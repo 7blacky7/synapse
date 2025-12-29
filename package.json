@@ -1,0 +1,27 @@
+{
+  "name": "synapse",
+  "version": "0.1.0",
+  "description": "KI-Gedaechtnis & Code-Intelligenz - Verbindet lokale CLIs und Web-KIs",
+  "private": true,
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces",
+    "build:core": "npm run build -w @synapse/core",
+    "build:mcp": "npm run build -w @synapse/mcp-server",
+    "build:api": "npm run build -w @synapse/rest-api",
+    "dev:mcp": "npm run dev -w @synapse/mcp-server",
+    "dev:api": "npm run dev -w @synapse/rest-api",
+    "lint": "eslint packages/*/src --ext .ts",
+    "clean": "rimraf packages/*/dist"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "typescript": "^5.3.0",
+    "rimraf": "^5.0.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

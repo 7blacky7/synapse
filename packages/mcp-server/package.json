@@ -1,0 +1,25 @@
+{
+  "name": "@synapse/mcp-server",
+  "version": "0.1.0",
+  "description": "Synapse MCP - MCP Server fuer lokale CLIs (Claude Code, Codex, etc.)",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "type": "module",
+  "bin": {
+    "synapse-mcp": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "start": "node dist/index.js",
+    "clean": "rimraf dist"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "@synapse/core": "*",
+    "dotenv": "^16.3.1"
+  },
+  "files": [
+    "dist"
+  ]
+}

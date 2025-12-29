@@ -1,0 +1,23 @@
+version: '3.8'
+
+services:
+  synapse-api:
+    build: .
+    container_name: synapse-api
+    restart: unless-stopped
+    ports:
+      - "3456:3456"
+    environment:
+      # Qdrant (localhost weil auf gleichem Server)
+      - QDRANT_URL=http://192.168.50.65:6333
+      # Ollama (localhost weil auf gleichem Server)
+      - OLLAMA_URL=http://192.168.50.65:11434
+      - OLLAMA_MODEL=nomic-embed-text
+      - EMBEDDING_PROVIDER=ollama
+      # Context7
+      - CONTEXT7_API_KEY=ctx7sk-4771a6b4-1de7-4ceb-8cb7-c31d9341d9e3
+      # API Config
+      - API_PORT=3456
+      - API_HOST=0.0.0.0
+    # Falls Qdrant/Ollama im gleichen Docker-Netzwerk:
+    # network_mode: host

@@ -1,0 +1,27 @@
+{
+  "name": "@synapse/rest-api",
+  "version": "0.1.0",
+  "description": "Synapse API - REST Server fuer Web-KIs (Claude Web, ChatGPT, etc.)",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "type": "module",
+  "bin": {
+    "synapse-api": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "start": "node dist/index.js",
+    "clean": "rimraf dist"
+  },
+  "dependencies": {
+    "@synapse/core": "*",
+    "dotenv": "^16.3.1",
+    "fastify": "^4.24.0",
+    "@fastify/cors": "^8.4.0",
+    "zod": "^3.22.0"
+  },
+  "files": [
+    "dist"
+  ]
+}
