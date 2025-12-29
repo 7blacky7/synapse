@@ -21,13 +21,6 @@ export async function createServer(): Promise<FastifyInstance> {
   const fastify = Fastify({
     logger: {
       level: 'info',
-      transport: {
-        target: 'pino-pretty',
-        options: {
-          translateTime: 'HH:MM:ss',
-          ignore: 'pid,hostname',
-        },
-      },
     },
   });
 
