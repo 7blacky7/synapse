@@ -79,7 +79,7 @@ const DEFAULT_IGNORES = [
 ];
 
 /**
- * Laedt .gitignore Datei und erstellt Ignore-Instanz
+ * Laedt .gitignore und .synapseignore Dateien und erstellt Ignore-Instanz
  */
 export function loadGitignore(projectPath: string): Ignore {
   const ig = ignore();
@@ -97,6 +97,19 @@ export function loadGitignore(projectPath: string): Ignore {
       console.log(`[Synapse] .gitignore geladen: ${gitignorePath}`);
     } catch (error) {
       console.warn(`[Synapse] Fehler beim Laden von .gitignore:`, error);
+    }
+  }
+
+  // .synapseignore laden wenn vorhanden (Synapse-spezifische Ignores)
+  const synapseignorePath = path.join(projectPath, '.synapseignore');
+
+  if (fs.existsSync(synapseignorePath)) {
+    try {
+      const content = fs.readFileSync(synapseignorePath, 'utf-8');
+      ig.add(content);
+      console.log(`[Synapse] .synapseignore geladen: ${synapseignorePath}`);
+    } catch (error) {
+      console.warn(`[Synapse] Fehler beim Laden von .synapseignore:`, error);
     }
   }
 
