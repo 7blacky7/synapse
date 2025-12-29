@@ -48,7 +48,7 @@ export function createServer(): Server {
     tools: [
       {
         name: 'init_projekt',
-        description: 'Initialisiert ein Projekt für Synapse. WICHTIG: Vor dem Aufruf erstelle eine .synapseignore Datei im Projekt-Root um unnötige Dateien vom Indexieren auszuschließen (Syntax wie .gitignore). Beispiel: "*.pdf\\n*.zip\\ndocs/archived/\\ntests/fixtures/\\n*.min.js"',
+        description: '⚠️ STOPP! Bevor du dieses Tool aufrufst: 1) Erstelle ZUERST eine .synapseignore Datei im Projekt-Root 2) Füge Muster für Dateien ein die NICHT indexiert werden sollen (große Dateien, generierte Dateien, etc.) 3) Syntax ist wie .gitignore. Beispiel-Inhalt für .synapseignore: "*.pdf\\n*.zip\\n*.min.js\\ndocs/archived/\\ntests/fixtures/\\n*.generated.*". Erst DANACH dieses Tool aufrufen!',
         inputSchema: {
           type: 'object',
           properties: {
