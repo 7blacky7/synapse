@@ -27,6 +27,15 @@ import {
 } from '@synapse/core';
 import { randomUUID } from 'crypto';
 
+/**
+ * Ermittelt das richtige Protokoll (HTTPS hinter Reverse Proxy)
+ */
+function getBaseUrl(request: FastifyRequest): string {
+  const proto = request.headers['x-forwarded-proto'] || request.protocol;
+  const protocol = Array.isArray(proto) ? proto[0] : proto;
+  return `${protocol}://${request.hostname}`;
+}
+
 // MCP Tool Definitionen (v0.2.0)
 const MCP_TOOLS = [
   // ===== PROJEKT-MANAGEMENT =====
@@ -604,7 +613,7 @@ export async function mcpRoutes(fastify: FastifyInstance): Promise<void> {
 
     sseConnections.set(sessionId, reply);
 
-    const baseUrl = `${request.protocol}://${request.hostname}`;
+    const baseUrl = getBaseUrl(request);
     sendSSEMessage(reply, {
       jsonrpc: '2.0',
       method: 'endpoint',
