@@ -17,6 +17,8 @@ import {
   cleanupProjekt,
   semanticCodeSearch,
   searchDocumentation,
+  searchByPath,
+  searchCodeWithPath,
   getProjectPlan,
   updateProjectPlan,
   addPlanTask,
@@ -26,6 +28,13 @@ import {
   searchThoughts,
   detectProjectTechnologies,
   indexTechDocs,
+  writeMemory,
+  readMemory,
+  listMemories,
+  searchMemory,
+  deleteMemory,
+  getIndexStats,
+  getDetailedStats,
 } from './tools/index.js';
 
 /**
@@ -35,7 +44,7 @@ export function createServer(): Server {
   const server = new Server(
     {
       name: 'synapse-mcp',
-      version: '0.1.0',
+      version: '0.2.0',
     },
     {
       capabilities: {
@@ -47,6 +56,7 @@ export function createServer(): Server {
   // Tool-Liste registrieren
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: [
+      // ===== PROJEKT-MANAGEMENT =====
       {
         name: 'init_projekt',
         description: '⚠️ STOPP! Bevor du dieses Tool aufrufst: 1) Erstelle ZUERST eine .synapseignore Datei im Projekt-Root 2) Füge Muster für Dateien ein die NICHT indexiert werden sollen (große Dateien, generierte Dateien, etc.) 3) Syntax ist wie .gitignore. Beispiel-Inhalt für .synapseignore: "*.pdf\\n*.zip\\n*.min.js\\ndocs/archived/\\ntests/fixtures/\\n*.generated.*". Erst DANACH dieses Tool aufrufen!',
@@ -103,7 +113,7 @@ export function createServer(): Server {
       },
       {
         name: 'cleanup_projekt',
-        description: 'Bereinigt ein Projekt nach Änderungen an .synapseignore - löscht alle Dateien aus der Vektordatenbank die jetzt ignoriert werden sollen. Nutze dieses Tool wenn du nachträglich Einträge zur .synapseignore hinzugefügt hast.',
+        description: 'Bereinigt ein Projekt nach Änderungen an .synapseignore - löscht alle Dateien aus der Vektordatenbank die jetzt ignoriert werden sollen. Zeigt detailliertes Feedback: welche Dateien gelöscht wurden, nach Pattern gruppiert.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -119,6 +129,36 @@ export function createServer(): Server {
           required: ['path', 'name'],
         },
       },
+      {
+        name: 'get_index_stats',
+        description: 'Zeigt Index-Statistiken für ein Projekt: Anzahl Dateien, Vektoren, aufgeteilt nach Collections (Code, Thoughts, Memories)',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            project: {
+              type: 'string',
+              description: 'Projekt-Name',
+            },
+          },
+          required: ['project'],
+        },
+      },
+      {
+        name: 'get_detailed_stats',
+        description: 'Detaillierte Statistiken: Code nach Dateityp, Thoughts nach Source, Memories nach Kategorie',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            project: {
+              type: 'string',
+              description: 'Projekt-Name',
+            },
+          },
+          required: ['project'],
+        },
+      },
+
+      // ===== CODE-SUCHE =====
       {
         name: 'semantic_code_search',
         description: 'Durchsucht den Code semantisch - findet konzeptuell aehnlichen Code',
@@ -136,6 +176,62 @@ export function createServer(): Server {
             file_type: {
               type: 'string',
               description: 'Optional: Dateityp filtern (z.B. typescript, python)',
+            },
+            limit: {
+              type: 'number',
+              description: 'Maximale Anzahl Ergebnisse (Standard: 10)',
+            },
+          },
+          required: ['query', 'project'],
+        },
+      },
+      {
+        name: 'search_by_path',
+        description: 'Exakte Pfadsuche ohne Embedding - findet Dateien nach Glob-Pattern. Beispiele: "backend/src/*", "**/*.ts", "**/utils/*"',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            project: {
+              type: 'string',
+              description: 'Projekt-Name',
+            },
+            path_pattern: {
+              type: 'string',
+              description: 'Glob-Pattern für Dateipfade (z.B. "src/**/*.ts", "backend/*")',
+            },
+            content_pattern: {
+              type: 'string',
+              description: 'Optional: Regex-Pattern für Content-Filter',
+            },
+            limit: {
+              type: 'number',
+              description: 'Maximale Anzahl Ergebnisse (Standard: 50)',
+            },
+          },
+          required: ['project', 'path_pattern'],
+        },
+      },
+      {
+        name: 'search_code_with_path',
+        description: 'Kombinierte Suche: Semantisch + Pfad-Filter. Erst semantisch ranken, dann nach Pfad filtern.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            query: {
+              type: 'string',
+              description: 'Semantische Suchanfrage',
+            },
+            project: {
+              type: 'string',
+              description: 'Projekt-Name',
+            },
+            path_pattern: {
+              type: 'string',
+              description: 'Optional: Glob-Pattern für Pfad-Filter',
+            },
+            file_type: {
+              type: 'string',
+              description: 'Optional: Dateityp filtern',
             },
             limit: {
               type: 'number',
@@ -171,6 +267,8 @@ export function createServer(): Server {
           required: ['query'],
         },
       },
+
+      // ===== PROJEKT-PLANUNG =====
       {
         name: 'get_project_plan',
         description: 'Ruft den Projekt-Plan ab (Ziele, Tasks, Architektur)',
@@ -243,9 +341,11 @@ export function createServer(): Server {
           required: ['project', 'title', 'description'],
         },
       },
+
+      // ===== GEDANKENAUSTAUSCH =====
       {
         name: 'add_thought',
-        description: 'Speichert einen Gedanken/eine Idee im Gedankenaustausch',
+        description: 'Speichert einen Gedanken/eine Idee im Gedankenaustausch (max. 10.000 Zeichen empfohlen)',
         inputSchema: {
           type: 'object',
           properties: {
@@ -310,6 +410,117 @@ export function createServer(): Server {
           required: ['query'],
         },
       },
+
+      // ===== MEMORY (LANGZEIT-SPEICHER) =====
+      {
+        name: 'write_memory',
+        description: 'Speichert längere Dokumentation/Notizen persistent. Überschreibt bei gleichem Namen. Für große Dokumente geeignet.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            project: {
+              type: 'string',
+              description: 'Projekt-Name',
+            },
+            name: {
+              type: 'string',
+              description: 'Eindeutiger Name für das Memory (z.B. "architecture-overview", "api-docs")',
+            },
+            content: {
+              type: 'string',
+              description: 'Inhalt des Memories (beliebig lang)',
+            },
+            category: {
+              type: 'string',
+              enum: ['documentation', 'note', 'architecture', 'decision', 'other'],
+              description: 'Kategorie (Standard: note)',
+            },
+            tags: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'Optionale Tags für bessere Suche',
+            },
+          },
+          required: ['project', 'name', 'content'],
+        },
+      },
+      {
+        name: 'read_memory',
+        description: 'Liest ein Memory nach Name',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            project: {
+              type: 'string',
+              description: 'Projekt-Name',
+            },
+            name: {
+              type: 'string',
+              description: 'Name des Memories',
+            },
+          },
+          required: ['project', 'name'],
+        },
+      },
+      {
+        name: 'list_memories',
+        description: 'Listet alle Memories eines Projekts auf',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            project: {
+              type: 'string',
+              description: 'Projekt-Name',
+            },
+            category: {
+              type: 'string',
+              enum: ['documentation', 'note', 'architecture', 'decision', 'other'],
+              description: 'Optional: Nach Kategorie filtern',
+            },
+          },
+          required: ['project'],
+        },
+      },
+      {
+        name: 'search_memory',
+        description: 'Durchsucht Memories semantisch',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            query: {
+              type: 'string',
+              description: 'Suchanfrage',
+            },
+            project: {
+              type: 'string',
+              description: 'Optional: Projekt filtern',
+            },
+            limit: {
+              type: 'number',
+              description: 'Maximale Anzahl Ergebnisse (Standard: 10)',
+            },
+          },
+          required: ['query'],
+        },
+      },
+      {
+        name: 'delete_memory',
+        description: 'Löscht ein Memory',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            project: {
+              type: 'string',
+              description: 'Projekt-Name',
+            },
+            name: {
+              type: 'string',
+              description: 'Name des Memories',
+            },
+          },
+          required: ['project', 'name'],
+        },
+      },
     ],
   }));
 
@@ -319,11 +530,12 @@ export function createServer(): Server {
 
     try {
       switch (name) {
+        // ===== PROJEKT-MANAGEMENT =====
         case 'init_projekt': {
           const result = await initProjekt(
             args?.path as string,
             args?.name as string | undefined,
-            args?.index_docs !== false // Standard: true
+            args?.index_docs !== false
           );
           return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
         }
@@ -349,12 +561,48 @@ export function createServer(): Server {
           return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
         }
 
+        case 'get_index_stats': {
+          const result = await getIndexStats(args?.project as string);
+          return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+        }
+
+        case 'get_detailed_stats': {
+          const result = await getDetailedStats(args?.project as string);
+          return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+        }
+
+        // ===== CODE-SUCHE =====
         case 'semantic_code_search': {
           const result = await semanticCodeSearch(
             args?.query as string,
             args?.project as string,
             args?.file_type as string | undefined,
             args?.limit as number | undefined
+          );
+          return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+        }
+
+        case 'search_by_path': {
+          const result = await searchByPath(
+            args?.project as string,
+            args?.path_pattern as string,
+            {
+              contentPattern: args?.content_pattern as string | undefined,
+              limit: args?.limit as number | undefined,
+            }
+          );
+          return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+        }
+
+        case 'search_code_with_path': {
+          const result = await searchCodeWithPath(
+            args?.query as string,
+            args?.project as string,
+            {
+              pathPattern: args?.path_pattern as string | undefined,
+              fileType: args?.file_type as string | undefined,
+              limit: args?.limit as number | undefined,
+            }
           );
           return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
         }
@@ -369,6 +617,7 @@ export function createServer(): Server {
           return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
         }
 
+        // ===== PROJEKT-PLANUNG =====
         case 'get_project_plan': {
           const result = await getProjectPlan(args?.project as string);
           return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
@@ -397,6 +646,7 @@ export function createServer(): Server {
           return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
         }
 
+        // ===== GEDANKENAUSTAUSCH =====
         case 'add_thought': {
           const result = await addThought(
             args?.project as string,
@@ -420,6 +670,51 @@ export function createServer(): Server {
             args?.query as string,
             args?.project as string | undefined,
             args?.limit as number | undefined
+          );
+          return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+        }
+
+        // ===== MEMORY =====
+        case 'write_memory': {
+          const result = await writeMemory(
+            args?.project as string,
+            args?.name as string,
+            args?.content as string,
+            args?.category as 'documentation' | 'note' | 'architecture' | 'decision' | 'other' | undefined,
+            args?.tags as string[] | undefined
+          );
+          return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+        }
+
+        case 'read_memory': {
+          const result = await readMemory(
+            args?.project as string,
+            args?.name as string
+          );
+          return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+        }
+
+        case 'list_memories': {
+          const result = await listMemories(
+            args?.project as string,
+            args?.category as 'documentation' | 'note' | 'architecture' | 'decision' | 'other' | undefined
+          );
+          return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+        }
+
+        case 'search_memory': {
+          const result = await searchMemory(
+            args?.query as string,
+            args?.project as string | undefined,
+            args?.limit as number | undefined
+          );
+          return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+        }
+
+        case 'delete_memory': {
+          const result = await deleteMemory(
+            args?.project as string,
+            args?.name as string
           );
           return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
         }
@@ -455,5 +750,5 @@ export async function startServer(): Promise<void> {
 
   await server.connect(transport);
 
-  console.error('[Synapse MCP] Server gestartet');
+  console.error('[Synapse MCP] Server gestartet (v0.2.0)');
 }

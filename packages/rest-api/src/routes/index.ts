@@ -8,3 +8,5 @@ export { searchRoutes } from './search.js';
 export { thoughtsRoutes } from './thoughts.js';
 export { mcpRoutes } from './mcp.js';
 export { oauthRoutes } from './oauth.js';
+export { memoryRoutes } from './memory.js';
+export { statsRoutes } from './stats.js';

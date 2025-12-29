@@ -104,7 +104,15 @@ export {
   indexProjectTechnologies,
   isFrameworkCached,
   cacheSearchResults,
+  // Memory
+  writeMemory,
+  getMemoryByName,
+  listMemories,
+  searchMemories,
+  deleteMemory,
+  deleteProjectMemories,
 } from './services/index.js';
+export type { Memory } from './services/memory.js';
 export type { DetectedTechnology } from './services/tech-detection.js';
 export type { Context7Doc, Context7SearchResult } from './services/context7.js';
 export type { IndexedDoc } from './services/docs-indexer.js';

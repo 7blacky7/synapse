@@ -1,6 +1,6 @@
 {
   "name": "@synapse/mcp-server",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Synapse MCP - MCP Server fuer lokale CLIs (Claude Code, Codex, etc.)",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -17,7 +17,11 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
     "@synapse/core": "*",
-    "dotenv": "^16.3.1"
+    "dotenv": "^16.3.1",
+    "minimatch": "^9.0.0"
+  },
+  "devDependencies": {
+    "@types/minimatch": "^5.1.2"
   },
   "files": [
     "dist"

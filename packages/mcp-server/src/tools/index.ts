@@ -8,3 +8,5 @@ export * from './search.js';
 export * from './plans.js';
 export * from './thoughts.js';
 export * from './tech.js';
+export * from './memory.js';
+export * from './stats.js';
