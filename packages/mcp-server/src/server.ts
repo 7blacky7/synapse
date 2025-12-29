@@ -48,7 +48,7 @@ export function createServer(): Server {
     tools: [
       {
         name: 'init_projekt',
-        description: 'Initialisiert ein Projekt: FileWatcher, Technologie-Erkennung, Doku-Caching',
+        description: 'Initialisiert ein Projekt für Synapse. WICHTIG: Vor dem Aufruf erstelle eine .synapseignore Datei im Projekt-Root um unnötige Dateien vom Indexieren auszuschließen (Syntax wie .gitignore). Beispiel: "*.pdf\\n*.zip\\ndocs/archived/\\ntests/fixtures/\\n*.min.js"',
         inputSchema: {
           type: 'object',
           properties: {
