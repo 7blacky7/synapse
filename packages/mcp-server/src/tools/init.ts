@@ -13,6 +13,10 @@ import {
   getPlan,
   detectTechnologies,
   indexProjectTechnologies,
+  scrollVectors,
+  deleteByFilePath,
+  loadGitignore,
+  shouldIgnore,
 } from '@synapse/core';
 import type { FileWatcherInstance, DetectedTechnology } from '@synapse/core';
 
@@ -91,13 +95,18 @@ export async function initProjekt(
     console.log(`[Synapse MCP] Docs: ${docsIndexed.indexed} neu, ${docsIndexed.cached} gecacht`);
   }
 
-  // FileWatcher starten
+  // FileWatcher starten mit automatischem Cleanup bei .synapseignore Aenderungen
   const watcher = startFileWatcher({
     projectPath,
     projectName: name,
     onFileChange: handleFileEvent,
     onError: (error) => {
       console.error(`[Synapse MCP] FileWatcher Fehler:`, error);
+    },
+    onIgnoreChange: async () => {
+      console.log(`[Synapse MCP] .synapseignore geaendert - starte automatisches Cleanup...`);
+      const result = await cleanupProjekt(projectPath, name);
+      console.log(`[Synapse MCP] Cleanup: ${result.deleted} Dateien geloescht, ${result.checked} geprueft`);
     },
   });
 
@@ -148,4 +157,63 @@ export function listActiveProjects(): string[] {
  */
 export function isProjectActive(projectName: string): boolean {
   return activeWatchers.has(projectName);
+}
+
+/**
+ * Bereinigt ein Projekt - entfernt Dateien die jetzt in .synapseignore stehen
+ */
+export async function cleanupProjekt(
+  projectPath: string,
+  projectName: string
+): Promise<{
+  success: boolean;
+  deleted: number;
+  checked: number;
+  message: string;
+}> {
+  console.log(`[Synapse MCP] Cleanup für "${projectName}"...`);
+
+  // .synapseignore und .gitignore neu laden
+  const ig = loadGitignore(projectPath);
+
+  // Alle Vektoren im Projekt durchgehen
+  const collectionName = `project_${projectName}`;
+  let deleted = 0;
+  let checked = 0;
+
+  try {
+    // Alle Vektoren holen (mit leerem Filter)
+    const results = await scrollVectors<{ file_path?: string }>(collectionName, {}, 10000);
+
+    for (const point of results) {
+      checked++;
+      const filePath = point.payload?.file_path;
+
+      if (filePath) {
+        // Relativen Pfad berechnen
+        const relativePath = path.relative(projectPath, filePath);
+
+        // Pruefen ob jetzt ignoriert werden soll
+        if (shouldIgnore(ig, relativePath)) {
+          console.log(`[Synapse MCP] Lösche ignorierte Datei: ${relativePath}`);
+          await deleteByFilePath(collectionName, filePath);
+          deleted++;
+        }
+      }
+    }
+
+    return {
+      success: true,
+      deleted,
+      checked,
+      message: `Cleanup abgeschlossen: ${deleted} Dateien gelöscht, ${checked} geprüft`,
+    };
+  } catch (error) {
+    return {
+      success: false,
+      deleted,
+      checked,
+      message: `Cleanup Fehler: ${error}`,
+    };
+  }
 }

@@ -14,6 +14,7 @@ import {
   initProjekt,
   stopProjekt,
   listActiveProjects,
+  cleanupProjekt,
   semanticCodeSearch,
   searchDocumentation,
   getProjectPlan,
@@ -98,6 +99,24 @@ export function createServer(): Server {
             },
           },
           required: ['path'],
+        },
+      },
+      {
+        name: 'cleanup_projekt',
+        description: 'Bereinigt ein Projekt nach Änderungen an .synapseignore - löscht alle Dateien aus der Vektordatenbank die jetzt ignoriert werden sollen. Nutze dieses Tool wenn du nachträglich Einträge zur .synapseignore hinzugefügt hast.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            path: {
+              type: 'string',
+              description: 'Absoluter Pfad zum Projekt-Ordner',
+            },
+            name: {
+              type: 'string',
+              description: 'Projekt-Name',
+            },
+          },
+          required: ['path', 'name'],
         },
       },
       {
@@ -318,6 +337,14 @@ export function createServer(): Server {
           const result = await indexTechDocs(
             args?.path as string,
             args?.force_reindex as boolean | undefined
+          );
+          return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+        }
+
+        case 'cleanup_projekt': {
+          const result = await cleanupProjekt(
+            args?.path as string,
+            args?.name as string
           );
           return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
         }

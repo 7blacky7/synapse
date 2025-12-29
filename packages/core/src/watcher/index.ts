@@ -24,6 +24,8 @@ export interface FileWatcherOptions {
   onFileChange: (event: FileEvent) => void | Promise<void>;
   /** Callback bei Fehler */
   onError?: (error: Error) => void;
+  /** Callback wenn .synapseignore geaendert wird - erhaelt neue Ignore-Patterns */
+  onIgnoreChange?: (newPatterns: string[]) => void | Promise<void>;
 }
 
 export interface FileWatcherInstance {
@@ -39,16 +41,37 @@ export interface FileWatcherInstance {
  * Startet einen FileWatcher fuer ein Projekt
  */
 export function startFileWatcher(options: FileWatcherOptions): FileWatcherInstance {
-  const { projectPath, projectName, onFileChange, onError } = options;
+  const { projectPath, projectName, onFileChange, onError, onIgnoreChange } = options;
   const config = getConfig();
 
   console.log(`[Synapse] Starte FileWatcher fuer "${projectName}" in ${projectPath}`);
 
-  // Gitignore laden
-  const ig: Ignore = loadGitignore(projectPath);
+  // Gitignore laden (mutable - wird bei .synapseignore Aenderung neu geladen)
+  let ig: Ignore = loadGitignore(projectPath);
+
+  // Pfade zu ignore Dateien
+  const synapseignorePath = path.join(projectPath, '.synapseignore');
+  const gitignorePath = path.join(projectPath, '.gitignore');
 
   // Debounce Map fuer Batch-Updates
   const pendingEvents = new Map<string, { type: FileEvent['type']; timeout: NodeJS.Timeout }>();
+
+  /**
+   * Liest neue Patterns aus .synapseignore
+   */
+  function readSynapseignorePatterns(): string[] {
+    try {
+      if (fs.existsSync(synapseignorePath)) {
+        const content = fs.readFileSync(synapseignorePath, 'utf-8');
+        return content.split('\n')
+          .map(line => line.trim())
+          .filter(line => line && !line.startsWith('#'));
+      }
+    } catch {
+      // Ignore
+    }
+    return [];
+  }
 
   /**
    * Verarbeitet ein Datei-Event mit Debounce
@@ -56,6 +79,23 @@ export function startFileWatcher(options: FileWatcherOptions): FileWatcherInstan
   function handleEvent(type: FileEvent['type'], filePath: string): void {
     // Relativen Pfad berechnen
     const relativePath = path.relative(projectPath, filePath);
+
+    // Pruefen ob .synapseignore oder .gitignore geaendert wurde
+    if (filePath === synapseignorePath || filePath === gitignorePath) {
+      console.log(`[Synapse] Ignore-Datei geaendert: ${relativePath}`);
+
+      // Ignore-Patterns neu laden
+      ig = loadGitignore(projectPath);
+
+      // Callback aufrufen mit neuen Patterns
+      if (onIgnoreChange) {
+        const patterns = readSynapseignorePatterns();
+        Promise.resolve(onIgnoreChange(patterns)).catch(error => {
+          console.error(`[Synapse] Fehler bei onIgnoreChange:`, error);
+        });
+      }
+      return;
+    }
 
     // Ignorierte Dateien ueberspringen
     if (shouldIgnore(ig, relativePath)) {
