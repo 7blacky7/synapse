@@ -254,9 +254,117 @@ export async function mcpRoutes(fastify: FastifyInstance): Promise<void> {
   });
 
   /**
+   * POST / - Root MCP JSON-RPC Endpoint
+   * Claude.ai macht POST auf / für MCP Requests
+   */
+  fastify.post<{
+    Body: {
+      jsonrpc: string;
+      id?: string | number;
+      method: string;
+      params?: Record<string, unknown>;
+    };
+  }>('/', async (request, reply) => {
+    const { jsonrpc, id, method, params } = request.body || {};
+
+    // CORS Headers
+    reply.header('Access-Control-Allow-Origin', '*');
+    reply.header('Access-Control-Allow-Headers', '*');
+
+    // Wenn kein JSON-RPC, ignorieren (nicht unser Request)
+    if (!jsonrpc) {
+      return reply.status(400).send({ error: 'Not a JSON-RPC request' });
+    }
+
+    if (jsonrpc !== '2.0') {
+      return reply.status(400).send({
+        jsonrpc: '2.0',
+        id,
+        error: { code: -32600, message: 'Invalid JSON-RPC version' },
+      });
+    }
+
+    console.log(`[MCP] Request: ${method}`);
+
+    try {
+      let result: unknown;
+
+      switch (method) {
+        case 'initialize': {
+          result = {
+            protocolVersion: '2024-11-05',
+            capabilities: {
+              tools: {},
+            },
+            serverInfo: {
+              name: 'synapse-mcp',
+              version: '0.1.0',
+            },
+          };
+          break;
+        }
+
+        case 'tools/list': {
+          result = { tools: MCP_TOOLS };
+          break;
+        }
+
+        case 'tools/call': {
+          const toolName = params?.name as string;
+          const toolArgs = (params?.arguments || {}) as Record<string, unknown>;
+          const toolResult = await handleToolCall(toolName, toolArgs);
+          result = {
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify(toolResult, null, 2),
+              },
+            ],
+          };
+          break;
+        }
+
+        case 'notifications/initialized': {
+          // Acknowledgment - keine Antwort nötig bei Notifications
+          return reply.status(202).send();
+        }
+
+        case 'ping': {
+          result = {};
+          break;
+        }
+
+        default: {
+          return reply.status(400).send({
+            jsonrpc: '2.0',
+            id,
+            error: { code: -32601, message: `Method not found: ${method}` },
+          });
+        }
+      }
+
+      return { jsonrpc: '2.0', id, result };
+    } catch (error) {
+      console.error(`[MCP] Error:`, error);
+      return reply.status(500).send({
+        jsonrpc: '2.0',
+        id,
+        error: { code: -32000, message: String(error) },
+      });
+    }
+  });
+
+  /**
    * OPTIONS Handler für CORS Preflight
    */
   fastify.options('/mcp/*', async (request, reply) => {
+    reply.header('Access-Control-Allow-Origin', '*');
+    reply.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    reply.header('Access-Control-Allow-Headers', '*');
+    return reply.status(204).send();
+  });
+
+  fastify.options('/', async (request, reply) => {
     reply.header('Access-Control-Allow-Origin', '*');
     reply.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
     reply.header('Access-Control-Allow-Headers', '*');

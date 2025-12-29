@@ -13,6 +13,7 @@ import {
   searchRoutes,
   thoughtsRoutes,
   mcpRoutes,
+  oauthRoutes,
 } from './routes/index.js';
 
 /**
@@ -34,12 +35,17 @@ export async function createServer(): Promise<FastifyInstance> {
   // Error Handler
   fastify.setErrorHandler(errorHandler);
 
-  // Routes registrieren
+  // OAuth zuerst (für /.well-known Endpoints)
+  await fastify.register(oauthRoutes);
+
+  // MCP Routes (für Claude.ai Connectors)
+  await fastify.register(mcpRoutes);
+
+  // REST API Routes
   await fastify.register(statusRoutes);
   await fastify.register(projectRoutes);
   await fastify.register(searchRoutes);
   await fastify.register(thoughtsRoutes);
-  await fastify.register(mcpRoutes);
 
   // Health Check
   fastify.get('/health', async () => ({ status: 'ok' }));
