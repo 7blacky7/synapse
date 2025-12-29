@@ -169,7 +169,13 @@ export async function cleanupProjekt(
   success: boolean;
   deleted: number;
   checked: number;
+  deletedFiles: string[];
+  keptFiles: number;
   message: string;
+  details: {
+    byPattern: Record<string, string[]>;
+    uniqueFiles: number;
+  };
 }> {
   console.log(`[Synapse MCP] Cleanup für "${projectName}"...`);
 
@@ -180,6 +186,9 @@ export async function cleanupProjekt(
   const collectionName = `project_${projectName}`;
   let deleted = 0;
   let checked = 0;
+  const deletedFiles: string[] = [];
+  const seenFiles = new Set<string>();
+  const byPattern: Record<string, string[]> = {};
 
   try {
     // Alle Vektoren holen (mit leerem Filter)
@@ -192,28 +201,58 @@ export async function cleanupProjekt(
       if (filePath) {
         // Relativen Pfad berechnen
         const relativePath = path.relative(projectPath, filePath);
+        seenFiles.add(relativePath);
 
         // Pruefen ob jetzt ignoriert werden soll
         if (shouldIgnore(ig, relativePath)) {
+          // Finde welches Pattern matcht (für Feedback)
+          const ext = path.extname(relativePath) || 'no-extension';
+          const dir = path.dirname(relativePath).split(path.sep)[0] || 'root';
+          const patternKey = relativePath.includes('node_modules')
+            ? 'node_modules/'
+            : ext;
+
+          if (!byPattern[patternKey]) {
+            byPattern[patternKey] = [];
+          }
+          byPattern[patternKey].push(relativePath);
+
           console.log(`[Synapse MCP] Lösche ignorierte Datei: ${relativePath}`);
           await deleteByFilePath(collectionName, filePath);
+          deletedFiles.push(relativePath);
           deleted++;
         }
       }
     }
 
+    const keptFiles = seenFiles.size - deletedFiles.length;
+
     return {
       success: true,
       deleted,
       checked,
-      message: `Cleanup abgeschlossen: ${deleted} Dateien gelöscht, ${checked} geprüft`,
+      deletedFiles,
+      keptFiles,
+      message: deleted > 0
+        ? `Cleanup: ${deleted} Dateien gelöscht, ${keptFiles} behalten (${checked} Chunks geprüft)`
+        : `Cleanup: Keine Änderungen nötig (${seenFiles.size} Dateien, ${checked} Chunks geprüft)`,
+      details: {
+        byPattern,
+        uniqueFiles: seenFiles.size,
+      },
     };
   } catch (error) {
     return {
       success: false,
       deleted,
       checked,
+      deletedFiles,
+      keptFiles: 0,
       message: `Cleanup Fehler: ${error}`,
+      details: {
+        byPattern,
+        uniqueFiles: 0,
+      },
     };
   }
 }

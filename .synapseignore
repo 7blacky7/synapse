@@ -1,0 +1,26 @@
+# Synapse Ignore - Dateien die nicht indexiert werden sollen
+
+# Dependencies
+node_modules/
+
+# Build Output  
+dist/
+*.tsbuildinfo
+
+# Logs
+*.log
+
+# IDE
+.idea/
+.vscode/
+
+# Git
+.git/
+
+# Docker
+Dockerfile
+docker-compose.yml
+
+# Config mit Secrets
+.env
+.mcp.json

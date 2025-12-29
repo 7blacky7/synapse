@@ -14,6 +14,8 @@ import {
   thoughtsRoutes,
   mcpRoutes,
   oauthRoutes,
+  memoryRoutes,
+  statsRoutes,
 } from './routes/index.js';
 
 /**
@@ -46,6 +48,8 @@ export async function createServer(): Promise<FastifyInstance> {
   await fastify.register(projectRoutes);
   await fastify.register(searchRoutes);
   await fastify.register(thoughtsRoutes);
+  await fastify.register(memoryRoutes);
+  await fastify.register(statsRoutes);
 
   // Health Check
   fastify.get('/health', async () => ({ status: 'ok' }));
@@ -53,7 +57,7 @@ export async function createServer(): Promise<FastifyInstance> {
   // Root
   fastify.get('/', async () => ({
     name: 'Synapse API',
-    version: '0.1.0',
+    version: '0.2.0',
     docs: '/api/status',
   }));
 
