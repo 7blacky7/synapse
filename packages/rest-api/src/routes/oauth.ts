@@ -35,13 +35,22 @@ function generateSecret(length = 32): string {
   return randomBytes(length).toString('hex');
 }
 
+/**
+ * Ermittelt das richtige Protokoll (HTTPS hinter Reverse Proxy)
+ */
+function getBaseUrl(request: FastifyRequest): string {
+  const proto = request.headers['x-forwarded-proto'] || request.protocol;
+  const protocol = Array.isArray(proto) ? proto[0] : proto;
+  return `${protocol}://${request.hostname}`;
+}
+
 export async function oauthRoutes(fastify: FastifyInstance): Promise<void> {
   /**
    * OAuth Authorization Server Metadata
    * RFC 8414
    */
   fastify.get('/.well-known/oauth-authorization-server', async (request) => {
-    const baseUrl = `${request.protocol}://${request.hostname}`;
+    const baseUrl = getBaseUrl(request);
 
     return {
       issuer: baseUrl,
@@ -61,7 +70,7 @@ export async function oauthRoutes(fastify: FastifyInstance): Promise<void> {
    * RFC 9728
    */
   fastify.get('/.well-known/oauth-protected-resource', async (request) => {
-    const baseUrl = `${request.protocol}://${request.hostname}`;
+    const baseUrl = getBaseUrl(request);
 
     return {
       resource: baseUrl,
