@@ -12,6 +12,7 @@ import {
   projectRoutes,
   searchRoutes,
   thoughtsRoutes,
+  mcpRoutes,
 } from './routes/index.js';
 
 /**
@@ -38,6 +39,7 @@ export async function createServer(): Promise<FastifyInstance> {
   await fastify.register(projectRoutes);
   await fastify.register(searchRoutes);
   await fastify.register(thoughtsRoutes);
+  await fastify.register(mcpRoutes);
 
   // Health Check
   fastify.get('/health', async () => ({ status: 'ok' }));
