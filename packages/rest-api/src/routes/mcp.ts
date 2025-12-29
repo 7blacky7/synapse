@@ -31,9 +31,20 @@ import { randomUUID } from 'crypto';
  * Ermittelt das richtige Protokoll (HTTPS hinter Reverse Proxy)
  */
 function getBaseUrl(request: FastifyRequest): string {
-  const proto = request.headers['x-forwarded-proto'] || request.protocol;
-  const protocol = Array.isArray(proto) ? proto[0] : proto;
-  return `${protocol}://${request.hostname}`;
+  // X-Forwarded-Proto Header prüfen
+  const forwardedProto = request.headers['x-forwarded-proto'];
+  if (forwardedProto) {
+    const protocol = Array.isArray(forwardedProto) ? forwardedProto[0] : forwardedProto;
+    return `${protocol}://${request.hostname}`;
+  }
+
+  // Fallback: HTTPS erzwingen für öffentliche Domains
+  const hostname = request.hostname;
+  if (hostname.includes('.') && !hostname.startsWith('localhost') && !hostname.startsWith('127.') && !hostname.startsWith('192.168.') && !hostname.startsWith('172.') && !hostname.startsWith('10.')) {
+    return `https://${hostname}`;
+  }
+
+  return `${request.protocol}://${hostname}`;
 }
 
 // MCP Tool Definitionen (v0.2.0)
