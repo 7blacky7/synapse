@@ -51,6 +51,7 @@ export {
   readFileWithMetadata,
   isBinaryFile,
   isBinaryExtension,
+  isExtractableDocument,
   getFileType,
   getFileExtension,
   loadGitignore,
@@ -111,11 +112,20 @@ export {
   searchMemories,
   deleteMemory,
   deleteProjectMemories,
+  // Documents
+  extractDocument,
+  extractPDF,
+  extractWord,
+  extractExcel,
+  indexDocument,
+  searchDocuments,
+  removeDocument,
 } from './services/index.js';
 export type { Memory } from './services/memory.js';
 export type { DetectedTechnology } from './services/tech-detection.js';
 export type { Context7Doc, Context7SearchResult } from './services/context7.js';
 export type { IndexedDoc } from './services/docs-indexer.js';
+export type { ExtractedDocument, DocumentSearchResult } from './services/documents.js';
 
 /**
  * Initialisiert Synapse Core

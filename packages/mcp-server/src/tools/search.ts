@@ -3,8 +3,8 @@
  * Code und Dokumentation durchsuchen
  */
 
-import { searchCode, searchDocsWithFallback, scrollVectors } from '@synapse/core';
-import type { CodeSearchResult, DocSearchResult } from '@synapse/core';
+import { searchCode, searchDocsWithFallback, scrollVectors, searchDocuments } from '@synapse/core';
+import type { CodeSearchResult, DocSearchResult, DocumentSearchResult } from '@synapse/core';
 import { minimatch } from 'minimatch';
 
 /**
@@ -271,6 +271,53 @@ export async function searchCodeWithPath(
       success: false,
       results: [],
       message: `Fehler bei kombinierter Suche: ${error}`,
+    };
+  }
+}
+
+/**
+ * Semantische Dokument-Suche (PDF, Word, Excel)
+ */
+export async function searchDocumentsWrapper(
+  query: string,
+  project: string,
+  documentType?: 'pdf' | 'docx' | 'xlsx' | 'all',
+  limit: number = 10
+): Promise<{
+  success: boolean;
+  results: Array<{
+    filePath: string;
+    fileName: string;
+    documentType: string;
+    content: string;
+    score: number;
+    chunkIndex: number;
+  }>;
+  message: string;
+}> {
+  try {
+    const results = await searchDocuments(query, project, {
+      documentType: documentType || 'all',
+      limit,
+    });
+
+    return {
+      success: true,
+      results: results.map(r => ({
+        filePath: r.filePath,
+        fileName: r.fileName,
+        documentType: r.documentType,
+        content: r.content,
+        score: r.score,
+        chunkIndex: r.chunkIndex,
+      })),
+      message: `${results.length} Dokument-Ergebnisse gefunden`,
+    };
+  } catch (error) {
+    return {
+      success: false,
+      results: [],
+      message: `Fehler bei Dokument-Suche: ${error}`,
     };
   }
 }

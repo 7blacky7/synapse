@@ -19,6 +19,7 @@ import {
   searchDocumentation,
   searchByPath,
   searchCodeWithPath,
+  searchDocumentsWrapper,
   getProjectPlan,
   updateProjectPlan,
   addPlanTask,
@@ -35,6 +36,8 @@ import {
   deleteMemory,
   getIndexStats,
   getDetailedStats,
+  saveProjectIdea,
+  confirmIdea,
 } from './tools/index.js';
 
 /**
@@ -157,6 +160,28 @@ export function createServer(): Server {
           required: ['project'],
         },
       },
+      {
+        name: 'stop_projekt',
+        description: 'Stoppt den FileWatcher für ein Projekt und gibt Ressourcen frei',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            project: {
+              type: 'string',
+              description: 'Projekt-Name',
+            },
+          },
+          required: ['project'],
+        },
+      },
+      {
+        name: 'list_active_projects',
+        description: 'Listet alle Projekte mit aktivem FileWatcher auf',
+        inputSchema: {
+          type: 'object',
+          properties: {},
+        },
+      },
 
       // ===== CODE-SUCHE =====
       {
@@ -265,6 +290,33 @@ export function createServer(): Server {
             },
           },
           required: ['query'],
+        },
+      },
+      {
+        name: 'search_documents',
+        description: 'Durchsucht indexierte Dokumente (PDF, Word, Excel) semantisch',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            query: {
+              type: 'string',
+              description: 'Suchanfrage in natuerlicher Sprache',
+            },
+            project: {
+              type: 'string',
+              description: 'Projekt-Name',
+            },
+            document_type: {
+              type: 'string',
+              enum: ['pdf', 'docx', 'xlsx', 'all'],
+              description: 'Optional: Dokumententyp filtern (Standard: all)',
+            },
+            limit: {
+              type: 'number',
+              description: 'Maximale Anzahl Ergebnisse (Standard: 10)',
+            },
+          },
+          required: ['query', 'project'],
         },
       },
 
@@ -521,6 +573,49 @@ export function createServer(): Server {
           required: ['project', 'name'],
         },
       },
+
+      // ===== PROJEKT-IDEEN =====
+      {
+        name: 'save_project_idea',
+        description: 'Speichert eine Projektidee. Generiert automatisch einen Namen und fragt nach Bestaetigung.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            content: {
+              type: 'string',
+              description: 'Die Projektidee',
+            },
+            project: {
+              type: 'string',
+              description: 'Optional: Projekt (Standard: "ideas")',
+            },
+            tags: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'Optionale Tags',
+            },
+          },
+          required: ['content'],
+        },
+      },
+      {
+        name: 'confirm_idea',
+        description: 'Bestaetigt eine vorgeschlagene Idee und speichert sie persistent',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            temp_id: {
+              type: 'string',
+              description: 'Temporaere ID der vorgemerkten Idee',
+            },
+            custom_name: {
+              type: 'string',
+              description: 'Optional: Eigener Name statt des vorgeschlagenen',
+            },
+          },
+          required: ['temp_id'],
+        },
+      },
     ],
   }));
 
@@ -571,6 +666,40 @@ export function createServer(): Server {
           return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
         }
 
+        case 'stop_projekt': {
+          const projectName = args?.project as string;
+          const stopped = await stopProjekt(projectName);
+          return {
+            content: [{
+              type: 'text',
+              text: JSON.stringify({
+                success: stopped,
+                project: projectName,
+                message: stopped
+                  ? `FileWatcher für "${projectName}" gestoppt`
+                  : `Projekt "${projectName}" war nicht aktiv`,
+              }, null, 2),
+            }],
+          };
+        }
+
+        case 'list_active_projects': {
+          const projects = listActiveProjects();
+          return {
+            content: [{
+              type: 'text',
+              text: JSON.stringify({
+                success: true,
+                count: projects.length,
+                projects,
+                message: projects.length > 0
+                  ? `${projects.length} aktive Projekte: ${projects.join(', ')}`
+                  : 'Keine aktiven Projekte',
+              }, null, 2),
+            }],
+          };
+        }
+
         // ===== CODE-SUCHE =====
         case 'semantic_code_search': {
           const result = await semanticCodeSearch(
@@ -612,6 +741,16 @@ export function createServer(): Server {
             args?.query as string,
             args?.framework as string | undefined,
             args?.use_context7 as boolean | undefined,
+            args?.limit as number | undefined
+          );
+          return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+        }
+
+        case 'search_documents': {
+          const result = await searchDocumentsWrapper(
+            args?.query as string,
+            args?.project as string,
+            args?.document_type as 'pdf' | 'docx' | 'xlsx' | 'all' | undefined,
             args?.limit as number | undefined
           );
           return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
@@ -715,6 +854,24 @@ export function createServer(): Server {
           const result = await deleteMemory(
             args?.project as string,
             args?.name as string
+          );
+          return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+        }
+
+        // ===== PROJEKT-IDEEN =====
+        case 'save_project_idea': {
+          const result = await saveProjectIdea(
+            args?.content as string,
+            args?.project as string | undefined,
+            args?.tags as string[] | undefined
+          );
+          return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+        }
+
+        case 'confirm_idea': {
+          const result = await confirmIdea(
+            args?.temp_id as string,
+            args?.custom_name as string | undefined
           );
           return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
         }
