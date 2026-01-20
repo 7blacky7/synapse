@@ -37,8 +37,14 @@ export function saveBase64AsTemp(base64Data: string, format: string = 'png'): st
   const filename = `image_${id}.${format}`;
   const filepath = join(IMAGE_TEMP_DIR, filename);
 
+  // Data URL Prefix entfernen wenn vorhanden (z.B. "data:image/png;base64,")
+  let cleanBase64 = base64Data;
+  if (base64Data.includes(',')) {
+    cleanBase64 = base64Data.split(',')[1];
+  }
+
   // Base64 decodieren und speichern
-  const buffer = Buffer.from(base64Data, 'base64');
+  const buffer = Buffer.from(cleanBase64, 'base64');
   writeFileSync(filepath, buffer);
 
   console.log(`[ImageProcessing] Temp-Bild gespeichert: ${filepath}`);
