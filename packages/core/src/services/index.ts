@@ -11,3 +11,4 @@ export * from './tech-detection.js';
 export * from './context7.js';
 export * from './docs-indexer.js';
 export * from './memory.js';
+export * from './documents.js';

@@ -10,3 +10,4 @@ export { mcpRoutes } from './mcp.js';
 export { oauthRoutes } from './oauth.js';
 export { memoryRoutes } from './memory.js';
 export { statsRoutes } from './stats.js';
+export { chatRoutes } from './chat.js';

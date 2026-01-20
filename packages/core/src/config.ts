@@ -22,7 +22,7 @@ export function loadConfig(): SynapseConfig {
       provider: (process.env.EMBEDDING_PROVIDER as 'ollama' | 'openai') || 'ollama',
       ollama: {
         url: process.env.OLLAMA_URL || 'http://localhost:11434',
-        model: process.env.OLLAMA_MODEL || 'nomic-embed-text',
+        model: process.env.OLLAMA_MODEL || 'nomic-embed-text-v2-moe',
       },
       openai: {
         apiKey: process.env.OPENAI_API_KEY || undefined,

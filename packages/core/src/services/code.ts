@@ -19,7 +19,8 @@ import {
 } from '../qdrant/index.js';
 import { embed, embedBatch } from '../embeddings/index.js';
 import { chunkFile } from '../chunking/index.js';
-import { readFileWithMetadata, getFileType } from '../watcher/index.js';
+import { readFileWithMetadata, getFileType, isExtractableDocument } from '../watcher/index.js';
+import { indexDocument, removeDocument } from './documents.js';
 
 /**
  * Indexiert eine Datei in Qdrant
@@ -106,15 +107,30 @@ export async function removeFile(
  * Verarbeitet ein FileWatcher Event
  */
 export async function handleFileEvent(event: FileEvent): Promise<void> {
+  // Pruefen ob es ein extrahierbares Dokument ist
+  const isDocument = isExtractableDocument(event.path);
+
   switch (event.type) {
     case 'add':
-      await indexFile(event.path, event.project);
+      if (isDocument) {
+        await indexDocument(event.path, event.project);
+      } else {
+        await indexFile(event.path, event.project);
+      }
       break;
     case 'change':
-      await updateFile(event.path, event.project);
+      if (isDocument) {
+        await indexDocument(event.path, event.project);
+      } else {
+        await updateFile(event.path, event.project);
+      }
       break;
     case 'unlink':
-      await removeFile(event.path, event.project);
+      if (isDocument) {
+        await removeDocument(event.path, event.project);
+      } else {
+        await removeFile(event.path, event.project);
+      }
       break;
   }
 }
