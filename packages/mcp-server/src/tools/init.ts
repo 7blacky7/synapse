@@ -378,7 +378,7 @@ export async function getProjectStatusWithStats(
     let memoriesCount = 0;
 
     try {
-      const thoughtsStats = await getCollectionStats('synapse_thoughts');
+      const thoughtsStats = await getCollectionStats('project_thoughts');
       thoughtsCount = thoughtsStats?.pointsCount ?? 0;
     } catch {
       // Collection existiert moeglicherweise nicht

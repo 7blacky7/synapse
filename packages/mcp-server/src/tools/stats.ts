@@ -36,7 +36,7 @@ export async function getIndexStats(
     let memoriesCount = 0;
 
     try {
-      const thoughtsStats = await getCollectionStats('synapse_thoughts');
+      const thoughtsStats = await getCollectionStats('project_thoughts');
       thoughtsCount = thoughtsStats?.pointsCount ?? 0;
     } catch {
       // Collection existiert möglicherweise nicht
@@ -131,7 +131,7 @@ export async function getDetailedStats(
 
     try {
       const thoughtPoints = await scrollVectors<{ source: string; project: string }>(
-        'synapse_thoughts',
+        'project_thoughts',
         { must: [{ key: 'project', match: { value: project } }] },
         10000
       );
