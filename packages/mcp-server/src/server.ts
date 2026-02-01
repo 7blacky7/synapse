@@ -42,8 +42,6 @@ import {
   saveProjectIdea,
   confirmIdea,
   checkAgentOnboarding,
-  globalSearchWrapper,
-  listProjectsWrapper,
 } from './tools/index.js';
 
 /**
@@ -369,51 +367,6 @@ export function createServer(): Server {
             },
           },
           required: ['query', 'project'],
-        },
-      },
-
-      // ===== GLOBALE SUCHE =====
-      {
-        name: 'global_search',
-        description: 'Globale semantische Suche ueber ALLE Projekte - fuer externe KI-Agenten (Read-Only). Durchsucht Code, Thoughts und Memories parallel.',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            query: {
-              type: 'string',
-              description: 'Suchanfrage in natuerlicher Sprache',
-            },
-            types: {
-              type: 'array',
-              items: {
-                type: 'string',
-                enum: ['code', 'thoughts', 'memories'],
-              },
-              description: 'Optional: Welche Typen durchsuchen (Standard: alle)',
-            },
-            project_filter: {
-              type: 'array',
-              items: { type: 'string' },
-              description: 'Optional: Nur bestimmte Projekte durchsuchen',
-            },
-            limit: {
-              type: 'number',
-              description: 'Maximale Ergebnisse pro Typ (Standard: 10)',
-            },
-            min_score: {
-              type: 'number',
-              description: 'Minimaler Relevanz-Score 0-1 (Standard: 0.5)',
-            },
-          },
-          required: ['query'],
-        },
-      },
-      {
-        name: 'list_searchable_projects',
-        description: 'Listet alle verfuegbaren Projekte auf, die durchsucht werden koennen',
-        inputSchema: {
-          type: 'object',
-          properties: {},
         },
       },
 
@@ -959,25 +912,6 @@ export function createServer(): Server {
             args?.limit as number | undefined
           );
           return withOnboarding(result);
-        }
-
-        // ===== GLOBALE SUCHE =====
-        case 'global_search': {
-          const result = await globalSearchWrapper(
-            args?.query as string,
-            {
-              types: args?.types as ('code' | 'thoughts' | 'memories')[] | undefined,
-              projectFilter: args?.project_filter as string[] | undefined,
-              limit: args?.limit as number | undefined,
-              minScore: args?.min_score as number | undefined,
-            }
-          );
-          return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
-        }
-
-        case 'list_searchable_projects': {
-          const result = await listProjectsWrapper();
-          return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
         }
 
         // ===== PROJEKT-PLANUNG =====

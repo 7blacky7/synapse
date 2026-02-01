@@ -12,4 +12,3 @@ export * from './memory.js';
 export * from './stats.js';
 export * from './ideas.js';
 export * from './onboarding.js';
-export * from './global-search.js';
