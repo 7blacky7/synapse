@@ -60,6 +60,7 @@ export interface ChatMessage {
 
 export interface ChatResponse {
   message: string;
+  sessionId: string;
   context?: Array<{
     source: string;
     preview: string;
@@ -83,7 +84,8 @@ export interface MemoryResult {
 export async function sendChatMessage(
   message: string,
   project?: string,
-  image?: string
+  image?: string,
+  sessionId?: string
 ): Promise<ChatResponse> {
   const response = await fetch(`${API_BASE}/chat`, {
     method: 'POST',
@@ -94,6 +96,7 @@ export async function sendChatMessage(
       message,
       project: project || undefined,
       image: image || undefined,
+      sessionId: sessionId || undefined,
     }),
   });
 

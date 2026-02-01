@@ -39,6 +39,7 @@ export interface ProjectStatus {
   initialized: string;  // ISO Timestamp
   lastAccess: string;   // ISO Timestamp
   status: 'active' | 'stopped';
+  knownAgents: string[];  // Liste bekannter Agent-IDs fuer Onboarding
 }
 
 /**
@@ -95,6 +96,7 @@ export function setProjectStatus(
     initialized: existing?.initialized ?? status.initialized ?? now,
     lastAccess: status.lastAccess ?? now,
     status: status.status ?? existing?.status ?? 'active',
+    knownAgents: status.knownAgents ?? existing?.knownAgents ?? [],
   };
 
   fs.writeFileSync(statusPath, JSON.stringify(merged, null, 2), 'utf-8');
@@ -132,4 +134,36 @@ export function clearProjectStatus(projectPath: string): void {
   } catch {
     // Fehler beim Loeschen ignorieren
   }
+}
+
+/**
+ * Prueft ob ein Agent dem Projekt bereits bekannt ist
+ */
+export function isAgentKnown(projectPath: string, agentId: string): boolean {
+  const status = getProjectStatus(projectPath);
+  if (!status) {
+    return false;
+  }
+  return status.knownAgents?.includes(agentId) ?? false;
+}
+
+/**
+ * Registriert einen Agent als bekannt
+ * Gibt true zurueck wenn Agent NEU war, false wenn bereits bekannt
+ */
+export function registerAgent(projectPath: string, agentId: string): boolean {
+  const status = getProjectStatus(projectPath);
+  if (!status) {
+    return false;
+  }
+
+  // Bereits bekannt?
+  if (status.knownAgents?.includes(agentId)) {
+    return false;
+  }
+
+  // Agent hinzufuegen
+  const knownAgents = [...(status.knownAgents || []), agentId];
+  setProjectStatus(projectPath, { knownAgents });
+  return true;
 }

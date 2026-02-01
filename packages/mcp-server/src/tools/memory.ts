@@ -9,10 +9,14 @@ import {
   listMemories as listMemoriesCore,
   searchMemories as searchMemoriesCore,
   deleteMemory as deleteMemoryCore,
+  readMemoryWithRelatedCode,
+  findMemoriesForPath,
   Memory,
+  MemoryWithRelatedCode,
+  RelatedMemoryResult,
 } from '@synapse/core';
 
-export type MemoryCategory = Memory['category'];
+export type MemoryCategory = Memory['category'];  // 'documentation' | 'note' | 'architecture' | 'decision' | 'rules' | 'other'
 
 /**
  * Speichert ein Memory (überschreibt bei gleichem Namen)
@@ -198,5 +202,58 @@ export async function deleteMemory(
       success: false,
       message: `Fehler beim Löschen: ${error}`,
     };
+  }
+}
+
+/**
+ * Liest ein Memory mit verwandtem Code
+ */
+export async function readMemoryWithCode(
+  project: string,
+  name: string,
+  options: { codeLimit?: number; includeSemanticMatches?: boolean } = {}
+): Promise<{
+  success: boolean;
+  data: MemoryWithRelatedCode | null;
+  message: string;
+}> {
+  try {
+    const result = await readMemoryWithRelatedCode(project, name, options);
+    if (!result) {
+      return { success: false, data: null, message: `Memory "${name}" nicht gefunden` };
+    }
+    const pathMatches = result.relatedCode.filter(c => c.matchType === 'exact').length;
+    const semanticMatches = result.relatedCode.filter(c => c.matchType === 'semantic').length;
+    return {
+      success: true,
+      data: result,
+      message: `Memory "${name}" mit ${pathMatches} Pfad- und ${semanticMatches} semantischen Matches`,
+    };
+  } catch (error) {
+    return { success: false, data: null, message: `Fehler: ${error}` };
+  }
+}
+
+/**
+ * Findet Memories für eine Datei
+ */
+export async function findMemoriesForFile(
+  project: string,
+  filePath: string,
+  limit: number = 10
+): Promise<{
+  success: boolean;
+  results: RelatedMemoryResult[];
+  message: string;
+}> {
+  try {
+    const results = await findMemoriesForPath(project, filePath, limit);
+    return {
+      success: true,
+      results,
+      message: `${results.length} Memories gefunden für "${filePath}"`,
+    };
+  } catch (error) {
+    return { success: false, results: [], message: `Fehler: ${error}` };
   }
 }
