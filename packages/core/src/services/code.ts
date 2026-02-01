@@ -26,7 +26,7 @@
  *   - uuid (extern) - ID-Generierung
  *
  * HINWEISE:
- *   - Projekt muss fuer Code-Suche angegeben werden (Multi-Collection-Suche TODO)
+ *   - Projekt muss fuer Code-Suche angegeben werden (bewusste Isolation)
  *   - Dokumente (PDF/Word/Excel) werden an documents.js delegiert
  *   - Batch-Embedding fuer Performance bei mehreren Chunks
  */
@@ -196,20 +196,18 @@ export async function searchCode(
     });
   }
 
-  // In allen Projekt-Collections suchen wenn kein Projekt angegeben
-  if (projectName) {
-    const collectionName = COLLECTIONS.projectCode(projectName);
-    return searchVectors<CodeChunkPayload>(
-      collectionName,
-      queryVector,
-      limit,
-      must.length > 0 ? filter : undefined
-    );
+  // Projekt-Angabe ist erforderlich (bewusste Design-Entscheidung: Projekt-Isolation)
+  if (!projectName) {
+    throw new Error('Projekt muss angegeben werden fuer Code-Suche');
   }
 
-  // TODO: Suche ueber mehrere Collections implementieren
-  // Fuer jetzt: Fehler werfen
-  throw new Error('Projekt muss angegeben werden fuer Code-Suche');
+  const collectionName = COLLECTIONS.projectCode(projectName);
+  return searchVectors<CodeChunkPayload>(
+    collectionName,
+    queryVector,
+    limit,
+    must.length > 0 ? filter : undefined
+  );
 }
 
 /**
