@@ -36,6 +36,8 @@ export interface SynapseConfig {
     port: number;
     host: string;
   };
+  /** Arbeitsverzeichnis fuer CLI-Tools (ai_photoshop, etc.) */
+  cliWorkDir: string;
 }
 
 // ===========================================

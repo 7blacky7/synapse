@@ -1,6 +1,36 @@
 /**
- * Synapse Core - Documentation Indexer
- * Lädt Framework-Dokumentation vor und speichert in Qdrant
+ * MODUL: Dokumentations-Indexer
+ * ZWECK: Laedt Framework-Dokumentation von Context7 und cached sie in Qdrant fuer schnellen Zugriff
+ *
+ * INPUT:
+ *   - framework: string - Name des Frameworks (z.B. "react", "vue")
+ *   - version?: string - Optionale Version
+ *   - technologies: DetectedTechnology[] - Liste erkannter Projekt-Technologien
+ *   - forceReindex: boolean - Cache ignorieren und neu indexieren
+ *   - docs: Context7Doc[] - Manuell geholte Dokumente zum Cachen
+ *   - searchQuery: string - Suchbegriff fuer Cache-Zuordnung
+ *
+ * OUTPUT:
+ *   - boolean: Ob Framework bereits gecacht ist
+ *   - { indexed, cached }: Anzahl indexierter Chunks und Cache-Status
+ *   - { total, indexed, cached }: Statistiken ueber alle Technologien
+ *
+ * NEBENEFFEKTE:
+ *   - Qdrant: Schreibt in Collection "synapse_tech_docs"
+ *   - Netzwerk: Ruft Context7 API fuer Framework-Dokumentation ab
+ *   - Logs: Konsolenausgabe bei Indexierung/Cache-Hit
+ *
+ * ABHÄNGIGKEITEN:
+ *   - ../embeddings/index.js (intern) - Text-zu-Vektor Konvertierung
+ *   - ../qdrant/index.js (intern) - Qdrant Client
+ *   - ../chunking/index.js (intern) - Text-Chunking
+ *   - ./context7.js (intern) - Context7 API Client
+ *   - ./tech-detection.js (intern) - Technologie-Typen
+ *
+ * HINWEISE:
+ *   - Benoetigt CONTEXT7_API_KEY Umgebungsvariable
+ *   - Nur Frameworks und Libraries werden indexiert (keine Tools/Runtimes)
+ *   - Cache-Pruefung basiert auf framework + version Kombination
  */
 
 import { getEmbeddingProvider, embed } from '../embeddings/index.js';
