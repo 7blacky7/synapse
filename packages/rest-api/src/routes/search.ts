@@ -3,7 +3,12 @@
  */
 
 import { FastifyInstance } from 'fastify';
-import { searchCode, searchDocsWithFallback } from '@synapse/core';
+import {
+  searchCode,
+  searchDocsWithFallback,
+  globalSearch,
+  SearchType,
+} from '@synapse/core';
 
 /**
  * SSE Helper - sendet Daten im Server-Sent Events Format
@@ -206,6 +211,111 @@ export async function searchRoutes(fastify: FastifyInstance): Promise<void> {
       }
 
       sendSSE(reply, 'done', { count: results.length });
+      endSSE(reply);
+    } catch (error) {
+      sendSSE(reply, 'error', { message: String(error) });
+      endSSE(reply);
+    }
+  });
+
+  /**
+   * POST /api/search/global
+   * Globale Suche ueber alle Projekte (fuer externe KI-Agenten)
+   *
+   * Durchsucht parallel:
+   * - Code-Collections (alle project_*)
+   * - Thoughts-Collection
+   * - Memories-Collection
+   */
+  fastify.post<{
+    Body: {
+      query: string;
+      types?: SearchType[];
+      projectFilter?: string[];
+      limit?: number;
+      minScore?: number;
+    };
+  }>('/api/search/global', async (request, reply) => {
+    const { query, types, projectFilter, limit = 10, minScore = 0.5 } = request.body;
+
+    if (!query) {
+      return reply.status(400).send({
+        success: false,
+        error: { message: 'query ist erforderlich' },
+      });
+    }
+
+    try {
+      const result = await globalSearch(query, {
+        types,
+        projectFilter,
+        limit,
+        minScore,
+      });
+
+      return {
+        success: true,
+        results: result.results,
+        counts: result.counts,
+        searchedProjects: result.searchedProjects,
+        searchTimeMs: result.searchTimeMs,
+      };
+    } catch (error) {
+      return reply.status(500).send({
+        success: false,
+        error: { message: String(error) },
+      });
+    }
+  });
+
+  /**
+   * POST /api/search/global/stream
+   * Globale Suche mit SSE (Server-Sent Events)
+   */
+  fastify.post<{
+    Body: {
+      query: string;
+      types?: SearchType[];
+      projectFilter?: string[];
+      limit?: number;
+      minScore?: number;
+    };
+  }>('/api/search/global/stream', async (request, reply) => {
+    const { query, types, projectFilter, limit = 10, minScore = 0.5 } = request.body;
+
+    reply.raw.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+      'Access-Control-Allow-Origin': '*',
+    });
+
+    if (!query) {
+      sendSSE(reply, 'error', { message: 'query ist erforderlich' });
+      endSSE(reply);
+      return;
+    }
+
+    try {
+      sendSSE(reply, 'start', { status: 'searching', query, types, projectFilter });
+
+      const result = await globalSearch(query, {
+        types,
+        projectFilter,
+        limit,
+        minScore,
+      });
+
+      // Sende jedes Ergebnis einzeln
+      for (const item of result.results) {
+        sendSSE(reply, 'result', item);
+      }
+
+      sendSSE(reply, 'done', {
+        counts: result.counts,
+        searchedProjects: result.searchedProjects,
+        searchTimeMs: result.searchTimeMs,
+      });
       endSSE(reply);
     } catch (error) {
       sendSSE(reply, 'error', { message: String(error) });
