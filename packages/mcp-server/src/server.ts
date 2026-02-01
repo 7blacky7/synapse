@@ -35,10 +35,13 @@ import {
   listMemories,
   searchMemory,
   deleteMemory,
+  readMemoryWithCode,
+  findMemoriesForFile,
   getIndexStats,
   getDetailedStats,
   saveProjectIdea,
   confirmIdea,
+  checkAgentOnboarding,
 } from './tools/index.js';
 
 /**
@@ -78,6 +81,10 @@ export function createServer(): Server {
             index_docs: {
               type: 'boolean',
               description: 'Framework-Dokumentation vorladen (Standard: true)',
+            },
+            agent_id: {
+              type: 'string',
+              description: 'Optionale Agent-ID fuer Onboarding. Neue Agenten sehen automatisch Projekt-Regeln (category: rules Memories).',
             },
           },
           required: ['path'],
@@ -143,6 +150,10 @@ export function createServer(): Server {
               type: 'string',
               description: 'Projekt-Name',
             },
+            agent_id: {
+              type: 'string',
+              description: 'Agent-ID fuer Onboarding. Neue Agenten sehen automatisch Projekt-Regeln.',
+            },
           },
           required: ['project'],
         },
@@ -156,6 +167,10 @@ export function createServer(): Server {
             project: {
               type: 'string',
               description: 'Projekt-Name',
+            },
+            agent_id: {
+              type: 'string',
+              description: 'Agent-ID fuer Onboarding. Neue Agenten sehen automatisch Projekt-Regeln.',
             },
           },
           required: ['project'],
@@ -217,6 +232,10 @@ export function createServer(): Server {
               type: 'string',
               description: 'Projekt-Name',
             },
+            agent_id: {
+              type: 'string',
+              description: 'Agent-ID fuer Onboarding. Neue Agenten sehen automatisch Projekt-Regeln.',
+            },
             file_type: {
               type: 'string',
               description: 'Optional: Dateityp filtern (z.B. typescript, python)',
@@ -238,6 +257,10 @@ export function createServer(): Server {
             project: {
               type: 'string',
               description: 'Projekt-Name',
+            },
+            agent_id: {
+              type: 'string',
+              description: 'Agent-ID fuer Onboarding. Neue Agenten sehen automatisch Projekt-Regeln.',
             },
             path_pattern: {
               type: 'string',
@@ -268,6 +291,10 @@ export function createServer(): Server {
             project: {
               type: 'string',
               description: 'Projekt-Name',
+            },
+            agent_id: {
+              type: 'string',
+              description: 'Agent-ID fuer Onboarding. Neue Agenten sehen automatisch Projekt-Regeln.',
             },
             path_pattern: {
               type: 'string',
@@ -325,6 +352,10 @@ export function createServer(): Server {
               type: 'string',
               description: 'Projekt-Name',
             },
+            agent_id: {
+              type: 'string',
+              description: 'Agent-ID fuer Onboarding. Neue Agenten sehen automatisch Projekt-Regeln.',
+            },
             document_type: {
               type: 'string',
               enum: ['pdf', 'docx', 'xlsx', 'all'],
@@ -350,6 +381,10 @@ export function createServer(): Server {
               type: 'string',
               description: 'Projekt-Name',
             },
+            agent_id: {
+              type: 'string',
+              description: 'Agent-ID fuer Onboarding. Neue Agenten sehen automatisch Projekt-Regeln.',
+            },
           },
           required: ['project'],
         },
@@ -363,6 +398,10 @@ export function createServer(): Server {
             project: {
               type: 'string',
               description: 'Projekt-Name',
+            },
+            agent_id: {
+              type: 'string',
+              description: 'Agent-ID fuer Onboarding. Neue Agenten sehen automatisch Projekt-Regeln.',
             },
             name: {
               type: 'string',
@@ -395,6 +434,10 @@ export function createServer(): Server {
               type: 'string',
               description: 'Projekt-Name',
             },
+            agent_id: {
+              type: 'string',
+              description: 'Agent-ID fuer Onboarding. Neue Agenten sehen automatisch Projekt-Regeln.',
+            },
             title: {
               type: 'string',
               description: 'Task-Titel',
@@ -424,6 +467,10 @@ export function createServer(): Server {
               type: 'string',
               description: 'Projekt-Name',
             },
+            agent_id: {
+              type: 'string',
+              description: 'Agent-ID fuer Onboarding. Neue Agenten sehen automatisch Projekt-Regeln.',
+            },
             source: {
               type: 'string',
               description: 'Quelle (z.B. claude-code, gpt, user)',
@@ -451,6 +498,10 @@ export function createServer(): Server {
               type: 'string',
               description: 'Projekt-Name',
             },
+            agent_id: {
+              type: 'string',
+              description: 'Agent-ID fuer Onboarding. Neue Agenten sehen automatisch Projekt-Regeln.',
+            },
             limit: {
               type: 'number',
               description: 'Maximale Anzahl (Standard: 50)',
@@ -469,6 +520,10 @@ export function createServer(): Server {
               type: 'string',
               description: 'Suchanfrage',
             },
+            agent_id: {
+              type: 'string',
+              description: 'Agent-ID fuer Onboarding. Neue Agenten sehen automatisch Projekt-Regeln.',
+            },
             project: {
               type: 'string',
               description: 'Optional: Projekt filtern',
@@ -485,13 +540,17 @@ export function createServer(): Server {
       // ===== MEMORY (LANGZEIT-SPEICHER) =====
       {
         name: 'write_memory',
-        description: 'Speichert längere Dokumentation/Notizen persistent. Überschreibt bei gleichem Namen. Für große Dokumente geeignet.',
+        description: 'Speichert längere Dokumentation/Notizen persistent. Überschreibt bei gleichem Namen. Für große Dokumente geeignet. Kategorie "rules" fuer Projekt-Regeln die neue Agenten beim Onboarding sehen.',
         inputSchema: {
           type: 'object',
           properties: {
             project: {
               type: 'string',
               description: 'Projekt-Name',
+            },
+            agent_id: {
+              type: 'string',
+              description: 'Agent-ID fuer Onboarding. Neue Agenten sehen automatisch Projekt-Regeln.',
             },
             name: {
               type: 'string',
@@ -503,8 +562,8 @@ export function createServer(): Server {
             },
             category: {
               type: 'string',
-              enum: ['documentation', 'note', 'architecture', 'decision', 'other'],
-              description: 'Kategorie (Standard: note)',
+              enum: ['documentation', 'note', 'architecture', 'decision', 'rules', 'other'],
+              description: 'Kategorie (Standard: note). "rules" = Projekt-Regeln fuer Agent-Onboarding',
             },
             tags: {
               type: 'array',
@@ -525,6 +584,10 @@ export function createServer(): Server {
               type: 'string',
               description: 'Projekt-Name',
             },
+            agent_id: {
+              type: 'string',
+              description: 'Agent-ID fuer Onboarding. Neue Agenten sehen automatisch Projekt-Regeln.',
+            },
             name: {
               type: 'string',
               description: 'Name des Memories',
@@ -543,10 +606,14 @@ export function createServer(): Server {
               type: 'string',
               description: 'Projekt-Name',
             },
+            agent_id: {
+              type: 'string',
+              description: 'Agent-ID fuer Onboarding. Neue Agenten sehen automatisch Projekt-Regeln.',
+            },
             category: {
               type: 'string',
-              enum: ['documentation', 'note', 'architecture', 'decision', 'other'],
-              description: 'Optional: Nach Kategorie filtern',
+              enum: ['documentation', 'note', 'architecture', 'decision', 'rules', 'other'],
+              description: 'Optional: Nach Kategorie filtern. "rules" = Projekt-Regeln fuer Agent-Onboarding',
             },
           },
           required: ['project'],
@@ -561,6 +628,10 @@ export function createServer(): Server {
             query: {
               type: 'string',
               description: 'Suchanfrage',
+            },
+            agent_id: {
+              type: 'string',
+              description: 'Agent-ID fuer Onboarding. Neue Agenten sehen automatisch Projekt-Regeln.',
             },
             project: {
               type: 'string',
@@ -584,12 +655,45 @@ export function createServer(): Server {
               type: 'string',
               description: 'Projekt-Name',
             },
+            agent_id: {
+              type: 'string',
+              description: 'Agent-ID fuer Onboarding. Neue Agenten sehen automatisch Projekt-Regeln.',
+            },
             name: {
               type: 'string',
               description: 'Name des Memories',
             },
           },
           required: ['project', 'name'],
+        },
+      },
+      {
+        name: 'read_memory_with_code',
+        description: 'Liest ein Memory und findet verwandten Code basierend auf Dateipfaden im Content',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            project: { type: 'string', description: 'Projekt-Name' },
+            agent_id: { type: 'string', description: 'Agent-ID fuer Onboarding' },
+            name: { type: 'string', description: 'Memory-Name' },
+            codeLimit: { type: 'number', description: 'Max. Code-Chunks (Standard: 10)' },
+            includeSemanticMatches: { type: 'boolean', description: 'Semantische Matches einbeziehen (Standard: true)' },
+          },
+          required: ['project', 'name'],
+        },
+      },
+      {
+        name: 'find_memories_for_file',
+        description: 'Findet Memories die auf eine bestimmte Datei verweisen',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            project: { type: 'string', description: 'Projekt-Name' },
+            agent_id: { type: 'string', description: 'Agent-ID fuer Onboarding' },
+            filePath: { type: 'string', description: 'Dateipfad' },
+            limit: { type: 'number', description: 'Max. Ergebnisse (Standard: 10)' },
+          },
+          required: ['project', 'filePath'],
         },
       },
 
@@ -642,6 +746,32 @@ export function createServer(): Server {
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;
 
+    // Globale Parameter fuer Agent-Onboarding extrahieren
+    const agentId = args?.agent_id as string | undefined;
+    const projectName = args?.project as string | undefined;
+
+    // Helper: Ergebnis mit Onboarding erweitern
+    const withOnboarding = async (result: Record<string, unknown>) => {
+      if (!agentId || !projectName) {
+        return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+      }
+
+      const onboarding = await checkAgentOnboarding(projectName, agentId);
+      if (onboarding?.isFirstVisit && onboarding.rules && onboarding.rules.length > 0) {
+        const enhanced = {
+          ...result,
+          agentOnboarding: {
+            isFirstVisit: true,
+            message: '📋 WILLKOMMEN! Als neuer Agent beachte bitte folgende Projekt-Regeln:',
+            rules: onboarding.rules,
+          },
+        };
+        return { content: [{ type: 'text', text: JSON.stringify(enhanced, null, 2) }] };
+      }
+
+      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+    };
+
     try {
       switch (name) {
         // ===== PROJEKT-MANAGEMENT =====
@@ -649,8 +779,10 @@ export function createServer(): Server {
           const result = await initProjekt(
             args?.path as string,
             args?.name as string | undefined,
-            args?.index_docs !== false
+            args?.index_docs !== false,
+            agentId
           );
+          // Pfad wird automatisch in initProjekt gecacht
           return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
         }
 
@@ -677,12 +809,12 @@ export function createServer(): Server {
 
         case 'get_index_stats': {
           const result = await getIndexStats(args?.project as string);
-          return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+          return withOnboarding(result);
         }
 
         case 'get_detailed_stats': {
           const result = await getDetailedStats(args?.project as string);
-          return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+          return withOnboarding(result);
         }
 
         case 'stop_projekt': {
@@ -734,7 +866,7 @@ export function createServer(): Server {
             args?.file_type as string | undefined,
             args?.limit as number | undefined
           );
-          return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+          return withOnboarding(result);
         }
 
         case 'search_by_path': {
@@ -746,7 +878,7 @@ export function createServer(): Server {
               limit: args?.limit as number | undefined,
             }
           );
-          return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+          return withOnboarding(result);
         }
 
         case 'search_code_with_path': {
@@ -759,7 +891,7 @@ export function createServer(): Server {
               limit: args?.limit as number | undefined,
             }
           );
-          return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+          return withOnboarding(result);
         }
 
         case 'search_docs': {
@@ -779,13 +911,13 @@ export function createServer(): Server {
             args?.document_type as 'pdf' | 'docx' | 'xlsx' | 'all' | undefined,
             args?.limit as number | undefined
           );
-          return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+          return withOnboarding(result);
         }
 
         // ===== PROJEKT-PLANUNG =====
         case 'get_project_plan': {
           const result = await getProjectPlan(args?.project as string);
-          return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+          return withOnboarding(result);
         }
 
         case 'update_project_plan': {
@@ -798,7 +930,7 @@ export function createServer(): Server {
               architecture: args?.architecture as string | undefined,
             }
           );
-          return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+          return withOnboarding(result);
         }
 
         case 'add_plan_task': {
@@ -808,7 +940,7 @@ export function createServer(): Server {
             args?.description as string,
             args?.priority as 'low' | 'medium' | 'high' | undefined
           );
-          return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+          return withOnboarding(result);
         }
 
         // ===== GEDANKENAUSTAUSCH =====
@@ -819,7 +951,7 @@ export function createServer(): Server {
             args?.content as string,
             args?.tags as string[] | undefined
           );
-          return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+          return withOnboarding(result);
         }
 
         case 'get_thoughts': {
@@ -827,7 +959,7 @@ export function createServer(): Server {
             args?.project as string,
             args?.limit as number | undefined
           );
-          return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+          return withOnboarding(result);
         }
 
         case 'search_thoughts': {
@@ -836,7 +968,7 @@ export function createServer(): Server {
             args?.project as string | undefined,
             args?.limit as number | undefined
           );
-          return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+          return withOnboarding(result);
         }
 
         // ===== MEMORY =====
@@ -845,10 +977,10 @@ export function createServer(): Server {
             args?.project as string,
             args?.name as string,
             args?.content as string,
-            args?.category as 'documentation' | 'note' | 'architecture' | 'decision' | 'other' | undefined,
+            args?.category as 'documentation' | 'note' | 'architecture' | 'decision' | 'rules' | 'other' | undefined,
             args?.tags as string[] | undefined
           );
-          return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+          return withOnboarding(result);
         }
 
         case 'read_memory': {
@@ -856,15 +988,15 @@ export function createServer(): Server {
             args?.project as string,
             args?.name as string
           );
-          return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+          return withOnboarding(result);
         }
 
         case 'list_memories': {
           const result = await listMemories(
             args?.project as string,
-            args?.category as 'documentation' | 'note' | 'architecture' | 'decision' | 'other' | undefined
+            args?.category as 'documentation' | 'note' | 'architecture' | 'decision' | 'rules' | 'other' | undefined
           );
-          return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+          return withOnboarding(result);
         }
 
         case 'search_memory': {
@@ -873,7 +1005,7 @@ export function createServer(): Server {
             args?.project as string | undefined,
             args?.limit as number | undefined
           );
-          return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+          return withOnboarding(result);
         }
 
         case 'delete_memory': {
@@ -881,7 +1013,28 @@ export function createServer(): Server {
             args?.project as string,
             args?.name as string
           );
-          return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+          return withOnboarding(result);
+        }
+
+        case 'read_memory_with_code': {
+          const result = await readMemoryWithCode(
+            args?.project as string,
+            args?.name as string,
+            {
+              codeLimit: args?.codeLimit as number | undefined,
+              includeSemanticMatches: args?.includeSemanticMatches as boolean | undefined,
+            }
+          );
+          return withOnboarding(result);
+        }
+
+        case 'find_memories_for_file': {
+          const result = await findMemoriesForFile(
+            args?.project as string,
+            args?.filePath as string,
+            args?.limit as number | undefined
+          );
+          return withOnboarding(result);
         }
 
         // ===== PROJEKT-IDEEN =====

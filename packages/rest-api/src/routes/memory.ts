@@ -10,6 +10,8 @@ import {
   listMemories,
   searchMemories,
   deleteMemory,
+  readMemoryWithRelatedCode,
+  findMemoriesForPath,
 } from '@synapse/core';
 
 export async function memoryRoutes(fastify: FastifyInstance): Promise<void> {
@@ -195,6 +197,80 @@ export async function memoryRoutes(fastify: FastifyInstance): Promise<void> {
       return {
         success: true,
         message: `Memory "${memoryName}" gelöscht`,
+      };
+    } catch (error) {
+      return reply.status(500).send({
+        success: false,
+        error: { message: String(error) },
+      });
+    }
+  });
+
+  /**
+   * GET /api/projects/:name/memories/:memoryName/with-code
+   * Memory mit verwandtem Code abrufen
+   */
+  fastify.get<{
+    Params: { name: string; memoryName: string };
+    Querystring: { codeLimit?: string; includeSemanticMatches?: string };
+  }>('/api/projects/:name/memories/:memoryName/with-code', async (request, reply) => {
+    const { name, memoryName } = request.params;
+    const codeLimit = request.query.codeLimit ? parseInt(request.query.codeLimit, 10) : 10;
+    const includeSemanticMatches = request.query.includeSemanticMatches !== 'false';
+
+    try {
+      const result = await readMemoryWithRelatedCode(name, memoryName, {
+        codeLimit,
+        includeSemanticMatches,
+      });
+
+      if (!result) {
+        return reply.status(404).send({
+          success: false,
+          error: { message: `Memory "${memoryName}" nicht gefunden` },
+        });
+      }
+
+      return {
+        success: true,
+        memory: result.memory,
+        relatedCode: result.relatedCode,
+        hasMoreCode: result.hasMoreCode,
+      };
+    } catch (error) {
+      return reply.status(500).send({
+        success: false,
+        error: { message: String(error) },
+      });
+    }
+  });
+
+  /**
+   * GET /api/projects/:name/files/:filePath/memories
+   * Memories für eine Datei finden
+   * Hinweis: filePath muss URL-encoded sein
+   */
+  fastify.get<{
+    Params: { name: string; filePath: string };
+    Querystring: { limit?: string };
+  }>('/api/projects/:name/files/:filePath/memories', async (request, reply) => {
+    const { name, filePath } = request.params;
+    const limit = request.query.limit ? parseInt(request.query.limit, 10) : 10;
+
+    try {
+      const results = await findMemoriesForPath(name, decodeURIComponent(filePath), limit);
+
+      return {
+        success: true,
+        results: results.map(r => ({
+          name: r.memory.name,
+          category: r.memory.category,
+          matchType: r.matchType,
+          score: r.score,
+          linkedPaths: r.memory.linkedPaths,
+          preview: r.memory.content.substring(0, 200) + (r.memory.content.length > 200 ? '...' : ''),
+        })),
+        count: results.length,
       };
     } catch (error) {
       return reply.status(500).send({

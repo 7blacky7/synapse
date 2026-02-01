@@ -20,14 +20,30 @@ import {
   getProjectStatus,
   setProjectStatus,
   updateLastAccess,
+  isAgentKnown,
+  registerAgent,
+  getRulesForNewAgent,
 } from '@synapse/core';
-import type { FileWatcherInstance, DetectedTechnology } from '@synapse/core';
+import type { FileWatcherInstance, DetectedTechnology, Memory } from '@synapse/core';
 
 /** Aktive FileWatcher pro Projekt */
 const activeWatchers = new Map<string, FileWatcherInstance>();
 
-/** Speichert Projekt-Pfade fuer Shutdown (name -> path) */
+/** Speichert Projekt-Pfade fuer Shutdown und Onboarding (name -> path) */
+import { cacheProjectPath as cachePathInOnboarding } from './onboarding.js';
 const projectPaths = new Map<string, string>();
+
+/** Wrapper der beide Caches synchron haelt */
+function cacheProjectPathBoth(name: string, path: string): void {
+  projectPaths.set(name, path);
+  cachePathInOnboarding(name, path);
+}
+
+/** Regel-Memory fuer Onboarding-Response */
+interface RuleMemory {
+  name: string;
+  content: string;
+}
 
 /** Return-Typ fuer initProjekt */
 type InitResult = {
@@ -37,24 +53,51 @@ type InitResult = {
   message: string;
   technologies?: DetectedTechnology[];
   docsIndexed?: { total: number; indexed: number; cached: number };
+  isFirstVisit?: boolean;
+  rules?: RuleMemory[];
 };
 
 /**
  * Prueft ob Projekt reaktiviert werden kann (bereits indexiert)
  * Startet ggf. nur den FileWatcher neu
+ * @param agentId - Optionale Agent-ID fuer Onboarding
  */
 async function tryReactivateProject(
   projectPath: string,
-  name: string
+  name: string,
+  agentId?: string
 ): Promise<InitResult | null> {
-  // Watcher bereits aktiv? Nur Status aktualisieren
+  // Watcher bereits aktiv? Nur Status aktualisieren + Agent-Check
   if (activeWatchers.has(name)) {
     updateLastAccess(projectPath);
+
+    // Agent-Onboarding auch bei aktivem Watcher
+    let isFirstVisit = false;
+    let rules: RuleMemory[] | undefined;
+
+    if (agentId) {
+      isFirstVisit = registerAgent(projectPath, agentId);
+      if (isFirstVisit) {
+        try {
+          const ruleMemories = await getRulesForNewAgent(name);
+          if (ruleMemories.length > 0) {
+            rules = ruleMemories.map(m => ({ name: m.name, content: m.content }));
+          }
+        } catch { /* ignore */ }
+      }
+    }
+
+    const rulesHint = rules && rules.length > 0
+      ? `\n\n📋 PROJEKT-REGELN (bitte beachten!):\n${rules.map(r => `- ${r.name}`).join('\n')}`
+      : '';
+
     return {
       success: true,
       project: name,
       path: projectPath,
-      message: `Projekt "${name}" ist bereits aktiv`,
+      message: `Projekt "${name}" ist bereits aktiv${rulesHint}`,
+      isFirstVisit,
+      rules,
     };
   }
 
@@ -83,24 +126,51 @@ async function tryReactivateProject(
     },
   });
   activeWatchers.set(name, watcher);
-  projectPaths.set(name, projectPath);
+  cacheProjectPathBoth(name, projectPath);
   updateLastAccess(projectPath);
+
+  // Agent-Onboarding bei Reaktivierung
+  let isFirstVisit = false;
+  let rules: RuleMemory[] | undefined;
+
+  if (agentId) {
+    isFirstVisit = registerAgent(projectPath, agentId);
+    if (isFirstVisit) {
+      try {
+        const ruleMemories = await getRulesForNewAgent(name);
+        if (ruleMemories.length > 0) {
+          rules = ruleMemories.map(m => ({ name: m.name, content: m.content }));
+        }
+      } catch { /* ignore */ }
+    }
+  }
+
+  const rulesHint = rules && rules.length > 0
+    ? `\n\n📋 PROJEKT-REGELN (bitte beachten!):\n${rules.map(r => `- ${r.name}`).join('\n')}`
+    : '';
 
   return {
     success: true,
     project: name,
     path: projectPath,
-    message: `Projekt "${name}" reaktiviert (bereits indexiert)`,
+    message: `Projekt "${name}" reaktiviert (bereits indexiert)${rulesHint}`,
+    isFirstVisit,
+    rules,
   };
 }
 
 /**
  * Initialisiert ein Projekt
+ * @param projectPath - Absoluter Pfad zum Projekt
+ * @param projectName - Optionaler Projekt-Name
+ * @param indexDocs - Framework-Docs vorladen (default: true)
+ * @param agentId - Optionale Agent-ID fuer Onboarding (neue Agenten sehen Regeln)
  */
 export async function initProjekt(
   projectPath: string,
   projectName?: string,
-  indexDocs: boolean = true
+  indexDocs: boolean = true,
+  agentId?: string
 ): Promise<InitResult> {
   // Synapse initialisieren (Qdrant, Embeddings)
   const initialized = await initSynapse();
@@ -118,7 +188,7 @@ export async function initProjekt(
   const name = projectName || path.basename(projectPath);
 
   // Pruefen ob bereits aktiv (Memory oder persistenter Status)
-  const reactivated = await tryReactivateProject(projectPath, name);
+  const reactivated = await tryReactivateProject(projectPath, name, agentId);
   if (reactivated) {
     return reactivated;
   }
@@ -171,10 +241,36 @@ export async function initProjekt(
   });
 
   activeWatchers.set(name, watcher);
-  projectPaths.set(name, projectPath);
+  cacheProjectPathBoth(name, projectPath);
 
   // Persistenten Status speichern
   setProjectStatus(projectPath, { status: 'active', project: name });
+
+  // ===== AGENT ONBOARDING =====
+  let isFirstVisit = false;
+  let rules: RuleMemory[] | undefined;
+
+  if (agentId) {
+    // Pruefen ob Agent neu ist und registrieren
+    isFirstVisit = registerAgent(projectPath, agentId);
+
+    if (isFirstVisit) {
+      // Regeln-Memories fuer neuen Agent laden
+      console.log(`[Synapse MCP] Neuer Agent "${agentId}" - lade Regeln...`);
+      try {
+        const ruleMemories = await getRulesForNewAgent(name);
+        if (ruleMemories.length > 0) {
+          rules = ruleMemories.map(m => ({
+            name: m.name,
+            content: m.content,
+          }));
+          console.log(`[Synapse MCP] ${rules.length} Regeln fuer Agent geladen`);
+        }
+      } catch (error) {
+        console.error(`[Synapse MCP] Fehler beim Laden der Regeln:`, error);
+      }
+    }
+  }
 
   // Hinweis fuer KI generieren
   const techList = technologies.map(t => t.name).join(', ');
@@ -184,13 +280,20 @@ export async function initProjekt(
       `Bei fehlenden Infos wird automatisch Context7 abgefragt und gecacht.`
     : '';
 
+  // Regeln-Hinweis hinzufuegen wenn vorhanden
+  const rulesHint = rules && rules.length > 0
+    ? `\n\n📋 PROJEKT-REGELN (bitte beachten!):\n${rules.map(r => `- ${r.name}`).join('\n')}`
+    : '';
+
   return {
     success: true,
     project: name,
     path: projectPath,
-    message: `Projekt "${name}" initialisiert. FileWatcher aktiv.${instruction}`,
+    message: `Projekt "${name}" initialisiert. FileWatcher aktiv.${instruction}${rulesHint}`,
     technologies,
     docsIndexed,
+    isFirstVisit,
+    rules,
   };
 }
 
