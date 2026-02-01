@@ -377,10 +377,12 @@ export async function globalSearch(
 ): Promise<GlobalSearchResult> {
   const startTime = Date.now();
 
-  // Optionen mit Defaults mergen
+  // Optionen mit Defaults mergen (nullish coalescing um undefined zu ignorieren)
   const opts: Required<GlobalSearchOptions> = {
-    ...DEFAULT_OPTIONS,
-    ...options,
+    types: options.types ?? DEFAULT_OPTIONS.types,
+    projectFilter: options.projectFilter ?? DEFAULT_OPTIONS.projectFilter,
+    limit: options.limit ?? DEFAULT_OPTIONS.limit,
+    minScore: options.minScore ?? DEFAULT_OPTIONS.minScore,
   };
 
   // Query embedden
