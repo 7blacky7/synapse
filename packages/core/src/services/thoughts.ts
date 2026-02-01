@@ -16,7 +16,7 @@
  *   - ThoughtSearchResult[]: Suchergebnisse mit Relevanz-Score
  *
  * NEBENEFFEKTE:
- *   - Qdrant: Schreibt/loescht in Collection "synapse_thoughts"
+ *   - Qdrant: Schreibt/loescht in Collection "project_thoughts"
  *   - Logs: Konsolenausgabe bei Speicherung/Loeschung
  *
  * ABHÄNGIGKEITEN:
