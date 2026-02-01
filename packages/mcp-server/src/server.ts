@@ -15,6 +15,7 @@ import {
   stopProjekt,
   listActiveProjects,
   cleanupProjekt,
+  getProjectStatusWithStats,
   semanticCodeSearch,
   searchDocumentation,
   searchByPath,
@@ -162,13 +163,17 @@ export function createServer(): Server {
       },
       {
         name: 'stop_projekt',
-        description: 'Stoppt den FileWatcher für ein Projekt und gibt Ressourcen frei',
+        description: 'Stoppt den FileWatcher für ein Projekt und setzt Status auf stopped',
         inputSchema: {
           type: 'object',
           properties: {
             project: {
               type: 'string',
               description: 'Projekt-Name',
+            },
+            path: {
+              type: 'string',
+              description: 'Optional: Absoluter Pfad zum Projekt (fuer Status-Update)',
             },
           },
           required: ['project'],
@@ -180,6 +185,20 @@ export function createServer(): Server {
         inputSchema: {
           type: 'object',
           properties: {},
+        },
+      },
+      {
+        name: 'get_project_status',
+        description: 'Zeigt den persistenten Status eines Projekts (.synapse/status.json)',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            path: {
+              type: 'string',
+              description: 'Absoluter Pfad zum Projekt',
+            },
+          },
+          required: ['path'],
         },
       },
 
@@ -668,7 +687,8 @@ export function createServer(): Server {
 
         case 'stop_projekt': {
           const projectName = args?.project as string;
-          const stopped = await stopProjekt(projectName);
+          const projectPath = args?.path as string | undefined;
+          const stopped = await stopProjekt(projectName, projectPath);
           return {
             content: [{
               type: 'text',
@@ -676,7 +696,7 @@ export function createServer(): Server {
                 success: stopped,
                 project: projectName,
                 message: stopped
-                  ? `FileWatcher für "${projectName}" gestoppt`
+                  ? `FileWatcher für "${projectName}" gestoppt, Status auf 'stopped' gesetzt`
                   : `Projekt "${projectName}" war nicht aktiv`,
               }, null, 2),
             }],
@@ -698,6 +718,12 @@ export function createServer(): Server {
               }, null, 2),
             }],
           };
+        }
+
+        case 'get_project_status': {
+          const { path: projectPath } = args as { path: string };
+          const result = await getProjectStatusWithStats(projectPath);
+          return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
         }
 
         // ===== CODE-SUCHE =====

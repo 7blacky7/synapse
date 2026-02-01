@@ -4,13 +4,61 @@
  */
 
 import { spawn } from 'child_process';
-import { writeFileSync, mkdirSync, existsSync, unlinkSync } from 'fs';
+import { writeFileSync, mkdirSync, existsSync, unlinkSync, readdirSync, statSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { randomUUID } from 'crypto';
+import { EventEmitter } from 'events';
+import { getConfig } from '@synapse/core';
 
 // Temp-Verzeichnis fuer Bilder
 export const IMAGE_TEMP_DIR = join(tmpdir(), 'synapse-images');
+
+// ============================================================================
+// STATUS EVENT SYSTEM
+// ============================================================================
+
+export interface ImageProcessingStatus {
+  action: string;
+  description: string;
+  progress?: number; // 0-100
+  timestamp: Date;
+}
+
+// Globaler EventEmitter fuer Status-Updates
+export const imageProcessingEvents = new EventEmitter();
+
+// Aktueller Status pro Session
+const sessionStatus = new Map<string, ImageProcessingStatus>();
+
+/**
+ * Sendet Status-Update fuer eine Session
+ */
+export function emitStatus(sessionId: string, action: string, description: string, progress?: number): void {
+  const status: ImageProcessingStatus = {
+    action,
+    description,
+    progress,
+    timestamp: new Date()
+  };
+  sessionStatus.set(sessionId, status);
+  imageProcessingEvents.emit('status', { sessionId, ...status });
+  console.log(`[ImageProc Status] ${sessionId.substring(0, 8)}: ${action} - ${description}`);
+}
+
+/**
+ * Holt aktuellen Status einer Session
+ */
+export function getSessionStatus(sessionId: string): ImageProcessingStatus | undefined {
+  return sessionStatus.get(sessionId);
+}
+
+/**
+ * Loescht Status einer Session
+ */
+export function clearSessionStatus(sessionId: string): void {
+  sessionStatus.delete(sessionId);
+}
 
 // Sicherstellen dass Temp-Dir existiert
 if (!existsSync(IMAGE_TEMP_DIR)) {
@@ -33,19 +81,36 @@ interface ImageResult {
  * Gibt den vollstaendigen Pfad zurueck den Claude lesen kann
  */
 export function saveBase64AsTemp(base64Data: string, format: string = 'png'): string {
+  console.log(`[DEBUG ImageProc] saveBase64AsTemp aufgerufen`);
+  console.log(`[DEBUG ImageProc] Input Laenge: ${base64Data.length} chars`);
+  console.log(`[DEBUG ImageProc] Input Prefix: ${base64Data.substring(0, 80)}...`);
+
   const id = randomUUID().substring(0, 8);
   const filename = `image_${id}.${format}`;
   const filepath = join(IMAGE_TEMP_DIR, filename);
 
+  console.log(`[DEBUG ImageProc] Ziel-Pfad: ${filepath}`);
+
   // Data URL Prefix entfernen wenn vorhanden (z.B. "data:image/png;base64,")
   let cleanBase64 = base64Data;
   if (base64Data.includes(',')) {
-    cleanBase64 = base64Data.split(',')[1];
+    const parts = base64Data.split(',');
+    console.log(`[DEBUG ImageProc] Data URL erkannt, Prefix: ${parts[0]}`);
+    cleanBase64 = parts[1];
+    console.log(`[DEBUG ImageProc] Clean Base64 Laenge: ${cleanBase64.length} chars`);
+  } else {
+    console.log(`[DEBUG ImageProc] Kein Data URL Prefix gefunden`);
   }
 
   // Base64 decodieren und speichern
   const buffer = Buffer.from(cleanBase64, 'base64');
+  console.log(`[DEBUG ImageProc] Buffer Groesse: ${buffer.length} bytes`);
+
   writeFileSync(filepath, buffer);
+
+  // Verify file exists
+  const fileExists = existsSync(filepath);
+  console.log(`[DEBUG ImageProc] Datei existiert: ${fileExists}`);
 
   console.log(`[ImageProcessing] Temp-Bild gespeichert: ${filepath}`);
   return filepath;
@@ -69,13 +134,50 @@ export function deleteTempImage(filepath: string): void {
 // AI_PHOTOSHOP CLI
 // ============================================================================
 
+// Action Beschreibungen fuer Status-Updates
+const ACTION_DESCRIPTIONS: Record<string, string> = {
+  'load': '📂 Lade Bild...',
+  'analyze': '🔍 Analysiere Bild...',
+  'smart-cut': '✂️ Schneide Objekte aus...',
+  'select-object': '🎯 Waehle Objekt...',
+  'extract': '📤 Extrahiere Auswahl...',
+  'extract-base64': '📤 Exportiere als Base64...',
+  'filter': '🎨 Wende Filter an...',
+  'draw': '✏️ Zeichne auf Bild...',
+  'save': '💾 Speichere Bild...',
+  'to-base64': '📤 Konvertiere zu Base64...',
+  'list-filters': '📋 Lade Filter-Liste...',
+  'status': '📊 Pruefe Status...',
+  'reset': '🔄 Setze zurueck...',
+};
+
+// Aktuelle Session-ID fuer Status-Updates
+let currentSessionId: string | null = null;
+
+/**
+ * Setzt die aktuelle Session-ID fuer Status-Updates
+ */
+export function setCurrentSession(sessionId: string): void {
+  currentSessionId = sessionId;
+}
+
 /**
  * Fuehrt ai_photoshop CLI Command aus
  */
 async function runAiPhotoshop(args: string[]): Promise<ImageResult> {
+  const action = args[0] || 'unknown';
+  const description = ACTION_DESCRIPTIONS[action] || `⚙️ ${action}...`;
+
+  // Status-Event senden wenn Session aktiv
+  if (currentSessionId) {
+    emitStatus(currentSessionId, action, description);
+  }
+
   return new Promise((resolve) => {
+    // Arbeitsverzeichnis aus Config (statt hardcoded Pfad)
+    const cliWorkDir = getConfig().cliWorkDir;
     const process = spawn('python', ['-m', 'ai_photoshop.cli', ...args], {
-      cwd: 'F:\\m',
+      cwd: cliWorkDir,
       shell: true
     });
 
@@ -228,17 +330,15 @@ export async function resetSession(): Promise<ImageResult> {
  * Bereinigt alte Temp-Bilder (aelter als 1 Stunde)
  */
 export function cleanupOldTempImages(): void {
-  const fs = require('fs');
-  const path = require('path');
   const oneHourAgo = Date.now() - (60 * 60 * 1000);
 
   try {
-    const files = fs.readdirSync(IMAGE_TEMP_DIR);
+    const files = readdirSync(IMAGE_TEMP_DIR);
     for (const file of files) {
-      const filepath = path.join(IMAGE_TEMP_DIR, file);
-      const stats = fs.statSync(filepath);
+      const filepath = join(IMAGE_TEMP_DIR, file);
+      const stats = statSync(filepath);
       if (stats.mtimeMs < oneHourAgo) {
-        fs.unlinkSync(filepath);
+        unlinkSync(filepath);
         console.log(`[ImageProcessing] Altes Temp-Bild bereinigt: ${file}`);
       }
     }

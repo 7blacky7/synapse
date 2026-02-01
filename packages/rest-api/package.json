@@ -19,8 +19,7 @@
     "@fastify/cors": "^8.4.0",
     "@synapse/core": "*",
     "dotenv": "^16.3.1",
-    "fastify": "^4.24.0",
-    "zod": "^3.22.0"
+    "fastify": "^4.24.0"
   },
   "files": [
     "dist"

@@ -1,6 +1,34 @@
 /**
- * Synapse Core - Code Service
- * Indexierung und Suche von Code-Dateien
+ * MODUL: Code-Indexierung Service
+ * ZWECK: Indexiert Code-Dateien in Qdrant fuer semantische Suche und verarbeitet FileWatcher-Events
+ *
+ * INPUT:
+ *   - filePath: string - Absoluter Pfad zur Datei
+ *   - projectName: string - Name des Projekts fuer Collection-Zuordnung
+ *   - query: string - Suchbegriff fuer semantische Suche
+ *   - event: FileEvent - add/change/unlink Events vom FileWatcher
+ *
+ * OUTPUT:
+ *   - number: Anzahl indexierter Chunks
+ *   - CodeSearchResult[]: Suchergebnisse mit Score und Payload
+ *   - { fileCount, chunkCount }: Projekt-Statistiken
+ *
+ * NEBENEFFEKTE:
+ *   - Qdrant: Schreibt/loescht Vektoren in projekt-spezifischen Collections
+ *   - Logs: Konsolenausgabe bei Indexierung/Loeschung
+ *
+ * ABHÄNGIGKEITEN:
+ *   - ../qdrant/index.js (intern) - Vektor-Operationen
+ *   - ../embeddings/index.js (intern) - Text-zu-Vektor Konvertierung
+ *   - ../chunking/index.js (intern) - Datei-Chunking
+ *   - ../watcher/index.js (intern) - Datei-Lesen und Typ-Erkennung
+ *   - ./documents.js (intern) - Dokument-Extraktion (PDF, Word, Excel)
+ *   - uuid (extern) - ID-Generierung
+ *
+ * HINWEISE:
+ *   - Projekt muss fuer Code-Suche angegeben werden (Multi-Collection-Suche TODO)
+ *   - Dokumente (PDF/Word/Excel) werden an documents.js delegiert
+ *   - Batch-Embedding fuer Performance bei mehreren Chunks
  */
 
 import * as path from 'path';
@@ -23,7 +51,7 @@ import { readFileWithMetadata, getFileType, isExtractableDocument } from '../wat
 import { indexDocument, removeDocument } from './documents.js';
 
 /**
- * Indexiert eine Datei in Qdrant
+ * Indexiert eine Datei in Qdrant (Upsert-Verhalten: loescht alte Chunks zuerst)
  */
 export async function indexFile(
   filePath: string,
@@ -31,6 +59,9 @@ export async function indexFile(
 ): Promise<number> {
   // Collection sicherstellen
   const collectionName = await ensureProjectCollection(projectName);
+
+  // Alte Chunks fuer diese Datei loeschen (verhindert Duplikate bei Re-Indexierung)
+  await deleteByFilePath(collectionName, filePath);
 
   // Datei lesen
   const fileData = readFileWithMetadata(filePath, projectName);

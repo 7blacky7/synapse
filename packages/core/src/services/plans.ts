@@ -1,6 +1,38 @@
 /**
- * Synapse Core - Plans Service
- * Projekt-Plaene speichern und abrufen
+ * MODUL: Projekt-Plan-System
+ * ZWECK: Verwaltet Projekt-Plaene mit Zielen, Architektur und Tasks in Qdrant
+ *
+ * INPUT:
+ *   - project: string - Projekt-Identifikator (1 Plan pro Projekt)
+ *   - name: string - Plan-Name
+ *   - description: string - Plan-Beschreibung
+ *   - goals: string[] - Liste der Projektziele
+ *   - updates: Partial<ProjectPlan> - Teil-Updates fuer Plan
+ *   - title, description, priority: Task-Parameter
+ *   - taskId: string - Task-ID fuer Updates
+ *
+ * OUTPUT:
+ *   - ProjectPlan: Erstellter/aktualisierter Plan mit Tasks
+ *   - ProjectPlan | null: Plan oder null wenn nicht gefunden
+ *   - ProjectTask | null: Erstellte/aktualisierte Task
+ *   - boolean: Erfolg bei Plan-Loeschung
+ *
+ * NEBENEFFEKTE:
+ *   - Qdrant: Schreibt/loescht in Collection "synapse_plans"
+ *   - Logs: Konsolenausgabe bei CRUD-Operationen
+ *
+ * ABHÄNGIGKEITEN:
+ *   - ../types/index.js (intern) - ProjectPlan, ProjectTask, ProjectPlanPayload Typen
+ *   - ../qdrant/index.js (intern) - Collection und Vektor-Operationen
+ *   - ../embeddings/index.js (intern) - Text-zu-Vektor Konvertierung
+ *   - uuid (extern) - ID-Generierung
+ *
+ * HINWEISE:
+ *   - Nur 1 Plan pro Projekt erlaubt (getPlan gibt ersten Treffer zurueck)
+ *   - Embedding basiert auf Name + Description + Goals (nicht Tasks)
+ *   - Task-Updates erfordern komplettes Plan-Neuschreiben (Delete+Insert)
+ *   - Task-Status: 'todo' | 'in_progress' | 'done'
+ *   - Task-Priority: 'low' | 'medium' | 'high'
  */
 
 import { v4 as uuidv4 } from 'uuid';

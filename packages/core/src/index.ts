@@ -126,6 +126,8 @@ export type { DetectedTechnology } from './services/tech-detection.js';
 export type { Context7Doc, Context7SearchResult } from './services/context7.js';
 export type { IndexedDoc } from './services/docs-indexer.js';
 export type { ExtractedDocument, DocumentSearchResult } from './services/documents.js';
+export type { ProjectStatus } from './services/project-status.js';
+export { getProjectStatus, setProjectStatus, isProjectInitialized, updateLastAccess, clearProjectStatus } from './services/project-status.js';
 
 /**
  * Initialisiert Synapse Core

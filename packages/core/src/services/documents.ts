@@ -1,6 +1,38 @@
 /**
- * Synapse Core - Document Extraction
- * Extrahiert Text aus PDF, Word und Excel Dateien
+ * MODUL: Dokument-Extraktion
+ * ZWECK: Extrahiert Text aus Binaerdokumenten (PDF, Word, Excel) und indexiert sie in Qdrant
+ *
+ * INPUT:
+ *   - filePath: string - Absoluter Pfad zum Dokument
+ *   - projectName: string - Projekt fuer Collection-Zuordnung
+ *   - buffer: Buffer - Rohe Datei-Bytes fuer direkte Extraktion
+ *   - query: string - Suchbegriff fuer semantische Dokumentensuche
+ *   - documentType: 'pdf'|'docx'|'xlsx'|'all' - Filter fuer Dokumententyp
+ *
+ * OUTPUT:
+ *   - ExtractedDocument: Extrahierter Text mit Typ und Metadaten (Seiten, Blaetter, Autor)
+ *   - { success, chunks, type, metadata }: Indexierungs-Ergebnis
+ *   - DocumentSearchResult[]: Suchergebnisse mit Content und Score
+ *
+ * NEBENEFFEKTE:
+ *   - Qdrant: Schreibt/loescht in projekt-spezifischen Collections
+ *   - Dateisystem: Liest Dokumente von der Festplatte
+ *   - Logs: Konsolenausgabe bei Indexierung/Fehlern
+ *
+ * ABHÄNGIGKEITEN:
+ *   - ../embeddings/index.js (intern) - Text-zu-Vektor Konvertierung (Batch)
+ *   - ../qdrant/index.js (intern) - Vektor-Operationen
+ *   - ../chunking/index.js (intern) - Text-Chunking
+ *   - ../watcher/binary.js (intern) - Extension-Erkennung
+ *   - pdf-parse (extern) - PDF-Extraktion
+ *   - mammoth (extern) - Word-Extraktion
+ *   - xlsx (extern) - Excel-Extraktion
+ *   - uuid (extern) - ID-Generierung
+ *
+ * HINWEISE:
+ *   - Alte Chunks werden vor Re-Indexierung geloescht
+ *   - Excel-Sheets werden als CSV mit Sheet-Namen exportiert
+ *   - Chunk-Groesse: 1500 Zeichen mit 200 Overlap
  */
 
 import * as fs from 'fs';

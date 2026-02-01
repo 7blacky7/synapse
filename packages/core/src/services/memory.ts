@@ -1,7 +1,35 @@
 /**
- * Synapse Core - Memory Service
- * Persistente Speicherung von Dokumentationen und Notizen
- * Ähnlich zu Serena's write_memory
+ * MODUL: Memory-System
+ * ZWECK: Persistente Speicherung von Notizen, Dokumentationen und Entscheidungen pro Projekt
+ *
+ * INPUT:
+ *   - project: string - Projekt-Identifikator
+ *   - name: string - Eindeutiger Memory-Name (Ueberschreibung bei Duplikat)
+ *   - content: string - Inhalt des Memories
+ *   - category: 'documentation'|'note'|'architecture'|'decision'|'other' - Kategorisierung
+ *   - tags: string[] - Optionale Tags fuer Filterung
+ *   - query: string - Suchbegriff fuer semantische Suche
+ *
+ * OUTPUT:
+ *   - Memory: Gespeichertes Memory-Objekt mit ID und Timestamps
+ *   - Memory[]: Liste aller Memories eines Projekts
+ *   - MemorySearchResult[]: Suchergebnisse mit Relevanz-Score
+ *   - boolean: Erfolg bei Loeschung
+ *
+ * NEBENEFFEKTE:
+ *   - Qdrant: Schreibt/loescht in Collection "synapse_memories"
+ *   - Logs: Konsolenausgabe bei Speicherung/Loeschung
+ *
+ * ABHÄNGIGKEITEN:
+ *   - ../embeddings/index.js (intern) - Text-zu-Vektor Konvertierung
+ *   - ../qdrant/collections.js (intern) - Collection-Verwaltung
+ *   - ../qdrant/operations.js (intern) - CRUD-Operationen
+ *   - uuid (extern) - ID-Generierung
+ *
+ * HINWEISE:
+ *   - Memory mit gleichem Namen wird ueberschrieben (Upsert-Semantik)
+ *   - Semantische Suche unterstuetzt projekt-uebergreifende Abfragen
+ *   - createdAt bleibt bei Updates erhalten, updatedAt wird aktualisiert
  */
 
 import { v4 as uuidv4 } from 'uuid';

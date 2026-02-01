@@ -42,6 +42,8 @@ export function loadConfig(): SynapseConfig {
       port: parseInt(process.env.API_PORT || '3456', 10),
       host: process.env.API_HOST || '0.0.0.0',
     },
+    // Arbeitsverzeichnis fuer CLI-Tools (ai_photoshop, etc.)
+    cliWorkDir: process.env.CLI_WORK_DIR || process.cwd(),
   };
 }
 
