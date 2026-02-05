@@ -4,6 +4,7 @@
  */
 
 import * as path from 'path';
+import * as fs from 'fs';
 import {
   initSynapse,
   startFileWatcher,
@@ -513,6 +514,44 @@ export async function getProjectStatusWithStats(
       success: true,
       status,
       message: `Status fuer "${status.project}" geladen (Stats nicht verfuegbar)`,
+    };
+  }
+}
+
+/**
+ * Leert die knownAgents-Liste in .synapse/status.json
+ */
+export async function dropNamelist(projectPath: string): Promise<{
+  success: boolean;
+  message: string;
+  clearedCount?: number;
+}> {
+  const statusPath = path.join(projectPath, '.synapse', 'status.json');
+
+  if (!fs.existsSync(statusPath)) {
+    return {
+      success: false,
+      message: 'status.json nicht gefunden - Projekt nicht initialisiert',
+    };
+  }
+
+  try {
+    const statusContent = fs.readFileSync(statusPath, 'utf-8');
+    const status = JSON.parse(statusContent);
+    const clearedCount = status.knownAgents?.length || 0;
+    status.knownAgents = [];
+
+    fs.writeFileSync(statusPath, JSON.stringify(status, null, 2));
+
+    return {
+      success: true,
+      message: `knownAgents geleert (${clearedCount} Eintraege entfernt)`,
+      clearedCount,
+    };
+  } catch (error) {
+    return {
+      success: false,
+      message: `Fehler beim Leeren der knownAgents: ${error}`,
     };
   }
 }
