@@ -27,34 +27,17 @@ export async function writeMemory(
   content: string,
   category: MemoryCategory = 'note',
   tags: string[] = []
-): Promise<{
-  success: boolean;
-  memory: Memory | null;
-  isUpdate: boolean;
-  message: string;
-}> {
+): Promise<string> {
   try {
-    // Prüfen ob Update
     const existing = await getMemoryByName(project, name);
     const isUpdate = !!existing;
+    await writeMemoryCore(project, name, content, category, tags);
 
-    const memory = await writeMemoryCore(project, name, content, category, tags);
-
-    return {
-      success: true,
-      memory,
-      isUpdate,
-      message: isUpdate
-        ? `Memory "${name}" aktualisiert (${content.length} Zeichen)`
-        : `Memory "${name}" erstellt (${content.length} Zeichen)`,
-    };
+    return isUpdate
+      ? `✅ Memory "${name}" aktualisiert | ${content.length} Zeichen | ${category}`
+      : `✅ Memory "${name}" erstellt | ${content.length} Zeichen | ${category}`;
   } catch (error) {
-    return {
-      success: false,
-      memory: null,
-      isUpdate: false,
-      message: `Fehler beim Speichern: ${error}`,
-    };
+    return `❌ Fehler: ${error}`;
   }
 }
 
@@ -179,29 +162,14 @@ export async function searchMemory(
 export async function deleteMemory(
   project: string,
   name: string
-): Promise<{
-  success: boolean;
-  message: string;
-}> {
+): Promise<string> {
   try {
     const deleted = await deleteMemoryCore(project, name);
-
-    if (!deleted) {
-      return {
-        success: false,
-        message: `Memory "${name}" nicht gefunden`,
-      };
-    }
-
-    return {
-      success: true,
-      message: `Memory "${name}" gelöscht`,
-    };
+    return deleted
+      ? `✅ Memory "${name}" gelöscht`
+      : `⚠️ Memory "${name}" nicht gefunden`;
   } catch (error) {
-    return {
-      success: false,
-      message: `Fehler beim Löschen: ${error}`,
-    };
+    return `❌ Fehler: ${error}`;
   }
 }
 
