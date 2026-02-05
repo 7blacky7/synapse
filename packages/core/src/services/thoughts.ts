@@ -1,6 +1,34 @@
 /**
- * Synapse Core - Thoughts Service
- * Gedankenaustausch zwischen KIs speichern und abrufen
+ * MODUL: Gedanken-System
+ * ZWECK: Speichert und durchsucht Gedanken/Notizen von KI-Agenten fuer Wissensaustausch
+ *
+ * INPUT:
+ *   - project: string - Projekt-Identifikator
+ *   - source: ThoughtSource - Ursprung des Gedankens (z.B. "claude", "user")
+ *   - content: string - Inhalt des Gedankens
+ *   - tags: string[] - Optionale Tags fuer Kategorisierung
+ *   - query: string - Suchbegriff fuer semantische Suche
+ *   - id: string - Gedanken-ID fuer Loeschung
+ *
+ * OUTPUT:
+ *   - Thought: Gespeicherter Gedanke mit ID und Timestamp
+ *   - Thought[]: Liste von Gedanken (nach Timestamp sortiert, neueste zuerst)
+ *   - ThoughtSearchResult[]: Suchergebnisse mit Relevanz-Score
+ *
+ * NEBENEFFEKTE:
+ *   - Qdrant: Schreibt/loescht in Collection "project_thoughts"
+ *   - Logs: Konsolenausgabe bei Speicherung/Loeschung
+ *
+ * ABHÄNGIGKEITEN:
+ *   - ../types/index.js (intern) - Thought, ThoughtPayload, ThoughtSource Typen
+ *   - ../qdrant/index.js (intern) - Collection und Vektor-Operationen
+ *   - ../embeddings/index.js (intern) - Text-zu-Vektor Konvertierung
+ *   - uuid (extern) - ID-Generierung
+ *
+ * HINWEISE:
+ *   - Gedanken sind projekt-gebunden aber source-uebergreifend durchsuchbar
+ *   - Semantische Suche kann optional projekt-uebergreifend sein
+ *   - Filterung nach Source oder Tag moeglich
  */
 
 import { v4 as uuidv4 } from 'uuid';

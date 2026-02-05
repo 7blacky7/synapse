@@ -51,6 +51,7 @@ export {
   readFileWithMetadata,
   isBinaryFile,
   isBinaryExtension,
+  isExtractableDocument,
   getFileType,
   getFileExtension,
   loadGitignore,
@@ -111,11 +112,38 @@ export {
   searchMemories,
   deleteMemory,
   deleteProjectMemories,
+  readMemoryWithRelatedCode,
+  findMemoriesForPath,
+  getRulesForNewAgent,
+  // Documents
+  extractDocument,
+  extractPDF,
+  extractWord,
+  extractExcel,
+  indexDocument,
+  searchDocuments,
+  removeDocument,
+  // Global Search
+  globalSearch,
+  listSearchableProjects,
 } from './services/index.js';
-export type { Memory } from './services/memory.js';
+export type { Memory, MemoryWithRelatedCode, RelatedMemoryResult, RelatedCodeResult } from './services/memory.js';
 export type { DetectedTechnology } from './services/tech-detection.js';
 export type { Context7Doc, Context7SearchResult } from './services/context7.js';
 export type { IndexedDoc } from './services/docs-indexer.js';
+export type { ExtractedDocument, DocumentSearchResult } from './services/documents.js';
+export type {
+  GlobalSearchOptions,
+  GlobalSearchResult,
+  GlobalSearchItem,
+  GlobalSearchMetadata,
+  CodeSearchMetadata,
+  ThoughtSearchMetadata,
+  MemorySearchMetadata,
+  SearchType,
+} from './services/global-search.js';
+export type { ProjectStatus } from './services/project-status.js';
+export { getProjectStatus, setProjectStatus, isProjectInitialized, updateLastAccess, clearProjectStatus, isAgentKnown, registerAgent } from './services/project-status.js';
 
 /**
  * Initialisiert Synapse Core

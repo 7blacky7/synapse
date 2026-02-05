@@ -107,6 +107,21 @@ export function isBinaryFile(filePath: string, buffer?: Buffer): boolean {
   return false;
 }
 
+/** Extrahierbare Dokument-Extensions */
+const EXTRACTABLE_DOCUMENT_EXTENSIONS = new Set([
+  'pdf',
+  'docx', 'doc',
+  'xlsx', 'xls',
+]);
+
+/**
+ * Prueft ob eine Datei ein extrahierbares Dokument ist (PDF, Word, Excel)
+ */
+export function isExtractableDocument(filePath: string): boolean {
+  const ext = getFileExtension(filePath);
+  return EXTRACTABLE_DOCUMENT_EXTENSIONS.has(ext);
+}
+
 /**
  * Gibt die Datei-Extension zurueck
  */
