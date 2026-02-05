@@ -16,6 +16,7 @@ import {
   listActiveProjects,
   cleanupProjekt,
   getProjectStatusWithStats,
+  dropNamelist,
   semanticCodeSearch,
   searchDocumentation,
   searchByPath,
@@ -205,6 +206,20 @@ export function createServer(): Server {
       {
         name: 'get_project_status',
         description: 'Zeigt den persistenten Status eines Projekts (.synapse/status.json)',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            path: {
+              type: 'string',
+              description: 'Absoluter Pfad zum Projekt',
+            },
+          },
+          required: ['path'],
+        },
+      },
+      {
+        name: 'drop_namelist',
+        description: 'Leert die knownAgents-Liste in .synapse/status.json - setzt alle bekannten Agenten zurueck',
         inputSchema: {
           type: 'object',
           properties: {
@@ -855,6 +870,12 @@ export function createServer(): Server {
         case 'get_project_status': {
           const { path: projectPath } = args as { path: string };
           const result = await getProjectStatusWithStats(projectPath);
+          return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+        }
+
+        case 'drop_namelist': {
+          const { path: projectPath } = args as { path: string };
+          const result = await dropNamelist(projectPath);
           return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
         }
 
