@@ -980,7 +980,7 @@ export function createServer(): Server {
             args?.category as 'documentation' | 'note' | 'architecture' | 'decision' | 'rules' | 'other' | undefined,
             args?.tags as string[] | undefined
           );
-          return withOnboarding(result);
+          return withOnboarding({ message: result });
         }
 
         case 'read_memory': {
@@ -1013,7 +1013,7 @@ export function createServer(): Server {
             args?.project as string,
             args?.name as string
           );
-          return withOnboarding(result);
+          return withOnboarding({ message: result });
         }
 
         case 'read_memory_with_code': {
