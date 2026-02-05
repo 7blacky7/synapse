@@ -1,6 +1,34 @@
 /**
- * Synapse Core - Code Service
- * Indexierung und Suche von Code-Dateien
+ * MODUL: Code-Indexierung Service
+ * ZWECK: Indexiert Code-Dateien in Qdrant fuer semantische Suche und verarbeitet FileWatcher-Events
+ *
+ * INPUT:
+ *   - filePath: string - Absoluter Pfad zur Datei
+ *   - projectName: string - Name des Projekts fuer Collection-Zuordnung
+ *   - query: string - Suchbegriff fuer semantische Suche
+ *   - event: FileEvent - add/change/unlink Events vom FileWatcher
+ *
+ * OUTPUT:
+ *   - number: Anzahl indexierter Chunks
+ *   - CodeSearchResult[]: Suchergebnisse mit Score und Payload
+ *   - { fileCount, chunkCount }: Projekt-Statistiken
+ *
+ * NEBENEFFEKTE:
+ *   - Qdrant: Schreibt/loescht Vektoren in projekt-spezifischen Collections
+ *   - Logs: Konsolenausgabe bei Indexierung/Loeschung
+ *
+ * ABHÄNGIGKEITEN:
+ *   - ../qdrant/index.js (intern) - Vektor-Operationen
+ *   - ../embeddings/index.js (intern) - Text-zu-Vektor Konvertierung
+ *   - ../chunking/index.js (intern) - Datei-Chunking
+ *   - ../watcher/index.js (intern) - Datei-Lesen und Typ-Erkennung
+ *   - ./documents.js (intern) - Dokument-Extraktion (PDF, Word, Excel)
+ *   - uuid (extern) - ID-Generierung
+ *
+ * HINWEISE:
+ *   - Projekt muss fuer Code-Suche angegeben werden (bewusste Isolation)
+ *   - Dokumente (PDF/Word/Excel) werden an documents.js delegiert
+ *   - Batch-Embedding fuer Performance bei mehreren Chunks
  */
 
 import * as path from 'path';
@@ -19,10 +47,11 @@ import {
 } from '../qdrant/index.js';
 import { embed, embedBatch } from '../embeddings/index.js';
 import { chunkFile } from '../chunking/index.js';
-import { readFileWithMetadata, getFileType } from '../watcher/index.js';
+import { readFileWithMetadata, getFileType, isExtractableDocument } from '../watcher/index.js';
+import { indexDocument, removeDocument } from './documents.js';
 
 /**
- * Indexiert eine Datei in Qdrant
+ * Indexiert eine Datei in Qdrant (Upsert-Verhalten: loescht alte Chunks zuerst)
  */
 export async function indexFile(
   filePath: string,
@@ -30,6 +59,9 @@ export async function indexFile(
 ): Promise<number> {
   // Collection sicherstellen
   const collectionName = await ensureProjectCollection(projectName);
+
+  // Alte Chunks fuer diese Datei loeschen (verhindert Duplikate bei Re-Indexierung)
+  await deleteByFilePath(collectionName, filePath);
 
   // Datei lesen
   const fileData = readFileWithMetadata(filePath, projectName);
@@ -106,15 +138,30 @@ export async function removeFile(
  * Verarbeitet ein FileWatcher Event
  */
 export async function handleFileEvent(event: FileEvent): Promise<void> {
+  // Pruefen ob es ein extrahierbares Dokument ist
+  const isDocument = isExtractableDocument(event.path);
+
   switch (event.type) {
     case 'add':
-      await indexFile(event.path, event.project);
+      if (isDocument) {
+        await indexDocument(event.path, event.project);
+      } else {
+        await indexFile(event.path, event.project);
+      }
       break;
     case 'change':
-      await updateFile(event.path, event.project);
+      if (isDocument) {
+        await indexDocument(event.path, event.project);
+      } else {
+        await updateFile(event.path, event.project);
+      }
       break;
     case 'unlink':
-      await removeFile(event.path, event.project);
+      if (isDocument) {
+        await removeDocument(event.path, event.project);
+      } else {
+        await removeFile(event.path, event.project);
+      }
       break;
   }
 }
@@ -149,20 +196,18 @@ export async function searchCode(
     });
   }
 
-  // In allen Projekt-Collections suchen wenn kein Projekt angegeben
-  if (projectName) {
-    const collectionName = COLLECTIONS.projectCode(projectName);
-    return searchVectors<CodeChunkPayload>(
-      collectionName,
-      queryVector,
-      limit,
-      must.length > 0 ? filter : undefined
-    );
+  // Projekt-Angabe ist erforderlich (bewusste Design-Entscheidung: Projekt-Isolation)
+  if (!projectName) {
+    throw new Error('Projekt muss angegeben werden fuer Code-Suche');
   }
 
-  // TODO: Suche ueber mehrere Collections implementieren
-  // Fuer jetzt: Fehler werfen
-  throw new Error('Projekt muss angegeben werden fuer Code-Suche');
+  const collectionName = COLLECTIONS.projectCode(projectName);
+  return searchVectors<CodeChunkPayload>(
+    collectionName,
+    queryVector,
+    limit,
+    must.length > 0 ? filter : undefined
+  );
 }
 
 /**

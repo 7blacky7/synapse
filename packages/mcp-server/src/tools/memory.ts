@@ -9,10 +9,14 @@ import {
   listMemories as listMemoriesCore,
   searchMemories as searchMemoriesCore,
   deleteMemory as deleteMemoryCore,
+  readMemoryWithRelatedCode,
+  findMemoriesForPath,
   Memory,
+  MemoryWithRelatedCode,
+  RelatedMemoryResult,
 } from '@synapse/core';
 
-export type MemoryCategory = Memory['category'];
+export type MemoryCategory = Memory['category'];  // 'documentation' | 'note' | 'architecture' | 'decision' | 'rules' | 'other'
 
 /**
  * Speichert ein Memory (überschreibt bei gleichem Namen)
@@ -23,34 +27,17 @@ export async function writeMemory(
   content: string,
   category: MemoryCategory = 'note',
   tags: string[] = []
-): Promise<{
-  success: boolean;
-  memory: Memory | null;
-  isUpdate: boolean;
-  message: string;
-}> {
+): Promise<string> {
   try {
-    // Prüfen ob Update
     const existing = await getMemoryByName(project, name);
     const isUpdate = !!existing;
+    await writeMemoryCore(project, name, content, category, tags);
 
-    const memory = await writeMemoryCore(project, name, content, category, tags);
-
-    return {
-      success: true,
-      memory,
-      isUpdate,
-      message: isUpdate
-        ? `Memory "${name}" aktualisiert (${content.length} Zeichen)`
-        : `Memory "${name}" erstellt (${content.length} Zeichen)`,
-    };
+    return isUpdate
+      ? `✅ Memory "${name}" aktualisiert | ${content.length} Zeichen | ${category}`
+      : `✅ Memory "${name}" erstellt | ${content.length} Zeichen | ${category}`;
   } catch (error) {
-    return {
-      success: false,
-      memory: null,
-      isUpdate: false,
-      message: `Fehler beim Speichern: ${error}`,
-    };
+    return `❌ Fehler: ${error}`;
   }
 }
 
@@ -175,28 +162,66 @@ export async function searchMemory(
 export async function deleteMemory(
   project: string,
   name: string
+): Promise<string> {
+  try {
+    const deleted = await deleteMemoryCore(project, name);
+    return deleted
+      ? `✅ Memory "${name}" gelöscht`
+      : `⚠️ Memory "${name}" nicht gefunden`;
+  } catch (error) {
+    return `❌ Fehler: ${error}`;
+  }
+}
+
+/**
+ * Liest ein Memory mit verwandtem Code
+ */
+export async function readMemoryWithCode(
+  project: string,
+  name: string,
+  options: { codeLimit?: number; includeSemanticMatches?: boolean } = {}
 ): Promise<{
   success: boolean;
+  data: MemoryWithRelatedCode | null;
   message: string;
 }> {
   try {
-    const deleted = await deleteMemoryCore(project, name);
-
-    if (!deleted) {
-      return {
-        success: false,
-        message: `Memory "${name}" nicht gefunden`,
-      };
+    const result = await readMemoryWithRelatedCode(project, name, options);
+    if (!result) {
+      return { success: false, data: null, message: `Memory "${name}" nicht gefunden` };
     }
-
+    const pathMatches = result.relatedCode.filter(c => c.matchType === 'exact').length;
+    const semanticMatches = result.relatedCode.filter(c => c.matchType === 'semantic').length;
     return {
       success: true,
-      message: `Memory "${name}" gelöscht`,
+      data: result,
+      message: `Memory "${name}" mit ${pathMatches} Pfad- und ${semanticMatches} semantischen Matches`,
     };
   } catch (error) {
+    return { success: false, data: null, message: `Fehler: ${error}` };
+  }
+}
+
+/**
+ * Findet Memories für eine Datei
+ */
+export async function findMemoriesForFile(
+  project: string,
+  filePath: string,
+  limit: number = 10
+): Promise<{
+  success: boolean;
+  results: RelatedMemoryResult[];
+  message: string;
+}> {
+  try {
+    const results = await findMemoriesForPath(project, filePath, limit);
     return {
-      success: false,
-      message: `Fehler beim Löschen: ${error}`,
+      success: true,
+      results,
+      message: `${results.length} Memories gefunden für "${filePath}"`,
     };
+  } catch (error) {
+    return { success: false, results: [], message: `Fehler: ${error}` };
   }
 }

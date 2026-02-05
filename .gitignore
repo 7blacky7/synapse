@@ -24,3 +24,7 @@ npm-debug.log*
 
 # Test files
 test-*.js
+.serena
+
+# Synapse Projekt-Status (pro Projekt)
+.synapse/

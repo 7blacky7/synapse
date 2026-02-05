@@ -17,27 +17,161 @@ import {
   deleteByFilePath,
   loadGitignore,
   shouldIgnore,
+  getProjectStatus,
+  setProjectStatus,
+  updateLastAccess,
+  isAgentKnown,
+  registerAgent,
+  getRulesForNewAgent,
 } from '@synapse/core';
-import type { FileWatcherInstance, DetectedTechnology } from '@synapse/core';
+import type { FileWatcherInstance, DetectedTechnology, Memory } from '@synapse/core';
 
 /** Aktive FileWatcher pro Projekt */
 const activeWatchers = new Map<string, FileWatcherInstance>();
 
-/**
- * Initialisiert ein Projekt
- */
-export async function initProjekt(
-  projectPath: string,
-  projectName?: string,
-  indexDocs: boolean = true
-): Promise<{
+/** Speichert Projekt-Pfade fuer Shutdown und Onboarding (name -> path) */
+import { cacheProjectPath as cachePathInOnboarding } from './onboarding.js';
+const projectPaths = new Map<string, string>();
+
+/** Wrapper der beide Caches synchron haelt */
+function cacheProjectPathBoth(name: string, path: string): void {
+  projectPaths.set(name, path);
+  cachePathInOnboarding(name, path);
+}
+
+/** Regel-Memory fuer Onboarding-Response */
+interface RuleMemory {
+  name: string;
+  content: string;
+}
+
+/** Return-Typ fuer initProjekt */
+type InitResult = {
   success: boolean;
   project: string;
   path: string;
   message: string;
   technologies?: DetectedTechnology[];
   docsIndexed?: { total: number; indexed: number; cached: number };
-}> {
+  isFirstVisit?: boolean;
+  rules?: RuleMemory[];
+};
+
+/**
+ * Prueft ob Projekt reaktiviert werden kann (bereits indexiert)
+ * Startet ggf. nur den FileWatcher neu
+ * @param agentId - Optionale Agent-ID fuer Onboarding
+ */
+async function tryReactivateProject(
+  projectPath: string,
+  name: string,
+  agentId?: string
+): Promise<InitResult | null> {
+  // Watcher bereits aktiv? Nur Status aktualisieren + Agent-Check
+  if (activeWatchers.has(name)) {
+    updateLastAccess(projectPath);
+
+    // Agent-Onboarding auch bei aktivem Watcher
+    let isFirstVisit = false;
+    let rules: RuleMemory[] | undefined;
+
+    if (agentId) {
+      isFirstVisit = registerAgent(projectPath, agentId);
+      if (isFirstVisit) {
+        try {
+          const ruleMemories = await getRulesForNewAgent(name);
+          if (ruleMemories.length > 0) {
+            rules = ruleMemories.map(m => ({ name: m.name, content: m.content }));
+          }
+        } catch { /* ignore */ }
+      }
+    }
+
+    const rulesHint = rules && rules.length > 0
+      ? `\n\n📋 PROJEKT-REGELN (bitte beachten!):\n${rules.map(r => `- ${r.name}`).join('\n')}`
+      : '';
+
+    return {
+      success: true,
+      project: name,
+      path: projectPath,
+      message: `Projekt "${name}" ist bereits aktiv${rulesHint}`,
+      isFirstVisit,
+      rules,
+    };
+  }
+
+  // Persistenten Status pruefen
+  const status = getProjectStatus(projectPath);
+  if (!status || status.status !== 'active') {
+    return null; // Keine Reaktivierung moeglich
+  }
+
+  // Pruefen ob Collection bereits Daten hat
+  const collectionName = `project_${name}`;
+  const vectors = await scrollVectors(collectionName, {}, 1);
+  if (vectors.length === 0) {
+    return null; // Collection leer, neu initialisieren
+  }
+
+  // FileWatcher starten (Projekt war bereits indexiert)
+  const watcher = startFileWatcher({
+    projectPath,
+    projectName: name,
+    onFileChange: handleFileEvent,
+    onError: (error) => console.error(`[Synapse MCP] FileWatcher Fehler:`, error),
+    onIgnoreChange: async () => {
+      const result = await cleanupProjekt(projectPath, name);
+      console.log(`[Synapse MCP] Cleanup: ${result.deleted} geloescht`);
+    },
+  });
+  activeWatchers.set(name, watcher);
+  cacheProjectPathBoth(name, projectPath);
+  updateLastAccess(projectPath);
+
+  // Agent-Onboarding bei Reaktivierung
+  let isFirstVisit = false;
+  let rules: RuleMemory[] | undefined;
+
+  if (agentId) {
+    isFirstVisit = registerAgent(projectPath, agentId);
+    if (isFirstVisit) {
+      try {
+        const ruleMemories = await getRulesForNewAgent(name);
+        if (ruleMemories.length > 0) {
+          rules = ruleMemories.map(m => ({ name: m.name, content: m.content }));
+        }
+      } catch { /* ignore */ }
+    }
+  }
+
+  const rulesHint = rules && rules.length > 0
+    ? `\n\n📋 PROJEKT-REGELN (bitte beachten!):\n${rules.map(r => `- ${r.name}`).join('\n')}`
+    : '';
+
+  return {
+    success: true,
+    project: name,
+    path: projectPath,
+    message: `Projekt "${name}" reaktiviert (bereits indexiert)${rulesHint}`,
+    isFirstVisit,
+    rules,
+  };
+}
+
+/**
+ * Initialisiert ein Projekt
+ * @param projectPath - Absoluter Pfad zum Projekt
+ * @param projectName - Optionaler Projekt-Name
+ * @param indexDocs - Framework-Docs vorladen (default: true)
+ * @param agentId - Optionale Agent-ID fuer Onboarding (neue Agenten sehen Regeln)
+ */
+export async function initProjekt(
+  projectPath: string,
+  projectName?: string,
+  indexDocs: boolean = true,
+  agentId?: string
+): Promise<InitResult> {
   // Synapse initialisieren (Qdrant, Embeddings)
   const initialized = await initSynapse();
 
@@ -53,14 +187,10 @@ export async function initProjekt(
   // Projekt-Name aus Pfad ableiten wenn nicht angegeben
   const name = projectName || path.basename(projectPath);
 
-  // Pruefen ob Watcher schon laeuft
-  if (activeWatchers.has(name)) {
-    return {
-      success: true,
-      project: name,
-      path: projectPath,
-      message: `Projekt "${name}" ist bereits aktiv`,
-    };
+  // Pruefen ob bereits aktiv (Memory oder persistenter Status)
+  const reactivated = await tryReactivateProject(projectPath, name, agentId);
+  if (reactivated) {
+    return reactivated;
   }
 
   // Collection erstellen
@@ -111,6 +241,36 @@ export async function initProjekt(
   });
 
   activeWatchers.set(name, watcher);
+  cacheProjectPathBoth(name, projectPath);
+
+  // Persistenten Status speichern
+  setProjectStatus(projectPath, { status: 'active', project: name });
+
+  // ===== AGENT ONBOARDING =====
+  let isFirstVisit = false;
+  let rules: RuleMemory[] | undefined;
+
+  if (agentId) {
+    // Pruefen ob Agent neu ist und registrieren
+    isFirstVisit = registerAgent(projectPath, agentId);
+
+    if (isFirstVisit) {
+      // Regeln-Memories fuer neuen Agent laden
+      console.log(`[Synapse MCP] Neuer Agent "${agentId}" - lade Regeln...`);
+      try {
+        const ruleMemories = await getRulesForNewAgent(name);
+        if (ruleMemories.length > 0) {
+          rules = ruleMemories.map(m => ({
+            name: m.name,
+            content: m.content,
+          }));
+          console.log(`[Synapse MCP] ${rules.length} Regeln fuer Agent geladen`);
+        }
+      } catch (error) {
+        console.error(`[Synapse MCP] Fehler beim Laden der Regeln:`, error);
+      }
+    }
+  }
 
   // Hinweis fuer KI generieren
   const techList = technologies.map(t => t.name).join(', ');
@@ -120,20 +280,31 @@ export async function initProjekt(
       `Bei fehlenden Infos wird automatisch Context7 abgefragt und gecacht.`
     : '';
 
+  // Regeln-Hinweis hinzufuegen wenn vorhanden
+  const rulesHint = rules && rules.length > 0
+    ? `\n\n📋 PROJEKT-REGELN (bitte beachten!):\n${rules.map(r => `- ${r.name}`).join('\n')}`
+    : '';
+
   return {
     success: true,
     project: name,
     path: projectPath,
-    message: `Projekt "${name}" initialisiert. FileWatcher aktiv.${instruction}`,
+    message: `Projekt "${name}" initialisiert. FileWatcher aktiv.${instruction}${rulesHint}`,
     technologies,
     docsIndexed,
+    isFirstVisit,
+    rules,
   };
 }
 
 /**
- * Stoppt einen FileWatcher
+ * Stoppt einen FileWatcher und setzt Status auf 'stopped'
+ * projectPath ist optional - wird aus Cache geholt wenn nicht angegeben
  */
-export async function stopProjekt(projectName: string): Promise<boolean> {
+export async function stopProjekt(
+  projectName: string,
+  projectPath?: string
+): Promise<boolean> {
   const watcher = activeWatchers.get(projectName);
 
   if (!watcher) {
@@ -142,7 +313,22 @@ export async function stopProjekt(projectName: string): Promise<boolean> {
 
   await watcher.stop();
   activeWatchers.delete(projectName);
+
+  // Pfad aus Cache oder Parameter
+  const pathToUse = projectPath || projectPaths.get(projectName);
+  if (pathToUse) {
+    setProjectStatus(pathToUse, { status: 'stopped' });
+    projectPaths.delete(projectName);
+  }
+
   return true;
+}
+
+/**
+ * Gibt den gespeicherten Pfad fuer ein Projekt zurueck
+ */
+export function getProjectPath(projectName: string): string | undefined {
+  return projectPaths.get(projectName);
 }
 
 /**
@@ -253,6 +439,80 @@ export async function cleanupProjekt(
         byPattern,
         uniqueFiles: 0,
       },
+    };
+  }
+}
+
+/**
+ * Holt den persistenten Projekt-Status aus .synapse/status.json
+ * Gibt zusaetzlich Vektor-Statistiken zurueck wenn verfuegbar
+ */
+export async function getProjectStatusWithStats(
+  projectPath: string
+): Promise<{
+  success: boolean;
+  status: ReturnType<typeof getProjectStatus> | null;
+  stats?: {
+    totalVectors: number;
+    collections: {
+      code: { vectors: number };
+      thoughts: { vectors: number };
+      memories: { vectors: number };
+    };
+  };
+  message: string;
+}> {
+  const status = getProjectStatus(projectPath);
+
+  if (!status) {
+    return {
+      success: false,
+      status: null,
+      message: 'Kein Status gefunden. Projekt nicht initialisiert.',
+    };
+  }
+
+  // Vektor-Stats holen wenn Projekt bekannt
+  try {
+    const { getProjectStats, getCollectionStats } = await import('@synapse/core');
+
+    const codeStats = await getProjectStats(status.project);
+    let thoughtsCount = 0;
+    let memoriesCount = 0;
+
+    try {
+      const thoughtsStats = await getCollectionStats('project_thoughts');
+      thoughtsCount = thoughtsStats?.pointsCount ?? 0;
+    } catch {
+      // Collection existiert moeglicherweise nicht
+    }
+
+    try {
+      const memoriesStats = await getCollectionStats('synapse_memories');
+      memoriesCount = memoriesStats?.pointsCount ?? 0;
+    } catch {
+      // Collection existiert moeglicherweise nicht
+    }
+
+    return {
+      success: true,
+      status,
+      stats: {
+        totalVectors: (codeStats?.chunkCount ?? 0) + thoughtsCount + memoriesCount,
+        collections: {
+          code: { vectors: codeStats?.chunkCount ?? 0 },
+          thoughts: { vectors: thoughtsCount },
+          memories: { vectors: memoriesCount },
+        },
+      },
+      message: `Status fuer "${status.project}" geladen`,
+    };
+  } catch {
+    // Falls Stats nicht verfuegbar, trotzdem Status zurueckgeben
+    return {
+      success: true,
+      status,
+      message: `Status fuer "${status.project}" geladen (Stats nicht verfuegbar)`,
     };
   }
 }
