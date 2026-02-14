@@ -36,8 +36,6 @@ export interface SynapseConfig {
     port: number;
     host: string;
   };
-  /** Arbeitsverzeichnis fuer CLI-Tools (ai_photoshop, etc.) */
-  cliWorkDir: string;
 }
 
 // ===========================================
@@ -200,6 +198,38 @@ export interface EmbeddingResult {
 }
 
 // ===========================================
+// SCHATTENVORSCHLÄGE
+// ===========================================
+
+export interface Proposal {
+  id: string;
+  project: string;
+  filePath: string;
+  suggestedContent: string;
+  description: string;
+  author: string;
+  status: 'pending' | 'reviewed' | 'accepted' | 'rejected';
+  tags: string[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ProposalPayload {
+  project: string;
+  file_path: string;
+  suggested_content: string;
+  description: string;
+  author: string;
+  status: string;
+  tags: string[];
+  created_at: string;
+  updated_at: string;
+  [key: string]: unknown;
+}
+
+export interface ProposalSearchResult extends SearchResult<ProposalPayload> {}
+
+// ===========================================
 // COLLECTION NAMEN
 // ===========================================
 
@@ -212,4 +242,6 @@ export const COLLECTIONS = {
   projectPlans: 'project_plans',
   /** Gedankenaustausch */
   projectThoughts: 'project_thoughts',
+  /** Schattenvorschlaege */
+  proposals: 'synapse_proposals',
 } as const;

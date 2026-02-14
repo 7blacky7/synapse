@@ -1,0 +1,280 @@
+/**
+ * MODUL: Proposals-System (Schattenvorschlaege)
+ * ZWECK: Verwaltung von Code-Aenderungsvorschlaegen pro Projekt
+ *
+ * INPUT:
+ *   - project: string - Projekt-Identifikator
+ *   - filePath: string - Zieldatei fuer den Vorschlag
+ *   - suggestedContent: string - Vorgeschlagener Dateiinhalt
+ *   - description: string - Beschreibung des Vorschlags
+ *   - author: string - Urheber (Agent-Name, User, etc.)
+ *   - status: 'pending'|'reviewed'|'accepted'|'rejected' - Bearbeitungsstatus
+ *   - tags: string[] - Optionale Tags fuer Filterung
+ *   - query: string - Suchbegriff fuer semantische Suche
+ *
+ * OUTPUT:
+ *   - Proposal: Gespeichertes Proposal-Objekt mit ID und Timestamps
+ *   - Proposal[]: Liste (OHNE suggestedContent fuer Lightweight-Listing)
+ *   - SearchResult<ProposalPayload>[]: Suchergebnisse (OHNE suggestedContent)
+ *   - boolean: Erfolg bei Loeschung
+ *
+ * NEBENEFFEKTE:
+ *   - Qdrant: Schreibt/loescht in Collection "synapse_proposals"
+ *   - Logs: Konsolenausgabe bei CRUD-Operationen
+ *
+ * ABHAENGIGKEITEN:
+ *   - ../embeddings/index.js (intern) - Text-zu-Vektor Konvertierung
+ *   - ../qdrant/collections.js (intern) - Collection-Verwaltung
+ *   - ../qdrant/operations.js (intern) - CRUD-Operationen
+ *   - uuid (extern) - ID-Generierung
+ *
+ * HINWEISE:
+ *   - listProposals() gibt NUR Metadaten zurueck (kein suggestedContent) - Lightweight-Listing
+ *   - getProposal() gibt den vollen Inhalt inkl. suggestedContent zurueck
+ *   - searchProposals() gibt Ergebnisse OHNE suggestedContent im Payload zurueck
+ *   - Embedding wird aus "description + filePath" generiert fuer semantische Suche
+ */
+
+import { v4 as uuidv4 } from 'uuid';
+import { embed } from '../embeddings/index.js';
+import { ensureCollection } from '../qdrant/collections.js';
+import {
+  insertVector,
+  searchVectors,
+  scrollVectors,
+  deleteVector,
+  getVector,
+} from '../qdrant/operations.js';
+import {
+  Proposal,
+  ProposalPayload,
+  SearchResult,
+  COLLECTIONS,
+} from '../types/index.js';
+
+const COLLECTION_NAME = COLLECTIONS.proposals;
+
+/**
+ * Erstellt einen neuen Proposal (Schattenvorschlag)
+ *
+ * Generiert UUID, embeddet "description + filePath" fuer semantische Suche
+ * und speichert in der Proposals-Collection.
+ */
+export async function createProposal(
+  project: string,
+  filePath: string,
+  suggestedContent: string,
+  description: string,
+  author: string,
+  tags: string[] = []
+): Promise<Proposal> {
+  await ensureCollection(COLLECTION_NAME);
+
+  const now = new Date().toISOString();
+  const id = uuidv4();
+
+  const proposal: Proposal = {
+    id,
+    project,
+    filePath,
+    suggestedContent,
+    description,
+    author,
+    status: 'pending',
+    tags,
+    createdAt: now,
+    updatedAt: now,
+  };
+
+  // Embedding aus description + filePath generieren
+  const vector = await embed(`${description} ${filePath}`);
+
+  const payload: ProposalPayload = {
+    project: proposal.project,
+    file_path: proposal.filePath,
+    suggested_content: proposal.suggestedContent,
+    description: proposal.description,
+    author: proposal.author,
+    status: proposal.status,
+    tags: proposal.tags,
+    created_at: proposal.createdAt,
+    updated_at: proposal.updatedAt,
+  };
+
+  await insertVector(COLLECTION_NAME, vector, payload, id);
+
+  console.log(`[Synapse] Proposal "${id}" erstellt fuer "${filePath}" in Projekt "${project}"`);
+  return proposal;
+}
+
+/**
+ * Holt einen einzelnen Proposal mit vollem suggestedContent
+ */
+export async function getProposal(
+  project: string,
+  id: string
+): Promise<Proposal | null> {
+  try {
+    const result = await getVector<ProposalPayload>(COLLECTION_NAME, id);
+
+    if (!result) {
+      return null;
+    }
+
+    // Projekt-Zugehoerigkeit pruefen
+    if (result.payload.project !== project) {
+      return null;
+    }
+
+    return payloadToProposal(result.id, result.payload);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Listet alle Proposals eines Projekts (Lightweight)
+ *
+ * WICHTIG: Gibt NUR Metadaten zurueck, suggestedContent wird auf '' gesetzt.
+ * Fuer den vollen Inhalt getProposal() verwenden.
+ */
+export async function listProposals(
+  project: string,
+  status?: Proposal['status']
+): Promise<Proposal[]> {
+  const must: Array<Record<string, unknown>> = [
+    { key: 'project', match: { value: project } },
+  ];
+
+  if (status) {
+    must.push({ key: 'status', match: { value: status } });
+  }
+
+  const results = await scrollVectors<ProposalPayload>(
+    COLLECTION_NAME,
+    { must },
+    1000
+  );
+
+  // Lightweight: suggestedContent wird NICHT mitgeliefert
+  return results.map((point) => ({
+    ...payloadToProposal(point.id, point.payload),
+    suggestedContent: '',
+  }));
+}
+
+/**
+ * Aktualisiert den Status eines Proposals
+ *
+ * Aendert Status (pending -> reviewed/accepted/rejected) und updatedAt.
+ * Der Vektor wird mit dem aktualisierten Payload neu geschrieben.
+ */
+export async function updateProposalStatus(
+  project: string,
+  id: string,
+  status: Proposal['status']
+): Promise<Proposal | null> {
+  // Bestehenden Proposal laden (mit Vektor)
+  const existing = await getVector<ProposalPayload>(COLLECTION_NAME, id);
+
+  if (!existing) {
+    return null;
+  }
+
+  // Projekt-Zugehoerigkeit pruefen
+  if (existing.payload.project !== project) {
+    return null;
+  }
+
+  const now = new Date().toISOString();
+
+  // Payload aktualisieren
+  const updatedPayload: ProposalPayload = {
+    ...existing.payload,
+    status,
+    updated_at: now,
+  };
+
+  // Neuen Vektor generieren (bleibt gleich da description/filePath unveraendert)
+  const vector = await embed(`${updatedPayload.description} ${updatedPayload.file_path}`);
+
+  // Alten Eintrag loeschen und neuen einfuegen
+  await deleteVector(COLLECTION_NAME, id);
+  await insertVector(COLLECTION_NAME, vector, updatedPayload, id);
+
+  console.log(`[Synapse] Proposal "${id}" Status geaendert zu "${status}"`);
+  return payloadToProposal(id, updatedPayload);
+}
+
+/**
+ * Loescht einen Proposal
+ */
+export async function deleteProposal(
+  project: string,
+  id: string
+): Promise<boolean> {
+  // Existenz und Projekt-Zugehoerigkeit pruefen
+  const existing = await getVector<ProposalPayload>(COLLECTION_NAME, id);
+
+  if (!existing || existing.payload.project !== project) {
+    return false;
+  }
+
+  await deleteVector(COLLECTION_NAME, id);
+  console.log(`[Synapse] Proposal "${id}" geloescht fuer Projekt "${project}"`);
+  return true;
+}
+
+/**
+ * Durchsucht Proposals semantisch
+ *
+ * Ergebnisse enthalten KEIN suggestedContent im Payload.
+ */
+export async function searchProposals(
+  query: string,
+  project?: string,
+  limit: number = 10
+): Promise<SearchResult<ProposalPayload>[]> {
+  const queryVector = await embed(query);
+
+  const filter: Record<string, unknown> = { must: [] };
+  const must = filter.must as Array<Record<string, unknown>>;
+
+  if (project) {
+    must.push({ key: 'project', match: { value: project } });
+  }
+
+  const results = await searchVectors<ProposalPayload>(
+    COLLECTION_NAME,
+    queryVector,
+    limit,
+    must.length > 0 ? filter : undefined
+  );
+
+  // suggestedContent aus den Ergebnissen entfernen (Lightweight)
+  return results.map((result) => ({
+    ...result,
+    payload: {
+      ...result.payload,
+      suggested_content: '',
+    },
+  }));
+}
+
+/**
+ * Konvertiert Qdrant-Payload zu Proposal-Objekt (camelCase)
+ */
+function payloadToProposal(id: string, payload: ProposalPayload): Proposal {
+  return {
+    id,
+    project: payload.project,
+    filePath: payload.file_path,
+    suggestedContent: payload.suggested_content,
+    description: payload.description,
+    author: payload.author,
+    status: payload.status as Proposal['status'],
+    tags: payload.tags || [],
+    createdAt: payload.created_at,
+    updatedAt: payload.updated_at,
+  };
+}

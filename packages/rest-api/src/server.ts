@@ -16,7 +16,9 @@ import {
   oauthRoutes,
   memoryRoutes,
   statsRoutes,
-  chatRoutes,
+  ideasRoutes,
+  techRoutes,
+  proposalRoutes,
 } from './routes/index.js';
 
 /**
@@ -51,7 +53,9 @@ export async function createServer(): Promise<FastifyInstance> {
   await fastify.register(thoughtsRoutes);
   await fastify.register(memoryRoutes);
   await fastify.register(statsRoutes);
-  await fastify.register(chatRoutes);
+  await fastify.register(ideasRoutes);
+  await fastify.register(techRoutes);
+  await fastify.register(proposalRoutes);
 
   // Health Check
   fastify.get('/health', async () => ({ status: 'ok' }));

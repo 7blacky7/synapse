@@ -43,6 +43,11 @@ import {
   saveProjectIdea,
   confirmIdea,
   checkAgentOnboarding,
+  listProposalsWrapper,
+  getProposalWrapper,
+  updateProposalStatusWrapper,
+  deleteProposalWrapper,
+  searchProposalsWrapper,
 } from './tools/index.js';
 
 /**
@@ -712,6 +717,108 @@ export function createServer(): Server {
         },
       },
 
+      // ===== SCHATTENVORSCHLAEGE (PROPOSALS) =====
+      {
+        name: 'list_proposals',
+        description: 'Listet alle Schattenvorschlaege eines Projekts auf (nur Metadaten, kein Content)',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            project: {
+              type: 'string',
+              description: 'Projekt-Name',
+            },
+            status: {
+              type: 'string',
+              enum: ['pending', 'reviewed', 'accepted', 'rejected'],
+              description: 'Optional: Nach Status filtern',
+            },
+          },
+          required: ['project'],
+        },
+      },
+      {
+        name: 'get_proposal',
+        description: 'Ruft einen einzelnen Schattenvorschlag mit vollem suggestedContent ab',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            project: {
+              type: 'string',
+              description: 'Projekt-Name',
+            },
+            id: {
+              type: 'string',
+              description: 'Proposal-ID',
+            },
+          },
+          required: ['project', 'id'],
+        },
+      },
+      {
+        name: 'update_proposal_status',
+        description: 'Aendert den Status eines Schattenvorschlags',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            project: {
+              type: 'string',
+              description: 'Projekt-Name',
+            },
+            id: {
+              type: 'string',
+              description: 'Proposal-ID',
+            },
+            status: {
+              type: 'string',
+              enum: ['reviewed', 'accepted', 'rejected'],
+              description: 'Neuer Status',
+            },
+          },
+          required: ['project', 'id', 'status'],
+        },
+      },
+      {
+        name: 'delete_proposal',
+        description: 'Loescht einen Schattenvorschlag',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            project: {
+              type: 'string',
+              description: 'Projekt-Name',
+            },
+            id: {
+              type: 'string',
+              description: 'Proposal-ID',
+            },
+          },
+          required: ['project', 'id'],
+        },
+      },
+      {
+        name: 'search_proposals',
+        description: 'Durchsucht Schattenvorschlaege semantisch',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            query: {
+              type: 'string',
+              description: 'Suchanfrage',
+            },
+            project: {
+              type: 'string',
+              description: 'Optional: Projekt filtern',
+            },
+            limit: {
+              type: 'number',
+              description: 'Maximale Anzahl Ergebnisse (Standard: 10)',
+            },
+          },
+          required: ['query'],
+        },
+      },
+
       // ===== PROJEKT-IDEEN =====
       {
         name: 'save_project_idea',
@@ -1074,6 +1181,37 @@ export function createServer(): Server {
             args?.custom_name as string | undefined
           );
           return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+        }
+
+        // ===== SCHATTENVORSCHLAEGE (PROPOSALS) =====
+        case 'list_proposals': {
+          const { project, status } = args as { project: string; status?: string };
+          const result = await listProposalsWrapper(project, status);
+          return { content: [{ type: 'text', text: result }] };
+        }
+
+        case 'get_proposal': {
+          const { project, id } = args as { project: string; id: string };
+          const result = await getProposalWrapper(project, id);
+          return { content: [{ type: 'text', text: result }] };
+        }
+
+        case 'update_proposal_status': {
+          const { project, id, status } = args as { project: string; id: string; status: string };
+          const result = await updateProposalStatusWrapper(project, id, status);
+          return { content: [{ type: 'text', text: result }] };
+        }
+
+        case 'delete_proposal': {
+          const { project, id } = args as { project: string; id: string };
+          const result = await deleteProposalWrapper(project, id);
+          return { content: [{ type: 'text', text: result }] };
+        }
+
+        case 'search_proposals': {
+          const { query, project, limit } = args as { query: string; project?: string; limit?: number };
+          const result = await searchProposalsWrapper(query, project, limit);
+          return { content: [{ type: 'text', text: result }] };
         }
 
         default:

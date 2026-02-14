@@ -1,39 +1,16 @@
 import { useState, useRef, useEffect } from 'react';
-import ImageUpload from './ImageUpload';
 import { sendChatMessage, ChatMessage } from '../api/synapse-client';
 
 interface ChatProps {
   project: string;
 }
 
-/**
- * Extrahiert Base64-Bilder aus der Nachricht und gibt Text + Bilder zurueck
- */
-function parseMessageContent(content: string): { text: string; images: string[] } {
-  const images: string[] = [];
-  // Pattern: [BILD_BASE64:data:image/...;base64,...]
-  const pattern = /\[BILD_BASE64:(data:image\/[^;]+;base64,[^\]]+)\]/g;
-
-  let match;
-  while ((match = pattern.exec(content)) !== null) {
-    images.push(match[1]);
-  }
-
-  // Entferne die Bild-Tags aus dem Text
-  const text = content.replace(pattern, '').trim();
-
-  return { text, images };
-}
-
 function Chat({ project }: ChatProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
-  const [image, setImage] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [sessionId, setSessionId] = useState<string | null>(null);
-  const [processingStatus, setProcessingStatus] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const eventSourceRef = useRef<EventSource | null>(null);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -41,52 +18,23 @@ function Chat({ project }: ChatProps) {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!input.trim() && !image) return;
+    if (!input.trim()) return;
 
     const userMessage: ChatMessage = {
       role: 'user',
       content: input,
-      image: image || undefined,
       timestamp: new Date().toISOString(),
     };
 
     setMessages((prev) => [...prev, userMessage]);
     setInput('');
-    setImage(null);
     setIsLoading(true);
-    setProcessingStatus(null);
-
-    // SSE fuer Status-Updates starten (wenn wir eine Session haben)
-    const currentSessionId = sessionId;
-    if (currentSessionId) {
-      eventSourceRef.current = new EventSource(`/api/chat/status/${currentSessionId}`);
-      eventSourceRef.current.onmessage = (event) => {
-        try {
-          const data = JSON.parse(event.data);
-          setProcessingStatus(data.description);
-        } catch (e) {
-          // Ignore parse errors
-        }
-      };
-    }
 
     try {
-      const response = await sendChatMessage(input, project, image || undefined, sessionId || undefined);
+      const response = await sendChatMessage(input, project, undefined, sessionId || undefined);
 
-      // SSE schliessen
-      if (eventSourceRef.current) {
-        eventSourceRef.current.close();
-        eventSourceRef.current = null;
-      }
-
-      // Session-ID speichern fuer Folge-Nachrichten
       if (response.sessionId) {
         setSessionId(response.sessionId);
-
-        // SSE fuer neue Session starten falls noch nicht vorhanden
-        if (!currentSessionId) {
-          // Naechster Request wird SSE nutzen
-        }
       }
 
       const assistantMessage: ChatMessage = {
@@ -98,11 +46,6 @@ function Chat({ project }: ChatProps) {
 
       setMessages((prev) => [...prev, assistantMessage]);
     } catch (error) {
-      // SSE schliessen bei Fehler
-      if (eventSourceRef.current) {
-        eventSourceRef.current.close();
-        eventSourceRef.current = null;
-      }
       const errorMessage: ChatMessage = {
         role: 'assistant',
         content: `Fehler: ${error instanceof Error ? error.message : 'Unbekannter Fehler'}`,
@@ -111,7 +54,6 @@ function Chat({ project }: ChatProps) {
       setMessages((prev) => [...prev, errorMessage]);
     } finally {
       setIsLoading(false);
-      setProcessingStatus(null);
     }
   };
 
@@ -150,30 +92,7 @@ function Chat({ project }: ChatProps) {
               </span>
             </div>
 
-            {msg.image && (
-              <img
-                src={msg.image}
-                alt="Uploaded"
-                style={styles.messageImage}
-              />
-            )}
-
-            {(() => {
-              const { text, images } = parseMessageContent(msg.content);
-              return (
-                <>
-                  <div style={styles.messageContent}>{text}</div>
-                  {images.map((imgSrc, imgIdx) => (
-                    <img
-                      key={imgIdx}
-                      src={imgSrc}
-                      alt={`Bearbeitet ${imgIdx + 1}`}
-                      style={styles.messageImage}
-                    />
-                  ))}
-                </>
-              );
-            })()}
+            <div style={styles.messageContent}>{msg.content}</div>
 
             {msg.context && (
               <div style={styles.context}>
@@ -194,9 +113,7 @@ function Chat({ project }: ChatProps) {
 
         {isLoading && (
           <div style={{ ...styles.message, ...styles.assistantMessage }}>
-            <div style={styles.loading}>
-              {processingStatus || 'Denke nach...'}
-            </div>
+            <div style={styles.loading}>Denke nach...</div>
           </div>
         )}
 
@@ -204,22 +121,7 @@ function Chat({ project }: ChatProps) {
       </div>
 
       <form onSubmit={handleSubmit} style={styles.inputArea}>
-        {image && (
-          <div style={styles.imagePreview}>
-            <img src={image} alt="Preview" style={styles.previewImg} />
-            <button
-              type="button"
-              onClick={() => setImage(null)}
-              style={styles.removeImage}
-            >
-              x
-            </button>
-          </div>
-        )}
-
         <div style={styles.inputRow}>
-          <ImageUpload onImageSelect={setImage} />
-
           <input
             type="text"
             value={input}
@@ -235,7 +137,7 @@ function Chat({ project }: ChatProps) {
 
           <button
             type="submit"
-            disabled={isLoading || (!input.trim() && !image)}
+            disabled={isLoading || !input.trim()}
             style={styles.sendButton}
           >
             Senden
@@ -302,12 +204,6 @@ const styles: Record<string, React.CSSProperties> = {
     lineHeight: 1.5,
     whiteSpace: 'pre-wrap',
   },
-  messageImage: {
-    maxWidth: '100%',
-    maxHeight: '200px',
-    borderRadius: '8px',
-    marginBottom: '8px',
-  },
   context: {
     marginTop: '12px',
     fontSize: '12px',
@@ -321,29 +217,6 @@ const styles: Record<string, React.CSSProperties> = {
     padding: '16px 20px',
     background: '#16213e',
     borderTop: '1px solid #0f3460',
-  },
-  imagePreview: {
-    position: 'relative',
-    display: 'inline-block',
-    marginBottom: '12px',
-  },
-  previewImg: {
-    maxHeight: '100px',
-    borderRadius: '8px',
-  },
-  removeImage: {
-    position: 'absolute',
-    top: '-8px',
-    right: '-8px',
-    width: '24px',
-    height: '24px',
-    borderRadius: '50%',
-    border: 'none',
-    background: '#e94560',
-    color: 'white',
-    cursor: 'pointer',
-    fontSize: '14px',
-    fontWeight: 'bold',
   },
   inputRow: {
     display: 'flex',

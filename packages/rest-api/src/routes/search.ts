@@ -7,8 +7,11 @@ import {
   searchCode,
   searchDocsWithFallback,
   globalSearch,
+  scrollVectors,
+  searchDocuments,
   SearchType,
 } from '@synapse/core';
+import { minimatch } from 'minimatch';
 
 /**
  * SSE Helper - sendet Daten im Server-Sent Events Format
@@ -320,6 +323,202 @@ export async function searchRoutes(fastify: FastifyInstance): Promise<void> {
     } catch (error) {
       sendSSE(reply, 'error', { message: String(error) });
       endSSE(reply);
+    }
+  });
+
+  /**
+   * POST /api/search/path
+   * Exakte Pfadsuche - findet Code nach Pfad-Pattern (kein Embedding)
+   * Unterstuetzt Glob-Patterns wie: "backend/src/*", "*.ts", "** /utils/*"
+   */
+  fastify.post<{
+    Body: {
+      project: string;
+      pathPattern: string;
+      contentPattern?: string;
+      limit?: number;
+    };
+  }>('/api/search/path', async (request, reply) => {
+    const { project, pathPattern, contentPattern, limit = 50 } = request.body;
+
+    if (!project || !pathPattern) {
+      return reply.status(400).send({
+        success: false,
+        error: { message: 'project und pathPattern sind erforderlich' },
+      });
+    }
+
+    try {
+      const collectionName = `project_${project}`;
+
+      // Alle Vektoren aus der Projekt-Collection holen
+      const allPoints = await scrollVectors<{
+        file_path: string;
+        file_name: string;
+        file_type: string;
+        line_start: number;
+        line_end: number;
+        content: string;
+        project: string;
+      }>(collectionName, {}, 10000);
+
+      // Nach Pfad-Pattern filtern
+      let matches = allPoints.filter((point) => {
+        const filePath = point.payload?.file_path || '';
+        const normalizedPath = filePath.replace(/\\/g, '/');
+        return minimatch(normalizedPath, pathPattern, { matchBase: true });
+      });
+
+      // Optional: Nach Content filtern
+      if (contentPattern) {
+        const regex = new RegExp(contentPattern, 'i');
+        matches = matches.filter((point) => {
+          const content = point.payload?.content || '';
+          return regex.test(content);
+        });
+      }
+
+      const totalMatches = matches.length;
+      const limited = matches.slice(0, limit);
+
+      return {
+        success: true,
+        results: limited.map((p) => ({
+          filePath: p.payload.file_path,
+          fileName: p.payload.file_name,
+          fileType: p.payload.file_type,
+          lineStart: p.payload.line_start,
+          lineEnd: p.payload.line_end,
+          content: p.payload.content,
+        })),
+        totalMatches,
+        count: limited.length,
+      };
+    } catch (error) {
+      return reply.status(500).send({
+        success: false,
+        error: { message: String(error) },
+      });
+    }
+  });
+
+  /**
+   * POST /api/search/code-with-path
+   * Kombinierte Suche: Semantisch + Pfad-Filter
+   * Erst semantisch ranken, dann nach Pfad filtern
+   */
+  fastify.post<{
+    Body: {
+      query: string;
+      project: string;
+      pathPattern?: string;
+      fileType?: string;
+      limit?: number;
+    };
+  }>('/api/search/code-with-path', async (request, reply) => {
+    const { query, project, pathPattern, fileType, limit = 10 } = request.body;
+
+    if (!query || !project) {
+      return reply.status(400).send({
+        success: false,
+        error: { message: 'query und project sind erforderlich' },
+      });
+    }
+
+    try {
+      // Wenn kein Pfad-Pattern, normale semantische Suche
+      if (!pathPattern) {
+        const results = await searchCode(query, project, fileType, limit);
+        return {
+          success: true,
+          results: results.map((r) => ({
+            filePath: r.payload.file_path,
+            fileName: r.payload.file_name,
+            fileType: r.payload.file_type,
+            lineStart: r.payload.line_start,
+            lineEnd: r.payload.line_end,
+            score: r.score,
+            content: r.payload.content,
+          })),
+          count: results.length,
+        };
+      }
+
+      // Mit Pfad-Pattern: Erst semantische Suche (mehr holen), dann filtern
+      const results = await searchCode(query, project, fileType, limit * 5);
+
+      const filtered = results.filter((r) => {
+        const normalizedPath = r.payload.file_path.replace(/\\/g, '/');
+        return minimatch(normalizedPath, pathPattern, { matchBase: true });
+      });
+
+      const limited = filtered.slice(0, limit);
+
+      return {
+        success: true,
+        results: limited.map((r) => ({
+          filePath: r.payload.file_path,
+          fileName: r.payload.file_name,
+          fileType: r.payload.file_type,
+          lineStart: r.payload.line_start,
+          lineEnd: r.payload.line_end,
+          score: r.score,
+          content: r.payload.content,
+        })),
+        count: limited.length,
+      };
+    } catch (error) {
+      return reply.status(500).send({
+        success: false,
+        error: { message: String(error) },
+      });
+    }
+  });
+
+  /**
+   * POST /api/search/documents
+   * Semantische Dokument-Suche (PDF, Word, Excel)
+   */
+  fastify.post<{
+    Body: {
+      query: string;
+      project: string;
+      documentType?: 'pdf' | 'docx' | 'xlsx' | 'all';
+      limit?: number;
+    };
+  }>('/api/search/documents', async (request, reply) => {
+    const { query, project, documentType, limit = 10 } = request.body;
+
+    if (!query || !project) {
+      return reply.status(400).send({
+        success: false,
+        error: { message: 'query und project sind erforderlich' },
+      });
+    }
+
+    try {
+      const results = await searchDocuments(query, project, {
+        documentType: documentType || 'all',
+        limit,
+      });
+
+      return {
+        success: true,
+        results: results.map((r) => ({
+          filePath: r.filePath,
+          fileName: r.fileName,
+          documentType: r.documentType,
+          content: r.content,
+          score: r.score,
+          chunkIndex: r.chunkIndex,
+        })),
+        count: results.length,
+      };
+    } catch (error) {
+      return reply.status(500).send({
+        success: false,
+        error: { message: String(error) },
+      });
     }
   });
 }

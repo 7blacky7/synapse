@@ -77,6 +77,9 @@ export async function ensureAllCollections(): Promise<void> {
   // Gedankenaustausch
   await ensureCollection(COLLECTIONS.projectThoughts);
 
+  // Schattenvorschlaege
+  await ensureCollection(COLLECTIONS.proposals);
+
   console.log('[Synapse] Alle Standard-Collections bereit');
 }
 
