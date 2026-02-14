@@ -126,6 +126,13 @@ export {
   // Global Search
   globalSearch,
   listSearchableProjects,
+  // Proposals
+  createProposal,
+  getProposal,
+  listProposals,
+  updateProposalStatus,
+  deleteProposal,
+  searchProposals,
 } from './services/index.js';
 export type { Memory, MemoryWithRelatedCode, RelatedMemoryResult, RelatedCodeResult } from './services/memory.js';
 export type { DetectedTechnology } from './services/tech-detection.js';

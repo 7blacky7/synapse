@@ -18,6 +18,9 @@ dist/
 .DS_Store
 Thumbs.db
 
+# Package manager
+package-lock.json
+
 # Logs
 *.log
 npm-debug.log*

@@ -10,4 +10,6 @@ export { mcpRoutes } from './mcp.js';
 export { oauthRoutes } from './oauth.js';
 export { memoryRoutes } from './memory.js';
 export { statsRoutes } from './stats.js';
-export { chatRoutes } from './chat.js';
+export { ideasRoutes } from './ideas.js';
+export { techRoutes } from './tech.js';
+export { proposalRoutes } from './proposals.js';

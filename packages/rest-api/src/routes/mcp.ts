@@ -24,7 +24,18 @@ import {
   getProjectStats,
   getCollectionStats,
   scrollVectors,
+  readMemoryWithRelatedCode,
+  findMemoriesForPath,
+  searchDocuments,
+  createProposal,
+  getProposal,
+  listProposals,
+  updateProposalStatus,
+  deleteProposal,
+  searchProposals,
+  COLLECTIONS,
 } from '@synapse/core';
+import { minimatch } from 'minimatch';
 import { randomUUID } from 'crypto';
 
 /**
@@ -240,7 +251,7 @@ const MCP_TOOLS = [
         project: { type: 'string', description: 'Projekt-Name' },
         name: { type: 'string', description: 'Eindeutiger Name für das Memory' },
         content: { type: 'string', description: 'Inhalt des Memories (beliebig lang)' },
-        category: { type: 'string', enum: ['documentation', 'note', 'architecture', 'decision', 'other'], description: 'Kategorie' },
+        category: { type: 'string', enum: ['documentation', 'note', 'architecture', 'decision', 'rules', 'other'], description: 'Kategorie' },
         tags: { type: 'array', items: { type: 'string' }, description: 'Optionale Tags' },
       },
       required: ['project', 'name', 'content'],
@@ -265,7 +276,7 @@ const MCP_TOOLS = [
       type: 'object',
       properties: {
         project: { type: 'string', description: 'Projekt-Name' },
-        category: { type: 'string', enum: ['documentation', 'note', 'architecture', 'decision', 'other'], description: 'Optional: Kategorie' },
+        category: { type: 'string', enum: ['documentation', 'note', 'architecture', 'decision', 'rules', 'other'], description: 'Optional: Kategorie' },
       },
       required: ['project'],
     },
@@ -295,7 +306,248 @@ const MCP_TOOLS = [
       required: ['project', 'name'],
     },
   },
+  {
+    name: 'read_memory_with_code',
+    description: 'Liest ein Memory und findet verwandten Code basierend auf Dateipfaden im Content',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        project: { type: 'string', description: 'Projekt-Name' },
+        name: { type: 'string', description: 'Memory-Name' },
+        codeLimit: { type: 'number', description: 'Max. Code-Chunks (Standard: 10)' },
+        includeSemanticMatches: { type: 'boolean', description: 'Semantische Matches einbeziehen (Standard: true)' },
+      },
+      required: ['project', 'name'],
+    },
+  },
+  {
+    name: 'find_memories_for_file',
+    description: 'Findet Memories die auf eine bestimmte Datei verweisen',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        project: { type: 'string', description: 'Projekt-Name' },
+        filePath: { type: 'string', description: 'Dateipfad' },
+        limit: { type: 'number', description: 'Max. Ergebnisse (Standard: 10)' },
+      },
+      required: ['project', 'filePath'],
+    },
+  },
+
+  // ===== CODE-SUCHE (erweitert) =====
+  {
+    name: 'search_by_path',
+    description: 'Exakte Pfadsuche ohne Embedding - findet Dateien nach Glob-Pattern. Beispiele: "backend/src/*", "**/*.ts", "**/utils/*"',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        project: { type: 'string', description: 'Projekt-Name' },
+        path_pattern: { type: 'string', description: 'Glob-Pattern für Dateipfade (z.B. "src/**/*.ts", "backend/*")' },
+        content_pattern: { type: 'string', description: 'Optional: Regex-Pattern für Content-Filter' },
+        limit: { type: 'number', description: 'Maximale Anzahl Ergebnisse (Standard: 50)' },
+      },
+      required: ['project', 'path_pattern'],
+    },
+  },
+  {
+    name: 'search_code_with_path',
+    description: 'Kombinierte Suche: Semantisch + Pfad-Filter. Erst semantisch ranken, dann nach Pfad filtern.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Semantische Suchanfrage' },
+        project: { type: 'string', description: 'Projekt-Name' },
+        path_pattern: { type: 'string', description: 'Optional: Glob-Pattern für Pfad-Filter' },
+        file_type: { type: 'string', description: 'Optional: Dateityp filtern' },
+        limit: { type: 'number', description: 'Maximale Anzahl Ergebnisse (Standard: 10)' },
+      },
+      required: ['query', 'project'],
+    },
+  },
+  {
+    name: 'search_documents',
+    description: 'Durchsucht indexierte Dokumente (PDF, Word, Excel) semantisch',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Suchanfrage in natürlicher Sprache' },
+        project: { type: 'string', description: 'Projekt-Name' },
+        document_type: { type: 'string', enum: ['pdf', 'docx', 'xlsx', 'all'], description: 'Optional: Dokumententyp filtern (Standard: all)' },
+        limit: { type: 'number', description: 'Maximale Anzahl Ergebnisse (Standard: 10)' },
+      },
+      required: ['query', 'project'],
+    },
+  },
+
+  // ===== PROJEKT-IDEEN =====
+  {
+    name: 'save_project_idea',
+    description: 'Speichert eine Projektidee. Generiert automatisch einen Namen und fragt nach Bestätigung.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        content: { type: 'string', description: 'Die Projektidee' },
+        project: { type: 'string', description: 'Optional: Projekt (Standard: "ideas")' },
+        tags: { type: 'array', items: { type: 'string' }, description: 'Optionale Tags' },
+      },
+      required: ['content'],
+    },
+  },
+  {
+    name: 'confirm_idea',
+    description: 'Bestätigt eine vorgeschlagene Idee und speichert sie persistent',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        temp_id: { type: 'string', description: 'Temporäre ID der vorgemerkten Idee' },
+        custom_name: { type: 'string', description: 'Optional: Eigener Name statt des vorgeschlagenen' },
+      },
+      required: ['temp_id'],
+    },
+  },
+
+  // ===== PROPOSALS (SCHATTENVORSCHLÄGE) =====
+  {
+    name: 'create_proposal',
+    description: 'Erstellt einen Schattenvorschlag (Code-Änderungsvorschlag)',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        project: { type: 'string', description: 'Projekt-Name' },
+        filePath: { type: 'string', description: 'Zieldatei für den Vorschlag' },
+        suggestedContent: { type: 'string', description: 'Vorgeschlagener Dateiinhalt' },
+        description: { type: 'string', description: 'Beschreibung des Vorschlags' },
+        author: { type: 'string', description: 'Urheber (Agent-Name, User, etc.)' },
+        tags: { type: 'array', items: { type: 'string' }, description: 'Optionale Tags' },
+      },
+      required: ['project', 'filePath', 'suggestedContent', 'description', 'author'],
+    },
+  },
+  {
+    name: 'list_proposals',
+    description: 'Listet alle Vorschläge eines Projekts auf (nur Metadaten, ohne suggestedContent)',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        project: { type: 'string', description: 'Projekt-Name' },
+        status: { type: 'string', enum: ['pending', 'reviewed', 'accepted', 'rejected'], description: 'Optional: Nach Status filtern' },
+      },
+      required: ['project'],
+    },
+  },
+  {
+    name: 'get_proposal',
+    description: 'Ruft einen einzelnen Vorschlag ab (mit vollem suggestedContent)',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        project: { type: 'string', description: 'Projekt-Name' },
+        id: { type: 'string', description: 'Proposal-ID' },
+      },
+      required: ['project', 'id'],
+    },
+  },
+  {
+    name: 'update_proposal_status',
+    description: 'Ändert den Status eines Vorschlags',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        project: { type: 'string', description: 'Projekt-Name' },
+        id: { type: 'string', description: 'Proposal-ID' },
+        status: { type: 'string', enum: ['pending', 'reviewed', 'accepted', 'rejected'], description: 'Neuer Status' },
+      },
+      required: ['project', 'id', 'status'],
+    },
+  },
+  {
+    name: 'delete_proposal',
+    description: 'Löscht einen Vorschlag',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        project: { type: 'string', description: 'Projekt-Name' },
+        id: { type: 'string', description: 'Proposal-ID' },
+      },
+      required: ['project', 'id'],
+    },
+  },
+  {
+    name: 'search_proposals',
+    description: 'Durchsucht Vorschläge semantisch',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Suchanfrage' },
+        project: { type: 'string', description: 'Optional: Projekt filtern' },
+        limit: { type: 'number', description: 'Maximale Anzahl Ergebnisse (Standard: 10)' },
+      },
+      required: ['query'],
+    },
+  },
 ];
+
+// Temporärer Speicher für unbestätigte Ideen (analog zu mcp-server/tools/ideas.ts)
+interface PendingIdea {
+  content: string;
+  project: string;
+  suggestedName: string;
+  tags: string[];
+  createdAt: Date;
+}
+
+const pendingIdeas = new Map<string, PendingIdea>();
+
+// Cleanup alte Ideen nach 30 Minuten
+setInterval(() => {
+  const now = Date.now();
+  for (const [id, idea] of pendingIdeas.entries()) {
+    if (now - idea.createdAt.getTime() > 30 * 60 * 1000) {
+      pendingIdeas.delete(id);
+    }
+  }
+}, 5 * 60 * 1000);
+
+/**
+ * Generiert einen eindeutigen Namen aus dem Content
+ */
+function generateIdeaName(content: string): string {
+  const stopwords = new Set([
+    'und', 'oder', 'der', 'die', 'das', 'ein', 'eine', 'fuer', 'mit', 'von', 'zu', 'auf',
+    'the', 'a', 'an', 'and', 'or', 'for', 'with', 'to', 'on', 'in', 'is', 'are', 'be',
+    'that', 'this', 'it', 'as', 'at', 'by', 'from', 'into', 'of', 'about', 'should',
+    'could', 'would', 'will', 'can', 'may', 'might', 'must', 'shall', 'need', 'want',
+    'ich', 'du', 'wir', 'sie', 'er', 'es', 'man', 'kann', 'soll', 'will', 'wird',
+  ]);
+
+  const words = content
+    .toLowerCase()
+    .replace(/[^a-zA-Z0-9\u00E4\u00F6\u00FC\u00C4\u00D6\u00DC\u00DF\s-]/g, ' ')
+    .split(/\s+/)
+    .filter(w => w.length > 2 && !stopwords.has(w));
+
+  const keywords = words.slice(0, 3);
+  const date = new Date().toISOString().split('T')[0];
+  const namePart = keywords.length > 0 ? keywords.join('-') : 'idea';
+  return `idea-${namePart}-${date}`;
+}
+
+/**
+ * Generiert eine kurze Vorschau des Contents
+ */
+function generatePreview(content: string, maxLength: number = 200): string {
+  if (content.length <= maxLength) {
+    return content;
+  }
+  return content.substring(0, maxLength).trim() + '...';
+}
+
+/**
+ * Generiert eine eindeutige temporäre ID
+ */
+function generateTempId(): string {
+  return `temp-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`;
+}
 
 // SSE Verbindungen speichern
 const sseConnections = new Map<string, FastifyReply>();
@@ -537,7 +789,7 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
         args.project as string,
         args.name as string,
         args.content as string,
-        args.category as 'documentation' | 'note' | 'architecture' | 'decision' | 'other' | undefined,
+        args.category as 'documentation' | 'note' | 'architecture' | 'decision' | 'rules' | 'other' | undefined,
         args.tags as string[] | undefined
       );
       return {
@@ -565,7 +817,7 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
     case 'list_memories': {
       const memories = await listMemories(
         args.project as string,
-        args.category as 'documentation' | 'note' | 'architecture' | 'decision' | 'other' | undefined
+        args.category as 'documentation' | 'note' | 'architecture' | 'decision' | 'rules' | 'other' | undefined
       );
       return {
         memories: memories.map(m => ({
@@ -599,6 +851,357 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
       return {
         success: deleted,
         message: deleted ? `Memory "${args.name}" gelöscht` : `Memory "${args.name}" nicht gefunden`,
+      };
+    }
+
+    case 'read_memory_with_code': {
+      const result = await readMemoryWithRelatedCode(
+        args.project as string,
+        args.name as string,
+        {
+          codeLimit: args.codeLimit as number | undefined,
+          includeSemanticMatches: args.includeSemanticMatches as boolean | undefined,
+        }
+      );
+      if (!result) {
+        return { success: false, message: `Memory "${args.name}" nicht gefunden` };
+      }
+      return { success: true, ...result };
+    }
+
+    case 'find_memories_for_file': {
+      const results = await findMemoriesForPath(
+        args.project as string,
+        args.filePath as string,
+        (args.limit as number) || 10
+      );
+      return {
+        success: true,
+        results: results.map(r => ({
+          name: r.memory.name,
+          category: r.memory.category,
+          matchType: r.matchType,
+          score: r.score,
+          preview: r.memory.content.substring(0, 200) + (r.memory.content.length > 200 ? '...' : ''),
+        })),
+        message: `${results.length} Memories für "${args.filePath}" gefunden`,
+      };
+    }
+
+    // ===== CODE-SUCHE (erweitert) =====
+    case 'search_by_path': {
+      const project = args.project as string;
+      const pathPattern = args.path_pattern as string;
+      const contentPattern = args.content_pattern as string | undefined;
+      const limit = (args.limit as number) || 50;
+      const collectionName = COLLECTIONS.projectCode(project);
+
+      try {
+        const allPoints = await scrollVectors<{
+          file_path: string;
+          file_name: string;
+          file_type: string;
+          line_start: number;
+          line_end: number;
+          content: string;
+        }>(collectionName, {}, 10000);
+
+        let matches = allPoints.filter(point => {
+          const filePath = point.payload?.file_path || '';
+          const normalizedPath = filePath.replace(/\\/g, '/');
+          return minimatch(normalizedPath, pathPattern, { matchBase: true });
+        });
+
+        if (contentPattern) {
+          const regex = new RegExp(contentPattern, 'i');
+          matches = matches.filter(point => {
+            const content = point.payload?.content || '';
+            return regex.test(content);
+          });
+        }
+
+        const totalMatches = matches.length;
+        const limited = matches.slice(0, limit);
+
+        return {
+          success: true,
+          results: limited.map(p => ({
+            filePath: p.payload.file_path,
+            fileName: p.payload.file_name,
+            fileType: p.payload.file_type,
+            lineStart: p.payload.line_start,
+            lineEnd: p.payload.line_end,
+            content: p.payload.content,
+          })),
+          totalMatches,
+          message: totalMatches > limit
+            ? `${limit} von ${totalMatches} Treffern angezeigt`
+            : `${totalMatches} Treffer gefunden`,
+        };
+      } catch (error) {
+        return {
+          success: false,
+          results: [],
+          totalMatches: 0,
+          message: `Fehler bei Pfadsuche: ${error}`,
+        };
+      }
+    }
+
+    case 'search_code_with_path': {
+      const project = args.project as string;
+      const query = args.query as string;
+      const pathPattern = args.path_pattern as string | undefined;
+      const fileType = args.file_type as string | undefined;
+      const limit = (args.limit as number) || 10;
+
+      try {
+        if (!pathPattern) {
+          const results = await searchCode(query, project, fileType, limit);
+          return {
+            success: true,
+            results: results.map(r => ({
+              filePath: r.payload.file_path,
+              fileName: r.payload.file_name,
+              fileType: r.payload.file_type,
+              lineStart: r.payload.line_start,
+              lineEnd: r.payload.line_end,
+              score: r.score,
+              content: r.payload.content,
+            })),
+            message: `${results.length} Ergebnisse gefunden`,
+          };
+        }
+
+        const results = await searchCode(query, project, fileType, limit * 5);
+        const filtered = results.filter(r => {
+          const normalizedPath = r.payload.file_path.replace(/\\/g, '/');
+          return minimatch(normalizedPath, pathPattern, { matchBase: true });
+        });
+
+        return {
+          success: true,
+          results: filtered.slice(0, limit).map(r => ({
+            filePath: r.payload.file_path,
+            fileName: r.payload.file_name,
+            fileType: r.payload.file_type,
+            lineStart: r.payload.line_start,
+            lineEnd: r.payload.line_end,
+            score: r.score,
+            content: r.payload.content,
+          })),
+          message: `${filtered.length} Ergebnisse für Pattern "${pathPattern}"`,
+        };
+      } catch (error) {
+        return {
+          success: false,
+          results: [],
+          message: `Fehler bei kombinierter Suche: ${error}`,
+        };
+      }
+    }
+
+    case 'search_documents': {
+      const results = await searchDocuments(
+        args.query as string,
+        args.project as string,
+        {
+          documentType: (args.document_type as 'pdf' | 'docx' | 'xlsx' | 'all') || 'all',
+          limit: (args.limit as number) || 10,
+        }
+      );
+      return {
+        success: true,
+        results: results.map(r => ({
+          filePath: r.filePath,
+          fileName: r.fileName,
+          documentType: r.documentType,
+          content: r.content,
+          score: r.score,
+          chunkIndex: r.chunkIndex,
+        })),
+        message: `${results.length} Dokument-Ergebnisse gefunden`,
+      };
+    }
+
+    // ===== PROJEKT-IDEEN =====
+    case 'save_project_idea': {
+      const content = args.content as string;
+      const project = (args.project as string) || 'ideas';
+      const tags = (args.tags as string[]) || [];
+
+      if (!content || content.trim().length === 0) {
+        return {
+          success: false,
+          message: 'Content darf nicht leer sein',
+        };
+      }
+
+      const suggestedName = generateIdeaName(content);
+      const tempId = generateTempId();
+      const preview = generatePreview(content);
+
+      pendingIdeas.set(tempId, {
+        content,
+        project,
+        suggestedName,
+        tags,
+        createdAt: new Date(),
+      });
+
+      return {
+        success: true,
+        tempId,
+        suggestedName,
+        preview,
+        project,
+        confirmationRequired: true,
+        message: `Idee vorgemerkt. Name: "${suggestedName}". Bitte mit confirm_idea bestätigen oder eigenen Namen angeben.`,
+      };
+    }
+
+    case 'confirm_idea': {
+      const tempId = args.temp_id as string;
+      const customName = args.custom_name as string | undefined;
+      const pendingIdea = pendingIdeas.get(tempId);
+
+      if (!pendingIdea) {
+        return {
+          success: false,
+          message: `Keine vorgemerkte Idee mit ID "${tempId}" gefunden. Ideen werden nach 30 Minuten automatisch gelöscht.`,
+        };
+      }
+
+      const finalName = customName?.trim() || pendingIdea.suggestedName;
+
+      const existing = await getMemoryByName(pendingIdea.project, finalName);
+      if (existing) {
+        return {
+          success: false,
+          name: finalName,
+          project: pendingIdea.project,
+          message: `Ein Memory mit dem Namen "${finalName}" existiert bereits. Bitte anderen Namen wählen.`,
+        };
+      }
+
+      const memory = await writeMemory(
+        pendingIdea.project,
+        finalName,
+        pendingIdea.content,
+        'note',
+        [...pendingIdea.tags, 'idea']
+      );
+
+      pendingIdeas.delete(tempId);
+
+      return {
+        success: true,
+        name: finalName,
+        project: pendingIdea.project,
+        memory: {
+          name: memory.name,
+          category: memory.category,
+          sizeChars: memory.content.length,
+        },
+        message: `Idee "${finalName}" erfolgreich gespeichert in Projekt "${pendingIdea.project}".`,
+      };
+    }
+
+    // ===== PROPOSALS (SCHATTENVORSCHLÄGE) =====
+    case 'create_proposal': {
+      const proposal = await createProposal(
+        args.project as string,
+        args.filePath as string,
+        args.suggestedContent as string,
+        args.description as string,
+        args.author as string,
+        args.tags as string[] | undefined
+      );
+      return {
+        success: true,
+        proposal,
+        message: `Proposal "${proposal.id}" erstellt für "${proposal.filePath}"`,
+      };
+    }
+
+    case 'list_proposals': {
+      const proposals = await listProposals(
+        args.project as string,
+        args.status as 'pending' | 'reviewed' | 'accepted' | 'rejected' | undefined
+      );
+      return {
+        success: true,
+        proposals: proposals.map(p => ({
+          id: p.id,
+          filePath: p.filePath,
+          description: p.description,
+          author: p.author,
+          status: p.status,
+          tags: p.tags,
+          createdAt: p.createdAt,
+          updatedAt: p.updatedAt,
+        })),
+        count: proposals.length,
+        message: `${proposals.length} Vorschläge gefunden`,
+      };
+    }
+
+    case 'get_proposal': {
+      const proposal = await getProposal(
+        args.project as string,
+        args.id as string
+      );
+      if (!proposal) {
+        return { success: false, message: `Proposal "${args.id}" nicht gefunden` };
+      }
+      return { success: true, proposal };
+    }
+
+    case 'update_proposal_status': {
+      const proposal = await updateProposalStatus(
+        args.project as string,
+        args.id as string,
+        args.status as 'pending' | 'reviewed' | 'accepted' | 'rejected'
+      );
+      if (!proposal) {
+        return { success: false, message: `Proposal "${args.id}" nicht gefunden` };
+      }
+      return {
+        success: true,
+        proposal,
+        message: `Proposal "${proposal.id}" Status geändert zu "${proposal.status}"`,
+      };
+    }
+
+    case 'delete_proposal': {
+      const deleted = await deleteProposal(
+        args.project as string,
+        args.id as string
+      );
+      return {
+        success: deleted,
+        message: deleted ? `Proposal "${args.id}" gelöscht` : `Proposal "${args.id}" nicht gefunden`,
+      };
+    }
+
+    case 'search_proposals': {
+      const results = await searchProposals(
+        args.query as string,
+        args.project as string | undefined,
+        (args.limit as number) || 10
+      );
+      return {
+        success: true,
+        results: results.map(r => ({
+          id: r.id,
+          filePath: r.payload.file_path,
+          description: r.payload.description,
+          author: r.payload.author,
+          status: r.payload.status,
+          tags: r.payload.tags,
+          score: r.score,
+        })),
+        message: `${results.length} Proposals gefunden`,
       };
     }
 

@@ -24,3 +24,6 @@ docker-compose.yml
 # Config mit Secrets
 .env
 .mcp.json
+
+# Windows-only
+*.ps1

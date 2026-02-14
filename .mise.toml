@@ -1,0 +1,34 @@
+[tools]
+node = "20"
+
+[tasks.dev]
+description = "Start MCP dev server"
+run = "pnpm run dev:mcp"
+
+[tasks.build]
+description = "Build all packages"
+run = "pnpm run build"
+
+[tasks."build:core"]
+description = "Build core package"
+run = "pnpm run build:core"
+
+[tasks."build:mcp"]
+description = "Build MCP server"
+run = "pnpm run build:mcp"
+
+[tasks."build:api"]
+description = "Build REST API"
+run = "pnpm run build:api"
+
+[tasks."dev:api"]
+description = "Start REST API dev server"
+run = "pnpm run dev:api"
+
+[tasks.clean]
+description = "Clean all dist folders"
+run = "pnpm run clean"
+
+[tasks.lint]
+description = "Run linter"
+run = "pnpm run lint"

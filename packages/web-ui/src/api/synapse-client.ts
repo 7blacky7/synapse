@@ -50,7 +50,6 @@ export async function initProject(path: string, name?: string): Promise<{ projec
 export interface ChatMessage {
   role: 'user' | 'assistant';
   content: string;
-  image?: string;
   context?: Array<{
     source: string;
     preview: string;
@@ -84,7 +83,7 @@ export interface MemoryResult {
 export async function sendChatMessage(
   message: string,
   project?: string,
-  image?: string,
+  _image?: string,
   sessionId?: string
 ): Promise<ChatResponse> {
   const response = await fetch(`${API_BASE}/chat`, {
@@ -95,7 +94,6 @@ export async function sendChatMessage(
     body: JSON.stringify({
       message,
       project: project || undefined,
-      image: image || undefined,
       sessionId: sessionId || undefined,
     }),
   });
