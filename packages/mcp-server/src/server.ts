@@ -29,6 +29,7 @@ import {
   addThought,
   getThoughts,
   searchThoughts,
+  deleteThought,
   detectProjectTechnologies,
   indexTechDocs,
   writeMemory,
@@ -554,6 +555,28 @@ export function createServer(): Server {
             },
           },
           required: ['query'],
+        },
+      },
+      {
+        name: 'delete_thought',
+        description: 'Loescht einen Gedanken nach ID',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            project: {
+              type: 'string',
+              description: 'Projekt-Name',
+            },
+            agent_id: {
+              type: 'string',
+              description: 'Agent-ID fuer Onboarding. Neue Agenten sehen automatisch Projekt-Regeln.',
+            },
+            id: {
+              type: 'string',
+              description: 'ID des Gedankens',
+            },
+          },
+          required: ['project', 'id'],
         },
       },
 
@@ -1095,6 +1118,14 @@ export function createServer(): Server {
             args?.query as string,
             args?.project as string | undefined,
             args?.limit as number | undefined
+          );
+          return withOnboarding(result);
+        }
+
+        case 'delete_thought': {
+          const result = await deleteThought(
+            args?.project as string,
+            args?.id as string
           );
           return withOnboarding(result);
         }

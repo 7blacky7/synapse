@@ -8,6 +8,7 @@ import {
   addThought,
   getThoughts,
   searchThoughts,
+  deleteThought,
 } from '@synapse/core';
 
 export async function thoughtsRoutes(fastify: FastifyInstance): Promise<void> {
@@ -111,6 +112,30 @@ export async function thoughtsRoutes(fastify: FastifyInstance): Promise<void> {
           score: r.score,
         })),
         count: results.length,
+      };
+    } catch (error) {
+      return reply.status(500).send({
+        success: false,
+        error: { message: String(error) },
+      });
+    }
+  });
+
+  /**
+   * DELETE /api/projects/:name/thoughts/:id
+   * Gedanken loeschen
+   */
+  fastify.delete<{
+    Params: { name: string; id: string };
+  }>('/api/projects/:name/thoughts/:id', async (request, reply) => {
+    const { id } = request.params;
+
+    try {
+      await deleteThought(id);
+
+      return {
+        success: true,
+        message: `Gedanke "${id}" geloescht`,
       };
     } catch (error) {
       return reply.status(500).send({
