@@ -7,6 +7,7 @@ import {
   addThought as addThoughtCore,
   getThoughts as getThoughtsCore,
   searchThoughts as searchThoughtsCore,
+  deleteThought as deleteThoughtCore,
 } from '@synapse/core';
 import type { Thought, ThoughtSource } from '@synapse/core';
 
@@ -109,6 +110,31 @@ export async function searchThoughts(
       success: false,
       results: [],
       message: `Fehler bei Gedanken-Suche: ${error}`,
+    };
+  }
+}
+
+/**
+ * Loescht einen Gedanken nach ID
+ */
+export async function deleteThought(
+  project: string,
+  id: string
+): Promise<{
+  success: boolean;
+  message: string;
+}> {
+  try {
+    await deleteThoughtCore(id);
+
+    return {
+      success: true,
+      message: `Gedanke "${id}" aus Projekt "${project}" geloescht`,
+    };
+  } catch (error) {
+    return {
+      success: false,
+      message: `Fehler beim Loeschen des Gedankens: ${error}`,
     };
   }
 }

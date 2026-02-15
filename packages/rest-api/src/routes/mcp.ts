@@ -16,6 +16,7 @@ import {
   addThought,
   getThoughts,
   searchThoughts,
+  deleteThought,
   writeMemory,
   getMemoryByName,
   listMemories,
@@ -238,6 +239,18 @@ const MCP_TOOLS = [
         limit: { type: 'number', description: 'Max Ergebnisse (Standard: 10)' },
       },
       required: ['query'],
+    },
+  },
+  {
+    name: 'delete_thought',
+    description: 'Loescht einen Gedanken nach ID',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        project: { type: 'string', description: 'Projekt-Name' },
+        id: { type: 'string', description: 'ID des Gedankens' },
+      },
+      required: ['project', 'id'],
     },
   },
 
@@ -780,6 +793,14 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
         (args.limit as number) || 10
       );
       return results;
+    }
+
+    case 'delete_thought': {
+      await deleteThought(args.id as string);
+      return {
+        success: true,
+        message: `Gedanke "${args.id}" geloescht`,
+      };
     }
 
     // ===== MEMORY =====
