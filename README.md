@@ -178,7 +178,7 @@ Session 1 (Context voll)          Session 2 (frischer Context)
 |---------|--------|------------|
 | **Statistiken zaehlen alle Projekte** — `get_index_stats` und `get_detailed_stats` zeigen Gesamtzahlen ueber alle Projekte, nicht nur das aktuelle. Ein Agent sieht z.B. 1115 Vektoren, obwohl er nur auf sein Projekt Zugriff hat. | Offen | Keine — Zahlen sind korrekt, aber irreführend |
 | **Projekt-Init ueber Web-API fehlerhaft** — Ueber die REST-API (`/api/projects/init`) kann ein noch nicht initialisiertes Projekt manchmal nicht erstellt werden, obwohl es zuvor funktioniert hat. | Bug | Projekt ueber MCP (STDIO) oder CLI initialisieren |
-| **MCP auf unterschiedlichen Systemen** — Wenn dasselbe Projekt auf verschiedenen Rechnern oder Festplatten liegt (z.B. Desktop A und Desktop B), gibt es zwei Probleme: Der FileWatcher laeuft nur lokal im MCP (nicht auf der REST-API), und die Projekt-Pfade unterscheiden sich zwischen den Systemen. | Geplant | KI auf System B kann ueber `semantic_code_search` alles nachbauen was auf System A gebaut wurde. Loest sich wenn die REST-API FileWatcher-Funktionalitaet bekommt und Pfade relativ aufgeloest werden. |
+| **MCP auf unterschiedlichen Systemen** — Wenn dasselbe Projekt auf verschiedenen Rechnern oder Festplatten liegt (z.B. Desktop A und Desktop B), gibt es zwei Probleme: Der FileWatcher laeuft nur lokal im MCP (nicht auf der REST-API), und die Projekt-Pfade unterscheiden sich zwischen den Systemen. | Offen | KI auf System B kann bereits ueber `semantic_code_search` alles nachbauen was auf System A gebaut wurde. Vollstaendige Loesung wenn REST-API FileWatcher bekommt und Pfade relativ aufgeloest werden. |
 
 ## Lizenz
 
