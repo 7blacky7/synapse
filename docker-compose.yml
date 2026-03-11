@@ -15,7 +15,7 @@ services:
       - OLLAMA_MODEL=nomic-embed-text
       - EMBEDDING_PROVIDER=ollama
       # Context7
-      - CONTEXT7_API_KEY=REDACTED_CONTEXT7_KEY
+      - CONTEXT7_API_KEY=
       # API Config
       - API_PORT=3456
       - API_HOST=0.0.0.0
