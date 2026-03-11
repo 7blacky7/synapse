@@ -73,42 +73,11 @@ Beispiele: `signal-fuchs`, `kabel-wolf`, `frost-rabe`
 3. Name als `agent_id` an alle Synapse-Tools UND als `name` beim Agent-Tool uebergeben
 4. Synapse-Regeln DIREKT im Prompt einbetten (siehe Abschnitt "Agenten-Prompt Baustein")
 
-## 2. Worktree-Isolation (PFLICHT fuer parallele Agenten)
+## 2. Worktree-Isolation (optional)
 
-Jeder Agent arbeitet in einem eigenen Git Worktree. Das verhindert Konflikte.
+Worktrees sind **optional** — Agenten koennen sich ueber Synapse (`add_thought`, `search_thoughts`) koordinieren und im selben Workspace arbeiten. Das hat sich in der Praxis als zuverlaessiger erwiesen.
 
-### Koordinator-Workflow
-
-1. **Agent spawnen mit `isolation: "worktree"`:**
-   ```
-   Agent(
-     name: "{AGENT_ID}",
-     subagent_type: "general-purpose",
-     isolation: "worktree",
-     prompt: "<Aufgabe + Synapse-Regeln>"
-   )
-   ```
-   → Agent bekommt automatisch eigenen Worktree + eigenen Branch
-
-2. **Agent arbeitet isoliert:**
-   - Eigene Kopie des Repos
-   - Kann frei editieren ohne andere zu stoeren
-   - Committed in seinen eigenen Branch
-
-3. **Agent sichert Ergebnis in Synapse:**
-   - `add_thought` mit Tag `"{AGENT_ID}-ergebnis"` und Branch-Name
-   - KEINE lange Nachricht — nur kurzer Verweis
-
-4. **Koordinator mergt nach Abschluss:**
-   - Worktree-Branch wird im Agent-Ergebnis zurueckgegeben
-   - Koordinator prueft und mergt: `git merge <branch>`
-   - Bei Konflikten: manuell loesen oder Agent nochmal spawnen
-
-### Merge-Reihenfolge
-
-- Tasks mit Abhaengigkeiten NACHEINANDER mergen (nicht parallel)
-- Unabhaengige Tasks koennen parallel laufen + danach gemergt werden
-- Nach jedem Merge: Tests + Build pruefen
+Worktrees koennen bei grossen, unabhaengigen Tasks hilfreich sein, sind aber kein Standard-Workflow.
 
 ## 3. Agenten-Prompt Baustein (PFLICHT)
 
