@@ -17,6 +17,7 @@ Synapse ist ein System zur Integration verschiedener KI-Tools mit:
 | `@synapse/core` | Gemeinsamer Kern | - |
 | `@synapse/mcp-server` | MCP Server fuer Claude Code, Desktop, etc. | User PC |
 | `@synapse/rest-api` | REST API fuer Claude Web, ChatGPT, etc. | Unraid Server |
+| `@synapse/web-ui` | Web-Oberflaeche (in Entwicklung) | - |
 
 ## Schnellstart
 
