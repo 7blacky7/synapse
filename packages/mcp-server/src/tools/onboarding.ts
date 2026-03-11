@@ -13,6 +13,7 @@ import {
   registerAgent,
   getRulesForNewAgent,
   getProjectStatus,
+  writeMemory,
 } from '@synapse/core';
 
 /** Regel-Memory fuer Onboarding-Response */
@@ -128,11 +129,16 @@ export async function checkAgentOnboarding(
   try {
     const ruleMemories = await getRulesForNewAgent(project);
 
-    if (ruleMemories.length === 0) {
+    // Auto-Inject: Handoff-Regeln hinzufuegen wenn nicht vorhanden (PROTOTYP)
+    await ensureHandoffRules(project, ruleMemories);
+    // Regeln neu laden falls Handoff-Regeln gerade erstellt wurden
+    const finalRules = await getRulesForNewAgent(project);
+
+    if (finalRules.length === 0) {
       return { isFirstVisit: true };
     }
 
-    const rules: OnboardingRule[] = ruleMemories.map(m => ({
+    const rules: OnboardingRule[] = finalRules.map(m => ({
       name: m.name,
       content: m.content,
     }));
@@ -149,6 +155,73 @@ export async function checkAgentOnboarding(
   } catch (error) {
     console.error(`[Synapse MCP] Fehler beim Laden der Regeln:`, error);
     return { isFirstVisit: true };
+  }
+}
+
+/** Name der auto-injizierten Handoff-Regel */
+const HANDOFF_RULE_NAME = 'context-handoff-regeln';
+
+/** PROTOTYP: Handoff-Regeln im Content */
+const HANDOFF_RULE_CONTENT = `## Context-Handoff Regeln (PROTOTYP)
+
+Synapse unterstuetzt automatischen Session-Handoff wenn das Context-Window voll wird.
+
+### Wann Handoff noetig ist
+- Du wirst automatisch per Hook gewarnt (60% = gelb, 80% = rot)
+- Bei GELB: Aktuellen Task abschliessen, dann Handoff planen
+- Bei ROT: SOFORT Handoff ausfuehren
+
+### Handoff-Protokoll (3 Schritte)
+
+**1. Thought speichern (Schnelleinstieg):**
+add_thought(project, source: "<dein-name>",
+  content: "SESSION-HANDOFF: <Fortschritt> | NAECHSTER SCHRITT: <was> | MEMORY: session-handoff-<projekt>-<YYYY-MM-DD-HH-MM>",
+  tags: ["session-uebergabe"])
+
+**2. Memory speichern (Details):**
+write_memory(project, name: "session-handoff-<projekt>-<YYYY-MM-DD-HH-MM>",
+  category: "note", content: "User-Auftrag, Erledigtes, Offene Tasks, Naechste Schritte, Branch/Git-Status")
+
+**3. Neue Session starten:**
+bash <projekt-pfad>/scripts/context-handoff/context-handoff.sh "<projekt-pfad>" "<projekt-name>" "<aufgabe>"
+
+### Wichtig
+- Handoff NICHT mitten in einer Datei-Bearbeitung — erst commit
+- Die neue Session liest automatisch den Synapse-Kontext und arbeitet weiter
+- Neuen einzigartigen Agent-Namen in der Folge-Session verwenden`;
+
+/**
+ * PROTOTYP: Prueft ob Handoff-Regeln existieren und erstellt sie automatisch
+ * Wird beim Onboarding aufgerufen — nur einmal pro Projekt
+ */
+async function ensureHandoffRules(
+  project: string,
+  existingRules: { name: string; content: string }[]
+): Promise<void> {
+  // Bereits vorhanden?
+  const hasHandoff = existingRules.some(r =>
+    r.name === HANDOFF_RULE_NAME ||
+    r.content.includes('context-handoff') ||
+    r.content.includes('SESSION-HANDOFF')
+  );
+
+  if (hasHandoff) {
+    return;
+  }
+
+  console.log(`[Synapse MCP] Auto-Inject: Handoff-Regeln fuer Projekt "${project}" erstellen (PROTOTYP)`);
+
+  try {
+    await writeMemory(
+      project,
+      HANDOFF_RULE_NAME,
+      HANDOFF_RULE_CONTENT,
+      'rules',
+      ['context-handoff', 'prototyp', 'auto-injected']
+    );
+    console.log(`[Synapse MCP] Handoff-Regeln erfolgreich erstellt`);
+  } catch (error) {
+    console.error(`[Synapse MCP] Handoff-Regeln konnten nicht erstellt werden:`, error);
   }
 }
 

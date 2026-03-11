@@ -134,22 +134,26 @@ Ein Claude Code Hook (`packages/mcp-server/hooks/`) der beim Bearbeiten von Code
 - **Plattformuebergreifend** — Bash (Linux/macOS) und PowerShell (Windows) Varianten
 - **Zero-Config** — Aktiviert sich automatisch als PostToolUse-Hook bei Edit/Write
 
-### Automatischer Context-Handoff (verfuegbar)
+### Automatischer Context-Handoff — PROTOTYP (`scripts/context-handoff/`)
 
-Ein dreistufiges System das Claude Code Sessions automatisch neustartet wenn das Context-Window voll wird — ohne Kontextverlust dank Synapse:
+Ein dreistufiges System das Claude Code Sessions automatisch neustartet wenn das Context-Window voll wird — ohne Kontextverlust dank Synapse.
 
-**1. Context-Counter** (`context-counter.sh`) — PostToolUse-Hook
+> **PROTOTYP** — Experimentelles Feature. API und Verhalten koennen sich aendern.
+> Handoff-Regeln werden beim ersten Agent-Onboarding automatisch als Synapse-Memory
+> (category: `rules`) erstellt, sodass jeder neue Agent die Handoff-Anleitung erhaelt.
+
+**1. Context-Counter** (`scripts/context-handoff/context-counter.sh`) — PostToolUse-Hook
 - Liest den echten Context-Verbrauch aus der StatusLine
 - Warnt bei **60%** (gelb): "Plane Handoff nach aktuellem Task"
 - Warnt bei **80%** (rot): "SOFORTIGER HANDOFF!"
 - Schwellwerte konfigurierbar via `CONTEXT_WARN_PERCENT` / `CONTEXT_CRIT_PERCENT`
 
-**2. Context-Handoff** (`context-handoff.sh`) — Vom Agenten aufgerufen
+**2. Context-Handoff** (`scripts/context-handoff/context-handoff.sh`) — Vom Agenten aufgerufen
 - Speichert Fortschritt, offene Tasks und naechste Schritte in Synapse (Thought + Memory)
 - Extrahiert CLI-Flags der laufenden Session (Permissions, Model, etc.)
 - Setzt Handoff-Marker und beendet die aktuelle Claude-Session
 
-**3. Session-Wrapper** (`claude-session.sh`) — Ersetzt den `claude` Befehl
+**3. Session-Wrapper** (`scripts/context-handoff/claude-session.sh`) — Ersetzt den `claude` Befehl
 - Startet Claude normal, ueberwacht den Exit
 - Erkennt Handoff-Marker und startet automatisch eine neue Session
 - Uebergibt CLI-Flags, Model und Synapse-Prompt an die Folge-Session
