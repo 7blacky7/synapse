@@ -140,7 +140,7 @@ Ein dreistufiges System das Claude Code Sessions automatisch neustartet wenn das
 
 > **PROTOTYP** — Experimentelles Feature. API und Verhalten koennen sich aendern.
 > Handoff-Regeln werden beim ersten Agent-Onboarding automatisch als Synapse-Memory
-> (category: `rules`) erstellt, sodass jeder neue Agent die Handoff-Anleitung erhaelt.
+> (category: `rules`) erstellt, sodass der Koordinator die Handoff-Anweisung erhaelt.
 
 **1. Context-Counter** (`scripts/context-handoff/context-counter.sh`) — PostToolUse-Hook
 - Liest den echten Context-Verbrauch aus der StatusLine
