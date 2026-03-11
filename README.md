@@ -113,6 +113,27 @@ npm run dev:api
 └─────────────────────┘     └─────────────────────┘     └─────────────────────┘
 ```
 
+## Roadmap
+
+### Tech-Docs Integration (geplant)
+
+Automatische Framework-Dokumentation direkt in Synapse. Aktuell existiert ein separater [tech-docs-researcher](https://github.com/7blacky7/synapse) Skill, der Framework-Docs recherchiert und in Qdrant speichert — zukuenftig soll das nativ in Synapse integriert werden:
+
+- **Automatische Erkennung** — Beim Indexieren eines Projekts erkennt Synapse verwendete Frameworks und Sprachen (React, Fastify, Tailwind, etc.)
+- **Docs-Indexierung** — Offizielle Dokumentation wird automatisch in eine eigene Qdrant-Collection (`tech_docs`) geladen
+- **Kontextuelle Vorschlaege** — Beim Bearbeiten von Code-Dateien liefert Synapse passende Doku-Snippets zum verwendeten Framework
+- **Versioniert** — Docs werden pro Framework-Version gecacht, veraltete Versionen automatisch aktualisiert
+
+### Framework-Docs Hook (verfuegbar)
+
+Ein Claude Code Hook (`packages/mcp-server/hooks/`) der beim Bearbeiten von Code-Dateien automatisch Frameworks erkennt und verfuegbare Dokumentation aus Qdrant anzeigt:
+
+- **Multi-Language** — JavaScript/TypeScript, Go, Python, Rust, Ruby, PHP, CSS, HTML
+- **Import-Analyse** — Liest die ersten 50 Zeilen einer Datei und extrahiert Import-Statements
+- **Zwei Doku-Quellen** — DocsBySkill (Workflow-Recherche) und DocsByTool (Context7)
+- **Plattformuebergreifend** — Bash (Linux/macOS) und PowerShell (Windows) Varianten
+- **Zero-Config** — Aktiviert sich automatisch als PostToolUse-Hook bei Edit/Write
+
 ## Lizenz
 
 MIT
