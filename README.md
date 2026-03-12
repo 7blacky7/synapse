@@ -143,6 +143,26 @@ Ein dreistufiges System das Claude Code Sessions automatisch neustartet wenn das
 > Handoff-Regeln werden beim ersten Agent-Onboarding automatisch als Synapse-Memory
 > (category: `rules`) erstellt, sodass der Koordinator die Handoff-Anweisung erhaelt.
 
+> **⚠ Plattform-Einschraenkung: Nur Linux + fish/bash getestet**
+>
+> Die Scripts nutzen Linux-spezifische Features (`/proc/<pid>/cmdline` zum Auslesen
+> von CLI-Flags, `pgrep` zur Prozesssuche) und wurden nur unter **Linux mit fish shell**
+> (via `claude-session.sh` Wrapper) getestet.
+>
+> **macOS/Windows-Nutzer muessen die Scripts anpassen:**
+> - macOS: `/proc/` existiert nicht — CLI-Flag-Extraktion muss ueber `ps` oder `lsof` geloest werden
+> - Windows: Bash-Scripts funktionieren nur in WSL/Git Bash, `/proc/` ist nicht verfuegbar
+> - Andere Shells: Der `claude-session.sh` Wrapper nutzt Bash-Arrays (`mapfile`, `${arr[@]}`) — bei Nutzung anderer Shells den Wrapper entsprechend anpassen
+>
+> **Alias-Beispiele:**
+> ```bash
+> # fish
+> alias cs "bash /pfad/zu/synapse/scripts/context-handoff/claude-session.sh"
+>
+> # bash/zsh
+> alias cs='bash /pfad/zu/synapse/scripts/context-handoff/claude-session.sh'
+> ```
+
 **1. Context-Counter** (`scripts/context-handoff/context-counter.sh`) — PostToolUse-Hook
 - Liest den echten Context-Verbrauch aus der StatusLine
 - Warnt bei **60%** (gelb): "Plane Handoff nach aktuellem Task"
