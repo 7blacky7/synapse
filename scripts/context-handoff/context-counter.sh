@@ -35,8 +35,8 @@ if [ ! -f "$PCT_FILE" ]; then exit 0; fi
 USED_PCT=$(cat "$PCT_FILE" 2>/dev/null | tr -d '[:space:]')
 if [ -z "$USED_PCT" ] || [ "$USED_PCT" = "0" ]; then exit 0; fi
 
-WARN_PCT="${CONTEXT_WARN_PERCENT:-60}"
-CRIT_PCT="${CONTEXT_CRIT_PERCENT:-80}"
+WARN_PCT="${CONTEXT_WARN_PERCENT:-80}"
+CRIT_PCT="${CONTEXT_CRIT_PERCENT:-85}"
 
 if [ "$USED_PCT" -ge "$CRIT_PCT" ] 2>/dev/null; then
   jq -n \

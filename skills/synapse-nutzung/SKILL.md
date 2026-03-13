@@ -303,8 +303,8 @@ aus `context_window.used_percentage` (gleiche Daten wie die Statusline) und warn
 
 | Schwellwert | Warnstufe | Was passiert |
 |-------------|-----------|--------------|
-| 60% Context verbraucht | GELB | Hook gibt Warnung: "Plane Handoff nach aktuellem Task" |
-| 80% Context verbraucht | ROT | Hook gibt dringende Warnung: "SOFORTIGER HANDOFF!" |
+| 80% Context verbraucht | GELB | Hook gibt Warnung: "Plane Handoff nach aktuellem Task" |
+| 85% Context verbraucht | ROT | Hook gibt dringende Warnung: "SOFORTIGER HANDOFF!" |
 
 **Konfiguration** (via Umgebungsvariablen, optional):
 - `CONTEXT_WARN_PERCENT` — GELB-Schwellwert in Prozent (Standard: 60)

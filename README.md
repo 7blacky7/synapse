@@ -165,8 +165,8 @@ Ein dreistufiges System das Claude Code Sessions automatisch neustartet wenn das
 
 **1. Context-Counter** (`scripts/context-handoff/context-counter.sh`) — PostToolUse-Hook
 - Liest den echten Context-Verbrauch aus der StatusLine
-- Warnt bei **60%** (gelb): "Plane Handoff nach aktuellem Task"
-- Warnt bei **80%** (rot): "SOFORTIGER HANDOFF!"
+- Warnt bei **80%** (gelb): "Plane Handoff nach aktuellem Task"
+- Warnt bei **85%** (rot): "SOFORTIGER HANDOFF!"
 - Schwellwerte konfigurierbar via `CONTEXT_WARN_PERCENT` / `CONTEXT_CRIT_PERCENT`
 
 **2. Context-Handoff** (`scripts/context-handoff/context-handoff.sh`) — Vom Agenten aufgerufen
