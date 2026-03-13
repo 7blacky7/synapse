@@ -43,7 +43,7 @@ function loadRegistry(): void {
       for (const [name, projectPath] of Object.entries(data)) {
         projectPathCache.set(name, projectPath as string);
       }
-      console.log(`[Synapse] ${projectPathCache.size} Projekte aus Registry geladen`);
+      console.error(`[Synapse] ${projectPathCache.size} Projekte aus Registry geladen`);
     }
   } catch {
     // Registry nicht lesbar - ignorieren
@@ -124,7 +124,7 @@ export async function checkAgentOnboarding(
   }
 
   // Neuer Agent - Regeln laden
-  console.log(`[Synapse MCP] Neuer Agent "${agentId}" erkannt - lade Regeln...`);
+  console.error(`[Synapse MCP] Neuer Agent "${agentId}" erkannt - lade Regeln...`);
 
   try {
     const ruleMemories = await getRulesForNewAgent(project);
@@ -145,7 +145,7 @@ export async function checkAgentOnboarding(
 
     const rulesMessage = `\n\n📋 PROJEKT-REGELN (bitte beachten!):\n${rules.map(r => `### ${r.name}\n${r.content}`).join('\n\n')}`;
 
-    console.log(`[Synapse MCP] ${rules.length} Regeln fuer Agent "${agentId}" geladen`);
+    console.error(`[Synapse MCP] ${rules.length} Regeln fuer Agent "${agentId}" geladen`);
 
     return {
       isFirstVisit: true,
@@ -209,7 +209,7 @@ async function ensureHandoffRules(
     return;
   }
 
-  console.log(`[Synapse MCP] Auto-Inject: Handoff-Regeln fuer Projekt "${project}" erstellen (PROTOTYP)`);
+  console.error(`[Synapse MCP] Auto-Inject: Handoff-Regeln fuer Projekt "${project}" erstellen (PROTOTYP)`);
 
   try {
     await writeMemory(
@@ -219,7 +219,7 @@ async function ensureHandoffRules(
       'rules',
       ['context-handoff', 'prototyp', 'auto-injected']
     );
-    console.log(`[Synapse MCP] Handoff-Regeln erfolgreich erstellt`);
+    console.error(`[Synapse MCP] Handoff-Regeln erfolgreich erstellt`);
   } catch (error) {
     console.error(`[Synapse MCP] Handoff-Regeln konnten nicht erstellt werden:`, error);
   }
