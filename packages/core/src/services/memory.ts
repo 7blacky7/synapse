@@ -256,7 +256,7 @@ export async function writeMemory(
   await insertVector(COLLECTION_NAME, vector, payload, memory.id);
 
   const codeRefInfo = linkedPaths.length > 0 ? ` (${linkedPaths.length} Code-Referenzen)` : '';
-  console.log(`[Synapse] Memory "${name}" gespeichert für Projekt "${project}"${codeRefInfo}`);
+  console.error(`[Synapse] Memory "${name}" gespeichert für Projekt "${project}"${codeRefInfo}`);
   return memory;
 }
 
@@ -373,7 +373,7 @@ export async function deleteMemory(
   }
 
   await deleteVector(COLLECTION_NAME, existing.id);
-  console.log(`[Synapse] Memory "${name}" gelöscht für Projekt "${project}"`);
+  console.error(`[Synapse] Memory "${name}" gelöscht für Projekt "${project}"`);
   return true;
 }
 

@@ -33,7 +33,7 @@ export async function ensureCollection(
   const client = getQdrantClient();
 
   if (await collectionExists(name)) {
-    console.log(`[Synapse] Collection "${name}" existiert bereits`);
+    console.error(`[Synapse] Collection "${name}" existiert bereits`);
     return;
   }
 
@@ -44,7 +44,7 @@ export async function ensureCollection(
     },
   });
 
-  console.log(`[Synapse] Collection "${name}" erstellt`);
+  console.error(`[Synapse] Collection "${name}" erstellt`);
 }
 
 /**
@@ -54,19 +54,19 @@ export async function deleteCollection(name: string): Promise<void> {
   const client = getQdrantClient();
 
   if (!(await collectionExists(name))) {
-    console.log(`[Synapse] Collection "${name}" existiert nicht`);
+    console.error(`[Synapse] Collection "${name}" existiert nicht`);
     return;
   }
 
   await client.deleteCollection(name);
-  console.log(`[Synapse] Collection "${name}" geloescht`);
+  console.error(`[Synapse] Collection "${name}" geloescht`);
 }
 
 /**
  * Erstellt alle Standard-Collections fuer Synapse
  */
 export async function ensureAllCollections(): Promise<void> {
-  console.log('[Synapse] Erstelle Standard-Collections...');
+  console.error('[Synapse] Erstelle Standard-Collections...');
 
   // Dokumentations-Cache
   await ensureCollection(COLLECTIONS.techDocs);
@@ -80,7 +80,7 @@ export async function ensureAllCollections(): Promise<void> {
   // Schattenvorschlaege
   await ensureCollection(COLLECTIONS.proposals);
 
-  console.log('[Synapse] Alle Standard-Collections bereit');
+  console.error('[Synapse] Alle Standard-Collections bereit');
 }
 
 /**

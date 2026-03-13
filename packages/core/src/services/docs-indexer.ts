@@ -97,12 +97,12 @@ export async function indexFrameworkDocs(
   if (!forceReindex) {
     const cached = await isFrameworkCached(framework, version);
     if (cached) {
-      console.log(`[DocsIndexer] ${framework} bereits gecacht`);
+      console.error(`[DocsIndexer] ${framework} bereits gecacht`);
       return { indexed: 0, cached: true };
     }
   }
 
-  console.log(`[DocsIndexer] Indexiere ${framework}${version ? ` v${version}` : ''}...`);
+  console.error(`[DocsIndexer] Indexiere ${framework}${version ? ` v${version}` : ''}...`);
 
   // Dokumentation von Context7 holen
   const context7 = getContext7Client();
@@ -122,7 +122,7 @@ export async function indexFrameworkDocs(
   // Docs chunken und embedden
   const indexedDocs = await processAndIndexDocs(docs);
 
-  console.log(`[DocsIndexer] ${indexedDocs} Chunks für ${framework} indexiert`);
+  console.error(`[DocsIndexer] ${indexedDocs} Chunks für ${framework} indexiert`);
   return { indexed: indexedDocs, cached: false };
 }
 
@@ -141,7 +141,7 @@ export async function indexProjectTechnologies(
     (tech) => tech.type === 'framework' || tech.type === 'library'
   );
 
-  console.log(`[DocsIndexer] Indexiere ${toIndex.length} Technologien...`);
+  console.error(`[DocsIndexer] Indexiere ${toIndex.length} Technologien...`);
 
   for (const tech of toIndex) {
     try {
@@ -228,7 +228,7 @@ export async function cacheSearchResults(
 ): Promise<number> {
   if (docs.length === 0) return 0;
 
-  console.log(`[DocsIndexer] Cache ${docs.length} Suchergebnisse für "${searchQuery}"...`);
+  console.error(`[DocsIndexer] Cache ${docs.length} Suchergebnisse für "${searchQuery}"...`);
 
   return await processAndIndexDocs(docs);
 }

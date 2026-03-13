@@ -44,7 +44,7 @@ export function startFileWatcher(options: FileWatcherOptions): FileWatcherInstan
   const { projectPath, projectName, onFileChange, onError, onIgnoreChange } = options;
   const config = getConfig();
 
-  console.log(`[Synapse] Starte FileWatcher fuer "${projectName}" in ${projectPath}`);
+  console.error(`[Synapse] Starte FileWatcher fuer "${projectName}" in ${projectPath}`);
 
   // Gitignore laden (mutable - wird bei .synapseignore Aenderung neu geladen)
   let ig: Ignore = loadGitignore(projectPath);
@@ -82,7 +82,7 @@ export function startFileWatcher(options: FileWatcherOptions): FileWatcherInstan
 
     // Pruefen ob .synapseignore oder .gitignore geaendert wurde
     if (filePath === synapseignorePath || filePath === gitignorePath) {
-      console.log(`[Synapse] Ignore-Datei geaendert: ${relativePath}`);
+      console.error(`[Synapse] Ignore-Datei geaendert: ${relativePath}`);
 
       // Ignore-Patterns neu laden
       ig = loadGitignore(projectPath);
@@ -121,7 +121,7 @@ export function startFileWatcher(options: FileWatcherOptions): FileWatcherInstan
         const sizeMB = stats.size / (1024 * 1024);
         const maxSize = isDocument ? 50 : config.files.maxSizeMB;
         if (sizeMB > maxSize) {
-          console.log(`[Synapse] Datei zu gross (${sizeMB.toFixed(2)}MB): ${relativePath}`);
+          console.error(`[Synapse] Datei zu gross (${sizeMB.toFixed(2)}MB): ${relativePath}`);
           return;
         }
       } catch {
@@ -146,7 +146,7 @@ export function startFileWatcher(options: FileWatcherOptions): FileWatcherInstan
         project: projectName,
       };
 
-      console.log(`[Synapse] ${type.toUpperCase()}: ${relativePath}`);
+      console.error(`[Synapse] ${type.toUpperCase()}: ${relativePath}`);
 
       // Async Handler aufrufen
       Promise.resolve(onFileChange(event)).catch(error => {
@@ -183,7 +183,7 @@ export function startFileWatcher(options: FileWatcherOptions): FileWatcherInstan
   });
 
   watcher.on('ready', () => {
-    console.log(`[Synapse] FileWatcher bereit fuer "${projectName}"`);
+    console.error(`[Synapse] FileWatcher bereit fuer "${projectName}"`);
   });
 
   // Return FileWatcher Instance
@@ -196,7 +196,7 @@ export function startFileWatcher(options: FileWatcherOptions): FileWatcherInstan
       pendingEvents.clear();
 
       await watcher.close();
-      console.log(`[Synapse] FileWatcher gestoppt fuer "${projectName}"`);
+      console.error(`[Synapse] FileWatcher gestoppt fuer "${projectName}"`);
     },
     projectName,
     projectPath,

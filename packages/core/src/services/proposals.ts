@@ -103,7 +103,7 @@ export async function createProposal(
 
   await insertVector(COLLECTION_NAME, vector, payload, id);
 
-  console.log(`[Synapse] Proposal "${id}" erstellt fuer "${filePath}" in Projekt "${project}"`);
+  console.error(`[Synapse] Proposal "${id}" erstellt fuer "${filePath}" in Projekt "${project}"`);
   return proposal;
 }
 
@@ -202,7 +202,7 @@ export async function updateProposalStatus(
   await deleteVector(COLLECTION_NAME, id);
   await insertVector(COLLECTION_NAME, vector, updatedPayload, id);
 
-  console.log(`[Synapse] Proposal "${id}" Status geaendert zu "${status}"`);
+  console.error(`[Synapse] Proposal "${id}" Status geaendert zu "${status}"`);
   return payloadToProposal(id, updatedPayload);
 }
 
@@ -221,7 +221,7 @@ export async function deleteProposal(
   }
 
   await deleteVector(COLLECTION_NAME, id);
-  console.log(`[Synapse] Proposal "${id}" geloescht fuer Projekt "${project}"`);
+  console.error(`[Synapse] Proposal "${id}" geloescht fuer Projekt "${project}"`);
   return true;
 }
 

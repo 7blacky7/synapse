@@ -85,7 +85,7 @@ export async function addThought(
   // In Qdrant speichern
   await insertVector(COLLECTIONS.projectThoughts, vector, payload, thought.id);
 
-  console.log(`[Synapse] Gedanke gespeichert von "${source}" fuer Projekt "${project}"`);
+  console.error(`[Synapse] Gedanke gespeichert von "${source}" fuer Projekt "${project}"`);
   return thought;
 }
 
@@ -162,7 +162,7 @@ export async function searchThoughts(
  */
 export async function deleteThought(id: string): Promise<void> {
   await deleteVector(COLLECTIONS.projectThoughts, id);
-  console.log(`[Synapse] Gedanke geloescht: ${id}`);
+  console.error(`[Synapse] Gedanke geloescht: ${id}`);
 }
 
 /**
