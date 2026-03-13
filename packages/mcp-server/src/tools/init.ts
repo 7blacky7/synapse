@@ -123,7 +123,7 @@ async function tryReactivateProject(
     onError: (error) => console.error(`[Synapse MCP] FileWatcher Fehler:`, error),
     onIgnoreChange: async () => {
       const result = await cleanupProjekt(projectPath, name);
-      console.log(`[Synapse MCP] Cleanup: ${result.deleted} geloescht`);
+      console.error(`[Synapse MCP] Cleanup: ${result.deleted} geloescht`);
     },
   });
   activeWatchers.set(name, watcher);
@@ -209,21 +209,21 @@ export async function initProjekt(
   }
 
   // ===== TECHNOLOGIE-ERKENNUNG =====
-  console.log(`[Synapse MCP] Erkenne Technologien in ${name}...`);
+  console.error(`[Synapse MCP] Erkenne Technologien in ${name}...`);
   const technologies = await detectTechnologies(projectPath);
 
-  console.log(`[Synapse MCP] ${technologies.length} Technologien erkannt:`);
+  console.error(`[Synapse MCP] ${technologies.length} Technologien erkannt:`);
   for (const tech of technologies) {
-    console.log(`  - ${tech.name}${tech.version ? ` v${tech.version}` : ''} (${tech.type})`);
+    console.error(`  - ${tech.name}${tech.version ? ` v${tech.version}` : ''} (${tech.type})`);
   }
 
   // ===== DOKUMENTATION VORLADEN =====
   let docsIndexed: { total: number; indexed: number; cached: number } | undefined;
 
   if (indexDocs && technologies.length > 0) {
-    console.log(`[Synapse MCP] Indexiere Framework-Dokumentation...`);
+    console.error(`[Synapse MCP] Indexiere Framework-Dokumentation...`);
     docsIndexed = await indexProjectTechnologies(technologies);
-    console.log(`[Synapse MCP] Docs: ${docsIndexed.indexed} neu, ${docsIndexed.cached} gecacht`);
+    console.error(`[Synapse MCP] Docs: ${docsIndexed.indexed} neu, ${docsIndexed.cached} gecacht`);
   }
 
   // FileWatcher starten mit automatischem Cleanup bei .synapseignore Aenderungen
@@ -235,9 +235,9 @@ export async function initProjekt(
       console.error(`[Synapse MCP] FileWatcher Fehler:`, error);
     },
     onIgnoreChange: async () => {
-      console.log(`[Synapse MCP] .synapseignore geaendert - starte automatisches Cleanup...`);
+      console.error(`[Synapse MCP] .synapseignore geaendert - starte automatisches Cleanup...`);
       const result = await cleanupProjekt(projectPath, name);
-      console.log(`[Synapse MCP] Cleanup: ${result.deleted} Dateien geloescht, ${result.checked} geprueft`);
+      console.error(`[Synapse MCP] Cleanup: ${result.deleted} Dateien geloescht, ${result.checked} geprueft`);
     },
   });
 
@@ -257,7 +257,7 @@ export async function initProjekt(
 
     if (isFirstVisit) {
       // Regeln-Memories fuer neuen Agent laden
-      console.log(`[Synapse MCP] Neuer Agent "${agentId}" - lade Regeln...`);
+      console.error(`[Synapse MCP] Neuer Agent "${agentId}" - lade Regeln...`);
       try {
         const ruleMemories = await getRulesForNewAgent(name);
         if (ruleMemories.length > 0) {
@@ -265,7 +265,7 @@ export async function initProjekt(
             name: m.name,
             content: m.content,
           }));
-          console.log(`[Synapse MCP] ${rules.length} Regeln fuer Agent geladen`);
+          console.error(`[Synapse MCP] ${rules.length} Regeln fuer Agent geladen`);
         }
       } catch (error) {
         console.error(`[Synapse MCP] Fehler beim Laden der Regeln:`, error);
@@ -364,7 +364,7 @@ export async function cleanupProjekt(
     uniqueFiles: number;
   };
 }> {
-  console.log(`[Synapse MCP] Cleanup für "${projectName}"...`);
+  console.error(`[Synapse MCP] Cleanup für "${projectName}"...`);
 
   // .synapseignore und .gitignore neu laden
   const ig = loadGitignore(projectPath);
@@ -404,7 +404,7 @@ export async function cleanupProjekt(
           }
           byPattern[patternKey].push(relativePath);
 
-          console.log(`[Synapse MCP] Lösche ignorierte Datei: ${relativePath}`);
+          console.error(`[Synapse MCP] Lösche ignorierte Datei: ${relativePath}`);
           await deleteByFilePath(collectionName, filePath);
           deletedFiles.push(relativePath);
           deleted++;
