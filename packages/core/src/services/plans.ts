@@ -93,7 +93,7 @@ export async function createPlan(
 
   await insertVector(COLLECTIONS.projectPlans, vector, payload, plan.id);
 
-  console.log(`[Synapse] Plan erstellt: "${name}" fuer Projekt "${project}"`);
+  console.error(`[Synapse] Plan erstellt: "${name}" fuer Projekt "${project}"`);
   return plan;
 }
 
@@ -172,7 +172,7 @@ export async function updatePlan(
 
   await insertVector(COLLECTIONS.projectPlans, vector, payload, updatedPlan.id);
 
-  console.log(`[Synapse] Plan aktualisiert: "${updatedPlan.name}"`);
+  console.error(`[Synapse] Plan aktualisiert: "${updatedPlan.name}"`);
   return updatedPlan;
 }
 
@@ -227,7 +227,7 @@ export async function addTask(
 
   await insertVector(COLLECTIONS.projectPlans, vector, payload, plan.id);
 
-  console.log(`[Synapse] Task hinzugefuegt: "${title}"`);
+  console.error(`[Synapse] Task hinzugefuegt: "${title}"`);
   return task;
 }
 
@@ -281,7 +281,7 @@ export async function updateTask(
 
   await insertVector(COLLECTIONS.projectPlans, vector, payload, plan.id);
 
-  console.log(`[Synapse] Task aktualisiert: "${updatedTask.title}"`);
+  console.error(`[Synapse] Task aktualisiert: "${updatedTask.title}"`);
   return updatedTask;
 }
 
@@ -296,6 +296,6 @@ export async function deletePlan(project: string): Promise<boolean> {
   }
 
   await deleteVector(COLLECTIONS.projectPlans, plan.id);
-  console.log(`[Synapse] Plan geloescht fuer Projekt: ${project}`);
+  console.error(`[Synapse] Plan geloescht fuer Projekt: ${project}`);
   return true;
 }

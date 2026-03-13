@@ -250,7 +250,7 @@ export async function indexDocument(
   // In Qdrant einfuegen
   await insertVectors(collectionName, vectors);
 
-  console.log(`[Synapse] Dokument indexiert: ${fileName} (${chunks.length} Chunks, Typ: ${doc.type})`);
+  console.error(`[Synapse] Dokument indexiert: ${fileName} (${chunks.length} Chunks, Typ: ${doc.type})`);
 
   return {
     success: true,

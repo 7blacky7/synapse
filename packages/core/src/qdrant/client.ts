@@ -21,7 +21,7 @@ export function getQdrantClient(): QdrantClient {
       apiKey: config.qdrant.apiKey,
     });
 
-    console.log(`[Synapse] Qdrant Client verbunden mit ${config.qdrant.url}`);
+    console.error(`[Synapse] Qdrant Client verbunden mit ${config.qdrant.url}`);
   }
 
   return _client;
@@ -35,7 +35,7 @@ export async function testQdrantConnection(): Promise<boolean> {
   try {
     const client = getQdrantClient();
     const result = await client.getCollections();
-    console.log(`[Synapse] Qdrant erreichbar - ${result.collections.length} Collections gefunden`);
+    console.error(`[Synapse] Qdrant erreichbar - ${result.collections.length} Collections gefunden`);
     return true;
   } catch (error) {
     console.error('[Synapse] Qdrant nicht erreichbar:', error);

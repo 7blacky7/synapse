@@ -102,7 +102,7 @@ export async function indexFile(
   // In Qdrant einfuegen
   await insertVectors(collectionName, items);
 
-  console.log(`[Synapse] Indexiert: ${path.basename(filePath)} (${chunks.length} Chunks)`);
+  console.error(`[Synapse] Indexiert: ${path.basename(filePath)} (${chunks.length} Chunks)`);
   return chunks.length;
 }
 
@@ -131,7 +131,7 @@ export async function removeFile(
 ): Promise<void> {
   const collectionName = COLLECTIONS.projectCode(projectName);
   await deleteByFilePath(collectionName, filePath);
-  console.log(`[Synapse] Entfernt: ${path.basename(filePath)}`);
+  console.error(`[Synapse] Entfernt: ${path.basename(filePath)}`);
 }
 
 /**

@@ -94,7 +94,7 @@ export function loadGitignore(projectPath: string): Ignore {
     try {
       const content = fs.readFileSync(gitignorePath, 'utf-8');
       ig.add(content);
-      console.log(`[Synapse] .gitignore geladen: ${gitignorePath}`);
+      console.error(`[Synapse] .gitignore geladen: ${gitignorePath}`);
     } catch (error) {
       console.warn(`[Synapse] Fehler beim Laden von .gitignore:`, error);
     }
@@ -107,7 +107,7 @@ export function loadGitignore(projectPath: string): Ignore {
     try {
       const content = fs.readFileSync(synapseignorePath, 'utf-8');
       ig.add(content);
-      console.log(`[Synapse] .synapseignore geladen: ${synapseignorePath}`);
+      console.error(`[Synapse] .synapseignore geladen: ${synapseignorePath}`);
     } catch (error) {
       console.warn(`[Synapse] Fehler beim Laden von .synapseignore:`, error);
     }

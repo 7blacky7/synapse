@@ -41,8 +41,8 @@ export class OllamaEmbeddingProvider implements EmbeddingProvider {
    * Laedt das Model automatisch wenn nicht vorhanden
    */
   async pullModel(): Promise<boolean> {
-    console.log(`[Synapse] Lade Ollama Model "${this.model}"...`);
-    console.log(`[Synapse] Dies kann beim ersten Mal einige Minuten dauern.`);
+    console.error(`[Synapse] Lade Ollama Model "${this.model}"...`);
+    console.error(`[Synapse] Dies kann beim ersten Mal einige Minuten dauern.`);
 
     try {
       const response = await fetch(`${this.baseUrl}/api/pull`, {
@@ -73,7 +73,7 @@ export class OllamaEmbeddingProvider implements EmbeddingProvider {
               const data = JSON.parse(line);
               if (data.status && data.status !== lastStatus) {
                 lastStatus = data.status;
-                console.log(`[Synapse] ${data.status}`);
+                console.error(`[Synapse] ${data.status}`);
               }
             }
           } catch {
@@ -82,7 +82,7 @@ export class OllamaEmbeddingProvider implements EmbeddingProvider {
         }
       }
 
-      console.log(`[Synapse] Model "${this.model}" erfolgreich geladen!`);
+      console.error(`[Synapse] Model "${this.model}" erfolgreich geladen!`);
       return true;
     } catch (error) {
       console.error('[Synapse] Fehler beim Laden des Models:', error);
@@ -100,7 +100,7 @@ export class OllamaEmbeddingProvider implements EmbeddingProvider {
     const available = await this.isModelAvailable();
 
     if (!available) {
-      console.log(`[Synapse] Model "${this.model}" nicht gefunden.`);
+      console.error(`[Synapse] Model "${this.model}" nicht gefunden.`);
       const pulled = await this.pullModel();
       if (!pulled) return false;
     }
@@ -163,7 +163,7 @@ export class OllamaEmbeddingProvider implements EmbeddingProvider {
         return false;
       }
 
-      console.log(`[Synapse] Ollama verbunden: ${this.baseUrl}`);
+      console.error(`[Synapse] Ollama verbunden: ${this.baseUrl}`);
 
       // Model sicherstellen (automatisch laden wenn noetig)
       const modelReady = await this.ensureModel();
@@ -172,7 +172,7 @@ export class OllamaEmbeddingProvider implements EmbeddingProvider {
         return false;
       }
 
-      console.log(`[Synapse] Ollama Model bereit: ${this.model}`);
+      console.error(`[Synapse] Ollama Model bereit: ${this.model}`);
       return true;
     } catch (error) {
       console.error('[Synapse] Ollama nicht erreichbar:', error);

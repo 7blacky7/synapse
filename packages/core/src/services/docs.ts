@@ -58,7 +58,7 @@ export async function cacheDoc(
 
   await insertVector(COLLECTIONS.techDocs, vector, payload, doc.id);
 
-  console.log(`[Synapse] Doku gecached: ${framework} ${version} - ${title}`);
+  console.error(`[Synapse] Doku gecached: ${framework} ${version} - ${title}`);
   return doc;
 }
 
@@ -137,7 +137,7 @@ export async function clearDocsForFramework(framework: string): Promise<void> {
     ],
   });
 
-  console.log(`[Synapse] Doku-Cache geloescht fuer: ${framework}`);
+  console.error(`[Synapse] Doku-Cache geloescht fuer: ${framework}`);
 }
 
 /**
@@ -169,7 +169,7 @@ export async function searchDocsWithFallback(
       const context7 = getContext7Client();
 
       if (context7.isAvailable()) {
-        console.log(`[Synapse] Context7 Suche: "${query}" (${framework || 'alle'})`);
+        console.error(`[Synapse] Context7 Suche: "${query}" (${framework || 'alle'})`);
 
         const docs = await context7.searchDocs(framework || '', query);
 

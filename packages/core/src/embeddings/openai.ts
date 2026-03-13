@@ -59,7 +59,7 @@ export class OpenAIEmbeddingProvider implements EmbeddingProvider {
     try {
       // Einfacher Test mit kurzem Text
       await this.embed('test');
-      console.log(`[Synapse] OpenAI verbunden, Model: ${this.model}`);
+      console.error(`[Synapse] OpenAI verbunden, Model: ${this.model}`);
       return true;
     } catch (error) {
       console.error('[Synapse] OpenAI nicht erreichbar:', error);

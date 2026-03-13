@@ -157,7 +157,7 @@ export { getProjectStatus, setProjectStatus, isProjectInitialized, updateLastAcc
  * Testet Verbindungen und erstellt Collections
  */
 export async function initSynapse(): Promise<boolean> {
-  console.log('[Synapse] Initialisiere...');
+  console.error('[Synapse] Initialisiere...');
 
   // Qdrant testen
   const { testQdrantConnection } = await import('./qdrant/client.js');
@@ -182,6 +182,6 @@ export async function initSynapse(): Promise<boolean> {
     return false;
   }
 
-  console.log('[Synapse] Initialisierung abgeschlossen');
+  console.error('[Synapse] Initialisierung abgeschlossen');
   return true;
 }
