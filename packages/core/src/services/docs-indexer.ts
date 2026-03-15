@@ -136,9 +136,9 @@ export async function indexProjectTechnologies(
   let totalIndexed = 0;
   let cachedCount = 0;
 
-  // Nur Frameworks und Libraries indexieren
+  // Frameworks, Libraries und Sprachen indexieren (keine Tools/Runtimes)
   const toIndex = technologies.filter(
-    (tech) => tech.type === 'framework' || tech.type === 'library'
+    (tech) => tech.type === 'framework' || tech.type === 'library' || tech.type === 'language'
   );
 
   console.error(`[DocsIndexer] Indexiere ${toIndex.length} Technologien...`);
