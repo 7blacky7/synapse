@@ -16,3 +16,12 @@ export * from './project-status.js';
 export * from './global-search.js';
 export * from './proposals.js';
 export * from './backup.js';
+export {
+  registerAgent,
+  unregisterAgent,
+  getAgentSession,
+  listActiveAgents,
+  sendMessage,
+  getMessages,
+} from './chat.js';
+export type { ChatMessage, AgentSession } from './chat.js';

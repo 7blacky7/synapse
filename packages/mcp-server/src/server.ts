@@ -51,6 +51,11 @@ import {
   searchProposalsWrapper,
   migrateEmbeddings,
   restoreFromBackup,
+  registerChatAgent,
+  unregisterChatAgent,
+  sendChatMessage,
+  getChatMessages,
+  listAgents,
 } from './tools/index.js';
 
 /**
@@ -887,6 +892,73 @@ export function createServer(): Server {
         },
       },
 
+      // ===== AGENTEN-CHAT =====
+      {
+        name: 'register_chat_agent',
+        description: 'Registriert einen Agenten im Projekt-Chat. Cutoff-Datum wird bei bekannten Modellen automatisch erkannt.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            id: { type: 'string', description: 'Einzigartige Agent-ID' },
+            project: { type: 'string', description: 'Projekt-Name' },
+            model: { type: 'string', description: 'Modell-Name (z.B. claude-opus-4-6, gpt-4o)' },
+            cutoff_date: { type: 'string', description: 'Wissens-Cutoff (YYYY-MM-DD), wird bei bekannten Modellen auto-erkannt' },
+          },
+          required: ['id', 'project'],
+        },
+      },
+      {
+        name: 'unregister_chat_agent',
+        description: 'Meldet einen Agenten vom Chat ab',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            id: { type: 'string', description: 'Agent-ID' },
+          },
+          required: ['id'],
+        },
+      },
+      {
+        name: 'send_chat_message',
+        description: 'Sendet eine Nachricht. Ohne recipient_id = Broadcast an alle. Mit recipient_id = DM.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            project: { type: 'string', description: 'Projekt-Name' },
+            sender_id: { type: 'string', description: 'Absender Agent-ID' },
+            content: { type: 'string', description: 'Nachrichteninhalt' },
+            recipient_id: { type: 'string', description: 'Empfaenger Agent-ID (leer = Broadcast)' },
+          },
+          required: ['project', 'sender_id', 'content'],
+        },
+      },
+      {
+        name: 'get_chat_messages',
+        description: 'Holt Chat-Nachrichten. Mit since fuer Polling (nur neue Nachrichten seit Zeitpunkt).',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            project: { type: 'string', description: 'Projekt-Name' },
+            agent_id: { type: 'string', description: 'Eigene Agent-ID (filtert relevante DMs)' },
+            since: { type: 'string', description: 'ISO-Timestamp, nur Nachrichten danach (fuer Polling)' },
+            sender_id: { type: 'string', description: 'Optional: Nur Nachrichten von diesem Absender' },
+            limit: { type: 'number', description: 'Max Nachrichten (Standard: 50)' },
+          },
+          required: ['project'],
+        },
+      },
+      {
+        name: 'list_chat_agents',
+        description: 'Listet alle aktiven Agenten im Projekt-Chat',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            project: { type: 'string', description: 'Projekt-Name' },
+          },
+          required: ['project'],
+        },
+      },
+
       // ===== PROJEKT-IDEEN =====
       {
         name: 'save_project_idea',
@@ -1239,6 +1311,50 @@ export function createServer(): Server {
             args?.limit as number | undefined
           );
           return withOnboarding(result);
+        }
+
+        // ===== AGENTEN-CHAT =====
+        case 'register_chat_agent': {
+          const result = await registerChatAgent(
+            args?.id as string,
+            args?.project as string,
+            args?.model as string | undefined,
+            args?.cutoff_date as string | undefined
+          );
+          return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+        }
+
+        case 'unregister_chat_agent': {
+          const result = await unregisterChatAgent(args?.id as string);
+          return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+        }
+
+        case 'send_chat_message': {
+          const result = await sendChatMessage(
+            args?.project as string,
+            args?.sender_id as string,
+            args?.content as string,
+            args?.recipient_id as string | undefined
+          );
+          return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+        }
+
+        case 'get_chat_messages': {
+          const result = await getChatMessages(
+            args?.project as string,
+            {
+              agentId: args?.agent_id as string | undefined,
+              since: args?.since as string | undefined,
+              senderId: args?.sender_id as string | undefined,
+              limit: args?.limit as number | undefined,
+            }
+          );
+          return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+        }
+
+        case 'list_chat_agents': {
+          const result = await listAgents(args?.project as string);
+          return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
         }
 
         // ===== PROJEKT-IDEEN =====

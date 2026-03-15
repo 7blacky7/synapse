@@ -147,8 +147,16 @@ export {
   readBackupFile,
   getBackupDir,
   getBackupStats,
+  // Chat
+  registerAgent as registerChatAgent,
+  unregisterAgent as unregisterChatAgent,
+  getAgentSession,
+  listActiveAgents,
+  sendMessage as sendChatMessage,
+  getMessages as getChatMessages,
 } from './services/index.js';
 export type { BackupEntry } from './services/backup.js';
+export type { ChatMessage, AgentSession } from './services/chat.js';
 export type { Memory, MemoryWithRelatedCode, RelatedMemoryResult, RelatedCodeResult } from './services/memory.js';
 export type { DetectedTechnology } from './services/tech-detection.js';
 export type { Context7Doc, Context7SearchResult } from './services/context7.js';
