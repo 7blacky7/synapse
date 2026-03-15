@@ -154,9 +154,15 @@ export {
   listActiveAgents,
   sendMessage as sendChatMessage,
   getMessages as getChatMessages,
+  // Tech-Docs
+  addTechDoc,
+  searchTechDocs,
+  getDocsForFile,
+  deleteTechDoc,
 } from './services/index.js';
 export type { BackupEntry } from './services/backup.js';
 export type { ChatMessage, AgentSession } from './services/chat.js';
+export type { TechDoc, TechDocType } from './services/tech-docs.js';
 export type { Memory, MemoryWithRelatedCode, RelatedMemoryResult, RelatedCodeResult } from './services/memory.js';
 export type { DetectedTechnology } from './services/tech-detection.js';
 export type { Context7Doc, Context7SearchResult } from './services/context7.js';

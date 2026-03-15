@@ -15,3 +15,4 @@ export * from './onboarding.js';
 export * from './proposals.js';
 export * from './migration.js';
 export * from './chat.js';
+export * from './tech-docs.js';

@@ -56,6 +56,9 @@ import {
   sendChatMessage,
   getChatMessages,
   listAgents,
+  addTechDocTool,
+  searchTechDocsTool,
+  getDocsForFileTool,
 } from './tools/index.js';
 
 /**
@@ -892,6 +895,55 @@ export function createServer(): Server {
         },
       },
 
+      // ===== TECH-DOCS =====
+      {
+        name: 'add_tech_doc',
+        description: 'Indexiert ein Tech-Doc (Breaking Change, Migration, Gotcha etc.) in PostgreSQL + Qdrant. Duplikat-Check via content_hash.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            framework: { type: 'string', description: 'Framework/Sprache (z.B. react, python, express)' },
+            version: { type: 'string', description: 'Version (z.B. 19.0, 3.12)' },
+            section: { type: 'string', description: 'Abschnitt (z.B. hooks, routing, breaking-changes)' },
+            content: { type: 'string', description: 'Inhalt des Docs' },
+            type: { type: 'string', enum: ['feature', 'breaking-change', 'migration', 'gotcha', 'code-example', 'best-practice', 'known-issue', 'community'], description: 'Chunk-Type' },
+            category: { type: 'string', enum: ['framework', 'language'], description: 'framework oder language (Standard: framework)' },
+            source: { type: 'string', enum: ['research', 'context7', 'manual'], description: 'Quelle (Standard: research)' },
+            project: { type: 'string', description: 'Optional: Projekt fuer projekt-spezifische Docs-Collection' },
+          },
+          required: ['framework', 'version', 'section', 'content', 'type'],
+        },
+      },
+      {
+        name: 'search_tech_docs',
+        description: 'Durchsucht Tech-Docs semantisch. Filtert nach Framework, Type und Source.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            query: { type: 'string', description: 'Suchanfrage' },
+            framework: { type: 'string', description: 'Optional: Framework filtern' },
+            type: { type: 'string', description: 'Optional: Chunk-Type filtern (breaking-change, migration, etc.)' },
+            source: { type: 'string', description: 'Optional: Quelle filtern (research, context7)' },
+            project: { type: 'string', description: 'Optional: Projekt-Collection durchsuchen' },
+            limit: { type: 'number', description: 'Max Ergebnisse (Standard: 10)' },
+          },
+          required: ['query'],
+        },
+      },
+      {
+        name: 'get_docs_for_file',
+        description: 'Wissens-Airbag: Holt relevante Tech-Docs fuer eine Datei. Prueft ob Docs neuer als Agent-Cutoff sind und liefert nur kuratierte research-Chunks (breaking-changes, migrations, gotchas).',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            file_path: { type: 'string', description: 'Dateipfad (z.B. src/api.ts)' },
+            agent_id: { type: 'string', description: 'Agent-ID fuer Cutoff-Ermittlung' },
+            project: { type: 'string', description: 'Projekt-Name' },
+          },
+          required: ['file_path', 'agent_id', 'project'],
+        },
+      },
+
       // ===== AGENTEN-CHAT =====
       {
         name: 'register_chat_agent',
@@ -1311,6 +1363,44 @@ export function createServer(): Server {
             args?.limit as number | undefined
           );
           return withOnboarding(result);
+        }
+
+        // ===== TECH-DOCS =====
+        case 'add_tech_doc': {
+          const result = await addTechDocTool(
+            args?.framework as string,
+            args?.version as string,
+            args?.section as string,
+            args?.content as string,
+            args?.type as 'feature' | 'breaking-change' | 'migration' | 'gotcha' | 'code-example' | 'best-practice' | 'known-issue' | 'community',
+            args?.category as string | undefined,
+            args?.source as string | undefined,
+            args?.project as string | undefined
+          );
+          return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+        }
+
+        case 'search_tech_docs': {
+          const result = await searchTechDocsTool(
+            args?.query as string,
+            {
+              framework: args?.framework as string | undefined,
+              type: args?.type as string | undefined,
+              source: args?.source as string | undefined,
+              project: args?.project as string | undefined,
+              limit: args?.limit as number | undefined,
+            }
+          );
+          return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+        }
+
+        case 'get_docs_for_file': {
+          const result = await getDocsForFileTool(
+            args?.file_path as string,
+            args?.agent_id as string,
+            args?.project as string
+          );
+          return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
         }
 
         // ===== AGENTEN-CHAT =====
