@@ -124,7 +124,8 @@ export async function checkAgentOnboarding(
   }
 
   // Neuer Agent - Regeln laden
-  console.error(`[Synapse MCP] Neuer Agent "${agentId}" erkannt - lade Regeln...`);
+  const isCoordinator = agentId === 'koordinator' || agentId.startsWith('koordinator-');
+  console.error(`[Synapse MCP] Neuer Agent "${agentId}" erkannt (Koordinator: ${isCoordinator}) - lade Regeln...`);
 
   try {
     const ruleMemories = await getRulesForNewAgent(project);
@@ -132,7 +133,12 @@ export async function checkAgentOnboarding(
     // Auto-Inject: Handoff-Regeln hinzufuegen wenn nicht vorhanden (PROTOTYP)
     await ensureHandoffRules(project, ruleMemories);
     // Regeln neu laden falls Handoff-Regeln gerade erstellt wurden
-    const finalRules = await getRulesForNewAgent(project);
+    const allRules = await getRulesForNewAgent(project);
+
+    // Koordinator-Only Regeln filtern: Agenten sehen nur Regeln OHNE Tag "coordinator-only"
+    const finalRules = isCoordinator
+      ? allRules
+      : allRules.filter(m => !m.tags?.includes('coordinator-only'));
 
     if (finalRules.length === 0) {
       return { isFirstVisit: true };
@@ -193,6 +199,7 @@ bash <projekt-pfad>/scripts/context-handoff/context-handoff.sh "<projekt-pfad>" 
 /**
  * PROTOTYP: Prueft ob Handoff-Regeln existieren und erstellt sie automatisch
  * Wird beim Onboarding aufgerufen — nur einmal pro Projekt
+ * Tag "coordinator-only" sorgt dafuer dass nur Koordinatoren sie sehen
  */
 async function ensureHandoffRules(
   project: string,
@@ -217,9 +224,9 @@ async function ensureHandoffRules(
       HANDOFF_RULE_NAME,
       HANDOFF_RULE_CONTENT,
       'rules',
-      ['context-handoff', 'prototyp', 'auto-injected']
+      ['context-handoff', 'prototyp', 'coordinator-only']
     );
-    console.error(`[Synapse MCP] Handoff-Regeln erfolgreich erstellt`);
+    console.error(`[Synapse MCP] Handoff-Regeln erfolgreich erstellt (coordinator-only)`);
   } catch (error) {
     console.error(`[Synapse MCP] Handoff-Regeln konnten nicht erstellt werden:`, error);
   }
