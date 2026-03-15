@@ -280,6 +280,10 @@ async function migrateCollection(
 export async function initSynapse(projectName: string): Promise<boolean> {
   console.error(`[Synapse] Initialisiere Projekt "${projectName}"...`);
 
+  // 0. Embedding-Provider resetten damit aktuelle Config geladen wird
+  const { resetEmbeddingProvider } = await import('./embeddings/index.js');
+  resetEmbeddingProvider();
+
   // 1. PostgreSQL testen + Schema sicherstellen
   const { testDatabaseConnection, ensureSchema } = await import('./db/index.js');
   const dbOk = await testDatabaseConnection();
