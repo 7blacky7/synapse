@@ -173,8 +173,11 @@ export async function initProjekt(
   indexDocs: boolean = true,
   agentId?: string
 ): Promise<InitResult> {
-  // Synapse initialisieren (Qdrant, Embeddings)
-  const initialized = await initSynapse();
+  // Projekt-Name aus Pfad ableiten wenn nicht angegeben
+  const name = projectName || path.basename(projectPath);
+
+  // Synapse initialisieren (Qdrant, Embeddings) – mit Projektname fuer gezielte Migration
+  const initialized = await initSynapse(name);
 
   if (!initialized) {
     return {
@@ -184,9 +187,6 @@ export async function initProjekt(
       message: 'Synapse konnte nicht initialisiert werden (Qdrant/Embeddings pruefen)',
     };
   }
-
-  // Projekt-Name aus Pfad ableiten wenn nicht angegeben
-  const name = projectName || path.basename(projectPath);
 
   // Pruefen ob bereits aktiv (Memory oder persistenter Status)
   const reactivated = await tryReactivateProject(projectPath, name, agentId);

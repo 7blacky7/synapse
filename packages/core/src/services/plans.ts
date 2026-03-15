@@ -18,7 +18,7 @@
  *   - boolean: Erfolg bei Plan-Loeschung
  *
  * NEBENEFFEKTE:
- *   - Qdrant: Schreibt/loescht in Collection "synapse_plans"
+ *   - Qdrant: Schreibt/loescht in per-Projekt Collection "project_{name}_plans"
  *   - Logs: Konsolenausgabe bei CRUD-Operationen
  *
  * ABHÄNGIGKEITEN:
@@ -61,7 +61,7 @@ export async function createPlan(
   goals: string[] = []
 ): Promise<ProjectPlan> {
   // Collection sicherstellen
-  await ensureCollection(COLLECTIONS.projectPlans);
+  await ensureCollection(COLLECTIONS.projectPlans(project));
 
   const now = new Date().toISOString();
 
@@ -91,7 +91,7 @@ export async function createPlan(
     updated_at: plan.updatedAt,
   };
 
-  await insertVector(COLLECTIONS.projectPlans, vector, payload, plan.id);
+  await insertVector(COLLECTIONS.projectPlans(project), vector, payload, plan.id);
 
   console.error(`[Synapse] Plan erstellt: "${name}" fuer Projekt "${project}"`);
   return plan;
@@ -102,7 +102,7 @@ export async function createPlan(
  */
 export async function getPlan(project: string): Promise<ProjectPlan | null> {
   const results = await scrollVectors<ProjectPlanPayload>(
-    COLLECTIONS.projectPlans,
+    COLLECTIONS.projectPlans(project),
     {
       must: [
         {
@@ -154,7 +154,7 @@ export async function updatePlan(
   };
 
   // Alten loeschen, neuen einfuegen (Embedding aktualisieren)
-  await deleteVector(COLLECTIONS.projectPlans, existingPlan.id);
+  await deleteVector(COLLECTIONS.projectPlans(project), existingPlan.id);
 
   const textForEmbedding = `${updatedPlan.name}\n${updatedPlan.description}\n${updatedPlan.goals.join('\n')}`;
   const vector = await embed(textForEmbedding);
@@ -170,7 +170,7 @@ export async function updatePlan(
     updated_at: updatedPlan.updatedAt,
   };
 
-  await insertVector(COLLECTIONS.projectPlans, vector, payload, updatedPlan.id);
+  await insertVector(COLLECTIONS.projectPlans(project), vector, payload, updatedPlan.id);
 
   console.error(`[Synapse] Plan aktualisiert: "${updatedPlan.name}"`);
   return updatedPlan;
@@ -209,7 +209,7 @@ export async function addTask(
   plan.updatedAt = now;
 
   // Plan aktualisieren (ohne Embedding-Aenderung)
-  await deleteVector(COLLECTIONS.projectPlans, plan.id);
+  await deleteVector(COLLECTIONS.projectPlans(project), plan.id);
 
   const textForEmbedding = `${plan.name}\n${plan.description}\n${plan.goals.join('\n')}`;
   const vector = await embed(textForEmbedding);
@@ -225,7 +225,7 @@ export async function addTask(
     updated_at: plan.updatedAt,
   };
 
-  await insertVector(COLLECTIONS.projectPlans, vector, payload, plan.id);
+  await insertVector(COLLECTIONS.projectPlans(project), vector, payload, plan.id);
 
   console.error(`[Synapse] Task hinzugefuegt: "${title}"`);
   return task;
@@ -263,7 +263,7 @@ export async function updateTask(
   plan.updatedAt = new Date().toISOString();
 
   // Plan speichern
-  await deleteVector(COLLECTIONS.projectPlans, plan.id);
+  await deleteVector(COLLECTIONS.projectPlans(project), plan.id);
 
   const textForEmbedding = `${plan.name}\n${plan.description}\n${plan.goals.join('\n')}`;
   const vector = await embed(textForEmbedding);
@@ -279,7 +279,7 @@ export async function updateTask(
     updated_at: plan.updatedAt,
   };
 
-  await insertVector(COLLECTIONS.projectPlans, vector, payload, plan.id);
+  await insertVector(COLLECTIONS.projectPlans(project), vector, payload, plan.id);
 
   console.error(`[Synapse] Task aktualisiert: "${updatedTask.title}"`);
   return updatedTask;
@@ -295,7 +295,7 @@ export async function deletePlan(project: string): Promise<boolean> {
     return false;
   }
 
-  await deleteVector(COLLECTIONS.projectPlans, plan.id);
+  await deleteVector(COLLECTIONS.projectPlans(project), plan.id);
   console.error(`[Synapse] Plan geloescht fuer Projekt: ${project}`);
   return true;
 }

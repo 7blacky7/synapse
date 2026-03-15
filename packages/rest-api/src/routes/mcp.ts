@@ -711,7 +711,7 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
       const results = await searchCode(
         args.query as string,
         args.project as string,
-        args.file_type as string | undefined,
+        args.file_type as string,
         (args.limit as number) || 10
       );
       return results.map(r => ({
@@ -789,14 +789,14 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
     case 'search_thoughts': {
       const results = await searchThoughts(
         args.query as string,
-        args.project as string | undefined,
+        args.project as string,
         (args.limit as number) || 10
       );
       return results;
     }
 
     case 'delete_thought': {
-      await deleteThought(args.id as string);
+      await deleteThought(args.project as string, args.id as string);
       return {
         success: true,
         message: `Gedanke "${args.id}" geloescht`,
@@ -854,7 +854,7 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
     case 'search_memory': {
       const results = await searchMemories(
         args.query as string,
-        args.project as string | undefined,
+        args.project as string,
         (args.limit as number) || 10
       );
       return {
@@ -1208,7 +1208,7 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
     case 'search_proposals': {
       const results = await searchProposals(
         args.query as string,
-        args.project as string | undefined,
+        args.project as string,
         (args.limit as number) || 10
       );
       return {

@@ -128,10 +128,10 @@ export async function thoughtsRoutes(fastify: FastifyInstance): Promise<void> {
   fastify.delete<{
     Params: { name: string; id: string };
   }>('/api/projects/:name/thoughts/:id', async (request, reply) => {
-    const { id } = request.params;
+    const { name, id } = request.params;
 
     try {
-      await deleteThought(id);
+      await deleteThought(name, id);
 
       return {
         success: true,

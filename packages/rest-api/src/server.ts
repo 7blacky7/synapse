@@ -79,7 +79,7 @@ export async function startServer(): Promise<void> {
   console.log('[Synapse API] Initialisiere...');
 
   // Synapse Core initialisieren
-  const initialized = await initSynapse();
+  const initialized = await initSynapse('synapse-api');
 
   if (!initialized) {
     console.error('[Synapse API] Core-Initialisierung fehlgeschlagen');

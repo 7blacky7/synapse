@@ -138,8 +138,8 @@ export interface GlobalSearchResult {
 // KONSTANTEN
 // ===========================================
 
-/** Collection-Name fuer Memories */
-const MEMORIES_COLLECTION = 'synapse_memories';
+/** Collection-Name Prefix fuer Per-Projekt Collections */
+// Memories, Thoughts, Proposals sind jetzt per-Projekt: project_{name}_memories etc.
 
 /** Default-Optionen */
 const DEFAULT_OPTIONS: Required<GlobalSearchOptions> = {
@@ -265,12 +265,25 @@ async function searchThoughtsCollection(
           }
         : undefined;
 
-    const hits = await searchVectors<ThoughtPayload>(
-      COLLECTIONS.projectThoughts,
-      queryVector,
-      limit,
-      filter
-    );
+    // Per-Projekt Collections durchsuchen
+    const allCollections = await listCollections();
+    const thoughtCollections = allCollections.filter(c => c.endsWith('_thoughts'));
+    if (projectFilter.length > 0) {
+      thoughtCollections.length = 0;
+      for (const p of projectFilter) {
+        const col = COLLECTIONS.projectThoughts(p);
+        if (allCollections.includes(col)) thoughtCollections.push(col);
+      }
+    }
+
+    const allHits: Array<{ id: string; score: number; payload: ThoughtPayload }> = [];
+    for (const col of thoughtCollections) {
+      try {
+        const hits = await searchVectors<ThoughtPayload>(col, queryVector, limit);
+        allHits.push(...hits);
+      } catch { /* Collection existiert nicht */ }
+    }
+    const hits = allHits;
 
     return hits
       .filter(hit => hit.score >= minScore)
@@ -314,12 +327,25 @@ async function searchMemoriesCollection(
           }
         : undefined;
 
-    const hits = await searchVectors<MemoryPayload>(
-      MEMORIES_COLLECTION,
-      queryVector,
-      limit,
-      filter
-    );
+    // Per-Projekt Collections durchsuchen
+    const allCollections = await listCollections();
+    const memCollections = allCollections.filter(c => c.endsWith('_memories'));
+    if (projectFilter.length > 0) {
+      memCollections.length = 0;
+      for (const p of projectFilter) {
+        const col = COLLECTIONS.projectMemories(p);
+        if (allCollections.includes(col)) memCollections.push(col);
+      }
+    }
+
+    const allHits: Array<{ id: string; score: number; payload: MemoryPayload }> = [];
+    for (const col of memCollections) {
+      try {
+        const hits = await searchVectors<MemoryPayload>(col, queryVector, limit);
+        allHits.push(...hits);
+      } catch { /* Collection existiert nicht */ }
+    }
+    const hits = allHits;
 
     return hits
       .filter(hit => hit.score >= minScore)

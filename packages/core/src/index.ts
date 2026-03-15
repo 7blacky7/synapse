@@ -8,6 +8,9 @@
 // Konfiguration
 export { loadConfig, getConfig, resetConfig } from './config.js';
 
+// PostgreSQL
+export { getPool, testDatabaseConnection, closePool, ensureSchema } from './db/index.js';
+
 // Typen
 export * from './types/index.js';
 
@@ -45,6 +48,9 @@ export {
   resetEmbeddingProvider,
   OllamaEmbeddingProvider,
   OpenAIEmbeddingProvider,
+  OpenAICompatibleProvider,
+  GoogleEmbeddingProvider,
+  CohereEmbeddingProvider,
 } from './embeddings/index.js';
 export type { EmbeddingProvider } from './embeddings/index.js';
 
@@ -162,36 +168,25 @@ export type { ProjectStatus } from './services/project-status.js';
 export { getProjectStatus, setProjectStatus, isProjectInitialized, updateLastAccess, clearProjectStatus, isAgentKnown, registerAgent } from './services/project-status.js';
 
 /**
- * Collections die Agenten-Daten enthalten und bei Modellwechsel gesichert werden
- * Code-Collections (project_{name}) und tech_docs_cache werden NICHT gesichert
- */
-const MIGRATABLE_COLLECTIONS = [
-  'project_thoughts',
-  'synapse_memories',
-  'project_plans',
-  'synapse_proposals',
-] as const;
-
-/**
- * Ermittelt das Text-Feld fuer Re-Embedding anhand des Collection-Typs
+ * Ermittelt das Text-Feld fuer Re-Embedding anhand des Collection-Suffixes
  */
 function getEmbeddingTextField(
   collectionName: string,
   payload: Record<string, unknown>
 ): string {
-  if (collectionName === 'project_thoughts') {
+  if (collectionName.endsWith('_thoughts')) {
     return (payload.content as string) || '';
   }
-  if (collectionName === 'synapse_memories') {
+  if (collectionName.endsWith('_memories')) {
     return (payload.content as string) || '';
   }
-  if (collectionName === 'project_plans') {
+  if (collectionName.endsWith('_plans')) {
     const name = (payload.name as string) || '';
     const desc = (payload.description as string) || '';
     const goals = (payload.goals as string[]) || [];
     return `${name} ${desc} ${goals.join(' ')}`.trim();
   }
-  if (collectionName === 'synapse_proposals') {
+  if (collectionName.endsWith('_proposals')) {
     return (payload.description as string) || '';
   }
   return JSON.stringify(payload);
@@ -203,8 +198,7 @@ function getEmbeddingTextField(
  */
 async function migrateCollection(
   collectionName: string,
-  newDim: number,
-  oldDim: number
+  newDim: number
 ): Promise<{ migrated: number; failed: number }> {
   const { scrollVectors } = await import('./qdrant/operations.js');
   const { deleteCollection, ensureCollection } = await import('./qdrant/collections.js');
@@ -216,7 +210,6 @@ async function migrateCollection(
   let migrated = 0;
   let failed = 0;
 
-  // 1. Alle Payloads aus Qdrant lesen
   let points: Array<{ id: string; payload: Record<string, unknown> }> = [];
   try {
     points = await scrollVectors<Record<string, unknown>>(collectionName, {}, 10000);
@@ -226,36 +219,29 @@ async function migrateCollection(
   }
 
   if (points.length === 0) {
-    console.error(`[Synapse Migration] "${collectionName}" ist leer, nur Dimension aktualisieren`);
     await deleteCollection(collectionName);
     await ensureCollection(collectionName, newDim);
     return { migrated: 0, failed: 0 };
   }
 
-  // 2. JSONL-Backup schreiben (Sicherheitsnetz)
+  // JSONL-Backup schreiben (Sicherheitsnetz)
   const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
   const backupDir = getBackupDir();
   const backupPath = path.join(backupDir, `${collectionName}_${timestamp}.jsonl`);
   await dumpCollectionToFile(collectionName, backupPath);
 
-  // 3. Collection loeschen und neu erstellen
   await deleteCollection(collectionName);
   await ensureCollection(collectionName, newDim);
 
-  // 4. Alle Payloads re-embedden und einfuegen
   console.error(`[Synapse Migration] Re-embedde ${points.length} Eintraege fuer "${collectionName}"...`);
 
   for (const point of points) {
     try {
       const text = getEmbeddingTextField(collectionName, point.payload);
-      if (!text) {
-        failed++;
-        continue;
-      }
+      if (!text) { failed++; continue; }
       const vector = await embed(text);
       await insertVector(collectionName, vector, point.payload, point.id);
       migrated++;
-
       if (migrated % 25 === 0) {
         console.error(`[Synapse Migration] "${collectionName}": ${migrated}/${points.length}`);
       }
@@ -265,32 +251,39 @@ async function migrateCollection(
     }
   }
 
-  console.error(
-    `[Synapse Migration] "${collectionName}": ${migrated} migriert, ${failed} fehlgeschlagen`
-  );
-
+  console.error(`[Synapse Migration] "${collectionName}": ${migrated} migriert, ${failed} fehlgeschlagen`);
   return { migrated, failed };
 }
 
 /**
  * Initialisiert Synapse Core
- * Testet Verbindungen, prueft Dimensions-Mismatch, migriert automatisch, erstellt Collections
+ * Testet Verbindungen (PostgreSQL, Qdrant, Embeddings), erstellt Collections
+ *
+ * @param projectName - Projekt-Name (Pflicht). Erstellt Per-Projekt Collections
+ *   und migriert bei Dimensions-Mismatch automatisch mit Backup.
  */
-export async function initSynapse(): Promise<boolean> {
-  console.error('[Synapse] Initialisiere...');
+export async function initSynapse(projectName: string): Promise<boolean> {
+  console.error(`[Synapse] Initialisiere Projekt "${projectName}"...`);
 
-  // Qdrant testen
+  // 1. PostgreSQL testen + Schema sicherstellen
+  const { testDatabaseConnection, ensureSchema } = await import('./db/index.js');
+  const dbOk = await testDatabaseConnection();
+  if (dbOk) {
+    await ensureSchema();
+  } else {
+    console.error('[Synapse] PostgreSQL nicht erreichbar - fahre ohne DB fort');
+  }
+
+  // 2. Qdrant testen
   const { testQdrantConnection } = await import('./qdrant/client.js');
   const qdrantOk = await testQdrantConnection();
-
   if (!qdrantOk) {
     console.error('[Synapse] Qdrant nicht erreichbar - Abbruch');
     return false;
   }
 
-  // Embedding Provider testen
+  // 3. Embedding Provider testen
   const { getEmbeddingProvider, getEmbeddingDimension } = await import('./embeddings/index.js');
-
   try {
     await getEmbeddingProvider();
   } catch (error) {
@@ -298,43 +291,70 @@ export async function initSynapse(): Promise<boolean> {
     return false;
   }
 
-  // Aktuelle Dimension ermitteln
   const currentDim = await getEmbeddingDimension();
 
-  // Dimensions-Mismatch pruefen und automatisch migrieren
-  const { getCollectionVectorSize, collectionExists: colExists } = await import('./qdrant/collections.js');
+  // 4. Per-Projekt Collections pruefen und bei Mismatch migrieren
+  const {
+    getCollectionVectorSize,
+    collectionExists: colExists,
+    deleteCollection: delCol,
+    ensureCollection: ensCol,
+    ensureAllCollections,
+    ensureProjectCollections,
+  } = await import('./qdrant/collections.js');
+
+  const { COLLECTIONS } = await import('./types/index.js');
+
+  // Alle Per-Projekt Collections dieses Projekts
+  const projectCollections = [
+    COLLECTIONS.projectMemories(projectName),
+    COLLECTIONS.projectThoughts(projectName),
+    COLLECTIONS.projectPlans(projectName),
+    COLLECTIONS.projectProposals(projectName),
+    COLLECTIONS.projectCode(projectName),
+    COLLECTIONS.projectDocs(projectName),
+  ];
 
   let totalMigrated = 0;
   let totalFailed = 0;
 
-  for (const collectionName of MIGRATABLE_COLLECTIONS) {
-    if (!(await colExists(collectionName))) continue;
+  for (const colName of projectCollections) {
+    if (!(await colExists(colName))) continue;
 
-    const collectionDim = await getCollectionVectorSize(collectionName);
-    if (collectionDim === null) continue;
+    const colDim = await getCollectionVectorSize(colName);
+    if (colDim === null) continue;
 
-    if (collectionDim !== currentDim) {
-      console.error(
-        `[Synapse] Dimensions-Mismatch erkannt: "${collectionName}" hat ${collectionDim}d, ` +
-        `aktuelles Modell liefert ${currentDim}d. Starte automatische Migration...`
-      );
-
-      const result = await migrateCollection(collectionName, currentDim, collectionDim);
-      totalMigrated += result.migrated;
-      totalFailed += result.failed;
+    if (colDim !== currentDim) {
+      // Code-Collections: einfach loeschen (Filewatcher re-indexiert)
+      if (colName.endsWith('_code')) {
+        console.error(
+          `[Synapse] Code-Collection "${colName}" hat ${colDim}d, Modell liefert ${currentDim}d. ` +
+          `Loesche und erstelle neu.`
+        );
+        await delCol(colName);
+        await ensCol(colName, currentDim);
+      } else {
+        // Daten-Collections: mit Backup migrieren
+        console.error(
+          `[Synapse] Dimensions-Mismatch: "${colName}" hat ${colDim}d, Modell liefert ${currentDim}d. Migriere...`
+        );
+        const result = await migrateCollection(colName, currentDim);
+        totalMigrated += result.migrated;
+        totalFailed += result.failed;
+      }
     }
   }
 
   if (totalMigrated > 0 || totalFailed > 0) {
     console.error(
-      `[Synapse] Migration abgeschlossen: ${totalMigrated} Eintraege migriert, ${totalFailed} fehlgeschlagen`
+      `[Synapse] Migration: ${totalMigrated} migriert, ${totalFailed} fehlgeschlagen`
     );
   }
 
-  // Standard-Collections erstellen (fehlende werden angelegt)
-  const { ensureAllCollections } = await import('./qdrant/collections.js');
+  // 5. Globale + Projekt-Collections sicherstellen
   await ensureAllCollections();
+  await ensureProjectCollections(projectName);
 
-  console.error('[Synapse] Initialisierung abgeschlossen');
+  console.error(`[Synapse] Projekt "${projectName}" bereit`);
   return true;
 }

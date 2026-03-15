@@ -19,7 +19,7 @@
  *   - boolean: Erfolg bei Loeschung
  *
  * NEBENEFFEKTE:
- *   - Qdrant: Schreibt/loescht in Collection "synapse_proposals"
+ *   - Qdrant: Schreibt/loescht in per-Projekt Collection "project_{name}_proposals"
  *   - Logs: Konsolenausgabe bei CRUD-Operationen
  *
  * ABHAENGIGKEITEN:
@@ -52,7 +52,10 @@ import {
   COLLECTIONS,
 } from '../types/index.js';
 
-const COLLECTION_NAME = COLLECTIONS.proposals;
+/** Collection-Name wird jetzt per Projekt berechnet */
+function getCollectionName(project: string): string {
+  return COLLECTIONS.projectProposals(project);
+}
 
 /**
  * Erstellt einen neuen Proposal (Schattenvorschlag)
@@ -68,6 +71,7 @@ export async function createProposal(
   author: string,
   tags: string[] = []
 ): Promise<Proposal> {
+  const COLLECTION_NAME = getCollectionName(project);
   await ensureCollection(COLLECTION_NAME);
 
   const now = new Date().toISOString();
@@ -115,7 +119,8 @@ export async function getProposal(
   id: string
 ): Promise<Proposal | null> {
   try {
-    const result = await getVector<ProposalPayload>(COLLECTION_NAME, id);
+    const collName = getCollectionName(project);
+    const result = await getVector<ProposalPayload>(collName, id);
 
     if (!result) {
       return null;
@@ -150,8 +155,9 @@ export async function listProposals(
     must.push({ key: 'status', match: { value: status } });
   }
 
+  const collName = getCollectionName(project);
   const results = await scrollVectors<ProposalPayload>(
-    COLLECTION_NAME,
+    collName,
     { must },
     1000
   );
@@ -174,8 +180,10 @@ export async function updateProposalStatus(
   id: string,
   status: Proposal['status']
 ): Promise<Proposal | null> {
+  const collName = getCollectionName(project);
+
   // Bestehenden Proposal laden (mit Vektor)
-  const existing = await getVector<ProposalPayload>(COLLECTION_NAME, id);
+  const existing = await getVector<ProposalPayload>(collName, id);
 
   if (!existing) {
     return null;
@@ -199,8 +207,8 @@ export async function updateProposalStatus(
   const vector = await embed(`${updatedPayload.description} ${updatedPayload.file_path}`);
 
   // Alten Eintrag loeschen und neuen einfuegen
-  await deleteVector(COLLECTION_NAME, id);
-  await insertVector(COLLECTION_NAME, vector, updatedPayload, id);
+  await deleteVector(collName, id);
+  await insertVector(collName, vector, updatedPayload, id);
 
   console.error(`[Synapse] Proposal "${id}" Status geaendert zu "${status}"`);
   return payloadToProposal(id, updatedPayload);
@@ -213,14 +221,16 @@ export async function deleteProposal(
   project: string,
   id: string
 ): Promise<boolean> {
+  const collName = getCollectionName(project);
+
   // Existenz und Projekt-Zugehoerigkeit pruefen
-  const existing = await getVector<ProposalPayload>(COLLECTION_NAME, id);
+  const existing = await getVector<ProposalPayload>(collName, id);
 
   if (!existing || existing.payload.project !== project) {
     return false;
   }
 
-  await deleteVector(COLLECTION_NAME, id);
+  await deleteVector(collName, id);
   console.error(`[Synapse] Proposal "${id}" geloescht fuer Projekt "${project}"`);
   return true;
 }
@@ -232,23 +242,23 @@ export async function deleteProposal(
  */
 export async function searchProposals(
   query: string,
-  project?: string,
+  project: string,
   limit: number = 10
 ): Promise<SearchResult<ProposalPayload>[]> {
+  const collName = getCollectionName(project);
   const queryVector = await embed(query);
 
-  const filter: Record<string, unknown> = { must: [] };
-  const must = filter.must as Array<Record<string, unknown>>;
-
-  if (project) {
-    must.push({ key: 'project', match: { value: project } });
-  }
+  const filter: Record<string, unknown> = {
+    must: [
+      { key: 'project', match: { value: project } },
+    ],
+  };
 
   const results = await searchVectors<ProposalPayload>(
-    COLLECTION_NAME,
+    collName,
     queryVector,
     limit,
-    must.length > 0 ? filter : undefined
+    filter
   );
 
   // suggestedContent aus den Ergebnissen entfernen (Lightweight)

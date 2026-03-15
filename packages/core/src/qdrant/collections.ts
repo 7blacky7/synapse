@@ -111,19 +111,30 @@ export async function deleteCollection(name: string): Promise<void> {
 export async function ensureAllCollections(): Promise<void> {
   console.error('[Synapse] Erstelle Standard-Collections...');
 
-  // Dokumentations-Cache
+  // Dokumentations-Cache (global)
   await ensureCollection(COLLECTIONS.techDocs);
 
-  // Projekt-Plaene
-  await ensureCollection(COLLECTIONS.projectPlans);
-
-  // Gedankenaustausch
-  await ensureCollection(COLLECTIONS.projectThoughts);
-
-  // Schattenvorschlaege
-  await ensureCollection(COLLECTIONS.proposals);
-
   console.error('[Synapse] Alle Standard-Collections bereit');
+}
+
+/**
+ * Erstellt alle Collections fuer ein bestimmtes Projekt
+ */
+export async function ensureProjectCollections(project: string): Promise<void> {
+  const collections = [
+    COLLECTIONS.projectCode(project),
+    COLLECTIONS.projectMemories(project),
+    COLLECTIONS.projectThoughts(project),
+    COLLECTIONS.projectPlans(project),
+    COLLECTIONS.projectProposals(project),
+    COLLECTIONS.projectDocs(project),
+  ];
+
+  for (const col of collections) {
+    await ensureCollection(col);
+  }
+
+  console.error(`[Synapse] Projekt-Collections fuer "${project}" bereit`);
 }
 
 /**

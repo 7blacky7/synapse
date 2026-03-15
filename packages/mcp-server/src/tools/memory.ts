@@ -122,7 +122,7 @@ export async function listMemories(
  */
 export async function searchMemory(
   query: string,
-  project?: string,
+  project: string,
   limit: number = 10
 ): Promise<{
   success: boolean;

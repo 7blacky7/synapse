@@ -17,7 +17,7 @@
  *   - boolean: Erfolg bei Loeschung
  *
  * NEBENEFFEKTE:
- *   - Qdrant: Schreibt/loescht in Collection "synapse_memories"
+ *   - Qdrant: Schreibt/loescht in per-Projekt Collection "project_{name}_memories"
  *   - Logs: Konsolenausgabe bei Speicherung/Loeschung
  *
  * ABHÄNGIGKEITEN:
@@ -44,8 +44,6 @@ import {
 } from '../qdrant/operations.js';
 import { searchCode } from './code.js';
 import { CodeChunkPayload, COLLECTIONS } from '../types/index.js';
-
-const COLLECTION_NAME = 'synapse_memories';
 
 export interface Memory {
   id: string;
@@ -213,7 +211,8 @@ export async function writeMemory(
   category: Memory['category'] = 'note',
   tags: string[] = []
 ): Promise<Memory> {
-  await ensureCollection(COLLECTION_NAME);
+  const collectionName = COLLECTIONS.projectMemories(project);
+  await ensureCollection(collectionName);
 
   // Prüfen ob Memory mit diesem Namen existiert
   const existing = await getMemoryByName(project, name);
@@ -249,11 +248,11 @@ export async function writeMemory(
 
   // Falls existiert, erst löschen
   if (existing) {
-    await deleteVector(COLLECTION_NAME, existing.id);
+    await deleteVector(collectionName, existing.id);
   }
 
   // Speichern
-  await insertVector(COLLECTION_NAME, vector, payload, memory.id);
+  await insertVector(collectionName, vector, payload, memory.id);
 
   const codeRefInfo = linkedPaths.length > 0 ? ` (${linkedPaths.length} Code-Referenzen)` : '';
   console.error(`[Synapse] Memory "${name}" gespeichert für Projekt "${project}"${codeRefInfo}`);
@@ -268,8 +267,9 @@ export async function getMemoryByName(
   name: string
 ): Promise<Memory | null> {
   try {
+    const collectionName = COLLECTIONS.projectMemories(project);
     const results = await scrollVectors<MemoryPayload>(
-      COLLECTION_NAME,
+      collectionName,
       {
         must: [
           { key: 'project', match: { value: project } },
@@ -315,8 +315,9 @@ export async function listMemories(
     must.push({ key: 'category', match: { value: category } });
   }
 
+  const collectionName = COLLECTIONS.projectMemories(project);
   const results = await scrollVectors<MemoryPayload>(
-    COLLECTION_NAME,
+    collectionName,
     { must },
     1000
   );
@@ -339,23 +340,23 @@ export async function listMemories(
  */
 export async function searchMemories(
   query: string,
-  project?: string,
+  project: string,
   limit: number = 10
 ): Promise<MemorySearchResult[]> {
+  const collectionName = COLLECTIONS.projectMemories(project);
   const queryVector = await embed(query);
 
-  const filter: Record<string, unknown> = { must: [] };
-  const must = filter.must as Array<Record<string, unknown>>;
-
-  if (project) {
-    must.push({ key: 'project', match: { value: project } });
-  }
+  const filter: Record<string, unknown> = {
+    must: [
+      { key: 'project', match: { value: project } },
+    ],
+  };
 
   return searchVectors<MemoryPayload>(
-    COLLECTION_NAME,
+    collectionName,
     queryVector,
     limit,
-    must.length > 0 ? filter : undefined
+    filter
   );
 }
 
@@ -372,7 +373,8 @@ export async function deleteMemory(
     return false;
   }
 
-  await deleteVector(COLLECTION_NAME, existing.id);
+  const collectionName = COLLECTIONS.projectMemories(project);
+  await deleteVector(collectionName, existing.id);
   console.error(`[Synapse] Memory "${name}" gelöscht für Projekt "${project}"`);
   return true;
 }
@@ -381,10 +383,11 @@ export async function deleteMemory(
  * Löscht alle Memories eines Projekts
  */
 export async function deleteProjectMemories(project: string): Promise<number> {
+  const collectionName = COLLECTIONS.projectMemories(project);
   const memories = await listMemories(project);
 
   for (const memory of memories) {
-    await deleteVector(COLLECTION_NAME, memory.id);
+    await deleteVector(collectionName, memory.id);
   }
 
   return memories.length;
@@ -571,8 +574,9 @@ export async function findMemoriesForPath(
   const resultMap = new Map<string, RelatedMemoryResult>();
 
   // 1. Hole alle Memories des Projekts via scrollVectors
+  const collectionName = COLLECTIONS.projectMemories(project);
   const allPoints = await scrollVectors<MemoryPayload>(
-    COLLECTION_NAME,
+    collectionName,
     {
       must: [{ key: 'project', match: { value: project } }],
     },

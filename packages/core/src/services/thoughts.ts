@@ -16,7 +16,7 @@
  *   - ThoughtSearchResult[]: Suchergebnisse mit Relevanz-Score
  *
  * NEBENEFFEKTE:
- *   - Qdrant: Schreibt/loescht in Collection "project_thoughts"
+ *   - Qdrant: Schreibt/loescht in per-Projekt Collection "project_{name}_thoughts"
  *   - Logs: Konsolenausgabe bei Speicherung/Loeschung
  *
  * ABHÄNGIGKEITEN:
@@ -58,7 +58,8 @@ export async function addThought(
   tags: string[] = []
 ): Promise<Thought> {
   // Collection sicherstellen
-  await ensureCollection(COLLECTIONS.projectThoughts);
+  const collectionName = COLLECTIONS.projectThoughts(project);
+  await ensureCollection(collectionName);
 
   // Embedding generieren
   const vector = await embed(content);
@@ -83,7 +84,7 @@ export async function addThought(
   };
 
   // In Qdrant speichern
-  await insertVector(COLLECTIONS.projectThoughts, vector, payload, thought.id);
+  await insertVector(collectionName, vector, payload, thought.id);
 
   console.error(`[Synapse] Gedanke gespeichert von "${source}" fuer Projekt "${project}"`);
   return thought;
@@ -96,8 +97,9 @@ export async function getThoughts(
   project: string,
   limit: number = 50
 ): Promise<Thought[]> {
+  const collectionName = COLLECTIONS.projectThoughts(project);
   const results = await scrollVectors<ThoughtPayload>(
-    COLLECTIONS.projectThoughts,
+    collectionName,
     {
       must: [
         {
@@ -131,26 +133,26 @@ export async function getThoughts(
  */
 export async function searchThoughts(
   query: string,
-  project?: string,
+  project: string,
   limit: number = 10
 ): Promise<ThoughtSearchResult[]> {
+  const collectionName = COLLECTIONS.projectThoughts(project);
+
   // Query embedden
   const queryVector = await embed(query);
 
   // Filter erstellen
-  const filter: Record<string, unknown> | undefined = project
-    ? {
-        must: [
-          {
-            key: 'project',
-            match: { value: project },
-          },
-        ],
-      }
-    : undefined;
+  const filter: Record<string, unknown> = {
+    must: [
+      {
+        key: 'project',
+        match: { value: project },
+      },
+    ],
+  };
 
   return searchVectors<ThoughtPayload>(
-    COLLECTIONS.projectThoughts,
+    collectionName,
     queryVector,
     limit,
     filter
@@ -160,8 +162,9 @@ export async function searchThoughts(
 /**
  * Loescht einen Gedanken
  */
-export async function deleteThought(id: string): Promise<void> {
-  await deleteVector(COLLECTIONS.projectThoughts, id);
+export async function deleteThought(project: string, id: string): Promise<void> {
+  const collectionName = COLLECTIONS.projectThoughts(project);
+  await deleteVector(collectionName, id);
   console.error(`[Synapse] Gedanke geloescht: ${id}`);
 }
 
@@ -173,8 +176,9 @@ export async function getThoughtsBySource(
   source: ThoughtSource,
   limit: number = 50
 ): Promise<Thought[]> {
+  const collectionName = COLLECTIONS.projectThoughts(project);
   const results = await scrollVectors<ThoughtPayload>(
-    COLLECTIONS.projectThoughts,
+    collectionName,
     {
       must: [
         { key: 'project', match: { value: project } },
@@ -202,8 +206,9 @@ export async function getThoughtsByTag(
   tag: string,
   limit: number = 50
 ): Promise<Thought[]> {
+  const collectionName = COLLECTIONS.projectThoughts(project);
   const results = await scrollVectors<ThoughtPayload>(
-    COLLECTIONS.projectThoughts,
+    collectionName,
     {
       must: [
         { key: 'project', match: { value: project } },

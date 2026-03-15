@@ -13,7 +13,7 @@ export interface SynapseConfig {
     apiKey?: string;
   };
   embeddings: {
-    provider: 'ollama' | 'openai';
+    provider: 'ollama' | 'openai' | 'mistral' | 'jina' | 'voyage' | 'google' | 'cohere';
     ollama: {
       url: string;
       model: string;
@@ -22,6 +22,12 @@ export interface SynapseConfig {
       apiKey?: string;
       model: string;
     };
+    /** Generischer API-Key (Fallback fuer alle Provider) */
+    apiKey?: string;
+    /** Model-Override (ueberschreibt Provider-Default) */
+    model?: string;
+    /** Base-URL Override (ueberschreibt Provider-Preset) */
+    baseUrl?: string;
   };
   context7?: {
     apiKey?: string;
@@ -35,6 +41,9 @@ export interface SynapseConfig {
   api: {
     port: number;
     host: string;
+  };
+  database: {
+    url: string;
   };
 }
 
@@ -234,14 +243,18 @@ export interface ProposalSearchResult extends SearchResult<ProposalPayload> {}
 // ===========================================
 
 export const COLLECTIONS = {
-  /** Code pro Projekt: project_{name} */
-  projectCode: (name: string) => `project_${name}`,
-  /** Dokumentations-Cache */
+  /** Code pro Projekt: project_{name}_code */
+  projectCode: (project: string) => `project_${project}_code`,
+  /** Memories pro Projekt */
+  projectMemories: (project: string) => `project_${project}_memories`,
+  /** Thoughts pro Projekt */
+  projectThoughts: (project: string) => `project_${project}_thoughts`,
+  /** Plans pro Projekt */
+  projectPlans: (project: string) => `project_${project}_plans`,
+  /** Proposals pro Projekt */
+  projectProposals: (project: string) => `project_${project}_proposals`,
+  /** Docs pro Projekt */
+  projectDocs: (project: string) => `project_${project}_docs`,
+  /** Dokumentations-Cache (global, bleibt) */
   techDocs: 'tech_docs_cache',
-  /** Projekt-Plaene */
-  projectPlans: 'project_plans',
-  /** Gedankenaustausch */
-  projectThoughts: 'project_thoughts',
-  /** Schattenvorschlaege */
-  proposals: 'synapse_proposals',
 } as const;

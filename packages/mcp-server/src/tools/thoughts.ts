@@ -74,7 +74,7 @@ export async function getThoughts(
  */
 export async function searchThoughts(
   query: string,
-  project?: string,
+  project: string,
   limit: number = 10
 ): Promise<{
   success: boolean;
@@ -125,7 +125,7 @@ export async function deleteThought(
   message: string;
 }> {
   try {
-    await deleteThoughtCore(id);
+    await deleteThoughtCore(project, id);
 
     return {
       success: true,
