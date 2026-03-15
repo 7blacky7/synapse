@@ -5,9 +5,7 @@
 
 import { getQdrantClient } from './client.js';
 import { COLLECTIONS } from '../types/index.js';
-
-/** Vektor-Dimension fuer Embeddings (nomic-embed-text = 768) */
-const VECTOR_SIZE = 768;
+import { getEmbeddingDimension } from '../embeddings/index.js';
 
 /**
  * Prueft ob eine Collection existiert
@@ -24,27 +22,72 @@ export async function collectionExists(name: string): Promise<boolean> {
 }
 
 /**
+ * Liest die Vektor-Dimension einer existierenden Collection
+ * Gibt null zurueck wenn Collection nicht existiert
+ */
+export async function getCollectionVectorSize(name: string): Promise<number | null> {
+  const client = getQdrantClient();
+  try {
+    const info = await client.getCollection(name);
+    const vectors = info.config.params.vectors;
+    if (vectors && typeof vectors === 'object' && 'size' in vectors) {
+      return (vectors as { size: number }).size;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Prueft ob die Dimension einer Collection zum aktuellen Embedding-Modell passt
+ */
+export async function checkDimensionMatch(name: string): Promise<{
+  match: boolean;
+  collectionDim: number | null;
+  currentDim: number;
+}> {
+  const currentDim = await getEmbeddingDimension();
+  const collectionDim = await getCollectionVectorSize(name);
+
+  return {
+    match: collectionDim === null || collectionDim === currentDim,
+    collectionDim,
+    currentDim,
+  };
+}
+
+/**
  * Erstellt eine Collection falls sie nicht existiert
+ * Warnt bei Dimensions-Mismatch (automatische Migration erfolgt in initSynapse)
  */
 export async function ensureCollection(
   name: string,
-  vectorSize: number = VECTOR_SIZE
+  vectorSize?: number
 ): Promise<void> {
   const client = getQdrantClient();
+  const size = vectorSize ?? await getEmbeddingDimension();
 
   if (await collectionExists(name)) {
-    console.error(`[Synapse] Collection "${name}" existiert bereits`);
+    // Dimensions-Mismatch pruefen
+    const collectionDim = await getCollectionVectorSize(name);
+    if (collectionDim !== null && collectionDim !== size) {
+      console.error(
+        `[Synapse] ⚠️ DIMENSIONS-MISMATCH: Collection "${name}" hat ${collectionDim}d, ` +
+        `aktuelles Modell liefert ${size}d. Migration noetig.`
+      );
+    }
     return;
   }
 
   await client.createCollection(name, {
     vectors: {
-      size: vectorSize,
+      size,
       distance: 'Cosine',
     },
   });
 
-  console.error(`[Synapse] Collection "${name}" erstellt`);
+  console.error(`[Synapse] Collection "${name}" erstellt (${size}d)`);
 }
 
 /**
