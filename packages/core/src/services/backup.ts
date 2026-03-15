@@ -28,6 +28,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { scrollVectors } from '../qdrant/operations.js';
+import { COLLECTIONS } from '../types/index.js';
+import { getPool } from '../db/client.js';
 
 const SYNAPSE_HOME = path.join(os.homedir(), '.synapse');
 const BACKUP_DIR = path.join(SYNAPSE_HOME, 'backup');
@@ -140,4 +142,56 @@ export function getBackupStats(): Array<{
   }
 
   return stats;
+}
+
+/**
+ * Sichert alle Per-Projekt Collections als JSONL-Backups
+ * Nutzt die neuen Collection-Namen (project_{name}_memories etc.)
+ */
+export async function backupProject(project: string): Promise<{
+  collections: Array<{ name: string; entries: number; path: string }>;
+  totalEntries: number;
+}> {
+  const dir = getBackupDir();
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const results: Array<{ name: string; entries: number; path: string }> = [];
+  let totalEntries = 0;
+
+  const collectionsToBackup = [
+    { name: COLLECTIONS.projectMemories(project), label: 'memories' },
+    { name: COLLECTIONS.projectThoughts(project), label: 'thoughts' },
+    { name: COLLECTIONS.projectPlans(project), label: 'plans' },
+    { name: COLLECTIONS.projectProposals(project), label: 'proposals' },
+  ];
+
+  for (const col of collectionsToBackup) {
+    const filePath = path.join(dir, `${col.name}_${timestamp}.jsonl`);
+    const count = await dumpCollectionToFile(col.name, filePath);
+    if (count > 0) {
+      results.push({ name: col.label, entries: count, path: filePath });
+      totalEntries += count;
+    }
+  }
+
+  // PostgreSQL-Backup (alle Projekt-Daten als JSON)
+  try {
+    const pool = getPool();
+    const tables = ['memories', 'thoughts', 'plans', 'proposals'];
+    for (const table of tables) {
+      const result = await pool.query(
+        `SELECT * FROM ${table} WHERE project = $1`, [project]
+      );
+      if (result.rows.length > 0) {
+        const pgPath = path.join(dir, `psql_${project}_${table}_${timestamp}.jsonl`);
+        const lines = result.rows.map(row => JSON.stringify(row));
+        fs.writeFileSync(pgPath, lines.join('\n') + '\n', 'utf-8');
+        console.error(`[Synapse Backup] PostgreSQL ${table}: ${result.rows.length} Eintraege -> ${pgPath}`);
+      }
+    }
+  } catch (error) {
+    console.error('[Synapse Backup] PostgreSQL-Backup fehlgeschlagen:', error);
+  }
+
+  console.error(`[Synapse Backup] Projekt "${project}": ${totalEntries} Eintraege gesichert (${results.length} Collections)`);
+  return { collections: results, totalEntries };
 }

@@ -147,6 +147,7 @@ export {
   readBackupFile,
   getBackupDir,
   getBackupStats,
+  backupProject,
   // Chat
   registerAgent as registerChatAgent,
   unregisterAgent as unregisterChatAgent,
