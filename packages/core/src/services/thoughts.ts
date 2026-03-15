@@ -47,6 +47,7 @@ import {
   deleteVector,
 } from '../qdrant/index.js';
 import { embed } from '../embeddings/index.js';
+import { getPool } from '../db/client.js';
 
 /**
  * Fuegt einen Gedanken hinzu
@@ -83,7 +84,20 @@ export async function addThought(
     timestamp: thought.timestamp,
   };
 
-  // In Qdrant speichern
+  // 1. PostgreSQL (Source of Truth)
+  try {
+    const pool = getPool();
+    await pool.query(
+      `INSERT INTO thoughts (id, project, source, content, tags, timestamp)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       ON CONFLICT (id) DO NOTHING`,
+      [thought.id, project, source, content, tags, thought.timestamp]
+    );
+  } catch (error) {
+    console.error('[Synapse] PostgreSQL Thought-Write fehlgeschlagen, nur Qdrant:', error);
+  }
+
+  // 2. Qdrant (Vektor-Index)
   await insertVector(collectionName, vector, payload, thought.id);
 
   console.error(`[Synapse] Gedanke gespeichert von "${source}" fuer Projekt "${project}"`);
@@ -163,6 +177,15 @@ export async function searchThoughts(
  * Loescht einen Gedanken
  */
 export async function deleteThought(project: string, id: string): Promise<void> {
+  // 1. PostgreSQL
+  try {
+    const pool = getPool();
+    await pool.query('DELETE FROM thoughts WHERE id = $1', [id]);
+  } catch (error) {
+    console.error('[Synapse] PostgreSQL Thought-Delete fehlgeschlagen:', error);
+  }
+
+  // 2. Qdrant
   const collectionName = COLLECTIONS.projectThoughts(project);
   await deleteVector(collectionName, id);
   console.error(`[Synapse] Gedanke geloescht: ${id}`);
