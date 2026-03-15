@@ -39,25 +39,33 @@ Der Koordinator sucht NICHT selbst, er delegiert an Agenten.
 > ⛔ `isolation: "worktree"` NIEMALS verwenden wenn Synapse aktiv ist!
 > Agenten arbeiten direkt im Haupt-Repo auf eigenen Branches.
 
-### Agent-IDs
+### Agent spawnen (PFLICHT-Ablauf)
 
-Systematische IDs statt kreative Namen:
-- `agent-pg-layer` (task-bezogen)
-- `agent-1`, `agent-2` (nummeriert)
-- `recherche-react` (aufgaben-bezogen)
+**VOR dem Spawnen** registriert der Koordinator den Agent in PostgreSQL:
+
+```
+1. Agent-ID waehlen (task-bezogen: "agent-pg-layer", nummeriert: "agent-1")
+2. register_chat_agent(id: "<AGENT_ID>", project: "<PROJEKT>")
+   → Agent ist jetzt in PostgreSQL registriert
+3. Agent spawnen mit ID im Prompt (siehe Prompt-Baustein unten)
+```
+
+**Der Agent muss sich NICHT selbst registrieren** — der Koordinator hat das bereits gemacht.
+Der Agent muss sich am Ende nur abmelden: `unregister_chat_agent(id: "<AGENT_ID>")`
 
 ### Prompt-Baustein (PFLICHT in jedem Agent-Prompt)
 
 ```
-=== SYNAPSE PFLICHT-REGELN ===
+=== SYNAPSE AGENT-REGELN ===
 Du arbeitest mit Synapse MCP-Tools. Deine agent_id ist: {AGENT_ID}
 Projekt: {PROJEKT}
+Du bist bereits im Chat registriert (vom Koordinator).
 
 SCHRITT 1 (ALLERERSTE Aktion):
-  register_chat_agent(id: "{AGENT_ID}", project: "{PROJEKT}")
   get_index_stats(project: "{PROJEKT}", agent_id: "{AGENT_ID}")
-  read_memory(project: "{PROJEKT}", name: "projekt-regeln", agent_id: "{AGENT_ID}")
+  → Onboarding + Projekt-Regeln laden
   get_chat_messages(project: "{PROJEKT}", agent_id: "{AGENT_ID}", limit: 10)
+  → Letzte Nachrichten lesen
 
 SUCHE (vor jeder Code-Suche):
 - IMMER zuerst Synapse MCP-Tools verwenden
@@ -74,8 +82,8 @@ REGELN:
 - Erfolg: Chat "Task erledigt." + Task completed
 - Problem: Chat-DM + add_thought mit Tag "problem"
 
-ABMELDUNG (am Ende): unregister_chat_agent(id: "{AGENT_ID}")
-=== ENDE SYNAPSE REGELN ===
+ABMELDUNG (PFLICHT am Ende): unregister_chat_agent(id: "{AGENT_ID}")
+=== ENDE AGENT-REGELN ===
 ```
 
 ## 4. Richtige Tool-Wahl

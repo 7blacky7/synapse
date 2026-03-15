@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
-# Synapse Agent Onboarding Hook (Linux)
-# Handles: PreToolUse:Read (Koordinator) + SubagentStart (Subagenten)
-# PreToolUse → additionalContext (Koordinator-Regeln)
-# SubagentStart → updatedPrompt (Agent-Regeln)
+# Synapse Onboarding Hook
+# PreToolUse:Read → Koordinator-Regeln
+# SubagentStart → Agent-Regeln mit automatischer ID
 
 set -euo pipefail
 
@@ -51,10 +50,13 @@ PROJECT_NAME=$(jq -r '.project // empty' "$STATUS_FILE")
 PROJECT_STATUS=$(jq -r '.status // "unknown"' "$STATUS_FILE")
 if [ -z "$PROJECT_NAME" ]; then exit 0; fi
 
+QDRANT_URL="${QDRANT_URL:-http://192.168.50.65:6333}"
+
 # ============================================
-# Session-Tracking (NUR fuer Koordinator, nicht Subagenten)
+# KOORDINATOR (PreToolUse:Read)
 # ============================================
 if [ "$HOOK_EVENT" != "SubagentStart" ]; then
+    # Session-Tracking (einmal pro 30 Min)
     MARKER="/tmp/synapse-onboarding-${PROJECT_NAME}.marker"
     if [ -f "$MARKER" ]; then
         MARKER_AGE=$(( $(date +%s) - $(stat -c %Y "$MARKER" 2>/dev/null || echo 0) ))
@@ -63,63 +65,35 @@ if [ "$HOOK_EVENT" != "SubagentStart" ]; then
         fi
     fi
     touch "$MARKER"
-fi
 
-# ============================================
-# Qdrant URL (aus Env oder Default)
-# ============================================
-QDRANT_URL="${QDRANT_URL:-http://192.168.50.65:6333}"
-
-# ============================================
-# Letzte Thoughts aus Per-Projekt Collection
-# ============================================
-get_recent_thoughts() {
-    local collection="project_${PROJECT_NAME}_thoughts"
-    local body='{"limit":5,"filter":{"must":[{"key":"project","match":{"value":"'"$PROJECT_NAME"'"}}]},"with_payload":true}'
-    curl -s --max-time 3 \
-        -X POST "${QDRANT_URL}/collections/${collection}/points/scroll" \
-        -H "Content-Type: application/json" \
-        -d "$body" 2>/dev/null || echo '{}'
-}
-
-THOUGHTS_JSON=$(get_recent_thoughts)
-THOUGHTS_COUNT=$(echo "$THOUGHTS_JSON" | jq '.result.points | length // 0' 2>/dev/null || echo 0)
-
-# ============================================
-# Output: KOORDINATOR (PreToolUse)
-# ============================================
-if [ "$HOOK_EVENT" != "SubagentStart" ]; then
     MSG="Synapse MCP aktiv | Projekt: ${PROJECT_NAME} | Status: ${PROJECT_STATUS}\n"
-    MSG+="Lade: synapse-nutzung Skill (Koordinator-Regeln)\n"
-    MSG+="Session-Start: register_chat_agent(id:\"koordinator\" project:\"${PROJECT_NAME}\")\n"
-
-    if [ "$THOUGHTS_COUNT" -gt 0 ]; then
-        MSG+="Letzte Erkenntnisse:\n"
-        for i in $(seq 0 $((THOUGHTS_COUNT - 1))); do
-            SRC=$(echo "$THOUGHTS_JSON" | jq -r ".result.points[$i].payload.source // \"?\"")
-            CNT=$(echo "$THOUGHTS_JSON" | jq -r ".result.points[$i].payload.content // \"\"" | head -c 80)
-            MSG+="  ${SRC}: ${CNT}...\n"
-        done
-    fi
-
+    MSG+="Du bist der KOORDINATOR. Lade: synapse-nutzung Skill\n"
+    MSG+="Session-Start: register_chat_agent(id:\"koordinator\" project:\"${PROJECT_NAME}\" model:\"claude-opus-4-6\")\n"
+    MSG+="Dann: get_chat_messages(project:\"${PROJECT_NAME}\" agent_id:\"koordinator\" limit:10)\n"
+    MSG+="Agenten spawnen: Prompt-Baustein aus synapse-nutzung Skill einbetten\n"
     MSG+="Tools: register_chat_agent, send_chat_message, get_chat_messages, search_tech_docs, get_docs_for_file"
 
     CONTEXT=$(printf '%b' "$MSG")
     jq -nc --arg c "$CONTEXT" '{"hookSpecificOutput": {"hookEventName": "PreToolUse", "additionalContext": $c}}'
 
 # ============================================
-# Output: AGENT (SubagentStart)
+# AGENT (SubagentStart)
 # ============================================
 else
-    MSG="=== SYNAPSE AGENT-REGELN ===\n"
-    MSG+="Projekt: ${PROJECT_NAME}\n"
-    MSG+="SCHRITT 1: register_chat_agent(id:\"<deine-id>\" project:\"${PROJECT_NAME}\")\n"
-    MSG+="SCHRITT 2: get_index_stats(project:\"${PROJECT_NAME}\" agent_id:\"<deine-id>\")\n"
-    MSG+="SCHRITT 3: get_chat_messages(project:\"${PROJECT_NAME}\" agent_id:\"<deine-id>\" limit:10)\n"
-    MSG+="SUCHE: IMMER zuerst semantic_code_search / search_memory, Glob/Grep nur als Fallback\n"
-    MSG+="CHAT: send_chat_message fuer Status, DM an \"koordinator\" bei Problemen\n"
-    MSG+="ENDE: unregister_chat_agent(id:\"<deine-id>\")\n"
-    MSG+="=== ENDE AGENT-REGELN ===\n"
+    # Automatische Agent-ID generieren
+    AGENT_ID="agent-$(date +%s | tail -c 6)"
+
+    MSG="=== SYNAPSE AGENT-ONBOARDING ===\n"
+    MSG+="Projekt: ${PROJECT_NAME} | Deine ID: ${AGENT_ID}\n\n"
+    MSG+="PFLICHT-SCHRITTE (ALLERERSTE Aktionen):\n"
+    MSG+="1. register_chat_agent(id:\"${AGENT_ID}\" project:\"${PROJECT_NAME}\")\n"
+    MSG+="2. get_index_stats(project:\"${PROJECT_NAME}\" agent_id:\"${AGENT_ID}\")\n"
+    MSG+="3. get_chat_messages(project:\"${PROJECT_NAME}\" agent_id:\"${AGENT_ID}\" limit:10)\n\n"
+    MSG+="SUCHE: IMMER zuerst semantic_code_search / search_memory. Glob/Grep nur Fallback.\n"
+    MSG+="CHAT: send_chat_message fuer Status. DM: recipient_id:\"koordinator\" bei Problemen.\n"
+    MSG+="ENDE: unregister_chat_agent(id:\"${AGENT_ID}\")\n"
+    MSG+="agent_id \"${AGENT_ID}\" an JEDEN Synapse-Aufruf. source \"${AGENT_ID}\" bei add_thought.\n"
+    MSG+="=== ENDE AGENT-ONBOARDING ===\n"
 
     ORIGINAL_PROMPT=$(echo "$INPUT" | jq -r '.subagent_prompt // ""')
     UPDATED_PROMPT=$(printf '%b\n\n--- ORIGINAL TASK ---\n\n%s' "$MSG" "$ORIGINAL_PROMPT")
