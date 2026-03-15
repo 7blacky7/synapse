@@ -1536,12 +1536,28 @@ export function createServer(): Server {
         }
 
         case 'send_chat_message': {
+          const senderId = args?.sender_id as string;
+          const recipientId = args?.recipient_id as string | undefined;
+          const content = args?.content as string;
           const result = await sendChatMessage(
             args?.project as string,
-            args?.sender_id as string,
-            args?.content as string,
-            args?.recipient_id as string | undefined
+            senderId,
+            content,
+            recipientId
           );
+
+          // Broadcast-Notification an den Client: Neue Chat-Nachricht!
+          if (result.success) {
+            const target = recipientId ? `DM an ${recipientId}` : 'Broadcast';
+            const preview = content.length > 80 ? content.slice(0, 80) + '...' : content;
+            try {
+              await server.sendLoggingMessage({
+                level: 'info',
+                data: `📨 Chat [${senderId} → ${target}]: ${preview}`,
+              });
+            } catch { /* Logging nicht verfuegbar */ }
+          }
+
           return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
         }
 
