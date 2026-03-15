@@ -169,7 +169,7 @@ export type { ChatMessage, AgentSession } from './services/chat.js';
 export type { TechDoc, TechDocType } from './services/tech-docs.js';
 export type { Memory, MemoryWithRelatedCode, RelatedMemoryResult, RelatedCodeResult } from './services/memory.js';
 export type { DetectedTechnology } from './services/tech-detection.js';
-export type { Context7Doc, Context7SearchResult } from './services/context7.js';
+export type { Context7Doc } from './services/context7.js';
 export type { IndexedDoc } from './services/docs-indexer.js';
 export type { ExtractedDocument, DocumentSearchResult } from './services/documents.js';
 export type {
