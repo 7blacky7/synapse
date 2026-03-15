@@ -203,6 +203,45 @@ export async function readMemoryWithCode(
 }
 
 /**
+ * Aktualisiert ein bestehendes Memory (einzelne Felder aenderbar)
+ */
+export async function updateMemoryTool(
+  project: string,
+  name: string,
+  changes: { content?: string; category?: MemoryCategory; tags?: string[] }
+): Promise<{
+  success: boolean;
+  memory: Memory | null;
+  message: string;
+}> {
+  try {
+    const { updateMemory } = await import('@synapse/core');
+    const memory = await updateMemory(project, name, changes);
+
+    if (!memory) {
+      return {
+        success: false,
+        memory: null,
+        message: `Memory "${name}" nicht gefunden in Projekt "${project}"`,
+      };
+    }
+
+    const changedFields = Object.keys(changes).filter(k => changes[k as keyof typeof changes] !== undefined);
+    return {
+      success: true,
+      memory,
+      message: `Memory "${name}" aktualisiert (${changedFields.join(', ')})`,
+    };
+  } catch (error) {
+    return {
+      success: false,
+      memory: null,
+      message: `Fehler beim Aktualisieren: ${error}`,
+    };
+  }
+}
+
+/**
  * Findet Memories für eine Datei
  */
 export async function findMemoriesForFile(

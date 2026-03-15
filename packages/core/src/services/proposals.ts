@@ -238,6 +238,78 @@ export async function updateProposalStatus(
 }
 
 /**
+ * Aktualisiert einen bestehenden Proposal (partielle Aenderungen)
+ * PostgreSQL first, dann Qdrant bei content/suggestedContent-Aenderung
+ */
+export async function updateProposal(
+  project: string,
+  id: string,
+  changes: { content?: string; suggestedContent?: string; status?: string }
+): Promise<Proposal | null> {
+  // 1. Bestehenden Proposal aus PostgreSQL laden
+  const pool = getPool();
+  const existing = await pool.query(
+    'SELECT id, project, file_path, suggested_content, description, author, status, tags, created_at, updated_at FROM proposals WHERE project = $1 AND id = $2',
+    [project, id]
+  );
+
+  if (existing.rows.length === 0) {
+    console.error(`[Synapse] updateProposal: Proposal "${id}" nicht gefunden in Projekt "${project}"`);
+    return null;
+  }
+
+  const row = existing.rows[0];
+  const now = new Date().toISOString();
+
+  // 2. Felder mergen (nur gesetzte changes ueberschreiben)
+  // content mappt auf description (Proposal-Beschreibung)
+  const mergedDescription = changes.content ?? row.description;
+  const mergedSuggestedContent = changes.suggestedContent ?? row.suggested_content;
+  const mergedStatus = changes.status ?? row.status;
+
+  // 3. PostgreSQL UPDATE
+  await pool.query(
+    `UPDATE proposals SET description = $1, suggested_content = $2, status = $3, updated_at = $4 WHERE id = $5`,
+    [mergedDescription, mergedSuggestedContent, mergedStatus, now, id]
+  );
+
+  // 4. Neues Embedding generieren und Qdrant-Vektor upserten
+  const collName = getCollectionName(project);
+  await ensureCollection(collName);
+  const vector = await embed(`${mergedDescription} ${row.file_path}`);
+  const payload: ProposalPayload = {
+    project,
+    file_path: row.file_path,
+    suggested_content: mergedSuggestedContent,
+    description: mergedDescription,
+    author: row.author,
+    status: mergedStatus,
+    tags: row.tags || [],
+    created_at: row.created_at instanceof Date ? row.created_at.toISOString() : row.created_at,
+    updated_at: now,
+  };
+  await deleteVector(collName, id);
+  await insertVector(collName, vector, payload, id);
+
+  // 5. Aktualisierter Proposal zurueckgeben
+  const updatedProposal: Proposal = {
+    id,
+    project,
+    filePath: row.file_path,
+    suggestedContent: mergedSuggestedContent,
+    description: mergedDescription,
+    author: row.author,
+    status: mergedStatus as Proposal['status'],
+    tags: row.tags || [],
+    createdAt: row.created_at instanceof Date ? row.created_at.toISOString() : row.created_at,
+    updatedAt: now,
+  };
+
+  console.error(`[Synapse] Proposal "${id}" aktualisiert fuer Projekt "${project}"`);
+  return updatedProposal;
+}
+
+/**
  * Loescht einen Proposal
  */
 export async function deleteProposal(

@@ -55,6 +55,10 @@ import {
   addTechDocTool,
   searchTechDocsTool,
   getDocsForFileTool,
+  completeSetupTool,
+  updateMemoryTool,
+  updateThoughtTool,
+  updateProposalTool,
 } from './tools/index.js';
 
 /**
@@ -101,6 +105,18 @@ export function createServer(): Server {
             },
           },
           required: ['path'],
+        },
+      },
+      {
+        name: 'complete_setup',
+        description: 'Markiert eine Setup-Phase als abgeschlossen. Wird nach dem Setup-Wizard aufgerufen.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            project: { type: 'string', description: 'Projekt-Name' },
+            phase: { type: 'string', enum: ['initial', 'post-indexing'], description: 'Welche Phase abschliessen' },
+          },
+          required: ['project', 'phase'],
         },
       },
       {
@@ -757,6 +773,110 @@ export function createServer(): Server {
         },
       },
 
+      // ===== UPDATE-TOOLS (EDIT-LAYER) =====
+      {
+        name: 'update_memory',
+        description: 'Aktualisiert ein bestehendes Memory (Felder einzeln aenderbar). Aendert PostgreSQL und re-indexiert Qdrant.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            project: {
+              type: 'string',
+              description: 'Projekt-Name',
+            },
+            agent_id: {
+              type: 'string',
+              description: 'Agent-ID fuer Onboarding. Neue Agenten sehen automatisch Projekt-Regeln.',
+            },
+            name: {
+              type: 'string',
+              description: 'Name des Memories (eindeutiger Identifier)',
+            },
+            content: {
+              type: 'string',
+              description: 'Neuer Inhalt (optional)',
+            },
+            category: {
+              type: 'string',
+              enum: ['documentation', 'note', 'architecture', 'decision', 'rules', 'other'],
+              description: 'Neue Kategorie (optional)',
+            },
+            tags: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'Neue Tags (optional, ersetzt bestehende)',
+            },
+          },
+          required: ['project', 'name'],
+        },
+      },
+      {
+        name: 'update_thought',
+        description: 'Aktualisiert einen bestehenden Gedanken. Aendert PostgreSQL und re-indexiert Qdrant.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            project: {
+              type: 'string',
+              description: 'Projekt-Name',
+            },
+            agent_id: {
+              type: 'string',
+              description: 'Agent-ID fuer Onboarding. Neue Agenten sehen automatisch Projekt-Regeln.',
+            },
+            id: {
+              type: 'string',
+              description: 'ID des Gedankens',
+            },
+            content: {
+              type: 'string',
+              description: 'Neuer Inhalt (optional)',
+            },
+            tags: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'Neue Tags (optional, ersetzt bestehende)',
+            },
+          },
+          required: ['project', 'id'],
+        },
+      },
+      {
+        name: 'update_proposal',
+        description: 'Aktualisiert einen Schattenvorschlag. Aendert PostgreSQL und re-indexiert Qdrant.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            project: {
+              type: 'string',
+              description: 'Projekt-Name',
+            },
+            agent_id: {
+              type: 'string',
+              description: 'Agent-ID fuer Onboarding. Neue Agenten sehen automatisch Projekt-Regeln.',
+            },
+            id: {
+              type: 'string',
+              description: 'Proposal-ID',
+            },
+            content: {
+              type: 'string',
+              description: 'Neue Beschreibung (optional)',
+            },
+            suggested_content: {
+              type: 'string',
+              description: 'Neuer vorgeschlagener Inhalt (optional)',
+            },
+            status: {
+              type: 'string',
+              enum: ['pending', 'reviewed', 'accepted', 'rejected'],
+              description: 'Neuer Status (optional)',
+            },
+          },
+          required: ['project', 'id'],
+        },
+      },
+
       // ===== MIGRATION & BACKUP =====
       {
         name: 'migrate_embeddings',
@@ -1002,6 +1122,20 @@ export function createServer(): Server {
             agentId
           );
           // Pfad wird automatisch in initProjekt gecacht
+          return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+        }
+
+        case 'complete_setup': {
+          const { getCachedProjectPath } = await import('./tools/onboarding.js');
+          const setupProjectPath = getCachedProjectPath(args?.project as string);
+          if (!setupProjectPath) {
+            return { content: [{ type: 'text', text: JSON.stringify({ success: false, message: 'Projekt-Pfad nicht gefunden. Wurde init_projekt aufgerufen?' }, null, 2) }] };
+          }
+          const result = await completeSetupTool(
+            args?.project as string,
+            args?.phase as 'initial' | 'post-indexing',
+            setupProjectPath
+          );
           return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
         }
 
@@ -1365,6 +1499,45 @@ export function createServer(): Server {
           const { query, project, limit } = args as { query: string; project: string; limit?: number };
           const result = await searchProposalsWrapper(query, project, limit);
           return { content: [{ type: 'text', text: result }] };
+        }
+
+        // ===== UPDATE-TOOLS (EDIT-LAYER) =====
+        case 'update_memory': {
+          const changes: { content?: string; category?: 'documentation' | 'note' | 'architecture' | 'decision' | 'rules' | 'other'; tags?: string[] } = {};
+          if (args?.content) changes.content = args.content as string;
+          if (args?.category) changes.category = args.category as 'documentation' | 'note' | 'architecture' | 'decision' | 'rules' | 'other';
+          if (args?.tags) changes.tags = args.tags as string[];
+          const result = await updateMemoryTool(
+            args?.project as string,
+            args?.name as string,
+            changes
+          );
+          return withOnboarding(result);
+        }
+
+        case 'update_thought': {
+          const changes: { content?: string; tags?: string[] } = {};
+          if (args?.content) changes.content = args.content as string;
+          if (args?.tags) changes.tags = args.tags as string[];
+          const result = await updateThoughtTool(
+            args?.project as string,
+            args?.id as string,
+            changes
+          );
+          return withOnboarding(result);
+        }
+
+        case 'update_proposal': {
+          const changes: { content?: string; suggestedContent?: string; status?: string } = {};
+          if (args?.content) changes.content = args.content as string;
+          if (args?.suggested_content) changes.suggestedContent = args.suggested_content as string;
+          if (args?.status) changes.status = args.status as string;
+          const result = await updateProposalTool(
+            args?.project as string,
+            args?.id as string,
+            changes
+          );
+          return withOnboarding(result);
         }
 
         // ===== MIGRATION & BACKUP =====

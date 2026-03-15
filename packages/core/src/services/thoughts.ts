@@ -174,6 +174,68 @@ export async function searchThoughts(
 }
 
 /**
+ * Aktualisiert einen bestehenden Gedanken (partielle Aenderungen)
+ * PostgreSQL first, dann Qdrant bei content-Aenderung
+ */
+export async function updateThought(
+  project: string,
+  id: string,
+  changes: { content?: string; tags?: string[] }
+): Promise<Thought | null> {
+  // 1. Bestehenden Thought aus PostgreSQL laden
+  const pool = getPool();
+  const existing = await pool.query(
+    'SELECT id, project, source, content, tags, timestamp FROM thoughts WHERE project = $1 AND id = $2',
+    [project, id]
+  );
+
+  if (existing.rows.length === 0) {
+    console.error(`[Synapse] updateThought: Thought "${id}" nicht gefunden in Projekt "${project}"`);
+    return null;
+  }
+
+  const row = existing.rows[0];
+  const now = new Date().toISOString();
+
+  // 2. Felder mergen (nur gesetzte changes ueberschreiben)
+  const mergedContent = changes.content ?? row.content;
+  const mergedTags = changes.tags ?? row.tags;
+
+  // 3. PostgreSQL UPDATE
+  await pool.query(
+    `UPDATE thoughts SET content = $1, tags = $2 WHERE id = $3`,
+    [mergedContent, mergedTags, id]
+  );
+
+  // 4. Neues Embedding generieren und Qdrant-Vektor upserten
+  const collectionName = COLLECTIONS.projectThoughts(project);
+  await ensureCollection(collectionName);
+  const vector = await embed(mergedContent);
+  const payload: ThoughtPayload = {
+    project,
+    source: row.source,
+    content: mergedContent,
+    tags: mergedTags,
+    timestamp: row.timestamp instanceof Date ? row.timestamp.toISOString() : row.timestamp,
+  };
+  await deleteVector(collectionName, id);
+  await insertVector(collectionName, vector, payload, id);
+
+  // 5. Aktualisierter Thought zurueckgeben
+  const updatedThought: Thought = {
+    id,
+    project,
+    source: row.source as ThoughtSource,
+    content: mergedContent,
+    tags: mergedTags,
+    timestamp: row.timestamp instanceof Date ? row.timestamp.toISOString() : row.timestamp,
+  };
+
+  console.error(`[Synapse] Thought "${id}" aktualisiert fuer Projekt "${project}"`);
+  return updatedThought;
+}
+
+/**
  * Loescht einen Gedanken
  */
 export async function deleteThought(project: string, id: string): Promise<void> {

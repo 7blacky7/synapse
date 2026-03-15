@@ -26,6 +26,7 @@ import {
   getRulesForNewAgent,
 } from '@synapse/core';
 import type { FileWatcherInstance, DetectedTechnology, Memory } from '@synapse/core';
+import type { SetupQuestion } from './setup.js';
 
 /** Aktive FileWatcher pro Projekt */
 const activeWatchers = new Map<string, FileWatcherInstance>();
@@ -56,6 +57,12 @@ type InitResult = {
   docsIndexed?: { total: number; indexed: number; cached: number };
   isFirstVisit?: boolean;
   rules?: RuleMemory[];
+  setupRequired?: {
+    phase: string;
+    questions: SetupQuestion[];
+    detectedContext: { technologies: DetectedTechnology[]; readmeExcerpt: string | null };
+    instructions: string;
+  };
 };
 
 /**
@@ -247,6 +254,34 @@ export async function initProjekt(
   // Persistenten Status speichern
   setProjectStatus(projectPath, { status: 'active', project: name });
 
+  // ===== SETUP-WIZARD PRUEFEN =====
+  let setupRequired: InitResult['setupRequired'] | undefined;
+
+  try {
+    const { listMemories: listMems } = await import('@synapse/core');
+    let existingRules: unknown[] = [];
+    try {
+      existingRules = await listMems(name, 'rules');
+    } catch {
+      // Collection existiert noch nicht — keine rules vorhanden
+    }
+    if (existingRules.length === 0) {
+      const { buildSetupWizard, readReadmeExcerpt } = await import('./setup.js');
+      const readmeExcerpt = readReadmeExcerpt(projectPath);
+      setProjectStatus(projectPath, { setupPhase: 'initial-pending' });
+      const wizard = buildSetupWizard('initial', technologies, readmeExcerpt);
+      setupRequired = {
+        phase: wizard.phase,
+        questions: wizard.questions,
+        detectedContext: wizard.detectedContext,
+        instructions: wizard.instructions,
+      };
+      console.error(`[Synapse MCP] Setup-Wizard: ${wizard.questions.length} Fragen fuer Phase "initial"`);
+    }
+  } catch (error) {
+    console.error(`[Synapse MCP] Setup-Wizard Fehler:`, error);
+  }
+
   // ===== AGENT ONBOARDING =====
   let isFirstVisit = false;
   let rules: RuleMemory[] | undefined;
@@ -295,6 +330,7 @@ export async function initProjekt(
     docsIndexed,
     isFirstVisit,
     rules,
+    setupRequired,
   };
 }
 
