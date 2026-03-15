@@ -84,17 +84,82 @@ REGELN:
 
 WISSENSLUECKEN (Cutoff-Handling):
 - Wenn Technologie/Version jenseits deines Cutoffs liegt:
-  1. Chat: "Wissensluecke: [Tech] v[Version] jenseits Cutoff [Datum]. Suche Context7..."
-  2. search_tech_docs(query: "[Frage]", framework: "[tech]", project: "{PROJEKT}")
-  3. Bei Treffern (Score > 0.60): Docs nutzen, weiterarbeiten
-  4. Ohne Treffer: Chat: "Kein Wissen zu [Tech]. Brauche Context7-Recherche fuer: [was fehlt]"
+  1. search_tech_docs(query: "[Frage]", framework: "[tech]", project: "{PROJEKT}")
+     → Hat Context7 Auto-Fetch, liefert Basis-Docs automatisch
+  2. Bei Treffern (Score > 0.60): Docs nutzen, weiterarbeiten
+  3. Wenn kuratiertes Wissen fehlt (Breaking Changes, Migration, Gotchas):
+     Chat-DM an Koordinator: "Wissensluecke: [Tech] v[Version]. Brauche: [was genau fehlt]"
+  4. NICHT selbst recherchieren (kein Context7, keine Web-Suche, keine externen Skills)
   5. NICHT blockieren — mit bestem Wissen weiterarbeiten, TODO-Kommentar setzen
+  6. Warte auf Antwort (get_chat_messages pollen, max 5x mit 8s Pause)
+  7. Koordinator dispatcht Docs-Kurator, indexiert kuratierte Docs
+  8. Danach: search_tech_docs(source: "research") fuer Breaking Changes etc.
 
 ABMELDUNG (PFLICHT am Ende): unregister_chat_agent(id: "{AGENT_ID}")
 === ENDE AGENT-REGELN ===
 ```
 
-## 4. Richtige Tool-Wahl
+## 4. Wissensluecke-Reaktion (AUTOMATISCH)
+
+Wenn ein Agent eine DM mit "Wissensluecke:" schickt → SOFORT reagieren:
+
+### Schritt 1: Agent informieren
+```
+send_chat_message(recipient_id: "<agent-id>",
+  content: "Docs werden recherchiert und indexiert, ~5min. Arbeite weiter.")
+```
+
+### Schritt 2: Docs-Kurator dispatchen (Opus)
+```
+register_chat_agent(id: "docs-kurator", model: "claude-opus-4-6")
+```
+
+Prompt-Kern fuer den Docs-Kurator:
+```
+DEINE AUFGABE — DOCS-KURATOR fuer {FRAMEWORK} {VERSION}:
+Agent "{AGENT_ID}" braucht kuratiertes Wissen.
+
+1. CONTEXT7 PRUEFEN:
+   search_tech_docs(framework: "{FRAMEWORK}", project: "{PROJEKT}")
+   → Bewerten: Deckt das Breaking Changes ab? Meist nur Code-Beispiele.
+
+2. UMFASSEND RECHERCHIEREN — alle verfuegbaren Quellen:
+   - WebSearch: "{FRAMEWORK} {VERSION} breaking changes migration guide"
+   - WebSearch: "{FRAMEWORK} {VERSION} release notes changelog"
+   - WebSearch: "{FRAMEWORK} {VERSION} known issues gotchas"
+   - GitHub: Releases, MIGRATION.md, Issues mit "breaking" Label
+   - Offizielle Docs: Migration Guides, Upgrade Guides
+   - Community: Stack Overflow, Reddit, Blog-Posts
+   - WebFetch auf die besten Treffer fuer den vollen Content
+   DU entscheidest was wichtig ist und was nicht.
+
+3. KURATIEREN + INDEXIEREN — fuer jedes relevante Thema:
+   add_tech_doc(
+     framework: "{FRAMEWORK}", version: "{VERSION}",
+     section: "<Aussagekraeftiger Titel>",
+     content: "<Max 2000 Zeichen. Code Vorher/Nachher. Quelle angeben.>",
+     type: "<breaking-change|migration|gotcha|known-issue>",
+     source: "research", project: "{PROJEKT}"
+   )
+
+4. QUALITAET:
+   - Mindestens 5 Docs, alle konkret und actionable
+   - Undokumentierte Gotchas (aus GitHub Issues) besonders wertvoll
+   - Lieber 2 kleine Docs als 1 riesiger
+   - search_tech_docs am Ende → genuegend research-Docs?
+
+5. ABSCHLUSS:
+   Chat-Broadcast: "{FRAMEWORK} {VERSION} Docs kuratiert: X Breaking Changes,
+   Y Migration-Guides, Z Gotchas. search_tech_docs(framework: '{FRAMEWORK}',
+   source: 'research') fuer Details."
+```
+
+### Warum Opus?
+Opus entscheidet selbst welche Quellen relevant sind, bewertet Qualitaet,
+erkennt undokumentierte Probleme in GitHub Issues und filtert Rauschen raus.
+Haiku/Sonnet koennen das nicht zuverlaessig.
+
+## 5. Richtige Tool-Wahl
 
 | Situation | Tool |
 |-----------|------|
@@ -107,13 +172,13 @@ ABMELDUNG (PFLICHT am Ende): unregister_chat_agent(id: "{AGENT_ID}")
 | Frueherer Kontext | `search_thoughts` |
 | Datei-spezifische Docs | `get_docs_for_file` (Wissens-Airbag) |
 
-## 5. Filter-Regeln
+## 6. Filter-Regeln
 
 - `file_type` IMMER setzen wenn Zielsprache bekannt (typescript, rust, python, css)
 - `path_pattern` nutzen wenn Bereich bekannt (src/**/*.ts)
 - `limit`: gezielt 3-5, standard 10, breit 15-20
 
-## 6. Ergebnis-Bewertung
+## 7. Ergebnis-Bewertung
 
 | Score | Bedeutung |
 |-------|-----------|
@@ -121,7 +186,7 @@ ABMELDUNG (PFLICHT am Ende): unregister_chat_agent(id: "{AGENT_ID}")
 | 0.60 - 0.75 | Vermutlich relevant |
 | < 0.60 | Rauschen → Query umformulieren |
 
-## 7. Projekt-Wissen speichern
+## 8. Projekt-Wissen speichern
 
 | Was | Kategorie | Name |
 |-----|-----------|------|
@@ -134,7 +199,7 @@ ABMELDUNG (PFLICHT am Ende): unregister_chat_agent(id: "{AGENT_ID}")
 - `category: "rules"` wird Agenten beim Onboarding gezeigt
 - KEINE .md-Dateien — alles in Synapse Memories
 
-## 8. Context-Handoff
+## 9. Context-Handoff
 
 Der Context-Verbrauch wird per PostToolUse-Hook ueberwacht (95% gelb, 98% rot).
 
@@ -167,7 +232,7 @@ bash ~/.claude/skills/synapse-nutzung/scripts/context-handoff.sh \
 4. Handoff-Thought loeschen
 5. Arbeit fortsetzen
 
-## 9. .synapseignore Hygiene
+## 10. .synapseignore Hygiene
 
 Gehoert NICHT in den Index:
 - `docs/` (Scores hoeher als Code)
