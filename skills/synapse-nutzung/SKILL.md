@@ -128,7 +128,7 @@ ABMELDUNG (PFLICHT am Ende): unregister_chat_agent(id: "{AGENT_ID}")
 
 ## 8. Context-Handoff
 
-Der Context-Verbrauch wird per PostToolUse-Hook ueberwacht (60% gelb, 80% rot).
+Der Context-Verbrauch wird per PostToolUse-Hook ueberwacht (95% gelb, 98% rot).
 
 ### Handoff-Protokoll (2 Schritte)
 

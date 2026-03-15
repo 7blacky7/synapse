@@ -185,14 +185,14 @@ while true; do
 
     echo "Initiale Flags: ${INITIAL_FLAGS[*]:-(keine)}"
     echo "Aktive Flags:   ${FILTERED_FLAGS[*]:-(keine)}"
-    echo "Model:          ${HANDOFF_MODEL:-opus}"
+    echo "Model:          ${HANDOFF_MODEL:-opus[1m]}"
     echo ""
 
     # Starte Claude mit gesicherten Flags + Handoff-Prompt
-    echo "Starte: claude ${FILTERED_FLAGS[*]} --model ${HANDOFF_MODEL:-opus} <prompt>"
+    echo "Starte: claude ${FILTERED_FLAGS[*]} --model ${HANDOFF_MODEL:-opus[1m]} <prompt>"
     echo ""
-    log "EXEC: $CLAUDE_BIN ${FILTERED_FLAGS[*]} --model ${HANDOFF_MODEL:-opus} <prompt>"
-    "$CLAUDE_BIN" "${FILTERED_FLAGS[@]}" --model "${HANDOFF_MODEL:-opus}" "$HANDOFF_PROMPT"
+    log "EXEC: $CLAUDE_BIN ${FILTERED_FLAGS[*]} --model ${HANDOFF_MODEL:-opus[1m]} <prompt>"
+    "$CLAUDE_BIN" "${FILTERED_FLAGS[@]}" --model "${HANDOFF_MODEL:-opus[1m]}" "$HANDOFF_PROMPT"
     EXIT_CODE=$?
     log "Claude beendet (Exit: $EXIT_CODE)"
   else

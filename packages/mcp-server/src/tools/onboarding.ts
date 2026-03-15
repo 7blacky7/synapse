@@ -178,7 +178,7 @@ const HANDOFF_RULE_CONTENT = `## Context-Handoff Regeln (PROTOTYP)
 Synapse unterstuetzt automatischen Session-Handoff wenn das Context-Window voll wird.
 
 ### Wann Handoff noetig ist
-- Du wirst automatisch per Hook gewarnt (60% = gelb, 80% = rot)
+- Du wirst automatisch per Hook gewarnt (95% = gelb, 98% = rot)
 - Bei GELB: Aktuellen Task abschliessen, dann Handoff planen
 - Bei ROT: SOFORT Handoff ausfuehren
 
