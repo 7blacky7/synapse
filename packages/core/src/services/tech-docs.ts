@@ -118,25 +118,44 @@ export async function searchTechDocs(
     limit?: number;
   } = {}
 ): Promise<Array<{ id: string; score: number; framework: string; version: string; section: string; content: string; type: string; source: string }>> {
-  const { framework, type, source, project, limit = 10 } = options;
+  const { framework, type, source, project, limit: rawLimit = 10 } = options;
+  const limit = typeof rawLimit === 'string' ? parseInt(rawLimit, 10) : rawLimit;
 
   const collectionName = project ? COLLECTIONS.projectDocs(project) : COLLECTIONS.techDocs;
 
   const queryVector = await embed(query);
+  console.error(`[Synapse TechDocs] Suche in "${collectionName}" mit ${queryVector.length}d Vektor, limit=${limit}`);
 
   const must: Array<Record<string, unknown>> = [];
   if (framework) must.push({ key: 'framework', match: { value: framework.toLowerCase() } });
   if (type) must.push({ key: 'type', match: { value: type } });
   if (source) must.push({ key: 'source', match: { value: source } });
 
-  const filter = must.length > 0 ? { must } : undefined;
-
-  const results = await searchVectors<Record<string, unknown>>(
-    collectionName,
-    queryVector,
+  // Qdrant REST-API direkt nutzen (Client hat Bug mit bestimmten Collections)
+  const { getConfig } = await import('../config.js');
+  const qdrantUrl = getConfig().qdrant.url;
+  const searchBody: Record<string, unknown> = {
+    vector: queryVector,
     limit,
-    filter
-  );
+    with_payload: true,
+  };
+  if (must.length > 0) {
+    searchBody.filter = { must };
+  }
+
+  const response = await fetch(`${qdrantUrl}/collections/${collectionName}/points/search`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(searchBody),
+  });
+
+  if (!response.ok) {
+    const errBody = await response.text();
+    throw new Error(`Qdrant search failed: ${response.status} ${errBody}`);
+  }
+
+  const data = await response.json() as { result: Array<{ id: string; score: number; payload: Record<string, unknown> }> };
+  const results = data.result;
 
   return results.map(r => ({
     id: r.id,

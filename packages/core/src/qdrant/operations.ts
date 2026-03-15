@@ -67,12 +67,18 @@ export async function searchVectors<T>(
 ): Promise<SearchResult<T>[]> {
   const client = getQdrantClient();
 
-  const results = await client.search(collection, {
-    vector: queryVector,
-    limit,
-    filter: filter as any,
-    with_payload: true,
-  });
+  let results;
+  try {
+    results = await client.search(collection, {
+      vector: queryVector,
+      limit,
+      filter: filter as any,
+      with_payload: true,
+    });
+  } catch (error: unknown) {
+    console.error(`[Synapse Qdrant] searchVectors FEHLER in "${collection}": vectorDim=${queryVector.length}, limit=${limit}, filter=${JSON.stringify(filter)}`);
+    throw error;
+  }
 
   return results.map(result => ({
     id: result.id as string,

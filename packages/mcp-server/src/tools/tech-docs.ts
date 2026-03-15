@@ -56,8 +56,12 @@ export async function searchTechDocsTool(
       })),
       message: `${results.length} Tech-Docs gefunden`,
     };
-  } catch (error) {
-    return { success: false, results: [], message: `Fehler: ${error}` };
+  } catch (error: unknown) {
+    const errMsg = error instanceof Error ? error.message : String(error);
+    const errStack = error instanceof Error ? error.stack?.split('\n').slice(0, 3).join(' | ') : '';
+    console.error(`[Synapse TechDocs] Suche fehlgeschlagen: ${errMsg}`);
+    console.error(`[Synapse TechDocs] Stack: ${errStack}`);
+    return { success: false, results: [], message: `Fehler: ${errMsg} | ${errStack}` };
   }
 }
 
