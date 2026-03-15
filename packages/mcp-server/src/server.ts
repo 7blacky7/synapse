@@ -48,7 +48,9 @@ import {
   migrateEmbeddings,
   restoreFromBackup,
   registerChatAgent,
+  registerChatAgentsBatch,
   unregisterChatAgent,
+  unregisterChatAgentsBatch,
   sendChatMessage,
   getChatMessages,
   listAgents,
@@ -996,6 +998,44 @@ export function createServer(): Server {
         },
       },
       {
+        name: 'register_chat_agents_batch',
+        description: 'Registriert mehrere Agenten auf einmal. Spart API-Calls bei vielen parallelen Agenten.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            agents: {
+              type: 'array',
+              description: 'Liste der Agenten',
+              items: {
+                type: 'object',
+                properties: {
+                  id: { type: 'string', description: 'Einzigartige Agent-ID' },
+                  model: { type: 'string', description: 'Modell-Name (z.B. claude-haiku-4-5, claude-sonnet-4-6)' },
+                },
+                required: ['id'],
+              },
+            },
+            project: { type: 'string', description: 'Projekt-Name' },
+          },
+          required: ['agents', 'project'],
+        },
+      },
+      {
+        name: 'unregister_chat_agents_batch',
+        description: 'Meldet mehrere Agenten auf einmal ab.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            ids: {
+              type: 'array',
+              description: 'Liste der Agent-IDs',
+              items: { type: 'string' },
+            },
+          },
+          required: ['ids'],
+        },
+      },
+      {
         name: 'send_chat_message',
         description: 'Sendet eine Nachricht. Ohne recipient_id = Broadcast an alle. Mit recipient_id = DM.',
         inputSchema: {
@@ -1421,6 +1461,19 @@ export function createServer(): Server {
 
         case 'unregister_chat_agent': {
           const result = await unregisterChatAgent(args?.id as string);
+          return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+        }
+
+        case 'register_chat_agents_batch': {
+          const result = await registerChatAgentsBatch(
+            args?.agents as Array<{ id: string; model?: string; cutoffDate?: string }>,
+            args?.project as string
+          );
+          return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+        }
+
+        case 'unregister_chat_agents_batch': {
+          const result = await unregisterChatAgentsBatch(args?.ids as string[]);
           return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
         }
 

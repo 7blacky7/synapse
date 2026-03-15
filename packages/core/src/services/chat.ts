@@ -90,6 +90,34 @@ export async function registerAgent(
 }
 
 /**
+ * Registriert mehrere Agenten auf einmal
+ */
+export async function registerAgentsBatch(
+  agents: Array<{ id: string; model?: string; cutoffDate?: string }>,
+  project: string
+): Promise<AgentSession[]> {
+  const results: AgentSession[] = [];
+  for (const agent of agents) {
+    const session = await registerAgent(agent.id, project, agent.model, agent.cutoffDate);
+    results.push(session);
+  }
+  console.error(`[Synapse Chat] ${results.length} Agenten batch-registriert fuer "${project}"`);
+  return results;
+}
+
+/**
+ * Meldet mehrere Agenten auf einmal ab
+ */
+export async function unregisterAgentsBatch(ids: string[]): Promise<void> {
+  const pool = getPool();
+  await pool.query(
+    `UPDATE agent_sessions SET status = 'inactive' WHERE id = ANY($1)`,
+    [ids]
+  );
+  console.error(`[Synapse Chat] ${ids.length} Agenten batch-abgemeldet: ${ids.join(', ')}`);
+}
+
+/**
  * Meldet einen Agenten ab
  */
 export async function unregisterAgent(id: string): Promise<void> {

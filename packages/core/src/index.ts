@@ -153,7 +153,9 @@ export {
   backupProject,
   // Chat
   registerAgent as registerChatAgent,
+  registerAgentsBatch,
   unregisterAgent as unregisterChatAgent,
+  unregisterAgentsBatch,
   getAgentSession,
   listActiveAgents,
   sendMessage as sendChatMessage,
