@@ -145,20 +145,24 @@ HANDOFF_PROMPT="Du bist die Fortsetzung einer vorherigen Session die wegen Conte
 
 PFLICHT — Fuehre diese Schritte in DIESER Reihenfolge aus:
 
-1. Synapse-Kontext laden:
-   - search_thoughts(query: 'session-uebergabe', project: '${PROJEKT_NAME}')
-     → Lies den neuesten Thought mit Tag 'session-uebergabe'
-   - Den dort referenzierten Memory laden:
-     read_memory(project: '${PROJEKT_NAME}', name: '<name-aus-thought>')
-     → Enthaelt detaillierten Fortschritt, offene Tasks, naechste Schritte
+1. Registrieren:
+   register_chat_agent(id: 'koordinator', project: '${PROJEKT_NAME}')
 
-2. Aufgabe: ${AUFGABE}
+2. Handoff-Kontext laden:
+   search_thoughts(query: 'session-uebergabe', project: '${PROJEKT_NAME}')
+   → Lies den Thought, extrahiere CHAT-SEIT Timestamp
+
+3. Chat-Verlauf laden (nur relevante Nachrichten):
+   get_chat_messages(project: '${PROJEKT_NAME}', agent_id: 'koordinator', since: '<CHAT-SEIT>', limit: 20)
+   → Kontext von anderen Agenten und vorheriger Session
+
+4. Handoff-Thought loeschen nach dem Lesen
+
+5. Aufgabe: ${AUFGABE}
 
 WICHTIG:
-- ZUERST Synapse-Kontext lesen, DANN arbeiten
-- NEUEN einzigartigen Namen registrieren
-- Alten session-uebergabe Thought loeschen nach dem Lesen
-- Synapse-Regeln befolgen"
+- ZUERST Kontext lesen, DANN arbeiten
+- Synapse-Regeln befolgen (synapse-nutzung Skill laden)"
 
 # --- Handoff-Daten schreiben (wird vom Wrapper gelesen) ---
 
