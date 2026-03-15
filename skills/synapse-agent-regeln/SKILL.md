@@ -97,7 +97,7 @@ Wenn eine Technologie/Version jenseits deines Cutoffs liegt:
    "Wissensluecke: [Tech] v[Version]. Brauche: [was genau fehlt]"
 4. NICHT selbst recherchieren (kein Context7, keine Web-Suche, keine externen Skills)
 5. NICHT blockieren — mit bestem Wissen weiterarbeiten, TODO-Kommentar setzen
-6. Warte auf Antwort (get_chat_messages pollen, max 5x mit 8s Pause)
+6. Arbeite weiter — unreadChat im naechsten Tool-Response zeigt dir wenn Antwort da ist
 7. Koordinator dispatcht Docs-Kurator → indexiert kuratierte Docs
 8. Danach: search_tech_docs(source: "research") fuer Breaking Changes etc.
 ```
