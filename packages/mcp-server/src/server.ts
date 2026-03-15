@@ -63,6 +63,51 @@ import {
   updateProposalTool,
 } from './tools/index.js';
 
+/** Tracking: Wann hat ein Agent zuletzt Chat gelesen? */
+const lastChatRead = new Map<string, string>();
+
+/** Zählt ungelesene Chat-Nachrichten für einen Agenten */
+async function getUnreadChatCount(
+  agentId: string,
+  project: string
+): Promise<{ broadcasts: number; dms: Array<{ from: string; count: number }> } | null> {
+  const lastRead = lastChatRead.get(agentId);
+  if (!lastRead) return null; // Noch nie gelesen → kein Count (Onboarding zeigt Chat-Hinweis)
+
+  try {
+    const result = await getChatMessages(project, {
+      agentId,
+      since: lastRead,
+      limit: 50,
+    });
+
+    if (!result.success || result.messages.length === 0) return null;
+
+    let broadcasts = 0;
+    const dmCounts = new Map<string, number>();
+
+    for (const msg of result.messages) {
+      if (msg.senderId === agentId) continue; // Eigene Nachrichten ignorieren
+      if (msg.recipientId === agentId) {
+        // DM an mich
+        dmCounts.set(msg.senderId, (dmCounts.get(msg.senderId) || 0) + 1);
+      } else if (!msg.recipientId) {
+        // Broadcast
+        broadcasts++;
+      }
+    }
+
+    if (broadcasts === 0 && dmCounts.size === 0) return null;
+
+    return {
+      broadcasts,
+      dms: Array.from(dmCounts.entries()).map(([from, count]) => ({ from, count })),
+    };
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Erstellt und konfiguriert den MCP Server
  */
@@ -1136,19 +1181,30 @@ export function createServer(): Server {
       }
 
       const onboarding = await checkAgentOnboarding(projectName, agentId);
+      const enhanced: Record<string, unknown> = { ...result };
+
+      // Onboarding-Regeln bei erstem Besuch
       if (onboarding?.isFirstVisit && onboarding.rules && onboarding.rules.length > 0) {
-        const enhanced = {
-          ...result,
-          agentOnboarding: {
-            isFirstVisit: true,
-            message: '📋 WILLKOMMEN! Als neuer Agent beachte bitte folgende Projekt-Regeln:',
-            rules: onboarding.rules,
-          },
+        enhanced.agentOnboarding = {
+          isFirstVisit: true,
+          message: '📋 WILLKOMMEN! Als neuer Agent beachte bitte folgende Projekt-Regeln:',
+          rules: onboarding.rules,
         };
-        return { content: [{ type: 'text', text: JSON.stringify(enhanced, null, 2) }] };
       }
 
-      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+      // Ungelesene Chat-Nachrichten anzeigen
+      const unread = await getUnreadChatCount(agentId, projectName);
+      if (unread) {
+        const parts: string[] = [];
+        if (unread.broadcasts > 0) parts.push(`${unread.broadcasts} Broadcasts`);
+        for (const dm of unread.dms) parts.push(`${dm.count} DM von ${dm.from}`);
+        enhanced.unreadChat = {
+          ...unread,
+          hint: `📨 Ungelesene Nachrichten: ${parts.join(', ')}. Lies mit: get_chat_messages(project: "${projectName}", agent_id: "${agentId}")`,
+        };
+      }
+
+      return { content: [{ type: 'text', text: JSON.stringify(enhanced, null, 2) }] };
     };
 
     try {
@@ -1456,6 +1512,8 @@ export function createServer(): Server {
             args?.model as string | undefined,
             args?.cutoff_date as string | undefined
           );
+          // Chat-Read-Timestamp ab jetzt tracken
+          lastChatRead.set(args?.id as string, new Date().toISOString());
           return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
         }
 
@@ -1465,10 +1523,10 @@ export function createServer(): Server {
         }
 
         case 'register_chat_agents_batch': {
-          const result = await registerChatAgentsBatch(
-            args?.agents as Array<{ id: string; model?: string; cutoffDate?: string }>,
-            args?.project as string
-          );
+          const agentsList = args?.agents as Array<{ id: string; model?: string; cutoffDate?: string }>;
+          const result = await registerChatAgentsBatch(agentsList, args?.project as string);
+          const now = new Date().toISOString();
+          for (const a of agentsList) lastChatRead.set(a.id, now);
           return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
         }
 
@@ -1497,6 +1555,10 @@ export function createServer(): Server {
               limit: args?.limit as number | undefined,
             }
           );
+          // Timestamp aktualisieren — Agent hat Chat gelesen
+          if (agentId) {
+            lastChatRead.set(agentId, new Date().toISOString());
+          }
           return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
         }
 
