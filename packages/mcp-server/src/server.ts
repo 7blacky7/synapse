@@ -49,6 +49,8 @@ import {
   updateProposalStatusWrapper,
   deleteProposalWrapper,
   searchProposalsWrapper,
+  migrateEmbeddings,
+  restoreFromBackup,
 } from './tools/index.js';
 
 /**
@@ -842,6 +844,49 @@ export function createServer(): Server {
         },
       },
 
+      // ===== MIGRATION & BACKUP =====
+      {
+        name: 'migrate_embeddings',
+        description: 'Migriert Embeddings bei Modellwechsel. Liest Payloads aus Qdrant, sichert als JSONL, loescht Collections, erstellt neu mit aktuellen Dimensionen, re-embedded alle Daten.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            project: {
+              type: 'string',
+              description: 'Projekt-Name (wird fuer Code-Collection benoetigt)',
+            },
+            collections: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'Optional: Nur bestimmte Collections migrieren (Standard: alle Agenten-Collections + project_{name})',
+            },
+            dry_run: {
+              type: 'boolean',
+              description: 'Nur pruefen ohne zu migrieren (Standard: false)',
+            },
+          },
+          required: ['project'],
+        },
+      },
+      {
+        name: 'restore_backup',
+        description: 'Stellt Thoughts, Memories, Plans und/oder Proposals aus JSONL-Backup wieder her. Re-embedded mit aktuellem Modell.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            type: {
+              type: 'string',
+              enum: ['thoughts', 'memories', 'plans', 'proposals', 'all'],
+              description: 'Was wiederherstellen (Standard: all)',
+            },
+            project: {
+              type: 'string',
+              description: 'Optional: Nur fuer ein bestimmtes Projekt wiederherstellen',
+            },
+          },
+        },
+      },
+
       // ===== PROJEKT-IDEEN =====
       {
         name: 'save_project_idea',
@@ -1243,6 +1288,26 @@ export function createServer(): Server {
           const { query, project, limit } = args as { query: string; project?: string; limit?: number };
           const result = await searchProposalsWrapper(query, project, limit);
           return { content: [{ type: 'text', text: result }] };
+        }
+
+        // ===== MIGRATION & BACKUP =====
+        case 'migrate_embeddings': {
+          const result = await migrateEmbeddings(
+            args?.project as string,
+            {
+              collections: args?.collections as string[] | undefined,
+              dryRun: args?.dry_run as boolean | undefined,
+            }
+          );
+          return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+        }
+
+        case 'restore_backup': {
+          const result = await restoreFromBackup(
+            (args?.type as 'thoughts' | 'memories' | 'plans' | 'proposals' | 'all') || 'all',
+            args?.project as string | undefined
+          );
+          return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
         }
 
         default:
