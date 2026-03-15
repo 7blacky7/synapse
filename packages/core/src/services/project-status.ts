@@ -40,6 +40,7 @@ export interface ProjectStatus {
   lastAccess: string;   // ISO Timestamp
   status: 'active' | 'stopped';
   knownAgents: string[];  // Liste bekannter Agent-IDs fuer Onboarding
+  setupPhase?: 'none' | 'initial-pending' | 'initial-done' | 'post-indexing-pending' | 'complete';
 }
 
 /**
@@ -97,6 +98,7 @@ export function setProjectStatus(
     lastAccess: status.lastAccess ?? now,
     status: status.status ?? existing?.status ?? 'active',
     knownAgents: status.knownAgents ?? existing?.knownAgents ?? [],
+    setupPhase: status.setupPhase ?? existing?.setupPhase ?? 'none',
   };
 
   fs.writeFileSync(statusPath, JSON.stringify(merged, null, 2), 'utf-8');

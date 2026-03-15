@@ -115,6 +115,45 @@ export async function searchThoughts(
 }
 
 /**
+ * Aktualisiert einen bestehenden Gedanken
+ */
+export async function updateThoughtTool(
+  project: string,
+  id: string,
+  changes: { content?: string; tags?: string[] }
+): Promise<{
+  success: boolean;
+  thought: Thought | null;
+  message: string;
+}> {
+  try {
+    const { updateThought } = await import('@synapse/core');
+    const thought = await updateThought(project, id, changes);
+
+    if (!thought) {
+      return {
+        success: false,
+        thought: null,
+        message: `Gedanke "${id}" nicht gefunden in Projekt "${project}"`,
+      };
+    }
+
+    const changedFields = Object.keys(changes).filter(k => changes[k as keyof typeof changes] !== undefined);
+    return {
+      success: true,
+      thought,
+      message: `Gedanke "${id}" aktualisiert (${changedFields.join(', ')})`,
+    };
+  } catch (error) {
+    return {
+      success: false,
+      thought: null,
+      message: `Fehler beim Aktualisieren des Gedankens: ${error}`,
+    };
+  }
+}
+
+/**
  * Loescht einen Gedanken nach ID
  */
 export async function deleteThought(

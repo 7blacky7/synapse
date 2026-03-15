@@ -372,6 +372,95 @@ export async function searchMemories(
 }
 
 /**
+ * Aktualisiert ein bestehendes Memory (partielle Aenderungen)
+ * PostgreSQL first, dann Qdrant bei content-Aenderung
+ */
+export async function updateMemory(
+  project: string,
+  name: string,
+  changes: { content?: string; category?: Memory['category']; tags?: string[] }
+): Promise<Memory | null> {
+  // 1. Bestehende Memory aus PostgreSQL laden
+  const pool = getPool();
+  const existing = await pool.query(
+    'SELECT id, project, name, content, category, tags, created_at, updated_at FROM memories WHERE project = $1 AND name = $2',
+    [project, name]
+  );
+
+  if (existing.rows.length === 0) {
+    console.error(`[Synapse] updateMemory: Memory "${name}" nicht gefunden in Projekt "${project}"`);
+    return null;
+  }
+
+  const row = existing.rows[0];
+  const now = new Date().toISOString();
+
+  // 2. Felder mergen (nur gesetzte changes ueberschreiben)
+  const mergedContent = changes.content ?? row.content;
+  const mergedCategory = changes.category ?? row.category;
+  const mergedTags = changes.tags ?? row.tags;
+  const linkedPaths = extractFilePaths(mergedContent);
+
+  // 3. PostgreSQL UPDATE
+  await pool.query(
+    `UPDATE memories SET content = $1, category = $2, tags = $3, updated_at = $4 WHERE id = $5`,
+    [mergedContent, mergedCategory, mergedTags, now, row.id]
+  );
+
+  // 4. Wenn content geaendert: neues Embedding generieren, Qdrant-Vektor upserten
+  if (changes.content !== undefined) {
+    const collectionName = COLLECTIONS.projectMemories(project);
+    await ensureCollection(collectionName);
+    const vector = await embed(mergedContent);
+    const payload: MemoryPayload = {
+      project,
+      name,
+      content: mergedContent,
+      category: mergedCategory,
+      tags: mergedTags,
+      linkedPaths,
+      createdAt: row.created_at instanceof Date ? row.created_at.toISOString() : row.created_at,
+      updatedAt: now,
+    };
+    await deleteVector(collectionName, row.id);
+    await insertVector(collectionName, vector, payload, row.id);
+  } else {
+    // Nur Payload-Felder in Qdrant aktualisieren (re-insert mit altem Vektor)
+    const collectionName = COLLECTIONS.projectMemories(project);
+    await ensureCollection(collectionName);
+    const vector = await embed(mergedContent);
+    const payload: MemoryPayload = {
+      project,
+      name,
+      content: mergedContent,
+      category: mergedCategory,
+      tags: mergedTags,
+      linkedPaths,
+      createdAt: row.created_at instanceof Date ? row.created_at.toISOString() : row.created_at,
+      updatedAt: now,
+    };
+    await deleteVector(collectionName, row.id);
+    await insertVector(collectionName, vector, payload, row.id);
+  }
+
+  // 5. Aktualisierte Memory zurueckgeben
+  const updatedMemory: Memory = {
+    id: row.id,
+    project,
+    name,
+    content: mergedContent,
+    category: mergedCategory as Memory['category'],
+    tags: mergedTags,
+    linkedPaths,
+    createdAt: row.created_at instanceof Date ? row.created_at.toISOString() : row.created_at,
+    updatedAt: now,
+  };
+
+  console.error(`[Synapse] Memory "${name}" aktualisiert fuer Projekt "${project}"`);
+  return updatedMemory;
+}
+
+/**
  * Löscht ein Memory aus PostgreSQL + Qdrant
  */
 export async function deleteMemory(

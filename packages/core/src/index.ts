@@ -85,6 +85,7 @@ export {
   getProjectStats,
   // Thoughts
   addThought,
+  updateThought,
   getThoughts,
   searchThoughts,
   deleteThought,
@@ -116,6 +117,7 @@ export {
   cacheSearchResults,
   // Memory
   writeMemory,
+  updateMemory,
   getMemoryByName,
   listMemories,
   searchMemories,
@@ -137,6 +139,7 @@ export {
   listSearchableProjects,
   // Proposals
   createProposal,
+  updateProposal,
   getProposal,
   listProposals,
   updateProposalStatus,

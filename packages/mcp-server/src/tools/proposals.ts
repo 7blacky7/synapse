@@ -108,6 +108,45 @@ export async function updateProposalStatusWrapper(
 }
 
 /**
+ * Aktualisiert einen Proposal (einzelne Felder aenderbar)
+ */
+export async function updateProposalTool(
+  project: string,
+  id: string,
+  changes: { content?: string; suggestedContent?: string; status?: string }
+): Promise<{
+  success: boolean;
+  proposal: Proposal | null;
+  message: string;
+}> {
+  try {
+    const { updateProposal } = await import('@synapse/core');
+    const proposal = await updateProposal(project, id, changes);
+
+    if (!proposal) {
+      return {
+        success: false,
+        proposal: null,
+        message: `Vorschlag "${id}" nicht gefunden in Projekt "${project}"`,
+      };
+    }
+
+    const changedFields = Object.keys(changes).filter(k => changes[k as keyof typeof changes] !== undefined);
+    return {
+      success: true,
+      proposal,
+      message: `Vorschlag "${id}" aktualisiert (${changedFields.join(', ')})`,
+    };
+  } catch (error) {
+    return {
+      success: false,
+      proposal: null,
+      message: `Fehler beim Aktualisieren des Vorschlags: ${error}`,
+    };
+  }
+}
+
+/**
  * Loescht einen Proposal
  */
 export async function deleteProposalWrapper(

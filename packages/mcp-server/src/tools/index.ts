@@ -16,3 +16,4 @@ export * from './proposals.js';
 export * from './migration.js';
 export * from './chat.js';
 export * from './tech-docs.js';
+export * from './setup.js';

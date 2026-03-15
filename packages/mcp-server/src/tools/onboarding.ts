@@ -149,7 +149,12 @@ export async function checkAgentOnboarding(
       content: m.content,
     }));
 
-    const rulesMessage = `\n\n📋 PROJEKT-REGELN (bitte beachten!):\n${rules.map(r => `### ${r.name}\n${r.content}`).join('\n\n')}`;
+    let rulesMessage = `\n\n📋 PROJEKT-REGELN (bitte beachten!):\n${rules.map(r => `### ${r.name}\n${r.content}`).join('\n\n')}`;
+
+    // Setup-Pending Hinweis fuer Koordinatoren
+    if (isCoordinator && status.setupPhase === 'initial-pending') {
+      rulesMessage += '\n\n⚠️ Projekt-Setup unvollstaendig. Starte /projekt-setup oder frage den User.';
+    }
 
     console.error(`[Synapse MCP] ${rules.length} Regeln fuer Agent "${agentId}" geladen`);
 
