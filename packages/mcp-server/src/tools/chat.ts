@@ -4,7 +4,9 @@
 
 import {
   registerChatAgent as coreRegisterAgent,
+  registerAgentsBatch as coreRegisterBatch,
   unregisterChatAgent as coreUnregisterAgent,
+  unregisterAgentsBatch as coreUnregisterBatch,
   listActiveAgents as coreListActiveAgents,
   sendChatMessage as coreSendMessage,
   getChatMessages as coreGetMessages,
@@ -55,6 +57,48 @@ export async function unregisterChatAgent(
     return { success: true, message: `Agent "${id}" abgemeldet` };
   } catch (error) {
     return { success: false, message: `Fehler: ${error}` };
+  }
+}
+
+/**
+ * Registriert mehrere Agenten auf einmal
+ */
+export async function registerChatAgentsBatch(
+  agents: Array<{ id: string; model?: string; cutoffDate?: string }>,
+  project: string
+): Promise<{
+  success: boolean;
+  sessions: Array<{ id: string; project: string; model: string | null; cutoffDate: string | null }>;
+  message: string;
+}> {
+  try {
+    const sessions = await coreRegisterBatch(agents, project);
+    return {
+      success: true,
+      sessions: sessions.map(s => ({
+        id: s.id,
+        project: s.project,
+        model: s.model,
+        cutoffDate: s.cutoffDate,
+      })),
+      message: `${sessions.length} Agenten registriert`,
+    };
+  } catch (error) {
+    return { success: false, sessions: [], message: `Fehler: ${error}` };
+  }
+}
+
+/**
+ * Meldet mehrere Agenten auf einmal ab
+ */
+export async function unregisterChatAgentsBatch(
+  ids: string[]
+): Promise<{ success: boolean; count: number; message: string }> {
+  try {
+    await coreUnregisterBatch(ids);
+    return { success: true, count: ids.length, message: `${ids.length} Agenten abgemeldet` };
+  } catch (error) {
+    return { success: false, count: 0, message: `Fehler: ${error}` };
   }
 }
 

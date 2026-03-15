@@ -18,7 +18,9 @@ export * from './proposals.js';
 export * from './backup.js';
 export {
   registerAgent,
+  registerAgentsBatch,
   unregisterAgent,
+  unregisterAgentsBatch,
   getAgentSession,
   listActiveAgents,
   sendMessage,
