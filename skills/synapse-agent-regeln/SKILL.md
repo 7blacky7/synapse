@@ -58,20 +58,33 @@ send_chat_message(project: "<projekt>", sender_id: "<deine-id>",
 get_chat_messages(project: "<projekt>", agent_id: "<deine-id>", since: "<letzter-timestamp>")
 ```
 
-## 5. Task-Abschluss
+## 5. Vor jeder Datei-Bearbeitung (PFLICHT)
+
+**BEVOR du eine Datei mit Edit/Write aenderst**, pruefe den Wissens-Airbag:
+
+```
+get_docs_for_file(file_path: "<datei>", agent_id: "<deine-id>", project: "<projekt>")
+```
+
+- Zeigt Breaking Changes, Migration-Warnungen und Gotchas fuer Frameworks die in der Datei relevant sind
+- Wenn Warnings kommen: **LIES SIE** und beruecksichtige sie in deinen Aenderungen
+- Warnt dich vor Dingen die du wegen deines Cutoffs nicht wissen kannst
+- Ignoriere diese Warnungen NICHT — sie verhindern Fehler
+
+## 6. Task-Abschluss
 
 | Ergebnis | Aktion |
 |----------|--------|
 | Erfolg | Chat: "Task X erledigt." Task `completed`. |
 | Problem | Chat-DM an Koordinator. `add_thought` mit Tag `"problem"`. Task NICHT completed. |
 
-## 6. Ergebnisse speichern
+## 7. Ergebnisse speichern
 
 - Plaene, Analysen → `write_memory` (ausfuehrlich)
 - Kurze Erkenntnisse → `add_thought`
 - KEINE .md-Dateien erstellen — alles in Synapse
 
-## 7. Wissensluecken melden (Cutoff-Handling)
+## 8. Wissensluecken melden (Cutoff-Handling)
 
 Wenn eine Technologie/Version jenseits deines Cutoffs liegt:
 
@@ -93,13 +106,13 @@ Wenn eine Technologie/Version jenseits deines Cutoffs liegt:
 Fuer Breaking Changes, Migration-Guides und Gotchas braucht es den Docs-Kurator.
 Der Koordinator dispatcht ihn automatisch wenn du "Wissensluecke:" meldest.
 
-## 8. Abmeldung (PFLICHT am Ende)
+## 9. Abmeldung (PFLICHT am Ende)
 
 ```
 unregister_chat_agent(id: "<deine-id>")
 ```
 
-## 9. Verbote
+## 10. Verbote
 
 - Keine Synapse-Einstellungen aendern (init, cleanup, stop)
 - NIEMALS `source: "claude-code"` verwenden

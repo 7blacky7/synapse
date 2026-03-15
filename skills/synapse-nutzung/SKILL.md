@@ -82,6 +82,13 @@ REGELN:
 - Erfolg: Chat "Task erledigt." + Task completed
 - Problem: Chat-DM + add_thought mit Tag "problem"
 
+VOR JEDER DATEI-BEARBEITUNG (PFLICHT):
+- BEVOR du eine Datei mit Edit/Write aenderst:
+  get_docs_for_file(file_path: "<datei>", agent_id: "{AGENT_ID}", project: "{PROJEKT}")
+  → Zeigt Breaking Changes, Migration-Warnungen und Gotchas fuer relevante Frameworks
+  → Wenn Warnings kommen: LIES SIE und beruecksichtige sie in deinen Aenderungen
+  → Ignoriere diese Warnungen NICHT — sie verhindern Fehler die du nicht kennst
+
 WISSENSLUECKEN (Cutoff-Handling):
 - Wenn Technologie/Version jenseits deines Cutoffs liegt:
   1. search_tech_docs(query: "[Frage]", framework: "[tech]", project: "{PROJEKT}")
