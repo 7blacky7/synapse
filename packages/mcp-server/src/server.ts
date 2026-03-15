@@ -16,12 +16,9 @@ import {
   listActiveProjects,
   cleanupProjekt,
   getProjectStatusWithStats,
-  dropNamelist,
   semanticCodeSearch,
-  searchDocumentation,
   searchByPath,
   searchCodeWithPath,
-  searchDocumentsWrapper,
   getProjectPlan,
   updateProjectPlan,
   addPlanTask,
@@ -31,7 +28,6 @@ import {
   searchThoughts,
   deleteThought,
   detectProjectTechnologies,
-  indexTechDocs,
   writeMemory,
   readMemory,
   listMemories,
@@ -116,24 +112,6 @@ export function createServer(): Server {
             path: {
               type: 'string',
               description: 'Absoluter Pfad zum Projekt-Ordner',
-            },
-          },
-          required: ['path'],
-        },
-      },
-      {
-        name: 'index_tech_docs',
-        description: 'Indexiert Framework-Dokumentation fuer erkannte Technologien',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            path: {
-              type: 'string',
-              description: 'Absoluter Pfad zum Projekt-Ordner',
-            },
-            force_reindex: {
-              type: 'boolean',
-              description: 'Bereits gecachte Docs neu indexieren (Standard: false)',
             },
           },
           required: ['path'],
@@ -233,21 +211,6 @@ export function createServer(): Server {
           required: ['path'],
         },
       },
-      {
-        name: 'drop_namelist',
-        description: 'Leert die knownAgents-Liste in .synapse/status.json - setzt alle bekannten Agenten zurueck',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            path: {
-              type: 'string',
-              description: 'Absoluter Pfad zum Projekt',
-            },
-          },
-          required: ['path'],
-        },
-      },
-
       // ===== CODE-SUCHE =====
       {
         name: 'semantic_code_search',
@@ -343,64 +306,6 @@ export function createServer(): Server {
           required: ['query', 'project'],
         },
       },
-      {
-        name: 'search_docs',
-        description: 'Durchsucht Framework-Dokumentation (Cache und optional Context7)',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            query: {
-              type: 'string',
-              description: 'Suchanfrage',
-            },
-            framework: {
-              type: 'string',
-              description: 'Optional: Framework filtern (z.B. react, vue)',
-            },
-            use_context7: {
-              type: 'boolean',
-              description: '0=nur Cache, 1=Context7 als Fallback',
-            },
-            limit: {
-              type: 'number',
-              description: 'Maximale Anzahl Ergebnisse (Standard: 10)',
-            },
-          },
-          required: ['query'],
-        },
-      },
-      {
-        name: 'search_documents',
-        description: 'Durchsucht indexierte Dokumente (PDF, Word, Excel) semantisch',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            query: {
-              type: 'string',
-              description: 'Suchanfrage in natuerlicher Sprache',
-            },
-            project: {
-              type: 'string',
-              description: 'Projekt-Name',
-            },
-            agent_id: {
-              type: 'string',
-              description: 'Agent-ID fuer Onboarding. Neue Agenten sehen automatisch Projekt-Regeln.',
-            },
-            document_type: {
-              type: 'string',
-              enum: ['pdf', 'docx', 'xlsx', 'all'],
-              description: 'Optional: Dokumententyp filtern (Standard: all)',
-            },
-            limit: {
-              type: 'number',
-              description: 'Maximale Anzahl Ergebnisse (Standard: 10)',
-            },
-          },
-          required: ['query', 'project'],
-        },
-      },
-
       // ===== PROJEKT-PLANUNG =====
       {
         name: 'get_project_plan',
@@ -1105,14 +1010,6 @@ export function createServer(): Server {
           return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
         }
 
-        case 'index_tech_docs': {
-          const result = await indexTechDocs(
-            args?.path as string,
-            args?.force_reindex as boolean | undefined
-          );
-          return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
-        }
-
         case 'cleanup_projekt': {
           const result = await cleanupProjekt(
             args?.path as string,
@@ -1172,12 +1069,6 @@ export function createServer(): Server {
           return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
         }
 
-        case 'drop_namelist': {
-          const { path: projectPath } = args as { path: string };
-          const result = await dropNamelist(projectPath);
-          return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
-        }
-
         // ===== CODE-SUCHE =====
         case 'semantic_code_search': {
           const result = await semanticCodeSearch(
@@ -1210,26 +1101,6 @@ export function createServer(): Server {
               fileType: args?.file_type as string | undefined,
               limit: args?.limit as number | undefined,
             }
-          );
-          return withOnboarding(result);
-        }
-
-        case 'search_docs': {
-          const result = await searchDocumentation(
-            args?.query as string,
-            args?.framework as string | undefined,
-            args?.use_context7 as boolean | undefined,
-            args?.limit as number | undefined
-          );
-          return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
-        }
-
-        case 'search_documents': {
-          const result = await searchDocumentsWrapper(
-            args?.query as string,
-            args?.project as string,
-            args?.document_type as 'pdf' | 'docx' | 'xlsx' | 'all' | undefined,
-            args?.limit as number | undefined
           );
           return withOnboarding(result);
         }

@@ -36,9 +36,9 @@ export function loadConfig(): SynapseConfig {
       apiKey: process.env.CONTEXT7_API_KEY || undefined,
     },
     files: {
-      maxSizeMB: parseFloat(process.env.MAX_FILE_SIZE_MB || '1'),
-      chunkSize: parseInt(process.env.CHUNK_SIZE || '1000', 10),
-      chunkOverlap: parseInt(process.env.CHUNK_OVERLAP || '200', 10),
+      maxSizeMB: parseFloat(process.env.MAX_FILE_SIZE_MB || '5'),
+      chunkSize: parseInt(process.env.CHUNK_SIZE || '1500', 10),
+      chunkOverlap: parseInt(process.env.CHUNK_OVERLAP || '300', 10),
       debounceMs: parseInt(process.env.DEBOUNCE_MS || '500', 10),
     },
     api: {
