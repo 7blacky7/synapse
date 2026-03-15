@@ -309,14 +309,80 @@ pnpm run dev:api
 | `agent_sessions` | Registrierte Agenten mit Modell und Cutoff |
 | `chat_messages` | Agenten-Chat (Broadcasts + DMs) |
 
-## Skills
+## Slash-Commands
 
-Synapse kommt mit zwei Skills fuer Claude Code:
+Synapse bringt eigene Slash-Commands fuer Claude Code mit:
 
-| Skill | Zweck |
-|-------|-------|
-| `synapse-nutzung` | Koordinator-Regeln: Session-Management, Agenten-Dispatching, Wissensluecke-Reaktion, Context-Handoff |
-| `synapse-agent-regeln` | Pflicht-Regeln fuer Subagenten: Onboarding, Suche, Kommunikation, Wissens-Airbag |
+| Command | Beschreibung |
+|---------|--------------|
+| `/projekt-setup` | **Setup-Wizard** — Erfasst Projektbeschreibung, Coding-Standards, Commit-Konventionen und Skills. Speichert alles als Synapse-Memories. |
+| `/projekt-regeln` | **Coding-Standards** anzeigen und aendern — Sprache, Linter, Commit-Konventionen, Namensgebung |
+| `/projekt-architektur` | **Architektur-Uebersicht** anzeigen und bearbeiten — Design-Entscheidungen, Komponentenstruktur |
+| `/projekt-status` | **Alles anzeigen** was Synapse ueber das Projekt weiss — Regeln, Architektur, Beschreibung |
+| `/synapse-nutzung` | **Koordinator-Regeln** laden — Session-Management, Agenten-Dispatching, Wissensluecke-Reaktion, Context-Handoff |
+| `/synapse-agent-regeln` | **Agent-Regeln** laden — Onboarding, Suche, Kommunikation, Wissens-Airbag (wird Subagenten im Prompt mitgegeben) |
+| `/commit-arbeit` | **Commit-Workflow** — Konventionelle Commits, logische Aufteilung, Patch-Staging, Sicherheitspruefungen |
+
+### Typischer Projekt-Start
+
+```bash
+# 1. Synapse fuer ein neues Projekt einrichten
+> /projekt-setup
+# → Wizard fragt nach Beschreibung, Standards, Konventionen
+# → Speichert alles als Synapse-Memories (category: "rules")
+
+# 2. Projekt initialisieren (MCP-Tool)
+> init_projekt(path: "/pfad/zum/projekt")
+# → FileWatcher startet, Code wird indexiert, Technologien erkannt
+
+# 3. Arbeiten — Synapse-Regeln laden
+> /synapse-nutzung
+# → Koordinator-Regeln aktiv, Agenten koennen dispatcht werden
+```
+
+## Skills (Dateien)
+
+| Skill | Pfad | Zweck |
+|-------|------|-------|
+| `synapse-nutzung` | `skills/synapse-nutzung/SKILL.md` | Koordinator-Regeln (im Repo) |
+| `synapse-agent-regeln` | `skills/synapse-agent-regeln/SKILL.md` | Agent-Regeln (im Repo) |
+| `projekt-setup` | `~/.claude/skills/projekt-setup/` | Setup-Wizard (global) |
+| `projekt-regeln` | `~/.claude/skills/projekt-regeln/` | Coding-Standards (global) |
+| `projekt-architektur` | `~/.claude/skills/projekt-architektur/` | Architektur (global) |
+| `projekt-status` | `~/.claude/skills/projekt-status/` | Status-Uebersicht (global) |
+| `commit-arbeit` | `~/.claude/skills/commit-arbeit/` | Commit-Workflow (global) |
+
+## Entwicklung
+
+### mise-Tasks
+
+```bash
+mr dev          # MCP Server im Dev-Modus starten
+mr dev:api      # REST API im Dev-Modus starten
+mr build        # Alle Packages bauen
+mr build:core   # Nur Core bauen
+mr build:mcp    # Nur MCP Server bauen
+mr build:api    # Nur REST API bauen
+mr clean        # Alle dist/ Ordner loeschen
+mr lint         # Linter ausfuehren
+```
+
+### Projekt-Struktur
+
+```
+synapse/
+├── packages/
+│   ├── core/           # Gemeinsamer Kern (Services, DB, Embeddings)
+│   ├── mcp-server/     # MCP Server (stdio, 46 Tools)
+│   ├── rest-api/       # REST API (Fastify, HTTP)
+│   └── web-ui/         # Web-Dashboard (React, in Entwicklung)
+├── skills/
+│   ├── synapse-nutzung/      # Koordinator-Regeln
+│   └── synapse-agent-regeln/ # Agent-Regeln
+├── .mcp.json           # MCP Server Konfiguration
+├── .synapseignore      # Dateien vom Index ausschliessen
+└── .mise.toml          # Task-Runner Konfiguration
+```
 
 ## Bekannte Einschraenkungen
 
