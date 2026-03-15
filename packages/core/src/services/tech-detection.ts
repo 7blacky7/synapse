@@ -25,6 +25,26 @@ export async function detectTechnologies(projectPath: string): Promise<DetectedT
   if (fs.existsSync(packageJsonPath)) {
     const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf-8'));
     technologies.push(...detectFromPackageJson(packageJson));
+
+    // Monorepo: Workspace-Packages scannen
+    const workspaces = packageJson.workspaces || [];
+    for (const ws of workspaces) {
+      const wsBase = ws.replace(/\/\*$/, '');
+      const wsDir = path.join(projectPath, wsBase);
+      try {
+        if (fs.existsSync(wsDir) && fs.statSync(wsDir).isDirectory()) {
+          for (const entry of fs.readdirSync(wsDir)) {
+            const pkgJson = path.join(wsDir, entry, 'package.json');
+            if (fs.existsSync(pkgJson)) {
+              const pkg = JSON.parse(fs.readFileSync(pkgJson, 'utf-8'));
+              technologies.push(...detectFromPackageJson(pkg));
+            }
+          }
+        }
+      } catch {
+        // Workspace-Verzeichnis nicht lesbar
+      }
+    }
   }
 
   // 2. requirements.txt analysieren (Python Projekte)
@@ -127,6 +147,24 @@ function detectFromPackageJson(packageJson: any): DetectedTechnology[] {
     'typeorm': { type: 'library', displayName: 'TypeORM' },
     'mongoose': { type: 'library' },
     'sequelize': { type: 'library' },
+    'pg': { type: 'library', displayName: 'PostgreSQL (pg)' },
+    'mysql2': { type: 'library', displayName: 'MySQL' },
+    'better-sqlite3': { type: 'library', displayName: 'SQLite' },
+    'redis': { type: 'library', displayName: 'Redis' },
+    'ioredis': { type: 'library', displayName: 'Redis (ioredis)' },
+
+    // Vektor-Datenbanken
+    '@qdrant/js-client-rest': { type: 'library', displayName: 'Qdrant' },
+    'chromadb': { type: 'library', displayName: 'ChromaDB' },
+    '@pinecone-database/pinecone': { type: 'library', displayName: 'Pinecone' },
+    'weaviate-ts-client': { type: 'library', displayName: 'Weaviate' },
+
+    // AI/LLM SDKs
+    '@anthropic-ai/sdk': { type: 'library', displayName: 'Anthropic SDK' },
+    'openai': { type: 'library', displayName: 'OpenAI SDK' },
+    '@google/generative-ai': { type: 'library', displayName: 'Google AI SDK' },
+    'langchain': { type: 'library', displayName: 'LangChain' },
+    '@modelcontextprotocol/sdk': { type: 'library', displayName: 'MCP SDK' },
 
     // API/GraphQL
     'graphql': { type: 'library', displayName: 'GraphQL' },
