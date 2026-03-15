@@ -13,3 +13,4 @@ export * from './stats.js';
 export * from './ideas.js';
 export * from './onboarding.js';
 export * from './proposals.js';
+export * from './migration.js';
