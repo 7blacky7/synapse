@@ -19,7 +19,7 @@ export function loadConfig(): SynapseConfig {
       apiKey: process.env.QDRANT_API_KEY || undefined,
     },
     embeddings: {
-      provider: (process.env.EMBEDDING_PROVIDER as 'ollama' | 'openai') || 'ollama',
+      provider: (process.env.EMBEDDING_PROVIDER as SynapseConfig['embeddings']['provider']) || 'ollama',
       ollama: {
         url: process.env.OLLAMA_URL || 'http://localhost:11434',
         model: process.env.OLLAMA_MODEL || 'nomic-embed-text-v2-moe',
@@ -28,6 +28,9 @@ export function loadConfig(): SynapseConfig {
         apiKey: process.env.OPENAI_API_KEY || undefined,
         model: 'text-embedding-3-small',
       },
+      apiKey: process.env.EMBEDDING_API_KEY || undefined,
+      model: process.env.EMBEDDING_MODEL || undefined,
+      baseUrl: process.env.EMBEDDING_BASE_URL || undefined,
     },
     context7: {
       apiKey: process.env.CONTEXT7_API_KEY || undefined,
@@ -41,6 +44,9 @@ export function loadConfig(): SynapseConfig {
     api: {
       port: parseInt(process.env.API_PORT || '3456', 10),
       host: process.env.API_HOST || '0.0.0.0',
+    },
+    database: {
+      url: process.env.DATABASE_URL || 'postgresql://localhost:5432/synapse',
     },
   };
 }

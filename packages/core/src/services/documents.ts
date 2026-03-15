@@ -42,6 +42,7 @@ import { embed, embedBatch } from '../embeddings/index.js';
 import { insertVectors, searchVectors, deleteByFilePath } from '../qdrant/index.js';
 import { chunkText } from '../chunking/index.js';
 import { isExtractableDocument, getFileExtension } from '../watcher/binary.js';
+import { COLLECTIONS } from '../types/index.js';
 
 export interface ExtractedDocument {
   /** Extrahierter Text */
@@ -203,7 +204,7 @@ export async function indexDocument(
     };
   }
 
-  const collectionName = `project_${projectName}`;
+  const collectionName = COLLECTIONS.projectCode(projectName);
   const fileName = path.basename(filePath);
 
   // Text in Chunks aufteilen
@@ -272,7 +273,7 @@ export async function searchDocuments(
   } = {}
 ): Promise<DocumentSearchResult[]> {
   const { documentType = 'all', limit = 10 } = options;
-  const collectionName = `project_${projectName}`;
+  const collectionName = COLLECTIONS.projectCode(projectName);
 
   // Query embedding
   const queryVector = await embed(query);
@@ -323,7 +324,7 @@ export async function removeDocument(
   filePath: string,
   projectName: string
 ): Promise<{ success: boolean; deleted: number }> {
-  const collectionName = `project_${projectName}`;
+  const collectionName = COLLECTIONS.projectCode(projectName);
 
   try {
     await deleteByFilePath(collectionName, filePath);

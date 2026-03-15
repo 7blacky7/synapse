@@ -132,7 +132,7 @@ export async function deleteProposalWrapper(
  */
 export async function searchProposalsWrapper(
   query: string,
-  project?: string,
+  project: string,
   limit: number = 10
 ): Promise<string> {
   try {

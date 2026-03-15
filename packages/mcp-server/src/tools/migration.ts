@@ -71,12 +71,12 @@ export async function migrateEmbeddings(
   const newDim = await getEmbeddingDimension();
   const { dryRun = false } = options;
 
-  // Standard: Agenten-Collections + optional Projekt-Code
+  // Standard: Alle Per-Projekt Collections
   const collectionsToCheck = options.collections ?? [
-    COLLECTIONS.projectThoughts,
-    'synapse_memories',
-    COLLECTIONS.projectPlans,
-    COLLECTIONS.proposals,
+    COLLECTIONS.projectThoughts(project),
+    COLLECTIONS.projectMemories(project),
+    COLLECTIONS.projectPlans(project),
+    COLLECTIONS.projectProposals(project),
     COLLECTIONS.projectCode(project),
   ];
 
@@ -181,7 +181,7 @@ export async function migrateEmbeddings(
  */
 export async function restoreFromBackup(
   type: 'thoughts' | 'memories' | 'plans' | 'proposals' | 'all',
-  project?: string
+  project: string
 ): Promise<{
   success: boolean;
   restored: number;
@@ -209,10 +209,10 @@ export async function restoreFromBackup(
     : [type];
 
   const typeToCollection: Record<string, string> = {
-    thoughts: COLLECTIONS.projectThoughts,
-    memories: 'synapse_memories',
-    plans: COLLECTIONS.projectPlans,
-    proposals: COLLECTIONS.proposals,
+    thoughts: COLLECTIONS.projectThoughts(project),
+    memories: COLLECTIONS.projectMemories(project),
+    plans: COLLECTIONS.projectPlans(project),
+    proposals: COLLECTIONS.projectProposals(project),
   };
 
   let totalRestored = 0;

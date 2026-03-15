@@ -1161,7 +1161,7 @@ export function createServer(): Server {
         case 'search_thoughts': {
           const result = await searchThoughts(
             args?.query as string,
-            args?.project as string | undefined,
+            args?.project as string,
             args?.limit as number | undefined
           );
           return withOnboarding(result);
@@ -1206,7 +1206,7 @@ export function createServer(): Server {
         case 'search_memory': {
           const result = await searchMemory(
             args?.query as string,
-            args?.project as string | undefined,
+            args?.project as string,
             args?.limit as number | undefined
           );
           return withOnboarding(result);
@@ -1285,7 +1285,7 @@ export function createServer(): Server {
         }
 
         case 'search_proposals': {
-          const { query, project, limit } = args as { query: string; project?: string; limit?: number };
+          const { query, project, limit } = args as { query: string; project: string; limit?: number };
           const result = await searchProposalsWrapper(query, project, limit);
           return { content: [{ type: 'text', text: result }] };
         }
@@ -1305,7 +1305,7 @@ export function createServer(): Server {
         case 'restore_backup': {
           const result = await restoreFromBackup(
             (args?.type as 'thoughts' | 'memories' | 'plans' | 'proposals' | 'all') || 'all',
-            args?.project as string | undefined
+            args?.project as string
           );
           return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
         }
