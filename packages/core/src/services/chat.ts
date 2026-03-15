@@ -64,7 +64,11 @@ export async function registerAgent(
   const pool = getPool();
 
   // Cutoff automatisch ermitteln wenn nicht angegeben
-  const resolvedCutoff = cutoffDate || (model ? MODEL_CUTOFFS[model] : null) || null;
+  // Prefix-Match: "claude-haiku-4-5-20251001" → "claude-haiku-4-5"
+  const matchedCutoff = model
+    ? MODEL_CUTOFFS[model] || Object.entries(MODEL_CUTOFFS).find(([key]) => model.startsWith(key))?.[1] || null
+    : null;
+  const resolvedCutoff = cutoffDate || matchedCutoff;
 
   await pool.query(
     `INSERT INTO agent_sessions (id, project, model, cutoff_date, status, registered_at)
