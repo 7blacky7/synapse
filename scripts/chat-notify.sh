@@ -58,4 +58,6 @@ PARTS=()
 [[ "$BROADCASTS" -gt 0 ]] && PARTS+=("${BROADCASTS} Broadcasts")
 [[ "$DMS" -gt 0 ]] && PARTS+=("${DMS} DMs${DM_SENDERS:+ von ${DM_SENDERS}}")
 
-echo "📨 Chat: $(IFS=', '; echo "${PARTS[*]}") ungelesen"
+MSG="📨 Chat: $(IFS=', '; echo "${PARTS[*]}") ungelesen. Lies mit: get_chat_messages(project: \"${PROJECT}\", agent_id: \"${AGENT_ID}\")"
+
+jq -n --arg ctx "$MSG" '{"hookSpecificOutput":{"hookEventName":"PostToolUse","additionalContext":$ctx}}'
