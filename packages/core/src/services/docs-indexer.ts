@@ -112,7 +112,7 @@ export async function indexFrameworkDocs(
     return { indexed: 0, cached: false };
   }
 
-  const docs = await context7.getBaseDocs(framework, version);
+  const docs = await context7.searchDocs(framework, `${framework} getting started core concepts`);
 
   if (docs.length === 0) {
     console.warn(`[DocsIndexer] Keine Docs für ${framework} gefunden`);
