@@ -14,3 +14,4 @@ export * from './ideas.js';
 export * from './onboarding.js';
 export * from './proposals.js';
 export * from './migration.js';
+export * from './chat.js';
