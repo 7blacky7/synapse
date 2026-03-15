@@ -15,3 +15,4 @@ export * from './documents.js';
 export * from './project-status.js';
 export * from './global-search.js';
 export * from './proposals.js';
+export * from './backup.js';

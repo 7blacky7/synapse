@@ -13,6 +13,7 @@ export { OllamaEmbeddingProvider } from './ollama.js';
 export { OpenAIEmbeddingProvider } from './openai.js';
 
 let _provider: EmbeddingProvider | null = null;
+let _cachedDimension: number | null = null;
 
 /**
  * Gibt den konfigurierten Embedding Provider zurueck
@@ -87,8 +88,23 @@ export async function embedBatch(texts: string[]): Promise<number[][]> {
 }
 
 /**
+ * Ermittelt die Vektor-Dimension des aktuellen Embedding-Modells
+ * Ergebnis wird gecached fuer die Prozess-Lebensdauer
+ */
+export async function getEmbeddingDimension(): Promise<number> {
+  if (_cachedDimension !== null) return _cachedDimension;
+
+  const provider = await getEmbeddingProvider();
+  const testVector = await provider.embed('synapse dimension detection');
+  _cachedDimension = testVector.length;
+  console.error(`[Synapse] Erkannte Embedding-Dimension: ${_cachedDimension}`);
+  return _cachedDimension;
+}
+
+/**
  * Setzt den Provider zurueck (fuer Tests)
  */
 export function resetEmbeddingProvider(): void {
   _provider = null;
+  _cachedDimension = null;
 }
