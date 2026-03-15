@@ -18,6 +18,7 @@ import { ensureCollection } from '../qdrant/collections.js';
 import { insertVector, searchVectors, deleteVector } from '../qdrant/operations.js';
 import { COLLECTIONS } from '../types/index.js';
 import { getAgentSession } from './chat.js';
+import { getContext7Client } from './context7.js';
 
 export interface TechDoc {
   id: string;
@@ -157,8 +158,8 @@ export async function searchTechDocs(
   const data = await response.json() as { result: Array<{ id: string; score: number; payload: Record<string, unknown> }> };
   const results = data.result;
 
-  return results.map(r => ({
-    id: r.id,
+  const mapped = results.map(r => ({
+    id: r.id as string,
     score: r.score,
     framework: r.payload.framework as string,
     version: r.payload.version as string,
@@ -167,6 +168,59 @@ export async function searchTechDocs(
     type: r.payload.type as string,
     source: r.payload.source as string,
   }));
+
+  // Context7 Auto-Fetch: Wenn keine guten Ergebnisse und Framework bekannt
+  const hasGoodResults = mapped.some(r => r.score >= 0.60);
+  if (!hasGoodResults && framework) {
+    console.error(`[Synapse TechDocs] Keine guten Ergebnisse (Score < 0.60) — versuche Context7 Auto-Fetch fuer "${framework}"...`);
+
+    const context7 = getContext7Client();
+    if (context7.isAvailable()) {
+      const c7Docs = await context7.searchDocs(framework, query);
+
+      if (c7Docs.length > 0) {
+        console.error(`[Synapse TechDocs] Context7 liefert ${c7Docs.length} Docs — indexiere in ${collectionName}...`);
+
+        const fetched: typeof mapped = [];
+        for (const doc of c7Docs) {
+          const result = await addTechDoc(
+            doc.framework || framework,
+            doc.version || 'latest',
+            doc.title || 'context7-fetch',
+            doc.content,
+            'code-example',
+            'framework',
+            'context7',
+            project
+          );
+
+          if (result.success && !result.duplicate) {
+            fetched.push({
+              id: result.id,
+              score: 0.90,
+              framework: (doc.framework || framework).toLowerCase(),
+              version: doc.version || 'latest',
+              section: doc.title || 'context7-fetch',
+              content: doc.content,
+              type: 'code-example',
+              source: 'context7',
+            });
+          }
+        }
+
+        if (fetched.length > 0) {
+          console.error(`[Synapse TechDocs] ${fetched.length} Docs von Context7 indexiert und zurueckgegeben`);
+          return fetched;
+        }
+      } else {
+        console.error(`[Synapse TechDocs] Context7 hat keine Docs fuer "${framework}"`);
+      }
+    } else {
+      console.error(`[Synapse TechDocs] Context7 nicht verfuegbar (kein API-Key)`);
+    }
+  }
+
+  return mapped;
 }
 
 /**
