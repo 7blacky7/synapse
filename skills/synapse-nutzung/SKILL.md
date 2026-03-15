@@ -82,6 +82,14 @@ REGELN:
 - Erfolg: Chat "Task erledigt." + Task completed
 - Problem: Chat-DM + add_thought mit Tag "problem"
 
+WISSENSLUECKEN (Cutoff-Handling):
+- Wenn Technologie/Version jenseits deines Cutoffs liegt:
+  1. Chat: "Wissensluecke: [Tech] v[Version] jenseits Cutoff [Datum]. Suche Context7..."
+  2. search_tech_docs(query: "[Frage]", framework: "[tech]", project: "{PROJEKT}")
+  3. Bei Treffern (Score > 0.60): Docs nutzen, weiterarbeiten
+  4. Ohne Treffer: Chat: "Kein Wissen zu [Tech]. Brauche Context7-Recherche fuer: [was fehlt]"
+  5. NICHT blockieren — mit bestem Wissen weiterarbeiten, TODO-Kommentar setzen
+
 ABMELDUNG (PFLICHT am Ende): unregister_chat_agent(id: "{AGENT_ID}")
 === ENDE AGENT-REGELN ===
 ```
