@@ -37,6 +37,7 @@
 
 import { v4 as uuidv4 } from 'uuid';
 import { embed } from '../embeddings/index.js';
+import { getPool } from '../db/client.js';
 import { ensureCollection } from '../qdrant/collections.js';
 import {
   insertVector,
@@ -105,6 +106,20 @@ export async function createProposal(
     updated_at: proposal.updatedAt,
   };
 
+  // 1. PostgreSQL (Source of Truth)
+  try {
+    const pool = getPool();
+    await pool.query(
+      `INSERT INTO proposals (id, project, file_path, suggested_content, description, author, status, tags, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+       ON CONFLICT (id) DO NOTHING`,
+      [id, project, filePath, suggestedContent, description, author, 'pending', tags, now, now]
+    );
+  } catch (error) {
+    console.error('[Synapse] PostgreSQL Proposal-Write fehlgeschlagen:', error);
+  }
+
+  // 2. Qdrant (Vektor-Index)
   await insertVector(COLLECTION_NAME, vector, payload, id);
 
   console.error(`[Synapse] Proposal "${id}" erstellt fuer "${filePath}" in Projekt "${project}"`);
@@ -206,7 +221,15 @@ export async function updateProposalStatus(
   // Neuen Vektor generieren (bleibt gleich da description/filePath unveraendert)
   const vector = await embed(`${updatedPayload.description} ${updatedPayload.file_path}`);
 
-  // Alten Eintrag loeschen und neuen einfuegen
+  // 1. PostgreSQL
+  try {
+    const pool = getPool();
+    await pool.query('UPDATE proposals SET status = $1, updated_at = $2 WHERE id = $3', [status, now, id]);
+  } catch (error) {
+    console.error('[Synapse] PostgreSQL Proposal-Status-Update fehlgeschlagen:', error);
+  }
+
+  // 2. Qdrant
   await deleteVector(collName, id);
   await insertVector(collName, vector, updatedPayload, id);
 
@@ -230,6 +253,15 @@ export async function deleteProposal(
     return false;
   }
 
+  // 1. PostgreSQL
+  try {
+    const pool = getPool();
+    await pool.query('DELETE FROM proposals WHERE id = $1', [id]);
+  } catch (error) {
+    console.error('[Synapse] PostgreSQL Proposal-Delete fehlgeschlagen:', error);
+  }
+
+  // 2. Qdrant
   await deleteVector(collName, id);
   console.error(`[Synapse] Proposal "${id}" geloescht fuer Projekt "${project}"`);
   return true;

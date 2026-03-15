@@ -50,6 +50,7 @@ import {
   getVector,
 } from '../qdrant/index.js';
 import { embed } from '../embeddings/index.js';
+import { getPool } from '../db/client.js';
 
 /**
  * Erstellt einen neuen Projekt-Plan
@@ -91,6 +92,21 @@ export async function createPlan(
     updated_at: plan.updatedAt,
   };
 
+  // 1. PostgreSQL (Source of Truth)
+  try {
+    const pool = getPool();
+    await pool.query(
+      `INSERT INTO plans (id, project, name, description, goals, architecture, tasks, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+       ON CONFLICT (id) DO UPDATE SET
+         name = $3, description = $4, goals = $5, tasks = $7, updated_at = $9`,
+      [plan.id, project, name, description, goals, null, JSON.stringify([]), plan.createdAt, plan.updatedAt]
+    );
+  } catch (error) {
+    console.error('[Synapse] PostgreSQL Plan-Write fehlgeschlagen, nur Qdrant:', error);
+  }
+
+  // 2. Qdrant (Vektor-Index)
   await insertVector(COLLECTIONS.projectPlans(project), vector, payload, plan.id);
 
   console.error(`[Synapse] Plan erstellt: "${name}" fuer Projekt "${project}"`);
@@ -170,6 +186,17 @@ export async function updatePlan(
     updated_at: updatedPlan.updatedAt,
   };
 
+  // PostgreSQL aktualisieren
+  try {
+    const pool = getPool();
+    await pool.query(
+      `UPDATE plans SET name = $1, description = $2, goals = $3, architecture = $4, tasks = $5, updated_at = $6 WHERE id = $7`,
+      [updatedPlan.name, updatedPlan.description, updatedPlan.goals, updatedPlan.architecture || null, JSON.stringify(updatedPlan.tasks), updatedPlan.updatedAt, updatedPlan.id]
+    );
+  } catch (error) {
+    console.error('[Synapse] PostgreSQL Plan-Update fehlgeschlagen:', error);
+  }
+
   await insertVector(COLLECTIONS.projectPlans(project), vector, payload, updatedPlan.id);
 
   console.error(`[Synapse] Plan aktualisiert: "${updatedPlan.name}"`);
@@ -225,6 +252,15 @@ export async function addTask(
     updated_at: plan.updatedAt,
   };
 
+  // PostgreSQL Tasks aktualisieren
+  try {
+    const pool = getPool();
+    await pool.query('UPDATE plans SET tasks = $1, updated_at = $2 WHERE id = $3',
+      [JSON.stringify(plan.tasks), plan.updatedAt, plan.id]);
+  } catch (error) {
+    console.error('[Synapse] PostgreSQL Task-Add fehlgeschlagen:', error);
+  }
+
   await insertVector(COLLECTIONS.projectPlans(project), vector, payload, plan.id);
 
   console.error(`[Synapse] Task hinzugefuegt: "${title}"`);
@@ -279,6 +315,15 @@ export async function updateTask(
     updated_at: plan.updatedAt,
   };
 
+  // PostgreSQL Tasks aktualisieren
+  try {
+    const pool = getPool();
+    await pool.query('UPDATE plans SET tasks = $1, updated_at = $2 WHERE id = $3',
+      [JSON.stringify(plan.tasks), plan.updatedAt, plan.id]);
+  } catch (error) {
+    console.error('[Synapse] PostgreSQL Task-Update fehlgeschlagen:', error);
+  }
+
   await insertVector(COLLECTIONS.projectPlans(project), vector, payload, plan.id);
 
   console.error(`[Synapse] Task aktualisiert: "${updatedTask.title}"`);
@@ -286,13 +331,20 @@ export async function updateTask(
 }
 
 /**
- * Loescht einen Plan
+ * Loescht einen Plan aus PostgreSQL + Qdrant
  */
 export async function deletePlan(project: string): Promise<boolean> {
   const plan = await getPlan(project);
 
   if (!plan) {
     return false;
+  }
+
+  try {
+    const pool = getPool();
+    await pool.query('DELETE FROM plans WHERE id = $1', [plan.id]);
+  } catch (error) {
+    console.error('[Synapse] PostgreSQL Plan-Delete fehlgeschlagen:', error);
   }
 
   await deleteVector(COLLECTIONS.projectPlans(project), plan.id);
