@@ -32,7 +32,23 @@ Regeln fuer den Koordinator. Agenten bekommen den `synapse-agent-regeln` Skill.
 
 Der Koordinator sucht NICHT selbst, er delegiert an Agenten.
 
-## 3. Agenten dispatchen
+## 3. Chat-Pflicht (WENN Agenten aktiv)
+
+Der PostToolUse-Hook zeigt ungelesene Nachrichten nach jedem Tool-Call:
+```
+📨 Chat: 3 Broadcasts, 2 DMs von agent-1, agent-2 ungelesen
+```
+
+**WENN diese Notification erscheint → SOFORT reagieren:**
+1. `get_chat_messages(project, agent_id: "koordinator")` — Nachrichten lesen
+2. Auf JEDE DM antworten per `send_chat_message(recipient_id: "<sender>")`
+3. Bei "Wissensluecke:" → Docs-Kurator dispatchen (siehe §4)
+4. Bei Problemen → Hilfestellung oder neuen Task dispatchen
+
+**Solange Agenten registriert sind, bleibt der Koordinator im Chat aktiv.**
+Nicht ignorieren, nicht aufschieben — Agenten warten auf Antworten.
+
+## 4. Agenten dispatchen
 
 ### Worktree-Isolation — VERBOTEN
 
@@ -106,7 +122,7 @@ ABMELDUNG (PFLICHT am Ende): unregister_chat_agent(id: "{AGENT_ID}")
 === ENDE AGENT-REGELN ===
 ```
 
-## 4. Wissensluecke-Reaktion (AUTOMATISCH)
+## 5. Wissensluecke-Reaktion (AUTOMATISCH)
 
 Wenn ein Agent eine DM mit "Wissensluecke:" schickt → SOFORT reagieren:
 
@@ -166,7 +182,7 @@ Opus entscheidet selbst welche Quellen relevant sind, bewertet Qualitaet,
 erkennt undokumentierte Probleme in GitHub Issues und filtert Rauschen raus.
 Haiku/Sonnet koennen das nicht zuverlaessig.
 
-## 5. Richtige Tool-Wahl
+## 6. Richtige Tool-Wahl
 
 | Situation | Tool |
 |-----------|------|
@@ -179,13 +195,13 @@ Haiku/Sonnet koennen das nicht zuverlaessig.
 | Frueherer Kontext | `search_thoughts` |
 | Datei-spezifische Docs | `get_docs_for_file` (Wissens-Airbag) |
 
-## 6. Filter-Regeln
+## 7. Filter-Regeln
 
 - `file_type` IMMER setzen wenn Zielsprache bekannt (typescript, rust, python, css)
 - `path_pattern` nutzen wenn Bereich bekannt (src/**/*.ts)
 - `limit`: gezielt 3-5, standard 10, breit 15-20
 
-## 7. Ergebnis-Bewertung
+## 8. Ergebnis-Bewertung
 
 | Score | Bedeutung |
 |-------|-----------|
@@ -193,7 +209,7 @@ Haiku/Sonnet koennen das nicht zuverlaessig.
 | 0.60 - 0.75 | Vermutlich relevant |
 | < 0.60 | Rauschen → Query umformulieren |
 
-## 8. Projekt-Wissen speichern
+## 9. Projekt-Wissen speichern
 
 | Was | Kategorie | Name |
 |-----|-----------|------|
@@ -206,7 +222,7 @@ Haiku/Sonnet koennen das nicht zuverlaessig.
 - `category: "rules"` wird Agenten beim Onboarding gezeigt
 - KEINE .md-Dateien — alles in Synapse Memories
 
-## 9. Context-Handoff
+## 10. Context-Handoff
 
 Der Context-Verbrauch wird per PostToolUse-Hook ueberwacht (95% gelb, 98% rot).
 
@@ -239,7 +255,7 @@ bash ~/.claude/skills/synapse-nutzung/scripts/context-handoff.sh \
 4. Handoff-Thought loeschen
 5. Arbeit fortsetzen
 
-## 10. .synapseignore Hygiene
+## 11. .synapseignore Hygiene
 
 Gehoert NICHT in den Index:
 - `docs/` (Scores hoeher als Code)
