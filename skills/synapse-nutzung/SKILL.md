@@ -55,6 +55,23 @@ Nicht ignorieren, nicht aufschieben — Agenten warten auf Antworten.
 > ⛔ `isolation: "worktree"` NIEMALS verwenden wenn Synapse aktiv ist!
 > Agenten arbeiten direkt im Haupt-Repo auf eigenen Branches.
 
+### Coordinator-Watch (AUTOMATISCH bei Hintergrund-Agenten)
+
+Wenn mindestens ein Agent im Hintergrund laeuft, MUSS der Coordinator-Watch aktiv sein:
+```
+Bash (run_in_background: true):
+  bash ~/dev/synapse/scripts/coordinator-watch.sh "<projekt>" "koordinator" 10
+```
+
+Der Watcher pollt alle 10s auf neue DMs/Events und weckt den Koordinator per task-notification.
+**WENN die Notification kommt:**
+1. Nachrichten lesen: get_chat_messages + get_pending_events
+2. Reagieren (DMs beantworten, Events acknowledgen)
+3. Watcher NEU starten (gleicher Befehl wie oben)
+
+Der Watcher laeuft bis er eine Nachricht findet, dann beendet er sich.
+Deshalb nach jedem Aufwachen neu starten solange Agenten aktiv sind.
+
 ### Agent spawnen (PFLICHT-Ablauf)
 
 **VOR dem Spawnen** registriert der Koordinator den Agent in PostgreSQL:
@@ -64,6 +81,7 @@ Nicht ignorieren, nicht aufschieben — Agenten warten auf Antworten.
 2. register_chat_agent(id: "<AGENT_ID>", project: "<PROJEKT>")
    → Agent ist jetzt in PostgreSQL registriert
 3. Agent spawnen mit ID im Prompt (siehe Prompt-Baustein unten)
+4. Falls noch kein Watcher laeuft → coordinator-watch.sh im Hintergrund starten
 ```
 
 **Der Agent muss sich NICHT selbst registrieren** — der Koordinator hat das bereits gemacht.
