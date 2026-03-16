@@ -1359,6 +1359,25 @@ export function createServer(): Server {
         };
       }
 
+      // Aktive Agenten anzeigen (kompakte Einblendung)
+      try {
+        const agentList = await listAgents(projectName);
+        if (agentList.success && agentList.agents.length > 0) {
+          const others = agentList.agents.filter(a => a.id !== agentId);
+          if (others.length > 0) {
+            enhanced.activeAgents = {
+              count: others.length + 1,
+              agents: agentList.agents.map(a => ({
+                id: a.id,
+                model: a.model,
+                isYou: a.id === agentId,
+              })),
+              hint: `👥 Aktive Agenten: ${agentList.agents.map(a => a.id === agentId ? `${a.id} (du)` : a.id).join(', ')}`,
+            };
+          }
+        }
+      } catch { /* Agenten-Liste darf nicht crashen */ }
+
       // Eskalation: Agent ignoriert kritische Events
       if (pendingEvents) {
         const hasCritical = pendingEvents.events.some(e => e.priority === 'critical');
