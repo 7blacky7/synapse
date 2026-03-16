@@ -1,6 +1,20 @@
 /**
- * Synapse Core - Technology Detection
- * Erkennt verwendete Technologien in einem Projekt
+ * MODUL: Technology Detection
+ * ZWECK: Erkennt verwendete Frameworks und Bibliotheken in einem Projekt fuer automatische Docs-Indexierung
+ *
+ * INPUT:
+ *   - projectPath: string - Absoluter Pfad zum Projektverzeichnis
+ *
+ * OUTPUT:
+ *   - DetectedTechnology[]: Liste mit { name, version?, type, confidence, source }
+ *     — type: 'framework' | 'library' | 'language' | 'tool'
+ *     — confidence: 'high' | 'medium' | 'low'
+ *     — source: Datei wo gefunden (z.B. "package.json", "requirements.txt")
+ *
+ * NEBENEFFEKTE:
+ *   - Filesystem: Liest package.json, requirements.txt, Cargo.toml, go.mod u.a.
+ *
+ * ABHAENGIGKEITEN: keine externen
  */
 
 import * as fs from 'fs';
