@@ -1,9 +1,24 @@
 /**
- * Synapse MCP - Agent Onboarding
- * Zentraler Mechanismus fuer automatisches Agent-Tracking und Regeln-Anzeige
+ * MODUL: Agent-Onboarding
+ * ZWECK: Automatisches Agent-Tracking und einmaliges Anzeigen der Projekt-Regeln beim Erstbesuch.
+ *        Koordinatoren sehen alle Regeln; Subagenten sehen keine 'coordinator-only'-Regeln.
+ *        Auto-injiziert Handoff-Regeln wenn noch nicht vorhanden (PROTOTYP).
  *
- * Wenn ein Agent zum ersten Mal ein Tool mit project + agent_id aufruft,
- * werden automatisch die Projekt-Regeln (category: 'rules') angezeigt.
+ * INPUT:
+ *   - project: string - Projekt-Identifikator
+ *   - agentId?: string - Agent-ID (ohne ID kein Tracking)
+ *   - projectPath?: string - Pfad (optional, wird aus Cache/Registry geholt)
+ *
+ * OUTPUT:
+ *   - checkAgentOnboarding: OnboardingResult mit isFirstVisit, rules[], rulesMessage
+ *   - cacheProjectPath: void - Registriert Pfad im In-Memory-Cache + Registry
+ *   - getCachedProjectPath: string | null - Bekannter Pfad fuer Projekt-Name
+ *   - addOnboardingToResult: T & { agentOnboarding? } - Erweitert Tool-Ergebnisse
+ *
+ * NEBENEFFEKTE:
+ *   - Dateisystem: Liest/schreibt ~/.synapse/project-registry.json (persistente Pfad-Registry)
+ *   - Dateisystem: Liest .synapse/status.json (Agent-Tracking via registerAgent)
+ *   - Qdrant: Liest synapse_memories (Regeln), schreibt ggf. Handoff-Regel (PROTOTYP)
  */
 
 import * as fs from 'fs';
