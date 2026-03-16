@@ -74,7 +74,7 @@ import { getPendingEvents } from '@synapse/core';
 const lastChatRead = new Map<string, string>();
 
 /** Tracking: Wie oft hat ein Agent ein kritisches Event ignoriert? */
-const eventIgnoreCount = new Map<string, number>();
+const eventIgnoreCount = new Map<string, { firstSeen: number; count: number }>();
 
 /** Zählt ungelesene Chat-Nachrichten für einen Agenten */
 async function getUnreadChatCount(
@@ -1099,6 +1099,7 @@ export function createServer(): Server {
             source: { type: 'string', description: 'Optional: Quelle filtern (research, context7)' },
             project: { type: 'string', description: 'Optional: Projekt-Collection durchsuchen' },
             limit: { type: 'number', description: 'Max Ergebnisse (Standard: 10)' },
+            scope: { type: 'string', enum: ['project', 'global', 'all'], description: 'Suchbereich: project (Standard, nur Projekt-Collection), global (nur globale tech_docs_cache), all (beide, Duplikate gefiltert)' },
           },
           required: ['query'],
         },
@@ -1385,21 +1386,29 @@ export function createServer(): Server {
 
         if (hasCritical || hasHigh) {
           const key = agentId;
-          const count = (eventIgnoreCount.get(key) || 0) + 1;
-          eventIgnoreCount.set(key, count);
+          const now = Date.now();
+          const existing = eventIgnoreCount.get(key);
 
-          if (count >= 3) {
-            // Eskalation an Koordinator
-            try {
-              const eventList = pendingEvents.events.map(e => `${e.eventType}(${e.priority})`).join(', ');
-              await sendChatMessage(
-                projectName,
-                'system',
-                `⚠️ ESKALATION: Agent "${agentId}" ignoriert ${pendingEvents.events.length} Event(s) seit ${count} Tool-Calls: ${eventList}`,
-                'koordinator'
-              );
-              console.error(`[Synapse] Eskalation: ${agentId} ignoriert Events seit ${count} Calls`);
-            } catch { /* Eskalation darf nicht crashen */ }
+          if (!existing) {
+            // Erstes Mal gesehen — Grace Period starten
+            eventIgnoreCount.set(key, { firstSeen: now, count: 1 });
+          } else {
+            existing.count++;
+            // Grace Period: 30 Sekunden nach erstem Sehen
+            const elapsed = now - existing.firstSeen;
+            if (elapsed > 30000 && existing.count >= 3) {
+              // Eskalation an Koordinator
+              try {
+                const eventList = pendingEvents.events.map(e => `${e.eventType}(${e.priority})`).join(', ');
+                await sendChatMessage(
+                  projectName,
+                  'system',
+                  `⚠️ ESKALATION: Agent "${agentId}" ignoriert ${pendingEvents.events.length} Event(s) seit ${existing.count} Tool-Calls: ${eventList}`,
+                  'koordinator'
+                );
+                console.error(`[Synapse] Eskalation: ${agentId} ignoriert Events seit ${existing.count} Calls`);
+              } catch { /* Eskalation darf nicht crashen */ }
+            }
           }
         }
       }
@@ -1709,6 +1718,7 @@ export function createServer(): Server {
               source: args?.source as string | undefined,
               project: args?.project as string | undefined,
               limit: args?.limit as number | undefined,
+              scope: args?.scope as 'global' | 'project' | 'all' | undefined,
             }
           );
           return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
@@ -1859,31 +1869,36 @@ export function createServer(): Server {
         case 'list_proposals': {
           const { project, status } = args as { project: string; status?: string };
           const result = await listProposalsWrapper(project, status);
-          return { content: [{ type: 'text', text: result }] };
+          const parsed = typeof result === 'string' ? JSON.parse(result) : result;
+          return withOnboarding(parsed);
         }
 
         case 'get_proposal': {
           const { project, id } = args as { project: string; id: string };
           const result = await getProposalWrapper(project, id);
-          return { content: [{ type: 'text', text: result }] };
+          const parsed = typeof result === 'string' ? JSON.parse(result) : result;
+          return withOnboarding(parsed);
         }
 
         case 'update_proposal_status': {
           const { project, id, status } = args as { project: string; id: string; status: string };
           const result = await updateProposalStatusWrapper(project, id, status);
-          return { content: [{ type: 'text', text: result }] };
+          const parsed = typeof result === 'string' ? JSON.parse(result) : result;
+          return withOnboarding(parsed);
         }
 
         case 'delete_proposal': {
           const { project, id } = args as { project: string; id: string };
           const result = await deleteProposalWrapper(project, id);
-          return { content: [{ type: 'text', text: result }] };
+          const parsed = typeof result === 'string' ? JSON.parse(result) : result;
+          return withOnboarding(parsed);
         }
 
         case 'search_proposals': {
           const { query, project, limit } = args as { query: string; project: string; limit?: number };
           const result = await searchProposalsWrapper(query, project, limit);
-          return { content: [{ type: 'text', text: result }] };
+          const parsed = typeof result === 'string' ? JSON.parse(result) : result;
+          return withOnboarding(parsed);
         }
 
         // ===== UPDATE-TOOLS (EDIT-LAYER) =====
