@@ -1,3 +1,20 @@
+/**
+ * MODUL: PostgreSQL Schema
+ * ZWECK: DDL-Migration fuer alle Synapse-Tabellen — einmalig ausfuehren beim Start.
+ *
+ * INPUT:
+ *   - Kein direkter Input; nutzt intern getPool() aus client.ts
+ *
+ * OUTPUT:
+ *   - void: Schema ist nach ensureSchema() garantiert vorhanden
+ *
+ * NEBENEFFEKTE:
+ *   - PostgreSQL: Erstellt Tabellen memories, thoughts, plans, proposals,
+ *     agent_sessions, chat_messages, tech_docs, agent_events, agent_event_acks
+ *   - Legt Indizes fuer alle Projekt- und Zeitstempel-Felder an
+ *   - Idempotent: CREATE TABLE IF NOT EXISTS / CREATE INDEX IF NOT EXISTS
+ */
+
 import { getPool } from './client.js';
 
 const SCHEMA_SQL = `

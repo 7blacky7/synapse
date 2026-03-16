@@ -1,3 +1,19 @@
+/**
+ * MODUL: PostgreSQL Client
+ * ZWECK: Singleton-Pool zur PostgreSQL-Datenbank — Verbindung, Test, Teardown.
+ *
+ * INPUT:
+ *   - DATABASE_URL (via config) - PostgreSQL Connection String
+ *
+ * OUTPUT:
+ *   - Pool: Aktiver pg-Connection-Pool (Singleton)
+ *   - boolean: Verbindungstest-Ergebnis
+ *
+ * NEBENEFFEKTE:
+ *   - Haelt einen globalen Pool am Leben fuer die gesamte Prozess-Lebensdauer
+ *   - closePool() gibt alle Verbindungen frei
+ */
+
 import { Pool } from 'pg';
 import { getConfig } from '../config.js';
 
