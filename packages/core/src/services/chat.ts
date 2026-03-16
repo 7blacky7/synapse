@@ -15,6 +15,9 @@
  * NEBENEFFEKTE:
  *   - PostgreSQL: Schreibt in chat_messages Tabelle
  *   - Kein Qdrant (Chat ist chronologisch, nicht semantisch)
+ *
+ * ABHÄNGIGKEITEN:
+ *   - ../db/client.js (intern) - PostgreSQL Connection Pool
  */
 
 import { getPool } from '../db/client.js';
