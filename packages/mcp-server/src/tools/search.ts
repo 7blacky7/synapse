@@ -1,6 +1,27 @@
 /**
- * Synapse MCP - Search Tools
- * Code und Dokumentation durchsuchen
+ * MODUL: Such-Tools
+ * ZWECK: Semantische und pfadbasierte Suche ueber Code, Docs, Dokumente und Media.
+ *
+ * INPUT:
+ *   - query: string - Suchbegriff (natuerlichsprachlich oder Regex)
+ *   - project: string - Projekt-Identifikator
+ *   - fileType?: string - Dateiendung zum Filtern (z.B. 'ts', 'py')
+ *   - pathPattern?: string - Glob-Pattern fuer Pfad-Filter (z.B. '** /utils/*')
+ *   - framework?: string - Framework-Name fuer Docs-Suche
+ *   - mediaType?: 'image' | 'video' - Filterung bei Media-Suche
+ *   - documentType?: 'pdf' | 'docx' | 'xlsx' | 'all' - Typ bei Dokument-Suche
+ *   - limit?: number - Max. Ergebnisse (default: 10 oder 50)
+ *   - recursive?: boolean - Rekursive Verzeichnis-Indexierung (default: true)
+ *
+ * OUTPUT:
+ *   - results[]: Array von Code-/Doc-/Media-/Dokument-Treffern mit Score
+ *   - totalMatches: number - Gesamtanzahl bei Pfad-Suche
+ *   - indexed/skipped/failed/total: number - Statistiken bei Media-Indexierung
+ *   - message: string - Ergebnis-Zusammenfassung
+ *
+ * NEBENEFFEKTE:
+ *   - Qdrant: Liest aus project_<name>_code, _media, _documents, synapse_tech_docs
+ *   - Media-Indexierung schreibt in project_<name>_media Collection
  */
 
 import { searchCode, searchMedia, indexMediaFile, indexMediaDirectory, searchDocsWithFallback, scrollVectors, searchDocuments } from '@synapse/core';
