@@ -1,6 +1,23 @@
 /**
- * Synapse MCP - Projekt-Ideen
- * Automatische Namensgenerierung und Bestaetigungs-Workflow
+ * MODUL: Projekt-Ideen
+ * ZWECK: Zweistufiger Workflow zum Speichern von Projektideen — erst vormerken mit
+ *        auto-generiertem Namen, dann explizit bestaetigen oder verwerfen.
+ *
+ * INPUT:
+ *   - saveProjectIdea: content, project? (default: 'ideas'), tags?
+ *   - confirmIdea: tempId, customName?
+ *   - discardIdea: tempId
+ *
+ * OUTPUT:
+ *   - saveProjectIdea: { success, tempId, suggestedName, preview, confirmationRequired, message }
+ *   - confirmIdea: { success, memory?, name, project, message }
+ *   - listPendingIdeas: Array<{ tempId, suggestedName, project, preview, createdAt }>
+ *   - discardIdea: boolean - ob Idee gefunden und geloescht
+ *
+ * NEBENEFFEKTE:
+ *   - In-Memory: pendingIdeas Map haelt unbestaetigte Ideen (TTL: 30 Minuten, Cleanup alle 5 Min.)
+ *   - Qdrant: confirmIdea schreibt via writeMemory in synapse_memories Collection
+ *   - Kein Dateisystem-Zugriff
  */
 
 import { writeMemory, getMemoryByName } from '@synapse/core';
