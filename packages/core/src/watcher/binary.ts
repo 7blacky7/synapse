@@ -1,6 +1,22 @@
 /**
- * Synapse Core - Binary Detection
- * Erkennt binaere Dateien anhand von Magic Bytes und Extension
+ * MODUL: Binary Detection
+ * ZWECK: Klassifiziert Dateien als binaer, Dokument oder Multimodal — verhindert Indexierung nicht-textueller Inhalte
+ *
+ * INPUT:
+ *   - filePath: string - Dateipfad fuer Extension-basierte Pruefung
+ *   - buffer: Buffer - Datei-Header fuer Magic-Bytes-Pruefung (erste ~512 Bytes)
+ *   - sampleSize?: number - Wie viele Bytes geprueft werden (Standard: 512)
+ *
+ * OUTPUT:
+ *   - boolean: isBinaryFile, isBinaryExtension, hasBinaryMagicBytes, hasNullBytes
+ *   - boolean: isExtractableDocument (PDF, DOCX etc. — fuer Volltext-Extraktion)
+ *   - boolean: isMultimodalFile (Bilder/Audio/Video — fuer Embedding-Pipeline)
+ *   - FileType: 'text' | 'binary' | 'document' | 'multimodal' (getFileType)
+ *   - number: MAX_MEDIA_SIZE_MB — Konfiguriertes Limit fuer Mediendateien
+ *
+ * NEBENEFFEKTE: keine
+ *
+ * ABHAENGIGKEITEN: keine externen
  */
 
 /** Bekannte binaere Datei-Extensions */
