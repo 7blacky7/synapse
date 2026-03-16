@@ -92,6 +92,8 @@ export async function createPlan(
     updated_at: plan.updatedAt,
   };
 
+  let warning: string | undefined;
+
   // 1. PostgreSQL (Source of Truth)
   try {
     const pool = getPool();
@@ -103,14 +105,20 @@ export async function createPlan(
       [plan.id, project, name, description, goals, null, JSON.stringify([]), plan.createdAt, plan.updatedAt]
     );
   } catch (error) {
-    console.error('[Synapse] PostgreSQL Plan-Write fehlgeschlagen, nur Qdrant:', error);
+    console.error('[Synapse] PostgreSQL Plan-Write fehlgeschlagen:', error);
+    warning = `PG-Write fehlgeschlagen: ${error}`;
   }
 
   // 2. Qdrant (Vektor-Index)
-  await insertVector(COLLECTIONS.projectPlans(project), vector, payload, plan.id);
+  try {
+    await insertVector(COLLECTIONS.projectPlans(project), vector, payload, plan.id);
+  } catch (error) {
+    console.error('[Synapse] Qdrant Plan-Write fehlgeschlagen:', error);
+    warning = (warning ? warning + ' | ' : '') + `Qdrant-Write fehlgeschlagen: ${error}`;
+  }
 
   console.error(`[Synapse] Plan erstellt: "${name}" fuer Projekt "${project}"`);
-  return plan;
+  return { ...plan, warning };
 }
 
 /**
@@ -169,9 +177,6 @@ export async function updatePlan(
     updatedAt: new Date().toISOString(),
   };
 
-  // Alten loeschen, neuen einfuegen (Embedding aktualisieren)
-  await deleteVector(COLLECTIONS.projectPlans(project), existingPlan.id);
-
   const textForEmbedding = `${updatedPlan.name}\n${updatedPlan.description}\n${updatedPlan.goals.join('\n')}`;
   const vector = await embed(textForEmbedding);
 
@@ -186,7 +191,9 @@ export async function updatePlan(
     updated_at: updatedPlan.updatedAt,
   };
 
-  // PostgreSQL aktualisieren
+  let warning: string | undefined;
+
+  // 1. PostgreSQL (Source of Truth)
   try {
     const pool = getPool();
     await pool.query(
@@ -195,12 +202,20 @@ export async function updatePlan(
     );
   } catch (error) {
     console.error('[Synapse] PostgreSQL Plan-Update fehlgeschlagen:', error);
+    warning = `PG-Write fehlgeschlagen: ${error}`;
   }
 
-  await insertVector(COLLECTIONS.projectPlans(project), vector, payload, updatedPlan.id);
+  // 2. Qdrant (Vektor-Index)
+  try {
+    await deleteVector(COLLECTIONS.projectPlans(project), existingPlan.id);
+    await insertVector(COLLECTIONS.projectPlans(project), vector, payload, updatedPlan.id);
+  } catch (error) {
+    console.error('[Synapse] Qdrant Plan-Update fehlgeschlagen:', error);
+    warning = (warning ? warning + ' | ' : '') + `Qdrant-Write fehlgeschlagen: ${error}`;
+  }
 
   console.error(`[Synapse] Plan aktualisiert: "${updatedPlan.name}"`);
-  return updatedPlan;
+  return { ...updatedPlan, warning };
 }
 
 /**
@@ -235,9 +250,6 @@ export async function addTask(
   plan.tasks.push(task);
   plan.updatedAt = now;
 
-  // Plan aktualisieren (ohne Embedding-Aenderung)
-  await deleteVector(COLLECTIONS.projectPlans(project), plan.id);
-
   const textForEmbedding = `${plan.name}\n${plan.description}\n${plan.goals.join('\n')}`;
   const vector = await embed(textForEmbedding);
 
@@ -252,19 +264,29 @@ export async function addTask(
     updated_at: plan.updatedAt,
   };
 
-  // PostgreSQL Tasks aktualisieren
+  let warning: string | undefined;
+
+  // 1. PostgreSQL (Source of Truth)
   try {
     const pool = getPool();
     await pool.query('UPDATE plans SET tasks = $1, updated_at = $2 WHERE id = $3',
       [JSON.stringify(plan.tasks), plan.updatedAt, plan.id]);
   } catch (error) {
     console.error('[Synapse] PostgreSQL Task-Add fehlgeschlagen:', error);
+    warning = `PG-Write fehlgeschlagen: ${error}`;
   }
 
-  await insertVector(COLLECTIONS.projectPlans(project), vector, payload, plan.id);
+  // 2. Qdrant (Vektor-Index)
+  try {
+    await deleteVector(COLLECTIONS.projectPlans(project), plan.id);
+    await insertVector(COLLECTIONS.projectPlans(project), vector, payload, plan.id);
+  } catch (error) {
+    console.error('[Synapse] Qdrant Task-Add fehlgeschlagen:', error);
+    warning = (warning ? warning + ' | ' : '') + `Qdrant-Write fehlgeschlagen: ${error}`;
+  }
 
   console.error(`[Synapse] Task hinzugefuegt: "${title}"`);
-  return task;
+  return { ...task, warning };
 }
 
 /**
@@ -298,9 +320,6 @@ export async function updateTask(
   plan.tasks[taskIndex] = updatedTask;
   plan.updatedAt = new Date().toISOString();
 
-  // Plan speichern
-  await deleteVector(COLLECTIONS.projectPlans(project), plan.id);
-
   const textForEmbedding = `${plan.name}\n${plan.description}\n${plan.goals.join('\n')}`;
   const vector = await embed(textForEmbedding);
 
@@ -315,39 +334,60 @@ export async function updateTask(
     updated_at: plan.updatedAt,
   };
 
-  // PostgreSQL Tasks aktualisieren
+  let warning: string | undefined;
+
+  // 1. PostgreSQL (Source of Truth)
   try {
     const pool = getPool();
     await pool.query('UPDATE plans SET tasks = $1, updated_at = $2 WHERE id = $3',
       [JSON.stringify(plan.tasks), plan.updatedAt, plan.id]);
   } catch (error) {
     console.error('[Synapse] PostgreSQL Task-Update fehlgeschlagen:', error);
+    warning = `PG-Write fehlgeschlagen: ${error}`;
   }
 
-  await insertVector(COLLECTIONS.projectPlans(project), vector, payload, plan.id);
+  // 2. Qdrant (Vektor-Index)
+  try {
+    await deleteVector(COLLECTIONS.projectPlans(project), plan.id);
+    await insertVector(COLLECTIONS.projectPlans(project), vector, payload, plan.id);
+  } catch (error) {
+    console.error('[Synapse] Qdrant Task-Update fehlgeschlagen:', error);
+    warning = (warning ? warning + ' | ' : '') + `Qdrant-Write fehlgeschlagen: ${error}`;
+  }
 
   console.error(`[Synapse] Task aktualisiert: "${updatedTask.title}"`);
-  return updatedTask;
+  return { ...updatedTask, warning };
 }
 
 /**
  * Loescht einen Plan aus PostgreSQL + Qdrant
  */
-export async function deletePlan(project: string): Promise<boolean> {
+export async function deletePlan(project: string): Promise<{ success: boolean; warning?: string }> {
   const plan = await getPlan(project);
 
   if (!plan) {
-    return false;
+    return { success: false };
   }
 
+  let warning: string | undefined;
+
+  // 1. PostgreSQL
   try {
     const pool = getPool();
     await pool.query('DELETE FROM plans WHERE id = $1', [plan.id]);
   } catch (error) {
     console.error('[Synapse] PostgreSQL Plan-Delete fehlgeschlagen:', error);
+    warning = `PG-Write fehlgeschlagen: ${error}`;
   }
 
-  await deleteVector(COLLECTIONS.projectPlans(project), plan.id);
+  // 2. Qdrant
+  try {
+    await deleteVector(COLLECTIONS.projectPlans(project), plan.id);
+  } catch (error) {
+    console.error('[Synapse] Qdrant Plan-Delete fehlgeschlagen:', error);
+    warning = (warning ? warning + ' | ' : '') + `Qdrant-Write fehlgeschlagen: ${error}`;
+  }
+
   console.error(`[Synapse] Plan geloescht fuer Projekt: ${project}`);
-  return true;
+  return { success: true, warning };
 }

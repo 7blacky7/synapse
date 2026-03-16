@@ -243,6 +243,7 @@ export interface Proposal {
   tags: string[];
   createdAt: string;
   updatedAt: string;
+  warning?: string;
 }
 
 export interface ProposalPayload {
