@@ -1,10 +1,7 @@
-# Synapse
+# 🧠 Synapse — KI-Gedaechtnis & Agenten-Orchestrierung
 
-> KI-Gedaechtnis & Code-Intelligenz — Semantische Suche, Multi-Agent-Koordination und automatisches Wissensmanagement ueber MCP
-
-## Was ist Synapse?
-
-Synapse gibt KI-Agenten ein **persistentes Gedaechtnis**. Code wird automatisch indexiert, Wissen bleibt ueber Sessions erhalten, und mehrere Agenten koennen koordiniert an einem Projekt arbeiten — mit Broadcast-Chat, Wissenslücken-Erkennung und automatischer Dokumentations-Recherche.
+> Persistentes Projekt-Wissen, semantische Code-Suche und Multi-Agent-Koordination ueber MCP.
+> Synapse gibt KI-Agenten ein Langzeitgedaechtnis: Code wird automatisch indexiert, Wissen bleibt ueber Sessions erhalten, und mehrere Agenten koennen koordiniert an einem Projekt arbeiten — mit Chat, Events, Wissens-Airbag und automatischer Dokumentations-Recherche.
 
 ```
 Du (User)
@@ -22,6 +19,7 @@ Du (User)
                                     │  Tech-Detection     │
                                     │  Context7 Client    │
                                     │  Agenten-Chat       │
+                                    │  Event-System       │
                                     │  Wissens-Airbag     │
                                     └──┬──────────┬───────┘
                                        │          │
@@ -29,104 +27,420 @@ Du (User)
                               │  Qdrant   │  │ PostgreSQL  │
                               │  (Vektor) │  │ (Relational)│
                               │           │  │             │
-                              │ Code      │  │ Thoughts    │
-                              │ Memories  │  │ Memories    │
+                              │ Code      │  │ Memories    │
+                              │ Memories  │  │ Thoughts    │
+                              │ Thoughts  │  │ Plans       │
+                              │ Proposals │  │ Proposals   │
                               │ Tech-Docs │  │ Chat        │
-                              │ Proposals │  │ Sessions    │
+                              │ Media     │  │ Sessions    │
                               └───────────┘  │ Tech-Docs   │
-                                             │ Plans       │
+                                             │ Events      │
+                                             │ Event-Acks  │
                                              └─────────────┘
 ```
 
-## Features
+---
 
-### Semantische Code-Suche
-- **FileWatcher** indexiert Code automatisch bei jeder Aenderung (Chokidar)
-- **Vektor-Suche** ueber Qdrant — findet konzeptuell aehnlichen Code, nicht nur String-Matches
-- **Pfad-Filter** und **Dateityp-Filter** fuer gezielte Suche
-- **Google Embeddings** (gemini-embedding-2-preview, 3072d) fuer hohe Qualitaet
+## ✨ Features
 
-### Multi-Agent-System
-- **Agenten-Chat** mit Broadcasts und Direktnachrichten (PostgreSQL-basiert)
-- **Koordinator-Muster**: Opus dispatcht Haiku/Sonnet-Agenten fuer parallele Arbeit
-- **Cutoff-Erkennung**: Jeder Agent registriert sein Modell, Synapse kennt den Wissens-Cutoff
-- **Wissensluecken-Workflow**: Agent meldet Luecke → Koordinator dispatcht Docs-Kurator → kuratierte Docs indexiert
+| Feature | Beschreibung |
+|---------|--------------|
+| 🔍 **Semantische Code-Suche** | FileWatcher indexiert Code automatisch. Vektor-Suche ueber Qdrant findet konzeptuell aehnlichen Code — nicht nur String-Matches. Google Embeddings (3072d). |
+| 🧠 **Persistentes Projekt-Wissen** | Memories (Architektur, Regeln), Thoughts (Erkenntnisse), Plans (Ziele, Tasks), Proposals (Code-Vorschlaege), Tech-Docs — alles ueberlebt Session-Grenzen. |
+| 💬 **Multi-Agent Chat** | Broadcast-Nachrichten an alle Agenten oder gezielte DMs. Polling-basiert mit `since`-Timestamp. Ungelesene Nachrichten werden in jeder Tool-Response eingeblendet. |
+| ⚡ **Event-System** | Verbindliche Steuersignale (WORK_STOP, CRITICAL_REVIEW, ...) mit Pflicht-Ack. Eskalation nach 3 ignorierten Calls. Prioritaeten: critical, high, normal. |
+| 🤖 **Agenten-Koordination** | Koordinator-Muster: Opus dispatcht Sonnet/Haiku-Agenten. Batch-Registrierung, automatisches Onboarding, Coordinator-Watch fuer Idle-Aufwachen. |
+| 🔄 **Context-Handoff** | Automatische Session-Uebergabe wenn das Context-Window voll wird. Fortschritt in Synapse gespeichert, neue Session liest nahtlos weiter. |
+| 📚 **Tech-Docs Auto-Fetch** | `search_tech_docs` holt automatisch Docs von [Context7](https://context7.com) wenn keine lokalen Ergebnisse. Docs-Kurator (Opus) recherchiert kuratierte Breaking Changes. |
+| 🛡️ **Wissens-Airbag** | `get_docs_for_file` zeigt vor jeder Datei-Bearbeitung Breaking Changes, Migration-Warnungen und Gotchas — nur was neuer als der Agent-Cutoff ist. |
+| 👁️ **FileWatcher** | Chokidar-basiert. Erkennt Aenderungen in Echtzeit → Chunking → Google Embedding → Qdrant. Respektiert `.synapseignore`. |
+| 🔔 **Coordinator-Watch** | Background-Daemon pollt alle 10s auf neue Chat-Nachrichten und Events. Weckt den Koordinator im Idle via Task-Notification. |
+| 🖼️ **Media-Suche** | Cross-Modal Suche: Bilder und Videos per Text-Query finden (Google Gemini Embedding 2). |
+| 🔧 **Tech-Detection** | Erkennt automatisch Frameworks, Libraries und Tools im Projekt. |
 
-### Wissens-Airbag
-- **`get_docs_for_file`** — Agent ruft das vor jeder Datei-Bearbeitung auf
-- Erkennt relevante Frameworks anhand der Datei-Extension (`.ts` → TypeScript, Fastify, React, ...)
-- Zeigt nur **Breaking Changes, Migration-Warnungen und Gotchas** die neuer als der Agent-Cutoff sind
-- Quelle: Kuratierte `research`-Docs (vom Docs-Kurator via Web-Recherche indexiert)
+---
 
-### Context7 Auto-Fetch
-- **`search_tech_docs`** holt automatisch Docs von [Context7](https://context7.com) wenn keine lokalen Ergebnisse
-- Library-ID Resolution → Docs abrufen → in Projekt-Collection indexieren → zurueckgeben
-- Liefert Basis-Docs (Code-Beispiele, API-Referenz) — fuer Breaking Changes braucht es den Docs-Kurator
+## 🏗️ Architektur
 
-### Docs-Kurator (Opus-Agent)
-- Wird automatisch dispatcht wenn ein Agent eine Wissensluecke meldet
-- Recherchiert auf **allen verfuegbaren Quellen**: offizielle Docs, GitHub Issues, Release Notes, Stack Overflow, Reddit, Blog-Posts
-- Bewertet Qualitaet und Relevanz — indexiert nur was wirklich wichtig ist
-- Kategorisiert: `breaking-change`, `migration`, `gotcha`, `known-issue`
-- Ergebnis: Kuratierte, kompakte Docs mit Vorher/Nachher-Code und Quellenangabe
-
-### Persistentes Projekt-Wissen
-- **Memories** — Architektur, Regeln, Entscheidungen (Qdrant + PostgreSQL)
-- **Thoughts** — Kurze Erkenntnisse, Ideen, Recherche-Ergebnisse
-- **Plans** — Projekt-Ziele, Tasks, Architektur-Ueberblick
-- **Proposals** — Code-Vorschlaege mit Status-Tracking
-- **Tech-Docs** — Kuratierte Framework-Dokumentation (research + context7)
-
-### Context-Handoff
-- Automatische Session-Uebergabe wenn das Context-Window voll wird (95%/98% Schwellwerte)
-- Fortschritt wird in Synapse gespeichert, neue Session liest nahtlos weiter
-- Hook-basiert — PostToolUse-Hook ueberwacht den Context-Verbrauch
-
-## Packages
+### Monorepo-Packages
 
 | Package | Beschreibung | Laeuft auf |
 |---------|--------------|------------|
-| `@synapse/core` | Gemeinsamer Kern (Qdrant, PostgreSQL, Embeddings, Services) | - |
-| `@synapse/mcp-server` | MCP Server fuer Claude Code, Desktop, Cline | User PC |
-| `@synapse/rest-api` | REST API fuer Web-KIs (Claude.ai, ChatGPT, Gemini) | Unraid Server |
-| `@synapse/web-ui` | Web-Dashboard (in Entwicklung) | - |
+| `@synapse/core` | Gemeinsamer Kern — Services, DB, Embeddings, FileWatcher, Events | - |
+| `@synapse/mcp-server` | MCP Server (stdio) fuer Claude Code, Claude Desktop, Cline | User PC |
+| `@synapse/rest-api` | REST API (Fastify, HTTP) fuer Web-KIs (Claude.ai, ChatGPT, Gemini) | Server |
+| `@synapse/web-ui` | Web-Dashboard (React, in Entwicklung) | - |
 
-## Schnellstart
+### Datenfluss
+
+```
+Datei gespeichert
+  → FileWatcher (Chokidar) erkennt Aenderung
+    → .synapseignore pruefen
+      → Datei lesen + in Chunks aufteilen (1000 Zeichen, 200 Overlap)
+        → Google Gemini Embedding (3072 Dimensionen)
+          → Qdrant Vektor-DB (Upsert mit Metadaten)
+```
+
+### Dual-Storage
+
+- **Qdrant** — Semantische Vektor-Suche (Code, Memories, Thoughts, Proposals, Tech-Docs, Media)
+- **PostgreSQL** — Source of Truth fuer strukturierte Daten (alle 9 Tabellen)
+
+Jedes Projekt bekommt eigene Qdrant-Collections: `project_{name}_code`, `project_{name}_thoughts`, etc.
+
+---
+
+## 🛠️ MCP-Tools (53 Tools)
+
+### 📦 Projekt-Management (9 Tools)
+
+| Tool | Beschreibung |
+|------|--------------|
+| `init_projekt` | Projekt initialisieren, FileWatcher + Tech-Detection starten |
+| `complete_setup` | Setup-Phase als abgeschlossen markieren |
+| `detect_technologies` | Frameworks, Libraries und Tools erkennen |
+| `cleanup_projekt` | Vektoren fuer ignorierte Dateien bereinigen |
+| `stop_projekt` | FileWatcher stoppen |
+| `list_active_projects` | Alle aktiven Projekte auflisten |
+| `get_project_status` | Persistenter Status aus `.synapse/status.json` |
+| `get_index_stats` | Vektor-Statistiken + Agent-Onboarding |
+| `get_detailed_stats` | Aufschluesselung nach Dateityp, Source, Kategorie |
+
+### 🔍 Code-Suche (3 Tools)
+
+| Tool | Beschreibung |
+|------|--------------|
+| `semantic_code_search` | Konzeptuelle Suche — findet aehnlichen Code |
+| `search_by_path` | Exakte Pfadsuche nach Glob-Pattern |
+| `search_code_with_path` | Kombiniert: Semantisch + Pfad-Filter |
+
+### 🖼️ Media (2 Tools)
+
+| Tool | Beschreibung |
+|------|--------------|
+| `search_media` | Cross-Modal Suche: Bilder/Videos per Text-Query |
+| `index_media` | Bilder und Videos indexieren (Gemini Embedding 2) |
+
+### 🧠 Memories (8 Tools)
+
+| Tool | Beschreibung |
+|------|--------------|
+| `write_memory` | Langform-Wissen speichern (Architektur, Regeln, Docs) |
+| `read_memory` | Memory nach Name lesen |
+| `read_memory_with_code` | Memory + verwandten Code laden |
+| `search_memory` | Semantische Memory-Suche |
+| `list_memories` | Alle Memories auflisten |
+| `update_memory` | Memory aktualisieren (PostgreSQL + re-embed) |
+| `delete_memory` | Memory loeschen |
+| `find_memories_for_file` | Relevante Memories fuer eine Datei finden |
+
+### 💭 Gedanken (5 Tools)
+
+| Tool | Beschreibung |
+|------|--------------|
+| `add_thought` | Kurze Erkenntnis speichern |
+| `get_thoughts` | Letzte Gedanken abrufen |
+| `search_thoughts` | Semantische Thought-Suche |
+| `update_thought` | Thought aktualisieren (PostgreSQL + re-embed) |
+| `delete_thought` | Thought loeschen |
+
+### 📋 Plaene (3 Tools)
+
+| Tool | Beschreibung |
+|------|--------------|
+| `get_project_plan` | Plan abrufen (Ziele, Tasks, Architektur) |
+| `update_project_plan` | Plan aktualisieren |
+| `add_plan_task` | Task zum Plan hinzufuegen |
+
+### 📝 Proposals (6 Tools)
+
+| Tool | Beschreibung |
+|------|--------------|
+| `save_project_idea` | Projekt-Idee als Proposal speichern |
+| `confirm_idea` | Idee bestaetigen und persistent speichern |
+| `list_proposals` | Alle Proposals auflisten |
+| `get_proposal` | Proposal nach ID abrufen |
+| `search_proposals` | Semantische Proposal-Suche |
+| `update_proposal_status` | Status aendern (pending → reviewed → accepted) |
+| `update_proposal` | Proposal-Inhalt aendern |
+| `delete_proposal` | Proposal loeschen |
+
+### 💬 Chat (7 Tools)
+
+| Tool | Beschreibung |
+|------|--------------|
+| `register_chat_agent` | Agent registrieren (mit Cutoff-Erkennung) |
+| `register_chat_agents_batch` | Mehrere Agenten auf einmal registrieren |
+| `unregister_chat_agent` | Agent abmelden |
+| `unregister_chat_agents_batch` | Mehrere Agenten abmelden |
+| `send_chat_message` | Broadcast (alle) oder DM (ein Agent) senden |
+| `get_chat_messages` | Nachrichten abrufen (Polling via `since`) |
+| `list_chat_agents` | Aktive Agenten auflisten |
+
+### ⚡ Events (3 Tools)
+
+| Tool | Beschreibung |
+|------|--------------|
+| `emit_event` | Steuersignal an Agenten senden |
+| `acknowledge_event` | Event quittieren (Pflicht bei `requires_ack`) |
+| `get_pending_events` | Unbestaetigte Events abrufen |
+
+### 📚 Tech-Docs & Wissens-Airbag (3 Tools)
+
+| Tool | Beschreibung |
+|------|--------------|
+| `add_tech_doc` | Kuratierte Docs indexieren (Breaking Changes, Migrations, ...) |
+| `search_tech_docs` | Docs suchen (mit Context7 Auto-Fetch) |
+| `get_docs_for_file` | Wissens-Airbag: Relevante Docs fuer eine Datei |
+
+### 🔧 Migration & Backup (2 Tools)
+
+| Tool | Beschreibung |
+|------|--------------|
+| `migrate_embeddings` | Embedding-Modell wechseln (Backup → Re-Embed) |
+| `restore_backup` | Daten aus JSONL-Backup wiederherstellen |
+
+---
+
+## 🎭 Event-System
+
+Events sind **verbindliche Steuersignale** — keine Chat-Nachrichten. Der Koordinator sendet Events, Agenten muessen reagieren.
+
+### Event-Typen
+
+| Event-Typ | Priority | Pflicht-Reaktion |
+|-----------|----------|-----------------|
+| `WORK_STOP` | critical | Arbeit sofort anhalten, Status posten |
+| `CRITICAL_REVIEW` | critical | Betroffene Arbeit nicht abschliessen |
+| `ARCH_DECISION` | high | Plan neu pruefen, Ack mit Bewertung |
+| `TEAM_DISCUSSION` | high | Status posten, auf Koordinator warten |
+| `ANNOUNCEMENT` | normal | Lesen, Ack, weiterarbeiten |
+
+### Priority-Level
+
+| Level | Bedeutung |
+|-------|-----------|
+| `critical` | Sofortige Reaktion, Arbeit anhalten |
+| `high` | Zeitnah reagieren, vor naechstem Task |
+| `normal` | Zur Kenntnis nehmen, weiterarbeiten |
+
+### Scope
+
+- `all` — alle aktiven Agenten sehen das Event
+- `agent:<id>` — nur ein bestimmter Agent
+
+### Delivery-Mechanismus
+
+```
+1. Koordinator: emit_event(project, event_type, priority, scope, source_id, payload)
+   → PostgreSQL: agent_events Tabelle
+
+2. Agent fuehrt beliebiges Tool aus
+   → server.ts: withOnboarding() prueft getPendingEvents()
+   → Tool-Response enthaelt pendingEvents mit Hint-Text
+
+3. PostToolUse Hook (chat-notify.sh)
+   → Pollt Events via event-check.mjs
+   → Zeigt Events VOR Chat-Nachrichten an
+
+4. Agent: acknowledge_event(event_id, agent_id, reaction)
+   → PostgreSQL: agent_event_acks Tabelle
+```
+
+### Eskalation
+
+Nach **3 Tool-Calls** ohne Ack bei `critical`/`high` Events:
+→ Automatische DM an Koordinator: *"Agent X ignoriert Event Y seit Z Calls"*
+
+### Beispiel
+
+```typescript
+// Koordinator stoppt alle Agenten
+emit_event(
+  project: "synapse",
+  event_type: "WORK_STOP",
+  priority: "critical",
+  scope: "all",
+  source_id: "koordinator",
+  payload: "Architektur-Aenderung in schema.ts. Wartet auf Review."
+)
+
+// Agent quittiert
+acknowledge_event(
+  event_id: 5,
+  agent_id: "code-spatz",
+  reaction: "Arbeit angehalten. Aktueller Stand: 3/5 Tests geschrieben."
+)
+```
+
+---
+
+## 🤖 Multi-Agent Koordination
+
+### Koordinator-Muster
+
+```
+┌─────────────────────────────────────────┐
+│  Koordinator (Opus)                     │
+│                                         │
+│  1. register_chat_agents_batch          │
+│  2. coordinator-watch.sh starten        │
+│  3. Agenten spawnen mit Prompt-Baustein │
+│  4. Chat lesen + Events beobachten      │
+│  5. search_thoughts nach Ergebnissen    │
+└────┬──────────┬──────────┬──────────────┘
+     │          │          │
+     ▼          ▼          ▼
+  ┌──────┐  ┌──────┐  ┌──────┐
+  │Haiku │  │Sonnet│  │Haiku │
+  │Agent1│  │Agent2│  │Agent3│
+  └──────┘  └──────┘  └──────┘
+```
+
+### Agent-Registrierung
+
+```typescript
+// Batch-Registrierung (spart API-Calls)
+register_chat_agents_batch(
+  agents: [
+    { id: "code-spatz", model: "claude-haiku-4-5" },
+    { id: "test-falke", model: "claude-sonnet-4-6" }
+  ],
+  project: "synapse"
+)
+```
+
+### Automatisches Onboarding
+
+Jeder Agent bekommt beim ersten Tool-Call automatisch:
+- **Projekt-Regeln** (Memories mit `category: "rules"`)
+- **Ungelesene Chat-Nachrichten** und **ausstehende Events**
+- **Liste aktiver Agenten**
+
+### Coordinator-Watch
+
+Der Koordinator hat kein echtes Push-System. Der `coordinator-watch.sh` Daemon lauft im Hintergrund:
+
+```bash
+# Alle 10s auf neue DMs und Events pruefen
+bash ~/dev/synapse/scripts/coordinator-watch.sh "synapse" "koordinator" 10
+```
+
+Wenn neue Nachrichten oder Events ankommen:
+→ Script gibt Output und beendet sich
+→ Claude Code Task-Notification weckt den Koordinator
+→ Koordinator liest Nachrichten, reagiert, startet Watcher neu
+
+### Wissensluecken-Workflow
+
+```
+Agent meldet: "Wissensluecke: Fastify v5 Breaking Changes"
+  → Koordinator empfaengt DM
+    → Dispatcht Docs-Kurator (Opus)
+      → Web-Recherche, GitHub Issues, offizielle Docs
+        → add_tech_doc(type: "breaking-change", source: "research")
+          → Agent: search_tech_docs(source: "research")
+            → Kuratierte Breaking Changes verfuegbar
+```
+
+---
+
+## 🗄️ Datenbank-Schema
+
+### PostgreSQL (9 Tabellen)
+
+| Tabelle | Spalten | Beschreibung |
+|---------|---------|--------------|
+| `memories` | id, project, name, category, content, tags, created_at, updated_at | Langzeit-Wissen (Architektur, Regeln, Docs) |
+| `thoughts` | id, project, source, content, tags, timestamp | Kurze Erkenntnisse und Ideen |
+| `plans` | id, project, name, description, goals, architecture, tasks (JSONB) | Projekt-Plaene mit Tasks |
+| `proposals` | id, project, file_path, suggested_content, description, author, status, tags | Code-Vorschlaege mit Status-Tracking |
+| `agent_sessions` | id, project, model, cutoff_date, status, registered_at | Registrierte Agenten mit Modell-Info |
+| `chat_messages` | id, project, sender_id, recipient_id, content, timestamp | Agenten-Chat (Broadcasts + DMs) |
+| `tech_docs` | id, framework, version, section, content, type, category, content_hash, source | Kuratierte Framework-Dokumentation |
+| `agent_events` | id, project, event_type, priority, scope, source_id, payload, requires_ack | Steuersignale zwischen Agenten |
+| `agent_event_acks` | event_id, agent_id, acked_at, reaction | Quittierungen von Events |
+
+### Qdrant (Vektor-Collections)
+
+| Collection | Inhalt | Dimension |
+|------------|--------|-----------|
+| `project_{name}_code` | Code-Chunks mit Metadaten | 3072 |
+| `project_{name}_thoughts` | Gedanken (semantisch durchsuchbar) | 3072 |
+| `project_{name}_memories` | Memories (Architektur, Regeln) | 3072 |
+| `project_{name}_proposals` | Code-Vorschlaege | 3072 |
+| `project_{name}_docs` | Tech-Docs pro Projekt | 3072 |
+| `project_{name}_media` | Bilder und Videos | 3072 |
+| `tech_docs_cache` | Globaler Docs-Cache | 3072 |
+
+---
+
+## 🪝 Hooks
+
+Synapse nutzt Claude Code Hooks fuer automatische Integrationen:
+
+### PreToolUse
+
+| Matcher | Hook | Beschreibung |
+|---------|------|--------------|
+| `Read` | `pre-synapse-onboarding.sh` | Koordinator-Onboarding: Zeigt Projekt-Kontext beim ersten Tool-Call der Session |
+
+### PostToolUse
+
+| Matcher | Hook | Beschreibung |
+|---------|------|--------------|
+| `Edit\|Write` | `post-edit-framework-docs.sh` | Wissens-Airbag: Zeigt Framework-Docs nach Datei-Bearbeitung |
+| `.*` | `chat-notify.sh` | Chat + Event Notifications: Ungelesene DMs, Broadcasts und Events nach jedem Tool-Call |
+
+### SubagentStart
+
+| Matcher | Hook | Beschreibung |
+|---------|------|--------------|
+| `.*` | `pre-synapse-onboarding.sh` | Agent-Onboarding: Gibt Subagenten automatisch eine ID und Synapse-Regeln |
+
+### Response Enhancement (server.ts)
+
+Zusaetzlich erweitert `server.ts` jede Tool-Response um:
+- **pendingEvents** — unbestaetigte Events mit Hint-Text
+- **unreadChat** — ungelesene Nachrichten mit Lesehinweis
+- **activeAgents** — Liste aktiver Agenten
+- **agentOnboarding** — Projekt-Regeln beim ersten Besuch
+
+---
+
+## 🚀 Setup
 
 ### 1. Voraussetzungen
 
-- **Node.js 20+**
+- **Node.js 20+** (via [mise](https://mise.jdx.dev/))
 - **pnpm** (Paketmanager)
+- **PostgreSQL** (relationale Daten)
 - **Qdrant** (Vektor-Datenbank, Docker oder Cloud)
-- **PostgreSQL** (relationale Daten, Docker oder lokal)
-- **Google AI API Key** (fuer Embeddings)
-- Optional: **Context7 API Key** (fuer automatische Docs)
+- **Google AI API Key** (fuer Embeddings, `gemini-embedding-2-preview`)
+- Optional: **Context7 API Key** (fuer automatische Framework-Docs)
 
 ### 2. Installation
 
 ```bash
-cd synapse
+cd ~/dev/synapse
+cp .env.example .env
+# .env bearbeiten: DATABASE_URL, QDRANT_URL, GOOGLE_API_KEY
+
 pnpm install
 pnpm run build
 ```
 
-### 3. Konfiguration
+### 3. MCP Server konfigurieren
 
-```bash
-cp .env.example .env
-# .env bearbeiten: QDRANT_URL, DATABASE_URL, GOOGLE_API_KEY
-```
-
-### 4. MCP Server (Claude Code / Desktop)
-
-In `.mcp.json` im Projekt-Root:
+In der `.mcp.json` im Projekt-Root (oder global):
 
 ```json
 {
   "mcpServers": {
     "synapse": {
       "command": "node",
-      "args": ["/pfad/zu/synapse/packages/mcp-server/dist/index.js"],
+      "args": ["/home/<user>/dev/synapse/packages/mcp-server/dist/index.js"],
       "env": {
         "QDRANT_URL": "http://localhost:6333",
         "DATABASE_URL": "postgresql://synapse:password@localhost:5432/synapse",
@@ -139,260 +453,204 @@ In `.mcp.json` im Projekt-Root:
 }
 ```
 
-### 5. REST API (fuer Web-KIs)
+### 4. Claude Code Hooks einrichten
+
+Kopiere die Hooks-Konfiguration in `~/.claude/settings.json`:
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Read",
+        "hooks": [{
+          "type": "command",
+          "command": "<SYNAPSE_PATH>/packages/mcp-server/hooks/pre-synapse-onboarding.sh"
+        }]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [{
+          "type": "command",
+          "command": "<SYNAPSE_PATH>/packages/mcp-server/hooks/post-edit-framework-docs.sh"
+        }]
+      },
+      {
+        "matcher": ".*",
+        "hooks": [{
+          "type": "command",
+          "command": "<SYNAPSE_PATH>/scripts/chat-notify.sh",
+          "timeout": 10
+        }]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "matcher": ".*",
+        "hooks": [{
+          "type": "command",
+          "command": "<SYNAPSE_PATH>/packages/mcp-server/hooks/pre-synapse-onboarding.sh"
+        }]
+      }
+    ]
+  }
+}
+```
+
+> Ersetze `<SYNAPSE_PATH>` mit dem absoluten Pfad zu deinem Synapse-Verzeichnis.
+
+Vorlage: [`hooks-setup.example.json`](hooks-setup.example.json)
+
+### 5. Fish Shell Setup
+
+In `~/.config/fish/config.fish`:
+
+```fish
+# Synapse DB-URL fuer Hooks und Scripts
+# WICHTIG: Ohne diese Variable funktionieren Chat-Notifications,
+# Event-Watcher und Coordinator-Watch NICHT.
+set -gx SYNAPSE_DB_URL "postgresql://synapse:password@localhost:5432/synapse"
+
+# Claude Code mit automatischem Context-Handoff + volle Rechte
+alias cc "bash ~/.claude/skills/synapse-nutzung/scripts/claude-session.sh --dangerously-skip-permissions"
+```
+
+Vorlage: [`shell-setup.example.fish`](shell-setup.example.fish)
+
+### 6. Projekt initialisieren
+
+```
+> init_projekt(path: "/home/<user>/dev/mein-projekt")
+```
+
+→ FileWatcher startet, Code wird indexiert, Technologien erkannt.
+
+### 7. REST API starten (optional)
 
 ```bash
 pnpm run dev:api
 # Laeuft auf http://0.0.0.0:3456
 ```
 
-## MCP Tools (46 Tools)
+---
 
-### Projekt-Management
-
-| Tool | Beschreibung |
-|------|--------------|
-| `init_projekt` | Projekt initialisieren, FileWatcher + Tech-Detection starten |
-| `stop_projekt` | FileWatcher stoppen |
-| `get_project_status` | Status mit Vektor-Statistiken |
-| `detect_technologies` | Frameworks, Libraries und Tools erkennen |
-| `list_active_projects` | Alle aktiven Projekte |
-| `cleanup_projekt` | Projekt-Daten bereinigen |
-| `complete_setup` | Setup-Wizard abschliessen |
-
-### Code-Suche
-
-| Tool | Beschreibung |
-|------|--------------|
-| `semantic_code_search` | Konzeptuelle Suche (Was macht der Code?) |
-| `search_by_path` | Suche nach Dateipfad-Muster |
-| `search_code_with_path` | Kombiniert: Konzept + Pfad |
-
-### Wissen & Gedaechtnis
-
-| Tool | Beschreibung |
-|------|--------------|
-| `write_memory` | Langform-Wissen speichern (Architektur, Regeln) |
-| `read_memory` | Memory nach Name lesen |
-| `read_memory_with_code` | Memory + zugehoerigen Code laden |
-| `search_memory` | Semantische Memory-Suche |
-| `list_memories` | Alle Memories auflisten |
-| `update_memory` | Memory aktualisieren (PostgreSQL + re-embed) |
-| `delete_memory` | Memory loeschen |
-| `find_memories_for_file` | Relevante Memories fuer eine Datei |
-
-### Gedanken & Ideen
-
-| Tool | Beschreibung |
-|------|--------------|
-| `add_thought` | Kurze Erkenntnis speichern |
-| `get_thoughts` | Letzte Gedanken abrufen |
-| `search_thoughts` | Semantische Thought-Suche |
-| `update_thought` | Thought aktualisieren |
-| `delete_thought` | Thought loeschen |
-| `save_project_idea` | Projekt-Idee als Proposal speichern |
-| `confirm_idea` | Idee bestaetigen und Plan erstellen |
-
-### Projekt-Plaene
-
-| Tool | Beschreibung |
-|------|--------------|
-| `get_project_plan` | Plan abrufen |
-| `update_project_plan` | Plan aktualisieren |
-| `add_plan_task` | Task zum Plan hinzufuegen |
-
-### Proposals
-
-| Tool | Beschreibung |
-|------|--------------|
-| `list_proposals` | Alle Proposals auflisten |
-| `get_proposal` | Proposal nach ID |
-| `search_proposals` | Semantische Proposal-Suche |
-| `update_proposal` | Proposal-Inhalt aendern |
-| `update_proposal_status` | Status aendern (draft → approved → implemented) |
-| `delete_proposal` | Proposal loeschen |
-
-### Tech-Docs & Wissens-Airbag
-
-| Tool | Beschreibung |
-|------|--------------|
-| `search_tech_docs` | Docs suchen (mit Context7 Auto-Fetch) |
-| `add_tech_doc` | Kuratierte Docs indexieren |
-| `get_docs_for_file` | Wissens-Airbag: Breaking Changes fuer eine Datei |
-
-### Agenten-Chat
-
-| Tool | Beschreibung |
-|------|--------------|
-| `register_chat_agent` | Agent registrieren (mit Cutoff-Erkennung) |
-| `unregister_chat_agent` | Agent abmelden |
-| `send_chat_message` | Broadcast oder DM senden |
-| `get_chat_messages` | Nachrichten abrufen (mit Polling via `since`) |
-| `list_chat_agents` | Aktive Agenten auflisten |
-
-### Statistiken & Admin
-
-| Tool | Beschreibung |
-|------|--------------|
-| `get_index_stats` | Vektor-Statistiken + Agent-Onboarding |
-| `get_detailed_stats` | Aufschuesselung nach Dateityp, Source, Kategorie |
-| `migrate_embeddings` | Embedding-Modell wechseln |
-| `restore_backup` | Daten aus PostgreSQL-Backup wiederherstellen |
-
-## Wissens-Workflow
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│  Code-Agent (Haiku/Sonnet)                                      │
-│                                                                  │
-│  1. get_docs_for_file("src/api.ts")                             │
-│     → Wissens-Airbag: 7 Breaking Changes, 2 Gotchas            │
-│                                                                  │
-│  2. search_tech_docs("fastify routing")                          │
-│     → Context7 Auto-Fetch: 5 Code-Beispiele indexiert           │
-│                                                                  │
-│  3. Kuratiertes Wissen fehlt?                                    │
-│     → Chat-DM: "Wissensluecke: Fastify v5 Breaking Changes"    │
-│                                                                  │
-│  4. Warte auf Koordinator (Polling)                              │
-└────────────────────┬────────────────────────────────────────────┘
-                     │ DM
-                     ▼
-┌─────────────────────────────────────────────────────────────────┐
-│  Koordinator (Opus)                                              │
-│                                                                  │
-│  → Dispatcht Docs-Kurator (Opus)                                │
-└────────────────────┬────────────────────────────────────────────┘
-                     │
-                     ▼
-┌─────────────────────────────────────────────────────────────────┐
-│  Docs-Kurator (Opus)                                             │
-│                                                                  │
-│  1. Context7 Basis-Docs bewerten                                │
-│  2. Web-Recherche: Offizielle Docs, GitHub Issues, Reddit, ...  │
-│  3. Kuratieren: Was ist relevant? Vorher/Nachher-Code?          │
-│  4. add_tech_doc(type: "breaking-change", source: "research")   │
-│  5. Chat-Broadcast: "11 Docs indexiert"                         │
-└────────────────────┬────────────────────────────────────────────┘
-                     │
-                     ▼
-┌─────────────────────────────────────────────────────────────────┐
-│  Code-Agent                                                      │
-│                                                                  │
-│  → search_tech_docs(source: "research") → findet kuratierte Docs│
-│  → get_docs_for_file → Wissens-Airbag zeigt Breaking Changes   │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-## Datenbank-Schema
-
-### Qdrant (Vektor-Suche)
-
-| Collection | Inhalt | Dimension |
-|------------|--------|-----------|
-| `project_{name}_code` | Code-Chunks mit Metadaten | 3072 |
-| `project_{name}_thoughts` | Gedanken (semantisch durchsuchbar) | 3072 |
-| `project_{name}_memories` | Memories (Architektur, Regeln) | 3072 |
-| `project_{name}_proposals` | Code-Vorschlaege | 3072 |
-| `project_{name}_docs` | Tech-Docs pro Projekt | 3072 |
-| `tech_docs_cache` | Globaler Docs-Cache | 3072 |
-
-### PostgreSQL (Source of Truth)
-
-| Tabelle | Inhalt |
-|---------|--------|
-| `thoughts` | Gedanken mit Tags, Source, Timestamp |
-| `memories` | Memories mit Kategorie, Tags, Code-Links |
-| `plans` | Projekt-Plaene mit Goals und Tasks |
-| `proposals` | Code-Vorschlaege mit Status |
-| `tech_docs` | Kuratierte Framework-Docs mit Content-Hash |
-| `agent_sessions` | Registrierte Agenten mit Modell und Cutoff |
-| `chat_messages` | Agenten-Chat (Broadcasts + DMs) |
-
-## Slash-Commands
-
-Synapse bringt eigene Slash-Commands fuer Claude Code mit:
-
-| Command | Beschreibung |
-|---------|--------------|
-| `/projekt-setup` | **Setup-Wizard** — Erfasst Projektbeschreibung, Coding-Standards, Commit-Konventionen und Skills. Speichert alles als Synapse-Memories. |
-| `/projekt-regeln` | **Coding-Standards** anzeigen und aendern — Sprache, Linter, Commit-Konventionen, Namensgebung |
-| `/projekt-architektur` | **Architektur-Uebersicht** anzeigen und bearbeiten — Design-Entscheidungen, Komponentenstruktur |
-| `/projekt-status` | **Alles anzeigen** was Synapse ueber das Projekt weiss — Regeln, Architektur, Beschreibung |
-| `/synapse-nutzung` | **Koordinator-Regeln** laden — Session-Management, Agenten-Dispatching, Wissensluecke-Reaktion, Context-Handoff |
-| `/synapse-agent-regeln` | **Agent-Regeln** laden — Onboarding, Suche, Kommunikation, Wissens-Airbag (wird Subagenten im Prompt mitgegeben) |
-| `/commit-arbeit` | **Commit-Workflow** — Konventionelle Commits, logische Aufteilung, Patch-Staging, Sicherheitspruefungen |
-
-### Typischer Projekt-Start
-
-```bash
-# 1. Synapse fuer ein neues Projekt einrichten
-> /projekt-setup
-# → Wizard fragt nach Beschreibung, Standards, Konventionen
-# → Speichert alles als Synapse-Memories (category: "rules")
-
-# 2. Projekt initialisieren (MCP-Tool)
-> init_projekt(path: "/pfad/zum/projekt")
-# → FileWatcher startet, Code wird indexiert, Technologien erkannt
-
-# 3. Arbeiten — Synapse-Regeln laden
-> /synapse-nutzung
-# → Koordinator-Regeln aktiv, Agenten koennen dispatcht werden
-```
-
-## Skills (Dateien)
-
-| Skill | Pfad | Zweck |
-|-------|------|-------|
-| `synapse-nutzung` | `skills/synapse-nutzung/SKILL.md` | Koordinator-Regeln (im Repo) |
-| `synapse-agent-regeln` | `skills/synapse-agent-regeln/SKILL.md` | Agent-Regeln (im Repo) |
-| `projekt-setup` | `~/.claude/skills/projekt-setup/` | Setup-Wizard (global) |
-| `projekt-regeln` | `~/.claude/skills/projekt-regeln/` | Coding-Standards (global) |
-| `projekt-architektur` | `~/.claude/skills/projekt-architektur/` | Architektur (global) |
-| `projekt-status` | `~/.claude/skills/projekt-status/` | Status-Uebersicht (global) |
-| `commit-arbeit` | `~/.claude/skills/commit-arbeit/` | Commit-Workflow (global) |
-
-## Entwicklung
-
-### mise-Tasks
-
-```bash
-mr dev          # MCP Server im Dev-Modus starten
-mr dev:api      # REST API im Dev-Modus starten
-mr build        # Alle Packages bauen
-mr build:core   # Nur Core bauen
-mr build:mcp    # Nur MCP Server bauen
-mr build:api    # Nur REST API bauen
-mr clean        # Alle dist/ Ordner loeschen
-mr lint         # Linter ausfuehren
-```
-
-### Projekt-Struktur
+## 📁 Projektstruktur
 
 ```
 synapse/
 ├── packages/
-│   ├── core/           # Gemeinsamer Kern (Services, DB, Embeddings)
-│   ├── mcp-server/     # MCP Server (stdio, 46 Tools)
-│   ├── rest-api/       # REST API (Fastify, HTTP)
-│   └── web-ui/         # Web-Dashboard (React, in Entwicklung)
+│   ├── core/                        # Gemeinsamer Kern
+│   │   └── src/
+│   │       ├── db/
+│   │       │   ├── client.ts        # PostgreSQL Connection Pool
+│   │       │   └── schema.ts        # 9 Tabellen + Indizes
+│   │       ├── services/
+│   │       │   ├── events.ts        # Event-System (emit, ack, pending)
+│   │       │   ├── thoughts.ts      # Gedanken-Verwaltung
+│   │       │   ├── memory.ts        # Memory-Verwaltung
+│   │       │   ├── techDocs.ts      # Tech-Docs + Context7
+│   │       │   └── ...
+│   │       ├── embeddings/          # Google / Ollama / OpenAI
+│   │       └── watcher/             # FileWatcher (Chokidar)
+│   ├── mcp-server/                  # MCP Server (53 Tools)
+│   │   ├── src/
+│   │   │   ├── server.ts            # Tool-Definitionen + Response Enhancement
+│   │   │   └── tools/               # Tool-Implementierungen
+│   │   └── hooks/
+│   │       ├── pre-synapse-onboarding.sh   # Koordinator + Agent Onboarding
+│   │       └── post-edit-framework-docs.sh # Wissens-Airbag Hook
+│   ├── rest-api/                    # REST API (Fastify)
+│   └── web-ui/                      # Web-Dashboard (React)
+├── scripts/
+│   ├── coordinator-watch.sh         # Coordinator Idle-Watcher
+│   ├── chat-notify.sh               # PostToolUse Chat/Event Hook
+│   ├── chat-check.mjs               # Chat-Polling Helper
+│   └── event-check.mjs              # Event-Polling Helper
 ├── skills/
-│   ├── synapse-nutzung/      # Koordinator-Regeln
-│   └── synapse-agent-regeln/ # Agent-Regeln
-├── .mcp.json           # MCP Server Konfiguration
-├── .synapseignore      # Dateien vom Index ausschliessen
-└── .mise.toml          # Task-Runner Konfiguration
+│   ├── synapse-nutzung/             # Koordinator-Regeln (Skill)
+│   └── synapse-agent-regeln/        # Agent-Regeln (Skill)
+├── .env.example                     # Konfigurationsvorlage
+├── .mcp.json                        # MCP Server Konfiguration
+├── .synapseignore                   # Dateien vom Index ausschliessen
+├── hooks-setup.example.json         # Claude Code Hooks Vorlage
+├── shell-setup.example.fish         # Fish Shell Setup Vorlage
+└── .mise.toml                       # Task-Runner Konfiguration
 ```
 
-## Bekannte Einschraenkungen
+---
 
-| Problem | Status |
-|---------|--------|
-| `get_detailed_stats` zeigt Gesamtzahlen ueber alle Projekte | Offen |
-| REST-API hat keinen eigenen FileWatcher | Offen |
-| Projekt-Pfade sind systemspezifisch (kein relatives Mapping) | Offen |
-| Context-Handoff nur auf Linux + fish/bash getestet | Plattform |
+## 🔧 Konfiguration
 
-## Lizenz
+### .env
+
+| Variable | Beschreibung | Standard |
+|----------|--------------|---------|
+| `DATABASE_URL` | PostgreSQL Connection String | - |
+| `QDRANT_URL` | Qdrant Server URL | `http://localhost:6333` |
+| `QDRANT_API_KEY` | Qdrant API Key (optional) | - |
+| `EMBEDDING_PROVIDER` | `google`, `ollama` oder `openai` | `google` |
+| `GOOGLE_API_KEY` | Google AI API Key (fuer Embeddings) | - |
+| `OLLAMA_URL` | Ollama Server URL | `http://localhost:11434` |
+| `OLLAMA_MODEL` | Ollama Embedding Model | `nomic-embed-text` |
+| `OPENAI_API_KEY` | OpenAI API Key (optional) | - |
+| `CONTEXT7_API_KEY` | Context7 API Key (Auto-Fetch) | - |
+| `API_PORT` | REST API Port | `3456` |
+| `API_HOST` | REST API Host | `0.0.0.0` |
+| `MAX_FILE_SIZE_MB` | Max Dateigroesse fuer Indexierung | `1` |
+| `CHUNK_SIZE` | Chunk-Groesse in Zeichen | `1000` |
+| `CHUNK_OVERLAP` | Overlap zwischen Chunks | `200` |
+| `DEBOUNCE_MS` | FileWatcher Debounce | `500` |
+
+### Shell-Umgebung
+
+| Variable | Beschreibung | Benoetigt fuer |
+|----------|--------------|---------------|
+| `SYNAPSE_DB_URL` | PostgreSQL URL (in Fish Shell) | Chat-Notify, Coordinator-Watch, Event-Check |
+
+### Slash-Commands (Claude Code Skills)
+
+| Command | Beschreibung |
+|---------|--------------|
+| `/synapse-nutzung` | Koordinator-Regeln laden |
+| `/synapse-agent-regeln` | Agent-Regeln laden |
+| `/projekt-setup` | Setup-Wizard (Beschreibung, Standards, Skills) |
+| `/projekt-regeln` | Coding-Standards anzeigen/aendern |
+| `/projekt-architektur` | Architektur-Uebersicht |
+| `/projekt-status` | Alles anzeigen was Synapse ueber das Projekt weiss |
+| `/commit-arbeit` | Commit-Workflow mit Konventionen |
+
+---
+
+## 🧪 mise-Tasks
+
+```bash
+mr dev          # MCP Server im Dev-Modus
+mr dev:api      # REST API im Dev-Modus
+mr build        # Alle Packages bauen
+mr build:core   # Nur Core bauen
+mr build:mcp    # Nur MCP Server bauen
+mr build:api    # Nur REST API bauen
+mr clean        # Alle dist/ loeschen
+mr lint         # Linter ausfuehren
+```
+
+---
+
+## 📋 Bekannte Einschraenkungen
+
+| Einschraenkung | Details |
+|----------------|---------|
+| Context-Handoff | Nur auf Linux + fish/bash getestet |
+| Kein echter Push | Coordinator-Watch (Polling alle 10s) als Workaround |
+| Google Batch-Embedding | Limit von 100 Texten pro Batch-Request |
+| REST-API FileWatcher | REST-API hat keinen eigenen FileWatcher |
+| Pfade systemspezifisch | Absolute Pfade, kein relatives Mapping |
+| `get_detailed_stats` | Zeigt Gesamtzahlen ueber alle Projekte |
+
+---
+
+## 📜 Lizenz
 
 MIT
