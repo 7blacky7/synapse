@@ -27,3 +27,9 @@ docker-compose.yml
 
 # Windows-only
 *.ps1
+
+# Geloeschte/externe Test-Projekte
+test-synapsevoll/
+
+# Dokumentation (verdraengt Code-Scores)
+docs/

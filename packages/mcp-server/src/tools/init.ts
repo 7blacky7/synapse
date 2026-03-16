@@ -116,7 +116,7 @@ async function tryReactivateProject(
   }
 
   // Pruefen ob Collection bereits Daten hat
-  const collectionName = `project_${name}`;
+  const collectionName = `project_${name}_code`;
   const vectors = await scrollVectors(collectionName, {}, 1);
   if (vectors.length === 0) {
     return null; // Collection leer, neu initialisieren
