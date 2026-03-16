@@ -1,6 +1,26 @@
 /**
- * Synapse Core - FileWatcher
- * Ueberwacht Dateiaenderungen mit Chokidar
+ * MODUL: FileWatcher
+ * ZWECK: Echtzeit-Ueberwachung von Projektdateien — erkennt Aenderungen und loest Indexierung aus
+ *
+ * INPUT:
+ *   - projectPath: string - Absoluter Pfad zum Projektverzeichnis
+ *   - projectName: string - Projekt-Identifikator fuer Metadaten
+ *   - onFileChange: (FileEvent) => void - Callback bei add/change/unlink
+ *   - onError?: (Error) => void - Callback bei Watcher-Fehlern
+ *   - onIgnoreChange?: (string[]) => void - Callback wenn .synapseignore sich aendert
+ *
+ * OUTPUT:
+ *   - FileWatcherInstance: { stop(), projectName, projectPath }
+ *
+ * NEBENEFFEKTE:
+ *   - Filesystem: Liest .gitignore und .synapseignore live
+ *   - Chokidar: Oeffnet inotify/FSEvents-Handle auf projectPath
+ *   - Debounce: Batched schnelle Aenderungen (300ms Fenster)
+ *
+ * ABHAENGIGKEITEN:
+ *   - ./ignore.js (intern) - Gitignore- und Synapseignore-Filterung
+ *   - ./binary.js (intern) - Binaer/Multimodal/Dokument-Klassifizierung
+ *   - chokidar (npm) - Cross-Platform Filesystem-Watcher
  */
 
 import * as fs from 'fs';
