@@ -17,7 +17,8 @@ CONTENT="${1:?Nachricht fehlt. Nutzung: synapse-chat \"Nachricht\" [empfaenger] 
 RECIPIENT="${2:-}"
 SENDER="${3:-user}"
 PROJECT="${SYNAPSE_PROJECT:-synapse}"
-DB_URL="${SYNAPSE_DB_URL}"
+DB_URL="${SYNAPSE_DB_URL:-}"
+if [[ -z "$DB_URL" ]]; then echo "SYNAPSE_DB_URL nicht gesetzt" >&2; exit 1; fi
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # Insert via node + pg

@@ -12,7 +12,8 @@ set -euo pipefail
 
 PROJECT="${SYNAPSE_PROJECT:-synapse}"
 CHECK_INTERVAL="${SYNAPSE_CHAT_INTERVAL:-15}"
-DB_URL="${SYNAPSE_DB_URL}"
+DB_URL="${SYNAPSE_DB_URL:-}"
+if [[ -z "$DB_URL" ]]; then exit 0; fi
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CURRENT_AGENT_FILE="/tmp/synapse-current-agent"
 

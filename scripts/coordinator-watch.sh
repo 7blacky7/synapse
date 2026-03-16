@@ -11,7 +11,8 @@ set -euo pipefail
 PROJECT="${1:-synapse}"
 AGENT_ID="${2:-koordinator}"
 INTERVAL="${3:-10}"
-DB_URL="${SYNAPSE_DB_URL}"
+DB_URL="${SYNAPSE_DB_URL:-}"
+if [[ -z "$DB_URL" ]]; then echo "[coordinator-watch] SYNAPSE_DB_URL nicht gesetzt" >&2; exit 1; fi
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 LASTSEEN_FILE="/tmp/synapse-chat-lastseen-${AGENT_ID}"
 PID_FILE="/tmp/synapse-watch-${PROJECT}.pid"
