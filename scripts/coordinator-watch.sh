@@ -11,7 +11,7 @@ set -euo pipefail
 PROJECT="${1:-synapse}"
 AGENT_ID="${2:-koordinator}"
 INTERVAL="${3:-10}"
-DB_URL="${SYNAPSE_DB_URL:-postgresql://synapse:***@192.168.50.65:5432/synapse}"
+DB_URL="${SYNAPSE_DB_URL}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 LASTSEEN_FILE="/tmp/synapse-chat-lastseen-${AGENT_ID}"
 PID_FILE="/tmp/synapse-watch-${PROJECT}.pid"

@@ -12,7 +12,7 @@ set -euo pipefail
 
 PROJECT="${SYNAPSE_PROJECT:-synapse}"
 CHECK_INTERVAL="${SYNAPSE_CHAT_INTERVAL:-15}"
-DB_URL="${SYNAPSE_DB_URL:-postgresql://synapse:***@192.168.50.65:5432/synapse}"
+DB_URL="${SYNAPSE_DB_URL}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CURRENT_AGENT_FILE="/tmp/synapse-current-agent"
 

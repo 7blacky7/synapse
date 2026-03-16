@@ -17,7 +17,7 @@ CONTENT="${1:?Nachricht fehlt. Nutzung: synapse-chat \"Nachricht\" [empfaenger] 
 RECIPIENT="${2:-}"
 SENDER="${3:-user}"
 PROJECT="${SYNAPSE_PROJECT:-synapse}"
-DB_URL="${SYNAPSE_DB_URL:-postgresql://synapse:***@192.168.50.65:5432/synapse}"
+DB_URL="${SYNAPSE_DB_URL}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # Insert via node + pg
