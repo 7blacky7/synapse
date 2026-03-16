@@ -216,7 +216,8 @@ export async function searchTechDocs(
     const context7 = getContext7Client();
     if (context7.isAvailable()) {
       const c7Docs = await context7.searchDocs(framework, query);
-      const targetCollection = project ? COLLECTIONS.projectDocs(project) : COLLECTIONS.techDocs;
+      // Context7 Auto-Fetch IMMER global — generische Docs, alle Projekte profitieren
+      const targetCollection = COLLECTIONS.techDocs;
 
       if (c7Docs.length > 0) {
         console.error(`[Synapse TechDocs] Context7 liefert ${c7Docs.length} Docs — indexiere in ${targetCollection}...`);
@@ -231,7 +232,7 @@ export async function searchTechDocs(
             'code-example',
             'framework',
             'context7',
-            project
+            undefined  // Context7 IMMER global — generische Docs fuer alle Projekte
           );
 
           if (result.success && !result.duplicate) {
