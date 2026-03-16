@@ -1,6 +1,22 @@
 /**
- * Synapse Core - Google Gemini Embedding Provider
- * Nutzt die Gemini API per fetch (kein SDK noetig)
+ * MODUL: Google Gemini Embedding Provider
+ * ZWECK: Vektorisierung von Text und Medien via Google Gemini API — Text, Batch, Multimodal.
+ *
+ * INPUT:
+ *   - apiKey: string - Google API Key (GOOGLE_API_KEY)
+ *   - model?: string - Modellname (Standard: gemini-embedding-2-preview)
+ *   - text: string - Zu embeddender Text
+ *   - texts: string[] - Batch-Texte
+ *   - data: Buffer + mimeType: string - Medien-Datei fuer Multimodal-Embedding
+ *
+ * OUTPUT:
+ *   - number[]: Embedding-Vektor fuer einen Text
+ *   - number[][]: Embedding-Vektoren fuer Batch
+ *   - boolean: Verbindungstest-Ergebnis
+ *
+ * NEBENEFFEKTE:
+ *   - Netzwerk: Ruft generativelanguage.googleapis.com auf
+ *   - Kein lokaler State; kein PostgreSQL; kein Qdrant
  */
 
 import { EmbeddingProvider } from './types.js';

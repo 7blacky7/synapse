@@ -1,5 +1,11 @@
 /**
- * Synapse Core - Embedding Typen
+ * MODUL: Embedding Typen
+ * ZWECK: Gemeinsame Interfaces fuer alle Embedding-Provider und deren Anfrage-/Antwort-Strukturen.
+ *
+ * INPUT:  — (nur Typdefinitionen, kein Runtime-Code)
+ * OUTPUT: — (nur Typdefinitionen, kein Runtime-Code)
+ *
+ * NEBENEFFEKTE: keine
  */
 
 export interface EmbeddingProvider {

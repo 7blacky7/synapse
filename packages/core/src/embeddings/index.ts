@@ -1,6 +1,25 @@
 /**
- * Synapse Core - Embedding Service
- * Automatische Provider-Auswahl mit Factory-Pattern
+ * MODUL: Embedding Service
+ * ZWECK: Einheitlicher Zugriff auf alle Embedding-Provider — Ollama, OpenAI, Google, Cohere.
+ *
+ * INPUT:
+ *   - EMBEDDING_PROVIDER (via config) - Provider-Name (ollama | openai | mistral | jina | voyage | google | cohere)
+ *   - EMBEDDING_API_KEY / provider-spezifischer Key - API-Authentifizierung
+ *   - text: string - Zu embeddender Text
+ *   - texts: string[] - Batch-Texte
+ *   - data: Buffer + mimeType: string - Medien-Datei (nur multimodale Provider)
+ *
+ * OUTPUT:
+ *   - EmbeddingProvider: Aktiver Provider (Singleton)
+ *   - number[]: Embedding-Vektor
+ *   - number[][]: Batch-Vektoren
+ *   - number: Vektor-Dimension des Modells (gecached)
+ *   - boolean: Multimodal-Support-Flag
+ *
+ * NEBENEFFEKTE:
+ *   - Cached den Provider und die Dimension im Prozess-Speicher (_provider, _cachedDimension)
+ *   - Fallback: Ollama nicht erreichbar → OpenAI wird automatisch versucht
+ *   - Netzwerk: Ruft je nach Provider externe APIs auf
  */
 
 import { getConfig } from '../config.js';
