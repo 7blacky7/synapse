@@ -1,6 +1,22 @@
 /**
- * Synapse MCP - Migration Tools
- * Manuelle Embedding-Migration und Backup-Restore
+ * MODUL: Migrations-Tools
+ * ZWECK: Embedding-Migration bei Modellwechsel und Wiederherstellung aus JSONL-Backups.
+ *        Liest Payloads aus Qdrant, sichert als JSONL, loescht Collection, erstellt neu und re-embedded.
+ *
+ * INPUT:
+ *   - migrateEmbeddings: project, options.collections?, options.dryRun?
+ *   - restoreFromBackup: type ('thoughts'|'memories'|'plans'|'proposals'|'all'), project
+ *
+ * OUTPUT:
+ *   - migrateEmbeddings: { success, message, details: MigrationDetail[], backupDir }
+ *   - restoreFromBackup: { success, restored, failed, message, files: string[] }
+ *   - MigrationDetail: collection, oldDim, newDim, migratedCount, failedCount
+ *
+ * NEBENEFFEKTE:
+ *   - Qdrant: Loescht und erstellt Collections neu (project_thoughts, synapse_memories, project_plans,
+ *     synapse_proposals, project_<name>_code) — DESTRUKTIV, aber Backup wird vorher angelegt
+ *   - Dateisystem: Schreibt JSONL-Backups in getBackupDir() (~/.synapse/backups/)
+ *   - Dateisystem: Liest JSONL-Backups bei Restore (neueste Datei pro Typ)
  */
 
 import {
