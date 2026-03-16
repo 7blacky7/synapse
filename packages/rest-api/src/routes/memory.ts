@@ -187,7 +187,7 @@ export async function memoryRoutes(fastify: FastifyInstance): Promise<void> {
     try {
       const deleted = await deleteMemory(name, memoryName);
 
-      if (!deleted) {
+      if (!deleted.success) {
         return reply.status(404).send({
           success: false,
           error: { message: `Memory "${memoryName}" nicht gefunden` },
@@ -197,6 +197,7 @@ export async function memoryRoutes(fastify: FastifyInstance): Promise<void> {
       return {
         success: true,
         message: `Memory "${memoryName}" gelöscht`,
+        warning: deleted.warning,
       };
     } catch (error) {
       return reply.status(500).send({

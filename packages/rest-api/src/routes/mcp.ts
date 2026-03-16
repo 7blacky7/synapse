@@ -870,8 +870,9 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
     case 'delete_memory': {
       const deleted = await deleteMemory(args.project as string, args.name as string);
       return {
-        success: deleted,
-        message: deleted ? `Memory "${args.name}" gelöscht` : `Memory "${args.name}" nicht gefunden`,
+        success: deleted.success,
+        message: deleted.success ? `Memory "${args.name}" gelöscht` : `Memory "${args.name}" nicht gefunden`,
+        warning: deleted.warning,
       };
     }
 

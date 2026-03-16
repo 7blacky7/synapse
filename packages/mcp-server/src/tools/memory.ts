@@ -164,10 +164,13 @@ export async function deleteMemory(
   name: string
 ): Promise<string> {
   try {
-    const deleted = await deleteMemoryCore(project, name);
-    return deleted
-      ? `✅ Memory "${name}" gelöscht`
-      : `⚠️ Memory "${name}" nicht gefunden`;
+    const result = await deleteMemoryCore(project, name);
+    if (!result.success) {
+      return `⚠️ Memory "${name}" nicht gefunden`;
+    }
+    return result.warning
+      ? `✅ Memory "${name}" gelöscht (Warning: ${result.warning})`
+      : `✅ Memory "${name}" gelöscht`;
   } catch (error) {
     return `❌ Fehler: ${error}`;
   }
