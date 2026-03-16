@@ -11,6 +11,7 @@ interface IndexStats {
   totalVectors: number;
   collections: {
     code: { vectors: number };
+    media: { vectors: number; images: number; videos: number };
     thoughts: { vectors: number };
     memories: { vectors: number };
   };
@@ -49,12 +50,34 @@ export async function getIndexStats(
       // Collection existiert möglicherweise nicht
     }
 
+    // Media-Collection Stats
+    let mediaCount = 0;
+    let mediaImages = 0;
+    let mediaVideos = 0;
+    try {
+      const mediaStats = await getCollectionStats(`project_${project}_media`);
+      mediaCount = mediaStats?.pointsCount ?? 0;
+      if (mediaCount > 0) {
+        const { scrollVectors } = await import('@synapse/core');
+        const mediaPoints = await scrollVectors<{ media_category: string }>(
+          `project_${project}_media`, {}, 10000
+        );
+        for (const p of mediaPoints) {
+          if (p.payload?.media_category === 'image') mediaImages++;
+          else if (p.payload?.media_category === 'video') mediaVideos++;
+        }
+      }
+    } catch {
+      // Collection existiert möglicherweise nicht
+    }
+
     const stats: IndexStats = {
       project,
       totalFiles: codeStats?.fileCount ?? 0,
-      totalVectors: (codeStats?.chunkCount ?? 0) + thoughtsCount + memoriesCount,
+      totalVectors: (codeStats?.chunkCount ?? 0) + mediaCount + thoughtsCount + memoriesCount,
       collections: {
         code: { vectors: codeStats?.chunkCount ?? 0 },
+        media: { vectors: mediaCount, images: mediaImages, videos: mediaVideos },
         thoughts: { vectors: thoughtsCount },
         memories: { vectors: memoriesCount },
       },

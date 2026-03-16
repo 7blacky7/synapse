@@ -10,7 +10,7 @@ import { Ignore } from 'ignore';
 import { FileEvent } from '../types/index.js';
 import { getConfig } from '../config.js';
 import { loadGitignore, shouldIgnore } from './ignore.js';
-import { isBinaryFile, isExtractableDocument, getFileType } from './binary.js';
+import { isBinaryFile, isExtractableDocument, isMultimodalFile, getFileType, MAX_MEDIA_SIZE_MB } from './binary.js';
 
 export * from './binary.js';
 export * from './ignore.js';
@@ -104,22 +104,23 @@ export function startFileWatcher(options: FileWatcherOptions): FileWatcherInstan
 
     // Binaere Dateien ueberspringen (nur bei add/change)
     // AUSNAHME: Extrahierbare Dokumente (PDF, Word, Excel) werden durchgelassen
+    // AUSNAHME: Multimodal-Dateien (Bilder, Videos) werden bei Google-Provider durchgelassen
     if (type !== 'unlink') {
       try {
-        // Extrahierbare Dokumente immer durchlassen
         const isDocument = isExtractableDocument(filePath);
+        const isMedia = isMultimodalFile(filePath);
 
-        if (!isDocument) {
+        if (!isDocument && !isMedia) {
           const buffer = fs.readFileSync(filePath).subarray(0, 512);
           if (isBinaryFile(filePath, buffer)) {
             return;
           }
         }
 
-        // Dateigroesse pruefen (grosszuegiger fuer Dokumente: 50MB)
+        // Dateigroesse pruefen (Dokumente: 50MB, Media: 20MB, Code: config)
         const stats = fs.statSync(filePath);
         const sizeMB = stats.size / (1024 * 1024);
-        const maxSize = isDocument ? 50 : config.files.maxSizeMB;
+        const maxSize = isDocument ? 50 : isMedia ? MAX_MEDIA_SIZE_MB : config.files.maxSizeMB;
         if (sizeMB > maxSize) {
           console.error(`[Synapse] Datei zu gross (${sizeMB.toFixed(2)}MB): ${relativePath}`);
           return;

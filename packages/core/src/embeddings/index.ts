@@ -151,6 +151,29 @@ export async function embedBatch(texts: string[]): Promise<number[][]> {
 }
 
 /**
+ * Prueft ob der aktuelle Provider Multimodal-Embeddings unterstuetzt
+ */
+export async function supportsMultimodal(): Promise<boolean> {
+  const provider = await getEmbeddingProvider();
+  return typeof provider.embedMedia === 'function';
+}
+
+/**
+ * Generiert Embedding fuer eine Medien-Datei (Bild/Video)
+ * Nur verfuegbar bei multimodalen Providern (Google Gemini)
+ */
+export async function embedMedia(data: Buffer, mimeType: string): Promise<number[]> {
+  const provider = await getEmbeddingProvider();
+  if (!provider.embedMedia) {
+    throw new Error(
+      `Provider "${provider.name}" unterstuetzt keine Multimodal-Embeddings. ` +
+      `Setze EMBEDDING_PROVIDER=google fuer Bild/Video-Support.`
+    );
+  }
+  return provider.embedMedia(data, mimeType);
+}
+
+/**
  * Ermittelt die Vektor-Dimension des aktuellen Embedding-Modells
  * Ergebnis wird gecached fuer die Prozess-Lebensdauer
  */

@@ -80,6 +80,25 @@ export interface CodeChunkPayload {
 }
 
 // ===========================================
+// MEDIA CHUNKS (Bilder, Videos)
+// ===========================================
+
+export interface MediaChunkPayload {
+  file_path: string;
+  file_name: string;
+  file_type: string;
+  media_type: string;
+  media_category: 'image' | 'video';
+  media_size_bytes: number;
+  project: string;
+  updated_at: string;
+  content: string;
+  [key: string]: unknown;
+}
+
+export interface MediaSearchResult extends SearchResult<MediaChunkPayload> {}
+
+// ===========================================
 // PROJEKT-PLAENE
 // ===========================================
 
@@ -245,6 +264,8 @@ export interface ProposalSearchResult extends SearchResult<ProposalPayload> {}
 export const COLLECTIONS = {
   /** Code pro Projekt: project_{name}_code */
   projectCode: (project: string) => `project_${project}_code`,
+  /** Media pro Projekt: project_{name}_media (Bilder, Videos) */
+  projectMedia: (project: string) => `project_${project}_media`,
   /** Memories pro Projekt */
   projectMemories: (project: string) => `project_${project}_memories`,
   /** Thoughts pro Projekt */

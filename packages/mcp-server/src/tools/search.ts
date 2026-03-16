@@ -3,8 +3,10 @@
  * Code und Dokumentation durchsuchen
  */
 
-import { searchCode, searchDocsWithFallback, scrollVectors, searchDocuments } from '@synapse/core';
-import type { CodeSearchResult, DocSearchResult, DocumentSearchResult } from '@synapse/core';
+import { searchCode, searchMedia, indexMediaFile, indexMediaDirectory, searchDocsWithFallback, scrollVectors, searchDocuments } from '@synapse/core';
+import type { CodeSearchResult, DocSearchResult, DocumentSearchResult, MediaSearchResult } from '@synapse/core';
+import * as fs from 'fs';
+import * as path from 'path';
 import { minimatch } from 'minimatch';
 
 /**
@@ -318,6 +320,119 @@ export async function searchDocumentsWrapper(
       success: false,
       results: [],
       message: `Fehler bei Dokument-Suche: ${error}`,
+    };
+  }
+}
+
+/**
+ * Semantische Media-Suche (Cross-Modal: Text -> Bild/Video)
+ * Durchsucht die projekt-spezifische Media-Collection
+ */
+export async function searchMediaWrapper(
+  query: string,
+  project: string,
+  mediaType?: 'image' | 'video',
+  limit: number = 10
+): Promise<{
+  success: boolean;
+  results: Array<{
+    filePath: string;
+    fileName: string;
+    mediaType: string;
+    mediaCategory: string;
+    sizeMB: string;
+    score: number;
+    content: string;
+  }>;
+  message: string;
+}> {
+  if (!project) {
+    return { success: false, results: [], message: 'Projekt muss angegeben werden' };
+  }
+
+  try {
+    const results = await searchMedia(query, project, mediaType, limit);
+
+    return {
+      success: true,
+      results: results.map(r => ({
+        filePath: r.payload.file_path,
+        fileName: r.payload.file_name,
+        mediaType: r.payload.media_type,
+        mediaCategory: r.payload.media_category,
+        sizeMB: (r.payload.media_size_bytes / (1024 * 1024)).toFixed(2),
+        score: r.score,
+        content: r.payload.content,
+      })),
+      message: `${results.length} Media-Ergebnisse gefunden`,
+    };
+  } catch (error) {
+    return {
+      success: false,
+      results: [],
+      message: `Fehler bei Media-Suche: ${error}`,
+    };
+  }
+}
+
+/**
+ * Indexiert Media-Dateien (Bilder/Videos) in die projekt-spezifische Media-Collection
+ * Akzeptiert einzelne Dateien oder Verzeichnisse
+ */
+export async function indexMediaWrapper(
+  filePath: string,
+  project: string,
+  recursive: boolean = true
+): Promise<{
+  success: boolean;
+  indexed: number;
+  skipped: number;
+  failed: number;
+  total: number;
+  message: string;
+}> {
+  if (!project) {
+    return { success: false, indexed: 0, skipped: 0, failed: 0, total: 0, message: 'Projekt muss angegeben werden' };
+  }
+
+  const resolved = path.resolve(filePath);
+
+  try {
+    const stat = fs.statSync(resolved);
+
+    if (stat.isDirectory()) {
+      // Verzeichnis: alle Media-Dateien rekursiv indexieren
+      const result = await indexMediaDirectory(resolved, project, { recursive });
+      return {
+        success: true,
+        indexed: result.indexed,
+        skipped: result.skipped,
+        failed: result.failed,
+        total: result.files.length,
+        message: `${result.indexed} indexiert, ${result.skipped} uebersprungen, ${result.failed} fehlgeschlagen (${result.files.length} Dateien in ${filePath})`,
+      };
+    } else {
+      // Einzelne Datei
+      const n = await indexMediaFile(resolved, project);
+      return {
+        success: true,
+        indexed: n,
+        skipped: n === 0 ? 1 : 0,
+        failed: 0,
+        total: 1,
+        message: n > 0
+          ? `${path.basename(resolved)} indexiert`
+          : `${path.basename(resolved)} uebersprungen (bereits indexiert oder kein Media-Typ)`,
+      };
+    }
+  } catch (error) {
+    return {
+      success: false,
+      indexed: 0,
+      skipped: 0,
+      failed: 1,
+      total: 0,
+      message: `Fehler: ${error}`,
     };
   }
 }

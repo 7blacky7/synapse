@@ -12,6 +12,9 @@ export interface EmbeddingProvider {
   /** Generiert Embeddings fuer mehrere Texte (Batch) */
   embedBatch(texts: string[]): Promise<number[][]>;
 
+  /** Generiert Embedding fuer Medien-Dateien (Bild/Video) - nur multimodale Provider */
+  embedMedia?(data: Buffer, mimeType: string): Promise<number[]>;
+
   /** Testet die Verbindung zum Provider */
   testConnection(): Promise<boolean>;
 }

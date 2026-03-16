@@ -58,6 +58,38 @@ export class GoogleEmbeddingProvider implements EmbeddingProvider {
     return data.embeddings.map(e => e.values);
   }
 
+  async embedMedia(data: Buffer, mimeType: string): Promise<number[]> {
+    const url = `${BASE_URL}/models/${this.model}:embedContent?key=${this.apiKey}`;
+    const base64Data = data.toString('base64');
+
+    console.error(`[Synapse] Google Multimodal-Embedding: ${mimeType} (${(data.length / 1024 / 1024).toFixed(2)}MB)`);
+
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: `models/${this.model}`,
+        content: {
+          parts: [{
+            inline_data: {
+              mime_type: mimeType,
+              data: base64Data,
+            },
+          }],
+        },
+      }),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Google Multimodal-Embedding fehlgeschlagen (${mimeType}): ${response.status} ${errorText}`);
+    }
+
+    const result = await response.json() as { embedding: { values: number[] } };
+    console.error(`[Synapse] Multimodal-Embedding erstellt: ${result.embedding.values.length} Dimensionen`);
+    return result.embedding.values;
+  }
+
   async testConnection(): Promise<boolean> {
     try {
       await this.embed('test');

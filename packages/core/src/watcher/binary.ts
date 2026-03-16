@@ -107,6 +107,48 @@ export function isBinaryFile(filePath: string, buffer?: Buffer): boolean {
   return false;
 }
 
+/** Multimodal-Embeddable Extensions (Google Gemini Embedding 2) */
+const MULTIMODAL_EXTENSIONS = new Map<string, string>([
+  // Bilder (PNG, JPEG)
+  ['.png', 'image/png'],
+  ['.jpg', 'image/jpeg'],
+  ['.jpeg', 'image/jpeg'],
+  // Video (MP4, MOV, WebM)
+  ['.mp4', 'video/mp4'],
+  ['.mov', 'video/quicktime'],
+  ['.webm', 'video/webm'],
+  // GIF (als Bild)
+  ['.gif', 'image/gif'],
+]);
+
+/** Max Dateigroesse fuer Multimodal-Embedding (20MB) */
+export const MAX_MEDIA_SIZE_MB = 20;
+
+/**
+ * Prueft ob eine Datei multimodal embeddable ist (Bild/Video)
+ */
+export function isMultimodalFile(filePath: string): boolean {
+  const ext = filePath.toLowerCase().match(/\.[^.]+$/)?.[0];
+  return ext ? MULTIMODAL_EXTENSIONS.has(ext) : false;
+}
+
+/**
+ * Gibt den MIME-Type fuer eine Multimodal-Datei zurueck
+ */
+export function getMediaMimeType(filePath: string): string | null {
+  const ext = filePath.toLowerCase().match(/\.[^.]+$/)?.[0];
+  return ext ? MULTIMODAL_EXTENSIONS.get(ext) ?? null : null;
+}
+
+/**
+ * Gibt den Medien-Typ zurueck (image/video)
+ */
+export function getMediaCategory(filePath: string): 'image' | 'video' | null {
+  const mime = getMediaMimeType(filePath);
+  if (!mime) return null;
+  return mime.startsWith('image/') ? 'image' : 'video';
+}
+
 /** Extrahierbare Dokument-Extensions */
 const EXTRACTABLE_DOCUMENT_EXTENSIONS = new Set([
   'pdf',

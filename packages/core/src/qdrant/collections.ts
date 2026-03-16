@@ -123,6 +123,7 @@ export async function ensureAllCollections(): Promise<void> {
 export async function ensureProjectCollections(project: string): Promise<void> {
   const collections = [
     COLLECTIONS.projectCode(project),
+    COLLECTIONS.projectMedia(project),
     COLLECTIONS.projectMemories(project),
     COLLECTIONS.projectThoughts(project),
     COLLECTIONS.projectPlans(project),

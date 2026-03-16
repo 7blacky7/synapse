@@ -31,11 +31,14 @@
  *   - Batch-Embedding fuer Performance bei mehreren Chunks
  */
 
+import * as fs from 'fs';
 import * as path from 'path';
 import { v4 as uuidv4 } from 'uuid';
 import {
   CodeChunkPayload,
   CodeSearchResult,
+  MediaChunkPayload,
+  MediaSearchResult,
   COLLECTIONS,
   FileEvent,
 } from '../types/index.js';
@@ -45,9 +48,10 @@ import {
   searchVectors,
   deleteByFilePath,
 } from '../qdrant/index.js';
-import { embed, embedBatch } from '../embeddings/index.js';
+import { embed, embedBatch, embedMedia, supportsMultimodal } from '../embeddings/index.js';
 import { chunkFile } from '../chunking/index.js';
 import { readFileWithMetadata, getFileType, isExtractableDocument } from '../watcher/index.js';
+import { isMultimodalFile, getMediaMimeType, getMediaCategory } from '../watcher/binary.js';
 import { indexDocument, removeDocument } from './documents.js';
 
 /**
@@ -135,16 +139,175 @@ export async function removeFile(
 }
 
 /**
+ * Indexiert eine Medien-Datei (Bild/Video) via Multimodal-Embedding
+ * Nutzt eigene projekt-spezifische Media-Collection (project_{name}_media)
+ * Wird NICHT automatisch vom FileWatcher aufgerufen — nur per index_media MCP-Tool
+ */
+export async function indexMediaFile(
+  filePath: string,
+  projectName: string
+): Promise<number> {
+  const mimeType = getMediaMimeType(filePath);
+  const mediaCategory = getMediaCategory(filePath);
+
+  if (!mimeType || !mediaCategory) {
+    console.warn(`[Synapse] Kein MIME-Type fuer Medien-Datei: ${filePath}`);
+    return 0;
+  }
+
+  // Pruefen ob Provider Multimodal unterstuetzt
+  if (!(await supportsMultimodal())) {
+    return 0;
+  }
+
+  // Eigene Media-Collection verwenden
+  const collectionName = COLLECTIONS.projectMedia(projectName);
+  const { ensureCollection } = await import('../qdrant/collections.js');
+  await ensureCollection(collectionName);
+
+  // Pruefen ob bereits indexiert (kein Re-Index bei change)
+  const { scrollVectors } = await import('../qdrant/operations.js');
+  const existing = await scrollVectors(collectionName, {
+    must: [{ key: 'file_path', match: { value: filePath } }],
+  }, 1);
+  if (existing.length > 0) {
+    return 0;
+  }
+
+  // Datei als Buffer lesen
+  const buffer = fs.readFileSync(filePath);
+  const sizeMB = buffer.length / (1024 * 1024);
+  const fileName = path.basename(filePath);
+
+  try {
+    const vector = await embedMedia(buffer, mimeType);
+
+    const payload: MediaChunkPayload = {
+      file_path: filePath,
+      file_name: fileName,
+      file_type: `media_${mediaCategory}`,
+      media_type: mimeType,
+      media_category: mediaCategory,
+      media_size_bytes: buffer.length,
+      project: projectName,
+      updated_at: new Date().toISOString(),
+      content: `[${mediaCategory.toUpperCase()}: ${mimeType}] ${fileName} (${sizeMB.toFixed(2)}MB)`,
+    };
+
+    await insertVectors(collectionName, [{
+      id: uuidv4(),
+      vector,
+      payload,
+    }]);
+
+    console.error(`[Synapse] Media indexiert: ${fileName} (${mediaCategory}, ${sizeMB.toFixed(2)}MB, ${vector.length}d)`);
+    return 1;
+  } catch (error) {
+    console.error(`[Synapse] Media-Indexierung fehlgeschlagen fuer ${fileName}:`, error);
+    return 0;
+  }
+}
+
+/**
+ * Entfernt eine Medien-Datei aus der Media-Collection
+ */
+export async function removeMediaFile(
+  filePath: string,
+  projectName: string
+): Promise<void> {
+  const collectionName = COLLECTIONS.projectMedia(projectName);
+  await deleteByFilePath(collectionName, filePath);
+  console.error(`[Synapse] Media entfernt: ${path.basename(filePath)}`);
+}
+
+/**
+ * Indexiert Media-Dateien aus einem Verzeichnis (rekursiv)
+ * Ueberspringt bereits indexierte Dateien (Duplikat-Check)
+ */
+export async function indexMediaDirectory(
+  dirPath: string,
+  projectName: string,
+  options: { recursive?: boolean; extensions?: string[] } = {}
+): Promise<{ indexed: number; skipped: number; failed: number; files: string[] }> {
+  const { recursive = true } = options;
+  const { isMultimodalFile: isMedia } = await import('../watcher/binary.js');
+
+  const result = { indexed: 0, skipped: 0, failed: 0, files: [] as string[] };
+
+  function walk(dir: string) {
+    try {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory() && recursive) walk(full);
+        else if (entry.isFile() && isMedia(full)) {
+          try { fs.statSync(full); result.files.push(full); } catch { /* broken symlink */ }
+        }
+      }
+    } catch { /* inaccessible dir */ }
+  }
+  walk(path.resolve(dirPath));
+
+  for (const file of result.files) {
+    try {
+      const n = await indexMediaFile(file, projectName);
+      if (n > 0) result.indexed++;
+      else result.skipped++;
+    } catch {
+      result.failed++;
+    }
+  }
+
+  return result;
+}
+
+/**
+ * Semantische Media-Suche (Cross-Modal: Text -> Bild/Video)
+ */
+export async function searchMedia(
+  query: string,
+  projectName: string,
+  mediaCategory?: 'image' | 'video',
+  limit: number = 10
+): Promise<MediaSearchResult[]> {
+  if (!projectName) {
+    throw new Error('Projekt muss angegeben werden fuer Media-Suche');
+  }
+
+  const queryVector = await embed(query);
+  const collectionName = COLLECTIONS.projectMedia(projectName);
+
+  const filter: Record<string, unknown> = { must: [] };
+  const must = filter.must as Array<Record<string, unknown>>;
+
+  must.push({ key: 'project', match: { value: projectName } });
+
+  if (mediaCategory) {
+    must.push({ key: 'media_category', match: { value: mediaCategory } });
+  }
+
+  return searchVectors<MediaChunkPayload>(
+    collectionName,
+    queryVector,
+    limit,
+    must.length > 0 ? filter : undefined
+  );
+}
+
+/**
  * Verarbeitet ein FileWatcher Event
  */
 export async function handleFileEvent(event: FileEvent): Promise<void> {
-  // Pruefen ob es ein extrahierbares Dokument ist
+  // Klassifikation: Dokument > Media > Code
   const isDocument = isExtractableDocument(event.path);
+  const isMedia = !isDocument && isMultimodalFile(event.path);
 
   switch (event.type) {
     case 'add':
       if (isDocument) {
         await indexDocument(event.path, event.project);
+      } else if (isMedia) {
+        // Media: NICHT automatisch indexieren — Agent entscheidet per index_media Tool
+        break;
       } else {
         await indexFile(event.path, event.project);
       }
@@ -152,6 +315,9 @@ export async function handleFileEvent(event: FileEvent): Promise<void> {
     case 'change':
       if (isDocument) {
         await indexDocument(event.path, event.project);
+      } else if (isMedia) {
+        // Media: ignorieren
+        break;
       } else {
         await updateFile(event.path, event.project);
       }
@@ -159,6 +325,8 @@ export async function handleFileEvent(event: FileEvent): Promise<void> {
     case 'unlink':
       if (isDocument) {
         await removeDocument(event.path, event.project);
+      } else if (isMedia) {
+        await removeMediaFile(event.path, event.project);
       } else {
         await removeFile(event.path, event.project);
       }

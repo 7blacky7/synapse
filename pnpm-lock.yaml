@@ -130,6 +130,21 @@ importers:
         specifier: ^5.0.0
         version: 5.4.21(@types/node@20.19.33)
 
+  test-synapsevoll:
+    dependencies:
+      '@fastify/cors':
+        specifier: ^8.5.0
+        version: 8.5.0
+      '@types/node':
+        specifier: ^20.19.33
+        version: 20.19.33
+      fastify:
+        specifier: ^4.29.1
+        version: 4.29.1
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+
 packages:
 
   '@anthropic-ai/sdk@0.71.2':
