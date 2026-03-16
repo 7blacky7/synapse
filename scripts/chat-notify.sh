@@ -21,15 +21,18 @@ CURRENT_AGENT_FILE="/tmp/synapse-current-agent"
 INPUT=$(cat 2>/dev/null || echo '{}')
 TOOL_NAME=$(echo "$INPUT" | node -p "try{const d=JSON.parse(require('fs').readFileSync(0,'utf8'));console.log(d.tool_name||'');process.exit()}catch{}" 2>/dev/null || echo "")
 
-# agent_id aus tool_input extrahieren (wenn Synapse MCP-Tool)
+# Agent-ID bestimmen: direkt aus Hook-Input (Claude Code liefert agent_id/session_id)
+HOOK_AGENT=$(echo "$INPUT" | jq -r '.agent_id // empty' 2>/dev/null || echo "")
+HOOK_SESSION=$(echo "$INPUT" | jq -r '.session_id // empty' 2>/dev/null || echo "")
+# Fallback: agent_id aus tool_input (Synapse MCP-Tool)
 TOOL_AGENT=$(echo "$INPUT" | node -p "try{const d=JSON.parse(require('fs').readFileSync(0,'utf8'));const i=d.tool_input||{};console.log(i.agent_id||i.sender_id||i.id||'');process.exit()}catch{}" 2>/dev/null || echo "")
 
-# Agent-ID bestimmen: aus Tool-Input, oder letzte bekannte, oder Default
-if [[ -n "$TOOL_AGENT" ]]; then
+if [[ -n "$HOOK_AGENT" ]]; then
+  AGENT_ID="$HOOK_AGENT"
+elif [[ -n "$TOOL_AGENT" ]]; then
   AGENT_ID="$TOOL_AGENT"
-  echo "$AGENT_ID" > "$CURRENT_AGENT_FILE"
-elif [[ -f "$CURRENT_AGENT_FILE" ]]; then
-  AGENT_ID=$(cat "$CURRENT_AGENT_FILE")
+elif [[ -n "$HOOK_SESSION" ]]; then
+  AGENT_ID="$HOOK_SESSION"
 else
   AGENT_ID="${SYNAPSE_AGENT_ID:-koordinator}"
 fi

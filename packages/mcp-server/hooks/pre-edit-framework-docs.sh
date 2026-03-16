@@ -13,12 +13,10 @@ if ! command -v jq &>/dev/null; then exit 0; fi
 FILE_PATH=$(echo "$INPUT" | jq -r '.tool_input.file_path // .tool_input.path // empty')
 if [ -z "$FILE_PATH" ]; then exit 0; fi
 
-# Agent-ID ermitteln (gesetzt von chat-notify.sh)
-CURRENT_AGENT_FILE="/tmp/synapse-current-agent"
-if [ -f "$CURRENT_AGENT_FILE" ]; then
-  AGENT_ID=$(cat "$CURRENT_AGENT_FILE")
-else
-  AGENT_ID="${SYNAPSE_AGENT_ID:-koordinator}"
+# Agent-ID direkt aus Hook-Input (Claude Code liefert agent_id bei Subagenten, session_id immer)
+AGENT_ID=$(echo "$INPUT" | jq -r '.agent_id // empty')
+if [ -z "$AGENT_ID" ]; then
+  AGENT_ID=$(echo "$INPUT" | jq -r '.session_id // "default"')
 fi
 
 # Extension pruefen
