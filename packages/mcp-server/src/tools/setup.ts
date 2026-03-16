@@ -1,6 +1,24 @@
 /**
- * Synapse MCP - Setup Wizard
- * Interaktiver Projekt-Setup fuer neue Projekte ohne bestehende Regeln
+ * MODUL: Setup-Wizard
+ * ZWECK: Interaktiver Ersteinrichtungs-Dialog fuer neue Projekte ohne Regeln-Memories.
+ *        Generiert Fragen zu Zweck, Coding-Standards, Commits und Architektur.
+ *
+ * INPUT:
+ *   - phase: 'initial' | 'post-indexing' - Einrichtungsphase
+ *   - technologies: DetectedTechnology[] - Erkannte Frameworks/Sprachen
+ *   - readmeExcerpt: string | null - Erster Abschnitt der README (max 500 Zeichen)
+ *   - projectPath: string - Pfad fuer Status-Update
+ *   - project: string - Projekt-Name (fuer MCP-Wrapper)
+ *
+ * OUTPUT:
+ *   - buildSetupWizard: SetupWizardResult mit phase, questions[], detectedContext, instructions
+ *   - completeSetup: { success, message, nextPhase } - Status nach Abschluss
+ *   - readReadmeExcerpt: string | null - README-Inhalt (erste 500 Zeichen)
+ *
+ * NEBENEFFEKTE:
+ *   - Dateisystem: Liest README.md aus dem Projekt-Verzeichnis
+ *   - setProjectStatus: Setzt setupPhase in .synapse/status.json ('initial-pending', 'initial-done', 'complete')
+ *   - Kein Qdrant-Zugriff — Memories werden vom Aufrufer per write_memory gespeichert
  */
 
 import * as fs from 'fs';
