@@ -95,9 +95,30 @@ else
     MSG+="agent_id \"${AGENT_ID}\" an JEDEN Synapse-Aufruf. source \"${AGENT_ID}\" bei add_thought.\n"
     MSG+="=== ENDE AGENT-ONBOARDING ===\n"
 
+    # Coordinator-Watch Hinweis fuer den Koordinator (nicht den Agenten)
+    WATCH_HINT=""
+    WATCH_PID_FILE="/tmp/synapse-watch-${PROJECT_NAME}.pid"
+    if [[ -f "$WATCH_PID_FILE" ]]; then
+        WATCH_PID=$(cat "$WATCH_PID_FILE" 2>/dev/null || echo "")
+        if [[ -n "$WATCH_PID" ]] && kill -0 "$WATCH_PID" 2>/dev/null; then
+            WATCH_HINT="" # Watcher laeuft bereits
+        else
+            rm -f "$WATCH_PID_FILE"
+            WATCH_HINT="⚡ COORDINATOR-WATCH nicht aktiv fuer ${PROJECT_NAME}. Starte im Hintergrund: bash ~/dev/synapse/scripts/coordinator-watch.sh ${PROJECT_NAME} koordinator 10"
+        fi
+    else
+        WATCH_HINT="⚡ COORDINATOR-WATCH nicht aktiv fuer ${PROJECT_NAME}. Starte im Hintergrund: bash ~/dev/synapse/scripts/coordinator-watch.sh ${PROJECT_NAME} koordinator 10"
+    fi
+
     ORIGINAL_PROMPT=$(echo "$INPUT" | jq -r '.subagent_prompt // ""')
     UPDATED_PROMPT=$(printf '%b\n\n--- ORIGINAL TASK ---\n\n%s' "$MSG" "$ORIGINAL_PROMPT")
-    jq -nc --arg p "$UPDATED_PROMPT" '{"updatedPrompt": $p}'
+
+    if [[ -n "$WATCH_HINT" ]]; then
+        # Agent bekommt Onboarding, Koordinator bekommt Watcher-Hinweis
+        jq -nc --arg p "$UPDATED_PROMPT" --arg w "$WATCH_HINT" '{"updatedPrompt": $p, "hookSpecificOutput": {"hookEventName": "SubagentStart", "additionalContext": $w}}'
+    else
+        jq -nc --arg p "$UPDATED_PROMPT" '{"updatedPrompt": $p}'
+    fi
 fi
 
 exit 0

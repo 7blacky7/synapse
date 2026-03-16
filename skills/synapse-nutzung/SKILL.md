@@ -55,22 +55,26 @@ Nicht ignorieren, nicht aufschieben — Agenten warten auf Antworten.
 > ⛔ `isolation: "worktree"` NIEMALS verwenden wenn Synapse aktiv ist!
 > Agenten arbeiten direkt im Haupt-Repo auf eigenen Branches.
 
-### Coordinator-Watch (AUTOMATISCH bei Hintergrund-Agenten)
+### Coordinator-Watch (AUTOMATISCH)
 
-Wenn mindestens ein Agent im Hintergrund laeuft, MUSS der Coordinator-Watch aktiv sein:
+Der SubagentStart-Hook prueft ob ein Watcher laeuft. Falls nicht, erscheint:
+```
+⚡ COORDINATOR-WATCH nicht aktiv fuer <projekt>. Starte im Hintergrund: bash ~/dev/synapse/scripts/coordinator-watch.sh <projekt> koordinator 10
+```
+
+**WENN dieser Hinweis erscheint → SOFORT den Befehl als Hintergrund-Task starten:**
 ```
 Bash (run_in_background: true):
   bash ~/dev/synapse/scripts/coordinator-watch.sh "<projekt>" "koordinator" 10
 ```
 
-Der Watcher pollt alle 10s auf neue DMs/Events und weckt den Koordinator per task-notification.
-**WENN die Notification kommt:**
+Pro Projekt laeuft maximal EIN Watcher (PID-File in /tmp/synapse-watch-{projekt}.pid).
+Multi-Projekt: Jedes Projekt hat seinen eigenen Watcher.
+
+**WENN die Watcher-Notification kommt (task-notification mit "KOORDINATOR AUFWACHEN"):**
 1. Nachrichten lesen: get_chat_messages + get_pending_events
 2. Reagieren (DMs beantworten, Events acknowledgen)
-3. Watcher NEU starten (gleicher Befehl wie oben)
-
-Der Watcher laeuft bis er eine Nachricht findet, dann beendet er sich.
-Deshalb nach jedem Aufwachen neu starten solange Agenten aktiv sind.
+3. Watcher NEU starten (gleicher Befehl wie oben — PID-File ist bereits aufgeraeumt)
 
 ### Agent spawnen (PFLICHT-Ablauf)
 

@@ -3,7 +3,8 @@
 # Laeuft im Hintergrund, checkt alle 10s auf neue DMs/Events
 # Gibt Output und beendet sich wenn was da ist → task-notification weckt Koordinator
 #
-# Usage: Als Hintergrund-Task in Claude Code starten
+# PID-Management: Ein Watcher pro Projekt, PID in /tmp/synapse-watch-{projekt}.pid
+# Multi-Projekt: Jedes Projekt hat seinen eigenen Watcher
 
 set -euo pipefail
 
@@ -13,13 +14,29 @@ INTERVAL="${3:-10}"
 DB_URL="${SYNAPSE_DB_URL:-postgresql://synapse:***@192.168.50.65:5432/synapse}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 LASTSEEN_FILE="/tmp/synapse-chat-lastseen-${AGENT_ID}"
+PID_FILE="/tmp/synapse-watch-${PROJECT}.pid"
+
+# Pruefen ob bereits ein Watcher fuer dieses Projekt laeuft
+if [[ -f "$PID_FILE" ]]; then
+  OLD_PID=$(cat "$PID_FILE" 2>/dev/null || echo "")
+  if [[ -n "$OLD_PID" ]] && kill -0 "$OLD_PID" 2>/dev/null; then
+    echo "[coordinator-watch] Watcher fuer ${PROJECT} laeuft bereits (PID: ${OLD_PID})" >&2
+    exit 0
+  fi
+  # PID-File existiert aber Prozess ist tot → aufraeumen
+  rm -f "$PID_FILE"
+fi
+
+# PID schreiben + Cleanup bei Exit
+echo $$ > "$PID_FILE"
+trap 'rm -f "$PID_FILE"' EXIT
 
 # Initiales Lastseen setzen falls nicht vorhanden
 if [[ ! -f "$LASTSEEN_FILE" ]]; then
   date -u +"%Y-%m-%dT%H:%M:%SZ" > "$LASTSEEN_FILE"
 fi
 
-echo "[coordinator-watch] Starte Polling (alle ${INTERVAL}s) fuer ${AGENT_ID}@${PROJECT}" >&2
+echo "[coordinator-watch] Starte Polling (alle ${INTERVAL}s) fuer ${AGENT_ID}@${PROJECT} (PID: $$)" >&2
 
 while true; do
   sleep "$INTERVAL"
@@ -39,7 +56,6 @@ while true; do
   if [[ "$EVENT_COUNT" -gt 0 ]] || [[ "$BROADCASTS" -gt 0 ]] || [[ "$DMS" -gt 0 ]]; then
     PARTS=()
     if [[ "$EVENT_COUNT" -gt 0 ]]; then
-      # Event-Details
       EVENT_DETAILS=$(echo "$EVENTS" | node -p "
         JSON.parse(require('fs').readFileSync(0,'utf8'))
           .map(e => e.event_type + '(' + e.priority + ') von ' + e.source_id + ': ' + (e.payload || '-'))
@@ -54,11 +70,11 @@ while true; do
       PARTS+=("💬 ${DMS} DMs${DM_SENDERS:+ von ${DM_SENDERS}}")
     fi
 
-    # Output auf stdout → wird zur task-notification
-    echo "🔔 KOORDINATOR AUFWACHEN!"
+    echo "🔔 KOORDINATOR AUFWACHEN! [${PROJECT}]"
     printf '%s\n' "${PARTS[@]}"
     echo ""
     echo "→ get_chat_messages + get_pending_events aufrufen!"
+    echo "→ Danach Watcher neu starten: bash ~/dev/synapse/scripts/coordinator-watch.sh ${PROJECT} ${AGENT_ID} ${INTERVAL}"
     exit 0
   fi
 done
