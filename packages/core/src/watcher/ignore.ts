@@ -1,6 +1,21 @@
 /**
- * Synapse Core - Ignore Handler
- * Respektiert .gitignore und Standard-Ignores
+ * MODUL: Ignore Handler
+ * ZWECK: Filtert Dateipfade anhand von .gitignore, .synapseignore und fest codierten Standard-Ignores
+ *
+ * INPUT:
+ *   - projectPath: string - Projektverzeichnis fuer .gitignore/.synapseignore Suche
+ *   - filePath: string - Zu pruefender Dateipfad (relativ oder absolut)
+ *   - ig: Ignore - Vorgeladene Ignore-Instanz fuer performante Batch-Pruefung
+ *
+ * OUTPUT:
+ *   - Ignore: Instanz mit allen kombinierten Ignore-Regeln (loadGitignore)
+ *   - boolean: Ob eine Datei ignoriert werden soll (shouldIgnore)
+ *
+ * NEBENEFFEKTE:
+ *   - Filesystem: Liest .gitignore und .synapseignore aus projectPath (beim Laden)
+ *
+ * ABHAENGIGKEITEN:
+ *   - ignore (npm) - Gitignore-kompatibles Pattern-Matching
  */
 
 import * as fs from 'fs';
