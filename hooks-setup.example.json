@@ -1,0 +1,57 @@
+{
+  "_comment": "Synapse Hooks fuer Claude Code. Eintragen in ~/.claude/settings.json unter 'hooks'.",
+  "_instructions": [
+    "1. Pfade anpassen: /home/blacky/dev/synapse → dein Synapse-Pfad",
+    "2. In ~/.claude/settings.json unter 'hooks' einfuegen/mergen",
+    "3. Claude Code neustarten"
+  ],
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Read",
+        "hooks": [
+          {
+            "_description": "Koordinator-Onboarding: Zeigt Projekt-Kontext beim ersten Tool-Call",
+            "type": "command",
+            "command": "<SYNAPSE_PATH>/packages/mcp-server/hooks/pre-synapse-onboarding.sh"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "_description": "Wissens-Airbag: Zeigt Framework-Docs nach Datei-Bearbeitung",
+            "type": "command",
+            "command": "<SYNAPSE_PATH>/packages/mcp-server/hooks/post-edit-framework-docs.sh"
+          }
+        ]
+      },
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "_description": "Chat + Event Notifications: Zeigt ungelesene DMs, Broadcasts und Events nach jedem Tool-Call",
+            "type": "command",
+            "command": "<SYNAPSE_PATH>/scripts/chat-notify.sh",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "_description": "Agent-Onboarding: Gibt Subagenten automatisch eine ID und Synapse-Regeln",
+            "type": "command",
+            "command": "<SYNAPSE_PATH>/packages/mcp-server/hooks/pre-synapse-onboarding.sh"
+          }
+        ]
+      }
+    ]
+  }
+}
