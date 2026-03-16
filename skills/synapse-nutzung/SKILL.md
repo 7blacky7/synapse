@@ -57,15 +57,24 @@ Nicht ignorieren, nicht aufschieben — Agenten warten auf Antworten.
 
 ### Agent spawnen (PFLICHT-Ablauf)
 
-**VOR dem Spawnen** registriert der Koordinator den Agent in PostgreSQL:
+Beim Dispatchen von Hintergrund-Agenten IMMER als parallele Calls:
 
 ```
-1. Agent-ID waehlen (task-bezogen: "agent-pg-layer", nummeriert: "agent-1")
-2. register_chat_agent(id: "<AGENT_ID>", project: "<PROJEKT>")
-   → Agent ist jetzt in PostgreSQL registriert
-3. Agent spawnen mit ID im Prompt (siehe Prompt-Baustein unten)
-4. Falls noch kein Watcher laeuft → coordinator-watch.sh im Hintergrund starten
+// PARALLEL (ein Tool-Call-Block):
+1. register_chat_agents_batch(agents: [{id, model}, ...], project: "<PROJEKT>")
+2. Bash(run_in_background, timeout: 300000):
+     bash ~/dev/synapse/scripts/coordinator-watch.sh "<PROJEKT>" "koordinator" 10
+3. Agent(s) spawnen mit IDs im Prompt
 ```
+
+Der Watcher ist der EINZIGE Weg den Koordinator im Idle zu wecken.
+Hooks (PostToolUse, server.ts) funktionieren nur bei aktiver Arbeit.
+
+**WENN der Watcher aufwacht (task-notification "KOORDINATOR AUFWACHEN"):**
+1. Nachrichten lesen: get_chat_messages + get_pending_events
+2. Reagieren (DMs beantworten, Events acknowledgen)
+3. Watcher NEU starten (gleicher Bash-Befehl, run_in_background)
+Solange Agenten im Hintergrund laufen → Watcher muss laufen.
 
 **Der Agent muss sich NICHT selbst registrieren** — der Koordinator hat das bereits gemacht.
 Der Agent muss sich am Ende nur abmelden: `unregister_chat_agent(id: "<AGENT_ID>")`
