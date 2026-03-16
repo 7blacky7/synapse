@@ -147,6 +147,7 @@ export interface Thought {
   content: string;
   tags: string[];
   timestamp: string;
+  warning?: string;
 }
 
 export type ThoughtSource =

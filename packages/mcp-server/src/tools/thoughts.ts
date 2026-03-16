@@ -164,11 +164,13 @@ export async function deleteThought(
   message: string;
 }> {
   try {
-    await deleteThoughtCore(project, id);
+    const result = await deleteThoughtCore(project, id);
 
     return {
       success: true,
-      message: `Gedanke "${id}" aus Projekt "${project}" geloescht`,
+      message: result.warning
+        ? `Gedanke "${id}" aus Projekt "${project}" geloescht (Warning: ${result.warning})`
+        : `Gedanke "${id}" aus Projekt "${project}" geloescht`,
     };
   } catch (error) {
     return {

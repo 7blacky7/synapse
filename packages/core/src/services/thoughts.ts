@@ -84,6 +84,8 @@ export async function addThought(
     timestamp: thought.timestamp,
   };
 
+  let warning: string | undefined;
+
   // 1. PostgreSQL (Source of Truth)
   try {
     const pool = getPool();
@@ -95,13 +97,19 @@ export async function addThought(
     );
   } catch (error) {
     console.error('[Synapse] PostgreSQL Thought-Write fehlgeschlagen, nur Qdrant:', error);
+    warning = `PG-Write fehlgeschlagen: ${error}`;
   }
 
   // 2. Qdrant (Vektor-Index)
-  await insertVector(collectionName, vector, payload, thought.id);
+  try {
+    await insertVector(collectionName, vector, payload, thought.id);
+  } catch (error) {
+    console.error('[Synapse] Qdrant Thought-Write fehlgeschlagen:', error);
+    warning = (warning ? warning + ' | ' : '') + `Qdrant-Write fehlgeschlagen: ${error}`;
+  }
 
   console.error(`[Synapse] Gedanke gespeichert von "${source}" fuer Projekt "${project}"`);
-  return thought;
+  return { ...thought, warning };
 }
 
 /**
@@ -201,25 +209,37 @@ export async function updateThought(
   const mergedContent = changes.content ?? row.content;
   const mergedTags = changes.tags ?? row.tags;
 
+  let warning: string | undefined;
+
   // 3. PostgreSQL UPDATE
-  await pool.query(
-    `UPDATE thoughts SET content = $1, tags = $2 WHERE id = $3`,
-    [mergedContent, mergedTags, id]
-  );
+  try {
+    await pool.query(
+      `UPDATE thoughts SET content = $1, tags = $2 WHERE id = $3`,
+      [mergedContent, mergedTags, id]
+    );
+  } catch (error) {
+    console.error('[Synapse] PostgreSQL Thought-Update fehlgeschlagen:', error);
+    warning = `PG-Write fehlgeschlagen: ${error}`;
+  }
 
   // 4. Neues Embedding generieren und Qdrant-Vektor upserten
-  const collectionName = COLLECTIONS.projectThoughts(project);
-  await ensureCollection(collectionName);
-  const vector = await embed(mergedContent);
-  const payload: ThoughtPayload = {
-    project,
-    source: row.source,
-    content: mergedContent,
-    tags: mergedTags,
-    timestamp: row.timestamp instanceof Date ? row.timestamp.toISOString() : row.timestamp,
-  };
-  await deleteVector(collectionName, id);
-  await insertVector(collectionName, vector, payload, id);
+  try {
+    const collectionName = COLLECTIONS.projectThoughts(project);
+    await ensureCollection(collectionName);
+    const vector = await embed(mergedContent);
+    const payload: ThoughtPayload = {
+      project,
+      source: row.source,
+      content: mergedContent,
+      tags: mergedTags,
+      timestamp: row.timestamp instanceof Date ? row.timestamp.toISOString() : row.timestamp,
+    };
+    await deleteVector(collectionName, id);
+    await insertVector(collectionName, vector, payload, id);
+  } catch (error) {
+    console.error('[Synapse] Qdrant Thought-Update fehlgeschlagen:', error);
+    warning = (warning ? warning + ' | ' : '') + `Qdrant-Write fehlgeschlagen: ${error}`;
+  }
 
   // 5. Aktualisierter Thought zurueckgeben
   const updatedThought: Thought = {
@@ -229,6 +249,7 @@ export async function updateThought(
     content: mergedContent,
     tags: mergedTags,
     timestamp: row.timestamp instanceof Date ? row.timestamp.toISOString() : row.timestamp,
+    warning,
   };
 
   console.error(`[Synapse] Thought "${id}" aktualisiert fuer Projekt "${project}"`);
@@ -238,19 +259,29 @@ export async function updateThought(
 /**
  * Loescht einen Gedanken
  */
-export async function deleteThought(project: string, id: string): Promise<void> {
+export async function deleteThought(project: string, id: string): Promise<{ success: boolean; warning?: string }> {
+  let warning: string | undefined;
+
   // 1. PostgreSQL
   try {
     const pool = getPool();
     await pool.query('DELETE FROM thoughts WHERE id = $1', [id]);
   } catch (error) {
     console.error('[Synapse] PostgreSQL Thought-Delete fehlgeschlagen:', error);
+    warning = `PG-Write fehlgeschlagen: ${error}`;
   }
 
   // 2. Qdrant
-  const collectionName = COLLECTIONS.projectThoughts(project);
-  await deleteVector(collectionName, id);
+  try {
+    const collectionName = COLLECTIONS.projectThoughts(project);
+    await deleteVector(collectionName, id);
+  } catch (error) {
+    console.error('[Synapse] Qdrant Thought-Delete fehlgeschlagen:', error);
+    warning = (warning ? warning + ' | ' : '') + `Qdrant-Write fehlgeschlagen: ${error}`;
+  }
+
   console.error(`[Synapse] Gedanke geloescht: ${id}`);
+  return { success: true, warning };
 }
 
 /**

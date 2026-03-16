@@ -131,11 +131,12 @@ export async function thoughtsRoutes(fastify: FastifyInstance): Promise<void> {
     const { name, id } = request.params;
 
     try {
-      await deleteThought(name, id);
+      const deleted = await deleteThought(name, id);
 
       return {
-        success: true,
+        success: deleted.success,
         message: `Gedanke "${id}" geloescht`,
+        warning: deleted.warning,
       };
     } catch (error) {
       return reply.status(500).send({

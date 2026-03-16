@@ -796,10 +796,11 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
     }
 
     case 'delete_thought': {
-      await deleteThought(args.project as string, args.id as string);
+      const deleted = await deleteThought(args.project as string, args.id as string);
       return {
-        success: true,
+        success: deleted.success,
         message: `Gedanke "${args.id}" geloescht`,
+        warning: deleted.warning,
       };
     }
 
