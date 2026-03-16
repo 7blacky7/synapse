@@ -3,7 +3,13 @@
 // Aufgerufen von chat-notify.sh
 // Args: <agent_id> <project> <since_timestamp> <db_url>
 
-import pg from '/home/blacky/dev/synapse/node_modules/.pnpm/pg@8.20.0/node_modules/pg/lib/index.js';
+import { createRequire } from 'module';
+import { fileURLToPath } from 'url';
+import { dirname, resolve } from 'path';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const require = createRequire(resolve(__dirname, '../packages/core/package.json'));
+const pg = require('pg');
 const { Pool } = pg;
 
 const [,, agentId, project, since, dbUrl] = process.argv;
