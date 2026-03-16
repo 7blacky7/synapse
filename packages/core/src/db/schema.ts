@@ -90,7 +90,7 @@ CREATE TABLE IF NOT EXISTS agent_events (
 );
 
 CREATE TABLE IF NOT EXISTS agent_event_acks (
-  event_id INTEGER REFERENCES agent_events(id),
+  event_id INTEGER REFERENCES agent_events(id) ON DELETE CASCADE,
   agent_id TEXT NOT NULL,
   acked_at TIMESTAMPTZ DEFAULT NOW(),
   reaction TEXT,

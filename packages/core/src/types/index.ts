@@ -112,6 +112,7 @@ export interface ProjectPlan {
   tasks: ProjectTask[];
   createdAt: string;
   updatedAt: string;
+  warning?: string;
 }
 
 export interface ProjectTask {
@@ -122,6 +123,7 @@ export interface ProjectTask {
   priority: 'low' | 'medium' | 'high';
   createdAt: string;
   updatedAt: string;
+  warning?: string;
 }
 
 export interface ProjectPlanPayload {
