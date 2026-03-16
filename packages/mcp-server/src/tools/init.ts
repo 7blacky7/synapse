@@ -1,6 +1,27 @@
 /**
- * Synapse MCP - Init Tool
- * Projekt initialisieren und FileWatcher starten
+ * MODUL: Init-Tool
+ * ZWECK: Projekt initialisieren, FileWatcher starten und Agenten-Onboarding ausloesen.
+ *        Erkennt Technologien, laedt Framework-Docs vor und triggert Setup-Wizard bei Ersteinrichtung.
+ *
+ * INPUT:
+ *   - projectPath: string - Absoluter Pfad zum Projekt-Verzeichnis
+ *   - projectName?: string - Optionaler Projekt-Name (default: Verzeichnisname)
+ *   - indexDocs?: boolean - Framework-Docs vorladen (default: true)
+ *   - agentId?: string - Agent-ID fuer Onboarding (neue Agenten sehen Projekt-Regeln)
+ *
+ * OUTPUT:
+ *   - initProjekt: InitResult mit project, path, technologies, docsIndexed, isFirstVisit, rules, setupRequired
+ *   - stopProjekt: boolean - ob Watcher erfolgreich gestoppt
+ *   - listActiveProjects: string[] - Namen aktiver Projekte
+ *   - cleanupProjekt: deleted/checked/deletedFiles/keptFiles/details
+ *   - getProjectStatusWithStats: status + Vektor-Statistiken
+ *   - dropNamelist: clearedCount - Anzahl entfernter Agent-Eintraege
+ *
+ * NEBENEFFEKTE:
+ *   - Qdrant: Erstellt project_<name>_code Collection, liest/schreibt project_plans
+ *   - Dateisystem: Schreibt .synapse/status.json, startet chokidar FileWatcher
+ *   - Registry: Aktualisiert ~/.synapse/project-registry.json via onboarding.ts
+ *   - Setup-Wizard: Wird getriggert wenn keine Regeln-Memories vorhanden sind
  */
 
 import * as path from 'path';
