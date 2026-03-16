@@ -1202,8 +1202,9 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
         args.id as string
       );
       return {
-        success: deleted,
-        message: deleted ? `Proposal "${args.id}" gelöscht` : `Proposal "${args.id}" nicht gefunden`,
+        success: deleted.success,
+        message: deleted.success ? `Proposal "${args.id}" gelöscht` : `Proposal "${args.id}" nicht gefunden`,
+        ...(deleted.warning ? { warning: deleted.warning } : {}),
       };
     }
 

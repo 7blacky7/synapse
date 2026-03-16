@@ -166,7 +166,7 @@ export async function proposalRoutes(fastify: FastifyInstance): Promise<void> {
     try {
       const deleted = await deleteProposal(name, id);
 
-      if (!deleted) {
+      if (!deleted.success) {
         return reply.status(404).send({
           success: false,
           error: { message: `Proposal "${id}" nicht gefunden in Projekt "${name}"` },
@@ -176,6 +176,7 @@ export async function proposalRoutes(fastify: FastifyInstance): Promise<void> {
       return {
         success: true,
         message: `Proposal "${id}" geloescht`,
+        ...(deleted.warning ? { warning: deleted.warning } : {}),
       };
     } catch (error) {
       return reply.status(500).send({

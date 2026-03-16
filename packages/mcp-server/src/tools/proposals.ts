@@ -156,11 +156,12 @@ export async function deleteProposalWrapper(
   try {
     const deleted = await coreDeleteProposal(project, id);
 
-    if (!deleted) {
+    if (!deleted.success) {
       return `Vorschlag "${id}" nicht gefunden in Projekt "${project}".`;
     }
 
-    return `Vorschlag "${id}" erfolgreich geloescht aus Projekt "${project}".`;
+    const warningInfo = deleted.warning ? ` (Warning: ${deleted.warning})` : '';
+    return `Vorschlag "${id}" erfolgreich geloescht aus Projekt "${project}".${warningInfo}`;
   } catch (error) {
     return `Fehler beim Loeschen des Vorschlags: ${error}`;
   }

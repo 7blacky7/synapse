@@ -106,6 +106,8 @@ export async function createProposal(
     updated_at: proposal.updatedAt,
   };
 
+  let warning: string | undefined;
+
   // 1. PostgreSQL (Source of Truth)
   try {
     const pool = getPool();
@@ -117,13 +119,19 @@ export async function createProposal(
     );
   } catch (error) {
     console.error('[Synapse] PostgreSQL Proposal-Write fehlgeschlagen:', error);
+    warning = `PG-Write fehlgeschlagen: ${error}`;
   }
 
   // 2. Qdrant (Vektor-Index)
-  await insertVector(COLLECTION_NAME, vector, payload, id);
+  try {
+    await insertVector(COLLECTION_NAME, vector, payload, id);
+  } catch (error) {
+    console.error('[Synapse] Qdrant Proposal-Write fehlgeschlagen:', error);
+    warning = (warning ? warning + ' | ' : '') + `Qdrant-Write fehlgeschlagen: ${error}`;
+  }
 
   console.error(`[Synapse] Proposal "${id}" erstellt fuer "${filePath}" in Projekt "${project}"`);
-  return proposal;
+  return { ...proposal, warning };
 }
 
 /**
@@ -221,20 +229,28 @@ export async function updateProposalStatus(
   // Neuen Vektor generieren (bleibt gleich da description/filePath unveraendert)
   const vector = await embed(`${updatedPayload.description} ${updatedPayload.file_path}`);
 
-  // 1. PostgreSQL
+  let warning: string | undefined;
+
+  // 1. PostgreSQL (Source of Truth)
   try {
     const pool = getPool();
     await pool.query('UPDATE proposals SET status = $1, updated_at = $2 WHERE id = $3', [status, now, id]);
   } catch (error) {
     console.error('[Synapse] PostgreSQL Proposal-Status-Update fehlgeschlagen:', error);
+    warning = `PG-Write fehlgeschlagen: ${error}`;
   }
 
-  // 2. Qdrant
-  await deleteVector(collName, id);
-  await insertVector(collName, vector, updatedPayload, id);
+  // 2. Qdrant (Vektor-Index)
+  try {
+    await deleteVector(collName, id);
+    await insertVector(collName, vector, updatedPayload, id);
+  } catch (error) {
+    console.error('[Synapse] Qdrant Proposal-Status-Update fehlgeschlagen:', error);
+    warning = (warning ? warning + ' | ' : '') + `Qdrant-Write fehlgeschlagen: ${error}`;
+  }
 
   console.error(`[Synapse] Proposal "${id}" Status geaendert zu "${status}"`);
-  return payloadToProposal(id, updatedPayload);
+  return { ...payloadToProposal(id, updatedPayload), warning };
 }
 
 /**
@@ -267,29 +283,41 @@ export async function updateProposal(
   const mergedSuggestedContent = changes.suggestedContent ?? row.suggested_content;
   const mergedStatus = changes.status ?? row.status;
 
-  // 3. PostgreSQL UPDATE
-  await pool.query(
-    `UPDATE proposals SET description = $1, suggested_content = $2, status = $3, updated_at = $4 WHERE id = $5`,
-    [mergedDescription, mergedSuggestedContent, mergedStatus, now, id]
-  );
+  let warning: string | undefined;
+
+  // 3. PostgreSQL UPDATE (Source of Truth)
+  try {
+    await pool.query(
+      `UPDATE proposals SET description = $1, suggested_content = $2, status = $3, updated_at = $4 WHERE id = $5`,
+      [mergedDescription, mergedSuggestedContent, mergedStatus, now, id]
+    );
+  } catch (error) {
+    console.error('[Synapse] PostgreSQL Proposal-Update fehlgeschlagen:', error);
+    warning = `PG-Write fehlgeschlagen: ${error}`;
+  }
 
   // 4. Neues Embedding generieren und Qdrant-Vektor upserten
-  const collName = getCollectionName(project);
-  await ensureCollection(collName);
-  const vector = await embed(`${mergedDescription} ${row.file_path}`);
-  const payload: ProposalPayload = {
-    project,
-    file_path: row.file_path,
-    suggested_content: mergedSuggestedContent,
-    description: mergedDescription,
-    author: row.author,
-    status: mergedStatus,
-    tags: row.tags || [],
-    created_at: row.created_at instanceof Date ? row.created_at.toISOString() : row.created_at,
-    updated_at: now,
-  };
-  await deleteVector(collName, id);
-  await insertVector(collName, vector, payload, id);
+  try {
+    const collName = getCollectionName(project);
+    await ensureCollection(collName);
+    const vector = await embed(`${mergedDescription} ${row.file_path}`);
+    const payload: ProposalPayload = {
+      project,
+      file_path: row.file_path,
+      suggested_content: mergedSuggestedContent,
+      description: mergedDescription,
+      author: row.author,
+      status: mergedStatus,
+      tags: row.tags || [],
+      created_at: row.created_at instanceof Date ? row.created_at.toISOString() : row.created_at,
+      updated_at: now,
+    };
+    await deleteVector(collName, id);
+    await insertVector(collName, vector, payload, id);
+  } catch (error) {
+    console.error('[Synapse] Qdrant Proposal-Update fehlgeschlagen:', error);
+    warning = (warning ? warning + ' | ' : '') + `Qdrant-Write fehlgeschlagen: ${error}`;
+  }
 
   // 5. Aktualisierter Proposal zurueckgeben
   const updatedProposal: Proposal = {
@@ -303,6 +331,7 @@ export async function updateProposal(
     tags: row.tags || [],
     createdAt: row.created_at instanceof Date ? row.created_at.toISOString() : row.created_at,
     updatedAt: now,
+    warning,
   };
 
   console.error(`[Synapse] Proposal "${id}" aktualisiert fuer Projekt "${project}"`);
@@ -315,15 +344,17 @@ export async function updateProposal(
 export async function deleteProposal(
   project: string,
   id: string
-): Promise<boolean> {
+): Promise<{ success: boolean; warning?: string }> {
   const collName = getCollectionName(project);
 
   // Existenz und Projekt-Zugehoerigkeit pruefen
   const existing = await getVector<ProposalPayload>(collName, id);
 
   if (!existing || existing.payload.project !== project) {
-    return false;
+    return { success: false };
   }
+
+  let warning: string | undefined;
 
   // 1. PostgreSQL
   try {
@@ -331,12 +362,19 @@ export async function deleteProposal(
     await pool.query('DELETE FROM proposals WHERE id = $1', [id]);
   } catch (error) {
     console.error('[Synapse] PostgreSQL Proposal-Delete fehlgeschlagen:', error);
+    warning = `PG-Write fehlgeschlagen: ${error}`;
   }
 
   // 2. Qdrant
-  await deleteVector(collName, id);
+  try {
+    await deleteVector(collName, id);
+  } catch (error) {
+    console.error('[Synapse] Qdrant Proposal-Delete fehlgeschlagen:', error);
+    warning = (warning ? warning + ' | ' : '') + `Qdrant-Write fehlgeschlagen: ${error}`;
+  }
+
   console.error(`[Synapse] Proposal "${id}" geloescht fuer Projekt "${project}"`);
-  return true;
+  return { success: true, warning };
 }
 
 /**
