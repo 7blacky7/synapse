@@ -144,7 +144,7 @@ export async function searchByPath(
   const { contentPattern, limit = 50 } = options;
 
   try {
-    const collectionName = `project_${project}`;
+    const collectionName = `project_${project}_code`;
 
     // Alle Vektoren holen
     const allPoints = await scrollVectors<CodeChunkPayload>(
