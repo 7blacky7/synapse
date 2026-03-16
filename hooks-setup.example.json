@@ -16,19 +16,19 @@
             "command": "<SYNAPSE_PATH>/packages/mcp-server/hooks/pre-synapse-onboarding.sh"
           }
         ]
-      }
-    ],
-    "PostToolUse": [
+      },
       {
         "matcher": "Edit|Write",
         "hooks": [
           {
-            "_description": "Wissens-Airbag: Zeigt Framework-Docs nach Datei-Bearbeitung",
+            "_description": "Framework-Docs: Zeigt verfuegbare Docs VOR Datei-Bearbeitung (1x pro Agent+Framework)",
             "type": "command",
-            "command": "<SYNAPSE_PATH>/packages/mcp-server/hooks/post-edit-framework-docs.sh"
+            "command": "<SYNAPSE_PATH>/packages/mcp-server/hooks/pre-edit-framework-docs.sh"
           }
         ]
-      },
+      }
+    ],
+    "PostToolUse": [
       {
         "matcher": ".*",
         "hooks": [
