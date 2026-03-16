@@ -168,7 +168,7 @@ done
 if [ "$TOTAL_DOCS" -gt 0 ]; then
   CONTEXT_MSG="=== SYNAPSE TECH-DOCS ===\nErkannte Frameworks: ${FW_LIST}${DOCS_OUTPUT}\n\nMehr Context: search_tech_docs(query: \"...\", scope: \"all\") fuer globale + projekt-spezifische Docs."
 else
-  CONTEXT_MSG="=== SYNAPSE TECH-DOCS ===\nErkannte Frameworks: ${FW_LIST}\n\nContext7-Docs verfuegbar! Abrufen mit:\n  search_tech_docs(query: \"${FW_LIST}\", scope: \"all\")\nLaedt automatisch von Context7 und indexiert global."
+  CONTEXT_MSG="=== SYNAPSE TECH-DOCS ===\nErkannte Frameworks: ${FW_LIST}\n\nDocs verfuegbar! Abrufen mit:\n  search_tech_docs(query: \"${FW_LIST}\", scope: \"all\")"
 fi
 
 # Output als JSON
