@@ -36,10 +36,11 @@ export async function searchTechDocsTool(
     source?: string;
     project?: string;
     limit?: number;
+    scope?: 'global' | 'project' | 'all';
   } = {}
 ): Promise<{
   success: boolean;
-  results: Array<{ framework: string; version: string; section: string; content: string; type: string; score: number }>;
+  results: Array<{ framework: string; version: string; section: string; content: string; type: string; source: string; score: number | null }>;
   message: string;
 }> {
   try {
@@ -52,6 +53,7 @@ export async function searchTechDocsTool(
         section: r.section,
         content: r.content,
         type: r.type,
+        source: r.source,
         score: r.score,
       })),
       message: `${results.length} Tech-Docs gefunden`,

@@ -184,7 +184,7 @@ export {
 export type { BackupEntry } from './services/backup.js';
 export type { ChatMessage, AgentSession } from './services/chat.js';
 export type { AgentEvent, EventAck, EventType, EventPriority } from './services/events.js';
-export type { TechDoc, TechDocType } from './services/tech-docs.js';
+export type { TechDoc, TechDocType, TechDocResult } from './services/tech-docs.js';
 export type { Memory, MemoryWithRelatedCode, RelatedMemoryResult, RelatedCodeResult } from './services/memory.js';
 export type { DetectedTechnology } from './services/tech-detection.js';
 export type { Context7Doc } from './services/context7.js';

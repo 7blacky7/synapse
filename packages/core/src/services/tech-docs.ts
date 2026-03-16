@@ -33,6 +33,18 @@ export interface TechDoc {
   indexedAt: string;
 }
 
+/** Ergebnis einer Tech-Doc Suche */
+export interface TechDocResult {
+  id: string;
+  score: number | null;
+  framework: string;
+  version: string;
+  section: string;
+  content: string;
+  type: string;
+  source: string;
+}
+
 /** Chunk-Types fuer Tech-Docs */
 export type TechDocType =
   | 'feature'
@@ -117,71 +129,99 @@ export async function searchTechDocs(
     source?: string;
     project?: string;
     limit?: number;
+    scope?: 'global' | 'project' | 'all';
   } = {}
-): Promise<Array<{ id: string; score: number; framework: string; version: string; section: string; content: string; type: string; source: string }>> {
-  const { framework, type, source, project, limit: rawLimit = 10 } = options;
+): Promise<Array<TechDocResult>> {
+  const { framework, type, source, project, limit: rawLimit = 10, scope = 'project' } = options;
   const limit = typeof rawLimit === 'string' ? parseInt(rawLimit, 10) : rawLimit;
 
-  const collectionName = project ? COLLECTIONS.projectDocs(project) : COLLECTIONS.techDocs;
-
+  const { getConfig } = await import('../config.js');
+  const qdrantUrl = getConfig().qdrant.url;
   const queryVector = await embed(query);
-  console.error(`[Synapse TechDocs] Suche in "${collectionName}" mit ${queryVector.length}d Vektor, limit=${limit}`);
 
   const must: Array<Record<string, unknown>> = [];
   if (framework) must.push({ key: 'framework', match: { value: framework.toLowerCase() } });
   if (type) must.push({ key: 'type', match: { value: type } });
   if (source) must.push({ key: 'source', match: { value: source } });
 
-  // Qdrant REST-API direkt nutzen (Client hat Bug mit bestimmten Collections)
-  const { getConfig } = await import('../config.js');
-  const qdrantUrl = getConfig().qdrant.url;
-  const searchBody: Record<string, unknown> = {
-    vector: queryVector,
-    limit,
-    with_payload: true,
-  };
-  if (must.length > 0) {
-    searchBody.filter = { must };
+  /** Fuehrt eine Qdrant-Suche in einer Collection durch */
+  async function searchInCollection(collectionName: string): Promise<TechDocResult[]> {
+    const searchBody: Record<string, unknown> = {
+      vector: queryVector,
+      limit,
+      with_payload: true,
+    };
+    if (must.length > 0) {
+      searchBody.filter = { must };
+    }
+
+    console.error(`[Synapse TechDocs] Suche in "${collectionName}" mit ${queryVector.length}d Vektor, limit=${limit}`);
+
+    const response = await fetch(`${qdrantUrl}/collections/${collectionName}/points/search`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(searchBody),
+    });
+
+    if (!response.ok) {
+      const errBody = await response.text();
+      throw new Error(`Qdrant search failed: ${response.status} ${errBody}`);
+    }
+
+    const data = await response.json() as { result: Array<{ id: string; score: number; payload: Record<string, unknown> }> };
+    return data.result.map(r => ({
+      id: r.id as string,
+      score: r.score,
+      framework: r.payload.framework as string,
+      version: r.payload.version as string,
+      section: r.payload.section as string,
+      content: r.payload.content as string,
+      type: r.payload.type as string,
+      source: r.payload.source as string,
+    }));
   }
 
-  const response = await fetch(`${qdrantUrl}/collections/${collectionName}/points/search`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(searchBody),
-  });
+  // Scope-basierte Suche
+  let mapped: TechDocResult[];
 
-  if (!response.ok) {
-    const errBody = await response.text();
-    throw new Error(`Qdrant search failed: ${response.status} ${errBody}`);
+  if (scope === 'global') {
+    mapped = await searchInCollection(COLLECTIONS.techDocs);
+  } else if (scope === 'all') {
+    const projectCollection = project ? COLLECTIONS.projectDocs(project) : null;
+    const [globalResults, projectResults] = await Promise.all([
+      searchInCollection(COLLECTIONS.techDocs),
+      projectCollection ? searchInCollection(projectCollection) : Promise.resolve([] as TechDocResult[]),
+    ]);
+    // Duplikate per content_hash filtern (content als Proxy, da hash nicht im Ergebnis)
+    const seen = new Set<string>();
+    const merged: TechDocResult[] = [];
+    for (const r of [...projectResults, ...globalResults]) {
+      if (!seen.has(r.id)) {
+        seen.add(r.id);
+        merged.push(r);
+      }
+    }
+    mapped = merged.sort((a, b) => (b.score ?? 0) - (a.score ?? 0)).slice(0, limit);
+  } else {
+    // scope === 'project' (Default)
+    const collectionName = project ? COLLECTIONS.projectDocs(project) : COLLECTIONS.techDocs;
+    mapped = await searchInCollection(collectionName);
   }
 
-  const data = await response.json() as { result: Array<{ id: string; score: number; payload: Record<string, unknown> }> };
-  const results = data.result;
-
-  const mapped = results.map(r => ({
-    id: r.id as string,
-    score: r.score,
-    framework: r.payload.framework as string,
-    version: r.payload.version as string,
-    section: r.payload.section as string,
-    content: r.payload.content as string,
-    type: r.payload.type as string,
-    source: r.payload.source as string,
-  }));
-
-  // Context7 Auto-Fetch: Wenn keine guten Ergebnisse und Framework bekannt
-  const hasGoodResults = mapped.some(r => r.score >= 0.60);
-  if (!hasGoodResults && framework) {
+  // Context7 Auto-Fetch: Wenn keine guten Ergebnisse und Framework bekannt (nur bei project/all scope)
+  const hasGoodResults = mapped.some(r => (r.score ?? 0) >= 0.60);
+  if (!hasGoodResults && framework && scope !== 'global') {
     console.error(`[Synapse TechDocs] Keine guten Ergebnisse (Score < 0.60) — versuche Context7 Auto-Fetch fuer "${framework}"...`);
 
     const context7 = getContext7Client();
     if (context7.isAvailable()) {
       const c7Docs = await context7.searchDocs(framework, query);
+      const targetCollection = project ? COLLECTIONS.projectDocs(project) : COLLECTIONS.techDocs;
 
       if (c7Docs.length > 0) {
-        console.error(`[Synapse TechDocs] Context7 liefert ${c7Docs.length} Docs — indexiere in ${collectionName}...`);
+        console.error(`[Synapse TechDocs] Context7 liefert ${c7Docs.length} Docs — indexiere in ${targetCollection}...`);
 
-        const fetched: typeof mapped = [];
+        const fetched: TechDocResult[] = [];
         for (const doc of c7Docs) {
           const result = await addTechDoc(
             doc.framework || framework,
@@ -197,7 +237,7 @@ export async function searchTechDocs(
           if (result.success && !result.duplicate) {
             fetched.push({
               id: result.id,
-              score: 0.90,
+              score: null,  // Kein echter Relevanz-Score — Auto-Fetch ohne Matching
               framework: (doc.framework || framework).toLowerCase(),
               version: doc.version || 'latest',
               section: doc.title || 'context7-fetch',
