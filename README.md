@@ -68,7 +68,7 @@ Du (User)
 |---------|--------------|------------|
 | `@synapse/core` | Gemeinsamer Kern — Services, DB, Embeddings, FileWatcher, Events | - |
 | `@synapse/mcp-server` | MCP Server (stdio) fuer Claude Code, Claude Desktop, Cline | User PC |
-| `@synapse/rest-api` | REST API (Fastify, HTTP) fuer Web-KIs (Claude.ai, ChatGPT, Gemini) | Server |
+| `@synapse/rest-api` | REST API (Fastify, HTTP) fuer Web-KIs (Claude.ai, ChatGPT, Gemini) — ⚠️ **noch nicht aktualisiert**, fehlende Routen fuer Events, Updates und neue Tools | Server |
 | `@synapse/web-ui` | Web-Dashboard (React, in Entwicklung) | - |
 
 ### Datenfluss
