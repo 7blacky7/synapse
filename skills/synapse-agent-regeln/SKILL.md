@@ -71,20 +71,41 @@ get_docs_for_file(file_path: "<datei>", agent_id: "<deine-id>", project: "<proje
 - Warnt dich vor Dingen die du wegen deines Cutoffs nicht wissen kannst
 - Ignoriere diese Warnungen NICHT — sie verhindern Fehler
 
-## 6. Task-Abschluss
+## 6. Events (Pflicht-Reaktion)
+
+Tool-Responses zeigen pending Events an. Events sind KEINE Chat-Nachrichten — sie sind **Steuersignale**.
+
+**Wenn ein Event erscheint → SOFORT reagieren:**
+
+```
+acknowledge_event(event_id: <id>, agent_id: "<deine-id>", reaction: "Was du getan hast")
+```
+
+| Event-Typ | Deine Reaktion |
+|-----------|---------------|
+| `WORK_STOP` | Arbeit sofort anhalten, Status per Chat posten, auf Koordinator warten |
+| `CRITICAL_REVIEW` | Betroffene Arbeit NICHT abschliessen, Review abwarten |
+| `ARCH_DECISION` | Plan neu pruefen, Ack mit Bewertung |
+| `TEAM_DISCUSSION` | Status posten, auf Koordinator warten |
+| `ANNOUNCEMENT` | Lesen, Ack, weiterarbeiten |
+
+**WARNUNG:** Nach 3 Tool-Calls ohne Ack wird automatisch an den Koordinator eskaliert.
+Events NICHT ignorieren — sie haben Vorrang vor deinem aktuellen Task.
+
+## 7. Task-Abschluss
 
 | Ergebnis | Aktion |
 |----------|--------|
 | Erfolg | Chat: "Task X erledigt." Task `completed`. |
 | Problem | Chat-DM an Koordinator. `add_thought` mit Tag `"problem"`. Task NICHT completed. |
 
-## 7. Ergebnisse speichern
+## 8. Ergebnisse speichern
 
 - Plaene, Analysen → `write_memory` (ausfuehrlich)
 - Kurze Erkenntnisse → `add_thought`
 - KEINE .md-Dateien erstellen — alles in Synapse
 
-## 8. Wissensluecken melden (Cutoff-Handling)
+## 9. Wissensluecken melden (Cutoff-Handling)
 
 Wenn eine Technologie/Version jenseits deines Cutoffs liegt:
 
@@ -106,13 +127,13 @@ Wenn eine Technologie/Version jenseits deines Cutoffs liegt:
 Fuer Breaking Changes, Migration-Guides und Gotchas braucht es den Docs-Kurator.
 Der Koordinator dispatcht ihn automatisch wenn du "Wissensluecke:" meldest.
 
-## 9. Abmeldung (PFLICHT am Ende)
+## 10. Abmeldung (PFLICHT am Ende)
 
 ```
 unregister_chat_agent(id: "<deine-id>")
 ```
 
-## 10. Verbote
+## 11. Verbote
 
 - Keine Synapse-Einstellungen aendern (init, cleanup, stop)
 - NIEMALS `source: "claude-code"` verwenden

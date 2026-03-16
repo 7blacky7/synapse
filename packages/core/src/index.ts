@@ -45,6 +45,8 @@ export {
   getEmbeddingDimension,
   embed,
   embedBatch,
+  embedMedia,
+  supportsMultimodal,
   resetEmbeddingProvider,
   OllamaEmbeddingProvider,
   OpenAIEmbeddingProvider,
@@ -61,6 +63,9 @@ export {
   isBinaryFile,
   isBinaryExtension,
   isExtractableDocument,
+  isMultimodalFile,
+  getMediaMimeType,
+  getMediaCategory,
   getFileType,
   getFileExtension,
   loadGitignore,
@@ -83,6 +88,11 @@ export {
   handleFileEvent,
   searchCode,
   getProjectStats,
+  // Media
+  indexMediaFile,
+  indexMediaDirectory,
+  removeMediaFile,
+  searchMedia,
   // Thoughts
   addThought,
   updateThought,
@@ -165,9 +175,15 @@ export {
   searchTechDocs,
   getDocsForFile,
   deleteTechDoc,
+  // Events
+  emitEvent,
+  acknowledgeEvent,
+  getPendingEvents,
+  getUnackedCount,
 } from './services/index.js';
 export type { BackupEntry } from './services/backup.js';
 export type { ChatMessage, AgentSession } from './services/chat.js';
+export type { AgentEvent, EventAck, EventType, EventPriority } from './services/events.js';
 export type { TechDoc, TechDocType } from './services/tech-docs.js';
 export type { Memory, MemoryWithRelatedCode, RelatedMemoryResult, RelatedCodeResult } from './services/memory.js';
 export type { DetectedTechnology } from './services/tech-detection.js';
@@ -336,6 +352,7 @@ export async function initSynapse(projectName: string): Promise<boolean> {
     COLLECTIONS.projectPlans(projectName),
     COLLECTIONS.projectProposals(projectName),
     COLLECTIONS.projectCode(projectName),
+    COLLECTIONS.projectMedia(projectName),
     COLLECTIONS.projectDocs(projectName),
   ];
 

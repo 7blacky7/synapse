@@ -59,19 +59,50 @@ if [[ ! -f "$LASTSEEN_FILE" ]]; then
 fi
 SINCE=$(cat "$LASTSEEN_FILE")
 
-# DB-Query
-RESULT=$(node "$SCRIPT_DIR/chat-check.mjs" "$AGENT_ID" "$PROJECT" "$SINCE" "$DB_URL" 2>/dev/null) || exit 0
+# === EVENT-CHECK (VOR Chat) ===
+EVENT_RESULT=$(node "$SCRIPT_DIR/event-check.mjs" "$AGENT_ID" "$PROJECT" "$DB_URL" 2>/dev/null) || EVENT_RESULT="[]"
+
+# Events parsen und ausgeben
+EVENT_COUNT=$(echo "$EVENT_RESULT" | node -p "JSON.parse(require('fs').readFileSync(0,'utf8')).length" 2>/dev/null || echo "0")
+
+EVENT_MSG=""
+if [[ "$EVENT_COUNT" -gt 0 ]]; then
+  # Event-Details formatieren
+  EVENT_MSG=$(echo "$EVENT_RESULT" | node -p "
+    const events = JSON.parse(require('fs').readFileSync(0,'utf8'));
+    events.map(e => {
+      const prefix = e.priority === 'critical' ? '⛔ PFLICHT' : '⚠️';
+      return prefix + ' EVENT ' + e.event_type + ' (' + e.priority + ') von ' + e.source_id + ': ' + (e.payload || 'Keine Details') + '. Reagiere mit: acknowledge_event(event_id: ' + e.id + ')';
+    }).join('\\n');
+  " 2>/dev/null || echo "")
+fi
+
+# DB-Query (Chat)
+RESULT=$(node "$SCRIPT_DIR/chat-check.mjs" "$AGENT_ID" "$PROJECT" "$SINCE" "$DB_URL" 2>/dev/null) || RESULT="0|0|"
 
 IFS='|' read -r BROADCASTS DMS DM_SENDERS <<< "$RESULT"
 BROADCASTS=${BROADCASTS:-0}
 DMS=${DMS:-0}
 
-[[ "$BROADCASTS" -eq 0 && "$DMS" -eq 0 ]] && exit 0
+CHAT_MSG=""
+if [[ "$BROADCASTS" -gt 0 || "$DMS" -gt 0 ]]; then
+  PARTS=()
+  [[ "$BROADCASTS" -gt 0 ]] && PARTS+=("${BROADCASTS} Broadcasts")
+  [[ "$DMS" -gt 0 ]] && PARTS+=("${DMS} DMs${DM_SENDERS:+ von ${DM_SENDERS}}")
+  CHAT_MSG="📨 Chat (${AGENT_ID}): $(IFS=', '; echo "${PARTS[*]}") ungelesen"
+fi
 
-PARTS=()
-[[ "$BROADCASTS" -gt 0 ]] && PARTS+=("${BROADCASTS} Broadcasts")
-[[ "$DMS" -gt 0 ]] && PARTS+=("${DMS} DMs${DM_SENDERS:+ von ${DM_SENDERS}}")
+# Ausgabe: Events VOR Chat, nur wenn mindestens eine Meldung vorhanden
+[[ -z "$EVENT_MSG" && -z "$CHAT_MSG" ]] && exit 0
 
-MSG="📨 Chat (${AGENT_ID}): $(IFS=', '; echo "${PARTS[*]}") ungelesen"
+FULL_MSG=""
+if [[ -n "$EVENT_MSG" && -n "$CHAT_MSG" ]]; then
+  FULL_MSG="${EVENT_MSG}
+${CHAT_MSG}"
+elif [[ -n "$EVENT_MSG" ]]; then
+  FULL_MSG="$EVENT_MSG"
+else
+  FULL_MSG="$CHAT_MSG"
+fi
 
-jq -n --arg ctx "$MSG" '{"hookSpecificOutput":{"hookEventName":"PostToolUse","additionalContext":$ctx}}'
+jq -n --arg ctx "$FULL_MSG" '{"hookSpecificOutput":{"hookEventName":"PostToolUse","additionalContext":$ctx}}'

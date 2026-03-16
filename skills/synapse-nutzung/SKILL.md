@@ -118,6 +118,12 @@ WISSENSLUECKEN (Cutoff-Handling):
   7. Koordinator dispatcht Docs-Kurator, indexiert kuratierte Docs
   8. Danach: search_tech_docs(source: "research") fuer Breaking Changes etc.
 
+EVENTS (Pflicht-Reaktion):
+- Tool-Responses zeigen pending Events an (wie unreadChat)
+- Bei ⛔ PFLICHT-EVENT: SOFORT mit acknowledge_event(event_id: <id>, agent_id: "{AGENT_ID}") reagieren
+- WORK_STOP: Arbeit anhalten, Status posten, auf Koordinator warten
+- Ignorieren fuehrt zu Eskalation nach 3 Calls
+
 ABMELDUNG (PFLICHT am Ende): unregister_chat_agent(id: "{AGENT_ID}")
 === ENDE AGENT-REGELN ===
 ```
@@ -182,7 +188,55 @@ Opus entscheidet selbst welche Quellen relevant sind, bewertet Qualitaet,
 erkennt undokumentierte Probleme in GitHub Issues und filtert Rauschen raus.
 Haiku/Sonnet koennen das nicht zuverlaessig.
 
-## 6. Richtige Tool-Wahl
+## 6. Event-System (Agenten-Steuerung)
+
+Events sind KEINE Chat-Nachrichten. Events sind **verbindliche Steuersignale**.
+
+### Event senden (nur Koordinator)
+
+```
+emit_event(project: "<projekt>", event_type: "WORK_STOP", priority: "critical",
+  scope: "all", source_id: "koordinator", payload: "Grund fuer den Stopp")
+```
+
+### Event-Typen
+
+| Event-Typ | Priority | Pflicht-Reaktion |
+|-----------|----------|-----------------|
+| `WORK_STOP` | critical | Arbeit sofort anhalten, Status posten |
+| `CRITICAL_REVIEW` | critical | Betroffene Arbeit nicht abschliessen |
+| `ARCH_DECISION` | high | Plan neu pruefen, Ack mit Bewertung |
+| `TEAM_DISCUSSION` | high | Status posten, auf Koordinator warten |
+| `ANNOUNCEMENT` | normal | Lesen, Ack, weiterarbeiten |
+
+### Scope
+
+- `all` → alle aktiven Agenten sehen das Event
+- `agent:<id>` → nur ein bestimmter Agent
+
+### Delivery
+
+Events werden automatisch an Tool-Responses angehaengt (wie unreadChat).
+Der PostToolUse-Hook zeigt Events VOR Chat-Nachrichten.
+Agenten MUESSEN mit `acknowledge_event(event_id, agent_id)` reagieren.
+
+### Eskalation
+
+Nach 3 Tool-Calls ohne Ack bei critical/high Events:
+→ Automatische DM an Koordinator: "Agent X ignoriert Event Y seit Z Calls"
+
+### Prompt-Baustein Erweiterung
+
+Fuege im Agent-Prompt-Baustein hinzu:
+```
+EVENTS (Pflicht-Reaktion):
+- Tool-Responses zeigen pending Events an
+- Bei ⛔ PFLICHT-EVENT: SOFORT mit acknowledge_event(event_id, agent_id) reagieren
+- Bei WORK_STOP: Arbeit anhalten, Status posten, auf Koordinator warten
+- Ignorieren fuehrt zu Eskalation nach 3 Calls
+```
+
+## 7. Richtige Tool-Wahl
 
 | Situation | Tool |
 |-----------|------|
@@ -194,14 +248,17 @@ Haiku/Sonnet koennen das nicht zuverlaessig.
 | Framework-Doku | `search_tech_docs` |
 | Frueherer Kontext | `search_thoughts` |
 | Datei-spezifische Docs | `get_docs_for_file` (Wissens-Airbag) |
+| Steuer-Signal senden | `emit_event` |
+| Event bestaetigen | `acknowledge_event` |
+| Offene Events pruefen | `get_pending_events` |
 
-## 7. Filter-Regeln
+## 8. Filter-Regeln
 
 - `file_type` IMMER setzen wenn Zielsprache bekannt (typescript, rust, python, css)
 - `path_pattern` nutzen wenn Bereich bekannt (src/**/*.ts)
 - `limit`: gezielt 3-5, standard 10, breit 15-20
 
-## 8. Ergebnis-Bewertung
+## 9. Ergebnis-Bewertung
 
 | Score | Bedeutung |
 |-------|-----------|
@@ -209,7 +266,7 @@ Haiku/Sonnet koennen das nicht zuverlaessig.
 | 0.60 - 0.75 | Vermutlich relevant |
 | < 0.60 | Rauschen → Query umformulieren |
 
-## 9. Projekt-Wissen speichern
+## 10. Projekt-Wissen speichern
 
 | Was | Kategorie | Name |
 |-----|-----------|------|
@@ -222,7 +279,7 @@ Haiku/Sonnet koennen das nicht zuverlaessig.
 - `category: "rules"` wird Agenten beim Onboarding gezeigt
 - KEINE .md-Dateien — alles in Synapse Memories
 
-## 10. Context-Handoff
+## 11. Context-Handoff
 
 Der Context-Verbrauch wird per PostToolUse-Hook ueberwacht (95% gelb, 98% rot).
 
@@ -255,7 +312,7 @@ bash ~/.claude/skills/synapse-nutzung/scripts/context-handoff.sh \
 4. Handoff-Thought loeschen
 5. Arbeit fortsetzen
 
-## 11. .synapseignore Hygiene
+## 12. .synapseignore Hygiene
 
 Gehoert NICHT in den Index:
 - `docs/` (Scores hoeher als Code)

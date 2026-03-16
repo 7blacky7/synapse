@@ -29,3 +29,5 @@ export {
 export type { ChatMessage, AgentSession } from './chat.js';
 export { addTechDoc, searchTechDocs, getDocsForFile, deleteTechDoc } from './tech-docs.js';
 export type { TechDoc, TechDocType } from './tech-docs.js';
+export { emitEvent, acknowledgeEvent, getPendingEvents, getUnackedCount } from './events.js';
+export type { AgentEvent, EventAck, EventType, EventPriority } from './events.js';

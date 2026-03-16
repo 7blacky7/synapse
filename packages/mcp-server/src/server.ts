@@ -61,10 +61,20 @@ import {
   updateMemoryTool,
   updateThoughtTool,
   updateProposalTool,
+  searchMediaWrapper,
+  indexMediaWrapper,
+  emitEventTool,
+  acknowledgeEventTool,
+  getPendingEventsTool,
 } from './tools/index.js';
+
+import { getPendingEvents } from '@synapse/core';
 
 /** Tracking: Wann hat ein Agent zuletzt Chat gelesen? */
 const lastChatRead = new Map<string, string>();
+
+/** Tracking: Wie oft hat ein Agent ein kritisches Event ignoriert? */
+const eventIgnoreCount = new Map<string, number>();
 
 /** Zählt ungelesene Chat-Nachrichten für einen Agenten */
 async function getUnreadChatCount(
@@ -103,6 +113,39 @@ async function getUnreadChatCount(
       broadcasts,
       dms: Array.from(dmCounts.entries()).map(([from, count]) => ({ from, count })),
     };
+  } catch {
+    return null;
+  }
+}
+
+/** Prüft ausstehende Events für einen Agenten und baut Hint-Text */
+async function getUnackedEventHint(
+  agentId: string,
+  project: string
+): Promise<{ events: Array<{id: number, eventType: string, priority: string, payload: string | null}>, hint: string } | null> {
+  try {
+    const pending = await getPendingEvents(project, agentId);
+    if (!pending || pending.length === 0) return null;
+
+    const events = pending.map(e => ({
+      id: e.id,
+      eventType: e.eventType,
+      priority: e.priority,
+      payload: e.payload,
+    }));
+
+    const hintParts: string[] = [];
+    for (const e of pending) {
+      if (e.priority === 'critical') {
+        hintParts.push(`⛔ PFLICHT-EVENT: ${e.eventType} von ${e.sourceId}: ${e.payload}. Reagiere SOFORT mit acknowledge_event(event_id: ${e.id}, agent_id: "${agentId}")`);
+      } else if (e.priority === 'high') {
+        hintParts.push(`⚠️ EVENT: ${e.eventType} von ${e.sourceId}: ${e.payload}. Bitte mit acknowledge_event(event_id: ${e.id}, agent_id: "${agentId}") bestaetigen.`);
+      } else {
+        hintParts.push(`📋 EVENT: ${e.eventType}: ${e.payload}. acknowledge_event(event_id: ${e.id}, agent_id: "${agentId}")`);
+      }
+    }
+
+    return { events, hint: hintParts.join('\n') };
   } catch {
     return null;
   }
@@ -367,6 +410,64 @@ export function createServer(): Server {
             },
           },
           required: ['query', 'project'],
+        },
+      },
+      // ===== MEDIA-SUCHE =====
+      {
+        name: 'search_media',
+        description: 'Cross-Modal Media-Suche: Findet Bilder und Videos per Text-Query (nutzt Google Gemini Embedding 2). Durchsucht die projekt-spezifische Media-Collection.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            query: {
+              type: 'string',
+              description: 'Suchanfrage in natuerlicher Sprache (z.B. "login form screenshot", "dashboard navigation video")',
+            },
+            project: {
+              type: 'string',
+              description: 'Projekt-Name',
+            },
+            agent_id: {
+              type: 'string',
+              description: 'Agent-ID fuer Onboarding.',
+            },
+            media_type: {
+              type: 'string',
+              enum: ['image', 'video'],
+              description: 'Optional: Nur Bilder oder nur Videos',
+            },
+            limit: {
+              type: 'number',
+              description: 'Maximale Anzahl Ergebnisse (Standard: 10)',
+            },
+          },
+          required: ['query', 'project'],
+        },
+      },
+      {
+        name: 'index_media',
+        description: 'Indexiert Bilder und Videos in die projekt-spezifische Media-Collection (Google Gemini Embedding 2). Akzeptiert einzelne Dateien oder Verzeichnisse. Bereits indexierte Dateien werden uebersprungen.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            path: {
+              type: 'string',
+              description: 'Absoluter Pfad zu einer Datei oder einem Verzeichnis mit Media-Dateien',
+            },
+            project: {
+              type: 'string',
+              description: 'Projekt-Name',
+            },
+            agent_id: {
+              type: 'string',
+              description: 'Agent-ID fuer Onboarding.',
+            },
+            recursive: {
+              type: 'boolean',
+              description: 'Bei Verzeichnissen: rekursiv durchsuchen (Standard: true)',
+            },
+          },
+          required: ['path', 'project'],
         },
       },
       // ===== PROJEKT-PLANUNG =====
@@ -1121,6 +1222,50 @@ export function createServer(): Server {
         },
       },
 
+      // ===== AGENTEN-EVENTS =====
+      {
+        name: 'emit_event',
+        description: 'Sendet ein Event an Agenten. Event-Typen: WORK_STOP, CRITICAL_REVIEW, ARCH_DECISION, TEAM_DISCUSSION, ANNOUNCEMENT. Priority: critical, high, normal. Scope: \'all\' oder \'agent:<id>\'.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            project: { type: 'string', description: 'Projekt-Name' },
+            event_type: { type: 'string', description: 'Event-Typ: WORK_STOP, CRITICAL_REVIEW, ARCH_DECISION, TEAM_DISCUSSION, ANNOUNCEMENT' },
+            priority: { type: 'string', description: 'Prioritaet: critical, high, normal' },
+            scope: { type: 'string', description: 'Empfaenger: "all" oder "agent:<id>" (Standard: "all")' },
+            source_id: { type: 'string', description: 'Absender Agent-ID' },
+            payload: { type: 'string', description: 'Optionaler JSON-Payload mit weiteren Infos' },
+            requires_ack: { type: 'boolean', description: 'Ob Agenten quittieren muessen (Standard: true)' },
+          },
+          required: ['project', 'event_type', 'priority', 'source_id'],
+        },
+      },
+      {
+        name: 'acknowledge_event',
+        description: 'Bestaetigt ein Event. PFLICHT bei Events mit requires_ack=true.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            event_id: { type: 'number', description: 'Event-ID' },
+            agent_id: { type: 'string', description: 'Eigene Agent-ID' },
+            reaction: { type: 'string', description: 'Optionale Reaktion/Kommentar zum Event' },
+          },
+          required: ['event_id', 'agent_id'],
+        },
+      },
+      {
+        name: 'get_pending_events',
+        description: 'Holt unbestaetigte Events fuer einen Agenten.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            project: { type: 'string', description: 'Projekt-Name' },
+            agent_id: { type: 'string', description: 'Eigene Agent-ID' },
+          },
+          required: ['project', 'agent_id'],
+        },
+      },
+
       // ===== PROJEKT-IDEEN =====
       {
         name: 'save_project_idea',
@@ -1192,6 +1337,16 @@ export function createServer(): Server {
         };
       }
 
+      // Pending Events anzeigen (VOR Chat)
+      const pendingEvents = await getUnackedEventHint(agentId, projectName);
+      if (pendingEvents) {
+        enhanced.pendingEvents = {
+          count: pendingEvents.events.length,
+          events: pendingEvents.events,
+          hint: pendingEvents.hint,
+        };
+      }
+
       // Ungelesene Chat-Nachrichten anzeigen
       const unread = await getUnreadChatCount(agentId, projectName);
       if (unread) {
@@ -1202,6 +1357,32 @@ export function createServer(): Server {
           ...unread,
           hint: `📨 Ungelesene Nachrichten: ${parts.join(', ')}. Lies mit: get_chat_messages(project: "${projectName}", agent_id: "${agentId}")`,
         };
+      }
+
+      // Eskalation: Agent ignoriert kritische Events
+      if (pendingEvents) {
+        const hasCritical = pendingEvents.events.some(e => e.priority === 'critical');
+        const hasHigh = pendingEvents.events.some(e => e.priority === 'high');
+
+        if (hasCritical || hasHigh) {
+          const key = agentId;
+          const count = (eventIgnoreCount.get(key) || 0) + 1;
+          eventIgnoreCount.set(key, count);
+
+          if (count >= 3) {
+            // Eskalation an Koordinator
+            try {
+              const eventList = pendingEvents.events.map(e => `${e.eventType}(${e.priority})`).join(', ');
+              await sendChatMessage(
+                projectName,
+                'system',
+                `⚠️ ESKALATION: Agent "${agentId}" ignoriert ${pendingEvents.events.length} Event(s) seit ${count} Tool-Calls: ${eventList}`,
+                'koordinator'
+              );
+              console.error(`[Synapse] Eskalation: ${agentId} ignoriert Events seit ${count} Calls`);
+            } catch { /* Eskalation darf nicht crashen */ }
+          }
+        }
       }
 
       return { content: [{ type: 'text', text: JSON.stringify(enhanced, null, 2) }] };
@@ -1331,6 +1512,25 @@ export function createServer(): Server {
               fileType: args?.file_type as string | undefined,
               limit: args?.limit as number | undefined,
             }
+          );
+          return withOnboarding(result);
+        }
+
+        case 'search_media': {
+          const result = await searchMediaWrapper(
+            args?.query as string,
+            args?.project as string,
+            args?.media_type as 'image' | 'video' | undefined,
+            args?.limit as number | undefined
+          );
+          return withOnboarding(result);
+        }
+
+        case 'index_media': {
+          const result = await indexMediaWrapper(
+            args?.path as string,
+            args?.project as string,
+            args?.recursive as boolean | undefined
           );
           return withOnboarding(result);
         }
@@ -1580,6 +1780,41 @@ export function createServer(): Server {
 
         case 'list_chat_agents': {
           const result = await listAgents(args?.project as string);
+          return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+        }
+
+        // ===== AGENTEN-EVENTS =====
+        case 'emit_event': {
+          const result = await emitEventTool(
+            args?.project as string,
+            args?.event_type as string,
+            args?.priority as string,
+            (args?.scope as string | undefined) ?? 'all',
+            args?.source_id as string,
+            args?.payload as string | undefined,
+            args?.requires_ack as boolean | undefined
+          );
+          return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+        }
+
+        case 'acknowledge_event': {
+          const result = await acknowledgeEventTool(
+            args?.event_id as number,
+            args?.agent_id as string,
+            args?.reaction as string | undefined
+          );
+          // Eskalations-Counter zuruecksetzen bei erfolgreichem Ack
+          if (result.success) {
+            eventIgnoreCount.delete(args?.agent_id as string);
+          }
+          return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+        }
+
+        case 'get_pending_events': {
+          const result = await getPendingEventsTool(
+            args?.project as string,
+            args?.agent_id as string
+          );
           return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
         }
 
