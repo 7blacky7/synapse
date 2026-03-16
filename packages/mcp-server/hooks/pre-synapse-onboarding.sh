@@ -80,8 +80,9 @@ if [ "$HOOK_EVENT" != "SubagentStart" ]; then
 # AGENT (SubagentStart)
 # ============================================
 else
-    # Automatische Agent-ID generieren
-    AGENT_ID="agent-$(date +%s | tail -c 6)"
+    # Agent-ID: Claude Code liefert agent_id im Hook-Input, Fallback auf Timestamp-ID
+    CLAUDE_AGENT_ID=$(echo "$INPUT" | jq -r '.agent_id // empty')
+    AGENT_ID="${CLAUDE_AGENT_ID:-agent-$(date +%s | tail -c 6)}"
 
     MSG="=== SYNAPSE AGENT-ONBOARDING ===\n"
     MSG+="Projekt: ${PROJECT_NAME} | Deine ID: ${AGENT_ID}\n\n"

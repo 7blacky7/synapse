@@ -2,8 +2,8 @@
 # chat-notify.sh — PostToolUse Hook: Zeigt ungelesene Chat-Nachrichten
 #
 # Erkennt automatisch den aktiven Agenten:
-# - Bei Synapse-Tool-Calls: agent_id aus tool_input extrahieren
-# - Sonst: letzte bekannte agent_id aus /tmp/synapse-current-agent
+# - Primaer: agent_id / session_id aus Claude Code Hook-Input
+# - Fallback: agent_id aus Synapse MCP-Tool tool_input
 #
 # Installation (Claude Code settings.json → hooks.PostToolUse):
 #   { "type": "command", "command": "bash ~/dev/synapse/scripts/chat-notify.sh" }
@@ -15,7 +15,6 @@ CHECK_INTERVAL="${SYNAPSE_CHAT_INTERVAL:-15}"
 DB_URL="${SYNAPSE_DB_URL:-}"
 if [[ -z "$DB_URL" ]]; then exit 0; fi
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-CURRENT_AGENT_FILE="/tmp/synapse-current-agent"
 
 # stdin → Tool-Name + agent_id extrahieren
 INPUT=$(cat 2>/dev/null || echo '{}')
