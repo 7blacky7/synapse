@@ -1,6 +1,20 @@
 /**
- * Synapse Core - Text Chunking
- * Teilt grosse Texte in kleinere Chunks fuer Embeddings
+ * MODUL: Text Chunking
+ * ZWECK: Teilt grosse Texte in ueberlappende Chunks fuer die Embedding-Pipeline
+ *
+ * INPUT:
+ *   - text: string - Vollstaendiger Quelltext
+ *   - options?.chunkSize: number - Maximale Zeichenlaenge pro Chunk (Standard: aus Config)
+ *   - options?.overlap: number - Ueberlappung zwischen aufeinanderfolgenden Chunks in Zeichen
+ *
+ * OUTPUT:
+ *   - TextChunk[]: Array mit { content, index, total, lineStart, lineEnd }
+ *     — Zeilennummern sind 1-basiert und zeigen auf den Quelltext
+ *
+ * NEBENEFFEKTE: keine
+ *
+ * ABHAENGIGKEITEN:
+ *   - ../config.js (intern) - chunkSize und chunkOverlap Konfiguration
  */
 
 import { getConfig } from '../config.js';
