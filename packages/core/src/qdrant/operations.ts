@@ -1,6 +1,24 @@
 /**
- * Synapse Core - Qdrant CRUD Operationen
- * Insert, Search, Delete fuer Vektoren
+ * MODUL: Qdrant CRUD Operationen
+ * ZWECK: Insert, Search, Delete und Scroll von Vektoren in Qdrant Collections.
+ *
+ * INPUT:
+ *   - collection: string - Name der Qdrant-Collection
+ *   - vector: number[] - Embedding-Vektor
+ *   - payload: Record - Beliebige Metadaten zum Vektor
+ *   - filter: Record - Qdrant-Filter-Objekt (must/should/must_not)
+ *   - limit: number - Max. Anzahl Ergebnisse
+ *   - id?: string - Optionale UUID; wird sonst generiert
+ *
+ * OUTPUT:
+ *   - string: ID des eingefuegten Vektors
+ *   - string[]: IDs bei Batch-Insert
+ *   - SearchResult<T>[]: Semantische Suchergebnisse mit Score und Payload
+ *   - Array<{id, payload}>: Scroll-Ergebnisse (gefiltert, ohne Score)
+ *
+ * NEBENEFFEKTE:
+ *   - Qdrant: Schreibt, liest und loescht Punkte in den angegebenen Collections
+ *   - Kein PostgreSQL; kein Embedding (Vektoren muessen fertig uebergeben werden)
  */
 
 import { v4 as uuidv4 } from 'uuid';

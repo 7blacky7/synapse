@@ -1,6 +1,24 @@
 /**
- * Synapse Core - Qdrant Collection Management
- * Erstellt und verwaltet Qdrant Collections
+ * MODUL: Qdrant Collection Management
+ * ZWECK: Erstellt, prueft und loescht Qdrant Collections — inkl. Dimensions-Validierung.
+ *
+ * INPUT:
+ *   - name: string - Collection-Name
+ *   - vectorSize?: number - Vektor-Dimension (Standard: aus getEmbeddingDimension())
+ *   - project: string - Projektname fuer projekt-spezifische Collections
+ *
+ * OUTPUT:
+ *   - void: Collection ist nach ensureCollection() garantiert vorhanden
+ *   - boolean: Existenz-Check
+ *   - number | null: Vektor-Dimension einer bestehenden Collection
+ *   - string[]: Liste aller Collection-Namen
+ *   - {pointsCount, vectorsCount} | null: Collection-Statistiken
+ *
+ * NEBENEFFEKTE:
+ *   - Qdrant: Erstellt oder loescht Collections
+ *   - Warnt bei Dimensions-Mismatch (altes Modell vs. neue Embedding-Dimension)
+ *   - ensureAllCollections() erstellt globale tech_docs Collection
+ *   - ensureProjectCollections() erstellt alle 7 Projekt-Collections auf einmal
  */
 
 import { getQdrantClient } from './client.js';
