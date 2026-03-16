@@ -1,8 +1,24 @@
 /**
- * Synapse Core - Context7 REST-API Integration
- * Holt Framework-Dokumentation ueber die Context7 API (https://context7.com/api/v2)
+ * MODUL: Context7 Client
+ * ZWECK: REST-API Integration fuer Framework-Dokumentation von https://context7.com/api/v2
  *
- * Endpunkte:
+ * INPUT:
+ *   - framework: string - Bibliotheks-Name (z.B. "react", "express")
+ *   - libraryId?: string - Direkte Context7 Library-ID (ueberspringt Suche)
+ *   - maxTokens?: number - Maximale Tokens fuer den Docs-Abruf
+ *
+ * OUTPUT:
+ *   - string | null: resolveLibraryId() — Context7 Library-ID oder null
+ *   - Context7Doc[]: fetchDocs() — Array mit { framework, version?, content, url?, title? }
+ *
+ * NEBENEFFEKTE:
+ *   - Netzwerk: GET /v2/libs/search und GET /v2/context (context7.com)
+ *   - Logs: Konsolenausgabe bei Fehlern und Cache-Hits
+ *
+ * ABHAENGIGKEITEN:
+ *   - ../config.js (intern) - context7.apiKey (optional, lockert Rate-Limits)
+ *
+ * API-Endpunkte:
  *   /v2/libs/search — Library-Name → Library-ID resolven
  *   /v2/context     — Docs fuer eine Library-ID abrufen
  */
