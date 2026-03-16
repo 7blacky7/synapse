@@ -1,6 +1,18 @@
 /**
- * Synapse MCP - Statistics Tools
- * Index-Statistiken und Projekt-Übersicht
+ * MODUL: Statistik-Tools
+ * ZWECK: Index-Statistiken und detaillierte Aufschluesselung aller Qdrant-Collections eines Projekts.
+ *
+ * INPUT:
+ *   - project: string - Projekt-Identifikator
+ *
+ * OUTPUT:
+ *   - getIndexStats: IndexStats mit totalVectors, aufgeteilt nach code/media/thoughts/memories
+ *   - getDetailedStats: Detailansicht mit byFileType, bySource, byCategory
+ *   - message: string - Zusammenfassung
+ *
+ * NEBENEFFEKTE:
+ *   - Qdrant: Liest aus project_<name>_code, project_<name>_media, project_thoughts, synapse_memories
+ *   - Kein Schreiben, reine Leseoperation
  */
 
 import { getProjectStats } from '@synapse/core';
