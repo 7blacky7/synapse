@@ -166,9 +166,9 @@ done
 
 # Context-Message bauen
 if [ "$TOTAL_DOCS" -gt 0 ]; then
-  CONTEXT_MSG="=== SYNAPSE TECH-DOCS ===\nErkannte Frameworks: ${FW_LIST}${DOCS_OUTPUT}\n\nMehr Docs: search_tech_docs(query: \"...\") oder /tech-docs-researcher fuer neue Recherche."
+  CONTEXT_MSG="=== SYNAPSE TECH-DOCS ===\nErkannte Frameworks: ${FW_LIST}${DOCS_OUTPUT}\n\nMehr Context: search_tech_docs(query: \"...\", scope: \"all\") fuer globale + projekt-spezifische Docs."
 else
-  CONTEXT_MSG="=== SYNAPSE TECH-DOCS ===\nErkannte Frameworks: ${FW_LIST}\n\nKEINE DOCS in Synapse fuer diese Frameworks gefunden!\n\nIndexiere mit: search_tech_docs(query: \"${FW_LIST}\") — laedt automatisch von Context7.\nOder: /tech-docs-researcher fuer ausfuehrliche Recherche."
+  CONTEXT_MSG="=== SYNAPSE TECH-DOCS ===\nErkannte Frameworks: ${FW_LIST}\n\nContext7-Docs verfuegbar! Abrufen mit:\n  search_tech_docs(query: \"${FW_LIST}\", scope: \"all\")\nLaedt automatisch von Context7 und indexiert global."
 fi
 
 # Output als JSON
