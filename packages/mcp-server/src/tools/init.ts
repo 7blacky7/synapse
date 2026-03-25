@@ -97,41 +97,7 @@ async function tryReactivateProject(
   name: string,
   agentId?: string
 ): Promise<InitResult | null> {
-  // Watcher bereits aktiv? Nur Status aktualisieren + Agent-Check
-  if (activeWatchers.has(name)) {
-    updateLastAccess(projectPath);
-
-    // Agent-Onboarding auch bei aktivem Watcher
-    let isFirstVisit = false;
-    let rules: RuleMemory[] | undefined;
-
-    if (agentId) {
-      isFirstVisit = await registerAgent(name, agentId, SERVER_INSTANCE_ID);
-      if (isFirstVisit) {
-        try {
-          const ruleMemories = await getRulesForNewAgent(name);
-          if (ruleMemories.length > 0) {
-            rules = ruleMemories.map(m => ({ name: m.name, content: m.content }));
-          }
-        } catch { /* ignore */ }
-      }
-    }
-
-    const rulesHint = rules && rules.length > 0
-      ? `\n\n📋 PROJEKT-REGELN (bitte beachten!):\n${rules.map(r => `- ${r.name}`).join('\n')}`
-      : '';
-
-    return {
-      success: true,
-      project: name,
-      path: projectPath,
-      message: `Projekt "${name}" ist bereits aktiv${rulesHint}`,
-      isFirstVisit,
-      rules,
-    };
-  }
-
-  // Persistenten Status pruefen
+  // Persistenten Status pruefen (activeWatchers-Check passiert bereits in initProjekt)
   const status = getProjectStatus(projectPath);
   if (!status || status.status !== 'active') {
     return null; // Keine Reaktivierung moeglich
@@ -218,7 +184,40 @@ export async function initProjekt(
   // Projekt-Name aus Pfad ableiten wenn nicht angegeben
   const name = projectName || path.basename(projectPath);
 
-  // Synapse initialisieren (Qdrant, Embeddings) – mit Projektname fuer gezielte Migration
+  // Fast-Path: FileWatcher laeuft bereits → initSynapse komplett ueberspringen
+  if (activeWatchers.has(name)) {
+    updateLastAccess(projectPath);
+
+    let isFirstVisit = false;
+    let rules: RuleMemory[] | undefined;
+
+    if (agentId) {
+      isFirstVisit = await registerAgent(name, agentId, SERVER_INSTANCE_ID);
+      if (isFirstVisit) {
+        try {
+          const ruleMemories = await getRulesForNewAgent(name);
+          if (ruleMemories.length > 0) {
+            rules = ruleMemories.map(m => ({ name: m.name, content: m.content }));
+          }
+        } catch { /* ignore */ }
+      }
+    }
+
+    const rulesHint = rules && rules.length > 0
+      ? `\n\n📋 PROJEKT-REGELN (bitte beachten!):\n${rules.map(r => `- ${r.name}`).join('\n')}`
+      : '';
+
+    return {
+      success: true,
+      project: name,
+      path: projectPath,
+      message: `Projekt "${name}" ist bereits aktiv${rulesHint}`,
+      isFirstVisit,
+      rules,
+    };
+  }
+
+  // Cold-Start: Synapse initialisieren (Qdrant, Embeddings) – mit Projektname fuer gezielte Migration
   const initialized = await initSynapse(name);
 
   if (!initialized) {
@@ -230,7 +229,7 @@ export async function initProjekt(
     };
   }
 
-  // Pruefen ob bereits aktiv (Memory oder persistenter Status)
+  // Persistenten Status pruefen (Watcher war nicht aktiv, aber Projekt war vorher initialisiert)
   const reactivated = await tryReactivateProject(projectPath, name, agentId);
   if (reactivated) {
     return reactivated;
