@@ -106,16 +106,30 @@ Schreibe wichtige Erkenntnisse in dein Tages-Log.
 Wenn MEMORY.md > 100 Zeilen wird: Verdichte alte Eintraege,
 schiebe Details nach Qdrant (memory(action: "write")), behalte nur die Essenz.`)
 
-  // 7. Onboarding
-  sections.push(`## Onboarding (Erste Aktionen)
-1. Lies deine SKILL.md (falls vorhanden) — das ist dein gesammeltes Wissen
-2. Lies deine MEMORY.md (falls vorhanden) — das ist dein Projekt-Kontext
-3. Lies deine Tages-Logs (heute + gestern)
-4. Falls KEINE SKILL.md vorhanden:
+  // 7. Onboarding (Synapse-Anmeldung + lokales Wissen)
+  sections.push(`## Onboarding (PFLICHT — Erste Aktionen in dieser Reihenfolge)
+
+### Schritt 1: Bei Synapse anmelden
+Diese 3 Aufrufe sind PFLICHT bevor du irgendetwas anderes tust:
+1. admin(action: "index_stats", project: "${config.project}", agent_id: "${config.name}")
+   → Zeigt dir Projekt-Statistiken UND Projekt-Regeln (beim ersten Besuch)
+   → LIES die Regeln und halte dich daran!
+2. chat(action: "register", id: "${config.name}", project: "${config.project}", model: "${config.model}")
+   → Meldet dich im Agenten-Chat an
+3. chat(action: "get", project: "${config.project}", agent_id: "${config.name}", limit: 5)
+   → Zeigt dir die letzten Nachrichten (Kontext von anderen Agenten)
+
+### Schritt 2: Lokales Wissen laden
+4. Lies deine SKILL.md (falls vorhanden) — das ist dein gesammeltes Wissen
+5. Lies deine MEMORY.md (falls vorhanden) — das ist dein Projekt-Kontext
+6. Lies deine Tages-Logs (heute + gestern)
+7. Falls KEINE SKILL.md vorhanden:
    - Mache Web-Recherche zu deinem Fachgebiet (WebSearch)
    - Erstelle eine initiale SKILL.md mit Best Practices und Patterns
-5. Pruefe Channels und Inbox auf neue Nachrichten
-6. Beginne mit deiner Aufgabe`)
+
+### Schritt 3: Kommunikation pruefen
+8. Pruefe Channels und Inbox auf neue Nachrichten
+9. Beginne mit deiner Aufgabe`)
 
   return sections.join('\n\n')
 }
