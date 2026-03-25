@@ -121,6 +121,22 @@ export async function deleteVector(
 }
 
 /**
+ * Loescht mehrere Vektoren anhand ihrer IDs (Batch)
+ */
+export async function deleteVectors(
+  collection: string,
+  ids: string[]
+): Promise<void> {
+  if (ids.length === 0) return;
+  const client = getQdrantClient();
+
+  await client.delete(collection, {
+    wait: true,
+    points: ids,
+  });
+}
+
+/**
  * Loescht Vektoren anhand eines Filters
  */
 export async function deleteByFilter(
