@@ -106,7 +106,7 @@ Jedes Projekt bekommt eigene Qdrant-Collections: `project_{name}_code`, `project
 
 ---
 
-## 🛠️ MCP-Tools (13 konsolidierte Tools, 72 Actions)
+## 🛠️ MCP-Tools (13 konsolidierte Tools, 82 Actions)
 
 ### 📦 Admin & Projekt-Management (`admin`)
 
@@ -307,6 +307,18 @@ Spezialisten sind **persistente Claude-Agenten** die als detached Subprozesse da
 | `status` | FileWatcher-Status prüfen |
 | `start` | FileWatcher starten |
 | `stop` | FileWatcher stoppen |
+
+---
+
+### 🔄 Array/Batch-Parameter
+
+Viele Actions unterstützen jetzt **Array-Input** (backward compatible). Skalare Input geben unveranderte Response, Array-Input gibt `{ results[], errors[], count }` zurück.
+
+**Phase 1 — Read-only Batch:** `specialist.status`, `thought.get`, `memory.read`, `proposal.get`, `docs.get_for_file`, `memory.find_for_file` (Promise.allSettled)
+
+**Phase 2 — Steuerungs Batch:** `specialist.stop/wake`, `event.ack`, `channel.join/leave`, `chat.send` (Multicast), `chat.inbox_send`, `proposal.update_status` (Promise.allSettled)
+
+**Phase 3 — Batch-Delete mit Safeguards:** `thought.delete`, `memory.delete`, `proposal.delete` — mit `dry_run` (Preview), `max_items` (Limit, Default 10), Audit-Logging
 
 ---
 
