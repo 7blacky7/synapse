@@ -101,14 +101,14 @@ export const chatTool: ConsolidatedTool = {
           const regCutoffDate = str(args, 'cutoff_date');
 
           const result = await registerChatAgent(regId, regProject, regModel, regCutoffDate);
-          return { success: true, action: 'register', ...result };
+          return { ...result, action: 'register' };
         }
 
         // ===== unregister =====
         case 'unregister': {
           const unregId = reqStr(args, 'id');
           const result = await unregisterChatAgent(unregId);
-          return { success: true, action: 'unregister', ...result };
+          return { ...result, action: 'unregister' };
         }
 
         // ===== register_batch =====
@@ -120,7 +120,7 @@ export const chatTool: ConsolidatedTool = {
           const batchProject = reqStr(args, 'project');
 
           const result = await registerChatAgentsBatch(batchAgents, batchProject);
-          return { success: true, action: 'register_batch', ...result };
+          return { ...result, action: 'register_batch' };
         }
 
         // ===== unregister_batch =====
@@ -131,7 +131,7 @@ export const chatTool: ConsolidatedTool = {
           }
 
           const result = await unregisterChatAgentsBatch(batchIds);
-          return { success: true, action: 'unregister_batch', ...result };
+          return { ...result, action: 'unregister_batch' };
         }
 
         // ===== send =====
@@ -142,7 +142,7 @@ export const chatTool: ConsolidatedTool = {
           const sendRecipientId = str(args, 'recipient_id');
 
           const result = await sendChatMessage(sendProject, sendSenderId, sendContent, sendRecipientId);
-          return { success: true, action: 'send', ...result };
+          return { ...result, action: 'send' };
         }
 
         // ===== get =====
@@ -159,14 +159,14 @@ export const chatTool: ConsolidatedTool = {
             senderId: getSenderIdFilter,
             limit: getLimit,
           });
-          return { success: true, action: 'get', ...result };
+          return { ...result, action: 'get' };
         }
 
         // ===== list =====
         case 'list': {
           const listProject = reqStr(args, 'project');
           const result = await listAgents(listProject);
-          return { success: true, action: 'list', ...result };
+          return { ...result, action: 'list' };
         }
 
         // ===== inbox_send =====

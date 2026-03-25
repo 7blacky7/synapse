@@ -129,7 +129,7 @@ const projectTool: ConsolidatedTool = {
           const project = reqStr(args, 'project');
           const path = str(args, 'path');
 
-          const { readStatus } = await import('@synapse/core');
+          const { readStatus } = await import('@synapse/agents');
           const { heartbeatController } = await import('@synapse/agents');
           const { getProjectPath } = await import('../index.js');
 

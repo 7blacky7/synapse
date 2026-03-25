@@ -22,7 +22,6 @@ import { join } from 'node:path';
 import {
   startFileWatcher,
   handleFileEvent,
-  cleanupProjekt,
 } from '@synapse/core';
 import type { FileWatcherInstance } from '@synapse/core';
 
@@ -60,12 +59,7 @@ try {
     onFileChange: handleFileEvent,
     onError: (error) => console.error(`[Watcher-Daemon] FileWatcher Fehler:`, error),
     onIgnoreChange: async () => {
-      try {
-        const result = await cleanupProjekt(projectPath, projectName);
-        console.error(`[Watcher-Daemon] .synapseignore Cleanup: ${result.deleted} geloescht`);
-      } catch (err) {
-        console.error(`[Watcher-Daemon] Cleanup Fehler:`, err);
-      }
+      console.error(`[Watcher-Daemon] .synapseignore geaendert — Cleanup erfolgt bei naechstem init_projekt`);
     },
   });
   console.error(`[Watcher-Daemon] FileWatcher gestartet fuer "${projectName}"`);

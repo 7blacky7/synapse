@@ -96,10 +96,10 @@ export const specialistTool: ConsolidatedTool = {
           enum: ['regeln', 'fehler', 'patterns'],
           description: 'Abschnitt der SKILL.md (erforderlich für: update_skill)',
         },
-        action: {
+        skill_action: {
           type: 'string',
           enum: ['add', 'remove'],
-          description: 'Hinzufügen oder entfernen (erforderlich für: update_skill)',
+          description: 'Hinzufuegen oder entfernen (erforderlich fuer: update_skill)',
         },
         content: {
           type: 'string',
@@ -172,7 +172,7 @@ export const specialistTool: ConsolidatedTool = {
         const name = reqStr(args, 'name');
         const projectPath = reqStr(args, 'project_path');
         const section = reqStr(args, 'section') as 'regeln' | 'fehler' | 'patterns';
-        const skillAction = reqStr(args, 'action') as 'add' | 'remove';
+        const skillAction = reqStr(args, 'skill_action') as 'add' | 'remove';
         const content = reqStr(args, 'content');
 
         return await updateSpecialistSkillTool(name, projectPath, section, skillAction, content);
