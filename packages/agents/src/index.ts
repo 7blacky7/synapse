@@ -7,3 +7,5 @@ export * from './status.js'
 export * from './channels.js'
 export * from './inbox.js'
 export * from './process.js'
+// Note: wrapper.ts is a standalone binary (synapse-agent-wrapper), not re-exported here.
+// It runs as its own process via the "bin" entry in package.json.
