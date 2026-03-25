@@ -87,18 +87,20 @@ Datei gespeichert
           → Qdrant Vektor-DB (Upsert mit Metadaten)
 ```
 
-### Dual-Storage (mit bekannten Inkonsistenzen)
+### Dual-Storage (Write-Primary/Read-Primary, Eventual Consistency)
 
-- **PostgreSQL** — primärer Schreibspeicher (aber Reads sind NICHT konsistent garantiert)
-- **Qdrant** — sekundärer Vektor-Index mit eigenständigen Reads
+- **PostgreSQL** — **Write-Primary + Source of Truth** (Schreibvorgänge: Create, Update, Delete)
+- **Qdrant** — **Read-Primary** (semantische Suche via Vektor-Index)
+
+**Konsistenz-Modell:** Eventual Consistency (best-effort, kein Rollback bei Partial-Failure)
 
 **Schreib-Flow:** PG first → Qdrant second (Ausnahme: code.ts schreibt Qdrant first)
 **Fehlertoleranz:** Beide Writes in separaten try-catch, warning-Feld bei Partial-Failure
 
-**⚠️ KRITISCH:** Reads kommen je nach Operation aus verschiedenen Stores:
-- `get*/list*` Operationen lesen **Qdrant**
-- `update*` Operationen lesen **PostgreSQL**
-- **Folge:** Bei Partial-Failure entstehen Geister-Datensätze (unsichtbar oder nicht-editierbar)
+**⚠️ ARCHITEKTUR-PROBLEM:** Reads kommen je nach Operation aus verschiedenen Stores:
+- `get*/list*` Operationen lesen **Qdrant** (Read-Primary)
+- `update*/delete*` Operationen lesen **PostgreSQL** (Write-Primary)
+- **Konsequenz:** Bei Partial-Failure entstehen Geister-Datensätze (unsichtbar oder nicht-editierbar)
 
 Jedes Projekt bekommt eigene Qdrant-Collections: `project_{name}_code`, `project_{name}_thoughts`, etc.
 
