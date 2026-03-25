@@ -16,6 +16,7 @@ import { ConsolidatedTool, str, reqStr, bool, num } from './types.js';
 import {
   writeMemory,
   readMemory,
+  readMemories,
   listMemories,
   deleteMemory,
   readMemoryWithCode,
@@ -40,8 +41,11 @@ const memoryTool: ConsolidatedTool = {
           description: 'Projekt-Name (erforderlich für alle Aktionen)',
         },
         name: {
-          type: 'string',
-          description: 'Memory-Name (erforderlich für read, read_with_code, delete, update)',
+          oneOf: [
+            { type: 'string' },
+            { type: 'array', items: { type: 'string' }, minItems: 1 },
+          ],
+          description: 'Memory-Name (erforderlich für read, read_with_code, delete, update). Array erlaubt fuer: read',
         },
         content: {
           type: 'string',
@@ -62,8 +66,11 @@ const memoryTool: ConsolidatedTool = {
           description: 'Agent-ID für Onboarding (optional)',
         },
         file_path: {
-          type: 'string',
-          description: 'Dateipfad (erforderlich für find_for_file)',
+          oneOf: [
+            { type: 'string' },
+            { type: 'array', items: { type: 'string' }, minItems: 1 },
+          ],
+          description: 'Dateipfad (erforderlich für find_for_file). Array erlaubt fuer: find_for_file',
         },
         limit: {
           type: 'number',
@@ -113,6 +120,14 @@ const memoryTool: ConsolidatedTool = {
         }
 
         case 'read': {
+          // Array-Support: Mehrere Memories in einem Call
+          if (Array.isArray(args.name)) {
+            const names = args.name as string[];
+            const result = await readMemories(project, names);
+            return result;
+          }
+
+          // Bestehend: Einzelnes Memory
           const name = reqStr(args, 'name');
           const result = await readMemory(project, name);
           return result;
@@ -177,6 +192,22 @@ const memoryTool: ConsolidatedTool = {
         }
 
         case 'find_for_file': {
+          // Array-Support: Mehrere Dateien in einem Call
+          if (Array.isArray(args.file_path)) {
+            const filePaths = args.file_path as string[];
+            const settled = await Promise.allSettled(
+              filePaths.map(fp => findMemoriesForFile(project, fp))
+            );
+            const results: Array<Record<string, unknown>> = [];
+            const errors: string[] = [];
+            for (const r of settled) {
+              if (r.status === 'fulfilled') results.push(r.value as Record<string, unknown>);
+              else errors.push(String(r.reason));
+            }
+            return { results, count: results.length, errors };
+          }
+
+          // Bestehend: Einzelner Dateipfad
           const filePath = reqStr(args, 'file_path');
           const limit = num(args, 'limit');
 

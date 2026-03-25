@@ -8,6 +8,7 @@ import {
   getThoughts as getThoughtsCore,
   searchThoughts as searchThoughtsCore,
   deleteThought as deleteThoughtCore,
+  getThoughtsByIds as getThoughtsByIdsCore,
 } from '@synapse/core';
 import type { Thought, ThoughtSource } from '@synapse/core';
 
@@ -176,6 +177,34 @@ export async function deleteThought(
     return {
       success: false,
       message: `Fehler beim Loeschen des Gedankens: ${error}`,
+    };
+  }
+}
+
+/**
+ * Ruft Gedanken anhand ihrer IDs ab (Batch)
+ */
+export async function getThoughtsByIdsTool(
+  project: string,
+  ids: string[]
+): Promise<{
+  success: boolean;
+  thoughts: Thought[];
+  message: string;
+}> {
+  try {
+    const thoughts = await getThoughtsByIdsCore(project, ids);
+
+    return {
+      success: true,
+      thoughts,
+      message: `${thoughts.length} von ${ids.length} Gedanken geladen`,
+    };
+  } catch (error) {
+    return {
+      success: false,
+      thoughts: [],
+      message: `Fehler beim Laden der Gedanken: ${error}`,
     };
   }
 }

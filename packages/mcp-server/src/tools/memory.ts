@@ -267,3 +267,36 @@ export async function findMemoriesForFile(
     return { success: false, results: [], message: `Fehler: ${error}` };
   }
 }
+
+/**
+ * Liest mehrere Memories anhand ihrer Namen (Batch)
+ */
+export async function readMemories(
+  project: string,
+  names: string[]
+): Promise<{
+  success: boolean;
+  memories: Memory[];
+  message: string;
+}> {
+  try {
+    const { getMemoriesByNames } = await import('@synapse/core');
+    const memories = await getMemoriesByNames(project, names);
+
+    const found = memories.length;
+    const notFound = names.filter(n => !memories.some(m => m.name === n));
+    const notFoundHint = notFound.length > 0 ? ` | Nicht gefunden: ${notFound.join(', ')}` : '';
+
+    return {
+      success: true,
+      memories,
+      message: `${found} von ${names.length} Memories geladen${notFoundHint}`,
+    };
+  } catch (error) {
+    return {
+      success: false,
+      memories: [],
+      message: `Fehler beim Laden der Memories: ${error}`,
+    };
+  }
+}

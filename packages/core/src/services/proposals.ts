@@ -45,6 +45,7 @@ import {
   scrollVectors,
   deleteVector,
   getVector,
+  getVectors,
 } from '../qdrant/operations.js';
 import {
   Proposal,
@@ -152,6 +153,24 @@ export async function getProposal(
   } catch {
     return null;
   }
+}
+
+/**
+ * Holt mehrere Proposals anhand ihrer IDs (Batch)
+ * Nutzt Qdrant client.retrieve() fuer einen einzelnen Call statt N Einzel-Abfragen
+ */
+export async function getProposalsByIds(
+  project: string,
+  ids: string[]
+): Promise<Proposal[]> {
+  if (ids.length === 0) return [];
+
+  const collName = getCollectionName(project);
+  const results = await getVectors<ProposalPayload>(collName, ids);
+
+  return results
+    .filter(r => r.payload.project === project)
+    .map(r => payloadToProposal(r.id, r.payload));
 }
 
 /**

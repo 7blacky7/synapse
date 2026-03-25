@@ -657,6 +657,48 @@ export async function getRulesForNewAgent(
 }
 
 /**
+ * Liest mehrere Memories anhand ihrer Namen (Batch)
+ * Nutzt Qdrant should-Filter fuer einen einzelnen Call statt N Einzel-Abfragen
+ */
+export async function getMemoriesByNames(
+  project: string,
+  names: string[]
+): Promise<Memory[]> {
+  if (names.length === 0) return [];
+
+  const collectionName = COLLECTIONS.projectMemories(project);
+
+  // Qdrant should-Filter: project MUST match AND (name1 OR name2 OR ...)
+  const nameFilters = names.map(name => ({
+    key: 'name',
+    match: { value: name },
+  }));
+
+  const results = await scrollVectors<MemoryPayload>(
+    collectionName,
+    {
+      must: [
+        { key: 'project', match: { value: project } },
+      ],
+      should: nameFilters,
+    },
+    names.length  // Limit = Anzahl angefragter Names
+  );
+
+  return results.map(point => ({
+    id: point.id as string,
+    project: point.payload.project,
+    name: point.payload.name,
+    content: point.payload.content,
+    category: point.payload.category as Memory['category'],
+    tags: point.payload.tags,
+    linkedPaths: point.payload.linkedPaths || [],
+    createdAt: point.payload.createdAt,
+    updatedAt: point.payload.updatedAt,
+  }));
+}
+
+/**
  * Findet Memories die auf einen bestimmten Dateipfad verweisen
  *
  * Matching-Logik:

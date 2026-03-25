@@ -85,8 +85,11 @@ export const docsTool: ConsolidatedTool = {
         },
         // ===== ACTION: get_for_file =====
         file_path: {
-          type: 'string',
-          description: 'Dateipfad (z.B. src/api.ts)',
+          oneOf: [
+            { type: 'string' },
+            { type: 'array', items: { type: 'string' }, minItems: 1 },
+          ],
+          description: 'Dateipfad (z.B. src/api.ts). Array erlaubt fuer get_for_file (Multi-File-Analyse)',
         },
         agent_id: {
           type: 'string',
@@ -169,10 +172,35 @@ export const docsTool: ConsolidatedTool = {
       }
 
       case 'get_for_file': {
-        const filePath = reqStr(args, 'file_path');
         const agentId = reqStr(args, 'agent_id');
         const project = reqStr(args, 'project');
 
+        // Array-Support: Mehrere Dateien in einem Call
+        if (Array.isArray(args.file_path)) {
+          const filePaths = args.file_path as string[];
+          const settled = await Promise.allSettled(
+            filePaths.map(fp => getDocsForFileTool(fp, agentId, project))
+          );
+          const results: Array<Record<string, unknown>> = [];
+          const errors: string[] = [];
+          for (const r of settled) {
+            if (r.status === 'fulfilled') {
+              const val = r.value;
+              results.push({
+                success: val.success,
+                warnings: val.warnings,
+                agentCutoff: val.agentCutoff,
+                message: val.message,
+              });
+            } else {
+              errors.push(String(r.reason));
+            }
+          }
+          return { results, count: results.length, errors };
+        }
+
+        // Bestehend: Einzelner Dateipfad
+        const filePath = reqStr(args, 'file_path');
         const result = await getDocsForFileTool(filePath, agentId, project);
 
         return {

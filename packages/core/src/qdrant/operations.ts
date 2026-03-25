@@ -214,6 +214,31 @@ export async function getVector<T>(
 }
 
 /**
+ * Holt mehrere Vektoren anhand ihrer IDs (Batch)
+ */
+export async function getVectors<T>(
+  collection: string,
+  ids: string[]
+): Promise<Array<{ id: string; payload: T }>> {
+  if (ids.length === 0) return [];
+  const client = getQdrantClient();
+
+  try {
+    const results = await client.retrieve(collection, {
+      ids,
+      with_payload: true,
+    });
+
+    return results.map(point => ({
+      id: point.id as string,
+      payload: point.payload as T,
+    }));
+  } catch {
+    return [];
+  }
+}
+
+/**
  * Holt alle Vektoren mit einem bestimmten Filter
  */
 export async function scrollVectors<T>(

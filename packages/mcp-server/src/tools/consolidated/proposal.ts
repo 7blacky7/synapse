@@ -13,6 +13,7 @@
 import {
   listProposalsWrapper,
   getProposalWrapper,
+  getProposalsByIdsWrapper,
   updateProposalStatusWrapper,
   deleteProposalWrapper,
   updateProposalTool,
@@ -40,8 +41,11 @@ export const proposalTool: ConsolidatedTool = {
           description: 'Agent-ID für Onboarding',
         },
         id: {
-          type: 'string',
-          description: 'Proposal-ID (für get, update_status, delete, update)',
+          oneOf: [
+            { type: 'string' },
+            { type: 'array', items: { type: 'string' }, minItems: 1 },
+          ],
+          description: 'Proposal-ID (für get, update_status, delete, update). Array erlaubt fuer: get',
         },
         status: {
           type: 'string',
@@ -76,7 +80,14 @@ export const proposalTool: ConsolidatedTool = {
       }
 
       case 'get': {
-        // get_proposal: Holt einen einzelnen Proposal mit vollem suggestedContent
+        // Array-Support: Mehrere Proposals in einem Call
+        if (Array.isArray(args.id)) {
+          const ids = args.id as string[];
+          const result = await getProposalsByIdsWrapper(project, ids);
+          return result;
+        }
+
+        // Bestehend: Einzelner Proposal
         const id = reqStr(args, 'id');
         const result = await getProposalWrapper(project, id);
         return {

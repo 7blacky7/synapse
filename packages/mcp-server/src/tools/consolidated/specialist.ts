@@ -38,8 +38,11 @@ export const specialistTool: ConsolidatedTool = {
 
         // spawn parameters
         name: {
-          type: 'string',
-          description: 'Name des Spezialisten (erforderlich für: spawn, stop, status, wake, update_skill)',
+          oneOf: [
+            { type: 'string' },
+            { type: 'array', items: { type: 'string' }, minItems: 1 },
+          ],
+          description: 'Name des Spezialisten (erforderlich für: spawn, stop, status, wake, update_skill). Array erlaubt für: status',
         },
         model: {
           type: 'string',
@@ -156,8 +159,24 @@ export const specialistTool: ConsolidatedTool = {
 
       case 'status': {
         const projectPath = reqStr(args, 'project_path');
-        const name = str(args, 'name');
 
+        // Array-Support: Mehrere Spezialisten-Status in einem Call
+        if (Array.isArray(args.name)) {
+          const names = args.name as string[];
+          const settled = await Promise.allSettled(
+            names.map(n => specialistStatusTool(projectPath, n))
+          );
+          const results: Array<Record<string, unknown>> = [];
+          const errors: string[] = [];
+          for (const r of settled) {
+            if (r.status === 'fulfilled') results.push(r.value as Record<string, unknown>);
+            else errors.push(String(r.reason));
+          }
+          return { results, count: results.length, errors };
+        }
+
+        // Bestehend: Einzelner Name (oder alle wenn kein Name)
+        const name = str(args, 'name');
         return await specialistStatusTool(projectPath, name);
       }
 

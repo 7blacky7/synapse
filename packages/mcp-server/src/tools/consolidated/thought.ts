@@ -9,6 +9,7 @@ import type { ConsolidatedTool } from './types.js';
 import {
   addThought,
   getThoughts,
+  getThoughtsByIdsTool,
   deleteThought,
   searchThoughts,
   updateThoughtTool,
@@ -48,8 +49,11 @@ export const thoughtTool: ConsolidatedTool = {
           description: 'Optionale Tags - fuer action "add" oder "update"',
         },
         id: {
-          type: 'string',
-          description: 'ID des Gedankens - fuer action "delete" oder "update"',
+          oneOf: [
+            { type: 'string' },
+            { type: 'array', items: { type: 'string' }, minItems: 1 },
+          ],
+          description: 'ID des Gedankens - fuer action "get" (einzeln oder Array), "delete" oder "update"',
         },
         query: {
           type: 'string',
@@ -80,8 +84,26 @@ export const thoughtTool: ConsolidatedTool = {
 
       case 'get': {
         const project = reqStr(args, 'project');
-        const limit = num(args, 'limit');
 
+        // NEU: Wenn id angegeben → spezifische Thoughts laden
+        if (args.id !== undefined) {
+          const isBatch = Array.isArray(args.id);
+          const ids = isBatch ? (args.id as string[]) : [args.id as string];
+          const result = await getThoughtsByIdsTool(project, ids);
+
+          // Scalar-Input → einzelnes Thought zurückgeben
+          if (!isBatch) {
+            return result.thoughts.length > 0
+              ? { success: true, thought: result.thoughts[0], message: '1 Gedanke geladen' }
+              : { success: false, thought: null, message: `Gedanke "${args.id}" nicht gefunden` };
+          }
+
+          // Array-Input → Batch-Response
+          return result;
+        }
+
+        // Bestehend: Alle Thoughts des Projekts auflisten
+        const limit = num(args, 'limit');
         const result = await getThoughts(project, limit);
         return result;
       }

@@ -168,6 +168,39 @@ export async function deleteProposalWrapper(
 }
 
 /**
+ * Holt mehrere Proposals anhand ihrer IDs (Batch)
+ */
+export async function getProposalsByIdsWrapper(
+  project: string,
+  ids: string[]
+): Promise<{
+  success: boolean;
+  proposals: Proposal[];
+  message: string;
+}> {
+  try {
+    const { getProposalsByIds } = await import('@synapse/core');
+    const proposals = await getProposalsByIds(project, ids);
+
+    const found = proposals.length;
+    const notFoundIds = ids.filter(id => !proposals.some(p => p.id === id));
+    const notFoundHint = notFoundIds.length > 0 ? ` | Nicht gefunden: ${notFoundIds.join(', ')}` : '';
+
+    return {
+      success: true,
+      proposals,
+      message: `${found} von ${ids.length} Proposals geladen${notFoundHint}`,
+    };
+  } catch (error) {
+    return {
+      success: false,
+      proposals: [],
+      message: `Fehler bei Proposals-Batch: ${error}`,
+    };
+  }
+}
+
+/**
  * Durchsucht Proposals semantisch
  */
 export async function searchProposalsWrapper(

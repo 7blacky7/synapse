@@ -45,6 +45,7 @@ import {
   searchVectors,
   scrollVectors,
   deleteVector,
+  getVectors,
 } from '../qdrant/index.js';
 import { embed } from '../embeddings/index.js';
 import { getPool } from '../db/client.js';
@@ -324,4 +325,29 @@ export async function getThoughtsByTag(
     tags: r.payload.tags,
     timestamp: r.payload.timestamp,
   }));
+}
+
+/**
+ * Ruft Gedanken anhand ihrer IDs ab (Batch)
+ * Nutzt Qdrant client.retrieve() fuer einen einzelnen Call statt N Einzel-Abfragen
+ */
+export async function getThoughtsByIds(
+  project: string,
+  ids: string[]
+): Promise<Thought[]> {
+  if (ids.length === 0) return [];
+
+  const collectionName = COLLECTIONS.projectThoughts(project);
+  const results = await getVectors<ThoughtPayload>(collectionName, ids);
+
+  return results
+    .filter(r => r.payload.project === project)
+    .map(r => ({
+      id: r.id,
+      project: r.payload.project,
+      source: r.payload.source as ThoughtSource,
+      content: r.payload.content,
+      tags: r.payload.tags,
+      timestamp: r.payload.timestamp,
+    }));
 }

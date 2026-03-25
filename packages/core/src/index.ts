@@ -32,10 +32,12 @@ export {
   insertVectors,
   searchVectors,
   deleteVector,
+  deleteVectors,
   deleteByFilter,
   deleteByFilePath,
   deleteByProject,
   getVector,
+  getVectors,
   scrollVectors,
 } from './qdrant/index.js';
 
@@ -103,6 +105,7 @@ export {
   deleteThought,
   getThoughtsBySource,
   getThoughtsByTag,
+  getThoughtsByIds,
   // Plans
   createPlan,
   getPlan,
@@ -131,6 +134,7 @@ export {
   writeMemory,
   updateMemory,
   getMemoryByName,
+  getMemoriesByNames,
   listMemories,
   searchMemories,
   deleteMemory,
@@ -153,6 +157,7 @@ export {
   createProposal,
   updateProposal,
   getProposal,
+  getProposalsByIds,
   listProposals,
   updateProposalStatus,
   deleteProposal,
