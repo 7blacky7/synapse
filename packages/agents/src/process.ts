@@ -211,8 +211,11 @@ class ProcessManager extends EventEmitter {
         try {
           event = JSON.parse(line)
         } catch {
+          console.error(`[ProcessManager:${agent.agentName}] Non-JSON stdout: ${line.slice(0, 200)}`)
           return
         }
+
+        console.error(`[ProcessManager:${agent.agentName}] Event: ${event.type}${event.type === 'result' ? ` (${event.usage?.input_tokens ?? 0}in/${event.usage?.output_tokens ?? 0}out)` : ''}`)
 
         if (event.type === 'assistant' && event.message?.content) {
           for (const block of event.message.content) {

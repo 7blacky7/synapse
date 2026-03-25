@@ -126,6 +126,12 @@ export async function spawnSpecialistTool(
 
   const wrapperPath = resolveWrapperPath();
 
+  // Log-Datei fuer Wrapper-Stderr (Debugging)
+  const logDir = join(projectPath, '.synapse', 'agents', name, 'logs');
+  await mkdir(logDir, { recursive: true });
+  const { openSync } = await import('node:fs');
+  const logFd = openSync(join(logDir, 'wrapper.log'), 'a');
+
   const wrapper = spawn('node', [wrapperPath], {
     env: {
       ...process.env,
@@ -140,7 +146,7 @@ export async function spawnSpecialistTool(
       ...(keepAlive ? { SYNAPSE_KEEP_ALIVE: '1' } : {}),
     },
     detached: true,
-    stdio: 'ignore',
+    stdio: ['ignore', 'ignore', logFd],
   });
   wrapper.unref();
 

@@ -437,48 +437,19 @@ async function heartbeatPoll() {
 }
 
 /**
- * Recovery bei stuck Agent: Claude-Prozess neu starten und Aufgabe erneut senden.
+ * Recovery bei stuck Agent: Busy-Status zuruecksetzen.
+ * Der writeAndCollect-Timeout rejected den Promise, wakeAgent setzt agentBusy
+ * im finally-Block zurueck. Der naechste Heartbeat kann dann normal neue
+ * Nachrichten/Items pollen und den Agent erneut anschreiben.
  */
 async function recoverStuckAgent(): Promise<void> {
+  log('Recovery: Setze busy-Status zurueck — naechster Heartbeat weckt den Agent normal')
   agentBusy = false
   agentBusySince = 0
 
   broadcastNotification('agent_error', {
-    error: `Agent stuck — kein Token-Fortschritt seit ${STUCK_TIMEOUT_MS / 1000}s. Starte Recovery.`,
+    error: `Agent stuck — kein Token-Fortschritt seit ${STUCK_TIMEOUT_MS / 1000}s. Busy-Status zurueckgesetzt.`,
   })
-
-  try {
-    // Claude-Prozess stoppen
-    await processManager.stop(AGENT_NAME)
-    processAlive = false
-
-    // Token-Zaehler zuruecksetzen (Watermarks behalten!)
-    totalInputTokens = 0
-    totalOutputTokens = 0
-
-    // System-Prompt neu laden und Claude neu starten
-    const systemPrompt = await readFile(SYSTEM_PROMPT_FILE, 'utf-8')
-    await startAgentProcess(systemPrompt)
-
-    log('Recovery: Claude-Prozess neu gestartet')
-
-    // Agent mit Onboarding wecken (Task ist im System-Prompt)
-    const recoveryPrompt = `Du wurdest nach einem Stuck-Recovery neu gestartet.
-Dein Claude-Prozess hat 2 Minuten lang nicht reagiert und wurde automatisch neu gestartet.
-
-ERSTE AKTIONEN:
-1. Lies deine SKILL.md und MEMORY.md
-2. Pruefe Channels und Inbox auf Nachrichten
-3. Fuehre deine Aufgabe aus (steht in deinem System-Prompt unter "Aktuelle Aufgabe")`
-
-    await wakeAgent(recoveryPrompt)
-    log('Recovery: Agent erfolgreich geweckt')
-  } catch (err) {
-    log('Recovery fehlgeschlagen: %s', err)
-    broadcastNotification('agent_error', {
-      error: `Recovery fehlgeschlagen: ${err instanceof Error ? err.message : String(err)}`,
-    })
-  }
 }
 
 async function pollChannelMessages(): Promise<boolean> {
@@ -927,9 +898,13 @@ async function main() {
   // 6. Initialize watermarks from DB
   await initializeWatermarks()
 
-  // 7. Start heartbeat polling
-  heartbeatIntervalId = setInterval(() => void heartbeatPoll(), POLL_INTERVAL)
-  log('Heartbeat started (interval: %dms)', POLL_INTERVAL)
+  // 7. Start heartbeat polling (mit Startup-Delay damit Claude's MCP-Server bereit sind)
+  const STARTUP_DELAY_MS = 30_000
+  log('Heartbeat startet in %ds (MCP-Server Startup-Delay)', STARTUP_DELAY_MS / 1000)
+  setTimeout(() => {
+    heartbeatIntervalId = setInterval(() => void heartbeatPoll(), POLL_INTERVAL)
+    log('Heartbeat gestartet (interval: %dms)', POLL_INTERVAL)
+  }, STARTUP_DELAY_MS)
 
   // 8. Update status file: running
   await updateSpecialist(PROJECT_PATH, AGENT_NAME, {
