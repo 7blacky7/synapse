@@ -234,24 +234,18 @@ export async function writeMemory(
     updatedAt: now,
   };
 
+  // 1. PostgreSQL (Write-Primary) — fail-fast: wirft bei Fehler
+  const pool = getPool();
+  await pool.query(
+    `INSERT INTO memories (id, project, name, category, content, tags, created_at, updated_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+     ON CONFLICT (id) DO UPDATE SET
+       content = $5, category = $4, tags = $6, updated_at = $8`,
+    [id, project, name, category, content, tags, memory.createdAt, memory.updatedAt]
+  );
+
+  // 2. Qdrant (Vektor-Index) — Warning bei Fehler, PG-Daten bleiben erhalten
   let warning: string | undefined;
-
-  // 1. PostgreSQL (Source of Truth)
-  try {
-    const pool = getPool();
-    await pool.query(
-      `INSERT INTO memories (id, project, name, category, content, tags, created_at, updated_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-       ON CONFLICT (id) DO UPDATE SET
-         content = $5, category = $4, tags = $6, updated_at = $8`,
-      [id, project, name, category, content, tags, memory.createdAt, memory.updatedAt]
-    );
-  } catch (error) {
-    console.error('[Synapse] PostgreSQL Memory-Write fehlgeschlagen, nur Qdrant:', error);
-    warning = `PG-Write fehlgeschlagen: ${error}`;
-  }
-
-  // 2. Qdrant (Vektor-Index)
   try {
     const vector = await embed(content);
     const payload: MemoryPayload = {
@@ -271,7 +265,7 @@ export async function writeMemory(
     await insertVector(collectionName, vector, payload, memory.id);
   } catch (error) {
     console.error('[Synapse] Qdrant Memory-Write fehlgeschlagen:', error);
-    warning = (warning ? warning + ' | ' : '') + `Qdrant-Write fehlgeschlagen: ${error}`;
+    warning = `Qdrant-Write fehlgeschlagen: ${error}`;
   }
 
   const codeRefInfo = linkedPaths.length > 0 ? ` (${linkedPaths.length} Code-Referenzen)` : '';
@@ -410,20 +404,14 @@ export async function updateMemory(
   const mergedTags = changes.tags ?? row.tags;
   const linkedPaths = extractFilePaths(mergedContent);
 
+  // 3. PostgreSQL UPDATE (Write-Primary) — fail-fast: wirft bei Fehler
+  await pool.query(
+    `UPDATE memories SET content = $1, category = $2, tags = $3, updated_at = $4 WHERE id = $5`,
+    [mergedContent, mergedCategory, mergedTags, now, row.id]
+  );
+
+  // 4. Qdrant Vektor upserten — Warning bei Fehler, PG-Daten bleiben erhalten
   let warning: string | undefined;
-
-  // 3. PostgreSQL UPDATE
-  try {
-    await pool.query(
-      `UPDATE memories SET content = $1, category = $2, tags = $3, updated_at = $4 WHERE id = $5`,
-      [mergedContent, mergedCategory, mergedTags, now, row.id]
-    );
-  } catch (error) {
-    console.error('[Synapse] PostgreSQL Memory-Update fehlgeschlagen:', error);
-    warning = `PG-Write fehlgeschlagen: ${error}`;
-  }
-
-  // 4. Neues Embedding generieren und Qdrant-Vektor upserten
   try {
     const collectionName = COLLECTIONS.projectMemories(project);
     await ensureCollection(collectionName);
@@ -442,7 +430,7 @@ export async function updateMemory(
     await insertVector(collectionName, vector, payload, row.id);
   } catch (error) {
     console.error('[Synapse] Qdrant Memory-Update fehlgeschlagen:', error);
-    warning = (warning ? warning + ' | ' : '') + `Qdrant-Write fehlgeschlagen: ${error}`;
+    warning = `Qdrant-Write fehlgeschlagen: ${error}`;
   }
 
   // 5. Aktualisierte Memory zurueckgeben
@@ -476,24 +464,18 @@ export async function deleteMemory(
     return { success: false };
   }
 
+  // 1. PostgreSQL (Write-Primary) — fail-fast: wirft bei Fehler
+  const pool = getPool();
+  await pool.query('DELETE FROM memories WHERE id = $1', [existing.id]);
+
+  // 2. Qdrant — Warning bei Fehler, PG-Daten bereits geloescht
   let warning: string | undefined;
-
-  // 1. PostgreSQL
-  try {
-    const pool = getPool();
-    await pool.query('DELETE FROM memories WHERE id = $1', [existing.id]);
-  } catch (error) {
-    console.error('[Synapse] PostgreSQL Memory-Delete fehlgeschlagen:', error);
-    warning = `PG-Write fehlgeschlagen: ${error}`;
-  }
-
-  // 2. Qdrant
   try {
     const collectionName = COLLECTIONS.projectMemories(project);
     await deleteVector(collectionName, existing.id);
   } catch (error) {
     console.error('[Synapse] Qdrant Memory-Delete fehlgeschlagen:', error);
-    warning = (warning ? warning + ' | ' : '') + `Qdrant-Write fehlgeschlagen: ${error}`;
+    warning = `Qdrant-Write fehlgeschlagen: ${error}`;
   }
 
   console.error(`[Synapse] Memory "${name}" gelöscht für Projekt "${project}"`);

@@ -106,28 +106,22 @@ export async function createProposal(
     updated_at: proposal.updatedAt,
   };
 
+  // 1. PostgreSQL (Write-Primary) — fail-fast: wirft bei Fehler
+  const pool = getPool();
+  await pool.query(
+    `INSERT INTO proposals (id, project, file_path, suggested_content, description, author, status, tags, created_at, updated_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+     ON CONFLICT (id) DO NOTHING`,
+    [id, project, filePath, suggestedContent, description, author, 'pending', tags, now, now]
+  );
+
+  // 2. Qdrant (Vektor-Index) — Warning bei Fehler, PG-Daten bleiben erhalten
   let warning: string | undefined;
-
-  // 1. PostgreSQL (Source of Truth)
-  try {
-    const pool = getPool();
-    await pool.query(
-      `INSERT INTO proposals (id, project, file_path, suggested_content, description, author, status, tags, created_at, updated_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-       ON CONFLICT (id) DO NOTHING`,
-      [id, project, filePath, suggestedContent, description, author, 'pending', tags, now, now]
-    );
-  } catch (error) {
-    console.error('[Synapse] PostgreSQL Proposal-Write fehlgeschlagen:', error);
-    warning = `PG-Write fehlgeschlagen: ${error}`;
-  }
-
-  // 2. Qdrant (Vektor-Index)
   try {
     await insertVector(COLLECTION_NAME, vector, payload, id);
   } catch (error) {
     console.error('[Synapse] Qdrant Proposal-Write fehlgeschlagen:', error);
-    warning = (warning ? warning + ' | ' : '') + `Qdrant-Write fehlgeschlagen: ${error}`;
+    warning = `Qdrant-Write fehlgeschlagen: ${error}`;
   }
 
   console.error(`[Synapse] Proposal "${id}" erstellt fuer "${filePath}" in Projekt "${project}"`);
@@ -229,24 +223,18 @@ export async function updateProposalStatus(
   // Neuen Vektor generieren (bleibt gleich da description/filePath unveraendert)
   const vector = await embed(`${updatedPayload.description} ${updatedPayload.file_path}`);
 
+  // 1. PostgreSQL (Write-Primary) — fail-fast: wirft bei Fehler
+  const pool = getPool();
+  await pool.query('UPDATE proposals SET status = $1, updated_at = $2 WHERE id = $3', [status, now, id]);
+
+  // 2. Qdrant (Vektor-Index) — Warning bei Fehler, PG-Daten bleiben erhalten
   let warning: string | undefined;
-
-  // 1. PostgreSQL (Source of Truth)
-  try {
-    const pool = getPool();
-    await pool.query('UPDATE proposals SET status = $1, updated_at = $2 WHERE id = $3', [status, now, id]);
-  } catch (error) {
-    console.error('[Synapse] PostgreSQL Proposal-Status-Update fehlgeschlagen:', error);
-    warning = `PG-Write fehlgeschlagen: ${error}`;
-  }
-
-  // 2. Qdrant (Vektor-Index)
   try {
     await deleteVector(collName, id);
     await insertVector(collName, vector, updatedPayload, id);
   } catch (error) {
     console.error('[Synapse] Qdrant Proposal-Status-Update fehlgeschlagen:', error);
-    warning = (warning ? warning + ' | ' : '') + `Qdrant-Write fehlgeschlagen: ${error}`;
+    warning = `Qdrant-Write fehlgeschlagen: ${error}`;
   }
 
   console.error(`[Synapse] Proposal "${id}" Status geaendert zu "${status}"`);
@@ -283,20 +271,14 @@ export async function updateProposal(
   const mergedSuggestedContent = changes.suggestedContent ?? row.suggested_content;
   const mergedStatus = changes.status ?? row.status;
 
+  // 3. PostgreSQL UPDATE (Write-Primary) — fail-fast: wirft bei Fehler
+  await pool.query(
+    `UPDATE proposals SET description = $1, suggested_content = $2, status = $3, updated_at = $4 WHERE id = $5`,
+    [mergedDescription, mergedSuggestedContent, mergedStatus, now, id]
+  );
+
+  // 4. Qdrant Vektor upserten — Warning bei Fehler, PG-Daten bleiben erhalten
   let warning: string | undefined;
-
-  // 3. PostgreSQL UPDATE (Source of Truth)
-  try {
-    await pool.query(
-      `UPDATE proposals SET description = $1, suggested_content = $2, status = $3, updated_at = $4 WHERE id = $5`,
-      [mergedDescription, mergedSuggestedContent, mergedStatus, now, id]
-    );
-  } catch (error) {
-    console.error('[Synapse] PostgreSQL Proposal-Update fehlgeschlagen:', error);
-    warning = `PG-Write fehlgeschlagen: ${error}`;
-  }
-
-  // 4. Neues Embedding generieren und Qdrant-Vektor upserten
   try {
     const collName = getCollectionName(project);
     await ensureCollection(collName);
@@ -316,7 +298,7 @@ export async function updateProposal(
     await insertVector(collName, vector, payload, id);
   } catch (error) {
     console.error('[Synapse] Qdrant Proposal-Update fehlgeschlagen:', error);
-    warning = (warning ? warning + ' | ' : '') + `Qdrant-Write fehlgeschlagen: ${error}`;
+    warning = `Qdrant-Write fehlgeschlagen: ${error}`;
   }
 
   // 5. Aktualisierter Proposal zurueckgeben

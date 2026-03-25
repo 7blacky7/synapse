@@ -92,29 +92,23 @@ export async function createPlan(
     updated_at: plan.updatedAt,
   };
 
+  // 1. PostgreSQL (Write-Primary) — fail-fast: wirft bei Fehler
+  const pool = getPool();
+  await pool.query(
+    `INSERT INTO plans (id, project, name, description, goals, architecture, tasks, created_at, updated_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+     ON CONFLICT (id) DO UPDATE SET
+       name = $3, description = $4, goals = $5, tasks = $7, updated_at = $9`,
+    [plan.id, project, name, description, goals, null, JSON.stringify([]), plan.createdAt, plan.updatedAt]
+  );
+
+  // 2. Qdrant (Vektor-Index) — Warning bei Fehler, PG-Daten bleiben erhalten
   let warning: string | undefined;
-
-  // 1. PostgreSQL (Source of Truth)
-  try {
-    const pool = getPool();
-    await pool.query(
-      `INSERT INTO plans (id, project, name, description, goals, architecture, tasks, created_at, updated_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-       ON CONFLICT (id) DO UPDATE SET
-         name = $3, description = $4, goals = $5, tasks = $7, updated_at = $9`,
-      [plan.id, project, name, description, goals, null, JSON.stringify([]), plan.createdAt, plan.updatedAt]
-    );
-  } catch (error) {
-    console.error('[Synapse] PostgreSQL Plan-Write fehlgeschlagen:', error);
-    warning = `PG-Write fehlgeschlagen: ${error}`;
-  }
-
-  // 2. Qdrant (Vektor-Index)
   try {
     await insertVector(COLLECTIONS.projectPlans(project), vector, payload, plan.id);
   } catch (error) {
     console.error('[Synapse] Qdrant Plan-Write fehlgeschlagen:', error);
-    warning = (warning ? warning + ' | ' : '') + `Qdrant-Write fehlgeschlagen: ${error}`;
+    warning = `Qdrant-Write fehlgeschlagen: ${error}`;
   }
 
   console.error(`[Synapse] Plan erstellt: "${name}" fuer Projekt "${project}"`);
@@ -191,27 +185,21 @@ export async function updatePlan(
     updated_at: updatedPlan.updatedAt,
   };
 
+  // 1. PostgreSQL (Write-Primary) — fail-fast: wirft bei Fehler
+  const pool = getPool();
+  await pool.query(
+    `UPDATE plans SET name = $1, description = $2, goals = $3, architecture = $4, tasks = $5, updated_at = $6 WHERE id = $7`,
+    [updatedPlan.name, updatedPlan.description, updatedPlan.goals, updatedPlan.architecture || null, JSON.stringify(updatedPlan.tasks), updatedPlan.updatedAt, updatedPlan.id]
+  );
+
+  // 2. Qdrant (Vektor-Index) — Warning bei Fehler, PG-Daten bleiben erhalten
   let warning: string | undefined;
-
-  // 1. PostgreSQL (Source of Truth)
-  try {
-    const pool = getPool();
-    await pool.query(
-      `UPDATE plans SET name = $1, description = $2, goals = $3, architecture = $4, tasks = $5, updated_at = $6 WHERE id = $7`,
-      [updatedPlan.name, updatedPlan.description, updatedPlan.goals, updatedPlan.architecture || null, JSON.stringify(updatedPlan.tasks), updatedPlan.updatedAt, updatedPlan.id]
-    );
-  } catch (error) {
-    console.error('[Synapse] PostgreSQL Plan-Update fehlgeschlagen:', error);
-    warning = `PG-Write fehlgeschlagen: ${error}`;
-  }
-
-  // 2. Qdrant (Vektor-Index)
   try {
     await deleteVector(COLLECTIONS.projectPlans(project), existingPlan.id);
     await insertVector(COLLECTIONS.projectPlans(project), vector, payload, updatedPlan.id);
   } catch (error) {
     console.error('[Synapse] Qdrant Plan-Update fehlgeschlagen:', error);
-    warning = (warning ? warning + ' | ' : '') + `Qdrant-Write fehlgeschlagen: ${error}`;
+    warning = `Qdrant-Write fehlgeschlagen: ${error}`;
   }
 
   console.error(`[Synapse] Plan aktualisiert: "${updatedPlan.name}"`);
@@ -264,25 +252,19 @@ export async function addTask(
     updated_at: plan.updatedAt,
   };
 
+  // 1. PostgreSQL (Write-Primary) — fail-fast: wirft bei Fehler
+  const pool = getPool();
+  await pool.query('UPDATE plans SET tasks = $1, updated_at = $2 WHERE id = $3',
+    [JSON.stringify(plan.tasks), plan.updatedAt, plan.id]);
+
+  // 2. Qdrant (Vektor-Index) — Warning bei Fehler, PG-Daten bleiben erhalten
   let warning: string | undefined;
-
-  // 1. PostgreSQL (Source of Truth)
-  try {
-    const pool = getPool();
-    await pool.query('UPDATE plans SET tasks = $1, updated_at = $2 WHERE id = $3',
-      [JSON.stringify(plan.tasks), plan.updatedAt, plan.id]);
-  } catch (error) {
-    console.error('[Synapse] PostgreSQL Task-Add fehlgeschlagen:', error);
-    warning = `PG-Write fehlgeschlagen: ${error}`;
-  }
-
-  // 2. Qdrant (Vektor-Index)
   try {
     await deleteVector(COLLECTIONS.projectPlans(project), plan.id);
     await insertVector(COLLECTIONS.projectPlans(project), vector, payload, plan.id);
   } catch (error) {
     console.error('[Synapse] Qdrant Task-Add fehlgeschlagen:', error);
-    warning = (warning ? warning + ' | ' : '') + `Qdrant-Write fehlgeschlagen: ${error}`;
+    warning = `Qdrant-Write fehlgeschlagen: ${error}`;
   }
 
   console.error(`[Synapse] Task hinzugefuegt: "${title}"`);
@@ -334,25 +316,19 @@ export async function updateTask(
     updated_at: plan.updatedAt,
   };
 
+  // 1. PostgreSQL (Write-Primary) — fail-fast: wirft bei Fehler
+  const pool = getPool();
+  await pool.query('UPDATE plans SET tasks = $1, updated_at = $2 WHERE id = $3',
+    [JSON.stringify(plan.tasks), plan.updatedAt, plan.id]);
+
+  // 2. Qdrant (Vektor-Index) — Warning bei Fehler, PG-Daten bleiben erhalten
   let warning: string | undefined;
-
-  // 1. PostgreSQL (Source of Truth)
-  try {
-    const pool = getPool();
-    await pool.query('UPDATE plans SET tasks = $1, updated_at = $2 WHERE id = $3',
-      [JSON.stringify(plan.tasks), plan.updatedAt, plan.id]);
-  } catch (error) {
-    console.error('[Synapse] PostgreSQL Task-Update fehlgeschlagen:', error);
-    warning = `PG-Write fehlgeschlagen: ${error}`;
-  }
-
-  // 2. Qdrant (Vektor-Index)
   try {
     await deleteVector(COLLECTIONS.projectPlans(project), plan.id);
     await insertVector(COLLECTIONS.projectPlans(project), vector, payload, plan.id);
   } catch (error) {
     console.error('[Synapse] Qdrant Task-Update fehlgeschlagen:', error);
-    warning = (warning ? warning + ' | ' : '') + `Qdrant-Write fehlgeschlagen: ${error}`;
+    warning = `Qdrant-Write fehlgeschlagen: ${error}`;
   }
 
   console.error(`[Synapse] Task aktualisiert: "${updatedTask.title}"`);
@@ -369,23 +345,17 @@ export async function deletePlan(project: string): Promise<{ success: boolean; w
     return { success: false };
   }
 
+  // 1. PostgreSQL (Write-Primary) — fail-fast: wirft bei Fehler
+  const pool = getPool();
+  await pool.query('DELETE FROM plans WHERE id = $1', [plan.id]);
+
+  // 2. Qdrant — Warning bei Fehler, PG-Daten bereits geloescht
   let warning: string | undefined;
-
-  // 1. PostgreSQL
-  try {
-    const pool = getPool();
-    await pool.query('DELETE FROM plans WHERE id = $1', [plan.id]);
-  } catch (error) {
-    console.error('[Synapse] PostgreSQL Plan-Delete fehlgeschlagen:', error);
-    warning = `PG-Write fehlgeschlagen: ${error}`;
-  }
-
-  // 2. Qdrant
   try {
     await deleteVector(COLLECTIONS.projectPlans(project), plan.id);
   } catch (error) {
     console.error('[Synapse] Qdrant Plan-Delete fehlgeschlagen:', error);
-    warning = (warning ? warning + ' | ' : '') + `Qdrant-Write fehlgeschlagen: ${error}`;
+    warning = `Qdrant-Write fehlgeschlagen: ${error}`;
   }
 
   console.error(`[Synapse] Plan geloescht fuer Projekt: ${project}`);

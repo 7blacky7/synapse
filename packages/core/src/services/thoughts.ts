@@ -84,28 +84,22 @@ export async function addThought(
     timestamp: thought.timestamp,
   };
 
+  // 1. PostgreSQL (Write-Primary) — fail-fast: wirft bei Fehler
+  const pool = getPool();
+  await pool.query(
+    `INSERT INTO thoughts (id, project, source, content, tags, timestamp)
+     VALUES ($1, $2, $3, $4, $5, $6)
+     ON CONFLICT (id) DO NOTHING`,
+    [thought.id, project, source, content, tags, thought.timestamp]
+  );
+
+  // 2. Qdrant (Vektor-Index) — Warning bei Fehler, PG-Daten bleiben erhalten
   let warning: string | undefined;
-
-  // 1. PostgreSQL (Source of Truth)
-  try {
-    const pool = getPool();
-    await pool.query(
-      `INSERT INTO thoughts (id, project, source, content, tags, timestamp)
-       VALUES ($1, $2, $3, $4, $5, $6)
-       ON CONFLICT (id) DO NOTHING`,
-      [thought.id, project, source, content, tags, thought.timestamp]
-    );
-  } catch (error) {
-    console.error('[Synapse] PostgreSQL Thought-Write fehlgeschlagen, nur Qdrant:', error);
-    warning = `PG-Write fehlgeschlagen: ${error}`;
-  }
-
-  // 2. Qdrant (Vektor-Index)
   try {
     await insertVector(collectionName, vector, payload, thought.id);
   } catch (error) {
     console.error('[Synapse] Qdrant Thought-Write fehlgeschlagen:', error);
-    warning = (warning ? warning + ' | ' : '') + `Qdrant-Write fehlgeschlagen: ${error}`;
+    warning = `Qdrant-Write fehlgeschlagen: ${error}`;
   }
 
   console.error(`[Synapse] Gedanke gespeichert von "${source}" fuer Projekt "${project}"`);
@@ -209,20 +203,14 @@ export async function updateThought(
   const mergedContent = changes.content ?? row.content;
   const mergedTags = changes.tags ?? row.tags;
 
+  // 3. PostgreSQL UPDATE (Write-Primary) — fail-fast: wirft bei Fehler
+  await pool.query(
+    `UPDATE thoughts SET content = $1, tags = $2 WHERE id = $3`,
+    [mergedContent, mergedTags, id]
+  );
+
+  // 4. Qdrant Vektor upserten — Warning bei Fehler, PG-Daten bleiben erhalten
   let warning: string | undefined;
-
-  // 3. PostgreSQL UPDATE
-  try {
-    await pool.query(
-      `UPDATE thoughts SET content = $1, tags = $2 WHERE id = $3`,
-      [mergedContent, mergedTags, id]
-    );
-  } catch (error) {
-    console.error('[Synapse] PostgreSQL Thought-Update fehlgeschlagen:', error);
-    warning = `PG-Write fehlgeschlagen: ${error}`;
-  }
-
-  // 4. Neues Embedding generieren und Qdrant-Vektor upserten
   try {
     const collectionName = COLLECTIONS.projectThoughts(project);
     await ensureCollection(collectionName);
@@ -238,7 +226,7 @@ export async function updateThought(
     await insertVector(collectionName, vector, payload, id);
   } catch (error) {
     console.error('[Synapse] Qdrant Thought-Update fehlgeschlagen:', error);
-    warning = (warning ? warning + ' | ' : '') + `Qdrant-Write fehlgeschlagen: ${error}`;
+    warning = `Qdrant-Write fehlgeschlagen: ${error}`;
   }
 
   // 5. Aktualisierter Thought zurueckgeben
@@ -260,18 +248,12 @@ export async function updateThought(
  * Loescht einen Gedanken
  */
 export async function deleteThought(project: string, id: string): Promise<{ success: boolean; warning?: string }> {
+  // 1. PostgreSQL (Write-Primary) — fail-fast: wirft bei Fehler
+  const pool = getPool();
+  await pool.query('DELETE FROM thoughts WHERE id = $1', [id]);
+
+  // 2. Qdrant — Warning bei Fehler, PG-Daten bereits geloescht
   let warning: string | undefined;
-
-  // 1. PostgreSQL
-  try {
-    const pool = getPool();
-    await pool.query('DELETE FROM thoughts WHERE id = $1', [id]);
-  } catch (error) {
-    console.error('[Synapse] PostgreSQL Thought-Delete fehlgeschlagen:', error);
-    warning = `PG-Write fehlgeschlagen: ${error}`;
-  }
-
-  // 2. Qdrant
   try {
     const collectionName = COLLECTIONS.projectThoughts(project);
     await deleteVector(collectionName, id);
