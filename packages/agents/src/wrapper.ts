@@ -22,6 +22,8 @@
 import { createServer, type Server, type Socket } from 'node:net'
 import { unlinkSync, chmodSync, existsSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 import { ProcessManager } from './process.js'
 import { getNewMessagesForAgent } from './channels.js'
 import { getNewMessages as getNewInboxMessages } from './inbox.js'
@@ -63,13 +65,15 @@ let lastInboxMsgId = 0
 let totalInputTokens = 0
 let totalOutputTokens = 0
 let lastActivityTs = new Date().toISOString()
+let lastEventTs = 0 // Timestamp des letzten ProcessManager-Events (fuer Stuck-Detection)
+let lastEventCount = 0 // Anzahl Events seit letztem wakeAgent
 let agentBusy = false
 let agentBusySince = 0
 let tokensAtBusyStart = 0
 let shuttingDown = false
 let processAlive = true
 
-const STUCK_TIMEOUT_MS = 120_000 // 2 Minuten ohne Token-Fortschritt = stuck
+const STUCK_TIMEOUT_MS = 120_000 // 2 Minuten ohne Event-Aktivitaet = stuck
 
 // ---------------------------------------------------------------------------
 // Instances
@@ -99,6 +103,50 @@ function getContextPercent(): number {
   const total = totalInputTokens + totalOutputTokens
   const ceiling = getContextCeiling()
   return ceiling > 0 ? Math.round((total / ceiling) * 100) : 0
+}
+
+/**
+ * Liest echte Token-Counts aus der Claude CLI Session-JSONL.
+ * Die JSONL-Datei hat message.usage pro Assistant-Turn mit input_tokens,
+ * cache_read_input_tokens, cache_creation_input_tokens und output_tokens.
+ * Der letzte Turn's Input = aktuelle Context-Groesse (weil jeder Turn
+ * die gesamte Konversation sendet).
+ */
+async function syncTokensFromHistory(): Promise<void> {
+  const status = processManager.getStatus().get(AGENT_NAME)
+  if (!status) return
+
+  // Pfad: ~/.claude/projects/<cwd-mit-dashes>/<session-id>.jsonl
+  const projectDir = PROJECT_PATH.replace(/\//g, '-')
+  const jsonlPath = join(homedir(), '.claude', 'projects', projectDir, `${status.sessionId}.jsonl`)
+
+  try {
+    const content = await readFile(jsonlPath, 'utf-8')
+    const lines = content.trimEnd().split('\n')
+
+    let lastContextInput = 0
+    let cumulativeOutput = 0
+
+    for (const line of lines) {
+      if (!line.trim()) continue
+      try {
+        const obj = JSON.parse(line)
+        const usage = obj?.message?.usage
+        if (usage) {
+          // Letzter Turn Input = aktuelle Context-Groesse
+          lastContextInput = (usage.input_tokens || 0)
+            + (usage.cache_read_input_tokens || 0)
+            + (usage.cache_creation_input_tokens || 0)
+          cumulativeOutput += (usage.output_tokens || 0)
+        }
+      } catch { /* skip non-JSON lines */ }
+    }
+
+    if (lastContextInput > 0 || cumulativeOutput > 0) {
+      totalInputTokens = lastContextInput
+      totalOutputTokens = cumulativeOutput
+    }
+  } catch { /* Datei existiert noch nicht oder nicht lesbar */ }
 }
 
 // ---------------------------------------------------------------------------
@@ -366,15 +414,16 @@ async function startAgentProcess(systemPrompt: string): Promise<void> {
 async function wakeAgent(message: string): Promise<SendMessageResult> {
   agentBusy = true
   agentBusySince = Date.now()
+  lastEventTs = Date.now() // Reset fuer Stuck-Detection
+  lastEventCount = 0
   tokensAtBusyStart = totalInputTokens + totalOutputTokens
   lastActivityTs = new Date().toISOString()
 
   try {
     const result = await processManager.sendMessage(AGENT_NAME, message)
 
-    // Track cumulative tokens
-    totalInputTokens += result.inputTokens
-    totalOutputTokens += result.outputTokens
+    // Token-Sync nach Turn-Ende: JSONL hat die echten Werte
+    await syncTokensFromHistory()
     lastActivityTs = new Date().toISOString()
 
     // Broadcast output to all connected socket clients
@@ -403,12 +452,16 @@ async function heartbeatPoll() {
   if (shuttingDown || !processAlive) return
 
   try {
-    // Stuck-Detection: Agent busy aber kein Token-Fortschritt seit STUCK_TIMEOUT_MS
+    // Token-Sync: Echte Werte aus der Claude CLI Session-JSONL lesen
+    await syncTokensFromHistory()
+
+    // Stuck-Detection: Agent busy aber keine Event-Aktivitaet seit STUCK_TIMEOUT_MS
+    // Alte Logik (nur Token-Count) produzierte false positives beim ersten Turn (Tokens=0 bis result-Event).
+    // Neue Logik: Events fliessen = Agent arbeitet, auch wenn kein result-Event kam.
     if (agentBusy && agentBusySince > 0) {
-      const elapsed = Date.now() - agentBusySince
-      const currentTokens = totalInputTokens + totalOutputTokens
-      if (elapsed > STUCK_TIMEOUT_MS && currentTokens === tokensAtBusyStart) {
-        log('STUCK erkannt: busy seit %ds, 0 Token-Fortschritt — starte Recovery', Math.round(elapsed / 1000))
+      const sinceLastEvent = lastEventTs > 0 ? Date.now() - lastEventTs : Date.now() - agentBusySince
+      if (sinceLastEvent > STUCK_TIMEOUT_MS) {
+        log('STUCK erkannt: kein Event seit %ds (%d Events total) — starte Recovery', Math.round(sinceLastEvent / 1000), lastEventCount)
         await recoverStuckAgent()
         return // Nach Recovery normalen Heartbeat beim naechsten Intervall
       }
@@ -448,7 +501,7 @@ async function recoverStuckAgent(): Promise<void> {
   agentBusySince = 0
 
   broadcastNotification('agent_error', {
-    error: `Agent stuck — kein Token-Fortschritt seit ${STUCK_TIMEOUT_MS / 1000}s. Busy-Status zurueckgesetzt.`,
+    error: `Agent stuck — kein Event seit ${STUCK_TIMEOUT_MS / 1000}s (${lastEventCount} Events gesamt). Busy-Status zurueckgesetzt.`,
   })
 }
 
@@ -732,6 +785,13 @@ function setupProcessManagerEvents() {
     if (data.trim()) {
       log('CLI stderr: %s', data.trim())
     }
+  })
+
+  // Activity-Events: ProcessManager meldet jeden Stream-Event (assistant, user, etc.)
+  processManager.on('activity', (agentName: string, _eventType: string, eventCount: number) => {
+    if (agentName !== AGENT_NAME) return
+    lastEventTs = Date.now()
+    lastEventCount = eventCount
   })
 }
 

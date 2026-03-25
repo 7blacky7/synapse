@@ -193,19 +193,30 @@ class ProcessManager extends EventEmitter {
       let inputTokens = 0
       let outputTokens = 0
       let lastEventTs = Date.now()
+      let eventCount = 0
 
-      const timeoutId = setTimeout(() => {
+      // Sliding timeout: resets on every event (120s without ANY event = stuck)
+      let timeoutId = setTimeout(onTimeout, timeoutMs)
+
+      function onTimeout() {
         cleanup()
         reject(
           new Error(
-            `Agent "${agent.agentName}" Timeout nach ${timeoutMs / 1000}s ohne result-Event (letztes Event vor ${Math.round((Date.now() - lastEventTs) / 1000)}s)`,
+            `Agent "${agent.agentName}" Timeout nach ${timeoutMs / 1000}s ohne Event (${eventCount} Events total, letztes vor ${Math.round((Date.now() - lastEventTs) / 1000)}s)`,
           ),
         )
-      }, timeoutMs)
+      }
+
+      function resetTimeout() {
+        clearTimeout(timeoutId)
+        timeoutId = setTimeout(onTimeout, timeoutMs)
+      }
 
       const onLine = (line: string) => {
         if (!line.trim()) return
         lastEventTs = Date.now()
+        eventCount++
+        resetTimeout()
 
         let event: StreamEvent
         try {
@@ -216,6 +227,9 @@ class ProcessManager extends EventEmitter {
         }
 
         console.error(`[ProcessManager:${agent.agentName}] Event: ${event.type}${event.type === 'result' ? ` (${event.usage?.input_tokens ?? 0}in/${event.usage?.output_tokens ?? 0}out)` : ''}`)
+
+        // Emit activity event for wrapper to track
+        this.emit('activity', agent.agentName, event.type, eventCount)
 
         if (event.type === 'assistant' && event.message?.content) {
           for (const block of event.message.content) {

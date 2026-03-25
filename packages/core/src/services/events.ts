@@ -142,23 +142,34 @@ export async function getPendingEvents(
 ): Promise<AgentEvent[]> {
   const pool = getPool();
 
+  // Nur Events liefern die NACH der Registrierung des Agenten erstellt wurden.
+  // Alte scope:'all' Events wurden bereits von damals aktiven Agenten bearbeitet —
+  // ein neuer Agent muss sie nicht nochmal acken.
+  // Direkt adressierte Events (scope: 'agent:<id>') werden immer geliefert.
   const result = await pool.query(
-    `SELECT id, project, event_type, priority, scope, source_id, payload, requires_ack, created_at
-     FROM agent_events
-     WHERE project = $1
-       AND (scope = 'all' OR scope = $2)
+    `SELECT e.id, e.project, e.event_type, e.priority, e.scope, e.source_id, e.payload, e.requires_ack, e.created_at
+     FROM agent_events e
+     WHERE e.project = $1
+       AND (e.scope = 'all' OR e.scope = $2)
        AND NOT EXISTS (
          SELECT 1 FROM agent_event_acks
-         WHERE agent_event_acks.event_id = agent_events.id
+         WHERE agent_event_acks.event_id = e.id
            AND agent_event_acks.agent_id = $3
        )
+       AND (
+         e.scope = $2
+         OR e.created_at > COALESCE(
+           (SELECT registered_at FROM agent_sessions WHERE id = $3),
+           NOW() - INTERVAL '1 hour'
+         )
+       )
      ORDER BY
-       CASE priority
+       CASE e.priority
          WHEN 'critical' THEN 0
          WHEN 'high' THEN 1
          ELSE 2
        END ASC,
-       created_at ASC`,
+       e.created_at ASC`,
     [project, `agent:${agentId}`, agentId]
   );
 
