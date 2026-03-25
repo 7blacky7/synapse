@@ -186,14 +186,26 @@ class ProcessManager extends EventEmitter {
   private writeAndCollect(
     agent: AgentProcess,
     message: string,
+    timeoutMs: number = 120_000,
   ): Promise<SendMessageResult> {
     return new Promise((resolve, reject) => {
       const contentParts: string[] = []
       let inputTokens = 0
       let outputTokens = 0
+      let lastEventTs = Date.now()
+
+      const timeoutId = setTimeout(() => {
+        cleanup()
+        reject(
+          new Error(
+            `Agent "${agent.agentName}" Timeout nach ${timeoutMs / 1000}s ohne result-Event (letztes Event vor ${Math.round((Date.now() - lastEventTs) / 1000)}s)`,
+          ),
+        )
+      }, timeoutMs)
 
       const onLine = (line: string) => {
         if (!line.trim()) return
+        lastEventTs = Date.now()
 
         let event: StreamEvent
         try {
@@ -237,6 +249,7 @@ class ProcessManager extends EventEmitter {
       }
 
       const cleanup = () => {
+        clearTimeout(timeoutId)
         agent.stdout.off('line', onLine)
         agent.proc.off('exit', onExit)
         agent.proc.off('error', onError)

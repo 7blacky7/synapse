@@ -64,8 +64,12 @@ let totalInputTokens = 0
 let totalOutputTokens = 0
 let lastActivityTs = new Date().toISOString()
 let agentBusy = false
+let agentBusySince = 0
+let tokensAtBusyStart = 0
 let shuttingDown = false
 let processAlive = true
+
+const STUCK_TIMEOUT_MS = 120_000 // 2 Minuten ohne Token-Fortschritt = stuck
 
 // ---------------------------------------------------------------------------
 // Instances
@@ -361,6 +365,8 @@ async function startAgentProcess(systemPrompt: string): Promise<void> {
 
 async function wakeAgent(message: string): Promise<SendMessageResult> {
   agentBusy = true
+  agentBusySince = Date.now()
+  tokensAtBusyStart = totalInputTokens + totalOutputTokens
   lastActivityTs = new Date().toISOString()
 
   try {
@@ -397,6 +403,17 @@ async function heartbeatPoll() {
   if (shuttingDown || !processAlive) return
 
   try {
+    // Stuck-Detection: Agent busy aber kein Token-Fortschritt seit STUCK_TIMEOUT_MS
+    if (agentBusy && agentBusySince > 0) {
+      const elapsed = Date.now() - agentBusySince
+      const currentTokens = totalInputTokens + totalOutputTokens
+      if (elapsed > STUCK_TIMEOUT_MS && currentTokens === tokensAtBusyStart) {
+        log('STUCK erkannt: busy seit %ds, 0 Token-Fortschritt — starte Recovery', Math.round(elapsed / 1000))
+        await recoverStuckAgent()
+        return // Nach Recovery normalen Heartbeat beim naechsten Intervall
+      }
+    }
+
     const hadChannelMessages = await pollChannelMessages()
     const hadInboxMessages = await pollInboxMessages()
     const hadSynapseItems = await pollSynapseItems()
@@ -416,6 +433,51 @@ async function heartbeatPoll() {
     }
   } catch (err) {
     log('Heartbeat poll error: %s', err)
+  }
+}
+
+/**
+ * Recovery bei stuck Agent: Claude-Prozess neu starten und Aufgabe erneut senden.
+ */
+async function recoverStuckAgent(): Promise<void> {
+  agentBusy = false
+  agentBusySince = 0
+
+  broadcastNotification('agent_error', {
+    error: `Agent stuck — kein Token-Fortschritt seit ${STUCK_TIMEOUT_MS / 1000}s. Starte Recovery.`,
+  })
+
+  try {
+    // Claude-Prozess stoppen
+    await processManager.stop(AGENT_NAME)
+    processAlive = false
+
+    // Token-Zaehler zuruecksetzen (Watermarks behalten!)
+    totalInputTokens = 0
+    totalOutputTokens = 0
+
+    // System-Prompt neu laden und Claude neu starten
+    const systemPrompt = await readFile(SYSTEM_PROMPT_FILE, 'utf-8')
+    await startAgentProcess(systemPrompt)
+
+    log('Recovery: Claude-Prozess neu gestartet')
+
+    // Agent mit Onboarding wecken (Task ist im System-Prompt)
+    const recoveryPrompt = `Du wurdest nach einem Stuck-Recovery neu gestartet.
+Dein Claude-Prozess hat 2 Minuten lang nicht reagiert und wurde automatisch neu gestartet.
+
+ERSTE AKTIONEN:
+1. Lies deine SKILL.md und MEMORY.md
+2. Pruefe Channels und Inbox auf Nachrichten
+3. Fuehre deine Aufgabe aus (steht in deinem System-Prompt unter "Aktuelle Aufgabe")`
+
+    await wakeAgent(recoveryPrompt)
+    log('Recovery: Agent erfolgreich geweckt')
+  } catch (err) {
+    log('Recovery fehlgeschlagen: %s', err)
+    broadcastNotification('agent_error', {
+      error: `Recovery fehlgeschlagen: ${err instanceof Error ? err.message : String(err)}`,
+    })
   }
 }
 
