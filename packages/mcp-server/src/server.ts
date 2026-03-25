@@ -468,8 +468,8 @@ export function createServer(): Server {
         case 'event': {
           const eventAction = (args as Record<string, unknown>)?.action as string;
 
-          // SONDER-LOGIK: "acknowledge" mit eventIgnoreCount Reset
-          if (eventAction === 'acknowledge') {
+          // SONDER-LOGIK: "ack" mit eventIgnoreCount Reset
+          if (eventAction === 'ack') {
             const eventId = (args as Record<string, unknown>)?.event_id as number;
             const ackAgentId = (args as Record<string, unknown>)?.agent_id as string;
             const reaction = (args as Record<string, unknown>)?.reaction as string | undefined;
