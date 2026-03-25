@@ -80,9 +80,11 @@ import {
   postToInboxTool,
   checkInboxTool,
   getAgentCapabilitiesTool,
+  getProjectPath,
 } from './tools/index.js';
 
 import { getPendingEvents } from '@synapse/core';
+import { ensureAgentsSchema, detectClaudeCli, heartbeatController, readStatus, postToInbox, postMessage } from '@synapse/agents';
 
 /** Tracking: Wann hat ein Agent zuletzt Chat gelesen? */
 const lastChatRead = new Map<string, string>();
@@ -1141,6 +1143,7 @@ export function createServer(): Server {
           properties: {
             id: { type: 'string', description: 'Einzigartige Agent-ID' },
             project: { type: 'string', description: 'Projekt-Name' },
+            project_path: { type: 'string', description: 'Absoluter Pfad zum Projekt-Ordner (optional, fuer Specialist-System)' },
             model: { type: 'string', description: 'Modell-Name (z.B. claude-opus-4-6, gpt-4o)' },
             cutoff_date: { type: 'string', description: 'Wissens-Cutoff (YYYY-MM-DD), wird bei bekannten Modellen auto-erkannt' },
           },
@@ -1198,11 +1201,12 @@ export function createServer(): Server {
       },
       {
         name: 'send_chat_message',
-        description: 'Sendet eine Nachricht. Ohne recipient_id = Broadcast an alle. Mit recipient_id = DM.',
+        description: 'Sendet eine Nachricht. Ohne recipient_id = Broadcast an alle. Mit recipient_id = DM. Wenn der Empfaenger ein Spezialist ist, wird automatisch das Specialist-Inbox-System genutzt.',
         inputSchema: {
           type: 'object',
           properties: {
             project: { type: 'string', description: 'Projekt-Name' },
+            project_path: { type: 'string', description: 'Absoluter Pfad zum Projekt-Ordner (optional, fuer Specialist-Routing)' },
             sender_id: { type: 'string', description: 'Absender Agent-ID' },
             content: { type: 'string', description: 'Nachrichteninhalt' },
             recipient_id: { type: 'string', description: 'Empfaenger Agent-ID (leer = Broadcast)' },
@@ -1212,11 +1216,12 @@ export function createServer(): Server {
       },
       {
         name: 'get_chat_messages',
-        description: 'Holt Chat-Nachrichten. Mit since fuer Polling (nur neue Nachrichten seit Zeitpunkt).',
+        description: 'Holt Chat-Nachrichten. Mit since fuer Polling (nur neue Nachrichten seit Zeitpunkt). Inkludiert automatisch Specialist-Inbox-Nachrichten wenn project_path angegeben.',
         inputSchema: {
           type: 'object',
           properties: {
             project: { type: 'string', description: 'Projekt-Name' },
+            project_path: { type: 'string', description: 'Absoluter Pfad zum Projekt-Ordner (optional, fuer Specialist-Inbox)' },
             agent_id: { type: 'string', description: 'Eigene Agent-ID (filtert relevante DMs)' },
             since: { type: 'string', description: 'ISO-Timestamp, nur Nachrichten danach (fuer Polling)' },
             sender_id: { type: 'string', description: 'Optional: Nur Nachrichten von diesem Absender' },
@@ -1227,11 +1232,12 @@ export function createServer(): Server {
       },
       {
         name: 'list_chat_agents',
-        description: 'Listet alle aktiven Agenten im Projekt-Chat',
+        description: 'Listet alle aktiven Agenten im Projekt-Chat. Inkludiert Spezialisten wenn project_path angegeben.',
         inputSchema: {
           type: 'object',
           properties: {
             project: { type: 'string', description: 'Projekt-Name' },
+            project_path: { type: 'string', description: 'Absoluter Pfad zum Projekt-Ordner (optional, listet auch Spezialisten)' },
           },
           required: ['project'],
         },
@@ -1667,6 +1673,23 @@ export function createServer(): Server {
         case 'stop_projekt': {
           const projectName = args?.project as string;
           const projectPath = args?.path as string | undefined;
+
+          // Stop all running specialists before stopping the project
+          const resolvedPath = projectPath ?? getProjectPath(projectName);
+          if (resolvedPath) {
+            try {
+              const agentStatus = await readStatus(resolvedPath);
+              for (const name of Object.keys(agentStatus.specialists)) {
+                if (heartbeatController.isConnected(name)) {
+                  try {
+                    await heartbeatController.sendStop(name);
+                    await heartbeatController.disconnectFromWrapper(name);
+                  } catch { /* best effort */ }
+                }
+              }
+            } catch { /* no status file yet — nothing to clean */ }
+          }
+
           const stopped = await stopProjekt(projectName, projectPath);
           return {
             content: [{
@@ -2301,4 +2324,29 @@ export async function startServer(): Promise<void> {
   await server.connect(transport);
 
   console.error('[Synapse MCP] Server gestartet (v0.2.0)');
+
+  // Step 1: Ensure agents DB schema exists before any tools are used
+  await ensureAgentsSchema();
+
+  // Step 2: Reconnect to running specialists and clean up orphans for all known projects
+  const cliInfo = detectClaudeCli();
+  if (cliInfo.available) {
+    for (const projectName of listActiveProjects()) {
+      const projectPath = getProjectPath(projectName);
+      if (!projectPath) continue;
+
+      const orphans = await heartbeatController.cleanupOrphans(projectPath);
+      if (orphans.length > 0) {
+        console.error(`[Synapse] Cleaned up ${orphans.length} orphaned agent sockets for "${projectName}"`);
+      }
+
+      const reconnected = await heartbeatController.reconnectAll(projectPath);
+      if (reconnected.connected.length > 0) {
+        console.error(`[Synapse] Reconnected to ${reconnected.connected.length} running specialists for "${projectName}"`);
+      }
+      if (reconnected.cleaned.length > 0) {
+        console.error(`[Synapse] Cleaned up ${reconnected.cleaned.length} stale specialist entries for "${projectName}"`);
+      }
+    }
+  }
 }
