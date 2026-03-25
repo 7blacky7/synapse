@@ -501,6 +501,19 @@ async function heartbeatPoll() {
         log('keepAlive wake failed: %s', err)
       }
     }
+
+    // Post-Turn Rotation-Check: wakeAgent() hat Tokens aktualisiert (syncTokensFromHistory),
+    // daher koennte der Context jetzt ueber 95% liegen obwohl der Check am Anfang
+    // des Heartbeats noch unter 95% war.
+    if (!agentBusy && processAlive) {
+      const postTotal = totalInputTokens + totalOutputTokens
+      const postCeiling = getContextCeiling()
+      if (postTotal >= postCeiling * 0.95) {
+        log('POST-TURN ROTATION: %dk/%dk (%d%%) — Agent-Turn hat Context ueber 95%% geschoben', Math.round(postTotal / 1000), Math.round(postCeiling / 1000), getContextPercent())
+        await rotateAgent()
+        return
+      }
+    }
   } catch (err) {
     log('Heartbeat poll error: %s', err)
   }

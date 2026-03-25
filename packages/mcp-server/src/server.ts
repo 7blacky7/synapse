@@ -327,10 +327,46 @@ export function createServer(): Server {
           // SONDER-LOGIK: "send" mit Specialist Dual-Path Routing
           if (chatAction === 'send') {
             const senderId = (args as Record<string, unknown>)?.sender_id as string;
-            const recipientId = (args as Record<string, unknown>)?.recipient_id as string | undefined;
+            const rawRecipientId = (args as Record<string, unknown>)?.recipient_id;
             const content = (args as Record<string, unknown>)?.content as string;
             const project = (args as Record<string, unknown>)?.project as string;
             const sendProjectPath = (args as Record<string, unknown>)?.project_path as string | undefined;
+
+            // Array-Support: Multicast an mehrere Empfaenger
+            if (Array.isArray(rawRecipientId)) {
+              const recipientIds = rawRecipientId as string[];
+              const results: Array<Record<string, unknown>> = [];
+              const errors: string[] = [];
+              for (const rid of recipientIds) {
+                try {
+                  // Specialist-Routing pro Empfaenger
+                  if (sendProjectPath) {
+                    try {
+                      const specStatus = await readStatus(sendProjectPath);
+                      if (specStatus.specialists[rid]) {
+                        const inboxResult = await postToInbox(senderId, rid, content);
+                        results.push({ success: true, routed: 'specialist_inbox', recipient: rid, ...inboxResult });
+                        continue;
+                      }
+                    } catch { /* Specialist-Status nicht verfuegbar */ }
+                  }
+                  const r = await sendChatMessage(project, senderId, content, rid);
+                  results.push(r as Record<string, unknown>);
+                } catch (err) {
+                  errors.push(`${rid}: ${err}`);
+                }
+              }
+              const preview = content.length > 80 ? content.slice(0, 80) + '...' : content;
+              try {
+                await server.sendLoggingMessage({
+                  level: 'info',
+                  data: `📨 Chat [${senderId} → Multicast(${recipientIds.join(',')})]: ${preview}`,
+                });
+              } catch { /* Logging nicht verfuegbar */ }
+              return { content: [{ type: 'text', text: JSON.stringify({ results, count: results.length, errors, action: 'send' }, null, 2) }] };
+            }
+
+            const recipientId = typeof rawRecipientId === 'string' ? rawRecipientId : undefined;
 
             // Dual-path: Specialist-Routing wenn project_path angegeben
             if (sendProjectPath) {
