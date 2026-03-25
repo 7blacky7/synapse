@@ -68,10 +68,10 @@ if [ "$HOOK_EVENT" != "SubagentStart" ]; then
 
     MSG="Synapse MCP aktiv | Projekt: ${PROJECT_NAME} | Status: ${PROJECT_STATUS}\n"
     MSG+="Du bist der KOORDINATOR. Lade: synapse-nutzung Skill\n"
-    MSG+="Session-Start: register_chat_agent(id:\"koordinator\" project:\"${PROJECT_NAME}\" model:\"claude-opus-4-6\")\n"
-    MSG+="Dann: get_chat_messages(project:\"${PROJECT_NAME}\" agent_id:\"koordinator\" limit:10)\n"
+    MSG+="Session-Start: chat(action: \"register\", id: \"koordinator\", project: \"${PROJECT_NAME}\", model: \"claude-opus-4-6\")\n"
+    MSG+="Dann: chat(action: \"get\", project: \"${PROJECT_NAME}\", agent_id: \"koordinator\", limit: 10)\n"
     MSG+="Agenten spawnen: Prompt-Baustein aus synapse-nutzung Skill einbetten\n"
-    MSG+="Tools: register_chat_agent, send_chat_message, get_chat_messages, search_tech_docs, get_docs_for_file"
+    MSG+="Tools: chat, search, memory, thought, docs, event, project (13 konsolidierte Tools mit action-Parameter)"
 
     CONTEXT=$(printf '%b' "$MSG")
     jq -nc --arg c "$CONTEXT" '{"hookSpecificOutput": {"hookEventName": "PreToolUse", "additionalContext": $c}}'
@@ -87,13 +87,13 @@ else
     MSG="=== SYNAPSE AGENT-ONBOARDING ===\n"
     MSG+="Projekt: ${PROJECT_NAME} | Deine ID: ${AGENT_ID}\n\n"
     MSG+="PFLICHT-SCHRITTE (ALLERERSTE Aktionen):\n"
-    MSG+="1. register_chat_agent(id:\"${AGENT_ID}\" project:\"${PROJECT_NAME}\")\n"
-    MSG+="2. get_index_stats(project:\"${PROJECT_NAME}\" agent_id:\"${AGENT_ID}\")\n"
-    MSG+="3. get_chat_messages(project:\"${PROJECT_NAME}\" agent_id:\"${AGENT_ID}\" limit:10)\n\n"
-    MSG+="SUCHE: IMMER zuerst semantic_code_search / search_memory. Glob/Grep nur Fallback.\n"
-    MSG+="CHAT: send_chat_message fuer Status. DM: recipient_id:\"koordinator\" bei Problemen.\n"
-    MSG+="ENDE: unregister_chat_agent(id:\"${AGENT_ID}\")\n"
-    MSG+="agent_id \"${AGENT_ID}\" an JEDEN Synapse-Aufruf. source \"${AGENT_ID}\" bei add_thought.\n"
+    MSG+="1. chat(action: \"register\", id: \"${AGENT_ID}\", project: \"${PROJECT_NAME}\")\n"
+    MSG+="2. admin(action: \"index_stats\", project: \"${PROJECT_NAME}\", agent_id: \"${AGENT_ID}\")\n"
+    MSG+="3. chat(action: \"get\", project: \"${PROJECT_NAME}\", agent_id: \"${AGENT_ID}\", limit: 10)\n\n"
+    MSG+="SUCHE: IMMER zuerst search(action: \"code\") / search(action: \"memory\"). Glob/Grep nur Fallback.\n"
+    MSG+="CHAT: chat(action: \"send\") fuer Status. DM: recipient_id: \"koordinator\" bei Problemen.\n"
+    MSG+="ENDE: chat(action: \"unregister\", id: \"${AGENT_ID}\")\n"
+    MSG+="agent_id \"${AGENT_ID}\" an JEDEN Synapse-Aufruf. source \"${AGENT_ID}\" bei thought(action: \"add\").\n"
     MSG+="=== ENDE AGENT-ONBOARDING ===\n"
 
     ORIGINAL_PROMPT=$(echo "$INPUT" | jq -r '.subagent_prompt // ""')

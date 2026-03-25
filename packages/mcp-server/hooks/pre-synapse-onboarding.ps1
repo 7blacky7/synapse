@@ -132,7 +132,7 @@ if ($thoughts.Count -gt 0) {
     }
 }
 
-$msg += "Synapse-Tools: mcp__synapse__read_memory (project:`"$projectName`" name:`"projekt-regeln`" agent_id:`"dein-name`"), mcp__synapse__search_thoughts, mcp__synapse__add_thought"
+$msg += "Synapse-Tools: memory(action: 'read', project: '$projectName', name: 'projekt-regeln', agent_id: 'dein-name'), search(action: 'thoughts'), thought(action: 'add')"
 
 # ============================================
 # Output je nach Event-Typ

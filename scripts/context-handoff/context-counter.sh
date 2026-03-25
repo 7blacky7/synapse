@@ -40,7 +40,7 @@ CRIT_PCT="${CONTEXT_CRIT_PERCENT:-98}"
 
 if [ "$USED_PCT" -ge "$CRIT_PCT" ] 2>/dev/null; then
   jq -n \
-    --arg ctx "CONTEXT-LIMIT KRITISCH (${USED_PCT}% verbraucht) — SOFORTIGER HANDOFF NOETIG! 1) Aktuellen Schritt sauber abschliessen (commit!) 2) Session-Handoff ausfuehren: add_thought + write_memory 3) KEINE neuen Tasks!" \
+    --arg ctx "CONTEXT-LIMIT KRITISCH (${USED_PCT}% verbraucht) — SOFORTIGER HANDOFF NOETIG! 1) Aktuellen Schritt sauber abschliessen (commit!) 2) Session-Handoff ausfuehren: thought(action: 'add') + memory(action: 'write') 3) KEINE neuen Tasks!" \
     '{"hookSpecificOutput":{"hookEventName":"PostToolUse","additionalContext":$ctx}}'
 
 elif [ "$USED_PCT" -ge "$WARN_PCT" ] 2>/dev/null; then

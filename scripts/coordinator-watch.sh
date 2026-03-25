@@ -74,7 +74,7 @@ while true; do
     echo "🔔 KOORDINATOR AUFWACHEN! [${PROJECT}]"
     printf '%s\n' "${PARTS[@]}"
     echo ""
-    echo "→ get_chat_messages + get_pending_events aufrufen!"
+    echo "→ chat(action: 'get') + event(action: 'pending') aufrufen!"
     echo "→ Danach Watcher neu starten: bash ~/dev/synapse/scripts/coordinator-watch.sh ${PROJECT} ${AGENT_ID} ${INTERVAL}"
     exit 0
   fi

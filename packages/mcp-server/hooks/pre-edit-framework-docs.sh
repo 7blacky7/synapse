@@ -112,7 +112,7 @@ if [ ${#NEW_FW[@]} -eq 0 ]; then exit 0; fi
 FW_LIST=$(printf '%s, ' "${NEW_FW[@]}")
 FW_LIST="${FW_LIST%, }"
 
-CONTEXT_MSG="=== SYNAPSE TECH-DOCS (EINMALIG) ===\nErkannte Frameworks: ${FW_LIST}\n\nDocs verfuegbar — DIESER HINWEIS WIRD NUR EINMAL ANGEZEIGT.\nVerwende jetzt:\n  search_tech_docs(query: \"${FW_LIST}\", scope: \"all\")"
+CONTEXT_MSG="=== SYNAPSE TECH-DOCS (EINMALIG) ===\nErkannte Frameworks: ${FW_LIST}\n\nDocs verfuegbar — DIESER HINWEIS WIRD NUR EINMAL ANGEZEIGT.\nVerwende jetzt:\n  docs(action: \"search\", query: \"${FW_LIST}\", scope: \"all\")"
 
 jq -nc --arg c "$(printf '%b' "$CONTEXT_MSG")" \
   '{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":$c}}'

@@ -39,8 +39,10 @@ fi
 LASTSEEN_FILE="/tmp/synapse-chat-lastseen-${AGENT_ID}"
 LASTCHECK_FILE="/tmp/synapse-chat-lastcheck-${AGENT_ID}"
 
-# get_chat_messages → gelesen markieren
-if [[ "$TOOL_NAME" == *"get_chat_messages"* ]]; then
+# chat(action: "get") → gelesen markieren
+# Konsolidierte Tools: mcp__synapse__chat mit action "get"
+TOOL_ACTION=$(echo "$INPUT" | jq -r '.tool_input.action // empty' 2>/dev/null || echo "")
+if [[ "$TOOL_NAME" == *"chat"* && "$TOOL_ACTION" == "get" ]] || [[ "$TOOL_NAME" == *"get_chat_messages"* ]]; then
   date -u +"%Y-%m-%dT%H:%M:%SZ" > "$LASTSEEN_FILE"
   exit 0
 fi
@@ -75,7 +77,7 @@ if [[ "$EVENT_COUNT" -gt 0 ]]; then
     const events = JSON.parse(require('fs').readFileSync(0,'utf8'));
     events.map(e => {
       const prefix = e.priority === 'critical' ? '⛔ PFLICHT' : '⚠️';
-      return prefix + ' EVENT ' + e.event_type + ' (' + e.priority + ') von ' + e.source_id + ': ' + (e.payload || 'Keine Details') + '. Reagiere mit: acknowledge_event(event_id: ' + e.id + ')';
+      return prefix + ' EVENT ' + e.event_type + ' (' + e.priority + ') von ' + e.source_id + ': ' + (e.payload || 'Keine Details') + '. Reagiere mit: event(action: \"ack\", event_id: ' + e.id + ')';
     }).join('\\n');
   " 2>/dev/null || echo "")
 fi

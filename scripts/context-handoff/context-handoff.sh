@@ -145,24 +145,28 @@ HANDOFF_PROMPT="Du bist die Fortsetzung einer vorherigen Session die wegen Conte
 
 PFLICHT — Fuehre diese Schritte in DIESER Reihenfolge aus:
 
-1. Registrieren:
-   register_chat_agent(id: 'koordinator', project: '${PROJEKT_NAME}')
+1. Lade den synapse-nutzung Skill (er enthaelt deine Arbeitsregeln)
 
-2. Handoff-Kontext laden:
-   search_thoughts(query: 'session-uebergabe', project: '${PROJEKT_NAME}')
+2. Projekt starten (FileWatcher + Spezialisten-Reconnect):
+   project(action: 'init', path: '${PROJECT_DIR}', name: '${PROJEKT_NAME}', agent_id: 'koordinator')
+
+3. Registrieren:
+   chat(action: 'register', id: 'koordinator', project: '${PROJEKT_NAME}')
+
+4. Handoff-Kontext laden:
+   thought(action: 'get', query: 'session-uebergabe', project: '${PROJEKT_NAME}')
    → Lies den Thought, extrahiere CHAT-SEIT Timestamp
 
-3. Chat-Verlauf laden (nur relevante Nachrichten):
-   get_chat_messages(project: '${PROJEKT_NAME}', agent_id: 'koordinator', since: '<CHAT-SEIT>', limit: 20)
-   → Kontext von anderen Agenten und vorheriger Session
+5. Chat-Verlauf laden (nur relevante Nachrichten):
+   chat(action: 'get', project: '${PROJEKT_NAME}', agent_id: 'koordinator', since: '<CHAT-SEIT>', limit: 20)
 
-4. Handoff-Thought loeschen nach dem Lesen
+6. Handoff-Thought loeschen nach dem Lesen
 
-5. Aufgabe: ${AUFGABE}
+7. Aufgabe: ${AUFGABE}
 
 WICHTIG:
 - ZUERST Kontext lesen, DANN arbeiten
-- Synapse-Regeln befolgen (synapse-nutzung Skill laden)"
+- Synapse-Regeln befolgen"
 
 # --- Handoff-Daten schreiben (wird vom Wrapper gelesen) ---
 

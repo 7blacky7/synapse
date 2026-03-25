@@ -2,7 +2,7 @@
 # post-edit-framework-docs.sh
 # Erkennt Frameworks in bearbeiteten Code-Dateien und zeigt verfuegbare Docs an
 # Liest aus Synapse Qdrant 6333: tech_docs_cache Collection
-# Integriert in Synapse — nutzt dasselbe System wie search_tech_docs / add_tech_doc
+# Integriert in Synapse — nutzt dasselbe System wie docs(action: "search") / docs(action: "add")
 
 set -euo pipefail
 
@@ -166,9 +166,9 @@ done
 
 # Context-Message bauen
 if [ "$TOTAL_DOCS" -gt 0 ]; then
-  CONTEXT_MSG="=== SYNAPSE TECH-DOCS ===\nErkannte Frameworks: ${FW_LIST}${DOCS_OUTPUT}\n\nMehr Context: search_tech_docs(query: \"...\", scope: \"all\") fuer globale + projekt-spezifische Docs."
+  CONTEXT_MSG="=== SYNAPSE TECH-DOCS ===\nErkannte Frameworks: ${FW_LIST}${DOCS_OUTPUT}\n\nMehr Context: docs(action: \"search\", query: \"...\", scope: \"all\") fuer globale + projekt-spezifische Docs."
 else
-  CONTEXT_MSG="=== SYNAPSE TECH-DOCS ===\nErkannte Frameworks: ${FW_LIST}\n\nDocs verfuegbar! Abrufen mit:\n  search_tech_docs(query: \"${FW_LIST}\", scope: \"all\")"
+  CONTEXT_MSG="=== SYNAPSE TECH-DOCS ===\nErkannte Frameworks: ${FW_LIST}\n\nDocs verfuegbar! Abrufen mit:\n  docs(action: \"search\", query: \"${FW_LIST}\", scope: \"all\")"
 fi
 
 # Output als JSON
