@@ -30,6 +30,7 @@ import {
   getProjectStatus,
   writeMemory,
 } from '@synapse/core';
+import { SERVER_INSTANCE_ID } from '../server.js';
 
 /** Regel-Memory fuer Onboarding-Response */
 export interface OnboardingRule {
@@ -130,8 +131,8 @@ export async function checkAgentOnboarding(
     return null;
   }
 
-  // Agent registrieren (gibt true zurueck wenn NEU)
-  const isFirstVisit = registerAgent(path, agentId);
+  // Agent bekannt in dieser Server-Instanz? (prueft PG agent_sessions + server_instance_id)
+  const isFirstVisit = await registerAgent(project, agentId, SERVER_INSTANCE_ID);
 
   if (!isFirstVisit) {
     // Agent bereits bekannt - keine Regeln

@@ -69,8 +69,12 @@ CREATE TABLE IF NOT EXISTS agent_sessions (
   model TEXT,
   cutoff_date DATE,
   status TEXT DEFAULT 'active',
+  server_instance_id TEXT,
   registered_at TIMESTAMPTZ DEFAULT NOW()
 );
+
+-- Migration: server_instance_id nachtraeglich hinzufuegen
+ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS server_instance_id TEXT;
 
 CREATE TABLE IF NOT EXISTS chat_messages (
   id SERIAL PRIMARY KEY,

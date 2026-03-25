@@ -1,8 +1,9 @@
 /**
  * Synapse MCP - Server
- * MCP Server Implementation mit 12 konsolidierten Tools
+ * MCP Server Implementation mit 13 konsolidierten Tools
  */
 
+import { randomUUID } from 'crypto';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import {
@@ -39,6 +40,10 @@ import {
   docsTool,
   adminTool,
 } from './tools/consolidated/index.js';
+
+/** Eindeutige ID dieser Server-Instanz — bei Neustart neu generiert.
+ *  Wird fuer Session-basiertes Onboarding verwendet: neue Instance = neues Onboarding. */
+export const SERVER_INSTANCE_ID = randomUUID();
 
 /** Tracking: Wann hat ein Agent zuletzt Chat gelesen? */
 const lastChatRead = new Map<string, string>();

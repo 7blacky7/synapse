@@ -28,6 +28,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { v4 as uuidv4 } from 'uuid';
+import { getPool } from '../db/client.js';
 
 const STATUS_DIR = '.synapse';
 const STATUS_FILE = 'status.json';
@@ -39,7 +40,6 @@ export interface ProjectStatus {
   initialized: string;  // ISO Timestamp
   lastAccess: string;   // ISO Timestamp
   status: 'active' | 'stopped';
-  knownAgents: string[];  // Liste bekannter Agent-IDs fuer Onboarding
   setupPhase?: 'none' | 'initial-pending' | 'initial-done' | 'post-indexing-pending' | 'complete';
 }
 
@@ -97,7 +97,6 @@ export function setProjectStatus(
     initialized: existing?.initialized ?? status.initialized ?? now,
     lastAccess: status.lastAccess ?? now,
     status: status.status ?? existing?.status ?? 'active',
-    knownAgents: status.knownAgents ?? existing?.knownAgents ?? [],
     setupPhase: status.setupPhase ?? existing?.setupPhase ?? 'none',
   };
 
@@ -139,33 +138,69 @@ export function clearProjectStatus(projectPath: string): void {
 }
 
 /**
- * Prueft ob ein Agent dem Projekt bereits bekannt ist
+ * Prueft ob ein Agent in dieser Server-Instanz bereits ongeboardet wurde.
+ * Nutzt server_instance_id in PG agent_sessions:
+ *   - Gleiche Instance-ID → Agent kennt die Regeln → false (nicht neu)
+ *   - Andere/keine Instance-ID → neue Session → true (Onboarding noetig)
+ *   - Kein Record → Agent komplett unbekannt → true + auto-INSERT
+ *
+ * @returns true wenn Agent NEU ist (Onboarding zeigen), false wenn bereits bekannt
  */
-export function isAgentKnown(projectPath: string, agentId: string): boolean {
-  const status = getProjectStatus(projectPath);
-  if (!status) {
-    return false;
+export async function registerAgent(
+  project: string,
+  agentId: string,
+  serverInstanceId: string
+): Promise<boolean> {
+  try {
+    const pool = getPool();
+
+    // Pruefen ob Agent mit dieser server_instance_id schon bekannt ist
+    const result = await pool.query(
+      `SELECT server_instance_id FROM agent_sessions WHERE id = $1 AND project = $2 LIMIT 1`,
+      [agentId, project]
+    );
+
+    if (result.rows.length === 0) {
+      // Agent komplett unbekannt → auto-INSERT + Onboarding
+      await pool.query(
+        `INSERT INTO agent_sessions (id, project, status, server_instance_id, registered_at)
+         VALUES ($1, $2, 'active', $3, NOW())
+         ON CONFLICT (id) DO UPDATE SET server_instance_id = $3`,
+        [agentId, project, serverInstanceId]
+      );
+      return true;
+    }
+
+    const currentInstanceId = result.rows[0].server_instance_id;
+    if (currentInstanceId === serverInstanceId) {
+      // Gleiche Server-Instanz → schon ongeboardet
+      return false;
+    }
+
+    // Andere/keine Instance-ID → neue Session → Onboarding + UPDATE
+    await pool.query(
+      `UPDATE agent_sessions SET server_instance_id = $3 WHERE id = $1 AND project = $2`,
+      [agentId, project, serverInstanceId]
+    );
+    return true;
+  } catch {
+    // Bei PG-Fehler sicherheitshalber Onboarding zeigen
+    return true;
   }
-  return status.knownAgents?.includes(agentId) ?? false;
 }
 
 /**
- * Registriert einen Agent als bekannt
- * Gibt true zurueck wenn Agent NEU war, false wenn bereits bekannt
+ * Prueft ob ein Agent dem Projekt bekannt ist (hat jemals einen Record in PG)
  */
-export function registerAgent(projectPath: string, agentId: string): boolean {
-  const status = getProjectStatus(projectPath);
-  if (!status) {
+export async function isAgentKnown(project: string, agentId: string): Promise<boolean> {
+  try {
+    const pool = getPool();
+    const result = await pool.query(
+      `SELECT 1 FROM agent_sessions WHERE id = $1 AND project = $2 LIMIT 1`,
+      [agentId, project]
+    );
+    return result.rows.length > 0;
+  } catch {
     return false;
   }
-
-  // Bereits bekannt?
-  if (status.knownAgents?.includes(agentId)) {
-    return false;
-  }
-
-  // Agent hinzufuegen
-  const knownAgents = [...(status.knownAgents || []), agentId];
-  setProjectStatus(projectPath, { knownAgents });
-  return true;
 }

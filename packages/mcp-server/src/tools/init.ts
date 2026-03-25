@@ -15,7 +15,7 @@
  *   - listActiveProjects: string[] - Namen aktiver Projekte
  *   - cleanupProjekt: deleted/checked/deletedFiles/keptFiles/details
  *   - getProjectStatusWithStats: status + Vektor-Statistiken
- *   - dropNamelist: clearedCount - Anzahl entfernter Agent-Eintraege
+ *   (dropNamelist entfernt — Onboarding jetzt via PG server_instance_id)
  *
  * NEBENEFFEKTE:
  *   - Qdrant: Erstellt project_<name>_code Collection, liest/schreibt project_plans
@@ -42,11 +42,11 @@ import {
   getProjectStatus,
   setProjectStatus,
   updateLastAccess,
-  isAgentKnown,
   registerAgent,
   getRulesForNewAgent,
 } from '@synapse/core';
 import type { FileWatcherInstance, DetectedTechnology, Memory } from '@synapse/core';
+import { SERVER_INSTANCE_ID } from '../server.js';
 import type { SetupQuestion } from './setup.js';
 
 /** Aktive FileWatcher pro Projekt */
@@ -106,7 +106,7 @@ async function tryReactivateProject(
     let rules: RuleMemory[] | undefined;
 
     if (agentId) {
-      isFirstVisit = registerAgent(projectPath, agentId);
+      isFirstVisit = await registerAgent(name, agentId, SERVER_INSTANCE_ID);
       if (isFirstVisit) {
         try {
           const ruleMemories = await getRulesForNewAgent(name);
@@ -177,7 +177,7 @@ async function tryReactivateProject(
   let rules: RuleMemory[] | undefined;
 
   if (agentId) {
-    isFirstVisit = registerAgent(projectPath, agentId);
+    isFirstVisit = await registerAgent(name, agentId, SERVER_INSTANCE_ID);
     if (isFirstVisit) {
       try {
         const ruleMemories = await getRulesForNewAgent(name);
@@ -336,7 +336,7 @@ export async function initProjekt(
 
   if (agentId) {
     // Pruefen ob Agent neu ist und registrieren
-    isFirstVisit = registerAgent(projectPath, agentId);
+    isFirstVisit = await registerAgent(name, agentId, SERVER_INSTANCE_ID);
 
     if (isFirstVisit) {
       // Regeln-Memories fuer neuen Agent laden
@@ -602,40 +602,3 @@ export async function getProjectStatusWithStats(
   }
 }
 
-/**
- * Leert die knownAgents-Liste in .synapse/status.json
- */
-export async function dropNamelist(projectPath: string): Promise<{
-  success: boolean;
-  message: string;
-  clearedCount?: number;
-}> {
-  const statusPath = path.join(projectPath, '.synapse', 'status.json');
-
-  if (!fs.existsSync(statusPath)) {
-    return {
-      success: false,
-      message: 'status.json nicht gefunden - Projekt nicht initialisiert',
-    };
-  }
-
-  try {
-    const statusContent = fs.readFileSync(statusPath, 'utf-8');
-    const status = JSON.parse(statusContent);
-    const clearedCount = status.knownAgents?.length || 0;
-    status.knownAgents = [];
-
-    fs.writeFileSync(statusPath, JSON.stringify(status, null, 2));
-
-    return {
-      success: true,
-      message: `knownAgents geleert (${clearedCount} Eintraege entfernt)`,
-      clearedCount,
-    };
-  } catch (error) {
-    return {
-      success: false,
-      message: `Fehler beim Leeren der knownAgents: ${error}`,
-    };
-  }
-}
