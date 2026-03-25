@@ -53,6 +53,44 @@ import { chunkFile } from '../chunking/index.js';
 import { readFileWithMetadata, getFileType, isExtractableDocument } from '../watcher/index.js';
 import { isMultimodalFile, getMediaMimeType, getMediaCategory } from '../watcher/binary.js';
 import { indexDocument, removeDocument } from './documents.js';
+import { getPool } from '../db/client.js';
+
+/**
+ * Schreibt File-Metadaten nach PostgreSQL (UPSERT)
+ */
+async function upsertCodeFile(
+  project: string,
+  filePath: string,
+  fileName: string,
+  fileType: string,
+  chunkCount: number,
+  fileSize: number
+): Promise<void> {
+  const pool = getPool();
+  const id = uuidv4();
+  await pool.query(
+    `INSERT INTO code_files (id, project, file_path, file_name, file_type, chunk_count, file_size, indexed_at, updated_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW())
+     ON CONFLICT (project, file_path) DO UPDATE SET
+       file_name = EXCLUDED.file_name,
+       file_type = EXCLUDED.file_type,
+       chunk_count = EXCLUDED.chunk_count,
+       file_size = EXCLUDED.file_size,
+       updated_at = NOW()`,
+    [id, project, filePath, fileName, fileType, chunkCount, fileSize]
+  );
+}
+
+/**
+ * Loescht File-Metadaten aus PostgreSQL
+ */
+async function deleteCodeFile(project: string, filePath: string): Promise<void> {
+  const pool = getPool();
+  await pool.query(
+    'DELETE FROM code_files WHERE project = $1 AND file_path = $2',
+    [project, filePath]
+  );
+}
 
 /**
  * Indexiert eine Datei in Qdrant (Upsert-Verhalten: loescht alte Chunks zuerst)
@@ -106,6 +144,21 @@ export async function indexFile(
   // In Qdrant einfuegen
   await insertVectors(collectionName, items);
 
+  // Dual-Write: File-Metadaten nach PostgreSQL
+  try {
+    const fileSize = fs.statSync(filePath).size;
+    await upsertCodeFile(
+      projectName,
+      filePath,
+      path.basename(filePath),
+      fileData.fileType,
+      chunks.length,
+      fileSize
+    );
+  } catch (pgErr) {
+    console.warn(`[Synapse] PG code_files Write fehlgeschlagen: ${pgErr}`);
+  }
+
   console.error(`[Synapse] Indexiert: ${path.basename(filePath)} (${chunks.length} Chunks)`);
   return chunks.length;
 }
@@ -135,6 +188,14 @@ export async function removeFile(
 ): Promise<void> {
   const collectionName = COLLECTIONS.projectCode(projectName);
   await deleteByFilePath(collectionName, filePath);
+
+  // Dual-Delete: Auch aus PostgreSQL entfernen
+  try {
+    await deleteCodeFile(projectName, filePath);
+  } catch (pgErr) {
+    console.warn(`[Synapse] PG code_files Delete fehlgeschlagen: ${pgErr}`);
+  }
+
   console.error(`[Synapse] Entfernt: ${path.basename(filePath)}`);
 }
 
@@ -379,6 +440,73 @@ export async function searchCode(
 }
 
 /**
+ * Befuellt code_files aus bestehenden Qdrant-Vektoren (einmaliger Backfill)
+ * Wird bei project init aufgerufen wenn PG-Tabelle leer ist aber Qdrant Daten hat
+ */
+export async function backfillCodeFiles(projectName: string): Promise<number> {
+  const pool = getPool();
+  const collectionName = COLLECTIONS.projectCode(projectName);
+
+  // Pruefen ob code_files bereits befuellt ist
+  const existing = await pool.query(
+    'SELECT COUNT(*) FROM code_files WHERE project = $1',
+    [projectName]
+  );
+  if (parseInt(existing.rows[0].count, 10) > 0) {
+    return 0; // Bereits befuellt
+  }
+
+  // Alle Chunks aus Qdrant lesen
+  const { scrollVectors } = await import('../qdrant/operations.js');
+  const allChunks = await scrollVectors<CodeChunkPayload>(collectionName, {}, 10000);
+
+  if (allChunks.length === 0) return 0;
+
+  // Unique file_paths mit Metadaten aggregieren
+  const fileMap = new Map<string, {
+    fileName: string;
+    fileType: string;
+    chunkCount: number;
+  }>();
+
+  for (const chunk of allChunks) {
+    const fp = chunk.payload.file_path;
+    const entry = fileMap.get(fp);
+    if (entry) {
+      entry.chunkCount++;
+    } else {
+      fileMap.set(fp, {
+        fileName: chunk.payload.file_name,
+        fileType: chunk.payload.file_type,
+        chunkCount: 1,
+      });
+    }
+  }
+
+  // Batch-Insert in PostgreSQL
+  let inserted = 0;
+  for (const [filePath, meta] of fileMap) {
+    try {
+      let fileSize = 0;
+      try { fileSize = fs.statSync(filePath).size; } catch { /* Datei evtl. geloescht */ }
+
+      await pool.query(
+        `INSERT INTO code_files (id, project, file_path, file_name, file_type, chunk_count, file_size, indexed_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW())
+         ON CONFLICT (project, file_path) DO NOTHING`,
+        [uuidv4(), projectName, filePath, meta.fileName, meta.fileType, meta.chunkCount, fileSize]
+      );
+      inserted++;
+    } catch (err) {
+      console.warn(`[Synapse] Backfill fehlgeschlagen fuer ${filePath}: ${err}`);
+    }
+  }
+
+  console.error(`[Synapse] Backfill: ${inserted} Dateien aus Qdrant nach code_files kopiert`);
+  return inserted;
+}
+
+/**
  * Gibt Statistiken ueber ein Projekt zurueck
  */
 export async function getProjectStats(projectName: string): Promise<{
@@ -395,11 +523,70 @@ export async function getProjectStats(projectName: string): Promise<{
       return null;
     }
 
+    // fileCount aus PostgreSQL statt Qdrant
+    let fileCount = 0;
+    try {
+      const pool = getPool();
+      const result = await pool.query(
+        'SELECT COUNT(*) FROM code_files WHERE project = $1',
+        [projectName]
+      );
+      fileCount = parseInt(result.rows[0].count, 10);
+    } catch {
+      // PG nicht verfuegbar — Fallback auf 0
+    }
+
     return {
-      fileCount: 0, // TODO: Berechnen aus unique file_paths
+      fileCount,
       chunkCount: stats.pointsCount,
     };
   } catch {
     return null;
   }
+}
+
+/**
+ * Sucht Dateien nach Pfad-Pattern in PostgreSQL
+ * Glob-Patterns werden zu SQL LIKE/Regex konvertiert
+ */
+export async function searchFilesByPath(
+  project: string,
+  pathPattern: string,
+  options: { contentPattern?: string; limit?: number } = {}
+): Promise<Array<{
+  filePath: string;
+  fileName: string;
+  fileType: string;
+  chunkCount: number;
+  fileSize: number;
+}>> {
+  const { limit = 50 } = options;
+  const pool = getPool();
+
+  // Glob → SQL: Einfache Konvertierung
+  // * → % (beliebige Zeichen ohne /)
+  // ** → % (beliebige Zeichen inkl. /)
+  // ? → _ (ein Zeichen)
+  const sqlPattern = pathPattern
+    .replace(/\*\*/g, '⚡DOUBLESTAR⚡')
+    .replace(/\*/g, '[^/]*')
+    .replace(/⚡DOUBLESTAR⚡/g, '.*')
+    .replace(/\?/g, '.');
+
+  const result = await pool.query(
+    `SELECT file_path, file_name, file_type, chunk_count, file_size
+     FROM code_files
+     WHERE project = $1 AND file_path ~ $2
+     ORDER BY file_path
+     LIMIT $3`,
+    [project, sqlPattern, limit]
+  );
+
+  return result.rows.map(row => ({
+    filePath: row.file_path,
+    fileName: row.file_name,
+    fileType: row.file_type,
+    chunkCount: row.chunk_count,
+    fileSize: row.file_size,
+  }));
 }

@@ -88,6 +88,8 @@ export {
   handleFileEvent,
   searchCode,
   getProjectStats,
+  searchFilesByPath,
+  backfillCodeFiles,
   // Media
   indexMediaFile,
   indexMediaDirectory,
@@ -395,6 +397,16 @@ export async function initSynapse(projectName: string): Promise<boolean> {
   // 5. Globale + Projekt-Collections sicherstellen
   await ensureAllCollections();
   await ensureProjectCollections(projectName);
+
+  // 6. code_files Backfill (einmalig: Qdrant → PostgreSQL)
+  if (dbOk) {
+    try {
+      const { backfillCodeFiles } = await import('./services/code.js');
+      await backfillCodeFiles(projectName);
+    } catch (err) {
+      console.warn(`[Synapse] code_files Backfill fehlgeschlagen: ${err}`);
+    }
+  }
 
   console.error(`[Synapse] Projekt "${projectName}" bereit`);
   return true;

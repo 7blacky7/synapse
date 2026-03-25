@@ -24,7 +24,7 @@
  *   - Media-Indexierung schreibt in project_<name>_media Collection
  */
 
-import { searchCode, searchMedia, indexMediaFile, indexMediaDirectory, searchDocsWithFallback, scrollVectors, searchDocuments } from '@synapse/core';
+import { searchCode, searchMedia, indexMediaFile, indexMediaDirectory, searchDocsWithFallback, searchDocuments, searchFilesByPath } from '@synapse/core';
 import type { CodeSearchResult, DocSearchResult, DocumentSearchResult, MediaSearchResult } from '@synapse/core';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -139,8 +139,9 @@ interface CodeChunkPayload {
 }
 
 /**
- * Exakte Pfadsuche - findet Code nach Pfad-Pattern (kein Embedding)
+ * Exakte Pfadsuche - findet Dateien nach Pfad-Pattern via PostgreSQL
  * Unterstützt Glob-Patterns wie: "backend/src/*", "*.ts", "** /utils/*"
+ * Nutzt code_files Tabelle statt Qdrant-Scroll (schnell + zuverlaessig)
  */
 export async function searchByPath(
   project: string,
@@ -155,61 +156,22 @@ export async function searchByPath(
     filePath: string;
     fileName: string;
     fileType: string;
-    lineStart: number;
-    lineEnd: number;
-    content: string;
+    chunkCount: number;
+    fileSize: number;
   }>;
   totalMatches: number;
   message: string;
 }> {
-  const { contentPattern, limit = 50 } = options;
+  const { limit = 50 } = options;
 
   try {
-    const collectionName = `project_${project}_code`;
-
-    // Alle Vektoren holen
-    const allPoints = await scrollVectors<CodeChunkPayload>(
-      collectionName,
-      {},
-      10000
-    );
-
-    // Nach Pfad-Pattern filtern
-    let matches = allPoints.filter((point) => {
-      const filePath = point.payload?.file_path || '';
-      // Normalisiere Pfade für Cross-Platform
-      const normalizedPath = filePath.replace(/\\/g, '/');
-      return minimatch(normalizedPath, pathPattern, { matchBase: true });
-    });
-
-    // Optional: Nach Content filtern
-    if (contentPattern) {
-      const regex = new RegExp(contentPattern, 'i');
-      matches = matches.filter((point) => {
-        const content = point.payload?.content || '';
-        return regex.test(content);
-      });
-    }
-
-    const totalMatches = matches.length;
-
-    // Limitieren
-    const limited = matches.slice(0, limit);
+    const results = await searchFilesByPath(project, pathPattern, { limit });
 
     return {
       success: true,
-      results: limited.map((p) => ({
-        filePath: p.payload.file_path,
-        fileName: p.payload.file_name,
-        fileType: p.payload.file_type,
-        lineStart: p.payload.line_start,
-        lineEnd: p.payload.line_end,
-        content: p.payload.content,
-      })),
-      totalMatches,
-      message: totalMatches > limit
-        ? `${limit} von ${totalMatches} Treffern angezeigt`
-        : `${totalMatches} Treffer gefunden`,
+      results,
+      totalMatches: results.length,
+      message: `${results.length} Treffer gefunden`,
     };
   } catch (error) {
     return {

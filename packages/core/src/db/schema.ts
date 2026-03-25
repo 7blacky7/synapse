@@ -10,7 +10,7 @@
  *
  * NEBENEFFEKTE:
  *   - PostgreSQL: Erstellt Tabellen memories, thoughts, plans, proposals,
- *     agent_sessions, chat_messages, tech_docs, agent_events, agent_event_acks
+ *     agent_sessions, chat_messages, tech_docs, code_files, agent_events, agent_event_acks
  *   - Legt Indizes fuer alle Projekt- und Zeitstempel-Felder an
  *   - Idempotent: CREATE TABLE IF NOT EXISTS / CREATE INDEX IF NOT EXISTS
  */
@@ -94,6 +94,19 @@ CREATE TABLE IF NOT EXISTS tech_docs (
   indexed_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS code_files (
+  id TEXT PRIMARY KEY,
+  project TEXT NOT NULL,
+  file_path TEXT NOT NULL,
+  file_name TEXT NOT NULL,
+  file_type TEXT NOT NULL,
+  chunk_count INTEGER DEFAULT 0,
+  file_size INTEGER DEFAULT 0,
+  indexed_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE(project, file_path)
+);
+
 CREATE TABLE IF NOT EXISTS agent_events (
   id SERIAL PRIMARY KEY,
   project TEXT NOT NULL,
@@ -123,6 +136,10 @@ CREATE INDEX IF NOT EXISTS idx_chat_messages_recipient ON chat_messages(recipien
 CREATE INDEX IF NOT EXISTS idx_agent_sessions_project ON agent_sessions(project);
 CREATE INDEX IF NOT EXISTS idx_tech_docs_framework ON tech_docs(framework, version);
 CREATE INDEX IF NOT EXISTS idx_tech_docs_hash ON tech_docs(content_hash);
+CREATE INDEX IF NOT EXISTS idx_code_files_project ON code_files(project);
+CREATE INDEX IF NOT EXISTS idx_code_files_path ON code_files(project, file_path);
+CREATE INDEX IF NOT EXISTS idx_code_files_type ON code_files(project, file_type);
+
 CREATE INDEX IF NOT EXISTS idx_agent_events_project ON agent_events(project, created_at);
 CREATE INDEX IF NOT EXISTS idx_agent_events_type ON agent_events(event_type);
 CREATE INDEX IF NOT EXISTS idx_agent_event_acks_agent ON agent_event_acks(agent_id);
