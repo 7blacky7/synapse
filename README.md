@@ -106,7 +106,7 @@ Jedes Projekt bekommt eigene Qdrant-Collections: `project_{name}_code`, `project
 
 ---
 
-## 🛠️ MCP-Tools (13 konsolidierte Tools)
+## 🛠️ MCP-Tools (13 konsolidierte Tools, 72 Actions)
 
 ### 📦 Admin & Projekt-Management (`admin`)
 
@@ -749,6 +749,10 @@ mr lint         # Linter ausführen
 | **🚨 Dual-Write Consistency** | Kein Rollback bei Partial-Failure (PG OK ↔ Qdrant FAIL) → Daten in nur einem Store, keine automatischen Retries |
 | **Inkonsistente Read-Pfade** | `get*/list*` liest Qdrant, `update*` liest PG → Geister-Datensätze bei Failures (unsichtbar oder nicht-editierbar) |
 | **Keine PG-Transaktionen** | Kein BEGIN/COMMIT pro Schreiboperation → keine ACID-Garantien, Race Conditions bei concurrent Updates |
+| **Kein Optimistic Locking** | Race Conditions bei concurrent Plan-Updates (updateTask), Lost Updates möglich — Blockiert bis Phase 3 |
+| **tech-docs.ts Sonderfall** | Bare awaits OHNE try-catch bei Dual-Write (Ausnahme zum allgemeinen Error-Pattern) |
+| **code.ts Invertierte Reihenfolge** | Schreibt Qdrant first statt PG first (Inkonsistenz zur Standard-Reihenfolge) |
+| **Kein Reconciliation-Job** | Dual-Write Drift akkumuliert über Zeit, keine automatische Heilung |
 | Context-Handoff | Nur auf Linux + fish/bash getestet |
 | Kein echter Push | Coordinator-Watch (Polling alle 10s) als Workaround |
 | Google Batch-Embedding | Limit von 100 Texten pro Batch-Request |
