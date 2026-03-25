@@ -755,7 +755,7 @@ mr lint         # Linter ausführen
 | **Kein Reconciliation-Job** | Dual-Write Drift akkumuliert über Zeit, keine automatische Heilung |
 | Context-Handoff | Nur auf Linux + fish/bash getestet |
 | Kein echter Push | Coordinator-Watch (Polling alle 10s) als Workaround |
-| Google Batch-Embedding | Limit von 100 Texten pro Batch-Request |
+| Google Batch-Embedding | Max 100 Texte/Request (API-Limit) — Code erzwingt Splitting nicht, bei größeren Dateien (>100 Chunks) mögliche API-Fehler |
 | REST-API FileWatcher | REST-API hat keinen eigenen FileWatcher |
 | `detailed_stats` | Zeigt Gesamtzahlen über alle Projekte |
 
