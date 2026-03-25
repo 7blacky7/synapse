@@ -19,3 +19,4 @@ export { eventTool } from './event.js';
 export { specialistTool } from './specialist.js';
 export { docsTool } from './docs.js';
 export { adminTool } from './admin.js';
+export { watcherTool } from './watcher.js';
