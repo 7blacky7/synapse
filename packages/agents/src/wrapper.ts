@@ -169,6 +169,14 @@ async function handleWake(message: string | undefined, id?: number): Promise<Wra
     }
   }
 
+  if (agentBusy) {
+    return {
+      jsonrpc: '2.0',
+      error: { code: -32001, message: 'Agent is busy' },
+      id,
+    }
+  }
+
   const result = await wakeAgent(message)
   return {
     jsonrpc: '2.0',

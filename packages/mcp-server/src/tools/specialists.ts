@@ -298,6 +298,24 @@ export async function wakeSpecialistTool(
       },
     });
   } catch (err) {
+    // Agent busy → auto-fallback to inbox (delivered on next heartbeat poll)
+    const errMsg = err instanceof Error ? err.message : String(err);
+    if (errMsg.includes('Agent is busy')) {
+      try {
+        const inboxResult = await postToInbox('koordinator', name, message);
+        return jsonResult({
+          success: true,
+          queued: true,
+          message: `Spezialist "${name}" ist beschaeftigt. Nachricht in Inbox zugestellt (ID: ${inboxResult.id}) — wird beim naechsten Heartbeat verarbeitet.`,
+        });
+      } catch (inboxErr) {
+        return jsonResult({
+          success: false,
+          message: `Spezialist "${name}" ist beschaeftigt und Inbox-Fallback fehlgeschlagen: ${inboxErr}`,
+        });
+      }
+    }
+
     return jsonResult({
       success: false,
       message: `Fehler beim Aufwecken von "${name}": ${err}`,

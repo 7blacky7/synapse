@@ -33,3 +33,12 @@ test-synapsevoll/
 
 # Dokumentation (verdraengt Code-Scores)
 docs/
+README.md
+
+# Synapse-eigene Daten
+.synapse/
+
+# Nicht-Code-Dateien
+*.txt
+project_plans_backup.json
+hooks-setup.example.json
