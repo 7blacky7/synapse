@@ -182,6 +182,53 @@ export async function deleteThought(
 }
 
 /**
+ * Loescht mehrere Gedanken (Batch) mit Safeguards
+ */
+export async function deleteThoughtsBatch(
+  project: string,
+  ids: string[],
+  dryRun: boolean = false,
+  maxItems: number = 10
+): Promise<Record<string, unknown>> {
+  // Safeguard: max_items Limit
+  if (ids.length > maxItems) {
+    return {
+      success: false,
+      message: `Batch-Limit: Max ${maxItems} Items pro Call. Erhalten: ${ids.length}. Nutze dry_run fuer Vorschau oder erhoehe max_items.`,
+    };
+  }
+
+  // Audit-Logging (PFLICHT fuer Batch-Deletes)
+  console.error(`[BATCH-DELETE] tool=thought action=delete count=${ids.length} dry_run=${dryRun} items=${JSON.stringify(ids)}`);
+
+  // dry_run: Preview ohne Loeschen
+  if (dryRun) {
+    const { getThoughtsByIds } = await import('@synapse/core');
+    const thoughts = await getThoughtsByIds(project, ids);
+    return {
+      success: true,
+      dry_run: true,
+      would_delete: thoughts.map(t => ({ id: t.id, source: t.source, content: t.content.substring(0, 100) })),
+      count: thoughts.length,
+      message: `dry_run: ${thoughts.length} Gedanken wuerden geloescht`,
+    };
+  }
+
+  try {
+    const { deleteThoughts } = await import('@synapse/core');
+    const result = await deleteThoughts(project, ids);
+    return {
+      success: true,
+      deleted: result.deleted,
+      warning: result.warning,
+      message: `${result.deleted} Gedanken geloescht`,
+    };
+  } catch (error) {
+    return { success: false, message: `Fehler: ${error}` };
+  }
+}
+
+/**
  * Ruft Gedanken anhand ihrer IDs ab (Batch)
  */
 export async function getThoughtsByIdsTool(

@@ -16,9 +16,10 @@ import {
   getProposalsByIdsWrapper,
   updateProposalStatusWrapper,
   deleteProposalWrapper,
+  deleteProposalsBatch,
   updateProposalTool,
 } from '../proposals.js';
-import { ConsolidatedTool, reqStr, str } from './types.js';
+import { ConsolidatedTool, reqStr, str, bool, num } from './types.js';
 
 export const proposalTool: ConsolidatedTool = {
   definition: {
@@ -60,6 +61,14 @@ export const proposalTool: ConsolidatedTool = {
           type: 'string',
           description: 'Neuer vorgeschlagener Inhalt (für update)',
         },
+        dry_run: {
+          type: 'boolean',
+          description: 'Preview: Zeigt was geloescht wuerde ohne tatsaechlich zu loeschen (nur fuer delete mit Array)',
+        },
+        max_items: {
+          type: 'number',
+          description: 'Max. erlaubte Items pro Batch-Delete (Standard: 10, nur fuer delete mit Array)',
+        },
       },
       required: ['action', 'project'],
     },
@@ -96,7 +105,23 @@ export const proposalTool: ConsolidatedTool = {
       }
 
       case 'update_status': {
-        // update_proposal_status: Aktualisiert den Status eines Proposals
+        // Array-Support: Gleicher Status fuer mehrere Proposals
+        if (Array.isArray(args.id)) {
+          const ids = args.id as string[];
+          const status = reqStr(args, 'status');
+          const settled = await Promise.allSettled(
+            ids.map(id => updateProposalStatusWrapper(project, id, status))
+          );
+          const results: Array<Record<string, unknown>> = [];
+          const errors: string[] = [];
+          for (const r of settled) {
+            if (r.status === 'fulfilled') results.push({ text: r.value });
+            else errors.push(String(r.reason));
+          }
+          return { results, count: results.length, errors };
+        }
+
+        // Bestehend: Einzelner Status-Update
         const id = reqStr(args, 'id');
         const status = reqStr(args, 'status');
         const result = await updateProposalStatusWrapper(project, id, status);
@@ -106,7 +131,15 @@ export const proposalTool: ConsolidatedTool = {
       }
 
       case 'delete': {
-        // delete_proposal: Löscht einen Proposal
+        // Array-Support: Batch-Delete mit Safeguards
+        if (Array.isArray(args.id)) {
+          const ids = args.id as string[];
+          const dryRun = bool(args, 'dry_run') ?? false;
+          const maxItems = num(args, 'max_items') ?? 10;
+          return await deleteProposalsBatch(project, ids, dryRun, maxItems);
+        }
+
+        // Bestehend: Einzelnes Delete
         const id = reqStr(args, 'id');
         const result = await deleteProposalWrapper(project, id);
         return {

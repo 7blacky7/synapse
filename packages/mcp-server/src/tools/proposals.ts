@@ -201,6 +201,50 @@ export async function getProposalsByIdsWrapper(
 }
 
 /**
+ * Loescht mehrere Proposals (Batch) mit Safeguards
+ */
+export async function deleteProposalsBatch(
+  project: string,
+  ids: string[],
+  dryRun: boolean = false,
+  maxItems: number = 10
+): Promise<Record<string, unknown>> {
+  if (ids.length > maxItems) {
+    return {
+      success: false,
+      message: `Batch-Limit: Max ${maxItems} Items pro Call. Erhalten: ${ids.length}.`,
+    };
+  }
+
+  console.error(`[BATCH-DELETE] tool=proposal action=delete count=${ids.length} dry_run=${dryRun} items=${JSON.stringify(ids)}`);
+
+  if (dryRun) {
+    const { getProposalsByIds } = await import('@synapse/core');
+    const proposals = await getProposalsByIds(project, ids);
+    return {
+      success: true,
+      dry_run: true,
+      would_delete: proposals.map(p => ({ id: p.id, description: p.description, status: p.status })),
+      count: proposals.length,
+      message: `dry_run: ${proposals.length} Proposals wuerden geloescht`,
+    };
+  }
+
+  try {
+    const { deleteProposals } = await import('@synapse/core');
+    const result = await deleteProposals(project, ids);
+    return {
+      success: true,
+      deleted: result.deleted,
+      warning: result.warning,
+      message: `${result.deleted} Proposals geloescht`,
+    };
+  } catch (error) {
+    return { success: false, message: `Fehler: ${error}` };
+  }
+}
+
+/**
  * Durchsucht Proposals semantisch
  */
 export async function searchProposalsWrapper(

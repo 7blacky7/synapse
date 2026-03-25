@@ -103,6 +103,7 @@ export {
   getThoughts,
   searchThoughts,
   deleteThought,
+  deleteThoughts,
   getThoughtsBySource,
   getThoughtsByTag,
   getThoughtsByIds,
@@ -138,6 +139,7 @@ export {
   listMemories,
   searchMemories,
   deleteMemory,
+  deleteMemories,
   deleteProjectMemories,
   readMemoryWithRelatedCode,
   findMemoriesForPath,
@@ -161,6 +163,7 @@ export {
   listProposals,
   updateProposalStatus,
   deleteProposal,
+  deleteProposals,
   searchProposals,
   // Backup
   dumpCollectionToFile,

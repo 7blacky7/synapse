@@ -4,13 +4,14 @@
  * in ein einziges Tool mit action-Parameter
  */
 
-import { str, reqStr, num } from './types.js';
+import { str, reqStr, num, bool } from './types.js';
 import type { ConsolidatedTool } from './types.js';
 import {
   addThought,
   getThoughts,
   getThoughtsByIdsTool,
   deleteThought,
+  deleteThoughtsBatch,
   searchThoughts,
   updateThoughtTool,
 } from '../index.js';
@@ -62,6 +63,14 @@ export const thoughtTool: ConsolidatedTool = {
         limit: {
           type: 'number',
           description: 'Maximale Anzahl Ergebnisse (Standard: 50 fuer get, 10 fuer search)',
+        },
+        dry_run: {
+          type: 'boolean',
+          description: 'Preview: Zeigt was geloescht wuerde ohne tatsaechlich zu loeschen (nur fuer delete mit Array)',
+        },
+        max_items: {
+          type: 'number',
+          description: 'Max. erlaubte Items pro Batch-Delete (Standard: 10, nur fuer delete mit Array)',
         },
       },
       required: ['action'],
@@ -119,8 +128,17 @@ export const thoughtTool: ConsolidatedTool = {
 
       case 'delete': {
         const project = reqStr(args, 'project');
-        const id = reqStr(args, 'id');
 
+        // Array-Support: Batch-Delete mit Safeguards
+        if (Array.isArray(args.id)) {
+          const ids = args.id as string[];
+          const dryRun = bool(args, 'dry_run') ?? false;
+          const maxItems = num(args, 'max_items') ?? 10;
+          return await deleteThoughtsBatch(project, ids, dryRun, maxItems);
+        }
+
+        // Bestehend: Einzelnes Delete
+        const id = reqStr(args, 'id');
         const result = await deleteThought(project, id);
         return result;
       }

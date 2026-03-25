@@ -44,6 +44,7 @@ import {
   searchVectors,
   scrollVectors,
   deleteVector,
+  deleteVectors,
   getVector,
   getVectors,
 } from '../qdrant/operations.js';
@@ -370,6 +371,48 @@ export async function deleteProposal(
 
   console.error(`[Synapse] Proposal "${id}" geloescht fuer Projekt "${project}"`);
   return { success: true, warning };
+}
+
+/**
+ * Loescht mehrere Proposals anhand ihrer IDs (Batch)
+ * PG: DELETE WHERE id = ANY($1::uuid[]) — atomar
+ * Qdrant: deleteVectors(ids[]) — ein Call
+ */
+export async function deleteProposals(
+  project: string,
+  ids: string[]
+): Promise<{ deleted: number; warning?: string }> {
+  if (ids.length === 0) return { deleted: 0 };
+
+  const collName = getCollectionName(project);
+
+  // Existenz + Projekt-Zugehörigkeit prüfen via getVectors
+  const existing = await getVectors<ProposalPayload>(collName, ids);
+  const validIds = existing
+    .filter(r => r.payload.project === project)
+    .map(r => r.id);
+
+  if (validIds.length === 0) return { deleted: 0 };
+
+  // 1. PostgreSQL (Write-Primary) — atomar, fail-fast
+  const pool = getPool();
+  const pgResult = await pool.query(
+    'DELETE FROM proposals WHERE id = ANY($1::uuid[]) RETURNING id',
+    [validIds]
+  );
+  const deletedCount = pgResult.rowCount ?? 0;
+
+  // 2. Qdrant — Warning bei Fehler
+  let warning: string | undefined;
+  try {
+    await deleteVectors(collName, validIds);
+  } catch (error) {
+    console.error('[Synapse] Qdrant Batch-Proposal-Delete fehlgeschlagen:', error);
+    warning = `Qdrant-Delete fehlgeschlagen: ${error}`;
+  }
+
+  console.error(`[Synapse] ${deletedCount} Proposals geloescht (Batch)`);
+  return { deleted: deletedCount, warning };
 }
 
 /**

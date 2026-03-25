@@ -40,6 +40,7 @@ import {
   searchVectors,
   scrollVectors,
   deleteVector,
+  deleteVectors,
   deleteByFilter,
 } from '../qdrant/operations.js';
 import { getPool } from '../db/client.js';
@@ -480,6 +481,48 @@ export async function deleteMemory(
 
   console.error(`[Synapse] Memory "${name}" gelöscht für Projekt "${project}"`);
   return { success: true, warning };
+}
+
+/**
+ * Loescht mehrere Memories anhand ihrer Namen (Batch)
+ * Schritt 1: name→ID Lookup via Qdrant
+ * Schritt 2: PG DELETE WHERE id = ANY
+ * Schritt 3: Qdrant deleteVectors
+ */
+export async function deleteMemories(
+  project: string,
+  names: string[]
+): Promise<{ deleted: number; notFound: string[]; warning?: string }> {
+  if (names.length === 0) return { deleted: 0, notFound: [] };
+
+  // 1. name→ID Lookup — Alle angefragten Memories suchen
+  const memories = await getMemoriesByNames(project, names);
+  const foundIds = memories.map(m => m.id);
+  const foundNames = memories.map(m => m.name);
+  const notFound = names.filter(n => !foundNames.includes(n));
+
+  if (foundIds.length === 0) return { deleted: 0, notFound };
+
+  // 2. PostgreSQL (Write-Primary) — atomar, fail-fast
+  const pool = getPool();
+  const pgResult = await pool.query(
+    'DELETE FROM memories WHERE id = ANY($1::uuid[]) AND project = $2 RETURNING id',
+    [foundIds, project]
+  );
+  const deletedCount = pgResult.rowCount ?? 0;
+
+  // 3. Qdrant — Warning bei Fehler, PG-Daten bereits geloescht
+  let warning: string | undefined;
+  try {
+    const collectionName = COLLECTIONS.projectMemories(project);
+    await deleteVectors(collectionName, foundIds);
+  } catch (error) {
+    console.error('[Synapse] Qdrant Batch-Memory-Delete fehlgeschlagen:', error);
+    warning = `Qdrant-Delete fehlgeschlagen: ${error}`;
+  }
+
+  console.error(`[Synapse] ${deletedCount} Memories geloescht (Batch)`);
+  return { deleted: deletedCount, notFound, warning };
 }
 
 /**

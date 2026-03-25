@@ -269,6 +269,52 @@ export async function findMemoriesForFile(
 }
 
 /**
+ * Loescht mehrere Memories (Batch) mit Safeguards
+ */
+export async function deleteMemoriesBatch(
+  project: string,
+  names: string[],
+  dryRun: boolean = false,
+  maxItems: number = 10
+): Promise<Record<string, unknown>> {
+  if (names.length > maxItems) {
+    return {
+      success: false,
+      message: `Batch-Limit: Max ${maxItems} Items pro Call. Erhalten: ${names.length}.`,
+    };
+  }
+
+  console.error(`[BATCH-DELETE] tool=memory action=delete count=${names.length} dry_run=${dryRun} items=${JSON.stringify(names)}`);
+
+  if (dryRun) {
+    const { getMemoriesByNames } = await import('@synapse/core');
+    const memories = await getMemoriesByNames(project, names);
+    return {
+      success: true,
+      dry_run: true,
+      would_delete: memories.map(m => ({ name: m.name, category: m.category, content: m.content.substring(0, 100) })),
+      count: memories.length,
+      not_found: names.filter(n => !memories.some(m => m.name === n)),
+      message: `dry_run: ${memories.length} Memories wuerden geloescht`,
+    };
+  }
+
+  try {
+    const { deleteMemories } = await import('@synapse/core');
+    const result = await deleteMemories(project, names);
+    return {
+      success: true,
+      deleted: result.deleted,
+      notFound: result.notFound,
+      warning: result.warning,
+      message: `${result.deleted} Memories geloescht`,
+    };
+  } catch (error) {
+    return { success: false, message: `Fehler: ${error}` };
+  }
+}
+
+/**
  * Liest mehrere Memories anhand ihrer Namen (Batch)
  */
 export async function readMemories(

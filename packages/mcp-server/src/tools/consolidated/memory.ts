@@ -19,6 +19,7 @@ import {
   readMemories,
   listMemories,
   deleteMemory,
+  deleteMemoriesBatch,
   readMemoryWithCode,
   findMemoriesForFile,
   updateMemoryTool,
@@ -83,6 +84,14 @@ const memoryTool: ConsolidatedTool = {
         includeSemanticMatches: {
           type: 'boolean',
           description: 'Semantische Matches einbeziehen (optional, Standard: true für read_with_code)',
+        },
+        dry_run: {
+          type: 'boolean',
+          description: 'Preview: Zeigt was geloescht wuerde ohne tatsaechlich zu loeschen (nur fuer delete mit Array)',
+        },
+        max_items: {
+          type: 'number',
+          description: 'Max. erlaubte Items pro Batch-Delete (Standard: 10, nur fuer delete mit Array)',
         },
       },
       required: ['action', 'project'],
@@ -160,6 +169,15 @@ const memoryTool: ConsolidatedTool = {
         }
 
         case 'delete': {
+          // Array-Support: Batch-Delete mit Safeguards
+          if (Array.isArray(args.name)) {
+            const names = args.name as string[];
+            const dryRun = bool(args, 'dry_run') ?? false;
+            const maxItems = num(args, 'max_items') ?? 10;
+            return await deleteMemoriesBatch(project, names, dryRun, maxItems);
+          }
+
+          // Bestehend: Einzelnes Delete
           const name = reqStr(args, 'name');
           const result = await deleteMemory(project, name);
           return { message: result };

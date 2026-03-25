@@ -45,6 +45,7 @@ import {
   searchVectors,
   scrollVectors,
   deleteVector,
+  deleteVectors,
   getVectors,
 } from '../qdrant/index.js';
 import { embed } from '../embeddings/index.js';
@@ -265,6 +266,39 @@ export async function deleteThought(project: string, id: string): Promise<{ succ
 
   console.error(`[Synapse] Gedanke geloescht: ${id}`);
   return { success: true, warning };
+}
+
+/**
+ * Loescht mehrere Gedanken anhand ihrer IDs (Batch)
+ * PG: DELETE WHERE id = ANY($1::uuid[]) — atomar
+ * Qdrant: deleteVectors(ids[]) — ein Call
+ */
+export async function deleteThoughts(
+  project: string,
+  ids: string[]
+): Promise<{ deleted: number; warning?: string }> {
+  if (ids.length === 0) return { deleted: 0 };
+
+  // 1. PostgreSQL (Write-Primary) — atomar, fail-fast
+  const pool = getPool();
+  const pgResult = await pool.query(
+    'DELETE FROM thoughts WHERE id = ANY($1::uuid[]) AND project = $2 RETURNING id',
+    [ids, project]
+  );
+  const deletedCount = pgResult.rowCount ?? 0;
+
+  // 2. Qdrant — Warning bei Fehler, PG-Daten bereits geloescht
+  let warning: string | undefined;
+  try {
+    const collectionName = COLLECTIONS.projectThoughts(project);
+    await deleteVectors(collectionName, ids);
+  } catch (error) {
+    console.error('[Synapse] Qdrant Batch-Thought-Delete fehlgeschlagen:', error);
+    warning = `Qdrant-Delete fehlgeschlagen: ${error}`;
+  }
+
+  console.error(`[Synapse] ${deletedCount} Gedanken geloescht (Batch)`);
+  return { deleted: deletedCount, warning };
 }
 
 /**
