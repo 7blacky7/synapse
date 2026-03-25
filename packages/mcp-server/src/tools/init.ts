@@ -54,6 +54,7 @@ const activeWatchers = new Map<string, FileWatcherInstance>();
 
 /** Speichert Projekt-Pfade fuer Shutdown und Onboarding (name -> path) */
 import { cacheProjectPath as cachePathInOnboarding } from './onboarding.js';
+import { heartbeatController } from '@synapse/agents';
 const projectPaths = new Map<string, string>();
 
 /** Wrapper der beide Caches synchron haelt */
@@ -157,6 +158,19 @@ async function tryReactivateProject(
   activeWatchers.set(name, watcher);
   cacheProjectPathBoth(name, projectPath);
   updateLastAccess(projectPath);
+
+  // Reconnect zu laufenden Spezialisten (Wrapper-Prozesse ueberleben Session-Wechsel)
+  try {
+    const reconnected = await heartbeatController.reconnectAll(projectPath);
+    if (reconnected.connected.length > 0) {
+      console.error(`[Synapse] Reconnected to ${reconnected.connected.length} running specialists for "${name}"`);
+    }
+    if (reconnected.cleaned.length > 0) {
+      console.error(`[Synapse] Cleaned up ${reconnected.cleaned.length} stale specialist entries for "${name}"`);
+    }
+  } catch (err) {
+    console.error(`[Synapse] Specialist reconnect failed for "${name}":`, err);
+  }
 
   // Agent-Onboarding bei Reaktivierung
   let isFirstVisit = false;
@@ -274,6 +288,19 @@ export async function initProjekt(
 
   // Persistenten Status speichern
   setProjectStatus(projectPath, { status: 'active', project: name });
+
+  // Reconnect zu laufenden Spezialisten (Wrapper-Prozesse ueberleben Session-Wechsel)
+  try {
+    const reconnected = await heartbeatController.reconnectAll(projectPath);
+    if (reconnected.connected.length > 0) {
+      console.error(`[Synapse] Reconnected to ${reconnected.connected.length} running specialists for "${name}"`);
+    }
+    if (reconnected.cleaned.length > 0) {
+      console.error(`[Synapse] Cleaned up ${reconnected.cleaned.length} stale specialist entries for "${name}"`);
+    }
+  } catch (err) {
+    console.error(`[Synapse] Specialist reconnect failed for "${name}":`, err);
+  }
 
   // ===== SETUP-WIZARD PRUEFEN =====
   let setupRequired: InitResult['setupRequired'] | undefined;
