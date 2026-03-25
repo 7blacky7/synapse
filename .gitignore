@@ -29,5 +29,8 @@ npm-debug.log*
 test-*.js
 .serena
 
+# Superpowers Plans/Specs (lokal)
+docs/superpowers/
+
 # Synapse Projekt-Status (pro Projekt)
 .synapse/
