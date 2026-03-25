@@ -87,10 +87,18 @@ Datei gespeichert
           → Qdrant Vektor-DB (Upsert mit Metadaten)
 ```
 
-### Dual-Storage
+### Dual-Storage (mit bekannten Inkonsistenzen)
 
-- **Qdrant** — Semantische Vektor-Suche (Code, Memories, Thoughts, Proposals, Tech-Docs, Media)
-- **PostgreSQL** — Source of Truth für strukturierte Daten (10 Tabellen)
+- **PostgreSQL** — primärer Schreibspeicher (aber Reads sind NICHT konsistent garantiert)
+- **Qdrant** — sekundärer Vektor-Index mit eigenständigen Reads
+
+**Schreib-Flow:** PG first → Qdrant second (Ausnahme: code.ts schreibt Qdrant first)
+**Fehlertoleranz:** Beide Writes in separaten try-catch, warning-Feld bei Partial-Failure
+
+**⚠️ KRITISCH:** Reads kommen je nach Operation aus verschiedenen Stores:
+- `get*/list*` Operationen lesen **Qdrant**
+- `update*` Operationen lesen **PostgreSQL**
+- **Folge:** Bei Partial-Failure entstehen Geister-Datensätze (unsichtbar oder nicht-editierbar)
 
 Jedes Projekt bekommt eigene Qdrant-Collections: `project_{name}_code`, `project_{name}_thoughts`, etc.
 
@@ -736,6 +744,9 @@ mr lint         # Linter ausführen
 
 | Einschränkung | Details |
 |----------------|---------|
+| **🚨 Dual-Write Consistency** | Kein Rollback bei Partial-Failure (PG OK ↔ Qdrant FAIL) → Daten in nur einem Store, keine automatischen Retries |
+| **Inkonsistente Read-Pfade** | `get*/list*` liest Qdrant, `update*` liest PG → Geister-Datensätze bei Failures (unsichtbar oder nicht-editierbar) |
+| **Keine PG-Transaktionen** | Kein BEGIN/COMMIT pro Schreiboperation → keine ACID-Garantien, Race Conditions bei concurrent Updates |
 | Context-Handoff | Nur auf Linux + fish/bash getestet |
 | Kein echter Push | Coordinator-Watch (Polling alle 10s) als Workaround |
 | Google Batch-Embedding | Limit von 100 Texten pro Batch-Request |
