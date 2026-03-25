@@ -463,6 +463,15 @@ async function heartbeatPoll() {
     // Token-Sync: Echte Werte aus der Claude CLI Session-JSONL lesen
     await syncTokensFromHistory()
 
+    // Auto-Rotation: Context fast voll → Agent speichern + neustarten
+    const contextTotal = totalInputTokens + totalOutputTokens
+    const ceiling = getContextCeiling()
+    if (!agentBusy && contextTotal >= ceiling * 0.95) {
+      log('CONTEXT-ROTATION: %dk/%dk (%d%%) — starte Rotation', Math.round(contextTotal / 1000), Math.round(ceiling / 1000), getContextPercent())
+      await rotateAgent()
+      return
+    }
+
     // Stuck-Detection: Agent busy aber keine Event-Aktivitaet seit STUCK_TIMEOUT_MS
     // Alte Logik (nur Token-Count) produzierte false positives beim ersten Turn (Tokens=0 bis result-Event).
     // Neue Logik: Events fliessen = Agent arbeitet, auch wenn kein result-Event kam.
@@ -557,12 +566,6 @@ async function pollChannelMessages(): Promise<boolean> {
     await wakeAgent(prompt)
   } catch (err) {
     log('Failed to wake agent for channel messages: %s', err)
-  }
-
-  // Auto-rotation at context ceiling
-  const ceiling = getContextCeiling()
-  if (total >= ceiling * 0.995) {
-    await rotateAgent()
   }
 
   return true
