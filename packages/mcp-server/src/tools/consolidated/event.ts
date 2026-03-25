@@ -61,8 +61,11 @@ export const eventTool: ConsolidatedTool = {
         },
         // ack-Parameter
         event_id: {
-          type: 'number',
-          description: 'Event-ID (erforderlich für ack)',
+          oneOf: [
+            { type: 'number' },
+            { type: 'array', items: { type: 'number' }, minItems: 1 },
+          ],
+          description: 'Event-ID (erforderlich für ack). Array erlaubt fuer Batch-Ack',
         },
         agent_id: {
           type: 'string',
@@ -104,15 +107,30 @@ export const eventTool: ConsolidatedTool = {
       }
 
       case 'ack': {
+        const agentId = reqStr(args, 'agent_id');
+        const reaction = str(args, 'reaction');
+
+        // Array-Support: Mehrere Events in einem Call bestätigen
+        if (Array.isArray(args.event_id)) {
+          const eventIds = args.event_id as number[];
+          const settled = await Promise.allSettled(
+            eventIds.map(eid => acknowledgeEventTool(eid, agentId, reaction))
+          );
+          const results: Array<Record<string, unknown>> = [];
+          const errors: string[] = [];
+          for (const r of settled) {
+            if (r.status === 'fulfilled') results.push(r.value as Record<string, unknown>);
+            else errors.push(String(r.reason));
+          }
+          return { results, count: results.length, errors };
+        }
+
+        // Bestehend: Einzelnes Event
         const eventId = num(args, 'event_id');
         if (eventId === undefined) {
           throw new Error('Parameter "event_id" ist erforderlich für action "ack"');
         }
-        const agentId = reqStr(args, 'agent_id');
-        const reaction = str(args, 'reaction');
-
         const result = await acknowledgeEventTool(eventId, agentId, reaction);
-
         return result;
       }
 

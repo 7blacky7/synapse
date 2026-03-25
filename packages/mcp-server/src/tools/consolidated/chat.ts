@@ -71,7 +71,13 @@ export const chatTool: ConsolidatedTool = {
         // ===== send =====
         sender_id: { type: 'string', description: 'Absender Agent-ID' },
         content: { type: 'string', description: 'Nachrichteninhalt' },
-        recipient_id: { type: 'string', description: 'Empfaenger Agent-ID (optional, fuer DM)' },
+        recipient_id: {
+          oneOf: [
+            { type: 'string' },
+            { type: 'array', items: { type: 'string' }, minItems: 1 },
+          ],
+          description: 'Empfaenger Agent-ID (optional, fuer DM). Array erlaubt fuer: send (Multicast)',
+        },
 
         // ===== get =====
         agent_id: { type: 'string', description: 'Eigene Agent-ID' },
@@ -81,7 +87,13 @@ export const chatTool: ConsolidatedTool = {
 
         // ===== inbox_send / inbox_check =====
         from_agent: { type: 'string', description: 'Absender Agent-Name' },
-        to_agent: { type: 'string', description: 'Empfaenger Agent-Name' },
+        to_agent: {
+          oneOf: [
+            { type: 'string' },
+            { type: 'array', items: { type: 'string' }, minItems: 1 },
+          ],
+          description: 'Empfaenger Agent-Name. Array erlaubt fuer: inbox_send (Multicast)',
+        },
         agent_name: { type: 'string', description: 'Agent-Name' },
       },
       required: ['action'],
@@ -139,8 +151,24 @@ export const chatTool: ConsolidatedTool = {
           const sendProject = reqStr(args, 'project');
           const sendSenderId = reqStr(args, 'sender_id');
           const sendContent = reqStr(args, 'content');
-          const sendRecipientId = str(args, 'recipient_id');
 
+          // Array-Support: Gleiche Nachricht an mehrere Empfaenger
+          if (Array.isArray(args.recipient_id)) {
+            const recipientIds = args.recipient_id as string[];
+            const settled = await Promise.allSettled(
+              recipientIds.map(rid => sendChatMessage(sendProject, sendSenderId, sendContent, rid))
+            );
+            const results: Array<Record<string, unknown>> = [];
+            const errors: string[] = [];
+            for (const r of settled) {
+              if (r.status === 'fulfilled') results.push(r.value as Record<string, unknown>);
+              else errors.push(String(r.reason));
+            }
+            return { results, count: results.length, errors, action: 'send' };
+          }
+
+          // Bestehend: Einzelner Empfaenger (oder Broadcast wenn kein recipient_id)
+          const sendRecipientId = str(args, 'recipient_id');
           const result = await sendChatMessage(sendProject, sendSenderId, sendContent, sendRecipientId);
           return { ...result, action: 'send' };
         }
@@ -172,9 +200,25 @@ export const chatTool: ConsolidatedTool = {
         // ===== inbox_send =====
         case 'inbox_send': {
           const inboxFromAgent = reqStr(args, 'from_agent');
-          const inboxToAgent = reqStr(args, 'to_agent');
           const inboxContent = reqStr(args, 'content');
 
+          // Array-Support: Gleiche Nachricht an mehrere Agenten-Inboxen
+          if (Array.isArray(args.to_agent)) {
+            const toAgents = args.to_agent as string[];
+            const settled = await Promise.allSettled(
+              toAgents.map(ta => postToInboxTool(inboxFromAgent, ta, inboxContent))
+            );
+            const results: Array<Record<string, unknown>> = [];
+            const errors: string[] = [];
+            for (const r of settled) {
+              if (r.status === 'fulfilled') results.push(r.value as Record<string, unknown>);
+              else errors.push(String(r.reason));
+            }
+            return { success: true, action: 'inbox_send', results, count: results.length, errors };
+          }
+
+          // Bestehend: Einzelner Empfaenger
+          const inboxToAgent = reqStr(args, 'to_agent');
           const result = await postToInboxTool(inboxFromAgent, inboxToAgent, inboxContent);
           return {
             success: true,

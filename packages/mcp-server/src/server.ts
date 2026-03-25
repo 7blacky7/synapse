@@ -470,12 +470,33 @@ export function createServer(): Server {
 
           // SONDER-LOGIK: "ack" mit eventIgnoreCount Reset
           if (eventAction === 'ack') {
-            const eventId = (args as Record<string, unknown>)?.event_id as number;
+            const eventIdRaw = (args as Record<string, unknown>)?.event_id;
             const ackAgentId = (args as Record<string, unknown>)?.agent_id as string;
             const reaction = (args as Record<string, unknown>)?.reaction as string | undefined;
 
+            // Array-Support: Mehrere Events in einem Call bestätigen
+            if (Array.isArray(eventIdRaw)) {
+              const eventIds = eventIdRaw as number[];
+              const settled = await Promise.allSettled(
+                eventIds.map(eid => acknowledgeEventTool(eid, ackAgentId, reaction))
+              );
+              const results: Array<Record<string, unknown>> = [];
+              const errors: string[] = [];
+              for (const r of settled) {
+                if (r.status === 'fulfilled') results.push(r.value as Record<string, unknown>);
+                else errors.push(String(r.reason));
+              }
+              // Eskalations-Counter zuruecksetzen wenn mindestens ein Ack erfolgreich
+              const anySuccess = results.some(r => (r as any).success === true);
+              if (anySuccess) {
+                eventIgnoreCount.delete(ackAgentId);
+              }
+              return { content: [{ type: 'text', text: JSON.stringify({ results, count: results.length, errors }, null, 2) }] };
+            }
+
+            // Bestehend: Einzelnes Event
+            const eventId = eventIdRaw as number;
             const result = await acknowledgeEventTool(eventId, ackAgentId, reaction);
-            // Eskalations-Counter zuruecksetzen bei erfolgreichem Ack
             if (result.success) {
               eventIgnoreCount.delete(ackAgentId);
             }

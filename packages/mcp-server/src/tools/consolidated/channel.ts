@@ -173,8 +173,11 @@ export const channelTool: ConsolidatedTool = {
         },
         // join/leave/post/feed: channel_name
         channel_name: {
-          type: 'string',
-          description: 'Channel-Name (fuer join, leave, post, feed)',
+          oneOf: [
+            { type: 'string' },
+            { type: 'array', items: { type: 'string' }, minItems: 1 },
+          ],
+          description: 'Channel-Name (fuer join, leave, post, feed). Array erlaubt fuer: join, leave',
         },
         // join/leave: agent_name
         agent_name: {
@@ -214,10 +217,62 @@ export const channelTool: ConsolidatedTool = {
     switch (action) {
       case 'create':
         return await handleCreate(args);
-      case 'join':
+      case 'join': {
+        // Array-Support: Mehreren Channels beitreten
+        if (Array.isArray(args.channel_name)) {
+          const channelNames = args.channel_name as string[];
+          const agentName = reqStr(args, 'agent_name');
+          const settled = await Promise.allSettled(
+            channelNames.map(cn => joinChannel(cn, agentName))
+          );
+          const results: Array<Record<string, unknown>> = [];
+          const errors: string[] = [];
+          for (let i = 0; i < settled.length; i++) {
+            const r = settled[i];
+            if (r.status === 'fulfilled') {
+              results.push({
+                success: !!r.value,
+                channel: channelNames[i],
+                message: r.value
+                  ? `"${agentName}" ist Channel "${channelNames[i]}" beigetreten.`
+                  : `Channel "${channelNames[i]}" nicht gefunden.`,
+              });
+            } else {
+              errors.push(`${channelNames[i]}: ${r.reason}`);
+            }
+          }
+          return jsonResult({ results, count: results.length, errors });
+        }
         return await handleJoin(args);
-      case 'leave':
+      }
+      case 'leave': {
+        // Array-Support: Mehrere Channels verlassen
+        if (Array.isArray(args.channel_name)) {
+          const channelNames = args.channel_name as string[];
+          const agentName = reqStr(args, 'agent_name');
+          const settled = await Promise.allSettled(
+            channelNames.map(cn => leaveChannel(cn, agentName))
+          );
+          const results: Array<Record<string, unknown>> = [];
+          const errors: string[] = [];
+          for (let i = 0; i < settled.length; i++) {
+            const r = settled[i];
+            if (r.status === 'fulfilled') {
+              results.push({
+                success: !!r.value,
+                channel: channelNames[i],
+                message: r.value
+                  ? `"${agentName}" hat Channel "${channelNames[i]}" verlassen.`
+                  : `"${agentName}" war nicht in Channel "${channelNames[i]}".`,
+              });
+            } else {
+              errors.push(`${channelNames[i]}: ${r.reason}`);
+            }
+          }
+          return jsonResult({ results, count: results.length, errors });
+        }
         return await handleLeave(args);
+      }
       case 'post':
         return await handlePost(args);
       case 'feed':

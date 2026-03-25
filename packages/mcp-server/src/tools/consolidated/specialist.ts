@@ -151,9 +151,25 @@ export const specialistTool: ConsolidatedTool = {
       }
 
       case 'stop': {
+        // Array-Support: Mehrere Spezialisten stoppen
+        if (Array.isArray(args.name)) {
+          const names = args.name as string[];
+          const projectPath = reqStr(args, 'project_path');
+          const settled = await Promise.allSettled(
+            names.map(n => stopSpecialistTool(n, projectPath))
+          );
+          const results: Array<Record<string, unknown>> = [];
+          const errors: string[] = [];
+          for (const r of settled) {
+            if (r.status === 'fulfilled') results.push(r.value as Record<string, unknown>);
+            else errors.push(String(r.reason));
+          }
+          return { results, count: results.length, errors };
+        }
+
+        // Bestehend: Einzelner Stop
         const name = reqStr(args, 'name');
         const projectPath = reqStr(args, 'project_path');
-
         return await stopSpecialistTool(name, projectPath);
       }
 
@@ -181,9 +197,25 @@ export const specialistTool: ConsolidatedTool = {
       }
 
       case 'wake': {
-        const name = reqStr(args, 'name');
         const message = reqStr(args, 'message');
 
+        // Array-Support: Mehrere Spezialisten mit gleichem Message wecken
+        if (Array.isArray(args.name)) {
+          const names = args.name as string[];
+          const settled = await Promise.allSettled(
+            names.map(n => wakeSpecialistTool(n, message))
+          );
+          const results: Array<Record<string, unknown>> = [];
+          const errors: string[] = [];
+          for (const r of settled) {
+            if (r.status === 'fulfilled') results.push(r.value as Record<string, unknown>);
+            else errors.push(String(r.reason));
+          }
+          return { results, count: results.length, errors };
+        }
+
+        // Bestehend: Einzelner Wake
+        const name = reqStr(args, 'name');
         return await wakeSpecialistTool(name, message);
       }
 
