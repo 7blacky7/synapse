@@ -6,15 +6,39 @@
 
 import 'dotenv/config';
 import { startServer } from './server.js';
-import { listActiveProjects, stopProjekt } from './tools/index.js';
+import { listActiveProjects, stopProjekt, getProjectPath } from './tools/index.js';
+import { heartbeatController, readStatus } from '@synapse/agents';
 
 /**
- * Graceful Shutdown - stoppt alle aktiven FileWatcher
+ * Graceful Shutdown - stoppt alle aktiven FileWatcher und Specialist-Wrappers
  */
 async function gracefulShutdown(signal: string): Promise<void> {
   console.error(`[Synapse MCP] ${signal} empfangen, stoppe alle Watcher...`);
 
   const activeProjects = listActiveProjects();
+
+  // Send save_and_pause to all connected specialists (they keep running)
+  console.error('[Synapse] Graceful shutdown — saving specialist state...');
+  for (const projectName of activeProjects) {
+    const projectPath = getProjectPath(projectName);
+    if (!projectPath) continue;
+    try {
+      const status = await readStatus(projectPath);
+      for (const name of Object.keys(status.specialists)) {
+        if (heartbeatController.isConnected(name)) {
+          try {
+            await heartbeatController.sendSaveAndPause(name);
+          } catch { /* wrapper might already be gone */ }
+        }
+      }
+    } catch { /* no status file — skip */ }
+  }
+
+  try {
+    await heartbeatController.disconnectAll();
+  } catch (err) {
+    console.error('[Synapse] Shutdown error during disconnectAll:', err);
+  }
 
   for (const project of activeProjects) {
     try {

@@ -11,6 +11,7 @@
     "build:core": "pnpm --filter @synapse/core run build",
     "build:mcp": "pnpm --filter @synapse/mcp-server run build",
     "build:api": "pnpm --filter @synapse/rest-api run build",
+    "build:agents": "pnpm --filter @synapse/agents build",
     "dev:mcp": "pnpm --filter @synapse/mcp-server run dev",
     "dev:api": "pnpm --filter @synapse/rest-api run dev",
     "lint": "eslint packages/*/src --ext .ts",

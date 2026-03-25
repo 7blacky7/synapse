@@ -18,6 +18,25 @@ importers:
         specifier: ^5.3.0
         version: 5.9.3
 
+  packages/agents:
+    dependencies:
+      '@synapse/core':
+        specifier: workspace:*
+        version: link:../core
+    devDependencies:
+      '@types/node':
+        specifier: ^20.10.0
+        version: 20.19.33
+      '@types/pg':
+        specifier: ^8.10.0
+        version: 8.18.0
+      rimraf:
+        specifier: ^5.0.0
+        version: 5.0.10
+      typescript:
+        specifier: ^5.3.0
+        version: 5.9.3
+
   packages/core:
     dependencies:
       '@qdrant/js-client-rest':
@@ -66,6 +85,9 @@ importers:
       '@modelcontextprotocol/sdk':
         specifier: ^1.0.0
         version: 1.26.0(zod@4.3.6)
+      '@synapse/agents':
+        specifier: workspace:*
+        version: link:../agents
       '@synapse/core':
         specifier: workspace:*
         version: link:../core
@@ -129,21 +151,6 @@ importers:
       vite:
         specifier: ^5.0.0
         version: 5.4.21(@types/node@20.19.33)
-
-  test-synapsevoll:
-    dependencies:
-      '@fastify/cors':
-        specifier: ^8.5.0
-        version: 8.5.0
-      '@types/node':
-        specifier: ^20.19.33
-        version: 20.19.33
-      fastify:
-        specifier: ^4.29.1
-        version: 4.29.1
-      typescript:
-        specifier: ^5.9.3
-        version: 5.9.3
 
 packages:
 
