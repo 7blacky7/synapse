@@ -45,6 +45,7 @@ const PROJECT_PATH = process.env.SYNAPSE_PROJECT_PATH!
 const SOCKET_PATH = process.env.SYNAPSE_SOCKET_PATH!
 const SYSTEM_PROMPT_FILE = process.env.SYNAPSE_SYSTEM_PROMPT_FILE!
 const POLL_INTERVAL = parseInt(process.env.SYNAPSE_POLL_INTERVAL || '15000', 10)
+const KEEP_ALIVE = process.env.SYNAPSE_KEEP_ALIVE === '1'
 
 // ---------------------------------------------------------------------------
 // State tracking
@@ -380,19 +381,32 @@ async function heartbeatPoll() {
   if (shuttingDown || !processAlive) return
 
   try {
-    await pollChannelMessages()
-    await pollInboxMessages()
+    const hadChannelMessages = await pollChannelMessages()
+    const hadInboxMessages = await pollInboxMessages()
     await updateStatusFile()
+
+    // keepAlive: Wake agent even when no new messages arrived
+    if (KEEP_ALIVE && !hadChannelMessages && !hadInboxMessages && !agentBusy) {
+      const percent = getContextPercent()
+      const total = totalInputTokens + totalOutputTokens
+      const tokenInfo = `[Context: ${Math.round(total / 1000)}k tokens, ${percent}%]`
+      const prompt = `${tokenInfo} HEARTBEAT — Keine neuen Nachrichten. Fuehre deinen laufenden Task fort oder poste einen Status-Update in deinen Channel.`
+      try {
+        await wakeAgent(prompt)
+      } catch (err) {
+        log('keepAlive wake failed: %s', err)
+      }
+    }
   } catch (err) {
     log('Heartbeat poll error: %s', err)
   }
 }
 
-async function pollChannelMessages() {
-  if (agentBusy) return
+async function pollChannelMessages(): Promise<boolean> {
+  if (agentBusy) return false
 
   const newMsgs = await getNewMessagesForAgent(AGENT_NAME, lastChannelMsgId)
-  if (newMsgs.length === 0) return
+  if (newMsgs.length === 0) return false
 
   // Update watermark
   lastChannelMsgId = newMsgs[newMsgs.length - 1].id
@@ -439,13 +453,15 @@ async function pollChannelMessages() {
   if (total >= ceiling * 0.995) {
     await rotateAgent()
   }
+
+  return true
 }
 
-async function pollInboxMessages() {
-  if (agentBusy) return
+async function pollInboxMessages(): Promise<boolean> {
+  if (agentBusy) return false
 
   const newMsgs = await getNewInboxMessages(AGENT_NAME, lastInboxMsgId)
-  if (newMsgs.length === 0) return
+  if (newMsgs.length === 0) return false
 
   // Update watermark
   lastInboxMsgId = newMsgs[newMsgs.length - 1].id
@@ -469,6 +485,8 @@ async function pollInboxMessages() {
   } catch (err) {
     log('Failed to wake agent for inbox messages: %s', err)
   }
+
+  return true
 }
 
 async function updateStatusFile() {
@@ -737,6 +755,7 @@ async function main() {
   log('  Project: %s', PROJECT_PATH)
   log('  Socket: %s', SOCKET_PATH)
   log('  Poll interval: %dms', POLL_INTERVAL)
+  log('  Keep alive: %s', KEEP_ALIVE)
   log('  PID: %d', process.pid)
 
   // 1. Setup signal handlers early

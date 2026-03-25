@@ -7,6 +7,7 @@ export interface SpecialistConfig {
   cwd?: string
   channel?: string
   allowedTools?: string[]
+  keepAlive?: boolean
 }
 
 export interface SpecialistStatus {

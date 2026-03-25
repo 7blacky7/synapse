@@ -1346,6 +1346,7 @@ export function createServer(): Server {
             cwd: { type: 'string', description: 'Arbeitsverzeichnis (Standard: Projekt-Pfad)' },
             channel: { type: 'string', description: 'Channel fuer Kommunikation (Standard: {project}-general)' },
             allowed_tools: { type: 'array', items: { type: 'string' }, description: 'Erlaubte Tools fuer den Spezialisten' },
+            keep_alive: { type: 'boolean', description: 'Agent bei jedem Heartbeat-Poll wecken, auch ohne neue Nachrichten (Standard: false)' },
           },
           required: ['name', 'model', 'expertise', 'task', 'project', 'project_path'],
         },
@@ -2291,6 +2292,7 @@ export function createServer(): Server {
             args?.cwd as string | undefined,
             args?.channel as string | undefined,
             args?.allowed_tools as string[] | undefined,
+            args?.keep_alive as boolean | undefined,
           );
         }
 

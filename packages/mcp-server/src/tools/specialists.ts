@@ -63,6 +63,7 @@ export async function spawnSpecialistTool(
   cwd?: string,
   channel?: string,
   allowedTools?: string[],
+  keepAlive?: boolean,
 ) {
   // 1. Claude CLI pruefen
   const cliInfo = detectClaudeCli();
@@ -135,6 +136,7 @@ export async function spawnSpecialistTool(
       SYNAPSE_SYSTEM_PROMPT_FILE: promptFile,
       SYNAPSE_AGENT_CWD: cwd ?? projectPath,
       ...(allowedTools?.length ? { SYNAPSE_ALLOWED_TOOLS: allowedTools.join(',') } : {}),
+      ...(keepAlive ? { SYNAPSE_KEEP_ALIVE: '1' } : {}),
     },
     detached: true,
     stdio: 'ignore',
