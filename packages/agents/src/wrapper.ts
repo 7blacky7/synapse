@@ -26,7 +26,14 @@ import { ProcessManager } from './process.js'
 import { getNewMessagesForAgent } from './channels.js'
 import { getNewMessages as getNewInboxMessages } from './inbox.js'
 import { readStatus, updateSpecialist } from './status.js'
-import { getPool } from '@synapse/core'
+import {
+  getPool,
+  listMemories,
+  getThoughtsByTag,
+  getPlan,
+  getPendingEvents,
+} from '@synapse/core'
+import type { Memory, Thought, ProjectTask, AgentEvent } from '@synapse/core'
 import {
   CONTEXT_CEILINGS,
   WARN_THRESHOLDS,
@@ -41,6 +48,7 @@ import {
 // ---------------------------------------------------------------------------
 const AGENT_NAME = process.env.SYNAPSE_AGENT_NAME!
 const AGENT_MODEL = process.env.SYNAPSE_AGENT_MODEL!
+const PROJECT_NAME = process.env.SYNAPSE_PROJECT_NAME || ''
 const PROJECT_PATH = process.env.SYNAPSE_PROJECT_PATH!
 const SOCKET_PATH = process.env.SYNAPSE_SOCKET_PATH!
 const SYSTEM_PROMPT_FILE = process.env.SYNAPSE_SYSTEM_PROMPT_FILE!
@@ -383,10 +391,11 @@ async function heartbeatPoll() {
   try {
     const hadChannelMessages = await pollChannelMessages()
     const hadInboxMessages = await pollInboxMessages()
+    const hadSynapseItems = await pollSynapseItems()
     await updateStatusFile()
 
     // keepAlive: Wake agent even when no new messages arrived
-    if (KEEP_ALIVE && !hadChannelMessages && !hadInboxMessages && !agentBusy) {
+    if (KEEP_ALIVE && !hadChannelMessages && !hadInboxMessages && !hadSynapseItems && !agentBusy) {
       const percent = getContextPercent()
       const total = totalInputTokens + totalOutputTokens
       const tokenInfo = `[Context: ${Math.round(total / 1000)}k tokens, ${percent}%]`
@@ -484,6 +493,77 @@ async function pollInboxMessages(): Promise<boolean> {
     await wakeAgent(prompt)
   } catch (err) {
     log('Failed to wake agent for inbox messages: %s', err)
+  }
+
+  return true
+}
+
+async function pollSynapseItems(): Promise<boolean> {
+  if (agentBusy || !PROJECT_NAME) return false
+
+  const items: string[] = []
+
+  try {
+    // 1. Memories mit Agent-Tag
+    const memories = await listMemories(PROJECT_NAME)
+    const myMemories = memories.filter(m => m.tags?.includes(AGENT_NAME))
+    for (const m of myMemories) {
+      const truncated = m.content.length > 800 ? m.content.slice(0, 800) + '...' : m.content
+      items.push(`[MEMORY:${m.name}] ${truncated}`)
+    }
+
+    // 2. Thoughts mit Agent-Tag
+    const thoughts = await getThoughtsByTag(PROJECT_NAME, AGENT_NAME, 10)
+    for (const t of thoughts) {
+      const truncated = t.content.length > 800 ? t.content.slice(0, 800) + '...' : t.content
+      items.push(`[THOUGHT:${t.id}] ${truncated}`)
+    }
+
+    // 3. Plan Tasks mit Agent-Name im Titel
+    const plan = await getPlan(PROJECT_NAME)
+    if (plan?.tasks) {
+      const nameLower = AGENT_NAME.toLowerCase()
+      const myTasks = plan.tasks.filter(t =>
+        t.title.toLowerCase().includes(nameLower) &&
+        (t.status === 'todo' || t.status === 'in_progress')
+      )
+      for (const t of myTasks) {
+        items.push(`[TASK:${t.id}] "${t.title}" (${t.status}, ${t.priority}): ${t.description}`)
+      }
+    }
+
+    // 4. Pending Events
+    const events = await getPendingEvents(PROJECT_NAME, AGENT_NAME)
+    for (const e of events) {
+      items.push(`[EVENT:${e.id}:${e.eventType}] (${e.priority}) ${e.payload || ''}`)
+    }
+  } catch (err) {
+    log('pollSynapseItems error: %s', err)
+    return false
+  }
+
+  if (items.length === 0) return false
+
+  const percent = getContextPercent()
+  const total = totalInputTokens + totalOutputTokens
+  const tokenInfo = `[Context: ${Math.round(total / 1000)}k tokens, ${percent}%]`
+
+  const prompt = `${tokenInfo} SYNAPSE-ITEMS fuer dich (${items.length} offen):
+
+${items.join('\n\n')}
+
+REAKTION (PFLICHT fuer jedes Item):
+- [MEMORY:name] → Inhalt in SKILL.md integrieren (update_specialist_skill: section "fehler" oder "patterns" oder "regeln"), dann delete_memory(name: "<name>")
+- [THOUGHT:id] → Verarbeiten, dann delete_thought(id: "<id>")
+- [TASK:id] → Abarbeiten, dann update_plan_task(taskId: "<id>", status: "done")
+- [EVENT:id:typ] → Je nach Typ reagieren, dann acknowledge_event(event_id: <id>)
+
+Arbeite diese Items jetzt ab.`
+
+  try {
+    await wakeAgent(prompt)
+  } catch (err) {
+    log('Failed to wake agent for synapse items: %s', err)
   }
 
   return true

@@ -131,6 +131,7 @@ export async function spawnSpecialistTool(
       ...process.env,
       SYNAPSE_AGENT_NAME: name,
       SYNAPSE_AGENT_MODEL: model,
+      SYNAPSE_PROJECT_NAME: project,
       SYNAPSE_PROJECT_PATH: projectPath,
       SYNAPSE_SOCKET_PATH: socketPath,
       SYNAPSE_SYSTEM_PROMPT_FILE: promptFile,

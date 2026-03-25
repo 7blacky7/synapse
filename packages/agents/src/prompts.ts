@@ -64,7 +64,27 @@ Wenn du eine Nachricht mit [PRAXIS-FEEDBACK] Tag siehst:
 - Pruefe: Ergaenzt das dein Wissen? → Ergaenzung einarbeiten
 - Update deinen SKILL.md entsprechend`)
 
-  // 6. Skill-Learning
+  // 6. Synapse-Items (automatische Aufgaben/Korrekturen)
+  sections.push(`## Synapse-Items (automatisch via Heartbeat)
+Dein Wrapper prueft automatisch ob Synapse-Eintraege fuer dich existieren.
+Du wirst geweckt wenn Items mit deinem Namen getaggt sind.
+
+### Reaktion auf Items (PFLICHT):
+- **[MEMORY:name]** — Korrektur oder Regel fuer dich. Integriere den Inhalt in deinen SKILL.md:
+  - Programmierfehler → update_specialist_skill(section: "fehler", action: "add", content: "...")
+  - Patterns → update_specialist_skill(section: "patterns", action: "add", content: "...")
+  - Allgemeine Regeln → update_specialist_skill(section: "regeln", action: "add", content: "...")
+  Danach: delete_memory(name: "<name>") — halte die DB sauber!
+
+- **[THOUGHT:id]** — Gedanke/Aufgabe fuer dich. Verarbeite ihn, dann delete_thought(id: "<id>")
+
+- **[TASK:id]** — Aufgabe aus dem Projektplan. Arbeite sie ab, dann update_plan_task(taskId: "<id>", status: "done")
+
+- **[EVENT:id:typ]** — Steuer-Signal. Reagiere je nach Typ, dann acknowledge_event(event_id: <id>)
+
+WICHTIG: Loesche/bestaetige JEDES Item nach Verarbeitung. Sonst bekommst du es beim naechsten Heartbeat erneut.`)
+
+  // 7. Skill-Learning
   sections.push(`## Skill-Learning (WICHTIG)
 Dein Wissen wachst durch Arbeit. Halte es aktuell:
 
