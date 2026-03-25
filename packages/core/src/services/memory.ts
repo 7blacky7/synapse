@@ -506,7 +506,7 @@ export async function deleteMemories(
   // 2. PostgreSQL (Write-Primary) — atomar, fail-fast
   const pool = getPool();
   const pgResult = await pool.query(
-    'DELETE FROM memories WHERE id = ANY($1::uuid[]) AND project = $2 RETURNING id',
+    'DELETE FROM memories WHERE id = ANY($1::text[]) AND project = $2 RETURNING id',
     [foundIds, project]
   );
   const deletedCount = pgResult.rowCount ?? 0;

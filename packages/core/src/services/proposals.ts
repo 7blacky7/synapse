@@ -397,7 +397,7 @@ export async function deleteProposals(
   // 1. PostgreSQL (Write-Primary) — atomar, fail-fast
   const pool = getPool();
   const pgResult = await pool.query(
-    'DELETE FROM proposals WHERE id = ANY($1::uuid[]) RETURNING id',
+    'DELETE FROM proposals WHERE id = ANY($1::text[]) RETURNING id',
     [validIds]
   );
   const deletedCount = pgResult.rowCount ?? 0;
