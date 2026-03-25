@@ -740,7 +740,6 @@ mr lint         # Linter ausführen
 | Kein echter Push | Coordinator-Watch (Polling alle 10s) als Workaround |
 | Google Batch-Embedding | Limit von 100 Texten pro Batch-Request |
 | REST-API FileWatcher | REST-API hat keinen eigenen FileWatcher |
-| Pfade systemspezifisch | Absolute Pfade, kein relatives Mapping |
 | `detailed_stats` | Zeigt Gesamtzahlen über alle Projekte |
 
 ---
