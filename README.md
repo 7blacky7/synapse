@@ -248,9 +248,11 @@ Jedes Projekt bekommt eigene Qdrant-Collections: `project_{name}_code`, `project
 Spezialisten sind **persistente Claude-Agenten** die als detached Subprozesse dauerhaft aktiv bleiben:
 
 - **SKILL.md** — Jeder Spezialist hat eine eigene Wissensdatei (Regeln, Fehler, Patterns) die sich durch jeden Einsatz verbessert
-- **Heartbeat** (15s) — Wrapper pollt Inbox, Chat und Events automatisch im Hintergrund
-- **Auto-Wake** — `wake` sendet Nachrichten direkt an den laufenden Agenten via Inbox-Routing (kein Re-Spawn)
-- **Context-Ceiling** — Opus/Sonnet: 400k Tokens | Haiku: 200k Tokens | Stuck-Detection bei >120s Inaktivität
+- **Heartbeat** (15s, parallel zum Initial Wake) — Wrapper pollt Inbox, Chat und Events automatisch im Hintergrund. Startet sofort nach Prozess-Launch (nicht auf First-Activity warten)
+- **Token-Sync** — Liest echte Counts live aus Claude CLI Session-JSONL (`~/.claude/projects/<project>/<session>.jsonl`). Funktioniert ab Sekunde 1, nicht nur bei Activity-Events
+- **Stuck-Detection** — Zeitbasiert via `lastEventTs` (nicht Token-Count). 120s ohne ProcessManager-Event → Recovery (Busy-Status zurücksetzen). Keine false positives beim ersten Turn
+- **Sliding Timeout** — `writeAndCollect` Timeout resettet bei jedem Event, nicht fest 120s
+- **Context-Ceiling** — Opus/Sonnet: 200k Tokens | Haiku: 200k Tokens | Activity-Events für Wrapper-Diagnostik
 - **IPC** — Unix Domain Socket + JSON-RPC 2.0 zwischen MCP-Server und Wrapper-Prozess
 - **Modelle** — `opus`, `sonnet`, `haiku`, `opus[1m]`, `sonnet[1m]`
 
@@ -319,6 +321,7 @@ Events sind **verbindliche Steuersignale** — keine Chat-Nachrichten. Der Koord
 2. Agent führt beliebiges Tool aus
    → server.ts: withOnboarding() prüft getPendingEvents()
    → Tool-Response enthält pendingEvents mit Hint-Text
+   → Broadcasts werden nur gelesen seit Agent-Registrierung (neue Agenten bekommen keine uralten Events)
 
 3. PostToolUse Hook (chat-notify.sh)
    → Pollt Events via event-check.mjs
@@ -401,6 +404,12 @@ specialist(action: "spawn", name: "code-analyst", model: "haiku",
 specialist(action: "wake", name: "code-analyst",
            message: "Analysiere src/tools/consolidated/")
 ```
+
+**Startup-Verhalten:**
+- Heartbeat startet sofort nach Prozess-Launch (30s Verzögerung für MCP-Server-Init)
+- Initial Wake läuft **parallel** zum Heartbeat (nicht sequenziell)
+- Token-Sync funktioniert ab Sekunde 1 — liest echte Counts aus Session-JSONL
+- Stuck-Detection prüft `lastEventTs` (zeitbasiert), keine false positives beim ersten Turn
 
 Das **SKILL.md** des Spezialisten wächst mit jedem Einsatz:
 - Neue Regeln aus Fehlern
