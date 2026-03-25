@@ -563,15 +563,25 @@ export async function searchFilesByPath(
   const { limit = 50 } = options;
   const pool = getPool();
 
-  // Glob → SQL: Einfache Konvertierung
-  // * → % (beliebige Zeichen ohne /)
-  // ** → % (beliebige Zeichen inkl. /)
-  // ? → _ (ein Zeichen)
-  const sqlPattern = pathPattern
-    .replace(/\*\*/g, '⚡DOUBLESTAR⚡')
-    .replace(/\*/g, '[^/]*')
-    .replace(/⚡DOUBLESTAR⚡/g, '.*')
-    .replace(/\?/g, '.');
+  // Glob → PostgreSQL Regex (~): Konvertierung mit Marker-Methode
+  // Reihenfolge: Glob-Konstrukte zuerst durch Marker ersetzen,
+  // dann Sonderzeichen escapen, dann Marker durch Regex ersetzen.
+  // So werden . in *.ts escaped, aber . in [^/]* bleiben intakt.
+  let sqlPattern = pathPattern
+    .replace(/\*\*\//g, '\x01GLOBSTARSLASH\x01')
+    .replace(/\*\*/g, '\x01GLOBSTAR\x01')
+    .replace(/\*/g, '\x01STAR\x01')
+    .replace(/\?/g, '\x01QUESTION\x01')
+    .replace(/\./g, '\\.')
+    .replace(/\x01GLOBSTARSLASH\x01/g, '(.*/)?')
+    .replace(/\x01GLOBSTAR\x01/g, '.*')
+    .replace(/\x01STAR\x01/g, '[^/]*')
+    .replace(/\x01QUESTION\x01/g, '.');
+
+  // Relative Patterns (ohne fuehrenden /) matchen ueberall im absoluten Pfad
+  if (!pathPattern.startsWith('/')) {
+    sqlPattern = '.*/' + sqlPattern;
+  }
 
   const result = await pool.query(
     `SELECT file_path, file_name, file_type, chunk_count, file_size
