@@ -121,13 +121,15 @@ Jedes Projekt bekommt eigene Qdrant-Collections: `project_{name}_code`, `project
 | Action | Beschreibung |
 |--------|--------------|
 | `code` | Konzeptuelle Suche — findet ähnlichen Code |
-| `path` | Exakte Pfadsuche nach Glob-Pattern |
+| `path` | Exakte Pfadsuche nach Glob-Pattern (absolute und relative Pfade, z.B. `packages/agents/src/**/*.ts`) |
 | `code_with_path` | Kombiniert: Semantisch + Pfad-Filter |
 | `memory` | Semantische Memory-Suche |
 | `thoughts` | Thought-Suche (Erkenntnisse) |
 | `proposals` | Proposal-Suche (Code-Vorschläge) |
 | `tech_docs` | Framework-Dokumentation (mit Context7 Auto-Fetch) |
 | `media` | Cross-Modal Suche: Bilder/Videos per Text-Query |
+
+> **Path-Suche Glob-Pattern:** Relative Pfade (z.B. `packages/agents/**/*.ts`) werden automatisch in SQL-Regex konvertiert und matchen überall im absoluten Pfad. Marker-basierte Konvertierung: `*` → `[^/]*`, `**` → `.*`, `?` → `.` — Sonderzeichen wie `.` werden escaped.
 
 ---
 
