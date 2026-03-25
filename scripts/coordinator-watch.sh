@@ -15,6 +15,7 @@ DB_URL="${SYNAPSE_DB_URL:-}"
 if [[ -z "$DB_URL" ]]; then echo "[coordinator-watch] SYNAPSE_DB_URL nicht gesetzt" >&2; exit 1; fi
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 LASTSEEN_FILE="/tmp/synapse-chat-lastseen-${AGENT_ID}"
+CHANNEL_LASTSEEN_FILE="/tmp/synapse-channel-lastseen-${AGENT_ID}"
 PID_FILE="/tmp/synapse-watch-${PROJECT}.pid"
 
 # Pruefen ob bereits ein Watcher fuer dieses Projekt laeuft
@@ -36,6 +37,9 @@ trap 'rm -f "$PID_FILE"' EXIT
 if [[ ! -f "$LASTSEEN_FILE" ]]; then
   date -u +"%Y-%m-%dT%H:%M:%SZ" > "$LASTSEEN_FILE"
 fi
+if [[ ! -f "$CHANNEL_LASTSEEN_FILE" ]]; then
+  date -u +"%Y-%m-%dT%H:%M:%SZ" > "$CHANNEL_LASTSEEN_FILE"
+fi
 
 echo "[coordinator-watch] Starte Polling (alle ${INTERVAL}s) fuer ${AGENT_ID}@${PROJECT} (PID: $$)" >&2
 
@@ -53,8 +57,14 @@ while true; do
   BROADCASTS=${BROADCASTS:-0}
   DMS=${DMS:-0}
 
+  # Channel checken
+  CHANNEL_SINCE=$(cat "$CHANNEL_LASTSEEN_FILE" 2>/dev/null || echo "2000-01-01T00:00:00Z")
+  CHANNEL_DATA=$(node "$SCRIPT_DIR/channel-check.mjs" "$AGENT_ID" "$PROJECT" "$CHANNEL_SINCE" "$DB_URL" 2>/dev/null) || CHANNEL_DATA="0|"
+  IFS='|' read -r CHANNEL_COUNT CHANNEL_NAMES <<< "$CHANNEL_DATA"
+  CHANNEL_COUNT=${CHANNEL_COUNT:-0}
+
   # Wenn was da ist → Output und Exit (weckt Koordinator via task-notification)
-  if [[ "$EVENT_COUNT" -gt 0 ]] || [[ "$BROADCASTS" -gt 0 ]] || [[ "$DMS" -gt 0 ]]; then
+  if [[ "$EVENT_COUNT" -gt 0 ]] || [[ "$BROADCASTS" -gt 0 ]] || [[ "$DMS" -gt 0 ]] || [[ "$CHANNEL_COUNT" -gt 0 ]]; then
     PARTS=()
     if [[ "$EVENT_COUNT" -gt 0 ]]; then
       EVENT_DETAILS=$(echo "$EVENTS" | node -p "
@@ -69,6 +79,9 @@ while true; do
     fi
     if [[ "$DMS" -gt 0 ]]; then
       PARTS+=("💬 ${DMS} DMs${DM_SENDERS:+ von ${DM_SENDERS}}")
+    fi
+    if [[ "$CHANNEL_COUNT" -gt 0 ]]; then
+      PARTS+=("📣 ${CHANNEL_COUNT} Channel-Nachrichten${CHANNEL_NAMES:+ in ${CHANNEL_NAMES}}")
     fi
 
     echo "🔔 KOORDINATOR AUFWACHEN! [${PROJECT}]"
