@@ -561,10 +561,10 @@ async function pollSynapseItems(): Promise<boolean> {
 ${items.join('\n\n')}
 
 REAKTION (PFLICHT fuer jedes Item):
-- [MEMORY:name] → Inhalt in SKILL.md integrieren (update_specialist_skill: section "fehler" oder "patterns" oder "regeln"), dann delete_memory(name: "<name>")
-- [THOUGHT:id] → Verarbeiten, dann delete_thought(id: "<id>")
-- [TASK:id] → Abarbeiten, dann update_plan_task(taskId: "<id>", status: "done")
-- [EVENT:id:typ] → Je nach Typ reagieren, dann acknowledge_event(event_id: <id>)
+- [MEMORY:name] → Inhalt in SKILL.md integrieren (specialist(action: "update_skill", section: "fehler"/"patterns"/"regeln")), dann memory(action: "delete", name: "<name>")
+- [THOUGHT:id] → Verarbeiten, dann thought(action: "delete", id: "<id>")
+- [TASK:id] → Abarbeiten, dann plan(action: "add_task", taskId: "<id>", status: "done")
+- [EVENT:id:typ] → Je nach Typ reagieren, dann event(action: "ack", event_id: <id>)
 
 Arbeite diese Items jetzt ab.`
 

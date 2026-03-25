@@ -29,14 +29,14 @@ ${memory}`)
   }
 
   // 4. Synapse MCP-Instruktionen
-  sections.push(`## Synapse MCP-Tools
+  sections.push(`## Synapse MCP-Tools (13 konsolidierte Tools mit action-Parameter)
 Du hast Zugriff auf Synapse MCP-Tools. Nutze sie:
-- semantic_code_search: Code semantisch suchen
-- search_by_path: Dateien nach Pfad suchen
-- search_memory: Projekt-Wissen durchsuchen
-- write_memory: Erkenntnisse speichern
-- search_tech_docs: Framework-Dokumentation suchen
-- get_docs_for_file: Docs fuer eine Datei abrufen (VOR jeder Bearbeitung!)
+- search(action: "code"): Code semantisch suchen
+- search(action: "path"): Dateien nach Pfad suchen
+- search(action: "memory"): Projekt-Wissen durchsuchen
+- memory(action: "write"): Erkenntnisse speichern
+- docs(action: "search"): Framework-Dokumentation suchen
+- docs(action: "get_for_file"): Docs fuer eine Datei abrufen (VOR jeder Bearbeitung!)
 
 SUCHREIHENFOLGE (PFLICHT):
 1. Synapse MCP-Tools zuerst
@@ -49,13 +49,13 @@ SUCHREIHENFOLGE (PFLICHT):
 Du bist im Channel "${channelName}" registriert.
 
 ### Channel (Gruppenchat)
-- Nachrichten lesen: mcp__synapse__get_channel_feed
-- Antworten: mcp__synapse__post_to_channel (sender: "${config.name}")
+- Nachrichten lesen: channel(action: "feed")
+- Antworten: channel(action: "post", sender: "${config.name}")
 - Wenn du fachlich beitragen kannst: ANTWORTE im Channel
 
 ### Inbox (Direktnachrichten)
-- Pruefen: mcp__synapse__check_inbox
-- Senden: mcp__synapse__post_to_inbox
+- Pruefen: chat(action: "inbox_check")
+- Senden: chat(action: "inbox_send")
 
 ### [PRAXIS-FEEDBACK] Nachrichten
 Wenn du eine Nachricht mit [PRAXIS-FEEDBACK] Tag siehst:
@@ -71,16 +71,16 @@ Du wirst geweckt wenn Items mit deinem Namen getaggt sind.
 
 ### Reaktion auf Items (PFLICHT):
 - **[MEMORY:name]** — Korrektur oder Regel fuer dich. Integriere den Inhalt in deinen SKILL.md:
-  - Programmierfehler → update_specialist_skill(section: "fehler", action: "add", content: "...")
-  - Patterns → update_specialist_skill(section: "patterns", action: "add", content: "...")
-  - Allgemeine Regeln → update_specialist_skill(section: "regeln", action: "add", content: "...")
-  Danach: delete_memory(name: "<name>") — halte die DB sauber!
+  - Programmierfehler → specialist(action: "update_skill", section: "fehler", skill_action: "add", content: "...")
+  - Patterns → specialist(action: "update_skill", section: "patterns", skill_action: "add", content: "...")
+  - Allgemeine Regeln → specialist(action: "update_skill", section: "regeln", skill_action: "add", content: "...")
+  Danach: memory(action: "delete", name: "<name>") — halte die DB sauber!
 
-- **[THOUGHT:id]** — Gedanke/Aufgabe fuer dich. Verarbeite ihn, dann delete_thought(id: "<id>")
+- **[THOUGHT:id]** — Gedanke/Aufgabe fuer dich. Verarbeite ihn, dann thought(action: "delete", id: "<id>")
 
-- **[TASK:id]** — Aufgabe aus dem Projektplan. Arbeite sie ab, dann update_plan_task(taskId: "<id>", status: "done")
+- **[TASK:id]** — Aufgabe aus dem Projektplan. Arbeite sie ab, dann plan(action: "add_task", taskId: "<id>", status: "done")
 
-- **[EVENT:id:typ]** — Steuer-Signal. Reagiere je nach Typ, dann acknowledge_event(event_id: <id>)
+- **[EVENT:id:typ]** — Steuer-Signal. Reagiere je nach Typ, dann event(action: "ack", event_id: <id>)
 
 WICHTIG: Loesche/bestaetige JEDES Item nach Verarbeitung. Sonst bekommst du es beim naechsten Heartbeat erneut.`)
 
@@ -104,7 +104,7 @@ Schreibe wichtige Erkenntnisse in dein Tages-Log.
 
 ### Verdichtung
 Wenn MEMORY.md > 100 Zeilen wird: Verdichte alte Eintraege,
-schiebe Details nach Qdrant (write_memory), behalte nur die Essenz.`)
+schiebe Details nach Qdrant (memory(action: "write")), behalte nur die Essenz.`)
 
   // 7. Onboarding
   sections.push(`## Onboarding (Erste Aktionen)

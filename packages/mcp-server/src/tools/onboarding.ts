@@ -200,15 +200,11 @@ Synapse unterstuetzt automatischen Session-Handoff wenn das Context-Window voll 
 ### Handoff-Protokoll (3 Schritte)
 
 **1. Thought speichern (Schnelleinstieg):**
-add_thought(project, source: "<dein-name>",
-  content: "SESSION-HANDOFF: <Fortschritt> | NAECHSTER SCHRITT: <was> | MEMORY: session-handoff-<projekt>-<YYYY-MM-DD-HH-MM>",
+thought(action: "add", project: "<projekt>", source: "<dein-name>",
+  content: "SESSION-HANDOFF: <Fortschritt> | NAECHSTER SCHRITT: <was> | CHAT-SEIT: <timestamp>",
   tags: ["session-uebergabe"])
 
-**2. Memory speichern (Details):**
-write_memory(project, name: "session-handoff-<projekt>-<YYYY-MM-DD-HH-MM>",
-  category: "note", content: "User-Auftrag, Erledigtes, Offene Tasks, Naechste Schritte, Branch/Git-Status")
-
-**3. Neue Session starten:**
+**2. Neue Session starten:**
 bash <projekt-pfad>/scripts/context-handoff/context-handoff.sh "<projekt-pfad>" "<projekt-name>" "<aufgabe>"
 
 ### Wichtig
