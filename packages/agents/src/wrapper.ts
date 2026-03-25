@@ -114,7 +114,10 @@ function getContextPercent(): number {
  */
 async function syncTokensFromHistory(): Promise<void> {
   const status = processManager.getStatus().get(AGENT_NAME)
-  if (!status) return
+  if (!status) {
+    log('syncTokens: processManager hat keinen Status fuer "%s"', AGENT_NAME)
+    return
+  }
 
   // Pfad: ~/.claude/projects/<cwd-mit-dashes>/<session-id>.jsonl
   const projectDir = PROJECT_PATH.replace(/\//g, '-')
@@ -126,6 +129,7 @@ async function syncTokensFromHistory(): Promise<void> {
 
     let lastContextInput = 0
     let cumulativeOutput = 0
+    let usageTurns = 0
 
     for (const line of lines) {
       if (!line.trim()) continue
@@ -138,6 +142,7 @@ async function syncTokensFromHistory(): Promise<void> {
             + (usage.cache_read_input_tokens || 0)
             + (usage.cache_creation_input_tokens || 0)
           cumulativeOutput += (usage.output_tokens || 0)
+          usageTurns++
         }
       } catch { /* skip non-JSON lines */ }
     }
@@ -145,8 +150,11 @@ async function syncTokensFromHistory(): Promise<void> {
     if (lastContextInput > 0 || cumulativeOutput > 0) {
       totalInputTokens = lastContextInput
       totalOutputTokens = cumulativeOutput
+      log('syncTokens: %d turns, context=%dk (%d%%), output=%dk', usageTurns, Math.round(lastContextInput / 1000), getContextPercent(), Math.round(cumulativeOutput / 1000))
     }
-  } catch { /* Datei existiert noch nicht oder nicht lesbar */ }
+  } catch (err) {
+    log('syncTokens: Fehler beim Lesen von %s: %s', jsonlPath, err instanceof Error ? err.message : String(err))
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -961,17 +969,15 @@ async function main() {
   // 7. Start heartbeat polling (mit Startup-Delay damit Claude's MCP-Server bereit sind)
   const STARTUP_DELAY_MS = 30_000
   log('Heartbeat startet in %ds (MCP-Server Startup-Delay)', STARTUP_DELAY_MS / 1000)
-  setTimeout(async () => {
-    // Initial Wake: Agent mit seiner Aufgabe starten (Task steht im System-Prompt)
-    log('Initial Wake: Starte Agent mit Aufgabe')
-    try {
-      await wakeAgent('Starte jetzt mit deiner Aufgabe. Fuehre zuerst das Onboarding durch, dann arbeite deinen Task ab.')
-    } catch (err) {
-      log('Initial Wake fehlgeschlagen: %s', err)
-    }
-
+  setTimeout(() => {
+    // Heartbeat SOFORT starten — unabhaengig vom Initial Wake
     heartbeatIntervalId = setInterval(() => void heartbeatPoll(), POLL_INTERVAL)
     log('Heartbeat gestartet (interval: %dms)', POLL_INTERVAL)
+
+    // Initial Wake: Agent mit seiner Aufgabe starten (Task steht im System-Prompt)
+    log('Initial Wake: Starte Agent mit Aufgabe')
+    wakeAgent('Starte jetzt mit deiner Aufgabe. Fuehre zuerst das Onboarding durch, dann arbeite deinen Task ab.')
+      .catch((err) => log('Initial Wake fehlgeschlagen: %s', err))
   }, STARTUP_DELAY_MS)
 
   // 8. Update status file: running
