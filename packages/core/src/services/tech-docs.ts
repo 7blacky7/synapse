@@ -69,7 +69,7 @@ export async function addTechDoc(
   category: string = 'framework',
   source: string = 'research',
   project?: string
-): Promise<{ success: boolean; id: string; duplicate: boolean; message: string }> {
+): Promise<{ success: boolean; id: string; duplicate: boolean; message: string; warning?: string }> {
   const contentHash = createHash('sha256').update(content).digest('hex');
 
   // Duplikat-Check in PostgreSQL
@@ -98,24 +98,30 @@ export async function addTechDoc(
     [id, framework.toLowerCase(), version, section, content, type, category, contentHash, source, now]
   );
 
-  // 2. Qdrant (Vektor-Index) - in Projekt-Collection wenn angegeben, sonst global
-  const collectionName = project ? COLLECTIONS.projectDocs(project) : COLLECTIONS.techDocs;
-  await ensureCollection(collectionName);
-  const vector = await embed(`${framework} ${version} ${section} ${content}`);
-  await insertVector(collectionName, vector, {
-    framework: framework.toLowerCase(),
-    version,
-    section,
-    content,
-    type,
-    category,
-    source,
-    content_hash: contentHash,
-    indexed_at: now,
-  }, id);
+  // 2. Qdrant (Vektor-Index) — Warning bei Fehler, PG-Daten bleiben erhalten
+  let warning: string | undefined;
+  try {
+    const collectionName = project ? COLLECTIONS.projectDocs(project) : COLLECTIONS.techDocs;
+    await ensureCollection(collectionName);
+    const vector = await embed(`${framework} ${version} ${section} ${content}`);
+    await insertVector(collectionName, vector, {
+      framework: framework.toLowerCase(),
+      version,
+      section,
+      content,
+      type,
+      category,
+      source,
+      content_hash: contentHash,
+      indexed_at: now,
+    }, id);
+  } catch (error) {
+    console.error('[Synapse TechDocs] Qdrant-Write fehlgeschlagen:', error);
+    warning = `Qdrant-Write fehlgeschlagen: ${error}`;
+  }
 
   console.error(`[Synapse TechDocs] ${framework} ${version} ${section} (${type}) indexiert`);
-  return { success: true, id, duplicate: false, message: `${framework} ${version} ${section} indexiert` };
+  return { success: true, id, duplicate: false, message: `${framework} ${version} ${section} indexiert`, warning };
 }
 
 /**

@@ -141,10 +141,15 @@ export async function indexFile(
     } satisfies CodeChunkPayload,
   }));
 
+  // ARCHITEKTUR: Qdrant FIRST (statt PG-first wie in anderen Services)
+  // GRUND: Filesystem ist echte Source of Truth fuer Code, Qdrant ist Kern-Funktionalität.
+  // PG dient nur als Metadaten-Cache (Dateiname, Größe, chunk_count).
+  // Bei Qdrant-Fehler: Ganze Operation fail-fast (kritischer Index).
+  // Bei PG-Fehler: OK, Chunks sind bereits im Qdrant → Suche funktioniert trotzdem.
   // In Qdrant einfuegen
   await insertVectors(collectionName, items);
 
-  // Dual-Write: File-Metadaten nach PostgreSQL
+  // Dual-Write: File-Metadaten nach PostgreSQL (optional, nur Metadaten)
   try {
     const fileSize = fs.statSync(filePath).size;
     await upsertCodeFile(
