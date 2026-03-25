@@ -375,14 +375,21 @@ function getFrameworkHintsForExtension(ext: string): string[] {
 export async function deleteTechDoc(
   id: string,
   project?: string
-): Promise<boolean> {
+): Promise<{ success: boolean; warning?: string }> {
+  // 1. PostgreSQL (Write-Primary) — fail-fast: wirft bei Fehler
   const pool = getPool();
   await pool.query('DELETE FROM tech_docs WHERE id = $1', [id]);
 
+  // 2. Qdrant — Warning bei Fehler, PG-Daten bereits geloescht
+  let warning: string | undefined;
   const collectionName = project ? COLLECTIONS.projectDocs(project) : COLLECTIONS.techDocs;
   try {
     await deleteVector(collectionName, id);
-  } catch { /* Collection existiert evtl nicht */ }
+  } catch (error) {
+    console.error('[Synapse TechDocs] Qdrant-Delete fehlgeschlagen:', error);
+    warning = `Qdrant-Delete fehlgeschlagen: ${error}`;
+  }
 
-  return true;
+  console.error(`[Synapse TechDocs] Doc "${id}" geloescht`);
+  return { success: true, warning };
 }

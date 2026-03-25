@@ -336,23 +336,17 @@ export async function deleteProposal(
     return { success: false };
   }
 
+  // 1. PostgreSQL (Write-Primary) — fail-fast: wirft bei Fehler
+  const pool = getPool();
+  await pool.query('DELETE FROM proposals WHERE id = $1', [id]);
+
+  // 2. Qdrant — Warning bei Fehler, PG-Daten bereits geloescht
   let warning: string | undefined;
-
-  // 1. PostgreSQL
-  try {
-    const pool = getPool();
-    await pool.query('DELETE FROM proposals WHERE id = $1', [id]);
-  } catch (error) {
-    console.error('[Synapse] PostgreSQL Proposal-Delete fehlgeschlagen:', error);
-    warning = `PG-Write fehlgeschlagen: ${error}`;
-  }
-
-  // 2. Qdrant
   try {
     await deleteVector(collName, id);
   } catch (error) {
     console.error('[Synapse] Qdrant Proposal-Delete fehlgeschlagen:', error);
-    warning = (warning ? warning + ' | ' : '') + `Qdrant-Write fehlgeschlagen: ${error}`;
+    warning = `Qdrant-Write fehlgeschlagen: ${error}`;
   }
 
   console.error(`[Synapse] Proposal "${id}" geloescht fuer Projekt "${project}"`);
