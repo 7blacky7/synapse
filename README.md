@@ -52,6 +52,7 @@ Du (User)
 | 💬 **Multi-Agent Chat** | Broadcast-Nachrichten an alle Agenten oder gezielte DMs. Polling-basiert mit `since`-Timestamp. Ungelesene Nachrichten werden in jeder Tool-Response eingeblendet. |
 | ⚡ **Event-System** | Verbindliche Steuersignale (WORK_STOP, CRITICAL_REVIEW, ...) mit Pflicht-Ack. Eskalation nach 3 ignorierten Calls. Prioritäten: critical, high, normal. |
 | 🤖 **Agenten-Koordination** | Koordinator-Muster: Opus dispatcht Sonnet/Haiku-Agenten. Batch-Registrierung, automatisches Onboarding, Coordinator-Watch für Idle-Aufwachen. |
+| 🧑‍🔬 **Persistente Spezialisten** | Dauerhaft laufende Claude-Agenten (Subprozess + Unix Socket). Eigene SKILL.md pro Agent wächst mit jedem Einsatz. Auto-Wake via `wake`, Heartbeat-Polling (15s), Context-Ceiling-Tracking. |
 | 🔄 **Context-Handoff** | Automatische Session-Übergabe wenn das Context-Window voll wird. Fortschritt in Synapse gespeichert, neue Session liest nahtlos weiter. |
 | 📚 **Tech-Docs Auto-Fetch** | `search_tech_docs` holt automatisch Docs von [Context7](https://context7.com) wenn keine lokalen Ergebnisse. Docs-Kurator (Opus) recherchiert kuratierte Breaking Changes. |
 | 🛡️ **Wissens-Airbag** | `get_docs_for_file` zeigt vor jeder Datei-Bearbeitung Breaking Changes, Migration-Warnungen und Gotchas — nur was neuer als der Agent-Cutoff ist. |
@@ -99,7 +100,7 @@ Jedes Projekt bekommt eigene Qdrant-Collections: `project_{name}_code`, `project
 
 ### 📦 Admin & Projekt-Management (`admin`)
 
-**Actions:** `index_stats`, `migrate`, `restore`, `save_idea`, `confirm_idea`, `index_media`, `index_stats`, `detailed_stats`
+**Actions:** `index_stats`, `migrate`, `restore`, `save_idea`, `confirm_idea`, `index_media`, `detailed_stats`
 
 | Action | Beschreibung |
 |--------|--------------|
@@ -244,6 +245,15 @@ Jedes Projekt bekommt eigene Qdrant-Collections: `project_{name}_code`, `project
 | `update_skill` | Skill des Agenten aktualisieren |
 | `capabilities` | Agenten-Fähigkeiten prüfen |
 
+Spezialisten sind **persistente Claude-Agenten** die als detached Subprozesse dauerhaft aktiv bleiben:
+
+- **SKILL.md** — Jeder Spezialist hat eine eigene Wissensdatei (Regeln, Fehler, Patterns) die sich durch jeden Einsatz verbessert
+- **Heartbeat** (15s) — Wrapper pollt Inbox, Chat und Events automatisch im Hintergrund
+- **Auto-Wake** — `wake` sendet Nachrichten direkt an den laufenden Agenten via Inbox-Routing (kein Re-Spawn)
+- **Context-Ceiling** — Opus/Sonnet: 400k Tokens | Haiku: 200k Tokens | Stuck-Detection bei >120s Inaktivität
+- **IPC** — Unix Domain Socket + JSON-RPC 2.0 zwischen MCP-Server und Wrapper-Prozess
+- **Modelle** — `opus`, `sonnet`, `haiku`, `opus[1m]`, `sonnet[1m]`
+
 ---
 
 ### 📚 Tech-Docs & Wissens-Airbag (`docs`)
@@ -367,6 +377,37 @@ Wenn neue Nachrichten oder Events ankommen:
 → Script gibt Output und beendet sich
 → Claude Code Task-Notification weckt den Koordinator
 → Koordinator liest Nachrichten, reagiert, startet Watcher neu
+
+---
+
+### 🧑‍🔬 Persistente Spezialisten — Architektur
+
+```
+MCP-Server (HeartbeatController)
+    ↓ Unix Domain Socket (JSON-RPC 2.0)
+Agent-Wrapper (Detached Node.js Prozess)
+    ↓ stdin/stdout Pipe
+Claude CLI Subprocess (--stream-json)
+```
+
+Ein Spezialist startet **einmal** und bleibt über Sessions hinweg erreichbar:
+
+```
+# Einmalig starten
+specialist(action: "spawn", name: "code-analyst", model: "haiku",
+           expertise: "TypeScript Analyse", project: "synapse")
+
+# Jederzeit wieder aufwecken
+specialist(action: "wake", name: "code-analyst",
+           message: "Analysiere src/tools/consolidated/")
+```
+
+Das **SKILL.md** des Spezialisten wächst mit jedem Einsatz:
+- Neue Regeln aus Fehlern
+- Patterns die sich bewährt haben
+- Korrekturen via `update_skill`
+
+Bei Context-Ceiling (95%): automatischer Handoff — der Spezialist liest in der Folge-Session nahtlos weiter.
 
 ---
 
