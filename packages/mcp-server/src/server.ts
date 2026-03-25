@@ -84,7 +84,7 @@ import {
 } from './tools/index.js';
 
 import { getPendingEvents } from '@synapse/core';
-import { ensureAgentsSchema, detectClaudeCli, heartbeatController, readStatus, postToInbox, postMessage } from '@synapse/agents';
+import { ensureAgentsSchema, detectClaudeCli, heartbeatController, readStatus, postToInbox, postMessage, checkInbox } from '@synapse/agents';
 
 /** Tracking: Wann hat ein Agent zuletzt Chat gelesen? */
 const lastChatRead = new Map<string, string>();
@@ -1955,15 +1955,30 @@ export function createServer(): Server {
 
         // ===== AGENTEN-CHAT =====
         case 'register_chat_agent': {
+          const agentRegId = args?.id as string;
+          const agentRegProjectPath = args?.project_path as string | undefined;
           const result = await registerChatAgent(
-            args?.id as string,
+            agentRegId,
             args?.project as string,
             args?.model as string | undefined,
             args?.cutoff_date as string | undefined
           );
           // Chat-Read-Timestamp ab jetzt tracken
-          lastChatRead.set(args?.id as string, new Date().toISOString());
-          return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+          lastChatRead.set(agentRegId, new Date().toISOString());
+          // Specialist-System: Pruefen ob dieser Agent ein Spezialist ist
+          const regEnriched: Record<string, unknown> = { ...result };
+          if (agentRegProjectPath) {
+            try {
+              const specStatus = await readStatus(agentRegProjectPath);
+              if (specStatus.specialists[agentRegId]) {
+                regEnriched.specialistInfo = {
+                  isSpecialist: true,
+                  specialistStatus: specStatus.specialists[agentRegId].status,
+                };
+              }
+            } catch { /* Specialist-Status nicht verfuegbar */ }
+          }
+          return { content: [{ type: 'text', text: JSON.stringify(regEnriched, null, 2) }] };
         }
 
         case 'unregister_chat_agent': {
@@ -1988,12 +2003,47 @@ export function createServer(): Server {
           const senderId = args?.sender_id as string;
           const recipientId = args?.recipient_id as string | undefined;
           const content = args?.content as string;
-          const result = await sendChatMessage(
-            args?.project as string,
-            senderId,
-            content,
-            recipientId
-          );
+          const project = args?.project as string;
+          const sendProjectPath = args?.project_path as string | undefined;
+
+          // Dual-path: Specialist-Routing wenn project_path angegeben
+          if (sendProjectPath) {
+            try {
+              const specStatus = await readStatus(sendProjectPath);
+
+              // Recipient ist ein Spezialist → direkt in die Inbox routen
+              if (recipientId && specStatus.specialists[recipientId]) {
+                const inboxResult = await postToInbox(senderId, recipientId, content);
+                const target = `DM an ${recipientId}`;
+                const preview = content.length > 80 ? content.slice(0, 80) + '...' : content;
+                try {
+                  await server.sendLoggingMessage({
+                    level: 'info',
+                    data: `📨 Chat [${senderId} → ${target}] (specialist-inbox): ${preview}`,
+                  });
+                } catch { /* Logging nicht verfuegbar */ }
+                return {
+                  content: [{
+                    type: 'text',
+                    text: JSON.stringify({ success: true, routed: 'specialist_inbox', ...inboxResult }, null, 2),
+                  }],
+                };
+              }
+
+              // Broadcast und Spezialisten laufen → auch in general-channel posten
+              if (!recipientId) {
+                const runningCount = Object.values(specStatus.specialists).filter(s => s.status === 'running').length;
+                if (runningCount > 0) {
+                  try {
+                    await postMessage(`${project}-general`, senderId, content);
+                  } catch { /* Channel existiert noch nicht */ }
+                }
+              }
+            } catch { /* Specialist-Status nicht verfuegbar, legacy fallback */ }
+          }
+
+          // Legacy-Pfad (auch als Fallback wenn kein project_path)
+          const result = await sendChatMessage(project, senderId, content, recipientId);
 
           // Broadcast-Notification an den Client: Neue Chat-Nachricht!
           if (result.success) {
@@ -2011,10 +2061,12 @@ export function createServer(): Server {
         }
 
         case 'get_chat_messages': {
+          const getMsgProjectPath = args?.project_path as string | undefined;
+          const getMsgAgentId = args?.agent_id as string | undefined;
           const result = await getChatMessages(
             args?.project as string,
             {
-              agentId: args?.agent_id as string | undefined,
+              agentId: getMsgAgentId,
               since: args?.since as string | undefined,
               senderId: args?.sender_id as string | undefined,
               limit: args?.limit as number | undefined,
@@ -2024,11 +2076,58 @@ export function createServer(): Server {
           if (agentId) {
             lastChatRead.set(agentId, new Date().toISOString());
           }
+
+          // Dual-path: Specialist-Inbox-Nachrichten anfuegen wenn project_path vorhanden
+          if (getMsgProjectPath && getMsgAgentId) {
+            try {
+              const specStatus = await readStatus(getMsgProjectPath);
+              if (Object.keys(specStatus.specialists).length > 0) {
+                const inboxMessages = await checkInbox(getMsgAgentId);
+                if (inboxMessages.length > 0) {
+                  const inboxResult: Record<string, unknown> = {
+                    ...(typeof result === 'object' && result !== null ? result : { messages: [] }),
+                    specialistInbox: inboxMessages.map(m => ({
+                      id: m.id,
+                      from: m.fromAgent,
+                      content: m.content,
+                      createdAt: m.createdAt,
+                    })),
+                  };
+                  return { content: [{ type: 'text', text: JSON.stringify(inboxResult, null, 2) }] };
+                }
+              }
+            } catch { /* Specialist-Inbox nicht verfuegbar */ }
+          }
+
           return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
         }
 
         case 'list_chat_agents': {
+          const listProjectPath = args?.project_path as string | undefined;
           const result = await listAgents(args?.project as string);
+
+          // Dual-path: Spezialisten anfuegen wenn project_path vorhanden
+          if (listProjectPath) {
+            try {
+              const specStatus = await readStatus(listProjectPath);
+              const specialists = Object.entries(specStatus.specialists).map(([name, s]) => ({
+                id: name,
+                isSpecialist: true,
+                status: s.status,
+                model: s.model,
+                currentTask: s.currentTask,
+                lastActivity: s.lastActivity,
+              }));
+              if (specialists.length > 0) {
+                const enrichedList: Record<string, unknown> = {
+                  ...(typeof result === 'object' && result !== null ? result : {}),
+                  specialists,
+                };
+                return { content: [{ type: 'text', text: JSON.stringify(enrichedList, null, 2) }] };
+              }
+            } catch { /* Specialist-Status nicht verfuegbar */ }
+          }
+
           return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
         }
 
