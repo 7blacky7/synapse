@@ -66,6 +66,20 @@ import {
   emitEventTool,
   acknowledgeEventTool,
   getPendingEventsTool,
+  spawnSpecialistTool,
+  stopSpecialistTool,
+  specialistStatusTool,
+  wakeSpecialistTool,
+  updateSpecialistSkillTool,
+  createChannelTool,
+  joinChannelTool,
+  leaveChannelTool,
+  postToChannelTool,
+  getChannelFeedTool,
+  listChannelsTool,
+  postToInboxTool,
+  checkInboxTool,
+  getAgentCapabilitiesTool,
 } from './tools/index.js';
 
 import { getPendingEvents } from '@synapse/core';
@@ -1309,6 +1323,189 @@ export function createServer(): Server {
           required: ['temp_id'],
         },
       },
+
+      // ===== SPEZIALISTEN (AGENT-SPAWNING) =====
+      {
+        name: 'spawn_specialist',
+        description: 'Spawnt einen persistenten Claude CLI Spezialisten mit eigenem Skill-System. Der Spezialist laeuft als detached Prozess und kommuniziert ueber Unix-Sockets.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            name: { type: 'string', description: 'Eindeutiger Name des Spezialisten' },
+            model: { type: 'string', enum: ['opus', 'sonnet', 'haiku', 'opus[1m]', 'sonnet[1m]'], description: 'Claude Modell' },
+            expertise: { type: 'string', description: 'Fachgebiet des Spezialisten' },
+            task: { type: 'string', description: 'Aufgabe fuer den Spezialisten' },
+            project: { type: 'string', description: 'Projekt-Name' },
+            project_path: { type: 'string', description: 'Absoluter Pfad zum Projekt-Ordner' },
+            cwd: { type: 'string', description: 'Arbeitsverzeichnis (Standard: Projekt-Pfad)' },
+            channel: { type: 'string', description: 'Channel fuer Kommunikation (Standard: {project}-general)' },
+            allowed_tools: { type: 'array', items: { type: 'string' }, description: 'Erlaubte Tools fuer den Spezialisten' },
+          },
+          required: ['name', 'model', 'expertise', 'task', 'project', 'project_path'],
+        },
+      },
+      {
+        name: 'stop_specialist',
+        description: 'Stoppt einen laufenden Spezialisten und trennt die Verbindung',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            name: { type: 'string', description: 'Name des Spezialisten' },
+            project_path: { type: 'string', description: 'Absoluter Pfad zum Projekt-Ordner' },
+          },
+          required: ['name', 'project_path'],
+        },
+      },
+      {
+        name: 'specialist_status',
+        description: 'Zeigt Status aller Spezialisten oder eines einzelnen (inkl. Wrapper-Status und SKILL.md)',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            project_path: { type: 'string', description: 'Absoluter Pfad zum Projekt-Ordner' },
+            name: { type: 'string', description: 'Optional: Name eines einzelnen Spezialisten' },
+          },
+          required: ['project_path'],
+        },
+      },
+      {
+        name: 'wake_specialist',
+        description: 'Sendet eine Nachricht an einen schlafenden Spezialisten und wartet auf Antwort',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            name: { type: 'string', description: 'Name des Spezialisten' },
+            message: { type: 'string', description: 'Nachricht an den Spezialisten' },
+          },
+          required: ['name', 'message'],
+        },
+      },
+      {
+        name: 'update_specialist_skill',
+        description: 'Aktualisiert die SKILL.md eines Spezialisten (Regeln, Fehler oder Patterns hinzufuegen/entfernen)',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            name: { type: 'string', description: 'Name des Spezialisten' },
+            project_path: { type: 'string', description: 'Absoluter Pfad zum Projekt-Ordner' },
+            section: { type: 'string', enum: ['regeln', 'fehler', 'patterns'], description: 'Abschnitt der SKILL.md' },
+            action: { type: 'string', enum: ['add', 'remove'], description: 'Hinzufuegen oder entfernen' },
+            content: { type: 'string', description: 'Inhalt des Eintrags' },
+          },
+          required: ['name', 'project_path', 'section', 'action', 'content'],
+        },
+      },
+      {
+        name: 'get_agent_capabilities',
+        description: 'Prueft ob Claude CLI verfuegbar ist und welche Specialist-Features aktiv sind',
+        inputSchema: {
+          type: 'object',
+          properties: {},
+        },
+      },
+
+      // ===== SPECIALIST-CHANNELS =====
+      {
+        name: 'create_channel',
+        description: 'Erstellt einen neuen Channel fuer Spezialisten-Kommunikation',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            name: { type: 'string', description: 'Channel-Name' },
+            project: { type: 'string', description: 'Projekt-Name' },
+            description: { type: 'string', description: 'Beschreibung des Channels' },
+            created_by: { type: 'string', description: 'Ersteller (Agent-Name)' },
+          },
+          required: ['name', 'project', 'description', 'created_by'],
+        },
+      },
+      {
+        name: 'join_channel',
+        description: 'Fuegt einen Agenten einem Channel hinzu',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            channel_name: { type: 'string', description: 'Channel-Name' },
+            agent_name: { type: 'string', description: 'Agent-Name' },
+          },
+          required: ['channel_name', 'agent_name'],
+        },
+      },
+      {
+        name: 'leave_channel',
+        description: 'Entfernt einen Agenten aus einem Channel',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            channel_name: { type: 'string', description: 'Channel-Name' },
+            agent_name: { type: 'string', description: 'Agent-Name' },
+          },
+          required: ['channel_name', 'agent_name'],
+        },
+      },
+      {
+        name: 'post_to_channel',
+        description: 'Postet eine Nachricht in einen Channel',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            channel_name: { type: 'string', description: 'Channel-Name' },
+            sender: { type: 'string', description: 'Absender (Agent-Name)' },
+            content: { type: 'string', description: 'Nachrichteninhalt' },
+          },
+          required: ['channel_name', 'sender', 'content'],
+        },
+      },
+      {
+        name: 'get_channel_feed',
+        description: 'Holt Nachrichten aus einem Channel (chronologisch, aelteste zuerst)',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            channel_name: { type: 'string', description: 'Channel-Name' },
+            limit: { type: 'number', description: 'Max. Nachrichten (Standard: 20)' },
+            since_id: { type: 'number', description: 'Nur Nachrichten nach dieser ID' },
+            preview: { type: 'boolean', description: 'Inhalte auf 200 Zeichen kuerzen (Standard: false)' },
+          },
+          required: ['channel_name'],
+        },
+      },
+      {
+        name: 'list_channels',
+        description: 'Listet alle Channels auf (optional nach Projekt gefiltert)',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            project: { type: 'string', description: 'Optional: Projekt-Name zum Filtern' },
+          },
+        },
+      },
+
+      // ===== SPECIALIST-INBOX =====
+      {
+        name: 'post_to_inbox',
+        description: 'Sendet eine Direktnachricht an einen Spezialisten',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            from_agent: { type: 'string', description: 'Absender Agent-Name' },
+            to_agent: { type: 'string', description: 'Empfaenger Agent-Name' },
+            content: { type: 'string', description: 'Nachrichteninhalt' },
+          },
+          required: ['from_agent', 'to_agent', 'content'],
+        },
+      },
+      {
+        name: 'check_inbox',
+        description: 'Prueft und markiert ungelesene Inbox-Nachrichten eines Agenten als gelesen',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            agent_name: { type: 'string', description: 'Agent-Name' },
+          },
+          required: ['agent_name'],
+        },
+      },
     ],
   }));
 
@@ -1958,6 +2155,118 @@ export function createServer(): Server {
             args?.project as string
           );
           return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+        }
+
+        // ===== SPEZIALISTEN (AGENT-SPAWNING) =====
+        case 'spawn_specialist': {
+          return await spawnSpecialistTool(
+            args?.name as string,
+            args?.model as 'opus' | 'sonnet' | 'haiku' | 'opus[1m]' | 'sonnet[1m]',
+            args?.expertise as string,
+            args?.task as string,
+            args?.project as string,
+            args?.project_path as string,
+            args?.cwd as string | undefined,
+            args?.channel as string | undefined,
+            args?.allowed_tools as string[] | undefined,
+          );
+        }
+
+        case 'stop_specialist': {
+          return await stopSpecialistTool(
+            args?.name as string,
+            args?.project_path as string,
+          );
+        }
+
+        case 'specialist_status': {
+          return await specialistStatusTool(
+            args?.project_path as string,
+            args?.name as string | undefined,
+          );
+        }
+
+        case 'wake_specialist': {
+          return await wakeSpecialistTool(
+            args?.name as string,
+            args?.message as string,
+          );
+        }
+
+        case 'update_specialist_skill': {
+          return await updateSpecialistSkillTool(
+            args?.name as string,
+            args?.project_path as string,
+            args?.section as 'regeln' | 'fehler' | 'patterns',
+            args?.action as 'add' | 'remove',
+            args?.content as string,
+          );
+        }
+
+        case 'get_agent_capabilities': {
+          return getAgentCapabilitiesTool();
+        }
+
+        // ===== SPECIALIST-CHANNELS =====
+        case 'create_channel': {
+          return await createChannelTool(
+            args?.name as string,
+            args?.project as string,
+            args?.description as string,
+            args?.created_by as string,
+          );
+        }
+
+        case 'join_channel': {
+          return await joinChannelTool(
+            args?.channel_name as string,
+            args?.agent_name as string,
+          );
+        }
+
+        case 'leave_channel': {
+          return await leaveChannelTool(
+            args?.channel_name as string,
+            args?.agent_name as string,
+          );
+        }
+
+        case 'post_to_channel': {
+          return await postToChannelTool(
+            args?.channel_name as string,
+            args?.sender as string,
+            args?.content as string,
+          );
+        }
+
+        case 'get_channel_feed': {
+          return await getChannelFeedTool(
+            args?.channel_name as string,
+            args?.limit as number | undefined,
+            args?.since_id as number | undefined,
+            args?.preview as boolean | undefined,
+          );
+        }
+
+        case 'list_channels': {
+          return await listChannelsTool(
+            args?.project as string | undefined,
+          );
+        }
+
+        // ===== SPECIALIST-INBOX =====
+        case 'post_to_inbox': {
+          return await postToInboxTool(
+            args?.from_agent as string,
+            args?.to_agent as string,
+            args?.content as string,
+          );
+        }
+
+        case 'check_inbox': {
+          return await checkInboxTool(
+            args?.agent_name as string,
+          );
         }
 
         default:

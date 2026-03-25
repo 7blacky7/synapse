@@ -18,3 +18,4 @@ export * from './chat.js';
 export * from './tech-docs.js';
 export * from './setup.js';
 export * from './events.js';
+export * from './specialists.js';
