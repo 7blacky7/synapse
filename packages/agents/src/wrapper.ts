@@ -961,7 +961,15 @@ async function main() {
   // 7. Start heartbeat polling (mit Startup-Delay damit Claude's MCP-Server bereit sind)
   const STARTUP_DELAY_MS = 30_000
   log('Heartbeat startet in %ds (MCP-Server Startup-Delay)', STARTUP_DELAY_MS / 1000)
-  setTimeout(() => {
+  setTimeout(async () => {
+    // Initial Wake: Agent mit seiner Aufgabe starten (Task steht im System-Prompt)
+    log('Initial Wake: Starte Agent mit Aufgabe')
+    try {
+      await wakeAgent('Starte jetzt mit deiner Aufgabe. Fuehre zuerst das Onboarding durch, dann arbeite deinen Task ab.')
+    } catch (err) {
+      log('Initial Wake fehlgeschlagen: %s', err)
+    }
+
     heartbeatIntervalId = setInterval(() => void heartbeatPoll(), POLL_INTERVAL)
     log('Heartbeat gestartet (interval: %dms)', POLL_INTERVAL)
   }, STARTUP_DELAY_MS)
