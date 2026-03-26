@@ -92,6 +92,7 @@ export {
   getProjectStats,
   searchFilesByPath,
   backfillCodeFiles,
+  parseUnparsedFiles,
   // Media
   indexMediaFile,
   indexMediaDirectory,
@@ -165,6 +166,14 @@ export {
   deleteProposal,
   deleteProposals,
   searchProposals,
+  // Code Intelligence (PG-only)
+  getProjectTree,
+  getFunctions,
+  getVariables,
+  getSymbols,
+  getReferences,
+  fullTextSearchCode,
+  getFileContent,
   // Backup
   dumpCollectionToFile,
   readBackupFile,
@@ -191,6 +200,7 @@ export {
   getPendingEvents,
   getUnackedCount,
 } from './services/index.js';
+export type { FunctionInfo, VariableInfo, SymbolInfo, ReferenceInfo, ReferencesResult, FullTextSearchResult, FileContentResult } from './services/code-intel.js';
 export type { BackupEntry } from './services/backup.js';
 export type { ChatMessage, AgentSession } from './services/chat.js';
 export type { AgentEvent, EventAck, EventType, EventPriority } from './services/events.js';
@@ -413,6 +423,16 @@ export async function initSynapse(projectName: string): Promise<boolean> {
       await backfillCodeFiles(projectName);
     } catch (err) {
       console.warn(`[Synapse] code_files Backfill fehlgeschlagen: ${err}`);
+    }
+  }
+
+  // 7. Ungeparste Dateien nachparsen (content vorhanden, parsed_at IS NULL)
+  if (dbOk) {
+    try {
+      const { parseUnparsedFiles } = await import('./services/code.js');
+      await parseUnparsedFiles(projectName);
+    } catch (err) {
+      console.warn(`[Synapse] parseUnparsedFiles fehlgeschlagen: ${err}`);
     }
   }
 

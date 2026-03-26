@@ -2,6 +2,10 @@
  * MODUL: Code-Indexierung Service
  * ZWECK: Indexiert Code-Dateien in Qdrant fuer semantische Suche und verarbeitet FileWatcher-Events
  *
+ * ZWEISTUFIGE ARCHITEKTUR:
+ *   Stage 1 (synchron, schnell): FileWatcher → Dateiinhalt + Hash in PostgreSQL speichern
+ *   Stage 2 (async, debounced):  Symbole parsen → code_symbols, Chunks → code_chunks, Embeddings → Qdrant
+ *
  * INPUT:
  *   - filePath: string - Absoluter Pfad zur Datei
  *   - projectName: string - Name des Projekts fuer Collection-Zuordnung
@@ -14,6 +18,7 @@
  *   - { fileCount, chunkCount }: Projekt-Statistiken
  *
  * NEBENEFFEKTE:
+ *   - PostgreSQL: Schreibt/loescht code_files, code_symbols, code_references, code_chunks
  *   - Qdrant: Schreibt/loescht Vektoren in projekt-spezifischen Collections
  *   - Logs: Konsolenausgabe bei Indexierung/Loeschung
  *
@@ -23,6 +28,7 @@
  *   - ../chunking/index.js (intern) - Datei-Chunking
  *   - ../watcher/index.js (intern) - Datei-Lesen und Typ-Erkennung
  *   - ./documents.js (intern) - Dokument-Extraktion (PDF, Word, Excel)
+ *   - ../parser/index.js (intern) - Code-Symbol-Parser
  *   - uuid (extern) - ID-Generierung
  *
  * HINWEISE:
@@ -33,6 +39,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import * as crypto from 'crypto';
 import { v4 as uuidv4 } from 'uuid';
 import {
   CodeChunkPayload,
@@ -54,9 +61,10 @@ import { readFileWithMetadata, getFileType, isExtractableDocument } from '../wat
 import { isMultimodalFile, getMediaMimeType, getMediaCategory } from '../watcher/binary.js';
 import { indexDocument, removeDocument } from './documents.js';
 import { getPool } from '../db/client.js';
+import { getParserForFile } from '../parser/index.js';
 
 /**
- * Schreibt File-Metadaten nach PostgreSQL (UPSERT)
+ * Schreibt File-Metadaten nach PostgreSQL (UPSERT) — unterstuetzt content + content_hash
  */
 async function upsertCodeFile(
   project: string,
@@ -64,20 +72,24 @@ async function upsertCodeFile(
   fileName: string,
   fileType: string,
   chunkCount: number,
-  fileSize: number
+  fileSize: number,
+  content?: string,
+  contentHash?: string
 ): Promise<void> {
   const pool = getPool();
   const id = uuidv4();
   await pool.query(
-    `INSERT INTO code_files (id, project, file_path, file_name, file_type, chunk_count, file_size, indexed_at, updated_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW())
+    `INSERT INTO code_files (id, project, file_path, file_name, file_type, chunk_count, file_size, content, content_hash, indexed_at, updated_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW(), NOW())
      ON CONFLICT (project, file_path) DO UPDATE SET
        file_name = EXCLUDED.file_name,
        file_type = EXCLUDED.file_type,
        chunk_count = EXCLUDED.chunk_count,
        file_size = EXCLUDED.file_size,
+       content = EXCLUDED.content,
+       content_hash = EXCLUDED.content_hash,
        updated_at = NOW()`,
-    [id, project, filePath, fileName, fileType, chunkCount, fileSize]
+    [id, project, filePath, fileName, fileType, chunkCount, fileSize, content, contentHash]
   );
 }
 
@@ -93,114 +105,292 @@ async function deleteCodeFile(project: string, filePath: string): Promise<void> 
 }
 
 /**
- * Indexiert eine Datei in Qdrant (Upsert-Verhalten: loescht alte Chunks zuerst)
+ * Stage 1: Dateiinhalt synchron in PostgreSQL speichern.
+ * Gibt true zurueck wenn Datei geaendert (oder neu), false wenn unveraendert.
+ */
+export async function storeFileContent(
+  filePath: string,
+  projectName: string
+): Promise<boolean> {
+  const pool = getPool();
+  const fileData = readFileWithMetadata(filePath, projectName);
+  if (!fileData) {
+    console.error(`[Synapse] Datei nicht lesbar: ${filePath}`);
+    return false;
+  }
+
+  const contentHash = crypto.createHash('sha256').update(fileData.content).digest('hex');
+
+  // Hash-Vergleich — ueberspringen wenn unveraendert
+  try {
+    const existing = await pool.query(
+      'SELECT content_hash FROM code_files WHERE project = $1 AND file_path = $2',
+      [projectName, filePath]
+    );
+    if (existing.rows[0]?.content_hash === contentHash) {
+      return false; // Keine Aenderung
+    }
+  } catch {
+    // PG nicht erreichbar — fail-open
+  }
+
+  const fileSize = fs.statSync(filePath).size;
+  await upsertCodeFile(
+    projectName, filePath, path.basename(filePath), fileData.fileType,
+    0, fileSize, fileData.content, contentHash
+  );
+
+  console.error(`[Synapse] Gespeichert: ${path.basename(filePath)} (${fileData.content.length} Zeichen)`);
+  return true;
+}
+
+/**
+ * Debounce-Queue fuer Stage-2-Verarbeitung
+ */
+const parseQueue = new Map<string, NodeJS.Timeout>();
+
+function enqueueParseAndEmbed(project: string, filePath: string): void {
+  const key = `${project}:${filePath}`;
+  if (parseQueue.has(key)) clearTimeout(parseQueue.get(key)!);
+  parseQueue.set(key, setTimeout(async () => {
+    parseQueue.delete(key);
+    try {
+      await parseAndEmbed(project, filePath);
+    } catch (err) {
+      console.error(`[Synapse] Parse+Embed fehlgeschlagen fuer ${filePath}:`, err);
+    }
+  }, 2000));
+}
+
+/**
+ * Stage 2: Symbole parsen, Chunks erstellen, Embeddings generieren.
+ * Liest Inhalt aus PostgreSQL (nicht Filesystem).
+ */
+export async function parseAndEmbed(project: string, filePath: string): Promise<void> {
+  const pool = getPool();
+
+  // Inhalt aus PG laden
+  const fileRow = await pool.query(
+    'SELECT content, file_type FROM code_files WHERE project = $1 AND file_path = $2',
+    [project, filePath]
+  );
+  if (!fileRow.rows[0]?.content) {
+    console.error(`[Synapse] Kein Inhalt in PG fuer: ${filePath}`);
+    return;
+  }
+  const content: string = fileRow.rows[0].content;
+  const fileType: string = fileRow.rows[0].file_type;
+
+  // --- Symbole + Referenzen parsen (in Transaktion) ---
+  let parseSuccess = false;
+  const parser = getParserForFile(filePath);
+  if (parser) {
+    const parseResult = parser.parse(content, filePath);
+
+    await pool.query('BEGIN');
+    try {
+      // Alte Symbole loeschen (CASCADE loescht auch References) — innerhalb der Transaktion
+      await pool.query(
+        'DELETE FROM code_symbols WHERE project = $1 AND file_path = $2',
+        [project, filePath]
+      );
+      // Symbol-ID-Map fuer parent_id-Aufloesung (index → uuid)
+      const symbolIds: string[] = [];
+
+      for (const sym of parseResult.symbols) {
+        const symId = uuidv4();
+        symbolIds.push(symId);
+
+        // parent_id: ParsedSymbol.parent_id ist optional string (Index-basiert intern)
+        // Da parser direkt UUIDs nicht kennt, bleibt parent_symbol NULL fuer jetzt
+        await pool.query(
+          `INSERT INTO code_symbols
+             (id, project, file_path, symbol_type, name, value, line_start, line_end,
+              parent_symbol, params, return_type, is_exported)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+          [
+            symId, project, filePath,
+            sym.symbol_type, sym.name ?? null, sym.value ?? null,
+            sym.line_start, sym.line_end ?? null,
+            null, // parent_symbol: UUID-Mapping nicht trivial ohne vorherigem Insert
+            sym.params ?? null, sym.return_type ?? null,
+            sym.is_exported,
+          ]
+        );
+
+        // Referenzen fuer dieses Symbol einfuegen
+        if (parseResult.references.length > 0 && sym.name) {
+          const symRefs = parseResult.references.filter(r => r.symbol_name === sym.name);
+          for (const ref of symRefs) {
+            await pool.query(
+              `INSERT INTO code_references (id, project, symbol_id, file_path, line_number, context)
+               VALUES ($1, $2, $3, $4, $5, $6)`,
+              [uuidv4(), project, symId, filePath, ref.line_number, ref.context ?? null]
+            );
+          }
+        }
+      }
+
+      await pool.query('COMMIT');
+      parseSuccess = true;
+    } catch (txErr) {
+      await pool.query('ROLLBACK');
+      console.error(`[Synapse] Symbol-Insert Transaktion fehlgeschlagen:`, txErr);
+    }
+  }
+
+  // --- Chunks erstellen + in code_chunks speichern ---
+  const chunks = chunkFile(content, filePath, project);
+
+  // Alte Chunks loeschen
+  await pool.query(
+    'DELETE FROM code_chunks WHERE project = $1 AND file_path = $2',
+    [project, filePath]
+  );
+
+  // Neue Chunks in PG einfuegen
+  for (const chunk of chunks) {
+    await pool.query(
+      `INSERT INTO code_chunks (id, project, file_path, chunk_index, content, line_start, line_end)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [
+        uuidv4(), project, filePath,
+        chunk.chunkIndex, chunk.content,
+        chunk.lineStart, chunk.lineEnd,
+      ]
+    );
+  }
+
+  // --- Embeddings generieren + in Qdrant einfuegen ---
+  if (chunks.length > 0) {
+    const collectionName = await ensureProjectCollection(project);
+
+    // Alte Qdrant-Eintraege loeschen
+    await deleteByFilePath(collectionName, filePath);
+
+    const contents = chunks.map(c => c.content);
+    const embeddings = await embedBatch(contents);
+
+    const items = chunks.map((chunk, i) => ({
+      id: uuidv4(),
+      vector: embeddings[i],
+      payload: {
+        file_path: chunk.filePath,
+        file_name: path.basename(chunk.filePath),
+        file_type: fileType,
+        line_start: chunk.lineStart,
+        line_end: chunk.lineEnd,
+        project: chunk.project,
+        chunk_index: chunk.chunkIndex,
+        total_chunks: chunk.totalChunks,
+        updated_at: new Date().toISOString(),
+        content: chunk.content,
+      } satisfies CodeChunkPayload,
+    }));
+
+    await insertVectors(collectionName, items);
+
+    // code_chunks als embedded markieren
+    await pool.query(
+      `UPDATE code_chunks SET embedded_at = NOW()
+       WHERE project = $1 AND file_path = $2`,
+      [project, filePath]
+    );
+  }
+
+  // code_files aktualisieren: parsed_at nur wenn Symbole erfolgreich geschrieben
+  await pool.query(
+    `UPDATE code_files
+     SET ${parseSuccess ? 'parsed_at = NOW(),' : ''} indexed_at = NOW(), chunk_count = $3
+     WHERE project = $1 AND file_path = $2`,
+    [project, filePath, chunks.length]
+  );
+
+  console.error(`[Synapse] Geparst+Embedded: ${path.basename(filePath)} (${chunks.length} Chunks)`);
+}
+
+/**
+ * Parst alle Dateien die Content haben aber noch nicht geparst wurden (parsed_at IS NULL).
+ * Wird bei project init aufgerufen um Altdaten nachzuparsen.
+ * Laeuft sequentiell im Hintergrund um DB-Connection-Konflikte zu vermeiden.
+ */
+export async function parseUnparsedFiles(projectName: string): Promise<number> {
+  const pool = getPool();
+  const result = await pool.query(
+    'SELECT file_path FROM code_files WHERE project = $1 AND content IS NOT NULL AND parsed_at IS NULL',
+    [projectName]
+  );
+
+  if (result.rows.length === 0) return 0;
+
+  const total = result.rows.length;
+  console.error(`[Synapse] ${total} ungeparste Dateien gefunden — starte sequentielles Nachparsing...`);
+
+  // Sequentiell im Hintergrund parsen (nicht blockierend fuer Init)
+  const filePaths = result.rows.map((r: { file_path: string }) => r.file_path);
+  setImmediate(async () => {
+    let parsed = 0;
+    let failed = 0;
+    for (const filePath of filePaths) {
+      try {
+        await parseAndEmbed(projectName, filePath);
+        parsed++;
+        if (parsed % 20 === 0) {
+          console.error(`[Synapse] Nachparsing: ${parsed}/${total} Dateien...`);
+        }
+      } catch (err) {
+        failed++;
+        console.error(`[Synapse] Parse fehlgeschlagen fuer ${filePath}:`, err);
+      }
+    }
+    console.error(`[Synapse] Nachparsing abgeschlossen: ${parsed} geparst, ${failed} fehlgeschlagen`);
+  });
+
+  return total;
+}
+
+/**
+ * Indexiert eine Datei — zweistufig: Stage 1 synchron, Stage 2 async debounced
  */
 export async function indexFile(
   filePath: string,
   projectName: string
 ): Promise<number> {
-  // Collection sicherstellen
-  const collectionName = await ensureProjectCollection(projectName);
-
-  // Alte Chunks fuer diese Datei loeschen (verhindert Duplikate bei Re-Indexierung)
-  await deleteByFilePath(collectionName, filePath);
-
-  // Datei lesen
-  const fileData = readFileWithMetadata(filePath, projectName);
-  if (!fileData) {
-    console.warn(`[Synapse] Datei nicht lesbar: ${filePath}`);
-    return 0;
+  const changed = await storeFileContent(filePath, projectName);
+  if (changed) {
+    enqueueParseAndEmbed(projectName, filePath);
   }
-
-  // In Chunks aufteilen
-  const chunks = chunkFile(fileData.content, filePath, projectName);
-
-  if (chunks.length === 0) {
-    return 0;
-  }
-
-  // Embeddings generieren (Batch fuer Performance)
-  const contents = chunks.map(c => c.content);
-  const embeddings = await embedBatch(contents);
-
-  // Payloads erstellen
-  const items = chunks.map((chunk, i) => ({
-    id: uuidv4(),
-    vector: embeddings[i],
-    payload: {
-      file_path: chunk.filePath,
-      file_name: path.basename(chunk.filePath),
-      file_type: fileData.fileType,
-      line_start: chunk.lineStart,
-      line_end: chunk.lineEnd,
-      project: chunk.project,
-      chunk_index: chunk.chunkIndex,
-      total_chunks: chunk.totalChunks,
-      updated_at: new Date().toISOString(),
-      content: chunk.content,
-    } satisfies CodeChunkPayload,
-  }));
-
-  // ARCHITEKTUR: Qdrant FIRST (statt PG-first wie in anderen Services)
-  // GRUND: Filesystem ist echte Source of Truth fuer Code, Qdrant ist Kern-Funktionalität.
-  // PG dient nur als Metadaten-Cache (Dateiname, Größe, chunk_count).
-  // Bei Qdrant-Fehler: Ganze Operation fail-fast (kritischer Index).
-  // Bei PG-Fehler: OK, Chunks sind bereits im Qdrant → Suche funktioniert trotzdem.
-  // In Qdrant einfuegen
-  await insertVectors(collectionName, items);
-
-  // Dual-Write: File-Metadaten nach PostgreSQL (optional, nur Metadaten)
-  try {
-    const fileSize = fs.statSync(filePath).size;
-    await upsertCodeFile(
-      projectName,
-      filePath,
-      path.basename(filePath),
-      fileData.fileType,
-      chunks.length,
-      fileSize
-    );
-  } catch (pgErr) {
-    console.warn(`[Synapse] PG code_files Write fehlgeschlagen: ${pgErr}`);
-  }
-
-  console.error(`[Synapse] Indexiert: ${path.basename(filePath)} (${chunks.length} Chunks)`);
-  return chunks.length;
+  return changed ? 1 : 0;
 }
 
 /**
- * Aktualisiert eine Datei (loescht alte Chunks, fuegt neue ein)
+ * Aktualisiert eine Datei — delegiert an indexFile
  */
 export async function updateFile(
   filePath: string,
   projectName: string
 ): Promise<number> {
-  const collectionName = COLLECTIONS.projectCode(projectName);
-
-  // Alte Chunks loeschen
-  await deleteByFilePath(collectionName, filePath);
-
-  // Neu indexieren
   return indexFile(filePath, projectName);
 }
 
 /**
- * Loescht eine Datei aus dem Index
+ * Loescht eine Datei aus dem Index (PG CASCADE + Qdrant)
  */
 export async function removeFile(
   filePath: string,
   projectName: string
 ): Promise<void> {
-  const collectionName = COLLECTIONS.projectCode(projectName);
-  await deleteByFilePath(collectionName, filePath);
-
-  // Dual-Delete: Auch aus PostgreSQL entfernen
   try {
     await deleteCodeFile(projectName, filePath);
   } catch (pgErr) {
-    console.warn(`[Synapse] PG code_files Delete fehlgeschlagen: ${pgErr}`);
+    console.error(`[Synapse] PG Delete fehlgeschlagen: ${pgErr}`);
   }
-
+  const collectionName = COLLECTIONS.projectCode(projectName);
+  try {
+    await deleteByFilePath(collectionName, filePath);
+  } catch (qdrantErr) {
+    console.error(`[Synapse] Qdrant Delete fehlgeschlagen: ${qdrantErr}`);
+  }
   console.error(`[Synapse] Entfernt: ${path.basename(filePath)}`);
 }
 
@@ -445,20 +635,30 @@ export async function searchCode(
 }
 
 /**
- * Befuellt code_files aus bestehenden Qdrant-Vektoren (einmaliger Backfill)
- * Wird bei project init aufgerufen wenn PG-Tabelle leer ist aber Qdrant Daten hat
+ * Befuellt code_files aus bestehenden Qdrant-Vektoren (einmaliger Backfill).
+ * Wird bei project init aufgerufen wenn PG-Tabelle leer oder Dateien ohne content sind.
+ * Liest bei Backfill auch Dateiinhalt vom Filesystem ein.
  */
 export async function backfillCodeFiles(projectName: string): Promise<number> {
   const pool = getPool();
   const collectionName = COLLECTIONS.projectCode(projectName);
 
-  // Pruefen ob code_files bereits befuellt ist
+  // Pruefen ob code_files Eintraege ohne content (content IS NULL) existieren
+  // oder ob die Tabelle komplett leer ist — nur dann Backfill ausfuehren
+  const nullContent = await pool.query(
+    'SELECT COUNT(*) FROM code_files WHERE project = $1 AND content IS NULL',
+    [projectName]
+  );
+  const nullCount = parseInt(nullContent.rows[0].count, 10);
+
   const existing = await pool.query(
     'SELECT COUNT(*) FROM code_files WHERE project = $1',
     [projectName]
   );
-  if (parseInt(existing.rows[0].count, 10) > 0) {
-    return 0; // Bereits befuellt
+  const totalCount = parseInt(existing.rows[0].count, 10);
+
+  if (totalCount > 0 && nullCount === 0) {
+    return 0; // Bereits vollstaendig befuellt
   }
 
   // Alle Chunks aus Qdrant lesen
@@ -488,18 +688,33 @@ export async function backfillCodeFiles(projectName: string): Promise<number> {
     }
   }
 
-  // Batch-Insert in PostgreSQL
+  // Batch-Insert in PostgreSQL — mit Dateiinhalt vom Filesystem
   let inserted = 0;
   for (const [filePath, meta] of fileMap) {
     try {
       let fileSize = 0;
       try { fileSize = fs.statSync(filePath).size; } catch { /* Datei evtl. geloescht */ }
 
+      // Dateiinhalt vom Filesystem lesen fuer content + content_hash
+      let content: string | undefined;
+      let contentHash: string | undefined;
+      try {
+        const fileData = readFileWithMetadata(filePath, projectName);
+        if (fileData) {
+          content = fileData.content;
+          contentHash = crypto.createHash('sha256').update(fileData.content).digest('hex');
+        }
+      } catch { /* Datei evtl. nicht lesbar */ }
+
       await pool.query(
-        `INSERT INTO code_files (id, project, file_path, file_name, file_type, chunk_count, file_size, indexed_at, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW())
-         ON CONFLICT (project, file_path) DO NOTHING`,
-        [uuidv4(), projectName, filePath, meta.fileName, meta.fileType, meta.chunkCount, fileSize]
+        `INSERT INTO code_files (id, project, file_path, file_name, file_type, chunk_count, file_size, content, content_hash, indexed_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW(), NOW())
+         ON CONFLICT (project, file_path) DO UPDATE SET
+           content = COALESCE(EXCLUDED.content, code_files.content),
+           content_hash = COALESCE(EXCLUDED.content_hash, code_files.content_hash),
+           updated_at = NOW()
+         WHERE code_files.content IS NULL`,
+        [uuidv4(), projectName, filePath, meta.fileName, meta.fileType, meta.chunkCount, fileSize, content ?? null, contentHash ?? null]
       );
       inserted++;
     } catch (err) {

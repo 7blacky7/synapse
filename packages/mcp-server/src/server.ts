@@ -39,6 +39,7 @@ import {
   specialistTool,
   docsTool,
   adminTool,
+  codeIntelTool,
 } from './tools/consolidated/index.js';
 
 /** Eindeutige ID dieser Server-Instanz — bei Neustart neu generiert.
@@ -142,7 +143,7 @@ export function createServer(): Server {
     }
   );
 
-  // Tool-Liste registrieren (12 konsolidierte Tools)
+  // Tool-Liste registrieren (13 konsolidierte Tools)
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: [
       projectTool.definition,
@@ -157,6 +158,7 @@ export function createServer(): Server {
       specialistTool.definition,
       docsTool.definition,
       adminTool.definition,
+      codeIntelTool.definition,
     ],
   }));
 
@@ -550,6 +552,9 @@ export function createServer(): Server {
 
         case 'admin':
           return withOnboarding(await adminTool.handler(args as Record<string, unknown>));
+
+        case 'code_intel':
+          return withOnboarding(await codeIntelTool.handler(args as Record<string, unknown>));
 
         default:
           throw new Error(`Unbekanntes Tool: ${name}`);

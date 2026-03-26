@@ -4,6 +4,7 @@
  */
 
 export * from './code.js';
+export * from './code-intel.js';
 export * from './thoughts.js';
 export * from './plans.js';
 export * from './docs.js';

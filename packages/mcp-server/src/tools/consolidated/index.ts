@@ -20,3 +20,4 @@ export { specialistTool } from './specialist.js';
 export { docsTool } from './docs.js';
 export { adminTool } from './admin.js';
 export { watcherTool } from './watcher.js';
+export { codeIntelTool } from './code-intel.js';
