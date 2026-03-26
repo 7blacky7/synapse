@@ -219,6 +219,7 @@ function extractSymbols(
             addSymbol({
               symbol_type: 'const_object',
               name: varName,
+              value: ts.isObjectLiteralExpression(init) ? 'object' : 'array',
               line_start,
               line_end: getLineEnd(sourceFile, init),
               params: keys,
