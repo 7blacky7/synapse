@@ -6,11 +6,13 @@
 import * as path from 'path';
 import type { LanguageParser } from './types.js';
 import { typescriptParser } from './typescript.js';
+import { sqlParser } from './sql.js';
 
 export type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
 
 const parsers: LanguageParser[] = [
   typescriptParser,
+  sqlParser,
 ];
 
 export function getParserForFile(filePath: string): LanguageParser | null {
