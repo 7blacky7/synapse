@@ -165,6 +165,14 @@ export {
   deleteProposal,
   deleteProposals,
   searchProposals,
+  // Code Intelligence (PG-only)
+  getProjectTree,
+  getFunctions,
+  getVariables,
+  getSymbols,
+  getReferences,
+  fullTextSearchCode,
+  getFileContent,
   // Backup
   dumpCollectionToFile,
   readBackupFile,
@@ -191,6 +199,7 @@ export {
   getPendingEvents,
   getUnackedCount,
 } from './services/index.js';
+export type { FunctionInfo, VariableInfo, SymbolInfo, ReferenceInfo, ReferencesResult, FullTextSearchResult, FileContentResult } from './services/code-intel.js';
 export type { BackupEntry } from './services/backup.js';
 export type { ChatMessage, AgentSession } from './services/chat.js';
 export type { AgentEvent, EventAck, EventType, EventPriority } from './services/events.js';
