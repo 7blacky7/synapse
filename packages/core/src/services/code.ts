@@ -186,14 +186,13 @@ export async function parseAndEmbed(project: string, filePath: string): Promise<
   if (parser) {
     const parseResult = parser.parse(content, filePath);
 
-    // Alte Symbole loeschen (CASCADE loescht auch References)
-    await pool.query(
-      'DELETE FROM code_symbols WHERE project = $1 AND file_path = $2',
-      [project, filePath]
-    );
-
     await pool.query('BEGIN');
     try {
+      // Alte Symbole loeschen (CASCADE loescht auch References) — innerhalb der Transaktion
+      await pool.query(
+        'DELETE FROM code_symbols WHERE project = $1 AND file_path = $2',
+        [project, filePath]
+      );
       // Symbol-ID-Map fuer parent_id-Aufloesung (index → uuid)
       const symbolIds: string[] = [];
 
