@@ -30,8 +30,9 @@ import { getPool } from '../db/client.js';
 
 /**
  * Gibt einen formatierten Projekt-Baum zurueck.
- * detail='minimal': nur Dateinamen + Zeilenzahl
- * detail='normal': + erster Block-Kommentar aus code_symbols
+ * Dateien werden nach Verzeichnis gruppiert, Pfade relativ zum Projekt-Root.
+ * detail='minimal': Verzeichnisse mit Dateinamen + Zeilenzahl
+ * detail='normal': + erster Block-Kommentar
  * detail='full': + Funktionen und Imports
  */
 export async function getProjectTree(
@@ -41,11 +42,32 @@ export async function getProjectTree(
 ): Promise<string> {
   const pool = getPool();
 
-  // Basis-Query: Dateien mit Symbol-Count und Zeilenzahl
+  // Projekt-Root-Pfad ermitteln (laengster gemeinsamer Prefix aller Dateien)
+  const rootResult = await pool.query(
+    `SELECT file_path FROM code_files WHERE project = $1 ORDER BY file_path LIMIT 1`,
+    [project]
+  );
+  // Projekt-Root: Alles bis zum Projekt-Verzeichnis (heuristisch: kuerzester Pfad-Prefix)
+  let projectRoot = '';
+  if (rootResult.rows.length > 0) {
+    // Finde den gemeinsamen Prefix aller Pfade
+    const prefixResult = await pool.query(
+      `SELECT MIN(file_path) AS first_path, MAX(file_path) AS last_path FROM code_files WHERE project = $1`,
+      [project]
+    );
+    const firstPath: string = prefixResult.rows[0].first_path;
+    const lastPath: string = prefixResult.rows[0].last_path;
+    let i = 0;
+    while (i < firstPath.length && i < lastPath.length && firstPath[i] === lastPath[i]) i++;
+    // Auf letztes '/' zurueckschneiden
+    projectRoot = firstPath.substring(0, firstPath.lastIndexOf('/', i) + 1);
+  }
+
+  // Basis-Query: Dateien mit Funktions-/Variablen-Counts und Zeilenzahl
   const params: unknown[] = [project];
   let where = 'WHERE cf.project = $1';
   if (dirPath) {
-    params.push(`${dirPath}%`);
+    params.push(`%${dirPath}%`);
     where += ` AND cf.file_path LIKE $${params.length}`;
   }
 
@@ -54,13 +76,11 @@ export async function getProjectTree(
        cf.file_path,
        cf.file_name,
        cf.file_type,
-       cf.file_size,
        (length(cf.content) - length(replace(cf.content, E'\\n', '')) + 1) AS line_count,
-       COUNT(cs.id) AS symbol_count
+       (SELECT COUNT(*) FROM code_symbols cs WHERE cs.project = cf.project AND cs.file_path = cf.file_path AND cs.symbol_type = 'function') AS fn_count,
+       (SELECT COUNT(*) FROM code_symbols cs WHERE cs.project = cf.project AND cs.file_path = cf.file_path AND cs.symbol_type = 'variable') AS var_count
      FROM code_files cf
-     LEFT JOIN code_symbols cs ON cs.project = cf.project AND cs.file_path = cf.file_path
      ${where}
-     GROUP BY cf.file_path, cf.file_name, cf.file_type, cf.file_size, cf.content
      ORDER BY cf.file_path`,
     params
   );
@@ -69,66 +89,95 @@ export async function getProjectTree(
     return `Kein Code indexiert fuer Projekt "${project}"${dirPath ? ` unter ${dirPath}` : ''}.`;
   }
 
-  const lines: string[] = [`# Projekt-Baum: ${project}`, ''];
-
+  // Dateien nach Verzeichnis gruppieren
+  const dirMap = new Map<string, Array<typeof filesResult.rows[0]>>();
   for (const row of filesResult.rows) {
-    const lineCount = row.line_count ?? 0;
-    const symbolCount = parseInt(row.symbol_count, 10) ?? 0;
+    const relPath = row.file_path.startsWith(projectRoot)
+      ? row.file_path.substring(projectRoot.length)
+      : row.file_path;
+    row._relPath = relPath;
+    const dir = relPath.substring(0, relPath.lastIndexOf('/') + 1) || '/';
+    if (!dirMap.has(dir)) dirMap.set(dir, []);
+    dirMap.get(dir)!.push(row);
+  }
 
-    // Minimal: nur Pfad + Metadaten
-    lines.push(`## ${row.file_path}`);
-    lines.push(`   Typ: ${row.file_type} | Zeilen: ${lineCount} | Symbole: ${symbolCount}`);
+  const lines: string[] = [];
 
-    if (detail === 'normal' || detail === 'full') {
-      // Ersten Block-Kommentar laden (JSDoc / block comment)
-      const commentResult = await pool.query(
-        `SELECT value FROM code_symbols
-         WHERE project = $1 AND file_path = $2 AND symbol_type = 'comment'
-         ORDER BY line_start
-         LIMIT 2`,
-        [project, row.file_path]
-      );
-      if (commentResult.rows.length > 0) {
-        const comment = commentResult.rows[0].value ?? '';
-        const preview = comment.split('\n').slice(0, 3).join(' ').trim().replace(/\s+/g, ' ');
-        if (preview) lines.push(`   Kommentar: ${preview.substring(0, 120)}`);
+  for (const [dir, files] of dirMap) {
+    const fnTotal = files.reduce((s, f) => s + parseInt(f.fn_count, 10), 0);
+    const varTotal = files.reduce((s, f) => s + parseInt(f.var_count, 10), 0);
+
+    if (detail === 'minimal') {
+      // Kompakt: Verzeichnis mit allen Dateien in einer Zeile
+      const fileList = files.map(f => {
+        const fn = parseInt(f.fn_count, 10);
+        const v = parseInt(f.var_count, 10);
+        const meta = fn > 0 || v > 0 ? ` (${fn}fn, ${v}var)` : '';
+        return `${f.file_name}${meta}`;
+      }).join(', ');
+      lines.push(`${dir} ${fileList}`);
+    } else {
+      // Normal/Full: Verzeichnis als Ueberschrift
+      lines.push(`${dir} (${files.length} Dateien, ${fnTotal}fn, ${varTotal}var)`);
+
+      for (const f of files) {
+        const lineCount = f.line_count ?? 0;
+        const fn = parseInt(f.fn_count, 10);
+        const v = parseInt(f.var_count, 10);
+        const meta = [
+          `${lineCount}Z`,
+          fn > 0 ? `${fn}fn` : null,
+          v > 0 ? `${v}var` : null,
+        ].filter(Boolean).join(', ');
+        lines.push(`  ${f.file_name} (${meta})`);
+
+        if (detail === 'normal' || detail === 'full') {
+          // Ersten Block-Kommentar laden
+          const commentResult = await pool.query(
+            `SELECT value FROM code_symbols
+             WHERE project = $1 AND file_path = $2 AND symbol_type = 'comment'
+             ORDER BY line_start LIMIT 1`,
+            [project, f.file_path]
+          );
+          if (commentResult.rows.length > 0) {
+            const comment = (commentResult.rows[0].value ?? '').split('\n')[0].trim().replace(/\s+/g, ' ');
+            if (comment) lines.push(`    /** ${comment.substring(0, 100)} */`);
+          }
+        }
+
+        if (detail === 'full') {
+          // Funktionsnamen
+          const funcsResult = await pool.query(
+            `SELECT name, is_exported FROM code_symbols
+             WHERE project = $1 AND file_path = $2 AND symbol_type = 'function'
+             ORDER BY line_start`,
+            [project, f.file_path]
+          );
+          if (funcsResult.rows.length > 0) {
+            const names = funcsResult.rows
+              .map((fn: { name: string; is_exported: boolean }) => (fn.is_exported ? `+${fn.name}` : fn.name))
+              .join(', ');
+            lines.push(`    fn: ${names}`);
+          }
+
+          // Imports
+          const importsResult = await pool.query(
+            `SELECT name, value FROM code_symbols
+             WHERE project = $1 AND file_path = $2 AND symbol_type = 'import'
+             ORDER BY line_start LIMIT 10`,
+            [project, f.file_path]
+          );
+          if (importsResult.rows.length > 0) {
+            const importNames = importsResult.rows.map((i: { name: string; value: string }) => `${i.name} (${i.value})`).join(', ');
+            lines.push(`    imports: ${importNames}`);
+          }
+        }
       }
     }
-
-    if (detail === 'full') {
-      // Funktionen auflisten
-      const funcsResult = await pool.query(
-        `SELECT name, is_exported FROM code_symbols
-         WHERE project = $1 AND file_path = $2 AND symbol_type = 'function'
-         ORDER BY line_start`,
-        [project, row.file_path]
-      );
-      if (funcsResult.rows.length > 0) {
-        const names = funcsResult.rows
-          .map((f: { name: string; is_exported: boolean }) => (f.is_exported ? `export ${f.name}` : f.name))
-          .join(', ');
-        lines.push(`   Funktionen: ${names}`);
-      }
-
-      // Imports auflisten
-      const importsResult = await pool.query(
-        `SELECT name FROM code_symbols
-         WHERE project = $1 AND file_path = $2 AND symbol_type = 'import'
-         ORDER BY line_start
-         LIMIT 10`,
-        [project, row.file_path]
-      );
-      if (importsResult.rows.length > 0) {
-        const importNames = importsResult.rows.map((i: { name: string }) => i.name).join(', ');
-        lines.push(`   Imports: ${importNames}`);
-      }
-    }
-
-    lines.push('');
   }
 
   lines.push(`---`);
-  lines.push(`Gesamt: ${filesResult.rows.length} Dateien`);
+  lines.push(`${filesResult.rows.length} Dateien | Root: ${projectRoot}`);
 
   return lines.join('\n');
 }
