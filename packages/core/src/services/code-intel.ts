@@ -35,7 +35,9 @@ import { getPool } from '../db/client.js';
 export interface TreeOptions {
   /** Verzeichnis-Filter (zeigt nur Dateien unter diesem Pfad) */
   path?: string;
-  /** Max. Verzeichnis-Tiefe (0 = nur Root-Verzeichnisse) */
+  /** false = nur Dateien direkt im Verzeichnis, true = auch Unterverzeichnisse (Standard: true) */
+  recursive?: boolean;
+  /** Max. Verzeichnis-Tiefe relativ zum path (0 = nur das Verzeichnis selbst) */
   depth?: number;
   /** Zeilenzahl pro Datei anzeigen (Standard: true) */
   show_lines?: boolean;
@@ -63,6 +65,7 @@ export async function getProjectTree(
   const pool = getPool();
   const {
     path: dirPath,
+    recursive = true,
     depth,
     show_lines = true,
     show_counts = true,
@@ -90,8 +93,17 @@ export async function getProjectTree(
   const params: unknown[] = [project];
   let where = 'WHERE cf.project = $1';
   if (dirPath) {
-    params.push(`%${dirPath}%`);
-    where += ` AND cf.file_path LIKE $${params.length}`;
+    if (recursive) {
+      // Rekursiv: alle Dateien die den Pfad enthalten
+      params.push(`%${dirPath}%`);
+      where += ` AND cf.file_path LIKE $${params.length}`;
+    } else {
+      // Nicht-rekursiv: nur Dateien direkt in diesem Verzeichnis
+      // Pfad muss den dir enthalten, aber danach darf kein weiterer / kommen (ausser am Ende des file_path)
+      params.push(`%${dirPath}%`);
+      where += ` AND cf.file_path LIKE $${params.length}`;
+      // Nachfilterung in JS (PG LIKE kann nicht "kein / nach dem Match" pruefen)
+    }
   }
   if (file_type) {
     params.push(file_type);
@@ -118,18 +130,32 @@ export async function getProjectTree(
   }
 
   // Dateien nach Verzeichnis gruppieren
+  // Bei dirPath: Basis-Tiefe berechnen fuer relative depth-Filterung
   const dirMap = new Map<string, Array<typeof filesResult.rows[0]>>();
+  let baseDirDepth = 0;
+  if (dirPath) {
+    // Normalisiere den Suchpfad: entferne projectRoot-Prefix wenn vorhanden
+    const normalizedDirPath = dirPath.startsWith(projectRoot)
+      ? dirPath.substring(projectRoot.length)
+      : dirPath;
+    baseDirDepth = normalizedDirPath.split('/').filter(Boolean).length;
+  }
+
   for (const row of filesResult.rows) {
     const relPath = row.file_path.startsWith(projectRoot)
       ? row.file_path.substring(projectRoot.length)
       : row.file_path;
     row._relPath = relPath;
     const dir = relPath.substring(0, relPath.lastIndexOf('/') + 1) || '/';
+    const dirDepth = dir.split('/').filter(Boolean).length;
 
-    // Depth-Filter: Zaehle Verzeichnis-Ebenen
+    // Nicht-rekursiv: nur Dateien deren Verzeichnis-Tiefe == baseDirDepth
+    if (!recursive && dirPath && dirDepth > baseDirDepth) continue;
+
+    // Depth-Filter: relativ zum Basis-Verzeichnis
     if (depth !== undefined) {
-      const dirDepth = dir.split('/').filter(Boolean).length;
-      if (dirDepth > depth) continue;
+      const relativeDepth = dirDepth - baseDirDepth;
+      if (relativeDepth > depth) continue;
     }
 
     if (!dirMap.has(dir)) dirMap.set(dir, []);

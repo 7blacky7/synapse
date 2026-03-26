@@ -52,9 +52,13 @@ export const codeIntelTool: ConsolidatedTool = {
           type: 'string',
           description: 'Verzeichnis-Pfad-Prefix zum Filtern (fuer tree und file)',
         },
+        recursive: {
+          type: 'boolean',
+          description: 'Unterverzeichnisse einschliessen (Standard: true, fuer tree). false = nur Dateien direkt im Verzeichnis.',
+        },
         depth: {
           type: 'number',
-          description: 'Max. Verzeichnis-Tiefe fuer tree (0 = nur Root-Verzeichnisse)',
+          description: 'Max. Verzeichnis-Tiefe relativ zum path (0 = nur das Verzeichnis, 1 = +1 Ebene, fuer tree)',
         },
         show_lines: {
           type: 'boolean',
@@ -142,6 +146,7 @@ export const codeIntelTool: ConsolidatedTool = {
       case 'tree': {
         const tree = await getProjectTree(project, {
           path: str(args, 'path') ?? str(args, 'file_path'),
+          recursive: bool(args, 'recursive'),
           depth: num(args, 'depth'),
           show_lines: bool(args, 'show_lines'),
           show_counts: bool(args, 'show_counts'),
