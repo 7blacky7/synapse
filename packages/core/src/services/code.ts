@@ -182,6 +182,7 @@ export async function parseAndEmbed(project: string, filePath: string): Promise<
   const fileType: string = fileRow.rows[0].file_type;
 
   // --- Symbole + Referenzen parsen (in Transaktion) ---
+  let parseSuccess = false;
   const parser = getParserForFile(filePath);
   if (parser) {
     const parseResult = parser.parse(content, filePath);
@@ -231,6 +232,7 @@ export async function parseAndEmbed(project: string, filePath: string): Promise<
       }
 
       await pool.query('COMMIT');
+      parseSuccess = true;
     } catch (txErr) {
       await pool.query('ROLLBACK');
       console.error(`[Synapse] Symbol-Insert Transaktion fehlgeschlagen:`, txErr);
@@ -296,10 +298,10 @@ export async function parseAndEmbed(project: string, filePath: string): Promise<
     );
   }
 
-  // code_files aktualisieren: parsed_at, indexed_at, chunk_count
+  // code_files aktualisieren: parsed_at nur wenn Symbole erfolgreich geschrieben
   await pool.query(
     `UPDATE code_files
-     SET parsed_at = NOW(), indexed_at = NOW(), chunk_count = $3
+     SET ${parseSuccess ? 'parsed_at = NOW(),' : ''} indexed_at = NOW(), chunk_count = $3
      WHERE project = $1 AND file_path = $2`,
     [project, filePath, chunks.length]
   );
@@ -310,6 +312,7 @@ export async function parseAndEmbed(project: string, filePath: string): Promise<
 /**
  * Parst alle Dateien die Content haben aber noch nicht geparst wurden (parsed_at IS NULL).
  * Wird bei project init aufgerufen um Altdaten nachzuparsen.
+ * Laeuft sequentiell im Hintergrund um DB-Connection-Konflikte zu vermeiden.
  */
 export async function parseUnparsedFiles(projectName: string): Promise<number> {
   const pool = getPool();
@@ -320,16 +323,30 @@ export async function parseUnparsedFiles(projectName: string): Promise<number> {
 
   if (result.rows.length === 0) return 0;
 
-  console.error(`[Synapse] ${result.rows.length} ungeparste Dateien gefunden — starte Nachparsing...`);
+  const total = result.rows.length;
+  console.error(`[Synapse] ${total} ungeparste Dateien gefunden — starte sequentielles Nachparsing...`);
 
-  let parsed = 0;
-  for (const row of result.rows) {
-    enqueueParseAndEmbed(projectName, row.file_path);
-    parsed++;
-  }
+  // Sequentiell im Hintergrund parsen (nicht blockierend fuer Init)
+  const filePaths = result.rows.map((r: { file_path: string }) => r.file_path);
+  setImmediate(async () => {
+    let parsed = 0;
+    let failed = 0;
+    for (const filePath of filePaths) {
+      try {
+        await parseAndEmbed(projectName, filePath);
+        parsed++;
+        if (parsed % 20 === 0) {
+          console.error(`[Synapse] Nachparsing: ${parsed}/${total} Dateien...`);
+        }
+      } catch (err) {
+        failed++;
+        console.error(`[Synapse] Parse fehlgeschlagen fuer ${filePath}:`, err);
+      }
+    }
+    console.error(`[Synapse] Nachparsing abgeschlossen: ${parsed} geparst, ${failed} fehlgeschlagen`);
+  });
 
-  console.error(`[Synapse] ${parsed} Dateien zum Parsen eingeplant (2s Debounce)`);
-  return parsed;
+  return total;
 }
 
 /**
