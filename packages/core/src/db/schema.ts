@@ -10,7 +10,9 @@
  *
  * NEBENEFFEKTE:
  *   - PostgreSQL: Erstellt Tabellen memories, thoughts, plans, proposals,
- *     agent_sessions, chat_messages, tech_docs, code_files, agent_events, agent_event_acks
+ *     agent_sessions, chat_messages, tech_docs, code_files, agent_events, agent_event_acks,
+ *     code_symbols, code_references, code_chunks
+ *   - Erweitert code_files um: content, content_hash, parsed_at, tsv (mit GIN-Index + Trigger)
  *   - Legt Indizes fuer alle Projekt- und Zeitstempel-Felder an
  *   - Idempotent: CREATE TABLE IF NOT EXISTS / CREATE INDEX IF NOT EXISTS
  */
@@ -147,6 +149,80 @@ CREATE INDEX IF NOT EXISTS idx_code_files_type ON code_files(project, file_type)
 CREATE INDEX IF NOT EXISTS idx_agent_events_project ON agent_events(project, created_at);
 CREATE INDEX IF NOT EXISTS idx_agent_events_type ON agent_events(event_type);
 CREATE INDEX IF NOT EXISTS idx_agent_event_acks_agent ON agent_event_acks(agent_id);
+
+-- Migration: Neue Spalten fuer Code-Intelligence
+ALTER TABLE code_files ADD COLUMN IF NOT EXISTS content TEXT;
+ALTER TABLE code_files ADD COLUMN IF NOT EXISTS content_hash TEXT;
+ALTER TABLE code_files ADD COLUMN IF NOT EXISTS parsed_at TIMESTAMPTZ;
+ALTER TABLE code_files ADD COLUMN IF NOT EXISTS tsv TSVECTOR;
+
+CREATE INDEX IF NOT EXISTS idx_code_files_tsv ON code_files USING GIN(tsv);
+CREATE INDEX IF NOT EXISTS idx_code_files_hash ON code_files(project, content_hash);
+
+CREATE OR REPLACE FUNCTION code_files_tsv_trigger() RETURNS trigger AS $$
+BEGIN
+  NEW.tsv := to_tsvector('english', COALESCE(NEW.content, ''));
+  RETURN NEW;
+END
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_code_files_tsv ON code_files;
+CREATE TRIGGER trg_code_files_tsv
+  BEFORE INSERT OR UPDATE OF content ON code_files
+  FOR EACH ROW EXECUTE FUNCTION code_files_tsv_trigger();
+
+CREATE TABLE IF NOT EXISTS code_symbols (
+  id TEXT PRIMARY KEY,
+  project TEXT NOT NULL,
+  file_path TEXT NOT NULL,
+  symbol_type TEXT NOT NULL,
+  name TEXT,
+  value TEXT,
+  line_start INTEGER NOT NULL,
+  line_end INTEGER,
+  parent_symbol TEXT REFERENCES code_symbols(id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED,
+  params TEXT[],
+  return_type TEXT,
+  is_exported BOOLEAN DEFAULT false,
+  usage_count INTEGER DEFAULT 0,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  FOREIGN KEY (project, file_path) REFERENCES code_files(project, file_path) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_code_symbols_project ON code_symbols(project);
+CREATE INDEX IF NOT EXISTS idx_code_symbols_type ON code_symbols(project, symbol_type);
+CREATE INDEX IF NOT EXISTS idx_code_symbols_name ON code_symbols(project, name);
+CREATE INDEX IF NOT EXISTS idx_code_symbols_file ON code_symbols(project, file_path);
+
+CREATE TABLE IF NOT EXISTS code_references (
+  id TEXT PRIMARY KEY,
+  project TEXT NOT NULL,
+  symbol_id TEXT NOT NULL REFERENCES code_symbols(id) ON DELETE CASCADE,
+  file_path TEXT NOT NULL,
+  line_number INTEGER NOT NULL,
+  context TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  FOREIGN KEY (project, file_path) REFERENCES code_files(project, file_path) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_code_references_symbol ON code_references(symbol_id);
+CREATE INDEX IF NOT EXISTS idx_code_references_file ON code_references(project, file_path);
+CREATE INDEX IF NOT EXISTS idx_code_references_project ON code_references(project);
+
+CREATE TABLE IF NOT EXISTS code_chunks (
+  id TEXT PRIMARY KEY,
+  project TEXT NOT NULL,
+  file_path TEXT NOT NULL,
+  chunk_index INTEGER NOT NULL,
+  content TEXT NOT NULL,
+  line_start INTEGER NOT NULL,
+  line_end INTEGER NOT NULL,
+  embedded_at TIMESTAMPTZ,
+  FOREIGN KEY (project, file_path) REFERENCES code_files(project, file_path) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_code_chunks_file ON code_chunks(project, file_path);
+CREATE INDEX IF NOT EXISTS idx_code_chunks_unembedded ON code_chunks(project) WHERE embedded_at IS NULL;
 `;
 
 export async function ensureSchema(): Promise<void> {
