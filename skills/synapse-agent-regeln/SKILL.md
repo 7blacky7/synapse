@@ -32,12 +32,19 @@ add_thought(project: "...", source: "<deine-id>", content: "...", agent_id: "<de
 ## 3. Suchreihenfolge (PFLICHT)
 
 ```
-1. Synapse: semantic_code_search / search_by_path / search_memory
-2. NUR wenn Score < 0.60 oder 0 Ergebnisse → Glob / Grep
-3. NUR wenn beides scheitert → Read / manuelle Suche
+1. code_intel — Strukturierte Abfragen (IMMER ZUERST fuer Code-Fragen!)
+   → tree (Projektbaum), functions, variables, symbols, references, search, file
+   → Kein Embedding noetig, sofortige Ergebnisse aus PostgreSQL
+   → "Welche Funktionen?" → code_intel(action: "functions")
+   → "Wo wird X verwendet?" → code_intel(action: "references", name: "X")
+   → "Datei lesen" → code_intel(action: "file") statt Read-Tool!
+2. Synapse Semantic: search(action: "code") / search(action: "memory")
+   → Wenn fuzzy/konzeptuelle Suche noetig (Score-basiert via Qdrant)
+3. NUR wenn Score < 0.60 oder 0 Ergebnisse → Glob / Grep
+4. NUR wenn alles scheitert → Read / manuelle Suche
 ```
 
-**VERBOTEN:** Read/Glob/Grep BEVOR Synapse versucht wurde.
+**VERBOTEN:** Read/Glob/Grep BEVOR code_intel UND Synapse Semantic versucht wurden.
 
 ## 4. Kommunikation (ueber Agenten-Chat)
 

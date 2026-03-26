@@ -25,10 +25,21 @@ Regeln fuer den Koordinator. Agenten bekommen den `synapse-agent-regeln` Skill.
 ## 2. Suchreihenfolge (PFLICHT)
 
 ```
-1. Synapse: semantic_code_search / search_by_path / search_memory
-2. NUR wenn Score < 0.60 oder 0 Ergebnisse → Glob / Grep
-3. NUR wenn beides scheitert → Read / manuelle Suche
+1. code_intel — Strukturierte Abfragen (tree, functions, variables, symbols, references)
+   → Projektbaum, Funktionsliste, Variablen-Suche, Querverweise, Full-Text-Search
+   → Kein Embedding noetig, sofortige Ergebnisse aus PostgreSQL
+2. Synapse Semantic: search(action: "code") / search(action: "memory") / search(action: "thoughts")
+   → Wenn konzeptuelle/fuzzy Suche noetig (Score-basiert via Qdrant)
+3. NUR wenn Score < 0.60 oder 0 Ergebnisse → Glob / Grep
+4. NUR wenn alles scheitert → Read / manuelle Suche
 ```
+
+**code_intel IMMER ZUERST** fuer:
+- "Welche Funktionen gibt es?" → `code_intel(action: "functions")`
+- "Wo wird X verwendet?" → `code_intel(action: "references", name: "X")`
+- "Projektstruktur zeigen" → `code_intel(action: "tree")`
+- "Alle Interfaces/Klassen" → `code_intel(action: "symbols", symbol_type: "interface")`
+- "Datei-Inhalt lesen" → `code_intel(action: "file")` (statt Read-Tool!)
 
 Der Koordinator sucht NICHT selbst, er delegiert an Agenten.
 
@@ -93,9 +104,12 @@ SCHRITT 1 (ALLERERSTE Aktion):
   get_chat_messages(project: "{PROJEKT}", agent_id: "{AGENT_ID}", limit: 10)
   → Letzte Nachrichten lesen
 
-SUCHE (vor jeder Code-Suche):
-- IMMER zuerst Synapse MCP-Tools verwenden
-- NUR wenn Score < 0.60 → Glob/Grep/Read als Fallback
+SUCHE (PFLICHT-Reihenfolge):
+1. code_intel — Strukturierte Abfragen: tree, functions, variables, symbols, references, search, file
+   → IMMER ZUERST fuer Code-Fragen (Funktionen, Variablen, Imports, Querverweise, Projektbaum)
+2. Synapse Semantic: search(action: "code") — NUR wenn fuzzy/konzeptuelle Suche noetig
+3. NUR wenn Score < 0.60 → Glob/Grep als Fallback
+4. Read NUR als letzter Ausweg (code_intel file-Action bevorzugen!)
 
 KOMMUNIKATION (Agenten-Chat):
 - send_chat_message(project: "{PROJEKT}", sender_id: "{AGENT_ID}", content: "...")
@@ -248,19 +262,40 @@ EVENTS (Pflicht-Reaktion):
 
 ## 7. Richtige Tool-Wahl
 
+### code_intel (ERSTE WAHL fuer Code-Fragen)
+
 | Situation | Tool |
 |-----------|------|
-| Konzeptuelle Frage | `semantic_code_search` |
-| Bekannter Dateipfad | `search_by_path` |
-| Konzept + Pfad | `search_code_with_path` |
-| Architektur / Regeln | `search_memory` |
-| Memory + Code | `read_memory_with_code` |
-| Framework-Doku | `search_tech_docs` |
-| Frueherer Kontext | `search_thoughts` |
-| Datei-spezifische Docs | `get_docs_for_file` (Wissens-Airbag) |
-| Steuer-Signal senden | `emit_event` |
-| Event bestaetigen | `acknowledge_event` |
-| Offene Events pruefen | `get_pending_events` |
+| Projektstruktur verstehen | `code_intel(action: "tree", path: "...", depth: N)` |
+| Funktionen finden/auflisten | `code_intel(action: "functions", name: "...", exported_only: true)` |
+| Variablen + Werte | `code_intel(action: "variables", name: "...", with_values: true)` |
+| Interfaces/Klassen/Enums | `code_intel(action: "symbols", symbol_type: "interface")` |
+| Wo wird X verwendet? | `code_intel(action: "references", name: "X")` |
+| Imports einer Datei | `code_intel(action: "tree", path: "...", show_imports: true)` |
+| Datei lesen (aus PG) | `code_intel(action: "file", file_path: "...")` |
+| Volltext-Suche (ohne Qdrant) | `code_intel(action: "search", query: "...")` |
+| SQL-Tabellen/Spalten | `code_intel(action: "symbols", symbol_type: "table")` |
+
+### Synapse Semantic (ZWEITE WAHL — fuzzy/konzeptuelle Suche)
+
+| Situation | Tool |
+|-----------|------|
+| Konzeptuelle Code-Frage | `search(action: "code", query: "...")` |
+| Pfad-Pattern-Suche | `search(action: "path", path_pattern: "...")` |
+| Architektur / Regeln | `search(action: "memory", query: "...")` |
+| Memory + Code | `memory(action: "read_with_code", name: "...")` |
+| Framework-Doku | `docs(action: "search", query: "...")` |
+| Frueherer Kontext | `search(action: "thoughts", query: "...")` |
+| Datei-spezifische Docs | `docs(action: "get_for_file")` (Wissens-Airbag) |
+
+### Events + Steuerung
+
+| Situation | Tool |
+|-----------|------|
+| Steuer-Signal senden | `event(action: "emit")` |
+| Event bestaetigen | `event(action: "ack")` |
+| Offene Events pruefen | `event(action: "pending")` |
+| FileWatcher steuern | `watcher(action: "status\|start\|stop")` |
 
 ## 8. Filter-Regeln
 
