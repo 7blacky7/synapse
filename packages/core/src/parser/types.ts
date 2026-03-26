@@ -7,7 +7,11 @@ export interface ParsedSymbol {
   symbol_type:
     | 'function' | 'variable' | 'string' | 'comment'
     | 'import' | 'export' | 'class' | 'interface'
-    | 'enum' | 'const_object' | 'todo';
+    | 'enum' | 'const_object' | 'todo'
+    // SQL-spezifische Typen
+    | 'table' | 'column' | 'index' | 'view' | 'trigger' | 'constraint'
+    // Erweiterbar fuer weitere Sprachen
+    | string;
   name: string | null;
   value?: string;
   line_start: number;
