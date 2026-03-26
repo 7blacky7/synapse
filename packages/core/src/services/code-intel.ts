@@ -29,59 +29,87 @@ import { getPool } from '../db/client.js';
 // ─── getProjectTree ───────────────────────────────────────────────────────────
 
 /**
+ * Tree-Optionen — jeder Aspekt einzeln steuerbar.
+ * KI entscheidet selbst welche Details sie braucht.
+ */
+export interface TreeOptions {
+  /** Verzeichnis-Filter (zeigt nur Dateien unter diesem Pfad) */
+  path?: string;
+  /** Max. Verzeichnis-Tiefe (0 = nur Root-Verzeichnisse) */
+  depth?: number;
+  /** Zeilenzahl pro Datei anzeigen (Standard: true) */
+  show_lines?: boolean;
+  /** Funktions-/Variablen-Counts anzeigen (Standard: true) */
+  show_counts?: boolean;
+  /** Kommentare unter Dateien anzeigen (Standard: false) */
+  show_comments?: boolean;
+  /** Funktionsnamen auflisten (Standard: false) */
+  show_functions?: boolean;
+  /** Import-Statements auflisten (Standard: false) */
+  show_imports?: boolean;
+  /** Nur Dateien mit bestimmtem Typ (z.B. 'typescript', 'sql') */
+  file_type?: string;
+}
+
+/**
  * Gibt einen formatierten Projekt-Baum zurueck.
  * Dateien werden nach Verzeichnis gruppiert, Pfade relativ zum Projekt-Root.
- * detail='minimal': Verzeichnisse mit Dateinamen + Zeilenzahl
- * detail='normal': + erster Block-Kommentar
- * detail='full': + Funktionen und Imports
+ * Jeder Aspekt ist einzeln steuerbar ueber TreeOptions.
  */
 export async function getProjectTree(
   project: string,
-  dirPath?: string,
-  detail: 'minimal' | 'normal' | 'full' = 'normal'
+  options: TreeOptions = {}
 ): Promise<string> {
   const pool = getPool();
+  const {
+    path: dirPath,
+    depth,
+    show_lines = true,
+    show_counts = true,
+    show_comments = false,
+    show_functions = false,
+    show_imports = false,
+    file_type,
+  } = options;
 
   // Projekt-Root-Pfad ermitteln (laengster gemeinsamer Prefix aller Dateien)
-  const rootResult = await pool.query(
-    `SELECT file_path FROM code_files WHERE project = $1 ORDER BY file_path LIMIT 1`,
+  let projectRoot = '';
+  const prefixResult = await pool.query(
+    `SELECT MIN(file_path) AS first_path, MAX(file_path) AS last_path FROM code_files WHERE project = $1`,
     [project]
   );
-  // Projekt-Root: Alles bis zum Projekt-Verzeichnis (heuristisch: kuerzester Pfad-Prefix)
-  let projectRoot = '';
-  if (rootResult.rows.length > 0) {
-    // Finde den gemeinsamen Prefix aller Pfade
-    const prefixResult = await pool.query(
-      `SELECT MIN(file_path) AS first_path, MAX(file_path) AS last_path FROM code_files WHERE project = $1`,
-      [project]
-    );
+  if (prefixResult.rows[0]?.first_path) {
     const firstPath: string = prefixResult.rows[0].first_path;
     const lastPath: string = prefixResult.rows[0].last_path;
     let i = 0;
     while (i < firstPath.length && i < lastPath.length && firstPath[i] === lastPath[i]) i++;
-    // Auf letztes '/' zurueckschneiden
     projectRoot = firstPath.substring(0, firstPath.lastIndexOf('/', i) + 1);
   }
 
-  // Basis-Query: Dateien mit Funktions-/Variablen-Counts und Zeilenzahl
+  // Basis-Query
   const params: unknown[] = [project];
   let where = 'WHERE cf.project = $1';
   if (dirPath) {
     params.push(`%${dirPath}%`);
     where += ` AND cf.file_path LIKE $${params.length}`;
   }
+  if (file_type) {
+    params.push(file_type);
+    where += ` AND cf.file_type = $${params.length}`;
+  }
+
+  // Counts nur laden wenn gewuenscht (spart Subqueries)
+  const countCols = show_counts
+    ? `, (SELECT COUNT(*) FROM code_symbols cs WHERE cs.project = cf.project AND cs.file_path = cf.file_path AND cs.symbol_type = 'function') AS fn_count,
+         (SELECT COUNT(*) FROM code_symbols cs WHERE cs.project = cf.project AND cs.file_path = cf.file_path AND cs.symbol_type = 'variable') AS var_count`
+    : '';
+  const lineCols = show_lines
+    ? `, (length(cf.content) - length(replace(cf.content, E'\\n', '')) + 1) AS line_count`
+    : '';
 
   const filesResult = await pool.query(
-    `SELECT
-       cf.file_path,
-       cf.file_name,
-       cf.file_type,
-       (length(cf.content) - length(replace(cf.content, E'\\n', '')) + 1) AS line_count,
-       (SELECT COUNT(*) FROM code_symbols cs WHERE cs.project = cf.project AND cs.file_path = cf.file_path AND cs.symbol_type = 'function') AS fn_count,
-       (SELECT COUNT(*) FROM code_symbols cs WHERE cs.project = cf.project AND cs.file_path = cf.file_path AND cs.symbol_type = 'variable') AS var_count
-     FROM code_files cf
-     ${where}
-     ORDER BY cf.file_path`,
+    `SELECT cf.file_path, cf.file_name, cf.file_type ${lineCols} ${countCols}
+     FROM code_files cf ${where} ORDER BY cf.file_path`,
     params
   );
 
@@ -97,6 +125,13 @@ export async function getProjectTree(
       : row.file_path;
     row._relPath = relPath;
     const dir = relPath.substring(0, relPath.lastIndexOf('/') + 1) || '/';
+
+    // Depth-Filter: Zaehle Verzeichnis-Ebenen
+    if (depth !== undefined) {
+      const dirDepth = dir.split('/').filter(Boolean).length;
+      if (dirDepth > depth) continue;
+    }
+
     if (!dirMap.has(dir)) dirMap.set(dir, []);
     dirMap.get(dir)!.push(row);
   }
@@ -104,72 +139,70 @@ export async function getProjectTree(
   const lines: string[] = [];
 
   for (const [dir, files] of dirMap) {
-    const fnTotal = files.reduce((s, f) => s + parseInt(f.fn_count, 10), 0);
-    const varTotal = files.reduce((s, f) => s + parseInt(f.var_count, 10), 0);
+    // Verzeichnis-Header
+    const dirMeta: string[] = [`${files.length} Dateien`];
+    if (show_counts) {
+      const fnTotal = files.reduce((s, f) => s + parseInt(f.fn_count ?? '0', 10), 0);
+      const varTotal = files.reduce((s, f) => s + parseInt(f.var_count ?? '0', 10), 0);
+      if (fnTotal > 0) dirMeta.push(`${fnTotal}fn`);
+      if (varTotal > 0) dirMeta.push(`${varTotal}var`);
+    }
+    lines.push(`${dir} (${dirMeta.join(', ')})`);
 
-    if (detail === 'minimal') {
-      // Kompakt: Verzeichnis mit allen Dateien in einer Zeile
-      const fileList = files.map(f => {
-        const fn = parseInt(f.fn_count, 10);
-        const v = parseInt(f.var_count, 10);
-        const meta = fn > 0 || v > 0 ? ` (${fn}fn, ${v}var)` : '';
-        return `${f.file_name}${meta}`;
-      }).join(', ');
-      lines.push(`${dir} ${fileList}`);
-    } else {
-      // Normal/Full: Verzeichnis als Ueberschrift
-      lines.push(`${dir} (${files.length} Dateien, ${fnTotal}fn, ${varTotal}var)`);
+    // Dateien
+    for (const f of files) {
+      const fileMeta: string[] = [];
+      if (show_lines && f.line_count) fileMeta.push(`${f.line_count}Z`);
+      if (show_counts) {
+        const fn = parseInt(f.fn_count ?? '0', 10);
+        const v = parseInt(f.var_count ?? '0', 10);
+        if (fn > 0) fileMeta.push(`${fn}fn`);
+        if (v > 0) fileMeta.push(`${v}var`);
+      }
+      const metaStr = fileMeta.length > 0 ? ` (${fileMeta.join(', ')})` : '';
+      lines.push(`  ${f.file_name}${metaStr}`);
 
-      for (const f of files) {
-        const lineCount = f.line_count ?? 0;
-        const fn = parseInt(f.fn_count, 10);
-        const v = parseInt(f.var_count, 10);
-        const meta = [
-          `${lineCount}Z`,
-          fn > 0 ? `${fn}fn` : null,
-          v > 0 ? `${v}var` : null,
-        ].filter(Boolean).join(', ');
-        lines.push(`  ${f.file_name} (${meta})`);
-
-        if (detail === 'normal' || detail === 'full') {
-          // Ersten Block-Kommentar laden
-          const commentResult = await pool.query(
-            `SELECT value FROM code_symbols
-             WHERE project = $1 AND file_path = $2 AND symbol_type = 'comment'
-             ORDER BY line_start LIMIT 1`,
-            [project, f.file_path]
-          );
-          if (commentResult.rows.length > 0) {
-            const comment = (commentResult.rows[0].value ?? '').split('\n')[0].trim().replace(/\s+/g, ' ');
-            if (comment) lines.push(`    /** ${comment.substring(0, 100)} */`);
-          }
+      // Kommentare
+      if (show_comments) {
+        const commentResult = await pool.query(
+          `SELECT value FROM code_symbols
+           WHERE project = $1 AND file_path = $2 AND symbol_type = 'comment'
+           ORDER BY line_start LIMIT 1`,
+          [project, f.file_path]
+        );
+        if (commentResult.rows.length > 0) {
+          const comment = (commentResult.rows[0].value ?? '').split('\n')[0].trim().replace(/\s+/g, ' ');
+          if (comment) lines.push(`    /** ${comment.substring(0, 100)} */`);
         }
+      }
 
-        if (detail === 'full') {
-          // Funktionsnamen
-          const funcsResult = await pool.query(
-            `SELECT name, is_exported FROM code_symbols
-             WHERE project = $1 AND file_path = $2 AND symbol_type = 'function'
-             ORDER BY line_start`,
-            [project, f.file_path]
-          );
-          if (funcsResult.rows.length > 0) {
-            const names = funcsResult.rows
-              .map((fn: { name: string; is_exported: boolean }) => (fn.is_exported ? `+${fn.name}` : fn.name))
-              .join(', ');
-            lines.push(`    fn: ${names}`);
-          }
+      // Funktionen
+      if (show_functions) {
+        const funcsResult = await pool.query(
+          `SELECT name, is_exported FROM code_symbols
+           WHERE project = $1 AND file_path = $2 AND symbol_type = 'function'
+           ORDER BY line_start`,
+          [project, f.file_path]
+        );
+        if (funcsResult.rows.length > 0) {
+          const names = funcsResult.rows
+            .map((fn: { name: string; is_exported: boolean }) => (fn.is_exported ? `+${fn.name}` : fn.name))
+            .join(', ');
+          lines.push(`    fn: ${names}`);
+        }
+      }
 
-          // Imports
-          const importsResult = await pool.query(
-            `SELECT name, value FROM code_symbols
-             WHERE project = $1 AND file_path = $2 AND symbol_type = 'import'
-             ORDER BY line_start LIMIT 10`,
-            [project, f.file_path]
-          );
-          if (importsResult.rows.length > 0) {
-            const importNames = importsResult.rows.map((i: { name: string; value: string }) => `${i.name} (${i.value})`).join(', ');
-            lines.push(`    imports: ${importNames}`);
+      // Imports
+      if (show_imports) {
+        const importsResult = await pool.query(
+          `SELECT name, value FROM code_symbols
+           WHERE project = $1 AND file_path = $2 AND symbol_type = 'import'
+           ORDER BY line_start`,
+          [project, f.file_path]
+        );
+        if (importsResult.rows.length > 0) {
+          for (const imp of importsResult.rows) {
+            lines.push(`    from "${imp.value}": ${imp.name}`);
           }
         }
       }
