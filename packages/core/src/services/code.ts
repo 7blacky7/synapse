@@ -308,6 +308,31 @@ export async function parseAndEmbed(project: string, filePath: string): Promise<
 }
 
 /**
+ * Parst alle Dateien die Content haben aber noch nicht geparst wurden (parsed_at IS NULL).
+ * Wird bei project init aufgerufen um Altdaten nachzuparsen.
+ */
+export async function parseUnparsedFiles(projectName: string): Promise<number> {
+  const pool = getPool();
+  const result = await pool.query(
+    'SELECT file_path FROM code_files WHERE project = $1 AND content IS NOT NULL AND parsed_at IS NULL',
+    [projectName]
+  );
+
+  if (result.rows.length === 0) return 0;
+
+  console.error(`[Synapse] ${result.rows.length} ungeparste Dateien gefunden — starte Nachparsing...`);
+
+  let parsed = 0;
+  for (const row of result.rows) {
+    enqueueParseAndEmbed(projectName, row.file_path);
+    parsed++;
+  }
+
+  console.error(`[Synapse] ${parsed} Dateien zum Parsen eingeplant (2s Debounce)`);
+  return parsed;
+}
+
+/**
  * Indexiert eine Datei — zweistufig: Stage 1 synchron, Stage 2 async debounced
  */
 export async function indexFile(

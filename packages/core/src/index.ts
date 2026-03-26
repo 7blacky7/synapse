@@ -92,6 +92,7 @@ export {
   getProjectStats,
   searchFilesByPath,
   backfillCodeFiles,
+  parseUnparsedFiles,
   // Media
   indexMediaFile,
   indexMediaDirectory,
@@ -422,6 +423,16 @@ export async function initSynapse(projectName: string): Promise<boolean> {
       await backfillCodeFiles(projectName);
     } catch (err) {
       console.warn(`[Synapse] code_files Backfill fehlgeschlagen: ${err}`);
+    }
+  }
+
+  // 7. Ungeparste Dateien nachparsen (content vorhanden, parsed_at IS NULL)
+  if (dbOk) {
+    try {
+      const { parseUnparsedFiles } = await import('./services/code.js');
+      await parseUnparsedFiles(projectName);
+    } catch (err) {
+      console.warn(`[Synapse] parseUnparsedFiles fehlgeschlagen: ${err}`);
     }
   }
 
