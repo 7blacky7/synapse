@@ -234,7 +234,7 @@ function extractSymbols(
             addSymbol({
               symbol_type: 'variable',
               name: varName,
-              value: keyword,
+              value: strVal,
               line_start,
               is_exported: exported,
             });
@@ -249,11 +249,12 @@ function extractSymbols(
           }
         }
 
-        // Plain variable
+        // Plain variable — Wert kuerzen wenn zu lang
+        const rawValue = init ? init.getText().slice(0, 200) : undefined;
         addSymbol({
           symbol_type: 'variable',
           name: varName,
-          value: keyword,
+          value: rawValue,
           line_start,
           is_exported: exported,
         });
@@ -262,46 +263,46 @@ function extractSymbols(
       return;
     }
 
-    // Import declarations
+    // Import declarations — gruppiert als ein Symbol pro Statement
     if (ts.isImportDeclaration(node)) {
       const source = (node.moduleSpecifier as ts.StringLiteral).text;
       const clause = node.importClause;
       const line_start = getLineNumber(sourceFile, node.getStart());
+      const importNames: string[] = [];
 
       if (clause) {
         // Default import
         if (clause.name) {
-          addSymbol({
-            symbol_type: 'import',
-            name: clause.name.getText(),
-            value: source,
-            line_start,
-            is_exported: false,
-          });
+          importNames.push(clause.name.getText());
         }
 
         // Named imports
         const namedBindings = clause.namedBindings;
         if (namedBindings) {
           if (ts.isNamespaceImport(namedBindings)) {
-            addSymbol({
-              symbol_type: 'import',
-              name: namedBindings.name.getText(),
-              value: source,
-              line_start,
-              is_exported: false,
-            });
+            importNames.push(`* as ${namedBindings.name.getText()}`);
           } else if (ts.isNamedImports(namedBindings)) {
             for (const el of namedBindings.elements) {
-              addSymbol({
-                symbol_type: 'import',
-                name: el.name.getText(),
-                value: source,
-                line_start,
-                is_exported: false,
-              });
+              importNames.push(el.name.getText());
             }
           }
+        }
+      }
+
+      // Ein Symbol pro Import-Statement, alle Bezeichner in params[]
+      if (importNames.length > 0) {
+        addSymbol({
+          symbol_type: 'import',
+          name: importNames.join(', '),
+          value: source,
+          params: importNames,
+          line_start,
+          is_exported: false,
+        });
+        // Alle importierten Namen als definiert markieren
+        for (const n of importNames) {
+          const cleanName = n.replace(/^\* as /, '');
+          definedNames.add(cleanName);
         }
       }
       return;

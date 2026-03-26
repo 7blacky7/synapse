@@ -52,10 +52,29 @@ export const codeIntelTool: ConsolidatedTool = {
           type: 'string',
           description: 'Verzeichnis-Pfad-Prefix zum Filtern (fuer tree und file)',
         },
-        detail: {
-          type: 'string',
-          enum: ['minimal', 'normal', 'full'],
-          description: 'Detail-Level fuer tree: minimal|normal|full (Standard: normal)',
+        depth: {
+          type: 'number',
+          description: 'Max. Verzeichnis-Tiefe fuer tree (0 = nur Root-Verzeichnisse)',
+        },
+        show_lines: {
+          type: 'boolean',
+          description: 'Zeilenzahl pro Datei anzeigen (Standard: true, fuer tree)',
+        },
+        show_counts: {
+          type: 'boolean',
+          description: 'Funktions-/Variablen-Counts anzeigen (Standard: true, fuer tree)',
+        },
+        show_comments: {
+          type: 'boolean',
+          description: 'Kommentare unter Dateien anzeigen (Standard: false, fuer tree)',
+        },
+        show_functions: {
+          type: 'boolean',
+          description: 'Funktionsnamen auflisten (Standard: false, fuer tree)',
+        },
+        show_imports: {
+          type: 'boolean',
+          description: 'Import-Statements auflisten (Standard: false, fuer tree)',
         },
 
         // --- functions / variables / symbols ---
@@ -121,9 +140,16 @@ export const codeIntelTool: ConsolidatedTool = {
 
     switch (action) {
       case 'tree': {
-        const dirPath = str(args, 'path') ?? str(args, 'file_path');
-        const detail = (str(args, 'detail') as 'minimal' | 'normal' | 'full' | undefined) ?? 'normal';
-        const tree = await getProjectTree(project, dirPath, detail);
+        const tree = await getProjectTree(project, {
+          path: str(args, 'path') ?? str(args, 'file_path'),
+          depth: num(args, 'depth'),
+          show_lines: bool(args, 'show_lines'),
+          show_counts: bool(args, 'show_counts'),
+          show_comments: bool(args, 'show_comments'),
+          show_functions: bool(args, 'show_functions'),
+          show_imports: bool(args, 'show_imports'),
+          file_type: str(args, 'file_type'),
+        });
         return { success: true, tree, project };
       }
 
