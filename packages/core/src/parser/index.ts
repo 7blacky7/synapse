@@ -39,6 +39,7 @@ import { groovyParser } from './groovy.js';
 import { ocamlParser } from './ocaml.js';
 import { clojureParser } from './clojure.js';
 import { juliaParser } from './julia.js';
+import { nimParser } from './nim.js';
 
 export type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
 
@@ -77,6 +78,7 @@ const parsers: LanguageParser[] = [
   ocamlParser,
   clojureParser,
   juliaParser,
+  nimParser,
 ];
 
 /** Dateiname-basiertes Matching fuer Dateien ohne Extension (Makefile, Dockerfile) */
