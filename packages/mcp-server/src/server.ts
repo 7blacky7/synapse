@@ -113,11 +113,11 @@ async function getUnackedEventHint(
     const hintParts: string[] = [];
     for (const e of pending) {
       if (e.priority === 'critical') {
-        hintParts.push(`⛔ PFLICHT-EVENT: ${e.eventType} von ${e.sourceId}: ${e.payload}. Reagiere SOFORT mit event(action: "acknowledge", event_id: ${e.id}, agent_id: "${agentId}")`);
+        hintParts.push(`⛔ PFLICHT-EVENT: ${e.eventType} von ${e.sourceId}: ${e.payload}. Reagiere SOFORT mit event(action: "ack", event_id: ${e.id}, agent_id: "${agentId}")`);
       } else if (e.priority === 'high') {
-        hintParts.push(`⚠️ EVENT: ${e.eventType} von ${e.sourceId}: ${e.payload}. Bitte mit event(action: "acknowledge", event_id: ${e.id}, agent_id: "${agentId}") bestaetigen.`);
+        hintParts.push(`⚠️ EVENT: ${e.eventType} von ${e.sourceId}: ${e.payload}. Bitte mit event(action: "ack", event_id: ${e.id}, agent_id: "${agentId}") bestaetigen.`);
       } else {
-        hintParts.push(`📋 EVENT: ${e.eventType}: ${e.payload}. event(action: "acknowledge", event_id: ${e.id}, agent_id: "${agentId}")`);
+        hintParts.push(`📋 EVENT: ${e.eventType}: ${e.payload}. event(action: "ack", event_id: ${e.id}, agent_id: "${agentId}")`);
       }
     }
 
