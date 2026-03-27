@@ -155,6 +155,7 @@ ALTER TABLE code_files ADD COLUMN IF NOT EXISTS content TEXT;
 ALTER TABLE code_files ADD COLUMN IF NOT EXISTS content_hash TEXT;
 ALTER TABLE code_files ADD COLUMN IF NOT EXISTS parsed_at TIMESTAMPTZ;
 ALTER TABLE code_files ADD COLUMN IF NOT EXISTS tsv TSVECTOR;
+ALTER TABLE code_files ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;
 
 CREATE INDEX IF NOT EXISTS idx_code_files_tsv ON code_files USING GIN(tsv);
 CREATE INDEX IF NOT EXISTS idx_code_files_hash ON code_files(project, content_hash);
