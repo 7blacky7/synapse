@@ -15,6 +15,7 @@ import { csharpParser } from './csharp.js';
 import { cParser } from './c.js';
 import { cppParser } from './cpp.js';
 import { rubyParser } from './ruby.js';
+import { phpParser } from './php.js';
 
 export type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
 
@@ -29,6 +30,7 @@ const parsers: LanguageParser[] = [
   cParser,
   cppParser,
   rubyParser,
+  phpParser,
 ];
 
 export function getParserForFile(filePath: string): LanguageParser | null {
