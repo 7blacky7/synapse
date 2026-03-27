@@ -174,6 +174,18 @@ export {
   getReferences,
   fullTextSearchCode,
   getFileContent,
+  // Code Write
+  replaceLines,
+  insertAfterLine,
+  deleteLines,
+  searchReplace,
+  contentHash,
+  createFileInPg,
+  updateFileInPg,
+  softDeleteFile,
+  moveFileInPg,
+  copyFileInPg,
+  getFileContentFromPg,
   // Backup
   dumpCollectionToFile,
   readBackupFile,
