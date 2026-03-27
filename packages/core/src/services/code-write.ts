@@ -235,6 +235,16 @@ export async function moveFileInPg(
 
   try {
     await client.query('BEGIN');
+    // FK-Checks erst beim COMMIT pruefen — erlaubt Updates in beliebiger Reihenfolge
+    await client.query('SET CONSTRAINTS ALL DEFERRED');
+
+    // code_files ZUERST (Ziel-Pfad muss existieren fuer FKs)
+    await client.query(
+      `UPDATE code_files
+       SET file_path = $3, updated_at = NOW(), parsed_at = NULL
+       WHERE project = $1 AND file_path LIKE '%' || $2`,
+      [project, oldPath, newPath]
+    );
 
     await client.query(
       `UPDATE code_symbols
@@ -253,13 +263,6 @@ export async function moveFileInPg(
     await client.query(
       `UPDATE code_chunks
        SET file_path = $3
-       WHERE project = $1 AND file_path LIKE '%' || $2`,
-      [project, oldPath, newPath]
-    );
-
-    await client.query(
-      `UPDATE code_files
-       SET file_path = $3, updated_at = NOW()
        WHERE project = $1 AND file_path LIKE '%' || $2`,
       [project, oldPath, newPath]
     );
