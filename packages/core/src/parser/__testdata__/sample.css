@@ -1,0 +1,76 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter');
+@import './variables.css';
+
+:root {
+  --color-primary: #3b82f6;
+  --color-secondary: #6366f1;
+  --color-bg: #0f172a;
+  --color-text: #e2e8f0;
+  --spacing-base: 8px;
+  --font-family: 'Inter', sans-serif;
+  --border-radius: 8px;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(-10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: var(--font-family);
+  background: var(--color-bg);
+  color: var(--color-text);
+}
+
+.agent-card {
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: var(--border-radius);
+  padding: calc(var(--spacing-base) * 3);
+  animation: fadeIn 0.3s ease-out;
+}
+
+.agent-card:hover {
+  border-color: var(--color-primary);
+}
+
+.agent-card .status {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.agent-card .status.active::before {
+  content: '';
+  width: 8px;
+  height: 8px;
+  background: #22c55e;
+  border-radius: 50%;
+  animation: pulse 2s infinite;
+}
+
+#app {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 2rem;
+}
+
+@media (max-width: 768px) {
+  .agent-card {
+    padding: var(--spacing-base);
+  }
+}
+
+/* TODO: add dark mode toggle styles */
+/* FIXME: status indicator alignment on mobile */

@@ -1,0 +1,73 @@
+syntax = "proto3";
+
+package synapse.api.v1;
+
+option java_package = "com.synapse.api.v1";
+option go_package = "synapse/api/v1;apiv1";
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/empty.proto";
+
+enum Status {
+  STATUS_UNSPECIFIED = 0;
+  STATUS_ACTIVE = 1;
+  STATUS_IDLE = 2;
+  STATUS_STOPPED = 3;
+  STATUS_ERROR = 4;
+}
+
+message AgentConfig {
+  string model = 1;
+  int32 max_tokens = 2;
+  double temperature = 3;
+  repeated string tools = 4;
+}
+
+message Agent {
+  string id = 1;
+  string name = 2;
+  AgentConfig config = 3;
+  Status status = 4;
+  google.protobuf.Timestamp created_at = 5;
+}
+
+message CreateAgentRequest {
+  string name = 1;
+  AgentConfig config = 2;
+}
+
+message GetAgentRequest {
+  string agent_id = 1;
+}
+
+message ListAgentsRequest {
+  int32 page_size = 1;
+  string page_token = 2;
+}
+
+message ListAgentsResponse {
+  repeated Agent agents = 1;
+  string next_page_token = 2;
+}
+
+message ProcessRequest {
+  string agent_id = 1;
+  string message = 2;
+}
+
+message ProcessResponse {
+  string response = 1;
+  int32 tokens_used = 2;
+}
+
+service AgentService {
+  rpc CreateAgent(CreateAgentRequest) returns (Agent);
+  rpc GetAgent(GetAgentRequest) returns (Agent);
+  rpc ListAgents(ListAgentsRequest) returns (ListAgentsResponse);
+  rpc DeleteAgent(GetAgentRequest) returns (google.protobuf.Empty);
+  rpc Process(ProcessRequest) returns (ProcessResponse);
+  rpc StreamProcess(ProcessRequest) returns (stream ProcessResponse);
+}
+
+// TODO: add health check service
+// FIXME: missing field validation

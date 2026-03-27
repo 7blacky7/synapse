@@ -1,0 +1,37 @@
+[package]
+name = "synapse-core"
+version = "0.1.0"
+edition = "2021"
+authors = ["Synapse Team <team@synapse.dev>"]
+description = "Core library for Synapse AI agent framework"
+license = "MIT"
+
+[dependencies]
+tokio = { version = "1.35", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+anyhow = "1.0"
+tracing = "0.1"
+
+[dev-dependencies]
+criterion = "0.5"
+
+[features]
+default = ["full"]
+full = ["search", "memory"]
+search = []
+memory = []
+
+[[bin]]
+name = "synapse-cli"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = 3
+lto = true
+
+[workspace]
+members = ["crates/*"]
+
+# TODO: add benchmark configuration
+# FIXME: dependency versions need audit

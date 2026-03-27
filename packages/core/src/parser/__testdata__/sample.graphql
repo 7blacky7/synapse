@@ -1,0 +1,108 @@
+"""Synapse GraphQL API Schema"""
+
+scalar DateTime
+scalar JSON
+
+enum Status {
+  ACTIVE
+  IDLE
+  STOPPED
+  ERROR
+}
+
+interface Node {
+  id: ID!
+  createdAt: DateTime!
+}
+
+input AgentConfigInput {
+  model: String = "claude-opus-4-6"
+  maxTokens: Int = 4096
+  temperature: Float = 0.7
+}
+
+input CreateAgentInput {
+  name: String!
+  config: AgentConfigInput
+}
+
+input ProcessInput {
+  agentId: ID!
+  message: String!
+}
+
+type AgentConfig {
+  model: String!
+  maxTokens: Int!
+  temperature: Float!
+}
+
+type Agent implements Node {
+  id: ID!
+  name: String!
+  config: AgentConfig!
+  status: Status!
+  sessions: [Session!]!
+  createdAt: DateTime!
+}
+
+type Session implements Node {
+  id: ID!
+  agent: Agent!
+  messages: [Message!]!
+  createdAt: DateTime!
+  endedAt: DateTime
+}
+
+type Message {
+  id: ID!
+  role: String!
+  content: String!
+  createdAt: DateTime!
+}
+
+type ProcessResult {
+  response: String!
+  tokensUsed: Int!
+}
+
+union SearchResult = Agent | Session | Message
+
+type AgentConnection {
+  edges: [AgentEdge!]!
+  pageInfo: PageInfo!
+  totalCount: Int!
+}
+
+type AgentEdge {
+  node: Agent!
+  cursor: String!
+}
+
+type PageInfo {
+  hasNextPage: Boolean!
+  hasPreviousPage: Boolean!
+  startCursor: String
+  endCursor: String
+}
+
+type Query {
+  agent(id: ID!): Agent
+  agents(first: Int, after: String, status: Status): AgentConnection!
+  session(id: ID!): Session
+  search(query: String!): [SearchResult!]!
+}
+
+type Mutation {
+  createAgent(input: CreateAgentInput!): Agent!
+  deleteAgent(id: ID!): Boolean!
+  process(input: ProcessInput!): ProcessResult!
+}
+
+type Subscription {
+  agentStatusChanged(agentId: ID!): Agent!
+  messageReceived(sessionId: ID!): Message!
+}
+
+# TODO: add rate limiting directive
+# FIXME: missing input validation

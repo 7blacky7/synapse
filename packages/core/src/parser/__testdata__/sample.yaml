@@ -1,0 +1,78 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: synapse-api
+  namespace: synapse
+  labels:
+    app: synapse-api
+    version: "1.0.0"
+
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: synapse-api
+
+  template:
+    metadata:
+      labels:
+        app: synapse-api
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9090"
+
+    spec:
+      containers:
+        - name: api
+          image: synapse/api:latest
+          ports:
+            - containerPort: 3000
+              name: http
+            - containerPort: 9090
+              name: metrics
+          env:
+            - name: NODE_ENV
+              value: production
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: synapse-secrets
+                  key: database-url
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 2Gi
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: http
+            initialDelaySeconds: 5
+
+      serviceAccountName: synapse-api
+      nodeSelector:
+        kubernetes.io/os: linux
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: synapse-api
+  namespace: synapse
+spec:
+  selector:
+    app: synapse-api
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+
+# TODO: add HPA for auto-scaling
+# FIXME: missing TLS configuration
