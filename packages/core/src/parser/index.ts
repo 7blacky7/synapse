@@ -55,6 +55,7 @@ import { wgslParser } from './wgsl.js';
 import { glslParser } from './glsl.js';
 import { starlarkParser } from './starlark.js';
 import { dlangParser } from './dlang.js';
+import { crystalParser } from './crystal.js';
 
 export type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
 
@@ -109,6 +110,7 @@ const parsers: LanguageParser[] = [
   glslParser,
   starlarkParser,
   dlangParser,
+  crystalParser,
 ];
 
 /** Dateiname-basiertes Matching fuer Dateien ohne Extension (Makefile, Dockerfile) */
