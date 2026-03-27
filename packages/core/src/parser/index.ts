@@ -57,6 +57,7 @@ import { starlarkParser } from './starlark.js';
 import { dlangParser } from './dlang.js';
 import { crystalParser } from './crystal.js';
 import { tclParser } from './tcl.js';
+import { cobolParser } from './cobol.js';
 
 export type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
 
@@ -113,6 +114,7 @@ const parsers: LanguageParser[] = [
   dlangParser,
   crystalParser,
   tclParser,
+  cobolParser,
 ];
 
 /** Dateiname-basiertes Matching fuer Dateien ohne Extension (Makefile, Dockerfile) */
