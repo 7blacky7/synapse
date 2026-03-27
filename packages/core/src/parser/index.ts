@@ -36,6 +36,7 @@ import { perlParser } from './perl.js';
 import { haskellParser } from './haskell.js';
 import { zigParser } from './zig.js';
 import { groovyParser } from './groovy.js';
+import { ocamlParser } from './ocaml.js';
 
 export type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
 
@@ -71,6 +72,7 @@ const parsers: LanguageParser[] = [
   haskellParser,
   zigParser,
   groovyParser,
+  ocamlParser,
 ];
 
 /** Dateiname-basiertes Matching fuer Dateien ohne Extension (Makefile, Dockerfile) */
