@@ -207,9 +207,87 @@ export function startFileWatcher(options: FileWatcherOptions): FileWatcherInstan
     console.error(`[Synapse] FileWatcher bereit fuer "${projectName}"`);
   });
 
+  // ═══ PG-Watcher: Externe Aenderungen aus PostgreSQL auf Festplatte synchen ═══
+  let lastPgCheck = new Date(0).toISOString();
+  let pgPollInterval: NodeJS.Timeout | null = null;
+
+  // Start PG-Watcher (async setup, doesn't block return)
+  (async () => {
+    try {
+      const { getPool } = await import('../db/client.js');
+      const { COLLECTIONS } = await import('../types/index.js');
+      const { deleteByFilePath } = await import('../qdrant/index.js');
+      const crypto = await import('crypto');
+
+      const pool = getPool();
+
+      pgPollInterval = setInterval(async () => {
+        try {
+          // 1. Changed/new files: PG content newer than local
+          const changed = await pool.query(
+            `SELECT file_path, content, content_hash, updated_at
+             FROM code_files
+             WHERE project = $1 AND updated_at > $2
+               AND content IS NOT NULL AND deleted_at IS NULL`,
+            [projectName, lastPgCheck]
+          );
+
+          for (const row of changed.rows) {
+            const filePath: string = row.file_path;
+            let localHash: string | null = null;
+            if (fs.existsSync(filePath)) {
+              localHash = crypto.createHash('sha256').update(fs.readFileSync(filePath, 'utf-8')).digest('hex');
+            }
+            if (localHash !== row.content_hash) {
+              fs.mkdirSync(path.dirname(filePath), { recursive: true });
+              fs.writeFileSync(filePath, row.content, 'utf-8');
+              console.error(`[Synapse] PG→FS Sync: ${path.basename(filePath)}`);
+            }
+          }
+
+          // 2. Soft-deleted files
+          const deleted = await pool.query(
+            `SELECT id, file_path, updated_at FROM code_files
+             WHERE project = $1 AND deleted_at IS NOT NULL AND deleted_at > $2`,
+            [projectName, lastPgCheck]
+          );
+
+          for (const row of deleted.rows) {
+            if (fs.existsSync(row.file_path)) {
+              fs.unlinkSync(row.file_path);
+              console.error(`[Synapse] PG→FS Delete: ${path.basename(row.file_path)}`);
+            }
+            try {
+              const collectionName = COLLECTIONS.projectCode(projectName);
+              await deleteByFilePath(collectionName, row.file_path);
+            } catch {}
+            await pool.query('DELETE FROM code_files WHERE id = $1', [row.id]);
+          }
+
+          // Checkpoint: MAX(updated_at) from results
+          const allRows = [...changed.rows, ...deleted.rows];
+          if (allRows.length > 0) {
+            const maxUpdated = allRows.reduce((max: string, r: { updated_at: string | Date }) => {
+              const ts = typeof r.updated_at === 'string' ? r.updated_at : new Date(r.updated_at).toISOString();
+              return ts > max ? ts : max;
+            }, lastPgCheck);
+            lastPgCheck = maxUpdated;
+          }
+        } catch {
+          // PG not reachable — ignore, next poll will retry
+        }
+      }, 15000);
+    } catch {
+      console.error('[Synapse] PG-Watcher konnte nicht gestartet werden — nur Filesystem-Ueberwachung aktiv');
+    }
+  })();
+
   // Return FileWatcher Instance
   return {
     stop: async () => {
+      // PG-Poll-Intervall stoppen
+      if (pgPollInterval) clearInterval(pgPollInterval);
+
       // Alle pending Events abbrechen
       for (const { timeout } of pendingEvents.values()) {
         clearTimeout(timeout);
