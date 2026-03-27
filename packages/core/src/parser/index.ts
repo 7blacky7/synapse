@@ -18,6 +18,7 @@ import { rubyParser } from './ruby.js';
 import { phpParser } from './php.js';
 import { kotlinParser } from './kotlin.js';
 import { swiftParser } from './swift.js';
+import { dartParser } from './dart.js';
 
 export type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
 
@@ -35,6 +36,7 @@ const parsers: LanguageParser[] = [
   phpParser,
   kotlinParser,
   swiftParser,
+  dartParser,
 ];
 
 export function getParserForFile(filePath: string): LanguageParser | null {
