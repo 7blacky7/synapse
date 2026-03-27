@@ -43,6 +43,7 @@ import { nimParser } from './nim.js';
 import { vlangParser } from './vlang.js';
 import { erlangParser } from './erlang.js';
 import { fsharpParser } from './fsharp.js';
+import { solidityParser } from './solidity.js';
 
 export type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
 
@@ -85,6 +86,7 @@ const parsers: LanguageParser[] = [
   vlangParser,
   erlangParser,
   fsharpParser,
+  solidityParser,
 ];
 
 /** Dateiname-basiertes Matching fuer Dateien ohne Extension (Makefile, Dockerfile) */
