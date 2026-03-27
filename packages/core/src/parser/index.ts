@@ -23,6 +23,7 @@ import { shellParser } from './shell.js';
 import { cssParser } from './css.js';
 import { luaParser } from './lua.js';
 import { yamlParser } from './yaml.js';
+import { dockerfileParser } from './dockerfile.js';
 
 export type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
 
@@ -45,6 +46,7 @@ const parsers: LanguageParser[] = [
   cssParser,
   luaParser,
   yamlParser,
+  dockerfileParser,
 ];
 
 export function getParserForFile(filePath: string): LanguageParser | null {
