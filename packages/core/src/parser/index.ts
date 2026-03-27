@@ -30,6 +30,7 @@ import { protobufParser } from './protobuf.js';
 import { graphqlParser } from './graphql.js';
 import { elixirParser } from './elixir.js';
 import { hclParser } from './hcl.js';
+import { makefileParser } from './makefile.js';
 
 export type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
 
@@ -59,11 +60,24 @@ const parsers: LanguageParser[] = [
   graphqlParser,
   elixirParser,
   hclParser,
+  makefileParser,
 ];
+
+/** Dateiname-basiertes Matching fuer Dateien ohne Extension (Makefile, Dockerfile) */
+const filenameParsers: Record<string, LanguageParser> = {
+  'makefile': makefileParser,
+  'gnumakefile': makefileParser,
+  'dockerfile': dockerfileParser,
+};
 
 export function getParserForFile(filePath: string): LanguageParser | null {
   const ext = path.extname(filePath).toLowerCase();
-  return parsers.find(p => p.extensions.includes(ext)) ?? null;
+  if (ext) {
+    return parsers.find(p => p.extensions.includes(ext)) ?? null;
+  }
+  // Fallback: Dateiname-basiertes Matching (Makefile, Dockerfile etc.)
+  const basename = path.basename(filePath).toLowerCase().split('.')[0];
+  return filenameParsers[basename] ?? null;
 }
 
 export function getSupportedExtensions(): string[] {
