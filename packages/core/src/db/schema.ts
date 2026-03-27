@@ -224,6 +224,28 @@ CREATE TABLE IF NOT EXISTS code_chunks (
 
 CREATE INDEX IF NOT EXISTS idx_code_chunks_file ON code_chunks(project, file_path);
 CREATE INDEX IF NOT EXISTS idx_code_chunks_unembedded ON code_chunks(project) WHERE embedded_at IS NULL;
+
+-- Migration: FKs auf code_files DEFERRABLE machen (fuer move-Operation)
+DO $$ BEGIN
+  -- code_symbols FK
+  IF EXISTS (SELECT 1 FROM information_schema.table_constraints WHERE constraint_name = 'code_symbols_project_file_path_fkey') THEN
+    ALTER TABLE code_symbols DROP CONSTRAINT code_symbols_project_file_path_fkey;
+    ALTER TABLE code_symbols ADD CONSTRAINT code_symbols_project_file_path_fkey
+      FOREIGN KEY (project, file_path) REFERENCES code_files(project, file_path) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED;
+  END IF;
+  -- code_references FK
+  IF EXISTS (SELECT 1 FROM information_schema.table_constraints WHERE constraint_name = 'code_references_project_file_path_fkey') THEN
+    ALTER TABLE code_references DROP CONSTRAINT code_references_project_file_path_fkey;
+    ALTER TABLE code_references ADD CONSTRAINT code_references_project_file_path_fkey
+      FOREIGN KEY (project, file_path) REFERENCES code_files(project, file_path) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED;
+  END IF;
+  -- code_chunks FK
+  IF EXISTS (SELECT 1 FROM information_schema.table_constraints WHERE constraint_name = 'code_chunks_project_file_path_fkey') THEN
+    ALTER TABLE code_chunks DROP CONSTRAINT code_chunks_project_file_path_fkey;
+    ALTER TABLE code_chunks ADD CONSTRAINT code_chunks_project_file_path_fkey
+      FOREIGN KEY (project, file_path) REFERENCES code_files(project, file_path) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED;
+  END IF;
+END $$;
 `;
 
 export async function ensureSchema(): Promise<void> {
