@@ -61,6 +61,7 @@ import { cobolParser } from './cobol.js';
 import { cmakeParser } from './cmake.js';
 import { puppetParser } from './puppet.js';
 import { asmParser } from './asm.js';
+import { racketParser } from './racket.js';
 
 export type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
 
@@ -121,6 +122,7 @@ const parsers: LanguageParser[] = [
   cmakeParser,
   puppetParser,
   asmParser,
+  racketParser,
 ];
 
 /** Dateiname-basiertes Matching fuer Dateien ohne Extension (Makefile, Dockerfile) */
