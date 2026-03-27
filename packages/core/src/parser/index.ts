@@ -45,6 +45,7 @@ import { erlangParser } from './erlang.js';
 import { fsharpParser } from './fsharp.js';
 import { solidityParser } from './solidity.js';
 import { fortranParser } from './fortran.js';
+import { adaParser } from './ada.js';
 
 export type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
 
@@ -89,6 +90,7 @@ const parsers: LanguageParser[] = [
   fsharpParser,
   solidityParser,
   fortranParser,
+  adaParser,
 ];
 
 /** Dateiname-basiertes Matching fuer Dateien ohne Extension (Makefile, Dockerfile) */
