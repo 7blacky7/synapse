@@ -59,6 +59,7 @@ import { crystalParser } from './crystal.js';
 import { tclParser } from './tcl.js';
 import { cobolParser } from './cobol.js';
 import { cmakeParser } from './cmake.js';
+import { puppetParser } from './puppet.js';
 
 export type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
 
@@ -117,6 +118,7 @@ const parsers: LanguageParser[] = [
   tclParser,
   cobolParser,
   cmakeParser,
+  puppetParser,
 ];
 
 /** Dateiname-basiertes Matching fuer Dateien ohne Extension (Makefile, Dockerfile) */
