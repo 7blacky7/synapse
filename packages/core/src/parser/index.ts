@@ -8,6 +8,7 @@ import type { LanguageParser } from './types.js';
 import { typescriptParser } from './typescript.js';
 import { sqlParser } from './sql.js';
 import { pythonParser } from './python.js';
+import { goParser } from './go.js';
 
 export type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
 
@@ -15,6 +16,7 @@ const parsers: LanguageParser[] = [
   typescriptParser,
   sqlParser,
   pythonParser,
+  goParser,
 ];
 
 export function getParserForFile(filePath: string): LanguageParser | null {
