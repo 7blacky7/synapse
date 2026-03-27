@@ -32,6 +32,7 @@ import { elixirParser } from './elixir.js';
 import { hclParser } from './hcl.js';
 import { makefileParser } from './makefile.js';
 import { rParser } from './r.js';
+import { perlParser } from './perl.js';
 
 export type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
 
@@ -63,6 +64,7 @@ const parsers: LanguageParser[] = [
   hclParser,
   makefileParser,
   rParser,
+  perlParser,
 ];
 
 /** Dateiname-basiertes Matching fuer Dateien ohne Extension (Makefile, Dockerfile) */
