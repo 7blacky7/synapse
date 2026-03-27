@@ -40,6 +40,7 @@ import { ocamlParser } from './ocaml.js';
 import { clojureParser } from './clojure.js';
 import { juliaParser } from './julia.js';
 import { nimParser } from './nim.js';
+import { vlangParser } from './vlang.js';
 
 export type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
 
@@ -79,6 +80,7 @@ const parsers: LanguageParser[] = [
   clojureParser,
   juliaParser,
   nimParser,
+  vlangParser,
 ];
 
 /** Dateiname-basiertes Matching fuer Dateien ohne Extension (Makefile, Dockerfile) */
