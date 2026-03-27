@@ -58,6 +58,7 @@ import { dlangParser } from './dlang.js';
 import { crystalParser } from './crystal.js';
 import { tclParser } from './tcl.js';
 import { cobolParser } from './cobol.js';
+import { cmakeParser } from './cmake.js';
 
 export type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
 
@@ -115,6 +116,7 @@ const parsers: LanguageParser[] = [
   crystalParser,
   tclParser,
   cobolParser,
+  cmakeParser,
 ];
 
 /** Dateiname-basiertes Matching fuer Dateien ohne Extension (Makefile, Dockerfile) */
@@ -124,6 +126,7 @@ const filenameParsers: Record<string, LanguageParser> = {
   'dockerfile': dockerfileParser,
   'build': starlarkParser,
   'workspace': starlarkParser,
+  'cmakelists': cmakeParser,
 };
 
 export function getParserForFile(filePath: string): LanguageParser | null {
