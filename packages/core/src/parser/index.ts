@@ -47,6 +47,7 @@ import { solidityParser } from './solidity.js';
 import { fortranParser } from './fortran.js';
 import { adaParser } from './ada.js';
 import { powershellParser } from './powershell.js';
+import { objcParser } from './objc.js';
 
 export type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
 
@@ -93,6 +94,7 @@ const parsers: LanguageParser[] = [
   fortranParser,
   adaParser,
   powershellParser,
+  objcParser,
 ];
 
 /** Dateiname-basiertes Matching fuer Dateien ohne Extension (Makefile, Dockerfile) */
