@@ -54,6 +54,7 @@ import { vueParser } from './vue.js';
 import { wgslParser } from './wgsl.js';
 import { glslParser } from './glsl.js';
 import { starlarkParser } from './starlark.js';
+import { dlangParser } from './dlang.js';
 
 export type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
 
@@ -107,6 +108,7 @@ const parsers: LanguageParser[] = [
   wgslParser,
   glslParser,
   starlarkParser,
+  dlangParser,
 ];
 
 /** Dateiname-basiertes Matching fuer Dateien ohne Extension (Makefile, Dockerfile) */
