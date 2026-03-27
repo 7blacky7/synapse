@@ -24,6 +24,7 @@ import { cssParser } from './css.js';
 import { luaParser } from './lua.js';
 import { yamlParser } from './yaml.js';
 import { dockerfileParser } from './dockerfile.js';
+import { tomlParser } from './toml.js';
 
 export type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
 
@@ -47,6 +48,7 @@ const parsers: LanguageParser[] = [
   luaParser,
   yamlParser,
   dockerfileParser,
+  tomlParser,
 ];
 
 export function getParserForFile(filePath: string): LanguageParser | null {
