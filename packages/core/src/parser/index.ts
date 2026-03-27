@@ -53,6 +53,7 @@ import { svelteParser } from './svelte.js';
 import { vueParser } from './vue.js';
 import { wgslParser } from './wgsl.js';
 import { glslParser } from './glsl.js';
+import { starlarkParser } from './starlark.js';
 
 export type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
 
@@ -105,6 +106,7 @@ const parsers: LanguageParser[] = [
   vueParser,
   wgslParser,
   glslParser,
+  starlarkParser,
 ];
 
 /** Dateiname-basiertes Matching fuer Dateien ohne Extension (Makefile, Dockerfile) */
@@ -112,14 +114,17 @@ const filenameParsers: Record<string, LanguageParser> = {
   'makefile': makefileParser,
   'gnumakefile': makefileParser,
   'dockerfile': dockerfileParser,
+  'build': starlarkParser,
+  'workspace': starlarkParser,
 };
 
 export function getParserForFile(filePath: string): LanguageParser | null {
   const ext = path.extname(filePath).toLowerCase();
   if (ext) {
-    return parsers.find(p => p.extensions.includes(ext)) ?? null;
+    const byExt = parsers.find(p => p.extensions.includes(ext));
+    if (byExt) return byExt;
   }
-  // Fallback: Dateiname-basiertes Matching (Makefile, Dockerfile etc.)
+  // Fallback: Dateiname-basiertes Matching (Makefile, Dockerfile, BUILD, WORKSPACE etc.)
   const basename = path.basename(filePath).toLowerCase().split('.')[0];
   return filenameParsers[basename] ?? null;
 }
