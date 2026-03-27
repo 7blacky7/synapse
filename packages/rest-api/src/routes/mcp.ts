@@ -12,7 +12,6 @@ import {
   searchDocsWithFallback,
   listCollections,
   scrollVectors,
-  searchDocuments,
   COLLECTIONS,
   // Projekt
   detectTechnologies,
@@ -29,7 +28,6 @@ import {
   getThoughtsByIds,
   searchThoughts,
   deleteThought,
-  deleteThoughts,
   updateThought,
   // Memory
   writeMemory,
@@ -38,12 +36,10 @@ import {
   listMemories,
   searchMemories,
   deleteMemory,
-  deleteMemories,
   readMemoryWithRelatedCode,
   findMemoriesForPath,
   updateMemory,
   // Proposals
-  createProposal,
   getProposal,
   getProposalsByIds,
   listProposals,
@@ -771,7 +767,12 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
             return minimatch(fp.replace(/\\/g, '/'), pathPattern, { matchBase: true });
           });
           if (contentPattern) {
-            const regex = new RegExp(contentPattern, 'i');
+            let regex: RegExp;
+            try {
+              regex = new RegExp(contentPattern, 'i');
+            } catch {
+              return { success: false, error: `Ungueltiges Regex-Pattern: ${contentPattern}` };
+            }
             matches = matches.filter(p => regex.test(p.payload?.content || ''));
           }
           const totalMatches = matches.length;
@@ -1250,8 +1251,8 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
         case 'emit': {
           const result = await emitEvent(
             reqStr(args, 'project'),
-            reqStr(args, 'event_type') as any,
-            reqStr(args, 'priority') as any,
+            reqStr(args, 'event_type') as 'WORK_STOP' | 'CRITICAL_REVIEW' | 'ARCH_DECISION' | 'TEAM_DISCUSSION' | 'ANNOUNCEMENT',
+            reqStr(args, 'priority') as 'critical' | 'high' | 'normal',
             str(args, 'scope') ?? 'all',
             reqStr(args, 'source_id'),
             str(args, 'payload'),
@@ -1303,7 +1304,7 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
           const result = await addTechDoc(
             reqStr(args, 'framework'), reqStr(args, 'version'),
             reqStr(args, 'section'), reqStr(args, 'content'),
-            reqStr(args, 'type') as any,
+            reqStr(args, 'type') as Parameters<typeof addTechDoc>[4],
             str(args, 'category'), str(args, 'source'), str(args, 'project')
           );
           return result;
