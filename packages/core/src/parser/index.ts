@@ -9,6 +9,7 @@ import { typescriptParser } from './typescript.js';
 import { sqlParser } from './sql.js';
 import { pythonParser } from './python.js';
 import { goParser } from './go.js';
+import { rustParser } from './rust.js';
 
 export type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
 
@@ -17,6 +18,7 @@ const parsers: LanguageParser[] = [
   sqlParser,
   pythonParser,
   goParser,
+  rustParser,
 ];
 
 export function getParserForFile(filePath: string): LanguageParser | null {
