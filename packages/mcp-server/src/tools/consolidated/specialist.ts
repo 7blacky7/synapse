@@ -97,7 +97,12 @@ export const specialistTool: ConsolidatedTool = {
         section: {
           type: 'string',
           enum: ['regeln', 'fehler', 'patterns'],
-          description: 'Abschnitt der SKILL.md (erforderlich für: update_skill)',
+          description: 'Abschnitt der SKILL.md (legacy, optional fuer: update_skill). Alternative: file',
+        },
+        file: {
+          type: 'string',
+          enum: ['rules', 'errors', 'patterns', 'context'],
+          description: 'Ziel-Datei (neu, optional fuer: update_skill). Alternative zu section (legacy).',
         },
         skill_action: {
           type: 'string',
@@ -222,11 +227,13 @@ export const specialistTool: ConsolidatedTool = {
       case 'update_skill': {
         const name = reqStr(args, 'name');
         const projectPath = reqStr(args, 'project_path');
-        const section = reqStr(args, 'section') as 'regeln' | 'fehler' | 'patterns';
+        const section = str(args, 'section') as 'regeln' | 'fehler' | 'patterns' | undefined;
+        const file = str(args, 'file') as 'rules' | 'errors' | 'patterns' | 'context' | undefined;
+        if (!section && !file) throw new Error('Parameter "section" oder "file" erforderlich');
         const skillAction = reqStr(args, 'skill_action') as 'add' | 'remove';
         const content = reqStr(args, 'content');
 
-        return await updateSpecialistSkillTool(name, projectPath, section, skillAction, content);
+        return await updateSpecialistSkillTool(name, projectPath, section, skillAction, content, file);
       }
 
       case 'capabilities': {

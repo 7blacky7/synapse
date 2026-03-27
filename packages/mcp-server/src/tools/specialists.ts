@@ -14,9 +14,6 @@ import {
   canSpawn,
   ensureAgentDir,
   readSkill,
-  writeSkill,
-  createInitialSkill,
-  readMemory as readAgentMemory,
   readStatus,
   updateSpecialist,
   removeSpecialist,
@@ -32,6 +29,13 @@ import {
   getChannelMembers,
   postToInbox,
   checkInbox,
+  readAllSkillFiles,
+  appendToSkillFile,
+  readSkillFile,
+  writeSkillFile,
+  migrateSkillMd,
+  createInitialAgent,
+  type SkillFile,
   type SpecialistConfig,
 } from '@synapse/agents';
 
@@ -86,17 +90,14 @@ export async function spawnSpecialistTool(
   // 3. Agent-Verzeichnis erstellen
   await ensureAgentDir(projectPath, name);
 
-  // 4. SKILL.md lesen oder erstellen
+  // 4. Skill-Dateien lesen oder erstellen (Multi-File)
   let skill = await readSkill(projectPath, name);
   if (!skill) {
-    skill = createInitialSkill(name, model, expertise);
-    await writeSkill(projectPath, name, skill);
+    await createInitialAgent(projectPath, name, model, expertise);
+    skill = await readAllSkillFiles(projectPath, name);
   }
 
-  // 5. MEMORY.md lesen
-  const memory = await readAgentMemory(projectPath, name);
-
-  // 6. System-Prompt bauen
+  // 5. System-Prompt bauen (memory entfaellt — context.md ist Teil der Skills)
   const config: SpecialistConfig = {
     name,
     model,
@@ -107,7 +108,7 @@ export async function spawnSpecialistTool(
     channel,
     allowedTools,
   };
-  const systemPrompt = buildSpecialistPrompt(config, skill, memory);
+  const systemPrompt = buildSpecialistPrompt(config, skill);
 
   // 7. System-Prompt in Datei schreiben (zu gross fuer Env-Var)
   const promptFile = join(projectPath, '.synapse', 'agents', name, 'system-prompt.txt');
@@ -336,86 +337,55 @@ export async function wakeSpecialistTool(
 export async function updateSpecialistSkillTool(
   name: string,
   projectPath: string,
-  section: 'regeln' | 'fehler' | 'patterns',
+  section: 'regeln' | 'fehler' | 'patterns' | undefined,
   action: 'add' | 'remove',
   content: string,
+  file?: SkillFile,
 ) {
-  const skill = await readSkill(projectPath, name);
-  if (!skill) {
-    return jsonResult({
-      success: false,
-      message: `Spezialist "${name}" hat keine SKILL.md.`,
-    });
-  }
+  // Auto-Migration: falls meta.yaml nicht existiert, migrieren
+  await migrateSkillMd(projectPath, name);
 
-  const sectionHeaders: Record<string, string> = {
-    regeln: '# Regeln',
-    fehler: '# Fehler → Loesung',
-    patterns: '# Patterns',
+  // Legacy-Mapping: section → file
+  const fileMap: Record<string, SkillFile> = {
+    regeln: 'rules',
+    fehler: 'errors',
+    patterns: 'patterns',
   };
-
-  const header = sectionHeaders[section];
-  const lines = skill.split('\n');
-
-  // Finde den Abschnitt
-  const sectionIdx = lines.findIndex(l => l.trim() === header);
-  if (sectionIdx === -1) {
-    return jsonResult({
-      success: false,
-      message: `Abschnitt "${header}" nicht gefunden in SKILL.md von "${name}".`,
-    });
-  }
-
-  // Finde das Ende des Abschnitts (naechster # Header oder EOF)
-  let endIdx = lines.length;
-  for (let i = sectionIdx + 1; i < lines.length; i++) {
-    if (lines[i].startsWith('# ') && !lines[i].startsWith('# Fehler')) {
-      endIdx = i;
-      break;
-    }
-  }
+  const targetFile: SkillFile = file ?? (section ? fileMap[section] : undefined) ?? 'rules';
 
   if (action === 'add') {
-    // Entferne Platzhalter "(Noch keine ...)"
-    const sectionLines = lines.slice(sectionIdx + 1, endIdx);
-    const filteredLines = sectionLines.filter(l => !l.trim().startsWith('(Noch keine'));
-
-    const newLines = [
-      ...lines.slice(0, sectionIdx + 1),
-      ...filteredLines,
-      `- ${content}`,
-      '',
-      ...lines.slice(endIdx),
-    ];
-
-    await writeSkill(projectPath, name, newLines.join('\n'));
+    await appendToSkillFile(projectPath, name, targetFile, content);
     return jsonResult({
       success: true,
-      message: `Eintrag zu "${section}" hinzugefuegt in SKILL.md von "${name}".`,
+      message: `Eintrag zu "${targetFile}" hinzugefuegt fuer "${name}".`,
+      file: targetFile,
     });
   }
 
   if (action === 'remove') {
-    const sectionLines = lines.slice(sectionIdx + 1, endIdx);
-    const filtered = sectionLines.filter(l => !l.includes(content));
-
-    if (filtered.length === sectionLines.length) {
+    const existing = await readSkillFile(projectPath, name, targetFile);
+    if (!existing) {
       return jsonResult({
         success: false,
-        message: `Eintrag "${content}" nicht gefunden in Abschnitt "${section}".`,
+        message: `Datei "${targetFile}.md" nicht gefunden fuer "${name}".`,
       });
     }
 
-    const newLines = [
-      ...lines.slice(0, sectionIdx + 1),
-      ...filtered,
-      ...lines.slice(endIdx),
-    ];
+    const lines = existing.split('\n');
+    const filtered = lines.filter(l => !l.includes(content));
 
-    await writeSkill(projectPath, name, newLines.join('\n'));
+    if (filtered.length === lines.length) {
+      return jsonResult({
+        success: false,
+        message: `Eintrag "${content}" nicht gefunden in "${targetFile}.md" von "${name}".`,
+      });
+    }
+
+    await writeSkillFile(projectPath, name, targetFile, filtered.join('\n'));
     return jsonResult({
       success: true,
-      message: `Eintrag aus "${section}" entfernt in SKILL.md von "${name}".`,
+      message: `Eintrag aus "${targetFile}" entfernt fuer "${name}".`,
+      file: targetFile,
     });
   }
 
