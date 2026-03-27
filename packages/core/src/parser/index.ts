@@ -38,6 +38,7 @@ import { zigParser } from './zig.js';
 import { groovyParser } from './groovy.js';
 import { ocamlParser } from './ocaml.js';
 import { clojureParser } from './clojure.js';
+import { juliaParser } from './julia.js';
 
 export type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
 
@@ -75,6 +76,7 @@ const parsers: LanguageParser[] = [
   groovyParser,
   ocamlParser,
   clojureParser,
+  juliaParser,
 ];
 
 /** Dateiname-basiertes Matching fuer Dateien ohne Extension (Makefile, Dockerfile) */
