@@ -19,6 +19,7 @@ import { phpParser } from './php.js';
 import { kotlinParser } from './kotlin.js';
 import { swiftParser } from './swift.js';
 import { dartParser } from './dart.js';
+import { shellParser } from './shell.js';
 
 export type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
 
@@ -37,6 +38,7 @@ const parsers: LanguageParser[] = [
   kotlinParser,
   swiftParser,
   dartParser,
+  shellParser,
 ];
 
 export function getParserForFile(filePath: string): LanguageParser | null {
