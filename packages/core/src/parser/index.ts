@@ -48,6 +48,7 @@ import { fortranParser } from './fortran.js';
 import { adaParser } from './ada.js';
 import { powershellParser } from './powershell.js';
 import { objcParser } from './objc.js';
+import { nixParser } from './nix.js';
 
 export type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
 
@@ -95,6 +96,7 @@ const parsers: LanguageParser[] = [
   adaParser,
   powershellParser,
   objcParser,
+  nixParser,
 ];
 
 /** Dateiname-basiertes Matching fuer Dateien ohne Extension (Makefile, Dockerfile) */
