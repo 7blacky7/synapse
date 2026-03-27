@@ -50,6 +50,7 @@ import { powershellParser } from './powershell.js';
 import { objcParser } from './objc.js';
 import { nixParser } from './nix.js';
 import { svelteParser } from './svelte.js';
+import { vueParser } from './vue.js';
 
 export type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
 
@@ -99,6 +100,7 @@ const parsers: LanguageParser[] = [
   objcParser,
   nixParser,
   svelteParser,
+  vueParser,
 ];
 
 /** Dateiname-basiertes Matching fuer Dateien ohne Extension (Makefile, Dockerfile) */
