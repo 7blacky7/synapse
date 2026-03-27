@@ -13,6 +13,7 @@ import { rustParser } from './rust.js';
 import { javaParser } from './java.js';
 import { csharpParser } from './csharp.js';
 import { cParser } from './c.js';
+import { cppParser } from './cpp.js';
 
 export type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
 
@@ -25,6 +26,7 @@ const parsers: LanguageParser[] = [
   javaParser,
   csharpParser,
   cParser,
+  cppParser,
 ];
 
 export function getParserForFile(filePath: string): LanguageParser | null {
