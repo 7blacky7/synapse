@@ -74,10 +74,16 @@ export async function addTechDoc(
 
   // Duplikat-Check in PostgreSQL
   const pool = getPool();
-  const existing = await pool.query(
-    'SELECT id FROM tech_docs WHERE content_hash = $1',
-    [contentHash]
-  );
+  let existing;
+  try {
+    existing = await pool.query(
+      'SELECT id FROM tech_docs WHERE content_hash = $1',
+      [contentHash]
+    );
+  } catch (error) {
+    console.error('[Synapse TechDocs] PostgreSQL Duplikat-Check fehlgeschlagen:', error);
+    return { success: false, id: '', duplicate: false, message: `DB-Fehler beim Duplikat-Check: ${error}` };
+  }
 
   if (existing.rows.length > 0) {
     return {
@@ -92,11 +98,16 @@ export async function addTechDoc(
   const now = new Date().toISOString();
 
   // 1. PostgreSQL (Source of Truth)
-  await pool.query(
-    `INSERT INTO tech_docs (id, framework, version, section, content, type, category, content_hash, source, indexed_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
-    [id, framework.toLowerCase(), version, section, content, type, category, contentHash, source, now]
-  );
+  try {
+    await pool.query(
+      `INSERT INTO tech_docs (id, framework, version, section, content, type, category, content_hash, source, indexed_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+      [id, framework.toLowerCase(), version, section, content, type, category, contentHash, source, now]
+    );
+  } catch (error) {
+    console.error('[Synapse TechDocs] PostgreSQL INSERT fehlgeschlagen:', error);
+    return { success: false, id: '', duplicate: false, message: `DB-Fehler beim Speichern: ${error}` };
+  }
 
   // 2. Qdrant (Vektor-Index) — Warning bei Fehler, PG-Daten bleiben erhalten
   let warning: string | undefined;
@@ -304,16 +315,22 @@ export async function getDocsForFile(
 
   // 3. Relevante Docs aus PostgreSQL holen (nur research, neuer als Cutoff)
   const pool = getPool();
-  const result = await pool.query(
-    `SELECT framework, version, section, type, content
-     FROM tech_docs
-     WHERE framework = ANY($1)
-       AND indexed_at > $2
-       AND source = 'research'
-       AND type IN ('breaking-change', 'migration', 'gotcha', 'known-issue')
-     ORDER BY framework, indexed_at DESC`,
-    [frameworkHints, agentCutoff]
-  );
+  let result;
+  try {
+    result = await pool.query(
+      `SELECT framework, version, section, type, content
+       FROM tech_docs
+       WHERE framework = ANY($1)
+         AND indexed_at > $2
+         AND source = 'research'
+         AND type IN ('breaking-change', 'migration', 'gotcha', 'known-issue')
+       ORDER BY framework, indexed_at DESC`,
+      [frameworkHints, agentCutoff]
+    );
+  } catch (error) {
+    console.error('[Synapse TechDocs] PostgreSQL SELECT fehlgeschlagen:', error);
+    return { warnings: [], agentCutoff };
+  }
 
   if (result.rows.length === 0) {
     return { warnings: [], agentCutoff };
@@ -376,9 +393,14 @@ export async function deleteTechDoc(
   id: string,
   project?: string
 ): Promise<{ success: boolean; warning?: string }> {
-  // 1. PostgreSQL (Write-Primary) — fail-fast: wirft bei Fehler
+  // 1. PostgreSQL (Write-Primary)
   const pool = getPool();
-  await pool.query('DELETE FROM tech_docs WHERE id = $1', [id]);
+  try {
+    await pool.query('DELETE FROM tech_docs WHERE id = $1', [id]);
+  } catch (error) {
+    console.error('[Synapse TechDocs] PostgreSQL DELETE fehlgeschlagen:', error);
+    return { success: false, warning: `DB-Fehler beim Loeschen: ${error}` };
+  }
 
   // 2. Qdrant — Warning bei Fehler, PG-Daten bereits geloescht
   let warning: string | undefined;
