@@ -31,6 +31,7 @@ import { graphqlParser } from './graphql.js';
 import { elixirParser } from './elixir.js';
 import { hclParser } from './hcl.js';
 import { makefileParser } from './makefile.js';
+import { rParser } from './r.js';
 
 export type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
 
@@ -61,6 +62,7 @@ const parsers: LanguageParser[] = [
   elixirParser,
   hclParser,
   makefileParser,
+  rParser,
 ];
 
 /** Dateiname-basiertes Matching fuer Dateien ohne Extension (Makefile, Dockerfile) */
