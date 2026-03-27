@@ -34,6 +34,7 @@ import { makefileParser } from './makefile.js';
 import { rParser } from './r.js';
 import { perlParser } from './perl.js';
 import { haskellParser } from './haskell.js';
+import { zigParser } from './zig.js';
 
 export type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
 
@@ -67,6 +68,7 @@ const parsers: LanguageParser[] = [
   rParser,
   perlParser,
   haskellParser,
+  zigParser,
 ];
 
 /** Dateiname-basiertes Matching fuer Dateien ohne Extension (Makefile, Dockerfile) */
