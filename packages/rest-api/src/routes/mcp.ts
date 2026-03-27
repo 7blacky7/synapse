@@ -1,40 +1,84 @@
 /**
  * Synapse API - MCP over HTTP Routes
- * Für Claude.ai Connectors (v0.2.0)
+ * Fuer Claude.ai Connectors (v0.2.0)
+ *
+ * 14 konsolidierte Action-basierte Tools — identisch zum MCP-Server.
  */
 
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import {
+  // Code-Suche
   searchCode,
   searchDocsWithFallback,
   listCollections,
+  scrollVectors,
+  searchDocuments,
+  COLLECTIONS,
+  // Projekt
   detectTechnologies,
   indexProjectTechnologies,
+  getProjectStats,
+  getCollectionStats,
+  // Plan
   getPlan,
   updatePlan,
   addTask,
+  // Thought
   addThought,
   getThoughts,
+  getThoughtsByIds,
   searchThoughts,
   deleteThought,
+  deleteThoughts,
+  updateThought,
+  // Memory
   writeMemory,
   getMemoryByName,
+  getMemoriesByNames,
   listMemories,
   searchMemories,
   deleteMemory,
-  getProjectStats,
-  getCollectionStats,
-  scrollVectors,
+  deleteMemories,
   readMemoryWithRelatedCode,
   findMemoriesForPath,
-  searchDocuments,
+  updateMemory,
+  // Proposals
   createProposal,
   getProposal,
+  getProposalsByIds,
   listProposals,
   updateProposalStatus,
   deleteProposal,
+  deleteProposals,
   searchProposals,
-  COLLECTIONS,
+  updateProposal,
+  // Chat
+  registerChatAgent,
+  registerAgentsBatch,
+  unregisterChatAgent,
+  unregisterAgentsBatch,
+  listActiveAgents,
+  sendChatMessage,
+  getChatMessages,
+  // Events
+  emitEvent,
+  acknowledgeEvent,
+  getPendingEvents,
+  // Tech-Docs
+  addTechDoc,
+  searchTechDocs,
+  getDocsForFile,
+  // Code Intelligence
+  getProjectTree,
+  getFunctions,
+  getVariables,
+  getSymbols,
+  getReferences,
+  fullTextSearchCode,
+  getFileContent,
+  // Media
+  indexMediaDirectory,
+  searchMedia,
 } from '@synapse/core';
 import { minimatch } from 'minimatch';
 import { randomUUID } from 'crypto';
@@ -59,443 +103,475 @@ function getBaseUrl(request: FastifyRequest): string {
   return `${request.protocol}://${hostname}`;
 }
 
-// MCP Tool Definitionen (v0.2.0)
+// =====================================================================
+// MCP Tool Definitionen — 14 konsolidierte Action-basierte Tools
+// Schemas identisch zum MCP-Server (packages/mcp-server/src/tools/consolidated/)
+// =====================================================================
 const MCP_TOOLS = [
-  // ===== PROJEKT-MANAGEMENT =====
+  // 1. project
   {
-    name: 'init_projekt',
-    description: 'Initialisiert ein Projekt: FileWatcher, Technologie-Erkennung, Doku-Caching',
+    name: 'project',
+    description: 'Verwende fuer alle Projekt-Management-Operationen: init, setup, tech-Erkennung, cleanup, status und Listing',
     inputSchema: {
       type: 'object',
       properties: {
-        path: { type: 'string', description: 'Absoluter Pfad zum Projekt-Ordner' },
-        name: { type: 'string', description: 'Optionaler Projekt-Name (Standard: Ordnername)' },
-        index_docs: { type: 'boolean', description: 'Framework-Dokumentation vorladen (Standard: true)' },
+        action: {
+          type: 'string',
+          enum: ['init', 'complete_setup', 'detect_tech', 'cleanup', 'stop', 'status', 'list'],
+          description: 'Aktion: init | complete_setup | detect_tech | cleanup | stop | status | list',
+        },
+        path: { type: 'string', description: 'Absoluter Pfad zum Projekt-Ordner (fuer init, detect_tech, cleanup, status)' },
+        name: { type: 'string', description: 'Optionaler Projekt-Name (fuer init, cleanup) oder erforderlich fuer cleanup' },
+        index_docs: { type: 'boolean', description: 'Framework-Dokumentation vorladen (Standard: true, fuer init)' },
+        project: { type: 'string', description: 'Projekt-Name (fuer complete_setup, stop, list nutzt dies)' },
+        phase: { type: 'string', enum: ['initial', 'post-indexing'], description: 'Setup-Phase (fuer complete_setup)' },
+        agent_id: { type: 'string', description: 'Optionale Agent-ID fuer Onboarding (fuer init)' },
       },
-      required: ['path'],
+      required: ['action'],
     },
   },
+  // 2. search
   {
-    name: 'detect_technologies',
-    description: 'Erkennt verwendete Technologien in einem Projekt (Frameworks, Libraries, Tools)',
+    name: 'search',
+    description: 'Konsolidierte Such-Funktion mit action-Parameter fuer Code, Paths, Memory, Thoughts, Proposals, Tech-Docs und Media',
     inputSchema: {
       type: 'object',
       properties: {
-        path: { type: 'string', description: 'Absoluter Pfad zum Projekt-Ordner' },
-      },
-      required: ['path'],
-    },
-  },
-  {
-    name: 'index_tech_docs',
-    description: 'Indexiert Framework-Dokumentation für erkannte Technologien',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        path: { type: 'string', description: 'Absoluter Pfad zum Projekt-Ordner' },
-        force_reindex: { type: 'boolean', description: 'Bereits gecachte Docs neu indexieren (Standard: false)' },
-      },
-      required: ['path'],
-    },
-  },
-  {
-    name: 'list_projects',
-    description: 'Listet alle aktiven/indexierten Projekte',
-    inputSchema: {
-      type: 'object',
-      properties: {},
-    },
-  },
-  {
-    name: 'get_index_stats',
-    description: 'Zeigt Index-Statistiken für ein Projekt: Anzahl Dateien, Vektoren, aufgeteilt nach Collections',
-    inputSchema: {
-      type: 'object',
-      properties: {
+        action: {
+          type: 'string',
+          enum: ['code', 'path', 'code_with_path', 'memory', 'thoughts', 'proposals', 'tech_docs', 'media'],
+          description: 'Such-Aktion: code|path|code_with_path|memory|thoughts|proposals|tech_docs|media',
+        },
+        query: { type: 'string', description: 'Suchanfrage (erforderlich fuer die meisten Actions)' },
         project: { type: 'string', description: 'Projekt-Name' },
+        agent_id: { type: 'string', description: 'Agent-ID fuer Onboarding' },
+        limit: { type: 'number', description: 'Max. Ergebnisse (Standard: 10 oder 50)' },
+        file_type: { type: 'string', description: 'Dateityp-Filter (fuer code, code_with_path)' },
+        path_pattern: { type: 'string', description: 'Glob-Pattern fuer Pfad-Filter (fuer path, code_with_path)' },
+        content_pattern: { type: 'string', description: 'Regex-Pattern fuer Content-Filter (fuer path)' },
+        media_type: { type: 'string', enum: ['image', 'video'], description: 'Media-Typ-Filter (image|video, fuer media)' },
+        framework: { type: 'string', description: 'Framework-Filter (fuer tech_docs)' },
+        type: { type: 'string', description: 'Tech-Doc-Type-Filter (fuer tech_docs)' },
+        source: { type: 'string', description: 'Source-Filter (fuer tech_docs)' },
+        scope: { type: 'string', enum: ['project', 'global', 'all'], description: 'Suchbereich (project|global|all, fuer tech_docs)' },
+        category: { type: 'string', description: 'Memory-Kategorie-Filter (fuer memory)' },
       },
-      required: ['project'],
+      required: ['action'],
     },
   },
+  // 3. memory
   {
-    name: 'get_detailed_stats',
-    description: 'Detaillierte Statistiken: Code nach Dateityp, Thoughts nach Source, Memories nach Kategorie',
+    name: 'memory',
+    description: 'Verwende fuer alle Memory-Operationen: write, read, read_with_code, list, delete, update und find_for_file',
     inputSchema: {
       type: 'object',
       properties: {
+        action: {
+          type: 'string',
+          enum: ['write', 'read', 'read_with_code', 'list', 'delete', 'update', 'find_for_file'],
+          description: 'Aktion: write | read | read_with_code | list | delete | update | find_for_file',
+        },
+        project: { type: 'string', description: 'Projekt-Name (erforderlich fuer alle Aktionen)' },
+        name: {
+          oneOf: [
+            { type: 'string' },
+            { type: 'array', items: { type: 'string' }, minItems: 1 },
+          ],
+          description: 'Memory-Name (erforderlich fuer read, read_with_code, delete, update). Array erlaubt fuer: read',
+        },
+        content: { type: 'string', description: 'Memory-Inhalt (erforderlich fuer write, optional fuer update)' },
+        category: {
+          type: 'string',
+          enum: ['documentation', 'note', 'architecture', 'decision', 'rules', 'other'],
+          description: 'Kategorie (optional fuer write, optional fuer update)',
+        },
+        tags: { type: 'array', items: { type: 'string' }, description: 'Tags (optional fuer write, optional fuer update)' },
+        agent_id: { type: 'string', description: 'Agent-ID fuer Onboarding (optional)' },
+        file_path: {
+          oneOf: [
+            { type: 'string' },
+            { type: 'array', items: { type: 'string' }, minItems: 1 },
+          ],
+          description: 'Dateipfad (erforderlich fuer find_for_file). Array erlaubt fuer: find_for_file',
+        },
+        limit: { type: 'number', description: 'Max. Ergebnisse (optional, Standard: 10 fuer find_for_file)' },
+        codeLimit: { type: 'number', description: 'Max. Code-Chunks (optional, Standard: 10 fuer read_with_code)' },
+        includeSemanticMatches: { type: 'boolean', description: 'Semantische Matches einbeziehen (optional, Standard: true fuer read_with_code)' },
+        dry_run: { type: 'boolean', description: 'Preview: Zeigt was geloescht wuerde ohne tatsaechlich zu loeschen (nur fuer delete mit Array)' },
+        max_items: { type: 'number', description: 'Max. erlaubte Items pro Batch-Delete (Standard: 10, nur fuer delete mit Array)' },
+      },
+      required: ['action', 'project'],
+    },
+  },
+  // 4. thought
+  {
+    name: 'thought',
+    description: 'Gedankenaustausch zwischen KIs - speichern, abrufen, suchen, aktualisieren, loeschen',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        action: {
+          type: 'string',
+          enum: ['add', 'get', 'delete', 'update', 'search'],
+          description: 'Aktion: add (speichern), get (abrufen), search (suchen), update (aktualisieren), delete (loeschen)',
+        },
         project: { type: 'string', description: 'Projekt-Name' },
+        agent_id: { type: 'string', description: 'Agent-ID fuer Onboarding. Neue Agenten sehen automatisch Projekt-Regeln.' },
+        source: { type: 'string', description: 'Quelle (z.B. claude-code, gpt, user) - fuer action "add"' },
+        content: { type: 'string', description: 'Inhalt des Gedankens - fuer action "add" oder "update"' },
+        tags: { type: 'array', items: { type: 'string' }, description: 'Optionale Tags - fuer action "add" oder "update"' },
+        id: {
+          oneOf: [
+            { type: 'string' },
+            { type: 'array', items: { type: 'string' }, minItems: 1 },
+          ],
+          description: 'ID des Gedankens - fuer action "get" (einzeln oder Array), "delete" oder "update"',
+        },
+        query: { type: 'string', description: 'Suchanfrage - fuer action "search"' },
+        limit: { type: 'number', description: 'Maximale Anzahl Ergebnisse (Standard: 50 fuer get, 10 fuer search)' },
+        dry_run: { type: 'boolean', description: 'Preview: Zeigt was geloescht wuerde ohne tatsaechlich zu loeschen (nur fuer delete mit Array)' },
+        max_items: { type: 'number', description: 'Max. erlaubte Items pro Batch-Delete (Standard: 10, nur fuer delete mit Array)' },
       },
-      required: ['project'],
+      required: ['action'],
     },
   },
-
-  // ===== CODE-SUCHE =====
+  // 5. plan
   {
-    name: 'semantic_code_search',
-    description: 'Durchsucht den Code semantisch - findet konzeptuell ähnlichen Code',
+    name: 'plan',
+    description: 'Verwaltet Projekt-Plaene: Abrufen, Aktualisieren, Tasks hinzufuegen',
     inputSchema: {
       type: 'object',
       properties: {
-        query: { type: 'string', description: 'Suchanfrage in natürlicher Sprache' },
+        action: {
+          type: 'string',
+          enum: ['get', 'update', 'add_task'],
+          description: 'Aktion: "get" zum Abrufen, "update" zum Aktualisieren, "add_task" um eine Task hinzuzufuegen',
+        },
         project: { type: 'string', description: 'Projekt-Name' },
-        file_type: { type: 'string', description: 'Optional: Dateityp filtern' },
-        limit: { type: 'number', description: 'Max Ergebnisse (Standard: 10)' },
-      },
-      required: ['query', 'project'],
-    },
-  },
-  {
-    name: 'search_docs',
-    description: 'Durchsucht Framework-Dokumentation (Cache und optional Context7)',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        query: { type: 'string', description: 'Suchanfrage' },
-        framework: { type: 'string', description: 'Optional: Framework filtern' },
-        use_context7: { type: 'boolean', description: 'Context7 als Fallback nutzen' },
-        limit: { type: 'number', description: 'Max Ergebnisse (Standard: 10)' },
-      },
-      required: ['query'],
-    },
-  },
-
-  // ===== PROJEKT-PLANUNG =====
-  {
-    name: 'get_project_plan',
-    description: 'Ruft den Projekt-Plan ab (Ziele, Tasks, Architektur)',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        project: { type: 'string', description: 'Projekt-Name' },
-      },
-      required: ['project'],
-    },
-  },
-  {
-    name: 'update_project_plan',
-    description: 'Aktualisiert den Projekt-Plan',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        project: { type: 'string', description: 'Projekt-Name' },
+        agent_id: { type: 'string', description: 'Agent-ID fuer Onboarding. Neue Agenten sehen automatisch Projekt-Regeln.' },
         name: { type: 'string', description: 'Neuer Plan-Name' },
         description: { type: 'string', description: 'Neue Beschreibung' },
         goals: { type: 'array', items: { type: 'string' }, description: 'Neue Ziele' },
         architecture: { type: 'string', description: 'Architektur-Beschreibung' },
-      },
-      required: ['project'],
-    },
-  },
-  {
-    name: 'add_plan_task',
-    description: 'Fügt eine neue Task zum Projekt-Plan hinzu',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        project: { type: 'string', description: 'Projekt-Name' },
         title: { type: 'string', description: 'Task-Titel' },
-        description: { type: 'string', description: 'Task-Beschreibung' },
-        priority: { type: 'string', enum: ['low', 'medium', 'high'], description: 'Priorität' },
+        priority: { type: 'string', enum: ['low', 'medium', 'high'], description: 'Prioritaet (Standard: medium)' },
       },
-      required: ['project', 'title', 'description'],
+      required: ['action', 'project'],
     },
   },
-
-  // ===== GEDANKENAUSTAUSCH =====
+  // 6. proposal
   {
-    name: 'add_thought',
-    description: 'Speichert einen Gedanken/eine Idee im Gedankenaustausch (max. 10.000 Zeichen empfohlen)',
+    name: 'proposal',
+    description: 'Konsolidiertes Proposal-Management: list, get, update_status, delete, update',
     inputSchema: {
       type: 'object',
       properties: {
+        action: {
+          type: 'string',
+          enum: ['list', 'get', 'update_status', 'delete', 'update'],
+          description: 'Aktion: list (Auflistung), get (Abrufen), update_status (Status aendern), delete (Loeschen), update (Aktualisieren)',
+        },
         project: { type: 'string', description: 'Projekt-Name' },
-        source: { type: 'string', description: 'Quelle (z.B. claude-web, gpt, user)' },
-        content: { type: 'string', description: 'Inhalt des Gedankens' },
-        tags: { type: 'array', items: { type: 'string' }, description: 'Optionale Tags' },
+        agent_id: { type: 'string', description: 'Agent-ID fuer Onboarding' },
+        id: {
+          oneOf: [
+            { type: 'string' },
+            { type: 'array', items: { type: 'string' }, minItems: 1 },
+          ],
+          description: 'Proposal-ID (fuer get, update_status, delete, update). Array erlaubt fuer: get',
+        },
+        status: {
+          type: 'string',
+          enum: ['pending', 'reviewed', 'accepted', 'rejected'],
+          description: 'Status (fuer list: Filter; fuer update_status: Neuer Status; fuer update: Optional)',
+        },
+        content: { type: 'string', description: 'Neue Beschreibung (fuer update)' },
+        suggested_content: { type: 'string', description: 'Neuer vorgeschlagener Inhalt (fuer update)' },
+        dry_run: { type: 'boolean', description: 'Preview: Zeigt was geloescht wuerde ohne tatsaechlich zu loeschen (nur fuer delete mit Array)' },
+        max_items: { type: 'number', description: 'Max. erlaubte Items pro Batch-Delete (Standard: 10, nur fuer delete mit Array)' },
       },
-      required: ['project', 'source', 'content'],
+      required: ['action', 'project'],
     },
   },
+  // 7. chat
   {
-    name: 'get_thoughts',
-    description: 'Ruft den Gedankenaustausch für ein Projekt ab',
+    name: 'chat',
+    description: 'Verwaltetes Chat-System fuer Agenten mit verschiedenen Aktionen: Registrierung, Messaging, Inbox-Handling',
     inputSchema: {
       type: 'object',
       properties: {
+        action: {
+          type: 'string',
+          enum: ['register', 'unregister', 'register_batch', 'unregister_batch', 'send', 'get', 'list', 'inbox_send', 'inbox_check'],
+          description: 'Die auszufuehrende Aktion (register, unregister, register_batch, unregister_batch, send, get, list, inbox_send, inbox_check)',
+        },
+        id: { type: 'string', description: 'Agent-ID (fuer register, unregister)' },
         project: { type: 'string', description: 'Projekt-Name' },
-        limit: { type: 'number', description: 'Max Anzahl (Standard: 50)' },
+        project_path: { type: 'string', description: 'Absoluter Pfad zum Projekt-Ordner' },
+        model: { type: 'string', description: 'Modell-Name (z.B. claude-opus-4-6)' },
+        cutoff_date: { type: 'string', description: 'Wissens-Cutoff (YYYY-MM-DD)' },
+        ids: { type: 'array', items: { type: 'string' }, description: 'Liste der Agent-IDs (fuer unregister_batch)' },
+        agents: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: { id: { type: 'string' }, model: { type: 'string' } },
+            required: ['id'],
+          },
+          description: 'Liste der Agenten (fuer register_batch)',
+        },
+        sender_id: { type: 'string', description: 'Absender Agent-ID' },
+        content: { type: 'string', description: 'Nachrichteninhalt' },
+        recipient_id: {
+          oneOf: [
+            { type: 'string' },
+            { type: 'array', items: { type: 'string' }, minItems: 1 },
+          ],
+          description: 'Empfaenger Agent-ID (optional, fuer DM). Array erlaubt fuer: send (Multicast)',
+        },
+        agent_id: { type: 'string', description: 'Eigene Agent-ID' },
+        since: { type: 'string', description: 'ISO-Timestamp fuer Polling' },
+        sender_id_filter: { type: 'string', description: 'Optional: Nur Nachrichten von diesem Absender' },
+        limit: { type: 'number', description: 'Max. Nachrichten (Standard: 50)' },
+        from_agent: { type: 'string', description: 'Absender Agent-Name' },
+        to_agent: {
+          oneOf: [
+            { type: 'string' },
+            { type: 'array', items: { type: 'string' }, minItems: 1 },
+          ],
+          description: 'Empfaenger Agent-Name. Array erlaubt fuer: inbox_send (Multicast)',
+        },
+        agent_name: { type: 'string', description: 'Agent-Name' },
       },
-      required: ['project'],
+      required: ['action'],
     },
   },
+  // 8. channel
   {
-    name: 'search_thoughts',
-    description: 'Durchsucht Gedanken semantisch',
+    name: 'channel',
+    description: 'Verwaltet Channels fuer Spezialisten-Kommunikation (create, join, leave, post, feed, list)',
     inputSchema: {
       type: 'object',
       properties: {
+        action: {
+          type: 'string',
+          enum: ['create', 'join', 'leave', 'post', 'feed', 'list'],
+          description: 'Die auszufuehrende Aktion',
+        },
+        name: { type: 'string', description: 'Channel-Name (fuer create)' },
+        project: { type: 'string', description: 'Projekt-Name (fuer create und list)' },
+        description: { type: 'string', description: 'Beschreibung des Channels (fuer create)' },
+        created_by: { type: 'string', description: 'Ersteller (Agent-Name, fuer create)' },
+        channel_name: {
+          oneOf: [
+            { type: 'string' },
+            { type: 'array', items: { type: 'string' }, minItems: 1 },
+          ],
+          description: 'Channel-Name (fuer join, leave, post, feed). Array erlaubt fuer: join, leave',
+        },
+        agent_name: { type: 'string', description: 'Agent-Name (fuer join, leave)' },
+        sender: { type: 'string', description: 'Absender (Agent-Name, fuer post)' },
+        content: { type: 'string', description: 'Nachrichteninhalt (fuer post)' },
+        limit: { type: 'number', description: 'Max. Nachrichten (Standard: 20, fuer feed)' },
+        since_id: { type: 'number', description: 'Nur Nachrichten nach dieser ID (fuer feed)' },
+        preview: { type: 'boolean', description: 'Inhalte auf 200 Zeichen kuerzen (fuer feed)' },
+      },
+      required: ['action'],
+    },
+  },
+  // 9. event
+  {
+    name: 'event',
+    description: 'Verwaltet Events fuer Agenten. Actions: emit (Sendet Event), ack (Bestaetigt Event), pending (Holt unbestaetigte Events).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        action: {
+          type: 'string',
+          enum: ['emit', 'ack', 'pending'],
+          description: 'Action: "emit", "ack", oder "pending"',
+        },
+        project: { type: 'string', description: 'Projekt-Name (erforderlich fuer emit und pending)' },
+        event_type: { type: 'string', description: 'Event-Typ fuer emit: WORK_STOP, CRITICAL_REVIEW, ARCH_DECISION, TEAM_DISCUSSION, ANNOUNCEMENT' },
+        priority: { type: 'string', description: 'Prioritaet fuer emit: critical, high, normal' },
+        scope: { type: 'string', description: 'Empfaenger fuer emit: "all" oder "agent:<id>" (Standard: "all")' },
+        source_id: { type: 'string', description: 'Absender Agent-ID (erforderlich fuer emit)' },
+        payload: { type: 'string', description: 'Optionaler JSON-Payload fuer emit' },
+        requires_ack: { type: 'boolean', description: 'Ob Agenten quittieren muessen (Standard: true, nur fuer emit)' },
+        event_id: {
+          oneOf: [
+            { type: 'number' },
+            { type: 'array', items: { type: 'number' }, minItems: 1 },
+          ],
+          description: 'Event-ID (erforderlich fuer ack). Array erlaubt fuer Batch-Ack',
+        },
+        agent_id: { type: 'string', description: 'Eigene Agent-ID (erforderlich fuer ack und pending)' },
+        reaction: { type: 'string', description: 'Optionale Reaktion/Kommentar (nur fuer ack)' },
+      },
+      required: ['action'],
+    },
+  },
+  // 10. specialist
+  {
+    name: 'specialist',
+    description: 'Konsolidiertes Tool fuer Spezialisten-Management. Unterstuetzt Spawning, Stopping, Status-Checks, Wake-Calls, Skill-Updates und Capabilities-Checks.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        action: {
+          type: 'string',
+          enum: ['spawn', 'stop', 'status', 'wake', 'update_skill', 'capabilities'],
+          description: 'Die auszufuehrende Aktion',
+        },
+        name: {
+          oneOf: [
+            { type: 'string' },
+            { type: 'array', items: { type: 'string' }, minItems: 1 },
+          ],
+          description: 'Name des Spezialisten (erforderlich fuer: spawn, stop, status, wake, update_skill). Array erlaubt fuer: status',
+        },
+        model: { type: 'string', enum: ['opus', 'sonnet', 'haiku', 'opus[1m]', 'sonnet[1m]'], description: 'Claude Modell (erforderlich fuer: spawn)' },
+        expertise: { type: 'string', description: 'Fachgebiet des Spezialisten (erforderlich fuer: spawn)' },
+        task: { type: 'string', description: 'Aufgabe fuer den Spezialisten (erforderlich fuer: spawn)' },
+        project: { type: 'string', description: 'Projekt-Name (erforderlich fuer: spawn)' },
+        project_path: { type: 'string', description: 'Absoluter Pfad zum Projekt-Ordner (erforderlich fuer: spawn, stop, status, update_skill)' },
+        cwd: { type: 'string', description: 'Arbeitsverzeichnis (optional fuer: spawn, Standard: Projekt-Pfad)' },
+        channel: { type: 'string', description: 'Channel fuer Kommunikation (optional fuer: spawn, Standard: {project}-general)' },
+        allowed_tools: { type: 'array', items: { type: 'string' }, description: 'Erlaubte Tools fuer den Spezialisten (optional fuer: spawn)' },
+        keep_alive: { type: 'boolean', description: 'Agent bei jedem Heartbeat-Poll wecken (optional fuer: spawn, Standard: false)' },
+        message: { type: 'string', description: 'Nachricht an den Spezialisten (erforderlich fuer: wake)' },
+        section: { type: 'string', enum: ['regeln', 'fehler', 'patterns'], description: 'Abschnitt der SKILL.md (erforderlich fuer: update_skill)' },
+        skill_action: { type: 'string', enum: ['add', 'remove'], description: 'Hinzufuegen oder entfernen (erforderlich fuer: update_skill)' },
+        content: { type: 'string', description: 'Inhalt des Eintrags (erforderlich fuer: update_skill)' },
+      },
+      required: ['action'],
+    },
+  },
+  // 11. docs
+  {
+    name: 'docs',
+    description: 'Konsolidiertes MCP-Tool fuer Tech-Docs: Indexieren, Suchen, Wissens-Airbag',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        action: {
+          type: 'string',
+          enum: ['add', 'search', 'get_for_file'],
+          description: 'Aktion: add (Indexieren), search (Suchen), get_for_file (Wissens-Airbag)',
+        },
+        framework: { type: 'string', description: 'Framework/Sprache (z.B. react, python, express)' },
+        version: { type: 'string', description: 'Version (z.B. 19.0, 3.12)' },
+        section: { type: 'string', description: 'Abschnitt (z.B. hooks, routing, breaking-changes)' },
+        content: { type: 'string', description: 'Inhalt des Docs' },
+        type: {
+          type: 'string',
+          enum: ['feature', 'breaking-change', 'migration', 'gotcha', 'code-example', 'best-practice', 'known-issue', 'community'],
+          description: 'Chunk-Type',
+        },
+        category: { type: 'string', enum: ['framework', 'language'], description: 'framework oder language (Standard: framework)' },
+        source: { type: 'string', enum: ['research', 'context7', 'manual'], description: 'Quelle (Standard: research)' },
         query: { type: 'string', description: 'Suchanfrage' },
-        project: { type: 'string', description: 'Optional: Projekt filtern' },
         limit: { type: 'number', description: 'Max Ergebnisse (Standard: 10)' },
+        scope: { type: 'string', enum: ['project', 'global', 'all'], description: 'Suchbereich: project (nur Projekt-Collection), global (nur globale), all (beide)' },
+        file_path: {
+          oneOf: [
+            { type: 'string' },
+            { type: 'array', items: { type: 'string' }, minItems: 1 },
+          ],
+          description: 'Dateipfad (z.B. src/api.ts). Array erlaubt fuer get_for_file (Multi-File-Analyse)',
+        },
+        agent_id: { type: 'string', description: 'Agent-ID fuer Cutoff-Ermittlung' },
+        project: { type: 'string', description: 'Projekt-Name (optional)' },
       },
-      required: ['query'],
+      required: ['action'],
     },
   },
+  // 12. admin
   {
-    name: 'delete_thought',
-    description: 'Loescht einen Gedanken nach ID',
+    name: 'admin',
+    description: 'Konsolidiertes Admin/Utility-Tool mit verschiedenen Actions fuer Projekt-Management, Statistiken, Ideen und Media-Indexierung',
     inputSchema: {
       type: 'object',
       properties: {
-        project: { type: 'string', description: 'Projekt-Name' },
-        id: { type: 'string', description: 'ID des Gedankens' },
+        action: {
+          type: 'string',
+          enum: ['migrate', 'restore', 'save_idea', 'confirm_idea', 'index_media', 'index_stats', 'detailed_stats'],
+          description: 'Die auszufuehrende Admin-Action',
+        },
+        project: { type: 'string', description: 'Projekt-Name (erforderlich fuer alle Actions ausser confirm_idea)' },
+        collections: { type: 'array', items: { type: 'string' }, description: 'Optional fuer migrate: Nur bestimmte Collections migrieren' },
+        dry_run: { type: 'boolean', description: 'Optional fuer migrate: Nur pruefen ohne zu migrieren (Standard: false)' },
+        backup_type: {
+          type: 'string',
+          enum: ['thoughts', 'memories', 'plans', 'proposals', 'all'],
+          description: 'Optional fuer restore: Was wiederherstellen (Standard: all)',
+        },
+        title: { type: 'string', description: 'Erforderlich fuer save_idea: Titel der Idee' },
+        description: { type: 'string', description: 'Erforderlich fuer save_idea: Beschreibung der Idee' },
+        tags: { type: 'array', items: { type: 'string' }, description: 'Optional fuer save_idea: Tags fuer die Idee' },
+        idea_id: { type: 'string', description: 'Erforderlich fuer confirm_idea: ID der zu bestaetigenden Idee' },
+        custom_name: { type: 'string', description: 'Optional fuer confirm_idea: Eigener Name statt des vorgeschlagenen' },
+        path: { type: 'string', description: 'Erforderlich fuer index_media: Absoluter Pfad zu Datei oder Verzeichnis' },
+        recursive: { type: 'boolean', description: 'Optional fuer index_media: Rekursiv durchsuchen (Standard: true)' },
+        agent_id: { type: 'string', description: 'Optional fuer index_media/index_stats/detailed_stats: Agent-ID fuer Onboarding' },
       },
-      required: ['project', 'id'],
+      required: ['action'],
     },
   },
-
-  // ===== MEMORY (LANGZEIT-SPEICHER) =====
+  // 13. watcher
   {
-    name: 'write_memory',
-    description: 'Speichert längere Dokumentation/Notizen persistent. Überschreibt bei gleichem Namen.',
+    name: 'watcher',
+    description: 'FileWatcher-Daemon steuern: status (laeuft er?), start (starten falls nicht aktiv), stop (stoppen)',
     inputSchema: {
       type: 'object',
       properties: {
-        project: { type: 'string', description: 'Projekt-Name' },
-        name: { type: 'string', description: 'Eindeutiger Name für das Memory' },
-        content: { type: 'string', description: 'Inhalt des Memories (beliebig lang)' },
-        category: { type: 'string', enum: ['documentation', 'note', 'architecture', 'decision', 'rules', 'other'], description: 'Kategorie' },
-        tags: { type: 'array', items: { type: 'string' }, description: 'Optionale Tags' },
+        action: {
+          type: 'string',
+          enum: ['status', 'start', 'stop'],
+          description: 'status: Daemon-Status pruefen. start: Daemon starten (wenn nicht aktiv). stop: Daemon stoppen.',
+        },
+        path: { type: 'string', description: 'Absoluter Pfad zum Projekt-Ordner' },
+        name: { type: 'string', description: 'Projekt-Name (nur bei start noetig)' },
       },
-      required: ['project', 'name', 'content'],
+      required: ['action', 'path'],
     },
   },
+  // 14. code_intel
   {
-    name: 'read_memory',
-    description: 'Liest ein Memory nach Name',
+    name: 'code_intel',
+    description: 'Strukturierte Code-Abfragen aus PostgreSQL: Dateibaum, Funktionen, Variablen, Symbole, Referenzen, Volltext-Suche und Dateiinhalt.',
     inputSchema: {
       type: 'object',
       properties: {
-        project: { type: 'string', description: 'Projekt-Name' },
-        name: { type: 'string', description: 'Name des Memories' },
+        action: {
+          type: 'string',
+          enum: ['tree', 'functions', 'variables', 'symbols', 'references', 'search', 'file'],
+          description: 'Aktion: tree|functions|variables|symbols|references|search|file',
+        },
+        project: { type: 'string', description: 'Projekt-Name (erforderlich)' },
+        agent_id: { type: 'string', description: 'Agent-ID fuer Onboarding' },
+        path: { type: 'string', description: 'Verzeichnis-Pfad-Prefix zum Filtern (fuer tree und file)' },
+        recursive: { type: 'boolean', description: 'Unterverzeichnisse einschliessen (Standard: true, fuer tree). false = nur Dateien direkt im Verzeichnis.' },
+        depth: { type: 'number', description: 'Max. Verzeichnis-Tiefe relativ zum path (0 = nur das Verzeichnis, 1 = +1 Ebene, fuer tree)' },
+        show_lines: { type: 'boolean', description: 'Zeilenzahl pro Datei anzeigen (Standard: true, fuer tree)' },
+        show_counts: { type: 'boolean', description: 'Funktions-/Variablen-Counts anzeigen (Standard: true, fuer tree)' },
+        show_comments: { type: 'boolean', description: 'Kommentare unter Dateien anzeigen (Standard: false, fuer tree)' },
+        show_functions: { type: 'boolean', description: 'Funktionsnamen auflisten (Standard: false, fuer tree)' },
+        show_imports: { type: 'boolean', description: 'Import-Statements auflisten (Standard: false, fuer tree)' },
+        file_path: { type: 'string', description: 'Datei-Pfad-Filter (LIKE-Pattern, fuer functions/variables/symbols/file)' },
+        name: { type: 'string', description: 'Symbol-Name-Filter (fuer functions/variables/symbols/references)' },
+        exported_only: { type: 'boolean', description: 'Nur exportierte Funktionen zurueckgeben (fuer functions)' },
+        with_values: { type: 'boolean', description: 'Wert-Spalte einschliessen (fuer variables)' },
+        symbol_type: {
+          type: 'string',
+          enum: ['function', 'variable', 'string', 'comment', 'import', 'export', 'class', 'interface', 'enum', 'const_object', 'todo'],
+          description: 'Symbol-Typ fuer symbols-Action',
+        },
+        query: { type: 'string', description: 'Suchbegriff fuer search-Action (Volltext)' },
+        file_type: { type: 'string', description: 'Dateityp-Filter fuer search-Action (z.B. "ts", "js")' },
+        limit: { type: 'number', description: 'Max. Ergebnisse fuer search-Action (Standard: 20)' },
       },
-      required: ['project', 'name'],
-    },
-  },
-  {
-    name: 'list_memories',
-    description: 'Listet alle Memories eines Projekts auf',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        project: { type: 'string', description: 'Projekt-Name' },
-        category: { type: 'string', enum: ['documentation', 'note', 'architecture', 'decision', 'rules', 'other'], description: 'Optional: Kategorie' },
-      },
-      required: ['project'],
-    },
-  },
-  {
-    name: 'search_memory',
-    description: 'Durchsucht Memories semantisch',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        query: { type: 'string', description: 'Suchanfrage' },
-        project: { type: 'string', description: 'Optional: Projekt filtern' },
-        limit: { type: 'number', description: 'Max Ergebnisse (Standard: 10)' },
-      },
-      required: ['query'],
-    },
-  },
-  {
-    name: 'delete_memory',
-    description: 'Löscht ein Memory',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        project: { type: 'string', description: 'Projekt-Name' },
-        name: { type: 'string', description: 'Name des Memories' },
-      },
-      required: ['project', 'name'],
-    },
-  },
-  {
-    name: 'read_memory_with_code',
-    description: 'Liest ein Memory und findet verwandten Code basierend auf Dateipfaden im Content',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        project: { type: 'string', description: 'Projekt-Name' },
-        name: { type: 'string', description: 'Memory-Name' },
-        codeLimit: { type: 'number', description: 'Max. Code-Chunks (Standard: 10)' },
-        includeSemanticMatches: { type: 'boolean', description: 'Semantische Matches einbeziehen (Standard: true)' },
-      },
-      required: ['project', 'name'],
-    },
-  },
-  {
-    name: 'find_memories_for_file',
-    description: 'Findet Memories die auf eine bestimmte Datei verweisen',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        project: { type: 'string', description: 'Projekt-Name' },
-        filePath: { type: 'string', description: 'Dateipfad' },
-        limit: { type: 'number', description: 'Max. Ergebnisse (Standard: 10)' },
-      },
-      required: ['project', 'filePath'],
-    },
-  },
-
-  // ===== CODE-SUCHE (erweitert) =====
-  {
-    name: 'search_by_path',
-    description: 'Exakte Pfadsuche ohne Embedding - findet Dateien nach Glob-Pattern. Beispiele: "backend/src/*", "**/*.ts", "**/utils/*"',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        project: { type: 'string', description: 'Projekt-Name' },
-        path_pattern: { type: 'string', description: 'Glob-Pattern für Dateipfade (z.B. "src/**/*.ts", "backend/*")' },
-        content_pattern: { type: 'string', description: 'Optional: Regex-Pattern für Content-Filter' },
-        limit: { type: 'number', description: 'Maximale Anzahl Ergebnisse (Standard: 50)' },
-      },
-      required: ['project', 'path_pattern'],
-    },
-  },
-  {
-    name: 'search_code_with_path',
-    description: 'Kombinierte Suche: Semantisch + Pfad-Filter. Erst semantisch ranken, dann nach Pfad filtern.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        query: { type: 'string', description: 'Semantische Suchanfrage' },
-        project: { type: 'string', description: 'Projekt-Name' },
-        path_pattern: { type: 'string', description: 'Optional: Glob-Pattern für Pfad-Filter' },
-        file_type: { type: 'string', description: 'Optional: Dateityp filtern' },
-        limit: { type: 'number', description: 'Maximale Anzahl Ergebnisse (Standard: 10)' },
-      },
-      required: ['query', 'project'],
-    },
-  },
-  {
-    name: 'search_documents',
-    description: 'Durchsucht indexierte Dokumente (PDF, Word, Excel) semantisch',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        query: { type: 'string', description: 'Suchanfrage in natürlicher Sprache' },
-        project: { type: 'string', description: 'Projekt-Name' },
-        document_type: { type: 'string', enum: ['pdf', 'docx', 'xlsx', 'all'], description: 'Optional: Dokumententyp filtern (Standard: all)' },
-        limit: { type: 'number', description: 'Maximale Anzahl Ergebnisse (Standard: 10)' },
-      },
-      required: ['query', 'project'],
-    },
-  },
-
-  // ===== PROJEKT-IDEEN =====
-  {
-    name: 'save_project_idea',
-    description: 'Speichert eine Projektidee. Generiert automatisch einen Namen und fragt nach Bestätigung.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        content: { type: 'string', description: 'Die Projektidee' },
-        project: { type: 'string', description: 'Optional: Projekt (Standard: "ideas")' },
-        tags: { type: 'array', items: { type: 'string' }, description: 'Optionale Tags' },
-      },
-      required: ['content'],
-    },
-  },
-  {
-    name: 'confirm_idea',
-    description: 'Bestätigt eine vorgeschlagene Idee und speichert sie persistent',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        temp_id: { type: 'string', description: 'Temporäre ID der vorgemerkten Idee' },
-        custom_name: { type: 'string', description: 'Optional: Eigener Name statt des vorgeschlagenen' },
-      },
-      required: ['temp_id'],
-    },
-  },
-
-  // ===== PROPOSALS (SCHATTENVORSCHLÄGE) =====
-  {
-    name: 'create_proposal',
-    description: 'Erstellt einen Schattenvorschlag (Code-Änderungsvorschlag)',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        project: { type: 'string', description: 'Projekt-Name' },
-        filePath: { type: 'string', description: 'Zieldatei für den Vorschlag' },
-        suggestedContent: { type: 'string', description: 'Vorgeschlagener Dateiinhalt' },
-        description: { type: 'string', description: 'Beschreibung des Vorschlags' },
-        author: { type: 'string', description: 'Urheber (Agent-Name, User, etc.)' },
-        tags: { type: 'array', items: { type: 'string' }, description: 'Optionale Tags' },
-      },
-      required: ['project', 'filePath', 'suggestedContent', 'description', 'author'],
-    },
-  },
-  {
-    name: 'list_proposals',
-    description: 'Listet alle Vorschläge eines Projekts auf (nur Metadaten, ohne suggestedContent)',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        project: { type: 'string', description: 'Projekt-Name' },
-        status: { type: 'string', enum: ['pending', 'reviewed', 'accepted', 'rejected'], description: 'Optional: Nach Status filtern' },
-      },
-      required: ['project'],
-    },
-  },
-  {
-    name: 'get_proposal',
-    description: 'Ruft einen einzelnen Vorschlag ab (mit vollem suggestedContent)',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        project: { type: 'string', description: 'Projekt-Name' },
-        id: { type: 'string', description: 'Proposal-ID' },
-      },
-      required: ['project', 'id'],
-    },
-  },
-  {
-    name: 'update_proposal_status',
-    description: 'Ändert den Status eines Vorschlags',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        project: { type: 'string', description: 'Projekt-Name' },
-        id: { type: 'string', description: 'Proposal-ID' },
-        status: { type: 'string', enum: ['pending', 'reviewed', 'accepted', 'rejected'], description: 'Neuer Status' },
-      },
-      required: ['project', 'id', 'status'],
-    },
-  },
-  {
-    name: 'delete_proposal',
-    description: 'Löscht einen Vorschlag',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        project: { type: 'string', description: 'Projekt-Name' },
-        id: { type: 'string', description: 'Proposal-ID' },
-      },
-      required: ['project', 'id'],
-    },
-  },
-  {
-    name: 'search_proposals',
-    description: 'Durchsucht Vorschläge semantisch',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        query: { type: 'string', description: 'Suchanfrage' },
-        project: { type: 'string', description: 'Optional: Projekt filtern' },
-        limit: { type: 'number', description: 'Maximale Anzahl Ergebnisse (Standard: 10)' },
-      },
-      required: ['query'],
+      required: ['action', 'project'],
     },
   },
 ];
@@ -573,438 +649,102 @@ function sendSSEMessage(reply: FastifyReply, message: object): void {
   reply.raw.write(`data: ${data}\n\n`);
 }
 
-/**
- * Verarbeitet MCP Tool Aufrufe
- */
+// =====================================================================
+// Hilfsfunktionen fuer Argument-Zugriff (analog zu consolidated/types.ts)
+// =====================================================================
+function str(a: Record<string, unknown>, k: string): string | undefined {
+  const v = a[k];
+  return typeof v === 'string' ? v : undefined;
+}
+function reqStr(a: Record<string, unknown>, k: string): string {
+  const v = str(a, k);
+  if (!v) throw new Error(`Parameter "${k}" ist erforderlich`);
+  return v;
+}
+function num(a: Record<string, unknown>, k: string): number | undefined {
+  const v = a[k];
+  return typeof v === 'number' ? v : undefined;
+}
+function bool(a: Record<string, unknown>, k: string): boolean | undefined {
+  const v = a[k];
+  return typeof v === 'boolean' ? v : undefined;
+}
+
+// =====================================================================
+// handleToolCall — Kompakter Dispatcher fuer 14 konsolidierte Tools
+// =====================================================================
 async function handleToolCall(name: string, args: Record<string, unknown>): Promise<unknown> {
+  const action = str(args, 'action');
+
   switch (name) {
-    // ===== PROJEKT-MANAGEMENT =====
-    case 'init_projekt': {
-      const projectPath = args.path as string;
-      const projectName = (args.name as string) || projectPath.split(/[/\\]/).pop() || 'unknown';
-      const indexDocs = args.index_docs !== false;
+    // =================================================================
+    // 1. PROJECT
+    // =================================================================
+    case 'project': {
+      switch (action) {
+        case 'init': {
+          const projectPath = reqStr(args, 'path');
+          const projectName = str(args, 'name') || projectPath.split(/[/\\]/).pop() || 'unknown';
+          const indexDocs = bool(args, 'index_docs') !== false;
 
-      let techs: Awaited<ReturnType<typeof detectTechnologies>> = [];
-      let docsIndexed = 0;
+          let techs: Awaited<ReturnType<typeof detectTechnologies>> = [];
+          let docsIndexed = 0;
 
-      if (indexDocs) {
-        techs = await detectTechnologies(projectPath);
-        const result = await indexProjectTechnologies(techs);
-        docsIndexed = result.indexed;
-      }
+          if (indexDocs) {
+            techs = await detectTechnologies(projectPath);
+            const result = await indexProjectTechnologies(techs);
+            docsIndexed = result.indexed;
+          }
 
-      return {
-        success: true,
-        project: projectName,
-        path: projectPath,
-        technologies: techs,
-        docsIndexed,
-        message: `Projekt "${projectName}" - Docs indexiert (FileWatcher nicht verfügbar über HTTP)`,
-      };
-    }
-
-    case 'detect_technologies': {
-      const techs = await detectTechnologies(args.path as string);
-      return { technologies: techs };
-    }
-
-    case 'index_tech_docs': {
-      const techs = await detectTechnologies(args.path as string);
-      const result = await indexProjectTechnologies(techs, args.force_reindex as boolean);
-      return result;
-    }
-
-    case 'list_projects': {
-      const collections = await listCollections();
-      const projects = collections
-        .filter(c => c.startsWith('project_'))
-        .map(c => c.replace('project_', ''));
-      return { projects };
-    }
-
-    case 'get_index_stats': {
-      const project = args.project as string;
-      const codeStats = await getProjectStats(project);
-      let thoughtsCount = 0;
-      let memoriesCount = 0;
-
-      try {
-        const thoughtsStats = await getCollectionStats('project_thoughts');
-        thoughtsCount = thoughtsStats?.pointsCount ?? 0;
-      } catch { /* Collection existiert nicht */ }
-
-      try {
-        const memoriesStats = await getCollectionStats('synapse_memories');
-        memoriesCount = memoriesStats?.pointsCount ?? 0;
-      } catch { /* Collection existiert nicht */ }
-
-      return {
-        project,
-        totalFiles: codeStats?.fileCount ?? 0,
-        totalVectors: (codeStats?.chunkCount ?? 0) + thoughtsCount + memoriesCount,
-        collections: {
-          code: { vectors: codeStats?.chunkCount ?? 0 },
-          thoughts: { vectors: thoughtsCount },
-          memories: { vectors: memoriesCount },
-        },
-      };
-    }
-
-    case 'get_detailed_stats': {
-      const project = args.project as string;
-      const collectionName = `project_${project}`;
-      let codeByType: Record<string, number> = {};
-      let totalChunks = 0;
-      let thoughtsBySource: Record<string, number> = {};
-      let totalThoughts = 0;
-      let memoriesByCategory: Record<string, number> = {};
-      let totalMemories = 0;
-
-      try {
-        const codePoints = await scrollVectors<{ file_type: string }>(collectionName, {}, 10000);
-        totalChunks = codePoints.length;
-        codeByType = codePoints.reduce((acc, p) => {
-          const type = p.payload?.file_type || 'unknown';
-          acc[type] = (acc[type] || 0) + 1;
-          return acc;
-        }, {} as Record<string, number>);
-      } catch { /* Collection existiert nicht */ }
-
-      try {
-        const thoughtPoints = await scrollVectors<{ source: string; project: string }>(
-          'project_thoughts',
-          { must: [{ key: 'project', match: { value: project } }] },
-          10000
-        );
-        totalThoughts = thoughtPoints.length;
-        thoughtsBySource = thoughtPoints.reduce((acc, p) => {
-          const source = p.payload?.source || 'unknown';
-          acc[source] = (acc[source] || 0) + 1;
-          return acc;
-        }, {} as Record<string, number>);
-      } catch { /* Collection existiert nicht */ }
-
-      try {
-        const memoryPoints = await scrollVectors<{ category: string; project: string }>(
-          'synapse_memories',
-          { must: [{ key: 'project', match: { value: project } }] },
-          10000
-        );
-        totalMemories = memoryPoints.length;
-        memoriesByCategory = memoryPoints.reduce((acc, p) => {
-          const cat = p.payload?.category || 'unknown';
-          acc[cat] = (acc[cat] || 0) + 1;
-          return acc;
-        }, {} as Record<string, number>);
-      } catch { /* Collection existiert nicht */ }
-
-      return {
-        project,
-        code: { totalChunks, byFileType: codeByType },
-        thoughts: { total: totalThoughts, bySource: thoughtsBySource },
-        memories: { total: totalMemories, byCategory: memoriesByCategory },
-      };
-    }
-
-    // ===== CODE-SUCHE =====
-    case 'semantic_code_search': {
-      const results = await searchCode(
-        args.query as string,
-        args.project as string,
-        args.file_type as string,
-        (args.limit as number) || 10
-      );
-      return results.map(r => ({
-        filePath: r.payload.file_path,
-        fileName: r.payload.file_name,
-        fileType: r.payload.file_type,
-        lineStart: r.payload.line_start,
-        lineEnd: r.payload.line_end,
-        score: r.score,
-        content: r.payload.content,
-      }));
-    }
-
-    case 'search_docs': {
-      const results = await searchDocsWithFallback(
-        args.query as string,
-        args.framework as string | undefined,
-        args.use_context7 as boolean || false,
-        (args.limit as number) || 10
-      );
-      return results.map(r => ({
-        framework: r.payload.framework,
-        title: r.payload.title,
-        content: r.payload.content,
-        url: r.payload.url,
-        score: r.score,
-      }));
-    }
-
-    // ===== PROJEKT-PLANUNG =====
-    case 'get_project_plan': {
-      const plan = await getPlan(args.project as string);
-      return plan || { message: 'Kein Plan gefunden' };
-    }
-
-    case 'update_project_plan': {
-      const result = await updatePlan(args.project as string, {
-        name: args.name as string | undefined,
-        description: args.description as string | undefined,
-        goals: args.goals as string[] | undefined,
-        architecture: args.architecture as string | undefined,
-      });
-      return result;
-    }
-
-    case 'add_plan_task': {
-      const result = await addTask(
-        args.project as string,
-        args.title as string,
-        args.description as string,
-        args.priority as 'low' | 'medium' | 'high' | undefined
-      );
-      return result;
-    }
-
-    // ===== GEDANKENAUSTAUSCH =====
-    case 'add_thought': {
-      const result = await addThought(
-        args.project as string,
-        args.source as string,
-        args.content as string,
-        args.tags as string[] | undefined
-      );
-      return result;
-    }
-
-    case 'get_thoughts': {
-      const thoughts = await getThoughts(
-        args.project as string,
-        (args.limit as number) || 50
-      );
-      return { thoughts };
-    }
-
-    case 'search_thoughts': {
-      const results = await searchThoughts(
-        args.query as string,
-        args.project as string,
-        (args.limit as number) || 10
-      );
-      return results;
-    }
-
-    case 'delete_thought': {
-      const deleted = await deleteThought(args.project as string, args.id as string);
-      return {
-        success: deleted.success,
-        message: `Gedanke "${args.id}" geloescht`,
-        warning: deleted.warning,
-      };
-    }
-
-    // ===== MEMORY =====
-    case 'write_memory': {
-      const existing = await getMemoryByName(args.project as string, args.name as string);
-      const memory = await writeMemory(
-        args.project as string,
-        args.name as string,
-        args.content as string,
-        args.category as 'documentation' | 'note' | 'architecture' | 'decision' | 'rules' | 'other' | undefined,
-        args.tags as string[] | undefined
-      );
-      return {
-        success: true,
-        memory: {
-          name: memory.name,
-          category: memory.category,
-          sizeChars: memory.content.length,
-        },
-        isUpdate: !!existing,
-        message: existing
-          ? `Memory "${memory.name}" aktualisiert`
-          : `Memory "${memory.name}" erstellt`,
-      };
-    }
-
-    case 'read_memory': {
-      const memory = await getMemoryByName(args.project as string, args.name as string);
-      if (!memory) {
-        return { success: false, message: `Memory "${args.name}" nicht gefunden` };
-      }
-      return { success: true, memory };
-    }
-
-    case 'list_memories': {
-      const memories = await listMemories(
-        args.project as string,
-        args.category as 'documentation' | 'note' | 'architecture' | 'decision' | 'rules' | 'other' | undefined
-      );
-      return {
-        memories: memories.map(m => ({
-          name: m.name,
-          category: m.category,
-          tags: m.tags,
-          sizeChars: m.content.length,
-          updatedAt: m.updatedAt,
-        })),
-      };
-    }
-
-    case 'search_memory': {
-      const results = await searchMemories(
-        args.query as string,
-        args.project as string,
-        (args.limit as number) || 10
-      );
-      return {
-        results: results.map(r => ({
-          name: r.payload.name,
-          category: r.payload.category,
-          score: r.score,
-          preview: r.payload.content.substring(0, 200) + (r.payload.content.length > 200 ? '...' : ''),
-        })),
-      };
-    }
-
-    case 'delete_memory': {
-      const deleted = await deleteMemory(args.project as string, args.name as string);
-      return {
-        success: deleted.success,
-        message: deleted.success ? `Memory "${args.name}" gelöscht` : `Memory "${args.name}" nicht gefunden`,
-        warning: deleted.warning,
-      };
-    }
-
-    case 'read_memory_with_code': {
-      const result = await readMemoryWithRelatedCode(
-        args.project as string,
-        args.name as string,
-        {
-          codeLimit: args.codeLimit as number | undefined,
-          includeSemanticMatches: args.includeSemanticMatches as boolean | undefined,
-        }
-      );
-      if (!result) {
-        return { success: false, message: `Memory "${args.name}" nicht gefunden` };
-      }
-      return { success: true, ...result };
-    }
-
-    case 'find_memories_for_file': {
-      const results = await findMemoriesForPath(
-        args.project as string,
-        args.filePath as string,
-        (args.limit as number) || 10
-      );
-      return {
-        success: true,
-        results: results.map(r => ({
-          name: r.memory.name,
-          category: r.memory.category,
-          matchType: r.matchType,
-          score: r.score,
-          preview: r.memory.content.substring(0, 200) + (r.memory.content.length > 200 ? '...' : ''),
-        })),
-        message: `${results.length} Memories für "${args.filePath}" gefunden`,
-      };
-    }
-
-    // ===== CODE-SUCHE (erweitert) =====
-    case 'search_by_path': {
-      const project = args.project as string;
-      const pathPattern = args.path_pattern as string;
-      const contentPattern = args.content_pattern as string | undefined;
-      const limit = (args.limit as number) || 50;
-      const collectionName = COLLECTIONS.projectCode(project);
-
-      try {
-        const allPoints = await scrollVectors<{
-          file_path: string;
-          file_name: string;
-          file_type: string;
-          line_start: number;
-          line_end: number;
-          content: string;
-        }>(collectionName, {}, 10000);
-
-        let matches = allPoints.filter(point => {
-          const filePath = point.payload?.file_path || '';
-          const normalizedPath = filePath.replace(/\\/g, '/');
-          return minimatch(normalizedPath, pathPattern, { matchBase: true });
-        });
-
-        if (contentPattern) {
-          const regex = new RegExp(contentPattern, 'i');
-          matches = matches.filter(point => {
-            const content = point.payload?.content || '';
-            return regex.test(content);
-          });
-        }
-
-        const totalMatches = matches.length;
-        const limited = matches.slice(0, limit);
-
-        return {
-          success: true,
-          results: limited.map(p => ({
-            filePath: p.payload.file_path,
-            fileName: p.payload.file_name,
-            fileType: p.payload.file_type,
-            lineStart: p.payload.line_start,
-            lineEnd: p.payload.line_end,
-            content: p.payload.content,
-          })),
-          totalMatches,
-          message: totalMatches > limit
-            ? `${limit} von ${totalMatches} Treffern angezeigt`
-            : `${totalMatches} Treffer gefunden`,
-        };
-      } catch (error) {
-        return {
-          success: false,
-          results: [],
-          totalMatches: 0,
-          message: `Fehler bei Pfadsuche: ${error}`,
-        };
-      }
-    }
-
-    case 'search_code_with_path': {
-      const project = args.project as string;
-      const query = args.query as string;
-      const pathPattern = args.path_pattern as string | undefined;
-      const fileType = args.file_type as string | undefined;
-      const limit = (args.limit as number) || 10;
-
-      try {
-        if (!pathPattern) {
-          const results = await searchCode(query, project, fileType, limit);
           return {
             success: true,
-            results: results.map(r => ({
-              filePath: r.payload.file_path,
-              fileName: r.payload.file_name,
-              fileType: r.payload.file_type,
-              lineStart: r.payload.line_start,
-              lineEnd: r.payload.line_end,
-              score: r.score,
-              content: r.payload.content,
-            })),
-            message: `${results.length} Ergebnisse gefunden`,
+            project: projectName,
+            path: projectPath,
+            technologies: techs,
+            docsIndexed,
+            message: `Projekt "${projectName}" - Docs indexiert (FileWatcher nicht verfuegbar ueber HTTP)`,
           };
         }
+        case 'complete_setup':
+          return { success: false, error: 'Action "complete_setup" ist nur ueber MCP Server (stdio) verfuegbar' };
+        case 'detect_tech': {
+          const techs = await detectTechnologies(reqStr(args, 'path'));
+          return { technologies: techs };
+        }
+        case 'cleanup':
+          return { success: false, error: 'Action "cleanup" ist nur ueber MCP Server (stdio) verfuegbar — FileWatcher benoetigt' };
+        case 'stop':
+          return { success: false, error: 'Action "stop" ist nur ueber MCP Server (stdio) verfuegbar — FileWatcher benoetigt' };
+        case 'status': {
+          const project = reqStr(args, 'path');
+          const codeStats = await getProjectStats(project.split(/[/\\]/).pop() || project);
+          return { success: true, stats: codeStats };
+        }
+        case 'list': {
+          const collections = await listCollections();
+          const projects = collections
+            .filter(c => c.startsWith('project_'))
+            .map(c => c.replace('project_', ''));
+          return { success: true, count: projects.length, projects };
+        }
+        default:
+          return { success: false, error: `Unbekannte project action: "${action}"` };
+      }
+    }
 
-        const results = await searchCode(query, project, fileType, limit * 5);
-        const filtered = results.filter(r => {
-          const normalizedPath = r.payload.file_path.replace(/\\/g, '/');
-          return minimatch(normalizedPath, pathPattern, { matchBase: true });
-        });
-
-        return {
-          success: true,
-          results: filtered.slice(0, limit).map(r => ({
+    // =================================================================
+    // 2. SEARCH
+    // =================================================================
+    case 'search': {
+      switch (action) {
+        case 'code': {
+          const results = await searchCode(
+            reqStr(args, 'query'),
+            reqStr(args, 'project'),
+            str(args, 'file_type'),
+            num(args, 'limit') ?? 10
+          );
+          return results.map(r => ({
             filePath: r.payload.file_path,
             fileName: r.payload.file_name,
             fileType: r.payload.file_type,
@@ -1012,221 +752,801 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
             lineEnd: r.payload.line_end,
             score: r.score,
             content: r.payload.content,
-          })),
-          message: `${filtered.length} Ergebnisse für Pattern "${pathPattern}"`,
-        };
-      } catch (error) {
-        return {
-          success: false,
-          results: [],
-          message: `Fehler bei kombinierter Suche: ${error}`,
-        };
-      }
-    }
-
-    case 'search_documents': {
-      const results = await searchDocuments(
-        args.query as string,
-        args.project as string,
-        {
-          documentType: (args.document_type as 'pdf' | 'docx' | 'xlsx' | 'all') || 'all',
-          limit: (args.limit as number) || 10,
+          }));
         }
-      );
-      return {
-        success: true,
-        results: results.map(r => ({
-          filePath: r.filePath,
-          fileName: r.fileName,
-          documentType: r.documentType,
-          content: r.content,
-          score: r.score,
-          chunkIndex: r.chunkIndex,
-        })),
-        message: `${results.length} Dokument-Ergebnisse gefunden`,
-      };
-    }
+        case 'path': {
+          const project = reqStr(args, 'project');
+          const pathPattern = reqStr(args, 'path_pattern');
+          const contentPattern = str(args, 'content_pattern');
+          const limit = num(args, 'limit') ?? 50;
+          const collectionName = COLLECTIONS.projectCode(project);
 
-    // ===== PROJEKT-IDEEN =====
-    case 'save_project_idea': {
-      const content = args.content as string;
-      const project = (args.project as string) || 'ideas';
-      const tags = (args.tags as string[]) || [];
+          const allPoints = await scrollVectors<{
+            file_path: string; file_name: string; file_type: string;
+            line_start: number; line_end: number; content: string;
+          }>(collectionName, {}, 10000);
 
-      if (!content || content.trim().length === 0) {
-        return {
-          success: false,
-          message: 'Content darf nicht leer sein',
-        };
+          let matches = allPoints.filter(point => {
+            const fp = point.payload?.file_path || '';
+            return minimatch(fp.replace(/\\/g, '/'), pathPattern, { matchBase: true });
+          });
+          if (contentPattern) {
+            const regex = new RegExp(contentPattern, 'i');
+            matches = matches.filter(p => regex.test(p.payload?.content || ''));
+          }
+          const totalMatches = matches.length;
+          return {
+            success: true,
+            results: matches.slice(0, limit).map(p => ({
+              filePath: p.payload.file_path, fileName: p.payload.file_name,
+              fileType: p.payload.file_type, lineStart: p.payload.line_start,
+              lineEnd: p.payload.line_end, content: p.payload.content,
+            })),
+            totalMatches,
+            message: totalMatches > limit
+              ? `${limit} von ${totalMatches} Treffern angezeigt`
+              : `${totalMatches} Treffer gefunden`,
+          };
+        }
+        case 'code_with_path': {
+          const query = reqStr(args, 'query');
+          const project = reqStr(args, 'project');
+          const pathPattern = str(args, 'path_pattern');
+          const fileType = str(args, 'file_type');
+          const limit = num(args, 'limit') ?? 10;
+
+          if (!pathPattern) {
+            const results = await searchCode(query, project, fileType, limit);
+            return {
+              success: true,
+              results: results.map(r => ({
+                filePath: r.payload.file_path, fileName: r.payload.file_name,
+                fileType: r.payload.file_type, lineStart: r.payload.line_start,
+                lineEnd: r.payload.line_end, score: r.score, content: r.payload.content,
+              })),
+              message: `${results.length} Ergebnisse gefunden`,
+            };
+          }
+          const results = await searchCode(query, project, fileType, limit * 5);
+          const filtered = results.filter(r =>
+            minimatch(r.payload.file_path.replace(/\\/g, '/'), pathPattern, { matchBase: true })
+          );
+          return {
+            success: true,
+            results: filtered.slice(0, limit).map(r => ({
+              filePath: r.payload.file_path, fileName: r.payload.file_name,
+              fileType: r.payload.file_type, lineStart: r.payload.line_start,
+              lineEnd: r.payload.line_end, score: r.score, content: r.payload.content,
+            })),
+            message: `${filtered.length} Ergebnisse fuer Pattern "${pathPattern}"`,
+          };
+        }
+        case 'memory': {
+          const results = await searchMemories(
+            reqStr(args, 'query'),
+            reqStr(args, 'project'),
+            num(args, 'limit') ?? 10
+          );
+          return {
+            results: results.map(r => ({
+              name: r.payload.name, category: r.payload.category, score: r.score,
+              preview: r.payload.content.substring(0, 200) + (r.payload.content.length > 200 ? '...' : ''),
+            })),
+          };
+        }
+        case 'thoughts': {
+          return await searchThoughts(
+            reqStr(args, 'query'),
+            str(args, 'project') ?? '',
+            num(args, 'limit') ?? 10
+          );
+        }
+        case 'proposals': {
+          const results = await searchProposals(
+            reqStr(args, 'query'),
+            str(args, 'project') ?? '',
+            num(args, 'limit') ?? 10
+          );
+          return {
+            success: true,
+            results: results.map(r => ({
+              id: r.id, filePath: r.payload.file_path, description: r.payload.description,
+              author: r.payload.author, status: r.payload.status, tags: r.payload.tags, score: r.score,
+            })),
+            message: `${results.length} Proposals gefunden`,
+          };
+        }
+        case 'tech_docs': {
+          const query = reqStr(args, 'query');
+          const results = await searchTechDocs(query, {
+            framework: str(args, 'framework'),
+            type: str(args, 'type'),
+            source: str(args, 'source'),
+            project: str(args, 'project'),
+            limit: num(args, 'limit'),
+            scope: str(args, 'scope') as 'global' | 'project' | 'all' | undefined,
+          });
+          return { success: true, results, message: `${results.length} Tech-Docs gefunden` };
+        }
+        case 'media': {
+          const results = await searchMedia(
+            reqStr(args, 'query'),
+            reqStr(args, 'project'),
+            str(args, 'media_type') as 'image' | 'video' | undefined,
+            num(args, 'limit')
+          );
+          return { success: true, results };
+        }
+        default:
+          return { success: false, error: `Unbekannte search action: "${action}"` };
       }
-
-      const suggestedName = generateIdeaName(content);
-      const tempId = generateTempId();
-      const preview = generatePreview(content);
-
-      pendingIdeas.set(tempId, {
-        content,
-        project,
-        suggestedName,
-        tags,
-        createdAt: new Date(),
-      });
-
-      return {
-        success: true,
-        tempId,
-        suggestedName,
-        preview,
-        project,
-        confirmationRequired: true,
-        message: `Idee vorgemerkt. Name: "${suggestedName}". Bitte mit confirm_idea bestätigen oder eigenen Namen angeben.`,
-      };
     }
 
-    case 'confirm_idea': {
-      const tempId = args.temp_id as string;
-      const customName = args.custom_name as string | undefined;
-      const pendingIdea = pendingIdeas.get(tempId);
-
-      if (!pendingIdea) {
-        return {
-          success: false,
-          message: `Keine vorgemerkte Idee mit ID "${tempId}" gefunden. Ideen werden nach 30 Minuten automatisch gelöscht.`,
-        };
+    // =================================================================
+    // 3. MEMORY
+    // =================================================================
+    case 'memory': {
+      const project = reqStr(args, 'project');
+      switch (action) {
+        case 'write': {
+          const memName = reqStr(args, 'name');
+          const content = reqStr(args, 'content');
+          const category = str(args, 'category') as 'documentation' | 'note' | 'architecture' | 'decision' | 'rules' | 'other' | undefined;
+          const tags = Array.isArray(args.tags) ? args.tags as string[] : undefined;
+          const existing = await getMemoryByName(project, memName);
+          const memory = await writeMemory(project, memName, content, category, tags);
+          return {
+            success: true,
+            memory: { name: memory.name, category: memory.category, sizeChars: memory.content.length },
+            isUpdate: !!existing,
+            message: existing ? `Memory "${memory.name}" aktualisiert` : `Memory "${memory.name}" erstellt`,
+          };
+        }
+        case 'read': {
+          if (Array.isArray(args.name)) {
+            const names = args.name as string[];
+            const results = await getMemoriesByNames(project, names);
+            return { success: true, memories: results, count: results.length };
+          }
+          const memName = reqStr(args, 'name');
+          const memory = await getMemoryByName(project, memName);
+          if (!memory) return { success: false, message: `Memory "${memName}" nicht gefunden` };
+          return { success: true, memory };
+        }
+        case 'read_with_code': {
+          const result = await readMemoryWithRelatedCode(project, reqStr(args, 'name'), {
+            codeLimit: num(args, 'codeLimit'),
+            includeSemanticMatches: bool(args, 'includeSemanticMatches'),
+          });
+          if (!result) return { success: false, message: `Memory "${args.name}" nicht gefunden` };
+          return { success: true, ...result };
+        }
+        case 'list': {
+          const category = str(args, 'category') as 'documentation' | 'note' | 'architecture' | 'decision' | 'rules' | 'other' | undefined;
+          const memories = await listMemories(project, category);
+          return {
+            memories: memories.map(m => ({
+              name: m.name, category: m.category, tags: m.tags,
+              sizeChars: m.content.length, updatedAt: m.updatedAt,
+            })),
+          };
+        }
+        case 'delete': {
+          if (Array.isArray(args.name)) {
+            const names = args.name as string[];
+            const dryRun = bool(args, 'dry_run') ?? false;
+            const maxItems = num(args, 'max_items') ?? 10;
+            if (names.length > maxItems) {
+              return { success: false, message: `Batch-Delete: Max ${maxItems} Items erlaubt, ${names.length} angegeben` };
+            }
+            if (dryRun) {
+              return { success: true, dry_run: true, would_delete: names, count: names.length };
+            }
+            const results = await Promise.allSettled(names.map(n => deleteMemory(project, n)));
+            const deleted = results.filter(r => r.status === 'fulfilled').length;
+            return { success: true, deleted, total: names.length };
+          }
+          const deleted = await deleteMemory(project, reqStr(args, 'name'));
+          return { success: deleted.success, message: deleted.success ? `Memory "${args.name}" geloescht` : `Memory "${args.name}" nicht gefunden`, warning: deleted.warning };
+        }
+        case 'update': {
+          const memName = reqStr(args, 'name');
+          const changes: { content?: string; category?: 'documentation' | 'note' | 'architecture' | 'decision' | 'rules' | 'other'; tags?: string[] } = {};
+          if (args.content) changes.content = args.content as string;
+          if (args.category) changes.category = args.category as 'documentation' | 'note' | 'architecture' | 'decision' | 'rules' | 'other';
+          if (Array.isArray(args.tags)) changes.tags = args.tags as string[];
+          const result = await updateMemory(project, memName, changes);
+          return result;
+        }
+        case 'find_for_file': {
+          if (Array.isArray(args.file_path)) {
+            const filePaths = args.file_path as string[];
+            const settled = await Promise.allSettled(filePaths.map(fp => findMemoriesForPath(project, fp)));
+            const results: unknown[] = [];
+            const errors: string[] = [];
+            for (const r of settled) {
+              if (r.status === 'fulfilled') results.push(r.value);
+              else errors.push(String(r.reason));
+            }
+            return { results, count: results.length, errors };
+          }
+          const filePath = reqStr(args, 'file_path');
+          const limit = num(args, 'limit') ?? 10;
+          const results = await findMemoriesForPath(project, filePath, limit);
+          return {
+            success: true,
+            results: results.map(r => ({
+              name: r.memory.name, category: r.memory.category, matchType: r.matchType, score: r.score,
+              preview: r.memory.content.substring(0, 200) + (r.memory.content.length > 200 ? '...' : ''),
+            })),
+            message: `${results.length} Memories fuer "${filePath}" gefunden`,
+          };
+        }
+        default:
+          return { success: false, error: `Unbekannte memory action: "${action}"` };
       }
+    }
 
-      const finalName = customName?.trim() || pendingIdea.suggestedName;
-
-      const existing = await getMemoryByName(pendingIdea.project, finalName);
-      if (existing) {
-        return {
-          success: false,
-          name: finalName,
-          project: pendingIdea.project,
-          message: `Ein Memory mit dem Namen "${finalName}" existiert bereits. Bitte anderen Namen wählen.`,
-        };
+    // =================================================================
+    // 4. THOUGHT
+    // =================================================================
+    case 'thought': {
+      switch (action) {
+        case 'add': {
+          return await addThought(
+            reqStr(args, 'project'), reqStr(args, 'source'),
+            reqStr(args, 'content'), (args.tags as string[]) ?? []
+          );
+        }
+        case 'get': {
+          const project = reqStr(args, 'project');
+          if (args.id !== undefined) {
+            const isBatch = Array.isArray(args.id);
+            const ids = isBatch ? args.id as string[] : [args.id as string];
+            const result = await getThoughtsByIds(project, ids);
+            if (!isBatch) {
+              return result.length > 0
+                ? { success: true, thought: result[0], message: '1 Gedanke geladen' }
+                : { success: false, thought: null, message: `Gedanke "${args.id}" nicht gefunden` };
+            }
+            return { success: true, thoughts: result, count: result.length };
+          }
+          const thoughts = await getThoughts(project, num(args, 'limit') ?? 50);
+          return { thoughts };
+        }
+        case 'search': {
+          return await searchThoughts(
+            reqStr(args, 'query'),
+            str(args, 'project') ?? '',
+            num(args, 'limit') ?? 10
+          );
+        }
+        case 'delete': {
+          const project = reqStr(args, 'project');
+          if (Array.isArray(args.id)) {
+            const ids = args.id as string[];
+            const dryRun = bool(args, 'dry_run') ?? false;
+            const maxItems = num(args, 'max_items') ?? 10;
+            if (ids.length > maxItems) {
+              return { success: false, message: `Batch-Delete: Max ${maxItems} Items erlaubt, ${ids.length} angegeben` };
+            }
+            if (dryRun) {
+              return { success: true, dry_run: true, would_delete: ids, count: ids.length };
+            }
+            const results = await Promise.allSettled(ids.map(id => deleteThought(project, id)));
+            const deleted = results.filter(r => r.status === 'fulfilled').length;
+            return { success: true, deleted, total: ids.length };
+          }
+          const result = await deleteThought(project, reqStr(args, 'id'));
+          return { success: result.success, message: `Gedanke "${args.id}" geloescht`, warning: result.warning };
+        }
+        case 'update': {
+          const project = reqStr(args, 'project');
+          const id = reqStr(args, 'id');
+          const changes: { content?: string; tags?: string[] } = {};
+          if (args.content) changes.content = str(args, 'content');
+          if (args.tags) changes.tags = args.tags as string[];
+          const result = await updateThought(project, id, changes);
+          return result;
+        }
+        default:
+          return { success: false, error: `Unbekannte thought action: "${action}"` };
       }
-
-      const memory = await writeMemory(
-        pendingIdea.project,
-        finalName,
-        pendingIdea.content,
-        'note',
-        [...pendingIdea.tags, 'idea']
-      );
-
-      pendingIdeas.delete(tempId);
-
-      return {
-        success: true,
-        name: finalName,
-        project: pendingIdea.project,
-        memory: {
-          name: memory.name,
-          category: memory.category,
-          sizeChars: memory.content.length,
-        },
-        message: `Idee "${finalName}" erfolgreich gespeichert in Projekt "${pendingIdea.project}".`,
-      };
     }
 
-    // ===== PROPOSALS (SCHATTENVORSCHLÄGE) =====
-    case 'create_proposal': {
-      const proposal = await createProposal(
-        args.project as string,
-        args.filePath as string,
-        args.suggestedContent as string,
-        args.description as string,
-        args.author as string,
-        args.tags as string[] | undefined
-      );
-      return {
-        success: true,
-        proposal,
-        message: `Proposal "${proposal.id}" erstellt für "${proposal.filePath}"`,
-      };
-    }
-
-    case 'list_proposals': {
-      const proposals = await listProposals(
-        args.project as string,
-        args.status as 'pending' | 'reviewed' | 'accepted' | 'rejected' | undefined
-      );
-      return {
-        success: true,
-        proposals: proposals.map(p => ({
-          id: p.id,
-          filePath: p.filePath,
-          description: p.description,
-          author: p.author,
-          status: p.status,
-          tags: p.tags,
-          createdAt: p.createdAt,
-          updatedAt: p.updatedAt,
-        })),
-        count: proposals.length,
-        message: `${proposals.length} Vorschläge gefunden`,
-      };
-    }
-
-    case 'get_proposal': {
-      const proposal = await getProposal(
-        args.project as string,
-        args.id as string
-      );
-      if (!proposal) {
-        return { success: false, message: `Proposal "${args.id}" nicht gefunden` };
+    // =================================================================
+    // 5. PLAN
+    // =================================================================
+    case 'plan': {
+      const project = reqStr(args, 'project');
+      switch (action) {
+        case 'get':
+          return (await getPlan(project)) || { message: 'Kein Plan gefunden' };
+        case 'update':
+          return await updatePlan(project, {
+            name: str(args, 'name'),
+            description: str(args, 'description'),
+            goals: Array.isArray(args.goals) ? args.goals as string[] : undefined,
+            architecture: str(args, 'architecture'),
+          });
+        case 'add_task':
+          return await addTask(
+            project, reqStr(args, 'title'), reqStr(args, 'description'),
+            (str(args, 'priority') || 'medium') as 'low' | 'medium' | 'high'
+          );
+        default:
+          return { success: false, error: `Unbekannte plan action: "${action}"` };
       }
-      return { success: true, proposal };
     }
 
-    case 'update_proposal_status': {
-      const proposal = await updateProposalStatus(
-        args.project as string,
-        args.id as string,
-        args.status as 'pending' | 'reviewed' | 'accepted' | 'rejected'
-      );
-      if (!proposal) {
-        return { success: false, message: `Proposal "${args.id}" nicht gefunden` };
+    // =================================================================
+    // 6. PROPOSAL
+    // =================================================================
+    case 'proposal': {
+      const project = reqStr(args, 'project');
+      switch (action) {
+        case 'list': {
+          const proposals = await listProposals(project, str(args, 'status') as 'pending' | 'reviewed' | 'accepted' | 'rejected' | undefined);
+          return {
+            success: true,
+            proposals: proposals.map(p => ({
+              id: p.id, filePath: p.filePath, description: p.description,
+              author: p.author, status: p.status, tags: p.tags,
+              createdAt: p.createdAt, updatedAt: p.updatedAt,
+            })),
+            count: proposals.length,
+            message: `${proposals.length} Vorschlaege gefunden`,
+          };
+        }
+        case 'get': {
+          if (Array.isArray(args.id)) {
+            const ids = args.id as string[];
+            const results = await getProposalsByIds(project, ids);
+            return { success: true, proposals: results, count: results.length };
+          }
+          const proposal = await getProposal(project, reqStr(args, 'id'));
+          if (!proposal) return { success: false, message: `Proposal "${args.id}" nicht gefunden` };
+          return { success: true, proposal };
+        }
+        case 'update_status': {
+          if (Array.isArray(args.id)) {
+            const ids = args.id as string[];
+            const status = reqStr(args, 'status');
+            const settled = await Promise.allSettled(
+              ids.map(id => updateProposalStatus(project, id, status as 'pending' | 'reviewed' | 'accepted' | 'rejected'))
+            );
+            const results: unknown[] = [];
+            const errors: string[] = [];
+            for (const r of settled) {
+              if (r.status === 'fulfilled') results.push(r.value);
+              else errors.push(String(r.reason));
+            }
+            return { results, count: results.length, errors };
+          }
+          const proposal = await updateProposalStatus(
+            project, reqStr(args, 'id'),
+            reqStr(args, 'status') as 'pending' | 'reviewed' | 'accepted' | 'rejected'
+          );
+          if (!proposal) return { success: false, message: `Proposal "${args.id}" nicht gefunden` };
+          return { success: true, proposal, message: `Proposal "${proposal.id}" Status geaendert zu "${proposal.status}"` };
+        }
+        case 'delete': {
+          if (Array.isArray(args.id)) {
+            const ids = args.id as string[];
+            const dryRun = bool(args, 'dry_run') ?? false;
+            const maxItems = num(args, 'max_items') ?? 10;
+            if (ids.length > maxItems) {
+              return { success: false, message: `Batch-Delete: Max ${maxItems} Items erlaubt, ${ids.length} angegeben` };
+            }
+            if (dryRun) {
+              return { success: true, dry_run: true, would_delete: ids, count: ids.length };
+            }
+            const settled = await Promise.allSettled(ids.map(id => deleteProposal(project, id)));
+            const deleted = settled.filter(r => r.status === 'fulfilled').length;
+            return { success: true, deleted, total: ids.length };
+          }
+          const deleted = await deleteProposal(project, reqStr(args, 'id'));
+          return {
+            success: deleted.success,
+            message: deleted.success ? `Proposal "${args.id}" geloescht` : `Proposal "${args.id}" nicht gefunden`,
+            ...(deleted.warning ? { warning: deleted.warning } : {}),
+          };
+        }
+        case 'update': {
+          const id = reqStr(args, 'id');
+          const changes: { content?: string; suggestedContent?: string; status?: string } = {};
+          if (args.content) changes.content = str(args, 'content');
+          if (args.suggested_content) changes.suggestedContent = str(args, 'suggested_content');
+          if (args.status) changes.status = str(args, 'status');
+          const result = await updateProposal(project, id, changes);
+          return result;
+        }
+        default:
+          return { success: false, error: `Unbekannte proposal action: "${action}"` };
       }
-      return {
-        success: true,
-        proposal,
-        message: `Proposal "${proposal.id}" Status geändert zu "${proposal.status}"`,
-      };
     }
 
-    case 'delete_proposal': {
-      const deleted = await deleteProposal(
-        args.project as string,
-        args.id as string
-      );
-      return {
-        success: deleted.success,
-        message: deleted.success ? `Proposal "${args.id}" gelöscht` : `Proposal "${args.id}" nicht gefunden`,
-        ...(deleted.warning ? { warning: deleted.warning } : {}),
-      };
+    // =================================================================
+    // 7. CHAT
+    // =================================================================
+    case 'chat': {
+      switch (action) {
+        case 'register': {
+          const session = await registerChatAgent(
+            reqStr(args, 'id'), reqStr(args, 'project'),
+            str(args, 'model'), str(args, 'cutoff_date')
+          );
+          return { ...session, action: 'register' };
+        }
+        case 'unregister': {
+          await unregisterChatAgent(reqStr(args, 'id'));
+          return { success: true, action: 'unregister' };
+        }
+        case 'register_batch': {
+          const agents = args.agents as Array<{ id: string; model?: string; cutoffDate?: string }>;
+          if (!Array.isArray(agents)) throw new Error('Parameter "agents" muss ein Array sein');
+          const results = await registerAgentsBatch(agents, reqStr(args, 'project'));
+          return { success: true, count: results.length, agents: results, action: 'register_batch' };
+        }
+        case 'unregister_batch': {
+          const ids = args.ids as string[];
+          if (!Array.isArray(ids)) throw new Error('Parameter "ids" muss ein Array sein');
+          await unregisterAgentsBatch(ids);
+          return { success: true, count: ids.length, action: 'unregister_batch' };
+        }
+        case 'send': {
+          const sendProject = reqStr(args, 'project');
+          const senderId = reqStr(args, 'sender_id');
+          const content = reqStr(args, 'content');
+          if (Array.isArray(args.recipient_id)) {
+            const recipientIds = args.recipient_id as string[];
+            const settled = await Promise.allSettled(
+              recipientIds.map(rid => sendChatMessage(sendProject, senderId, content, rid))
+            );
+            const results: unknown[] = [];
+            const errors: string[] = [];
+            for (const r of settled) {
+              if (r.status === 'fulfilled') results.push(r.value);
+              else errors.push(String(r.reason));
+            }
+            return { results, count: results.length, errors, action: 'send' };
+          }
+          const result = await sendChatMessage(sendProject, senderId, content, str(args, 'recipient_id'));
+          return { ...result, action: 'send' };
+        }
+        case 'get': {
+          const messages = await getChatMessages(reqStr(args, 'project'), {
+            agentId: str(args, 'agent_id'),
+            since: str(args, 'since'),
+            senderId: str(args, 'sender_id_filter'),
+            limit: num(args, 'limit'),
+          });
+          return { success: true, messages, count: messages.length, action: 'get' };
+        }
+        case 'list': {
+          const agents = await listActiveAgents(reqStr(args, 'project'));
+          return { success: true, agents, count: agents.length, action: 'list' };
+        }
+        case 'inbox_send':
+          return { success: false, error: 'Action "inbox_send" ist nur ueber MCP Server (stdio) verfuegbar' };
+        case 'inbox_check':
+          return { success: false, error: 'Action "inbox_check" ist nur ueber MCP Server (stdio) verfuegbar' };
+        default:
+          return { success: false, error: `Unbekannte chat action: "${action}"` };
+      }
     }
 
-    case 'search_proposals': {
-      const results = await searchProposals(
-        args.query as string,
-        args.project as string,
-        (args.limit as number) || 10
-      );
-      return {
-        success: true,
-        results: results.map(r => ({
-          id: r.id,
-          filePath: r.payload.file_path,
-          description: r.payload.description,
-          author: r.payload.author,
-          status: r.payload.status,
-          tags: r.payload.tags,
-          score: r.score,
-        })),
-        message: `${results.length} Proposals gefunden`,
-      };
+    // =================================================================
+    // 8. CHANNEL — nur ueber MCP Server (stdio) verfuegbar
+    // =================================================================
+    case 'channel':
+      return { success: false, error: `Channel-Tool ist nur ueber MCP Server (stdio) verfuegbar — benoetigt @synapse/agents` };
+
+    // =================================================================
+    // 9. EVENT
+    // =================================================================
+    case 'event': {
+      switch (action) {
+        case 'emit': {
+          const result = await emitEvent(
+            reqStr(args, 'project'),
+            reqStr(args, 'event_type') as any,
+            reqStr(args, 'priority') as any,
+            str(args, 'scope') ?? 'all',
+            reqStr(args, 'source_id'),
+            str(args, 'payload'),
+            bool(args, 'requires_ack')
+          );
+          return result;
+        }
+        case 'ack': {
+          const agentId = reqStr(args, 'agent_id');
+          const reaction = str(args, 'reaction');
+          if (Array.isArray(args.event_id)) {
+            const eventIds = args.event_id as number[];
+            const settled = await Promise.allSettled(
+              eventIds.map(eid => acknowledgeEvent(eid, agentId, reaction))
+            );
+            const results: unknown[] = [];
+            const errors: string[] = [];
+            for (const r of settled) {
+              if (r.status === 'fulfilled') results.push(r.value);
+              else errors.push(String(r.reason));
+            }
+            return { results, count: results.length, errors };
+          }
+          const eventId = num(args, 'event_id');
+          if (eventId === undefined) throw new Error('Parameter "event_id" ist erforderlich fuer action "ack"');
+          return await acknowledgeEvent(eventId, agentId, reaction);
+        }
+        case 'pending': {
+          const events = await getPendingEvents(reqStr(args, 'project'), reqStr(args, 'agent_id'));
+          return { success: true, events, count: events.length };
+        }
+        default:
+          return { success: false, error: `Unbekannte event action: "${action}"` };
+      }
+    }
+
+    // =================================================================
+    // 10. SPECIALIST — nur ueber MCP Server (stdio) verfuegbar
+    // =================================================================
+    case 'specialist':
+      return { success: false, error: 'Specialist-Tool ist nur ueber MCP Server (stdio) verfuegbar — benoetigt Claude CLI Subprozesse' };
+
+    // =================================================================
+    // 11. DOCS
+    // =================================================================
+    case 'docs': {
+      switch (action) {
+        case 'add': {
+          const result = await addTechDoc(
+            reqStr(args, 'framework'), reqStr(args, 'version'),
+            reqStr(args, 'section'), reqStr(args, 'content'),
+            reqStr(args, 'type') as any,
+            str(args, 'category'), str(args, 'source'), str(args, 'project')
+          );
+          return result;
+        }
+        case 'search': {
+          const results = await searchTechDocs(reqStr(args, 'query'), {
+            framework: str(args, 'framework'),
+            type: str(args, 'type'),
+            source: str(args, 'source'),
+            project: str(args, 'project'),
+            limit: num(args, 'limit'),
+            scope: str(args, 'scope') as 'global' | 'project' | 'all' | undefined,
+          });
+          return { success: true, results, message: `${results.length} Tech-Docs gefunden` };
+        }
+        case 'get_for_file': {
+          const agentId = reqStr(args, 'agent_id');
+          const project = reqStr(args, 'project');
+          if (Array.isArray(args.file_path)) {
+            const filePaths = args.file_path as string[];
+            const settled = await Promise.allSettled(
+              filePaths.map(fp => getDocsForFile(fp, agentId, project))
+            );
+            const results: unknown[] = [];
+            const errors: string[] = [];
+            for (const r of settled) {
+              if (r.status === 'fulfilled') results.push(r.value);
+              else errors.push(String(r.reason));
+            }
+            return { results, count: results.length, errors };
+          }
+          const result = await getDocsForFile(reqStr(args, 'file_path'), agentId, project);
+          return { success: true, ...result };
+        }
+        default:
+          return { success: false, error: `Unbekannte docs action: "${action}"` };
+      }
+    }
+
+    // =================================================================
+    // 12. ADMIN
+    // =================================================================
+    case 'admin': {
+      switch (action) {
+        case 'migrate':
+          return { success: false, error: 'Action "migrate" ist nur ueber MCP Server (stdio) verfuegbar' };
+        case 'restore':
+          return { success: false, error: 'Action "restore" ist nur ueber MCP Server (stdio) verfuegbar' };
+        case 'save_idea': {
+          const title = reqStr(args, 'title');
+          const description = reqStr(args, 'description');
+          const project = str(args, 'project') || 'ideas';
+          const tags = (args.tags as string[]) || [];
+          const content = `## ${title}\n\n${description}`;
+
+          const suggestedName = generateIdeaName(content);
+          const tempId = generateTempId();
+          const preview = generatePreview(content);
+
+          pendingIdeas.set(tempId, {
+            content, project, suggestedName, tags, createdAt: new Date(),
+          });
+
+          return {
+            success: true, tempId, suggestedName, preview, project,
+            confirmationRequired: true,
+            message: `Idee vorgemerkt. Name: "${suggestedName}". Bitte mit admin(action:"confirm_idea") bestaetigen.`,
+          };
+        }
+        case 'confirm_idea': {
+          const ideaId = reqStr(args, 'idea_id');
+          const customName = str(args, 'custom_name');
+          const pendingIdea = pendingIdeas.get(ideaId);
+
+          if (!pendingIdea) {
+            return { success: false, message: `Keine vorgemerkte Idee mit ID "${ideaId}" gefunden. Ideen werden nach 30 Minuten automatisch geloescht.` };
+          }
+
+          const finalName = customName?.trim() || pendingIdea.suggestedName;
+          const existing = await getMemoryByName(pendingIdea.project, finalName);
+          if (existing) {
+            return { success: false, name: finalName, project: pendingIdea.project, message: `Ein Memory mit dem Namen "${finalName}" existiert bereits.` };
+          }
+
+          const memory = await writeMemory(pendingIdea.project, finalName, pendingIdea.content, 'note', [...pendingIdea.tags, 'idea']);
+          pendingIdeas.delete(ideaId);
+
+          return {
+            success: true, name: finalName, project: pendingIdea.project,
+            memory: { name: memory.name, category: memory.category, sizeChars: memory.content.length },
+            message: `Idee "${finalName}" erfolgreich gespeichert in Projekt "${pendingIdea.project}".`,
+          };
+        }
+        case 'index_media': {
+          const path = reqStr(args, 'path');
+          const project = reqStr(args, 'project');
+          const recursive = bool(args, 'recursive') !== false;
+          const result = await indexMediaDirectory(path, project, { recursive });
+          return result;
+        }
+        case 'index_stats': {
+          const project = reqStr(args, 'project');
+          const codeStats = await getProjectStats(project);
+          let thoughtsCount = 0;
+          let memoriesCount = 0;
+
+          try {
+            const thoughtsStats = await getCollectionStats('project_thoughts');
+            thoughtsCount = thoughtsStats?.pointsCount ?? 0;
+          } catch { /* Collection existiert nicht */ }
+          try {
+            const memoriesStats = await getCollectionStats('synapse_memories');
+            memoriesCount = memoriesStats?.pointsCount ?? 0;
+          } catch { /* Collection existiert nicht */ }
+
+          return {
+            project,
+            totalFiles: codeStats?.fileCount ?? 0,
+            totalVectors: (codeStats?.chunkCount ?? 0) + thoughtsCount + memoriesCount,
+            collections: {
+              code: { vectors: codeStats?.chunkCount ?? 0 },
+              thoughts: { vectors: thoughtsCount },
+              memories: { vectors: memoriesCount },
+            },
+          };
+        }
+        case 'detailed_stats': {
+          const project = reqStr(args, 'project');
+          const collectionName = `project_${project}`;
+          let codeByType: Record<string, number> = {};
+          let totalChunks = 0;
+          let thoughtsBySource: Record<string, number> = {};
+          let totalThoughts = 0;
+          let memoriesByCategory: Record<string, number> = {};
+          let totalMemories = 0;
+
+          try {
+            const codePoints = await scrollVectors<{ file_type: string }>(collectionName, {}, 10000);
+            totalChunks = codePoints.length;
+            codeByType = codePoints.reduce((acc, p) => {
+              const type = p.payload?.file_type || 'unknown';
+              acc[type] = (acc[type] || 0) + 1;
+              return acc;
+            }, {} as Record<string, number>);
+          } catch { /* Collection existiert nicht */ }
+
+          try {
+            const thoughtPoints = await scrollVectors<{ source: string; project: string }>(
+              'project_thoughts',
+              { must: [{ key: 'project', match: { value: project } }] },
+              10000
+            );
+            totalThoughts = thoughtPoints.length;
+            thoughtsBySource = thoughtPoints.reduce((acc, p) => {
+              const source = p.payload?.source || 'unknown';
+              acc[source] = (acc[source] || 0) + 1;
+              return acc;
+            }, {} as Record<string, number>);
+          } catch { /* Collection existiert nicht */ }
+
+          try {
+            const memoryPoints = await scrollVectors<{ category: string; project: string }>(
+              'synapse_memories',
+              { must: [{ key: 'project', match: { value: project } }] },
+              10000
+            );
+            totalMemories = memoryPoints.length;
+            memoriesByCategory = memoryPoints.reduce((acc, p) => {
+              const cat = p.payload?.category || 'unknown';
+              acc[cat] = (acc[cat] || 0) + 1;
+              return acc;
+            }, {} as Record<string, number>);
+          } catch { /* Collection existiert nicht */ }
+
+          return {
+            project,
+            code: { totalChunks, byFileType: codeByType },
+            thoughts: { total: totalThoughts, bySource: thoughtsBySource },
+            memories: { total: totalMemories, byCategory: memoriesByCategory },
+          };
+        }
+        default:
+          return { success: false, error: `Unbekannte admin action: "${action}"` };
+      }
+    }
+
+    // =================================================================
+    // 13. WATCHER — nur ueber MCP Server (stdio) verfuegbar
+    // =================================================================
+    case 'watcher':
+      return { success: false, error: 'Watcher-Tool ist nur ueber MCP Server (stdio) verfuegbar — benoetigt lokale Dateisystem-Zugriffe' };
+
+    // =================================================================
+    // 14. CODE_INTEL
+    // =================================================================
+    case 'code_intel': {
+      const project = reqStr(args, 'project');
+      switch (action) {
+        case 'tree': {
+          const tree = await getProjectTree(project, {
+            path: str(args, 'path') ?? str(args, 'file_path'),
+            recursive: bool(args, 'recursive'),
+            depth: num(args, 'depth'),
+            show_lines: bool(args, 'show_lines'),
+            show_counts: bool(args, 'show_counts'),
+            show_comments: bool(args, 'show_comments'),
+            show_functions: bool(args, 'show_functions'),
+            show_imports: bool(args, 'show_imports'),
+            file_type: str(args, 'file_type'),
+          });
+          return { success: true, tree, project };
+        }
+        case 'functions': {
+          const functions = await getFunctions(project, str(args, 'file_path'), str(args, 'name'), bool(args, 'exported_only'));
+          return { success: true, functions, count: functions.length, project };
+        }
+        case 'variables': {
+          const variables = await getVariables(project, str(args, 'file_path'), str(args, 'name'), bool(args, 'with_values'));
+          return { success: true, variables, count: variables.length, project };
+        }
+        case 'symbols': {
+          const symbolType = reqStr(args, 'symbol_type');
+          const symbols = await getSymbols(project, symbolType, str(args, 'file_path'), str(args, 'name'));
+          return { success: true, symbols, count: symbols.length, symbol_type: symbolType, project };
+        }
+        case 'references': {
+          const result = await getReferences(project, reqStr(args, 'name'));
+          return { success: true, ...result, project };
+        }
+        case 'search': {
+          const results = await fullTextSearchCode(project, reqStr(args, 'query'), str(args, 'file_type'), num(args, 'limit') ?? 20);
+          return { success: true, results, count: results.length, project };
+        }
+        case 'file': {
+          const filePath = str(args, 'file_path') ?? str(args, 'path');
+          if (!filePath) throw new Error('Parameter "file_path" oder "path" ist erforderlich fuer action "file"');
+          const file = await getFileContent(project, filePath);
+          if (!file) return { success: false, message: `Datei nicht gefunden: ${filePath}`, project };
+          return { success: true, ...file, project };
+        }
+        default:
+          return { success: false, error: `Unbekannte code_intel action: "${action}"` };
+      }
     }
 
     default:
