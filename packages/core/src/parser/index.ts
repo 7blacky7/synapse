@@ -62,6 +62,12 @@ import { cmakeParser } from './cmake.js';
 import { puppetParser } from './puppet.js';
 import { asmParser } from './asm.js';
 import { racketParser } from './racket.js';
+import { valaParser } from './vala.js';
+import { mesonParser } from './meson.js';
+import { leanParser } from './lean.js';
+import { smithyParser } from './smithy.js';
+import { dhallParser } from './dhall.js';
+import { jsonnetParser } from './jsonnet.js';
 
 export type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
 
@@ -123,6 +129,12 @@ const parsers: LanguageParser[] = [
   puppetParser,
   asmParser,
   racketParser,
+  valaParser,
+  mesonParser,
+  leanParser,
+  smithyParser,
+  dhallParser,
+  jsonnetParser,
 ];
 
 /** Dateiname-basiertes Matching fuer Dateien ohne Extension (Makefile, Dockerfile) */
@@ -133,6 +145,8 @@ const filenameParsers: Record<string, LanguageParser> = {
   'build': starlarkParser,
   'workspace': starlarkParser,
   'cmakelists': cmakeParser,
+  'meson': mesonParser,
+  'meson_options': mesonParser,
 };
 
 export function getParserForFile(filePath: string): LanguageParser | null {
