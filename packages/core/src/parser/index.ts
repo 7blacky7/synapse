@@ -26,6 +26,7 @@ import { yamlParser } from './yaml.js';
 import { dockerfileParser } from './dockerfile.js';
 import { tomlParser } from './toml.js';
 import { scalaParser } from './scala.js';
+import { protobufParser } from './protobuf.js';
 
 export type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
 
@@ -51,6 +52,7 @@ const parsers: LanguageParser[] = [
   dockerfileParser,
   tomlParser,
   scalaParser,
+  protobufParser,
 ];
 
 export function getParserForFile(filePath: string): LanguageParser | null {
