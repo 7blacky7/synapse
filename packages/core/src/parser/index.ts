@@ -52,6 +52,7 @@ import { nixParser } from './nix.js';
 import { svelteParser } from './svelte.js';
 import { vueParser } from './vue.js';
 import { wgslParser } from './wgsl.js';
+import { glslParser } from './glsl.js';
 
 export type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
 
@@ -103,6 +104,7 @@ const parsers: LanguageParser[] = [
   svelteParser,
   vueParser,
   wgslParser,
+  glslParser,
 ];
 
 /** Dateiname-basiertes Matching fuer Dateien ohne Extension (Makefile, Dockerfile) */
