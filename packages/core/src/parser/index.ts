@@ -14,6 +14,7 @@ import { javaParser } from './java.js';
 import { csharpParser } from './csharp.js';
 import { cParser } from './c.js';
 import { cppParser } from './cpp.js';
+import { rubyParser } from './ruby.js';
 
 export type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
 
@@ -27,6 +28,7 @@ const parsers: LanguageParser[] = [
   csharpParser,
   cParser,
   cppParser,
+  rubyParser,
 ];
 
 export function getParserForFile(filePath: string): LanguageParser | null {
