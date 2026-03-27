@@ -41,6 +41,7 @@ import { clojureParser } from './clojure.js';
 import { juliaParser } from './julia.js';
 import { nimParser } from './nim.js';
 import { vlangParser } from './vlang.js';
+import { erlangParser } from './erlang.js';
 
 export type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
 
@@ -81,6 +82,7 @@ const parsers: LanguageParser[] = [
   juliaParser,
   nimParser,
   vlangParser,
+  erlangParser,
 ];
 
 /** Dateiname-basiertes Matching fuer Dateien ohne Extension (Makefile, Dockerfile) */
