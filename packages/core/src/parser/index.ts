@@ -22,6 +22,7 @@ import { dartParser } from './dart.js';
 import { shellParser } from './shell.js';
 import { cssParser } from './css.js';
 import { luaParser } from './lua.js';
+import { yamlParser } from './yaml.js';
 
 export type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
 
@@ -43,6 +44,7 @@ const parsers: LanguageParser[] = [
   shellParser,
   cssParser,
   luaParser,
+  yamlParser,
 ];
 
 export function getParserForFile(filePath: string): LanguageParser | null {
