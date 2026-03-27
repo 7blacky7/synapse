@@ -11,6 +11,7 @@ import { pythonParser } from './python.js';
 import { goParser } from './go.js';
 import { rustParser } from './rust.js';
 import { javaParser } from './java.js';
+import { csharpParser } from './csharp.js';
 
 export type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
 
@@ -21,6 +22,7 @@ const parsers: LanguageParser[] = [
   goParser,
   rustParser,
   javaParser,
+  csharpParser,
 ];
 
 export function getParserForFile(filePath: string): LanguageParser | null {
