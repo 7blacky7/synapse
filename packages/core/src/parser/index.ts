@@ -49,6 +49,7 @@ import { adaParser } from './ada.js';
 import { powershellParser } from './powershell.js';
 import { objcParser } from './objc.js';
 import { nixParser } from './nix.js';
+import { svelteParser } from './svelte.js';
 
 export type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
 
@@ -97,6 +98,7 @@ const parsers: LanguageParser[] = [
   powershellParser,
   objcParser,
   nixParser,
+  svelteParser,
 ];
 
 /** Dateiname-basiertes Matching fuer Dateien ohne Extension (Makefile, Dockerfile) */
