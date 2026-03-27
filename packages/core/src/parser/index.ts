@@ -28,6 +28,7 @@ import { tomlParser } from './toml.js';
 import { scalaParser } from './scala.js';
 import { protobufParser } from './protobuf.js';
 import { graphqlParser } from './graphql.js';
+import { elixirParser } from './elixir.js';
 
 export type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
 
@@ -55,6 +56,7 @@ const parsers: LanguageParser[] = [
   scalaParser,
   protobufParser,
   graphqlParser,
+  elixirParser,
 ];
 
 export function getParserForFile(filePath: string): LanguageParser | null {
