@@ -268,6 +268,66 @@ CREATE TABLE IF NOT EXISTS error_pattern_seen (
 );
 CREATE INDEX IF NOT EXISTS idx_error_pattern_seen_session
   ON error_pattern_seen(session_id);
+
+-- LISTEN/NOTIFY Trigger fuer Event-Driven Watcher
+-- Payload: JSON mit project, sender, type etc. fuer Client-seitiges Filtering
+
+CREATE OR REPLACE FUNCTION notify_chat_message() RETURNS trigger AS $$
+BEGIN
+  PERFORM pg_notify('synapse_chat', json_build_object(
+    'project', NEW.project,
+    'sender_id', NEW.sender_id,
+    'recipient_id', COALESCE(NEW.recipient_id, ''),
+    'id', NEW.id
+  )::text);
+  RETURN NEW;
+END
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_notify_chat_message ON chat_messages;
+CREATE TRIGGER trg_notify_chat_message
+  AFTER INSERT ON chat_messages
+  FOR EACH ROW EXECUTE FUNCTION notify_chat_message();
+
+CREATE OR REPLACE FUNCTION notify_agent_event() RETURNS trigger AS $$
+BEGIN
+  PERFORM pg_notify('synapse_event', json_build_object(
+    'project', NEW.project,
+    'event_type', NEW.event_type,
+    'priority', NEW.priority,
+    'source_id', NEW.source_id,
+    'id', NEW.id
+  )::text);
+  RETURN NEW;
+END
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_notify_agent_event ON agent_events;
+CREATE TRIGGER trg_notify_agent_event
+  AFTER INSERT ON agent_events
+  FOR EACH ROW EXECUTE FUNCTION notify_agent_event();
+
+CREATE OR REPLACE FUNCTION notify_channel_message() RETURNS trigger AS $$
+DECLARE
+  ch_name TEXT;
+  ch_project TEXT;
+BEGIN
+  SELECT name, project INTO ch_name, ch_project
+    FROM specialist_channels WHERE id = NEW.channel_id;
+  PERFORM pg_notify('synapse_channel', json_build_object(
+    'project', COALESCE(ch_project, ''),
+    'channel', COALESCE(ch_name, ''),
+    'sender', NEW.sender,
+    'id', NEW.id
+  )::text);
+  RETURN NEW;
+END
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_notify_channel_message ON specialist_channel_messages;
+CREATE TRIGGER trg_notify_channel_message
+  AFTER INSERT ON specialist_channel_messages
+  FOR EACH ROW EXECUTE FUNCTION notify_channel_message();
 `;
 
 export async function ensureSchema(): Promise<void> {
