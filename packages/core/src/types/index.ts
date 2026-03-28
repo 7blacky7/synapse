@@ -282,4 +282,6 @@ export const COLLECTIONS = {
   projectDocs: (project: string) => `project_${project}_docs`,
   /** Dokumentations-Cache (global, bleibt) */
   techDocs: 'tech_docs_cache',
+  /** Error-Patterns (global, nicht per-Projekt) */
+  globalErrorPatterns: 'global_error_patterns',
 } as const;

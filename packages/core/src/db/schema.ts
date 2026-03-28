@@ -246,6 +246,28 @@ DO $$ BEGIN
       FOREIGN KEY (project, file_path) REFERENCES code_files(project, file_path) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED;
   END IF;
 END $$;
+
+-- Error Patterns (global, kein Projekt-Filter)
+CREATE TABLE IF NOT EXISTS error_patterns (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  description TEXT NOT NULL,
+  fix TEXT NOT NULL,
+  severity TEXT NOT NULL DEFAULT 'warning',
+  model_scope TEXT NOT NULL,
+  found_by TEXT NOT NULL,
+  found_in_model TEXT NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Error Pattern Seen Tracking
+CREATE TABLE IF NOT EXISTS error_pattern_seen (
+  pattern_id UUID REFERENCES error_patterns(id) ON DELETE CASCADE,
+  session_id TEXT NOT NULL,
+  shown_at TIMESTAMPTZ DEFAULT NOW(),
+  PRIMARY KEY (pattern_id, session_id)
+);
+CREATE INDEX IF NOT EXISTS idx_error_pattern_seen_session
+  ON error_pattern_seen(session_id);
 `;
 
 export async function ensureSchema(): Promise<void> {

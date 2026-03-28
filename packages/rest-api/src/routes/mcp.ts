@@ -1592,17 +1592,34 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
     case 'files': {
       const project = reqStr(args, 'project');
       const filePath = reqStr(args, 'file_path');
+      const agentId = str(args, 'agent_id');
 
       switch (action) {
         case 'create': {
           const content = reqStr(args, 'content');
-          await createFileInPg(project, filePath, content);
-          return { success: true, message: `Datei "${filePath}" erstellt (${content.length} Zeichen)` };
+          const result = await createFileInPg(project, filePath, content, agentId);
+          const response: Record<string, unknown> = { success: true, message: `Datei "${filePath}" erstellt (${content.length} Zeichen)` };
+          if (result.warnings?.length) {
+            response.errorPatterns = {
+              count: result.warnings.length,
+              warnings: result.warnings,
+              hint: `${result.warnings.length} bekannte Fehler-Patterns matchen deinen Code`,
+            };
+          }
+          return response;
         }
         case 'update': {
           const content = reqStr(args, 'content');
-          await updateFileInPg(project, filePath, content);
-          return { success: true, message: `Datei "${filePath}" aktualisiert (${content.length} Zeichen)` };
+          const result = await updateFileInPg(project, filePath, content, agentId);
+          const response: Record<string, unknown> = { success: true, message: `Datei "${filePath}" aktualisiert (${content.length} Zeichen)` };
+          if (result.warnings?.length) {
+            response.errorPatterns = {
+              count: result.warnings.length,
+              warnings: result.warnings,
+              hint: `${result.warnings.length} bekannte Fehler-Patterns matchen deinen Code`,
+            };
+          }
+          return response;
         }
         case 'delete': {
           await softDeleteFile(project, filePath);
@@ -1633,8 +1650,16 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
           const content = reqStr(args, 'content');
           if (lineStart === undefined || lineEnd === undefined) return { success: false, error: 'line_start und line_end erforderlich' };
           const newContent = replaceLines(currentContent, lineStart, lineEnd, content);
-          await updateFileInPg(project, filePath, newContent);
-          return { success: true, message: `Zeilen ${lineStart}-${lineEnd} in "${filePath}" ersetzt` };
+          const result = await updateFileInPg(project, filePath, newContent, agentId);
+          const response: Record<string, unknown> = { success: true, message: `Zeilen ${lineStart}-${lineEnd} in "${filePath}" ersetzt` };
+          if (result.warnings?.length) {
+            response.errorPatterns = {
+              count: result.warnings.length,
+              warnings: result.warnings,
+              hint: `${result.warnings.length} bekannte Fehler-Patterns matchen deinen Code`,
+            };
+          }
+          return response;
         }
         case 'insert_after': {
           const currentContent = await getFileContentFromPg(project, filePath);
@@ -1643,8 +1668,16 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
           const content = reqStr(args, 'content');
           if (afterLine === undefined) return { success: false, error: 'after_line erforderlich' };
           const newContent = insertAfterLine(currentContent, afterLine, content);
-          await updateFileInPg(project, filePath, newContent);
-          return { success: true, message: `Inhalt nach Zeile ${afterLine} in "${filePath}" eingefuegt` };
+          const result = await updateFileInPg(project, filePath, newContent, agentId);
+          const response: Record<string, unknown> = { success: true, message: `Inhalt nach Zeile ${afterLine} in "${filePath}" eingefuegt` };
+          if (result.warnings?.length) {
+            response.errorPatterns = {
+              count: result.warnings.length,
+              warnings: result.warnings,
+              hint: `${result.warnings.length} bekannte Fehler-Patterns matchen deinen Code`,
+            };
+          }
+          return response;
         }
         case 'delete_lines': {
           const currentContent = await getFileContentFromPg(project, filePath);
@@ -1653,8 +1686,16 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
           const lineEnd = num(args, 'line_end');
           if (lineStart === undefined || lineEnd === undefined) return { success: false, error: 'line_start und line_end erforderlich' };
           const newContent = deleteLines(currentContent, lineStart, lineEnd);
-          await updateFileInPg(project, filePath, newContent);
-          return { success: true, message: `Zeilen ${lineStart}-${lineEnd} in "${filePath}" geloescht` };
+          const result = await updateFileInPg(project, filePath, newContent, agentId);
+          const response: Record<string, unknown> = { success: true, message: `Zeilen ${lineStart}-${lineEnd} in "${filePath}" geloescht` };
+          if (result.warnings?.length) {
+            response.errorPatterns = {
+              count: result.warnings.length,
+              warnings: result.warnings,
+              hint: `${result.warnings.length} bekannte Fehler-Patterns matchen deinen Code`,
+            };
+          }
+          return response;
         }
         case 'search_replace': {
           const currentContent = await getFileContentFromPg(project, filePath);
@@ -1663,8 +1704,16 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
           const replaceStr = reqStr(args, 'replace');
           const { content: newContent, count } = searchReplace(currentContent, searchStr, replaceStr);
           if (count === 0) return { success: true, count: 0, message: `Kein Vorkommen von "${searchStr}" in "${filePath}"` };
-          await updateFileInPg(project, filePath, newContent);
-          return { success: true, count, message: `${count} Vorkommen ersetzt in "${filePath}"` };
+          const result = await updateFileInPg(project, filePath, newContent, agentId);
+          const response: Record<string, unknown> = { success: true, count, message: `${count} Vorkommen ersetzt in "${filePath}"` };
+          if (result.warnings?.length) {
+            response.errorPatterns = {
+              count: result.warnings.length,
+              warnings: result.warnings,
+              hint: `${result.warnings.length} bekannte Fehler-Patterns matchen deinen Code`,
+            };
+          }
+          return response;
         }
         default:
           return { success: false, error: `Unbekannte files action: "${action}"` };

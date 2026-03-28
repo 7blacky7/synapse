@@ -132,6 +132,9 @@ export async function ensureAllCollections(): Promise<void> {
   // Dokumentations-Cache (global)
   await ensureCollection(COLLECTIONS.techDocs);
 
+  // Error-Patterns (global)
+  await ensureCollection(COLLECTIONS.globalErrorPatterns);
+
   console.error('[Synapse] Alle Standard-Collections bereit');
 }
 

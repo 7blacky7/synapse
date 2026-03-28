@@ -29,6 +29,7 @@ import { getPool } from '../db/client.js';
 import { parseAndEmbed } from './code.js';
 import { deleteByFilePath } from '../qdrant/index.js';
 import { COLLECTIONS } from '../types/index.js';
+import { checkErrorPatterns, type ErrorPatternWarning } from './error-patterns.js';
 
 // ─── String-Operationen (pure) ────────────────────────────────────────────────
 
@@ -151,8 +152,19 @@ export function contentHash(content: string): string {
 export async function createFileInPg(
   project: string,
   filePath: string,
-  content: string
-): Promise<void> {
+  content: string,
+  agentId?: string
+): Promise<{ warnings?: ErrorPatternWarning[] }> {
+  let warnings: ErrorPatternWarning[] | undefined;
+  if (agentId) {
+    try {
+      const result = await checkErrorPatterns(content, agentId);
+      if (result.length > 0) warnings = result;
+    } catch {
+      // non-blocking — ignore errors
+    }
+  }
+
   const { v4: uuidv4 } = await import('uuid');
   const pool = getPool();
 
@@ -176,6 +188,8 @@ export async function createFileInPg(
   parseAndEmbed(project, filePath).catch((err: unknown) =>
     console.error(`[code-write] parseAndEmbed Fehler fuer ${filePath}:`, err)
   );
+
+  return warnings?.length ? { warnings } : {};
 }
 
 /**
@@ -184,8 +198,19 @@ export async function createFileInPg(
 export async function updateFileInPg(
   project: string,
   filePath: string,
-  newContent: string
-): Promise<void> {
+  newContent: string,
+  agentId?: string
+): Promise<{ warnings?: ErrorPatternWarning[] }> {
+  let warnings: ErrorPatternWarning[] | undefined;
+  if (agentId) {
+    try {
+      const result = await checkErrorPatterns(newContent, agentId);
+      if (result.length > 0) warnings = result;
+    } catch {
+      // non-blocking — ignore errors
+    }
+  }
+
   const pool = getPool();
 
   const hash = contentHash(newContent);
@@ -201,6 +226,8 @@ export async function updateFileInPg(
   parseAndEmbed(project, filePath).catch((err: unknown) =>
     console.error(`[code-write] parseAndEmbed Fehler fuer ${filePath}:`, err)
   );
+
+  return warnings?.length ? { warnings } : {};
 }
 
 /**
@@ -293,13 +320,14 @@ export async function moveFileInPg(
 export async function copyFileInPg(
   project: string,
   sourcePath: string,
-  targetPath: string
-): Promise<void> {
+  targetPath: string,
+  agentId?: string
+): Promise<{ warnings?: ErrorPatternWarning[] }> {
   const sourceContent = await getFileContentFromPg(project, sourcePath);
   if (sourceContent === null) {
     throw new Error(`Quelldatei nicht gefunden: ${sourcePath}`);
   }
-  await createFileInPg(project, targetPath, sourceContent);
+  return createFileInPg(project, targetPath, sourceContent, agentId);
 }
 
 /**
