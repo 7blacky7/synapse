@@ -73,8 +73,11 @@ function handleNotification(msg) {
   // Projekt-Filter
   if (payload.project && payload.project !== PROJECT) return;
 
-  // Eigene Nachrichten ignorieren
-  if (payload.sender_id === AGENT_ID || payload.sender === AGENT_ID || payload.source_id === AGENT_ID) return;
+  // Eigene Nachrichten ignorieren (alle moeglichen Sender-Felder pruefen)
+  const sender = payload.sender_id || payload.sender || payload.source_id || '';
+  if (sender === AGENT_ID) {
+    return;
+  }
 
   // Channel-Filter (wenn gesetzt)
   if (CHANNEL_FILTER && msg.channel === 'synapse_channel' && payload.channel !== CHANNEL_FILTER) return;
