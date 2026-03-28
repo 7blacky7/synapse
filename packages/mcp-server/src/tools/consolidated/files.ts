@@ -86,6 +86,30 @@ export const filesTool: ConsolidatedTool = {
     const filePath = reqStr(args, 'file_path');
     const agentId = str(args, 'agent_id');
 
+    // Haiku escaped Content manchmal doppelt: "\"use client\";\n\nimport..."
+    // Detection: Literale \n im String aber keine echten Newlines → doppelt escaped
+    function unescapeIfNeeded(content: string): { content: string; wasFixed: boolean } {
+      if (!content.includes('\n') && (content.includes('\\n') || content.startsWith('\\"'))) {
+        try {
+          const parsed = JSON.parse(`"${content.replace(/^"|"$/g, '')}"`);
+          if (typeof parsed === 'string' && parsed.includes('\n')) {
+            return { content: parsed, wasFixed: true };
+          }
+        } catch {
+          // Fallback: manuelle Ersetzung
+          const fixed = content
+            .replace(/\\n/g, '\n')
+            .replace(/\\t/g, '\t')
+            .replace(/\\"/g, '"')
+            .replace(/\\\\/g, '\\');
+          if (fixed !== content) {
+            return { content: fixed, wasFixed: true };
+          }
+        }
+      }
+      return { content, wasFixed: false };
+    }
+
     async function attachWarnings(response: Record<string, unknown>, result: { warnings?: Array<{ id: string; severity: string; description: string; fix: string }> }) {
       if (result.warnings?.length) {
         response.errorPatterns = {
@@ -114,21 +138,21 @@ export const filesTool: ConsolidatedTool = {
 
     switch (action) {
       case 'create': {
-        const content = reqStr(args, 'content');
+        const raw = reqStr(args, 'content');
+        const { content, wasFixed } = unescapeIfNeeded(raw);
         const result = await createFileInPg(project, filePath, content, agentId);
-        return await attachWarnings(
-          { success: true, message: `Datei "${filePath}" erstellt (${content.length} Zeichen)` },
-          result
-        );
+        const response: Record<string, unknown> = { success: true, message: `Datei "${filePath}" erstellt (${content.length} Zeichen)` };
+        if (wasFixed) response.autoFixed = 'Content war doppelt escaped (\\n statt Newlines) — automatisch korrigiert.';
+        return await attachWarnings(response, result);
       }
 
       case 'update': {
-        const content = reqStr(args, 'content');
+        const raw = reqStr(args, 'content');
+        const { content, wasFixed } = unescapeIfNeeded(raw);
         const result = await updateFileInPg(project, filePath, content, agentId);
-        return await attachWarnings(
-          { success: true, message: `Datei "${filePath}" aktualisiert (${content.length} Zeichen)` },
-          result
-        );
+        const response: Record<string, unknown> = { success: true, message: `Datei "${filePath}" aktualisiert (${content.length} Zeichen)` };
+        if (wasFixed) response.autoFixed = 'Content war doppelt escaped (\\n statt Newlines) — automatisch korrigiert.';
+        return await attachWarnings(response, result);
       }
 
       case 'read': {
@@ -161,7 +185,7 @@ export const filesTool: ConsolidatedTool = {
         if (currentContent === null) return { success: false, error: `Datei "${filePath}" nicht gefunden` };
         const lineStart = num(args, 'line_start');
         const lineEnd = num(args, 'line_end');
-        const content = reqStr(args, 'content');
+        const { content } = unescapeIfNeeded(reqStr(args, 'content'));
         if (lineStart === undefined || lineEnd === undefined) return { success: false, error: 'line_start und line_end erforderlich' };
         const newContent = replaceLines(currentContent, lineStart, lineEnd, content);
         const result = await updateFileInPg(project, filePath, newContent, agentId);
@@ -175,7 +199,7 @@ export const filesTool: ConsolidatedTool = {
         const currentContent = await getFileContentFromPg(project, filePath);
         if (currentContent === null) return { success: false, error: `Datei "${filePath}" nicht gefunden` };
         const afterLine = num(args, 'after_line');
-        const content = reqStr(args, 'content');
+        const { content } = unescapeIfNeeded(reqStr(args, 'content'));
         if (afterLine === undefined) return { success: false, error: 'after_line erforderlich' };
         const newContent = insertAfterLine(currentContent, afterLine, content);
         const result = await updateFileInPg(project, filePath, newContent, agentId);
