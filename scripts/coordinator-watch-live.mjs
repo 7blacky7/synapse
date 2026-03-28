@@ -27,7 +27,7 @@ const { Client } = pg;
 const args = process.argv.slice(2);
 const PROJECT = args[0] || 'synapse';
 const AGENT_ID = args[1] || 'koordinator';
-const TIMEOUT_S = parseInt(args.find(a => /^\d+$/.test(a) && a !== PROJECT && a !== AGENT_ID) || '120', 10);
+const TIMEOUT_S = parseInt(args.find(a => /^\d+$/.test(a) && a !== PROJECT && a !== AGENT_ID) || '1200', 10);
 const CHANNEL_FILTER = args.find(a => a.startsWith('--channel='))?.split('=')[1] || null;
 
 const DB_URL = process.env.SYNAPSE_DB_URL;
