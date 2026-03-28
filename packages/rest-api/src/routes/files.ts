@@ -27,10 +27,11 @@ export async function filesRoutes(fastify: FastifyInstance): Promise<void> {
     Body: {
       file_path: string;
       content: string;
+      agent_id?: string;
     };
   }>('/api/projects/:name/files', async (request, reply) => {
     const { name } = request.params;
-    const { file_path, content } = request.body;
+    const { file_path, content, agent_id } = request.body;
 
     if (!file_path || content === undefined) {
       return reply.status(400).send({
@@ -40,12 +41,19 @@ export async function filesRoutes(fastify: FastifyInstance): Promise<void> {
     }
 
     try {
-      await createFileInPg(name, file_path, content);
-
-      return {
+      const result = await createFileInPg(name, file_path, content, agent_id);
+      const response: Record<string, unknown> = {
         success: true,
         message: `Datei "${file_path}" erstellt (${content.length} Zeichen)`,
       };
+      if (result.warnings?.length) {
+        response.errorPatterns = {
+          count: result.warnings.length,
+          warnings: result.warnings,
+          hint: `${result.warnings.length} bekannte Fehler-Patterns matchen deinen Code`,
+        };
+      }
+      return response;
     } catch (error) {
       return reply.status(500).send({
         success: false,
@@ -70,6 +78,7 @@ export async function filesRoutes(fastify: FastifyInstance): Promise<void> {
       search?: string;
       replace?: string;
       new_path?: string;
+      agent_id?: string;
     };
   }>('/api/projects/:name/files', async (request, reply) => {
     const { name } = request.params;
@@ -83,6 +92,7 @@ export async function filesRoutes(fastify: FastifyInstance): Promise<void> {
       search,
       replace,
       new_path,
+      agent_id,
     } = request.body;
 
     if (!file_path) {
@@ -101,11 +111,19 @@ export async function filesRoutes(fastify: FastifyInstance): Promise<void> {
             error: { message: 'content ist erforderlich wenn keine operation angegeben' },
           });
         }
-        await updateFileInPg(name, file_path, content);
-        return {
+        const result = await updateFileInPg(name, file_path, content, agent_id);
+        const response: Record<string, unknown> = {
           success: true,
           message: `Datei "${file_path}" aktualisiert (${content.length} Zeichen)`,
         };
+        if (result.warnings?.length) {
+          response.errorPatterns = {
+            count: result.warnings.length,
+            warnings: result.warnings,
+            hint: `${result.warnings.length} bekannte Fehler-Patterns matchen deinen Code`,
+          };
+        }
+        return response;
       }
 
       // Zeilenbasierte Operationen: aktuellen Inhalt laden
@@ -139,11 +157,19 @@ export async function filesRoutes(fastify: FastifyInstance): Promise<void> {
               error: { message: String(err) },
             });
           }
-          await updateFileInPg(name, file_path, newContent);
-          return {
+          const result = await updateFileInPg(name, file_path, newContent, agent_id);
+          const response: Record<string, unknown> = {
             success: true,
             message: `Zeilen ${line_start}-${line_end} in "${file_path}" ersetzt`,
           };
+          if (result.warnings?.length) {
+            response.errorPatterns = {
+              count: result.warnings.length,
+              warnings: result.warnings,
+              hint: `${result.warnings.length} bekannte Fehler-Patterns matchen deinen Code`,
+            };
+          }
+          return response;
         }
 
         if (operation === 'insert_after') {
@@ -162,11 +188,19 @@ export async function filesRoutes(fastify: FastifyInstance): Promise<void> {
               error: { message: String(err) },
             });
           }
-          await updateFileInPg(name, file_path, newContent);
-          return {
+          const result = await updateFileInPg(name, file_path, newContent, agent_id);
+          const response: Record<string, unknown> = {
             success: true,
             message: `Inhalt nach Zeile ${after_line} in "${file_path}" eingefuegt`,
           };
+          if (result.warnings?.length) {
+            response.errorPatterns = {
+              count: result.warnings.length,
+              warnings: result.warnings,
+              hint: `${result.warnings.length} bekannte Fehler-Patterns matchen deinen Code`,
+            };
+          }
+          return response;
         }
 
         if (operation === 'delete_lines') {
@@ -185,11 +219,19 @@ export async function filesRoutes(fastify: FastifyInstance): Promise<void> {
               error: { message: String(err) },
             });
           }
-          await updateFileInPg(name, file_path, newContent);
-          return {
+          const result = await updateFileInPg(name, file_path, newContent, agent_id);
+          const response: Record<string, unknown> = {
             success: true,
             message: `Zeilen ${line_start}-${line_end} in "${file_path}" geloescht`,
           };
+          if (result.warnings?.length) {
+            response.errorPatterns = {
+              count: result.warnings.length,
+              warnings: result.warnings,
+              hint: `${result.warnings.length} bekannte Fehler-Patterns matchen deinen Code`,
+            };
+          }
+          return response;
         }
 
         if (operation === 'search_replace') {
@@ -207,12 +249,20 @@ export async function filesRoutes(fastify: FastifyInstance): Promise<void> {
               message: `Kein Vorkommen von "${search}" gefunden in "${file_path}"`,
             };
           }
-          await updateFileInPg(name, file_path, newContent);
-          return {
+          const result = await updateFileInPg(name, file_path, newContent, agent_id);
+          const response: Record<string, unknown> = {
             success: true,
             count,
             message: `${count} Vorkommen von "${search}" ersetzt in "${file_path}"`,
           };
+          if (result.warnings?.length) {
+            response.errorPatterns = {
+              count: result.warnings.length,
+              warnings: result.warnings,
+              hint: `${result.warnings.length} bekannte Fehler-Patterns matchen deinen Code`,
+            };
+          }
+          return response;
         }
       }
 
