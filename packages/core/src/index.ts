@@ -211,12 +211,20 @@ export {
   acknowledgeEvent,
   getPendingEvents,
   getUnackedCount,
+  // Error Patterns
+  addErrorPattern,
+  listErrorPatterns,
+  deleteErrorPattern,
+  checkErrorPatterns,
+  getModelTier,
+  deriveModelScope,
 } from './services/index.js';
 export type { FunctionInfo, VariableInfo, SymbolInfo, ReferenceInfo, ReferencesResult, FullTextSearchResult, FileContentResult, TreeOptions } from './services/code-intel.js';
 export type { BackupEntry } from './services/backup.js';
 export type { ChatMessage, AgentSession } from './services/chat.js';
 export type { AgentEvent, EventAck, EventType, EventPriority } from './services/events.js';
 export type { TechDoc, TechDocType, TechDocResult } from './services/tech-docs.js';
+export type { ErrorPattern, ErrorPatternWarning } from './services/error-patterns.js';
 export type { Memory, MemoryWithRelatedCode, RelatedMemoryResult, RelatedCodeResult } from './services/memory.js';
 export type { DetectedTechnology } from './services/tech-detection.js';
 export type { Context7Doc } from './services/context7.js';

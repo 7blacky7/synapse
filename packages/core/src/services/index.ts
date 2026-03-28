@@ -33,3 +33,4 @@ export { addTechDoc, searchTechDocs, getDocsForFile, deleteTechDoc } from './tec
 export type { TechDoc, TechDocType, TechDocResult } from './tech-docs.js';
 export { emitEvent, acknowledgeEvent, getPendingEvents, getUnackedCount } from './events.js';
 export type { AgentEvent, EventAck, EventType, EventPriority } from './events.js';
+export * from './error-patterns.js';
