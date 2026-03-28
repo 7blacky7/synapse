@@ -15,6 +15,7 @@ import {
   insertAfterLine,
   deleteLines,
   searchReplace,
+  getDocsForFile,
 } from '@synapse/core';
 
 import { ConsolidatedTool, str, reqStr, num } from './types.js';
@@ -85,13 +86,28 @@ export const filesTool: ConsolidatedTool = {
     const filePath = reqStr(args, 'file_path');
     const agentId = str(args, 'agent_id');
 
-    function attachWarnings(response: Record<string, unknown>, result: { warnings?: Array<{ id: string; severity: string; description: string; fix: string }> }) {
+    async function attachWarnings(response: Record<string, unknown>, result: { warnings?: Array<{ id: string; severity: string; description: string; fix: string }> }) {
       if (result.warnings?.length) {
         response.errorPatterns = {
           count: result.warnings.length,
           warnings: result.warnings,
           hint: `${result.warnings.length} bekannte Fehler-Patterns matchen deinen Code`,
         };
+      }
+      // Framework-Docs (Breaking Changes, Gotchas) einmalig pro Agent anhaengen
+      if (agentId) {
+        try {
+          const docs = await getDocsForFile(filePath, agentId, project);
+          if (docs.warnings.length > 0) {
+            response.frameworkDocs = {
+              agentCutoff: docs.agentCutoff,
+              frameworks: docs.warnings,
+              hint: 'Breaking Changes / Gotchas fuer erkannte Frameworks — bitte beachten!',
+            };
+          }
+        } catch {
+          // Docs-Check darf Write nicht blockieren
+        }
       }
       return response;
     }
@@ -100,7 +116,7 @@ export const filesTool: ConsolidatedTool = {
       case 'create': {
         const content = reqStr(args, 'content');
         const result = await createFileInPg(project, filePath, content, agentId);
-        return attachWarnings(
+        return await attachWarnings(
           { success: true, message: `Datei "${filePath}" erstellt (${content.length} Zeichen)` },
           result
         );
@@ -109,7 +125,7 @@ export const filesTool: ConsolidatedTool = {
       case 'update': {
         const content = reqStr(args, 'content');
         const result = await updateFileInPg(project, filePath, content, agentId);
-        return attachWarnings(
+        return await attachWarnings(
           { success: true, message: `Datei "${filePath}" aktualisiert (${content.length} Zeichen)` },
           result
         );
@@ -149,7 +165,7 @@ export const filesTool: ConsolidatedTool = {
         if (lineStart === undefined || lineEnd === undefined) return { success: false, error: 'line_start und line_end erforderlich' };
         const newContent = replaceLines(currentContent, lineStart, lineEnd, content);
         const result = await updateFileInPg(project, filePath, newContent, agentId);
-        return attachWarnings(
+        return await attachWarnings(
           { success: true, message: `Zeilen ${lineStart}-${lineEnd} in "${filePath}" ersetzt` },
           result
         );
@@ -163,7 +179,7 @@ export const filesTool: ConsolidatedTool = {
         if (afterLine === undefined) return { success: false, error: 'after_line erforderlich' };
         const newContent = insertAfterLine(currentContent, afterLine, content);
         const result = await updateFileInPg(project, filePath, newContent, agentId);
-        return attachWarnings(
+        return await attachWarnings(
           { success: true, message: `Inhalt nach Zeile ${afterLine} in "${filePath}" eingefuegt` },
           result
         );
@@ -177,7 +193,7 @@ export const filesTool: ConsolidatedTool = {
         if (lineStart === undefined || lineEnd === undefined) return { success: false, error: 'line_start und line_end erforderlich' };
         const newContent = deleteLines(currentContent, lineStart, lineEnd);
         const result = await updateFileInPg(project, filePath, newContent, agentId);
-        return attachWarnings(
+        return await attachWarnings(
           { success: true, message: `Zeilen ${lineStart}-${lineEnd} in "${filePath}" geloescht` },
           result
         );
@@ -191,7 +207,7 @@ export const filesTool: ConsolidatedTool = {
         const { content: newContent, count } = searchReplace(currentContent, searchStr, replaceStr);
         if (count === 0) return { success: true, count: 0, message: `Kein Vorkommen von "${searchStr}" in "${filePath}"` };
         const result = await updateFileInPg(project, filePath, newContent, agentId);
-        return attachWarnings(
+        return await attachWarnings(
           { success: true, count, message: `${count} Vorkommen ersetzt in "${filePath}"` },
           result
         );
