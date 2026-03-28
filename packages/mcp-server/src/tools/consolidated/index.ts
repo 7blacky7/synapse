@@ -21,3 +21,4 @@ export { docsTool } from './docs.js';
 export { adminTool } from './admin.js';
 export { watcherTool } from './watcher.js';
 export { codeIntelTool } from './code-intel.js';
+export { codeCheckTool } from './code-check.js';
