@@ -239,6 +239,15 @@ export function startFileWatcher(options: FileWatcherOptions): FileWatcherInstan
               localHash = crypto.createHash('sha256').update(fs.readFileSync(filePath, 'utf-8')).digest('hex');
             }
             if (localHash !== row.content_hash) {
+              // Nur ueberschreiben wenn DB neuer als Disk (oder Disk existiert nicht)
+              if (fs.existsSync(filePath)) {
+                const diskMtime = fs.statSync(filePath).mtimeMs;
+                const dbUpdatedAt = new Date(row.updated_at).getTime();
+                if (diskMtime > dbUpdatedAt) {
+                  console.error(`[Synapse] PG→FS Skip (Disk neuer): ${path.basename(filePath)}`);
+                  continue;
+                }
+              }
               fs.mkdirSync(path.dirname(filePath), { recursive: true });
               fs.writeFileSync(filePath, row.content, 'utf-8');
               console.error(`[Synapse] PG→FS Sync: ${path.basename(filePath)}`);
