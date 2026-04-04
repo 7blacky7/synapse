@@ -230,18 +230,17 @@ export const filesTool: ConsolidatedTool = {
         const replaceStr = reqStr(args, 'replace');
         const { content: newContent, count, fuzzyMatches } = searchReplace(currentContent, searchStr, replaceStr);
 
-        // Keine exakten Matches gefunden
+        // Keine Matches gefunden — Datei wurde NICHT geändert
         if (count === 0) {
-          // Mit oder ohne Fuzzy-Vorschläge
           if (fuzzyMatches && fuzzyMatches.length > 0) {
             return {
-              success: true,
+              success: false,
               count: 0,
               fuzzyMatches,
               hint: `Kein exakter Match. Ähnliche Zeilen oben — meintest du eine davon?`,
             };
           }
-          return { success: true, count: 0, message: `Kein Vorkommen von "${searchStr}" in "${filePath}"` };
+          return { success: false, count: 0, message: `Kein Vorkommen von "${searchStr}" in "${filePath}"` };
         }
 
         // Exakte Matches gefunden — ersetzen

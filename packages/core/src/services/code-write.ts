@@ -7,7 +7,7 @@
  *     replaceLines     — Zeilen ersetzen (1-basiert, inklusiv)
  *     insertAfterLine  — Nach Zeile einfuegen (0 = Anfang)
  *     deleteLines      — Zeilen loeschen (1-basiert, inklusiv)
- *     searchReplace    — Suchen + Ersetzen, gibt { content, count } zurueck
+ *     searchReplace    — Suchen + Ersetzen, gibt { content, count, fuzzyMatches? } zurueck
  *     contentHash      — SHA-256 Hash
  *
  *   PG-Operationen:
@@ -122,11 +122,9 @@ function findSimilarLines(
     const matches: Array<{ lineStart: number; score: number }> = [];
 
     contentLines.forEach((line, idx) => {
-      if (normalizeWhitespace(line) === normalized) return; // Exakt match schon gefunden
-      const score = calculateLevenshteinSimilarity(
-        normalized,
-        normalizeWhitespace(line)
-      );
+      const normalizedLine = normalizeWhitespace(line); // einmal cachen
+      if (normalizedLine === normalized) return; // Exakt match schon gefunden
+      const score = calculateLevenshteinSimilarity(normalized, normalizedLine);
       if (score > minSimilarity) {
         matches.push({ lineStart: idx + 1, score });
       }
@@ -142,13 +140,14 @@ function findSimilarLines(
       }));
   }
 
-  // Mehrzeilig: Sliding Window mit LCS
+  // Mehrzeilig: Sliding Window mit LCS auf normalisierten Zeilen
+  const normalizedSearchLines = searchLines.map(normalizeWhitespace);
   const matches: Array<{ lineStart: number; score: number }> = [];
 
   for (let i = 0; i <= contentLines.length - searchLen; i++) {
-    const window = contentLines.slice(i, i + searchLen);
-    const lcs = lcsLength(window, searchLines);
-    const score = lcs / Math.max(searchLen, window.length);
+    const window = contentLines.slice(i, i + searchLen).map(normalizeWhitespace);
+    const lcs = lcsLength(window, normalizedSearchLines);
+    const score = lcs / searchLen; // window.length === searchLen immer
 
     if (score > minSimilarity) {
       matches.push({ lineStart: i + 1, score });
@@ -250,7 +249,7 @@ export function deleteLines(
 /**
  * Sucht und ersetzt einen String (alle Vorkommen).
  * Strategie:
- *   1. Normalisiere Whitespace und matche — häufigster Fall (Tabs vs Spaces)
+ *   1. Whitespace-tolerantes Regex-Matching ([ \t]+ statt festes Whitespace) — häufigster Fall
  *   2. Exaktes Match fallback
  *   3. Keine Matches: Fuzzy-Finder mit ähnlichen Zeilen
  * @param content - Dateiinhalt als String
@@ -263,36 +262,30 @@ export function searchReplace(
   search: string,
   replace: string
 ): { content: string; count: number; fuzzyMatches?: FuzzyMatch[] } {
-  // Einzeilig: Whitespace-normalisiertes Matching
-  if (!search.includes('\n')) {
-    const normalized = normalizeWhitespace(search);
-    const lines = content.split('\n');
-    const resultLines: string[] = [];
-    let count = 0;
+  if (!search) return { content, count: 0 };
 
-    for (const line of lines) {
-      if (normalizeWhitespace(line) === normalized) {
-        // Exakt match nach Normalisierung — mit Original-Whitespace ersetzen
-        resultLines.push(replace);
-        count++;
-      } else {
-        resultLines.push(line);
-      }
-    }
+  // Strategie 1: Whitespace-tolerantes Regex (Spaces/Tabs flexibel, Substring-basiert)
+  // Löst den häufigsten Fall: Indentation-Unterschiede (Tab vs Spaces)
+  const escapedSearch = search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const flexibleSearch = escapedSearch.replace(/[ \t]+/g, '[ \\t]+');
 
-    if (count > 0) {
-      return { content: resultLines.join('\n'), count };
+  try {
+    const regex = new RegExp(flexibleSearch, 'g');
+    const matchArr = content.match(regex);
+    if (matchArr && matchArr.length > 0) {
+      return { content: content.replace(regex, replace), count: matchArr.length };
     }
+  } catch {
+    // Ungültiger Regex (edge case) — fall through zu exaktem Match
   }
 
-  // Exaktes Match (fallback für mehrzeilig)
+  // Strategie 2: Exaktes Match
   const split = content.split(search);
   if (split.length > 1) {
-    const count = split.length - 1;
-    return { content: split.join(replace), count };
+    return { content: split.join(replace), count: split.length - 1 };
   }
 
-  // Keine Matches: Fuzzy-Finder
+  // Strategie 3: Fuzzy-Finder
   const fuzzyMatches = findSimilarLines(content, search);
   return { content, count: 0, fuzzyMatches };
 }
