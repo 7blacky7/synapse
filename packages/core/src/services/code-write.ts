@@ -34,6 +34,138 @@ import { checkErrorPatterns, type ErrorPatternWarning } from './error-patterns.j
 // ─── String-Operationen (pure) ────────────────────────────────────────────────
 
 /**
+ * Normalisiert Whitespace: trim + collapse multiple spaces
+ */
+function normalizeWhitespace(str: string): string {
+  return str
+    .trim()
+    .split('\n')
+    .map(line => line.trim().replace(/\s+/g, ' '))
+    .join('\n');
+}
+
+/**
+ * Longest Common Subsequence Länge (auf Array-Ebene, z.B. Zeilen)
+ * DP-basiert: O(m × n) wobei m, n = Zeilenanzahl (nicht Zeichenanzahl)
+ */
+function lcsLength(arr1: string[], arr2: string[]): number {
+  const m = arr1.length;
+  const n = arr2.length;
+  const dp: number[][] = Array(m + 1)
+    .fill(null)
+    .map(() => Array(n + 1).fill(0));
+
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      if (arr1[i - 1] === arr2[j - 1]) {
+        dp[i][j] = dp[i - 1][j - 1] + 1;
+      } else {
+        dp[i][j] = Math.max(dp[i - 1][j], dp[i][j - 1]);
+      }
+    }
+  }
+  return dp[m][n];
+}
+
+/**
+ * Levenshtein Similarity Score (0-1)
+ */
+function calculateLevenshteinSimilarity(s1: string, s2: string): number {
+  const maxLen = Math.max(s1.length, s2.length);
+  if (maxLen === 0) return 1;
+
+  const dp: number[][] = Array(s1.length + 1)
+    .fill(null)
+    .map(() => Array(s2.length + 1).fill(0));
+
+  for (let i = 0; i <= s1.length; i++) dp[i][0] = i;
+  for (let j = 0; j <= s2.length; j++) dp[0][j] = j;
+
+  for (let i = 1; i <= s1.length; i++) {
+    for (let j = 1; j <= s2.length; j++) {
+      const cost = s1[i - 1] === s2[j - 1] ? 0 : 1;
+      dp[i][j] = Math.min(
+        dp[i - 1][j] + 1,
+        dp[i][j - 1] + 1,
+        dp[i - 1][j - 1] + cost
+      );
+    }
+  }
+  const distance = dp[s1.length][s2.length];
+  return 1 - distance / maxLen;
+}
+
+/**
+ * Findet ähnliche Zeilen-Fenster für einen Search-String.
+ * Einzeilig: Levenshtein. Mehrzeilig: Sliding Window + LCS auf Zeilen-Ebene.
+ * @returns [{ lineStart, preview, similarity }] — Top 3, similarity > 0.5
+ */
+export interface FuzzyMatch {
+  lineStart: number;
+  preview: string;
+  similarity: number;
+}
+
+function findSimilarLines(
+  content: string,
+  searchStr: string,
+  limit: number = 3,
+  minSimilarity: number = 0.5
+): FuzzyMatch[] {
+  const contentLines = content.split('\n');
+  const searchLines = searchStr.split('\n');
+  const searchLen = searchLines.length;
+
+  // Einzeilig: Levenshtein auf normalisiertem Text
+  if (searchLen === 1) {
+    const normalized = normalizeWhitespace(searchStr);
+    const matches: Array<{ lineStart: number; score: number }> = [];
+
+    contentLines.forEach((line, idx) => {
+      if (normalizeWhitespace(line) === normalized) return; // Exakt match schon gefunden
+      const score = calculateLevenshteinSimilarity(
+        normalized,
+        normalizeWhitespace(line)
+      );
+      if (score > minSimilarity) {
+        matches.push({ lineStart: idx + 1, score });
+      }
+    });
+
+    return matches
+      .sort((a, b) => b.score - a.score)
+      .slice(0, limit)
+      .map(m => ({
+        lineStart: m.lineStart,
+        preview: contentLines[m.lineStart - 1].substring(0, 50),
+        similarity: Math.round(m.score * 100),
+      }));
+  }
+
+  // Mehrzeilig: Sliding Window mit LCS
+  const matches: Array<{ lineStart: number; score: number }> = [];
+
+  for (let i = 0; i <= contentLines.length - searchLen; i++) {
+    const window = contentLines.slice(i, i + searchLen);
+    const lcs = lcsLength(window, searchLines);
+    const score = lcs / Math.max(searchLen, window.length);
+
+    if (score > minSimilarity) {
+      matches.push({ lineStart: i + 1, score });
+    }
+  }
+
+  return matches
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit)
+    .map(m => ({
+      lineStart: m.lineStart,
+      preview: contentLines[m.lineStart - 1].substring(0, 50),
+      similarity: Math.round(m.score * 100),
+    }));
+}
+
+/**
  * Ersetzt Zeilen in einem String (1-basiert, inklusiv).
  * @param content   - Dateiinhalt als String
  * @param lineStart - Erste zu ersetzende Zeile (1-basiert)
@@ -117,24 +249,52 @@ export function deleteLines(
 
 /**
  * Sucht und ersetzt einen String (alle Vorkommen).
+ * Strategie:
+ *   1. Normalisiere Whitespace und matche — häufigster Fall (Tabs vs Spaces)
+ *   2. Exaktes Match fallback
+ *   3. Keine Matches: Fuzzy-Finder mit ähnlichen Zeilen
  * @param content - Dateiinhalt als String
  * @param search  - Suchstring
  * @param replace - Ersetzungsstring
- * @returns { content: string, count: number }
+ * @returns { content: string, count: number, fuzzyMatches?: FuzzyMatch[] }
  */
 export function searchReplace(
   content: string,
   search: string,
   replace: string
-): { content: string; count: number } {
-  let count = 0;
-  const result = content.split(search).join(replace);
-  // Anzahl der Ersetzungen berechnen
-  if (search.length > 0) {
-    const before = content.split(search);
-    count = before.length - 1;
+): { content: string; count: number; fuzzyMatches?: FuzzyMatch[] } {
+  // Einzeilig: Whitespace-normalisiertes Matching
+  if (!search.includes('\n')) {
+    const normalized = normalizeWhitespace(search);
+    const lines = content.split('\n');
+    const resultLines: string[] = [];
+    let count = 0;
+
+    for (const line of lines) {
+      if (normalizeWhitespace(line) === normalized) {
+        // Exakt match nach Normalisierung — mit Original-Whitespace ersetzen
+        resultLines.push(replace);
+        count++;
+      } else {
+        resultLines.push(line);
+      }
+    }
+
+    if (count > 0) {
+      return { content: resultLines.join('\n'), count };
+    }
   }
-  return { content: result, count };
+
+  // Exaktes Match (fallback für mehrzeilig)
+  const split = content.split(search);
+  if (split.length > 1) {
+    const count = split.length - 1;
+    return { content: split.join(replace), count };
+  }
+
+  // Keine Matches: Fuzzy-Finder
+  const fuzzyMatches = findSimilarLines(content, search);
+  return { content, count: 0, fuzzyMatches };
 }
 
 /**
