@@ -23,6 +23,12 @@ ${skillContent}`)
 
   // 4. Synapse MCP-Instruktionen
   sections.push(`## Synapse MCP-Tools (15 konsolidierte Tools mit action-Parameter)
+Du bist ein SPEZIALIST. Deine Rolle: spezialist
+
+### Onboarding (PFLICHT — Allererste Aktion)
+admin(action: "index_stats", project: "${config.project}", agent_id: "${config.name}", role: "spezialist")
+→ Du bekommst Projekt-Regeln. Befolge sie.
+
 Du hast Zugriff auf Synapse MCP-Tools. Nutze sie:
 - search(action: "code"): Code semantisch suchen
 - search(action: "path"): Dateien nach Pfad suchen
