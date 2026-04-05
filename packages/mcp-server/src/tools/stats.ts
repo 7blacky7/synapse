@@ -11,11 +11,11 @@
  *   - message: string - Zusammenfassung
  *
  * NEBENEFFEKTE:
- *   - Qdrant: Liest aus project_<name>_code, project_<name>_media, project_thoughts, synapse_memories
+ *   - Qdrant: Liest aus project_<name>_code, project_<name>_media, project_<name>_thoughts, project_<name>_memories
  *   - Kein Schreiben, reine Leseoperation
  */
 
-import { getProjectStats } from '@synapse/core';
+import { getProjectStats, COLLECTIONS } from '@synapse/core';
 
 interface IndexStats {
   project: string;
@@ -49,14 +49,14 @@ export async function getIndexStats(
     let memoriesCount = 0;
 
     try {
-      const thoughtsStats = await getCollectionStats('project_thoughts');
+      const thoughtsStats = await getCollectionStats(COLLECTIONS.projectThoughts(project));
       thoughtsCount = thoughtsStats?.pointsCount ?? 0;
     } catch {
       // Collection existiert möglicherweise nicht
     }
 
     try {
-      const memoriesStats = await getCollectionStats('synapse_memories');
+      const memoriesStats = await getCollectionStats(COLLECTIONS.projectMemories(project));
       memoriesCount = memoriesStats?.pointsCount ?? 0;
     } catch {
       // Collection existiert möglicherweise nicht
@@ -67,12 +67,12 @@ export async function getIndexStats(
     let mediaImages = 0;
     let mediaVideos = 0;
     try {
-      const mediaStats = await getCollectionStats(`project_${project}_media`);
+      const mediaStats = await getCollectionStats(COLLECTIONS.projectMedia(project));
       mediaCount = mediaStats?.pointsCount ?? 0;
       if (mediaCount > 0) {
         const { scrollVectors } = await import('@synapse/core');
         const mediaPoints = await scrollVectors<{ media_category: string }>(
-          `project_${project}_media`, {}, 10000
+          COLLECTIONS.projectMedia(project), {}, 10000
         );
         for (const p of mediaPoints) {
           if (p.payload?.media_category === 'image') mediaImages++;
@@ -137,7 +137,7 @@ export async function getDetailedStats(
     const { scrollVectors } = await import('@synapse/core');
 
     // Code-Chunks nach Dateityp gruppieren
-    const collectionName = `project_${project}`;
+    const collectionName = COLLECTIONS.projectCode(project);
     let codeByType: Record<string, number> = {};
     let totalChunks = 0;
 
@@ -165,9 +165,9 @@ export async function getDetailedStats(
     let totalThoughts = 0;
 
     try {
-      const thoughtPoints = await scrollVectors<{ source: string; project: string }>(
-        'project_thoughts',
-        { must: [{ key: 'project', match: { value: project } }] },
+      const thoughtPoints = await scrollVectors<{ source: string }>(
+        COLLECTIONS.projectThoughts(project),
+        {},
         10000
       );
       totalThoughts = thoughtPoints.length;
@@ -188,9 +188,9 @@ export async function getDetailedStats(
     let totalMemories = 0;
 
     try {
-      const memoryPoints = await scrollVectors<{ category: string; project: string }>(
-        'synapse_memories',
-        { must: [{ key: 'project', match: { value: project } }] },
+      const memoryPoints = await scrollVectors<{ category: string }>(
+        COLLECTIONS.projectMemories(project),
+        {},
         10000
       );
       totalMemories = memoryPoints.length;
