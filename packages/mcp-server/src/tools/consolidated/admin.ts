@@ -92,6 +92,11 @@ export const adminTool: ConsolidatedTool = {
           type: 'string',
           description: 'Optional für index_media/index_stats/detailed_stats: Agent-ID für Onboarding',
         },
+        role: {
+          type: 'string',
+          enum: ['koordinator', 'spezialist', 'subagent'],
+          description: 'Agenten-Rolle fuer rollenspezifisches Onboarding (optional, Fallback: Erkennung ueber agent_id)',
+        },
       },
       required: ['action'],
     },

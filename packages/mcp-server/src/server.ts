@@ -173,6 +173,7 @@ export function createServer(): Server {
     // Globale Parameter fuer Agent-Onboarding extrahieren
     const agentId = args?.agent_id as string | undefined;
     const projectName = args?.project as string | undefined;
+    const role = args?.role as import('./tools/onboarding.js').AgentRole | undefined;
 
     // Helper: Ergebnis mit Onboarding erweitern
     const withOnboarding = async (result: Record<string, unknown>) => {
@@ -180,7 +181,7 @@ export function createServer(): Server {
         return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
       }
 
-      const onboarding = await checkAgentOnboarding(projectName, agentId);
+      const onboarding = await checkAgentOnboarding(projectName, agentId, undefined, role);
       const enhanced: Record<string, unknown> = { ...result };
 
       // Onboarding-Regeln bei erstem Besuch
