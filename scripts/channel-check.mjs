@@ -18,7 +18,7 @@ const pool = new Pool({ connectionString: dbUrl, max: 1 });
 try {
   // Alle Channels finden in denen der Agent Mitglied ist
   const r = await pool.query(
-    `SELECT c.name AS channel_name, COUNT(m.id) AS unread
+    `SELECT c.name AS channel_name, COUNT(m.id) AS unread, MAX(m.id) AS max_id
      FROM specialist_channels c
      JOIN specialist_channel_members mem ON mem.channel_id = c.id
      JOIN specialist_channel_messages m ON m.channel_id = c.id
@@ -31,9 +31,15 @@ try {
      ORDER BY c.name`,
     [project, agentName, sinceId || '0']
   );
-  // Format: channel1:3,channel2:1
+  // Hoechste Message-ID ueber alle Channels
+  let maxId = parseInt(sinceId || '0', 10);
+  for (const row of r.rows) {
+    if (row.max_id > maxId) maxId = row.max_id;
+  }
+  // Format: Zeile 1 = channel1:3,channel2:1 | Zeile 2 = max_id
   const parts = r.rows.map(row => `${row.channel_name}:${row.unread}`);
   console.log(parts.join(','));
+  console.log(maxId);
 } catch {
   console.log('');
 }

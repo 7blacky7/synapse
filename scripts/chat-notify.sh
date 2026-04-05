@@ -89,11 +89,19 @@ CHANNEL_SINCE_ID="0"
 if [[ -f "$CHANNEL_LASTSEEN" ]]; then
   CHANNEL_SINCE_ID=$(cat "$CHANNEL_LASTSEEN" 2>/dev/null || echo "0")
 fi
-CHANNEL_RESULT=$(node "$SCRIPT_DIR/channel-check.mjs" "$AGENT_ID" "$PROJECT" "$CHANNEL_SINCE_ID" "$DB_URL" 2>/dev/null) || CHANNEL_RESULT=""
+CHANNEL_RAW=$(node "$SCRIPT_DIR/channel-check.mjs" "$AGENT_ID" "$PROJECT" "$CHANNEL_SINCE_ID" "$DB_URL" 2>/dev/null) || CHANNEL_RAW=""
+
+# Zeile 1 = channels, Zeile 2 = max_id
+CHANNEL_RESULT=$(echo "$CHANNEL_RAW" | head -1)
+CHANNEL_MAX_ID=$(echo "$CHANNEL_RAW" | tail -1)
 
 CHANNEL_MSG=""
 if [[ -n "$CHANNEL_RESULT" ]]; then
   CHANNEL_MSG="📢 Channel: ${CHANNEL_RESULT} — Lies mit: channel(action: \"feed\", channel_name: \"...\")"
+  # max_id speichern damit naechster Check nur neue Nachrichten zeigt
+  if [[ -n "$CHANNEL_MAX_ID" && "$CHANNEL_MAX_ID" != "$CHANNEL_RESULT" ]]; then
+    echo "$CHANNEL_MAX_ID" > "$CHANNEL_LASTSEEN"
+  fi
 fi
 
 # === CHAT-CHECK ===
