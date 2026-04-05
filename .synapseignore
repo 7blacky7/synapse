@@ -42,3 +42,6 @@ README.md
 *.txt
 project_plans_backup.json
 hooks-setup.example.json
+
+# Test-Daten (Parser-Samples, verdraengen echten Code)
+__testdata__/
