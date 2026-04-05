@@ -474,8 +474,10 @@ export async function cleanupProjekt(
       const filePath = point.payload?.file_path;
 
       if (filePath) {
-        // Relativen Pfad berechnen
-        const relativePath = path.relative(projectPath, filePath);
+        // Relativen Pfad berechnen (file_path kann absolut oder relativ sein)
+        const relativePath = filePath.startsWith('/')
+          ? path.relative(projectPath, filePath)
+          : filePath;
         seenFiles.add(relativePath);
 
         // Pruefen ob jetzt ignoriert werden soll
