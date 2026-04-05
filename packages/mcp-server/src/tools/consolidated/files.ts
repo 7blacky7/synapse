@@ -18,7 +18,9 @@ import {
   getDocsForFile,
 } from '@synapse/core';
 
+import * as path from 'path';
 import { ConsolidatedTool, str, reqStr, num } from './types.js';
+import { getProjectPath } from '../index.js';
 
 export const filesTool: ConsolidatedTool = {
   definition: {
@@ -83,8 +85,16 @@ export const filesTool: ConsolidatedTool = {
   handler: async (args: Record<string, unknown>) => {
     const action = reqStr(args, 'action');
     const project = reqStr(args, 'project');
-    const filePath = reqStr(args, 'file_path');
+    let filePath = reqStr(args, 'file_path');
     const agentId = str(args, 'agent_id');
+
+    // Relative Pfade auf absolut normalisieren (Projekt-Pfad voranstellen)
+    if (!path.isAbsolute(filePath)) {
+      const projectPath = getProjectPath(project);
+      if (projectPath) {
+        filePath = path.join(projectPath, filePath);
+      }
+    }
 
     // Haiku escaped Content manchmal doppelt: "\"use client\";\n\nimport..."
     // Detection: Literale \n im String aber keine echten Newlines → doppelt escaped
@@ -169,13 +179,21 @@ export const filesTool: ConsolidatedTool = {
       }
 
       case 'move': {
-        const newPath = reqStr(args, 'new_path');
+        let newPath = reqStr(args, 'new_path');
+        if (!path.isAbsolute(newPath)) {
+          const pp = getProjectPath(project);
+          if (pp) newPath = path.join(pp, newPath);
+        }
         await moveFileInPg(project, filePath, newPath);
         return { success: true, message: `Datei verschoben: "${filePath}" → "${newPath}"` };
       }
 
       case 'copy': {
-        const newPath = reqStr(args, 'new_path');
+        let newPath = reqStr(args, 'new_path');
+        if (!path.isAbsolute(newPath)) {
+          const pp = getProjectPath(project);
+          if (pp) newPath = path.join(pp, newPath);
+        }
         await copyFileInPg(project, filePath, newPath);
         return { success: true, message: `Datei kopiert: "${filePath}" → "${newPath}"` };
       }
