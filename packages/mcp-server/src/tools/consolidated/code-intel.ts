@@ -20,6 +20,7 @@ import {
   getReferences,
   fullTextSearchCode,
   getFileContent,
+  searchCode,
 } from '@synapse/core';
 
 import { ConsolidatedTool, str, reqStr, num, bool } from './types.js';
@@ -192,8 +193,24 @@ export const codeIntelTool: ConsolidatedTool = {
         const query = reqStr(args, 'query');
         const fileType = str(args, 'file_type');
         const limit = num(args, 'limit') ?? 20;
-        const results = await fullTextSearchCode(project, query, fileType, limit);
-        return { success: true, results, count: results.length, project };
+
+        // PG-Volltext zuerst (schnell, exakt)
+        const pgResults = await fullTextSearchCode(project, query, fileType, limit);
+
+        if (pgResults.length > 0) {
+          return { success: true, results: pgResults, count: pgResults.length, source: 'pg-fulltext', project };
+        }
+
+        // Auto-Fallback auf Qdrant-Semantik bei 0 PG-Treffern
+        const semanticResults = await searchCode(query, project, fileType, limit);
+        const mappedResults = semanticResults.map(r => ({
+          file_path: r.payload.file_path,
+          file_type: r.payload.file_type,
+          headline: r.payload.content.substring(0, 200),
+          rank: r.score,
+        }));
+
+        return { success: true, results: mappedResults, count: mappedResults.length, source: 'semantic-fallback', project };
       }
 
       case 'file': {

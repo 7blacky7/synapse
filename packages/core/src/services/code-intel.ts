@@ -555,16 +555,10 @@ export async function fullTextSearchCode(
 ): Promise<FullTextSearchResult[]> {
   const pool = getPool();
 
-  // Query-Woerter mit & verbinden fuer AND-Semantik
-  const tsQuery = query
-    .trim()
-    .split(/\s+/)
-    .filter(Boolean)
-    .join(' & ');
+  const cleanQuery = query.trim();
+  if (!cleanQuery) return [];
 
-  if (!tsQuery) return [];
-
-  const params: unknown[] = [project, tsQuery];
+  const params: unknown[] = [project, cleanQuery];
   let typeFilter = '';
   if (fileType) {
     params.push(fileType);
@@ -576,13 +570,13 @@ export async function fullTextSearchCode(
     `SELECT
        file_path,
        file_type,
-       ts_headline('english', content, to_tsquery('english', $2),
+       ts_headline('english', content, plainto_tsquery('english', $2),
          'MaxWords=20, MinWords=5, ShortWord=3, HighlightAll=false,
           MaxFragments=2, FragmentDelimiter='' ... ''') AS headline,
-       ts_rank(tsv, to_tsquery('english', $2)) AS rank
+       ts_rank(tsv, plainto_tsquery('english', $2)) AS rank
      FROM code_files
      WHERE project = $1
-       AND tsv @@ to_tsquery('english', $2)
+       AND tsv @@ plainto_tsquery('english', $2)
        ${typeFilter}
      ORDER BY rank DESC
      LIMIT $${params.length}`,
