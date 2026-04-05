@@ -56,22 +56,22 @@ QDRANT_URL="${QDRANT_URL:-http://192.168.50.65:6333}"
 # KOORDINATOR (PreToolUse:Read)
 # ============================================
 if [ "$HOOK_EVENT" != "SubagentStart" ]; then
-    # Session-Tracking (einmal pro 30 Min)
-    MARKER="/tmp/synapse-onboarding-${PROJECT_NAME}.marker"
+    # Einmal pro Session: Nach erstem Anzeigen nicht mehr wiederholen
+    MARKER="/tmp/synapse-onboarded-${PROJECT_NAME}-koordinator.marker"
     if [ -f "$MARKER" ]; then
-        MARKER_AGE=$(( $(date +%s) - $(stat -c %Y "$MARKER" 2>/dev/null || echo 0) ))
-        if [ "$MARKER_AGE" -lt 1800 ]; then
-            exit 0
-        fi
+        exit 0
     fi
-    touch "$MARKER"
 
     MSG="Synapse MCP aktiv | Projekt: ${PROJECT_NAME} | Status: ${PROJECT_STATUS}\n"
-    MSG+="Du bist der KOORDINATOR. Lade: synapse-nutzung Skill\n"
-    MSG+="Session-Start: chat(action: \"register\", id: \"koordinator\", project: \"${PROJECT_NAME}\", model: \"claude-opus-4-6\")\n"
-    MSG+="Dann: chat(action: \"get\", project: \"${PROJECT_NAME}\", agent_id: \"koordinator\", limit: 10)\n"
+    MSG+="Du bist der KOORDINATOR.\n"
+    MSG+="Session-Start (PFLICHT — einmal zu Beginn):\n"
+    MSG+="1. admin(action: \"index_stats\", project: \"${PROJECT_NAME}\", agent_id: \"koordinator\", role: \"koordinator\")\n"
+    MSG+="2. chat(action: \"register\", id: \"koordinator\", project: \"${PROJECT_NAME}\", model: \"claude-opus-4-6\")\n"
+    MSG+="3. chat(action: \"get\", project: \"${PROJECT_NAME}\", agent_id: \"koordinator\", limit: 10)\n"
     MSG+="Agenten spawnen: Prompt-Baustein aus synapse-nutzung Skill einbetten\n"
-    MSG+="Tools: chat, search, memory, thought, docs, event, project (13 konsolidierte Tools mit action-Parameter)"
+    MSG+="Spezialisten mit role: \"spezialist\", Subagenten mit role: \"subagent\" anmelden."
+
+    touch "$MARKER"
 
     CONTEXT=$(printf '%b' "$MSG")
     jq -nc --arg c "$CONTEXT" '{"hookSpecificOutput": {"hookEventName": "PreToolUse", "additionalContext": $c}}'
@@ -80,25 +80,23 @@ if [ "$HOOK_EVENT" != "SubagentStart" ]; then
 # AGENT (SubagentStart)
 # ============================================
 else
-    # Agent-ID: Claude Code liefert agent_id im Hook-Input, Fallback auf Timestamp-ID
     CLAUDE_AGENT_ID=$(echo "$INPUT" | jq -r '.agent_id // empty')
     AGENT_ID="${CLAUDE_AGENT_ID:-agent-$(date +%s | tail -c 6)}"
 
     MSG="=== SYNAPSE AGENT-ONBOARDING ===\n"
-    MSG+="Projekt: ${PROJECT_NAME} | Deine ID: ${AGENT_ID}\n\n"
+    MSG+="Projekt: ${PROJECT_NAME} | Deine ID: ${AGENT_ID} | Rolle: subagent\n\n"
     MSG+="PFLICHT-SCHRITTE (ALLERERSTE Aktionen):\n"
-    MSG+="1. chat(action: \"register\", id: \"${AGENT_ID}\", project: \"${PROJECT_NAME}\")\n"
-    MSG+="2. admin(action: \"index_stats\", project: \"${PROJECT_NAME}\", agent_id: \"${AGENT_ID}\")\n"
-    MSG+="3. chat(action: \"get\", project: \"${PROJECT_NAME}\", agent_id: \"${AGENT_ID}\", limit: 10)\n\n"
-    MSG+="SUCHE: IMMER zuerst search(action: \"code\") / search(action: \"memory\"). Glob/Grep nur Fallback.\n"
-    MSG+="CHAT: chat(action: \"send\") fuer Status. DM: recipient_id: \"koordinator\" bei Problemen.\n"
+    MSG+="1. admin(action: \"index_stats\", project: \"${PROJECT_NAME}\", agent_id: \"${AGENT_ID}\", role: \"subagent\")\n"
+    MSG+="   → Du bekommst Projekt-Regeln. Befolge sie.\n"
+    MSG+="2. chat(action: \"get\", project: \"${PROJECT_NAME}\", agent_id: \"${AGENT_ID}\", limit: 10)\n\n"
+    MSG+="SUCHE: IMMER zuerst code_intel, dann search(action: \"code\"). Glob/Grep nur Fallback.\n"
+    MSG+="CHAT: channel(action: \"post\") fuer Status. DM: chat(action: \"send\", recipient_id: \"koordinator\") bei Problemen.\n"
     MSG+="ENDE: chat(action: \"unregister\", id: \"${AGENT_ID}\")\n"
-    MSG+="agent_id \"${AGENT_ID}\" an JEDEN Synapse-Aufruf. source \"${AGENT_ID}\" bei thought(action: \"add\").\n"
+    MSG+="agent_id: \"${AGENT_ID}\" an JEDEN Synapse-Aufruf. source: \"${AGENT_ID}\" bei thought(action: \"add\").\n"
     MSG+="=== ENDE AGENT-ONBOARDING ===\n"
 
     ORIGINAL_PROMPT=$(echo "$INPUT" | jq -r '.subagent_prompt // ""')
     UPDATED_PROMPT=$(printf '%b\n\n--- ORIGINAL TASK ---\n\n%s' "$MSG" "$ORIGINAL_PROMPT")
     jq -nc --arg p "$UPDATED_PROMPT" '{"updatedPrompt": $p}'
 fi
-
 exit 0
