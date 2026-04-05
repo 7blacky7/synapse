@@ -90,6 +90,9 @@ export {
   toAbsolutePath,
 } from './services/project-registry.js';
 
+// Migrations
+export { migrateToRelativePaths } from './migrations/migrate-to-relative-paths.js';
+
 export {
   // Code
   indexFile,

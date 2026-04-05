@@ -7,7 +7,7 @@
  *   Stage 2 (async, debounced):  Symbole parsen → code_symbols, Chunks → code_chunks, Embeddings → Qdrant
  *
  * INPUT:
- *   - filePath: string - Absoluter Pfad zur Datei
+ *   - filePath: string - Relativer Pfad zur Datei (relativ zum Projekt-Root)
  *   - projectName: string - Name des Projekts fuer Collection-Zuordnung
  *   - query: string - Suchbegriff fuer semantische Suche
  *   - event: FileEvent - add/change/unlink Events vom FileWatcher
@@ -812,10 +812,12 @@ export async function searchFilesByPath(
     .replace(/\x01STAR\x01/g, '[^/]*')
     .replace(/\x01QUESTION\x01/g, '.');
 
-  // Relative Patterns (ohne fuehrenden /) matchen ueberall im absoluten Pfad
-  if (!pathPattern.startsWith('/')) {
-    sqlPattern = '.*/' + sqlPattern;
+  // Relative Pfade in DB — Pattern matcht direkt
+  // Fuehrenden / entfernen falls vorhanden (absolute→relative Normalisierung)
+  if (pathPattern.startsWith('/')) {
+    sqlPattern = sqlPattern.substring(1);
   }
+  // Kein '.*/' Prefix noetig — Pfade sind bereits relativ
 
   const result = await pool.query(
     `SELECT file_path, file_name, file_type, chunk_count, file_size

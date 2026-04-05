@@ -22,6 +22,7 @@ import {
   confirmIdea,
   indexMediaWrapper,
 } from '../index.js';
+import { migrateToRelativePaths } from '@synapse/core';
 
 export const adminTool: ConsolidatedTool = {
   definition: {
@@ -32,7 +33,7 @@ export const adminTool: ConsolidatedTool = {
       properties: {
         action: {
           type: 'string',
-          enum: ['migrate', 'restore', 'save_idea', 'confirm_idea', 'index_media', 'index_stats', 'detailed_stats'],
+          enum: ['migrate', 'restore', 'save_idea', 'confirm_idea', 'index_media', 'index_stats', 'detailed_stats', 'migrate_paths'],
           description: 'Die auszuführende Admin-Action',
         },
         // === migrate ===
@@ -199,6 +200,18 @@ export const adminTool: ConsolidatedTool = {
         const result = await getDetailedStats(project);
 
         return result;
+      }
+
+      // ===== MIGRATE_PATHS =====
+      case 'migrate_paths': {
+        const result = await migrateToRelativePaths();
+
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify(result, null, 2),
+          }],
+        };
       }
 
       default:
