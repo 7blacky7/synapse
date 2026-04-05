@@ -16,7 +16,6 @@ Du (User)
                                     │    SYNAPSE CORE     │
                                     │                     │
                                     │  FileWatcher        │
-                                    │  Code-Intelligence  │
                                     │  Embeddings (Google)│
                                     │  Tech-Detection     │
                                     │  Context7 Client    │
@@ -39,9 +38,6 @@ Du (User)
                                              │ Events      │
                                              │ Event-Acks  │
                                              │ Channels    │
-                                             │ Code-Symbols│
-                                             │ Code-Refs   │
-                                             │ Code-Chunks │
                                              └─────────────┘
 ```
 
@@ -65,7 +61,6 @@ Du (User)
 | 🖼️ **Media-Suche** | Cross-Modal Suche: Bilder und Videos per Text-Query finden (Google Gemini Embedding 2). |
 | 🔧 **Tech-Detection** | Erkennt automatisch Frameworks, Libraries und Tools im Projekt. |
 | 📢 **Kanäle** | Spezialistengruppen-Kommunikation - Agenten können gezielt in Kanälen kommunizieren und Fachgruppen bilden. |
-| 🧩 **Code-Intelligence** | Strukturierte Code-Analyse aus PostgreSQL: Funktionen, Variablen, Symbole, Referenzen, Dateibaum, Volltext-Suche. 61 Sprach-Parser (Regex-basiert). Kein Embedding nötig — sofortige Ergebnisse. |
 
 ---
 
@@ -102,16 +97,16 @@ Datei gespeichert
 **Schreib-Flow:** PG first → Qdrant second (Ausnahme: code.ts schreibt Qdrant first)
 **Fehlertoleranz:** Beide Writes in separaten try-catch, warning-Feld bei Partial-Failure
 
-**Read-Pfade (by Design):**
-- **Semantische Suche** (fuzzy/konzeptuell) → liest **Qdrant** (Read-Primary)
-- **Strukturierte Queries** (Funktionen, Variablen, Referenzen) → liest **PostgreSQL** via Code-Intelligence
-- **Schreibvorgänge** → PG first, Qdrant second
+**⚠️ ARCHITEKTUR-PROBLEM:** Reads kommen je nach Operation aus verschiedenen Stores:
+- `get*/list*` Operationen lesen **Qdrant** (Read-Primary)
+- `update*/delete*` Operationen lesen **PostgreSQL** (Write-Primary)
+- **Konsequenz:** Bei Partial-Failure entstehen Geister-Datensätze (unsichtbar oder nicht-editierbar)
 
 Jedes Projekt bekommt eigene Qdrant-Collections: `project_{name}_code`, `project_{name}_thoughts`, etc.
 
 ---
 
-## 🛠️ MCP-Tools (14 konsolidierte Tools)
+## 🛠️ MCP-Tools (13 konsolidierte Tools, 82 Actions)
 
 ### 📦 Admin & Projekt-Management (`admin`)
 
@@ -126,14 +121,6 @@ Jedes Projekt bekommt eigene Qdrant-Collections: `project_{name}_code`, `project
 | `confirm_idea` | Idee bestätigen und persistent speichern |
 | `index_media` | Bilder und Videos indexieren (Gemini Embedding 2) |
 | `detailed_stats` | Aufschlüsselung nach Dateityp, Source, Kategorie |
-
-**Beispiel:**
-```
-> admin(action: "index_stats", project: "synapse")
-
-← { collections: 7, code_chunks: 1250, memories: 12, thoughts: 45,
-     plans: 2, proposals: 8, tech_docs: 34, media: 0 }
-```
 
 ---
 
@@ -151,19 +138,6 @@ Jedes Projekt bekommt eigene Qdrant-Collections: `project_{name}_code`, `project
 | `proposals` | Proposal-Suche (Code-Vorschläge) |
 | `tech_docs` | Framework-Dokumentation (mit Context7 Auto-Fetch) |
 | `media` | Cross-Modal Suche: Bilder/Videos per Text-Query |
-
-**Beispiele:**
-```
-> search(action: "code", query: "file watcher implementation", project: "synapse")
-
-← [{ score: 0.72, file: "packages/core/src/watcher/index.ts",
-      content: "export class FileWatcher { ... }", line: 15 }, ...]
-
-> search(action: "memory", query: "commit conventions", project: "synapse")
-
-← [{ score: 0.68, name: "commit-konventionen",
-      content: "Konventionelle Commits auf Deutsch..." }]
-```
 
 > **Path-Suche Glob-Pattern:** Relative Pfade (z.B. `packages/agents/**/*.ts`) werden automatisch in SQL-Regex konvertiert und matchen überall im absoluten Pfad. Marker-basierte Konvertierung: `*` → `[^/]*`, `**` → `.*`, `?` → `.` — Sonderzeichen wie `.` werden escaped.
 
@@ -183,19 +157,6 @@ Jedes Projekt bekommt eigene Qdrant-Collections: `project_{name}_code`, `project
 | `update` | Memory aktualisieren (PostgreSQL + re-embed) |
 | `find_for_file` | Relevante Memories für eine Datei finden |
 
-**Beispiele:**
-```
-> memory(action: "write", project: "synapse", name: "projekt-regeln",
-         category: "rules", content: "TypeScript + pnpm, Commits auf Deutsch")
-
-← { success: true, id: "a142863e-..." }
-
-> memory(action: "read", project: "synapse", name: "projekt-regeln")
-
-← { name: "projekt-regeln", category: "rules",
-     content: "TypeScript + pnpm, Commits auf Deutsch", tags: [] }
-```
-
 ---
 
 ### 💭 Gedanken (`thought`)
@@ -210,18 +171,6 @@ Jedes Projekt bekommt eigene Qdrant-Collections: `project_{name}_code`, `project
 | `update` | Thought aktualisieren |
 | `search` | Semantische Thought-Suche |
 
-**Beispiel:**
-```
-> thought(action: "add", project: "synapse", source: "koordinator",
-          content: "FileWatcher ignoriert .map Dateien nicht", tags: ["bug"])
-
-← { id: "f1ec65f0-...", timestamp: "2026-03-27T07:17:19Z" }
-
-> thought(action: "search", query: "FileWatcher bug", project: "synapse")
-
-← [{ score: 0.71, id: "f1ec65f0-...", content: "FileWatcher ignoriert..." }]
-```
-
 ---
 
 ### 📋 Pläne (`plan`)
@@ -233,20 +182,6 @@ Jedes Projekt bekommt eigene Qdrant-Collections: `project_{name}_code`, `project
 | `get` | Plan abrufen (Ziele, Tasks, Architektur) |
 | `update` | Plan aktualisieren |
 | `add_task` | Task zum Plan hinzufügen |
-
-**Beispiel:**
-```
-> plan(action: "get", project: "synapse")
-
-← { name: "synapse-roadmap", goals: ["Multi-Agent Orchestrierung", "61 Parser"],
-     tasks: [{ id: 1, title: "Event-System Bug fixen", status: "done" },
-             { id: 2, title: "REST-API deployen", status: "in-progress" }] }
-
-> plan(action: "add_task", project: "synapse",
-       task: { title: "Reconciliation-Job", priority: "low" })
-
-← { success: true, task_id: 3 }
-```
 
 ---
 
@@ -261,18 +196,6 @@ Jedes Projekt bekommt eigene Qdrant-Collections: `project_{name}_code`, `project
 | `update_status` | Status ändern (pending → reviewed → accepted) |
 | `delete` | Proposal löschen |
 | `update` | Proposal-Inhalt ändern |
-
-**Beispiel:**
-```
-> proposal(action: "list", project: "synapse", status: "pending")
-
-← [{ id: "abc-123", file_path: "src/server.ts", author: "analyst",
-      description: "Event-Hint Fix", status: "pending" }]
-
-> proposal(action: "update_status", project: "synapse", id: "abc-123", status: "accepted")
-
-← { success: true }
-```
 
 ---
 
@@ -292,27 +215,6 @@ Jedes Projekt bekommt eigene Qdrant-Collections: `project_{name}_code`, `project
 | `inbox_send` | Nachricht in Inbox eines Agenten |
 | `inbox_check` | Inbox eines Agenten prüfen |
 
-**Beispiele:**
-```
-> chat(action: "register", id: "koordinator", project: "synapse", model: "claude-opus-4-6")
-
-← { session: { id: "koordinator", model: "claude-opus-4-6", cutoffDate: "2025-05-01" } }
-
-> chat(action: "send", project: "synapse", sender_id: "koordinator",
-       content: "Bitte src/tools/ analysieren")
-
-← { id: 42, broadcast: true, recipients: 3 }
-
-> chat(action: "send", project: "synapse", sender_id: "koordinator",
-       recipient_id: "analyst", content: "Fokus auf events.ts")
-
-← { id: 43, dm: true }
-
-> chat(action: "get", project: "synapse", agent_id: "koordinator", limit: 5)
-
-← [{ sender_id: "analyst", content: "Events.ts hat 7 Findings", timestamp: "..." }]
-```
-
 ---
 
 ### 📢 Kanäle (`channel`)
@@ -328,23 +230,6 @@ Jedes Projekt bekommt eigene Qdrant-Collections: `project_{name}_code`, `project
 | `feed` | Kanal-Nachrichten abrufen |
 | `list` | Alle Kanäle auflisten |
 
-**Beispiel:**
-```
-> channel(action: "create", project: "synapse", name: "code-review",
-          description: "Code-Review Diskussionen", created_by: "koordinator")
-
-← { success: true, channel: "code-review" }
-
-> channel(action: "post", channel_name: "code-review", sender: "analyst",
-          content: "server.ts hat Race Condition in Zeile 472")
-
-← { id: 12 }
-
-> channel(action: "feed", channel_name: "code-review", limit: 5)
-
-← [{ sender: "analyst", content: "server.ts hat Race Condition...", timestamp: "..." }]
-```
-
 ---
 
 ### ⚡ Events (`event`)
@@ -356,19 +241,6 @@ Jedes Projekt bekommt eigene Qdrant-Collections: `project_{name}_code`, `project
 | `emit` | Steuersignal an Agenten senden |
 | `ack` | Event quittieren (Pflicht bei `requires_ack`) |
 | `pending` | Unbestätigte Events abrufen |
-
-**Beispiel:**
-```
-> event(action: "emit", project: "synapse", event_type: "WORK_STOP",
-        priority: "critical", scope: "all", source_id: "koordinator",
-        payload: "Breaking Change in API — alle Arbeit pausieren")
-
-← { id: 7, delivered_to: ["analyst", "tester"] }
-
-> event(action: "ack", event_id: 7, agent_id: "analyst", reaction: "Verstanden, pausiere")
-
-← { success: true }
-```
 
 ---
 
@@ -384,29 +256,6 @@ Jedes Projekt bekommt eigene Qdrant-Collections: `project_{name}_code`, `project
 | `wake` | Agent mit Nachricht aufwecken |
 | `update_skill` | Skill des Agenten aktualisieren |
 | `capabilities` | Agenten-Fähigkeiten prüfen |
-
-**Beispiele:**
-```
-> specialist(action: "spawn", name: "code-analyst", model: "haiku",
-             expertise: "TypeScript Code-Analyse", project: "synapse")
-
-← { name: "code-analyst", pid: 229045, status: "running", socket: "/tmp/synapse-..." }
-
-> specialist(action: "wake", name: "code-analyst",
-             message: "Analysiere alle Funktionen in packages/core/src/services/")
-
-← { response: "Analyse gestartet...", tokens_used: 1250 }
-
-> specialist(action: "status", name: "code-analyst")
-
-← { name: "code-analyst", status: "running", tokens: 45000, ceiling: 200000,
-     uptime: "2h 15m", lastActivity: "2026-03-27T07:30:00Z" }
-
-> specialist(action: "update_skill", name: "code-analyst",
-             section: "patterns", content: "Dual-Write immer PG→Qdrant Reihenfolge prüfen")
-
-← { success: true, skill_size: 2048 }
-```
 
 Spezialisten sind **persistente Claude-Agenten** die als detached Subprozesse dauerhaft aktiv bleiben:
 
@@ -431,19 +280,6 @@ Spezialisten sind **persistente Claude-Agenten** die als detached Subprozesse da
 | `search` | Docs suchen (mit Context7 Auto-Fetch) |
 | `get_for_file` | Wissens-Airbag: Relevante Docs für eine Datei |
 
-**Beispiel:**
-```
-> docs(action: "search", query: "fastify v5 migration", framework: "fastify")
-
-← [{ section: "v5 Breaking Changes", type: "breaking-change",
-      content: "reply.send() is now async...", source: "context7", score: 0.78 }]
-
-> docs(action: "get_for_file", file_path: "packages/rest-api/src/server.ts", project: "synapse")
-
-← [{ framework: "fastify", section: "Route registration changed in v5",
-      type: "migration", content: "..." }]
-```
-
 ---
 
 ### 🔧 Projekt-Management (`project`)
@@ -460,91 +296,6 @@ Spezialisten sind **persistente Claude-Agenten** die als detached Subprozesse da
 | `status` | Persistenter Status aus `.synapse/status.json` |
 | `list` | Alle aktiven Projekte auflisten |
 
-**Beispiel:**
-```
-> project(action: "init", path: "/home/user/dev/my-project", name: "my-project")
-
-← { project: "my-project", technologies: ["TypeScript", "React", "PostgreSQL"],
-     rules: ["commit-konventionen", "projekt-regeln"],
-     message: "Projekt initialisiert. FileWatcher aktiv." }
-```
-
----
-
-### 🧩 Code-Intelligence (`code_intel`)
-
-**Actions:** `tree`, `functions`, `variables`, `symbols`, `references`, `search`, `file`
-
-| Action | Beschreibung |
-|--------|--------------|
-| `tree` | Verzeichnisbaum mit Dateigrößen, Funktions-/Variablen-Counts |
-| `functions` | Funktionen auflisten (Name, Params, Return-Type, Export-Status) |
-| `variables` | Variablen und Konstanten mit Werten |
-| `symbols` | Symbole nach Typ filtern (class, interface, enum, import, export, todo, ...) |
-| `references` | Querverweise: Wo wird ein Symbol verwendet? |
-| `search` | Volltext-Suche über indexierten Code (PostgreSQL, kein Embedding) |
-| `file` | Dateiinhalt aus PostgreSQL lesen (Alternative zu Read-Tool) |
-
-**61 Sprach-Parser** (Regex-basiert, `LanguageParser` Interface):
-
-TypeScript, SQL, Python, Go, Rust, Java, C#, C, C++, Ruby, PHP, Kotlin, Swift, Dart,
-Shell/Bash, CSS/SCSS, Lua, YAML, Dockerfile, TOML, Scala, Protobuf, GraphQL, Elixir,
-HCL/Terraform, Makefile, R, Perl, Haskell, Zig, Groovy, OCaml, Clojure, Julia, Nim,
-V/Vlang, Erlang, F#, Solidity, Fortran, Ada, PowerShell, Objective-C, Nix, Svelte,
-Vue SFC, WGSL, GLSL, Starlark/Bazel, D, Crystal, Tcl, COBOL, CMake, Puppet,
-Assembly, Racket, Vala, Meson, Lean, Smithy, Dhall, Jsonnet
-
-Dateiname-Matching für extensionlose Dateien: `Makefile`, `Dockerfile`, `BUILD`, `WORKSPACE`, `CMakeLists`, `meson.build`, `meson_options.txt`
-
-**Beispiele:**
-```
-> code_intel(action: "tree", project: "synapse", path: "packages/core/src", depth: 1)
-
-← packages/core/src/ (125 Dateien, 94fn, 2509var)
-    db/ (2 Dateien, 4fn, 68var)
-    embeddings/ (5 Dateien, 14fn, 120var)
-    parser/ (65 Dateien)
-    services/ (8 Dateien, 42fn, 890var)
-    watcher/ (3 Dateien, 12fn, 156var)
-
-> code_intel(action: "functions", project: "synapse",
-             file_path: "packages/core/src/services/events.ts", exported_only: true)
-
-← [{ name: "emitEvent", params: ["project", "eventType", "..."],
-      return_type: "Promise<Event>", line_start: 23, is_exported: true },
-    { name: "acknowledgeEvent", params: ["eventId", "agentId"],
-      line_start: 67, is_exported: true }, ...]
-
-> code_intel(action: "symbols", project: "synapse", symbol_type: "interface")
-
-← [{ name: "LanguageParser", file: "parser/types.ts", line: 39 },
-    { name: "ParsedSymbol", file: "parser/types.ts", line: 6 }, ...]
-
-> code_intel(action: "references", project: "synapse", name: "emitEvent")
-
-← { definition: { file: "services/events.ts", line: 23 },
-     references: [
-       { file: "tools/consolidated/event.ts", line: 45, context: "await emitEvent(..." },
-       { file: "server.ts", line: 112, context: "import { emitEvent } from..." }
-     ], total_references: 2 }
-
-> code_intel(action: "file", project: "synapse", file_path: "packages/core/src/parser/types.ts")
-
-← { file_path: "/.../types.ts", file_type: "typescript", file_size: 1063,
-     content: "export interface ParsedSymbol { ... }" }
-```
-
-**REST-API Endpunkte** (gleiche Funktionalität via HTTP):
-```
-GET /api/projects/:name/code-intel/tree?path=...&depth=1
-GET /api/projects/:name/code-intel/functions?file_path=...&exported_only=true
-GET /api/projects/:name/code-intel/variables?name=...&with_values=true
-GET /api/projects/:name/code-intel/symbols?symbol_type=interface
-GET /api/projects/:name/code-intel/references?name=emitEvent
-GET /api/projects/:name/code-intel/search?query=...&file_type=ts
-GET /api/projects/:name/code-intel/file?path=...
-```
-
 ---
 
 ### 👁️ FileWatcher (`watcher`)
@@ -557,14 +308,6 @@ GET /api/projects/:name/code-intel/file?path=...
 | `start` | FileWatcher starten |
 | `stop` | FileWatcher stoppen |
 
-**Beispiel:**
-```
-> watcher(action: "status")
-
-← { running: true, project: "synapse", watched_files: 276,
-     last_change: "2026-03-27T07:45:12Z", ignored_patterns: [".git", "node_modules", "dist"] }
-```
-
 ---
 
 ### 🔄 Array/Batch-Parameter
@@ -576,99 +319,6 @@ Viele Actions unterstützen jetzt **Array-Input** (backward compatible). Skalare
 **Phase 2 — Steuerungs Batch:** `specialist.stop/wake`, `event.ack`, `channel.join/leave`, `chat.send` (Multicast), `chat.inbox_send`, `proposal.update_status` (Promise.allSettled)
 
 **Phase 3 — Batch-Delete mit Safeguards:** `thought.delete`, `memory.delete`, `proposal.delete` — mit `dry_run` (Preview), `max_items` (Limit, Default 10), Audit-Logging
-
----
-
-## 🌐 REST API
-
-Die REST API (Fastify) bietet HTTP-Zugang zu allen Synapse-Funktionen — für Web-KIs (Claude.ai, ChatGPT, Gemini), Dashboards oder externe Integrationen. Läuft auf Port 3456.
-
-### Endpunkte
-
-| Bereich | Methode | Route | Beschreibung |
-|---------|---------|-------|--------------|
-| **Status** | GET | `/health` | Health-Check |
-| | GET | `/api/status` | Server-Status, Collections, Embedding-Provider |
-| **Projekte** | GET | `/api/projects` | Alle Projekte auflisten |
-| | POST | `/api/projects/init` | Projekt initialisieren |
-| | GET | `/api/projects/:name/stats` | Projekt-Statistiken |
-| | GET | `/api/projects/:name/stats/detailed` | Detaillierte Stats nach Typ |
-| | GET | `/api/projects/:name/plan` | Plan abrufen |
-| | PUT | `/api/projects/:name/plan` | Plan aktualisieren |
-| | POST | `/api/projects/:name/plan/tasks` | Task hinzufügen |
-| **Suche** | POST | `/api/search/code` | Semantische Code-Suche |
-| | POST | `/api/search/docs` | Tech-Docs suchen |
-| | POST | `/api/search/path` | Pfad-basierte Suche |
-| | POST | `/api/search/code-with-path` | Kombinierte Suche |
-| | POST | `/api/search/global` | Projektübergreifende Suche |
-| | POST | `/api/search/documents` | Dokument-Suche |
-| | POST | `/api/search/code/stream` | Code-Suche (SSE Stream) |
-| | POST | `/api/search/docs/stream` | Docs-Suche (SSE Stream) |
-| | POST | `/api/search/global/stream` | Global-Suche (SSE Stream) |
-| **Memories** | GET | `/api/projects/:name/memories` | Alle Memories |
-| | POST | `/api/projects/:name/memories` | Memory erstellen |
-| | GET | `/api/projects/:name/memories/:memoryName` | Memory lesen |
-| | PUT | `/api/projects/:name/memories/:memoryName` | Memory aktualisieren |
-| | POST | `/api/projects/:name/memories/search` | Memory-Suche |
-| | GET | `/api/projects/:name/memories/:memoryName/with-code` | Memory + Code |
-| | GET | `/api/projects/:name/files/:filePath/memories` | Memories für Datei |
-| **Thoughts** | GET | `/api/projects/:name/thoughts` | Thoughts auflisten |
-| | POST | `/api/projects/:name/thoughts` | Thought erstellen |
-| | DELETE | `/api/projects/:name/thoughts/:id` | Thought löschen |
-| | POST | `/api/projects/:name/thoughts/search` | Thought-Suche |
-| **Proposals** | GET | `/api/projects/:name/proposals` | Proposals auflisten |
-| | POST | `/api/projects/:name/proposals` | Proposal erstellen |
-| | GET | `/api/projects/:name/proposals/:id` | Proposal abrufen |
-| | PUT | `/api/projects/:name/proposals/:id` | Proposal aktualisieren |
-| | PATCH | `/api/projects/:name/proposals/:id/status` | Status ändern |
-| | POST | `/api/projects/:name/proposals/search` | Proposal-Suche |
-| **Code-Intelligence** | GET | `/api/projects/:name/code-intel/tree` | Dateibaum |
-| | GET | `/api/projects/:name/code-intel/functions` | Funktionen |
-| | GET | `/api/projects/:name/code-intel/variables` | Variablen |
-| | GET | `/api/projects/:name/code-intel/symbols` | Symbole |
-| | GET | `/api/projects/:name/code-intel/references` | Querverweise |
-| | GET | `/api/projects/:name/code-intel/search` | Volltext-Suche |
-| | GET | `/api/projects/:name/code-intel/file` | Dateiinhalt |
-| **Files** | GET | `/api/projects/:name/files` | Dateien auflisten |
-| | POST | `/api/projects/:name/files` | Datei schreiben/aktualisieren |
-| | DELETE | `/api/projects/:name/files` | Datei löschen |
-| **Ideen** | POST | `/api/projects/:name/ideas` | Idee speichern |
-| | POST | `/api/projects/:name/ideas/confirm` | Idee bestätigen |
-| **Tech** | POST | `/api/tech/detect` | Technologien erkennen |
-| | POST | `/api/tech/index-docs` | Docs indexieren |
-| **MCP** | GET | `/mcp/sse` | MCP via SSE (Streamable HTTP) |
-| | POST | `/mcp/messages` | MCP Message-Endpunkt |
-| **OAuth** | GET | `/.well-known/oauth-authorization-server` | OAuth Discovery |
-| | GET | `/.well-known/oauth-protected-resource` | OAuth Resource Info |
-
-### Beispiele (curl)
-
-```bash
-# Status
-curl http://192.168.50.65:3456/api/status
-
-# Code-Suche
-curl -X POST http://192.168.50.65:3456/api/search/code \
-  -H 'Content-Type: application/json' \
-  -d '{"query": "file watcher implementation", "project": "synapse", "limit": 5}'
-
-# Dateibaum
-curl 'http://192.168.50.65:3456/api/projects/synapse/code-intel/tree?path=packages/core/src&depth=1'
-
-# Funktionen einer Datei
-curl 'http://192.168.50.65:3456/api/projects/synapse/code-intel/functions?file_path=packages/core/src/services/events.ts'
-
-# Referenzen finden
-curl 'http://192.168.50.65:3456/api/projects/synapse/code-intel/references?name=emitEvent'
-
-# Memory lesen
-curl 'http://192.168.50.65:3456/api/projects/synapse/memories/projekt-regeln'
-
-# Thought erstellen
-curl -X POST http://192.168.50.65:3456/api/projects/synapse/thoughts \
-  -H 'Content-Type: application/json' \
-  -d '{"source": "api-user", "content": "REST API funktioniert", "tags": ["test"]}'
-```
 
 ---
 
@@ -796,7 +446,7 @@ Bei Context-Ceiling (95%): automatischer Handoff — der Spezialist liest in der
 
 ## 🗄️ Datenbank-Schema
 
-### PostgreSQL (13 Tabellen)
+### PostgreSQL (10 Tabellen)
 
 | Tabelle | Spalten | Beschreibung |
 |---------|---------|--------------|
@@ -810,9 +460,6 @@ Bei Context-Ceiling (95%): automatischer Handoff — der Spezialist liest in der
 | `code_files` | id, project, file_path, file_name, file_type, chunk_count, file_size, indexed_at, updated_at | Indexierte Dateien mit Metadaten (PG-basierte Pfadsuche) |
 | `agent_events` | id, project, event_type, priority, scope, source_id, payload, requires_ack | Steuersignale zwischen Agenten |
 | `agent_event_acks` | event_id, agent_id, acked_at, reaction | Quittierungen von Events |
-| `code_symbols` | id, file_id, symbol_type, name, value, line_start, line_end, params, return_type, is_exported, parent_id | Code-Symbole (Funktionen, Klassen, Variablen, ...) |
-| `code_references` | id, file_id, symbol_name, line_number, context | Querverweise auf Symbole |
-| `code_chunks` | id, file_id, chunk_index, content, start_line, end_line | Code-Chunks für Volltext-Suche |
 
 ### Qdrant (Vektor-Collections)
 
@@ -1004,22 +651,16 @@ synapse/
 │   │       │   ├── memory.ts        # Memory-Verwaltung
 │   │       │   ├── techDocs.ts      # Tech-Docs + Context7
 │   │       │   └── ...
-│   │       ├── parser/              # 61 Sprach-Parser (Regex-basiert)
-│   │       │   ├── index.ts         # Parser-Registry + Extension-Matching
-│   │       │   ├── types.ts         # LanguageParser Interface
-│   │       │   ├── typescript.ts ... jsonnet.ts  # 61 Parser
-│   │       │   └── __testdata__/    # Testdaten für alle Parser
 │   │       ├── embeddings/          # Google / Ollama / OpenAI
 │   │       └── watcher/             # FileWatcher (Chokidar)
 │   ├── mcp-server/                  # MCP Server (13 konsolidierte Tools)
 │   │   ├── src/
 │   │   │   ├── server.ts            # Tool-Definitionen + Response Enhancement
 │   │   │   └── tools/
-│   │   │       ├── consolidated/    # 14 konsolidierte Super-Tools
+│   │   │       ├── consolidated/    # 13 konsolidierte Super-Tools
 │   │   │       │   ├── admin.ts
 │   │   │       │   ├── chat.ts
 │   │   │       │   ├── channel.ts
-│   │   │       │   ├── code-intel.ts
 │   │   │       │   ├── docs.ts
 │   │   │       │   ├── event.ts
 │   │   │       │   ├── memory.ts
@@ -1117,8 +758,13 @@ mr lint         # Linter ausführen
 
 | Einschränkung | Details |
 |----------------|---------|
-| **Dual-Write Eventual Consistency** | Kein Rollback bei Partial-Failure (PG OK ↔ Qdrant FAIL) → Daten ggf. nur in einem Store. By Design: PG = strukturierte Queries, Qdrant = semantische Suche |
-| **Keine PG-Transaktionen** | Kein BEGIN/COMMIT pro Schreiboperation → keine ACID-Garantien bei concurrent Updates |
+| **🚨 Dual-Write Consistency** | Kein Rollback bei Partial-Failure (PG OK ↔ Qdrant FAIL) → Daten in nur einem Store, keine automatischen Retries |
+| **Inkonsistente Read-Pfade** | `get*/list*` liest Qdrant, `update*` liest PG → Geister-Datensätze bei Failures (unsichtbar oder nicht-editierbar) |
+| **Keine PG-Transaktionen** | Kein BEGIN/COMMIT pro Schreiboperation → keine ACID-Garantien, Race Conditions bei concurrent Updates |
+| **Kein Optimistic Locking** | Race Conditions bei concurrent Plan-Updates (updateTask), Lost Updates möglich — Blockiert bis Phase 3 |
+| **tech-docs.ts Sonderfall** | Bare awaits OHNE try-catch bei Dual-Write (Ausnahme zum allgemeinen Error-Pattern) |
+| **code.ts Invertierte Reihenfolge** | Schreibt Qdrant first statt PG first (Inkonsistenz zur Standard-Reihenfolge) |
+| **Kein Reconciliation-Job** | Dual-Write Drift akkumuliert über Zeit, keine automatische Heilung |
 | Context-Handoff | Nur auf Linux + fish/bash getestet |
 | Kein echter Push | Coordinator-Watch (Polling alle 10s) als Workaround |
 | Google Batch-Embedding | Max 100 Texte/Request (API-Limit) — Code erzwingt Splitting nicht, bei größeren Dateien (>100 Chunks) mögliche API-Fehler |
