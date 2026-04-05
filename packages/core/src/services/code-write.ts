@@ -19,7 +19,7 @@
  *     getFileContentFromPg — SELECT content
  *
  * HINWEISE:
- *   - Alle PG-Queries nutzen LIKE '%' || $2 fuer partielles Pfad-Matching
+ *   - Alle PG-Queries nutzen exakte file_path Matches (relative Pfade)
  *   - parseAndEmbed wird fire-and-forget aufgerufen
  *   - moveFileInPg verwendet BEGIN/COMMIT/ROLLBACK (FK-Reihenfolge: symbols/references/chunks → files)
  */
@@ -369,12 +369,16 @@ export async function updateFileInPg(
   const hash = contentHash(newContent);
   const fileSize = Buffer.byteLength(newContent, 'utf8');
 
-  await pool.query(
+  const result = await pool.query(
     `UPDATE code_files
      SET content = $3, content_hash = $4, file_size = $5, updated_at = NOW()
-     WHERE project = $1 AND file_path LIKE '%' || $2`,
+     WHERE project = $1 AND file_path = $2`,
     [project, filePath, newContent, hash, fileSize]
   );
+
+  if (result.rowCount === 0) {
+    console.error(`[code-write] updateFileInPg: Keine Datei gefunden fuer ${project}/${filePath}`);
+  }
 
   parseAndEmbed(project, filePath).catch((err: unknown) =>
     console.error(`[code-write] parseAndEmbed Fehler fuer ${filePath}:`, err)
@@ -395,7 +399,7 @@ export async function softDeleteFile(
   await pool.query(
     `UPDATE code_files
      SET deleted_at = NOW()
-     WHERE project = $1 AND file_path LIKE '%' || $2`,
+     WHERE project = $1 AND file_path = $2`,
     [project, filePath]
   );
 }
@@ -422,28 +426,28 @@ export async function moveFileInPg(
     await client.query(
       `UPDATE code_files
        SET file_path = $3, updated_at = NOW(), parsed_at = NULL
-       WHERE project = $1 AND file_path LIKE '%' || $2`,
+       WHERE project = $1 AND file_path = $2`,
       [project, oldPath, newPath]
     );
 
     await client.query(
       `UPDATE code_symbols
        SET file_path = $3
-       WHERE project = $1 AND file_path LIKE '%' || $2`,
+       WHERE project = $1 AND file_path = $2`,
       [project, oldPath, newPath]
     );
 
     await client.query(
       `UPDATE code_references
        SET file_path = $3
-       WHERE project = $1 AND file_path LIKE '%' || $2`,
+       WHERE project = $1 AND file_path = $2`,
       [project, oldPath, newPath]
     );
 
     await client.query(
       `UPDATE code_chunks
        SET file_path = $3
-       WHERE project = $1 AND file_path LIKE '%' || $2`,
+       WHERE project = $1 AND file_path = $2`,
       [project, oldPath, newPath]
     );
 
@@ -495,7 +499,7 @@ export async function getFileContentFromPg(
 
   const result = await pool.query<{ content: string }>(
     `SELECT content FROM code_files
-     WHERE project = $1 AND file_path LIKE '%' || $2 AND deleted_at IS NULL
+     WHERE project = $1 AND file_path = $2 AND deleted_at IS NULL
      LIMIT 1`,
     [project, filePath]
   );

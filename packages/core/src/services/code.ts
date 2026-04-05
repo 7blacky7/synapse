@@ -107,15 +107,25 @@ async function deleteCodeFile(project: string, filePath: string): Promise<void> 
 /**
  * Stage 1: Dateiinhalt synchron in PostgreSQL speichern.
  * Gibt true zurueck wenn Datei geaendert (oder neu), false wenn unveraendert.
+ * filePath ist RELATIV zum Projekt-Root, projectRoot ist der absolute Pfad.
  */
 export async function storeFileContent(
   filePath: string,
-  projectName: string
+  projectName: string,
+  projectRoot: string
 ): Promise<boolean> {
   const pool = getPool();
-  const fileData = readFileWithMetadata(filePath, projectName);
+
+  // Absoluten Pfad rekonstruieren fuer Filesystem-Zugriff
+  const absolutePath = filePath.startsWith('/')
+    ? filePath
+    : projectRoot.endsWith('/')
+      ? projectRoot + filePath
+      : projectRoot + '/' + filePath;
+
+  const fileData = readFileWithMetadata(absolutePath, projectName);
   if (!fileData) {
-    console.error(`[Synapse] Datei nicht lesbar: ${filePath}`);
+    console.error(`[Synapse] Datei nicht lesbar: ${absolutePath}`);
     return false;
   }
 
@@ -125,7 +135,7 @@ export async function storeFileContent(
   try {
     const existing = await pool.query(
       'SELECT content_hash FROM code_files WHERE project = $1 AND file_path = $2',
-      [projectName, filePath]
+      [projectName, filePath]  // RELATIV in DB
     );
     if (existing.rows[0]?.content_hash === contentHash) {
       return false; // Keine Aenderung
@@ -134,13 +144,13 @@ export async function storeFileContent(
     // PG nicht erreichbar — fail-open
   }
 
-  const fileSize = fs.statSync(filePath).size;
+  const fileSize = fs.statSync(absolutePath).size;
   await upsertCodeFile(
     projectName, filePath, path.basename(filePath), fileData.fileType,
     0, fileSize, fileData.content, contentHash
   );
 
-  console.error(`[Synapse] Gespeichert: ${path.basename(filePath)} (${fileData.content.length} Zeichen)`);
+  console.error(`[Synapse] Gespeichert: ${filePath} (${fileData.content.length} Zeichen)`);
   return true;
 }
 
@@ -351,12 +361,14 @@ export async function parseUnparsedFiles(projectName: string): Promise<number> {
 
 /**
  * Indexiert eine Datei — zweistufig: Stage 1 synchron, Stage 2 async debounced
+ * filePath ist RELATIV, projectRoot ist der absolute Projekt-Pfad.
  */
 export async function indexFile(
   filePath: string,
-  projectName: string
+  projectName: string,
+  projectRoot: string
 ): Promise<number> {
-  const changed = await storeFileContent(filePath, projectName);
+  const changed = await storeFileContent(filePath, projectName, projectRoot);
   if (changed) {
     enqueueParseAndEmbed(projectName, filePath);
   }
@@ -368,9 +380,10 @@ export async function indexFile(
  */
 export async function updateFile(
   filePath: string,
-  projectName: string
+  projectName: string,
+  projectRoot: string
 ): Promise<number> {
-  return indexFile(filePath, projectName);
+  return indexFile(filePath, projectName, projectRoot);
 }
 
 /**
@@ -550,9 +563,10 @@ export async function searchMedia(
 }
 
 /**
- * Verarbeitet ein FileWatcher Event
+ * Verarbeitet ein FileWatcher Event.
+ * event.path ist RELATIV, projectRoot ist der absolute Projekt-Pfad.
  */
-export async function handleFileEvent(event: FileEvent): Promise<void> {
+export async function handleFileEvent(event: FileEvent, projectRoot: string): Promise<void> {
   // Klassifikation: Dokument > Media > Code
   const isDocument = isExtractableDocument(event.path);
   const isMedia = !isDocument && isMultimodalFile(event.path);
@@ -565,7 +579,7 @@ export async function handleFileEvent(event: FileEvent): Promise<void> {
         // Media: NICHT automatisch indexieren — Agent entscheidet per index_media Tool
         break;
       } else {
-        await indexFile(event.path, event.project);
+        await indexFile(event.path, event.project, projectRoot);
       }
       break;
     case 'change':
@@ -575,7 +589,7 @@ export async function handleFileEvent(event: FileEvent): Promise<void> {
         // Media: ignorieren
         break;
       } else {
-        await updateFile(event.path, event.project);
+        await updateFile(event.path, event.project, projectRoot);
       }
       break;
     case 'unlink':

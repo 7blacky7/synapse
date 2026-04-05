@@ -115,7 +115,7 @@ async function tryReactivateProject(
   const watcher = startFileWatcher({
     projectPath,
     projectName: name,
-    onFileChange: handleFileEvent,
+    onFileChange: (event) => handleFileEvent(event, projectPath),
     onError: (error) => console.error(`[Synapse MCP] FileWatcher Fehler:`, error),
     onIgnoreChange: async () => {
       const result = await cleanupProjekt(projectPath, name);
@@ -273,7 +273,7 @@ export async function initProjekt(
   const watcher = startFileWatcher({
     projectPath,
     projectName: name,
-    onFileChange: handleFileEvent,
+    onFileChange: (event) => handleFileEvent(event, projectPath),
     onError: (error) => {
       console.error(`[Synapse MCP] FileWatcher Fehler:`, error);
     },

@@ -78,7 +78,7 @@ export async function projectRoutes(fastify: FastifyInstance): Promise<void> {
     const watcher = startFileWatcher({
       projectPath,
       projectName: name,
-      onFileChange: handleFileEvent,
+      onFileChange: (event) => handleFileEvent(event, projectPath),
       onError: (error) => {
         console.error(`[Synapse API] FileWatcher Fehler:`, error);
       },

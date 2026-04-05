@@ -16,6 +16,8 @@ import {
   deleteLines,
   searchReplace,
   getDocsForFile,
+  getProjectRoot,
+  toRelativePath,
 } from '@synapse/core';
 
 import * as path from 'path';
@@ -88,13 +90,12 @@ export const filesTool: ConsolidatedTool = {
     let filePath = reqStr(args, 'file_path');
     const agentId = str(args, 'agent_id');
 
-    // Relative Pfade auf absolut normalisieren (Projekt-Pfad voranstellen)
-    if (!path.isAbsolute(filePath)) {
-      const projectPath = getProjectPath(project);
-      if (projectPath) {
-        filePath = path.join(projectPath, filePath);
-      }
+    // Pfade normalisieren: DB erwartet relative Pfade
+    const projectRootPath = await getProjectRoot(project);
+    if (projectRootPath && path.isAbsolute(filePath)) {
+      filePath = toRelativePath(projectRootPath, filePath);
     }
+    // Wenn filePath immer noch absolut (kein projectRoot gefunden): als Fallback behalten
 
     // Haiku escaped Content manchmal doppelt: "\"use client\";\n\nimport..."
     // Detection: Literale \n im String aber keine echten Newlines → doppelt escaped
@@ -180,9 +181,8 @@ export const filesTool: ConsolidatedTool = {
 
       case 'move': {
         let newPath = reqStr(args, 'new_path');
-        if (!path.isAbsolute(newPath)) {
-          const pp = getProjectPath(project);
-          if (pp) newPath = path.join(pp, newPath);
+        if (projectRootPath && path.isAbsolute(newPath)) {
+          newPath = toRelativePath(projectRootPath, newPath);
         }
         await moveFileInPg(project, filePath, newPath);
         return { success: true, message: `Datei verschoben: "${filePath}" → "${newPath}"` };
@@ -190,9 +190,8 @@ export const filesTool: ConsolidatedTool = {
 
       case 'copy': {
         let newPath = reqStr(args, 'new_path');
-        if (!path.isAbsolute(newPath)) {
-          const pp = getProjectPath(project);
-          if (pp) newPath = path.join(pp, newPath);
+        if (projectRootPath && path.isAbsolute(newPath)) {
+          newPath = toRelativePath(projectRootPath, newPath);
         }
         await copyFileInPg(project, filePath, newPath);
         return { success: true, message: `Datei kopiert: "${filePath}" → "${newPath}"` };

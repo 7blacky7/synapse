@@ -56,7 +56,7 @@ try {
   watcher = startFileWatcher({
     projectPath,
     projectName,
-    onFileChange: handleFileEvent,
+    onFileChange: (event) => handleFileEvent(event, projectPath),
     onError: (error) => console.error(`[Watcher-Daemon] FileWatcher Fehler:`, error),
     onIgnoreChange: async () => {
       console.error(`[Watcher-Daemon] .synapseignore geaendert — Cleanup erfolgt bei naechstem init_projekt`);

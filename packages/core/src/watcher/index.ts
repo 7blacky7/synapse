@@ -151,19 +151,19 @@ export function startFileWatcher(options: FileWatcherOptions): FileWatcherInstan
       }
     }
 
-    // Existierendes Pending-Event abbrechen
-    const existing = pendingEvents.get(filePath);
+    // Existierendes Pending-Event abbrechen — relativePath als Key
+    const existing = pendingEvents.get(relativePath);
     if (existing) {
       clearTimeout(existing.timeout);
     }
 
     // Neues Debounced Event erstellen
     const timeout = setTimeout(() => {
-      pendingEvents.delete(filePath);
+      pendingEvents.delete(relativePath);
 
       const event: FileEvent = {
         type,
-        path: filePath,
+        path: relativePath,  // RELATIV statt ABSOLUT
         project: projectName,
       };
 
@@ -176,7 +176,7 @@ export function startFileWatcher(options: FileWatcherOptions): FileWatcherInstan
       });
     }, config.files.debounceMs);
 
-    pendingEvents.set(filePath, { type, timeout });
+    pendingEvents.set(relativePath, { type, timeout });
   }
 
   // Chokidar Watcher erstellen
@@ -233,7 +233,8 @@ export function startFileWatcher(options: FileWatcherOptions): FileWatcherInstan
           );
 
           for (const row of changed.rows) {
-            const filePath: string = row.file_path;
+            const relativePath: string = row.file_path;
+            const filePath = path.join(projectPath, relativePath);  // absolut rekonstruieren
             let localHash: string | null = null;
             if (fs.existsSync(filePath)) {
               localHash = crypto.createHash('sha256').update(fs.readFileSync(filePath, 'utf-8')).digest('hex');
@@ -262,13 +263,14 @@ export function startFileWatcher(options: FileWatcherOptions): FileWatcherInstan
           );
 
           for (const row of deleted.rows) {
-            if (fs.existsSync(row.file_path)) {
-              fs.unlinkSync(row.file_path);
-              console.error(`[Synapse] PG→FS Delete: ${path.basename(row.file_path)}`);
+            const filePath = path.join(projectPath, row.file_path);  // absolut rekonstruieren
+            if (fs.existsSync(filePath)) {
+              fs.unlinkSync(filePath);
+              console.error(`[Synapse] PG→FS Delete: ${path.basename(filePath)}`);
             }
             try {
               const collectionName = COLLECTIONS.projectCode(projectName);
-              await deleteByFilePath(collectionName, row.file_path);
+              await deleteByFilePath(collectionName, row.file_path);  // relativ fuer Qdrant
             } catch {}
             await pool.query('DELETE FROM code_files WHERE id = $1', [row.id]);
           }

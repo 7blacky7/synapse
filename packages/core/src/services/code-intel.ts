@@ -75,38 +75,19 @@ export async function getProjectTree(
     file_type,
   } = options;
 
-  // Projekt-Root-Pfad ermitteln (laengster gemeinsamer Prefix aller Dateien)
+  // Projekt-Root-Pfad aus projects-Tabelle holen
   let projectRoot = '';
-  const prefixResult = await pool.query(
-    `SELECT MIN(file_path) AS first_path, MAX(file_path) AS last_path FROM code_files WHERE project = $1`,
-    [project]
-  );
-  if (prefixResult.rows[0]?.first_path) {
-    const firstPath: string = prefixResult.rows[0].first_path;
-    const lastPath: string = prefixResult.rows[0].last_path;
-    let i = 0;
-    while (i < firstPath.length && i < lastPath.length && firstPath[i] === lastPath[i]) i++;
-    projectRoot = firstPath.substring(0, firstPath.lastIndexOf('/', i) + 1);
-
-    // Bei gemischten Pfaden (absolut + relativ) ist der Root zu kurz ('' oder '/')
-    // → Fallback: Root NUR aus absoluten Pfaden berechnen
-    if (projectRoot.length <= 1) {
-      const absPrefix = await pool.query(
-        `SELECT MIN(file_path) AS first_path, MAX(file_path) AS last_path
-         FROM code_files WHERE project = $1 AND file_path LIKE '/%'`,
-        [project]
-      );
-      if (absPrefix.rows[0]?.first_path) {
-        const fp: string = absPrefix.rows[0].first_path;
-        const lp: string = absPrefix.rows[0].last_path;
-        let j = 0;
-        while (j < fp.length && j < lp.length && fp[j] === lp[j]) j++;
-        const absRoot = fp.substring(0, fp.lastIndexOf('/', j) + 1);
-        if (absRoot.length > 1) {
-          projectRoot = absRoot;
-        }
-      }
+  try {
+    const rootResult = await pool.query<{ path: string }>(
+      `SELECT path FROM projects WHERE name = $1 ORDER BY last_access DESC LIMIT 1`,
+      [project]
+    );
+    if (rootResult.rows.length > 0) {
+      projectRoot = rootResult.rows[0].path;
+      if (!projectRoot.endsWith('/')) projectRoot += '/';
     }
+  } catch {
+    // Tabelle existiert noch nicht — Fallback: leerer Root (relative Pfade direkt)
   }
 
   // Basis-Query
@@ -154,17 +135,11 @@ export async function getProjectTree(
   const dirMap = new Map<string, Array<typeof filesResult.rows[0]>>();
   let baseDirDepth = 0;
   if (dirPath) {
-    // Normalisiere den Suchpfad: entferne projectRoot-Prefix wenn vorhanden
-    const normalizedDirPath = dirPath.startsWith(projectRoot)
-      ? dirPath.substring(projectRoot.length)
-      : dirPath;
-    baseDirDepth = normalizedDirPath.split('/').filter(Boolean).length;
+    baseDirDepth = dirPath.split('/').filter(Boolean).length;
   }
 
   for (const row of filesResult.rows) {
-    const relPath = row.file_path.startsWith(projectRoot)
-      ? row.file_path.substring(projectRoot.length)
-      : row.file_path;
+    const relPath = row.file_path;  // bereits relativ
     row._relPath = relPath;
     const dir = relPath.substring(0, relPath.lastIndexOf('/') + 1) || '/';
     const dirDepth = dir.split('/').filter(Boolean).length;
