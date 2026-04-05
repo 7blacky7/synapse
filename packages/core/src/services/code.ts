@@ -123,6 +123,9 @@ export async function storeFileContent(
       ? projectRoot + filePath
       : projectRoot + '/' + filePath;
 
+  // DEBUG: Pfad-Analyse in Datei loggen
+  try { require('fs').appendFileSync('/tmp/synapse-path-debug.log', `${new Date().toISOString()} storeFileContent: filePath="${filePath}" isAbsolute=${filePath.startsWith('/')} projectRoot="${projectRoot}"\n`); } catch {}
+
   const fileData = readFileWithMetadata(absolutePath, projectName);
   if (!fileData) {
     console.error(`[Synapse] Datei nicht lesbar: ${absolutePath}`);
@@ -697,8 +700,26 @@ export async function backfillCodeFiles(projectName: string): Promise<number> {
     chunkCount: number;
   }>();
 
+  // Projekt-Root fuer Pfad-Normalisierung
+  let projectRoot: string | null = null;
+  try {
+    const { getProjectRoot } = await import('./project-registry.js');
+    projectRoot = await getProjectRoot(projectName);
+  } catch {}
+
   for (const chunk of allChunks) {
-    const fp = chunk.payload.file_path;
+    // Qdrant-Pfade auf relativ normalisieren
+    let fp = chunk.payload.file_path;
+    if (projectRoot && fp.startsWith(projectRoot)) {
+      const root = projectRoot.endsWith('/') ? projectRoot : projectRoot + '/';
+      fp = fp.startsWith(root) ? fp.substring(root.length) : fp;
+    } else if (fp.startsWith('/')) {
+      // Absoluter Pfad ohne bekannten Root: letzte Komponenten nehmen
+      // z.B. /home/blacky/dev/softcleanToeva/apps/... → apps/...
+      const parts = fp.split('/');
+      const projIdx = parts.indexOf(projectName);
+      if (projIdx >= 0) fp = parts.slice(projIdx + 1).join('/');
+    }
     const entry = fileMap.get(fp);
     if (entry) {
       entry.chunkCount++;
@@ -715,14 +736,19 @@ export async function backfillCodeFiles(projectName: string): Promise<number> {
   let inserted = 0;
   for (const [filePath, meta] of fileMap) {
     try {
+      // Absoluten Pfad fuer Filesystem-Zugriff rekonstruieren
+      const absolutePath = projectRoot && !filePath.startsWith('/')
+        ? (projectRoot.endsWith('/') ? projectRoot + filePath : projectRoot + '/' + filePath)
+        : filePath;
+
       let fileSize = 0;
-      try { fileSize = fs.statSync(filePath).size; } catch { /* Datei evtl. geloescht */ }
+      try { fileSize = fs.statSync(absolutePath).size; } catch { /* Datei evtl. geloescht */ }
 
       // Dateiinhalt vom Filesystem lesen fuer content + content_hash
       let content: string | undefined;
       let contentHash: string | undefined;
       try {
-        const fileData = readFileWithMetadata(filePath, projectName);
+        const fileData = readFileWithMetadata(absolutePath, projectName);
         if (fileData) {
           content = fileData.content;
           contentHash = crypto.createHash('sha256').update(fileData.content).digest('hex');
