@@ -87,6 +87,26 @@ export async function getProjectTree(
     let i = 0;
     while (i < firstPath.length && i < lastPath.length && firstPath[i] === lastPath[i]) i++;
     projectRoot = firstPath.substring(0, firstPath.lastIndexOf('/', i) + 1);
+
+    // Bei gemischten Pfaden (absolut + relativ) ist der Root zu kurz ('' oder '/')
+    // → Fallback: Root NUR aus absoluten Pfaden berechnen
+    if (projectRoot.length <= 1) {
+      const absPrefix = await pool.query(
+        `SELECT MIN(file_path) AS first_path, MAX(file_path) AS last_path
+         FROM code_files WHERE project = $1 AND file_path LIKE '/%'`,
+        [project]
+      );
+      if (absPrefix.rows[0]?.first_path) {
+        const fp: string = absPrefix.rows[0].first_path;
+        const lp: string = absPrefix.rows[0].last_path;
+        let j = 0;
+        while (j < fp.length && j < lp.length && fp[j] === lp[j]) j++;
+        const absRoot = fp.substring(0, fp.lastIndexOf('/', j) + 1);
+        if (absRoot.length > 1) {
+          projectRoot = absRoot;
+        }
+      }
+    }
   }
 
   // Basis-Query
