@@ -713,9 +713,8 @@ export async function backfillCodeFiles(projectName: string): Promise<number> {
     if (projectRoot && fp.startsWith(projectRoot)) {
       const root = projectRoot.endsWith('/') ? projectRoot : projectRoot + '/';
       fp = fp.startsWith(root) ? fp.substring(root.length) : fp;
-    } else if (fp.startsWith('/')) {
-      // Absoluter Pfad ohne bekannten Root: letzte Komponenten nehmen
-      // z.B. /home/blacky/dev/softcleanToeva/apps/... → apps/...
+    } else if (fp.startsWith('/') || fp.startsWith('home/')) {
+      // Absoluter Pfad (mit oder ohne fuehrenden /) → Projektname finden und dahinter nehmen
       const parts = fp.split('/');
       const projIdx = parts.indexOf(projectName);
       if (projIdx >= 0) fp = parts.slice(projIdx + 1).join('/');
