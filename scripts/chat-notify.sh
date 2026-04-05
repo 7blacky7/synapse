@@ -83,7 +83,20 @@ if [[ "$EVENT_COUNT" -gt 0 ]]; then
   " 2>/dev/null || echo "")
 fi
 
-# DB-Query (Chat)
+# === CHANNEL-CHECK ===
+CHANNEL_LASTSEEN="/tmp/synapse-channel-lastseen-${AGENT_ID}"
+CHANNEL_SINCE_ID="0"
+if [[ -f "$CHANNEL_LASTSEEN" ]]; then
+  CHANNEL_SINCE_ID=$(cat "$CHANNEL_LASTSEEN" 2>/dev/null || echo "0")
+fi
+CHANNEL_RESULT=$(node "$SCRIPT_DIR/channel-check.mjs" "$AGENT_ID" "$PROJECT" "$CHANNEL_SINCE_ID" "$DB_URL" 2>/dev/null) || CHANNEL_RESULT=""
+
+CHANNEL_MSG=""
+if [[ -n "$CHANNEL_RESULT" ]]; then
+  CHANNEL_MSG="📢 Channel: ${CHANNEL_RESULT} — Lies mit: channel(action: \"feed\", channel_name: \"...\")"
+fi
+
+# === CHAT-CHECK ===
 RESULT=$(node "$SCRIPT_DIR/chat-check.mjs" "$AGENT_ID" "$PROJECT" "$SINCE" "$DB_URL" 2>/dev/null) || RESULT="0|0|"
 
 IFS='|' read -r BROADCASTS DMS DM_SENDERS <<< "$RESULT"
@@ -98,17 +111,14 @@ if [[ "$BROADCASTS" -gt 0 || "$DMS" -gt 0 ]]; then
   CHAT_MSG="📨 Chat (${AGENT_ID}): $(IFS=', '; echo "${PARTS[*]}") ungelesen"
 fi
 
-# Ausgabe: Events VOR Chat, nur wenn mindestens eine Meldung vorhanden
-[[ -z "$EVENT_MSG" && -z "$CHAT_MSG" ]] && exit 0
+# Ausgabe: Events > Channel > Chat, nur wenn mindestens eine Meldung
+[[ -z "$EVENT_MSG" && -z "$CHANNEL_MSG" && -z "$CHAT_MSG" ]] && exit 0
 
 FULL_MSG=""
-if [[ -n "$EVENT_MSG" && -n "$CHAT_MSG" ]]; then
-  FULL_MSG="${EVENT_MSG}
-${CHAT_MSG}"
-elif [[ -n "$EVENT_MSG" ]]; then
-  FULL_MSG="$EVENT_MSG"
-else
-  FULL_MSG="$CHAT_MSG"
-fi
+[[ -n "$EVENT_MSG" ]] && FULL_MSG="$EVENT_MSG"
+[[ -n "$CHANNEL_MSG" ]] && FULL_MSG="${FULL_MSG:+$FULL_MSG
+}$CHANNEL_MSG"
+[[ -n "$CHAT_MSG" ]] && FULL_MSG="${FULL_MSG:+$FULL_MSG
+}$CHAT_MSG"
 
 jq -n --arg ctx "$FULL_MSG" '{"hookSpecificOutput":{"hookEventName":"PostToolUse","additionalContext":$ctx}}'
