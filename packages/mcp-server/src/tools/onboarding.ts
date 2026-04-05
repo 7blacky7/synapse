@@ -45,6 +45,9 @@ export interface OnboardingResult {
   rulesMessage?: string;
 }
 
+/** Agenten-Rollen fuer rollenspezifisches Onboarding */
+export type AgentRole = 'koordinator' | 'spezialist' | 'subagent';
+
 /** Pfad zur persistenten Registry-Datei */
 const REGISTRY_PATH = path.join(os.homedir(), '.synapse', 'project-registry.json');
 
@@ -111,7 +114,8 @@ export function getCachedProjectPath(projectName: string): string | null {
 export async function checkAgentOnboarding(
   project: string,
   agentId?: string,
-  projectPath?: string
+  projectPath?: string,
+  role?: AgentRole
 ): Promise<OnboardingResult | null> {
   // Kein Agent-Tracking ohne ID
   if (!agentId) {
@@ -140,8 +144,10 @@ export async function checkAgentOnboarding(
   }
 
   // Neuer Agent - Regeln laden
-  const isCoordinator = agentId === 'koordinator' || agentId.startsWith('koordinator-');
-  console.error(`[Synapse MCP] Neuer Agent "${agentId}" erkannt (Koordinator: ${isCoordinator}) - lade Regeln...`);
+  const effectiveRole: AgentRole = role
+    ?? (agentId === 'koordinator' || agentId?.startsWith('koordinator-') ? 'koordinator' : 'subagent');
+  const isCoordinator = effectiveRole === 'koordinator';
+  console.error(`[Synapse MCP] Neuer Agent "${agentId}" erkannt (Rolle: ${effectiveRole}) - lade Regeln...`);
 
   try {
     const ruleMemories = await getRulesForNewAgent(project);
@@ -151,10 +157,14 @@ export async function checkAgentOnboarding(
     // Regeln neu laden falls Handoff-Regeln gerade erstellt wurden
     const allRules = await getRulesForNewAgent(project);
 
-    // Koordinator-Only Regeln filtern: Agenten sehen nur Regeln OHNE Tag "coordinator-only"
-    const finalRules = isCoordinator
-      ? allRules
-      : allRules.filter(m => !m.tags?.includes('coordinator-only'));
+    // Rollenspezifische Regeln filtern
+    const finalRules = allRules.filter(m => {
+      const tags = m.tags || [];
+      if (tags.includes('coordinator-only') && !isCoordinator) return false;
+      if (tags.includes('specialist-only') && effectiveRole !== 'spezialist') return false;
+      if (tags.includes('subagent-only') && effectiveRole !== 'subagent') return false;
+      return true;
+    });
 
     if (finalRules.length === 0) {
       return { isFirstVisit: true };
