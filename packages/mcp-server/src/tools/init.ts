@@ -219,6 +219,9 @@ export async function initProjekt(
     };
   }
 
+  // Projekt-Pfad FRUEH registrieren (vor initSynapse, damit backfillCodeFiles den Root kennt)
+  await registerProject(name, projectPath);
+
   // Cold-Start: Synapse initialisieren (Qdrant, Embeddings) – mit Projektname fuer gezielte Migration
   const initialized = await initSynapse(name);
 
