@@ -83,6 +83,14 @@ export type { ChunkOptions, TextChunk } from './chunking/index.js';
 
 // Services
 export {
+  // Project Registry
+  registerProject,
+  getProjectRoot,
+  toRelativePath,
+  toAbsolutePath,
+} from './services/project-registry.js';
+
+export {
   // Code
   indexFile,
   updateFile,

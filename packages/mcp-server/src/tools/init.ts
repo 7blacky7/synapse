@@ -44,6 +44,7 @@ import {
   updateLastAccess,
   registerAgent,
   getRulesForNewAgent,
+  registerProject,
 } from '@synapse/core';
 import type { FileWatcherInstance, DetectedTechnology, Memory } from '@synapse/core';
 import { SERVER_INSTANCE_ID } from '../server.js';
@@ -123,6 +124,7 @@ async function tryReactivateProject(
   });
   activeWatchers.set(name, watcher);
   cacheProjectPathBoth(name, projectPath);
+  await registerProject(name, projectPath);
   updateLastAccess(projectPath);
 
   // Reconnect zu laufenden Spezialisten (Wrapper-Prozesse ueberleben Session-Wechsel)
@@ -284,6 +286,9 @@ export async function initProjekt(
 
   activeWatchers.set(name, watcher);
   cacheProjectPathBoth(name, projectPath);
+
+  // Projekt-Pfad in DB registrieren (Multi-Machine Support)
+  await registerProject(name, projectPath);
 
   // Persistenten Status speichern
   setProjectStatus(projectPath, { status: 'active', project: name });

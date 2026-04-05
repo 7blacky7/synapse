@@ -113,6 +113,15 @@ CREATE TABLE IF NOT EXISTS code_files (
   UNIQUE(project, file_path)
 );
 
+CREATE TABLE IF NOT EXISTS projects (
+  name TEXT NOT NULL,
+  hostname TEXT NOT NULL,
+  path TEXT NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  last_access TIMESTAMPTZ DEFAULT NOW(),
+  PRIMARY KEY (name, hostname)
+);
+
 CREATE TABLE IF NOT EXISTS agent_events (
   id SERIAL PRIMARY KEY,
   project TEXT NOT NULL,
