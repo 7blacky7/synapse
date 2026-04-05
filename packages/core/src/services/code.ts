@@ -131,14 +131,23 @@ export async function storeFileContent(
 
   const contentHash = crypto.createHash('sha256').update(fileData.content).digest('hex');
 
-  // Hash-Vergleich — ueberspringen wenn unveraendert
+  // Hash-Vergleich — ueberspringen wenn unveraendert oder PG neuer
   try {
     const existing = await pool.query(
-      'SELECT content_hash FROM code_files WHERE project = $1 AND file_path = $2',
+      'SELECT content_hash, updated_at FROM code_files WHERE project = $1 AND file_path = $2',
       [projectName, filePath]  // RELATIV in DB
     );
-    if (existing.rows[0]?.content_hash === contentHash) {
-      return false; // Keine Aenderung
+    if (existing.rows[0]) {
+      if (existing.rows[0].content_hash === contentHash) {
+        return false; // Gleicher Inhalt
+      }
+      // Unterschiedlicher Inhalt: PG neuer als Disk? → PG nicht ueberschreiben
+      // (z.B. files(search_replace) hat PG geaendert, Disk ist noch alt)
+      const diskMtime = fs.statSync(absolutePath).mtimeMs;
+      const dbUpdatedAt = new Date(existing.rows[0].updated_at).getTime();
+      if (dbUpdatedAt > diskMtime) {
+        return false; // PG ist neuer — nicht ueberschreiben (PG→FS Sync wird synchronisieren)
+      }
     }
   } catch {
     // PG nicht erreichbar — fail-open
