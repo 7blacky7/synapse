@@ -2,7 +2,7 @@ import { readFile, writeFile, mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { SpecialistStatus, StatusFile } from './types.js'
 
-const DEFAULT_MAX_SPECIALISTS = 5
+const DEFAULT_MAX_SPECIALISTS = 7
 
 function statusPath(projectPath: string): string {
   return join(projectPath, '.synapse', 'agents', 'status.json')
