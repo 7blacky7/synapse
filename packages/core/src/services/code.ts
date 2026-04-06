@@ -349,7 +349,7 @@ export async function parseAndEmbed(project: string, filePath: string): Promise<
 /**
  * Parst alle Dateien die Content haben aber noch nicht geparst wurden (parsed_at IS NULL).
  * Wird bei project init aufgerufen um Altdaten nachzuparsen.
- * Laeuft sequentiell im Hintergrund um DB-Connection-Konflikte zu vermeiden.
+ * Dynamisches Auto-Scaling: Worker-Count skaliert mit Queue-Groesse.
  */
 export async function parseUnparsedFiles(projectName: string): Promise<number> {
   const pool = getPool();
@@ -361,26 +361,57 @@ export async function parseUnparsedFiles(projectName: string): Promise<number> {
   if (result.rows.length === 0) return 0;
 
   const total = result.rows.length;
-  console.error(`[Synapse] ${total} ungeparste Dateien gefunden — starte sequentielles Nachparsing...`);
 
-  // Sequentiell im Hintergrund parsen (nicht blockierend fuer Init)
+  // Worker-Count basierend auf Queue-Groesse bestimmen
+  function getWorkerCount(remaining: number): number {
+    if (remaining <= 50) return 1;
+    if (remaining <= 100) return 2;
+    if (remaining <= 200) return 3;
+    return 5;
+  }
+
+  const initialWorkers = getWorkerCount(total);
+  console.error(`[Synapse] ${total} ungeparste Dateien — starte mit ${initialWorkers} Worker(n)...`);
+
   const filePaths = result.rows.map((r: { file_path: string }) => r.file_path);
+
   setImmediate(async () => {
+    let nextIndex = 0;
     let parsed = 0;
     let failed = 0;
-    for (const filePath of filePaths) {
-      try {
-        await parseAndEmbed(projectName, filePath);
-        parsed++;
-        if (parsed % 20 === 0) {
-          console.error(`[Synapse] Nachparsing: ${parsed}/${total} Dateien...`);
+
+    async function worker(workerId: number): Promise<void> {
+      while (nextIndex < filePaths.length) {
+        const idx = nextIndex++;
+        const filePath = filePaths[idx];
+        try {
+          await parseAndEmbed(projectName, filePath);
+          parsed++;
+          if (parsed % 20 === 0) {
+            const remaining = total - parsed - failed;
+            const currentWorkers = getWorkerCount(remaining);
+            console.error(`[Synapse] Nachparsing: ${parsed}/${total} (${currentWorkers} Worker, ${remaining} verbleibend)`);
+          }
+        } catch (err) {
+          failed++;
+          console.error(`[Synapse] Parse fehlgeschlagen fuer ${filePath}:`, err);
         }
-      } catch (err) {
-        failed++;
-        console.error(`[Synapse] Parse fehlgeschlagen fuer ${filePath}:`, err);
       }
     }
-    console.error(`[Synapse] Nachparsing abgeschlossen: ${parsed} geparst, ${failed} fehlgeschlagen`);
+
+    // Worker starten — Anzahl basierend auf Queue-Groesse
+    const workerCount = getWorkerCount(total);
+    const workers = Array.from({ length: workerCount }, (_, i) => worker(i));
+    await Promise.all(workers);
+
+    console.error(`[Synapse] Nachparsing abgeschlossen: ${parsed} geparst, ${failed} fehlgeschlagen (${workerCount} Worker)`);
+
+    // Cross-File References am Ende verknuepfen
+    try {
+      await linkCrossFileReferences(projectName);
+    } catch (err) {
+      console.error(`[Synapse] Cross-File-Linking nach Nachparsing fehlgeschlagen:`, err);
+    }
   });
 
   return total;

@@ -54,24 +54,32 @@ export class GoogleEmbeddingProvider implements EmbeddingProvider {
   }
 
   async embedBatch(texts: string[]): Promise<number[][]> {
-    const url = `${BASE_URL}/models/${this.model}:batchEmbedContents?key=${this.apiKey}`;
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        requests: texts.map(text => ({
-          model: `models/${this.model}`,
-          content: { parts: [{ text }] },
-        })),
-      }),
-    });
+    const BATCH_SIZE = 100; // Google API Limit
+    const allEmbeddings: number[][] = [];
 
-    if (!response.ok) {
-      throw new Error(`Google Batch-Embedding fehlgeschlagen: ${response.status} ${await response.text()}`);
+    for (let i = 0; i < texts.length; i += BATCH_SIZE) {
+      const batch = texts.slice(i, i + BATCH_SIZE);
+      const url = `${BASE_URL}/models/${this.model}:batchEmbedContents?key=${this.apiKey}`;
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          requests: batch.map(text => ({
+            model: `models/${this.model}`,
+            content: { parts: [{ text }] },
+          })),
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`Google Batch-Embedding fehlgeschlagen: ${response.status} ${await response.text()}`);
+      }
+
+      const data = await response.json() as { embeddings: Array<{ values: number[] }> };
+      allEmbeddings.push(...data.embeddings.map(e => e.values));
     }
 
-    const data = await response.json() as { embeddings: Array<{ values: number[] }> };
-    return data.embeddings.map(e => e.values);
+    return allEmbeddings;
   }
 
   async embedMedia(data: Buffer, mimeType: string): Promise<number[]> {

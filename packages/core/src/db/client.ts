@@ -22,7 +22,7 @@ let _pool: Pool | null = null;
 export function getPool(): Pool {
   if (!_pool) {
     const config = getConfig();
-    _pool = new Pool({ connectionString: config.database.url });
+    _pool = new Pool({ connectionString: config.database.url, max: 20 });
   }
   return _pool;
 }
