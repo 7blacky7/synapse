@@ -104,6 +104,7 @@ export {
   searchFilesByPath,
   backfillCodeFiles,
   parseUnparsedFiles,
+  linkCrossFileReferences,
   // Media
   indexMediaFile,
   indexMediaDirectory,

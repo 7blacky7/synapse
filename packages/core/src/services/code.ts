@@ -170,6 +170,7 @@ export async function storeFileContent(
  * Debounce-Queue fuer Stage-2-Verarbeitung
  */
 const parseQueue = new Map<string, NodeJS.Timeout>();
+const crossRefTimers = new Map<string, NodeJS.Timeout>();
 
 function enqueueParseAndEmbed(project: string, filePath: string): void {
   const key = `${project}:${filePath}`;
@@ -181,6 +182,16 @@ function enqueueParseAndEmbed(project: string, filePath: string): void {
     } catch (err) {
       console.error(`[Synapse] Parse+Embed fehlgeschlagen fuer ${filePath}:`, err);
     }
+    // Cross-File References nach 5s Ruhe neu verknuepfen
+    if (crossRefTimers.has(project)) clearTimeout(crossRefTimers.get(project)!);
+    crossRefTimers.set(project, setTimeout(async () => {
+      crossRefTimers.delete(project);
+      try {
+        await linkCrossFileReferences(project);
+      } catch (err) {
+        console.error(`[Synapse] Cross-File-Linking fehlgeschlagen:`, err);
+      }
+    }, 5000));
   }, 2000));
 }
 
@@ -869,4 +880,89 @@ export async function searchFilesByPath(
     chunkCount: row.chunk_count,
     fileSize: row.file_size,
   }));
+}
+
+// ─── linkCrossFileReferences ────────────────────────────────────────────────────
+
+/**
+ * Verknuepft Import-Symbole mit ihren exportierten Originalen (Cross-File References).
+ *
+ * Liest alle Import-Symbole (symbol_type='import'), resolved das Quellmodul,
+ * findet das exportierte Original-Symbol und erstellt References in der
+ * importierenden Datei die auf das Original zeigen.
+ *
+ * Wird nach parseAndEmbed aufgerufen.
+ */
+export async function linkCrossFileReferences(project: string): Promise<number> {
+  const pool = getPool();
+  let linkedCount = 0;
+
+  // Alte Cross-File-References loeschen (file_path der Reference != file_path des Symbols)
+  await pool.query(
+    `DELETE FROM code_references cr
+     USING code_symbols cs
+     WHERE cr.symbol_id = cs.id
+       AND cr.project = $1
+       AND cr.file_path != cs.file_path`,
+    [project]
+  );
+
+  // Alle Import-Symbole laden (mit params = importierte Namen)
+  const imports = await pool.query(
+    `SELECT id, file_path, name, value, params
+     FROM code_symbols
+     WHERE project = $1 AND symbol_type = 'import' AND params IS NOT NULL`,
+    [project]
+  );
+
+  if (imports.rows.length === 0) return 0;
+
+  // Lookup-Map: exportierter Name → Symbol-ID (nur exportierte Symbole)
+  const exports = await pool.query(
+    `SELECT id, name, file_path
+     FROM code_symbols
+     WHERE project = $1
+       AND is_exported = true
+       AND symbol_type IN ('function', 'variable', 'class', 'interface', 'enum', 'const_object', 'export')`,
+    [project]
+  );
+
+  // Map: name → [{id, file_path}] (es kann mehrere geben, z.B. re-exports)
+  const exportMap = new Map<string, Array<{ id: string; file_path: string }>>();
+  for (const row of exports.rows) {
+    if (!row.name) continue;
+    const existing = exportMap.get(row.name) || [];
+    existing.push({ id: row.id, file_path: row.file_path });
+    exportMap.set(row.name, existing);
+  }
+
+  // Fuer jeden Import: importierte Namen mit Exports verknuepfen
+  for (const imp of imports.rows) {
+    const importingFile = imp.file_path;
+    const importedNames: string[] = imp.params || [];
+
+    for (const name of importedNames) {
+      const candidates = exportMap.get(name);
+      if (!candidates || candidates.length === 0) continue;
+
+      // Nimm das erste exportierte Symbol das NICHT in der gleichen Datei ist
+      const target = candidates.find(c => c.file_path !== importingFile) || candidates[0];
+      if (target.file_path === importingFile) continue; // Kein Self-Reference
+
+      // Reference erstellen: "In importingFile wird name aus target.file_path genutzt"
+      await pool.query(
+        `INSERT INTO code_references (id, project, symbol_id, file_path, line_number, context)
+         VALUES ($1, $2, $3, $4, $5, $6)
+         ON CONFLICT DO NOTHING`,
+        [uuidv4(), project, target.id, importingFile, imp.line_start ?? 1, `import { ${name} } from '${imp.value}'`]
+      );
+      linkedCount++;
+    }
+  }
+
+  if (linkedCount > 0) {
+    console.error(`[Synapse] Cross-File References: ${linkedCount} Links erstellt fuer Projekt "${project}"`);
+  }
+
+  return linkedCount;
 }
