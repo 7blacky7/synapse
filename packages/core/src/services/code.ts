@@ -253,7 +253,11 @@ export async function parseAndEmbed(project: string, filePath: string): Promise<
 
         // Referenzen fuer dieses Symbol einfuegen
         if (parseResult.references.length > 0 && sym.name) {
-          const symRefs = parseResult.references.filter(r => r.symbol_name === sym.name);
+          // Bei Imports: params enthaelt die einzelnen Namen, name ist komma-separiert
+          const nameSet = sym.symbol_type === 'import' && sym.params
+            ? new Set(sym.params)
+            : new Set([sym.name]);
+          const symRefs = parseResult.references.filter(r => nameSet.has(r.symbol_name));
           for (const ref of symRefs) {
             await pool.query(
               `INSERT INTO code_references (id, project, symbol_id, file_path, line_number, context)
