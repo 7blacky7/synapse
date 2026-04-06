@@ -919,7 +919,7 @@ export async function linkCrossFileReferences(project: string): Promise<number> 
 
   // Lookup-Map: exportierter Name → Symbol-ID (nur exportierte Symbole)
   const exports = await pool.query(
-    `SELECT id, name, file_path
+    `SELECT id, name, file_path, symbol_type
      FROM code_symbols
      WHERE project = $1
        AND is_exported = true
@@ -927,12 +927,12 @@ export async function linkCrossFileReferences(project: string): Promise<number> 
     [project]
   );
 
-  // Map: name → [{id, file_path}] (es kann mehrere geben, z.B. re-exports)
-  const exportMap = new Map<string, Array<{ id: string; file_path: string }>>();
+  // Map: name → [{id, file_path, symbol_type}] (es kann mehrere geben, z.B. re-exports)
+  const exportMap = new Map<string, Array<{ id: string; file_path: string; symbol_type: string }>>();
   for (const row of exports.rows) {
     if (!row.name) continue;
     const existing = exportMap.get(row.name) || [];
-    existing.push({ id: row.id, file_path: row.file_path });
+    existing.push({ id: row.id, file_path: row.file_path, symbol_type: row.symbol_type });
     exportMap.set(row.name, existing);
   }
 
@@ -945,9 +945,10 @@ export async function linkCrossFileReferences(project: string): Promise<number> 
       const candidates = exportMap.get(name);
       if (!candidates || candidates.length === 0) continue;
 
-      // Nimm das erste exportierte Symbol das NICHT in der gleichen Datei ist
-      const target = candidates.find(c => c.file_path !== importingFile) || candidates[0];
-      if (target.file_path === importingFile) continue; // Kein Self-Reference
+      // Bevorzuge function/class/interface Definitionen ueber re-exports
+      const filtered = candidates.filter(c => c.file_path !== importingFile);
+      if (filtered.length === 0) continue;
+      const target = filtered.find(c => c.symbol_type !== 'export') || filtered[0];
 
       // Reference erstellen: "In importingFile wird name aus target.file_path genutzt"
       await pool.query(
