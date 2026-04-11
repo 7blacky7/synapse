@@ -8,6 +8,7 @@
  */
 
 import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
+import { extractStringLiterals } from './types.js';
 
 class TomlParser implements LanguageParser {
   language = 'toml';
@@ -124,6 +125,9 @@ class TomlParser implements LanguageParser {
         commentBlock = [];
       }
     }
+
+    symbols.push(...extractStringLiterals(content, { includeSingleQuotes: true }));
+
 
     return { symbols, references };
   }

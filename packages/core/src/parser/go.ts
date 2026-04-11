@@ -8,6 +8,7 @@
  */
 
 import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
+import { extractStringLiterals } from './types.js';
 
 /** Zeilennummer fuer eine Position im Text (1-basiert) */
 function lineAt(text: string, pos: number): number {
@@ -337,6 +338,9 @@ class GoParser implements LanguageParser {
         is_exported: false,
       });
     }
+
+    symbols.push(...extractStringLiterals(content));
+
 
     return { symbols, references };
   }

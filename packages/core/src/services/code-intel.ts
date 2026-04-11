@@ -459,6 +459,11 @@ export interface ReferenceInfo {
   context: string | null;
 }
 
+export interface StringOccurrenceInfo {
+  file_path: string;
+  line_number: number;
+}
+
 export interface ReferencesResult {
   definition: {
     id: string;
@@ -471,6 +476,8 @@ export interface ReferencesResult {
   references: ReferenceInfo[];
   total_files: number;
   total_references: number;
+  string_occurrences: StringOccurrenceInfo[];
+  total_string_occurrences: number;
 }
 
 /**
@@ -482,12 +489,12 @@ export async function getReferences(
 ): Promise<ReferencesResult> {
   const pool = getPool();
 
-  // Definition laden
+  // Definition laden — non-string bevorzugen (echte Deklaration vor String-Literal)
   const defResult = await pool.query(
     `SELECT id, file_path, symbol_type, name, line_start, is_exported
      FROM code_symbols
      WHERE project = $1 AND name = $2
-     ORDER BY line_start
+     ORDER BY CASE WHEN symbol_type = 'string' THEN 1 ELSE 0 END, line_start
      LIMIT 1`,
     [project, name]
   );
@@ -520,6 +527,20 @@ export async function getReferences(
     context: row.context ?? null,
   }));
 
+  // String-Literale: separate Liste aller Vorkommen (Parser speichert jedes String-Literal
+  // als eigenes code_symbol mit symbol_type='string').
+  const stringRows = await pool.query(
+    `SELECT file_path, line_start
+     FROM code_symbols
+     WHERE project = $1 AND name = $2 AND symbol_type = 'string'
+     ORDER BY file_path, line_start`,
+    [project, name]
+  );
+  const stringOccurrences: StringOccurrenceInfo[] = stringRows.rows.map(row => ({
+    file_path: row.file_path,
+    line_number: row.line_start,
+  }));
+
   // Eindeutige Dateien zaehlen
   const uniqueFiles = new Set(references.map(r => r.file_path));
 
@@ -528,6 +549,8 @@ export async function getReferences(
     references,
     total_files: uniqueFiles.size,
     total_references: references.length,
+    string_occurrences: stringOccurrences,
+    total_string_occurrences: stringOccurrences.length,
   };
 }
 

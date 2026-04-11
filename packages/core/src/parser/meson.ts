@@ -8,6 +8,7 @@
  */
 
 import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
+import { extractStringLiterals } from './types.js';
 
 function lineAt(text: string, pos: number): number {
   return text.substring(0, pos).split('\n').length;
@@ -83,6 +84,9 @@ class MesonParser implements LanguageParser {
     while ((m = todoRe.exec(content)) !== null) {
       symbols.push({ symbol_type: 'todo', name: null, value: m[0].trim(), line_start: lineAt(content, m.index), is_exported: false });
     }
+
+    symbols.push(...extractStringLiterals(content, { includeSingleQuotes: true }));
+
 
     return { symbols, references };
   }

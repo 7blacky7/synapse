@@ -7,6 +7,7 @@
  */
 
 import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
+import { extractStringLiterals } from './types.js';
 
 /** Zeilennummer fuer eine Position im Text (1-basiert) */
 function lineAt(text: string, pos: number): number {
@@ -422,6 +423,9 @@ class SqlParser implements LanguageParser {
         }
       }
     }
+
+    symbols.push(...extractStringLiterals(content, { includeSingleQuotes: true }));
+
 
     return { symbols, references };
   }

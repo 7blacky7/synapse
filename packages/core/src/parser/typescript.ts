@@ -6,6 +6,7 @@
 
 import * as ts from 'typescript';
 import type { LanguageParser, ParseResult, ParsedSymbol, ParsedReference } from './types.js';
+import { extractStringLiterals } from './types.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -476,6 +477,9 @@ function parse(content: string, filePath: string): ParseResult {
 
   const { symbols, definedNames } = extractSymbols(sourceFile, content);
   const references = extractReferences(sourceFile, content, definedNames);
+
+  symbols.push(...extractStringLiterals(content, { includeSingleQuotes: true }));
+
 
   return { symbols, references };
 }

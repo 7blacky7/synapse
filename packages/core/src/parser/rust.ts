@@ -8,6 +8,7 @@
  */
 
 import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
+import { extractStringLiterals } from './types.js';
 
 function lineAt(text: string, pos: number): number {
   return text.substring(0, pos).split('\n').length;
@@ -329,6 +330,11 @@ class RustParser implements LanguageParser {
         is_exported: false,
       });
     }
+
+    // ══════════════════════════════════════════════
+    // String-Literale als benannte Symbole (via Helper — Rust: nur ", 'a' ist char)
+    // ══════════════════════════════════════════════
+    symbols.push(...extractStringLiterals(content));
 
     return { symbols, references };
   }

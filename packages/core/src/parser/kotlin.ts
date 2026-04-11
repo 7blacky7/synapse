@@ -8,6 +8,7 @@
  */
 
 import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
+import { extractStringLiterals } from './types.js';
 
 function lineAt(text: string, pos: number): number {
   return text.substring(0, pos).split('\n').length;
@@ -223,6 +224,9 @@ class KotlinParser implements LanguageParser {
         is_exported: false,
       });
     }
+
+    symbols.push(...extractStringLiterals(content));
+
 
     return { symbols, references };
   }

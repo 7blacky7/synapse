@@ -8,6 +8,7 @@
  */
 
 import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
+import { extractStringLiterals } from './types.js';
 
 /** Zeilennummer fuer eine Position im Text (1-basiert) */
 function lineAt(text: string, pos: number): number {
@@ -43,6 +44,7 @@ class PythonParser implements LanguageParser {
           symbol_type: 'import',
           name: module,
           value: `from ${module} import ${names.join(', ')}`,
+          params: names,
           line_start: line,
           is_exported: false,
         });
@@ -280,6 +282,11 @@ class PythonParser implements LanguageParser {
         });
       }
     }
+
+    // ══════════════════════════════════════════════
+    // 10. String-Literale als benannte Symbole (via Helper)
+    // ══════════════════════════════════════════════
+    symbols.push(...extractStringLiterals(content, { includeSingleQuotes: true }));
 
     return { symbols, references };
   }

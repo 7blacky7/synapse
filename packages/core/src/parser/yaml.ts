@@ -8,6 +8,7 @@
  */
 
 import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
+import { extractStringLiterals } from './types.js';
 
 class YamlParser implements LanguageParser {
   language = 'yaml';
@@ -150,6 +151,9 @@ class YamlParser implements LanguageParser {
         is_exported: false,
       });
     }
+
+    symbols.push(...extractStringLiterals(content, { includeSingleQuotes: true }));
+
 
     return { symbols, references };
   }

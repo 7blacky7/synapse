@@ -9,6 +9,7 @@
  */
 
 import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
+import { extractStringLiterals } from './types.js';
 
 function lineAt(text: string, pos: number): number {
   return text.substring(0, pos).split('\n').length;
@@ -271,6 +272,9 @@ class PowerShellParser implements LanguageParser {
         });
       }
     }
+
+    symbols.push(...extractStringLiterals(content, { includeSingleQuotes: true }));
+
 
     return { symbols, references };
   }
