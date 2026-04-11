@@ -227,15 +227,22 @@ export async function parseAndEmbed(project: string, filePath: string): Promise<
         'DELETE FROM code_symbols WHERE project = $1 AND file_path = $2',
         [project, filePath]
       );
-      // Symbol-ID-Map fuer parent_id-Aufloesung (index → uuid)
-      const symbolIds: string[] = [];
+      // Symbol-ID-Map fuer parent_symbol-Aufloesung.
+      // Phase 1: Alle Symbole einfuegen, Name→UUID-Map fuer Container-Typen aufbauen.
+      // Phase 2: Fuer Symbole mit parent_id den UUID aus der Map nachtragen.
+      const containerIds = new Map<string, string>(); // name → UUID (class/interface/enum/struct)
+      const insertedSymbols: Array<{ symId: string; sym: typeof parseResult.symbols[number] }> = [];
 
       for (const sym of parseResult.symbols) {
         const symId = uuidv4();
-        symbolIds.push(symId);
+        insertedSymbols.push({ symId, sym });
 
-        // parent_id: ParsedSymbol.parent_id ist optional string (Index-basiert intern)
-        // Da parser direkt UUIDs nicht kennt, bleibt parent_symbol NULL fuer jetzt
+        // Container-Symbole in Map aufnehmen fuer spaetere parent_symbol-Aufloesung
+        if (sym.name && (sym.symbol_type === 'class' || sym.symbol_type === 'interface' ||
+                          sym.symbol_type === 'enum' || sym.symbol_type === 'struct')) {
+          containerIds.set(sym.name, symId);
+        }
+
         await pool.query(
           `INSERT INTO code_symbols
              (id, project, file_path, symbol_type, name, value, line_start, line_end,
@@ -245,7 +252,7 @@ export async function parseAndEmbed(project: string, filePath: string): Promise<
             symId, project, filePath,
             sym.symbol_type, sym.name ?? null, sym.value ?? null,
             sym.line_start, sym.line_end ?? null,
-            null, // parent_symbol: UUID-Mapping nicht trivial ohne vorherigem Insert
+            null, // parent_symbol wird in Phase 2 gesetzt
             sym.params ?? null, sym.return_type ?? null,
             sym.is_exported,
           ]
@@ -266,6 +273,18 @@ export async function parseAndEmbed(project: string, filePath: string): Promise<
             );
           }
         }
+      }
+
+      // Phase 2: parent_symbol (UUID) fuer alle Symbole mit parent_id nachtragen.
+      // parent_id ist ein Name-String (z.B. Klassenname), der in der containerIds-Map aufgeloest wird.
+      for (const { symId, sym } of insertedSymbols) {
+        if (!sym.parent_id) continue;
+        const parentUuid = containerIds.get(sym.parent_id);
+        if (!parentUuid) continue;
+        await pool.query(
+          `UPDATE code_symbols SET parent_symbol = $1 WHERE id = $2`,
+          [parentUuid, symId]
+        );
       }
 
       await pool.query('COMMIT');
