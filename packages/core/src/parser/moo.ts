@@ -324,6 +324,91 @@ class MooParser implements LanguageParser {
     }
 
     // ══════════════════════════════════════════════
+    // 8b. Funktions-/Methoden-Aufrufe → References
+    //    Matcht IDENTIFIER( aber filtert:
+    //    - Definitions (funktion/func/fn/fu Name — davor)
+    //    - Klassen-Definitionen (klasse/class Name(Base) — `klasse` davor)
+    //    - moo-Keywords (wenn/if/solange/while/für/for/gib_zurück/return etc.)
+    //    - String-artige Literale
+    // ══════════════════════════════════════════════
+    const MOO_KEYWORDS = new Set([
+      // Kontrollfluss
+      'wenn', 'if', 'sonst', 'else', 'solange', 'while', 'für', 'for', 'in',
+      'prüfe', 'match', 'fall', 'case', 'standard', 'default',
+      // Deklarationen (werden separat behandelt)
+      'funktion', 'func', 'fn', 'fu', 'klasse', 'class', 'kl',
+      'daten', 'data', 'schnittstelle', 'interface',
+      'neue_klasse', 'funktion_definiere', 'setze_variable',
+      // Variablen
+      'setze', 'set', 'konstante', 'const', 'se', 'ko',
+      // Module
+      'importiere', 'import', 'im', 'aus', 'from', 'von',
+      'exportiere', 'export', 'als', 'as', 'importiere_modul',
+      // Control-Flow
+      'versuche', 'try', 'fange', 'catch', 'wirf', 'throw',
+      'stopp', 'break', 'weiter', 'continue',
+      'gib_zurück', 'return', 'gr', 'gib_wert_zurück',
+      // Literale
+      'wahr', 'true', 'falsch', 'false', 'nichts', 'none',
+      // Instanziierung
+      'neu', 'new', 'selbst', 'this',
+      // Operatoren
+      'und', 'and', 'oder', 'or', 'nicht', 'not',
+      // Features
+      'aufräumen', 'defer', 'garantiere', 'guard',
+      'unsicher', 'unsafe', 'un', 'implementiert', 'implements',
+      'zeige', 'show', 'ze', 'teste', 'test', 'erwarte', 'expect',
+      // Lern-Modus
+      'zeige_auf_bildschirm', 'wenn_bedingung', 'sonst_alternative',
+      'solange_wiederhole', 'fuer_jedes', 'versuche_ausfuehrung',
+      'fange_fehler', 'vorbedingung', 'nachbedingung',
+      // SQL-artige
+      'where', 'wo', 'select', 'wähle', 'order', 'sortiere',
+    ]);
+
+    // Skip die erste Spalte einer Funktions-/Klassen-Definitionszeile,
+    // damit `funktion foo(` nicht als Call auf `foo` gezaehlt wird.
+    const DEFINITION_PREFIX_RE = new RegExp(
+      `^[ \\t]*(?:${KW_FUNC}|${KW_CLASS}|${KW_DATA}\\s+${KW_CLASS}|${KW_INTERFACE})\\s+${ID}\\s*\\(`,
+      'u'
+    );
+
+    const callRe = new RegExp(`(${ID})\\s*\\(`, 'gu');
+    const allLines = content.split('\n');
+    let lineStartOffset = 0;
+    for (let lineIdx = 0; lineIdx < allLines.length; lineIdx++) {
+      const line = allLines[lineIdx];
+      // Kommentar-Zeilen skippen
+      const codeOnly = line.split('#')[0];
+      if (codeOnly.trim().length === 0) {
+        lineStartOffset += line.length + 1;
+        continue;
+      }
+      // Definition selbst ueberspringen — aber Calls INNERHALB der Signatur (default-Werte)
+      // oder spaeter in der Zeile nicht.
+      const isDefLine = DEFINITION_PREFIX_RE.test(codeOnly);
+
+      callRe.lastIndex = 0;
+      let cm: RegExpExecArray | null;
+      while ((cm = callRe.exec(codeOnly)) !== null) {
+        const name = cm[1];
+        if (MOO_KEYWORDS.has(name)) continue;
+        if (name === 'selbst' || name === 'this' || name === 'self') continue;
+        // Wenn es die Definition selbst ist (der erste Identifier nach dem Keyword), skippen
+        if (isDefLine) {
+          const defMatch = DEFINITION_PREFIX_RE.exec(codeOnly);
+          if (defMatch && cm.index < defMatch[0].length) continue;
+        }
+        references.push({
+          symbol_name: name,
+          line_number: lineIdx + 1,
+          context: codeOnly.trim().slice(0, 80),
+        });
+      }
+      lineStartOffset += line.length + 1;
+    }
+
+    // ══════════════════════════════════════════════
     // 9. Kommentar-Bloecke (zusammenhaengende #-Zeilen, >= 2)
     // ══════════════════════════════════════════════
     let commentBlock: string[] = [];
@@ -360,9 +445,10 @@ class MooParser implements LanguageParser {
     }
 
     // ══════════════════════════════════════════════
-    // 10. TODO/FIXME/HACK
+    // 10. TODO/FIXME/HACK — case-sensitive mit Wortgrenze,
+    //    damit "Todo-Liste" oder "Todos" keine False-Positives ergeben.
     // ══════════════════════════════════════════════
-    const todoRe = /^\s*#\s*(TODO|FIXME|HACK):?\s*(.*)$/gmi;
+    const todoRe = /^[ \t]*#\s*(TODO|FIXME|HACK)\b:?\s*(.*)$/gm;
     while ((m = todoRe.exec(content)) !== null) {
       symbols.push({
         symbol_type: 'todo',
