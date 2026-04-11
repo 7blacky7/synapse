@@ -942,11 +942,15 @@ export async function linkCrossFileReferences(project: string): Promise<number> 
     [project]
   );
 
-  // Alle Import-Symbole laden (mit params = importierte Namen)
+  // Alle Import-Symbole laden.
+  // Parser-Konventionen unterscheiden sich:
+  //  - TS/JS: `name` ist Join-Darstellung ("foo, bar"), `params` enthaelt die einzelnen Namen
+  //  - Rust/Python/Go/Java/C: `name` IST der importierte Symbolname, `params` ist NULL
+  // Beide Faelle muessen unterstuetzt werden — Fallback auf `name` wenn `params` fehlt.
   const imports = await pool.query(
-    `SELECT id, file_path, name, value, params
+    `SELECT id, file_path, name, value, params, line_start
      FROM code_symbols
-     WHERE project = $1 AND symbol_type = 'import' AND params IS NOT NULL`,
+     WHERE project = $1 AND symbol_type = 'import'`,
     [project]
   );
 
@@ -974,7 +978,13 @@ export async function linkCrossFileReferences(project: string): Promise<number> 
   // Fuer jeden Import: importierte Namen mit Exports verknuepfen
   for (const imp of imports.rows) {
     const importingFile = imp.file_path;
-    const importedNames: string[] = imp.params || [];
+    // params = multi-name Import (TS named imports), sonst name = single-symbol Import
+    const importedNames: string[] =
+      Array.isArray(imp.params) && imp.params.length > 0
+        ? imp.params
+        : imp.name
+          ? [imp.name]
+          : [];
 
     for (const name of importedNames) {
       const candidates = exportMap.get(name);
