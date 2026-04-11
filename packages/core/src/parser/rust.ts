@@ -208,34 +208,119 @@ class RustParser implements LanguageParser {
     }
 
     // ══════════════════════════════════════════════
-    // 7. Funktionen (fn)
+    // 7. Funktionen (fn) — multi-line Signaturen + Trait-Method-Stubs
+    //
+    // Strategie: Erst nur den Header matchen (fn NAME), dann von der Position
+    // aus die Parameter-Klammern per Balancing zaehlen, anschliessend bis zum
+    // naechsten ';' oder '{' lesen. Das erfasst:
+    //   - Multi-line Signaturen  fn foo(\n  a: T,\n  b: U\n) -> R { ... }
+    //   - Trait-Method-Stubs     fn foo() -> R;
+    //   - Komplexe Return-Types  fn foo() -> Result<HashMap<K,V>,E> { ... }
+    //   - Lifetime/Generic-Mix   fn foo<'a, T: Trait<Item=U>>(x: &'a T)
     // ══════════════════════════════════════════════
-    const fnRe = /^(\s*)(?:pub(?:\([\w:]+\))?\s+)?(?:async\s+)?(?:unsafe\s+)?(?:extern\s+"C"\s+)?fn\s+(\w+)(?:<[^>]+>)?\s*\(([^)]*)\)(?:\s*->\s*([^\n{]+))?\s*(?:where\s+[^\n{]+)?\s*\{/gm;
-    while ((m = fnRe.exec(content)) !== null) {
-      const indent = m[1].length;
-      const funcName = m[2];
-      const paramsRaw = m[3];
-      const returnType = m[4] ? m[4].trim() : undefined;
-      const lineStart = lineAt(content, m.index);
-      const lineEnd = this.findClosingBrace(content, m.index + m[0].length - 1);
+    const fnHeaderRe = /^([ \t]*)((?:pub(?:\([\w:]+\))?\s+)?(?:async\s+)?(?:const\s+)?(?:unsafe\s+)?(?:extern\s+(?:"[^"]+"\s+)?)?)fn\s+(\w+)/gm;
+    while ((m = fnHeaderRe.exec(content)) !== null) {
+      const indentStr = m[1];
+      const modifiers = m[2] ?? '';
+      const funcName = m[3];
 
+      // Nach dem Namen: optionale Generics <...> per balanced matching ueberspringen,
+      // dann die Parameter-Liste ( finden. Das ist robust gegen nested Generics wie
+      // Fn(i32) -> i32 oder Iterator<Item = Vec<T>>.
+      let cursor = m.index + m[0].length;
+      while (cursor < content.length && /[ \t\n\r]/.test(content[cursor])) cursor++;
+      if (content[cursor] === '<') {
+        let genDepth = 1;
+        cursor++;
+        while (cursor < content.length && genDepth > 0) {
+          const ch = content[cursor];
+          if (ch === '<') genDepth++;
+          else if (ch === '>') genDepth--;
+          cursor++;
+        }
+      }
+      while (cursor < content.length && /[ \t\n\r]/.test(content[cursor])) cursor++;
+      if (content[cursor] !== '(') continue;
+      const openParenPos = cursor;
+
+      // Balanced paren matching fuer Parameter-Liste.
+      // WICHTIG: Nur double-quoted Strings als Literal ueberspringen.
+      // Rust-Lifetimes wie 'a oder '_ sind KEINE Strings — sie als Char-Literal zu
+      // behandeln wuerde den Parser bis zum naechsten ' Zeichen durchfressen lassen.
+      let depth = 1;
+      let i = openParenPos + 1;
+      while (i < content.length && depth > 0) {
+        const c = content[i];
+        if (c === '(') depth++;
+        else if (c === ')') depth--;
+        else if (c === '"') {
+          i++;
+          while (i < content.length && content[i] !== '"') {
+            if (content[i] === '\\') i++;
+            i++;
+          }
+        }
+        i++;
+      }
+      if (depth !== 0) continue;
+      const closeParenPos = i - 1;
+      const paramsRaw = content.slice(openParenPos + 1, closeParenPos);
+
+      // Return-Type/where-Klausel bis zum naechsten ';' oder '{' (Body).
+      // -> ist Arrow-Operator: das > darf bracketDepth NICHT senken.
+      let j = closeParenPos + 1;
+      let bodyStart = -1;
+      let isStub = false;
+      let bracketDepth = 0;
+      while (j < content.length) {
+        const c = content[j];
+        if (c === '-' && content[j + 1] === '>') { j += 2; continue; }
+        if (c === '"') {
+          j++;
+          while (j < content.length && content[j] !== '"') {
+            if (content[j] === '\\') j++;
+            j++;
+          }
+          j++;
+          continue;
+        }
+        if (c === '<' || c === '(' || c === '[') bracketDepth++;
+        else if (c === '>' || c === ')' || c === ']') bracketDepth--;
+        else if (bracketDepth === 0) {
+          if (c === '{') { bodyStart = j; break; }
+          if (c === ';') { isStub = true; break; }
+        }
+        j++;
+      }
+      if (!isStub && bodyStart === -1) continue;
+
+      const header = content.slice(m.index, isStub ? j : bodyStart);
+      const returnMatch = /->\s*(.+?)(?:\s+where\s+[\s\S]+)?$/.exec(header.slice(header.indexOf(')') + 1));
+      const returnType = returnMatch ? returnMatch[1].trim() : undefined;
+
+      const lineStart = lineAt(content, m.index);
+      const lineEnd = isStub
+        ? lineAt(content, j)
+        : this.findClosingBrace(content, bodyStart);
+
+      // Parameter parsen (multi-line tolerant)
       const params = paramsRaw
         .split(',')
-        .map(p => p.trim().split(':')[0].replace(/^&?\s*mut\s+/, '').replace(/^&/, '').trim())
+        .map(p => p.replace(/\s+/g, ' ').trim().split(':')[0].replace(/^&?\s*mut\s+/, '').replace(/^&/, '').trim())
         .filter(p => p && p !== 'self' && p !== '&self' && p !== '&mut self');
 
-      // Parent finden (impl Block)
-      const parentType = indent > 0 ? this.findImplType(content, m.index) : undefined;
+      // Parent finden (impl Block) — immer versuchen, auch bei indent=0 (kann nested sein)
+      const parentType = this.findImplType(content, m.index);
 
       symbols.push({
         symbol_type: 'function',
         name: funcName,
-        value: m[0].includes('async') ? 'async' : undefined,
+        value: modifiers.includes('async') ? 'async' : (isStub ? 'stub' : undefined),
         params,
         return_type: returnType,
         line_start: lineStart,
         line_end: lineEnd,
-        is_exported: isPub(m[0]),
+        is_exported: isPub(modifiers),
         parent_id: parentType,
       });
     }
@@ -349,11 +434,62 @@ class RustParser implements LanguageParser {
     return lineAt(content, content.length);
   }
 
-  /** Findet den impl-Typ fuer eine Methode */
+  /**
+   * Findet den impl-Typ (Struct/Trait/Enum-Name) fuer eine Methode an Position fnPos.
+   *
+   * Strategie: Alle impl-Bloecke vor fnPos finden, pro Block die schliessende `}` per
+   * Balanced-Matching bestimmen und pruefen ob fnPos innerhalb liegt. Der INNERSTE
+   * (letzte vor fnPos, aber noch offen) ist der Container.
+   */
   private findImplType(content: string, fnPos: number): string | undefined {
-    const before = content.substring(0, fnPos);
-    const implMatch = before.match(/impl(?:<[^>]+>)?\s+(?:\w+(?:<[^>]+>)?\s+for\s+)?(\w+)(?:<[^>]+>)?\s*\{[^}]*$/);
-    return implMatch ? implMatch[1] : undefined;
+    const implHeaderRe = /^impl\b/gm;
+    let match: RegExpExecArray | null;
+    let result: string | undefined;
+    while ((match = implHeaderRe.exec(content)) !== null) {
+      if (match.index >= fnPos) break;
+
+      // Impl-Header parsen: impl<Generics>? TraitName<...> for TypeName<...> { ... }
+      // Name extrahieren (vor dem {) — letzter "richtiger" Name im Header.
+      const openBracePos = content.indexOf('{', match.index);
+      if (openBracePos === -1) break;
+      const header = content.slice(match.index, openBracePos);
+
+      // "impl Foo" | "impl<T> Foo<T>" | "impl<T> TraitA<T> for Bar<T>"
+      let typeName: string | undefined;
+      const forMatch = /\bfor\s+(\w+)/.exec(header);
+      if (forMatch) {
+        typeName = forMatch[1];
+      } else {
+        // Kein "for" — direkte impl auf einen Typ. Nimm den letzten Identifier vor dem {.
+        const direct = /impl(?:<[^>]*>)?\s+(\w+)/.exec(header);
+        if (direct) typeName = direct[1];
+      }
+      if (!typeName) continue;
+
+      // Schliessende Klammer finden per Brace-Balancing
+      let depth = 1;
+      let i = openBracePos + 1;
+      while (i < content.length && depth > 0) {
+        const ch = content[i];
+        if (ch === '{') depth++;
+        else if (ch === '}') depth--;
+        else if (ch === '"') {
+          i++;
+          while (i < content.length && content[i] !== '"') {
+            if (content[i] === '\\') i++;
+            i++;
+          }
+        }
+        i++;
+      }
+      const closeBracePos = i - 1;
+
+      // Liegt fnPos innerhalb dieses impl-Blocks?
+      if (openBracePos < fnPos && fnPos < closeBracePos) {
+        result = typeName; // Innerster gewinnt (wird weiter overridden wenn nested)
+      }
+    }
+    return result;
   }
 }
 
