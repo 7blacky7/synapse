@@ -68,6 +68,10 @@ import { leanParser } from './lean.js';
 import { smithyParser } from './smithy.js';
 import { dhallParser } from './dhall.js';
 import { jsonnetParser } from './jsonnet.js';
+import { htmlParser } from './html.js';
+import { llvmIrParser } from './llvmir.js';
+import { linkerScriptParser } from './linker.js';
+import { mooParser } from './moo.js';
 
 export type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
 
@@ -135,6 +139,10 @@ const parsers: LanguageParser[] = [
   smithyParser,
   dhallParser,
   jsonnetParser,
+  htmlParser,
+  llvmIrParser,
+  linkerScriptParser,
+  mooParser,
 ];
 
 /** Dateiname-basiertes Matching fuer Dateien ohne Extension (Makefile, Dockerfile) */
