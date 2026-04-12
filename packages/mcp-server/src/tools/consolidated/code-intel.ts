@@ -194,21 +194,31 @@ export const codeIntelTool: ConsolidatedTool = {
         const fileType = str(args, 'file_type');
         const limit = num(args, 'limit') ?? 20;
 
+        // .md-Dateien nur bei explizitem file_type:'md' — sonst aus Code-Suche ausschliessen
+        const effectiveFileType = fileType;
+        const excludeMd = !fileType;
+
         // PG-Volltext zuerst (schnell, exakt)
-        const pgResults = await fullTextSearchCode(project, query, fileType, limit);
+        let pgResults = await fullTextSearchCode(project, query, effectiveFileType, limit);
+        if (excludeMd) {
+          pgResults = pgResults.filter(r => r.file_type !== 'md');
+        }
 
         if (pgResults.length > 0) {
           return { success: true, results: pgResults, count: pgResults.length, source: 'pg-fulltext', project };
         }
 
         // Auto-Fallback auf Qdrant-Semantik bei 0 PG-Treffern
-        const semanticResults = await searchCode(query, project, fileType, limit);
-        const mappedResults = semanticResults.map(r => ({
-          file_path: r.payload.file_path,
-          file_type: r.payload.file_type,
-          headline: r.payload.content.substring(0, 200),
-          rank: r.score,
-        }));
+        const semanticResults = await searchCode(query, project, effectiveFileType, limit);
+        const mappedResults = semanticResults
+          .filter(r => r.score >= 0.65) // Score-Cutoff: keine False Positives
+          .filter(r => !excludeMd || r.payload.file_type !== 'md') // .md ausschliessen wenn kein Filter
+          .map(r => ({
+            file_path: r.payload.file_path,
+            file_type: r.payload.file_type,
+            headline: (r.payload.content || '').substring(0, 200),
+            rank: r.score,
+          }));
 
         return { success: true, results: mappedResults, count: mappedResults.length, source: 'semantic-fallback', project };
       }
