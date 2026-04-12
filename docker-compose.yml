@@ -8,14 +8,18 @@ services:
     ports:
       - "3456:3456"
     environment:
-      # Qdrant (localhost weil auf gleichem Server)
-      - QDRANT_URL=http://192.168.50.65:6333
-      # Ollama (localhost weil auf gleichem Server)
-      - OLLAMA_URL=http://192.168.50.65:11434
-      - OLLAMA_MODEL=nomic-embed-text
-      - EMBEDDING_PROVIDER=ollama
+      # PostgreSQL (Source of Truth) — aus .env
+      - DATABASE_URL=${DATABASE_URL}
+      # Qdrant
+      - QDRANT_URL=${QDRANT_URL}
+      # Embedding Provider — aus .env (google empfohlen)
+      - EMBEDDING_PROVIDER=${EMBEDDING_PROVIDER}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+      # Ollama (Fallback, falls Google nicht verfuegbar)
+      - OLLAMA_URL=${OLLAMA_URL}
+      - OLLAMA_MODEL=${OLLAMA_MODEL}
       # Context7
-      - CONTEXT7_API_KEY=
+      - CONTEXT7_API_KEY=${CONTEXT7_API_KEY}
       # API Config
       - API_PORT=3456
       - API_HOST=0.0.0.0
