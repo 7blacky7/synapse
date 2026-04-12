@@ -781,10 +781,19 @@ function setupProcessManagerEvents() {
       lastActivity: new Date().toISOString(),
     } as Partial<SpecialistStatus>).catch(() => {})
 
-    // If not shutting down, this is a crash — exit the wrapper too
+    // If not shutting down, this is a crash
     if (!shuttingDown) {
-      log('Agent process crashed — wrapper will exit')
-      void cleanup().then(() => process.exit(1))
+      if (KEEP_ALIVE) {
+        // Auto-Respawn: Wrapper bleibt am Leben, startet neue Claude-Instanz
+        log('Agent process crashed — KEEP_ALIVE aktiv, starte Rotation...')
+        void rotateAgent().catch((err) => {
+          log('Auto-Respawn fehlgeschlagen: %s — Wrapper beendet sich', err)
+          void cleanup().then(() => process.exit(1))
+        })
+      } else {
+        log('Agent process crashed — wrapper will exit')
+        void cleanup().then(() => process.exit(1))
+      }
     }
   })
 
