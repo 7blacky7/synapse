@@ -522,6 +522,11 @@ const MCP_TOOLS = [
         path: { type: 'string', description: 'Erforderlich fuer index_media: Absoluter Pfad zu Datei oder Verzeichnis' },
         recursive: { type: 'boolean', description: 'Optional fuer index_media: Rekursiv durchsuchen (Standard: true)' },
         agent_id: { type: 'string', description: 'Optional fuer index_media/index_stats/detailed_stats: Agent-ID fuer Onboarding' },
+        role: {
+          type: 'string',
+          enum: ['koordinator', 'spezialist', 'subagent'],
+          description: 'Agenten-Rolle fuer rollenspezifisches Onboarding (optional, Fallback: Erkennung ueber agent_id)',
+        },
       },
       required: ['action'],
     },
@@ -1448,22 +1453,39 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
           const codeStats = await getProjectStats(project);
           let thoughtsCount = 0;
           let memoriesCount = 0;
+          let mediaCount = 0;
+          let mediaImages = 0;
+          let mediaVideos = 0;
 
           try {
-            const thoughtsStats = await getCollectionStats('project_thoughts');
+            const thoughtsStats = await getCollectionStats(COLLECTIONS.projectThoughts(project));
             thoughtsCount = thoughtsStats?.pointsCount ?? 0;
           } catch { /* Collection existiert nicht */ }
           try {
-            const memoriesStats = await getCollectionStats('synapse_memories');
+            const memoriesStats = await getCollectionStats(COLLECTIONS.projectMemories(project));
             memoriesCount = memoriesStats?.pointsCount ?? 0;
+          } catch { /* Collection existiert nicht */ }
+          try {
+            const mediaStats = await getCollectionStats(COLLECTIONS.projectMedia(project));
+            mediaCount = mediaStats?.pointsCount ?? 0;
+            if (mediaCount > 0) {
+              const mediaPoints = await scrollVectors<{ media_category: string }>(
+                COLLECTIONS.projectMedia(project), {}, 10000
+              );
+              for (const p of mediaPoints) {
+                if (p.payload?.media_category === 'image') mediaImages++;
+                else if (p.payload?.media_category === 'video') mediaVideos++;
+              }
+            }
           } catch { /* Collection existiert nicht */ }
 
           return {
             project,
             totalFiles: codeStats?.fileCount ?? 0,
-            totalVectors: (codeStats?.chunkCount ?? 0) + thoughtsCount + memoriesCount,
+            totalVectors: (codeStats?.chunkCount ?? 0) + mediaCount + thoughtsCount + memoriesCount,
             collections: {
               code: { vectors: codeStats?.chunkCount ?? 0 },
+              media: { vectors: mediaCount, images: mediaImages, videos: mediaVideos },
               thoughts: { vectors: thoughtsCount },
               memories: { vectors: memoriesCount },
             },
@@ -1471,7 +1493,6 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
         }
         case 'detailed_stats': {
           const project = reqStr(args, 'project');
-          const collectionName = `project_${project}`;
           let codeByType: Record<string, number> = {};
           let totalChunks = 0;
           let thoughtsBySource: Record<string, number> = {};
@@ -1480,7 +1501,7 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
           let totalMemories = 0;
 
           try {
-            const codePoints = await scrollVectors<{ file_type: string }>(collectionName, {}, 10000);
+            const codePoints = await scrollVectors<{ file_type: string }>(COLLECTIONS.projectCode(project), {}, 10000);
             totalChunks = codePoints.length;
             codeByType = codePoints.reduce((acc, p) => {
               const type = p.payload?.file_type || 'unknown';
@@ -1490,9 +1511,9 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
           } catch { /* Collection existiert nicht */ }
 
           try {
-            const thoughtPoints = await scrollVectors<{ source: string; project: string }>(
-              'project_thoughts',
-              { must: [{ key: 'project', match: { value: project } }] },
+            const thoughtPoints = await scrollVectors<{ source: string }>(
+              COLLECTIONS.projectThoughts(project),
+              {},
               10000
             );
             totalThoughts = thoughtPoints.length;
@@ -1504,9 +1525,9 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
           } catch { /* Collection existiert nicht */ }
 
           try {
-            const memoryPoints = await scrollVectors<{ category: string; project: string }>(
-              'synapse_memories',
-              { must: [{ key: 'project', match: { value: project } }] },
+            const memoryPoints = await scrollVectors<{ category: string }>(
+              COLLECTIONS.projectMemories(project),
+              {},
               10000
             );
             totalMemories = memoryPoints.length;
