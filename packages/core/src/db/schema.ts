@@ -281,11 +281,12 @@ CREATE INDEX IF NOT EXISTS idx_error_pattern_seen_session
 -- Specialist Channels (Gruppenchat) — aus agents/schema.ts nach core verschoben
 CREATE TABLE IF NOT EXISTS specialist_channels (
   id SERIAL PRIMARY KEY,
-  name TEXT UNIQUE NOT NULL,
+  name TEXT NOT NULL,
   project TEXT NOT NULL,
   description TEXT,
   created_by TEXT NOT NULL,
-  created_at TIMESTAMPTZ DEFAULT NOW()
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE(name, project)
 );
 
 CREATE TABLE IF NOT EXISTS specialist_channel_members (
@@ -325,6 +326,14 @@ CREATE INDEX IF NOT EXISTS idx_specialist_channels_project
   ON specialist_channels(project);
 
 -- LISTEN/NOTIFY Trigger fuer Event-Driven Watcher
+
+-- Migration: UNIQUE(name) → UNIQUE(name, project) fuer Multi-Projekt-Support
+ALTER TABLE specialist_channels DROP CONSTRAINT IF EXISTS specialist_channels_name_key;
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'specialist_channels_name_project_key') THEN
+    ALTER TABLE specialist_channels ADD CONSTRAINT specialist_channels_name_project_key UNIQUE(name, project);
+  END IF;
+END $$;
 -- Payload: JSON mit project, sender, type etc. fuer Client-seitiges Filtering
 
 CREATE OR REPLACE FUNCTION notify_chat_message() RETURNS trigger AS $$

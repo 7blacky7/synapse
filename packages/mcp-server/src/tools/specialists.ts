@@ -117,7 +117,7 @@ export async function spawnSpecialistTool(
   // 8. General-Channel sicherstellen und Agent joinen
   await ensureGeneralChannel(project, name, name);
   if (channel && channel !== `${project}-general`) {
-    await joinChannel(channel, name);
+    await joinChannel(project, channel, name);
   }
 
   // 9. Wrapper als DETACHED Prozess starten
@@ -414,12 +414,9 @@ export async function createChannelTool(
   }
 }
 
-export async function joinChannelTool(
-  channelName: string,
-  agentName: string,
-) {
+export async function joinChannelTool(project: string, channelName: string, agentName: string) {
   try {
-    const joined = await joinChannel(channelName, agentName);
+    const joined = await joinChannel(project, channelName, agentName);
     if (!joined) {
       return jsonResult({ success: false, message: `Channel "${channelName}" nicht gefunden.` });
     }
@@ -429,12 +426,9 @@ export async function joinChannelTool(
   }
 }
 
-export async function leaveChannelTool(
-  channelName: string,
-  agentName: string,
-) {
+export async function leaveChannelTool(project: string, channelName: string, agentName: string) {
   try {
-    const left = await leaveChannel(channelName, agentName);
+    const left = await leaveChannel(project, channelName, agentName);
     if (!left) {
       return jsonResult({ success: false, message: `"${agentName}" war nicht in Channel "${channelName}".` });
     }
@@ -444,13 +438,9 @@ export async function leaveChannelTool(
   }
 }
 
-export async function postToChannelTool(
-  channelName: string,
-  sender: string,
-  content: string,
-) {
+export async function postToChannelTool(project: string, channelName: string, sender: string, content: string) {
   try {
-    const result = await postMessage(channelName, sender, content);
+    const result = await postMessage(project, channelName, sender, content);
     if (!result) {
       return jsonResult({ success: false, message: `Channel "${channelName}" nicht gefunden.` });
     }
@@ -465,14 +455,9 @@ export async function postToChannelTool(
   }
 }
 
-export async function getChannelFeedTool(
-  channelName: string,
-  limit?: number,
-  sinceId?: number,
-  preview?: boolean,
-) {
+export async function getChannelFeedTool(project: string, channelName: string, limit?: number, sinceId?: number, preview?: boolean) {
   try {
-    const messages = await getMessages(channelName, { limit, sinceId, preview });
+    const messages = await getMessages(project, channelName, { limit, sinceId, preview });
     return jsonResult({
       success: true,
       channel: channelName,

@@ -4,11 +4,12 @@ export const AGENTS_SCHEMA = `
 -- Specialist Channels (Gruppenchat)
 CREATE TABLE IF NOT EXISTS specialist_channels (
   id SERIAL PRIMARY KEY,
-  name TEXT UNIQUE NOT NULL,
+  name TEXT NOT NULL,
   project TEXT NOT NULL,
   description TEXT,
   created_by TEXT NOT NULL,
-  created_at TIMESTAMPTZ DEFAULT NOW()
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE(name, project)
 );
 
 CREATE TABLE IF NOT EXISTS specialist_channel_members (

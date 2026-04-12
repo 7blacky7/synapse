@@ -11,27 +11,27 @@ export async function createChannel(
   const { rows } = await pool.query<{ id: number; name: string; project: string }>(
     `INSERT INTO specialist_channels (name, project, description, created_by)
      VALUES ($1, $2, $3, $4)
-     ON CONFLICT (name) DO UPDATE SET description = EXCLUDED.description
+     ON CONFLICT (name, project) DO UPDATE SET description = EXCLUDED.description
      RETURNING id, name, project`,
     [name, project, description, createdBy],
   )
   return rows[0]
 }
 
-export async function deleteChannel(name: string): Promise<boolean> {
+export async function deleteChannel(project: string, name: string): Promise<boolean> {
   const pool = getPool()
   const { rows } = await pool.query(
-    `DELETE FROM specialist_channels WHERE name = $1 RETURNING id`,
-    [name],
+    `DELETE FROM specialist_channels WHERE name = $1 AND project = $2 RETURNING id`,
+    [name, project],
   )
   return rows.length > 0
 }
 
-export async function joinChannel(channelName: string, agentName: string): Promise<boolean> {
+export async function joinChannel(project: string, channelName: string, agentName: string): Promise<boolean> {
   const pool = getPool()
   const { rows } = await pool.query<{ id: number }>(
-    `SELECT id FROM specialist_channels WHERE name = $1`,
-    [channelName],
+    `SELECT id FROM specialist_channels WHERE name = $1 AND project = $2`,
+    [channelName, project],
   )
   if (rows.length === 0) return false
 
@@ -45,11 +45,11 @@ export async function joinChannel(channelName: string, agentName: string): Promi
   return true
 }
 
-export async function leaveChannel(channelName: string, agentName: string): Promise<boolean> {
+export async function leaveChannel(project: string, channelName: string, agentName: string): Promise<boolean> {
   const pool = getPool()
   const { rows: channelRows } = await pool.query<{ id: number }>(
-    `SELECT id FROM specialist_channels WHERE name = $1`,
-    [channelName],
+    `SELECT id FROM specialist_channels WHERE name = $1 AND project = $2`,
+    [channelName, project],
   )
   if (channelRows.length === 0) return false
 
@@ -64,6 +64,7 @@ export async function leaveChannel(channelName: string, agentName: string): Prom
 }
 
 export async function postChannelMessage(
+  project: string,
   channelName: string,
   sender: string,
   content: string,
@@ -72,16 +73,17 @@ export async function postChannelMessage(
   const pool = getPool()
   const { rows } = await pool.query<{ id: number; created_at: Date }>(
     `INSERT INTO specialist_channel_messages (channel_id, sender, content, metadata)
-     SELECT c.id, $2, $3, $4
-     FROM specialist_channels c WHERE c.name = $1
+     SELECT c.id, $3, $4, $5
+     FROM specialist_channels c WHERE c.name = $1 AND c.project = $2
      RETURNING id, created_at`,
-    [channelName, sender, content, metadata ? JSON.stringify(metadata) : null],
+    [channelName, project, sender, content, metadata ? JSON.stringify(metadata) : null],
   )
   if (rows.length === 0) return null
   return { id: rows[0].id, createdAt: rows[0].created_at }
 }
 
 export async function getChannelMessages(
+  project: string,
   channelName: string,
   opts?: { limit?: number; sinceId?: number; preview?: boolean },
 ): Promise<ChannelMessage[]> {
@@ -100,11 +102,11 @@ export async function getChannelMessages(
     `SELECT cm.id, c.name AS channel_name, cm.sender, cm.content, cm.metadata, cm.created_at
      FROM specialist_channel_messages cm
      JOIN specialist_channels c ON c.id = cm.channel_id
-     WHERE c.name = $1
-       AND cm.id > $2
+     WHERE c.name = $1 AND c.project = $2
+       AND cm.id > $3
      ORDER BY cm.created_at DESC
-     LIMIT $3`,
-    [channelName, sinceId, limit],
+     LIMIT $4`,
+    [channelName, project, sinceId, limit],
   )
 
   // Reverse to chronological order (oldest first)
@@ -121,15 +123,15 @@ export async function getChannelMessages(
   }))
 }
 
-export async function getChannelMembers(channelName: string): Promise<string[]> {
+export async function getChannelMembers(project: string, channelName: string): Promise<string[]> {
   const pool = getPool()
   const { rows } = await pool.query<{ agent_name: string }>(
     `SELECT cm.agent_name
      FROM specialist_channel_members cm
      JOIN specialist_channels c ON c.id = cm.channel_id
-     WHERE c.name = $1
+     WHERE c.name = $1 AND c.project = $2
      ORDER BY cm.joined_at`,
-    [channelName],
+    [channelName, project],
   )
   return rows.map((r) => r.agent_name)
 }
@@ -202,6 +204,6 @@ export async function ensureGeneralChannel(
   const channelName = `${project}-general`
   await createChannel(project, channelName, `General channel for ${project}`, createdBy)
   if (agentName) {
-    await joinChannel(channelName, agentName)
+    await joinChannel(project, channelName, agentName)
   }
 }

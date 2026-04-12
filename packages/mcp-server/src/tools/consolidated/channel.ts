@@ -49,11 +49,12 @@ async function handleCreate(args: Record<string, unknown>) {
 }
 
 async function handleJoin(args: Record<string, unknown>) {
+  const project = reqStr(args, 'project');
   const channelName = reqStr(args, 'channel_name');
   const agentName = reqStr(args, 'agent_name');
 
   try {
-    const joined = await joinChannel(channelName, agentName);
+    const joined = await joinChannel(project, channelName, agentName);
     if (!joined) {
       return jsonResult({ success: false, message: `Channel "${channelName}" nicht gefunden.` });
     }
@@ -64,11 +65,12 @@ async function handleJoin(args: Record<string, unknown>) {
 }
 
 async function handleLeave(args: Record<string, unknown>) {
+  const project = reqStr(args, 'project');
   const channelName = reqStr(args, 'channel_name');
   const agentName = reqStr(args, 'agent_name');
 
   try {
-    const left = await leaveChannel(channelName, agentName);
+    const left = await leaveChannel(project, channelName, agentName);
     if (!left) {
       return jsonResult({ success: false, message: `"${agentName}" war nicht in Channel "${channelName}".` });
     }
@@ -79,12 +81,13 @@ async function handleLeave(args: Record<string, unknown>) {
 }
 
 async function handlePost(args: Record<string, unknown>) {
+  const project = reqStr(args, 'project');
   const channelName = reqStr(args, 'channel_name');
   const sender = reqStr(args, 'sender');
   const content = reqStr(args, 'content');
 
   try {
-    const result = await postMessage(channelName, sender, content);
+    const result = await postMessage(project, channelName, sender, content);
     if (!result) {
       return jsonResult({ success: false, message: `Channel "${channelName}" nicht gefunden.` });
     }
@@ -100,13 +103,14 @@ async function handlePost(args: Record<string, unknown>) {
 }
 
 async function handleFeed(args: Record<string, unknown>) {
+  const project = reqStr(args, 'project');
   const channelName = reqStr(args, 'channel_name');
   const limit = num(args, 'limit');
   const sinceId = num(args, 'since_id');
   const preview = bool(args, 'preview');
 
   try {
-    const messages = await getMessages(channelName, { limit, sinceId, preview });
+    const messages = await getMessages(project, channelName, { limit, sinceId, preview });
     return jsonResult({
       success: true,
       channel: channelName,
@@ -221,9 +225,10 @@ export const channelTool: ConsolidatedTool = {
         // Array-Support: Mehreren Channels beitreten
         if (Array.isArray(args.channel_name)) {
           const channelNames = args.channel_name as string[];
+          const project = reqStr(args, 'project');
           const agentName = reqStr(args, 'agent_name');
           const settled = await Promise.allSettled(
-            channelNames.map(cn => joinChannel(cn, agentName))
+            channelNames.map(cn => joinChannel(project, cn, agentName))
           );
           const results: Array<Record<string, unknown>> = [];
           const errors: string[] = [];
@@ -249,9 +254,10 @@ export const channelTool: ConsolidatedTool = {
         // Array-Support: Mehrere Channels verlassen
         if (Array.isArray(args.channel_name)) {
           const channelNames = args.channel_name as string[];
+          const project = reqStr(args, 'project');
           const agentName = reqStr(args, 'agent_name');
           const settled = await Promise.allSettled(
-            channelNames.map(cn => leaveChannel(cn, agentName))
+            channelNames.map(cn => leaveChannel(project, cn, agentName))
           );
           const results: Array<Record<string, unknown>> = [];
           const errors: string[] = [];

@@ -1308,9 +1308,9 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
     // 8. CHANNEL — nur ueber MCP Server (stdio) verfuegbar
     // =================================================================
     case 'channel': {
+      const project = reqStr(args, 'project');
       switch (action) {
         case 'create': {
-          const project = reqStr(args, 'project');
           const chName = reqStr(args, 'name');
           const chDesc = (args.description as string | undefined) ?? null;
           const createdBy = reqStr(args, 'created_by');
@@ -1321,27 +1321,27 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
           const chParam = args.channel_name;
           const agName = reqStr(args, 'agent_name');
           if (Array.isArray(chParam)) {
-            const results = await Promise.all(chParam.map((ch: string) => joinChannel(ch, agName)));
+            const results = await Promise.all(chParam.map((ch: string) => joinChannel(project, ch, agName)));
             return { success: true, results, action: 'join' };
           }
-          const joined = await joinChannel(reqStr(args, 'channel_name'), agName);
+          const joined = await joinChannel(project, reqStr(args, 'channel_name'), agName);
           return { success: joined, action: 'join' };
         }
         case 'leave': {
           const chParam2 = args.channel_name;
           const agName2 = reqStr(args, 'agent_name');
           if (Array.isArray(chParam2)) {
-            const results = await Promise.all(chParam2.map((ch: string) => leaveChannel(ch, agName2)));
+            const results = await Promise.all(chParam2.map((ch: string) => leaveChannel(project, ch, agName2)));
             return { success: true, results, action: 'leave' };
           }
-          const left = await leaveChannel(reqStr(args, 'channel_name'), agName2);
+          const left = await leaveChannel(project, reqStr(args, 'channel_name'), agName2);
           return { success: left, action: 'leave' };
         }
         case 'post': {
           const chName2 = reqStr(args, 'channel_name');
           const sender = reqStr(args, 'sender');
           const postContent = reqStr(args, 'content');
-          const postResult = await postChannelMessage(chName2, sender, postContent);
+          const postResult = await postChannelMessage(project, chName2, sender, postContent);
           if (!postResult) return { success: false, error: `Channel "${chName2}" nicht gefunden` };
           return { success: true, messageId: postResult.id, createdAt: postResult.createdAt, action: 'post' };
         }
@@ -1350,7 +1350,7 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
           const feedLimit = args.limit !== undefined ? Number(args.limit) : 20;
           const sinceId = args.since_id !== undefined ? Number(args.since_id) : 0;
           const preview = args.preview === true;
-          const msgs = await getChannelMessages(chName3, { limit: feedLimit, sinceId, preview });
+          const msgs = await getChannelMessages(project, chName3, { limit: feedLimit, sinceId, preview });
           return { success: true, channel: chName3, messages: msgs, count: msgs.length, action: 'feed' };
         }
         case 'list': {

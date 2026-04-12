@@ -404,7 +404,7 @@ export function createServer(): Server {
                   const runningCount = Object.values(specStatus.specialists).filter(s => s.status === 'running').length;
                   if (runningCount > 0) {
                     try {
-                      await postMessage(`${project}-general`, senderId, content);
+                      await postMessage(project, `${project}-general`, senderId, content);
                     } catch { /* Channel existiert noch nicht */ }
                   }
                 }
