@@ -1308,7 +1308,9 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
     // 8. CHANNEL — nur ueber MCP Server (stdio) verfuegbar
     // =================================================================
     case 'channel': {
-      const project = reqStr(args, 'project');
+      const projectParam = (args.project as string | undefined);
+      if (!projectParam && action !== 'list') return { success: false, error: 'Parameter "project" ist erforderlich' };
+      const project = projectParam ?? '';
       switch (action) {
         case 'create': {
           const chName = reqStr(args, 'name');
