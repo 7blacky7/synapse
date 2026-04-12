@@ -278,6 +278,52 @@ CREATE TABLE IF NOT EXISTS error_pattern_seen (
 CREATE INDEX IF NOT EXISTS idx_error_pattern_seen_session
   ON error_pattern_seen(session_id);
 
+-- Specialist Channels (Gruppenchat) — aus agents/schema.ts nach core verschoben
+CREATE TABLE IF NOT EXISTS specialist_channels (
+  id SERIAL PRIMARY KEY,
+  name TEXT UNIQUE NOT NULL,
+  project TEXT NOT NULL,
+  description TEXT,
+  created_by TEXT NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS specialist_channel_members (
+  channel_id INTEGER REFERENCES specialist_channels(id) ON DELETE CASCADE,
+  agent_name TEXT NOT NULL,
+  joined_at TIMESTAMPTZ DEFAULT NOW(),
+  PRIMARY KEY (channel_id, agent_name)
+);
+
+CREATE TABLE IF NOT EXISTS specialist_channel_messages (
+  id SERIAL PRIMARY KEY,
+  channel_id INTEGER REFERENCES specialist_channels(id) ON DELETE CASCADE,
+  sender TEXT NOT NULL,
+  content TEXT NOT NULL,
+  metadata JSONB,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Specialist Inbox (1:1 Messaging)
+CREATE TABLE IF NOT EXISTS specialist_inbox (
+  id SERIAL PRIMARY KEY,
+  from_agent TEXT NOT NULL,
+  to_agent TEXT NOT NULL,
+  content TEXT NOT NULL,
+  processed BOOLEAN DEFAULT false,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Performance Indices (Channels + Inbox)
+CREATE INDEX IF NOT EXISTS idx_specialist_inbox_unprocessed
+  ON specialist_inbox(to_agent, processed) WHERE processed = false;
+CREATE INDEX IF NOT EXISTS idx_specialist_channel_messages_channel
+  ON specialist_channel_messages(channel_id, id DESC);
+CREATE INDEX IF NOT EXISTS idx_specialist_channel_messages_created
+  ON specialist_channel_messages(channel_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_specialist_channels_project
+  ON specialist_channels(project);
+
 -- LISTEN/NOTIFY Trigger fuer Event-Driven Watcher
 -- Payload: JSON mit project, sender, type etc. fuer Client-seitiges Filtering
 

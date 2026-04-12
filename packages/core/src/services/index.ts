@@ -34,3 +34,5 @@ export type { TechDoc, TechDocType, TechDocResult } from './tech-docs.js';
 export { emitEvent, acknowledgeEvent, getPendingEvents, getUnackedCount } from './events.js';
 export type { AgentEvent, EventAck, EventType, EventPriority } from './events.js';
 export * from './error-patterns.js';
+export * from './channels.js';
+export * from './inbox.js';

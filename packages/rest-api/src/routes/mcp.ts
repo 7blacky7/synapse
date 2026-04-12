@@ -86,6 +86,16 @@ import {
   insertAfterLine,
   deleteLines,
   searchReplace,
+  // Channels
+  createChannel,
+  joinChannel,
+  leaveChannel,
+  postChannelMessage,
+  getChannelMessages,
+  listChannels,
+  // Inbox
+  postToInbox,
+  checkInbox,
 } from '@synapse/core';
 import { minimatch } from 'minimatch';
 import { randomUUID } from 'crypto';
@@ -1271,10 +1281,24 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
           const agents = await listActiveAgents(reqStr(args, 'project'));
           return { success: true, agents, count: agents.length, action: 'list' };
         }
-        case 'inbox_send':
-          return { success: false, error: 'Action "inbox_send" ist nur ueber MCP Server (stdio) verfuegbar' };
-        case 'inbox_check':
-          return { success: false, error: 'Action "inbox_check" ist nur ueber MCP Server (stdio) verfuegbar' };
+        case 'inbox_send': {
+          const fromAgent = reqStr(args, 'from_agent');
+          const toAgentParam = args.to_agent;
+          const inboxContent = reqStr(args, 'content');
+          if (Array.isArray(toAgentParam)) {
+            const results = await Promise.all(
+              toAgentParam.map((t: string) => postToInbox(fromAgent, t, inboxContent))
+            );
+            return { success: true, results, count: results.length, action: 'inbox_send' };
+          }
+          const inboxResult = await postToInbox(fromAgent, reqStr(args, 'to_agent'), inboxContent);
+          return { success: true, ...inboxResult, action: 'inbox_send' };
+        }
+        case 'inbox_check': {
+          const inboxAgent = reqStr(args, 'agent_name');
+          const inboxMessages = await checkInbox(inboxAgent);
+          return { success: true, messages: inboxMessages, count: inboxMessages.length, action: 'inbox_check' };
+        }
         default:
           return { success: false, error: `Unbekannte chat action: "${action}"` };
       }
@@ -1283,8 +1307,61 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
     // =================================================================
     // 8. CHANNEL — nur ueber MCP Server (stdio) verfuegbar
     // =================================================================
-    case 'channel':
-      return { success: false, error: `Channel-Tool ist nur ueber MCP Server (stdio) verfuegbar — benoetigt @synapse/agents` };
+    case 'channel': {
+      switch (action) {
+        case 'create': {
+          const project = reqStr(args, 'project');
+          const chName = reqStr(args, 'name');
+          const chDesc = (args.description as string | undefined) ?? null;
+          const createdBy = reqStr(args, 'created_by');
+          const channel = await createChannel(project, chName, chDesc, createdBy);
+          return { success: true, channel, action: 'create' };
+        }
+        case 'join': {
+          const chParam = args.channel_name;
+          const agName = reqStr(args, 'agent_name');
+          if (Array.isArray(chParam)) {
+            const results = await Promise.all(chParam.map((ch: string) => joinChannel(ch, agName)));
+            return { success: true, results, action: 'join' };
+          }
+          const joined = await joinChannel(reqStr(args, 'channel_name'), agName);
+          return { success: joined, action: 'join' };
+        }
+        case 'leave': {
+          const chParam2 = args.channel_name;
+          const agName2 = reqStr(args, 'agent_name');
+          if (Array.isArray(chParam2)) {
+            const results = await Promise.all(chParam2.map((ch: string) => leaveChannel(ch, agName2)));
+            return { success: true, results, action: 'leave' };
+          }
+          const left = await leaveChannel(reqStr(args, 'channel_name'), agName2);
+          return { success: left, action: 'leave' };
+        }
+        case 'post': {
+          const chName2 = reqStr(args, 'channel_name');
+          const sender = reqStr(args, 'sender');
+          const postContent = reqStr(args, 'content');
+          const postResult = await postChannelMessage(chName2, sender, postContent);
+          if (!postResult) return { success: false, error: `Channel "${chName2}" nicht gefunden` };
+          return { success: true, messageId: postResult.id, createdAt: postResult.createdAt, action: 'post' };
+        }
+        case 'feed': {
+          const chName3 = reqStr(args, 'channel_name');
+          const feedLimit = args.limit !== undefined ? Number(args.limit) : 20;
+          const sinceId = args.since_id !== undefined ? Number(args.since_id) : 0;
+          const preview = args.preview === true;
+          const msgs = await getChannelMessages(chName3, { limit: feedLimit, sinceId, preview });
+          return { success: true, channel: chName3, messages: msgs, count: msgs.length, action: 'feed' };
+        }
+        case 'list': {
+          const chProject = (args.project as string | undefined);
+          const channels = await listChannels(chProject || undefined);
+          return { success: true, channels, count: channels.length, action: 'list' };
+        }
+        default:
+          return { success: false, error: `Unbekannte channel action: "${action}"` };
+      }
+    }
 
     // =================================================================
     // 9. EVENT

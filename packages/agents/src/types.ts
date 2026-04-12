@@ -61,23 +61,8 @@ export interface SendMessageResult {
   outputTokens: number
 }
 
-export interface ChannelMessage {
-  id: number
-  channelName: string
-  sender: string
-  content: string
-  metadata?: Record<string, unknown>
-  createdAt: Date
-}
-
-export interface InboxMessage {
-  id: number
-  fromAgent: string
-  toAgent: string
-  content: string
-  processed: boolean
-  createdAt: Date
-}
+// Re-Export aus @synapse/core (Backward-Compat)
+export type { ChannelMessage, InboxMessage } from '@synapse/core'
 
 export interface HeartbeatConfig {
   pollIntervalMs: number

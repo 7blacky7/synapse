@@ -88,6 +88,7 @@ export {
   getProjectRoot,
   toRelativePath,
   toAbsolutePath,
+  registerVirtualProject,
 } from './services/project-registry.js';
 
 // Migrations
@@ -223,6 +224,22 @@ export {
   acknowledgeEvent,
   getPendingEvents,
   getUnackedCount,
+  // Channels
+  createChannel,
+  deleteChannel,
+  joinChannel,
+  leaveChannel,
+  postChannelMessage,
+  getChannelMessages,
+  getChannelMembers,
+  listChannels,
+  getNewMessagesForAgent,
+  ensureGeneralChannel,
+  // Inbox
+  postToInbox,
+  checkInbox,
+  getNewInboxMessages,
+  getInboxHistory,
   // Error Patterns
   addErrorPattern,
   listErrorPatterns,
@@ -254,7 +271,6 @@ export type {
 } from './services/global-search.js';
 export type { ProjectStatus } from './services/project-status.js';
 export { getProjectStatus, setProjectStatus, isProjectInitialized, updateLastAccess, clearProjectStatus, isAgentKnown, registerAgent } from './services/project-status.js';
-
 /**
  * Ermittelt das Text-Feld fuer Re-Embedding anhand des Collection-Suffixes
  */

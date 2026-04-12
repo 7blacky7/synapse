@@ -262,6 +262,28 @@ export interface ProposalPayload {
 export interface ProposalSearchResult extends SearchResult<ProposalPayload> {}
 
 // ===========================================
+// CHANNELS & INBOX
+// ===========================================
+
+export interface ChannelMessage {
+  id: number;
+  channelName: string;
+  sender: string;
+  content: string;
+  metadata?: Record<string, unknown>;
+  createdAt: Date;
+}
+
+export interface InboxMessage {
+  id: number;
+  fromAgent: string;
+  toAgent: string;
+  content: string;
+  processed: boolean;
+  createdAt: Date;
+}
+
+// ===========================================
 // COLLECTION NAMEN
 // ===========================================
 

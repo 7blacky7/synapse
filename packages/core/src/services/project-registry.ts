@@ -69,3 +69,18 @@ export function toAbsolutePath(projectRoot: string, relativePath: string): strin
   const root = projectRoot.endsWith('/') ? projectRoot : projectRoot + '/';
   return root + relativePath;
 }
+
+/**
+ * Registriert ein virtuelles Projekt fuer REST-API Clients (Web-KIs).
+ * Hostname: 'rest-api', Pfad: '/virtual/rest-api'
+ * Web-KIs muessen keinen lokalen Pfad angeben — getProjectRoot findet immer einen Eintrag.
+ */
+export async function registerVirtualProject(name: string): Promise<void> {
+  const pool = getPool();
+  await pool.query(
+    `INSERT INTO projects (name, hostname, path, created_at, last_access)
+     VALUES ($1, 'rest-api', '/virtual/rest-api', NOW(), NOW())
+     ON CONFLICT (name, hostname) DO UPDATE SET last_access = NOW()`,
+    [name]
+  );
+}

@@ -5,7 +5,7 @@
 
 import Fastify, { FastifyInstance } from 'fastify';
 import cors from '@fastify/cors';
-import { getConfig, initSynapse } from '@synapse/core';
+import { getConfig, initSynapse, getPool, registerVirtualProject } from '@synapse/core';
 import { errorHandler } from './middleware/error.js';
 import {
   statusRoutes,
@@ -88,6 +88,18 @@ export async function startServer(): Promise<void> {
   if (!initialized) {
     console.error('[Synapse API] Core-Initialisierung fehlgeschlagen');
     process.exit(1);
+  }
+
+  // Virtuelle Projekte fuer REST-API registrieren
+  try {
+    const pool = getPool();
+    const { rows } = await pool.query<{ name: string }>('SELECT DISTINCT name FROM projects');
+    for (const p of rows) {
+      await registerVirtualProject(p.name);
+    }
+    console.log(`[Synapse API] ${rows.length} Projekte virtuell registriert`);
+  } catch (err) {
+    console.warn('[Synapse API] Virtuelle Projekt-Registrierung fehlgeschlagen:', err);
   }
 
   // Server erstellen und starten
