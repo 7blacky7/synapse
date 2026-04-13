@@ -72,6 +72,7 @@ import { htmlParser } from './html.js';
 import { llvmIrParser } from './llvmir.js';
 import { linkerScriptParser } from './linker.js';
 import { mooParser } from './moo.js';
+import { markdownParser } from './markdown.js';
 
 export type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
 
@@ -143,6 +144,7 @@ const parsers: LanguageParser[] = [
   llvmIrParser,
   linkerScriptParser,
   mooParser,
+  markdownParser,
 ];
 
 /** Dateiname-basiertes Matching fuer Dateien ohne Extension (Makefile, Dockerfile) */
