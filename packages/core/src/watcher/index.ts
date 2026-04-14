@@ -25,6 +25,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import * as crypto from 'crypto';
 import chokidar, { FSWatcher } from 'chokidar';
 import { Ignore } from 'ignore';
 import { FileEvent } from '../types/index.js';
@@ -46,6 +47,8 @@ export interface FileWatcherOptions {
   onError?: (error: Error) => void;
   /** Callback wenn .synapseignore geaendert wird - erhaelt neue Ignore-Patterns */
   onIgnoreChange?: (newPatterns: string[]) => void | Promise<void>;
+  /** Callback nach Initial-Scan (Reconciliation gegen PG) */
+  onReady?: () => void | Promise<void>;
 }
 
 export interface FileWatcherInstance {
@@ -61,7 +64,7 @@ export interface FileWatcherInstance {
  * Startet einen FileWatcher fuer ein Projekt
  */
 export function startFileWatcher(options: FileWatcherOptions): FileWatcherInstance {
-  const { projectPath, projectName, onFileChange, onError, onIgnoreChange } = options;
+  const { projectPath, projectName, onFileChange, onError, onIgnoreChange, onReady } = options;
   const config = getConfig();
 
   console.error(`[Synapse] Starte FileWatcher fuer "${projectName}" in ${projectPath}`);
@@ -157,33 +160,124 @@ export function startFileWatcher(options: FileWatcherOptions): FileWatcherInstan
       clearTimeout(existing.timeout);
     }
 
+    // Unlinks bekommen laengeren Debounce, damit ADD-Events eines Moves
+    // zuerst verarbeitet werden koennen (Live-Rename-Detection greift dann).
+    const debounceMs = type === 'unlink' ? 1500 : config.files.debounceMs;
+
     // Neues Debounced Event erstellen
-    const timeout = setTimeout(() => {
+    const timeout = setTimeout(async () => {
       pendingEvents.delete(relativePath);
+
+      // Bei Unlink: pruefen ob die PG-Row bereits von einem Rename umgebogen wurde
+      if (type === 'unlink' && debugPool) {
+        try {
+          const res = await debugPool.query(
+            'SELECT 1 FROM code_files WHERE project = $1 AND file_path = $2 AND deleted_at IS NULL',
+            [projectName, relativePath]
+          );
+          if (!res.rows[0]) {
+            console.error(`[Synapse] UNLINK uebersprungen (Rename-detected): ${relativePath}`);
+            return;
+          }
+        } catch {
+          // PG nicht erreichbar — fail-open, normaler Unlink-Flow
+        }
+      }
 
       const event: FileEvent = {
         type,
-        path: relativePath,  // RELATIV statt ABSOLUT
+        path: relativePath,
         project: projectName,
       };
 
       console.error(`[Synapse] ${type.toUpperCase()}: ${relativePath}`);
 
-      // Async Handler aufrufen
       Promise.resolve(onFileChange(event)).catch(error => {
         console.error(`[Synapse] Fehler bei Event-Verarbeitung:`, error);
         onError?.(error);
       });
-    }, config.files.debounceMs);
+    }, debounceMs);
 
     pendingEvents.set(relativePath, { type, timeout });
   }
+
+  // ═══ Event-Logging in PostgreSQL (watcher_events) ═══
+  // Standard: ADD/CHANGE/UNLINK/ADDDIR/UNLINKDIR werden IMMER geloggt (leichtgewichtig).
+  // Verbose-Modus (IGNORE/ALLOW/RAW) nur per SYNAPSE_WATCHER_DEBUG=1 oder
+  // Datei .synapse/watcher-debug.enabled — diese Events sind pro Projekt-Scan tausendfach.
+  const verboseEnabled = process.env.SYNAPSE_WATCHER_DEBUG === '1'
+    || fs.existsSync(path.join(projectPath, '.synapse', 'watcher-debug.enabled'));
+  if (verboseEnabled) {
+    console.error(`[Synapse] FileWatcher verbose-log AKTIV (IGNORE/ALLOW/RAW)`);
+  }
+
+  let debugPool: import('pg').Pool | null = null;
+  (async () => {
+    try {
+      const { getPool } = await import('../db/client.js');
+      debugPool = getPool();
+
+      // TTL-Cleanup: Events aelter als 7 Tage loeschen (einmal beim Start)
+      debugPool.query(
+        `DELETE FROM watcher_events WHERE project = $1 AND created_at < NOW() - INTERVAL '7 days'`,
+        [projectName]
+      ).catch(() => {});
+    } catch {
+      console.error('[Synapse] watcher_events: PG-Pool nicht verfuegbar — Logs gehen verloren');
+    }
+  })();
+
+  function debugLog(kind: string, rel: string, details?: unknown): void {
+    if (!debugPool) return;
+    // Verbose-Events nur bei aktivem Flag
+    if (!verboseEnabled && (kind === 'IGNORE' || kind === 'ALLOW' || kind.startsWith('RAW:'))) return;
+    debugPool.query(
+      'INSERT INTO watcher_events (project, event_type, file_path, details) VALUES ($1, $2, $3, $4)',
+      [projectName, kind, rel, details ? JSON.stringify(details) : null]
+    ).catch(() => { /* best-effort */ });
+  }
+
+  /**
+   * Liest Filesystem-Metadaten + Content-Hash fuer Event-Log.
+   * Limits: nur bis 10MB, Binaer-Dateien nur stat (kein Hash).
+   */
+  function captureFileMeta(absPath: string): Record<string, unknown> | undefined {
+    try {
+      const stat = fs.statSync(absPath);
+      const meta: Record<string, unknown> = {
+        size: stat.size,
+        mtime_ms: stat.mtimeMs,
+        ctime_ms: stat.ctimeMs,
+        ino: stat.ino,
+        mode: stat.mode,
+        is_dir: stat.isDirectory(),
+        is_symlink: stat.isSymbolicLink(),
+      };
+      if (!stat.isDirectory() && stat.size > 0 && stat.size <= 10 * 1024 * 1024) {
+        try {
+          const buf = fs.readFileSync(absPath);
+          meta.sha256 = crypto.createHash('sha256').update(buf).digest('hex');
+        } catch { /* Hash optional */ }
+      }
+      return meta;
+    } catch (err) {
+      return { error: (err as Error).message };
+    }
+  }
+
+  // Cache: letzte bekannte inode+hash pro relPath, damit UNLINK-Events
+  // diese Meta trotz weggenommener Datei mitloggen koennen (fuer Move-Detection).
+  const lastKnownMeta = new Map<string, Record<string, unknown>>();
 
   // Chokidar Watcher erstellen
   const watcher: FSWatcher = chokidar.watch(projectPath, {
     ignored: (filePath: string) => {
       const relativePath = path.relative(projectPath, filePath);
-      return shouldIgnore(ig, relativePath);
+      const ignored = shouldIgnore(ig, relativePath);
+      if (verboseEnabled && relativePath) {
+        debugLog(ignored ? 'IGNORE' : 'ALLOW', relativePath);
+      }
+      return ignored;
     },
     persistent: true,
     ignoreInitial: false, // Initial Scan durchfuehren
@@ -194,9 +288,37 @@ export function startFileWatcher(options: FileWatcherOptions): FileWatcherInstan
   });
 
   // Event Handler registrieren
-  watcher.on('add', (filePath) => handleEvent('add', filePath));
-  watcher.on('change', (filePath) => handleEvent('change', filePath));
-  watcher.on('unlink', (filePath) => handleEvent('unlink', filePath));
+  watcher.on('add', (filePath) => {
+    const rel = path.relative(projectPath, filePath);
+    const meta = captureFileMeta(filePath);
+    if (meta && !meta.error) lastKnownMeta.set(rel, meta);
+    debugLog('ADD', rel, meta);
+    handleEvent('add', filePath);
+  });
+  watcher.on('change', (filePath) => {
+    const rel = path.relative(projectPath, filePath);
+    const meta = captureFileMeta(filePath);
+    if (meta && !meta.error) lastKnownMeta.set(rel, meta);
+    debugLog('CHANGE', rel, meta);
+    handleEvent('change', filePath);
+  });
+  watcher.on('unlink', (filePath) => {
+    const rel = path.relative(projectPath, filePath);
+    // UNLINK: Datei ist weg — nutze letzte bekannte inode+hash aus Cache
+    const lastMeta = lastKnownMeta.get(rel);
+    lastKnownMeta.delete(rel);
+    debugLog('UNLINK', rel, lastMeta);
+    handleEvent('unlink', filePath);
+  });
+  watcher.on('addDir', (dirPath) => {
+    debugLog('ADDDIR', path.relative(projectPath, dirPath), captureFileMeta(dirPath));
+  });
+  watcher.on('unlinkDir', (dirPath) => {
+    debugLog('UNLINKDIR', path.relative(projectPath, dirPath));
+  });
+  watcher.on('raw', (event: string, rawPath: string, details: unknown) => {
+    debugLog('RAW:' + event, rawPath, details);
+  });
 
   watcher.on('error', (error) => {
     console.error(`[Synapse] FileWatcher Fehler:`, error);
@@ -205,6 +327,11 @@ export function startFileWatcher(options: FileWatcherOptions): FileWatcherInstan
 
   watcher.on('ready', () => {
     console.error(`[Synapse] FileWatcher bereit fuer "${projectName}"`);
+    if (onReady) {
+      Promise.resolve(onReady()).catch(error => {
+        console.error(`[Synapse] Fehler in onReady:`, error);
+      });
+    }
   });
 
   // ═══ PG-Watcher: Externe Aenderungen aus PostgreSQL auf Festplatte synchen ═══

@@ -8,6 +8,7 @@ import {
   ensureProjectCollection,
   startFileWatcher,
   handleFileEvent,
+  verifyProjectAgainstFilesystem,
   createPlan,
   getPlan,
   updatePlan,
@@ -81,6 +82,13 @@ export async function projectRoutes(fastify: FastifyInstance): Promise<void> {
       onFileChange: (event) => handleFileEvent(event, projectPath),
       onError: (error) => {
         console.error(`[Synapse API] FileWatcher Fehler:`, error);
+      },
+      onReady: async () => {
+        try {
+          await verifyProjectAgainstFilesystem(name, projectPath);
+        } catch (err) {
+          console.error(`[Synapse API] Reconcile fehlgeschlagen:`, err);
+        }
       },
     });
 

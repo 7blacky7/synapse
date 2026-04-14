@@ -256,6 +256,18 @@ DO $$ BEGIN
   END IF;
 END $$;
 
+-- Watcher Debug-Log (alle rohen chokidar-Events, auch nicht-indexierte)
+CREATE TABLE IF NOT EXISTS watcher_events (
+  id BIGSERIAL PRIMARY KEY,
+  project TEXT NOT NULL,
+  event_type TEXT NOT NULL,
+  file_path TEXT NOT NULL,
+  details JSONB,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_watcher_events_project_time ON watcher_events(project, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_watcher_events_path ON watcher_events(project, file_path);
+
 -- Error Patterns (global, kein Projekt-Filter)
 CREATE TABLE IF NOT EXISTS error_patterns (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

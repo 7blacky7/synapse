@@ -239,6 +239,46 @@ export async function getVectors<T>(
 }
 
 /**
+ * Aktualisiert das Payload aller Punkte einer Datei bei Umbenennung.
+ * Nutzt Qdrants setPayload-API, kein Re-Embedding noetig.
+ */
+export async function updatePayloadByFilePath(
+  collection: string,
+  oldFilePath: string,
+  newFilePath: string
+): Promise<number> {
+  const client = getQdrantClient();
+  const fileName = newFilePath.split('/').pop() || newFilePath;
+
+  // Alle Punkte mit dem alten Pfad finden
+  const points = await scrollVectors<{ file_path: string }>(
+    collection,
+    { must: [{ key: 'file_path', match: { value: oldFilePath } }] },
+    1000
+  );
+
+  if (points.length === 0) return 0;
+
+  const ids = points.map(p => p.id);
+  try {
+    await client.setPayload(collection, {
+      wait: true,
+      points: ids,
+      payload: {
+        file_path: newFilePath,
+        file_name: fileName,
+        updated_at: new Date().toISOString(),
+      },
+    });
+  } catch (err) {
+    console.error(`[Synapse Qdrant] setPayload fehlgeschlagen fuer ${oldFilePath} → ${newFilePath}:`, err);
+    throw err;
+  }
+
+  return ids.length;
+}
+
+/**
  * Holt alle Vektoren mit einem bestimmten Filter
  */
 export async function scrollVectors<T>(

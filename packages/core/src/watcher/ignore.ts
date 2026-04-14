@@ -132,7 +132,18 @@ export function loadGitignore(projectPath: string): Ignore {
 }
 
 /**
- * Prueft ob ein Pfad ignoriert werden soll
+ * Prueft ob ein Pfad ignoriert werden soll.
+ *
+ * Wichtig: Die `ignore`-Library interpretiert einen Pfad OHNE Trailing-Slash als Datei.
+ * Patterns wie "beispiele" gefolgt von Globs ignorieren dann auch Subdirectories, obwohl
+ * Negations-Patterns wie "!beispiele" + Glob + "*.moo" die Dateien darin explizit
+ * einschliessen sollten. Chokidar wuerde so den gesamten Unterbaum skippen — Dateien
+ * in diesen Dirs werden nie gesehen.
+ *
+ * Fix: Pfad sowohl als File- als auch als Directory-Variante testen. Nur wenn beide
+ * Varianten ignoriert sind, gilt der Pfad wirklich als ignoriert. Das entspricht der
+ * gitignore-Semantik und erlaubt Chokidar in Subdirs zu descenden, deren Inhalte per
+ * Negations-Patterns wieder eingeschlossen sind.
  */
 export function shouldIgnore(ig: Ignore, relativePath: string): boolean {
   // Leere Pfade nicht ignorieren
@@ -140,10 +151,11 @@ export function shouldIgnore(ig: Ignore, relativePath: string): boolean {
     return false;
   }
 
-  // Normalisiere Pfad (Windows -> Unix)
-  const normalized = relativePath.replace(/\\/g, '/');
+  // Normalisiere Pfad (Windows -> Unix), Trailing-Slash entfernen falls vorhanden
+  const normalized = relativePath.replace(/\\/g, '/').replace(/\/$/, '');
 
-  return ig.ignores(normalized);
+  // Als Datei UND als Directory pruefen
+  return ig.ignores(normalized) && ig.ignores(normalized + '/');
 }
 
 /**

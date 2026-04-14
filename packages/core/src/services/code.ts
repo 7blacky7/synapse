@@ -54,11 +54,14 @@ import {
   insertVectors,
   searchVectors,
   deleteByFilePath,
+  updatePayloadByFilePath,
 } from '../qdrant/index.js';
 import { embed, embedBatch, embedMedia, supportsMultimodal } from '../embeddings/index.js';
 import { chunkFile } from '../chunking/index.js';
 import { readFileWithMetadata, getFileType, isExtractableDocument } from '../watcher/index.js';
-import { isMultimodalFile, getMediaMimeType, getMediaCategory } from '../watcher/binary.js';
+import { isMultimodalFile, getMediaMimeType, getMediaCategory, isBinaryFile, MAX_MEDIA_SIZE_MB } from '../watcher/binary.js';
+import { loadGitignore, shouldIgnore } from '../watcher/ignore.js';
+import { getConfig } from '../config.js';
 import { indexDocument, removeDocument } from './documents.js';
 import { getPool } from '../db/client.js';
 import { getParserForFile } from '../parser/index.js';
@@ -485,6 +488,293 @@ export async function removeFile(
 }
 
 /**
+ * Benennt eine Datei in allen Tabellen und Qdrant-Payloads um — ohne Re-Parse/Re-Embed.
+ * Nutzt DEFERRABLE FK-Constraints fuer atomares UPDATE in einer Transaktion.
+ *
+ * Returns true wenn mindestens eine Zeile betroffen war.
+ */
+export async function renameCodeFile(
+  project: string,
+  oldPath: string,
+  newPath: string
+): Promise<boolean> {
+  if (oldPath === newPath) return false;
+  const pool = getPool();
+
+  let affected = false;
+  try {
+    await pool.query('BEGIN');
+    await pool.query('SET CONSTRAINTS ALL DEFERRED');
+
+    const fileUpd = await pool.query(
+      `UPDATE code_files SET file_path = $1, file_name = $2, updated_at = NOW()
+       WHERE project = $3 AND file_path = $4`,
+      [newPath, path.basename(newPath), project, oldPath]
+    );
+    affected = (fileUpd.rowCount ?? 0) > 0;
+
+    if (affected) {
+      await pool.query(
+        `UPDATE code_symbols SET file_path = $1 WHERE project = $2 AND file_path = $3`,
+        [newPath, project, oldPath]
+      );
+      await pool.query(
+        `UPDATE code_references SET file_path = $1 WHERE project = $2 AND file_path = $3`,
+        [newPath, project, oldPath]
+      );
+      await pool.query(
+        `UPDATE code_chunks SET file_path = $1 WHERE project = $2 AND file_path = $3`,
+        [newPath, project, oldPath]
+      );
+    }
+
+    await pool.query('COMMIT');
+  } catch (err) {
+    await pool.query('ROLLBACK').catch(() => {});
+    console.error(`[Synapse] renameCodeFile fehlgeschlagen ${oldPath} → ${newPath}:`, err);
+    throw err;
+  }
+
+  if (!affected) return false;
+
+  // Qdrant-Payload updaten (ausserhalb der PG-Transaktion)
+  try {
+    const collection = COLLECTIONS.projectCode(project);
+    const updated = await updatePayloadByFilePath(collection, oldPath, newPath);
+    if (updated > 0) {
+      console.error(`[Synapse] Rename: ${oldPath} → ${newPath} (${updated} Qdrant-Chunks)`);
+    } else {
+      console.error(`[Synapse] Rename: ${oldPath} → ${newPath} (nur PG, keine Qdrant-Chunks)`);
+    }
+  } catch (err) {
+    console.error(`[Synapse] Qdrant-Rename fehlgeschlagen ${oldPath} → ${newPath} — Collection ggf. inkonsistent, Neustart-Verify repariert:`, err);
+  }
+
+  return true;
+}
+
+/**
+ * Reconciliation: entfernt PG-Zeilen deren Datei auf der Disk nicht mehr existiert
+ * (z.B. nach Move/Rename waehrend der Watcher aus war, oder wenn der Watcher
+ *  das unlink-Event verpasst hat). Erkennt zusaetzlich Umbenennungen per
+ *  content_hash und aktualisiert den Pfad statt Delete+Insert.
+ */
+export async function reconcileOrphans(
+  projectName: string,
+  projectRoot: string
+): Promise<{ renamed: number; removed: number }> {
+  const pool = getPool();
+  const rows = await pool.query(
+    'SELECT file_path, content_hash FROM code_files WHERE project = $1 AND deleted_at IS NULL',
+    [projectName]
+  );
+
+  let renamed = 0;
+  let removed = 0;
+
+  for (const { file_path, content_hash } of rows.rows) {
+    const abs = path.join(projectRoot, file_path);
+    if (fs.existsSync(abs)) continue;
+
+    // Rename-Detection: existiert eine andere PG-Zeile mit gleichem Hash,
+    // deren Datei auf der Disk vorhanden ist? Dann ist "file_path" ein Geist.
+    let renameTarget: string | null = null;
+    if (content_hash) {
+      const twins = await pool.query(
+        `SELECT file_path FROM code_files
+         WHERE project = $1 AND content_hash = $2 AND file_path <> $3 AND deleted_at IS NULL`,
+        [projectName, content_hash, file_path]
+      );
+      for (const twin of twins.rows) {
+        if (fs.existsSync(path.join(projectRoot, twin.file_path))) {
+          renameTarget = twin.file_path;
+          break;
+        }
+      }
+    }
+
+    if (renameTarget) {
+      // Neuer Pfad ist bereits indexiert → alte Zeile entfernen
+      await removeFile(file_path, projectName);
+      renamed++;
+      console.error(`[Synapse] Reconcile Rename: ${file_path} → ${renameTarget}`);
+    } else {
+      // Datei existiert auch nicht unter anderem Pfad → Geisterzeile loeschen
+      await removeFile(file_path, projectName);
+      removed++;
+    }
+  }
+
+  if (renamed + removed > 0) {
+    console.error(`[Synapse] Reconcile "${projectName}": ${renamed} umbenannt, ${removed} entfernt`);
+  }
+  return { renamed, removed };
+}
+
+/**
+ * Rekursiver Walk durch das Projektverzeichnis. Respektiert .gitignore / .synapseignore.
+ * Liefert absolute Pfade aller Dateien (keine Verzeichnisse, keine binaeren ausser Dokumente/Media).
+ */
+function walkProjectFiles(projectRoot: string): string[] {
+  const config = getConfig();
+  const ig = loadGitignore(projectRoot);
+  const files: string[] = [];
+
+  function walk(dir: string): void {
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const abs = path.join(dir, entry.name);
+      const rel = path.relative(projectRoot, abs);
+      if (shouldIgnore(ig, rel)) continue;
+
+      if (entry.isDirectory()) {
+        walk(abs);
+      } else if (entry.isFile()) {
+        try {
+          const isDocument = isExtractableDocument(abs);
+          const isMedia = isMultimodalFile(abs);
+          // Groessenlimit
+          const stat = fs.statSync(abs);
+          const sizeMB = stat.size / (1024 * 1024);
+          const maxSize = isDocument ? 50 : isMedia ? MAX_MEDIA_SIZE_MB : config.files.maxSizeMB;
+          if (sizeMB > maxSize) continue;
+          // Binaer-Ausschluss (ausser Dokumente/Media)
+          if (!isDocument && !isMedia) {
+            const buffer = fs.readFileSync(abs).subarray(0, 512);
+            if (isBinaryFile(abs, buffer)) continue;
+          }
+          files.push(abs);
+        } catch {
+          // unzugaenglich
+        }
+      }
+    }
+  }
+  walk(projectRoot);
+  return files;
+}
+
+/**
+ * Verifiziert PostgreSQL gegen das reale Filesystem und korrigiert Differenzen.
+ * - Findet verschobene Dateien per content_hash-Twin → rename (UPDATE file_path)
+ * - Indexiert neue Dateien die nicht in PG sind
+ * - Updated veraenderte Dateien (Hash weicht ab)
+ * - Entfernt PG-Zeilen deren Datei weder unter altem Pfad noch als Hash-Twin existiert
+ *
+ * Laeuft beim Watcher-`ready` nach dem Initial-Scan.
+ */
+export async function verifyProjectAgainstFilesystem(
+  project: string,
+  projectRoot: string
+): Promise<{ renamed: number; added: number; removed: number; updated: number }> {
+  const pool = getPool();
+  const stats = { renamed: 0, added: 0, removed: 0, updated: 0 };
+
+  // 1. Rekursiver Walk + Hash fuer alle Disk-Dateien
+  const absFiles = walkProjectFiles(projectRoot);
+  const diskMap = new Map<string, { hash: string; abs: string }>();
+  for (const abs of absFiles) {
+    try {
+      const rel = path.relative(projectRoot, abs);
+      const buf = fs.readFileSync(abs);
+      const hash = crypto.createHash('sha256').update(buf).digest('hex');
+      diskMap.set(rel, { hash, abs });
+    } catch {
+      /* nicht lesbar */
+    }
+  }
+
+  // 2. PG-Abgleich
+  const pgRows = await pool.query(
+    `SELECT file_path, content_hash FROM code_files
+     WHERE project = $1 AND deleted_at IS NULL`,
+    [project]
+  );
+
+  // Hash → Disk-Pfad-Map fuer schnelle Twin-Suche
+  const hashToDisk = new Map<string, string>();
+  for (const [rel, info] of diskMap) {
+    if (!hashToDisk.has(info.hash)) hashToDisk.set(info.hash, rel);
+  }
+
+  for (const row of pgRows.rows) {
+    const pgPath: string = row.file_path;
+    const pgHash: string | null = row.content_hash;
+    const diskEntry = diskMap.get(pgPath);
+
+    if (diskEntry) {
+      // Exakter Pfad-Treffer — Hash abgleichen
+      if (pgHash && diskEntry.hash !== pgHash) {
+        await storeFileContent(pgPath, project, projectRoot).catch(() => {});
+        stats.updated++;
+      }
+      diskMap.delete(pgPath);
+    } else {
+      // Pfad nicht auf Disk — Rename per Hash-Twin suchen
+      const twinPath = pgHash ? hashToDisk.get(pgHash) : undefined;
+      if (twinPath && diskMap.has(twinPath)) {
+        const ok = await renameCodeFile(project, pgPath, twinPath).catch(() => false);
+        if (ok) {
+          stats.renamed++;
+          diskMap.delete(twinPath);
+          hashToDisk.delete(pgHash!);
+          continue;
+        }
+      }
+      // Kein Twin → watcher_events nach jungem UNLINK/ADD-Paar fragen
+      try {
+        const logRes = await pool.query(
+          `SELECT adds.file_path AS to_path FROM watcher_events unl
+           JOIN watcher_events adds
+             ON unl.project = adds.project
+            AND adds.event_type = 'ADD'
+            AND adds.created_at BETWEEN unl.created_at - INTERVAL '10 seconds' AND unl.created_at + INTERVAL '10 seconds'
+            AND (adds.details->>'ino' = unl.details->>'ino' OR adds.details->>'sha256' = unl.details->>'sha256')
+           WHERE unl.project = $1 AND unl.event_type = 'UNLINK' AND unl.file_path = $2
+           ORDER BY unl.created_at DESC LIMIT 1`,
+          [project, pgPath]
+        );
+        const logTarget = logRes.rows[0]?.to_path;
+        if (logTarget && diskMap.has(logTarget)) {
+          const ok = await renameCodeFile(project, pgPath, logTarget).catch(() => false);
+          if (ok) {
+            stats.renamed++;
+            diskMap.delete(logTarget);
+            continue;
+          }
+        }
+      } catch {
+        /* watcher_events ggf. nicht vorhanden */
+      }
+
+      // Wirklich verwaist → entfernen
+      await removeFile(pgPath, project).catch(() => {});
+      stats.removed++;
+    }
+  }
+
+  // 3. Neue Dateien (Rest in diskMap) → indexieren
+  for (const [rel] of diskMap) {
+    try {
+      const n = await indexFile(rel, project, projectRoot);
+      if (n > 0) stats.added++;
+    } catch {
+      /* skip */
+    }
+  }
+
+  console.error(
+    `[Synapse] Verify "${project}": ${stats.renamed} umbenannt, ${stats.added} neu, ${stats.updated} aktualisiert, ${stats.removed} entfernt`
+  );
+  return stats;
+}
+
+/**
  * Indexiert eine Medien-Datei (Bild/Video) via Multimodal-Embedding
  * Nutzt eigene projekt-spezifische Media-Collection (project_{name}_media)
  * Wird NICHT automatisch vom FileWatcher aufgerufen — nur per index_media MCP-Tool
@@ -640,6 +930,69 @@ export async function searchMedia(
 }
 
 /**
+ * Erkennt ob ein ADD-Event tatsaechlich ein Rename ist (Move innerhalb des Projekts).
+ * Sucht in watcher_events nach einem kuerzlich gesehenen UNLINK mit gleicher inode oder sha256.
+ *
+ * Returns den alten Pfad wenn Rename erkannt, sonst null.
+ */
+async function detectRenameSource(
+  project: string,
+  newPath: string,
+  projectRoot: string
+): Promise<string | null> {
+  const pool = getPool();
+  const absolutePath = path.isAbsolute(newPath) ? newPath : path.join(projectRoot, newPath);
+
+  let inode: string | null = null;
+  let sha256: string | null = null;
+  try {
+    const stat = fs.statSync(absolutePath);
+    inode = String(stat.ino);
+    const buf = fs.readFileSync(absolutePath);
+    sha256 = crypto.createHash('sha256').update(buf).digest('hex');
+  } catch {
+    return null;
+  }
+
+  try {
+    const result = await pool.query(
+      `SELECT file_path FROM watcher_events
+       WHERE project = $1 AND event_type = 'UNLINK'
+         AND file_path <> $2
+         AND created_at > NOW() - INTERVAL '10 seconds'
+         AND (details->>'ino' = $3 OR details->>'sha256' = $4)
+       ORDER BY created_at DESC LIMIT 1`,
+      [project, newPath, inode, sha256]
+    );
+    if (result.rows[0]) {
+      return result.rows[0].file_path as string;
+    }
+  } catch {
+    // watcher_events nicht verfuegbar — kein Rename-Detect
+  }
+
+  // Fallback: existiert eine andere code_files-Row mit demselben Hash,
+  // deren Datei auf der Disk nicht mehr existiert?
+  if (sha256) {
+    try {
+      const twins = await pool.query(
+        `SELECT file_path FROM code_files
+         WHERE project = $1 AND content_hash = $2 AND file_path <> $3 AND deleted_at IS NULL`,
+        [project, sha256, newPath]
+      );
+      for (const twin of twins.rows) {
+        const twinAbs = path.join(projectRoot, twin.file_path);
+        if (!fs.existsSync(twinAbs)) return twin.file_path as string;
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+
+  return null;
+}
+
+/**
  * Verarbeitet ein FileWatcher Event.
  * event.path ist RELATIV, projectRoot ist der absolute Projekt-Pfad.
  */
@@ -656,6 +1009,13 @@ export async function handleFileEvent(event: FileEvent, projectRoot: string): Pr
         // Media: NICHT automatisch indexieren — Agent entscheidet per index_media Tool
         break;
       } else {
+        // Vor der Indexierung: pruefen ob das ein Rename ist
+        const renameSrc = await detectRenameSource(event.project, event.path, projectRoot);
+        if (renameSrc) {
+          const renamed = await renameCodeFile(event.project, renameSrc, event.path).catch(() => false);
+          if (renamed) break; // als Rename verarbeitet, kein Re-Index noetig
+          // Fallback: alte Row bereits weg → normal indexieren
+        }
         await indexFile(event.path, event.project, projectRoot);
       }
       break;

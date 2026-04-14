@@ -30,6 +30,7 @@ import {
   initSynapse,
   startFileWatcher,
   handleFileEvent,
+  verifyProjectAgainstFilesystem,
   ensureProjectCollection,
   createPlan,
   getPlan,
@@ -120,6 +121,13 @@ async function tryReactivateProject(
     onIgnoreChange: async () => {
       const result = await cleanupProjekt(projectPath, name);
       console.error(`[Synapse MCP] Cleanup: ${result.deleted} geloescht`);
+    },
+    onReady: async () => {
+      try {
+        await verifyProjectAgainstFilesystem(name, projectPath);
+      } catch (err) {
+        console.error(`[Synapse MCP] Reconcile fehlgeschlagen:`, err);
+      }
     },
   });
   activeWatchers.set(name, watcher);
@@ -284,6 +292,13 @@ export async function initProjekt(
       console.error(`[Synapse MCP] .synapseignore geaendert - starte automatisches Cleanup...`);
       const result = await cleanupProjekt(projectPath, name);
       console.error(`[Synapse MCP] Cleanup: ${result.deleted} Dateien geloescht, ${result.checked} geprueft`);
+    },
+    onReady: async () => {
+      try {
+        await verifyProjectAgainstFilesystem(name, projectPath);
+      } catch (err) {
+        console.error(`[Synapse MCP] Reconcile fehlgeschlagen:`, err);
+      }
     },
   });
 

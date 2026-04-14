@@ -61,6 +61,14 @@ try {
     onIgnoreChange: async () => {
       console.error(`[Watcher-Daemon] .synapseignore geaendert — Cleanup erfolgt bei naechstem init_projekt`);
     },
+    onReady: async () => {
+      try {
+        const { verifyProjectAgainstFilesystem } = await import('@synapse/core');
+        await verifyProjectAgainstFilesystem(projectName, projectPath);
+      } catch (err) {
+        console.error(`[Watcher-Daemon] Reconcile fehlgeschlagen:`, err);
+      }
+    },
   });
   console.error(`[Watcher-Daemon] FileWatcher gestartet fuer "${projectName}"`);
 } catch (err) {
