@@ -108,29 +108,37 @@ funktion handle_project_status(req, cfg, name):
 
 funktion handle_project_add(req, cfg):
     setze body auf req["body"]
-    versuche:
-        setze j auf json_lesen(body)
-        setze name auf j["name"]
-        setze pfad auf j["pfad"]
-        wenn projekt_finde(cfg, name) >= 0:
-            web_antworten(req, "{\"error\":\"project exists\"}", 409)
-            gib_zurück nichts
-        wenn datei_ist_verzeichnis(pfad) == falsch:
-            web_antworten(req, "{\"error\":\"path is not a directory\"}", 400)
-            gib_zurück nichts
-        setze eintrag auf {}
-        eintrag["name"] = name
-        eintrag["pfad"] = pfad
-        eintrag["enabled"] = wahr
-        cfg["projekte"].hinzufügen(eintrag)
-        config_speichern(cfg)
-        worker_spawn(eintrag)
-        setze resp auf {}
-        resp["ok"] = wahr
-        resp["projekt"] = eintrag
-        web_json(req, resp)
-    fange e:
-        web_antworten(req, "{\"error\":\"invalid json body\"}", 400)
+    # json_lesen wirft keine Exception — liefert bei Parse-Fehler ein leeres
+    # dict. Also: Felder manuell pruefen und auf valide String-Werte testen.
+    setze j auf json_lesen(body)
+    wenn j.hat("name") == falsch:
+        web_antworten(req, "{\"error\":\"missing field: name\"}", 400)
+        gib_zurück nichts
+    wenn j.hat("pfad") == falsch:
+        web_antworten(req, "{\"error\":\"missing field: pfad\"}", 400)
+        gib_zurück nichts
+    setze name auf j["name"]
+    setze pfad auf j["pfad"]
+    wenn name == nichts oder pfad == nichts:
+        web_antworten(req, "{\"error\":\"name/pfad darf nicht null sein\"}", 400)
+        gib_zurück nichts
+    wenn projekt_finde(cfg, name) >= 0:
+        web_antworten(req, "{\"error\":\"project exists\"}", 409)
+        gib_zurück nichts
+    wenn datei_ist_verzeichnis(pfad) == falsch:
+        web_antworten(req, "{\"error\":\"path is not a directory\"}", 400)
+        gib_zurück nichts
+    setze eintrag auf {}
+    eintrag["name"] = name
+    eintrag["pfad"] = pfad
+    eintrag["enabled"] = wahr
+    cfg["projekte"].hinzufügen(eintrag)
+    config_speichern(cfg)
+    worker_spawn(eintrag)
+    setze resp auf {}
+    resp["ok"] = wahr
+    resp["projekt"] = eintrag
+    web_json(req, resp)
 
 funktion handle_project_enable(req, cfg, name):
     setze idx auf projekt_finde(cfg, name)
