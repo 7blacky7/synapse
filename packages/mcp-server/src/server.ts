@@ -42,6 +42,7 @@ import {
   codeIntelTool,
   codeCheckTool,
   filesTool,
+  shellTool,
 } from './tools/consolidated/index.js';
 
 /** Eindeutige ID dieser Server-Instanz — bei Neustart neu generiert.
@@ -163,6 +164,7 @@ export function createServer(): Server {
       codeIntelTool.definition,
       codeCheckTool.definition,
       filesTool.definition,
+      shellTool.definition,
     ],
   }));
 
@@ -566,6 +568,9 @@ export function createServer(): Server {
 
         case 'files':
           return withOnboarding(await filesTool.handler(args as Record<string, unknown>));
+
+        case 'shell':
+          return withOnboarding(await shellTool.handler(args as Record<string, unknown>));
 
         default:
           throw new Error(`Unbekanntes Tool: ${name}`);
