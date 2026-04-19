@@ -10,7 +10,20 @@ import { FastifyInstance } from 'fastify';
 import path from 'node:path';
 import { indexFile, removeFile, getProjectRoot } from '@synapse/core';
 
-type EventTyp = 'added' | 'modified' | 'deleted';
+// Akzeptiert beide Konventionen:
+//   Legacy REST-Form:  added / modified / deleted
+//   Chokidar/Core:     add   / change   / unlink   (ab moo-Daemon Phase-1)
+type EventTyp = 'added' | 'modified' | 'deleted' | 'add' | 'change' | 'unlink';
+type NormalizedTyp = 'added' | 'modified' | 'deleted';
+
+const TYP_ALIAS: Record<string, NormalizedTyp> = {
+  add: 'added',
+  added: 'added',
+  change: 'modified',
+  modified: 'modified',
+  unlink: 'deleted',
+  deleted: 'deleted',
+};
 
 interface FsEventBody {
   projekt: string;
@@ -21,19 +34,20 @@ interface FsEventBody {
 
 export async function fsEventsRoutes(fastify: FastifyInstance): Promise<void> {
   fastify.post<{ Body: FsEventBody }>('/api/fs/events', async (request, reply) => {
-    const { projekt, typ, pfad } = request.body ?? ({} as FsEventBody);
+    const { projekt, typ: rawTyp, pfad } = request.body ?? ({} as FsEventBody);
 
-    if (!projekt || !typ || !pfad) {
+    if (!projekt || !rawTyp || !pfad) {
       return reply.status(400).send({
         success: false,
         error: { message: 'projekt, typ, pfad sind erforderlich' },
       });
     }
 
-    if (typ !== 'added' && typ !== 'modified' && typ !== 'deleted') {
+    const typ = TYP_ALIAS[rawTyp];
+    if (!typ) {
       return reply.status(400).send({
         success: false,
-        error: { message: `unbekannter typ: ${typ}` },
+        error: { message: `unbekannter typ: ${rawTyp}` },
       });
     }
 
