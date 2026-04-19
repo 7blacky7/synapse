@@ -205,24 +205,13 @@ export function ensureTray(): void {
   if (!process.env.DISPLAY && !process.env.WAYLAND_DISPLAY) return;
   if (trayRunning()) return;
 
-  // Bevorzugt tray.py (SSE-Push, sofortige Updates) wenn vorhanden + python3 da.
-  // Fallback: moo-tray Binary (Polling-only, kompatibel).
-  const trayPy = path.join(REPO_ROOT, 'packages', 'file-watcher-daemon', 'tray', 'tray.py');
-  let cmd: string;
-  let args: string[];
-  let autostartCmd: string;
-
-  if (fs.existsSync(trayPy) && hasPython3()) {
-    cmd = 'python3';
-    args = [trayPy];
-    autostartCmd = `python3 ${trayPy}`;
-  } else {
-    const bin = findBinary('tray');
-    if (!bin) return;
-    cmd = bin;
-    args = [];
-    autostartCmd = bin;
-  }
+  // Bevorzugt moo-tray Binary (stabil, getestet). tray.py mit SSE ist
+  // experimentell und folgt spaeter — bis dahin nutzen wir was lief.
+  const bin = findBinary('tray');
+  if (!bin) return;
+  const cmd = bin;
+  const args: string[] = [];
+  const autostartCmd = bin;
 
   try {
     fs.mkdirSync(DAEMON_HOME, { recursive: true });
