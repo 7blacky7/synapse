@@ -454,12 +454,15 @@ export async function moveFileInPg(
     // Tombstone fuer alten Pfad — der PG-Watcher unlinkt die Datei von Disk
     // und loescht den Tombstone-Row danach selbst. Ohne diesen Schritt bleibt
     // die alte Datei nach einem Move auf Disk liegen.
+    const tombstoneId = crypto.randomUUID();
+    const fileName = oldPath.split('/').pop() || oldPath;
+    const fileType = (fileName.includes('.') ? fileName.split('.').pop() : 'txt') || 'txt';
     await client.query(
-      `INSERT INTO code_files (project, file_path, content, content_hash, deleted_at, updated_at)
-       VALUES ($1, $2, NULL, NULL, NOW(), NOW())
+      `INSERT INTO code_files (id, project, file_path, file_name, file_type, content, content_hash, deleted_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, NULL, NULL, NOW(), NOW())
        ON CONFLICT (project, file_path) DO UPDATE
          SET deleted_at = NOW(), updated_at = NOW()`,
-      [project, oldPath]
+      [tombstoneId, project, oldPath, fileName, fileType]
     );
 
     await client.query('COMMIT');
