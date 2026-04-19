@@ -91,6 +91,14 @@ export {
   registerVirtualProject,
 } from './services/project-registry.js';
 
+// Shell-Exec (gemeinsam fuer MCP-Tool + REST /api/shell)
+export {
+  execShellInProject,
+  getShellStream,
+  isProjectActive,
+} from './services/shell-exec.js';
+export type { ShellExecArgs, ShellGetStreamArgs } from './services/shell-exec.js';
+
 // Migrations
 export { migrateToRelativePaths } from './migrations/migrate-to-relative-paths.js';
 

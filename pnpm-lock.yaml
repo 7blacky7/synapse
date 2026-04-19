@@ -83,6 +83,15 @@ importers:
         specifier: ^9.0.0
         version: 9.0.8
 
+  packages/file-watcher-daemon-ts:
+    dependencies:
+      '@synapse/core':
+        specifier: workspace:*
+        version: link:../core
+      fastify:
+        specifier: ^4.28.1
+        version: 4.29.1
+
   packages/mcp-server:
     dependencies:
       '@modelcontextprotocol/sdk':

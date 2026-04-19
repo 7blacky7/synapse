@@ -471,6 +471,13 @@ async function heartbeatPoll() {
       await rotateAgent()
       return
     }
+    // Hard-Rotation: Bei 99% IMMER rotieren, auch wenn busy. Sonst rennt
+    // ein Agent in Dauer-Tool-Calls am Limit vorbei und crashed (kein Idle = kein Trigger).
+    if (contextTotal >= ceiling * 0.99) {
+      log('HARD-ROTATION: %dk/%dk (%d%%) — busy-skip ueberbrueckt', Math.round(contextTotal / 1000), Math.round(ceiling / 1000), getContextPercent())
+      await rotateAgent()
+      return
+    }
 
     // Stuck-Detection: Agent busy aber keine Event-Aktivitaet seit STUCK_TIMEOUT_MS
     // Alte Logik (nur Token-Count) produzierte false positives beim ersten Turn (Tokens=0 bis result-Event).
@@ -572,7 +579,15 @@ async function pollChannelMessages(): Promise<boolean> {
   // Context warning
   const warnThreshold = getWarnThreshold()
   if (total >= warnThreshold) {
-    prompt += `\n\nCONTEXT-WARNUNG (${percent}%): Dein Kontext ist fast voll. Sichere JETZT deinen aktuellen Wissensstand in MEMORY.md — fasse zusammen was du in dieser Session gelernt hast, offene Themen und deinen letzten Stand.`
+    prompt += `\n\nCONTEXT-WARNUNG (${percent}%): Dein Kontext ist fast voll.
+
+PFLICHT-AKTIONEN — beende laufende Tool-Calls SOFORT und mache:
+1. Sichere deinen kompletten Wissensstand in MEMORY.md (Lehren, offene Themen, letzter Stand)
+2. Update SKILL.md falls noetig
+3. Poste kurzen Status im Channel ("Context-Limit erreicht, Handoff in Arbeit")
+4. Werde dann IDLE — der Wrapper rotiert dich danach automatisch
+
+Wenn du weiterarbeitest und keine Pause machst, kann der Wrapper dich nicht rechtzeitig rotieren — du crashst und alles nicht-gespeicherte ist weg.`
   }
 
   try {
@@ -712,12 +727,14 @@ async function updateStatusFile() {
 // Auto-rotation when context ceiling is reached
 // ---------------------------------------------------------------------------
 
-async function rotateAgent() {
-  log('CONTEXT-ROTATION — saving memory and restarting')
+async function rotateAgent(fromCrash = false) {
+  log('CONTEXT-ROTATION — saving memory and restarting (fromCrash=%s)', fromCrash)
 
   try {
-    // Ask agent to save
-    if (!agentBusy) {
+    // Ask agent to save — but only if Claude process is still alive.
+    // When called from the exit handler, the process is already gone
+    // and wakeAgent would hang/fail and abort the whole rotation.
+    if (!fromCrash && processAlive && !agentBusy) {
       await wakeAgent(
         `CONTEXT-RESET STEHT BEVOR. Dein Kontext ist voll. Du wirst gleich neu gestartet.
 
@@ -733,8 +750,10 @@ Alles was du NICHT speicherst geht verloren.`,
       )
     }
 
-    // Stop current process
-    await processManager.stop(AGENT_NAME)
+    // Stop current process (no-op if already dead)
+    if (processAlive) {
+      await processManager.stop(AGENT_NAME)
+    }
     processAlive = false
 
     // Reset token counters (keep message watermarks!)
@@ -784,9 +803,10 @@ function setupProcessManagerEvents() {
     // If not shutting down, this is a crash
     if (!shuttingDown) {
       if (KEEP_ALIVE) {
-        // Auto-Respawn: Wrapper bleibt am Leben, startet neue Claude-Instanz
+        // Auto-Respawn: Wrapper bleibt am Leben, startet neue Claude-Instanz.
+        // fromCrash=true → ueberspringt wakeAgent() weil Inner-Claude bereits tot ist.
         log('Agent process crashed — KEEP_ALIVE aktiv, starte Rotation...')
-        void rotateAgent().catch((err) => {
+        void rotateAgent(true).catch((err) => {
           log('Auto-Respawn fehlgeschlagen: %s — Wrapper beendet sich', err)
           void cleanup().then(() => process.exit(1))
         })
