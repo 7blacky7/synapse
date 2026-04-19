@@ -62,15 +62,26 @@ function findBinary(kind: 'daemon' | 'tray'): string | null {
 }
 
 async function startDaemon(): Promise<number> {
-  const bin = findBinary('daemon');
-  if (!bin) {
-    throw new Error(
-      'synapse-fwd Binary nicht gefunden. Erwartet in ~/.synapse/file-watcher/synapse-fwd oder packages/file-watcher-daemon/bin/synapse-fwd.'
-    );
+  // Bevorzugt TS-Daemon (Node, dist/main.js). Fallback: moo-binary synapse-fwd.
+  const tsDaemon = path.join(REPO_ROOT, 'packages', 'file-watcher-daemon-ts', 'dist', 'main.js');
+  let cmd: string;
+  let args: string[];
+  if (fs.existsSync(tsDaemon)) {
+    cmd = process.execPath; // node
+    args = [tsDaemon];
+  } else {
+    const bin = findBinary('daemon');
+    if (!bin) {
+      throw new Error(
+        'Weder TS-Daemon (packages/file-watcher-daemon-ts/dist/main.js) noch synapse-fwd Binary gefunden.'
+      );
+    }
+    cmd = bin;
+    args = [];
   }
   fs.mkdirSync(DAEMON_HOME, { recursive: true });
   const logFd = fs.openSync(path.join(DAEMON_HOME, 'daemon.log'), 'a');
-  const child = spawn(bin, [], {
+  const child = spawn(cmd, args, {
     detached: true,
     stdio: ['ignore', logFd, logFd],
     env: { ...process.env, HOME: os.homedir() },
@@ -163,12 +174,26 @@ export async function disableProjectInDaemon(name: string): Promise<boolean> {
 }
 
 function trayRunning(): boolean {
+  // pgrep -a matcht die volle Command-Line — Spezialisten-System-Prompts koennen
+  // den Tray-Pfad enthalten und faelschlich matchen. Wir filtern: nur Eintraege
+  // bei denen die Command-Line MIT dem Tray-Pfad ANFAENGT (nach optionalem PID).
   try {
     const out = execSync(
       'pgrep -af "(file-watcher-daemon/tray/tray|\\.synapse/file-watcher/tray)( |$)"',
       { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }
     );
-    return out.trim().length > 0;
+    const lines = out.split('\n').filter(Boolean);
+    for (const line of lines) {
+      // Format: "<PID> <argv0> [args...]"
+      const m = line.match(/^\d+\s+(\S+)/);
+      if (!m) continue;
+      const argv0 = m[1];
+      if (argv0.endsWith('/file-watcher-daemon/tray/tray') ||
+          argv0.endsWith('/.synapse/file-watcher/tray')) {
+        return true;
+      }
+    }
+    return false;
   } catch {
     return false;
   }
