@@ -35,28 +35,34 @@ funktion port_file():
     gib_zurück ensure_config_dir() + "/daemon.port"
 
 # Laedt Config. Liefert leere Default-Config wenn File fehlt oder korrupt.
+# Felder (default in ()):
+#   port              (7878)
+#   projekte          ([])
+#   synapse_api_url   ("" — leer = kein Forwarding)
 funktion config_laden():
     setze p auf config_file()
     wenn datei_existiert(p) == falsch:
         setze leer auf {}
         leer["port"] = DEFAULT_PORT
         leer["projekte"] = []
+        leer["synapse_api_url"] = ""
         gib_zurück leer
     setze inhalt auf datei_lesen(p)
-    versuche:
-        setze c auf json_lesen(inhalt)
-        # Minimal-Validierung
-        wenn c.hat("port") == falsch:
-            c["port"] = DEFAULT_PORT
-        wenn c.hat("projekte") == falsch:
-            c["projekte"] = []
-        gib_zurück c
-    fange e:
+    setze c auf json_lesen(inhalt)
+    wenn typ_von(c) != "Woerterbuch":
         zeige "[config] WARN: korrupt, starte leer"
         setze leer auf {}
         leer["port"] = DEFAULT_PORT
         leer["projekte"] = []
+        leer["synapse_api_url"] = ""
         gib_zurück leer
+    wenn c.hat("port") == falsch:
+        c["port"] = DEFAULT_PORT
+    wenn c.hat("projekte") == falsch:
+        c["projekte"] = []
+    wenn c.hat("synapse_api_url") == falsch:
+        c["synapse_api_url"] = ""
+    gib_zurück c
 
 # Schreibt Config atomar (temp-file + rename)
 funktion config_speichern(cfg):

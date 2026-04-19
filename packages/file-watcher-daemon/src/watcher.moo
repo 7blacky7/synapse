@@ -64,13 +64,38 @@ funktion detect_changes(jetzt, alt):
     gib_zurück events
 
 # -----------------------------------------------------------------
+# Sendet ein Event via HTTP-POST an die Synapse-REST-API.
+# No-op wenn url leer. Fehler werden nur geloggt, kein Retry-Mechanismus
+# im MVP — Events sind best-effort.
+# -----------------------------------------------------------------
+funktion event_posten(url, projekt, ev):
+    wenn url == "":
+        gib_zurück nichts
+    setze body auf {}
+    body["projekt"] = projekt
+    body["typ"] = ev["typ"]
+    body["pfad"] = ev["pfad"]
+    wenn ev.hat("mtime"):
+        body["mtime"] = ev["mtime"]
+    # http_sende_mit_headers erwartet das Roh-Dict als Body — serialisiert
+    # intern via json_string. Wuerden wir hier vor-serialisieren, wuerde
+    # der Body doppelt JSON-encoded.
+    setze headers auf {}
+    headers["Content-Type"] = "application/json"
+    versuche:
+        http_sende_mit_headers(url, body, headers)
+    fange e:
+        zeige "[" + projekt + "] WARN: event POST failed -> " + url
+
+# -----------------------------------------------------------------
 # Worker-Main — laeuft pro Projekt in eigenem Thread
-#   ctx = {"name", "pfad", "flag_file"}
+#   ctx = {"name", "pfad", "flag_file", "synapse_api_url"}
 # -----------------------------------------------------------------
 funktion worker_main(ctx):
     setze projekt auf ctx["name"]
     setze pfad auf ctx["pfad"]
     setze flag_file auf ctx["flag_file"]
+    setze api_url auf ctx["synapse_api_url"]
 
     setze snap auf {}
     scan_baum(pfad, snap)
@@ -97,6 +122,7 @@ funktion worker_main(ctx):
             setze intervall_ms auf 200   # busy mode
             für e in events:
                 zeige "[" + projekt + "] " + e["typ"] + " " + e["pfad"]
+                event_posten(api_url, projekt, e)
         sonst:
             setze idle_ms auf zeit_ms() - letzte_aenderung_ms
             wenn idle_ms > 300000:

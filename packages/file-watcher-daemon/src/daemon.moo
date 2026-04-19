@@ -30,6 +30,8 @@ funktion projects_dir():
 funktion flag_file_for(name):
     gib_zurück projects_dir() + "/" + name + ".active"
 
+setze SYNAPSE_API_URL auf ""
+
 funktion worker_spawn(projekt):
     setze name auf projekt["name"]
     setze pfad auf projekt["pfad"]
@@ -40,6 +42,7 @@ funktion worker_spawn(projekt):
     ctx["name"] = name
     ctx["pfad"] = pfad
     ctx["flag_file"] = flag
+    ctx["synapse_api_url"] = SYNAPSE_API_URL
     starte(worker_main, ctx)
     zeige "[daemon] gestartet: " + name + " @ " + pfad
 
@@ -232,6 +235,7 @@ funktion dispatch(req, cfg):
 
 setze cfg auf config_laden()
 setze port auf cfg["port"]
+setze SYNAPSE_API_URL auf cfg["synapse_api_url"]
 
 # PID + Port hinschreiben fuer Discovery
 datei_schreiben(pid_file(), text(zeit_ms()))

@@ -76,7 +76,11 @@ daemon_stop() {
     fi
 }
 
-trap daemon_stop EXIT
+cleanup_all() {
+    daemon_stop
+    mock_stop 2>/dev/null || true
+}
+trap cleanup_all EXIT
 
 # Wartet bis ein Log-Muster erscheint (Timeout in Sekunden).
 wait_for_log() {
@@ -320,6 +324,86 @@ code=$(curl -sw "%{http_code}" -o /dev/null -X POST "$BASE/projects" \
 # Darf 200 oder 400 sein (Pfad /tmp wird existieren) — Daemon darf nicht crashen
 not_5xx_or_hang() { [ "$code" != "500" ] && [ "$code" != "000" ]; }
 assert "33-no-content-type-not-5xx" not_5xx_or_hang
+
+# ============================================================
+# Event-Forwarder-Szenarien (HTTP-POST an Mock-Receiver)
+# ============================================================
+
+MOCK_PORT=7999
+MOCK_RECEIVED=/tmp/fw_mock_received.jsonl
+MOCK_PID_FILE=/tmp/fw_mock.pid
+
+mock_start() {
+    rm -f "$MOCK_RECEIVED"
+    python3 -c "
+import http.server, os
+class H(http.server.BaseHTTPRequestHandler):
+    def do_POST(self):
+        n = int(self.headers.get('Content-Length', 0))
+        body = self.rfile.read(n)
+        with open('$MOCK_RECEIVED', 'a') as f: f.write(body.decode() + '\n')
+        self.send_response(200); self.end_headers()
+    def log_message(self, *a): pass
+http.server.HTTPServer(('127.0.0.1', $MOCK_PORT), H).serve_forever()
+" &
+    echo $! > "$MOCK_PID_FILE"
+    sleep 0.5
+}
+
+mock_stop() {
+    [ -f "$MOCK_PID_FILE" ] && kill "$(cat "$MOCK_PID_FILE")" 2>/dev/null || true
+    rm -f "$MOCK_PID_FILE"
+}
+
+# ---- Szenario 34: Daemon mit synapse_api_url konfiguriert → Events landen am Mock ----
+daemon_stop
+mock_start
+cat > ~/.synapse/file-watcher/config.json <<JSON
+{"port":$PORT,"projekte":[],"synapse_api_url":"http://127.0.0.1:$MOCK_PORT/fs-events"}
+JSON
+daemon_start --keep-config
+TEST_DIR_G=/tmp/fw_test_g
+rm -rf "$TEST_DIR_G" && mkdir -p "$TEST_DIR_G"
+curl -sf -X POST "$BASE/projects" -d '{"name":"G","pfad":"'"$TEST_DIR_G"'"}' >/dev/null
+wait_for_log "\[G\] initial" 3
+sleep 0.5
+echo mock_event > "$TEST_DIR_G/datei.txt"
+sleep 3
+
+received_count=$(wc -l < "$MOCK_RECEIVED" 2>/dev/null || echo 0)
+assert "34-forwarder-post-count" [ "${received_count:-0}" -ge 1 ]
+
+# Body muss projekt + typ + pfad enthalten
+if [ -s "$MOCK_RECEIVED" ]; then
+    first_body=$(head -1 "$MOCK_RECEIVED")
+    has_projekt() { grep -q '"projekt":"G"' <<< "$first_body"; }
+    has_typ_added() { grep -q '"typ":"added"' <<< "$first_body"; }
+    has_pfad() { grep -q '"pfad":"/tmp/fw_test_g/datei.txt"' <<< "$first_body"; }
+    assert "34-body-has-projekt" has_projekt
+    assert "34-body-has-typ-added" has_typ_added
+    assert "34-body-has-pfad" has_pfad
+fi
+
+# ---- Szenario 35: Delete-Event ebenfalls gepostet ----
+before=$(wc -l < "$MOCK_RECEIVED" 2>/dev/null || echo 0)
+rm "$TEST_DIR_G/datei.txt"
+sleep 3
+after=$(wc -l < "$MOCK_RECEIVED" 2>/dev/null || echo 0)
+has_delete_more() { [ "${after:-0}" -gt "${before:-0}" ]; }
+assert "35-delete-also-forwarded" has_delete_more
+
+# ---- Szenario 36: Mock-Server down → Daemon crasht NICHT ----
+mock_stop
+sleep 0.5
+echo crash_test > "$TEST_DIR_G/crash.txt"
+sleep 3
+# Daemon muss noch leben
+daemon_pid=$(cat "$PID_FILE")
+daemon_alive() { kill -0 "$daemon_pid" 2>/dev/null; }
+assert "36-daemon-survives-down-receiver" daemon_alive
+# Und weiter auf HTTP antworten
+responsive() { curl -sf --max-time 2 "$BASE/health" >/dev/null; }
+assert "36-daemon-still-responsive" responsive
 
 # ============================================================
 # Ergebnis
