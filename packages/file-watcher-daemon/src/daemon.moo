@@ -108,9 +108,16 @@ funktion handle_project_status(req, cfg, name):
 
 funktion handle_project_add(req, cfg):
     setze body auf req["body"]
-    # json_lesen wirft keine Exception — liefert bei Parse-Fehler ein leeres
-    # dict. Also: Felder manuell pruefen und auf valide String-Werte testen.
+    # json_lesen ist defensiv heterogen:
+    #   "" (leer)           -> nichts
+    #   "{nope"  (Parse-Err)-> {} (leeres Dict)
+    #   "[1,2]"  (kein Obj) -> Liste
+    #   nichts              -> Fehler-String
+    # Wir akzeptieren nur ein richtiges Dict. typ_von fuehrt durch.
     setze j auf json_lesen(body)
+    wenn typ_von(j) != "Woerterbuch":
+        web_antworten(req, "{\"error\":\"expected JSON object body\"}", 400)
+        gib_zurück nichts
     wenn j.hat("name") == falsch:
         web_antworten(req, "{\"error\":\"missing field: name\"}", 400)
         gib_zurück nichts

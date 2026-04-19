@@ -93,7 +93,7 @@ wait_for_log() {
 # Zaehlt Events im Log fuer ein Projekt.
 count_event() {
     local name="$1"; local typ="$2"
-    grep -c -- "\[$name\] $typ " "$LOG" || echo 0
+    grep -c -- "\[$name\] $typ " "$LOG" || true
 }
 
 # ============================================================
@@ -183,10 +183,10 @@ resp=$(curl -sf "$BASE/projects/B/status")
 assert "14-disable-persisted" grep -q '"enabled":false' <<< "$resp"
 
 # ---- Szenario 15: Re-Enable startet neuen Worker ----
-before_initial=$(grep -c "\[B\] initial" "$LOG" || echo 0)
+before_initial=$(grep -c "\[B\] initial" "$LOG" || true)
 curl -sf -X POST "$BASE/projects/B/enable" >/dev/null
 sleep 1.5
-after_initial=$(grep -c "\[B\] initial" "$LOG" || echo 0)
+after_initial=$(grep -c "\[B\] initial" "$LOG" || true)
 assert "15-reenable-new-worker" [ "$after_initial" -gt "$before_initial" ]
 
 # ---- Szenario 16: Delete entfernt Projekt ----
@@ -200,7 +200,7 @@ for i in $(seq 1 20); do
     echo "stress-$i" > "$TEST_DIR_A/stress_$i.txt"
 done
 sleep 3
-adds=$(grep -c "\[A\] added $TEST_DIR_A/stress_" "$LOG" || echo 0)
+adds=$(grep -c "\[A\] added $TEST_DIR_A/stress_" "$LOG" || true)
 assert "17-stress-all-20-detected" [ "$adds" -eq 20 ]
 
 # ---- Szenario 18: Daemon-Restart → Config wird geladen, Worker starten ----
@@ -239,7 +239,7 @@ assert_log "22-hidden-file-detected" "\[C\] added $TEST_DIR_C/.versteckt" 5
 # ---- Szenario 23: Filename mit Leerzeichen + Umlauten ----
 echo x > "$TEST_DIR_C/mit Leerzeichen und Üäö.txt"
 sleep 3
-adds=$(grep -F -c "Leerzeichen" "$LOG" || echo 0)
+adds=$(grep -F -c "Leerzeichen" "$LOG" || true)
 assert "23-special-chars" [ "$adds" -ge 1 ]
 
 # ---- Szenario 24: Disable → watcher_running=false ----
@@ -265,10 +265,61 @@ for i in $(seq 1 50); do
 done
 sleep 4
 end_ms=$(date +%s%3N)
-adds=$(grep -c "\[D\] added $TEST_DIR_D/file_" "$LOG" || echo 0)
+adds=$(grep -c "\[D\] added $TEST_DIR_D/file_" "$LOG" || true)
 elapsed=$((end_ms - start_ms))
 echo "  (50 Adds in ${elapsed}ms gemessen, $adds erkannt)"
 assert "26-perf-all-50-detected" [ "$adds" -eq 50 ]
+
+# ---- Szenario 27: Empty body POST → 400 ----
+code=$(curl -sw "%{http_code}" -o /dev/null -X POST "$BASE/projects" -d '')
+assert "27-empty-body-400" [ "$code" = "400" ]
+
+# ---- Szenario 28: Malformed URL (doppelslash) → 404 ----
+code=$(curl -sw "%{http_code}" -o /dev/null "$BASE/projects//foo")
+assert "28-double-slash-404" [ "$code" = "404" ]
+
+# ---- Szenario 29: Tiefe Verschachtelung (5 Ebenen) ----
+DEEP="$TEST_DIR_A/a/b/c/d/e"
+mkdir -p "$DEEP"
+echo deep > "$DEEP/tief.txt"
+assert_log "29-deep-nested-add" "\[A\] added $DEEP/tief.txt" 6
+
+# ---- Szenario 30: Symlinks zu Datei innerhalb des Projekts ----
+# (Polling liest mtime von dem Link-Ziel — erwartet: erkannt wie normale Datei)
+echo target > "$TEST_DIR_A/link_target.txt"
+ln -s "$TEST_DIR_A/link_target.txt" "$TEST_DIR_A/mein_link"
+sleep 3
+# dir_list listet den Link-Namen, datei_mtime follow-ed den Symlink (stat)
+# -> sollte in snap als pfad mit mtime erscheinen
+has_link=$(grep -c "\[A\] added $TEST_DIR_A/mein_link" "$LOG" || true)
+assert "30-symlink-seen" [ "$has_link" -ge 1 ]
+
+# ---- Szenario 31: Konkurrierende POSTs (2 Projekte parallel registrieren) ----
+TEST_DIR_E=/tmp/fw_test_e
+TEST_DIR_F=/tmp/fw_test_f
+rm -rf "$TEST_DIR_E" "$TEST_DIR_F" && mkdir -p "$TEST_DIR_E" "$TEST_DIR_F"
+(
+    curl -sf -X POST "$BASE/projects" -d '{"name":"E","pfad":"'"$TEST_DIR_E"'"}' >/dev/null &
+    curl -sf -X POST "$BASE/projects" -d '{"name":"F","pfad":"'"$TEST_DIR_F"'"}' >/dev/null &
+    wait
+)
+sleep 2
+resp=$(curl -sf "$BASE/projects")
+has_e=$(grep -c '"name":"E"' <<< "$resp" || true)
+has_f=$(grep -c '"name":"F"' <<< "$resp" || true)
+both_concurrent() { [ "${has_e:-0}" -ge 1 ] && [ "${has_f:-0}" -ge 1 ]; }
+assert "31-concurrent-both-registered" both_concurrent
+
+# ---- Szenario 32: Status fuer beide konkurrent erstellten Projekte ----
+assert_log "32-worker-E-gestartet" "\[daemon\] gestartet: E" 3
+assert_log "32-worker-F-gestartet" "\[daemon\] gestartet: F" 3
+
+# ---- Szenario 33: POST ohne Content-Type-Header ----
+code=$(curl -sw "%{http_code}" -o /dev/null -X POST "$BASE/projects" \
+    -H "" -d '{"name":"Z","pfad":"/tmp"}')
+# Darf 200 oder 400 sein (Pfad /tmp wird existieren) — Daemon darf nicht crashen
+not_5xx_or_hang() { [ "$code" != "500" ] && [ "$code" != "000" ]; }
+assert "33-no-content-type-not-5xx" not_5xx_or_hang
 
 # ============================================================
 # Ergebnis
