@@ -192,7 +192,17 @@ export async function initProjekt(
   const name = projectName || path.basename(projectPath);
 
   // Fast-Path: Projekt in dieser Session bereits aktiviert → initSynapse ueberspringen
+  // ABER: vorher pruefen ob der Daemon noch lebt — sonst returnen wir "aktiv" obwohl
+  // der Daemon zwischenzeitlich gestorben ist (z.B. via Tray "Komplett beenden").
   if (activeProjects.has(name)) {
+    try {
+      // ensureProjectInDaemon prueft Daemon-Health und startet ihn falls tot,
+      // registriert + enabled das Projekt — also genau was wir hier brauchen.
+      await ensureProjectInDaemon(name, projectPath);
+      ensureTray();
+    } catch (err) {
+      console.error('[init] Daemon-Recheck fehlgeschlagen, fahre mit Fast-Path fort:', (err as Error).message);
+    }
     updateLastAccess(projectPath);
 
     let isFirstVisit = false;
