@@ -47,7 +47,8 @@ export const specialistTool: ConsolidatedTool = {
         model: {
           type: 'string',
           enum: ['opus', 'sonnet', 'haiku', 'opus[1m]', 'sonnet[1m]'],
-          description: 'Claude Modell (erforderlich für: spawn)',
+          description:
+            'Claude Modell (erforderlich für: spawn). MODELLE: opus/sonnet/haiku = 200k Context (Standard fuer kurze Tasks). opus[1m]/sonnet[1m] = 1M Context (fuer langlaufende Code-Arbeit ohne Handoff-Risiko). ⚠️ ABO-LIMIT: Nur EIN Modell-Typ darf gleichzeitig auf 1M laufen — wenn der Koordinator opus[1m] nutzt, duerfen Spezialisten AUCH opus[1m] sein, aber NIEMALS sonnet[1m] dazu (rate-limit-Block). Bei Mix-Bedarf: andere Modelle auf 200k spawnen. Empfehlung: Deep-Code-Work → opus[1m], One-Shot-Tasks → opus/sonnet 200k, einfache Mechanik → haiku.',
         },
         expertise: {
           type: 'string',
@@ -81,7 +82,7 @@ export const specialistTool: ConsolidatedTool = {
         keep_alive: {
           type: 'boolean',
           description:
-            'Agent bei jedem Heartbeat-Poll wecken (optional für: spawn, Standard: false)',
+            '⚠️ WICHTIG: keep_alive: true setzen fuer langlaufende Spezialisten. Aktiviert (a) periodisches Wecken im Idle UND (b) Auto-Respawn bei Crash (Context-Limit, OOM). Ohne keep_alive stirbt der Wrapper mit dem Agenten — kein Comeback, manueller Spawn noetig. Standard: false (nur fuer kurze One-Shot-Tasks ok).',
         },
 
         // status parameters
