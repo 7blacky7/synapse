@@ -1,0 +1,75 @@
+# Synapse FileWatcher Daemon
+
+Eigenständiger Hintergrund-Prozess in **moo**, der Projekte auf
+Datei-Änderungen pollt und sie per HTTP-API verwaltet. Läuft unabhängig
+vom MCP-Server — MCP-Shutdown tötet den Daemon **nicht**.
+
+## Build
+
+```bash
+cd src
+moo-compiler compile daemon.moo -o /tmp/synapse-fwd
+```
+
+Erzeugt eine selbständige Binary.
+
+## Start
+
+```bash
+/tmp/synapse-fwd
+```
+
+Legt Config-Verzeichnis unter `~/.synapse/file-watcher/` an:
+
+- `config.json` — persistente Projektliste
+- `daemon.pid`, `daemon.port` — Discovery
+- `projects/<name>.active` — Worker-Flag-File (Stop-Signal)
+
+Default-Port: **7878** (konfigurierbar in `config.json`).
+
+## HTTP-API
+
+| Method | Pfad                            | Zweck                              |
+|--------|----------------------------------|-------------------------------------|
+| GET    | `/health`                        | `{status, uptime_ms}`               |
+| GET    | `/host/status`                   | `{online, hostname, time_ms}`       |
+| GET    | `/projects`                      | Projektliste + Port                 |
+| POST   | `/projects`                      | Projekt registrieren + starten      |
+| GET    | `/projects/<name>/status`        | `{enabled, watcher_running, …}`     |
+| POST   | `/projects/<name>/enable`        | Watcher starten                     |
+| POST   | `/projects/<name>/disable`       | Watcher stoppen (Flag-File löschen) |
+| DELETE | `/projects/<name>`               | Projekt entfernen                   |
+
+### Beispiel
+
+```bash
+# Projekt registrieren
+curl -X POST http://localhost:7878/projects \
+  -d '{"name":"mein-projekt","pfad":"/home/.../foo"}'
+
+# Status prüfen
+curl http://localhost:7878/projects/mein-projekt/status
+```
+
+## Architektur
+
+- **Main-Thread**: HTTP-Server (`web_server` + `web_annehmen`-Loop),
+  Config-Verwaltung, spawnt Worker-Threads.
+- **Pro Projekt**: ein Worker-Thread (`starte(worker_main, ctx)`),
+  polling-basiert mit adaptivem Intervall (200 ms busy /
+  1000 ms normal / 2000 ms idle).
+- **Stop-Signal**: Flag-File `projects/<name>.active` verschwindet →
+  Worker beendet sich im nächsten Zyklus.
+
+Events werden aktuell nur auf stdout geloggt. Post-an-Synapse-REST
+folgt im Folgeschritt.
+
+## Abhängigkeiten
+
+- moo-Compiler mit First-Class-Functions
+  (Branch `feat/first-class-functions` im moo-Repo, PR #1)
+- `datei_mtime` / `datei_ist_verzeichnis` / `datei_mkdir` Runtime-Builtins
+
+## Tests
+
+Siehe `tests/` für das Test-Skript.
