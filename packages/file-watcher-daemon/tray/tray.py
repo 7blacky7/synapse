@@ -182,7 +182,7 @@ class TrayApp:
         import urllib.error
         last_poll = 0.0
         while not self._stop_event.is_set():
-            port = self._port()
+            port = daemon_port()
             url = f"http://127.0.0.1:{port}/events"
             try:
                 req = urllib.request.Request(url, headers={'Accept': 'text/event-stream'})

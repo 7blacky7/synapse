@@ -205,20 +205,45 @@ export function ensureTray(): void {
   if (!process.env.DISPLAY && !process.env.WAYLAND_DISPLAY) return;
   if (trayRunning()) return;
 
-  const bin = findBinary('tray');
-  if (!bin) return;
+  // Bevorzugt tray.py (SSE-Push, sofortige Updates) wenn vorhanden + python3 da.
+  // Fallback: moo-tray Binary (Polling-only, kompatibel).
+  const trayPy = path.join(REPO_ROOT, 'packages', 'file-watcher-daemon', 'tray', 'tray.py');
+  let cmd: string;
+  let args: string[];
+  let autostartCmd: string;
+
+  if (fs.existsSync(trayPy) && hasPython3()) {
+    cmd = 'python3';
+    args = [trayPy];
+    autostartCmd = `python3 ${trayPy}`;
+  } else {
+    const bin = findBinary('tray');
+    if (!bin) return;
+    cmd = bin;
+    args = [];
+    autostartCmd = bin;
+  }
 
   try {
     fs.mkdirSync(DAEMON_HOME, { recursive: true });
     const logFd = fs.openSync(path.join(DAEMON_HOME, 'tray.log'), 'a');
-    const child = spawn(bin, [], {
+    const child = spawn(cmd, args, {
       detached: true,
       stdio: ['ignore', logFd, logFd],
       env: { ...process.env, HOME: os.homedir() },
     });
     child.unref();
-    ensureAutostartEntry(bin);
+    ensureAutostartEntry(autostartCmd);
   } catch {
     /* best-effort */
+  }
+}
+
+function hasPython3(): boolean {
+  try {
+    execSync('command -v python3', { stdio: 'ignore' });
+    return true;
+  } catch {
+    return false;
   }
 }
