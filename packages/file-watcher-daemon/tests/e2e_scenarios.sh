@@ -5,7 +5,9 @@
 # Prueft: HTTP-API, Polling, Worker-Lifecycle, Multi-Projekt,
 # Fehlerfaelle, Daemon-Restart.
 # ============================================================
-set -euo pipefail
+set -uo pipefail
+# Kein `set -e` — wait_for_log soll bei Timeout nicht das Skript killen,
+# sondern als FAIL in der Scoreboard auftauchen.
 
 DAEMON_BIN="${DAEMON_BIN:-/tmp/synapse-fwd}"
 PORT=7878
@@ -29,6 +31,18 @@ assert() {
         pass=$((pass+1))
     else
         echo -e "${RED}FAIL${NC} $name"
+        fail=$((fail+1))
+    fi
+}
+
+# Wartet auf Log-Muster und scored es direkt als PASS/FAIL.
+assert_log() {
+    local name="$1"; local pattern="$2"; local timeout="${3:-5}"
+    if wait_for_log "$pattern" "$timeout"; then
+        echo -e "${GREEN}PASS${NC} $name"
+        pass=$((pass+1))
+    else
+        echo -e "${RED}FAIL${NC} $name (log-pattern nicht gefunden: $pattern)"
         fail=$((fail+1))
     fi
 }
@@ -116,25 +130,21 @@ assert "4-worker-A-started" grep -q '\[daemon\] gestartet: A' "$LOG"
 # ---- Szenario 5: File-Add ----
 sleep 0.5
 echo hallo > "$TEST_DIR_A/foo.txt"
-wait_for_log "\[A\] added $TEST_DIR_A/foo.txt" 5
-assert "5-add-event" [ $? -eq 0 ]
+assert_log "5-add-event" "\[A\] added $TEST_DIR_A/foo.txt" 5
 
 # ---- Szenario 6: File-Modify ----
 sleep 2   # warten bis busy-mode zyklisch feuert und mtime sich aendert
 echo welt > "$TEST_DIR_A/foo.txt"
-wait_for_log "\[A\] modified $TEST_DIR_A/foo.txt" 6
-assert "6-modify-event" [ $? -eq 0 ]
+assert_log "6-modify-event" "\[A\] modified $TEST_DIR_A/foo.txt" 6
 
 # ---- Szenario 7: File-Delete ----
 rm "$TEST_DIR_A/foo.txt"
-wait_for_log "\[A\] deleted $TEST_DIR_A/foo.txt" 6
-assert "7-delete-event" [ $? -eq 0 ]
+assert_log "7-delete-event" "\[A\] deleted $TEST_DIR_A/foo.txt" 6
 
 # ---- Szenario 8: Verschachtelte Directories ----
 mkdir -p "$TEST_DIR_A/sub/deep"
 echo x > "$TEST_DIR_A/sub/deep/tief.txt"
-wait_for_log "\[A\] added $TEST_DIR_A/sub/deep/tief.txt" 6
-assert "8-nested-add" [ $? -eq 0 ]
+assert_log "8-nested-add" "\[A\] added $TEST_DIR_A/sub/deep/tief.txt" 6
 
 # ---- Szenario 9: Duplicate registration → 409 ----
 code=$(curl -sw "%{http_code}" -o /dev/null -X POST "$BASE/projects" \
@@ -161,8 +171,7 @@ curl -sf -X POST "$BASE/projects" -d '{"name":"B","pfad":"'"$TEST_DIR_B"'"}' >/d
 wait_for_log "\[B\] initial"
 assert "13-multi-project-started" grep -q '\[daemon\] gestartet: B' "$LOG"
 echo parallel > "$TEST_DIR_B/hello.txt"
-wait_for_log "\[B\] added $TEST_DIR_B/hello.txt" 6
-assert "13-multi-project-event" [ $? -eq 0 ]
+assert_log "13-multi-project-event" "\[B\] added $TEST_DIR_B/hello.txt" 6
 
 # ---- Szenario 14: Disable stoppt Worker ----
 curl -sf -X POST "$BASE/projects/B/disable" >/dev/null
@@ -202,8 +211,64 @@ daemon_start --keep-config
 sleep 1
 resp=$(curl -sf "$BASE/projects")
 assert "18-restart-config-loaded" grep -q '"name":"A"' <<< "$resp"
-wait_for_log "\[daemon\] gestartet: A" 3
-assert "18-restart-worker-respawned" [ $? -eq 0 ]
+assert_log "18-restart-worker-respawned" "\[daemon\] gestartet: A" 3
+
+# ---- Szenario 19: Missing field: name ----
+code=$(curl -sw "%{http_code}" -o /dev/null -X POST "$BASE/projects" -d '{"pfad":"/tmp"}')
+assert "19-missing-name-400" [ "$code" = "400" ]
+
+# ---- Szenario 20: Missing field: pfad ----
+code=$(curl -sw "%{http_code}" -o /dev/null -X POST "$BASE/projects" -d '{"name":"X"}')
+assert "20-missing-pfad-400" [ "$code" = "400" ]
+
+# ---- Szenario 21: File-Move (mv foo bar) → delete-und-add-Paar ----
+TEST_DIR_C=/tmp/fw_test_c
+rm -rf "$TEST_DIR_C" && mkdir -p "$TEST_DIR_C"
+curl -sf -X POST "$BASE/projects" -d '{"name":"C","pfad":"'"$TEST_DIR_C"'"}' >/dev/null
+wait_for_log "\[C\] initial"
+echo original > "$TEST_DIR_C/original.txt"
+assert_log "21-initial-file-added" "\[C\] added $TEST_DIR_C/original.txt" 8
+mv "$TEST_DIR_C/original.txt" "$TEST_DIR_C/umbenannt.txt"
+assert_log "21-move-detects-delete" "\[C\] deleted $TEST_DIR_C/original.txt" 5
+assert_log "21-move-detects-add" "\[C\] added $TEST_DIR_C/umbenannt.txt" 5
+
+# ---- Szenario 22: Hidden files (beginnen mit .) ----
+echo hidden > "$TEST_DIR_C/.versteckt"
+assert_log "22-hidden-file-detected" "\[C\] added $TEST_DIR_C/.versteckt" 5
+
+# ---- Szenario 23: Filename mit Leerzeichen + Umlauten ----
+echo x > "$TEST_DIR_C/mit Leerzeichen und Üäö.txt"
+sleep 3
+adds=$(grep -F -c "Leerzeichen" "$LOG" || echo 0)
+assert "23-special-chars" [ "$adds" -ge 1 ]
+
+# ---- Szenario 24: Disable → watcher_running=false ----
+curl -sf -X POST "$BASE/projects/C/disable" >/dev/null
+sleep 2
+resp=$(curl -sf "$BASE/projects/C/status")
+assert "24-disable-watcher-running-false" grep -q '"watcher_running":false' <<< "$resp"
+
+# ---- Szenario 25: PUT auf /projects → 404 (Methode nicht unterstuetzt) ----
+code=$(curl -sw "%{http_code}" -o /dev/null -X PUT "$BASE/projects")
+assert "25-unsupported-method-404" [ "$code" = "404" ]
+
+# ---- Szenario 26: Performance — 50 Adds in einem Schwung ----
+curl -sf -X POST "$BASE/projects/C/enable" >/dev/null
+wait_for_log "\[C\] initial" 3
+TEST_DIR_D=/tmp/fw_test_d
+rm -rf "$TEST_DIR_D" && mkdir -p "$TEST_DIR_D"
+curl -sf -X POST "$BASE/projects" -d '{"name":"D","pfad":"'"$TEST_DIR_D"'"}' >/dev/null
+wait_for_log "\[D\] initial"
+start_ms=$(date +%s%3N)
+for i in $(seq 1 50); do
+    echo "burst-$i" > "$TEST_DIR_D/file_$i.txt"
+done
+sleep 4
+end_ms=$(date +%s%3N)
+adds=$(grep -c "\[D\] added $TEST_DIR_D/file_" "$LOG" || echo 0)
+elapsed=$((end_ms - start_ms))
+echo "  (50 Adds in ${elapsed}ms gemessen, $adds erkannt)"
+assert "26-perf-all-50-detected" [ "$adds" -eq 50 ]
 
 # ============================================================
 # Ergebnis
