@@ -471,6 +471,13 @@ async function heartbeatPoll() {
       await rotateAgent()
       return
     }
+    // Hard-Rotation: Bei 99% IMMER rotieren, auch wenn busy. Sonst rennt
+    // ein Agent in Dauer-Tool-Calls am Limit vorbei und crashed (kein Idle = kein Trigger).
+    if (contextTotal >= ceiling * 0.99) {
+      log('HARD-ROTATION: %dk/%dk (%d%%) — busy-skip ueberbrueckt', Math.round(contextTotal / 1000), Math.round(ceiling / 1000), getContextPercent())
+      await rotateAgent()
+      return
+    }
 
     // Stuck-Detection: Agent busy aber keine Event-Aktivitaet seit STUCK_TIMEOUT_MS
     // Alte Logik (nur Token-Count) produzierte false positives beim ersten Turn (Tokens=0 bis result-Event).
