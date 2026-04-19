@@ -101,8 +101,13 @@ async function upsertCodeFile(
  */
 async function deleteCodeFile(project: string, filePath: string): Promise<void> {
   const pool = getPool();
+  // SOFT-Delete: setze deleted_at = NOW. Der PG-Watcher in startFileWatcher
+  // erkennt das und unlinkt die Datei von Disk + loescht den Row danach selbst.
+  // Hard-DELETE wuerde die Race-Condition produzieren wo PG-Watcher Section 1
+  // (changed/new) die soeben-geloeschte Datei wieder auf Disk schreibt bevor
+  // der chokidar-unlink-Debounce gefeuert hat.
   await pool.query(
-    'DELETE FROM code_files WHERE project = $1 AND file_path = $2',
+    'UPDATE code_files SET deleted_at = NOW(), updated_at = NOW() WHERE project = $1 AND file_path = $2',
     [project, filePath]
   );
 }
