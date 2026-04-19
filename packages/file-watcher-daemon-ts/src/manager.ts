@@ -11,8 +11,16 @@
  */
 
 import * as fs from 'fs';
+import * as path from 'path';
 import { EventEmitter } from 'events';
-import { startFileWatcher, FileWatcherInstance, FileEvent } from '@synapse/core';
+import {
+  startFileWatcher,
+  FileWatcherInstance,
+  FileEvent,
+  indexFile,
+  removeFile,
+  getProjectRoot,
+} from '@synapse/core';
 import {
   DaemonConfig,
   ProjektConfig,
@@ -21,7 +29,6 @@ import {
   findProjekt,
   upsertProjekt,
   removeProjekt,
-  DEFAULT_SYNAPSE_API_URL,
 } from './config.js';
 
 export interface OpResult {
@@ -214,20 +221,29 @@ export class WatcherManager {
   }
 
   private async forwardEvent(event: FileEvent): Promise<void> {
-    const base = (this.config.synapse_api_url || DEFAULT_SYNAPSE_API_URL).replace(/\/+$/, '');
-    // Defensive: falls base bereits auf /api/fs/events endet, nicht doppelt anhaengen
-    const url = /\/api\/fs\/events$/.test(base) ? base : `${base}/api/fs/events`;
+    // In-Process Indexierung — wie der alte watcher-daemon.ts vor dem moo-Pivot.
+    // indexFile() macht intern: storeFileContent (Hash/mtime-Schutz) + parseAndEmbed
+    // (PG -> Qdrant). Kein HTTP-Umweg, kein REST-API-Bedarf, Daemon bleibt
+    // standalone. HTTP-API + SSE-Push bleiben offen fuer externe Orchestrierung.
     try {
-      const res = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(event),
-      });
-      if (!res.ok) {
-        console.error(`[manager] forward -> ${url} status=${res.status}`);
+      const projektCfg = this.config.projekte.find((p) => p.name === event.project);
+      const projectRoot = (await getProjectRoot(event.project)) ?? projektCfg?.pfad;
+      if (!projectRoot) {
+        console.error(`[manager] indexieren skip: kein projectRoot fuer "${event.project}"`);
+        return;
+      }
+      let relPath = event.path;
+      if (path.isAbsolute(relPath)) relPath = path.relative(projectRoot, relPath);
+      if (event.type === 'unlink') {
+        await removeFile(relPath, event.project);
+      } else {
+        await indexFile(relPath, event.project, projectRoot);
       }
     } catch (err) {
-      console.error(`[manager] forward -> ${url} fehlgeschlagen:`, (err as Error).message);
+      console.error(
+        `[manager] indexieren ${event.type} ${event.path} fehlgeschlagen:`,
+        (err as Error).message
+      );
     }
   }
 }
