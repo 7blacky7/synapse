@@ -33,7 +33,7 @@ import pystray
 CONFIG_DIR = Path.home() / ".synapse" / "file-watcher"
 PORT_FILE = CONFIG_DIR / "daemon.port"
 DEFAULT_PORT = 7878
-POLL_INTERVAL_S = 3.0
+POLL_INTERVAL_S = 1.0
 HTTP_TIMEOUT_S = 1.0
 
 
@@ -172,18 +172,46 @@ class TrayApp:
         self._stop_event.set()
         icon.stop()
 
-    # --- Polling-Thread ---
+    # --- Push-Thread (SSE) mit Polling-Fallback ---
 
-    def _poll_loop(self) -> None:
-        while not self._stop_event.wait(POLL_INTERVAL_S):
+    def _sse_loop(self) -> None:
+        """Verbindet sich mit /events (SSE) und ruft refresh() bei jedem Event.
+        Bei Connection-Loss: kurzer Backoff, dann reconnect. Pollt zusaetzlich
+        alle 5s als Fallback fuer den Fall dass der Daemon kein /events kann."""
+        import urllib.request
+        import urllib.error
+        last_poll = 0.0
+        while not self._stop_event.is_set():
+            port = self._port()
+            url = f"http://127.0.0.1:{port}/events"
             try:
-                self.refresh()
-            except Exception as e:  # noqa: BLE001
-                print(f"[tray] refresh error: {e}", file=sys.stderr)
+                req = urllib.request.Request(url, headers={'Accept': 'text/event-stream'})
+                with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT_S) as resp:
+                    for raw in resp:
+                        if self._stop_event.is_set():
+                            return
+                        line = raw.decode('utf-8', errors='replace').rstrip()
+                        # bei jedem data:-Frame oder Heartbeat refreshen
+                        if line.startswith('data:'):
+                            try:
+                                self.refresh()
+                            except Exception as e:  # noqa: BLE001
+                                print(f"[tray] refresh error: {e}", file=sys.stderr)
+            except (urllib.error.URLError, ConnectionError, OSError):
+                pass  # Daemon nicht erreichbar — Backoff + retry
+            # Polling-Fallback: refresh wenn lange nichts kam
+            now = time.time()
+            if now - last_poll >= POLL_INTERVAL_S:
+                try:
+                    self.refresh()
+                except Exception:
+                    pass
+                last_poll = now
+            self._stop_event.wait(POLL_INTERVAL_S)
 
     def run(self) -> None:
         self.refresh()
-        Thread(target=self._poll_loop, daemon=True).start()
+        Thread(target=self._sse_loop, daemon=True).start()
         self.icon.run()
 
 

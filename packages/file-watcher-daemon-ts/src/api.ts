@@ -148,6 +148,35 @@ export function buildApi(opts: BuildApiOptions): FastifyInstance {
     return safeCall(reply, () => manager.unregister(req.params.name));
   });
 
+  // ---- GET /events (Server-Sent Events) ----------------------------------
+  // Push-Stream fuer State-Changes. Tray verbindet einmal, hoert zu,
+  // reagiert sofort auf register/enable/disable/unregister.
+  app.get('/events', async (_req, reply) => {
+    reply.raw.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      Connection: 'keep-alive',
+    });
+    // Initial-Snapshot, damit der Client sofort den aktuellen State hat
+    reply.raw.write(`event: state\ndata: ${JSON.stringify(manager.statusAll())}\n\n`);
+
+    const onChange = (payload: unknown): void => {
+      reply.raw.write(`event: state\ndata: ${JSON.stringify(payload)}\n\n`);
+    };
+    manager.events.on('state_change', onChange);
+
+    // Heartbeat alle 25s damit Proxies/Clients den Stream nicht killen
+    const heartbeat = setInterval(() => {
+      reply.raw.write(`: keep-alive ${Date.now()}\n\n`);
+    }, 25_000);
+
+    _req.raw.on('close', () => {
+      clearInterval(heartbeat);
+      manager.events.off('state_change', onChange);
+    });
+    return reply;
+  });
+
   // ---- 404-Fallback -------------------------------------------------------
   app.setNotFoundHandler((_req, reply) => {
     reply.code(404).send({ error: 'Not Found' });

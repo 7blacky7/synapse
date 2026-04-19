@@ -11,6 +11,7 @@
  */
 
 import * as fs from 'fs';
+import { EventEmitter } from 'events';
 import { startFileWatcher, FileWatcherInstance, FileEvent } from '@synapse/core';
 import {
   DaemonConfig,
@@ -46,9 +47,16 @@ export interface AggregateStatus {
 export class WatcherManager {
   private instances = new Map<string, FileWatcherInstance>();
   private config: DaemonConfig;
+  /** EventEmitter fuer State-Changes — abonniert von api.ts SSE-Stream. Events: "state_change". */
+  readonly events = new EventEmitter();
 
   constructor(config?: DaemonConfig) {
     this.config = config ?? loadConfig();
+  }
+
+  /** Emittiert ein state_change-Event mit aktuellem Aggregate-Snapshot. */
+  private emitChange(reason: string): void {
+    this.events.emit('state_change', { reason, ts: Date.now(), state: this.statusAll() });
   }
 
   /** Liefert alle Projekte als Config-Array (fuer API /projects). */
@@ -106,6 +114,7 @@ export class WatcherManager {
     saveConfig(this.config);
 
     if (!this.instances.has(name)) this.spawnWatcher(projekt);
+    this.emitChange(`register:${name}`);
     return projekt;
   }
 
@@ -116,6 +125,7 @@ export class WatcherManager {
     await this.stopWatcher(name);
     removeProjekt(this.config, name);
     saveConfig(this.config);
+    this.emitChange(`unregister:${name}`);
   }
 
   /** Aktiviert ein Projekt (enabled=true, startet Watcher). */
@@ -125,6 +135,7 @@ export class WatcherManager {
     p.enabled = true;
     saveConfig(this.config);
     if (!this.instances.has(name)) this.spawnWatcher(p);
+    this.emitChange(`enable:${name}`);
   }
 
   /** Deaktiviert ein Projekt (stoppt Watcher, enabled=false). */
@@ -134,6 +145,7 @@ export class WatcherManager {
     p.enabled = false;
     saveConfig(this.config);
     await this.stopWatcher(name);
+    this.emitChange(`disable:${name}`);
   }
 
   /** Status eines einzelnen Projekts. */
