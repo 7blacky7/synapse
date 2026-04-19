@@ -1,0 +1,24 @@
+{
+  "name": "@synapse/file-watcher-daemon-ts",
+  "version": "0.1.0",
+  "description": "Synapse FileWatcher Daemon (TS) - Eigenstaendiger HTTP-gesteuerter Daemon fuer projektuebergreifende Filesystem-Ueberwachung",
+  "main": "./dist/main.js",
+  "types": "./dist/main.d.ts",
+  "type": "module",
+  "bin": {
+    "synapse-file-watcher-daemon": "./dist/main.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "start": "node dist/main.js",
+    "clean": "rimraf dist"
+  },
+  "dependencies": {
+    "@synapse/core": "workspace:*",
+    "fastify": "^4.28.1"
+  },
+  "files": [
+    "dist"
+  ]
+}
