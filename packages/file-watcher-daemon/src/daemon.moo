@@ -238,7 +238,7 @@ setze port auf cfg["port"]
 setze SYNAPSE_API_URL auf cfg["synapse_api_url"]
 
 # PID + Port hinschreiben fuer Discovery
-datei_schreiben(pid_file(), text(zeit_ms()))
+datei_schreiben(pid_file(), text(prozess_id()))
 datei_schreiben(port_file(), text(port))
 
 zeige "================================================"
