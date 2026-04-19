@@ -451,6 +451,17 @@ export async function moveFileInPg(
       [project, oldPath, newPath]
     );
 
+    // Tombstone fuer alten Pfad — der PG-Watcher unlinkt die Datei von Disk
+    // und loescht den Tombstone-Row danach selbst. Ohne diesen Schritt bleibt
+    // die alte Datei nach einem Move auf Disk liegen.
+    await client.query(
+      `INSERT INTO code_files (project, file_path, content, content_hash, deleted_at, updated_at)
+       VALUES ($1, $2, NULL, NULL, NOW(), NOW())
+       ON CONFLICT (project, file_path) DO UPDATE
+         SET deleted_at = NOW(), updated_at = NOW()`,
+      [project, oldPath]
+    );
+
     await client.query('COMMIT');
   } catch (err) {
     await client.query('ROLLBACK');

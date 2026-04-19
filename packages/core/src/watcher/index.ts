@@ -414,7 +414,7 @@ export function startFileWatcher(options: FileWatcherOptions): FileWatcherInstan
         } catch {
           // PG not reachable — ignore, next poll will retry
         }
-      }, 15000);
+      }, 2000);
     } catch {
       console.error('[Synapse] PG-Watcher konnte nicht gestartet werden — nur Filesystem-Ueberwachung aktiv');
     }
