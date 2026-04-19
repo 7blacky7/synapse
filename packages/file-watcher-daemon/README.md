@@ -61,8 +61,25 @@ curl http://localhost:7878/projects/mein-projekt/status
 - **Stop-Signal**: Flag-File `projects/<name>.active` verschwindet →
   Worker beendet sich im nächsten Zyklus.
 
-Events werden aktuell nur auf stdout geloggt. Post-an-Synapse-REST
-folgt im Folgeschritt.
+## Event-Forwarding an Synapse-REST
+
+Wenn `config.json` ein Feld `synapse_api_url` enthaelt (z.B.
+`"http://127.0.0.1:3030/api/fs/events"`), postet jeder Worker pro
+FS-Change einen Event:
+
+```json
+{
+  "projekt": "mein-projekt",
+  "typ": "added|modified|deleted",
+  "pfad": "/abs/pfad/zur/datei",
+  "mtime": 1776600000
+}
+```
+
+Bei leerem Feld (Default) → nur stdout-Log, kein Netzwerk.
+
+Gegenstueck: `packages/rest-api/src/routes/fs-events.ts` nimmt Events
+entgegen und delegiert an `indexFile` / `removeFile` aus dem Core.
 
 ## Abhängigkeiten
 

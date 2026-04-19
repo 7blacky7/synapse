@@ -15,3 +15,4 @@ export { techRoutes } from './tech.js';
 export { proposalRoutes } from './proposals.js';
 export { codeIntelRoutes } from './code-intel.js';
 export { filesRoutes } from './files.js';
+export { fsEventsRoutes } from './fs-events.js';
