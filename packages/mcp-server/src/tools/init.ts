@@ -28,8 +28,6 @@ import * as path from 'path';
 import * as fs from 'fs';
 import {
   initSynapse,
-  startFileWatcher,
-  handleFileEvent,
   verifyProjectAgainstFilesystem,
   ensureProjectCollection,
   createPlan,
@@ -47,12 +45,13 @@ import {
   getRulesForNewAgent,
   registerProject,
 } from '@synapse/core';
-import type { FileWatcherInstance, DetectedTechnology, Memory } from '@synapse/core';
+import type { DetectedTechnology } from '@synapse/core';
 import { SERVER_INSTANCE_ID } from '../server.js';
+import { ensureProjectInDaemon, disableProjectInDaemon, ensureTray } from '../daemon-client.js';
 import type { SetupQuestion } from './setup.js';
 
-/** Aktive FileWatcher pro Projekt */
-const activeWatchers = new Map<string, FileWatcherInstance>();
+/** Projekte, die in dieser MCP-Session aktiviert wurden (fuer stopProjekt) */
+const activeProjects = new Set<string>();
 
 /** Speichert Projekt-Pfade fuer Shutdown und Onboarding (name -> path) */
 import { cacheProjectPath as cachePathInOnboarding } from './onboarding.js';
@@ -112,25 +111,23 @@ async function tryReactivateProject(
     return null; // Collection leer, neu initialisieren
   }
 
-  // FileWatcher starten (Projekt war bereits indexiert)
-  const watcher = startFileWatcher({
-    projectPath,
-    projectName: name,
-    onFileChange: (event) => handleFileEvent(event, projectPath),
-    onError: (error) => console.error(`[Synapse MCP] FileWatcher Fehler:`, error),
-    onIgnoreChange: async () => {
-      const result = await cleanupProjekt(projectPath, name);
-      console.error(`[Synapse MCP] Cleanup: ${result.deleted} geloescht`);
-    },
-    onReady: async () => {
-      try {
-        await verifyProjectAgainstFilesystem(name, projectPath);
-      } catch (err) {
-        console.error(`[Synapse MCP] Reconcile fehlgeschlagen:`, err);
-      }
-    },
-  });
-  activeWatchers.set(name, watcher);
+  // Projekt beim PC-weiten FileWatcher-Daemon registrieren (startet Daemon bei Bedarf)
+  try {
+    const { state } = await ensureProjectInDaemon(name, projectPath);
+    console.error(`[Synapse MCP] Daemon-Projekt "${name}": ${state}`);
+    ensureTray();
+  } catch (err) {
+    console.error(`[Synapse MCP] Daemon-Registrierung fehlgeschlagen:`, err);
+  }
+
+  // Reconcile (PG vs FS) einmalig beim Reaktivieren
+  try {
+    await verifyProjectAgainstFilesystem(name, projectPath);
+  } catch (err) {
+    console.error(`[Synapse MCP] Reconcile fehlgeschlagen:`, err);
+  }
+
+  activeProjects.add(name);
   cacheProjectPathBoth(name, projectPath);
   await registerProject(name, projectPath);
   updateLastAccess(projectPath);
@@ -194,8 +191,8 @@ export async function initProjekt(
   // Projekt-Name aus Pfad ableiten wenn nicht angegeben
   const name = projectName || path.basename(projectPath);
 
-  // Fast-Path: FileWatcher laeuft bereits → initSynapse komplett ueberspringen
-  if (activeWatchers.has(name)) {
+  // Fast-Path: Projekt in dieser Session bereits aktiviert → initSynapse ueberspringen
+  if (activeProjects.has(name)) {
     updateLastAccess(projectPath);
 
     let isFirstVisit = false;
@@ -280,29 +277,23 @@ export async function initProjekt(
     console.error(`[Synapse MCP] Docs: ${docsIndexed.indexed} neu, ${docsIndexed.cached} gecacht`);
   }
 
-  // FileWatcher starten mit automatischem Cleanup bei .synapseignore Aenderungen
-  const watcher = startFileWatcher({
-    projectPath,
-    projectName: name,
-    onFileChange: (event) => handleFileEvent(event, projectPath),
-    onError: (error) => {
-      console.error(`[Synapse MCP] FileWatcher Fehler:`, error);
-    },
-    onIgnoreChange: async () => {
-      console.error(`[Synapse MCP] .synapseignore geaendert - starte automatisches Cleanup...`);
-      const result = await cleanupProjekt(projectPath, name);
-      console.error(`[Synapse MCP] Cleanup: ${result.deleted} Dateien geloescht, ${result.checked} geprueft`);
-    },
-    onReady: async () => {
-      try {
-        await verifyProjectAgainstFilesystem(name, projectPath);
-      } catch (err) {
-        console.error(`[Synapse MCP] Reconcile fehlgeschlagen:`, err);
-      }
-    },
-  });
+  // Projekt beim PC-weiten FileWatcher-Daemon registrieren + Tray starten
+  try {
+    const { state } = await ensureProjectInDaemon(name, projectPath);
+    console.error(`[Synapse MCP] Daemon-Projekt "${name}": ${state}`);
+    ensureTray();
+  } catch (err) {
+    console.error(`[Synapse MCP] Daemon-Registrierung fehlgeschlagen:`, err);
+  }
 
-  activeWatchers.set(name, watcher);
+  // Reconcile (PG vs FS) einmalig beim Init
+  try {
+    await verifyProjectAgainstFilesystem(name, projectPath);
+  } catch (err) {
+    console.error(`[Synapse MCP] Reconcile fehlgeschlagen:`, err);
+  }
+
+  activeProjects.add(name);
   cacheProjectPathBoth(name, projectPath);
 
   // Projekt-Pfad in DB registrieren (Multi-Machine Support)
@@ -412,14 +403,12 @@ export async function stopProjekt(
   projectName: string,
   projectPath?: string
 ): Promise<boolean> {
-  const watcher = activeWatchers.get(projectName);
-
-  if (!watcher) {
+  if (!activeProjects.has(projectName)) {
     return false;
   }
 
-  await watcher.stop();
-  activeWatchers.delete(projectName);
+  await disableProjectInDaemon(projectName);
+  activeProjects.delete(projectName);
 
   // Pfad aus Cache oder Parameter
   const pathToUse = projectPath || projectPaths.get(projectName);
@@ -442,14 +431,14 @@ export function getProjectPath(projectName: string): string | undefined {
  * Listet aktive Projekte auf
  */
 export function listActiveProjects(): string[] {
-  return Array.from(activeWatchers.keys());
+  return Array.from(activeProjects);
 }
 
 /**
  * Prueft ob ein Projekt aktiv ist
  */
 export function isProjectActive(projectName: string): boolean {
-  return activeWatchers.has(projectName);
+  return activeProjects.has(projectName);
 }
 
 /**
