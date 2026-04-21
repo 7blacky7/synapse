@@ -341,6 +341,176 @@ funktion delete_factory(name):
     gib_zurück () => loesche_projekt(name)
 
 # --------------------------------------------------------------
+# Chat: Channel-Liste + Chat-Fenster
+# --------------------------------------------------------------
+# Geoeffnete Chat-Fenster: (projekt, channel) -> { fenster, liste_msgs, ... }
+setze chat_fenster auf {}
+
+# Channels eines Projekts laden und ins Submenu einhaengen
+funktion channel_submenu_fuellen(parent_submenu, projekt):
+    setze resp auf safe_get(DAEMON_URL + "/projects/" + projekt + "/channels")
+    wenn resp == "":
+        tray_menu_add_to(parent_submenu, "(Daemon offline)", noop)
+        gib_zurück nichts
+    setze info auf json_lesen(resp)
+    wenn typ_von(info) != "Woerterbuch":
+        tray_menu_add_to(parent_submenu, "(Fehler)", noop)
+        gib_zurück nichts
+    wenn nicht info.hat("channels"):
+        tray_menu_add_to(parent_submenu, "(keine Channels)", noop)
+        gib_zurück nichts
+    setze chs auf info["channels"]
+    wenn länge(chs) == 0:
+        tray_menu_add_to(parent_submenu, "(keine Channels)", noop)
+        gib_zurück nichts
+    setze i auf 0
+    solange i < länge(chs):
+        setze ch auf chs[i]
+        setze ch_name auf ch["name"]
+        tray_menu_add_to(parent_submenu, "# " + ch_name, chat_oeffnen_factory(projekt, ch_name))
+        setze i auf i + 1
+
+funktion chat_oeffnen_factory(projekt, channel):
+    gib_zurück () => oeffne_chat(projekt, channel)
+
+# Chat-Fenster pro (Projekt, Channel) — Nachrichten/Agenten/Input
+funktion oeffne_chat(projekt, channel):
+    setze schluessel auf projekt + "::" + channel
+    wenn chat_fenster.hat(schluessel):
+        setze g auf chat_fenster[schluessel]
+        wenn nicht g.hat("closed"):
+            ui_zeige(g["fenster"])
+            chat_messages_laden(schluessel)
+            chat_agents_laden(schluessel)
+            gib_zurück nichts
+
+    setze g auf {}
+    chat_fenster[schluessel] = g
+    g["projekt"] = projekt
+    g["channel"] = channel
+    g["schluessel"] = schluessel
+
+    setze fenster auf ui_fenster("Chat: " + channel + " (" + projekt + ")", 900, 620, 1, nichts)
+    g["fenster"] = fenster
+    ui_fenster_on_close(fenster, chat_close_factory(schluessel))
+
+    # Nachrichten-Liste (links-oben, breit)
+    ui_label(fenster, "Nachrichten:", 10, 10, 200, 20)
+    setze liste_m auf ui_liste(fenster, ["Zeit", "Absender", "Nachricht"], 10, 35, 620, 430)
+    g["liste_msgs"] = liste_m
+
+    # Agenten-Liste (rechts)
+    ui_label(fenster, "Agenten im Projekt:", 640, 10, 250, 20)
+    setze liste_a auf ui_liste(fenster, ["Name", "Modell"], 640, 35, 250, 430)
+    g["liste_agents"] = liste_a
+
+    # Input + Senden
+    ui_label(fenster, "Nachricht:", 10, 475, 100, 20)
+    setze eingabe auf ui_eingabe(fenster, 10, 500, 700, 32, "Hier tippen...", falsch)
+    g["eingabe"] = eingabe
+    ui_knopf(fenster, "Senden",        720, 500, 80, 32, chat_senden_factory(schluessel))
+    ui_knopf(fenster, "Aktualisieren", 805, 500, 85, 32, chat_refresh_factory(schluessel))
+
+    ui_zeige(fenster)
+    chat_messages_laden(schluessel)
+    chat_agents_laden(schluessel)
+
+funktion chat_close_factory(schluessel):
+    gib_zurück () => chat_fenster_schliessen(schluessel)
+
+funktion chat_fenster_schliessen(schluessel):
+    wenn chat_fenster.hat(schluessel):
+        setze g auf chat_fenster[schluessel]
+        g["closed"] = wahr
+    gib_zurück wahr
+
+funktion chat_messages_laden(schluessel):
+    wenn nicht chat_fenster.hat(schluessel):
+        gib_zurück nichts
+    setze g auf chat_fenster[schluessel]
+    setze projekt auf g["projekt"]
+    setze channel auf g["channel"]
+    setze liste auf g["liste_msgs"]
+    ui_liste_leeren(liste)
+    setze resp auf safe_get(DAEMON_URL + "/projects/" + projekt + "/channels/" + channel + "/feed?limit=50")
+    wenn resp == "":
+        gib_zurück nichts
+    setze info auf json_lesen(resp)
+    wenn typ_von(info) != "Woerterbuch":
+        gib_zurück nichts
+    wenn nicht info.hat("messages"):
+        gib_zurück nichts
+    setze msgs auf info["messages"]
+    setze i auf 0
+    solange i < länge(msgs):
+        setze m auf msgs[i]
+        setze zeit auf ""
+        wenn m.hat("created_at"):
+            setze zeit auf m["created_at"]
+        setze sender auf ""
+        wenn m.hat("sender"):
+            setze sender auf m["sender"]
+        setze inhalt auf ""
+        wenn m.hat("content"):
+            setze inhalt auf m["content"]
+        ui_liste_zeile_hinzu(liste, [zeit, sender, inhalt])
+        setze i auf i + 1
+
+funktion chat_agents_laden(schluessel):
+    wenn nicht chat_fenster.hat(schluessel):
+        gib_zurück nichts
+    setze g auf chat_fenster[schluessel]
+    setze projekt auf g["projekt"]
+    setze liste auf g["liste_agents"]
+    ui_liste_leeren(liste)
+    setze resp auf safe_get(DAEMON_URL + "/projects/" + projekt + "/agents")
+    wenn resp == "":
+        gib_zurück nichts
+    setze info auf json_lesen(resp)
+    wenn typ_von(info) != "Woerterbuch":
+        gib_zurück nichts
+    wenn nicht info.hat("agents"):
+        gib_zurück nichts
+    setze ags auf info["agents"]
+    setze i auf 0
+    solange i < länge(ags):
+        setze a auf ags[i]
+        setze id auf ""
+        wenn a.hat("id"):
+            setze id auf a["id"]
+        setze modell auf ""
+        wenn a.hat("model"):
+            wenn typ_von(a["model"]) == "Text":
+                setze modell auf a["model"]
+        ui_liste_zeile_hinzu(liste, [id, modell])
+        setze i auf i + 1
+
+funktion chat_senden_factory(schluessel):
+    gib_zurück () => chat_senden(schluessel)
+
+funktion chat_senden(schluessel):
+    wenn nicht chat_fenster.hat(schluessel):
+        gib_zurück nichts
+    setze g auf chat_fenster[schluessel]
+    setze projekt auf g["projekt"]
+    setze channel auf g["channel"]
+    setze inhalt auf ui_eingabe_text(g["eingabe"])
+    wenn inhalt == "":
+        gib_zurück nichts
+    setze payload auf { "sender": "synapse-tray", "content": inhalt }
+    setze r auf http_sende(DAEMON_URL + "/projects/" + projekt + "/channels/" + channel + "/post", payload)
+    # Input leeren, Feed neu laden
+    ui_eingabe_setze(g["eingabe"], "")
+    chat_messages_laden(schluessel)
+
+funktion chat_refresh_factory(schluessel):
+    gib_zurück () => chat_refresh(schluessel)
+
+funktion chat_refresh(schluessel):
+    chat_messages_laden(schluessel)
+    chat_agents_laden(schluessel)
+
+# --------------------------------------------------------------
 # Daemon-Start / Quit
 # --------------------------------------------------------------
 funktion daemon_starten():
@@ -413,6 +583,10 @@ funktion rebuild_menu():
             setze check auf tray_check_add_to(sm, "Aktiv", enabled, toggle_factory(name))
             tray_separator_add_to(sm)
             tray_menu_add_to(sm, "Oeffnen...", detail_factory(name))
+            tray_separator_add_to(sm)
+            # Channels flach im Projekt-Submenu — moo kennt (noch)
+            # keine nested submenus. Jeder Channel als "# name"-Eintrag.
+            channel_submenu_fuellen(sm, name)
             tray_separator_add_to(sm)
             tray_menu_add_to(sm, "Loeschen...", delete_factory(name))
             projekt_handles[name] = { "sub": sm, "check": check, "enabled": enabled }
