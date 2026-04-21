@@ -36,3 +36,15 @@ export type { AgentEvent, EventAck, EventType, EventPriority } from './events.js
 export * from './error-patterns.js';
 export * from './channels.js';
 export * from './inbox.js';
+export {
+  enqueueShellJob,
+  claimPendingShellJob,
+  completeShellJob,
+  waitForShellJob,
+} from './shell-queue.js';
+export type {
+  EnqueueArgs,
+  ShellJobRow,
+  ShellJobCompletion,
+  ShellJobResult,
+} from './shell-queue.js';

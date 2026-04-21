@@ -258,7 +258,18 @@ export {
   checkErrorPatterns,
   getModelTier,
   deriveModelScope,
+  // Shell-Queue
+  enqueueShellJob,
+  claimPendingShellJob,
+  completeShellJob,
+  waitForShellJob,
 } from './services/index.js';
+export type {
+  EnqueueArgs,
+  ShellJobRow,
+  ShellJobCompletion,
+  ShellJobResult,
+} from './services/shell-queue.js';
 export type { FunctionInfo, VariableInfo, SymbolInfo, ReferenceInfo, ReferencesResult, FullTextSearchResult, FileContentResult, TreeOptions } from './services/code-intel.js';
 export type { BackupEntry } from './services/backup.js';
 export type { ChatMessage, AgentSession } from './services/chat.js';
