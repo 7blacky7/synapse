@@ -105,6 +105,7 @@ import {
   deleteErrorPattern,
 } from '@synapse/core';
 import { minimatch } from 'minimatch';
+import { GUIDE_OVERVIEW, TOOL_GUIDES } from './guide-content.js';
 import { randomUUID } from 'crypto';
 
 /**
@@ -669,9 +670,20 @@ const MCP_TOOLS = [
       required: ['action'],
     },
   },
+  // 18. guide — Web-KI-Onboarding + Tool-Dokumentation (nur REST-API)
+  {
+    name: 'guide',
+    description: 'Zeigt Quick-Start fuer Web-KIs + detaillierte Nutzungs-Anleitung fuer alle Tools. Ohne Parameter: Uebersicht. Mit tool_name: Deep-Dive. Mit tool_name + action_name: Action-Details. Dieses Tool ist nur via REST-API verfuegbar und verbraucht KEINEN Kontext auf lokalen MCP-Sessions.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        tool_name: { type: 'string', description: 'Name des Tools fuer Detail-Doku (z.B. "code_intel", "shell", "files"). Weglassen fuer Uebersicht.' },
+        action_name: { type: 'string', description: 'Optional: Spezifische Action innerhalb eines Multi-Action-Tools (z.B. "tree" bei code_intel).' },
+      },
+    },
+  },
 ];
 
-// Temporärer Speicher für unbestätigte Ideen (analog zu mcp-server/tools/ideas.ts)
 interface PendingIdea {
   content: string;
   project: string;
@@ -1930,6 +1942,61 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
         default:
           return { success: false, error: `Unbekannte code_check action: "${ccAction}"` };
       }
+    }
+
+    // =================================================================
+    // 18. GUIDE — Web-KI-Onboarding + Tool-Dokumentation
+    // =================================================================
+    case 'guide': {
+      const toolName = str(args, 'tool_name');
+      const actionName = str(args, 'action_name');
+
+      if (!toolName) {
+        return {
+          success: true,
+          scope: 'overview',
+          content: GUIDE_OVERVIEW,
+          available_tools: Object.keys(TOOL_GUIDES),
+          tip: 'Rufe guide({ tool_name: "<name>" }) fuer Detail-Doku zu einem einzelnen Tool auf.',
+        };
+      }
+
+      const toolGuide = TOOL_GUIDES[toolName];
+      if (!toolGuide) {
+        return {
+          success: false,
+          error: `Kein Guide fuer Tool "${toolName}" gefunden.`,
+          available_tools: Object.keys(TOOL_GUIDES),
+        };
+      }
+
+      if (actionName) {
+        const action = toolGuide.actions?.[actionName];
+        if (!action) {
+          return {
+            success: false,
+            error: `Kein Guide fuer Action "${actionName}" in Tool "${toolName}" gefunden.`,
+            available_actions: toolGuide.actions ? Object.keys(toolGuide.actions) : [],
+          };
+        }
+        return {
+          success: true,
+          scope: 'action',
+          tool: toolName,
+          action: actionName,
+          guide: action,
+        };
+      }
+
+      return {
+        success: true,
+        scope: 'tool',
+        tool: toolName,
+        guide: toolGuide,
+        tip: toolGuide.actions
+          ? `Dieses Tool hat mehrere Actions: ${Object.keys(toolGuide.actions).join(', ')}. Rufe guide({ tool_name: "${toolName}", action_name: "<action>" }) fuer Detail-Doku.`
+          : undefined,
+      };
     }
 
     default:
