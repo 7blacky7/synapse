@@ -125,7 +125,9 @@ export async function claimPendingShellJob(
     await client.query('BEGIN');
     const res = await client.query<ShellJobRow>(
       `SELECT * FROM shell_jobs
-       WHERE project = $1 AND status = 'pending'
+       WHERE project = $1
+         AND status = 'pending'
+         AND created_at > NOW() - interval '30 seconds'
        ORDER BY created_at ASC
        LIMIT 1
        FOR UPDATE SKIP LOCKED`,
@@ -268,3 +270,32 @@ export async function waitForShellJob(
     client.release();
   }
 }
+
+/**
+ * Setzt alle pending Jobs die aelter als `maxAgeSec` Sekunden sind auf
+ * `rejected` (Default: 30s). NOTIFY wird fuer jeden Job gefeuert damit
+ * wartende `waitForShellJob`-Calls aufwachen.
+ *
+ * Sicherheit: Verhindert dass Jobs die eingereiht wurden als das Projekt
+ * inaktiv war, spaeter automatisch ausgefuehrt werden wenn das Projekt
+ * wieder aktiv wird.
+ */
+export async function expirePendingShellJobs(maxAgeSec: number = 30): Promise<number> {
+  const pool = getPool();
+  const res = await pool.query<{ id: string }>(
+    `UPDATE shell_jobs
+     SET status = 'rejected',
+         error = 'expired — Projekt war zu lange nicht aktiv (max ' || $1::text || 's Grace-Window)',
+         completed_at = NOW(),
+         updated_at = NOW()
+     WHERE status = 'pending'
+       AND created_at < NOW() - ($1::integer * interval '1 second')
+     RETURNING id`,
+    [maxAgeSec],
+  );
+  for (const row of res.rows) {
+    await pool.query(`SELECT pg_notify($1, $2)`, [doneChannelForJob(row.id), 'rejected']);
+  }
+  return res.rows.length;
+}
+

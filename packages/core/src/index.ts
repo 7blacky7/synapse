@@ -261,6 +261,7 @@ export {
   // Shell-Queue
   enqueueShellJob,
   claimPendingShellJob,
+  expirePendingShellJobs,
   completeShellJob,
   waitForShellJob,
 } from './services/index.js';

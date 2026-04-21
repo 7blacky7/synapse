@@ -39,6 +39,7 @@ export * from './inbox.js';
 export {
   enqueueShellJob,
   claimPendingShellJob,
+  expirePendingShellJobs,
   completeShellJob,
   waitForShellJob,
 } from './shell-queue.js';

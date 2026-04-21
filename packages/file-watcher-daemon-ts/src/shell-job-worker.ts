@@ -18,6 +18,7 @@ import {
   claimPendingShellJob,
   completeShellJob,
   execShellInProject,
+  expirePendingShellJobs,
 } from '@synapse/core';
 
 const DAEMON_ID = `daemon-${os.hostname()}-${process.pid}`;
@@ -72,8 +73,12 @@ export async function startShellJobWorker(
   });
 
   // Safety-Net: alle 10s pending Jobs aufarbeiten (fuer Race-Conditions / Daemon-Restart)
+  // + expire alter Jobs (>30s) damit deaktivierte Projekte nicht spaeter ausgefuehrt werden
   safetyInterval = setInterval(() => {
     if (stopped) return;
+    void expirePendingShellJobs(30).catch((err: unknown) => {
+      console.error(`[shell-worker] expirePendingShellJobs Fehler:`, (err as Error).message);
+    });
     for (const project of getActiveProjects()) {
       void processJob(project).catch((err: unknown) => {
         console.error(`[shell-worker] safety-net processJob(${project}) Fehler:`, (err as Error).message);
