@@ -18,7 +18,7 @@
 import os from 'node:os';
 import fs from 'node:fs';
 import Fastify, { type FastifyInstance, type FastifyReply } from 'fastify';
-import { getPool } from '@synapse/core';
+import { getPool, listChannels, getChannelMessages, postChannelMessage, listActiveAgents } from '@synapse/core';
 import { readStatus, removeSpecialist } from '@synapse/agents';
 import type { WatcherManager } from './manager.js';
 
@@ -237,6 +237,83 @@ export function buildApi(opts: BuildApiOptions): FastifyInstance {
         }
         await removeSpecialist(info.pfad, specName);
         return { ok: true, stopped: specName, wrapperPid: spec.wrapperPid };
+      } catch (err) {
+        reply.code(500);
+        return { error: (err as Error).message };
+      }
+    },
+  );
+
+  // ---- GET /projects/:name/channels --------------------------------------
+  // Liefert alle Channels eines Projekts (fuer Tray-Submenu).
+  app.get<{ Params: { name: string } }>(
+    '/projects/:name/channels',
+    async (req, reply) => {
+      try {
+        const channels = await listChannels(req.params.name);
+        return { project: req.params.name, channels };
+      } catch (err) {
+        reply.code(500);
+        return { error: (err as Error).message };
+      }
+    },
+  );
+
+  // ---- GET /projects/:name/channels/:channel/feed?limit=50 ---------------
+  // Letzte N Nachrichten eines Channels. Default 50.
+  app.get<{
+    Params: { name: string; channel: string };
+    Querystring: { limit?: string };
+  }>(
+    '/projects/:name/channels/:channel/feed',
+    async (req, reply) => {
+      const limit = req.query.limit ? Number(req.query.limit) : 50;
+      try {
+        const messages = await getChannelMessages(req.params.name, req.params.channel, { limit });
+        return { project: req.params.name, channel: req.params.channel, messages };
+      } catch (err) {
+        reply.code(500);
+        return { error: (err as Error).message };
+      }
+    },
+  );
+
+  // ---- POST /projects/:name/channels/:channel/post -----------------------
+  // Body: { sender: string, content: string }
+  app.post<{
+    Params: { name: string; channel: string };
+    Body: { sender?: string; content?: string };
+  }>(
+    '/projects/:name/channels/:channel/post',
+    async (req, reply) => {
+      const sender = (req.body?.sender ?? 'synapse-tray').trim();
+      const content = (req.body?.content ?? '').trim();
+      if (!content) {
+        reply.code(400);
+        return { error: 'content required' };
+      }
+      try {
+        const res = await postChannelMessage(req.params.name, req.params.channel, sender, content);
+        if (!res) {
+          reply.code(404);
+          return { error: `channel "${req.params.channel}" not found` };
+        }
+        return { ok: true, messageId: res.id, createdAt: res.createdAt };
+      } catch (err) {
+        reply.code(500);
+        return { error: (err as Error).message };
+      }
+    },
+  );
+
+  // ---- GET /projects/:name/agents ----------------------------------------
+  // Aktive Chat-Agenten des Projekts (fuer Chat-Fenster Seitenleiste).
+  app.get<{ Params: { name: string } }>(
+    '/projects/:name/agents',
+    async (req, reply) => {
+      try {
+        const agents = await listActiveAgents(req.params.name);
+        return { project: req.params.name, agents };
       } catch (err) {
         reply.code(500);
         return { error: (err as Error).message };
