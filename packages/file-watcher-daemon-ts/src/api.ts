@@ -18,6 +18,7 @@
 import os from 'node:os';
 import fs from 'node:fs';
 import Fastify, { type FastifyInstance, type FastifyReply } from 'fastify';
+import { getPool } from '@synapse/core';
 import type { WatcherManager } from './manager.js';
 
 const STARTED_AT = Date.now();
@@ -147,6 +148,39 @@ export function buildApi(opts: BuildApiOptions): FastifyInstance {
   app.delete<{ Params: { name: string } }>('/projects/:name', async (req, reply) => {
     return safeCall(reply, () => manager.unregister(req.params.name));
   });
+
+  // ---- GET /projects/:name/history ---------------------------------------
+  // Letzte N watcher_events (Default 50). Quelle: PostgreSQL watcher_events —
+  // wird vom core-Watcher bei jedem chokidar-Event befuellt (siehe core/watcher/index.ts).
+  // Wird vom Tray-Context-Menue "Details" genutzt.
+  app.get<{ Params: { name: string }; Querystring: { limit?: string } }>(
+    '/projects/:name/history',
+    async (req, reply) => {
+      const { name } = req.params;
+      if (!manager.status(name)) {
+        reply.code(404);
+        return { error: 'unknown project' };
+      }
+      let limit = parseInt(req.query.limit ?? '50', 10);
+      if (!Number.isFinite(limit) || limit <= 0) limit = 50;
+      if (limit > 500) limit = 500;
+      try {
+        const pool = getPool();
+        const { rows } = await pool.query(
+          `SELECT event_type, file_path, created_at, details
+             FROM watcher_events
+            WHERE project = $1
+            ORDER BY created_at DESC
+            LIMIT $2`,
+          [name, limit],
+        );
+        return { events: rows };
+      } catch (err) {
+        reply.code(500);
+        return { error: (err as Error).message };
+      }
+    },
+  );
 
   // ---- GET /events (Server-Sent Events) ----------------------------------
   // Push-Stream fuer State-Changes. Tray verbindet einmal, hoert zu,

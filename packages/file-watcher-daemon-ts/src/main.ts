@@ -17,6 +17,7 @@ import os from 'node:os';
 import { buildApi } from './api.js';
 import { ensureConfigDir, pidFilePath, portFilePath } from './config.js';
 import { WatcherManager } from './manager.js';
+import { startShellJobWorker, type ShellJobWorkerHandle } from './shell-job-worker.js';
 
 async function main(): Promise<void> {
   ensureConfigDir();
@@ -26,6 +27,19 @@ async function main(): Promise<void> {
 
   // Enabled Projekte direkt starten
   await manager.startAllEnabled();
+
+  // Shell-Job-Worker starten (LISTEN 'shell_job_created')
+  let shellWorker: ShellJobWorkerHandle | null = null;
+  try {
+    shellWorker = await startShellJobWorker(() =>
+      manager.list()
+        .filter((p) => p.enabled && manager.isRunning(p.name))
+        .map((p) => p.name)
+    );
+  } catch (err) {
+    console.error('[daemon] Shell-Job-Worker konnte nicht gestartet werden:', err);
+    // Kein harter Fehler — Daemon laeuft weiter ohne Queue-Worker
+  }
 
   const app = buildApi({ manager });
 
@@ -63,6 +77,14 @@ async function main(): Promise<void> {
       await app.close();
     } catch (err) {
       console.error('[daemon] Fastify close Fehler:', err);
+    }
+
+    if (shellWorker !== null) {
+      try {
+        await shellWorker.stop();
+      } catch (err) {
+        console.error('[daemon] Shell-Worker stop Fehler:', err);
+      }
     }
 
     try {
