@@ -14,7 +14,7 @@
  */
 
 import { FastifyInstance } from 'fastify';
-import { execShellInProject, getShellStream } from '@synapse/core';
+import { enqueueShellJob, waitForShellJob } from '@synapse/core';
 
 interface ShellBody {
   action?: 'exec' | 'get_stream';
@@ -42,15 +42,11 @@ export async function shellRoutes(fastify: FastifyInstance): Promise<void> {
 
     try {
       if (action === 'get_stream') {
-        if (!body.stream_id) {
-          return reply.status(400).send({ error: 'missing_field', message: 'stream_id erforderlich' });
-        }
-        const result = getShellStream({
-          stream_id: body.stream_id,
-          tail_lines: body.tail_lines,
-          since_last_read: body.since_last_read,
+        // get_stream via REST-API noch nicht implementiert — Queue-Version folgt
+        return reply.status(501).send({
+          success: false,
+          error: 'get_stream via REST-API noch nicht implementiert — Queue-Version folgt',
         });
-        return reply.status(statusFor(result)).send(result);
       }
 
       if (action === 'exec') {
@@ -60,14 +56,23 @@ export async function shellRoutes(fastify: FastifyInstance): Promise<void> {
             message: 'project und command sind erforderlich',
           });
         }
-        const result = await execShellInProject({
+        const timeoutMs = body.timeout_ms ?? 30000;
+        const { id, stream_id } = await enqueueShellJob({
           project: body.project,
           command: body.command,
           cwd_relative: body.cwd_relative,
-          timeout_ms: body.timeout_ms,
+          timeout_ms: timeoutMs,
           tail_lines: body.tail_lines,
         });
-        return reply.status(statusFor(result)).send(result);
+
+        const result = await waitForShellJob(id, timeoutMs + 5000);
+        return reply.status(statusFor(result as unknown as Record<string, unknown>)).send({
+          status: result.status,
+          stream_id: result.stream_id ?? stream_id,
+          exit_code: result.exit_code,
+          tail: result.tail,
+          error: result.error,
+        });
       }
 
       return reply.status(400).send({ error: 'unknown_action', message: `action: ${action}` });

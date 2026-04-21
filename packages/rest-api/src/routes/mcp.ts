@@ -96,6 +96,9 @@ import {
   // Inbox
   postToInbox,
   checkInbox,
+  // Shell-Queue
+  enqueueShellJob,
+  waitForShellJob,
 } from '@synapse/core';
 import { minimatch } from 'minimatch';
 import { randomUUID } from 'crypto';
@@ -1818,6 +1821,41 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
         default:
           return { success: false, error: `Unbekannte files action: "${action}"` };
       }
+    }
+
+    // =================================================================
+    // 15. SHELL — Queue-basiert via Daemon (REST-API-Pfad)
+    // =================================================================
+    case 'shell': {
+      const shellAction = str(args, 'action') ?? 'exec';
+
+      if (shellAction === 'get_stream') {
+        // get_stream via REST-API noch nicht implementiert — Queue-Version folgt
+        return { success: false, error: 'get_stream via REST-API noch nicht implementiert — Queue-Version folgt' };
+      }
+
+      if (shellAction !== 'exec') {
+        return { success: false, error: `Unbekannte shell action: "${shellAction}"` };
+      }
+
+      const timeoutMs = num(args, 'timeout_ms') ?? 30000;
+      const { id, stream_id } = await enqueueShellJob({
+        project: reqStr(args, 'project'),
+        command: reqStr(args, 'command'),
+        cwd_relative: str(args, 'cwd_relative'),
+        timeout_ms: timeoutMs,
+        tail_lines: num(args, 'tail_lines'),
+      });
+
+      const result = await waitForShellJob(id, timeoutMs + 5000);
+
+      return {
+        status: result.status,
+        stream_id: result.stream_id,
+        exit_code: result.exit_code,
+        tail: result.tail,
+        error: result.error,
+      };
     }
 
     default:
