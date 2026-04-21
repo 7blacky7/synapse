@@ -19,6 +19,7 @@ import os from 'node:os';
 import fs from 'node:fs';
 import Fastify, { type FastifyInstance, type FastifyReply } from 'fastify';
 import { getPool } from '@synapse/core';
+import { readStatus, removeSpecialist } from '@synapse/agents';
 import type { WatcherManager } from './manager.js';
 
 const STARTED_AT = Date.now();
@@ -175,6 +176,67 @@ export function buildApi(opts: BuildApiOptions): FastifyInstance {
           [name, limit],
         );
         return { events: rows };
+      } catch (err) {
+        reply.code(500);
+        return { error: (err as Error).message };
+      }
+    },
+  );
+
+  // ---- GET /projects/:name/specialists -----------------------------------
+  // Liest die lokale .synapse/agents/status.json des Projekts — gibt alle
+  // registrierten Spezialisten mit Status/Modell/Tokens/wrapperPid zurueck.
+  // Wird vom Tray-Context-Menue "Agenten" genutzt.
+  app.get<{ Params: { name: string } }>(
+    '/projects/:name/specialists',
+    async (req, reply) => {
+      const info = manager.status(req.params.name);
+      if (!info) {
+        reply.code(404);
+        return { error: 'unknown project' };
+      }
+      try {
+        const statusFile = await readStatus(info.pfad);
+        return {
+          project: req.params.name,
+          specialists: statusFile.specialists,
+          maxSpecialists: statusFile.maxSpecialists,
+          lastUpdate: statusFile.lastUpdate,
+        };
+      } catch (err) {
+        reply.code(500);
+        return { error: (err as Error).message };
+      }
+    },
+  );
+
+  // ---- POST /projects/:name/specialists/:specName/stop -------------------
+  // Sendet SIGTERM an die wrapperPid und entfernt den Eintrag aus status.json.
+  // Bei bereits toten Prozessen: no-op mit ok.
+  app.post<{ Params: { name: string; specName: string } }>(
+    '/projects/:name/specialists/:specName/stop',
+    async (req, reply) => {
+      const { name, specName } = req.params;
+      const info = manager.status(name);
+      if (!info) {
+        reply.code(404);
+        return { error: 'unknown project' };
+      }
+      try {
+        const statusFile = await readStatus(info.pfad);
+        const spec = statusFile.specialists[specName];
+        if (!spec) {
+          reply.code(404);
+          return { error: `unknown specialist: ${specName}` };
+        }
+        // SIGTERM auf wrapperPid — es ist ok wenn der Prozess schon tot ist
+        try {
+          process.kill(spec.wrapperPid, 'SIGTERM');
+        } catch (err: any) {
+          if (err.code !== 'ESRCH') throw err; // ESRCH = no such process, harmlos
+        }
+        await removeSpecialist(info.pfad, specName);
+        return { ok: true, stopped: specName, wrapperPid: spec.wrapperPid };
       } catch (err) {
         reply.code(500);
         return { error: (err as Error).message };
