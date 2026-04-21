@@ -99,6 +99,10 @@ import {
   // Shell-Queue
   enqueueShellJob,
   waitForShellJob,
+  // Error Patterns (code_check)
+  addErrorPattern,
+  listErrorPatterns,
+  deleteErrorPattern,
 } from '@synapse/core';
 import { minimatch } from 'minimatch';
 import { randomUUID } from 'crypto';
@@ -624,6 +628,45 @@ const MCP_TOOLS = [
         replace: { type: 'string', description: 'Ersetzungstext (fuer search_replace)' },
       },
       required: ['action', 'project', 'file_path'],
+    },
+  },
+  // 16. shell
+  {
+    name: 'shell',
+    description: 'Projekt-scoped Shell-Ausfuehrung via Queue (REST-API → PostgreSQL → FileWatcher-Daemon). Command wird lokal auf dem Projekt-PC ausgefuehrt, solange der Daemon laeuft.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', enum: ['exec', 'get_stream'], description: 'Default: exec.' },
+        project: { type: 'string', description: 'Projekt-Name (Pflicht fuer exec)' },
+        command: { type: 'string', description: 'Shell-Kommando (Pflicht fuer exec)' },
+        stream_id: { type: 'string', description: 'Pflicht fuer get_stream (noch nicht implementiert via REST)' },
+        timeout_ms: { type: 'number', description: 'Default 30000' },
+        tail_lines: { type: 'number', description: 'Default 5' },
+        cwd_relative: { type: 'string', description: 'Unterpfad innerhalb des Projekt-Roots' },
+      },
+      required: ['action'],
+    },
+  },
+  // 17. code_check
+  {
+    name: 'code_check',
+    description: 'Fehler-Pattern-System: Bekannte Fehler speichern und verwalten. Patterns werden automatisch bei Write-Operationen geprueft.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', enum: ['add_pattern', 'list_patterns', 'delete_pattern'], description: 'Action' },
+        description: { type: 'string', description: 'Erforderlich fuer add_pattern: Was ist der Fehler' },
+        fix: { type: 'string', description: 'Erforderlich fuer add_pattern: Wie sieht der Fix aus' },
+        severity: { type: 'string', enum: ['error', 'warning', 'info'], description: 'Optional fuer add_pattern (Standard: warning)' },
+        found_in_model: { type: 'string', description: 'Erforderlich fuer add_pattern: Modell' },
+        found_by: { type: 'string', description: 'Erforderlich fuer add_pattern: Agent-ID' },
+        model_scope: { type: 'string', description: 'Optional fuer list_patterns' },
+        id: { type: 'string', description: 'Erforderlich fuer delete_pattern' },
+        limit: { type: 'number', description: 'Optional fuer list_patterns (Standard: 20)' },
+        agent_id: { type: 'string', description: 'Agent-ID' },
+      },
+      required: ['action'],
     },
   },
 ];
@@ -1856,6 +1899,37 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
         tail: result.tail,
         error: result.error,
       };
+    }
+
+    // =================================================================
+    // 17. CODE_CHECK
+    // =================================================================
+    case 'code_check': {
+      const ccAction = reqStr(args, 'action');
+      switch (ccAction) {
+        case 'add_pattern': {
+          const description = reqStr(args, 'description');
+          const fix = reqStr(args, 'fix');
+          const severity = str(args, 'severity') ?? 'warning';
+          const foundInModel = reqStr(args, 'found_in_model');
+          const foundBy = reqStr(args, 'found_by');
+          const result = await addErrorPattern(description, fix, severity, foundBy, foundInModel);
+          return { success: true, ...result, message: `Pattern gespeichert (scope: ${result.modelScope})` };
+        }
+        case 'list_patterns': {
+          const modelScope = str(args, 'model_scope');
+          const limit = num(args, 'limit') ?? 20;
+          const patterns = await listErrorPatterns(modelScope, limit);
+          return { success: true, patterns, count: patterns.length };
+        }
+        case 'delete_pattern': {
+          const id = reqStr(args, 'id');
+          const deleted = await deleteErrorPattern(id);
+          return { success: deleted, message: deleted ? 'Pattern geloescht' : 'Pattern nicht gefunden' };
+        }
+        default:
+          return { success: false, error: `Unbekannte code_check action: "${ccAction}"` };
+      }
     }
 
     default:
