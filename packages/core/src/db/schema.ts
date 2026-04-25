@@ -435,8 +435,17 @@ CREATE TABLE IF NOT EXISTS shell_jobs (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+-- Persistenter Voll-Output: Worker schreibt stdout+stderr bei
+-- completeShellJob direkt in PG (gecappt 1MB). Damit ist die History
+-- via REST-API von einem anderen Host (Unraid) abrufbar — Logs auf
+-- der lokalen Festplatte sind nur noch Streaming-Fallback waehrend
+-- der Job laeuft. Nach Completion ist PG die Source-of-Truth.
+ALTER TABLE shell_jobs ADD COLUMN IF NOT EXISTS output TEXT;
+ALTER TABLE shell_jobs ADD COLUMN IF NOT EXISTS output_truncated BOOLEAN DEFAULT false;
+
 CREATE INDEX IF NOT EXISTS idx_shell_jobs_project_status ON shell_jobs(project, status);
 CREATE INDEX IF NOT EXISTS idx_shell_jobs_created ON shell_jobs(created_at) WHERE status = 'pending';
+CREATE INDEX IF NOT EXISTS idx_shell_jobs_history ON shell_jobs(project, created_at DESC);
 
 CREATE OR REPLACE FUNCTION notify_shell_job_created() RETURNS TRIGGER AS $$
 BEGIN

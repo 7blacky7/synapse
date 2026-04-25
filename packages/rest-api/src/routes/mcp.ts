@@ -99,6 +99,8 @@ import {
   // Shell-Queue
   enqueueShellJob,
   waitForShellJob,
+  getShellJobs,
+  getShellJobById,
   // Error Patterns (code_check)
   addErrorPattern,
   listErrorPatterns,
@@ -638,7 +640,11 @@ const MCP_TOOLS = [
     inputSchema: {
       type: 'object',
       properties: {
-        action: { type: 'string', enum: ['exec', 'get_stream'], description: 'Default: exec.' },
+        action: { type: 'string', enum: ['exec', 'get_stream', 'history', 'get'], description: 'Default: exec. history=Liste vergangener Jobs. get=Einzeljob mit vollem Output.' },
+        id: { type: 'string', description: 'Job-UUID (Pflicht fuer get)' },
+        limit: { type: 'number', description: 'history: max Jobs (Default 20, Max 200)' },
+        offset: { type: 'number', description: 'history: Skip N (Default 0)' },
+        status: { type: 'string', enum: ['pending', 'running', 'done', 'failed', 'rejected', 'timeout'], description: 'history: Filter auf Status' },
         project: { type: 'string', description: 'Projekt-Name (Pflicht fuer exec)' },
         command: { type: 'string', description: 'Shell-Kommando (Pflicht fuer exec)' },
         stream_id: { type: 'string', description: 'Pflicht fuer get_stream (noch nicht implementiert via REST)' },
@@ -1885,8 +1891,25 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
       const shellAction = str(args, 'action') ?? 'exec';
 
       if (shellAction === 'get_stream') {
-        // get_stream via REST-API noch nicht implementiert — Queue-Version folgt
-        return { success: false, error: 'get_stream via REST-API noch nicht implementiert — Queue-Version folgt' };
+        return { success: false, error: 'get_stream via REST-API noch nicht implementiert' };
+      }
+
+      if (shellAction === 'history') {
+        const jobs = await getShellJobs({
+          project: str(args, 'project'),
+          limit: num(args, 'limit'),
+          offset: num(args, 'offset'),
+          status: str(args, 'status') as 'pending' | 'running' | 'done' | 'failed' | 'rejected' | 'timeout' | undefined,
+        });
+        return { success: true, count: jobs.length, jobs };
+      }
+
+      if (shellAction === 'get') {
+        const job = await getShellJobById(reqStr(args, 'id'));
+        if (!job) {
+          return { success: false, error: 'unknown_job', message: `Job ${reqStr(args, 'id')} nicht gefunden` };
+        }
+        return { success: true, job };
       }
 
       if (shellAction !== 'exec') {

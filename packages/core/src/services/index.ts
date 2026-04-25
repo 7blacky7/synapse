@@ -42,6 +42,8 @@ export {
   expirePendingShellJobs,
   completeShellJob,
   waitForShellJob,
+  getShellJobs,
+  getShellJobById,
 } from './shell-queue.js';
 export type {
   EnqueueArgs,

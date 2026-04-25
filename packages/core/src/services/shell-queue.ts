@@ -38,6 +38,8 @@ export interface ShellJobRow {
   status: 'pending' | 'running' | 'done' | 'failed' | 'rejected' | 'timeout';
   exit_code: number | null;
   tail: string[] | null;
+  output: string | null;
+  output_truncated: boolean | null;
   error: string | null;
   stream_id: string | null;
   claimed_by: string | null;
@@ -52,6 +54,8 @@ export interface ShellJobCompletion {
   exit_code?: number;
   tail?: string[];
   error?: string;
+  /** Voller stdout+stderr-Output. Wird gecappt auf MAX_OUTPUT_BYTES. */
+  output?: string;
 }
 
 export interface ShellJobResult {
@@ -62,6 +66,9 @@ export interface ShellJobResult {
   error?: string;
   stream_id?: string;
 }
+
+/** Max bytes die wir in shell_jobs.output speichern. Groesseres wird truncated. */
+export const MAX_OUTPUT_BYTES = 1_000_000;
 
 /**
  * Mapped eine Job-UUID auf einen LISTEN-kompatiblen Channel-Namen.
@@ -168,12 +175,24 @@ export async function completeShellJob(
   result: ShellJobCompletion,
 ): Promise<void> {
   const pool = getPool();
+  // Output cappen — sehr grosse Logs sprengen die JSON-Response der KI-Tools.
+  // Bei Bedarf kann der File-Fallback die volle Groesse liefern.
+  let output = result.output ?? null;
+  let truncated = false;
+  if (output !== null && output.length > MAX_OUTPUT_BYTES) {
+    output =
+      output.slice(0, MAX_OUTPUT_BYTES) +
+      `\n\n[... output truncated at ${MAX_OUTPUT_BYTES} bytes — full log via stream_id ...]`;
+    truncated = true;
+  }
   await pool.query(
     `UPDATE shell_jobs
      SET status = $2,
          exit_code = $3,
          tail = $4::jsonb,
          error = $5,
+         output = $6,
+         output_truncated = $7,
          completed_at = NOW(),
          updated_at = NOW()
      WHERE id = $1`,
@@ -183,6 +202,8 @@ export async function completeShellJob(
       result.exit_code ?? null,
       result.tail ? JSON.stringify(result.tail) : null,
       result.error ?? null,
+      output,
+      truncated,
     ],
   );
   const channel = doneChannelForJob(id);
@@ -280,6 +301,57 @@ export async function waitForShellJob(
  * inaktiv war, spaeter automatisch ausgefuehrt werden wenn das Projekt
  * wieder aktiv wird.
  */
+/**
+ * History-Lookup: liefert die letzten N Jobs eines Projekts (oder ueber alle
+ * Projekte falls project=undefined). Sortiert nach created_at DESC.
+ *
+ * Returnt KEIN output-Feld — die Liste soll klein bleiben. Fuer den vollen
+ * Output ein einzelnes `getShellJobById` aufrufen.
+ */
+export async function getShellJobs(opts: {
+  project?: string;
+  limit?: number;
+  offset?: number;
+  status?: ShellJobRow['status'];
+}): Promise<Array<Omit<ShellJobRow, 'output'>>> {
+  const pool = getPool();
+  const limit = Math.max(1, Math.min(opts.limit ?? 20, 200));
+  const offset = Math.max(0, opts.offset ?? 0);
+
+  const conditions: string[] = [];
+  const params: unknown[] = [];
+  if (opts.project) { params.push(opts.project); conditions.push(`project = $${params.length}`); }
+  if (opts.status)  { params.push(opts.status);  conditions.push(`status = $${params.length}`); }
+
+  const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+  params.push(limit, offset);
+
+  const { rows } = await pool.query<Omit<ShellJobRow, 'output'>>(
+    `SELECT id, project, command, cwd_relative, timeout_ms, tail_lines,
+            status, exit_code, tail, error, output_truncated, stream_id,
+            claimed_by, claimed_at, completed_at, created_at, updated_at
+     FROM shell_jobs
+     ${where}
+     ORDER BY created_at DESC
+     LIMIT $${params.length - 1} OFFSET $${params.length}`,
+    params,
+  );
+  return rows;
+}
+
+/**
+ * Holt einen einzelnen Job inklusive vollem Output (falls vorhanden).
+ * Fuer das Detail-Lookup einer KI nach `history`.
+ */
+export async function getShellJobById(id: string): Promise<ShellJobRow | null> {
+  const pool = getPool();
+  const { rows } = await pool.query<ShellJobRow>(
+    `SELECT * FROM shell_jobs WHERE id = $1`,
+    [id],
+  );
+  return rows[0] ?? null;
+}
+
 export async function expirePendingShellJobs(maxAgeSec: number = 30): Promise<number> {
   const pool = getPool();
   const res = await pool.query<{ id: string }>(

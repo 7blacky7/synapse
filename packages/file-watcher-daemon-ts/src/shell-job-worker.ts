@@ -13,6 +13,8 @@
  */
 
 import os from 'node:os';
+import fs from 'node:fs';
+import path from 'node:path';
 import {
   getPool,
   claimPendingShellJob,
@@ -20,6 +22,18 @@ import {
   execShellInProject,
   expirePendingShellJobs,
 } from '@synapse/core';
+
+const STREAMS_DIR = path.join(os.homedir(), '.synapse', 'shell-streams');
+
+/** Liest den vollen Log einer Stream-ID (Best-Effort, returnt undefined bei Fehler). */
+function readStreamLog(streamId: string | undefined | null): string | undefined {
+  if (!streamId) return undefined;
+  try {
+    return fs.readFileSync(path.join(STREAMS_DIR, `${streamId}.log`), 'utf8');
+  } catch {
+    return undefined;
+  }
+}
 
 const DAEMON_ID = `daemon-${os.hostname()}-${process.pid}`;
 
@@ -179,7 +193,13 @@ async function processJob(project: string): Promise<void> {
 
   const exitCode = result['exit_code'] as number | undefined;
   const tail = result['tail'] as string[] | undefined;
+  // Vollen Output aus dem Stream-File lesen und in PG persistieren —
+  // sonst koennen entfernt laufende Clients (REST-API auf Unraid) den
+  // Log nicht sehen. File bleibt als Streaming-Fallback bei laufenden
+  // Jobs, ist nach diesem Punkt aber nicht mehr Source-of-Truth.
+  const streamId = (result['stream_id'] as string | undefined) ?? job.stream_id ?? undefined;
+  const output = readStreamLog(streamId);
 
-  await completeShellJob(job.id, { status, exit_code: exitCode, tail });
-  console.error(`[shell-worker] Job ${job.id} abgeschlossen mit status=${status}`);
+  await completeShellJob(job.id, { status, exit_code: exitCode, tail, output });
+  console.error(`[shell-worker] Job ${job.id} abgeschlossen mit status=${status} (output ${output ? output.length + ' bytes' : 'kein file'})`);
 }

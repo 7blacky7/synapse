@@ -264,6 +264,8 @@ export {
   expirePendingShellJobs,
   completeShellJob,
   waitForShellJob,
+  getShellJobs,
+  getShellJobById,
 } from './services/index.js';
 export type {
   EnqueueArgs,
