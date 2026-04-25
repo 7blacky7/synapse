@@ -182,24 +182,48 @@ async function dispatchSpecialistAction(job: SpecialistJobRow): Promise<Record<s
     }
 
     case 'stop': {
-      return (await tools.stopSpecialistTool(
-        String(args.name),
-        String(args.project_path),
-      )) as Record<string, unknown>
+      const names = Array.isArray(args.name) ? (args.name as unknown[]).map(String) : [String(args.name)]
+      const projectPath = String(args.project_path)
+      if (names.length === 1) {
+        return (await tools.stopSpecialistTool(names[0], projectPath)) as Record<string, unknown>
+      }
+      const results: Array<Record<string, unknown>> = []
+      const errors: string[] = []
+      for (const n of names) {
+        try { results.push((await tools.stopSpecialistTool(n, projectPath)) as Record<string, unknown>) }
+        catch (e) { errors.push(`${n}: ${e}`) }
+      }
+      return { results, count: results.length, errors }
     }
 
     case 'purge': {
-      return (await tools.purgeSpecialistTool(
-        String(args.name),
-        String(args.project_path),
-      )) as Record<string, unknown>
+      const names = Array.isArray(args.name) ? (args.name as unknown[]).map(String) : [String(args.name)]
+      const projectPath = String(args.project_path)
+      if (names.length === 1) {
+        return (await tools.purgeSpecialistTool(names[0], projectPath)) as Record<string, unknown>
+      }
+      const results: Array<Record<string, unknown>> = []
+      const errors: string[] = []
+      for (const n of names) {
+        try { results.push((await tools.purgeSpecialistTool(n, projectPath)) as Record<string, unknown>) }
+        catch (e) { errors.push(`${n}: ${e}`) }
+      }
+      return { results, count: results.length, errors }
     }
 
     case 'wake': {
-      return (await tools.wakeSpecialistTool(
-        String(args.name),
-        String(args.message),
-      )) as Record<string, unknown>
+      const names = Array.isArray(args.name) ? (args.name as unknown[]).map(String) : [String(args.name)]
+      const message = String(args.message)
+      if (names.length === 1) {
+        return (await tools.wakeSpecialistTool(names[0], message)) as Record<string, unknown>
+      }
+      const results: Array<Record<string, unknown>> = []
+      const errors: string[] = []
+      for (const n of names) {
+        try { results.push((await tools.wakeSpecialistTool(n, message)) as Record<string, unknown>) }
+        catch (e) { errors.push(`${n}: ${e}`) }
+      }
+      return { results, count: results.length, errors }
     }
 
     case 'update_skill': {
