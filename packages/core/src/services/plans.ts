@@ -272,6 +272,69 @@ export async function addTask(
 }
 
 /**
+ * Fuegt mehrere Tasks atomar zum Plan hinzu (Batch).
+ * 1× getPlan, lokale Generierung aller Tasks, 1× UPDATE der tasks-JSONB,
+ * 1× Qdrant-Re-Insert (Plan-Embedding bleibt gleich, Tasks aendern es nicht).
+ */
+export async function addTasksBatch(
+  project: string,
+  tasksInput: Array<{ title: string; description: string; priority?: ProjectTask['priority'] }>
+): Promise<{ tasks: ProjectTask[]; warning?: string }> {
+  if (tasksInput.length === 0) return { tasks: [] };
+
+  const plan = await getPlan(project);
+  if (!plan) {
+    console.warn(`[Synapse] Kein Plan gefunden fuer Projekt: ${project}`);
+    return { tasks: [] };
+  }
+
+  const now = new Date().toISOString();
+  const newTasks: ProjectTask[] = tasksInput.map(t => ({
+    id: uuidv4(),
+    title: t.title,
+    description: t.description,
+    status: 'todo',
+    priority: t.priority ?? 'medium',
+    createdAt: now,
+    updatedAt: now,
+  }));
+
+  plan.tasks.push(...newTasks);
+  plan.updatedAt = now;
+
+  // 1. PostgreSQL (Write-Primary)
+  const pool = getPool();
+  await pool.query('UPDATE plans SET tasks = $1, updated_at = $2 WHERE id = $3',
+    [JSON.stringify(plan.tasks), plan.updatedAt, plan.id]);
+
+  // 2. Qdrant: Plan-Embedding aus name+description+goals (Tasks nicht im Embedding-Text)
+  let warning: string | undefined;
+  try {
+    const textForEmbedding = `${plan.name}\n${plan.description}\n${plan.goals.join('\n')}`;
+    const vector = await embed(textForEmbedding);
+    const payload: ProjectPlanPayload = {
+      project: plan.project,
+      name: plan.name,
+      description: plan.description,
+      goals: plan.goals,
+      architecture: plan.architecture,
+      tasks: plan.tasks,
+      created_at: plan.createdAt,
+      updated_at: plan.updatedAt,
+    };
+    await deleteVector(COLLECTIONS.projectPlans(project), plan.id);
+    await insertVector(COLLECTIONS.projectPlans(project), vector, payload, plan.id);
+  } catch (error) {
+    console.error('[Synapse] Qdrant Tasks-Batch-Add fehlgeschlagen:', error);
+    warning = `Qdrant-Write fehlgeschlagen: ${error}`;
+  }
+
+  console.error(`[Synapse] ${newTasks.length} Tasks hinzugefuegt (Batch)`);
+  return { tasks: newTasks, warning };
+}
+
+
+/**
  * Aktualisiert eine Task
  */
 export async function updateTask(

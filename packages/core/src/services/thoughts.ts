@@ -109,6 +109,80 @@ export async function addThought(
 }
 
 /**
+ * Fuegt mehrere Gedanken atomar hinzu (Batch).
+ * 1× embedBatch fuer alle Texte, 1× INSERT mit allen Rows, N× insertVector (Qdrant).
+ * Source ist fuer alle Items im Batch identisch.
+ */
+export async function addThoughtsBatch(
+  project: string,
+  source: ThoughtSource,
+  items: Array<{ content: string; tags?: string[] }>
+): Promise<{ thoughts: Thought[]; warning?: string }> {
+  if (items.length === 0) return { thoughts: [] };
+
+  const collectionName = COLLECTIONS.projectThoughts(project);
+  await ensureCollection(collectionName);
+
+  const now = new Date().toISOString();
+  const thoughts: Thought[] = items.map(item => ({
+    id: uuidv4(),
+    project,
+    source,
+    content: item.content,
+    tags: item.tags ?? [],
+    timestamp: now,
+  }));
+
+  // 1. Embeddings im Batch
+  const texts = thoughts.map(t => t.content);
+  const { embedBatch } = await import('../embeddings/index.js');
+  const vectors = await embedBatch(texts);
+
+  // 2. PostgreSQL: Multi-Row INSERT in einem Statement
+  const pool = getPool();
+  const values: unknown[] = [];
+  const placeholders: string[] = [];
+  thoughts.forEach((t, i) => {
+    const off = i * 6;
+    placeholders.push(`($${off + 1}, $${off + 2}, $${off + 3}, $${off + 4}, $${off + 5}, $${off + 6})`);
+    values.push(t.id, t.project, t.source, t.content, t.tags, t.timestamp);
+  });
+  await pool.query(
+    `INSERT INTO thoughts (id, project, source, content, tags, timestamp)
+     VALUES ${placeholders.join(', ')}
+     ON CONFLICT (id) DO NOTHING`,
+    values
+  );
+
+  // 3. Qdrant: insertVectors-Batch (ein Upsert-Call)
+  let warning: string | undefined;
+  try {
+    const { insertVectors } = await import('../qdrant/index.js');
+    await insertVectors<ThoughtPayload>(
+      collectionName,
+      thoughts.map((t, i) => ({
+        vector: vectors[i],
+        payload: {
+          project: t.project,
+          source: t.source,
+          content: t.content,
+          tags: t.tags,
+          timestamp: t.timestamp,
+        },
+        id: t.id,
+      }))
+    );
+  } catch (error) {
+    console.error('[Synapse] Qdrant Thoughts-Batch-Add fehlgeschlagen:', error);
+    warning = `Qdrant-Write fehlgeschlagen: ${error}`;
+  }
+
+  console.error(`[Synapse] ${thoughts.length} Gedanken gespeichert von "${source}" (Batch)`);
+  return { thoughts, warning };
+}
+
+
+/**
  * Ruft Gedanken fuer ein Projekt ab
  */
 export async function getThoughts(

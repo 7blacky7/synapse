@@ -7,8 +7,10 @@ import {
   getPlan,
   updatePlan,
   addTask,
+  addTasksBatch,
   updateTask,
 } from '@synapse/core';
+
 import type { ProjectPlan, ProjectTask } from '@synapse/core';
 
 /**
@@ -122,6 +124,50 @@ export async function addPlanTask(
     };
   }
 }
+
+/**
+ * Fuegt mehrere Tasks atomar zum Plan hinzu (Batch)
+ */
+export async function addPlanTasksBatch(
+  project: string,
+  tasksInput: Array<{ title: string; description: string; priority?: 'low' | 'medium' | 'high' }>
+): Promise<{
+  success: boolean;
+  count: number;
+  tasks: ProjectTask[];
+  warning?: string;
+  message: string;
+}> {
+  try {
+    if (tasksInput.length === 0) {
+      return { success: false, count: 0, tasks: [], message: 'tasks darf nicht leer sein' };
+    }
+    if (tasksInput.length > 50) {
+      return { success: false, count: 0, tasks: [], message: `Batch-Limit: Max 50 Tasks pro Call. Erhalten: ${tasksInput.length}` };
+    }
+
+    const result = await addTasksBatch(project, tasksInput);
+    if (result.tasks.length === 0) {
+      return { success: false, count: 0, tasks: [], message: `Kein Plan gefunden fuer Projekt: ${project}` };
+    }
+
+    return {
+      success: true,
+      count: result.tasks.length,
+      tasks: result.tasks,
+      warning: result.warning,
+      message: `${result.tasks.length} Tasks hinzugefuegt`,
+    };
+  } catch (error) {
+    return {
+      success: false,
+      count: 0,
+      tasks: [],
+      message: `Fehler beim Batch-Hinzufuegen der Tasks: ${error}`,
+    };
+  }
+}
+
 
 /**
  * Aktualisiert eine Task

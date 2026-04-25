@@ -4,10 +4,11 @@
  * in ein einziges Tool mit action-Parameter
  */
 
-import { str, reqStr, num, bool, strArray, strArrayOrEmpty } from './types.js';
+import { str, reqStr, num, bool, strArray, strArrayOrEmpty, objArray } from './types.js';
 import type { ConsolidatedTool } from './types.js';
 import {
   addThought,
+  addThoughtsBatchTool,
   getThoughts,
   getThoughtsByIdsTool,
   deleteThought,
@@ -25,8 +26,8 @@ export const thoughtTool: ConsolidatedTool = {
       properties: {
         action: {
           type: 'string',
-          enum: ['add', 'get', 'delete', 'update', 'search'],
-          description: 'Aktion: add (speichern), get (abrufen), search (suchen), update (aktualisieren), delete (loeschen)',
+          enum: ['add', 'add_batch', 'get', 'delete', 'update', 'search'],
+          description: 'Aktion: add (speichern), add_batch (mehrere atomar speichern), get (abrufen), search (suchen), update (aktualisieren), delete (loeschen)',
         },
         project: {
           type: 'string',
@@ -72,6 +73,20 @@ export const thoughtTool: ConsolidatedTool = {
           type: 'number',
           description: 'Max. erlaubte Items pro Batch-Delete (Standard: 10, nur fuer delete mit Array)',
         },
+        items: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              content: { type: 'string' },
+              tags: { type: 'array', items: { type: 'string' } },
+            },
+            required: ['content'],
+          },
+          minItems: 1,
+          maxItems: 50,
+          description: 'Items fuer add_batch (1..50 Gedanken mit content + optional tags). source gilt fuer alle Items.',
+        },
       },
       required: ['action'],
     },
@@ -88,6 +103,21 @@ export const thoughtTool: ConsolidatedTool = {
         const tags = strArrayOrEmpty(args, 'tags');
 
         const result = await addThought(project, source, content, tags);
+        return result;
+      }
+
+      case 'add_batch': {
+        const project = reqStr(args, 'project');
+        const source = reqStr(args, 'source');
+        const items = objArray<{ content: string; tags?: string[] }>(args, 'items');
+        if (!items || items.length === 0) {
+          return { success: false, count: 0, thoughts: [], message: 'items (Array) ist erforderlich' };
+        }
+        const normalized = items.map(it => ({
+          content: String(it.content ?? ''),
+          tags: Array.isArray(it.tags) ? it.tags.map(String) : undefined,
+        }));
+        const result = await addThoughtsBatchTool(project, source, normalized);
         return result;
       }
 

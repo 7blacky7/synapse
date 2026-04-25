@@ -620,6 +620,12 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
         example: 'thought({ action: "add", project: "synapse", source: "mein-agent", content: "Analyse abgeschlossen", tags: ["status", "done"] })',
         tips: 'source = deine agent_id. NIEMALS "claude-code".',
       },
+      add_batch: {
+        description: 'Mehrere Thoughts atomar speichern (1..50 Items in einem Call).',
+        params: 'project (req), source (req, gilt fuer alle Items), items (req, Array von { content, tags? })',
+        example: 'thought({ action: "add_batch", project: "synapse", source: "mein-agent", items: [{ content: "Erkenntnis 1", tags: ["analyse"] }, { content: "Erkenntnis 2" }] })',
+        tips: 'Bei >5 Thoughts IMMER add_batch statt parallele add-Calls — atomar, ein Embedding-Call, kein Cloudflare-Stress.',
+      },
       get: {
         description: 'Thoughts abrufen (alle oder nach ID).',
         params: 'project (req), id (optional, String oder Array), limit',
@@ -691,6 +697,12 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
         description: 'Neue Task zum Plan hinzufuegen.',
         params: 'project (req), title (req), description (req), priority (low|medium|high)',
         example: 'plan({ action: "add_task", project: "synapse", title: "API-Rate-Limiting", description: "Implementiere Rate-Limiting fuer REST-API", priority: "medium" })',
+      },
+      add_tasks_batch: {
+        description: 'Mehrere Tasks atomar zum Plan hinzufuegen (1..50 Items in einem Call).',
+        params: 'project (req), tasks (req, Array von { title, description, priority? })',
+        example: 'plan({ action: "add_tasks_batch", project: "synapse", tasks: [{ title: "Task A", description: "...", priority: "high" }, { title: "Task B", description: "..." }] })',
+        tips: 'Bei >5 Tasks IMMER add_tasks_batch statt parallele add_task-Calls — ein UPDATE, ein Qdrant-Reindex.',
       },
     },
   },

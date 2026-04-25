@@ -124,6 +124,8 @@ export {
   searchMedia,
   // Thoughts
   addThought,
+  addThoughtsBatch,
+
   updateThought,
   getThoughts,
   searchThoughts,
@@ -136,6 +138,8 @@ export {
   createPlan,
   getPlan,
   updatePlan,
+  addTasksBatch,
+
   addTask,
   updateTask,
   deletePlan,

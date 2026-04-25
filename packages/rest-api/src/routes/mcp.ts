@@ -241,14 +241,28 @@ const MCP_TOOLS = [
       properties: {
         action: {
           type: 'string',
-          enum: ['add', 'get', 'delete', 'update', 'search'],
-          description: 'Aktion: add (speichern), get (abrufen), search (suchen), update (aktualisieren), delete (loeschen)',
+          enum: ['add', 'add_batch', 'get', 'delete', 'update', 'search'],
+          description: 'Aktion: add (speichern), add_batch (mehrere atomar speichern), get (abrufen), search (suchen), update (aktualisieren), delete (loeschen)',
         },
         project: { type: 'string', description: 'Projekt-Name' },
         agent_id: { type: 'string', description: 'Agent-ID fuer Onboarding. Neue Agenten sehen automatisch Projekt-Regeln.' },
-        source: { type: 'string', description: 'Quelle (z.B. claude-code, gpt, user) - fuer action "add"' },
+        source: { type: 'string', description: 'Quelle (z.B. claude-code, gpt, user) - fuer action "add" oder "add_batch"' },
         content: { type: 'string', description: 'Inhalt des Gedankens - fuer action "add" oder "update"' },
         tags: { type: 'array', items: { type: 'string' }, description: 'Optionale Tags - fuer action "add" oder "update"' },
+        items: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              content: { type: 'string' },
+              tags: { type: 'array', items: { type: 'string' } },
+            },
+            required: ['content'],
+          },
+          minItems: 1,
+          maxItems: 50,
+          description: 'Items fuer add_batch (1..50 Gedanken). source gilt fuer alle Items.',
+        },
         id: {
           oneOf: [
             { type: 'string' },
@@ -273,8 +287,8 @@ const MCP_TOOLS = [
       properties: {
         action: {
           type: 'string',
-          enum: ['get', 'update', 'add_task'],
-          description: 'Aktion: "get" zum Abrufen, "update" zum Aktualisieren, "add_task" um eine Task hinzuzufuegen',
+          enum: ['get', 'update', 'add_task', 'add_tasks_batch'],
+          description: 'Aktion: "get" zum Abrufen, "update" zum Aktualisieren, "add_task" um eine Task hinzuzufuegen, "add_tasks_batch" um mehrere Tasks atomar hinzuzufuegen',
         },
         project: { type: 'string', description: 'Projekt-Name' },
         agent_id: { type: 'string', description: 'Agent-ID fuer Onboarding. Neue Agenten sehen automatisch Projekt-Regeln.' },
@@ -284,6 +298,21 @@ const MCP_TOOLS = [
         architecture: { type: 'string', description: 'Architektur-Beschreibung' },
         title: { type: 'string', description: 'Task-Titel' },
         priority: { type: 'string', enum: ['low', 'medium', 'high'], description: 'Prioritaet (Standard: medium)' },
+        tasks: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              title: { type: 'string' },
+              description: { type: 'string' },
+              priority: { type: 'string', enum: ['low', 'medium', 'high'] },
+            },
+            required: ['title', 'description'],
+          },
+          minItems: 1,
+          maxItems: 50,
+          description: 'Tasks fuer add_tasks_batch (1..50 Items)',
+        },
       },
       required: ['action', 'project'],
     },
@@ -1259,6 +1288,35 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
             reqStr(args, 'content'), strArrayOrEmpty(args, 'tags')
           );
         }
+        case 'add_batch': {
+          const project = reqStr(args, 'project');
+          const source = reqStr(args, 'source');
+          const items = objArray<{ content: string; tags?: string[] }>(args, 'items');
+          if (!items || items.length === 0) {
+            return { success: false, count: 0, thoughts: [], message: 'items (Array) ist erforderlich' };
+          }
+          if (items.length > 50) {
+            return { success: false, count: 0, thoughts: [], message: `Batch-Limit: Max 50 Items, ${items.length} angegeben` };
+          }
+          const normalized = items
+            .map(it => ({
+              content: String(it.content ?? ''),
+              tags: Array.isArray(it.tags) ? it.tags.map(String) : undefined,
+            }))
+            .filter(it => it.content.length > 0);
+          if (normalized.length === 0) {
+            return { success: false, count: 0, thoughts: [], message: 'Keine gueltigen Items (content fehlt oder leer)' };
+          }
+          const { addThoughtsBatch } = await import('@synapse/core');
+          const result = await addThoughtsBatch(project, source as Parameters<typeof addThoughtsBatch>[1], normalized);
+          return {
+            success: true,
+            count: result.thoughts.length,
+            thoughts: result.thoughts,
+            warning: result.warning,
+            message: `${result.thoughts.length} Gedanken gespeichert von "${source}" (Batch)`,
+          };
+        }
         case 'get': {
           const project = reqStr(args, 'project');
           if (args.id !== undefined) {
@@ -1340,6 +1398,37 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
             project, reqStr(args, 'title'), reqStr(args, 'description'),
             (str(args, 'priority') || 'medium') as 'low' | 'medium' | 'high'
           );
+        case 'add_tasks_batch': {
+          const tasks = objArray<{ title: string; description: string; priority?: string }>(args, 'tasks');
+          if (!tasks || tasks.length === 0) {
+            return { success: false, count: 0, tasks: [], message: 'tasks (Array) ist erforderlich' };
+          }
+          if (tasks.length > 50) {
+            return { success: false, count: 0, tasks: [], message: `Batch-Limit: Max 50 Tasks, ${tasks.length} angegeben` };
+          }
+          const normalized = tasks
+            .map(t => ({
+              title: String(t.title ?? ''),
+              description: String(t.description ?? ''),
+              priority: (t.priority as 'low' | 'medium' | 'high' | undefined) ?? undefined,
+            }))
+            .filter(t => t.title.length > 0 && t.description.length > 0);
+          if (normalized.length === 0) {
+            return { success: false, count: 0, tasks: [], message: 'Keine gueltigen Tasks (title/description fehlt oder leer)' };
+          }
+          const { addTasksBatch } = await import('@synapse/core');
+          const result = await addTasksBatch(project, normalized);
+          if (result.tasks.length === 0) {
+            return { success: false, count: 0, tasks: [], message: `Kein Plan gefunden fuer Projekt: ${project}` };
+          }
+          return {
+            success: true,
+            count: result.tasks.length,
+            tasks: result.tasks,
+            warning: result.warning,
+            message: `${result.tasks.length} Tasks hinzugefuegt`,
+          };
+        }
         default:
           return { success: false, error: `Unbekannte plan action: "${action}"` };
       }

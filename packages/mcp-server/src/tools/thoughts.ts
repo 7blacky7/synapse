@@ -9,6 +9,8 @@ import {
   searchThoughts as searchThoughtsCore,
   deleteThought as deleteThoughtCore,
   getThoughtsByIds as getThoughtsByIdsCore,
+  addThoughtsBatch as addThoughtsBatchCore,
+
 } from '@synapse/core';
 import type { Thought, ThoughtSource } from '@synapse/core';
 
@@ -41,6 +43,51 @@ export async function addThought(
     };
   }
 }
+
+/**
+ * Fuegt mehrere Gedanken atomar hinzu (Batch)
+ */
+export async function addThoughtsBatchTool(
+  project: string,
+  source: ThoughtSource,
+  items: Array<{ content: string; tags?: string[] }>
+): Promise<{
+  success: boolean;
+  count: number;
+  thoughts: Thought[];
+  warning?: string;
+  message: string;
+}> {
+  try {
+    if (items.length === 0) {
+      return { success: false, count: 0, thoughts: [], message: 'items darf nicht leer sein' };
+    }
+    if (items.length > 50) {
+      return { success: false, count: 0, thoughts: [], message: `Batch-Limit: Max 50 Items pro Call. Erhalten: ${items.length}` };
+    }
+    const valid = items.filter(i => typeof i.content === 'string' && i.content.length > 0);
+    if (valid.length === 0) {
+      return { success: false, count: 0, thoughts: [], message: 'Keine gueltigen Items (content fehlt oder leer)' };
+    }
+
+    const result = await addThoughtsBatchCore(project, source, valid);
+    return {
+      success: true,
+      count: result.thoughts.length,
+      thoughts: result.thoughts,
+      warning: result.warning,
+      message: `${result.thoughts.length} Gedanken gespeichert von "${source}" (Batch)`,
+    };
+  } catch (error) {
+    return {
+      success: false,
+      count: 0,
+      thoughts: [],
+      message: `Fehler beim Batch-Speichern der Gedanken: ${error}`,
+    };
+  }
+}
+
 
 /**
  * Ruft Gedanken fuer ein Projekt ab

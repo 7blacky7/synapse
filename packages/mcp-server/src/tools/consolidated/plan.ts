@@ -4,11 +4,12 @@
  */
 
 import type { ConsolidatedTool } from './types.js';
-import { reqStr, str, strArray } from './types.js';
+import { reqStr, str, strArray, objArray } from './types.js';
 import {
   getProjectPlan,
   updateProjectPlan,
   addPlanTask,
+  addPlanTasksBatch,
 } from '../plans.js';
 
 export const planTool: ConsolidatedTool = {
@@ -20,9 +21,9 @@ export const planTool: ConsolidatedTool = {
       properties: {
         action: {
           type: 'string',
-          enum: ['get', 'update', 'add_task'],
+          enum: ['get', 'update', 'add_task', 'add_tasks_batch'],
           description:
-            'Aktion: "get" zum Abrufen, "update" zum Aktualisieren, "add_task" um eine Task hinzuzufuegen',
+            'Aktion: "get" zum Abrufen, "update" zum Aktualisieren, "add_task" um eine Task hinzuzufuegen, "add_tasks_batch" um mehrere Tasks atomar hinzuzufuegen',
         },
         project: {
           type: 'string',
@@ -61,6 +62,22 @@ export const planTool: ConsolidatedTool = {
           enum: ['low', 'medium', 'high'],
           description: 'Prioritaet (Standard: medium)',
         },
+        // fuer "add_tasks_batch"
+        tasks: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              title: { type: 'string' },
+              description: { type: 'string' },
+              priority: { type: 'string', enum: ['low', 'medium', 'high'] },
+            },
+            required: ['title', 'description'],
+          },
+          minItems: 1,
+          maxItems: 50,
+          description: 'Tasks fuer Batch-Add (1..50 Items mit title, description, optional priority)',
+        },
       },
       required: ['action', 'project'],
     },
@@ -95,6 +112,20 @@ export const planTool: ConsolidatedTool = {
           | 'high';
 
         const result = await addPlanTask(project, title, description, priority);
+        return result;
+      }
+
+      case 'add_tasks_batch': {
+        const tasks = objArray<{ title: string; description: string; priority?: string }>(args, 'tasks');
+        if (!tasks || tasks.length === 0) {
+          return { success: false, count: 0, tasks: [], message: 'tasks (Array) ist erforderlich' };
+        }
+        const normalized = tasks.map(t => ({
+          title: String(t.title ?? ''),
+          description: String(t.description ?? ''),
+          priority: (t.priority as 'low' | 'medium' | 'high' | undefined) ?? undefined,
+        }));
+        const result = await addPlanTasksBatch(project, normalized);
         return result;
       }
 
