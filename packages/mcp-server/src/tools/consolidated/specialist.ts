@@ -12,7 +12,7 @@
  */
 
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
-import { ConsolidatedTool, reqStr, str, bool, strArray } from './types.js';
+import { ConsolidatedTool, reqStr, str, bool, strArray, objArray } from './types.js';
 import {
   spawnSpecialistTool,
   stopSpecialistTool,
@@ -33,8 +33,8 @@ export const specialistTool: ConsolidatedTool = {
       properties: {
         action: {
           type: 'string',
-          enum: ['spawn', 'stop', 'purge', 'status', 'wake', 'update_skill', 'capabilities'],
-          description: 'Die auszuführende Aktion. purge = Stop + komplette Entfernung (FS-Verzeichnis, status.json, Channel-Memberships, Chat-Session). Auto-Respawn unmoeglich danach.',
+          enum: ['spawn', 'spawn_batch', 'stop', 'purge', 'status', 'wake', 'update_skill', 'capabilities'],
+          description: 'Die auszuführende Aktion. spawn_batch = mehrere Spezialisten in einem Call starten (specialists-Array). purge = Stop + komplette Entfernung (FS-Verzeichnis, status.json, Channel-Memberships, Chat-Session). Auto-Respawn unmoeglich danach.',
         },
 
         // spawn parameters
@@ -115,6 +115,25 @@ export const specialistTool: ConsolidatedTool = {
           type: 'string',
           description: 'Inhalt des Eintrags (erforderlich für: update_skill)',
         },
+        specialists: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              name: { type: 'string' },
+              model: { type: 'string', enum: ['opus', 'sonnet', 'haiku', 'opus[1m]', 'sonnet[1m]'] },
+              expertise: { type: 'string' },
+              task: { type: 'string' },
+              channel: { type: 'string' },
+              allowed_tools: { type: 'array', items: { type: 'string' } },
+              keep_alive: { type: 'boolean' },
+            },
+            required: ['name', 'model', 'expertise', 'task'],
+          },
+          minItems: 1,
+          maxItems: 10,
+          description: 'Liste der Spezialisten fuer spawn_batch (1..10 Items). project + project_path werden fuer alle gemeinsam genutzt.',
+        },
       },
       required: ['action'],
     },
@@ -153,6 +172,56 @@ export const specialistTool: ConsolidatedTool = {
           allowedTools,
           keepAlive,
         );
+      }
+
+      case 'spawn_batch': {
+        const project = reqStr(args, 'project');
+        const projectPath = reqStr(args, 'project_path');
+        const specs = objArray<{
+          name: string;
+          model: string;
+          expertise: string;
+          task: string;
+          channel?: string;
+          allowed_tools?: string[];
+          keep_alive?: boolean;
+          cwd?: string;
+        }>(args, 'specialists');
+        if (!specs || specs.length === 0) {
+          return { success: false, count: 0, results: [], message: 'specialists (Array) ist erforderlich' };
+        }
+        if (specs.length > 10) {
+          return { success: false, count: 0, results: [], message: `Batch-Limit: Max 10 Spezialisten, ${specs.length} angegeben` };
+        }
+        // Sequenziell spawnen — canSpawn-Check, FS-Setup und Socket-Wait machen Parallel-Spawn brueckig
+        const results: Array<Record<string, unknown>> = [];
+        const errors: string[] = [];
+        for (const s of specs) {
+          try {
+            const r = await spawnSpecialistTool(
+              String(s.name),
+              s.model as 'opus' | 'sonnet' | 'haiku' | 'opus[1m]' | 'sonnet[1m]',
+              String(s.expertise),
+              String(s.task),
+              project,
+              projectPath,
+              s.cwd ? String(s.cwd) : undefined,
+              s.channel ? String(s.channel) : undefined,
+              Array.isArray(s.allowed_tools) ? s.allowed_tools.map(String) : undefined,
+              typeof s.keep_alive === 'boolean' ? s.keep_alive : undefined,
+            );
+            results.push(r as Record<string, unknown>);
+          } catch (err) {
+            errors.push(`${s.name}: ${err}`);
+          }
+        }
+        return {
+          success: errors.length === 0,
+          count: results.length,
+          results,
+          errors: errors.length > 0 ? errors : undefined,
+          message: `${results.length}/${specs.length} Spezialisten gestartet`,
+        };
       }
 
       case 'stop': {
