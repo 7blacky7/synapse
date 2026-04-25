@@ -9,6 +9,7 @@ import {
   addTask,
   addTasksBatch,
   updateTask,
+  deleteTasks,
 } from '@synapse/core';
 
 import type { ProjectPlan, ProjectTask } from '@synapse/core';
@@ -207,6 +208,45 @@ export async function updatePlanTask(
       success: false,
       task: null,
       message: `Fehler beim Aktualisieren der Task: ${error}`,
+    };
+  }
+}
+
+/**
+ * Loescht eine oder mehrere Tasks aus dem Plan
+ */
+export async function deletePlanTasks(
+  project: string,
+  taskIds: string[]
+): Promise<{
+  success: boolean;
+  deleted: number;
+  warning?: string;
+  message: string;
+}> {
+  try {
+    if (taskIds.length === 0) {
+      return { success: false, deleted: 0, message: 'taskIds darf nicht leer sein' };
+    }
+    if (taskIds.length > 50) {
+      return { success: false, deleted: 0, message: `Batch-Limit: Max 50 Task-IDs pro Call. Erhalten: ${taskIds.length}` };
+    }
+
+    const result = await deleteTasks(project, taskIds);
+    if (result.deleted === 0) {
+      return { success: false, deleted: 0, message: `Keine passende Task gefunden in Projekt: ${project}` };
+    }
+    return {
+      success: true,
+      deleted: result.deleted,
+      warning: result.warning,
+      message: `${result.deleted} Tasks geloescht`,
+    };
+  } catch (error) {
+    return {
+      success: false,
+      deleted: 0,
+      message: `Fehler beim Loeschen der Tasks: ${error}`,
     };
   }
 }

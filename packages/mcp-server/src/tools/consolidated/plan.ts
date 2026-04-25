@@ -10,6 +10,8 @@ import {
   updateProjectPlan,
   addPlanTask,
   addPlanTasksBatch,
+  updatePlanTask,
+  deletePlanTasks,
 } from '../plans.js';
 
 export const planTool: ConsolidatedTool = {
@@ -21,9 +23,9 @@ export const planTool: ConsolidatedTool = {
       properties: {
         action: {
           type: 'string',
-          enum: ['get', 'update', 'add_task', 'add_tasks_batch'],
+          enum: ['get', 'update', 'add_task', 'add_tasks_batch', 'update_task', 'delete_task'],
           description:
-            'Aktion: "get" zum Abrufen, "update" zum Aktualisieren, "add_task" um eine Task hinzuzufuegen, "add_tasks_batch" um mehrere Tasks atomar hinzuzufuegen',
+            'Aktion: "get" zum Abrufen, "update" zum Aktualisieren, "add_task" um eine Task hinzuzufuegen, "add_tasks_batch" um mehrere Tasks atomar hinzuzufuegen, "update_task" um eine Task zu aendern (status/priority/title/description), "delete_task" um eine oder mehrere Tasks zu loeschen (id als String oder Array)',
         },
         project: {
           type: 'string',
@@ -61,6 +63,19 @@ export const planTool: ConsolidatedTool = {
           type: 'string',
           enum: ['low', 'medium', 'high'],
           description: 'Prioritaet (Standard: medium)',
+        },
+        // fuer "update_task" / "delete_task"
+        task_id: {
+          oneOf: [
+            { type: 'string' },
+            { type: 'array', items: { type: 'string' }, minItems: 1, maxItems: 50 },
+          ],
+          description: 'Task-ID (String fuer update_task/delete_task, Array fuer Batch-delete_task)',
+        },
+        status: {
+          type: 'string',
+          enum: ['todo', 'in_progress', 'done', 'blocked'],
+          description: 'Neuer Task-Status (fuer update_task)',
         },
         // fuer "add_tasks_batch"
         tasks: {
@@ -126,6 +141,26 @@ export const planTool: ConsolidatedTool = {
           priority: (t.priority as 'low' | 'medium' | 'high' | undefined) ?? undefined,
         }));
         const result = await addPlanTasksBatch(project, normalized);
+        return result;
+      }
+
+      case 'update_task': {
+        const taskId = reqStr(args, 'task_id');
+        const updates: { title?: string; description?: string; status?: 'todo' | 'in_progress' | 'done' | 'blocked'; priority?: 'low' | 'medium' | 'high' } = {};
+        const t = str(args, 'title'); if (t !== undefined) updates.title = t;
+        const d = str(args, 'description'); if (d !== undefined) updates.description = d;
+        const s = str(args, 'status'); if (s !== undefined) updates.status = s as 'todo' | 'in_progress' | 'done' | 'blocked';
+        const p = str(args, 'priority'); if (p !== undefined) updates.priority = p as 'low' | 'medium' | 'high';
+        const result = await updatePlanTask(project, taskId, updates);
+        return result;
+      }
+
+      case 'delete_task': {
+        const ids = strArray(args, 'task_id');
+        if (!ids || ids.length === 0) {
+          return { success: false, deleted: 0, message: 'task_id (String oder Array) ist erforderlich' };
+        }
+        const result = await deletePlanTasks(project, ids);
         return result;
       }
 

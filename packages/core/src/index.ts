@@ -139,6 +139,7 @@ export {
   getPlan,
   updatePlan,
   addTasksBatch,
+  deleteTasks,
 
   addTask,
   updateTask,

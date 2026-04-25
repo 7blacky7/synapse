@@ -399,6 +399,60 @@ export async function updateTask(
 }
 
 /**
+ * Loescht eine oder mehrere Tasks aus dem Plan (atomar).
+ * 1× getPlan, lokale Filterung, 1× UPDATE der tasks-JSONB,
+ * 1× Qdrant-Re-Insert (Plan-Embedding bleibt gleich).
+ */
+export async function deleteTasks(
+  project: string,
+  taskIds: string[]
+): Promise<{ deleted: number; warning?: string }> {
+  if (taskIds.length === 0) return { deleted: 0 };
+
+  const plan = await getPlan(project);
+  if (!plan) {
+    console.warn(`[Synapse] Kein Plan gefunden fuer Projekt: ${project}`);
+    return { deleted: 0 };
+  }
+
+  const idSet = new Set(taskIds);
+  const before = plan.tasks.length;
+  plan.tasks = plan.tasks.filter(t => !idSet.has(t.id));
+  const removed = before - plan.tasks.length;
+  if (removed === 0) return { deleted: 0 };
+
+  plan.updatedAt = new Date().toISOString();
+
+  const pool = getPool();
+  await pool.query('UPDATE plans SET tasks = $1, updated_at = $2 WHERE id = $3',
+    [JSON.stringify(plan.tasks), plan.updatedAt, plan.id]);
+
+  let warning: string | undefined;
+  try {
+    const textForEmbedding = `${plan.name}\n${plan.description}\n${plan.goals.join('\n')}`;
+    const vector = await embed(textForEmbedding);
+    const payload: ProjectPlanPayload = {
+      project: plan.project,
+      name: plan.name,
+      description: plan.description,
+      goals: plan.goals,
+      architecture: plan.architecture,
+      tasks: plan.tasks,
+      created_at: plan.createdAt,
+      updated_at: plan.updatedAt,
+    };
+    await deleteVector(COLLECTIONS.projectPlans(project), plan.id);
+    await insertVector(COLLECTIONS.projectPlans(project), vector, payload, plan.id);
+  } catch (error) {
+    console.error('[Synapse] Qdrant Tasks-Delete fehlgeschlagen:', error);
+    warning = `Qdrant-Write fehlgeschlagen: ${error}`;
+  }
+
+  console.error(`[Synapse] ${removed} Tasks geloescht`);
+  return { deleted: removed, warning };
+}
+
+/**
  * Loescht einen Plan aus PostgreSQL + Qdrant
  */
 export async function deletePlan(project: string): Promise<{ success: boolean; warning?: string }> {

@@ -704,6 +704,18 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
         example: 'plan({ action: "add_tasks_batch", project: "synapse", tasks: [{ title: "Task A", description: "...", priority: "high" }, { title: "Task B", description: "..." }] })',
         tips: 'Bei >5 Tasks IMMER add_tasks_batch statt parallele add_task-Calls — ein UPDATE, ein Qdrant-Reindex.',
       },
+      update_task: {
+        description: 'Eine bestehende Task aendern (status, priority, title, description).',
+        params: 'project (req), task_id (req), title?, description?, status (todo|in_progress|done|blocked)?, priority (low|medium|high)?',
+        example: 'plan({ action: "update_task", project: "synapse", task_id: "abc-123", status: "done" })',
+        tips: 'Status auf "done" setzen statt Task zu loeschen — bleibt fuer Audit erhalten.',
+      },
+      delete_task: {
+        description: 'Eine oder mehrere Tasks aus dem Plan loeschen (atomar).',
+        params: 'project (req), task_id (req, String oder Array von Strings, max 50)',
+        example: 'plan({ action: "delete_task", project: "synapse", task_id: ["abc-123", "def-456"] })',
+        tips: 'Bevorzuge update_task mit status: "done" wenn die Task fuer Historie/Audit erhalten bleiben soll.',
+      },
     },
   },
 

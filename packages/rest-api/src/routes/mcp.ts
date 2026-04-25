@@ -287,8 +287,8 @@ const MCP_TOOLS = [
       properties: {
         action: {
           type: 'string',
-          enum: ['get', 'update', 'add_task', 'add_tasks_batch'],
-          description: 'Aktion: "get" zum Abrufen, "update" zum Aktualisieren, "add_task" um eine Task hinzuzufuegen, "add_tasks_batch" um mehrere Tasks atomar hinzuzufuegen',
+          enum: ['get', 'update', 'add_task', 'add_tasks_batch', 'update_task', 'delete_task'],
+          description: 'Aktion: "get" zum Abrufen, "update" zum Aktualisieren, "add_task" um eine Task hinzuzufuegen, "add_tasks_batch" um mehrere Tasks atomar hinzuzufuegen, "update_task" um eine Task zu aendern, "delete_task" um eine oder mehrere Tasks zu loeschen (id als String oder Array)',
         },
         project: { type: 'string', description: 'Projekt-Name' },
         agent_id: { type: 'string', description: 'Agent-ID fuer Onboarding. Neue Agenten sehen automatisch Projekt-Regeln.' },
@@ -312,6 +312,18 @@ const MCP_TOOLS = [
           minItems: 1,
           maxItems: 50,
           description: 'Tasks fuer add_tasks_batch (1..50 Items)',
+        },
+        task_id: {
+          oneOf: [
+            { type: 'string' },
+            { type: 'array', items: { type: 'string' }, minItems: 1, maxItems: 50 },
+          ],
+          description: 'Task-ID (String fuer update_task/delete_task, Array fuer Batch-delete_task)',
+        },
+        status: {
+          type: 'string',
+          enum: ['todo', 'in_progress', 'done', 'blocked'],
+          description: 'Neuer Task-Status (fuer update_task)',
         },
       },
       required: ['action', 'project'],
@@ -1398,6 +1410,33 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
             project, reqStr(args, 'title'), reqStr(args, 'description'),
             (str(args, 'priority') || 'medium') as 'low' | 'medium' | 'high'
           );
+        case 'update_task': {
+          const taskId = reqStr(args, 'task_id');
+          const { updateTask } = await import('@synapse/core');
+          const updates: { title?: string; description?: string; status?: 'todo' | 'in_progress' | 'done' | 'blocked'; priority?: 'low' | 'medium' | 'high' } = {};
+          const t = str(args, 'title'); if (t !== undefined) updates.title = t;
+          const d = str(args, 'description'); if (d !== undefined) updates.description = d;
+          const s = str(args, 'status'); if (s !== undefined) updates.status = s as 'todo' | 'in_progress' | 'done' | 'blocked';
+          const p = str(args, 'priority'); if (p !== undefined) updates.priority = p as 'low' | 'medium' | 'high';
+          const task = await updateTask(project, taskId, updates);
+          if (!task) return { success: false, task: null, message: `Task nicht gefunden: ${taskId}` };
+          return { success: true, task, message: 'Task aktualisiert' };
+        }
+        case 'delete_task': {
+          const ids = strArray(args, 'task_id');
+          if (!ids || ids.length === 0) {
+            return { success: false, deleted: 0, message: 'task_id (String oder Array) ist erforderlich' };
+          }
+          if (ids.length > 50) {
+            return { success: false, deleted: 0, message: `Batch-Limit: Max 50 Task-IDs, ${ids.length} angegeben` };
+          }
+          const { deleteTasks } = await import('@synapse/core');
+          const result = await deleteTasks(project, ids);
+          if (result.deleted === 0) {
+            return { success: false, deleted: 0, message: `Keine passende Task gefunden in Projekt: ${project}` };
+          }
+          return { success: true, deleted: result.deleted, warning: result.warning, message: `${result.deleted} Tasks geloescht` };
+        }
         case 'add_tasks_batch': {
           const tasks = objArray<{ title: string; description: string; priority?: string }>(args, 'tasks');
           if (!tasks || tasks.length === 0) {
