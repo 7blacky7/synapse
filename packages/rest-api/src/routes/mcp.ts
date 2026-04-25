@@ -1767,8 +1767,14 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
       // ausloesen — daher beim REST-Pfad IMMER den daemon-bekannten Pfad nehmen,
       // egal was der Caller schickt.
       try {
+        // WICHTIG: '/virtual/%' raus — die REST-API selbst registriert sich als
+        // virtuelles Projekt mit /virtual/<container-name>. Wir wollen den ECHTEN
+        // User-Host-Pfad (z.B. /home/blacky/dev/synapse), nicht den Container-Stub.
         const pgRes = await getPool().query<{ path: string }>(
-          `SELECT path FROM projects WHERE name = $1 ORDER BY last_access DESC NULLS LAST LIMIT 1`,
+          `SELECT path FROM projects
+           WHERE name = $1 AND path NOT LIKE '/virtual/%'
+           ORDER BY last_access DESC NULLS LAST
+           LIMIT 1`,
           [project],
         );
         if (pgRes.rows.length > 0) {
