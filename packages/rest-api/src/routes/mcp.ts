@@ -504,7 +504,7 @@ const MCP_TOOLS = [
         expertise: { type: 'string', description: 'Fachgebiet des Spezialisten (erforderlich fuer: spawn)' },
         task: { type: 'string', description: 'Aufgabe fuer den Spezialisten (erforderlich fuer: spawn)' },
         project: { type: 'string', description: 'Projekt-Name (erforderlich fuer: spawn)' },
-        project_path: { type: 'string', description: 'Absoluter Pfad zum Projekt-Ordner (erforderlich fuer: spawn, stop, status, update_skill)' },
+        project_path: { type: 'string', description: 'Absoluter Pfad zum Projekt-Ordner. Bei REST-API OPTIONAL — wird vom Daemon aus dem Projektkontext (projects-Tabelle) anhand von project ermittelt. Nur fuer lokale MCP-Direktnutzung erforderlich.' },
         cwd: { type: 'string', description: 'Arbeitsverzeichnis (optional fuer: spawn, Standard: Projekt-Pfad)' },
         channel: { type: 'string', description: 'Channel fuer Kommunikation (optional fuer: spawn, Standard: {project}-general)' },
         allowed_tools: { type: 'array', items: { type: 'string' }, description: 'Erlaubte Tools fuer den Spezialisten (optional fuer: spawn)' },
@@ -1758,8 +1758,23 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
       // Specialist-Calls werden via PG-Queue an den lokalen FileWatcher-Daemon
       // delegiert (wo Claude-CLI + Projekt-FS verfuegbar sind).
       // status + capabilities lesen direkt aus PG ohne Queue.
-      const { enqueueSpecialistJob, waitForSpecialistJob } = await import('@synapse/core');
+      const { enqueueSpecialistJob, waitForSpecialistJob, getPool } = await import('@synapse/core');
       const project = reqStr(args, 'project');
+
+      // project_path-Auflösung: REST-Web-KIs muessen den Pfad nicht kennen.
+      // Lookup aus projects-Tabelle (Daemon-registriert) wenn nicht uebergeben.
+      // Falsche Hostpfade (z.B. /home/moritz statt /home/blacky) wuerden EACCES
+      // ausloesen — daher beim REST-Pfad IMMER den daemon-bekannten Pfad nehmen,
+      // egal was der Caller schickt.
+      try {
+        const pgRes = await getPool().query<{ path: string }>(
+          `SELECT path FROM projects WHERE name = $1 ORDER BY last_access DESC NULLS LAST LIMIT 1`,
+          [project],
+        );
+        if (pgRes.rows.length > 0) {
+          (args as Record<string, unknown>).project_path = pgRes.rows[0].path;
+        }
+      } catch { /* fallthrough — nutzt was Caller geschickt hat */ }
 
       // Direct-Pass-Through (kein Daemon-Roundtrip noetig):
       if (action === 'capabilities') {
