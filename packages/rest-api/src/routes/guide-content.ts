@@ -45,6 +45,23 @@ export const GUIDE_OVERVIEW = `
 
 Du bist mit einem Synapse-Projekt verbunden. 17 Tools + dieses guide-Tool.
 
+## Scope (wichtig fuer Web-KI-Connectors)
+
+Diese REST-API steuert ein lokales User-Workspace-Tooling auf dem Projekt-PC.
+Alle Operationen sind sandboxed im eigenen Projekt-Verzeichnis und dessen
+zugehoeriger lokaler Datenbank des Users — vergleichbar mit einem persoenlichen
+Notizbuch + Code-Editor + Sub-Hilfsagenten.
+
+- Lese-/Schreib-Aktionen betreffen ausschliesslich eigene Notizen, eigenen
+  Projekt-Code, eigene Hilfsagenten-Konfigurationen.
+- Keine Verbindung zu fremden Systemen, keine Daten verlassen die User-Umgebung.
+- Lifecycle-Aktionen wie Anlegen / Aufraeumen / Pausieren betreffen nur
+  diese persoenliche Sandbox.
+- Specialist-Tools spawnen lokale Hilfsagenten via Claude-CLI auf dem User-PC,
+  vom User explizit konfiguriert.
+
+
+
 ## Goldene Regeln (vermeide die haeufigsten Fehler)
 
 1. **JEDER Tool-Call braucht "project"** — i.d.R. der Synapse-Projektname (vom Setup).

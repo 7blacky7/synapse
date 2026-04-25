@@ -140,7 +140,7 @@ const MCP_TOOLS = [
   // 1. project
   {
     name: 'project',
-    description: 'Verwende fuer alle Projekt-Management-Operationen: init, setup, tech-Erkennung, cleanup, status und Listing',
+    description: 'Lifecycle des eigenen Synapse-Projekts auf dem User-PC: Initialisierung, Setup, Tech-Detection, Aufraeumen, Status, Listing. Wirkt nur auf das im Pfad angegebene lokale User-Projekt. Kein Zugriff auf fremde Repositories, keine externen Systeme.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -162,7 +162,7 @@ const MCP_TOOLS = [
   // 2. search
   {
     name: 'search',
-    description: 'Konsolidierte Such-Funktion mit action-Parameter fuer Code, Paths, Memory, Thoughts, Proposals, Tech-Docs und Media',
+    description: 'Semantische Lese-Suche in den eigenen Daten des Synapse-Projekts (Code-Vektor-Index, eigene Notizen, Tech-Doku, Pfade). Nur Read-Only. Kein Zugriff auf fremde Datenbanken, keine externen Quellen.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -191,7 +191,7 @@ const MCP_TOOLS = [
   // 3. memory
   {
     name: 'memory',
-    description: 'Verwende fuer alle Memory-Operationen: write, read, read_with_code, list, delete, update und find_for_file',
+    description: 'Eigenes Projekt-Notizbuch (Memories) im lokalen Synapse-Workspace verwalten: anlegen, lesen, listen, aktualisieren, eintragen-entfernen, dateispezifisches Lookup. Wirkt ausschliesslich auf die User-eigene lokale Datenbank dieses Projekts. Keine externen Systeme.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -235,7 +235,7 @@ const MCP_TOOLS = [
   // 4. thought
   {
     name: 'thought',
-    description: 'Gedankenaustausch zwischen KIs - speichern, abrufen, suchen, aktualisieren, loeschen',
+    description: 'Kurze Notizen (Thoughts) im eigenen Projekt-Notizbuch ablegen, suchen, lesen, aktualisieren oder bereinigen. Lokale Synapse-Datenbank des Users, project-scoped. Keine fremden Daten, keine externen Systeme.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -281,7 +281,7 @@ const MCP_TOOLS = [
   // 5. plan
   {
     name: 'plan',
-    description: 'Verwaltet Projekt-Plaene: Abrufen, Aktualisieren, Tasks hinzufuegen',
+    description: 'Eigenen Projekt-Plan + Tasks im lokalen Synapse-Workspace verwalten: abrufen, aktualisieren, Tasks anlegen (einzeln oder Batch), Tasks aendern, Tasks entfernen. Project-scoped, eigene User-Datenbank. Keine externen Systeme, keine freien Pfade.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -332,7 +332,7 @@ const MCP_TOOLS = [
   // 6. proposal
   {
     name: 'proposal',
-    description: 'Konsolidiertes Proposal-Management: list, get, update_status, delete, update',
+    description: 'Eigene Code-Aenderungs-Vorschlaege (Proposals) im Projekt-Workspace listen, lesen, aktualisieren, Status setzen, entfernen. Vorschlaege bleiben innerhalb der lokalen Synapse-DB, werden nicht automatisch auf den Code angewendet. Keine externen Systeme.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -366,7 +366,7 @@ const MCP_TOOLS = [
   // 7. chat
   {
     name: 'chat',
-    description: 'Verwaltetes Chat-System fuer Agenten mit verschiedenen Aktionen: Registrierung, Messaging, Inbox-Handling',
+    description: 'Lokales Agenten-Adressbuch der eigenen Synapse-Instanz: Sub-Hilfsagenten registrieren / abmelden, Direktnachrichten + Inbox. Wirkt nur auf vom User selbst registrierte Agenten in dieser Datenbank. Keine externen Identities, keine externen Messaging-Systeme.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -419,7 +419,7 @@ const MCP_TOOLS = [
   // 8. channel
   {
     name: 'channel',
-    description: 'Verwaltet Channels fuer Spezialisten-Kommunikation (create, join, leave, post, feed, list)',
+    description: 'Channels (Gruppen-Notizboards) zwischen Sub-Hilfsagenten im eigenen Synapse-Projekt verwalten: anlegen, beitreten, verlassen, posten, lesen, listen. Lokale Datenbank, project-scoped. Keine externen Chat-Systeme.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -452,7 +452,7 @@ const MCP_TOOLS = [
   // 9. event
   {
     name: 'event',
-    description: 'Verwaltet Events fuer Agenten. Actions: emit (Sendet Event), ack (Bestaetigt Event), pending (Holt unbestaetigte Events).',
+    description: 'Lokale Steuersignale fuer eigene Sub-Hilfsagenten: emit (Signal absetzen), ack (Signal bestaetigen), pending (offene Signale lesen). Wirkt nur innerhalb der eigenen Synapse-Instanz. Keine externen Systeme, keine OS-Signals.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -484,7 +484,7 @@ const MCP_TOOLS = [
   // 10. specialist
   {
     name: 'specialist',
-    description: 'Konsolidiertes Tool fuer Spezialisten-Management. Unterstuetzt Spawning, Stopping, Status-Checks, Wake-Calls, Skill-Updates und Capabilities-Checks.',
+    description: 'Lifecycle persistenter Sub-Hilfsagenten (Spezialisten) im eigenen Projekt-Workspace: anlegen (spawn / spawn_batch), ansprechen (wake), Skill-Konfiguration aktualisieren, pausieren (stop) oder endgueltig deprovisionieren (purge). Spezialisten sind vom User explizit konfigurierte lokale Helfer-Instanzen, gestartet als Subprozess via Claude-CLI auf dem Projekt-PC. Wirkt ausschliesslich auf registrierte Spezialisten-Namen im angegebenen project_path. Keine freien Dateipfade, keine Wildcards, keine Shell-Kommandos, keine externen Systeme.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -521,7 +521,7 @@ const MCP_TOOLS = [
   // 11. docs
   {
     name: 'docs',
-    description: 'Konsolidiertes MCP-Tool fuer Tech-Docs: Indexieren, Suchen, Wissens-Airbag',
+    description: 'Eigene Tech-Doku-Bibliothek im Projekt-Workspace verwalten: Wissens-Snippets indexieren, semantisch suchen, dateispezifische Warnungen abrufen (Wissens-Airbag). Lokale Datenbank, keine Web-Crawls, keine externen Systeme.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -560,7 +560,7 @@ const MCP_TOOLS = [
   // 12. admin
   {
     name: 'admin',
-    description: 'Konsolidiertes Admin/Utility-Tool mit verschiedenen Actions fuer Projekt-Management, Statistiken, Ideen und Media-Indexierung',
+    description: 'Wartungs- und Statistik-Operationen der eigenen Synapse-Instanz: Index-Statistiken, Backup-Restore innerhalb der eigenen DB, Ideen-Eingang, Indexierung lokaler Mediendateien im Projekt-Verzeichnis. Wirkt nur auf die User-eigene lokale Synapse-Datenbank. Keine externen Systeme.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -597,7 +597,7 @@ const MCP_TOOLS = [
   // 13. watcher
   {
     name: 'watcher',
-    description: 'FileWatcher-Daemon steuern: status (laeuft er?), start (starten falls nicht aktiv), stop (stoppen)',
+    description: 'Status-Check des lokalen FileWatcher-Daemons des eigenen Projekts (laeuft er, starten falls nicht aktiv, anhalten). Steuert nur diesen einen lokalen Hintergrund-Hilfsprozess auf dem User-PC, der Datei-Aenderungen im Projekt-Verzeichnis beobachtet. Keine externen Systeme.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -615,7 +615,7 @@ const MCP_TOOLS = [
   // 14. code_intel
   {
     name: 'code_intel',
-    description: 'Strukturierte Code-Abfragen aus PostgreSQL: Dateibaum, Funktionen, Variablen, Symbole, Referenzen, Volltext-Suche und Dateiinhalt.',
+    description: 'Strukturierte Lese-Abfragen ueber den eigenen Code-Index des Projekts (PostgreSQL): Dateibaum, Funktionen, Variablen, Symbole, Querverweise, Volltext-Suche, Dateiinhalt. Read-Only auf eigene indexierte Projekt-Daten. Keine fremden Repositories, keine externen Systeme.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -654,7 +654,7 @@ const MCP_TOOLS = [
   // 15. files
   {
     name: 'files',
-    description: 'Datei-CRUD in PostgreSQL: Erstellen, Aktualisieren, Loeschen, Verschieben, Kopieren. Aenderungen werden vom FileWatcher automatisch auf das lokale Dateisystem synchronisiert.',
+    description: 'Datei-CRUD im eigenen Projekt-Verzeichnis: Erstellen, Aktualisieren, Eintragen-Entfernen, Verschieben, Kopieren, gezielte Zeilen-Edits, Search-Replace. Pfade sind relativ zum Projekt-Root und werden gegen Path-Traversal validiert. FileWatcher synchronisiert die Aenderungen automatisch im lokalen Workspace. Keine freien absoluten Pfade ausserhalb des Projekts, keine externen Systeme.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -679,7 +679,7 @@ const MCP_TOOLS = [
   // 16. shell
   {
     name: 'shell',
-    description: 'Projekt-scoped Shell-Ausfuehrung via Queue (REST-API → PostgreSQL → FileWatcher-Daemon). Command wird lokal auf dem Projekt-PC ausgefuehrt, solange der Daemon laeuft.',
+    description: 'Shell-Kommando im eigenen Projekt-Verzeichnis ausfuehren (Queue → lokaler FileWatcher-Daemon auf dem User-PC). cwd ist auf das Projekt-Root + optional Unterpfad beschraenkt; nicht auf beliebige Verzeichnisse des Hosts. Wirkt nur wenn der User den Daemon und das Projekt aktiv hat. Keine externen Systeme.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -707,7 +707,7 @@ const MCP_TOOLS = [
   // 17. code_check
   {
     name: 'code_check',
-    description: 'Fehler-Pattern-System: Bekannte Fehler speichern und verwalten. Patterns werden automatisch bei Write-Operationen geprueft.',
+    description: 'Eigene Fehler-Pattern-Bibliothek im Projekt-Workspace: bekannte Fehler + Loesungen registrieren, listen, eintragen-entfernen. Patterns werden bei lokalen Code-Schreib-Operationen automatisch herangezogen. Eigene lokale Datenbank, keine externen Systeme.',
     inputSchema: {
       type: 'object',
       properties: {
