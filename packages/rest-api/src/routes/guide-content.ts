@@ -587,7 +587,7 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
         tips: 'Array-Support: Mehrere Dateien in einem Call. Gut fuer Wissens-Airbag vor Bearbeitung.',
       },
       delete: {
-        description: 'Memory loeschen (einzeln oder Batch).',
+        description: 'Memory loeschen (einzeln oder Batch). WICHTIG: Single-Delete (name als String) loescht SOFORT, dry_run wird ignoriert. Nur Batch-Delete (name als Array) unterstuetzt dry_run-Preview. Connector-UIs koennen daher bei Single-Delete eine Bestaetigung verlangen.',
         params: 'project (req), name (req, String oder Array), dry_run, max_items',
         example: 'memory({ action: "delete", project: "synapse", name: "alte-notiz" })',
         tips: 'Batch: name als Array + dry_run: true fuer Preview.',
@@ -660,7 +660,7 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
         example: 'thought({ action: "update", project: "synapse", id: "abc123", content: "Korrigiert: ..." })',
       },
       delete: {
-        description: 'Thought loeschen (einzeln oder Batch).',
+        description: 'Thought loeschen (einzeln oder Batch). WICHTIG: Single-Delete (id als String) loescht SOFORT, dry_run wird ignoriert. Nur Batch-Delete (id als Array) unterstuetzt dry_run-Preview. Connector-UIs koennen daher bei Single-Delete eine Bestaetigung verlangen.',
         params: 'project (req), id (req, String oder Array), dry_run, max_items',
         example: 'thought({ action: "delete", project: "synapse", id: "abc123" })',
         tips: 'Nach Verarbeitung IMMER loeschen. Batch: id als Array + dry_run: true fuer Preview.',
@@ -792,7 +792,7 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
         example: 'proposal({ action: "update", project: "synapse", id: "abc123", suggested_content: "Neuer Vorschlag..." })',
       },
       delete: {
-        description: 'Proposal loeschen (einzeln oder Batch).',
+        description: 'Proposal loeschen (einzeln oder Batch). WICHTIG: Single-Delete (id als String) loescht SOFORT, dry_run wird ignoriert. Nur Batch-Delete (id als Array) unterstuetzt dry_run-Preview. Connector-UIs koennen daher bei Single-Delete eine Bestaetigung verlangen.',
         params: 'project (req), id (req, String oder Array), dry_run, max_items',
         example: 'proposal({ action: "delete", project: "synapse", id: "abc123" })',
         tips: 'Batch: id als Array + dry_run: true fuer Preview.',
