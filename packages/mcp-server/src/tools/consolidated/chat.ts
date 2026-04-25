@@ -14,7 +14,7 @@
  */
 
 import type { ConsolidatedTool } from './types.js';
-import { reqStr, str, num, bool } from './types.js';
+import { reqStr, str, num, bool, strArray, objArray } from './types.js';
 import {
   registerChatAgent,
   unregisterChatAgent,
@@ -125,9 +125,9 @@ export const chatTool: ConsolidatedTool = {
 
         // ===== register_batch =====
         case 'register_batch': {
-          const batchAgents = args.agents as Array<{ id: string; model?: string; cutoffDate?: string }>;
-          if (!Array.isArray(batchAgents)) {
-            throw new Error('Parameter "agents" muss ein Array sein');
+          const batchAgents = objArray<{ id: string; model?: string; cutoffDate?: string }>(args, 'agents');
+          if (!batchAgents || batchAgents.length === 0) {
+            throw new Error('Parameter "agents" muss ein Array mit mindestens einem Eintrag sein');
           }
           const batchProject = reqStr(args, 'project');
 
@@ -137,9 +137,9 @@ export const chatTool: ConsolidatedTool = {
 
         // ===== unregister_batch =====
         case 'unregister_batch': {
-          const batchIds = args.ids as string[];
-          if (!Array.isArray(batchIds)) {
-            throw new Error('Parameter "ids" muss ein Array sein');
+          const batchIds = strArray(args, 'ids');
+          if (!batchIds || batchIds.length === 0) {
+            throw new Error('Parameter "ids" muss ein Array mit mindestens einem Eintrag sein');
           }
 
           const result = await unregisterChatAgentsBatch(batchIds);
@@ -153,8 +153,8 @@ export const chatTool: ConsolidatedTool = {
           const sendContent = reqStr(args, 'content');
 
           // Array-Support: Gleiche Nachricht an mehrere Empfaenger
-          if (Array.isArray(args.recipient_id)) {
-            const recipientIds = args.recipient_id as string[];
+          const recipientIds = strArray(args, 'recipient_id');
+          if (recipientIds && recipientIds.length > 1) {
             const settled = await Promise.allSettled(
               recipientIds.map(rid => sendChatMessage(sendProject, sendSenderId, sendContent, rid))
             );
@@ -203,8 +203,8 @@ export const chatTool: ConsolidatedTool = {
           const inboxContent = reqStr(args, 'content');
 
           // Array-Support: Gleiche Nachricht an mehrere Agenten-Inboxen
-          if (Array.isArray(args.to_agent)) {
-            const toAgents = args.to_agent as string[];
+          const toAgents = strArray(args, 'to_agent');
+          if (toAgents && toAgents.length > 1) {
             const settled = await Promise.allSettled(
               toAgents.map(ta => postToInboxTool(inboxFromAgent, ta, inboxContent))
             );

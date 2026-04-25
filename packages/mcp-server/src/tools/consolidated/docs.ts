@@ -7,7 +7,7 @@
  * - get_for_file: Holt relevante Docs fuer eine Datei (Wissens-Airbag)
  */
 
-import { ConsolidatedTool, reqStr, str, num, bool } from './types.js';
+import { ConsolidatedTool, reqStr, str, num, bool, strArray } from './types.js';
 import {
   addTechDocTool,
   searchTechDocsTool,
@@ -176,8 +176,8 @@ export const docsTool: ConsolidatedTool = {
         const project = reqStr(args, 'project');
 
         // Array-Support: Mehrere Dateien in einem Call
-        if (Array.isArray(args.file_path)) {
-          const filePaths = args.file_path as string[];
+        const filePaths = strArray(args, 'file_path');
+        if (filePaths && filePaths.length > 1) {
           const settled = await Promise.allSettled(
             filePaths.map(fp => getDocsForFileTool(fp, agentId, project))
           );

@@ -4,7 +4,7 @@
  * in ein einziges Tool mit action-Parameter
  */
 
-import { str, reqStr, num, bool } from './types.js';
+import { str, reqStr, num, bool, strArray, strArrayOrEmpty } from './types.js';
 import type { ConsolidatedTool } from './types.js';
 import {
   addThought,
@@ -85,7 +85,7 @@ export const thoughtTool: ConsolidatedTool = {
         const project = reqStr(args, 'project');
         const source = reqStr(args, 'source');
         const content = reqStr(args, 'content');
-        const tags = (args.tags as string[] | undefined) ?? [];
+        const tags = strArrayOrEmpty(args, 'tags');
 
         const result = await addThought(project, source, content, tags);
         return result;
@@ -96,8 +96,11 @@ export const thoughtTool: ConsolidatedTool = {
 
         // NEU: Wenn id angegeben → spezifische Thoughts laden
         if (args.id !== undefined) {
+          const ids = strArray(args, 'id');
           const isBatch = Array.isArray(args.id);
-          const ids = isBatch ? (args.id as string[]) : [args.id as string];
+          if (!ids || ids.length === 0) {
+            return { success: false, thought: null, message: 'id ist erforderlich' };
+          }
           const result = await getThoughtsByIdsTool(project, ids);
 
           // Scalar-Input → einzelnes Thought zurückgeben
@@ -130,8 +133,8 @@ export const thoughtTool: ConsolidatedTool = {
         const project = reqStr(args, 'project');
 
         // Array-Support: Batch-Delete mit Safeguards
-        if (Array.isArray(args.id)) {
-          const ids = args.id as string[];
+        const ids = strArray(args, 'id');
+        if (ids && ids.length > 1) {
           const dryRun = bool(args, 'dry_run') ?? false;
           const maxItems = num(args, 'max_items') ?? 10;
           return await deleteThoughtsBatch(project, ids, dryRun, maxItems);
@@ -148,8 +151,10 @@ export const thoughtTool: ConsolidatedTool = {
         const id = reqStr(args, 'id');
         const changes: { content?: string; tags?: string[] } = {};
 
-        if (args.content) changes.content = str(args, 'content');
-        if (args.tags) changes.tags = args.tags as string[];
+        const newContent = str(args, 'content');
+        if (newContent !== undefined) changes.content = newContent;
+        const newTags = strArray(args, 'tags');
+        if (newTags !== undefined) changes.tags = newTags;
 
         const result = await updateThoughtTool(project, id, changes);
         return result;

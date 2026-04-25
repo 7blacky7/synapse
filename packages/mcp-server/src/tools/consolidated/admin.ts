@@ -12,7 +12,7 @@
  */
 
 import type { ConsolidatedTool } from './types.js';
-import { str, reqStr, bool } from './types.js';
+import { str, reqStr, bool, strArray } from './types.js';
 import {
   getIndexStats,
   getDetailedStats,
@@ -112,7 +112,7 @@ export const adminTool: ConsolidatedTool = {
       // ===== MIGRATE =====
       case 'migrate': {
         const project = reqStr(args, 'project');
-        const collections = args.collections as string[] | undefined;
+        const collections = strArray(args, 'collections');
         const dryRun = bool(args, 'dry_run');
 
         const result = await migrateEmbeddings(project, {
@@ -148,7 +148,7 @@ export const adminTool: ConsolidatedTool = {
         const title = reqStr(args, 'title');
         const description = reqStr(args, 'description');
         const project = str(args, 'project');
-        const tags = args.tags as string[] | undefined;
+        const tags = strArray(args, 'tags');
 
         // Kombiniere title und description zu content für saveProjectIdea
         const content = `## ${title}\n\n${description}`;

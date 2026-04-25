@@ -12,7 +12,7 @@
  */
 
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
-import { ConsolidatedTool, str, reqStr, bool, num } from './types.js';
+import { ConsolidatedTool, str, reqStr, bool, num, strArray } from './types.js';
 import {
   writeMemory,
   readMemory,
@@ -122,7 +122,7 @@ const memoryTool: ConsolidatedTool = {
             | 'rules'
             | 'other'
             | undefined;
-          const tags = Array.isArray(args.tags) ? (args.tags as string[]) : undefined;
+          const tags = strArray(args, 'tags');
 
           const result = await writeMemory(project, name, content, category, tags);
           return { message: result };
@@ -130,8 +130,8 @@ const memoryTool: ConsolidatedTool = {
 
         case 'read': {
           // Array-Support: Mehrere Memories in einem Call
-          if (Array.isArray(args.name)) {
-            const names = args.name as string[];
+          const names = strArray(args, 'name');
+          if (names && names.length > 1) {
             const result = await readMemories(project, names);
             return result;
           }
@@ -170,8 +170,8 @@ const memoryTool: ConsolidatedTool = {
 
         case 'delete': {
           // Array-Support: Batch-Delete mit Safeguards
-          if (Array.isArray(args.name)) {
-            const names = args.name as string[];
+          const names = strArray(args, 'name');
+          if (names && names.length > 1) {
             const dryRun = bool(args, 'dry_run') ?? false;
             const maxItems = num(args, 'max_items') ?? 10;
             return await deleteMemoriesBatch(project, names, dryRun, maxItems);
@@ -191,9 +191,11 @@ const memoryTool: ConsolidatedTool = {
             tags?: string[];
           } = {};
 
-          if (args.content) changes.content = args.content as string;
-          if (args.category) {
-            changes.category = args.category as
+          const newContent = str(args, 'content');
+          if (newContent !== undefined) changes.content = newContent;
+          const newCategory = str(args, 'category');
+          if (newCategory !== undefined) {
+            changes.category = newCategory as
               | 'documentation'
               | 'note'
               | 'architecture'
@@ -201,9 +203,8 @@ const memoryTool: ConsolidatedTool = {
               | 'rules'
               | 'other';
           }
-          if (Array.isArray(args.tags)) {
-            changes.tags = args.tags as string[];
-          }
+          const newTags = strArray(args, 'tags');
+          if (newTags !== undefined) changes.tags = newTags;
 
           const result = await updateMemoryTool(project, name, changes);
           return result;
@@ -211,8 +212,8 @@ const memoryTool: ConsolidatedTool = {
 
         case 'find_for_file': {
           // Array-Support: Mehrere Dateien in einem Call
-          if (Array.isArray(args.file_path)) {
-            const filePaths = args.file_path as string[];
+          const filePaths = strArray(args, 'file_path');
+          if (filePaths && filePaths.length > 1) {
             const settled = await Promise.allSettled(
               filePaths.map(fp => findMemoriesForFile(project, fp))
             );

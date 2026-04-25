@@ -12,7 +12,7 @@
  */
 
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
-import { ConsolidatedTool, reqStr, str, bool } from './types.js';
+import { ConsolidatedTool, reqStr, str, bool, strArray } from './types.js';
 import {
   spawnSpecialistTool,
   stopSpecialistTool,
@@ -137,9 +137,7 @@ export const specialistTool: ConsolidatedTool = {
         const projectPath = reqStr(args, 'project_path');
         const cwd = str(args, 'cwd');
         const channel = str(args, 'channel');
-        const allowedTools = Array.isArray(args.allowed_tools)
-          ? (args.allowed_tools as string[])
-          : undefined;
+        const allowedTools = strArray(args, 'allowed_tools');
         const keepAlive = bool(args, 'keep_alive');
 
         return await spawnSpecialistTool(
@@ -158,8 +156,8 @@ export const specialistTool: ConsolidatedTool = {
 
       case 'stop': {
         // Array-Support: Mehrere Spezialisten stoppen
-        if (Array.isArray(args.name)) {
-          const names = args.name as string[];
+        const names = strArray(args, 'name');
+        if (names && names.length > 1) {
           const projectPath = reqStr(args, 'project_path');
           const settled = await Promise.allSettled(
             names.map(n => stopSpecialistTool(n, projectPath))
@@ -183,8 +181,8 @@ export const specialistTool: ConsolidatedTool = {
         const projectPath = reqStr(args, 'project_path');
 
         // Array-Support: Mehrere Spezialisten-Status in einem Call
-        if (Array.isArray(args.name)) {
-          const names = args.name as string[];
+        const names = strArray(args, 'name');
+        if (names && names.length > 1) {
           const settled = await Promise.allSettled(
             names.map(n => specialistStatusTool(projectPath, n))
           );
@@ -206,8 +204,8 @@ export const specialistTool: ConsolidatedTool = {
         const message = reqStr(args, 'message');
 
         // Array-Support: Mehrere Spezialisten mit gleichem Message wecken
-        if (Array.isArray(args.name)) {
-          const names = args.name as string[];
+        const names = strArray(args, 'name');
+        if (names && names.length > 1) {
           const settled = await Promise.allSettled(
             names.map(n => wakeSpecialistTool(n, message))
           );

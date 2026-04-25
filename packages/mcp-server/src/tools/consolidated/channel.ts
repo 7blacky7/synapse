@@ -12,7 +12,7 @@
  */
 
 import type { ConsolidatedTool } from './types.js';
-import { reqStr, str, num, bool } from './types.js';
+import { reqStr, str, num, bool, strArray } from './types.js';
 import {
   createChannel,
   joinChannel,
@@ -223,8 +223,8 @@ export const channelTool: ConsolidatedTool = {
         return await handleCreate(args);
       case 'join': {
         // Array-Support: Mehreren Channels beitreten
-        if (Array.isArray(args.channel_name)) {
-          const channelNames = args.channel_name as string[];
+        const channelNames = strArray(args, 'channel_name');
+        if (channelNames && channelNames.length > 1) {
           const project = reqStr(args, 'project');
           const agentName = reqStr(args, 'agent_name');
           const settled = await Promise.allSettled(
@@ -252,8 +252,8 @@ export const channelTool: ConsolidatedTool = {
       }
       case 'leave': {
         // Array-Support: Mehrere Channels verlassen
-        if (Array.isArray(args.channel_name)) {
-          const channelNames = args.channel_name as string[];
+        const channelNames = strArray(args, 'channel_name');
+        if (channelNames && channelNames.length > 1) {
           const project = reqStr(args, 'project');
           const agentName = reqStr(args, 'agent_name');
           const settled = await Promise.allSettled(

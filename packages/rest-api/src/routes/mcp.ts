@@ -852,6 +852,44 @@ function strArrayOrEmpty(a: Record<string, unknown>, k: string): string[] {
 }
 
 /**
+ * Liest ein Number-Array. Akzeptiert Array, JSON-String, Single-Number/-String.
+ * Strings werden via Number() konvertiert (NaN-filter).
+ */
+function numArray(a: Record<string, unknown>, k: string): number[] | undefined {
+  const v = a[k];
+  if (v === undefined || v === null) return undefined;
+  const toNum = (x: unknown): number | null => {
+    if (typeof x === 'number' && Number.isFinite(x)) return x;
+    if (typeof x === 'string' && x.trim() !== '') {
+      const n = Number(x);
+      if (Number.isFinite(n)) return n;
+    }
+    return null;
+  };
+  if (Array.isArray(v)) {
+    const out = v.map(toNum).filter((x): x is number => x !== null);
+    return out.length > 0 ? out : undefined;
+  }
+  if (typeof v === 'string') {
+    const trimmed = v.trim();
+    if (trimmed === '') return undefined;
+    if (trimmed.startsWith('[')) {
+      try {
+        const parsed = JSON.parse(trimmed);
+        if (Array.isArray(parsed)) {
+          const out = parsed.map(toNum).filter((x): x is number => x !== null);
+          return out.length > 0 ? out : undefined;
+        }
+      } catch { /* fall through */ }
+    }
+    const single = toNum(trimmed);
+    return single !== null ? [single] : undefined;
+  }
+  const single = toNum(v);
+  return single !== null ? [single] : undefined;
+}
+
+/**
  * Liest ein Array von Objekten — gleiche Coercion-Regeln wie strArray
  * (Array, JSON-String, Single-Object). Optional mit Validator.
  */
@@ -1559,8 +1597,8 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
         case 'ack': {
           const agentId = reqStr(args, 'agent_id');
           const reaction = str(args, 'reaction');
-          if (Array.isArray(args.event_id)) {
-            const eventIds = args.event_id as number[];
+          const eventIds = numArray(args, 'event_id');
+          if (eventIds && eventIds.length > 1) {
             const settled = await Promise.allSettled(
               eventIds.map(eid => acknowledgeEvent(eid, agentId, reaction))
             );

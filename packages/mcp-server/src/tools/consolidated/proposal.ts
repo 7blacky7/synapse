@@ -19,7 +19,7 @@ import {
   deleteProposalsBatch,
   updateProposalTool,
 } from '../proposals.js';
-import { ConsolidatedTool, reqStr, str, bool, num } from './types.js';
+import { ConsolidatedTool, reqStr, str, bool, num, strArray } from './types.js';
 
 export const proposalTool: ConsolidatedTool = {
   definition: {
@@ -90,8 +90,8 @@ export const proposalTool: ConsolidatedTool = {
 
       case 'get': {
         // Array-Support: Mehrere Proposals in einem Call
-        if (Array.isArray(args.id)) {
-          const ids = args.id as string[];
+        const ids = strArray(args, 'id');
+        if (ids && ids.length > 1) {
           const result = await getProposalsByIdsWrapper(project, ids);
           return result;
         }
@@ -106,8 +106,8 @@ export const proposalTool: ConsolidatedTool = {
 
       case 'update_status': {
         // Array-Support: Gleicher Status fuer mehrere Proposals
-        if (Array.isArray(args.id)) {
-          const ids = args.id as string[];
+        const ids = strArray(args, 'id');
+        if (ids && ids.length > 1) {
           const status = reqStr(args, 'status');
           const settled = await Promise.allSettled(
             ids.map(id => updateProposalStatusWrapper(project, id, status))
@@ -132,8 +132,8 @@ export const proposalTool: ConsolidatedTool = {
 
       case 'delete': {
         // Array-Support: Batch-Delete mit Safeguards
-        if (Array.isArray(args.id)) {
-          const ids = args.id as string[];
+        const ids = strArray(args, 'id');
+        if (ids && ids.length > 1) {
           const dryRun = bool(args, 'dry_run') ?? false;
           const maxItems = num(args, 'max_items') ?? 10;
           return await deleteProposalsBatch(project, ids, dryRun, maxItems);

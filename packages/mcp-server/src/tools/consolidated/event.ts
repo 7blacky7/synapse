@@ -8,7 +8,7 @@
  */
 
 import type { ConsolidatedTool } from './types.js';
-import { reqStr, str, num, bool } from './types.js';
+import { reqStr, str, num, bool, numArray } from './types.js';
 import {
   emitEventTool,
   acknowledgeEventTool,
@@ -111,8 +111,8 @@ export const eventTool: ConsolidatedTool = {
         const reaction = str(args, 'reaction');
 
         // Array-Support: Mehrere Events in einem Call bestätigen
-        if (Array.isArray(args.event_id)) {
-          const eventIds = args.event_id as number[];
+        const eventIds = numArray(args, 'event_id');
+        if (eventIds && eventIds.length > 1) {
           const settled = await Promise.allSettled(
             eventIds.map(eid => acknowledgeEventTool(eid, agentId, reaction))
           );

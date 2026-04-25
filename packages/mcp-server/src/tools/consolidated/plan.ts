@@ -4,7 +4,7 @@
  */
 
 import type { ConsolidatedTool } from './types.js';
-import { reqStr, str } from './types.js';
+import { reqStr, str, strArray } from './types.js';
 import {
   getProjectPlan,
   updateProjectPlan,
@@ -80,7 +80,7 @@ export const planTool: ConsolidatedTool = {
         const result = await updateProjectPlan(project, {
           name: str(args, 'name'),
           description: str(args, 'description'),
-          goals: Array.isArray(args.goals) ? (args.goals as string[]) : undefined,
+          goals: strArray(args, 'goals'),
           architecture: str(args, 'architecture'),
         });
         return result;
