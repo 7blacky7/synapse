@@ -276,6 +276,13 @@ export {
   getShellJobLogLines,
   searchShellJobLog,
   insertCompletedShellJob,
+  // Specialist-Queue
+  enqueueSpecialistJob,
+  claimPendingSpecialistJob,
+  completeSpecialistJob,
+  waitForSpecialistJob,
+  expirePendingSpecialistJobs,
+
 } from './services/index.js';
 export type {
   EnqueueArgs,
@@ -283,6 +290,13 @@ export type {
   ShellJobCompletion,
   ShellJobResult,
 } from './services/shell-queue.js';
+export type {
+  SpecialistAction,
+  SpecialistJobRow,
+  SpecialistJobCompletion,
+  SpecialistJobResult,
+} from './services/specialist-queue.js';
+
 export type { FunctionInfo, VariableInfo, SymbolInfo, ReferenceInfo, ReferencesResult, FullTextSearchResult, FileContentResult, TreeOptions } from './services/code-intel.js';
 export type { BackupEntry } from './services/backup.js';
 export type { ChatMessage, AgentSession } from './services/chat.js';

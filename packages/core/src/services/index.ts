@@ -54,3 +54,17 @@ export type {
   ShellJobCompletion,
   ShellJobResult,
 } from './shell-queue.js';
+export {
+  enqueueSpecialistJob,
+  claimPendingSpecialistJob,
+  completeSpecialistJob,
+  waitForSpecialistJob,
+  expirePendingSpecialistJobs,
+} from './specialist-queue.js';
+export type {
+  SpecialistAction,
+  SpecialistJobRow,
+  SpecialistJobCompletion,
+  SpecialistJobResult,
+} from './specialist-queue.js';
+

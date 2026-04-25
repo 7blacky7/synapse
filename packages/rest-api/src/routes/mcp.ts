@@ -1754,8 +1754,54 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
     // =================================================================
     // 10. SPECIALIST — nur ueber MCP Server (stdio) verfuegbar
     // =================================================================
-    case 'specialist':
-      return { success: false, error: 'Specialist-Tool ist nur ueber MCP Server (stdio) verfuegbar — benoetigt Claude CLI Subprozesse' };
+    case 'specialist': {
+      // Specialist-Calls werden via PG-Queue an den lokalen FileWatcher-Daemon
+      // delegiert (wo Claude-CLI + Projekt-FS verfuegbar sind).
+      // status + capabilities lesen direkt aus PG ohne Queue.
+      const { enqueueSpecialistJob, waitForSpecialistJob } = await import('@synapse/core');
+      const project = reqStr(args, 'project');
+
+      // Direct-Pass-Through (kein Daemon-Roundtrip noetig):
+      if (action === 'capabilities') {
+        return {
+          success: true,
+          message: 'capabilities-Check ist nur ueber lokalen MCP-Server verfuegbar (REST-API hat keinen Claude-CLI-Zugriff). Pruefe via shell({command:"which claude"}) ob CLI verfuegbar ist.',
+        };
+      }
+      if (action === 'status') {
+        return {
+          success: false,
+          message: 'status ist aktuell nicht ueber REST-API verfuegbar (kein PG-Schema fuer Live-Wrapper-Status). Workaround: spawn-Response enthaelt PID + socket; spaetere Status-Checks via lokalem MCP.',
+        };
+      }
+
+      const actionStr = String(action ?? '');
+      const queueableActions = ['spawn', 'spawn_batch', 'stop', 'purge', 'wake', 'update_skill'];
+      if (!queueableActions.includes(actionStr)) {
+        return { success: false, error: `Unbekannte specialist action: "${actionStr}"` };
+      }
+
+      try {
+        const { id } = await enqueueSpecialistJob({
+          project,
+          action: actionStr as 'spawn' | 'spawn_batch' | 'stop' | 'purge' | 'wake' | 'update_skill',
+          args: args as Record<string, unknown>,
+        });
+        const result = await waitForSpecialistJob(id, 60_000);
+        if (result.status === 'done') {
+          return result.result ?? { success: true, message: 'Spezialist-Aktion erfolgreich' };
+        }
+        return {
+          success: false,
+          status: result.status,
+          error: result.error,
+          message: result.message ?? 'Spezialist-Aktion fehlgeschlagen oder timeout. Pruefe ob FileWatcher-Daemon laeuft und das Projekt aktiv ist.',
+        };
+      } catch (err) {
+        return { success: false, error: 'queue_failure', message: String(err) };
+      }
+    }
+
 
     // =================================================================
     // 11. DOCS

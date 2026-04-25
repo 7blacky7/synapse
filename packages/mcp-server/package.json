@@ -8,6 +8,10 @@
   "bin": {
     "synapse-mcp": "./dist/index.js"
   },
+  "exports": {
+    ".": "./dist/index.js",
+    "./tools": "./dist/tools/index.js"
+  },
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",

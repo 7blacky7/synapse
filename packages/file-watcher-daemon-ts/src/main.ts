@@ -18,6 +18,7 @@ import { buildApi } from './api.js';
 import { ensureConfigDir, pidFilePath, portFilePath } from './config.js';
 import { WatcherManager } from './manager.js';
 import { startShellJobWorker, type ShellJobWorkerHandle } from './shell-job-worker.js';
+import { startSpecialistJobWorker, type SpecialistJobWorkerHandle } from './specialist-job-worker.js';
 
 async function main(): Promise<void> {
   ensureConfigDir();
@@ -39,6 +40,18 @@ async function main(): Promise<void> {
   } catch (err) {
     console.error('[daemon] Shell-Job-Worker konnte nicht gestartet werden:', err);
     // Kein harter Fehler — Daemon laeuft weiter ohne Queue-Worker
+  }
+
+  // Specialist-Job-Worker starten (LISTEN 'specialist_job_created')
+  let specialistWorker: SpecialistJobWorkerHandle | null = null;
+  try {
+    specialistWorker = await startSpecialistJobWorker(() =>
+      manager.list()
+        .filter((p) => p.enabled && manager.isRunning(p.name))
+        .map((p) => p.name)
+    );
+  } catch (err) {
+    console.error('[daemon] Specialist-Job-Worker konnte nicht gestartet werden:', err);
   }
 
   const app = buildApi({ manager });
@@ -84,6 +97,14 @@ async function main(): Promise<void> {
         await shellWorker.stop();
       } catch (err) {
         console.error('[daemon] Shell-Worker stop Fehler:', err);
+      }
+    }
+
+    if (specialistWorker !== null) {
+      try {
+        await specialistWorker.stop();
+      } catch (err) {
+        console.error('[daemon] Specialist-Worker stop Fehler:', err);
       }
     }
 

@@ -85,9 +85,15 @@ importers:
 
   packages/file-watcher-daemon-ts:
     dependencies:
+      '@synapse/agents':
+        specifier: workspace:*
+        version: link:../agents
       '@synapse/core':
         specifier: workspace:*
         version: link:../core
+      '@synapse/mcp-server':
+        specifier: workspace:*
+        version: link:../mcp-server
       fastify:
         specifier: ^4.28.1
         version: 4.29.1

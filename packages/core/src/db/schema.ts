@@ -470,6 +470,52 @@ CREATE TABLE IF NOT EXISTS shell_stream_chunks (
 );
 
 CREATE INDEX IF NOT EXISTS idx_shell_stream_chunks_job ON shell_stream_chunks(job_id, chunk_index);
+
+-- ==========================================================================
+-- Specialist-Queue: REST-API ↔ FileWatcher-Daemon Specialist-Calls.
+-- Alle Specialist-Actions (spawn, stop, purge, wake, etc.) werden via PG
+-- Queue an den lokalen Daemon delegiert. Erlaubt Web-KIs (REST) Spezialisten
+-- auf dem Host-PC zu spawnen wo Claude-CLI + FS verfuegbar sind.
+-- ==========================================================================
+
+DO $$ BEGIN
+  CREATE TYPE specialist_job_status AS ENUM ('pending', 'running', 'done', 'failed', 'rejected', 'timeout');
+EXCEPTION
+  WHEN duplicate_object THEN NULL;
+END $$;
+
+CREATE TABLE IF NOT EXISTS specialist_jobs (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  project TEXT NOT NULL,
+  action TEXT NOT NULL,
+  args JSONB NOT NULL,
+  status specialist_job_status NOT NULL DEFAULT 'pending',
+  result JSONB,
+  error TEXT,
+  message TEXT,
+  claimed_by TEXT,
+  claimed_at TIMESTAMPTZ,
+  completed_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_specialist_jobs_project_status ON specialist_jobs(project, status);
+CREATE INDEX IF NOT EXISTS idx_specialist_jobs_created ON specialist_jobs(created_at) WHERE status = 'pending';
+CREATE INDEX IF NOT EXISTS idx_specialist_jobs_history ON specialist_jobs(project, created_at DESC);
+
+CREATE OR REPLACE FUNCTION notify_specialist_job_created() RETURNS TRIGGER AS $$
+BEGIN
+  PERFORM pg_notify('specialist_job_created', NEW.project || ':' || NEW.id::text);
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_specialist_jobs_notify ON specialist_jobs;
+CREATE TRIGGER trg_specialist_jobs_notify
+  AFTER INSERT ON specialist_jobs
+  FOR EACH ROW EXECUTE FUNCTION notify_specialist_job_created();
+
 `;
 
 export async function ensureSchema(): Promise<void> {

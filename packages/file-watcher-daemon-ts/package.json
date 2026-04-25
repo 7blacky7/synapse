@@ -17,6 +17,7 @@
   "dependencies": {
     "@synapse/agents": "workspace:*",
     "@synapse/core": "workspace:*",
+    "@synapse/mcp-server": "workspace:*",
     "fastify": "^4.28.1"
   },
   "files": [
