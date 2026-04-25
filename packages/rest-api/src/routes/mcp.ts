@@ -771,7 +771,17 @@ function sendSSEMessage(reply: FastifyReply, message: object): void {
 }
 
 // =====================================================================
-// Hilfsfunktionen fuer Argument-Zugriff (analog zu consolidated/types.ts)
+// Hilfsfunktionen fuer Argument-Zugriff
+//
+// Hintergrund: Web-KI-Connectors (ChatGPT, Claude.ai) serialisieren
+// JSON-Bodies nicht immer mit nativer Type-Erhaltung — Arrays kommen
+// teilweise als JSON-Strings ("[\"a\",\"b\"]"), Booleans als "true"/
+// "false"-Strings, Numbers als "42"-Strings durch. Wenn der Server
+// diese 1:1 weiterreicht, wirft PG malformed-array-literal Fehler
+// und der gesamte Request hangt 30s im Cloudflare-Timeout.
+//
+// Loesung: Defensive Coercion — die Helpers akzeptieren beide Formen
+// und normalisieren auf die TypeScript-Typen.
 // =====================================================================
 function str(a: Record<string, unknown>, k: string): string | undefined {
   const v = a[k];
@@ -784,11 +794,95 @@ function reqStr(a: Record<string, unknown>, k: string): string {
 }
 function num(a: Record<string, unknown>, k: string): number | undefined {
   const v = a[k];
-  return typeof v === 'number' ? v : undefined;
+  if (typeof v === 'number') return v;
+  if (typeof v === 'string' && v.trim() !== '') {
+    const n = Number(v);
+    if (Number.isFinite(n)) return n;
+  }
+  return undefined;
 }
 function bool(a: Record<string, unknown>, k: string): boolean | undefined {
   const v = a[k];
-  return typeof v === 'boolean' ? v : undefined;
+  if (typeof v === 'boolean') return v;
+  if (typeof v === 'string') {
+    if (v === 'true') return true;
+    if (v === 'false') return false;
+  }
+  return undefined;
+}
+
+/**
+ * Liest ein String-Array aus den Args. Akzeptiert:
+ *   - natives Array (string[]), filtert non-strings raus
+ *   - JSON-String "[\"a\",\"b\"]" (Connector-Quirk)
+ *   - einzelner String "a"  → ["a"]  (Convenience, wenn Caller statt Array
+ *     einen einzelnen Wert sendet)
+ * Returnt undefined wenn der Wert fehlt oder leer/unparseabar ist.
+ */
+function strArray(a: Record<string, unknown>, k: string): string[] | undefined {
+  const v = a[k];
+  if (v === undefined || v === null) return undefined;
+  if (Array.isArray(v)) {
+    const out = v.filter((x): x is string => typeof x === 'string');
+    return out.length > 0 ? out : undefined;
+  }
+  if (typeof v === 'string') {
+    const trimmed = v.trim();
+    if (trimmed === '') return undefined;
+    if (trimmed.startsWith('[')) {
+      try {
+        const parsed = JSON.parse(trimmed);
+        if (Array.isArray(parsed)) {
+          const out = parsed.filter((x): x is string => typeof x === 'string');
+          return out.length > 0 ? out : undefined;
+        }
+      } catch { /* fall through to single-string */ }
+    }
+    return [trimmed];
+  }
+  return undefined;
+}
+
+/**
+ * Wie strArray, aber returnt [] statt undefined wenn nichts da ist.
+ * Fuer Felder wo der Service ein Array erwartet (statt undefined).
+ */
+function strArrayOrEmpty(a: Record<string, unknown>, k: string): string[] {
+  return strArray(a, k) ?? [];
+}
+
+/**
+ * Liest ein Array von Objekten — gleiche Coercion-Regeln wie strArray
+ * (Array, JSON-String, Single-Object). Optional mit Validator.
+ */
+function objArray<T extends Record<string, unknown>>(
+  a: Record<string, unknown>,
+  k: string,
+): T[] | undefined {
+  const v = a[k];
+  if (v === undefined || v === null) return undefined;
+  if (Array.isArray(v)) {
+    const out = v.filter((x): x is T => typeof x === 'object' && x !== null && !Array.isArray(x));
+    return out.length > 0 ? out : undefined;
+  }
+  if (typeof v === 'string') {
+    const trimmed = v.trim();
+    if (trimmed === '') return undefined;
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (Array.isArray(parsed)) {
+        const out = parsed.filter((x): x is T => typeof x === 'object' && x !== null && !Array.isArray(x));
+        return out.length > 0 ? out : undefined;
+      }
+      if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
+        return [parsed as T];
+      }
+    } catch { /* fall through */ }
+  }
+  if (typeof v === 'object' && v !== null && !Array.isArray(v)) {
+    return [v as T];
+  }
+  return undefined;
 }
 
 // =====================================================================
@@ -1018,7 +1112,7 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
           const memName = reqStr(args, 'name');
           const content = reqStr(args, 'content');
           const category = str(args, 'category') as 'documentation' | 'note' | 'architecture' | 'decision' | 'rules' | 'other' | undefined;
-          const tags = Array.isArray(args.tags) ? args.tags as string[] : undefined;
+          const tags = strArray(args, 'tags');
           const existing = await getMemoryByName(project, memName);
           const memory = await writeMemory(project, memName, content, category, tags);
           return {
@@ -1029,8 +1123,8 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
           };
         }
         case 'read': {
-          if (Array.isArray(args.name)) {
-            const names = args.name as string[];
+          const names = strArray(args, 'name');
+          if (names && names.length > 1) {
             const results = await getMemoriesByNames(project, names);
             return { success: true, memories: results, count: results.length };
           }
@@ -1058,8 +1152,8 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
           };
         }
         case 'delete': {
-          if (Array.isArray(args.name)) {
-            const names = args.name as string[];
+          const names = strArray(args, 'name');
+          if (names && names.length > 1) {
             const dryRun = bool(args, 'dry_run') ?? false;
             const maxItems = num(args, 'max_items') ?? 10;
             if (names.length > maxItems) {
@@ -1078,15 +1172,18 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
         case 'update': {
           const memName = reqStr(args, 'name');
           const changes: { content?: string; category?: 'documentation' | 'note' | 'architecture' | 'decision' | 'rules' | 'other'; tags?: string[] } = {};
-          if (args.content) changes.content = args.content as string;
-          if (args.category) changes.category = args.category as 'documentation' | 'note' | 'architecture' | 'decision' | 'rules' | 'other';
-          if (Array.isArray(args.tags)) changes.tags = args.tags as string[];
+          const newContent = str(args, 'content');
+          if (newContent !== undefined) changes.content = newContent;
+          const newCategory = str(args, 'category');
+          if (newCategory !== undefined) changes.category = newCategory as 'documentation' | 'note' | 'architecture' | 'decision' | 'rules' | 'other';
+          const newTags = strArray(args, 'tags');
+          if (newTags !== undefined) changes.tags = newTags;
           const result = await updateMemory(project, memName, changes);
           return result;
         }
         case 'find_for_file': {
-          if (Array.isArray(args.file_path)) {
-            const filePaths = args.file_path as string[];
+          const filePaths = strArray(args, 'file_path');
+          if (filePaths && filePaths.length > 1) {
             const settled = await Promise.allSettled(filePaths.map(fp => findMemoriesForPath(project, fp)));
             const results: unknown[] = [];
             const errors: string[] = [];
@@ -1121,14 +1218,17 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
         case 'add': {
           return await addThought(
             reqStr(args, 'project'), reqStr(args, 'source'),
-            reqStr(args, 'content'), (args.tags as string[]) ?? []
+            reqStr(args, 'content'), strArrayOrEmpty(args, 'tags')
           );
         }
         case 'get': {
           const project = reqStr(args, 'project');
           if (args.id !== undefined) {
+            const ids = strArray(args, 'id');
             const isBatch = Array.isArray(args.id);
-            const ids = isBatch ? args.id as string[] : [args.id as string];
+            if (!ids || ids.length === 0) {
+              return { success: false, thought: null, message: 'id ist erforderlich' };
+            }
             const result = await getThoughtsByIds(project, ids);
             if (!isBatch) {
               return result.length > 0
@@ -1149,8 +1249,8 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
         }
         case 'delete': {
           const project = reqStr(args, 'project');
-          if (Array.isArray(args.id)) {
-            const ids = args.id as string[];
+          const ids = strArray(args, 'id');
+          if (ids && ids.length > 1) {
             const dryRun = bool(args, 'dry_run') ?? false;
             const maxItems = num(args, 'max_items') ?? 10;
             if (ids.length > maxItems) {
@@ -1170,8 +1270,10 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
           const project = reqStr(args, 'project');
           const id = reqStr(args, 'id');
           const changes: { content?: string; tags?: string[] } = {};
-          if (args.content) changes.content = str(args, 'content');
-          if (args.tags) changes.tags = args.tags as string[];
+          const newContent = str(args, 'content');
+          if (newContent !== undefined) changes.content = newContent;
+          const newTags = strArray(args, 'tags');
+          if (newTags !== undefined) changes.tags = newTags;
           const result = await updateThought(project, id, changes);
           return result;
         }
@@ -1192,7 +1294,7 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
           return await updatePlan(project, {
             name: str(args, 'name'),
             description: str(args, 'description'),
-            goals: Array.isArray(args.goals) ? args.goals as string[] : undefined,
+            goals: strArray(args, 'goals'),
             architecture: str(args, 'architecture'),
           });
         case 'add_task':
@@ -1225,8 +1327,8 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
           };
         }
         case 'get': {
-          if (Array.isArray(args.id)) {
-            const ids = args.id as string[];
+          const ids = strArray(args, 'id');
+          if (ids && ids.length > 1) {
             const results = await getProposalsByIds(project, ids);
             return { success: true, proposals: results, count: results.length };
           }
@@ -1235,8 +1337,8 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
           return { success: true, proposal };
         }
         case 'update_status': {
-          if (Array.isArray(args.id)) {
-            const ids = args.id as string[];
+          const ids = strArray(args, 'id');
+          if (ids && ids.length > 1) {
             const status = reqStr(args, 'status');
             const settled = await Promise.allSettled(
               ids.map(id => updateProposalStatus(project, id, status as 'pending' | 'reviewed' | 'accepted' | 'rejected'))
@@ -1257,8 +1359,8 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
           return { success: true, proposal, message: `Proposal "${proposal.id}" Status geaendert zu "${proposal.status}"` };
         }
         case 'delete': {
-          if (Array.isArray(args.id)) {
-            const ids = args.id as string[];
+          const ids = strArray(args, 'id');
+          if (ids && ids.length > 1) {
             const dryRun = bool(args, 'dry_run') ?? false;
             const maxItems = num(args, 'max_items') ?? 10;
             if (ids.length > maxItems) {
@@ -1309,14 +1411,14 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
           return { success: true, action: 'unregister' };
         }
         case 'register_batch': {
-          const agents = args.agents as Array<{ id: string; model?: string; cutoffDate?: string }>;
-          if (!Array.isArray(agents)) throw new Error('Parameter "agents" muss ein Array sein');
+          const agents = objArray<{ id: string; model?: string; cutoffDate?: string }>(args, 'agents');
+          if (!agents || agents.length === 0) throw new Error('Parameter "agents" muss ein Array mit mindestens einem Eintrag sein');
           const results = await registerAgentsBatch(agents, reqStr(args, 'project'));
           return { success: true, count: results.length, agents: results, action: 'register_batch' };
         }
         case 'unregister_batch': {
-          const ids = args.ids as string[];
-          if (!Array.isArray(ids)) throw new Error('Parameter "ids" muss ein Array sein');
+          const ids = strArray(args, 'ids');
+          if (!ids || ids.length === 0) throw new Error('Parameter "ids" muss ein Array mit mindestens einem Eintrag sein');
           await unregisterAgentsBatch(ids);
           return { success: true, count: ids.length, action: 'unregister_batch' };
         }
@@ -1324,8 +1426,8 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
           const sendProject = reqStr(args, 'project');
           const senderId = reqStr(args, 'sender_id');
           const content = reqStr(args, 'content');
-          if (Array.isArray(args.recipient_id)) {
-            const recipientIds = args.recipient_id as string[];
+          const recipientIds = strArray(args, 'recipient_id');
+          if (recipientIds && recipientIds.length > 1) {
             const settled = await Promise.allSettled(
               recipientIds.map(rid => sendChatMessage(sendProject, senderId, content, rid))
             );
@@ -1517,8 +1619,8 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
         case 'get_for_file': {
           const agentId = reqStr(args, 'agent_id');
           const project = reqStr(args, 'project');
-          if (Array.isArray(args.file_path)) {
-            const filePaths = args.file_path as string[];
+          const filePaths = strArray(args, 'file_path');
+          if (filePaths && filePaths.length > 1) {
             const settled = await Promise.allSettled(
               filePaths.map(fp => getDocsForFile(fp, agentId, project))
             );
@@ -1551,7 +1653,7 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
           const title = reqStr(args, 'title');
           const description = reqStr(args, 'description');
           const project = str(args, 'project') || 'ideas';
-          const tags = (args.tags as string[]) || [];
+          const tags = strArrayOrEmpty(args, 'tags');
           const content = `## ${title}\n\n${description}`;
 
           const suggestedName = generateIdeaName(content);
