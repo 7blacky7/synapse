@@ -1904,12 +1904,17 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
 
       const result = await waitForShellJob(id, timeoutMs + 5000);
 
+      // Wichtig fuer Web-KI-Connectors: explizites success-Flag +
+      // actionable message - sonst hangt der Connector beim
+      // project_inactive/unknown_project-Fall stillschweigend.
       return {
+        success: !result.error,
         status: result.status,
         stream_id: result.stream_id,
         exit_code: result.exit_code,
         tail: result.tail,
         error: result.error,
+        message: result.message,
       };
     }
 
