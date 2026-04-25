@@ -986,9 +986,85 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
   },
 
   specialist: {
-    summary: 'NUR lokal verfuegbar. Startet Claude-CLI-Subprozesse.',
-    when_to_use: 'NICHT aus Web-KI.',
-    when_not_to_use: 'Immer aus Web-KI.',
+    summary: 'Persistente Claude-CLI Spezialisten auf dem User-PC spawnen, stoppen, ansprechen. Web-KI-Aufrufe laufen ueber PG-Queue → FileWatcher-Daemon → lokaler claude CLI.',
+    when_to_use: [
+      'Langlaufende Aufgabe an Sub-Agent delegieren: spawn (1) oder spawn_batch (mehrere atomar).',
+      'Sub-Agent eine Nachricht / neuen Auftrag schicken: wake.',
+      'Sub-Agent komplett entfernen (Auto-Respawn vermeiden, Token sparen): purge.',
+      'Sub-Agent nur stoppen aber Skill+Memory behalten: stop.',
+      'SKILL.md eines Spezialisten editieren: update_skill.',
+    ].join(' '),
+    when_not_to_use: [
+      'Eigene Single-Shot-Aufgabe → einfach selbst erledigen.',
+      'Status-Check / capabilities → aktuell nur ueber lokalen MCP (kein Live-Wrapper-Status in PG).',
+    ].join(' '),
+    param_tips: [
+      'project + project_path: BEIDE Pflicht fuer alle Aktionen ausser capabilities.',
+      'project_path = absoluter Pfad zum Projekt-Root auf dem User-PC.',
+      'name: eindeutige ID — KEINE Sonderzeichen / / .. / Leerzeichen, sonst Sicherheits-Reject.',
+      'model: opus / sonnet / haiku (200k Context). opus[1m] / sonnet[1m] = 1M Context.',
+      'keep_alive: true fuer langlaufende Spezialisten (Auto-Respawn bei Crash). Default false fuer One-Shot.',
+      'Voraussetzung: FileWatcher-Daemon laeuft auf dem User-PC + Claude-CLI installiert + Projekt im Tray aktiv.',
+    ].join('\\n'),
+    examples: [
+      'specialist({ action: "spawn", project: "synapse", project_path: "/home/user/dev/synapse", name: "review-bot", model: "haiku", expertise: "Code-Review", task: "Reviewe Branch X" })',
+      'specialist({ action: "spawn_batch", project: "synapse", project_path: "/home/user/dev/synapse", specialists: [{ name: "a", model: "haiku", expertise: "X", task: "..." }, { name: "b", model: "haiku", expertise: "Y", task: "..." }] })',
+      'specialist({ action: "wake", name: "review-bot", message: "Status Update bitte" })',
+      'specialist({ action: "purge", project: "synapse", project_path: "/home/user/dev/synapse", name: "review-bot" })',
+    ],
+    anti_patterns: [
+      'spawn fuer triviale One-Shot-Tasks — Overhead durch Process-Spawn + Claude-CLI.',
+      'Viele Spezialisten ohne Aufgaben spawnen — sie verbrauchen Heartbeat-Token.',
+      'stop statt purge wenn Spezialist nicht mehr gebraucht wird → KEEP_ALIVE-Auto-Respawn frisst Token.',
+      'name mit Pfadzeichen oder .. — wird wegen Path-Traversal-Schutz abgelehnt.',
+    ],
+    actions: {
+      spawn: {
+        description: 'Einen neuen Spezialisten starten (Claude-CLI-Subprozess auf dem User-PC).',
+        params: 'project (req), project_path (req), name (req), model (req), expertise (req), task (req), channel?, keep_alive?, allowed_tools?, cwd?',
+        example: 'specialist({ action: "spawn", project: "synapse", project_path: "/home/user/dev/synapse", name: "doc-bot", model: "haiku", expertise: "Doku", task: "Schreibe README" })',
+        tips: 'Web-KI: Job laeuft via Queue, Antwort innerhalb 60s. Bei Timeout pruefe ob Daemon laeuft.',
+      },
+      spawn_batch: {
+        description: 'Mehrere Spezialisten atomar in einem Call starten (1..10).',
+        params: 'project (req), project_path (req), specialists (req, Array von { name, model, expertise, task, channel?, allowed_tools?, keep_alive? })',
+        example: 'specialist({ action: "spawn_batch", project: "synapse", project_path: "/home/user/dev/synapse", specialists: [{ name: "a", model: "haiku", expertise: "X", task: "..." }, { name: "b", model: "haiku", expertise: "Y", task: "..." }] })',
+        tips: 'Sequenziell (nicht parallel) — wegen Resource-Limits + Socket-Wait.',
+      },
+      stop: {
+        description: 'Spezialisten anhalten (Wrapper-Prozess beenden). FS + DB-Eintraege bleiben.',
+        params: 'project_path (req), name (req, String oder Array fuer Batch)',
+        example: 'specialist({ action: "stop", project_path: "/home/user/dev/synapse", name: "doc-bot" })',
+        tips: 'Bei keep_alive: true respawnt der Wrapper automatisch — fuer endgueltiges Entfernen "purge" nutzen.',
+      },
+      purge: {
+        description: 'Spezialisten KOMPLETT entfernen: stop + Channel-Memberships + Chat-Session + status.json + FS-Verzeichnis. Auto-Respawn unmoeglich.',
+        params: 'project_path (req), name (req, String oder Array fuer Batch)',
+        example: 'specialist({ action: "purge", project_path: "/home/user/dev/synapse", name: "doc-bot" })',
+        tips: 'Bevorzugt vor stop wenn der Spezialist nicht mehr gebraucht wird — sonst kostet er Heartbeat-Token.',
+      },
+      wake: {
+        description: 'Eine Nachricht an einen laufenden Spezialisten schicken (synchroner RPC).',
+        params: 'name (req, String oder Array), message (req)',
+        example: 'specialist({ action: "wake", name: "doc-bot", message: "Status?" })',
+        tips: 'Wenn Spezialist busy: Auto-Fallback in seine Inbox (wird beim naechsten Heartbeat verarbeitet).',
+      },
+      update_skill: {
+        description: 'SKILL.md eines Spezialisten editieren (regeln/fehler/patterns/context).',
+        params: 'name (req), project_path (req), file (rules|errors|patterns|context), skill_action (add|remove), content (req)',
+        example: 'specialist({ action: "update_skill", name: "doc-bot", project_path: "/home/user/dev/synapse", file: "rules", skill_action: "add", content: "Niemals .md Dateien erstellen" })',
+      },
+      status: {
+        description: 'Aktuell NUR ueber lokalen MCP-Server verfuegbar (REST-API hat keinen Live-Wrapper-Status in PG).',
+        params: '— (REST gibt Stub-Antwort zurueck)',
+        example: '— (workaround: spawn-Response enthaelt PID + Socket; spaetere Status-Checks via lokalem MCP)',
+      },
+      capabilities: {
+        description: 'Pruefen ob Claude CLI verfuegbar ist (lokaler MCP). Web-KIs muessen via shell({command:"which claude"}) selbst pruefen.',
+        params: '—',
+        example: 'specialist({ action: "capabilities" })',
+      },
+    },
   },
 
   watcher: {
