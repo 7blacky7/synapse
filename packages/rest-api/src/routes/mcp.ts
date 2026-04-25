@@ -490,7 +490,7 @@ const MCP_TOOLS = [
       properties: {
         action: {
           type: 'string',
-          enum: ['spawn', 'stop', 'status', 'wake', 'update_skill', 'capabilities'],
+          enum: ['spawn', 'stop', 'purge', 'status', 'wake', 'update_skill', 'capabilities'],
           description: 'Die auszufuehrende Aktion',
         },
         name: {

@@ -11,5 +11,7 @@ export {
   listChannels,
   getNewMessagesForAgent,
   ensureGeneralChannel,
+  removeAgentFromAllChannels,
+  unregisterChatAgent as unregisterAgent,
 } from '@synapse/core'
 export type { ChannelMessage } from '@synapse/core'

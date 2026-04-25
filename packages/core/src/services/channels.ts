@@ -45,6 +45,19 @@ export async function joinChannel(project: string, channelName: string, agentNam
   return true
 }
 
+/**
+ * Entfernt einen Agenten aus ALLEN Channels (projektuebergreifend).
+ * Wird beim Purge eines Spezialisten aufgerufen.
+ */
+export async function removeAgentFromAllChannels(agentName: string): Promise<number> {
+  const pool = getPool()
+  const { rows } = await pool.query(
+    `DELETE FROM specialist_channel_members WHERE agent_name = $1 RETURNING channel_id`,
+    [agentName],
+  )
+  return rows.length
+}
+
 export async function leaveChannel(project: string, channelName: string, agentName: string): Promise<boolean> {
   const pool = getPool()
   const { rows: channelRows } = await pool.query<{ id: number }>(

@@ -16,6 +16,7 @@ import { ConsolidatedTool, reqStr, str, bool, strArray } from './types.js';
 import {
   spawnSpecialistTool,
   stopSpecialistTool,
+  purgeSpecialistTool,
   specialistStatusTool,
   wakeSpecialistTool,
   updateSpecialistSkillTool,
@@ -32,8 +33,8 @@ export const specialistTool: ConsolidatedTool = {
       properties: {
         action: {
           type: 'string',
-          enum: ['spawn', 'stop', 'status', 'wake', 'update_skill', 'capabilities'],
-          description: 'Die auszuführende Aktion',
+          enum: ['spawn', 'stop', 'purge', 'status', 'wake', 'update_skill', 'capabilities'],
+          description: 'Die auszuführende Aktion. purge = Stop + komplette Entfernung (FS-Verzeichnis, status.json, Channel-Memberships, Chat-Session). Auto-Respawn unmoeglich danach.',
         },
 
         // spawn parameters
@@ -175,6 +176,28 @@ export const specialistTool: ConsolidatedTool = {
         const name = reqStr(args, 'name');
         const projectPath = reqStr(args, 'project_path');
         return await stopSpecialistTool(name, projectPath);
+      }
+
+      case 'purge': {
+        // Array-Support: Mehrere Spezialisten purgen
+        const names = strArray(args, 'name');
+        if (names && names.length > 1) {
+          const projectPath = reqStr(args, 'project_path');
+          const settled = await Promise.allSettled(
+            names.map(n => purgeSpecialistTool(n, projectPath))
+          );
+          const results: Array<Record<string, unknown>> = [];
+          const errors: string[] = [];
+          for (const r of settled) {
+            if (r.status === 'fulfilled') results.push(r.value as Record<string, unknown>);
+            else errors.push(String(r.reason));
+          }
+          return { results, count: results.length, errors };
+        }
+
+        const name = reqStr(args, 'name');
+        const projectPath = reqStr(args, 'project_path');
+        return await purgeSpecialistTool(name, projectPath);
       }
 
       case 'status': {

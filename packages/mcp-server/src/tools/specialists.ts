@@ -17,11 +17,14 @@ import {
   readStatus,
   updateSpecialist,
   removeSpecialist,
+  purgeAgentDir,
   buildSpecialistPrompt,
   heartbeatController,
   ensureGeneralChannel,
   joinChannel,
   leaveChannel,
+  removeAgentFromAllChannels,
+  unregisterAgent,
   createChannel,
   postMessage,
   getMessages,
@@ -224,6 +227,67 @@ export async function stopSpecialistTool(
   return jsonResult({
     success: true,
     message: `Spezialist "${name}" gestoppt.`,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// purge_specialist — stop + komplette Entfernung (FS + DB + Channels)
+// ---------------------------------------------------------------------------
+
+export async function purgeSpecialistTool(
+  name: string,
+  projectPath: string,
+) {
+  const steps: Record<string, unknown> = {};
+
+  // 1. Stop wie bisher (Wrapper-Prozess beenden)
+  try {
+    if (heartbeatController.isConnected(name)) {
+      await heartbeatController.sendStop(name);
+    }
+    await heartbeatController.disconnectFromWrapper(name);
+    steps.stop = 'ok';
+  } catch (err) {
+    steps.stop = `Fehler: ${err}`;
+  }
+
+  // 2. Aus allen Channels entfernen (DB)
+  try {
+    const removed = await removeAgentFromAllChannels(name);
+    steps.channels_removed = removed;
+  } catch (err) {
+    steps.channels_removed = `Fehler: ${err}`;
+  }
+
+  // 3. Chat-Session abmelden (DB)
+  try {
+    await unregisterAgent(name);
+    steps.chat_unregistered = 'ok';
+  } catch (err) {
+    steps.chat_unregistered = `Fehler: ${err}`;
+  }
+
+  // 4. Specialist aus status.json entfernen (FS)
+  try {
+    await removeSpecialist(projectPath, name);
+    steps.status_removed = 'ok';
+  } catch (err) {
+    steps.status_removed = `Fehler: ${err}`;
+  }
+
+  // 5. Agent-Verzeichnis komplett loeschen (FS)
+  // Sicherheits-Check ist in purgeAgentDir selbst (verhindert path traversal)
+  try {
+    await purgeAgentDir(projectPath, name);
+    steps.fs_purged = 'ok';
+  } catch (err) {
+    steps.fs_purged = `Fehler: ${err}`;
+  }
+
+  return jsonResult({
+    success: true,
+    message: `Spezialist "${name}" komplett entfernt (Stop + Channels + Chat + Status + FS). Auto-Respawn unmoeglich.`,
+    steps,
   });
 }
 

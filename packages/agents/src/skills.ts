@@ -1,4 +1,4 @@
-import { readFile, writeFile, mkdir, readdir, rename, access } from 'node:fs/promises'
+import { readFile, writeFile, mkdir, readdir, rename, access, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 
 // ---------------------------------------------------------------------------
@@ -26,6 +26,20 @@ export async function ensureAgentDir(projectPath: string, agentName: string): Pr
   const dir = agentDir(projectPath, agentName)
   await mkdir(join(dir, 'logs'), { recursive: true })
   return dir
+}
+
+/**
+ * Loescht das gesamte Verzeichnis eines Agenten (.synapse/agents/<name>/).
+ * Idempotent: kein Fehler wenn nichts existiert.
+ * Sicherheits-Check: agentName darf weder leer sein noch '/' oder '..' enthalten,
+ * sonst koennte rm -rf in fremde Pfade greifen.
+ */
+export async function purgeAgentDir(projectPath: string, agentName: string): Promise<void> {
+  if (!agentName || agentName.includes('/') || agentName.includes('..') || agentName === '.') {
+    throw new Error(`Ungueltiger agentName fuer purge: "${agentName}"`)
+  }
+  const dir = agentDir(projectPath, agentName)
+  await rm(dir, { recursive: true, force: true })
 }
 
 function todayDate(): string {

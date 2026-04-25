@@ -245,6 +245,8 @@ export {
   deleteChannel,
   joinChannel,
   leaveChannel,
+  removeAgentFromAllChannels,
+
   postChannelMessage,
   getChannelMessages,
   getChannelMembers,
