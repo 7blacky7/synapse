@@ -66,12 +66,16 @@ export async function shellRoutes(fastify: FastifyInstance): Promise<void> {
         });
 
         const result = await waitForShellJob(id, timeoutMs + 5000);
+        // success-Flag + message sind Pflicht: Web-KI-Connectors brauchen
+        // ein klares Fehlersignal, sonst hangt der Call stillschweigend.
         return reply.status(statusFor(result as unknown as Record<string, unknown>)).send({
+          success: !result.error,
           status: result.status,
           stream_id: result.stream_id ?? stream_id,
           exit_code: result.exit_code,
           tail: result.tail,
           error: result.error,
+          message: result.message,
         });
       }
 

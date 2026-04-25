@@ -435,6 +435,11 @@ CREATE TABLE IF NOT EXISTS shell_jobs (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+-- Additive Migration: human-lesbare Fehler-Message getrennt vom error-Code.
+-- Web-KI-Connectors (ChatGPT, Claude.ai) brauchen eine actionable Message
+-- zusaetzlich zum Maschinen-Code damit sie dem User sagen koennen was zu tun ist.
+ALTER TABLE shell_jobs ADD COLUMN IF NOT EXISTS message TEXT;
+
 CREATE INDEX IF NOT EXISTS idx_shell_jobs_project_status ON shell_jobs(project, status);
 CREATE INDEX IF NOT EXISTS idx_shell_jobs_created ON shell_jobs(created_at) WHERE status = 'pending';
 

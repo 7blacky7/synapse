@@ -144,28 +144,35 @@ async function processJob(project: string): Promise<void> {
     })) as Record<string, unknown>;
   } catch (err: unknown) {
     // Unerwarteter Fehler in execShellInProject selbst
+    const m = (err as Error).message ?? String(err);
     await completeShellJob(job.id, {
       status: 'failed',
-      error: (err as Error).message ?? String(err),
+      error: 'exec_exception',
+      message: m,
     });
-    console.error(`[shell-worker] Job ${job.id} failed (exec-exception):`, (err as Error).message);
+    console.error(`[shell-worker] Job ${job.id} failed (exec-exception):`, m);
     return;
   }
 
   // Ergebnis-Shape aus execShellInProject mappen
   if (result['error']) {
-    // project_inactive → rejected; alles andere → failed
+    // project_inactive → rejected; alles andere → failed.
+    // error = Maschinen-Code, message = human-Text mit Anweisung — getrennt
+    // damit Web-KI-Connectors maschinell matchen UND dem User Anweisungen
+    // weitergeben koennen ("Bitte Projekt im Tray aktivieren").
     const isInactive = result['error'] === 'project_inactive';
+    const errCode = String(result['error']);
     const errMsg =
       (result['message'] as string | undefined) ??
       (result['reason'] as string | undefined) ??
-      String(result['error']);
+      errCode;
 
     await completeShellJob(job.id, {
       status: isInactive ? 'rejected' : 'failed',
-      error: errMsg,
+      error: errCode,
+      message: errMsg,
     });
-    console.error(`[shell-worker] Job ${job.id} ${isInactive ? 'rejected' : 'failed'}: ${errMsg}`);
+    console.error(`[shell-worker] Job ${job.id} ${isInactive ? 'rejected' : 'failed'}: ${errCode} — ${errMsg}`);
     return;
   }
 

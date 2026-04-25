@@ -39,6 +39,7 @@ export interface ShellJobRow {
   exit_code: number | null;
   tail: string[] | null;
   error: string | null;
+  message: string | null;
   stream_id: string | null;
   claimed_by: string | null;
   claimed_at: Date | null;
@@ -51,7 +52,10 @@ export interface ShellJobCompletion {
   status: 'done' | 'failed' | 'rejected' | 'timeout';
   exit_code?: number;
   tail?: string[];
+  /** Maschinen-Code: project_inactive, unknown_project, cwd_outside_project, ... */
   error?: string;
+  /** Human-lesbare Erklaerung mit Handlungs-Anweisung — fuer Web-KI-Connectors. */
+  message?: string;
 }
 
 export interface ShellJobResult {
@@ -60,6 +64,7 @@ export interface ShellJobResult {
   exit_code?: number;
   tail?: string[];
   error?: string;
+  message?: string;
   stream_id?: string;
 }
 
@@ -78,6 +83,7 @@ function formatResult(row: ShellJobRow): ShellJobResult {
     exit_code: row.exit_code ?? undefined,
     tail: row.tail ?? undefined,
     error: row.error ?? undefined,
+    message: row.message ?? undefined,
     stream_id: row.stream_id ?? undefined,
   };
 }
@@ -174,6 +180,7 @@ export async function completeShellJob(
          exit_code = $3,
          tail = $4::jsonb,
          error = $5,
+         message = $6,
          completed_at = NOW(),
          updated_at = NOW()
      WHERE id = $1`,
@@ -183,6 +190,7 @@ export async function completeShellJob(
       result.exit_code ?? null,
       result.tail ? JSON.stringify(result.tail) : null,
       result.error ?? null,
+      result.message ?? null,
     ],
   );
   const channel = doneChannelForJob(id);
@@ -285,7 +293,8 @@ export async function expirePendingShellJobs(maxAgeSec: number = 30): Promise<nu
   const res = await pool.query<{ id: string }>(
     `UPDATE shell_jobs
      SET status = 'rejected',
-         error = 'expired — Projekt war zu lange nicht aktiv (max ' || $1::text || 's Grace-Window)',
+         error = 'expired',
+         message = 'Job wurde verworfen weil das Projekt laenger als ' || $1::text || 's nicht aktiv war. Aktiviere das Projekt im Tray und schicke das Kommando erneut.',
          completed_at = NOW(),
          updated_at = NOW()
      WHERE status = 'pending'
