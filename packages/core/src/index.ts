@@ -268,6 +268,7 @@ export {
   getShellJobById,
   getShellJobLogLines,
   searchShellJobLog,
+  insertCompletedShellJob,
 } from './services/index.js';
 export type {
   EnqueueArgs,

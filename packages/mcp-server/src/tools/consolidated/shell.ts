@@ -13,6 +13,9 @@
 
 import type { ConsolidatedTool } from './types.js';
 import { str, num, reqStr } from './types.js';
+import os from 'node:os';
+import fs from 'node:fs';
+import path from 'node:path';
 import {
   execShellInProject,
   getShellStream,
@@ -20,7 +23,19 @@ import {
   getShellJobById,
   getShellJobLogLines,
   searchShellJobLog,
+  insertCompletedShellJob,
 } from '@synapse/core';
+
+const STREAMS_DIR = path.join(os.homedir(), '.synapse', 'shell-streams');
+
+function readStreamLog(streamId: string | undefined | null): string | undefined {
+  if (!streamId) return undefined;
+  try {
+    return fs.readFileSync(path.join(STREAMS_DIR, `${streamId}.log`), 'utf8');
+  } catch {
+    return undefined;
+  }
+}
 
 export const shellTool: ConsolidatedTool = {
   definition: {
@@ -145,13 +160,54 @@ export const shellTool: ConsolidatedTool = {
       };
     }
 
-    const result = await execShellInProject({
-      project: reqStr(args, 'project'),
-      command: reqStr(args, 'command'),
-      cwd_relative: str(args, 'cwd_relative'),
-      timeout_ms: num(args, 'timeout_ms'),
-      tail_lines: num(args, 'tail_lines'),
-    });
+    const project = reqStr(args, 'project');
+    const command = reqStr(args, 'command');
+    const cwdRel = str(args, 'cwd_relative');
+    const timeoutMs = num(args, 'timeout_ms');
+    const tailLines = num(args, 'tail_lines');
+
+    const result = (await execShellInProject({
+      project,
+      command,
+      cwd_relative: cwdRel,
+      timeout_ms: timeoutMs,
+      tail_lines: tailLines,
+    })) as Record<string, unknown>;
+
+    // History persistieren — damit eigene MCP-Aufrufe in shell history /
+    // shell get / shell log auftauchen (gleiche Tabelle wie REST-Queue).
+    // Best-effort: bei DB-Fehler nicht den exec-Aufruf scheitern lassen.
+    try {
+      const errCode = result['error'] as string | undefined;
+      const isInactive = errCode === 'project_inactive';
+      const status: 'done' | 'failed' | 'rejected' | 'timeout' = errCode
+        ? (isInactive ? 'rejected' : 'failed')
+        : (result['status'] === 'done'
+            ? 'done'
+            : result['status'] === 'running'
+              ? 'timeout'
+              : 'failed');
+      const streamId = (result['stream_id'] as string | undefined) ?? undefined;
+      const persistedId = await insertCompletedShellJob({
+        project,
+        command,
+        cwd_relative: cwdRel,
+        timeout_ms: timeoutMs,
+        tail_lines: tailLines,
+        status,
+        exit_code: result['exit_code'] as number | undefined,
+        tail: result['tail'] as string[] | undefined,
+        error: errCode,
+        message: result['message'] as string | undefined,
+        output: readStreamLog(streamId),
+        stream_id: streamId,
+        source: 'mcp_local',
+      });
+      // History-ID anhaengen damit der User sie via "shell get" abholen kann
+      (result as Record<string, unknown>)['id'] = persistedId.id;
+    } catch {
+      // Kein DB-Zugriff (z.B. Tests ohne PG) → exec-Result bleibt valide
+    }
 
     return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
   },

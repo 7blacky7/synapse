@@ -301,6 +301,62 @@ export async function waitForShellJob(
  * inaktiv war, spaeter automatisch ausgefuehrt werden wenn das Projekt
  * wieder aktiv wird.
  */
+/**
+ * Schreibt einen bereits abgeschlossenen Job direkt als Row — ohne Queue-Detour.
+ * Wird vom lokalen MCP-Server genutzt (der execShellInProject synchron ruft)
+ * damit dessen Aufrufe in der gleichen History landen wie REST/Queue-Jobs.
+ *
+ * KEIN NOTIFY (kein Worker erwartet das), KEIN pending-Status (Job ist done).
+ */
+export async function insertCompletedShellJob(args: {
+  project: string;
+  command: string;
+  cwd_relative?: string;
+  timeout_ms?: number;
+  tail_lines?: number;
+  status: 'done' | 'failed' | 'rejected' | 'timeout';
+  exit_code?: number;
+  tail?: string[];
+  error?: string;
+  message?: string;
+  output?: string;
+  stream_id?: string;
+  source: 'mcp_local' | 'rest_queue';
+}): Promise<{ id: string }> {
+  const pool = getPool();
+  let output = args.output ?? null;
+  let truncated = false;
+  if (output !== null && output.length > MAX_OUTPUT_BYTES) {
+    output = output.slice(0, MAX_OUTPUT_BYTES) + `\n\n[... output truncated at ${MAX_OUTPUT_BYTES} bytes ...]`;
+    truncated = true;
+  }
+  const res = await pool.query<{ id: string }>(
+    `INSERT INTO shell_jobs (
+       project, command, cwd_relative, timeout_ms, tail_lines,
+       status, exit_code, tail, error, message, output, output_truncated,
+       stream_id, claimed_by, claimed_at, completed_at
+     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,NOW(),NOW())
+     RETURNING id`,
+    [
+      args.project,
+      args.command,
+      args.cwd_relative ?? null,
+      args.timeout_ms ?? 30_000,
+      args.tail_lines ?? 5,
+      args.status,
+      args.exit_code ?? null,
+      args.tail ? JSON.stringify(args.tail) : null,
+      args.error ?? null,
+      args.message ?? null,
+      output,
+      truncated,
+      args.stream_id ?? null,
+      args.source,
+    ],
+  );
+  return { id: res.rows[0].id };
+}
+
 /** Zaehlt Newlines im Output — billig (eine Iteration). */
 function countLines(s: string | null | undefined): number {
   if (!s) return 0;
@@ -321,9 +377,12 @@ export interface ShellJobSummary {
   exit_code: number | null;
   tail: string[] | null;
   error: string | null;
+  message: string | null;
   output_truncated: boolean | null;
   output_line_count: number;
   stream_id: string | null;
+  /** "mcp_local" | "daemon-<hostname>-<pid>" — woher kam der Job. */
+  source: string | null;
   created_at: Date;
   completed_at: Date | null;
 }
@@ -358,7 +417,8 @@ export async function getShellJobs(opts: {
   // direkt — billig + spart Datenuebertragung des output-TEXT-Felds.
   const { rows } = await pool.query(
     `SELECT id, project, command, cwd_relative, status, exit_code, tail, error,
-            output_truncated, stream_id, created_at, completed_at,
+            message, output_truncated, stream_id, claimed_by AS source,
+            created_at, completed_at,
             CASE
               WHEN output IS NULL OR output = '' THEN 0
               WHEN substring(output FROM length(output) FOR 1) = E'\n'
