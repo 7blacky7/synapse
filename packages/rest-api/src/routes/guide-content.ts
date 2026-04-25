@@ -32,6 +32,8 @@ export interface ToolGuide {
   examples?: string[];
   anti_patterns?: string[];
   actions?: Record<string, ActionGuide>;
+  /** Mehrschritt-Workflows die mehrere Actions kombinieren — fuer komplexe Tools wie shell. */
+  workflow_examples?: string[];
 }
 
 // ===========================================================================
@@ -104,14 +106,15 @@ Rufe \`guide({ tool_name: "<name>" })\` auf fuer:
 export const TOOL_GUIDES: Record<string, ToolGuide> = {
 
   // -------------------------------------------------------------------------
-  // shell — das neue Queue-basierte Tool
+  // shell — Queue-basierte Shell-Ausfuehrung mit History
   // -------------------------------------------------------------------------
   shell: {
-    summary: 'Fuehrt Shell-Kommandos auf dem lokalen Projekt-PC aus (via PostgreSQL-Queue + FileWatcher-Daemon).',
+    summary: 'Fuehrt Shell-Kommandos auf dem lokalen Projekt-PC aus (via PostgreSQL-Queue + FileWatcher-Daemon). Voller Output in PG persistiert — Logs koennen Stunden spaeter abgerufen werden.',
     when_to_use: [
       'Ein-Zeilen-Commands fuer Status-Checks (git log, ls, pwd).',
       'Build-/Test-Ausfuehrung (pnpm build, pytest).',
       'Wenn code_intel/files nicht reichen (z.B. find, ripgrep-Flags).',
+      'Vergangene Job-Ausgabe nachschlagen — auch wenn die MCP-Connection in der Zwischenzeit weg war: history → get → log.',
     ].join(' '),
     when_not_to_use: [
       'Datei lesen/schreiben — nutze files.',
@@ -120,34 +123,62 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
       'Shell-Pipelines mit Interaktion (stdin) — nicht unterstuetzt.',
     ].join(' '),
     param_tips: [
-      'project: Pflicht, muss auf dem Daemon aktiv sein (sonst rejected).',
+      'project: Pflicht fuer exec, muss auf dem Daemon aktiv sein. Bei nicht-aktivem Projekt: status=rejected, error=project_inactive, message="Projekt ist inaktiv. Bitte im Tray aktivieren."',
       'timeout_ms: Default 30000. Bei langen Commands hoeher, aber max 90s sinnvoll.',
       'cwd_relative: Pfad RELATIV zum Projekt-Root (z.B. "packages/core"), kein absoluter Pfad.',
-      'tail_lines: Default 5. Auf 20-50 erhoehen wenn du mehr Output willst.',
+      'tail_lines: Default 5. Auf 20-50 erhoehen wenn du im exec-Result direkt mehr sehen willst — fuer den vollen Output ist aber action:"get" oder "log" besser.',
+      'response: success(true|false) + status + tail; bei history zusaetzlich output_line_count + source ("mcp_local" | "daemon-<host>-<pid>"); bei error: actionable message.',
     ].join('\\n'),
     examples: [
       'shell({ action: "exec", project: "synapse", command: "git status --short" })',
-      'shell({ action: "exec", project: "synapse", command: "pnpm --filter @synapse/core build", timeout_ms: 60000 })',
-      'shell({ action: "exec", project: "synapse", command: "ls -la", cwd_relative: "packages/rest-api" })',
+      'shell({ action: "history", project: "synapse", limit: 10 })',
+      'shell({ action: "get", id: "<uuid aus history>" })',
+      'shell({ action: "log", id: "<uuid>", from_line: 50, to_line: 100 })',
+      'shell({ action: "log", id: "<uuid>", query: "ERROR" })',
+      'shell({ action: "log", id: "<uuid>", query: "ERROR=\\\\d+", regex: true })',
     ],
     anti_patterns: [
       'command: "sudo ..." — Daemon laeuft als User, sudo wird nicht funktionieren.',
-      'command: "vim file.ts" — interaktive Tools hingen.',
-      'Sensible Daten in command (Passwords, API-Keys) — werden in shell_jobs-Tabelle gespeichert.',
+      'command: "vim file.ts" — interaktive Tools hangen.',
+      'Sensible Daten in command (Passwords, API-Keys) — werden in shell_jobs-Tabelle gespeichert + bleiben in der History.',
       'Destruktive Commands ohne Dry-Run (rm -rf, DROP TABLE) — IMMER erst echo + confirm.',
+      'Tausenden Zeilen Output direkt parsen — output ist auf 1MB gecappt, dann output_truncated=true. Nutze action:"log" mit query um nur Treffer-Zeilen zu holen.',
+      'Fuer "wie viele Zeilen kam raus?" → die history liefert output_line_count direkt mit, keine zweite Anfrage noetig.',
     ],
     actions: {
       exec: {
-        description: 'Kommando synchron ausfuehren, Ergebnis in Response.',
+        description: 'Kommando synchron ausfuehren, Ergebnis in Response. Voller Output wird automatisch in PG gespeichert (gecappt 1MB).',
         params: 'project (req), command (req), timeout_ms, tail_lines, cwd_relative',
         example: 'shell({ action: "exec", project: "synapse", command: "echo hallo" })',
-        tips: 'Default action — wenn du kein action angibst, ist es "exec".',
+        tips: 'Default action — wenn du kein action angibst, ist es "exec". Bei project_inactive bekommst du klare message statt stillem Hangen.',
       },
       get_stream: {
-        description: 'Noch nicht implementiert via REST — gibt 501.',
-        tips: 'Fuer long-running Commands: erhoeh timeout_ms. Wenn nicht reicht, split in kleinere Commands.',
+        description: 'Live-Tail eines laufenden Jobs (nur via lokalem MCP, REST gibt 501).',
+        tips: 'Fuer long-running Commands ueber REST: timeout_ms hoch + spaeter via "get" oder "log" abholen.',
+      },
+      history: {
+        description: 'Liste vergangener Jobs eines Projekts (oder global). Sortiert nach created_at DESC. Liefert Metadata mit output_line_count + source — KEIN voller Output (zu gross fuer Liste).',
+        params: 'project (optional Filter), limit (Default 20, Max 200), offset, status (pending|running|done|failed|rejected|timeout)',
+        example: 'shell({ action: "history", project: "synapse", limit: 10, status: "failed" })',
+        tips: 'Wenn du einen alten Build oder Test-Lauf nachschauen willst — IMMER zuerst history um die UUID zu finden, dann get/log fuer Details.',
+      },
+      get: {
+        description: 'Einzelnen Job per ID inkl. vollem Output (gecappt 1MB). Liefert auch claimed_by, completed_at, output_truncated.',
+        params: 'id (req)',
+        example: 'shell({ action: "get", id: "750a83b6-2c8e-483f-baee-7d8e6d323717" })',
+        tips: 'output_truncated:true bedeutet der Output war groesser als 1MB — nutze action:"log" mit query/range fuer gezielten Zugriff statt alles zu laden.',
+      },
+      log: {
+        description: 'Zeilengenauer Zugriff auf den Output eines Jobs. ZWEI Modi: (a) Zeilenrange via from_line/to_line, (b) Such-Treffer mit Zeilennummern via query (Substring oder Regex).',
+        params: 'id (req); fuer Range: from_line, to_line (1-basiert, beide inkl., Default 1-100); fuer Suche: query, regex (Default false), case_sensitive (Default false), max_matches (Default 200, Max 2000)',
+        example: 'shell({ action: "log", id: "<uuid>", query: "fehler|error|warning", regex: true })',
+        tips: 'Substring-Suche ist case-insensitive default. Fuer Zahlen einfach query: "42" (substring) statt regex. Treffer kommen mit line_number + content; truncated:true wenn mehr als max_matches.',
       },
     },
+    workflow_examples: [
+      'Workflow: Long-running Build im Hintergrund starten + spaeter Status pruefen.\\n  1) shell({ action: "exec", project: "synapse", command: "pnpm -r build", timeout_ms: 5000 }) → status=timeout, stream_id zurueck\\n  2) ... beliebig spaeter ...\\n  3) shell({ action: "history", project: "synapse", limit: 5 }) → letzten Job finden\\n  4) shell({ action: "get", id: "<uuid>" }) → status=done/failed, voller output',
+      'Workflow: Nach Fehler-Pattern in altem Build suchen.\\n  1) shell({ action: "history", project: "synapse", status: "failed", limit: 5 })\\n  2) shell({ action: "log", id: "<uuid>", query: "Error|FAIL|✗", regex: true })\\n  → Zeilennummern mit Fehlern, dann shell({ action: "log", id, from_line: <treffer-1>, to_line: <treffer+10> }) fuer Kontext',
+    ],
   },
 
   // -------------------------------------------------------------------------
