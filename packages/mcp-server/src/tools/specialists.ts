@@ -240,7 +240,14 @@ export async function purgeSpecialistTool(
 ) {
   const steps: Record<string, unknown> = {};
 
-  // 1. Stop wie bisher (Wrapper-Prozess beenden)
+  // 1. Wrapper-PID merken VOR dem Stop (fuer PID-Wait-Loop)
+  let wrapperPid: number | null = null;
+  try {
+    const status = await readStatus(projectPath);
+    wrapperPid = status.specialists[name]?.wrapperPid ?? null;
+  } catch { /* ignore */ }
+
+  // 2. Stop wie bisher (Wrapper-Prozess beenden)
   try {
     if (heartbeatController.isConnected(name)) {
       await heartbeatController.sendStop(name);
@@ -249,6 +256,25 @@ export async function purgeSpecialistTool(
     steps.stop = 'ok';
   } catch (err) {
     steps.stop = `Fehler: ${err}`;
+  }
+
+  // 2b. Auf Wrapper-Prozess-Tod warten — Wrapper schreibt waehrend Shutdown
+  // updateSpecialist({ status: 'stopped' }) und wuerde unseren removeSpecialist
+  // ueberschreiben. Polling: max 5s warten bis PID tot ist.
+  if (wrapperPid && wrapperPid > 0) {
+    const deadlineMs = Date.now() + 5000;
+    while (Date.now() < deadlineMs) {
+      try {
+        process.kill(wrapperPid, 0); // throws if dead
+        await new Promise(r => setTimeout(r, 100));
+      } catch {
+        break; // process is dead
+      }
+    }
+    // Sicherheitspuffer fuer letzten async write
+    await new Promise(r => setTimeout(r, 200));
+  } else {
+    await new Promise(r => setTimeout(r, 500));
   }
 
   // 2. Aus allen Channels entfernen (DB)
@@ -267,21 +293,21 @@ export async function purgeSpecialistTool(
     steps.chat_unregistered = `Fehler: ${err}`;
   }
 
-  // 4. Specialist aus status.json entfernen (FS)
-  try {
-    await removeSpecialist(projectPath, name);
-    steps.status_removed = 'ok';
-  } catch (err) {
-    steps.status_removed = `Fehler: ${err}`;
-  }
-
-  // 5. Agent-Verzeichnis komplett loeschen (FS)
+  // 4. Agent-Verzeichnis komplett loeschen (FS)
   // Sicherheits-Check ist in purgeAgentDir selbst (verhindert path traversal)
   try {
     await purgeAgentDir(projectPath, name);
     steps.fs_purged = 'ok';
   } catch (err) {
     steps.fs_purged = `Fehler: ${err}`;
+  }
+
+  // 5. Specialist aus status.json entfernen (zuletzt — nachdem Wrapper sicher tot)
+  try {
+    await removeSpecialist(projectPath, name);
+    steps.status_removed = 'ok';
+  } catch (err) {
+    steps.status_removed = `Fehler: ${err}`;
   }
 
   return jsonResult({
