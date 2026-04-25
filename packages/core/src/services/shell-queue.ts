@@ -301,19 +301,47 @@ export async function waitForShellJob(
  * inaktiv war, spaeter automatisch ausgefuehrt werden wenn das Projekt
  * wieder aktiv wird.
  */
+/** Zaehlt Newlines im Output — billig (eine Iteration). */
+function countLines(s: string | null | undefined): number {
+  if (!s) return 0;
+  // Kein newline am Ende? trotzdem 1 Zeile.
+  let n = 1;
+  for (let i = 0; i < s.length; i++) if (s.charCodeAt(i) === 10) n++;
+  // Trailing newline → letzte "leere" Zeile nicht zaehlen.
+  if (s.charCodeAt(s.length - 1) === 10) n--;
+  return Math.max(0, n);
+}
+
+export interface ShellJobSummary {
+  id: string;
+  project: string;
+  command: string;
+  cwd_relative: string | null;
+  status: ShellJobRow['status'];
+  exit_code: number | null;
+  tail: string[] | null;
+  error: string | null;
+  output_truncated: boolean | null;
+  output_line_count: number;
+  stream_id: string | null;
+  created_at: Date;
+  completed_at: Date | null;
+}
+
 /**
  * History-Lookup: liefert die letzten N Jobs eines Projekts (oder ueber alle
  * Projekte falls project=undefined). Sortiert nach created_at DESC.
  *
- * Returnt KEIN output-Feld — die Liste soll klein bleiben. Fuer den vollen
- * Output ein einzelnes `getShellJobById` aufrufen.
+ * Returnt KEIN output-Feld — die Liste soll klein bleiben. output_line_count
+ * gibt der KI aber an wie gross der jeweilige Log ist und ob ein detail-
+ * Lookup mit `get` oder `log` lohnt.
  */
 export async function getShellJobs(opts: {
   project?: string;
   limit?: number;
   offset?: number;
   status?: ShellJobRow['status'];
-}): Promise<Array<Omit<ShellJobRow, 'output'>>> {
+}): Promise<ShellJobSummary[]> {
   const pool = getPool();
   const limit = Math.max(1, Math.min(opts.limit ?? 20, 200));
   const offset = Math.max(0, opts.offset ?? 0);
@@ -326,30 +354,125 @@ export async function getShellJobs(opts: {
   const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
   params.push(limit, offset);
 
-  const { rows } = await pool.query<Omit<ShellJobRow, 'output'>>(
-    `SELECT id, project, command, cwd_relative, timeout_ms, tail_lines,
-            status, exit_code, tail, error, output_truncated, stream_id,
-            claimed_by, claimed_at, completed_at, created_at, updated_at
+  // length(output) - length(replace(output, E'\n', '')) zaehlt Newlines in PG
+  // direkt — billig + spart Datenuebertragung des output-TEXT-Felds.
+  const { rows } = await pool.query(
+    `SELECT id, project, command, cwd_relative, status, exit_code, tail, error,
+            output_truncated, stream_id, created_at, completed_at,
+            CASE
+              WHEN output IS NULL OR output = '' THEN 0
+              WHEN substring(output FROM length(output) FOR 1) = E'\n'
+                THEN length(output) - length(replace(output, E'\n', ''))
+              ELSE length(output) - length(replace(output, E'\n', '')) + 1
+            END AS output_line_count
      FROM shell_jobs
      ${where}
      ORDER BY created_at DESC
      LIMIT $${params.length - 1} OFFSET $${params.length}`,
     params,
   );
-  return rows;
+  return rows as ShellJobSummary[];
+}
+
+export interface ShellJobDetail extends ShellJobRow {
+  output_line_count: number;
 }
 
 /**
  * Holt einen einzelnen Job inklusive vollem Output (falls vorhanden).
  * Fuer das Detail-Lookup einer KI nach `history`.
  */
-export async function getShellJobById(id: string): Promise<ShellJobRow | null> {
+export async function getShellJobById(id: string): Promise<ShellJobDetail | null> {
   const pool = getPool();
   const { rows } = await pool.query<ShellJobRow>(
     `SELECT * FROM shell_jobs WHERE id = $1`,
     [id],
   );
-  return rows[0] ?? null;
+  if (rows.length === 0) return null;
+  const row = rows[0];
+  return { ...row, output_line_count: countLines(row.output) };
+}
+
+/**
+ * Liefert eine Zeilen-Range aus dem Output eines Jobs.
+ * fromLine/toLine sind 1-basiert, beide inklusiv. Default: erste 100 Zeilen.
+ */
+export async function getShellJobLogLines(
+  id: string,
+  fromLine?: number,
+  toLine?: number,
+): Promise<{
+  found: boolean;
+  total_lines: number;
+  from_line: number;
+  to_line: number;
+  lines: string[];
+} | null> {
+  const job = await getShellJobById(id);
+  if (!job) return null;
+  const all = (job.output ?? '').split('\n');
+  // Trailing leere Zeile durch \n am Ende entfernen
+  if (all.length > 0 && all[all.length - 1] === '') all.pop();
+  const total = all.length;
+  const from = Math.max(1, fromLine ?? 1);
+  const to = Math.min(total, toLine ?? from + 99);
+  const lines = total === 0 ? [] : all.slice(from - 1, to);
+  return { found: true, total_lines: total, from_line: from, to_line: to, lines };
+}
+
+/**
+ * Sucht im Output eines Jobs. Modi:
+ *   - regex=true: Pattern als RegExp interpretiert
+ *   - sonst: Substring-Match (case-insensitive default).
+ *
+ * Zahlen-Suche: einfach query="42" mit substring → findet alle Zeilen mit "42".
+ */
+export async function searchShellJobLog(
+  id: string,
+  query: string,
+  opts: { regex?: boolean; case_sensitive?: boolean; max_matches?: number } = {},
+): Promise<{
+  found: boolean;
+  total_lines: number;
+  total_matches: number;
+  matches: Array<{ line_number: number; content: string }>;
+  truncated: boolean;
+} | null> {
+  const job = await getShellJobById(id);
+  if (!job) return null;
+  const all = (job.output ?? '').split('\n');
+  if (all.length > 0 && all[all.length - 1] === '') all.pop();
+  const total = all.length;
+
+  const max = Math.max(1, Math.min(opts.max_matches ?? 200, 2000));
+  const matches: Array<{ line_number: number; content: string }> = [];
+  let totalMatches = 0;
+
+  let test: (s: string) => boolean;
+  if (opts.regex) {
+    const re = new RegExp(query, opts.case_sensitive ? '' : 'i');
+    test = (s) => re.test(s);
+  } else if (opts.case_sensitive) {
+    test = (s) => s.includes(query);
+  } else {
+    const q = query.toLowerCase();
+    test = (s) => s.toLowerCase().includes(q);
+  }
+
+  for (let i = 0; i < total; i++) {
+    if (test(all[i])) {
+      totalMatches++;
+      if (matches.length < max) matches.push({ line_number: i + 1, content: all[i] });
+    }
+  }
+
+  return {
+    found: true,
+    total_lines: total,
+    total_matches: totalMatches,
+    matches,
+    truncated: totalMatches > matches.length,
+  };
 }
 
 export async function expirePendingShellJobs(maxAgeSec: number = 30): Promise<number> {

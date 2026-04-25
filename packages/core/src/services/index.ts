@@ -44,6 +44,8 @@ export {
   waitForShellJob,
   getShellJobs,
   getShellJobById,
+  getShellJobLogLines,
+  searchShellJobLog,
 } from './shell-queue.js';
 export type {
   EnqueueArgs,

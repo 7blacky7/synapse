@@ -266,6 +266,8 @@ export {
   waitForShellJob,
   getShellJobs,
   getShellJobById,
+  getShellJobLogLines,
+  searchShellJobLog,
 } from './services/index.js';
 export type {
   EnqueueArgs,

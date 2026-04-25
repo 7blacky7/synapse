@@ -101,6 +101,8 @@ import {
   waitForShellJob,
   getShellJobs,
   getShellJobById,
+  getShellJobLogLines,
+  searchShellJobLog,
   // Error Patterns (code_check)
   addErrorPattern,
   listErrorPatterns,
@@ -640,11 +642,17 @@ const MCP_TOOLS = [
     inputSchema: {
       type: 'object',
       properties: {
-        action: { type: 'string', enum: ['exec', 'get_stream', 'history', 'get'], description: 'Default: exec. history=Liste vergangener Jobs. get=Einzeljob mit vollem Output.' },
-        id: { type: 'string', description: 'Job-UUID (Pflicht fuer get)' },
+        action: { type: 'string', enum: ['exec', 'get_stream', 'history', 'get', 'log'], description: 'Default: exec. log + id liefert Zeilenrange (1-100); log + id + query liefert Such-Treffer mit Zeilennummern.' },
+        id: { type: 'string', description: 'Job-UUID (Pflicht fuer get/log)' },
         limit: { type: 'number', description: 'history: max Jobs (Default 20, Max 200)' },
         offset: { type: 'number', description: 'history: Skip N (Default 0)' },
         status: { type: 'string', enum: ['pending', 'running', 'done', 'failed', 'rejected', 'timeout'], description: 'history: Filter auf Status' },
+        from_line: { type: 'number', description: 'log: ab Zeile N (1-basiert)' },
+        to_line: { type: 'number', description: 'log: bis Zeile M inkl.' },
+        query: { type: 'string', description: 'log: Such-Pattern (Substring oder Regex)' },
+        regex: { type: 'boolean', description: 'log: query als Regex (Default false)' },
+        case_sensitive: { type: 'boolean', description: 'log: case-sensitive (Default false)' },
+        max_matches: { type: 'number', description: 'log: max Treffer (Default 200, Max 2000)' },
         project: { type: 'string', description: 'Projekt-Name (Pflicht fuer exec)' },
         command: { type: 'string', description: 'Shell-Kommando (Pflicht fuer exec)' },
         stream_id: { type: 'string', description: 'Pflicht fuer get_stream (noch nicht implementiert via REST)' },
@@ -1910,6 +1918,23 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
           return { success: false, error: 'unknown_job', message: `Job ${reqStr(args, 'id')} nicht gefunden` };
         }
         return { success: true, job };
+      }
+
+      if (shellAction === 'log') {
+        const id = reqStr(args, 'id');
+        const query = str(args, 'query');
+        if (query) {
+          const result = await searchShellJobLog(id, query, {
+            regex: args.regex === true,
+            case_sensitive: args.case_sensitive === true,
+            max_matches: num(args, 'max_matches'),
+          });
+          if (!result) return { success: false, error: 'unknown_job', message: `Job ${id} nicht gefunden` };
+          return { success: true, ...result };
+        }
+        const result = await getShellJobLogLines(id, num(args, 'from_line'), num(args, 'to_line'));
+        if (!result) return { success: false, error: 'unknown_job', message: `Job ${id} nicht gefunden` };
+        return { success: true, ...result };
       }
 
       if (shellAction !== 'exec') {
