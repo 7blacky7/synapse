@@ -14,13 +14,30 @@
  */
 
 import { FastifyInstance } from 'fastify';
-import { enqueueShellJob, waitForShellJob } from '@synapse/core';
+import {
+  enqueueShellJob,
+  waitForShellJob,
+  getShellJobs,
+  getShellJobById,
+  getShellJobLogLines,
+  searchShellJobLog,
+} from '@synapse/core';
 
 interface ShellBody {
-  action?: 'exec' | 'get_stream';
+  action?: 'exec' | 'get_stream' | 'history' | 'get' | 'log';
   project?: string;
   command?: string;
   stream_id?: string;
+  id?: string;
+  limit?: number;
+  offset?: number;
+  status?: 'pending' | 'running' | 'done' | 'failed' | 'rejected' | 'timeout';
+  from_line?: number;
+  to_line?: number;
+  query?: string;
+  regex?: boolean;
+  case_sensitive?: boolean;
+  max_matches?: number;
   timeout_ms?: number;
   tail_lines?: number;
   cwd_relative?: string;
@@ -42,11 +59,53 @@ export async function shellRoutes(fastify: FastifyInstance): Promise<void> {
 
     try {
       if (action === 'get_stream') {
-        // get_stream via REST-API noch nicht implementiert — Queue-Version folgt
         return reply.status(501).send({
           success: false,
-          error: 'get_stream via REST-API noch nicht implementiert — Queue-Version folgt',
+          error: 'get_stream via REST-API noch nicht implementiert',
         });
+      }
+
+      if (action === 'history') {
+        const jobs = await getShellJobs({
+          project: body.project,
+          limit: body.limit,
+          offset: body.offset,
+          status: body.status,
+        });
+        return reply.status(200).send({ success: true, count: jobs.length, jobs });
+      }
+
+      if (action === 'get') {
+        if (!body.id) {
+          return reply.status(400).send({ success: false, error: 'missing_field', message: 'id ist erforderlich fuer get' });
+        }
+        const job = await getShellJobById(body.id);
+        if (!job) {
+          return reply.status(404).send({ success: false, error: 'unknown_job', message: `Job ${body.id} nicht gefunden` });
+        }
+        return reply.status(200).send({ success: true, job });
+      }
+
+      if (action === 'log') {
+        if (!body.id) {
+          return reply.status(400).send({ success: false, error: 'missing_field', message: 'id ist erforderlich fuer log' });
+        }
+        if (body.query) {
+          const result = await searchShellJobLog(body.id, body.query, {
+            regex: body.regex === true,
+            case_sensitive: body.case_sensitive === true,
+            max_matches: body.max_matches,
+          });
+          if (!result) {
+            return reply.status(404).send({ success: false, error: 'unknown_job', message: `Job ${body.id} nicht gefunden` });
+          }
+          return reply.status(200).send({ success: true, ...result });
+        }
+        const result = await getShellJobLogLines(body.id, body.from_line, body.to_line);
+        if (!result) {
+          return reply.status(404).send({ success: false, error: 'unknown_job', message: `Job ${body.id} nicht gefunden` });
+        }
+        return reply.status(200).send({ success: true, ...result });
       }
 
       if (action === 'exec') {

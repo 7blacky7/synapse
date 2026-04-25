@@ -435,13 +435,19 @@ CREATE TABLE IF NOT EXISTS shell_jobs (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- Additive Migration: human-lesbare Fehler-Message getrennt vom error-Code.
--- Web-KI-Connectors (ChatGPT, Claude.ai) brauchen eine actionable Message
--- zusaetzlich zum Maschinen-Code damit sie dem User sagen koennen was zu tun ist.
+-- Additive Migrations: actionable error-message + persistenter Voll-Output.
+-- message: getrennt vom error-Code, damit Web-KI-Connectors dem User
+--   sagen koennen was zu tun ist ("Projekt im Tray aktivieren").
+-- output: Worker schreibt stdout+stderr bei Completion direkt in PG
+--   (gecappt 1MB) — REST-API auf Unraid kann ohne Filesystem-Zugriff
+--   zur Projekt-Maschine den Log lesen.
 ALTER TABLE shell_jobs ADD COLUMN IF NOT EXISTS message TEXT;
+ALTER TABLE shell_jobs ADD COLUMN IF NOT EXISTS output TEXT;
+ALTER TABLE shell_jobs ADD COLUMN IF NOT EXISTS output_truncated BOOLEAN DEFAULT false;
 
 CREATE INDEX IF NOT EXISTS idx_shell_jobs_project_status ON shell_jobs(project, status);
 CREATE INDEX IF NOT EXISTS idx_shell_jobs_created ON shell_jobs(created_at) WHERE status = 'pending';
+CREATE INDEX IF NOT EXISTS idx_shell_jobs_history ON shell_jobs(project, created_at DESC);
 
 CREATE OR REPLACE FUNCTION notify_shell_job_created() RETURNS TRIGGER AS $$
 BEGIN

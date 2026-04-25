@@ -42,6 +42,11 @@ export {
   expirePendingShellJobs,
   completeShellJob,
   waitForShellJob,
+  getShellJobs,
+  getShellJobById,
+  getShellJobLogLines,
+  searchShellJobLog,
+  insertCompletedShellJob,
 } from './shell-queue.js';
 export type {
   EnqueueArgs,
