@@ -564,10 +564,9 @@ Standalone Node-Daemon auf Port `7878` (moo-daemon-kompatibel).
 
 | Tool | via REST | Anmerkung |
 |------|----------|-----------|
-| `search`, `memory`, `thought`, `plan`, `proposal`, `docs`, `code_intel`, `files`, `event` | ✅ vollständig | Alle Actions |
-| `chat` | ⚠️ teilweise | Ohne `inbox_send` / `inbox_check` |
-| `admin` | ⚠️ teilweise | Ohne `migrate` / `restore` |
-| `project` | ⚠️ teilweise | Ohne `complete_setup` / `cleanup` / `stop` |
+| `search`, `memory`, `thought`, `plan`, `proposal`, `docs`, `code_intel`, `files`, `event`, `chat` | ✅ vollständig | Alle Actions |
+| `admin` | ⚠️ Actions eingeschränkt | `migrate` / `restore` gesperrt — brauchen Filesystem-Zugriff auf Backup-Files |
+| `project` | ⚠️ Actions eingeschränkt | `complete_setup` / `cleanup` / `stop` gesperrt — brauchen lokalen FileWatcher |
 | `specialist` | 🔄 via PG-Queue | Daemon + Claude-CLI auf User-PC nötig (PC muss an sein) |
 | `channel` | 🔄 via PG-Queue | Wird beim Specialist-Spawn vom Daemon mitverwaltet; Daemon nötig |
 | `shell` | 🔄 via PG-Queue | Daemon claimt + führt aus |
