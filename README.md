@@ -625,7 +625,7 @@ Standalone Node-Daemon auf Port `7878` (moo-daemon-kompatibel).
 
 | Matcher | Hook | Beschreibung |
 |---------|------|--------------|
-| `Read` | `pre-synapse-onboarding.sh` | Koordinator-Onboarding (Status alle 30 min) |
+| `Read` | `pre-synapse-onboarding.sh` | Koordinator-Onboarding (einmal pro Session) |
 | `Edit\|Write` | `pre-edit-framework-docs.sh` | Framework-Hint einmalig pro Agent + Framework |
 
 ### PostToolUse
@@ -741,7 +741,7 @@ cd packages/file-watcher-daemon-ts
 pnpm run start    # Port 7878
 ```
 
-Läuft als Tray-Anwendung (Electron) und verarbeitet Shell-/Specialist-Jobs aus der PG-Queue für REST-Clients.
+Läuft als Tray-Anwendung (moo-basierter Daemon) und verarbeitet Shell-/Specialist-Jobs aus der PG-Queue für REST-Clients.
 
 ---
 
