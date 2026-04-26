@@ -335,6 +335,17 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
         example: 'files({ action: "search_replace", project: "synapse", file_path: "x.ts", search: "const x = 1", replace: "const x = 2" })',
         tips: 'Bei mehrdeutigem Match: nimm mehr Umgebungs-Kontext in search.',
       },
+      search_replace_batch: {
+        description: 'Mehrere Search-Replace-Edits in einem Aufruf. Datei wird 1× gelesen und 1× geschrieben. Continue-with-warnings: 0-match und multi-match (ohne replace_all) werden uebersprungen, Rest wird angewendet.',
+        params: 'edits (Array, 1..50 Elemente: { search, replace, replace_all? })',
+        example: 'files({ action: "search_replace_batch", project: "synapse", file_path: "src/x.ts", edits: [{ search: "const x = 1", replace: "const x = 2" }, { search: "foo", replace: "bar", replace_all: true }] })',
+        tips: [
+          'Jedes Edit wird sequenziell auf dem aktuellen Content angewendet — spaetere Edits sehen Aenderungen frueherer.',
+          'replace_all: true wenn der String mehrfach vorkommt und alle Vorkommen ersetzt werden sollen.',
+          'Response enthaelt applied, skipped, total und warnings[{ index, search_preview, reason }].',
+          'reason: "no_match" oder "multiple_matches (N occurrences)".',
+        ].join(' '),
+      },
       replace_lines: {
         description: 'Zeilenbereich ersetzen.',
         params: 'line_start, line_end, content',

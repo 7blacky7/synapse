@@ -297,6 +297,94 @@ export function searchReplace(
 }
 
 /**
+ * Zählt Vorkommen eines Suchstrings im Content (gleiche Whitespace-tolerante Logik wie searchReplace).
+ * Interner Helfer fuer searchReplaceBatch.
+ */
+function countOccurrences(content: string, search: string): number {
+  if (!search) return 0;
+  const escapedSearch = search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const flexibleSearch = escapedSearch.replace(/[ \t]+/g, '[ \\t]+');
+  try {
+    const regex = new RegExp(flexibleSearch, 'g');
+    const matchArr = content.match(regex);
+    if (matchArr && matchArr.length > 0) return matchArr.length;
+  } catch {
+    // Ungültiger Regex — Fallback auf exakten Split
+  }
+  return content.split(search).length - 1;
+}
+
+/**
+ * Ein einzelnes Edit fuer searchReplaceBatch.
+ */
+export interface BatchEdit {
+  search: string;
+  replace: string;
+  replace_all?: boolean;
+}
+
+/**
+ * Ergebnis eines searchReplaceBatch-Aufrufs.
+ */
+export interface BatchResult {
+  applied: number;
+  skipped: number;
+  total: number;
+  warnings: Array<{ index: number; search_preview: string; reason: string }>;
+}
+
+/**
+ * Fuehrt mehrere Search-Replace-Edits sequenziell auf einem Content durch.
+ * Liest das File 1× im Speicher, schreibt am Ende 1×.
+ *
+ * Verhalten (continue-with-warnings):
+ *   - 0 matches             → skipped, reason: "no_match"
+ *   - N>1 ohne replace_all  → skipped, reason: "multiple_matches (N occurrences)"
+ *   - 1 match (oder replace_all+match) → applied
+ *
+ * @param content - Dateiinhalt als String
+ * @param edits   - Array von BatchEdit (1..50 Elemente empfohlen)
+ * @returns { content: string; result: BatchResult }
+ */
+export function searchReplaceBatch(
+  content: string,
+  edits: BatchEdit[]
+): { content: string; result: BatchResult } {
+  let current = content;
+  let applied = 0;
+  let skipped = 0;
+  const warnings: Array<{ index: number; search_preview: string; reason: string }> = [];
+
+  for (let i = 0; i < edits.length; i++) {
+    const edit = edits[i];
+    const search_preview = edit.search.slice(0, 80);
+    const count = countOccurrences(current, edit.search);
+
+    if (count === 0) {
+      skipped++;
+      warnings.push({ index: i, search_preview, reason: 'no_match' });
+      continue;
+    }
+
+    if (count > 1 && !edit.replace_all) {
+      skipped++;
+      warnings.push({ index: i, search_preview, reason: `multiple_matches (${count} occurrences)` });
+      continue;
+    }
+
+    // Genau 1 Match oder replace_all gesetzt → anwenden
+    const { content: newContent } = searchReplace(current, edit.search, edit.replace);
+    current = newContent;
+    applied++;
+  }
+
+  return {
+    content: current,
+    result: { applied, skipped, total: edits.length, warnings },
+  };
+}
+
+/**
  * Berechnet den SHA-256 Hash eines Strings.
  */
 export function contentHash(content: string): string {

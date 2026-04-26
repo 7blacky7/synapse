@@ -86,6 +86,7 @@ import {
   insertAfterLine,
   deleteLines,
   searchReplace,
+  searchReplaceBatch,
   // Channels
   createChannel,
   joinChannel,
@@ -660,7 +661,7 @@ const MCP_TOOLS = [
       properties: {
         action: {
           type: 'string',
-          enum: ['create', 'update', 'delete', 'move', 'copy', 'read', 'replace_lines', 'insert_after', 'delete_lines', 'search_replace'],
+          enum: ['create', 'update', 'delete', 'move', 'copy', 'read', 'replace_lines', 'insert_after', 'delete_lines', 'search_replace', 'search_replace_batch'],
           description: 'Datei-Aktion',
         },
         project: { type: 'string', description: 'Projekt-Name' },
@@ -672,6 +673,21 @@ const MCP_TOOLS = [
         after_line: { type: 'number', description: 'Nach dieser Zeile einfuegen (fuer insert_after)' },
         search: { type: 'string', description: 'Suchtext (fuer search_replace)' },
         replace: { type: 'string', description: 'Ersetzungstext (fuer search_replace)' },
+        edits: {
+          type: 'array',
+          description: 'Edits fuer search_replace_batch (1..50 Elemente)',
+          minItems: 1,
+          maxItems: 50,
+          items: {
+            type: 'object',
+            properties: {
+              search: { type: 'string', description: 'Exakter Suchstring' },
+              replace: { type: 'string', description: 'Ersetzungsstring' },
+              replace_all: { type: 'boolean', description: 'Alle Vorkommen ersetzen (default: false)' },
+            },
+            required: ['search', 'replace'],
+          },
+        },
       },
       required: ['action', 'project', 'file_path'],
     },
@@ -2213,6 +2229,36 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
           if (count === 0) return { success: true, count: 0, message: `Kein Vorkommen von "${searchStr}" in "${filePath}"` };
           const result = await updateFileInPg(project, filePath, newContent, agentId);
           const response: Record<string, unknown> = { success: true, count, message: `${count} Vorkommen ersetzt in "${filePath}"` };
+          if (result.warnings?.length) {
+            response.errorPatterns = {
+              count: result.warnings.length,
+              warnings: result.warnings,
+              hint: `${result.warnings.length} bekannte Fehler-Patterns matchen deinen Code`,
+            };
+          }
+          return response;
+        }
+        case 'search_replace_batch': {
+          const currentContent = await getFileContentFromPg(project, filePath);
+          if (currentContent === null) return { success: false, error: `Datei "${filePath}" nicht gefunden` };
+          const rawEdits = args['edits'];
+          if (!Array.isArray(rawEdits) || rawEdits.length === 0) {
+            return { success: false, error: 'edits muss ein nicht-leeres Array sein' };
+          }
+          const { content: newContent, result: batchResult } = searchReplaceBatch(currentContent, rawEdits as Array<{ search: string; replace: string; replace_all?: boolean }>);
+          if (batchResult.applied === 0) {
+            return {
+              success: false,
+              ...batchResult,
+              message: `Keine Edits angewendet in "${filePath}"`,
+            };
+          }
+          const result = await updateFileInPg(project, filePath, newContent, agentId);
+          const response: Record<string, unknown> = {
+            success: true,
+            ...batchResult,
+            message: `${batchResult.applied}/${batchResult.total} Edits angewendet in "${filePath}"`,
+          };
           if (result.warnings?.length) {
             response.errorPatterns = {
               count: result.warnings.length,

@@ -15,10 +15,12 @@ import {
   insertAfterLine,
   deleteLines,
   searchReplace,
+  searchReplaceBatch,
   getDocsForFile,
   getProjectRoot,
   toRelativePath,
 } from '@synapse/core';
+import type { BatchEdit } from '@synapse/core';
 
 import * as path from 'path';
 import { ConsolidatedTool, str, reqStr, num } from './types.js';
@@ -36,8 +38,8 @@ export const filesTool: ConsolidatedTool = {
       properties: {
         action: {
           type: 'string',
-          enum: ['create', 'update', 'read', 'delete', 'move', 'copy', 'replace_lines', 'insert_after', 'delete_lines', 'search_replace'],
-          description: 'Action: create | update | read | delete | move | copy | replace_lines | insert_after | delete_lines | search_replace',
+          enum: ['create', 'update', 'read', 'delete', 'move', 'copy', 'replace_lines', 'insert_after', 'delete_lines', 'search_replace', 'search_replace_batch'],
+          description: 'Action: create | update | read | delete | move | copy | replace_lines | insert_after | delete_lines | search_replace | search_replace_batch',
         },
         project: {
           type: 'string',
@@ -74,6 +76,21 @@ export const filesTool: ConsolidatedTool = {
         replace: {
           type: 'string',
           description: 'Ersetzungsstring (fuer search_replace)',
+        },
+        edits: {
+          type: 'array',
+          description: 'Edits fuer search_replace_batch (1..50 Elemente)',
+          minItems: 1,
+          maxItems: 50,
+          items: {
+            type: 'object',
+            properties: {
+              search: { type: 'string', description: 'Exakter Suchstring' },
+              replace: { type: 'string', description: 'Ersetzungsstring' },
+              replace_all: { type: 'boolean', description: 'Alle Vorkommen ersetzen (default: false)' },
+            },
+            required: ['search', 'replace'],
+          },
         },
         agent_id: {
           type: 'string',
@@ -268,8 +285,36 @@ export const filesTool: ConsolidatedTool = {
         );
       }
 
+      case 'search_replace_batch': {
+        const currentContent = await getFileContentFromPg(project, filePath);
+        if (currentContent === null) return { success: false, error: `Datei "${filePath}" nicht gefunden` };
+        const rawEdits = args['edits'];
+        if (!Array.isArray(rawEdits) || rawEdits.length === 0) {
+          return { success: false, error: 'edits muss ein nicht-leeres Array sein' };
+        }
+        const edits = rawEdits as BatchEdit[];
+        const { content: newContent, result: batchResult } = searchReplaceBatch(currentContent, edits);
+
+        // Nur schreiben wenn mindestens ein Edit angewendet wurde
+        if (batchResult.applied === 0) {
+          return {
+            success: false,
+            ...batchResult,
+            message: `Keine Edits angewendet in "${filePath}"`,
+          };
+        }
+
+        const writeResult = await updateFileInPg(project, filePath, newContent, agentId);
+        const response: Record<string, unknown> = {
+          success: true,
+          ...batchResult,
+          message: `${batchResult.applied}/${batchResult.total} Edits angewendet in "${filePath}"`,
+        };
+        return await attachWarnings(response, writeResult);
+      }
+
       default:
-        throw new Error(`Unbekannte files action: ${action}. Erlaubt: create, update, read, delete, move, copy, replace_lines, insert_after, delete_lines, search_replace`);
+        throw new Error(`Unbekannte files action: ${action}. Erlaubt: create, update, read, delete, move, copy, replace_lines, insert_after, delete_lines, search_replace, search_replace_batch`);
     }
   },
 };
