@@ -112,19 +112,19 @@ Datei gespeichert
 
 ### Dual-Storage (Write-Primary / Read-Primary, Eventual Consistency)
 
-- **PostgreSQL** — **Write-Primary + Source of Truth** (Code-Inhalte, Memories, Thoughts, Plans, Proposals, Code-Intel, Chat, Events, Inbox, Channels, Shell-Queue, Specialist-Queue)
-- **Qdrant** — **Read-Primary** für semantische Suche (Code, Memories, Thoughts, Proposals, Tech-Docs, Media)
+- **PostgreSQL** — relationale Schicht für Memories, Thoughts, Plans, Proposals, Chat, Events, Inbox, Channels, Shell-Queue, Specialist-Queue, Code-Intelligence (Symbole, Referenzen, Volltext)
+- **Qdrant** — Vektor-Schicht für semantische Suche (Code, Memories, Thoughts, Proposals, Tech-Docs, Media); Code-Inhalte werden bei Änderungen re-embedded und alte Vektoren ausindexiert
 
 **Konsistenz-Modell:** Eventual Consistency (by design — Single-User-System, keine konkurrierenden Writer).
 
 **Schreib-Flow:** PG first → Qdrant second (Standard für **alle** Services).
 **Fehlertoleranz:** Beide Writes in separaten try/catch, `warning`-Feld bei Partial-Failure (Schreibvorgang scheitert nicht still).
 
-**Read-Routing (by design):** `get*/list*` lesen Qdrant (semantische Suche, Read-Primary), `update*/delete*` lesen PG (Write-Primary, Source of Truth).
+**Read-Routing (by design):** Semantische Suche (`search*`, `get*/list*`) liest aus Qdrant, strukturierte Operationen (`update*/delete*`, Code-Intelligence) lesen aus PostgreSQL.
 
 Jedes Projekt bekommt eigene Qdrant-Collections: `project_{name}_code`, `project_{name}_thoughts`,
 `project_{name}_memories`, `project_{name}_proposals`, `project_{name}_docs`, `project_{name}_media`.
-Code-Intelligence-Daten liegen vollständig in PostgreSQL (kein Qdrant nötig).
+Strukturierte Code-Intelligence-Daten (Symbole, Referenzen, Volltext) liegen in PostgreSQL — Qdrant hält parallel die Embeddings der Code-Chunks für semantische Suche.
 
 ---
 
@@ -653,7 +653,7 @@ Jede Tool-Response wird automatisch erweitert um: `pendingEvents`, `unreadChat`,
 
 - **Node.js 20+** (via [mise](https://mise.jdx.dev/))
 - **pnpm** (Paketmanager — `npm`/`yarn` nicht verwenden)
-- **PostgreSQL** (Source of Truth)
+- **PostgreSQL** (relationale Schicht)
 - **Qdrant** (Vektor-Index, Docker oder Cloud)
 - **Google AI API Key** (`gemini-embedding-2-preview`)
 - Optional: **Context7 API Key** (Auto-Fetch Framework-Docs)
