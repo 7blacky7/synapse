@@ -568,9 +568,10 @@ Standalone Node-Daemon auf Port `7878` (moo-daemon-kompatibel).
 | `chat` | ⚠️ teilweise | Ohne `inbox_send` / `inbox_check` |
 | `admin` | ⚠️ teilweise | Ohne `migrate` / `restore` |
 | `project` | ⚠️ teilweise | Ohne `complete_setup` / `cleanup` / `stop` |
-| `specialist` | 🔄 via PG-Queue | Daemon + Claude-CLI auf User-PC nötig |
+| `specialist` | 🔄 via PG-Queue | Daemon + Claude-CLI auf User-PC nötig (PC muss an sein) |
+| `channel` | 🔄 via PG-Queue | Wird beim Specialist-Spawn vom Daemon mitverwaltet; Daemon nötig |
 | `shell` | 🔄 via PG-Queue | Daemon claimt + führt aus |
-| `channel`, `watcher` | ❌ nur MCP | stdio-only |
+| `watcher` | ❌ nur MCP | FileWatcher-Steuerung benötigt lokalen Dateisystem-Zugriff |
 
 ### MCP-over-HTTP
 
