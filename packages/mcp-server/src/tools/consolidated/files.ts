@@ -19,6 +19,7 @@ import {
   getDocsForFile,
   getProjectRoot,
   toRelativePath,
+  applyContentRange,
 } from '@synapse/core';
 import type { BatchEdit } from '@synapse/core';
 
@@ -95,6 +96,18 @@ export const filesTool: ConsolidatedTool = {
         agent_id: {
           type: 'string',
           description: 'Agent-ID — aktiviert Error-Pattern-Check bei Write-Operationen',
+        },
+        from_line: {
+          type: 'number',
+          description: 'read: Start-Zeile (1-basiert, Standard: 1)',
+        },
+        to_line: {
+          type: 'number',
+          description: 'read: End-Zeile inklusiv (Standard: letzte Zeile). Wird automatisch reduziert wenn Content > 80k Zeichen.',
+        },
+        truncate_long_lines: {
+          type: 'number',
+          description: 'read: Zeilen laenger als N Zeichen kuerzen und Marker anhaengen. 0 = deaktiviert (Standard).',
         },
       },
       required: ['action', 'project', 'file_path'],
@@ -184,11 +197,21 @@ export const filesTool: ConsolidatedTool = {
       }
 
       case 'read': {
-        const content = await getFileContentFromPg(project, filePath);
-        if (content === null) {
+        const rawContent = await getFileContentFromPg(project, filePath);
+        if (rawContent === null) {
           return { success: false, error: `Datei "${filePath}" nicht gefunden in Projekt "${project}"` };
         }
-        return { success: true, file_path: filePath, content, size: content.length };
+        const ranged = applyContentRange(rawContent, {
+          from: num(args, 'from_line'),
+          to: num(args, 'to_line'),
+          truncate_long_lines: num(args, 'truncate_long_lines'),
+        });
+        return {
+          success: true,
+          file_path: filePath,
+          size: rawContent.length,
+          ...ranged,
+        };
       }
 
       case 'delete': {

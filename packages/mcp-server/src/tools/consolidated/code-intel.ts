@@ -134,6 +134,20 @@ export const codeIntelTool: ConsolidatedTool = {
           type: 'number',
           description: 'Max. Ergebnisse fuer search-Action (Standard: 20)',
         },
+
+        // --- file (range + truncation) ---
+        from_line: {
+          type: 'number',
+          description: 'file: Start-Zeile (1-basiert, Standard: 1)',
+        },
+        to_line: {
+          type: 'number',
+          description: 'file: End-Zeile inklusiv (Standard: letzte Zeile). Wird automatisch reduziert wenn Content > 80k Zeichen.',
+        },
+        truncate_long_lines: {
+          type: 'number',
+          description: 'file: Zeilen laenger als N Zeichen werden gekuerzt und mit Marker versehen. 0 = deaktiviert (Standard).',
+        },
       },
       required: ['action', 'project'],
     },
@@ -226,7 +240,11 @@ export const codeIntelTool: ConsolidatedTool = {
       case 'file': {
         const filePath = str(args, 'file_path') ?? str(args, 'path');
         if (!filePath) throw new Error('Parameter "file_path" oder "path" ist erforderlich fuer action "file"');
-        const file = await getFileContent(project, filePath);
+        const file = await getFileContent(project, filePath, {
+          from: num(args, 'from_line'),
+          to: num(args, 'to_line'),
+          truncate_long_lines: num(args, 'truncate_long_lines'),
+        });
         if (!file) {
           return { success: false, message: `Datei nicht gefunden: ${filePath}`, project };
         }

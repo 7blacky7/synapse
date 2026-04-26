@@ -616,21 +616,107 @@ export async function fullTextSearchCode(
 
 // ─── getFileContent ───────────────────────────────────────────────────────────
 
+/** Max. Zeichen im content-Feld bevor Auto-Reduce greift. */
+const FILE_CONTENT_MAX_CHARS = 80_000;
+
 export interface FileContentResult {
   file_path: string;
   file_type: string;
   file_size: number;
   content: string;
+  /** Gesamtzahl der Zeilen in der Datei (unabhaengig von from/to). */
+  total_lines: number;
+  /** Tatsaechlich gelieferte Zeilen-Range (1-basiert, inklusiv). */
+  returned_range: { from: number; to: number; eof: boolean };
+}
+
+/**
+ * Optionen fuer getFileContent und applyContentRange.
+ */
+export interface FileContentOptions {
+  /** 1-basierte Start-Zeile (Standard: 1). */
+  from?: number;
+  /** 1-basierte End-Zeile inklusiv (Standard: letzte Zeile). */
+  to?: number;
+  /**
+   * Zeilen die laenger als dieser Wert sind werden auf diesen Wert gekuerzt
+   * und mit einem Marker versehen. 0 = deaktiviert (Standard).
+   */
+  truncate_long_lines?: number;
+}
+
+/**
+ * Wendet Zeilen-Range, truncate_long_lines und Auto-Reduce auf rohen Datei-
+ * Inhalt an. Kann unabhaengig von der DB-Abfrage genutzt werden.
+ */
+export function applyContentRange(
+  rawContent: string,
+  options: FileContentOptions = {}
+): { content: string; total_lines: number; returned_range: { from: number; to: number; eof: boolean } } {
+  const lines = rawContent.split('\n');
+  const total_lines = lines.length;
+
+  const from = Math.max(1, options.from ?? 1);
+  const toRequested = options.to ?? total_lines;
+  const truncAt = options.truncate_long_lines ?? 0;
+
+  // truncate_long_lines ZUERST anwenden (damit Auto-Reduce korrekt zaehlt)
+  const processedLines = truncAt > 0
+    ? lines.map(line =>
+        line.length > truncAt
+          ? line.slice(0, truncAt) + `…[truncated, full length ${line.length} chars]…`
+          : line
+      )
+    : lines;
+
+  // Zeilen-Range ausschneiden (0-basiert intern)
+  const fromIdx = from - 1;
+  const toIdx = Math.min(toRequested, total_lines) - 1;
+  let selectedLines = processedLines.slice(fromIdx, toIdx + 1);
+  let actualTo = Math.min(toRequested, total_lines);
+
+  // Auto-Reduce: Wenn Content > FILE_CONTENT_MAX_CHARS → auf passende Zeilen kuerzen
+  let joined = selectedLines.join('\n');
+  if (joined.length > FILE_CONTENT_MAX_CHARS) {
+    let charCount = 0;
+    let fitCount = 0;
+    for (let i = 0; i < selectedLines.length; i++) {
+      const lineLen = selectedLines[i].length + (i > 0 ? 1 : 0); // +1 fuer \n (ausser erste Zeile)
+      if (charCount + lineLen > FILE_CONTENT_MAX_CHARS) break;
+      charCount += lineLen;
+      fitCount++;
+    }
+    if (fitCount === 0) fitCount = 1; // mindestens 1 Zeile liefern
+    selectedLines = selectedLines.slice(0, fitCount);
+    actualTo = from + fitCount - 1;
+    joined = selectedLines.join('\n');
+  }
+
+  return {
+    content: joined,
+    total_lines,
+    returned_range: {
+      from,
+      to: actualTo,
+      eof: actualTo >= total_lines,
+    },
+  };
 }
 
 /**
  * Laedt den Inhalt einer Datei aus PostgreSQL.
  * filePath wird als LIKE-Pattern verwendet ('%filePath%').
  * Gibt null zurueck wenn nicht gefunden.
+ *
+ * Unterstuetzt optionale Range- und Truncation-Parameter:
+ * - from / to: Zeilen-Range (1-basiert, inklusiv)
+ * - truncate_long_lines: Zeilen auf N Zeichen kuerzen
+ * - Auto-Reduce bei > 80k Zeichen im content
  */
 export async function getFileContent(
   project: string,
-  filePath: string
+  filePath: string,
+  options?: FileContentOptions
 ): Promise<FileContentResult | null> {
   const pool = getPool();
 
@@ -646,10 +732,12 @@ export async function getFileContent(
   if (!result.rows[0]) return null;
   const row = result.rows[0];
 
+  const ranged = applyContentRange(row.content ?? '', options);
+
   return {
     file_path: row.file_path,
     file_type: row.file_type,
     file_size: row.file_size ?? 0,
-    content: row.content ?? '',
+    ...ranged,
   };
 }

@@ -87,6 +87,7 @@ import {
   deleteLines,
   searchReplace,
   searchReplaceBatch,
+  applyContentRange,
   // Channels
   createChannel,
   joinChannel,
@@ -647,6 +648,9 @@ const MCP_TOOLS = [
         query: { type: 'string', description: 'Suchbegriff fuer search-Action (Volltext)' },
         file_type: { type: 'string', description: 'Dateityp-Filter fuer search-Action (z.B. "ts", "js")' },
         limit: { type: 'number', description: 'Max. Ergebnisse fuer search-Action (Standard: 20)' },
+        from_line: { type: 'number', description: 'file: Start-Zeile (1-basiert, Standard: 1)' },
+        to_line: { type: 'number', description: 'file: End-Zeile inklusiv (Standard: letzte Zeile). Auto-Reduce bei > 80k Zeichen.' },
+        truncate_long_lines: { type: 'number', description: 'file: Zeilen laenger als N Zeichen kuerzen + Marker. 0 = aus (Standard).' },
       },
       required: ['action', 'project'],
     },
@@ -688,6 +692,9 @@ const MCP_TOOLS = [
             required: ['search', 'replace'],
           },
         },
+        from_line: { type: 'number', description: 'read: Start-Zeile (1-basiert, Standard: 1)' },
+        to_line: { type: 'number', description: 'read: End-Zeile inklusiv (Standard: letzte Zeile). Auto-Reduce bei > 80k Zeichen.' },
+        truncate_long_lines: { type: 'number', description: 'read: Zeilen laenger als N Zeichen kuerzen + Marker. 0 = aus (Standard).' },
       },
       required: ['action', 'project', 'file_path'],
     },
@@ -2102,7 +2109,11 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
         case 'file': {
           const filePath = str(args, 'file_path') ?? str(args, 'path');
           if (!filePath) throw new Error('Parameter "file_path" oder "path" ist erforderlich fuer action "file"');
-          const file = await getFileContent(project, filePath);
+          const file = await getFileContent(project, filePath, {
+            from: num(args, 'from_line'),
+            to: num(args, 'to_line'),
+            truncate_long_lines: num(args, 'truncate_long_lines'),
+          });
           if (!file) return { success: false, message: `Datei nicht gefunden: ${filePath}`, project };
           return { success: true, ...file, project };
         }
@@ -2159,11 +2170,21 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
           return { success: true, message: `Datei kopiert: "${filePath}" → "${newPath}"` };
         }
         case 'read': {
-          const content = await getFileContentFromPg(project, filePath);
-          if (content === null) {
+          const rawContent = await getFileContentFromPg(project, filePath);
+          if (rawContent === null) {
             return { success: false, error: `Datei "${filePath}" nicht gefunden in Projekt "${project}"` };
           }
-          return { success: true, file_path: filePath, content, size: content.length };
+          const ranged = applyContentRange(rawContent, {
+            from: num(args, 'from_line'),
+            to: num(args, 'to_line'),
+            truncate_long_lines: num(args, 'truncate_long_lines'),
+          });
+          return {
+            success: true,
+            file_path: filePath,
+            size: rawContent.length,
+            ...ranged,
+          };
         }
         case 'replace_lines': {
           const currentContent = await getFileContentFromPg(project, filePath);
