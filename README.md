@@ -1,8 +1,8 @@
 # 🧠 Synapse — KI-Gedächtnis & Agenten-Orchestrierung
 
-> Persistentes Projekt-Wissen, semantische Code-Suche und Multi-Agent-Koordination über MCP.
+> Persistentes Projekt-Wissen, semantische Code-Suche, Code-Intelligenz und Multi-Agent-Koordination über MCP & REST.
 >
-> Synapse gibt KI-Agenten ein Langzeitgedächtnis: Code wird automatisch indexiert, Wissen bleibt über Sessions erhalten, und mehrere Agenten können koordiniert an einem Projekt arbeiten — mit Chat, Events, Wissens-Airbag und automatischer Dokumentations-Recherche.
+> Synapse gibt KI-Agenten ein Langzeitgedächtnis: Code wird automatisch indexiert (semantisch + strukturell), Wissen bleibt über Sessions erhalten, Spezialisten laufen persistent als detached Subprozesse, und mehrere Agenten arbeiten koordiniert über Chat, Inbox, Channels, Events und einen Wissens-Airbag.
 
 ```
 Du (User)
@@ -10,35 +10,50 @@ Du (User)
   ├─ Claude Code ──── MCP Server (stdio) ────┐
   ├─ Claude Desktop ─ MCP Server (stdio) ────┤
   ├─ Gemini CLI ───── REST API (http) ───────┤
+  ├─ Claude.ai ───── REST API + OAuth/SSE ──┤
   └─ ChatGPT ──────── REST API (http) ───────┤
                                               │
                                     ┌─────────▼──────────┐
                                     │    SYNAPSE CORE     │
                                     │                     │
                                     │  FileWatcher        │
+                                    │  Code-Intelligence  │
                                     │  Embeddings (Google)│
                                     │  Tech-Detection     │
                                     │  Context7 Client    │
                                     │  Agenten-Chat       │
+                                    │  Inbox / Channels   │
                                     │  Event-System       │
                                     │  Wissens-Airbag     │
+                                    │  Shell-Queue        │
+                                    │  Specialist-Queue   │
                                     └──┬──────────┬───────┘
                                        │          │
-                              ┌────────▼──┐  ┌───▼────────┐
-                              │  Qdrant   │  │ PostgreSQL  │
-                              │  (Vektor) │  │ (Relational)│
-                              │           │  │             │
-                              │ Code      │  │ Memories    │
-                              │ Memories  │  │ Thoughts    │
-                              │ Thoughts  │  │ Plans       │
-                              │ Proposals │  │ Proposals   │
-                              │ Tech-Docs │  │ Chat        │
-                              │ Media     │  │ Sessions    │
-                              └───────────┘  │ Tech-Docs   │
-                                             │ Events      │
-                                             │ Event-Acks  │
-                                             │ Channels    │
-                                             └─────────────┘
+                              ┌────────▼──┐  ┌───▼──────────┐
+                              │  Qdrant   │  │ PostgreSQL    │
+                              │  (Vektor) │  │ (Source of    │
+                              │           │  │  Truth)       │
+                              │ Code      │  │ Code-Files    │
+                              │ Memories  │  │ Memories      │
+                              │ Thoughts  │  │ Thoughts      │
+                              │ Proposals │  │ Plans         │
+                              │ Tech-Docs │  │ Proposals     │
+                              │ Media     │  │ Tech-Docs     │
+                              └───────────┘  │ Chat / Events │
+                                             │ Channels      │
+                                             │ Inbox         │
+                                             │ Shell-Queue   │
+                                             │ Specialist-Q. │
+                                             │ Code-Intel    │
+                                             │ Sessions      │
+                                             └───────────────┘
+                                                     │
+                                     ┌───────────────▼──────────────┐
+                                     │  FileWatcher-Daemon (Tray)   │
+                                     │  HTTP-API :7878 + SSE        │
+                                     │  Shell-Job-Worker  (LISTEN)  │
+                                     │  Specialist-Job-Worker(LISTEN)│
+                                     └──────────────────────────────┘
 ```
 
 ---
@@ -47,20 +62,24 @@ Du (User)
 
 | Feature | Beschreibung |
 |---------|--------------|
-| 🔍 **Semantische Code-Suche** | FileWatcher indexiert Code automatisch. Vektor-Suche über Qdrant findet konzeptuell ähnlichen Code — nicht nur String-Matches. Google Embeddings (3072d). |
+| 🔍 **Semantische Code-Suche** | FileWatcher (Chokidar) indexiert Code automatisch. Vektor-Suche über Qdrant findet konzeptuell ähnlichen Code. Google Gemini Embedding 2 (3072d). |
+| 🧬 **Code-Intelligence** | PostgreSQL-basierter Parser (60+ Sprachen): `tree`, `functions`, `variables`, `symbols`, `references`, `search` (PG-Volltext + Qdrant-Fusion), `file`-Read mit Zeilen-Range. Kein Qdrant-Roundtrip nötig. |
 | 🧠 **Persistentes Projekt-Wissen** | Memories (Architektur, Regeln), Thoughts (Erkenntnisse), Plans (Ziele, Tasks), Proposals (Code-Vorschläge), Tech-Docs — alles überlebt Session-Grenzen. |
-| 💬 **Multi-Agent Chat** | Broadcast-Nachrichten an alle Agenten oder gezielte DMs. Polling-basiert mit `since`-Timestamp. Ungelesene Nachrichten werden in jeder Tool-Response eingeblendet. |
-| ⚡ **Event-System** | Verbindliche Steuersignale (WORK_STOP, CRITICAL_REVIEW, ...) mit Pflicht-Ack. Eskalation nach 3 ignorierten Calls. Prioritäten: critical, high, normal. |
+| 💬 **Multi-Agent Chat + Inbox** | Broadcast-Nachrichten an alle, gezielte DMs (Inbox für 1:1, Chat für Gruppe), Channels für Spezialisten-Gruppen. Polling-basiert mit `since`-Timestamp. |
+| ⚡ **Event-System** | Verbindliche Steuersignale (WORK_STOP, CRITICAL_REVIEW, ARCH_DECISION, TEAM_DISCUSSION, ANNOUNCEMENT, NEW_TASK, CHECK_CHANNEL) mit Pflicht-Ack. Eskalation nach 3 ignorierten Calls. |
 | 🤖 **Agenten-Koordination** | Koordinator-Muster: Opus dispatcht Sonnet/Haiku-Agenten. Batch-Registrierung, automatisches Onboarding, Coordinator-Watch für Idle-Aufwachen. |
-| 🧑‍🔬 **Persistente Spezialisten** | Dauerhaft laufende Claude-Agenten (Subprozess + Unix Socket). Eigene SKILL.md pro Agent wächst mit jedem Einsatz. Auto-Wake via `wake`, Heartbeat-Polling (15s), Context-Ceiling-Tracking. |
-| 🔄 **Context-Handoff** | Automatische Session-Übergabe wenn das Context-Window voll wird. Fortschritt in Synapse gespeichert, neue Session liest nahtlos weiter. |
-| 📚 **Tech-Docs Auto-Fetch** | `search_tech_docs` holt automatisch Docs von [Context7](https://context7.com) wenn keine lokalen Ergebnisse. Docs-Kurator (Opus) recherchiert kuratierte Breaking Changes. |
-| 🛡️ **Wissens-Airbag** | `get_docs_for_file` zeigt vor jeder Datei-Bearbeitung Breaking Changes, Migration-Warnungen und Gotchas — nur was neuer als der Agent-Cutoff ist. |
-| 👁️ **FileWatcher** | Chokidar-basiert. Erkennt Änderungen in Echtzeit → Chunking → Google Embedding → Qdrant. Respektiert `.synapseignore`. |
-| 🔔 **Coordinator-Watch** | Background-Daemon pollt alle 10s auf neue Chat-Nachrichten und Events. Weckt den Koordinator im Idle via Task-Notification. |
-| 🖼️ **Media-Suche** | Cross-Modal Suche: Bilder und Videos per Text-Query finden (Google Gemini Embedding 2). |
+| 🧑‍🔬 **Persistente Spezialisten** | Dauerhaft laufende Claude-Agenten (detached Subprozess + Unix Socket). 4-Datei-Skill-System (rules/errors/patterns/context + meta.yaml). Auto-Wake via `wake`, Heartbeat-Polling (15s), Stuck-Detection event-basiert. |
+| 🔄 **Context-Handoff** | Automatische Session-Übergabe bei 95% Context. Fortschritt in Skill-Dateien gespeichert, neue Session liest nahtlos weiter. |
+| 📚 **Tech-Docs Auto-Fetch** | `docs.search` holt automatisch Docs von [Context7](https://context7.com) wenn lokal leer. Docs-Kurator (Opus) recherchiert kuratierte Breaking Changes. |
+| 🛡️ **Wissens-Airbag** | `docs.get_for_file` zeigt vor Datei-Bearbeitung Breaking Changes, Migrations & Gotchas — nur was neuer als der Agent-Cutoff ist. |
+| 📝 **PG-Files-Layer** | Datei-CRUD direkt in PostgreSQL (`files`-Tool): create/update/read/delete/move/copy + `replace_lines`, `insert_after`, `delete_lines`, `search_replace`, `search_replace_batch` (bis 50 Edits atomar). FileWatcher synct auf Disk. |
+| 🐚 **Shell-Queue** | `shell`-Tool für REST-Clients: PG-Queue → Daemon claim → Exec → Live-Stream-Log → Result. Actions: `exec`, `get_stream`, `history`, `get`, `log` (Range/Regex-Suche). |
+| 👁️ **FileWatcher** | Chokidar-basiert. Erkennt Änderungen → Chunking → Google Embedding → PG + Qdrant. Respektiert `.synapseignore`/`.gitignore`. In-Process-Indexierung im Daemon (kein HTTP-Umweg). |
+| 🔔 **Coordinator-Watch** | Background-Daemon pollt alle 10s auf neue Chat-Nachrichten und Events. Weckt den Koordinator im Idle. |
+| 🖼️ **Media-Suche** | Cross-Modal Suche: Bilder und Videos per Text-Query (Google Gemini Embedding 2). |
 | 🔧 **Tech-Detection** | Erkennt automatisch Frameworks, Libraries und Tools im Projekt. |
-| 📢 **Kanäle** | Spezialistengruppen-Kommunikation - Agenten können gezielt in Kanälen kommunizieren und Fachgruppen bilden. |
+| 🚨 **Code-Check** | `code_check`-Tool: Error-Patterns werden bei jedem `files.create/update` automatisch geprüft (wenn `agent_id` gesetzt) — verhindert wiederkehrende Modell-Fehler. |
+| 🔐 **OAuth + SSE** | REST-API mit `/.well-known/oauth-authorization-server` und `GET /mcp/sse` für Claude.ai-Connector. |
 
 ---
 
@@ -70,57 +89,62 @@ Du (User)
 
 | Package | Beschreibung | Läuft auf |
 |---------|--------------|----------|
-| `@synapse/core` | Gemeinsamer Kern — Services, DB, Embeddings, FileWatcher, Events | - |
-| `@synapse/mcp-server` | MCP Server (stdio) für Claude Code, Claude Desktop, Cline | User PC |
-| `@synapse/rest-api` | REST API (Fastify, HTTP) für Web-KIs (Claude.ai, ChatGPT, Gemini) | Server |
+| `@synapse/core` | Gemeinsamer Kern — 26 Services, DB, Embeddings, FileWatcher, Code-Intel, Shell-/Specialist-Queue | - |
+| `@synapse/mcp-server` | MCP Server (stdio) für Claude Code, Claude Desktop, Cline | User-PC |
+| `@synapse/rest-api` | REST API (Fastify) für Web-KIs (Claude.ai, ChatGPT, Gemini) — 15 MCP-Tools über HTTP | Server (Container) |
+| `@synapse/agents` | Agent-Wrapper, Heartbeat, ProcessManager, Skill-System, Channels, Inbox | User-PC |
+| `@synapse/file-watcher-daemon-ts` | Lokaler Tray-Daemon (Port 7878) — FileWatcher-Manager + Shell-Job-Worker + Specialist-Job-Worker | User-PC |
 | `@synapse/web-ui` | Web-Dashboard (React, in Entwicklung) | - |
-| `@synapse/agents` | Agenten-Koordination und Session-Management | - |
 
-### Datenfluss
+### Datenfluss (Indexierung)
 
 ```
 Datei gespeichert
-  → FileWatcher (Chokidar) erkennt Änderung
-    → .synapseignore prüfen
-      → Datei lesen + in Chunks aufteilen (1000 Zeichen, 200 Overlap)
-        → Google Gemini Embedding (3072 Dimensionen)
-          → Qdrant Vektor-DB (Upsert mit Metadaten)
+  → FileWatcher-Daemon (Chokidar) erkennt Änderung
+    → .synapseignore / .gitignore prüfen
+      → storeFileContent() schreibt PG (code_files)
+        → parseAndEmbed() — Tree-sitter / Regex-Parser für 60+ Sprachen
+          → Code-Intel-Daten in PG (functions, variables, symbols, imports)
+            → Chunking (1000 Zeichen, 200 Overlap)
+              → Google Gemini Embedding (3072d)
+                → Qdrant Upsert (project_{name}_code)
 ```
 
-### Dual-Storage (Write-Primary/Read-Primary, Eventual Consistency)
+### Dual-Storage (Write-Primary / Read-Primary, Eventual Consistency)
 
-- **PostgreSQL** — **Write-Primary + Source of Truth** (Schreibvorgänge: Create, Update, Delete)
-- **Qdrant** — **Read-Primary** (semantische Suche via Vektor-Index)
+- **PostgreSQL** — **Write-Primary + Source of Truth** (Code-Inhalte, Memories, Thoughts, Plans, Proposals, Code-Intel, Chat, Events, Inbox, Channels, Shell-Queue, Specialist-Queue)
+- **Qdrant** — **Read-Primary** für semantische Suche (Code, Memories, Thoughts, Proposals, Tech-Docs, Media)
 
 **Konsistenz-Modell:** Eventual Consistency (best-effort, kein Rollback bei Partial-Failure)
 
-**Schreib-Flow:** PG first → Qdrant second (Ausnahme: code.ts schreibt Qdrant first)
-**Fehlertoleranz:** Beide Writes in separaten try-catch, warning-Feld bei Partial-Failure
+**Schreib-Flow:** PG first → Qdrant second (Standard für **alle** Services).
+**Fehlertoleranz:** Beide Writes in separaten try/catch, `warning`-Feld bei Partial-Failure.
 
-**⚠️ ARCHITEKTUR-PROBLEM:** Reads kommen je nach Operation aus verschiedenen Stores:
-- `get*/list*` Operationen lesen **Qdrant** (Read-Primary)
-- `update*/delete*` Operationen lesen **PostgreSQL** (Write-Primary)
-- **Konsequenz:** Bei Partial-Failure entstehen Geister-Datensätze (unsichtbar oder nicht-editierbar)
+**⚠️ Architektur-Hinweis:** Reads kommen je nach Operation aus verschiedenen Stores —
+`get*/list*` lesen Qdrant (Read-Primary), `update*/delete*` lesen PG (Write-Primary).
+Bei Partial-Failure entstehen Geister-Datensätze (siehe „Bekannte Einschränkungen").
 
-Jedes Projekt bekommt eigene Qdrant-Collections: `project_{name}_code`, `project_{name}_thoughts`, etc.
+Jedes Projekt bekommt eigene Qdrant-Collections: `project_{name}_code`, `project_{name}_thoughts`,
+`project_{name}_memories`, `project_{name}_proposals`, `project_{name}_docs`, `project_{name}_media`.
+Code-Intelligence-Daten liegen vollständig in PostgreSQL (kein Qdrant nötig).
 
 ---
 
-## 🛠️ MCP-Tools (13 konsolidierte Tools, 82 Actions)
+## 🛠️ MCP-Tools (15 konsolidierte Tools + 2 Hilfstools, ~100 Actions)
 
 ### 📦 Admin & Projekt-Management (`admin`)
 
-**Actions:** `index_stats`, `migrate`, `restore`, `save_idea`, `confirm_idea`, `index_media`, `detailed_stats`
+**Actions:** `index_stats`, `migrate`, `restore`, `save_idea`, `confirm_idea`, `index_media`, `detailed_stats`, `migrate_paths`
 
 | Action | Beschreibung |
 |--------|--------------|
-| `index_stats` | Projekt-Statistiken + Agent-Onboarding |
+| `index_stats` | Projekt-Statistiken + automatisches Agent-Onboarding (Regeln + activeAgents) |
 | `migrate` | Embedding-Modell wechseln (Backup → Re-Embed) |
 | `restore` | Daten aus JSONL-Backup wiederherstellen |
-| `save_idea` | Projekt-Idee als Proposal speichern |
-| `confirm_idea` | Idee bestätigen und persistent speichern |
+| `save_idea` / `confirm_idea` | Projekt-Idee als Proposal vorschlagen + bestätigen (30 min TTL) |
 | `index_media` | Bilder und Videos indexieren (Gemini Embedding 2) |
 | `detailed_stats` | Aufschlüsselung nach Dateityp, Source, Kategorie |
+| `migrate_paths` | Pfad-Normalisierung in `code_files` (absolute → relative) |
 
 ---
 
@@ -130,16 +154,75 @@ Jedes Projekt bekommt eigene Qdrant-Collections: `project_{name}_code`, `project
 
 | Action | Beschreibung |
 |--------|--------------|
-| `code` | Konzeptuelle Suche — findet ähnlichen Code |
-| `path` | Exakte Pfadsuche nach Glob-Pattern (absolute und relative Pfade, z.B. `packages/agents/src/**/*.ts`) |
-| `code_with_path` | Kombiniert: Semantisch + Pfad-Filter |
-| `memory` | Semantische Memory-Suche |
-| `thoughts` | Thought-Suche (Erkenntnisse) |
-| `proposals` | Proposal-Suche (Code-Vorschläge) |
-| `tech_docs` | Framework-Dokumentation (mit Context7 Auto-Fetch) |
-| `media` | Cross-Modal Suche: Bilder/Videos per Text-Query |
+| `code` | Reine **Qdrant Semantic Search** über Code-Chunks |
+| `path` | Glob-Pattern-Suche auf Datei-Pfaden (auto relative→absolute Konvertierung) |
+| `code_with_path` | Hybrid: Semantisch + Pfad-Filter |
+| `memory` / `thoughts` / `proposals` | Semantische Suche in den jeweiligen Stores |
+| `tech_docs` | Framework-Docs (mit Context7 Auto-Fetch wenn lokal leer) |
+| `media` | Cross-Modal: Bilder/Videos per Text-Query |
 
-> **Path-Suche Glob-Pattern:** Relative Pfade (z.B. `packages/agents/**/*.ts`) werden automatisch in SQL-Regex konvertiert und matchen überall im absoluten Pfad. Marker-basierte Konvertierung: `*` → `[^/]*`, `**` → `.*`, `?` → `.` — Sonderzeichen wie `.` werden escaped.
+> **Tipp:** Für strukturierte Code-Fragen (Funktionen, Variablen, Imports) ist `code_intel` schneller und präziser. `search.code` ist für fuzzy/konzeptuelle Suche.
+
+---
+
+### 🧬 Code-Intelligence (`code_intel`)
+
+**Actions:** `tree`, `functions`, `variables`, `symbols`, `references`, `search`, `file`
+
+| Action | Beschreibung |
+|--------|--------------|
+| `tree` | Projektbaum mit Optionen (`show_counts`, `show_lines`, `show_functions`, `show_comments`, `show_imports`, `depth`, `recursive`) |
+| `functions` | Funktionen einer Datei oder per Name (mit `exportedOnly`-Filter) |
+| `variables` | Variablen-Liste (optional mit Werten) |
+| `symbols` | Filterbar nach `symbol_type`: function, variable, string, comment, import, export, class, interface, enum, const_object, todo |
+| `references` | Definition + alle Cross-File-Imports in einem Call |
+| `search` | **Search-Fusion** — PG-Volltext (`ts_rank`) + Qdrant-Fallback (live seit 2026-04-26) |
+| `file` | Dateiinhalt direkt aus PG mit `from_line`, `to_line`, `total_lines`, `truncate_long_lines` (Auto-Trim wenn > 80k Zeichen) |
+
+PostgreSQL-basiert, kein Qdrant nötig. Parser für TypeScript/JavaScript, Python, Go, Rust, Java, C/C++, Ruby, PHP, Kotlin, Swift, Dart, SQL, Lua, YAML, Dockerfile, TOML, Scala, Protobuf, GraphQL, Elixir, HCL/Terraform, Makefile, R, Perl, Haskell, Zig, Groovy, OCaml, Clojure, Julia, Nim, V, Erlang, F#, Solidity, Fortran, Ada, PowerShell, Objective-C, Nix, Svelte, Vue SFC, WGSL, GLSL, Starlark, D, Crystal, Tcl, COBOL, CMake, Puppet, Assembly, Racket, Vala, Meson, Lean, Smithy, Dhall, Jsonnet u. v. m. (60+ Sprachen).
+
+---
+
+### 📝 Datei-Operationen (`files`)
+
+**Actions:** `create`, `update`, `read`, `delete`, `move`, `copy`, `replace_lines`, `insert_after`, `delete_lines`, `search_replace`, `search_replace_batch`
+
+| Action | Beschreibung |
+|--------|--------------|
+| `create` / `update` | Datei in PG anlegen/aktualisieren — FileWatcher synct auf Disk. Bei `agent_id`: Error-Pattern + Framework-Docs Check |
+| `read` | Inhalt aus PG mit `from_line`, `to_line`, `total_lines`, `truncate_long_lines` (Auto-Trim wenn Content > 80k Zeichen) |
+| `delete` / `move` / `copy` | Soft-Delete / atomares Verschieben / Kopieren in PG + Qdrant |
+| `replace_lines` | Zeilenrange ersetzen (`line_start`..`line_end`) |
+| `insert_after` | Inhalt nach Zeile einfügen |
+| `delete_lines` | Zeilenrange löschen |
+| `search_replace` | Exakter String-Replace mit **Fuzzy-Match-Vorschlägen** bei Miss |
+| `search_replace_batch` | **Bis zu 50 Edits atomar** in einem Call |
+
+> **Auto-Unescape:** Doppelt-escaped Content (Haiku-Bug-Mitigation) wird automatisch normalisiert.
+
+---
+
+### 🚨 Code-Check / Error-Patterns (`code_check`)
+
+**Actions:** `add_pattern`, `list_patterns`, `delete_pattern`
+
+Patterns werden bei `files.create/update`-Operationen **automatisch** geprüft, wenn `agent_id` gesetzt ist. Felder: `description`, `fix`, `severity` (error/warning/info), `found_in_model`, `found_by`, `model_scope`. Der `model_scope` wird aus `found_in_model` abgeleitet (haiku-Fehler treffen alle Tiers, opus-Fehler nur opus).
+
+---
+
+### 🐚 Shell-Ausführung (`shell`)
+
+**Actions:** `exec`, `get_stream`, `history`, `get`, `log`
+
+| Action | Beschreibung |
+|--------|--------------|
+| `exec` | Synchrone Ausführung mit Active-Gate (prüft ob Projekt im Daemon aktiviert) |
+| `get_stream` | Live-Output laufender Jobs lesen |
+| `history` | Vergangene Jobs auflisten (limit, offset, status-Filter) |
+| `get` | Einzelnen Job + voller Output |
+| `log` | Zeilen-Range oder Regex-Suche im Job-Output (`query`, `regex`, `case_sensitive`, `max_matches`) |
+
+Alle Aufrufe werden in `shell_jobs` persistiert. Web-KIs nutzen die PG-Queue: Daemon claimt → führt aus → Stream-Log nach `~/.synapse/shell-streams/`.
 
 ---
 
@@ -150,38 +233,34 @@ Jedes Projekt bekommt eigene Qdrant-Collections: `project_{name}_code`, `project
 | Action | Beschreibung |
 |--------|--------------|
 | `write` | Langform-Wissen speichern (Architektur, Regeln, Docs) |
-| `read` | Memory nach Name laden |
+| `read` | Memory(s) nach Name laden — **Array-Support** |
 | `read_with_code` | Memory + verwandten Code laden |
 | `list` | Alle Memories auflisten |
-| `delete` | Memory löschen |
-| `update` | Memory aktualisieren (PostgreSQL + re-embed) |
-| `find_for_file` | Relevante Memories für eine Datei finden |
+| `delete` | Memory löschen — **Array + `dry_run` + `max_items`** |
+| `update` | Memory aktualisieren (PG + Re-Embed) |
+| `find_for_file` | Relevante Memories für eine Datei (oder Array von Pfaden) |
 
 ---
 
 ### 💭 Gedanken (`thought`)
 
-**Actions:** `add`, `get`, `delete`, `update`, `search`
+**Actions:** `add`, `add_batch`, `get`, `delete`, `update`, `search`
 
 | Action | Beschreibung |
 |--------|--------------|
-| `add` | Kurze Erkenntnis speichern |
-| `get` | Letzte Gedanken abrufen |
-| `delete` | Thought löschen |
-| `update` | Thought aktualisieren |
+| `add` / `add_batch` | Einzeln oder bis zu 50 Gedanken atomar |
+| `get` | Gedanken abrufen — **Array-Support für IDs** |
+| `delete` | Gedanken löschen — **Array + `dry_run` + `max_items`** |
 | `search` | Semantische Thought-Suche |
+| `update` | Inhalt/Tags ändern |
 
 ---
 
 ### 📋 Pläne (`plan`)
 
-**Actions:** `get`, `update`, `add_task`
+**Actions:** `get`, `update`, `add_task`, `add_tasks_batch`, `update_task`, `delete_tasks`, `delete`
 
-| Action | Beschreibung |
-|--------|--------------|
-| `get` | Plan abrufen (Ziele, Tasks, Architektur) |
-| `update` | Plan aktualisieren |
-| `add_task` | Task zum Plan hinzufügen |
+Tasks als JSONB im Plan, mit Status-Tracking, Prioritäten und Batch-Ops für Bulk-Updates.
 
 ---
 
@@ -192,28 +271,28 @@ Jedes Projekt bekommt eigene Qdrant-Collections: `project_{name}_code`, `project
 | Action | Beschreibung |
 |--------|--------------|
 | `list` | Alle Proposals auflisten |
-| `get` | Proposal nach ID abrufen |
-| `update_status` | Status ändern (pending → reviewed → accepted) |
-| `delete` | Proposal löschen |
-| `update` | Proposal-Inhalt ändern |
+| `get` | Proposal nach ID — **Array-Support** |
+| `update_status` | Status ändern (`pending` → `reviewed` → `accepted`) — **Array-Support** |
+| `delete` | Löschen — **Array + dry_run + max_items** |
+| `update` | Content / SuggestedContent / Status ändern |
 
 ---
 
-### 💬 Chat (`chat`)
+### 💬 Chat & Inbox (`chat`)
 
 **Actions:** `register`, `unregister`, `register_batch`, `unregister_batch`, `send`, `get`, `list`, `inbox_send`, `inbox_check`
 
 | Action | Beschreibung |
 |--------|--------------|
-| `register` | Agent registrieren (mit Cutoff-Erkennung) |
-| `unregister` | Agent abmelden |
-| `register_batch` | Mehrere Agenten auf einmal registrieren |
-| `unregister_batch` | Mehrere Agenten abmelden |
-| `send` | Broadcast (alle) oder DM (ein Agent) senden |
+| `register` / `register_batch` | Agent(en) registrieren (mit Cutoff-Erkennung). Setzt `lastChatRead`-Watermark |
+| `unregister` / `unregister_batch` | Agent(en) abmelden |
+| `send` | Broadcast (alle) oder DM — **Array-Support für `recipient_id` (Multicast)** |
 | `get` | Nachrichten abrufen (Polling via `since`) |
 | `list` | Aktive Agenten auflisten |
-| `inbox_send` | Nachricht in Inbox eines Agenten |
-| `inbox_check` | Inbox eines Agenten prüfen |
+| `inbox_send` | 1:1-Nachricht in Inbox eines Spezialisten — **Array-Support für `to_agent`** |
+| `inbox_check` | Inbox lesen + als verarbeitet markieren |
+
+> **Specialist Dual-Path:** `chat.send` mit `project_path` routet automatisch in Inbox, wenn der Empfänger ein Spezialist ist.
 
 ---
 
@@ -224,11 +303,12 @@ Jedes Projekt bekommt eigene Qdrant-Collections: `project_{name}_code`, `project
 | Action | Beschreibung |
 |--------|--------------|
 | `create` | Kanal für Spezialisten-Gruppen erstellen |
-| `join` | Agent zu Kanal hinzufügen |
-| `leave` | Agent aus Kanal entfernen |
+| `join` / `leave` | Agent zu/aus Kanal — **Array-Support für mehrere Channels** |
 | `post` | Nachricht in Kanal posten |
-| `feed` | Kanal-Nachrichten abrufen |
-| `list` | Alle Kanäle auflisten |
+| `feed` | Kanal-Nachrichten abrufen (`since_id`, `limit`, `preview`) |
+| `list` | Alle Kanäle des Projekts auflisten |
+
+> **Hinweis:** `project` ist bei `create`/`join`/`leave`/`feed`/`list` Pflicht-Parameter.
 
 ---
 
@@ -239,34 +319,27 @@ Jedes Projekt bekommt eigene Qdrant-Collections: `project_{name}_code`, `project
 | Action | Beschreibung |
 |--------|--------------|
 | `emit` | Steuersignal an Agenten senden |
-| `ack` | Event quittieren (Pflicht bei `requires_ack`) |
+| `ack` | Event quittieren (Pflicht bei `requires_ack`) — **Array-Support für mehrere IDs** |
 | `pending` | Unbestätigte Events abrufen |
 
 ---
 
 ### 🤖 Spezialisten (`specialist`)
 
-**Actions:** `spawn`, `stop`, `status`, `wake`, `update_skill`, `capabilities`
+**Actions:** `spawn`, `spawn_batch`, `stop`, `purge`, `status`, `wake`, `update_skill`, `capabilities`
 
 | Action | Beschreibung |
 |--------|--------------|
-| `spawn` | Spezialisten-Agent mit Expertise starten |
-| `stop` | Agent stoppen |
-| `status` | Agent-Status prüfen |
-| `wake` | Agent mit Nachricht aufwecken |
-| `update_skill` | Skill des Agenten aktualisieren |
-| `capabilities` | Agenten-Fähigkeiten prüfen |
+| `spawn` | Spezialisten-Agent starten (detached Subprozess) |
+| `spawn_batch` | Mehrere Spezialisten atomar starten |
+| `stop` | Agent stoppen — **Array-Support** |
+| `purge` | Agent komplett entfernen (Skill-Verzeichnis löschen) |
+| `status` | Status prüfen — **Array-Support** |
+| `wake` | Agent mit Nachricht aufwecken — **Array-Support** |
+| `update_skill` | Skill-Datei aktualisieren — `file`-Parameter: `rules` / `errors` / `patterns` / `context` |
+| `capabilities` | Verfügbare Modelle + Limits |
 
-Spezialisten sind **persistente Claude-Agenten** die als detached Subprozesse dauerhaft aktiv bleiben:
-
-- **SKILL.md** — Jeder Spezialist hat eine eigene Wissensdatei (Regeln, Fehler, Patterns) die sich durch jeden Einsatz verbessert
-- **Heartbeat** (15s, parallel zum Initial Wake) — Wrapper pollt Inbox, Chat und Events automatisch im Hintergrund. Startet sofort nach Prozess-Launch (nicht auf First-Activity warten)
-- **Token-Sync** — Liest echte Counts live aus Claude CLI Session-JSONL (`~/.claude/projects/<project>/<session>.jsonl`). Funktioniert ab Sekunde 1, nicht nur bei Activity-Events
-- **Stuck-Detection** — Zeitbasiert via `lastEventTs` (nicht Token-Count). 120s ohne ProcessManager-Event → Recovery (Busy-Status zurücksetzen). Keine false positives beim ersten Turn
-- **Sliding Timeout** — `writeAndCollect` Timeout resettet bei jedem Event, nicht fest 120s
-- **Context-Ceiling** — Opus/Sonnet: 200k Tokens | Haiku: 200k Tokens | Activity-Events für Wrapper-Diagnostik
-- **IPC** — Unix Domain Socket + JSON-RPC 2.0 zwischen MCP-Server und Wrapper-Prozess
-- **Modelle** — `opus`, `sonnet`, `haiku`, `opus[1m]`, `sonnet[1m]`
+**Modelle:** `opus`, `sonnet`, `haiku`, `opus[1m]`, `sonnet[1m]`
 
 ---
 
@@ -276,9 +349,9 @@ Spezialisten sind **persistente Claude-Agenten** die als detached Subprozesse da
 
 | Action | Beschreibung |
 |--------|--------------|
-| `add` | Kuratierte Docs indexieren (Breaking Changes, Migrations, ...) |
-| `search` | Docs suchen (mit Context7 Auto-Fetch) |
-| `get_for_file` | Wissens-Airbag: Relevante Docs für eine Datei |
+| `add` | Kuratierte Docs indexieren (Breaking Changes, Migrations, Gotchas) |
+| `search` | Docs suchen mit `scope: 'global' \| 'project' \| 'all'` (Context7 Auto-Fetch) |
+| `get_for_file` | **Wissens-Airbag**: relevante Docs für eine Datei — **Array-Support für mehrere Pfade**. Liefert `warnings` + `agentCutoff` |
 
 ---
 
@@ -286,45 +359,30 @@ Spezialisten sind **persistente Claude-Agenten** die als detached Subprozesse da
 
 **Actions:** `init`, `complete_setup`, `detect_tech`, `cleanup`, `stop`, `status`, `list`
 
-| Action | Beschreibung |
-|--------|--------------|
-| `init` | Projekt initialisieren, FileWatcher starten |
-| `complete_setup` | Setup-Phase als abgeschlossen markieren |
-| `detect_tech` | Frameworks, Libraries und Tools erkennen |
-| `cleanup` | Vektoren für ignorierte Dateien bereinigen |
-| `stop` | FileWatcher stoppen |
-| `status` | Persistenter Status aus `.synapse/status.json` |
-| `list` | Alle aktiven Projekte auflisten |
-
 ---
 
 ### 👁️ FileWatcher (`watcher`)
 
 **Actions:** `status`, `start`, `stop`
 
-| Action | Beschreibung |
-|--------|--------------|
-| `status` | FileWatcher-Status prüfen |
-| `start` | FileWatcher starten |
-| `stop` | FileWatcher stoppen |
+Steuert den lokalen Daemon via Unix Socket + PID-File.
 
 ---
 
-### 🔄 Array/Batch-Parameter
+### 🔄 Array / Batch-Parameter
 
-Viele Actions unterstützen jetzt **Array-Input** (backward compatible). Skalare Input geben unveranderte Response, Array-Input gibt `{ results[], errors[], count }` zurück.
+Viele Actions unterstützen **Array-Input** (backward compatible). Skalare Inputs liefern unverändertes Format, Array-Inputs liefern `{ results[], errors[], count }`.
 
-**Phase 1 — Read-only Batch:** `specialist.status`, `thought.get`, `memory.read`, `proposal.get`, `docs.get_for_file`, `memory.find_for_file` (Promise.allSettled)
-
-**Phase 2 — Steuerungs Batch:** `specialist.stop/wake`, `event.ack`, `channel.join/leave`, `chat.send` (Multicast), `chat.inbox_send`, `proposal.update_status` (Promise.allSettled)
-
-**Phase 3 — Batch-Delete mit Safeguards:** `thought.delete`, `memory.delete`, `proposal.delete` — mit `dry_run` (Preview), `max_items` (Limit, Default 10), Audit-Logging
+- **Read-only Batch:** `specialist.status`, `thought.get`, `memory.read`, `proposal.get`, `docs.get_for_file`, `memory.find_for_file` (Promise.allSettled)
+- **Steuerungs-Batch:** `specialist.stop` / `wake` / `spawn_batch`, `event.ack`, `channel.join` / `leave`, `chat.send` (Multicast), `chat.inbox_send`, `proposal.update_status`
+- **Batch-Delete mit Safeguards:** `thought.delete`, `memory.delete`, `proposal.delete` — mit `dry_run` (Preview), `max_items` (Limit, Default 10), Audit-Logging
+- **Atomare Batch-Writes:** `thought.add_batch`, `plan.add_tasks_batch`, `files.search_replace_batch` (bis 50 Edits)
 
 ---
 
 ## 🎭 Event-System
 
-Events sind **verbindliche Steuersignale** — keine Chat-Nachrichten. Der Koordinator sendet Events, Agenten müssen reagieren.
+Events sind **verbindliche Steuersignale** — keine Chat-Nachrichten. Der Koordinator sendet, Agenten müssen reagieren.
 
 ### Event-Typen
 
@@ -334,6 +392,8 @@ Events sind **verbindliche Steuersignale** — keine Chat-Nachrichten. Der Koord
 | `CRITICAL_REVIEW` | critical | Betroffene Arbeit nicht abschließen |
 | `ARCH_DECISION` | high | Plan neu prüfen, Ack mit Bewertung |
 | `TEAM_DISCUSSION` | high | Status posten, auf Koordinator warten |
+| `NEW_TASK` | high | Task übernehmen, Ack mit Bestätigung |
+| `CHECK_CHANNEL` | normal | Channel lesen, Ack |
 | `ANNOUNCEMENT` | normal | Lesen, Ack, weiterarbeiten |
 
 ### Delivery-Mechanismus
@@ -344,12 +404,12 @@ Events sind **verbindliche Steuersignale** — keine Chat-Nachrichten. Der Koord
 
 2. Agent führt beliebiges Tool aus
    → server.ts: withOnboarding() prüft getPendingEvents()
-   → Tool-Response enthält pendingEvents mit Hint-Text
-   → Broadcasts werden nur gelesen seit Agent-Registrierung (neue Agenten bekommen keine uralten Events)
+   → Tool-Response enthält pendingEvents mit Hint-Text (⛔/⚠️/📋)
+   → Broadcasts werden nur seit Agent-Registrierung gelesen
 
-3. PostToolUse Hook (chat-notify.sh)
+3. PostToolUse-Hook (chat-notify.sh)
    → Pollt Events via event-check.mjs
-   → Zeigt Events VOR Chat-Nachrichten an
+   → Zeigt Events VOR Chat-Nachrichten
 
 4. Agent: event(action: "ack", event_id, agent_id, reaction)
    → PostgreSQL: agent_event_acks Tabelle
@@ -357,8 +417,8 @@ Events sind **verbindliche Steuersignale** — keine Chat-Nachrichten. Der Koord
 
 ### Eskalation
 
-Nach **3 Tool-Calls** ohne Ack bei `critical`/`high` Events:
-→ Automatische DM an Koordinator: *"Agent X ignoriert Event Y seit Z Calls"*
+Nach **30 s Grace + 3 Tool-Calls** ohne Ack bei `critical`/`high` Events
+→ Automatische DM an Koordinator: *„Agent X ignoriert Event Y seit Z Calls"*
 
 ---
 
@@ -368,42 +428,37 @@ Nach **3 Tool-Calls** ohne Ack bei `critical`/`high` Events:
 
 ```
 ┌─────────────────────────────────────────┐
-│  Koordinator (Opus)                     │
+│  Koordinator (Opus / Opus[1m])          │
 │                                         │
 │  1. chat(action: "register_batch")      │
 │  2. coordinator-watch.sh starten        │
-│  3. Agenten spawnen mit Prompt-Baustein │
-│  4. Chat lesen + Events beobachten      │
-│  5. search(action: "thoughts") für Ergebnisse
+│  3. specialist(action: "spawn_batch")   │
+│  4. Channel-Feed + Events beobachten    │
+│  5. thought / memory / files lesen      │
 └────┬──────────┬──────────┬──────────────┘
      │          │          │
      ▼          ▼          ▼
   ┌──────┐  ┌──────┐  ┌──────┐
-  │Haiku │  │Sonnet│  │Haiku │
-  │Agent1│  │Agent2│  │Agent3│
+  │Haiku │  │Sonnet│  │Opus[1m]│
+  │Spec. │  │Spec. │  │Spec.   │
   └──────┘  └──────┘  └──────┘
 ```
 
 ### Automatisches Onboarding
 
-Jeder Agent bekommt beim ersten Tool-Call automatisch:
-- **Projekt-Regeln** (Memories mit `category: "rules"`)
-- **Ungelesene Chat-Nachrichten** und **ausstehende Events**
-- **Liste aktiver Agenten**
+Jeder Tool-Call eines neuen Agenten liefert in der Response:
+- **agentOnboarding** — Projekt-Regeln (Memories mit `category: "rules"`) beim ersten Besuch
+- **pendingEvents** — Unbestätigte Events mit Priority-Markern
+- **unreadChat** — Anzahl ungelesener Broadcasts + DMs seit Registrierung
+- **activeAgents** — Liste aktiver Agenten
 
 ### Coordinator-Watch
 
-Der Koordinator hat kein echtes Push-System. Der `coordinator-watch.sh` Daemon läuft im Hintergrund:
-
 ```bash
-# Alle 10s auf neue DMs und Events prüfen
 bash ~/dev/synapse/scripts/coordinator-watch.sh "synapse" "koordinator" 10
 ```
 
-Wenn neue Nachrichten oder Events ankommen:
-→ Script gibt Output und beendet sich
-→ Claude Code Task-Notification weckt den Koordinator
-→ Koordinator liest Nachrichten, reagiert, startet Watcher neu
+Pollt alle 10 s auf neue DMs/Events. Bei Treffer → Output → Script endet → Claude Code Task-Notification weckt den Koordinator.
 
 ---
 
@@ -411,100 +466,186 @@ Wenn neue Nachrichten oder Events ankommen:
 
 ```
 MCP-Server (HeartbeatController)
-    ↓ Unix Domain Socket (JSON-RPC 2.0)
+    ↓ Unix Domain Socket (JSON-RPC 2.0, newline-delimited)
 Agent-Wrapper (Detached Node.js Prozess)
-    ↓ stdin/stdout Pipe
-Claude CLI Subprocess (--stream-json)
+    ↓ stdin/stdout Pipe (--stream-json)
+Claude CLI Subprocess
 ```
-
-Ein Spezialist startet **einmal** und bleibt über Sessions hinweg erreichbar:
 
 ```
 # Einmalig starten
 specialist(action: "spawn", name: "code-analyst", model: "haiku",
-           expertise: "TypeScript Analyse", project: "synapse")
+           expertise: "TypeScript Analyse", project: "synapse",
+           project_path: "/home/user/dev/synapse",
+           channel: "analyse-team", keep_alive: false)
 
 # Jederzeit wieder aufwecken
 specialist(action: "wake", name: "code-analyst",
            message: "Analysiere src/tools/consolidated/")
+
+# Skill anpassen
+specialist(action: "update_skill", name: "code-analyst",
+           file: "patterns", skill_action: "add",
+           content: "Pattern: Tool-Files immer mit case-Statement matchen")
 ```
 
-**Startup-Verhalten:**
-- Heartbeat startet sofort nach Prozess-Launch (30s Verzögerung für MCP-Server-Init)
-- Initial Wake läuft **parallel** zum Heartbeat (nicht sequenziell)
-- Token-Sync funktioniert ab Sekunde 1 — liest echte Counts aus Session-JSONL
-- Stuck-Detection prüft `lastEventTs` (zeitbasiert), keine false positives beim ersten Turn
+#### Skill-System (4-Datei-Format + meta.yaml)
 
-Das **SKILL.md** des Spezialisten wächst mit jedem Einsatz:
-- Neue Regeln aus Fehlern
-- Patterns die sich bewährt haben
-- Korrekturen via `update_skill`
+`.synapse/agents/<name>/`
+- `meta.yaml` — name, model, expertise, created
+- `rules.md` — Verbindliche Regeln
+- `errors.md` — Bekannte Fehler + Lösungen
+- `patterns.md` — Bewährte Patterns
+- `context.md` — Projekt-Kontext
+- `logs/YYYY-MM-DD.md` — Tageslogs (datum-basiertes Append)
 
-Bei Context-Ceiling (95%): automatischer Handoff — der Spezialist liest in der Folge-Session nahtlos weiter.
+`migrateSkillMd()` migriert altes SKILL.md + MEMORY.md automatisch in das neue 4-Datei-Format.
+
+#### Heartbeat (alle 15 s, parallel zum Initial Wake)
+
+1. **Token-Sync** — liest echte Counts aus `~/.claude/projects/<cwd>/<sessionId>.jsonl` (letzter Turn Input = aktuelle Context-Größe). Funktioniert ab Sekunde 1.
+2. **Context-Rotation** bei 95 % — `wakeAgent("CONTEXT-RESET ... sichere Wissen")` → stop → reset → restart → re-onboarding
+3. **Stuck-Detection event-basiert** — kein ProcessManager-Activity-Event seit 120 s + Agent „busy" → busy-Flag zurücksetzen (kein Kill). Keine false positives beim ersten Turn.
+4. **pollChannelMessages()** — neue Channel-Nachrichten an alle Member
+5. **pollInboxMessages()** — 1:1-DMs aus `specialist_inbox`
+6. **pollSynapseItems()** — getaggte Memories + Thoughts + Plan-Tasks + Pending Events in einem Zyklus
+7. **PRAXIS-FEEDBACK-Erkennung** — Nachrichten von Nicht-Agenten (Mensch) werden mit `[PRAXIS-FEEDBACK]` markiert
+8. **KEEP_ALIVE-Modus** (`SYNAPSE_KEEP_ALIVE=1`) — Heartbeat-Wake auch bei leerer Queue
+
+**Sliding Timeout** — `writeAndCollect` resettet bei jedem Stream-Event (statt fest 120 s).
+
+**Context-Ceilings** (`types.ts`):
+- `opus[1m]` / `sonnet[1m]` → 1 000 000 Tokens
+- `opus` / `sonnet` / `haiku` → 200 000 Tokens
+
+**IPC** — Unix Domain Socket (`chmod 0600`) + JSON-RPC 2.0. Methoden: `wake`, `stop`, `status`, `save_and_pause`.
+
+**Crash-Handling** — `cleanupOrphans()` scannt `.synapse/sockets/` nach verwaisten `.sock`-Dateien (PID-Check via `process.kill(pid, 0)`).
+
+---
+
+### 🛰️ FileWatcher-Daemon (Tray)
+
+Standalone Node-Daemon auf Port `7878` (moo-daemon-kompatibel).
+
+**Workers:**
+- **shell-job-worker** — `LISTEN shell_job_created` → Claim → Exec → Stream-Log → Complete
+- **specialist-job-worker** — `LISTEN specialist_job_created` → Claim → spawn / spawn_batch / stop / purge / wake / update_skill via dynamischem Import von `@synapse/mcp-server`
+
+**Safety-Net:** Alle 10 s `expirePendingShellJobs(30)` + `expirePendingSpecialistJobs(30)` (Multi-Daemon-Sicher via `daemon-<host>-<pid>`-ID).
+
+**HTTP-Endpoints:**
+
+| Endpoint | Methode | Zweck |
+|----------|---------|-------|
+| `GET /health` | - | Liveness |
+| `GET /host/status` | - | Daemon-Status |
+| `GET /projects` | - | Projektliste + REST-API-URL |
+| `POST /projects` | Body | Projekt registrieren |
+| `GET /projects/:name/status` | - | enabled / running |
+| `POST /projects/:name/enable` / `disable` | - | FileWatcher steuern |
+| `DELETE /projects/:name` | - | Projekt entfernen |
+| `GET /projects/:name/history` | `?limit=` | Letzte FileWatcher-Events aus PG |
+| `GET /projects/:name/specialists` | - | status.json (alle Spezialisten) |
+| `POST /projects/:name/specialists/:name/stop` | - | SIGTERM + Cleanup |
+| `GET /projects/:name/channels` | - | Alle Channels |
+| `GET /projects/:name/channels/:ch/feed` | `?limit=` | Channel-Feed |
+| `POST /projects/:name/channels/:ch/post` | Body | In Channel posten |
+| `GET /projects/:name/agents` | - | Aktive Agenten |
+| `GET /events` | SSE | State-Stream (`event: state`, heartbeat 25 s) |
+
+**In-Process-Indexierung:** `WatcherManager.forwardEvent()` ruft `indexFile()` / `removeFile()` direkt — kein HTTP-Umweg.
+
+---
+
+## 🌐 REST-API (für Web-KIs)
+
+`@synapse/rest-api` (Fastify) stellt 15 MCP-Tools über HTTP bereit. Läuft als Container auf dem Server (siehe Deployment).
+
+### Verfügbarkeit pro Tool
+
+| Tool | via REST | Anmerkung |
+|------|----------|-----------|
+| `search`, `memory`, `thought`, `plan`, `proposal`, `docs`, `code_intel`, `files`, `event` | ✅ vollständig | Alle Actions |
+| `chat` | ⚠️ teilweise | Ohne `inbox_send` / `inbox_check` |
+| `admin` | ⚠️ teilweise | Ohne `migrate` / `restore` |
+| `project` | ⚠️ teilweise | Ohne `complete_setup` / `cleanup` / `stop` |
+| `specialist` | 🔄 via PG-Queue | Daemon + Claude-CLI auf User-PC nötig |
+| `shell` | 🔄 via PG-Queue | Daemon claimt + führt aus |
+| `channel`, `watcher` | ❌ nur MCP | stdio-only |
+
+### MCP-over-HTTP
+
+| Endpoint | Methode | Zweck |
+|----------|---------|-------|
+| `GET /mcp/sse` | SSE | SSE-Session (altes MCP v2024-11-05) — für Claude.ai Connector |
+| `POST /mcp/messages?sessionId=` | JSON-RPC | Tool-Calls in SSE-Session |
+| `POST /` | JSON-RPC | Direkter Root-Endpoint (ohne SSE) |
+| `GET /.well-known/oauth-authorization-server` | - | OAuth-Discovery für Claude.ai |
+| `GET / POST /oauth/*` | - | OAuth 2.0 Flow |
+
+### Standalone-REST-Routes
+
+`/api/health`, `/api/status`, `/api/search/*`, `/api/thoughts/*`, `/api/memory/*`, `/api/projects/*`, `/api/stats/*`, `/api/ideas/*`, `/api/tech/*`, `/api/proposals/*`, `/api/code-intel/*`, `/api/files/*`, `/api/guide` (KI-Doku via `guide-content.ts`).
+
+> **Setup-Voraussetzung:** Wenn der REST-API-Container `specialist` / `shell` an User-PCs delegieren soll, muss er im selben Docker-Netzwerk wie der lokale Daemon liegen — bei der Standard-Unraid-Topologie z. B. `proxynet`.
 
 ---
 
 ## 🗄️ Datenbank-Schema
 
-### PostgreSQL (10 Tabellen)
+### PostgreSQL — wichtigste Tabellen
 
-| Tabelle | Spalten | Beschreibung |
-|---------|---------|--------------|
-| `memories` | id, project, name, category, content, tags, created_at, updated_at | Langzeit-Wissen (Architektur, Regeln, Docs) |
-| `thoughts` | id, project, source, content, tags, timestamp | Kurze Erkenntnisse und Ideen |
-| `plans` | id, project, name, description, goals, architecture, tasks (JSONB) | Projekt-Pläne mit Tasks |
-| `proposals` | id, project, file_path, suggested_content, description, author, status, tags | Code-Vorschläge mit Status-Tracking |
-| `agent_sessions` | id, project, model, cutoff_date, status, registered_at | Registrierte Agenten mit Modell-Info |
-| `chat_messages` | id, project, sender_id, recipient_id, content, timestamp | Agenten-Chat (Broadcasts + DMs) |
-| `tech_docs` | id, framework, version, section, content, type, category, content_hash, source | Kuratierte Framework-Dokumentation |
-| `code_files` | id, project, file_path, file_name, file_type, chunk_count, file_size, indexed_at, updated_at | Indexierte Dateien mit Metadaten (PG-basierte Pfadsuche) |
-| `agent_events` | id, project, event_type, priority, scope, source_id, payload, requires_ack | Steuersignale zwischen Agenten |
-| `agent_event_acks` | event_id, agent_id, acked_at, reaction | Quittierungen von Events |
+| Tabelle | Beschreibung |
+|---------|--------------|
+| `code_files` | Indexierte Dateien (Pfad, Typ, Chunks, Größe) — primärer Code-Store |
+| `code_functions` / `code_variables` / `code_symbols` / `code_imports` | Code-Intelligence-Daten (PG-only) |
+| `memories` | Langzeit-Wissen mit Tags + Kategorien |
+| `thoughts` | Kurzerkenntnisse + Ideen |
+| `plans` | Projekt-Pläne mit Tasks (JSONB) |
+| `proposals` | Code-Vorschläge mit Status-Tracking |
+| `tech_docs` | Kuratierte Framework-Doku (mit `content_hash`) |
+| `agent_sessions` | Registrierte Agenten + Cutoff-Datum |
+| `chat_messages` | Broadcasts + DMs |
+| `agent_events` / `agent_event_acks` | Event-Layer |
+| `specialist_channels` / `_members` / `_messages` | Channel-System |
+| `specialist_inbox` | 1:1-Inbox für Spezialisten |
+| `shell_jobs` | Shell-Queue (PG-LISTEN) |
+| `specialist_jobs` | Specialist-Queue (PG-LISTEN) |
+| `error_patterns` | Bekannte Fehler-Patterns für `code_check` |
+| `watcher_events` | History pro Projekt |
 
-### Qdrant (Vektor-Collections)
+### Qdrant — Vektor-Collections (3072d, Google Gemini Embedding 2)
 
-| Collection | Inhalt | Dimension |
-|------------|--------|-----------|
-| `project_{name}_code` | Code-Chunks mit Metadaten | 3072 |
-| `project_{name}_thoughts` | Gedanken (semantisch durchsuchbar) | 3072 |
-| `project_{name}_memories` | Memories (Architektur, Regeln) | 3072 |
-| `project_{name}_proposals` | Code-Vorschläge | 3072 |
-| `project_{name}_docs` | Tech-Docs pro Projekt | 3072 |
-| `project_{name}_media` | Bilder und Videos | 3072 |
-| `tech_docs_cache` | Globaler Docs-Cache | 3072 |
+`project_{name}_code`, `project_{name}_memories`, `project_{name}_thoughts`, `project_{name}_proposals`, `project_{name}_docs`, `project_{name}_media` + globaler `tech_docs_cache`.
 
 ---
 
-## 🪝 Hooks
-
-Synapse nutzt Claude Code Hooks für automatische Integrationen:
+## 🪝 Hooks (Claude Code)
 
 ### PreToolUse
 
 | Matcher | Hook | Beschreibung |
 |---------|------|--------------|
-| `Read` | `pre-synapse-onboarding.sh` | Koordinator-Onboarding: Zeigt Projekt-Kontext beim ersten Tool-Call der Session |
+| `Read` | `pre-synapse-onboarding.sh` | Koordinator-Onboarding (Status alle 30 min) |
+| `Edit\|Write` | `pre-edit-framework-docs.sh` | Framework-Hint einmalig pro Agent + Framework |
 
 ### PostToolUse
 
 | Matcher | Hook | Beschreibung |
 |---------|------|--------------|
-| `Edit\|Write` | `post-edit-framework-docs.sh` | Wissens-Airbag: Zeigt Framework-Docs nach Datei-Bearbeitung |
-| `.*` | `chat-notify.sh` | Chat + Event Notifications: Ungelesene DMs, Broadcasts und Events nach jedem Tool-Call |
+| `Edit\|Write` | `post-edit-framework-docs.sh` | Wissens-Airbag — Framework-Docs nach jedem Edit |
+| `.*` | `chat-notify.sh` | Chat + Event Notifications |
 
 ### SubagentStart
 
 | Matcher | Hook | Beschreibung |
 |---------|------|--------------|
-| `.*` | `pre-synapse-onboarding.sh` | Agent-Onboarding: Gibt Subagenten automatisch eine ID und Synapse-Regeln |
+| `.*` | `pre-synapse-onboarding.sh` | Subagent-Onboarding (ID + Pflicht-Schritte: chat.register → admin.index_stats → chat.get) |
 
-### Response Enhancement (server.ts)
+### Response-Enhancement (server.ts `withOnboarding`)
 
-Zusätzlich erweitert `server.ts` jede Tool-Response um:
-- **pendingEvents** — unbestätigte Events mit Hint-Text
-- **unreadChat** — ungelesene Nachrichten mit Lesehinweis
-- **activeAgents** — Liste aktiver Agenten
-- **agentOnboarding** — Projekt-Regeln beim ersten Besuch
+Jede Tool-Response wird automatisch erweitert um: `pendingEvents`, `unreadChat`, `activeAgents`, `agentOnboarding` (beim ersten Besuch).
 
 ---
 
@@ -513,11 +654,11 @@ Zusätzlich erweitert `server.ts` jede Tool-Response um:
 ### 1. Voraussetzungen
 
 - **Node.js 20+** (via [mise](https://mise.jdx.dev/))
-- **pnpm** (Paketmanager)
-- **PostgreSQL** (relationale Daten)
-- **Qdrant** (Vektor-Datenbank, Docker oder Cloud)
-- **Google AI API Key** (für Embeddings, `gemini-embedding-2-preview`)
-- Optional: **Context7 API Key** (für automatische Framework-Docs)
+- **pnpm** (Paketmanager — `npm`/`yarn` nicht verwenden)
+- **PostgreSQL** (Source of Truth)
+- **Qdrant** (Vektor-Index, Docker oder Cloud)
+- **Google AI API Key** (`gemini-embedding-2-preview`)
+- Optional: **Context7 API Key** (Auto-Fetch Framework-Docs)
 
 ### 2. Installation
 
@@ -530,9 +671,9 @@ pnpm install
 pnpm run build
 ```
 
-### 3. MCP Server konfigurieren
+### 3. MCP-Server konfigurieren
 
-In der `.mcp.json` im Projekt-Root (oder global):
+In `.mcp.json` im Projekt-Root (oder global):
 
 ```json
 {
@@ -552,67 +693,14 @@ In der `.mcp.json` im Projekt-Root (oder global):
 }
 ```
 
-### 4. Claude Code Hooks einrichten
+### 4. Claude Code Hooks
 
-Kopiere die Hooks-Konfiguration in `~/.claude/settings.json`:
+Vorlage: [`hooks-setup.example.json`](hooks-setup.example.json) → in `~/.claude/settings.json` einfügen, `<SYNAPSE_PATH>` ersetzen.
 
-```json
-{
-  "hooks": {
-    "PreToolUse": [
-      {
-        "matcher": "Read",
-        "hooks": [{
-          "type": "command",
-          "command": "<SYNAPSE_PATH>/packages/mcp-server/hooks/pre-synapse-onboarding.sh"
-        }]
-      }
-    ],
-    "PostToolUse": [
-      {
-        "matcher": "Edit|Write",
-        "hooks": [{
-          "type": "command",
-          "command": "<SYNAPSE_PATH>/packages/mcp-server/hooks/post-edit-framework-docs.sh"
-        }]
-      },
-      {
-        "matcher": ".*",
-        "hooks": [{
-          "type": "command",
-          "command": "<SYNAPSE_PATH>/scripts/chat-notify.sh",
-          "timeout": 10
-        }]
-      }
-    ],
-    "SubagentStart": [
-      {
-        "matcher": ".*",
-        "hooks": [{
-          "type": "command",
-          "command": "<SYNAPSE_PATH>/packages/mcp-server/hooks/pre-synapse-onboarding.sh"
-        }]
-      }
-    ]
-  }
-}
-```
-
-> Ersetze `<SYNAPSE_PATH>` mit dem absoluten Pfad zu deinem Synapse-Verzeichnis.
-
-Vorlage: [`hooks-setup.example.json`](hooks-setup.example.json)
-
-### 5. Fish Shell Setup
-
-In `~/.config/fish/config.fish`:
+### 5. Fish-Shell Setup
 
 ```fish
-# Synapse DB-URL für Hooks und Scripts
-# WICHTIG: Ohne diese Variable funktionieren Chat-Notifications,
-# Event-Watcher und Coordinator-Watch NICHT.
 set -gx SYNAPSE_DB_URL "postgresql://synapse:password@localhost:5432/synapse"
-
-# Claude Code mit automatischem Context-Handoff + volle Rechte
 alias cc "bash ~/.claude/skills/synapse-nutzung/scripts/claude-session.sh --dangerously-skip-permissions"
 ```
 
@@ -626,12 +714,35 @@ Vorlage: [`shell-setup.example.fish`](shell-setup.example.fish)
 
 → FileWatcher startet, Code wird indexiert, Technologien erkannt.
 
-### 7. REST API starten (optional)
+### 7. REST-API starten (optional)
+
+**Lokal:**
 
 ```bash
 pnpm run dev:api
 # Läuft auf http://0.0.0.0:3456
 ```
+
+**Container (Unraid / Docker):**
+
+```bash
+docker run -d --name synapse-rest-api \
+  --network proxynet \
+  -e DATABASE_URL=... -e QDRANT_URL=... -e GOOGLE_API_KEY=... \
+  -p 3456:3456 \
+  ghcr.io/<user>/synapse-rest-api:latest
+```
+
+> **Wichtig:** Container muss im selben Docker-Netzwerk wie Qdrant + PostgreSQL laufen (Standard auf Unraid: `proxynet`). Sonst keine DB-Verbindung.
+
+### 8. FileWatcher-Daemon (Tray)
+
+```bash
+cd packages/file-watcher-daemon-ts
+pnpm run start    # Port 7878
+```
+
+Läuft als Tray-Anwendung (Electron) und verarbeitet Shell-/Specialist-Jobs aus der PG-Queue für REST-Clients.
 
 ---
 
@@ -640,59 +751,79 @@ pnpm run dev:api
 ```
 synapse/
 ├── packages/
-│   ├── core/                        # Gemeinsamer Kern
+│   ├── core/                        # Gemeinsamer Kern (26 Services)
 │   │   └── src/
 │   │       ├── db/
-│   │       │   ├── client.ts        # PostgreSQL Connection Pool
-│   │       │   └── schema.ts        # 9 Tabellen + Indizes
 │   │       ├── services/
-│   │       │   ├── events.ts        # Event-System (emit, ack, pending)
-│   │       │   ├── thoughts.ts      # Gedanken-Verwaltung
-│   │       │   ├── memory.ts        # Memory-Verwaltung
-│   │       │   ├── techDocs.ts      # Tech-Docs + Context7
+│   │       │   ├── code.ts            # FileWatcher-Indexierung + Konsistenz
+│   │       │   ├── code-intel.ts      # Code-Intelligence Queries
+│   │       │   ├── code-write.ts      # files-Tool Backend (search_replace_batch)
+│   │       │   ├── memory.ts / thoughts.ts / plans.ts / proposals.ts
+│   │       │   ├── chat.ts / channels.ts / inbox.ts
+│   │       │   ├── events.ts
+│   │       │   ├── shell-queue.ts / shell-exec.ts
+│   │       │   ├── specialist-queue.ts
+│   │       │   ├── tech-docs.ts / docs.ts / docs-indexer.ts
+│   │       │   ├── error-patterns.ts
+│   │       │   ├── project-registry.ts
+│   │       │   ├── tech-detection.ts
+│   │       │   ├── global-search.ts
 │   │       │   └── ...
-│   │       ├── embeddings/          # Google / Ollama / OpenAI
-│   │       └── watcher/             # FileWatcher (Chokidar)
-│   ├── mcp-server/                  # MCP Server (13 konsolidierte Tools)
+│   │       ├── embeddings/            # google / openai / ollama / cohere
+│   │       └── watcher/               # Chokidar
+│   ├── mcp-server/                   # MCP Server (15 Tools + watcher + shell)
 │   │   ├── src/
-│   │   │   ├── server.ts            # Tool-Definitionen + Response Enhancement
-│   │   │   └── tools/
-│   │   │       ├── consolidated/    # 13 konsolidierte Super-Tools
-│   │   │       │   ├── admin.ts
-│   │   │       │   ├── chat.ts
-│   │   │       │   ├── channel.ts
-│   │   │       │   ├── docs.ts
-│   │   │       │   ├── event.ts
-│   │   │       │   ├── memory.ts
-│   │   │       │   ├── plan.ts
-│   │   │       │   ├── project.ts
-│   │   │       │   ├── proposal.ts
-│   │   │       │   ├── search.ts
-│   │   │       │   ├── specialist.ts
-│   │   │       │   ├── thought.ts
-│   │   │       │   ├── watcher.ts
-│   │   │       │   └── index.ts
-│   │   │       └── ...
+│   │   │   ├── server.ts             # Tool-Registry + withOnboarding
+│   │   │   └── tools/consolidated/
+│   │   │       ├── admin.ts / search.ts / memory.ts / thought.ts
+│   │   │       ├── plan.ts / proposal.ts / chat.ts / channel.ts
+│   │   │       ├── event.ts / specialist.ts / docs.ts / project.ts
+│   │   │       ├── code_intel.ts / code_check.ts / files.ts
+│   │   │       ├── shell.ts / watcher.ts
+│   │   │       └── index.ts
 │   │   └── hooks/
-│   │       ├── pre-synapse-onboarding.sh   # Koordinator + Agent Onboarding
-│   │       └── post-edit-framework-docs.sh # Wissens-Airbag Hook
-│   ├── rest-api/                    # REST API (Fastify)
-│   ├── agents/                      # Agent-Koordination
-│   └── web-ui/                      # Web-Dashboard (React)
+│   │       ├── pre-synapse-onboarding.sh
+│   │       ├── pre-edit-framework-docs.sh
+│   │       └── post-edit-framework-docs.sh
+│   ├── rest-api/                     # Fastify HTTP-API (15 MCP-Tools)
+│   │   └── src/routes/
+│   │       ├── mcp.ts                # MCP-over-HTTP (JSON-RPC + SSE)
+│   │       ├── guide-content.ts      # KI-Doku
+│   │       ├── oauth.ts              # OAuth 2.0
+│   │       ├── code-intel.ts / files.ts / shell.ts
+│   │       ├── memory.ts / thoughts.ts / proposals.ts / projects.ts
+│   │       ├── search.ts / stats.ts / status.ts / tech.ts / ideas.ts
+│   │       └── index.ts
+│   ├── agents/                       # Wrapper + Heartbeat + Skill-System
+│   │   └── src/
+│   │       ├── wrapper.ts            # Detached Spezialist-Prozess
+│   │       ├── heartbeat.ts          # MCP-Server-Side Controller
+│   │       ├── process.ts            # Claude-CLI ProcessManager
+│   │       ├── skills.ts             # 4-Datei-Skill-System
+│   │       ├── channels.ts / inbox.ts
+│   │       └── ...
+│   ├── file-watcher-daemon-ts/       # Tray-Daemon (Port 7878)
+│   │   └── src/
+│   │       ├── main.ts
+│   │       ├── manager.ts            # WatcherManager
+│   │       ├── api.ts                # Fastify HTTP-API
+│   │       ├── shell-job-worker.ts
+│   │       └── specialist-job-worker.ts
+│   └── web-ui/                       # React Dashboard (in Entwicklung)
 ├── scripts/
-│   ├── coordinator-watch.sh         # Coordinator Idle-Watcher
-│   ├── chat-notify.sh               # PostToolUse Chat/Event Hook
-│   ├── chat-check.mjs               # Chat-Polling Helper
-│   └── event-check.mjs              # Event-Polling Helper
+│   ├── coordinator-watch.sh
+│   ├── chat-notify.sh
+│   ├── chat-check.mjs
+│   └── event-check.mjs
 ├── skills/
-│   ├── synapse-nutzung/             # Koordinator-Regeln (Skill)
-│   └── synapse-agent-regeln/        # Agent-Regeln (Skill)
-├── .env.example                     # Konfigurationsvorlage
-├── .mcp.json                        # MCP Server Konfiguration
-├── .synapseignore                   # Dateien vom Index ausschließen
-├── hooks-setup.example.json         # Claude Code Hooks Vorlage
-├── shell-setup.example.fish         # Fish Shell Setup Vorlage
-└── .mise.toml                       # Task-Runner Konfiguration
+│   ├── synapse-nutzung/              # Koordinator-Regeln
+│   └── synapse-agent-regeln/         # Agent-Regeln
+├── .env.example
+├── .mcp.json
+├── .synapseignore
+├── hooks-setup.example.json
+├── shell-setup.example.fish
+└── .mise.toml
 ```
 
 ---
@@ -706,36 +837,35 @@ synapse/
 | `DATABASE_URL` | PostgreSQL Connection String | - |
 | `QDRANT_URL` | Qdrant Server URL | `http://localhost:6333` |
 | `QDRANT_API_KEY` | Qdrant API Key (optional) | - |
-| `EMBEDDING_PROVIDER` | `google`, `ollama` oder `openai` | `google` |
-| `GOOGLE_API_KEY` | Google AI API Key (für Embeddings) | - |
-| `OLLAMA_URL` | Ollama Server URL | `http://localhost:11434` |
-| `OLLAMA_MODEL` | Ollama Embedding Model | `nomic-embed-text` |
-| `OPENAI_API_KEY` | OpenAI API Key (optional) | - |
-| `CONTEXT7_API_KEY` | Context7 API Key (Auto-Fetch) | - |
-| `API_PORT` | REST API Port | `3456` |
-| `API_HOST` | REST API Host | `0.0.0.0` |
-| `MAX_FILE_SIZE_MB` | Max Dateigröße für Indexierung | `1` |
-| `CHUNK_SIZE` | Chunk-Größe in Zeichen | `1000` |
-| `CHUNK_OVERLAP` | Overlap zwischen Chunks | `200` |
+| `EMBEDDING_PROVIDER` | `google` / `openai` / `ollama` / `cohere` / `openai-compatible` | `google` |
+| `GOOGLE_API_KEY` | Google AI API Key | - |
+| `OLLAMA_URL` / `OLLAMA_MODEL` | Ollama Server + Model | `http://localhost:11434` / `nomic-embed-text` |
+| `OPENAI_API_KEY` | OpenAI API Key | - |
+| `CONTEXT7_API_KEY` | Context7 Auto-Fetch | - |
+| `API_PORT` / `API_HOST` | REST-API Port + Host | `3456` / `0.0.0.0` |
+| `MAX_FILE_SIZE_MB` | Max-Größe für Indexierung | `1` |
+| `CHUNK_SIZE` / `CHUNK_OVERLAP` | Chunking-Parameter | `1000` / `200` |
 | `DEBOUNCE_MS` | FileWatcher Debounce | `500` |
 
 ### Shell-Umgebung
 
-| Variable | Beschreibung | Benötigt für |
-|----------|--------------|-------------|
-| `SYNAPSE_DB_URL` | PostgreSQL URL (in Fish Shell) | Chat-Notify, Coordinator-Watch, Event-Check |
+| Variable | Beschreibung |
+|----------|--------------|
+| `SYNAPSE_DB_URL` | PostgreSQL-URL für Hooks/Watcher (Pflicht) |
+| `SYNAPSE_KEEP_ALIVE` | `1` → Heartbeat-Wake auch ohne Queue |
+| `SYNAPSE_POLL_INTERVAL` | Heartbeat-Intervall (ms, default `15000`) |
 
 ### Slash-Commands (Claude Code Skills)
 
 | Command | Beschreibung |
 |---------|--------------|
 | `/synapse-nutzung` | Koordinator-Regeln laden |
-| `/synapse-agent-regeln` | Agent-Regeln laden |
-| `/projekt-setup` | Setup-Wizard (Beschreibung, Standards, Skills) |
-| `/projekt-regeln` | Coding-Standards anzeigen/ändern |
+| `/synapse-agent-regeln` | Agent-/Subagent-Regeln laden |
+| `/projekt-setup` | Setup-Wizard |
+| `/projekt-regeln` | Coding-Standards |
 | `/projekt-architektur` | Architektur-Übersicht |
-| `/projekt-status` | Alles anzeigen was Synapse über das Projekt weiß |
-| `/commit-arbeit` | Commit-Workflow mit Konventionen |
+| `/projekt-status` | Was Synapse über das Projekt weiß |
+| `/commit-arbeit` | Commit-Workflow (konventionelle Commits, Deutsch) |
 
 ---
 
@@ -745,11 +875,11 @@ synapse/
 mr dev          # MCP Server im Dev-Modus
 mr dev:api      # REST API im Dev-Modus
 mr build        # Alle Packages bauen
-mr build:core   # Nur Core bauen
-mr build:mcp    # Nur MCP Server bauen
-mr build:api    # Nur REST API bauen
+mr build:core   # Nur Core
+mr build:mcp    # Nur MCP Server
+mr build:api    # Nur REST API
 mr clean        # Alle dist/ löschen
-mr lint         # Linter ausführen
+mr lint         # Linter
 ```
 
 ---
@@ -758,18 +888,18 @@ mr lint         # Linter ausführen
 
 | Einschränkung | Details |
 |----------------|---------|
-| **🚨 Dual-Write Consistency** | Kein Rollback bei Partial-Failure (PG OK ↔ Qdrant FAIL) → Daten in nur einem Store, keine automatischen Retries |
-| **Inkonsistente Read-Pfade** | `get*/list*` liest Qdrant, `update*` liest PG → Geister-Datensätze bei Failures (unsichtbar oder nicht-editierbar) |
-| **Keine PG-Transaktionen** | Kein BEGIN/COMMIT pro Schreiboperation → keine ACID-Garantien, Race Conditions bei concurrent Updates |
-| **Kein Optimistic Locking** | Race Conditions bei concurrent Plan-Updates (updateTask), Lost Updates möglich — Blockiert bis Phase 3 |
-| **tech-docs.ts Sonderfall** | Bare awaits OHNE try-catch bei Dual-Write (Ausnahme zum allgemeinen Error-Pattern) |
-| **code.ts Invertierte Reihenfolge** | Schreibt Qdrant first statt PG first (Inkonsistenz zur Standard-Reihenfolge) |
-| **Kein Reconciliation-Job** | Dual-Write Drift akkumuliert über Zeit, keine automatische Heilung |
-| Context-Handoff | Nur auf Linux + fish/bash getestet |
-| Kein echter Push | Coordinator-Watch (Polling alle 10s) als Workaround |
-| Google Batch-Embedding | Max 100 Texte/Request (API-Limit) — Code erzwingt Splitting nicht, bei größeren Dateien (>100 Chunks) mögliche API-Fehler |
-| REST-API FileWatcher | REST-API hat keinen eigenen FileWatcher |
-| `detailed_stats` | Zeigt Gesamtzahlen über alle Projekte |
+| **Dual-Write Consistency** | Kein Rollback bei Partial-Failure (PG OK ↔ Qdrant FAIL) — Daten in nur einem Store, keine automatischen Retries |
+| **Inkonsistente Read-Pfade** | `get*/list*` liest Qdrant, `update*/delete*` liest PG → Geister-Datensätze bei Failures |
+| **Keine PG-Transaktionen** | Kein BEGIN/COMMIT pro Schreiboperation → keine ACID-Garantien, Race Conditions möglich |
+| **Kein Optimistic Locking** | Concurrent Plan-Updates / Memory-Updates können Lost Updates verursachen |
+| **Kein Reconciliation-Job** | Drift akkumuliert über Zeit; manuelles `verifyProjectAgainstFilesystem()` möglich |
+| **tech-docs.ts Sonderfall** | Bare awaits ohne try/catch beim Dual-Write |
+| **Doppelte Pfad-Indexierung** | `code_files` kann Einträge mit absolutem **und** relativem Pfad enthalten — `migrate_paths` empfohlen |
+| **Context-Handoff** | Nur auf Linux + fish/bash getestet |
+| **Kein echter Push** | Coordinator-Watch (Polling alle 10 s) als Workaround |
+| **Google Batch-Embedding** | Max 100 Texte/Request — Code splittet nicht automatisch (>100 Chunks → mögliche API-Fehler) |
+| **REST-API FileWatcher** | REST-API hat keinen eigenen FileWatcher — Daemon auf User-PC nötig |
+| **`detailed_stats`** | Zeigt Gesamtzahlen über alle Projekte |
 
 ---
 
