@@ -189,7 +189,13 @@ export function replaceLines(
 
   const before = lines.slice(0, lineStart - 1);
   const after = lines.slice(lineEnd);
-  const newLines = newContent.split('\n');
+
+  // Single-Line-Replace: trailing \n strippen (sonst extra leere Zeile)
+  let safeNewContent = newContent;
+  if (lineStart === lineEnd && safeNewContent.endsWith('\n')) {
+    safeNewContent = safeNewContent.slice(0, -1);
+  }
+  const newLines = safeNewContent.split('\n');
 
   return [...before, ...newLines, ...after].join('\n');
 }
