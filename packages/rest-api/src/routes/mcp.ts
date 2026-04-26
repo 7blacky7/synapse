@@ -86,6 +86,8 @@ import {
   insertAfterLine,
   deleteLines,
   searchReplace,
+  searchReplaceBatch,
+  applyContentRange,
   // Channels
   createChannel,
   joinChannel,
@@ -646,6 +648,9 @@ const MCP_TOOLS = [
         query: { type: 'string', description: 'Suchbegriff fuer search-Action (Volltext)' },
         file_type: { type: 'string', description: 'Dateityp-Filter fuer search-Action (z.B. "ts", "js")' },
         limit: { type: 'number', description: 'Max. Ergebnisse fuer search-Action (Standard: 20)' },
+        from_line: { type: 'number', description: 'file: Start-Zeile (1-basiert, Standard: 1)' },
+        to_line: { type: 'number', description: 'file: End-Zeile inklusiv (Standard: letzte Zeile). Auto-Reduce bei > 80k Zeichen.' },
+        truncate_long_lines: { type: 'number', description: 'file: Zeilen laenger als N Zeichen kuerzen + Marker. 0 = aus (Standard).' },
       },
       required: ['action', 'project'],
     },
@@ -660,7 +665,7 @@ const MCP_TOOLS = [
       properties: {
         action: {
           type: 'string',
-          enum: ['create', 'update', 'delete', 'move', 'copy', 'read', 'replace_lines', 'insert_after', 'delete_lines', 'search_replace'],
+          enum: ['create', 'update', 'delete', 'move', 'copy', 'read', 'replace_lines', 'insert_after', 'delete_lines', 'search_replace', 'search_replace_batch'],
           description: 'Datei-Aktion',
         },
         project: { type: 'string', description: 'Projekt-Name' },
@@ -672,6 +677,24 @@ const MCP_TOOLS = [
         after_line: { type: 'number', description: 'Nach dieser Zeile einfuegen (fuer insert_after)' },
         search: { type: 'string', description: 'Suchtext (fuer search_replace)' },
         replace: { type: 'string', description: 'Ersetzungstext (fuer search_replace)' },
+        edits: {
+          type: 'array',
+          description: 'Edits fuer search_replace_batch (1..50 Elemente)',
+          minItems: 1,
+          maxItems: 50,
+          items: {
+            type: 'object',
+            properties: {
+              search: { type: 'string', description: 'Exakter Suchstring' },
+              replace: { type: 'string', description: 'Ersetzungsstring' },
+              replace_all: { type: 'boolean', description: 'Alle Vorkommen ersetzen (default: false)' },
+            },
+            required: ['search', 'replace'],
+          },
+        },
+        from_line: { type: 'number', description: 'read: Start-Zeile (1-basiert, Standard: 1)' },
+        to_line: { type: 'number', description: 'read: End-Zeile inklusiv (Standard: letzte Zeile). Auto-Reduce bei > 80k Zeichen.' },
+        truncate_long_lines: { type: 'number', description: 'read: Zeilen laenger als N Zeichen kuerzen + Marker. 0 = aus (Standard).' },
       },
       required: ['action', 'project', 'file_path'],
     },
@@ -2086,7 +2109,11 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
         case 'file': {
           const filePath = str(args, 'file_path') ?? str(args, 'path');
           if (!filePath) throw new Error('Parameter "file_path" oder "path" ist erforderlich fuer action "file"');
-          const file = await getFileContent(project, filePath);
+          const file = await getFileContent(project, filePath, {
+            from: num(args, 'from_line'),
+            to: num(args, 'to_line'),
+            truncate_long_lines: num(args, 'truncate_long_lines'),
+          });
           if (!file) return { success: false, message: `Datei nicht gefunden: ${filePath}`, project };
           return { success: true, ...file, project };
         }
@@ -2143,11 +2170,21 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
           return { success: true, message: `Datei kopiert: "${filePath}" → "${newPath}"` };
         }
         case 'read': {
-          const content = await getFileContentFromPg(project, filePath);
-          if (content === null) {
+          const rawContent = await getFileContentFromPg(project, filePath);
+          if (rawContent === null) {
             return { success: false, error: `Datei "${filePath}" nicht gefunden in Projekt "${project}"` };
           }
-          return { success: true, file_path: filePath, content, size: content.length };
+          const ranged = applyContentRange(rawContent, {
+            from: num(args, 'from_line'),
+            to: num(args, 'to_line'),
+            truncate_long_lines: num(args, 'truncate_long_lines'),
+          });
+          return {
+            success: true,
+            file_path: filePath,
+            size: rawContent.length,
+            ...ranged,
+          };
         }
         case 'replace_lines': {
           const currentContent = await getFileContentFromPg(project, filePath);
@@ -2213,6 +2250,36 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
           if (count === 0) return { success: true, count: 0, message: `Kein Vorkommen von "${searchStr}" in "${filePath}"` };
           const result = await updateFileInPg(project, filePath, newContent, agentId);
           const response: Record<string, unknown> = { success: true, count, message: `${count} Vorkommen ersetzt in "${filePath}"` };
+          if (result.warnings?.length) {
+            response.errorPatterns = {
+              count: result.warnings.length,
+              warnings: result.warnings,
+              hint: `${result.warnings.length} bekannte Fehler-Patterns matchen deinen Code`,
+            };
+          }
+          return response;
+        }
+        case 'search_replace_batch': {
+          const currentContent = await getFileContentFromPg(project, filePath);
+          if (currentContent === null) return { success: false, error: `Datei "${filePath}" nicht gefunden` };
+          const rawEdits = args['edits'];
+          if (!Array.isArray(rawEdits) || rawEdits.length === 0) {
+            return { success: false, error: 'edits muss ein nicht-leeres Array sein' };
+          }
+          const { content: newContent, result: batchResult } = searchReplaceBatch(currentContent, rawEdits as Array<{ search: string; replace: string; replace_all?: boolean }>);
+          if (batchResult.applied === 0) {
+            return {
+              success: false,
+              ...batchResult,
+              message: `Keine Edits angewendet in "${filePath}"`,
+            };
+          }
+          const result = await updateFileInPg(project, filePath, newContent, agentId);
+          const response: Record<string, unknown> = {
+            success: true,
+            ...batchResult,
+            message: `${batchResult.applied}/${batchResult.total} Edits angewendet in "${filePath}"`,
+          };
           if (result.warnings?.length) {
             response.errorPatterns = {
               count: result.warnings.length,

@@ -203,11 +203,13 @@ export {
   getReferences,
   fullTextSearchCode,
   getFileContent,
+  applyContentRange,
   // Code Write
   replaceLines,
   insertAfterLine,
   deleteLines,
   searchReplace,
+  searchReplaceBatch,
   contentHash,
   createFileInPg,
   updateFileInPg,
@@ -297,7 +299,8 @@ export type {
   SpecialistJobResult,
 } from './services/specialist-queue.js';
 
-export type { FunctionInfo, VariableInfo, SymbolInfo, ReferenceInfo, ReferencesResult, FullTextSearchResult, FileContentResult, TreeOptions } from './services/code-intel.js';
+export type { FunctionInfo, VariableInfo, SymbolInfo, ReferenceInfo, ReferencesResult, FullTextSearchResult, FileContentResult, FileContentOptions, TreeOptions } from './services/code-intel.js';
+export type { BatchEdit, BatchResult } from './services/code-write.js';
 export type { BackupEntry } from './services/backup.js';
 export type { ChatMessage, AgentSession } from './services/chat.js';
 export type { AgentEvent, EventAck, EventType, EventPriority } from './services/events.js';
