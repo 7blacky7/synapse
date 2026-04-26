@@ -863,7 +863,6 @@ synapse/
 | `/projekt-regeln` | Coding-Standards |
 | `/projekt-architektur` | Architektur-Übersicht |
 | `/projekt-status` | Was Synapse über das Projekt weiß |
-| `/commit-arbeit` | Commit-Workflow (konventionelle Commits, Deutsch) |
 
 ---
 
