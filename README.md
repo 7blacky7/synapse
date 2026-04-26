@@ -586,7 +586,7 @@ Standalone Node-Daemon auf Port `7878` (moo-daemon-kompatibel).
 
 `/api/health`, `/api/status`, `/api/search/*`, `/api/thoughts/*`, `/api/memory/*`, `/api/projects/*`, `/api/stats/*`, `/api/ideas/*`, `/api/tech/*`, `/api/proposals/*`, `/api/code-intel/*`, `/api/files/*`, `/api/guide` (KI-Doku via `guide-content.ts`).
 
-> **Setup-Voraussetzung:** Wenn der REST-API-Container `specialist` / `shell` an User-PCs delegieren soll, muss er im selben Docker-Netzwerk wie der lokale Daemon liegen — bei der Standard-Unraid-Topologie z. B. `proxynet`.
+> **Setup-Voraussetzung:** Wenn die REST-API `specialist` / `shell` / `channel` an User-PCs delegieren soll, läuft die Kommunikation über die **PostgreSQL-Queue** — REST-Container und Daemon müssen lediglich beide dieselbe PG-Datenbank erreichen können. Der Daemon kann lokal, im LAN oder remote laufen, solange er TCP-Zugang zur PG hat.
 
 ---
 
@@ -725,13 +725,14 @@ pnpm run dev:api
 
 ```bash
 docker run -d --name synapse-rest-api \
-  --network proxynet \
-  -e DATABASE_URL=... -e QDRANT_URL=... -e GOOGLE_API_KEY=... \
+  -e DATABASE_URL=postgresql://user:pw@db-host:5432/synapse \
+  -e QDRANT_URL=http://qdrant-host:6333 \
+  -e GOOGLE_API_KEY=AIza... \
   -p 3456:3456 \
   ghcr.io/<user>/synapse-rest-api:latest
 ```
 
-> **Wichtig:** Container muss im selben Docker-Netzwerk wie Qdrant + PostgreSQL laufen (Standard auf Unraid: `proxynet`). Sonst keine DB-Verbindung.
+> **Wichtig:** Container braucht TCP-Erreichbarkeit zu PostgreSQL und Qdrant — entweder via gemeinsamem Docker-Netzwerk (`--network <name>`), Host-Mode oder über IP/Port wenn die DBs auf einem anderen Host laufen.
 
 ### 8. FileWatcher-Daemon (Tray)
 
