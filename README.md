@@ -115,14 +115,12 @@ Datei gespeichert
 - **PostgreSQL** — **Write-Primary + Source of Truth** (Code-Inhalte, Memories, Thoughts, Plans, Proposals, Code-Intel, Chat, Events, Inbox, Channels, Shell-Queue, Specialist-Queue)
 - **Qdrant** — **Read-Primary** für semantische Suche (Code, Memories, Thoughts, Proposals, Tech-Docs, Media)
 
-**Konsistenz-Modell:** Eventual Consistency (best-effort, kein Rollback bei Partial-Failure)
+**Konsistenz-Modell:** Eventual Consistency (by design — Single-User-System, keine konkurrierenden Writer).
 
 **Schreib-Flow:** PG first → Qdrant second (Standard für **alle** Services).
-**Fehlertoleranz:** Beide Writes in separaten try/catch, `warning`-Feld bei Partial-Failure.
+**Fehlertoleranz:** Beide Writes in separaten try/catch, `warning`-Feld bei Partial-Failure (Schreibvorgang scheitert nicht still).
 
-**⚠️ Architektur-Hinweis:** Reads kommen je nach Operation aus verschiedenen Stores —
-`get*/list*` lesen Qdrant (Read-Primary), `update*/delete*` lesen PG (Write-Primary).
-Bei Partial-Failure entstehen Geister-Datensätze (siehe „Bekannte Einschränkungen").
+**Read-Routing (by design):** `get*/list*` lesen Qdrant (semantische Suche, Read-Primary), `update*/delete*` lesen PG (Write-Primary, Source of Truth).
 
 Jedes Projekt bekommt eigene Qdrant-Collections: `project_{name}_code`, `project_{name}_thoughts`,
 `project_{name}_memories`, `project_{name}_proposals`, `project_{name}_docs`, `project_{name}_media`.
@@ -198,7 +196,7 @@ PostgreSQL-basiert, kein Qdrant nötig. Parser für TypeScript/JavaScript, Pytho
 | `search_replace` | Exakter String-Replace mit **Fuzzy-Match-Vorschlägen** bei Miss |
 | `search_replace_batch` | **Bis zu 50 Edits atomar** in einem Call |
 
-> **Auto-Unescape:** Doppelt-escaped Content (Haiku-Bug-Mitigation) wird automatisch normalisiert.
+> **Auto-Unescape:** Doppelt-escaped Content (z. B. `\\n` statt `\n`) wird automatisch normalisiert.
 
 ---
 
@@ -881,25 +879,6 @@ mr build:api    # Nur REST API
 mr clean        # Alle dist/ löschen
 mr lint         # Linter
 ```
-
----
-
-## 📋 Bekannte Einschränkungen
-
-| Einschränkung | Details |
-|----------------|---------|
-| **Dual-Write Consistency** | Kein Rollback bei Partial-Failure (PG OK ↔ Qdrant FAIL) — Daten in nur einem Store, keine automatischen Retries |
-| **Inkonsistente Read-Pfade** | `get*/list*` liest Qdrant, `update*/delete*` liest PG → Geister-Datensätze bei Failures |
-| **Keine PG-Transaktionen** | Kein BEGIN/COMMIT pro Schreiboperation → keine ACID-Garantien, Race Conditions möglich |
-| **Kein Optimistic Locking** | Concurrent Plan-Updates / Memory-Updates können Lost Updates verursachen |
-| **Kein Reconciliation-Job** | Drift akkumuliert über Zeit; manuelles `verifyProjectAgainstFilesystem()` möglich |
-| **tech-docs.ts Sonderfall** | Bare awaits ohne try/catch beim Dual-Write |
-| **Doppelte Pfad-Indexierung** | `code_files` kann Einträge mit absolutem **und** relativem Pfad enthalten — `migrate_paths` empfohlen |
-| **Context-Handoff** | Nur auf Linux + fish/bash getestet |
-| **Kein echter Push** | Coordinator-Watch (Polling alle 10 s) als Workaround |
-| **Google Batch-Embedding** | Max 100 Texte/Request — Code splittet nicht automatisch (>100 Chunks → mögliche API-Fehler) |
-| **REST-API FileWatcher** | REST-API hat keinen eigenen FileWatcher — Daemon auf User-PC nötig |
-| **`detailed_stats`** | Zeigt Gesamtzahlen über alle Projekte |
 
 ---
 
