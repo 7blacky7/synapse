@@ -7,32 +7,8 @@
 import * as ts from 'typescript';
 import type { LanguageParser, ParseResult, ParsedSymbol, ParsedReference } from './types.js';
 import { extractStringLiterals } from './types.js';
-import { sqlParser } from './sql.js';
-
-// HTTP-Verben die als Routen-Methoden erkannt werden
-const HTTP_VERBS = new Set([
-  'get', 'post', 'put', 'patch', 'delete', 'head', 'options', 'all',
-]);
-
-// NestJS Decorator-Namen (HTTP-Methode -> Verb-Map)
-const NEST_DECORATORS: Record<string, string> = {
-  Get: 'get', Post: 'post', Put: 'put', Patch: 'patch',
-  Delete: 'delete', Head: 'head', Options: 'options', All: 'all',
-};
-
-// SQL-DDL/DML-Schluesselwoerter — startet ein Statement so, gilt der Inhalt als SQL
-const SQL_KEYWORD_RE =
-  /\b(?:CREATE|ALTER|DROP|INSERT|UPDATE|DELETE|SELECT|WITH|TRUNCATE|REPLACE)\s+/i;
-
-// Method-Names die typischerweise SQL als ersten Argument bekommen
-const SQL_DB_METHODS = new Set([
-  'exec', 'prepare', 'query', 'run', 'all', 'get',
-  // pg/mysql/etc Patterns
-  'execute',
-]);
-
-// Tag-Namen fuer Tagged Templates die SQL signalisieren
-const SQL_TAGS = new Set(['sql', 'SQL', 'pgsql']);
+import { HTTP_VERBS, NEST_DECORATORS, formatRouteName, isLikelyHttpPath } from './patterns/http.js';
+import { SQL_DB_METHODS, SQL_TAGS, parseEmbeddedSql, looksLikeSql } from './patterns/sql.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -137,27 +113,8 @@ function resolveStringExpression(
   return null;
 }
 
-/**
- * Sub-parsed einen SQL-String-Inhalt mit dem SQL-Parser und passt die
- * line_start/line_end Felder so an, dass sie sich auf die ENCLOSING TS-Datei
- * beziehen (nicht auf die SQL-Region selbst).
- */
-function parseEmbeddedSql(
-  sqlContent: string,
-  filePath: string,
-  baseLine: number,
-): ParsedSymbol[] {
-  try {
-    const result = sqlParser.parse(sqlContent, filePath);
-    return result.symbols.map(s => ({
-      ...s,
-      line_start: s.line_start + baseLine - 1,
-      line_end: s.line_end !== undefined ? s.line_end + baseLine - 1 : undefined,
-    }));
-  } catch {
-    return [];
-  }
-}
+// parseEmbeddedSql ist jetzt aus './patterns/sql.js' importiert (geteilt mit
+// anderen Sprach-Parsern).
 
 // ---------------------------------------------------------------------------
 // Symbol extraction pass
@@ -536,7 +493,7 @@ function extractSymbols(
         const sqlText = ts.isNoSubstitutionTemplateLiteral(node.template)
           ? node.template.text
           : getStaticStringValue(node.template) ?? '';
-        if (SQL_KEYWORD_RE.test(sqlText)) {
+        if (looksLikeSql(sqlText)) {
           const baseLine = getLineNumber(sourceFile, node.template.getStart());
           symbols.push(...parseEmbeddedSql(sqlText, sourceFile.fileName, baseLine));
         }
@@ -550,7 +507,7 @@ function extractSymbols(
       const methodName = node.expression.name.getText();
       if (SQL_DB_METHODS.has(methodName) && node.arguments.length >= 1) {
         const resolved = resolveStringExpression(node.arguments[0], stringConsts, sourceFile);
-        if (resolved && SQL_KEYWORD_RE.test(resolved.value)) {
+        if (resolved && looksLikeSql(resolved.value)) {
           symbols.push(...parseEmbeddedSql(resolved.value, sourceFile.fileName, resolved.defLine));
         }
       }
