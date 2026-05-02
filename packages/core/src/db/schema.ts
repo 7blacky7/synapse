@@ -160,7 +160,21 @@ CREATE TABLE IF NOT EXISTS file_versions (
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 ALTER TABLE file_versions ADD COLUMN IF NOT EXISTS reason TEXT;
-
+-- IDEA-3a: History Enrichment (additive, alle nullable)
+ALTER TABLE file_versions ADD COLUMN IF NOT EXISTS feature_tag TEXT;
+ALTER TABLE file_versions ADD COLUMN IF NOT EXISTS parent_version_id BIGINT;
+ALTER TABLE file_versions ADD COLUMN IF NOT EXISTS git_commit_sha TEXT;
+DO $$ BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'file_versions_parent_version_id_fkey'
+  ) THEN
+    ALTER TABLE file_versions ADD CONSTRAINT file_versions_parent_version_id_fkey
+      FOREIGN KEY (parent_version_id) REFERENCES file_versions(id) ON DELETE SET NULL;
+  END IF;
+END $$;
+CREATE INDEX IF NOT EXISTS idx_fv_feature_tag ON file_versions(project, feature_tag) WHERE feature_tag IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_fv_git_sha ON file_versions(git_commit_sha) WHERE git_commit_sha IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_fv_parent ON file_versions(parent_version_id) WHERE parent_version_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_memories_project ON memories(project);
 CREATE INDEX IF NOT EXISTS idx_thoughts_project ON thoughts(project);
 CREATE INDEX IF NOT EXISTS idx_plans_project ON plans(project);
