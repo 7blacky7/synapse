@@ -444,14 +444,10 @@ export async function commitBatch(args: {
     const wasNew = plan.expected_hashes[filePath] === EMPTY_CONTENT_HASH;
     const effectiveReason = reasonPerFile.get(filePath) ?? fallbackReason;
     if (wasNew) {
-      await createFileInPg(plan.project, filePath, newContent, args.agent_id);
-      // file_versions-Marker fuer "in dieser Batch erstellt" — restore_batch kann dann
-      // die Datei wieder entleeren oder soft-deleten (V1: leerer Inhalt).
-      await pool.query(
-        `INSERT INTO file_versions (project, file_path, content, content_hash, edit_action, agent_id, batch_id, size_bytes, reason)
-         VALUES ($1, $2, '', $3, $4, $5, $6, 0, $7)`,
-        [plan.project, filePath, EMPTY_CONTENT_HASH, `batch:${args.plan_id}:create`, args.agent_id ?? null, batchIdSafe ?? null, effectiveReason ?? null],
-      );
+      // createFileInPg schreibt den Marker-Snapshot direkt mit batch_id + reason +
+      // edit_action="batch:N:create" — dadurch entsteht nur EIN Eintrag pro Create
+      // (vorher: createFileInPg + separater INSERT = 2 Eintraege).
+      await createFileInPg(plan.project, filePath, newContent, args.agent_id, effectiveReason, batchIdSafe, `batch:${args.plan_id}:create`);
     } else {
       await updateFileInPg(plan.project, filePath, newContent, args.agent_id, `batch:${args.plan_id}`, batchIdSafe, effectiveReason);
     }

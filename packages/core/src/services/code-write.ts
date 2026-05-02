@@ -404,7 +404,9 @@ export async function createFileInPg(
   filePath: string,
   content: string,
   agentId?: string,
-  reason?: string
+  reason?: string,
+  batchId?: number,
+  editAction?: string
 ): Promise<{ warnings?: ErrorPatternWarning[] }> {
   let warnings: ErrorPatternWarning[] | undefined;
   if (agentId) {
@@ -445,8 +447,8 @@ export async function createFileInPg(
   try {
     await pool.query(
       `INSERT INTO file_versions (project, file_path, content, content_hash, edit_action, agent_id, batch_id, size_bytes, reason)
-       VALUES ($1, $2, '', $3, 'create', $4, NULL, 0, $5)`,
-      [project, filePath, EMPTY_HASH, agentId ?? null, reason ?? null]
+       VALUES ($1, $2, '', $3, $4, $5, $6, 0, $7)`,
+      [project, filePath, EMPTY_HASH, editAction ?? 'create', agentId ?? null, batchId ?? null, reason ?? null]
     );
   } catch { /* Tabelle existiert in alten Schemata vlt nicht — best-effort */ }
 
