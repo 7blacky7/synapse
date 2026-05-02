@@ -7,6 +7,32 @@
 import * as ts from 'typescript';
 import type { LanguageParser, ParseResult, ParsedSymbol, ParsedReference } from './types.js';
 import { extractStringLiterals } from './types.js';
+import { sqlParser } from './sql.js';
+
+// HTTP-Verben die als Routen-Methoden erkannt werden
+const HTTP_VERBS = new Set([
+  'get', 'post', 'put', 'patch', 'delete', 'head', 'options', 'all',
+]);
+
+// NestJS Decorator-Namen (HTTP-Methode -> Verb-Map)
+const NEST_DECORATORS: Record<string, string> = {
+  Get: 'get', Post: 'post', Put: 'put', Patch: 'patch',
+  Delete: 'delete', Head: 'head', Options: 'options', All: 'all',
+};
+
+// SQL-DDL/DML-Schluesselwoerter — startet ein Statement so, gilt der Inhalt als SQL
+const SQL_KEYWORD_RE =
+  /\b(?:CREATE|ALTER|DROP|INSERT|UPDATE|DELETE|SELECT|WITH|TRUNCATE|REPLACE)\s+/i;
+
+// Method-Names die typischerweise SQL als ersten Argument bekommen
+const SQL_DB_METHODS = new Set([
+  'exec', 'prepare', 'query', 'run', 'all', 'get',
+  // pg/mysql/etc Patterns
+  'execute',
+]);
+
+// Tag-Namen fuer Tagged Templates die SQL signalisieren
+const SQL_TAGS = new Set(['sql', 'SQL', 'pgsql']);
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -37,6 +63,50 @@ function getContextSnippet(text: string, pos: number, length = 80): string {
   const start = Math.max(0, pos - half);
   const end = Math.min(text.length, pos + half);
   return text.slice(start, end).replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * Extrahiert den String-Inhalt aus einem ts.Expression Node, falls es ein
+ * StringLiteral oder ein NoSubstitutionTemplateLiteral ist. Gibt null zurueck
+ * wenn der Node keinen statischen String enthaelt (z.B. Variable, Komposition).
+ * Bei Template-Strings mit ${...} wird der Rohtext zurueckgegeben (Substitutions
+ * bleiben als Platzhalter erhalten — fuer SQL-Parser ist das ok).
+ */
+function getStaticStringValue(expr: ts.Expression): string | null {
+  if (ts.isStringLiteral(expr) || ts.isNoSubstitutionTemplateLiteral(expr)) {
+    return expr.text;
+  }
+  if (ts.isTemplateExpression(expr)) {
+    // Template mit Substitutions: head + spans (text-only, Substitutions als ${})
+    let s = expr.head.text;
+    for (const span of expr.templateSpans) {
+      s += '${}' + span.literal.text;
+    }
+    return s;
+  }
+  return null;
+}
+
+/**
+ * Sub-parsed einen SQL-String-Inhalt mit dem SQL-Parser und passt die
+ * line_start/line_end Felder so an, dass sie sich auf die ENCLOSING TS-Datei
+ * beziehen (nicht auf die SQL-Region selbst).
+ */
+function parseEmbeddedSql(
+  sqlContent: string,
+  filePath: string,
+  baseLine: number,
+): ParsedSymbol[] {
+  try {
+    const result = sqlParser.parse(sqlContent, filePath);
+    return result.symbols.map(s => ({
+      ...s,
+      line_start: s.line_start + baseLine - 1,
+      line_end: s.line_end !== undefined ? s.line_end + baseLine - 1 : undefined,
+    }));
+  } catch {
+    return [];
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -352,6 +422,85 @@ function extractSymbols(
         is_exported: true,
       });
       return;
+    }
+
+    // ----- Route-Detection: app.get/post/put/... + fastify.* + router.* -----
+    // Pattern: <obj>.<verb>(<path>, <handler>...)  wobei verb in HTTP_VERBS
+    if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)) {
+      const methodName = node.expression.name.getText();
+      if (HTTP_VERBS.has(methodName) && node.arguments.length >= 1) {
+        const pathArg = node.arguments[0];
+        const pathStr = getStaticStringValue(pathArg);
+        // Nur als Route werten wenn das erste Argument ein String-Pfad ist (mit "/").
+        // Das filtert z.B. Array.get(0) raus.
+        if (pathStr !== null && pathStr.startsWith('/')) {
+          const verb = methodName.toUpperCase();
+          addSymbol({
+            symbol_type: 'route',
+            name: `${verb} ${pathStr}`,
+            value: pathStr,
+            params: [verb],
+            line_start: getLineNumber(sourceFile, node.getStart()),
+            line_end: getLineEnd(sourceFile, node),
+            is_exported: false,
+          });
+        }
+      }
+    }
+
+    // ----- NestJS-Decorator-Routes: @Get('/path'), @Post('/x') etc. -----
+    if (ts.isMethodDeclaration(node) && ts.canHaveDecorators(node)) {
+      const decorators = ts.getDecorators(node);
+      if (decorators) {
+        for (const dec of decorators) {
+          if (!ts.isCallExpression(dec.expression)) continue;
+          const decName = dec.expression.expression.getText();
+          const verb = NEST_DECORATORS[decName];
+          if (!verb) continue;
+          const pathStr = dec.expression.arguments[0]
+            ? getStaticStringValue(dec.expression.arguments[0])
+            : '';
+          const fullPath = pathStr && pathStr.length > 0
+            ? (pathStr.startsWith('/') ? pathStr : '/' + pathStr)
+            : '/';
+          addSymbol({
+            symbol_type: 'route',
+            name: `${verb.toUpperCase()} ${fullPath}`,
+            value: fullPath,
+            params: [verb.toUpperCase(), node.name.getText()],
+            line_start: getLineNumber(sourceFile, node.getStart()),
+            line_end: getLineEnd(sourceFile, node),
+            is_exported: false,
+          });
+        }
+      }
+    }
+
+    // ----- Embedded-SQL via Tagged Template: sql`CREATE TABLE ...` -----
+    if (ts.isTaggedTemplateExpression(node)) {
+      const tagName = node.tag.getText();
+      if (SQL_TAGS.has(tagName)) {
+        const sqlText = ts.isNoSubstitutionTemplateLiteral(node.template)
+          ? node.template.text
+          : getStaticStringValue(node.template) ?? '';
+        if (SQL_KEYWORD_RE.test(sqlText)) {
+          const baseLine = getLineNumber(sourceFile, node.template.getStart());
+          symbols.push(...parseEmbeddedSql(sqlText, sourceFile.fileName, baseLine));
+        }
+      }
+    }
+
+    // ----- Embedded-SQL via DB-Method-Call: db.exec(`...`), pool.query(`...`) -----
+    if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)) {
+      const methodName = node.expression.name.getText();
+      if (SQL_DB_METHODS.has(methodName) && node.arguments.length >= 1) {
+        const arg = node.arguments[0];
+        const sqlText = getStaticStringValue(arg);
+        if (sqlText && SQL_KEYWORD_RE.test(sqlText)) {
+          const baseLine = getLineNumber(sourceFile, arg.getStart());
+          symbols.push(...parseEmbeddedSql(sqlText, sourceFile.fileName, baseLine));
+        }
+      }
     }
 
     // Recurse into other nodes
