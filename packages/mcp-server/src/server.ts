@@ -23,7 +23,7 @@ import {
   acknowledgeEventTool,
 } from './tools/index.js';
 
-import { getPendingEvents, TOOL_GUIDES } from '@synapse/core';
+import { getPendingEvents, TOOL_GUIDES, ensureSchema } from '@synapse/core';
 import { ensureAgentsSchema, detectClaudeCli, heartbeatController, readStatus, postToInbox, postMessage, checkInbox } from '@synapse/agents';
 
 import {
@@ -666,6 +666,15 @@ export async function startServer(): Promise<void> {
   await server.connect(transport);
 
   console.error('[Synapse MCP] Server gestartet (v0.2.0)');
+
+  // Step 0: Haupt-DB-Schema sicherstellen (Tabellen + Migrationen, idempotent).
+  // Wichtig: VOR ensureAgentsSchema(), und VOR dem ersten Tool-Call — sonst
+  // schlagen Tools auf neuen Spalten/Tabellen mit "relation does not exist" fehl.
+  try {
+    await ensureSchema();
+  } catch (err) {
+    console.error('[Synapse] ensureSchema fehlgeschlagen — Tools koennten Schema-Fehler werfen:', err);
+  }
 
   // Step 1: Ensure agents DB schema exists before any tools are used
   await ensureAgentsSchema();
