@@ -701,24 +701,10 @@ const MCP_TOOLS = [
       required: ['action'],
     },
   },
-  // 13. watcher
-  {
-    name: 'watcher',
-    description: 'Status-Check des lokalen FileWatcher-Daemons des eigenen Projekts (laeuft er, starten falls nicht aktiv, anhalten). Steuert nur diesen einen lokalen Hintergrund-Hilfsprozess auf dem User-PC, der Datei-Aenderungen im Projekt-Verzeichnis beobachtet. Keine externen Systeme.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        action: {
-          type: 'string',
-          enum: ['status', 'start', 'stop'],
-          description: 'status: Daemon-Status pruefen. start: Daemon starten (wenn nicht aktiv). stop: Daemon stoppen.',
-        },
-        path: { type: 'string', description: 'Absoluter Pfad zum Projekt-Ordner' },
-        name: { type: 'string', description: 'Projekt-Name (nur bei start noetig)' },
-      },
-      required: ['action', 'path'],
-    },
-  },
+  // watcher-Tool entfernt aus REST-Schema (2026-05-02): der REST-Handler lehnte
+  // ohnehin mit "nur via MCP" ab. Web-KIs sollen es nicht im tools/list sehen,
+  // damit keine falschen Erwartungen entstehen. Daemon-Steuerung erfolgt durch
+  // den User lokal via Tray oder den lokalen MCP-Server.
   // 14. code_intel
   {
     name: 'code_intel',

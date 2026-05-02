@@ -119,18 +119,30 @@ export async function createPlan(
  * Ruft den Plan fuer ein Projekt ab
  */
 export async function getPlan(project: string): Promise<ProjectPlan | null> {
-  const results = await scrollVectors<ProjectPlanPayload>(
-    COLLECTIONS.projectPlans(project),
-    {
-      must: [
-        {
-          key: 'project',
-          match: { value: project },
-        },
-      ],
-    },
-    1
-  );
+  // Defensiv: Collection existiert evtl. noch nicht (frisches Projekt ohne
+  // jemals geschriebenen Plan). scrollVectors wirft 404 — als "kein Plan"
+  // behandeln, nicht als Fehler.
+  let results: Awaited<ReturnType<typeof scrollVectors<ProjectPlanPayload>>>;
+  try {
+    results = await scrollVectors<ProjectPlanPayload>(
+      COLLECTIONS.projectPlans(project),
+      {
+        must: [
+          {
+            key: 'project',
+            match: { value: project },
+          },
+        ],
+      },
+      1
+    );
+  } catch (err) {
+    const msg = (err as Error).message ?? String(err);
+    if (msg.includes('Not Found') || msg.includes("doesn't exist")) {
+      return null;
+    }
+    throw err;
+  }
 
   if (results.length === 0) {
     return null;
