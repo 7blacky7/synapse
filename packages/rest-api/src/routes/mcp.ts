@@ -94,6 +94,12 @@ import {
   getFileVersion,
   restoreFileVersion,
   restoreBatch,
+  listFileHistory,
+  // Multi-File Plan/Commit (Schritt 2)
+  planBatch,
+  commitBatch,
+  cancelBatch,
+  getBatchPlan,
   // Project-Init-Queue (Self-Service Project-Bootstrap)
   isValidProjectName,
   enqueueProjectInitJob,
@@ -764,8 +770,8 @@ const MCP_TOOLS = [
       properties: {
         action: {
           type: 'string',
-          enum: ['create', 'update', 'delete', 'move', 'copy', 'read', 'replace_lines', 'insert_after', 'delete_lines', 'search_replace', 'search_replace_batch', 'versions', 'get_version', 'restore', 'restore_batch'],
-          description: 'Datei-Aktion. versions/get_version/restore/restore_batch arbeiten auf der Versionshistorie (jede Aenderung wird automatisch gesnapshottet).',
+          enum: ['create', 'update', 'delete', 'move', 'copy', 'read', 'replace_lines', 'insert_after', 'delete_lines', 'search_replace', 'search_replace_batch', 'versions', 'get_version', 'restore', 'restore_batch', 'plan', 'commit', 'cancel', 'plan_status', 'history'],
+          description: 'Datei-Aktion. versions/get_version/restore/restore_batch arbeiten auf der Versionshistorie. plan/commit/cancel/plan_status implementieren atomare Multi-File-Edits ueber mehrere Dateien. history listet Aenderungen mit Begruendung (Crash-Recovery).',
         },
         project: { type: 'string', description: 'Projekt-Name' },
         file_path: { type: 'string', description: 'Dateipfad (relativ zum Projekt-Root)' },
@@ -796,6 +802,45 @@ const MCP_TOOLS = [
         truncate_long_lines: { type: 'number', description: 'read: Zeilen laenger als N Zeichen kuerzen + Marker. 0 = aus (Standard).' },
         version_id: { type: 'string', description: 'Versions-ID (fuer get_version, restore). String, weil BIGSERIAL > Number.MAX_SAFE_INTEGER moeglich ist.' },
         batch_id: { type: 'string', description: 'Batch-ID (fuer restore_batch — rollt alle Files einer Multi-File-Batch zurueck).' },
+        plan_id: { type: 'string', description: 'Plan-ID (fuer commit, cancel, plan_status). String wegen BIGSERIAL.' },
+        ops: {
+          type: 'array',
+          description: 'Multi-File Edit-Plan: 1..100 Operationen ueber mehrere Dateien. Aktionen: create, update, search_replace, search_replace_batch, replace_lines, insert_after, delete_lines, delete (ganze Datei), move (-> new_path), copy (-> new_path).',
+          minItems: 1,
+          maxItems: 100,
+          items: {
+            type: 'object',
+            properties: {
+              file_path: { type: 'string' },
+              action: { type: 'string', enum: ['create', 'update', 'search_replace', 'search_replace_batch', 'replace_lines', 'insert_after', 'delete_lines', 'delete', 'move', 'copy'] },
+              new_path: { type: 'string' },
+              reason: { type: 'string' },
+              content: { type: 'string' },
+              search: { type: 'string' },
+              replace: { type: 'string' },
+              replace_all: { type: 'boolean' },
+              edits: {
+                type: 'array',
+                items: {
+                  type: 'object',
+                  properties: {
+                    search: { type: 'string' },
+                    replace: { type: 'string' },
+                    replace_all: { type: 'boolean' },
+                  },
+                  required: ['search', 'replace'],
+                },
+              },
+              line_start: { type: 'number' },
+              line_end: { type: 'number' },
+              after_line: { type: 'number' },
+            },
+            required: ['file_path', 'action'],
+          },
+        },
+        open_for_coedit: { type: 'boolean', description: 'Optional fuer plan: ob andere Agenten Co-Edits vorschlagen duerfen (default true). Aktuell informational; Co-Edit-Mechanik kommt in Schritt 3.' },
+        reason: { type: 'string', description: 'Optionale Begruendung — landet in file_versions.reason und ist via "history"-Action abrufbar. Fuer Crash-Recovery nuetzlich.' },
+        since: { type: 'string', description: 'history: ISO-Timestamp ab dem Eintraege gelistet werden.' },
         limit: { type: 'number', description: 'versions: Max Eintraege (Standard 50, Max 500).' },
       },
       required: ['action', 'project'],
@@ -2539,6 +2584,80 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
         };
       }
 
+      // Multi-File Plan/Commit (Schritt 2) — kein file_path noetig.
+      if (action === 'plan') {
+        const opsRaw = (args as Record<string, unknown>).ops;
+        if (!Array.isArray(opsRaw) || opsRaw.length === 0) {
+          return { success: false, error: 'invalid_ops', message: 'ops[] muss ein Array mit mindestens 1 Element sein.' };
+        }
+        const result = await planBatch({
+          project,
+          agent_id: agentId,
+          ops: opsRaw as import('@synapse/core').FileBatchOp[],
+          open_for_coedit: typeof args.open_for_coedit === 'boolean' ? args.open_for_coedit as boolean : undefined,
+          reason: str(args, 'reason'),
+        });
+        return {
+          success: true,
+          ...result,
+          message: `Plan ${result.plan_id} angelegt: ${result.total_ops} Op(s) ueber ${result.files_touched.length} Datei(en).`,
+        };
+      }
+      if (action === 'commit') {
+        const planId = reqStr(args, 'plan_id');
+        const result = await commitBatch({ plan_id: planId, agent_id: agentId });
+        if (result.success) {
+          return { ...result, message: `Plan ${result.plan_id} committed — ${result.committed} Datei(en) geaendert. batch_id=${result.batch_id}.` };
+        }
+        return result;
+      }
+      if (action === 'cancel') {
+        const planId = reqStr(args, 'plan_id');
+        const result = await cancelBatch(planId);
+        return {
+          success: result.ok,
+          plan_id: planId,
+          status: result.status,
+          message: result.ok ? `Plan ${planId} abgebrochen.` : `Plan ${planId} nicht abbrechbar (Status: ${result.status}).`,
+        };
+      }
+      if (action === 'plan_status') {
+        const planId = reqStr(args, 'plan_id');
+        const plan = await getBatchPlan(planId);
+        if (!plan) return { success: false, error: 'plan_not_found', message: `Plan ${planId} nicht gefunden.` };
+        return {
+          success: true,
+          plan_id: plan.id,
+          project: plan.project,
+          status: plan.status,
+          owner_agent_id: plan.owner_agent_id,
+          ops_count: Array.isArray(plan.ops) ? plan.ops.length : 0,
+          files_touched: Object.keys(plan.expected_hashes ?? {}),
+          previews: plan.previews,
+          reason: plan.reason,
+          expires_at: plan.expires_at,
+          committed_at: plan.committed_at,
+        };
+      }
+      if (action === 'history') {
+        const limit = num(args, 'limit') ?? 50;
+        const entries = await listFileHistory(project, {
+          agent_id: str(args, 'agent_id'),
+          file_path: str(args, 'file_path'),
+          since: str(args, 'since'),
+          limit,
+        });
+        return {
+          success: true,
+          project,
+          count: entries.length,
+          entries,
+          tip: entries.length > 0
+            ? 'Eintraege chronologisch (neueste zuerst). reason = "Warum" der Aenderung. Voller Inhalt: files(action: "get_version", version_id).'
+            : 'Keine Eintraege fuer diese Filter.',
+        };
+      }
+
       const filePath = reqStr(args, 'file_path');
 
       if (action === 'versions') {
@@ -2559,7 +2678,7 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
       switch (action) {
         case 'create': {
           const content = reqStr(args, 'content');
-          const result = await createFileInPg(project, filePath, content, agentId);
+          const result = await createFileInPg(project, filePath, content, agentId, str(args, 'reason'));
           const response: Record<string, unknown> = { success: true, message: `Datei "${filePath}" erstellt (${content.length} Zeichen)` };
           if (result.warnings?.length) {
             response.errorPatterns = {
@@ -2572,7 +2691,7 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
         }
         case 'update': {
           const content = reqStr(args, 'content');
-          const result = await updateFileInPg(project, filePath, content, agentId);
+          const result = await updateFileInPg(project, filePath, content, agentId, undefined, undefined, str(args, 'reason'));
           const response: Record<string, unknown> = { success: true, message: `Datei "${filePath}" aktualisiert (${content.length} Zeichen)` };
           if (result.warnings?.length) {
             response.errorPatterns = {
@@ -2622,7 +2741,7 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
           const content = reqStr(args, 'content');
           if (lineStart === undefined || lineEnd === undefined) return { success: false, error: 'line_start und line_end erforderlich' };
           const newContent = replaceLines(currentContent, lineStart, lineEnd, content);
-          const result = await updateFileInPg(project, filePath, newContent, agentId);
+          const result = await updateFileInPg(project, filePath, newContent, agentId, undefined, undefined, str(args, 'reason'));
           const response: Record<string, unknown> = { success: true, message: `Zeilen ${lineStart}-${lineEnd} in "${filePath}" ersetzt` };
           if (result.warnings?.length) {
             response.errorPatterns = {
@@ -2640,7 +2759,7 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
           const content = reqStr(args, 'content');
           if (afterLine === undefined) return { success: false, error: 'after_line erforderlich' };
           const newContent = insertAfterLine(currentContent, afterLine, content);
-          const result = await updateFileInPg(project, filePath, newContent, agentId);
+          const result = await updateFileInPg(project, filePath, newContent, agentId, undefined, undefined, str(args, 'reason'));
           const response: Record<string, unknown> = { success: true, message: `Inhalt nach Zeile ${afterLine} in "${filePath}" eingefuegt` };
           if (result.warnings?.length) {
             response.errorPatterns = {
@@ -2658,7 +2777,7 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
           const lineEnd = num(args, 'line_end');
           if (lineStart === undefined || lineEnd === undefined) return { success: false, error: 'line_start und line_end erforderlich' };
           const newContent = deleteLines(currentContent, lineStart, lineEnd);
-          const result = await updateFileInPg(project, filePath, newContent, agentId);
+          const result = await updateFileInPg(project, filePath, newContent, agentId, undefined, undefined, str(args, 'reason'));
           const response: Record<string, unknown> = { success: true, message: `Zeilen ${lineStart}-${lineEnd} in "${filePath}" geloescht` };
           if (result.warnings?.length) {
             response.errorPatterns = {
@@ -2676,7 +2795,7 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
           const replaceStr = reqStr(args, 'replace');
           const { content: newContent, count } = searchReplace(currentContent, searchStr, replaceStr);
           if (count === 0) return { success: true, count: 0, message: `Kein Vorkommen von "${searchStr}" in "${filePath}"` };
-          const result = await updateFileInPg(project, filePath, newContent, agentId);
+          const result = await updateFileInPg(project, filePath, newContent, agentId, undefined, undefined, str(args, 'reason'));
           const response: Record<string, unknown> = { success: true, count, message: `${count} Vorkommen ersetzt in "${filePath}"` };
           if (result.warnings?.length) {
             response.errorPatterns = {
@@ -2702,7 +2821,7 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
               message: `Keine Edits angewendet in "${filePath}"`,
             };
           }
-          const result = await updateFileInPg(project, filePath, newContent, agentId);
+          const result = await updateFileInPg(project, filePath, newContent, agentId, undefined, undefined, str(args, 'reason'));
           const response: Record<string, unknown> = {
             success: true,
             ...batchResult,

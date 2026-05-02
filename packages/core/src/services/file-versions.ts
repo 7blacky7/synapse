@@ -25,6 +25,7 @@ export interface FileVersionMeta {
   batch_id: string | null;
   size_bytes: number;
   created_at: string;
+  reason: string | null;
 }
 
 export interface FileVersionFull extends FileVersionMeta {
@@ -52,9 +53,10 @@ export async function listFileVersions(
     batch_id: string | null;
     size_bytes: number;
     created_at: string;
+    reason: string | null;
   }>(
     `SELECT id::text AS id, project, file_path, content_hash, edit_action, agent_id,
-            batch_id::text AS batch_id, size_bytes, created_at::text AS created_at
+            batch_id::text AS batch_id, size_bytes, created_at::text AS created_at, reason
      FROM file_versions
      WHERE project = $1 AND file_path = $2
      ORDER BY created_at DESC, id DESC
@@ -72,7 +74,7 @@ export async function getFileVersion(
   const result = await pool.query<FileVersionFull>(
     `SELECT id::text AS id, project, file_path, content, content_hash,
             edit_action, agent_id, batch_id::text AS batch_id,
-            size_bytes, created_at::text AS created_at
+            size_bytes, created_at::text AS created_at, reason
      FROM file_versions
      WHERE id = $1`,
     [versionId]
@@ -109,6 +111,44 @@ export async function restoreFileVersion(
 }
 
 /**
+ * Activity-Log: chronologische Liste von Aenderungen fuer Crash-Recovery.
+ * Filter: file_path (Praefix-Match), agent_id (exakt), since (TIMESTAMPTZ).
+ * Default: 50 letzte Eintraege im Projekt.
+ */
+export async function listFileHistory(
+  project: string,
+  opts: { file_path?: string; agent_id?: string; since?: string; limit?: number } = {},
+): Promise<FileVersionMeta[]> {
+  const safeLimit = Math.max(1, Math.min(opts.limit ?? 50, 500));
+  const params: unknown[] = [project];
+  const conds: string[] = ['project = $1'];
+  if (opts.agent_id) {
+    params.push(opts.agent_id);
+    conds.push(`agent_id = $${params.length}`);
+  }
+  if (opts.file_path) {
+    params.push(opts.file_path + '%');
+    conds.push(`file_path LIKE $${params.length}`);
+  }
+  if (opts.since) {
+    params.push(opts.since);
+    conds.push(`created_at >= $${params.length}::timestamptz`);
+  }
+  params.push(safeLimit);
+  const pool = getPool();
+  const result = await pool.query<FileVersionMeta>(
+    `SELECT id::text AS id, project, file_path, content_hash, edit_action, agent_id,
+            batch_id::text AS batch_id, size_bytes, created_at::text AS created_at, reason
+     FROM file_versions
+     WHERE ${conds.join(' AND ')}
+     ORDER BY created_at DESC, id DESC
+     LIMIT $${params.length}`,
+    params,
+  );
+  return result.rows;
+}
+
+/**
  * Liefert alle Versionen, die zu einer Multi-File-Batch gehoeren
  * (relevant ab Schritt 2 — Multi-File-Plan/Commit).
  */
@@ -118,7 +158,7 @@ export async function listBatchVersions(
   const pool = getPool();
   const result = await pool.query<FileVersionMeta>(
     `SELECT id::text AS id, project, file_path, content_hash, edit_action, agent_id,
-            batch_id::text AS batch_id, size_bytes, created_at::text AS created_at
+            batch_id::text AS batch_id, size_bytes, created_at::text AS created_at, reason
      FROM file_versions
      WHERE batch_id = $1
      ORDER BY created_at ASC, id ASC`,

@@ -309,6 +309,7 @@ export type { BatchEdit, BatchResult } from './services/code-write.js';
 // File-Versionierung (Schritt 1)
 export {
   listFileVersions,
+  listFileHistory,
   getFileVersion,
   restoreFileVersion,
   listBatchVersions,
@@ -327,6 +328,24 @@ export {
   getProjectInitJob,
 } from './services/project-init-queue.js';
 export type { ProjectInitJobRow, ProjectInitStatus, ProjectInitCompletion } from './services/project-init-queue.js';
+
+// Multi-File Edit-Plans (Schritt 2)
+export {
+  planBatch,
+  commitBatch,
+  cancelBatch,
+  getBatchPlan,
+} from './services/file-batch.js';
+export type {
+  FileBatchOp,
+  FileBatchOpAction,
+  OpPreview,
+  FileBatchPlanRow,
+  FileBatchStatus,
+  PlanBatchResult,
+  CommitBatchResult,
+  CommitConflictDetail,
+} from './services/file-batch.js';
 export type { BackupEntry } from './services/backup.js';
 export type { ChatMessage, AgentSession } from './services/chat.js';
 export type { AgentEvent, EventAck, EventType, EventPriority } from './services/events.js';

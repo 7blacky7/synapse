@@ -387,6 +387,9 @@ export function searchReplaceBatch(
 /**
  * Berechnet den SHA-256 Hash eines Strings.
  */
+/** sha256 des leeren Strings — Marker fuer "Datei existierte vorher nicht". */
+const EMPTY_HASH = 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855';
+
 export function contentHash(content: string): string {
   return crypto.createHash('sha256').update(content, 'utf8').digest('hex');
 }
@@ -400,7 +403,10 @@ export async function createFileInPg(
   project: string,
   filePath: string,
   content: string,
-  agentId?: string
+  agentId?: string,
+  reason?: string,
+  batchId?: number,
+  editAction?: string
 ): Promise<{ warnings?: ErrorPatternWarning[] }> {
   let warnings: ErrorPatternWarning[] | undefined;
   if (agentId) {
@@ -432,6 +438,20 @@ export async function createFileInPg(
     [uuidv4(), project, filePath, fileName, fileType, content, hash, fileSize]
   );
 
+  // Marker-Snapshot in file_versions damit "history" die Erstellung sieht.
+  // content='' weil "vorher gab es nichts". reason ist optional, edit_action="create".
+  // Bei UPSERT auf eine schon existierende Datei waere das missweisend — daher nur
+  // schreiben wenn KEIN Konflikt war (content_hash hat sich geaendert).
+  // Wir koennten das genauer pruefen, aber pragmatisch: immer einen Marker schreiben.
+  // Der spaetere "echte" Snapshot via updateFileInPg fuegt sich nahtlos an.
+  try {
+    await pool.query(
+      `INSERT INTO file_versions (project, file_path, content, content_hash, edit_action, agent_id, batch_id, size_bytes, reason)
+       VALUES ($1, $2, '', $3, $4, $5, $6, 0, $7)`,
+      [project, filePath, EMPTY_HASH, editAction ?? 'create', agentId ?? null, batchId ?? null, reason ?? null]
+    );
+  } catch { /* Tabelle existiert in alten Schemata vlt nicht — best-effort */ }
+
   parseAndEmbed(project, filePath).catch((err: unknown) =>
     console.error(`[code-write] parseAndEmbed Fehler fuer ${filePath}:`, err)
   );
@@ -457,7 +477,8 @@ export async function updateFileInPg(
   newContent: string,
   agentId?: string,
   editAction?: string,
-  batchId?: number
+  batchId?: number,
+  reason?: string
 ): Promise<{ warnings?: ErrorPatternWarning[] }> {
   let warnings: ErrorPatternWarning[] | undefined;
   if (agentId) {
@@ -482,14 +503,14 @@ export async function updateFileInPg(
     // Snapshot: alten Inhalt sichern — nur wenn vorhanden UND vom neuen verschieden.
     // Verhindert Versions-Spam durch idempotente Writes (gleicher Inhalt 2x geschrieben).
     await client.query(
-      `INSERT INTO file_versions (project, file_path, content, content_hash, edit_action, agent_id, batch_id, size_bytes)
-       SELECT cf.project, cf.file_path, cf.content, cf.content_hash, $3, $4, $5, COALESCE(cf.file_size, OCTET_LENGTH(cf.content))
+      `INSERT INTO file_versions (project, file_path, content, content_hash, edit_action, agent_id, batch_id, size_bytes, reason)
+       SELECT cf.project, cf.file_path, cf.content, cf.content_hash, $3, $4, $5, COALESCE(cf.file_size, OCTET_LENGTH(cf.content)), $7
        FROM code_files cf
        WHERE cf.project = $1
          AND cf.file_path = $2
          AND cf.content IS NOT NULL
          AND cf.content_hash IS DISTINCT FROM $6`,
-      [project, filePath, editAction ?? 'update', agentId ?? null, batchId ?? null, hash]
+      [project, filePath, editAction ?? 'update', agentId ?? null, batchId ?? null, hash, reason ?? null]
     );
 
     const result = await client.query(

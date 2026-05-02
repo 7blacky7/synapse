@@ -154,6 +154,7 @@ CREATE TABLE IF NOT EXISTS file_versions (
   size_bytes INTEGER NOT NULL DEFAULT 0,
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
+ALTER TABLE file_versions ADD COLUMN IF NOT EXISTS reason TEXT;
 
 CREATE INDEX IF NOT EXISTS idx_memories_project ON memories(project);
 CREATE INDEX IF NOT EXISTS idx_thoughts_project ON thoughts(project);
@@ -576,6 +577,39 @@ DROP TRIGGER IF EXISTS trg_project_init_jobs_notify ON project_init_jobs;
 CREATE TRIGGER trg_project_init_jobs_notify
   AFTER INSERT ON project_init_jobs
   FOR EACH ROW EXECUTE FUNCTION notify_project_init_job_created();
+
+-- ==========================================================================
+-- Multi-File Edit-Plans: Plan/Commit-Phase fuer atomare Multi-Datei-Aenderungen.
+-- Eine KI/Agent ruft files.plan(ops[]) -> erhaelt plan_id + previews.
+-- files.commit(plan_id) wendet alle Ops in einer TX an, prueft expected_hashes
+-- gegen aktuellen Stand. Bei Mismatch -> stale. Erfolgreicher Commit setzt
+-- batch_id in jedem file_versions-Snapshot -> restore_batch funktioniert.
+-- ==========================================================================
+
+DO $$ BEGIN
+  CREATE TYPE file_batch_status AS ENUM ('open', 'committed', 'cancelled', 'expired', 'stale');
+EXCEPTION
+  WHEN duplicate_object THEN NULL;
+END $$;
+
+CREATE TABLE IF NOT EXISTS file_batch_plans (
+  id BIGSERIAL PRIMARY KEY,
+  project TEXT NOT NULL,
+  owner_agent_id TEXT,
+  ops JSONB NOT NULL,
+  expected_hashes JSONB NOT NULL,
+  previews JSONB NOT NULL,
+  status file_batch_status NOT NULL DEFAULT 'open',
+  open_for_coedit BOOLEAN NOT NULL DEFAULT TRUE,
+  notify_channel TEXT,
+  expires_at TIMESTAMPTZ NOT NULL DEFAULT NOW() + INTERVAL '5 minutes',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  committed_at TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS idx_file_batch_plans_status ON file_batch_plans(project, status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_file_batch_plans_open ON file_batch_plans(project, expires_at) WHERE status = 'open';
+ALTER TABLE file_batch_plans ADD COLUMN IF NOT EXISTS reason TEXT;
 
 `;
 

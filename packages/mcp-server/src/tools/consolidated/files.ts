@@ -21,11 +21,16 @@ import {
   toRelativePath,
   applyContentRange,
   listFileVersions,
+  listFileHistory,
   getFileVersion,
   restoreFileVersion,
   restoreBatch,
+  planBatch,
+  commitBatch,
+  cancelBatch,
+  getBatchPlan,
 } from '@synapse/core';
-import type { BatchEdit } from '@synapse/core';
+import type { BatchEdit, FileBatchOp } from '@synapse/core';
 
 import * as path from 'path';
 import { ConsolidatedTool, str, reqStr, num } from './types.js';
@@ -40,14 +45,17 @@ export const filesTool: ConsolidatedTool = {
       'Bei Write-Operationen werden automatisch Error-Patterns geprueft (wenn agent_id gesetzt). ' +
       'Auto-Versionierung: jede Aenderung erzeugt einen Snapshot in file_versions — abrufbar mit ' +
       'action="versions", einzelne Version lesen mit "get_version", zurueckrollen mit "restore" ' +
-      'oder ganze Multi-File-Batches mit "restore_batch".',
+      'oder ganze Multi-File-Batches mit "restore_batch". ' +
+      'Multi-File Plan/Commit: action="plan" mit ops[] (mehrere Dateien) → erhaelt plan_id + previews. ' +
+      'action="commit" wendet alle Ops atomar an (Hash-basierte Konflikt-Erkennung; bei Mismatch: stale). ' +
+      'Snapshots tragen die batch_id → restore_batch rollt das ganze Plan-Set zurueck.',
     inputSchema: {
       type: 'object',
       properties: {
         action: {
           type: 'string',
-          enum: ['create', 'update', 'read', 'delete', 'move', 'copy', 'replace_lines', 'insert_after', 'delete_lines', 'search_replace', 'search_replace_batch', 'versions', 'get_version', 'restore', 'restore_batch'],
-          description: 'Action: create | update | read | delete | move | copy | replace_lines | insert_after | delete_lines | search_replace | search_replace_batch | versions | get_version | restore | restore_batch',
+          enum: ['create', 'update', 'read', 'delete', 'move', 'copy', 'replace_lines', 'insert_after', 'delete_lines', 'search_replace', 'search_replace_batch', 'versions', 'get_version', 'restore', 'restore_batch', 'plan', 'commit', 'cancel', 'plan_status', 'history'],
+          description: 'Action: create | update | read | delete | move | copy | replace_lines | insert_after | delete_lines | search_replace | search_replace_batch | versions | get_version | restore | restore_batch | plan | commit | cancel | plan_status | history',
         },
         project: {
           type: 'string',
@@ -128,6 +136,57 @@ export const filesTool: ConsolidatedTool = {
           type: 'number',
           description: 'versions: Max Eintraege (Standard 50, Max 500).',
         },
+        plan_id: {
+          type: 'string',
+          description: 'Plan-ID (fuer commit, cancel, plan_status). String wegen BIGSERIAL.',
+        },
+        ops: {
+          type: 'array',
+          description: 'Multi-File Edit-Plan: 1..100 Operationen ueber mehrere Dateien (fuer action="plan"). Jede Op: { file_path, action, ...op-spezifische Felder }. Aktionen: create (neue Datei), update, search_replace, search_replace_batch, replace_lines (line_start/line_end/content), insert_after (after_line/content), delete_lines (line_start/line_end), delete (ganze Datei loeschen), move (file_path → new_path), copy (file_path → new_path). Plan-Phase macht Trockenlauf, erfasst Hash + Preview pro Op. Commit per files(action: "commit", plan_id).',
+          minItems: 1,
+          maxItems: 100,
+          items: {
+            type: 'object',
+            properties: {
+              file_path: { type: 'string' },
+              action: { type: 'string', enum: ['create', 'update', 'search_replace', 'search_replace_batch', 'replace_lines', 'insert_after', 'delete_lines', 'delete', 'move', 'copy'] },
+              new_path: { type: 'string' },
+              reason: { type: 'string' },
+              content: { type: 'string' },
+              search: { type: 'string' },
+              replace: { type: 'string' },
+              replace_all: { type: 'boolean' },
+              edits: {
+                type: 'array',
+                items: {
+                  type: 'object',
+                  properties: {
+                    search: { type: 'string' },
+                    replace: { type: 'string' },
+                    replace_all: { type: 'boolean' },
+                  },
+                  required: ['search', 'replace'],
+                },
+              },
+              line_start: { type: 'number' },
+              line_end: { type: 'number' },
+              after_line: { type: 'number' },
+            },
+            required: ['file_path', 'action'],
+          },
+        },
+        open_for_coedit: {
+          type: 'boolean',
+          description: 'Optional fuer plan: ob andere Agenten Co-Edits vorschlagen duerfen (default true). Aktuell informational; Co-Edit-Mechanik kommt in Schritt 3.',
+        },
+        reason: {
+          type: 'string',
+          description: 'Optionale Begruendung fuer die Aenderung — landet in file_versions.reason und ist via "history"-Action abrufbar. Bei plan: Top-Level reason gilt fuer alle Ops (per-Op kann per ops[].reason ueberschrieben werden).',
+        },
+        since: {
+          type: 'string',
+          description: 'history: ISO-Timestamp ab dem Eintraege gelistet werden (z.B. "2026-05-02T10:00:00Z").',
+        },
       },
       required: ['action', 'project'],
     },
@@ -137,6 +196,7 @@ export const filesTool: ConsolidatedTool = {
     const action = reqStr(args, 'action');
     const project = reqStr(args, 'project');
     const agentId = str(args, 'agent_id');
+    const reason = str(args, 'reason');
 
     // Versionierungs-Actions brauchen kein file_path (versions: ja, get_version/restore: version_id,
     // restore_batch: batch_id). Werden hier vor der file_path-Pflicht abgefangen.
@@ -164,6 +224,85 @@ export const filesTool: ConsolidatedTool = {
         files_restored: restored.length,
         files: restored,
         message: `Batch ${batchId} zurueckgerollt: ${restored.length} Datei(en).`,
+      };
+    }
+
+    // Multi-File Plan/Commit (Schritt 2)
+    if (action === 'plan') {
+      const project = reqStr(args, 'project');
+      const opsRaw = (args as Record<string, unknown>).ops;
+      if (!Array.isArray(opsRaw) || opsRaw.length === 0) {
+        return { success: false, error: 'invalid_ops', message: 'ops[] muss ein Array mit mindestens 1 Element sein.' };
+      }
+      const result = await planBatch({
+        project,
+        agent_id: agentId,
+        ops: opsRaw as FileBatchOp[],
+        open_for_coedit: typeof args.open_for_coedit === 'boolean' ? args.open_for_coedit : undefined,
+        reason,
+      });
+      return {
+        success: true,
+        ...result,
+        message: `Plan ${result.plan_id} angelegt: ${result.total_ops} Op(s) ueber ${result.files_touched.length} Datei(en). commit mit files(action: "commit", plan_id: "${result.plan_id}") oder cancel mit "cancel". Laeuft ab um ${result.expires_at}.`,
+      };
+    }
+    if (action === 'commit') {
+      const planId = reqStr(args, 'plan_id');
+      const result = await commitBatch({ plan_id: planId, agent_id: agentId });
+      if (result.success) {
+        return {
+          ...result,
+          message: `Plan ${result.plan_id} committed — ${result.committed} Datei(en) geaendert. batch_id=${result.batch_id} (fuer restore_batch).`,
+        };
+      }
+      return result;
+    }
+    if (action === 'cancel') {
+      const planId = reqStr(args, 'plan_id');
+      const result = await cancelBatch(planId);
+      return {
+        success: result.ok,
+        plan_id: planId,
+        status: result.status,
+        message: result.ok ? `Plan ${planId} abgebrochen.` : `Plan ${planId} nicht abbrechbar (Status: ${result.status}).`,
+      };
+    }
+    if (action === 'plan_status') {
+      const planId = reqStr(args, 'plan_id');
+      const plan = await getBatchPlan(planId);
+      if (!plan) return { success: false, error: 'plan_not_found', message: `Plan ${planId} nicht gefunden.` };
+      return {
+        success: true,
+        plan_id: plan.id,
+        project: plan.project,
+        status: plan.status,
+        owner_agent_id: plan.owner_agent_id,
+        ops_count: Array.isArray(plan.ops) ? plan.ops.length : 0,
+        files_touched: Object.keys(plan.expected_hashes ?? {}),
+        previews: plan.previews,
+        reason: plan.reason,
+        expires_at: plan.expires_at,
+        committed_at: plan.committed_at,
+      };
+    }
+    if (action === 'history') {
+      const project = reqStr(args, 'project');
+      const limit = num(args, 'limit') ?? 50;
+      const entries = await listFileHistory(project, {
+        agent_id: str(args, 'agent_id'),
+        file_path: str(args, 'file_path'),
+        since: str(args, 'since'),
+        limit,
+      });
+      return {
+        success: true,
+        project,
+        count: entries.length,
+        entries,
+        tip: entries.length > 0
+          ? 'Eintraege chronologisch (neueste zuerst). reason = "Warum" der Aenderung. Voller Inhalt einer Version: files(action: "get_version", version_id).'
+          : 'Keine Eintraege fuer diese Filter.',
       };
     }
 
@@ -231,7 +370,7 @@ export const filesTool: ConsolidatedTool = {
       case 'create': {
         const raw = reqStr(args, 'content');
         const { content, wasFixed } = unescapeIfNeeded(raw);
-        const result = await createFileInPg(project, filePath, content, agentId);
+        const result = await createFileInPg(project, filePath, content, agentId, reason);
         const response: Record<string, unknown> = { success: true, message: `Datei "${filePath}" erstellt (${content.length} Zeichen)` };
         if (wasFixed) response.autoFixed = 'Content war doppelt escaped (\\n statt Newlines) — automatisch korrigiert.';
         return await attachWarnings(response, result);
@@ -240,7 +379,7 @@ export const filesTool: ConsolidatedTool = {
       case 'update': {
         const raw = reqStr(args, 'content');
         const { content, wasFixed } = unescapeIfNeeded(raw);
-        const result = await updateFileInPg(project, filePath, content, agentId);
+        const result = await updateFileInPg(project, filePath, content, agentId, undefined, undefined, reason);
         const response: Record<string, unknown> = { success: true, message: `Datei "${filePath}" aktualisiert (${content.length} Zeichen)` };
         if (wasFixed) response.autoFixed = 'Content war doppelt escaped (\\n statt Newlines) — automatisch korrigiert.';
         return await attachWarnings(response, result);
@@ -295,7 +434,7 @@ export const filesTool: ConsolidatedTool = {
         const { content } = unescapeIfNeeded(reqStr(args, 'content'));
         if (lineStart === undefined || lineEnd === undefined) return { success: false, error: 'line_start und line_end erforderlich' };
         const newContent = replaceLines(currentContent, lineStart, lineEnd, content);
-        const result = await updateFileInPg(project, filePath, newContent, agentId);
+        const result = await updateFileInPg(project, filePath, newContent, agentId, undefined, undefined, reason);
         return await attachWarnings(
           { success: true, message: `Zeilen ${lineStart}-${lineEnd} in "${filePath}" ersetzt` },
           result
@@ -309,7 +448,7 @@ export const filesTool: ConsolidatedTool = {
         const { content } = unescapeIfNeeded(reqStr(args, 'content'));
         if (afterLine === undefined) return { success: false, error: 'after_line erforderlich' };
         const newContent = insertAfterLine(currentContent, afterLine, content);
-        const result = await updateFileInPg(project, filePath, newContent, agentId);
+        const result = await updateFileInPg(project, filePath, newContent, agentId, undefined, undefined, reason);
         return await attachWarnings(
           { success: true, message: `Inhalt nach Zeile ${afterLine} in "${filePath}" eingefuegt` },
           result
@@ -323,7 +462,7 @@ export const filesTool: ConsolidatedTool = {
         const lineEnd = num(args, 'line_end');
         if (lineStart === undefined || lineEnd === undefined) return { success: false, error: 'line_start und line_end erforderlich' };
         const newContent = deleteLines(currentContent, lineStart, lineEnd);
-        const result = await updateFileInPg(project, filePath, newContent, agentId);
+        const result = await updateFileInPg(project, filePath, newContent, agentId, undefined, undefined, reason);
         return await attachWarnings(
           { success: true, message: `Zeilen ${lineStart}-${lineEnd} in "${filePath}" geloescht` },
           result
@@ -351,7 +490,7 @@ export const filesTool: ConsolidatedTool = {
         }
 
         // Exakte Matches gefunden — ersetzen
-        const result = await updateFileInPg(project, filePath, newContent, agentId);
+        const result = await updateFileInPg(project, filePath, newContent, agentId, undefined, undefined, reason);
         return await attachWarnings(
           { success: true, count, message: `${count} Vorkommen ersetzt in "${filePath}"` },
           result
@@ -377,7 +516,7 @@ export const filesTool: ConsolidatedTool = {
           };
         }
 
-        const writeResult = await updateFileInPg(project, filePath, newContent, agentId);
+        const writeResult = await updateFileInPg(project, filePath, newContent, agentId, undefined, undefined, reason);
         const response: Record<string, unknown> = {
           success: true,
           ...batchResult,

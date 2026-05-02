@@ -291,7 +291,7 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
   // files — Datei-Manipulation
   // -------------------------------------------------------------------------
   files: {
-    summary: 'Dateien erstellen/bearbeiten/lesen. FileWatcher synct auf Dateisystem.',
+    summary: 'Dateien erstellen/bearbeiten/lesen. FileWatcher synct auf Dateisystem. Auto-Versionierung (versions/restore). Multi-File Plan/Commit fuer atomare Aenderungen ueber mehrere Dateien (plan/commit/cancel). Audit-Log mit Begruendungen via "history" — fuer Crash-Recovery.',
     when_to_use: [
       'Neue Datei anlegen: create.',
       'Gezielte Aenderung in bestehender Datei: search_replace oder replace_lines.',
@@ -406,7 +406,35 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
         description: 'Rollt eine ganze Multi-File-Batch zurueck — alle Files die zu dieser batch_id gehoeren werden auf ihren Pre-Batch-Stand zurueckgesetzt. Auch nicht-destruktiv (jede Restore-Operation erzeugt selbst wieder Versionen).',
         params: 'batch_id (req, String)',
         example: 'files({ action: "restore_batch", project: "synapse", batch_id: "42", agent_id: "mein-agent" })',
-        tips: 'Wird relevant ab Multi-File-Plan/Commit (Schritt 2). Aktuell hauptsaechlich fuer manuelle Bulk-Rollbacks nutzbar.',
+        tips: 'Greift bei Multi-File-Plans (Schritt 2): commit setzt batch_id=plan_id in jedem file_versions-Snapshot. Auch fuer manuelle Bulk-Rollbacks nutzbar wenn batch_id manuell vergeben wurde.',
+      },
+      plan: {
+        description: 'Phase A eines Multi-File-Edits: nimmt ops[] (1..100, mehrere Dateien), liest betroffene Dateien, dry-runs jede Op, erfasst expected_hashes und Previews. Liefert plan_id zurueck. Kein Schreiben in dieser Phase!',
+        params: 'project (req), ops (req, Array von { file_path, action, new_path?, content?, search?, replace?, edits?, line_start?, line_end?, after_line?, reason? }), agent_id, open_for_coedit, reason (Top-Level)',
+        example: 'files({ action: "plan", project: "synapse", reason: "Refactor Modul X", ops: [{ file_path: "alt.ts", action: "delete", reason: "Obsolet" }, { file_path: "src.ts", action: "move", new_path: "src/dst.ts" }, { file_path: "neu.ts", action: "create", content: "..." }] })',
+        tips: 'Plan laeuft nach 5 Minuten ab. Op-Actions: create (neue Datei), update, search_replace, search_replace_batch, replace_lines, insert_after, delete_lines (Edit-Ops); delete (ganze Datei loeschen), move (file_path → new_path), copy (file_path → new_path) (Lifecycle-Ops). Mehrere Ops auf gleicher Datei moeglich; create nur als erste Op. Lifecycle-Ops mit move/copy laden auch dst-Buffer fuer Hash-Check. restore_batch macht delete/move/copy rueckgaengig.',
+      },
+      commit: {
+        description: 'Phase B: wendet alle Ops eines Plans atomar an (PG-TX). Pruefung gegen expected_hashes — wenn eine Datei seit dem Plan extern geaendert wurde, kommt status="stale" mit Konflikt-Details. Bei Erfolg tragen alle file_versions-Snapshots die batch_id=plan_id (-> restore_batch).',
+        params: 'plan_id (req), agent_id',
+        example: 'files({ action: "commit", project: "synapse", plan_id: "42", agent_id: "ich" })',
+        tips: 'Bei stale: neu plannen mit aktuellem Stand. Bei Erfolg: batch_id merken fuer evtl. Rollback via files(action: "restore_batch", batch_id).',
+      },
+      cancel: {
+        description: 'Plan abbrechen (Soft-Delete: status="cancelled"). Nur moeglich solange status=open.',
+        params: 'plan_id (req)',
+        example: 'files({ action: "cancel", project: "synapse", plan_id: "42" })',
+      },
+      plan_status: {
+        description: 'Plan-Details abfragen (Status, Previews, Files, reason). Fuer Status-Polling oder Diff-Inspektion vor commit.',
+        params: 'plan_id (req)',
+        example: 'files({ action: "plan_status", project: "synapse", plan_id: "42" })',
+      },
+      history: {
+        description: 'Audit-Log: chronologische Liste aller Datei-Aenderungen mit Begruendung. Crash-Recovery: nach Session-Crash kann eine neue Session sehen "wer hat wann was warum geaendert" und gegebenenfalls Versionen wiederherstellen.',
+        params: 'project (req); optional: agent_id (Filter), file_path (Praefix-Match), since (ISO-Timestamp), limit (Standard 50, Max 500)',
+        example: 'files({ action: "history", project: "synapse", agent_id: "ich", since: "2026-05-02T10:00:00Z", limit: 20 })',
+        tips: 'reason wird beim Schreiben mitgegeben (files write-actions + plan/commit). Eintraege haben file_path, edit_action, agent_id, batch_id, reason, created_at. Voller Inhalt einer Version: files(action: "get_version", version_id).',
       },
     },
   },
