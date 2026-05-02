@@ -315,6 +315,24 @@ export {
   restoreBatch,
 } from './services/file-versions.js';
 export type { FileVersionMeta, FileVersionFull } from './services/file-versions.js';
+
+// Multi-File Edit-Plans (Schritt 2)
+export {
+  planBatch,
+  commitBatch,
+  cancelBatch,
+  getBatchPlan,
+} from './services/file-batch.js';
+export type {
+  FileBatchOp,
+  FileBatchOpAction,
+  OpPreview,
+  FileBatchPlanRow,
+  FileBatchStatus,
+  PlanBatchResult,
+  CommitBatchResult,
+  CommitConflictDetail,
+} from './services/file-batch.js';
 export type { BackupEntry } from './services/backup.js';
 export type { ChatMessage, AgentSession } from './services/chat.js';
 export type { AgentEvent, EventAck, EventType, EventPriority } from './services/events.js';

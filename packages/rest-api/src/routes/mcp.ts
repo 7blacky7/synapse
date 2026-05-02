@@ -94,6 +94,11 @@ import {
   getFileVersion,
   restoreFileVersion,
   restoreBatch,
+  // Multi-File Plan/Commit (Schritt 2)
+  planBatch,
+  commitBatch,
+  cancelBatch,
+  getBatchPlan,
   // Channels
   createChannel,
   joinChannel,
@@ -755,8 +760,8 @@ const MCP_TOOLS = [
       properties: {
         action: {
           type: 'string',
-          enum: ['create', 'update', 'delete', 'move', 'copy', 'read', 'replace_lines', 'insert_after', 'delete_lines', 'search_replace', 'search_replace_batch', 'versions', 'get_version', 'restore', 'restore_batch'],
-          description: 'Datei-Aktion. versions/get_version/restore/restore_batch arbeiten auf der Versionshistorie (jede Aenderung wird automatisch gesnapshottet).',
+          enum: ['create', 'update', 'delete', 'move', 'copy', 'read', 'replace_lines', 'insert_after', 'delete_lines', 'search_replace', 'search_replace_batch', 'versions', 'get_version', 'restore', 'restore_batch', 'plan', 'commit', 'cancel', 'plan_status'],
+          description: 'Datei-Aktion. versions/get_version/restore/restore_batch arbeiten auf der Versionshistorie. plan/commit/cancel/plan_status implementieren atomare Multi-File-Edits ueber mehrere Dateien.',
         },
         project: { type: 'string', description: 'Projekt-Name' },
         file_path: { type: 'string', description: 'Dateipfad (relativ zum Projekt-Root)' },
@@ -787,6 +792,41 @@ const MCP_TOOLS = [
         truncate_long_lines: { type: 'number', description: 'read: Zeilen laenger als N Zeichen kuerzen + Marker. 0 = aus (Standard).' },
         version_id: { type: 'string', description: 'Versions-ID (fuer get_version, restore). String, weil BIGSERIAL > Number.MAX_SAFE_INTEGER moeglich ist.' },
         batch_id: { type: 'string', description: 'Batch-ID (fuer restore_batch — rollt alle Files einer Multi-File-Batch zurueck).' },
+        plan_id: { type: 'string', description: 'Plan-ID (fuer commit, cancel, plan_status). String wegen BIGSERIAL.' },
+        ops: {
+          type: 'array',
+          description: 'Multi-File Edit-Plan: 1..100 Operationen ueber mehrere Dateien (fuer action="plan"). Jede Op: { file_path, action, ...op-spezifische Felder }. Aktionen: update, search_replace, search_replace_batch, replace_lines, insert_after, delete_lines.',
+          minItems: 1,
+          maxItems: 100,
+          items: {
+            type: 'object',
+            properties: {
+              file_path: { type: 'string' },
+              action: { type: 'string', enum: ['update', 'search_replace', 'search_replace_batch', 'replace_lines', 'insert_after', 'delete_lines'] },
+              content: { type: 'string' },
+              search: { type: 'string' },
+              replace: { type: 'string' },
+              replace_all: { type: 'boolean' },
+              edits: {
+                type: 'array',
+                items: {
+                  type: 'object',
+                  properties: {
+                    search: { type: 'string' },
+                    replace: { type: 'string' },
+                    replace_all: { type: 'boolean' },
+                  },
+                  required: ['search', 'replace'],
+                },
+              },
+              line_start: { type: 'number' },
+              line_end: { type: 'number' },
+              after_line: { type: 'number' },
+            },
+            required: ['file_path', 'action'],
+          },
+        },
+        open_for_coedit: { type: 'boolean', description: 'Optional fuer plan: ob andere Agenten Co-Edits vorschlagen duerfen (default true). Aktuell informational; Co-Edit-Mechanik kommt in Schritt 3.' },
         limit: { type: 'number', description: 'versions: Max Eintraege (Standard 50, Max 500).' },
       },
       required: ['action', 'project'],
@@ -2435,6 +2475,60 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
           files_restored: restored.length,
           files: restored,
           message: `Batch ${batchId} zurueckgerollt: ${restored.length} Datei(en).`,
+        };
+      }
+
+      // Multi-File Plan/Commit (Schritt 2) — kein file_path noetig.
+      if (action === 'plan') {
+        const opsRaw = (args as Record<string, unknown>).ops;
+        if (!Array.isArray(opsRaw) || opsRaw.length === 0) {
+          return { success: false, error: 'invalid_ops', message: 'ops[] muss ein Array mit mindestens 1 Element sein.' };
+        }
+        const result = await planBatch({
+          project,
+          agent_id: agentId,
+          ops: opsRaw as import('@synapse/core').FileBatchOp[],
+          open_for_coedit: typeof args.open_for_coedit === 'boolean' ? args.open_for_coedit as boolean : undefined,
+        });
+        return {
+          success: true,
+          ...result,
+          message: `Plan ${result.plan_id} angelegt: ${result.total_ops} Op(s) ueber ${result.files_touched.length} Datei(en).`,
+        };
+      }
+      if (action === 'commit') {
+        const planId = reqStr(args, 'plan_id');
+        const result = await commitBatch({ plan_id: planId, agent_id: agentId });
+        if (result.success) {
+          return { ...result, message: `Plan ${result.plan_id} committed — ${result.committed} Datei(en) geaendert. batch_id=${result.batch_id}.` };
+        }
+        return result;
+      }
+      if (action === 'cancel') {
+        const planId = reqStr(args, 'plan_id');
+        const result = await cancelBatch(planId);
+        return {
+          success: result.ok,
+          plan_id: planId,
+          status: result.status,
+          message: result.ok ? `Plan ${planId} abgebrochen.` : `Plan ${planId} nicht abbrechbar (Status: ${result.status}).`,
+        };
+      }
+      if (action === 'plan_status') {
+        const planId = reqStr(args, 'plan_id');
+        const plan = await getBatchPlan(planId);
+        if (!plan) return { success: false, error: 'plan_not_found', message: `Plan ${planId} nicht gefunden.` };
+        return {
+          success: true,
+          plan_id: plan.id,
+          project: plan.project,
+          status: plan.status,
+          owner_agent_id: plan.owner_agent_id,
+          ops_count: Array.isArray(plan.ops) ? plan.ops.length : 0,
+          files_touched: Object.keys(plan.expected_hashes ?? {}),
+          previews: plan.previews,
+          expires_at: plan.expires_at,
+          committed_at: plan.committed_at,
         };
       }
 

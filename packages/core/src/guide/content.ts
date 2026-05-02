@@ -291,7 +291,7 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
   // files — Datei-Manipulation
   // -------------------------------------------------------------------------
   files: {
-    summary: 'Dateien erstellen/bearbeiten/lesen. FileWatcher synct auf Dateisystem.',
+    summary: 'Dateien erstellen/bearbeiten/lesen. FileWatcher synct auf Dateisystem. Auto-Versionierung (versions/restore). Multi-File Plan/Commit fuer atomare Aenderungen ueber mehrere Dateien (plan/commit/cancel).',
     when_to_use: [
       'Neue Datei anlegen: create.',
       'Gezielte Aenderung in bestehender Datei: search_replace oder replace_lines.',
@@ -406,7 +406,29 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
         description: 'Rollt eine ganze Multi-File-Batch zurueck — alle Files die zu dieser batch_id gehoeren werden auf ihren Pre-Batch-Stand zurueckgesetzt. Auch nicht-destruktiv (jede Restore-Operation erzeugt selbst wieder Versionen).',
         params: 'batch_id (req, String)',
         example: 'files({ action: "restore_batch", project: "synapse", batch_id: "42", agent_id: "mein-agent" })',
-        tips: 'Wird relevant ab Multi-File-Plan/Commit (Schritt 2). Aktuell hauptsaechlich fuer manuelle Bulk-Rollbacks nutzbar.',
+        tips: 'Greift bei Multi-File-Plans (Schritt 2): commit setzt batch_id=plan_id in jedem file_versions-Snapshot. Auch fuer manuelle Bulk-Rollbacks nutzbar wenn batch_id manuell vergeben wurde.',
+      },
+      plan: {
+        description: 'Phase A eines Multi-File-Edits: nimmt ops[] (1..100, mehrere Dateien), liest betroffene Dateien, dry-runs jede Op, erfasst expected_hashes und Previews. Liefert plan_id zurueck. Kein Schreiben in dieser Phase!',
+        params: 'project (req), ops (req, Array von { file_path, action, ...op-spezifische Felder }), agent_id, open_for_coedit',
+        example: 'files({ action: "plan", project: "synapse", agent_id: "ich", ops: [{ file_path: "a.ts", action: "search_replace", search: "old", replace: "new" }, { file_path: "b.ts", action: "replace_lines", line_start: 10, line_end: 12, content: "..." }] })',
+        tips: 'Plan laeuft nach 5 Minuten ab. Bei Op-Fehler im Trockenlauf wird der Plan NICHT angelegt — sofortige Fehlermeldung. Op-Actions: update, search_replace, search_replace_batch, replace_lines, insert_after, delete_lines.',
+      },
+      commit: {
+        description: 'Phase B: wendet alle Ops eines Plans atomar an (PG-TX). Pruefung gegen expected_hashes — wenn eine Datei seit dem Plan extern geaendert wurde, kommt status="stale" mit Konflikt-Details. Bei Erfolg tragen alle file_versions-Snapshots die batch_id=plan_id (-> restore_batch).',
+        params: 'plan_id (req), agent_id',
+        example: 'files({ action: "commit", project: "synapse", plan_id: "42", agent_id: "ich" })',
+        tips: 'Bei stale: neu plannen mit aktuellem Stand. Bei Erfolg: batch_id merken fuer evtl. Rollback via files(action: "restore_batch", batch_id).',
+      },
+      cancel: {
+        description: 'Plan abbrechen (Soft-Delete: status="cancelled"). Nur moeglich solange status=open.',
+        params: 'plan_id (req)',
+        example: 'files({ action: "cancel", project: "synapse", plan_id: "42" })',
+      },
+      plan_status: {
+        description: 'Plan-Details abfragen (Status, Previews, Files). Fuer Status-Polling oder Diff-Inspektion vor commit.',
+        params: 'plan_id (req)',
+        example: 'files({ action: "plan_status", project: "synapse", plan_id: "42" })',
       },
     },
   },
