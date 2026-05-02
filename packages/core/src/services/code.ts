@@ -326,7 +326,10 @@ export async function parseAndEmbed(project: string, filePath: string): Promise<
   }
 
   // --- Embeddings generieren + in Qdrant einfuegen ---
-  if (chunks.length > 0) {
+  // SKIP wenn env SYNAPSE_SKIP_EMBEDDINGS=1 gesetzt — Parser-Symbole bleiben in PG,
+  // aber kein Qdrant-Vektor-Update. Spart Embedding-API-Kosten bei Reparse-Iterationen.
+  const skipEmbeddings = process.env.SYNAPSE_SKIP_EMBEDDINGS === '1';
+  if (chunks.length > 0 && !skipEmbeddings) {
     const collectionName = await ensureProjectCollection(project);
 
     // Alte Qdrant-Eintraege loeschen
