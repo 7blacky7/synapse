@@ -411,8 +411,8 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
       plan: {
         description: 'Phase A eines Multi-File-Edits: nimmt ops[] (1..100, mehrere Dateien), liest betroffene Dateien, dry-runs jede Op, erfasst expected_hashes und Previews. Liefert plan_id zurueck. Kein Schreiben in dieser Phase!',
         params: 'project (req), ops (req, Array von { file_path, action, ...op-spezifische Felder }), agent_id, open_for_coedit',
-        example: 'files({ action: "plan", project: "synapse", agent_id: "ich", ops: [{ file_path: "a.ts", action: "search_replace", search: "old", replace: "new" }, { file_path: "b.ts", action: "replace_lines", line_start: 10, line_end: 12, content: "..." }] })',
-        tips: 'Plan laeuft nach 5 Minuten ab. Bei Op-Fehler im Trockenlauf wird der Plan NICHT angelegt — sofortige Fehlermeldung. Op-Actions: update, search_replace, search_replace_batch, replace_lines, insert_after, delete_lines.',
+        example: 'files({ action: "plan", project: "synapse", agent_id: "ich", ops: [{ file_path: "neu.ts", action: "create", content: "export const x = 1;" }, { file_path: "a.ts", action: "search_replace", search: "old", replace: "new" }] })',
+        tips: 'Plan laeuft nach 5 Minuten ab. Bei Op-Fehler im Trockenlauf wird der Plan NICHT angelegt — sofortige Fehlermeldung. Op-Actions: create (neue Datei, content erforderlich, nur als erste Op auf einer Datei), update, search_replace, search_replace_batch, replace_lines, insert_after, delete_lines.',
       },
       commit: {
         description: 'Phase B: wendet alle Ops eines Plans atomar an (PG-TX). Pruefung gegen expected_hashes — wenn eine Datei seit dem Plan extern geaendert wurde, kommt status="stale" mit Konflikt-Details. Bei Erfolg tragen alle file_versions-Snapshots die batch_id=plan_id (-> restore_batch).',

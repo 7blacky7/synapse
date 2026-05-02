@@ -795,14 +795,14 @@ const MCP_TOOLS = [
         plan_id: { type: 'string', description: 'Plan-ID (fuer commit, cancel, plan_status). String wegen BIGSERIAL.' },
         ops: {
           type: 'array',
-          description: 'Multi-File Edit-Plan: 1..100 Operationen ueber mehrere Dateien (fuer action="plan"). Jede Op: { file_path, action, ...op-spezifische Felder }. Aktionen: update, search_replace, search_replace_batch, replace_lines, insert_after, delete_lines.',
+          description: 'Multi-File Edit-Plan: 1..100 Operationen ueber mehrere Dateien (fuer action="plan"). Jede Op: { file_path, action, ...op-spezifische Felder }. Aktionen: create (neue Datei), update, search_replace, search_replace_batch, replace_lines, insert_after, delete_lines.',
           minItems: 1,
           maxItems: 100,
           items: {
             type: 'object',
             properties: {
               file_path: { type: 'string' },
-              action: { type: 'string', enum: ['update', 'search_replace', 'search_replace_batch', 'replace_lines', 'insert_after', 'delete_lines'] },
+              action: { type: 'string', enum: ['create', 'update', 'search_replace', 'search_replace_batch', 'replace_lines', 'insert_after', 'delete_lines'] },
               content: { type: 'string' },
               search: { type: 'string' },
               replace: { type: 'string' },

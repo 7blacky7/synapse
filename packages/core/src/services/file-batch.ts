@@ -27,13 +27,18 @@ import {
   insertAfterLine,
   deleteLines,
   updateFileInPg,
+  createFileInPg,
   getFileContentFromPg,
 } from './code-write.js';
 import type { BatchEdit } from './code-write.js';
 
+/** Hash eines leeren Strings — Marker fuer "Datei existiert (noch) nicht". */
+const EMPTY_CONTENT_HASH = contentHash('');
+
 export type FileBatchStatus = 'open' | 'committed' | 'cancelled' | 'expired' | 'stale';
 
 export type FileBatchOpAction =
+  | 'create'
   | 'update'
   | 'search_replace'
   | 'search_replace_batch'
@@ -111,7 +116,7 @@ export type CommitBatchResult =
       plan_id: string;
       batch_id: string;
       committed: number;
-      files: Array<{ file_path: string; size: number; hash: string }>;
+      files: Array<{ file_path: string; size: number; hash: string; created: boolean }>;
     }
   | {
       success: false;
@@ -128,8 +133,19 @@ interface PreparedFile {
 }
 
 /** Wendet eine Op sequenziell auf einen In-Memory-Text an. Wirft bei Fehlern. */
-function applyOpInMemory(currentContent: string, op: FileBatchOp): { newContent: string; context: string } {
+function applyOpInMemory(currentContent: string, op: FileBatchOp, isFirstOpOnFile: boolean): { newContent: string; context: string } {
   switch (op.action) {
+    case 'create': {
+      if (op.content === undefined) throw new Error('create: content fehlt');
+      // Nur als erste Op auf einer leeren/nicht existenten Datei zulaessig.
+      if (!isFirstOpOnFile) {
+        throw new Error('create: nur als erste Op auf einer Datei zulaessig (existiert bereits in Plan-Buffer)');
+      }
+      if (currentContent !== '') {
+        throw new Error('create: Datei existiert bereits — nutze "update" oder "search_replace"');
+      }
+      return { newContent: op.content, context: `create: ${op.content.length} Zeichen` };
+    }
     case 'update': {
       if (op.content === undefined) throw new Error('update: content fehlt');
       return { newContent: op.content, context: `update: ${op.content.length} Zeichen` };
@@ -212,17 +228,19 @@ export async function planBatch(args: {
     }
 
     let buf = fileBuffers.get(op.file_path);
+    let isFirstOpOnFile = false;
     if (!buf) {
       const initialContent = (await getFileContentFromPg(args.project, op.file_path)) ?? '';
       const initialHash = contentHash(initialContent);
       expectedHashes[op.file_path] = initialHash;
       buf = { finalContent: initialContent, finalHash: initialHash };
       fileBuffers.set(op.file_path, buf);
+      isFirstOpOnFile = true;
     }
 
     const sizeBefore = Buffer.byteLength(buf.finalContent, 'utf8');
     try {
-      const { newContent, context } = applyOpInMemory(buf.finalContent, op);
+      const { newContent, context } = applyOpInMemory(buf.finalContent, op, isFirstOpOnFile);
       buf.finalContent = newContent;
       buf.finalHash = contentHash(newContent);
       const sizeAfter = Buffer.byteLength(newContent, 'utf8');
@@ -377,6 +395,7 @@ export async function commitBatch(args: {
 
   // Re-Apply Ops auf den AKTUELLEN Stand (Hashes matchen → Stand identisch zu Plan-Zeitpunkt).
   const finalBuffers = new Map<string, string>();
+  const seenFile = new Set<string>();
   for (const filePath of Object.keys(plan.expected_hashes)) {
     finalBuffers.set(filePath, currentBuffers.get(filePath) ?? '');
   }
@@ -384,8 +403,10 @@ export async function commitBatch(args: {
   for (let i = 0; i < plan.ops.length; i++) {
     const op = plan.ops[i];
     const current = finalBuffers.get(op.file_path) ?? '';
+    const isFirstOpOnFile = !seenFile.has(op.file_path);
+    seenFile.add(op.file_path);
     try {
-      const { newContent } = applyOpInMemory(current, op);
+      const { newContent } = applyOpInMemory(current, op, isFirstOpOnFile);
       finalBuffers.set(op.file_path, newContent);
     } catch (err) {
       // Sollte eigentlich nicht passieren wenn Plan sauber war — defensive Behandlung.
@@ -400,16 +421,30 @@ export async function commitBatch(args: {
   }
 
   // Schreiben mit batch_id=plan.id — file_versions-Snapshots tragen die Batch-ID.
-  const writtenFiles: Array<{ file_path: string; size: number; hash: string }> = [];
+  // Per File entscheiden: war initial leer (existed not) → createFileInPg, sonst updateFileInPg.
+  const writtenFiles: Array<{ file_path: string; size: number; hash: string; created: boolean }> = [];
   const batchIdNum = Number(args.plan_id);
   const batchIdSafe = Number.isFinite(batchIdNum) && batchIdNum <= Number.MAX_SAFE_INTEGER ? batchIdNum : undefined;
 
   for (const [filePath, newContent] of finalBuffers) {
-    await updateFileInPg(plan.project, filePath, newContent, args.agent_id, `batch:${args.plan_id}`, batchIdSafe);
+    const wasNew = plan.expected_hashes[filePath] === EMPTY_CONTENT_HASH;
+    if (wasNew) {
+      await createFileInPg(plan.project, filePath, newContent, args.agent_id);
+      // file_versions-Marker fuer "in dieser Batch erstellt" — restore_batch kann dann
+      // die Datei wieder entleeren oder soft-deleten (V1: leerer Inhalt).
+      await pool.query(
+        `INSERT INTO file_versions (project, file_path, content, content_hash, edit_action, agent_id, batch_id, size_bytes)
+         VALUES ($1, $2, '', $3, $4, $5, $6, 0)`,
+        [plan.project, filePath, EMPTY_CONTENT_HASH, `batch:${args.plan_id}:create`, args.agent_id ?? null, batchIdSafe ?? null],
+      );
+    } else {
+      await updateFileInPg(plan.project, filePath, newContent, args.agent_id, `batch:${args.plan_id}`, batchIdSafe);
+    }
     writtenFiles.push({
       file_path: filePath,
       size: Buffer.byteLength(newContent, 'utf8'),
       hash: contentHash(newContent),
+      created: wasNew,
     });
   }
 
