@@ -10,6 +10,8 @@
 
 import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
 import { extractStringLiterals } from './types.js';
+import { formatRouteName, isLikelyHttpPath, HTTP_VERBS } from './patterns/http.js';
+import { parseEmbeddedSql, looksLikeSql } from './patterns/sql.js';
 
 function lineAt(text: string, pos: number): number {
   return text.substring(0, pos).split('\n').length;
@@ -271,6 +273,56 @@ class ClojureParser implements LanguageParser {
 
     symbols.push(...extractStringLiterals(content, { includeSingleQuotes: true }));
 
+    // ══════════════════════════════════════════════
+    // 11. Routes: Compojure (GET "/x" [...] handler)
+    // ══════════════════════════════════════════════
+    const compojureRe = /\((GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS|ANY)\s+["']([^"']+)["']/g;
+    while ((m = compojureRe.exec(content)) !== null) {
+      const method = m[1];
+      const path = m[2];
+      if (!isLikelyHttpPath(path)) continue;
+      symbols.push({
+        symbol_type: 'route',
+        name: formatRouteName(method, path),
+        value: path,
+        params: [method.toUpperCase()],
+        line_start: lineAt(content, m.index),
+        is_exported: true,
+      });
+    }
+
+    // ══════════════════════════════════════════════
+    // 12. Routes: reitit ["/x" {:get handler}]
+    // ══════════════════════════════════════════════
+    const reititRe = /\[\s*["']([^"']+)["']\s*\{\s*:(get|post|put|patch|delete|head|options)\b/g;
+    while ((m = reititRe.exec(content)) !== null) {
+      const path = m[1];
+      const verb = m[2].toLowerCase();
+      if (!isLikelyHttpPath(path)) continue;
+      if (!HTTP_VERBS.has(verb)) continue;
+      symbols.push({
+        symbol_type: 'route',
+        name: formatRouteName(verb, path),
+        value: path,
+        params: [verb.toUpperCase()],
+        line_start: lineAt(content, m.index),
+        is_exported: true,
+      });
+    }
+
+    // ══════════════════════════════════════════════
+    // 13. Embedded SQL: clojure.java.jdbc
+    // ══════════════════════════════════════════════
+    const sqlRe = new RegExp(
+      '\\(\\s*\\w+\\/(?:query|execute!?|find-by-keys|insert!|update!|delete!)\\s+\\S+\\s+\\[\\s*["\']((?:[^"\'\\\\]|\\\\.){10,})["\']',
+      'g',
+    );
+    while ((m = sqlRe.exec(content)) !== null) {
+      const sqlContent = m[1];
+      if (!looksLikeSql(sqlContent)) continue;
+      const baseLine = lineAt(content, m.index);
+      symbols.push(...parseEmbeddedSql(sqlContent, filePath, baseLine));
+    }
 
     return { symbols, references };
   }

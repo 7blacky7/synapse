@@ -10,6 +10,8 @@
 
 import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
 import { extractStringLiterals } from './types.js';
+import { formatRouteName, isLikelyHttpPath, HTTP_VERBS } from './patterns/http.js';
+import { parseEmbeddedSql, looksLikeSql } from './patterns/sql.js';
 
 function lineAt(text: string, pos: number): number {
   return text.substring(0, pos).split('\n').length;
@@ -268,6 +270,58 @@ class PerlParser implements LanguageParser {
 
     symbols.push(...extractStringLiterals(content, { includeSingleQuotes: true }));
 
+    // ══════════════════════════════════════════════
+    // 12. Routes — Mojolicious ($r->get/post/...)
+    // ══════════════════════════════════════════════
+    const mojoRouteRe = /\$\w+\s*->\s*(get|post|put|patch|delete|head|options|any)\s*\(\s*['"]([^'"]+)['"]/g;
+    while ((m = mojoRouteRe.exec(content)) !== null) {
+      const verb = m[1].toLowerCase();
+      const path = m[2];
+      if (!isLikelyHttpPath(path)) continue;
+      if (verb !== 'any' && !HTTP_VERBS.has(verb)) continue;
+      const method = verb === 'any' ? 'ANY' : verb.toUpperCase();
+      const lineStart = lineAt(content, m.index);
+      symbols.push({
+        symbol_type: 'route',
+        name: formatRouteName(method, path),
+        value: path,
+        params: [method],
+        line_start: lineStart,
+        is_exported: true,
+      });
+    }
+
+    // ══════════════════════════════════════════════
+    // 13. Routes — Dancer (get '/x' => sub {...})
+    // ══════════════════════════════════════════════
+    const dancerRouteRe = /^\s*(get|post|put|patch|delete|head|options)\s+['"]([^'"]+)['"]\s*=>\s*sub\b/gm;
+    while ((m = dancerRouteRe.exec(content)) !== null) {
+      const verb = m[1].toLowerCase();
+      const path = m[2];
+      if (!isLikelyHttpPath(path)) continue;
+      if (!HTTP_VERBS.has(verb)) continue;
+      const method = verb.toUpperCase();
+      const lineStart = lineAt(content, m.index);
+      symbols.push({
+        symbol_type: 'route',
+        name: formatRouteName(method, path),
+        value: path,
+        params: [method],
+        line_start: lineStart,
+        is_exported: true,
+      });
+    }
+
+    // ══════════════════════════════════════════════
+    // 14. Embedded SQL — DBI ($dbh->prepare/do/...)
+    // ══════════════════════════════════════════════
+    const dbiSqlRe = /\$\w+\s*->\s*(?:prepare|do|selectrow_array|selectrow_arrayref|selectrow_hashref|selectall_arrayref|selectall_hashref|select|execute_array)\s*\(\s*["']((?:[^"'\\]|\\.){10,})["']/g;
+    while ((m = dbiSqlRe.exec(content)) !== null) {
+      const sqlContent = m[1];
+      if (!looksLikeSql(sqlContent)) continue;
+      const baseLine = lineAt(content, m.index);
+      symbols.push(...parseEmbeddedSql(sqlContent, filePath, baseLine));
+    }
 
     return { symbols, references };
   }

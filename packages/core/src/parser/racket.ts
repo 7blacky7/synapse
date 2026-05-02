@@ -10,6 +10,8 @@
 
 import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
 import { extractStringLiterals } from './types.js';
+import { formatRouteName, isLikelyHttpPath } from './patterns/http.js';
+import { parseEmbeddedSql, looksLikeSql } from './patterns/sql.js';
 
 function lineAt(text: string, pos: number): number {
   return text.substring(0, pos).split('\n').length;
@@ -105,6 +107,31 @@ class RacketParser implements LanguageParser {
 
     symbols.push(...extractStringLiterals(content, { includeSingleQuotes: true }));
 
+    // 12. Routes: web-server dispatch-rules
+    const dispatchRe = /\[\s*\(\s*["']([^"']+)["']\s*\)\s+(\S+)/g;
+    while ((m = dispatchRe.exec(content)) !== null) {
+      const component = m[1];
+      const handler = m[2].replace(/[)\]]+$/, '');
+      if (component.includes('/')) continue;
+      const path = '/' + component;
+      if (!isLikelyHttpPath(path)) continue;
+      symbols.push({
+        symbol_type: 'route',
+        name: formatRouteName('ANY', path),
+        value: handler,
+        line_start: lineAt(content, m.index),
+        is_exported: true,
+      });
+    }
+
+    // 13. Embedded SQL via db package
+    const sqlRe = /\(\s*query-(?:rows|exec|list|value|maybe-value|maybe-row|row)\s+\S+\s+["']((?:[^"'\\]|\\.){10,})["']/g;
+    while ((m = sqlRe.exec(content)) !== null) {
+      const sql = m[1];
+      if (!looksLikeSql(sql)) continue;
+      const line = lineAt(content, m.index);
+      symbols.push(...parseEmbeddedSql(sql, filePath, line));
+    }
 
     return { symbols, references };
   }

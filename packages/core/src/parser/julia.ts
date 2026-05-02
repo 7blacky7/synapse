@@ -10,6 +10,8 @@
 
 import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
 import { extractStringLiterals } from './types.js';
+import { formatRouteName, isLikelyHttpPath, HTTP_VERBS } from './patterns/http.js';
+import { parseEmbeddedSql, looksLikeSql } from './patterns/sql.js';
 
 function lineAt(text: string, pos: number): number {
   return text.substring(0, pos).split('\n').length;
@@ -301,6 +303,90 @@ class JuliaParser implements LanguageParser {
 
     symbols.push(...extractStringLiterals(content));
 
+    // ══════════════════════════════════════════════
+    // 12. Routes — Genie + HTTP.jl
+    // ══════════════════════════════════════════════
+    // Genie: route("/x", method=POST) do  (mit explizitem method)
+    const genieRouteWithMethodRe = /\broute\s*\(\s*["']([^"']+)["']\s*,\s*method\s*=\s*(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\b/g;
+    const genieRoutesWithMethod = new Set<string>();
+    while ((m = genieRouteWithMethodRe.exec(content)) !== null) {
+      const path = m[1];
+      const method = m[2].toLowerCase();
+      if (!isLikelyHttpPath(path)) continue;
+      if (!HTTP_VERBS.has(method)) continue;
+      genieRoutesWithMethod.add(`${m.index}:${path}`);
+      symbols.push({
+        symbol_type: 'route',
+        name: formatRouteName(method, path),
+        value: path,
+        params: [method.toUpperCase()],
+        line_start: lineAt(content, m.index),
+        is_exported: true,
+      });
+    }
+
+    // Genie: route("/x") do  (default GET)
+    const genieRouteRe = /\broute\s*\(\s*["']([^"']+)["']\s*\)\s*do\b/g;
+    while ((m = genieRouteRe.exec(content)) !== null) {
+      const path = m[1];
+      if (!isLikelyHttpPath(path)) continue;
+      symbols.push({
+        symbol_type: 'route',
+        name: formatRouteName('get', path),
+        value: path,
+        params: ['GET'],
+        line_start: lineAt(content, m.index),
+        is_exported: true,
+      });
+    }
+
+    // HTTP.jl: HTTP.register!(router, "GET", "/x", handler)
+    const httpRegisterRe = /HTTP\.register!\s*\(\s*\w+\s*,\s*["'](GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)["']\s*,\s*["']([^"']+)["']/g;
+    while ((m = httpRegisterRe.exec(content)) !== null) {
+      const method = m[1].toLowerCase();
+      const path = m[2];
+      if (!isLikelyHttpPath(path)) continue;
+      if (!HTTP_VERBS.has(method)) continue;
+      symbols.push({
+        symbol_type: 'route',
+        name: formatRouteName(method, path),
+        value: path,
+        params: [method.toUpperCase()],
+        line_start: lineAt(content, m.index),
+        is_exported: true,
+      });
+    }
+
+    // ══════════════════════════════════════════════
+    // 13. Embedded SQL
+    // ══════════════════════════════════════════════
+    const seenSqlRanges = new Set<string>();
+    const pushSql = (sql: string, pos: number) => {
+      const key = `${pos}:${sql.length}`;
+      if (seenSqlRanges.has(key)) return;
+      seenSqlRanges.add(key);
+      if (!looksLikeSql(sql)) return;
+      const baseLine = lineAt(content, pos);
+      symbols.push(...parseEmbeddedSql(sql, filePath, baseLine));
+    };
+
+    // LibPQ.execute / DBInterface.execute / DBInterface.prepare
+    const sqlSpecificRe = /\b(?:LibPQ\.execute|DBInterface\.(?:execute|prepare))\s*\(\s*\w+\s*,\s*["']((?:[^"'\\]|\\.){10,})["']/g;
+    while ((m = sqlSpecificRe.exec(content)) !== null) {
+      pushSql(m[1], m.index);
+    }
+
+    // Generisches execute(conn, "...")
+    const sqlGenericRe = /\bexecute\s*\(\s*\w+\s*,\s*["']((?:[^"'\\]|\\.){10,})["']/g;
+    while ((m = sqlGenericRe.exec(content)) !== null) {
+      pushSql(m[1], m.index);
+    }
+
+    // Triple-quoted multi-line strings """..."""
+    const tripleRe = /"""([\s\S]{10,}?)"""/g;
+    while ((m = tripleRe.exec(content)) !== null) {
+      pushSql(m[1], m.index);
+    }
 
     return { symbols, references };
   }

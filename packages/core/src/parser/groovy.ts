@@ -10,6 +10,8 @@
 
 import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
 import { extractStringLiterals } from './types.js';
+import { formatRouteName, isLikelyHttpPath, HTTP_VERBS } from './patterns/http.js';
+import { parseEmbeddedSql, looksLikeSql } from './patterns/sql.js';
 
 function lineAt(text: string, pos: number): number {
   return text.substring(0, pos).split('\n').length;
@@ -268,6 +270,67 @@ class GroovyParser implements LanguageParser {
 
     symbols.push(...extractStringLiterals(content));
 
+    // ══════════════════════════════════════════════
+    // 10. Routes: Spark Java (Groovy-DSL)
+    //     get("/x", { req, res -> ... }), post("/x", ...)
+    // ══════════════════════════════════════════════
+    const sparkRouteRe = /\b(get|post|put|patch|delete|head|options)\s*\(\s*["']([^"']+)["']\s*,\s*\{/g;
+    while ((m = sparkRouteRe.exec(content)) !== null) {
+      const verb = m[1].toLowerCase();
+      const path = m[2];
+      if (!HTTP_VERBS.has(verb)) continue;
+      if (!isLikelyHttpPath(path)) continue;
+      const lineStart = lineAt(content, m.index);
+      symbols.push({
+        symbol_type: 'route',
+        name: formatRouteName(verb, path),
+        value: path,
+        params: [verb.toUpperCase()],
+        line_start: lineStart,
+        is_exported: true,
+      });
+    }
+
+    // ══════════════════════════════════════════════
+    // 11. Routes: Grails UrlMappings
+    //     "/x"(controller: "name", action: "act") oder "/x" {action = "..."}
+    // ══════════════════════════════════════════════
+    const grailsRouteRe = /^\s*["']([^"']+)["']\s*\(/gm;
+    while ((m = grailsRouteRe.exec(content)) !== null) {
+      const path = m[1];
+      if (!isLikelyHttpPath(path)) continue;
+      const lineStart = lineAt(content, m.index);
+      symbols.push({
+        symbol_type: 'route',
+        name: formatRouteName('any', path),
+        value: path,
+        params: ['ANY'],
+        line_start: lineStart,
+        is_exported: true,
+      });
+    }
+
+    // ══════════════════════════════════════════════
+    // 12. Embedded SQL: groovy.sql.Sql / JdbcTemplate (single/double quoted)
+    // ══════════════════════════════════════════════
+    const sqlCallRe = /\b\w+\.(?:eachRow|execute|executeUpdate|rows|firstRow|query|queryForList|queryForObject|update)\s*\(\s*["']((?:[^"'\\]|\\.){10,})["']/g;
+    while ((m = sqlCallRe.exec(content)) !== null) {
+      const sqlBody = m[1];
+      if (!looksLikeSql(sqlBody)) continue;
+      const baseLine = lineAt(content, m.index);
+      symbols.push(...parseEmbeddedSql(sqlBody, filePath, baseLine));
+    }
+
+    // ══════════════════════════════════════════════
+    // 13. Embedded SQL: triple-quoted Strings ("""...""")
+    // ══════════════════════════════════════════════
+    const tripleStrRe = /"""([\s\S]{10,}?)"""/g;
+    while ((m = tripleStrRe.exec(content)) !== null) {
+      const body = m[1];
+      if (!looksLikeSql(body)) continue;
+      const baseLine = lineAt(content, m.index);
+      symbols.push(...parseEmbeddedSql(body, filePath, baseLine));
+    }
 
     return { symbols, references };
   }
