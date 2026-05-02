@@ -9,6 +9,7 @@
 
 import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
 import { extractStringLiterals } from './types.js';
+import { parseEmbeddedSql, looksLikeSql } from './patterns/sql.js';
 
 function lineAt(text: string, pos: number): number {
   return text.substring(0, pos).split('\n').length;
@@ -202,6 +203,26 @@ class TclParser implements LanguageParser {
 
     symbols.push(...extractStringLiterals(content, { includeSingleQuotes: true }));
 
+    // ══════════════════════════════════════════════
+    // 8. Embedded SQL (sqlite3 / pgtcl)
+    // ══════════════════════════════════════════════
+    // <handle> eval/onecolumn/onerow/exec "SQL" or {SQL}
+    const sqliteRe = /\b\w+\s+(?:eval|onecolumn|onerow|exec)\s+["{]((?:[^"}\\]|\\.){10,})["}]/g;
+    while ((m = sqliteRe.exec(content)) !== null) {
+      const sql = m[1];
+      if (!looksLikeSql(sql)) continue;
+      const baseLine = lineAt(content, m.index);
+      symbols.push(...parseEmbeddedSql(sql, filePath, baseLine));
+    }
+
+    // pg_exec / pg_select / pg_execute conn "SQL"
+    const pgRe = /\bpg_(?:exec|select|execute)\s+\w+\s+["{]((?:[^"}\\]|\\.){10,})["}]/g;
+    while ((m = pgRe.exec(content)) !== null) {
+      const sql = m[1];
+      if (!looksLikeSql(sql)) continue;
+      const baseLine = lineAt(content, m.index);
+      symbols.push(...parseEmbeddedSql(sql, filePath, baseLine));
+    }
 
     return { symbols, references };
   }

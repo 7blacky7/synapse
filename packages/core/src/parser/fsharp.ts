@@ -9,6 +9,8 @@
 
 import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
 import { extractStringLiterals } from './types.js';
+import { formatRouteName, isLikelyHttpPath } from './patterns/http.js';
+import { looksLikeSql, parseEmbeddedSql } from './patterns/sql.js';
 
 function lineAt(text: string, pos: number): number {
   return text.substring(0, pos).split('\n').length;
@@ -297,6 +299,90 @@ class FSharpParser implements LanguageParser {
 
     symbols.push(...extractStringLiterals(content));
 
+    // ══════════════════════════════════════════════
+    // 11. Giraffe / Saturn Routes
+    // ══════════════════════════════════════════════
+    // Method-explicit: GET >=> route "/path"
+    const methodRouteRe = /\b(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\s*>=>\s*route\s+["']([^"']+)["']/g;
+    const methodRouteMatches = new Set<number>();
+    while ((m = methodRouteRe.exec(content)) !== null) {
+      const method = m[1].toLowerCase();
+      const path = m[2];
+      if (!isLikelyHttpPath(path)) continue;
+      methodRouteMatches.add(m.index);
+      symbols.push({
+        symbol_type: 'route',
+        name: formatRouteName(method, path),
+        value: path,
+        params: [method.toUpperCase()],
+        line_start: lineAt(content, m.index),
+        is_exported: true,
+      });
+    }
+
+    // Default GET: route "/path" >=>
+    const routeRe = /\broute\s+["']([^"']+)["']\s*>=>/g;
+    while ((m = routeRe.exec(content)) !== null) {
+      const path = m[1];
+      if (!isLikelyHttpPath(path)) continue;
+      // Skip if already matched by method-explicit pattern (overlap)
+      let alreadyMatched = false;
+      for (const idx of methodRouteMatches) {
+        if (m.index >= idx && m.index < idx + 100) { alreadyMatched = true; break; }
+      }
+      if (alreadyMatched) continue;
+      symbols.push({
+        symbol_type: 'route',
+        name: formatRouteName('get', path),
+        value: path,
+        params: ['GET'],
+        line_start: lineAt(content, m.index),
+        is_exported: true,
+      });
+    }
+
+    // Templated: routef "/users/%i"
+    const routefRe = /\broutef\s+["']([^"']+)["']/g;
+    while ((m = routefRe.exec(content)) !== null) {
+      const path = m[1];
+      if (!isLikelyHttpPath(path)) continue;
+      symbols.push({
+        symbol_type: 'route',
+        name: formatRouteName('get', path),
+        value: path,
+        params: ['GET'],
+        line_start: lineAt(content, m.index),
+        is_exported: true,
+      });
+    }
+
+    // ══════════════════════════════════════════════
+    // 12. Embedded SQL (Dapper, SqlCommand, triple-quoted)
+    // ══════════════════════════════════════════════
+    const dapperRe = /\b(?:Query|QueryAsync|QueryFirst|Execute|ExecuteAsync|ExecuteScalar)\s*\(\s*["']((?:[^"'\\]|\\.){10,})["']/g;
+    while ((m = dapperRe.exec(content)) !== null) {
+      const sqlText = m[1];
+      if (!looksLikeSql(sqlText)) continue;
+      const baseLine = lineAt(content, m.index);
+      symbols.push(...parseEmbeddedSql(sqlText, filePath, baseLine));
+    }
+
+    const sqlCmdRe = /\bnew\s+SqlCommand\s*\(\s*["']((?:[^"'\\]|\\.){10,})["']/g;
+    while ((m = sqlCmdRe.exec(content)) !== null) {
+      const sqlText = m[1];
+      if (!looksLikeSql(sqlText)) continue;
+      const baseLine = lineAt(content, m.index);
+      symbols.push(...parseEmbeddedSql(sqlText, filePath, baseLine));
+    }
+
+    // F# triple-quoted strings """..."""
+    const tripleRe = /"""([\s\S]{10,}?)"""/g;
+    while ((m = tripleRe.exec(content)) !== null) {
+      const sqlText = m[1];
+      if (!looksLikeSql(sqlText)) continue;
+      const baseLine = lineAt(content, m.index);
+      symbols.push(...parseEmbeddedSql(sqlText, filePath, baseLine));
+    }
 
     return { symbols, references };
   }

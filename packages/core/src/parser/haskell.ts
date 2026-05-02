@@ -10,6 +10,8 @@
 
 import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
 import { extractStringLiterals } from './types.js';
+import { HTTP_VERBS, formatRouteName, isLikelyHttpPath } from './patterns/http.js';
+import { parseEmbeddedSql, looksLikeSql } from './patterns/sql.js';
 
 function lineAt(text: string, pos: number): number {
   return text.substring(0, pos).split('\n').length;
@@ -315,6 +317,59 @@ class HaskellParser implements LanguageParser {
 
     symbols.push(...extractStringLiterals(content));
 
+    // ══════════════════════════════════════════════
+    // 13. Scotty Routes (get "/x" $ do ...)
+    // ══════════════════════════════════════════════
+    const scottyDoRouteRe = /^\s*(get|post|put|patch|delete|head|options)\s+["']([^"']+)["']\s+\$\s*do\b/gm;
+    const seenRoutes = new Set<string>();
+    while ((m = scottyDoRouteRe.exec(content)) !== null) {
+      const verb = m[1].toLowerCase();
+      const routePath = m[2];
+      if (!HTTP_VERBS.has(verb)) continue;
+      if (!isLikelyHttpPath(routePath)) continue;
+      const key = `${verb} ${routePath}`;
+      if (seenRoutes.has(key)) continue;
+      seenRoutes.add(key);
+      symbols.push({
+        symbol_type: 'route',
+        name: formatRouteName(verb, routePath),
+        value: routePath,
+        params: [verb.toUpperCase()],
+        line_start: lineAt(content, m.index),
+        is_exported: true,
+      });
+    }
+
+    const scottyInlineRouteRe = /\b(get|post|put|patch|delete|head|options)\s+["']([^"']+)["']\s+(?:\$|\(\s*do\b)/g;
+    while ((m = scottyInlineRouteRe.exec(content)) !== null) {
+      const verb = m[1].toLowerCase();
+      const routePath = m[2];
+      if (!HTTP_VERBS.has(verb)) continue;
+      if (!isLikelyHttpPath(routePath)) continue;
+      const key = `${verb} ${routePath}`;
+      if (seenRoutes.has(key)) continue;
+      seenRoutes.add(key);
+      symbols.push({
+        symbol_type: 'route',
+        name: formatRouteName(verb, routePath),
+        value: routePath,
+        params: [verb.toUpperCase()],
+        line_start: lineAt(content, m.index),
+        is_exported: true,
+      });
+    }
+
+    // ══════════════════════════════════════════════
+    // 14. Embedded SQL (postgresql-simple, HDBC)
+    // ══════════════════════════════════════════════
+    const sqlCallRe = /\b(?:query_?|execute_?|run|prepare)\s+\w+\s+["']((?:[^"'\\]|\\.){10,})["']/g;
+    while ((m = sqlCallRe.exec(content)) !== null) {
+      const sqlText = m[1].replace(/\\(["'\\])/g, '$1');
+      if (looksLikeSql(sqlText)) {
+        const baseLine = lineAt(content, m.index);
+        symbols.push(...parseEmbeddedSql(sqlText, filePath, baseLine));
+      }
+    }
 
     return { symbols, references };
   }

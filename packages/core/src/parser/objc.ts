@@ -14,6 +14,7 @@
 
 import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
 import { extractStringLiterals } from './types.js';
+import { parseEmbeddedSql, looksLikeSql } from './patterns/sql.js';
 
 function lineAt(text: string, pos: number): number {
   return text.substring(0, pos).split('\n').length;
@@ -253,6 +254,22 @@ class ObjcParser implements LanguageParser {
 
     symbols.push(...extractStringLiterals(content));
 
+    // ══════════════════════════════════════════════
+    // 12. Embedded SQL (FMDB + sqlite3 C API)
+    // ══════════════════════════════════════════════
+    const sqlPatterns: RegExp[] = [
+      /\[\s*\w+\s+(?:executeQuery|executeUpdate|executeStatements):\s*@"((?:[^"\\]|\\.){10,})"/g,
+      /\bsqlite3_exec\s*\(\s*\w+\s*,\s*"((?:[^"\\]|\\.){10,})"/g,
+      /\bsqlite3_prepare(?:_v2|_v3)?\s*\(\s*\w+\s*,\s*"((?:[^"\\]|\\.){10,})"/g,
+    ];
+    for (const re of sqlPatterns) {
+      while ((m = re.exec(content)) !== null) {
+        const raw = m[1];
+        if (!looksLikeSql(raw)) continue;
+        const lineStart = lineAt(content, m.index);
+        symbols.push(...parseEmbeddedSql(raw, filePath, lineStart));
+      }
+    }
 
     return { symbols, references };
   }

@@ -10,6 +10,7 @@
 
 import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
 import { extractStringLiterals } from './types.js';
+import { parseEmbeddedSql, looksLikeSql } from './patterns/sql.js';
 
 function lineAt(text: string, pos: number): number {
   return text.substring(0, pos).split('\n').length;
@@ -296,6 +297,26 @@ class AdaParser implements LanguageParser {
 
     symbols.push(...extractStringLiterals(content));
 
+    // ══════════════════════════════════════════════
+    // 13. Embedded SQL (APQ + GNATColl)
+    // ══════════════════════════════════════════════
+    const apqRe = /\b(?:Execute|Prepare|Query)\s*\(\s*\w+\s*,\s*"((?:[^"\\]|\\.){10,})"/gi;
+    while ((m = apqRe.exec(content)) !== null) {
+      const sqlContent = m[1];
+      if (looksLikeSql(sqlContent)) {
+        const baseLine = lineAt(content, m.index);
+        symbols.push(...parseEmbeddedSql(sqlContent, filePath, baseLine));
+      }
+    }
+
+    const gnatRe = /\bGNATColl\.SQL\.\w+\s*\(\s*"((?:[^"\\]|\\.){10,})"/gi;
+    while ((m = gnatRe.exec(content)) !== null) {
+      const sqlContent = m[1];
+      if (looksLikeSql(sqlContent)) {
+        const baseLine = lineAt(content, m.index);
+        symbols.push(...parseEmbeddedSql(sqlContent, filePath, baseLine));
+      }
+    }
 
     return { symbols, references };
   }

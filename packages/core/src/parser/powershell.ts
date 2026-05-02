@@ -10,6 +10,8 @@
 
 import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
 import { extractStringLiterals } from './types.js';
+import { HTTP_VERBS, isLikelyHttpPath, formatRouteName } from './patterns/http.js';
+import { parseEmbeddedSql, looksLikeSql } from './patterns/sql.js';
 
 function lineAt(text: string, pos: number): number {
   return text.substring(0, pos).split('\n').length;
@@ -275,6 +277,61 @@ class PowerShellParser implements LanguageParser {
 
     symbols.push(...extractStringLiterals(content, { includeSingleQuotes: true }));
 
+    // ══════════════════════════════════════════════
+    // 12. Pode Routes (Add-PodeRoute -Method X -Path Y)
+    // ══════════════════════════════════════════════
+    const podeMethodFirstRe = /Add-PodeRoute\s+(?:[^|]*?)-Method\s+(Get|Post|Put|Patch|Delete|Head|Options)\s+(?:[^|]*?)-Path\s+['"]([^'"]+)['"]/gi;
+    while ((m = podeMethodFirstRe.exec(content)) !== null) {
+      const method = m[1].toLowerCase();
+      const path = m[2];
+      if (!HTTP_VERBS.has(method) || !isLikelyHttpPath(path)) continue;
+      symbols.push({
+        symbol_type: 'route',
+        name: formatRouteName(method, path),
+        value: path,
+        params: [method.toUpperCase()],
+        line_start: lineAt(content, m.index),
+        is_exported: true,
+      });
+    }
+    const podePathFirstRe = /Add-PodeRoute\s+(?:[^|]*?)-Path\s+['"]([^'"]+)['"]\s+(?:[^|]*?)-Method\s+(Get|Post|Put|Patch|Delete|Head|Options)/gi;
+    while ((m = podePathFirstRe.exec(content)) !== null) {
+      const method = m[2].toLowerCase();
+      const path = m[1];
+      if (!HTTP_VERBS.has(method) || !isLikelyHttpPath(path)) continue;
+      symbols.push({
+        symbol_type: 'route',
+        name: formatRouteName(method, path),
+        value: path,
+        params: [method.toUpperCase()],
+        line_start: lineAt(content, m.index),
+        is_exported: true,
+      });
+    }
+
+    // ══════════════════════════════════════════════
+    // 13. Embedded SQL (Invoke-Sqlcmd / Invoke-DbaQuery / SqlCommand / here-strings)
+    // ══════════════════════════════════════════════
+    const invokeSqlcmdRe = /Invoke-Sqlcmd\s+(?:[^|]*?)-Query\s+["']((?:[^"'\\]|\\.){10,})["']/gi;
+    while ((m = invokeSqlcmdRe.exec(content)) !== null) {
+      if (!looksLikeSql(m[1])) continue;
+      symbols.push(...parseEmbeddedSql(m[1], filePath, lineAt(content, m.index)));
+    }
+    const invokeDbaRe = /Invoke-DbaQuery\s+(?:[^|]*?)-Query\s+["']((?:[^"'\\]|\\.){10,})["']/gi;
+    while ((m = invokeDbaRe.exec(content)) !== null) {
+      if (!looksLikeSql(m[1])) continue;
+      symbols.push(...parseEmbeddedSql(m[1], filePath, lineAt(content, m.index)));
+    }
+    const sqlCommandRe = /\bnew-object\s+System\.Data\.SqlClient\.SqlCommand\s*\(\s*["']((?:[^"'\\]|\\.){10,})["']/gi;
+    while ((m = sqlCommandRe.exec(content)) !== null) {
+      if (!looksLikeSql(m[1])) continue;
+      symbols.push(...parseEmbeddedSql(m[1], filePath, lineAt(content, m.index)));
+    }
+    const hereStringRe = /@"([\s\S]{10,}?)"@/g;
+    while ((m = hereStringRe.exec(content)) !== null) {
+      if (!looksLikeSql(m[1])) continue;
+      symbols.push(...parseEmbeddedSql(m[1], filePath, lineAt(content, m.index)));
+    }
 
     return { symbols, references };
   }

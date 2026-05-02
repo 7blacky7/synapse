@@ -9,6 +9,7 @@
 
 import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
 import { extractStringLiterals } from './types.js';
+import { parseEmbeddedSql, looksLikeSql } from './patterns/sql.js';
 
 function lineAt(text: string, pos: number): number {
   return text.substring(0, pos).split('\n').length;
@@ -101,6 +102,17 @@ class ValaParser implements LanguageParser {
 
     symbols.push(...extractStringLiterals(content, { includeSingleQuotes: true }));
 
+    // 13. Embedded SQL (Sqlite Vala)
+    const sqlExecRe = /\b\w+\.(?:exec|prepare_v2|prepare)\s*\(\s*"((?:[^"\\]|\\.){10,})"/g;
+    while ((m = sqlExecRe.exec(content)) !== null) {
+      const sql = m[1].replace(/\\"/g, '"').replace(/\\n/g, '\n').replace(/\\t/g, '\t').replace(/\\\\/g, '\\');
+      symbols.push(...parseEmbeddedSql(sql, filePath, lineAt(content, m.index)));
+    }
+    const sqlTripleRe = /"""([\s\S]{10,}?)"""/g;
+    while ((m = sqlTripleRe.exec(content)) !== null) {
+      if (!looksLikeSql(m[1])) continue;
+      symbols.push(...parseEmbeddedSql(m[1], filePath, lineAt(content, m.index)));
+    }
 
     return { symbols, references };
   }

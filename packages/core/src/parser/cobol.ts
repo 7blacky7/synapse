@@ -10,6 +10,7 @@
 
 import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
 import { extractStringLiterals } from './types.js';
+import { parseEmbeddedSql, looksLikeSql } from './patterns/sql.js';
 
 function lineAt(text: string, pos: number): number {
   return text.substring(0, pos).split('\n').length;
@@ -191,6 +192,16 @@ class CobolParser implements LanguageParser {
 
     symbols.push(...extractStringLiterals(content));
 
+    // ══════════════════════════════════════════════
+    // 11. Embedded SQL (EXEC SQL ... END-EXEC)
+    // ══════════════════════════════════════════════
+    const execSqlRe = /EXEC\s+SQL\s+([\s\S]*?)\s+END-EXEC/gi;
+    while ((m = execSqlRe.exec(content)) !== null) {
+      const sqlBlock = m[1];
+      if (!looksLikeSql(sqlBlock)) continue;
+      const baseLine = lineAt(content, m.index);
+      symbols.push(...parseEmbeddedSql(sqlBlock, filePath, baseLine));
+    }
 
     return { symbols, references };
   }

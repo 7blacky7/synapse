@@ -11,6 +11,8 @@
 
 import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
 import { extractStringLiterals } from './types.js';
+import { HTTP_VERBS, formatRouteName } from './patterns/http.js';
+import { looksLikeSql, parseEmbeddedSql } from './patterns/sql.js';
 
 function lineAt(text: string, pos: number): number {
   return text.substring(0, pos).split('\n').length;
@@ -253,6 +255,36 @@ class RParser implements LanguageParser {
 
     symbols.push(...extractStringLiterals(content, { includeSingleQuotes: true }));
 
+    // ══════════════════════════════════════════════
+    // 12. Plumber Routes (#* @get /path)
+    // ══════════════════════════════════════════════
+    const plumberRe = /^#\*\s+@(get|post|put|patch|delete|head|options)\s+(\S+)/gmi;
+    while ((m = plumberRe.exec(content)) !== null) {
+      const verb = m[1].toLowerCase();
+      if (!HTTP_VERBS.has(verb)) continue;
+      let path = m[2];
+      if (!path.startsWith('/')) path = '/' + path;
+      const lineStart = lineAt(content, m.index);
+      symbols.push({
+        symbol_type: 'route',
+        name: formatRouteName(verb, path),
+        value: path,
+        params: [verb.toUpperCase()],
+        line_start: lineStart,
+        is_exported: true,
+      });
+    }
+
+    // ══════════════════════════════════════════════
+    // 13. Embedded SQL via DBI (dbGetQuery, dbExecute, etc.)
+    // ══════════════════════════════════════════════
+    const dbiRe = /\b(?:DBI::)?(?:dbGetQuery|dbExecute|dbSendQuery|dbSendStatement|sqlInterpolate)\s*\(\s*\w+\s*,\s*['"]((?:[^"'\\]|\\.){10,})['"]/g;
+    while ((m = dbiRe.exec(content)) !== null) {
+      const sqlContent = m[1];
+      if (!looksLikeSql(sqlContent)) continue;
+      const baseLine = lineAt(content, m.index);
+      symbols.push(...parseEmbeddedSql(sqlContent, filePath, baseLine));
+    }
 
     return { symbols, references };
   }

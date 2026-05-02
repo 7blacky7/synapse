@@ -9,6 +9,7 @@
 
 import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
 import { extractStringLiterals } from './types.js';
+import { parseEmbeddedSql, looksLikeSql } from './patterns/sql.js';
 
 function lineAt(text: string, pos: number): number {
   return text.substring(0, pos).split('\n').length;
@@ -317,6 +318,27 @@ class CParser implements LanguageParser {
     // 11. String-Literale als benannte Symbole (via Helper — C: nur ", 'a' ist char)
     // ══════════════════════════════════════════════
     symbols.push(...extractStringLiterals(content));
+
+    // ══════════════════════════════════════════════
+    // 12. Embedded SQL: libpq (PQexec) + sqlite3 (sqlite3_exec / sqlite3_prepare[_v2/_v3])
+    // ══════════════════════════════════════════════
+    // PQexec(conn, "SQL"), sqlite3_exec(db, "SQL", ...), sqlite3_prepare_v2(db, "SQL", ...)
+    const sqlCallRe = /\b(?:PQexec|sqlite3_exec|sqlite3_prepare(?:_v2|_v3)?)\s*\(\s*[^,]+,\s*"((?:[^"\\]|\\.){10,})"/g;
+    while ((m = sqlCallRe.exec(content)) !== null) {
+      const raw = m[1].replace(/\\"/g, '"').replace(/\\n/g, '\n').replace(/\\t/g, '\t').replace(/\\\\/g, '\\');
+      if (!looksLikeSql(raw)) continue;
+      const baseLine = lineAt(content, m.index);
+      symbols.push(...parseEmbeddedSql(raw, filePath, baseLine));
+    }
+
+    // PQprepare(conn, name, "SQL", ...) — SQL ist 3. Argument
+    const pqPrepareRe = /\bPQprepare\s*\(\s*\w+\s*,\s*"[^"]*"\s*,\s*"((?:[^"\\]|\\.){10,})"/g;
+    while ((m = pqPrepareRe.exec(content)) !== null) {
+      const raw = m[1].replace(/\\"/g, '"').replace(/\\n/g, '\n').replace(/\\t/g, '\t').replace(/\\\\/g, '\\');
+      if (!looksLikeSql(raw)) continue;
+      const baseLine = lineAt(content, m.index);
+      symbols.push(...parseEmbeddedSql(raw, filePath, baseLine));
+    }
 
     return { symbols, references };
   }

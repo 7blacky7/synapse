@@ -9,6 +9,7 @@
 
 import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
 import { extractStringLiterals } from './types.js';
+import { parseEmbeddedSql, looksLikeSql } from './patterns/sql.js';
 
 function lineAt(text: string, pos: number): number {
   return text.substring(0, pos).split('\n').length;
@@ -248,6 +249,24 @@ class VlangParser implements LanguageParser {
 
     symbols.push(...extractStringLiterals(content));
 
+    // ══════════════════════════════════════════════
+    // 13. Embedded SQL (db.exec / sqlite / ORM)
+    // ══════════════════════════════════════════════
+    const sqlCallRe = /\b\w+\.(?:exec|exec_param|exec_one|q|query)\s*\(\s*['"]((?:[^"'\\]|\\.){10,})['"]/g;
+    while ((m = sqlCallRe.exec(content)) !== null) {
+      const sql = m[1];
+      if (!looksLikeSql(sql)) continue;
+      const line = lineAt(content, m.index);
+      symbols.push(...parseEmbeddedSql(sql, filePath, line));
+    }
+
+    const sqlRawRe = /\br['"]((?:[^"'\\]|\\.){10,})['"]/g;
+    while ((m = sqlRawRe.exec(content)) !== null) {
+      const sql = m[1];
+      if (!looksLikeSql(sql)) continue;
+      const line = lineAt(content, m.index);
+      symbols.push(...parseEmbeddedSql(sql, filePath, line));
+    }
 
     return { symbols, references };
   }

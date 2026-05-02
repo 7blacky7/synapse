@@ -10,6 +10,8 @@
 
 import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
 import { extractStringLiterals } from './types.js';
+import { HTTP_VERBS, isLikelyHttpPath, formatRouteName } from './patterns/http.js';
+import { looksLikeSql, parseEmbeddedSql } from './patterns/sql.js';
 
 function lineAt(text: string, pos: number): number {
   return text.substring(0, pos).split('\n').length;
@@ -253,6 +255,44 @@ class DlangParser implements LanguageParser {
         line_start: lineAt(content, m.index),
         is_exported: false,
       });
+    }
+
+    // ══════════════════════════════════════════════
+    // 13. Routes (vibe.d): router.get("/x", &handler), router.match(...)
+    // ══════════════════════════════════════════════
+    const routeRe = /\b\w+\.(get|post|put|patch|delete|head|options|any|match)\s*\(\s*"([^"]+)"/g;
+    while ((m = routeRe.exec(content)) !== null) {
+      const verb = m[1].toLowerCase();
+      const path = m[2];
+      const method = verb === 'match' || verb === 'any' ? 'ANY' : verb.toUpperCase();
+      if (!HTTP_VERBS.has(method.toLowerCase()) && method !== 'ANY') continue;
+      if (!isLikelyHttpPath(path)) continue;
+      symbols.push({
+        symbol_type: 'route',
+        name: formatRouteName(method, path),
+        value: path,
+        params: [method],
+        line_start: lineAt(content, m.index),
+        is_exported: true,
+      });
+    }
+
+    // ══════════════════════════════════════════════
+    // 14. Embedded SQL (ddbc)
+    // ══════════════════════════════════════════════
+    const sqlCallRe = /\b\w+\.(?:executeQuery|executeUpdate|prepareStatement|execute)\s*\(\s*"((?:[^"\\]|\\.){10,})"/g;
+    while ((m = sqlCallRe.exec(content)) !== null) {
+      const sqlContent = m[1].replace(/\\"/g, '"').replace(/\\n/g, '\n').replace(/\\t/g, '\t');
+      if (!looksLikeSql(sqlContent)) continue;
+      symbols.push(...parseEmbeddedSql(sqlContent, filePath, lineAt(content, m.index)));
+    }
+
+    // Raw / wysiwyg / token / hex strings: r"..." | `...` | q{...} | x"..."
+    const sqlRawRe = /\b\w+\.(?:executeQuery|executeUpdate|prepareStatement|execute)\s*\(\s*(?:r"([^"]{10,})"|`([^`]{10,})`|q\{([^}]{10,})\}|x"([^"]{10,})")/g;
+    while ((m = sqlRawRe.exec(content)) !== null) {
+      const sqlContent = m[1] || m[2] || m[3] || m[4] || '';
+      if (!looksLikeSql(sqlContent)) continue;
+      symbols.push(...parseEmbeddedSql(sqlContent, filePath, lineAt(content, m.index)));
     }
 
     symbols.push(...extractStringLiterals(content));

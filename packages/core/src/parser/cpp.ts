@@ -9,6 +9,8 @@
 
 import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
 import { extractStringLiterals } from './types.js';
+import { formatRouteName, isLikelyHttpPath, HTTP_VERBS } from './patterns/http.js';
+import { parseEmbeddedSql, looksLikeSql } from './patterns/sql.js';
 
 function lineAt(text: string, pos: number): number {
   return text.substring(0, pos).split('\n').length;
@@ -299,6 +301,71 @@ class CppParser implements LanguageParser {
         line_end: endLineAt(content, m.index, m[0].length),
         is_exported: false,
       });
+    }
+
+    // ══════════════════════════════════════════════
+    // 10. Routes — Crow: CROW_ROUTE(app, "/x")[.methods("POST"_method)]
+    // ══════════════════════════════════════════════
+    const crowRouteRe = /CROW_ROUTE\s*\(\s*\w+\s*,\s*"([^"]+)"\s*\)(?:\.methods?\(\s*"(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)"_method\s*\))?/g;
+    while ((m = crowRouteRe.exec(content)) !== null) {
+      const path = m[1];
+      const method = m[2] || 'GET';
+      if (!isLikelyHttpPath(path)) continue;
+      symbols.push({
+        symbol_type: 'route',
+        name: formatRouteName(method, path),
+        value: path,
+        params: [method],
+        line_start: lineAt(content, m.index),
+        is_exported: false,
+      });
+    }
+
+    // ══════════════════════════════════════════════
+    // 11. Routes — drogon: ADD_METHOD_TO(Class::method, "/x", Get, Options)
+    // ══════════════════════════════════════════════
+    const drogonRouteRe = /ADD_METHOD_TO\s*\([^,]+,\s*"([^"]+)"\s*,\s*(Get|Post|Put|Patch|Delete|Head|Options)/g;
+    while ((m = drogonRouteRe.exec(content)) !== null) {
+      const path = m[1];
+      const method = m[2].toUpperCase();
+      if (!isLikelyHttpPath(path)) continue;
+      symbols.push({
+        symbol_type: 'route',
+        name: formatRouteName(method, path),
+        value: path,
+        params: [method],
+        line_start: lineAt(content, m.index),
+        is_exported: false,
+      });
+    }
+    void HTTP_VERBS;
+
+    // ══════════════════════════════════════════════
+    // 12. Embedded SQL — libpqxx + sqlite3
+    // ══════════════════════════════════════════════
+    const seenSqlIdx = new Set<number>();
+    const sqlCallRe = /\b(?:txn\.exec[01]?|conn\.exec|prepared|sqlite3_exec|sqlite3_prepare(?:_v2|_v3)?)\s*\(\s*"((?:[^"\\]|\\.){10,})"/g;
+    while ((m = sqlCallRe.exec(content)) !== null) {
+      const sqlContent = m[1];
+      if (!looksLikeSql(sqlContent)) continue;
+      seenSqlIdx.add(m.index);
+      const baseLine = lineAt(content, m.index);
+      symbols.push(...parseEmbeddedSql(sqlContent, filePath, baseLine));
+    }
+    const sqlGenericRe = /\b\w+\.(?:query|exec[01]?)\s*\(\s*"((?:[^"\\]|\\.){10,})"/g;
+    while ((m = sqlGenericRe.exec(content)) !== null) {
+      if (seenSqlIdx.has(m.index)) continue;
+      const sqlContent = m[1];
+      if (!looksLikeSql(sqlContent)) continue;
+      const baseLine = lineAt(content, m.index);
+      symbols.push(...parseEmbeddedSql(sqlContent, filePath, baseLine));
+    }
+    const sqlRawRe = /R"\(([\s\S]{10,}?)\)"/g;
+    while ((m = sqlRawRe.exec(content)) !== null) {
+      const sqlContent = m[1];
+      if (!looksLikeSql(sqlContent)) continue;
+      const baseLine = lineAt(content, m.index);
+      symbols.push(...parseEmbeddedSql(sqlContent, filePath, baseLine));
     }
 
     symbols.push(...extractStringLiterals(content));

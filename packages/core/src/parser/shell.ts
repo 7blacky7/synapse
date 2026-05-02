@@ -9,6 +9,7 @@
 
 import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
 import { extractStringLiterals } from './types.js';
+import { parseEmbeddedSql, looksLikeSql } from './patterns/sql.js';
 
 function lineAt(text: string, pos: number): number {
   return text.substring(0, pos).split('\n').length;
@@ -230,6 +231,46 @@ class ShellParser implements LanguageParser {
 
     symbols.push(...extractStringLiterals(content, { includeSingleQuotes: true }));
 
+    // ══════════════════════════════════════════════
+    // 8. Embedded SQL (sqlite3/psql/mysql CLI + Heredocs)
+    // ══════════════════════════════════════════════
+    // sqlite3 db.sqlite "SELECT ..."
+    const sqlite3Re = /\bsqlite3\s+\S+\s+["']((?:[^"'\\]|\\.){10,})["']/g;
+    while ((m = sqlite3Re.exec(content)) !== null) {
+      const sql = m[1];
+      if (!looksLikeSql(sql)) continue;
+      const baseLine = lineAt(content, m.index);
+      symbols.push(...parseEmbeddedSql(sql, filePath, baseLine));
+    }
+
+    // psql ... -c "SELECT ..."
+    const psqlRe = /\bpsql\s+(?:[^|]*?)-c\s+["']((?:[^"'\\]|\\.){10,})["']/g;
+    while ((m = psqlRe.exec(content)) !== null) {
+      const sql = m[1];
+      if (!looksLikeSql(sql)) continue;
+      const baseLine = lineAt(content, m.index);
+      symbols.push(...parseEmbeddedSql(sql, filePath, baseLine));
+    }
+
+    // mysql ... -e "SELECT ..."
+    const mysqlRe = /\bmysql\s+(?:[^|]*?)-e\s+["']((?:[^"'\\]|\\.){10,})["']/g;
+    while ((m = mysqlRe.exec(content)) !== null) {
+      const sql = m[1];
+      if (!looksLikeSql(sql)) continue;
+      const baseLine = lineAt(content, m.index);
+      symbols.push(...parseEmbeddedSql(sql, filePath, baseLine));
+    }
+
+    // Heredocs: <<EOF ... EOF, <<-SQL ... SQL, <<'EOF' ... EOF
+    const heredocRe = /<<(?:-)?\s*['"]?(\w+)['"]?\s*\n([\s\S]*?)\n\1\s*$/gm;
+    while ((m = heredocRe.exec(content)) !== null) {
+      const body = m[2];
+      if (!looksLikeSql(body)) continue;
+      // baseLine = Zeile nach der <<TAG-Zeile (Body startet dort)
+      const heredocLine = lineAt(content, m.index);
+      const baseLine = heredocLine + 1;
+      symbols.push(...parseEmbeddedSql(body, filePath, baseLine));
+    }
 
     return { symbols, references };
   }

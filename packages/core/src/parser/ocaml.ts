@@ -10,6 +10,8 @@
 
 import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
 import { extractStringLiterals } from './types.js';
+import { HTTP_VERBS, formatRouteName, isLikelyHttpPath } from './patterns/http.js';
+import { parseEmbeddedSql, looksLikeSql } from './patterns/sql.js';
 
 function lineAt(text: string, pos: number): number {
   return text.substring(0, pos).split('\n').length;
@@ -329,6 +331,46 @@ class OCamlParser implements LanguageParser {
 
     symbols.push(...extractStringLiterals(content));
 
+    // ══════════════════════════════════════════════
+    // 12. Routes — Dream / Opium: Dream.get "/x" handler, App.post "/x" handler
+    // ══════════════════════════════════════════════
+    const ocamlRouteRe = /\b(?:Dream|App)\.(get|post|put|patch|delete|head|options)\s+["']([^"']+)["']/g;
+    while ((m = ocamlRouteRe.exec(content)) !== null) {
+      const verb = m[1].toLowerCase();
+      if (!HTTP_VERBS.has(verb)) continue;
+      const routePath = m[2];
+      if (!isLikelyHttpPath(routePath)) continue;
+      const lineStart = lineAt(content, m.index);
+      symbols.push({
+        symbol_type: 'route',
+        name: formatRouteName(verb, routePath),
+        value: routePath,
+        params: [verb.toUpperCase()],
+        line_start: lineStart,
+        is_exported: false,
+      });
+    }
+
+    // ══════════════════════════════════════════════
+    // 13. Embedded SQL — Caqti / Postgresql exec/find/collect/iter
+    // ══════════════════════════════════════════════
+    const ocamlSqlCallRe = /\b(?:exec|find|collect|iter)\s+\w+\s+["']((?:[^"'\\]|\\.){10,})["']/g;
+    while ((m = ocamlSqlCallRe.exec(content)) !== null) {
+      const sqlText = m[1];
+      if (looksLikeSql(sqlText)) {
+        const baseLine = lineAt(content, m.index);
+        symbols.push(...parseEmbeddedSql(sqlText, filePath, baseLine));
+      }
+    }
+    // OCaml multi-line quoted-string literal: {|...|}
+    const ocamlQuotedRe = /\{\|([\s\S]{10,}?)\|\}/g;
+    while ((m = ocamlQuotedRe.exec(content)) !== null) {
+      const sqlText = m[1];
+      if (looksLikeSql(sqlText)) {
+        const baseLine = lineAt(content, m.index);
+        symbols.push(...parseEmbeddedSql(sqlText, filePath, baseLine));
+      }
+    }
 
     return { symbols, references };
   }
