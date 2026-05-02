@@ -9,6 +9,7 @@
 
 import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
 import { extractStringLiterals } from './types.js';
+import { formatRouteName, isLikelyHttpPath } from './patterns/http.js';
 
 function lineAt(text: string, pos: number): number {
   return text.substring(0, pos).split('\n').length;
@@ -98,6 +99,35 @@ class SmithyParser implements LanguageParser {
 
     symbols.push(...extractStringLiterals(content));
 
+    // Routes: operation <Name> { ... }
+    const opRouteRe = /\boperation\s+(\w+)\s*\{/g;
+    while ((m = opRouteRe.exec(content)) !== null) {
+      const name = m[1];
+      symbols.push({
+        symbol_type: 'route',
+        name: `OPERATION ${name}`,
+        value: name,
+        line_start: lineAt(content, m.index),
+        is_exported: true,
+        params: ['OPERATION'],
+      });
+    }
+
+    // Routes: @http(method: "GET", uri: "/x")
+    const httpTraitRe = /@http\s*\(\s*method\s*:\s*["'](\w+)["']\s*,\s*uri\s*:\s*["']([^"']+)["']/g;
+    while ((m = httpTraitRe.exec(content)) !== null) {
+      const method = m[1].toUpperCase();
+      const uri = m[2];
+      if (!isLikelyHttpPath(uri)) continue;
+      symbols.push({
+        symbol_type: 'route',
+        name: formatRouteName(method, uri),
+        value: uri,
+        line_start: lineAt(content, m.index),
+        is_exported: true,
+        params: [method],
+      });
+    }
 
     return { symbols, references };
   }

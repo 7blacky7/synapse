@@ -13,6 +13,8 @@
 
 import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
 import { extractStringLiterals } from './types.js';
+import { formatRouteName, isLikelyHttpPath, HTTP_VERBS } from './patterns/http.js';
+import { parseEmbeddedSql, looksLikeSql } from './patterns/sql.js';
 
 // Unicode-faehige Identifier-Klasse (erlaubt deutsche Umlaute in Namen wie `länge`, `für`, `gib_zurück`)
 const ID = '[\\p{L}_][\\p{L}\\p{N}_]*';
@@ -474,6 +476,60 @@ class MooParser implements LanguageParser {
         if (sym.symbol_type === 'export' || sym.symbol_type === 'import') continue;
         if (sym.name) sym.is_exported = exportedNames.has(sym.name);
       }
+    }
+
+    // ══════════════════════════════════════════════
+    // 13. Routen (manueller Dispatch, Heuristik)
+    //     wenn pfad == "/x" und methode == "GET":
+    //     wenn methode == "GET" und pfad == "/x":
+    // ══════════════════════════════════════════════
+    const routePathFirstRe = /\b(?:wenn|if)\s+(?:pfad|path)\s*==\s*['"]([^'"]+)['"]\s+(?:und|and)\s+(?:methode|method)\s*==\s*['"](GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)['"]/g;
+    while ((m = routePathFirstRe.exec(content)) !== null) {
+      const path = m[1];
+      const verb = m[2];
+      if (!isLikelyHttpPath(path)) continue;
+      if (!HTTP_VERBS.has(verb.toLowerCase())) continue;
+      symbols.push({
+        symbol_type: 'route',
+        name: formatRouteName(verb, path),
+        value: path,
+        params: [verb],
+        line_start: lineAt(content, m.index),
+        is_exported: true,
+      });
+    }
+    const routeMethodFirstRe = /\b(?:wenn|if)\s+(?:methode|method)\s*==\s*['"](GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)['"]\s+(?:und|and)\s+(?:pfad|path)\s*==\s*['"]([^'"]+)['"]/g;
+    while ((m = routeMethodFirstRe.exec(content)) !== null) {
+      const verb = m[1];
+      const path = m[2];
+      if (!isLikelyHttpPath(path)) continue;
+      if (!HTTP_VERBS.has(verb.toLowerCase())) continue;
+      symbols.push({
+        symbol_type: 'route',
+        name: formatRouteName(verb, path),
+        value: path,
+        params: [verb],
+        line_start: lineAt(content, m.index),
+        is_exported: true,
+      });
+    }
+
+    // ══════════════════════════════════════════════
+    // 14. Embedded SQL: db_ausführen / db_abfrage (+_mit_params), <obj>.query(...)
+    // ══════════════════════════════════════════════
+    const dbCallRe = /\bdb_(?:ausführen|abfrage|execute|query)(?:_mit_params|_with_params)?\s*\(\s*\w+\s*,\s*['"]((?:[^'"\\]|\\.){10,})['"]/g;
+    while ((m = dbCallRe.exec(content)) !== null) {
+      const sqlText = m[1];
+      if (!looksLikeSql(sqlText)) continue;
+      const baseLine = lineAt(content, m.index);
+      symbols.push(...parseEmbeddedSql(sqlText, _filePath, baseLine));
+    }
+    const queryCallRe = /\b\w+\.query\s*\(\s*['"]((?:[^'"\\]|\\.){10,})['"]/g;
+    while ((m = queryCallRe.exec(content)) !== null) {
+      const sqlText = m[1];
+      if (!looksLikeSql(sqlText)) continue;
+      const baseLine = lineAt(content, m.index);
+      symbols.push(...parseEmbeddedSql(sqlText, _filePath, baseLine));
     }
 
     return { symbols, references };

@@ -10,6 +10,7 @@
 
 import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
 import { extractStringLiterals } from './types.js';
+import { formatRouteName } from './patterns/http.js';
 
 function lineAt(text: string, pos: number): number {
   return text.substring(0, pos).split('\n').length;
@@ -240,6 +241,30 @@ class ProtobufParser implements LanguageParser {
 
     symbols.push(...extractStringLiterals(content));
 
+    // ══════════════════════════════════════════════
+    // 10. gRPC Routes (service/rpc)
+    // ══════════════════════════════════════════════
+    void formatRouteName;
+    const serviceOuterRe = /\bservice\s+(\w+)\s*\{([\s\S]*?)\}/g;
+    let sm: RegExpExecArray | null;
+    while ((sm = serviceOuterRe.exec(content)) !== null) {
+      const serviceName = sm[1];
+      const blockStart = sm.index + sm[0].indexOf('{') + 1;
+      const block = sm[2];
+      const rpcInnerRe = /\brpc\s+(\w+)\s*\(/g;
+      let rm: RegExpExecArray | null;
+      while ((rm = rpcInnerRe.exec(block)) !== null) {
+        const method = rm[1];
+        symbols.push({
+          symbol_type: 'route',
+          name: `RPC ${method}`,
+          value: `/${serviceName}/${method}`,
+          params: ['RPC'],
+          line_start: lineAt(content, blockStart + rm.index),
+          is_exported: true,
+        });
+      }
+    }
 
     return { symbols, references };
   }

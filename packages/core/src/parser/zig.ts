@@ -10,6 +10,7 @@
 
 import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
 import { extractStringLiterals } from './types.js';
+import { parseEmbeddedSql, looksLikeSql } from './patterns/sql.js';
 
 function lineAt(text: string, pos: number): number {
   return text.substring(0, pos).split('\n').length;
@@ -287,6 +288,33 @@ class ZigParser implements LanguageParser {
 
     symbols.push(...extractStringLiterals(content));
 
+    // ══════════════════════════════════════════════
+    // 12. Embedded SQL (zqlite, pg.zig: db.exec/query/queryRow/prepare/...)
+    // ══════════════════════════════════════════════
+    const sqlCallRe = /\b\w+\.(?:exec|execNoArgs|query|queryRow|rowsAffected|prepare)\s*\(\s*"((?:[^"\\]|\\.){10,})"/g;
+    while ((m = sqlCallRe.exec(content)) !== null) {
+      const raw = m[1].replace(/\\"/g, '"').replace(/\\n/g, '\n').replace(/\\t/g, '\t').replace(/\\\\/g, '\\');
+      if (!looksLikeSql(raw)) continue;
+      const baseLine = lineAt(content, m.index);
+      symbols.push(...parseEmbeddedSql(raw, filePath, baseLine));
+    }
+
+    // ══════════════════════════════════════════════
+    // 13. Embedded SQL in Zig multiline strings (\\ ... am Zeilenanfang)
+    // ══════════════════════════════════════════════
+    const multilineRe = /(?:^[ \t]*\\\\.*\n?)+/gm;
+    while ((m = multilineRe.exec(content)) !== null) {
+      const block = m[0];
+      const inner = block
+        .split('\n')
+        .map(l => l.replace(/^[ \t]*\\\\ ?/, ''))
+        .join('\n')
+        .replace(/\n+$/, '');
+      if (inner.length < 10) continue;
+      if (!looksLikeSql(inner)) continue;
+      const baseLine = lineAt(content, m.index);
+      symbols.push(...parseEmbeddedSql(inner, filePath, baseLine));
+    }
 
     return { symbols, references };
   }

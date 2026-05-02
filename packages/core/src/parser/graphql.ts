@@ -10,6 +10,7 @@
 
 import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
 import { extractStringLiterals } from './types.js';
+import { formatRouteName } from './patterns/http.js';
 
 function lineAt(text: string, pos: number): number {
   return text.substring(0, pos).split('\n').length;
@@ -296,6 +297,32 @@ class GraphQLParser implements LanguageParser {
 
     symbols.push(...extractStringLiterals(content));
 
+    // ══════════════════════════════════════════════
+    // 12. GraphQL root operations as routes
+    // ══════════════════════════════════════════════
+    const rootRe = /\btype\s+(Query|Mutation|Subscription)\s*\{([^}]+)\}/g;
+    while ((m = rootRe.exec(content)) !== null) {
+      const rootType = m[1].toUpperCase();
+      const body = m[2];
+      const bodyStart = m.index + m[0].indexOf('{') + 1;
+      const outerLine = lineAt(content, m.index);
+      const fieldRe = /^[ \t]*(\w+)(?:\([^)]*\))?\s*:/gm;
+      let fm: RegExpExecArray | null;
+      while ((fm = fieldRe.exec(body)) !== null) {
+        const fieldName = fm[1];
+        const absPos = bodyStart + fm.index;
+        const lineStart = lineAt(content, absPos);
+        symbols.push({
+          symbol_type: 'route',
+          name: formatRouteName(rootType, fieldName),
+          value: fieldName,
+          params: [rootType],
+          line_start: lineStart,
+          is_exported: true,
+        });
+      }
+      void outerLine;
+    }
 
     return { symbols, references };
   }
