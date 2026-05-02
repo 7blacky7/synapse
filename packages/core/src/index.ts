@@ -8,6 +8,10 @@
 // Konfiguration
 export { loadConfig, getConfig, resetConfig } from './config.js';
 
+// Guide-Content (Tool-Doku, geteilt zwischen REST-API und MCP-Server)
+export { GUIDE_OVERVIEW, TOOL_GUIDES } from './guide/index.js';
+export type { ToolGuide, ActionGuide } from './guide/index.js';
+
 // PostgreSQL
 export { getPool, testDatabaseConnection, closePool, ensureSchema } from './db/index.js';
 

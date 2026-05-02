@@ -23,7 +23,7 @@ import {
   acknowledgeEventTool,
 } from './tools/index.js';
 
-import { getPendingEvents } from '@synapse/core';
+import { getPendingEvents, TOOL_GUIDES } from '@synapse/core';
 import { ensureAgentsSchema, detectClaudeCli, heartbeatController, readStatus, postToInbox, postMessage, checkInbox } from '@synapse/agents';
 
 import {
@@ -43,6 +43,7 @@ import {
   codeCheckTool,
   filesTool,
   shellTool,
+  guideTool,
 } from './tools/consolidated/index.js';
 
 /** Eindeutige ID dieser Server-Instanz — bei Neustart neu generiert.
@@ -54,6 +55,28 @@ const lastChatRead = new Map<string, string>();
 
 /** Tracking: Wie oft hat ein Agent ein kritisches Event ignoriert? */
 const eventIgnoreCount = new Map<string, { firstSeen: number; count: number }>();
+
+/** Tracking: Welche (Session, Tool)-Kombination wurde bereits mit Guide-Hint versehen?
+ *  Schluessel: `${sessionKey}:${toolName}`. sessionKey = agent_id (wenn gesetzt) oder
+ *  SERVER_INSTANCE_ID (Fallback fuer anonyme Calls). Lebt im RAM, wird bei Server-Restart
+ *  geleert — neuer Server-Run = neue Hints. */
+const firstUseHinted = new Set<string>();
+
+/** Baut einen kompakten Tool-Guide-Hinweis fuer die erste Nutzung eines Tools.
+ *  Liest aus dem geteilten TOOL_GUIDES (Single Source of Truth in @synapse/core).
+ *  Returnt null wenn fuer das Tool kein Guide existiert. */
+function buildFirstUseHint(toolName: string): Record<string, unknown> | null {
+  const g = TOOL_GUIDES[toolName];
+  if (!g) return null;
+  return {
+    message: `📚 Erste Nutzung von "${toolName}" in dieser Session — kompakte Doku unten. Vollstaendig: guide({ tool_name: "${toolName}" }).`,
+    summary: g.summary,
+    when_to_use: g.when_to_use,
+    when_not_to_use: g.when_not_to_use,
+    actions: g.actions ? Object.keys(g.actions) : undefined,
+    anti_patterns: g.anti_patterns,
+  };
+}
 
 /** Zählt ungelesene Chat-Nachrichten für einen Agenten */
 async function getUnreadChatCount(
@@ -165,6 +188,7 @@ export function createServer(): Server {
       codeCheckTool.definition,
       filesTool.definition,
       shellTool.definition,
+      guideTool.definition,
     ],
   }));
 
@@ -177,14 +201,46 @@ export function createServer(): Server {
     const projectName = args?.project as string | undefined;
     const role = args?.role as import('./tools/onboarding.js').AgentRole | undefined;
 
+    // First-Use-Hint: pro (Session, Tool) genau einmal die Tool-Doku anhaengen.
+    // sessionKey = agent_id wenn gesetzt, sonst Server-Instance-ID (Fallback fuer
+    // anonyme Calls in derselben MCP-Session).
+    const sessionKey = agentId ?? SERVER_INSTANCE_ID;
+    const firstUseKey = `${sessionKey}:${name}`;
+    let toolGuideHint: Record<string, unknown> | null = null;
+    if (!firstUseHinted.has(firstUseKey)) {
+      toolGuideHint = buildFirstUseHint(name);
+      // Auch bei null markieren — kein "Retry" wenn Tool im Guide fehlt
+      firstUseHinted.add(firstUseKey);
+    }
+
+    // Post-Hoc-Decorator: Haengt den First-Use-Hint an JEDE finale Tool-Response —
+    // egal ob der Pfad ueber withOnboarding lief oder bypass-Sonderlogik (chat.list,
+    // event.ack, etc.). Idempotent: nur einmal pro Response, nur wenn nicht schon drin.
+    const attachToolGuide = (resp: { content: Array<{ type: string; text: string }>; isError?: boolean }) => {
+      if (!toolGuideHint) return resp;
+      const first = resp.content?.[0];
+      if (!first || first.type !== 'text' || typeof first.text !== 'string') return resp;
+      try {
+        const parsed = JSON.parse(first.text);
+        if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return resp;
+        if ('tool_guide' in parsed) return resp; // schon angehaengt (z.B. via withOnboarding)
+        parsed.tool_guide = toolGuideHint;
+        first.text = JSON.stringify(parsed, null, 2);
+      } catch { /* nicht-JSON Response — kein Decorate moeglich, lassen */ }
+      return resp;
+    };
+
     // Helper: Ergebnis mit Onboarding erweitern
     const withOnboarding = async (result: Record<string, unknown>) => {
       if (!agentId || !projectName) {
-        return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+        const out: Record<string, unknown> = { ...result };
+        if (toolGuideHint) out.tool_guide = toolGuideHint;
+        return { content: [{ type: 'text', text: JSON.stringify(out, null, 2) }] };
       }
 
       const onboarding = await checkAgentOnboarding(projectName, agentId, undefined, role);
       const enhanced: Record<string, unknown> = { ...result };
+      if (toolGuideHint) enhanced.tool_guide = toolGuideHint;
 
       // Onboarding-Regeln bei erstem Besuch
       if (onboarding?.isFirstVisit && onboarding.rules && onboarding.rules.length > 0) {
@@ -273,6 +329,7 @@ export function createServer(): Server {
       return { content: [{ type: 'text', text: JSON.stringify(enhanced, null, 2) }] };
     };
 
+    const baseResp = await (async () => {
     try {
       switch (name) {
         case 'project':
@@ -572,6 +629,9 @@ export function createServer(): Server {
         case 'shell':
           return withOnboarding(await shellTool.handler(args as Record<string, unknown>));
 
+        case 'guide':
+          return withOnboarding(await guideTool.handler(args as Record<string, unknown>));
+
         default:
           throw new Error(`Unbekanntes Tool: ${name}`);
       }
@@ -589,6 +649,8 @@ export function createServer(): Server {
         isError: true,
       };
     }
+    })();
+    return attachToolGuide(baseResp as { content: Array<{ type: string; text: string }>; isError?: boolean });
   });
 
   return server;

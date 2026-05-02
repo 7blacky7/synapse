@@ -95,11 +95,13 @@ Notizbuch + Code-Editor + Sub-Hilfsagenten.
 **Projekt-Management:**
   admin, project
 
-**Shell & Runtime** (wenn Projekt-PC aktiv):
-  shell
+**Shell & Runtime** (braucht aktiven Watcher + shell-Worker auf dem Ziel-PC):
+  shell — Befehle laufen ueber PG-Queue, der lokale Worker fuehrt sie aus. Ist der Watcher aus, bleiben Jobs pending.
 
-**Agenten-Koordination** (nur lokal MCP, nicht REST):
-  chat, channel, event, specialist
+**Agenten-Koordination** (PostgreSQL-basiert, ueberall verfuegbar):
+  chat, channel, event — REST und lokaler MCP gleichermassen.
+  specialist — REST UND lokal: spawn / wake / stop / purge / update_skill funktionieren ueberall, solange auf dem Ziel-PC der Watcher laeuft. Einzige Einschraenkung: Live-Wrapper-Status (status / capabilities) nur via lokalem MCP.
+  watcher — nur lokal (REST kann den Daemon nicht erreichen, weist Calls ab).
 
 ## Tiefere Doku pro Tool
 
@@ -126,7 +128,7 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
   // shell — Queue-basierte Shell-Ausfuehrung mit History
   // -------------------------------------------------------------------------
   shell: {
-    summary: 'Fuehrt Shell-Kommandos auf dem lokalen Projekt-PC aus (via PostgreSQL-Queue + FileWatcher-Daemon). Voller Output in PG persistiert — Logs koennen Stunden spaeter abgerufen werden.',
+    summary: 'Fuehrt Shell-Kommandos auf dem Ziel-PC aus (via PostgreSQL-Queue + lokalem shell-Worker im FileWatcher-Daemon). Funktioniert sowohl ueber lokalen MCP als auch ueber REST/Web-KI — solange auf dem Ziel-PC der Watcher laeuft. Voller Output in PG persistiert — Logs koennen Stunden spaeter abgerufen werden. Fehlerinterpretation: error="project_inactive" → Projekt im Tray aktivieren. Status bleibt "pending" und ueberschreitet den timeout_ms ohne dass irgendetwas passiert → Watcher laeuft nicht (Daemon down auf dem Ziel-PC). Sofortige Validierungs-Fehler (Syntax/Pfad) → eigene Eingabe pruefen.',
     when_to_use: [
       'Ein-Zeilen-Commands fuer Status-Checks (git log, ls, pwd).',
       'Build-/Test-Ausfuehrung (pnpm build, pytest).',
@@ -1008,25 +1010,63 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
   },
 
   chat: {
-    summary: 'NUR lokal verfuegbar (stdio MCP). Ueber REST-API nicht nutzbar.',
-    when_to_use: 'NICHT in Web-KI-Sessions — nutze thought/memory fuer Kommunikation.',
-    when_not_to_use: 'Immer — Web-KIs haben keinen Chat-Zugang.',
+    summary: 'Agenten-Chat: Registrierung, Direkt-Nachrichten und Broadcasts. Verfuegbar lokal (stdio MCP) UND via REST-API (Daten in PostgreSQL, Routing ueber PG-Queue/Daemon, Erreichbarkeit unabhaengig vom Ziel-PC-Status fuer Schreib-/Lese-Ops auf der DB).',
+    when_to_use: 'Agent registrieren bevor du Nachrichten sendest: register. DM/Broadcast schicken: send. Eigene Inbox abholen: get. Aktive Agenten anzeigen: list. Inbox-Routing fuer offline Spezialisten: inbox_send / inbox_check.',
+    when_not_to_use: 'Langlebiges Wissen → memory. Kurze Beobachtungen → thought. Strukturierte Steuersignale (WORK_STOP etc.) → event.',
+    actions: {
+      register: { description: 'Agent in Chat registrieren (id, project, optional model + cutoff_date).' },
+      register_batch: { description: 'Mehrere Agenten in einem Call registrieren (agents: [{id, model?}, ...]).' },
+      unregister: { description: 'Agent abmelden.' },
+      send: { description: 'Nachricht senden — recipient_id leer = Broadcast, recipient_id als Array = Multicast.' },
+      get: { description: 'Eigene Nachrichten abholen (mit since-Timestamp fuer Polling).' },
+      list: { description: 'Alle aktiven Agenten anzeigen.' },
+      inbox_send: { description: 'Nachricht in Spezialisten-Inbox legen (offline-faehig).' },
+      inbox_check: { description: 'Eigene Inbox lesen.' },
+    },
+    anti_patterns: [
+      'send ohne vorheriges register — Sender-ID nicht im System bekannt.',
+      'get ohne since — bekommst alte Nachrichten doppelt.',
+      'sender_id verwechseln mit recipient_id — Nachrichten landen falsch.',
+    ],
   },
 
   channel: {
-    summary: 'NUR lokal verfuegbar. Web-KIs koennen nicht posten/lesen.',
-    when_to_use: 'NICHT — nutze thought fuer Team-Updates.',
-    when_not_to_use: 'Immer aus Web-KI.',
+    summary: 'Persistente Channels fuer Themen-/Mission-Kommunikation. Verfuegbar lokal UND via REST (PostgreSQL-basiert). Subscribe via join, posten via post, mitlesen via feed.',
+    when_to_use: 'Themen-Diskussion fuer mehrere Beteiligte: post + feed. Mission-Channel von Koordinator anlegen: create. Beitritt: join (auch Array fuer Multi-Channel-Subscribe). Verlassen: leave. Alle Channels eines Projekts: list.',
+    when_not_to_use: 'Direkte 1:1 Kommunikation → chat (DM). Steuersignale die Pflicht-Reaktion erzwingen → event. Langlebige Doku → memory.',
+    actions: {
+      create: { description: 'Channel anlegen (name, project, created_by, optional description).' },
+      join: { description: 'Beitreten — channel_name als String oder Array fuer Batch-Join.' },
+      leave: { description: 'Verlassen — channel_name als String oder Array.' },
+      post: { description: 'Nachricht in Channel (channel_name, sender, content).' },
+      feed: { description: 'Channel-Inhalt lesen (limit, since_id, optional preview-Truncation).' },
+      list: { description: 'Alle Channels im Projekt.' },
+    },
+    anti_patterns: [
+      'post ohne vorheriges join — manche Channels filtern Non-Member.',
+      'feed ohne since_id im Loop — bekommst alte Nachrichten erneut.',
+      'preview: false bei langen Posts — sprengt den Context.',
+    ],
   },
 
   event: {
-    summary: 'NUR lokal verfuegbar. Steuersignale fuer Spezialisten.',
-    when_to_use: 'NICHT aus Web-KI.',
-    when_not_to_use: 'Immer aus Web-KI.',
+    summary: 'Steuersignale fuer Agenten (WORK_STOP, NEW_TASK, ANNOUNCEMENT, …). Verfuegbar lokal UND via REST (PostgreSQL). Pflicht-Reaktion: ack innerhalb weniger Tool-Calls, sonst Eskalation an Koordinator.',
+    when_to_use: 'Koordinator emittiert Event an Agent(en): emit (mit scope: "all" oder "agent:<id>"). Agent quittiert empfangenes Event: ack. Agent prueft offene Events: pending.',
+    when_not_to_use: 'Lockere Updates ohne Pflicht → thought oder channel. Direkte 1:1 Frage → chat DM. Langlebige Anweisung → memory.',
+    actions: {
+      emit: { description: 'Event senden (event_type, priority: critical|high|normal, scope, source_id, payload).' },
+      ack: { description: 'Event quittieren (event_id einzeln oder als Array fuer Batch-Ack).' },
+      pending: { description: 'Eigene unacked Events abrufen (project + agent_id Pflicht).' },
+    },
+    anti_patterns: [
+      'critical-Event 3+ Tool-Calls ignorieren — Eskalation an Koordinator.',
+      'emit ohne source_id — Agent weiss nicht wer das Signal geschickt hat.',
+      'Batch-ack mit gemischten Event-Typen ohne Reaktion — quittieren ohne tatsaechlich zu reagieren.',
+    ],
   },
 
   specialist: {
-    summary: 'Persistente Claude-CLI Spezialisten auf dem User-PC spawnen, stoppen, ansprechen. Web-KI-Aufrufe laufen ueber PG-Queue → FileWatcher-Daemon → lokaler claude CLI.',
+    summary: 'Persistente Claude-CLI Spezialisten auf dem Ziel-PC spawnen, stoppen, ansprechen. Funktioniert sowohl lokal als auch ueber REST/Web-KI — Voraussetzung in beiden Faellen: auf dem Ziel-PC laeuft der FileWatcher-Daemon (er hostet PG-Queue → Claude-CLI). Fehlerinterpretation: spawn timeoutet ohne PID/Socket in der Antwort → Watcher down ODER Claude-CLI fehlt auf dem Ziel-PC. Spezifischer Fehler wie "name contains illegal characters" / "project not found" → Eingabe pruefen. wake antwortet nie / Inbox-Fallback → Spezialist gestorben oder Watcher-Heartbeat haengt.',
     when_to_use: [
       'Langlaufende Aufgabe an Sub-Agent delegieren: spawn (1) oder spawn_batch (mehrere atomar).',
       'Sub-Agent eine Nachricht / neuen Auftrag schicken: wake.',
@@ -1036,7 +1076,7 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
     ].join(' '),
     when_not_to_use: [
       'Eigene Single-Shot-Aufgabe → einfach selbst erledigen.',
-      'Status-Check / capabilities → aktuell nur ueber lokalen MCP (kein Live-Wrapper-Status in PG).',
+      'Live-Wrapper-Status (PID/Socket-Health) → nur lokaler MCP hat den; REST gibt Stub-Antwort. Spawn-Response enthaelt initial PID+Socket — danach Status via Channel-Posts/Chat verfolgen.',
     ].join(' '),
     param_tips: [
       'project: Pflicht fuer alle Aktionen ausser capabilities. project_path: optional via REST — wird automatisch aus dem daemon-registrierten Projekt-Pfad ermittelt (projects-Tabelle, last_access). Nur bei lokaler MCP-Direktnutzung weiterhin erforderlich.',
@@ -1094,12 +1134,12 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
         example: 'specialist({ action: "update_skill", project: "synapse", name: "doc-bot", file: "rules", skill_action: "add", content: "Niemals .md Dateien erstellen" })',
       },
       status: {
-        description: 'Aktuell NUR ueber lokalen MCP-Server verfuegbar (REST-API hat keinen Live-Wrapper-Status in PG).',
-        params: '— (REST gibt Stub-Antwort zurueck)',
-        example: '— (workaround: spawn-Response enthaelt PID + Socket; spaetere Status-Checks via lokalem MCP)',
+        description: 'Live-Wrapper-Status (PID, Socket-Health, busy/idle, currentTask) — der Watcher pflegt das in status.json auf dem Ziel-PC, REST hat darauf aktuell keinen Zugriff. Lokal: voll verfuegbar. Web-KI: Stub-Antwort; Workaround = Spawn-Response (PID+Socket) merken oder Status via Channel-Post abfragen.',
+        params: 'project (req), name (req, String oder Array fuer Batch-Status)',
+        example: 'specialist({ action: "status", project: "synapse", name: "doc-bot" })',
       },
       capabilities: {
-        description: 'Pruefen ob Claude CLI verfuegbar ist (lokaler MCP). Web-KIs muessen via shell({command:"which claude"}) selbst pruefen.',
+        description: 'Pruefen ob Claude CLI auf dem Ziel-PC verfuegbar ist. Lokaler MCP: liest direkt vom Filesystem. Web-KI/REST: Stub. In der Praxis nicht noetig — wer Spezialisten nutzt, hat Claude installiert. Wenn spawn fehlschlaegt: error_code interpretieren (siehe summary).',
         params: '—',
         example: 'specialist({ action: "capabilities" })',
       },
@@ -1107,9 +1147,9 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
   },
 
   watcher: {
-    summary: 'NUR lokal verfuegbar. FileWatcher-Daemon-Steuerung.',
-    when_to_use: 'NICHT aus Web-KI.',
-    when_not_to_use: 'Immer aus Web-KI.',
+    summary: 'FileWatcher-Daemon-Steuerung (start/stop/status) — der Watcher laeuft lokal auf dem Ziel-PC und synct PG <-> Filesystem. Nur ueber lokalen MCP-Server steuerbar (REST hat keine FS-Zugriffe, kann den Daemon nicht erreichen). Sind Watcher und shell-Worker auf dem Ziel-PC NICHT aktiv, kommen Datei-Edits und shell-Jobs aus REST nicht durch.',
+    when_to_use: 'Daemon-Status pruefen / starten / stoppen, wenn man auf dem Ziel-PC sitzt. Sync-Probleme debuggen. Indirekt geht status auch ueber project(action: "status").',
+    when_not_to_use: 'Aus REST/Web-KI — wird mit Fehler abgewiesen. Fuer normale Datei-Edits → files (Watcher synct automatisch wenn er laeuft).',
   },
 
 };

@@ -111,7 +111,7 @@ import {
   deleteErrorPattern,
 } from '@synapse/core';
 import { minimatch } from 'minimatch';
-import { GUIDE_OVERVIEW, TOOL_GUIDES } from './guide-content.js';
+import { GUIDE_OVERVIEW, TOOL_GUIDES } from '@synapse/core';
 import { randomUUID } from 'crypto';
 
 /**
