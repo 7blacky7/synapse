@@ -12,7 +12,7 @@
  */
 
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
-import { ConsolidatedTool, str, reqStr, bool, num, strArray } from './types.js';
+import { ConsolidatedTool, str, reqStr, bool, num, strArray, objArray } from './types.js';
 import {
   writeMemory,
   readMemory,
@@ -28,7 +28,7 @@ import {
 const memoryTool: ConsolidatedTool = {
   definition: {
     name: 'memory',
-    description: 'Verwende für alle Memory-Operationen: write, read, read_with_code, list, delete, update und find_for_file',
+    description: 'Memory-Operationen: write (single oder Bulk via items[]), read, read_with_code, list, delete, update, find_for_file. write akzeptiert optional items[] (1..50) fuer Bulk-Inserts in einem Call.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -93,6 +93,22 @@ const memoryTool: ConsolidatedTool = {
           type: 'number',
           description: 'Max. erlaubte Items pro Batch-Delete (Standard: 10, nur fuer delete mit Array)',
         },
+        items: {
+          type: 'array',
+          description: 'Bulk-Mode fuer write: 1..50 Memories in einem Call. Jedes Item: { name, content, category?, tags? }. Best-effort — bei Fehler eines Items wird der naechste weiter geschrieben, das Ergebnis enthaelt per-Item-Status.',
+          minItems: 1,
+          maxItems: 50,
+          items: {
+            type: 'object',
+            properties: {
+              name: { type: 'string' },
+              content: { type: 'string' },
+              category: { type: 'string', enum: ['documentation', 'note', 'architecture', 'decision', 'rules', 'other'] },
+              tags: { type: 'array', items: { type: 'string' } },
+            },
+            required: ['name', 'content'],
+          },
+        },
       },
       required: ['action', 'project'],
     },
@@ -112,6 +128,44 @@ const memoryTool: ConsolidatedTool = {
     try {
       switch (action) {
         case 'write': {
+          // Bulk-Mode: items[] vorhanden → mehrere Memories in einem Call.
+          // Best-effort: schreibt jedes Item einzeln (PG+Qdrant), Fehler in einem
+          // Item bricht den Rest nicht ab, Resultat hat per-Item-Status.
+          type WriteItem = {
+            name?: string;
+            content?: string;
+            category?: 'documentation' | 'note' | 'architecture' | 'decision' | 'rules' | 'other';
+            tags?: string[];
+          };
+          const items = objArray<WriteItem>(args, 'items');
+          if (items && items.length > 0) {
+            const results: Array<{ index: number; ok: boolean; name?: string; error?: string }> = [];
+            let applied = 0;
+            let failed = 0;
+            for (let i = 0; i < items.length; i++) {
+              const it = items[i];
+              try {
+                if (!it.name || typeof it.name !== 'string') throw new Error('name fehlt oder ist kein String');
+                if (!it.content || typeof it.content !== 'string') throw new Error('content fehlt oder ist kein String');
+                const tags = Array.isArray(it.tags) ? it.tags.filter((t): t is string => typeof t === 'string') : [];
+                await writeMemory(project, it.name, it.content, it.category ?? 'note', tags);
+                results.push({ index: i, ok: true, name: it.name });
+                applied++;
+              } catch (err) {
+                results.push({ index: i, ok: false, name: typeof it.name === 'string' ? it.name : undefined, error: (err as Error).message });
+                failed++;
+              }
+            }
+            return {
+              total: items.length,
+              applied,
+              failed,
+              results,
+              message: `${applied}/${items.length} Memories gespeichert${failed > 0 ? ` (${failed} fehlgeschlagen)` : ''}.`,
+            };
+          }
+
+          // Single-Mode (bestehend, abwaertskompatibel)
           const name = reqStr(args, 'name');
           const content = reqStr(args, 'content');
           const category = str(args, 'category') as

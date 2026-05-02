@@ -7,7 +7,7 @@
  * - get_for_file: Holt relevante Docs fuer eine Datei (Wissens-Airbag)
  */
 
-import { ConsolidatedTool, reqStr, str, num, bool, strArray } from './types.js';
+import { ConsolidatedTool, reqStr, str, num, bool, strArray, objArray } from './types.js';
 import {
   addTechDocTool,
   searchTechDocsTool,
@@ -100,6 +100,25 @@ export const docsTool: ConsolidatedTool = {
           type: 'string',
           description: 'Projekt-Name (optional)',
         },
+        docs: {
+          type: 'array',
+          description: 'Bulk-Mode fuer add: 1..50 Tech-Docs in einem Call. Jedes Item: { framework, version, section, content, type, category?, source? }. project gilt fuer alle. Best-effort.',
+          minItems: 1,
+          maxItems: 50,
+          items: {
+            type: 'object',
+            properties: {
+              framework: { type: 'string' },
+              version: { type: 'string' },
+              section: { type: 'string' },
+              content: { type: 'string' },
+              type: { type: 'string', enum: ['feature', 'breaking-change', 'migration', 'gotcha', 'code-example', 'best-practice', 'known-issue', 'community'] },
+              category: { type: 'string', enum: ['framework', 'language'] },
+              source: { type: 'string', enum: ['research', 'context7', 'manual'] },
+            },
+            required: ['framework', 'version', 'section', 'content', 'type'],
+          },
+        },
       },
       required: ['action'],
     },
@@ -110,6 +129,58 @@ export const docsTool: ConsolidatedTool = {
 
     switch (action) {
       case 'add': {
+        const project = str(args, 'project');
+
+        // Bulk-Mode
+        type DocItem = {
+          framework?: string;
+          version?: string;
+          section?: string;
+          content?: string;
+          type?: string;
+          category?: string;
+          source?: string;
+        };
+        const docs = objArray<DocItem>(args, 'docs');
+        if (docs && docs.length > 0) {
+          const results: Array<{ index: number; ok: boolean; id?: string; duplicate?: boolean; error?: string }> = [];
+          let applied = 0;
+          let failed = 0;
+          for (let i = 0; i < docs.length; i++) {
+            const d = docs[i];
+            try {
+              if (!d.framework) throw new Error('framework fehlt');
+              if (!d.version) throw new Error('version fehlt');
+              if (!d.section) throw new Error('section fehlt');
+              if (!d.content) throw new Error('content fehlt');
+              if (!d.type) throw new Error('type fehlt');
+              const r = await addTechDocTool(
+                d.framework,
+                d.version,
+                d.section,
+                d.content,
+                d.type as 'feature' | 'breaking-change' | 'migration' | 'gotcha' | 'code-example' | 'best-practice' | 'known-issue' | 'community',
+                d.category,
+                d.source,
+                project,
+              );
+              results.push({ index: i, ok: r.success, id: r.id, duplicate: r.duplicate });
+              if (r.success) applied++; else failed++;
+            } catch (err) {
+              results.push({ index: i, ok: false, error: (err as Error).message });
+              failed++;
+            }
+          }
+          return {
+            total: docs.length,
+            applied,
+            failed,
+            results,
+            message: `${applied}/${docs.length} Docs indexiert${failed > 0 ? ` (${failed} fehlgeschlagen)` : ''}.`,
+          };
+        }
+
+        // Single-Mode
         const framework = reqStr(args, 'framework');
         const version = reqStr(args, 'version');
         const section = reqStr(args, 'section');
@@ -125,7 +196,6 @@ export const docsTool: ConsolidatedTool = {
           | 'community';
         const category = str(args, 'category');
         const source = str(args, 'source');
-        const project = str(args, 'project');
 
         const result = await addTechDocTool(
           framework,

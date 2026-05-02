@@ -12,7 +12,7 @@
  */
 
 import type { ConsolidatedTool } from './types.js';
-import { reqStr, str, num, bool, strArray } from './types.js';
+import { reqStr, str, num, bool, strArray, objArray } from './types.js';
 import {
   createChannel,
   joinChannel,
@@ -84,8 +84,42 @@ async function handlePost(args: Record<string, unknown>) {
   const project = reqStr(args, 'project');
   const channelName = reqStr(args, 'channel_name');
   const sender = reqStr(args, 'sender');
-  const content = reqStr(args, 'content');
 
+  // Bulk-Mode: messages[] mit mehreren Posts in einem Channel.
+  type PostItem = { content?: string };
+  const messages = objArray<PostItem>(args, 'messages');
+  if (messages && messages.length > 0) {
+    const results: Array<{ index: number; ok: boolean; messageId?: number; error?: string }> = [];
+    let applied = 0;
+    let failed = 0;
+    for (let i = 0; i < messages.length; i++) {
+      const m = messages[i];
+      try {
+        if (!m.content) throw new Error('content fehlt');
+        const r = await postMessage(project, channelName, sender, m.content);
+        if (!r) {
+          results.push({ index: i, ok: false, error: `Channel "${channelName}" nicht gefunden` });
+          failed++;
+        } else {
+          results.push({ index: i, ok: true, messageId: r.id });
+          applied++;
+        }
+      } catch (err) {
+        results.push({ index: i, ok: false, error: (err as Error).message });
+        failed++;
+      }
+    }
+    return jsonResult({
+      total: messages.length,
+      applied,
+      failed,
+      results,
+      message: `${applied}/${messages.length} Nachrichten in "${channelName}" gepostet${failed > 0 ? ` (${failed} fehlgeschlagen)` : ''}.`,
+    });
+  }
+
+  // Single-Mode
+  const content = reqStr(args, 'content');
   try {
     const result = await postMessage(project, channelName, sender, content);
     if (!result) {
@@ -209,6 +243,17 @@ export const channelTool: ConsolidatedTool = {
         preview: {
           type: 'boolean',
           description: 'Inhalte auf 200 Zeichen kuerzen (fuer feed)',
+        },
+        messages: {
+          type: 'array',
+          description: 'Bulk-Mode fuer post: 1..20 Nachrichten in einem Channel in einem Call. Jedes Item: { content }. project + channel_name + sender gelten fuer alle. Best-effort.',
+          minItems: 1,
+          maxItems: 20,
+          items: {
+            type: 'object',
+            properties: { content: { type: 'string' } },
+            required: ['content'],
+          },
         },
       },
       required: ['action'],

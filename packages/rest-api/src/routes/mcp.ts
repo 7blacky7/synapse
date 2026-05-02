@@ -40,6 +40,7 @@ import {
   findMemoriesForPath,
   updateMemory,
   // Proposals
+  createProposal,
   getProposal,
   getProposalsByIds,
   listProposals,
@@ -235,6 +236,22 @@ const MCP_TOOLS = [
         includeSemanticMatches: { type: 'boolean', description: 'Semantische Matches einbeziehen (optional, Standard: true fuer read_with_code)' },
         dry_run: { type: 'boolean', description: 'Preview-Modus — NUR aktiv wenn name/id ein Array ist (Batch-Delete). Bei Single-String wird sofort geloescht, dry_run wird ignoriert. Wenn die UI eine Bestaetigung erzwingen soll, ruf erst mit Array + dry_run:true auf, dann mit Array ohne dry_run.' },
         max_items: { type: 'number', description: 'Max. erlaubte Items pro Batch-Delete (Standard: 10, nur fuer delete mit Array)' },
+        items: {
+          type: 'array',
+          description: 'Bulk-Mode fuer write: 1..50 Memories in einem Call. Jedes Item: { name, content, category?, tags? }. Best-effort — bei Fehler eines Items wird der naechste weitergeschrieben, das Ergebnis enthaelt per-Item-Status.',
+          minItems: 1,
+          maxItems: 50,
+          items: {
+            type: 'object',
+            properties: {
+              name: { type: 'string' },
+              content: { type: 'string' },
+              category: { type: 'string', enum: ['documentation', 'note', 'architecture', 'decision', 'rules', 'other'] },
+              tags: { type: 'array', items: { type: 'string' } },
+            },
+            required: ['name', 'content'],
+          },
+        },
       },
       required: ['action', 'project'],
     },
@@ -339,14 +356,14 @@ const MCP_TOOLS = [
   // 6. proposal
   {
     name: 'proposal',
-    description: 'Eigene Code-Aenderungs-Vorschlaege (Proposals) im Projekt-Workspace listen, lesen, aktualisieren, Status setzen, entfernen. Vorschlaege bleiben innerhalb der lokalen Synapse-DB, werden nicht automatisch auf den Code angewendet. Keine externen Systeme.',
+    description: 'Eigene Code-Aenderungs-Vorschlaege (Proposals) im Projekt-Workspace anlegen (single oder Bulk via items[]), listen, lesen, aktualisieren, Status setzen, entfernen. Vorschlaege bleiben innerhalb der lokalen Synapse-DB, werden nicht automatisch auf den Code angewendet. Keine externen Systeme.',
     inputSchema: {
       type: 'object',
       properties: {
         action: {
           type: 'string',
-          enum: ['list', 'get', 'update_status', 'delete', 'update'],
-          description: 'Aktion: list (Auflistung), get (Abrufen), update_status (Status aendern), delete (Loeschen), update (Aktualisieren)',
+          enum: ['create', 'list', 'get', 'update_status', 'delete', 'update'],
+          description: 'Aktion: create (Anlegen, single oder items[]), list, get, update_status, delete, update',
         },
         project: { type: 'string', description: 'Projekt-Name' },
         agent_id: { type: 'string', description: 'Agent-ID fuer Onboarding' },
@@ -363,9 +380,30 @@ const MCP_TOOLS = [
           description: 'Status (fuer list: Filter; fuer update_status: Neuer Status; fuer update: Optional)',
         },
         content: { type: 'string', description: 'Neue Beschreibung (fuer update)' },
-        suggested_content: { type: 'string', description: 'Neuer vorgeschlagener Inhalt (fuer update)' },
+        suggested_content: { type: 'string', description: 'Neuer vorgeschlagener Inhalt (fuer update). Bei create: vorgeschlagener Datei-Inhalt.' },
         dry_run: { type: 'boolean', description: 'Preview-Modus — NUR aktiv wenn name/id ein Array ist (Batch-Delete). Bei Single-String wird sofort geloescht, dry_run wird ignoriert. Wenn die UI eine Bestaetigung erzwingen soll, ruf erst mit Array + dry_run:true auf, dann mit Array ohne dry_run.' },
         max_items: { type: 'number', description: 'Max. erlaubte Items pro Batch-Delete (Standard: 10, nur fuer delete mit Array)' },
+        file_path: { type: 'string', description: 'Datei-Pfad (relativ) auf den sich der Proposal bezieht (fuer create).' },
+        author: { type: 'string', description: 'Autor des Proposals (fuer create).' },
+        description: { type: 'string', description: 'Kurzbeschreibung des Vorschlags (fuer create).' },
+        tags: { type: 'array', items: { type: 'string' }, description: 'Optionale Tags (fuer create).' },
+        items: {
+          type: 'array',
+          description: 'Bulk-Mode fuer create: 1..50 Proposals in einem Call. Jedes Item: { file_path, suggested_content, description, author, tags? }. project gilt fuer alle. Best-effort.',
+          minItems: 1,
+          maxItems: 50,
+          items: {
+            type: 'object',
+            properties: {
+              file_path: { type: 'string' },
+              suggested_content: { type: 'string' },
+              description: { type: 'string' },
+              author: { type: 'string' },
+              tags: { type: 'array', items: { type: 'string' } },
+            },
+            required: ['file_path', 'suggested_content', 'description', 'author'],
+          },
+        },
       },
       required: ['action', 'project'],
     },
@@ -452,6 +490,17 @@ const MCP_TOOLS = [
         limit: { type: 'number', description: 'Max. Nachrichten (Standard: 20, fuer feed)' },
         since_id: { type: 'number', description: 'Nur Nachrichten nach dieser ID (fuer feed)' },
         preview: { type: 'boolean', description: 'Inhalte auf 200 Zeichen kuerzen (fuer feed)' },
+        messages: {
+          type: 'array',
+          description: 'Bulk-Mode fuer post: 1..20 Nachrichten in einem Channel in einem Call. Jedes Item: { content }. project + channel_name + sender gelten fuer alle. Best-effort.',
+          minItems: 1,
+          maxItems: 20,
+          items: {
+            type: 'object',
+            properties: { content: { type: 'string' } },
+            required: ['content'],
+          },
+        },
       },
       required: ['action'],
     },
@@ -484,6 +533,23 @@ const MCP_TOOLS = [
         },
         agent_id: { type: 'string', description: 'Eigene Agent-ID (erforderlich fuer ack und pending)' },
         reaction: { type: 'string', description: 'Optionale Reaktion/Kommentar (nur fuer ack)' },
+        events: {
+          type: 'array',
+          description: 'Bulk-Mode fuer emit: 1..50 Events in einem Call. Jedes Item: { event_type, priority, scope?, payload?, requires_ack? }. project + source_id gelten fuer alle. Best-effort.',
+          minItems: 1,
+          maxItems: 50,
+          items: {
+            type: 'object',
+            properties: {
+              event_type: { type: 'string' },
+              priority: { type: 'string' },
+              scope: { type: 'string' },
+              payload: { type: 'string' },
+              requires_ack: { type: 'boolean' },
+            },
+            required: ['event_type', 'priority'],
+          },
+        },
       },
       required: ['action'],
     },
@@ -560,6 +626,25 @@ const MCP_TOOLS = [
         },
         agent_id: { type: 'string', description: 'Agent-ID fuer Cutoff-Ermittlung' },
         project: { type: 'string', description: 'Projekt-Name (optional)' },
+        docs: {
+          type: 'array',
+          description: 'Bulk-Mode fuer add: 1..50 Tech-Docs in einem Call. Jedes Item: { framework, version, section, content, type, category?, source? }. project gilt fuer alle. Best-effort.',
+          minItems: 1,
+          maxItems: 50,
+          items: {
+            type: 'object',
+            properties: {
+              framework: { type: 'string' },
+              version: { type: 'string' },
+              section: { type: 'string' },
+              content: { type: 'string' },
+              type: { type: 'string', enum: ['feature', 'breaking-change', 'migration', 'gotcha', 'code-example', 'best-practice', 'known-issue', 'community'] },
+              category: { type: 'string', enum: ['framework', 'language'] },
+              source: { type: 'string', enum: ['research', 'context7', 'manual'] },
+            },
+            required: ['framework', 'version', 'section', 'content', 'type'],
+          },
+        },
       },
       required: ['action'],
     },
@@ -1219,6 +1304,42 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
       const project = reqStr(args, 'project');
       switch (action) {
         case 'write': {
+          // Bulk-Mode: items[] vorhanden → mehrere Memories in einem Call.
+          type WriteItem = {
+            name?: string;
+            content?: string;
+            category?: 'documentation' | 'note' | 'architecture' | 'decision' | 'rules' | 'other';
+            tags?: string[];
+          };
+          const items = objArray<WriteItem>(args, 'items');
+          if (items && items.length > 0) {
+            const results: Array<{ index: number; ok: boolean; name?: string; isUpdate?: boolean; error?: string }> = [];
+            let applied = 0;
+            let failed = 0;
+            for (let i = 0; i < items.length; i++) {
+              const it = items[i];
+              try {
+                if (!it.name || typeof it.name !== 'string') throw new Error('name fehlt oder ist kein String');
+                if (!it.content || typeof it.content !== 'string') throw new Error('content fehlt oder ist kein String');
+                const tags = Array.isArray(it.tags) ? it.tags.filter((t): t is string => typeof t === 'string') : [];
+                const existing = await getMemoryByName(project, it.name);
+                await writeMemory(project, it.name, it.content, it.category ?? 'note', tags);
+                results.push({ index: i, ok: true, name: it.name, isUpdate: !!existing });
+                applied++;
+              } catch (err) {
+                results.push({ index: i, ok: false, name: typeof it.name === 'string' ? it.name : undefined, error: (err as Error).message });
+                failed++;
+              }
+            }
+            return {
+              success: failed === 0,
+              total: items.length,
+              applied,
+              failed,
+              results,
+              message: `${applied}/${items.length} Memories gespeichert${failed > 0 ? ` (${failed} fehlgeschlagen)` : ''}.`,
+            };
+          }
           const memName = reqStr(args, 'name');
           const content = reqStr(args, 'content');
           const category = str(args, 'category') as 'documentation' | 'note' | 'architecture' | 'decision' | 'rules' | 'other' | undefined;
@@ -1510,6 +1631,54 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
     case 'proposal': {
       const project = reqStr(args, 'project');
       switch (action) {
+        case 'create': {
+          // Bulk-Mode
+          type CreateItem = {
+            file_path?: string;
+            suggested_content?: string;
+            description?: string;
+            author?: string;
+            tags?: string[];
+          };
+          const items = objArray<CreateItem>(args, 'items');
+          if (items && items.length > 0) {
+            const results: Array<{ index: number; ok: boolean; id?: string; error?: string }> = [];
+            let applied = 0;
+            let failed = 0;
+            for (let i = 0; i < items.length; i++) {
+              const it = items[i];
+              try {
+                if (!it.file_path) throw new Error('file_path fehlt');
+                if (!it.suggested_content) throw new Error('suggested_content fehlt');
+                if (!it.description) throw new Error('description fehlt');
+                if (!it.author) throw new Error('author fehlt');
+                const tags = Array.isArray(it.tags) ? it.tags.filter((t): t is string => typeof t === 'string') : [];
+                const proposal = await createProposal(project, it.file_path, it.suggested_content, it.description, it.author, tags);
+                results.push({ index: i, ok: true, id: proposal.id });
+                applied++;
+              } catch (err) {
+                results.push({ index: i, ok: false, error: (err as Error).message });
+                failed++;
+              }
+            }
+            return {
+              success: failed === 0,
+              total: items.length,
+              applied,
+              failed,
+              results,
+              message: `${applied}/${items.length} Proposals erstellt${failed > 0 ? ` (${failed} fehlgeschlagen)` : ''}.`,
+            };
+          }
+          // Single-Mode
+          const filePath = reqStr(args, 'file_path');
+          const suggested = reqStr(args, 'suggested_content');
+          const desc = reqStr(args, 'description');
+          const author = reqStr(args, 'author');
+          const tags = strArray(args, 'tags') ?? [];
+          const proposal = await createProposal(project, filePath, suggested, desc, author, tags);
+          return { success: true, proposal };
+        }
         case 'list': {
           const proposals = await listProposals(project, str(args, 'status') as 'pending' | 'reviewed' | 'accepted' | 'rejected' | undefined);
           return {
@@ -1713,6 +1882,37 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
         case 'post': {
           const chName2 = reqStr(args, 'channel_name');
           const sender = reqStr(args, 'sender');
+          // Bulk-Mode
+          type PostItem = { content?: string };
+          const messages = objArray<PostItem>(args, 'messages');
+          if (messages && messages.length > 0) {
+            const results: Array<{ index: number; ok: boolean; messageId?: number; error?: string }> = [];
+            let applied = 0;
+            let failed = 0;
+            for (let i = 0; i < messages.length; i++) {
+              const m = messages[i];
+              try {
+                if (!m.content) throw new Error('content fehlt');
+                const r = await postChannelMessage(project, chName2, sender, m.content);
+                if (!r) {
+                  results.push({ index: i, ok: false, error: `Channel "${chName2}" nicht gefunden` });
+                  failed++;
+                } else {
+                  results.push({ index: i, ok: true, messageId: r.id });
+                  applied++;
+                }
+              } catch (err) {
+                results.push({ index: i, ok: false, error: (err as Error).message });
+                failed++;
+              }
+            }
+            return {
+              success: failed === 0,
+              total: messages.length, applied, failed, results,
+              message: `${applied}/${messages.length} Nachrichten in "${chName2}" gepostet${failed > 0 ? ` (${failed} fehlgeschlagen)` : ''}.`,
+              action: 'post',
+            };
+          }
           const postContent = reqStr(args, 'content');
           const postResult = await postChannelMessage(project, chName2, sender, postContent);
           if (!postResult) return { success: false, error: `Channel "${chName2}" nicht gefunden` };
@@ -1742,12 +1942,52 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
     case 'event': {
       switch (action) {
         case 'emit': {
+          const project = reqStr(args, 'project');
+          const sourceId = reqStr(args, 'source_id');
+          // Bulk-Mode
+          type EmitItem = { event_type?: string; priority?: string; scope?: string; payload?: string; requires_ack?: boolean };
+          const events = objArray<EmitItem>(args, 'events');
+          if (events && events.length > 0) {
+            const results: Array<{ index: number; ok: boolean; event_id?: number; error?: string }> = [];
+            let applied = 0;
+            let failed = 0;
+            for (let i = 0; i < events.length; i++) {
+              const e = events[i];
+              try {
+                if (!e.event_type) throw new Error('event_type fehlt');
+                if (!e.priority) throw new Error('priority fehlt');
+                const r = await emitEvent(
+                  project,
+                  e.event_type as 'WORK_STOP' | 'CRITICAL_REVIEW' | 'ARCH_DECISION' | 'TEAM_DISCUSSION' | 'ANNOUNCEMENT',
+                  e.priority as 'critical' | 'high' | 'normal',
+                  e.scope ?? 'all',
+                  sourceId,
+                  e.payload,
+                  e.requires_ack,
+                );
+                const eid = (r as { event_id?: number; eventId?: number }).event_id ?? (r as { eventId?: number }).eventId;
+                results.push({ index: i, ok: true, event_id: eid });
+                applied++;
+              } catch (err) {
+                results.push({ index: i, ok: false, error: (err as Error).message });
+                failed++;
+              }
+            }
+            return {
+              success: failed === 0,
+              total: events.length,
+              applied,
+              failed,
+              results,
+              message: `${applied}/${events.length} Events emittiert${failed > 0 ? ` (${failed} fehlgeschlagen)` : ''}.`,
+            };
+          }
           const result = await emitEvent(
-            reqStr(args, 'project'),
+            project,
             reqStr(args, 'event_type') as 'WORK_STOP' | 'CRITICAL_REVIEW' | 'ARCH_DECISION' | 'TEAM_DISCUSSION' | 'ANNOUNCEMENT',
             reqStr(args, 'priority') as 'critical' | 'high' | 'normal',
             str(args, 'scope') ?? 'all',
-            reqStr(args, 'source_id'),
+            sourceId,
             str(args, 'payload'),
             bool(args, 'requires_ack')
           );
@@ -1861,11 +2101,45 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
     case 'docs': {
       switch (action) {
         case 'add': {
+          // Bulk-Mode
+          type DocItem = { framework?: string; version?: string; section?: string; content?: string; type?: string; category?: string; source?: string };
+          const docs = objArray<DocItem>(args, 'docs');
+          const project = str(args, 'project');
+          if (docs && docs.length > 0) {
+            const results: Array<{ index: number; ok: boolean; id?: string; duplicate?: boolean; error?: string }> = [];
+            let applied = 0;
+            let failed = 0;
+            for (let i = 0; i < docs.length; i++) {
+              const d = docs[i];
+              try {
+                if (!d.framework) throw new Error('framework fehlt');
+                if (!d.version) throw new Error('version fehlt');
+                if (!d.section) throw new Error('section fehlt');
+                if (!d.content) throw new Error('content fehlt');
+                if (!d.type) throw new Error('type fehlt');
+                const r = await addTechDoc(
+                  d.framework, d.version, d.section, d.content,
+                  d.type as Parameters<typeof addTechDoc>[4],
+                  d.category, d.source, project,
+                );
+                results.push({ index: i, ok: r.success, id: r.id, duplicate: r.duplicate });
+                if (r.success) applied++; else failed++;
+              } catch (err) {
+                results.push({ index: i, ok: false, error: (err as Error).message });
+                failed++;
+              }
+            }
+            return {
+              success: failed === 0,
+              total: docs.length, applied, failed, results,
+              message: `${applied}/${docs.length} Docs indexiert${failed > 0 ? ` (${failed} fehlgeschlagen)` : ''}.`,
+            };
+          }
           const result = await addTechDoc(
             reqStr(args, 'framework'), reqStr(args, 'version'),
             reqStr(args, 'section'), reqStr(args, 'content'),
             reqStr(args, 'type') as Parameters<typeof addTechDoc>[4],
-            str(args, 'category'), str(args, 'source'), str(args, 'project')
+            str(args, 'category'), str(args, 'source'), project
           );
           return result;
         }

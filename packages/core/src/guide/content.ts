@@ -565,7 +565,7 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
   },
 
   memory: {
-    summary: 'Langlebiges Projekt-Wissen lesen, schreiben und verwalten (Architektur, Regeln, Entscheidungen).',
+    summary: 'Langlebiges Projekt-Wissen lesen, schreiben und verwalten (Architektur, Regeln, Entscheidungen). write akzeptiert optional items[] (1..50) fuer Bulk-Inserts in einem Call.',
     when_to_use: [
       'Langlebiges Wissen speichern das ueber Sessions bestehen soll: write.',
       'Gespeichertes Wissen lesen: read (einzeln oder mehrere).',
@@ -786,8 +786,9 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
   },
 
   proposal: {
-    summary: 'Verbesserungsvorschlaege (Proposals) einreichen, verwalten und Status verfolgen.',
+    summary: 'Verbesserungsvorschlaege (Proposals) erstellen, verwalten und Status verfolgen. create akzeptiert optional items[] (1..50) fuer Bulk-Insert.',
     when_to_use: [
+      'Neuen Vorschlag anlegen: create (single mit file_path/suggested_content/description/author oder items[] fuer Bulk).',
       'Architektur-Aenderungen vorschlagen.',
       'Feature-Ideen strukturiert einreichen (mit content + suggested_content).',
       'Offene Proposals auflisten und filtern: list.',
@@ -850,7 +851,7 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
   },
 
   docs: {
-    summary: 'Tech-Dokumentation indexieren, durchsuchen und Datei-spezifische Warnungen abrufen (Wissens-Airbag).',
+    summary: 'Tech-Dokumentation indexieren, durchsuchen und Datei-spezifische Warnungen abrufen (Wissens-Airbag). add akzeptiert optional docs[] (1..50) fuer Bulk-Indexierung.',
     when_to_use: [
       'Vor jeder Datei-Bearbeitung: get_for_file — prueft Breaking Changes fuer verwendete Frameworks.',
       'Framework-API nachschlagen: search.',
@@ -1062,7 +1063,7 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
       create: { description: 'Channel anlegen (name, project, created_by, optional description).' },
       join: { description: 'Beitreten — channel_name als String oder Array fuer Batch-Join.' },
       leave: { description: 'Verlassen — channel_name als String oder Array.' },
-      post: { description: 'Nachricht in Channel (channel_name, sender, content).' },
+      post: { description: 'Nachricht in Channel (channel_name, sender, content). Bulk-Mode: messages[] (1..20) fuer mehrere Posts in einem Call — sender + channel_name gelten fuer alle.' },
       feed: { description: 'Channel-Inhalt lesen (limit, since_id, optional preview-Truncation).' },
       list: { description: 'Alle Channels im Projekt.' },
     },
@@ -1074,7 +1075,7 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
   },
 
   event: {
-    summary: 'Steuersignale fuer Agenten (WORK_STOP, NEW_TASK, ANNOUNCEMENT, …). Verfuegbar lokal UND via REST (PostgreSQL). Pflicht-Reaktion: ack innerhalb weniger Tool-Calls, sonst Eskalation an Koordinator.',
+    summary: 'Steuersignale fuer Agenten (WORK_STOP, NEW_TASK, ANNOUNCEMENT, …). Verfuegbar lokal UND via REST (PostgreSQL). Pflicht-Reaktion: ack innerhalb weniger Tool-Calls, sonst Eskalation an Koordinator. emit akzeptiert optional events[] (1..50) fuer Bulk-Emit; ack akzeptiert event_id als Array (Batch-Ack).',
     when_to_use: 'Koordinator emittiert Event an Agent(en): emit (mit scope: "all" oder "agent:<id>"). Agent quittiert empfangenes Event: ack. Agent prueft offene Events: pending.',
     when_not_to_use: 'Lockere Updates ohne Pflicht → thought oder channel. Direkte 1:1 Frage → chat DM. Langlebige Anweisung → memory.',
     actions: {

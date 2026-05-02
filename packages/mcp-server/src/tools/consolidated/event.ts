@@ -8,7 +8,7 @@
  */
 
 import type { ConsolidatedTool } from './types.js';
-import { reqStr, str, num, bool, numArray } from './types.js';
+import { reqStr, str, num, bool, numArray, objArray } from './types.js';
 import {
   emitEventTool,
   acknowledgeEventTool,
@@ -75,6 +75,23 @@ export const eventTool: ConsolidatedTool = {
           type: 'string',
           description: 'Optionale Reaktion/Kommentar (nur für ack)',
         },
+        events: {
+          type: 'array',
+          description: 'Bulk-Mode fuer emit: 1..50 Events in einem Call. Jedes Item: { event_type, priority, scope?, payload?, requires_ack? }. project + source_id gelten fuer alle. Best-effort.',
+          minItems: 1,
+          maxItems: 50,
+          items: {
+            type: 'object',
+            properties: {
+              event_type: { type: 'string' },
+              priority: { type: 'string' },
+              scope: { type: 'string' },
+              payload: { type: 'string' },
+              requires_ack: { type: 'boolean' },
+            },
+            required: ['event_type', 'priority'],
+          },
+        },
       },
       required: ['action'],
     },
@@ -86,9 +103,55 @@ export const eventTool: ConsolidatedTool = {
     switch (action) {
       case 'emit': {
         const project = reqStr(args, 'project');
+        const sourceId = reqStr(args, 'source_id');
+
+        // Bulk-Mode: events[] vorhanden → mehrere Events in einem Call.
+        type EmitItem = {
+          event_type?: string;
+          priority?: string;
+          scope?: string;
+          payload?: string;
+          requires_ack?: boolean;
+        };
+        const events = objArray<EmitItem>(args, 'events');
+        if (events && events.length > 0) {
+          const results: Array<{ index: number; ok: boolean; event_id?: number; error?: string }> = [];
+          let applied = 0;
+          let failed = 0;
+          for (let i = 0; i < events.length; i++) {
+            const e = events[i];
+            try {
+              if (!e.event_type) throw new Error('event_type fehlt');
+              if (!e.priority) throw new Error('priority fehlt');
+              const r = await emitEventTool(
+                project,
+                e.event_type,
+                e.priority,
+                e.scope ?? 'all',
+                sourceId,
+                e.payload,
+                e.requires_ack,
+              );
+              const eid = (r as { event_id?: number; eventId?: number }).event_id ?? (r as { eventId?: number }).eventId;
+              results.push({ index: i, ok: true, event_id: eid });
+              applied++;
+            } catch (err) {
+              results.push({ index: i, ok: false, error: (err as Error).message });
+              failed++;
+            }
+          }
+          return {
+            total: events.length,
+            applied,
+            failed,
+            results,
+            message: `${applied}/${events.length} Events emittiert${failed > 0 ? ` (${failed} fehlgeschlagen)` : ''}.`,
+          };
+        }
+
+        // Single-Mode
         const eventType = reqStr(args, 'event_type');
         const priority = reqStr(args, 'priority');
-        const sourceId = reqStr(args, 'source_id');
         const scope = str(args, 'scope') ?? 'all';
         const payload = str(args, 'payload');
         const requiresAck = bool(args, 'requires_ack');
