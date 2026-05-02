@@ -142,14 +142,16 @@ export const filesTool: ConsolidatedTool = {
         },
         ops: {
           type: 'array',
-          description: 'Multi-File Edit-Plan: 1..100 Operationen ueber mehrere Dateien (fuer action="plan"). Jede Op: { file_path, action, ...op-spezifische Felder }. Aktionen: create (neue Datei mit content — nur als erste Op auf einer noch nicht existenten Datei), update, search_replace (mit search/replace, optional replace_all), search_replace_batch (mit edits[]), replace_lines (line_start/line_end/content), insert_after (after_line/content), delete_lines (line_start/line_end). Plan-Phase macht Trockenlauf, erfasst Hash + Preview pro Op. Commit per files(action: "commit", plan_id).',
+          description: 'Multi-File Edit-Plan: 1..100 Operationen ueber mehrere Dateien (fuer action="plan"). Jede Op: { file_path, action, ...op-spezifische Felder }. Aktionen: create (neue Datei), update, search_replace, search_replace_batch, replace_lines (line_start/line_end/content), insert_after (after_line/content), delete_lines (line_start/line_end), delete (ganze Datei loeschen), move (file_path → new_path), copy (file_path → new_path). Plan-Phase macht Trockenlauf, erfasst Hash + Preview pro Op. Commit per files(action: "commit", plan_id).',
           minItems: 1,
           maxItems: 100,
           items: {
             type: 'object',
             properties: {
               file_path: { type: 'string' },
-              action: { type: 'string', enum: ['create', 'update', 'search_replace', 'search_replace_batch', 'replace_lines', 'insert_after', 'delete_lines'] },
+              action: { type: 'string', enum: ['create', 'update', 'search_replace', 'search_replace_batch', 'replace_lines', 'insert_after', 'delete_lines', 'delete', 'move', 'copy'] },
+              new_path: { type: 'string' },
+              reason: { type: 'string' },
               content: { type: 'string' },
               search: { type: 'string' },
               replace: { type: 'string' },

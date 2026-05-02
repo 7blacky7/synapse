@@ -410,9 +410,9 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
       },
       plan: {
         description: 'Phase A eines Multi-File-Edits: nimmt ops[] (1..100, mehrere Dateien), liest betroffene Dateien, dry-runs jede Op, erfasst expected_hashes und Previews. Liefert plan_id zurueck. Kein Schreiben in dieser Phase!',
-        params: 'project (req), ops (req, Array von { file_path, action, ...op-spezifische Felder }), agent_id, open_for_coedit',
-        example: 'files({ action: "plan", project: "synapse", agent_id: "ich", ops: [{ file_path: "neu.ts", action: "create", content: "export const x = 1;" }, { file_path: "a.ts", action: "search_replace", search: "old", replace: "new" }] })',
-        tips: 'Plan laeuft nach 5 Minuten ab. Bei Op-Fehler im Trockenlauf wird der Plan NICHT angelegt — sofortige Fehlermeldung. Op-Actions: create (neue Datei, content erforderlich, nur als erste Op auf einer Datei), update, search_replace, search_replace_batch, replace_lines, insert_after, delete_lines.',
+        params: 'project (req), ops (req, Array von { file_path, action, new_path?, content?, search?, replace?, edits?, line_start?, line_end?, after_line?, reason? }), agent_id, open_for_coedit, reason (Top-Level)',
+        example: 'files({ action: "plan", project: "synapse", reason: "Refactor Modul X", ops: [{ file_path: "alt.ts", action: "delete", reason: "Obsolet" }, { file_path: "src.ts", action: "move", new_path: "src/dst.ts" }, { file_path: "neu.ts", action: "create", content: "..." }] })',
+        tips: 'Plan laeuft nach 5 Minuten ab. Op-Actions: create (neue Datei), update, search_replace, search_replace_batch, replace_lines, insert_after, delete_lines (Edit-Ops); delete (ganze Datei loeschen), move (file_path → new_path), copy (file_path → new_path) (Lifecycle-Ops). Mehrere Ops auf gleicher Datei moeglich; create nur als erste Op. Lifecycle-Ops mit move/copy laden auch dst-Buffer fuer Hash-Check. restore_batch macht delete/move/copy rueckgaengig.',
       },
       commit: {
         description: 'Phase B: wendet alle Ops eines Plans atomar an (PG-TX). Pruefung gegen expected_hashes — wenn eine Datei seit dem Plan extern geaendert wurde, kommt status="stale" mit Konflikt-Details. Bei Erfolg tragen alle file_versions-Snapshots die batch_id=plan_id (-> restore_batch).',

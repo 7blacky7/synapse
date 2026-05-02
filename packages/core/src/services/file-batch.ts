@@ -28,6 +28,7 @@ import {
   deleteLines,
   updateFileInPg,
   createFileInPg,
+  softDeleteFile,
   getFileContentFromPg,
 } from './code-write.js';
 import type { BatchEdit } from './code-write.js';
@@ -44,7 +45,10 @@ export type FileBatchOpAction =
   | 'search_replace_batch'
   | 'replace_lines'
   | 'insert_after'
-  | 'delete_lines';
+  | 'delete_lines'
+  | 'delete'
+  | 'move'
+  | 'copy';
 
 /** Eingabe-Format einer Op im Plan. */
 export interface FileBatchOp {
@@ -65,6 +69,9 @@ export interface FileBatchOp {
   line_end?: number;
   /** insert_after — after_line=0 = am Anfang */
   after_line?: number;
+  /** move + copy — Ziel-Pfad. Muss bei move noch nicht existieren; bei copy darf
+      der Zielpfad noch nicht existieren (sonst Konflikt im plan-Trockenlauf). */
+  new_path?: string;
 }
 
 /** Pro Op gespeicherte Preview-Info — was wuerde sich aendern. */
@@ -119,7 +126,7 @@ export type CommitBatchResult =
       plan_id: string;
       batch_id: string;
       committed: number;
-      files: Array<{ file_path: string; size: number; hash: string; created: boolean }>;
+      files: Array<{ file_path: string; size: number; hash: string; created: boolean; deleted?: boolean }>;
     }
   | {
       success: false;
@@ -133,68 +140,162 @@ export type CommitBatchResult =
 interface PreparedFile {
   finalContent: string;
   finalHash: string;
+  /** true wenn diese Datei am Ende der Plan-Sequenz nicht mehr existieren soll
+      (delete, move-source). commitBatch ruft dann softDeleteFile. */
+  deleted?: boolean;
+  /** true wenn die Datei VOR dem Plan nicht existierte und durch eine Op
+      angelegt wurde (create, move-target, copy-target). */
+  wasNewlyCreated?: boolean;
 }
 
-/** Wendet eine Op sequenziell auf einen In-Memory-Text an. Wirft bei Fehlern. */
-function applyOpInMemory(currentContent: string, op: FileBatchOp, isFirstOpOnFile: boolean): { newContent: string; context: string } {
+/**
+ * Wendet eine Op sequenziell auf die Buffer-Map an. Mutiert die Buffer direkt
+ * (bei move/copy mehrere Files gleichzeitig). Wirft bei semantischen Fehlern.
+ *
+ * Lifecycle-Ops (delete, move, copy) erfordern dass der DST-Buffer (move/copy)
+ * vorher per ensureBuffer() geladen wurde — passiert in planBatch/commitBatch.
+ */
+function applyOpInMemory(
+  buffers: Map<string, PreparedFile>,
+  op: FileBatchOp,
+  isFirstOpOnFile: boolean,
+): { context: string; sizeBefore: number; sizeAfter: number } {
+  const src = buffers.get(op.file_path);
+  if (!src) throw new Error(`Buffer fuer "${op.file_path}" nicht geladen`);
+  const sizeBefore = Buffer.byteLength(src.finalContent, 'utf8');
+
+  // Edit-Ops + create operieren nur auf src
   switch (op.action) {
     case 'create': {
       if (op.content === undefined) throw new Error('create: content fehlt');
-      // Nur als erste Op auf einer leeren/nicht existenten Datei zulaessig.
       if (!isFirstOpOnFile) {
-        throw new Error('create: nur als erste Op auf einer Datei zulaessig (existiert bereits in Plan-Buffer)');
+        throw new Error('create: nur als erste Op auf einer Datei zulaessig');
       }
-      if (currentContent !== '') {
+      if (src.deleted) throw new Error('create: Datei wurde in dieser Batch geloescht');
+      if (src.finalContent !== '') {
         throw new Error('create: Datei existiert bereits — nutze "update" oder "search_replace"');
       }
-      return { newContent: op.content, context: `create: ${op.content.length} Zeichen` };
+      src.finalContent = op.content;
+      src.finalHash = contentHash(op.content);
+      src.wasNewlyCreated = true;
+      return { context: `create: ${op.content.length} Zeichen`, sizeBefore: 0, sizeAfter: op.content.length };
     }
     case 'update': {
       if (op.content === undefined) throw new Error('update: content fehlt');
-      return { newContent: op.content, context: `update: ${op.content.length} Zeichen` };
+      if (src.deleted) throw new Error('update: Datei wurde in dieser Batch geloescht');
+      src.finalContent = op.content;
+      src.finalHash = contentHash(op.content);
+      return { context: `update: ${op.content.length} Zeichen`, sizeBefore, sizeAfter: op.content.length };
     }
     case 'search_replace': {
       if (op.search === undefined) throw new Error('search_replace: search fehlt');
       if (op.replace === undefined) throw new Error('search_replace: replace fehlt');
-      // searchReplace ersetzt mit /g immer alle Matches. Fuer Single-Match-
-      // Pflicht (replace_all=false) pruefen wir count nach und werfen.
-      const r = searchReplace(currentContent, op.search, op.replace);
+      if (src.deleted) throw new Error('search_replace: Datei wurde in dieser Batch geloescht');
+      const r = searchReplace(src.finalContent, op.search, op.replace);
       if (r.count === 0) throw new Error(`search_replace: 0 matches fuer "${op.search.slice(0, 40)}…"`);
       if (r.count > 1 && !op.replace_all) {
         throw new Error(`search_replace: ${r.count} matches — replace_all=true setzen oder Kontext praezisieren`);
       }
-      return { newContent: r.content, context: `search_replace: ${r.count} ersetzt` };
+      src.finalContent = r.content;
+      src.finalHash = contentHash(r.content);
+      return { context: `search_replace: ${r.count} ersetzt`, sizeBefore, sizeAfter: r.content.length };
     }
     case 'search_replace_batch': {
       if (!op.edits || op.edits.length === 0) throw new Error('search_replace_batch: edits[] fehlt');
-      const r = searchReplaceBatch(currentContent, op.edits);
+      if (src.deleted) throw new Error('search_replace_batch: Datei wurde in dieser Batch geloescht');
+      const r = searchReplaceBatch(src.finalContent, op.edits);
       if (r.result.applied === 0) throw new Error(`search_replace_batch: 0/${r.result.total} angewendet`);
-      return { newContent: r.content, context: `search_replace_batch: ${r.result.applied}/${r.result.total} angewendet` };
+      src.finalContent = r.content;
+      src.finalHash = contentHash(r.content);
+      return { context: `search_replace_batch: ${r.result.applied}/${r.result.total}`, sizeBefore, sizeAfter: r.content.length };
     }
     case 'replace_lines': {
       if (op.line_start === undefined || op.line_end === undefined || op.content === undefined) {
         throw new Error('replace_lines: line_start, line_end, content erforderlich');
       }
-      const newContent = replaceLines(currentContent, op.line_start, op.line_end, op.content);
-      return { newContent, context: `replace_lines: ${op.line_start}-${op.line_end}` };
+      if (src.deleted) throw new Error('replace_lines: Datei wurde in dieser Batch geloescht');
+      const newContent = replaceLines(src.finalContent, op.line_start, op.line_end, op.content);
+      src.finalContent = newContent;
+      src.finalHash = contentHash(newContent);
+      return { context: `replace_lines: ${op.line_start}-${op.line_end}`, sizeBefore, sizeAfter: newContent.length };
     }
     case 'insert_after': {
       if (op.after_line === undefined || op.content === undefined) {
         throw new Error('insert_after: after_line, content erforderlich');
       }
-      const newContent = insertAfterLine(currentContent, op.after_line, op.content);
-      return { newContent, context: `insert_after: nach Zeile ${op.after_line}` };
+      if (src.deleted) throw new Error('insert_after: Datei wurde in dieser Batch geloescht');
+      const newContent = insertAfterLine(src.finalContent, op.after_line, op.content);
+      src.finalContent = newContent;
+      src.finalHash = contentHash(newContent);
+      return { context: `insert_after: nach Zeile ${op.after_line}`, sizeBefore, sizeAfter: newContent.length };
     }
     case 'delete_lines': {
       if (op.line_start === undefined || op.line_end === undefined) {
         throw new Error('delete_lines: line_start, line_end erforderlich');
       }
-      const newContent = deleteLines(currentContent, op.line_start, op.line_end);
-      return { newContent, context: `delete_lines: ${op.line_start}-${op.line_end}` };
+      if (src.deleted) throw new Error('delete_lines: Datei wurde in dieser Batch geloescht');
+      const newContent = deleteLines(src.finalContent, op.line_start, op.line_end);
+      src.finalContent = newContent;
+      src.finalHash = contentHash(newContent);
+      return { context: `delete_lines: ${op.line_start}-${op.line_end}`, sizeBefore, sizeAfter: newContent.length };
+    }
+    case 'delete': {
+      if (src.deleted || src.finalContent === '') throw new Error('delete: Datei existiert nicht (oder schon geloescht in dieser Batch)');
+      src.deleted = true;
+      return { context: `delete: ${sizeBefore} bytes`, sizeBefore, sizeAfter: 0 };
+    }
+    case 'move': {
+      if (!op.new_path) throw new Error('move: new_path fehlt');
+      if (src.deleted || src.finalContent === '') throw new Error('move: src existiert nicht');
+      const dst = buffers.get(op.new_path);
+      if (!dst) throw new Error(`move: dst-Buffer "${op.new_path}" nicht geladen`);
+      if (!dst.deleted && dst.finalContent !== '') {
+        throw new Error(`move: dst "${op.new_path}" existiert bereits — Konflikt`);
+      }
+      const movedContent = src.finalContent;
+      const movedHash = src.finalHash;
+      dst.finalContent = movedContent;
+      dst.finalHash = movedHash;
+      dst.deleted = false;
+      dst.wasNewlyCreated = true;
+      src.deleted = true;
+      // src.finalContent bleibt fuer den Marker-Snapshot
+      return { context: `move: ${sizeBefore} bytes -> ${op.new_path}`, sizeBefore, sizeAfter: 0 };
+    }
+    case 'copy': {
+      if (!op.new_path) throw new Error('copy: new_path fehlt');
+      if (src.deleted || src.finalContent === '') throw new Error('copy: src existiert nicht');
+      const dst = buffers.get(op.new_path);
+      if (!dst) throw new Error(`copy: dst-Buffer "${op.new_path}" nicht geladen`);
+      if (!dst.deleted && dst.finalContent !== '') {
+        throw new Error(`copy: dst "${op.new_path}" existiert bereits — Konflikt`);
+      }
+      dst.finalContent = src.finalContent;
+      dst.finalHash = src.finalHash;
+      dst.deleted = false;
+      dst.wasNewlyCreated = true;
+      return { context: `copy: -> ${op.new_path} (${src.finalContent.length} bytes)`, sizeBefore, sizeAfter: src.finalContent.length };
     }
     default:
       throw new Error(`Unbekannte Op-Action: ${(op as FileBatchOp).action}`);
   }
+}
+
+/** Helper: laedt Datei in Buffer-Map wenn noch nicht geladen, schreibt Hash in expectedHashes. */
+async function ensureBuffer(
+  buffers: Map<string, PreparedFile>,
+  expectedHashes: Record<string, string>,
+  project: string,
+  filePath: string,
+): Promise<PreparedFile> {
+  const existing = buffers.get(filePath);
+  if (existing) return existing;
+  const initialContent = (await getFileContentFromPg(project, filePath)) ?? '';
+  const initialHash = contentHash(initialContent);
+  expectedHashes[filePath] = initialHash;
+  const buf: PreparedFile = { finalContent: initialContent, finalHash: initialHash };
+  buffers.set(filePath, buf);
+  return buf;
 }
 
 /**
@@ -231,23 +332,18 @@ export async function planBatch(args: {
       throw new Error(`Op ${i}: file_path fehlt`);
     }
 
-    let buf = fileBuffers.get(op.file_path);
-    let isFirstOpOnFile = false;
-    if (!buf) {
-      const initialContent = (await getFileContentFromPg(args.project, op.file_path)) ?? '';
-      const initialHash = contentHash(initialContent);
-      expectedHashes[op.file_path] = initialHash;
-      buf = { finalContent: initialContent, finalHash: initialHash };
-      fileBuffers.set(op.file_path, buf);
-      isFirstOpOnFile = true;
+    // src-Buffer laden falls noch nicht da. Tracke ob das die erste Op
+    // auf dieser Datei war (relevant fuer create-Validierung).
+    const wasUnknown = !fileBuffers.has(op.file_path);
+    await ensureBuffer(fileBuffers, expectedHashes, args.project, op.file_path);
+
+    // Lifecycle-Ops mit zweitem Pfad (move/copy): dst auch laden.
+    if ((op.action === 'move' || op.action === 'copy') && op.new_path) {
+      await ensureBuffer(fileBuffers, expectedHashes, args.project, op.new_path);
     }
 
-    const sizeBefore = Buffer.byteLength(buf.finalContent, 'utf8');
     try {
-      const { newContent, context } = applyOpInMemory(buf.finalContent, op, isFirstOpOnFile);
-      buf.finalContent = newContent;
-      buf.finalHash = contentHash(newContent);
-      const sizeAfter = Buffer.byteLength(newContent, 'utf8');
+      const { context, sizeBefore, sizeAfter } = applyOpInMemory(fileBuffers, op, wasUnknown);
       previews.push({
         index: i,
         file_path: op.file_path,
@@ -263,7 +359,6 @@ export async function planBatch(args: {
         file_path: op.file_path,
         action: op.action,
         ok: false,
-        size_before: sizeBefore,
         error: (err as Error).message,
       });
       // Abbrechen — Plan haengt sich nicht an einem fehlerhaften Op auf.
@@ -399,20 +494,24 @@ export async function commitBatch(args: {
   }
 
   // Re-Apply Ops auf den AKTUELLEN Stand (Hashes matchen → Stand identisch zu Plan-Zeitpunkt).
-  const finalBuffers = new Map<string, string>();
-  const seenFile = new Set<string>();
-  for (const filePath of Object.keys(plan.expected_hashes)) {
-    finalBuffers.set(filePath, currentBuffers.get(filePath) ?? '');
+  // Die Buffer-Map nutzt jetzt PreparedFile (mit deleted/wasNewlyCreated-Flags) damit der
+  // Write-Loop fuer delete/move/copy die richtige DB-Operation waehlen kann.
+  const finalBuffers = new Map<string, PreparedFile>();
+  for (const [filePath, expectedHash] of Object.entries(plan.expected_hashes)) {
+    const content = currentBuffers.get(filePath) ?? '';
+    finalBuffers.set(filePath, {
+      finalContent: content,
+      finalHash: expectedHash,
+    });
   }
+  const seenFile = new Set<string>();
 
   for (let i = 0; i < plan.ops.length; i++) {
     const op = plan.ops[i];
-    const current = finalBuffers.get(op.file_path) ?? '';
     const isFirstOpOnFile = !seenFile.has(op.file_path);
     seenFile.add(op.file_path);
     try {
-      const { newContent } = applyOpInMemory(current, op, isFirstOpOnFile);
-      finalBuffers.set(op.file_path, newContent);
+      applyOpInMemory(finalBuffers, op, isFirstOpOnFile);
     } catch (err) {
       // Sollte eigentlich nicht passieren wenn Plan sauber war — defensive Behandlung.
       return {
@@ -426,8 +525,7 @@ export async function commitBatch(args: {
   }
 
   // Schreiben mit batch_id=plan.id — file_versions-Snapshots tragen die Batch-ID.
-  // Per File entscheiden: war initial leer (existed not) → createFileInPg, sonst updateFileInPg.
-  const writtenFiles: Array<{ file_path: string; size: number; hash: string; created: boolean }> = [];
+  const writtenFiles: Array<{ file_path: string; size: number; hash: string; created: boolean; deleted?: boolean }> = [];
   const batchIdNum = Number(args.plan_id);
   const batchIdSafe = Number.isFinite(batchIdNum) && batchIdNum <= Number.MAX_SAFE_INTEGER ? batchIdNum : undefined;
 
@@ -437,26 +535,54 @@ export async function commitBatch(args: {
     if (op.reason && !reasonPerFile.has(op.file_path)) {
       reasonPerFile.set(op.file_path, op.reason);
     }
+    // Sekundaerer Pfad bei move/copy soll auch reason erben (gleicher reason wie src).
+    if (op.reason && op.new_path && !reasonPerFile.has(op.new_path)) {
+      reasonPerFile.set(op.new_path, op.reason);
+    }
   }
   const fallbackReason = plan.reason ?? undefined;
 
-  for (const [filePath, newContent] of finalBuffers) {
-    const wasNew = plan.expected_hashes[filePath] === EMPTY_CONTENT_HASH;
+  for (const [filePath, buf] of finalBuffers) {
+    const expectedHash = plan.expected_hashes[filePath];
+    const existedBefore = expectedHash !== EMPTY_CONTENT_HASH;
     const effectiveReason = reasonPerFile.get(filePath) ?? fallbackReason;
-    if (wasNew) {
-      // createFileInPg schreibt den Marker-Snapshot direkt mit batch_id + reason +
-      // edit_action="batch:N:create" — dadurch entsteht nur EIN Eintrag pro Create
-      // (vorher: createFileInPg + separater INSERT = 2 Eintraege).
-      await createFileInPg(plan.project, filePath, newContent, args.agent_id, effectiveReason, batchIdSafe, `batch:${args.plan_id}:create`);
-    } else {
-      await updateFileInPg(plan.project, filePath, newContent, args.agent_id, `batch:${args.plan_id}`, batchIdSafe, effectiveReason);
+
+    if (buf.deleted) {
+      if (!existedBefore) {
+        // Existed not before, in-batch erstellt + geloescht: nichts zu tun.
+        continue;
+      }
+      // softDelete + Marker-Snapshot mit ALTEM Inhalt fuer restore_batch.
+      await softDeleteFile(plan.project, filePath);
+      const oldContent = currentBuffers.get(filePath) ?? '';
+      const oldSize = Buffer.byteLength(oldContent, 'utf8');
+      await pool.query(
+        `INSERT INTO file_versions (project, file_path, content, content_hash, edit_action, agent_id, batch_id, size_bytes, reason)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+        [plan.project, filePath, oldContent, contentHash(oldContent), `batch:${args.plan_id}:delete`, args.agent_id ?? null, batchIdSafe ?? null, oldSize, effectiveReason ?? null],
+      );
+      writtenFiles.push({ file_path: filePath, size: 0, hash: EMPTY_CONTENT_HASH, created: false, deleted: true });
+    } else if (!existedBefore) {
+      // Datei wurde in dieser Batch erstellt (create | move-target | copy-target).
+      await createFileInPg(plan.project, filePath, buf.finalContent, args.agent_id, effectiveReason, batchIdSafe, `batch:${args.plan_id}:create`);
+      writtenFiles.push({
+        file_path: filePath,
+        size: Buffer.byteLength(buf.finalContent, 'utf8'),
+        hash: buf.finalHash,
+        created: true,
+      });
+    } else if (buf.finalHash !== expectedHash) {
+      // Bestehende Datei wurde im Plan editiert.
+      await updateFileInPg(plan.project, filePath, buf.finalContent, args.agent_id, `batch:${args.plan_id}`, batchIdSafe, effectiveReason);
+      writtenFiles.push({
+        file_path: filePath,
+        size: Buffer.byteLength(buf.finalContent, 'utf8'),
+        hash: buf.finalHash,
+        created: false,
+      });
     }
-    writtenFiles.push({
-      file_path: filePath,
-      size: Buffer.byteLength(newContent, 'utf8'),
-      hash: contentHash(newContent),
-      created: wasNew,
-    });
+    // sonst: Datei war im Plan aber unveraendert (z.B. nur als move-src in der Op-Liste,
+    // schon ueber den 'deleted' branch behandelt) — keine Aktion noetig.
   }
 
   await pool.query(
