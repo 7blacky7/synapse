@@ -26,7 +26,7 @@
 
 import * as crypto from 'crypto';
 import { getPool } from '../db/client.js';
-import { parseAndEmbed } from './code.js';
+import { enqueueParseAndEmbed } from './code.js';
 import { deleteByFilePath } from '../qdrant/index.js';
 import { COLLECTIONS } from '../types/index.js';
 import { checkErrorPatterns, type ErrorPatternWarning } from './error-patterns.js';
@@ -452,9 +452,7 @@ export async function createFileInPg(
     );
   } catch { /* Tabelle existiert in alten Schemata vlt nicht — best-effort */ }
 
-  parseAndEmbed(project, filePath).catch((err: unknown) =>
-    console.error(`[code-write] parseAndEmbed Fehler fuer ${filePath}:`, err)
-  );
+  enqueueParseAndEmbed(project, filePath);
 
   return warnings?.length ? { warnings } : {};
 }
@@ -533,9 +531,7 @@ export async function updateFileInPg(
     console.error(`[code-write] updateFileInPg: Keine Datei gefunden fuer ${project}/${filePath}`);
   }
 
-  parseAndEmbed(project, filePath).catch((err: unknown) =>
-    console.error(`[code-write] parseAndEmbed Fehler fuer ${filePath}:`, err)
-  );
+  enqueueParseAndEmbed(project, filePath);
 
   return warnings?.length ? { warnings } : {};
 }
@@ -633,9 +629,7 @@ export async function moveFileInPg(
   );
 
   // parseAndEmbed fuer neuen Pfad
-  parseAndEmbed(project, newPath).catch((err: unknown) =>
-    console.error(`[code-write] parseAndEmbed Fehler fuer ${newPath}:`, err)
-  );
+  enqueueParseAndEmbed(project, newPath);
 }
 
 /**
