@@ -3102,6 +3102,8 @@ export async function mcpRoutes(fastify: FastifyInstance): Promise<void> {
 
     reply.header('Access-Control-Allow-Origin', '*');
     reply.header('Access-Control-Allow-Headers', '*');
+    reply.header('Cache-Control', 'no-store, no-cache, must-revalidate');
+    reply.header('Pragma', 'no-cache');
 
     if (jsonrpc !== '2.0') {
       return reply.status(400).send({ jsonrpc: '2.0', id, error: { code: -32600, message: 'Invalid JSON-RPC version' } });
@@ -3115,7 +3117,7 @@ export async function mcpRoutes(fastify: FastifyInstance): Promise<void> {
           result = {
             protocolVersion: '2024-11-05',
             capabilities: { tools: {} },
-            serverInfo: { name: 'synapse-mcp', version: '0.2.0' },
+            serverInfo: { name: 'synapse-mcp', version: '0.3.0' },
           };
           break;
 
@@ -3160,6 +3162,8 @@ export async function mcpRoutes(fastify: FastifyInstance): Promise<void> {
 
     reply.header('Access-Control-Allow-Origin', '*');
     reply.header('Access-Control-Allow-Headers', '*');
+    reply.header('Cache-Control', 'no-store, no-cache, must-revalidate');
+    reply.header('Pragma', 'no-cache');
 
     if (!jsonrpc) {
       return reply.status(400).send({ error: 'Not a JSON-RPC request' });
@@ -3179,7 +3183,7 @@ export async function mcpRoutes(fastify: FastifyInstance): Promise<void> {
           result = {
             protocolVersion: '2024-11-05',
             capabilities: { tools: {} },
-            serverInfo: { name: 'synapse-mcp', version: '0.2.0' },
+            serverInfo: { name: 'synapse-mcp', version: '0.3.0' },
           };
           break;
 
