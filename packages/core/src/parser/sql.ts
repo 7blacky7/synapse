@@ -424,6 +424,60 @@ class SqlParser implements LanguageParser {
       }
     }
 
+    // ══════════════════════════════════════════════
+    // 11. DML/DQL Queries → sql_query Symbol + Tabellen-Referenzen
+    //     Funktioniert auch wenn CREATE TABLE NICHT im gleichen File steht
+    //     (wichtig fuer embedded SQL aus C/Python/Java/etc. via parseEmbeddedSql).
+    //     Schema: name="<VERB> <table>", value=Query (gekuerzt), params=[VERB, ...tables]
+    // ══════════════════════════════════════════════
+    const dmlVerbRe = /\b(SELECT|INSERT\s+INTO|UPDATE|DELETE\s+FROM)\b/gi;
+    while ((m = dmlVerbRe.exec(content)) !== null) {
+      const verbRaw = m[1].toUpperCase();
+      const verb = verbRaw.split(/\s+/)[0]; // SELECT/INSERT/UPDATE/DELETE
+      const lineStart = lineAt(content, m.index);
+      const rawWindow = content.substring(m.index, m.index + 500);
+      const window = rawWindow.split(';')[0];
+      const tables: string[] = [];
+      let firstTable: string | undefined;
+      if (verb === 'INSERT') {
+        const t = /^INSERT\s+INTO\s+(?:(\w+)\.)?(\w+)/i.exec(window);
+        if (t) { firstTable = t[2]; tables.push(t[2]); }
+      } else if (verb === 'UPDATE') {
+        const t = /^UPDATE\s+(?:(\w+)\.)?(\w+)/i.exec(window);
+        if (t) { firstTable = t[2]; tables.push(t[2]); }
+      } else if (verb === 'DELETE') {
+        const t = /^DELETE\s+FROM\s+(?:(\w+)\.)?(\w+)/i.exec(window);
+        if (t) { firstTable = t[2]; tables.push(t[2]); }
+      } else if (verb === 'SELECT') {
+        const t = /\bFROM\s+(?:(\w+)\.)?(\w+)/i.exec(window);
+        if (t) { firstTable = t[2]; tables.push(t[2]); }
+      }
+      // JOIN-Tabellen zusaetzlich erfassen
+      const joinRe = /\bJOIN\s+(?:(\w+)\.)?(\w+)/gi;
+      let jm: RegExpExecArray | null;
+      while ((jm = joinRe.exec(window)) !== null) {
+        if (!tables.includes(jm[2])) tables.push(jm[2]);
+      }
+      if (!firstTable) continue;
+      const preview = window.split(';')[0].replace(/\s+/g, ' ').trim().slice(0, 200);
+      symbols.push({
+        symbol_type: 'sql_query',
+        name: `${verb} ${firstTable}`,
+        value: preview,
+        params: [verb, ...tables],
+        line_start: lineStart,
+        is_exported: false,
+      });
+      for (const tbl of tables) {
+        references.push({
+          symbol_name: tbl,
+          line_number: lineStart,
+          context: preview.slice(0, 80),
+        });
+      }
+    }
+
+
     symbols.push(...extractStringLiterals(content, { includeSingleQuotes: true }));
 
 
