@@ -9,6 +9,8 @@
 
 import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
 import { extractStringLiterals } from './types.js';
+import { formatRouteName, isLikelyHttpPath } from './patterns/http.js';
+import { parseEmbeddedSql, looksLikeSql } from './patterns/sql.js';
 
 /** Zeilennummer fuer eine Position im Text (1-basiert) */
 function lineAt(text: string, pos: number): number {
@@ -287,6 +289,80 @@ class PythonParser implements LanguageParser {
     // 10. String-Literale als benannte Symbole (via Helper)
     // ══════════════════════════════════════════════
     symbols.push(...extractStringLiterals(content, { includeSingleQuotes: true }));
+
+    // ══════════════════════════════════════════════
+    // 11. Routes — Flask: @app.route('/path', methods=['GET', 'POST'])
+    // ══════════════════════════════════════════════
+    const flaskRouteRe = /@\w+\.route\s*\(\s*['"]([^'"]+)['"](?:\s*,\s*methods\s*=\s*\[([^\]]+)\])?/g;
+    while ((m = flaskRouteRe.exec(content)) !== null) {
+      const routePath = m[1];
+      if (!isLikelyHttpPath(routePath)) continue;
+      const methodsRaw = m[2];
+      const methods = methodsRaw
+        ? methodsRaw.split(',').map(s => s.trim().replace(/['"]/g, '').toUpperCase()).filter(Boolean)
+        : ['GET'];
+      const line = lineAt(content, m.index);
+      for (const method of methods) {
+        symbols.push({
+          symbol_type: 'route',
+          name: formatRouteName(method, routePath),
+          value: routePath,
+          params: [method],
+          line_start: line,
+          is_exported: false,
+        });
+      }
+    }
+
+    // ══════════════════════════════════════════════
+    // 12. Routes — FastAPI: @app.get('/path'), @router.post('/path')
+    // ══════════════════════════════════════════════
+    const fastapiRouteRe = /@\w+\.(get|post|put|patch|delete|head|options)\s*\(\s*['"]([^'"]+)['"]/g;
+    while ((m = fastapiRouteRe.exec(content)) !== null) {
+      const method = m[1].toUpperCase();
+      const routePath = m[2];
+      if (!isLikelyHttpPath(routePath)) continue;
+      const line = lineAt(content, m.index);
+      symbols.push({
+        symbol_type: 'route',
+        name: formatRouteName(method, routePath),
+        value: routePath,
+        params: [method],
+        line_start: line,
+        is_exported: false,
+      });
+    }
+
+    // ══════════════════════════════════════════════
+    // 13. Routes — Django: path('users/', views.user_list), re_path(...), url(...)
+    // ══════════════════════════════════════════════
+    const djangoRouteRe = /\b(?:path|re_path|url)\s*\(\s*['"]([^'"]+)['"]/g;
+    while ((m = djangoRouteRe.exec(content)) !== null) {
+      const rawPath = m[1];
+      // Django patterns sind oft ohne fuehrenden Slash — normalisieren
+      const routePath = rawPath.startsWith('/') ? rawPath : '/' + rawPath;
+      const line = lineAt(content, m.index);
+      symbols.push({
+        symbol_type: 'route',
+        name: formatRouteName('GET', routePath),
+        value: routePath,
+        params: ['GET'],
+        line_start: line,
+        is_exported: false,
+      });
+    }
+
+    // ══════════════════════════════════════════════
+    // 14. Embedded SQL — cursor.execute(...), cursor.executemany(...)
+    // ══════════════════════════════════════════════
+    const sqlExecRe = /\b(?:execute|executemany)\s*\(\s*['"]((?:[^'"\\]|\\.){10,})['"]/g;
+    while ((m = sqlExecRe.exec(content)) !== null) {
+      const sqlText = m[1];
+      if (looksLikeSql(sqlText)) {
+        const baseLine = lineAt(content, m.index);
+        symbols.push(...parseEmbeddedSql(sqlText, filePath, baseLine));
+      }
+    }
 
     return { symbols, references };
   }

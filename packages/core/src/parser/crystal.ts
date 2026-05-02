@@ -10,6 +10,8 @@
 
 import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
 import { extractStringLiterals } from './types.js';
+import { formatRouteName, isLikelyHttpPath, HTTP_VERBS } from './patterns/http.js';
+import { parseEmbeddedSql, looksLikeSql } from './patterns/sql.js';
 
 function lineAt(text: string, pos: number): number {
   return text.substring(0, pos).split('\n').length;
@@ -243,6 +245,37 @@ class CrystalParser implements LanguageParser {
 
     symbols.push(...extractStringLiterals(content));
 
+    // ══════════════════════════════════════════════
+    // 13. Routes — Kemal: get "/x" do, post "/x" do, ws "/x" do
+    // ══════════════════════════════════════════════
+    const kemalRouteRe = /^\s*(get|post|put|patch|delete|head|options|ws)\s+["']([^"']+)["']\s+do\b/gm;
+    while ((m = kemalRouteRe.exec(content)) !== null) {
+      const rawVerb = m[1].toLowerCase();
+      const verb = rawVerb === 'ws' ? 'ws' : rawVerb;
+      if (verb !== 'ws' && !HTTP_VERBS.has(verb)) continue;
+      const routePath = m[2];
+      if (!isLikelyHttpPath(routePath)) continue;
+      symbols.push({
+        symbol_type: 'route',
+        name: formatRouteName(verb, routePath),
+        value: routePath,
+        params: [verb.toUpperCase()],
+        line_start: lineAt(content, m.index),
+        is_exported: false,
+      });
+    }
+
+    // ══════════════════════════════════════════════
+    // 14. Embedded SQL — DB.exec / db.query / db.scalar / db.query_one
+    // ══════════════════════════════════════════════
+    const sqlExecRe = /\b(?:DB|db)\.(?:exec|query|scalar|query_one)\s*\(\s*["']((?:[^"'\\]|\\.){10,})["']/g;
+    while ((m = sqlExecRe.exec(content)) !== null) {
+      const sqlText = m[1];
+      if (looksLikeSql(sqlText)) {
+        const baseLine = lineAt(content, m.index);
+        symbols.push(...parseEmbeddedSql(sqlText, filePath, baseLine));
+      }
+    }
 
     return { symbols, references };
   }

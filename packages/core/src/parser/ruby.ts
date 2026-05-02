@@ -9,6 +9,8 @@
 
 import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
 import { extractStringLiterals } from './types.js';
+import { formatRouteName, isLikelyHttpPath, HTTP_VERBS } from './patterns/http.js';
+import { parseEmbeddedSql, looksLikeSql } from './patterns/sql.js';
 
 function lineAt(text: string, pos: number): number {
   return text.substring(0, pos).split('\n').length;
@@ -221,6 +223,91 @@ class RubyParser implements LanguageParser {
 
     symbols.push(...extractStringLiterals(content, { includeSingleQuotes: true }));
 
+    // ══════════════════════════════════════════════
+    // 10. Routes — Sinatra/Rails-style: get '/x' do, post '/x' do
+    //     Auch Rails-Router: get '/x' => 'controller#action', match '/x', via: :get
+    // ══════════════════════════════════════════════
+    const sinatraRouteRe = /^\s*(get|post|put|patch|delete|head|options)\s+['"]([^'"]+)['"]/gm;
+    while ((m = sinatraRouteRe.exec(content)) !== null) {
+      const verb = m[1].toLowerCase();
+      if (!HTTP_VERBS.has(verb)) continue;
+      const rawPath = m[2];
+      const routePath = rawPath.startsWith('/') ? rawPath : '/' + rawPath;
+      if (!isLikelyHttpPath(routePath)) continue;
+      const line = lineAt(content, m.index);
+      symbols.push({
+        symbol_type: 'route',
+        name: formatRouteName(verb, routePath),
+        value: routePath,
+        params: [verb.toUpperCase()],
+        line_start: line,
+        is_exported: false,
+      });
+    }
+
+    // ══════════════════════════════════════════════
+    // 11. Routes — Rails: match '/x', via: [:get, :post]
+    // ══════════════════════════════════════════════
+    const railsMatchRe = /^\s*match\s+['"]([^'"]+)['"][^\n]*?via:\s*(?:\[([^\]]+)\]|:(\w+))/gm;
+    while ((m = railsMatchRe.exec(content)) !== null) {
+      const rawPath = m[1];
+      const routePath = rawPath.startsWith('/') ? rawPath : '/' + rawPath;
+      if (!isLikelyHttpPath(routePath)) continue;
+      const verbsRaw = m[2] || m[3] || '';
+      const verbs = verbsRaw
+        .split(',')
+        .map(s => s.trim().replace(/^:/, '').toLowerCase())
+        .filter(v => HTTP_VERBS.has(v));
+      const line = lineAt(content, m.index);
+      for (const verb of verbs.length ? verbs : ['get']) {
+        symbols.push({
+          symbol_type: 'route',
+          name: formatRouteName(verb, routePath),
+          value: routePath,
+          params: [verb.toUpperCase()],
+          line_start: line,
+          is_exported: false,
+        });
+      }
+    }
+
+    // ══════════════════════════════════════════════
+    // 12. Routes — Rails: resources :name / resource :name
+    //     Erzeugt Standard-CRUD-Routen
+    // ══════════════════════════════════════════════
+    const railsResourcesRe = /^\s*(resources|resource)\s+:(\w+)/gm;
+    while ((m = railsResourcesRe.exec(content)) !== null) {
+      const kind = m[1];
+      const name = m[2];
+      const line = lineAt(content, m.index);
+      const basePath = '/' + name;
+      const crud: Array<[string, string]> = kind === 'resources'
+        ? [['GET', basePath], ['POST', basePath], ['GET', `${basePath}/:id`], ['PATCH', `${basePath}/:id`], ['DELETE', `${basePath}/:id`]]
+        : [['GET', basePath], ['POST', basePath], ['PATCH', basePath], ['DELETE', basePath]];
+      for (const [method, p] of crud) {
+        symbols.push({
+          symbol_type: 'route',
+          name: formatRouteName(method, p),
+          value: p,
+          params: [method],
+          line_start: line,
+          is_exported: false,
+        });
+      }
+    }
+
+    // ══════════════════════════════════════════════
+    // 13. Embedded SQL — ActiveRecord::Base.connection.execute('SELECT...'),
+    //     find_by_sql('SELECT...'), connection.exec_query('...')
+    // ══════════════════════════════════════════════
+    const sqlExecRe = /\b(?:execute|exec_query|find_by_sql|exec)\s*\(\s*['"]((?:[^'"\\]|\\.){10,})['"]/g;
+    while ((m = sqlExecRe.exec(content)) !== null) {
+      const sqlText = m[1];
+      if (looksLikeSql(sqlText)) {
+        const baseLine = lineAt(content, m.index);
+        symbols.push(...parseEmbeddedSql(sqlText, filePath, baseLine));
+      }
+    }
 
     return { symbols, references };
   }

@@ -11,6 +11,8 @@
 
 import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
 import { extractStringLiterals } from './types.js';
+import { HTTP_VERBS, formatRouteName, isLikelyHttpPath } from './patterns/http.js';
+import { parseEmbeddedSql, looksLikeSql } from './patterns/sql.js';
 
 function lineAt(text: string, pos: number): number {
   return text.substring(0, pos).split('\n').length;
@@ -337,6 +339,76 @@ class ElixirParser implements LanguageParser {
 
     symbols.push(...extractStringLiterals(content, { includeSingleQuotes: true }));
 
+    // ══════════════════════════════════════════════
+    // 14. Routes — Phoenix Router: get "/x", Controller, :action
+    //     Pattern: HTTP-Verb am Zeilenanfang (innerhalb scope/router-Block)
+    //     gefolgt von String-Pfad. Optional Controller + Action.
+    // ══════════════════════════════════════════════
+    const phoenixRouteRe = /^\s*(get|post|put|patch|delete|head|options)\s+"([^"\n]+)"(?:\s*,\s*([\w.]+)(?:\s*,\s*:(\w+))?)?/gm;
+    while ((m = phoenixRouteRe.exec(content)) !== null) {
+      const verb = m[1].toLowerCase();
+      if (!HTTP_VERBS.has(verb)) continue;
+      const routePath = m[2];
+      if (!isLikelyHttpPath(routePath)) continue;
+      const controller = m[3];
+      const action = m[4];
+      const lineStart = lineAt(content, m.index);
+      const params = [verb.toUpperCase()];
+      if (controller) params.push(controller);
+      if (action) params.push(`:${action}`);
+      symbols.push({
+        symbol_type: 'route',
+        name: formatRouteName(verb, routePath),
+        value: routePath,
+        params,
+        line_start: lineStart,
+        is_exported: false,
+      });
+    }
+
+    // ══════════════════════════════════════════════
+    // 15. Routes — Phoenix resources: resources "/users", UserController
+    // ══════════════════════════════════════════════
+    const phoenixResourcesRe = /^\s*resources\s+"([^"\n]+)"(?:\s*,\s*([\w.]+))?/gm;
+    while ((m = phoenixResourcesRe.exec(content)) !== null) {
+      const routePath = m[1];
+      if (!isLikelyHttpPath(routePath)) continue;
+      const controller = m[2];
+      const lineStart = lineAt(content, m.index);
+      const params = ['GET'];
+      if (controller) params.push(controller);
+      symbols.push({
+        symbol_type: 'route',
+        name: formatRouteName('GET', routePath),
+        value: routePath,
+        params,
+        line_start: lineStart,
+        is_exported: false,
+      });
+    }
+
+    // ══════════════════════════════════════════════
+    // 16. Embedded SQL — Ecto.Adapters.SQL.query!(...), query(...)
+    //     Pattern: query!/query mit String-Literal (Double-Quote oder Heredoc).
+    // ══════════════════════════════════════════════
+    // Single-line double-quoted SQL string
+    const ectoSqlRe = /\bquery!?\s*\(\s*[\w.]+\s*,\s*"((?:[^"\\]|\\.){10,})"/g;
+    while ((m = ectoSqlRe.exec(content)) !== null) {
+      const sqlText = m[1];
+      if (looksLikeSql(sqlText)) {
+        const baseLine = lineAt(content, m.index);
+        symbols.push(...parseEmbeddedSql(sqlText, filePath, baseLine));
+      }
+    }
+    // Heredoc SQL string """ ... """
+    const ectoSqlHeredocRe = /\bquery!?\s*\(\s*[\w.]+\s*,\s*"""([\s\S]*?)"""/g;
+    while ((m = ectoSqlHeredocRe.exec(content)) !== null) {
+      const sqlText = m[1];
+      if (looksLikeSql(sqlText)) {
+        const baseLine = lineAt(content, m.index);
+        symbols.push(...parseEmbeddedSql(sqlText, filePath, baseLine));
+      }
+    }
 
     return { symbols, references };
   }

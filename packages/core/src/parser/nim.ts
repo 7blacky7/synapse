@@ -10,6 +10,7 @@
 
 import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
 import { extractStringLiterals } from './types.js';
+import { formatRouteName, isLikelyHttpPath, HTTP_VERBS } from './patterns/http.js';
 
 function lineAt(text: string, pos: number): number {
   return text.substring(0, pos).split('\n').length;
@@ -253,6 +254,24 @@ class NimParser implements LanguageParser {
 
     symbols.push(...extractStringLiterals(content));
 
+    // ══════════════════════════════════════════════
+    // 10. Jester Routes: get "/x": / post "/x": / ...
+    // ══════════════════════════════════════════════
+    const jesterRouteRe = /^\s*(get|post|put|patch|delete|head|options)\s+["']([^"']+)["']\s*:/gm;
+    while ((m = jesterRouteRe.exec(content)) !== null) {
+      const method = m[1].toLowerCase();
+      const path = m[2];
+      if (!HTTP_VERBS.has(method)) continue;
+      if (!isLikelyHttpPath(path)) continue;
+      symbols.push({
+        symbol_type: 'route',
+        name: formatRouteName(method, path),
+        value: path,
+        params: [method.toUpperCase()],
+        line_start: lineAt(content, m.index),
+        is_exported: false,
+      });
+    }
 
     return { symbols, references };
   }

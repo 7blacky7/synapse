@@ -10,6 +10,7 @@
 
 import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
 import { extractStringLiterals } from './types.js';
+import { formatRouteName, isLikelyHttpPath } from './patterns/http.js';
 
 function lineAt(text: string, pos: number): number {
   return text.substring(0, pos).split('\n').length;
@@ -265,6 +266,22 @@ class ErlangParser implements LanguageParser {
 
     symbols.push(...extractStringLiterals(content, { includeSingleQuotes: true }));
 
+    // ══════════════════════════════════════════════
+    // 13. cowboy_router routes
+    // ══════════════════════════════════════════════
+    const cowboyRouteRe = /\{\s*["']([^"']+)["']\s*,\s*\w+_handler\s*,/g;
+    while ((m = cowboyRouteRe.exec(content)) !== null) {
+      const path = m[1];
+      if (!isLikelyHttpPath(path)) continue;
+      symbols.push({
+        symbol_type: 'route',
+        name: formatRouteName('ANY', path),
+        value: path,
+        params: ['ANY'],
+        line_start: lineAt(content, m.index),
+        is_exported: true,
+      });
+    }
 
     return { symbols, references };
   }

@@ -9,6 +9,7 @@
 
 import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
 import { extractStringLiterals } from './types.js';
+import { formatRouteName, isLikelyHttpPath, HTTP_VERBS } from './patterns/http.js';
 
 function lineAt(text: string, pos: number): number {
   return text.substring(0, pos).split('\n').length;
@@ -272,6 +273,40 @@ class LuaParser implements LanguageParser {
 
     symbols.push(...extractStringLiterals(content, { includeSingleQuotes: true }));
 
+    // ══════════════════════════════════════════════
+    // 7. Lapis/OpenResty Routes: app:get("/x", handler)
+    // ══════════════════════════════════════════════
+    const lapisSimpleRe = /\b\w+:(get|post|put|patch|delete|head|options|match)\s*\(\s*["']([^"']+)["']/g;
+    const lapisNamedRe = /\b\w+:(get|post|put|patch|delete|head|options|match)\s*\(\s*["'][^"']+["']\s*,\s*["']([^"']+)["']/g;
+    const seenRoutes = new Set<string>();
+    while ((m = lapisSimpleRe.exec(content)) !== null) {
+      const verb = m[1].toLowerCase();
+      if (!HTTP_VERBS.has(verb) && verb !== 'match') continue;
+      let path = m[2];
+      if (!isLikelyHttpPath(path)) {
+        // Try named route variant: 1. arg = name, 2. arg = path
+        lapisNamedRe.lastIndex = m.index;
+        const named = lapisNamedRe.exec(content);
+        if (named && named.index === m.index && isLikelyHttpPath(named[2])) {
+          path = named[2];
+        } else {
+          continue;
+        }
+      }
+      const method = verb === 'match' ? 'ANY' : verb.toUpperCase();
+      const lineStart = lineAt(content, m.index);
+      const key = `${method} ${path}@${lineStart}`;
+      if (seenRoutes.has(key)) continue;
+      seenRoutes.add(key);
+      symbols.push({
+        symbol_type: 'route',
+        name: formatRouteName(method, path),
+        value: path,
+        params: [method],
+        line_start: lineStart,
+        is_exported: true,
+      });
+    }
 
     return { symbols, references };
   }
