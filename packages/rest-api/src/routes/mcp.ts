@@ -93,6 +93,12 @@ import {
   getFileVersion,
   restoreFileVersion,
   restoreBatch,
+  // Project-Init-Queue (Self-Service Project-Bootstrap)
+  isValidProjectName,
+  enqueueProjectInitJob,
+  waitForProjectInitJob,
+  expirePendingProjectInitJobs,
+  getProjectInitJob,
   // Channels
   createChannel,
   joinChannel,
@@ -147,21 +153,24 @@ const MCP_TOOLS = [
   // 1. project
   {
     name: 'project',
-    description: 'Lifecycle des eigenen Synapse-Projekts auf dem User-PC: Initialisierung, Setup, Tech-Detection, Aufraeumen, Status, Listing. Wirkt nur auf das im Pfad angegebene lokale User-Projekt. Kein Zugriff auf fremde Repositories, keine externen Systeme.',
+    description: 'Lifecycle des eigenen Synapse-Projekts auf dem User-PC: Initialisierung, Setup, Tech-Detection, Aufraeumen, Status, Listing. Self-Service-Init: action="init" + name (ohne path) queued den Anlage-Job an den FileWatcher-Daemon auf dem Ziel-PC, der das Projekt unter SYNAPSE_WORKSPACE_ROOT (default ~/dev) anlegt und registriert. Status-Polling via init_status mit job_id.',
     inputSchema: {
       type: 'object',
       properties: {
         action: {
           type: 'string',
-          enum: ['init', 'complete_setup', 'detect_tech', 'cleanup', 'stop', 'status', 'list'],
-          description: 'Aktion: init | complete_setup | detect_tech | cleanup | stop | status | list',
+          enum: ['init', 'init_status', 'complete_setup', 'detect_tech', 'cleanup', 'stop', 'status', 'list'],
+          description: 'Aktion: init | init_status | complete_setup | detect_tech | cleanup | stop | status | list',
         },
-        path: { type: 'string', description: 'Absoluter Pfad zum Projekt-Ordner (fuer init, detect_tech, cleanup, status)' },
-        name: { type: 'string', description: 'Optionaler Projekt-Name (fuer init, cleanup) oder erforderlich fuer cleanup' },
+        path: { type: 'string', description: 'Absoluter Pfad zum Projekt-Ordner. Bei action="init" optional — ohne path queued der Job an den Daemon und resolved gegen WORKSPACE_ROOT/name.' },
+        name: { type: 'string', description: 'Projekt-Name. Pflicht fuer init wenn kein path gegeben. Erlaubt: 2-64 Zeichen [a-zA-Z0-9_-], beginnt mit Buchstabe/Ziffer.' },
         index_docs: { type: 'boolean', description: 'Framework-Dokumentation vorladen (Standard: true, fuer init)' },
         project: { type: 'string', description: 'Projekt-Name (fuer complete_setup, stop, list nutzt dies)' },
         phase: { type: 'string', enum: ['initial', 'post-indexing'], description: 'Setup-Phase (fuer complete_setup)' },
         agent_id: { type: 'string', description: 'Optionale Agent-ID fuer Onboarding (fuer init)' },
+        hostname: { type: 'string', description: 'Optional fuer init: Ziel-Hostname falls mehrere Daemons im selben PG haengen.' },
+        template: { type: 'string', description: 'Optional fuer init: Skeleton-Template ("node"|"python"|"blank"). Aktuell informational, Daemon legt nur Basisordner + README an.' },
+        job_id: { type: 'string', description: 'Erforderlich fuer init_status: Job-ID aus der ersten init-Antwort.' },
       },
       required: ['action'],
     },
@@ -1008,15 +1017,94 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
     case 'project': {
       switch (action) {
         case 'init': {
-          const projectPath = reqStr(args, 'path');
-          const projectName = str(args, 'name') || projectPath.split(/[/\\]/).pop() || 'unknown';
+          const explicitPath = str(args, 'path');
+          const requestedName = str(args, 'name');
           const indexDocs = bool(args, 'index_docs') !== false;
+          const requestedBy = str(args, 'agent_id');
 
+          // Self-Service: Wenn kein path gegeben ist aber ein Name, queue an den
+          // FileWatcher-Daemon auf dem Ziel-PC. Der legt das Verzeichnis unter
+          // SYNAPSE_WORKSPACE_ROOT an, registriert es in PG, startet den Watcher.
+          if (!explicitPath) {
+            if (!requestedName) {
+              return {
+                success: false,
+                error: 'missing_arguments',
+                message: 'Mindestens "name" oder "path" muss gesetzt sein.',
+              };
+            }
+            if (!isValidProjectName(requestedName)) {
+              return {
+                success: false,
+                error: 'invalid_name',
+                message: `Projekt-Name "${requestedName}" ist ungueltig. Erlaubt: 2-64 Zeichen, [a-zA-Z0-9_-], beginnt mit Buchstabe/Ziffer.`,
+              };
+            }
+            const hostname = str(args, 'hostname');
+            const template = str(args, 'template');
+            const { id: jobId } = await enqueueProjectInitJob({
+              name: requestedName,
+              hostname,
+              template,
+              requested_by: requestedBy,
+            });
+            const job = await waitForProjectInitJob(jobId, 35_000);
+            // Sicherheits-Cleanup falls kein Daemon laeuft — markiert >30s alte
+            // pending Jobs als timeout (verhindert dass Jobs ewig haengen).
+            if (job.status === 'pending' || job.status === 'running') {
+              try { await expirePendingProjectInitJobs(30); } catch { /* best-effort */ }
+            }
+
+            if (job.status === 'done' && job.resolved_path) {
+              let techs: Awaited<ReturnType<typeof detectTechnologies>> = [];
+              let docsIndexed = 0;
+              if (indexDocs) {
+                try {
+                  techs = await detectTechnologies(job.resolved_path);
+                  const result = await indexProjectTechnologies(techs);
+                  docsIndexed = result.indexed;
+                } catch {
+                  // Tech-Detection vom REST-Container aus kann ohne FS-Zugriff scheitern — kein Fail.
+                }
+              }
+              return {
+                success: true,
+                project: job.name,
+                path: job.resolved_path,
+                technologies: techs,
+                docsIndexed,
+                job_id: job.id,
+                message: job.message ?? `Projekt "${job.name}" angelegt unter ${job.resolved_path}.`,
+              };
+            }
+
+            // pending nach Wait = Daemon hat sich nicht gemeldet
+            if (job.status === 'pending' || job.status === 'running') {
+              return {
+                success: false,
+                error: 'daemon_unreachable',
+                job_id: job.id,
+                status: job.status,
+                message: 'FileWatcher-Daemon auf dem Ziel-PC hat den Job nicht abgeholt. Pruefe ob der Tray laeuft. Status erneut abrufen mit project(action: "init_status", job_id: "<id>").',
+              };
+            }
+
+            return {
+              success: false,
+              error: job.error ?? job.status,
+              job_id: job.id,
+              status: job.status,
+              message: job.message ?? `Project-Init fehlgeschlagen mit Status "${job.status}".`,
+            };
+          }
+
+          // Bestehender Pfad-Modus (Doku-Indexierung ohne Anlegen).
+          const projectName = requestedName || explicitPath.split(/[/\\]/).pop() || 'unknown';
           let techs: Awaited<ReturnType<typeof detectTechnologies>> = [];
           let docsIndexed = 0;
 
           if (indexDocs) {
-            techs = await detectTechnologies(projectPath);
+            techs = await detectTechnologies(explicitPath);
             const result = await indexProjectTechnologies(techs);
             docsIndexed = result.indexed;
           }
@@ -1024,10 +1112,23 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
           return {
             success: true,
             project: projectName,
-            path: projectPath,
+            path: explicitPath,
             technologies: techs,
             docsIndexed,
             message: `Projekt "${projectName}" - Docs indexiert (FileWatcher nicht verfuegbar ueber HTTP)`,
+          };
+        }
+        case 'init_status': {
+          const jobId = reqStr(args, 'job_id');
+          const job = await getProjectInitJob(jobId);
+          if (!job) return { success: false, error: 'not_found', message: `Job ${jobId} nicht gefunden.` };
+          return {
+            success: job.status === 'done',
+            project: job.name,
+            path: job.resolved_path,
+            status: job.status,
+            error: job.error,
+            message: job.message,
           };
         }
         case 'complete_setup':

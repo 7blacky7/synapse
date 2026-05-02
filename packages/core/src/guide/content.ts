@@ -939,10 +939,16 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
     ],
     actions: {
       init: {
-        description: 'Neues Projekt initialisieren (einmalig). Legt Collections an, startet FileWatcher.',
-        params: 'path (req, absolut), name, index_docs (Standard: true), agent_id',
-        example: 'project({ action: "init", path: "/home/user/dev/myproject", index_docs: true })',
-        tips: 'Einmalig aufrufen. index_docs: true empfohlen fuer Wissens-Airbag.',
+        description: 'Neues Projekt initialisieren. Zwei Modi: (a) mit absolutem path → Tech-Detection + Doku-Indexierung auf bestehendem Ordner, (b) Self-Service nur mit name (kein path) → Job geht an FileWatcher-Daemon auf dem Ziel-PC, der das Verzeichnis unter SYNAPSE_WORKSPACE_ROOT (default ~/dev) anlegt, git init macht, in projects-Tabelle registriert und Watcher startet.',
+        params: 'name (Pflicht wenn kein path) ODER path (absolut). Optional: index_docs (Standard: true), agent_id, hostname (Ziel-Host falls mehrere Daemons), template (informational).',
+        example: 'project({ action: "init", name: "neues-projekt" })  ODER  project({ action: "init", path: "/home/user/dev/bestehend" })',
+        tips: 'Self-Service: ohne path braucht der Watcher auf dem Ziel-PC einen aktiven Daemon. Antwort enthaelt resolved_path + job_id. Bei Timeout (daemon_unreachable): Status erneut pruefen via init_status mit job_id.',
+      },
+      init_status: {
+        description: 'Status eines Self-Service Init-Jobs abrufen — fuer den Fall dass init mit "daemon_unreachable" oder "queued" zurueckkam.',
+        params: 'job_id (req, aus init-Antwort)',
+        example: 'project({ action: "init_status", job_id: "abc-123" })',
+        tips: 'Status: pending|running|done|failed|rejected|timeout. Bei "done" enthaelt path den finalen Projekt-Pfad.',
       },
       status: {
         description: 'Projekt-Status, FileWatcher-Status und Statistiken abrufen.',

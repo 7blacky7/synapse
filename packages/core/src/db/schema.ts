@@ -532,6 +532,51 @@ CREATE TRIGGER trg_specialist_jobs_notify
   AFTER INSERT ON specialist_jobs
   FOR EACH ROW EXECUTE FUNCTION notify_specialist_job_created();
 
+-- ==========================================================================
+-- Project-Init-Queue: REST-API ↔ FileWatcher-Daemon Project-Bootstrap.
+-- Web-KIs (REST) koennen neue Projekte anlegen ohne Filesystem-Zugriff —
+-- der Daemon auf dem Ziel-PC resolved den Workspace-Root, mkdir, git init,
+-- registriert in projects-Tabelle und startet ggf. den FileWatcher.
+-- ==========================================================================
+
+DO $$ BEGIN
+  CREATE TYPE project_init_status AS ENUM ('pending', 'running', 'done', 'failed', 'rejected', 'timeout');
+EXCEPTION
+  WHEN duplicate_object THEN NULL;
+END $$;
+
+CREATE TABLE IF NOT EXISTS project_init_jobs (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  name TEXT NOT NULL,
+  hostname TEXT,
+  template TEXT,
+  requested_by TEXT,
+  status project_init_status NOT NULL DEFAULT 'pending',
+  resolved_path TEXT,
+  error TEXT,
+  message TEXT,
+  claimed_by TEXT,
+  claimed_at TIMESTAMPTZ,
+  completed_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_project_init_jobs_status ON project_init_jobs(status, created_at);
+CREATE INDEX IF NOT EXISTS idx_project_init_jobs_pending ON project_init_jobs(created_at) WHERE status = 'pending';
+
+CREATE OR REPLACE FUNCTION notify_project_init_job_created() RETURNS TRIGGER AS $$
+BEGIN
+  PERFORM pg_notify('project_init_job_created', NEW.id::text);
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_project_init_jobs_notify ON project_init_jobs;
+CREATE TRIGGER trg_project_init_jobs_notify
+  AFTER INSERT ON project_init_jobs
+  FOR EACH ROW EXECUTE FUNCTION notify_project_init_job_created();
+
 `;
 
 export async function ensureSchema(): Promise<void> {
