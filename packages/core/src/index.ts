@@ -309,6 +309,7 @@ export type { BatchEdit, BatchResult } from './services/code-write.js';
 // File-Versionierung (Schritt 1)
 export {
   listFileVersions,
+  listFileHistory,
   getFileVersion,
   restoreFileVersion,
   listBatchVersions,

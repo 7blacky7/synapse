@@ -154,6 +154,7 @@ CREATE TABLE IF NOT EXISTS file_versions (
   size_bytes INTEGER NOT NULL DEFAULT 0,
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
+ALTER TABLE file_versions ADD COLUMN IF NOT EXISTS reason TEXT;
 
 CREATE INDEX IF NOT EXISTS idx_memories_project ON memories(project);
 CREATE INDEX IF NOT EXISTS idx_thoughts_project ON thoughts(project);
@@ -563,6 +564,7 @@ CREATE TABLE IF NOT EXISTS file_batch_plans (
 
 CREATE INDEX IF NOT EXISTS idx_file_batch_plans_status ON file_batch_plans(project, status, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_file_batch_plans_open ON file_batch_plans(project, expires_at) WHERE status = 'open';
+ALTER TABLE file_batch_plans ADD COLUMN IF NOT EXISTS reason TEXT;
 
 `;
 

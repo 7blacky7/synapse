@@ -291,7 +291,7 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
   // files — Datei-Manipulation
   // -------------------------------------------------------------------------
   files: {
-    summary: 'Dateien erstellen/bearbeiten/lesen. FileWatcher synct auf Dateisystem. Auto-Versionierung (versions/restore). Multi-File Plan/Commit fuer atomare Aenderungen ueber mehrere Dateien (plan/commit/cancel).',
+    summary: 'Dateien erstellen/bearbeiten/lesen. FileWatcher synct auf Dateisystem. Auto-Versionierung (versions/restore). Multi-File Plan/Commit fuer atomare Aenderungen ueber mehrere Dateien (plan/commit/cancel). Audit-Log mit Begruendungen via "history" — fuer Crash-Recovery.',
     when_to_use: [
       'Neue Datei anlegen: create.',
       'Gezielte Aenderung in bestehender Datei: search_replace oder replace_lines.',
@@ -426,9 +426,15 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
         example: 'files({ action: "cancel", project: "synapse", plan_id: "42" })',
       },
       plan_status: {
-        description: 'Plan-Details abfragen (Status, Previews, Files). Fuer Status-Polling oder Diff-Inspektion vor commit.',
+        description: 'Plan-Details abfragen (Status, Previews, Files, reason). Fuer Status-Polling oder Diff-Inspektion vor commit.',
         params: 'plan_id (req)',
         example: 'files({ action: "plan_status", project: "synapse", plan_id: "42" })',
+      },
+      history: {
+        description: 'Audit-Log: chronologische Liste aller Datei-Aenderungen mit Begruendung. Crash-Recovery: nach Session-Crash kann eine neue Session sehen "wer hat wann was warum geaendert" und gegebenenfalls Versionen wiederherstellen.',
+        params: 'project (req); optional: agent_id (Filter), file_path (Praefix-Match), since (ISO-Timestamp), limit (Standard 50, Max 500)',
+        example: 'files({ action: "history", project: "synapse", agent_id: "ich", since: "2026-05-02T10:00:00Z", limit: 20 })',
+        tips: 'reason wird beim Schreiben mitgegeben (files write-actions + plan/commit). Eintraege haben file_path, edit_action, agent_id, batch_id, reason, created_at. Voller Inhalt einer Version: files(action: "get_version", version_id).',
       },
     },
   },

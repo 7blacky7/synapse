@@ -50,6 +50,8 @@ export type FileBatchOpAction =
 export interface FileBatchOp {
   file_path: string;
   action: FileBatchOpAction;
+  /** Optionale Per-Op-Begruendung; ueberschreibt Plan-Top-Level-reason fuer diese Datei. */
+  reason?: string;
   /** update */
   content?: string;
   /** search_replace */
@@ -92,6 +94,7 @@ export interface FileBatchPlanRow {
   expires_at: string;
   created_at: string;
   committed_at: string | null;
+  reason: string | null;
 }
 
 export interface PlanBatchResult {
@@ -207,6 +210,7 @@ export async function planBatch(args: {
   agent_id?: string;
   ops: FileBatchOp[];
   open_for_coedit?: boolean;
+  reason?: string;
 }): Promise<PlanBatchResult> {
   if (!args.ops || args.ops.length === 0) {
     throw new Error('ops[] darf nicht leer sein');
@@ -272,8 +276,8 @@ export async function planBatch(args: {
   // 2. INSERT in file_batch_plans
   const pool = getPool();
   const res = await pool.query<{ id: string; expires_at: string }>(
-    `INSERT INTO file_batch_plans (project, owner_agent_id, ops, expected_hashes, previews, open_for_coedit)
-     VALUES ($1, $2, $3::jsonb, $4::jsonb, $5::jsonb, $6)
+    `INSERT INTO file_batch_plans (project, owner_agent_id, ops, expected_hashes, previews, open_for_coedit, reason)
+     VALUES ($1, $2, $3::jsonb, $4::jsonb, $5::jsonb, $6, $7)
      RETURNING id::text AS id, expires_at::text AS expires_at`,
     [
       args.project,
@@ -282,6 +286,7 @@ export async function planBatch(args: {
       JSON.stringify(expectedHashes),
       JSON.stringify(previews),
       args.open_for_coedit ?? true,
+      args.reason ?? null,
     ],
   );
 
@@ -314,7 +319,7 @@ export async function commitBatch(args: {
   // Plan laden
   const planRes = await pool.query<FileBatchPlanRow>(
     `SELECT id::text AS id, project, owner_agent_id, ops, expected_hashes, previews,
-            status, open_for_coedit, notify_channel,
+            status, open_for_coedit, notify_channel, reason,
             expires_at::text AS expires_at,
             created_at::text AS created_at,
             committed_at::text AS committed_at
@@ -426,19 +431,29 @@ export async function commitBatch(args: {
   const batchIdNum = Number(args.plan_id);
   const batchIdSafe = Number.isFinite(batchIdNum) && batchIdNum <= Number.MAX_SAFE_INTEGER ? batchIdNum : undefined;
 
+  // Pro Datei: erste Op im Plan, deren reason gesetzt ist, gewinnt — sonst Top-Level reason.
+  const reasonPerFile = new Map<string, string | undefined>();
+  for (const op of plan.ops) {
+    if (op.reason && !reasonPerFile.has(op.file_path)) {
+      reasonPerFile.set(op.file_path, op.reason);
+    }
+  }
+  const fallbackReason = plan.reason ?? undefined;
+
   for (const [filePath, newContent] of finalBuffers) {
     const wasNew = plan.expected_hashes[filePath] === EMPTY_CONTENT_HASH;
+    const effectiveReason = reasonPerFile.get(filePath) ?? fallbackReason;
     if (wasNew) {
       await createFileInPg(plan.project, filePath, newContent, args.agent_id);
       // file_versions-Marker fuer "in dieser Batch erstellt" — restore_batch kann dann
       // die Datei wieder entleeren oder soft-deleten (V1: leerer Inhalt).
       await pool.query(
-        `INSERT INTO file_versions (project, file_path, content, content_hash, edit_action, agent_id, batch_id, size_bytes)
-         VALUES ($1, $2, '', $3, $4, $5, $6, 0)`,
-        [plan.project, filePath, EMPTY_CONTENT_HASH, `batch:${args.plan_id}:create`, args.agent_id ?? null, batchIdSafe ?? null],
+        `INSERT INTO file_versions (project, file_path, content, content_hash, edit_action, agent_id, batch_id, size_bytes, reason)
+         VALUES ($1, $2, '', $3, $4, $5, $6, 0, $7)`,
+        [plan.project, filePath, EMPTY_CONTENT_HASH, `batch:${args.plan_id}:create`, args.agent_id ?? null, batchIdSafe ?? null, effectiveReason ?? null],
       );
     } else {
-      await updateFileInPg(plan.project, filePath, newContent, args.agent_id, `batch:${args.plan_id}`, batchIdSafe);
+      await updateFileInPg(plan.project, filePath, newContent, args.agent_id, `batch:${args.plan_id}`, batchIdSafe, effectiveReason);
     }
     writtenFiles.push({
       file_path: filePath,
@@ -483,7 +498,7 @@ export async function getBatchPlan(plan_id: string): Promise<FileBatchPlanRow | 
   const pool = getPool();
   const res = await pool.query<FileBatchPlanRow>(
     `SELECT id::text AS id, project, owner_agent_id, ops, expected_hashes, previews,
-            status, open_for_coedit, notify_channel,
+            status, open_for_coedit, notify_channel, reason,
             expires_at::text AS expires_at,
             created_at::text AS created_at,
             committed_at::text AS committed_at
