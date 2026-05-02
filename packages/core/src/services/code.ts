@@ -180,7 +180,7 @@ export async function storeFileContent(
 const parseQueue = new Map<string, NodeJS.Timeout>();
 const crossRefTimers = new Map<string, NodeJS.Timeout>();
 
-function enqueueParseAndEmbed(project: string, filePath: string): void {
+export function enqueueParseAndEmbed(project: string, filePath: string): void {
   const key = `${project}:${filePath}`;
   if (parseQueue.has(key)) clearTimeout(parseQueue.get(key)!);
   parseQueue.set(key, setTimeout(async () => {
