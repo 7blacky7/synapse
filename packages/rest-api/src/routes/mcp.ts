@@ -733,7 +733,7 @@ const MCP_TOOLS = [
         with_values: { type: 'boolean', description: 'Wert-Spalte einschliessen (fuer variables)' },
         symbol_type: {
           type: 'string',
-          enum: ['function', 'variable', 'string', 'comment', 'import', 'export', 'class', 'interface', 'enum', 'const_object', 'todo'],
+          enum: ['function', 'variable', 'string', 'comment', 'import', 'export', 'class', 'interface', 'enum', 'const_object', 'todo', 'route', 'sql_query', 'table', 'column', 'index', 'view', 'trigger', 'constraint'],
           description: 'Symbol-Typ fuer symbols-Action',
         },
         query: { type: 'string', description: 'Suchbegriff fuer search-Action (Volltext)' },
