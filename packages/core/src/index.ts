@@ -315,6 +315,18 @@ export {
   restoreBatch,
 } from './services/file-versions.js';
 export type { FileVersionMeta, FileVersionFull } from './services/file-versions.js';
+
+// Project-Init-Queue (Self-Service Project-Bootstrap fuer Web-KIs)
+export {
+  isValidProjectName,
+  enqueueProjectInitJob,
+  claimPendingProjectInitJob,
+  completeProjectInitJob,
+  expirePendingProjectInitJobs,
+  waitForProjectInitJob,
+  getProjectInitJob,
+} from './services/project-init-queue.js';
+export type { ProjectInitJobRow, ProjectInitStatus, ProjectInitCompletion } from './services/project-init-queue.js';
 export type { BackupEntry } from './services/backup.js';
 export type { ChatMessage, AgentSession } from './services/chat.js';
 export type { AgentEvent, EventAck, EventType, EventPriority } from './services/events.js';

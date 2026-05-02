@@ -97,7 +97,14 @@ async function startDaemon(): Promise<number> {
   throw new Error('Daemon gestartet, aber /health nicht erreichbar (Log: ~/.synapse/file-watcher/daemon.log)');
 }
 
-async function ensureDaemon(): Promise<number> {
+/**
+ * Stellt sicher dass der FileWatcher-Daemon laeuft. Liefert den Port zurueck.
+ * - Daemon laeuft + /health ok → Port direkt zurueck.
+ * - Daemon nicht erreichbar → Auto-Spawn (TS-Daemon bevorzugt, sonst Binary).
+ * Wird von project-init-Handler genutzt: lokales `project init` startet den
+ * Daemon automatisch, damit die Web-KI-Self-Service-Queue sofort funktioniert.
+ */
+export async function ensureDaemon(): Promise<number> {
   const p = readPort();
   if (p && (await pingHealth(p))) return p;
   return startDaemon();

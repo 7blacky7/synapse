@@ -19,6 +19,7 @@ import { ensureConfigDir, pidFilePath, portFilePath } from './config.js';
 import { WatcherManager } from './manager.js';
 import { startShellJobWorker, type ShellJobWorkerHandle } from './shell-job-worker.js';
 import { startSpecialistJobWorker, type SpecialistJobWorkerHandle } from './specialist-job-worker.js';
+import { startProjectInitWorker, type ProjectInitWorkerHandle } from './project-init-worker.js';
 
 async function main(): Promise<void> {
   ensureConfigDir();
@@ -52,6 +53,15 @@ async function main(): Promise<void> {
     );
   } catch (err) {
     console.error('[daemon] Specialist-Job-Worker konnte nicht gestartet werden:', err);
+  }
+
+  // Project-Init-Worker starten (LISTEN 'project_init_job_created')
+  // Web-KI Self-Service: legt neue Projekte unter WORKSPACE_ROOT an.
+  let projectInitWorker: ProjectInitWorkerHandle | null = null;
+  try {
+    projectInitWorker = await startProjectInitWorker(manager);
+  } catch (err) {
+    console.error('[daemon] Project-Init-Worker konnte nicht gestartet werden:', err);
   }
 
   const app = buildApi({ manager });
@@ -105,6 +115,14 @@ async function main(): Promise<void> {
         await specialistWorker.stop();
       } catch (err) {
         console.error('[daemon] Specialist-Worker stop Fehler:', err);
+      }
+    }
+
+    if (projectInitWorker !== null) {
+      try {
+        await projectInitWorker.stop();
+      } catch (err) {
+        console.error('[daemon] Project-Init-Worker stop Fehler:', err);
       }
     }
 

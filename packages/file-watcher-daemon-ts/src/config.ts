@@ -19,6 +19,30 @@ import * as os from 'os';
 export const DEFAULT_PORT = 7878;
 export const DEFAULT_SYNAPSE_API_URL = 'http://127.0.0.1:3456';
 
+/**
+ * Workspace-Root: Verzeichnis unter dem neue Projekte beim Self-Service
+ * (project init nur mit Name, ohne Pfad) angelegt werden duerfen.
+ *
+ * Aufloesung in dieser Reihenfolge:
+ *  1. ENV `SYNAPSE_WORKSPACE_ROOT`
+ *  2. Feld `workspace_root` in config.json
+ *  3. Default: `~/dev`
+ */
+export function getWorkspaceRoot(): string {
+  const env = process.env.SYNAPSE_WORKSPACE_ROOT;
+  if (env && env.trim()) return path.resolve(env.trim());
+
+  try {
+    const cfg = loadConfig();
+    if (cfg.workspace_root && cfg.workspace_root.trim()) {
+      return path.resolve(cfg.workspace_root.trim());
+    }
+  } catch { /* config nicht da → fallback default */ }
+
+  const home = process.env.HOME || os.homedir() || '/tmp';
+  return path.join(home, 'dev');
+}
+
 export interface ProjektConfig {
   name: string;
   pfad: string;
@@ -33,6 +57,8 @@ export interface DaemonConfig {
   port: number;
   synapse_api_url: string;
   projekte: ProjektConfig[];
+  /** Optional: Root-Verzeichnis fuer Self-Service Project-Init via REST. */
+  workspace_root?: string;
 }
 
 /** Basis-Verzeichnis: ~/.synapse/file-watcher */
@@ -95,6 +121,10 @@ export function loadConfig(): DaemonConfig {
       projekte: Array.isArray(parsed.projekte)
         ? parsed.projekte.filter(isValidProjekt).map(normalizeProjekt)
         : [],
+      workspace_root:
+        typeof parsed.workspace_root === 'string' && parsed.workspace_root.trim()
+          ? parsed.workspace_root.trim()
+          : undefined,
     };
     return cfg;
   } catch (err) {
