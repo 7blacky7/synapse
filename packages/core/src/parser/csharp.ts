@@ -9,6 +9,8 @@
 
 import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
 import { extractStringLiterals } from './types.js';
+import { ASPNET_ATTRIBUTES, formatRouteName } from './patterns/http.js';
+import { looksLikeSql, parseEmbeddedSql } from './patterns/sql.js';
 
 function lineAt(text: string, pos: number): number {
   return text.substring(0, pos).split('\n').length;
@@ -333,6 +335,74 @@ class CSharpParser implements LanguageParser {
 
     symbols.push(...extractStringLiterals(content));
 
+    // ══════════════════════════════════════════════
+    // 11. Routes — ASP.NET Core Attributes [HttpGet("/api/x")] etc.
+    // ══════════════════════════════════════════════
+    const aspnetAttrRouteRe = /\[(HttpGet|HttpPost|HttpPut|HttpPatch|HttpDelete)\s*\(\s*"([^"]+)"/g;
+    while ((m = aspnetAttrRouteRe.exec(content)) !== null) {
+      const method = ASPNET_ATTRIBUTES[m[1]];
+      const path = m[2];
+      if (!method) continue;
+      const lineStart = lineAt(content, m.index);
+      symbols.push({
+        symbol_type: 'route',
+        name: formatRouteName(method, path),
+        value: path,
+        params: [method.toUpperCase()],
+        line_start: lineStart,
+        is_exported: true,
+      });
+    }
+
+    // [Route("/api/x")] — kein Method-Hinweis, default GET
+    const aspnetRouteAttrRe = /\[Route\s*\(\s*"([^"]+)"/g;
+    while ((m = aspnetRouteAttrRe.exec(content)) !== null) {
+      const path = m[1];
+      const lineStart = lineAt(content, m.index);
+      symbols.push({
+        symbol_type: 'route',
+        name: formatRouteName('get', path),
+        value: path,
+        params: ['GET'],
+        line_start: lineStart,
+        is_exported: true,
+      });
+    }
+
+    // Minimal API: app.MapGet("/api/x", ...)
+    const minimalApiRe = /\bapp\.Map(Get|Post|Put|Patch|Delete)\s*\(\s*"([^"]+)"/g;
+    while ((m = minimalApiRe.exec(content)) !== null) {
+      const method = m[1].toLowerCase();
+      const path = m[2];
+      const lineStart = lineAt(content, m.index);
+      symbols.push({
+        symbol_type: 'route',
+        name: formatRouteName(method, path),
+        value: path,
+        params: [method.toUpperCase()],
+        line_start: lineStart,
+        is_exported: true,
+      });
+    }
+
+    // ══════════════════════════════════════════════
+    // 12. Embedded SQL — new SqlCommand("...") und Dapper connection.Execute("...")
+    // ══════════════════════════════════════════════
+    const sqlCommandRe = /\bnew\s+SqlCommand\s*\(\s*"((?:[^"\\]|\\.){10,})"/g;
+    while ((m = sqlCommandRe.exec(content)) !== null) {
+      const sqlText = m[1];
+      if (!looksLikeSql(sqlText)) continue;
+      const baseLine = lineAt(content, m.index);
+      symbols.push(...parseEmbeddedSql(sqlText, filePath, baseLine));
+    }
+
+    const dapperRe = /\bconnection\.(?:Execute|Query|QueryFirst|QuerySingle)\s*\(\s*"((?:[^"\\]|\\.){10,})"/g;
+    while ((m = dapperRe.exec(content)) !== null) {
+      const sqlText = m[1];
+      if (!looksLikeSql(sqlText)) continue;
+      const baseLine = lineAt(content, m.index);
+      symbols.push(...parseEmbeddedSql(sqlText, filePath, baseLine));
+    }
 
     return { symbols, references };
   }

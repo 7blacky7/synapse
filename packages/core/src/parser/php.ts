@@ -9,6 +9,8 @@
 
 import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
 import { extractStringLiterals } from './types.js';
+import { formatRouteName, isLikelyHttpPath, HTTP_VERBS } from './patterns/http.js';
+import { parseEmbeddedSql, looksLikeSql } from './patterns/sql.js';
 
 function lineAt(text: string, pos: number): number {
   return text.substring(0, pos).split('\n').length;
@@ -248,6 +250,112 @@ class PhpParser implements LanguageParser {
 
     symbols.push(...extractStringLiterals(content, { includeSingleQuotes: true }));
 
+    // ══════════════════════════════════════════════
+    // 9. Routes — Laravel: Route::get('/x', ...), Route::post('/x', ...)
+    //    Auch Router::, $router->get(...), $route->match([...], '/x', ...)
+    // ══════════════════════════════════════════════
+    const laravelRouteRe = /\b(?:Route|Router)\s*::\s*(get|post|put|patch|delete|head|options|any|match)\s*\(\s*(?:\[\s*([^\]]+)\s*\]\s*,\s*)?['"]([^'"]+)['"]/g;
+    while ((m = laravelRouteRe.exec(content)) !== null) {
+      const verb = m[1].toLowerCase();
+      const matchMethods = m[2];
+      const routePath = m[3];
+      if (!isLikelyHttpPath(routePath)) continue;
+      const line = lineAt(content, m.index);
+      let methods: string[];
+      if (verb === 'match' && matchMethods) {
+        methods = matchMethods.split(',').map(s => s.trim().replace(/['"]/g, '').toUpperCase()).filter(Boolean);
+      } else if (verb === 'any') {
+        methods = ['ANY'];
+      } else {
+        methods = [verb.toUpperCase()];
+      }
+      for (const method of methods) {
+        symbols.push({
+          symbol_type: 'route',
+          name: formatRouteName(method, routePath),
+          value: routePath,
+          params: [method],
+          line_start: line,
+          is_exported: false,
+        });
+      }
+    }
+
+    // Laravel/Lumen instance-style: $router->get('/x', ...), $app->post('/x', ...)
+    const laravelInstanceRe = /\$\w+\s*->\s*(get|post|put|patch|delete|head|options|any)\s*\(\s*['"]([^'"]+)['"]/g;
+    while ((m = laravelInstanceRe.exec(content)) !== null) {
+      const verb = m[1].toLowerCase();
+      if (!HTTP_VERBS.has(verb) && verb !== 'any') continue;
+      const routePath = m[2];
+      if (!isLikelyHttpPath(routePath)) continue;
+      symbols.push({
+        symbol_type: 'route',
+        name: formatRouteName(verb === 'any' ? 'ANY' : verb.toUpperCase(), routePath),
+        value: routePath,
+        params: [verb === 'any' ? 'ANY' : verb.toUpperCase()],
+        line_start: lineAt(content, m.index),
+        is_exported: false,
+      });
+    }
+
+    // ══════════════════════════════════════════════
+    // 10. Routes — Symfony 6+: #[Route('/x', methods: ['GET'])]
+    //     Auch: #[Route(path: '/x', methods: ['POST'])]
+    // ══════════════════════════════════════════════
+    const symfonyRouteRe = /#\[\s*Route\s*\(\s*(?:path\s*:\s*)?['"]([^'"]+)['"](?:[^)]*?methods\s*:\s*\[([^\]]+)\])?/g;
+    while ((m = symfonyRouteRe.exec(content)) !== null) {
+      const routePath = m[1];
+      if (!isLikelyHttpPath(routePath)) continue;
+      const methodsRaw = m[2];
+      const methods = methodsRaw
+        ? methodsRaw.split(',').map(s => s.trim().replace(/['"]/g, '').toUpperCase()).filter(Boolean)
+        : ['GET'];
+      const line = lineAt(content, m.index);
+      for (const method of methods) {
+        symbols.push({
+          symbol_type: 'route',
+          name: formatRouteName(method, routePath),
+          value: routePath,
+          params: [method],
+          line_start: line,
+          is_exported: false,
+        });
+      }
+    }
+
+    // Symfony legacy annotation: @Route("/x", methods={"GET"}) inside docblocks
+    const symfonyAnnotRe = /@Route\s*\(\s*['"]([^'"]+)['"](?:[^)]*?methods\s*=\s*\{([^}]+)\})?/g;
+    while ((m = symfonyAnnotRe.exec(content)) !== null) {
+      const routePath = m[1];
+      if (!isLikelyHttpPath(routePath)) continue;
+      const methodsRaw = m[2];
+      const methods = methodsRaw
+        ? methodsRaw.split(',').map(s => s.trim().replace(/['"]/g, '').toUpperCase()).filter(Boolean)
+        : ['GET'];
+      const line = lineAt(content, m.index);
+      for (const method of methods) {
+        symbols.push({
+          symbol_type: 'route',
+          name: formatRouteName(method, routePath),
+          value: routePath,
+          params: [method],
+          line_start: line,
+          is_exported: false,
+        });
+      }
+    }
+
+    // ══════════════════════════════════════════════
+    // 11. Embedded SQL — PDO::query('...'), $pdo->exec('...'), $pdo->prepare('...')
+    // ══════════════════════════════════════════════
+    const phpSqlRe = /(?:->|::)\s*(?:query|exec|prepare)\s*\(\s*['"]((?:[^'"\\]|\\.){10,})['"]/g;
+    while ((m = phpSqlRe.exec(content)) !== null) {
+      const sqlText = m[1];
+      if (looksLikeSql(sqlText)) {
+        const baseLine = lineAt(content, m.index);
+        symbols.push(...parseEmbeddedSql(sqlText, filePath, baseLine));
+      }
+    }
 
     return { symbols, references };
   }

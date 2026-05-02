@@ -10,6 +10,7 @@
 
 import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
 import { extractStringLiterals } from './types.js';
+import { formatRouteName, isLikelyHttpPath, HTTP_VERBS } from './patterns/http.js';
 
 function lineAt(text: string, pos: number): number {
   return text.substring(0, pos).split('\n').length;
@@ -289,6 +290,73 @@ class ScalaParser implements LanguageParser {
     }
 
     symbols.push(...extractStringLiterals(content));
+
+    // ══════════════════════════════════════════════
+    // 12. Routes — Akka HTTP DSL: path("x") { get { ... } }, post(...) etc.
+    //     Auch path("a" / "b") wird als /a/b erkannt.
+    // ══════════════════════════════════════════════
+    const akkaPathRe = /\bpath\s*\(\s*((?:"[^"\n]+"\s*(?:\/\s*"[^"\n]+"\s*)*))\)\s*\{([\s\S]*?)\}/g;
+    while ((m = akkaPathRe.exec(content)) !== null) {
+      const segs = [...m[1].matchAll(/"([^"\n]+)"/g)].map(x => x[1]);
+      if (segs.length === 0) continue;
+      const path = '/' + segs.join('/');
+      if (!isLikelyHttpPath(path)) continue;
+      const block = m[2];
+      const baseLine = lineAt(content, m.index);
+      const verbRe = /\b(get|post|put|patch|delete|head|options)\s*[{(]/g;
+      let v: RegExpExecArray | null;
+      let foundVerb = false;
+      while ((v = verbRe.exec(block)) !== null) {
+        const verb = v[1].toLowerCase();
+        if (!HTTP_VERBS.has(verb)) continue;
+        foundVerb = true;
+        symbols.push({
+          symbol_type: 'route',
+          name: formatRouteName(verb, path),
+          value: path,
+          params: [verb.toUpperCase()],
+          line_start: baseLine + block.substring(0, v.index).split('\n').length - 1,
+          is_exported: false,
+        });
+      }
+      if (!foundVerb) {
+        symbols.push({
+          symbol_type: 'route',
+          name: formatRouteName('ANY', path),
+          value: path,
+          params: ['ANY'],
+          line_start: baseLine,
+          is_exported: false,
+        });
+      }
+    }
+
+    // ══════════════════════════════════════════════
+    // 13. Routes — Play routes file Heuristik:
+    //     "GET   /path   controllers.HomeController.index"
+    //     Auch in .scala denkbar via Comment/String oder als Inline-Routes-DSL.
+    // ══════════════════════════════════════════════
+    const playRouteRe = /^\s*(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\s+(\/\S*)\s+([\w.$]+)/gm;
+    while ((m = playRouteRe.exec(content)) !== null) {
+      const method = m[1];
+      const path = m[2];
+      const handler = m[3];
+      if (!isLikelyHttpPath(path)) continue;
+      const line = lineAt(content, m.index);
+      symbols.push({
+        symbol_type: 'route',
+        name: formatRouteName(method, path),
+        value: path,
+        params: [method],
+        line_start: line,
+        is_exported: false,
+      });
+      references.push({
+        symbol_name: handler.split('.').slice(-2).join('.'),
+        line_number: line,
+        context: `${method} ${path} -> ${handler}`.slice(0, 80),
+      });
+    }
 
 
     return { symbols, references };

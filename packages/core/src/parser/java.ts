@@ -9,6 +9,8 @@
 
 import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
 import { extractStringLiterals } from './types.js';
+import { SPRING_DECORATORS, formatRouteName } from './patterns/http.js';
+import { parseEmbeddedSql, looksLikeSql } from './patterns/sql.js';
 
 function lineAt(text: string, pos: number): number {
   return text.substring(0, pos).split('\n').length;
@@ -251,6 +253,63 @@ class JavaParser implements LanguageParser {
 
     symbols.push(...extractStringLiterals(content));
 
+    // ══════════════════════════════════════════════
+    // 9. Spring-Routes: @GetMapping/@PostMapping/etc.
+    // ══════════════════════════════════════════════
+    const springRe = /@(GetMapping|PostMapping|PutMapping|PatchMapping|DeleteMapping)\s*\(\s*(?:value\s*=\s*)?"([^"]+)"/g;
+    while ((m = springRe.exec(content)) !== null) {
+      const decoName = m[1];
+      const path = m[2];
+      const method = SPRING_DECORATORS[decoName];
+      if (!method) continue;
+      const verb = method.toUpperCase();
+      const lineStart = lineAt(content, m.index);
+      symbols.push({
+        symbol_type: 'route',
+        name: formatRouteName(verb, path),
+        value: path,
+        params: [verb],
+        line_start: lineStart,
+        line_end: endLineAt(content, m.index, m[0].length),
+        is_exported: false,
+      });
+    }
+
+    // @RequestMapping(value = "/path", method = RequestMethod.GET)
+    const reqMapRe = /@RequestMapping\s*\([^)]*value\s*=\s*"([^"]+)"[^)]*method\s*=\s*RequestMethod\.(GET|POST|PUT|PATCH|DELETE)/g;
+    while ((m = reqMapRe.exec(content)) !== null) {
+      const path = m[1];
+      const verb = m[2].toUpperCase();
+      const lineStart = lineAt(content, m.index);
+      symbols.push({
+        symbol_type: 'route',
+        name: formatRouteName(verb, path),
+        value: path,
+        params: [verb],
+        line_start: lineStart,
+        line_end: endLineAt(content, m.index, m[0].length),
+        is_exported: false,
+      });
+    }
+
+    // ══════════════════════════════════════════════
+    // 10. Embedded SQL: jdbcTemplate.* / prepareStatement
+    // ══════════════════════════════════════════════
+    const jdbcRe = /\bjdbcTemplate\.(?:query|queryForList|queryForObject|queryForMap|update|execute)\s*\(\s*"((?:[^"\\]|\\.){10,})"/g;
+    while ((m = jdbcRe.exec(content)) !== null) {
+      const sqlText = m[1].replace(/\\"/g, '"').replace(/\\\\/g, '\\').replace(/\\n/g, '\n');
+      if (!looksLikeSql(sqlText)) continue;
+      const baseLine = lineAt(content, m.index);
+      symbols.push(...parseEmbeddedSql(sqlText, filePath, baseLine));
+    }
+
+    const prepStmtRe = /\bprepareStatement\s*\(\s*"((?:[^"\\]|\\.){10,})"/g;
+    while ((m = prepStmtRe.exec(content)) !== null) {
+      const sqlText = m[1].replace(/\\"/g, '"').replace(/\\\\/g, '\\').replace(/\\n/g, '\n');
+      if (!looksLikeSql(sqlText)) continue;
+      const baseLine = lineAt(content, m.index);
+      symbols.push(...parseEmbeddedSql(sqlText, filePath, baseLine));
+    }
 
     return { symbols, references };
   }

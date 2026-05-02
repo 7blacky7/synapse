@@ -9,6 +9,8 @@
 
 import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
 import { extractStringLiterals } from './types.js';
+import { formatRouteName, isLikelyHttpPath, SPRING_DECORATORS, HTTP_VERBS } from './patterns/http.js';
+import { parseEmbeddedSql, looksLikeSql } from './patterns/sql.js';
 
 function lineAt(text: string, pos: number): number {
   return text.substring(0, pos).split('\n').length;
@@ -227,6 +229,101 @@ class KotlinParser implements LanguageParser {
 
     symbols.push(...extractStringLiterals(content));
 
+    // ══════════════════════════════════════════════
+    // 10. Routes — Spring: @GetMapping("/x"), @PostMapping(value = "/x"), ...
+    // ══════════════════════════════════════════════
+    const springRe = /@(GetMapping|PostMapping|PutMapping|PatchMapping|DeleteMapping)\s*\(\s*(?:value\s*=\s*)?["']([^"']+)["']/g;
+    while ((m = springRe.exec(content)) !== null) {
+      const decoName = m[1];
+      const path = m[2];
+      const method = SPRING_DECORATORS[decoName];
+      if (!method) continue;
+      const verb = method.toUpperCase();
+      const lineStart = lineAt(content, m.index);
+      symbols.push({
+        symbol_type: 'route',
+        name: formatRouteName(verb, path),
+        value: path,
+        params: [verb],
+        line_start: lineStart,
+        is_exported: false,
+      });
+    }
+
+    // @RequestMapping(value = "/path", method = [RequestMethod.GET])
+    const reqMapRe = /@RequestMapping\s*\([^)]*value\s*=\s*["']([^"']+)["'][^)]*method\s*=\s*(?:\[\s*)?RequestMethod\.(GET|POST|PUT|PATCH|DELETE)/g;
+    while ((m = reqMapRe.exec(content)) !== null) {
+      const path = m[1];
+      const verb = m[2].toUpperCase();
+      const lineStart = lineAt(content, m.index);
+      symbols.push({
+        symbol_type: 'route',
+        name: formatRouteName(verb, path),
+        value: path,
+        params: [verb],
+        line_start: lineStart,
+        is_exported: false,
+      });
+    }
+
+    // ══════════════════════════════════════════════
+    // 11. Routes — Ktor: get("/x") { ... }, post("/x") { ... }, route("/x") { ... }
+    // Heuristik: Verb am Zeilenanfang (mit Whitespace) gefolgt von String-Argument + "{".
+    // ══════════════════════════════════════════════
+    const ktorRouteRe = /^\s*(get|post|put|patch|delete|head|options)\s*\(\s*["']([^"']+)["']\s*\)\s*\{/gm;
+    while ((m = ktorRouteRe.exec(content)) !== null) {
+      const verbLower = m[1].toLowerCase();
+      if (!HTTP_VERBS.has(verbLower)) continue;
+      const path = m[2];
+      if (!isLikelyHttpPath(path)) continue;
+      const verb = verbLower.toUpperCase();
+      const lineStart = lineAt(content, m.index);
+      symbols.push({
+        symbol_type: 'route',
+        name: formatRouteName(verb, path),
+        value: path,
+        params: [verb],
+        line_start: lineStart,
+        is_exported: false,
+      });
+    }
+
+    // Ktor: call.respond innerhalb route("/path") { ... } — wir matchen route("/path") auch:
+    const ktorRouteBlockRe = /^\s*route\s*\(\s*["']([^"']+)["']\s*\)\s*\{/gm;
+    while ((m = ktorRouteBlockRe.exec(content)) !== null) {
+      const path = m[1];
+      if (!isLikelyHttpPath(path)) continue;
+      const lineStart = lineAt(content, m.index);
+      symbols.push({
+        symbol_type: 'route',
+        name: formatRouteName('ANY', path),
+        value: path,
+        params: ['ANY'],
+        line_start: lineStart,
+        is_exported: false,
+      });
+    }
+
+    // ══════════════════════════════════════════════
+    // 12. Embedded SQL — Exposed/JDBC: exec("SELECT..."), prepareStatement("..."),
+    //     transaction { exec(...) }, also Triple-Quoted Strings.
+    // ══════════════════════════════════════════════
+    const kotlinSqlRe = /\b(?:exec|prepareStatement|createStatement|executeQuery|executeUpdate)\s*\(\s*"((?:[^"\\]|\\.){10,})"/g;
+    while ((m = kotlinSqlRe.exec(content)) !== null) {
+      const sqlText = m[1].replace(/\\"/g, '"').replace(/\\\\/g, '\\').replace(/\\n/g, '\n');
+      if (!looksLikeSql(sqlText)) continue;
+      const baseLine = lineAt(content, m.index);
+      symbols.push(...parseEmbeddedSql(sqlText, filePath, baseLine));
+    }
+
+    // Triple-Quoted Strings ("""...""") als SQL-Kandidaten (Exposed raw SQL ist haeufig multiline)
+    const kotlinTripleSqlRe = /"""([\s\S]{10,}?)"""/g;
+    while ((m = kotlinTripleSqlRe.exec(content)) !== null) {
+      const sqlText = m[1];
+      if (!looksLikeSql(sqlText)) continue;
+      const baseLine = lineAt(content, m.index);
+      symbols.push(...parseEmbeddedSql(sqlText, filePath, baseLine));
+    }
 
     return { symbols, references };
   }

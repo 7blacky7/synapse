@@ -9,6 +9,7 @@
 
 import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
 import { extractStringLiterals } from './types.js';
+import { parseEmbeddedSql, looksLikeSql } from './patterns/sql.js';
 
 function lineAt(text: string, pos: number): number {
   return text.substring(0, pos).split('\n').length;
@@ -414,6 +415,56 @@ class RustParser implements LanguageParser {
         line_end: docStart + docBlock.length - 1,
         is_exported: false,
       });
+    }
+
+    // ══════════════════════════════════════════════
+    // 12. Routes — axum: .route("/path", get(handler))
+    // ══════════════════════════════════════════════
+    const axumRouteRe = /\.route\s*\(\s*"([^"]+)"\s*,\s*(get|post|put|patch|delete|head|options)\s*\(/g;
+    while ((m = axumRouteRe.exec(content)) !== null) {
+      const path = m[1];
+      const verb = m[2].toUpperCase();
+      const lineStart = lineAt(content, m.index);
+      symbols.push({
+        symbol_type: 'route',
+        name: `${verb} ${path}`,
+        value: path,
+        params: [verb],
+        line_start: lineStart,
+        line_end: lineStart,
+        is_exported: false,
+      });
+    }
+
+    // ══════════════════════════════════════════════
+    // 13. Routes — actix-web / rocket: #[get("/path")] Attribut-Macros
+    // ══════════════════════════════════════════════
+    const attrRouteRe = /#\[(get|post|put|patch|delete|head|options)\s*\(\s*"([^"]+)"\s*\)\]/g;
+    while ((m = attrRouteRe.exec(content)) !== null) {
+      const verb = m[1].toUpperCase();
+      const path = m[2];
+      const lineStart = lineAt(content, m.index);
+      symbols.push({
+        symbol_type: 'route',
+        name: `${verb} ${path}`,
+        value: path,
+        params: [verb],
+        line_start: lineStart,
+        line_end: lineStart,
+        is_exported: false,
+      });
+    }
+
+    // ══════════════════════════════════════════════
+    // 14. Embedded-SQL — sqlx::query!, sqlx::query_as!, query!, query_as!
+    // ══════════════════════════════════════════════
+    const sqlxRe = /\b(?:sqlx::)?query(?:_as)?!\s*\(\s*(?:[A-Z]\w+\s*,\s*)?"((?:[^"\\]|\\.){10,})"/g;
+    while ((m = sqlxRe.exec(content)) !== null) {
+      const sqlContent = m[1].replace(/\\"/g, '"').replace(/\\\\/g, '\\');
+      if (looksLikeSql(sqlContent)) {
+        const baseLine = lineAt(content, m.index);
+        symbols.push(...parseEmbeddedSql(sqlContent, filePath, baseLine));
+      }
     }
 
     // ══════════════════════════════════════════════

@@ -9,6 +9,7 @@
 
 import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
 import { extractStringLiterals } from './types.js';
+import { formatRouteName, HTTP_VERBS } from './patterns/http.js';
 
 function lineAt(text: string, pos: number): number {
   return text.substring(0, pos).split('\n').length;
@@ -242,6 +243,36 @@ class SwiftParser implements LanguageParser {
 
     symbols.push(...extractStringLiterals(content));
 
+    // ══════════════════════════════════════════════
+    // 7. Routes — Vapor: app.get("path") { ... }, routes.post("a", "b", use: handler)
+    // Multi-Path-Components werden als getrennte String-Argumente uebergeben und
+    // mit "/" verbunden. Closure und/oder use:-Argument werden ignoriert.
+    // ══════════════════════════════════════════════
+    const vaporRouteRe = /\b(?:app|routes|router|group)\.(get|post|put|patch|delete|head|options)\s*\(\s*((?:"[^"]*"\s*,?\s*)+)/g;
+    while ((m = vaporRouteRe.exec(content)) !== null) {
+      const verbLower = m[1].toLowerCase();
+      if (!HTTP_VERBS.has(verbLower)) continue;
+      const argsRaw = m[2];
+      const literalRe = /"([^"]*)"/g;
+      const parts: string[] = [];
+      let lm: RegExpExecArray | null;
+      while ((lm = literalRe.exec(argsRaw)) !== null) {
+        parts.push(lm[1]);
+      }
+      const cleanParts = parts.filter(p => p.length > 0);
+      if (cleanParts.length === 0) continue;
+      const path = '/' + cleanParts.join('/');
+      const verb = verbLower.toUpperCase();
+      const lineStart = lineAt(content, m.index);
+      symbols.push({
+        symbol_type: 'route',
+        name: formatRouteName(verb, path),
+        value: path,
+        params: [verb],
+        line_start: lineStart,
+        is_exported: false,
+      });
+    }
 
     return { symbols, references };
   }

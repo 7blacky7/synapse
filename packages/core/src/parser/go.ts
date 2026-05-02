@@ -9,6 +9,8 @@
 
 import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
 import { extractStringLiterals } from './types.js';
+import { formatRouteName, isLikelyHttpPath } from './patterns/http.js';
+import { parseEmbeddedSql, looksLikeSql } from './patterns/sql.js';
 
 /** Zeilennummer fuer eine Position im Text (1-basiert) */
 function lineAt(text: string, pos: number): number {
@@ -337,6 +339,74 @@ class GoParser implements LanguageParser {
         line_end: commentStart + commentBlock.length - 1,
         is_exported: false,
       });
+    }
+
+    // ══════════════════════════════════════════════
+    // 9. Routes — net/http HandleFunc (Default GET)
+    // ══════════════════════════════════════════════
+    const handleFuncRe = /\b(?:http|mux|router|r|m)\.HandleFunc\s*\(\s*"([^"]+)"/g;
+    while ((m = handleFuncRe.exec(content)) !== null) {
+      const path = m[1];
+      if (!isLikelyHttpPath(path)) continue;
+      // Check fuer .Methods("...") auf gleicher oder Folgezeile (gorilla/mux)
+      const tail = content.slice(m.index + m[0].length, m.index + m[0].length + 300);
+      const methodsMatch = /\.Methods\s*\(\s*"([^"]+)"(?:\s*,\s*"([^"]+)")*\s*\)/.exec(tail);
+      if (methodsMatch) {
+        const methodsListRe = /"([A-Z]+)"/g;
+        let mm: RegExpExecArray | null;
+        const methods: string[] = [];
+        while ((mm = methodsListRe.exec(methodsMatch[0])) !== null) {
+          methods.push(mm[1]);
+        }
+        for (const method of methods) {
+          symbols.push({
+            symbol_type: 'route',
+            name: formatRouteName(method, path),
+            value: path,
+            params: [method],
+            line_start: lineAt(content, m.index),
+            is_exported: false,
+          });
+        }
+      } else {
+        symbols.push({
+          symbol_type: 'route',
+          name: formatRouteName('GET', path),
+          value: path,
+          params: ['GET'],
+          line_start: lineAt(content, m.index),
+          is_exported: false,
+        });
+      }
+    }
+
+    // ══════════════════════════════════════════════
+    // 10. Routes — gin/echo/fiber/chi (r.GET, e.POST, app.PUT, ...)
+    // ══════════════════════════════════════════════
+    const verbRouteRe = /\b\w+\.(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\s*\(\s*"([^"]+)"/g;
+    while ((m = verbRouteRe.exec(content)) !== null) {
+      const method = m[1];
+      const path = m[2];
+      if (!isLikelyHttpPath(path)) continue;
+      symbols.push({
+        symbol_type: 'route',
+        name: formatRouteName(method, path),
+        value: path,
+        params: [method],
+        line_start: lineAt(content, m.index),
+        is_exported: false,
+      });
+    }
+
+    // ══════════════════════════════════════════════
+    // 11. Embedded SQL (db.Query, db.Exec, tx.Exec, stmt.Query, ...)
+    // ══════════════════════════════════════════════
+    const sqlCallRe = /\b\w+\.(?:Query|Exec|QueryRow|QueryContext|ExecContext)\s*\(\s*(?:ctx\s*,\s*)?[`"]((?:[^`"\\]|\\.){10,})[`"]/g;
+    while ((m = sqlCallRe.exec(content)) !== null) {
+      const sqlContent = m[1];
+      if (!looksLikeSql(sqlContent)) continue;
+      const baseLine = lineAt(content, m.index);
+      symbols.push(...parseEmbeddedSql(sqlContent, filePath, baseLine));
     }
 
     symbols.push(...extractStringLiterals(content));

@@ -9,6 +9,7 @@
 
 import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
 import { extractStringLiterals } from './types.js';
+import { formatRouteName, isLikelyHttpPath, HTTP_VERBS } from './patterns/http.js';
 
 function lineAt(text: string, pos: number): number {
   return text.substring(0, pos).split('\n').length;
@@ -277,6 +278,27 @@ class DartParser implements LanguageParser {
 
     symbols.push(...extractStringLiterals(content, { includeSingleQuotes: true }));
 
+    // ══════════════════════════════════════════════
+    // 8. Routes — shelf_router / dart_frog / generic
+    //    router.get('/x', handler), Router()..get('/x', ...) (Cascade)
+    // ══════════════════════════════════════════════
+    const dartRouteRe = /(?:\.\.|\.)\s*(get|post|put|patch|delete|head|options)\s*\(\s*['"]([^'"]+)['"]/g;
+    while ((m = dartRouteRe.exec(content)) !== null) {
+      const verbLower = m[1].toLowerCase();
+      if (!HTTP_VERBS.has(verbLower)) continue;
+      const path = m[2];
+      if (!isLikelyHttpPath(path)) continue;
+      const verb = verbLower.toUpperCase();
+      const lineStart = lineAt(content, m.index);
+      symbols.push({
+        symbol_type: 'route',
+        name: formatRouteName(verb, path),
+        value: path,
+        params: [verb],
+        line_start: lineStart,
+        is_exported: false,
+      });
+    }
 
     return { symbols, references };
   }
