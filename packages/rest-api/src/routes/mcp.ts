@@ -832,6 +832,67 @@ const MCP_TOOLS = [
       required: ['action', 'project'],
     },
   },
+  // 15b. files_batch — alias for files Multi-File-Plan/Commit (OpenAI-Cache-Buster)
+  {
+    name: 'files_batch',
+    description: 'Atomare Multi-File-Edits ueber mehrere Dateien (Plan-Phase Trockenlauf, dann Commit alle gemeinsam). Identische Implementierung wie files-Tool, aber als eigenes Tool exponiert weil manche MCP-Clients (z.B. ChatGPT) die action-Enum vom files-Tool aggressiv cachen und neue Werte (plan/commit/cancel) nicht erkennen. Nutze dieses Tool wenn files(action: "plan") nicht mehr klappt.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        action: {
+          type: 'string',
+          enum: ['plan', 'commit', 'cancel', 'plan_status', 'history', 'restore', 'restore_batch'],
+          description: 'plan: Trockenlauf, gibt plan_id zurueck. commit: alle Ops atomar ausfuehren. cancel: Plan verwerfen. plan_status: Plan-Details. history: Aenderungs-Log. restore/restore_batch: Versionierungs-Rollback.',
+        },
+        project: { type: 'string', description: 'Projekt-Name' },
+        ops: {
+          description: 'Multi-File Edit-Plan (1..100 Operationen). Jede Op: { file_path, action, ...op-spezifische Felder }. Aktionen: create, update, search_replace, search_replace_batch, replace_lines (line_start/line_end/content), insert_after (after_line/content), delete_lines (line_start/line_end), delete (ganze Datei), move (file_path -> new_path), copy (file_path -> new_path).',
+          type: 'array',
+          minItems: 1,
+          maxItems: 100,
+          items: {
+            type: 'object',
+            properties: {
+              file_path: { type: 'string' },
+              action: { type: 'string', enum: ['create', 'update', 'search_replace', 'search_replace_batch', 'replace_lines', 'insert_after', 'delete_lines', 'delete', 'move', 'copy'] },
+              content: { type: 'string' },
+              search: { type: 'string' },
+              replace: { type: 'string' },
+              replace_all: { type: 'boolean' },
+              line_start: { type: 'number' },
+              line_end: { type: 'number' },
+              after_line: { type: 'number' },
+              new_path: { type: 'string' },
+              reason: { type: 'string' },
+              edits: {
+                type: 'array',
+                items: {
+                  type: 'object',
+                  properties: {
+                    search: { type: 'string' },
+                    replace: { type: 'string' },
+                    replace_all: { type: 'boolean' },
+                  },
+                  required: ['search', 'replace'],
+                },
+              },
+            },
+            required: ['file_path', 'action'],
+          },
+        },
+        plan_id: { type: 'string', description: 'Pflicht fuer commit, cancel, plan_status' },
+        version_id: { type: 'string', description: 'Pflicht fuer restore' },
+        batch_id: { type: 'string', description: 'Pflicht fuer restore_batch' },
+        agent_id: { type: 'string', description: 'Optionale Agent-ID (Audit-Trail)' },
+        open_for_coedit: { type: 'boolean', description: 'plan: ob Co-Edits erlaubt sind (default true)' },
+        reason: { type: 'string', description: 'Optional fuer Audit-Trail (file_versions.reason)' },
+        since: { type: 'string', description: 'history: ISO-Timestamp ab dem Eintraege gelistet werden' },
+        file_path: { type: 'string', description: 'history: Filter auf einen Pfad (optional)' },
+        limit: { type: 'number', description: 'history: Max Eintraege (Standard 50)' },
+      },
+      required: ['action', 'project'],
+    },
+  },
   // 16. shell
   {
     name: 'shell',
@@ -2537,6 +2598,7 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
     }
 
     // =================================================================
+    case 'files_batch':
     case 'files': {
       const project = reqStr(args, 'project');
       const agentId = str(args, 'agent_id');
