@@ -88,6 +88,56 @@ function getStaticStringValue(expr: ts.Expression): string | null {
 }
 
 /**
+ * Sammelt alle const/let-Variablen die einem String/Template-Literal zugewiesen
+ * sind (auf beliebiger Ebene). Nuetzlich um z.B. db.exec(SCHEMA_SQL) aufzuloesen
+ * wo SCHEMA_SQL ein Top-Level-const mit Template-Literal ist.
+ *
+ * Map: variable-name → { value, defLine } — defLine ist die Zeile der Definition,
+ * nicht des call-sites. Embedded-SQL-Subparsing bekommt diese Zeile als Offset.
+ */
+function collectStringConsts(
+  sourceFile: ts.SourceFile,
+): Map<string, { value: string; defLine: number }> {
+  const out = new Map<string, { value: string; defLine: number }>();
+  function visit(node: ts.Node): void {
+    if (ts.isVariableDeclaration(node) && node.initializer && ts.isIdentifier(node.name)) {
+      const value = getStaticStringValue(node.initializer);
+      if (value !== null) {
+        const defLine = sourceFile.getLineAndCharacterOfPosition(node.initializer.getStart()).line + 1;
+        out.set(node.name.getText(), { value, defLine });
+      }
+    }
+    ts.forEachChild(node, visit);
+  }
+  ts.forEachChild(sourceFile, visit);
+  return out;
+}
+
+/**
+ * Versucht einen Expression-Wert als String zu resolven. Erst direkt
+ * (Literal/Template), dann Identifier-Reference auf eine string-const aus dem
+ * stringConsts-Cache. Gibt {value, defLine} zurueck — defLine ist die Zeile
+ * des Quell-Literals (nicht des call-sites), damit Embedded-SQL-Symbole sich
+ * auf die richtige Stelle beziehen.
+ */
+function resolveStringExpression(
+  expr: ts.Expression,
+  stringConsts: Map<string, { value: string; defLine: number }>,
+  sourceFile: ts.SourceFile,
+): { value: string; defLine: number } | null {
+  const direct = getStaticStringValue(expr);
+  if (direct !== null) {
+    const defLine = sourceFile.getLineAndCharacterOfPosition(expr.getStart()).line + 1;
+    return { value: direct, defLine };
+  }
+  if (ts.isIdentifier(expr)) {
+    const ref = stringConsts.get(expr.getText());
+    if (ref) return ref;
+  }
+  return null;
+}
+
+/**
  * Sub-parsed einen SQL-String-Inhalt mit dem SQL-Parser und passt die
  * line_start/line_end Felder so an, dass sie sich auf die ENCLOSING TS-Datei
  * beziehen (nicht auf die SQL-Region selbst).
@@ -119,6 +169,9 @@ function extractSymbols(
 ): { symbols: ParsedSymbol[]; definedNames: Set<string> } {
   const symbols: ParsedSymbol[] = [];
   const definedNames = new Set<string>();
+  // Pre-Pass: sammle alle String-Konstanten fuer Identifier-Resolution
+  // (z.B. const SCHEMA_SQL = `CREATE...` ; pool.query(SCHEMA_SQL))
+  const stringConsts = collectStringConsts(sourceFile);
 
   // Track nesting for parent_id
   const functionStack: string[] = [];
@@ -491,14 +544,14 @@ function extractSymbols(
     }
 
     // ----- Embedded-SQL via DB-Method-Call: db.exec(`...`), pool.query(`...`) -----
+    // Resolved auch Identifier wie pool.query(SCHEMA_SQL) wenn SCHEMA_SQL ein
+    // const mit String/Template-Literal ist.
     if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)) {
       const methodName = node.expression.name.getText();
       if (SQL_DB_METHODS.has(methodName) && node.arguments.length >= 1) {
-        const arg = node.arguments[0];
-        const sqlText = getStaticStringValue(arg);
-        if (sqlText && SQL_KEYWORD_RE.test(sqlText)) {
-          const baseLine = getLineNumber(sourceFile, arg.getStart());
-          symbols.push(...parseEmbeddedSql(sqlText, sourceFile.fileName, baseLine));
+        const resolved = resolveStringExpression(node.arguments[0], stringConsts, sourceFile);
+        if (resolved && SQL_KEYWORD_RE.test(resolved.value)) {
+          symbols.push(...parseEmbeddedSql(resolved.value, sourceFile.fileName, resolved.defLine));
         }
       }
     }
