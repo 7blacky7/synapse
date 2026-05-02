@@ -384,6 +384,30 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
         description: 'Datei kopieren.',
         params: 'new_path',
       },
+      versions: {
+        description: 'Versionshistorie einer Datei (neueste zuerst). Liefert Metadata ohne Inhalt — voller Inhalt via get_version.',
+        params: 'file_path (req), limit? (Standard 50, Max 500)',
+        example: 'files({ action: "versions", project: "synapse", file_path: "src/x.ts", limit: 20 })',
+        tips: 'Jede Aenderung erzeugt automatisch einen Snapshot. edit_action zeigt was geaendert hat (update / search_replace / restore:<id> / etc.). batch_id ist gesetzt wenn die Aenderung Teil eines Multi-File-Edits war.',
+      },
+      get_version: {
+        description: 'Liefert eine konkrete Version inklusive content.',
+        params: 'version_id (req, String)',
+        example: 'files({ action: "get_version", project: "synapse", version_id: "1234" })',
+        tips: 'version_id ist BIGSERIAL — bei sehr alten Datenbanken kann die Zahl > Number.MAX_SAFE_INTEGER werden, deshalb als String uebergeben.',
+      },
+      restore: {
+        description: 'Stellt eine alte Version als aktuellen Stand wieder her. NICHT-DESTRUKTIV: der vorherige Stand wird automatisch als neue Version mit edit_action="restore:<id>" gesnapshottet, du kannst also jederzeit wieder zurueckrollen.',
+        params: 'version_id (req, String)',
+        example: 'files({ action: "restore", project: "synapse", version_id: "1234", agent_id: "mein-agent" })',
+        tips: 'Workflow: 1. files(versions) → Liste, 2. files(get_version) → Inhalt pruefen, 3. files(restore) → einspielen.',
+      },
+      restore_batch: {
+        description: 'Rollt eine ganze Multi-File-Batch zurueck — alle Files die zu dieser batch_id gehoeren werden auf ihren Pre-Batch-Stand zurueckgesetzt. Auch nicht-destruktiv (jede Restore-Operation erzeugt selbst wieder Versionen).',
+        params: 'batch_id (req, String)',
+        example: 'files({ action: "restore_batch", project: "synapse", batch_id: "42", agent_id: "mein-agent" })',
+        tips: 'Wird relevant ab Multi-File-Plan/Commit (Schritt 2). Aktuell hauptsaechlich fuer manuelle Bulk-Rollbacks nutzbar.',
+      },
     },
   },
 

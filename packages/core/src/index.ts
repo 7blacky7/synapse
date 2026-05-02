@@ -305,6 +305,16 @@ export type {
 
 export type { FunctionInfo, VariableInfo, SymbolInfo, ReferenceInfo, ReferencesResult, FullTextSearchResult, FileContentResult, FileContentOptions, TreeOptions } from './services/code-intel.js';
 export type { BatchEdit, BatchResult } from './services/code-write.js';
+
+// File-Versionierung (Schritt 1)
+export {
+  listFileVersions,
+  getFileVersion,
+  restoreFileVersion,
+  listBatchVersions,
+  restoreBatch,
+} from './services/file-versions.js';
+export type { FileVersionMeta, FileVersionFull } from './services/file-versions.js';
 export type { BackupEntry } from './services/backup.js';
 export type { ChatMessage, AgentSession } from './services/chat.js';
 export type { AgentEvent, EventAck, EventType, EventPriority } from './services/events.js';

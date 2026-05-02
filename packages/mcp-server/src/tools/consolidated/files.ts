@@ -20,6 +20,10 @@ import {
   getProjectRoot,
   toRelativePath,
   applyContentRange,
+  listFileVersions,
+  getFileVersion,
+  restoreFileVersion,
+  restoreBatch,
 } from '@synapse/core';
 import type { BatchEdit } from '@synapse/core';
 
@@ -33,14 +37,17 @@ export const filesTool: ConsolidatedTool = {
     description:
       'Dateien in PostgreSQL erstellen, lesen, bearbeiten und loeschen. ' +
       'FileWatcher synchronisiert Aenderungen auf das Dateisystem. ' +
-      'Bei Write-Operationen werden automatisch Error-Patterns geprueft (wenn agent_id gesetzt).',
+      'Bei Write-Operationen werden automatisch Error-Patterns geprueft (wenn agent_id gesetzt). ' +
+      'Auto-Versionierung: jede Aenderung erzeugt einen Snapshot in file_versions — abrufbar mit ' +
+      'action="versions", einzelne Version lesen mit "get_version", zurueckrollen mit "restore" ' +
+      'oder ganze Multi-File-Batches mit "restore_batch".',
     inputSchema: {
       type: 'object',
       properties: {
         action: {
           type: 'string',
-          enum: ['create', 'update', 'read', 'delete', 'move', 'copy', 'replace_lines', 'insert_after', 'delete_lines', 'search_replace', 'search_replace_batch'],
-          description: 'Action: create | update | read | delete | move | copy | replace_lines | insert_after | delete_lines | search_replace | search_replace_batch',
+          enum: ['create', 'update', 'read', 'delete', 'move', 'copy', 'replace_lines', 'insert_after', 'delete_lines', 'search_replace', 'search_replace_batch', 'versions', 'get_version', 'restore', 'restore_batch'],
+          description: 'Action: create | update | read | delete | move | copy | replace_lines | insert_after | delete_lines | search_replace | search_replace_batch | versions | get_version | restore | restore_batch',
         },
         project: {
           type: 'string',
@@ -109,16 +116,59 @@ export const filesTool: ConsolidatedTool = {
           type: 'number',
           description: 'read: Zeilen laenger als N Zeichen kuerzen und Marker anhaengen. 0 = deaktiviert (Standard).',
         },
+        version_id: {
+          type: 'string',
+          description: 'Versions-ID (fuer get_version, restore). String, weil BIGSERIAL > Number.MAX_SAFE_INTEGER moeglich ist.',
+        },
+        batch_id: {
+          type: 'string',
+          description: 'Batch-ID (fuer restore_batch — rollt alle Files einer Multi-File-Batch zurueck).',
+        },
+        limit: {
+          type: 'number',
+          description: 'versions: Max Eintraege (Standard 50, Max 500).',
+        },
       },
-      required: ['action', 'project', 'file_path'],
+      required: ['action', 'project'],
     },
   },
 
   handler: async (args: Record<string, unknown>) => {
     const action = reqStr(args, 'action');
     const project = reqStr(args, 'project');
-    let filePath = reqStr(args, 'file_path');
     const agentId = str(args, 'agent_id');
+
+    // Versionierungs-Actions brauchen kein file_path (versions: ja, get_version/restore: version_id,
+    // restore_batch: batch_id). Werden hier vor der file_path-Pflicht abgefangen.
+    if (action === 'get_version') {
+      const versionId = reqStr(args, 'version_id');
+      const v = await getFileVersion(versionId);
+      if (!v) return { success: false, message: `Version ${versionId} nicht gefunden.` };
+      return { success: true, version: v };
+    }
+    if (action === 'restore') {
+      const versionId = reqStr(args, 'version_id');
+      const r = await restoreFileVersion(versionId, agentId);
+      return {
+        success: true,
+        ...r,
+        message: `Datei "${r.file_path}" auf Version ${r.restored_from} zurueckgerollt. Vorheriger Stand wurde als neue Version gesnapshottet.`,
+      };
+    }
+    if (action === 'restore_batch') {
+      const batchId = reqStr(args, 'batch_id');
+      const restored = await restoreBatch(batchId, agentId);
+      return {
+        success: true,
+        batch_id: batchId,
+        files_restored: restored.length,
+        files: restored,
+        message: `Batch ${batchId} zurueckgerollt: ${restored.length} Datei(en).`,
+      };
+    }
+
+    // Ab hier: actions die file_path brauchen.
+    let filePath = reqStr(args, 'file_path');
 
     // Pfade normalisieren: DB erwartet relative Pfade
     const projectRootPath = await getProjectRoot(project);
@@ -336,8 +386,23 @@ export const filesTool: ConsolidatedTool = {
         return await attachWarnings(response, writeResult);
       }
 
+      case 'versions': {
+        const limit = num(args, 'limit') ?? 50;
+        const versions = await listFileVersions(project, filePath, limit);
+        return {
+          success: true,
+          project,
+          file_path: filePath,
+          count: versions.length,
+          versions,
+          tip: versions.length > 0
+            ? `Voller Inhalt mit files(action: "get_version", version_id: "<id>"). Rollback mit files(action: "restore", version_id: "<id>").`
+            : 'Keine Versionen — Datei wurde noch nicht editiert oder existiert nicht.',
+        };
+      }
+
       default:
-        throw new Error(`Unbekannte files action: ${action}. Erlaubt: create, update, read, delete, move, copy, replace_lines, insert_after, delete_lines, search_replace, search_replace_batch`);
+        throw new Error(`Unbekannte files action: ${action}. Erlaubt: create, update, read, delete, move, copy, replace_lines, insert_after, delete_lines, search_replace, search_replace_batch, versions, get_version, restore, restore_batch`);
     }
   },
 };

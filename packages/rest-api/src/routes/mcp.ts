@@ -88,6 +88,11 @@ import {
   searchReplace,
   searchReplaceBatch,
   applyContentRange,
+  // File-Versionierung (Schritt 1)
+  listFileVersions,
+  getFileVersion,
+  restoreFileVersion,
+  restoreBatch,
   // Channels
   createChannel,
   joinChannel,
@@ -665,8 +670,8 @@ const MCP_TOOLS = [
       properties: {
         action: {
           type: 'string',
-          enum: ['create', 'update', 'delete', 'move', 'copy', 'read', 'replace_lines', 'insert_after', 'delete_lines', 'search_replace', 'search_replace_batch'],
-          description: 'Datei-Aktion',
+          enum: ['create', 'update', 'delete', 'move', 'copy', 'read', 'replace_lines', 'insert_after', 'delete_lines', 'search_replace', 'search_replace_batch', 'versions', 'get_version', 'restore', 'restore_batch'],
+          description: 'Datei-Aktion. versions/get_version/restore/restore_batch arbeiten auf der Versionshistorie (jede Aenderung wird automatisch gesnapshottet).',
         },
         project: { type: 'string', description: 'Projekt-Name' },
         file_path: { type: 'string', description: 'Dateipfad (relativ zum Projekt-Root)' },
@@ -695,8 +700,11 @@ const MCP_TOOLS = [
         from_line: { type: 'number', description: 'read: Start-Zeile (1-basiert, Standard: 1)' },
         to_line: { type: 'number', description: 'read: End-Zeile inklusiv (Standard: letzte Zeile). Auto-Reduce bei > 80k Zeichen.' },
         truncate_long_lines: { type: 'number', description: 'read: Zeilen laenger als N Zeichen kuerzen + Marker. 0 = aus (Standard).' },
+        version_id: { type: 'string', description: 'Versions-ID (fuer get_version, restore). String, weil BIGSERIAL > Number.MAX_SAFE_INTEGER moeglich ist.' },
+        batch_id: { type: 'string', description: 'Batch-ID (fuer restore_batch — rollt alle Files einer Multi-File-Batch zurueck).' },
+        limit: { type: 'number', description: 'versions: Max Eintraege (Standard 50, Max 500).' },
       },
-      required: ['action', 'project', 'file_path'],
+      required: ['action', 'project'],
     },
   },
   // 16. shell
@@ -2125,8 +2133,53 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
     // =================================================================
     case 'files': {
       const project = reqStr(args, 'project');
-      const filePath = reqStr(args, 'file_path');
       const agentId = str(args, 'agent_id');
+
+      // Versionierungs-Actions arbeiten ohne file_path (oder mit anderen IDs).
+      // Vor der file_path-Pflicht abfangen.
+      if (action === 'get_version') {
+        const versionId = reqStr(args, 'version_id');
+        const v = await getFileVersion(versionId);
+        if (!v) return { success: false, message: `Version ${versionId} nicht gefunden.` };
+        return { success: true, version: v };
+      }
+      if (action === 'restore') {
+        const versionId = reqStr(args, 'version_id');
+        const r = await restoreFileVersion(versionId, agentId);
+        return {
+          success: true,
+          ...r,
+          message: `Datei "${r.file_path}" auf Version ${r.restored_from} zurueckgerollt. Vorheriger Stand wurde als neue Version gesnapshottet.`,
+        };
+      }
+      if (action === 'restore_batch') {
+        const batchId = reqStr(args, 'batch_id');
+        const restored = await restoreBatch(batchId, agentId);
+        return {
+          success: true,
+          batch_id: batchId,
+          files_restored: restored.length,
+          files: restored,
+          message: `Batch ${batchId} zurueckgerollt: ${restored.length} Datei(en).`,
+        };
+      }
+
+      const filePath = reqStr(args, 'file_path');
+
+      if (action === 'versions') {
+        const limit = num(args, 'limit') ?? 50;
+        const versions = await listFileVersions(project, filePath, limit);
+        return {
+          success: true,
+          project,
+          file_path: filePath,
+          count: versions.length,
+          versions,
+          tip: versions.length > 0
+            ? `Voller Inhalt mit files(action: "get_version", version_id: "<id>"). Rollback mit files(action: "restore", version_id: "<id>").`
+            : 'Keine Versionen — Datei wurde noch nicht editiert oder existiert nicht.',
+        };
+      }
 
       switch (action) {
         case 'create': {

@@ -142,6 +142,19 @@ CREATE TABLE IF NOT EXISTS agent_event_acks (
   PRIMARY KEY (event_id, agent_id)
 );
 
+CREATE TABLE IF NOT EXISTS file_versions (
+  id BIGSERIAL PRIMARY KEY,
+  project TEXT NOT NULL,
+  file_path TEXT NOT NULL,
+  content TEXT NOT NULL,
+  content_hash TEXT NOT NULL,
+  edit_action TEXT,
+  agent_id TEXT,
+  batch_id BIGINT,
+  size_bytes INTEGER NOT NULL DEFAULT 0,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
 CREATE INDEX IF NOT EXISTS idx_memories_project ON memories(project);
 CREATE INDEX IF NOT EXISTS idx_thoughts_project ON thoughts(project);
 CREATE INDEX IF NOT EXISTS idx_plans_project ON plans(project);
@@ -158,6 +171,9 @@ CREATE INDEX IF NOT EXISTS idx_code_files_type ON code_files(project, file_type)
 CREATE INDEX IF NOT EXISTS idx_agent_events_project ON agent_events(project, created_at);
 CREATE INDEX IF NOT EXISTS idx_agent_events_type ON agent_events(event_type);
 CREATE INDEX IF NOT EXISTS idx_agent_event_acks_agent ON agent_event_acks(agent_id);
+
+CREATE INDEX IF NOT EXISTS idx_file_versions_lookup ON file_versions(project, file_path, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_file_versions_batch ON file_versions(batch_id) WHERE batch_id IS NOT NULL;
 
 -- Migration: Neue Spalten fuer Code-Intelligence
 ALTER TABLE code_files ADD COLUMN IF NOT EXISTS content TEXT;

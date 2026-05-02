@@ -441,12 +441,23 @@ export async function createFileInPg(
 
 /**
  * Aktualisiert den Inhalt einer Datei in code_files (UPDATE) und startet parseAndEmbed fire-and-forget.
+ *
+ * Versionierungs-Hook: Vor dem Schreiben wird der bisherige Inhalt — sofern vorhanden und vom
+ * neuen Inhalt verschieden — in `file_versions` gesichert. Snapshot + Update laufen in einer
+ * Transaktion, damit es bei parallelen Writes keine Race-Condition gibt.
+ *
+ * @param editAction optional, beschreibt die Aenderungsart (z.B. "update", "search_replace",
+ *                   "replace_lines"). Hilft beim Lesen der Versionshistorie.
+ * @param batchId    optional, gruppiert mehrere Versionseintraege zu einem Multi-File-Edit
+ *                   (relevant ab Schritt 2 — Multi-File-Plan/Commit).
  */
 export async function updateFileInPg(
   project: string,
   filePath: string,
   newContent: string,
-  agentId?: string
+  agentId?: string,
+  editAction?: string,
+  batchId?: number
 ): Promise<{ warnings?: ErrorPatternWarning[] }> {
   let warnings: ErrorPatternWarning[] | undefined;
   if (agentId) {
@@ -463,14 +474,41 @@ export async function updateFileInPg(
   const hash = contentHash(newContent);
   const fileSize = Buffer.byteLength(newContent, 'utf8');
 
-  const result = await pool.query(
-    `UPDATE code_files
-     SET content = $3, content_hash = $4, file_size = $5, updated_at = NOW()
-     WHERE project = $1 AND file_path = $2`,
-    [project, filePath, newContent, hash, fileSize]
-  );
+  const client = await pool.connect();
+  let rowCount = 0;
+  try {
+    await client.query('BEGIN');
 
-  if (result.rowCount === 0) {
+    // Snapshot: alten Inhalt sichern — nur wenn vorhanden UND vom neuen verschieden.
+    // Verhindert Versions-Spam durch idempotente Writes (gleicher Inhalt 2x geschrieben).
+    await client.query(
+      `INSERT INTO file_versions (project, file_path, content, content_hash, edit_action, agent_id, batch_id, size_bytes)
+       SELECT cf.project, cf.file_path, cf.content, cf.content_hash, $3, $4, $5, COALESCE(cf.file_size, OCTET_LENGTH(cf.content))
+       FROM code_files cf
+       WHERE cf.project = $1
+         AND cf.file_path = $2
+         AND cf.content IS NOT NULL
+         AND cf.content_hash IS DISTINCT FROM $6`,
+      [project, filePath, editAction ?? 'update', agentId ?? null, batchId ?? null, hash]
+    );
+
+    const result = await client.query(
+      `UPDATE code_files
+       SET content = $3, content_hash = $4, file_size = $5, updated_at = NOW()
+       WHERE project = $1 AND file_path = $2`,
+      [project, filePath, newContent, hash, fileSize]
+    );
+    rowCount = result.rowCount ?? 0;
+
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => { /* ignore rollback failure */ });
+    throw err;
+  } finally {
+    client.release();
+  }
+
+  if (rowCount === 0) {
     console.error(`[code-write] updateFileInPg: Keine Datei gefunden fuer ${project}/${filePath}`);
   }
 
