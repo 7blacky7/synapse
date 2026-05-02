@@ -80,12 +80,22 @@ export const thoughtTool: ConsolidatedTool = {
             properties: {
               content: { type: 'string' },
               tags: { type: 'array', items: { type: 'string' } },
+              task_id: { type: 'string', description: 'Optional: Task-ID fuer Verknuepfung pro Item' },
             },
             required: ['content'],
           },
           minItems: 1,
           maxItems: 50,
-          description: 'Items fuer add_batch (1..50 Gedanken mit content + optional tags). source gilt fuer alle Items.',
+          description: 'Items fuer add_batch (1..50 Gedanken mit content + optional tags + optional task_id). source gilt fuer alle Items.',
+        },
+        task_id: {
+          type: 'string',
+          description: 'Optional fuer add: Verknuepft den Thought mit einer Plan-Task. Erlaubt spaetere Suche "alle Thoughts zu Task X" und Plan-Lookups via Spalte task_id.',
+        },
+        task_status: {
+          type: 'string',
+          enum: ['todo', 'in_progress', 'done', 'blocked'],
+          description: 'Optional fuer add/add_batch: setzt zugleich den Status der via task_id verlinkten Task. Spart einen separaten plan(update_task)-Call.',
         },
       },
       required: ['action'],
@@ -101,23 +111,27 @@ export const thoughtTool: ConsolidatedTool = {
         const source = reqStr(args, 'source');
         const content = reqStr(args, 'content');
         const tags = strArrayOrEmpty(args, 'tags');
+        const taskId = typeof args.task_id === 'string' ? args.task_id : undefined;
+        const taskStatus = typeof args.task_status === 'string' ? args.task_status as Parameters<typeof addThought>[5] : undefined;
 
-        const result = await addThought(project, source, content, tags);
+        const result = await addThought(project, source, content, tags, taskId, taskStatus);
         return result;
       }
 
       case 'add_batch': {
         const project = reqStr(args, 'project');
         const source = reqStr(args, 'source');
-        const items = objArray<{ content: string; tags?: string[] }>(args, 'items');
+        const items = objArray<{ content: string; tags?: string[]; task_id?: string }>(args, 'items');
         if (!items || items.length === 0) {
           return { success: false, count: 0, thoughts: [], message: 'items (Array) ist erforderlich' };
         }
         const normalized = items.map(it => ({
           content: String(it.content ?? ''),
           tags: Array.isArray(it.tags) ? it.tags.map(String) : undefined,
+          task_id: typeof (it as { task_id?: unknown }).task_id === 'string' ? (it as { task_id: string }).task_id : undefined,
         }));
-        const result = await addThoughtsBatchTool(project, source, normalized);
+        const taskStatus = typeof args.task_status === 'string' ? args.task_status as Parameters<typeof addThought>[5] : undefined;
+        const result = await addThoughtsBatchTool(project, source, normalized, taskStatus);
         return result;
       }
 

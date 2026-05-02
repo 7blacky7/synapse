@@ -290,17 +290,23 @@ const MCP_TOOLS = [
         tags: { type: 'array', items: { type: 'string' }, description: 'Optionale Tags - fuer action "add" oder "update"' },
         items: {
           type: 'array',
+        items: {
+          type: 'array',
           items: {
             type: 'object',
             properties: {
               content: { type: 'string' },
               tags: { type: 'array', items: { type: 'string' } },
+              task_id: { type: 'string', description: 'Optional: Task-ID fuer Verknuepfung pro Item' },
             },
             required: ['content'],
           },
           minItems: 1,
           maxItems: 50,
           description: 'Items fuer add_batch (1..50 Gedanken). source gilt fuer alle Items.',
+        },
+        task_id: { type: 'string', description: 'Optional fuer add: Verknuepft den Thought mit einer Plan-Task (Spalte task_id). Suche und Plan-Lookups koennen darauf filtern.' },
+        task_status: { type: 'string', enum: ['todo', 'in_progress', 'done', 'blocked'], description: 'Optional fuer add/add_batch: setzt zugleich den Status der via task_id verlinkten Task. Spart einen separaten plan(update_task)-Call.' },
         },
         id: {
           oneOf: [
@@ -1642,7 +1648,9 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
         case 'add': {
           return await addThought(
             reqStr(args, 'project'), reqStr(args, 'source'),
-            reqStr(args, 'content'), strArrayOrEmpty(args, 'tags')
+            reqStr(args, 'content'), strArrayOrEmpty(args, 'tags'),
+            str(args, 'task_id'),
+            str(args, 'task_status') as Parameters<typeof addThought>[5]
           );
         }
         case 'add_batch': {
@@ -1659,13 +1667,19 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
             .map(it => ({
               content: String(it.content ?? ''),
               tags: Array.isArray(it.tags) ? it.tags.map(String) : undefined,
+              task_id: typeof (it as unknown as { task_id?: unknown }).task_id === 'string' ? (it as unknown as { task_id: string }).task_id : undefined,
             }))
             .filter(it => it.content.length > 0);
           if (normalized.length === 0) {
             return { success: false, count: 0, thoughts: [], message: 'Keine gueltigen Items (content fehlt oder leer)' };
           }
           const { addThoughtsBatch } = await import('@synapse/core');
-          const result = await addThoughtsBatch(project, source as Parameters<typeof addThoughtsBatch>[1], normalized);
+          const result = await addThoughtsBatch(
+            project,
+            source as Parameters<typeof addThoughtsBatch>[1],
+            normalized,
+            str(args, 'task_status') as Parameters<typeof addThoughtsBatch>[3]
+          );
           return {
             success: true,
             count: result.thoughts.length,

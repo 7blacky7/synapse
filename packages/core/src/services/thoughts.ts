@@ -50,6 +50,8 @@ import {
 } from '../qdrant/index.js';
 import { embed } from '../embeddings/index.js';
 import { getPool } from '../db/client.js';
+import { updateTask } from './plans.js';
+import type { ProjectTask } from '../types/index.js';
 
 /**
  * Fuegt einen Gedanken hinzu
@@ -58,7 +60,9 @@ export async function addThought(
   project: string,
   source: ThoughtSource,
   content: string,
-  tags: string[] = []
+  tags: string[] = [],
+  taskId?: string,
+  taskStatus?: ProjectTask['status']
 ): Promise<Thought> {
   // Collection sicherstellen
   const collectionName = COLLECTIONS.projectThoughts(project);
@@ -68,6 +72,7 @@ export async function addThought(
   const vector = await embed(content);
 
   // Thought erstellen
+  // Thought erstellen
   const thought: Thought = {
     id: uuidv4(),
     project,
@@ -75,6 +80,7 @@ export async function addThought(
     content,
     tags,
     timestamp: new Date().toISOString(),
+    task_id: taskId,
   };
 
   // Payload erstellen
@@ -85,14 +91,15 @@ export async function addThought(
     tags: thought.tags,
     timestamp: thought.timestamp,
   };
+  if (taskId) (payload as ThoughtPayload & { task_id?: string }).task_id = taskId;
 
   // 1. PostgreSQL (Write-Primary) — fail-fast: wirft bei Fehler
   const pool = getPool();
   await pool.query(
-    `INSERT INTO thoughts (id, project, source, content, tags, timestamp)
-     VALUES ($1, $2, $3, $4, $5, $6)
+    `INSERT INTO thoughts (id, project, source, content, tags, timestamp, task_id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)
      ON CONFLICT (id) DO NOTHING`,
-    [thought.id, project, source, content, tags, thought.timestamp]
+    [thought.id, project, source, content, tags, thought.timestamp, taskId ?? null]
   );
 
   // 2. Qdrant (Vektor-Index) — Warning bei Fehler, PG-Daten bleiben erhalten
@@ -102,6 +109,18 @@ export async function addThought(
   } catch (error) {
     console.error('[Synapse] Qdrant Thought-Write fehlgeschlagen:', error);
     warning = `Qdrant-Write fehlgeschlagen: ${error}`;
+  }
+
+  // 3. Optional: Task-Status atomar mit setzen (wenn taskId + taskStatus)
+  if (taskId && taskStatus) {
+    try {
+      const updated = await updateTask(project, taskId, { status: taskStatus });
+      if (!updated) {
+        warning = (warning ? warning + '; ' : '') + `Task ${taskId} nicht gefunden — Status nicht gesetzt`;
+      }
+    } catch (error) {
+      warning = (warning ? warning + '; ' : '') + `Task-Update fehlgeschlagen: ${error}`;
+    }
   }
 
   console.error(`[Synapse] Gedanke gespeichert von "${source}" fuer Projekt "${project}"`);
@@ -116,7 +135,8 @@ export async function addThought(
 export async function addThoughtsBatch(
   project: string,
   source: ThoughtSource,
-  items: Array<{ content: string; tags?: string[] }>
+  items: Array<{ content: string; tags?: string[]; task_id?: string }>,
+  taskStatus?: ProjectTask['status']
 ): Promise<{ thoughts: Thought[]; warning?: string }> {
   if (items.length === 0) return { thoughts: [] };
 
@@ -131,6 +151,7 @@ export async function addThoughtsBatch(
     content: item.content,
     tags: item.tags ?? [],
     timestamp: now,
+    task_id: item.task_id,
   }));
 
   // 1. Embeddings im Batch
@@ -143,12 +164,12 @@ export async function addThoughtsBatch(
   const values: unknown[] = [];
   const placeholders: string[] = [];
   thoughts.forEach((t, i) => {
-    const off = i * 6;
-    placeholders.push(`($${off + 1}, $${off + 2}, $${off + 3}, $${off + 4}, $${off + 5}, $${off + 6})`);
-    values.push(t.id, t.project, t.source, t.content, t.tags, t.timestamp);
+    const off = i * 7;
+    placeholders.push(`($${off + 1}, $${off + 2}, $${off + 3}, $${off + 4}, $${off + 5}, $${off + 6}, $${off + 7})`);
+    values.push(t.id, t.project, t.source, t.content, t.tags, t.timestamp, t.task_id ?? null);
   });
   await pool.query(
-    `INSERT INTO thoughts (id, project, source, content, tags, timestamp)
+    `INSERT INTO thoughts (id, project, source, content, tags, timestamp, task_id)
      VALUES ${placeholders.join(', ')}
      ON CONFLICT (id) DO NOTHING`,
     values
@@ -175,6 +196,21 @@ export async function addThoughtsBatch(
   } catch (error) {
     console.error('[Synapse] Qdrant Thoughts-Batch-Add fehlgeschlagen:', error);
     warning = `Qdrant-Write fehlgeschlagen: ${error}`;
+  }
+
+  // 4. Optional: Task-Status fuer alle items mit task_id setzen
+  if (taskStatus) {
+    for (const t of thoughts) {
+      if (!t.task_id) continue;
+      try {
+        const updated = await updateTask(project, t.task_id, { status: taskStatus });
+        if (!updated) {
+          warning = (warning ? warning + '; ' : '') + `Task ${t.task_id} nicht gefunden`;
+        }
+      } catch (error) {
+        warning = (warning ? warning + '; ' : '') + `Task-Update fehlgeschlagen (${t.task_id}): ${error}`;
+      }
+    }
   }
 
   console.error(`[Synapse] ${thoughts.length} Gedanken gespeichert von "${source}" (Batch)`);

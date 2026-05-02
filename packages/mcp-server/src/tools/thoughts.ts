@@ -21,14 +21,16 @@ export async function addThought(
   project: string,
   source: ThoughtSource,
   content: string,
-  tags: string[] = []
+  tags: string[] = [],
+  taskId?: string,
+  taskStatus?: 'todo' | 'in_progress' | 'done' | 'blocked'
 ): Promise<{
   success: boolean;
   thought: Thought | null;
   message: string;
 }> {
   try {
-    const thought = await addThoughtCore(project, source, content, tags);
+    const thought = await addThoughtCore(project, source, content, tags, taskId, taskStatus);
 
     return {
       success: true,
@@ -50,7 +52,8 @@ export async function addThought(
 export async function addThoughtsBatchTool(
   project: string,
   source: ThoughtSource,
-  items: Array<{ content: string; tags?: string[] }>
+  items: Array<{ content: string; tags?: string[]; task_id?: string }>,
+  taskStatus?: 'todo' | 'in_progress' | 'done' | 'blocked'
 ): Promise<{
   success: boolean;
   count: number;
@@ -70,7 +73,7 @@ export async function addThoughtsBatchTool(
       return { success: false, count: 0, thoughts: [], message: 'Keine gueltigen Items (content fehlt oder leer)' };
     }
 
-    const result = await addThoughtsBatchCore(project, source, valid);
+    const result = await addThoughtsBatchCore(project, source, valid, taskStatus);
     return {
       success: true,
       count: result.thoughts.length,

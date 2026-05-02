@@ -150,6 +150,7 @@ export interface Thought {
   tags: string[];
   timestamp: string;
   warning?: string;
+  task_id?: string;
 }
 
 export type ThoughtSource =

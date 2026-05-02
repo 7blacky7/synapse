@@ -40,6 +40,11 @@ CREATE TABLE IF NOT EXISTS thoughts (
   timestamp TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- Migration: task_id fuer Verknuepfung Thought↔Plan-Task (Idea 1, 2026-05-02)
+ALTER TABLE thoughts ADD COLUMN IF NOT EXISTS task_id TEXT;
+CREATE INDEX IF NOT EXISTS idx_thoughts_project_task_id ON thoughts(project, task_id) WHERE task_id IS NOT NULL;
+
+
 CREATE TABLE IF NOT EXISTS plans (
   id TEXT PRIMARY KEY,
   project TEXT NOT NULL,
