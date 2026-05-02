@@ -171,9 +171,16 @@ export async function updatePlan(
 ): Promise<ProjectPlan | null> {
   const existingPlan = await getPlan(project);
 
+  // Upsert-Verhalten: Wenn noch kein Plan existiert, lege einen an. Web-KIs
+  // koennen so via plan(action: "update") direkt arbeiten ohne separates create.
   if (!existingPlan) {
-    console.warn(`[Synapse] Kein Plan gefunden fuer Projekt: ${project}`);
-    return null;
+    console.error(`[Synapse] Plan-Upsert: lege neuen Plan an fuer Projekt "${project}"`);
+    return await createPlan(
+      project,
+      updates.name ?? `Plan fuer ${project}`,
+      updates.description ?? '',
+      updates.goals ?? [],
+    );
   }
 
   // Plan aktualisieren
