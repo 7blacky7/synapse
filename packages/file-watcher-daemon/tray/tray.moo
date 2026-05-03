@@ -102,28 +102,32 @@ funktion oeffne_detail(name):
     offene_fenster[name] = g
     g["name"] = name
 
-    setze fenster auf ui_fenster("Projekt: " + name, 780, 560, 1, nichts)
+    setze fenster auf ui_fenster("Projekt: " + name, 1100, 750, 1, nichts)
     g["fenster"] = fenster
     # Beim Close: Eintrag entfernen — GTK zerstoert das Widget, der
     # gecachte Pointer wird sonst beim naechsten Oeffnen zum Segfault.
     ui_fenster_on_close(fenster, close_factory(name))
 
-    setze tabs auf ui_tabs(fenster, 10, 10, 760, 500)
+    setze tabs auf ui_tabs(fenster, 10, 10, 1080, 690)
     g["tabs"] = tabs
 
     # --- Tab 1: Agenten ---
     setze tab_a auf ui_tab_hinzu(tabs, "Agenten")
-    setze liste_a auf ui_liste(tab_a, ["Name", "Modell", "Status", "Tokens", "Letzte Aktivitaet"], 10, 10, 730, 400)
+    setze liste_a auf ui_liste(tab_a, ["Name", "Modell", "Status", "Tokens", "Letzte Aktivitaet"], 10, 10, 1050, 590)
     g["liste_agents"] = liste_a
-    ui_knopf(tab_a, "Stoppen",        10, 420, 120, 32, stop_agent_factory(name))
-    ui_knopf(tab_a, "Aktualisieren", 140, 420, 140, 32, refresh_agents_factory(name))
+    setze btn_stop auf ui_knopf(tab_a, "Stoppen",        10, 610, 120, 32, stop_agent_factory(name))
+    setze btn_ref_a auf ui_knopf(tab_a, "Aktualisieren", 140, 610, 140, 32, refresh_agents_factory(name))
+    g["btn_stop_a"] = btn_stop
+    g["btn_ref_a"]  = btn_ref_a
 
     # --- Tab 2: Events ---
     setze tab_e auf ui_tab_hinzu(tabs, "Events")
-    setze liste_e auf ui_liste(tab_e, ["Typ", "Datei", "Zeit"], 10, 10, 730, 400)
+    setze liste_e auf ui_liste(tab_e, ["Typ", "Datei", "Zeit"], 10, 10, 1050, 590)
     g["liste_events"] = liste_e
-    ui_knopf(tab_e, "Aktualisieren", 10, 420, 140, 32, refresh_events_factory(name))
-    ui_knopf(tab_e, "Oeffnen",      160, 420, 120, 32, open_event_factory(name))
+    setze btn_ref_e auf ui_knopf(tab_e, "Aktualisieren", 10, 610, 140, 32, refresh_events_factory(name))
+    setze btn_open_e auf ui_knopf(tab_e, "Oeffnen",      160, 610, 120, 32, open_event_factory(name))
+    g["btn_ref_e"]  = btn_ref_e
+    g["btn_open_e"] = btn_open_e
 
     # --- Tab 3: Status ---
     setze tab_s auf ui_tab_hinzu(tabs, "Status")
@@ -146,10 +150,34 @@ funktion oeffne_detail(name):
     ui_knopf(tab_ak, "Neu indexieren", 10, 10,   200, 36, reindex_factory(name))
     ui_knopf(tab_ak, "Projekt loeschen", 10, 60, 200, 36, delete_factory(name))
 
+    # Resize-Layout: Tabs + Listen + Buttons folgen der Fenstergroesse
+    ui_fenster_on_resize(fenster, layout_projekt_factory(name))
     ui_zeige(fenster)
     agents_laden(name)
     events_laden(name)
     status_laden(name)
+
+# Reposition aller Widgets im Projekt-Fenster bei Resize.
+# (b, h) ist die neue Fenster-Innengroesse vom GTK configure-event.
+funktion layout_projekt(name, b, h):
+    wenn nicht offene_fenster.hat(name):
+        gib_zurück nichts
+    setze g auf offene_fenster[name]
+    setze tabs_b auf b - 20
+    setze tabs_h auf h - 60
+    ui_groesse_setze(g["tabs"], tabs_b, tabs_h)
+    setze inner_b auf tabs_b - 30
+    setze list_h auf tabs_h - 100
+    setze btn_y auf list_h + 20
+    ui_groesse_setze(g["liste_agents"], inner_b, list_h)
+    ui_position_setze(g["btn_stop_a"], 10,  btn_y)
+    ui_position_setze(g["btn_ref_a"],  140, btn_y)
+    ui_groesse_setze(g["liste_events"], inner_b, list_h)
+    ui_position_setze(g["btn_ref_e"],  10,  btn_y)
+    ui_position_setze(g["btn_open_e"], 160, btn_y)
+
+funktion layout_projekt_factory(name):
+    gib_zurück (b, h) => layout_projekt(name, b, h)
 
 funktion detail_factory(name):
     gib_zurück () => oeffne_detail(name)
@@ -411,32 +439,69 @@ funktion oeffne_chat(projekt, channel):
     g["channel"] = channel
     g["schluessel"] = schluessel
 
-    setze fenster auf ui_fenster("Chat: " + channel + " (" + projekt + ")", 900, 620, 1, nichts)
+    setze fenster auf ui_fenster("Chat: " + channel + " (" + projekt + ")", 1200, 800, 1, nichts)
     g["fenster"] = fenster
     ui_fenster_on_close(fenster, chat_close_factory(schluessel))
 
     # Nachrichten-Liste (links-oben, breit)
-    ui_label(fenster, "Nachrichten:", 10, 10, 200, 20)
-    setze liste_m auf ui_liste(fenster, ["Zeit", "Absender", "Nachricht"], 10, 35, 620, 430)
+    setze lbl_msgs auf ui_label(fenster, "Nachrichten:", 10, 10, 200, 20)
+    setze liste_m auf ui_liste(fenster, ["Zeit", "Absender", "Nachricht"], 10, 35, 880, 670)
     g["liste_msgs"] = liste_m
+    g["lbl_msgs"]   = lbl_msgs
 
     # Agenten-Liste (rechts)
-    ui_label(fenster, "Agenten im Projekt:", 640, 10, 250, 20)
-    setze liste_a auf ui_liste(fenster, ["Name", "Modell"], 640, 35, 250, 430)
+    setze lbl_ag auf ui_label(fenster, "Agenten im Projekt:", 900, 10, 290, 20)
+    setze liste_a auf ui_liste(fenster, ["Name", "Modell"], 900, 35, 290, 670)
     g["liste_agents"] = liste_a
+    g["lbl_ag"]       = lbl_ag
 
     # Input + Senden
-    ui_label(fenster, "Nachricht:", 10, 475, 100, 20)
-    setze eingabe auf ui_eingabe(fenster, 10, 500, 700, 32, "Hier tippen...", falsch)
+    setze lbl_in auf ui_label(fenster, "Nachricht:", 10, 715, 100, 20)
+    setze eingabe auf ui_eingabe(fenster, 10, 740, 990, 32, "Hier tippen...", falsch)
     g["eingabe"] = eingabe
+    g["lbl_in"]  = lbl_in
     # Enter-Taste sendet (Bind aus moo nacht-session/moo-gtk-event-hooks).
     ui_eingabe_on_enter(eingabe, chat_senden_factory(schluessel))
-    ui_knopf(fenster, "Senden",        720, 500, 80, 32, chat_senden_factory(schluessel))
-    ui_knopf(fenster, "Aktualisieren", 805, 500, 85, 32, chat_refresh_factory(schluessel))
+    setze btn_send auf ui_knopf(fenster, "Senden",        1010, 740, 80, 32, chat_senden_factory(schluessel))
+    setze btn_ref auf ui_knopf(fenster, "Aktualisieren", 1095, 740, 85, 32, chat_refresh_factory(schluessel))
+    g["btn_send"] = btn_send
+    g["btn_ref"]  = btn_ref
 
+    # Resize-Layout: Listen + Eingabe folgen der Fenstergroesse
+    ui_fenster_on_resize(fenster, layout_chat_factory(schluessel))
     ui_zeige(fenster)
     chat_messages_laden(schluessel)
     chat_agents_laden(schluessel)
+
+# Reposition aller Widgets im Chat-Fenster bei Resize.
+funktion layout_chat(schluessel, b, h):
+    wenn nicht chat_fenster.hat(schluessel):
+        gib_zurück nichts
+    setze g auf chat_fenster[schluessel]
+    # Aufteilung: Nachrichten links breit (~73%), Agenten rechts schmal (~25%)
+    setze rechts_b auf 290
+    setze links_b auf b - rechts_b - 30
+    setze listen_h auf h - 130
+    # Nachrichten-Liste links
+    ui_position_setze(g["lbl_msgs"], 10, 10)
+    ui_groesse_setze(g["liste_msgs"], links_b, listen_h)
+    # Agenten-Liste rechts
+    setze rechts_x auf links_b + 20
+    ui_position_setze(g["lbl_ag"], rechts_x, 10)
+    ui_groesse_setze(g["lbl_ag"], rechts_b, 20)
+    ui_position_setze(g["liste_agents"], rechts_x, 35)
+    ui_groesse_setze(g["liste_agents"], rechts_b, listen_h)
+    # Eingabe + Buttons unten
+    setze in_y auf listen_h + 60
+    setze in_b auf b - 220
+    ui_position_setze(g["lbl_in"], 10, in_y - 25)
+    ui_position_setze(g["eingabe"], 10, in_y)
+    ui_groesse_setze(g["eingabe"], in_b, 32)
+    ui_position_setze(g["btn_send"], in_b + 20, in_y)
+    ui_position_setze(g["btn_ref"], in_b + 105, in_y)
+
+funktion layout_chat_factory(schluessel):
+    gib_zurück (b, h) => layout_chat(schluessel, b, h)
 
 funktion chat_close_factory(schluessel):
     gib_zurück () => chat_fenster_schliessen(schluessel)
