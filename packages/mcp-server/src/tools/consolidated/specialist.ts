@@ -22,6 +22,8 @@ import {
   updateSpecialistSkillTool,
   getAgentCapabilitiesTool,
 } from '../index.js';
+import { getWrapperStatus, listWrapperStatus } from '@synapse/core';
+import type { WrapperStatusRow } from '@synapse/core';
 
 export const specialistTool: ConsolidatedTool = {
   definition: {
@@ -271,14 +273,56 @@ export const specialistTool: ConsolidatedTool = {
       }
 
       case 'status': {
-        const projectPath = reqStr(args, 'project_path');
+        const project = str(args, 'project');
+        const projectPath = str(args, 'project_path');
+        const names = strArray(args, 'name');
+        const name = str(args, 'name');
+        const THREE_MIN_MS = 3 * 60 * 1000;
+
+        // Helper: PG-Row → Specialist-Record (Response-Struktur unveraendert)
+        const pgRowToSpec = (row: WrapperStatusRow): Record<string, unknown> => ({
+          name: row.agentName,
+          model: row.model ?? '',
+          status: row.status,
+          pid: row.innerPid ?? 0,
+          wrapperPid: row.wrapperPid ?? 0,
+          socket: row.socketPath ?? '',
+          tokens: {
+            input: row.tokensInput ?? 0,
+            output: row.tokensOutput ?? 0,
+            percent: row.tokensPercent ?? 0,
+          },
+          contextCeiling: row.contextCeiling ?? 0,
+          lastActivity: row.lastActivity.toISOString(),
+          channels: row.channels ?? [],
+          currentTask: row.currentTask ?? null,
+          busy: row.busy ?? false,
+          ...(row.provider != null && { provider: row.provider }),
+          ...(row.modelFullId != null && { modelFullId: row.modelFullId }),
+        });
 
         // Array-Support: Mehrere Spezialisten-Status in einem Call
-        const names = strArray(args, 'name');
         if (names && names.length > 1) {
-          const settled = await Promise.allSettled(
-            names.map(n => specialistStatusTool(projectPath, n))
-          );
+          if (project) {
+            const settled = await Promise.allSettled(names.map(n => getWrapperStatus(n, project)));
+            const results: Array<Record<string, unknown>> = [];
+            const errors: string[] = [];
+            for (let i = 0; i < settled.length; i++) {
+              const r = settled[i];
+              if (r.status === 'fulfilled' && r.value) {
+                const connected = Date.now() - r.value.lastActivity.getTime() < THREE_MIN_MS;
+                results.push({ success: true, specialist: pgRowToSpec(r.value), connected });
+              } else if (r.status === 'fulfilled') {
+                results.push({ success: false, message: `Spezialist "${names[i]}" nicht gefunden.` });
+              } else {
+                errors.push(String(r.reason));
+              }
+            }
+            return { results, count: results.length, errors };
+          }
+          // Fallback: specialistStatusTool (braucht project_path)
+          const pp = projectPath ?? reqStr(args, 'project_path');
+          const settled = await Promise.allSettled(names.map(n => specialistStatusTool(pp, n)));
           const results: Array<Record<string, unknown>> = [];
           const errors: string[] = [];
           for (const r of settled) {
@@ -288,9 +332,47 @@ export const specialistTool: ConsolidatedTool = {
           return { results, count: results.length, errors };
         }
 
-        // Bestehend: Einzelner Name (oder alle wenn kein Name)
-        const name = str(args, 'name');
-        return await specialistStatusTool(projectPath, name);
+        // PG-first: Einzelner Spezialist oder alle
+        if (project) {
+          if (name) {
+            // Einzelner Spezialist aus PG
+            const row = await getWrapperStatus(name, project).catch(() => null);
+            if (row) {
+              const connected = Date.now() - row.lastActivity.getTime() < THREE_MIN_MS
+                && row.status !== 'crashed' && row.status !== 'stopped';
+              return {
+                success: true,
+                specialist: pgRowToSpec(row),
+                connected,
+                wrapperStatus: { via: 'pg', lastActivity: row.lastActivity.toISOString() },
+                skill: '(Skill-Daten nur via project_path verfuegbar)',
+              };
+            }
+            // PG leer → Fallback auf specialistStatusTool
+            if (projectPath) return await specialistStatusTool(projectPath, name);
+            return { success: false, message: `Spezialist "${name}" nicht gefunden.` };
+          }
+
+          // Alle Spezialisten des Projekts aus PG
+          const rows = await listWrapperStatus(project).catch(() => [] as WrapperStatusRow[]);
+          if (rows.length > 0) {
+            const specialists: Record<string, unknown> = {};
+            for (const row of rows) specialists[row.agentName] = pgRowToSpec(row);
+            return {
+              success: true,
+              specialists,
+              runningCount: rows.filter(r => r.status === 'running').length,
+              lastUpdate: rows[0].lastActivity.toISOString(),
+            };
+          }
+          // PG leer → Fallback
+          if (projectPath) return await specialistStatusTool(projectPath, undefined);
+          return { success: true, specialists: {}, runningCount: 0, lastUpdate: new Date().toISOString() };
+        }
+
+        // Kein project → Fallback auf specialistStatusTool (braucht project_path)
+        const pp = projectPath ?? reqStr(args, 'project_path');
+        return await specialistStatusTool(pp, name ?? undefined);
       }
 
       case 'wake': {
