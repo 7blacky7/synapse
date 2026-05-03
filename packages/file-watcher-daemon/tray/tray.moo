@@ -549,6 +549,9 @@ funktion chat_messages_laden(schluessel):
             setze inhalt auf m["content"]
         ui_liste_zeile_hinzu(liste, [zeit, sender, inhalt])
         setze i auf i + 1
+    # Auto-Scroll zur letzten Nachricht (Open + Refresh + nach Senden).
+    # Nutzt ui_liste_scroll_unten aus moo nacht-session/moo-gtk-event-hooks.
+    ui_liste_scroll_unten(liste)
     g["busy_msgs"] = falsch
 
 funktion chat_agents_laden(schluessel):
