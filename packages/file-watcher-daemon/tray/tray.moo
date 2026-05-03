@@ -150,8 +150,10 @@ funktion oeffne_detail(name):
     ui_knopf(tab_ak, "Neu indexieren", 10, 10,   200, 36, reindex_factory(name))
     ui_knopf(tab_ak, "Projekt loeschen", 10, 60, 200, 36, delete_factory(name))
 
-    # Resize-Layout: Tabs + Listen + Buttons folgen der Fenstergroesse
-    ui_fenster_on_resize(fenster, layout_projekt_factory(name))
+    # Resize-Layout TEMPORAER DEAKTIVIERT — moo Closure-Capture-Crash
+    # in 2-arg-Lambda. Siehe cc-send an moo-runtime-dev. Default-Groesse
+    # ist gross genug damit das Layout vorerst statisch akzeptabel ist.
+    # ui_fenster_on_resize(fenster, layout_projekt_factory(name))
     ui_zeige(fenster)
     agents_laden(name)
     events_laden(name)
@@ -483,8 +485,8 @@ funktion oeffne_chat(projekt, channel):
     g["btn_send"] = btn_send
     g["btn_ref"]  = btn_ref
 
-    # Resize-Layout: Listen + Eingabe folgen der Fenstergroesse
-    ui_fenster_on_resize(fenster, layout_chat_factory(schluessel))
+    # Resize-Layout TEMPORAER DEAKTIVIERT — siehe layout_projekt-Kommentar
+    # ui_fenster_on_resize(fenster, layout_chat_factory(schluessel))
     ui_zeige(fenster)
     chat_messages_laden(schluessel)
     chat_agents_laden(schluessel)
