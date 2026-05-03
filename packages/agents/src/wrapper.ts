@@ -367,6 +367,12 @@ async function handleWake(message: string | undefined, id?: number): Promise<Wra
 async function handleStop(id?: number): Promise<WrapperResponse> {
   log('Stop requested — asking agent to save and shutting down')
 
+  // SOFORT shuttingDown setzen — verhindert dass der Exit-Handler den Inner-Claude-
+  // Exit als "Crash" interpretiert + KEEP_ALIVE-Auto-Respawn ausloest. Sonst Race:
+  // Agent saved, Inner-Claude exit, Exit-Handler sieht !shuttingDown → respawn,
+  // Wrapper lebt weiter obwohl explizit gestoppt wurde.
+  shuttingDown = true
+
   // Ask agent to save before stopping
   if (processAlive && !agentBusy) {
     try {
