@@ -72,10 +72,28 @@ export function createState(opts: HeartbeatStateOpts): HeartbeatState {
   };
 }
 
-/** Externe Aktivitaet → reset auf 10s, neuer Tick sofort */
+/**
+ * Externe Aktivitaet (hot) → reset auf 10s, neuer Tick sofort.
+ * Beispiele: tatsaechliche neue Channel-Message gefunden, file-change-NOTIFY,
+ * direkter wakeAgent.
+ */
 export function onEvent(state: HeartbeatState): void {
   state.ladderIdx = ACTIVE_IDX;
   state.currentIntervalMs = LADDER_MS[ACTIVE_IDX];
+  state.lastEventAt = Date.now();
+}
+
+/**
+ * Warm-Reset → zurueck auf 30s (Default), nicht ganz runter auf 10s.
+ * Beispiele: PG-NOTIFY auf chat/channel/event ohne dass etwas konkret
+ * Relevantes gefunden wurde — irgendwas tickt im System, aber kein
+ * Real-Time-Druck. Wenn aktueller Backoff schon < 30s ist, bleibt es so.
+ */
+export function onWarmEvent(state: HeartbeatState): void {
+  if (state.ladderIdx > DEFAULT_IDX) {
+    state.ladderIdx = DEFAULT_IDX;
+    state.currentIntervalMs = LADDER_MS[DEFAULT_IDX];
+  }
   state.lastEventAt = Date.now();
 }
 

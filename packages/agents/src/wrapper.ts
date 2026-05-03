@@ -49,6 +49,7 @@ import { resolveModel } from './models.js'
 import {
   createState as createHeartbeatState,
   onEvent as onHeartbeatEvent,
+  onWarmEvent as onHeartbeatWarmEvent,
   onIdleStep as onHeartbeatIdleStep,
   nextDelayMs as nextHeartbeatDelay,
   describeInterval,
@@ -117,11 +118,16 @@ function consumeFileChangesText(): string | null {
   return `FILE-CHANGES seit letztem Wake:\n${lines.join('\n')}`
 }
 
-/** Trigger sofortigen Heartbeat (z.B. nach LISTEN-Notification) */
-function triggerImmediateHeartbeat(reason: string): void {
+/**
+ * Trigger sofortigen Heartbeat (z.B. nach LISTEN-Notification).
+ * level='hot': Reset auf 10s (file-change, echte Aktivitaet)
+ * level='warm': Reset auf max 30s (Default; nur ein NOTIFY-Tick, evtl. nichts Konkretes)
+ */
+function triggerImmediateHeartbeat(reason: string, level: 'hot' | 'warm' = 'hot'): void {
   if (!heartbeatState || shuttingDown || !processAlive) return
-  log('LISTEN-Trigger (%s) → sofortiger Heartbeat', reason)
-  onHeartbeatEvent(heartbeatState)
+  log('LISTEN-Trigger (%s, %s) → sofortiger Heartbeat', reason, level)
+  if (level === 'hot') onHeartbeatEvent(heartbeatState)
+  else onHeartbeatWarmEvent(heartbeatState)
   if (heartbeatTimeoutId) {
     clearTimeout(heartbeatTimeoutId)
     heartbeatTimeoutId = null
@@ -166,7 +172,9 @@ async function setupPgListeners(): Promise<void> {
           }
         } catch { /* ignore parse errors */ }
       }
-      triggerImmediateHeartbeat(channel)
+      // File-Changes sind 'hot' (Real-Time), andere Events nur 'warm' (Default 30s).
+      const level = channel === 'synapse_file' ? 'hot' : 'warm'
+      triggerImmediateHeartbeat(channel, level)
     })
     listenClient.on('error', (err) => {
       log('PG-LISTEN error: %s — neu verbinden bei naechstem Heartbeat', err.message)
