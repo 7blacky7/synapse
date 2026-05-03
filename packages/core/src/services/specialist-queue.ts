@@ -24,7 +24,8 @@ export type SpecialistAction =
   | 'stop'
   | 'purge'
   | 'wake'
-  | 'update_skill';
+  | 'update_skill'
+  | 'status';
 
 export interface SpecialistJobRow {
   id: string;

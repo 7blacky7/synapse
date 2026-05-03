@@ -47,9 +47,12 @@ export const specialistTool: ConsolidatedTool = {
         },
         model: {
           type: 'string',
-          enum: ['opus', 'sonnet', 'haiku', 'opus[1m]', 'sonnet[1m]'],
+          // enum dynamisch aus model_registry beim Server-Start ueberschrieben.
+          // Aktuell statischer Fallback fuer Bootstrap-Tests + JSONSchema-Validierung
+          // bei DB-Down. Neue Modelle in DB → MCP-Server-Restart noetig.
+          enum: ['opus', 'sonnet', 'haiku', 'opus[1m]', 'sonnet[1m]', 'gemini-flash-lite', 'gemini-flash', 'gemini-pro'],
           description:
-            'Claude Modell (erforderlich für: spawn). MODELLE: opus/sonnet/haiku = 200k Context (Standard fuer kurze Tasks). opus[1m]/sonnet[1m] = 1M Context (fuer langlaufende Code-Arbeit ohne Handoff-Risiko). ⚠️ ABO-LIMIT: Nur EIN Modell-Typ darf gleichzeitig auf 1M laufen — wenn der Koordinator opus[1m] nutzt, duerfen Spezialisten AUCH opus[1m] sein, aber NIEMALS sonnet[1m] dazu (rate-limit-Block). Bei Mix-Bedarf: andere Modelle auf 200k spawnen. Empfehlung: Deep-Code-Work → opus[1m], One-Shot-Tasks → opus/sonnet 200k, einfache Mechanik → haiku.',
+            'Modell-Alias (erforderlich für: spawn). Aliases werden via model_registry-Tabelle aufgeloest. CLAUDE: opus/sonnet/haiku = 200k, opus[1m]/sonnet[1m] = 1M Context. ⚠️ ABO-LIMIT: Nur EIN Modell-Typ darf gleichzeitig auf 1M laufen (sonst rate-limit-Block). GOOGLE: gemini-flash-lite/gemini-flash/gemini-pro = 1M Context, ~3-75x billiger als Claude (braucht GOOGLE_API_KEY).',
         },
         expertise: {
           type: 'string',
@@ -145,12 +148,9 @@ export const specialistTool: ConsolidatedTool = {
     switch (action) {
       case 'spawn': {
         const name = reqStr(args, 'name');
-        const model = reqStr(args, 'model') as
-          | 'opus'
-          | 'sonnet'
-          | 'haiku'
-          | 'opus[1m]'
-          | 'sonnet[1m]';
+        // model ist jetzt Alias-String (claude+gemini+future). Validierung +
+        // env-Check passiert in spawnSpecialistTool via resolveModel.
+        const model = reqStr(args, 'model') as Parameters<typeof spawnSpecialistTool>[1];
         const expertise = reqStr(args, 'expertise');
         const task = reqStr(args, 'task');
         const project = reqStr(args, 'project');

@@ -22,6 +22,10 @@ export interface SpecialistStatus {
   lastActivity: string
   channels: string[]
   currentTask: string | null
+  /** Provider (z.B. 'anthropic', 'google'). Optional fuer Backward-Compat mit alten status.json */
+  provider?: string
+  /** Voller Modell-API-String (z.B. 'gemini-3.1-flash-lite-preview'). Optional. */
+  modelFullId?: string
 }
 
 export interface StatusFile {

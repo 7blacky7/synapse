@@ -40,6 +40,7 @@ import {
   createInitialAgent,
   type SkillFile,
   type SpecialistConfig,
+  type SpecialistStatus,
 } from '@synapse/agents';
 
 // ---------------------------------------------------------------------------
@@ -62,7 +63,7 @@ function jsonResult(data: Record<string, unknown>) {
 
 export async function spawnSpecialistTool(
   name: string,
-  model: SpecialistConfig['model'],
+  model: SpecialistConfig['model'] | string,
   expertise: string,
   task: string,
   project: string,
@@ -72,16 +73,48 @@ export async function spawnSpecialistTool(
   allowedTools?: string[],
   keepAlive?: boolean,
 ) {
-  // 1. Claude CLI pruefen
-  const cliInfo = detectClaudeCli();
-  if (!cliInfo.available) {
+  // 1. Modell aufloesen + provider-spezifische Checks
+  const { resolveModel, listAliases } = await import('@synapse/agents');
+  const modelEntry = resolveModel(model);
+  if (!modelEntry) {
     return jsonResult({
       success: false,
-      message: 'Claude CLI nicht gefunden. Installiere claude (npm i -g @anthropic-ai/claude-code) und stelle sicher, dass "claude" im PATH ist.',
+      message: `Unbekanntes Modell-Alias "${model}". Verfuegbar: ${listAliases().join(', ')}`,
     });
   }
 
-  // 2. Limit pruefen
+  // 2a. Provider-spezifischer Binary-Check
+  if (modelEntry.binary === 'claude') {
+    const cliInfo = detectClaudeCli();
+    if (!cliInfo.available) {
+      return jsonResult({
+        success: false,
+        message: 'Claude CLI nicht gefunden. Installiere claude (npm i -g @anthropic-ai/claude-code) und stelle sicher, dass "claude" im PATH ist.',
+      });
+    }
+  }
+  // (binary='node': process.ts macht require.resolve, eigene Error wenn fail)
+
+  // 2b. ENV-Pre-Spawn-Check (S4 — verhindert Endlos-Respawn-Loop bei fehlendem API-Key)
+  if (modelEntry.envRequired.length > 0) {
+    const useEmbeddingKey = (process.env.SYNAPSE_GEMINI_USE_EMBEDDING_KEY ?? 'true').toLowerCase() !== 'false';
+    const missing = modelEntry.envRequired.filter(envName => {
+      // Wenn USE_EMBEDDING_KEY=true, ist GOOGLE_API_KEY ueber ENV verfuegbar
+      // Sonst muss er in provider_credentials stehen (Check passiert in der Runtime)
+      if (envName === 'GOOGLE_API_KEY' && useEmbeddingKey) {
+        return !process.env.GOOGLE_API_KEY;
+      }
+      return !process.env[envName];
+    });
+    if (missing.length > 0) {
+      return jsonResult({
+        success: false,
+        message: `Modell "${model}" (provider: ${modelEntry.provider}) benoetigt ENV-Variablen: ${missing.join(', ')}. Setze sie oder konfiguriere SYNAPSE_GEMINI_USE_EMBEDDING_KEY=false + provider_credentials-Tabelle.`,
+      });
+    }
+  }
+
+  // 3. Limit pruefen
   const spawnCheck = await canSpawn(projectPath);
   if (!spawnCheck.ok) {
     return jsonResult({
@@ -101,9 +134,11 @@ export async function spawnSpecialistTool(
   }
 
   // 5. System-Prompt bauen (memory entfaellt — context.md ist Teil der Skills)
+  // model wird widened auf string fuer Provider-Erweiterung; SpecialistConfig
+  // hat noch closed Claude-Union, deshalb hier cast.
   const config: SpecialistConfig = {
     name,
-    model,
+    model: model as SpecialistConfig['model'],
     expertise,
     task,
     project,
@@ -166,7 +201,7 @@ export async function spawnSpecialistTool(
     console.error(`[Synapse] Konnte nicht sofort zu Wrapper "${name}" verbinden: ${err}`);
   }
 
-  // 11. Status aktualisieren
+  // 11. Status aktualisieren — provider + modelFullId mit ablegen
   await updateSpecialist(projectPath, name, {
     name,
     model,
@@ -175,17 +210,21 @@ export async function spawnSpecialistTool(
     wrapperPid,
     socket: socketPath,
     tokens: { input: 0, output: 0, percent: 0 },
-    contextCeiling: model.includes('1m') ? 1_000_000 : 200_000,
+    contextCeiling: modelEntry.contextWindow,
     lastActivity: new Date().toISOString(),
     channels: [channel ?? `${project}-general`],
     currentTask: task,
-  });
+    provider: modelEntry.provider,
+    modelFullId: modelEntry.fullId,
+  } as Partial<SpecialistStatus>);
 
   return jsonResult({
     success: true,
     specialist: {
       name,
       model,
+      modelFullId: modelEntry.fullId,
+      provider: modelEntry.provider,
       expertise,
       task,
       project,
@@ -193,7 +232,7 @@ export async function spawnSpecialistTool(
       socket: socketPath,
       channel: channel ?? `${project}-general`,
     },
-    message: `Spezialist "${name}" (${model}) gestartet. PID: ${wrapperPid}`,
+    message: `Spezialist "${name}" (${model} → ${modelEntry.fullId}, provider: ${modelEntry.provider}) gestartet. PID: ${wrapperPid}`,
   });
 }
 
