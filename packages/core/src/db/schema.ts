@@ -632,6 +632,59 @@ CREATE INDEX IF NOT EXISTS idx_file_batch_plans_status ON file_batch_plans(proje
 CREATE INDEX IF NOT EXISTS idx_file_batch_plans_open ON file_batch_plans(project, expires_at) WHERE status = 'open';
 ALTER TABLE file_batch_plans ADD COLUMN IF NOT EXISTS reason TEXT;
 
+-- ==========================================================================
+-- model_registry: zentrale Source-of-Truth fuer Spezialisten-Modelle.
+-- Web-UI/REST kann neue Modelle anlegen ohne Recompile.
+-- Wrapper macht 1x Lookup beim Start, In-Memory-Cache fuer Lebensdauer (DB-1).
+-- Multi-Daemon: kein Cache-Drift weil Sessions PK haben + Modell pro Spawn fixiert (DB-2 nicht relevant).
+-- ALTER TABLE-Risiko bei vielen agent_sessions Rows (>10k): siehe DB-3 Doku.
+-- Unbekannter Alias bei Spawn: clear error mit listAliases-Output (DB-4).
+-- ==========================================================================
+CREATE TABLE IF NOT EXISTS model_registry (
+  alias TEXT PRIMARY KEY,
+  full_id TEXT NOT NULL,
+  provider TEXT NOT NULL,
+  context_window INT NOT NULL,
+  output_limit INT,
+  env_required TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[],
+  binary TEXT NOT NULL DEFAULT 'claude',
+  runtime_path TEXT,
+  corridor_min INT NOT NULL,
+  corridor_max INT NOT NULL,
+  pricing_input_usd_per_mtok NUMERIC(10,4),
+  pricing_output_usd_per_mtok NUMERIC(10,4),
+  pricing_cache_usd_per_mtok NUMERIC(10,4),
+  cutoff_date DATE,
+  enabled BOOLEAN NOT NULL DEFAULT true,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Provider-Credentials (optional — wenn SYNAPSE_GEMINI_USE_EMBEDDING_KEY=false)
+CREATE TABLE IF NOT EXISTS provider_credentials (
+  provider TEXT PRIMARY KEY,
+  api_key TEXT NOT NULL,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- agent_sessions: Provider + Model-Full-ID nachtraeglich
+ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS provider TEXT;
+ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS model_full_id TEXT;
+
+-- Initial-Seed (idempotent via ON CONFLICT)
+INSERT INTO model_registry
+  (alias, full_id, provider, context_window, env_required, binary, runtime_path, corridor_min, corridor_max, pricing_input_usd_per_mtok, pricing_output_usd_per_mtok, pricing_cache_usd_per_mtok, cutoff_date)
+VALUES
+  ('opus',              'claude-opus-4-7',                'anthropic',  200000, ARRAY[]::TEXT[],          'claude', NULL,                                90, 99, 15.00, 75.00, 1.50, '2025-01-01'),
+  ('sonnet',            'claude-sonnet-4-6',              'anthropic',  200000, ARRAY[]::TEXT[],          'claude', NULL,                                80, 88,  3.00, 15.00, 0.30, '2025-01-01'),
+  ('haiku',             'claude-haiku-4-5',               'anthropic',  200000, ARRAY[]::TEXT[],          'claude', NULL,                                80, 88,  1.00,  5.00, 0.10, '2025-01-01'),
+  ('opus[1m]',          'claude-opus-4-7',                'anthropic', 1000000, ARRAY[]::TEXT[],          'claude', NULL,                                80, 99, 15.00, 75.00, 1.50, '2025-01-01'),
+  ('sonnet[1m]',        'claude-sonnet-4-6',              'anthropic', 1000000, ARRAY[]::TEXT[],          'claude', NULL,                                70, 88,  3.00, 15.00, 0.30, '2025-01-01'),
+  ('gemini-flash-lite', 'gemini-3.1-flash-lite-preview',  'google',    1000000, ARRAY['GOOGLE_API_KEY'],  'node',   '@synapse/agents-gemini/runtime',    80, 88,  0.25,  1.50, 0.025, '2025-01-01'),
+  ('gemini-flash',      'gemini-3-flash-preview',         'google',    1000000, ARRAY['GOOGLE_API_KEY'],  'node',   '@synapse/agents-gemini/runtime',    80, 88,  0.50,  3.00, 0.05,  '2025-01-01'),
+  ('gemini-pro',        'gemini-2.5-pro',                 'google',    1000000, ARRAY['GOOGLE_API_KEY'],  'node',   '@synapse/agents-gemini/runtime',    80, 88,  1.25, 10.00, 0.13,  '2025-01-01')
+ON CONFLICT (alias) DO NOTHING;
+
 `;
 
 export async function ensureSchema(): Promise<void> {

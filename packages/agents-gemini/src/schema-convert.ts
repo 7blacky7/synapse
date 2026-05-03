@@ -1,14 +1,12 @@
 /**
- * JSON-Schema → Gemini OpenAPI-3.0-Subset Konverter.
+ * JSON-Schema → Gemini OpenAPI-Subset Konverter.
  *
- * Gemini akzeptiert nur einen begrenzten OpenAPI-Subset:
+ * Gemini Schema unterstuetzt (verifiziert in @google/genai 1.51.0 dist/genai.d.ts:9638):
  *   ✅ type, properties, required, items, enum, description, format
- *   ❌ oneOf, anyOf, allOf, $ref, dependentRequired, patternProperties
- *
- * Strategie fuer nicht-supportierte Konstrukte:
- *   - oneOf/anyOf → degradiert zu STRING + Hinweis in description
- *   - $ref → resolved (wir haben aktuell keine $refs in unseren Schemas, aber sicherheitshalber)
- *   - allOf → erste Option uebernehmen
+ *   ✅ anyOf (interpretiert wie oneOf — geht!)
+ *   ✅ minItems/maxItems (als string laut SDK)
+ *   ❌ allOf (wir nehmen erste Variante)
+ *   ❌ $ref (wir resolven nicht — unsere Schemas haben aktuell keine)
  *
  * Type-Mapping JSON-Schema → Gemini Type:
  *   "object" → OBJECT, "array" → ARRAY, "string" → STRING,
@@ -54,22 +52,24 @@ export function convertSchema(json: JsonSchema, path = '$'): ConvertResult {
 }
 
 function convertNode(node: JsonSchema, path: string, warnings: string[]): Schema {
-  // oneOf / anyOf → fallback STRING
-  if (node.oneOf || node.anyOf) {
-    warnings.push(`${path}: oneOf/anyOf nicht supportiert von Gemini → degradiert zu STRING`);
-    return {
-      type: Type.STRING,
-      description: `${node.description ?? ''} (urspruenglich oneOf/anyOf — pass JSON-stringifiziert oder einfachen Wert)`.trim(),
+  // oneOf → anyOf (Gemini interpretiert beides identisch laut Doku)
+  // anyOf → anyOf direkt
+  const variants = node.oneOf ?? node.anyOf;
+  if (variants && variants.length > 0) {
+    const out: Schema = {
+      anyOf: variants.map((v, i) => convertNode(v, `${path}.anyOf[${i}]`, warnings)),
     };
+    if (node.description) out.description = node.description;
+    return out;
   }
 
-  // allOf → erste Variante
+  // allOf → erste Variante (nicht ideal, aber unsere Schemas nutzen das nicht)
   if (node.allOf && node.allOf.length > 0) {
     warnings.push(`${path}: allOf nicht supportiert → erste Variante uebernommen`);
     return convertNode(node.allOf[0], path, warnings);
   }
 
-  // type fehlt
+  // type fehlt → Fallback STRING
   if (!node.type) {
     warnings.push(`${path}: kein type-Feld → Fallback STRING`);
     return { type: Type.STRING, description: node.description };
@@ -98,8 +98,9 @@ function convertNode(node: JsonSchema, path: string, warnings: string[]): Schema
 
   if (node.type === 'array' && node.items) {
     out.items = convertNode(node.items, `${path}[]`, warnings);
-    if (typeof node.minItems === 'number') (out as unknown as Record<string, unknown>).minItems = node.minItems;
-    if (typeof node.maxItems === 'number') (out as unknown as Record<string, unknown>).maxItems = node.maxItems;
+    // Gemini SDK erwartet minItems/maxItems als string
+    if (typeof node.minItems === 'number') out.minItems = String(node.minItems);
+    if (typeof node.maxItems === 'number') out.maxItems = String(node.maxItems);
   }
 
   return out;

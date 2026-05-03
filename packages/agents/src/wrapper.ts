@@ -44,6 +44,7 @@ import {
   type SendMessageResult,
   type SpecialistStatus,
 } from './types.js'
+import { resolveModel } from './models.js'
 
 // ---------------------------------------------------------------------------
 // Configuration from environment
@@ -91,11 +92,24 @@ function log(msg: string, ...args: unknown[]) {
   console.error(`[Wrapper:${AGENT_NAME}] ${msg}`, ...args)
 }
 
+/**
+ * Liefert das Context-Ceiling fuer das aktuelle Modell.
+ * Iter 2: zuerst Registry-Lookup (provider-agnostisch), Fallback auf legacy
+ * CONTEXT_CEILINGS (claude-spezifisch). Iter 2.5: Registry kommt aus DB.
+ */
 function getContextCeiling(): number {
+  const entry = resolveModel(AGENT_MODEL)
+  if (entry) return entry.contextWindow
   return CONTEXT_CEILINGS[AGENT_MODEL] ?? 200_000
 }
 
+/**
+ * Liefert die Warn-Schwelle in absoluten Tokens.
+ * Iter 2: aus Registry (corridorMin% * contextWindow). Fallback: legacy WARN_THRESHOLDS.
+ */
 function getWarnThreshold(): number {
+  const entry = resolveModel(AGENT_MODEL)
+  if (entry) return Math.floor((entry.corridorMin / 100) * entry.contextWindow)
   return WARN_THRESHOLDS[AGENT_MODEL] ?? 160_000
 }
 

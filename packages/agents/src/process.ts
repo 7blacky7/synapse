@@ -2,7 +2,11 @@ import { spawn, type ChildProcess } from 'node:child_process'
 import { createInterface, type Interface } from 'node:readline'
 import { EventEmitter } from 'node:events'
 import { randomUUID } from 'node:crypto'
+import { writeFile, mkdir } from 'node:fs/promises'
+import { join } from 'node:path'
+import { tmpdir } from 'node:os'
 import type { StreamEvent, SendMessageResult } from './types.js'
+import { resolveModel } from './models.js'
 
 interface AgentProcess {
   agentName: string
@@ -18,6 +22,12 @@ interface AgentProcess {
 interface StartOptions {
   cwd?: string
   allowedTools?: string[]
+  /** Pflicht fuer non-claude Provider (Gemini etc.): Projekt-Pfad fuer Skill-Files */
+  projectPath?: string
+  /** Pflicht fuer non-claude Provider: Projekt-Name (Synapse-DB-Lookup) */
+  projectName?: string
+  expertise?: string
+  task?: string
 }
 
 interface AgentStatus {
@@ -43,32 +53,80 @@ class ProcessManager extends EventEmitter {
 
     const sessionId = randomUUID()
 
-    const args = [
-      '--print',
-      '--verbose',
-      '--output-format', 'stream-json',
-      '--input-format', 'stream-json',
-      '--model', model,
-      '--system-prompt', systemPrompt,
-      '--session-id', sessionId,
-      '--permission-mode', 'bypassPermissions',
-    ]
+    // Provider-Strategy: Claude CLI vs node-Runtime (Gemini etc.)
+    const modelEntry = resolveModel(model)
+    const useNodeRuntime = modelEntry?.binary === 'node'
 
-    if (opts?.allowedTools?.length) {
-      for (const tool of opts.allowedTools) {
-        args.push('--allowedTools', tool)
+    let proc: ChildProcess
+
+    if (useNodeRuntime && modelEntry) {
+      // Non-claude Provider via node-Subprocess (z.B. Gemini)
+      // Runtime liest System-Prompt aus File (zu gross fuer ENV)
+      const promptFile = join(tmpdir(), `synapse-runtime-prompt-${sessionId}.txt`)
+      await writeFile(promptFile, systemPrompt, 'utf-8')
+
+      // Resolve runtime path via require.resolve (robust gegen Workspace-Layout)
+      const { createRequire } = await import('node:module')
+      const requireFn = createRequire(import.meta.url)
+      let runtimePath: string
+      try {
+        runtimePath = requireFn.resolve(modelEntry.runtimePath ?? '@synapse/agents-gemini/runtime')
+      } catch (err) {
+        throw new Error(
+          `Runtime-Pfad nicht aufloesbar fuer Provider "${modelEntry.provider}" (${modelEntry.runtimePath}): ${err instanceof Error ? err.message : String(err)}. ` +
+          `Stelle sicher dass das Runtime-Package gebaut ist (pnpm --filter @synapse/agents-gemini build).`,
+        )
       }
-    }
 
-    const proc = spawn(
-      'claude',
-      args,
-      {
-        env: { ...process.env },
-        stdio: ['pipe', 'pipe', 'pipe'],
-        cwd: opts?.cwd ?? process.cwd(),
-      },
-    )
+      proc = spawn(
+        'node',
+        [runtimePath],
+        {
+          env: {
+            ...process.env,
+            SYNAPSE_WRAPPER_MODE: '1',
+            SYNAPSE_AGENT_NAME: agentName,
+            SYNAPSE_AGENT_MODEL: model,
+            SYNAPSE_PROJECT_PATH: opts?.projectPath ?? opts?.cwd ?? process.cwd(),
+            SYNAPSE_PROJECT_NAME: opts?.projectName ?? '',
+            SYNAPSE_SYSTEM_PROMPT_FILE: promptFile,
+            SYNAPSE_SESSION_ID: sessionId,
+            SYNAPSE_AGENT_EXPERTISE: opts?.expertise ?? '',
+            SYNAPSE_AGENT_TASK: opts?.task ?? '',
+          },
+          stdio: ['pipe', 'pipe', 'pipe'],
+          cwd: opts?.cwd ?? process.cwd(),
+        },
+      )
+    } else {
+      // Default: Claude CLI
+      const args = [
+        '--print',
+        '--verbose',
+        '--output-format', 'stream-json',
+        '--input-format', 'stream-json',
+        '--model', model,
+        '--system-prompt', systemPrompt,
+        '--session-id', sessionId,
+        '--permission-mode', 'bypassPermissions',
+      ]
+
+      if (opts?.allowedTools?.length) {
+        for (const tool of opts.allowedTools) {
+          args.push('--allowedTools', tool)
+        }
+      }
+
+      proc = spawn(
+        'claude',
+        args,
+        {
+          env: { ...process.env },
+          stdio: ['pipe', 'pipe', 'pipe'],
+          cwd: opts?.cwd ?? process.cwd(),
+        },
+      )
+    }
 
     const stdout = createInterface({ input: proc.stdout! })
 

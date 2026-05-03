@@ -44,7 +44,10 @@ export function buildToolBridge(): ToolBridge {
     allWarnings.push(...warnings.map(w => `[${def.name}] ${w}`));
 
     declarations.push({
-      name: def.name,
+      // mcp__synapse__-Prefix damit Wrapper-Wake-Prompts (Claude-MCP-Format)
+      // 1:1 funktionieren: "mcp__synapse__thought({trigger_respawn:true})"
+      // wuerde sonst ins Leere laufen.
+      name: `mcp__synapse__${def.name}`,
       description: def.description ?? '',
       parameters: schema,
     });
@@ -52,9 +55,12 @@ export function buildToolBridge(): ToolBridge {
   }
 
   const dispatch = async (name: string, args: Record<string, unknown>): Promise<Record<string, unknown>> => {
-    const handler = handlerMap.get(name);
+    // Prefix entfernen falls Modell ihn ruft (sollte immer der Fall sein
+    // weil declarations mit Prefix registriert sind, aber tolerant)
+    const cleanName = name.replace(/^mcp__synapse__/, '');
+    const handler = handlerMap.get(cleanName);
     if (!handler) {
-      return { error: `Unbekanntes Tool: "${name}". Verfuegbar: ${Array.from(handlerMap.keys()).join(', ')}` };
+      return { error: `Unbekanntes Tool: "${name}". Verfuegbar: ${Array.from(handlerMap.keys()).map(n => `mcp__synapse__${n}`).join(', ')}` };
     }
     try {
       const result = await handler(args);

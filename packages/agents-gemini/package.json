@@ -14,6 +14,7 @@
   },
   "dependencies": {
     "@google/genai": "^1.0.0",
+    "@synapse/agents": "workspace:*",
     "@synapse/core": "workspace:*",
     "@synapse/mcp-server": "workspace:*",
     "fastify": "^4.0.0"

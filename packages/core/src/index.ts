@@ -99,6 +99,18 @@ export {
 export { maybeTriggerRespawn } from './services/specialist-respawn.js';
 export type { RespawnDecision } from './services/specialist-respawn.js';
 
+// Model-Registry Service (DB-Loader fuer Spezialisten-Modelle)
+export {
+  getModel,
+  listAliases as listModelAliases,
+  listModels,
+  listProviders,
+  invalidateCache as invalidateModelCache,
+  getProviderCredential,
+  setProviderCredential,
+} from './services/model-registry.js';
+export type { ModelEntry as DbModelEntry, Provider as ModelProvider } from './services/model-registry.js';
+
 // Shell-Exec (gemeinsam fuer MCP-Tool + REST /api/shell)
 export {
   execShellInProject,
