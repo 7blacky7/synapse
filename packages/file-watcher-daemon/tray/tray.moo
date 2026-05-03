@@ -102,30 +102,30 @@ funktion oeffne_detail(name):
     offene_fenster[name] = g
     g["name"] = name
 
-    setze fenster auf ui_fenster("Projekt: " + name, 1100, 750, 1, nichts)
+    setze fenster auf ui_fenster("Projekt: " + name, 1500, 900, 1, nichts)
     g["fenster"] = fenster
     # Beim Close: Eintrag entfernen — GTK zerstoert das Widget, der
     # gecachte Pointer wird sonst beim naechsten Oeffnen zum Segfault.
     ui_fenster_on_close(fenster, close_factory(name))
 
-    setze tabs auf ui_tabs(fenster, 10, 10, 1080, 690)
+    setze tabs auf ui_tabs(fenster, 10, 10, 1480, 840)
     g["tabs"] = tabs
 
     # --- Tab 1: Agenten ---
     setze tab_a auf ui_tab_hinzu(tabs, "Agenten")
-    setze liste_a auf ui_liste(tab_a, ["Name", "Modell", "Status", "Tokens", "Letzte Aktivitaet"], 10, 10, 1050, 590)
+    setze liste_a auf ui_liste(tab_a, ["Name", "Modell", "Status", "Tokens", "Letzte Aktivitaet"], 10, 10, 1450, 740)
     g["liste_agents"] = liste_a
-    setze btn_stop auf ui_knopf(tab_a, "Stoppen",        10, 610, 120, 32, stop_agent_factory(name))
-    setze btn_ref_a auf ui_knopf(tab_a, "Aktualisieren", 140, 610, 140, 32, refresh_agents_factory(name))
+    setze btn_stop auf ui_knopf(tab_a, "Stoppen",        10, 760, 120, 32, stop_agent_factory(name))
+    setze btn_ref_a auf ui_knopf(tab_a, "Aktualisieren", 140, 760, 140, 32, refresh_agents_factory(name))
     g["btn_stop_a"] = btn_stop
     g["btn_ref_a"]  = btn_ref_a
 
     # --- Tab 2: Events ---
     setze tab_e auf ui_tab_hinzu(tabs, "Events")
-    setze liste_e auf ui_liste(tab_e, ["Typ", "Datei", "Zeit"], 10, 10, 1050, 590)
+    setze liste_e auf ui_liste(tab_e, ["Typ", "Datei", "Zeit"], 10, 10, 1450, 740)
     g["liste_events"] = liste_e
-    setze btn_ref_e auf ui_knopf(tab_e, "Aktualisieren", 10, 610, 140, 32, refresh_events_factory(name))
-    setze btn_open_e auf ui_knopf(tab_e, "Oeffnen",      160, 610, 120, 32, open_event_factory(name))
+    setze btn_ref_e auf ui_knopf(tab_e, "Aktualisieren", 10, 760, 140, 32, refresh_events_factory(name))
+    setze btn_open_e auf ui_knopf(tab_e, "Oeffnen",      160, 760, 120, 32, open_event_factory(name))
     g["btn_ref_e"]  = btn_ref_e
     g["btn_open_e"] = btn_open_e
 
@@ -150,11 +150,9 @@ funktion oeffne_detail(name):
     ui_knopf(tab_ak, "Neu indexieren", 10, 10,   200, 36, reindex_factory(name))
     ui_knopf(tab_ak, "Projekt loeschen", 10, 60, 200, 36, delete_factory(name))
 
-    # Resize-Layout DEAKTIVIERT — moo-Closure-Slot-Race korrumpiert
-    # captured 'name' beim mehrfachen Resize-Feuern. Kein Workaround
-    # in moo-Sprache moeglich; braucht Compiler-Fix.
-    # Siehe Channel-Diagnose moo-runtime-dev + tray.log Beweis.
-    # ui_fenster_on_resize(fenster, layout_projekt_factory(name))
+    # Resize-Layout: rv-Pattern-Workaround gegen moo Closure-Refcount-Bug
+    # (siehe layout_projekt_via_rv).
+    ui_fenster_on_resize(fenster, layout_projekt_factory(name))
     ui_zeige(fenster)
     agents_laden(name)
     events_laden(name)
@@ -199,9 +197,16 @@ funktion layout_projekt(name, b, h):
     ui_position_setze(g["btn_open_e"], 160, btn_y)
 
 funktion layout_projekt_factory(name):
-    # Konkatenation INNERHALB der Closure - moo allokiert pro Resize-Event
-    # einen frischen String, was Slot-Race umgeht (moo-runtime-dev Empfehlung).
-    gib_zurück (b, h) => layout_projekt(name + "", b, h)
+    # Workaround moo Closure-Refcount-Bug (moo-runtime-dev, Repro f90913e):
+    # Closure-Body retained captured nicht -> nach 2-3 Aufrufen freed.
+    # Helper-Funktion + rv-Pattern (`setze rv auf x` macht retain) loest's.
+    gib_zurück (b, h) => layout_projekt_via_rv(name, b, h)
+
+funktion layout_projekt_via_rv(captured_name, b, h):
+    # rv-Pattern: lokale Variable haelt +1 Ref auf den uebergebenen Wert,
+    # bevor er weitergereicht wird. Schuetzt vor Refcount-Sink im Closure.
+    setze rv auf captured_name
+    layout_projekt(rv, b, h)
 
 funktion detail_factory(name):
     gib_zurück () => oeffne_detail(name)
@@ -491,8 +496,8 @@ funktion oeffne_chat(projekt, channel):
     g["btn_send"] = btn_send
     g["btn_ref"]  = btn_ref
 
-    # Resize-Layout DEAKTIVIERT — moo-Closure-Slot-Race (siehe layout_projekt)
-    # ui_fenster_on_resize(fenster, layout_chat_factory(schluessel))
+    # Resize-Layout: rv-Pattern-Workaround
+    ui_fenster_on_resize(fenster, layout_chat_factory(schluessel))
     ui_zeige(fenster)
     chat_messages_laden(schluessel)
     chat_agents_laden(schluessel)
@@ -544,7 +549,11 @@ funktion layout_chat(schluessel, b, h):
     ui_position_setze(g["btn_ref"], in_b + 105, in_y)
 
 funktion layout_chat_factory(schluessel):
-    gib_zurück (b, h) => layout_chat(schluessel + "", b, h)
+    gib_zurück (b, h) => layout_chat_via_rv(schluessel, b, h)
+
+funktion layout_chat_via_rv(captured_key, b, h):
+    setze rv auf captured_key
+    layout_chat(rv, b, h)
 
 funktion chat_close_factory(schluessel):
     gib_zurück () => chat_fenster_schliessen(schluessel)
