@@ -127,6 +127,7 @@ import {
   addErrorPattern,
   listErrorPatterns,
   deleteErrorPattern,
+  resolveAgentId,
 } from '@synapse/core';
 import { minimatch } from 'minimatch';
 import { GUIDE_OVERVIEW, TOOL_GUIDES } from '@synapse/core';
@@ -1220,7 +1221,7 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
           const explicitPath = str(args, 'path');
           const requestedName = str(args, 'name');
           const indexDocs = bool(args, 'index_docs') !== false;
-          const requestedBy = str(args, 'agent_id');
+          const requestedBy = resolveAgentId(str(args, 'agent_id')) ?? undefined;
 
           // Self-Service: Wenn kein path gegeben ist aber ein Name, queue an den
           // FileWatcher-Daemon auf dem Ziel-PC. Der legt das Verzeichnis unter
@@ -1664,7 +1665,8 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
       switch (action) {
         case 'add': {
           const project = reqStr(args, 'project');
-          const source = reqStr(args, 'source');
+          const source = resolveAgentId(str(args, 'source'));
+          if (!source) throw new Error('Parameter "source" ist erforderlich (oder SYNAPSE_AGENT_NAME setzen)');
           const result = await addThought(
             project, source,
             reqStr(args, 'content'), strArrayOrEmpty(args, 'tags'),
@@ -1683,7 +1685,8 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
         }
         case 'add_batch': {
           const project = reqStr(args, 'project');
-          const source = reqStr(args, 'source');
+          const source = resolveAgentId(str(args, 'source'));
+          if (!source) throw new Error('Parameter "source" ist erforderlich (oder SYNAPSE_AGENT_NAME setzen)');
           const items = objArray<{ content: string; tags?: string[] }>(args, 'items');
           if (!items || items.length === 0) {
             return { success: false, count: 0, thoughts: [], message: 'items (Array) ist erforderlich' };
@@ -2025,7 +2028,8 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
         }
         case 'send': {
           const sendProject = reqStr(args, 'project');
-          const senderId = reqStr(args, 'sender_id');
+          const senderId = resolveAgentId(str(args, 'sender_id'));
+          if (!senderId) throw new Error('Parameter "sender_id" ist erforderlich (oder SYNAPSE_AGENT_NAME setzen)');
           const content = reqStr(args, 'content');
           const recipientIds = strArray(args, 'recipient_id');
           if (recipientIds && recipientIds.length > 1) {
@@ -2045,7 +2049,7 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
         }
         case 'get': {
           const messages = await getChatMessages(reqStr(args, 'project'), {
-            agentId: str(args, 'agent_id'),
+            agentId: resolveAgentId(str(args, 'agent_id')) ?? undefined,
             since: str(args, 'since'),
             senderId: str(args, 'sender_id_filter'),
             limit: num(args, 'limit'),
