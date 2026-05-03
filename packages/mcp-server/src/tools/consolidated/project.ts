@@ -13,6 +13,7 @@
 
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import { ConsolidatedTool, str, reqStr, bool } from './types.js';
+import { resolveAgentId } from '@synapse/core';
 import {
   initProjekt,
   stopProjekt,
@@ -91,7 +92,7 @@ const projectTool: ConsolidatedTool = {
           const explicitPath = str(args, 'path');
           const requestedName = str(args, 'name');
           const indexDocs = bool(args, 'index_docs') !== false;
-          const agentId = str(args, 'agent_id');
+          const agentId = resolveAgentId(str(args, 'agent_id')) ?? undefined;
 
           // Self-Service: Wenn kein path aber ein name gegeben ist, queue an den
           // Daemon (auch lokal — er kennt WORKSPACE_ROOT). Web-KIs nutzen das via

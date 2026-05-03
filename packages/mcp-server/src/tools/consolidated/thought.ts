@@ -17,6 +17,7 @@ import {
   updateThoughtTool,
 } from '../index.js';
 import { maybeTriggerRespawn } from './utils/respawn-trigger.js';
+import { resolveAgentId } from '@synapse/core';
 
 export const thoughtTool: ConsolidatedTool = {
   definition: {
@@ -113,7 +114,8 @@ export const thoughtTool: ConsolidatedTool = {
     switch (action) {
       case 'add': {
         const project = reqStr(args, 'project');
-        const source = reqStr(args, 'source');
+        const source = resolveAgentId(str(args, 'source'));
+        if (!source) throw new Error('Parameter "source" ist erforderlich (oder SYNAPSE_AGENT_NAME setzen)');
         const content = reqStr(args, 'content');
         const tags = strArrayOrEmpty(args, 'tags');
         const taskId = typeof args.task_id === 'string' ? args.task_id : undefined;
@@ -138,7 +140,8 @@ export const thoughtTool: ConsolidatedTool = {
 
       case 'add_batch': {
         const project = reqStr(args, 'project');
-        const source = reqStr(args, 'source');
+        const source = resolveAgentId(str(args, 'source'));
+        if (!source) throw new Error('Parameter "source" ist erforderlich (oder SYNAPSE_AGENT_NAME setzen)');
         const items = objArray<{ content: string; tags?: string[]; task_id?: string }>(args, 'items');
         if (!items || items.length === 0) {
           return { success: false, count: 0, thoughts: [], message: 'items (Array) ist erforderlich' };

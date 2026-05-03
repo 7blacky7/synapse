@@ -14,6 +14,7 @@ import {
   getDocsForFileTool,
 } from '../tech-docs.js';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
+import { resolveAgentId } from '@synapse/core';
 
 export const docsTool: ConsolidatedTool = {
   definition: {
@@ -242,7 +243,9 @@ export const docsTool: ConsolidatedTool = {
       }
 
       case 'get_for_file': {
-        const agentId = reqStr(args, 'agent_id');
+        const rawAgentId = str(args, 'agent_id');
+        const agentId = resolveAgentId(rawAgentId);
+        if (!agentId) throw new Error('agent_id erforderlich (oder SYNAPSE_AGENT_NAME setzen)');
         const project = reqStr(args, 'project');
 
         // Array-Support: Mehrere Dateien in einem Call

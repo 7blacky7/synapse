@@ -29,6 +29,7 @@ import {
   commitBatch,
   cancelBatch,
   getBatchPlan,
+  resolveAgentId,
 } from '@synapse/core';
 import type { BatchEdit, FileBatchOp } from '@synapse/core';
 
@@ -232,7 +233,7 @@ export const filesTool: ConsolidatedTool = {
   handler: async (args: Record<string, unknown>) => {
     const action = reqStr(args, 'action');
     const project = reqStr(args, 'project');
-    const agentId = str(args, 'agent_id');
+    const agentId = resolveAgentId(str(args, 'agent_id')) ?? undefined;
     const reason = str(args, 'reason');
     // History-Enrichment (additive, alle nullable)
     const featureTag = str(args, 'feature_tag');
@@ -346,7 +347,7 @@ export const filesTool: ConsolidatedTool = {
       const project = reqStr(args, 'project');
       const limit = num(args, 'limit') ?? 50;
       const entries = await listFileHistory(project, {
-        agent_id: str(args, 'agent_id'),
+        agent_id: str(args, 'agent_id') ?? undefined, // READ-FILTER: kein resolveAgentId
         file_path: str(args, 'file_path'),
         since: str(args, 'since'),
         limit,

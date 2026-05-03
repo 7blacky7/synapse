@@ -9,6 +9,7 @@
 
 import type { ConsolidatedTool } from './types.js';
 import { reqStr, str, num, bool, numArray, objArray } from './types.js';
+import { resolveAgentId } from '@synapse/core';
 import {
   emitEventTool,
   acknowledgeEventTool,
@@ -103,7 +104,9 @@ export const eventTool: ConsolidatedTool = {
     switch (action) {
       case 'emit': {
         const project = reqStr(args, 'project');
-        const sourceId = reqStr(args, 'source_id');
+        const rawSourceId = str(args, 'source_id');
+        const sourceId = resolveAgentId(rawSourceId);
+        if (!sourceId) throw new Error('Parameter "source_id" ist erforderlich (oder SYNAPSE_AGENT_NAME setzen)');
 
         // Bulk-Mode: events[] vorhanden → mehrere Events in einem Call.
         type EmitItem = {
@@ -170,7 +173,9 @@ export const eventTool: ConsolidatedTool = {
       }
 
       case 'ack': {
-        const agentId = reqStr(args, 'agent_id');
+        const rawAckAgentId = str(args, 'agent_id');
+        const agentId = resolveAgentId(rawAckAgentId);
+        if (!agentId) throw new Error('Parameter "agent_id" ist erforderlich für ack (oder SYNAPSE_AGENT_NAME setzen)');
         const reaction = str(args, 'reaction');
 
         // Array-Support: Mehrere Events in einem Call bestätigen
@@ -199,7 +204,7 @@ export const eventTool: ConsolidatedTool = {
 
       case 'pending': {
         const project = reqStr(args, 'project');
-        const agentId = reqStr(args, 'agent_id');
+        const agentId = reqStr(args, 'agent_id'); // READ-FILTER: kein resolveAgentId (würde auf ENV-Agent filtern wenn nicht gesetzt)
 
         const result = await getPendingEventsTool(project, agentId);
 

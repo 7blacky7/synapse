@@ -68,3 +68,5 @@ export type {
   SpecialistJobResult,
 } from './specialist-queue.js';
 
+// Agent-ID Resolver — geteilt zwischen MCP-Server, REST-API und Core-Services
+export { resolveAgentId } from './agent-id-resolver.js';
