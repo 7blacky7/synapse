@@ -250,10 +250,11 @@ export const specialistTool: ConsolidatedTool = {
       case 'purge': {
         // Array-Support: Mehrere Spezialisten purgen
         const names = strArray(args, 'name');
+        const purgeProject = str(args, 'project');
         if (names && names.length > 1) {
           const projectPath = reqStr(args, 'project_path');
           const settled = await Promise.allSettled(
-            names.map(n => purgeSpecialistTool(n, projectPath))
+            names.map(n => purgeSpecialistTool(n, projectPath, purgeProject ?? undefined))
           );
           const results: Array<Record<string, unknown>> = [];
           const errors: string[] = [];
@@ -266,7 +267,7 @@ export const specialistTool: ConsolidatedTool = {
 
         const name = reqStr(args, 'name');
         const projectPath = reqStr(args, 'project_path');
-        return await purgeSpecialistTool(name, projectPath);
+        return await purgeSpecialistTool(name, projectPath, purgeProject ?? undefined);
       }
 
       case 'status': {

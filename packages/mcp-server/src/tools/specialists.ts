@@ -9,6 +9,8 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 
+import { removeWrapperStatus } from '@synapse/core';
+
 import {
   detectClaudeCli,
   canSpawn,
@@ -276,6 +278,7 @@ export async function stopSpecialistTool(
 export async function purgeSpecialistTool(
   name: string,
   projectPath: string,
+  project?: string,
 ) {
   const steps: Record<string, unknown> = {};
 
@@ -349,9 +352,20 @@ export async function purgeSpecialistTool(
     steps.status_removed = `Fehler: ${err}`;
   }
 
+  // 6. Wrapper-Status aus PG entfernen (zusaetzlich zu status.json)
+  if (project) {
+    try {
+      await removeWrapperStatus(name, project);
+      steps.pg_status_removed = 'ok';
+    } catch (err) {
+      // Kein Hard-Fail — PG-Row fehlt z.B. bei alten Spezialisten ohne PG-Eintrag
+      steps.pg_status_removed = `Fehler (non-fatal): ${err}`;
+    }
+  }
+
   return jsonResult({
     success: true,
-    message: `Spezialist "${name}" komplett entfernt (Stop + Channels + Chat + Status + FS). Auto-Respawn unmoeglich.`,
+    message: `Spezialist "${name}" komplett entfernt (Stop + Channels + Chat + Status + FS${project ? ' + PG' : ''}). Auto-Respawn unmoeglich.`,
     steps,
   });
 }
