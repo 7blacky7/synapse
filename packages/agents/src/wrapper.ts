@@ -21,7 +21,7 @@
 
 import { createServer, type Server, type Socket } from 'node:net'
 import { unlinkSync, chmodSync, existsSync } from 'node:fs'
-import { readFile } from 'node:fs/promises'
+import { readFile, unlink } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { ProcessManager } from './process.js'
@@ -456,12 +456,29 @@ async function wakeAgent(message: string): Promise<SendMessageResult> {
 // Part 3: Mini-Heartbeat (DB Polling)
 // ---------------------------------------------------------------------------
 
+const RESPAWN_MARKER_PATH = `/tmp/.specialist-rotate-pending-${AGENT_NAME}`
+
 async function heartbeatPoll() {
   if (shuttingDown || !processAlive) return
 
   try {
     // Token-Sync: Echte Werte aus der Claude CLI Session-JSONL lesen
     await syncTokensFromHistory()
+
+    // Externer Respawn-Trigger: Spezialist hat per thought(trigger_respawn)
+    // sein Auto-Handoff signalisiert. Marker existiert nur wenn der MCP-Server
+    // den Korridor-Check bereits bestanden hat. Sofortige Rotation, unabhaengig
+    // vom Context-%.
+    if (!agentBusy && existsSync(RESPAWN_MARKER_PATH)) {
+      log('RESPAWN-MARKER erkannt (%s) — starte sofortige Rotation', RESPAWN_MARKER_PATH)
+      try {
+        await unlink(RESPAWN_MARKER_PATH)
+      } catch {
+        // Marker schon weg → ok
+      }
+      await rotateAgent()
+      return
+    }
 
     // Auto-Rotation: Context fast voll → Agent speichern + neustarten
     const contextTotal = totalInputTokens + totalOutputTokens

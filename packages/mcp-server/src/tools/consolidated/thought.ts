@@ -16,6 +16,7 @@ import {
   searchThoughts,
   updateThoughtTool,
 } from '../index.js';
+import { maybeTriggerRespawn } from './utils/respawn-trigger.js';
 
 export const thoughtTool: ConsolidatedTool = {
   definition: {
@@ -97,6 +98,10 @@ export const thoughtTool: ConsolidatedTool = {
           enum: ['todo', 'in_progress', 'done', 'blocked'],
           description: 'Optional fuer add/add_batch: setzt zugleich den Status der via task_id verlinkten Task. Spart einen separaten plan(update_task)-Call.',
         },
+        trigger_respawn: {
+          type: 'boolean',
+          description: 'Optional fuer add: Spezialist signalisiert sein Auto-Handoff. Server prueft Context-Stand gegen Korridor und triggert sofortigen Respawn (ohne auf 95% zu warten). Nur wirksam wenn source einem aktiven Spezialisten entspricht. Fuer Subagenten/Koordinator wirkungslos.',
+        },
       },
       required: ['action'],
     },
@@ -113,8 +118,21 @@ export const thoughtTool: ConsolidatedTool = {
         const tags = strArrayOrEmpty(args, 'tags');
         const taskId = typeof args.task_id === 'string' ? args.task_id : undefined;
         const taskStatus = typeof args.task_status === 'string' ? args.task_status as Parameters<typeof addThought>[5] : undefined;
+        const triggerRespawn = bool(args, 'trigger_respawn') ?? false;
 
         const result = await addThought(project, source, content, tags, taskId, taskStatus);
+
+        if (triggerRespawn) {
+          const decision = await maybeTriggerRespawn(source);
+          return {
+            ...(result as Record<string, unknown>),
+            respawn: {
+              triggered: decision.triggered,
+              message: decision.message,
+            },
+          };
+        }
+
         return result;
       }
 
