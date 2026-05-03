@@ -119,6 +119,11 @@ funktion oeffne_detail(name):
     # --- Tab 1: Agenten ---
     setze tab_a auf ui_tab_hinzu(tabs, "Agenten")
     setze liste_a auf ui_liste(tab_a, ["Name", "Modell", "Status", "Tokens", "Letzte Aktivitaet"], 10, 10, 1450, 740)
+    ui_liste_spalte_breite(liste_a, 0, 200)
+    ui_liste_spalte_breite(liste_a, 1, 130)
+    ui_liste_spalte_breite(liste_a, 2, 110)
+    ui_liste_spalte_breite(liste_a, 3, 90)
+    ui_liste_spalte_breite(liste_a, 4, 240)
     g["liste_agents"] = liste_a
     setze btn_stop auf ui_knopf(tab_a, "Stoppen",        10, 760, 120, 32, stop_agent_factory(name))
     setze btn_ref_a auf ui_knopf(tab_a, "Aktualisieren", 140, 760, 140, 32, refresh_agents_factory(name))
@@ -128,6 +133,9 @@ funktion oeffne_detail(name):
     # --- Tab 2: Events ---
     setze tab_e auf ui_tab_hinzu(tabs, "Events")
     setze liste_e auf ui_liste(tab_e, ["Typ", "Datei", "Zeit"], 10, 10, 1450, 740)
+    ui_liste_spalte_breite(liste_e, 0, 100)
+    ui_liste_spalte_breite(liste_e, 1, 900)
+    ui_liste_spalte_breite(liste_e, 2, 220)
     g["liste_events"] = liste_e
     setze btn_ref_e auf ui_knopf(tab_e, "Aktualisieren", 10, 760, 140, 32, refresh_events_factory(name))
     setze btn_open_e auf ui_knopf(tab_e, "Oeffnen",      160, 760, 120, 32, open_event_factory(name))
@@ -481,12 +489,17 @@ funktion oeffne_chat(projekt, channel):
     # Nachrichten-Liste (links-oben, breit)
     setze lbl_msgs auf ui_label(fenster, "Nachrichten:", 10, 10, 200, 20)
     setze liste_m auf ui_liste(fenster, ["Zeit", "Absender", "Nachricht"], 10, 35, 880, 670)
+    ui_liste_spalte_breite(liste_m, 0, 100)
+    ui_liste_spalte_breite(liste_m, 1, 160)
+    ui_liste_spalte_breite(liste_m, 2, 600)
     g["liste_msgs"] = liste_m
     g["lbl_msgs"]   = lbl_msgs
 
     # Agenten-Liste (rechts)
     setze lbl_ag auf ui_label(fenster, "Agenten im Projekt:", 900, 10, 290, 20)
     setze liste_a auf ui_liste(fenster, ["Name", "Modell"], 900, 35, 290, 670)
+    ui_liste_spalte_breite(liste_a, 0, 180)
+    ui_liste_spalte_breite(liste_a, 1, 100)
     g["liste_agents"] = liste_a
     g["lbl_ag"]       = lbl_ag
 
