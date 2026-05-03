@@ -49,10 +49,10 @@ export const filesTool: ConsolidatedTool = {
       'Multi-File Plan/Commit: action="plan" mit ops[] (mehrere Dateien) → erhaelt plan_id + previews. ' +
       'action="commit" wendet alle Ops atomar an (Hash-basierte Konflikt-Erkennung; bei Mismatch: stale). ' +
       'Snapshots tragen die batch_id → restore_batch rollt das ganze Plan-Set zurueck. ' +
-      'IDEA-5: auto_commit:true bei plan() spart den separaten commit-Call. ' +
-      'IDEA-6: agent_note speichert KI-Beobachtungen pro Batch (zusaetzlich zum User-reason). ' +
-      'IDEA-4: ops[].anchor_text / anchor_contains macht Pre-flight Verifikation auf der Ziel-Zeile (Schutz vor Drift). ' +
-      'IDEA-3a: feature_tag, parent_version_id, git_commit_sha reichern die Versions-Snapshots an (Filter via history).',
+      'auto_commit:true bei plan() spart den separaten commit-Call. ' +
+      'agent_note speichert KI-Beobachtungen pro Batch (zusaetzlich zum User-reason). ' +
+      'ops[].anchor_text / anchor_contains macht Pre-flight Verifikation auf der Ziel-Zeile (Schutz vor Drift). ' +
+      'feature_tag, parent_version_id, git_commit_sha reichern die Versions-Snapshots an (Filter via history).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -130,7 +130,7 @@ export const filesTool: ConsolidatedTool = {
         },
         version_id: {
           type: 'string',
-          description: 'Versions-ID (BIGSERIAL als String). Pflicht fuer get_version/restore. Bei history (IDEA-3a): zeigt die Korrektur-Chain ab dieser Version (rekursiv via parent_version_id).',
+          description: 'Versions-ID (BIGSERIAL als String). Pflicht fuer get_version/restore. Bei history (): zeigt die Korrektur-Chain ab dieser Version (rekursiv via parent_version_id).',
         },
         batch_id: {
           type: 'string',
@@ -182,11 +182,11 @@ export const filesTool: ConsolidatedTool = {
               },
               anchor_text: {
                 type: 'string',
-                description: 'IDEA-4 (optional): Pre-flight Verifikation — pruefe dass die Ziel-Zeile (line_start fuer replace/delete, after_line fuer insert) exakt diesen Text enthaelt (.trim()-vergleich). Mismatch -> harter Error, KEINE Mutation. Schuetzt vor Drift zwischen plan() und commit().',
+                description: '(optional): Pre-flight Verifikation — pruefe dass die Ziel-Zeile (line_start fuer replace/delete, after_line fuer insert) exakt diesen Text enthaelt (.trim()-vergleich). Mismatch -> harter Error, KEINE Mutation. Schuetzt vor Drift zwischen plan() und commit().',
               },
               anchor_contains: {
                 type: 'string',
-                description: 'IDEA-4 (optional): Wie anchor_text, aber Substring-Match statt Exact. Nuetzlich wenn Zeile zusaetzliche Zeichen enthalten darf.',
+                description: '(optional): Wie anchor_text, aber Substring-Match statt Exact. Nuetzlich wenn Zeile zusaetzliche Zeichen enthalten darf.',
               },
             },
             required: ['file_path', 'action'],
@@ -198,11 +198,11 @@ export const filesTool: ConsolidatedTool = {
         },
         auto_commit: {
           type: 'boolean',
-          description: 'IDEA-5 (optional fuer plan): wenn true, wird direkt nach plan() automatisch commit() aufgerufen — spart einen Tool-Call wenn kein User-Review vor commit gewuenscht. Versionierung bleibt aktiv (file_versions + batch_id), Rollback via restore_batch jederzeit moeglich.',
+          description: '(optional fuer plan): wenn true, wird direkt nach plan() automatisch commit() aufgerufen — spart einen Tool-Call wenn kein User-Review vor commit gewuenscht. Versionierung bleibt aktiv (file_versions + batch_id), Rollback via restore_batch jederzeit moeglich.',
         },
         agent_note: {
           type: 'string',
-          description: 'IDEA-6 (optional fuer plan/commit): KI-eigene Beobachtungen/Analyse zum Batch zusaetzlich zum reason des Users. Wird in alle file_versions dieser Batch geschrieben. Empfohlen ab ≥3 Ops oder Multi-File Batches — User kann via files(history) sehen was die KI dabei gedacht hat.',
+          description: '(optional fuer plan/commit): KI-eigene Beobachtungen/Analyse zum Batch zusaetzlich zum reason des Users. Wird in alle file_versions dieser Batch geschrieben. Empfohlen ab ≥3 Ops oder Multi-File Batches — User kann via files(history) sehen was die KI dabei gedacht hat.',
         },
         reason: {
           type: 'string',
@@ -214,15 +214,15 @@ export const filesTool: ConsolidatedTool = {
         },
         feature_tag: {
           type: 'string',
-          description: 'IDEA-3a: Logischer Feature-Group-Tag (z.B. "idea-thought-task-link"). Beim Schreiben → file_versions.feature_tag. Bei history → Filter (exakter Match).',
+          description: 'Logischer Feature-Group-Tag (z.B. "idea-thought-task-link"). Beim Schreiben → file_versions.feature_tag. Bei history → Filter (exakter Match).',
         },
         parent_version_id: {
           type: 'string',
-          description: 'IDEA-3a: Referenziert die vorherige Version, die dieses Edit korrigiert/ersetzt. BIGINT als String. Erlaubt Tracking von Korrektur-Chains.',
+          description: 'Referenziert die vorherige Version, die dieses Edit korrigiert/ersetzt. BIGINT als String. Erlaubt Tracking von Korrektur-Chains.',
         },
         git_commit_sha: {
           type: 'string',
-          description: 'IDEA-3a: Optionaler Git-Commit-SHA, der diese Aenderung im File-System repraesentiert.',
+          description: 'Optionaler Git-Commit-SHA, der diese Aenderung im File-System repraesentiert.',
         },
       },
       required: ['action', 'project'],
@@ -234,7 +234,7 @@ export const filesTool: ConsolidatedTool = {
     const project = reqStr(args, 'project');
     const agentId = str(args, 'agent_id');
     const reason = str(args, 'reason');
-    // IDEA-3a: History-Enrichment (additive, alle nullable)
+    // History-Enrichment (additive, alle nullable)
     const featureTag = str(args, 'feature_tag');
     const parentVersionId = str(args, 'parent_version_id');
     const gitCommitSha = str(args, 'git_commit_sha');
@@ -285,8 +285,8 @@ export const filesTool: ConsolidatedTool = {
         open_for_coedit: typeof args.open_for_coedit === 'boolean' ? args.open_for_coedit : undefined,
         reason,
       });
-      // IDEA-5: auto_commit:true -> direkt commit, ein Call statt zwei
-      // IDEA-5: auto_commit:true -> direkt commit, ABER nur wenn alle Previews ok sind.
+      // auto_commit:true -> direkt commit, ein Call statt zwei
+      // auto_commit:true -> direkt commit, ABER nur wenn alle Previews ok sind.
       // Wenn Plan einzelne ok:false hatte, lassen wir den Plan offen damit User
       // entscheiden kann. (planBatch throws sowieso bei harten Fehlern wie anchor mismatch.)
       const allPreviewsOk = result.previews?.every(p => p.ok) ?? true;
@@ -350,7 +350,7 @@ export const filesTool: ConsolidatedTool = {
         file_path: str(args, 'file_path'),
         since: str(args, 'since'),
         limit,
-        // IDEA-3a: Enrichment-Filter
+        // Enrichment-Filter
         feature_tag: str(args, 'feature_tag'),
         version_id: str(args, 'version_id'),
       });
@@ -360,7 +360,7 @@ export const filesTool: ConsolidatedTool = {
         count: entries.length,
         entries,
         tip: entries.length > 0
-          ? 'Eintraege chronologisch (neueste zuerst). reason = "Warum" der Aenderung. Voller Inhalt einer Version: files(action: "get_version", version_id). IDEA-3a: feature_tag und parent_version_id zeigen Feature-Group bzw. Korrektur-Chain.'
+          ? 'Eintraege chronologisch (neueste zuerst). reason = "Warum" der Aenderung. Voller Inhalt einer Version: files(action: "get_version", version_id). feature_tag und parent_version_id zeigen Feature-Group bzw. Korrektur-Chain.'
           : 'Keine Eintraege fuer diese Filter.',
       };
     }

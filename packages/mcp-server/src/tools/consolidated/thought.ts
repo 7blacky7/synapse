@@ -20,7 +20,7 @@ import {
 export const thoughtTool: ConsolidatedTool = {
   definition: {
     name: 'thought',
-    description: 'Gedankenaustausch zwischen KIs - speichern, abrufen, suchen, aktualisieren, loeschen. IDEA-1: add/add_batch akzeptieren task_id (Verknuepfung mit Plan-Task) + task_status (setzt zugleich den Status der Task — spart einen plan(update_task)-Call). Atomarer Status-Bericht + Task-Update in einem Aufruf.',
+    description: 'Gedankenaustausch zwischen KIs - speichern, abrufen, suchen, aktualisieren, loeschen. add/add_batch akzeptieren optional task_id (Verknuepfung mit Plan-Task) + task_status (setzt zugleich den Status der Task — spart einen plan(update_task)-Call). Atomarer Status-Bericht + Task-Update in einem Aufruf.',
     inputSchema: {
       type: 'object',
       properties: {

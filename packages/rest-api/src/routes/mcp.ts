@@ -274,7 +274,7 @@ const MCP_TOOLS = [
   // 4. thought
   {
     name: 'thought',
-    description: 'Kurze Notizen (Thoughts) im eigenen Projekt-Notizbuch ablegen, suchen, lesen, aktualisieren oder bereinigen. Lokale Synapse-Datenbank des Users, project-scoped. Keine fremden Daten, keine externen Systeme. IDEA-1: add/add_batch akzeptieren task_id (Verknuepfung mit Plan-Task) + task_status (setzt zugleich den Status der verlinkten Task — spart einen plan(update_task)-Call).',
+    description: 'Kurze Notizen (Thoughts) im eigenen Projekt-Notizbuch ablegen, suchen, lesen, aktualisieren oder bereinigen. Lokale Synapse-Datenbank des Users, project-scoped. Keine fremden Daten, keine externen Systeme. add/add_batch akzeptieren optional task_id (Verknuepfung mit Plan-Task) + task_status (setzt zugleich den Status der verlinkten Task — spart einen plan(update_task)-Call).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -756,7 +756,7 @@ const MCP_TOOLS = [
   // 15. files
   {
     name: 'files',
-    description: 'Datei-CRUD im eigenen Projekt-Verzeichnis: Erstellen, Aktualisieren, Eintragen-Entfernen, Verschieben, Kopieren, gezielte Zeilen-Edits, Search-Replace. Pfade sind relativ zum Projekt-Root und werden gegen Path-Traversal validiert. FileWatcher synchronisiert die Aenderungen automatisch im lokalen Workspace. Multi-File Plan/Commit (action="plan"+"commit") fuer atomare Edits ueber mehrere Dateien mit Hash-basierter Konflikt-Erkennung; restore_batch rollt komplette Plan-Sets zurueck. Erweiterte Optionen: IDEA-5 auto_commit:true (plan+commit in einem Call), IDEA-6 agent_note (KI-Beobachtungen pro Batch), IDEA-4 ops[].anchor_text/anchor_contains (Pre-flight Drift-Schutz auf der Ziel-Zeile), IDEA-3a feature_tag/parent_version_id/git_commit_sha (Versions-Anreicherung + history-Filter). Keine freien absoluten Pfade ausserhalb des Projekts, keine externen Systeme.',
+    description: 'Datei-CRUD im eigenen Projekt-Verzeichnis: Erstellen, Aktualisieren, Eintragen-Entfernen, Verschieben, Kopieren, gezielte Zeilen-Edits, Search-Replace. Pfade sind relativ zum Projekt-Root und werden gegen Path-Traversal validiert. FileWatcher synchronisiert die Aenderungen automatisch im lokalen Workspace. Multi-File Plan/Commit (action="plan"+"commit") fuer atomare Edits ueber mehrere Dateien mit Hash-basierter Konflikt-Erkennung; restore_batch rollt komplette Plan-Sets zurueck. Erweiterte Optionen: auto_commit:true (plan+commit in einem Call), agent_note (KI-Beobachtungen pro Batch), ops[].anchor_text/anchor_contains (Pre-flight Drift-Schutz auf der Ziel-Zeile), feature_tag/parent_version_id/git_commit_sha (Versions-Anreicherung + history-Filter). Keine freien absoluten Pfade ausserhalb des Projekts, keine externen Systeme.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -792,7 +792,7 @@ const MCP_TOOLS = [
         from_line: { type: 'number', description: 'read: Start-Zeile (1-basiert, Standard: 1)' },
         to_line: { type: 'number', description: 'read: End-Zeile inklusiv (Standard: letzte Zeile). Auto-Reduce bei > 80k Zeichen.' },
         truncate_long_lines: { type: 'number', description: 'read: Zeilen laenger als N Zeichen kuerzen + Marker. 0 = aus (Standard).' },
-        version_id: { type: 'string', description: 'Versions-ID (BIGSERIAL als String). Pflicht fuer get_version/restore. Bei history (IDEA-3a): zeigt Korrektur-Chain ab dieser Version (rekursiv via parent_version_id).' },
+        version_id: { type: 'string', description: 'Versions-ID (BIGSERIAL als String). Pflicht fuer get_version/restore. Bei history (): zeigt Korrektur-Chain ab dieser Version (rekursiv via parent_version_id).' },
         batch_id: { type: 'string', description: 'Batch-ID (fuer restore_batch — rollt alle Files einer Multi-File-Batch zurueck).' },
         plan_id: { type: 'string', description: 'Plan-ID (fuer commit, cancel, plan_status). String wegen BIGSERIAL.' },
         ops: {
@@ -827,21 +827,21 @@ const MCP_TOOLS = [
               line_end: { type: 'number' },
               after_line: { type: 'number' },
               shift_mode: { type: 'string', enum: ['auto', 'absolute'], description: 'Default "auto" = line-Ops auf gleicher Datei werden reverse-order appliziert (User gibt Zeilen aus Pre-Plan-Snapshot an). "absolute" = Op wird in Plan-Reihenfolge mit den angegebenen Zeilen auf den aktuellen Buffer-Stand bezogen.' },
-              anchor_text: { type: 'string', description: 'IDEA-4 (optional): Pre-flight Verifikation — pruefe dass die Ziel-Zeile (line_start fuer replace/delete, after_line fuer insert) exakt diesen Text enthaelt (.trim()-vergleich). Mismatch -> harter Error, KEINE Mutation. Schuetzt vor Drift zwischen plan() und commit().' },
-              anchor_contains: { type: 'string', description: 'IDEA-4 (optional): Wie anchor_text, aber Substring-Match statt Exact.' },
+              anchor_text: { type: 'string', description: '(optional): Pre-flight Verifikation — pruefe dass die Ziel-Zeile (line_start fuer replace/delete, after_line fuer insert) exakt diesen Text enthaelt (.trim()-vergleich). Mismatch -> harter Error, KEINE Mutation. Schuetzt vor Drift zwischen plan() und commit().' },
+              anchor_contains: { type: 'string', description: '(optional): Wie anchor_text, aber Substring-Match statt Exact.' },
             },
             required: ['file_path', 'action'],
           },
         },
         open_for_coedit: { type: 'boolean', description: 'Optional fuer plan: ob andere Agenten Co-Edits vorschlagen duerfen (default true). Aktuell informational; Co-Edit-Mechanik kommt in Schritt 3.' },
-        auto_commit: { type: 'boolean', description: 'IDEA-5 (optional fuer plan): wenn true, wird direkt nach plan() automatisch commit() aufgerufen — spart einen Tool-Call wenn kein User-Review vor commit gewuenscht. Versionierung bleibt aktiv (file_versions + batch_id), Rollback via restore_batch jederzeit moeglich.' },
-        agent_note: { type: 'string', description: 'IDEA-6 (optional fuer plan/commit): KI-eigene Beobachtungen/Analyse zum Batch (zusaetzlich zum reason des Users). Wird in alle file_versions dieser Batch geschrieben. Empfohlen ab ≥3 Ops oder Multi-File Batches.' },
+        auto_commit: { type: 'boolean', description: '(optional fuer plan): wenn true, wird direkt nach plan() automatisch commit() aufgerufen — spart einen Tool-Call wenn kein User-Review vor commit gewuenscht. Versionierung bleibt aktiv (file_versions + batch_id), Rollback via restore_batch jederzeit moeglich.' },
+        agent_note: { type: 'string', description: '(optional fuer plan/commit): KI-eigene Beobachtungen/Analyse zum Batch (zusaetzlich zum reason des Users). Wird in alle file_versions dieser Batch geschrieben. Empfohlen ab ≥3 Ops oder Multi-File Batches.' },
         reason: { type: 'string', description: 'Optionale Begruendung — landet in file_versions.reason und ist via "history"-Action abrufbar. Fuer Crash-Recovery nuetzlich.' },
         since: { type: 'string', description: 'history: ISO-Timestamp ab dem Eintraege gelistet werden.' },
         limit: { type: 'number', description: 'versions: Max Eintraege (Standard 50, Max 500).' },
-        feature_tag: { type: 'string', description: 'IDEA-3a: Logischer Feature-Group-Tag (z.B. "idea-thought-task-link"). Wird in file_versions.feature_tag gespeichert. history(feature_tag=...) filtert danach.' },
-        parent_version_id: { type: 'string', description: 'IDEA-3a: Referenziert vorherige Version, die dieses Edit korrigiert/ersetzt. BIGINT als String. Erlaubt Korrektur-Chain-Tracking.' },
-        git_commit_sha: { type: 'string', description: 'IDEA-3a: Optionaler Git-Commit-SHA, der diese Aenderung im File-System repraesentiert.' },
+        feature_tag: { type: 'string', description: 'Logischer Feature-Group-Tag (z.B. "idea-thought-task-link"). Wird in file_versions.feature_tag gespeichert. history(feature_tag=...) filtert danach.' },
+        parent_version_id: { type: 'string', description: 'Referenziert vorherige Version, die dieses Edit korrigiert/ersetzt. BIGINT als String. Erlaubt Korrektur-Chain-Tracking.' },
+        git_commit_sha: { type: 'string', description: 'Optionaler Git-Commit-SHA, der diese Aenderung im File-System repraesentiert.' },
       },
       required: ['action', 'project'],
     },
@@ -849,7 +849,7 @@ const MCP_TOOLS = [
   // 15b. files_batch — alias for files Multi-File-Plan/Commit (OpenAI-Cache-Buster)
   {
     name: 'files_batch',
-    description: 'Atomare Multi-File-Edits ueber mehrere Dateien (Plan-Phase Trockenlauf, dann Commit alle gemeinsam). Identische Implementierung wie files-Tool, aber als eigenes Tool exponiert weil manche MCP-Clients (z.B. ChatGPT) die action-Enum vom files-Tool aggressiv cachen und neue Werte (plan/commit/cancel) nicht erkennen. Nutze dieses Tool wenn files(action: "plan") nicht mehr klappt. Erweiterte Optionen: IDEA-5 auto_commit:true (plan+commit in einem Call), IDEA-6 agent_note (KI-Beobachtungen pro Batch), IDEA-4 ops[].anchor_text/anchor_contains (Pre-flight Drift-Schutz auf der Ziel-Zeile), IDEA-3a feature_tag/parent_version_id/git_commit_sha (Versions-Anreicherung + history-Filter).',
+    description: 'Atomare Multi-File-Edits ueber mehrere Dateien (Plan-Phase Trockenlauf, dann Commit alle gemeinsam). Identische Implementierung wie files-Tool, aber als eigenes Tool exponiert weil manche MCP-Clients (z.B. ChatGPT) die action-Enum vom files-Tool aggressiv cachen und neue Werte (plan/commit/cancel) nicht erkennen. Nutze dieses Tool wenn files(action: "plan") nicht mehr klappt. Erweiterte Optionen: auto_commit:true (plan+commit in einem Call), agent_note (KI-Beobachtungen pro Batch), ops[].anchor_text/anchor_contains (Pre-flight Drift-Schutz auf der Ziel-Zeile), feature_tag/parent_version_id/git_commit_sha (Versions-Anreicherung + history-Filter).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -877,8 +877,8 @@ const MCP_TOOLS = [
               line_end: { type: 'number' },
               after_line: { type: 'number' },
               shift_mode: { type: 'string', enum: ['auto', 'absolute'], description: 'Default "auto" = line-Ops auf gleicher Datei werden reverse-order appliziert (User gibt Zeilen aus Pre-Plan-Snapshot an). "absolute" = Op wird in Plan-Reihenfolge mit den angegebenen Zeilen auf den aktuellen Buffer-Stand bezogen.' },
-              anchor_text: { type: 'string', description: 'IDEA-4 (optional): Pre-flight Verifikation — pruefe dass die Ziel-Zeile (line_start fuer replace/delete, after_line fuer insert) exakt diesen Text enthaelt (.trim()-vergleich). Mismatch -> harter Error, KEINE Mutation.' },
-              anchor_contains: { type: 'string', description: 'IDEA-4 (optional): Wie anchor_text, aber Substring-Match statt Exact.' },
+              anchor_text: { type: 'string', description: '(optional): Pre-flight Verifikation — pruefe dass die Ziel-Zeile (line_start fuer replace/delete, after_line fuer insert) exakt diesen Text enthaelt (.trim()-vergleich). Mismatch -> harter Error, KEINE Mutation.' },
+              anchor_contains: { type: 'string', description: '(optional): Wie anchor_text, aber Substring-Match statt Exact.' },
               new_path: { type: 'string' },
               reason: { type: 'string' },
               edits: {
@@ -902,15 +902,15 @@ const MCP_TOOLS = [
         batch_id: { type: 'string', description: 'Pflicht fuer restore_batch' },
         agent_id: { type: 'string', description: 'Optionale Agent-ID (Audit-Trail)' },
         open_for_coedit: { type: 'boolean', description: 'plan: ob Co-Edits erlaubt sind (default true)' },
-        auto_commit: { type: 'boolean', description: 'IDEA-5: plan + commit in einem Call (default false). Versionierung bleibt aktiv.' },
-        agent_note: { type: 'string', description: 'IDEA-6 (optional): KI-eigene Beobachtungen pro Batch (zusaetzlich zum User-reason).' },
+        auto_commit: { type: 'boolean', description: 'plan + commit in einem Call (default false). Versionierung bleibt aktiv.' },
+        agent_note: { type: 'string', description: '(optional): KI-eigene Beobachtungen pro Batch (zusaetzlich zum User-reason).' },
         reason: { type: 'string', description: 'Optional fuer Audit-Trail (file_versions.reason)' },
         since: { type: 'string', description: 'history: ISO-Timestamp ab dem Eintraege gelistet werden' },
         file_path: { type: 'string', description: 'history: Filter auf einen Pfad (optional)' },
         limit: { type: 'number', description: 'history: Max Eintraege (Standard 50)' },
-        feature_tag: { type: 'string', description: 'IDEA-3a: Logischer Feature-Group-Tag (z.B. "idea-thought-task-link"). history(feature_tag=...) filtert danach.' },
-        parent_version_id: { type: 'string', description: 'IDEA-3a: Referenziert vorherige Version. BIGINT als String.' },
-        git_commit_sha: { type: 'string', description: 'IDEA-3a: Optionaler Git-Commit-SHA.' },
+        feature_tag: { type: 'string', description: 'Logischer Feature-Group-Tag (z.B. "idea-thought-task-link"). history(feature_tag=...) filtert danach.' },
+        parent_version_id: { type: 'string', description: 'Referenziert vorherige Version. BIGINT als String.' },
+        git_commit_sha: { type: 'string', description: 'Optionaler Git-Commit-SHA.' },
       },
       required: ['action', 'project'],
     },
@@ -2632,7 +2632,7 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
     case 'files': {
       const project = reqStr(args, 'project');
       const agentId = str(args, 'agent_id');
-      // IDEA-3a: History-Enrichment (additive, alle nullable)
+      // History-Enrichment (additive, alle nullable)
       const featureTag = str(args, 'feature_tag');
       const parentVersionId = str(args, 'parent_version_id');
       const gitCommitSha = str(args, 'git_commit_sha');
@@ -2682,7 +2682,7 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
           open_for_coedit: typeof args.open_for_coedit === 'boolean' ? args.open_for_coedit as boolean : undefined,
           reason: str(args, 'reason'),
         });
-        // IDEA-5: auto_commit:true -> direkt commit, ABER nur wenn alle Previews ok sind.
+        // auto_commit:true -> direkt commit, ABER nur wenn alle Previews ok sind.
         const allPreviewsOk = result.previews?.every(p => p.ok) ?? true;
         if (args.auto_commit === true && allPreviewsOk) {
           const c = await commitBatch({ plan_id: result.plan_id, agent_id: agentId, agent_note: str(args, 'agent_note') });
@@ -2740,7 +2740,7 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
           file_path: str(args, 'file_path'),
           since: str(args, 'since'),
           limit,
-          // IDEA-3a: Enrichment-Filter
+          // Enrichment-Filter
           feature_tag: str(args, 'feature_tag'),
           version_id: str(args, 'version_id'),
         });
@@ -2750,7 +2750,7 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
           count: entries.length,
           entries,
           tip: entries.length > 0
-            ? 'Eintraege chronologisch (neueste zuerst). reason = "Warum" der Aenderung. Voller Inhalt: files(action: "get_version", version_id). IDEA-3a: feature_tag und parent_version_id zeigen Feature-Group bzw. Korrektur-Chain.'
+            ? 'Eintraege chronologisch (neueste zuerst). reason = "Warum" der Aenderung. Voller Inhalt: files(action: "get_version", version_id). feature_tag und parent_version_id zeigen Feature-Group bzw. Korrektur-Chain.'
             : 'Keine Eintraege fuer diese Filter.',
         };
       }
