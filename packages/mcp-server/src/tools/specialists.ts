@@ -9,7 +9,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 
-import { removeWrapperStatus } from '@synapse/core';
+import { removeWrapperStatus, upsertWrapperStatus } from '@synapse/core';
 
 import {
   detectClaudeCli,
@@ -219,6 +219,32 @@ export async function spawnSpecialistTool(
     provider: modelEntry.provider,
     modelFullId: modelEntry.fullId,
   } as Partial<SpecialistStatus>);
+
+  // 11b. Initiale PG-Zeile schreiben (sofortige Cross-Process-Visibility).
+  //      Wrapper ueberschreibt diese Row beim naechsten Heartbeat mit
+  //      aktuellen Token-Werten. Try/catch: PG-Down darf Spawn nicht blockieren.
+  try {
+    await upsertWrapperStatus({
+      agentName: name,
+      project,
+      wrapperPid,
+      socketPath,
+      model,
+      modelFullId: modelEntry.fullId,
+      provider: modelEntry.provider,
+      status: 'running',
+      busy: false,
+      currentTask: task,
+      contextCeiling: modelEntry.contextWindow,
+      tokensInput: 0,
+      tokensOutput: 0,
+      tokensPercent: 0,
+      channels: [channel ?? `${project}-general`],
+      connectedMcp: false,
+    });
+  } catch (err) {
+    console.error(`[Synapse] PG-Status-Init fuer "${name}" fehlgeschlagen (non-fatal): ${err}`);
+  }
 
   return jsonResult({
     success: true,
