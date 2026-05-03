@@ -159,11 +159,9 @@ funktion oeffne_detail(name):
     # ueber Datei/Agent/Reason/Feature. Live-Update on_change.
     setze lbl_filter_e auf ui_label(tab_e, "Filter:", 10, 12, 60, 24)
     setze filter_e auf ui_eingabe(tab_e, 70, 10, 1380, 28, "Substring in Datei/Agent/Reason/Feature...", falsch)
-    # Number-Capture: Closure capturet nur filter_e (Number-Handle, kein
-    # Refcount). Den name holen wir per Dict-Lookup beim Aufruf.
-    filter_zu_name[text(filter_e)] = name
-    ui_eingabe_on_change(filter_e, () => events_laden_via_filter(filter_e))
-    ui_eingabe_on_enter(filter_e, () => events_laden_via_filter(filter_e))
+    # Capture-frei: top-level Handler liest aktiv_projekt[v].
+    ui_eingabe_on_change(filter_e, events_laden_global)
+    ui_eingabe_on_enter(filter_e, events_laden_global)
     g["filter_events"] = filter_e
     g["lbl_filter_e"] = lbl_filter_e
     setze liste_e auf ui_liste(tab_e, ["Zeit", "Agent", "Datei", "Aktion", "Reason", "Feature"], 10, 50, 1450, 700)
@@ -446,7 +444,7 @@ funktion events_laden(name):
         setze v auf versions[i]
         setze zeit auf ""
         wenn v.hat("created_at"):
-            setze zeit auf ui_zeit_lokal(v["created_at"])
+            setze zeit auf ui_zeit_format(v["created_at"], "%d.%m. %H:%M:%S")
         # Wenn agent_id null/leer ist: explizit "<unbekannt>" — damit der
         # Edit nicht "unsichtbar" wirkt. Heute's agent-id-auto-propagation
         # Mission sorgt dafuer dass das nie wieder vorkommt; Altdaten
@@ -486,15 +484,6 @@ funktion events_laden(name):
 
 funktion refresh_events_factory(name):
     gib_zurück () => events_laden(name)
-
-# Number-Capture-Helfer fuer Filter-on_change/on_enter:
-# Closure capturet nur filter_e (Number), name kommt per Dict-Lookup.
-funktion events_laden_via_filter(filter_e):
-    setze key auf text(filter_e)
-    wenn nicht filter_zu_name.hat(key):
-        gib_zurück nichts
-    setze name auf filter_zu_name[key]
-    events_laden(name)
 
 funktion oeffne_event(name):
     wenn nicht offene_fenster.hat(name):
@@ -651,7 +640,7 @@ funktion oeffne_chat(projekt, channel):
     # Nachrichten-Liste (links-oben, breit)
     setze lbl_msgs auf ui_label(fenster, "Nachrichten:", 10, 10, 200, 20)
     setze liste_m auf ui_liste(fenster, ["Zeit", "Absender", "Nachricht"], 10, 35, 880, 620)
-    ui_liste_spalte_min_breite(liste_m, 0, 80)
+    ui_liste_spalte_min_breite(liste_m, 0, 130)
     ui_liste_spalte_min_breite(liste_m, 1, 100)
     ui_liste_spalte_min_breite(liste_m, 2, 300)
     ui_liste_sortierbar(liste_m, 0, wahr)
@@ -805,7 +794,7 @@ funktion chat_messages_laden(schluessel):
         wenn first_load oder id > last_id:
             setze zeit auf ""
             wenn m.hat("createdAt"):
-                setze zeit auf ui_zeit_lokal(m["createdAt"])
+                setze zeit auf ui_zeit_format(m["createdAt"], "%d.%m. %H:%M:%S")
             setze sender auf ""
             wenn m.hat("sender"):
                 setze sender auf m["sender"]
