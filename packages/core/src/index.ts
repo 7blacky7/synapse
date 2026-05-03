@@ -336,6 +336,15 @@ export {
 } from './services/file-versions.js';
 export type { FileVersionMeta, FileVersionFull } from './services/file-versions.js';
 
+// Wrapper-Status (PG Source-of-Truth fuer laufende Spezialisten)
+export {
+  upsertWrapperStatus,
+  getWrapperStatus,
+  listWrapperStatus,
+  removeWrapperStatus,
+} from './services/wrapper-status.js';
+export type { WrapperStatusRow } from './services/wrapper-status.js';
+
 // Project-Init-Queue (Self-Service Project-Bootstrap fuer Web-KIs)
 export {
   isValidProjectName,

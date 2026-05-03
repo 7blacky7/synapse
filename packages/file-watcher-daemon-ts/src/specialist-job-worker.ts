@@ -199,13 +199,14 @@ async function dispatchSpecialistAction(job: SpecialistJobRow): Promise<Record<s
     case 'purge': {
       const names = Array.isArray(args.name) ? (args.name as unknown[]).map(String) : [String(args.name)]
       const projectPath = String(args.project_path)
+      const purgeProject = args.project ? String(args.project) : undefined
       if (names.length === 1) {
-        return (await tools.purgeSpecialistTool(names[0], projectPath)) as Record<string, unknown>
+        return (await tools.purgeSpecialistTool(names[0], projectPath, purgeProject)) as Record<string, unknown>
       }
       const results: Array<Record<string, unknown>> = []
       const errors: string[] = []
       for (const n of names) {
-        try { results.push((await tools.purgeSpecialistTool(n, projectPath)) as Record<string, unknown>) }
+        try { results.push((await tools.purgeSpecialistTool(n, projectPath, purgeProject)) as Record<string, unknown>) }
         catch (e) { errors.push(`${n}: ${e}`) }
       }
       return { results, count: results.length, errors }

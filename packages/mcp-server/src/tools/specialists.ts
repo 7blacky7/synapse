@@ -9,6 +9,8 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 
+import { removeWrapperStatus, upsertWrapperStatus } from '@synapse/core';
+
 import {
   detectClaudeCli,
   canSpawn,
@@ -218,6 +220,32 @@ export async function spawnSpecialistTool(
     modelFullId: modelEntry.fullId,
   } as Partial<SpecialistStatus>);
 
+  // 11b. Initiale PG-Zeile schreiben (sofortige Cross-Process-Visibility).
+  //      Wrapper ueberschreibt diese Row beim naechsten Heartbeat mit
+  //      aktuellen Token-Werten. Try/catch: PG-Down darf Spawn nicht blockieren.
+  try {
+    await upsertWrapperStatus({
+      agentName: name,
+      project,
+      wrapperPid,
+      socketPath,
+      model,
+      modelFullId: modelEntry.fullId,
+      provider: modelEntry.provider,
+      status: 'running',
+      busy: false,
+      currentTask: task,
+      contextCeiling: modelEntry.contextWindow,
+      tokensInput: 0,
+      tokensOutput: 0,
+      tokensPercent: 0,
+      channels: [channel ?? `${project}-general`],
+      connectedMcp: false,
+    });
+  } catch (err) {
+    console.error(`[Synapse] PG-Status-Init fuer "${name}" fehlgeschlagen (non-fatal): ${err}`);
+  }
+
   return jsonResult({
     success: true,
     specialist: {
@@ -276,6 +304,7 @@ export async function stopSpecialistTool(
 export async function purgeSpecialistTool(
   name: string,
   projectPath: string,
+  project?: string,
 ) {
   const steps: Record<string, unknown> = {};
 
@@ -349,9 +378,20 @@ export async function purgeSpecialistTool(
     steps.status_removed = `Fehler: ${err}`;
   }
 
+  // 6. Wrapper-Status aus PG entfernen (zusaetzlich zu status.json)
+  if (project) {
+    try {
+      await removeWrapperStatus(name, project);
+      steps.pg_status_removed = 'ok';
+    } catch (err) {
+      // Kein Hard-Fail — PG-Row fehlt z.B. bei alten Spezialisten ohne PG-Eintrag
+      steps.pg_status_removed = `Fehler (non-fatal): ${err}`;
+    }
+  }
+
   return jsonResult({
     success: true,
-    message: `Spezialist "${name}" komplett entfernt (Stop + Channels + Chat + Status + FS). Auto-Respawn unmoeglich.`,
+    message: `Spezialist "${name}" komplett entfernt (Stop + Channels + Chat + Status + FS${project ? ' + PG' : ''}). Auto-Respawn unmoeglich.`,
     steps,
   });
 }

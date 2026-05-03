@@ -34,6 +34,9 @@ import {
   getThoughtsByTag,
   getPlan,
   getPendingEvents,
+  upsertWrapperStatus,
+  removeWrapperStatus,
+  ensureSchema,
 } from '@synapse/core'
 import pg from 'pg'
 import type { Memory, Thought, ProjectTask, AgentEvent } from '@synapse/core'
@@ -86,6 +89,18 @@ let shuttingDown = false
 let processAlive = true
 
 const STUCK_TIMEOUT_MS = 120_000 // 2 Minuten ohne Event-Aktivitaet = stuck
+
+// PG-Status: min-write-interval unabhaengig vom adaptiven Heartbeat-Ladder
+// (Ladder geht bis 60min — ohne eigenen Timer veraltet last_activity in PG)
+const WRAPPER_STATUS_PG_WRITE_INTERVAL_MS = 90_000
+let lastPgWriteTs = 0
+let pgWriteTimerId: ReturnType<typeof setInterval> | null = null
+
+/** Gecachte Channel-Liste des Agenten (einmalig beim Start aus DB geladen) */
+let cachedChannels: string[] = []
+
+/** Wake-Nachrichten aus NOTIFY synapse_specialist_wake_<name> — naechster Heartbeat verarbeitet sie */
+const pendingNotifyWakes: string[] = []
 
 // ---------------------------------------------------------------------------
 // Instances
@@ -154,8 +169,23 @@ async function setupPgListeners(): Promise<void> {
     await listenClient.query('LISTEN synapse_channel')
     await listenClient.query('LISTEN synapse_event')
     await listenClient.query('LISTEN synapse_file')
+    // Spezialist-Wake via NOTIFY (Fast-Path; Inbox bleibt Fallback)
+    await listenClient.query(`LISTEN synapse_specialist_wake_${AGENT_NAME}`)
     listenClient.on('notification', (msg) => {
       const channel = msg.channel ?? '<unknown>'
+      // Spezialist-Wake: Nachricht direkt in Queue, naechster Heartbeat verarbeitet sie.
+      // NOTIFY ist Fast-Path — Inbox-Fallback laeuft sowieso via pollInboxMessages().
+      if (channel === `synapse_specialist_wake_${AGENT_NAME}` && msg.payload) {
+        try {
+          const p = JSON.parse(msg.payload) as { message?: string; project?: string }
+          if (p.message && (!p.project || p.project === PROJECT_NAME)) {
+            log('NOTIFY-Wake empfangen: %s', p.message.slice(0, 100))
+            pendingNotifyWakes.push(p.message)
+            triggerImmediateHeartbeat(`wake_${AGENT_NAME}`, 'hot')
+          }
+        } catch { /* ignore parse errors */ }
+        return // Kein weiterer triggerImmediateHeartbeat unten
+      }
       // Spezial-Behandlung fuer file-changes: Payload puffern fuer naechsten Wake-Prompt.
       if (channel === 'synapse_file' && msg.payload) {
         try {
@@ -179,7 +209,7 @@ async function setupPgListeners(): Promise<void> {
     listenClient.on('error', (err) => {
       log('PG-LISTEN error: %s — neu verbinden bei naechstem Heartbeat', err.message)
     })
-    log('PG-LISTEN aktiv: synapse_chat, synapse_channel, synapse_event, synapse_file')
+    log('PG-LISTEN aktiv: synapse_chat, synapse_channel, synapse_event, synapse_file, synapse_specialist_wake_%s', AGENT_NAME)
   } catch (err) {
     log('PG-LISTEN-Setup fehlgeschlagen (Heartbeat laeuft trotzdem): %s', err instanceof Error ? err.message : String(err))
   }
@@ -682,6 +712,15 @@ Wenn du weiterarbeitest ohne den trigger_respawn Flag, rotiert der Wrapper dich 
       }
     }
 
+    // NOTIFY-Wake Fast-Path: direkt aus Queue wecken (vor normalen Polls)
+    if (!agentBusy && pendingNotifyWakes.length > 0) {
+      const wakeMsg = pendingNotifyWakes.shift()!
+      log('Verarbeite NOTIFY-Wake: %s', wakeMsg.slice(0, 80))
+      try { await wakeAgent(wakeMsg) } catch (err) { log('NOTIFY-Wake wakeAgent fehlgeschlagen: %s', err) }
+      await updateStatusFile()
+      return
+    }
+
     const hadChannelMessages = await pollChannelMessages()
     const hadInboxMessages = await pollInboxMessages()
     const hadSynapseItems = await pollSynapseItems()
@@ -910,6 +949,101 @@ Arbeite diese Items jetzt ab.`
   return true
 }
 
+/**
+ * Liest die Channel-Mitgliedschaft des Agenten aus der DB (pro 90s-Flush).
+ * Wird nicht gecacht — pro Flush neu gelesen damit JOIN/LEAVE widergespiegelt wird.
+ * Non-fatal: bei Fehler leeres Array zurueck.
+ */
+async function fetchCurrentChannels(): Promise<string[]> {
+  if (!PROJECT_NAME) return []
+  try {
+    const pool = getPool()
+    const { rows } = await pool.query<{ channel_name: string }>(
+      `SELECT c.name AS channel_name
+       FROM specialist_channels c
+       JOIN specialist_channel_members m ON m.channel_id = c.id
+       WHERE m.agent_name = $1
+       ORDER BY c.name`,
+      [AGENT_NAME],
+    )
+    return rows.map(r => r.channel_name)
+  } catch {
+    return cachedChannels // Fallback: letzter bekannter Wert
+  }
+}
+
+/** Initialisiert den Channel-Cache beim Start (einmaliger Warm-up). */
+async function initCachedChannels(): Promise<void> {
+  cachedChannels = await fetchCurrentChannels()
+  log('Channel-Cache initialisiert: [%s]', cachedChannels.join(', '))
+}
+
+/**
+ * Baut den vollstaendigen PG-Status-Record aus dem aktuellen Wrapper-State.
+ * IMMER alle transient-Felder mitliefern (skeptiker-pg: Hard-Overwrite-Bug).
+ * channels wird frisch aus DB gelesen (async) damit JOIN/LEAVE widergespiegelt wird.
+ */
+async function buildFullPgStatus(
+  statusOverride?: 'running' | 'idle' | 'crashed' | 'stopped',
+  channelsSnapshot?: string[],
+) {
+  const effectiveStatus = statusOverride ?? (
+    processAlive ? (agentBusy ? 'running' : 'idle') : 'crashed'
+  )
+  // Fix skeptiker-pg #5: bei terminal-Status busy immer false
+  const effectiveBusy = (effectiveStatus === 'crashed' || effectiveStatus === 'stopped')
+    ? false
+    : agentBusy
+
+  // Fix skeptiker-pg #2: modelFullId + provider aus resolveModel()
+  const modelEntry = resolveModel(AGENT_MODEL)
+
+  // Fix skeptiker-pg #3: channels live lesen (Snapshot falls bereits geholt)
+  const channels = channelsSnapshot ?? await fetchCurrentChannels()
+  cachedChannels = channels // Cache aktualisieren
+
+  return {
+    agentName: AGENT_NAME,
+    project: PROJECT_NAME,
+    wrapperPid: process.pid,
+    // Fix skeptiker-pg #1: innerPid = Claude-CLI-PID aus processManager
+    innerPid: processManager.getStatus().get(AGENT_NAME)?.pid ?? null,
+    socketPath: SOCKET_PATH,
+    model: AGENT_MODEL,
+    // Fix skeptiker-pg #2: modelFullId + provider
+    modelFullId: modelEntry?.fullId ?? null,
+    provider: modelEntry?.provider ?? null,
+    status: effectiveStatus,
+    busy: effectiveBusy,
+    tokensInput: totalInputTokens,
+    tokensOutput: totalOutputTokens,
+    tokensPercent: getContextPercent(),
+    contextCeiling: getContextCeiling(),
+    connectedMcp: connectedClients.size > 0,
+    channels,
+    currentTask: null as string | null,
+  }
+}
+
+/**
+ * Schreibt den aktuellen Wrapper-Status in PG (gedrosselt auf 90s).
+ * Bei explizitem statusOverride (crash/stop) immer sofort schreiben.
+ * Non-fatal: PG-Fehler loggen, nie werfen.
+ */
+async function updateStatusPg(statusOverride?: 'running' | 'idle' | 'crashed' | 'stopped'): Promise<void> {
+  if (!PROJECT_NAME) return
+  const isForced = statusOverride !== undefined
+  const now = Date.now()
+  if (!isForced && now - lastPgWriteTs < WRAPPER_STATUS_PG_WRITE_INTERVAL_MS) return
+  // Fix skeptiker-pg #4: lastPgWriteTs erst nach erfolgreichem Write setzen (nur fuer nicht-forced)
+  try {
+    await upsertWrapperStatus(await buildFullPgStatus(statusOverride))
+    if (!isForced) lastPgWriteTs = now
+  } catch (err) {
+    log('PG-Status-Schreiben fehlgeschlagen (non-fatal): %s', err)
+  }
+}
+
 async function updateStatusFile() {
   try {
     await updateSpecialist(PROJECT_PATH, AGENT_NAME, {
@@ -929,6 +1063,8 @@ async function updateStatusFile() {
   } catch (err) {
     log('Failed to update status file: %s', err)
   }
+  // Parallel: PG-Status aktualisieren (gedrosselt auf 90s, non-fatal)
+  void updateStatusPg()
 }
 
 // ---------------------------------------------------------------------------
@@ -1009,6 +1145,8 @@ function setupProcessManagerEvents() {
       status: 'crashed',
       lastActivity: new Date().toISOString(),
     } as Partial<SpecialistStatus>).catch(() => {})
+    // PG: status='crashed' sofort setzen (fire-and-forget, non-fatal)
+    if (PROJECT_NAME) void updateStatusPg('crashed')
 
     // If not shutting down, this is a crash
     if (!shuttingDown) {
@@ -1050,6 +1188,8 @@ function setupProcessManagerEvents() {
       status: 'crashed',
       lastActivity: new Date().toISOString(),
     } as Partial<SpecialistStatus>).catch(() => {})
+    // PG: status='crashed' sofort setzen (fire-and-forget, non-fatal)
+    if (PROJECT_NAME) void updateStatusPg('crashed')
   })
 
   processManager.on('stderr', (_agentName: string, data: string) => {
@@ -1110,7 +1250,7 @@ async function cleanup() {
     // ignore
   }
 
-  // Update status
+  // Update status: status.json (Backward-Compat)
   try {
     await updateSpecialist(PROJECT_PATH, AGENT_NAME, {
       status: 'stopped',
@@ -1118,6 +1258,15 @@ async function cleanup() {
     } as Partial<SpecialistStatus>)
   } catch {
     // ignore
+  }
+  // PG: status='stopped' setzen (non-fatal)
+  if (PROJECT_NAME) {
+    try { await updateStatusPg('stopped') } catch { /* ignore */ }
+  }
+  // 90s-Timer stoppen
+  if (pgWriteTimerId) {
+    clearInterval(pgWriteTimerId)
+    pgWriteTimerId = null
   }
 
   log('Cleanup complete')
@@ -1269,7 +1418,7 @@ async function main() {
       .catch((err) => log('Initial Wake fehlgeschlagen: %s', err))
   }, STARTUP_DELAY_MS)
 
-  // 8. Update status file: running
+  // 8. Update status file: running (Backward-Compat status.json)
   await updateSpecialist(PROJECT_PATH, AGENT_NAME, {
     status: 'running',
     model: AGENT_MODEL,
@@ -1279,6 +1428,57 @@ async function main() {
     contextCeiling: getContextCeiling(),
     lastActivity: lastActivityTs,
   } as Partial<SpecialistStatus>)
+
+  // 9. PG-Schema sicherstellen (idempotent, CREATE IF NOT EXISTS)
+  if (PROJECT_NAME) {
+    try {
+      await ensureSchema()
+      log('PG-Schema sichergestellt')
+    } catch (err) {
+      log('ensureSchema fehlgeschlagen (non-fatal, PG evtl. nicht erreichbar): %s', err)
+    }
+  }
+
+  // 10. Channel-Cache initialisieren (fuer vollstaendigen PG-Status-Row)
+  await initCachedChannels()
+
+  // 11. Initiale PG-Zeile schreiben (status='running', tokens=0)
+  if (PROJECT_NAME) {
+    try {
+      const spawnModelEntry = resolveModel(AGENT_MODEL)
+      await upsertWrapperStatus({
+        agentName: AGENT_NAME,
+        project: PROJECT_NAME,
+        wrapperPid: process.pid,
+        innerPid: null, // Claude CLI noch nicht gestartet an diesem Punkt
+        socketPath: SOCKET_PATH,
+        model: AGENT_MODEL,
+        modelFullId: spawnModelEntry?.fullId ?? null,
+        provider: spawnModelEntry?.provider ?? null,
+        status: 'running',
+        busy: false,
+        tokensInput: 0,
+        tokensOutput: 0,
+        tokensPercent: 0,
+        contextCeiling: getContextCeiling(),
+        connectedMcp: false,
+        channels: cachedChannels,
+        currentTask: null,
+      })
+      lastPgWriteTs = Date.now()
+      log('PG-Status-Zeile initialisiert (running)')
+    } catch (err) {
+      log('Initiale PG-Status-Zeile fehlgeschlagen (non-fatal): %s', err)
+    }
+  }
+
+  // 12. 90s min-write-interval Timer (unabhaengig vom adaptiven Heartbeat-Ladder)
+  // Sichert last_activity auch wenn Ladder auf 60min steht (Idle-Agent).
+  if (PROJECT_NAME) {
+    pgWriteTimerId = setInterval(() => {
+      void updateStatusPg()
+    }, WRAPPER_STATUS_PG_WRITE_INTERVAL_MS)
+  }
 
   log('Wrapper fully started and ready')
 }

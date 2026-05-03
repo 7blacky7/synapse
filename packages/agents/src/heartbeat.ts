@@ -10,7 +10,9 @@
  * PROTOKOLL: Newline-delimited JSON-RPC 2.0
  *
  * NEBENEFFEKTE:
- *   - Liest status.json zur Reconnect-Logik
+ *   - Liest status.json zur Reconnect-Logik (primaer)
+ *   - Optional: liest PG wrapper_status fuer Cross-Process-Awareness
+ *     (Spezialisten die per REST-API oder anderem Prozess gestartet wurden)
  *   - Aktualisiert/entfernt Eintraege in status.json bei toten PIDs
  *   - Loescht verwaiste .sock-Dateien
  */
@@ -19,6 +21,7 @@ import { connect, type Socket } from 'node:net'
 import { readdir, unlink, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import { readStatus, updateSpecialist, removeSpecialist } from './status.js'
+import { getPool } from '@synapse/core'
 import type { WrapperMessage, WrapperResponse, SendMessageResult } from './types.js'
 
 // ---------------------------------------------------------------------------
@@ -126,18 +129,27 @@ class HeartbeatController {
   }
 
   /**
-   * Reconnect all wrappers from status.json.
+   * Reconnect all wrappers from status.json (primaer).
+   * Optional: wenn `project` angegeben, werden zusaetzlich PG-Eintraege
+   * (wrapper_status-Tabelle) konsultiert — Cross-Process-Awareness fuer
+   * Wrapper die von REST-API oder anderem Prozess gestartet wurden.
+   *
    * Verifies PIDs are alive, cleans up dead entries.
    * Returns lists of connected and cleaned-up wrapper names.
    */
   async reconnectAll(
     projectPath: string,
+    project?: string,
   ): Promise<{ connected: string[]; cleaned: string[] }> {
     const status = await readStatus(projectPath)
     const connected: string[] = []
     const cleaned: string[] = []
 
+    // Bekannte Namen aus status.json (Primaer-Quelle)
+    const processedNames = new Set<string>()
+
     for (const [name, specialist] of Object.entries(status.specialists)) {
+      processedNames.add(name)
       const { wrapperPid, socket: socketPath } = specialist
 
       // Skip entries without a wrapperPid or socket path
@@ -156,13 +168,47 @@ class HeartbeatController {
           // Socket file exists in status but connection failed — treat as dead
           await removeSpecialist(projectPath, name)
           await deleteSocketFile(socketPath)
+          // PG: status='crashed' fuer toten Wrapper setzen (best-effort)
+          if (project) void markWrapperCrashedInPg(name, project, wrapperPid)
           cleaned.push(name)
         }
       } else {
         // PID is dead — clean up status entry and socket file
         await removeSpecialist(projectPath, name)
         await deleteSocketFile(socketPath)
+        // PG: status='crashed' fuer toten Wrapper setzen (best-effort)
+        if (project) void markWrapperCrashedInPg(name, project, wrapperPid)
         cleaned.push(name)
+      }
+    }
+
+    // Cross-Process-Awareness: PG-Eintraege die nicht in status.json sind
+    // (z.B. per REST-API gestartete Wrapper in einem anderen Prozess)
+    if (project) {
+      try {
+        const { listWrapperStatus } = await import('@synapse/core')
+        const pgRows = await listWrapperStatus(project)
+
+        for (const row of pgRows) {
+          // Nur Eintraege die noch nicht verarbeitet wurden
+          if (processedNames.has(row.agentName)) continue
+          // Nur laufende Wrapper mit bekanntem PID + Socket
+          if (row.status !== 'running' && row.status !== 'idle') continue
+          if (!row.wrapperPid || !row.socketPath) continue
+
+          const alive = isPidAlive(row.wrapperPid)
+          if (alive) {
+            try {
+              await this.connectToWrapper(row.agentName, row.socketPath)
+              connected.push(row.agentName)
+            } catch {
+              // Verbindung fehlgeschlagen — PG-Eintrag bleibt (Wrapper schreibt selbst)
+            }
+          }
+          // Tote PG-Eintraege werden vom Wrapper selbst oder einem Reaper bereinigt
+        }
+      } catch {
+        // PG nicht erreichbar — kein Cross-Process-Read, kein Hard-Fail
       }
     }
 
@@ -371,6 +417,32 @@ class HeartbeatController {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/**
+ * Markiert einen Wrapper-Eintrag in PG als 'crashed'.
+ * Nur wenn der Wrapper bisher 'running' oder 'idle' war — kein Overwrite
+ * von bereits 'stopped'/'crashed' Eintraegen.
+ * Non-fatal: Fehler werden ignoriert (best-effort).
+ */
+async function markWrapperCrashedInPg(
+  agentName: string,
+  project: string,
+  wrapperPid: number,
+): Promise<void> {
+  try {
+    const pool = getPool()
+    await pool.query(
+      `UPDATE wrapper_status
+       SET status = 'crashed', last_activity = NOW()
+       WHERE agent_name = $1 AND project = $2
+         AND wrapper_pid = $3
+         AND status IN ('running', 'idle')`,
+      [agentName, project, wrapperPid],
+    )
+  } catch {
+    // PG nicht erreichbar oder Tabelle existiert noch nicht — ignorieren
+  }
+}
 
 /**
  * Check if a process with the given PID is alive using signal 0.
