@@ -2297,13 +2297,43 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
       // status + capabilities lesen direkt aus PG ohne Queue.
       const { enqueueSpecialistJob, waitForSpecialistJob, getPool, getWrapperStatus, listWrapperStatus, postToInbox } = await import('@synapse/core');
 
-      // capabilities ist projekt-agnostisch — vor reqStr('project') abfangen
-      // sonst crasht der Aufruf an required-Param und wir geben 500/502 statt
-      // einer hilfreichen Antwort.
+      // capabilities ist projekt-agnostisch — direkt aus PG ableiten.
+      // projects-Tabelle = registrierte Daemons je hostname.
+      // wrapper_status-Tabelle = aktive Spezialisten (running/idle).
       if (action === 'capabilities') {
+        const pool = getPool();
+        const [hostsRes, wrappersRes] = await Promise.all([
+          pool.query<{ hostname: string; project_count: string; last_seen: string | null }>(
+            `SELECT hostname, COUNT(*)::text AS project_count, MAX(last_access)::text AS last_seen
+             FROM projects WHERE path NOT LIKE '/virtual/%'
+             GROUP BY hostname ORDER BY last_seen DESC NULLS LAST`,
+          ),
+          pool.query<{ provider: string | null; model: string | null; status: string; n: string }>(
+            `SELECT provider, model, status, COUNT(*)::text AS n
+             FROM wrapper_status GROUP BY provider, model, status`,
+          ),
+        ]);
+        const totalActive = wrappersRes.rows
+          .filter(r => r.status === 'active' || r.status === 'idle' || r.status === 'busy')
+          .reduce((s, r) => s + Number(r.n), 0);
+        const providers = Array.from(new Set(wrappersRes.rows.map(r => r.provider).filter(Boolean)));
         return {
           success: true,
-          message: 'capabilities-Check ist nur ueber lokalen MCP-Server verfuegbar (REST-API hat keinen Claude-CLI-Zugriff). Pruefe via shell({command:"which claude"}) ob CLI verfuegbar ist.',
+          daemons: hostsRes.rows.map(r => ({ hostname: r.hostname, projects: Number(r.project_count), lastSeen: r.last_seen })),
+          wrappers: {
+            total: wrappersRes.rows.reduce((s, r) => s + Number(r.n), 0),
+            active: totalActive,
+            byProviderModel: wrappersRes.rows,
+          },
+          features: {
+            specialists: hostsRes.rows.length > 0,
+            channels: true,
+            inbox: true,
+            providers,
+          },
+          message: hostsRes.rows.length > 0
+            ? `${hostsRes.rows.length} Daemon-Host(s) registriert, ${totalActive} aktive Wrapper.`
+            : 'Keine Daemons registriert.',
         };
       }
 
