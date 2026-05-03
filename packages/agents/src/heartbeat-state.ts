@@ -32,7 +32,7 @@ const LADDER_MS = [
   60 * 60_000,   // 60min — Cap, Safety-Tick
 ] as const;
 
-const DEFAULT_IDX = 1; // 30s als Start
+const DEFAULT_IDX = 1; // 30s als Start (Live-Test 2026-05-03)
 const ACTIVE_IDX = 0;  // 10s nach Event
 
 /** Simple deterministische String-Hash → Phase-Offset in ms */
