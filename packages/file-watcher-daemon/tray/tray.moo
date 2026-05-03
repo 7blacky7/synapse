@@ -150,9 +150,11 @@ funktion oeffne_detail(name):
     ui_knopf(tab_ak, "Neu indexieren", 10, 10,   200, 36, reindex_factory(name))
     ui_knopf(tab_ak, "Projekt loeschen", 10, 60, 200, 36, delete_factory(name))
 
-    # Resize-Layout: Tabs + Listen + Buttons folgen der Fenstergroesse.
-    # Mit fname-String-Kopie-Workaround in der Factory.
-    ui_fenster_on_resize(fenster, layout_projekt_factory(name))
+    # Resize-Layout DEAKTIVIERT — moo-Closure-Slot-Race korrumpiert
+    # captured 'name' beim mehrfachen Resize-Feuern. Kein Workaround
+    # in moo-Sprache moeglich; braucht Compiler-Fix.
+    # Siehe Channel-Diagnose moo-runtime-dev + tray.log Beweis.
+    # ui_fenster_on_resize(fenster, layout_projekt_factory(name))
     ui_zeige(fenster)
     agents_laden(name)
     events_laden(name)
@@ -161,13 +163,10 @@ funktion oeffne_detail(name):
 # Reposition aller Widgets im Projekt-Fenster bei Resize.
 # (b, h) ist die neue Fenster-Innengroesse vom GTK configure-event.
 funktion layout_projekt(name, b, h):
-    # Diagnose-Print landet in /tmp/tray.log - bestaetigt ob Callback feuert
-    zeige("LAYOUT projekt name=" + name + " b=" + text(b) + " h=" + text(h))
-    # Defensive Guards (moo-runtime-dev Tipp C):
+    # Defensive Guards (moo-runtime-dev Tipp C)
     wenn name == nichts:
         gib_zurück nichts
     wenn nicht offene_fenster.hat(name):
-        zeige("LAYOUT projekt: name nicht in offene_fenster -> abort")
         gib_zurück nichts
     setze g auf offene_fenster[name]
     # closed-Flag check: GTK-size-allocate kann auch nach Fenster-Close
@@ -492,20 +491,18 @@ funktion oeffne_chat(projekt, channel):
     g["btn_send"] = btn_send
     g["btn_ref"]  = btn_ref
 
-    # Resize-Layout: Listen + Eingabe folgen der Fenstergroesse
-    ui_fenster_on_resize(fenster, layout_chat_factory(schluessel))
+    # Resize-Layout DEAKTIVIERT — moo-Closure-Slot-Race (siehe layout_projekt)
+    # ui_fenster_on_resize(fenster, layout_chat_factory(schluessel))
     ui_zeige(fenster)
     chat_messages_laden(schluessel)
     chat_agents_laden(schluessel)
 
 # Reposition aller Widgets im Chat-Fenster bei Resize.
 funktion layout_chat(schluessel, b, h):
-    zeige("LAYOUT chat key=" + schluessel + " b=" + text(b) + " h=" + text(h))
     # Defensive Guards
     wenn schluessel == nichts:
         gib_zurück nichts
     wenn nicht chat_fenster.hat(schluessel):
-        zeige("LAYOUT chat: key nicht in chat_fenster -> abort")
         gib_zurück nichts
     setze g auf chat_fenster[schluessel]
     # closed-Flag check: GTK-size-allocate feuert auch nach Close,
