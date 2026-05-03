@@ -18,7 +18,8 @@
 import os from 'node:os';
 import fs from 'node:fs';
 import Fastify, { type FastifyInstance, type FastifyReply } from 'fastify';
-import { getPool, listChannels, getChannelMessages, postChannelMessage, listActiveAgents } from '@synapse/core';
+import { getPool, listChannels, getChannelMessages, postChannelMessage, listActiveAgents, listWrapperStatus } from '@synapse/core';
+import type { WrapperStatusRow } from '@synapse/core';
 import { readStatus, removeSpecialist } from '@synapse/agents';
 import type { WatcherManager } from './manager.js';
 
@@ -26,6 +27,29 @@ const STARTED_AT = Date.now();
 
 export interface BuildApiOptions {
   manager: WatcherManager;
+}
+
+/** Konvertiert eine PG-WrapperStatusRow in das SpecialistStatus-kompatible Format. */
+function pgRowToSpecialist(row: WrapperStatusRow): Record<string, unknown> {
+  return {
+    name: row.agentName,
+    model: row.model ?? '',
+    status: row.status,
+    pid: row.innerPid ?? 0,
+    wrapperPid: row.wrapperPid ?? 0,
+    socket: row.socketPath ?? '',
+    tokens: {
+      input: row.tokensInput ?? 0,
+      output: row.tokensOutput ?? 0,
+      percent: row.tokensPercent ?? 0,
+    },
+    contextCeiling: row.contextCeiling ?? 0,
+    lastActivity: row.lastActivity.toISOString(),
+    channels: row.channels,
+    currentTask: row.currentTask,
+    ...(row.provider != null && { provider: row.provider }),
+    ...(row.modelFullId != null && { modelFullId: row.modelFullId }),
+  };
 }
 
 /** Fuehrt einen throw-basierten Manager-Call aus und mappt Fehler auf HTTP-Codes. */
@@ -184,21 +208,41 @@ export function buildApi(opts: BuildApiOptions): FastifyInstance {
   );
 
   // ---- GET /projects/:name/specialists -----------------------------------
-  // Liest die lokale .synapse/agents/status.json des Projekts — gibt alle
-  // registrierten Spezialisten mit Status/Modell/Tokens/wrapperPid zurueck.
+  // Primary: PostgreSQL wrapper_status — gibt alle registrierten Spezialisten
+  // mit Status/Modell/Tokens/wrapperPid zurueck.
+  // Fallback auf .synapse/agents/status.json wenn PG-Tabelle leer ist.
   // Wird vom Tray-Context-Menue "Agenten" genutzt.
   app.get<{ Params: { name: string } }>(
     '/projects/:name/specialists',
     async (req, reply) => {
-      const info = manager.status(req.params.name);
+      const projectName = req.params.name;
+      const info = manager.status(projectName);
       if (!info) {
         reply.code(404);
         return { error: 'unknown project' };
       }
       try {
+        // Primary: PostgreSQL wrapper_status
+        const pgRows = await listWrapperStatus(projectName);
+        // Metadaten (maxSpecialists, lastUpdate-Fallback) aus status.json
         const statusFile = await readStatus(info.pfad);
+
+        if (pgRows.length > 0) {
+          const specialists: Record<string, unknown> = {};
+          for (const row of pgRows) {
+            specialists[row.agentName] = pgRowToSpecialist(row);
+          }
+          return {
+            project: projectName,
+            specialists,
+            maxSpecialists: statusFile.maxSpecialists,
+            lastUpdate: pgRows[0].lastActivity.toISOString(),
+          };
+        }
+
+        // Fallback: status.json wenn PG-Tabelle leer
         return {
-          project: req.params.name,
+          project: projectName,
           specialists: statusFile.specialists,
           maxSpecialists: statusFile.maxSpecialists,
           lastUpdate: statusFile.lastUpdate,
