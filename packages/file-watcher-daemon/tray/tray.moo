@@ -173,10 +173,18 @@ funktion agents_laden(name):
     wenn nicht offene_fenster.hat(name):
         gib_zurück nichts
     setze g auf offene_fenster[name]
+    # Busy-Guard: re-entrancy bei mehrfachen Aktualisieren-Klicks blockt
+    # http_hole sonst den UI-Thread und kann waehrend Specialist-Spawning
+    # zum Crash fuehren.
+    wenn g.hat("busy_agents"):
+        wenn g["busy_agents"]:
+            gib_zurück nichts
+    g["busy_agents"] = wahr
     setze liste auf g["liste_agents"]
     ui_liste_leeren(liste)
     setze resp auf safe_get(DAEMON_URL + "/projects/" + name + "/specialists")
     wenn resp == "":
+        g["busy_agents"] = falsch
         gib_zurück nichts
     setze info auf json_lesen(resp)
     wenn typ_von(info) != "Woerterbuch":
@@ -206,6 +214,7 @@ funktion agents_laden(name):
             setze letzte auf sp["lastActivity"]
         ui_liste_zeile_hinzu(liste, [agent, modell, stat, tok, letzte])
         setze i auf i + 1
+    g["busy_agents"] = falsch
 
 funktion refresh_agents_factory(name):
     gib_zurück () => agents_laden(name)
@@ -234,10 +243,15 @@ funktion events_laden(name):
     wenn nicht offene_fenster.hat(name):
         gib_zurück nichts
     setze g auf offene_fenster[name]
+    wenn g.hat("busy_events"):
+        wenn g["busy_events"]:
+            gib_zurück nichts
+    g["busy_events"] = wahr
     setze liste auf g["liste_events"]
     ui_liste_leeren(liste)
     setze resp auf safe_get(DAEMON_URL + "/projects/" + name + "/history?limit=50")
     wenn resp == "":
+        g["busy_events"] = falsch
         gib_zurück nichts
     setze info auf json_lesen(resp)
     wenn typ_von(info) != "Woerterbuch":
@@ -259,6 +273,7 @@ funktion events_laden(name):
             setze zeit auf ev["created_at"]
         ui_liste_zeile_hinzu(liste, [typ, pfad, zeit])
         setze i auf i + 1
+    g["busy_events"] = falsch
 
 funktion refresh_events_factory(name):
     gib_zurück () => events_laden(name)
@@ -287,8 +302,13 @@ funktion status_laden(name):
     wenn nicht offene_fenster.hat(name):
         gib_zurück nichts
     setze g auf offene_fenster[name]
+    wenn g.hat("busy_status"):
+        wenn g["busy_status"]:
+            gib_zurück nichts
+    g["busy_status"] = wahr
     setze resp auf safe_get(DAEMON_URL + "/projects/" + name + "/status")
     wenn resp == "":
+        g["busy_status"] = falsch
         gib_zurück nichts
     setze info auf json_lesen(resp)
     wenn typ_von(info) != "Woerterbuch":
@@ -312,6 +332,7 @@ funktion status_laden(name):
     ui_label_setze(g["lbl_aktiv"],  aktiv)
     ui_label_setze(g["lbl_chunks"], chunks)
     ui_label_setze(g["lbl_files"],  files)
+    g["busy_status"] = falsch
 
 funktion refresh_status_factory(name):
     gib_zurück () => status_laden(name)
@@ -408,6 +429,8 @@ funktion oeffne_chat(projekt, channel):
     ui_label(fenster, "Nachricht:", 10, 475, 100, 20)
     setze eingabe auf ui_eingabe(fenster, 10, 500, 700, 32, "Hier tippen...", falsch)
     g["eingabe"] = eingabe
+    # Enter-Taste sendet (Bind aus moo nacht-session/moo-gtk-event-hooks).
+    ui_eingabe_on_enter(eingabe, chat_senden_factory(schluessel))
     ui_knopf(fenster, "Senden",        720, 500, 80, 32, chat_senden_factory(schluessel))
     ui_knopf(fenster, "Aktualisieren", 805, 500, 85, 32, chat_refresh_factory(schluessel))
 
@@ -428,12 +451,18 @@ funktion chat_messages_laden(schluessel):
     wenn nicht chat_fenster.hat(schluessel):
         gib_zurück nichts
     setze g auf chat_fenster[schluessel]
+    # Busy-Guard gegen reentrancy (siehe agents_laden)
+    wenn g.hat("busy_msgs"):
+        wenn g["busy_msgs"]:
+            gib_zurück nichts
+    g["busy_msgs"] = wahr
     setze projekt auf g["projekt"]
     setze channel auf g["channel"]
     setze liste auf g["liste_msgs"]
     ui_liste_leeren(liste)
     setze resp auf safe_get(DAEMON_URL + "/projects/" + projekt + "/channels/" + channel + "/feed?limit=50")
     wenn resp == "":
+        g["busy_msgs"] = falsch
         gib_zurück nichts
     setze info auf json_lesen(resp)
     wenn typ_von(info) != "Woerterbuch":
@@ -455,16 +484,22 @@ funktion chat_messages_laden(schluessel):
             setze inhalt auf m["content"]
         ui_liste_zeile_hinzu(liste, [zeit, sender, inhalt])
         setze i auf i + 1
+    g["busy_msgs"] = falsch
 
 funktion chat_agents_laden(schluessel):
     wenn nicht chat_fenster.hat(schluessel):
         gib_zurück nichts
     setze g auf chat_fenster[schluessel]
+    wenn g.hat("busy_chat_agents"):
+        wenn g["busy_chat_agents"]:
+            gib_zurück nichts
+    g["busy_chat_agents"] = wahr
     setze projekt auf g["projekt"]
     setze liste auf g["liste_agents"]
     ui_liste_leeren(liste)
     setze resp auf safe_get(DAEMON_URL + "/projects/" + projekt + "/agents")
     wenn resp == "":
+        g["busy_chat_agents"] = falsch
         gib_zurück nichts
     setze info auf json_lesen(resp)
     wenn typ_von(info) != "Woerterbuch":
@@ -484,6 +519,7 @@ funktion chat_agents_laden(schluessel):
                 setze modell auf a["model"]
         ui_liste_zeile_hinzu(liste, [id, modell])
         setze i auf i + 1
+    g["busy_chat_agents"] = falsch
 
 funktion chat_senden_factory(schluessel):
     gib_zurück () => chat_senden(schluessel)
