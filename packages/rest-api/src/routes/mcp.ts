@@ -797,6 +797,7 @@ const MCP_TOOLS = [
         version_id: { type: 'string', description: 'Versions-ID (BIGSERIAL als String). Pflicht fuer get_version/restore. Bei history (): zeigt Korrektur-Chain ab dieser Version (rekursiv via parent_version_id).' },
         batch_id: { type: 'string', description: 'Batch-ID (fuer restore_batch — rollt alle Files einer Multi-File-Batch zurueck).' },
         plan_id: { type: 'string', description: 'Plan-ID (fuer commit, cancel, plan_status). String wegen BIGSERIAL.' },
+        agent_id: { type: 'string', description: 'Optional: Audit-Agent fuer file_versions. Bei Web-KI-Calls ohne Wrapper wird agent_id aus User-Agent/X-Openai-Session abgeleitet (z.B. "gpt-<8charsessionid>"). DARF weggelassen oder leer sein — Server ergaenzt automatisch.' },
         ops: {
           type: 'array',
           description: 'Multi-File Edit-Plan: 1..100 Operationen ueber mehrere Dateien. Aktionen: create, update, search_replace, search_replace_batch, replace_lines, insert_after, delete_lines, delete (ganze Datei), move (-> new_path), copy (-> new_path).',
