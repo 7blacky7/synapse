@@ -39,6 +39,10 @@ setze offene_fenster auf {}
 # Closure-Refcount-Bug — String-Capture triggert Use-After-Free).
 setze fenster_zu_name auf {}
 setze fenster_zu_chatkey auf {}
+# Aktiver Chat-Schluessel fuer den globalen Tastenbindungs-Handler.
+# Als Dict damit Schreiben aus Funktionen die globale Variable trifft
+# (setze in funktion = lokal!). Schluessel "v" haelt den aktiven Wert.
+setze aktiv_chat auf { "v": "" }
 
 # --------------------------------------------------------------
 # HTTP-Helfer
@@ -557,7 +561,7 @@ funktion oeffne_chat(projekt, channel):
 
     # Nachrichten-Liste (links-oben, breit)
     setze lbl_msgs auf ui_label(fenster, "Nachrichten:", 10, 10, 200, 20)
-    setze liste_m auf ui_liste(fenster, ["Zeit", "Absender", "Nachricht"], 10, 35, 880, 670)
+    setze liste_m auf ui_liste(fenster, ["Zeit", "Absender", "Nachricht"], 10, 35, 880, 620)
     ui_liste_spalte_min_breite(liste_m, 0, 80)
     ui_liste_spalte_min_breite(liste_m, 1, 100)
     ui_liste_spalte_min_breite(liste_m, 2, 300)
@@ -569,7 +573,7 @@ funktion oeffne_chat(projekt, channel):
 
     # Agenten-Liste (rechts)
     setze lbl_ag auf ui_label(fenster, "Agenten im Projekt:", 900, 10, 290, 20)
-    setze liste_a auf ui_liste(fenster, ["Name", "Modell"], 900, 35, 290, 670)
+    setze liste_a auf ui_liste(fenster, ["Name", "Modell"], 900, 35, 290, 620)
     ui_liste_spalte_min_breite(liste_a, 0, 120)
     ui_liste_spalte_min_breite(liste_a, 1, 80)
     ui_liste_sortierbar(liste_a, 0, wahr)
@@ -577,15 +581,17 @@ funktion oeffne_chat(projekt, channel):
     g["liste_agents"] = liste_a
     g["lbl_ag"]       = lbl_ag
 
-    # Input + Senden
-    setze lbl_in auf ui_label(fenster, "Nachricht:", 10, 715, 100, 20)
-    setze eingabe auf ui_eingabe(fenster, 10, 740, 990, 32, "Hier tippen...", falsch)
+    # Input + Senden — Multi-Line via ui_textbereich (Shift+Enter = neue Zeile, Enter = senden).
+    setze lbl_in auf ui_label(fenster, "Nachricht (Enter=Senden, Shift+Enter=neue Zeile):", 10, 665, 500, 20)
+    setze eingabe auf ui_textbereich(fenster, 10, 690, 990, 80)
     g["eingabe"] = eingabe
     g["lbl_in"]  = lbl_in
-    # Enter-Taste sendet (Bind aus moo nacht-session/moo-gtk-event-hooks).
-    ui_eingabe_on_enter(eingabe, chat_senden_factory(schluessel))
-    setze btn_send auf ui_knopf(fenster, "Senden",        1010, 740, 80, 32, chat_senden_factory(schluessel))
-    setze btn_ref auf ui_knopf(fenster, "Aktualisieren", 1095, 740, 85, 32, chat_refresh_factory(schluessel))
+    # Tastenbindung: globaler Handler, kein Closure-Capture (4-arg
+    # Closures mit Capture crashen moo). Aktiven Chat ueber Dict setzen.
+    aktiv_chat["v"] = schluessel
+    ui_textbereich_on_key(eingabe, chat_key_handler_global)
+    setze btn_send auf ui_knopf(fenster, "Senden",        1010, 690, 80, 36, chat_senden_factory(schluessel))
+    setze btn_ref auf ui_knopf(fenster, "Aktualisieren", 1095, 690, 85, 36, chat_refresh_factory(schluessel))
     g["btn_send"] = btn_send
     g["btn_ref"]  = btn_ref
 
@@ -620,7 +626,7 @@ funktion layout_chat(schluessel, b, h):
     setze links_b auf b - rechts_b - 30
     wenn links_b < 100:
         setze links_b auf 100
-    setze listen_h auf h - 130
+    setze listen_h auf h - 180
     wenn listen_h < 50:
         setze listen_h auf 50
     # Nachrichten-Liste links
@@ -639,7 +645,7 @@ funktion layout_chat(schluessel, b, h):
         setze in_b auf 100
     ui_position_setze(g["lbl_in"], 10, in_y - 25)
     ui_position_setze(g["eingabe"], 10, in_y)
-    ui_groesse_setze(g["eingabe"], in_b, 32)
+    ui_groesse_setze(g["eingabe"], in_b, 80)
     ui_position_setze(g["btn_send"], in_b + 20, in_y)
     ui_position_setze(g["btn_ref"], in_b + 105, in_y)
 
@@ -747,14 +753,30 @@ funktion chat_senden(schluessel):
     setze g auf chat_fenster[schluessel]
     setze projekt auf g["projekt"]
     setze channel auf g["channel"]
-    setze inhalt auf ui_eingabe_text(g["eingabe"])
+    setze inhalt auf ui_textbereich_text(g["eingabe"])
     wenn inhalt == "":
         gib_zurück nichts
     setze payload auf { "sender": "synapse-tray", "content": inhalt }
     setze r auf http_sende(DAEMON_URL + "/projects/" + projekt + "/channels/" + channel + "/post", payload)
     # Input leeren, Feed neu laden
-    ui_eingabe_setze(g["eingabe"], "")
+    ui_textbereich_setze(g["eingabe"], "")
     chat_messages_laden(schluessel)
+
+# Globaler Tastenbindungs-Handler — kein Closure (4-arg-Lambda+Capture
+# crasht moo). Liest aktiver_chat_schluessel.
+# Return-Wert: wahr = Default unterdruecken, falsch = Default zulassen.
+# - Enter ohne Shift → senden, Default unterdruecken (sonst tippt GTK \n).
+# - Enter mit Shift  → falsch, GTK fuegt \n ein.
+# - Sonst            → falsch (normales Tippen).
+funktion chat_key_handler_global(keyname, ctrl, shift, alt):
+    setze schluessel auf aktiv_chat["v"]
+    wenn schluessel == "":
+        gib_zurück falsch
+    wenn keyname == "Return" oder keyname == "KP_Enter":
+        wenn nicht shift:
+            chat_senden(schluessel)
+            gib_zurück wahr
+    gib_zurück falsch
 
 funktion chat_refresh_factory(schluessel):
     gib_zurück () => chat_refresh(schluessel)
