@@ -39,6 +39,10 @@ setze offene_fenster auf {}
 # Closure-Refcount-Bug — String-Capture triggert Use-After-Free).
 setze fenster_zu_name auf {}
 setze fenster_zu_chatkey auf {}
+# Filter-Eingabe-Handle → projekt-name. Number-Capture-Workaround:
+# on_change feuert pro Tastendruck, String-Capture-Closure crasht
+# (moo Closure-Multi-Call-Refcount-Bug, Memory bug-closure-segfault).
+setze filter_zu_name auf {}
 # Aktiver Chat-Schluessel fuer den globalen Tastenbindungs-Handler.
 # Als Dict damit Schreiben aus Funktionen die globale Variable trifft
 # (setze in funktion = lokal!). Schluessel "v" haelt den aktiven Wert.
@@ -145,8 +149,11 @@ funktion oeffne_detail(name):
     # ueber Datei/Agent/Reason/Feature. Live-Update on_change.
     setze lbl_filter_e auf ui_label(tab_e, "Filter:", 10, 12, 60, 24)
     setze filter_e auf ui_eingabe(tab_e, 70, 10, 1380, 28, "Substring in Datei/Agent/Reason/Feature...", falsch)
-    ui_eingabe_on_change(filter_e, refresh_events_factory(name))
-    ui_eingabe_on_enter(filter_e, refresh_events_factory(name))
+    # Number-Capture: Closure capturet nur filter_e (Number-Handle, kein
+    # Refcount). Den name holen wir per Dict-Lookup beim Aufruf.
+    filter_zu_name[text(filter_e)] = name
+    ui_eingabe_on_change(filter_e, () => events_laden_via_filter(filter_e))
+    ui_eingabe_on_enter(filter_e, () => events_laden_via_filter(filter_e))
     g["filter_events"] = filter_e
     g["lbl_filter_e"] = lbl_filter_e
     setze liste_e auf ui_liste(tab_e, ["Zeit", "Agent", "Datei", "Aktion", "Reason", "Feature"], 10, 50, 1450, 700)
@@ -420,6 +427,15 @@ funktion events_laden(name):
 
 funktion refresh_events_factory(name):
     gib_zurück () => events_laden(name)
+
+# Number-Capture-Helfer fuer Filter-on_change/on_enter:
+# Closure capturet nur filter_e (Number), name kommt per Dict-Lookup.
+funktion events_laden_via_filter(filter_e):
+    setze key auf text(filter_e)
+    wenn nicht filter_zu_name.hat(key):
+        gib_zurück nichts
+    setze name auf filter_zu_name[key]
+    events_laden(name)
 
 funktion oeffne_event(name):
     wenn nicht offene_fenster.hat(name):
@@ -835,10 +851,14 @@ funktion chat_refresh(schluessel):
     chat_agents_laden(schluessel)
 
 # Live-Refresh aller offenen Chat-Fenster (Timer-Tick alle 3 s).
-# Sticky-bottom-Check + busy-Guard sind in chat_messages_laden — User
-# der hochgescrollt liest, sieht keinen Sprung. closed-Flag wird
-# respektiert (kein Refresh auf totem Widget).
+# Globaler refresh_busy-Guard: verhindert Re-Entrancy wenn HTTP-Fetch
+# laenger dauert als der Tick (key-press kann sonst waehrend safe_get
+# ankommen → signal_emit Verschachtelung → tcache-Korruption).
+setze refresh_busy auf { "v": falsch }
 funktion chat_live_refresh_tick():
+    wenn refresh_busy["v"]:
+        gib_zurück nichts
+    refresh_busy["v"] = wahr
     setze keys auf chat_fenster.schlüssel()
     setze i auf 0
     solange i < länge(keys):
@@ -850,6 +870,7 @@ funktion chat_live_refresh_tick():
         wenn nicht closed:
             chat_messages_laden(k)
         setze i auf i + 1
+    refresh_busy["v"] = falsch
 
 # --------------------------------------------------------------
 # Daemon-Start / Quit
@@ -998,6 +1019,7 @@ funktion update_tick():
 # per "Neu laden" oder implizit durch eigene Aktionen.
 # --------------------------------------------------------------
 rebuild_menu()
-# Timer-A/B-Test: deaktiviert wegen Crash (malloc unaligned tcache).
-# ui_timer_hinzu(3000, chat_live_refresh_tick)
+# Live-Refresh fuer offene Chat-Fenster: alle 3 s.
+# refresh_busy-Guard verhindert Re-Entrancy.
+ui_timer_hinzu(3000, chat_live_refresh_tick)
 ui_laufen()
