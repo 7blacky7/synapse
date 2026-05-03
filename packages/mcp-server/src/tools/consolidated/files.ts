@@ -196,6 +196,10 @@ export const filesTool: ConsolidatedTool = {
           type: 'boolean',
           description: 'IDEA-5 (optional fuer plan): wenn true, wird direkt nach plan() automatisch commit() aufgerufen — spart einen Tool-Call wenn kein User-Review vor commit gewuenscht. Versionierung bleibt aktiv (file_versions + batch_id), Rollback via restore_batch jederzeit moeglich.',
         },
+        agent_note: {
+          type: 'string',
+          description: 'IDEA-6 (optional fuer plan/commit): KI-eigene Beobachtungen/Analyse zum Batch zusaetzlich zum reason des Users. Wird in alle file_versions dieser Batch geschrieben. Empfohlen ab ≥3 Ops oder Multi-File Batches — User kann via files(history) sehen was die KI dabei gedacht hat.',
+        },
         reason: {
           type: 'string',
           description: 'Optionale Begruendung fuer die Aenderung — landet in file_versions.reason und ist via "history"-Action abrufbar. Bei plan: Top-Level reason gilt fuer alle Ops (per-Op kann per ops[].reason ueberschrieben werden).',
@@ -283,7 +287,7 @@ export const filesTool: ConsolidatedTool = {
       // entscheiden kann. (planBatch throws sowieso bei harten Fehlern wie anchor mismatch.)
       const allPreviewsOk = result.previews?.every(p => p.ok) ?? true;
       if (args.auto_commit === true && allPreviewsOk) {
-        const c = await commitBatch({ plan_id: result.plan_id, agent_id: agentId });
+        const c = await commitBatch({ plan_id: result.plan_id, agent_id: agentId, agent_note: typeof args.agent_note === 'string' ? args.agent_note : undefined });
         if (c.success) {
           return { ...c, plan: result, auto_committed: true, message: `Plan ${result.plan_id} angelegt + sofort committed (auto_commit) — ${c.committed} Datei(en) geaendert. batch_id=${c.batch_id}.` };
         }
@@ -297,7 +301,7 @@ export const filesTool: ConsolidatedTool = {
     }
     if (action === 'commit') {
       const planId = reqStr(args, 'plan_id');
-      const result = await commitBatch({ plan_id: planId, agent_id: agentId });
+      const result = await commitBatch({ plan_id: planId, agent_id: agentId, agent_note: typeof args.agent_note === 'string' ? args.agent_note : undefined });
       if (result.success) {
         return {
           ...result,
