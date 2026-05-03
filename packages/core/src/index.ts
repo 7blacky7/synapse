@@ -95,6 +95,10 @@ export {
   registerVirtualProject,
 } from './services/project-registry.js';
 
+// Specialist Respawn Trigger (geteilt zwischen stdio MCP + REST API)
+export { maybeTriggerRespawn } from './services/specialist-respawn.js';
+export type { RespawnDecision } from './services/specialist-respawn.js';
+
 // Shell-Exec (gemeinsam fuer MCP-Tool + REST /api/shell)
 export {
   execShellInProject,

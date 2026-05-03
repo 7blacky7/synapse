@@ -307,6 +307,7 @@ const MCP_TOOLS = [
         },
         task_id: { type: 'string', description: 'Optional fuer add: Verknuepft den Thought mit einer Plan-Task (Spalte task_id). Suche und Plan-Lookups koennen darauf filtern.' },
         task_status: { type: 'string', enum: ['todo', 'in_progress', 'done', 'blocked'], description: 'Optional fuer add/add_batch: setzt zugleich den Status der via task_id verlinkten Task. Spart einen separaten plan(update_task)-Call.' },
+        trigger_respawn: { type: 'boolean', description: 'Optional fuer add: Spezialist signalisiert sein Auto-Handoff. Server prueft Context-Stand gegen Korridor und triggert sofortigen Respawn (ohne auf 95% zu warten). Nur wirksam wenn source einem aktiven Spezialisten entspricht. Fuer Subagenten/Koordinator wirkungslos.' },
         },
         id: {
           oneOf: [
@@ -1662,12 +1663,23 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
     case 'thought': {
       switch (action) {
         case 'add': {
-          return await addThought(
-            reqStr(args, 'project'), reqStr(args, 'source'),
+          const project = reqStr(args, 'project');
+          const source = reqStr(args, 'source');
+          const result = await addThought(
+            project, source,
             reqStr(args, 'content'), strArrayOrEmpty(args, 'tags'),
             str(args, 'task_id'),
             str(args, 'task_status') as Parameters<typeof addThought>[5]
           );
+          if (args.trigger_respawn === true) {
+            const { maybeTriggerRespawn } = await import('@synapse/core');
+            const decision = await maybeTriggerRespawn(project, source);
+            return {
+              ...(result as unknown as Record<string, unknown>),
+              respawn: { triggered: decision.triggered, message: decision.message },
+            };
+          }
+          return result;
         }
         case 'add_batch': {
           const project = reqStr(args, 'project');
