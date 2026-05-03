@@ -596,7 +596,7 @@ const MCP_TOOLS = [
           ],
           description: 'Name des Spezialisten (erforderlich fuer: spawn, stop, status, wake, update_skill). Array erlaubt fuer: status',
         },
-        model: { type: 'string', enum: ['opus', 'sonnet', 'haiku', 'opus[1m]', 'sonnet[1m]'], description: 'Claude Modell (erforderlich fuer: spawn). MODELLE: opus/sonnet/haiku = 200k Context. opus[1m]/sonnet[1m] = 1M Context (fuer langlaufende Code-Arbeit ohne Handoff-Risiko). ⚠️ ABO-LIMIT: Nur EIN Modell-Typ darf gleichzeitig auf 1M laufen — Koordinator opus[1m] + Spezialisten opus[1m] OK, aber NIEMALS sonnet[1m] dazu mischen (rate-limit-Block).' },
+        model: { type: 'string', enum: ['opus', 'sonnet', 'haiku', 'opus[1m]', 'sonnet[1m]', 'gemini-flash-lite', 'gemini-flash', 'gemini-pro'], description: 'Modell-Alias (erforderlich fuer: spawn). Aliases werden via model_registry-Tabelle aufgeloest. CLAUDE: opus/sonnet/haiku = 200k, opus[1m]/sonnet[1m] = 1M Context. ⚠️ ABO-LIMIT: Nur EIN Modell-Typ darf gleichzeitig auf 1M laufen (sonst rate-limit-Block). GOOGLE: gemini-flash-lite/gemini-flash/gemini-pro = 1M Context, ~3-75x billiger als Claude (braucht GOOGLE_API_KEY).' },
         expertise: { type: 'string', description: 'Fachgebiet des Spezialisten (erforderlich fuer: spawn)' },
         task: { type: 'string', description: 'Aufgabe fuer den Spezialisten (erforderlich fuer: spawn)' },
         project: { type: 'string', description: 'Projekt-Name (erforderlich fuer: spawn)' },
