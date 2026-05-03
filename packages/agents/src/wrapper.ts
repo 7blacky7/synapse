@@ -35,6 +35,7 @@ import {
   getPlan,
   getPendingEvents,
 } from '@synapse/core'
+import pg from 'pg'
 import type { Memory, Thought, ProjectTask, AgentEvent } from '@synapse/core'
 import {
   CONTEXT_CEILINGS,
@@ -45,6 +46,14 @@ import {
   type SpecialistStatus,
 } from './types.js'
 import { resolveModel } from './models.js'
+import {
+  createState as createHeartbeatState,
+  onEvent as onHeartbeatEvent,
+  onIdleStep as onHeartbeatIdleStep,
+  nextDelayMs as nextHeartbeatDelay,
+  describeInterval,
+  type HeartbeatState,
+} from './heartbeat-state.js'
 
 // ---------------------------------------------------------------------------
 // Configuration from environment
@@ -62,6 +71,7 @@ const KEEP_ALIVE = process.env.SYNAPSE_KEEP_ALIVE === '1'
 // State tracking
 // ---------------------------------------------------------------------------
 let lastChannelMsgId = 0
+let crashTimestamps: number[] = []
 let lastInboxMsgId = 0
 let totalInputTokens = 0
 let totalOutputTokens = 0
@@ -83,6 +93,56 @@ const processManager = new ProcessManager()
 let socketServer: Server | null = null
 const connectedClients: Set<Socket> = new Set()
 let heartbeatIntervalId: ReturnType<typeof setInterval> | null = null
+let heartbeatTimeoutId: ReturnType<typeof setTimeout> | null = null
+let heartbeatState: HeartbeatState | null = null
+let listenClient: pg.Client | null = null
+
+/** Trigger sofortigen Heartbeat (z.B. nach LISTEN-Notification) */
+function triggerImmediateHeartbeat(reason: string): void {
+  if (!heartbeatState || shuttingDown || !processAlive) return
+  log('LISTEN-Trigger (%s) → sofortiger Heartbeat', reason)
+  onHeartbeatEvent(heartbeatState)
+  if (heartbeatTimeoutId) {
+    clearTimeout(heartbeatTimeoutId)
+    heartbeatTimeoutId = null
+  }
+  // Schedule sofortigen Poll (0ms timeout) — der Pollen-Loop schedult sich selbst neu danach
+  heartbeatTimeoutId = setTimeout(async () => {
+    try { await heartbeatPoll() } catch (err) { log('Trigger-Heartbeat error: %s', err) }
+    // re-schedule via normal Loop (im Boot-Code)
+    if (heartbeatState && !shuttingDown && processAlive) {
+      const delay = nextHeartbeatDelay(heartbeatState, AGENT_NAME)
+      heartbeatTimeoutId = setTimeout(async () => {
+        try { await heartbeatPoll() } catch (err) { log('Heartbeat after trigger error: %s', err) }
+      }, delay)
+    }
+  }, 0)
+}
+
+async function setupPgListeners(): Promise<void> {
+  try {
+    // Dedicated Client weil LISTEN den Connection blockt — nicht aus dem Pool.
+    listenClient = new pg.Client({ connectionString: process.env.DATABASE_URL })
+    await listenClient.connect()
+    await listenClient.query('LISTEN synapse_chat')
+    await listenClient.query('LISTEN synapse_channel')
+    await listenClient.query('LISTEN synapse_event')
+    listenClient.on('notification', (msg) => {
+      // Filter im Trigger: nur Wake wenn relevant (z.B. chat addressed an uns, channel wo wir Member sind).
+      // Das Filtering macht eh der naechste pollChannelMessages/pollInboxMessages — wir brauchen
+      // hier nur einen "irgendwas-passiert"-Indikator damit Heartbeat-Backoff zurueckgesetzt wird.
+      const channel = msg.channel ?? '<unknown>'
+      triggerImmediateHeartbeat(channel)
+    })
+    listenClient.on('error', (err) => {
+      log('PG-LISTEN error: %s — neu verbinden bei naechstem Heartbeat', err.message)
+      // Auto-Reconnect koennte hier rein — vorerst weicher Fallback (Heartbeat findet's eh)
+    })
+    log('PG-LISTEN aktiv: synapse_chat, synapse_channel, synapse_event')
+  } catch (err) {
+    log('PG-LISTEN-Setup fehlgeschlagen (Heartbeat laeuft trotzdem): %s', err instanceof Error ? err.message : String(err))
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -580,6 +640,21 @@ Wenn du weiterarbeitest ohne den trigger_respawn Flag, rotiert der Wrapper dich 
     const hadSynapseItems = await pollSynapseItems()
     await updateStatusFile()
 
+    // Adaptive Heartbeat-State: bei Aktivitaet auf 10s reset, sonst eskalieren
+    if (heartbeatState) {
+      const hadActivity = hadChannelMessages || hadInboxMessages || hadSynapseItems
+      if (hadActivity) {
+        onHeartbeatEvent(heartbeatState)
+        log('Heartbeat-Aktivitaet erkannt → reset auf %s', describeInterval(heartbeatState.currentIntervalMs))
+      } else {
+        const prevIdx = heartbeatState.ladderIdx
+        onHeartbeatIdleStep(heartbeatState)
+        if (heartbeatState.ladderIdx !== prevIdx) {
+          log('Heartbeat idle-Eskalation → %s', describeInterval(heartbeatState.currentIntervalMs))
+        }
+      }
+    }
+
     // keepAlive: Wake agent even when no new messages arrived
     if (KEEP_ALIVE && !hadChannelMessages && !hadInboxMessages && !hadSynapseItems && !agentBusy) {
       const percent = getContextPercent()
@@ -892,6 +967,15 @@ function setupProcessManagerEvents() {
         // Auto-Respawn: Wrapper bleibt am Leben, startet neue Claude-Instanz.
         // fromCrash=true → ueberspringt wakeAgent() weil Inner-Claude bereits tot ist.
         log('Agent process crashed — KEEP_ALIVE aktiv, starte Rotation...')
+        const now = Date.now();
+        crashTimestamps = crashTimestamps.filter(t => now - t < 60000);
+        crashTimestamps.push(now);
+
+        if (crashTimestamps.length >= 3) {
+          log('Kritische Crash-Rate — Abbruch nach 3 Crashes innerhalb 60s');
+          void cleanup().then(() => process.exit(1));
+          return;
+        }
         void rotateAgent(true).catch((err) => {
           log('Auto-Respawn fehlgeschlagen: %s — Wrapper beendet sich', err)
           void cleanup().then(() => process.exit(1))
@@ -937,7 +1021,16 @@ function setupProcessManagerEvents() {
 async function cleanup() {
   log('Cleaning up...')
 
-  // Stop heartbeat
+  // Stop heartbeat (legacy interval und neuer adaptive timeout)
+  if (heartbeatTimeoutId) {
+    clearTimeout(heartbeatTimeoutId)
+    heartbeatTimeoutId = null
+  }
+  // Close PG-LISTEN client
+  if (listenClient) {
+    try { await listenClient.end() } catch { /* ignore */ }
+    listenClient = null
+  }
   if (heartbeatIntervalId) {
     clearInterval(heartbeatIntervalId)
     heartbeatIntervalId = null
@@ -1097,13 +1190,29 @@ async function main() {
   // 6. Initialize watermarks from DB
   await initializeWatermarks()
 
-  // 7. Start heartbeat polling (mit Startup-Delay damit Claude's MCP-Server bereit sind)
+  // 7. Start adaptive heartbeat polling (mit Startup-Delay damit Claude's MCP-Server bereit sind)
+  // Iter Heartbeat-Refactor: rekursives setTimeout mit Backoff-Ladder statt fixem setInterval.
   const STARTUP_DELAY_MS = 30_000
   log('Heartbeat startet in %ds (MCP-Server Startup-Delay)', STARTUP_DELAY_MS / 1000)
   setTimeout(() => {
-    // Heartbeat SOFORT starten — unabhaengig vom Initial Wake
-    heartbeatIntervalId = setInterval(() => void heartbeatPoll(), POLL_INTERVAL)
-    log('Heartbeat gestartet (interval: %dms)', POLL_INTERVAL)
+    // Initialize adaptive heartbeat state
+    heartbeatState = createHeartbeatState({ agentName: AGENT_NAME })
+    const scheduleNextHeartbeat = () => {
+      if (shuttingDown || !processAlive) return
+      const delay = heartbeatState ? nextHeartbeatDelay(heartbeatState, AGENT_NAME) : 30_000
+      heartbeatTimeoutId = setTimeout(async () => {
+        try {
+          await heartbeatPoll()
+        } catch (err) {
+          log('Heartbeat poll uncaught error: %s', err)
+        }
+        scheduleNextHeartbeat()
+      }, delay)
+    }
+    scheduleNextHeartbeat()
+    log('Heartbeat gestartet (adaptive, start: %s)', describeInterval(heartbeatState.currentIntervalMs))
+    // PG-LISTEN parallel: triggert sofortigen Heartbeat bei DB-Notification (Channel/Chat/Event)
+    void setupPgListeners()
 
     // Initial Wake: Agent mit seiner Aufgabe starten (Task steht im System-Prompt)
     log('Initial Wake: Starte Agent mit Aufgabe')
