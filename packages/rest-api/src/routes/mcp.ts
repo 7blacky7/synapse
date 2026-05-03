@@ -274,7 +274,7 @@ const MCP_TOOLS = [
   // 4. thought
   {
     name: 'thought',
-    description: 'Kurze Notizen (Thoughts) im eigenen Projekt-Notizbuch ablegen, suchen, lesen, aktualisieren oder bereinigen. Lokale Synapse-Datenbank des Users, project-scoped. Keine fremden Daten, keine externen Systeme.',
+    description: 'Kurze Notizen (Thoughts) im eigenen Projekt-Notizbuch ablegen, suchen, lesen, aktualisieren oder bereinigen. Lokale Synapse-Datenbank des Users, project-scoped. Keine fremden Daten, keine externen Systeme. IDEA-1: add/add_batch akzeptieren task_id (Verknuepfung mit Plan-Task) + task_status (setzt zugleich den Status der verlinkten Task — spart einen plan(update_task)-Call).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -756,7 +756,7 @@ const MCP_TOOLS = [
   // 15. files
   {
     name: 'files',
-    description: 'Datei-CRUD im eigenen Projekt-Verzeichnis: Erstellen, Aktualisieren, Eintragen-Entfernen, Verschieben, Kopieren, gezielte Zeilen-Edits, Search-Replace. Pfade sind relativ zum Projekt-Root und werden gegen Path-Traversal validiert. FileWatcher synchronisiert die Aenderungen automatisch im lokalen Workspace. Keine freien absoluten Pfade ausserhalb des Projekts, keine externen Systeme.',
+    description: 'Datei-CRUD im eigenen Projekt-Verzeichnis: Erstellen, Aktualisieren, Eintragen-Entfernen, Verschieben, Kopieren, gezielte Zeilen-Edits, Search-Replace. Pfade sind relativ zum Projekt-Root und werden gegen Path-Traversal validiert. FileWatcher synchronisiert die Aenderungen automatisch im lokalen Workspace. Multi-File Plan/Commit (action="plan"+"commit") fuer atomare Edits ueber mehrere Dateien mit Hash-basierter Konflikt-Erkennung; restore_batch rollt komplette Plan-Sets zurueck. Erweiterte Optionen: IDEA-5 auto_commit:true (plan+commit in einem Call), IDEA-6 agent_note (KI-Beobachtungen pro Batch), IDEA-4 ops[].anchor_text/anchor_contains (Pre-flight Drift-Schutz auf der Ziel-Zeile), IDEA-3a feature_tag/parent_version_id/git_commit_sha (Versions-Anreicherung + history-Filter). Keine freien absoluten Pfade ausserhalb des Projekts, keine externen Systeme.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -849,7 +849,7 @@ const MCP_TOOLS = [
   // 15b. files_batch — alias for files Multi-File-Plan/Commit (OpenAI-Cache-Buster)
   {
     name: 'files_batch',
-    description: 'Atomare Multi-File-Edits ueber mehrere Dateien (Plan-Phase Trockenlauf, dann Commit alle gemeinsam). Identische Implementierung wie files-Tool, aber als eigenes Tool exponiert weil manche MCP-Clients (z.B. ChatGPT) die action-Enum vom files-Tool aggressiv cachen und neue Werte (plan/commit/cancel) nicht erkennen. Nutze dieses Tool wenn files(action: "plan") nicht mehr klappt.',
+    description: 'Atomare Multi-File-Edits ueber mehrere Dateien (Plan-Phase Trockenlauf, dann Commit alle gemeinsam). Identische Implementierung wie files-Tool, aber als eigenes Tool exponiert weil manche MCP-Clients (z.B. ChatGPT) die action-Enum vom files-Tool aggressiv cachen und neue Werte (plan/commit/cancel) nicht erkennen. Nutze dieses Tool wenn files(action: "plan") nicht mehr klappt. Erweiterte Optionen: IDEA-5 auto_commit:true (plan+commit in einem Call), IDEA-6 agent_note (KI-Beobachtungen pro Batch), IDEA-4 ops[].anchor_text/anchor_contains (Pre-flight Drift-Schutz auf der Ziel-Zeile), IDEA-3a feature_tag/parent_version_id/git_commit_sha (Versions-Anreicherung + history-Filter).',
     inputSchema: {
       type: 'object',
       properties: {

@@ -48,7 +48,11 @@ export const filesTool: ConsolidatedTool = {
       'oder ganze Multi-File-Batches mit "restore_batch". ' +
       'Multi-File Plan/Commit: action="plan" mit ops[] (mehrere Dateien) → erhaelt plan_id + previews. ' +
       'action="commit" wendet alle Ops atomar an (Hash-basierte Konflikt-Erkennung; bei Mismatch: stale). ' +
-      'Snapshots tragen die batch_id → restore_batch rollt das ganze Plan-Set zurueck.',
+      'Snapshots tragen die batch_id → restore_batch rollt das ganze Plan-Set zurueck. ' +
+      'IDEA-5: auto_commit:true bei plan() spart den separaten commit-Call. ' +
+      'IDEA-6: agent_note speichert KI-Beobachtungen pro Batch (zusaetzlich zum User-reason). ' +
+      'IDEA-4: ops[].anchor_text / anchor_contains macht Pre-flight Verifikation auf der Ziel-Zeile (Schutz vor Drift). ' +
+      'IDEA-3a: feature_tag, parent_version_id, git_commit_sha reichern die Versions-Snapshots an (Filter via history).',
     inputSchema: {
       type: 'object',
       properties: {
