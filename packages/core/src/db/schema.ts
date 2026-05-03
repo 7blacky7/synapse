@@ -728,7 +728,7 @@ CREATE TABLE IF NOT EXISTS wrapper_status (
   context_ceiling INTEGER,
   tokens_input INTEGER,
   tokens_output INTEGER,
-  tokens_percent NUMERIC,
+  tokens_percent NUMERIC(5,2),
   channels TEXT[] NOT NULL DEFAULT '{}',
   connected_mcp BOOLEAN NOT NULL DEFAULT false,
   last_activity TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -737,6 +737,8 @@ CREATE TABLE IF NOT EXISTS wrapper_status (
 
 CREATE INDEX IF NOT EXISTS idx_wrapper_status_project ON wrapper_status(project);
 CREATE INDEX IF NOT EXISTS idx_wrapper_status_last_activity ON wrapper_status(last_activity);
+-- Reaper-Query-Index: WHERE status='running' AND last_activity < NOW() - INTERVAL '3 min'
+CREATE INDEX IF NOT EXISTS idx_wrapper_status_status ON wrapper_status(status, last_activity);
 
 `;
 
