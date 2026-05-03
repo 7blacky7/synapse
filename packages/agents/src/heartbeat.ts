@@ -21,6 +21,7 @@ import { connect, type Socket } from 'node:net'
 import { readdir, unlink, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import { readStatus, updateSpecialist, removeSpecialist } from './status.js'
+import { getPool } from '@synapse/core'
 import type { WrapperMessage, WrapperResponse, SendMessageResult } from './types.js'
 
 // ---------------------------------------------------------------------------
@@ -167,12 +168,16 @@ class HeartbeatController {
           // Socket file exists in status but connection failed — treat as dead
           await removeSpecialist(projectPath, name)
           await deleteSocketFile(socketPath)
+          // PG: status='crashed' fuer toten Wrapper setzen (best-effort)
+          if (project) void markWrapperCrashedInPg(name, project, wrapperPid)
           cleaned.push(name)
         }
       } else {
         // PID is dead — clean up status entry and socket file
         await removeSpecialist(projectPath, name)
         await deleteSocketFile(socketPath)
+        // PG: status='crashed' fuer toten Wrapper setzen (best-effort)
+        if (project) void markWrapperCrashedInPg(name, project, wrapperPid)
         cleaned.push(name)
       }
     }
@@ -412,6 +417,32 @@ class HeartbeatController {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/**
+ * Markiert einen Wrapper-Eintrag in PG als 'crashed'.
+ * Nur wenn der Wrapper bisher 'running' oder 'idle' war — kein Overwrite
+ * von bereits 'stopped'/'crashed' Eintraegen.
+ * Non-fatal: Fehler werden ignoriert (best-effort).
+ */
+async function markWrapperCrashedInPg(
+  agentName: string,
+  project: string,
+  wrapperPid: number,
+): Promise<void> {
+  try {
+    const pool = getPool()
+    await pool.query(
+      `UPDATE wrapper_status
+       SET status = 'crashed', last_activity = NOW()
+       WHERE agent_name = $1 AND project = $2
+         AND wrapper_pid = $3
+         AND status IN ('running', 'idle')`,
+      [agentName, project, wrapperPid],
+    )
+  } catch {
+    // PG nicht erreichbar oder Tabelle existiert noch nicht — ignorieren
+  }
+}
 
 /**
  * Check if a process with the given PID is alive using signal 0.
