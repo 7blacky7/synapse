@@ -13,8 +13,53 @@
 # hinzukommen oder wegfallen. Kein Flimmern mehr.
 
 importiere ui
+importiere pg_client
 
 konstante DAEMON_URL auf "http://127.0.0.1:7878"
+konstante PG_HOST auf "192.168.50.65"
+konstante PG_PORT auf 5432
+konstante PG_USER auf "synapse"
+konstante PG_DB   auf "synapse"
+
+# Globaler PG-Client. Liste-Lese-Pfade gehen direkt auf Postgres
+# (specialist_channel_messages, agent_sessions, file_versions, wrapper_status),
+# kein HTTP+JSON-Daemon-Roundtrip mehr. Schreib-Pfade (chat_senden) bleiben
+# HTTP — Daemon hat NOTIFY-Trigger fuer Live-Subscriptions.
+setze pg_db auf nichts
+setze pg_letzte_fehler auf ""
+
+funktion pg_init():
+    versuche:
+        setze pg_db auf neu PgClient(PG_HOST, PG_PORT, PG_USER, PG_DB)
+        pg_db.verbinde()
+        wenn nicht pg_db.ready:
+            setze pg_letzte_fehler auf "PG nicht ready: " + text(pg_db.letzte_fehler)
+            setze pg_db auf nichts
+    fange e:
+        setze pg_letzte_fehler auf "PG verbinde Exception"
+        setze pg_db auf nichts
+
+# SQL-Literal-Escape fuer simple-query (Postgres '): doppeltes Apostroph.
+# Inputs: projekt-name, channel-name — keine User-Eingabe, aber defensiv.
+funktion sql_quote(s):
+    gib_zurück "'" + s.ersetzen("'", "''") + "'"
+
+# Wrapper: queryt PG, reconnect bei Verbindungsabbruch. Gibt Result-Dict
+# zurueck oder nichts bei Fehler. Caller sollte auf nichts pruefen.
+funktion pg_query(sql):
+    wenn pg_db == nichts:
+        pg_init()
+        wenn pg_db == nichts:
+            gib_zurück nichts
+    versuche:
+        setze r auf pg_db.frage(sql)
+        wenn r["fehler"] != nichts:
+            setze pg_letzte_fehler auf text(r["fehler"])
+        gib_zurück r
+    fange e:
+        # Connection lost. Reset + reconnect on next call.
+        setze pg_db auf nichts
+        gib_zurück nichts
 konstante START_TRIGGER auf "/home/blacky/.synapse/file-watcher/start-requested"
 konstante STOP_TRIGGER  auf "/home/blacky/.synapse/file-watcher/stop-requested"
 
@@ -299,50 +344,28 @@ funktion agents_laden(name):
     wenn nicht offene_fenster.hat(name):
         gib_zurück nichts
     setze g auf offene_fenster[name]
-    # Busy-Guard: re-entrancy bei mehrfachen Aktualisieren-Klicks blockt
-    # http_hole sonst den UI-Thread und kann waehrend Specialist-Spawning
-    # zum Crash fuehren.
     wenn g.hat("busy_agents"):
         wenn g["busy_agents"]:
             gib_zurück nichts
     g["busy_agents"] = wahr
     setze first_load auf nicht g.hat("agents_init_done")
     setze liste auf g["liste_agents"]
-    setze resp auf safe_get(DAEMON_URL + "/projects/" + name + "/specialists")
-    wenn resp == "":
+    # PG-Direkt: wrapper_status (Specialists-Live-State)
+    setze sql auf "SELECT agent_name, COALESCE(model, '') AS model, status, COALESCE(tokens_percent::text, '0') AS tok, COALESCE(last_activity::text, '') AS letzte FROM wrapper_status WHERE project = " + sql_quote(name) + " ORDER BY last_activity DESC NULLS LAST"
+    setze r auf pg_query(sql)
+    wenn r == nichts:
         g["busy_agents"] = falsch
         gib_zurück nichts
-    setze info auf json_lesen(resp)
-    wenn typ_von(info) != "Woerterbuch":
+    wenn r["fehler"] != nichts:
         g["busy_agents"] = falsch
         gib_zurück nichts
-    wenn nicht info.hat("specialists"):
-        g["busy_agents"] = falsch
-        gib_zurück nichts
-    setze specs auf info["specialists"]
-    setze keys auf specs.schlüssel()
     ui_liste_leeren(liste)
     setze rows auf []
+    setze msgs auf r["rows"]
     setze i auf 0
-    solange i < länge(keys):
-        setze agent auf keys[i]
-        setze sp auf specs[agent]
-        setze modell auf ""
-        wenn sp.hat("model"):
-            setze modell auf sp["model"]
-        setze stat auf ""
-        wenn sp.hat("status"):
-            setze stat auf sp["status"]
-        setze tok auf "0%"
-        wenn sp.hat("tokens"):
-            setze t auf sp["tokens"]
-            wenn typ_von(t) == "Woerterbuch":
-                wenn t.hat("percent"):
-                    setze tok auf text(t["percent"]) + "%"
-        setze letzte auf ""
-        wenn sp.hat("lastActivity"):
-            setze letzte auf sp["lastActivity"]
-        rows.hinzufügen([agent, modell, stat, tok, letzte])
+    solange i < länge(msgs):
+        setze sp auf msgs[i]
+        rows.hinzufügen([sp["agent_name"], sp["model"], sp["status"], sp["tok"] + "%", sp["letzte"]])
         setze i auf i + 1
     ui_liste_zeilen_hinzu_bulk(liste, rows)
     wenn first_load:
@@ -427,58 +450,32 @@ funktion events_laden(name):
     g["busy_events"] = wahr
     setze first_load auf nicht g.hat("events_init_done")
     setze liste auf g["liste_events"]
-    # Quelle: file_versions-Tabelle (Synapse-eigene "Commits" mit reason).
-    setze resp auf safe_get(DAEMON_URL + "/projects/" + name + "/file_versions?limit=50")
-    wenn resp == "":
+    # PG-Direkt: file_versions
+    setze sql auf "SELECT id::text, COALESCE(file_path, '') AS file_path, COALESCE(edit_action, '') AS edit_action, COALESCE(agent_id, '<unbekannt>') AS agent_id, COALESCE(reason, '') AS reason, COALESCE(feature_tag, '') AS feature_tag, to_char(created_at, 'DD.MM. HH24:MI:SS') AS zeit FROM file_versions WHERE project = " + sql_quote(name) + " ORDER BY id DESC LIMIT 50"
+    setze r auf pg_query(sql)
+    wenn r == nichts:
         g["busy_events"] = falsch
         gib_zurück nichts
-    setze info auf json_lesen(resp)
-    wenn typ_von(info) != "Woerterbuch":
+    wenn r["fehler"] != nichts:
         g["busy_events"] = falsch
         gib_zurück nichts
-    wenn nicht info.hat("versions"):
-        g["busy_events"] = falsch
-        gib_zurück nichts
-    setze versions auf info["versions"]
-    setze versions auf info["versions"]
+    setze versions auf r["rows"]
     ui_liste_leeren(liste)
     setze rows auf []
-    # Filter-Substring (kann leer sein -> alles)
     setze filter_text auf ""
     wenn g.hat("filter_events"):
         setze filter_text auf ui_eingabe_text(g["filter_events"])
     setze i auf 0
     solange i < länge(versions):
         setze v auf versions[i]
-        setze zeit auf ""
-        wenn v.hat("created_at"):
-            setze zeit auf ui_zeit_format(v["created_at"], "%d.%m. %H:%M:%S")
-        # Wenn agent_id null/leer ist: explizit "<unbekannt>" — damit der
-        # Edit nicht "unsichtbar" wirkt. Heute's agent-id-auto-propagation
-        # Mission sorgt dafuer dass das nie wieder vorkommt; Altdaten
-        # (z.B. gemini-Iter4 Edits 15:17-15:20) bleiben so.
-        setze agent auf "<unbekannt>"
-        wenn v.hat("agent_id"):
-            wenn typ_von(v["agent_id"]) == "Text":
-                wenn v["agent_id"] != "":
-                    setze agent auf v["agent_id"]
-        setze pfad auf ""
-        wenn v.hat("file_path"):
-            setze pfad auf v["file_path"]
-        setze aktion auf ""
-        wenn v.hat("edit_action"):
-            wenn typ_von(v["edit_action"]) == "Text":
-                setze aktion auf v["edit_action"]
-        setze reason auf ""
-        wenn v.hat("reason"):
-            wenn typ_von(v["reason"]) == "Text":
-                setze reason auf v["reason"]
-        setze feature auf ""
-        wenn v.hat("feature_tag"):
-            wenn typ_von(v["feature_tag"]) == "Text":
-                setze feature auf v["feature_tag"]
-        # Filter: Substring (case-insensitive nicht trivial in moo, daher
-        # exakt) ueber agent/pfad/reason/feature.
+        setze zeit auf v["zeit"]
+        setze agent auf v["agent_id"]
+        wenn agent == "":
+            setze agent auf "<unbekannt>"
+        setze pfad auf v["file_path"]
+        setze aktion auf v["edit_action"]
+        setze reason auf v["reason"]
+        setze feature auf v["feature_tag"]
         setze passt auf wahr
         wenn filter_text != "":
             setze haystack auf agent + " " + pfad + " " + reason + " " + feature
@@ -784,41 +781,41 @@ funktion chat_messages_laden(schluessel):
     setze war_unten auf ui_liste_ist_unten(liste)
     wenn first_load:
         ui_liste_leeren(liste)
-    setze resp auf safe_get(DAEMON_URL + "/projects/" + projekt + "/channels/" + channel + "/feed?limit=50")
-    wenn resp == "":
+    # PG-Direkt: specialist_channel_messages JOIN specialist_channels.
+    # first_load: letzten 50 Messages (DESC, dann reversed). Refresh: nur
+    # neue Messages > last_msg_id (incremental append, sticky-bottom-stabil).
+    setze sql auf ""
+    wenn first_load:
+        setze sql auf "SELECT m.id::text AS id, m.sender, m.content, to_char(m.created_at, 'DD.MM. HH24:MI:SS') AS zeit FROM specialist_channel_messages m JOIN specialist_channels c ON c.id = m.channel_id WHERE c.project = " + sql_quote(projekt) + " AND c.name = " + sql_quote(channel) + " ORDER BY m.id DESC LIMIT 50"
+    sonst:
+        setze sql auf "SELECT m.id::text AS id, m.sender, m.content, to_char(m.created_at, 'DD.MM. HH24:MI:SS') AS zeit FROM specialist_channel_messages m JOIN specialist_channels c ON c.id = m.channel_id WHERE c.project = " + sql_quote(projekt) + " AND c.name = " + sql_quote(channel) + " AND m.id > " + text(last_id) + " ORDER BY m.id LIMIT 50"
+    setze r auf pg_query(sql)
+    wenn r == nichts:
         g["busy_msgs"] = falsch
         gib_zurück nichts
-    setze info auf json_lesen(resp)
-    wenn typ_von(info) != "Woerterbuch":
+    wenn r["fehler"] != nichts:
         g["busy_msgs"] = falsch
         gib_zurück nichts
-    wenn nicht info.hat("messages"):
-        g["busy_msgs"] = falsch
-        gib_zurück nichts
-    setze msgs auf info["messages"]
+    setze msgs auf r["rows"]
+    # first_load lieferte DESC — fuer chronologische Anzeige reverse.
+    wenn first_load:
+        setze umgedreht auf []
+        setze j auf länge(msgs) - 1
+        solange j >= 0:
+            umgedreht.hinzufügen(msgs[j])
+            setze j auf j - 1
+        setze msgs auf umgedreht
     setze rows auf []
     setze i auf 0
     setze max_id auf last_id
     setze neue_zeilen auf 0
     solange i < länge(msgs):
         setze m auf msgs[i]
-        setze id auf 0
-        wenn m.hat("id"):
-            setze id auf m["id"]
-        wenn first_load oder id > last_id:
-            setze zeit auf ""
-            wenn m.hat("createdAt"):
-                setze zeit auf ui_zeit_format(m["createdAt"], "%d.%m. %H:%M:%S")
-            setze sender auf ""
-            wenn m.hat("sender"):
-                setze sender auf m["sender"]
-            setze inhalt auf ""
-            wenn m.hat("content"):
-                setze inhalt auf m["content"]
-            rows.hinzufügen([zeit, sender, inhalt])
-            setze neue_zeilen auf neue_zeilen + 1
-            wenn id > max_id:
-                setze max_id auf id
+        setze id auf zahl(m["id"])
+        rows.hinzufügen([m["zeit"], m["sender"], m["content"]])
+        setze neue_zeilen auf neue_zeilen + 1
+        wenn id > max_id:
+            setze max_id auf id
         setze i auf i + 1
     ui_liste_zeilen_hinzu_bulk(liste, rows)
     g["last_msg_id"] = max_id
@@ -844,27 +841,23 @@ funktion chat_agents_laden(schluessel):
     setze first_load auf nicht g.hat("chat_agents_init_done")
     setze projekt auf g["projekt"]
     setze liste auf g["liste_agents"]
-    setze resp auf safe_get(DAEMON_URL + "/projects/" + projekt + "/agents")
-    wenn resp == "":
+    # PG-Direkt: agent_sessions
+    setze sql auf "SELECT id, COALESCE(model, '') AS model FROM agent_sessions WHERE project = " + sql_quote(projekt) + " AND status = 'active' ORDER BY id"
+    setze r auf pg_query(sql)
+    wenn r == nichts:
         g["busy_chat_agents"] = falsch
         gib_zurück nichts
-    setze info auf json_lesen(resp)
-    wenn typ_von(info) != "Woerterbuch":
+    wenn r["fehler"] != nichts:
         g["busy_chat_agents"] = falsch
         gib_zurück nichts
-    wenn nicht info.hat("agents"):
-        g["busy_chat_agents"] = falsch
-        gib_zurück nichts
-    setze ags auf info["agents"]
+    setze ags auf r["rows"]
     ui_liste_leeren(liste)
     setze rows auf []
     setze i auf 0
     solange i < länge(ags):
         setze a auf ags[i]
-        setze id auf ""
-        wenn a.hat("id"):
-            setze id auf a["id"]
-        setze modell auf ""
+        setze id auf a["id"]
+        setze modell auf a["model"]
         wenn a.hat("model"):
             wenn typ_von(a["model"]) == "Text":
                 setze modell auf a["model"]
@@ -1112,6 +1105,7 @@ funktion update_tick():
 # vollen Menu-Rebuild zwingt — Flackern. Der User triggert Updates
 # per "Neu laden" oder implizit durch eigene Aktionen.
 # --------------------------------------------------------------
+pg_init()
 rebuild_menu()
 # Live-Refresh fuer offene Chat-Fenster: alle 3 s.
 # refresh_busy-Guard verhindert Re-Entrancy.
