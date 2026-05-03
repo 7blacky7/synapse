@@ -1,0 +1,4 @@
+{"type":"start","timestamp":"2026-05-03T11:55:14.631Z","payload":{"runId":"run-2026-05-03T11-55-14-619Z","model":"gemini-3.1-flash-lite-preview","contextCeiling":1000000,"task":"Sage einfach 'Hallo Welt' und beende sofort. Keine Tools nutzen.","toolCount":18,"schemaWarnings":11}}
+{"type":"usage","timestamp":"2026-05-03T11:55:15.519Z","payload":{"turn":1,"inputTokens":12777,"outputTokens":2,"cachedTokens":0,"thoughtsTokens":0}}
+{"type":"assistant","timestamp":"2026-05-03T11:55:15.520Z","payload":{"turn":1,"text":"Hallo Welt"}}
+{"type":"done","timestamp":"2026-05-03T11:55:15.520Z","payload":{"totalInput":12777,"totalOutput":2,"cachedTokens":0}}

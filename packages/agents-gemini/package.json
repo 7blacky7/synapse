@@ -1,0 +1,24 @@
+{
+  "name": "@synapse/agents-gemini",
+  "version": "0.1.0",
+  "description": "Gemini-basierter Specialist-Runtime fuer Synapse (Iter 1: Standalone PoC)",
+  "main": "./dist/runtime.js",
+  "type": "module",
+  "bin": {
+    "synapse-gemini": "./dist/runtime.js"
+  },
+  "scripts": {
+    "build": "tsc && cp -r src/public dist/public",
+    "start": "node dist/runtime.js",
+    "clean": "rimraf dist"
+  },
+  "dependencies": {
+    "@google/genai": "^1.0.0",
+    "@synapse/core": "workspace:*",
+    "@synapse/mcp-server": "workspace:*",
+    "fastify": "^4.0.0"
+  },
+  "files": [
+    "dist"
+  ]
+}
