@@ -2390,7 +2390,9 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
           return { success: true, results, message: `${results.length} Tech-Docs gefunden` };
         }
         case 'get_for_file': {
-          const agentId = reqStr(args, 'agent_id');
+          const rawAgentId = str(args, 'agent_id');
+          const agentId = resolveAgentId(rawAgentId);
+          if (!agentId) throw new Error('agent_id erforderlich (oder SYNAPSE_AGENT_NAME setzen)');
           const project = reqStr(args, 'project');
           const filePaths = strArray(args, 'file_path');
           if (filePaths && filePaths.length > 1) {
@@ -2643,7 +2645,7 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
     case 'files_batch':
     case 'files': {
       const project = reqStr(args, 'project');
-      const agentId = str(args, 'agent_id');
+      const agentId = resolveAgentId(str(args, 'agent_id')) ?? undefined;
       // History-Enrichment (additive, alle nullable)
       const featureTag = str(args, 'feature_tag');
       const parentVersionId = str(args, 'parent_version_id');
@@ -2748,7 +2750,7 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
       if (action === 'history') {
         const limit = num(args, 'limit') ?? 50;
         const entries = await listFileHistory(project, {
-          agent_id: str(args, 'agent_id'),
+          agent_id: agentId,
           file_path: str(args, 'file_path'),
           since: str(args, 'since'),
           limit,
@@ -3035,7 +3037,9 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
           const fix = reqStr(args, 'fix');
           const severity = str(args, 'severity') ?? 'warning';
           const foundInModel = reqStr(args, 'found_in_model');
-          const foundBy = reqStr(args, 'found_by');
+          const rawFoundBy = str(args, 'found_by');
+          const foundBy = resolveAgentId(rawFoundBy);
+          if (!foundBy) throw new Error('found_by erforderlich (oder SYNAPSE_AGENT_NAME setzen)');
           const result = await addErrorPattern(description, fix, severity, foundBy, foundInModel);
           return { success: true, ...result, message: `Pattern gespeichert (scope: ${result.modelScope})` };
         }
