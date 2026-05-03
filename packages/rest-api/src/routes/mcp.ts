@@ -834,6 +834,7 @@ const MCP_TOOLS = [
           },
         },
         open_for_coedit: { type: 'boolean', description: 'Optional fuer plan: ob andere Agenten Co-Edits vorschlagen duerfen (default true). Aktuell informational; Co-Edit-Mechanik kommt in Schritt 3.' },
+        auto_commit: { type: 'boolean', description: 'IDEA-5 (optional fuer plan): wenn true, wird direkt nach plan() automatisch commit() aufgerufen — spart einen Tool-Call wenn kein User-Review vor commit gewuenscht. Versionierung bleibt aktiv (file_versions + batch_id), Rollback via restore_batch jederzeit moeglich.' },
         reason: { type: 'string', description: 'Optionale Begruendung — landet in file_versions.reason und ist via "history"-Action abrufbar. Fuer Crash-Recovery nuetzlich.' },
         since: { type: 'string', description: 'history: ISO-Timestamp ab dem Eintraege gelistet werden.' },
         limit: { type: 'number', description: 'versions: Max Eintraege (Standard 50, Max 500).' },
@@ -900,6 +901,7 @@ const MCP_TOOLS = [
         batch_id: { type: 'string', description: 'Pflicht fuer restore_batch' },
         agent_id: { type: 'string', description: 'Optionale Agent-ID (Audit-Trail)' },
         open_for_coedit: { type: 'boolean', description: 'plan: ob Co-Edits erlaubt sind (default true)' },
+        auto_commit: { type: 'boolean', description: 'IDEA-5: plan + commit in einem Call (default false). Versionierung bleibt aktiv.' },
         reason: { type: 'string', description: 'Optional fuer Audit-Trail (file_versions.reason)' },
         since: { type: 'string', description: 'history: ISO-Timestamp ab dem Eintraege gelistet werden' },
         file_path: { type: 'string', description: 'history: Filter auf einen Pfad (optional)' },
@@ -2678,6 +2680,15 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
           open_for_coedit: typeof args.open_for_coedit === 'boolean' ? args.open_for_coedit as boolean : undefined,
           reason: str(args, 'reason'),
         });
+        // IDEA-5: auto_commit:true -> direkt commit, ABER nur wenn alle Previews ok sind.
+        const allPreviewsOk = result.previews?.every(p => p.ok) ?? true;
+        if (args.auto_commit === true && allPreviewsOk) {
+          const c = await commitBatch({ plan_id: result.plan_id, agent_id: agentId });
+          if (c.success) {
+            return { ...c, plan: result, auto_committed: true, message: `Plan ${result.plan_id} angelegt + sofort committed (auto_commit) — ${c.committed} Datei(en) geaendert. batch_id=${c.batch_id}.` };
+          }
+          return { ...c, plan: result, auto_committed: false, message: `Plan ${result.plan_id} angelegt, auto-commit fehlgeschlagen — Plan bleibt offen, kann manuell committet oder cancelt werden.` };
+        }
         return {
           success: true,
           ...result,
