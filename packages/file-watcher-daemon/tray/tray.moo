@@ -34,6 +34,11 @@ setze war_online auf falsch
 
 # Geoeffnete Detail-Fenster: name -> { fenster, liste_agents, ... }
 setze offene_fenster auf {}
+# Mapping fenster-Handle (als text(num)) -> name. Wird vom Resize-Closure
+# genutzt, damit dieser nur Number-Handle capturen muss (umgeht moo
+# Closure-Refcount-Bug — String-Capture triggert Use-After-Free).
+setze fenster_zu_name auf {}
+setze fenster_zu_chatkey auf {}
 
 # --------------------------------------------------------------
 # HTTP-Helfer
@@ -102,28 +107,40 @@ funktion oeffne_detail(name):
     offene_fenster[name] = g
     g["name"] = name
 
-    setze fenster auf ui_fenster("Projekt: " + name, 780, 560, 1, nichts)
+    setze fenster auf ui_fenster("Projekt: " + name, 1500, 900, 1, nichts)
     g["fenster"] = fenster
     # Beim Close: Eintrag entfernen — GTK zerstoert das Widget, der
     # gecachte Pointer wird sonst beim naechsten Oeffnen zum Segfault.
     ui_fenster_on_close(fenster, close_factory(name))
 
-    setze tabs auf ui_tabs(fenster, 10, 10, 760, 500)
+    setze tabs auf ui_tabs(fenster, 10, 10, 1480, 840)
     g["tabs"] = tabs
 
     # --- Tab 1: Agenten ---
     setze tab_a auf ui_tab_hinzu(tabs, "Agenten")
-    setze liste_a auf ui_liste(tab_a, ["Name", "Modell", "Status", "Tokens", "Letzte Aktivitaet"], 10, 10, 730, 400)
+    setze liste_a auf ui_liste(tab_a, ["Name", "Modell", "Status", "Tokens", "Letzte Aktivitaet"], 10, 10, 1450, 740)
+    ui_liste_spalte_breite(liste_a, 0, 200)
+    ui_liste_spalte_breite(liste_a, 1, 130)
+    ui_liste_spalte_breite(liste_a, 2, 110)
+    ui_liste_spalte_breite(liste_a, 3, 90)
+    ui_liste_spalte_breite(liste_a, 4, 240)
     g["liste_agents"] = liste_a
-    ui_knopf(tab_a, "Stoppen",        10, 420, 120, 32, stop_agent_factory(name))
-    ui_knopf(tab_a, "Aktualisieren", 140, 420, 140, 32, refresh_agents_factory(name))
+    setze btn_stop auf ui_knopf(tab_a, "Stoppen",        10, 760, 120, 32, stop_agent_factory(name))
+    setze btn_ref_a auf ui_knopf(tab_a, "Aktualisieren", 140, 760, 140, 32, refresh_agents_factory(name))
+    g["btn_stop_a"] = btn_stop
+    g["btn_ref_a"]  = btn_ref_a
 
     # --- Tab 2: Events ---
     setze tab_e auf ui_tab_hinzu(tabs, "Events")
-    setze liste_e auf ui_liste(tab_e, ["Typ", "Datei", "Zeit"], 10, 10, 730, 400)
+    setze liste_e auf ui_liste(tab_e, ["Typ", "Datei", "Zeit"], 10, 10, 1450, 740)
+    ui_liste_spalte_breite(liste_e, 0, 100)
+    ui_liste_spalte_breite(liste_e, 1, 900)
+    ui_liste_spalte_breite(liste_e, 2, 220)
     g["liste_events"] = liste_e
-    ui_knopf(tab_e, "Aktualisieren", 10, 420, 140, 32, refresh_events_factory(name))
-    ui_knopf(tab_e, "Oeffnen",      160, 420, 120, 32, open_event_factory(name))
+    setze btn_ref_e auf ui_knopf(tab_e, "Aktualisieren", 10, 760, 140, 32, refresh_events_factory(name))
+    setze btn_open_e auf ui_knopf(tab_e, "Oeffnen",      160, 760, 120, 32, open_event_factory(name))
+    g["btn_ref_e"]  = btn_ref_e
+    g["btn_open_e"] = btn_open_e
 
     # --- Tab 3: Status ---
     setze tab_s auf ui_tab_hinzu(tabs, "Status")
@@ -146,10 +163,64 @@ funktion oeffne_detail(name):
     ui_knopf(tab_ak, "Neu indexieren", 10, 10,   200, 36, reindex_factory(name))
     ui_knopf(tab_ak, "Projekt loeschen", 10, 60, 200, 36, delete_factory(name))
 
+    # Resize-Layout: Number-Handle-Capture-Pattern (moo-runtime-dev).
+    # Closure capturet NUR den Fenster-Handle (Number, kein Refcount).
+    # Der eigentliche String 'name' wird via Dict-Lookup geholt; das Dict
+    # retain-t den Wert selbst, kein Closure-Refcount-Bug mehr.
+    fenster_zu_name[text(fenster)] = name
+    ui_fenster_on_resize(fenster, (b, h) => layout_projekt_via_handle(fenster, b, h))
     ui_zeige(fenster)
     agents_laden(name)
     events_laden(name)
     status_laden(name)
+
+# Reposition aller Widgets im Projekt-Fenster bei Resize.
+# (b, h) ist die neue Fenster-Innengroesse vom GTK configure-event.
+funktion layout_projekt(name, b, h):
+    # Defensive Guards (moo-runtime-dev Tipp C)
+    wenn name == nichts:
+        gib_zurück nichts
+    wenn nicht offene_fenster.hat(name):
+        gib_zurück nichts
+    setze g auf offene_fenster[name]
+    # closed-Flag check: GTK-size-allocate kann auch nach Fenster-Close
+    # noch feuern. ui_groesse_setze auf zerstoertem Widget = segfault.
+    wenn g.hat("closed"):
+        wenn g["closed"]:
+            gib_zurück nichts
+    # Min-Clamp: GTK ui_groesse_setze mit Werten <= 0 oder negativ
+    # fuehrt zu Segfault. Beim manuellen Verkleinern unter unsere
+    # Layout-Annahmen koennen Differenzen negativ werden.
+    setze tabs_b auf b - 20
+    wenn tabs_b < 50:
+        setze tabs_b auf 50
+    setze tabs_h auf h - 60
+    wenn tabs_h < 50:
+        setze tabs_h auf 50
+    ui_groesse_setze(g["tabs"], tabs_b, tabs_h)
+    setze inner_b auf tabs_b - 30
+    wenn inner_b < 30:
+        setze inner_b auf 30
+    setze list_h auf tabs_h - 100
+    wenn list_h < 30:
+        setze list_h auf 30
+    setze btn_y auf list_h + 20
+    ui_groesse_setze(g["liste_agents"], inner_b, list_h)
+    ui_position_setze(g["btn_stop_a"], 10,  btn_y)
+    ui_position_setze(g["btn_ref_a"],  140, btn_y)
+    ui_groesse_setze(g["liste_events"], inner_b, list_h)
+    ui_position_setze(g["btn_ref_e"],  10,  btn_y)
+    ui_position_setze(g["btn_open_e"], 160, btn_y)
+
+funktion layout_projekt_via_handle(fenster, b, h):
+    # Number-Handle-Capture-Workaround: Closure capturet fenster (Number,
+    # ohne Refcount), wir holen den name aus dem globalen Dict (Dict
+    # retain-t Strings selbstaendig).
+    setze key auf text(fenster)
+    wenn nicht fenster_zu_name.hat(key):
+        gib_zurück nichts
+    setze name auf fenster_zu_name[key]
+    layout_projekt(name, b, h)
 
 funktion detail_factory(name):
     gib_zurück () => oeffne_detail(name)
@@ -173,10 +244,18 @@ funktion agents_laden(name):
     wenn nicht offene_fenster.hat(name):
         gib_zurück nichts
     setze g auf offene_fenster[name]
+    # Busy-Guard: re-entrancy bei mehrfachen Aktualisieren-Klicks blockt
+    # http_hole sonst den UI-Thread und kann waehrend Specialist-Spawning
+    # zum Crash fuehren.
+    wenn g.hat("busy_agents"):
+        wenn g["busy_agents"]:
+            gib_zurück nichts
+    g["busy_agents"] = wahr
     setze liste auf g["liste_agents"]
     ui_liste_leeren(liste)
     setze resp auf safe_get(DAEMON_URL + "/projects/" + name + "/specialists")
     wenn resp == "":
+        g["busy_agents"] = falsch
         gib_zurück nichts
     setze info auf json_lesen(resp)
     wenn typ_von(info) != "Woerterbuch":
@@ -206,6 +285,7 @@ funktion agents_laden(name):
             setze letzte auf sp["lastActivity"]
         ui_liste_zeile_hinzu(liste, [agent, modell, stat, tok, letzte])
         setze i auf i + 1
+    g["busy_agents"] = falsch
 
 funktion refresh_agents_factory(name):
     gib_zurück () => agents_laden(name)
@@ -234,10 +314,15 @@ funktion events_laden(name):
     wenn nicht offene_fenster.hat(name):
         gib_zurück nichts
     setze g auf offene_fenster[name]
+    wenn g.hat("busy_events"):
+        wenn g["busy_events"]:
+            gib_zurück nichts
+    g["busy_events"] = wahr
     setze liste auf g["liste_events"]
     ui_liste_leeren(liste)
     setze resp auf safe_get(DAEMON_URL + "/projects/" + name + "/history?limit=50")
     wenn resp == "":
+        g["busy_events"] = falsch
         gib_zurück nichts
     setze info auf json_lesen(resp)
     wenn typ_von(info) != "Woerterbuch":
@@ -259,6 +344,7 @@ funktion events_laden(name):
             setze zeit auf ev["created_at"]
         ui_liste_zeile_hinzu(liste, [typ, pfad, zeit])
         setze i auf i + 1
+    g["busy_events"] = falsch
 
 funktion refresh_events_factory(name):
     gib_zurück () => events_laden(name)
@@ -287,8 +373,13 @@ funktion status_laden(name):
     wenn nicht offene_fenster.hat(name):
         gib_zurück nichts
     setze g auf offene_fenster[name]
+    wenn g.hat("busy_status"):
+        wenn g["busy_status"]:
+            gib_zurück nichts
+    g["busy_status"] = wahr
     setze resp auf safe_get(DAEMON_URL + "/projects/" + name + "/status")
     wenn resp == "":
+        g["busy_status"] = falsch
         gib_zurück nichts
     setze info auf json_lesen(resp)
     wenn typ_von(info) != "Woerterbuch":
@@ -312,6 +403,7 @@ funktion status_laden(name):
     ui_label_setze(g["lbl_aktiv"],  aktiv)
     ui_label_setze(g["lbl_chunks"], chunks)
     ui_label_setze(g["lbl_files"],  files)
+    g["busy_status"] = falsch
 
 funktion refresh_status_factory(name):
     gib_zurück () => status_laden(name)
@@ -390,30 +482,98 @@ funktion oeffne_chat(projekt, channel):
     g["channel"] = channel
     g["schluessel"] = schluessel
 
-    setze fenster auf ui_fenster("Chat: " + channel + " (" + projekt + ")", 900, 620, 1, nichts)
+    setze fenster auf ui_fenster("Chat: " + channel + " (" + projekt + ")", 1200, 800, 1, nichts)
     g["fenster"] = fenster
     ui_fenster_on_close(fenster, chat_close_factory(schluessel))
 
     # Nachrichten-Liste (links-oben, breit)
-    ui_label(fenster, "Nachrichten:", 10, 10, 200, 20)
-    setze liste_m auf ui_liste(fenster, ["Zeit", "Absender", "Nachricht"], 10, 35, 620, 430)
+    setze lbl_msgs auf ui_label(fenster, "Nachrichten:", 10, 10, 200, 20)
+    setze liste_m auf ui_liste(fenster, ["Zeit", "Absender", "Nachricht"], 10, 35, 880, 670)
+    ui_liste_spalte_breite(liste_m, 0, 100)
+    ui_liste_spalte_breite(liste_m, 1, 160)
+    ui_liste_spalte_breite(liste_m, 2, 600)
     g["liste_msgs"] = liste_m
+    g["lbl_msgs"]   = lbl_msgs
 
     # Agenten-Liste (rechts)
-    ui_label(fenster, "Agenten im Projekt:", 640, 10, 250, 20)
-    setze liste_a auf ui_liste(fenster, ["Name", "Modell"], 640, 35, 250, 430)
+    setze lbl_ag auf ui_label(fenster, "Agenten im Projekt:", 900, 10, 290, 20)
+    setze liste_a auf ui_liste(fenster, ["Name", "Modell"], 900, 35, 290, 670)
+    ui_liste_spalte_breite(liste_a, 0, 180)
+    ui_liste_spalte_breite(liste_a, 1, 100)
     g["liste_agents"] = liste_a
+    g["lbl_ag"]       = lbl_ag
 
     # Input + Senden
-    ui_label(fenster, "Nachricht:", 10, 475, 100, 20)
-    setze eingabe auf ui_eingabe(fenster, 10, 500, 700, 32, "Hier tippen...", falsch)
+    setze lbl_in auf ui_label(fenster, "Nachricht:", 10, 715, 100, 20)
+    setze eingabe auf ui_eingabe(fenster, 10, 740, 990, 32, "Hier tippen...", falsch)
     g["eingabe"] = eingabe
-    ui_knopf(fenster, "Senden",        720, 500, 80, 32, chat_senden_factory(schluessel))
-    ui_knopf(fenster, "Aktualisieren", 805, 500, 85, 32, chat_refresh_factory(schluessel))
+    g["lbl_in"]  = lbl_in
+    # Enter-Taste sendet (Bind aus moo nacht-session/moo-gtk-event-hooks).
+    ui_eingabe_on_enter(eingabe, chat_senden_factory(schluessel))
+    setze btn_send auf ui_knopf(fenster, "Senden",        1010, 740, 80, 32, chat_senden_factory(schluessel))
+    setze btn_ref auf ui_knopf(fenster, "Aktualisieren", 1095, 740, 85, 32, chat_refresh_factory(schluessel))
+    g["btn_send"] = btn_send
+    g["btn_ref"]  = btn_ref
 
+    # Resize-Layout: Number-Handle-Capture-Pattern (siehe layout_projekt).
+    fenster_zu_chatkey[text(fenster)] = schluessel
+    ui_fenster_on_resize(fenster, (b, h) => layout_chat_via_handle(fenster, b, h))
     ui_zeige(fenster)
     chat_messages_laden(schluessel)
     chat_agents_laden(schluessel)
+
+# Reposition aller Widgets im Chat-Fenster bei Resize.
+funktion layout_chat(schluessel, b, h):
+    # Defensive Guards
+    wenn schluessel == nichts:
+        gib_zurück nichts
+    wenn nicht chat_fenster.hat(schluessel):
+        gib_zurück nichts
+    setze g auf chat_fenster[schluessel]
+    # closed-Flag check: GTK-size-allocate feuert auch nach Close,
+    # ui_groesse_setze auf totem Widget = segfault.
+    wenn g.hat("closed"):
+        wenn g["closed"]:
+            gib_zurück nichts
+    # Aufteilung: Nachrichten links breit, Agenten rechts schmal.
+    # Min-Clamps gegen negative Werte beim Verkleinern (= Segfault in GTK).
+    setze rechts_b auf 290
+    wenn b < 600:
+        setze rechts_b auf b / 4
+    wenn rechts_b < 60:
+        setze rechts_b auf 60
+    setze links_b auf b - rechts_b - 30
+    wenn links_b < 100:
+        setze links_b auf 100
+    setze listen_h auf h - 130
+    wenn listen_h < 50:
+        setze listen_h auf 50
+    # Nachrichten-Liste links
+    ui_position_setze(g["lbl_msgs"], 10, 10)
+    ui_groesse_setze(g["liste_msgs"], links_b, listen_h)
+    # Agenten-Liste rechts
+    setze rechts_x auf links_b + 20
+    ui_position_setze(g["lbl_ag"], rechts_x, 10)
+    ui_groesse_setze(g["lbl_ag"], rechts_b, 20)
+    ui_position_setze(g["liste_agents"], rechts_x, 35)
+    ui_groesse_setze(g["liste_agents"], rechts_b, listen_h)
+    # Eingabe + Buttons unten
+    setze in_y auf listen_h + 60
+    setze in_b auf b - 220
+    wenn in_b < 100:
+        setze in_b auf 100
+    ui_position_setze(g["lbl_in"], 10, in_y - 25)
+    ui_position_setze(g["eingabe"], 10, in_y)
+    ui_groesse_setze(g["eingabe"], in_b, 32)
+    ui_position_setze(g["btn_send"], in_b + 20, in_y)
+    ui_position_setze(g["btn_ref"], in_b + 105, in_y)
+
+funktion layout_chat_via_handle(fenster, b, h):
+    setze key auf text(fenster)
+    wenn nicht fenster_zu_chatkey.hat(key):
+        gib_zurück nichts
+    setze schluessel auf fenster_zu_chatkey[key]
+    layout_chat(schluessel, b, h)
 
 funktion chat_close_factory(schluessel):
     gib_zurück () => chat_fenster_schliessen(schluessel)
@@ -428,12 +588,18 @@ funktion chat_messages_laden(schluessel):
     wenn nicht chat_fenster.hat(schluessel):
         gib_zurück nichts
     setze g auf chat_fenster[schluessel]
+    # Busy-Guard gegen reentrancy (siehe agents_laden)
+    wenn g.hat("busy_msgs"):
+        wenn g["busy_msgs"]:
+            gib_zurück nichts
+    g["busy_msgs"] = wahr
     setze projekt auf g["projekt"]
     setze channel auf g["channel"]
     setze liste auf g["liste_msgs"]
     ui_liste_leeren(liste)
     setze resp auf safe_get(DAEMON_URL + "/projects/" + projekt + "/channels/" + channel + "/feed?limit=50")
     wenn resp == "":
+        g["busy_msgs"] = falsch
         gib_zurück nichts
     setze info auf json_lesen(resp)
     wenn typ_von(info) != "Woerterbuch":
@@ -455,16 +621,25 @@ funktion chat_messages_laden(schluessel):
             setze inhalt auf m["content"]
         ui_liste_zeile_hinzu(liste, [zeit, sender, inhalt])
         setze i auf i + 1
+    # Auto-Scroll zur letzten Nachricht (Open + Refresh + nach Senden).
+    # Nutzt ui_liste_scroll_unten aus moo nacht-session/moo-gtk-event-hooks.
+    ui_liste_scroll_unten(liste)
+    g["busy_msgs"] = falsch
 
 funktion chat_agents_laden(schluessel):
     wenn nicht chat_fenster.hat(schluessel):
         gib_zurück nichts
     setze g auf chat_fenster[schluessel]
+    wenn g.hat("busy_chat_agents"):
+        wenn g["busy_chat_agents"]:
+            gib_zurück nichts
+    g["busy_chat_agents"] = wahr
     setze projekt auf g["projekt"]
     setze liste auf g["liste_agents"]
     ui_liste_leeren(liste)
     setze resp auf safe_get(DAEMON_URL + "/projects/" + projekt + "/agents")
     wenn resp == "":
+        g["busy_chat_agents"] = falsch
         gib_zurück nichts
     setze info auf json_lesen(resp)
     wenn typ_von(info) != "Woerterbuch":
@@ -484,6 +659,7 @@ funktion chat_agents_laden(schluessel):
                 setze modell auf a["model"]
         ui_liste_zeile_hinzu(liste, [id, modell])
         setze i auf i + 1
+    g["busy_chat_agents"] = falsch
 
 funktion chat_senden_factory(schluessel):
     gib_zurück () => chat_senden(schluessel)
@@ -556,6 +732,7 @@ funktion rebuild_menu():
         setze status_item auf tray_menu_add(tray, status_text, noop)
         tray_separator_add(tray)
         tray_menu_add(tray, "Daemon starten", daemon_starten)
+        tray_menu_add(tray, "Neu laden", rebuild_menu)
         tray_menu_add(tray, "Beenden", quit_app)
         setze letzte_projekt_signatur auf ""
         gib_zurück nichts
