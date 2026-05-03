@@ -7,7 +7,8 @@
  *
  * Ablauf:
  *   1. project-Name → projectPath via getProjectRoot
- *   2. status.json (auf Disk) lesen → Spezialist mit Name <source> finden
+ *   2. PG-Read (primaer): getWrapperStatus(source, project) → Spezialist-Daten
+ *      Fallback: status.json (auf Disk) lesen → Spezialist mit Name <source> finden
  *   3. Korridor-Check (Opus ab 80%, Sonnet/Haiku ab 70%)
  *   4. In Korridor → Marker /tmp/.specialist-rotate-pending-<source> schreiben
  *      → Wrapper rotiert beim naechsten Heartbeat
@@ -21,6 +22,7 @@
 import { writeFile, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { getProjectRoot } from './project-registry.js';
+import { getWrapperStatus } from './wrapper-status.js';
 
 const MARKER_PREFIX = '/tmp/.specialist-rotate-pending-';
 
@@ -58,18 +60,33 @@ export async function maybeTriggerRespawn(project: string, source: string): Prom
     return { triggered: false, message: `Trigger ignoriert — Projekt "${project}" unbekannt.` };
   }
 
-  const status = await readStatusFile(projectPath);
-  if (!status) {
-    return { triggered: false, message: `Trigger ignoriert — status.json nicht lesbar.` };
+  // --- PG-Read (primaer) ---
+  let percent: number;
+  let model: string;
+
+  const pgRow = await getWrapperStatus(source, project).catch(() => null);
+
+  if (pgRow !== null) {
+    // PG-Quelle: Spezialist gefunden
+    if (pgRow.status === 'stopped' || pgRow.status === 'crashed') {
+      return { triggered: false, message: `Trigger ignoriert — kein aktiver Spezialist mit Name "${source}".` };
+    }
+    percent = pgRow.tokensPercent ?? 0;
+    model = pgRow.model ?? 'sonnet';
+  } else {
+    // Fallback: status.json auf Disk
+    const status = await readStatusFile(projectPath);
+    if (!status) {
+      return { triggered: false, message: `Trigger ignoriert — status.json nicht lesbar.` };
+    }
+    const specialist = status.specialists?.[source];
+    if (!specialist || specialist.status === 'stopped' || specialist.status === 'crashed') {
+      return { triggered: false, message: `Trigger ignoriert — kein aktiver Spezialist mit Name "${source}".` };
+    }
+    percent = specialist.tokens?.percent ?? 0;
+    model = specialist.model ?? 'sonnet';
   }
 
-  const specialist = status.specialists?.[source];
-  if (!specialist || specialist.status === 'stopped' || specialist.status === 'crashed') {
-    return { triggered: false, message: `Trigger ignoriert — kein aktiver Spezialist mit Name "${source}".` };
-  }
-
-  const percent = specialist.tokens?.percent ?? 0;
-  const model = specialist.model ?? 'sonnet';
   const minPct = corridorMin(model);
 
   if (percent < minPct) {
