@@ -21,23 +21,27 @@ konstante PG_PORT auf 5432
 konstante PG_USER auf "synapse"
 konstante PG_DB   auf "synapse"
 
-# Globaler PG-Client. Liste-Lese-Pfade gehen direkt auf Postgres
+# Globaler PG-Client (als Dict-Wrapper, weil 'setze' in Funktion lokal ist).
+# pg["db"] = PgClient-Instanz oder nichts. pg["err"] = letzte Fehlermeldung.
+# Liste-Lese-Pfade gehen direkt auf Postgres
 # (specialist_channel_messages, agent_sessions, file_versions, wrapper_status),
 # kein HTTP+JSON-Daemon-Roundtrip mehr. Schreib-Pfade (chat_senden) bleiben
 # HTTP — Daemon hat NOTIFY-Trigger fuer Live-Subscriptions.
-setze pg_db auf nichts
-setze pg_letzte_fehler auf ""
+setze pg auf { "db": nichts, "err": "" }
 
 funktion pg_init():
     versuche:
-        setze pg_db auf neu PgClient(PG_HOST, PG_PORT, PG_USER, PG_DB)
-        pg_db.verbinde()
-        wenn nicht pg_db.ready:
-            setze pg_letzte_fehler auf "PG nicht ready: " + text(pg_db.letzte_fehler)
-            setze pg_db auf nichts
+        setze c auf neu PgClient(PG_HOST, PG_PORT, PG_USER, PG_DB)
+        c.verbinde()
+        wenn c.ready:
+            pg["db"] = c
+            pg["err"] = ""
+        sonst:
+            pg["err"] = "PG nicht ready: " + text(c.letzte_fehler)
+            pg["db"] = nichts
     fange e:
-        setze pg_letzte_fehler auf "PG verbinde Exception"
-        setze pg_db auf nichts
+        pg["err"] = "PG verbinde Exception"
+        pg["db"] = nichts
 
 # SQL-Literal-Escape fuer simple-query (Postgres '): doppeltes Apostroph.
 # Inputs: projekt-name, channel-name — keine User-Eingabe, aber defensiv.
@@ -47,18 +51,18 @@ funktion sql_quote(s):
 # Wrapper: queryt PG, reconnect bei Verbindungsabbruch. Gibt Result-Dict
 # zurueck oder nichts bei Fehler. Caller sollte auf nichts pruefen.
 funktion pg_query(sql):
-    wenn pg_db == nichts:
+    wenn pg["db"] == nichts:
         pg_init()
-        wenn pg_db == nichts:
+        wenn pg["db"] == nichts:
             gib_zurück nichts
     versuche:
-        setze r auf pg_db.frage(sql)
+        setze r auf pg["db"].frage(sql)
         wenn r["fehler"] != nichts:
-            setze pg_letzte_fehler auf text(r["fehler"])
+            pg["err"] = text(r["fehler"])
         gib_zurück r
     fange e:
         # Connection lost. Reset + reconnect on next call.
-        setze pg_db auf nichts
+        pg["db"] = nichts
         gib_zurück nichts
 konstante START_TRIGGER auf "/home/blacky/.synapse/file-watcher/start-requested"
 konstante STOP_TRIGGER  auf "/home/blacky/.synapse/file-watcher/stop-requested"
