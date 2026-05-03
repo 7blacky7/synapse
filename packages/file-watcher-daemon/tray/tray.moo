@@ -138,11 +138,13 @@ funktion oeffne_detail(name):
     # --- Tab 2: Events (Synapse file_versions History) ---
     setze tab_e auf ui_tab_hinzu(tabs, "Events")
     # Filter-Eingabe oben — leer = alles, sonst Substring-Filter
-    # ueber Datei/Agent/Reason/Feature.
-    ui_label(tab_e, "Filter:", 10, 12, 60, 24)
-    setze filter_e auf ui_eingabe(tab_e, 70, 10, 600, 28, "Substring in Datei/Agent/Reason/Feature...", falsch)
+    # ueber Datei/Agent/Reason/Feature. Live-Update on_change.
+    setze lbl_filter_e auf ui_label(tab_e, "Filter:", 10, 12, 60, 24)
+    setze filter_e auf ui_eingabe(tab_e, 70, 10, 1380, 28, "Substring in Datei/Agent/Reason/Feature...", falsch)
+    ui_eingabe_on_change(filter_e, refresh_events_factory(name))
     ui_eingabe_on_enter(filter_e, refresh_events_factory(name))
     g["filter_events"] = filter_e
+    g["lbl_filter_e"] = lbl_filter_e
     setze liste_e auf ui_liste(tab_e, ["Zeit", "Agent", "Datei", "Aktion", "Reason", "Feature"], 10, 50, 1450, 700)
     ui_liste_spalte_breite(liste_e, 0, 170)
     ui_liste_spalte_breite(liste_e, 1, 160)
@@ -228,7 +230,16 @@ funktion layout_projekt(name, b, h):
     ui_groesse_setze(g["liste_agents"], inner_b, list_h)
     ui_position_setze(g["btn_stop_a"], 10,  btn_y)
     ui_position_setze(g["btn_ref_a"],  140, btn_y)
-    ui_groesse_setze(g["liste_events"], inner_b, list_h)
+    # Events-Tab: Filter-Zeile oben (y=10), Liste startet bei y=50, Buttons unten.
+    setze events_list_h auf list_h - 40
+    wenn events_list_h < 30:
+        setze events_list_h auf 30
+    setze filter_b auf inner_b - 60
+    wenn filter_b < 100:
+        setze filter_b auf 100
+    wenn g.hat("filter_events"):
+        ui_groesse_setze(g["filter_events"], filter_b, 28)
+    ui_groesse_setze(g["liste_events"], inner_b, events_list_h)
     ui_position_setze(g["btn_ref_e"],  10,  btn_y)
     ui_position_setze(g["btn_open_e"], 160, btn_y)
 
