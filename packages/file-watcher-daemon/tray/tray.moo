@@ -119,8 +119,6 @@ funktion oeffne_detail(name):
     # --- Tab 1: Agenten ---
     setze tab_a auf ui_tab_hinzu(tabs, "Agenten")
     setze liste_a auf ui_liste(tab_a, ["Name", "Modell", "Status", "Tokens", "Letzte Aktivitaet"], 10, 10, 1450, 740)
-    # min_breite pro Spalte — sichert Drag-Grip + verhindert Schrumpf-auf-0
-    # (moo-runtime-dev e33d973). autosize nach Daten-Load wird in agents_laden gemacht.
     ui_liste_spalte_min_breite(liste_a, 0, 120)
     ui_liste_spalte_min_breite(liste_a, 1, 80)
     ui_liste_spalte_min_breite(liste_a, 2, 80)
@@ -192,7 +190,9 @@ funktion oeffne_detail(name):
     # Der eigentliche String 'name' wird via Dict-Lookup geholt; das Dict
     # retain-t den Wert selbst, kein Closure-Refcount-Bug mehr.
     fenster_zu_name[text(fenster)] = name
-    ui_fenster_on_resize(fenster, (b, h) => layout_projekt_via_handle(fenster, b, h))
+    # A/B-TEST: Resize-Hook AUS — Drag im isolierten Test-Programm geht.
+    # Verdacht: on_resize size-allocate ueberschreibt Drag-Grip-Layout.
+    # ui_fenster_on_resize(fenster, (b, h) => layout_projekt_via_handle(fenster, b, h))
     ui_zeige(fenster)
     agents_laden(name)
     events_laden(name)
@@ -591,7 +591,8 @@ funktion oeffne_chat(projekt, channel):
 
     # Resize-Layout: Number-Handle-Capture-Pattern (siehe layout_projekt).
     fenster_zu_chatkey[text(fenster)] = schluessel
-    ui_fenster_on_resize(fenster, (b, h) => layout_chat_via_handle(fenster, b, h))
+    # A/B-TEST: Resize-Hook AUS (siehe Projekt-Fenster)
+    # ui_fenster_on_resize(fenster, (b, h) => layout_chat_via_handle(fenster, b, h))
     ui_zeige(fenster)
     chat_messages_laden(schluessel)
     chat_agents_laden(schluessel)
