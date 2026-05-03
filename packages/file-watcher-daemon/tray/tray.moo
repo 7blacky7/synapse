@@ -119,11 +119,8 @@ funktion oeffne_detail(name):
     # --- Tab 1: Agenten ---
     setze tab_a auf ui_tab_hinzu(tabs, "Agenten")
     setze liste_a auf ui_liste(tab_a, ["Name", "Modell", "Status", "Tokens", "Letzte Aktivitaet"], 10, 10, 1450, 740)
-    ui_liste_spalte_breite(liste_a, 0, 200)
-    ui_liste_spalte_breite(liste_a, 1, 130)
-    ui_liste_spalte_breite(liste_a, 2, 110)
-    ui_liste_spalte_breite(liste_a, 3, 90)
-    ui_liste_spalte_breite(liste_a, 4, 240)
+    # Keine ui_liste_spalte_breite — das setzt FIXED-Sizing und blockiert
+    # User-Drag. GTK auto-sized + resizable=TRUE per default.
     ui_liste_sortierbar(liste_a, 0, wahr)
     ui_liste_sortierbar(liste_a, 1, wahr)
     ui_liste_sortierbar(liste_a, 2, wahr)
@@ -146,12 +143,7 @@ funktion oeffne_detail(name):
     g["filter_events"] = filter_e
     g["lbl_filter_e"] = lbl_filter_e
     setze liste_e auf ui_liste(tab_e, ["Zeit", "Agent", "Datei", "Aktion", "Reason", "Feature"], 10, 50, 1450, 700)
-    ui_liste_spalte_breite(liste_e, 0, 170)
-    ui_liste_spalte_breite(liste_e, 1, 160)
-    ui_liste_spalte_breite(liste_e, 2, 360)
-    ui_liste_spalte_breite(liste_e, 3, 100)
-    ui_liste_spalte_breite(liste_e, 4, 460)
-    ui_liste_spalte_breite(liste_e, 5, 200)
+    # Keine ui_liste_spalte_breite — auto-sized + draggable.
     ui_liste_sortierbar(liste_e, 0, wahr)
     ui_liste_sortierbar(liste_e, 1, wahr)
     ui_liste_sortierbar(liste_e, 2, wahr)
@@ -549,9 +541,7 @@ funktion oeffne_chat(projekt, channel):
     # Nachrichten-Liste (links-oben, breit)
     setze lbl_msgs auf ui_label(fenster, "Nachrichten:", 10, 10, 200, 20)
     setze liste_m auf ui_liste(fenster, ["Zeit", "Absender", "Nachricht"], 10, 35, 880, 670)
-    ui_liste_spalte_breite(liste_m, 0, 100)
-    ui_liste_spalte_breite(liste_m, 1, 160)
-    ui_liste_spalte_breite(liste_m, 2, 600)
+    # auto-sized + draggable.
     ui_liste_sortierbar(liste_m, 0, wahr)
     ui_liste_sortierbar(liste_m, 1, wahr)
     ui_liste_sortierbar(liste_m, 2, wahr)
@@ -561,8 +551,7 @@ funktion oeffne_chat(projekt, channel):
     # Agenten-Liste (rechts)
     setze lbl_ag auf ui_label(fenster, "Agenten im Projekt:", 900, 10, 290, 20)
     setze liste_a auf ui_liste(fenster, ["Name", "Modell"], 900, 35, 290, 670)
-    ui_liste_spalte_breite(liste_a, 0, 180)
-    ui_liste_spalte_breite(liste_a, 1, 100)
+    # auto-sized + draggable.
     ui_liste_sortierbar(liste_a, 0, wahr)
     ui_liste_sortierbar(liste_a, 1, wahr)
     g["liste_agents"] = liste_a
