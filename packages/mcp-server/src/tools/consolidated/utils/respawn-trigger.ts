@@ -33,7 +33,10 @@ export type RespawnDecision = {
 };
 
 function corridorMin(model: string): number {
-  return /opus/i.test(model) ? 90 : 80; // Opus 90-99, Sonnet/Haiku 80-88
+  // Schwellen synchron mit wrapper.ts (heartbeatPoll Auto-Handoff-Hinweis):
+  // bewusst niedrig, damit ein einzelner grosser Tool-Call nicht den Context
+  // von <Schwelle direkt ueber 95% schiebt und die kontrollierte Rotation umgeht.
+  return /opus/i.test(model) ? 80 : 70; // Opus ab 80%, Sonnet/Haiku ab 70%
 }
 
 export async function maybeTriggerRespawn(project: string, source: string): Promise<RespawnDecision> {

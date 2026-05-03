@@ -490,20 +490,40 @@ async function heartbeatPoll() {
     // sauber zu sichern bevor die Hard-Rotation bei 95% greift.
     if (!agentBusy && !handoffWarningSent) {
       const ctxPct = getContextPercent()
-      const isOpus = /opus/i.test(AGENT_MODEL)
-      const handoffMin = isOpus ? 90 : 80
+      // Schwelle bewusst niedrig: 70% gibt 25% Headroom fuer einen einzelnen
+      // grossen Tool-Call (z.B. code_intel tree ueber ein riesiges Projekt),
+      // damit nicht ein Turn den Context von <Schwelle direkt auf >95%
+      // springt und die kontrollierte Rotation umgeht.
+      const handoffMin = /opus/i.test(AGENT_MODEL) ? 80 : 70
       if (ctxPct >= handoffMin) {
         handoffWarningSent = true
         log('AUTO-HANDOFF-HINWEIS: Context %d%% — sende Wake an Agent', ctxPct)
-        const handoffMessage = `CONTEXT-WARNUNG: Dein Kontext ist fast voll. Mache JETZT deinen Auto-Handoff — beende laufende Tool-Calls SOFORT und:
+        const handoffMessage = `CONTEXT-WARNUNG: Dein Kontext ist fast voll (${ctxPct}%). Mache JETZT deinen Auto-Handoff. Stoppe laufende Tool-Calls SOFORT.
 
-1. Sichere deinen kompletten Wissensstand in MEMORY.md (Lehren, offene Themen, letzter Stand)
+PFLICHT-SCHRITTE — exakt in dieser Reihenfolge:
+
+1. Sichere kompletten Wissensstand in MEMORY.md (Lehren, offene Themen, letzter Stand)
 2. Update SKILL.md falls noetig
-3. Rufe diesen Tool-Call auf:
-   thought(action: "add", project: "<dein-projekt>", source: "${AGENT_NAME}", content: "AUTO-HANDOFF: <kurze Zusammenfassung>", tags: ["auto-handoff"], trigger_respawn: true)
-4. Die Tool-Response sagt dir ob der Respawn akzeptiert wurde. Falls ja: kurzen Status im Channel posten und IDLE werden.
 
-Wenn du weiterarbeitest ohne Handoff, rotiert der Wrapper dich automatisch bei 95% — aber dann kann MEMORY/SKILL nicht mehr sauber gesichert werden.`
+3. Rufe EXAKT diesen Tool-Call auf — KOPIERE die Argumente, der trigger_respawn Flag ist PFLICHT:
+
+mcp__synapse__thought({
+  "action": "add",
+  "project": "<dein-projekt-name>",
+  "source": "${AGENT_NAME}",
+  "content": "AUTO-HANDOFF: <kurze Zusammenfassung deines Stands>",
+  "tags": ["auto-handoff"],
+  "trigger_respawn": true
+})
+
+⚠️ OHNE den Flag "trigger_respawn": true wird KEIN Respawn ausgeloest.
+⚠️ Die Tool-Response enthaelt ein "respawn"-Feld:
+   - { "triggered": true, ... } → du wirst gleich neugestartet, mache nichts mehr
+   - { "triggered": false, ... } → arbeite weiter, Schwelle nicht erreicht
+
+4. Falls Respawn akzeptiert: kurzer Channel-Post "Handoff in Arbeit", dann IDLE.
+
+Wenn du weiterarbeitest ohne den trigger_respawn Flag, rotiert der Wrapper dich erst bei 95% — und ein einzelner grosser Tool-Call kann den Context vorher in einem Turn ueber 95% schieben → Crash, kein sauberes MEMORY-Save.`
         try {
           await wakeAgent(handoffMessage)
         } catch (err) {
