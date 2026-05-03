@@ -34,6 +34,11 @@ setze war_online auf falsch
 
 # Geoeffnete Detail-Fenster: name -> { fenster, liste_agents, ... }
 setze offene_fenster auf {}
+# Mapping fenster-Handle (als text(num)) -> name. Wird vom Resize-Closure
+# genutzt, damit dieser nur Number-Handle capturen muss (umgeht moo
+# Closure-Refcount-Bug — String-Capture triggert Use-After-Free).
+setze fenster_zu_name auf {}
+setze fenster_zu_chatkey auf {}
 
 # --------------------------------------------------------------
 # HTTP-Helfer
@@ -150,10 +155,12 @@ funktion oeffne_detail(name):
     ui_knopf(tab_ak, "Neu indexieren", 10, 10,   200, 36, reindex_factory(name))
     ui_knopf(tab_ak, "Projekt loeschen", 10, 60, 200, 36, delete_factory(name))
 
-    # Resize-Layout DEAKTIVIERT — rv-Workaround in Helper-Funktion zu spaet,
-    # Closure-Body korrumpiert captured 'name' VOR unserem Helper-Zugriff.
-    # Wartet auf moo-Compiler-Fix (regression/closure-multi-call-segv).
-    # ui_fenster_on_resize(fenster, layout_projekt_factory(name))
+    # Resize-Layout: Number-Handle-Capture-Pattern (moo-runtime-dev).
+    # Closure capturet NUR den Fenster-Handle (Number, kein Refcount).
+    # Der eigentliche String 'name' wird via Dict-Lookup geholt; das Dict
+    # retain-t den Wert selbst, kein Closure-Refcount-Bug mehr.
+    fenster_zu_name[text(fenster)] = name
+    ui_fenster_on_resize(fenster, (b, h) => layout_projekt_via_handle(fenster, b, h))
     ui_zeige(fenster)
     agents_laden(name)
     events_laden(name)
@@ -197,17 +204,15 @@ funktion layout_projekt(name, b, h):
     ui_position_setze(g["btn_ref_e"],  10,  btn_y)
     ui_position_setze(g["btn_open_e"], 160, btn_y)
 
-funktion layout_projekt_factory(name):
-    # Workaround moo Closure-Refcount-Bug (moo-runtime-dev, Repro f90913e):
-    # Closure-Body retained captured nicht -> nach 2-3 Aufrufen freed.
-    # Helper-Funktion + rv-Pattern (`setze rv auf x` macht retain) loest's.
-    gib_zurück (b, h) => layout_projekt_via_rv(name, b, h)
-
-funktion layout_projekt_via_rv(captured_name, b, h):
-    # rv-Pattern: lokale Variable haelt +1 Ref auf den uebergebenen Wert,
-    # bevor er weitergereicht wird. Schuetzt vor Refcount-Sink im Closure.
-    setze rv auf captured_name
-    layout_projekt(rv, b, h)
+funktion layout_projekt_via_handle(fenster, b, h):
+    # Number-Handle-Capture-Workaround: Closure capturet fenster (Number,
+    # ohne Refcount), wir holen den name aus dem globalen Dict (Dict
+    # retain-t Strings selbstaendig).
+    setze key auf text(fenster)
+    wenn nicht fenster_zu_name.hat(key):
+        gib_zurück nichts
+    setze name auf fenster_zu_name[key]
+    layout_projekt(name, b, h)
 
 funktion detail_factory(name):
     gib_zurück () => oeffne_detail(name)
@@ -497,8 +502,9 @@ funktion oeffne_chat(projekt, channel):
     g["btn_send"] = btn_send
     g["btn_ref"]  = btn_ref
 
-    # Resize-Layout DEAKTIVIERT (siehe layout_projekt)
-    # ui_fenster_on_resize(fenster, layout_chat_factory(schluessel))
+    # Resize-Layout: Number-Handle-Capture-Pattern (siehe layout_projekt).
+    fenster_zu_chatkey[text(fenster)] = schluessel
+    ui_fenster_on_resize(fenster, (b, h) => layout_chat_via_handle(fenster, b, h))
     ui_zeige(fenster)
     chat_messages_laden(schluessel)
     chat_agents_laden(schluessel)
@@ -549,12 +555,12 @@ funktion layout_chat(schluessel, b, h):
     ui_position_setze(g["btn_send"], in_b + 20, in_y)
     ui_position_setze(g["btn_ref"], in_b + 105, in_y)
 
-funktion layout_chat_factory(schluessel):
-    gib_zurück (b, h) => layout_chat_via_rv(schluessel, b, h)
-
-funktion layout_chat_via_rv(captured_key, b, h):
-    setze rv auf captured_key
-    layout_chat(rv, b, h)
+funktion layout_chat_via_handle(fenster, b, h):
+    setze key auf text(fenster)
+    wenn nicht fenster_zu_chatkey.hat(key):
+        gib_zurück nichts
+    setze schluessel auf fenster_zu_chatkey[key]
+    layout_chat(schluessel, b, h)
 
 funktion chat_close_factory(schluessel):
     gib_zurück () => chat_fenster_schliessen(schluessel)
