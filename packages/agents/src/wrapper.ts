@@ -466,34 +466,17 @@ async function heartbeatPoll() {
     await syncTokensFromHistory()
 
     // Externer Respawn-Trigger: Spezialist hat per thought(trigger_respawn)
-    // sein Auto-Handoff signalisiert. Wrapper macht den Korridor-Check selbst,
-    // weil er sein Modell und seinen aktuellen Context-Stand kennt
-    // (cross-process: der MCP-Server-Prozess des Spezialisten kennt diese
-    // Werte nicht ohne weiteres).
-    //
-    // Korridore:
-    //   - Opus:        90% .. 99%
-    //   - Sonnet/Haiku: 80% .. 88%
+    // sein Auto-Handoff signalisiert UND der MCP-Server hat den Korridor-Check
+    // bereits bestanden (sonst waere kein Marker geschrieben worden). Hier nur
+    // noch Marker konsumieren + Rotation triggern.
     if (!agentBusy && existsSync(RESPAWN_MARKER_PATH)) {
+      log('RESPAWN-MARKER erkannt → Rotation')
       try {
         await unlink(RESPAWN_MARKER_PATH)
       } catch {
         // Marker schon weg → ok
       }
-      const ctxPct = getContextPercent()
-      const isOpus = /opus/i.test(AGENT_MODEL)
-      const minPct = isOpus ? 90 : 80
-      if (ctxPct >= minPct) {
-        log('RESPAWN-MARKER: Context %d%% >= %d%% (%s) → Rotation', ctxPct, minPct, AGENT_MODEL)
-        await rotateAgent()
-        return
-      }
-      log('RESPAWN-MARKER: Context nur %d%% < %d%% (%s) → abgelehnt', ctxPct, minPct, AGENT_MODEL)
-      try {
-        await wakeAgent(`Handoff nicht ausgefuehrt — du bist erst bei ${ctxPct}%. Arbeite weiter.`)
-      } catch (err) {
-        log('Reject-Wake fehlgeschlagen: %s', err)
-      }
+      await rotateAgent()
       return
     }
 

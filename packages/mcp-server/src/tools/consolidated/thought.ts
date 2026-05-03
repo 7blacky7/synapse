@@ -123,7 +123,7 @@ export const thoughtTool: ConsolidatedTool = {
         const result = await addThought(project, source, content, tags, taskId, taskStatus);
 
         if (triggerRespawn) {
-          const decision = await maybeTriggerRespawn(source);
+          const decision = await maybeTriggerRespawn(project, source);
           return {
             ...(result as Record<string, unknown>),
             respawn: {
