@@ -163,6 +163,11 @@ funktion layout_projekt(name, b, h):
     wenn nicht offene_fenster.hat(name):
         gib_zurück nichts
     setze g auf offene_fenster[name]
+    # closed-Flag check: GTK-size-allocate kann auch nach Fenster-Close
+    # noch feuern. ui_groesse_setze auf zerstoertem Widget = segfault.
+    wenn g.hat("closed"):
+        wenn g["closed"]:
+            gib_zurück nichts
     setze tabs_b auf b - 20
     setze tabs_h auf h - 60
     ui_groesse_setze(g["tabs"], tabs_b, tabs_h)
@@ -478,6 +483,11 @@ funktion layout_chat(schluessel, b, h):
     wenn nicht chat_fenster.hat(schluessel):
         gib_zurück nichts
     setze g auf chat_fenster[schluessel]
+    # closed-Flag check: GTK-size-allocate feuert auch nach Close,
+    # ui_groesse_setze auf totem Widget = segfault.
+    wenn g.hat("closed"):
+        wenn g["closed"]:
+            gib_zurück nichts
     # Aufteilung: Nachrichten links breit (~73%), Agenten rechts schmal (~25%)
     setze rechts_b auf 290
     setze links_b auf b - rechts_b - 30
