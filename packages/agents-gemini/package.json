@@ -4,6 +4,10 @@
   "description": "Gemini-basierter Specialist-Runtime fuer Synapse (Iter 1: Standalone PoC)",
   "main": "./dist/runtime.js",
   "type": "module",
+  "exports": {
+    ".": "./dist/runtime.js",
+    "./runtime": "./dist/runtime.js"
+  },
   "bin": {
     "synapse-gemini": "./dist/runtime.js"
   },
@@ -14,6 +18,7 @@
   },
   "dependencies": {
     "@google/genai": "^1.0.0",
+    "@synapse/agents": "workspace:*",
     "@synapse/core": "workspace:*",
     "@synapse/mcp-server": "workspace:*",
     "fastify": "^4.0.0"

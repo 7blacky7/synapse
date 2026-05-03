@@ -77,9 +77,26 @@ export class MonitorServer {
     return ev;
   }
 
-  async start(port: number, host = '127.0.0.1'): Promise<string> {
-    await this.fastify.listen({ port, host });
-    return `http://${host}:${port}`;
+  /**
+   * Versucht startPort, geht bei EADDRINUSE schrittweise hoch.
+   * Verhindert Port-Konflikte bei mehreren parallelen Spezialisten.
+   */
+  async start(startPort: number, host = '127.0.0.1', maxAttempts = 100): Promise<string> {
+    let port = startPort;
+    for (let i = 0; i < maxAttempts; i++) {
+      try {
+        await this.fastify.listen({ port, host });
+        return `http://${host}:${port}`;
+      } catch (err) {
+        const code = (err as NodeJS.ErrnoException)?.code;
+        if (code === 'EADDRINUSE') {
+          port++;
+          continue;
+        }
+        throw err;
+      }
+    }
+    throw new Error(`Kein freier Port im Bereich ${startPort}-${startPort + maxAttempts}`);
   }
 
   async stop(): Promise<void> {

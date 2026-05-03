@@ -35,6 +35,7 @@ import {
   getPlan,
   getPendingEvents,
 } from '@synapse/core'
+import pg from 'pg'
 import type { Memory, Thought, ProjectTask, AgentEvent } from '@synapse/core'
 import {
   CONTEXT_CEILINGS,
@@ -44,6 +45,16 @@ import {
   type SendMessageResult,
   type SpecialistStatus,
 } from './types.js'
+import { resolveModel } from './models.js'
+import {
+  createState as createHeartbeatState,
+  onEvent as onHeartbeatEvent,
+  onWarmEvent as onHeartbeatWarmEvent,
+  onIdleStep as onHeartbeatIdleStep,
+  nextDelayMs as nextHeartbeatDelay,
+  describeInterval,
+  type HeartbeatState,
+} from './heartbeat-state.js'
 
 // ---------------------------------------------------------------------------
 // Configuration from environment
@@ -61,6 +72,7 @@ const KEEP_ALIVE = process.env.SYNAPSE_KEEP_ALIVE === '1'
 // State tracking
 // ---------------------------------------------------------------------------
 let lastChannelMsgId = 0
+let crashTimestamps: number[] = []
 let lastInboxMsgId = 0
 let totalInputTokens = 0
 let totalOutputTokens = 0
@@ -82,6 +94,96 @@ const processManager = new ProcessManager()
 let socketServer: Server | null = null
 const connectedClients: Set<Socket> = new Set()
 let heartbeatIntervalId: ReturnType<typeof setInterval> | null = null
+let heartbeatTimeoutId: ReturnType<typeof setTimeout> | null = null
+let heartbeatState: HeartbeatState | null = null
+let listenClient: pg.Client | null = null
+
+/** Buffered file-change events fuer naechsten Wake-Prompt. Cap 20 + 5min Alter. */
+interface FileChangeEvent { path: string; action: string; agent: string; ts: number }
+let recentFileChanges: FileChangeEvent[] = []
+
+function pruneFileChanges(): void {
+  const fiveMinAgo = Date.now() - 5 * 60_000
+  recentFileChanges = recentFileChanges.filter(c => c.ts >= fiveMinAgo).slice(-20)
+}
+
+function consumeFileChangesText(): string | null {
+  pruneFileChanges()
+  if (recentFileChanges.length === 0) return null
+  const lines = recentFileChanges.map(c => {
+    const by = c.agent ? `by ${c.agent}` : 'by unbekannt'
+    return `- ${c.path} (${c.action} ${by})`
+  })
+  recentFileChanges = []
+  return `FILE-CHANGES seit letztem Wake:\n${lines.join('\n')}`
+}
+
+/**
+ * Trigger sofortigen Heartbeat (z.B. nach LISTEN-Notification).
+ * level='hot': Reset auf 10s (file-change, echte Aktivitaet)
+ * level='warm': Reset auf max 30s (Default; nur ein NOTIFY-Tick, evtl. nichts Konkretes)
+ */
+function triggerImmediateHeartbeat(reason: string, level: 'hot' | 'warm' = 'hot'): void {
+  if (!heartbeatState || shuttingDown || !processAlive) return
+  log('LISTEN-Trigger (%s, %s) → sofortiger Heartbeat', reason, level)
+  if (level === 'hot') onHeartbeatEvent(heartbeatState)
+  else onHeartbeatWarmEvent(heartbeatState)
+  if (heartbeatTimeoutId) {
+    clearTimeout(heartbeatTimeoutId)
+    heartbeatTimeoutId = null
+  }
+  // Schedule sofortigen Poll (0ms timeout) — der Pollen-Loop schedult sich selbst neu danach
+  heartbeatTimeoutId = setTimeout(async () => {
+    try { await heartbeatPoll() } catch (err) { log('Trigger-Heartbeat error: %s', err) }
+    // re-schedule via normal Loop (im Boot-Code)
+    if (heartbeatState && !shuttingDown && processAlive) {
+      const delay = nextHeartbeatDelay(heartbeatState, AGENT_NAME)
+      heartbeatTimeoutId = setTimeout(async () => {
+        try { await heartbeatPoll() } catch (err) { log('Heartbeat after trigger error: %s', err) }
+      }, delay)
+    }
+  }, 0)
+}
+
+async function setupPgListeners(): Promise<void> {
+  try {
+    // Dedicated Client weil LISTEN den Connection blockt — nicht aus dem Pool.
+    listenClient = new pg.Client({ connectionString: process.env.DATABASE_URL })
+    await listenClient.connect()
+    await listenClient.query('LISTEN synapse_chat')
+    await listenClient.query('LISTEN synapse_channel')
+    await listenClient.query('LISTEN synapse_event')
+    await listenClient.query('LISTEN synapse_file')
+    listenClient.on('notification', (msg) => {
+      const channel = msg.channel ?? '<unknown>'
+      // Spezial-Behandlung fuer file-changes: Payload puffern fuer naechsten Wake-Prompt.
+      if (channel === 'synapse_file' && msg.payload) {
+        try {
+          const p = JSON.parse(msg.payload) as { project?: string; file_path?: string; edit_action?: string; agent_id?: string }
+          // Filter: nicht eigene Aenderungen (Echo-Schutz), nur wenn aus diesem Projekt
+          if (p.project === PROJECT_NAME && p.agent_id !== AGENT_NAME && p.file_path) {
+            recentFileChanges.push({
+              path: p.file_path,
+              action: p.edit_action ?? 'change',
+              agent: p.agent_id ?? '',
+              ts: Date.now(),
+            })
+            pruneFileChanges()
+          }
+        } catch { /* ignore parse errors */ }
+      }
+      // File-Changes sind 'hot' (Real-Time), andere Events nur 'warm' (Default 30s).
+      const level = channel === 'synapse_file' ? 'hot' : 'warm'
+      triggerImmediateHeartbeat(channel, level)
+    })
+    listenClient.on('error', (err) => {
+      log('PG-LISTEN error: %s — neu verbinden bei naechstem Heartbeat', err.message)
+    })
+    log('PG-LISTEN aktiv: synapse_chat, synapse_channel, synapse_event, synapse_file')
+  } catch (err) {
+    log('PG-LISTEN-Setup fehlgeschlagen (Heartbeat laeuft trotzdem): %s', err instanceof Error ? err.message : String(err))
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -91,11 +193,24 @@ function log(msg: string, ...args: unknown[]) {
   console.error(`[Wrapper:${AGENT_NAME}] ${msg}`, ...args)
 }
 
+/**
+ * Liefert das Context-Ceiling fuer das aktuelle Modell.
+ * Iter 2: zuerst Registry-Lookup (provider-agnostisch), Fallback auf legacy
+ * CONTEXT_CEILINGS (claude-spezifisch). Iter 2.5: Registry kommt aus DB.
+ */
 function getContextCeiling(): number {
+  const entry = resolveModel(AGENT_MODEL)
+  if (entry) return entry.contextWindow
   return CONTEXT_CEILINGS[AGENT_MODEL] ?? 200_000
 }
 
+/**
+ * Liefert die Warn-Schwelle in absoluten Tokens.
+ * Iter 2: aus Registry (corridorMin% * contextWindow). Fallback: legacy WARN_THRESHOLDS.
+ */
 function getWarnThreshold(): number {
+  const entry = resolveModel(AGENT_MODEL)
+  if (entry) return Math.floor((entry.corridorMin / 100) * entry.contextWindow)
   return WARN_THRESHOLDS[AGENT_MODEL] ?? 160_000
 }
 
@@ -251,6 +366,12 @@ async function handleWake(message: string | undefined, id?: number): Promise<Wra
 
 async function handleStop(id?: number): Promise<WrapperResponse> {
   log('Stop requested — asking agent to save and shutting down')
+
+  // SOFORT shuttingDown setzen — verhindert dass der Exit-Handler den Inner-Claude-
+  // Exit als "Crash" interpretiert + KEEP_ALIVE-Auto-Respawn ausloest. Sonst Race:
+  // Agent saved, Inner-Claude exit, Exit-Handler sieht !shuttingDown → respawn,
+  // Wrapper lebt weiter obwohl explizit gestoppt wurde.
+  shuttingDown = true
 
   // Ask agent to save before stopping
   if (processAlive && !agentBusy) {
@@ -566,12 +687,29 @@ Wenn du weiterarbeitest ohne den trigger_respawn Flag, rotiert der Wrapper dich 
     const hadSynapseItems = await pollSynapseItems()
     await updateStatusFile()
 
-    // keepAlive: Wake agent even when no new messages arrived
-    if (KEEP_ALIVE && !hadChannelMessages && !hadInboxMessages && !hadSynapseItems && !agentBusy) {
+    // Adaptive Heartbeat-State: bei Aktivitaet auf 10s reset, sonst eskalieren
+    if (heartbeatState) {
+      const hadActivity = hadChannelMessages || hadInboxMessages || hadSynapseItems
+      if (hadActivity) {
+        onHeartbeatEvent(heartbeatState)
+        log('Heartbeat-Aktivitaet erkannt → reset auf %s', describeInterval(heartbeatState.currentIntervalMs))
+      } else {
+        const prevIdx = heartbeatState.ladderIdx
+        onHeartbeatIdleStep(heartbeatState)
+        if (heartbeatState.ladderIdx !== prevIdx) {
+          log('Heartbeat idle-Eskalation → %s', describeInterval(heartbeatState.currentIntervalMs))
+        }
+      }
+    }
+
+    // keepAlive: Wake agent even when no new messages arrived (oder wenn nur File-Changes da sind).
+    const fileChangeText = consumeFileChangesText()
+    if ((KEEP_ALIVE || fileChangeText) && !hadChannelMessages && !hadInboxMessages && !hadSynapseItems && !agentBusy) {
       const percent = getContextPercent()
       const total = totalInputTokens + totalOutputTokens
       const tokenInfo = `[Context: ${Math.round(total / 1000)}k tokens, ${percent}%]`
-      const prompt = `${tokenInfo} HEARTBEAT — Keine neuen Nachrichten. Fuehre deinen laufenden Task fort oder poste einen Status-Update in deinen Channel.`
+      let prompt = `${tokenInfo} HEARTBEAT — Keine neuen Nachrichten. Fuehre deinen laufenden Task fort oder poste einen Status-Update in deinen Channel.`
+      if (fileChangeText) prompt += `\n\n${fileChangeText}`
       try {
         await wakeAgent(prompt)
       } catch (err) {
@@ -878,6 +1016,15 @@ function setupProcessManagerEvents() {
         // Auto-Respawn: Wrapper bleibt am Leben, startet neue Claude-Instanz.
         // fromCrash=true → ueberspringt wakeAgent() weil Inner-Claude bereits tot ist.
         log('Agent process crashed — KEEP_ALIVE aktiv, starte Rotation...')
+        const now = Date.now();
+        crashTimestamps = crashTimestamps.filter(t => now - t < 60000);
+        crashTimestamps.push(now);
+
+        if (crashTimestamps.length >= 3) {
+          log('Kritische Crash-Rate — Abbruch nach 3 Crashes innerhalb 60s');
+          void cleanup().then(() => process.exit(1));
+          return;
+        }
         void rotateAgent(true).catch((err) => {
           log('Auto-Respawn fehlgeschlagen: %s — Wrapper beendet sich', err)
           void cleanup().then(() => process.exit(1))
@@ -923,7 +1070,16 @@ function setupProcessManagerEvents() {
 async function cleanup() {
   log('Cleaning up...')
 
-  // Stop heartbeat
+  // Stop heartbeat (legacy interval und neuer adaptive timeout)
+  if (heartbeatTimeoutId) {
+    clearTimeout(heartbeatTimeoutId)
+    heartbeatTimeoutId = null
+  }
+  // Close PG-LISTEN client
+  if (listenClient) {
+    try { await listenClient.end() } catch { /* ignore */ }
+    listenClient = null
+  }
   if (heartbeatIntervalId) {
     clearInterval(heartbeatIntervalId)
     heartbeatIntervalId = null
@@ -1083,13 +1239,29 @@ async function main() {
   // 6. Initialize watermarks from DB
   await initializeWatermarks()
 
-  // 7. Start heartbeat polling (mit Startup-Delay damit Claude's MCP-Server bereit sind)
+  // 7. Start adaptive heartbeat polling (mit Startup-Delay damit Claude's MCP-Server bereit sind)
+  // Iter Heartbeat-Refactor: rekursives setTimeout mit Backoff-Ladder statt fixem setInterval.
   const STARTUP_DELAY_MS = 30_000
   log('Heartbeat startet in %ds (MCP-Server Startup-Delay)', STARTUP_DELAY_MS / 1000)
   setTimeout(() => {
-    // Heartbeat SOFORT starten — unabhaengig vom Initial Wake
-    heartbeatIntervalId = setInterval(() => void heartbeatPoll(), POLL_INTERVAL)
-    log('Heartbeat gestartet (interval: %dms)', POLL_INTERVAL)
+    // Initialize adaptive heartbeat state
+    heartbeatState = createHeartbeatState({ agentName: AGENT_NAME })
+    const scheduleNextHeartbeat = () => {
+      if (shuttingDown || !processAlive) return
+      const delay = heartbeatState ? nextHeartbeatDelay(heartbeatState, AGENT_NAME) : 30_000
+      heartbeatTimeoutId = setTimeout(async () => {
+        try {
+          await heartbeatPoll()
+        } catch (err) {
+          log('Heartbeat poll uncaught error: %s', err)
+        }
+        scheduleNextHeartbeat()
+      }, delay)
+    }
+    scheduleNextHeartbeat()
+    log('Heartbeat gestartet (adaptive, start: %s)', describeInterval(heartbeatState.currentIntervalMs))
+    // PG-LISTEN parallel: triggert sofortigen Heartbeat bei DB-Notification (Channel/Chat/Event)
+    void setupPgListeners()
 
     // Initial Wake: Agent mit seiner Aufgabe starten (Task steht im System-Prompt)
     log('Initial Wake: Starte Agent mit Aufgabe')

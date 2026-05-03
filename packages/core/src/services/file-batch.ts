@@ -19,6 +19,7 @@
  */
 
 import { getPool } from '../db/client.js';
+import { resolveAgentId } from './agent-id-resolver.js';
 import {
   contentHash,
   searchReplace,
@@ -575,7 +576,7 @@ export async function planBatch(args: {
      RETURNING id::text AS id, expires_at::text AS expires_at`,
     [
       args.project,
-      args.agent_id ?? null,
+      resolveAgentId(args.agent_id),
       JSON.stringify(args.ops),
       JSON.stringify(expectedHashes),
       JSON.stringify(previews),
@@ -764,7 +765,7 @@ export async function commitBatch(args: {
       await pool.query(
         `INSERT INTO file_versions (project, file_path, content, content_hash, edit_action, agent_id, batch_id, size_bytes, reason)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-        [plan.project, filePath, oldContent, contentHash(oldContent), `batch:${args.plan_id}:delete`, args.agent_id ?? null, batchIdSafe ?? null, oldSize, effectiveReason ?? null],
+        [plan.project, filePath, oldContent, contentHash(oldContent), `batch:${args.plan_id}:delete`, resolveAgentId(args.agent_id), batchIdSafe ?? null, oldSize, effectiveReason ?? null],
       );
       writtenFiles.push({ file_path: filePath, size: 0, hash: EMPTY_CONTENT_HASH, created: false, deleted: true });
     } else if (!existedBefore) {

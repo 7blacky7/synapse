@@ -237,6 +237,23 @@ async function dispatchSpecialistAction(job: SpecialistJobRow): Promise<Record<s
       )) as Record<string, unknown>
     }
 
+    case 'status': {
+      // Iter 3: REST-API status verfuegbar machen. Bei name=Array → batch-status
+      const names = Array.isArray(args.name) ? (args.name as string[]) : (args.name ? [String(args.name)] : [])
+      if (names.length === 0) {
+        // Alle Spezialisten
+        return (await tools.specialistStatusTool(String(args.project_path))) as Record<string, unknown>
+      }
+      if (names.length === 1) {
+        return (await tools.specialistStatusTool(String(args.project_path), names[0])) as Record<string, unknown>
+      }
+      const results: Array<Record<string, unknown>> = []
+      for (const n of names) {
+        results.push((await tools.specialistStatusTool(String(args.project_path), n)) as Record<string, unknown>)
+      }
+      return { results, count: results.length }
+    }
+
     default:
       throw new Error(`Unbekannte Specialist-Action: ${job.action}`)
   }

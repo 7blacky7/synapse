@@ -2295,15 +2295,11 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
           message: 'capabilities-Check ist nur ueber lokalen MCP-Server verfuegbar (REST-API hat keinen Claude-CLI-Zugriff). Pruefe via shell({command:"which claude"}) ob CLI verfuegbar ist.',
         };
       }
-      if (action === 'status') {
-        return {
-          success: false,
-          message: 'status ist aktuell nicht ueber REST-API verfuegbar (kein PG-Schema fuer Live-Wrapper-Status). Workaround: spawn-Response enthaelt PID + socket; spaetere Status-Checks via lokalem MCP.',
-        };
-      }
+      // status wird via PG-Queue an Daemon delegiert (Iter 3)
+      // status liest ueber Daemon → status.json + heartbeat. Kein Stub mehr.
 
       const actionStr = String(action ?? '');
-      const queueableActions = ['spawn', 'spawn_batch', 'stop', 'purge', 'wake', 'update_skill'];
+      const queueableActions = ['spawn', 'spawn_batch', 'stop', 'purge', 'wake', 'update_skill', 'status'];
       if (!queueableActions.includes(actionStr)) {
         return { success: false, error: `Unbekannte specialist action: "${actionStr}"` };
       }
@@ -2311,7 +2307,7 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
       try {
         const { id } = await enqueueSpecialistJob({
           project,
-          action: actionStr as 'spawn' | 'spawn_batch' | 'stop' | 'purge' | 'wake' | 'update_skill',
+          action: actionStr as 'spawn' | 'spawn_batch' | 'stop' | 'purge' | 'wake' | 'update_skill' | 'status',
           args: args as Record<string, unknown>,
         });
         const result = await waitForSpecialistJob(id, 60_000);
