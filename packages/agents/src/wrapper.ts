@@ -949,9 +949,13 @@ Arbeite diese Items jetzt ab.`
   return true
 }
 
-/** Laedt die Channel-Mitgliedschaft des Agenten aus der DB (einmalig beim Start). */
-async function initCachedChannels(): Promise<void> {
-  if (!PROJECT_NAME) return
+/**
+ * Liest die Channel-Mitgliedschaft des Agenten aus der DB (pro 90s-Flush).
+ * Wird nicht gecacht — pro Flush neu gelesen damit JOIN/LEAVE widergespiegelt wird.
+ * Non-fatal: bei Fehler leeres Array zurueck.
+ */
+async function fetchCurrentChannels(): Promise<string[]> {
+  if (!PROJECT_NAME) return []
   try {
     const pool = getPool()
     const { rows } = await pool.query<{ channel_name: string }>(
@@ -962,35 +966,61 @@ async function initCachedChannels(): Promise<void> {
        ORDER BY c.name`,
       [AGENT_NAME],
     )
-    cachedChannels = rows.map(r => r.channel_name)
-    log('Channel-Cache initialisiert: [%s]', cachedChannels.join(', '))
-  } catch (err) {
-    log('initCachedChannels fehlgeschlagen (non-fatal): %s', err)
+    return rows.map(r => r.channel_name)
+  } catch {
+    return cachedChannels // Fallback: letzter bekannter Wert
   }
+}
+
+/** Initialisiert den Channel-Cache beim Start (einmaliger Warm-up). */
+async function initCachedChannels(): Promise<void> {
+  cachedChannels = await fetchCurrentChannels()
+  log('Channel-Cache initialisiert: [%s]', cachedChannels.join(', '))
 }
 
 /**
  * Baut den vollstaendigen PG-Status-Record aus dem aktuellen Wrapper-State.
  * IMMER alle transient-Felder mitliefern (skeptiker-pg: Hard-Overwrite-Bug).
+ * channels wird frisch aus DB gelesen (async) damit JOIN/LEAVE widergespiegelt wird.
  */
-function buildFullPgStatus(statusOverride?: 'running' | 'idle' | 'crashed' | 'stopped') {
+async function buildFullPgStatus(
+  statusOverride?: 'running' | 'idle' | 'crashed' | 'stopped',
+  channelsSnapshot?: string[],
+) {
   const effectiveStatus = statusOverride ?? (
     processAlive ? (agentBusy ? 'running' : 'idle') : 'crashed'
   )
+  // Fix skeptiker-pg #5: bei terminal-Status busy immer false
+  const effectiveBusy = (effectiveStatus === 'crashed' || effectiveStatus === 'stopped')
+    ? false
+    : agentBusy
+
+  // Fix skeptiker-pg #2: modelFullId + provider aus resolveModel()
+  const modelEntry = resolveModel(AGENT_MODEL)
+
+  // Fix skeptiker-pg #3: channels live lesen (Snapshot falls bereits geholt)
+  const channels = channelsSnapshot ?? await fetchCurrentChannels()
+  cachedChannels = channels // Cache aktualisieren
+
   return {
     agentName: AGENT_NAME,
     project: PROJECT_NAME,
     wrapperPid: process.pid,
+    // Fix skeptiker-pg #1: innerPid = Claude-CLI-PID aus processManager
+    innerPid: processManager.getStatus().get(AGENT_NAME)?.pid ?? null,
     socketPath: SOCKET_PATH,
     model: AGENT_MODEL,
+    // Fix skeptiker-pg #2: modelFullId + provider
+    modelFullId: modelEntry?.fullId ?? null,
+    provider: modelEntry?.provider ?? null,
     status: effectiveStatus,
-    busy: agentBusy,
+    busy: effectiveBusy,
     tokensInput: totalInputTokens,
     tokensOutput: totalOutputTokens,
     tokensPercent: getContextPercent(),
     contextCeiling: getContextCeiling(),
     connectedMcp: connectedClients.size > 0,
-    channels: cachedChannels,
+    channels,
     currentTask: null as string | null,
   }
 }
@@ -1005,9 +1035,10 @@ async function updateStatusPg(statusOverride?: 'running' | 'idle' | 'crashed' | 
   const isForced = statusOverride !== undefined
   const now = Date.now()
   if (!isForced && now - lastPgWriteTs < WRAPPER_STATUS_PG_WRITE_INTERVAL_MS) return
-  lastPgWriteTs = now
+  // Fix skeptiker-pg #4: lastPgWriteTs erst nach erfolgreichem Write setzen (nur fuer nicht-forced)
   try {
-    await upsertWrapperStatus(buildFullPgStatus(statusOverride))
+    await upsertWrapperStatus(await buildFullPgStatus(statusOverride))
+    if (!isForced) lastPgWriteTs = now
   } catch (err) {
     log('PG-Status-Schreiben fehlgeschlagen (non-fatal): %s', err)
   }
@@ -1414,12 +1445,16 @@ async function main() {
   // 11. Initiale PG-Zeile schreiben (status='running', tokens=0)
   if (PROJECT_NAME) {
     try {
+      const spawnModelEntry = resolveModel(AGENT_MODEL)
       await upsertWrapperStatus({
         agentName: AGENT_NAME,
         project: PROJECT_NAME,
         wrapperPid: process.pid,
+        innerPid: null, // Claude CLI noch nicht gestartet an diesem Punkt
         socketPath: SOCKET_PATH,
         model: AGENT_MODEL,
+        modelFullId: spawnModelEntry?.fullId ?? null,
+        provider: spawnModelEntry?.provider ?? null,
         status: 'running',
         busy: false,
         tokensInput: 0,
