@@ -48,7 +48,7 @@ export const chatTool: ConsolidatedTool = {
         project: { type: 'string', description: 'Projekt-Name' },
         project_path: { type: 'string', description: 'Absoluter Pfad zum Projekt-Ordner' },
         model: { type: 'string', description: 'Modell-Name (z.B. claude-opus-4-6)' },
-        cutoff_date: { type: 'string', description: 'Wissens-Cutoff (YYYY-MM-DD)' },
+        cutoff_date: { type: 'string', description: 'Wissens-Cutoff. Format YYYY-MM-DD (auch YYYY-MM und YYYY akzeptiert, wird automatisch gepadded). NICHT nur Jahr-Monat ohne Tag im Postgres-DATE-Feld.' },
 
         // ===== unregister_batch / register_batch =====
         ids: {

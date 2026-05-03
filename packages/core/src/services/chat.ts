@@ -58,6 +58,14 @@ const MODEL_CUTOFFS: Record<string, string> = {
  * Registriert einen Agenten fuer ein Projekt
  * Gibt die Session mit automatisch erkanntem Cutoff zurueck
  */
+function normalizeCutoffDate(s: string | null | undefined): string | null {
+  if (!s) return null;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+  if (/^\d{4}-\d{2}$/.test(s)) return `${s}-01`;
+  if (/^\d{4}$/.test(s)) return `${s}-01-01`;
+  throw new Error(`Ungueltiges cutoff_date "${s}". Erwartet YYYY-MM-DD (oder YYYY-MM, YYYY).`);
+}
+
 export async function registerAgent(
   id: string,
   project: string,
@@ -71,7 +79,10 @@ export async function registerAgent(
   const matchedCutoff = model
     ? MODEL_CUTOFFS[model] || Object.entries(MODEL_CUTOFFS).find(([key]) => model.startsWith(key))?.[1] || null
     : null;
-  const resolvedCutoff = cutoffDate || matchedCutoff;
+  const rawCutoff = cutoffDate || matchedCutoff;
+  // Web-KIs schicken oft "YYYY-MM" oder "YYYY" — pad zu "YYYY-MM-DD" damit
+  // Postgres DATE nicht mit DateTimeParseError 500'd (war Repro: GPT-5 Web).
+  const resolvedCutoff = normalizeCutoffDate(rawCutoff);
 
   await pool.query(
     `INSERT INTO agent_sessions (id, project, model, cutoff_date, status, registered_at)

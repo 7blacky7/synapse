@@ -447,7 +447,7 @@ const MCP_TOOLS = [
         project: { type: 'string', description: 'Projekt-Name' },
         project_path: { type: 'string', description: 'Absoluter Pfad zum Projekt-Ordner' },
         model: { type: 'string', description: 'Modell-Name (z.B. claude-opus-4-6)' },
-        cutoff_date: { type: 'string', description: 'Wissens-Cutoff (YYYY-MM-DD)' },
+        cutoff_date: { type: 'string', description: 'Wissens-Cutoff. Format YYYY-MM-DD (auch YYYY-MM und YYYY akzeptiert, wird automatisch gepadded). NICHT nur Jahr-Monat ohne Tag im Postgres-DATE-Feld.' },
         ids: { type: 'array', items: { type: 'string' }, description: 'Liste der Agent-IDs (fuer unregister_batch)' },
         agents: {
           type: 'array',
@@ -1208,6 +1208,21 @@ function objArray<T extends Record<string, unknown>>(
 // =====================================================================
 // handleToolCall — Kompakter Dispatcher fuer 14 konsolidierte Tools
 // =====================================================================
+// Aus Request-Headern eine Agent-ID ableiten (Web-KIs ohne Wrapper-Kontext).
+// OpenAI/ChatGPT: User-Agent "openai-mcp/*" + X-Openai-Session "v1/<token>".
+//   → agent_id = "gpt-" + first8(session-token), pro ChatGPT-Konversation stabil.
+// Claude: liefert keinen stable User-/Session-Identifier — hier kein Auto-Detect.
+function deriveAgentIdFromHeaders(headers: Record<string, unknown>): string | undefined {
+  const ua = String(headers['user-agent'] || '').toLowerCase();
+  if (ua.startsWith('openai-mcp')) {
+    const session = String(headers['x-openai-session'] || '');
+    const m = session.match(/v1\/([A-Za-z0-9]{8})/);
+    if (m) return `gpt-${m[1].toLowerCase()}`;
+    return 'gpt-web';
+  }
+  return undefined;
+}
+
 async function handleToolCall(name: string, args: Record<string, unknown>): Promise<unknown> {
   const action = str(args, 'action');
 
@@ -3284,6 +3299,8 @@ export async function mcpRoutes(fastify: FastifyInstance): Promise<void> {
       return reply.status(400).send({ jsonrpc: '2.0', id, error: { code: -32600, message: 'Invalid JSON-RPC version' } });
     }
 
+    const derivedAgentId = deriveAgentIdFromHeaders(request.headers as Record<string, unknown>);
+
     try {
       let result: unknown;
 
@@ -3303,6 +3320,12 @@ export async function mcpRoutes(fastify: FastifyInstance): Promise<void> {
         case 'tools/call': {
           const toolName = params?.name as string;
           const toolArgs = (params?.arguments || {}) as Record<string, unknown>;
+          // Auto-Detect: Web-KIs ohne Wrapper-Kontext bekommen agent_id aus
+          // dem User-Agent/Session-Header (siehe deriveAgentIdFromHeaders).
+          // Setzt nur wenn der Caller nicht selbst eine ID mitschickt.
+          if (derivedAgentId && !toolArgs.agent_id) {
+            toolArgs.agent_id = derivedAgentId;
+          }
           const toolResult = await handleToolCall(toolName, toolArgs);
           result = { content: [{ type: 'text', text: JSON.stringify(toolResult, null, 2) }] };
           break;
@@ -3348,6 +3371,8 @@ export async function mcpRoutes(fastify: FastifyInstance): Promise<void> {
       return reply.status(400).send({ jsonrpc: '2.0', id, error: { code: -32600, message: 'Invalid JSON-RPC version' } });
     }
 
+    const derivedAgentId = deriveAgentIdFromHeaders(request.headers as Record<string, unknown>);
+
     console.log(`[MCP] Request: ${method}`);
 
     try {
@@ -3369,6 +3394,12 @@ export async function mcpRoutes(fastify: FastifyInstance): Promise<void> {
         case 'tools/call': {
           const toolName = params?.name as string;
           const toolArgs = (params?.arguments || {}) as Record<string, unknown>;
+          // Auto-Detect: Web-KIs ohne Wrapper-Kontext bekommen agent_id aus
+          // dem User-Agent/Session-Header (siehe deriveAgentIdFromHeaders).
+          // Setzt nur wenn der Caller nicht selbst eine ID mitschickt.
+          if (derivedAgentId && !toolArgs.agent_id) {
+            toolArgs.agent_id = derivedAgentId;
+          }
           const toolResult = await handleToolCall(toolName, toolArgs);
           result = { content: [{ type: 'text', text: JSON.stringify(toolResult, null, 2) }] };
           break;
