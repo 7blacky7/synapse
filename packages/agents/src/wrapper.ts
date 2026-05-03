@@ -97,6 +97,26 @@ let heartbeatTimeoutId: ReturnType<typeof setTimeout> | null = null
 let heartbeatState: HeartbeatState | null = null
 let listenClient: pg.Client | null = null
 
+/** Buffered file-change events fuer naechsten Wake-Prompt. Cap 20 + 5min Alter. */
+interface FileChangeEvent { path: string; action: string; agent: string; ts: number }
+let recentFileChanges: FileChangeEvent[] = []
+
+function pruneFileChanges(): void {
+  const fiveMinAgo = Date.now() - 5 * 60_000
+  recentFileChanges = recentFileChanges.filter(c => c.ts >= fiveMinAgo).slice(-20)
+}
+
+function consumeFileChangesText(): string | null {
+  pruneFileChanges()
+  if (recentFileChanges.length === 0) return null
+  const lines = recentFileChanges.map(c => {
+    const by = c.agent ? `by ${c.agent}` : 'by unbekannt'
+    return `- ${c.path} (${c.action} ${by})`
+  })
+  recentFileChanges = []
+  return `FILE-CHANGES seit letztem Wake:\n${lines.join('\n')}`
+}
+
 /** Trigger sofortigen Heartbeat (z.B. nach LISTEN-Notification) */
 function triggerImmediateHeartbeat(reason: string): void {
   if (!heartbeatState || shuttingDown || !processAlive) return
@@ -127,18 +147,31 @@ async function setupPgListeners(): Promise<void> {
     await listenClient.query('LISTEN synapse_chat')
     await listenClient.query('LISTEN synapse_channel')
     await listenClient.query('LISTEN synapse_event')
+    await listenClient.query('LISTEN synapse_file')
     listenClient.on('notification', (msg) => {
-      // Filter im Trigger: nur Wake wenn relevant (z.B. chat addressed an uns, channel wo wir Member sind).
-      // Das Filtering macht eh der naechste pollChannelMessages/pollInboxMessages — wir brauchen
-      // hier nur einen "irgendwas-passiert"-Indikator damit Heartbeat-Backoff zurueckgesetzt wird.
       const channel = msg.channel ?? '<unknown>'
+      // Spezial-Behandlung fuer file-changes: Payload puffern fuer naechsten Wake-Prompt.
+      if (channel === 'synapse_file' && msg.payload) {
+        try {
+          const p = JSON.parse(msg.payload) as { project?: string; file_path?: string; edit_action?: string; agent_id?: string }
+          // Filter: nicht eigene Aenderungen (Echo-Schutz), nur wenn aus diesem Projekt
+          if (p.project === PROJECT_NAME && p.agent_id !== AGENT_NAME && p.file_path) {
+            recentFileChanges.push({
+              path: p.file_path,
+              action: p.edit_action ?? 'change',
+              agent: p.agent_id ?? '',
+              ts: Date.now(),
+            })
+            pruneFileChanges()
+          }
+        } catch { /* ignore parse errors */ }
+      }
       triggerImmediateHeartbeat(channel)
     })
     listenClient.on('error', (err) => {
       log('PG-LISTEN error: %s — neu verbinden bei naechstem Heartbeat', err.message)
-      // Auto-Reconnect koennte hier rein — vorerst weicher Fallback (Heartbeat findet's eh)
     })
-    log('PG-LISTEN aktiv: synapse_chat, synapse_channel, synapse_event')
+    log('PG-LISTEN aktiv: synapse_chat, synapse_channel, synapse_event, synapse_file')
   } catch (err) {
     log('PG-LISTEN-Setup fehlgeschlagen (Heartbeat laeuft trotzdem): %s', err instanceof Error ? err.message : String(err))
   }
@@ -655,12 +688,14 @@ Wenn du weiterarbeitest ohne den trigger_respawn Flag, rotiert der Wrapper dich 
       }
     }
 
-    // keepAlive: Wake agent even when no new messages arrived
-    if (KEEP_ALIVE && !hadChannelMessages && !hadInboxMessages && !hadSynapseItems && !agentBusy) {
+    // keepAlive: Wake agent even when no new messages arrived (oder wenn nur File-Changes da sind).
+    const fileChangeText = consumeFileChangesText()
+    if ((KEEP_ALIVE || fileChangeText) && !hadChannelMessages && !hadInboxMessages && !hadSynapseItems && !agentBusy) {
       const percent = getContextPercent()
       const total = totalInputTokens + totalOutputTokens
       const tokenInfo = `[Context: ${Math.round(total / 1000)}k tokens, ${percent}%]`
-      const prompt = `${tokenInfo} HEARTBEAT — Keine neuen Nachrichten. Fuehre deinen laufenden Task fort oder poste einen Status-Update in deinen Channel.`
+      let prompt = `${tokenInfo} HEARTBEAT — Keine neuen Nachrichten. Fuehre deinen laufenden Task fort oder poste einen Status-Update in deinen Channel.`
+      if (fileChangeText) prompt += `\n\n${fileChangeText}`
       try {
         await wakeAgent(prompt)
       } catch (err) {

@@ -36,12 +36,8 @@ import { checkErrorPatterns, type ErrorPatternWarning } from './error-patterns.j
  * Reihenfolge: explizit uebergeben -> SYNAPSE_DEFAULT_AGENT_ID env -> null.
  * KEIN harter 'koordinator'-Default — bleibt null wenn nichts gesetzt ist.
  */
-function resolveAgentId(agentId?: string | null): string | null {
-  if (agentId && agentId.trim().length > 0) return agentId;
-  const fromEnv = process.env.SYNAPSE_DEFAULT_AGENT_ID;
-  if (fromEnv && fromEnv.trim().length > 0) return fromEnv;
-  return null;
-}
+// resolveAgentId: zentral in agent-id-resolver.ts (DRY mit file-batch.ts)
+import { resolveAgentId } from './agent-id-resolver.js';
 
 /**
  * IDEA-3a: Optionale Enrichment-Felder fuer file_versions.

@@ -632,6 +632,27 @@ CREATE INDEX IF NOT EXISTS idx_file_batch_plans_status ON file_batch_plans(proje
 CREATE INDEX IF NOT EXISTS idx_file_batch_plans_open ON file_batch_plans(project, expires_at) WHERE status = 'open';
 ALTER TABLE file_batch_plans ADD COLUMN IF NOT EXISTS reason TEXT;
 
+-- File-Change-Notify: jeder INSERT in file_versions feuert pg_notify('synapse_file', ...)
+-- damit Wrapper bei File-Aenderungen sofort reagieren koennen (Heartbeat-Reset auf 10s
+-- + buffered wake-message mit "welche Datei wurde von wem geaendert").
+CREATE OR REPLACE FUNCTION notify_file_change() RETURNS trigger AS $$
+BEGIN
+  PERFORM pg_notify('synapse_file', json_build_object(
+    'project', NEW.project,
+    'file_path', NEW.file_path,
+    'edit_action', NEW.edit_action,
+    'agent_id', COALESCE(NEW.agent_id, ''),
+    'id', NEW.id::text
+  )::text);
+  RETURN NEW;
+END
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_notify_file_change ON file_versions;
+CREATE TRIGGER trg_notify_file_change
+  AFTER INSERT ON file_versions
+  FOR EACH ROW EXECUTE FUNCTION notify_file_change();
+
 -- ==========================================================================
 -- model_registry: zentrale Source-of-Truth fuer Spezialisten-Modelle.
 -- Web-UI/REST kann neue Modelle anlegen ohne Recompile.
