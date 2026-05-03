@@ -44,7 +44,7 @@ interface DbRow {
   context_window: number;
   output_limit: number | null;
   env_required: string[] | null;
-  binary: string;
+  runtime_binary: string;
   runtime_path: string | null;
   corridor_min: number;
   corridor_max: number;
@@ -63,7 +63,7 @@ function rowToEntry(row: DbRow): ModelEntry {
     contextWindow: row.context_window,
     outputLimit: row.output_limit,
     envRequired: row.env_required ?? [],
-    binary: (row.binary === 'node' ? 'node' : 'claude'),
+    binary: (row.runtime_binary === 'node' ? 'node' : 'claude'),
     runtimePath: row.runtime_path,
     corridorMin: row.corridor_min,
     corridorMax: row.corridor_max,
@@ -79,7 +79,7 @@ async function loadCache(): Promise<Map<string, ModelEntry>> {
   if (cache) return cache;
   const pool = getPool();
   const result = await pool.query<DbRow>(
-    `SELECT alias, full_id, provider, context_window, output_limit, env_required, binary, runtime_path,
+    `SELECT alias, full_id, provider, context_window, output_limit, env_required, runtime_binary, runtime_path,
             corridor_min, corridor_max, pricing_input_usd_per_mtok, pricing_output_usd_per_mtok,
             pricing_cache_usd_per_mtok, cutoff_date, enabled
      FROM model_registry WHERE enabled = true`,

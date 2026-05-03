@@ -647,7 +647,7 @@ CREATE TABLE IF NOT EXISTS model_registry (
   context_window INT NOT NULL,
   output_limit INT,
   env_required TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[],
-  binary TEXT NOT NULL DEFAULT 'claude',
+  runtime_binary TEXT NOT NULL DEFAULT 'claude',  -- 'binary' ist SQL-reserved
   runtime_path TEXT,
   corridor_min INT NOT NULL,
   corridor_max INT NOT NULL,
@@ -673,7 +673,7 @@ ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS model_full_id TEXT;
 
 -- Initial-Seed (idempotent via ON CONFLICT)
 INSERT INTO model_registry
-  (alias, full_id, provider, context_window, env_required, binary, runtime_path, corridor_min, corridor_max, pricing_input_usd_per_mtok, pricing_output_usd_per_mtok, pricing_cache_usd_per_mtok, cutoff_date)
+  (alias, full_id, provider, context_window, env_required, runtime_binary, runtime_path, corridor_min, corridor_max, pricing_input_usd_per_mtok, pricing_output_usd_per_mtok, pricing_cache_usd_per_mtok, cutoff_date)
 VALUES
   ('opus',              'claude-opus-4-7',                'anthropic',  200000, ARRAY[]::TEXT[],          'claude', NULL,                                90, 99, 15.00, 75.00, 1.50, '2025-01-01'),
   ('sonnet',            'claude-sonnet-4-6',              'anthropic',  200000, ARRAY[]::TEXT[],          'claude', NULL,                                80, 88,  3.00, 15.00, 0.30, '2025-01-01'),
