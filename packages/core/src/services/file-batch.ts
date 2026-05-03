@@ -87,6 +87,20 @@ export interface FileBatchOp {
    * Hinweis: Single-Op-Plaene verhalten sich identisch in beiden Modi.
    */
   shift_mode?: 'auto' | 'absolute';
+  /**
+   * IDEA-4: Optional Anchor-Verifikation vor Op-Anwendung.
+   * Pre-flight Check: pruefe dass die Ziel-Zeile (line_start fuer replace/delete,
+   * after_line fuer insert) den angegebenen Text enthaelt. Mismatch -> harter
+   * Error mit Zeilen-Info, KEINE Mutation.
+   *
+   * - anchor_text: exakter String-Match (target.trim() === anchor.trim())
+   * - anchor_contains: Substring-Match (target.includes(anchor))
+   *
+   * KEIN MUSS — wenn beide undefined: kein Check, Verhalten wie zuvor.
+   * Schuetzt vor Drift zwischen plan() und commit() wenn Datei extern geaendert.
+   */
+  anchor_text?: string;
+  anchor_contains?: string;
 }
 
 /**
@@ -286,6 +300,42 @@ interface PreparedFile {
   wasNewlyCreated?: boolean;
 }
 
+
+/**
+ * IDEA-4: Pre-flight Anchor-Verifikation. Wirft mit klarem Error bei Mismatch.
+ * Anker auf 1-basierte Zielzeile (line_start fuer replace/delete, after_line fuer insert).
+ * after_line=0 (insert am Anfang) → kein Check moeglich, Anker ignoriert.
+ */
+function verifyAnchor(
+  content: string,
+  targetLine: number,
+  op: FileBatchOp,
+): void {
+  if (op.anchor_text === undefined && op.anchor_contains === undefined) return;
+  if (targetLine < 1) return; // insert_after=0 → no anchor check
+  const lines = content.split('\n');
+  if (targetLine > lines.length) {
+    throw new Error(
+      `anchor mismatch: Zielzeile ${targetLine} ausserhalb der Datei (nur ${lines.length} Zeilen)`,
+    );
+  }
+  const actual = lines[targetLine - 1];
+  if (op.anchor_text !== undefined) {
+    if (actual.trim() !== op.anchor_text.trim()) {
+      throw new Error(
+        `anchor mismatch at line ${targetLine}: expected ${JSON.stringify(op.anchor_text)}, got ${JSON.stringify(actual.slice(0, 120))}`,
+      );
+    }
+  }
+  if (op.anchor_contains !== undefined) {
+    if (!actual.includes(op.anchor_contains)) {
+      throw new Error(
+        `anchor_contains mismatch at line ${targetLine}: expected substring ${JSON.stringify(op.anchor_contains)}, got ${JSON.stringify(actual.slice(0, 120))}`,
+      );
+    }
+  }
+}
+
 /**
  * Wendet eine Op sequenziell auf die Buffer-Map an. Mutiert die Buffer direkt
  * (bei move/copy mehrere Files gleichzeitig). Wirft bei semantischen Fehlern.
@@ -352,6 +402,7 @@ function applyOpInMemory(
         throw new Error('replace_lines: line_start, line_end, content erforderlich');
       }
       if (src.deleted) throw new Error('replace_lines: Datei wurde in dieser Batch geloescht');
+      verifyAnchor(src.finalContent, op.line_start, op);
       const newContent = replaceLines(src.finalContent, op.line_start, op.line_end, op.content);
       src.finalContent = newContent;
       src.finalHash = contentHash(newContent);
@@ -362,6 +413,7 @@ function applyOpInMemory(
         throw new Error('insert_after: after_line, content erforderlich');
       }
       if (src.deleted) throw new Error('insert_after: Datei wurde in dieser Batch geloescht');
+      verifyAnchor(src.finalContent, op.after_line, op);
       const newContent = insertAfterLine(src.finalContent, op.after_line, op.content);
       src.finalContent = newContent;
       src.finalHash = contentHash(newContent);
@@ -372,6 +424,7 @@ function applyOpInMemory(
         throw new Error('delete_lines: line_start, line_end erforderlich');
       }
       if (src.deleted) throw new Error('delete_lines: Datei wurde in dieser Batch geloescht');
+      verifyAnchor(src.finalContent, op.line_start, op);
       const newContent = deleteLines(src.finalContent, op.line_start, op.line_end);
       src.finalContent = newContent;
       src.finalHash = contentHash(newContent);

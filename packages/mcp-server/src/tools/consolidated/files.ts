@@ -176,6 +176,14 @@ export const filesTool: ConsolidatedTool = {
                 enum: ['auto', 'absolute'],
                 description: 'Default "auto" = line-Ops auf gleicher Datei werden intern reverse-order appliziert (User gibt absolute Zeilen aus Pre-Plan-Snapshot an). "absolute" = Op wird in Plan-Reihenfolge mit den angegebenen Zeilen auf den AKTUELLEN Buffer-Stand bezogen. Single-Op-Plaene verhalten sich identisch in beiden Modi.',
               },
+              anchor_text: {
+                type: 'string',
+                description: 'IDEA-4 (optional): Pre-flight Verifikation — pruefe dass die Ziel-Zeile (line_start fuer replace/delete, after_line fuer insert) exakt diesen Text enthaelt (.trim()-vergleich). Mismatch -> harter Error, KEINE Mutation. Schuetzt vor Drift zwischen plan() und commit().',
+              },
+              anchor_contains: {
+                type: 'string',
+                description: 'IDEA-4 (optional): Wie anchor_text, aber Substring-Match statt Exact. Nuetzlich wenn Zeile zusaetzliche Zeichen enthalten darf.',
+              },
             },
             required: ['file_path', 'action'],
           },
