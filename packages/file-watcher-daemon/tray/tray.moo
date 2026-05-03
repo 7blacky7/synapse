@@ -119,8 +119,13 @@ funktion oeffne_detail(name):
     # --- Tab 1: Agenten ---
     setze tab_a auf ui_tab_hinzu(tabs, "Agenten")
     setze liste_a auf ui_liste(tab_a, ["Name", "Modell", "Status", "Tokens", "Letzte Aktivitaet"], 10, 10, 1450, 740)
-    # Keine ui_liste_spalte_breite — das setzt FIXED-Sizing und blockiert
-    # User-Drag. GTK auto-sized + resizable=TRUE per default.
+    # min_breite pro Spalte — sichert Drag-Grip + verhindert Schrumpf-auf-0
+    # (moo-runtime-dev e33d973). autosize nach Daten-Load wird in agents_laden gemacht.
+    ui_liste_spalte_min_breite(liste_a, 0, 120)
+    ui_liste_spalte_min_breite(liste_a, 1, 80)
+    ui_liste_spalte_min_breite(liste_a, 2, 80)
+    ui_liste_spalte_min_breite(liste_a, 3, 60)
+    ui_liste_spalte_min_breite(liste_a, 4, 160)
     ui_liste_sortierbar(liste_a, 0, wahr)
     ui_liste_sortierbar(liste_a, 1, wahr)
     ui_liste_sortierbar(liste_a, 2, wahr)
@@ -143,7 +148,12 @@ funktion oeffne_detail(name):
     g["filter_events"] = filter_e
     g["lbl_filter_e"] = lbl_filter_e
     setze liste_e auf ui_liste(tab_e, ["Zeit", "Agent", "Datei", "Aktion", "Reason", "Feature"], 10, 50, 1450, 700)
-    # Keine ui_liste_spalte_breite — auto-sized + draggable.
+    ui_liste_spalte_min_breite(liste_e, 0, 130)
+    ui_liste_spalte_min_breite(liste_e, 1, 100)
+    ui_liste_spalte_min_breite(liste_e, 2, 200)
+    ui_liste_spalte_min_breite(liste_e, 3, 70)
+    ui_liste_spalte_min_breite(liste_e, 4, 250)
+    ui_liste_spalte_min_breite(liste_e, 5, 120)
     ui_liste_sortierbar(liste_e, 0, wahr)
     ui_liste_sortierbar(liste_e, 1, wahr)
     ui_liste_sortierbar(liste_e, 2, wahr)
@@ -308,6 +318,7 @@ funktion agents_laden(name):
             setze letzte auf sp["lastActivity"]
         ui_liste_zeile_hinzu(liste, [agent, modell, stat, tok, letzte])
         setze i auf i + 1
+    ui_liste_spalten_autosize(liste)
     g["busy_agents"] = falsch
 
 funktion refresh_agents_factory(name):
@@ -366,10 +377,15 @@ funktion events_laden(name):
         setze zeit auf ""
         wenn v.hat("created_at"):
             setze zeit auf v["created_at"]
-        setze agent auf ""
+        # Wenn agent_id null/leer ist: explizit "<unbekannt>" — damit der
+        # Edit nicht "unsichtbar" wirkt. Heute's agent-id-auto-propagation
+        # Mission sorgt dafuer dass das nie wieder vorkommt; Altdaten
+        # (z.B. gemini-Iter4 Edits 15:17-15:20) bleiben so.
+        setze agent auf "<unbekannt>"
         wenn v.hat("agent_id"):
             wenn typ_von(v["agent_id"]) == "Text":
-                setze agent auf v["agent_id"]
+                wenn v["agent_id"] != "":
+                    setze agent auf v["agent_id"]
         setze pfad auf ""
         wenn v.hat("file_path"):
             setze pfad auf v["file_path"]
@@ -395,6 +411,7 @@ funktion events_laden(name):
         wenn passt:
             ui_liste_zeile_hinzu(liste, [zeit, agent, pfad, aktion, reason, feature])
         setze i auf i + 1
+    ui_liste_spalten_autosize(liste)
     g["busy_events"] = falsch
 
 funktion refresh_events_factory(name):
@@ -541,7 +558,9 @@ funktion oeffne_chat(projekt, channel):
     # Nachrichten-Liste (links-oben, breit)
     setze lbl_msgs auf ui_label(fenster, "Nachrichten:", 10, 10, 200, 20)
     setze liste_m auf ui_liste(fenster, ["Zeit", "Absender", "Nachricht"], 10, 35, 880, 670)
-    # auto-sized + draggable.
+    ui_liste_spalte_min_breite(liste_m, 0, 80)
+    ui_liste_spalte_min_breite(liste_m, 1, 100)
+    ui_liste_spalte_min_breite(liste_m, 2, 300)
     ui_liste_sortierbar(liste_m, 0, wahr)
     ui_liste_sortierbar(liste_m, 1, wahr)
     ui_liste_sortierbar(liste_m, 2, wahr)
@@ -551,7 +570,8 @@ funktion oeffne_chat(projekt, channel):
     # Agenten-Liste (rechts)
     setze lbl_ag auf ui_label(fenster, "Agenten im Projekt:", 900, 10, 290, 20)
     setze liste_a auf ui_liste(fenster, ["Name", "Modell"], 900, 35, 290, 670)
-    # auto-sized + draggable.
+    ui_liste_spalte_min_breite(liste_a, 0, 120)
+    ui_liste_spalte_min_breite(liste_a, 1, 80)
     ui_liste_sortierbar(liste_a, 0, wahr)
     ui_liste_sortierbar(liste_a, 1, wahr)
     g["liste_agents"] = liste_a
@@ -677,6 +697,7 @@ funktion chat_messages_laden(schluessel):
         setze i auf i + 1
     # Auto-Scroll zur letzten Nachricht (Open + Refresh + nach Senden).
     # Nutzt ui_liste_scroll_unten aus moo nacht-session/moo-gtk-event-hooks.
+    ui_liste_spalten_autosize(liste)
     ui_liste_scroll_unten(liste)
     g["busy_msgs"] = falsch
 
@@ -713,6 +734,7 @@ funktion chat_agents_laden(schluessel):
                 setze modell auf a["model"]
         ui_liste_zeile_hinzu(liste, [id, modell])
         setze i auf i + 1
+    ui_liste_spalten_autosize(liste)
     g["busy_chat_agents"] = falsch
 
 funktion chat_senden_factory(schluessel):
