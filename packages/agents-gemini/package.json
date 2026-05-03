@@ -4,6 +4,10 @@
   "description": "Gemini-basierter Specialist-Runtime fuer Synapse (Iter 1: Standalone PoC)",
   "main": "./dist/runtime.js",
   "type": "module",
+  "exports": {
+    ".": "./dist/runtime.js",
+    "./runtime": "./dist/runtime.js"
+  },
   "bin": {
     "synapse-gemini": "./dist/runtime.js"
   },

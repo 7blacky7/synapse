@@ -14,7 +14,8 @@
     "clean": "rimraf dist"
   },
   "dependencies": {
-    "@synapse/core": "workspace:*"
+    "@synapse/core": "workspace:*",
+    "@synapse/agents-gemini": "workspace:*"
   },
   "devDependencies": {
     "typescript": "^5.3.0",
