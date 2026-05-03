@@ -18,7 +18,7 @@
 import os from 'node:os';
 import fs from 'node:fs';
 import Fastify, { type FastifyInstance, type FastifyReply } from 'fastify';
-import { getPool, listChannels, getChannelMessages, postChannelMessage, listActiveAgents, listWrapperStatus } from '@synapse/core';
+import { getPool, listChannels, getChannelMessages, postChannelMessage, listActiveAgents, listWrapperStatus, getWrapperStatus, removeWrapperStatus } from '@synapse/core';
 import type { WrapperStatusRow } from '@synapse/core';
 import { readStatus, removeSpecialist } from '@synapse/agents';
 import type { WatcherManager } from './manager.js';
@@ -29,12 +29,17 @@ export interface BuildApiOptions {
   manager: WatcherManager;
 }
 
-/** Konvertiert eine PG-WrapperStatusRow in das SpecialistStatus-kompatible Format. */
+const STALE_MS = 3 * 60_000;
+
+/** Konvertiert eine PG-WrapperStatusRow in das SpecialistStatus-kompatible Format.
+ *  Rows ohne Heartbeat-Update seit > 3min werden als 'stale' markiert (konsistent zu REST). */
 function pgRowToSpecialist(row: WrapperStatusRow): Record<string, unknown> {
+  const ageMs = Date.now() - row.lastActivity.getTime();
+  const isStale = (row.status === 'running' || row.status === 'idle') && ageMs > STALE_MS;
   return {
     name: row.agentName,
     model: row.model ?? '',
-    status: row.status,
+    status: isStale ? 'stale' : row.status,
     pid: row.innerPid ?? 0,
     wrapperPid: row.wrapperPid ?? 0,
     socket: row.socketPath ?? '',
@@ -255,7 +260,8 @@ export function buildApi(opts: BuildApiOptions): FastifyInstance {
   );
 
   // ---- POST /projects/:name/specialists/:specName/stop -------------------
-  // Sendet SIGTERM an die wrapperPid und entfernt den Eintrag aus status.json.
+  // Sendet SIGTERM an die wrapperPid (PG primary, status.json fallback)
+  // und bereinigt beide Stores (status.json + PG wrapper_status).
   // Bei bereits toten Prozessen: no-op mit ok.
   app.post<{ Params: { name: string; specName: string } }>(
     '/projects/:name/specialists/:specName/stop',
@@ -267,20 +273,25 @@ export function buildApi(opts: BuildApiOptions): FastifyInstance {
         return { error: 'unknown project' };
       }
       try {
-        const statusFile = await readStatus(info.pfad);
-        const spec = statusFile.specialists[specName];
-        if (!spec) {
+        // PG primary: wrapperPid aus wrapper_status
+        const pgRow = await getWrapperStatus(specName, name).catch(() => null);
+        // Fallback: status.json (fuer Wrapper die noch keinen Heartbeat geschrieben haben)
+        const statusFile = await readStatus(info.pfad).catch(() => null);
+        const wrapperPid = pgRow?.wrapperPid ?? statusFile?.specialists[specName]?.wrapperPid;
+        if (!wrapperPid) {
           reply.code(404);
           return { error: `unknown specialist: ${specName}` };
         }
-        // SIGTERM auf wrapperPid — es ist ok wenn der Prozess schon tot ist
+        // SIGTERM — es ist ok wenn der Prozess schon tot ist
         try {
-          process.kill(spec.wrapperPid, 'SIGTERM');
+          process.kill(wrapperPid, 'SIGTERM');
         } catch (err: any) {
           if (err.code !== 'ESRCH') throw err; // ESRCH = no such process, harmlos
         }
-        await removeSpecialist(info.pfad, specName);
-        return { ok: true, stopped: specName, wrapperPid: spec.wrapperPid };
+        // Cleanup: status.json + PG (beide, non-fatal einzeln)
+        await removeSpecialist(info.pfad, specName).catch(() => { /* non-fatal */ });
+        await removeWrapperStatus(specName, name).catch(() => { /* non-fatal */ });
+        return { ok: true, stopped: specName, wrapperPid };
       } catch (err) {
         reply.code(500);
         return { error: (err as Error).message };
