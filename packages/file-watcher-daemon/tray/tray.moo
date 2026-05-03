@@ -161,10 +161,13 @@ funktion oeffne_detail(name):
 # Reposition aller Widgets im Projekt-Fenster bei Resize.
 # (b, h) ist die neue Fenster-Innengroesse vom GTK configure-event.
 funktion layout_projekt(name, b, h):
+    # Diagnose-Print landet in /tmp/tray.log - bestaetigt ob Callback feuert
+    zeige("LAYOUT projekt name=" + name + " b=" + text(b) + " h=" + text(h))
     # Defensive Guards (moo-runtime-dev Tipp C):
     wenn name == nichts:
         gib_zurück nichts
     wenn nicht offene_fenster.hat(name):
+        zeige("LAYOUT projekt: name nicht in offene_fenster -> abort")
         gib_zurück nichts
     setze g auf offene_fenster[name]
     # closed-Flag check: GTK-size-allocate kann auch nach Fenster-Close
@@ -197,11 +200,9 @@ funktion layout_projekt(name, b, h):
     ui_position_setze(g["btn_open_e"], 160, btn_y)
 
 funktion layout_projekt_factory(name):
-    # Workaround moo-Closure-Slot-Race (Diagnose moo-runtime-dev): String-Kopie
-    # erzwingen damit der Closure einen stabilen Wert capturet statt einen
-    # Slot-Index der bei der naechsten factory-Verwendung ueberschrieben wird.
-    setze fname auf name + ""
-    gib_zurück (b, h) => layout_projekt(fname, b, h)
+    # Konkatenation INNERHALB der Closure - moo allokiert pro Resize-Event
+    # einen frischen String, was Slot-Race umgeht (moo-runtime-dev Empfehlung).
+    gib_zurück (b, h) => layout_projekt(name + "", b, h)
 
 funktion detail_factory(name):
     gib_zurück () => oeffne_detail(name)
@@ -499,10 +500,12 @@ funktion oeffne_chat(projekt, channel):
 
 # Reposition aller Widgets im Chat-Fenster bei Resize.
 funktion layout_chat(schluessel, b, h):
+    zeige("LAYOUT chat key=" + schluessel + " b=" + text(b) + " h=" + text(h))
     # Defensive Guards
     wenn schluessel == nichts:
         gib_zurück nichts
     wenn nicht chat_fenster.hat(schluessel):
+        zeige("LAYOUT chat: key nicht in chat_fenster -> abort")
         gib_zurück nichts
     setze g auf chat_fenster[schluessel]
     # closed-Flag check: GTK-size-allocate feuert auch nach Close,
@@ -544,9 +547,7 @@ funktion layout_chat(schluessel, b, h):
     ui_position_setze(g["btn_ref"], in_b + 105, in_y)
 
 funktion layout_chat_factory(schluessel):
-    # Workaround moo-Closure-Slot-Race (siehe layout_projekt_factory).
-    setze fkey auf schluessel + ""
-    gib_zurück (b, h) => layout_chat(fkey, b, h)
+    gib_zurück (b, h) => layout_chat(schluessel + "", b, h)
 
 funktion chat_close_factory(schluessel):
     gib_zurück () => chat_fenster_schliessen(schluessel)
