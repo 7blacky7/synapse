@@ -192,6 +192,10 @@ export const filesTool: ConsolidatedTool = {
           type: 'boolean',
           description: 'Optional fuer plan: ob andere Agenten Co-Edits vorschlagen duerfen (default true). Aktuell informational; Co-Edit-Mechanik kommt in Schritt 3.',
         },
+        auto_commit: {
+          type: 'boolean',
+          description: 'IDEA-5 (optional fuer plan): wenn true, wird direkt nach plan() automatisch commit() aufgerufen — spart einen Tool-Call wenn kein User-Review vor commit gewuenscht. Versionierung bleibt aktiv (file_versions + batch_id), Rollback via restore_batch jederzeit moeglich.',
+        },
         reason: {
           type: 'string',
           description: 'Optionale Begruendung fuer die Aenderung — landet in file_versions.reason und ist via "history"-Action abrufbar. Bei plan: Top-Level reason gilt fuer alle Ops (per-Op kann per ops[].reason ueberschrieben werden).',
@@ -273,6 +277,18 @@ export const filesTool: ConsolidatedTool = {
         open_for_coedit: typeof args.open_for_coedit === 'boolean' ? args.open_for_coedit : undefined,
         reason,
       });
+      // IDEA-5: auto_commit:true -> direkt commit, ein Call statt zwei
+      // IDEA-5: auto_commit:true -> direkt commit, ABER nur wenn alle Previews ok sind.
+      // Wenn Plan einzelne ok:false hatte, lassen wir den Plan offen damit User
+      // entscheiden kann. (planBatch throws sowieso bei harten Fehlern wie anchor mismatch.)
+      const allPreviewsOk = result.previews?.every(p => p.ok) ?? true;
+      if (args.auto_commit === true && allPreviewsOk) {
+        const c = await commitBatch({ plan_id: result.plan_id, agent_id: agentId });
+        if (c.success) {
+          return { ...c, plan: result, auto_committed: true, message: `Plan ${result.plan_id} angelegt + sofort committed (auto_commit) — ${c.committed} Datei(en) geaendert. batch_id=${c.batch_id}.` };
+        }
+        return { ...c, plan: result, auto_committed: false, message: `Plan ${result.plan_id} angelegt, auto-commit fehlgeschlagen — Plan offen, kann manuell committet oder cancelt werden.` };
+      }
       return {
         success: true,
         ...result,
