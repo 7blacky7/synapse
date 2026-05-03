@@ -79,19 +79,6 @@ funktion safe_post(url, body):
     fange e:
         setze ignore auf 0
 
-# UTC-ISO ("2026-05-03T19:35:27.944Z") → lokale HH:MM:SS.
-# CEST = UTC+2 (TODO: DST-aware bei moo-Datetime-API).
-funktion format_zeit_lokal(iso):
-    wenn länge(iso) < 19:
-        gib_zurück iso
-    setze hh auf zahl(iso.teilstring(11, 13)) + 2
-    wenn hh >= 24:
-        setze hh auf hh - 24
-    setze hh_str auf text(hh)
-    wenn länge(hh_str) < 2:
-        setze hh_str auf "0" + hh_str
-    gib_zurück hh_str + ":" + iso.teilstring(14, 16) + ":" + iso.teilstring(17, 19)
-
 # --------------------------------------------------------------
 # Projekt-Toggle (Check-Item-Callback)
 # --------------------------------------------------------------
@@ -111,8 +98,13 @@ funktion toggle_projekt(name):
     wenn projekt_handles.hat(name):
         projekt_handles[name]["enabled"] = nicht akt
 
-funktion toggle_factory(name):
-    gib_zurück () => toggle_projekt(name)
+# Tray-Submenu Aktiv-Checkbox: Capture-frei via menue_eintrag_data.
+funktion toggle_aktiv_via_menu():
+    setze item auf ui_menue_eintrag_aktiv()
+    setze name auf ui_menue_eintrag_lookup(item)
+    wenn name == nichts:
+        gib_zurück nichts
+    toggle_projekt(name)
 
 # --------------------------------------------------------------
 # Detail-Fenster oeffnen (Tab-basiert)
@@ -284,8 +276,13 @@ funktion layout_projekt_via_handle(fenster, b, h):
     setze name auf fenster_zu_name[key]
     layout_projekt(name, b, h)
 
-funktion detail_factory(name):
-    gib_zurück () => oeffne_detail(name)
+# Tray-Submenu Oeffnen: Capture-frei via menue_eintrag_data.
+funktion oeffne_detail_via_menu():
+    setze item auf ui_menue_eintrag_aktiv()
+    setze name auf ui_menue_eintrag_lookup(item)
+    wenn name == nichts:
+        gib_zurück nichts
+    oeffne_detail(name)
 
 funktion fenster_wirklich_schliessen(name):
     # moo Dict hat kein .entferne() als Methode — Flag setzen,
@@ -449,7 +446,7 @@ funktion events_laden(name):
         setze v auf versions[i]
         setze zeit auf ""
         wenn v.hat("created_at"):
-            setze zeit auf v["created_at"]
+            setze zeit auf ui_zeit_lokal(v["created_at"])
         # Wenn agent_id null/leer ist: explizit "<unbekannt>" — damit der
         # Edit nicht "unsichtbar" wirkt. Heute's agent-id-auto-propagation
         # Mission sorgt dafuer dass das nie wieder vorkommt; Altdaten
@@ -580,8 +577,13 @@ funktion loesche_projekt(name):
         # Voller Rebuild — das Projekt-Set hat sich geaendert
         rebuild_menu()
 
-funktion delete_factory(name):
-    gib_zurück () => loesche_projekt(name)
+# Tray-Submenu Loeschen: Capture-frei via menue_eintrag_data.
+funktion loesche_projekt_via_menu():
+    setze item auf ui_menue_eintrag_aktiv()
+    setze name auf ui_menue_eintrag_lookup(item)
+    wenn name == nichts:
+        gib_zurück nichts
+    loesche_projekt(name)
 
 # --------------------------------------------------------------
 # Chat: Channel-Liste + Chat-Fenster
@@ -610,11 +612,20 @@ funktion channel_submenu_fuellen(parent_submenu, projekt):
     solange i < länge(chs):
         setze ch auf chs[i]
         setze ch_name auf ch["name"]
-        tray_menu_add_to(parent_submenu, "# " + ch_name, chat_oeffnen_factory(projekt, ch_name))
+        setze it_ch auf tray_menu_add_to(parent_submenu, "# " + ch_name, oeffne_chat_via_menu)
+        ui_menue_eintrag_data(it_ch, projekt + "::" + ch_name)
         setze i auf i + 1
 
-funktion chat_oeffnen_factory(projekt, channel):
-    gib_zurück () => oeffne_chat(projekt, channel)
+# Tray-Submenu Channel-Oeffnen: key = projekt + "::" + channel.
+funktion oeffne_chat_via_menu():
+    setze item auf ui_menue_eintrag_aktiv()
+    setze key auf ui_menue_eintrag_lookup(item)
+    wenn key == nichts:
+        gib_zurück nichts
+    setze parts auf key.teilen("::")
+    wenn länge(parts) < 2:
+        gib_zurück nichts
+    oeffne_chat(parts[0], parts[1])
 
 # Chat-Fenster pro (Projekt, Channel) — Nachrichten/Agenten/Input
 funktion oeffne_chat(projekt, channel):
@@ -793,8 +804,8 @@ funktion chat_messages_laden(schluessel):
             setze id auf m["id"]
         wenn first_load oder id > last_id:
             setze zeit auf ""
-            wenn m.hat("created_at"):
-                setze zeit auf m["created_at"]
+            wenn m.hat("createdAt"):
+                setze zeit auf ui_zeit_lokal(m["createdAt"])
             setze sender auf ""
             wenn m.hat("sender"):
                 setze sender auf m["sender"]
@@ -854,9 +865,6 @@ funktion chat_agents_laden(schluessel):
     ui_liste_spalten_autosize(liste)
     g["busy_chat_agents"] = falsch
 
-funktion chat_senden_factory(schluessel):
-    gib_zurück () => chat_senden(schluessel)
-
 funktion chat_senden(schluessel):
     wenn nicht chat_fenster.hat(schluessel):
         gib_zurück nichts
@@ -904,9 +912,6 @@ funktion chat_key_handler_global(keyname, ctrl, shift, alt):
             chat_senden(schluessel)
             gib_zurück wahr
     gib_zurück falsch
-
-funktion chat_refresh_factory(schluessel):
-    gib_zurück () => chat_refresh(schluessel)
 
 funktion chat_refresh(schluessel):
     chat_messages_laden(schluessel)
@@ -1018,15 +1023,18 @@ funktion rebuild_menu():
             setze name auf p["name"]
             setze enabled auf p["enabled"]
             setze sm auf tray_submenu_add(tray, name)
-            setze check auf tray_check_add_to(sm, "Aktiv", enabled, toggle_factory(name))
+            setze check auf tray_check_add_to(sm, "Aktiv", enabled, toggle_aktiv_via_menu)
+            ui_menue_eintrag_data(check, name)
             tray_separator_add_to(sm)
-            tray_menu_add_to(sm, "Oeffnen...", detail_factory(name))
+            setze it_oeffnen auf tray_menu_add_to(sm, "Oeffnen...", oeffne_detail_via_menu)
+            ui_menue_eintrag_data(it_oeffnen, name)
             tray_separator_add_to(sm)
             # Channels flach im Projekt-Submenu — moo kennt (noch)
             # keine nested submenus. Jeder Channel als "# name"-Eintrag.
             channel_submenu_fuellen(sm, name)
             tray_separator_add_to(sm)
-            tray_menu_add_to(sm, "Loeschen...", delete_factory(name))
+            setze it_loeschen auf tray_menu_add_to(sm, "Loeschen...", loesche_projekt_via_menu)
+            ui_menue_eintrag_data(it_loeschen, name)
             projekt_handles[name] = { "sub": sm, "check": check, "enabled": enabled }
             setze i auf i + 1
 
