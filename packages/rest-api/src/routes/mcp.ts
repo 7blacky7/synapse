@@ -479,7 +479,7 @@ const MCP_TOOLS = [
           ],
           description: 'Empfaenger Agent-Name. Array erlaubt fuer: inbox_send (Multicast)',
         },
-        agent_name: { type: 'string', description: 'Agent-Name' },
+        agent_name: { type: 'string', description: 'Agent-Name (fuer inbox_check). NICHT agent_id verwenden — das ist eine andere Aktion-Param.' },
       },
       required: ['action'],
     },

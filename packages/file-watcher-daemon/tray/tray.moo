@@ -568,6 +568,9 @@ funktion oeffne_chat(projekt, channel):
     ui_liste_sortierbar(liste_m, 0, wahr)
     ui_liste_sortierbar(liste_m, 1, wahr)
     ui_liste_sortierbar(liste_m, 2, wahr)
+    # Rechtsklick auf Nachricht-Zeile kopiert Inhalt direkt ins Clipboard
+    # (globaler Handler, vermeidet Closure-Capture-Bugs).
+    ui_liste_on_rechtsklick(liste_m, chat_msg_rechtsklick_global)
     g["liste_msgs"] = liste_m
     g["lbl_msgs"]   = lbl_msgs
 
@@ -677,7 +680,21 @@ funktion chat_messages_laden(schluessel):
     setze projekt auf g["projekt"]
     setze channel auf g["channel"]
     setze liste auf g["liste_msgs"]
-    ui_liste_leeren(liste)
+    # Inkrementelle Liste: erstes Mal voll laden, danach nur neue
+    # Nachrichten anhaengen. Verhindert Scroll-Reset bei refresh.
+    setze first_load auf wahr
+    wenn g.hat("init_done"):
+        wenn g["init_done"]:
+            setze first_load auf falsch
+    setze last_id auf 0
+    wenn g.hat("last_msg_id"):
+        setze last_id auf g["last_msg_id"]
+    # Sticky-bottom: Scroll-Position VOR dem Mutieren ermitteln.
+    # Bei first_load ist Liste leer → ist_unten=wahr → wir scrollen
+    # nachher bewusst ans Ende.
+    setze war_unten auf ui_liste_ist_unten(liste)
+    wenn first_load:
+        ui_liste_leeren(liste)
     setze resp auf safe_get(DAEMON_URL + "/projects/" + projekt + "/channels/" + channel + "/feed?limit=50")
     wenn resp == "":
         g["busy_msgs"] = falsch
@@ -689,23 +706,38 @@ funktion chat_messages_laden(schluessel):
         gib_zurück nichts
     setze msgs auf info["messages"]
     setze i auf 0
+    setze max_id auf last_id
+    setze neue_zeilen auf 0
     solange i < länge(msgs):
         setze m auf msgs[i]
-        setze zeit auf ""
-        wenn m.hat("created_at"):
-            setze zeit auf m["created_at"]
-        setze sender auf ""
-        wenn m.hat("sender"):
-            setze sender auf m["sender"]
-        setze inhalt auf ""
-        wenn m.hat("content"):
-            setze inhalt auf m["content"]
-        ui_liste_zeile_hinzu(liste, [zeit, sender, inhalt])
+        setze id auf 0
+        wenn m.hat("id"):
+            setze id auf m["id"]
+        wenn first_load oder id > last_id:
+            setze zeit auf ""
+            wenn m.hat("created_at"):
+                setze zeit auf m["created_at"]
+            setze sender auf ""
+            wenn m.hat("sender"):
+                setze sender auf m["sender"]
+            setze inhalt auf ""
+            wenn m.hat("content"):
+                setze inhalt auf m["content"]
+            ui_liste_zeile_hinzu(liste, [zeit, sender, inhalt])
+            setze neue_zeilen auf neue_zeilen + 1
+            wenn id > max_id:
+                setze max_id auf id
         setze i auf i + 1
-    # Auto-Scroll zur letzten Nachricht (Open + Refresh + nach Senden).
-    # Nutzt ui_liste_scroll_unten aus moo nacht-session/moo-gtk-event-hooks.
-    ui_liste_spalten_autosize(liste)
-    ui_liste_scroll_unten(liste)
+    g["last_msg_id"] = max_id
+    g["init_done"] = wahr
+    wenn first_load:
+        ui_liste_spalten_autosize(liste)
+    # Scrollen nur wenn was Neues kam UND User vorher unten war.
+    # Bei first_load gilt war_unten=wahr (leere Liste), also scrollt's
+    # initial ans Ende.
+    wenn neue_zeilen > 0:
+        wenn war_unten:
+            ui_liste_scroll_unten(liste)
     g["busy_msgs"] = falsch
 
 funktion chat_agents_laden(schluessel):
@@ -768,6 +800,23 @@ funktion chat_senden(schluessel):
 # - Enter ohne Shift → senden, Default unterdruecken (sonst tippt GTK \n).
 # - Enter mit Shift  → falsch, GTK fuegt \n ein.
 # - Sonst            → falsch (normales Tippen).
+# Rechtsklick auf Nachricht-Liste: aktive Zeile in Clipboard kopieren.
+# Globaler Handler ohne Capture (vermeidet Closure-Bugs).
+# zeile_idx: -1 = neben einer Zeile (ignorieren), >=0 = Zeilen-Index.
+funktion chat_msg_rechtsklick_global(zeile_idx):
+    wenn zeile_idx < 0:
+        gib_zurück nichts
+    setze schluessel auf aktiv_chat["v"]
+    wenn schluessel == "":
+        gib_zurück nichts
+    wenn nicht chat_fenster.hat(schluessel):
+        gib_zurück nichts
+    setze g auf chat_fenster[schluessel]
+    setze zeile auf ui_liste_zeile(g["liste_msgs"], zeile_idx)
+    # Spalten: [Zeit, Absender, Nachricht] → Index 2
+    setze inhalt auf zeile[2]
+    ui_clipboard_setze(inhalt)
+
 funktion chat_key_handler_global(keyname, ctrl, shift, alt):
     setze schluessel auf aktiv_chat["v"]
     wenn schluessel == "":
@@ -784,6 +833,23 @@ funktion chat_refresh_factory(schluessel):
 funktion chat_refresh(schluessel):
     chat_messages_laden(schluessel)
     chat_agents_laden(schluessel)
+
+# Live-Refresh aller offenen Chat-Fenster (Timer-Tick alle 3 s).
+# Sticky-bottom-Check + busy-Guard sind in chat_messages_laden — User
+# der hochgescrollt liest, sieht keinen Sprung. closed-Flag wird
+# respektiert (kein Refresh auf totem Widget).
+funktion chat_live_refresh_tick():
+    setze keys auf chat_fenster.schlüssel()
+    setze i auf 0
+    solange i < länge(keys):
+        setze k auf keys[i]
+        setze g auf chat_fenster[k]
+        setze closed auf falsch
+        wenn g.hat("closed"):
+            setze closed auf g["closed"]
+        wenn nicht closed:
+            chat_messages_laden(k)
+        setze i auf i + 1
 
 # --------------------------------------------------------------
 # Daemon-Start / Quit
@@ -932,4 +998,6 @@ funktion update_tick():
 # per "Neu laden" oder implizit durch eigene Aktionen.
 # --------------------------------------------------------------
 rebuild_menu()
+# Timer-A/B-Test: deaktiviert wegen Crash (malloc unaligned tcache).
+# ui_timer_hinzu(3000, chat_live_refresh_tick)
 ui_laufen()
