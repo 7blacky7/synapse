@@ -26,6 +26,10 @@ export interface FileVersionMeta {
   size_bytes: number;
   created_at: string;
   reason: string | null;
+  // IDEA-3a: History Enrichment (additive, alle nullable)
+  feature_tag?: string | null;
+  parent_version_id?: string | null;
+  git_commit_sha?: string | null;
 }
 
 export interface FileVersionFull extends FileVersionMeta {
@@ -43,20 +47,10 @@ export async function listFileVersions(
 ): Promise<FileVersionMeta[]> {
   const safeLimit = Math.max(1, Math.min(limit, 500));
   const pool = getPool();
-  const result = await pool.query<{
-    id: string;
-    project: string;
-    file_path: string;
-    content_hash: string;
-    edit_action: string | null;
-    agent_id: string | null;
-    batch_id: string | null;
-    size_bytes: number;
-    created_at: string;
-    reason: string | null;
-  }>(
+  const result = await pool.query<FileVersionMeta>(
     `SELECT id::text AS id, project, file_path, content_hash, edit_action, agent_id,
-            batch_id::text AS batch_id, size_bytes, created_at::text AS created_at, reason
+            batch_id::text AS batch_id, size_bytes, created_at::text AS created_at, reason,
+            feature_tag, parent_version_id::text AS parent_version_id, git_commit_sha
      FROM file_versions
      WHERE project = $1 AND file_path = $2
      ORDER BY created_at DESC, id DESC
@@ -74,7 +68,8 @@ export async function getFileVersion(
   const result = await pool.query<FileVersionFull>(
     `SELECT id::text AS id, project, file_path, content, content_hash,
             edit_action, agent_id, batch_id::text AS batch_id,
-            size_bytes, created_at::text AS created_at, reason
+            size_bytes, created_at::text AS created_at, reason,
+            feature_tag, parent_version_id::text AS parent_version_id, git_commit_sha
      FROM file_versions
      WHERE id = $1`,
     [versionId]
@@ -113,13 +108,46 @@ export async function restoreFileVersion(
 /**
  * Activity-Log: chronologische Liste von Aenderungen fuer Crash-Recovery.
  * Filter: file_path (Praefix-Match), agent_id (exakt), since (TIMESTAMPTZ).
+ * IDEA-3a: feature_tag (exakt) und version_id (parent-chain via rekursivem CTE).
  * Default: 50 letzte Eintraege im Projekt.
  */
 export async function listFileHistory(
   project: string,
-  opts: { file_path?: string; agent_id?: string; since?: string; limit?: number } = {},
+  opts: {
+    file_path?: string;
+    agent_id?: string;
+    since?: string;
+    limit?: number;
+    feature_tag?: string;
+    version_id?: string | number;
+  } = {},
 ): Promise<FileVersionMeta[]> {
   const safeLimit = Math.max(1, Math.min(opts.limit ?? 50, 500));
+  const pool = getPool();
+
+  // IDEA-3a: version_id-Filter zeigt die Korrektur-Chain einer Version.
+  // Rekursiver CTE: Start ist die angegebene Version, dann jeweils parent_version_id
+  // nach oben — projektgebunden (Schutz vor Cross-Project-Leak).
+  if (opts.version_id) {
+    const result = await pool.query<FileVersionMeta>(
+      `WITH RECURSIVE chain AS (
+         SELECT * FROM file_versions WHERE id = $1 AND project = $2
+         UNION ALL
+         SELECT fv.* FROM file_versions fv
+         JOIN chain c ON fv.id = c.parent_version_id
+         WHERE fv.project = $2
+       )
+       SELECT id::text AS id, project, file_path, content_hash, edit_action, agent_id,
+              batch_id::text AS batch_id, size_bytes, created_at::text AS created_at, reason,
+              feature_tag, parent_version_id::text AS parent_version_id, git_commit_sha
+       FROM chain
+       ORDER BY created_at DESC, id DESC
+       LIMIT $3`,
+      [opts.version_id, project, safeLimit],
+    );
+    return result.rows;
+  }
+
   const params: unknown[] = [project];
   const conds: string[] = ['project = $1'];
   if (opts.agent_id) {
@@ -134,11 +162,15 @@ export async function listFileHistory(
     params.push(opts.since);
     conds.push(`created_at >= $${params.length}::timestamptz`);
   }
+  if (opts.feature_tag) {
+    params.push(opts.feature_tag);
+    conds.push(`feature_tag = $${params.length}`);
+  }
   params.push(safeLimit);
-  const pool = getPool();
   const result = await pool.query<FileVersionMeta>(
     `SELECT id::text AS id, project, file_path, content_hash, edit_action, agent_id,
-            batch_id::text AS batch_id, size_bytes, created_at::text AS created_at, reason
+            batch_id::text AS batch_id, size_bytes, created_at::text AS created_at, reason,
+            feature_tag, parent_version_id::text AS parent_version_id, git_commit_sha
      FROM file_versions
      WHERE ${conds.join(' AND ')}
      ORDER BY created_at DESC, id DESC
@@ -158,7 +190,8 @@ export async function listBatchVersions(
   const pool = getPool();
   const result = await pool.query<FileVersionMeta>(
     `SELECT id::text AS id, project, file_path, content_hash, edit_action, agent_id,
-            batch_id::text AS batch_id, size_bytes, created_at::text AS created_at, reason
+            batch_id::text AS batch_id, size_bytes, created_at::text AS created_at, reason,
+            feature_tag, parent_version_id::text AS parent_version_id, git_commit_sha
      FROM file_versions
      WHERE batch_id = $1
      ORDER BY created_at ASC, id ASC`,

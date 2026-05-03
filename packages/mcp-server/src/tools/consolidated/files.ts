@@ -126,7 +126,7 @@ export const filesTool: ConsolidatedTool = {
         },
         version_id: {
           type: 'string',
-          description: 'Versions-ID (fuer get_version, restore). String, weil BIGSERIAL > Number.MAX_SAFE_INTEGER moeglich ist.',
+          description: 'Versions-ID (BIGSERIAL als String). Pflicht fuer get_version/restore. Bei history (IDEA-3a): zeigt die Korrektur-Chain ab dieser Version (rekursiv via parent_version_id).',
         },
         batch_id: {
           type: 'string',
@@ -194,7 +194,7 @@ export const filesTool: ConsolidatedTool = {
         },
         feature_tag: {
           type: 'string',
-          description: 'IDEA-3a: Logischer Feature-Group-Tag (z.B. "idea-thought-task-link"). Wird in file_versions.feature_tag gespeichert und kann via history(feature_tag=...) gefiltert werden.',
+          description: 'IDEA-3a: Logischer Feature-Group-Tag (z.B. "idea-thought-task-link"). Beim Schreiben → file_versions.feature_tag. Bei history → Filter (exakter Match).',
         },
         parent_version_id: {
           type: 'string',
@@ -318,6 +318,9 @@ export const filesTool: ConsolidatedTool = {
         file_path: str(args, 'file_path'),
         since: str(args, 'since'),
         limit,
+        // IDEA-3a: Enrichment-Filter
+        feature_tag: str(args, 'feature_tag'),
+        version_id: str(args, 'version_id'),
       });
       return {
         success: true,
@@ -325,7 +328,7 @@ export const filesTool: ConsolidatedTool = {
         count: entries.length,
         entries,
         tip: entries.length > 0
-          ? 'Eintraege chronologisch (neueste zuerst). reason = "Warum" der Aenderung. Voller Inhalt einer Version: files(action: "get_version", version_id).'
+          ? 'Eintraege chronologisch (neueste zuerst). reason = "Warum" der Aenderung. Voller Inhalt einer Version: files(action: "get_version", version_id). IDEA-3a: feature_tag und parent_version_id zeigen Feature-Group bzw. Korrektur-Chain.'
           : 'Keine Eintraege fuer diese Filter.',
       };
     }
