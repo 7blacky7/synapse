@@ -2300,9 +2300,10 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
       // capabilities ist projekt-agnostisch — direkt aus PG ableiten.
       // projects-Tabelle = registrierte Daemons je hostname.
       // wrapper_status-Tabelle = aktive Spezialisten (running/idle).
+      // model_registry = welche Modelle SUPPORTED sind (unabhaengig davon was aktuell laeuft).
       if (action === 'capabilities') {
         const pool = getPool();
-        const [hostsRes, wrappersRes] = await Promise.all([
+        const [hostsRes, wrappersRes, modelsRes] = await Promise.all([
           pool.query<{ hostname: string; project_count: string; last_seen: string | null }>(
             `SELECT hostname, COUNT(*)::text AS project_count, MAX(last_access)::text AS last_seen
              FROM projects WHERE path NOT LIKE '/virtual/%'
@@ -2312,11 +2313,17 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
             `SELECT provider, model, status, COUNT(*)::text AS n
              FROM wrapper_status GROUP BY provider, model, status`,
           ),
+          pool.query<{ alias: string; full_id: string; provider: string; context_window: number; env_required: string[]; runtime_binary: string }>(
+            `SELECT alias, full_id, provider, context_window, env_required, runtime_binary
+             FROM model_registry WHERE enabled = true
+             ORDER BY provider, alias`,
+          ),
         ]);
         const totalActive = wrappersRes.rows
           .filter(r => r.status === 'active' || r.status === 'idle' || r.status === 'busy')
           .reduce((s, r) => s + Number(r.n), 0);
-        const providers = Array.from(new Set(wrappersRes.rows.map(r => r.provider).filter(Boolean)));
+        const supportedProviders = Array.from(new Set(modelsRes.rows.map(r => r.provider)));
+        const activeProviders = Array.from(new Set(wrappersRes.rows.map(r => r.provider).filter(Boolean)));
         return {
           success: true,
           daemons: hostsRes.rows.map(r => ({ hostname: r.hostname, projects: Number(r.project_count), lastSeen: r.last_seen })),
@@ -2325,14 +2332,16 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
             active: totalActive,
             byProviderModel: wrappersRes.rows,
           },
+          supportedModels: modelsRes.rows,
           features: {
             specialists: hostsRes.rows.length > 0,
             channels: true,
             inbox: true,
-            providers,
+            providers: supportedProviders,
+            activeProviders,
           },
           message: hostsRes.rows.length > 0
-            ? `${hostsRes.rows.length} Daemon-Host(s) registriert, ${totalActive} aktive Wrapper.`
+            ? `${hostsRes.rows.length} Daemon-Host(s) registriert, ${totalActive} aktive Wrapper. ${modelsRes.rows.length} Modelle supported (${supportedProviders.join(' + ')}).`
             : 'Keine Daemons registriert.',
         };
       }
