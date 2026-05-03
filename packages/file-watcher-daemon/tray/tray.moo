@@ -150,10 +150,9 @@ funktion oeffne_detail(name):
     ui_knopf(tab_ak, "Neu indexieren", 10, 10,   200, 36, reindex_factory(name))
     ui_knopf(tab_ak, "Projekt loeschen", 10, 60, 200, 36, delete_factory(name))
 
-    # Resize-Layout TEMPORAER DEAKTIVIERT — moo Closure-Capture-Crash
-    # in 2-arg-Lambda. Siehe cc-send an moo-runtime-dev. Default-Groesse
-    # ist gross genug damit das Layout vorerst statisch akzeptabel ist.
-    # ui_fenster_on_resize(fenster, layout_projekt_factory(name))
+    # Resize-Layout: Tabs + Listen + Buttons folgen der Fenstergroesse.
+    # Mit fname-String-Kopie-Workaround in der Factory.
+    ui_fenster_on_resize(fenster, layout_projekt_factory(name))
     ui_zeige(fenster)
     agents_laden(name)
     events_laden(name)
@@ -162,6 +161,9 @@ funktion oeffne_detail(name):
 # Reposition aller Widgets im Projekt-Fenster bei Resize.
 # (b, h) ist die neue Fenster-Innengroesse vom GTK configure-event.
 funktion layout_projekt(name, b, h):
+    # Defensive Guards (moo-runtime-dev Tipp C):
+    wenn name == nichts:
+        gib_zurück nichts
     wenn nicht offene_fenster.hat(name):
         gib_zurück nichts
     setze g auf offene_fenster[name]
@@ -195,7 +197,11 @@ funktion layout_projekt(name, b, h):
     ui_position_setze(g["btn_open_e"], 160, btn_y)
 
 funktion layout_projekt_factory(name):
-    gib_zurück (b, h) => layout_projekt(name, b, h)
+    # Workaround moo-Closure-Slot-Race (Diagnose moo-runtime-dev): String-Kopie
+    # erzwingen damit der Closure einen stabilen Wert capturet statt einen
+    # Slot-Index der bei der naechsten factory-Verwendung ueberschrieben wird.
+    setze fname auf name + ""
+    gib_zurück (b, h) => layout_projekt(fname, b, h)
 
 funktion detail_factory(name):
     gib_zurück () => oeffne_detail(name)
@@ -485,14 +491,17 @@ funktion oeffne_chat(projekt, channel):
     g["btn_send"] = btn_send
     g["btn_ref"]  = btn_ref
 
-    # Resize-Layout TEMPORAER DEAKTIVIERT — siehe layout_projekt-Kommentar
-    # ui_fenster_on_resize(fenster, layout_chat_factory(schluessel))
+    # Resize-Layout: Listen + Eingabe folgen der Fenstergroesse
+    ui_fenster_on_resize(fenster, layout_chat_factory(schluessel))
     ui_zeige(fenster)
     chat_messages_laden(schluessel)
     chat_agents_laden(schluessel)
 
 # Reposition aller Widgets im Chat-Fenster bei Resize.
 funktion layout_chat(schluessel, b, h):
+    # Defensive Guards
+    wenn schluessel == nichts:
+        gib_zurück nichts
     wenn nicht chat_fenster.hat(schluessel):
         gib_zurück nichts
     setze g auf chat_fenster[schluessel]
@@ -535,7 +544,9 @@ funktion layout_chat(schluessel, b, h):
     ui_position_setze(g["btn_ref"], in_b + 105, in_y)
 
 funktion layout_chat_factory(schluessel):
-    gib_zurück (b, h) => layout_chat(schluessel, b, h)
+    # Workaround moo-Closure-Slot-Race (siehe layout_projekt_factory).
+    setze fkey auf schluessel + ""
+    gib_zurück (b, h) => layout_chat(fkey, b, h)
 
 funktion chat_close_factory(schluessel):
     gib_zurück () => chat_fenster_schliessen(schluessel)
