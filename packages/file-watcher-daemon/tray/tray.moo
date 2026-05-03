@@ -124,6 +124,11 @@ funktion oeffne_detail(name):
     ui_liste_spalte_breite(liste_a, 2, 110)
     ui_liste_spalte_breite(liste_a, 3, 90)
     ui_liste_spalte_breite(liste_a, 4, 240)
+    ui_liste_sortierbar(liste_a, 0, wahr)
+    ui_liste_sortierbar(liste_a, 1, wahr)
+    ui_liste_sortierbar(liste_a, 2, wahr)
+    ui_liste_sortierbar(liste_a, 3, wahr)
+    ui_liste_sortierbar(liste_a, 4, wahr)
     g["liste_agents"] = liste_a
     setze btn_stop auf ui_knopf(tab_a, "Stoppen",        10, 760, 120, 32, stop_agent_factory(name))
     setze btn_ref_a auf ui_knopf(tab_a, "Aktualisieren", 140, 760, 140, 32, refresh_agents_factory(name))
@@ -136,6 +141,9 @@ funktion oeffne_detail(name):
     ui_liste_spalte_breite(liste_e, 0, 100)
     ui_liste_spalte_breite(liste_e, 1, 900)
     ui_liste_spalte_breite(liste_e, 2, 220)
+    ui_liste_sortierbar(liste_e, 0, wahr)
+    ui_liste_sortierbar(liste_e, 1, wahr)
+    ui_liste_sortierbar(liste_e, 2, wahr)
     g["liste_events"] = liste_e
     setze btn_ref_e auf ui_knopf(tab_e, "Aktualisieren", 10, 760, 140, 32, refresh_events_factory(name))
     setze btn_open_e auf ui_knopf(tab_e, "Oeffnen",      160, 760, 120, 32, open_event_factory(name))
@@ -492,6 +500,9 @@ funktion oeffne_chat(projekt, channel):
     ui_liste_spalte_breite(liste_m, 0, 100)
     ui_liste_spalte_breite(liste_m, 1, 160)
     ui_liste_spalte_breite(liste_m, 2, 600)
+    ui_liste_sortierbar(liste_m, 0, wahr)
+    ui_liste_sortierbar(liste_m, 1, wahr)
+    ui_liste_sortierbar(liste_m, 2, wahr)
     g["liste_msgs"] = liste_m
     g["lbl_msgs"]   = lbl_msgs
 
@@ -500,6 +511,8 @@ funktion oeffne_chat(projekt, channel):
     setze liste_a auf ui_liste(fenster, ["Name", "Modell"], 900, 35, 290, 670)
     ui_liste_spalte_breite(liste_a, 0, 180)
     ui_liste_spalte_breite(liste_a, 1, 100)
+    ui_liste_sortierbar(liste_a, 0, wahr)
+    ui_liste_sortierbar(liste_a, 1, wahr)
     g["liste_agents"] = liste_a
     g["lbl_ag"]       = lbl_ag
 
