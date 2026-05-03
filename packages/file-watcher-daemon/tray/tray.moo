@@ -135,15 +135,27 @@ funktion oeffne_detail(name):
     g["btn_stop_a"] = btn_stop
     g["btn_ref_a"]  = btn_ref_a
 
-    # --- Tab 2: Events ---
+    # --- Tab 2: Events (Synapse file_versions History) ---
     setze tab_e auf ui_tab_hinzu(tabs, "Events")
-    setze liste_e auf ui_liste(tab_e, ["Typ", "Datei", "Zeit"], 10, 10, 1450, 740)
-    ui_liste_spalte_breite(liste_e, 0, 100)
-    ui_liste_spalte_breite(liste_e, 1, 900)
-    ui_liste_spalte_breite(liste_e, 2, 220)
+    # Filter-Eingabe oben — leer = alles, sonst Substring-Filter
+    # ueber Datei/Agent/Reason/Feature.
+    ui_label(tab_e, "Filter:", 10, 12, 60, 24)
+    setze filter_e auf ui_eingabe(tab_e, 70, 10, 600, 28, "Substring in Datei/Agent/Reason/Feature...", falsch)
+    ui_eingabe_on_enter(filter_e, refresh_events_factory(name))
+    g["filter_events"] = filter_e
+    setze liste_e auf ui_liste(tab_e, ["Zeit", "Agent", "Datei", "Aktion", "Reason", "Feature"], 10, 50, 1450, 700)
+    ui_liste_spalte_breite(liste_e, 0, 170)
+    ui_liste_spalte_breite(liste_e, 1, 160)
+    ui_liste_spalte_breite(liste_e, 2, 360)
+    ui_liste_spalte_breite(liste_e, 3, 100)
+    ui_liste_spalte_breite(liste_e, 4, 460)
+    ui_liste_spalte_breite(liste_e, 5, 200)
     ui_liste_sortierbar(liste_e, 0, wahr)
     ui_liste_sortierbar(liste_e, 1, wahr)
     ui_liste_sortierbar(liste_e, 2, wahr)
+    ui_liste_sortierbar(liste_e, 3, wahr)
+    ui_liste_sortierbar(liste_e, 4, wahr)
+    ui_liste_sortierbar(liste_e, 5, wahr)
     g["liste_events"] = liste_e
     setze btn_ref_e auf ui_knopf(tab_e, "Aktualisieren", 10, 760, 140, 32, refresh_events_factory(name))
     setze btn_open_e auf ui_knopf(tab_e, "Oeffnen",      160, 760, 120, 32, open_event_factory(name))
@@ -328,29 +340,57 @@ funktion events_laden(name):
     g["busy_events"] = wahr
     setze liste auf g["liste_events"]
     ui_liste_leeren(liste)
-    setze resp auf safe_get(DAEMON_URL + "/projects/" + name + "/history?limit=50")
+    # Quelle: file_versions-Tabelle (Synapse-eigene "Commits" mit reason).
+    setze resp auf safe_get(DAEMON_URL + "/projects/" + name + "/file_versions?limit=200")
     wenn resp == "":
         g["busy_events"] = falsch
         gib_zurück nichts
     setze info auf json_lesen(resp)
     wenn typ_von(info) != "Woerterbuch":
+        g["busy_events"] = falsch
         gib_zurück nichts
-    wenn nicht info.hat("events"):
+    wenn nicht info.hat("versions"):
+        g["busy_events"] = falsch
         gib_zurück nichts
-    setze events auf info["events"]
+    setze versions auf info["versions"]
+    # Filter-Substring (kann leer sein -> alles)
+    setze filter_text auf ""
+    wenn g.hat("filter_events"):
+        setze filter_text auf ui_eingabe_text(g["filter_events"])
     setze i auf 0
-    solange i < länge(events):
-        setze ev auf events[i]
-        setze typ auf ""
-        wenn ev.hat("event_type"):
-            setze typ auf ev["event_type"]
-        setze pfad auf ""
-        wenn ev.hat("file_path"):
-            setze pfad auf ev["file_path"]
+    solange i < länge(versions):
+        setze v auf versions[i]
         setze zeit auf ""
-        wenn ev.hat("created_at"):
-            setze zeit auf ev["created_at"]
-        ui_liste_zeile_hinzu(liste, [typ, pfad, zeit])
+        wenn v.hat("created_at"):
+            setze zeit auf v["created_at"]
+        setze agent auf ""
+        wenn v.hat("agent_id"):
+            wenn typ_von(v["agent_id"]) == "Text":
+                setze agent auf v["agent_id"]
+        setze pfad auf ""
+        wenn v.hat("file_path"):
+            setze pfad auf v["file_path"]
+        setze aktion auf ""
+        wenn v.hat("edit_action"):
+            wenn typ_von(v["edit_action"]) == "Text":
+                setze aktion auf v["edit_action"]
+        setze reason auf ""
+        wenn v.hat("reason"):
+            wenn typ_von(v["reason"]) == "Text":
+                setze reason auf v["reason"]
+        setze feature auf ""
+        wenn v.hat("feature_tag"):
+            wenn typ_von(v["feature_tag"]) == "Text":
+                setze feature auf v["feature_tag"]
+        # Filter: Substring (case-insensitive nicht trivial in moo, daher
+        # exakt) ueber agent/pfad/reason/feature.
+        setze passt auf wahr
+        wenn filter_text != "":
+            setze haystack auf agent + " " + pfad + " " + reason + " " + feature
+            wenn nicht haystack.enthält(filter_text):
+                setze passt auf falsch
+        wenn passt:
+            ui_liste_zeile_hinzu(liste, [zeit, agent, pfad, aktion, reason, feature])
         setze i auf i + 1
     g["busy_events"] = falsch
 
@@ -365,7 +405,8 @@ funktion oeffne_event(name):
     wenn idx < 0:
         gib_zurück nichts
     setze zeile auf ui_liste_zeile(g["liste_events"], idx)
-    setze pfad auf zeile[1]
+    # Liste-Spalten: [Zeit, Agent, Datei, Aktion, Reason, Feature]
+    setze pfad auf zeile[2]
     versuche:
         http_sende(DAEMON_URL + "/projects/" + name + "/open-file", pfad)
     fange e:

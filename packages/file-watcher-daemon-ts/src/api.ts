@@ -212,6 +212,41 @@ export function buildApi(opts: BuildApiOptions): FastifyInstance {
     },
   );
 
+  // ---- GET /projects/:name/file_versions ---------------------------------
+  // Letzte N Eintraege aus file_versions-Tabelle (Synapse-eigene "Commits"
+  // mit reason + feature_tag + agent_id + git_commit_sha + agent_note).
+  // Wird vom Tray-Events-Tab genutzt — zeigt was Synapse-Tools gemacht
+  // haben statt was chokidar an Roh-Events sah.
+  app.get<{ Params: { name: string }; Querystring: { limit?: string } }>(
+    '/projects/:name/file_versions',
+    async (req, reply) => {
+      const { name } = req.params;
+      if (!manager.status(name)) {
+        reply.code(404);
+        return { error: 'unknown project' };
+      }
+      let limit = parseInt(req.query.limit ?? '100', 10);
+      if (!Number.isFinite(limit) || limit <= 0) limit = 100;
+      if (limit > 1000) limit = 1000;
+      try {
+        const pool = getPool();
+        const { rows } = await pool.query(
+          `SELECT id, file_path, edit_action, agent_id, reason, feature_tag,
+                  git_commit_sha, agent_note, created_at
+             FROM file_versions
+            WHERE project = $1
+            ORDER BY created_at DESC
+            LIMIT $2`,
+          [name, limit],
+        );
+        return { versions: rows };
+      } catch (err) {
+        reply.code(500);
+        return { error: (err as Error).message };
+      }
+    },
+  );
+
   // ---- GET /projects/:name/specialists -----------------------------------
   // Primary: PostgreSQL wrapper_status — gibt alle registrierten Spezialisten
   // mit Status/Modell/Tokens/wrapperPid zurueck.
