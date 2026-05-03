@@ -209,9 +209,7 @@ funktion oeffne_detail(name):
     # Der eigentliche String 'name' wird via Dict-Lookup geholt; das Dict
     # retain-t den Wert selbst, kein Closure-Refcount-Bug mehr.
     fenster_zu_name[text(fenster)] = name
-    # A/B-TEST: Resize-Hook AUS — Drag im isolierten Test-Programm geht.
-    # Verdacht: on_resize size-allocate ueberschreibt Drag-Grip-Layout.
-    # ui_fenster_on_resize(fenster, (b, h) => layout_projekt_via_handle(fenster, b, h))
+    ui_fenster_on_resize(fenster, (b, h) => layout_projekt(aktiv_projekt["v"], b, h))
     ui_zeige(fenster)
     agents_laden(name)
     events_laden(name)
@@ -678,8 +676,7 @@ funktion oeffne_chat(projekt, channel):
 
     # Resize-Layout: Number-Handle-Capture-Pattern (siehe layout_projekt).
     fenster_zu_chatkey[text(fenster)] = schluessel
-    # A/B-TEST: Resize-Hook AUS (siehe Projekt-Fenster)
-    # ui_fenster_on_resize(fenster, (b, h) => layout_chat_via_handle(fenster, b, h))
+    ui_fenster_on_resize(fenster, (b, h) => layout_chat(aktiv_chat["v"], b, h))
     ui_zeige(fenster)
     chat_messages_laden(schluessel)
     chat_agents_laden(schluessel)
