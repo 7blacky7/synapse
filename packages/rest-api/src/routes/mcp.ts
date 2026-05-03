@@ -2776,8 +2776,9 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
       const featureTag = str(args, 'feature_tag');
       const parentVersionId = str(args, 'parent_version_id');
       const gitCommitSha = str(args, 'git_commit_sha');
-      const enrichment = (featureTag || parentVersionId || gitCommitSha)
-        ? { feature_tag: featureTag ?? null, parent_version_id: parentVersionId ?? null, git_commit_sha: gitCommitSha ?? null }
+      const agentNote = str(args, 'agent_note');
+      const enrichment = (featureTag || parentVersionId || gitCommitSha || agentNote)
+        ? { feature_tag: featureTag ?? null, parent_version_id: parentVersionId ?? null, git_commit_sha: gitCommitSha ?? null, agent_note: agentNote ?? null }
         : undefined;
 
       // Versionierungs-Actions arbeiten ohne file_path (oder mit anderen IDs).

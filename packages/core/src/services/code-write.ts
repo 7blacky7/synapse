@@ -47,6 +47,10 @@ export interface VersionEnrichment {
   feature_tag?: string | null;
   parent_version_id?: string | number | null;
   git_commit_sha?: string | null;
+  /** KI-eigene Beobachtungen pro Edit. Bei Multi-File-Batches via plan/commit
+   *  wird zusaetzlich ein UPDATE in file-batch.ts auf alle Rows der Batch
+   *  ausgefuehrt; bei single-file writes wird agent_note direkt mit-eingetragen. */
+  agent_note?: string | null;
 }
 
 // ─── String-Operationen (pure) ────────────────────────────────────────────────
@@ -466,8 +470,8 @@ export async function createFileInPg(
   // Der spaetere "echte" Snapshot via updateFileInPg fuegt sich nahtlos an.
   try {
     await pool.query(
-      `INSERT INTO file_versions (project, file_path, content, content_hash, edit_action, agent_id, batch_id, size_bytes, reason, feature_tag, parent_version_id, git_commit_sha)
-       VALUES ($1, $2, '', $3, $4, $5, $6, 0, $7, $8, $9, $10)`,
+      `INSERT INTO file_versions (project, file_path, content, content_hash, edit_action, agent_id, batch_id, size_bytes, reason, feature_tag, parent_version_id, git_commit_sha, agent_note)
+       VALUES ($1, $2, '', $3, $4, $5, $6, 0, $7, $8, $9, $10, $11)`,
       [
         project,
         filePath,
@@ -479,6 +483,7 @@ export async function createFileInPg(
         enrichment?.feature_tag ?? null,
         enrichment?.parent_version_id ?? null,
         enrichment?.git_commit_sha ?? null,
+        enrichment?.agent_note ?? null,
       ]
     );
   } catch { /* Tabelle existiert in alten Schemata vlt nicht — best-effort */ }
@@ -534,9 +539,9 @@ export async function updateFileInPg(
     // Snapshot: alten Inhalt sichern — nur wenn vorhanden UND vom neuen verschieden.
     // Verhindert Versions-Spam durch idempotente Writes (gleicher Inhalt 2x geschrieben).
     await client.query(
-      `INSERT INTO file_versions (project, file_path, content, content_hash, edit_action, agent_id, batch_id, size_bytes, reason, feature_tag, parent_version_id, git_commit_sha)
+      `INSERT INTO file_versions (project, file_path, content, content_hash, edit_action, agent_id, batch_id, size_bytes, reason, feature_tag, parent_version_id, git_commit_sha, agent_note)
        SELECT cf.project, cf.file_path, cf.content, cf.content_hash, $3, $4, $5,
-              COALESCE(cf.file_size, OCTET_LENGTH(cf.content)), $7, $8, $9, $10
+              COALESCE(cf.file_size, OCTET_LENGTH(cf.content)), $7, $8, $9, $10, $11
        FROM code_files cf
        WHERE cf.project = $1
          AND cf.file_path = $2
@@ -553,6 +558,7 @@ export async function updateFileInPg(
         enrichment?.feature_tag ?? null,
         enrichment?.parent_version_id ?? null,
         enrichment?.git_commit_sha ?? null,
+        enrichment?.agent_note ?? null,
       ]
     );
 
