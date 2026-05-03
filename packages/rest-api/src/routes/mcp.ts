@@ -2279,7 +2279,7 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
       // Specialist-Calls werden via PG-Queue an den lokalen FileWatcher-Daemon
       // delegiert (wo Claude-CLI + Projekt-FS verfuegbar sind).
       // status + capabilities lesen direkt aus PG ohne Queue.
-      const { enqueueSpecialistJob, waitForSpecialistJob, getPool } = await import('@synapse/core');
+      const { enqueueSpecialistJob, waitForSpecialistJob, getPool, getWrapperStatus, listWrapperStatus, postToInbox } = await import('@synapse/core');
       const project = reqStr(args, 'project');
 
       // project_path-Auflösung: REST-Web-KIs muessen den Pfad nicht kennen.
@@ -2310,11 +2310,110 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
           message: 'capabilities-Check ist nur ueber lokalen MCP-Server verfuegbar (REST-API hat keinen Claude-CLI-Zugriff). Pruefe via shell({command:"which claude"}) ob CLI verfuegbar ist.',
         };
       }
-      // status wird via PG-Queue an Daemon delegiert (Iter 3)
-      // status liest ueber Daemon → status.json + heartbeat. Kein Stub mehr.
+      // status: direkt aus PG wrapper_status lesen — kein Daemon-Roundtrip noetig
+      if (action === 'status') {
+        const name = str(args, 'name');
+        const THREE_MIN_MS = 3 * 60 * 1000;
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const toSpecialist = (row: any) => ({
+          name: row.agentName,
+          model: row.model ?? '',
+          status: row.status,
+          pid: row.innerPid ?? 0,
+          wrapperPid: row.wrapperPid ?? 0,
+          socket: row.socketPath ?? '',
+          tokens: {
+            input: row.tokensInput ?? 0,
+            output: row.tokensOutput ?? 0,
+            percent: row.tokensPercent ?? 0,
+          },
+          contextCeiling: row.contextCeiling ?? 0,
+          lastActivity: row.lastActivity instanceof Date
+            ? row.lastActivity.toISOString()
+            : String(row.lastActivity),
+          channels: row.channels ?? [],
+          currentTask: row.currentTask ?? null,
+          busy: row.busy ?? false,
+          ...(row.provider != null && { provider: row.provider }),
+          ...(row.modelFullId != null && { modelFullId: row.modelFullId }),
+        });
+
+        if (name) {
+          // Einzelner Spezialist
+          const row = await getWrapperStatus(name, project).catch(() => null);
+          if (!row) {
+            return { success: false, message: `Spezialist "${name}" nicht gefunden.` };
+          }
+          const connected = Date.now() - row.lastActivity.getTime() < THREE_MIN_MS
+            && row.status !== 'crashed' && row.status !== 'stopped';
+          return {
+            success: true,
+            specialist: toSpecialist(row),
+            connected,
+            wrapperStatus: { via: 'pg', lastActivity: row.lastActivity.toISOString() },
+            skill: '(Skill-Daten nur via lokalen MCP-Server verfuegbar)',
+          };
+        }
+
+        // Alle Spezialisten des Projekts
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const rows = await listWrapperStatus(project).catch(() => [] as any[]);
+        const specialists: Record<string, unknown> = {};
+        for (const row of rows) {
+          specialists[row.agentName] = toSpecialist(row);
+        }
+        return {
+          success: true,
+          specialists,
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          runningCount: rows.filter((r: any) => r.status === 'running').length,
+          lastUpdate: rows[0]?.lastActivity instanceof Date
+            ? rows[0].lastActivity.toISOString()
+            : new Date().toISOString(),
+        };
+      }
+
+      // wake: PG NOTIFY (fast path) + Inbox (persistent fallback) — kein Daemon-Roundtrip
+      if (action === 'wake') {
+        const name = reqStr(args, 'name');
+        const message = reqStr(args, 'message');
+        const topic = `synapse_specialist_wake_${name}`;
+        const payload = JSON.stringify({ message, from: 'rest-api', project, timestamp: Date.now() });
+        let notifyOk = false;
+        let inboxId: number | undefined;
+        const wakeErrors: string[] = [];
+
+        // Fast path: PG NOTIFY (wrapper.ts hat LISTEN synapse_specialist_wake_<name>)
+        try {
+          await getPool().query('SELECT pg_notify($1, $2)', [topic, payload]);
+          notifyOk = true;
+        } catch (e) {
+          wakeErrors.push(`notify: ${(e as Error).message}`);
+        }
+
+        // Persistent fallback: Inbox (wird beim naechsten Heartbeat verarbeitet)
+        try {
+          const r = await postToInbox('rest-api', name, message);
+          inboxId = r.id;
+        } catch (e) {
+          wakeErrors.push(`inbox: ${(e as Error).message}`);
+        }
+
+        const ok = notifyOk || inboxId != null;
+        return {
+          success: ok,
+          name,
+          notified: notifyOk,
+          inboxId,
+          errors: wakeErrors.length > 0 ? wakeErrors : undefined,
+          message: ok
+            ? `Wake gesendet an "${name}" (notify=${notifyOk}, inbox=${inboxId != null})`
+            : `Wake-Fehler fuer "${name}": ${wakeErrors.join(', ')}`,
+        };
+      }
 
       const actionStr = String(action ?? '');
-      const queueableActions = ['spawn', 'spawn_batch', 'stop', 'purge', 'wake', 'update_skill', 'status'];
+      const queueableActions = ['spawn', 'spawn_batch', 'stop', 'purge', 'update_skill'];
       if (!queueableActions.includes(actionStr)) {
         return { success: false, error: `Unbekannte specialist action: "${actionStr}"` };
       }
@@ -2322,7 +2421,7 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
       try {
         const { id } = await enqueueSpecialistJob({
           project,
-          action: actionStr as 'spawn' | 'spawn_batch' | 'stop' | 'purge' | 'wake' | 'update_skill' | 'status',
+          action: actionStr as 'spawn' | 'spawn_batch' | 'stop' | 'purge' | 'update_skill',
           args: args as Record<string, unknown>,
         });
         const result = await waitForSpecialistJob(id, 60_000);
