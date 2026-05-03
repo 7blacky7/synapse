@@ -2296,6 +2296,17 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
       // delegiert (wo Claude-CLI + Projekt-FS verfuegbar sind).
       // status + capabilities lesen direkt aus PG ohne Queue.
       const { enqueueSpecialistJob, waitForSpecialistJob, getPool, getWrapperStatus, listWrapperStatus, postToInbox } = await import('@synapse/core');
+
+      // capabilities ist projekt-agnostisch — vor reqStr('project') abfangen
+      // sonst crasht der Aufruf an required-Param und wir geben 500/502 statt
+      // einer hilfreichen Antwort.
+      if (action === 'capabilities') {
+        return {
+          success: true,
+          message: 'capabilities-Check ist nur ueber lokalen MCP-Server verfuegbar (REST-API hat keinen Claude-CLI-Zugriff). Pruefe via shell({command:"which claude"}) ob CLI verfuegbar ist.',
+        };
+      }
+
       const project = reqStr(args, 'project');
 
       // project_path-Auflösung: REST-Web-KIs muessen den Pfad nicht kennen.
@@ -2319,13 +2330,6 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
         }
       } catch { /* fallthrough — nutzt was Caller geschickt hat */ }
 
-      // Direct-Pass-Through (kein Daemon-Roundtrip noetig):
-      if (action === 'capabilities') {
-        return {
-          success: true,
-          message: 'capabilities-Check ist nur ueber lokalen MCP-Server verfuegbar (REST-API hat keinen Claude-CLI-Zugriff). Pruefe via shell({command:"which claude"}) ob CLI verfuegbar ist.',
-        };
-      }
       // status: direkt aus PG wrapper_status lesen — kein Daemon-Roundtrip noetig
       if (action === 'status') {
         const name = str(args, 'name');
