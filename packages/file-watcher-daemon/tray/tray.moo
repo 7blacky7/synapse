@@ -168,11 +168,22 @@ funktion layout_projekt(name, b, h):
     wenn g.hat("closed"):
         wenn g["closed"]:
             gib_zurück nichts
+    # Min-Clamp: GTK ui_groesse_setze mit Werten <= 0 oder negativ
+    # fuehrt zu Segfault. Beim manuellen Verkleinern unter unsere
+    # Layout-Annahmen koennen Differenzen negativ werden.
     setze tabs_b auf b - 20
+    wenn tabs_b < 50:
+        setze tabs_b auf 50
     setze tabs_h auf h - 60
+    wenn tabs_h < 50:
+        setze tabs_h auf 50
     ui_groesse_setze(g["tabs"], tabs_b, tabs_h)
     setze inner_b auf tabs_b - 30
+    wenn inner_b < 30:
+        setze inner_b auf 30
     setze list_h auf tabs_h - 100
+    wenn list_h < 30:
+        setze list_h auf 30
     setze btn_y auf list_h + 20
     ui_groesse_setze(g["liste_agents"], inner_b, list_h)
     ui_position_setze(g["btn_stop_a"], 10,  btn_y)
@@ -488,10 +499,19 @@ funktion layout_chat(schluessel, b, h):
     wenn g.hat("closed"):
         wenn g["closed"]:
             gib_zurück nichts
-    # Aufteilung: Nachrichten links breit (~73%), Agenten rechts schmal (~25%)
+    # Aufteilung: Nachrichten links breit, Agenten rechts schmal.
+    # Min-Clamps gegen negative Werte beim Verkleinern (= Segfault in GTK).
     setze rechts_b auf 290
+    wenn b < 600:
+        setze rechts_b auf b / 4
+    wenn rechts_b < 60:
+        setze rechts_b auf 60
     setze links_b auf b - rechts_b - 30
+    wenn links_b < 100:
+        setze links_b auf 100
     setze listen_h auf h - 130
+    wenn listen_h < 50:
+        setze listen_h auf 50
     # Nachrichten-Liste links
     ui_position_setze(g["lbl_msgs"], 10, 10)
     ui_groesse_setze(g["liste_msgs"], links_b, listen_h)
@@ -504,6 +524,8 @@ funktion layout_chat(schluessel, b, h):
     # Eingabe + Buttons unten
     setze in_y auf listen_h + 60
     setze in_b auf b - 220
+    wenn in_b < 100:
+        setze in_b auf 100
     ui_position_setze(g["lbl_in"], 10, in_y - 25)
     ui_position_setze(g["eingabe"], 10, in_y)
     ui_groesse_setze(g["eingabe"], in_b, 32)
