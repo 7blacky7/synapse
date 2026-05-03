@@ -458,6 +458,10 @@ async function wakeAgent(message: string): Promise<SendMessageResult> {
 
 const RESPAWN_MARKER_PATH = `/tmp/.specialist-rotate-pending-${AGENT_NAME}`
 
+// Pre-Rotation Auto-Handoff Hinweis: einmal pro Wrapper-Lauf, sobald der
+// Agent in den Korridor-Bereich kommt. Verhindert Spam bei jedem Heartbeat.
+let handoffWarningSent = false
+
 async function heartbeatPoll() {
   if (shuttingDown || !processAlive) return
 
@@ -478,6 +482,35 @@ async function heartbeatPoll() {
       }
       await rotateAgent()
       return
+    }
+
+    // Pre-Rotation Auto-Handoff-Hinweis: sobald Agent in den Korridor-Bereich
+    // kommt (Opus 90%, Sonnet/Haiku 80%), einmalig wakeAgent mit der Bitte
+    // den Handoff selbst zu machen. So bekommt der Agent die Chance MEMORY
+    // sauber zu sichern bevor die Hard-Rotation bei 95% greift.
+    if (!agentBusy && !handoffWarningSent) {
+      const ctxPct = getContextPercent()
+      const isOpus = /opus/i.test(AGENT_MODEL)
+      const handoffMin = isOpus ? 90 : 80
+      if (ctxPct >= handoffMin) {
+        handoffWarningSent = true
+        log('AUTO-HANDOFF-HINWEIS: Context %d%% — sende Wake an Agent', ctxPct)
+        const handoffMessage = `CONTEXT-WARNUNG: Dein Kontext ist fast voll. Mache JETZT deinen Auto-Handoff — beende laufende Tool-Calls SOFORT und:
+
+1. Sichere deinen kompletten Wissensstand in MEMORY.md (Lehren, offene Themen, letzter Stand)
+2. Update SKILL.md falls noetig
+3. Rufe diesen Tool-Call auf:
+   thought(action: "add", project: "<dein-projekt>", source: "${AGENT_NAME}", content: "AUTO-HANDOFF: <kurze Zusammenfassung>", tags: ["auto-handoff"], trigger_respawn: true)
+4. Die Tool-Response sagt dir ob der Respawn akzeptiert wurde. Falls ja: kurzen Status im Channel posten und IDLE werden.
+
+Wenn du weiterarbeitest ohne Handoff, rotiert der Wrapper dich automatisch bei 95% — aber dann kann MEMORY/SKILL nicht mehr sauber gesichert werden.`
+        try {
+          await wakeAgent(handoffMessage)
+        } catch (err) {
+          log('Auto-Handoff-Wake fehlgeschlagen: %s', err)
+        }
+        return
+      }
     }
 
     // Auto-Rotation: Context fast voll → Agent speichern + neustarten
@@ -746,6 +779,8 @@ async function updateStatusFile() {
 
 async function rotateAgent(fromCrash = false) {
   log('CONTEXT-ROTATION — saving memory and restarting (fromCrash=%s)', fromCrash)
+  // Reset Auto-Handoff-Hinweis-Flag, damit er nach Respawn wieder feuert
+  handoffWarningSent = false
 
   try {
     // Ask agent to save — but only if Claude process is still alive.
