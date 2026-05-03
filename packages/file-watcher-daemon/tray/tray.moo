@@ -43,6 +43,10 @@ setze fenster_zu_chatkey auf {}
 # on_change feuert pro Tastendruck, String-Capture-Closure crasht
 # (moo Closure-Multi-Call-Refcount-Bug, Memory bug-closure-segfault).
 setze filter_zu_name auf {}
+# Aktives Projekt-Detail-Fenster (fuer Knopf-Callbacks ohne Capture).
+# Wird in oeffne_detail gesetzt. Edge-Case: mehrere Detail-Fenster
+# parallel — Knoepfe wirken auf das zuletzt geoeffnete.
+setze aktiv_projekt auf { "v": "" }
 # Aktiver Chat-Schluessel fuer den globalen Tastenbindungs-Handler.
 # Als Dict damit Schreiben aus Funktionen die globale Variable trifft
 # (setze in funktion = lokal!). Schluessel "v" haelt den aktiven Wert.
@@ -74,6 +78,19 @@ funktion safe_post(url, body):
         http_sende(url, body)
     fange e:
         setze ignore auf 0
+
+# UTC-ISO ("2026-05-03T19:35:27.944Z") → lokale HH:MM:SS.
+# CEST = UTC+2 (TODO: DST-aware bei moo-Datetime-API).
+funktion format_zeit_lokal(iso):
+    wenn länge(iso) < 19:
+        gib_zurück iso
+    setze hh auf zahl(iso.teilstring(11, 13)) + 2
+    wenn hh >= 24:
+        setze hh auf hh - 24
+    setze hh_str auf text(hh)
+    wenn länge(hh_str) < 2:
+        setze hh_str auf "0" + hh_str
+    gib_zurück hh_str + ":" + iso.teilstring(14, 16) + ":" + iso.teilstring(17, 19)
 
 # --------------------------------------------------------------
 # Projekt-Toggle (Check-Item-Callback)
@@ -114,6 +131,7 @@ funktion oeffne_detail(name):
     setze g auf {}
     offene_fenster[name] = g
     g["name"] = name
+    aktiv_projekt["v"] = name
 
     setze fenster auf ui_fenster("Projekt: " + name, 1500, 900, 1, nichts)
     g["fenster"] = fenster
@@ -138,8 +156,8 @@ funktion oeffne_detail(name):
     ui_liste_sortierbar(liste_a, 3, wahr)
     ui_liste_sortierbar(liste_a, 4, wahr)
     g["liste_agents"] = liste_a
-    setze btn_stop auf ui_knopf(tab_a, "Stoppen",        10, 760, 120, 32, stop_agent_factory(name))
-    setze btn_ref_a auf ui_knopf(tab_a, "Aktualisieren", 140, 760, 140, 32, refresh_agents_factory(name))
+    setze btn_stop auf ui_knopf(tab_a, "Stoppen",        10, 760, 120, 32, stoppe_ausgewaehlten_global)
+    setze btn_ref_a auf ui_knopf(tab_a, "Aktualisieren", 140, 760, 140, 32, agents_laden_global)
     g["btn_stop_a"] = btn_stop
     g["btn_ref_a"]  = btn_ref_a
 
@@ -170,8 +188,8 @@ funktion oeffne_detail(name):
     ui_liste_sortierbar(liste_e, 4, wahr)
     ui_liste_sortierbar(liste_e, 5, wahr)
     g["liste_events"] = liste_e
-    setze btn_ref_e auf ui_knopf(tab_e, "Aktualisieren", 10, 760, 140, 32, refresh_events_factory(name))
-    setze btn_open_e auf ui_knopf(tab_e, "Oeffnen",      160, 760, 120, 32, open_event_factory(name))
+    setze btn_ref_e auf ui_knopf(tab_e, "Aktualisieren", 10, 760, 140, 32, events_laden_global)
+    setze btn_open_e auf ui_knopf(tab_e, "Oeffnen",      160, 760, 120, 32, oeffne_event_global)
     g["btn_ref_e"]  = btn_ref_e
     g["btn_open_e"] = btn_open_e
 
@@ -189,12 +207,12 @@ funktion oeffne_detail(name):
     ui_label(tab_s, "Dateien:",  10, 100, 100, 20)
     setze lbl_files auf ui_label(tab_s, "-", 110, 100, 620, 20)
     g["lbl_files"] = lbl_files
-    ui_knopf(tab_s, "Aktualisieren", 10, 140, 140, 32, refresh_status_factory(name))
+    ui_knopf(tab_s, "Aktualisieren", 10, 140, 140, 32, status_laden_global)
 
     # --- Tab 4: Aktionen ---
     setze tab_ak auf ui_tab_hinzu(tabs, "Aktionen")
-    ui_knopf(tab_ak, "Neu indexieren", 10, 10,   200, 36, reindex_factory(name))
-    ui_knopf(tab_ak, "Projekt loeschen", 10, 60, 200, 36, delete_factory(name))
+    ui_knopf(tab_ak, "Neu indexieren", 10, 10,   200, 36, reindex_projekt_global)
+    ui_knopf(tab_ak, "Projekt loeschen", 10, 60, 200, 36, loesche_projekt_global)
 
     # Resize-Layout: Number-Handle-Capture-Pattern (moo-runtime-dev).
     # Closure capturet NUR den Fenster-Handle (Number, kein Refcount).
@@ -334,6 +352,50 @@ funktion agents_laden(name):
 
 funktion refresh_agents_factory(name):
     gib_zurück () => agents_laden(name)
+
+# Globale Top-Level-Handler ohne Capture (vermeidet Closure-Multi-Call-
+# Refcount-Bug). Lesen aktiv_projekt["v"] beim Aufruf.
+funktion agents_laden_global():
+    setze name auf aktiv_projekt["v"]
+    wenn name == "":
+        gib_zurück nichts
+    agents_laden(name)
+
+funktion stoppe_ausgewaehlten_global():
+    setze name auf aktiv_projekt["v"]
+    wenn name == "":
+        gib_zurück nichts
+    stoppe_ausgewaehlten(name)
+
+funktion events_laden_global():
+    setze name auf aktiv_projekt["v"]
+    wenn name == "":
+        gib_zurück nichts
+    events_laden(name)
+
+funktion oeffne_event_global():
+    setze name auf aktiv_projekt["v"]
+    wenn name == "":
+        gib_zurück nichts
+    oeffne_event(name)
+
+funktion status_laden_global():
+    setze name auf aktiv_projekt["v"]
+    wenn name == "":
+        gib_zurück nichts
+    status_laden(name)
+
+funktion reindex_projekt_global():
+    setze name auf aktiv_projekt["v"]
+    wenn name == "":
+        gib_zurück nichts
+    reindex_projekt(name)
+
+funktion loesche_projekt_global():
+    setze name auf aktiv_projekt["v"]
+    wenn name == "":
+        gib_zurück nichts
+    loesche_projekt(name)
 
 funktion stoppe_ausgewaehlten(name):
     wenn nicht offene_fenster.hat(name):
@@ -609,8 +671,8 @@ funktion oeffne_chat(projekt, channel):
     # Closures mit Capture crashen moo). Aktiven Chat ueber Dict setzen.
     aktiv_chat["v"] = schluessel
     ui_textbereich_on_key(eingabe, chat_key_handler_global)
-    setze btn_send auf ui_knopf(fenster, "Senden",        1010, 690, 80, 36, chat_senden_factory(schluessel))
-    setze btn_ref auf ui_knopf(fenster, "Aktualisieren", 1095, 690, 85, 36, chat_refresh_factory(schluessel))
+    setze btn_send auf ui_knopf(fenster, "Senden",        1010, 690, 80, 36, chat_senden_global)
+    setze btn_ref auf ui_knopf(fenster, "Aktualisieren", 1095, 690, 85, 36, chat_refresh_global)
     g["btn_send"] = btn_send
     g["btn_ref"]  = btn_ref
 
@@ -849,6 +911,19 @@ funktion chat_refresh_factory(schluessel):
 funktion chat_refresh(schluessel):
     chat_messages_laden(schluessel)
     chat_agents_laden(schluessel)
+
+# Globale Top-Level-Handler fuer Chat-Buttons (ohne Capture).
+funktion chat_senden_global():
+    setze schluessel auf aktiv_chat["v"]
+    wenn schluessel == "":
+        gib_zurück nichts
+    chat_senden(schluessel)
+
+funktion chat_refresh_global():
+    setze schluessel auf aktiv_chat["v"]
+    wenn schluessel == "":
+        gib_zurück nichts
+    chat_refresh(schluessel)
 
 # Live-Refresh aller offenen Chat-Fenster (Timer-Tick alle 3 s).
 # Globaler refresh_busy-Guard: verhindert Re-Entrancy wenn HTTP-Fetch
