@@ -31,6 +31,28 @@ import { deleteByFilePath } from '../qdrant/index.js';
 import { COLLECTIONS } from '../types/index.js';
 import { checkErrorPatterns, type ErrorPatternWarning } from './error-patterns.js';
 
+/**
+ * IDEA-3a: Resolve agent_id mit Default-Fallback.
+ * Reihenfolge: explizit uebergeben -> SYNAPSE_DEFAULT_AGENT_ID env -> null.
+ * KEIN harter 'koordinator'-Default — bleibt null wenn nichts gesetzt ist.
+ */
+function resolveAgentId(agentId?: string | null): string | null {
+  if (agentId && agentId.trim().length > 0) return agentId;
+  const fromEnv = process.env.SYNAPSE_DEFAULT_AGENT_ID;
+  if (fromEnv && fromEnv.trim().length > 0) return fromEnv;
+  return null;
+}
+
+/**
+ * IDEA-3a: Optionale Enrichment-Felder fuer file_versions.
+ * Alle Felder additive/nullable — bestehende Aufrufer ohne diese Felder laufen unveraendert weiter.
+ */
+export interface VersionEnrichment {
+  feature_tag?: string | null;
+  parent_version_id?: string | number | null;
+  git_commit_sha?: string | null;
+}
+
 // ─── String-Operationen (pure) ────────────────────────────────────────────────
 
 /**
@@ -406,12 +428,14 @@ export async function createFileInPg(
   agentId?: string,
   reason?: string,
   batchId?: number,
-  editAction?: string
+  editAction?: string,
+  enrichment?: VersionEnrichment
 ): Promise<{ warnings?: ErrorPatternWarning[] }> {
+  const resolvedAgentId = resolveAgentId(agentId);
   let warnings: ErrorPatternWarning[] | undefined;
-  if (agentId) {
+  if (resolvedAgentId) {
     try {
-      const result = await checkErrorPatterns(content, agentId);
+      const result = await checkErrorPatterns(content, resolvedAgentId);
       if (result.length > 0) warnings = result;
     } catch {
       // non-blocking — ignore errors
@@ -446,9 +470,20 @@ export async function createFileInPg(
   // Der spaetere "echte" Snapshot via updateFileInPg fuegt sich nahtlos an.
   try {
     await pool.query(
-      `INSERT INTO file_versions (project, file_path, content, content_hash, edit_action, agent_id, batch_id, size_bytes, reason)
-       VALUES ($1, $2, '', $3, $4, $5, $6, 0, $7)`,
-      [project, filePath, EMPTY_HASH, editAction ?? 'create', agentId ?? null, batchId ?? null, reason ?? null]
+      `INSERT INTO file_versions (project, file_path, content, content_hash, edit_action, agent_id, batch_id, size_bytes, reason, feature_tag, parent_version_id, git_commit_sha)
+       VALUES ($1, $2, '', $3, $4, $5, $6, 0, $7, $8, $9, $10)`,
+      [
+        project,
+        filePath,
+        EMPTY_HASH,
+        editAction ?? 'create',
+        resolvedAgentId,
+        batchId ?? null,
+        reason ?? null,
+        enrichment?.feature_tag ?? null,
+        enrichment?.parent_version_id ?? null,
+        enrichment?.git_commit_sha ?? null,
+      ]
     );
   } catch { /* Tabelle existiert in alten Schemata vlt nicht — best-effort */ }
 
@@ -476,12 +511,14 @@ export async function updateFileInPg(
   agentId?: string,
   editAction?: string,
   batchId?: number,
-  reason?: string
+  reason?: string,
+  enrichment?: VersionEnrichment
 ): Promise<{ warnings?: ErrorPatternWarning[] }> {
+  const resolvedAgentId = resolveAgentId(agentId);
   let warnings: ErrorPatternWarning[] | undefined;
-  if (agentId) {
+  if (resolvedAgentId) {
     try {
-      const result = await checkErrorPatterns(newContent, agentId);
+      const result = await checkErrorPatterns(newContent, resolvedAgentId);
       if (result.length > 0) warnings = result;
     } catch {
       // non-blocking — ignore errors
@@ -501,14 +538,26 @@ export async function updateFileInPg(
     // Snapshot: alten Inhalt sichern — nur wenn vorhanden UND vom neuen verschieden.
     // Verhindert Versions-Spam durch idempotente Writes (gleicher Inhalt 2x geschrieben).
     await client.query(
-      `INSERT INTO file_versions (project, file_path, content, content_hash, edit_action, agent_id, batch_id, size_bytes, reason)
-       SELECT cf.project, cf.file_path, cf.content, cf.content_hash, $3, $4, $5, COALESCE(cf.file_size, OCTET_LENGTH(cf.content)), $7
+      `INSERT INTO file_versions (project, file_path, content, content_hash, edit_action, agent_id, batch_id, size_bytes, reason, feature_tag, parent_version_id, git_commit_sha)
+       SELECT cf.project, cf.file_path, cf.content, cf.content_hash, $3, $4, $5,
+              COALESCE(cf.file_size, OCTET_LENGTH(cf.content)), $7, $8, $9, $10
        FROM code_files cf
        WHERE cf.project = $1
          AND cf.file_path = $2
          AND cf.content IS NOT NULL
          AND cf.content_hash IS DISTINCT FROM $6`,
-      [project, filePath, editAction ?? 'update', agentId ?? null, batchId ?? null, hash, reason ?? null]
+      [
+        project,
+        filePath,
+        editAction ?? 'update',
+        resolvedAgentId,
+        batchId ?? null,
+        hash,
+        reason ?? null,
+        enrichment?.feature_tag ?? null,
+        enrichment?.parent_version_id ?? null,
+        enrichment?.git_commit_sha ?? null,
+      ]
     );
 
     const result = await client.query(

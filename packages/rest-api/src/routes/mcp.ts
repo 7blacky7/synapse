@@ -792,7 +792,7 @@ const MCP_TOOLS = [
         from_line: { type: 'number', description: 'read: Start-Zeile (1-basiert, Standard: 1)' },
         to_line: { type: 'number', description: 'read: End-Zeile inklusiv (Standard: letzte Zeile). Auto-Reduce bei > 80k Zeichen.' },
         truncate_long_lines: { type: 'number', description: 'read: Zeilen laenger als N Zeichen kuerzen + Marker. 0 = aus (Standard).' },
-        version_id: { type: 'string', description: 'Versions-ID (fuer get_version, restore). String, weil BIGSERIAL > Number.MAX_SAFE_INTEGER moeglich ist.' },
+        version_id: { type: 'string', description: 'Versions-ID (BIGSERIAL als String). Pflicht fuer get_version/restore. Bei history (IDEA-3a): zeigt Korrektur-Chain ab dieser Version (rekursiv via parent_version_id).' },
         batch_id: { type: 'string', description: 'Batch-ID (fuer restore_batch — rollt alle Files einer Multi-File-Batch zurueck).' },
         plan_id: { type: 'string', description: 'Plan-ID (fuer commit, cancel, plan_status). String wegen BIGSERIAL.' },
         ops: {
@@ -826,6 +826,7 @@ const MCP_TOOLS = [
               line_start: { type: 'number' },
               line_end: { type: 'number' },
               after_line: { type: 'number' },
+              shift_mode: { type: 'string', enum: ['auto', 'absolute'], description: 'Default "auto" = line-Ops auf gleicher Datei werden reverse-order appliziert (User gibt Zeilen aus Pre-Plan-Snapshot an). "absolute" = Op wird in Plan-Reihenfolge mit den angegebenen Zeilen auf den aktuellen Buffer-Stand bezogen.' },
             },
             required: ['file_path', 'action'],
           },
@@ -834,6 +835,9 @@ const MCP_TOOLS = [
         reason: { type: 'string', description: 'Optionale Begruendung — landet in file_versions.reason und ist via "history"-Action abrufbar. Fuer Crash-Recovery nuetzlich.' },
         since: { type: 'string', description: 'history: ISO-Timestamp ab dem Eintraege gelistet werden.' },
         limit: { type: 'number', description: 'versions: Max Eintraege (Standard 50, Max 500).' },
+        feature_tag: { type: 'string', description: 'IDEA-3a: Logischer Feature-Group-Tag (z.B. "idea-thought-task-link"). Wird in file_versions.feature_tag gespeichert. history(feature_tag=...) filtert danach.' },
+        parent_version_id: { type: 'string', description: 'IDEA-3a: Referenziert vorherige Version, die dieses Edit korrigiert/ersetzt. BIGINT als String. Erlaubt Korrektur-Chain-Tracking.' },
+        git_commit_sha: { type: 'string', description: 'IDEA-3a: Optionaler Git-Commit-SHA, der diese Aenderung im File-System repraesentiert.' },
       },
       required: ['action', 'project'],
     },
@@ -852,7 +856,7 @@ const MCP_TOOLS = [
         },
         project: { type: 'string', description: 'Projekt-Name' },
         ops: {
-          description: 'Multi-File Edit-Plan (1..100 Operationen). Jede Op: { file_path, action, ...op-spezifische Felder }. Aktionen: create, update, search_replace, search_replace_batch, replace_lines (line_start/line_end/content), insert_after (after_line/content), delete_lines (line_start/line_end), delete (ganze Datei), move (file_path -> new_path), copy (file_path -> new_path).',
+          description: 'Multi-File Edit-Plan (1..100 Operationen). Jede Op: { file_path, action, ...op-spezifische Felder }. Aktionen: create, update, search_replace, search_replace_batch, replace_lines (line_start/line_end/content), insert_after (after_line/content), delete_lines (line_start/line_end), delete (ganze Datei), move (file_path -> new_path), copy (file_path -> new_path). Multi-Op-auf-gleicher-Datei: per Default shift_mode="auto" → line-Ops werden reverse-order appliziert; ueberlappende Ranges sind ein harter Error vor jeder Mutation.',
           type: 'array',
           minItems: 1,
           maxItems: 100,
@@ -868,6 +872,7 @@ const MCP_TOOLS = [
               line_start: { type: 'number' },
               line_end: { type: 'number' },
               after_line: { type: 'number' },
+              shift_mode: { type: 'string', enum: ['auto', 'absolute'], description: 'Default "auto" = line-Ops auf gleicher Datei werden reverse-order appliziert (User gibt Zeilen aus Pre-Plan-Snapshot an). "absolute" = Op wird in Plan-Reihenfolge mit den angegebenen Zeilen auf den aktuellen Buffer-Stand bezogen.' },
               new_path: { type: 'string' },
               reason: { type: 'string' },
               edits: {
@@ -895,6 +900,9 @@ const MCP_TOOLS = [
         since: { type: 'string', description: 'history: ISO-Timestamp ab dem Eintraege gelistet werden' },
         file_path: { type: 'string', description: 'history: Filter auf einen Pfad (optional)' },
         limit: { type: 'number', description: 'history: Max Eintraege (Standard 50)' },
+        feature_tag: { type: 'string', description: 'IDEA-3a: Logischer Feature-Group-Tag (z.B. "idea-thought-task-link"). history(feature_tag=...) filtert danach.' },
+        parent_version_id: { type: 'string', description: 'IDEA-3a: Referenziert vorherige Version. BIGINT als String.' },
+        git_commit_sha: { type: 'string', description: 'IDEA-3a: Optionaler Git-Commit-SHA.' },
       },
       required: ['action', 'project'],
     },
@@ -2616,6 +2624,13 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
     case 'files': {
       const project = reqStr(args, 'project');
       const agentId = str(args, 'agent_id');
+      // IDEA-3a: History-Enrichment (additive, alle nullable)
+      const featureTag = str(args, 'feature_tag');
+      const parentVersionId = str(args, 'parent_version_id');
+      const gitCommitSha = str(args, 'git_commit_sha');
+      const enrichment = (featureTag || parentVersionId || gitCommitSha)
+        ? { feature_tag: featureTag ?? null, parent_version_id: parentVersionId ?? null, git_commit_sha: gitCommitSha ?? null }
+        : undefined;
 
       // Versionierungs-Actions arbeiten ohne file_path (oder mit anderen IDs).
       // Vor der file_path-Pflicht abfangen.
@@ -2708,6 +2723,9 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
           file_path: str(args, 'file_path'),
           since: str(args, 'since'),
           limit,
+          // IDEA-3a: Enrichment-Filter
+          feature_tag: str(args, 'feature_tag'),
+          version_id: str(args, 'version_id'),
         });
         return {
           success: true,
@@ -2715,7 +2733,7 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
           count: entries.length,
           entries,
           tip: entries.length > 0
-            ? 'Eintraege chronologisch (neueste zuerst). reason = "Warum" der Aenderung. Voller Inhalt: files(action: "get_version", version_id).'
+            ? 'Eintraege chronologisch (neueste zuerst). reason = "Warum" der Aenderung. Voller Inhalt: files(action: "get_version", version_id). IDEA-3a: feature_tag und parent_version_id zeigen Feature-Group bzw. Korrektur-Chain.'
             : 'Keine Eintraege fuer diese Filter.',
         };
       }
@@ -2740,7 +2758,7 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
       switch (action) {
         case 'create': {
           const content = reqStr(args, 'content');
-          const result = await createFileInPg(project, filePath, content, agentId, str(args, 'reason'));
+          const result = await createFileInPg(project, filePath, content, agentId, str(args, 'reason'), undefined, undefined, enrichment);
           const response: Record<string, unknown> = { success: true, message: `Datei "${filePath}" erstellt (${content.length} Zeichen)` };
           if (result.warnings?.length) {
             response.errorPatterns = {
@@ -2753,7 +2771,7 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
         }
         case 'update': {
           const content = reqStr(args, 'content');
-          const result = await updateFileInPg(project, filePath, content, agentId, undefined, undefined, str(args, 'reason'));
+          const result = await updateFileInPg(project, filePath, content, agentId, undefined, undefined, str(args, 'reason'), enrichment);
           const response: Record<string, unknown> = { success: true, message: `Datei "${filePath}" aktualisiert (${content.length} Zeichen)` };
           if (result.warnings?.length) {
             response.errorPatterns = {
@@ -2803,7 +2821,7 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
           const content = reqStr(args, 'content');
           if (lineStart === undefined || lineEnd === undefined) return { success: false, error: 'line_start und line_end erforderlich' };
           const newContent = replaceLines(currentContent, lineStart, lineEnd, content);
-          const result = await updateFileInPg(project, filePath, newContent, agentId, undefined, undefined, str(args, 'reason'));
+          const result = await updateFileInPg(project, filePath, newContent, agentId, undefined, undefined, str(args, 'reason'), enrichment);
           const response: Record<string, unknown> = { success: true, message: `Zeilen ${lineStart}-${lineEnd} in "${filePath}" ersetzt` };
           if (result.warnings?.length) {
             response.errorPatterns = {
@@ -2821,7 +2839,7 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
           const content = reqStr(args, 'content');
           if (afterLine === undefined) return { success: false, error: 'after_line erforderlich' };
           const newContent = insertAfterLine(currentContent, afterLine, content);
-          const result = await updateFileInPg(project, filePath, newContent, agentId, undefined, undefined, str(args, 'reason'));
+          const result = await updateFileInPg(project, filePath, newContent, agentId, undefined, undefined, str(args, 'reason'), enrichment);
           const response: Record<string, unknown> = { success: true, message: `Inhalt nach Zeile ${afterLine} in "${filePath}" eingefuegt` };
           if (result.warnings?.length) {
             response.errorPatterns = {
@@ -2839,7 +2857,7 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
           const lineEnd = num(args, 'line_end');
           if (lineStart === undefined || lineEnd === undefined) return { success: false, error: 'line_start und line_end erforderlich' };
           const newContent = deleteLines(currentContent, lineStart, lineEnd);
-          const result = await updateFileInPg(project, filePath, newContent, agentId, undefined, undefined, str(args, 'reason'));
+          const result = await updateFileInPg(project, filePath, newContent, agentId, undefined, undefined, str(args, 'reason'), enrichment);
           const response: Record<string, unknown> = { success: true, message: `Zeilen ${lineStart}-${lineEnd} in "${filePath}" geloescht` };
           if (result.warnings?.length) {
             response.errorPatterns = {
@@ -2857,7 +2875,7 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
           const replaceStr = reqStr(args, 'replace');
           const { content: newContent, count } = searchReplace(currentContent, searchStr, replaceStr);
           if (count === 0) return { success: true, count: 0, message: `Kein Vorkommen von "${searchStr}" in "${filePath}"` };
-          const result = await updateFileInPg(project, filePath, newContent, agentId, undefined, undefined, str(args, 'reason'));
+          const result = await updateFileInPg(project, filePath, newContent, agentId, undefined, undefined, str(args, 'reason'), enrichment);
           const response: Record<string, unknown> = { success: true, count, message: `${count} Vorkommen ersetzt in "${filePath}"` };
           if (result.warnings?.length) {
             response.errorPatterns = {
@@ -2883,7 +2901,7 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
               message: `Keine Edits angewendet in "${filePath}"`,
             };
           }
-          const result = await updateFileInPg(project, filePath, newContent, agentId, undefined, undefined, str(args, 'reason'));
+          const result = await updateFileInPg(project, filePath, newContent, agentId, undefined, undefined, str(args, 'reason'), enrichment);
           const response: Record<string, unknown> = {
             success: true,
             ...batchResult,

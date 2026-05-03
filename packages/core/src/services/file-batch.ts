@@ -72,6 +72,144 @@ export interface FileBatchOp {
   /** move + copy — Ziel-Pfad. Muss bei move noch nicht existieren; bei copy darf
       der Zielpfad noch nicht existieren (sonst Konflikt im plan-Trockenlauf). */
   new_path?: string;
+  /**
+   * Steuert wie line-basierte Ops (replace_lines, insert_after, delete_lines)
+   * appliziert werden, wenn mehrere Ops auf derselben Datei sitzen.
+   *
+   * - 'auto' (Default): line-Ops auf einer Datei werden intern in absteigender
+   *   Reihenfolge nach line_start angewendet, sodass User absolute Zeilen aus
+   *   dem Snapshot VOR dem Plan angeben kann (kein manuelles Shift-Tracking).
+   * - 'absolute': Op wird in der vom Plan angegebenen Reihenfolge appliziert
+   *   und Zeilen-Argumente werden auf den AKTUELLEN Buffer-Stand bezogen
+   *   (klassisches sequentielles Verhalten — fuer Edge-Cases wo User bewusst
+   *   nach einem vorausgehenden Edit weitere Ops feintunen will).
+   *
+   * Hinweis: Single-Op-Plaene verhalten sich identisch in beiden Modi.
+   */
+  shift_mode?: 'auto' | 'absolute';
+}
+
+/**
+ * Helper: liefert das Start-Linien-Argument fuer eine Op (fuer Reverse-Order
+ * Sortierung und Overlap-Check). Liefert undefined fuer Ops ohne Line-Bezug.
+ */
+function lineStartOf(op: FileBatchOp): number | undefined {
+  switch (op.action) {
+    case 'replace_lines':
+    case 'delete_lines':
+      return op.line_start;
+    case 'insert_after':
+      return op.after_line;
+    default:
+      return undefined;
+  }
+}
+
+/**
+ * Helper: liefert den End-Linien-Wert fuer Range-Vergleich. insert_after wird
+ * als punktuelle Operation an der Zeile after_line behandelt (range = [n,n]).
+ */
+function lineEndOf(op: FileBatchOp): number | undefined {
+  switch (op.action) {
+    case 'replace_lines':
+    case 'delete_lines':
+      return op.line_end;
+    case 'insert_after':
+      return op.after_line;
+    default:
+      return undefined;
+  }
+}
+
+/**
+ * Pre-flight Check + Reorder fuer Multi-Op-Plaene.
+ *
+ * Schritt 1: Per file_path werden alle line-Ops gesammelt. Liegen zwei Ranges
+ *            ueberlappend (gilt nicht fuer 'absolute'-Mode-Ops, weil der User
+ *            dort bewusst auf den shifted-Stand zielt) → harter Error VOR der
+ *            ersten Mutation.
+ * Schritt 2: 'auto' line-Ops werden in absteigender Reihenfolge nach
+ *            line_start sortiert (stable: Original-Index-Tiebreaker). Non-line
+ *            Ops und 'absolute'-Ops behalten ihre Reihenfolge — sie werden an
+ *            den Stellen eingesetzt an denen sie urspruenglich standen.
+ *
+ * Ergebnis: Array von Ops in Apply-Reihenfolge inkl. originalIndex (fuer
+ *           Preview-Mapping). Fuer Single-Op-Plaene oder Plaene ohne Multi-Op
+ *           pro Datei ist die Reihenfolge identisch zur Eingabe.
+ */
+export function prepareOpsForApply(ops: FileBatchOp[]): Array<{ op: FileBatchOp; originalIndex: number }> {
+  const indexed = ops.map((op, originalIndex) => ({ op, originalIndex }));
+
+  // 1. Overlap-Pre-Flight pro Datei. Nur 'auto' line-Ops zaehlen — 'absolute'
+  //    Ops sind explizit User-gesteuert (= legitim auf shifted-Stand zielend).
+  const byFileAuto = new Map<string, Array<{ op: FileBatchOp; originalIndex: number; start: number; end: number }>>();
+  for (const entry of indexed) {
+    const mode = entry.op.shift_mode ?? 'auto';
+    if (mode !== 'auto') continue;
+    const start = lineStartOf(entry.op);
+    const end = lineEndOf(entry.op);
+    if (start === undefined || end === undefined) continue;
+    const list = byFileAuto.get(entry.op.file_path) ?? [];
+    list.push({ ...entry, start, end });
+    byFileAuto.set(entry.op.file_path, list);
+  }
+  for (const [filePath, list] of byFileAuto) {
+    if (list.length < 2) continue;
+    // Sortieren nach start, dann paarweise vergleichen.
+    const sorted = [...list].sort((a, b) => a.start - b.start || a.originalIndex - b.originalIndex);
+    for (let i = 1; i < sorted.length; i++) {
+      const prev = sorted[i - 1];
+      const curr = sorted[i];
+      // Bei insert_after sind start==end (Punkt); bei replace_lines/delete_lines start..end
+      // Ueberlappung wenn curr.start <= prev.end. Gleiche Punkt-Inserts auf derselben Zeile sind erlaubt
+      // (insert_after(50) + insert_after(50)) — zwei reine Inserts in absteigender Reihenfolge geben
+      // sauberes Ergebnis. Daher: gleicher start ist nur dann Overlap, wenn mind. eine Op ein Range ist.
+      const prevIsPoint = prev.op.action === 'insert_after';
+      const currIsPoint = curr.op.action === 'insert_after';
+      const overlap = prevIsPoint && currIsPoint
+        ? false // zwei Inserts auf identischer Zeile sind ok
+        : curr.start <= prev.end;
+      if (overlap) {
+        throw new Error(
+          `overlapping ranges in batch fuer "${filePath}": ` +
+          `Op #${prev.originalIndex} (${prev.op.action} ${prev.start}-${prev.end}) und ` +
+          `Op #${curr.originalIndex} (${curr.op.action} ${curr.start}-${curr.end}). ` +
+          `Setze shift_mode='absolute' auf einer der Ops wenn das gewollt ist, oder verschmelze sie.`,
+        );
+      }
+    }
+  }
+
+  // 2. Reorder: alle 'auto' line-Ops auf einer Datei in absteigender start-Reihenfolge
+  //    an den Positionen platzieren, an denen vorher die line-Ops dieser Datei standen.
+  //    Non-line Ops und 'absolute'-Ops bleiben an ihrer Original-Position.
+  const result: Array<{ op: FileBatchOp; originalIndex: number }> = [...indexed];
+  // Pro Datei: Indizes der 'auto' line-Ops einsammeln, in der Reihenfolge in der sie auftreten.
+  const autoLineSlotsByFile = new Map<string, number[]>();
+  for (let i = 0; i < indexed.length; i++) {
+    const entry = indexed[i];
+    const mode = entry.op.shift_mode ?? 'auto';
+    if (mode !== 'auto') continue;
+    if (lineStartOf(entry.op) === undefined) continue;
+    const slots = autoLineSlotsByFile.get(entry.op.file_path) ?? [];
+    slots.push(i);
+    autoLineSlotsByFile.set(entry.op.file_path, slots);
+  }
+  for (const [, slots] of autoLineSlotsByFile) {
+    if (slots.length < 2) continue;
+    // Hole die zugehoerigen Ops, sortiere absteigend, schreibe sie in dieselben Slots zurueck.
+    const opsAtSlots = slots.map((slotIdx) => indexed[slotIdx]);
+    const sortedDesc = [...opsAtSlots].sort((a, b) => {
+      const sa = lineStartOf(a.op) ?? 0;
+      const sb = lineStartOf(b.op) ?? 0;
+      if (sb !== sa) return sb - sa;
+      return a.originalIndex - b.originalIndex;
+    });
+    for (let k = 0; k < slots.length; k++) {
+      result[slots[k]] = sortedDesc[k];
+    }
+  }
+  return result;
 }
 
 /** Pro Op gespeicherte Preview-Info — was wuerde sich aendern. */
@@ -320,21 +458,29 @@ export async function planBatch(args: {
     throw new Error(`ops[] maximal 100 Eintraege (got ${args.ops.length})`);
   }
 
+  // 0. Pre-Flight: file_path-Pflichtcheck + Overlap-Check + Auto-Shift Reorder.
+  //    Single-Op-Plaene und Plaene ohne Multi-Op pro Datei kommen unveraendert
+  //    durch — backwards compatible.
+  for (let i = 0; i < args.ops.length; i++) {
+    if (!args.ops[i].file_path) {
+      throw new Error(`Op ${i}: file_path fehlt`);
+    }
+  }
+  const applyPlan = prepareOpsForApply(args.ops);
+
   // 1. Group by file_path, lade aktuelle Dateien nur einmal.
   const fileBuffers = new Map<string, PreparedFile>();
   const expectedHashes: Record<string, string> = {};
-  const previews: OpPreview[] = [];
+  // previews wird in Original-Reihenfolge zurueckgeliefert (User-Sicht), nicht
+  // in Apply-Reihenfolge. Pro originalIndex eine Slot-Position vorbelegen.
+  const previews: OpPreview[] = new Array(args.ops.length);
+  const seenFileInApplyOrder = new Set<string>();
 
-  for (let i = 0; i < args.ops.length; i++) {
-    const op = args.ops[i];
-    if (!op.file_path) {
-      previews.push({ index: i, file_path: '', action: op.action, ok: false, error: 'file_path fehlt' });
-      throw new Error(`Op ${i}: file_path fehlt`);
-    }
-
-    // src-Buffer laden falls noch nicht da. Tracke ob das die erste Op
-    // auf dieser Datei war (relevant fuer create-Validierung).
-    const wasUnknown = !fileBuffers.has(op.file_path);
+  for (const { op, originalIndex } of applyPlan) {
+    // src-Buffer laden falls noch nicht da. "isFirstOpOnFile" bezieht sich
+    // auf die APPLY-Reihenfolge — nur dort ist die create-Validierung sinnvoll.
+    const wasUnknown = !seenFileInApplyOrder.has(op.file_path);
+    seenFileInApplyOrder.add(op.file_path);
     await ensureBuffer(fileBuffers, expectedHashes, args.project, op.file_path);
 
     // Lifecycle-Ops mit zweitem Pfad (move/copy): dst auch laden.
@@ -344,26 +490,26 @@ export async function planBatch(args: {
 
     try {
       const { context, sizeBefore, sizeAfter } = applyOpInMemory(fileBuffers, op, wasUnknown);
-      previews.push({
-        index: i,
+      previews[originalIndex] = {
+        index: originalIndex,
         file_path: op.file_path,
         action: op.action,
         ok: true,
         size_before: sizeBefore,
         size_after: sizeAfter,
         context: context.slice(0, 200),
-      });
+      };
     } catch (err) {
-      previews.push({
-        index: i,
+      previews[originalIndex] = {
+        index: originalIndex,
         file_path: op.file_path,
         action: op.action,
         ok: false,
         error: (err as Error).message,
-      });
+      };
       // Abbrechen — Plan haengt sich nicht an einem fehlerhaften Op auf.
       throw new Error(
-        `Op ${i} (${op.action} auf "${op.file_path}") fehlgeschlagen: ${(err as Error).message}`,
+        `Op ${originalIndex} (${op.action} auf "${op.file_path}") fehlgeschlagen: ${(err as Error).message}`,
       );
     }
   }
@@ -506,8 +652,12 @@ export async function commitBatch(args: {
   }
   const seenFile = new Set<string>();
 
-  for (let i = 0; i < plan.ops.length; i++) {
-    const op = plan.ops[i];
+  // Re-Apply muss IDENTISCH zu planBatch ablaufen — d.h. erneuter Auto-Shift.
+  // Da die Ops in plan.ops in Original-Reihenfolge gespeichert sind, fuehrt
+  // prepareOpsForApply zur gleichen Apply-Reihenfolge wie im Trockenlauf.
+  const reapplyPlan = prepareOpsForApply(plan.ops);
+
+  for (const { op, originalIndex } of reapplyPlan) {
     const isFirstOpOnFile = !seenFile.has(op.file_path);
     seenFile.add(op.file_path);
     try {
@@ -519,7 +669,7 @@ export async function commitBatch(args: {
         plan_id: args.plan_id,
         status: 'stale',
         error: 'reapply_failed',
-        message: `Re-Apply von Op ${i} fehlgeschlagen: ${(err as Error).message}`,
+        message: `Re-Apply von Op ${originalIndex} fehlgeschlagen: ${(err as Error).message}`,
       };
     }
   }

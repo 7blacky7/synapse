@@ -126,7 +126,7 @@ export const filesTool: ConsolidatedTool = {
         },
         version_id: {
           type: 'string',
-          description: 'Versions-ID (fuer get_version, restore). String, weil BIGSERIAL > Number.MAX_SAFE_INTEGER moeglich ist.',
+          description: 'Versions-ID (BIGSERIAL als String). Pflicht fuer get_version/restore. Bei history (IDEA-3a): zeigt die Korrektur-Chain ab dieser Version (rekursiv via parent_version_id).',
         },
         batch_id: {
           type: 'string',
@@ -142,7 +142,7 @@ export const filesTool: ConsolidatedTool = {
         },
         ops: {
           type: 'array',
-          description: 'Multi-File Edit-Plan: 1..100 Operationen ueber mehrere Dateien (fuer action="plan"). Jede Op: { file_path, action, ...op-spezifische Felder }. Aktionen: create (neue Datei), update, search_replace, search_replace_batch, replace_lines (line_start/line_end/content), insert_after (after_line/content), delete_lines (line_start/line_end), delete (ganze Datei loeschen), move (file_path → new_path), copy (file_path → new_path). Plan-Phase macht Trockenlauf, erfasst Hash + Preview pro Op. Commit per files(action: "commit", plan_id).',
+          description: 'Multi-File Edit-Plan: 1..100 Operationen ueber mehrere Dateien (fuer action="plan"). Jede Op: { file_path, action, ...op-spezifische Felder }. Aktionen: create (neue Datei), update, search_replace, search_replace_batch, replace_lines (line_start/line_end/content), insert_after (after_line/content), delete_lines (line_start/line_end), delete (ganze Datei loeschen), move (file_path → new_path), copy (file_path → new_path). MULTI-OP AUF GLEICHER DATEI: line-basierte Ops werden per Default (shift_mode="auto") intern in absteigender line_start-Reihenfolge appliziert — du gibst absolute Zeilen aus dem Snapshot VOR plan() an, kein manuelles Shift-Tracking. Ueberlappende Line-Ranges → harter Error vor jeder Mutation. Setze shift_mode="absolute" pro Op wenn du Zeilen explizit auf den Stand NACH vorausgehenden Ops beziehst. Plan-Phase macht Trockenlauf, erfasst Hash + Preview pro Op. Commit per files(action: "commit", plan_id).',
           minItems: 1,
           maxItems: 100,
           items: {
@@ -171,6 +171,11 @@ export const filesTool: ConsolidatedTool = {
               line_start: { type: 'number' },
               line_end: { type: 'number' },
               after_line: { type: 'number' },
+              shift_mode: {
+                type: 'string',
+                enum: ['auto', 'absolute'],
+                description: 'Default "auto" = line-Ops auf gleicher Datei werden intern reverse-order appliziert (User gibt absolute Zeilen aus Pre-Plan-Snapshot an). "absolute" = Op wird in Plan-Reihenfolge mit den angegebenen Zeilen auf den AKTUELLEN Buffer-Stand bezogen. Single-Op-Plaene verhalten sich identisch in beiden Modi.',
+              },
             },
             required: ['file_path', 'action'],
           },
@@ -187,6 +192,18 @@ export const filesTool: ConsolidatedTool = {
           type: 'string',
           description: 'history: ISO-Timestamp ab dem Eintraege gelistet werden (z.B. "2026-05-02T10:00:00Z").',
         },
+        feature_tag: {
+          type: 'string',
+          description: 'IDEA-3a: Logischer Feature-Group-Tag (z.B. "idea-thought-task-link"). Beim Schreiben → file_versions.feature_tag. Bei history → Filter (exakter Match).',
+        },
+        parent_version_id: {
+          type: 'string',
+          description: 'IDEA-3a: Referenziert die vorherige Version, die dieses Edit korrigiert/ersetzt. BIGINT als String. Erlaubt Tracking von Korrektur-Chains.',
+        },
+        git_commit_sha: {
+          type: 'string',
+          description: 'IDEA-3a: Optionaler Git-Commit-SHA, der diese Aenderung im File-System repraesentiert.',
+        },
       },
       required: ['action', 'project'],
     },
@@ -197,6 +214,13 @@ export const filesTool: ConsolidatedTool = {
     const project = reqStr(args, 'project');
     const agentId = str(args, 'agent_id');
     const reason = str(args, 'reason');
+    // IDEA-3a: History-Enrichment (additive, alle nullable)
+    const featureTag = str(args, 'feature_tag');
+    const parentVersionId = str(args, 'parent_version_id');
+    const gitCommitSha = str(args, 'git_commit_sha');
+    const enrichment = (featureTag || parentVersionId || gitCommitSha)
+      ? { feature_tag: featureTag ?? null, parent_version_id: parentVersionId ?? null, git_commit_sha: gitCommitSha ?? null }
+      : undefined;
 
     // Versionierungs-Actions brauchen kein file_path (versions: ja, get_version/restore: version_id,
     // restore_batch: batch_id). Werden hier vor der file_path-Pflicht abgefangen.
@@ -294,6 +318,9 @@ export const filesTool: ConsolidatedTool = {
         file_path: str(args, 'file_path'),
         since: str(args, 'since'),
         limit,
+        // IDEA-3a: Enrichment-Filter
+        feature_tag: str(args, 'feature_tag'),
+        version_id: str(args, 'version_id'),
       });
       return {
         success: true,
@@ -301,7 +328,7 @@ export const filesTool: ConsolidatedTool = {
         count: entries.length,
         entries,
         tip: entries.length > 0
-          ? 'Eintraege chronologisch (neueste zuerst). reason = "Warum" der Aenderung. Voller Inhalt einer Version: files(action: "get_version", version_id).'
+          ? 'Eintraege chronologisch (neueste zuerst). reason = "Warum" der Aenderung. Voller Inhalt einer Version: files(action: "get_version", version_id). IDEA-3a: feature_tag und parent_version_id zeigen Feature-Group bzw. Korrektur-Chain.'
           : 'Keine Eintraege fuer diese Filter.',
       };
     }
@@ -370,7 +397,7 @@ export const filesTool: ConsolidatedTool = {
       case 'create': {
         const raw = reqStr(args, 'content');
         const { content, wasFixed } = unescapeIfNeeded(raw);
-        const result = await createFileInPg(project, filePath, content, agentId, reason);
+        const result = await createFileInPg(project, filePath, content, agentId, reason, undefined, undefined, enrichment);
         const response: Record<string, unknown> = { success: true, message: `Datei "${filePath}" erstellt (${content.length} Zeichen)` };
         if (wasFixed) response.autoFixed = 'Content war doppelt escaped (\\n statt Newlines) — automatisch korrigiert.';
         return await attachWarnings(response, result);
@@ -379,7 +406,7 @@ export const filesTool: ConsolidatedTool = {
       case 'update': {
         const raw = reqStr(args, 'content');
         const { content, wasFixed } = unescapeIfNeeded(raw);
-        const result = await updateFileInPg(project, filePath, content, agentId, undefined, undefined, reason);
+        const result = await updateFileInPg(project, filePath, content, agentId, undefined, undefined, reason, enrichment);
         const response: Record<string, unknown> = { success: true, message: `Datei "${filePath}" aktualisiert (${content.length} Zeichen)` };
         if (wasFixed) response.autoFixed = 'Content war doppelt escaped (\\n statt Newlines) — automatisch korrigiert.';
         return await attachWarnings(response, result);
@@ -434,7 +461,7 @@ export const filesTool: ConsolidatedTool = {
         const { content } = unescapeIfNeeded(reqStr(args, 'content'));
         if (lineStart === undefined || lineEnd === undefined) return { success: false, error: 'line_start und line_end erforderlich' };
         const newContent = replaceLines(currentContent, lineStart, lineEnd, content);
-        const result = await updateFileInPg(project, filePath, newContent, agentId, undefined, undefined, reason);
+        const result = await updateFileInPg(project, filePath, newContent, agentId, undefined, undefined, reason, enrichment);
         return await attachWarnings(
           { success: true, message: `Zeilen ${lineStart}-${lineEnd} in "${filePath}" ersetzt` },
           result
@@ -448,7 +475,7 @@ export const filesTool: ConsolidatedTool = {
         const { content } = unescapeIfNeeded(reqStr(args, 'content'));
         if (afterLine === undefined) return { success: false, error: 'after_line erforderlich' };
         const newContent = insertAfterLine(currentContent, afterLine, content);
-        const result = await updateFileInPg(project, filePath, newContent, agentId, undefined, undefined, reason);
+        const result = await updateFileInPg(project, filePath, newContent, agentId, undefined, undefined, reason, enrichment);
         return await attachWarnings(
           { success: true, message: `Inhalt nach Zeile ${afterLine} in "${filePath}" eingefuegt` },
           result
@@ -462,7 +489,7 @@ export const filesTool: ConsolidatedTool = {
         const lineEnd = num(args, 'line_end');
         if (lineStart === undefined || lineEnd === undefined) return { success: false, error: 'line_start und line_end erforderlich' };
         const newContent = deleteLines(currentContent, lineStart, lineEnd);
-        const result = await updateFileInPg(project, filePath, newContent, agentId, undefined, undefined, reason);
+        const result = await updateFileInPg(project, filePath, newContent, agentId, undefined, undefined, reason, enrichment);
         return await attachWarnings(
           { success: true, message: `Zeilen ${lineStart}-${lineEnd} in "${filePath}" geloescht` },
           result
@@ -490,7 +517,7 @@ export const filesTool: ConsolidatedTool = {
         }
 
         // Exakte Matches gefunden — ersetzen
-        const result = await updateFileInPg(project, filePath, newContent, agentId, undefined, undefined, reason);
+        const result = await updateFileInPg(project, filePath, newContent, agentId, undefined, undefined, reason, enrichment);
         return await attachWarnings(
           { success: true, count, message: `${count} Vorkommen ersetzt in "${filePath}"` },
           result
@@ -516,7 +543,7 @@ export const filesTool: ConsolidatedTool = {
           };
         }
 
-        const writeResult = await updateFileInPg(project, filePath, newContent, agentId, undefined, undefined, reason);
+        const writeResult = await updateFileInPg(project, filePath, newContent, agentId, undefined, undefined, reason, enrichment);
         const response: Record<string, unknown> = {
           success: true,
           ...batchResult,
