@@ -145,7 +145,11 @@ export async function checkAgentOnboarding(
 
   // Neuer Agent - Regeln laden
   const effectiveRole: AgentRole = role
-    ?? (agentId === 'koordinator' || agentId?.startsWith('koordinator-') ? 'koordinator' : 'subagent');
+    ?? (agentId === 'koordinator' || agentId?.startsWith('koordinator-')
+      ? 'koordinator'
+      : (agentId?.startsWith('spezialist-') || agentId?.startsWith('specialist-')
+        ? 'spezialist'
+        : 'subagent'));
   const isCoordinator = effectiveRole === 'koordinator';
   console.error(`[Synapse MCP] Neuer Agent "${agentId}" erkannt (Rolle: ${effectiveRole}) - lade Regeln...`);
 

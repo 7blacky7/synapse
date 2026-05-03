@@ -83,7 +83,7 @@ export const specialistTool: ConsolidatedTool = {
         keep_alive: {
           type: 'boolean',
           description:
-            '⚠️ WICHTIG: keep_alive: true setzen fuer langlaufende Spezialisten. Aktiviert (a) periodisches Wecken im Idle UND (b) Auto-Respawn bei Crash (Context-Limit, OOM). Ohne keep_alive stirbt der Wrapper mit dem Agenten — kein Comeback, manueller Spawn noetig. Standard: false (nur fuer kurze One-Shot-Tasks ok).',
+            'Aktiviert (a) periodisches Wecken im Idle UND (b) Auto-Respawn bei Crash/Context-Limit. Standard: true (sinnvoller Default fuer alle laufenden Spezialisten — Wrapper kostet kaum Tokens, Auto-Recovery ist wertvoll). Auf false setzen nur fuer One-Shot-Tasks die nach Abschluss sterben sollen.',
         },
 
         // status parameters
@@ -158,7 +158,7 @@ export const specialistTool: ConsolidatedTool = {
         const cwd = str(args, 'cwd');
         const channel = str(args, 'channel');
         const allowedTools = strArray(args, 'allowed_tools');
-        const keepAlive = bool(args, 'keep_alive');
+        const keepAlive = bool(args, 'keep_alive') ?? true;
 
         return await spawnSpecialistTool(
           name,
@@ -208,7 +208,7 @@ export const specialistTool: ConsolidatedTool = {
               s.cwd ? String(s.cwd) : undefined,
               s.channel ? String(s.channel) : undefined,
               Array.isArray(s.allowed_tools) ? s.allowed_tools.map(String) : undefined,
-              typeof s.keep_alive === 'boolean' ? s.keep_alive : undefined,
+              typeof s.keep_alive === 'boolean' ? s.keep_alive : true,
             );
             results.push(r as Record<string, unknown>);
           } catch (err) {
