@@ -556,6 +556,7 @@ funktion rebuild_menu():
         setze status_item auf tray_menu_add(tray, status_text, noop)
         tray_separator_add(tray)
         tray_menu_add(tray, "Daemon starten", daemon_starten)
+        tray_menu_add(tray, "Neu laden", rebuild_menu)
         tray_menu_add(tray, "Beenden", quit_app)
         setze letzte_projekt_signatur auf ""
         gib_zurück nichts
