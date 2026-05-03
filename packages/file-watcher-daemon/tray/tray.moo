@@ -306,19 +306,23 @@ funktion agents_laden(name):
         wenn g["busy_agents"]:
             gib_zurück nichts
     g["busy_agents"] = wahr
+    setze first_load auf nicht g.hat("agents_init_done")
     setze liste auf g["liste_agents"]
-    ui_liste_leeren(liste)
     setze resp auf safe_get(DAEMON_URL + "/projects/" + name + "/specialists")
     wenn resp == "":
         g["busy_agents"] = falsch
         gib_zurück nichts
     setze info auf json_lesen(resp)
     wenn typ_von(info) != "Woerterbuch":
+        g["busy_agents"] = falsch
         gib_zurück nichts
     wenn nicht info.hat("specialists"):
+        g["busy_agents"] = falsch
         gib_zurück nichts
     setze specs auf info["specialists"]
     setze keys auf specs.schlüssel()
+    ui_liste_leeren(liste)
+    setze rows auf []
     setze i auf 0
     solange i < länge(keys):
         setze agent auf keys[i]
@@ -338,9 +342,12 @@ funktion agents_laden(name):
         setze letzte auf ""
         wenn sp.hat("lastActivity"):
             setze letzte auf sp["lastActivity"]
-        ui_liste_zeile_hinzu(liste, [agent, modell, stat, tok, letzte])
+        rows.hinzufügen([agent, modell, stat, tok, letzte])
         setze i auf i + 1
-    ui_liste_spalten_autosize(liste)
+    ui_liste_zeilen_hinzu_bulk(liste, rows)
+    wenn first_load:
+        ui_liste_spalten_autosize(liste)
+    g["agents_init_done"] = wahr
     g["busy_agents"] = falsch
 
 funktion refresh_agents_factory(name):
@@ -418,10 +425,10 @@ funktion events_laden(name):
         wenn g["busy_events"]:
             gib_zurück nichts
     g["busy_events"] = wahr
+    setze first_load auf nicht g.hat("events_init_done")
     setze liste auf g["liste_events"]
-    ui_liste_leeren(liste)
     # Quelle: file_versions-Tabelle (Synapse-eigene "Commits" mit reason).
-    setze resp auf safe_get(DAEMON_URL + "/projects/" + name + "/file_versions?limit=200")
+    setze resp auf safe_get(DAEMON_URL + "/projects/" + name + "/file_versions?limit=50")
     wenn resp == "":
         g["busy_events"] = falsch
         gib_zurück nichts
@@ -433,6 +440,9 @@ funktion events_laden(name):
         g["busy_events"] = falsch
         gib_zurück nichts
     setze versions auf info["versions"]
+    setze versions auf info["versions"]
+    ui_liste_leeren(liste)
+    setze rows auf []
     # Filter-Substring (kann leer sein -> alles)
     setze filter_text auf ""
     wenn g.hat("filter_events"):
@@ -475,9 +485,12 @@ funktion events_laden(name):
             wenn nicht haystack.enthält(filter_text):
                 setze passt auf falsch
         wenn passt:
-            ui_liste_zeile_hinzu(liste, [zeit, agent, pfad, aktion, reason, feature])
+            rows.hinzufügen([zeit, agent, pfad, aktion, reason, feature])
         setze i auf i + 1
-    ui_liste_spalten_autosize(liste)
+    ui_liste_zeilen_hinzu_bulk(liste, rows)
+    wenn first_load:
+        ui_liste_spalten_autosize(liste)
+    g["events_init_done"] = wahr
     g["busy_events"] = falsch
 
 funktion refresh_events_factory(name):
@@ -518,6 +531,7 @@ funktion status_laden(name):
         gib_zurück nichts
     setze info auf json_lesen(resp)
     wenn typ_von(info) != "Woerterbuch":
+        g["busy_status"] = falsch
         gib_zurück nichts
     setze pfad auf "-"
     wenn info.hat("pfad"):
@@ -776,10 +790,13 @@ funktion chat_messages_laden(schluessel):
         gib_zurück nichts
     setze info auf json_lesen(resp)
     wenn typ_von(info) != "Woerterbuch":
+        g["busy_msgs"] = falsch
         gib_zurück nichts
     wenn nicht info.hat("messages"):
+        g["busy_msgs"] = falsch
         gib_zurück nichts
     setze msgs auf info["messages"]
+    setze rows auf []
     setze i auf 0
     setze max_id auf last_id
     setze neue_zeilen auf 0
@@ -798,11 +815,12 @@ funktion chat_messages_laden(schluessel):
             setze inhalt auf ""
             wenn m.hat("content"):
                 setze inhalt auf m["content"]
-            ui_liste_zeile_hinzu(liste, [zeit, sender, inhalt])
+            rows.hinzufügen([zeit, sender, inhalt])
             setze neue_zeilen auf neue_zeilen + 1
             wenn id > max_id:
                 setze max_id auf id
         setze i auf i + 1
+    ui_liste_zeilen_hinzu_bulk(liste, rows)
     g["last_msg_id"] = max_id
     g["init_done"] = wahr
     wenn first_load:
@@ -823,19 +841,23 @@ funktion chat_agents_laden(schluessel):
         wenn g["busy_chat_agents"]:
             gib_zurück nichts
     g["busy_chat_agents"] = wahr
+    setze first_load auf nicht g.hat("chat_agents_init_done")
     setze projekt auf g["projekt"]
     setze liste auf g["liste_agents"]
-    ui_liste_leeren(liste)
     setze resp auf safe_get(DAEMON_URL + "/projects/" + projekt + "/agents")
     wenn resp == "":
         g["busy_chat_agents"] = falsch
         gib_zurück nichts
     setze info auf json_lesen(resp)
     wenn typ_von(info) != "Woerterbuch":
+        g["busy_chat_agents"] = falsch
         gib_zurück nichts
     wenn nicht info.hat("agents"):
+        g["busy_chat_agents"] = falsch
         gib_zurück nichts
     setze ags auf info["agents"]
+    ui_liste_leeren(liste)
+    setze rows auf []
     setze i auf 0
     solange i < länge(ags):
         setze a auf ags[i]
@@ -846,9 +868,12 @@ funktion chat_agents_laden(schluessel):
         wenn a.hat("model"):
             wenn typ_von(a["model"]) == "Text":
                 setze modell auf a["model"]
-        ui_liste_zeile_hinzu(liste, [id, modell])
+        rows.hinzufügen([id, modell])
         setze i auf i + 1
-    ui_liste_spalten_autosize(liste)
+    ui_liste_zeilen_hinzu_bulk(liste, rows)
+    wenn first_load:
+        ui_liste_spalten_autosize(liste)
+    g["chat_agents_init_done"] = wahr
     g["busy_chat_agents"] = falsch
 
 funktion chat_senden(schluessel):
