@@ -19,7 +19,7 @@ import {
   deleteProposalsBatch,
   updateProposalTool,
 } from '../proposals.js';
-import { createProposal } from '@synapse/core';
+import { createProposal, resolveAgentId } from '@synapse/core';
 import { ConsolidatedTool, reqStr, str, bool, num, strArray, objArray } from './types.js';
 
 export const proposalTool: ConsolidatedTool = {
@@ -134,9 +134,10 @@ export const proposalTool: ConsolidatedTool = {
               if (!it.file_path) throw new Error('file_path fehlt');
               if (!it.suggested_content) throw new Error('suggested_content fehlt');
               if (!it.description) throw new Error('description fehlt');
-              if (!it.author) throw new Error('author fehlt');
+              const resolvedAuthor = resolveAgentId(it.author ?? undefined);
+              if (!resolvedAuthor) throw new Error('author fehlt (oder SYNAPSE_AGENT_NAME setzen)');
               const tags = Array.isArray(it.tags) ? it.tags.filter((t): t is string => typeof t === 'string') : [];
-              const proposal = await createProposal(project, it.file_path, it.suggested_content, it.description, it.author, tags);
+              const proposal = await createProposal(project, it.file_path, it.suggested_content, it.description, resolvedAuthor, tags);
               results.push({ index: i, ok: true, id: proposal.id });
               applied++;
             } catch (err) {
@@ -157,7 +158,9 @@ export const proposalTool: ConsolidatedTool = {
         const filePath = reqStr(args, 'file_path');
         const suggested = reqStr(args, 'suggested_content');
         const desc = reqStr(args, 'description');
-        const author = reqStr(args, 'author');
+        const rawAuthor = str(args, 'author');
+        const author = resolveAgentId(rawAuthor);
+        if (!author) throw new Error('Parameter "author" ist erforderlich (oder SYNAPSE_AGENT_NAME setzen)');
         const tags = strArray(args, 'tags') ?? [];
         const proposal = await createProposal(project, filePath, suggested, desc, author, tags);
         return { success: true, proposal };

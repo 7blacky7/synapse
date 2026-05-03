@@ -99,6 +99,9 @@ export {
 export { maybeTriggerRespawn } from './services/specialist-respawn.js';
 export type { RespawnDecision } from './services/specialist-respawn.js';
 
+// Agent-ID Resolver (zentrale Fallback-Logik fuer audit-relevante Schreib-Ops)
+export { resolveAgentId } from './services/agent-id-resolver.js';
+
 // Model-Registry Service (DB-Loader fuer Spezialisten-Modelle)
 export {
   getModel,

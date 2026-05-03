@@ -1889,9 +1889,10 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
                 if (!it.file_path) throw new Error('file_path fehlt');
                 if (!it.suggested_content) throw new Error('suggested_content fehlt');
                 if (!it.description) throw new Error('description fehlt');
-                if (!it.author) throw new Error('author fehlt');
+                const resolvedAuthor = resolveAgentId(it.author ?? undefined);
+                if (!resolvedAuthor) throw new Error('author fehlt (oder SYNAPSE_AGENT_NAME setzen)');
                 const tags = Array.isArray(it.tags) ? it.tags.filter((t): t is string => typeof t === 'string') : [];
-                const proposal = await createProposal(project, it.file_path, it.suggested_content, it.description, it.author, tags);
+                const proposal = await createProposal(project, it.file_path, it.suggested_content, it.description, resolvedAuthor, tags);
                 results.push({ index: i, ok: true, id: proposal.id });
                 applied++;
               } catch (err) {
@@ -1912,7 +1913,9 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
           const filePath = reqStr(args, 'file_path');
           const suggested = reqStr(args, 'suggested_content');
           const desc = reqStr(args, 'description');
-          const author = reqStr(args, 'author');
+          const rawAuthor = str(args, 'author');
+          const author = resolveAgentId(rawAuthor);
+          if (!author) throw new Error('Parameter "author" ist erforderlich (oder SYNAPSE_AGENT_NAME setzen)');
           const tags = strArray(args, 'tags') ?? [];
           const proposal = await createProposal(project, filePath, suggested, desc, author, tags);
           return { success: true, proposal };
@@ -2049,7 +2052,7 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
         }
         case 'get': {
           const messages = await getChatMessages(reqStr(args, 'project'), {
-            agentId: resolveAgentId(str(args, 'agent_id')) ?? undefined,
+            agentId: str(args, 'agent_id') ?? undefined, // READ-FILTER: kein resolveAgentId
             since: str(args, 'since'),
             senderId: str(args, 'sender_id_filter'),
             limit: num(args, 'limit'),
@@ -2094,7 +2097,9 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
         case 'create': {
           const chName = reqStr(args, 'name');
           const chDesc = (args.description as string | undefined) ?? null;
-          const createdBy = reqStr(args, 'created_by');
+          const rawCreatedBy = str(args, 'created_by');
+          const createdBy = resolveAgentId(rawCreatedBy);
+          if (!createdBy) throw new Error('Parameter "created_by" ist erforderlich (oder SYNAPSE_AGENT_NAME setzen)');
           const channel = await createChannel(project, chName, chDesc, createdBy);
           return { success: true, channel, action: 'create' };
         }
@@ -2120,7 +2125,9 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
         }
         case 'post': {
           const chName2 = reqStr(args, 'channel_name');
-          const sender = reqStr(args, 'sender');
+          const rawSender = str(args, 'sender');
+          const sender = resolveAgentId(rawSender);
+          if (!sender) throw new Error('Parameter "sender" ist erforderlich (oder SYNAPSE_AGENT_NAME setzen)');
           // Bulk-Mode
           type PostItem = { content?: string };
           const messages = objArray<PostItem>(args, 'messages');
@@ -2182,7 +2189,9 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
       switch (action) {
         case 'emit': {
           const project = reqStr(args, 'project');
-          const sourceId = reqStr(args, 'source_id');
+          const rawSourceId = str(args, 'source_id');
+          const sourceId = resolveAgentId(rawSourceId);
+          if (!sourceId) throw new Error('Parameter "source_id" ist erforderlich (oder SYNAPSE_AGENT_NAME setzen)');
           // Bulk-Mode
           type EmitItem = { event_type?: string; priority?: string; scope?: string; payload?: string; requires_ack?: boolean };
           const events = objArray<EmitItem>(args, 'events');
@@ -2233,7 +2242,9 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
           return result;
         }
         case 'ack': {
-          const agentId = reqStr(args, 'agent_id');
+          const rawAckAgentId = str(args, 'agent_id');
+          const agentId = resolveAgentId(rawAckAgentId);
+          if (!agentId) throw new Error('Parameter "agent_id" ist erforderlich fuer ack (oder SYNAPSE_AGENT_NAME setzen)');
           const reaction = str(args, 'reaction');
           const eventIds = numArray(args, 'event_id');
           if (eventIds && eventIds.length > 1) {
@@ -2750,7 +2761,7 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
       if (action === 'history') {
         const limit = num(args, 'limit') ?? 50;
         const entries = await listFileHistory(project, {
-          agent_id: agentId,
+          agent_id: str(args, 'agent_id') ?? undefined, // READ-FILTER: kein resolveAgentId
           file_path: str(args, 'file_path'),
           since: str(args, 'since'),
           limit,

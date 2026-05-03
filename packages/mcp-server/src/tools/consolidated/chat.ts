@@ -26,6 +26,7 @@ import {
   postToInboxTool,
   checkInboxTool,
 } from '../index.js';
+import { resolveAgentId } from '@synapse/core';
 
 export const chatTool: ConsolidatedTool = {
   definition: {
@@ -149,7 +150,8 @@ export const chatTool: ConsolidatedTool = {
         // ===== send =====
         case 'send': {
           const sendProject = reqStr(args, 'project');
-          const sendSenderId = reqStr(args, 'sender_id');
+          const sendSenderId = resolveAgentId(str(args, 'sender_id'));
+          if (!sendSenderId) throw new Error('Parameter "sender_id" ist erforderlich (oder SYNAPSE_AGENT_NAME setzen)');
           const sendContent = reqStr(args, 'content');
 
           // Array-Support: Gleiche Nachricht an mehrere Empfaenger
@@ -176,7 +178,7 @@ export const chatTool: ConsolidatedTool = {
         // ===== get =====
         case 'get': {
           const getProject = reqStr(args, 'project');
-          const getAgentId = str(args, 'agent_id');
+          const getAgentId = str(args, 'agent_id') ?? undefined; // READ-FILTER: kein resolveAgentId (kein ENV-Override des Filters)
           const getSince = str(args, 'since');
           const getSenderIdFilter = str(args, 'sender_id_filter');
           const getLimit = num(args, 'limit');

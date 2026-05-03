@@ -13,6 +13,7 @@
 
 import type { ConsolidatedTool } from './types.js';
 import { reqStr, str, num, bool, strArray, objArray } from './types.js';
+import { resolveAgentId } from '@synapse/core';
 import {
   createChannel,
   joinChannel,
@@ -34,7 +35,9 @@ async function handleCreate(args: Record<string, unknown>) {
   const name = reqStr(args, 'name');
   const project = reqStr(args, 'project');
   const description = reqStr(args, 'description');
-  const createdBy = reqStr(args, 'created_by');
+  const rawCreatedBy = str(args, 'created_by');
+  const createdBy = resolveAgentId(rawCreatedBy);
+  if (!createdBy) throw new Error('Parameter "created_by" ist erforderlich (oder SYNAPSE_AGENT_NAME setzen)');
 
   try {
     const channel = await createChannel(project, name, description, createdBy);
@@ -83,7 +86,9 @@ async function handleLeave(args: Record<string, unknown>) {
 async function handlePost(args: Record<string, unknown>) {
   const project = reqStr(args, 'project');
   const channelName = reqStr(args, 'channel_name');
-  const sender = reqStr(args, 'sender');
+  const rawSender = str(args, 'sender');
+  const sender = resolveAgentId(rawSender);
+  if (!sender) throw new Error('Parameter "sender" ist erforderlich (oder SYNAPSE_AGENT_NAME setzen)');
 
   // Bulk-Mode: messages[] mit mehreren Posts in einem Channel.
   type PostItem = { content?: string };

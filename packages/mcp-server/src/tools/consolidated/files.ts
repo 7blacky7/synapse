@@ -347,7 +347,7 @@ export const filesTool: ConsolidatedTool = {
       const project = reqStr(args, 'project');
       const limit = num(args, 'limit') ?? 50;
       const entries = await listFileHistory(project, {
-        agent_id: resolveAgentId(str(args, 'agent_id')) ?? undefined,
+        agent_id: str(args, 'agent_id') ?? undefined, // READ-FILTER: kein resolveAgentId
         file_path: str(args, 'file_path'),
         since: str(args, 'since'),
         limit,

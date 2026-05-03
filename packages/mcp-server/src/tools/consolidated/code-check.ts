@@ -7,6 +7,7 @@ import {
   addErrorPattern,
   listErrorPatterns,
   deleteErrorPattern,
+  resolveAgentId,
 } from '@synapse/core';
 
 import { ConsolidatedTool, str, reqStr, num } from './types.js';
@@ -76,7 +77,9 @@ export const codeCheckTool: ConsolidatedTool = {
         const fix = reqStr(args, 'fix');
         const severity = str(args, 'severity') ?? 'warning';
         const foundInModel = reqStr(args, 'found_in_model');
-        const foundBy = reqStr(args, 'found_by');
+        const rawFoundBy = str(args, 'found_by');
+        const foundBy = resolveAgentId(rawFoundBy);
+        if (!foundBy) throw new Error('found_by erforderlich (oder SYNAPSE_AGENT_NAME setzen)');
 
         const result = await addErrorPattern(description, fix, severity, foundBy, foundInModel);
         return {
