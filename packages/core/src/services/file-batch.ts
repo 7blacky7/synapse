@@ -607,6 +607,8 @@ export async function planBatch(args: {
 export async function commitBatch(args: {
   plan_id: string;
   agent_id?: string;
+  /** IDEA-6: optionale KI-Beobachtungen — wird in alle file_versions dieser Batch geschrieben. */
+  agent_note?: string;
 }): Promise<CommitBatchResult> {
   const pool = getPool();
 
@@ -786,6 +788,15 @@ export async function commitBatch(args: {
     }
     // sonst: Datei war im Plan aber unveraendert (z.B. nur als move-src in der Op-Liste,
     // schon ueber den 'deleted' branch behandelt) — keine Aktion noetig.
+  }
+
+
+  // IDEA-6: agent_note auf alle in dieser Batch geschriebenen file_versions-Rows propagieren.
+  if (args.agent_note && batchIdSafe !== undefined) {
+    await pool.query(
+      `UPDATE file_versions SET agent_note = $1 WHERE batch_id = $2`,
+      [args.agent_note, batchIdSafe],
+    );
   }
 
   await pool.query(

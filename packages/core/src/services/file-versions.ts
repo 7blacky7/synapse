@@ -30,6 +30,7 @@ export interface FileVersionMeta {
   feature_tag?: string | null;
   parent_version_id?: string | null;
   git_commit_sha?: string | null;
+  agent_note?: string | null;
 }
 
 export interface FileVersionFull extends FileVersionMeta {
@@ -50,7 +51,7 @@ export async function listFileVersions(
   const result = await pool.query<FileVersionMeta>(
     `SELECT id::text AS id, project, file_path, content_hash, edit_action, agent_id,
             batch_id::text AS batch_id, size_bytes, created_at::text AS created_at, reason,
-            feature_tag, parent_version_id::text AS parent_version_id, git_commit_sha
+            feature_tag, parent_version_id::text AS parent_version_id, git_commit_sha, agent_note
      FROM file_versions
      WHERE project = $1 AND file_path = $2
      ORDER BY created_at DESC, id DESC
@@ -69,7 +70,7 @@ export async function getFileVersion(
     `SELECT id::text AS id, project, file_path, content, content_hash,
             edit_action, agent_id, batch_id::text AS batch_id,
             size_bytes, created_at::text AS created_at, reason,
-            feature_tag, parent_version_id::text AS parent_version_id, git_commit_sha
+            feature_tag, parent_version_id::text AS parent_version_id, git_commit_sha, agent_note
      FROM file_versions
      WHERE id = $1`,
     [versionId]
@@ -139,7 +140,7 @@ export async function listFileHistory(
        )
        SELECT id::text AS id, project, file_path, content_hash, edit_action, agent_id,
               batch_id::text AS batch_id, size_bytes, created_at::text AS created_at, reason,
-              feature_tag, parent_version_id::text AS parent_version_id, git_commit_sha
+            feature_tag, parent_version_id::text AS parent_version_id, git_commit_sha, agent_note
        FROM chain
        ORDER BY created_at DESC, id DESC
        LIMIT $3`,
@@ -170,7 +171,7 @@ export async function listFileHistory(
   const result = await pool.query<FileVersionMeta>(
     `SELECT id::text AS id, project, file_path, content_hash, edit_action, agent_id,
             batch_id::text AS batch_id, size_bytes, created_at::text AS created_at, reason,
-            feature_tag, parent_version_id::text AS parent_version_id, git_commit_sha
+            feature_tag, parent_version_id::text AS parent_version_id, git_commit_sha, agent_note
      FROM file_versions
      WHERE ${conds.join(' AND ')}
      ORDER BY created_at DESC, id DESC
@@ -191,7 +192,7 @@ export async function listBatchVersions(
   const result = await pool.query<FileVersionMeta>(
     `SELECT id::text AS id, project, file_path, content_hash, edit_action, agent_id,
             batch_id::text AS batch_id, size_bytes, created_at::text AS created_at, reason,
-            feature_tag, parent_version_id::text AS parent_version_id, git_commit_sha
+            feature_tag, parent_version_id::text AS parent_version_id, git_commit_sha, agent_note
      FROM file_versions
      WHERE batch_id = $1
      ORDER BY created_at ASC, id ASC`,

@@ -164,6 +164,8 @@ ALTER TABLE file_versions ADD COLUMN IF NOT EXISTS reason TEXT;
 ALTER TABLE file_versions ADD COLUMN IF NOT EXISTS feature_tag TEXT;
 ALTER TABLE file_versions ADD COLUMN IF NOT EXISTS parent_version_id BIGINT;
 ALTER TABLE file_versions ADD COLUMN IF NOT EXISTS git_commit_sha TEXT;
+-- IDEA-6: KI-eigene Analyse/Beobachtungen pro Batch, optional
+ALTER TABLE file_versions ADD COLUMN IF NOT EXISTS agent_note TEXT;
 DO $$ BEGIN
   IF NOT EXISTS (
     SELECT 1 FROM pg_constraint WHERE conname = 'file_versions_parent_version_id_fkey'

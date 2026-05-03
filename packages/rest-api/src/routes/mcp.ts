@@ -835,6 +835,7 @@ const MCP_TOOLS = [
         },
         open_for_coedit: { type: 'boolean', description: 'Optional fuer plan: ob andere Agenten Co-Edits vorschlagen duerfen (default true). Aktuell informational; Co-Edit-Mechanik kommt in Schritt 3.' },
         auto_commit: { type: 'boolean', description: 'IDEA-5 (optional fuer plan): wenn true, wird direkt nach plan() automatisch commit() aufgerufen — spart einen Tool-Call wenn kein User-Review vor commit gewuenscht. Versionierung bleibt aktiv (file_versions + batch_id), Rollback via restore_batch jederzeit moeglich.' },
+        agent_note: { type: 'string', description: 'IDEA-6 (optional fuer plan/commit): KI-eigene Beobachtungen/Analyse zum Batch (zusaetzlich zum reason des Users). Wird in alle file_versions dieser Batch geschrieben. Empfohlen ab ≥3 Ops oder Multi-File Batches.' },
         reason: { type: 'string', description: 'Optionale Begruendung — landet in file_versions.reason und ist via "history"-Action abrufbar. Fuer Crash-Recovery nuetzlich.' },
         since: { type: 'string', description: 'history: ISO-Timestamp ab dem Eintraege gelistet werden.' },
         limit: { type: 'number', description: 'versions: Max Eintraege (Standard 50, Max 500).' },
@@ -902,6 +903,7 @@ const MCP_TOOLS = [
         agent_id: { type: 'string', description: 'Optionale Agent-ID (Audit-Trail)' },
         open_for_coedit: { type: 'boolean', description: 'plan: ob Co-Edits erlaubt sind (default true)' },
         auto_commit: { type: 'boolean', description: 'IDEA-5: plan + commit in einem Call (default false). Versionierung bleibt aktiv.' },
+        agent_note: { type: 'string', description: 'IDEA-6 (optional): KI-eigene Beobachtungen pro Batch (zusaetzlich zum User-reason).' },
         reason: { type: 'string', description: 'Optional fuer Audit-Trail (file_versions.reason)' },
         since: { type: 'string', description: 'history: ISO-Timestamp ab dem Eintraege gelistet werden' },
         file_path: { type: 'string', description: 'history: Filter auf einen Pfad (optional)' },
@@ -2683,7 +2685,7 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
         // IDEA-5: auto_commit:true -> direkt commit, ABER nur wenn alle Previews ok sind.
         const allPreviewsOk = result.previews?.every(p => p.ok) ?? true;
         if (args.auto_commit === true && allPreviewsOk) {
-          const c = await commitBatch({ plan_id: result.plan_id, agent_id: agentId });
+          const c = await commitBatch({ plan_id: result.plan_id, agent_id: agentId, agent_note: str(args, 'agent_note') });
           if (c.success) {
             return { ...c, plan: result, auto_committed: true, message: `Plan ${result.plan_id} angelegt + sofort committed (auto_commit) — ${c.committed} Datei(en) geaendert. batch_id=${c.batch_id}.` };
           }
@@ -2697,7 +2699,7 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
       }
       if (action === 'commit') {
         const planId = reqStr(args, 'plan_id');
-        const result = await commitBatch({ plan_id: planId, agent_id: agentId });
+        const result = await commitBatch({ plan_id: planId, agent_id: agentId, agent_note: str(args, 'agent_note') });
         if (result.success) {
           return { ...result, message: `Plan ${result.plan_id} committed — ${result.committed} Datei(en) geaendert. batch_id=${result.batch_id}.` };
         }
