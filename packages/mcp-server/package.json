@@ -10,7 +10,8 @@
   },
   "exports": {
     ".": "./dist/index.js",
-    "./tools": "./dist/tools/index.js"
+    "./tools": "./dist/tools/index.js",
+    "./consolidated": "./dist/tools/consolidated/index.js"
   },
   "scripts": {
     "build": "tsc",

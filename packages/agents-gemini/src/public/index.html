@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <title>Synapse Gemini Runtime — Live Monitor</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      font-family: 'SF Mono', Menlo, monospace;
+      margin: 0;
+      background: #0e1116;
+      color: #c9d1d9;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+    header {
+      padding: 12px 20px;
+      background: #161b22;
+      border-bottom: 1px solid #30363d;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 20px;
+      flex-wrap: wrap;
+    }
+    header h1 { font-size: 14px; margin: 0; color: #58a6ff; font-weight: 600; }
+    header .meta { color: #8b949e; font-size: 12px; }
+    header .meta strong { color: #c9d1d9; }
+    .status { padding: 3px 10px; border-radius: 4px; font-weight: 600; font-size: 11px; }
+    .status.running { background: #1f6feb; color: #fff; }
+    .status.done { background: #238636; color: #fff; }
+    .status.error { background: #da3633; color: #fff; }
+    .status.idle { background: #30363d; color: #8b949e; }
+
+    #stats {
+      padding: 10px 20px;
+      background: #161b22;
+      border-bottom: 1px solid #30363d;
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr 1fr;
+      gap: 16px;
+    }
+    .stat .label { color: #8b949e; font-size: 11px; text-transform: uppercase; }
+    .stat .value { color: #c9d1d9; font-size: 18px; font-weight: 600; margin-top: 2px; }
+    .token-bar {
+      grid-column: 1 / -1;
+      position: relative;
+      height: 22px;
+      background: #21262d;
+      border-radius: 3px;
+      overflow: hidden;
+      margin-top: 4px;
+    }
+    .token-bar .fill {
+      height: 100%;
+      background: linear-gradient(90deg, #238636 0%, #1f6feb 50%, #d29922 80%, #da3633 100%);
+      transition: width 0.3s;
+    }
+    .token-bar .marker {
+      position: absolute;
+      top: 0; bottom: 0;
+      width: 2px;
+      background: #f0883e;
+    }
+    .token-bar .marker::after {
+      content: '80% Korridor';
+      position: absolute;
+      top: 50%;
+      left: 6px;
+      transform: translateY(-50%);
+      font-size: 10px;
+      color: #f0883e;
+      white-space: nowrap;
+    }
+    .token-bar .label {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      font-size: 11px;
+      font-weight: 600;
+      color: #fff;
+      text-shadow: 0 0 3px rgba(0,0,0,0.7);
+    }
+
+    main { padding: 16px 20px; max-width: 1400px; margin: 0 auto; }
+
+    .turn {
+      margin-bottom: 12px;
+      border: 1px solid #30363d;
+      border-radius: 6px;
+      overflow: hidden;
+    }
+    .turn .head {
+      padding: 6px 12px;
+      background: #161b22;
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      font-size: 11px;
+    }
+    .turn .head .icon { font-size: 14px; }
+    .turn .head .role { font-weight: 600; }
+    .turn .head .ts { color: #6e7681; margin-left: auto; }
+    .turn .body { padding: 10px 14px; white-space: pre-wrap; word-break: break-word; }
+
+    .turn.user .head { background: #0d2440; }
+    .turn.assistant .head { background: #1a2f1a; }
+    .turn.function_call .head { background: #2d2716; }
+    .turn.function_response .head { background: #1a2235; }
+    .turn.error .head { background: #3d1a1a; color: #f85149; }
+    .turn.respawn_marker .head { background: #3d2a16; color: #f0883e; }
+
+    details summary {
+      cursor: pointer;
+      color: #58a6ff;
+      font-size: 12px;
+      padding: 4px 0;
+    }
+    details summary:hover { color: #79c0ff; }
+    pre {
+      background: #0d1117;
+      border: 1px solid #30363d;
+      border-radius: 4px;
+      padding: 8px;
+      overflow-x: auto;
+      font-size: 12px;
+      margin: 4px 0 0 0;
+    }
+
+    #footer {
+      padding: 8px 20px;
+      background: #161b22;
+      border-top: 1px solid #30363d;
+      color: #6e7681;
+      font-size: 11px;
+      position: fixed;
+      bottom: 0;
+      left: 0;
+      right: 0;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>🤖 Synapse Gemini Runtime — Live Monitor</h1>
+    <div class="meta">
+      <span>Modell: <strong id="model">—</strong></span>
+      &nbsp;|&nbsp;
+      <span>Run: <strong id="run-id">—</strong></span>
+      &nbsp;|&nbsp;
+      <span>Start: <strong id="start-time">—</strong></span>
+    </div>
+    <span id="status" class="status idle">idle</span>
+  </header>
+
+  <section id="stats">
+    <div class="stat">
+      <div class="label">Input Tokens</div>
+      <div class="value" id="input-tokens">0</div>
+    </div>
+    <div class="stat">
+      <div class="label">Output Tokens</div>
+      <div class="value" id="output-tokens">0</div>
+    </div>
+    <div class="stat">
+      <div class="label">Cost ($USD)</div>
+      <div class="value" id="cost">0.00</div>
+    </div>
+    <div class="stat">
+      <div class="label">Turns</div>
+      <div class="value" id="turn-count">0</div>
+    </div>
+    <div class="token-bar" title="Context-Auslastung">
+      <div class="fill" id="bar-fill" style="width: 0%"></div>
+      <div class="marker" id="bar-marker" style="left: 80%"></div>
+      <div class="label" id="bar-label">0% — 0 / 1.000.000 Tokens</div>
+    </div>
+  </section>
+
+  <main id="turns"></main>
+
+  <div id="footer">
+    <span id="connection">⏳ Verbinde mit /events...</span>
+    &nbsp;|&nbsp;
+    <span>Letzter Heartbeat: <span id="last-heartbeat">—</span></span>
+    &nbsp;|&nbsp;
+    <a href="/run.jsonl" target="_blank" style="color: #58a6ff;">Raw JSONL Log</a>
+  </div>
+
+  <script>
+    const turns = document.getElementById('turns');
+    const statusEl = document.getElementById('status');
+    const modelEl = document.getElementById('model');
+    const runIdEl = document.getElementById('run-id');
+    const startTimeEl = document.getElementById('start-time');
+    const inputTokensEl = document.getElementById('input-tokens');
+    const outputTokensEl = document.getElementById('output-tokens');
+    const costEl = document.getElementById('cost');
+    const turnCountEl = document.getElementById('turn-count');
+    const barFill = document.getElementById('bar-fill');
+    const barLabel = document.getElementById('bar-label');
+    const lastHbEl = document.getElementById('last-heartbeat');
+    const connEl = document.getElementById('connection');
+
+    let inputTokens = 0;
+    let outputTokens = 0;
+    let cachedTokens = 0;
+    let turnCount = 0;
+    let contextCeiling = 1000000;
+
+    // Pricing gemini-3.1-flash-lite-preview (USD pro 1M Tokens)
+    const PRICING = { input: 0.25, output: 1.50, cache: 0.025 };
+
+    function fmt(n) { return n.toLocaleString('de-DE'); }
+    function fmtTs(iso) { return new Date(iso).toLocaleTimeString('de-DE'); }
+
+    function appendTurn(ev) {
+      const div = document.createElement('div');
+      div.className = `turn ${ev.type}`;
+      const ICONS = {
+        user: '🧑', assistant: '🤖', function_call: '🛠',
+        function_response: '✅', error: '⚠️', respawn_marker: '🔄'
+      };
+      const LABELS = {
+        user: 'User', assistant: 'Assistant',
+        function_call: 'Function Call', function_response: 'Function Response',
+        error: 'Error', respawn_marker: 'Respawn-Marker'
+      };
+      let bodyHtml = '';
+      if (ev.type === 'user' || ev.type === 'assistant') {
+        bodyHtml = escapeHtml(String(ev.payload.text ?? ''));
+      } else if (ev.type === 'function_call') {
+        bodyHtml = `<strong>${escapeHtml(ev.payload.name)}</strong>`
+          + `<details><summary>Args (${Object.keys(ev.payload.args ?? {}).length} keys)</summary>`
+          + `<pre>${escapeHtml(JSON.stringify(ev.payload.args, null, 2))}</pre></details>`;
+      } else if (ev.type === 'function_response') {
+        const result = ev.payload.result;
+        const preview = JSON.stringify(result).slice(0, 200);
+        bodyHtml = `<strong>${escapeHtml(ev.payload.name)}</strong> → `
+          + `<details><summary>${escapeHtml(preview)}${preview.length >= 200 ? '...' : ''}</summary>`
+          + `<pre>${escapeHtml(JSON.stringify(result, null, 2))}</pre></details>`;
+      } else if (ev.type === 'error') {
+        bodyHtml = escapeHtml(String(ev.payload.message ?? ev.payload.error ?? 'Unbekannter Fehler'));
+      } else if (ev.type === 'respawn_marker') {
+        bodyHtml = `Marker geschrieben: <code>${escapeHtml(String(ev.payload.path ?? ''))}</code>`;
+      }
+      div.innerHTML = `
+        <div class="head">
+          <span class="icon">${ICONS[ev.type] ?? '•'}</span>
+          <span class="role">${LABELS[ev.type] ?? ev.type}</span>
+          <span class="ts">${fmtTs(ev.timestamp)}</span>
+        </div>
+        <div class="body">${bodyHtml}</div>
+      `;
+      turns.appendChild(div);
+      window.scrollTo(0, document.body.scrollHeight);
+    }
+
+    function escapeHtml(s) {
+      return String(s).replace(/[&<>"']/g, c => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+      }[c]));
+    }
+
+    function updateStats() {
+      inputTokensEl.textContent = fmt(inputTokens);
+      outputTokensEl.textContent = fmt(outputTokens);
+      const cost = (inputTokens / 1e6 * PRICING.input)
+        + (outputTokens / 1e6 * PRICING.output)
+        + (cachedTokens / 1e6 * PRICING.cache);
+      costEl.textContent = '$' + cost.toFixed(4);
+      turnCountEl.textContent = turnCount;
+      const total = inputTokens + outputTokens;
+      const pct = Math.min(100, (total / contextCeiling) * 100);
+      barFill.style.width = pct + '%';
+      barLabel.textContent = `${pct.toFixed(1)}% — ${fmt(total)} / ${fmt(contextCeiling)} Tokens`;
+    }
+
+    function handleEvent(ev) {
+      lastHbEl.textContent = fmtTs(ev.timestamp);
+      if (ev.type === 'start') {
+        modelEl.textContent = ev.payload.model ?? '—';
+        runIdEl.textContent = ev.payload.runId ?? '—';
+        startTimeEl.textContent = fmtTs(ev.timestamp);
+        statusEl.textContent = 'running';
+        statusEl.className = 'status running';
+        if (ev.payload.contextCeiling) contextCeiling = Number(ev.payload.contextCeiling);
+        if (ev.payload.task) appendTurn({ type: 'user', timestamp: ev.timestamp, payload: { text: ev.payload.task } });
+      } else if (ev.type === 'usage') {
+        inputTokens = Number(ev.payload.inputTokens ?? inputTokens);
+        outputTokens = Number(ev.payload.outputTokens ?? outputTokens);
+        cachedTokens = Number(ev.payload.cachedTokens ?? cachedTokens);
+        turnCount = Number(ev.payload.turn ?? turnCount);
+        updateStats();
+      } else if (ev.type === 'done') {
+        statusEl.textContent = 'done';
+        statusEl.className = 'status done';
+      } else if (ev.type === 'error') {
+        statusEl.textContent = 'error';
+        statusEl.className = 'status error';
+        appendTurn(ev);
+      } else {
+        appendTurn(ev);
+      }
+    }
+
+    const es = new EventSource('/events');
+    es.onopen = () => { connEl.textContent = '🟢 Verbunden'; };
+    es.onerror = () => { connEl.textContent = '🔴 Verbindung verloren'; };
+    es.onmessage = (e) => {
+      try {
+        const ev = JSON.parse(e.data);
+        handleEvent(ev);
+      } catch (err) {
+        console.error('Parse error', err, e.data);
+      }
+    };
+  </script>
+</body>
+</html>
