@@ -70,3 +70,12 @@ export type {
 
 // Agent-ID Resolver — geteilt zwischen MCP-Server, REST-API und Core-Services
 export { resolveAgentId } from './agent-id-resolver.js';
+
+// Wrapper-Status (PG Source-of-Truth fuer laufende Spezialisten)
+export {
+  upsertWrapperStatus,
+  getWrapperStatus,
+  listWrapperStatus,
+  removeWrapperStatus,
+} from './wrapper-status.js';
+export type { WrapperStatusRow } from './wrapper-status.js';

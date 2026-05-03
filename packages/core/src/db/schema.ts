@@ -706,6 +706,38 @@ VALUES
   ('gemini-pro',        'gemini-2.5-pro',                 'google',    1000000, ARRAY['GOOGLE_API_KEY'],  'node',   '@synapse/agents-gemini/runtime',    80, 88,  1.25, 10.00, 0.13,  '2025-01-01')
 ON CONFLICT (alias) DO NOTHING;
 
+-- ==========================================================================
+-- wrapper_status: Source-of-Truth fuer laufende Wrapper/Spezialisten.
+-- Ersetzt .synapse/agents/status.json als primaere Datenquelle.
+-- Beide Eingangs-Pfade (stdio-MCP + REST) lesen/schreiben diese Tabelle.
+-- status.json bleibt als optionaler Cache fuer Backward-Compat.
+-- ==========================================================================
+
+CREATE TABLE IF NOT EXISTS wrapper_status (
+  agent_name TEXT NOT NULL,
+  project TEXT NOT NULL,
+  wrapper_pid INTEGER,
+  inner_pid INTEGER,
+  socket_path TEXT,
+  model TEXT,
+  model_full_id TEXT,
+  provider TEXT,
+  status TEXT NOT NULL DEFAULT 'idle',  -- running/idle/crashed/stopped
+  busy BOOLEAN NOT NULL DEFAULT false,
+  current_task TEXT,
+  context_ceiling INTEGER,
+  tokens_input INTEGER,
+  tokens_output INTEGER,
+  tokens_percent NUMERIC,
+  channels TEXT[] NOT NULL DEFAULT '{}',
+  connected_mcp BOOLEAN NOT NULL DEFAULT false,
+  last_activity TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (agent_name, project)
+);
+
+CREATE INDEX IF NOT EXISTS idx_wrapper_status_project ON wrapper_status(project);
+CREATE INDEX IF NOT EXISTS idx_wrapper_status_last_activity ON wrapper_status(last_activity);
+
 `;
 
 export async function ensureSchema(): Promise<void> {
