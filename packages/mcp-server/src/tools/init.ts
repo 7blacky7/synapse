@@ -38,6 +38,7 @@ import {
   deleteByFilePath,
   loadGitignore,
   shouldIgnore,
+  getPool,
   getProjectStatus,
   setProjectStatus,
   updateLastAccess,
@@ -474,13 +475,15 @@ export async function cleanupProjekt(
   // .synapseignore und .gitignore neu laden
   const ig = loadGitignore(projectPath);
 
-  // Alle Vektoren im Projekt durchgehen
-  const collectionName = `project_${projectName}`;
+  // Vektor-Collection fuer Code (Suffix _code, gleich wie ensureProjectCollection anlegt)
+  const collectionName = `project_${projectName}_code`;
   let deleted = 0;
   let checked = 0;
   const deletedFiles: string[] = [];
   const seenFiles = new Set<string>();
   const byPattern: Record<string, string[]> = {};
+  // Gesammelte Pfade fuer PG-Cleanup (relativ zum Projekt)
+  const pgPathsToDelete = new Set<string>();
 
   try {
     // Alle Vektoren holen (mit leerem Filter)
@@ -501,7 +504,6 @@ export async function cleanupProjekt(
         if (shouldIgnore(ig, relativePath)) {
           // Finde welches Pattern matcht (für Feedback)
           const ext = path.extname(relativePath) || 'no-extension';
-          const dir = path.dirname(relativePath).split(path.sep)[0] || 'root';
           const patternKey = relativePath.includes('node_modules')
             ? 'node_modules/'
             : ext;
@@ -513,9 +515,34 @@ export async function cleanupProjekt(
 
           console.error(`[Synapse MCP] Lösche ignorierte Datei: ${relativePath}`);
           await deleteByFilePath(collectionName, filePath);
+          // Beide Varianten fuer PG-Cleanup vormerken (relativ + absolut)
+          pgPathsToDelete.add(relativePath);
+          pgPathsToDelete.add(filePath);
           deletedFiles.push(relativePath);
           deleted++;
         }
+      }
+    }
+
+    // PG-Cleanup: code_files DELETE cascadiert via FK auf code_chunks/code_symbols/code_references
+    // (alle FKs haben ON DELETE CASCADE). watcher_events haben kein FK und werden separat geloescht.
+    if (pgPathsToDelete.size > 0) {
+      const pool = getPool();
+      const paths = Array.from(pgPathsToDelete);
+      try {
+        const r1 = await pool.query(
+          'DELETE FROM code_files WHERE project = $1 AND file_path = ANY($2::text[])',
+          [projectName, paths]
+        );
+        const r2 = await pool.query(
+          'DELETE FROM watcher_events WHERE project = $1 AND file_path = ANY($2::text[])',
+          [projectName, paths]
+        );
+        console.error(
+          `[Synapse MCP] PG-Cleanup fuer "${projectName}": code_files=${r1.rowCount}, watcher_events=${r2.rowCount}`
+        );
+      } catch (pgErr) {
+        console.error(`[Synapse MCP] PG-Cleanup-Fehler (Qdrant bereits aufgeraeumt):`, pgErr);
       }
     }
 

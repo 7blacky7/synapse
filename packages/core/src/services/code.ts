@@ -304,26 +304,54 @@ export async function parseAndEmbed(project: string, filePath: string): Promise<
   }
 
   // --- Chunks erstellen + in code_chunks speichern ---
+  // RACE-FIX: parallele parseAndEmbed-Calls fuer dasselbe File haben frueher
+  // Doppel-Rows produziert (DELETE+INSERT war nicht atomar). Jetzt:
+  // (1) pg_advisory_xact_lock serialisiert Calls auf (project, filePath).
+  // (2) DELETE + INSERT in einer Transaktion → atomar.
+  // (3) Single multi-VALUES INSERT statt N Einzel-Queries (auch schneller).
   const chunks = chunkFile(content, filePath, project);
-
-  // Alte Chunks loeschen
-  await pool.query(
-    'DELETE FROM code_chunks WHERE project = $1 AND file_path = $2',
-    [project, filePath]
-  );
-
-  // Neue Chunks in PG einfuegen
-  for (const chunk of chunks) {
-    await pool.query(
-      `INSERT INTO code_chunks (id, project, file_path, chunk_index, content, line_start, line_end)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-      [
-        uuidv4(), project, filePath,
-        chunk.chunkIndex, chunk.content,
-        chunk.lineStart, chunk.lineEnd,
-      ]
+  const chunksClient = await pool.connect();
+  try {
+    await chunksClient.query('BEGIN');
+    await chunksClient.query('SELECT pg_advisory_xact_lock(hashtext($1))', [
+      `chunks:${project}:${filePath}`,
+    ]);
+    await chunksClient.query(
+      'DELETE FROM code_chunks WHERE project = $1 AND file_path = $2',
+      [project, filePath]
     );
+    if (chunks.length > 0) {
+      const values: unknown[] = [];
+      const placeholders: string[] = [];
+      chunks.forEach((chunk, i) => {
+        const base = i * 7;
+        placeholders.push(
+          `($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5}, $${base + 6}, $${base + 7})`
+        );
+        values.push(
+          uuidv4(),
+          project,
+          filePath,
+          chunk.chunkIndex,
+          chunk.content,
+          chunk.lineStart,
+          chunk.lineEnd
+        );
+      });
+      await chunksClient.query(
+        `INSERT INTO code_chunks (id, project, file_path, chunk_index, content, line_start, line_end)
+         VALUES ${placeholders.join(', ')}`,
+        values
+      );
+    }
+    await chunksClient.query('COMMIT');
+  } catch (chunkErr) {
+    await chunksClient.query('ROLLBACK').catch(() => {});
+    console.error(`[Synapse] Chunk-Insert Transaktion fehlgeschlagen:`, chunkErr);
+    chunksClient.release();
+    return;
   }
+  chunksClient.release();
 
   // --- Embeddings generieren + in Qdrant einfuegen ---
   // SKIP wenn env SYNAPSE_SKIP_EMBEDDINGS=1 gesetzt — Parser-Symbole bleiben in PG,
