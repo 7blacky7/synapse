@@ -43,6 +43,7 @@ import { insertVectors, searchVectors, deleteByFilePath } from '../qdrant/index.
 import { chunkText } from '../chunking/index.js';
 import { isExtractableDocument, getFileExtension } from '../watcher/binary.js';
 import { COLLECTIONS } from '../types/index.js';
+import { getPool } from '../db/client.js';
 
 export interface ExtractedDocument {
   /** Extrahierter Text */
@@ -222,34 +223,63 @@ export async function indexDocument(
     };
   }
 
-  // Alte Vektoren loeschen
-  await deleteByFilePath(collectionName, filePath, projectName);
+  // RACE-FIX: parallele indexDocument-Calls fuer dieselbe Datei haben frueher
+  // Doppel-Vektoren in Qdrant produziert (DELETE+embed+INSERT war nicht atomar).
+  // Jetzt:
+  // (1) pg_advisory_xact_lock serialisiert Calls auf (project, filePath).
+  // (2) DELETE + INSERT erfolgen unter dem Lock → kein paralleler Re-Insert.
+  // (3) Bei Fehler: ROLLBACK gibt Lock frei.
+  // Analog zum parseAndEmbed-Fix in code.ts:307.
+  const pool = getPool();
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [
+      `docs:${projectName}:${filePath}`,
+    ]);
 
-  // Embeddings erstellen
-  const chunkTexts = chunks.map(c => c.content);
-  const embeddings = await embedBatch(chunkTexts);
+    // Alte Vektoren loeschen (unter Lock) — projectName fuer Path-Canonicalization
+    await deleteByFilePath(collectionName, filePath, projectName);
 
-  // Vektoren vorbereiten
-  const vectors = chunks.map((chunk, index) => ({
-    id: uuidv4(),
-    vector: embeddings[index],
-    payload: {
-      file_path: filePath,
-      file_name: fileName,
-      file_type: `document_${doc.type}`,
-      document_type: doc.type,
-      project: projectName,
-      chunk_index: index,
-      total_chunks: chunks.length,
-      content: chunk.content,
-      start_line: chunk.lineStart,
-      end_line: chunk.lineEnd,
-      ...doc.metadata,
-    },
-  }));
+    // Embeddings erstellen
+    const chunkTexts = chunks.map(c => c.content);
+    const embeddings = await embedBatch(chunkTexts);
 
-  // In Qdrant einfuegen
-  await insertVectors(collectionName, vectors);
+    // Vektoren vorbereiten
+    const vectors = chunks.map((chunk, index) => ({
+      id: uuidv4(),
+      vector: embeddings[index],
+      payload: {
+        file_path: filePath,
+        file_name: fileName,
+        file_type: `document_${doc.type}`,
+        document_type: doc.type,
+        project: projectName,
+        chunk_index: index,
+        total_chunks: chunks.length,
+        content: chunk.content,
+        start_line: chunk.lineStart,
+        end_line: chunk.lineEnd,
+        ...doc.metadata,
+      },
+    }));
+
+    // In Qdrant einfuegen (immer noch unter Lock)
+    await insertVectors(collectionName, vectors);
+
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    console.error(`[Synapse] indexDocument Transaktion fehlgeschlagen fuer ${filePath}:`, err);
+    return {
+      success: false,
+      chunks: 0,
+      type: doc.type,
+      error: err instanceof Error ? err.message : String(err),
+    };
+  } finally {
+    client.release();
+  }
 
   console.error(`[Synapse] Dokument indexiert: ${fileName} (${chunks.length} Chunks, Typ: ${doc.type})`);
 
