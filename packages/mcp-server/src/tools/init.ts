@@ -453,7 +453,18 @@ export function isProjectActive(projectName: string): boolean {
 }
 
 /**
- * Bereinigt ein Projekt - entfernt Dateien die jetzt in .synapseignore stehen
+ * Bereinigt ein Projekt — Notfall-Werkzeug.
+ *
+ * Macht zwei Dinge in einem Aufruf:
+ * (1) Ignore-Cleanup: Pfade die jetzt in .synapseignore/.gitignore matchen
+ *     werden aus Qdrant + PG (code_files + watcher_events) entfernt.
+ * (2) Dedupe-Cleanup: Doppelte (file_path, chunk_index)-Eintraege in
+ *     code_chunks und der Qdrant-Code-Collection werden auf je 1 reduziert.
+ *     Behaelt jeweils den lexikografisch hoechsten id (= "neuester").
+ *
+ * Im Regelbetrieb sollte (2) immer 0 sein — Race-Fix in parseAndEmbed
+ * verhindert das Entstehen von Doppeln. (2) ist Aufraeumtool fuer alte
+ * Drift-Reste oder den unwahrscheinlichen Fall dass doch was durchrutscht.
  */
 export async function cleanupProjekt(
   projectPath: string,
@@ -464,6 +475,8 @@ export async function cleanupProjekt(
   checked: number;
   deletedFiles: string[];
   keptFiles: number;
+  dedupedPg: number;
+  dedupedQdrant: number;
   message: string;
   details: {
     byPattern: Record<string, string[]>;
@@ -546,7 +559,80 @@ export async function cleanupProjekt(
       }
     }
 
+    // === Dedupe-Pass: Doppel-Eintraege in code_chunks (PG) + Qdrant abraeumen ===
+    // Behaelt pro (project, file_path, chunk_index) den lexikografisch hoechsten id.
+    // Im Regelbetrieb sollte das 0 zurueckgeben — Race-Fix in parseAndEmbed
+    // verhindert das Entstehen von Doppeln. Nur Notfall fuer alte Drift-Reste.
+    let dedupedPg = 0;
+    let dedupedQdrant = 0;
+    try {
+      const pool = getPool();
+      const pgRes = await pool.query(
+        `DELETE FROM code_chunks WHERE id IN (
+           SELECT id FROM (
+             SELECT id, ROW_NUMBER() OVER (
+               PARTITION BY file_path, chunk_index ORDER BY id DESC
+             ) AS rn
+             FROM code_chunks WHERE project = $1
+           ) t WHERE t.rn > 1
+         )`,
+        [projectName]
+      );
+      dedupedPg = pgRes.rowCount ?? 0;
+      if (dedupedPg > 0) {
+        console.error(`[Synapse MCP] Dedupe PG fuer "${projectName}": ${dedupedPg} doppelte chunks entfernt`);
+      }
+    } catch (dupErr) {
+      console.error(`[Synapse MCP] Dedupe-PG-Fehler:`, dupErr);
+    }
+
+    try {
+      // Qdrant: scroll alle Points, sammle (file_path, chunk_index)-Doppel,
+      // loesche pro Kombination alle ausser dem hoechsten id.
+      const allPoints = await scrollVectors<{ file_path?: string; chunk_index?: number }>(
+        collectionName,
+        {},
+        10000
+      );
+      const groups = new Map<string, Array<string | number>>();
+      for (const p of allPoints) {
+        const fp = p.payload?.file_path;
+        const ci = p.payload?.chunk_index;
+        if (fp == null || ci == null) continue;
+        const key = `${fp}\x00${ci}`;
+        const arr = groups.get(key) ?? [];
+        arr.push(p.id);
+        groups.set(key, arr);
+      }
+      const idsToDrop: Array<string | number> = [];
+      for (const ids of groups.values()) {
+        if (ids.length <= 1) continue;
+        // Sortiere absteigend, behalte ersten (hoechsten), drop Rest
+        ids.sort((a, b) => String(b).localeCompare(String(a)));
+        for (let i = 1; i < ids.length; i++) idsToDrop.push(ids[i]);
+      }
+      if (idsToDrop.length > 0) {
+        const { getQdrantClient } = await import('@synapse/core');
+        const client = getQdrantClient();
+        // In Batches a 500
+        const BATCH = 500;
+        for (let i = 0; i < idsToDrop.length; i += BATCH) {
+          await client.delete(collectionName, { points: idsToDrop.slice(i, i + BATCH), wait: true });
+        }
+        dedupedQdrant = idsToDrop.length;
+        console.error(`[Synapse MCP] Dedupe Qdrant fuer "${projectName}": ${dedupedQdrant} doppelte Points entfernt`);
+      }
+    } catch (dupErr) {
+      console.error(`[Synapse MCP] Dedupe-Qdrant-Fehler:`, dupErr);
+    }
+
     const keptFiles = seenFiles.size - deletedFiles.length;
+    const ignoreParts = deleted > 0
+      ? `${deleted} ignorierte Dateien gelöscht, ${keptFiles} behalten`
+      : `keine ignorierten Dateien (${seenFiles.size} aktuell)`;
+    const dedupeParts = (dedupedPg + dedupedQdrant) > 0
+      ? `, Dedupe: ${dedupedPg} PG-rows + ${dedupedQdrant} Qdrant-points entfernt`
+      : `, keine Doppel`;
 
     return {
       success: true,
@@ -554,9 +640,9 @@ export async function cleanupProjekt(
       checked,
       deletedFiles,
       keptFiles,
-      message: deleted > 0
-        ? `Cleanup: ${deleted} Dateien gelöscht, ${keptFiles} behalten (${checked} Chunks geprüft)`
-        : `Cleanup: Keine Änderungen nötig (${seenFiles.size} Dateien, ${checked} Chunks geprüft)`,
+      dedupedPg,
+      dedupedQdrant,
+      message: `Cleanup: ${ignoreParts}${dedupeParts} (${checked} Chunks geprüft)`,
       details: {
         byPattern,
         uniqueFiles: seenFiles.size,
@@ -569,6 +655,8 @@ export async function cleanupProjekt(
       checked,
       deletedFiles,
       keptFiles: 0,
+      dedupedPg: 0,
+      dedupedQdrant: 0,
       message: `Cleanup Fehler: ${error}`,
       details: {
         byPattern,
