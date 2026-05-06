@@ -223,7 +223,7 @@ export async function indexDocument(
   }
 
   // Alte Vektoren loeschen
-  await deleteByFilePath(collectionName, filePath);
+  await deleteByFilePath(collectionName, filePath, projectName);
 
   // Embeddings erstellen
   const chunkTexts = chunks.map(c => c.content);
@@ -327,7 +327,7 @@ export async function removeDocument(
   const collectionName = COLLECTIONS.projectCode(projectName);
 
   try {
-    await deleteByFilePath(collectionName, filePath);
+    await deleteByFilePath(collectionName, filePath, projectName);
     return { success: true, deleted: 1 };
   } catch (error) {
     console.error(`[Synapse] Fehler beim Loeschen von ${filePath}:`, error);

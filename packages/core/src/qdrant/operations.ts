@@ -24,6 +24,89 @@
 import { v4 as uuidv4 } from 'uuid';
 import { getQdrantClient } from './client.js';
 import { SearchResult } from '../types/index.js';
+import { getPool } from '../db/client.js';
+
+// ===========================================
+// PATH-CANONICALIZATION
+// ===========================================
+// Qdrant soll IMMER relative file_path-Eintraege speichern (Single Source of Truth).
+// Caller koennen absolute Pfade uebergeben — diese werden beim Insert/Delete
+// gegen den Projekt-Root in der projects-Tabelle aufgeloest und gekuerzt.
+
+const PROJECT_ROOT_TTL_MS = 60_000;
+const projectRootCache = new Map<string, { root: string | null; expiresAt: number }>();
+
+/**
+ * Loescht den projectRoot-Cache (nur fuer Tests/Migrations gedacht).
+ */
+export function clearProjectRootCache(): void {
+  projectRootCache.clear();
+}
+
+async function getProjectRoot(project: string): Promise<string | null> {
+  const now = Date.now();
+  const cached = projectRootCache.get(project);
+  if (cached && cached.expiresAt > now) return cached.root;
+
+  let root: string | null = null;
+  try {
+    const pool = getPool();
+    const res = await pool.query<{ path: string }>(
+      `SELECT path FROM projects WHERE name = $1 ORDER BY last_access DESC NULLS LAST LIMIT 1`,
+      [project]
+    );
+    if (res.rows.length > 0) root = res.rows[0].path;
+  } catch (err) {
+    console.error(`[Qdrant canonicalize] PG-Lookup fuer projectRoot "${project}" fehlgeschlagen:`, err);
+  }
+
+  projectRootCache.set(project, { root, expiresAt: now + PROJECT_ROOT_TTL_MS });
+  return root;
+}
+
+/**
+ * Wandelt einen absoluten file_path in einen projekt-relativen Pfad.
+ * - Bereits relative Pfade werden unveraendert zurueckgegeben.
+ * - Absolute Pfade ohne passenden Projekt-Root werden geloggt + as-is zurueckgegeben (best-effort).
+ */
+export async function canonicalizeFilePath(filePath: string, project: string): Promise<string> {
+  if (!filePath) return filePath;
+  if (!filePath.startsWith('/')) return filePath; // bereits relativ
+  if (!project) {
+    console.error(`[Qdrant canonicalize] Kein project-Name fuer absoluten Pfad: ${filePath}`);
+    return filePath;
+  }
+
+  const root = await getProjectRoot(project);
+  if (!root) {
+    console.error(`[Qdrant canonicalize] Kein projectRoot fuer "${project}" gefunden — file_path bleibt absolut: ${filePath}`);
+    return filePath;
+  }
+
+  const rootSlash = root.endsWith('/') ? root : root + '/';
+  if (filePath === root) return '';
+  if (filePath.startsWith(rootSlash)) {
+    return filePath.substring(rootSlash.length);
+  }
+
+  console.error(`[Qdrant canonicalize] file_path passt nicht zum projectRoot "${root}" (project=${project}): ${filePath}`);
+  return filePath;
+}
+
+/**
+ * Normalisiert file_path im Payload (wenn vorhanden) gegen den project-Root.
+ * No-op falls payload kein file_path oder kein project enthaelt.
+ */
+async function canonicalizePayload<T extends Record<string, unknown>>(payload: T): Promise<T> {
+  const filePath = payload.file_path;
+  const project = payload.project;
+  if (typeof filePath !== 'string' || typeof project !== 'string') return payload;
+  if (!filePath.startsWith('/')) return payload; // schon relativ → kein Realloc
+
+  const canon = await canonicalizeFilePath(filePath, project);
+  if (canon === filePath) return payload;
+  return { ...payload, file_path: canon };
+}
 
 /**
  * Fuegt einen Vektor mit Payload in eine Collection ein
@@ -36,6 +119,7 @@ export async function insertVector<T extends Record<string, unknown>>(
 ): Promise<string> {
   const client = getQdrantClient();
   const pointId = id || uuidv4();
+  const canonPayload = await canonicalizePayload(payload);
 
   await client.upsert(collection, {
     wait: true,
@@ -43,7 +127,7 @@ export async function insertVector<T extends Record<string, unknown>>(
       {
         id: pointId,
         vector,
-        payload,
+        payload: canonPayload,
       },
     ],
   });
@@ -60,11 +144,13 @@ export async function insertVectors<T extends Record<string, unknown>>(
 ): Promise<string[]> {
   const client = getQdrantClient();
 
-  const points = items.map(item => ({
-    id: item.id || uuidv4(),
-    vector: item.vector,
-    payload: item.payload,
-  }));
+  const points = await Promise.all(
+    items.map(async item => ({
+      id: item.id || uuidv4(),
+      vector: item.vector,
+      payload: await canonicalizePayload(item.payload),
+    }))
+  );
 
   await client.upsert(collection, {
     wait: true,
@@ -156,13 +242,15 @@ export async function deleteByFilter(
  */
 export async function deleteByFilePath(
   collection: string,
-  filePath: string
+  filePath: string,
+  project?: string
 ): Promise<void> {
+  const canonPath = project ? await canonicalizeFilePath(filePath, project) : filePath;
   await deleteByFilter(collection, {
     must: [
       {
         key: 'file_path',
-        match: { value: filePath },
+        match: { value: canonPath },
       },
     ],
   });

@@ -407,7 +407,7 @@ export function startFileWatcher(options: FileWatcherOptions): FileWatcherInstan
             }
             try {
               const collectionName = COLLECTIONS.projectCode(projectName);
-              await deleteByFilePath(collectionName, row.file_path);  // relativ fuer Qdrant
+              await deleteByFilePath(collectionName, row.file_path, projectName);  // relativ fuer Qdrant
             } catch {}
             await pool.query('DELETE FROM code_files WHERE id = $1', [row.id]);
           }

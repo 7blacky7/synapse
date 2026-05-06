@@ -527,7 +527,7 @@ export async function cleanupProjekt(
           byPattern[patternKey].push(relativePath);
 
           console.error(`[Synapse MCP] Lösche ignorierte Datei: ${relativePath}`);
-          await deleteByFilePath(collectionName, filePath);
+          await deleteByFilePath(collectionName, filePath, projectName);
           // Beide Varianten fuer PG-Cleanup vormerken (relativ + absolut)
           pgPathsToDelete.add(relativePath);
           pgPathsToDelete.add(filePath);

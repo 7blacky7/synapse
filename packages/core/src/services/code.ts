@@ -361,7 +361,7 @@ export async function parseAndEmbed(project: string, filePath: string): Promise<
     const collectionName = await ensureProjectCollection(project);
 
     // Alte Qdrant-Eintraege loeschen
-    await deleteByFilePath(collectionName, filePath);
+    await deleteByFilePath(collectionName, filePath, project);
 
     const contents = chunks.map(c => c.content);
     const embeddings = await embedBatch(contents);
@@ -516,7 +516,7 @@ export async function removeFile(
   }
   const collectionName = COLLECTIONS.projectCode(projectName);
   try {
-    await deleteByFilePath(collectionName, filePath);
+    await deleteByFilePath(collectionName, filePath, projectName);
   } catch (qdrantErr) {
     console.error(`[Synapse] Qdrant Delete fehlgeschlagen: ${qdrantErr}`);
   }
@@ -888,7 +888,7 @@ export async function removeMediaFile(
   projectName: string
 ): Promise<void> {
   const collectionName = COLLECTIONS.projectMedia(projectName);
-  await deleteByFilePath(collectionName, filePath);
+  await deleteByFilePath(collectionName, filePath, projectName);
   console.error(`[Synapse] Media entfernt: ${path.basename(filePath)}`);
 }
 

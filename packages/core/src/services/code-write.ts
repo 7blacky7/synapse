@@ -675,7 +675,7 @@ export async function moveFileInPg(
 
   // Alte Qdrant-Vektoren loeschen
   const collection = COLLECTIONS.projectCode(project);
-  deleteByFilePath(collection, oldPath).catch((err: unknown) =>
+  deleteByFilePath(collection, oldPath, project).catch((err: unknown) =>
     console.error(`[code-write] Qdrant deleteByFilePath Fehler fuer ${oldPath}:`, err)
   );
 

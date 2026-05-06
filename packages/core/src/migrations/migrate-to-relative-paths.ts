@@ -7,6 +7,9 @@
  */
 
 import { getPool } from '../db/client.js';
+import { getQdrantClient } from '../qdrant/client.js';
+import { COLLECTIONS } from '../types/index.js';
+import { collectionExists } from '../qdrant/collections.js';
 
 export async function migrateToRelativePaths(): Promise<{
   projects: number;
@@ -15,6 +18,8 @@ export async function migrateToRelativePaths(): Promise<{
   refsUpdated: number;
   chunksUpdated: number;
   skipped: number;
+  qdrantPointsRewritten: number;
+  qdrantPointsDropped: number;
 }> {
   const pool = getPool();
   let filesUpdated = 0, symbolsUpdated = 0, refsUpdated = 0, chunksUpdated = 0, skipped = 0;
@@ -111,6 +116,30 @@ export async function migrateToRelativePaths(): Promise<{
     }
   }
 
+  // === Qdrant-Path-Normalisierung ===
+  // Nach der PG-Migration auch Qdrant-Points normalisieren:
+  // - Wenn file_path absolut UND relativ-Pendant existiert: drop absolut.
+  // - Wenn nur absolut: re-write to relative (setPayload).
+  let qdrantPointsRewritten = 0;
+  let qdrantPointsDropped = 0;
+  for (const proj of projects.rows) {
+    const root = proj.path.endsWith('/') ? proj.path : proj.path + '/';
+    const collections = [
+      COLLECTIONS.projectCode(proj.name),
+      COLLECTIONS.projectDocs(proj.name),
+    ];
+    for (const collection of collections) {
+      try {
+        if (!(await collectionExists(collection))) continue;
+        const result = await normalizeQdrantPathsForCollection(collection, proj.path, root);
+        qdrantPointsRewritten += result.rewritten;
+        qdrantPointsDropped += result.dropped;
+      } catch (err) {
+        console.error(`[Migration] Qdrant-Normalisierung fuer ${collection} fehlgeschlagen:`, err);
+      }
+    }
+  }
+
   return {
     projects: projects.rows.length,
     filesUpdated,
@@ -118,5 +147,87 @@ export async function migrateToRelativePaths(): Promise<{
     refsUpdated,
     chunksUpdated,
     skipped,
+    qdrantPointsRewritten,
+    qdrantPointsDropped,
   };
+}
+
+/**
+ * Scrollt eine Qdrant-Collection und normalisiert absolute file_path-Eintraege.
+ * - Wenn ein relatives Pendant existiert: absoluter Punkt wird gedroppt.
+ * - Sonst: file_path wird auf den relativen Pfad umgeschrieben (setPayload).
+ */
+async function normalizeQdrantPathsForCollection(
+  collection: string,
+  projectRoot: string,
+  rootSlash: string
+): Promise<{ rewritten: number; dropped: number }> {
+  const client = getQdrantClient();
+  let rewritten = 0;
+  let dropped = 0;
+
+  type Pt = { id: string | number; payload: { file_path?: string } | null };
+  const allPoints: Pt[] = [];
+  let offset: string | number | undefined = undefined;
+  const PAGE = 1000;
+  for (;;) {
+    const page: { points: Pt[]; next_page_offset?: string | number | null } =
+      (await client.scroll(collection, {
+        limit: PAGE,
+        with_payload: true,
+        offset,
+      })) as any;
+    allPoints.push(...page.points);
+    if (!page.next_page_offset) break;
+    offset = page.next_page_offset;
+  }
+
+  const relativePaths = new Set<string>();
+  for (const p of allPoints) {
+    const fp = p.payload?.file_path;
+    if (typeof fp === 'string' && !fp.startsWith('/')) relativePaths.add(fp);
+  }
+
+  const idsToDrop: Array<string | number> = [];
+  const rewriteByNewPath = new Map<string, Array<string | number>>();
+  for (const p of allPoints) {
+    const fp = p.payload?.file_path;
+    if (typeof fp !== 'string' || !fp.startsWith('/')) continue;
+
+    let relPath: string | null = null;
+    if (fp === projectRoot) relPath = '';
+    else if (fp.startsWith(rootSlash)) relPath = fp.substring(rootSlash.length);
+
+    if (relPath === null) continue; // gehoert nicht zu diesem Projekt-Root
+
+    if (relativePaths.has(relPath)) {
+      idsToDrop.push(p.id);
+    } else {
+      const list = rewriteByNewPath.get(relPath) ?? [];
+      list.push(p.id);
+      rewriteByNewPath.set(relPath, list);
+      relativePaths.add(relPath);
+    }
+  }
+
+  if (idsToDrop.length > 0) {
+    await client.delete(collection, { wait: true, points: idsToDrop });
+    dropped += idsToDrop.length;
+  }
+
+  for (const [newPath, ids] of rewriteByNewPath.entries()) {
+    const fileName = newPath.split('/').pop() || newPath;
+    await client.setPayload(collection, {
+      wait: true,
+      points: ids,
+      payload: {
+        file_path: newPath,
+        file_name: fileName,
+        updated_at: new Date().toISOString(),
+      },
+    });
+    rewritten += ids.length;
+  }
+
+  return { rewritten, dropped };
 }
