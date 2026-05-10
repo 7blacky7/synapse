@@ -40,7 +40,16 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
-import { v4 as uuidv4 } from 'uuid';
+import { v4 as uuidv4, v5 as uuidv5 } from 'uuid';
+
+// Fixed namespace UUID fuer deterministische Qdrant-Point-IDs.
+// Race-Schutz ohne Lock: parallele insertVectors mit identischem (project, filePath, chunkIndex, content)
+// erzeugen identische ID → Qdrant-Upsert statt Duplikat.
+const SYNAPSE_QDRANT_NS = '6ba7b810-9dad-11d1-80b4-00c04fd430c8';
+function deterministicChunkId(project: string, filePath: string, chunkIndex: number, content: string): string {
+  const contentHash = crypto.createHash('sha256').update(content).digest('hex').slice(0, 16);
+  return uuidv5(`${project}:${filePath}:${chunkIndex}:${contentHash}`, SYNAPSE_QDRANT_NS);
+}
 import {
   CodeChunkPayload,
   CodeSearchResult,
@@ -210,14 +219,15 @@ export function enqueueParseAndEmbed(project: string, filePath: string): void {
 export async function parseAndEmbed(project: string, filePath: string): Promise<void> {
   const pool = getPool();
 
-  // RACE-FIX (Cross-Process): pg_advisory_lock auf dedizierter Connection serialisiert
-  // parallele parseAndEmbed-Calls fuer dasselbe (project, filePath) DB-weit — auch ueber
-  // mehrere Prozesse (FileWatcher-Daemon, MCP-stdio, REST-API, Wrapper).
-  const lockClient = await pool.connect();
-  await lockClient.query('SELECT pg_advisory_lock(hashtext($1))', [
-    `parseEmbed:${project}:${filePath}`,
-  ]);
-  try {
+  // RACE-SCHUTZ (Cross-Process) ohne Outer-Lock:
+  //   - Symbol-Block: eigener client + pg_advisory_xact_lock(symbols:project:file)
+  //   - Chunk-Block: eigener client + pg_advisory_xact_lock(chunks:project:file)
+  //   - Qdrant-Block: deterministische Point-IDs (uuidv5 aus project+filePath+chunkIndex+contentHash)
+  //     → parallele insertVectors mit gleicher ID werden upserted, KEIN Duplikat
+  //   - Idempotenz-Skip am Anfang: wenn bereits embedded → return
+  // Frueherer Outer-pg_advisory_lock wurde entfernt: hielt eine Pool-Connection ueber die gesamte
+  // Funktionsdauer (inkl. embedBatch) → Connection-Pool-Starvation bei initial-scan vieler Files.
+  {
     // Hash-Idempotenz-Skip: wenn Datei bereits indexed_at gesetzt hat UND alle Chunks
     // embedded sind UND min(embedded_at) >= indexed_at → nichts zu tun, return.
     const idemRow = await pool.query(
@@ -401,7 +411,7 @@ export async function parseAndEmbed(project: string, filePath: string): Promise<
     const embeddings = await embedBatch(contents);
 
     const items = chunks.map((chunk, i) => ({
-      id: uuidv4(),
+      id: deterministicChunkId(chunk.project, chunk.filePath, chunk.chunkIndex, chunk.content),
       vector: embeddings[i],
       payload: {
         file_path: chunk.filePath,
@@ -436,13 +446,6 @@ export async function parseAndEmbed(project: string, filePath: string): Promise<
   );
 
   console.error(`[Synapse] Geparst+Embedded: ${path.basename(filePath)} (${chunks.length} Chunks)`);
-  } finally {
-    try {
-      await lockClient.query('SELECT pg_advisory_unlock(hashtext($1))', [
-        `parseEmbed:${project}:${filePath}`,
-      ]);
-    } catch {}
-    lockClient.release();
   }
 }
 
