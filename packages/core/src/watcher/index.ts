@@ -361,6 +361,16 @@ export function startFileWatcher(options: FileWatcherOptions): FileWatcherInstan
 
           for (const row of changed.rows) {
             const relativePath: string = row.file_path;
+            // BUGFIX 2026-05-07 (unlink-bootstrap-race): wenn fuer dieses File
+            // ein chokidar-unlink-Event pending ist (User hat gerade rm/mv
+            // gemacht, Debounce 1500ms laeuft noch), darf der PG-Watcher es
+            // NICHT zurueckschreiben. Sonst wird das User-Delete rueckgaengig
+            // gemacht und der unlink-Handler skippt mit "Rename-detected".
+            const pending = pendingEvents.get(relativePath);
+            if (pending && pending.type === 'unlink') {
+              console.error(`[Synapse] PG→FS Skip (unlink pending): ${path.basename(relativePath)}`);
+              continue;
+            }
             const filePath = path.join(projectPath, relativePath);  // absolut rekonstruieren
             let localHash: string | null = null;
             if (fs.existsSync(filePath)) {
@@ -397,7 +407,7 @@ export function startFileWatcher(options: FileWatcherOptions): FileWatcherInstan
             }
             try {
               const collectionName = COLLECTIONS.projectCode(projectName);
-              await deleteByFilePath(collectionName, row.file_path);  // relativ fuer Qdrant
+              await deleteByFilePath(collectionName, row.file_path, projectName);  // relativ fuer Qdrant
             } catch {}
             await pool.query('DELETE FROM code_files WHERE id = $1', [row.id]);
           }

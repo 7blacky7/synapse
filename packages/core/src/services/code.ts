@@ -40,7 +40,16 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
-import { v4 as uuidv4 } from 'uuid';
+import { v4 as uuidv4, v5 as uuidv5 } from 'uuid';
+
+// Fixed namespace UUID fuer deterministische Qdrant-Point-IDs.
+// Race-Schutz ohne Lock: parallele insertVectors mit identischem (project, filePath, chunkIndex, content)
+// erzeugen identische ID → Qdrant-Upsert statt Duplikat.
+const SYNAPSE_QDRANT_NS = '6ba7b810-9dad-11d1-80b4-00c04fd430c8';
+function deterministicChunkId(project: string, filePath: string, chunkIndex: number, content: string): string {
+  const contentHash = crypto.createHash('sha256').update(content).digest('hex').slice(0, 16);
+  return uuidv5(`${project}:${filePath}:${chunkIndex}:${contentHash}`, SYNAPSE_QDRANT_NS);
+}
 import {
   CodeChunkPayload,
   CodeSearchResult,
@@ -210,6 +219,33 @@ export function enqueueParseAndEmbed(project: string, filePath: string): void {
 export async function parseAndEmbed(project: string, filePath: string): Promise<void> {
   const pool = getPool();
 
+  // RACE-SCHUTZ (Cross-Process) ohne Outer-Lock:
+  //   - Symbol-Block: eigener client + pg_advisory_xact_lock(symbols:project:file)
+  //   - Chunk-Block: eigener client + pg_advisory_xact_lock(chunks:project:file)
+  //   - Qdrant-Block: deterministische Point-IDs (uuidv5 aus project+filePath+chunkIndex+contentHash)
+  //     → parallele insertVectors mit gleicher ID werden upserted, KEIN Duplikat
+  //   - Idempotenz-Skip am Anfang: wenn bereits embedded → return
+  // Frueherer Outer-pg_advisory_lock wurde entfernt: hielt eine Pool-Connection ueber die gesamte
+  // Funktionsdauer (inkl. embedBatch) → Connection-Pool-Starvation bei initial-scan vieler Files.
+  {
+    // Hash-Idempotenz-Skip: wenn Datei bereits indexed_at gesetzt hat UND alle Chunks
+    // embedded sind UND min(embedded_at) >= indexed_at → nichts zu tun, return.
+    const idemRow = await pool.query(
+      `SELECT cf.content_hash, cf.indexed_at,
+              (SELECT MIN(cc.embedded_at) FROM code_chunks cc WHERE cc.project=cf.project AND cc.file_path=cf.file_path) AS min_embedded_at,
+              (SELECT COUNT(*) FROM code_chunks cc WHERE cc.project=cf.project AND cc.file_path=cf.file_path AND cc.embedded_at IS NULL) AS unembedded
+         FROM code_files cf WHERE cf.project=$1 AND cf.file_path=$2`,
+      [project, filePath]
+    );
+    if (
+      idemRow.rows[0]?.indexed_at &&
+      idemRow.rows[0].unembedded === '0' &&
+      idemRow.rows[0].min_embedded_at &&
+      new Date(idemRow.rows[0].min_embedded_at) >= new Date(idemRow.rows[0].indexed_at)
+    ) {
+      return; // Already embedded, nichts zu tun
+    }
+
   // Inhalt aus PG laden
   const fileRow = await pool.query(
     'SELECT content, file_type FROM code_files WHERE project = $1 AND file_path = $2',
@@ -228,10 +264,16 @@ export async function parseAndEmbed(project: string, filePath: string): Promise<
   if (parser) {
     const parseResult = parser.parse(content, filePath);
 
-    await pool.query('BEGIN');
+    // RACE-FIX: dedizierter Client + advisory_xact_lock — vorher liefen BEGIN/DELETE/INSERT/COMMIT
+    // auf verschiedenen Pool-Connections (keine echte Tx).
+    const symClient = await pool.connect();
     try {
+      await symClient.query('BEGIN');
+      await symClient.query('SELECT pg_advisory_xact_lock(hashtext($1))', [
+        `symbols:${project}:${filePath}`,
+      ]);
       // Alte Symbole loeschen (CASCADE loescht auch References) — innerhalb der Transaktion
-      await pool.query(
+      await symClient.query(
         'DELETE FROM code_symbols WHERE project = $1 AND file_path = $2',
         [project, filePath]
       );
@@ -251,7 +293,7 @@ export async function parseAndEmbed(project: string, filePath: string): Promise<
           containerIds.set(sym.name, symId);
         }
 
-        await pool.query(
+        await symClient.query(
           `INSERT INTO code_symbols
              (id, project, file_path, symbol_type, name, value, line_start, line_end,
               parent_symbol, params, return_type, is_exported)
@@ -274,7 +316,7 @@ export async function parseAndEmbed(project: string, filePath: string): Promise<
             : new Set([sym.name]);
           const symRefs = parseResult.references.filter(r => nameSet.has(r.symbol_name));
           for (const ref of symRefs) {
-            await pool.query(
+            await symClient.query(
               `INSERT INTO code_references (id, project, symbol_id, file_path, line_number, context)
                VALUES ($1, $2, $3, $4, $5, $6)`,
               [uuidv4(), project, symId, filePath, ref.line_number, ref.context ?? null]
@@ -289,41 +331,71 @@ export async function parseAndEmbed(project: string, filePath: string): Promise<
         if (!sym.parent_id) continue;
         const parentUuid = containerIds.get(sym.parent_id);
         if (!parentUuid) continue;
-        await pool.query(
+        await symClient.query(
           `UPDATE code_symbols SET parent_symbol = $1 WHERE id = $2`,
           [parentUuid, symId]
         );
       }
 
-      await pool.query('COMMIT');
+      await symClient.query('COMMIT');
       parseSuccess = true;
     } catch (txErr) {
-      await pool.query('ROLLBACK');
+      await symClient.query('ROLLBACK').catch(() => {});
       console.error(`[Synapse] Symbol-Insert Transaktion fehlgeschlagen:`, txErr);
+    } finally {
+      symClient.release();
     }
   }
 
   // --- Chunks erstellen + in code_chunks speichern ---
+  // RACE-FIX: parallele parseAndEmbed-Calls fuer dasselbe File haben frueher
+  // Doppel-Rows produziert (DELETE+INSERT war nicht atomar). Jetzt:
+  // (1) pg_advisory_xact_lock serialisiert Calls auf (project, filePath).
+  // (2) DELETE + INSERT in einer Transaktion → atomar.
+  // (3) Single multi-VALUES INSERT statt N Einzel-Queries (auch schneller).
   const chunks = chunkFile(content, filePath, project);
-
-  // Alte Chunks loeschen
-  await pool.query(
-    'DELETE FROM code_chunks WHERE project = $1 AND file_path = $2',
-    [project, filePath]
-  );
-
-  // Neue Chunks in PG einfuegen
-  for (const chunk of chunks) {
-    await pool.query(
-      `INSERT INTO code_chunks (id, project, file_path, chunk_index, content, line_start, line_end)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-      [
-        uuidv4(), project, filePath,
-        chunk.chunkIndex, chunk.content,
-        chunk.lineStart, chunk.lineEnd,
-      ]
+  const chunksClient = await pool.connect();
+  try {
+    await chunksClient.query('BEGIN');
+    await chunksClient.query('SELECT pg_advisory_xact_lock(hashtext($1))', [
+      `chunks:${project}:${filePath}`,
+    ]);
+    await chunksClient.query(
+      'DELETE FROM code_chunks WHERE project = $1 AND file_path = $2',
+      [project, filePath]
     );
+    if (chunks.length > 0) {
+      const values: unknown[] = [];
+      const placeholders: string[] = [];
+      chunks.forEach((chunk, i) => {
+        const base = i * 7;
+        placeholders.push(
+          `($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5}, $${base + 6}, $${base + 7})`
+        );
+        values.push(
+          uuidv4(),
+          project,
+          filePath,
+          chunk.chunkIndex,
+          chunk.content,
+          chunk.lineStart,
+          chunk.lineEnd
+        );
+      });
+      await chunksClient.query(
+        `INSERT INTO code_chunks (id, project, file_path, chunk_index, content, line_start, line_end)
+         VALUES ${placeholders.join(', ')}`,
+        values
+      );
+    }
+    await chunksClient.query('COMMIT');
+  } catch (chunkErr) {
+    await chunksClient.query('ROLLBACK').catch(() => {});
+    console.error(`[Synapse] Chunk-Insert Transaktion fehlgeschlagen:`, chunkErr);
+    chunksClient.release();
+    return;
   }
+  chunksClient.release();
 
   // --- Embeddings generieren + in Qdrant einfuegen ---
   // SKIP wenn env SYNAPSE_SKIP_EMBEDDINGS=1 gesetzt — Parser-Symbole bleiben in PG,
@@ -333,13 +405,13 @@ export async function parseAndEmbed(project: string, filePath: string): Promise<
     const collectionName = await ensureProjectCollection(project);
 
     // Alte Qdrant-Eintraege loeschen
-    await deleteByFilePath(collectionName, filePath);
+    await deleteByFilePath(collectionName, filePath, project);
 
     const contents = chunks.map(c => c.content);
     const embeddings = await embedBatch(contents);
 
     const items = chunks.map((chunk, i) => ({
-      id: uuidv4(),
+      id: deterministicChunkId(chunk.project, chunk.filePath, chunk.chunkIndex, chunk.content),
       vector: embeddings[i],
       payload: {
         file_path: chunk.filePath,
@@ -374,6 +446,7 @@ export async function parseAndEmbed(project: string, filePath: string): Promise<
   );
 
   console.error(`[Synapse] Geparst+Embedded: ${path.basename(filePath)} (${chunks.length} Chunks)`);
+  }
 }
 
 /**
@@ -488,7 +561,7 @@ export async function removeFile(
   }
   const collectionName = COLLECTIONS.projectCode(projectName);
   try {
-    await deleteByFilePath(collectionName, filePath);
+    await deleteByFilePath(collectionName, filePath, projectName);
   } catch (qdrantErr) {
     console.error(`[Synapse] Qdrant Delete fehlgeschlagen: ${qdrantErr}`);
   }
@@ -860,7 +933,7 @@ export async function removeMediaFile(
   projectName: string
 ): Promise<void> {
   const collectionName = COLLECTIONS.projectMedia(projectName);
-  await deleteByFilePath(collectionName, filePath);
+  await deleteByFilePath(collectionName, filePath, projectName);
   console.error(`[Synapse] Media entfernt: ${path.basename(filePath)}`);
 }
 
