@@ -165,12 +165,19 @@ class HeartbeatController {
           await this.connectToWrapper(name, socketPath)
           connected.push(name)
         } catch (err) {
-          // Socket file exists in status but connection failed — treat as dead
-          await removeSpecialist(projectPath, name)
-          await deleteSocketFile(socketPath)
-          // PG: status='crashed' fuer toten Wrapper setzen (best-effort)
-          if (project) void markWrapperCrashedInPg(name, project, wrapperPid)
-          cleaned.push(name)
+          // Re-check PID: connectToWrapper kann transient fehlschlagen (busy,
+          // EAGAIN, Wrapper im Restart). Nur wenn PID jetzt wirklich tot ist,
+          // entfernen wir den Eintrag. Sonst: Eintrag belassen, naechster
+          // Heartbeat-Tick versucht es erneut. Symmetrie zum PG-Pfad unten.
+          if (!isPidAlive(wrapperPid)) {
+            await removeSpecialist(projectPath, name)
+            await deleteSocketFile(socketPath)
+            // PG: status='crashed' fuer toten Wrapper setzen (best-effort)
+            if (project) void markWrapperCrashedInPg(name, project, wrapperPid)
+            cleaned.push(name)
+          }
+          // else: lebender Wrapper, transienter Connect-Fail — Eintrag
+          // bleibt unveraendert, naechster Heartbeat-Tick versucht erneut.
         }
       } else {
         // PID is dead — clean up status entry and socket file
