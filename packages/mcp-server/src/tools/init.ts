@@ -477,6 +477,7 @@ export async function cleanupProjekt(
   keptFiles: number;
   dedupedPg: number;
   dedupedQdrant: number;
+  dedupedSymbols: number;
   message: string;
   details: {
     byPattern: Record<string, string[]>;
@@ -565,6 +566,7 @@ export async function cleanupProjekt(
     // verhindert das Entstehen von Doppeln. Nur Notfall fuer alte Drift-Reste.
     let dedupedPg = 0;
     let dedupedQdrant = 0;
+    let dedupedSymbols = 0;
     try {
       const pool = getPool();
       const pgRes = await pool.query(
@@ -584,6 +586,30 @@ export async function cleanupProjekt(
       }
     } catch (dupErr) {
       console.error(`[Synapse MCP] Dedupe-PG-Fehler:`, dupErr);
+    }
+
+    // Symbol-Dedupe: doppelte Eintraege in code_symbols entfernen.
+    // Behaelt pro (project, file_path, name, line_start, symbol_type) den hoechsten id.
+    try {
+      const pool = getPool();
+      const symRes = await pool.query(
+        `DELETE FROM code_symbols WHERE id IN (
+           SELECT id FROM (
+             SELECT id, ROW_NUMBER() OVER (
+               PARTITION BY file_path, name, line_start, symbol_type
+               ORDER BY id DESC
+             ) AS rn
+             FROM code_symbols WHERE project = $1
+           ) t WHERE t.rn > 1
+         )`,
+        [projectName]
+      );
+      dedupedSymbols = symRes.rowCount ?? 0;
+      if (dedupedSymbols > 0) {
+        console.error(`[Synapse MCP] Dedupe Symbols fuer "${projectName}": ${dedupedSymbols} entfernt`);
+      }
+    } catch (dupErr) {
+      console.error(`[Synapse MCP] Dedupe-Symbols-Fehler:`, dupErr);
     }
 
     try {
@@ -630,8 +656,8 @@ export async function cleanupProjekt(
     const ignoreParts = deleted > 0
       ? `${deleted} ignorierte Dateien gelöscht, ${keptFiles} behalten`
       : `keine ignorierten Dateien (${seenFiles.size} aktuell)`;
-    const dedupeParts = (dedupedPg + dedupedQdrant) > 0
-      ? `, Dedupe: ${dedupedPg} PG-rows + ${dedupedQdrant} Qdrant-points entfernt`
+    const dedupeParts = (dedupedPg + dedupedQdrant + dedupedSymbols) > 0
+      ? `, Dedupe: ${dedupedPg} PG-rows + ${dedupedSymbols} Symbols + ${dedupedQdrant} Qdrant-points entfernt`
       : `, keine Doppel`;
 
     return {
@@ -642,6 +668,7 @@ export async function cleanupProjekt(
       keptFiles,
       dedupedPg,
       dedupedQdrant,
+      dedupedSymbols,
       message: `Cleanup: ${ignoreParts}${dedupeParts} (${checked} Chunks geprüft)`,
       details: {
         byPattern,
@@ -657,6 +684,7 @@ export async function cleanupProjekt(
       keptFiles: 0,
       dedupedPg: 0,
       dedupedQdrant: 0,
+      dedupedSymbols: 0,
       message: `Cleanup Fehler: ${error}`,
       details: {
         byPattern,
