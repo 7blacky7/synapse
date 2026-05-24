@@ -1,0 +1,359 @@
+/**
+ * Synapse API - Specialists & Channels Routes
+ */
+
+import { FastifyInstance } from 'fastify';
+import {
+  listWrapperStatus,
+  enqueueSpecialistJob,
+  waitForSpecialistJob,
+  postToInbox,
+  getPool,
+  listChannels,
+  getChannelMessages,
+  postChannelMessage,
+} from '@synapse/core';
+
+export async function specialistRoutes(fastify: FastifyInstance): Promise<void> {
+  /**
+   * GET /api/projects/:name/specialists
+   * Alle Spezialisten eines Projekts auflisten (aus wrapper_status)
+   */
+  fastify.get<{
+    Params: { name: string };
+  }>('/api/projects/:name/specialists', async (request, reply) => {
+    const { name } = request.params;
+
+    try {
+      const rows = await listWrapperStatus(name);
+      const specialists: Record<string, any> = {};
+
+      for (const row of rows) {
+        specialists[row.agentName] = {
+          name: row.agentName,
+          model: row.model ?? '',
+          status: row.status,
+          pid: row.innerPid ?? 0,
+          wrapperPid: row.wrapperPid ?? 0,
+          socket: row.socketPath ?? '',
+          tokens: {
+            input: row.tokensInput ?? 0,
+            output: row.tokensOutput ?? 0,
+            percent: row.tokensPercent ?? 0,
+          },
+          contextCeiling: row.contextCeiling ?? 0,
+          lastActivity: row.lastActivity.toISOString(),
+          channels: row.channels ?? [],
+          currentTask: row.currentTask ?? null,
+          busy: row.busy ?? false,
+          provider: row.provider ?? null,
+          modelFullId: row.modelFullId ?? null,
+        };
+      }
+
+      return {
+        success: true,
+        project: name,
+        specialists,
+        runningCount: rows.filter(r => r.status === 'running').length,
+        lastUpdate: rows[0]?.lastActivity?.toISOString() ?? new Date().toISOString(),
+      };
+    } catch (error) {
+      return reply.status(500).send({
+        success: false,
+        error: { message: String(error) },
+      });
+    }
+  });
+
+  /**
+   * POST /api/projects/:name/specialists/spawn
+   * Einen neuen Spezialisten spawnen
+   */
+  fastify.post<{
+    Params: { name: string };
+    Body: { name: string; model: string; cwd?: string; allowedTools?: string[] };
+  }>('/api/projects/:name/specialists/spawn', async (request, reply) => {
+    const project = request.params.name;
+    const { name: specName, model, cwd, allowedTools } = request.body ?? {};
+
+    if (!specName || !model) {
+      return reply.status(400).send({
+        success: false,
+        error: { message: 'name und model sind erforderlich' },
+      });
+    }
+
+    try {
+      // Auflösung des Pfads aus der DB falls nicht übergeben
+      let projectPath = cwd;
+      if (!projectPath) {
+        const pgRes = await getPool().query<{ path: string }>(
+          `SELECT path FROM projects
+           WHERE name = $1 AND path NOT LIKE '/virtual/%'
+           ORDER BY last_access DESC NULLS LAST
+           LIMIT 1`,
+          [project],
+        );
+        if (pgRes.rows.length > 0) {
+          projectPath = pgRes.rows[0].path;
+        }
+      }
+
+      const { id } = await enqueueSpecialistJob({
+        project,
+        action: 'spawn',
+        args: {
+          name: specName,
+          model,
+          cwd: projectPath,
+          allowedTools,
+        },
+      });
+
+      const result = await waitForSpecialistJob(id, 60_000);
+      if (result.status === 'done') {
+        return result.result ?? { success: true, message: `Spezialist "${specName}" gestartet` };
+      }
+
+      return reply.status(400).send({
+        success: false,
+        status: result.status,
+        error: result.error,
+        message: result.message ?? `Spawn für Spezialist "${specName}" fehlgeschlagen.`,
+      });
+    } catch (error) {
+      return reply.status(500).send({
+        success: false,
+        error: { message: String(error) },
+      });
+    }
+  });
+
+  /**
+   * POST /api/projects/:name/specialists/:specName/stop
+   * Spezialisten stoppen
+   */
+  fastify.post<{
+    Params: { name: string; specName: string };
+  }>('/api/projects/:name/specialists/:specName/stop', async (request, reply) => {
+    const project = request.params.name;
+    const specName = request.params.specName;
+
+    try {
+      const { id } = await enqueueSpecialistJob({
+        project,
+        action: 'stop',
+        args: { name: specName },
+      });
+
+      const result = await waitForSpecialistJob(id, 60_000);
+      if (result.status === 'done') {
+        return result.result ?? { success: true, message: `Spezialist "${specName}" gestoppt` };
+      }
+
+      return reply.status(400).send({
+        success: false,
+        status: result.status,
+        error: result.error,
+        message: result.message ?? `Stoppen von Spezialist "${specName}" fehlgeschlagen.`,
+      });
+    } catch (error) {
+      return reply.status(500).send({
+        success: false,
+        error: { message: String(error) },
+      });
+    }
+  });
+
+  /**
+   * POST /api/projects/:name/specialists/:specName/purge
+   * Spezialisten bereinigen/entfernen
+   */
+  fastify.post<{
+    Params: { name: string; specName: string };
+  }>('/api/projects/:name/specialists/:specName/purge', async (request, reply) => {
+    const project = request.params.name;
+    const specName = request.params.specName;
+
+    try {
+      const { id } = await enqueueSpecialistJob({
+        project,
+        action: 'purge',
+        args: { name: specName },
+      });
+
+      const result = await waitForSpecialistJob(id, 60_000);
+      if (result.status === 'done') {
+        return result.result ?? { success: true, message: `Spezialist "${specName}" bereinigt` };
+      }
+
+      return reply.status(400).send({
+        success: false,
+        status: result.status,
+        error: result.error,
+        message: result.message ?? `Bereinigung von Spezialist "${specName}" fehlgeschlagen.`,
+      });
+    } catch (error) {
+      return reply.status(500).send({
+        success: false,
+        error: { message: String(error) },
+      });
+    }
+  });
+
+  /**
+   * POST /api/projects/:name/specialists/:specName/wake
+   * Spezialisten wecken
+   */
+  fastify.post<{
+    Params: { name: string; specName: string };
+    Body: { message: string };
+  }>('/api/projects/:name/specialists/:specName/wake', async (request, reply) => {
+    const project = request.params.name;
+    const specName = request.params.specName;
+    const { message } = request.body ?? {};
+
+    if (!message) {
+      return reply.status(400).send({
+        success: false,
+        error: { message: 'message ist erforderlich fuer wake' },
+      });
+    }
+
+    try {
+      const topic = `synapse_specialist_wake_${specName}`;
+      const payload = JSON.stringify({ message, from: 'rest-api', project, timestamp: Date.now() });
+      let notifyOk = false;
+      let inboxId: number | undefined;
+      const wakeErrors: string[] = [];
+
+      try {
+        await getPool().query('SELECT pg_notify($1, $2)', [topic, payload]);
+        notifyOk = true;
+      } catch (e) {
+        wakeErrors.push(`notify: ${(e as Error).message}`);
+      }
+
+      try {
+        const r = await postToInbox('rest-api', specName, message);
+        inboxId = r.id;
+      } catch (e) {
+        wakeErrors.push(`inbox: ${(e as Error).message}`);
+      }
+
+      const ok = notifyOk || inboxId != null;
+      if (ok) {
+        return {
+          success: true,
+          name: specName,
+          notified: notifyOk,
+          inboxId,
+          message: `Wake gesendet an "${specName}" (notify=${notifyOk}, inbox=${inboxId != null})`,
+        };
+      }
+
+      return reply.status(500).send({
+        success: false,
+        errors: wakeErrors,
+        message: `Wake-Fehler fuer "${specName}": ${wakeErrors.join(', ')}`,
+      });
+    } catch (error) {
+      return reply.status(500).send({
+        success: false,
+        error: { message: String(error) },
+      });
+    }
+  });
+
+  /**
+   * GET /api/projects/:name/channels
+   * Alle Gruppenkanäle auflisten
+   */
+  fastify.get<{
+    Params: { name: string };
+  }>('/api/projects/:name/channels', async (request, reply) => {
+    const { name } = request.params;
+    try {
+      const channels = await listChannels(name);
+      return {
+        success: true,
+        project: name,
+        channels,
+      };
+    } catch (error) {
+      return reply.status(500).send({
+        success: false,
+        error: { message: String(error) },
+      });
+    }
+  });
+
+  /**
+   * GET /api/projects/:name/channels/:channel/feed
+   * Kanal-Historie abrufen
+   */
+  fastify.get<{
+    Params: { name: string; channel: string };
+    Querystring: { limit?: string };
+  }>('/api/projects/:name/channels/:channel/feed', async (request, reply) => {
+    const { name, channel } = request.params;
+    const limit = request.query.limit ? Number(request.query.limit) : 50;
+
+    try {
+      const messages = await getChannelMessages(name, channel, { limit });
+      return {
+        success: true,
+        project: name,
+        channel,
+        messages,
+      };
+    } catch (error) {
+      return reply.status(500).send({
+        success: false,
+        error: { message: String(error) },
+      });
+    }
+  });
+
+  /**
+   * POST /api/projects/:name/channels/:channel/post
+   * Nachricht in Gruppenkanal posten
+   */
+  fastify.post<{
+    Params: { name: string; channel: string };
+    Body: { sender?: string; content: string };
+  }>('/api/projects/:name/channels/:channel/post', async (request, reply) => {
+    const { name, channel } = request.params;
+    const sender = (request.body?.sender ?? 'user').trim();
+    const content = (request.body?.content ?? '').trim();
+
+    if (!content) {
+      return reply.status(400).send({
+        success: false,
+        error: { message: 'content ist erforderlich' },
+      });
+    }
+
+    try {
+      const res = await postChannelMessage(name, channel, sender, content);
+      if (!res) {
+        return reply.status(404).send({
+          success: false,
+          error: { message: `Kanal "${channel}" nicht gefunden` },
+        });
+      }
+
+      return {
+        success: true,
+        messageId: res.id,
+        createdAt: res.createdAt,
+      };
+    } catch (error) {
+      return reply.status(500).send({
+        success: false,
+        error: { message: String(error) },
+      });
+    }
+  });
+}

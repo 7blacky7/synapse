@@ -23,6 +23,7 @@ import {
   filesRoutes,
   fsEventsRoutes,
   shellRoutes,
+  specialistRoutes,
 } from './routes/index.js';
 
 /**
@@ -64,6 +65,7 @@ export async function createServer(): Promise<FastifyInstance> {
   await fastify.register(filesRoutes);
   await fastify.register(fsEventsRoutes);
   await fastify.register(shellRoutes);
+  await fastify.register(specialistRoutes);
 
   // Health Check
   fastify.get('/health', async () => ({ status: 'ok' }));
