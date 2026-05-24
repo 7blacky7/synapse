@@ -742,6 +742,30 @@ CREATE INDEX IF NOT EXISTS idx_wrapper_status_last_activity ON wrapper_status(la
 -- Reaper-Query-Index: WHERE status='running' AND last_activity < NOW() - INTERVAL '3 min'
 CREATE INDEX IF NOT EXISTS idx_wrapper_status_status ON wrapper_status(status, last_activity);
 
+-- NOTIFY-Trigger fuer wrapper_status Aenderungen
+CREATE OR REPLACE FUNCTION notify_wrapper_status_change() RETURNS trigger AS $$
+DECLARE
+  proj TEXT;
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    proj := OLD.project;
+  ELSE
+    proj := NEW.project;
+  END IF;
+  PERFORM pg_notify('synapse_specialist_status_change', json_build_object(
+    'project', proj,
+    'agent_name', CASE WHEN TG_OP = 'DELETE' THEN OLD.agent_name ELSE NEW.agent_name END,
+    'status', CASE WHEN TG_OP = 'DELETE' THEN 'deleted' ELSE NEW.status END
+  )::text);
+  RETURN CASE WHEN TG_OP = 'DELETE' THEN OLD ELSE NEW END;
+END
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_notify_wrapper_status_change ON wrapper_status;
+CREATE TRIGGER trg_notify_wrapper_status_change
+  AFTER INSERT OR UPDATE OR DELETE ON wrapper_status
+  FOR EACH ROW EXECUTE FUNCTION notify_wrapper_status_change();
+
 `;
 
 export async function ensureSchema(): Promise<void> {

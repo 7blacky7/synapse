@@ -356,4 +356,100 @@ export async function specialistRoutes(fastify: FastifyInstance): Promise<void> 
       });
     }
   });
+
+  /**
+   * GET /api/projects/:name/events
+   * SSE Live-Stream für Statusänderungen und Kanäle (PG LISTEN)
+   */
+  fastify.get<{
+    Params: { name: string };
+  }>('/api/projects/:name/events', async (request, reply) => {
+    const { name: project } = request.params;
+
+    // Set correct headers for SSE
+    reply.raw.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache, no-transform',
+      'Connection': 'keep-alive',
+      'X-Accel-Buffering': 'no',
+    });
+
+    reply.sent = true;
+
+    // Write initial retry & connection confirmation
+    reply.raw.write('retry: 5000\n\n');
+    reply.raw.write(`data: ${JSON.stringify({ type: 'connected', project })}\n\n`);
+
+    let client: any = null;
+    let isClosed = false;
+
+    // Periodic heartbeat to keep connection alive
+    const heartbeatInterval = setInterval(() => {
+      if (!isClosed) {
+        reply.raw.write(`data: ${JSON.stringify({ type: 'heartbeat' })}\n\n`);
+      }
+    }, 15000);
+
+    const cleanup = async () => {
+      if (isClosed) return;
+      isClosed = true;
+      clearInterval(heartbeatInterval);
+
+      if (client) {
+        try {
+          await client.query('UNLISTEN synapse_specialist_status_change');
+          await client.query('UNLISTEN synapse_channel');
+        } catch (e) {
+          // ignore
+        } finally {
+          client.release();
+        }
+      }
+    };
+
+    request.raw.on('close', () => {
+      cleanup();
+    });
+
+    try {
+      client = await getPool().connect();
+
+      client.on('notification', (msg: any) => {
+        if (isClosed) return;
+
+        try {
+          const payload = JSON.parse(msg.payload || '{}');
+          // Only send if it matches the current project
+          if (payload.project === project) {
+            reply.raw.write(`data: ${JSON.stringify({
+              channel: msg.channel,
+              payload
+            })}\n\n`);
+          }
+        } catch (err) {
+          reply.raw.write(`data: ${JSON.stringify({
+            channel: msg.channel,
+            raw: msg.payload
+          })}\n\n`);
+        }
+      });
+
+      await client.query('LISTEN synapse_specialist_status_change');
+      await client.query('LISTEN synapse_channel');
+    } catch (error) {
+      clearInterval(heartbeatInterval);
+      if (client) {
+        client.release();
+      }
+      if (!reply.raw.headersSent) {
+        reply.status(500).send({
+          success: false,
+          error: { message: `SSE-Initialisierung fehlgeschlagen: ${String(error)}` }
+        });
+      } else {
+        reply.raw.write(`data: ${JSON.stringify({ type: 'error', message: String(error) })}\n\n`);
+        reply.raw.end();
+      }
+    }
+  });
 }
