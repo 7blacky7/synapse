@@ -492,3 +492,117 @@ export async function getFileVersions(project: string, limit?: number): Promise<
   const data = await response.json();
   return data.versions || [];
 }
+
+export interface SystemStatus {
+  server: string;
+  qdrant: string;
+  embeddings: string;
+  collections: number;
+  timestamp: string;
+}
+
+export async function getSystemStatus(): Promise<SystemStatus> {
+  const response = await fetch(`${API_BASE}/status`);
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status}`);
+  }
+  const data = await response.json();
+  return data.status;
+}
+
+export interface DetailedStats {
+  project: string;
+  code: {
+    totalChunks: number;
+    byFileType: Record<string, number>;
+  };
+  thoughts: {
+    total: number;
+    bySource: Record<string, number>;
+  };
+  memories: {
+    total: number;
+    byCategory: Record<string, number>;
+  };
+}
+
+export interface Thought {
+  id: string;
+  project: string;
+  source: string;
+  content: string;
+  tags: string[];
+  timestamp: string;
+}
+
+export async function getThoughts(project: string, limit: number = 50): Promise<Thought[]> {
+  const response = await fetch(`${API_BASE}/projects/${encodeURIComponent(project)}/thoughts?limit=${limit}`);
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status}`);
+  }
+  const data = await response.json();
+  return data.thoughts || [];
+}
+
+export async function getDetailedStats(project: string): Promise<DetailedStats> {
+  const response = await fetch(`${API_BASE}/projects/${encodeURIComponent(project)}/stats/detailed`);
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status}`);
+  }
+  const data = await response.json();
+  return data.stats;
+}
+
+export async function executeShellCommand(project: string, command: string): Promise<any> {
+  const response = await fetch(`${API_BASE}/shell`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'exec', project, command })
+  });
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}));
+    throw new Error(error.message || `HTTP ${response.status}`);
+  }
+  return response.json();
+}
+
+export async function getShellHistory(project: string): Promise<any> {
+  const response = await fetch(`${API_BASE}/shell`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'history', project })
+  });
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status}`);
+  }
+  return response.json();
+}
+
+export async function callMcpTool(name: string, args: Record<string, any>): Promise<any> {
+  const response = await fetch(`/mcp/messages`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      jsonrpc: '2.0',
+      id: Math.floor(Math.random() * 1000000),
+      method: 'tools/call',
+      params: { name, arguments: args }
+    })
+  });
+  if (!response.ok) {
+    throw new Error(`MCP Error: HTTP ${response.status}`);
+  }
+  const res = await response.json();
+  if (res.error) {
+    throw new Error(res.error.message || JSON.stringify(res.error));
+  }
+  const text = res.result?.content?.[0]?.text;
+  if (text) {
+    try {
+      return JSON.parse(text);
+    } catch {
+      return text;
+    }
+  }
+  return res.result;
+}

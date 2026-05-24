@@ -1,156 +1,361 @@
 import { useState, useEffect, useRef } from 'react';
 import {
+  getProjects,
   getSpecialists,
   spawnSpecialist,
   stopSpecialist,
   purgeSpecialist,
   wakeSpecialist,
-  getChannels,
-  getChannelFeed,
-  postChannelMessage,
   getWatcherEvents,
-  getFileVersions,
   SpecialistInfo,
-  ChannelInfo,
-  ChannelMessage,
-  WatcherEvent,
-  FileVersion
+  WatcherEvent
 } from '../api/synapse-client';
 
 interface DashboardProps {
   project: string;
 }
 
-type LogTab = 'watcher' | 'versions';
+interface DetailedStats {
+  code: {
+    totalChunks: number;
+    byFileType: Record<string, number>;
+  };
+  thoughts: {
+    total: number;
+    bySource: Record<string, number>;
+  };
+  memories: {
+    total: number;
+    byCategory: Record<string, number>;
+  };
+}
 
-function Dashboard({ project }: DashboardProps) {
-  const [specialists, setSpecialists] = useState<Record<string, SpecialistInfo>>({});
-  const [channels, setChannels] = useState<ChannelInfo[]>([]);
-  const [selectedChannel, setSelectedChannel] = useState<string | null>(null);
-  const [channelFeed, setChannelFeed] = useState<ChannelMessage[]>([]);
-  const [watcherEvents, setWatcherEvents] = useState<WatcherEvent[]>([]);
-  const [fileVersions, setFileVersions] = useState<FileVersion[]>([]);
+interface AgentEvent {
+  id: number;
+  project: string;
+  eventType: string;
+  priority: string;
+  scope: string;
+  sourceId: string;
+  payload: string | null;
+  requiresAck: boolean;
+  createdAt: string;
+}
+
+// JSON-RPC helper to communicate with MCP endpoint directly
+async function callMcpTool(toolName: string, args: any) {
+  const res = await fetch('/mcp/messages', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      jsonrpc: '2.0',
+      id: Date.now().toString(),
+      method: 'tools/call',
+      params: {
+        name: toolName,
+        arguments: args
+      }
+    })
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const json = await res.json();
+  if (json.error) throw new Error(json.error.message);
+  const text = json.result?.content?.[0]?.text;
+  return text ? JSON.parse(text) : null;
+}
+
+export default function Dashboard({ project }: DashboardProps) {
+  // Tile 1: Telemetry
+  const [telemetry, setTelemetry] = useState({
+    server: 'OFFLINE',
+    qdrant: 'OFFLINE',
+    db: 'OFFLINE',
+    daemon: 'OFFLINE',
+    timestamp: ''
+  });
   
-  const [logTab, setLogTab] = useState<LogTab>('watcher');
-  const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  // Forms states
+  // Tile 2: Active Agents Squad
+  const [specialists, setSpecialists] = useState<Record<string, SpecialistInfo>>({});
+  const [showSpawnModal, setShowSpawnModal] = useState(false);
   const [spawnName, setSpawnName] = useState('');
   const [spawnModel, setSpawnModel] = useState('sonnet');
   const [spawnCwd, setSpawnCwd] = useState('');
   const [allowedTools, setAllowedTools] = useState('');
-  const [showSpawnModal, setShowSpawnModal] = useState(false);
   const [spawnLoading, setSpawnLoading] = useState(false);
-
-  const [wakeMessage, setWakeMessage] = useState('');
   const [wakingSpec, setWakingSpec] = useState<string | null>(null);
+  const [wakeMessage, setWakeMessage] = useState('');
   const [wakeLoading, setWakeLoading] = useState(false);
 
-  const [postContent, setPostContent] = useState('');
-  const [postSender, setPostSender] = useState('user');
-  const [postLoading, setPostLoading] = useState(false);
+  // Tile 3: Steering Event Radar
+  const [pendingEvents, setPendingEvents] = useState<AgentEvent[]>([]);
+  const [ackLoading, setAckLoading] = useState<Record<number, boolean>>({});
 
+  // Tile 4: File Watcher Stream
+  const [watcherEvents, setWatcherEvents] = useState<WatcherEvent[]>([]);
+
+  // Tile 5: Synapse Data Corpus
+  const [detailedStats, setDetailedStats] = useState<DetailedStats | null>(null);
+  const [statsError, setStatsError] = useState<string | null>(null);
+
+  // Tile 6: Quick CLI Console
+  const [cliCommand, setCliCommand] = useState('');
+  const [cliOutput, setCliOutput] = useState<string[]>(['READY FOR STEERING COMMANDS...']);
+  const [cliLoading, setCliLoading] = useState(false);
+  const [cliHistory, setCliHistory] = useState<string[]>([]);
+  const [historyIndex, setHistoryIndex] = useState(-1);
+  const cliOutputEndRef = useRef<HTMLDivElement>(null);
+
+  const [error, setError] = useState<string | null>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
-  const chatMessagesEndRef = useRef<HTMLDivElement>(null);
 
-  // Load initial data
+  // Fetch all data
   useEffect(() => {
     if (!project) return;
     loadAllData();
     setupSSE();
+    
+    // Periodischer Refresh alle 8 Sekunden
+    const interval = setInterval(refreshData, 8000);
 
     return () => {
+      clearInterval(interval);
       disconnectSSE();
     };
   }, [project]);
 
-  // Reload feed when selected channel changes
+  // Scroll to bottom of CLI output
   useEffect(() => {
-    if (project && selectedChannel) {
-      loadChannelFeed(selectedChannel);
-    }
-  }, [project, selectedChannel]);
-
-  // Scroll to bottom of channel chat
-  useEffect(() => {
-    chatMessagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [channelFeed]);
+    cliOutputEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [cliOutput]);
 
   const loadAllData = async () => {
-    if (!project) return;
-    setIsLoading(true);
     setError(null);
     try {
-      const [specData, channelsData, watcherData, versionsData] = await Promise.all([
-        getSpecialists(project),
-        getChannels(project),
-        getWatcherEvents(project, 20),
-        getFileVersions(project, 20),
+      await Promise.all([
+        refreshTelemetry(),
+        refreshSpecialists(),
+        refreshEvents(),
+        refreshWatcherEvents(),
+        refreshDetailedStats()
       ]);
-      setSpecialists(specData.specialists || {});
-      setChannels(channelsData);
-      setWatcherEvents(watcherData);
-      setFileVersions(versionsData);
-
-      // Auto-select first channel if none selected
-      if (channelsData.length > 0 && !selectedChannel) {
-        setSelectedChannel(channelsData[0].name);
-      }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Fehler beim Laden der Dashboard-Daten');
+      setError(err instanceof Error ? err.message : 'Fehler beim Laden des Command Decks');
     } finally {
-      setIsLoading(false);
+      // Done loading
     }
   };
 
-  const loadChannelFeed = async (channelName: string) => {
+  const refreshData = async () => {
+    if (!project) return;
+    refreshTelemetry();
+    refreshSpecialists();
+    refreshEvents();
+    refreshWatcherEvents();
+    refreshDetailedStats();
+  };
+
+  const refreshTelemetry = async () => {
     try {
-      const messages = await getChannelFeed(project, channelName);
-      setChannelFeed(messages);
+      // 1. Core Server & Qdrant Status
+      const statusRes = await fetch('/api/status');
+      let qdrant = 'OFFLINE';
+      let server = 'OFFLINE';
+      if (statusRes.ok) {
+        const data = await statusRes.json();
+        server = data.status?.server === 'running' ? 'ACTIVE' : 'OFFLINE';
+        qdrant = data.status?.qdrant === 'connected' ? 'CONNECTED' : 'OFFLINE';
+      }
+
+      // 2. Projects & Daemon status
+      const projectsRes = await getProjects();
+      const isDaemonRunning = projectsRes.some(p => p.name === project && p.isActive);
+      const daemon = isDaemonRunning ? 'RUNNING' : 'OFFLINE';
+
+      // 3. Database status
+      // We assume DB is connected if statusRes was ok since status route queries DB/Qdrant
+      const db = statusRes.ok ? 'CONNECTED' : 'OFFLINE';
+
+      setTelemetry({
+        server,
+        qdrant,
+        db,
+        daemon,
+        timestamp: new Date().toLocaleTimeString()
+      });
     } catch (err) {
-      console.error('Fehler beim Laden des Kanals-Feeds:', err);
+      setTelemetry(prev => ({ ...prev, server: 'OFFLINE', timestamp: new Date().toLocaleTimeString() }));
+    }
+  };
+
+  const refreshSpecialists = async () => {
+    try {
+      const data = await getSpecialists(project);
+      setSpecialists(data.specialists || {});
+    } catch (err) {
+      console.error('Fehler bei Specialists-Refresh:', err);
+    }
+  };
+
+  const refreshEvents = async () => {
+    try {
+      // Fetch pending events via MCP bridge
+      const res = await callMcpTool('event', {
+        action: 'pending',
+        project,
+        agent_id: 'agy-test'
+      });
+      if (res && res.events) {
+        setPendingEvents(res.events);
+      } else if (Array.isArray(res)) {
+        setPendingEvents(res);
+      } else {
+        setPendingEvents([]);
+      }
+    } catch (err) {
+      console.error('Fehler bei Event-Radar-Refresh:', err);
+    }
+  };
+
+  const refreshWatcherEvents = async () => {
+    try {
+      const events = await getWatcherEvents(project, 15);
+      setWatcherEvents(events);
+    } catch (err) {
+      console.error('Fehler bei Watcher-Events-Refresh:', err);
+    }
+  };
+
+  const refreshDetailedStats = async () => {
+    try {
+      setStatsError(null);
+      const res = await fetch(`/api/projects/${encodeURIComponent(project)}/stats/detailed`);
+      if (res.ok) {
+        const data = await res.json();
+        if (data.success && data.stats) {
+          setDetailedStats(data.stats);
+        } else {
+          setStatsError('Ungültiges Antwortformat');
+        }
+      } else {
+        setStatsError(`HTTP ${res.status}`);
+      }
+    } catch (err) {
+      setStatsError(err instanceof Error ? err.message : 'Verbindungsfehler');
+    }
+  };
+
+  const handleAcknowledge = async (eventId: number) => {
+    setAckLoading(prev => ({ ...prev, [eventId]: true }));
+    try {
+      await callMcpTool('event', {
+        action: 'ack',
+        event_id: eventId,
+        agent_id: 'agy-test',
+        reaction: 'ACK via TACTICAL HUD Command Deck'
+      });
+      // Refresh events immediately
+      refreshEvents();
+      setCliOutput(prev => [...prev, `[EVENT ACK] Quittiert: Event #${eventId}`]);
+    } catch (err) {
+      alert(`Fehler beim Quittieren: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setAckLoading(prev => ({ ...prev, [eventId]: false }));
+    }
+  };
+
+  const handleCliSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!cliCommand.trim()) return;
+
+    const command = cliCommand.trim();
+    setCliHistory(prev => [command, ...prev]);
+    setHistoryIndex(-1);
+    setCliCommand('');
+    setCliLoading(true);
+    setCliOutput(prev => [...prev, `> ${command}`]);
+
+    try {
+      const res = await fetch('/api/shell', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'exec',
+          project,
+          command
+        })
+      });
+
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.message || `HTTP ${res.status}`);
+      }
+
+      const data = await res.json();
+      if (data.success) {
+        const outLines = data.tail ? data.tail.split('\n') : [];
+        setCliOutput(prev => [
+          ...prev,
+          ...outLines.filter(Boolean),
+          `[PROCESS COMPLETED WITH EXIT CODE ${data.exit_code}]`
+        ]);
+      } else {
+        throw new Error(data.message || data.error || 'Prozessfehler');
+      }
+    } catch (err) {
+      setCliOutput(prev => [
+        ...prev,
+        `[SHELL ERROR] ${err instanceof Error ? err.message : String(err)}`
+      ]);
+    } finally {
+      setCliLoading(false);
+      refreshData();
+    }
+  };
+
+  const handleCliKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      if (historyIndex < cliHistory.length - 1) {
+        const nextIdx = historyIndex + 1;
+        setHistoryIndex(nextIdx);
+        setCliCommand(cliHistory[nextIdx]);
+      }
+    } else if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      if (historyIndex > 0) {
+        const nextIdx = historyIndex - 1;
+        setHistoryIndex(nextIdx);
+        setCliCommand(cliHistory[nextIdx]);
+      } else if (historyIndex === 0) {
+        setHistoryIndex(-1);
+        setCliCommand('');
+      }
     }
   };
 
   const setupSSE = () => {
     disconnectSSE();
-
     const url = `/api/projects/${encodeURIComponent(project)}/events`;
-    console.log(`Verbinde mit SSE: ${url}`);
     const source = new EventSource(url);
     eventSourceRef.current = source;
 
     source.addEventListener('message', (e) => {
       try {
         const event = JSON.parse(e.data);
-        console.log('SSE Event erhalten:', event);
+        if (event.type === 'heartbeat' || event.type === 'connected') return;
 
-        if (event.type === 'heartbeat' || event.type === 'connected') {
-          return;
-        }
-
-        // Live update status/details of specialist
         if (event.channel === 'synapse_specialist_status_change') {
-          loadSpecialistsOnly();
+          refreshSpecialists();
         }
-
-        // Live update channel feed
         if (event.channel === 'synapse_channel') {
-          const msgPayload = event.payload;
-          if (msgPayload && selectedChannel && msgPayload.channel === selectedChannel) {
-            loadChannelFeed(selectedChannel);
-          }
-          // Also reload channel list since description or active state might change
-          loadChannelsOnly();
+          refreshEvents(); // Events könnten aktualisiert worden sein
         }
       } catch (err) {
-        console.error('Fehler beim Parsen des SSE-Events:', err);
+        console.error('SSE Error:', err);
       }
     });
 
-    source.onerror = (err) => {
-      console.error('SSE Verbindungsfehler, schließe...', err);
+    source.onerror = () => {
       source.close();
     };
   };
@@ -162,25 +367,7 @@ function Dashboard({ project }: DashboardProps) {
     }
   };
 
-  const loadSpecialistsOnly = async () => {
-    try {
-      const data = await getSpecialists(project);
-      setSpecialists(data.specialists || {});
-    } catch (err) {
-      console.error('Fehler beim Aktualisieren der Spezialisten:', err);
-    }
-  };
-
-  const loadChannelsOnly = async () => {
-    try {
-      const channelsData = await getChannels(project);
-      setChannels(channelsData);
-    } catch (err) {
-      console.error('Fehler beim Aktualisieren der Kanäle:', err);
-    }
-  };
-
-  // Actions
+  // Specialist Actions
   const handleSpawn = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!spawnName.trim() || !spawnModel.trim()) return;
@@ -196,7 +383,8 @@ function Dashboard({ project }: DashboardProps) {
       setSpawnName('');
       setSpawnCwd('');
       setAllowedTools('');
-      loadSpecialistsOnly();
+      refreshSpecialists();
+      setCliOutput(prev => [...prev, `[AGENTS] Spezialist '${spawnName}' gestartet.`]);
     } catch (err) {
       alert(`Fehler beim Spawnen: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
@@ -205,20 +393,22 @@ function Dashboard({ project }: DashboardProps) {
   };
 
   const handleStop = async (name: string) => {
-    if (!confirm(`Spezialist "${name}" wirklich stoppen?`)) return;
+    if (!confirm(`Spezialist "${name}" stoppen?`)) return;
     try {
       await stopSpecialist(project, name);
-      loadSpecialistsOnly();
+      refreshSpecialists();
+      setCliOutput(prev => [...prev, `[AGENTS] Spezialist '${name}' angehalten.`]);
     } catch (err) {
       alert(`Fehler beim Stoppen: ${err instanceof Error ? err.message : String(err)}`);
     }
   };
 
   const handlePurge = async (name: string) => {
-    if (!confirm(`Spezialist "${name}" wirklich komplett aus der DB löschen/bereinigen?`)) return;
+    if (!confirm(`Spezialist "${name}" bereinigen?`)) return;
     try {
       await purgeSpecialist(project, name);
-      loadSpecialistsOnly();
+      refreshSpecialists();
+      setCliOutput(prev => [...prev, `[AGENTS] Spezialist '${name}' aus DB gelöscht.`]);
     } catch (err) {
       alert(`Fehler beim Bereinigen: ${err instanceof Error ? err.message : String(err)}`);
     }
@@ -233,7 +423,8 @@ function Dashboard({ project }: DashboardProps) {
       await wakeSpecialist(project, wakingSpec, wakeMessage.trim());
       setWakingSpec(null);
       setWakeMessage('');
-      loadSpecialistsOnly();
+      refreshSpecialists();
+      setCliOutput(prev => [...prev, `[AGENTS] Spezialist '${wakingSpec}' aufgeweckt mit Prompt.`]);
     } catch (err) {
       alert(`Fehler beim Wecken: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
@@ -241,1071 +432,812 @@ function Dashboard({ project }: DashboardProps) {
     }
   };
 
-  const handlePostMessage = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!selectedChannel || !postContent.trim()) return;
-
-    setPostLoading(true);
-    try {
-      await postChannelMessage(project, selectedChannel, postContent.trim(), postSender.trim());
-      setPostContent('');
-      loadChannelFeed(selectedChannel);
-    } catch (err) {
-      alert(`Fehler beim Senden: ${err instanceof Error ? err.message : String(err)}`);
-    } finally {
-      setPostLoading(false);
-    }
-  };
-
-  const getStatusColor = (status: string) => {
-    switch (status) {
-      case 'running': return 'var(--status-running)';
-      case 'idle': return 'var(--accent-blue)';
-      case 'crashed': return 'var(--status-crashed)';
-      case 'stopped': return 'var(--status-stopped)';
-      default: return 'var(--status-idle)';
-    }
-  };
-
   return (
-    <div style={styles.container} className="animate-fade-in">
-      {/* Spawn Modal */}
+    <div style={styles.commandDeck} className="animate-fade-in">
+      {/* Modal overlays */}
       {showSpawnModal && (
         <div style={styles.modalBackdrop}>
-          <div style={styles.modal} className="animate-scale-up">
-            <h3 style={styles.modalTitle}>Neuen Spezialisten spawnen</h3>
+          <div style={styles.modal}>
+            <div style={styles.modalHeader}>SPAWN SPECIALIST AGENT</div>
             <form onSubmit={handleSpawn} style={styles.modalForm}>
               <div style={styles.formGroup}>
-                <label style={styles.formLabel}>Spezialist Name *</label>
+                <label style={styles.formLabel}>AGENTEN-NAME (ID)</label>
                 <input
                   type="text"
                   required
                   value={spawnName}
                   onChange={(e) => setSpawnName(e.target.value)}
-                  placeholder="z.B. backend-tester"
+                  placeholder="z.B. code-analyzer"
+                  className="hud-input"
                   style={styles.modalInput}
                 />
               </div>
               <div style={styles.formGroup}>
-                <label style={styles.formLabel}>Modell *</label>
+                <label style={styles.formLabel}>KI-MODELL</label>
                 <select
                   value={spawnModel}
                   onChange={(e) => setSpawnModel(e.target.value)}
+                  className="hud-input"
                   style={styles.modalSelect}
                 >
-                  <option value="sonnet">Claude Sonnet 3.5 / 3.7</option>
-                  <option value="haiku">Claude Haiku</option>
-                  <option value="opus[1m]">Claude Opus (1M Context)</option>
+                  <option value="sonnet">Claude 3.5 Sonnet</option>
+                  <option value="haiku">Claude 3.5 Haiku</option>
                   <option value="gemini-flash">Gemini 1.5 Flash</option>
                   <option value="gemini-pro">Gemini 1.5 Pro</option>
-                  <option value="antigravity">Antigravity (Keyring)</option>
                 </select>
               </div>
               <div style={styles.formGroup}>
-                <label style={styles.formLabel}>CWD / Verzeichnis (Optional)</label>
+                <label style={styles.formLabel}>CWD / ARBEITSVERZEICHNIS (RELATIV)</label>
                 <input
                   type="text"
                   value={spawnCwd}
                   onChange={(e) => setSpawnCwd(e.target.value)}
-                  placeholder="Standard: Projekt-Root"
+                  placeholder="Standard: Root"
+                  className="hud-input"
                   style={styles.modalInput}
                 />
               </div>
               <div style={styles.formGroup}>
-                <label style={styles.formLabel}>Erlaubte Tools (Optional, Komma-separiert)</label>
+                <label style={styles.formLabel}>ERLAUBTE TOOLS (KOMMA-SEPARIERT)</label>
                 <input
                   type="text"
                   value={allowedTools}
                   onChange={(e) => setAllowedTools(e.target.value)}
                   placeholder="z.B. read_file, run_command"
+                  className="hud-input"
                   style={styles.modalInput}
                 />
               </div>
               <div style={styles.modalActions}>
-                <button
-                  type="button"
-                  onClick={() => setShowSpawnModal(false)}
-                  style={styles.cancelBtn}
-                >
-                  Abbrechen
-                </button>
-                <button
-                  type="submit"
-                  disabled={spawnLoading}
-                  style={styles.confirmBtn}
-                >
-                  {spawnLoading ? 'Starte...' : 'Spawnen'}
-                </button>
+                <button type="button" onClick={() => setShowSpawnModal(false)} className="hud-button hud-button-amber" style={styles.modalBtn}>ABBRECHEN</button>
+                <button type="submit" disabled={spawnLoading} className="hud-button" style={styles.modalBtn}>{spawnLoading ? 'INITIALISIERE...' : 'SPAWN'}</button>
               </div>
             </form>
           </div>
         </div>
       )}
 
-      {/* Wake Modal */}
       {wakingSpec && (
         <div style={styles.modalBackdrop}>
-          <div style={styles.modal} className="animate-scale-up">
-            <h3 style={styles.modalTitle}>Spezialist "{wakingSpec}" wecken</h3>
+          <div style={styles.modal}>
+            <div style={styles.modalHeader}>STEER AGENT: {wakingSpec.toUpperCase()}</div>
             <form onSubmit={handleWake} style={styles.modalForm}>
               <div style={styles.formGroup}>
-                <label style={styles.formLabel}>Nachricht / Arbeitsanweisung</label>
+                <label style={styles.formLabel}>ANWEISUNG / CONTEXT PROMPT</label>
                 <textarea
                   required
                   rows={4}
                   value={wakeMessage}
                   onChange={(e) => setWakeMessage(e.target.value)}
-                  placeholder="Bitte führe den Task X aus..."
+                  placeholder="Bitte Code reviewen und Refactoring vorschlagen..."
+                  className="hud-input"
                   style={styles.modalTextarea}
                 />
               </div>
               <div style={styles.modalActions}>
-                <button
-                  type="button"
-                  onClick={() => setWakingSpec(null)}
-                  style={styles.cancelBtn}
-                >
-                  Abbrechen
-                </button>
-                <button
-                  type="submit"
-                  disabled={wakeLoading}
-                  style={styles.confirmBtn}
-                >
-                  {wakeLoading ? 'Sende...' : 'Wecken'}
-                </button>
+                <button type="button" onClick={() => setWakingSpec(null)} className="hud-button hud-button-amber" style={styles.modalBtn}>ABBRECHEN</button>
+                <button type="submit" disabled={wakeLoading} className="hud-button" style={styles.modalBtn}>{wakeLoading ? 'TRANSMITTING...' : 'STEER'}</button>
               </div>
             </form>
           </div>
         </div>
       )}
 
-      {error && <div style={styles.error}>{error}</div>}
-      {isLoading && <div style={styles.loadingBanner}>Dashboard wird synchronisiert...</div>}
+      {error && (
+        <div style={styles.globalError}>
+          <span style={styles.errorTag}>SYSTEM CRITICAL</span>
+          <span>{error}</span>
+        </div>
+      )}
 
-      <div style={styles.dashboardGrid}>
-        {/* Left Side: Specialists Grid and Log Viewer */}
-        <div style={styles.leftCol}>
-          <div style={styles.sectionHeader}>
-            <h2 style={styles.sectionTitle}>Spezialisten</h2>
-            <button onClick={() => setShowSpawnModal(true)} style={styles.spawnBtn}>
-              + Spezialist spawnen
-            </button>
+      <div style={styles.deckGrid}>
+        
+        {/* TILE 1: SYSTEM TELEMETRY */}
+        <section className="hud-panel" style={styles.tile}>
+          <div style={styles.tileHeader}>
+            <span style={styles.tileTitle}>SYSTEM TELEMETRY</span>
+            <span style={styles.tileTimestamp}>{telemetry.timestamp || 'LOD...'}</span>
           </div>
+          <div style={styles.tileContent}>
+            <div style={styles.telemetryGrid}>
+              <div style={styles.telemetryRow}>
+                <span style={styles.telemetryLabel}>CORE_SERVER:</span>
+                <span style={{
+                  ...styles.telemetryValue,
+                  color: telemetry.server === 'ACTIVE' ? 'var(--accent-green)' : 'var(--accent-red)'
+                }}>{telemetry.server}</span>
+              </div>
+              <div style={styles.telemetryRow}>
+                <span style={styles.telemetryLabel}>DB_POOL:</span>
+                <span style={{
+                  ...styles.telemetryValue,
+                  color: telemetry.db === 'CONNECTED' ? 'var(--accent-green)' : 'var(--accent-red)'
+                }}>{telemetry.db}</span>
+              </div>
+              <div style={styles.telemetryRow}>
+                <span style={styles.telemetryLabel}>QDRANT_DB:</span>
+                <span style={{
+                  ...styles.telemetryValue,
+                  color: telemetry.qdrant === 'CONNECTED' ? 'var(--accent-green)' : 'var(--accent-red)'
+                }}>{telemetry.qdrant}</span>
+              </div>
+              <div style={styles.telemetryRow}>
+                <span style={styles.telemetryLabel}>WATCHER_DAEMON:</span>
+                <span style={{
+                  ...styles.telemetryValue,
+                  color: telemetry.daemon === 'RUNNING' ? 'var(--accent-green)' : 'var(--accent-red)'
+                }}>{telemetry.daemon}</span>
+              </div>
+            </div>
+            <div style={styles.statusDivider} />
+            <div style={styles.telemetryMeta}>
+              <span>SECTOR: GRID-A</span>
+              <span>REST-API: ONLINE</span>
+            </div>
+          </div>
+        </section>
 
-          <div style={styles.specGrid}>
+        {/* TILE 2: ACTIVE AGENTS SQUAD */}
+        <section className="hud-panel" style={styles.tileLarge}>
+          <div style={styles.tileHeader}>
+            <span style={styles.tileTitle}>ACTIVE AGENTS SQUAD</span>
+            <button onClick={() => setShowSpawnModal(true)} className="hud-button" style={styles.spawnBtn}>+ SPAWN AGENT</button>
+          </div>
+          <div style={styles.tileContentScroll}>
             {Object.keys(specialists).length === 0 ? (
-              <div style={styles.emptyCard} className="glass-panel">
-                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" style={{ color: 'var(--text-muted)', marginBottom: '12px' }}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M18 18.72a9.094 9.094 0 003.741-.479 3 3 0 00-4.682-2.72m.94 3.198l.001.031c0 .225-.012.447-.037.666A11.944 11.944 0 0112 21c-2.17 0-4.207-.576-5.963-1.584A6.062 6.062 0 016 18.719m12 0a5.971 5.971 0 00-.941-3.197m0 0A5.995 5.995 0 0012 12.75a5.995 5.995 0 00-5.058 2.772m0 0a3 3 0 00-4.681 2.72 8.986 8.986 0 003.74.477m.94-3.197a5.971 5.971 0 00-.94 3.197M15 6.75a3 3 0 11-6 0 3 3 0 016 0zm6 3a2.25 2.25 0 11-4.5 0 2.25 2.25 0 014.5 0zm-13.5 0a2.25 2.25 0 11-4.5 0 2.25 2.25 0 014.5 0z" />
-                </svg>
-                <div style={styles.emptyTextTitle}>Keine Spezialisten aktiv</div>
-                <div style={styles.emptyTextSub}>Klicke oben rechts auf "Spezialist spawnen", um einen Agenten für diese Session zu erstellen.</div>
+              <div style={styles.emptyTile}>
+                <span style={styles.emptyText}>NO ACTIVE AGENTS</span>
               </div>
             ) : (
-              Object.values(specialists).map((spec) => {
-                const specColor = getStatusColor(spec.status);
-                const isRunning = spec.status === 'running';
-                
-                return (
-                  <div key={spec.name} style={styles.specCard} className="glass-panel">
-                    <div style={styles.specHeader}>
-                      <div style={styles.specNameRow}>
-                        <span style={styles.specName}>{spec.name}</span>
-                        <div style={styles.statusBadgeContainer}>
-                          {isRunning && <span style={{...styles.pulseDot, background: specColor}} />}
-                          <span style={{
-                            ...styles.statusBadge,
-                            background: specColor + '1a',
-                            color: specColor,
-                            border: `1px solid ${specColor}33`
-                          }}>
-                            {spec.status} {spec.busy ? '(busy)' : ''}
-                          </span>
-                        </div>
-                      </div>
-                      <span style={styles.specModel}>{spec.model}</span>
-                    </div>
-
-                    <div style={styles.specBody}>
-                      {spec.currentTask ? (
-                        <div style={styles.specTask}>
-                          <div style={styles.specTaskLabel}>AKTUELLER TASK</div>
-                          <div style={styles.specTaskText}>{spec.currentTask}</div>
-                        </div>
-                      ) : (
-                        <div style={styles.specTaskEmpty}>Bereit für Aufgaben</div>
-                      )}
-                      
-                      <div style={styles.specMetaGrid}>
-                        <div style={styles.specMetaItem}>
-                          <span style={styles.specMetaLabel}>PID:</span>
-                          <span style={styles.specMetaValue}>{spec.pid || 'n/a'}</span>
-                        </div>
-                        <div style={styles.specMetaItem}>
-                          <span style={styles.specMetaLabel}>WRAPPER:</span>
-                          <span style={styles.specMetaValue}>{spec.wrapperPid || 'n/a'}</span>
-                        </div>
-                      </div>
-
-                      <div style={styles.specTokenWrapper}>
-                        <div style={styles.specTokenLabels}>
-                          <span>Token-Auslastung</span>
-                          <span style={{fontWeight: 600, color: spec.tokens.percent > 85 ? 'var(--status-crashed)' : 'var(--text-primary)'}}>
-                            {spec.tokens.percent}%
-                          </span>
-                        </div>
-                        <div style={styles.progressBarBg}>
-                          <div style={{
-                            ...styles.progressBarFill,
-                            width: `${Math.min(100, spec.tokens.percent)}%`,
-                            background: spec.tokens.percent > 85 
-                              ? 'linear-gradient(90deg, #ef4444 0%, #b91c1c 100%)' 
-                              : 'linear-gradient(90deg, #00f5d4 0%, #3b82f6 100%)'
-                          }} />
-                        </div>
-                        <div style={styles.specTokenSub}>
-                          In: {spec.tokens.input.toLocaleString()} | Out: {spec.tokens.output.toLocaleString()}
-                        </div>
-                      </div>
-                    </div>
-
-                    <div style={styles.specActions}>
-                      <button
-                        onClick={() => setWakingSpec(spec.name)}
-                        style={styles.actionBtnWake}
-                      >
-                        Wake
-                      </button>
-                      {spec.status === 'running' || spec.status === 'idle' ? (
-                        <button
-                          onClick={() => handleStop(spec.name)}
-                          style={styles.actionBtnStop}
-                        >
-                          Stop
-                        </button>
-                      ) : (
-                        <button
-                          onClick={() => handlePurge(spec.name)}
-                          style={styles.actionBtnPurge}
-                        >
-                          Purge
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                );
-              })
-            )}
-          </div>
-
-          {/* System Logs Tab View */}
-          <div style={styles.logsContainer} className="glass-panel">
-            <div style={styles.logsHeader}>
-              <div style={styles.logTabs}>
-                <button
-                  onClick={() => setLogTab('watcher')}
-                  style={{
-                    ...styles.logTabBtn,
-                    ...(logTab === 'watcher' ? styles.activeLogTabBtn : {})
-                  }}
-                >
-                  Watcher Events
-                </button>
-                <button
-                  onClick={() => setLogTab('versions')}
-                  style={{
-                    ...styles.logTabBtn,
-                    ...(logTab === 'versions' ? styles.activeLogTabBtn : {})
-                  }}
-                >
-                  File Versions
-                </button>
-              </div>
-              <button onClick={loadAllData} style={styles.refreshBtn}>
-                ↻ Neu laden
-              </button>
-            </div>
-
-            <div style={styles.logsBody}>
-              {logTab === 'watcher' ? (
-                watcherEvents.length === 0 ? (
-                  <div style={styles.emptyLogPanel}>
-                    <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" style={{ color: 'var(--text-muted)', marginBottom: '8px' }}>
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M2.036 12.322a1.012 1.012 0 010-.639C3.423 7.51 7.36 4.5 12 4.5c4.638 0 8.573 3.007 9.963 7.178.07.207.07.431 0 .639C20.577 16.49 16.64 19.5 12 19.5c-4.638 0-8.573-3.007-9.963-7.178z" />
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                    </svg>
-                    <span>Keine Dateisystem-Events aufgezeichnet.</span>
-                  </div>
-                ) : (
-                  <table style={styles.logTable}>
-                    <thead>
-                      <tr>
-                        <th style={styles.th}>Zeit</th>
-                        <th style={styles.th}>Event</th>
-                        <th style={styles.th}>Datei</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {watcherEvents.map((evt) => (
-                        <tr key={evt.id} style={styles.tr}>
-                          <td style={styles.tdTime}>{new Date(evt.created_at).toLocaleTimeString()}</td>
-                          <td style={styles.tdEvent}>
-                            <span style={{
-                              ...styles.eventBadge,
-                              background: evt.event_type === 'deleted' || evt.event_type === 'unlink' ? 'rgba(239, 68, 68, 0.15)' : 'rgba(16, 185, 129, 0.15)',
-                              color: evt.event_type === 'deleted' || evt.event_type === 'unlink' ? 'var(--status-crashed)' : 'var(--status-running)',
-                              border: `1px solid ${evt.event_type === 'deleted' || evt.event_type === 'unlink' ? 'rgba(239, 68, 68, 0.2)' : 'rgba(16, 185, 129, 0.2)'}`
-                            }}>
-                              {evt.event_type}
-                            </span>
-                          </td>
-                          <td style={styles.tdFile}>{evt.file_path}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                )
-              ) : (
-                fileVersions.length === 0 ? (
-                  <div style={styles.emptyLogPanel}>
-                    <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" style={{ color: 'var(--text-muted)', marginBottom: '8px' }}>
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z" />
-                    </svg>
-                    <span>Keine Datei-Snapshots vorhanden.</span>
-                  </div>
-                ) : (
-                  <table style={styles.logTable}>
-                    <thead>
-                      <tr>
-                        <th style={styles.th}>Zeit</th>
-                        <th style={styles.th}>Aktion</th>
-                        <th style={styles.th}>Datei</th>
-                        <th style={styles.th}>Autor / Grund</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {fileVersions.map((ver) => (
-                        <tr key={ver.id} style={styles.tr}>
-                          <td style={styles.tdTime}>{new Date(ver.created_at).toLocaleTimeString()}</td>
-                          <td style={styles.tdEvent}>
-                            <span style={styles.versionBadge}>{ver.edit_action || 'write'}</span>
-                          </td>
-                          <td style={styles.tdFile}>{ver.file_path}</td>
-                          <td style={styles.tdMeta}>
-                            <div style={styles.verAgent}>{ver.agent_id || 'user'}</div>
-                            {ver.reason && <div style={styles.verReason} title={ver.reason}>{ver.reason}</div>}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                )
-              )}
-            </div>
-          </div>
-        </div>
-
-        {/* Right Side: Channels and Live-Viewer */}
-        <div style={styles.rightCol} className="glass-panel">
-          <h2 style={styles.sectionTitleChannels}>Gruppen-Kanäle</h2>
-          
-          <div style={styles.channelsList}>
-            {channels.length === 0 ? (
-              <div style={styles.emptyChannels}>
-                <span style={{ fontSize: '13px', color: 'var(--text-muted)' }}>Keine Kanäle registriert</span>
-              </div>
-            ) : (
-              channels.map((ch) => {
-                const isActive = selectedChannel === ch.name;
-                return (
-                  <div
-                    key={ch.name}
-                    onClick={() => setSelectedChannel(ch.name)}
-                    style={{
-                      ...styles.channelItem,
-                      ...(isActive ? styles.activeChannelItem : {})
-                    }}
-                  >
-                    <div style={{
-                      ...styles.channelName,
-                      color: isActive ? 'var(--accent-cyan)' : 'var(--text-primary)'
-                    }}>
-                      <span style={{ marginRight: '6px', opacity: 0.5 }}>#</span>
-                      {ch.name}
-                    </div>
-                    {ch.description && (
-                      <div style={styles.channelDesc}>{ch.description}</div>
-                    )}
-                  </div>
-                );
-              })
-            )}
-          </div>
-
-          {selectedChannel ? (
-            <div style={styles.chatArea}>
-              <div style={styles.chatHeader}>
-                <span style={{color: 'var(--accent-cyan)', marginRight: '6px'}}>#</span>
-                <span style={{fontWeight: 700}}>{selectedChannel}</span>
-                <span style={styles.chatHeaderStatus}>Live-Feed</span>
-              </div>
-
-              <div style={styles.chatMessages}>
-                {channelFeed.length === 0 ? (
-                  <div style={styles.emptyChatText}>
-                    <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" style={{ color: 'var(--text-muted)', marginBottom: '8px' }}>
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M8.625 12a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0H8.25m4.125 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0H12m4.125 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0h-.375M21 12c0 4.556-4.03 8.25-9 8.25a9.764 9.764 0 01-2.555-.337A5.972 5.972 0 015.41 20.97a5.969 5.969 0 01-.474-.065 4.48 4.48 0 00.978-2.025 2.858 2.858 0 00-.243-1.923C3.266 15.74 3 13.995 3 12c0-4.556 4.03-8.25 9-8.25s9 3.694 9 8.25z" />
-                    </svg>
-                    <span>Keine Nachrichten in diesem Kanal.</span>
-                  </div>
-                ) : (
-                  channelFeed.map((msg) => {
-                    const isUser = msg.sender.toLowerCase() === 'user' || msg.sender.toLowerCase() === 'moritz';
-                    
+              <table className="hud-table">
+                <thead>
+                  <tr>
+                    <th>Agent</th>
+                    <th>PID</th>
+                    <th>Model</th>
+                    <th>Status</th>
+                    <th>Task / Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {Object.values(specialists).map((spec) => {
+                    const isRunning = spec.status === 'running';
+                    const statusColor = isRunning ? 'var(--accent-green)' : spec.status === 'crashed' ? 'var(--accent-red)' : 'var(--accent-amber)';
                     return (
-                      <div key={msg.id} style={{
-                        ...styles.chatMessageItem,
-                        background: isUser ? 'var(--bg-chat-user)' : 'var(--bg-chat-assistant)',
-                        borderLeft: `3px solid ${isUser ? 'var(--accent-blue)' : 'var(--accent-purple)'}`
-                      }}>
-                        <div style={styles.chatMessageMeta}>
+                      <tr key={spec.name}>
+                        <td style={{ fontWeight: 'bold', color: 'var(--accent-cyan)' }}>{spec.name.toUpperCase()}</td>
+                        <td style={styles.monoCell}>{spec.pid || 'n/a'}</td>
+                        <td style={styles.monoCell}>{spec.model}</td>
+                        <td>
                           <span style={{
-                            ...styles.chatMessageSender,
-                            color: isUser ? 'var(--accent-blue)' : 'var(--accent-cyan)'
-                          }}>{msg.sender}</span>
-                          <span style={styles.chatMessageTime}>
-                            {new Date(msg.createdAt).toLocaleTimeString()}
+                            color: statusColor,
+                            fontSize: '11px',
+                            fontWeight: 'bold',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '4px'
+                          }}>
+                            <span style={{
+                              width: '6px',
+                              height: '6px',
+                              background: statusColor,
+                              animation: isRunning ? 'crtBlink 1s infinite' : 'none'
+                            }} />
+                            {spec.status.toUpperCase()}
                           </span>
-                        </div>
-                        <div style={styles.chatMessageContent}>{msg.content}</div>
-                      </div>
+                        </td>
+                        <td>
+                          <div style={styles.agentTaskCol}>
+                            <span style={styles.agentTaskText}>
+                              {spec.currentTask || 'IDLE / AWAITING INSTRUCTIONS'}
+                            </span>
+                            <div style={styles.agentRowActions}>
+                              <button onClick={() => setWakingSpec(spec.name)} className="hud-button" style={styles.rowBtn}>STEER</button>
+                              {spec.status === 'running' || spec.status === 'idle' ? (
+                                <button onClick={() => handleStop(spec.name)} className="hud-button hud-button-amber" style={styles.rowBtn}>STOP</button>
+                              ) : (
+                                <button onClick={() => handlePurge(spec.name)} className="hud-button hud-button-danger" style={styles.rowBtn}>PURGE</button>
+                              )}
+                            </div>
+                          </div>
+                        </td>
+                      </tr>
                     );
-                  })
-                )}
-                <div ref={chatMessagesEndRef} />
-              </div>
+                  })}
+                </tbody>
+              </table>
+            )}
+          </div>
+        </section>
 
-              <form onSubmit={handlePostMessage} style={styles.chatForm}>
-                <input
-                  type="text"
-                  value={postSender}
-                  onChange={(e) => setPostSender(e.target.value)}
-                  placeholder="Name"
-                  style={styles.chatSenderInput}
-                  required
-                />
-                <input
-                  type="text"
-                  value={postContent}
-                  onChange={(e) => setPostContent(e.target.value)}
-                  placeholder={`Nachricht an #${selectedChannel}...`}
-                  style={styles.chatContentInput}
-                  required
-                />
-                <button
-                  type="submit"
-                  disabled={postLoading}
-                  style={styles.chatSendBtn}
-                >
-                  Senden
-                </button>
-              </form>
+        {/* TILE 3: STEERING EVENT RADAR */}
+        <section className="hud-panel" style={styles.tile}>
+          <div style={styles.tileHeader}>
+            <span style={{ ...styles.tileTitle, color: pendingEvents.length > 0 ? 'var(--accent-amber)' : 'var(--text-bone)' }}>
+              STEERING EVENT RADAR {pendingEvents.length > 0 ? `[${pendingEvents.length} ALARMS]` : ''}
+            </span>
+          </div>
+          <div style={styles.tileContentScroll}>
+            {pendingEvents.length === 0 ? (
+              <div style={styles.emptyRadarTile}>
+                <div style={styles.radarSweep} />
+                <span style={styles.radarText}>NO CRITICAL EVENTS DETECTED</span>
+              </div>
+            ) : (
+              <div style={styles.radarEventsList}>
+                {pendingEvents.map((evt) => {
+                  const isCritical = evt.priority === 'critical' || evt.eventType === 'WORK_STOP';
+                  const borderColor = isCritical ? 'var(--accent-red)' : 'var(--accent-amber)';
+                  return (
+                    <div key={evt.id} style={{ ...styles.radarEventCard, borderColor }}>
+                      <div style={styles.radarEventHeader}>
+                        <span style={{
+                          ...styles.radarPriorityTag,
+                          background: isCritical ? 'var(--accent-red)' : 'var(--accent-amber)',
+                          color: 'var(--bg-void)'
+                        }}>{evt.eventType}</span>
+                        <span style={styles.radarEventTime}>
+                          {new Date(evt.createdAt).toLocaleTimeString()}
+                        </span>
+                      </div>
+                      <div style={styles.radarEventBody}>
+                        <div style={styles.radarEventSource}>FROM: {evt.sourceId}</div>
+                        <div style={styles.radarEventPayload}>
+                          {evt.payload ? (
+                            typeof evt.payload === 'string' && evt.payload.startsWith('{') ? (
+                              <pre style={styles.preCode}>
+                                {JSON.stringify(JSON.parse(evt.payload), null, 2)}
+                              </pre>
+                            ) : (
+                              evt.payload
+                            )
+                          ) : 'No payload description.'}
+                        </div>
+                      </div>
+                      <div style={styles.radarEventActions}>
+                        <button
+                          onClick={() => handleAcknowledge(evt.id)}
+                          disabled={ackLoading[evt.id]}
+                          className="hud-button"
+                          style={styles.ackBtn}
+                        >
+                          {ackLoading[evt.id] ? 'ACKING...' : 'ACKNOWLEDGE'}
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </section>
+
+        {/* TILE 4: FILE WATCHER STREAM */}
+        <section className="hud-panel" style={styles.tile}>
+          <div style={styles.tileHeader}>
+            <span style={styles.tileTitle}>FILE WATCHER STREAM</span>
+          </div>
+          <div style={styles.tileContentScroll}>
+            {watcherEvents.length === 0 ? (
+              <div style={styles.emptyTile}>
+                <span style={styles.emptyText}>NO FILE SYSTEM EVENTS</span>
+              </div>
+            ) : (
+              <div style={styles.fsStream}>
+                {watcherEvents.map((evt) => {
+                  const isDelete = evt.event_type === 'deleted' || evt.event_type === 'unlink';
+                  const isAdd = evt.event_type === 'added' || evt.event_type === 'add';
+                  const color = isDelete ? 'var(--accent-red)' : isAdd ? 'var(--accent-green)' : 'var(--accent-cyan)';
+                  return (
+                    <div key={evt.id} style={styles.fsStreamItem}>
+                      <span style={styles.fsTime}>{new Date(evt.created_at).toLocaleTimeString()}</span>
+                      <span style={{ ...styles.fsType, color }}>[{evt.event_type.toUpperCase()}]</span>
+                      <span style={styles.fsPath}>{evt.file_path}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </section>
+
+        {/* TILE 5: SYNAPSE DATA CORPUS */}
+        <section className="hud-panel" style={styles.tile}>
+          <div style={styles.tileHeader}>
+            <span style={styles.tileTitle}>SYNAPSE DATA CORPUS</span>
+          </div>
+          <div style={styles.tileContentScroll}>
+            {statsError ? (
+              <div style={styles.statsError}>
+                <span>ERROR RESOLVING CORPUS STATS</span>
+                <span style={{ fontSize: '10px', color: 'var(--accent-red)' }}>{statsError}</span>
+              </div>
+            ) : !detailedStats ? (
+              <div style={styles.emptyTile}>
+                <span style={styles.emptyText}>METRICS AWAITING RESOLVE...</span>
+              </div>
+            ) : (
+              <div style={styles.statsPanel}>
+                {/* Code Chunks */}
+                <div style={styles.statsSection}>
+                  <div style={styles.statsSecHeader}>
+                    <span style={styles.statsSecTitle}>CODE CHUNKS</span>
+                    <span style={styles.statsSecCount}>{detailedStats.code.totalChunks}</span>
+                  </div>
+                  <div style={styles.statsBreakdown}>
+                    {Object.entries(detailedStats.code.byFileType || {}).map(([ext, count]) => (
+                      <div key={ext} style={styles.breakdownItem}>
+                        <span style={styles.breakdownLabel}>.{ext}:</span>
+                        <span style={styles.breakdownValue}>{count}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Thoughts */}
+                <div style={styles.statsSection}>
+                  <div style={styles.statsSecHeader}>
+                    <span style={styles.statsSecTitle}>THOUGHTS (COLLECTION)</span>
+                    <span style={styles.statsSecCount}>{detailedStats.thoughts.total}</span>
+                  </div>
+                  <div style={styles.statsBreakdown}>
+                    {Object.entries(detailedStats.thoughts.bySource || {}).map(([source, count]) => (
+                      <div key={source} style={styles.breakdownItem}>
+                        <span style={styles.breakdownLabel}>{source}:</span>
+                        <span style={styles.breakdownValue}>{count}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Memories */}
+                <div style={styles.statsSection}>
+                  <div style={styles.statsSecHeader}>
+                    <span style={styles.statsSecTitle}>MEMORIES (VECTOR)</span>
+                    <span style={styles.statsSecCount}>{detailedStats.memories.total}</span>
+                  </div>
+                  <div style={styles.statsBreakdown}>
+                    {Object.entries(detailedStats.memories.byCategory || {}).map(([cat, count]) => (
+                      <div key={cat} style={styles.breakdownItem}>
+                        <span style={styles.breakdownLabel}>{cat}:</span>
+                        <span style={styles.breakdownValue}>{count}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        </section>
+
+        {/* TILE 6: QUICK CLI CONSOLE */}
+        <section className="hud-panel" style={styles.tile}>
+          <div style={styles.tileHeader}>
+            <span style={styles.tileTitle}>QUICK CLI STEERING DECK</span>
+            {cliLoading && <span style={styles.cliRunning} className="blink">EXECUTING...</span>}
+          </div>
+          <div style={styles.cliPanel}>
+            <div style={styles.cliOutputArea}>
+              {cliOutput.map((line, idx) => (
+                <div key={idx} style={styles.cliLine}>
+                  {line}
+                </div>
+              ))}
+              <div ref={cliOutputEndRef} />
             </div>
-          ) : (
-            <div style={styles.noChannelSelected}>
-              <span style={{ fontSize: '13px', color: 'var(--text-muted)' }}>Wähle einen Kanal aus, um den Feed anzuzeigen.</span>
-            </div>
-          )}
-        </div>
+            <form onSubmit={handleCliSubmit} style={styles.cliForm}>
+              <span style={styles.cliPrompt}>$</span>
+              <input
+                type="text"
+                value={cliCommand}
+                onChange={(e) => setCliCommand(e.target.value)}
+                onKeyDown={handleCliKeyDown}
+                placeholder="Type command and press ENTER (e.g. ls, pnpm build)..."
+                className="hud-input"
+                style={styles.cliInput}
+                disabled={cliLoading}
+              />
+            </form>
+          </div>
+        </section>
+
       </div>
     </div>
   );
 }
 
 const styles: Record<string, React.CSSProperties> = {
-  container: {
+  commandDeck: {
     display: 'flex',
     flexDirection: 'column',
     height: '100%',
-    padding: '24px',
-    background: 'transparent',
-    color: 'var(--text-primary)',
-    overflowY: 'auto',
+    width: '100%',
+    gap: '20px',
   },
-  error: {
-    padding: '12px 18px',
-    background: 'rgba(239, 68, 68, 0.12)',
-    border: '1px solid rgba(239, 68, 68, 0.25)',
-    color: '#fca5a5',
-    borderRadius: '10px',
-    marginBottom: '20px',
-    fontSize: '14px',
+  globalError: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '12px',
+    padding: '8px 16px',
+    background: 'rgba(255, 59, 48, 0.1)',
+    border: '1px solid var(--accent-red)',
+    color: 'var(--text-bone)',
+    fontFamily: 'var(--font-mono)',
+    fontSize: '11px',
   },
-  loadingBanner: {
-    padding: '10px 16px',
-    background: 'rgba(6, 182, 212, 0.1)',
-    border: '1px solid rgba(6, 182, 212, 0.2)',
-    color: 'var(--accent-cyan)',
-    borderRadius: '8px',
-    marginBottom: '20px',
-    fontSize: '13px',
-    fontWeight: 500,
+  errorTag: {
+    background: 'var(--accent-red)',
+    color: 'var(--bg-void)',
+    padding: '1px 6px',
+    fontWeight: 'bold',
   },
-  dashboardGrid: {
+  deckGrid: {
     display: 'grid',
-    gridTemplateColumns: '1fr 400px',
-    gap: '28px',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(420px, 1fr))',
+    gridAutoRows: '340px',
+    gap: '20px',
     flex: 1,
-    minHeight: '0',
   },
-  leftCol: {
+  tile: {
     display: 'flex',
     flexDirection: 'column',
-    gap: '24px',
-    minWidth: '0',
+    borderWidth: '1px',
+    borderStyle: 'solid',
+    borderColor: 'var(--border-color)',
+    background: 'var(--bg-panel)',
+    position: 'relative',
+    height: '100%',
+    overflow: 'hidden',
   },
-  rightCol: {
+  tileLarge: {
     display: 'flex',
     flexDirection: 'column',
-    height: 'fit-content',
-    maxHeight: 'calc(100vh - 120px)',
-    position: 'sticky',
-    top: '20px',
+    borderWidth: '1px',
+    borderStyle: 'solid',
+    borderColor: 'var(--border-color)',
+    background: 'var(--bg-panel)',
+    position: 'relative',
+    height: '100%',
+    gridColumn: 'span 2',
+    overflow: 'hidden',
   },
-  sectionHeader: {
+  tileHeader: {
     display: 'flex',
     justifyContent: 'space-between',
     alignItems: 'center',
+    padding: '10px 16px',
+    background: 'var(--bg-panel-header)',
+    borderBottom: '1px solid var(--border-color)',
   },
-  sectionTitle: {
-    fontSize: '18px',
+  tileTitle: {
+    fontFamily: 'var(--font-display)',
+    fontSize: '11px',
     fontWeight: 700,
-    color: 'var(--text-primary)',
-    margin: 0,
-    borderLeft: '4px solid var(--accent-cyan)',
-    paddingLeft: '10px',
-    letterSpacing: '-0.3px',
+    letterSpacing: '1.5px',
+    color: 'var(--text-bone)',
   },
-  sectionTitleChannels: {
-    fontSize: '18px',
-    fontWeight: 700,
-    color: 'var(--text-primary)',
-    margin: '0 0 16px 0',
-    borderLeft: '4px solid var(--accent-purple)',
-    paddingLeft: '10px',
-    letterSpacing: '-0.3px',
+  tileTimestamp: {
+    fontFamily: 'var(--font-mono)',
+    fontSize: '10px',
+    color: 'var(--text-dark)',
+  },
+  tileContent: {
+    padding: '16px',
+    display: 'flex',
+    flexDirection: 'column',
+    height: 'calc(100% - 38px)',
+  },
+  tileContentScroll: {
+    padding: '16px',
+    display: 'flex',
+    flexDirection: 'column',
+    height: 'calc(100% - 38px)',
+    overflowY: 'auto',
   },
   spawnBtn: {
-    padding: '8px 18px',
-    background: 'var(--accent-primary-gradient)',
-    color: 'white',
-    border: 'none',
-    borderRadius: '8px',
-    fontWeight: 600,
-    fontSize: '13px',
-    cursor: 'pointer',
-    boxShadow: 'var(--shadow-glow)',
-    transition: 'all var(--transition-fast)',
-    outline: 'none',
-  },
-  specGrid: {
-    display: 'grid',
-    gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))',
-    gap: '20px',
-  },
-  specCard: {
-    padding: '20px',
-    display: 'flex',
-    flexDirection: 'column',
-    justifyContent: 'space-between',
-    gap: '16px',
-    background: 'var(--bg-panel)',
-  },
-  specHeader: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '4px',
-  },
-  specNameRow: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    gap: '8px',
-  },
-  specName: {
-    fontWeight: 700,
-    fontSize: '16px',
-    color: 'var(--text-primary)',
-    letterSpacing: '-0.2px',
-  },
-  statusBadgeContainer: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '6px',
-  },
-  statusBadge: {
-    padding: '3px 8px',
-    borderRadius: '8px',
-    fontSize: '11px',
-    fontWeight: 700,
-    textTransform: 'uppercase',
-    letterSpacing: '0.5px',
-  },
-  pulseDot: {
-    width: '8px',
-    height: '8px',
-    borderRadius: '50%',
-    display: 'inline-block',
-    animation: 'pulseGlowGreen 2s infinite',
-  },
-  specModel: {
-    fontSize: '12px',
-    color: 'var(--text-muted)',
-    fontWeight: 500,
-  },
-  specBody: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '14px',
-    fontSize: '13px',
-    color: 'var(--text-secondary)',
-  },
-  specTask: {
-    background: 'rgba(15, 23, 42, 0.4)',
-    padding: '10px 12px',
-    borderRadius: '8px',
-    border: '1px solid rgba(255,255,255,0.03)',
-    borderLeft: '3px solid var(--accent-cyan)',
-  },
-  specTaskLabel: {
-    fontSize: '9px',
-    fontWeight: 800,
-    color: 'var(--text-muted)',
-    letterSpacing: '1px',
-    marginBottom: '4px',
-  },
-  specTaskText: {
-    fontSize: '12px',
-    color: 'var(--text-primary)',
-    fontWeight: 500,
-    lineHeight: '1.4',
-  },
-  specTaskEmpty: {
-    fontSize: '12px',
-    color: 'var(--text-muted)',
-    fontStyle: 'italic',
-    padding: '6px 0',
-  },
-  specMetaGrid: {
-    display: 'grid',
-    gridTemplateColumns: '1fr 1fr',
-    gap: '12px',
-    background: 'rgba(255,255,255,0.01)',
-    padding: '6px 0',
-    borderTop: '1px dashed var(--border-color)',
-    borderBottom: '1px dashed var(--border-color)',
-  },
-  specMetaItem: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '2px',
-  },
-  specMetaLabel: {
-    fontSize: '9px',
-    fontWeight: 700,
-    color: 'var(--text-muted)',
-  },
-  specMetaValue: {
-    fontSize: '11px',
-    color: 'var(--text-primary)',
-    fontFamily: 'var(--font-mono)',
-  },
-  specTokenWrapper: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '6px',
-  },
-  specTokenLabels: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    fontSize: '12px',
-    color: 'var(--text-secondary)',
-  },
-  specTokenSub: {
+    padding: '4px 10px',
     fontSize: '10px',
-    color: 'var(--text-muted)',
-    textAlign: 'right',
   },
-  progressBarBg: {
-    height: '6px',
-    background: 'rgba(15, 23, 42, 0.8)',
-    borderRadius: '3px',
-    overflow: 'hidden',
-    border: '1px solid rgba(255,255,255,0.03)',
-  },
-  progressBarFill: {
-    height: '100%',
-    borderRadius: '3px',
-    transition: 'width 0.4s ease-out',
-  },
-  specActions: {
+  emptyTile: {
     display: 'flex',
-    gap: '10px',
-    marginTop: '6px',
-  },
-  actionBtnWake: {
-    flex: 1.2,
-    padding: '7px 12px',
-    background: 'rgba(6, 182, 212, 0.08)',
-    color: 'var(--accent-cyan)',
-    border: '1px solid rgba(6, 182, 212, 0.2)',
-    borderRadius: '8px',
-    cursor: 'pointer',
-    fontSize: '12px',
-    fontWeight: 700,
-    transition: 'all var(--transition-fast)',
-  },
-  actionBtnStop: {
-    flex: 1,
-    padding: '7px 12px',
-    background: 'rgba(239, 68, 68, 0.08)',
-    color: 'var(--status-crashed)',
-    border: '1px solid rgba(239, 68, 68, 0.2)',
-    borderRadius: '8px',
-    cursor: 'pointer',
-    fontSize: '12px',
-    fontWeight: 700,
-    transition: 'all var(--transition-fast)',
-  },
-  actionBtnPurge: {
-    flex: 1,
-    padding: '7px 12px',
-    background: 'rgba(245, 158, 11, 0.08)',
-    color: 'var(--status-idle)',
-    border: '1px solid rgba(245, 158, 11, 0.2)',
-    borderRadius: '8px',
-    cursor: 'pointer',
-    fontSize: '12px',
-    fontWeight: 700,
-    transition: 'all var(--transition-fast)',
-  },
-  emptyCard: {
-    gridColumn: '1 / -1',
-    display: 'flex',
-    flexDirection: 'column',
     alignItems: 'center',
     justifyContent: 'center',
-    padding: '40px 24px',
-    textAlign: 'center',
+    height: '100%',
+    border: '1px dashed var(--border-color)',
   },
-  emptyTextTitle: {
-    fontSize: '15px',
-    fontWeight: 600,
-    color: 'var(--text-primary)',
-    marginBottom: '4px',
+  emptyText: {
+    fontFamily: 'var(--font-mono)',
+    fontSize: '11px',
+    color: 'var(--text-dark)',
   },
-  emptyTextSub: {
-    fontSize: '12px',
-    color: 'var(--text-muted)',
-    maxWidth: '380px',
-    lineHeight: '1.5',
+  monoCell: {
+    fontFamily: 'var(--font-mono)',
   },
-
-  // Logs Tab
-  logsContainer: {
+  agentTaskCol: {
     display: 'flex',
     flexDirection: 'column',
-    marginTop: '12px',
-    overflow: 'hidden',
+    gap: '6px',
   },
-  logsHeader: {
+  agentTaskText: {
+    fontSize: '11px',
+    color: 'var(--text-muted)',
+    wordBreak: 'break-word',
+  },
+  agentRowActions: {
+    display: 'flex',
+    gap: '6px',
+  },
+  rowBtn: {
+    padding: '2px 8px',
+    fontSize: '9px',
+  },
+  statusDivider: {
+    height: '1px',
+    background: 'var(--border-color)',
+    margin: '16px 0',
+  },
+  telemetryGrid: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '12px',
+    flex: 1,
+  },
+  telemetryRow: {
     display: 'flex',
     justifyContent: 'space-between',
-    alignItems: 'center',
-    padding: '14px 20px',
-    borderBottom: '1px solid var(--border-color)',
+    fontFamily: 'var(--font-mono)',
+    fontSize: '12px',
   },
-  logTabs: {
+  telemetryLabel: {
+    color: 'var(--text-muted)',
+  },
+  telemetryValue: {
+    fontWeight: 'bold',
+  },
+  telemetryMeta: {
     display: 'flex',
-    gap: '20px',
+    justifyContent: 'space-between',
+    fontFamily: 'var(--font-mono)',
+    fontSize: '10px',
+    color: 'var(--text-dark)',
   },
-  logTabBtn: {
-    background: 'transparent',
-    border: 'none',
-    color: 'var(--text-secondary)',
-    fontSize: '13px',
-    fontWeight: 600,
-    cursor: 'pointer',
-    paddingBottom: '8px',
-    borderBottom: '2px solid transparent',
-    transition: 'all var(--transition-fast)',
-    outline: 'none',
-  },
-  activeLogTabBtn: {
-    color: 'var(--accent-cyan)',
-    borderBottomColor: 'var(--accent-cyan)',
-  },
-  refreshBtn: {
-    background: 'rgba(255,255,255,0.03)',
-    border: '1px solid var(--border-color)',
-    color: 'var(--text-secondary)',
-    padding: '5px 12px',
-    borderRadius: '6px',
-    fontSize: '11px',
-    fontWeight: 600,
-    cursor: 'pointer',
-    transition: 'all var(--transition-fast)',
-  },
-  logsBody: {
-    maxHeight: '290px',
-    overflowY: 'auto',
-    padding: '0 20px 14px 20px',
-  },
-  emptyLogPanel: {
+  // FS Stream
+  fsStream: {
     display: 'flex',
     flexDirection: 'column',
-    alignItems: 'center',
-    padding: '32px 0',
-    color: 'var(--text-muted)',
-    fontSize: '12px',
-  },
-  logTable: {
-    width: '100%',
-    borderCollapse: 'collapse',
-    fontSize: '13px',
-    textAlign: 'left',
-  },
-  th: {
-    padding: '12px 8px',
-    color: 'var(--text-secondary)',
-    fontWeight: 600,
-    fontSize: '12px',
-    borderBottom: '1px solid var(--border-color)',
-  },
-  tr: {
-    borderBottom: '1px solid rgba(255,255,255,0.02)',
-    transition: 'background var(--transition-fast)',
-  },
-  tdTime: {
-    padding: '12px 8px',
-    color: 'var(--text-muted)',
-    whiteSpace: 'nowrap',
-    width: '90px',
+    gap: '8px',
     fontFamily: 'var(--font-mono)',
     fontSize: '11px',
   },
-  tdEvent: {
-    padding: '12px 8px',
-    width: '110px',
+  fsStreamItem: {
+    display: 'flex',
+    gap: '8px',
+    borderBottom: '1px solid rgba(255, 255, 255, 0.01)',
+    paddingBottom: '4px',
   },
-  eventBadge: {
-    padding: '2px 8px',
-    borderRadius: '6px',
-    fontSize: '11px',
-    fontWeight: 700,
-    textTransform: 'uppercase',
+  fsTime: {
+    color: 'var(--text-dark)',
+    width: '70px',
   },
-  tdFile: {
-    padding: '12px 8px',
-    color: 'var(--text-primary)',
-    wordBreak: 'break-all',
-    fontFamily: 'var(--font-mono)',
-    fontSize: '12px',
+  fsType: {
+    fontWeight: 'bold',
+    width: '75px',
   },
-  tdMeta: {
-    padding: '12px 8px',
-  },
-  versionBadge: {
-    padding: '2px 8px',
-    background: 'rgba(255,255,255,0.05)',
-    border: '1px solid var(--border-color)',
-    color: 'var(--text-secondary)',
-    borderRadius: '6px',
-    fontSize: '11px',
-    fontWeight: 600,
-    textTransform: 'uppercase',
-  },
-  verAgent: {
-    fontWeight: 700,
-    color: 'var(--accent-cyan)',
-    fontSize: '12px',
-  },
-  verReason: {
-    fontSize: '11px',
+  fsPath: {
     color: 'var(--text-muted)',
-    whiteSpace: 'nowrap',
+    flex: 1,
     overflow: 'hidden',
     textOverflow: 'ellipsis',
-    maxWidth: '220px',
-    marginTop: '2px',
+    whiteSpace: 'nowrap',
   },
-
-  // Channels column
-  channelsList: {
+  // Data Corpus
+  statsPanel: {
     display: 'flex',
     flexDirection: 'column',
-    gap: '6px',
-    marginBottom: '20px',
-    maxHeight: '180px',
-    overflowY: 'auto',
-    paddingRight: '4px',
+    gap: '16px',
   },
-  emptyChannels: {
-    padding: '16px',
-    textAlign: 'center',
-    border: '1px dashed var(--border-color)',
-    borderRadius: '8px',
+  statsSection: {
+    borderBottom: '1px solid rgba(255, 255, 255, 0.02)',
+    paddingBottom: '12px',
   },
-  channelItem: {
-    padding: '10px 14px',
-    borderRadius: '8px',
-    background: 'rgba(15, 23, 42, 0.4)',
-    border: '1px solid var(--border-color)',
-    cursor: 'pointer',
-    transition: 'all var(--transition-fast)',
-  },
-  activeChannelItem: {
-    borderColor: 'var(--accent-cyan)',
-    background: 'rgba(6, 182, 212, 0.05)',
-    boxShadow: '0 0 10px rgba(6, 182, 212, 0.1)',
-  },
-  channelName: {
-    fontWeight: 600,
-    fontSize: '14px',
-  },
-  channelDesc: {
-    fontSize: '11px',
-    color: 'var(--text-muted)',
-    marginTop: '3px',
-  },
-
-  // Chat Area
-  chatArea: {
-    display: 'flex',
-    flexDirection: 'column',
-    flex: 1,
-    background: 'rgba(15, 23, 42, 0.4)',
-    borderRadius: '10px',
-    border: '1px solid var(--border-color)',
-    overflow: 'hidden',
-    height: '420px',
-  },
-  chatHeader: {
-    padding: '12px 16px',
-    background: 'rgba(15, 22, 42, 0.8)',
-    borderBottom: '1px solid var(--border-color)',
-    fontWeight: 600,
-    fontSize: '14px',
-    display: 'flex',
-    alignItems: 'center',
-  },
-  chatHeaderStatus: {
-    marginLeft: 'auto',
-    fontSize: '10px',
-    fontWeight: 700,
-    textTransform: 'uppercase',
-    background: 'rgba(16, 185, 129, 0.15)',
-    color: 'var(--status-running)',
-    padding: '2px 8px',
-    borderRadius: '6px',
-  },
-  chatMessages: {
-    flex: 1,
-    overflowY: 'auto',
-    padding: '16px',
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '14px',
-  },
-  emptyChatText: {
-    color: 'var(--text-muted)',
-    fontSize: '12px',
-    textAlign: 'center',
-    margin: 'auto',
-    display: 'flex',
-    flexDirection: 'column',
-    alignItems: 'center',
-  },
-  chatMessageItem: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '4px',
-    padding: '10px 14px',
-    borderRadius: '10px',
-  },
-  chatMessageMeta: {
+  statsSecHeader: {
     display: 'flex',
     justifyContent: 'space-between',
     alignItems: 'center',
-    fontSize: '11px',
-    marginBottom: '2px',
+    marginBottom: '8px',
   },
-  chatMessageSender: {
-    fontWeight: 700,
+  statsSecTitle: {
+    fontFamily: 'var(--font-display)',
+    fontSize: '10px',
+    fontWeight: 'bold',
+    color: 'var(--accent-cyan)',
+    letterSpacing: '1px',
   },
-  chatMessageTime: {
-    color: 'var(--text-muted)',
+  statsSecCount: {
+    fontFamily: 'var(--font-mono)',
+    fontSize: '12px',
+    fontWeight: 'bold',
+    color: 'var(--text-bone)',
+  },
+  statsBreakdown: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fill, minmax(110px, 1fr))',
+    gap: '8px',
+  },
+  breakdownItem: {
+    display: 'flex',
+    justifyContent: 'space-between',
     fontFamily: 'var(--font-mono)',
     fontSize: '10px',
+    background: 'rgba(255, 255, 255, 0.01)',
+    padding: '3px 6px',
+    border: '1px solid rgba(255, 255, 255, 0.03)',
   },
-  chatMessageContent: {
-    fontSize: '13px',
-    color: 'var(--text-primary)',
-    lineHeight: '1.45',
-    whiteSpace: 'pre-wrap',
+  breakdownLabel: {
+    color: 'var(--text-muted)',
   },
-  chatForm: {
+  breakdownValue: {
+    color: 'var(--accent-amber)',
+    fontWeight: 'bold',
+  },
+  statsError: {
     display: 'flex',
-    gap: '8px',
-    padding: '12px',
-    background: 'rgba(15, 22, 42, 0.8)',
-    borderTop: '1px solid var(--border-color)',
-  },
-  chatSenderInput: {
-    width: '90px',
-    padding: '8px 12px',
-    background: 'rgba(15, 23, 42, 0.6)',
-    border: '1px solid var(--border-color)',
-    borderRadius: '6px',
-    color: 'var(--text-primary)',
-    fontSize: '12px',
-    fontWeight: 500,
-    outline: 'none',
-    transition: 'all var(--transition-fast)',
-  },
-  chatContentInput: {
-    flex: 1,
-    padding: '8px 14px',
-    background: 'rgba(15, 23, 42, 0.6)',
-    border: '1px solid var(--border-color)',
-    borderRadius: '6px',
-    color: 'var(--text-primary)',
-    fontSize: '12px',
-    outline: 'none',
-    transition: 'all var(--transition-fast)',
-  },
-  chatSendBtn: {
-    padding: '8px 16px',
-    background: 'var(--accent-primary-gradient)',
-    color: 'white',
-    border: 'none',
-    borderRadius: '6px',
-    fontWeight: 700,
-    fontSize: '12px',
-    cursor: 'pointer',
-    transition: 'all var(--transition-fast)',
-  },
-  noChannelSelected: {
-    padding: '40px 16px',
-    textAlign: 'center',
-    border: '1px dashed var(--border-color)',
-    borderRadius: '10px',
-    display: 'flex',
+    flexDirection: 'column',
     alignItems: 'center',
     justifyContent: 'center',
+    height: '100%',
+    fontFamily: 'var(--font-mono)',
+    fontSize: '11px',
+    color: 'var(--text-dark)',
+    gap: '6px',
   },
-
+  // Steering Event Radar
+  emptyRadarTile: {
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'center',
+    justifyContent: 'center',
+    height: '100%',
+    position: 'relative',
+    border: '1px dashed var(--border-color)',
+    overflow: 'hidden',
+  },
+  radarSweep: {
+    position: 'absolute',
+    width: '200%',
+    height: '200%',
+    background: 'conic-gradient(from 0deg, rgba(0, 240, 255, 0.04) 0deg, transparent 90deg, transparent 360deg)',
+    animation: 'rotate 4s linear infinite',
+    pointerEvents: 'none',
+  },
+  radarText: {
+    fontFamily: 'var(--font-mono)',
+    fontSize: '10px',
+    color: 'var(--text-dark)',
+    zIndex: 1,
+    letterSpacing: '1px',
+  },
+  radarEventsList: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '12px',
+  },
+  radarEventCard: {
+    borderLeftWidth: '3px',
+    borderLeftStyle: 'solid',
+    borderWidth: '1px',
+    borderStyle: 'solid',
+    borderColor: 'var(--border-color)',
+    background: 'rgba(255, 255, 255, 0.01)',
+    padding: '10px',
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '8px',
+  },
+  radarEventHeader: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  radarPriorityTag: {
+    fontFamily: 'var(--font-display)',
+    fontSize: '9px',
+    fontWeight: 'bold',
+    padding: '2px 6px',
+    letterSpacing: '0.5px',
+  },
+  radarEventTime: {
+    fontFamily: 'var(--font-mono)',
+    fontSize: '10px',
+    color: 'var(--text-dark)',
+  },
+  radarEventBody: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '4px',
+  },
+  radarEventSource: {
+    fontFamily: 'var(--font-mono)',
+    fontSize: '10px',
+    color: 'var(--accent-cyan)',
+  },
+  radarEventPayload: {
+    fontFamily: 'var(--font-mono)',
+    fontSize: '11px',
+    color: 'var(--text-bone)',
+    whiteSpace: 'pre-wrap',
+    wordBreak: 'break-all',
+  },
+  radarEventActions: {
+    display: 'flex',
+    justifyContent: 'flex-end',
+  },
+  ackBtn: {
+    padding: '3px 10px',
+    fontSize: '9px',
+  },
+  preCode: {
+    margin: 0,
+    padding: '8px',
+    background: 'var(--bg-void)',
+    border: '1px solid var(--border-color)',
+    fontSize: '10px',
+    color: 'var(--accent-cyan)',
+    maxHeight: '120px',
+    overflowY: 'auto',
+  },
+  // CLI Panel
+  cliPanel: {
+    display: 'flex',
+    flexDirection: 'column',
+    height: 'calc(100% - 38px)',
+    background: 'var(--bg-void)',
+  },
+  cliOutputArea: {
+    flex: 1,
+    overflowY: 'auto',
+    padding: '12px',
+    fontFamily: 'var(--font-mono)',
+    fontSize: '11px',
+    color: 'var(--accent-cyan)',
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '4px',
+    borderBottom: '1px solid var(--border-color)',
+  },
+  cliLine: {
+    whiteSpace: 'pre-wrap',
+    wordBreak: 'break-all',
+  },
+  cliForm: {
+    display: 'flex',
+    alignItems: 'center',
+    background: 'var(--bg-input)',
+    padding: '6px 12px',
+  },
+  cliPrompt: {
+    fontFamily: 'var(--font-mono)',
+    fontSize: '12px',
+    color: 'var(--accent-amber)',
+    marginRight: '8px',
+    fontWeight: 'bold',
+  },
+  cliInput: {
+    flex: 1,
+    border: 'none',
+    background: 'transparent',
+    padding: 0,
+    fontSize: '12px',
+    color: 'var(--text-bone)',
+    fontFamily: 'var(--font-mono)',
+    outline: 'none',
+    boxShadow: 'none',
+  },
+  cliRunning: {
+    fontFamily: 'var(--font-mono)',
+    fontSize: '10px',
+    color: 'var(--accent-amber)',
+  },
   // Modals
   modalBackdrop: {
     position: 'fixed',
@@ -1313,35 +1245,36 @@ const styles: Record<string, React.CSSProperties> = {
     left: 0,
     right: 0,
     bottom: 0,
-    background: 'rgba(3, 7, 18, 0.75)',
+    background: 'rgba(6, 6, 10, 0.85)',
+    backdropFilter: 'blur(4px)',
     display: 'flex',
-    justifyContent: 'center',
     alignItems: 'center',
+    justifyContent: 'center',
     zIndex: 1000,
-    backdropFilter: 'blur(12px)',
-    WebkitBackdropFilter: 'blur(12px)',
   },
   modal: {
-    background: 'var(--bg-panel-solid)',
-    borderRadius: '16px',
-    border: '1px solid var(--border-color)',
-    width: '440px',
-    padding: '28px',
-    boxShadow: 'var(--shadow-lg)',
-  },
-  modalTitle: {
-    margin: '0 0 20px 0',
-    fontSize: '18px',
-    background: 'var(--accent-primary-gradient)',
-    WebkitBackgroundClip: 'text',
-    WebkitTextFillColor: 'transparent',
-    fontWeight: 800,
-    letterSpacing: '-0.2px',
-  },
-  modalForm: {
+    background: 'var(--bg-panel)',
+    border: '1px solid var(--accent-cyan)',
+    width: '450px',
     display: 'flex',
     flexDirection: 'column',
-    gap: '18px',
+    boxShadow: '0 0 20px rgba(0, 240, 255, 0.15)',
+  },
+  modalHeader: {
+    background: 'var(--bg-panel-header)',
+    borderBottom: '1px solid var(--border-color)',
+    padding: '12px 16px',
+    fontFamily: 'var(--font-display)',
+    fontSize: '12px',
+    fontWeight: 'bold',
+    color: 'var(--accent-cyan)',
+    letterSpacing: '1px',
+  },
+  modalForm: {
+    padding: '16px',
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '16px',
   },
   formGroup: {
     display: 'flex',
@@ -1349,70 +1282,45 @@ const styles: Record<string, React.CSSProperties> = {
     gap: '6px',
   },
   formLabel: {
-    fontSize: '12px',
-    color: 'var(--text-secondary)',
-    fontWeight: 600,
+    fontFamily: 'var(--font-display)',
+    fontSize: '9px',
+    color: 'var(--text-muted)',
+    fontWeight: 'bold',
+    letterSpacing: '0.5px',
   },
   modalInput: {
-    padding: '10px 14px',
-    background: 'rgba(15, 23, 42, 0.5)',
-    border: '1px solid var(--border-color)',
-    borderRadius: '8px',
-    color: 'var(--text-primary)',
-    fontSize: '13px',
-    outline: 'none',
-    transition: 'all var(--transition-fast)',
+    width: '100%',
   },
   modalSelect: {
-    padding: '10px 14px',
-    background: 'rgba(15, 23, 42, 0.5)',
+    width: '100%',
+    background: 'var(--bg-input)',
     border: '1px solid var(--border-color)',
-    borderRadius: '8px',
-    color: 'var(--text-primary)',
-    fontSize: '13px',
+    color: 'var(--text-bone)',
+    fontFamily: 'var(--font-mono)',
+    fontSize: '12px',
+    padding: '8px 12px',
     outline: 'none',
-    cursor: 'pointer',
-    transition: 'all var(--transition-fast)',
+    borderRadius: 0,
   },
   modalTextarea: {
-    padding: '10px 14px',
-    background: 'rgba(15, 23, 42, 0.5)',
+    width: '100%',
+    background: 'var(--bg-input)',
     border: '1px solid var(--border-color)',
-    borderRadius: '8px',
-    color: 'var(--text-primary)',
-    fontSize: '13px',
+    color: 'var(--text-bone)',
+    fontFamily: 'var(--font-mono)',
+    fontSize: '12px',
+    padding: '8px 12px',
     outline: 'none',
+    borderRadius: 0,
     resize: 'vertical',
-    transition: 'all var(--transition-fast)',
   },
   modalActions: {
     display: 'flex',
     justifyContent: 'flex-end',
-    gap: '12px',
-    marginTop: '10px',
+    gap: '10px',
+    marginTop: '8px',
   },
-  cancelBtn: {
-    padding: '8px 18px',
-    background: 'transparent',
-    border: '1px solid var(--border-color)',
-    color: 'var(--text-secondary)',
-    borderRadius: '8px',
-    cursor: 'pointer',
-    fontSize: '13px',
-    fontWeight: 600,
-    transition: 'all var(--transition-fast)',
-  },
-  confirmBtn: {
-    padding: '8px 18px',
-    background: 'var(--accent-primary-gradient)',
-    color: 'white',
-    border: 'none',
-    borderRadius: '8px',
-    fontWeight: 700,
-    cursor: 'pointer',
-    fontSize: '13px',
-    transition: 'all var(--transition-fast)',
+  modalBtn: {
+    padding: '6px 12px',
   },
 };
-
-export default Dashboard;

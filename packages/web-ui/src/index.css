@@ -1,148 +1,236 @@
 :root {
-  --bg-main: #070a13;
-  --bg-panel: rgba(15, 22, 42, 0.65);
-  --bg-panel-solid: #0f172a;
-  --bg-chat-user: rgba(59, 130, 246, 0.15);
-  --bg-chat-assistant: rgba(30, 41, 59, 0.5);
+  --bg-void: #06060a;
+  --bg-panel: #0d0d13;
+  --bg-panel-header: #12121a;
+  --bg-input: #08080c;
   
-  --border-color: rgba(255, 255, 255, 0.07);
-  --border-hover: rgba(255, 255, 255, 0.15);
+  --border-color: #1a1a24;
+  --border-hover: #00f0ff;
+  --border-active: #00f0ff;
   
-  --accent-primary: #06b6d4;
-  --accent-primary-gradient: linear-gradient(135deg, #00f5d4 0%, #3b82f6 50%, #7b2cbf 100%);
-  --accent-cyan: #00f5d4;
-  --accent-blue: #3b82f6;
-  --accent-purple: #7b2cbf;
-  --accent-indigo: #6366f1;
+  --accent-cyan: #00f0ff;
+  --accent-amber: #f59e0b;
+  --accent-green: #00ff66;
+  --accent-red: #ff3b30;
   
-  --status-running: #10b981;
-  --status-idle: #f59e0b;
-  --status-crashed: #ef4444;
-  --status-stopped: #64748b;
+  --text-bone: #f4f4f5;
+  --text-muted: #80808a;
+  --text-dark: #40404a;
+
+  --font-display: 'Orbitron', 'Chakra Petch', sans-serif;
+  --font-mono: 'IBM Plex Mono', monospace;
+  --font-ui: 'Archivo', sans-serif;
+
+  --shadow-hud: 0 0 10px rgba(0, 240, 255, 0.15);
+  --shadow-hud-amber: 0 0 10px rgba(245, 158, 11, 0.15);
   
-  --text-primary: #f8fafc;
-  --text-secondary: #94a3b8;
-  --text-muted: #8293a9;
-  
-  --font-sans: 'Outfit', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
-  --font-mono: 'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace;
-  
-  --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.2);
-  --shadow-md: 0 8px 24px rgba(0, 0, 0, 0.35);
-  --shadow-lg: 0 16px 40px rgba(0, 0, 0, 0.5);
-  --shadow-glow: 0 0 15px rgba(6, 182, 212, 0.3);
-  
-  --transition-fast: 0.15s cubic-bezier(0.4, 0, 0.2, 1);
-  --transition-normal: 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  --transition-hud: 0.1s ease-out;
 }
 
 * {
   margin: 0;
   padding: 0;
   box-sizing: border-box;
+  font-feature-settings: "tnum";
 }
 
 body {
-  font-family: var(--font-sans);
-  background-color: var(--bg-main);
+  font-family: var(--font-ui);
+  background-color: var(--bg-void);
   background-image: 
-    radial-gradient(at 0% 0%, rgba(123, 44, 191, 0.12) 0px, transparent 50%),
-    radial-gradient(at 100% 0%, rgba(6, 182, 212, 0.12) 0px, transparent 50%),
-    radial-gradient(at 50% 100%, rgba(59, 130, 246, 0.08) 0px, transparent 50%);
+    radial-gradient(rgba(0, 240, 255, 0.02) 1px, transparent 1px),
+    radial-gradient(rgba(245, 158, 11, 0.015) 1px, transparent 1px);
+  background-size: 24px 24px;
+  background-position: 0 0, 12px 12px;
   background-attachment: fixed;
-  color: var(--text-primary);
+  color: var(--text-bone);
   min-height: 100vh;
   overflow: hidden;
   -webkit-font-smoothing: antialiased;
 }
 
-/* Custom Scrollbar */
+/* Scrollbar */
 ::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+  width: 6px;
+  height: 6px;
 }
 
 ::-webkit-scrollbar-track {
-  background: rgba(15, 22, 42, 0.3);
+  background: var(--bg-void);
+  border-left: 1px solid var(--border-color);
 }
 
 ::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.1);
-  border-radius: 4px;
+  background: var(--border-color);
+  border-radius: 0;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.2);
+  background: var(--accent-cyan);
 }
 
-/* Glassmorphism Panel */
-.glass-panel {
+/* HUD Panels */
+.hud-panel {
   background: var(--bg-panel);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
   border: 1px solid var(--border-color);
-  border-radius: 12px;
-  box-shadow: var(--shadow-md);
-  transition: border-color var(--transition-normal), box-shadow var(--transition-normal);
+  border-radius: 0;
+  position: relative;
+  overflow: hidden;
 }
 
-.glass-panel:hover {
-  border-color: var(--border-hover);
+.hud-panel::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 4px;
+  height: 4px;
+  border-top: 1px solid var(--accent-cyan);
+  border-left: 1px solid var(--accent-cyan);
 }
 
-/* Base Animations */
-@keyframes fadeIn {
-  from { opacity: 0; }
-  to { opacity: 1; }
+.hud-panel::after {
+  content: "";
+  position: absolute;
+  bottom: 0;
+  right: 0;
+  width: 4px;
+  height: 4px;
+  border-bottom: 1px solid var(--accent-cyan);
+  border-right: 1px solid var(--accent-cyan);
 }
 
-@keyframes slideUp {
-  from { opacity: 0; transform: translateY(12px); }
-  to { opacity: 1; transform: translateY(0); }
+.hud-panel:hover {
+  border-color: rgba(0, 240, 255, 0.3);
 }
 
-@keyframes scaleUp {
-  from { opacity: 0; transform: scale(0.96); }
-  to { opacity: 1; transform: scale(1); }
+/* Animations */
+@keyframes crtBlink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
 }
 
-@keyframes pulseGlowGreen {
-  0% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.4); }
-  70% { box-shadow: 0 0 0 6px rgba(16, 185, 129, 0); }
-  100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
+@keyframes hudPulse {
+  0%, 100% { opacity: 0.6; }
+  50% { opacity: 1; }
 }
 
-@keyframes pulseGlowRed {
-  0% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.4); }
-  70% { box-shadow: 0 0 0 6px rgba(239, 68, 68, 0); }
-  100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
+@keyframes telemetrieSlide {
+  from { transform: translateY(0); }
+  to { transform: translateY(-50%); }
 }
 
-@keyframes pulseNode {
-  0% { transform: scale(0.95); opacity: 0.5; }
-  50% { transform: scale(1.05); opacity: 0.8; }
-  100% { transform: scale(0.95); opacity: 0.5; }
+.blink {
+  animation: crtBlink 1s infinite;
 }
 
-@keyframes rotate {
-  from { transform: rotate(0deg); }
-  to { transform: rotate(360deg); }
+.hud-pulse {
+  animation: hudPulse 2s infinite ease-in-out;
 }
 
-/* Utility Animations */
-.animate-fade-in {
-  animation: fadeIn var(--transition-normal) forwards;
+/* Grid & Tables */
+.hud-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--font-mono);
+  font-size: 12px;
 }
 
-.animate-slide-up {
-  animation: slideUp var(--transition-normal) forwards;
+.hud-table th {
+  font-family: var(--font-display);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border-color);
+  padding: 8px 12px;
+  text-align: left;
 }
 
-.animate-scale-up {
-  animation: scaleUp var(--transition-normal) forwards;
+.hud-table td {
+  padding: 8px 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.02);
+  color: var(--text-bone);
 }
 
-input::placeholder, textarea::placeholder {
-  color: #64748b;
-  opacity: 0.85;
+.hud-table tr:hover td {
+  background: rgba(0, 240, 255, 0.02);
+  border-bottom-color: rgba(0, 240, 255, 0.1);
+}
+
+/* Inputs & Buttons */
+.hud-input {
+  background: var(--bg-input);
+  border: 1px solid var(--border-color);
+  color: var(--text-bone);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  padding: 8px 12px;
+  outline: none;
+  border-radius: 0;
+  transition: border-color var(--transition-hud);
+}
+
+.hud-input:focus {
+  border-color: var(--accent-cyan);
+  box-shadow: var(--shadow-hud);
+}
+
+.hud-button {
+  background: transparent;
+  border: 1px solid var(--accent-cyan);
+  color: var(--accent-cyan);
+  font-family: var(--font-display);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  padding: 8px 16px;
+  cursor: pointer;
+  border-radius: 0;
+  transition: all var(--transition-hud);
+}
+
+.hud-button:hover {
+  background: rgba(0, 240, 255, 0.1);
+  box-shadow: var(--shadow-hud);
+}
+
+.hud-button-amber {
+  border-color: var(--accent-amber);
+  color: var(--accent-amber);
+}
+
+.hud-button-amber:hover {
+  background: rgba(245, 158, 11, 0.1);
+  box-shadow: var(--shadow-hud-amber);
+}
+
+.hud-button-danger {
+  border-color: var(--accent-red);
+  color: var(--accent-red);
+}
+
+.hud-button-danger:hover {
+  background: rgba(255, 59, 48, 0.1);
+  box-shadow: 0 0 10px rgba(255, 59, 48, 0.15);
+}
+
+/* Terminal Cursor */
+.terminal-cursor::after {
+  content: "_";
+  animation: crtBlink 0.8s infinite;
+  color: var(--accent-cyan);
+}
+
+/* Scanlines overlay */
+.scanline-overlay {
+  position: fixed;
+  top: 0; left: 0; bottom: 0; right: 0;
+  background: linear-gradient(rgba(18, 16, 16, 0) 50%, rgba(0, 0, 0, 0.15) 50%);
+  background-size: 100% 4px;
+  z-index: 9999;
+  pointer-events: none;
+  opacity: 0.4;
 }

@@ -22,7 +22,7 @@ function MemorySearch({ project }: MemorySearchProps) {
       const data = await searchMemories(query, project || undefined);
       setResults(data);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Unbekannter Fehler');
+      setError(err instanceof Error ? err.message : 'Unknown error occurred');
       setResults([]);
     } finally {
       setIsLoading(false);
@@ -41,17 +41,23 @@ function MemorySearch({ project }: MemorySearchProps) {
               type="text"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder="Nach Projekt-Erinnerungen suchen... (z. B. 'API-Routen' oder 'Rules')"
+              placeholder="Search index memories... (e.g. 'API-Routen' or 'Rules')"
+              className="hud-input"
               style={styles.searchInput}
             />
           </div>
-          <button type="submit" disabled={isLoading} style={styles.searchButton}>
-            {isLoading ? 'Suche...' : 'Suchen'}
+          <button type="submit" disabled={isLoading} className="hud-button" style={styles.searchButton}>
+            {isLoading ? 'SEARCHING...' : 'SEARCH'}
           </button>
         </form>
       </div>
 
-      {error && <div style={styles.error}>{error}</div>}
+      {error && (
+        <div style={styles.error}>
+          <span style={styles.errorTag}>SYSTEM ERROR</span>
+          <span style={{ fontFamily: 'var(--font-mono)' }}>{error}</span>
+        </div>
+      )}
 
       <div style={styles.results}>
         {results.length === 0 && !isLoading && query && (
@@ -59,44 +65,40 @@ function MemorySearch({ project }: MemorySearchProps) {
             <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" style={{ color: 'var(--text-muted)', marginBottom: '12px' }}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
             </svg>
-            <span>Keine Erinnerungen gefunden</span>
+            <span style={{ fontFamily: 'var(--font-mono)' }}>NO ARCHIVAL MEMORIES LOCATED</span>
           </div>
         )}
 
         {results.map((result, idx) => (
-          <div key={idx} style={styles.resultCard} className="glass-panel animate-slide-up">
+          <div key={idx} style={styles.resultCard} className="hud-panel animate-slide-up">
             <div style={styles.resultHeader}>
-              <span style={styles.resultName}>{result.name}</span>
-              <span style={styles.resultProject}>{result.project}</span>
+              <span style={styles.resultName}>{result.name.toUpperCase()}</span>
+              <span style={styles.resultProject}>{result.project.toUpperCase()}</span>
             </div>
             
             <div style={styles.resultMeta}>
-              <span style={styles.category}>{result.category}</span>
+              <span style={styles.category}>{result.category.toUpperCase()}</span>
               {result.tags.length > 0 && (
                 <div style={styles.tags}>
                   {result.tags.map((tag, i) => (
                     <span key={i} style={styles.tag}>
-                      {tag}
+                      #{tag.toUpperCase()}
                     </span>
                   ))}
                 </div>
               )}
             </div>
 
-            <div style={styles.resultContent}>
-              {result.content.length > 500
-                ? result.content.substring(0, 500) + '...'
-                : result.content}
-            </div>
+            <div style={styles.resultContent}>{result.content}</div>
 
             <div style={styles.resultFooter}>
               <span style={{
                 ...styles.scoreBadge,
-                background: result.score > 0.7 ? 'rgba(16, 185, 129, 0.1)' : 'rgba(59, 130, 246, 0.1)',
-                color: result.score > 0.7 ? 'var(--status-running)' : 'var(--accent-blue)',
-                border: `1px solid ${result.score > 0.7 ? 'rgba(16, 185, 129, 0.2)' : 'rgba(59, 130, 246, 0.2)'}`
+                background: result.score > 0.7 ? 'rgba(0, 255, 102, 0.05)' : 'rgba(0, 240, 255, 0.05)',
+                color: result.score > 0.7 ? 'var(--accent-green)' : 'var(--accent-cyan)',
+                border: `1px solid ${result.score > 0.7 ? 'rgba(0, 255, 102, 0.2)' : 'rgba(0, 240, 255, 0.2)'}`
               }}>
-                Relevanz: {(result.score * 100).toFixed(1)}%
+                RELEVANCE: {(result.score * 100).toFixed(1)}%
               </span>
             </div>
           </div>
@@ -138,42 +140,33 @@ const styles: Record<string, React.CSSProperties> = {
   },
   searchInput: {
     width: '100%',
-    padding: '14px 16px 14px 48px',
-    border: '1px solid var(--border-color)',
-    borderRadius: '10px',
-    background: 'var(--bg-panel)',
-    backdropFilter: 'blur(16px)',
-    WebkitBackdropFilter: 'blur(16px)',
-    color: 'var(--text-primary)',
-    fontSize: '14px',
-    fontWeight: 500,
-    outline: 'none',
-    transition: 'all var(--transition-normal)',
-    boxShadow: 'var(--shadow-sm)',
+    paddingLeft: '48px',
   },
   searchButton: {
-    padding: '14px 28px',
-    border: 'none',
-    borderRadius: '10px',
-    background: 'var(--accent-primary-gradient)',
-    color: 'white',
-    fontSize: '14px',
-    fontWeight: 700,
-    cursor: 'pointer',
-    boxShadow: 'var(--shadow-glow)',
-    transition: 'all var(--transition-fast)',
+    flexShrink: 0,
   },
   error: {
     padding: '12px 18px',
-    background: 'rgba(239, 68, 68, 0.12)',
-    border: '1px solid rgba(239, 68, 68, 0.25)',
-    color: '#fca5a5',
-    borderRadius: '10px',
+    background: 'rgba(255, 59, 48, 0.04)',
+    border: '1px solid var(--accent-red)',
+    color: 'var(--text-bone)',
     marginBottom: '20px',
     maxWidth: '800px',
     width: '100%',
     margin: '0 auto 20px auto',
     fontSize: '13px',
+    display: 'flex',
+    gap: '12px',
+    alignItems: 'center',
+  },
+  errorTag: {
+    fontFamily: 'var(--font-display)',
+    fontWeight: 'bold',
+    fontSize: '10px',
+    color: 'var(--accent-red)',
+    border: '1px solid var(--accent-red)',
+    padding: '2px 6px',
+    letterSpacing: '0.5px',
   },
   results: {
     flex: 1,
@@ -193,14 +186,12 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'flex',
     flexDirection: 'column',
     alignItems: 'center',
-    fontSize: '13px',
+    fontSize: '12px',
+    border: '1px dashed var(--border-color)',
+    background: 'rgba(13, 13, 19, 0.2)',
   },
   resultCard: {
     padding: '20px',
-    background: 'var(--bg-panel)',
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '14px',
   },
   resultHeader: {
     display: 'flex',
@@ -209,18 +200,18 @@ const styles: Record<string, React.CSSProperties> = {
     gap: '12px',
   },
   resultName: {
-    fontWeight: 700,
-    fontSize: '16px',
+    fontFamily: 'var(--font-display)',
+    fontWeight: 'bold',
+    fontSize: '15px',
     color: 'var(--accent-cyan)',
-    letterSpacing: '-0.2px',
+    letterSpacing: '0.5px',
   },
   resultProject: {
-    fontSize: '11px',
+    fontSize: '10px',
     color: 'var(--text-muted)',
     fontFamily: 'var(--font-mono)',
-    background: 'rgba(255, 255, 255, 0.03)',
+    background: 'var(--bg-input)',
     padding: '2px 8px',
-    borderRadius: '6px',
     border: '1px solid var(--border-color)',
   },
   resultMeta: {
@@ -228,17 +219,17 @@ const styles: Record<string, React.CSSProperties> = {
     alignItems: 'center',
     flexWrap: 'wrap',
     gap: '10px',
+    marginTop: '6px',
   },
   category: {
-    padding: '3px 8px',
-    background: 'rgba(99, 102, 241, 0.12)',
-    color: 'var(--accent-indigo)',
-    border: '1px solid rgba(99, 102, 241, 0.2)',
-    borderRadius: '6px',
-    fontSize: '11px',
-    fontWeight: 700,
-    textTransform: 'uppercase',
-    letterSpacing: '0.3px',
+    padding: '2px 8px',
+    background: 'rgba(0, 240, 255, 0.05)',
+    color: 'var(--accent-cyan)',
+    border: '1px solid rgba(0, 240, 255, 0.2)',
+    fontSize: '10px',
+    fontWeight: 'bold',
+    fontFamily: 'var(--font-display)',
+    letterSpacing: '0.5px',
   },
   tags: {
     display: 'flex',
@@ -247,29 +238,30 @@ const styles: Record<string, React.CSSProperties> = {
   },
   tag: {
     padding: '2px 6px',
-    background: 'rgba(255, 255, 255, 0.03)',
     border: '1px solid var(--border-color)',
-    borderRadius: '6px',
-    fontSize: '11px',
-    color: 'var(--text-secondary)',
-    fontWeight: 500,
+    fontSize: '10px',
+    fontFamily: 'var(--font-mono)',
+    color: 'var(--text-muted)',
   },
   resultContent: {
-    fontSize: '14px',
+    fontFamily: 'var(--font-ui)',
+    fontSize: '13px',
     lineHeight: '1.6',
-    color: 'var(--text-primary)',
+    color: 'var(--text-bone)',
     whiteSpace: 'pre-wrap',
+    marginTop: '12px',
   },
   resultFooter: {
     display: 'flex',
     justifyContent: 'flex-end',
-    marginTop: '4px',
+    marginTop: '12px',
   },
   scoreBadge: {
-    padding: '3px 8px',
-    borderRadius: '6px',
-    fontSize: '11px',
-    fontWeight: 700,
+    padding: '2px 8px',
+    fontSize: '10px',
+    fontFamily: 'var(--font-display)',
+    fontWeight: 'bold',
+    letterSpacing: '0.5px',
   },
 };
 
