@@ -16,6 +16,7 @@
   "dependencies": {
     "@synapse/core": "workspace:*",
     "@synapse/agents-gemini": "workspace:*",
+    "@synapse/agents-antigravity": "workspace:*",
     "pg": "^8.11.0"
   },
   "devDependencies": {

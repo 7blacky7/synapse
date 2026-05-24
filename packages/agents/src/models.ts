@@ -7,7 +7,7 @@
  * dient als Last-Resort-Fallback.
  */
 
-export type Provider = 'anthropic' | 'google';
+export type Provider = 'anthropic' | 'google' | 'antigravity';
 
 export interface ModelEntry {
   /** User-facing Alias z.B. "opus", "gemini-flash-lite" */
@@ -92,6 +92,15 @@ export const STATIC_FALLBACK: Record<string, ModelEntry> = {
     corridorMin: 80, corridorMax: 88,
     pricingInputUsdPerMtok: 1.25, pricingOutputUsdPerMtok: 10, pricingCacheUsdPerMtok: 0.13,
   },
+  // Antigravity (agy) CLI: laeuft auf der Pro-Abo-Quota via Keyring — KEIN API-Key
+  // (envRequired leer). Strikt getrennt vom 'google'-Provider (Gemini/API-Key).
+  // corridorMin hoch: agy verwaltet seinen Kontext selbst, Synapse-Handoff quasi aus.
+  antigravity: {
+    alias: 'antigravity', fullId: 'agy-1.0.2', provider: 'antigravity',
+    contextWindow: 1_000_000, envRequired: [], binary: 'node',
+    runtimePath: '@synapse/agents-antigravity/runtime',
+    corridorMin: 95, corridorMax: 99,
+  },
 };
 
 /**
@@ -136,7 +145,7 @@ export async function loadFromDb(): Promise<void> {
       map.set(m.alias, {
         alias: m.alias,
         fullId: m.fullId,
-        provider: m.provider as 'anthropic' | 'google',
+        provider: m.provider as Provider,
         contextWindow: m.contextWindow,
         outputLimit: m.outputLimit ?? undefined,
         envRequired: m.envRequired,

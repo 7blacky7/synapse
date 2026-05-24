@@ -703,7 +703,9 @@ VALUES
   ('sonnet[1m]',        'claude-sonnet-4-6',              'anthropic', 1000000, ARRAY[]::TEXT[],          'claude', NULL,                                70, 88,  3.00, 15.00, 0.30, '2025-01-01'),
   ('gemini-flash-lite', 'gemini-3.1-flash-lite-preview',  'google',    1000000, ARRAY['GOOGLE_API_KEY'],  'node',   '@synapse/agents-gemini/runtime',    80, 88,  0.25,  1.50, 0.025, '2025-01-01'),
   ('gemini-flash',      'gemini-3-flash-preview',         'google',    1000000, ARRAY['GOOGLE_API_KEY'],  'node',   '@synapse/agents-gemini/runtime',    80, 88,  0.50,  3.00, 0.05,  '2025-01-01'),
-  ('gemini-pro',        'gemini-2.5-pro',                 'google',    1000000, ARRAY['GOOGLE_API_KEY'],  'node',   '@synapse/agents-gemini/runtime',    80, 88,  1.25, 10.00, 0.13,  '2025-01-01')
+  ('gemini-pro',        'gemini-2.5-pro',                 'google',    1000000, ARRAY['GOOGLE_API_KEY'],  'node',   '@synapse/agents-gemini/runtime',    80, 88,  1.25, 10.00, 0.13,  '2025-01-01'),
+  -- agy-CLI: Pro-Abo via Keyring, KEIN API-Key (env_required leer), provider 'antigravity' (getrennt von 'google')
+  ('antigravity',       'agy-1.0.2',                      'antigravity', 1000000, ARRAY[]::TEXT[],         'node',   '@synapse/agents-antigravity/runtime', 95, 99, NULL,  NULL,  NULL,  NULL)
 ON CONFLICT (alias) DO NOTHING;
 
 -- ==========================================================================

@@ -20,6 +20,9 @@ importers:
 
   packages/agents:
     dependencies:
+      '@synapse/agents-antigravity':
+        specifier: workspace:*
+        version: link:../agents-antigravity
       '@synapse/agents-gemini':
         specifier: workspace:*
         version: link:../agents-gemini
@@ -42,6 +45,12 @@ importers:
       typescript:
         specifier: ^5.3.0
         version: 5.9.3
+
+  packages/agents-antigravity:
+    dependencies:
+      '@synapse/agents':
+        specifier: workspace:*
+        version: link:../agents
 
   packages/agents-gemini:
     dependencies:

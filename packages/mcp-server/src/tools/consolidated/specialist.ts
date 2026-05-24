@@ -52,9 +52,9 @@ export const specialistTool: ConsolidatedTool = {
           // enum dynamisch aus model_registry beim Server-Start ueberschrieben.
           // Aktuell statischer Fallback fuer Bootstrap-Tests + JSONSchema-Validierung
           // bei DB-Down. Neue Modelle in DB → MCP-Server-Restart noetig.
-          enum: ['opus', 'sonnet', 'haiku', 'opus[1m]', 'sonnet[1m]', 'gemini-flash-lite', 'gemini-flash', 'gemini-pro'],
+          enum: ['opus', 'sonnet', 'haiku', 'opus[1m]', 'sonnet[1m]', 'gemini-flash-lite', 'gemini-flash', 'gemini-pro', 'antigravity'],
           description:
-            'Modell-Alias (erforderlich für: spawn). Aliases werden via model_registry-Tabelle aufgeloest. CLAUDE: opus/sonnet/haiku = 200k, opus[1m]/sonnet[1m] = 1M Context. ⚠️ ABO-LIMIT: Nur EIN Modell-Typ darf gleichzeitig auf 1M laufen (sonst rate-limit-Block). GOOGLE: gemini-flash-lite/gemini-flash/gemini-pro = 1M Context, ~3-75x billiger als Claude (braucht GOOGLE_API_KEY).',
+            'Modell-Alias (erforderlich für: spawn). Aliases werden via model_registry-Tabelle aufgeloest. CLAUDE: opus/sonnet/haiku = 200k, opus[1m]/sonnet[1m] = 1M Context. ⚠️ ABO-LIMIT: Nur EIN Modell-Typ darf gleichzeitig auf 1M laufen (sonst rate-limit-Block). GOOGLE (API-Key, Pay-per-Token): gemini-flash-lite/gemini-flash/gemini-pro = 1M Context, ~3-75x billiger als Claude (braucht GOOGLE_API_KEY). ANTIGRAVITY (Pro-Abo via Keyring, KEIN API-Key): antigravity = offizieller agy-CLI als Single-Agent-Worker; laeuft auf Pro-Quota/Credits, strikt getrennt vom GOOGLE-Provider.',
         },
         expertise: {
           type: 'string',

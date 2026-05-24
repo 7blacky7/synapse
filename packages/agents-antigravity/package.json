@@ -1,0 +1,25 @@
+{
+  "name": "@synapse/agents-antigravity",
+  "version": "0.1.0",
+  "description": "Antigravity-CLI (agy) Specialist-Runtime fuer Synapse — nutzt das Pro-Abo via Keyring-Session, KEIN API-Key. Strikt getrennt vom Gemini-Adapter (provider 'antigravity').",
+  "main": "./dist/runtime.js",
+  "type": "module",
+  "exports": {
+    ".": "./dist/runtime.js",
+    "./runtime": "./dist/runtime.js"
+  },
+  "bin": {
+    "synapse-antigravity": "./dist/runtime.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/runtime.js",
+    "clean": "rimraf dist"
+  },
+  "dependencies": {
+    "@synapse/agents": "workspace:*"
+  },
+  "files": [
+    "dist"
+  ]
+}
