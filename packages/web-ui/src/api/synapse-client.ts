@@ -114,16 +114,11 @@ export async function searchMemories(
   project?: string,
   limit: number = 10
 ): Promise<MemoryResult[]> {
-  const params = new URLSearchParams({
-    query,
-    limit: limit.toString(),
+  const response = await fetch(`${API_BASE}/projects/${encodeURIComponent(project || '')}/memories/search`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query, limit }),
   });
-
-  if (project) {
-    params.set('project', project);
-  }
-
-  const response = await fetch(`${API_BASE}/memory/search?${params}`);
 
   if (!response.ok) {
     const error = await response.json().catch(() => ({ error: 'Unbekannter Fehler' }));
@@ -131,7 +126,7 @@ export async function searchMemories(
   }
 
   const data = await response.json();
-  return data.results || [];
+  return data.results || data.memories || [];
 }
 
 /**
@@ -141,13 +136,13 @@ export async function listMemories(
   project: string,
   category?: string
 ): Promise<MemoryResult[]> {
-  const params = new URLSearchParams({ project });
+  const params = new URLSearchParams();
 
   if (category) {
     params.set('category', category);
   }
 
-  const response = await fetch(`${API_BASE}/memory/list?${params}`);
+  const response = await fetch(`${API_BASE}/projects/${encodeURIComponent(project)}/memories?${params}`);
 
   if (!response.ok) {
     const error = await response.json().catch(() => ({ error: 'Unbekannter Fehler' }));
@@ -168,7 +163,7 @@ export async function saveMemory(
   category: string = 'note',
   tags: string[] = []
 ): Promise<MemoryResult> {
-  const response = await fetch(`${API_BASE}/memory`, {
+  const response = await fetch(`${API_BASE}/projects/${encodeURIComponent(project)}/memories`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -198,7 +193,7 @@ export async function deleteMemory(
   name: string
 ): Promise<void> {
   const response = await fetch(
-    `${API_BASE}/memory/${encodeURIComponent(project)}/${encodeURIComponent(name)}`,
+    `${API_BASE}/projects/${encodeURIComponent(project)}/memories/${encodeURIComponent(name)}`,
     {
       method: 'DELETE',
     }
