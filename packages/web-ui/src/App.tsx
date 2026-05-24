@@ -7,6 +7,7 @@ import CodeIntelView from './components/CodeIntelView';
 import FileHistorianView from './components/FileHistorianView';
 import SystemCommandView from './components/SystemCommandView';
 import PlanView from './components/PlanView';
+import ErrorBoundary from './components/ErrorBoundary';
 import { getProjects, ProjectInfo, getSpecialists, SpecialistInfo, getWatcherEvents, WatcherEvent } from './api/synapse-client';
 
 type Tab = 'command' | 'agents' | 'comms' | 'knowledge' | 'code' | 'files' | 'system' | 'plan';
@@ -248,6 +249,7 @@ function App() {
 
         {/* Center view stage */}
         <main style={styles.mainContent}>
+          <ErrorBoundary key={activeTab + ':' + currentProject}>
           {activeTab === 'command' && <Dashboard project={currentProject} />}
           {activeTab === 'agents' && <SpecialistsView project={currentProject} />}
           {activeTab === 'comms' && <Chat project={currentProject} />}
@@ -256,6 +258,7 @@ function App() {
           {activeTab === 'files' && <FileHistorianView project={currentProject} />}
           {activeTab === 'system' && <SystemCommandView project={currentProject} />}
           {activeTab === 'plan' && <PlanView project={currentProject} />}
+          </ErrorBoundary>
         </main>
 
         {/* Right Telemetry Ticker */}
