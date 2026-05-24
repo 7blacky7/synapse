@@ -159,3 +159,12 @@ unregister_chat_agent(id: "<deine-id>")
 - In der ersten Phase gilt: **NUR ERKUNDEN + VORSCHLAGEN**. Es dürfen noch **KEINE Code-Änderungen** vorgenommen werden, es sei denn, der Koordinator weist dich explizit dazu an.
 - Alle Findings und Vorschläge werden zuerst in den Kommunikationskanälen bzw. im Synapse-Memory dokumentiert und zur Diskussion gestellt.
 
+
+## 13. Deployment & Live-Umgebung
+
+- **NIEMALS** Dateien direkt in die Live-Umgebung des Users schreiben oder kopieren (z. B. `~/.synapse/file-watcher/`). Dies ist strikt dem Koordinator/User vorbehalten.
+- Alle Builds und Kompilierungen (z. B. mit PyInstaller) dürfen ausschließlich im `dist/`-Verzeichnis des Repositories erstellt werden (z. B. `dist/tray_test` oder `dist/tray`).
+- Eigene Test-Prozesse (z. B. gestartete Test-Trays) müssen nach der Verifizierung immer sofort selbst beendet werden.
+- Headless-Tests oder Verifizierungen (z. B. DBus-Registrierungen) dürfen nur mit der Test-Binary aus dem `dist/`-Verzeichnis durchgeführt werden. Die Live-Binary darf zu Testzwecken niemals gestartet, beendet oder modifiziert werden.
+
+
