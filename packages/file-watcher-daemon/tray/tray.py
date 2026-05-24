@@ -20,11 +20,16 @@ from __future__ import annotations
 import json
 import os
 import sys
+
+# Force AppIndicator backend on Linux before importing pystray
+if sys.platform != "win32" and sys.platform != "darwin":
+    os.environ["PYSTRAY_BACKEND"] = "appindicator"
+
 import time
 import urllib.request
 import urllib.error
 from pathlib import Path
-from threading import Thread, Event
+from threading import Thread, Event, Lock
 
 from PIL import Image, ImageDraw
 import pystray
@@ -107,15 +112,17 @@ class TrayApp:
         self._projects: list[dict] = []
         self._connected = False
         self._sse_active = False
+        self._lock = Lock()
     # --- Daemon-Calls ---
 
     def refresh(self) -> None:
-        status, body = http_json("GET", "/projects")
-        connected = status == 200 and isinstance(body, dict)
-        self._connected = connected
-        self._projects = body.get("projekte", []) if connected else []
-        self.icon.icon = make_icon(connected)
-        self.icon.update_menu()
+        with self._lock:
+            status, body = http_json("GET", "/projects")
+            connected = status == 200 and isinstance(body, dict)
+            self._connected = connected
+            self._projects = body.get("projekte", []) if connected else []
+            self.icon.icon = make_icon(connected)
+            self.icon.update_menu()
 
     def toggle_project(self, name: str, currently_enabled: bool) -> None:
         path = f"/projects/{name}/{'disable' if currently_enabled else 'enable'}"
@@ -140,44 +147,50 @@ class TrayApp:
     # --- Menu ---
 
     def _build_menu(self) -> tuple:
-        items: list = []
-        items.append(pystray.MenuItem(
-            f"Daemon: {'online' if self._connected else 'OFFLINE'}  ({daemon_port()})",
-            None, enabled=False,
-        ))
-        items.append(pystray.Menu.SEPARATOR)
-
-        if not self._connected:
+        try:
+            items: list = []
             items.append(pystray.MenuItem(
-                f"Daemon starten: {get_daemon_path()}", None, enabled=False,
+                f"Daemon: {'online' if self._connected else 'OFFLINE'}  ({daemon_port()})",
+                None, enabled=False,
             ))
-        elif not self._projects:
-            items.append(pystray.MenuItem("keine Projekte registriert", None, enabled=False))
-        else:
-            for proj in self._projects:
-                name = proj.get("name", "?")
-                enabled = bool(proj.get("enabled", False))
-                label = f"{'●' if enabled else '○'}  {name}"
-                # Submenu mit Toggle + Delete
-                items.append(pystray.MenuItem(
-                    label,
-                    pystray.Menu(
-                        pystray.MenuItem(
-                            "deaktivieren" if enabled else "aktivieren",
-                            lambda _, n=name, e=enabled: self.toggle_project(n, e),
-                        ),
-                        pystray.MenuItem(
-                            "entfernen",
-                            lambda _, n=name: self.delete_project(n),
-                        ),
-                    ),
-                ))
+            items.append(pystray.Menu.SEPARATOR)
 
-        items.append(pystray.Menu.SEPARATOR)
-        items.append(pystray.MenuItem("Config-Ordner oeffnen", lambda _: self.open_config()))
-        items.append(pystray.MenuItem("jetzt aktualisieren", lambda _: self.refresh()))
-        items.append(pystray.MenuItem("Tray beenden", self._on_quit))
-        return tuple(items)
+            if not self._connected:
+                items.append(pystray.MenuItem(
+                    f"Daemon starten: {get_daemon_path()}", None, enabled=False,
+                ))
+            elif not self._projects:
+                items.append(pystray.MenuItem("keine Projekte registriert", None, enabled=False))
+            else:
+                for proj in self._projects:
+                    name = proj.get("name", "?")
+                    enabled = bool(proj.get("enabled", False))
+                    label = f"{'●' if enabled else '○'}  {name}"
+                    # Submenu mit Toggle + Delete
+                    items.append(pystray.MenuItem(
+                        label,
+                        pystray.Menu(
+                            pystray.MenuItem(
+                                "deaktivieren" if enabled else "aktivieren",
+                                (lambda n=name, e=enabled: lambda icon, item: self.toggle_project(n, e))(),
+                            ),
+                            pystray.MenuItem(
+                                "entfernen",
+                                (lambda n=name: lambda icon, item: self.delete_project(n))(),
+                            ),
+                        ),
+                    ))
+
+            items.append(pystray.Menu.SEPARATOR)
+            items.append(pystray.MenuItem("Config-Ordner oeffnen", lambda icon, item: self.open_config()))
+            items.append(pystray.MenuItem("jetzt aktualisieren", lambda icon, item: self.refresh()))
+            items.append(pystray.MenuItem("Tray beenden", lambda icon, item: self._on_quit(icon, item)))
+            return tuple(items)
+        except Exception as e:
+            print(f"[debug] Exception in _build_menu: {e}", flush=True)
+            import traceback
+            traceback.print_exc()
+            return ()
 
     def _on_quit(self, icon, item) -> None:
         self._stop_event.set()
@@ -216,7 +229,7 @@ class TrayApp:
 
     def _poll_loop(self) -> None:
         """Pollt den Daemon als Fallback, falls SSE nicht aktiv ist."""
-        last_poll = 0.0
+        last_poll = time.time()
         while not self._stop_event.is_set():
             now = time.time()
             # Wenn SSE aktiv ist, reicht ein seltener Kontroll-Poll (z.B. alle 10s)
@@ -231,9 +244,23 @@ class TrayApp:
             self._stop_event.wait(POLL_INTERVAL_S)
 
     def run(self) -> None:
+        print("[debug] Entering TrayApp.run()", flush=True)
         self.refresh()
+        print("[debug] refresh() completed", flush=True)
         Thread(target=self._sse_loop, daemon=True).start()
         Thread(target=self._poll_loop, daemon=True).start()
-        self.icon.run()
+        print("[debug] Calling self.icon.run()", flush=True)
+        
+        def setup_callback(icon):
+            print("[debug] setup_callback started", flush=True)
+            try:
+                print("[debug] Setting visible = True", flush=True)
+                icon.visible = True
+                print("[debug] visible = True completed", flush=True)
+            except Exception as e:
+                print(f"[debug] Exception in setup_callback: {e}", flush=True)
+                
+        self.icon.run(setup=setup_callback)
+        print("[debug] self.icon.run() returned", flush=True)
 if __name__ == "__main__":
     TrayApp().run()
