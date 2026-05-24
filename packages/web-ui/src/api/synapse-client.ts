@@ -606,3 +606,139 @@ export async function callMcpTool(name: string, args: Record<string, any>): Prom
   }
   return res.result;
 }
+
+export interface ToolCall {
+  id: number;
+  project: string;
+  tool_name: string;
+  action: string;
+  source: string;
+  args_preview: string;
+  ok: boolean;
+  ts: string;
+}
+
+export async function getToolCalls(project: string, limit?: number): Promise<ToolCall[]> {
+  const params = new URLSearchParams();
+  if (limit) {
+    params.set('limit', limit.toString());
+  }
+  const response = await fetch(`${API_BASE}/projects/${encodeURIComponent(project)}/tool-calls?${params}`);
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status}`);
+  }
+  const data = await response.json();
+  return data.toolCalls || [];
+}
+
+export interface ProjectTask {
+  id: string;
+  title: string;
+  description: string;
+  status: 'todo' | 'in_progress' | 'done';
+  priority: 'low' | 'medium' | 'high';
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ProjectPlan {
+  id: string;
+  project: string;
+  name: string;
+  description: string;
+  goals: string[];
+  architecture?: string;
+  tasks: ProjectTask[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export async function getProjectPlan(project: string): Promise<ProjectPlan> {
+  const response = await fetch(`${API_BASE}/projects/${encodeURIComponent(project)}/plan`);
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status}`);
+  }
+  const data = await response.json();
+  return data.plan;
+}
+
+export async function updateProjectPlan(
+  project: string,
+  updates: Partial<Pick<ProjectPlan, 'name' | 'description' | 'goals' | 'architecture'>>
+): Promise<ProjectPlan> {
+  const response = await fetch(`${API_BASE}/projects/${encodeURIComponent(project)}/plan`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(updates),
+  });
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status}`);
+  }
+  const data = await response.json();
+  return data.plan;
+}
+
+export async function addProjectTask(
+  project: string,
+  title: string,
+  description: string,
+  priority?: 'low' | 'medium' | 'high'
+): Promise<ProjectTask> {
+  const response = await fetch(`${API_BASE}/projects/${encodeURIComponent(project)}/plan/tasks`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ title, description, priority }),
+  });
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status}`);
+  }
+  const data = await response.json();
+  return data.task;
+}
+
+export async function updateProjectTask(
+  project: string,
+  taskId: string,
+  updates: Partial<Pick<ProjectTask, 'title' | 'description' | 'status' | 'priority'>>
+): Promise<ProjectTask> {
+  const response = await fetch(
+    `${API_BASE}/projects/${encodeURIComponent(project)}/plan/tasks/${encodeURIComponent(taskId)}`,
+    {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(updates),
+    }
+  );
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status}`);
+  }
+  const data = await response.json();
+  return data.task;
+}
+
+export interface DocSearchResult {
+  framework: string;
+  version?: string;
+  title: string;
+  content: string;
+  url?: string;
+  score: number;
+}
+
+export async function searchDocs(
+  query: string,
+  framework?: string,
+  limit: number = 10
+): Promise<DocSearchResult[]> {
+  const response = await fetch(`${API_BASE}/search/docs`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query, framework, limit }),
+  });
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status}`);
+  }
+  const data = await response.json();
+  return data.results || [];
+}
+

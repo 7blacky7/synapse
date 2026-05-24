@@ -14,8 +14,8 @@
   --accent-red: #ff3b30;
   
   --text-bone: #f4f4f5;
-  --text-muted: #80808a;
-  --text-dark: #40404a;
+  --text-muted: #a1a1aa;
+  --text-dark: #60606a;
 
   --font-display: 'Orbitron', 'Chakra Petch', sans-serif;
   --font-mono: 'IBM Plex Mono', monospace;
@@ -36,6 +36,10 @@
 
 body {
   font-family: var(--font-ui);
+  font-size: 14px;
+  line-height: 1.5;
+  font-size: 14px;
+  line-height: 1.6;
   background-color: var(--bg-void);
   background-image: 
     radial-gradient(rgba(0, 240, 255, 0.02) 1px, transparent 1px),
@@ -133,25 +137,26 @@ body {
   width: 100%;
   border-collapse: collapse;
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: 14px;
 }
 
 .hud-table th {
   font-family: var(--font-display);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
   letter-spacing: 0.5px;
   text-transform: uppercase;
   color: var(--text-muted);
   border-bottom: 1px solid var(--border-color);
-  padding: 8px 12px;
+  padding: 10px 14px;
   text-align: left;
 }
 
 .hud-table td {
-  padding: 8px 12px;
+  padding: 10px 14px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.02);
   color: var(--text-bone);
+  line-height: 1.5;
 }
 
 .hud-table tr:hover td {
@@ -165,8 +170,8 @@ body {
   border: 1px solid var(--border-color);
   color: var(--text-bone);
   font-family: var(--font-mono);
-  font-size: 12px;
-  padding: 8px 12px;
+  font-size: 14px;
+  padding: 10px 14px;
   outline: none;
   border-radius: 0;
   transition: border-color var(--transition-hud);
@@ -182,11 +187,11 @@ body {
   border: 1px solid var(--accent-cyan);
   color: var(--accent-cyan);
   font-family: var(--font-display);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 700;
   letter-spacing: 1px;
   text-transform: uppercase;
-  padding: 8px 16px;
+  padding: 10px 20px;
   cursor: pointer;
   border-radius: 0;
   transition: all var(--transition-hud);
@@ -232,5 +237,5 @@ body {
   background-size: 100% 4px;
   z-index: 9999;
   pointer-events: none;
-  opacity: 0.4;
+  opacity: 0.22;
 }

@@ -1,194 +1,450 @@
 import { useState, useRef, useEffect } from 'react';
-import { sendChatMessage, ChatMessage } from '../api/synapse-client';
+import {
+  sendChatMessage,
+  getChannels,
+  getChannelFeed,
+  postChannelMessage,
+  ChatMessage,
+  ChannelInfo,
+  ChannelMessage
+} from '../api/synapse-client';
 
 interface ChatProps {
   project: string;
 }
 
-function Chat({ project }: ChatProps) {
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
+export default function Chat({ project }: ChatProps) {
+  // Sidebar channel selection
+  const [selectedChannel, setSelectedChannel] = useState<string | null>(null); // null means Direct Chat
+  const [channels, setChannels] = useState<ChannelInfo[]>([]);
+  const [loadingChannels, setLoadingChannels] = useState(false);
+
+  // Direct Chat states
+  const [directMessages, setDirectMessages] = useState<ChatMessage[]>([]);
+  const [sessionId, setSessionId] = useState<string | null>(null);
+
+  // Channel Feed states
+  const [channelMessages, setChannelMessages] = useState<ChannelMessage[]>([]);
+  const [loadingFeed, setLoadingFeed] = useState(false);
+
+  // Input states
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const [sessionId, setSessionId] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
+  // Load channels when project changes
+  useEffect(() => {
+    if (project) {
+      loadChannels();
+      setSelectedChannel(null); // Reset to Direct Chat on project change
+    } else {
+      setChannels([]);
+      setChannelMessages([]);
+    }
+  }, [project]);
+
+  // Load feed or scroll when channel changes
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
+  }, [directMessages, channelMessages]);
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!input.trim()) return;
+  // Poll channel feed if a channel is selected
+  useEffect(() => {
+    if (!project || selectedChannel === null) {
+      setChannelMessages([]);
+      return;
+    }
 
-    const userMessage: ChatMessage = {
-      role: 'user',
-      content: input,
-      timestamp: new Date().toISOString(),
-    };
+    loadChannelFeed(true); // Initial load with spinner
 
-    setMessages((prev) => [...prev, userMessage]);
-    setInput('');
-    setIsLoading(true);
+    const interval = setInterval(() => {
+      loadChannelFeed(false); // Background refresh
+    }, 5000);
 
+    return () => clearInterval(interval);
+  }, [project, selectedChannel]);
+
+  const loadChannels = async () => {
+    setLoadingChannels(true);
     try {
-      const response = await sendChatMessage(input, project, undefined, sessionId || undefined);
-
-      if (response.sessionId) {
-        setSessionId(response.sessionId);
-      }
-
-      const assistantMessage: ChatMessage = {
-        role: 'assistant',
-        content: response.message,
-        context: response.context,
-        timestamp: new Date().toISOString(),
-      };
-
-      setMessages((prev) => [...prev, assistantMessage]);
-    } catch (error) {
-      const errorMessage: ChatMessage = {
-        role: 'assistant',
-        content: `Error: ${error instanceof Error ? error.message : 'Unknown error occurred'}`,
-        timestamp: new Date().toISOString(),
-      };
-      setMessages((prev) => [...prev, errorMessage]);
+      const data = await getChannels(project);
+      setChannels(data);
+    } catch (err) {
+      console.error('Fehler beim Laden der Kanäle:', err);
     } finally {
-      setIsLoading(false);
+      setLoadingChannels(false);
     }
   };
 
+  const loadChannelFeed = async (showLoading: boolean) => {
+    if (!project || !selectedChannel) return;
+    if (showLoading) setLoadingFeed(true);
+    try {
+      const data = await getChannelFeed(project, selectedChannel, 50);
+      // Sort messages ascending by creation date
+      const sorted = [...data].sort(
+        (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+      );
+      setChannelMessages(sorted);
+    } catch (err) {
+      console.error('Fehler beim Laden des Feeds:', err);
+    } finally {
+      if (showLoading) setLoadingFeed(false);
+    }
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!input.trim() || !project) return;
+
+    const messageContent = input.trim();
+    setInput('');
+    setIsLoading(true);
+
+    if (selectedChannel === null) {
+      // Direct Chat Session
+      const userMessage: ChatMessage = {
+        role: 'user',
+        content: messageContent,
+        timestamp: new Date().toISOString(),
+      };
+
+      setDirectMessages((prev) => [...prev, userMessage]);
+
+      try {
+        const response = await sendChatMessage(messageContent, project, undefined, sessionId || undefined);
+
+        if (response.sessionId) {
+          setSessionId(response.sessionId);
+        }
+
+        const assistantMessage: ChatMessage = {
+          role: 'assistant',
+          content: response.message,
+          context: response.context,
+          timestamp: new Date().toISOString(),
+        };
+
+        setDirectMessages((prev) => [...prev, assistantMessage]);
+      } catch (error) {
+        const errorMessage: ChatMessage = {
+          role: 'assistant',
+          content: `Error: ${error instanceof Error ? error.message : 'Unknown error occurred'}`,
+          timestamp: new Date().toISOString(),
+        };
+        setDirectMessages((prev) => [...prev, errorMessage]);
+      } finally {
+        setIsLoading(false);
+      }
+    } else {
+      // Post to Channel
+      try {
+        await postChannelMessage(project, selectedChannel, messageContent, 'user');
+        // Refresh feed immediately
+        await loadChannelFeed(false);
+      } catch (err) {
+        alert(`Fehler beim Senden in den Channel: ${err instanceof Error ? err.message : String(err)}`);
+      } finally {
+        setIsLoading(false);
+      }
+    }
+  };
+
+  if (!project) {
+    return (
+      <div style={styles.stubView}>
+        <span className="blink">AWAITING PROJECT CONTEXT FOR COMMS LINK...</span>
+      </div>
+    );
+  }
+
   return (
-    <div style={styles.container} className="animate-fade-in">
-      <div style={styles.messages}>
-        {messages.length === 0 && (
-          <div style={styles.welcome} className="animate-slide-up">
-            <div style={styles.welcomeIconWrapper}>
-              <svg width="48" height="48" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <rect x="2" y="2" width="28" height="28" stroke="var(--accent-cyan)" strokeWidth="1" strokeDasharray="4 2" />
-                <path d="M8 12 H24 M8 16 H24 M8 20 H18" stroke="var(--accent-cyan)" strokeWidth="1" opacity="0.6" />
-                <rect x="20" y="18" width="6" height="6" fill="var(--bg-void)" stroke="var(--accent-amber)" strokeWidth="1" />
-              </svg>
-            </div>
-            <h2 style={styles.welcomeTitle}>SYNAPSE // DIRECTED_STEERING</h2>
-            <p style={styles.welcomeText}>
-              Establish a direct communication channel with the specialist coordinator. Input instructions or query index.
-            </p>
-            {!project && (
-              <div style={styles.hintCard}>
-                <span style={styles.hintLabel}>[WARNING]</span>
-                <p style={styles.hintText}>
-                  No project context active. Select a project from the top HUD bar for targeted reasoning.
-                </p>
-              </div>
-            )}
-          </div>
-        )}
+    <div style={styles.layoutGrid} className="animate-fade-in">
+      {/* Channels Sidebar */}
+      <div className="hud-panel" style={styles.sidebar}>
+        <div style={styles.sidebarHeader}>COMMS CHANNELS</div>
+        <div style={styles.channelsList}>
+          {/* Direct Chat Option */}
+          <button
+            onClick={() => setSelectedChannel(null)}
+            style={{
+              ...styles.channelBtn,
+              ...(selectedChannel === null ? styles.activeChannelBtn : {}),
+            }}
+          >
+            <span style={styles.channelPrefix}>[⚡]</span> DIRECT_STEERING
+          </button>
 
-        {messages.map((msg, idx) => {
-          const isUser = msg.role === 'user';
-          
-          return (
-            <div
-              key={idx}
-              style={{
-                ...styles.message,
-                ...(isUser ? styles.userMessage : styles.assistantMessage),
-              }}
-              className="animate-slide-up"
-            >
-              <div style={styles.messageHeader}>
-                <span style={{
-                  ...styles.role,
-                  color: isUser ? 'var(--accent-cyan)' : 'var(--accent-amber)'
-                }}>
-                  {isUser ? 'USER' : 'SYNAPSE'}
-                </span>
-                <span style={styles.timestamp}>
-                  {new Date(msg.timestamp).toLocaleTimeString()}
-                </span>
-              </div>
-
-              <div style={styles.messageContent}>{msg.content}</div>
-
-              {msg.context && msg.context.length > 0 && (
-                <div style={styles.context}>
-                  <details style={styles.details}>
-                    <summary style={styles.summary}>
-                      RESOURCES_CHECK ({msg.context.length})
-                    </summary>
-                    <ul style={styles.contextList}>
-                      {msg.context.map((ctx, i) => (
-                        <li key={i} style={styles.contextItem}>
-                          <span style={styles.contextSource}>{ctx.source}</span>
-                          <span style={styles.contextPreview}>{ctx.preview}</span>
-                        </li>
-                      ))}
-                    </ul>
-                  </details>
-                </div>
-              )}
-            </div>
-          );
-        })}
-
-        {isLoading && (
-          <div style={{ ...styles.message, ...styles.assistantMessage }} className="animate-slide-up">
-            <div style={styles.messageHeader}>
-              <span style={{ ...styles.role, color: 'var(--accent-amber)' }}>SYNAPSE</span>
-              <span style={styles.timestamp} className="blink">THINKING...</span>
-            </div>
-            <div style={styles.loadingContainer}>
-              <span style={styles.loadingDot} />
-              <span style={{ ...styles.loadingDot, animationDelay: '0.2s' }} />
-              <span style={{ ...styles.loadingDot, animationDelay: '0.4s' }} />
-            </div>
-          </div>
-        )}
-
-        <div ref={messagesEndRef} />
+          {loadingChannels ? (
+            <div style={styles.loadingText} className="blink">SCANNING SPECTRUM...</div>
+          ) : (
+            channels.map((chan) => (
+              <button
+                key={chan.name}
+                onClick={() => setSelectedChannel(chan.name)}
+                style={{
+                  ...styles.channelBtn,
+                  ...(selectedChannel === chan.name ? styles.activeChannelBtn : {}),
+                }}
+              >
+                <span style={styles.channelPrefix}>[#]</span> {chan.name.toUpperCase()}
+              </button>
+            ))
+          )}
+        </div>
       </div>
 
-      <form onSubmit={handleSubmit} style={styles.inputArea}>
-        <div style={styles.inputRow}>
-          <input
-            type="text"
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            placeholder={
-              project
-                ? `Enter steering instruction for [${project.toUpperCase()}]...`
-                : 'Enter query message...'
-            }
-            className="hud-input"
-            style={styles.textInput}
-            disabled={isLoading}
-          />
-
-          <button
-            type="submit"
-            disabled={isLoading || !input.trim()}
-            className="hud-button"
-            style={styles.sendButton}
-          >
-            TRANSMIT
-          </button>
+      {/* Message Feed Display */}
+      <div className="hud-panel" style={styles.chatArea}>
+        <div style={styles.chatHeader}>
+          <span style={styles.chatTitle}>
+            {selectedChannel === null ? 'DIRECT_STEERING // ASSISTANT' : `#${selectedChannel.toUpperCase()}`}
+          </span>
+          {selectedChannel !== null && (
+            <span style={styles.chatStatus} className="blink">
+              {loadingFeed ? 'SYNCING...' : 'LIVE_FEED'}
+            </span>
+          )}
         </div>
-      </form>
+
+        <div style={styles.messages}>
+          {selectedChannel === null ? (
+            /* Render Direct Chat Messages */
+            directMessages.length === 0 ? (
+              <div style={styles.welcome}>
+                <div style={styles.welcomeIconWrapper}>
+                  <svg width="48" height="48" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <rect x="2" y="2" width="28" height="28" stroke="var(--accent-cyan)" strokeWidth="1" strokeDasharray="4 2" />
+                    <path d="M8 12 H24 M8 16 H24 M8 20 H18" stroke="var(--accent-cyan)" strokeWidth="1" opacity="0.6" />
+                    <rect x="20" y="18" width="6" height="6" fill="var(--bg-void)" stroke="var(--accent-amber)" strokeWidth="1" />
+                  </svg>
+                </div>
+                <h2 style={styles.welcomeTitle}>DIRECT_STEERING</h2>
+                <p style={styles.welcomeText}>
+                  Send instructions directly to the project agent. The coordinator is ready to process.
+                </p>
+              </div>
+            ) : (
+              directMessages.map((msg, idx) => {
+                const isUser = msg.role === 'user';
+                return (
+                  <div
+                    key={idx}
+                    style={{
+                      ...styles.messageCard,
+                      ...(isUser ? styles.userMessage : styles.assistantMessage),
+                    }}
+                    className="animate-slide-up"
+                  >
+                    <div style={styles.messageHeader}>
+                      <span style={{ ...styles.role, color: isUser ? 'var(--accent-cyan)' : 'var(--accent-amber)' }}>
+                        {isUser ? 'USER' : 'SYNAPSE'}
+                      </span>
+                      <span style={styles.timestamp}>{new Date(msg.timestamp).toLocaleTimeString()}</span>
+                    </div>
+                    <div style={styles.messageContent}>{msg.content}</div>
+                    {msg.context && msg.context.length > 0 && (
+                      <div style={styles.context}>
+                        <details style={styles.details}>
+                          <summary style={styles.summary}>RESOURCES ({msg.context.length})</summary>
+                          <ul style={styles.contextList}>
+                            {msg.context.map((ctx, i) => (
+                              <li key={i} style={styles.contextItem}>
+                                <span style={styles.contextSource}>{ctx.source}</span>
+                                <span style={styles.contextPreview}>{ctx.preview}</span>
+                              </li>
+                            ))}
+                          </ul>
+                        </details>
+                      </div>
+                    )}
+                  </div>
+                );
+              })
+            )
+          ) : (
+            /* Render Channel Messages */
+            channelMessages.length === 0 ? (
+              <div style={styles.welcome}>
+                <h2 style={styles.welcomeTitle}>#{selectedChannel.toUpperCase()}</h2>
+                <p style={styles.welcomeText}>No communications recorded on this frequency yet.</p>
+              </div>
+            ) : (
+              channelMessages.map((msg) => {
+                const isUser = msg.sender === 'user';
+                const isSystem = msg.sender === 'system' || msg.sender === 'watcher';
+                const senderColor = isUser
+                  ? 'var(--accent-cyan)'
+                  : isSystem
+                  ? 'var(--text-muted)'
+                  : 'var(--accent-amber)';
+
+                return (
+                  <div key={msg.id} style={styles.channelMessageCard} className="animate-slide-up">
+                    <div style={styles.channelMessageHeader}>
+                      <span style={{ ...styles.channelSender, color: senderColor }}>
+                        {msg.sender.toUpperCase()}
+                      </span>
+                      <span style={styles.channelTime}>
+                        {new Date(msg.createdAt).toLocaleTimeString()}
+                      </span>
+                    </div>
+                    <div style={styles.channelMessageContent}>{msg.content}</div>
+                  </div>
+                )
+              })
+            ))}
+
+          {isLoading && selectedChannel === null && (
+            <div style={{ ...styles.messageCard, ...styles.assistantMessage }} className="animate-slide-up">
+              <div style={styles.messageHeader}>
+                <span style={{ ...styles.role, color: 'var(--accent-amber)' }}>SYNAPSE</span>
+                <span style={styles.timestamp} className="blink">THINKING...</span>
+              </div>
+              <div style={styles.loadingContainer}>
+                <span style={styles.loadingDot} />
+                <span style={{ ...styles.loadingDot, animationDelay: '0.2s' }} />
+                <span style={{ ...styles.loadingDot, animationDelay: '0.4s' }} />
+              </div>
+            </div>
+          )}
+
+          <div ref={messagesEndRef} />
+        </div>
+
+        <form onSubmit={handleSubmit} style={styles.inputArea}>
+          <div style={styles.inputRow}>
+            <input
+              type="text"
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              placeholder={
+                selectedChannel === null
+                  ? `Transmit direct steering instruction for [${project.toUpperCase()}]...`
+                  : `Broadcast message to #${selectedChannel.toUpperCase()}...`
+              }
+              className="hud-input"
+              style={styles.textInput}
+              disabled={isLoading}
+            />
+            <button
+              type="submit"
+              disabled={isLoading || !input.trim()}
+              className="hud-button"
+              style={styles.sendButton}
+            >
+              TRANSMIT
+            </button>
+          </div>
+        </form>
+      </div>
     </div>
   );
 }
 
 const styles: Record<string, React.CSSProperties> = {
-  container: {
+  layoutGrid: {
+    display: 'grid',
+    gridTemplateColumns: '240px 1fr',
+    gap: '20px',
+    height: 'calc(100vh - 100px)',
+  },
+  stubView: {
+    fontFamily: 'var(--font-mono)',
+    fontSize: '14px',
+    color: 'var(--text-muted)',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    height: 'calc(100vh - 100px)',
+    border: '1px dashed var(--border-color)',
+  },
+  sidebar: {
+    background: 'var(--bg-panel)',
     display: 'flex',
     flexDirection: 'column',
     height: '100%',
+  },
+  sidebarHeader: {
+    fontFamily: 'var(--font-display)',
+    fontSize: '11px',
+    fontWeight: 'bold',
+    letterSpacing: '1px',
+    color: 'var(--text-bone)',
+    padding: '10px 16px',
+    background: 'var(--bg-panel-header)',
+    borderBottom: '1px solid var(--border-color)',
+  },
+  channelsList: {
+    padding: '12px',
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '8px',
+    flex: 1,
+    overflowY: 'auto',
+  },
+  channelBtn: {
+    fontFamily: 'var(--font-display)',
+    fontSize: '12px',
+    fontWeight: 'bold',
+    textAlign: 'left',
+    color: 'var(--text-muted)',
     background: 'transparent',
+    border: '1px solid transparent',
+    padding: '8px 12px',
+    cursor: 'pointer',
+    width: '100%',
+    outline: 'none',
+    transition: 'all var(--transition-hud)',
+  },
+  activeChannelBtn: {
+    color: 'var(--accent-cyan)',
+    borderColor: 'var(--border-color)',
+    background: 'rgba(0, 240, 255, 0.03)',
+    boxShadow: 'inset 2px 0 0 var(--accent-cyan)',
+  },
+  channelPrefix: {
+    color: 'var(--text-dark)',
+    marginRight: '6px',
+  },
+  loadingText: {
+    fontFamily: 'var(--font-mono)',
+    fontSize: '11px',
+    color: 'var(--text-dark)',
+    textAlign: 'center',
+    padding: '20px 0',
+  },
+  chatArea: {
+    background: 'var(--bg-panel)',
+    display: 'flex',
+    flexDirection: 'column',
+    height: '100%',
+  },
+  chatHeader: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: '10px 16px',
+    background: 'var(--bg-panel-header)',
+    borderBottom: '1px solid var(--border-color)',
+  },
+  chatTitle: {
+    fontFamily: 'var(--font-display)',
+    fontSize: '12px',
+    fontWeight: 'bold',
+    color: 'var(--text-bone)',
+    letterSpacing: '1px',
+  },
+  chatStatus: {
+    fontFamily: 'var(--font-mono)',
+    fontSize: '10px',
+    color: 'var(--accent-green)',
+    fontWeight: 'bold',
   },
   messages: {
     flex: 1,
     overflowY: 'auto',
-    padding: '24px',
+    padding: '20px',
     display: 'flex',
     flexDirection: 'column',
     gap: '16px',
@@ -222,45 +478,20 @@ const styles: Record<string, React.CSSProperties> = {
     color: 'var(--text-muted)',
     lineHeight: '1.5',
   },
-  hintCard: {
-    marginTop: '20px',
-    padding: '12px',
-    background: 'rgba(255, 59, 48, 0.04)',
-    border: '1px solid var(--accent-red)',
-    textAlign: 'left',
-    width: '100%',
-  },
-  hintLabel: {
-    fontFamily: 'var(--font-display)',
-    fontSize: '10px',
-    fontWeight: 'bold',
-    color: 'var(--accent-red)',
-    letterSpacing: '1px',
-    display: 'block',
-    marginBottom: '4px',
-  },
-  hintText: {
-    fontFamily: 'var(--font-mono)',
-    fontSize: '11px',
-    color: 'var(--text-bone)',
-    lineHeight: '1.4',
-    margin: 0,
-  },
-  message: {
+  messageCard: {
     maxWidth: '80%',
     padding: '12px 16px',
     border: '1px solid var(--border-color)',
-    borderRadius: '2px',
+    borderRadius: 0,
   },
   userMessage: {
     alignSelf: 'flex-end',
     background: 'rgba(0, 240, 255, 0.02)',
     borderColor: 'var(--accent-cyan)',
-    boxShadow: '0 0 8px rgba(0, 240, 255, 0.05)',
   },
   assistantMessage: {
     alignSelf: 'flex-start',
-    background: 'var(--bg-panel)',
+    background: 'var(--bg-void)',
     borderColor: 'var(--border-color)',
   },
   messageHeader: {
@@ -281,8 +512,8 @@ const styles: Record<string, React.CSSProperties> = {
   },
   messageContent: {
     fontFamily: 'var(--font-ui)',
-    fontSize: '13px',
-    lineHeight: '1.6',
+    fontSize: '14px',
+    lineHeight: '1.5',
     color: 'var(--text-bone)',
     whiteSpace: 'pre-wrap',
   },
@@ -343,8 +574,8 @@ const styles: Record<string, React.CSSProperties> = {
     animation: 'crtBlink 1.2s infinite ease-in-out',
   },
   inputArea: {
-    padding: '16px 24px',
-    background: 'var(--bg-panel)',
+    padding: '16px 20px',
+    background: 'var(--bg-panel-header)',
     borderTop: '1px solid var(--border-color)',
   },
   inputRow: {
@@ -357,6 +588,32 @@ const styles: Record<string, React.CSSProperties> = {
   sendButton: {
     flexShrink: 0,
   },
+  // Channel specific message styles
+  channelMessageCard: {
+    borderBottom: '1px solid rgba(255, 255, 255, 0.02)',
+    paddingBottom: '12px',
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '4px',
+  },
+  channelMessageHeader: {
+    display: 'flex',
+    gap: '10px',
+    alignItems: 'center',
+    fontFamily: 'var(--font-mono)',
+    fontSize: '12px',
+  },
+  channelSender: {
+    fontWeight: 'bold',
+  },
+  channelTime: {
+    color: 'var(--text-dark)',
+  },
+  channelMessageContent: {
+    fontFamily: 'var(--font-ui)',
+    fontSize: '14px',
+    lineHeight: '1.5',
+    color: 'var(--text-bone)',
+    whiteSpace: 'pre-wrap',
+  },
 };
-
-export default Chat;

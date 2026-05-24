@@ -6,9 +6,10 @@ import SpecialistsView from './components/SpecialistsView';
 import CodeIntelView from './components/CodeIntelView';
 import FileHistorianView from './components/FileHistorianView';
 import SystemCommandView from './components/SystemCommandView';
+import PlanView from './components/PlanView';
 import { getProjects, ProjectInfo, getSpecialists, SpecialistInfo, getWatcherEvents, WatcherEvent } from './api/synapse-client';
 
-type Tab = 'command' | 'agents' | 'comms' | 'knowledge' | 'code' | 'files' | 'system';
+type Tab = 'command' | 'agents' | 'comms' | 'knowledge' | 'code' | 'files' | 'system' | 'plan';
 
 function App() {
   const [activeTab, setActiveTab] = useState<Tab>('command');
@@ -217,6 +218,15 @@ function App() {
             >
               <span style={styles.navNum}>[07]</span> SYSTEM COMMAND
             </button>
+            <button
+              onClick={() => setActiveTab('plan')}
+              style={{
+                ...styles.navBtn,
+                ...(activeTab === 'plan' ? styles.activeNavBtn : {})
+              }}
+            >
+              <span style={styles.navNum}>[08]</span> PLAN & TASKS
+            </button>
           </div>
           
           <div style={styles.systemStatusBlock}>
@@ -245,6 +255,7 @@ function App() {
           {activeTab === 'code' && <CodeIntelView project={currentProject} />}
           {activeTab === 'files' && <FileHistorianView project={currentProject} />}
           {activeTab === 'system' && <SystemCommandView project={currentProject} />}
+          {activeTab === 'plan' && <PlanView project={currentProject} />}
         </main>
 
         {/* Right Telemetry Ticker */}

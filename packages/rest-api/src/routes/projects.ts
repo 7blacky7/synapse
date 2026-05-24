@@ -13,6 +13,7 @@ import {
   getPlan,
   updatePlan,
   addTask,
+  updateTask,
 } from '@synapse/core';
 import type { FileWatcherInstance } from '@synapse/core';
 
@@ -212,4 +213,36 @@ export async function projectRoutes(fastify: FastifyInstance): Promise<void> {
       task,
     };
   });
+
+  /**
+   * PATCH /api/projects/:name/plan/tasks/:taskId
+   * Task aktualisieren (z.B. Status pflegen)
+   */
+  fastify.patch<{
+    Params: { name: string; taskId: string };
+    Body: {
+      title?: string;
+      description?: string;
+      status?: 'todo' | 'in_progress' | 'done';
+      priority?: 'low' | 'medium' | 'high';
+    };
+  }>('/api/projects/:name/plan/tasks/:taskId', async (request, reply) => {
+    const { name, taskId } = request.params;
+    const updates = request.body;
+
+    const task = await updateTask(name, taskId, updates);
+
+    if (!task) {
+      return reply.status(404).send({
+        success: false,
+        error: { message: `Task nicht gefunden oder kein Plan fuer Projekt: ${name}` },
+      });
+    }
+
+    return {
+      success: true,
+      task,
+    };
+  });
 }
+
