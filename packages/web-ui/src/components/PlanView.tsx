@@ -254,12 +254,12 @@ function TaskCard({ task, onMove }: TaskCardProps) {
     <div style={styles.taskCard}>
       <div style={styles.taskHeader}>
         <span style={{ ...styles.taskPriority, borderColor: priorityColor, color: priorityColor }}>
-          {task.priority.toUpperCase()}
+          {String(task.priority || '').toUpperCase()}
         </span>
         <span style={styles.taskTime}>{new Date(task.updatedAt).toLocaleTimeString()}</span>
       </div>
-      <div style={styles.taskTitle}>{task.title}</div>
-      <div style={styles.taskDesc}>{task.description}</div>
+      <div style={styles.taskTitle}>{typeof task.title === 'string' ? task.title : JSON.stringify(task.title)}</div>
+      <div style={styles.taskDesc}>{typeof task.description === 'string' ? task.description : (task.description == null ? '' : JSON.stringify(task.description))}</div>
       <div style={styles.taskActions}>
         {isTodo && (
           <button onClick={() => onMove('in_progress')} className="hud-button" style={styles.taskActionBtn}>
