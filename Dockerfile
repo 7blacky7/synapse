@@ -10,6 +10,7 @@ WORKDIR /app
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY packages/core/package.json ./packages/core/
 COPY packages/rest-api/package.json ./packages/rest-api/
+COPY packages/web-ui/package.json ./packages/web-ui/
 
 # Install
 RUN pnpm install --frozen-lockfile
@@ -18,9 +19,10 @@ RUN pnpm install --frozen-lockfile
 COPY tsconfig.base.json ./
 COPY packages/core ./packages/core
 COPY packages/rest-api ./packages/rest-api
+COPY packages/web-ui ./packages/web-ui
 
 # Build
-RUN pnpm -r --filter @synapse/core --filter @synapse/rest-api run build
+RUN pnpm -r --filter @synapse/core --filter @synapse/rest-api --filter @synapse/web-ui run build
 
 # Port
 EXPOSE 3456

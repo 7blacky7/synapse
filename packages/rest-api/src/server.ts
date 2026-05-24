@@ -5,6 +5,10 @@
 
 import Fastify, { FastifyInstance } from 'fastify';
 import cors from '@fastify/cors';
+import fastifyStatic from '@fastify/static';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
+import { existsSync } from 'node:fs';
 import { getConfig, initSynapse, getPool, registerVirtualProject } from '@synapse/core';
 import { errorHandler } from './middleware/error.js';
 import {
@@ -70,12 +74,45 @@ export async function createServer(): Promise<FastifyInstance> {
   // Health Check
   fastify.get('/health', async () => ({ status: 'ok' }));
 
-  // Root
-  fastify.get('/', async () => ({
+  // API-Info unter /api (Root liefert jetzt das Web-UI-Dashboard)
+  fastify.get('/api', async () => ({
     name: 'Synapse API',
     version: '0.2.0',
     docs: '/api/status',
   }));
+
+  // Web-UI (React-Dashboard) Same-Origin ausliefern, wenn ein Build vorliegt
+  const __dirname = dirname(fileURLToPath(import.meta.url));
+  const webUiDist = process.env.WEB_UI_DIST || join(__dirname, '..', '..', 'web-ui', 'dist');
+
+  if (existsSync(join(webUiDist, 'index.html'))) {
+    await fastify.register(fastifyStatic, {
+      root: webUiDist,
+      prefix: '/',
+    });
+
+    // SPA-Fallback: unbekannte GET-Routen (kein /api, /mcp, /.well-known) -> index.html
+    fastify.setNotFoundHandler((request, reply) => {
+      if (
+        request.method === 'GET' &&
+        !request.url.startsWith('/api') &&
+        !request.url.startsWith('/mcp') &&
+        !request.url.startsWith('/.well-known')
+      ) {
+        return reply.sendFile('index.html');
+      }
+      reply.code(404).send({ error: 'Not Found', path: request.url });
+    });
+
+    fastify.log.info(`[Synapse API] Web-UI wird ausgeliefert aus ${webUiDist}`);
+  } else {
+    fastify.log.warn(`[Synapse API] Kein Web-UI-Build gefunden (${webUiDist}) -- nur API aktiv`);
+    fastify.get('/', async () => ({
+      name: 'Synapse API',
+      version: '0.2.0',
+      docs: '/api/status',
+    }));
+  }
 
   return fastify;
 }

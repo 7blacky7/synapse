@@ -34,3 +34,7 @@ docs/superpowers/
 
 # Synapse Projekt-Status (pro Projekt)
 .synapse/
+
+# Agent-Artefakte (nicht versionieren)
+MEMORY.md
+build/

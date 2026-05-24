@@ -17,6 +17,7 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.71.2",
     "@fastify/cors": "^8.4.0",
+    "@fastify/static": "^7.0.4",
     "@synapse/core": "workspace:*",
     "dotenv": "^16.3.1",
     "fastify": "^4.24.0",
