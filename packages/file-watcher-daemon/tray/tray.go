@@ -4,11 +4,13 @@ import (
 	"bufio"
 	"bytes"
 	"database/sql"
+	_ "embed"
 	"encoding/json"
 	"fmt"
 	"image"
 	"image/color"
 	"image/png"
+	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -99,8 +101,8 @@ type ChatWindow struct {
 	Window       fyne.Window
 	ProjectName  string
 	ChannelName  string
-	MessageTable *widget.Table
-	MessageRows  [][]string
+	MessageBox    *fyne.Container
+	MessageScroll *container.Scroll
 	LastMsgID    int64
 	AgentTable   *widget.Table
 	AgentRows    [][]string
@@ -367,6 +369,13 @@ func openConfigDir(path string) {
 	_ = cmd.Start()
 }
 
+func toggleLabel(enabled bool) string {
+	if enabled {
+		return "Aktiv: AN  (klick = deaktivieren)"
+	}
+	return "Aktiv: AUS  (klick = aktivieren)"
+}
+
 func toggleProject(name string, currentlyEnabled bool) {
 	// 1. ZUERST frischen State holen
 	uStatus := fmt.Sprintf("http://127.0.0.1:%d/projects/%s/status", port, url.QueryEscape(name))
@@ -374,7 +383,9 @@ func toggleProject(name string, currentlyEnabled bool) {
 	
 	enabled := currentlyEnabled
 	respStatus, err := client.Get(uStatus)
-	if err == nil {
+	if err != nil {
+		log.Printf("[tray] toggleProject %s: GET status FEHLER: %v (port=%d)", name, err, port)
+	} else {
 		defer respStatus.Body.Close()
 		var statusMap map[string]interface{}
 		if err := json.NewDecoder(respStatus.Body).Decode(&statusMap); err == nil {
@@ -392,8 +403,9 @@ func toggleProject(name string, currentlyEnabled bool) {
 
 	// 3. POST ausführen
 	u := fmt.Sprintf("http://127.0.0.1:%d/projects/%s/%s", port, url.QueryEscape(name), action)
-	resp, err := client.Post(u, "application/json", nil)
+	resp, err := client.Post(u, "application/json", bytes.NewReader([]byte("{}")))
 	if err != nil {
+		log.Printf("[tray] toggleProject %s: POST FEHLER: %v", name, err)
 		return
 	}
 	defer resp.Body.Close()
@@ -405,10 +417,10 @@ func toggleProject(name string, currentlyEnabled bool) {
 		if handle, ok := projectHandles[name]; ok {
 			handle.Enabled = newState
 			if newState {
-				handle.CheckItem.Check()
+				handle.CheckItem.SetTitle(toggleLabel(true))
 				handle.SubMenu.SetTitle("●  " + name)
 			} else {
-				handle.CheckItem.Uncheck()
+				handle.CheckItem.SetTitle(toggleLabel(false))
 				handle.SubMenu.SetTitle("○  " + name)
 			}
 		}
@@ -460,10 +472,12 @@ func rebuildMenu(projs []Project) {
 			}
 
 			sm := systray.AddMenuItem(label, "")
-			check := sm.AddSubMenuItemCheckbox("Aktiv", "", enabled)
+			// Reguläres Item statt Checkbox: AddSubMenuItemCheckbox feuert ClickedCh
+			// auf KDE/SNI nicht zuverlässig, reguläre Items schon. State steht im Titel.
+			check := sm.AddSubMenuItem(toggleLabel(enabled), "")
 			sm.AddSeparator()
 
-			itOeffnen := sm.AddSubMenuItem("Oeffnen...", "")
+			itOeffnen := sm.AddSubMenuItem("Öffnen...", "")
 			go func(projName string) {
 				for range itOeffnen.ClickedCh {
 					openDetail(projName)
@@ -496,7 +510,7 @@ func rebuildMenu(projs []Project) {
 			}
 
 			sm.AddSeparator()
-			itLoeschen := sm.AddSubMenuItem("Loeschen...", "")
+			itLoeschen := sm.AddSubMenuItem("Löschen...", "")
 			go func(projName string) {
 				for range itLoeschen.ClickedCh {
 					openDetail(projName) // Delete is handled in Aktionen tab
@@ -509,7 +523,7 @@ func rebuildMenu(projs []Project) {
 				Enabled:   enabled,
 			}
 
-			// Active checkbox handler
+			// Active toggle handler
 			go func(pName string, item *systray.MenuItem) {
 				for range item.ClickedCh {
 					toggleProject(pName, projectHandles[pName].Enabled)
@@ -587,10 +601,10 @@ func refresh() {
 			if handle.Enabled != newEnabled {
 				handle.Enabled = newEnabled
 				if newEnabled {
-					handle.CheckItem.Check()
+					handle.CheckItem.SetTitle(toggleLabel(true))
 					handle.SubMenu.SetTitle("●  " + name)
 				} else {
-					handle.CheckItem.Uncheck()
+					handle.CheckItem.SetTitle(toggleLabel(false))
 					handle.SubMenu.SetTitle("○  " + name)
 				}
 			}
@@ -644,7 +658,7 @@ func openDetail(name string) {
 					go func() {
 						u := fmt.Sprintf("http://127.0.0.1:%d/projects/%s/specialists/%s/stop", port, url.QueryEscape(name), url.QueryEscape(agentName))
 						client := &http.Client{Timeout: 1 * time.Second}
-						resp, err := client.Post(u, "application/json", nil)
+						resp, err := client.Post(u, "application/json", bytes.NewReader([]byte("{}")))
 						if err == nil {
 							resp.Body.Close()
 						}
@@ -653,7 +667,7 @@ func openDetail(name string) {
 				}
 			}, w.Window)
 		} else {
-			dialog.ShowInformation("Stoppen", "Kein Spezialist ausgewaehlt.", w.Window)
+			dialog.ShowInformation("Stoppen", "Kein Spezialist ausgewählt.", w.Window)
 		}
 	})
 
@@ -695,7 +709,7 @@ func openDetail(name string) {
 	btnRefE := widget.NewButton("Aktualisieren", func() {
 		go w.ReloadEvents()
 	})
-	btnOpenE := widget.NewButton("Oeffnen", func() {
+	btnOpenE := widget.NewButton("Öffnen", func() {
 		if selectedEventRow >= 0 && selectedEventRow < len(w.EventRows) {
 			go w.OpenSelectedEventFile(selectedEventRow)
 		}
@@ -735,7 +749,7 @@ func openDetail(name string) {
 				go func() {
 					u := fmt.Sprintf("http://127.0.0.1:%d/projects/%s/reindex", port, url.QueryEscape(name))
 					client := &http.Client{Timeout: 1 * time.Second}
-					resp, err := client.Post(u, "application/json", nil)
+					resp, err := client.Post(u, "application/json", bytes.NewReader([]byte("{}")))
 					if err == nil {
 						resp.Body.Close()
 					}
@@ -747,13 +761,13 @@ func openDetail(name string) {
 		}, w.Window)
 	})
 
-	btnDelete := widget.NewButton("Projekt loeschen", func() {
-		dialog.ShowConfirm("Loeschen?", fmt.Sprintf("Projekt '%s' wirklich loeschen?\nIndex und Watcher-Eintrag werden entfernt.\nDer Ordner auf der Platte bleibt unberuehrt.", name), func(ok bool) {
+	btnDelete := widget.NewButton("Projekt löschen", func() {
+		dialog.ShowConfirm("Löschen?", fmt.Sprintf("Projekt '%s' wirklich löschen?\nIndex und Watcher-Eintrag werden entfernt.\nDer Ordner auf der Platte bleibt unberührt.", name), func(ok bool) {
 			if ok {
 				go func() {
 					u := fmt.Sprintf("http://127.0.0.1:%d/projects/%s/delete", port, url.QueryEscape(name))
 					client := &http.Client{Timeout: 1 * time.Second}
-					resp, err := client.Post(u, "application/json", nil)
+					resp, err := client.Post(u, "application/json", bytes.NewReader([]byte("{}")))
 					if err == nil {
 						resp.Body.Close()
 					}
@@ -941,29 +955,10 @@ func openChat(projectName, channelName string) {
 		ChannelName: channelName,
 	}
 
-	w.MessageTable = widget.NewTable(
-		func() (int, int) { return len(w.MessageRows), 3 },
-		func() fyne.CanvasObject { return widget.NewLabel("Template") },
-		func(id widget.TableCellID, cell fyne.CanvasObject) {
-			label := cell.(*widget.Label)
-			if id.Row < len(w.MessageRows) && id.Col < 3 {
-				label.SetText(w.MessageRows[id.Row][id.Col])
-			}
-		},
-	)
-	w.MessageTable.SetColumnWidth(0, 130)
-	w.MessageTable.SetColumnWidth(1, 100)
-	w.MessageTable.SetColumnWidth(2, 450)
-
-	w.MessageTable.OnSelected = func(id widget.TableCellID) {
-		if id.Row < len(w.MessageRows) {
-			msgContent := w.MessageRows[id.Row][2]
-			if len(w.MessageRows[id.Row]) > 3 {
-				msgContent = w.MessageRows[id.Row][3]
-			}
-			w.Window.Clipboard().SetContent(msgContent)
-		}
-	}
+	// Nachrichten: scrollbare Liste mehrzeiliger Wrapping-Labels (kein Truncation,
+	// kein Überlappen, voller Text immer lesbar — ersetzt die starre Tabelle).
+	w.MessageBox = container.NewVBox()
+	w.MessageScroll = container.NewVScroll(w.MessageBox)
 
 	w.AgentTable = widget.NewTable(
 		func() (int, int) { return len(w.AgentRows), 2 },
@@ -991,7 +986,7 @@ func openChat(projectName, channelName string) {
 		go w.ReloadAll()
 	})
 
-	leftSide := container.NewBorder(widget.NewLabel("Nachrichten:"), nil, nil, nil, w.MessageTable)
+	leftSide := container.NewBorder(widget.NewLabel("Nachrichten:"), nil, nil, nil, w.MessageScroll)
 	rightSide := container.NewBorder(widget.NewLabel("Agenten im Projekt:"), nil, nil, nil, w.AgentTable)
 
 	split := container.NewHSplit(leftSide, rightSide)
@@ -1086,14 +1081,8 @@ func (w *ChatWindow) ReloadMessages() {
 		var id int64
 		var sender, content, timeStr string
 		if err := rows.Scan(&id, &sender, &content, &timeStr); err == nil {
-			// Sanitize content for grid display (Bug 5)
-			displayContent := strings.ReplaceAll(content, "\n", " ")
-			displayContent = strings.ReplaceAll(displayContent, "\r", " ")
-			r := []rune(displayContent)
-			if len(r) > 200 {
-				displayContent = string(r[:200]) + "…"
-			}
-			newMsgs = append(newMsgs, []string{timeStr, sender, displayContent, content})
+			// Voller Inhalt inkl. Zeilenumbrüche — Wrapping-Label rendert das sauber.
+			newMsgs = append(newMsgs, []string{timeStr, sender, content})
 			if id > maxID {
 				maxID = id
 			}
@@ -1107,18 +1096,31 @@ func (w *ChatWindow) ReloadMessages() {
 				newMsgs[i], newMsgs[j] = newMsgs[j], newMsgs[i]
 			}
 			fyne.Do(func() {
-				w.MessageRows = newMsgs
-				w.MessageTable.Refresh()
-				w.MessageTable.ScrollTo(widget.TableCellID{Row: len(w.MessageRows) - 1, Col: 0})
+				w.MessageBox.RemoveAll()
+				for _, m := range newMsgs {
+					w.MessageBox.Add(makeMsgItem(m[0], m[1], m[2]))
+				}
+				w.MessageBox.Refresh()
+				w.MessageScroll.ScrollToBottom()
 			})
 		} else {
 			fyne.Do(func() {
-				w.MessageRows = append(w.MessageRows, newMsgs...)
-				w.MessageTable.Refresh()
-				w.MessageTable.ScrollTo(widget.TableCellID{Row: len(w.MessageRows) - 1, Col: 0})
+				for _, m := range newMsgs {
+					w.MessageBox.Add(makeMsgItem(m[0], m[1], m[2]))
+				}
+				w.MessageBox.Refresh()
+				w.MessageScroll.ScrollToBottom()
 			})
 		}
 	}
+}
+
+// makeMsgItem rendert eine Chat-Nachricht als mehrzeiliges, umbrechendes Element.
+func makeMsgItem(timeStr, sender, content string) fyne.CanvasObject {
+	header := widget.NewLabelWithStyle("["+timeStr+"]  "+sender, fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
+	body := widget.NewLabel(content)
+	body.Wrapping = fyne.TextWrapWord
+	return container.NewVBox(header, body, widget.NewSeparator())
 }
 
 func (w *ChatWindow) ReloadAgents() {
@@ -1146,32 +1148,29 @@ func (w *ChatWindow) ReloadAgents() {
 	})
 }
 
+//go:embed icon.png
+var iconPNG []byte
+
+// makeIcon liefert das eingebettete Synapse-Icon. Connected = Originalfarbe (cyan),
+// Offline = desaturierte (graue) Variante als Status-Indikator. Alpha bleibt erhalten.
 func makeIcon(connected bool) []byte {
-	size := 64
-	img := image.NewRGBA(image.Rect(0, 0, size, size))
-
-	var outerColor color.RGBA
 	if connected {
-		outerColor = color.RGBA{76, 175, 80, 255}
-	} else {
-		outerColor = color.RGBA{84, 84, 84, 255}
+		return iconPNG
 	}
-	innerColor := color.RGBA{30, 30, 30, 255}
-
-	drawCircle := func(cx, cy, r int, col color.RGBA) {
-		for y := -r; y < r; y++ {
-			for x := -r; x < r; x++ {
-				if x*x+y*y < r*r {
-					img.Set(cx+x, cy+y, col)
-				}
-			}
+	src, err := png.Decode(bytes.NewReader(iconPNG))
+	if err != nil {
+		return iconPNG
+	}
+	b := src.Bounds()
+	dst := image.NewRGBA(b)
+	for y := b.Min.Y; y < b.Max.Y; y++ {
+		for x := b.Min.X; x < b.Max.X; x++ {
+			r, g, bl, a := src.At(x, y).RGBA()
+			lum := uint8(((r*299 + g*587 + bl*114) / 1000) >> 8)
+			dst.Set(x, y, color.RGBA{lum, lum, lum, uint8(a >> 8)})
 		}
 	}
-
-	drawCircle(size/2, size/2, 28, outerColor)
-	drawCircle(size/2, size/2, 12, innerColor)
-
 	var buf bytes.Buffer
-	_ = png.Encode(&buf, img)
+	_ = png.Encode(&buf, dst)
 	return buf.Bytes()
 }
