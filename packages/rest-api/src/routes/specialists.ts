@@ -452,4 +452,74 @@ export async function specialistRoutes(fastify: FastifyInstance): Promise<void> 
       }
     }
   });
+
+  /**
+   * GET /api/projects/:name/watcher-events
+   * Letzte Watcher-Events abrufen
+   */
+  fastify.get<{
+    Params: { name: string };
+    Querystring: { limit?: string };
+  }>('/api/projects/:name/watcher-events', async (request, reply) => {
+    const { name } = request.params;
+    const limit = request.query.limit ? Number(request.query.limit) : 50;
+
+    try {
+      const { rows } = await getPool().query(
+        `SELECT id::text AS id, project, event_type, file_path, details, created_at::text AS created_at
+         FROM watcher_events
+         WHERE project = $1
+         ORDER BY created_at DESC, id DESC
+         LIMIT $2`,
+        [name, limit]
+      );
+
+      return {
+        success: true,
+        project: name,
+        events: rows,
+      };
+    } catch (error) {
+      return reply.status(500).send({
+        success: false,
+        error: { message: String(error) },
+      });
+    }
+  });
+
+  /**
+   * GET /api/projects/:name/file-versions
+   * Letzte Datei-Versionen abrufen
+   */
+  fastify.get<{
+    Params: { name: string };
+    Querystring: { limit?: string };
+  }>('/api/projects/:name/file-versions', async (request, reply) => {
+    const { name } = request.params;
+    const limit = request.query.limit ? Number(request.query.limit) : 50;
+
+    try {
+      const { rows } = await getPool().query(
+        `SELECT id::text AS id, project, file_path, content_hash, edit_action, agent_id,
+                batch_id::text AS batch_id, size_bytes, created_at::text AS created_at, reason,
+                feature_tag, parent_version_id::text AS parent_version_id, git_commit_sha, agent_note
+         FROM file_versions
+         WHERE project = $1
+         ORDER BY created_at DESC, id DESC
+         LIMIT $2`,
+        [name, limit]
+      );
+
+      return {
+        success: true,
+        project: name,
+        versions: rows,
+      };
+    } catch (error) {
+      return reply.status(500).send({
+        success: false,
+        error: { message: String(error) },
+      });
+    }
+  });
 }

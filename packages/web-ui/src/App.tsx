@@ -1,9 +1,10 @@
 import { useState, useEffect } from 'react';
 import Chat from './components/Chat';
 import MemorySearch from './components/MemorySearch';
+import Dashboard from './components/Dashboard';
 import { getProjects, ProjectInfo } from './api/synapse-client';
 
-type Tab = 'chat' | 'memory';
+type Tab = 'chat' | 'memory' | 'dashboard';
 
 function App() {
   const [activeTab, setActiveTab] = useState<Tab>('chat');
@@ -56,6 +57,15 @@ function App() {
           >
             Memory
           </button>
+          <button
+            style={{
+              ...styles.tab,
+              ...(activeTab === 'dashboard' ? styles.activeTab : {}),
+            }}
+            onClick={() => setActiveTab('dashboard')}
+          >
+            Dashboard
+          </button>
         </div>
         <div style={styles.projectSelector}>
           <label htmlFor="project" style={styles.label}>Projekt:</label>
@@ -94,11 +104,11 @@ function App() {
       <main style={styles.main}>
         {activeTab === 'chat' && <Chat project={currentProject} />}
         {activeTab === 'memory' && <MemorySearch project={currentProject} />}
+        {activeTab === 'dashboard' && <Dashboard project={currentProject} />}
       </main>
     </div>
   );
 }
-
 const styles: Record<string, React.CSSProperties> = {
   container: {
     display: 'flex',
