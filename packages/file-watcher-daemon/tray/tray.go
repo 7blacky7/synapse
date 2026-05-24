@@ -565,182 +565,198 @@ func openDetail(name string) {
 	windowLock.Lock()
 	if w, ok := openWindows[name]; ok {
 		windowLock.Unlock()
-		w.Window.Show()
-		w.Window.RequestFocus()
+		fyne.Do(func() {
+			w.Window.Show()
+			w.Window.RequestFocus()
+		})
 		return
 	}
 
 	w := &DetailWindow{
 		ProjectName: name,
 	}
-	w.Window = myApp.NewWindow("Projekt: " + name)
-	w.Window.Resize(fyne.NewSize(1200, 800))
+
+	fyne.Do(func() {
+		w.Window = myApp.NewWindow("Projekt: " + name)
+		w.Window.Resize(fyne.NewSize(1200, 800))
+		w.Window.SetCloseIntercept(func() {
+			w.Window.Hide()
+		})
+
+		// Tab 1: Agenten
+		w.AgentTable = widget.NewTable(
+			func() (int, int) { return len(w.AgentRows), 5 },
+			func() fyne.CanvasObject { return widget.NewLabel("Template") },
+			func(id widget.TableCellID, cell fyne.CanvasObject) {
+				label := cell.(*widget.Label)
+				if id.Row < len(w.AgentRows) && id.Col < 5 {
+					label.SetText(w.AgentRows[id.Row][id.Col])
+				}
+			},
+		)
+		w.AgentTable.SetColumnWidth(0, 150)
+		w.AgentTable.SetColumnWidth(1, 150)
+		w.AgentTable.SetColumnWidth(2, 100)
+		w.AgentTable.SetColumnWidth(3, 80)
+		w.AgentTable.SetColumnWidth(4, 180)
+
+		var selectedAgentRow = -1
+		w.AgentTable.OnSelected = func(id widget.TableCellID) {
+			selectedAgentRow = id.Row
+		}
+
+		btnStop := widget.NewButton("Stoppen", func() {
+			if selectedAgentRow >= 0 && selectedAgentRow < len(w.AgentRows) {
+				agentName := w.AgentRows[selectedAgentRow][0]
+				dialog.ShowConfirm("Stoppen?", fmt.Sprintf("Spezialist '%s' stoppen?\nSIGTERM geht an den Wrapper.", agentName), func(ok bool) {
+					if ok {
+						go func() {
+							u := fmt.Sprintf("http://127.0.0.1:%d/projects/%s/specialists/%s/stop", port, url.QueryEscape(name), url.QueryEscape(agentName))
+							client := &http.Client{Timeout: 1 * time.Second}
+							resp, err := client.Post(u, "application/json", nil)
+							if err == nil {
+								resp.Body.Close()
+							}
+							w.ReloadAgenten()
+						}()
+					}
+				}, w.Window)
+			} else {
+				dialog.ShowInformation("Stoppen", "Kein Spezialist ausgewaehlt.", w.Window)
+			}
+		})
+
+		btnRefA := widget.NewButton("Aktualisieren", func() {
+			go w.ReloadAgenten()
+		})
+
+		tabAgenten := container.NewBorder(nil, container.NewHBox(btnStop, btnRefA), nil, nil, w.AgentTable)
+
+		// Tab 2: Events
+		w.FilterEntry = widget.NewEntry()
+		w.FilterEntry.SetPlaceHolder("Substring in Datei/Agent/Reason/Feature...")
+		w.FilterEntry.OnChanged = func(text string) {
+			go w.ReloadEvents()
+		}
+
+		w.EventTable = widget.NewTable(
+			func() (int, int) { return len(w.EventRows), 6 },
+			func() fyne.CanvasObject { return widget.NewLabel("Template") },
+			func(id widget.TableCellID, cell fyne.CanvasObject) {
+				label := cell.(*widget.Label)
+				if id.Row < len(w.EventRows) && id.Col < 6 {
+					label.SetText(w.EventRows[id.Row][id.Col])
+				}
+			},
+		)
+		w.EventTable.SetColumnWidth(0, 130)
+		w.EventTable.SetColumnWidth(1, 100)
+		w.EventTable.SetColumnWidth(2, 350)
+		w.EventTable.SetColumnWidth(3, 80)
+		w.EventTable.SetColumnWidth(4, 250)
+		w.EventTable.SetColumnWidth(5, 120)
+
+		var selectedEventRow = -1
+		w.EventTable.OnSelected = func(id widget.TableCellID) {
+			selectedEventRow = id.Row
+		}
+
+		btnRefE := widget.NewButton("Aktualisieren", func() {
+			go w.ReloadEvents()
+		})
+		btnOpenE := widget.NewButton("Oeffnen", func() {
+			if selectedEventRow >= 0 && selectedEventRow < len(w.EventRows) {
+				go w.OpenSelectedEventFile(selectedEventRow)
+			}
+		})
+
+		tabEvents := container.NewBorder(
+			container.NewBorder(nil, nil, widget.NewLabel("Filter:"), nil, w.FilterEntry),
+			container.NewHBox(btnRefE, btnOpenE),
+			nil,
+			nil,
+			w.EventTable,
+		)
+
+		// Tab 3: Status
+		w.PathLabel = widget.NewLabel("-")
+		w.ActiveLabel = widget.NewLabel("-")
+		w.ChunksLabel = widget.NewLabel("-")
+		w.FilesLabel = widget.NewLabel("-")
+
+		statusForm := widget.NewForm(
+			widget.NewFormItem("Pfad:", w.PathLabel),
+			widget.NewFormItem("Aktiv:", w.ActiveLabel),
+			widget.NewFormItem("Chunks:", w.ChunksLabel),
+			widget.NewFormItem("Dateien:", w.FilesLabel),
+		)
+
+		btnRefS := widget.NewButton("Aktualisieren", func() {
+			go w.ReloadStatus()
+		})
+
+		tabStatus := container.NewBorder(nil, container.NewHBox(btnRefS), nil, nil, statusForm)
+
+		// Tab 4: Aktionen
+		btnReindex := widget.NewButton("Neu indexieren", func() {
+			dialog.ShowConfirm("Neu indexieren?", fmt.Sprintf("Projekt '%s' komplett neu indexieren?", name), func(ok bool) {
+				if ok {
+					go func() {
+						u := fmt.Sprintf("http://127.0.0.1:%d/projects/%s/reindex", port, url.QueryEscape(name))
+						client := &http.Client{Timeout: 1 * time.Second}
+						resp, err := client.Post(u, "application/json", nil)
+						if err == nil {
+							resp.Body.Close()
+						}
+						fyne.Do(func() {
+							dialog.ShowInformation("Reindex", "Reindex gestartet. Fortschritt im Daemon-Log.", w.Window)
+						})
+					}()
+				}
+			}, w.Window)
+		})
+
+		btnDelete := widget.NewButton("Projekt loeschen", func() {
+			dialog.ShowConfirm("Loeschen?", fmt.Sprintf("Projekt '%s' wirklich loeschen?\nIndex und Watcher-Eintrag werden entfernt.\nDer Ordner auf der Platte bleibt unberuehrt.", name), func(ok bool) {
+				if ok {
+					go func() {
+						u := fmt.Sprintf("http://127.0.0.1:%d/projects/%s/delete", port, url.QueryEscape(name))
+						client := &http.Client{Timeout: 1 * time.Second}
+						resp, err := client.Post(u, "application/json", nil)
+						if err == nil {
+							resp.Body.Close()
+						}
+						fyne.Do(func() {
+							w.Window.Hide()
+						})
+						windowLock.Lock()
+						delete(openWindows, name)
+						windowLock.Unlock()
+						triggerRefresh()
+					}()
+				}
+			}, w.Window)
+		})
+
+		tabAktionen := container.NewVBox(
+			btnReindex,
+			btnDelete,
+		)
+
+		tabs := container.NewAppTabs(
+			container.NewTabItem("Agenten", tabAgenten),
+			container.NewTabItem("Events", tabEvents),
+			container.NewTabItem("Status", tabStatus),
+			container.NewTabItem("Aktionen", tabAktionen),
+		)
+
+		w.Window.SetContent(tabs)
+		w.Window.Show()
+	})
 	openWindows[name] = w
 	windowLock.Unlock()
 
-	w.Window.SetOnClosed(func() {
-		windowLock.Lock()
-		delete(openWindows, name)
-		windowLock.Unlock()
-	})
-
-	// Tab 1: Agenten
-	w.AgentTable = widget.NewTable(
-		func() (int, int) { return len(w.AgentRows), 5 },
-		func() fyne.CanvasObject { return widget.NewLabel("Template") },
-		func(id widget.TableCellID, cell fyne.CanvasObject) {
-			label := cell.(*widget.Label)
-			if id.Row < len(w.AgentRows) && id.Col < 5 {
-				label.SetText(w.AgentRows[id.Row][id.Col])
-			}
-		},
-	)
-	w.AgentTable.SetColumnWidth(0, 150)
-	w.AgentTable.SetColumnWidth(1, 150)
-	w.AgentTable.SetColumnWidth(2, 100)
-	w.AgentTable.SetColumnWidth(3, 80)
-	w.AgentTable.SetColumnWidth(4, 180)
-
-	var selectedAgentRow = -1
-	w.AgentTable.OnSelected = func(id widget.TableCellID) {
-		selectedAgentRow = id.Row
-	}
-
-	btnStop := widget.NewButton("Stoppen", func() {
-		if selectedAgentRow >= 0 && selectedAgentRow < len(w.AgentRows) {
-			agentName := w.AgentRows[selectedAgentRow][0]
-			dialog.ShowConfirm("Stoppen?", fmt.Sprintf("Spezialist '%s' stoppen?\nSIGTERM geht an den Wrapper.", agentName), func(ok bool) {
-				if ok {
-					u := fmt.Sprintf("http://127.0.0.1:%d/projects/%s/specialists/%s/stop", port, url.QueryEscape(name), url.QueryEscape(agentName))
-					client := &http.Client{Timeout: 1 * time.Second}
-					resp, err := client.Post(u, "application/json", nil)
-					if err == nil {
-						resp.Body.Close()
-					}
-					w.ReloadAgenten()
-				}
-			}, w.Window)
-		} else {
-			dialog.ShowInformation("Stoppen", "Kein Spezialist ausgewaehlt.", w.Window)
-		}
-	})
-
-	btnRefA := widget.NewButton("Aktualisieren", func() {
-		w.ReloadAgenten()
-	})
-
-	tabAgenten := container.NewBorder(nil, container.NewHBox(btnStop, btnRefA), nil, nil, w.AgentTable)
-
-	// Tab 2: Events
-	w.FilterEntry = widget.NewEntry()
-	w.FilterEntry.SetPlaceHolder("Substring in Datei/Agent/Reason/Feature...")
-	w.FilterEntry.OnChanged = func(text string) {
-		w.ReloadEvents()
-	}
-
-	w.EventTable = widget.NewTable(
-		func() (int, int) { return len(w.EventRows), 6 },
-		func() fyne.CanvasObject { return widget.NewLabel("Template") },
-		func(id widget.TableCellID, cell fyne.CanvasObject) {
-			label := cell.(*widget.Label)
-			if id.Row < len(w.EventRows) && id.Col < 6 {
-				label.SetText(w.EventRows[id.Row][id.Col])
-			}
-		},
-	)
-	w.EventTable.SetColumnWidth(0, 130)
-	w.EventTable.SetColumnWidth(1, 100)
-	w.EventTable.SetColumnWidth(2, 350)
-	w.EventTable.SetColumnWidth(3, 80)
-	w.EventTable.SetColumnWidth(4, 250)
-	w.EventTable.SetColumnWidth(5, 120)
-
-	var selectedEventRow = -1
-	w.EventTable.OnSelected = func(id widget.TableCellID) {
-		selectedEventRow = id.Row
-	}
-
-	btnRefE := widget.NewButton("Aktualisieren", func() {
-		w.ReloadEvents()
-	})
-	btnOpenE := widget.NewButton("Oeffnen", func() {
-		if selectedEventRow >= 0 && selectedEventRow < len(w.EventRows) {
-			w.OpenSelectedEventFile(selectedEventRow)
-		}
-	})
-
-	tabEvents := container.NewBorder(
-		container.NewBorder(nil, nil, widget.NewLabel("Filter:"), nil, w.FilterEntry),
-		container.NewHBox(btnRefE, btnOpenE),
-		nil,
-		nil,
-		w.EventTable,
-	)
-
-	// Tab 3: Status
-	w.PathLabel = widget.NewLabel("-")
-	w.ActiveLabel = widget.NewLabel("-")
-	w.ChunksLabel = widget.NewLabel("-")
-	w.FilesLabel = widget.NewLabel("-")
-
-	statusForm := widget.NewForm(
-		widget.NewFormItem("Pfad:", w.PathLabel),
-		widget.NewFormItem("Aktiv:", w.ActiveLabel),
-		widget.NewFormItem("Chunks:", w.ChunksLabel),
-		widget.NewFormItem("Dateien:", w.FilesLabel),
-	)
-
-	btnRefS := widget.NewButton("Aktualisieren", func() {
-		w.ReloadStatus()
-	})
-
-	tabStatus := container.NewBorder(nil, container.NewHBox(btnRefS), nil, nil, statusForm)
-
-	// Tab 4: Aktionen
-	btnReindex := widget.NewButton("Neu indexieren", func() {
-		dialog.ShowConfirm("Neu indexieren?", fmt.Sprintf("Projekt '%s' komplett neu indexieren?", name), func(ok bool) {
-			if ok {
-				u := fmt.Sprintf("http://127.0.0.1:%d/projects/%s/reindex", port, url.QueryEscape(name))
-				client := &http.Client{Timeout: 1 * time.Second}
-				resp, err := client.Post(u, "application/json", nil)
-				if err == nil {
-					resp.Body.Close()
-				}
-				dialog.ShowInformation("Reindex", "Reindex gestartet. Fortschritt im Daemon-Log.", w.Window)
-			}
-		}, w.Window)
-	})
-
-	btnDelete := widget.NewButton("Projekt loeschen", func() {
-		dialog.ShowConfirm("Loeschen?", fmt.Sprintf("Projekt '%s' wirklich loeschen?\nIndex und Watcher-Eintrag werden entfernt.\nDer Ordner auf der Platte bleibt unberuehrt.", name), func(ok bool) {
-			if ok {
-				u := fmt.Sprintf("http://127.0.0.1:%d/projects/%s/delete", port, url.QueryEscape(name))
-				client := &http.Client{Timeout: 1 * time.Second}
-				resp, err := client.Post(u, "application/json", nil)
-				if err == nil {
-					resp.Body.Close()
-				}
-				w.Window.Close()
-				triggerRefresh()
-			}
-		}, w.Window)
-	})
-
-	tabAktionen := container.NewVBox(
-		btnReindex,
-		btnDelete,
-	)
-
-	tabs := container.NewAppTabs(
-		container.NewTabItem("Agenten", tabAgenten),
-		container.NewTabItem("Events", tabEvents),
-		container.NewTabItem("Status", tabStatus),
-		container.NewTabItem("Aktionen", tabAktionen),
-	)
-
-	w.Window.SetContent(tabs)
-	w.Window.Show()
-	w.ReloadAll()
+	go w.ReloadAll()
 }
 
 func (w *DetailWindow) ReloadAll() {
@@ -763,8 +779,10 @@ func (w *DetailWindow) ReloadAgenten() {
 			newRows = append(newRows, []string{agentName, model, status, tokens + "%", lastAct})
 		}
 	}
-	w.AgentRows = newRows
-	w.AgentTable.Refresh()
+	fyne.Do(func() {
+		w.AgentRows = newRows
+		w.AgentTable.Refresh()
+	})
 }
 
 func (w *DetailWindow) ReloadEvents() {
@@ -789,8 +807,10 @@ func (w *DetailWindow) ReloadEvents() {
 			newRows = append(newRows, []string{timeStr, agent, file, action, reason, feature})
 		}
 	}
-	w.EventRows = newRows
-	w.EventTable.Refresh()
+	fyne.Do(func() {
+		w.EventRows = newRows
+		w.EventTable.Refresh()
+	})
 }
 
 func (w *DetailWindow) ReloadStatus() {
@@ -798,10 +818,12 @@ func (w *DetailWindow) ReloadStatus() {
 	client := &http.Client{Timeout: 1 * time.Second}
 	resp, err := client.Get(u)
 	if err != nil {
-		w.PathLabel.SetText("-")
-		w.ActiveLabel.SetText("-")
-		w.ChunksLabel.SetText("-")
-		w.FilesLabel.SetText("-")
+		fyne.Do(func() {
+			w.PathLabel.SetText("-")
+			w.ActiveLabel.SetText("-")
+			w.ChunksLabel.SetText("-")
+			w.FilesLabel.SetText("-")
+		})
 		return
 	}
 	defer resp.Body.Close()
@@ -825,10 +847,12 @@ func (w *DetailWindow) ReloadStatus() {
 			files = fmt.Sprintf("%d", int(v))
 		}
 
-		w.PathLabel.SetText(pfad)
-		w.ActiveLabel.SetText(active)
-		w.ChunksLabel.SetText(chunks)
-		w.FilesLabel.SetText(files)
+		fyne.Do(func() {
+			w.PathLabel.SetText(pfad)
+			w.ActiveLabel.SetText(active)
+			w.ChunksLabel.SetText(chunks)
+			w.FilesLabel.SetText(files)
+		})
 	}
 }
 
@@ -851,8 +875,10 @@ func openChat(projectName, channelName string) {
 	chatLock.Lock()
 	if w, ok := openChats[key]; ok {
 		chatLock.Unlock()
-		w.Window.Show()
-		w.Window.RequestFocus()
+		fyne.Do(func() {
+			w.Window.Show()
+			w.Window.RequestFocus()
+		})
 		return
 	}
 
@@ -860,82 +886,83 @@ func openChat(projectName, channelName string) {
 		ProjectName: projectName,
 		ChannelName: channelName,
 	}
-	w.Window = myApp.NewWindow("Chat: #" + channelName + " (" + projectName + ")")
-	w.Window.Resize(fyne.NewSize(1000, 600))
+
+	fyne.Do(func() {
+		w.Window = myApp.NewWindow("Chat: #" + channelName + " (" + projectName + ")")
+		w.Window.Resize(fyne.NewSize(1000, 600))
+		w.Window.SetCloseIntercept(func() {
+			w.Window.Hide()
+		})
+
+		w.MessageTable = widget.NewTable(
+			func() (int, int) { return len(w.MessageRows), 3 },
+			func() fyne.CanvasObject { return widget.NewLabel("Template") },
+			func(id widget.TableCellID, cell fyne.CanvasObject) {
+				label := cell.(*widget.Label)
+				if id.Row < len(w.MessageRows) && id.Col < 3 {
+					label.SetText(w.MessageRows[id.Row][id.Col])
+				}
+			},
+		)
+		w.MessageTable.SetColumnWidth(0, 130)
+		w.MessageTable.SetColumnWidth(1, 100)
+		w.MessageTable.SetColumnWidth(2, 450)
+
+		w.MessageTable.OnSelected = func(id widget.TableCellID) {
+			if id.Row < len(w.MessageRows) {
+				msgContent := w.MessageRows[id.Row][2]
+				w.Window.Clipboard().SetContent(msgContent)
+			}
+		}
+
+		w.AgentTable = widget.NewTable(
+			func() (int, int) { return len(w.AgentRows), 2 },
+			func() fyne.CanvasObject { return widget.NewLabel("Template") },
+			func(id widget.TableCellID, cell fyne.CanvasObject) {
+				label := cell.(*widget.Label)
+				if id.Row < len(w.AgentRows) && id.Col < 2 {
+					label.SetText(w.AgentRows[id.Row][id.Col])
+				}
+			},
+		)
+		w.AgentTable.SetColumnWidth(0, 120)
+		w.AgentTable.SetColumnWidth(1, 150)
+
+		w.InputEntry = widget.NewEntry()
+		w.InputEntry.SetPlaceHolder("Nachricht eingeben... (Enter zum Senden)")
+		w.InputEntry.OnSubmitted = func(text string) {
+			go w.SendMessage()
+		}
+
+		btnSend := widget.NewButton("Senden", func() {
+			go w.SendMessage()
+		})
+		btnRef := widget.NewButton("Aktualisieren", func() {
+			go w.ReloadAll()
+		})
+
+		leftSide := container.NewBorder(widget.NewLabel("Nachrichten:"), nil, nil, nil, w.MessageTable)
+		rightSide := container.NewBorder(widget.NewLabel("Agenten im Projekt:"), nil, nil, nil, w.AgentTable)
+
+		split := container.NewHSplit(leftSide, rightSide)
+		split.Offset = 0.7
+
+		bottomControls := container.NewBorder(
+			widget.NewLabel("Nachricht:"),
+			nil,
+			nil,
+			container.NewHBox(btnSend, btnRef),
+			w.InputEntry,
+		)
+
+		mainContent := container.NewBorder(nil, bottomControls, nil, nil, split)
+		w.Window.SetContent(mainContent)
+		w.Window.Show()
+	})
 	openChats[key] = w
 	chatLock.Unlock()
 
-	w.Window.SetOnClosed(func() {
-		chatLock.Lock()
-		delete(openChats, key)
-		chatLock.Unlock()
-	})
-
-	w.MessageTable = widget.NewTable(
-		func() (int, int) { return len(w.MessageRows), 3 },
-		func() fyne.CanvasObject { return widget.NewLabel("Template") },
-		func(id widget.TableCellID, cell fyne.CanvasObject) {
-			label := cell.(*widget.Label)
-			if id.Row < len(w.MessageRows) && id.Col < 3 {
-				label.SetText(w.MessageRows[id.Row][id.Col])
-			}
-		},
-	)
-	w.MessageTable.SetColumnWidth(0, 130)
-	w.MessageTable.SetColumnWidth(1, 100)
-	w.MessageTable.SetColumnWidth(2, 450)
-
-	w.MessageTable.OnSelected = func(id widget.TableCellID) {
-		if id.Row < len(w.MessageRows) {
-			msgContent := w.MessageRows[id.Row][2]
-			w.Window.Clipboard().SetContent(msgContent)
-		}
-	}
-
-	w.AgentTable = widget.NewTable(
-		func() (int, int) { return len(w.AgentRows), 2 },
-		func() fyne.CanvasObject { return widget.NewLabel("Template") },
-		func(id widget.TableCellID, cell fyne.CanvasObject) {
-			label := cell.(*widget.Label)
-			if id.Row < len(w.AgentRows) && id.Col < 2 {
-				label.SetText(w.AgentRows[id.Row][id.Col])
-			}
-		},
-	)
-	w.AgentTable.SetColumnWidth(0, 120)
-	w.AgentTable.SetColumnWidth(1, 150)
-
-	w.InputEntry = widget.NewEntry()
-	w.InputEntry.SetPlaceHolder("Nachricht eingeben... (Enter zum Senden)")
-	w.InputEntry.OnSubmitted = func(text string) {
-		w.SendMessage()
-	}
-
-	btnSend := widget.NewButton("Senden", func() {
-		w.SendMessage()
-	})
-	btnRef := widget.NewButton("Aktualisieren", func() {
-		w.ReloadAll()
-	})
-
-	leftSide := container.NewBorder(widget.NewLabel("Nachrichten:"), nil, nil, nil, w.MessageTable)
-	rightSide := container.NewBorder(widget.NewLabel("Agenten im Projekt:"), nil, nil, nil, w.AgentTable)
-
-	split := container.NewHSplit(leftSide, rightSide)
-	split.Offset = 0.7
-
-	bottomControls := container.NewBorder(
-		widget.NewLabel("Nachricht:"),
-		nil,
-		nil,
-		container.NewHBox(btnSend, btnRef),
-		w.InputEntry,
-	)
-
-	mainContent := container.NewBorder(nil, bottomControls, nil, nil, split)
-	w.Window.SetContent(mainContent)
-	w.Window.Show()
-	w.ReloadAll()
+	go w.ReloadAll()
 }
 
 func (w *ChatWindow) SendMessage() {
@@ -959,8 +986,10 @@ func (w *ChatWindow) SendMessage() {
 	resp, err := client.Post(u, "application/json", bytes.NewReader(payloadBytes))
 	if err == nil {
 		resp.Body.Close()
-		w.InputEntry.SetText("")
-		w.ReloadMessages()
+		fyne.Do(func() {
+			w.InputEntry.SetText("")
+		})
+		go w.ReloadMessages()
 	}
 }
 
@@ -1012,14 +1041,18 @@ func (w *ChatWindow) ReloadMessages() {
 			for i, j := 0, len(newMsgs)-1; i < j; i, j = i+1, j-1 {
 				newMsgs[i], newMsgs[j] = newMsgs[j], newMsgs[i]
 			}
-			w.MessageRows = newMsgs
+			fyne.Do(func() {
+				w.MessageRows = newMsgs
+				w.MessageTable.Refresh()
+				w.MessageTable.ScrollTo(widget.TableCellID{Row: len(w.MessageRows) - 1, Col: 0})
+			})
 		} else {
-			w.MessageRows = append(w.MessageRows, newMsgs...)
+			fyne.Do(func() {
+				w.MessageRows = append(w.MessageRows, newMsgs...)
+				w.MessageTable.Refresh()
+				w.MessageTable.ScrollTo(widget.TableCellID{Row: len(w.MessageRows) - 1, Col: 0})
+			})
 		}
-		w.MessageTable.Refresh()
-		
-		// Scroll to bottom
-		w.MessageTable.ScrollTo(widget.TableCellID{Row: len(w.MessageRows) - 1, Col: 0})
 	}
 }
 
@@ -1042,8 +1075,10 @@ func (w *ChatWindow) ReloadAgents() {
 			newRows = append(newRows, []string{id, model})
 		}
 	}
-	w.AgentRows = newRows
-	w.AgentTable.Refresh()
+	fyne.Do(func() {
+		w.AgentRows = newRows
+		w.AgentTable.Refresh()
+	})
 }
 
 func makeIcon(connected bool) []byte {
