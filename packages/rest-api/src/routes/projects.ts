@@ -4,7 +4,7 @@
 
 import { FastifyInstance } from 'fastify';
 import {
-  listCollections,
+  getPool,
   ensureProjectCollection,
   startFileWatcher,
   handleFileEvent,
@@ -25,12 +25,13 @@ export async function projectRoutes(fastify: FastifyInstance): Promise<void> {
    * Alle Projekte auflisten
    */
   fastify.get('/api/projects', async (request, reply) => {
-    const collections = await listCollections();
-
-    // Projekt-Collections filtern (project_*)
-    const projects = collections
-      .filter(c => c.startsWith('project_'))
-      .map(c => c.replace('project_', ''));
+    // Saubere, deduplizierte Projektnamen aus der projects-Tabelle
+    // (NICHT Qdrant-Collection-Namen mit _code/_memories/_thoughts-Suffix)
+    const pool = getPool();
+    const { rows } = await pool.query<{ name: string }>(
+      'SELECT DISTINCT name FROM projects ORDER BY name'
+    );
+    const projects = rows.map(r => r.name);
 
     return {
       success: true,
