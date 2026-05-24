@@ -395,9 +395,12 @@ funktion stoppe_ausgewaehlten_global():
     stoppe_ausgewaehlten(name)
 
 funktion events_laden_global():
+    zeige "[debug] events_laden_global called, aktiv_projekt[v]=" + aktiv_projekt["v"]
     setze name auf aktiv_projekt["v"]
     wenn name == "":
+        zeige "[debug] events_laden_global: name='', return"
         gib_zurück nichts
+    zeige "[debug] events_laden_global: rufe events_laden(" + name + ")"
     events_laden(name)
 
 funktion oeffne_event_global():
@@ -445,7 +448,9 @@ funktion stop_agent_factory(name):
 # Events-Tab: laden + oeffnen
 # --------------------------------------------------------------
 funktion events_laden(name):
+    zeige "[debug] events_laden(" + name + ") called"
     wenn nicht offene_fenster.hat(name):
+        zeige "[debug] events_laden: offene_fenster nicht da, return"
         gib_zurück nichts
     setze g auf offene_fenster[name]
     wenn g.hat("busy_events"):
