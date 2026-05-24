@@ -60,11 +60,11 @@ send_chat_message(project: "<projekt>", sender_id: "<deine-id>",
 **Direkt-Benachrichtigung an Koordinator (über Terminal):**
 Wenn du mit der Erkundung fertig bist oder eine dringende Frage hast, pinge den Koordinator direkt über das Terminal an:
 ```bash
-cc-send 2455054 "@agy-test: <deine Nachricht>"
+cc-send 2740640 "@agy-test: <deine Nachricht>"
 ```
 *WICHTIG:* 
 - Die Nachricht MUSS immer mit dem eigenen Agenten-Präfix `@agy-test:` beginnen, damit der Empfänger weiß, von wem sie stammt.
-- Wenn du per `cc-send` eine Nachricht erhältst, antworte IMMER per `cc-send` zurück an die Absender-PID (z.B. `cc-send 2455054 "@agy-test: <deine Nachricht>"`). Antworte in diesem Fall NICHT im Channel.
+- Wenn du per `cc-send` eine Nachricht erhältst, antworte IMMER per `cc-send` zurück an die Absender-PID (z.B. `cc-send 2740640 "@agy-test: <deine Nachricht>"`). Antworte in diesem Fall NICHT im Channel.
 
 **Neue Nachrichten lesen** (Polling):
 ```
