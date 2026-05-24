@@ -141,11 +141,13 @@ klasse PgClient:
     funktion empfange_eine_message():
         setze typ_b auf selbst.sock.lesen_bytes(1)
         wenn länge(typ_b) == 0:
-            gib_zurück nichts
+            # EOF — Connection vom Server geschlossen. Werfen damit pg_query's
+            # fange-Block pg["db"]=nichts setzt und beim naechsten Call neu connectet.
+            wirf "PG-EOF"
         setze typ auf typ_b[0]
         setze laenge_b auf selbst.sock.lesen_bytes(4)
         wenn länge(laenge_b) < 4:
-            gib_zurück nichts
+            wirf "PG-EOF-Header"
         setze laenge auf bytes_int32(laenge_b, 0)
         setze body_len auf laenge - 4
         setze body auf []

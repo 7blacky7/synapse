@@ -33,18 +33,15 @@ add_thought(project: "...", source: "<deine-id>", content: "...", agent_id: "<de
 
 ```
 1. code_intel — Strukturierte Abfragen (IMMER ZUERST fuer Code-Fragen!)
-   → tree (Projektbaum), functions, variables, symbols, references, search, file
+   → tree (Projektbaum), functions/symbols (finden), references (wo verwendet), search (Volltext), file (lesen mit from_line/to_line bei grossen Dateien)
    → Kein Embedding noetig, sofortige Ergebnisse aus PostgreSQL
-   → "Welche Funktionen?" → code_intel(action: "functions")
-   → "Wo wird X verwendet?" → code_intel(action: "references", name: "X")
-   → "Datei lesen" → code_intel(action: "file") statt Read-Tool!
 2. Synapse Semantic: search(action: "code") / search(action: "memory")
-   → Wenn fuzzy/konzeptuelle Suche noetig (Score-basiert via Qdrant)
+   → Nur wenn fuzzy/konzeptuelle Suche noetig (Score-basiert via Qdrant)
 3. NUR wenn Score < 0.60 oder 0 Ergebnisse → Glob / Grep
-4. NUR wenn alles scheitert → Read / manuelle Suche
+4. NUR wenn alles scheitert → Read / manuelle Suche / Bash als Notfall
 ```
 
-**VERBOTEN:** Read/Glob/Grep BEVOR code_intel UND Synapse Semantic versucht wurden.
+**VERBOTEN:** Read/Glob/Grep/Bash-Suchbefehle BEVOR code_intel UND Synapse Semantic versucht wurden.
 
 ## 4. Kommunikation (ueber Agenten-Chat)
 
@@ -59,6 +56,15 @@ send_chat_message(project: "<projekt>", sender_id: "<deine-id>",
 send_chat_message(project: "<projekt>", sender_id: "<deine-id>",
   content: "Brauche Hilfe: ...", recipient_id: "koordinator")
 ```
+
+**Direkt-Benachrichtigung an Koordinator (über Terminal):**
+Wenn du mit der Erkundung fertig bist oder eine dringende Frage hast, pinge den Koordinator direkt über das Terminal an:
+```bash
+cc-send 2455054 "@agy-test: <deine Nachricht>"
+```
+*WICHTIG:* 
+- Die Nachricht MUSS immer mit dem eigenen Agenten-Präfix `@agy-test:` beginnen, damit der Empfänger weiß, von wem sie stammt.
+- Wenn du per `cc-send` eine Nachricht erhältst, antworte IMMER per `cc-send` zurück an die Absender-PID (z.B. `cc-send 2455054 "@agy-test: <deine Nachricht>"`). Antworte in diesem Fall NICHT im Channel.
 
 **Neue Nachrichten lesen** (Polling):
 ```
@@ -125,7 +131,7 @@ Wenn eine Technologie/Version jenseits deines Cutoffs liegt:
    "Wissensluecke: [Tech] v[Version]. Brauche: [was genau fehlt]"
 4. NICHT selbst recherchieren (kein Context7, keine Web-Suche, keine externen Skills)
 5. NICHT blockieren — mit bestem Wissen weiterarbeiten, TODO-Kommentar setzen
-6. Arbeite weiter — unreadChat im naechsten Tool-Response zeigt dir wenn Antwort da ist
+6. Arbeite weiter — unreadChat im nahexsten Tool-Response zeigt dir wenn Antwort da ist
 7. Koordinator dispatcht Docs-Kurator → indexiert kuratierte Docs
 8. Danach: search_tech_docs(source: "research") fuer Breaking Changes etc.
 ```
@@ -146,3 +152,10 @@ unregister_chat_agent(id: "<deine-id>")
 - NIEMALS `source: "claude-code"` verwenden
 - NIEMALS Worktree-Isolation verwenden
 - Keine langen Nachrichten per SendMessage — Chat nutzen
+
+## 12. Phasen-basiertes Arbeiten (PFLICHT)
+
+- Halte dich strikt an die aktuelle Arbeitsphase des Projekts.
+- In der ersten Phase gilt: **NUR ERKUNDEN + VORSCHLAGEN**. Es dürfen noch **KEINE Code-Änderungen** vorgenommen werden, es sei denn, der Koordinator weist dich explizit dazu an.
+- Alle Findings und Vorschläge werden zuerst in den Kommunikationskanälen bzw. im Synapse-Memory dokumentiert und zur Diskussion gestellt.
+

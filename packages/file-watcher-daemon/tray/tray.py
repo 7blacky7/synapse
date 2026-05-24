@@ -33,6 +33,12 @@ import pystray
 CONFIG_DIR = Path.home() / ".synapse" / "file-watcher"
 PORT_FILE = CONFIG_DIR / "daemon.port"
 DEFAULT_PORT = 7878
+
+def get_daemon_path() -> str:
+    if sys.platform == "win32":
+        temp_dir = os.environ.get("TEMP", os.environ.get("TMP", "C:\\temp"))
+        return os.path.join(temp_dir, "synapse-fwd.exe")
+    return "/tmp/synapse-fwd"
 POLL_INTERVAL_S = 1.0
 HTTP_TIMEOUT_S = 1.0
 
@@ -100,7 +106,7 @@ class TrayApp:
         self._stop_event = Event()
         self._projects: list[dict] = []
         self._connected = False
-
+        self._sse_active = False
     # --- Daemon-Calls ---
 
     def refresh(self) -> None:
@@ -122,7 +128,12 @@ class TrayApp:
 
     def open_config(self) -> None:
         try:
-            os.system(f"xdg-open {CONFIG_DIR}")  # noqa: S605
+            if sys.platform == "win32":
+                os.startfile(CONFIG_DIR)
+            elif sys.platform == "darwin":
+                os.system(f"open {CONFIG_DIR}")  # noqa: S605
+            else:
+                os.system(f"xdg-open {CONFIG_DIR}")  # noqa: S605
         except Exception:
             pass
 
@@ -138,7 +149,7 @@ class TrayApp:
 
         if not self._connected:
             items.append(pystray.MenuItem(
-                "Daemon starten: /tmp/synapse-fwd", None, enabled=False,
+                f"Daemon starten: {get_daemon_path()}", None, enabled=False,
             ))
         elif not self._projects:
             items.append(pystray.MenuItem("keine Projekte registriert", None, enabled=False))
@@ -176,32 +187,42 @@ class TrayApp:
 
     def _sse_loop(self) -> None:
         """Verbindet sich mit /events (SSE) und ruft refresh() bei jedem Event.
-        Bei Connection-Loss: kurzer Backoff, dann reconnect. Pollt zusaetzlich
-        alle 5s als Fallback fuer den Fall dass der Daemon kein /events kann."""
+        Bei Connection-Loss: kurzer Backoff, dann reconnect."""
         import urllib.request
         import urllib.error
-        last_poll = 0.0
+        
         while not self._stop_event.is_set():
             port = daemon_port()
             url = f"http://127.0.0.1:{port}/events"
             try:
+                # 35.0s Timeout (Daemon-Heartbeat kommt alle 25s)
                 req = urllib.request.Request(url, headers={'Accept': 'text/event-stream'})
-                with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT_S) as resp:
+                with urllib.request.urlopen(req, timeout=35.0) as resp:
+                    self._sse_active = True
                     for raw in resp:
                         if self._stop_event.is_set():
                             return
                         line = raw.decode('utf-8', errors='replace').rstrip()
-                        # bei jedem data:-Frame oder Heartbeat refreshen
                         if line.startswith('data:'):
                             try:
                                 self.refresh()
                             except Exception as e:  # noqa: BLE001
                                 print(f"[tray] refresh error: {e}", file=sys.stderr)
-            except (urllib.error.URLError, ConnectionError, OSError):
-                pass  # Daemon nicht erreichbar — Backoff + retry
-            # Polling-Fallback: refresh wenn lange nichts kam
+            except Exception:
+                self._sse_active = False
+            
+            # Backoff vor dem nächsten Reconnect-Versuch (5s)
+            self._stop_event.wait(5.0)
+
+    def _poll_loop(self) -> None:
+        """Pollt den Daemon als Fallback, falls SSE nicht aktiv ist."""
+        last_poll = 0.0
+        while not self._stop_event.is_set():
             now = time.time()
-            if now - last_poll >= POLL_INTERVAL_S:
+            # Wenn SSE aktiv ist, reicht ein seltener Kontroll-Poll (z.B. alle 10s)
+            # Wenn SSE inaktiv ist, pollt er jede Sekunde
+            interval = POLL_INTERVAL_S if not getattr(self, '_sse_active', False) else 10.0
+            if now - last_poll >= interval:
                 try:
                     self.refresh()
                 except Exception:
@@ -212,8 +233,7 @@ class TrayApp:
     def run(self) -> None:
         self.refresh()
         Thread(target=self._sse_loop, daemon=True).start()
+        Thread(target=self._poll_loop, daemon=True).start()
         self.icon.run()
-
-
 if __name__ == "__main__":
     TrayApp().run()

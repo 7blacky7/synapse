@@ -237,8 +237,7 @@ export function ensureTray(): void {
   if (!process.env.DISPLAY && !process.env.WAYLAND_DISPLAY) return;
   if (trayRunning()) return;
 
-  // Bevorzugt moo-tray Binary (stabil, getestet). tray.py mit SSE ist
-  // experimentell und folgt spaeter — bis dahin nutzen wir was lief.
+  // Startet das neue plattformuebergreifende Python-Tray-Icon (pystray).
   const bin = findBinary('tray');
   if (!bin) return;
   const cmd = bin;
