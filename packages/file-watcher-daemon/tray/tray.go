@@ -368,16 +368,54 @@ func openConfigDir(path string) {
 }
 
 func toggleProject(name string, currentlyEnabled bool) {
+	// 1. ZUERST frischen State holen
+	uStatus := fmt.Sprintf("http://127.0.0.1:%d/projects/%s/status", port, url.QueryEscape(name))
+	client := &http.Client{Timeout: 1 * time.Second}
+	
+	enabled := currentlyEnabled
+	respStatus, err := client.Get(uStatus)
+	if err == nil {
+		defer respStatus.Body.Close()
+		var statusMap map[string]interface{}
+		if err := json.NewDecoder(respStatus.Body).Decode(&statusMap); err == nil {
+			if v, ok := statusMap["enabled"].(bool); ok {
+				enabled = v
+			}
+		}
+	}
+
+	// 2. Aktion bestimmen
 	action := "enable"
-	if currentlyEnabled {
+	if enabled {
 		action = "disable"
 	}
+
+	// 3. POST ausführen
 	u := fmt.Sprintf("http://127.0.0.1:%d/projects/%s/%s", port, url.QueryEscape(name), action)
-	client := &http.Client{Timeout: 1 * time.Second}
 	resp, err := client.Post(u, "application/json", nil)
-	if err == nil {
-		resp.Body.Close()
+	if err != nil {
+		return
 	}
+	defer resp.Body.Close()
+
+	// 4. Statuscode prüfen
+	if resp.StatusCode == 200 {
+		newState := !enabled
+		menuMutex.Lock()
+		if handle, ok := projectHandles[name]; ok {
+			handle.Enabled = newState
+			if newState {
+				handle.CheckItem.Check()
+				handle.SubMenu.SetTitle("●  " + name)
+			} else {
+				handle.CheckItem.Uncheck()
+				handle.SubMenu.SetTitle("○  " + name)
+			}
+		}
+		menuMutex.Unlock()
+	}
+
+	// 5. triggerRefresh() am Ende
 	triggerRefresh()
 }
 
@@ -804,7 +842,23 @@ func (w *DetailWindow) ReloadEvents() {
 					continue
 				}
 			}
-			newRows = append(newRows, []string{timeStr, agent, file, action, reason, feature})
+
+			// Sanitize reason and feature (Bug 5)
+			reasonDisplay := strings.ReplaceAll(reason, "\n", " ")
+			reasonDisplay = strings.ReplaceAll(reasonDisplay, "\r", " ")
+			rReason := []rune(reasonDisplay)
+			if len(rReason) > 200 {
+				reasonDisplay = string(rReason[:200]) + "…"
+			}
+
+			featureDisplay := strings.ReplaceAll(feature, "\n", " ")
+			featureDisplay = strings.ReplaceAll(featureDisplay, "\r", " ")
+			rFeature := []rune(featureDisplay)
+			if len(rFeature) > 200 {
+				featureDisplay = string(rFeature[:200]) + "…"
+			}
+
+			newRows = append(newRows, []string{timeStr, agent, file, action, reasonDisplay, featureDisplay})
 		}
 	}
 	fyne.Do(func() {
@@ -904,6 +958,9 @@ func openChat(projectName, channelName string) {
 	w.MessageTable.OnSelected = func(id widget.TableCellID) {
 		if id.Row < len(w.MessageRows) {
 			msgContent := w.MessageRows[id.Row][2]
+			if len(w.MessageRows[id.Row]) > 3 {
+				msgContent = w.MessageRows[id.Row][3]
+			}
 			w.Window.Clipboard().SetContent(msgContent)
 		}
 	}
@@ -1029,7 +1086,14 @@ func (w *ChatWindow) ReloadMessages() {
 		var id int64
 		var sender, content, timeStr string
 		if err := rows.Scan(&id, &sender, &content, &timeStr); err == nil {
-			newMsgs = append(newMsgs, []string{timeStr, sender, content})
+			// Sanitize content for grid display (Bug 5)
+			displayContent := strings.ReplaceAll(content, "\n", " ")
+			displayContent = strings.ReplaceAll(displayContent, "\r", " ")
+			r := []rune(displayContent)
+			if len(r) > 200 {
+				displayContent = string(r[:200]) + "…"
+			}
+			newMsgs = append(newMsgs, []string{timeStr, sender, displayContent, content})
 			if id > maxID {
 				maxID = id
 			}
