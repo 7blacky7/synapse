@@ -41,6 +41,24 @@ export async function projectRoutes(fastify: FastifyInstance): Promise<void> {
   });
 
   /**
+   * GET /api/projects/:name/tool-calls
+   * Audit-Log aller verwendeten Synapse-Tools (projektspezifisch)
+   */
+  fastify.get<{ Params: { name: string }; Querystring: { limit?: string } }>(
+    '/api/projects/:name/tool-calls',
+    async (request) => {
+      const { name } = request.params;
+      const limit = Math.min(parseInt(request.query.limit ?? '100', 10) || 100, 500);
+      const pool = getPool();
+      const { rows } = await pool.query(
+        'SELECT id, project, tool_name, action, source, args_preview, ok, ts FROM tool_calls WHERE project = $1 ORDER BY ts DESC LIMIT $2',
+        [name, limit]
+      );
+      return { success: true, toolCalls: rows };
+    }
+  );
+
+  /**
    * POST /api/projects/init
    * Projekt initialisieren
    */

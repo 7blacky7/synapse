@@ -499,6 +499,21 @@ CREATE TRIGGER trg_shell_jobs_notify
   AFTER INSERT ON shell_jobs
   FOR EACH ROW EXECUTE FUNCTION notify_shell_job_created();
 
+-- ==========================================================================
+-- Tool-Call Audit-Log: jede verwendete Synapse-Tool-Action, projektspezifisch
+-- ==========================================================================
+CREATE TABLE IF NOT EXISTS tool_calls (
+  id BIGSERIAL PRIMARY KEY,
+  project TEXT,
+  tool_name TEXT NOT NULL,
+  action TEXT,
+  source TEXT,
+  args_preview TEXT,
+  ok BOOLEAN DEFAULT true,
+  ts TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_tool_calls_project_ts ON tool_calls(project, ts DESC);
+
 CREATE TABLE IF NOT EXISTS shell_stream_chunks (
   id BIGSERIAL PRIMARY KEY,
   job_id UUID NOT NULL REFERENCES shell_jobs(id) ON DELETE CASCADE,

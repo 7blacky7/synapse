@@ -23,7 +23,7 @@ import {
   acknowledgeEventTool,
 } from './tools/index.js';
 
-import { getPendingEvents, TOOL_GUIDES, ensureSchema } from '@synapse/core';
+import { getPendingEvents, TOOL_GUIDES, ensureSchema, getPool } from '@synapse/core';
 import { ensureAgentsSchema, detectClaudeCli, heartbeatController, readStatus, postToInbox, postMessage, checkInbox } from '@synapse/agents';
 
 import {
@@ -200,6 +200,19 @@ export function createServer(): Server {
     const agentId = args?.agent_id as string | undefined;
     const projectName = args?.project as string | undefined;
     const role = args?.role as import('./tools/onboarding.js').AgentRole | undefined;
+
+    // Tool-Call Audit-Log (best-effort, darf Dispatch NIE blockieren/brechen)
+    try {
+      const actionVal = (args?.action as string | undefined) ?? null;
+      let preview: string | null = null;
+      try { preview = JSON.stringify(args ?? {}).slice(0, 500); } catch { preview = null; }
+      getPool()
+        .query(
+          'INSERT INTO tool_calls (project, tool_name, action, source, args_preview) VALUES ($1,$2,$3,$4,$5)',
+          [projectName ?? null, name, actionVal, agentId ?? 'mcp', preview]
+        )
+        .catch(() => {});
+    } catch { /* never throw from logging */ }
 
     // First-Use-Hint: pro (Session, Tool) genau einmal die Tool-Doku anhaengen.
     // sessionKey = agent_id wenn gesetzt, sonst Server-Instance-ID (Fallback fuer
