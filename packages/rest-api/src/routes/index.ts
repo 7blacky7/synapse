@@ -17,3 +17,4 @@ export { codeIntelRoutes } from './code-intel.js';
 export { filesRoutes } from './files.js';
 export { fsEventsRoutes } from './fs-events.js';
 export { shellRoutes } from './shell.js';
+export { specialistRoutes } from './specialists.js';
