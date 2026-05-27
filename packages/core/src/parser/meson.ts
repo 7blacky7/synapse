@@ -88,7 +88,7 @@ class MesonParser implements LanguageParser {
     symbols.push(...extractStringLiterals(content, { includeSingleQuotes: true }));
 
 
-    return { symbols, references };
+    return { symbols, references, statements: [], callEdges: [] };
   }
 }
 

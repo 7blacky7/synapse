@@ -2,14 +2,18 @@
  * Synapse MCP - Consolidated code_intel Tool
  * Strukturierte Code-Abfragen via PostgreSQL (kein Qdrant)
  *
- * 7 Actions:
- *   tree      — Projekt-Verzeichnisbaum mit Symbol-Counts
- *   functions — Funktionen mit usage_count und parent_name
- *   variables — Variablen, optional mit Wert
- *   symbols   — Generische Symbol-Abfrage nach symbol_type
- *   references — Definition + alle Referenzen eines Symbols
- *   search    — PostgreSQL-Volltext-Suche (tsv / ts_rank)
- *   file      — Dateiinhalt aus PG laden
+ * 11 Actions:
+ *   tree        — Projekt-Verzeichnisbaum mit Symbol-Counts
+ *   functions   — Funktionen mit usage_count und parent_name
+ *   variables   — Variablen, optional mit Wert
+ *   symbols     — Generische Symbol-Abfrage nach symbol_type
+ *   references  — Definition + alle Referenzen eines Symbols
+ *   search      — PostgreSQL-Volltext-Suche (tsv / ts_rank)
+ *   file        — Dateiinhalt aus PG laden
+ *   statements  — Ablauf-Ebene: Statements einer Datei/Scope
+ *   calls       — Ablauf-Ebene: Call-Edges (Aufrufe)
+ *   flow        — Geordnete Top-Level-Ausfuehrung einer Datei/Scope
+ *   entrypoints — Projektweite Top-Level executable Statements
  */
 
 import {
@@ -18,6 +22,10 @@ import {
   getVariables,
   getSymbols,
   getReferences,
+  getStatements,
+  getCallEdges,
+  getExecutionFlow,
+  getEntrypoints,
   fullTextSearchCode,
   getFileContent,
   searchCode,
@@ -35,9 +43,9 @@ export const codeIntelTool: ConsolidatedTool = {
       properties: {
         action: {
           type: 'string',
-          enum: ['tree', 'functions', 'variables', 'symbols', 'references', 'search', 'file'],
+          enum: ['tree', 'functions', 'variables', 'symbols', 'references', 'search', 'file', 'statements', 'calls', 'flow', 'entrypoints'],
           description:
-            'Aktion: tree|functions|variables|symbols|references|search|file',
+            'Aktion: tree|functions|variables|symbols|references|search|file|statements|calls|flow|entrypoints',
         },
         project: {
           type: 'string',
@@ -156,6 +164,20 @@ export const codeIntelTool: ConsolidatedTool = {
           type: 'number',
           description: 'file: Zeilen laenger als N Zeichen werden gekuerzt und mit Marker versehen. 0 = deaktiviert (Standard).',
         },
+
+        // --- statements / calls / flow (Ablauf-Ebene) ---
+        scope: {
+          type: 'string',
+          description: 'Scope-Name-Filter fuer statements/flow (z.B. Funktionsname). Ohne scope bei flow: Top-Level-Ausfuehrung der Datei.',
+        },
+        callee: {
+          type: 'string',
+          description: 'callee_name-Filter fuer calls-Action (aufgerufener Funktions-/Methodenname).',
+        },
+        top_level_only: {
+          type: 'boolean',
+          description: 'Nur Top-Level-Statements zurueckgeben (fuer statements).',
+        },
       },
       required: ['action', 'project'],
     },
@@ -259,9 +281,39 @@ export const codeIntelTool: ConsolidatedTool = {
         return { success: true, ...file, project };
       }
 
+      case 'statements': {
+        const filePath = str(args, 'file_path');
+        const scope = str(args, 'scope');
+        const topLevelOnly = bool(args, 'top_level_only');
+        const statements = await getStatements(project, filePath, scope, topLevelOnly);
+        return { success: true, statements, count: statements.length, project };
+      }
+
+      case 'calls': {
+        const filePath = str(args, 'file_path');
+        const callee = str(args, 'callee') ?? str(args, 'name');
+        const calls = await getCallEdges(project, filePath, callee);
+        return { success: true, calls, count: calls.length, project };
+      }
+
+      case 'flow': {
+        const filePath = str(args, 'file_path');
+        if (!filePath) throw new Error('Parameter "file_path" ist erforderlich fuer action "flow"');
+        const scope = str(args, 'scope');
+        const flow = await getExecutionFlow(project, filePath, scope);
+        return { success: true, ...flow, count: flow.statements.length, project };
+      }
+
+      case 'entrypoints': {
+        const filePath = str(args, 'file_path');
+        const limit = num(args, 'limit') ?? 200;
+        const entrypoints = await getEntrypoints(project, filePath, limit);
+        return { success: true, entrypoints, count: entrypoints.length, project };
+      }
+
       default:
         throw new Error(
-          `Unbekannte action: "${action}". Erlaubte Werte: tree, functions, variables, symbols, references, search, file`
+          `Unbekannte action: "${action}". Erlaubte Werte: tree, functions, variables, symbols, references, search, file, statements, calls, flow, entrypoints`
         );
     }
   },

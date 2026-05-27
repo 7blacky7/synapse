@@ -31,9 +31,78 @@ export interface ParsedReference {
   context?: string;
 }
 
+/**
+ * Ein einzelnes Statement der Ablauf-Ebene (Execution-Flow).
+ * Wird von Parsern OPTIONAL geliefert — bestehende Parser ohne Flow-Support
+ * lassen ParseResult.statements einfach undefined.
+ *
+ * parent_id ist eine TEMPORAERE, parser-lokale ID (z.B. lfd. Nummer als String),
+ * die beim Persistieren in echte DB-IDs (BIGINT) aufgeloest wird. Top-Level-
+ * bzw. Wurzel-Statements haben parent_id = undefined.
+ */
+export interface ParsedStatement {
+  /** Temporaere, parser-lokale ID (eindeutig je ParseResult) zur parent-Verknuepfung */
+  temp_id: string;
+  /** Temporaere ID des Eltern-Statements; undefined = Wurzel/Top-Level */
+  parent_temp_id?: string;
+  /** Scope-Art des umschliessenden Kontextes: 'module' | 'function' | 'method' | 'class' | ... */
+  scope_type?: string;
+  /** Name des umschliessenden Scopes (z.B. Funktionsname); null im Modul-Scope */
+  scope_name?: string | null;
+  /** Logischer Statement-Typ: 'if'|'for'|'while'|'do'|'switch'|'try'|'throw'|'return'|'await'|'new'|'call'|'assignment'|... */
+  statement_type: string;
+  /** Roher AST-Node-Kind (z.B. 'IfStatement', 'CallExpression') */
+  node_kind?: string;
+  line_start: number;
+  line_end?: number;
+  /** Reihenfolge innerhalb des Scopes (0-basiert) */
+  order_index: number;
+  /** Verschachtelungstiefe (0 = direkt im Scope) */
+  depth: number;
+  /** Gekuerzter Quelltext des Statements */
+  text?: string;
+  /** Bei calls: aufgerufener Name */
+  callee?: string;
+  /** Bei method-calls: Receiver-Ausdruck (z.B. 'pool') */
+  receiver?: string;
+  /** Bei assignments: Ziel-Variable */
+  assigned_to?: string;
+  /** Bei if/while/for/switch: Bedingungstext */
+  condition_text?: string;
+  /** true wenn Statement direkt im Modul-/Top-Level-Scope liegt */
+  is_top_level: boolean;
+  /** true wenn das Statement (oder sein Ausdruck) awaited wird */
+  is_awaited: boolean;
+  metadata?: Record<string, unknown>;
+}
+
+/**
+ * Eine Aufruf-Kante (Call-Edge) der Ablauf-Ebene. OPTIONAL von Parsern geliefert.
+ * Verknuepft ein Statement (ueber dessen temporaere ID) mit dem aufgerufenen Namen.
+ */
+export interface ParsedCallEdge {
+  /** Temporaere ID des zugehoerigen Statements (siehe ParsedStatement.temp_id); optional */
+  statement_temp_id?: string;
+  /** Umschliessender Scope-Name des Aufrufs */
+  caller_scope?: string | null;
+  /** Aufgerufener Funktions-/Methodenname */
+  callee_name: string;
+  /** Receiver-Ausdruck bei method-calls (z.B. 'pool') */
+  callee_receiver?: string;
+  line_number: number;
+  /** Art des Aufrufs: 'function' | 'method' | 'new' | 'await' */
+  call_kind?: string;
+  /** Konfidenz der Aufloesung (0..1), Standard 1.0 */
+  confidence?: number;
+}
+
 export interface ParseResult {
   symbols: ParsedSymbol[];
   references: ParsedReference[];
+  /** OPTIONAL: Ablauf-Ebene — geordnete Statements je Scope. Abwaertskompatibel. */
+  statements?: ParsedStatement[];
+  /** OPTIONAL: Aufruf-Kanten der Ablauf-Ebene. Abwaertskompatibel. */
+  callEdges?: ParsedCallEdge[];
 }
 
 export interface LanguageParser {

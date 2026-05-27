@@ -8,7 +8,7 @@
  * ANSATZ: Regex-basiert (case-insensitive, column-aware)
  */
 
-import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
+import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser, ParsedStatement, ParsedCallEdge } from './types.js';
 import { extractStringLiterals } from './types.js';
 import { parseEmbeddedSql, looksLikeSql } from './patterns/sql.js';
 
@@ -203,8 +203,215 @@ class CobolParser implements LanguageParser {
       symbols.push(...parseEmbeddedSql(sqlBlock, filePath, baseLine));
     }
 
-    return { symbols, references };
+    const { statements, callEdges } = extractCobolFlow(content);
+    return { symbols, references, statements, callEdges };
   }
+}
+
+// ---------------------------------------------------------------------------
+// Execution-Flow Extraktion fuer COBOL (PROCEDURE DIVISION)
+// Paragraphen als Scopes, PERFORM/CALL/IF/EVALUATE/GO TO als Statements
+// ---------------------------------------------------------------------------
+function extractCobolFlow(content: string): { statements: ParsedStatement[]; callEdges: ParsedCallEdge[] } {
+  const statements: ParsedStatement[] = [];
+  const callEdges: ParsedCallEdge[] = [];
+  let tempId = 0;
+  const nextId = (): string => `s${tempId++}`;
+  const orderCounters = new Map<string, number>();
+
+  function nextOrder(parentId: string | undefined, sc: { n: number }): number {
+    if (parentId === undefined) return sc.n++;
+    const key = `p:${parentId}`;
+    const cur = orderCounters.get(key) ?? 0;
+    orderCounters.set(key, cur + 1);
+    return cur;
+  }
+
+  function lineAt(pos: number): number {
+    return content.substring(0, pos).split('\n').length;
+  }
+
+  // Find PROCEDURE DIVISION start
+  const procDivM = /PROCEDURE\s+DIVISION/i.exec(content);
+  if (!procDivM) return { statements, callEdges };
+
+  const procStart = procDivM.index + procDivM[0].length;
+  const procContent = content.substring(procStart);
+  const procLines = procContent.split('\n');
+  const baseLineOffset = lineAt(procStart);
+
+  // Parse paragraphs: lines matching /^\s{6}\s*([\w-]+)\s*\.\s*$/
+  // Each paragraph is a scope. Statements within it are PERFORM, CALL, IF, EVALUATE, GO TO.
+  // We process line-by-line.
+
+  let currentParagraph: string | null = null;
+  let scopeCounter = { n: 0 };
+  // paragraph-level if-stack for nesting
+  let ifStack: Array<{ stmtId: string; depth: number }> = [];
+  let lineDepth = 0;
+
+  const SKIP_KEYWORDS = new Set([
+    'IDENTIFICATION','ENVIRONMENT','DATA','PROCEDURE',
+    'WORKING-STORAGE','LOCAL-STORAGE','LINKAGE','FILE',
+    'CONFIGURATION','INPUT-OUTPUT','FD','SD','COPY',
+    'PROGRAM-ID','AUTHOR','DATE-WRITTEN','REMARKS',
+    'SOURCE-COMPUTER','OBJECT-COMPUTER','SPECIAL-NAMES',
+  ]);
+
+  for (let i = 0; i < procLines.length; i++) {
+    const raw = procLines[i];
+    const lineNum = baseLineOffset + i;
+    const trimmed = raw.trim();
+    if (!trimmed || trimmed.startsWith('*')) continue;
+    // Strip column 7 indicator (COBOL fixed format: col 7 = '*' = comment)
+    const col7 = raw.length > 6 ? raw[6] : ' ';
+    if (col7 === '*' || col7 === '/') continue;
+
+    // Paragraph declaration: 8+ leading spaces + NAME.
+    const paraM = /^\s{6}\s*([\w-]+)\s*\.\s*$/.exec(raw);
+    if (paraM) {
+      const name = paraM[1].toUpperCase();
+      if (!SKIP_KEYWORDS.has(name) && !name.endsWith('DIVISION') && !name.endsWith('SECTION')) {
+        currentParagraph = name;
+        scopeCounter = { n: 0 };
+        ifStack = [];
+        lineDepth = 0;
+        continue;
+      }
+    }
+
+    if (!currentParagraph) continue;
+
+    const upper = trimmed.toUpperCase();
+    const parentId = ifStack.length > 0 ? ifStack[ifStack.length - 1].stmtId : undefined;
+    const depth = ifStack.length;
+
+    // IF condition
+    if (/^IF\b/.test(upper)) {
+      const condText = trimmed.replace(/^IF\s+/i, '').replace(/\s+THEN\s*$/i, '').slice(0, 200);
+      const st: ParsedStatement = {
+        temp_id: nextId(), parent_temp_id: parentId,
+        scope_type: 'function', scope_name: currentParagraph,
+        statement_type: 'if', line_start: lineNum,
+        order_index: nextOrder(parentId, scopeCounter),
+        depth, is_top_level: depth === 0, is_awaited: false,
+        condition_text: condText,
+      };
+      statements.push(st);
+      ifStack.push({ stmtId: st.temp_id, depth });
+      continue;
+    }
+
+    // END-IF
+    if (/^END-IF\b/.test(upper)) {
+      if (ifStack.length > 0) ifStack.pop();
+      continue;
+    }
+
+    // ELSE
+    if (/^ELSE\b/.test(upper)) continue;
+
+    // EVALUATE
+    if (/^EVALUATE\b/.test(upper)) {
+      const condText = trimmed.replace(/^EVALUATE\s+/i, '').slice(0, 200);
+      const st: ParsedStatement = {
+        temp_id: nextId(), parent_temp_id: parentId,
+        scope_type: 'function', scope_name: currentParagraph,
+        statement_type: 'switch', line_start: lineNum,
+        order_index: nextOrder(parentId, scopeCounter),
+        depth, is_top_level: depth === 0, is_awaited: false,
+        condition_text: condText,
+      };
+      statements.push(st);
+      ifStack.push({ stmtId: st.temp_id, depth });
+      continue;
+    }
+    if (/^END-EVALUATE\b/.test(upper)) { if (ifStack.length > 0) ifStack.pop(); continue; }
+
+    // PERFORM
+    const perfM = /^PERFORM\s+([\w-]+)/i.exec(trimmed);
+    if (perfM) {
+      const target = perfM[1].toUpperCase();
+      if (!['VARYING','UNTIL','TIMES','WITH','TEST'].includes(target)) {
+        const isLoop = /\bVARYING\b|\bUNTIL\b|\bTIMES\b/i.test(trimmed);
+        const st: ParsedStatement = {
+          temp_id: nextId(), parent_temp_id: parentId,
+          scope_type: 'function', scope_name: currentParagraph,
+          statement_type: isLoop ? 'for' : 'call', line_start: lineNum,
+          order_index: nextOrder(parentId, scopeCounter),
+          depth, is_top_level: depth === 0, is_awaited: false,
+          callee: target,
+        };
+        statements.push(st);
+        callEdges.push({ statement_temp_id: st.temp_id, caller_scope: currentParagraph, callee_name: target, line_number: lineNum, call_kind: 'function' });
+        continue;
+      }
+    }
+
+    // CALL
+    const callM = /^CALL\s+["']([^"']+)["']/i.exec(trimmed);
+    if (callM) {
+      const callee = callM[1];
+      const st: ParsedStatement = {
+        temp_id: nextId(), parent_temp_id: parentId,
+        scope_type: 'function', scope_name: currentParagraph,
+        statement_type: 'call', line_start: lineNum,
+        order_index: nextOrder(parentId, scopeCounter),
+        depth, is_top_level: depth === 0, is_awaited: false,
+        callee,
+      };
+      statements.push(st);
+      callEdges.push({ statement_temp_id: st.temp_id, caller_scope: currentParagraph, callee_name: callee, line_number: lineNum, call_kind: 'function' });
+      continue;
+    }
+
+    // GO TO
+    const gotoM = /^GO\s+TO\s+([\w-]+)/i.exec(trimmed);
+    if (gotoM) {
+      const target = gotoM[1].toUpperCase();
+      const st: ParsedStatement = {
+        temp_id: nextId(), parent_temp_id: parentId,
+        scope_type: 'function', scope_name: currentParagraph,
+        statement_type: 'call', line_start: lineNum,
+        order_index: nextOrder(parentId, scopeCounter),
+        depth, is_top_level: depth === 0, is_awaited: false,
+        callee: target,
+      };
+      statements.push(st);
+      callEdges.push({ statement_temp_id: st.temp_id, caller_scope: currentParagraph, callee_name: target, line_number: lineNum, call_kind: 'function' });
+      continue;
+    }
+
+    // MOVE / COMPUTE / ADD / SUBTRACT / etc. — generic assignment
+    if (/^(?:MOVE|COMPUTE|ADD|SUBTRACT|MULTIPLY|DIVIDE|SET|INITIALIZE|INSPECT)\b/i.test(upper)) {
+      statements.push({
+        temp_id: nextId(), parent_temp_id: parentId,
+        scope_type: 'function', scope_name: currentParagraph,
+        statement_type: 'assignment', line_start: lineNum,
+        order_index: nextOrder(parentId, scopeCounter),
+        depth, is_top_level: depth === 0, is_awaited: false,
+        text: trimmed.slice(0, 200),
+      });
+      continue;
+    }
+
+    // DISPLAY / WRITE / READ / OPEN / CLOSE / STOP / etc.
+    if (/^(?:DISPLAY|WRITE|READ|OPEN|CLOSE|STOP|ACCEPT|REWRITE|DELETE|START|RETURN)\b/i.test(upper)) {
+      const callName = upper.split(/\s+/)[0];
+      const st: ParsedStatement = {
+        temp_id: nextId(), parent_temp_id: parentId,
+        scope_type: 'function', scope_name: currentParagraph,
+        statement_type: 'call', line_start: lineNum,
+        order_index: nextOrder(parentId, scopeCounter),
+        depth, is_top_level: depth === 0, is_awaited: false,
+        callee: callName,
+      };
+      statements.push(st);
+      callEdges.push({ statement_temp_id: st.temp_id, caller_scope: currentParagraph, callee_name: callName, line_number: lineNum, call_kind: 'function' });
+    }
+  }
+
+  return { statements, callEdges };
 }
 
 export const cobolParser = new CobolParser();

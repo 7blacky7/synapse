@@ -80,7 +80,7 @@ class LinkerScriptParser implements LanguageParser {
     // 5. String-Literale
     symbols.push(...extractStringLiterals(content));
 
-    return { symbols, references };
+    return { symbols, references, statements: [], callEdges: [] };
   }
 }
 

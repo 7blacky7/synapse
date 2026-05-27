@@ -87,7 +87,7 @@ class LlvmIrParser implements LanguageParser {
     // 6. String-Literale (LLVM nutzt "...", Single-Quotes nicht als String)
     symbols.push(...extractStringLiterals(content));
 
-    return { symbols, references };
+    return { symbols, references, statements: [], callEdges: [] };
   }
 }
 

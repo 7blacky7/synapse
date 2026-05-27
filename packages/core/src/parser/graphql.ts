@@ -324,7 +324,7 @@ class GraphQLParser implements LanguageParser {
       void outerLine;
     }
 
-    return { symbols, references };
+    return { symbols, references, statements: [], callEdges: [] };
   }
 
   private parseFields(

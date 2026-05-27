@@ -8,7 +8,7 @@
  * ANSATZ: Regex-basiert
  */
 
-import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
+import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser, ParsedStatement, ParsedCallEdge } from './types.js';
 import { extractStringLiterals } from './types.js';
 import { formatRouteName, isLikelyHttpPath } from './patterns/http.js';
 import { parseEmbeddedSql, looksLikeSql } from './patterns/sql.js';
@@ -133,7 +133,82 @@ class RacketParser implements LanguageParser {
       symbols.push(...parseEmbeddedSql(sql, filePath, line));
     }
 
-    return { symbols, references };
+    // ══════════════════════════════════════════════
+    // Flow extraction: top-level defines + call edges
+    // ══════════════════════════════════════════════
+    const statements: ParsedStatement[] = [];
+    const callEdges: ParsedCallEdge[] = [];
+    let tempIdCounter = 0;
+    const nextId = () => `s${tempIdCounter++}`;
+    let orderIndex = 0;
+
+    // Function defines: (define (name args...) body)
+    const defFuncRe = /^\(define\s+\((\w[!\w?*+-]*)\s*([^)]*)\)\s*([\s\S]*?)(?=^\(define|\z)/gm;
+    const emitted = new Set<string>();
+    while ((m = defFuncRe.exec(content)) !== null) {
+      const name = m[1];
+      const body = m[3] || '';
+      if (emitted.has(name)) continue;
+      emitted.add(name);
+      const lineStart = lineAt(content, m.index);
+      const tid = nextId();
+      statements.push({
+        temp_id: tid,
+        scope_type: 'module',
+        scope_name: null,
+        statement_type: 'function',
+        node_kind: 'define',
+        line_start: lineStart,
+        order_index: orderIndex++,
+        depth: 0,
+        is_top_level: true,
+        is_awaited: false,
+        callee: name,
+        text: `(define (${name} ...) ...)`.slice(0, 240),
+      });
+
+      // Extract calls in body: (callee ...)
+      const callRe = /\(([a-z][a-z0-9*+!?/<>=-]*)\s/g;
+      let cm: RegExpExecArray | null;
+      while ((cm = callRe.exec(body)) !== null) {
+        const callee = cm[1];
+        if (['if', 'cond', 'let', 'let*', 'letrec', 'begin', 'and', 'or', 'not', 'when', 'unless', 'lambda', 'define', 'case', 'do'].includes(callee)) continue;
+        callEdges.push({
+          statement_temp_id: tid,
+          caller_scope: name,
+          callee_name: callee,
+          line_number: lineStart,
+          call_kind: 'function',
+          confidence: 0.8,
+        });
+      }
+    }
+
+    // Value defines: (define name expr)
+    const defValFlowRe = /^\(define\s+(\w[!\w?*+-]*)\s+/gm;
+    while ((m = defValFlowRe.exec(content)) !== null) {
+      const name = m[1];
+      if (emitted.has(name)) continue;
+      emitted.add(name);
+      const lineStart = lineAt(content, m.index);
+      const tid = nextId();
+      statements.push({
+        temp_id: tid,
+        scope_type: 'module',
+        scope_name: null,
+        statement_type: 'variable',
+        node_kind: 'define-value',
+        line_start: lineStart,
+        order_index: orderIndex++,
+        depth: 0,
+        is_top_level: true,
+        is_awaited: false,
+        assigned_to: name,
+        text: m[0].trim().slice(0, 240),
+      });
+    }
+
+    return { symbols, references, statements, callEdges };
   }
 }
 

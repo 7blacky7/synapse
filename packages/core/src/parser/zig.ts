@@ -8,12 +8,168 @@
  * ANSATZ: Regex-basiert
  */
 
-import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
+import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser, ParsedStatement, ParsedCallEdge } from './types.js';
 import { extractStringLiterals } from './types.js';
 import { parseEmbeddedSql, looksLikeSql } from './patterns/sql.js';
 
 function lineAt(text: string, pos: number): number {
   return text.substring(0, pos).split('\n').length;
+}
+
+// ---------------------------------------------------------------------------
+// Flow extraction (Zig)
+// ---------------------------------------------------------------------------
+
+function lineAtZig(text: string, pos: number): number {
+  return text.substring(0, pos).split('\n').length;
+}
+
+function extractFlowZig(content: string): { statements: ParsedStatement[]; callEdges: ParsedCallEdge[] } {
+  const statements: ParsedStatement[] = [];
+  const callEdges: ParsedCallEdge[] = [];
+  let tempIdCounter = 0;
+  const nextId = (): string => `s${tempIdCounter++}`;
+  const orderCounters = new Map<string, number>();
+  function nextOrder(parentId: string | undefined, sc: { v: number }): number {
+    if (parentId === undefined) return sc.v++;
+    const key = `p:${parentId}`;
+    const cur = orderCounters.get(key) ?? 0;
+    orderCounters.set(key, cur + 1);
+    return cur;
+  }
+
+  function stripComments(src: string): string {
+    return src.replace(/\/\/[^\n]*/g, m => ' '.repeat(m.length));
+  }
+
+  function extractCalls(expr: string, stmtId: string, scopeName: string | null, lineNo: number): void {
+    // method calls: receiver.method(
+    const methodRe = /(\w+)\.(\w+)\s*\(/g;
+    let mc: RegExpExecArray | null;
+    while ((mc = methodRe.exec(expr)) !== null) {
+      callEdges.push({ statement_temp_id: stmtId, caller_scope: scopeName, callee_name: mc[2], callee_receiver: mc[1], line_number: lineNo, call_kind: 'method' });
+    }
+    // plain fn calls
+    const funcRe = /(?<![.\w])([a-zA-Z_]\w*)\s*\(/g;
+    while ((mc = funcRe.exec(expr)) !== null) {
+      const name = mc[1];
+      if (['if','for','while','switch','return','try','catch','defer','errdefer','comptime','@import','@as','@intCast','@floatCast','@ptrCast','@sizeOf','@typeOf'].includes(name)) continue;
+      callEdges.push({ statement_temp_id: stmtId, caller_scope: scopeName, callee_name: name, line_number: lineNo, call_kind: name.startsWith('@') ? 'function' : 'function' });
+    }
+  }
+
+  // Find fn bodies: fn name(...) ... {
+  interface FnBody { name: string; bodyOffset: number; bodyContent: string; }
+  function findFnBodies(src: string): FnBody[] {
+    const bodies: FnBody[] = [];
+    const stripped = stripComments(src);
+    const fnRe = /^(?:\s*)(?:pub\s+)?(?:export\s+)?(?:inline\s+)?fn\s+(\w+)\s*\([^)]*\)[^{]*\{/gm;
+    let m: RegExpExecArray | null;
+    while ((m = fnRe.exec(stripped)) !== null) {
+      const name = m[1];
+      const openBrace = m.index + m[0].length - 1;
+      let depth = 1; let i = openBrace + 1;
+      while (i < src.length && depth > 0) {
+        if (src[i] === '{') depth++;
+        else if (src[i] === '}') depth--;
+        i++;
+      }
+      bodies.push({ name, bodyOffset: openBrace + 1, bodyContent: src.slice(openBrace + 1, i - 1) });
+    }
+    return bodies;
+  }
+
+  function processBody(body: string, bodyOffset: number, scopeName: string, scopeType: string, isModule: boolean): void {
+    const sc = { v: 0 };
+    const lines = body.split('\n');
+    let i = 0;
+    while (i < lines.length) {
+      const line = lines[i];
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith('//')) { i++; continue; }
+      const charOffset = lines.slice(0, i).reduce((a, l) => a + l.length + 1, 0);
+      const fileLine = lineAtZig(content, bodyOffset + charOffset);
+      const isTop = isModule && true; // for top-level only
+
+      function emit(type: string, kind: string, extra: Partial<ParsedStatement> = {}): ParsedStatement {
+        const id = nextId();
+        const st: ParsedStatement = { temp_id: id, parent_temp_id: undefined, scope_type: scopeType, scope_name: isModule ? null : scopeName, statement_type: type, node_kind: kind, line_start: fileLine, order_index: sc.v++, depth: 0, is_top_level: isTop, is_awaited: false, text: trimmed.slice(0, 240), ...extra };
+        statements.push(st);
+        return st;
+      }
+
+      // if / if-else
+      if (/^\s*if\s*\(/.test(line)) {
+        const cm = line.match(/if\s*\((.+)/); const cond = cm ? cm[1].replace(/\)\s*.*$/, '').slice(0, 200) : undefined;
+        const st = emit('if', 'IfStatement', { condition_text: cond });
+        if (cond) extractCalls(cond, st.temp_id, isModule ? null : scopeName, fileLine);
+      // for loop (Zig: for (slice) |item| {)
+      } else if (/^\s*for\s*\(/.test(line)) {
+        const cm = line.match(/for\s*\((.+)/); const cond = cm ? cm[1].replace(/\)\s*.*$/, '').slice(0, 200) : undefined;
+        const st = emit('for', 'ForStatement', { condition_text: cond });
+        if (cond) extractCalls(cond, st.temp_id, isModule ? null : scopeName, fileLine);
+      // while loop (Zig: while (cond) { or while (cond) |val| {)
+      } else if (/^\s*while\s*\(/.test(line)) {
+        const cm = line.match(/while\s*\((.+)/); const cond = cm ? cm[1].replace(/\)\s*.*$/, '').slice(0, 200) : undefined;
+        const st = emit('while', 'WhileStatement', { condition_text: cond });
+        if (cond) extractCalls(cond, st.temp_id, isModule ? null : scopeName, fileLine);
+      // switch
+      } else if (/^\s*switch\s*\(/.test(line)) {
+        const cm = line.match(/switch\s*\((.+)/); const cond = cm ? cm[1].replace(/\)\s*\{?\s*$/, '').slice(0, 200) : undefined;
+        const st = emit('switch', 'SwitchExpression', { condition_text: cond });
+        if (cond) extractCalls(cond, st.temp_id, isModule ? null : scopeName, fileLine);
+      // defer
+      } else if (/^\s*defer\b/.test(line)) {
+        const expr = trimmed.replace(/^defer\s*/, '').replace(/;$/, '');
+        const st = emit('call', 'DeferStatement', { callee: 'defer' });
+        extractCalls(expr, st.temp_id, isModule ? null : scopeName, fileLine);
+      // errdefer
+      } else if (/^\s*errdefer\b/.test(line)) {
+        const expr = trimmed.replace(/^errdefer\s*/, '').replace(/;$/, '');
+        const st = emit('call', 'ErrDeferStatement', { callee: 'errdefer' });
+        extractCalls(expr, st.temp_id, isModule ? null : scopeName, fileLine);
+      // return
+      } else if (/^\s*return\b/.test(line)) {
+        const expr = trimmed.replace(/^return\s*/, '').replace(/;$/, '');
+        const st = emit('return', 'ReturnStatement');
+        if (expr) extractCalls(expr, st.temp_id, isModule ? null : scopeName, fileLine);
+      // try expr (Zig: try someCall())
+      } else if (/^\s*(?:const|var)\s+\w+\s*=\s*try\s+/.test(line) || /^\s*try\s+\w+/.test(line)) {
+        const varM = trimmed.match(/(?:(?:const|var)\s+(\w+)\s*=\s*)?try\s+(.+)/);
+        const st = emit('call', 'TryExpression', { assigned_to: varM?.[1], callee: 'try', is_awaited: true });
+        if (varM?.[2]) extractCalls(varM[2], st.temp_id, isModule ? null : scopeName, fileLine);
+      // const/var assignment
+      } else if (/^\s*(?:const|var)\s+\w+/.test(line)) {
+        const vm = trimmed.match(/(?:const|var)\s+(\w+)(?:\s*:\s*\S+)?\s*=\s*(.+)/);
+        if (vm) {
+          const st = emit('variable', 'VariableDeclaration', { assigned_to: vm[1].slice(0, 120) });
+          extractCalls(vm[2].replace(/;$/, ''), st.temp_id, isModule ? null : scopeName, fileLine);
+        }
+      // plain assignment
+      } else if (/^\s*\w[\w.*\[\]]*\s*(?:[+*/%&|^-]?=)\s*.+;/.test(line)) {
+        const am = trimmed.match(/^(\w[\w.*\[\]]*)\s*(?:[+*/%&|^-]?=)\s*(.+);/);
+        if (am) {
+          const st = emit('assignment', 'AssignmentExpression', { assigned_to: am[1].slice(0, 120) });
+          extractCalls(am[2], st.temp_id, isModule ? null : scopeName, fileLine);
+        }
+      // function call statement: expr();
+      } else if (/\w+\s*\(/.test(trimmed) && /;$/.test(trimmed) && !/^\s*(?:if|for|while|switch|return|defer|errdefer|const|var|fn|pub|try)/.test(line)) {
+        const cm2 = trimmed.match(/(?:(\w+)\.)?(\w+)\s*\(/);
+        if (cm2) {
+          const st = emit('call', 'CallExpression', { callee: cm2[2], receiver: cm2[1] || undefined });
+          extractCalls(trimmed, st.temp_id, isModule ? null : scopeName, fileLine);
+        }
+      }
+      i++;
+    }
+  }
+
+  const bodies = findFnBodies(content);
+  for (const fb of bodies) {
+    processBody(fb.bodyContent, fb.bodyOffset, fb.name, 'function', false);
+  }
+
+  return { statements, callEdges };
 }
 
 class ZigParser implements LanguageParser {
@@ -316,7 +472,8 @@ class ZigParser implements LanguageParser {
       symbols.push(...parseEmbeddedSql(inner, filePath, baseLine));
     }
 
-    return { symbols, references };
+    const { statements, callEdges } = extractFlowZig(content);
+    return { symbols, references, statements, callEdges };
   }
 
   private parseStructFields(

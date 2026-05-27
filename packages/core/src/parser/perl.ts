@@ -8,7 +8,7 @@
  * ANSATZ: Regex-basiert
  */
 
-import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
+import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser, ParsedStatement, ParsedCallEdge } from './types.js';
 import { extractStringLiterals } from './types.js';
 import { formatRouteName, isLikelyHttpPath, HTTP_VERBS } from './patterns/http.js';
 import { parseEmbeddedSql, looksLikeSql } from './patterns/sql.js';
@@ -323,7 +323,141 @@ class PerlParser implements LanguageParser {
       symbols.push(...parseEmbeddedSql(sqlContent, filePath, baseLine));
     }
 
-    return { symbols, references };
+    // ══════════════════════════════════════════════
+    // FLOW: Statements + CallEdges
+    // ══════════════════════════════════════════════
+    const statements: ParsedStatement[] = [];
+    const callEdges: ParsedCallEdge[] = [];
+    let tid = 0;
+    const nid = (): string => `s${tid++}`;
+    const oc = new Map<string, number>();
+    const norder = (p: string | undefined): number => { const k = p ?? 'root'; const v = oc.get(k) ?? 0; oc.set(k, v + 1); return v; };
+
+    interface PS { type: string; name: string | null; }
+    const ss: PS[] = [{ type: 'module', name: null }];
+    const cs = (): PS => ss[ss.length - 1];
+
+    function es(st: string, line: number, pid: string | undefined, depth: number, extra: Partial<ParsedStatement> = {}): ParsedStatement {
+      const sc = cs();
+      const id = nid();
+      const s: ParsedStatement = { temp_id: id, parent_temp_id: pid, scope_type: sc.type, scope_name: sc.name, statement_type: st, line_start: line, order_index: norder(pid), depth, is_top_level: sc.type === 'module' && depth === 0, is_awaited: false, ...extra };
+      statements.push(s); return s;
+    }
+    function ec(sid: string, callee: string, recv: string | undefined, line: number, kind: string): void {
+      callEdges.push({ statement_temp_id: sid, caller_scope: cs().name, callee_name: callee, callee_receiver: recv, line_number: line, call_kind: kind });
+    }
+
+    const plines = content.split('\n');
+    interface PF { pid: string | undefined; depth: number; indentLevel: number; }
+    const fs: PF[] = [{ pid: undefined, depth: 0, indentLevel: -1 }];
+    const tf = (): PF => fs[fs.length - 1];
+
+    // Track sub scopes
+    interface SubEntry { name: string; indent: number; }
+    const subStack: SubEntry[] = [];
+
+    for (let i = 0; i < plines.length; i++) {
+      const raw = plines[i];
+      const tr = raw.trim();
+      const ln = i + 1;
+      if (!tr || tr.startsWith('#')) continue;
+      const indent = raw.search(/\S/);
+
+      // pop block frames
+      while (fs.length > 1 && indent <= fs[fs.length - 1].indentLevel) fs.pop();
+      // pop sub scopes when closing brace at matching indent
+      if (tr === '}' && subStack.length > 0 && indent <= subStack[subStack.length - 1].indent) {
+        subStack.pop(); ss.pop(); continue;
+      }
+
+      const f = tf();
+      const d = f.depth;
+
+      // sub declaration
+      const subM = /^sub\s+(\w+)/.exec(tr);
+      if (subM) {
+        const st = es('call', ln, f.pid, d, { callee: subM[1], text: tr.slice(0, 120) });
+        subStack.push({ name: subM[1], indent });
+        ss.push({ type: 'function', name: subM[1] });
+        fs.push({ pid: st.temp_id, depth: d + 1, indentLevel: indent });
+        continue;
+      }
+
+      // if / elsif / unless
+      const ifM = /^(?:if|elsif|unless)\s*\((.{1,200})\)/.exec(tr);
+      if (ifM) {
+        const st = es('if', ln, f.pid, d, { condition_text: ifM[1].slice(0, 200), text: tr.slice(0, 120) });
+        fs.push({ pid: st.temp_id, depth: d + 1, indentLevel: indent });
+        continue;
+      }
+
+      // while / until
+      const whM = /^(?:while|until)\s*\((.{1,200})\)/.exec(tr);
+      if (whM) {
+        const st = es('while', ln, f.pid, d, { condition_text: whM[1].slice(0, 200), text: tr.slice(0, 120) });
+        fs.push({ pid: st.temp_id, depth: d + 1, indentLevel: indent });
+        continue;
+      }
+
+      // for / foreach
+      const forM = /^(?:for|foreach)\s/.exec(tr);
+      if (forM) {
+        const st = es('for', ln, f.pid, d, { text: tr.slice(0, 120) });
+        fs.push({ pid: st.temp_id, depth: d + 1, indentLevel: indent });
+        continue;
+      }
+
+      // return
+      if (/^return\b/.test(tr)) { es('return', ln, f.pid, d, { text: tr.slice(0, 120) }); continue; }
+      // die / croak (throw-like)
+      if (/^(?:die|croak|confess)\b/.test(tr)) { es('throw', ln, f.pid, d, { text: tr.slice(0, 120) }); continue; }
+      // eval (try-like)
+      if (/^eval\s*\{/.test(tr)) { const st = es('try', ln, f.pid, d, { text: tr.slice(0, 120) }); fs.push({ pid: st.temp_id, depth: d + 1, indentLevel: indent }); continue; }
+
+      // require / use
+      if (/^(?:use|require)\s/.test(tr)) {
+        const rm = /^(?:use|require)\s+([\w:]+)/.exec(tr);
+        if (rm) { const st = es('call', ln, f.pid, d, { callee: rm[0].startsWith('use') ? 'use' : 'require', text: tr.slice(0, 120) }); ec(st.temp_id, rm[0].startsWith('use') ? 'use' : 'require', undefined, ln, 'function'); }
+        continue;
+      }
+
+      // my/our/local assignment
+      const varM = /^(?:my|our|local)\s+[\$@%](\w+)\s*=\s*(.+)/.exec(tr);
+      if (varM) {
+        const callM = /(\w+)\s*\(/.exec(varM[2]);
+        const st = es('variable', ln, f.pid, d, { assigned_to: varM[1], text: tr.slice(0, 120) });
+        if (callM) ec(st.temp_id, callM[1], undefined, ln, 'function');
+        continue;
+      }
+
+      // assignment $var = expr
+      const assignM = /^[\$@%](\w+(?:\[.*?\]|\{.*?\})?)\s*(?:[.+\-*]?=)(?!=)\s*(.+)/.exec(tr);
+      if (assignM) {
+        const callM = /(\w+)\s*\(/.exec(assignM[2]);
+        const st = es('assignment', ln, f.pid, d, { assigned_to: assignM[1], text: tr.slice(0, 120) });
+        if (callM) ec(st.temp_id, callM[1], undefined, ln, 'function');
+        continue;
+      }
+
+      // method call: $obj->method() or Module::func()
+      const mCallM = /^(?:\$(\w+)->|(\w+)::)?(\w+)\s*\(/.exec(tr);
+      if (mCallM && !/^(?:if|elsif|unless|while|until|for|foreach|sub|my|our|local|return|die|eval)\b/.test(tr)) {
+        const recv = mCallM[1] || mCallM[2];
+        const callee = mCallM[3];
+        const st = es('call', ln, f.pid, d, { callee, receiver: recv, text: tr.slice(0, 120) });
+        ec(st.temp_id, callee, recv, ln, recv ? 'method' : 'function');
+        continue;
+      }
+
+      // print / say
+      if (/^(?:print|say|warn)\b/.test(tr)) {
+        const st = es('call', ln, f.pid, d, { callee: /^print/.test(tr) ? 'print' : /^say/.test(tr) ? 'say' : 'warn', text: tr.slice(0, 120) });
+        ec(st.temp_id, st.callee!, undefined, ln, 'function');
+        continue;
+      }
+    }
+
+    return { symbols, references, statements, callEdges };
   }
 
   private findClosingBrace(content: string, openPos: number): number {

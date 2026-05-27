@@ -7,7 +7,7 @@
  * ANSATZ: Regex-basiert
  */
 
-import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
+import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser, ParsedStatement, ParsedCallEdge } from './types.js';
 import { extractStringLiterals } from './types.js';
 import { parseEmbeddedSql, looksLikeSql } from './patterns/sql.js';
 
@@ -17,6 +17,234 @@ function lineAt(text: string, pos: number): number {
 
 function endLineAt(text: string, pos: number, matchLength: number): number {
   return text.substring(0, pos + matchLength).split('\n').length;
+}
+
+// ---------------------------------------------------------------------------
+// Flow extraction (regex-based, C)
+// ---------------------------------------------------------------------------
+
+function extractFlowC(content: string): { statements: ParsedStatement[]; callEdges: ParsedCallEdge[] } {
+  const statements: ParsedStatement[] = [];
+  const callEdges: ParsedCallEdge[] = [];
+  let tempIdCounter = 0;
+  const nextId = (): string => `s${tempIdCounter++}`;
+
+  const orderCounters = new Map<string, number>();
+  function nextOrder(parentId: string | undefined, scopeCounter: { v: number }): number {
+    if (parentId === undefined) return scopeCounter.v++;
+    const key = `p:${parentId}`;
+    const cur = orderCounters.get(key) ?? 0;
+    orderCounters.set(key, cur + 1);
+    return cur;
+  }
+
+  // Strip line comments and block comments to avoid false matches inside strings/comments.
+  // We keep line structure intact (replace with spaces).
+  function stripComments(src: string): string {
+    return src
+      .replace(/\/\*[\s\S]*?\*\//g, m => m.replace(/[^\n]/g, ' '))
+      .replace(/\/\/[^\n]*/g, m => ' '.repeat(m.length));
+  }
+
+  // Find all top-level function bodies: FuncName(...) { ... }
+  // Returns array of {name, bodyStart, bodyEnd (line), content of body}
+  interface FuncBody { name: string; bodyStart: number; bodyEnd: number; bodyContent: string; bodyOffset: number; }
+
+  function findFunctionBodies(src: string): FuncBody[] {
+    const bodies: FuncBody[] = [];
+    // Match function definition opening brace (simplified: name(...) {)
+    const funcRe = /^(?:(?:static|inline|extern|__attribute__\([^)]*\)\s*)*\s*)(?:(?:const\s+)?(?:unsigned\s+|signed\s+|long\s+|short\s+)?(?:struct\s+)?\w[\w*\s]*?)\s+(\*?\w+)\s*\([^)]*\)\s*\{/gm;
+    let m: RegExpExecArray | null;
+    const stripped = stripComments(src);
+    while ((m = funcRe.exec(stripped)) !== null) {
+      const rawName = m[1].replace(/^\*/, '');
+      if (['if', 'for', 'while', 'switch', 'return', 'else', 'do'].includes(rawName)) continue;
+      const openBrace = m.index + m[0].length - 1;
+      // Find matching close brace
+      let depth = 1;
+      let i = openBrace + 1;
+      while (i < src.length && depth > 0) {
+        if (src[i] === '{') depth++;
+        else if (src[i] === '}') depth--;
+        i++;
+      }
+      const bodyEnd = i;
+      bodies.push({
+        name: rawName,
+        bodyStart: openBrace + 1,
+        bodyEnd: lineAt(src, bodyEnd),
+        bodyContent: src.slice(openBrace + 1, bodyEnd - 1),
+        bodyOffset: openBrace + 1,
+      });
+    }
+    return bodies;
+  }
+
+  // Extract calls from an expression string (simple regex)
+  function extractCallsFromExpr(expr: string, stmtId: string, scopeName: string | null, lineBase: number): void {
+    // method calls: receiver.func(  or  receiver->func(
+    const methodRe = /(\w+)\s*(?:->|\.)\s*(\w+)\s*\(/g;
+    let mc: RegExpExecArray | null;
+    while ((mc = methodRe.exec(expr)) !== null) {
+      callEdges.push({ statement_temp_id: stmtId, caller_scope: scopeName, callee_name: mc[2], callee_receiver: mc[1], line_number: lineBase, call_kind: 'method' });
+    }
+    // plain function calls (not preceded by -> or .)
+    const funcRe2 = /(?<![.\->])\b([a-zA-Z_]\w*)\s*\(/g;
+    while ((mc = funcRe2.exec(expr)) !== null) {
+      const name = mc[1];
+      if (['if', 'for', 'while', 'switch', 'do', 'return', 'sizeof', 'typeof', 'alignof', 'offsetof'].includes(name)) continue;
+      callEdges.push({ statement_temp_id: stmtId, caller_scope: scopeName, callee_name: name, line_number: lineBase, call_kind: 'function' });
+    }
+  }
+
+  function processBody(
+    body: string,
+    bodyOffset: number,
+    scopeName: string | null,
+    scopeType: string,
+    depth: number,
+    parentId: string | undefined,
+    scopeCounter: { v: number },
+  ): void {
+    const isTop = scopeType === 'module' && depth === 0;
+
+    // We scan line by line for control-flow keywords and call statements
+    // using a simplified regex approach (no full AST).
+    const lines = body.split('\n');
+    let i = 0;
+    while (i < lines.length) {
+      const line = lines[i];
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith('//') || trimmed.startsWith('/*') || trimmed.startsWith('*')) { i++; continue; }
+
+      const absLine = lineAt(body.slice(0, lines.slice(0, i).join('\n').length + (i > 0 ? 1 : 0)), 0) + lineAt(body, lines.slice(0, i).join('\n').length + (i > 0 ? 1 : 0)) - 1 || 1;
+      // Compute actual line in file
+      const lineInFile = lineAt(body.slice(0, lines.slice(0, i).reduce((a, l) => a + l.length + 1, 0)), 0) +
+        lineAt(body, lines.slice(0, i).reduce((a, l) => a + l.length + 1, 0)) - 1 || 1;
+      // Simpler: count newlines in bodyOffset prefix + current position
+      const lineOffset = body.slice(0, lines.slice(0, i).reduce((a, l) => a + l.length + 1, 0)).split('\n').length;
+      const fileLine = lineAt(content, bodyOffset) + lineOffset - 1;
+
+      // if (...) {
+      if (/^\s*if\s*\(/.test(line)) {
+        const condMatch = line.match(/if\s*\((.+)/);
+        const cond = condMatch ? condMatch[1].replace(/\)\s*\{?\s*$/, '').slice(0, 200) : undefined;
+        const stId = nextId();
+        statements.push({ temp_id: stId, parent_temp_id: parentId, scope_type: scopeType, scope_name: scopeName, statement_type: 'if', node_kind: 'IfStatement', line_start: fileLine, order_index: nextOrder(parentId, scopeCounter), depth, is_top_level: isTop, is_awaited: false, condition_text: cond, text: trimmed.slice(0, 240) });
+        if (condMatch) extractCallsFromExpr(cond || '', stId, scopeName, fileLine);
+        i++; continue;
+      }
+      // for (...) {
+      if (/^\s*for\s*\(/.test(line)) {
+        const condMatch = line.match(/for\s*\((.+)/);
+        const cond = condMatch ? condMatch[1].replace(/\)\s*\{?\s*$/, '').slice(0, 200) : undefined;
+        const stId = nextId();
+        statements.push({ temp_id: stId, parent_temp_id: parentId, scope_type: scopeType, scope_name: scopeName, statement_type: 'for', node_kind: 'ForStatement', line_start: fileLine, order_index: nextOrder(parentId, scopeCounter), depth, is_top_level: isTop, is_awaited: false, condition_text: cond, text: trimmed.slice(0, 240) });
+        if (cond) extractCallsFromExpr(cond, stId, scopeName, fileLine);
+        i++; continue;
+      }
+      // while (...) {
+      if (/^\s*while\s*\(/.test(line)) {
+        const condMatch = line.match(/while\s*\((.+)/);
+        const cond = condMatch ? condMatch[1].replace(/\)\s*\{?\s*$/, '').slice(0, 200) : undefined;
+        const stId = nextId();
+        statements.push({ temp_id: stId, parent_temp_id: parentId, scope_type: scopeType, scope_name: scopeName, statement_type: 'while', node_kind: 'WhileStatement', line_start: fileLine, order_index: nextOrder(parentId, scopeCounter), depth, is_top_level: isTop, is_awaited: false, condition_text: cond, text: trimmed.slice(0, 240) });
+        if (cond) extractCallsFromExpr(cond, stId, scopeName, fileLine);
+        i++; continue;
+      }
+      // do {
+      if (/^\s*do\s*\{/.test(line)) {
+        const stId = nextId();
+        statements.push({ temp_id: stId, parent_temp_id: parentId, scope_type: scopeType, scope_name: scopeName, statement_type: 'do', node_kind: 'DoStatement', line_start: fileLine, order_index: nextOrder(parentId, scopeCounter), depth, is_top_level: isTop, is_awaited: false, text: trimmed.slice(0, 240) });
+        i++; continue;
+      }
+      // switch (...) {
+      if (/^\s*switch\s*\(/.test(line)) {
+        const condMatch = line.match(/switch\s*\((.+)/);
+        const cond = condMatch ? condMatch[1].replace(/\)\s*\{?\s*$/, '').slice(0, 200) : undefined;
+        const stId = nextId();
+        statements.push({ temp_id: stId, parent_temp_id: parentId, scope_type: scopeType, scope_name: scopeName, statement_type: 'switch', node_kind: 'SwitchStatement', line_start: fileLine, order_index: nextOrder(parentId, scopeCounter), depth, is_top_level: isTop, is_awaited: false, condition_text: cond, text: trimmed.slice(0, 240) });
+        if (cond) extractCallsFromExpr(cond, stId, scopeName, fileLine);
+        i++; continue;
+      }
+      // return ...;
+      if (/^\s*return\b/.test(line)) {
+        const stId = nextId();
+        const retExpr = trimmed.replace(/^return\s*/, '').replace(/;$/, '');
+        statements.push({ temp_id: stId, parent_temp_id: parentId, scope_type: scopeType, scope_name: scopeName, statement_type: 'return', node_kind: 'ReturnStatement', line_start: fileLine, order_index: nextOrder(parentId, scopeCounter), depth, is_top_level: isTop, is_awaited: false, text: trimmed.slice(0, 240) });
+        if (retExpr) extractCallsFromExpr(retExpr, stId, scopeName, fileLine);
+        i++; continue;
+      }
+      // goto label;
+      if (/^\s*goto\s+\w+/.test(line)) {
+        const stId = nextId();
+        statements.push({ temp_id: stId, parent_temp_id: parentId, scope_type: scopeType, scope_name: scopeName, statement_type: 'goto', node_kind: 'GotoStatement', line_start: fileLine, order_index: nextOrder(parentId, scopeCounter), depth, is_top_level: isTop, is_awaited: false, text: trimmed.slice(0, 240) });
+        i++; continue;
+      }
+      // assignment: x = expr; or x += expr; etc.
+      if (/^\s*\w[\w.*\[\]>-]*\s*(?:[+*/%&|^-]?=)\s*.+;/.test(line) && !/^\s*(?:if|for|while|switch|return|goto)/.test(line)) {
+        const assignMatch = trimmed.match(/^(\w[\w.*\[\]>-]*)\s*(?:[+*/%&|^-]?=)\s*(.+);/);
+        if (assignMatch) {
+          const stId = nextId();
+          statements.push({ temp_id: stId, parent_temp_id: parentId, scope_type: scopeType, scope_name: scopeName, statement_type: 'assignment', node_kind: 'AssignmentExpression', line_start: fileLine, order_index: nextOrder(parentId, scopeCounter), depth, is_top_level: isTop, is_awaited: false, assigned_to: assignMatch[1].slice(0, 120), text: trimmed.slice(0, 240) });
+          extractCallsFromExpr(assignMatch[2], stId, scopeName, fileLine);
+          i++; continue;
+        }
+      }
+      // variable declaration with init: type name = expr;
+      if (/^\s*(?:(?:const|static|volatile|unsigned|signed|long|short|struct|enum)\s+)?\w+\s+\*?\w+\s*=\s*.+;/.test(line) && !/^\s*(?:if|for|while|switch|return|goto|typedef)/.test(line)) {
+        const varMatch = trimmed.match(/\w+\s+\*?(\w+)\s*=\s*(.+);/);
+        if (varMatch) {
+          const stId = nextId();
+          statements.push({ temp_id: stId, parent_temp_id: parentId, scope_type: scopeType, scope_name: scopeName, statement_type: 'variable', node_kind: 'VariableDeclaration', line_start: fileLine, order_index: nextOrder(parentId, scopeCounter), depth, is_top_level: isTop, is_awaited: false, assigned_to: varMatch[1].slice(0, 120), text: trimmed.slice(0, 240) });
+          extractCallsFromExpr(varMatch[2], stId, scopeName, fileLine);
+          i++; continue;
+        }
+      }
+      // function call statement: name(...);  or  obj->method(...);
+      if (/^\s*(?:\w[\w.*\[\]>-]*\s*(?:->|\.)?\s*)?\w+\s*\([^)]*\)\s*;/.test(line) && !/^\s*(?:if|for|while|switch|return|goto|typedef|struct|enum|union)/.test(line)) {
+        const callMatch = trimmed.match(/^(?:(\w[\w.*\[\]>-]*)(?:->|\.))?\s*(\w+)\s*\(([^)]*)\)\s*;/);
+        if (callMatch) {
+          const stId = nextId();
+          statements.push({ temp_id: stId, parent_temp_id: parentId, scope_type: scopeType, scope_name: scopeName, statement_type: 'call', node_kind: 'CallExpression', line_start: fileLine, order_index: nextOrder(parentId, scopeCounter), depth, is_top_level: isTop, is_awaited: false, callee: callMatch[2], receiver: callMatch[1] || undefined, text: trimmed.slice(0, 240) });
+          extractCallsFromExpr(trimmed, stId, scopeName, fileLine);
+          i++; continue;
+        }
+      }
+
+      i++;
+    }
+  }
+
+  // Process function bodies as 'function' scopes
+  const bodies = findFunctionBodies(content);
+  for (const fb of bodies) {
+    const scopeCounter = { v: 0 };
+    processBody(fb.bodyContent, fb.bodyOffset, fb.name, 'function', 0, undefined, scopeCounter);
+  }
+
+  // Also process top-level statements (outside functions) with scope_type='module'
+  // We mark regions outside function bodies as top-level
+  // For simplicity, scan for top-level variable declarations and calls not inside any function body
+  const bodyRanges = bodies.map(b => [b.bodyOffset, b.bodyOffset + b.bodyContent.length] as [number, number]);
+  function isInsideBody(pos: number): boolean {
+    return bodyRanges.some(([s, e]) => pos >= s && pos <= e);
+  }
+
+  const topScopeCounter = { v: 0 };
+  const stripped = stripComments(content);
+  // Top-level variable declarations with init
+  const topVarRe = /^(?:(?:static|extern|const|volatile|unsigned|signed|long|short|struct|enum)\s+)+\w[\w*\s]*?\s+(\w+)\s*(?:=\s*([^;]+))?\s*;/gm;
+  let mv: RegExpExecArray | null;
+  while ((mv = topVarRe.exec(stripped)) !== null) {
+    if (isInsideBody(mv.index)) continue;
+    const fileLine = lineAt(content, mv.index);
+    const stId = nextId();
+    statements.push({ temp_id: stId, parent_temp_id: undefined, scope_type: 'module', scope_name: null, statement_type: 'variable', node_kind: 'VariableDeclaration', line_start: fileLine, order_index: nextOrder(undefined, topScopeCounter), depth: 0, is_top_level: true, is_awaited: false, assigned_to: mv[1], text: mv[0].trim().slice(0, 240) });
+    if (mv[2]) extractCallsFromExpr(mv[2], stId, null, fileLine);
+  }
+
+  return { statements, callEdges };
 }
 
 class CParser implements LanguageParser {
@@ -340,7 +568,8 @@ class CParser implements LanguageParser {
       symbols.push(...parseEmbeddedSql(raw, filePath, baseLine));
     }
 
-    return { symbols, references };
+    const { statements, callEdges } = extractFlowC(content);
+    return { symbols, references, statements, callEdges };
   }
 
   private extractFields(body: string): string[] {

@@ -8,7 +8,7 @@
  * ANSATZ: Regex-basiert
  */
 
-import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
+import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser, ParsedStatement, ParsedCallEdge } from './types.js';
 import { extractStringLiterals } from './types.js';
 import { formatRouteName, isLikelyHttpPath, HTTP_VERBS } from './patterns/http.js';
 import { parseEmbeddedSql, looksLikeSql } from './patterns/sql.js';
@@ -388,7 +388,114 @@ class JuliaParser implements LanguageParser {
       pushSql(m[1], m.index);
     }
 
-    return { symbols, references };
+    // ══════════════════════════════════════════════
+    // Flow extraction: top-level functions + call edges
+    // ══════════════════════════════════════════════
+    const statements: ParsedStatement[] = [];
+    const callEdges: ParsedCallEdge[] = [];
+    let tempIdCounter = 0;
+    const nextId = () => `s${tempIdCounter++}`;
+    let orderIndex = 0;
+
+    // Long-form functions: function name(...) ... end
+    const funcFlowRe = /^function\s+(?:(\w+)\.)?(\w+)(?:\{[^}]*\})?\s*\(([^)]*)\)(?:\s*::\s*\S+)?\s*\n([\s\S]*?)^end\b/gm;
+    const emitted = new Set<string>();
+    while ((m = funcFlowRe.exec(content)) !== null) {
+      const parentType = m[1];
+      const name = m[2];
+      const body = m[4] || '';
+      const fullName = parentType ? `${parentType}.${name}` : name;
+      if (emitted.has(fullName)) continue;
+      emitted.add(fullName);
+      const lineStart = lineAt(content, m.index);
+      const tid = nextId();
+      statements.push({
+        temp_id: tid,
+        scope_type: 'module',
+        scope_name: null,
+        statement_type: 'function',
+        node_kind: 'FunctionDef',
+        line_start: lineStart,
+        order_index: orderIndex++,
+        depth: 0,
+        is_top_level: true,
+        is_awaited: false,
+        callee: fullName,
+        text: `function ${fullName}(...)`.slice(0, 240),
+      });
+
+      // Extract calls from body
+      const callRe = /\b([a-z_]\w*)\s*\(/g;
+      let cm: RegExpExecArray | null;
+      while ((cm = callRe.exec(body)) !== null) {
+        const callee = cm[1];
+        if (['if', 'for', 'while', 'let', 'try', 'begin', 'do', 'macro', 'function', 'struct', 'module'].includes(callee)) continue;
+        callEdges.push({
+          statement_temp_id: tid,
+          caller_scope: fullName,
+          callee_name: callee,
+          line_number: lineStart,
+          call_kind: 'function',
+          confidence: 0.8,
+        });
+      }
+      // Method calls: obj.method(
+      const methodRe = /\b(\w+)\.(\w+)\s*\(/g;
+      let mm: RegExpExecArray | null;
+      while ((mm = methodRe.exec(body)) !== null) {
+        callEdges.push({
+          statement_temp_id: tid,
+          caller_scope: fullName,
+          callee_name: mm[2],
+          callee_receiver: mm[1],
+          line_number: lineStart,
+          call_kind: 'method',
+          confidence: 0.8,
+        });
+      }
+    }
+
+    // Short-form functions: name(args) = expr
+    const shortFuncFlowRe = /^(\w+)\s*\([^)]*\)\s*=\s*(.+)/gm;
+    while ((m = shortFuncFlowRe.exec(content)) !== null) {
+      const name = m[1];
+      const rhs = m[2];
+      if (['if', 'while', 'for', 'let', 'const', 'global', 'struct', 'module'].includes(name)) continue;
+      if (emitted.has(name)) continue;
+      emitted.add(name);
+      const lineStart = lineAt(content, m.index);
+      const tid = nextId();
+      statements.push({
+        temp_id: tid,
+        scope_type: 'module',
+        scope_name: null,
+        statement_type: 'function',
+        node_kind: 'ShortFuncDef',
+        line_start: lineStart,
+        order_index: orderIndex++,
+        depth: 0,
+        is_top_level: true,
+        is_awaited: false,
+        callee: name,
+        text: m[0].trim().slice(0, 240),
+      });
+      const callRe2 = /\b([a-z_]\w*)\s*\(/g;
+      let cm2: RegExpExecArray | null;
+      while ((cm2 = callRe2.exec(rhs)) !== null) {
+        const callee = cm2[1];
+        if (['if', 'for', 'while'].includes(callee)) continue;
+        callEdges.push({
+          statement_temp_id: tid,
+          caller_scope: name,
+          callee_name: callee,
+          line_number: lineStart,
+          call_kind: 'function',
+          confidence: 0.7,
+        });
+      }
+    }
+
+    return { symbols, references, statements, callEdges };
   }
 
   private findEnd(content: string, startPos: number): number {

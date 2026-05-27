@@ -12,6 +12,10 @@ import {
   getReferences,
   fullTextSearchCode,
   getFileContent,
+  getStatements,
+  getCallEdges,
+  getExecutionFlow,
+  getEntrypoints,
 } from '@synapse/core';
 
 export async function codeIntelRoutes(fastify: FastifyInstance): Promise<void> {
@@ -285,6 +289,137 @@ export async function codeIntelRoutes(fastify: FastifyInstance): Promise<void> {
       return {
         success: true,
         file: result,
+      };
+    } catch (error) {
+      return reply.status(500).send({
+        success: false,
+        error: { message: String(error) },
+      });
+    }
+  });
+
+  /**
+   * GET /api/projects/:name/code-intel/statements
+   * Statements (Ablauf-Ebene) eines Projekts/einer Datei abrufen
+   */
+  fastify.get<{
+    Params: { name: string };
+    Querystring: {
+      file_path?: string;
+      scope?: string;
+      top_level_only?: string;
+    };
+  }>('/api/projects/:name/code-intel/statements', async (request, reply) => {
+    const { name } = request.params;
+    const { file_path, scope, top_level_only } = request.query;
+
+    try {
+      const result = await getStatements(name, file_path, scope, top_level_only === 'true');
+
+      return {
+        success: true,
+        statements: result,
+        count: result.length,
+      };
+    } catch (error) {
+      return reply.status(500).send({
+        success: false,
+        error: { message: String(error) },
+      });
+    }
+  });
+
+  /**
+   * GET /api/projects/:name/code-intel/calls
+   * Call-Kanten (Aufruf-Beziehungen) eines Projekts/einer Datei abrufen
+   */
+  fastify.get<{
+    Params: { name: string };
+    Querystring: {
+      file_path?: string;
+      callee?: string;
+    };
+  }>('/api/projects/:name/code-intel/calls', async (request, reply) => {
+    const { name } = request.params;
+    const { file_path, callee } = request.query;
+
+    try {
+      const result = await getCallEdges(name, file_path, callee);
+
+      return {
+        success: true,
+        call_edges: result,
+        count: result.length,
+      };
+    } catch (error) {
+      return reply.status(500).send({
+        success: false,
+        error: { message: String(error) },
+      });
+    }
+  });
+
+  /**
+   * GET /api/projects/:name/code-intel/flow
+   * Ausfuehrungs-Reihenfolge (Execution Flow) einer Datei/eines Scopes abrufen
+   */
+  fastify.get<{
+    Params: { name: string };
+    Querystring: {
+      file_path: string;
+      scope?: string;
+    };
+  }>('/api/projects/:name/code-intel/flow', async (request, reply) => {
+    const { name } = request.params;
+    const { file_path, scope } = request.query;
+
+    if (!file_path) {
+      return reply.status(400).send({
+        success: false,
+        error: { message: 'file_path ist erforderlich' },
+      });
+    }
+
+    try {
+      const result = await getExecutionFlow(name, file_path, scope);
+
+      return {
+        success: true,
+        ...result,
+      };
+    } catch (error) {
+      return reply.status(500).send({
+        success: false,
+        error: { message: String(error) },
+      });
+    }
+  });
+
+  /**
+   * GET /api/projects/:name/code-intel/entrypoints
+   * Top-Level-Einstiegspunkte (ausfuehrbarer Code) eines Projekts abrufen
+   */
+  fastify.get<{
+    Params: { name: string };
+    Querystring: {
+      file_path?: string;
+      limit?: string;
+    };
+  }>('/api/projects/:name/code-intel/entrypoints', async (request, reply) => {
+    const { name } = request.params;
+    const { file_path, limit } = request.query;
+
+    try {
+      const result = await getEntrypoints(
+        name,
+        file_path,
+        limit !== undefined ? parseInt(limit, 10) : undefined
+      );
+
+      return {
+        success: true,
+        entrypoints: result,
+        count: result.length,
       };
     } catch (error) {
       return reply.status(500).send({

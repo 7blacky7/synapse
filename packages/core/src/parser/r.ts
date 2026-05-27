@@ -9,7 +9,7 @@
  * ANSATZ: Regex-basiert
  */
 
-import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
+import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser, ParsedStatement, ParsedCallEdge } from './types.js';
 import { extractStringLiterals } from './types.js';
 import { HTTP_VERBS, formatRouteName } from './patterns/http.js';
 import { looksLikeSql, parseEmbeddedSql } from './patterns/sql.js';
@@ -286,7 +286,155 @@ class RParser implements LanguageParser {
       symbols.push(...parseEmbeddedSql(sqlContent, filePath, baseLine));
     }
 
-    return { symbols, references };
+    // ══════════════════════════════════════════════
+    // FLOW: Statements + CallEdges
+    // ══════════════════════════════════════════════
+    const statements: ParsedStatement[] = [];
+    const callEdges: ParsedCallEdge[] = [];
+    let tid = 0;
+    const nid = (): string => `s${tid++}`;
+    const oc = new Map<string, number>();
+    const nord = (p: string | undefined): number => { const k = p ?? 'root'; const v = oc.get(k) ?? 0; oc.set(k, v + 1); return v; };
+    interface RS { type: string; name: string | null; }
+    const ss: RS[] = [{ type: 'module', name: null }];
+    const cs = (): RS => ss[ss.length - 1];
+
+    function es(st: string, line: number, pid: string | undefined, depth: number, extra: Partial<ParsedStatement> = {}): ParsedStatement {
+      const sc = cs(); const id = nid();
+      const s: ParsedStatement = { temp_id: id, parent_temp_id: pid, scope_type: sc.type, scope_name: sc.name, statement_type: st, line_start: line, order_index: nord(pid), depth, is_top_level: sc.type === 'module' && depth === 0, is_awaited: false, ...extra };
+      statements.push(s); return s;
+    }
+    function ec(sid: string, callee: string, recv: string | undefined, line: number, kind: string): void {
+      callEdges.push({ statement_temp_id: sid, caller_scope: cs().name, callee_name: callee, callee_receiver: recv, line_number: line, call_kind: kind });
+    }
+
+    const rLines = content.split('\n');
+    interface RF { pid: string | undefined; depth: number; braceDepthAtOpen: number; }
+    const fs: RF[] = [{ pid: undefined, depth: 0, braceDepthAtOpen: 0 }];
+    const tf = (): RF => fs[fs.length - 1];
+    interface FnEnt { name: string; braceDepth: number; }
+    const fnStack: FnEnt[] = [];
+    let braceDepth = 0;
+
+    for (let i = 0; i < rLines.length; i++) {
+      const raw = rLines[i];
+      const tr = raw.replace(/#.*$/, '').trim();
+      const ln = i + 1;
+      if (!tr) continue;
+
+      const openB = (tr.match(/\{/g) || []).length;
+      const closeB = (tr.match(/\}/g) || []).length;
+      const f = tf();
+      const d = f.depth;
+
+      // function assignment: name <- function(...)  or  name = function(...)
+      const fnM = /^(\w+)\s*(?:<-|=)\s*function\s*\(/.exec(tr);
+      if (fnM) {
+        const name = fnM[1];
+        const st = es('variable', ln, f.pid, d, { assigned_to: name, text: tr.slice(0, 120) });
+        if (openB > closeB) {
+          ss.push({ type: 'function', name });
+          fnStack.push({ name, braceDepth: braceDepth + openB - closeB });
+          fs.push({ pid: st.temp_id, depth: d + 1, braceDepthAtOpen: braceDepth + openB - closeB });
+        }
+        braceDepth += openB - closeB;
+        continue;
+      }
+
+      // if
+      const ifM = /^if\s*\((.{0,200})\)/.exec(tr);
+      if (ifM) {
+        const st = es('if', ln, f.pid, d, { condition_text: ifM[1].slice(0, 200), text: tr.slice(0, 120) });
+        if (openB > closeB) { fs.push({ pid: st.temp_id, depth: d + 1, braceDepthAtOpen: braceDepth + openB - closeB }); }
+        braceDepth += openB - closeB;
+        continue;
+      }
+      if (/^\}\s*else\s*\{/.test(tr) || /^else\s*\{/.test(tr)) { braceDepth += openB - closeB; continue; }
+
+      // while
+      const whM = /^while\s*\((.{0,200})\)/.exec(tr);
+      if (whM) {
+        const st = es('while', ln, f.pid, d, { condition_text: whM[1].slice(0, 200), text: tr.slice(0, 120) });
+        if (openB > closeB) { fs.push({ pid: st.temp_id, depth: d + 1, braceDepthAtOpen: braceDepth + openB - closeB }); }
+        braceDepth += openB - closeB;
+        continue;
+      }
+
+      // for
+      const forM = /^for\s*\((.{0,200})\)/.exec(tr);
+      if (forM) {
+        const st = es('for', ln, f.pid, d, { condition_text: forM[1].slice(0, 200), text: tr.slice(0, 120) });
+        if (openB > closeB) { fs.push({ pid: st.temp_id, depth: d + 1, braceDepthAtOpen: braceDepth + openB - closeB }); }
+        braceDepth += openB - closeB;
+        continue;
+      }
+
+      // repeat
+      if (/^repeat\s*\{/.test(tr)) {
+        const st = es('do', ln, f.pid, d, { text: tr.slice(0, 120) });
+        fs.push({ pid: st.temp_id, depth: d + 1, braceDepthAtOpen: braceDepth + openB - closeB });
+        braceDepth += openB - closeB;
+        continue;
+      }
+
+      // tryCatch / try (R error handling)
+      if (/^tryCatch\s*\(|^try\s*\(/.test(tr)) {
+        const st = es('try', ln, f.pid, d, { text: tr.slice(0, 120) });
+        ec(st.temp_id, /^tryCatch/.test(tr) ? 'tryCatch' : 'try', undefined, ln, 'function');
+        braceDepth += openB - closeB;
+        continue;
+      }
+
+      // stop / warning (throw-like)
+      if (/^stop\s*\(/.test(tr)) { const st = es('throw', ln, f.pid, d, { text: tr.slice(0, 120) }); ec(st.temp_id, 'stop', undefined, ln, 'function'); continue; }
+
+      // return
+      if (/^return\s*\(/.test(tr)) { es('return', ln, f.pid, d, { text: tr.slice(0, 120) }); continue; }
+
+      // library / require / source (already as symbols; also emit call)
+      if (/^(?:library|require)\s*\(/.test(tr)) {
+        const nm = /^(library|require)\s*\(\s*(?:"|')?(\w+)/.exec(tr);
+        if (nm) { const st = es('call', ln, f.pid, d, { callee: nm[1], text: tr.slice(0, 120) }); ec(st.temp_id, nm[1], undefined, ln, 'function'); }
+        continue;
+      }
+      if (/^source\s*\(/.test(tr)) {
+        const st = es('call', ln, f.pid, d, { callee: 'source', text: tr.slice(0, 120) });
+        ec(st.temp_id, 'source', undefined, ln, 'function');
+        continue;
+      }
+
+      // assignment: var <- expr  or  var = expr  (not inside if/for/while)
+      const assignM = /^(\w+)\s*(?:<<?-|->>?|=)\s*(.+)/.exec(tr);
+      if (assignM && !/^(?:if|while|for|repeat|function|return|stop|library|require|source)\b/.test(tr)) {
+        const rhs = assignM[2];
+        const callM = /(\w+)\s*\(/.exec(rhs);
+        const st = es('assignment', ln, f.pid, d, { assigned_to: assignM[1], text: tr.slice(0, 120) });
+        if (callM && callM[1] !== 'function') ec(st.temp_id, callM[1], undefined, ln, 'function');
+        braceDepth += openB - closeB;
+        while (fs.length > 1 && braceDepth < fs[fs.length - 1].braceDepthAtOpen) { fs.pop(); }
+        while (fnStack.length > 0 && braceDepth < fnStack[fnStack.length - 1].braceDepth) { fnStack.pop(); if (ss.length > 1) ss.pop(); }
+        continue;
+      }
+
+      // method call: obj$method() or func()
+      const mCallM = /^(\w+)\$(\w+)\s*\(/.exec(tr);
+      if (mCallM) {
+        const st = es('call', ln, f.pid, d, { callee: mCallM[2], receiver: mCallM[1], text: tr.slice(0, 120) });
+        ec(st.temp_id, mCallM[2], mCallM[1], ln, 'method');
+      } else {
+        const plainCallM = /^(\w+)\s*\(/.exec(tr);
+        if (plainCallM && !/^(?:if|while|for|repeat|function|return|stop|library|require|source)\b/.test(tr)) {
+          const st = es('call', ln, f.pid, d, { callee: plainCallM[1], text: tr.slice(0, 120) });
+          ec(st.temp_id, plainCallM[1], undefined, ln, 'function');
+        }
+      }
+
+      braceDepth += openB - closeB;
+      while (fs.length > 1 && braceDepth < fs[fs.length - 1].braceDepthAtOpen) { fs.pop(); }
+      while (fnStack.length > 0 && braceDepth < fnStack[fnStack.length - 1].braceDepth) { fnStack.pop(); if (ss.length > 1) ss.pop(); }
+    }
+
+    return { symbols, references, statements, callEdges };
   }
 }
 

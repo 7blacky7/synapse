@@ -7,7 +7,7 @@
  * ANSATZ: Regex-basiert
  */
 
-import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
+import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser, ParsedStatement, ParsedCallEdge } from './types.js';
 import { extractStringLiterals } from './types.js';
 
 function lineAt(text: string, pos: number): number {
@@ -104,8 +104,56 @@ class LeanParser implements LanguageParser {
 
     symbols.push(...extractStringLiterals(content));
 
+    // ══════════════════════════════════════════════
+    // Flow extraction: top-level defs/theorems + call edges
+    // ══════════════════════════════════════════════
+    const statements: ParsedStatement[] = [];
+    const callEdges: ParsedCallEdge[] = [];
+    let tempIdCounter = 0;
+    const nextId = () => `s${tempIdCounter++}`;
+    let orderIndex = 0;
 
-    return { symbols, references };
+    // def / theorem / lemma / noncomputable def
+    const defFlowRe = /^(?:noncomputable\s+)?(?:private\s+)?(?:protected\s+)?(?:partial\s+)?(def|theorem|lemma)\s+(\w+)(?:\s*\(([^)]*)\))?(?:\s*:\s*([^\n:=]+))?(?:\s*:=\s*([^\n]*))?/gm;
+    while ((m = defFlowRe.exec(content)) !== null) {
+      const kind = m[1];
+      const name = m[2];
+      const rhs = m[5] || '';
+      const lineStart = lineAt(content, m.index);
+      const tid = nextId();
+      statements.push({
+        temp_id: tid,
+        scope_type: 'module',
+        scope_name: null,
+        statement_type: 'function',
+        node_kind: kind,
+        line_start: lineStart,
+        order_index: orderIndex++,
+        depth: 0,
+        is_top_level: true,
+        is_awaited: false,
+        callee: name,
+        text: m[0].trim().slice(0, 240),
+      });
+
+      // Extract applied functions from the body/rhs
+      const callRe = /\b([a-z_]\w*)\s+/g;
+      let cm: RegExpExecArray | null;
+      while ((cm = callRe.exec(rhs)) !== null) {
+        const callee = cm[1];
+        if (['fun', 'do', 'let', 'if', 'match', 'return', 'by', 'have', 'show', 'from', 'at', 'in'].includes(callee)) continue;
+        callEdges.push({
+          statement_temp_id: tid,
+          caller_scope: name,
+          callee_name: callee,
+          line_number: lineStart,
+          call_kind: 'function',
+          confidence: 0.7,
+        });
+      }
+    }
+
+    return { symbols, references, statements, callEdges };
   }
 }
 

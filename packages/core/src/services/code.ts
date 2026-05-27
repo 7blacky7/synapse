@@ -90,6 +90,11 @@ async function upsertCodeFile(
 ): Promise<void> {
   const pool = getPool();
   const id = uuidv4();
+  // PostgreSQL text/UTF8 kann NUL-Bytes (0x00) nicht speichern ("invalid byte
+  // sequence for encoding UTF8: 0x00"). Manche Dateien (z.B. mit eingebetteten
+  // Binaerteilen) enthalten 0x00 → defensiv strippen, sonst schlaegt der ganze
+  // code_files-Upsert fehl und die Datei wird nicht indexiert.
+  const safeContent = content != null ? content.replace(/\0/g, '') : content;
   await pool.query(
     `INSERT INTO code_files (id, project, file_path, file_name, file_type, chunk_count, file_size, content, content_hash, indexed_at, updated_at)
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW(), NOW())
@@ -101,7 +106,7 @@ async function upsertCodeFile(
        content = EXCLUDED.content,
        content_hash = EXCLUDED.content_hash,
        updated_at = NOW()`,
-    [id, project, filePath, fileName, fileType, chunkCount, fileSize, content, contentHash]
+    [id, project, filePath, fileName, fileType, chunkCount, fileSize, safeContent, contentHash]
   );
 }
 
@@ -283,6 +288,11 @@ export async function parseAndEmbed(project: string, filePath: string): Promise<
       const containerIds = new Map<string, string>(); // name → UUID (class/interface/enum/struct)
       const insertedSymbols: Array<{ symId: string; sym: typeof parseResult.symbols[number] }> = [];
 
+      // PERF: Symbole + Referenzen als Batch Multi-VALUES INSERT statt N Einzel-Queries.
+      // symId wird client-seitig (uuidv4) erzeugt → kein RETURNING noetig, parent_symbol
+      // wird in Phase 2 via Batch-UPDATE (unnest) nachgetragen. Entscheidend bei Remote-DB.
+      const symbolTuples: unknown[][] = [];
+      const refTuples: unknown[][] = [];
       for (const sym of parseResult.symbols) {
         const symId = uuidv4();
         insertedSymbols.push({ symId, sym });
@@ -293,22 +303,16 @@ export async function parseAndEmbed(project: string, filePath: string): Promise<
           containerIds.set(sym.name, symId);
         }
 
-        await symClient.query(
-          `INSERT INTO code_symbols
-             (id, project, file_path, symbol_type, name, value, line_start, line_end,
-              parent_symbol, params, return_type, is_exported)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
-          [
-            symId, project, filePath,
-            sym.symbol_type, sym.name ?? null, sym.value ?? null,
-            sym.line_start, sym.line_end ?? null,
-            null, // parent_symbol wird in Phase 2 gesetzt
-            sym.params ?? null, sym.return_type ?? null,
-            sym.is_exported,
-          ]
-        );
+        symbolTuples.push([
+          symId, project, filePath,
+          sym.symbol_type, sym.name ?? null, sym.value ?? null,
+          sym.line_start, sym.line_end ?? null,
+          null, // parent_symbol wird in Phase 2 gesetzt
+          sym.params ?? null, sym.return_type ?? null,
+          sym.is_exported,
+        ]);
 
-        // Referenzen fuer dieses Symbol einfuegen
+        // Referenzen fuer dieses Symbol sammeln
         if (parseResult.references.length > 0 && sym.name) {
           // Bei Imports: params enthaelt die einzelnen Namen, name ist komma-separiert
           const nameSet = sym.symbol_type === 'import' && sym.params
@@ -316,24 +320,68 @@ export async function parseAndEmbed(project: string, filePath: string): Promise<
             : new Set([sym.name]);
           const symRefs = parseResult.references.filter(r => nameSet.has(r.symbol_name));
           for (const ref of symRefs) {
-            await symClient.query(
-              `INSERT INTO code_references (id, project, symbol_id, file_path, line_number, context)
-               VALUES ($1, $2, $3, $4, $5, $6)`,
-              [uuidv4(), project, symId, filePath, ref.line_number, ref.context ?? null]
-            );
+            refTuples.push([uuidv4(), project, symId, filePath, ref.line_number, ref.context ?? null]);
           }
         }
       }
 
-      // Phase 2: parent_symbol (UUID) fuer alle Symbole mit parent_id nachtragen.
+      // Batch-INSERT Symbole (Sub-Batching wg. PG-Parameter-Limit; 12 Params/Row).
+      const SYM_COLS = 12;
+      const SYM_BATCH = 2000; // 2000 * 12 = 24000 < 65535
+      for (let i = 0; i < symbolTuples.length; i += SYM_BATCH) {
+        const slice = symbolTuples.slice(i, i + SYM_BATCH);
+        const vals: unknown[] = [];
+        const rows = slice.map((t, j) => {
+          const b = j * SYM_COLS;
+          vals.push(...t);
+          return `($${b + 1},$${b + 2},$${b + 3},$${b + 4},$${b + 5},$${b + 6},$${b + 7},$${b + 8},$${b + 9},$${b + 10},$${b + 11},$${b + 12})`;
+        });
+        await symClient.query(
+          `INSERT INTO code_symbols
+             (id, project, file_path, symbol_type, name, value, line_start, line_end,
+              parent_symbol, params, return_type, is_exported)
+           VALUES ${rows.join(',')}`,
+          vals
+        );
+      }
+
+      // Batch-INSERT Referenzen (6 Params/Row).
+      const REF_COLS = 6;
+      const REF_BATCH = 5000; // 5000 * 6 = 30000 < 65535
+      for (let i = 0; i < refTuples.length; i += REF_BATCH) {
+        const slice = refTuples.slice(i, i + REF_BATCH);
+        const vals: unknown[] = [];
+        const rows = slice.map((t, j) => {
+          const b = j * REF_COLS;
+          vals.push(...t);
+          return `($${b + 1},$${b + 2},$${b + 3},$${b + 4},$${b + 5},$${b + 6})`;
+        });
+        await symClient.query(
+          `INSERT INTO code_references (id, project, symbol_id, file_path, line_number, context)
+           VALUES ${rows.join(',')}`,
+          vals
+        );
+      }
+
+      // Phase 2: parent_symbol (UUID) in EINEM Batch-UPDATE via unnest nachtragen.
       // parent_id ist ein Name-String (z.B. Klassenname), der in der containerIds-Map aufgeloest wird.
+      const symChildIds: string[] = [];
+      const symParentIds: string[] = [];
       for (const { symId, sym } of insertedSymbols) {
         if (!sym.parent_id) continue;
         const parentUuid = containerIds.get(sym.parent_id);
         if (!parentUuid) continue;
+        symChildIds.push(symId);
+        symParentIds.push(parentUuid);
+      }
+      if (symChildIds.length > 0) {
+        // code_symbols.id ist text (UUID-String), daher text[] casten (nicht uuid[]).
         await symClient.query(
-          `UPDATE code_symbols SET parent_symbol = $1 WHERE id = $2`,
-          [parentUuid, symId]
+          `UPDATE code_symbols AS cs
+              SET parent_symbol = v.parent
+             FROM (SELECT unnest($1::text[]) AS id, unnest($2::text[]) AS parent) AS v
+            WHERE cs.id = v.id`,
+          [symChildIds, symParentIds]
         );
       }
 
@@ -344,6 +392,142 @@ export async function parseAndEmbed(project: string, filePath: string): Promise<
       console.error(`[Synapse] Symbol-Insert Transaktion fehlgeschlagen:`, txErr);
     } finally {
       symClient.release();
+    }
+
+    // --- Statements + Call-Edges (Ablauf-Ebene) persistieren ---
+    // Eigene Transaktion + eigener advisory_xact_lock (Key: statements:project:file).
+    // Darf den Symbol-/Chunk-/Embedding-Pfad NICHT blockieren: bei leeren/undefined
+    // statements wird das DELETE trotzdem ausgefuehrt (alte Eintraege raeumen), aber
+    // Fehler werden geschluckt (try/catch), damit die restliche Indexierung weiterlaeuft.
+    const stmts = parseResult.statements;
+    const callEdges = parseResult.callEdges;
+    if (stmts !== undefined || callEdges !== undefined) {
+      const flowClient = await pool.connect();
+      try {
+        await flowClient.query('BEGIN');
+        await flowClient.query('SELECT pg_advisory_xact_lock(hashtext($1))', [
+          `statements:${project}:${filePath}`,
+        ]);
+        // DELETE+INSERT: alte Ablauf-Eintraege fuer dieses File raeumen.
+        // code_call_edges.statement_id ist ON DELETE CASCADE → mit-geloescht; die
+        // ueber file_path verknuepften (statement_id NULL) explizit loeschen.
+        await flowClient.query(
+          'DELETE FROM code_call_edges WHERE project = $1 AND file_path = $2',
+          [project, filePath]
+        );
+        await flowClient.query(
+          'DELETE FROM code_statements WHERE project = $1 AND file_path = $2',
+          [project, filePath]
+        );
+
+        // temp_id (parser-lokal) → echte DB-ID (BIGINT) aufloesen.
+        // PERF: Batched Multi-VALUES INSERT statt N Einzel-Queries. Entscheidend bei
+        // Remote-DB — reduziert hunderte sequentielle Roundtrips pro Datei auf wenige.
+        // RETURNING id liefert die Zeilen in VALUES-Reihenfolge → index-basiertes Mapping.
+        // Sub-Batching wegen PG-Parameter-Limit (65535 Params/Query).
+        const tempToDbId = new Map<string, string>();
+        if (stmts && stmts.length > 0) {
+          const STMT_PARAMS = 18;
+          const STMT_BATCH = 2000; // 2000 * 18 = 36000 < 65535
+          for (let i = 0; i < stmts.length; i += STMT_BATCH) {
+            const slice = stmts.slice(i, i + STMT_BATCH);
+            const values: unknown[] = [];
+            const rows: string[] = [];
+            slice.forEach((st, j) => {
+              const b = j * STMT_PARAMS;
+              rows.push(
+                `($${b + 1},$${b + 2},$${b + 3},$${b + 4},$${b + 5},$${b + 6},$${b + 7},$${b + 8},$${b + 9},$${b + 10},NULL,$${b + 11},$${b + 12},$${b + 13},$${b + 14},$${b + 15},$${b + 16},$${b + 17},$${b + 18})`
+              );
+              values.push(
+                project, filePath,
+                st.scope_type ?? null, st.scope_name ?? null,
+                st.statement_type, st.node_kind ?? null,
+                st.line_start, st.line_end ?? null,
+                st.order_index, st.depth,
+                st.text ?? null, st.callee ?? null, st.receiver ?? null,
+                st.assigned_to ?? null, st.condition_text ?? null,
+                st.is_top_level, st.is_awaited,
+                st.metadata ? JSON.stringify(st.metadata) : null
+              );
+            });
+            const res = await flowClient.query(
+              `INSERT INTO code_statements
+                 (project, file_path, scope_type, scope_name, statement_type, node_kind,
+                  line_start, line_end, order_index, depth, parent_statement_id,
+                  text, callee, receiver, assigned_to, condition_text,
+                  is_top_level, is_awaited, metadata)
+               VALUES ${rows.join(',')}
+               RETURNING id`,
+              values
+            );
+            res.rows.forEach((r, j) => {
+              tempToDbId.set(slice[j].temp_id, String(r.id));
+            });
+          }
+          // Phase 2: parent_statement_id (echte DB-ID) in EINEM Batch-UPDATE via unnest nachtragen.
+          const childIds: string[] = [];
+          const parentIds: string[] = [];
+          for (const st of stmts) {
+            if (!st.parent_temp_id) continue;
+            const childId = tempToDbId.get(st.temp_id);
+            const parentId = tempToDbId.get(st.parent_temp_id);
+            if (!childId || !parentId) continue;
+            childIds.push(childId);
+            parentIds.push(parentId);
+          }
+          if (childIds.length > 0) {
+            await flowClient.query(
+              `UPDATE code_statements AS cs
+                  SET parent_statement_id = v.parent
+                 FROM (SELECT unnest($1::bigint[]) AS id, unnest($2::bigint[]) AS parent) AS v
+                WHERE cs.id = v.id`,
+              [childIds, parentIds]
+            );
+          }
+        }
+
+        // Call-Edges einfuegen (Batch Multi-VALUES), statement_temp_id → DB-ID aufloesen.
+        if (callEdges && callEdges.length > 0) {
+          const CE_PARAMS = 9;
+          const CE_BATCH = 5000; // 5000 * 9 = 45000 < 65535
+          for (let i = 0; i < callEdges.length; i += CE_BATCH) {
+            const slice = callEdges.slice(i, i + CE_BATCH);
+            const values: unknown[] = [];
+            const rows: string[] = [];
+            slice.forEach((ce, j) => {
+              const b = j * CE_PARAMS;
+              rows.push(
+                `($${b + 1},$${b + 2},$${b + 3},$${b + 4},$${b + 5},$${b + 6},NULL,$${b + 7},$${b + 8},$${b + 9})`
+              );
+              const stmtDbId = ce.statement_temp_id
+                ? tempToDbId.get(ce.statement_temp_id) ?? null
+                : null;
+              values.push(
+                project, filePath,
+                ce.caller_scope ?? null, stmtDbId,
+                ce.callee_name, ce.callee_receiver ?? null,
+                ce.line_number, ce.call_kind ?? null,
+                ce.confidence ?? 1.0
+              );
+            });
+            await flowClient.query(
+              `INSERT INTO code_call_edges
+                 (project, file_path, caller_scope, statement_id, callee_name,
+                  callee_receiver, target_symbol_id, line_number, call_kind, confidence)
+               VALUES ${rows.join(',')}`,
+              values
+            );
+          }
+        }
+
+        await flowClient.query('COMMIT');
+      } catch (flowErr) {
+        await flowClient.query('ROLLBACK').catch(() => {});
+        // Fehler hier sollen die restliche Indexierung NICHT stoppen.
+        console.error(`[Synapse] Statement/Call-Edge Transaktion fehlgeschlagen:`, flowErr);
+      } finally {
+        flowClient.release();
+      }
     }
   }
 
@@ -1255,8 +1439,9 @@ export async function backfillCodeFiles(projectName: string): Promise<number> {
       try {
         const fileData = readFileWithMetadata(absolutePath, projectName);
         if (fileData) {
-          content = fileData.content;
-          contentHash = crypto.createHash('sha256').update(fileData.content).digest('hex');
+          // NUL-Bytes (0x00) strippen — PostgreSQL UTF8 kann sie nicht speichern.
+          content = fileData.content.replace(/\0/g, '');
+          contentHash = crypto.createHash('sha256').update(content).digest('hex');
         }
       } catch { /* Datei evtl. nicht lesbar */ }
 

@@ -12,12 +12,139 @@
  *          .m/.mm Dateien von diesem Parser.
  */
 
-import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
+import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser, ParsedStatement, ParsedCallEdge } from './types.js';
 import { extractStringLiterals } from './types.js';
 import { parseEmbeddedSql, looksLikeSql } from './patterns/sql.js';
 
 function lineAt(text: string, pos: number): number {
   return text.substring(0, pos).split('\n').length;
+}
+
+// ---------------------------------------------------------------------------
+// Flow extraction (Objective-C)
+// ---------------------------------------------------------------------------
+
+function lineAtObjc(text: string, pos: number): number {
+  return text.substring(0, pos).split('\n').length;
+}
+
+function extractFlowObjc(content: string): { statements: ParsedStatement[]; callEdges: ParsedCallEdge[] } {
+  const statements: ParsedStatement[] = [];
+  const callEdges: ParsedCallEdge[] = [];
+  let tempIdCounter = 0;
+  const nextId = (): string => `s${tempIdCounter++}`;
+  const orderCounters = new Map<string, number>();
+  function nextOrder(parentId: string | undefined, sc: { v: number }): number {
+    if (parentId === undefined) return sc.v++;
+    const key = `p:${parentId}`;
+    const cur = orderCounters.get(key) ?? 0;
+    orderCounters.set(key, cur + 1);
+    return cur;
+  }
+
+  function stripComments(src: string): string {
+    return src
+      .replace(/\/\*[\s\S]*?\*\//g, m => m.replace(/[^\n]/g, ' '))
+      .replace(/\/\/[^\n]*/g, m => ' '.repeat(m.length));
+  }
+
+  function extractCalls(expr: string, stmtId: string, scopeName: string | null, lineNo: number): void {
+    // ObjC message sends: [receiver method:args]
+    const msgRe = /\[\s*(\w+)\s+(\w+)/g;
+    let mc: RegExpExecArray | null;
+    while ((mc = msgRe.exec(expr)) !== null) {
+      callEdges.push({ statement_temp_id: stmtId, caller_scope: scopeName, callee_name: mc[2], callee_receiver: mc[1], line_number: lineNo, call_kind: 'method' });
+    }
+    // C-style calls
+    const funcRe = /(?<![.\->])\b([a-zA-Z_]\w*)\s*\(/g;
+    while ((mc = funcRe.exec(expr)) !== null) {
+      const name = mc[1];
+      if (['if','for','while','switch','do','return','sizeof','typeof'].includes(name)) continue;
+      callEdges.push({ statement_temp_id: stmtId, caller_scope: scopeName, callee_name: name, line_number: lineNo, call_kind: 'function' });
+    }
+  }
+
+  // Find ObjC method bodies: - (type)name { ... } or + (type)name { ... }
+  interface MethodBody { name: string; bodyOffset: number; bodyContent: string; }
+  function findMethodBodies(src: string): MethodBody[] {
+    const bodies: MethodBody[] = [];
+    const stripped = stripComments(src);
+    const methRe = /^[+-]\s*\([^)]+\)\s*(\w+)[^{]*\{/gm;
+    let m: RegExpExecArray | null;
+    while ((m = methRe.exec(stripped)) !== null) {
+      const name = m[1];
+      const openBrace = m.index + m[0].length - 1;
+      let depth = 1; let i = openBrace + 1;
+      while (i < src.length && depth > 0) {
+        if (src[i] === '{') depth++;
+        else if (src[i] === '}') depth--;
+        i++;
+      }
+      bodies.push({ name, bodyOffset: openBrace + 1, bodyContent: src.slice(openBrace + 1, i - 1) });
+    }
+    return bodies;
+  }
+
+  function processBody(body: string, bodyOffset: number, scopeName: string): void {
+    const sc = { v: 0 };
+    const lines = body.split('\n');
+    let i = 0;
+    while (i < lines.length) {
+      const line = lines[i];
+      const trimmed = line.trim();
+      if (!trimmed || /^\/[/*]/.test(trimmed) || /^\*/.test(trimmed)) { i++; continue; }
+      const charOffset = lines.slice(0, i).reduce((a, l) => a + l.length + 1, 0);
+      const fileLine = lineAtObjc(content, bodyOffset + charOffset);
+
+      function emit(type: string, kind: string, extra: Partial<ParsedStatement> = {}): ParsedStatement {
+        const id = nextId();
+        const st: ParsedStatement = { temp_id: id, parent_temp_id: undefined, scope_type: 'method', scope_name: scopeName, statement_type: type, node_kind: kind, line_start: fileLine, order_index: sc.v++, depth: 0, is_top_level: false, is_awaited: false, text: trimmed.slice(0, 240), ...extra };
+        statements.push(st);
+        return st;
+      }
+
+      if (/^\s*if\s*\(/.test(line)) {
+        const cm = line.match(/if\s*\((.+)/); const cond = cm ? cm[1].replace(/\)\s*\{?\s*$/, '').slice(0, 200) : undefined;
+        const st = emit('if', 'IfStatement', { condition_text: cond });
+        if (cond) extractCalls(cond, st.temp_id, scopeName, fileLine);
+      } else if (/^\s*for\s*\(/.test(line)) {
+        const cm = line.match(/for\s*\((.+)/); const cond = cm ? cm[1].replace(/\)\s*\{?\s*$/, '').slice(0, 200) : undefined;
+        const st = emit('for', 'ForStatement', { condition_text: cond });
+        if (cond) extractCalls(cond, st.temp_id, scopeName, fileLine);
+      } else if (/^\s*while\s*\(/.test(line)) {
+        const cm = line.match(/while\s*\((.+)/); const cond = cm ? cm[1].replace(/\)\s*\{?\s*$/, '').slice(0, 200) : undefined;
+        const st = emit('while', 'WhileStatement', { condition_text: cond });
+        if (cond) extractCalls(cond, st.temp_id, scopeName, fileLine);
+      } else if (/^\s*switch\s*\(/.test(line)) {
+        const cm = line.match(/switch\s*\((.+)/); const cond = cm ? cm[1].replace(/\)\s*\{?\s*$/, '').slice(0, 200) : undefined;
+        const st = emit('switch', 'SwitchStatement', { condition_text: cond });
+        if (cond) extractCalls(cond, st.temp_id, scopeName, fileLine);
+      } else if (/^\s*return\b/.test(line)) {
+        const expr = trimmed.replace(/^return\s*/, '').replace(/;$/, '');
+        const st = emit('return', 'ReturnStatement');
+        if (expr) extractCalls(expr, st.temp_id, scopeName, fileLine);
+      } else if (/^\[/.test(trimmed) || /\[\s*\w+\s+\w+/.test(trimmed)) {
+        // ObjC message send statement
+        const msgM = trimmed.match(/\[\s*(\w+)\s+(\w+)/);
+        const st = emit('call', 'ObjCMessageExpression', { callee: msgM ? msgM[2] : undefined, receiver: msgM ? msgM[1] : undefined });
+        extractCalls(trimmed, st.temp_id, scopeName, fileLine);
+      } else if (/^\s*\w[\w.*\[\]>-]*\s*(?:[+*/%&|^-]?=)\s*.+;/.test(line)) {
+        const am = trimmed.match(/^(\w[\w.*\[\]>-]*)\s*(?:[+*/%&|^-]?=)\s*(.+);/);
+        if (am) {
+          const st = emit('assignment', 'AssignmentExpression', { assigned_to: am[1].slice(0, 120) });
+          extractCalls(am[2], st.temp_id, scopeName, fileLine);
+        }
+      }
+      i++;
+    }
+  }
+
+  const bodies = findMethodBodies(content);
+  for (const mb of bodies) {
+    processBody(mb.bodyContent, mb.bodyOffset, mb.name);
+  }
+
+  return { statements, callEdges };
 }
 
 class ObjcParser implements LanguageParser {
@@ -271,7 +398,8 @@ class ObjcParser implements LanguageParser {
       }
     }
 
-    return { symbols, references };
+    const { statements, callEdges } = extractFlowObjc(content);
+    return { symbols, references, statements, callEdges };
   }
 }
 

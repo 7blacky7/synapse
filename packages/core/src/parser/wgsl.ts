@@ -200,7 +200,7 @@ class WgslParser implements LanguageParser {
     symbols.push(...extractStringLiterals(content));
 
 
-    return { symbols, references };
+    return { symbols, references, statements: [], callEdges: [] };
   }
 
   private findClosingBrace(content: string, openPos: number): number {

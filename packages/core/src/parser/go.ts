@@ -7,7 +7,7 @@
  * ANSATZ: Regex-basiert — Go hat klare, einfache Syntax
  */
 
-import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
+import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser, ParsedStatement, ParsedCallEdge } from './types.js';
 import { extractStringLiterals } from './types.js';
 import { formatRouteName, isLikelyHttpPath } from './patterns/http.js';
 import { parseEmbeddedSql, looksLikeSql } from './patterns/sql.js';
@@ -25,6 +25,322 @@ function endLineAt(text: string, pos: number, matchLength: number): number {
 /** Go-Exports: Grossbuchstabe am Anfang */
 function isExported(name: string): boolean {
   return /^[A-Z]/.test(name);
+}
+
+// ---------------------------------------------------------------------------
+// Flow-Extraction fuer Go
+// ---------------------------------------------------------------------------
+
+interface GoScope {
+  type: string;   // 'module' | 'function' | 'method'
+  name: string | null;
+  braceDepth: number;  // brace-Tiefe bei Scope-Eintritt
+  orderCounter: number;
+}
+
+function extractGoFlow(
+  content: string,
+): { statements: ParsedStatement[]; callEdges: ParsedCallEdge[] } {
+  const statements: ParsedStatement[] = [];
+  const callEdges: ParsedCallEdge[] = [];
+  let tempId = 0;
+  const nextId = () => `s${tempId++}`;
+  const orderCounters = new Map<string, number>();
+
+  function nextOrder(parentId: string | undefined, scope: GoScope): number {
+    if (parentId === undefined) return scope.orderCounter++;
+    const key = `p:${parentId}`;
+    const cur = orderCounters.get(key) ?? 0;
+    orderCounters.set(key, cur + 1);
+    return cur;
+  }
+
+  const lines = content.split('\n');
+  const scopeStack: GoScope[] = [{ type: 'module', name: null, braceDepth: 0, orderCounter: 0 }];
+  const currentScope = () => scopeStack[scopeStack.length - 1];
+
+  // Verfolge brace-Tiefe global
+  let globalBraceDepth = 0;
+
+  // Parent-Tracking: brace-Tiefe -> letztes Container-Statement
+  const parentAtBrace = new Map<number, string>();
+
+  const callRe = /\b([\w.]+)\s*\(/g;
+  function extractCalls(expr: string, stmtId: string, scopeName: string | null, line: number, isAwaited: boolean): void {
+    callRe.lastIndex = 0;
+    let cm: RegExpExecArray | null;
+    while ((cm = callRe.exec(expr)) !== null) {
+      const raw = cm[1];
+      if (!raw || /^(if|for|switch|select|go|defer|return|range|make|new|len|cap|append|copy|delete|close|panic|recover|print|println|fmt)$/.test(raw)) continue;
+      const parts = raw.split('.');
+      const callee = parts[parts.length - 1];
+      const receiver = parts.length > 1 ? parts.slice(0, -1).join('.') : undefined;
+      callEdges.push({
+        statement_temp_id: stmtId,
+        caller_scope: scopeName,
+        callee_name: callee,
+        callee_receiver: receiver,
+        line_number: line,
+        call_kind: isAwaited ? 'await' : (receiver ? 'method' : 'function'),
+      });
+    }
+  }
+
+  // Regex patterns
+  const funcRe = /^func\s+(?:\((\w+\s+\*?\w+)\)\s+)?(\w+)\s*\(/;
+  const ifRe = /\bif\s+(.+?)\s*\{/;
+  const forRe = /\bfor\s*(.*?)\s*\{/;
+  const switchRe = /\bswitch\s*(.*?)\s*\{/;
+  const selectRe = /\bselect\s*\{/;
+  const deferRe = /^\s*defer\s+(.+)/;
+  const goStmtRe = /^\s*go\s+(.+)/;
+  const returnRe = /^\s*return\s*(.*)/;
+  const assignRe = /^\s*([\w.[\]]+(?:\s*,\s*[\w.[\]]+)*)\s*(?::=|=)\s*(.+)/;
+  const callStmtRe = /^\s*([\w.]+)\s*\(/;
+  const newMakeRe = /\b(new|make)\s*\(/g;
+
+  for (let i = 0; i < lines.length; i++) {
+    const raw = lines[i];
+    const lineNum = i + 1;
+    const trimmed = raw.trim();
+    if (!trimmed || trimmed.startsWith('//')) {
+      // Count braces even in comments? No. But count in code lines.
+      // Still need to count braces in non-comment lines
+      continue;
+    }
+
+    // Count braces in this line (simplified - ignores strings/comments within line)
+    let openCount = 0, closeCount = 0;
+    for (const ch of trimmed) {
+      if (ch === '{') openCount++;
+      else if (ch === '}') closeCount++;
+    }
+
+    const prevBraceDepth = globalBraceDepth;
+    // Braces open AFTER counting: a line "func foo() {" opens a brace
+    // We process the line THEN update brace depth
+    // Actually: compute depth at statement time = prevBraceDepth for the line content
+
+    const scope = currentScope();
+
+    // Pop scopes if we close braces back to their entry depth
+    // (close braces reduce depth, check AFTER processing)
+
+    // depth within current scope = globalBraceDepth - scope.braceDepth
+    const depth = Math.max(0, globalBraceDepth - scope.braceDepth);
+
+    // Parent lookup
+    let parentId: string | undefined = undefined;
+    if (globalBraceDepth > scope.braceDepth) {
+      for (let bd = globalBraceDepth - 1; bd >= scope.braceDepth; bd--) {
+        if (parentAtBrace.has(bd)) {
+          parentId = parentAtBrace.get(bd);
+          break;
+        }
+      }
+    }
+
+    const isTop = scope.type === 'module' && depth === 0;
+
+    let dm: RegExpExecArray | null;
+
+    // func declaration -> new scope
+    if ((dm = funcRe.exec(trimmed)) !== null && globalBraceDepth === 0) {
+      const receiver = dm[1];
+      const funcName = dm[2];
+      const scopeType = receiver ? 'method' : 'function';
+      const fullName = receiver ? `${receiver.split(' ').pop()}.${funcName}` : funcName;
+      // Update brace depth for this line
+      globalBraceDepth += openCount - closeCount;
+      scopeStack.push({ type: scopeType, name: fullName, braceDepth: globalBraceDepth - openCount + closeCount + 1, orderCounter: 0 });
+      // Clear parent tracking for nested braces
+      for (const k of Array.from(parentAtBrace.keys())) {
+        if (k >= globalBraceDepth) parentAtBrace.delete(k);
+      }
+      continue;
+    }
+
+    // defer
+    if ((dm = deferRe.exec(trimmed)) !== null) {
+      const expr = dm[1];
+      const id = nextId();
+      statements.push({
+        temp_id: id, parent_temp_id: parentId,
+        scope_type: scope.type, scope_name: scope.name,
+        statement_type: 'try', node_kind: 'defer',
+        line_start: lineNum, line_end: lineNum,
+        order_index: nextOrder(parentId, scope), depth,
+        text: trimmed.slice(0, 240), is_top_level: isTop, is_awaited: false,
+      });
+      extractCalls(expr, id, scope.name, lineNum, false);
+      globalBraceDepth += openCount - closeCount;
+      continue;
+    }
+
+    // go goroutine
+    if ((dm = goStmtRe.exec(trimmed)) !== null && scope.type !== 'module') {
+      const expr = dm[1];
+      const id = nextId();
+      statements.push({
+        temp_id: id, parent_temp_id: parentId,
+        scope_type: scope.type, scope_name: scope.name,
+        statement_type: 'call', node_kind: 'go',
+        line_start: lineNum, line_end: lineNum,
+        order_index: nextOrder(parentId, scope), depth,
+        text: trimmed.slice(0, 240), is_top_level: isTop, is_awaited: false,
+      });
+      extractCalls(expr, id, scope.name, lineNum, false);
+      globalBraceDepth += openCount - closeCount;
+      continue;
+    }
+
+    // if
+    if (trimmed.match(/^\s*(?:} )?else if\b/) || (ifRe.test(trimmed) && !funcRe.test(trimmed))) {
+      const condM = ifRe.exec(trimmed);
+      const cond = condM?.[1]?.slice(0, 200) ?? '';
+      const id = nextId();
+      statements.push({
+        temp_id: id, parent_temp_id: parentId,
+        scope_type: scope.type, scope_name: scope.name,
+        statement_type: 'if', node_kind: trimmed.includes('else if') ? 'else_if' : 'if',
+        line_start: lineNum, line_end: lineNum,
+        order_index: nextOrder(parentId, scope), depth,
+        text: trimmed.slice(0, 240), is_top_level: isTop, is_awaited: false,
+        condition_text: cond,
+      });
+      parentAtBrace.set(globalBraceDepth + openCount - 1, id);
+      if (cond) extractCalls(cond, id, scope.name, lineNum, false);
+      globalBraceDepth += openCount - closeCount;
+      continue;
+    }
+
+    // for
+    if (trimmed.match(/^\s*for\b/) && trimmed.includes('{')) {
+      const condM = forRe.exec(trimmed);
+      const cond = condM?.[1]?.slice(0, 200) ?? '';
+      const id = nextId();
+      statements.push({
+        temp_id: id, parent_temp_id: parentId,
+        scope_type: scope.type, scope_name: scope.name,
+        statement_type: 'for', node_kind: 'for',
+        line_start: lineNum, line_end: lineNum,
+        order_index: nextOrder(parentId, scope), depth,
+        text: trimmed.slice(0, 240), is_top_level: isTop, is_awaited: false,
+        condition_text: cond,
+      });
+      parentAtBrace.set(globalBraceDepth + openCount - 1, id);
+      if (cond) extractCalls(cond, id, scope.name, lineNum, false);
+      globalBraceDepth += openCount - closeCount;
+      continue;
+    }
+
+    // switch
+    if (trimmed.match(/^\s*switch\b/) && trimmed.includes('{')) {
+      const condM = switchRe.exec(trimmed);
+      const cond = condM?.[1]?.slice(0, 200) ?? '';
+      const id = nextId();
+      statements.push({
+        temp_id: id, parent_temp_id: parentId,
+        scope_type: scope.type, scope_name: scope.name,
+        statement_type: 'switch', node_kind: 'switch',
+        line_start: lineNum, line_end: lineNum,
+        order_index: nextOrder(parentId, scope), depth,
+        text: trimmed.slice(0, 240), is_top_level: isTop, is_awaited: false,
+        condition_text: cond,
+      });
+      parentAtBrace.set(globalBraceDepth + openCount - 1, id);
+      if (cond) extractCalls(cond, id, scope.name, lineNum, false);
+      globalBraceDepth += openCount - closeCount;
+      continue;
+    }
+
+    // select
+    if (selectRe.test(trimmed)) {
+      const id = nextId();
+      statements.push({
+        temp_id: id, parent_temp_id: parentId,
+        scope_type: scope.type, scope_name: scope.name,
+        statement_type: 'switch', node_kind: 'select',
+        line_start: lineNum, line_end: lineNum,
+        order_index: nextOrder(parentId, scope), depth,
+        text: trimmed.slice(0, 240), is_top_level: isTop, is_awaited: false,
+      });
+      parentAtBrace.set(globalBraceDepth + openCount - 1, id);
+      globalBraceDepth += openCount - closeCount;
+      continue;
+    }
+
+    // return
+    if ((dm = returnRe.exec(trimmed)) !== null) {
+      const expr = dm[1] ?? '';
+      const id = nextId();
+      statements.push({
+        temp_id: id, parent_temp_id: parentId,
+        scope_type: scope.type, scope_name: scope.name,
+        statement_type: 'return', node_kind: 'return',
+        line_start: lineNum, line_end: lineNum,
+        order_index: nextOrder(parentId, scope), depth,
+        text: trimmed.slice(0, 240), is_top_level: isTop, is_awaited: false,
+      });
+      if (expr) extractCalls(expr, id, scope.name, lineNum, false);
+      globalBraceDepth += openCount - closeCount;
+      continue;
+    }
+
+    // assignment := or = (including new/make)
+    if ((dm = assignRe.exec(trimmed)) !== null && scope.type !== 'module') {
+      const lhs = dm[1].slice(0, 120);
+      const rhs = dm[2];
+      const hasNew = /\bnew\s*\(/.test(rhs) || /\bmake\s*\(/.test(rhs);
+      const id = nextId();
+      statements.push({
+        temp_id: id, parent_temp_id: parentId,
+        scope_type: scope.type, scope_name: scope.name,
+        statement_type: hasNew ? 'new' : 'assignment', node_kind: hasNew ? 'new' : 'assignment',
+        line_start: lineNum, line_end: lineNum,
+        order_index: nextOrder(parentId, scope), depth,
+        text: trimmed.slice(0, 240), is_top_level: isTop, is_awaited: false,
+        assigned_to: lhs,
+      });
+      extractCalls(rhs, id, scope.name, lineNum, false);
+      globalBraceDepth += openCount - closeCount;
+      continue;
+    }
+
+    // plain call statement
+    if ((dm = callStmtRe.exec(trimmed)) !== null && scope.type !== 'module') {
+      const callExpr = dm[1];
+      const parts = callExpr.split('.');
+      const callee = parts[parts.length - 1];
+      const receiver = parts.length > 1 ? parts.slice(0, -1).join('.') : undefined;
+      const id = nextId();
+      statements.push({
+        temp_id: id, parent_temp_id: parentId,
+        scope_type: scope.type, scope_name: scope.name,
+        statement_type: 'call', node_kind: 'call',
+        line_start: lineNum, line_end: lineNum,
+        order_index: nextOrder(parentId, scope), depth,
+        text: trimmed.slice(0, 240), is_top_level: isTop, is_awaited: false,
+        callee, receiver,
+      });
+      callEdges.push({
+        statement_temp_id: id, caller_scope: scope.name,
+        callee_name: callee, callee_receiver: receiver,
+        line_number: lineNum, call_kind: receiver ? 'method' : 'function',
+      });
+      globalBraceDepth += openCount - closeCount;
+      continue;
+    }
+
+    globalBraceDepth += openCount - closeCount;
+
+    // Pop function scopes when brace depth falls back
+    while (scopeStack.length > 1 && globalBraceDepth < scopeStack[scopeStack.length - 1].braceDepth) {
+      scopeStack.pop();
+    }
+  }
+
+  return { statements, callEdges };
 }
 
 class GoParser implements LanguageParser {
@@ -412,7 +728,8 @@ class GoParser implements LanguageParser {
     symbols.push(...extractStringLiterals(content));
 
 
-    return { symbols, references };
+    const { statements, callEdges } = extractGoFlow(content);
+    return { symbols, references, statements, callEdges };
   }
 
   /** Parst Go-Parameter-Listen ("name type, name type") */

@@ -129,7 +129,7 @@ class HtmlParser implements LanguageParser {
       }
     }
 
-    return { symbols, references };
+    return { symbols, references, statements: [], callEdges: [] };
   }
 }
 

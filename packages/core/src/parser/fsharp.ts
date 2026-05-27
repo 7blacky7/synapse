@@ -7,7 +7,7 @@
  * ANSATZ: Regex-basiert
  */
 
-import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
+import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser, ParsedStatement, ParsedCallEdge } from './types.js';
 import { extractStringLiterals } from './types.js';
 import { formatRouteName, isLikelyHttpPath } from './patterns/http.js';
 import { looksLikeSql, parseEmbeddedSql } from './patterns/sql.js';
@@ -384,7 +384,79 @@ class FSharpParser implements LanguageParser {
       symbols.push(...parseEmbeddedSql(sqlText, filePath, baseLine));
     }
 
-    return { symbols, references };
+    // ══════════════════════════════════════════════
+    // Flow extraction: top-level let bindings + call edges
+    // ══════════════════════════════════════════════
+    const statements: ParsedStatement[] = [];
+    const callEdges: ParsedCallEdge[] = [];
+    let tempIdCounter = 0;
+    const nextId = () => `s${tempIdCounter++}`;
+    let orderIndex = 0;
+
+    const letFlowRe = /^(\s*)((?:(?:internal|private|public)\s+)?)let\s+(rec\s+)?(?:inline\s+)?(\w+)(?:\s+([^=\n]+))?\s*=([^\n]*)/gm;
+    const emitted = new Set<string>();
+    while ((m = letFlowRe.exec(content)) !== null) {
+      const indent = m[1].replace(/\n/g, '').length;
+      if (indent > 8) continue;
+      const isRec = !!m[3];
+      const name = m[4];
+      const argsRaw = m[5] || '';
+      const rhs = m[6] || '';
+      if (name === '_') continue;
+      if (emitted.has(name)) continue;
+      emitted.add(name);
+      const lineStart = lineAt(content, m.index);
+      const isFunction = argsRaw.trim().length > 0;
+      const tid = nextId();
+      statements.push({
+        temp_id: tid,
+        scope_type: 'module',
+        scope_name: null,
+        statement_type: isFunction ? 'function' : 'variable',
+        node_kind: isRec ? 'LetRec' : 'Let',
+        line_start: lineStart,
+        order_index: orderIndex++,
+        depth: 0,
+        is_top_level: indent === 0,
+        is_awaited: rhs.includes('async') || rhs.includes('Async.'),
+        callee: isFunction ? name : undefined,
+        assigned_to: isFunction ? undefined : name,
+        text: m[0].trim().slice(0, 240),
+      });
+
+      // Extract pipe-chains and function calls
+      // F# pipe: expr |> func
+      const pipeRe = /\|>\s*(\w[\w.]*)/g;
+      let pm: RegExpExecArray | null;
+      while ((pm = pipeRe.exec(rhs)) !== null) {
+        callEdges.push({
+          statement_temp_id: tid,
+          caller_scope: name,
+          callee_name: pm[1].split('.').pop() || pm[1],
+          callee_receiver: pm[1].includes('.') ? pm[1].split('.').slice(0, -1).join('.') : undefined,
+          line_number: lineStart,
+          call_kind: 'function',
+          confidence: 0.9,
+        });
+      }
+      // Direct calls: func(
+      const callRe = /\b([a-z_]\w*)\s*\(/g;
+      let cm: RegExpExecArray | null;
+      while ((cm = callRe.exec(rhs)) !== null) {
+        const callee = cm[1];
+        if (['if', 'let', 'match', 'fun', 'for', 'while', 'try', 'async'].includes(callee)) continue;
+        callEdges.push({
+          statement_temp_id: tid,
+          caller_scope: name,
+          callee_name: callee,
+          line_number: lineStart,
+          call_kind: 'function',
+          confidence: 0.8,
+        });
+      }
+    }
+
+    return { symbols, references, statements, callEdges };
   }
 }
 

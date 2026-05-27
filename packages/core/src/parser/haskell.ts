@@ -8,7 +8,7 @@
  * ANSATZ: Regex-basiert
  */
 
-import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
+import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser, ParsedStatement, ParsedCallEdge } from './types.js';
 import { extractStringLiterals } from './types.js';
 import { HTTP_VERBS, formatRouteName, isLikelyHttpPath } from './patterns/http.js';
 import { parseEmbeddedSql, looksLikeSql } from './patterns/sql.js';
@@ -371,7 +371,91 @@ class HaskellParser implements LanguageParser {
       }
     }
 
-    return { symbols, references };
+    // ══════════════════════════════════════════════
+    // Flow extraction: top-level definitions + call edges
+    // ══════════════════════════════════════════════
+    const statements: ParsedStatement[] = [];
+    const callEdges: ParsedCallEdge[] = [];
+    let tempIdCounter = 0;
+    const nextId = () => `s${tempIdCounter++}`;
+    let orderIndex = 0;
+
+    // Top-level type signatures as function stmts (:: defines the "entry" for a function)
+    const sigFlowRe = /^(\w+)\s*::\s*(.+)/gm;
+    const emittedSigs = new Set<string>();
+    while ((m = sigFlowRe.exec(content)) !== null) {
+      const name = m[1];
+      if (['module', 'import', 'data', 'newtype', 'type', 'class', 'instance', 'where', 'let', 'in'].includes(name)) continue;
+      if (emittedSigs.has(name)) continue;
+      emittedSigs.add(name);
+      const lineStart = lineAt(content, m.index);
+      const tid = nextId();
+      const sig = m[2].trim();
+      const isIO = sig.includes('IO ');
+      statements.push({
+        temp_id: tid,
+        scope_type: 'module',
+        scope_name: null,
+        statement_type: 'function',
+        node_kind: 'TypeSig',
+        line_start: lineStart,
+        order_index: orderIndex++,
+        depth: 0,
+        is_top_level: true,
+        is_awaited: isIO,
+        callee: name,
+        text: `${name} :: ${sig}`.slice(0, 240),
+      });
+
+      // Find function body for this name and extract calls
+      const bodyRe = new RegExp(`^${name}\\s+[^=\\n]*=([^\\n]*)`, 'm');
+      const bodyMatch = bodyRe.exec(content);
+      if (bodyMatch) {
+        const body = bodyMatch[1];
+        // Extract applied functions: sequences like `funcName ` or `funcName(`
+        const callRe = /\b([a-z][a-zA-Z0-9_']*)\s+(?!\s*::)/g;
+        let cm: RegExpExecArray | null;
+        while ((cm = callRe.exec(body)) !== null) {
+          const callee = cm[1];
+          if (['do', 'let', 'in', 'where', 'if', 'then', 'else', 'case', 'of', 'return', 'otherwise'].includes(callee)) continue;
+          callEdges.push({
+            statement_temp_id: tid,
+            caller_scope: name,
+            callee_name: callee,
+            line_number: lineStart,
+            call_kind: 'function',
+            confidence: 0.7,
+          });
+        }
+      }
+    }
+
+    // Top-level function defs without type sig
+    const funcFlowRe = /^(\w+)\s+(?!::)([^=\n]*?)=\s/gm;
+    while ((m = funcFlowRe.exec(content)) !== null) {
+      const name = m[1];
+      if (['module', 'import', 'data', 'newtype', 'type', 'class', 'instance', 'where', 'let', 'in', 'if', 'then', 'else', 'do', 'case', 'of'].includes(name)) continue;
+      if (emittedSigs.has(name)) continue;
+      emittedSigs.add(name);
+      const lineStart = lineAt(content, m.index);
+      const tid = nextId();
+      statements.push({
+        temp_id: tid,
+        scope_type: 'module',
+        scope_name: null,
+        statement_type: 'function',
+        node_kind: 'FuncDef',
+        line_start: lineStart,
+        order_index: orderIndex++,
+        depth: 0,
+        is_top_level: true,
+        is_awaited: false,
+        callee: name,
+        text: m[0].trim().slice(0, 240),
+      });
+    }
+
+    return { symbols, references, statements, callEdges };
   }
 }
 

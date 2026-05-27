@@ -8,12 +8,150 @@
  * ANSATZ: Regex-basiert
  */
 
-import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
+import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser, ParsedStatement, ParsedCallEdge } from './types.js';
 import { extractStringLiterals } from './types.js';
 import { formatRouteName, isLikelyHttpPath, HTTP_VERBS } from './patterns/http.js';
 
 function lineAt(text: string, pos: number): number {
   return text.substring(0, pos).split('\n').length;
+}
+
+// ---------------------------------------------------------------------------
+// Flow extraction (Nim) — indentation-based
+// ---------------------------------------------------------------------------
+
+function lineAtNim(text: string, pos: number): number {
+  return text.substring(0, pos).split('\n').length;
+}
+
+function extractFlowNim(content: string): { statements: ParsedStatement[]; callEdges: ParsedCallEdge[] } {
+  const statements: ParsedStatement[] = [];
+  const callEdges: ParsedCallEdge[] = [];
+  let tempIdCounter = 0;
+  const nextId = (): string => `s${tempIdCounter++}`;
+
+  function extractCalls(expr: string, stmtId: string, scopeName: string | null, lineNo: number): void {
+    // method call / UFCS: receiver.method(
+    const methodRe = /(\w+)\.(\w+)\s*\(/g;
+    let mc: RegExpExecArray | null;
+    while ((mc = methodRe.exec(expr)) !== null) {
+      callEdges.push({ statement_temp_id: stmtId, caller_scope: scopeName, callee_name: mc[2], callee_receiver: mc[1], line_number: lineNo, call_kind: 'method' });
+    }
+    // plain proc/func calls
+    const funcRe = /(?<![.\w])([a-zA-Z_]\w*)\s*\(/g;
+    while ((mc = funcRe.exec(expr)) !== null) {
+      const name = mc[1];
+      if (['if','elif','else','for','while','case','of','return','yield','try','except','finally','defer','discard','when','import','from','include','proc','func','method','iterator','template','macro'].includes(name)) continue;
+      callEdges.push({ statement_temp_id: stmtId, caller_scope: scopeName, callee_name: name, line_number: lineNo, call_kind: 'function' });
+    }
+  }
+
+  // Find proc/func/method bodies by indentation
+  // We look for proc/func/method declarations and collect their indented bodies
+  const lines = content.split('\n');
+
+  interface ProcBody { name: string; startLine: number; bodyLines: { text: string; lineNo: number }[]; }
+
+  function findProcBodies(): ProcBody[] {
+    const bodies: ProcBody[] = [];
+    const procRe = /^(proc|func|method|iterator|converter)\s+(\w+)/;
+    let i = 0;
+    while (i < lines.length) {
+      const pm = procRe.exec(lines[i]);
+      if (pm) {
+        const name = pm[2];
+        const startLine = i + 1; // 1-based
+        // Collect body: next lines with indent > 0
+        const bodyLines: { text: string; lineNo: number }[] = [];
+        let j = i + 1;
+        // Skip the header continuation lines (with indent, no body yet — until we get '=')
+        // In Nim, body is after '=' or on next indented lines
+        while (j < lines.length) {
+          const l = lines[j];
+          if (l.trim() === '' || l.trim().startsWith('#')) { j++; continue; }
+          if (/^\S/.test(l)) break; // new top-level declaration
+          bodyLines.push({ text: l, lineNo: j + 1 });
+          j++;
+        }
+        if (bodyLines.length > 0) bodies.push({ name, startLine, bodyLines });
+        i = j;
+      } else {
+        i++;
+      }
+    }
+    return bodies;
+  }
+
+  function processBody(pb: ProcBody): void {
+    let order = 0;
+    for (const { text, lineNo } of pb.bodyLines) {
+      const trimmed = text.trim();
+      if (!trimmed || trimmed.startsWith('#')) continue;
+
+      function emit(type: string, kind: string, extra: Partial<ParsedStatement> = {}): ParsedStatement {
+        const id = nextId();
+        const st: ParsedStatement = { temp_id: id, parent_temp_id: undefined, scope_type: 'function', scope_name: pb.name, statement_type: type, node_kind: kind, line_start: lineNo, order_index: order++, depth: 0, is_top_level: false, is_awaited: false, text: trimmed.slice(0, 240), ...extra };
+        statements.push(st);
+        return st;
+      }
+
+      if (/^\s*if\s+/.test(text)) {
+        const cm = trimmed.match(/^if\s+(.+?):/); const cond = cm ? cm[1].slice(0, 200) : undefined;
+        const st = emit('if', 'IfStatement', { condition_text: cond });
+        if (cond) extractCalls(cond, st.temp_id, pb.name, lineNo);
+      } else if (/^\s*elif\s+/.test(text)) {
+        const cm = trimmed.match(/^elif\s+(.+?):/); const cond = cm ? cm[1].slice(0, 200) : undefined;
+        emit('if', 'ElifBranch', { condition_text: cond });
+      } else if (/^\s*for\s+/.test(text)) {
+        const cm = trimmed.match(/^for\s+(.+?):/); const cond = cm ? cm[1].slice(0, 200) : undefined;
+        const st = emit('for', 'ForStatement', { condition_text: cond });
+        if (cond) extractCalls(cond, st.temp_id, pb.name, lineNo);
+      } else if (/^\s*while\s+/.test(text)) {
+        const cm = trimmed.match(/^while\s+(.+?):/); const cond = cm ? cm[1].slice(0, 200) : undefined;
+        const st = emit('while', 'WhileStatement', { condition_text: cond });
+        if (cond) extractCalls(cond, st.temp_id, pb.name, lineNo);
+      } else if (/^\s*case\s+/.test(text)) {
+        const cm = trimmed.match(/^case\s+(.+)/); const cond = cm ? cm[1].slice(0, 200) : undefined;
+        const st = emit('switch', 'CaseStatement', { condition_text: cond });
+        if (cond) extractCalls(cond, st.temp_id, pb.name, lineNo);
+      } else if (/^\s*try:/.test(text)) {
+        emit('try', 'TryStatement');
+      } else if (/^\s*defer:/.test(text)) {
+        emit('call', 'DeferStatement', { callee: 'defer' });
+      } else if (/^\s*return\b/.test(text)) {
+        const expr = trimmed.replace(/^return\s*/, '');
+        const st = emit('return', 'ReturnStatement');
+        if (expr) extractCalls(expr, st.temp_id, pb.name, lineNo);
+      } else if (/^\s*raise\b/.test(text)) {
+        const expr = trimmed.replace(/^raise\s*/, '');
+        const st = emit('throw', 'RaiseStatement');
+        if (expr) extractCalls(expr, st.temp_id, pb.name, lineNo);
+      } else if (/^\s*(?:let|var|const)\s+\w+/.test(text)) {
+        const vm = trimmed.match(/(?:let|var|const)\s+(\w+)(?:\s*:\s*\S+)?\s*=\s*(.+)/);
+        if (vm) {
+          const st = emit('variable', 'VariableDeclaration', { assigned_to: vm[1].slice(0, 120) });
+          extractCalls(vm[2], st.temp_id, pb.name, lineNo);
+        }
+      } else if (/^\s*\w+\s*=\s*.+/.test(text) && !/^\s*(?:if|for|while|case|return|raise|let|var|const|proc|func|type|import)/.test(text)) {
+        const am = trimmed.match(/^(\w+)\s*=\s*(.+)/);
+        if (am) {
+          const st = emit('assignment', 'AssignmentStatement', { assigned_to: am[1].slice(0, 120) });
+          extractCalls(am[2], st.temp_id, pb.name, lineNo);
+        }
+      } else if (/\w+\s*\(/.test(trimmed) && !/^\s*(?:if|for|while|case|return|raise|proc|func|let|var|const|type|import)/.test(text)) {
+        const cm2 = trimmed.match(/(?:(\w+)\.)?(\w+)\s*\(/);
+        if (cm2) {
+          const st = emit('call', 'CallExpression', { callee: cm2[2], receiver: cm2[1] || undefined });
+          extractCalls(trimmed, st.temp_id, pb.name, lineNo);
+        }
+      }
+    }
+  }
+
+  const bodies = findProcBodies();
+  for (const pb of bodies) processBody(pb);
+
+  return { statements, callEdges };
 }
 
 class NimParser implements LanguageParser {
@@ -273,7 +411,8 @@ class NimParser implements LanguageParser {
       });
     }
 
-    return { symbols, references };
+    const { statements, callEdges } = extractFlowNim(content);
+    return { symbols, references, statements, callEdges };
   }
 }
 

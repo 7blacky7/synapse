@@ -8,12 +8,164 @@
  * ANSATZ: Regex-basiert (case-insensitive)
  */
 
-import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
+import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser, ParsedStatement, ParsedCallEdge } from './types.js';
 import { extractStringLiterals } from './types.js';
 import { parseEmbeddedSql, looksLikeSql } from './patterns/sql.js';
 
 function lineAt(text: string, pos: number): number {
   return text.substring(0, pos).split('\n').length;
+}
+
+// ---------------------------------------------------------------------------
+// Flow extraction (Ada) — case-insensitive, keyword-based
+// ---------------------------------------------------------------------------
+
+function lineAtAda(text: string, pos: number): number {
+  return text.substring(0, pos).split('\n').length;
+}
+
+function extractFlowAda(content: string): { statements: ParsedStatement[]; callEdges: ParsedCallEdge[] } {
+  const statements: ParsedStatement[] = [];
+  const callEdges: ParsedCallEdge[] = [];
+  let tempIdCounter = 0;
+  const nextId = (): string => `s${tempIdCounter++}`;
+
+  function extractCalls(expr: string, stmtId: string, scopeName: string | null, lineNo: number): void {
+    // Ada procedure/function calls: Name(...) or Pkg.Name(...)
+    const methodRe = /(\w+)\.(\w+)\s*\(/g;
+    let mc: RegExpExecArray | null;
+    while ((mc = methodRe.exec(expr)) !== null) {
+      callEdges.push({ statement_temp_id: stmtId, caller_scope: scopeName, callee_name: mc[2], callee_receiver: mc[1], line_number: lineNo, call_kind: 'method' });
+    }
+    const funcRe = /(?<![.\w])([a-zA-Z_]\w*)\s*\(/g;
+    while ((mc = funcRe.exec(expr)) !== null) {
+      const name = mc[1].toLowerCase();
+      if (['if','elsif','else','loop','while','for','case','when','return','raise','declare','begin','end','exception','exit','goto','select','accept','delay','abort','null','new','not','and','or','xor','in','out','rem','mod','abs'].includes(name)) continue;
+      callEdges.push({ statement_temp_id: stmtId, caller_scope: scopeName, callee_name: mc[1], line_number: lineNo, call_kind: 'function' });
+    }
+    // new TypeName(...)
+    const newRe = /\bnew\s+(\w[\w.]*)/gi;
+    while ((mc = newRe.exec(expr)) !== null) {
+      callEdges.push({ statement_temp_id: stmtId, caller_scope: scopeName, callee_name: mc[1], line_number: lineNo, call_kind: 'new' });
+    }
+  }
+
+  const allLines = content.split('\n');
+
+  interface SubBody { name: string; startLine: number; lines: { text: string; lineNo: number }[]; }
+
+  function findSubBodies(): SubBody[] {
+    const bodies: SubBody[] = [];
+    // Match procedure/function body start: "procedure/function Name ..."
+    // Body begins at "is" keyword on same or next line and ends at "end Name;"
+    const startRe = /^\s*(?:overriding\s+)?(?:procedure|function)\s+(\w+)/i;
+    let i = 0;
+    while (i < allLines.length) {
+      const sm = startRe.exec(allLines[i]);
+      if (sm) {
+        const name = sm[1];
+        // Look for "is" to mark body start (skip spec-only declarations ending with ";")
+        let bodyStart = -1;
+        let j = i;
+        while (j < allLines.length && j < i + 20) {
+          if (/\bis\b/i.test(allLines[j]) && !/\bis\s+(?:new|abstract|separate|null)/i.test(allLines[j])) {
+            bodyStart = j + 1;
+            break;
+          }
+          if (/;\s*$/.test(allLines[j].trim()) && j > i) break; // spec only
+          j++;
+        }
+        if (bodyStart < 0) { i++; continue; }
+        // Collect until "end Name;" or "end;"
+        const endRe = new RegExp(`^\\s*end\\s+(?:${name}\\s*)?;`, 'i');
+        const bodyLines: { text: string; lineNo: number }[] = [];
+        let k = bodyStart;
+        while (k < allLines.length) {
+          if (endRe.test(allLines[k]) || /^\s*end\s*;/i.test(allLines[k])) { k++; break; }
+          bodyLines.push({ text: allLines[k], lineNo: k + 1 });
+          k++;
+        }
+        bodies.push({ name, startLine: i + 1, lines: bodyLines });
+        i = k;
+      } else {
+        i++;
+      }
+    }
+    return bodies;
+  }
+
+  function processBody(sb: SubBody): void {
+    let order = 0;
+    for (const { text, lineNo } of sb.lines) {
+      const trimmed = text.trim();
+      if (!trimmed || trimmed.startsWith('--')) continue;
+      const code = trimmed.replace(/--.*$/, '').trim();
+      if (!code) continue;
+
+      function emit(type: string, kind: string, extra: Partial<ParsedStatement> = {}): ParsedStatement {
+        const id = nextId();
+        const st: ParsedStatement = { temp_id: id, parent_temp_id: undefined, scope_type: 'function', scope_name: sb.name, statement_type: type, node_kind: kind, line_start: lineNo, order_index: order++, depth: 0, is_top_level: false, is_awaited: false, text: code.slice(0, 240), ...extra };
+        statements.push(st);
+        return st;
+      }
+
+      if (/^\s*if\b/i.test(code)) {
+        const cm = code.match(/\bif\s+(.+?)\s+then\b/i); const cond = cm ? cm[1].slice(0, 200) : undefined;
+        const st = emit('if', 'IfStatement', { condition_text: cond });
+        if (cond) extractCalls(cond, st.temp_id, sb.name, lineNo);
+      } else if (/^\s*elsif\b/i.test(code)) {
+        const cm = code.match(/\belsif\s+(.+?)\s+then\b/i); const cond = cm ? cm[1].slice(0, 200) : undefined;
+        emit('if', 'ElsifBranch', { condition_text: cond });
+      } else if (/^\s*loop\b/i.test(code) || /^\s*while\s+.+\s+loop\b/i.test(code)) {
+        const cm = code.match(/\bwhile\s+(.+?)\s+loop\b/i); const cond = cm ? cm[1].slice(0, 200) : undefined;
+        const st = emit('while', 'WhileLoop', { condition_text: cond });
+        if (cond) extractCalls(cond, st.temp_id, sb.name, lineNo);
+      } else if (/^\s*for\s+\w+\s+in\b/i.test(code)) {
+        const cm = code.match(/\bfor\s+(.+?)\s+loop\b/i); const cond = cm ? cm[1].slice(0, 200) : undefined;
+        const st = emit('for', 'ForLoop', { condition_text: cond });
+        if (cond) extractCalls(cond, st.temp_id, sb.name, lineNo);
+      } else if (/^\s*case\s+.+\s+is\b/i.test(code)) {
+        const cm = code.match(/\bcase\s+(.+?)\s+is\b/i); const cond = cm ? cm[1].slice(0, 200) : undefined;
+        const st = emit('switch', 'CaseStatement', { condition_text: cond });
+        if (cond) extractCalls(cond, st.temp_id, sb.name, lineNo);
+      } else if (/^\s*begin\b/i.test(code)) {
+        emit('try', 'BeginBlock');
+      } else if (/^\s*exception\b/i.test(code)) {
+        emit('try', 'ExceptionBlock');
+      } else if (/^\s*return\b/i.test(code)) {
+        const expr = code.replace(/^return\s*/i, '').replace(/;$/, '');
+        const st = emit('return', 'ReturnStatement');
+        if (expr) extractCalls(expr, st.temp_id, sb.name, lineNo);
+      } else if (/^\s*raise\b/i.test(code)) {
+        const expr = code.replace(/^raise\s*/i, '').replace(/;$/, '');
+        const st = emit('throw', 'RaiseStatement');
+        if (expr) extractCalls(expr, st.temp_id, sb.name, lineNo);
+      } else if (/^\s*goto\b/i.test(code)) {
+        const cm = code.match(/\bgoto\s+(\w+)/i);
+        emit('goto', 'GotoStatement', { callee: cm ? cm[1] : undefined });
+      } else if (/\s*:=\s*/.test(code) && !/^\s*(?:if|elsif|while|for|case|begin|exception|return|raise|goto|declare|end|when|else|loop)/.test(code.toLowerCase())) {
+        const am = code.match(/^([\w.()]+)\s*:=\s*(.+);?$/);
+        if (am) {
+          const st = emit('assignment', 'AssignmentStatement', { assigned_to: am[1].slice(0, 120) });
+          extractCalls(am[2], st.temp_id, sb.name, lineNo);
+        }
+      } else if (/^\s*[\w.]+\s*\(/.test(code) && /;\s*$/.test(code) && !/^\s*(?:if|elsif|while|for|case|begin|exception|return|raise|goto|declare|end|when|else|loop|procedure|function|type|subtype|package|with|use|pragma)/i.test(code)) {
+        const cm2 = code.match(/^([\w.]+)\s*\(/);
+        if (cm2) {
+          const parts = cm2[1].split('.');
+          const callee = parts[parts.length - 1];
+          const receiver = parts.length > 1 ? parts.slice(0, -1).join('.') : undefined;
+          const st = emit('call', 'ProcedureCall', { callee, receiver });
+          extractCalls(code, st.temp_id, sb.name, lineNo);
+        }
+      }
+    }
+  }
+
+  const bodies = findSubBodies();
+  for (const sb of bodies) processBody(sb);
+
+  return { statements, callEdges };
 }
 
 class AdaParser implements LanguageParser {
@@ -318,7 +470,8 @@ class AdaParser implements LanguageParser {
       }
     }
 
-    return { symbols, references };
+    const { statements, callEdges } = extractFlowAda(content);
+    return { symbols, references, statements, callEdges };
   }
 }
 

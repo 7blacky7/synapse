@@ -741,3 +741,263 @@ export async function getFileContent(
     ...ranged,
   };
 }
+
+// ─── Ablauf-Ebene (Statements / Call-Edges / Flow / Entrypoints) ──────────────
+
+export interface StatementInfo {
+  id: string;
+  file_path: string;
+  scope_type: string | null;
+  scope_name: string | null;
+  statement_type: string;
+  node_kind: string | null;
+  line_start: number;
+  line_end: number | null;
+  order_index: number;
+  depth: number;
+  parent_statement_id: string | null;
+  text: string | null;
+  callee: string | null;
+  receiver: string | null;
+  assigned_to: string | null;
+  condition_text: string | null;
+  is_top_level: boolean;
+  is_awaited: boolean;
+}
+
+export interface CallEdgeInfo {
+  id: string;
+  file_path: string;
+  caller_scope: string | null;
+  statement_id: string | null;
+  callee_name: string;
+  callee_receiver: string | null;
+  target_symbol_id: string | null;
+  line_number: number;
+  call_kind: string | null;
+  confidence: number | null;
+}
+
+/**
+ * Liefert Statements der Ablauf-Ebene. Filterbar nach Datei, Scope und
+ * optional nur Top-Level. Sortiert nach Datei, Scope, order_index, line_start.
+ */
+export async function getStatements(
+  project: string,
+  filePath?: string,
+  scopeName?: string,
+  topLevelOnly?: boolean
+): Promise<StatementInfo[]> {
+  const pool = getPool();
+  const params: unknown[] = [project];
+  const conditions: string[] = ['project = $1'];
+
+  if (filePath) {
+    params.push(`%${filePath}%`);
+    conditions.push(`file_path LIKE $${params.length}`);
+  }
+  if (scopeName) {
+    params.push(scopeName);
+    conditions.push(`scope_name = $${params.length}`);
+  }
+  if (topLevelOnly) {
+    conditions.push('is_top_level = true');
+  }
+
+  const result = await pool.query(
+    `SELECT id, file_path, scope_type, scope_name, statement_type, node_kind,
+            line_start, line_end, order_index, depth, parent_statement_id,
+            text, callee, receiver, assigned_to, condition_text,
+            is_top_level, is_awaited
+       FROM code_statements
+      WHERE ${conditions.join(' AND ')}
+      ORDER BY file_path, scope_name NULLS FIRST, order_index, line_start`,
+    params
+  );
+
+  return result.rows.map(row => ({
+    id: String(row.id),
+    file_path: row.file_path,
+    scope_type: row.scope_type,
+    scope_name: row.scope_name,
+    statement_type: row.statement_type,
+    node_kind: row.node_kind,
+    line_start: row.line_start,
+    line_end: row.line_end,
+    order_index: row.order_index,
+    depth: row.depth,
+    parent_statement_id: row.parent_statement_id != null ? String(row.parent_statement_id) : null,
+    text: row.text,
+    callee: row.callee,
+    receiver: row.receiver,
+    assigned_to: row.assigned_to,
+    condition_text: row.condition_text,
+    is_top_level: row.is_top_level,
+    is_awaited: row.is_awaited,
+  }));
+}
+
+/**
+ * Liefert Call-Edges der Ablauf-Ebene. Filterbar nach Datei und/oder
+ * aufgerufenem Namen (callee_name). Sortiert nach Datei und Zeile.
+ */
+export async function getCallEdges(
+  project: string,
+  filePath?: string,
+  calleeName?: string
+): Promise<CallEdgeInfo[]> {
+  const pool = getPool();
+  const params: unknown[] = [project];
+  const conditions: string[] = ['project = $1'];
+
+  if (filePath) {
+    params.push(`%${filePath}%`);
+    conditions.push(`file_path LIKE $${params.length}`);
+  }
+  if (calleeName) {
+    params.push(calleeName);
+    conditions.push(`callee_name = $${params.length}`);
+  }
+
+  const result = await pool.query(
+    `SELECT id, file_path, caller_scope, statement_id, callee_name,
+            callee_receiver, target_symbol_id, line_number, call_kind, confidence
+       FROM code_call_edges
+      WHERE ${conditions.join(' AND ')}
+      ORDER BY file_path, line_number`,
+    params
+  );
+
+  return result.rows.map(row => ({
+    id: String(row.id),
+    file_path: row.file_path,
+    caller_scope: row.caller_scope,
+    statement_id: row.statement_id != null ? String(row.statement_id) : null,
+    callee_name: row.callee_name,
+    callee_receiver: row.callee_receiver,
+    target_symbol_id: row.target_symbol_id,
+    line_number: row.line_number,
+    call_kind: row.call_kind,
+    confidence: row.confidence != null ? Number(row.confidence) : null,
+  }));
+}
+
+export interface ExecutionFlowResult {
+  file_path: string;
+  scope_name: string | null;
+  statements: StatementInfo[];
+}
+
+/**
+ * Liefert die geordnete Ausfuehrungsreihenfolge einer Datei (oder eines
+ * Scopes innerhalb der Datei). Standardmaessig die TOP-LEVEL-Ausfuehrung
+ * (scope_type = 'module'), d.h. was beim Laden der Datei passiert.
+ * Wenn scopeName gesetzt ist, wird der Ablauf dieses Scopes (z.B. Funktion)
+ * geliefert. Sortiert nach order_index — der Reihenfolge im Quelltext.
+ */
+export async function getExecutionFlow(
+  project: string,
+  filePath: string,
+  scopeName?: string
+): Promise<ExecutionFlowResult> {
+  const pool = getPool();
+  const params: unknown[] = [project, `%${filePath}%`];
+  let scopeCond: string;
+  if (scopeName) {
+    params.push(scopeName);
+    scopeCond = `scope_name = $${params.length}`;
+  } else {
+    // Top-Level-Ausfuehrung der Datei
+    scopeCond = `is_top_level = true`;
+  }
+
+  const result = await pool.query(
+    `SELECT id, file_path, scope_type, scope_name, statement_type, node_kind,
+            line_start, line_end, order_index, depth, parent_statement_id,
+            text, callee, receiver, assigned_to, condition_text,
+            is_top_level, is_awaited
+       FROM code_statements
+      WHERE project = $1 AND file_path LIKE $2 AND ${scopeCond} AND depth = 0
+      ORDER BY order_index, line_start`,
+    params
+  );
+
+  const statements: StatementInfo[] = result.rows.map(row => ({
+    id: String(row.id),
+    file_path: row.file_path,
+    scope_type: row.scope_type,
+    scope_name: row.scope_name,
+    statement_type: row.statement_type,
+    node_kind: row.node_kind,
+    line_start: row.line_start,
+    line_end: row.line_end,
+    order_index: row.order_index,
+    depth: row.depth,
+    parent_statement_id: row.parent_statement_id != null ? String(row.parent_statement_id) : null,
+    text: row.text,
+    callee: row.callee,
+    receiver: row.receiver,
+    assigned_to: row.assigned_to,
+    condition_text: row.condition_text,
+    is_top_level: row.is_top_level,
+    is_awaited: row.is_awaited,
+  }));
+
+  return {
+    file_path: statements[0]?.file_path ?? filePath,
+    scope_name: scopeName ?? null,
+    statements,
+  };
+}
+
+export interface EntrypointInfo {
+  file_path: string;
+  line_start: number;
+  order_index: number;
+  statement_type: string;
+  is_awaited: boolean;
+  callee: string | null;
+  text: string | null;
+}
+
+/**
+ * Liefert projektweit alle Top-Level (Modul-Scope, depth 0) ausfuehrbaren
+ * Statements — die "Entrypoints", also was beim Importieren/Ausfuehren der
+ * jeweiligen Datei passiert. Nicht-ausfuehrbare reine Deklarations-Statements
+ * (z.B. blosse 'variable'-Deklarationen) sind enthalten, koennen aber via
+ * optionalem filePath eingegrenzt werden.
+ */
+export async function getEntrypoints(
+  project: string,
+  filePath?: string,
+  limit: number = 200
+): Promise<EntrypointInfo[]> {
+  const pool = getPool();
+  const params: unknown[] = [project];
+  const conditions: string[] = ['project = $1', 'is_top_level = true', 'depth = 0'];
+
+  if (filePath) {
+    params.push(`%${filePath}%`);
+    conditions.push(`file_path LIKE $${params.length}`);
+  }
+  params.push(limit);
+
+  const result = await pool.query(
+    `SELECT file_path, line_start, order_index, statement_type, is_awaited, callee, text
+       FROM code_statements
+      WHERE ${conditions.join(' AND ')}
+      ORDER BY file_path, order_index, line_start
+      LIMIT $${params.length}`,
+    params
+  );
+
+  return result.rows.map(row => ({
+    file_path: row.file_path,
+    line_start: row.line_start,
+    order_index: row.order_index,
+    statement_type: row.statement_type,
+    is_awaited: row.is_awaited,
+    callee: row.callee,
+    text: row.text,
+  }));
+}

@@ -7,7 +7,7 @@
  * ANSATZ: Regex-basiert
  */
 
-import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
+import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser, ParsedStatement, ParsedCallEdge } from './types.js';
 import { extractStringLiterals } from './types.js';
 import { parseEmbeddedSql, looksLikeSql } from './patterns/sql.js';
 
@@ -224,7 +224,151 @@ class TclParser implements LanguageParser {
       symbols.push(...parseEmbeddedSql(sql, filePath, baseLine));
     }
 
-    return { symbols, references };
+    // ══════════════════════════════════════════════
+    // FLOW: Statements + CallEdges
+    // ══════════════════════════════════════════════
+    const statements: ParsedStatement[] = [];
+    const callEdges: ParsedCallEdge[] = [];
+    let tid = 0;
+    const nid = (): string => `s${tid++}`;
+    const oc = new Map<string, number>();
+    const nord = (p: string | undefined): number => { const k = p ?? 'root'; const v = oc.get(k) ?? 0; oc.set(k, v + 1); return v; };
+
+    interface TS { type: string; name: string | null; }
+    const ss: TS[] = [{ type: 'module', name: null }];
+    const cs = (): TS => ss[ss.length - 1];
+
+    function es(st: string, line: number, pid: string | undefined, depth: number, extra: Partial<ParsedStatement> = {}): ParsedStatement {
+      const sc = cs();
+      const id = nid();
+      const s: ParsedStatement = { temp_id: id, parent_temp_id: pid, scope_type: sc.type, scope_name: sc.name, statement_type: st, line_start: line, order_index: nord(pid), depth, is_top_level: sc.type === 'module' && depth === 0, is_awaited: false, ...extra };
+      statements.push(s); return s;
+    }
+    function ec(sid: string, callee: string, recv: string | undefined, line: number, kind: string): void {
+      callEdges.push({ statement_temp_id: sid, caller_scope: cs().name, callee_name: callee, callee_receiver: recv, line_number: line, call_kind: kind });
+    }
+
+    // Tcl: line-based, commands are first word on line
+    // Depth tracking via brace-counting (Tcl bodies are in {})
+    const tclLines = content.split('\n');
+    interface TF { pid: string | undefined; depth: number; }
+    const fs: TF[] = [{ pid: undefined, depth: 0 }];
+    const tf = (): TF => fs[fs.length - 1];
+    let braceNest = 0;
+
+    for (let i = 0; i < tclLines.length; i++) {
+      const raw = tclLines[i];
+      const tr = raw.trim();
+      const ln = i + 1;
+      if (!tr || tr.startsWith('#')) continue;
+
+      const openB = (tr.match(/\{/g) || []).length;
+      const closeB = (tr.match(/\}/g) || []).length;
+      const f = tf();
+      const d = f.depth;
+
+      // proc declaration
+      const procM = /^proc\s+([\w:]+)\s/.exec(tr);
+      if (procM) {
+        const name = procM[1];
+        const st = es('call', ln, f.pid, d, { callee: name, text: tr.slice(0, 120) });
+        if (openB > closeB) {
+          ss.push({ type: 'function', name });
+          fs.push({ pid: st.temp_id, depth: d + 1 });
+          braceNest += openB - closeB;
+        }
+        continue;
+      }
+
+      // if / elseif
+      const ifM = /^(?:if|elseif)\s+[{"\[](.{0,200})[}"\]]/.exec(tr);
+      if (ifM) {
+        const st = es('if', ln, f.pid, d, { condition_text: ifM[1].slice(0, 200), text: tr.slice(0, 120) });
+        if (openB > closeB) { fs.push({ pid: st.temp_id, depth: d + 1 }); braceNest += openB - closeB; }
+        continue;
+      }
+      if (/^else\b/.test(tr)) continue;
+
+      // while
+      const whM = /^while\s+[{"\[](.{0,200})[}"\]]/.exec(tr);
+      if (whM) {
+        const st = es('while', ln, f.pid, d, { condition_text: whM[1].slice(0, 200), text: tr.slice(0, 120) });
+        if (openB > closeB) { fs.push({ pid: st.temp_id, depth: d + 1 }); braceNest += openB - closeB; }
+        continue;
+      }
+
+      // for / foreach
+      if (/^for(?:each)?\s/.test(tr)) {
+        const st = es('for', ln, f.pid, d, { text: tr.slice(0, 120) });
+        if (openB > closeB) { fs.push({ pid: st.temp_id, depth: d + 1 }); braceNest += openB - closeB; }
+        continue;
+      }
+
+      // switch
+      if (/^switch\s/.test(tr)) {
+        const st = es('switch', ln, f.pid, d, { text: tr.slice(0, 120) });
+        if (openB > closeB) { fs.push({ pid: st.temp_id, depth: d + 1 }); braceNest += openB - closeB; }
+        continue;
+      }
+
+      // try / catch
+      if (/^try\s/.test(tr)) {
+        const st = es('try', ln, f.pid, d, { text: tr.slice(0, 120) });
+        if (openB > closeB) { fs.push({ pid: st.temp_id, depth: d + 1 }); braceNest += openB - closeB; }
+        continue;
+      }
+      if (/^catch\s/.test(tr)) continue;
+
+      // return
+      if (/^return\b/.test(tr)) { es('return', ln, f.pid, d, { text: tr.slice(0, 120) }); continue; }
+      // error (throw-like)
+      if (/^error\s/.test(tr)) { const st = es('throw', ln, f.pid, d, { text: tr.slice(0, 120) }); ec(st.temp_id, 'error', undefined, ln, 'function'); continue; }
+
+      // source
+      if (/^source\s/.test(tr)) {
+        const st = es('call', ln, f.pid, d, { callee: 'source', text: tr.slice(0, 120) });
+        ec(st.temp_id, 'source', undefined, ln, 'function');
+        continue;
+      }
+
+      // package require / provide
+      if (/^package\s/.test(tr)) {
+        const st = es('call', ln, f.pid, d, { callee: 'package', text: tr.slice(0, 120) });
+        ec(st.temp_id, 'package', undefined, ln, 'function');
+        continue;
+      }
+
+      // set var = assignment
+      const setM = /^set\s+(\w+)\s+(.+)/.exec(tr);
+      if (setM) {
+        const callM = /\[(\w+)\s/.exec(setM[2]);
+        const st = es('assignment', ln, f.pid, d, { assigned_to: setM[1], text: tr.slice(0, 120) });
+        if (callM) ec(st.temp_id, callM[1], undefined, ln, 'function');
+        braceNest += openB - closeB;
+        while (fs.length > 1 && braceNest < 0) { fs.pop(); if (ss.length > 1) ss.pop(); braceNest++; }
+        continue;
+      }
+
+      // namespace eval / oo::class create
+      if (/^namespace\s+eval\s|^oo::class\s+create\s/.test(tr)) {
+        const st = es('call', ln, f.pid, d, { callee: tr.startsWith('namespace') ? 'namespace' : 'oo::class', text: tr.slice(0, 120) });
+        ec(st.temp_id, st.callee!, undefined, ln, 'function');
+        if (openB > closeB) { fs.push({ pid: st.temp_id, depth: d + 1 }); braceNest += openB - closeB; }
+        continue;
+      }
+
+      // generic command call (first word on line)
+      const cmdM = /^([\w:]+)\s/.exec(tr);
+      if (cmdM && !/^(?:if|else|elseif|while|for|foreach|switch|try|catch|return|error|proc|set|source|package|namespace)\b/.test(tr)) {
+        const st = es('call', ln, f.pid, d, { callee: cmdM[1], text: tr.slice(0, 120) });
+        ec(st.temp_id, cmdM[1], undefined, ln, 'function');
+      }
+
+      braceNest += openB - closeB;
+      while (fs.length > 1 && braceNest < 0) { fs.pop(); if (ss.length > 1) ss.pop(); braceNest++; }
+    }
+
+    return { symbols, references, statements, callEdges };
   }
 }
 
