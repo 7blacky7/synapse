@@ -1716,14 +1716,18 @@ export async function linkCrossFileReferences(project: string): Promise<number> 
       if (filtered.length === 0) continue;
       const target = filtered.find(c => c.symbol_type !== 'export') || filtered[0];
 
-      // Reference erstellen: "In importingFile wird name aus target.file_path genutzt"
-      await pool.query(
+      // Reference erstellen mit atomarem FK-Check: target.id koennte zwischen
+      // SELECT (oben) und INSERT von einem parallel-Worker bereits geloescht
+      // worden sein (parseAndEmbed -> DELETE code_symbols). INSERT...SELECT
+      // mit existence-check verhindert die FK-violation.
+      const res = await pool.query(
         `INSERT INTO code_references (id, project, symbol_id, file_path, line_number, context)
-         VALUES ($1, $2, $3, $4, $5, $6)
+         SELECT $1, $2, $3, $4, $5, $6
+         WHERE EXISTS (SELECT 1 FROM code_symbols WHERE id = $3)
          ON CONFLICT DO NOTHING`,
         [uuidv4(), project, target.id, importingFile, imp.line_start ?? 1, `import { ${name} } from '${imp.value}'`]
       );
-      linkedCount++;
+      if (res.rowCount && res.rowCount > 0) linkedCount++;
     }
   }
 
