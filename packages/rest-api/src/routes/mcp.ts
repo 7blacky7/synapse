@@ -1008,6 +1008,7 @@ const MCP_TOOLS = [
         command: { type: 'string', description: 'Shell-Kommando fuer exec (Pflicht bei exec)' },
         timeout_ms: { type: 'number', description: 'exec: Hard-Timeout in ms (Default 60000)' },
         working_dir: { type: 'string', description: 'exec: alternativer WorkingDir (Default /workspace)' },
+        expose_ports: { type: 'array', items: { type: 'number' }, description: 'exec: gewuenschte Container-Ports — Response liefert internal_urls mit DNS-Namen "http://synapse-ws-<project>:<port>", erreichbar von anderen proxynet-Containern (z.B. ki-browser). Kein Host-Port, keine Konflikte.' },
         ignore_patterns: { type: 'array', items: { type: 'string' }, description: 'materialize/commit: glob-Patterns die uebersprungen werden (Default: node_modules, .git, dist, build, target, .next, coverage, __pycache__, ...)' },
       },
       required: ['action'],
@@ -3546,11 +3547,16 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
         case 'exec': {
           const project = reqStr(args, 'project');
           const command = reqStr(args, 'command');
+          const exposePorts = Array.isArray((args as Record<string, unknown>).expose_ports)
+            ? ((args as Record<string, unknown>).expose_ports as unknown[]).map(Number).filter(Number.isFinite)
+            : undefined;
           const result = await orch.exec(project, command, {
             timeoutMs: num(args, 'timeout_ms'),
             workingDir: str(args, 'working_dir'),
+            exposePorts,
           });
-          return { success: true, project, ...result };
+          return { success: true, project, ...result };</replace>
+<parameter name="reason">workspace.exec expose_ports Param durchreichen — Response liefert internal_urls
         }
         case 'materialize': {
           const project = reqStr(args, 'project');
