@@ -256,16 +256,39 @@ export async function parseAndEmbed(project: string, filePath: string): Promise<
     'SELECT content, file_type FROM code_files WHERE project = $1 AND file_path = $2',
     [project, filePath]
   );
-  if (!fileRow.rows[0]?.content) {
+  if (fileRow.rows[0]?.content === undefined || fileRow.rows[0]?.content === null) {
     console.error(`[Synapse] Kein Inhalt in PG fuer: ${filePath}`);
     return;
   }
   const content: string = fileRow.rows[0].content;
   const fileType: string = fileRow.rows[0].file_type;
 
+  // Leere Files (0 Bytes) sind trotzdem "verarbeitet" — als parsed markieren damit
+  // der parser-worker-Loop sie nicht ewig erneut versucht. Re-Trigger via content-Aenderung
+  // (Hash-Diff in code-write setzt parsed_at zurueck auf NULL).
+  if (content === '') {
+    await pool.query(
+      `UPDATE code_files SET parsed_at = NOW(), indexed_at = NOW(), chunk_count = 0
+         WHERE project = $1 AND file_path = $2`,
+      [project, filePath]
+    );
+    return;
+  }
+
   // --- Symbole + Referenzen parsen (in Transaktion) ---
   let parseSuccess = false;
   const parser = getParserForFile(filePath);
+  if (!parser) {
+    // Unbekannter Filetype (z.B. json, png, gitignore, txt) — kein Parser noetig.
+    // parsed_at trotzdem setzen damit der Loop ihn nicht ewig wieder versucht.
+    // Re-Process bei content-Aenderung erfolgt automatisch (Hash-Diff setzt parsed_at=NULL).
+    await pool.query(
+      `UPDATE code_files SET parsed_at = NOW(), indexed_at = NOW()
+         WHERE project = $1 AND file_path = $2`,
+      [project, filePath]
+    );
+    return;
+  }
   if (parser) {
     const parseResult = parser.parse(content, filePath);
 
