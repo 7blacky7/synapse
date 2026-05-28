@@ -310,6 +310,8 @@ export class WorkspaceOrchestrator {
     const row = await this.loadRow(project);
     if (!row || !row.containerId) return;
     await pool.query(`UPDATE project_workspaces SET status='stopping', updated_at=NOW() WHERE project=$1`, [project]);
+    // Last-Will Log-Line vorm Stop
+    await this.appendToLog(row.containerId, `STOP requested (${reason})`).catch(() => {});
     try {
       const c = this.docker.getContainer(row.containerId);
       await c.stop({ t: 10 }).catch(() => {});
@@ -317,6 +319,7 @@ export class WorkspaceOrchestrator {
     } catch (err) {
       console.error(`[Workspaces] Stop ${project} (${reason}): ${(err as Error).message}`);
     }
+    console.error(`[Workspaces] stopped ${project}: ${reason}`);
     await this.markStopped(project, reason);
   }
 
@@ -326,11 +329,16 @@ export class WorkspaceOrchestrator {
    * Sammelt stdout/stderr getrennt via Stream-Demux.
    * timeoutMs: hard kill nach N ms (Default 60s).
    */
+  /** Berechnet die proxynet-interne URL fuer einen Workspace-Container + Port. */
+  internalUrl(project: string, port: number): string {
+    return `http://${this.cfg.containerNamePrefix}-${sanitize(project)}:${port}`;
+  }
+
   async exec(
     project: string,
     command: string,
-    opts: { timeoutMs?: number; workingDir?: string } = {}
-  ): Promise<{ stdout: string; stderr: string; exitCode: number | null; timedOut: boolean; durationMs: number }> {
+    opts: { timeoutMs?: number; workingDir?: string; exposePorts?: number[] } = {}
+  ): Promise<{ stdout: string; stderr: string; exitCode: number | null; timedOut: boolean; durationMs: number; internal_urls?: Record<number, string> }> {
     if (!this.dockerAvailable) {
       throw new Error('Workspace-Orchestrator nicht verfuegbar (Docker-Socket nicht erreichbar)');
     }
@@ -338,6 +346,8 @@ export class WorkspaceOrchestrator {
     const container = this.docker.getContainer(containerId);
     const timeoutMs = opts.timeoutMs ?? 60_000;
     const t0 = Date.now();
+    console.error(`[Workspaces] exec ${project}: ${command.slice(0, 120)}${command.length > 120 ? '…' : ''} (timeout=${timeoutMs}ms)`);
+    void this.appendToLog(containerId, `EXEC: ${command.slice(0, 200)}`);
 
     const exec = await container.exec({
       Cmd: ['/bin/sh', '-c', command],
@@ -392,7 +402,15 @@ export class WorkspaceOrchestrator {
 
     // Activity bei jedem exec frischen — Idle-Timer nicht versehentlich triggern.
     await this.recordActivity(project);
-    return { stdout, stderr, exitCode, timedOut, durationMs: Date.now() - t0 };
+
+    const dt = Date.now() - t0;
+    console.error(`[Workspaces] exec ${project} done: exit=${exitCode} stdout=${stdout.length}B stderr=${stderr.length}B in ${dt}ms${timedOut ? ' [TIMEOUT]' : ''}`);
+    void this.appendToLog(containerId, `EXIT: code=${exitCode} duration=${dt}ms stdout=${stdout.length}B stderr=${stderr.length}B${timedOut ? ' TIMEOUT' : ''}`);
+
+    const internal_urls: Record<number, string> = {};
+    if (opts.exposePorts) for (const p of opts.exposePorts) internal_urls[p] = this.internalUrl(project, p);
+
+    return { stdout, stderr, exitCode, timedOut, durationMs: dt, ...(opts.exposePorts ? { internal_urls } : {}) };
   }
 
   /**
@@ -446,7 +464,10 @@ export class WorkspaceOrchestrator {
     pack.finalize();
     await putPromise;
     await this.recordActivity(project);
-    return { files, bytes, durationMs: Date.now() - t0 };
+    const dt = Date.now() - t0;
+    console.error(`[Workspaces] materialize ${project}: ${files} files, ${bytes}B in ${dt}ms`);
+    void this.appendToLog(containerId, `MATERIALIZE: ${files} files, ${bytes}B in ${dt}ms`);
+    return { files, bytes, durationMs: dt };
   }
 
   /**
@@ -663,12 +684,32 @@ export class WorkspaceOrchestrator {
         MemorySwap: row.memLimitMb * 1024 * 1024,   // kein Swap-Spielraum
         PidsLimit: row.pidsLimit,
       },
-      // Container am Leben halten ohne TTY (cat liest stdin auf /dev/null).
-      Cmd: ['/bin/sh', '-c', 'while true; do sleep 86400; done'],
+      // PID 1 = tail -F /tmp/ws.log → docker logs zeigt alle exec/materialize/start/stop
+      // Events die der Orchestrator dorthin appended. /tmp ist tmpfs (siehe oben),
+      // beim Container-Restart leer; Datei wird beim ersten echo neu angelegt.
+      Cmd: ['/bin/sh', '-c', 'touch /tmp/ws.log; tail -F /tmp/ws.log 2>/dev/null'],
       User: '1000:1000',
     });
     await create.start();
+    console.error(`[Workspaces] container created+started: ${name} (${create.id.slice(0, 12)}) for ${project}`);
+    // Initial log-line in den Container damit docker logs sofort was zeigt
+    void this.appendToLog(create.id, `CONTAINER STARTED (${name})`).catch(() => { /* ignore */ });
     return create.id;
+  }
+
+  /** Schreibt eine Zeile nach /tmp/ws.log im Container — taucht in docker logs auf. */
+  private async appendToLog(containerId: string, line: string): Promise<void> {
+    if (!this.dockerAvailable) return;
+    try {
+      const container = this.docker.getContainer(containerId);
+      const ts = new Date().toISOString();
+      // Escapen mit Heredoc-style stdin um Quote-Hoelle zu vermeiden
+      const ex = await container.exec({
+        Cmd: ['/bin/sh', '-c', `printf '[ws] %s %s\\n' "${ts}" "${line.replace(/"/g, '\\"').slice(0, 500)}" >> /tmp/ws.log`],
+        AttachStdout: false, AttachStderr: false, User: '0',
+      });
+      await ex.start({ hijack: false, stdin: false });
+    } catch { /* best-effort, no log noise */ }
   }
 
   private async markStopped(project: string, reason: string): Promise<void> {
