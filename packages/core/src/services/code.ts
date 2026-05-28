@@ -278,6 +278,22 @@ export async function parseAndEmbed(project: string, filePath: string): Promise<
   // --- Symbole + Referenzen parsen (in Transaktion) ---
   let parseSuccess = false;
   const parser = getParserForFile(filePath);
+
+  // TEMP-Mitigation: Files >PARSER_MAX_BYTES blocken den Event-Loop (sync
+  // parser.parse() ist CPU-gebunden). Bis Worker-Threads (WT-1..5) fertig
+  // sind, ueberspringen wir Mega-Files: parsed_at=NOW(), keine Symbole.
+  // 0 oder unset = kein Skip (alte Verhalten).
+  const skipBytes = Number(process.env.PARSER_MAX_BYTES || 0);
+  if (parser && skipBytes > 0 && content.length > skipBytes) {
+    console.error(`[Synapse] Parse SKIPPED (file ${content.length}b > ${skipBytes}b): ${filePath}`);
+    await pool.query(
+      `UPDATE code_files SET parsed_at = NOW(), indexed_at = NOW()
+         WHERE project = $1 AND file_path = $2`,
+      [project, filePath]
+    );
+    return;
+  }
+
   if (!parser) {
     // Unbekannter Filetype (z.B. json, png, gitignore, txt) — kein Parser noetig.
     // parsed_at trotzdem setzen damit der Loop ihn nicht ewig wieder versucht.
