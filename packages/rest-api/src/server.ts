@@ -169,6 +169,22 @@ export async function startServer(): Promise<void> {
     console.log('[Synapse API] Workspace-Orchestrator per WORKSPACE_DISABLED=1 ausgeschaltet');
   }
 
+  // Parser-Worker-Pool: off-thread parser.parse() via node:worker_threads.
+  // Verhindert Event-Loop-Stall bei grossen Files. ENV PARSER_WORKER_THREADS
+  // (Default 4, 0=disabled).
+  try {
+    const { getParserPool } = await import('@synapse/core');
+    const pPool = getParserPool();
+    if (pPool) {
+      await pPool.init();
+      console.log(`[Synapse API] ParserPool aktiv (${process.env.PARSER_WORKER_THREADS ?? 4} Workers)`);
+    } else {
+      console.log('[Synapse API] ParserPool deaktiviert (PARSER_WORKER_THREADS=0)');
+    }
+  } catch (err) {
+    console.error('[Synapse API] ParserPool-Init fehlgeschlagen:', err);
+  }
+
   // Parser-Worker: server-seitige parseUnparsedFiles-Schleife. Schliesst die Luecke
   // wenn KEIN lokaler FileWatcher-Daemon laeuft — Files die via files-Tool / Web-KI
   // in code_files landen, werden hier nachgezogen + code_intel sieht sie.

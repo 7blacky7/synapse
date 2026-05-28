@@ -407,6 +407,10 @@ export type {
   MemorySearchMetadata,
   SearchType,
 } from './services/global-search.js';
+// Parser Worker-Threads Pool
+export { getParserPool, resetParserPool, ParserWorkerPool } from './parser/worker-pool.js';
+export type { ParseArgs } from './parser/worker-pool.js';
+
 export type { ProjectStatus } from './services/project-status.js';
 export { getProjectStatus, setProjectStatus, isProjectInitialized, updateLastAccess, clearProjectStatus, isAgentKnown, registerAgent } from './services/project-status.js';
 /**

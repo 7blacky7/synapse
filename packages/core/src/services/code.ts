@@ -306,7 +306,27 @@ export async function parseAndEmbed(project: string, filePath: string): Promise<
     return;
   }
   if (parser) {
-    const parseResult = parser.parse(content, filePath);
+    // Off-Thread Parse via Worker-Pool (verhindert Event-Loop-Stall bei Mega-Files).
+    // Fallback auf Sync-Parse wenn Pool deaktiviert (PARSER_WORKER_THREADS=0) oder Pool wirft.
+    const { getParserPool } = await import('../parser/worker-pool.js');
+    const workerPool = getParserPool();
+    let parseResult;
+    if (workerPool) {
+      try {
+        const poolResult = await workerPool.parse({ filePath, fileType, content });
+        if (poolResult === null) {
+          // Im Worker kein Parser fuer fileType gefunden — Fallback auf parsed_at-Skip-Pfad
+          parseResult = parser.parse(content, filePath);
+        } else {
+          parseResult = poolResult;
+        }
+      } catch (poolErr) {
+        console.error(`[Synapse] Worker-Pool parse fehlgeschlagen fuer ${filePath}, fallback sync:`, (poolErr as Error).message);
+        parseResult = parser.parse(content, filePath);
+      }
+    } else {
+      parseResult = parser.parse(content, filePath);
+    }
 
     // RACE-FIX: dedizierter Client + advisory_xact_lock — vorher liefen BEGIN/DELETE/INSERT/COMMIT
     // auf verschiedenen Pool-Connections (keine echte Tx).
