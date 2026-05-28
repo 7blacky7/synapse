@@ -387,6 +387,32 @@ function applyOpInMemory(
     case 'update': {
       if (op.content === undefined) throw new Error('update: content fehlt');
       if (src.deleted) throw new Error('update: Datei wurde in dieser Batch geloescht');
+      // Safety: update ueberschreibt die KOMPLETTE Datei. Ohne Anker waere das
+      // ein hohes Drift-Risiko (KI koennte aus Versehen die falsche Version
+      // ueberschreiben). Daher PFLICHT: mind. ein Anker (anchor_text ODER
+      // anchor_contains) muss im current content matchen. Fuer NEU-Erstellung
+      // gibt es action='create' (mit upsert:true wenn ueberschreiben gewollt
+      // UND der Pfad geloescht/leer ist).
+      if (op.anchor_text === undefined && op.anchor_contains === undefined) {
+        throw new Error(
+          `update: anchor_text ODER anchor_contains ist PFLICHT bei "${op.file_path}" — ` +
+          `verhindert versehentliches Ueberschreiben. Liefere einen kurzen Substring/Zeile ` +
+          `aus dem aktuellen Datei-Inhalt zur Drift-Verifikation.`,
+        );
+      }
+      const cur = src.finalContent;
+      if (op.anchor_text !== undefined && !cur.includes(op.anchor_text.trim())) {
+        throw new Error(
+          `update: anchor_text in "${op.file_path}" nicht gefunden — Datei wurde eventuell ` +
+          `extern geaendert. Aktualisiere deinen Lese-Snapshot und versuche es erneut.`,
+        );
+      }
+      if (op.anchor_contains !== undefined && !cur.includes(op.anchor_contains)) {
+        throw new Error(
+          `update: anchor_contains "${op.anchor_contains.slice(0, 80)}" in "${op.file_path}" ` +
+          `nicht gefunden — Drift erkannt, keine Mutation.`,
+        );
+      }
       src.finalContent = op.content;
       src.finalHash = contentHash(op.content);
       return { context: `update: ${op.content.length} Zeichen`, sizeBefore, sizeAfter: op.content.length };
