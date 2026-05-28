@@ -17,6 +17,7 @@
  */
 
 import Docker from 'dockerode';
+import { PassThrough } from 'node:stream';
 import { getPool } from '@synapse/core';
 
 export interface WorkspaceConfig {
@@ -176,6 +177,81 @@ export class WorkspaceOrchestrator {
       console.error(`[Workspaces] Stop ${project} (${reason}): ${(err as Error).message}`);
     }
     await this.markStopped(project, reason);
+  }
+
+  /**
+   * Fuehrt ein Shell-Kommando im Workspace-Container des Projekts aus.
+   * Startet den Container falls noetig (ensureProjectRunning).
+   * Sammelt stdout/stderr getrennt via Stream-Demux.
+   * timeoutMs: hard kill nach N ms (Default 60s).
+   */
+  async exec(
+    project: string,
+    command: string,
+    opts: { timeoutMs?: number; workingDir?: string } = {}
+  ): Promise<{ stdout: string; stderr: string; exitCode: number | null; timedOut: boolean; durationMs: number }> {
+    if (!this.dockerAvailable) {
+      throw new Error('Workspace-Orchestrator nicht verfuegbar (Docker-Socket nicht erreichbar)');
+    }
+    const containerId = await this.ensureProjectRunning(project);
+    const container = this.docker.getContainer(containerId);
+    const timeoutMs = opts.timeoutMs ?? 60_000;
+    const t0 = Date.now();
+
+    const exec = await container.exec({
+      Cmd: ['/bin/sh', '-c', command],
+      AttachStdout: true,
+      AttachStderr: true,
+      Tty: false,
+      User: '1000:1000',
+      WorkingDir: opts.workingDir ?? '/workspace',
+      Env: [`SYNAPSE_PROJECT=${project}`],
+    });
+
+    const stream = await exec.start({ hijack: true, stdin: false });
+
+    const stdoutChunks: Buffer[] = [];
+    const stderrChunks: Buffer[] = [];
+    const stdoutPass = new PassThrough();
+    const stderrPass = new PassThrough();
+    stdoutPass.on('data', (c: Buffer) => stdoutChunks.push(c));
+    stderrPass.on('data', (c: Buffer) => stderrChunks.push(c));
+    // Multiplexed-Stream (Header pro Frame fuer stdout/stderr) demuxen.
+    this.docker.modem.demuxStream(stream, stdoutPass, stderrPass);
+
+    let timedOut = false;
+    const streamDone = new Promise<void>((resolve, reject) => {
+      stream.on('end', () => resolve());
+      stream.on('error', (err: Error) => reject(err));
+    });
+    let timeoutHandle: NodeJS.Timeout | null = null;
+    const timeout = new Promise<void>((_resolve, reject) => {
+      timeoutHandle = setTimeout(() => { timedOut = true; reject(new Error(`exec timeout > ${timeoutMs}ms`)); }, timeoutMs);
+    });
+
+    let timeoutMsg = '';
+    try {
+      await Promise.race([streamDone, timeout]);
+    } catch (err) {
+      // Bei Timeout: Stream schliessen, Container weiterlaufen lassen.
+      stream.destroy?.();
+      timeoutMsg = `\n[orchestrator] ${(err as Error).message}`;
+    } finally {
+      if (timeoutHandle) clearTimeout(timeoutHandle);
+    }
+
+    let stdout = Buffer.concat(stdoutChunks).toString('utf8');
+    let stderr = Buffer.concat(stderrChunks).toString('utf8') + timeoutMsg;
+
+    let exitCode: number | null = null;
+    try {
+      const info = await exec.inspect();
+      exitCode = info.ExitCode ?? null;
+    } catch { /* ignore */ }
+
+    // Activity bei jedem exec frischen — Idle-Timer nicht versehentlich triggern.
+    await this.recordActivity(project);
+    return { stdout, stderr, exitCode, timedOut, durationMs: Date.now() - t0 };
   }
 
   async pin(project: string, pinned: boolean): Promise<void> {
