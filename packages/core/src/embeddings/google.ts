@@ -21,7 +21,10 @@
 
 import { EmbeddingProvider } from './types.js';
 
-const DEFAULT_MODEL = 'gemini-embedding-2-preview';
+// gemini-embedding-001 (stable) statt -2-preview — Preview hat striktes Per-Minute-Quota.
+// outputDimensionality=3072 macht den Output kompatibel zu existierenden Qdrant-Collections.
+const DEFAULT_MODEL = 'gemini-embedding-001';
+const OUTPUT_DIMENSIONALITY = 3072;
 const BASE_URL = 'https://generativelanguage.googleapis.com/v1beta';
 
 // Retry-Konfiguration fuer 429 (Quota) + transiente 5xx (Service-Unavailable):
@@ -92,6 +95,7 @@ export class GoogleEmbeddingProvider implements EmbeddingProvider {
       body: JSON.stringify({
         model: `models/${this.model}`,
         content: { parts: [{ text }] },
+        outputDimensionality: OUTPUT_DIMENSIONALITY,
       }),
     }, 'Google Embedding');
 
@@ -113,6 +117,7 @@ export class GoogleEmbeddingProvider implements EmbeddingProvider {
           requests: batch.map(text => ({
             model: `models/${this.model}`,
             content: { parts: [{ text }] },
+            outputDimensionality: OUTPUT_DIMENSIONALITY,
           })),
         }),
       }, 'Google Batch-Embedding');
