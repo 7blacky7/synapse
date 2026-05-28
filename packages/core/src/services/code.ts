@@ -661,7 +661,17 @@ export async function parseAndEmbed(project: string, filePath: string): Promise<
  * Wird bei project init aufgerufen um Altdaten nachzuparsen.
  * Dynamisches Auto-Scaling: Worker-Count skaliert mit Queue-Groesse.
  */
+// In-Memory Lock pro Projekt: verhindert dass parser-worker im API
+// parallel mehrere Background-Crews fuer dasselbe Projekt startet
+// (setImmediate-Pattern returnt sofort, der naechste Tick wuerde sonst
+// SELECTen + neue Workers starten, die dieselben Files doppelt parsen).
+const activeParseProjects = new Set<string>();
+
 export async function parseUnparsedFiles(projectName: string): Promise<number> {
+  if (activeParseProjects.has(projectName)) {
+    return 0; // Background-Crew laeuft noch — neuer Tick uebersprungen.
+  }
+
   const pool = getPool();
   const result = await pool.query(
     'SELECT file_path FROM code_files WHERE project = $1 AND content IS NOT NULL AND parsed_at IS NULL',
@@ -685,6 +695,7 @@ export async function parseUnparsedFiles(projectName: string): Promise<number> {
 
   const filePaths = result.rows.map((r: { file_path: string }) => r.file_path);
 
+  activeParseProjects.add(projectName);
   setImmediate(async () => {
     let nextIndex = 0;
     let parsed = 0;
@@ -722,6 +733,8 @@ export async function parseUnparsedFiles(projectName: string): Promise<number> {
     } catch (err) {
       console.error(`[Synapse] Cross-File-Linking nach Nachparsing fehlgeschlagen:`, err);
     }
+
+    activeParseProjects.delete(projectName);
   });
 
   return total;
