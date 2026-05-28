@@ -26,7 +26,7 @@ import {
   type ProjectInitJobRow,
 } from '@synapse/core'
 
-import { getWorkspaceRoot } from './config.js'
+import { getWorkspaceRoot, loadConfig, DEFAULT_SYNAPSE_API_URL } from './config.js'
 import type { WatcherManager } from './manager.js'
 
 const HOSTNAME = os.hostname()
@@ -119,6 +119,34 @@ async function processNextJob(manager: WatcherManager): Promise<void> {
   }
 }
 
+async function startRemoteWorkspace(name: string): Promise<void> {
+  let baseUrl = DEFAULT_SYNAPSE_API_URL
+  try {
+    const cfg = loadConfig()
+    if (cfg.synapse_api_url) baseUrl = cfg.synapse_api_url
+  } catch { /* default-fallback */ }
+
+  const url = `${baseUrl.replace(/\/+$/, '')}/api/projects/${encodeURIComponent(name)}/workspace/start`
+  try {
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), 5000)
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{}',
+      signal: controller.signal,
+    })
+    clearTimeout(timer)
+    if (!res.ok) {
+      console.error(`[project-init-worker] workspace-bridge ${name}: HTTP ${res.status}`)
+      return
+    }
+    console.error(`[project-init-worker] workspace-bridge ${name}: gestartet via ${baseUrl}`)
+  } catch (err) {
+    console.error(`[project-init-worker] workspace-bridge ${name} fehlgeschlagen (uebersprungen): ${(err as Error).message}`)
+  }
+}
+
 interface InitResult {
   path: string
   message: string
@@ -199,6 +227,12 @@ async function initializeProject(
     console.error(
       `[project-init-worker] manager.register fuer ${job.name} fehlgeschlagen (uebersprungen): ${(regErr as Error).message}`,
     )
+  }
+
+  // WS-P10: Bridge zur synapse-api — Workspace-Container vorwaermen.
+  // Best-effort: Fehler nur loggen, Projekt-Init darf nicht failen wenn synapse-api offline.
+  if (process.env.SYNAPSE_WORKSPACE_BRIDGE_DISABLED !== '1') {
+    void startRemoteWorkspace(job.name)
   }
 
   return {

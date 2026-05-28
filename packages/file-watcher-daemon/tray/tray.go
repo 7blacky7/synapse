@@ -49,6 +49,19 @@ type ChannelsResponse struct {
 	Channels []ChannelInfo `json:"channels"`
 }
 
+// Workspace = ein Container-Workspace auf der synapse-api (siehe project_workspaces Tabelle).
+type Workspace struct {
+	Project     string `json:"project"`
+	Status      string `json:"status"`       // running | stopped | error | ...
+	Pinned      bool   `json:"pinned"`
+	ContainerId string `json:"container_id"`
+}
+
+type WorkspacesResponse struct {
+	Success    bool        `json:"success"`
+	Workspaces []Workspace `json:"workspaces"`
+}
+
 // ProjectMenuHandles stores menu items for incremental updates
 type ProjectMenuHandles struct {
 	SubMenu   *systray.MenuItem
@@ -69,6 +82,12 @@ var (
 	wasOnline              bool
 	projectHandles         = make(map[string]*ProjectMenuHandles)
 	statusItem             *systray.MenuItem
+
+	// synapse-api (Workspaces)
+	synapseApiUrl          string
+	workspaces             []Workspace
+	workspacesAvailable    bool
+	lastWorkspaceSignature string
 
 	// DB connection
 	db                     *sql.DB
@@ -134,6 +153,7 @@ func onReady() {
 	systray.SetTooltip("Synapse FileWatcher")
 
 	port = readPort()
+	synapseApiUrl = readSynapseApiUrl()
 	systray.SetIcon(makeIcon(false))
 
 	dbInit()
@@ -311,6 +331,31 @@ func dbQuery(query string, args ...interface{}) (*sql.Rows, error) {
 	return rows, nil
 }
 
+// readSynapseApiUrl liest synapse_api_url aus ~/.synapse/file-watcher/config.json.
+// Fallback: http://127.0.0.1:3456 (DEFAULT_SYNAPSE_API_URL im TS-Daemon).
+func readSynapseApiUrl() string {
+	const fallback = "http://127.0.0.1:3456"
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return fallback
+	}
+	cfgFile := filepath.Join(home, ".synapse", "file-watcher", "config.json")
+	data, err := os.ReadFile(cfgFile)
+	if err != nil {
+		return fallback
+	}
+	var cfg struct {
+		SynapseApiUrl string `json:"synapse_api_url"`
+	}
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return fallback
+	}
+	if strings.TrimSpace(cfg.SynapseApiUrl) == "" {
+		return fallback
+	}
+	return strings.TrimRight(strings.TrimSpace(cfg.SynapseApiUrl), "/")
+}
+
 func readPort() int {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -431,6 +476,57 @@ func toggleProject(name string, currentlyEnabled bool) {
 	triggerRefresh()
 }
 
+func fetchWorkspaces() ([]Workspace, bool) {
+	if synapseApiUrl == "" {
+		return nil, false
+	}
+	u := synapseApiUrl + "/api/workspaces"
+	client := &http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Get(u)
+	if err != nil {
+		return nil, false
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return nil, false
+	}
+	var data WorkspacesResponse
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		return nil, false
+	}
+	return data.Workspaces, true
+}
+
+func workspaceAction(project, action string, body string) {
+	if synapseApiUrl == "" {
+		return
+	}
+	u := fmt.Sprintf("%s/api/projects/%s/workspace/%s", synapseApiUrl, url.PathEscape(project), action)
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Post(u, "application/json", strings.NewReader(body))
+	if err != nil {
+		log.Printf("[tray] workspace %s %s FEHLER: %v", action, project, err)
+		return
+	}
+	resp.Body.Close()
+	triggerRefresh()
+}
+
+func getWorkspaceSignature(ws []Workspace, available bool) string {
+	if !available {
+		return "offline"
+	}
+	parts := make([]string, 0, len(ws))
+	for _, w := range ws {
+		pin := "u"
+		if w.Pinned {
+			pin = "p"
+		}
+		parts = append(parts, w.Project+":"+w.Status+":"+pin)
+	}
+	return strings.Join(parts, "|")
+}
+
 func getProjectSignature(projs []Project) string {
 	var names []string
 	for _, p := range projs {
@@ -532,6 +628,64 @@ func rebuildMenu(projs []Project) {
 		}
 	}
 
+	// Workspaces-Submenu (synapse-api) — WS-P6
+	systray.AddSeparator()
+	wsLabel := "Workspaces (offline)"
+	if workspacesAvailable {
+		running := 0
+		for _, w := range workspaces {
+			if w.Status == "running" {
+				running++
+			}
+		}
+		wsLabel = fmt.Sprintf("Workspaces  (%d/%d)", running, len(workspaces))
+	}
+	wsMenu := systray.AddMenuItem(wsLabel, synapseApiUrl)
+	if !workspacesAvailable {
+		wsMenu.Disable()
+	} else if len(workspaces) == 0 {
+		wsMenu.AddSubMenuItem("(keine Workspaces)", "")
+	} else {
+		for _, w := range workspaces {
+			wsCopy := w
+			label := "○  " + wsCopy.Project
+			if wsCopy.Status == "running" {
+				label = "●  " + wsCopy.Project
+			}
+			if wsCopy.Pinned {
+				label += "  📌"
+			}
+			sub := wsMenu.AddSubMenuItem(label, fmt.Sprintf("status=%s container=%s", wsCopy.Status, wsCopy.ContainerId))
+
+			itStart := sub.AddSubMenuItem("Start", "")
+			go func(name string) {
+				for range itStart.ClickedCh {
+					go workspaceAction(name, "start", "{}")
+				}
+			}(wsCopy.Project)
+
+			itStop := sub.AddSubMenuItem("Stop", "")
+			go func(name string) {
+				for range itStop.ClickedCh {
+					go workspaceAction(name, "stop", "{}")
+				}
+			}(wsCopy.Project)
+
+			pinLabel := "Pin"
+			pinBody := `{"pinned":true}`
+			if wsCopy.Pinned {
+				pinLabel = "Unpin"
+				pinBody = `{"pinned":false}`
+			}
+			itPin := sub.AddSubMenuItem(pinLabel, "")
+			go func(name, body string) {
+				for range itPin.ClickedCh {
+					go workspaceAction(name, "pin", body)
+				}
+			}(wsCopy.Project, pinBody)
+		}
+	}
+
 	systray.AddSeparator()
 	mReload := systray.AddMenuItem("Neu laden", "")
 	go func() {
@@ -547,6 +701,7 @@ func rebuildMenu(projs []Project) {
 	}()
 
 	lastProjectSignature = getProjectSignature(projs)
+	lastWorkspaceSignature = getWorkspaceSignature(workspaces, workspacesAvailable)
 	wasOnline = connected
 }
 
@@ -580,10 +735,16 @@ func refresh() {
 
 	systray.SetIcon(makeIcon(connected))
 
+	// Workspaces parallel pollen (synapse-api)
+	ws, wsOK := fetchWorkspaces()
+	workspaces = ws
+	workspacesAvailable = wsOK
+	wsSig := getWorkspaceSignature(ws, wsOK)
+
 	sig := getProjectSignature(projs)
 
-	// Fall 1: Online status changed OR projects set changed -> Full rebuild
-	if connected != wasOnline || sig != lastProjectSignature {
+	// Fall 1: Online status changed OR projects set changed OR workspaces changed -> Full rebuild
+	if connected != wasOnline || sig != lastProjectSignature || wsSig != lastWorkspaceSignature {
 		rebuildMenu(projs)
 		return
 	}
