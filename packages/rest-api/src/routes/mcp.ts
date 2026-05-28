@@ -2886,7 +2886,7 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
           return { success: true, ...file, project };
         }
         case 'statements': {
-          const statements = await getStatements(project, str(args, 'file_path'), str(args, 'scope'), bool(args, 'top_level_only'));
+          const statements = await getStatements(project, str(args, 'file_path'), str(args, 'scope'), bool(args, 'top_level_only'), num(args, 'limit'));
           return { success: true, statements, count: statements.length, project };
         }
         case 'calls': {

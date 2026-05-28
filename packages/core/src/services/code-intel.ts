@@ -786,7 +786,8 @@ export async function getStatements(
   project: string,
   filePath?: string,
   scopeName?: string,
-  topLevelOnly?: boolean
+  topLevelOnly?: boolean,
+  limit?: number,
 ): Promise<StatementInfo[]> {
   const pool = getPool();
   const params: unknown[] = [project];
@@ -804,16 +805,22 @@ export async function getStatements(
     conditions.push('is_top_level = true');
   }
 
-  const result = await pool.query(
+  // Sort: file → scope (NULL=top-level first) → depth (parents before children) → order_index.
+  // Verhindert dass Child-Statements (order_index=0 im inner scope) zwischen Top-Level rutschen.
+  let sql =
     `SELECT id, file_path, scope_type, scope_name, statement_type, node_kind,
             line_start, line_end, order_index, depth, parent_statement_id,
             text, callee, receiver, assigned_to, condition_text,
             is_top_level, is_awaited
        FROM code_statements
       WHERE ${conditions.join(' AND ')}
-      ORDER BY file_path, scope_name NULLS FIRST, order_index, line_start`,
-    params
-  );
+      ORDER BY file_path, scope_name NULLS FIRST, depth, order_index, line_start`;
+  if (limit && limit > 0) {
+    params.push(limit);
+    sql += ` LIMIT $${params.length}`;
+  }
+
+  const result = await pool.query(sql, params);
 
   return result.rows.map(row => ({
     id: String(row.id),
@@ -974,7 +981,16 @@ export async function getEntrypoints(
 ): Promise<EntrypointInfo[]> {
   const pool = getPool();
   const params: unknown[] = [project];
-  const conditions: string[] = ['project = $1', 'is_top_level = true', 'depth = 0'];
+  // Entrypoints = echte ausfuehrende Top-Level-Statements. KEINE Imports
+  // (variable+text~"import"/"require"), KEINE reine Typ-Deklarationen.
+  // Behalten: call, await, expression, new, throw, return-at-top-level.
+  const conditions: string[] = [
+    'project = $1',
+    'is_top_level = true',
+    'depth = 0',
+    `statement_type IN ('call','await','expression','new','if','for','while','switch','try','throw')`,
+    `(text IS NULL OR (text NOT LIKE 'import %' AND text NOT LIKE 'interface %' AND text NOT LIKE 'type %' AND text NOT LIKE 'const enum %' AND text NOT LIKE 'declare %'))`,
+  ];
 
   if (filePath) {
     params.push(`%${filePath}%`);
