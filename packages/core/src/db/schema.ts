@@ -826,6 +826,35 @@ CREATE TRIGGER trg_notify_wrapper_status_change
   AFTER INSERT OR UPDATE OR DELETE ON wrapper_status
   FOR EACH ROW EXECUTE FUNCTION notify_wrapper_status_change();
 
+-- ============================================================================
+-- project_workspaces — Lifecycle-Tracking pro-Projekt Docker-Container
+-- ============================================================================
+-- Server-seitige Sandbox-Container fuer Shell-Jobs/File-Sync, lazy-gestartet
+-- + idle-gestoppt. PG ist Single-Source-of-Truth fuer den Workspace-Status,
+-- damit Orchestrator-Restarts (synapse-api Container) den Stand wiederfinden.
+CREATE TABLE IF NOT EXISTS project_workspaces (
+  project           TEXT PRIMARY KEY,
+  container_id      TEXT,                          -- Docker-Container-ID (NULL wenn cold)
+  status            TEXT NOT NULL DEFAULT 'cold',  -- cold | warming | active | stopping | error
+  image             TEXT NOT NULL DEFAULT 'synapse-workspace:latest',
+  volume_name       TEXT,                          -- z.B. synapse-workspace-<project>
+  cpu_limit         REAL NOT NULL DEFAULT 1.0,     -- CPUs
+  mem_limit_mb      INT  NOT NULL DEFAULT 512,     -- MB
+  pids_limit        INT  NOT NULL DEFAULT 200,
+  pinned            BOOLEAN NOT NULL DEFAULT FALSE, -- LRU verschont gepinte
+  last_activity_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  last_started_at   TIMESTAMPTZ,
+  last_stopped_at   TIMESTAMPTZ,
+  last_error        TEXT,                          -- letzter Container-Start/Exec-Fehler
+  created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+-- LRU-/Idle-Stopper-Query: WHERE status='active' ORDER BY last_activity_at
+CREATE INDEX IF NOT EXISTS idx_project_workspaces_active_activity
+  ON project_workspaces(last_activity_at) WHERE status = 'active';
+CREATE INDEX IF NOT EXISTS idx_project_workspaces_status
+  ON project_workspaces(status);
+
 `;
 
 export async function ensureSchema(): Promise<void> {

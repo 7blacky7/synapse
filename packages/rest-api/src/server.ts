@@ -28,6 +28,7 @@ import {
   fsEventsRoutes,
   shellRoutes,
   specialistRoutes,
+  workspaceRoutes,
 } from './routes/index.js';
 
 /**
@@ -70,6 +71,7 @@ export async function createServer(): Promise<FastifyInstance> {
   await fastify.register(fsEventsRoutes);
   await fastify.register(shellRoutes);
   await fastify.register(specialistRoutes);
+  await fastify.register(workspaceRoutes);
 
   // Health Check
   fastify.get('/health', async () => ({ status: 'ok' }));
@@ -143,6 +145,27 @@ export async function startServer(): Promise<void> {
     console.log(`[Synapse API] ${rows.length} Projekte virtuell registriert`);
   } catch (err) {
     console.warn('[Synapse API] Virtuelle Projekt-Registrierung fehlgeschlagen:', err);
+  }
+
+  // Workspace-Orchestrator initialisieren (graceful: ohne Docker-Socket faellt
+  // er still aus, REST laeuft weiter). Steuerbar per ENV:
+  //   WORKSPACE_DISABLED=1           — komplett ausschalten
+  //   WORKSPACE_DOCKER_SOCKET=...    — default /var/run/docker.sock
+  //   WORKSPACE_IMAGE=...            — default synapse-workspace:latest
+  //   WORKSPACE_NETWORK=...          — default proxynet
+  //   WORKSPACE_MAX_CONCURRENT=N     — default 5
+  //   WORKSPACE_IDLE_MINUTES=N       — default 10
+  if (process.env.WORKSPACE_DISABLED !== '1') {
+    const { initWorkspaceOrchestrator } = await import('./services/workspace-orchestrator.js');
+    await initWorkspaceOrchestrator({
+      socketPath: process.env.WORKSPACE_DOCKER_SOCKET,
+      image: process.env.WORKSPACE_IMAGE,
+      network: process.env.WORKSPACE_NETWORK,
+      maxConcurrent: process.env.WORKSPACE_MAX_CONCURRENT ? parseInt(process.env.WORKSPACE_MAX_CONCURRENT, 10) : undefined,
+      idleStopMinutes: process.env.WORKSPACE_IDLE_MINUTES ? parseInt(process.env.WORKSPACE_IDLE_MINUTES, 10) : undefined,
+    });
+  } else {
+    console.log('[Synapse API] Workspace-Orchestrator per WORKSPACE_DISABLED=1 ausgeschaltet');
   }
 
   // Server erstellen und starten
