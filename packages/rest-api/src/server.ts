@@ -157,13 +157,14 @@ export async function startServer(): Promise<void> {
   //   WORKSPACE_IDLE_MINUTES=N       — default 10
   if (process.env.WORKSPACE_DISABLED !== '1') {
     const { initWorkspaceOrchestrator } = await import('./services/workspace-orchestrator.js');
-    await initWorkspaceOrchestrator({
-      socketPath: process.env.WORKSPACE_DOCKER_SOCKET,
-      image: process.env.WORKSPACE_IMAGE,
-      network: process.env.WORKSPACE_NETWORK,
-      maxConcurrent: process.env.WORKSPACE_MAX_CONCURRENT ? parseInt(process.env.WORKSPACE_MAX_CONCURRENT, 10) : undefined,
-      idleStopMinutes: process.env.WORKSPACE_IDLE_MINUTES ? parseInt(process.env.WORKSPACE_IDLE_MINUTES, 10) : undefined,
-    });
+    // Nur definierte ENV-Werte uebergeben (sonst ueberschreibt 'undefined' die Defaults beim Spread).
+    const wsCfg: Record<string, unknown> = {};
+    if (process.env.WORKSPACE_DOCKER_SOCKET) wsCfg.socketPath = process.env.WORKSPACE_DOCKER_SOCKET;
+    if (process.env.WORKSPACE_IMAGE) wsCfg.image = process.env.WORKSPACE_IMAGE;
+    if (process.env.WORKSPACE_NETWORK) wsCfg.network = process.env.WORKSPACE_NETWORK;
+    if (process.env.WORKSPACE_MAX_CONCURRENT) wsCfg.maxConcurrent = parseInt(process.env.WORKSPACE_MAX_CONCURRENT, 10);
+    if (process.env.WORKSPACE_IDLE_MINUTES) wsCfg.idleStopMinutes = parseInt(process.env.WORKSPACE_IDLE_MINUTES, 10);
+    await initWorkspaceOrchestrator(wsCfg);
   } else {
     console.log('[Synapse API] Workspace-Orchestrator per WORKSPACE_DISABLED=1 ausgeschaltet');
   }
