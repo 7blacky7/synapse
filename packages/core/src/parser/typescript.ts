@@ -396,6 +396,48 @@ function extractSymbols(
       return;
     }
 
+    // Dynamic imports: const { foo, bar } = await import('./mod.js')
+    // ODER: const mod = await import('./mod.js')
+    // Erfasst als symbol_type='import' damit linkCrossFileReferences sie
+    // genauso wie statische Imports cross-file-verlinken kann.
+    if (ts.isVariableDeclaration(node) && node.initializer) {
+      let importCall: ts.CallExpression | null = null;
+      let init = node.initializer;
+      if (ts.isAwaitExpression(init)) init = init.expression;
+      if (ts.isCallExpression(init) && init.expression.kind === ts.SyntaxKind.ImportKeyword) {
+        importCall = init;
+      }
+      if (importCall && importCall.arguments[0] && ts.isStringLiteral(importCall.arguments[0])) {
+        const source = (importCall.arguments[0] as ts.StringLiteral).text;
+        const line_start = getLineNumber(sourceFile, node.getStart());
+        const dynImportNames: string[] = [];
+        if (ts.isObjectBindingPattern(node.name)) {
+          // const { foo, bar } = await import(...)
+          for (const el of node.name.elements) {
+            if (ts.isBindingElement(el) && ts.isIdentifier(el.name)) {
+              dynImportNames.push(el.name.text);
+            }
+          }
+        } else if (ts.isIdentifier(node.name)) {
+          // const mod = await import(...) → namespace-style
+          dynImportNames.push(`* as ${node.name.text}`);
+        }
+        if (dynImportNames.length > 0) {
+          addSymbol({
+            symbol_type: 'import',
+            name: dynImportNames.join(', '),
+            value: source,
+            params: dynImportNames,
+            line_start,
+            is_exported: false,
+          });
+          for (const n of dynImportNames) {
+            definedNames.add(n.replace(/^\* as /, ''));
+          }
+        }
+      }
+    }
+
     // Export declarations (re-exports like `export { foo } from './bar'`)
     if (ts.isExportDeclaration(node)) {
       const line_start = getLineNumber(sourceFile, node.getStart());
