@@ -418,6 +418,12 @@ export class WorkspaceOrchestrator {
     );
 
     const pack = tar.pack();
+
+    // RACE-FIX: putArchive PARALLEL zum Producer starten — sonst blockt
+    // tar.pack() bei voller internal-buffer (~16 KB). Vorher wurde der Stream
+    // erst nach finalize konsumiert → nach 3-4 kleinen Files Deadlock.
+    const putPromise = container.putArchive(pack as unknown as NodeJS.ReadableStream, { path: '/workspace' });
+
     let files = 0;
     let bytes = 0;
     for (const row of r.rows) {
@@ -438,9 +444,7 @@ export class WorkspaceOrchestrator {
       bytes += content.length;
     }
     pack.finalize();
-
-    // Container erwartet, dass /workspace existiert (legt unsere Image-CMD an).
-    await container.putArchive(pack as unknown as NodeJS.ReadableStream, { path: '/workspace' });
+    await putPromise;
     await this.recordActivity(project);
     return { files, bytes, durationMs: Date.now() - t0 };
   }
