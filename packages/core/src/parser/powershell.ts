@@ -8,7 +8,7 @@
  * ANSATZ: Regex-basiert (case-insensitive)
  */
 
-import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
+import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser, ParsedStatement, ParsedCallEdge } from './types.js';
 import { extractStringLiterals } from './types.js';
 import { HTTP_VERBS, isLikelyHttpPath, formatRouteName } from './patterns/http.js';
 import { parseEmbeddedSql, looksLikeSql } from './patterns/sql.js';
@@ -333,7 +333,159 @@ class PowerShellParser implements LanguageParser {
       symbols.push(...parseEmbeddedSql(m[1], filePath, lineAt(content, m.index)));
     }
 
-    return { symbols, references };
+    // ══════════════════════════════════════════════
+    // FLOW: Statements + CallEdges
+    // ══════════════════════════════════════════════
+    const statements: ParsedStatement[] = [];
+    const callEdges: ParsedCallEdge[] = [];
+    let tid = 0;
+    const nid = (): string => `s${tid++}`;
+    const oc = new Map<string, number>();
+    const nord = (p: string | undefined): number => { const k = p ?? 'root'; const v = oc.get(k) ?? 0; oc.set(k, v + 1); return v; };
+    interface PsScope { type: string; name: string | null; }
+    const ss: PsScope[] = [{ type: 'module', name: null }];
+    const cs = (): PsScope => ss[ss.length - 1];
+
+    function es(st: string, line: number, pid: string | undefined, depth: number, extra: Partial<ParsedStatement> = {}): ParsedStatement {
+      const sc = cs(); const id = nid();
+      const s: ParsedStatement = { temp_id: id, parent_temp_id: pid, scope_type: sc.type, scope_name: sc.name, statement_type: st, line_start: line, order_index: nord(pid), depth, is_top_level: sc.type === 'module' && depth === 0, is_awaited: false, ...extra };
+      statements.push(s); return s;
+    }
+    function ec(sid: string, callee: string, recv: string | undefined, line: number, kind: string): void {
+      callEdges.push({ statement_temp_id: sid, caller_scope: cs().name, callee_name: callee, callee_receiver: recv, line_number: line, call_kind: kind });
+    }
+
+    const psLines = content.split('\n');
+    interface PsFrame { pid: string | undefined; depth: number; braceDepthAtOpen: number; }
+    const fs: PsFrame[] = [{ pid: undefined, depth: 0, braceDepthAtOpen: 0 }];
+    const tf = (): PsFrame => fs[fs.length - 1];
+    interface FnEntry { name: string; braceDepth: number; }
+    const fnStack: FnEntry[] = [];
+    let braceDepth = 0;
+
+    for (let i = 0; i < psLines.length; i++) {
+      const raw = psLines[i];
+      // strip line comments
+      const tr = raw.replace(/#.*$/, '').trim();
+      const ln = i + 1;
+      if (!tr) continue;
+
+      const openB = (tr.match(/\{/g) || []).length;
+      const closeB = (tr.match(/\}/g) || []).length;
+      const f = tf();
+      const d = f.depth;
+
+      // function declaration
+      const fnM = /^function\s+([\w-]+)\s*\{?/i.exec(tr);
+      if (fnM) {
+        const name = fnM[1];
+        const st = es('call', ln, f.pid, d, { callee: name, text: tr.slice(0, 120) });
+        if (openB > 0) {
+          ss.push({ type: 'function', name });
+          fnStack.push({ name, braceDepth: braceDepth + openB - closeB });
+          fs.push({ pid: st.temp_id, depth: d + 1, braceDepthAtOpen: braceDepth + openB - closeB });
+        }
+        braceDepth += openB - closeB;
+        continue;
+      }
+
+      // if / elseif
+      const ifM = /^(?:if|elseif)\s*\((.{0,200})\)/i.exec(tr);
+      if (ifM) {
+        const st = es('if', ln, f.pid, d, { condition_text: ifM[1].slice(0, 200), text: tr.slice(0, 120) });
+        if (openB > closeB) { fs.push({ pid: st.temp_id, depth: d + 1, braceDepthAtOpen: braceDepth + openB - closeB }); }
+        braceDepth += openB - closeB;
+        continue;
+      }
+      if (/^else\s*\{/i.test(tr)) { braceDepth += openB - closeB; continue; }
+
+      // while
+      const whM = /^while\s*\((.{0,200})\)/i.exec(tr);
+      if (whM) {
+        const st = es('while', ln, f.pid, d, { condition_text: whM[1].slice(0, 200), text: tr.slice(0, 120) });
+        if (openB > closeB) { fs.push({ pid: st.temp_id, depth: d + 1, braceDepthAtOpen: braceDepth + openB - closeB }); }
+        braceDepth += openB - closeB;
+        continue;
+      }
+
+      // for / foreach
+      const forM = /^(?:for|foreach)\s*\((.{0,200})\)/i.exec(tr);
+      if (forM) {
+        const st = es('for', ln, f.pid, d, { condition_text: forM[1].slice(0, 200), text: tr.slice(0, 120) });
+        if (openB > closeB) { fs.push({ pid: st.temp_id, depth: d + 1, braceDepthAtOpen: braceDepth + openB - closeB }); }
+        braceDepth += openB - closeB;
+        continue;
+      }
+
+      // switch
+      const swM = /^switch\s*(?:\((.{0,200})\))?/i.exec(tr);
+      if (swM && /^switch\b/i.test(tr)) {
+        const st = es('switch', ln, f.pid, d, { condition_text: swM[1]?.slice(0, 200), text: tr.slice(0, 120) });
+        if (openB > closeB) { fs.push({ pid: st.temp_id, depth: d + 1, braceDepthAtOpen: braceDepth + openB - closeB }); }
+        braceDepth += openB - closeB;
+        continue;
+      }
+
+      // try / catch
+      if (/^try\s*\{/i.test(tr)) {
+        const st = es('try', ln, f.pid, d, { text: tr.slice(0, 120) });
+        fs.push({ pid: st.temp_id, depth: d + 1, braceDepthAtOpen: braceDepth + openB - closeB });
+        braceDepth += openB - closeB;
+        continue;
+      }
+      if (/^catch\s*\{/i.test(tr) || /^finally\s*\{/i.test(tr)) { braceDepth += openB - closeB; continue; }
+
+      // throw
+      if (/^throw\b/i.test(tr)) { es('throw', ln, f.pid, d, { text: tr.slice(0, 120) }); continue; }
+      // return
+      if (/^return\b/i.test(tr)) { es('return', ln, f.pid, d, { text: tr.slice(0, 120) }); continue; }
+
+      // . source
+      if (/^\.\s+/.test(tr)) {
+        const st = es('call', ln, f.pid, d, { callee: 'source', text: tr.slice(0, 120) });
+        ec(st.temp_id, 'source', undefined, ln, 'function');
+        continue;
+      }
+
+      // Import-Module
+      if (/^Import-Module\b/i.test(tr)) {
+        const st = es('call', ln, f.pid, d, { callee: 'Import-Module', text: tr.slice(0, 120) });
+        ec(st.temp_id, 'Import-Module', undefined, ln, 'function');
+        continue;
+      }
+
+      // $var = expr assignment
+      const assignM = /^\$(\w+)\s*(?:[+\-*\/]?=)(?!=)\s*(.+)/.exec(tr);
+      if (assignM) {
+        const callM = /([\w-]+)\s*\(/.exec(assignM[2]);
+        const st = es('assignment', ln, f.pid, d, { assigned_to: `$${assignM[1]}`, text: tr.slice(0, 120) });
+        if (callM) ec(st.temp_id, callM[1], undefined, ln, 'function');
+        braceDepth += openB - closeB;
+        while (fs.length > 1 && braceDepth < fs[fs.length - 1].braceDepthAtOpen) { fs.pop(); if (ss.length > 1) ss.pop(); }
+        while (fnStack.length > 0 && braceDepth < fnStack[fnStack.length - 1].braceDepth) { fnStack.pop(); if (ss.length > 1) ss.pop(); }
+        continue;
+      }
+
+      // Cmdlet call: Verb-Noun or plain function
+      const cmdM = /^([\w][\w-]*)\s/.exec(tr);
+      if (cmdM && !/^(?:if|else|elseif|while|for|foreach|switch|try|catch|finally|throw|return|function|param)\b/i.test(tr)) {
+        // check for object method: $obj.Method()
+        const methodM = /^\$(\w+)\.(\w+)\s*\(/.exec(tr);
+        if (methodM) {
+          const st = es('call', ln, f.pid, d, { callee: methodM[2], receiver: `$${methodM[1]}`, text: tr.slice(0, 120) });
+          ec(st.temp_id, methodM[2], `$${methodM[1]}`, ln, 'method');
+        } else {
+          const st = es('call', ln, f.pid, d, { callee: cmdM[1], text: tr.slice(0, 120) });
+          ec(st.temp_id, cmdM[1], undefined, ln, 'function');
+        }
+      }
+
+      braceDepth += openB - closeB;
+      while (fs.length > 1 && braceDepth < fs[fs.length - 1].braceDepthAtOpen) { fs.pop(); }
+      while (fnStack.length > 0 && braceDepth < fnStack[fnStack.length - 1].braceDepth) { fnStack.pop(); if (ss.length > 1) ss.pop(); }
+    }
+
+    return { symbols, references, statements, callEdges };
   }
 
   private findClosingBrace(content: string, openPos: number): number {

@@ -8,7 +8,7 @@
  * ANSATZ: Regex-basiert (unterstuetzt AT&T und Intel Syntax)
  */
 
-import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
+import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser, ParsedStatement, ParsedCallEdge } from './types.js';
 import { extractStringLiterals } from './types.js';
 
 function lineAt(text: string, pos: number): number {
@@ -199,9 +199,114 @@ class AsmParser implements LanguageParser {
 
     symbols.push(...extractStringLiterals(content));
 
-
-    return { symbols, references };
+    const { statements, callEdges } = extractAsmFlow(content);
+    return { symbols, references, statements, callEdges };
   }
+}
+
+// ---------------------------------------------------------------------------
+// Execution-Flow Extraktion fuer Assembly
+// Labels als Scopes, Instruktionen als geordnete Statements
+// jmp/call/branch als callEdges/control-flow
+// ---------------------------------------------------------------------------
+function extractAsmFlow(content: string): { statements: ParsedStatement[]; callEdges: ParsedCallEdge[] } {
+  const statements: ParsedStatement[] = [];
+  const callEdges: ParsedCallEdge[] = [];
+  let tempId = 0;
+  const nextId = (): string => `s${tempId++}`;
+
+  const lines = content.split('\n');
+  let currentScope: string | null = null;
+  let orderCounter = 0;
+
+  const JUMP_OPS = new Set([
+    'jmp','je','jne','jz','jnz','jg','jl','jge','jle','ja','jb','jae','jbe',
+    'jo','jno','js','jns','jp','jnp','jcxz','jecxz','jrcxz',
+    // ARM
+    'b','bl','beq','bne','blt','bgt','ble','bge','bcs','bcc','bmi','bpl','bvs','bvc','bhi','bls','blx',
+    // RISC-V
+    'beq','bne','blt','bge','bltu','bgeu','jal','jalr',
+  ]);
+
+  for (let i = 0; i < lines.length; i++) {
+    const raw = lines[i];
+    const lineNum = i + 1;
+
+    // Skip empty/comment-only lines
+    const commentStripped = raw.replace(/[;#@].*$/, '').trim();
+    if (!commentStripped) continue;
+
+    // Label: word followed by ':'
+    const labelM = /^(\w[\w.@$]*)\s*:/.exec(commentStripped);
+    if (labelM) {
+      const name = labelM[1];
+      if (!/^[.L\d]/.test(name)) {
+        // New scope
+        currentScope = name;
+        orderCounter = 0;
+      }
+      continue;
+    }
+
+    if (!currentScope) continue;
+
+    // Instruction line: first token is mnemonic
+    const instrM = /^(\w+)\s*(.*)$/.exec(commentStripped);
+    if (!instrM) continue;
+
+    const mnemonic = instrM[1].toLowerCase();
+    const operands = instrM[2].trim();
+
+    // Skip assembler directives
+    if (mnemonic.startsWith('.') || ['section','global','globl','extern','equ','db','dw','dd','dq','resb','resw','resd','resq','org','align','times','byte','word','long','quad','ascii','asciz','string','space','zero','fill','macro','endm','%macro','%endmacro','%define','%include','%if','%endif'].includes(mnemonic)) continue;
+
+    let stmtType = 'expression';
+    let callTarget: string | undefined;
+    let callKind: string | undefined;
+
+    if (mnemonic === 'call') {
+      stmtType = 'call';
+      callTarget = operands.split(/[,\s]/)[0].replace(/^\*/, '');
+      callKind = 'function';
+    } else if (JUMP_OPS.has(mnemonic)) {
+      stmtType = mnemonic === 'jmp' || mnemonic === 'b' ? 'call' : 'if';
+      callTarget = operands.split(/[,\s]/)[0];
+      callKind = 'function';
+    } else if (['ret','retn','retf','bx','blr'].includes(mnemonic)) {
+      stmtType = 'return';
+    } else if (['mov','movq','movl','movw','movb','lea','ldr','str','push','pop'].includes(mnemonic)) {
+      stmtType = 'assignment';
+    }
+
+    const id = nextId();
+    const st: ParsedStatement = {
+      temp_id: id,
+      scope_type: 'function',
+      scope_name: currentScope,
+      statement_type: stmtType,
+      node_kind: mnemonic,
+      line_start: lineNum,
+      order_index: orderCounter++,
+      depth: 0,
+      is_top_level: true,
+      is_awaited: false,
+      text: commentStripped.slice(0, 200),
+      callee: callTarget,
+    };
+    statements.push(st);
+
+    if (callTarget && callKind && !/^\d/.test(callTarget)) {
+      callEdges.push({
+        statement_temp_id: id,
+        caller_scope: currentScope,
+        callee_name: callTarget,
+        line_number: lineNum,
+        call_kind: callKind,
+      });
+    }
+  }
+
+  return { statements, callEdges };
 }
 
 export const asmParser = new AsmParser();

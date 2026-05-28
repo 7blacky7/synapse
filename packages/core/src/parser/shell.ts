@@ -7,7 +7,7 @@
  * ANSATZ: Regex-basiert — Shell hat einfache Deklarations-Syntax
  */
 
-import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
+import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser, ParsedStatement, ParsedCallEdge } from './types.js';
 import { extractStringLiterals } from './types.js';
 import { parseEmbeddedSql, looksLikeSql } from './patterns/sql.js';
 
@@ -272,7 +272,131 @@ class ShellParser implements LanguageParser {
       symbols.push(...parseEmbeddedSql(body, filePath, baseLine));
     }
 
-    return { symbols, references };
+    // ══════════════════════════════════════════════
+    // FLOW: Statements + CallEdges
+    // ══════════════════════════════════════════════
+    const statements: ParsedStatement[] = [];
+    const callEdges: ParsedCallEdge[] = [];
+    let tid = 0;
+    const nid = (): string => `s${tid++}`;
+    const oc = new Map<string, number>();
+    const nord = (p: string | undefined): number => { const k = p ?? 'root'; const v = oc.get(k) ?? 0; oc.set(k, v + 1); return v; };
+    interface ShScope { type: string; name: string | null; }
+    const ss: ShScope[] = [{ type: 'module', name: null }];
+    const cs = (): ShScope => ss[ss.length - 1];
+
+    function es(st: string, line: number, pid: string | undefined, depth: number, extra: Partial<ParsedStatement> = {}): ParsedStatement {
+      const sc = cs(); const id = nid();
+      const s: ParsedStatement = { temp_id: id, parent_temp_id: pid, scope_type: sc.type, scope_name: sc.name, statement_type: st, line_start: line, order_index: nord(pid), depth, is_top_level: sc.type === 'module' && depth === 0, is_awaited: false, ...extra };
+      statements.push(s); return s;
+    }
+    function ec(sid: string, callee: string, recv: string | undefined, line: number, kind: string): void {
+      callEdges.push({ statement_temp_id: sid, caller_scope: cs().name, callee_name: callee, callee_receiver: recv, line_number: line, call_kind: kind });
+    }
+
+    const shLines = content.split('\n');
+    interface ShFrame { pid: string | undefined; depth: number; indentLevel: number; }
+    const fs: ShFrame[] = [{ pid: undefined, depth: 0, indentLevel: -1 }];
+    const tf = (): ShFrame => fs[fs.length - 1];
+    interface FnEnt { name: string; indent: number; }
+    const fnStack: FnEnt[] = [];
+
+    for (let i = 0; i < shLines.length; i++) {
+      const raw = shLines[i];
+      const tr = raw.replace(/#.*$/, '').trim();
+      const ln = i + 1;
+      if (!tr) continue;
+      const indent = raw.search(/\S/);
+
+      // closing keywords pop frames
+      if (/^fi\b|^done\b|^esac\b/.test(tr)) { if (fs.length > 1) fs.pop(); continue; }
+      if (tr === '}' && fnStack.length > 0 && indent <= fnStack[fnStack.length - 1].indent) {
+        fnStack.pop(); ss.pop(); if (fs.length > 1) fs.pop(); continue;
+      }
+      while (fs.length > 1 && indent < fs[fs.length - 1].indentLevel) fs.pop();
+
+      const f = tf();
+      const d = f.depth;
+
+      // function declaration
+      const fnM = /^(?:function\s+)?(\w+)\s*\(\s*\)\s*\{?/.exec(tr);
+      if (fnM && /^(?:function\s+\w+|\w+\s*\(\))/.test(tr)) {
+        const name = fnM[1];
+        const st = es('call', ln, f.pid, d, { callee: name, text: tr.slice(0, 120) });
+        fnStack.push({ name, indent });
+        ss.push({ type: 'function', name });
+        fs.push({ pid: st.temp_id, depth: d + 1, indentLevel: indent });
+        continue;
+      }
+
+      // if / elif
+      const ifM = /^(?:if|elif)\s+(.+?)(?:\s*;\s*then)?$/.exec(tr);
+      if (ifM) {
+        const st = es('if', ln, f.pid, d, { condition_text: ifM[1].slice(0, 200), text: tr.slice(0, 120) });
+        fs.push({ pid: st.temp_id, depth: d + 1, indentLevel: indent });
+        continue;
+      }
+      if (/^else\b/.test(tr)) continue;
+
+      // while / until
+      const whM = /^(?:while|until)\s+(.+?)(?:\s*;\s*do)?$/.exec(tr);
+      if (whM) {
+        const st = es('while', ln, f.pid, d, { condition_text: whM[1].slice(0, 200), text: tr.slice(0, 120) });
+        fs.push({ pid: st.temp_id, depth: d + 1, indentLevel: indent });
+        continue;
+      }
+
+      // for
+      const forM = /^for\s+(\w+)\s+in\s+(.+?)(?:\s*;\s*do)?$/.exec(tr);
+      if (forM) {
+        const st = es('for', ln, f.pid, d, { condition_text: `${forM[1]} in ${forM[2]}`.slice(0, 200), text: tr.slice(0, 120) });
+        fs.push({ pid: st.temp_id, depth: d + 1, indentLevel: indent });
+        continue;
+      }
+
+      // case
+      if (/^case\s/.test(tr)) {
+        const st = es('switch', ln, f.pid, d, { text: tr.slice(0, 120) });
+        fs.push({ pid: st.temp_id, depth: d + 1, indentLevel: indent });
+        continue;
+      }
+
+      // return / exit
+      if (/^return\b/.test(tr)) { es('return', ln, f.pid, d, { text: tr.slice(0, 120) }); continue; }
+      if (/^exit\b/.test(tr)) { es('return', ln, f.pid, d, { text: tr.slice(0, 120) }); continue; }
+
+      // source / .
+      if (/^(?:source|\.\s+)\s*/.test(tr)) {
+        const st = es('call', ln, f.pid, d, { callee: 'source', text: tr.slice(0, 120) });
+        ec(st.temp_id, 'source', undefined, ln, 'function');
+        continue;
+      }
+
+      // assignment: VAR=value
+      const assignM = /^(\w+)=(.*)/.exec(tr);
+      if (assignM && !/^(?:if|while|until|for|case|function)\b/.test(tr)) {
+        const rhs = assignM[2];
+        // command substitution $(...) or backtick
+        const cmdSubM = /\$\((\w+)/.exec(rhs) || /`(\w+)/.exec(rhs);
+        const st = es('assignment', ln, f.pid, d, { assigned_to: assignM[1], text: tr.slice(0, 120) });
+        if (cmdSubM) ec(st.temp_id, cmdSubM[1], undefined, ln, 'function');
+        continue;
+      }
+
+      // pipe command: first command in a pipeline is a statement
+      // each command in the line is a call
+      const cmdParts = tr.split(/\s*[|&;]\s*/);
+      for (const part of cmdParts) {
+        const cmdM = /^([\w./][\w./\-]*)/.exec(part.trim());
+        if (cmdM && !/^(?:if|elif|else|fi|then|while|until|do|done|for|in|case|esac|function|return|exit|source|export|local|readonly|declare)\b/.test(part.trim())) {
+          const st = es('call', ln, f.pid, d, { callee: cmdM[1], text: part.trim().slice(0, 120) });
+          ec(st.temp_id, cmdM[1], undefined, ln, 'function');
+          break; // only first command as primary statement
+        }
+      }
+    }
+
+    return { symbols, references, statements, callEdges };
   }
 
   private findClosingBrace(content: string, openPos: number): number {

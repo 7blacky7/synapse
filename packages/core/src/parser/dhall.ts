@@ -77,7 +77,7 @@ class DhallParser implements LanguageParser {
     symbols.push(...extractStringLiterals(content));
 
 
-    return { symbols, references };
+    return { symbols, references, statements: [], callEdges: [] };
   }
 }
 

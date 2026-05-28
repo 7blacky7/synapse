@@ -241,6 +241,10 @@ CREATE INDEX IF NOT EXISTS idx_code_symbols_project ON code_symbols(project);
 CREATE INDEX IF NOT EXISTS idx_code_symbols_type ON code_symbols(project, symbol_type);
 CREATE INDEX IF NOT EXISTS idx_code_symbols_name ON code_symbols(project, name);
 CREATE INDEX IF NOT EXISTS idx_code_symbols_file ON code_symbols(project, file_path);
+-- parent_symbol hat einen self-FK (parent_symbol -> id) ON DELETE CASCADE. Ohne Index
+-- muss jeder Symbol-DELETE die Tabelle seq-scannen, um Cascade-Kinder zu finden →
+-- per-Datei-DELETE wird bei großen/duplizierten Dateien extrem langsam (Minuten).
+CREATE INDEX IF NOT EXISTS idx_code_symbols_parent_symbol ON code_symbols(parent_symbol);
 
 CREATE TABLE IF NOT EXISTS code_references (
   id TEXT PRIMARY KEY,
@@ -271,6 +275,62 @@ CREATE TABLE IF NOT EXISTS code_chunks (
 
 CREATE INDEX IF NOT EXISTS idx_code_chunks_file ON code_chunks(project, file_path);
 CREATE INDEX IF NOT EXISTS idx_code_chunks_unembedded ON code_chunks(project) WHERE embedded_at IS NULL;
+
+-- ============================================================================
+-- CodeIntel Ablauf-Ebene (Statement-/Execution-Flow)
+-- code_statements: pro Datei geordnete Statements (top-level + innerhalb Scopes)
+-- code_call_edges: Aufruf-Kanten (CallExpression/new/method/await) je Statement
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS code_statements (
+  id BIGSERIAL PRIMARY KEY,
+  project TEXT NOT NULL,
+  file_path TEXT NOT NULL,
+  scope_type TEXT,                -- 'module' | 'function' | 'method' | 'class' | ...
+  scope_name TEXT,                -- Name des umschliessenden Scopes (z.B. Funktionsname)
+  statement_type TEXT NOT NULL,   -- 'if' | 'for' | 'while' | 'call' | 'return' | 'assignment' | ...
+  node_kind TEXT,                 -- roher AST-Kind-Name (z.B. 'IfStatement', 'CallExpression')
+  line_start INTEGER NOT NULL,
+  line_end INTEGER,
+  order_index INTEGER NOT NULL,   -- Reihenfolge innerhalb des Scopes (0-basiert)
+  depth INTEGER NOT NULL DEFAULT 0, -- Verschachtelungstiefe
+  parent_statement_id BIGINT REFERENCES code_statements(id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED,
+  text TEXT,                      -- gekuerzter Quelltext des Statements
+  callee TEXT,                    -- bei calls: aufgerufener Name
+  receiver TEXT,                  -- bei method-calls: Receiver-Ausdruck (z.B. 'pool')
+  assigned_to TEXT,               -- bei assignments: Ziel-Variable
+  condition_text TEXT,            -- bei if/while/for: Bedingungstext
+  is_top_level BOOLEAN NOT NULL DEFAULT false,
+  is_awaited BOOLEAN NOT NULL DEFAULT false,
+  metadata JSONB,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  FOREIGN KEY (project, file_path) REFERENCES code_files(project, file_path) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+);
+
+CREATE INDEX IF NOT EXISTS idx_code_statements_file ON code_statements(project, file_path);
+CREATE INDEX IF NOT EXISTS idx_code_statements_toplevel ON code_statements(project, is_top_level) WHERE is_top_level = true;
+CREATE INDEX IF NOT EXISTS idx_code_statements_scope ON code_statements(project, file_path, scope_name);
+CREATE INDEX IF NOT EXISTS idx_code_statements_parent ON code_statements(parent_statement_id) WHERE parent_statement_id IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS code_call_edges (
+  id BIGSERIAL PRIMARY KEY,
+  project TEXT NOT NULL,
+  file_path TEXT NOT NULL,
+  caller_scope TEXT,              -- umschliessender Scope-Name des Aufrufs
+  statement_id BIGINT REFERENCES code_statements(id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED,
+  callee_name TEXT NOT NULL,      -- aufgerufener Funktions-/Methodenname
+  callee_receiver TEXT,           -- Receiver-Ausdruck bei method-calls
+  target_symbol_id TEXT REFERENCES code_symbols(id) ON DELETE SET NULL, -- aufgeloestes Ziel-Symbol (optional)
+  line_number INTEGER NOT NULL,
+  call_kind TEXT,                 -- 'function' | 'method' | 'new' | 'await'
+  confidence REAL DEFAULT 1.0,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  FOREIGN KEY (project, file_path) REFERENCES code_files(project, file_path) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+);
+
+CREATE INDEX IF NOT EXISTS idx_code_call_edges_file ON code_call_edges(project, file_path);
+CREATE INDEX IF NOT EXISTS idx_code_call_edges_callee ON code_call_edges(project, callee_name);
+CREATE INDEX IF NOT EXISTS idx_code_call_edges_statement ON code_call_edges(statement_id) WHERE statement_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_code_call_edges_target ON code_call_edges(target_symbol_id) WHERE target_symbol_id IS NOT NULL;
 
 -- Migration: FKs auf code_files DEFERRABLE machen (fuer move-Operation)
 DO $$ BEGIN

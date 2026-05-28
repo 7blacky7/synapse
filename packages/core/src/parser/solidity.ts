@@ -8,11 +8,309 @@
  * ANSATZ: Regex-basiert
  */
 
-import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
+import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser, ParsedStatement, ParsedCallEdge } from './types.js';
 import { extractStringLiterals } from './types.js';
 
 function lineAt(text: string, pos: number): number {
   return text.substring(0, pos).split('\n').length;
+}
+
+// ---------------------------------------------------------------------------
+// Execution-Flow Extraktion fuer Solidity
+// Erfasst: function/modifier Bodies mit if/for/while/require/revert/emit/calls
+// ---------------------------------------------------------------------------
+function extractSolidityFlow(content: string): { statements: ParsedStatement[]; callEdges: ParsedCallEdge[] } {
+  const statements: ParsedStatement[] = [];
+  const callEdges: ParsedCallEdge[] = [];
+  let tempId = 0;
+  const nextId = (): string => `s${tempId++}`;
+
+  const lines = content.split('\n');
+
+  // Per-parent order counter
+  const orderCounters = new Map<string, number>();
+  function nextOrder(parentId: string | undefined, scopeCounter: { n: number }): number {
+    if (parentId === undefined) return scopeCounter.n++;
+    const key = `p:${parentId}`;
+    const cur = orderCounters.get(key) ?? 0;
+    orderCounters.set(key, cur + 1);
+    return cur;
+  }
+
+  function emitStmt(
+    lineStart: number,
+    lineEnd: number,
+    scopeType: string,
+    scopeName: string | null,
+    stmtType: string,
+    depth: number,
+    parentId: string | undefined,
+    scopeCounter: { n: number },
+    extra: Partial<ParsedStatement> = {},
+  ): ParsedStatement {
+    const isTop = scopeType === 'function' && depth === 0;
+    const id = nextId();
+    const st: ParsedStatement = {
+      temp_id: id,
+      parent_temp_id: parentId,
+      scope_type: scopeType,
+      scope_name: scopeName,
+      statement_type: stmtType,
+      line_start: lineStart,
+      line_end: lineEnd,
+      order_index: nextOrder(parentId, scopeCounter),
+      depth,
+      is_top_level: isTop,
+      is_awaited: false,
+      ...extra,
+    };
+    statements.push(st);
+    return st;
+  }
+
+  // Find matching closing brace position (char index)
+  function findClose(src: string, openIdx: number): number {
+    let depth = 1;
+    for (let i = openIdx + 1; i < src.length; i++) {
+      if (src[i] === '{') depth++;
+      else if (src[i] === '}') { depth--; if (depth === 0) return i; }
+    }
+    return src.length - 1;
+  }
+
+  function charToLine(src: string, pos: number): number {
+    return src.substring(0, pos).split('\n').length;
+  }
+
+  // Parse a block body (between { }) recursively
+  function parseBlock(
+    src: string,           // full content
+    blockStart: number,    // position of '{'
+    blockEnd: number,      // position of '}'
+    scopeType: string,
+    scopeName: string | null,
+    depth: number,
+    parentId: string | undefined,
+    scopeCounter: { n: number },
+  ): void {
+    const body = src.substring(blockStart + 1, blockEnd);
+    const baseOffset = blockStart + 1;
+
+    // Strip comments for matching (but keep positions via offset)
+    let pos = 0;
+    while (pos < body.length) {
+      // Skip strings
+      if (body[pos] === '"' || body[pos] === "'") {
+        const q = body[pos]; pos++;
+        while (pos < body.length && body[pos] !== q) { if (body[pos] === '\\') pos++; pos++; }
+        pos++; continue;
+      }
+      // Skip line comment
+      if (body[pos] === '/' && body[pos+1] === '/') {
+        while (pos < body.length && body[pos] !== '\n') pos++;
+        continue;
+      }
+      // Skip block comment
+      if (body[pos] === '/' && body[pos+1] === '*') {
+        pos += 2;
+        while (pos < body.length - 1 && !(body[pos] === '*' && body[pos+1] === '/')) pos++;
+        pos += 2; continue;
+      }
+
+      // if(...) { ... } [else { ... }]
+      const ifM = /^if\s*\(/.exec(body.slice(pos));
+      if (ifM) {
+        const absPos = baseOffset + pos;
+        const lineStart = charToLine(src, absPos);
+        // find condition end
+        let condEnd = pos + ifM[0].length - 1;
+        let pDepth = 1;
+        while (condEnd < body.length && pDepth > 0) {
+          condEnd++;
+          if (body[condEnd] === '(') pDepth++;
+          else if (body[condEnd] === ')') pDepth--;
+        }
+        const condText = body.substring(pos + 3, condEnd).trim().slice(0, 200);
+        // find then-block
+        let thenStart = condEnd + 1;
+        while (thenStart < body.length && /\s/.test(body[thenStart])) thenStart++;
+        let lineEnd = lineStart;
+        if (body[thenStart] === '{') {
+          const thenClose = findClose(body, thenStart);
+          lineEnd = charToLine(src, baseOffset + thenClose);
+          const st = emitStmt(lineStart, lineEnd, scopeType, scopeName, 'if', depth, parentId, scopeCounter, { condition_text: condText });
+          parseBlock(body, thenStart, thenClose, scopeType, scopeName, depth + 1, st.temp_id, { n: 0 });
+          pos = thenClose + 1;
+          // else?
+          const elseM = /^\s*else\s*\{/.exec(body.slice(pos));
+          if (elseM) {
+            const elseStart = pos + elseM[0].lastIndexOf('{');
+            const elseClose = findClose(body, elseStart);
+            parseBlock(body, elseStart, elseClose, scopeType, scopeName, depth + 1, st.temp_id, { n: orderCounters.get(`p:${st.temp_id}`) ?? 0 });
+            pos = elseClose + 1;
+          }
+        } else {
+          // single-line then
+          const stmtEnd = body.indexOf(';', thenStart);
+          lineEnd = stmtEnd >= 0 ? charToLine(src, baseOffset + stmtEnd) : lineStart;
+          const st = emitStmt(lineStart, lineEnd, scopeType, scopeName, 'if', depth, parentId, scopeCounter, { condition_text: condText });
+          if (stmtEnd >= 0) pos = stmtEnd + 1;
+          else pos = thenStart + 1;
+        }
+        continue;
+      }
+
+      // for(...) { ... }
+      const forM = /^for\s*\(/.exec(body.slice(pos));
+      if (forM) {
+        const absPos = baseOffset + pos;
+        const lineStart = charToLine(src, absPos);
+        let condEnd = pos + forM[0].length - 1;
+        let pDepth = 1;
+        while (condEnd < body.length && pDepth > 0) {
+          condEnd++;
+          if (body[condEnd] === '(') pDepth++;
+          else if (body[condEnd] === ')') pDepth--;
+        }
+        const condText = body.substring(pos + 4, condEnd).trim().slice(0, 200);
+        let bodyStart = condEnd + 1;
+        while (bodyStart < body.length && /\s/.test(body[bodyStart])) bodyStart++;
+        if (body[bodyStart] === '{') {
+          const bodyClose = findClose(body, bodyStart);
+          const lineEnd = charToLine(src, baseOffset + bodyClose);
+          const st = emitStmt(lineStart, lineEnd, scopeType, scopeName, 'for', depth, parentId, scopeCounter, { condition_text: condText });
+          parseBlock(body, bodyStart, bodyClose, scopeType, scopeName, depth + 1, st.temp_id, { n: 0 });
+          pos = bodyClose + 1;
+        } else {
+          emitStmt(lineStart, lineStart, scopeType, scopeName, 'for', depth, parentId, scopeCounter, { condition_text: condText });
+          pos = condEnd + 1;
+        }
+        continue;
+      }
+
+      // while(...) { ... }
+      const whileM = /^while\s*\(/.exec(body.slice(pos));
+      if (whileM) {
+        const absPos = baseOffset + pos;
+        const lineStart = charToLine(src, absPos);
+        let condEnd = pos + whileM[0].length - 1;
+        let pDepth = 1;
+        while (condEnd < body.length && pDepth > 0) {
+          condEnd++;
+          if (body[condEnd] === '(') pDepth++;
+          else if (body[condEnd] === ')') pDepth--;
+        }
+        const condText = body.substring(pos + 6, condEnd).trim().slice(0, 200);
+        let bodyStart = condEnd + 1;
+        while (bodyStart < body.length && /\s/.test(body[bodyStart])) bodyStart++;
+        if (body[bodyStart] === '{') {
+          const bodyClose = findClose(body, bodyStart);
+          const lineEnd = charToLine(src, baseOffset + bodyClose);
+          const st = emitStmt(lineStart, lineEnd, scopeType, scopeName, 'while', depth, parentId, scopeCounter, { condition_text: condText });
+          parseBlock(body, bodyStart, bodyClose, scopeType, scopeName, depth + 1, st.temp_id, { n: 0 });
+          pos = bodyClose + 1;
+        } else {
+          emitStmt(lineStart, lineStart, scopeType, scopeName, 'while', depth, parentId, scopeCounter, { condition_text: condText });
+          pos = condEnd + 1;
+        }
+        continue;
+      }
+
+      // require(...); or revert(...);
+      const reqM = /^(require|revert)\s*\(/.exec(body.slice(pos));
+      if (reqM) {
+        const absPos = baseOffset + pos;
+        const lineStart = charToLine(src, absPos);
+        let argEnd = pos + reqM[0].length - 1;
+        let pDepth = 1;
+        while (argEnd < body.length && pDepth > 0) {
+          argEnd++;
+          if (body[argEnd] === '(') pDepth++;
+          else if (body[argEnd] === ')') pDepth--;
+        }
+        const argText = body.substring(pos + reqM[1].length + 1, argEnd).trim().slice(0, 200);
+        const stmtType = reqM[1] === 'require' ? 'call' : 'throw';
+        const st = emitStmt(lineStart, lineStart, scopeType, scopeName, stmtType, depth, parentId, scopeCounter, {
+          callee: reqM[1],
+          condition_text: argText,
+        });
+        callEdges.push({ statement_temp_id: st.temp_id, caller_scope: scopeName, callee_name: reqM[1], line_number: lineStart, call_kind: 'function' });
+        pos = argEnd + 2; // skip ');'
+        continue;
+      }
+
+      // emit EventName(...);
+      const emitM = /^emit\s+(\w+)\s*\(/.exec(body.slice(pos));
+      if (emitM) {
+        const absPos = baseOffset + pos;
+        const lineStart = charToLine(src, absPos);
+        const st = emitStmt(lineStart, lineStart, scopeType, scopeName, 'call', depth, parentId, scopeCounter, { callee: emitM[1] });
+        callEdges.push({ statement_temp_id: st.temp_id, caller_scope: scopeName, callee_name: emitM[1], line_number: lineStart, call_kind: 'function' });
+        const semi = body.indexOf(';', pos);
+        pos = semi >= 0 ? semi + 1 : pos + emitM[0].length;
+        continue;
+      }
+
+      // return ...;
+      const retM = /^return\b/.exec(body.slice(pos));
+      if (retM) {
+        const absPos = baseOffset + pos;
+        const lineStart = charToLine(src, absPos);
+        const semi = body.indexOf(';', pos);
+        emitStmt(lineStart, lineStart, scopeType, scopeName, 'return', depth, parentId, scopeCounter);
+        pos = semi >= 0 ? semi + 1 : pos + 6;
+        continue;
+      }
+
+      // Generic statement ending in ;
+      if (body[pos] === ';') { pos++; continue; }
+      if (body[pos] === '{') { pos = findClose(body, pos) + 1; continue; }
+      if (body[pos] === '}') { pos++; continue; }
+
+      // Check for a generic function call: identifier(
+      const callM = /^([a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)*)\s*\(/.exec(body.slice(pos));
+      if (callM) {
+        const absPos = baseOffset + pos;
+        const lineStart = charToLine(src, absPos);
+        const parts = callM[1].split('.');
+        const callee = parts[parts.length - 1];
+        const receiver = parts.length > 1 ? parts.slice(0, -1).join('.') : undefined;
+        // find end of statement
+        let argEnd = pos + callM[0].length - 1;
+        let pDepth = 1;
+        while (argEnd < body.length && pDepth > 0) {
+          argEnd++;
+          if (body[argEnd] === '(') pDepth++;
+          else if (body[argEnd] === ')') pDepth--;
+        }
+        const semi = body.indexOf(';', argEnd);
+        // Only emit as call if followed by ; (statement level)
+        if (semi >= 0 && semi - argEnd < 5) {
+          const st = emitStmt(lineStart, lineStart, scopeType, scopeName, 'call', depth, parentId, scopeCounter, { callee, receiver });
+          callEdges.push({ statement_temp_id: st.temp_id, caller_scope: scopeName, callee_name: callee, callee_receiver: receiver, line_number: lineStart, call_kind: receiver ? 'method' : 'function' });
+          pos = semi + 1;
+          continue;
+        }
+      }
+
+      pos++;
+    }
+  }
+
+  // Extract function/modifier bodies and process them
+  const funcBodyRe = /\b(function|modifier|constructor|receive|fallback)\s*(\w*)?\s*(?:\([^)]*\))?\s*(?:[^{]*?)\{/g;
+  let fm: RegExpExecArray | null;
+  while ((fm = funcBodyRe.exec(content)) !== null) {
+    const kind = fm[1];
+    const name = fm[2] || kind;
+    const openBrace = content.indexOf('{', fm.index + fm[0].length - 1);
+    if (openBrace < 0) continue;
+    const closeBrace = findClose(content, openBrace);
+    const scopeCounter = { n: 0 };
+    parseBlock(content, openBrace, closeBrace, 'function', name, 0, undefined, scopeCounter);
+  }
+
+  return { statements, callEdges };
 }
 
 class SolidityParser implements LanguageParser {
@@ -310,8 +608,8 @@ class SolidityParser implements LanguageParser {
 
     symbols.push(...extractStringLiterals(content));
 
-
-    return { symbols, references };
+    const { statements, callEdges } = extractSolidityFlow(content);
+    return { symbols, references, statements, callEdges };
   }
 
   private findClosingBrace(content: string, openPos: number): number {

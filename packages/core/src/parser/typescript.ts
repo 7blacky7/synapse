@@ -5,7 +5,14 @@
  */
 
 import * as ts from 'typescript';
-import type { LanguageParser, ParseResult, ParsedSymbol, ParsedReference } from './types.js';
+import type {
+  LanguageParser,
+  ParseResult,
+  ParsedSymbol,
+  ParsedReference,
+  ParsedStatement,
+  ParsedCallEdge,
+} from './types.js';
 import { extractStringLiterals } from './types.js';
 import { HTTP_VERBS, NEST_DECORATORS, formatRouteName, isLikelyHttpPath } from './patterns/http.js';
 import { SQL_DB_METHODS, SQL_TAGS, parseEmbeddedSql, looksLikeSql } from './patterns/sql.js';
@@ -622,6 +629,435 @@ function extractReferences(
 }
 
 // ---------------------------------------------------------------------------
+// Flow extraction pass (Ablauf-Ebene: statements + call edges)
+// ---------------------------------------------------------------------------
+//
+// REFERENZ-IMPLEMENTIERUNG fuer alle anderen Sprach-Parser.
+//
+// Konzept:
+//  - Wir laufen ueber die AST und erzeugen pro "ausfuehrbarem" Statement einen
+//    ParsedStatement-Eintrag. Dabei tracken wir den umschliessenden Scope
+//    (Modul / Funktion / Methode) ueber einen Stack.
+//  - order_index zaehlt die Reihenfolge der Statements INNERHALB des aktuellen
+//    Scopes (jeder Scope hat seinen eigenen Zaehler).
+//  - depth ist die Verschachtelungstiefe relativ zum Scope (0 = direkt im Scope).
+//  - is_top_level = Statement liegt direkt im Modul-Scope (scope_type 'module').
+//  - parent_temp_id verknuepft verschachtelte Statements mit ihrem Eltern-
+//    Statement (z.B. ein return innerhalb eines if).
+//  - Fuer jeden Aufruf (CallExpression / NewExpression) wird zusaetzlich eine
+//    ParsedCallEdge erzeugt (callee_name, receiver, call_kind).
+//
+// Erfasste statement_type-Werte:
+//   if | for | while | do | switch | try | throw | return | await | new |
+//   call | assignment | variable | expression
+//
+// call_kind-Werte: function | method | new | await
+// ---------------------------------------------------------------------------
+
+interface ScopeFrame {
+  scopeType: string;        // 'module' | 'function' | 'method'
+  scopeName: string | null;
+  orderCounter: number;     // laufender order_index innerhalb dieses Scopes
+}
+
+function extractFlow(
+  sourceFile: ts.SourceFile,
+): { statements: ParsedStatement[]; callEdges: ParsedCallEdge[] } {
+  const statements: ParsedStatement[] = [];
+  const callEdges: ParsedCallEdge[] = [];
+  let tempIdCounter = 0;
+  const nextTempId = (): string => `s${tempIdCounter++}`;
+
+  // Scope-Stack: oberster Frame ist der aktuelle Scope. Start = Modul.
+  const scopeStack: ScopeFrame[] = [
+    { scopeType: 'module', scopeName: null, orderCounter: 0 },
+  ];
+  const currentScope = (): ScopeFrame => scopeStack[scopeStack.length - 1];
+
+  function lineOf(node: ts.Node): number {
+    return getLineNumber(sourceFile, node.getStart());
+  }
+  function snippet(node: ts.Node): string {
+    return node.getText().replace(/\s+/g, ' ').trim().slice(0, 240);
+  }
+
+  // Liefert callee_name, receiver, call_kind fuer einen Call/New-Ausdruck.
+  function describeCall(
+    expr: ts.CallExpression | ts.NewExpression,
+    kind: 'call' | 'new',
+  ): { callee: string; receiver?: string; callKind: string } {
+    const target = expr.expression;
+    if (ts.isPropertyAccessExpression(target)) {
+      return {
+        callee: target.name.getText(),
+        receiver: target.expression.getText().slice(0, 80),
+        callKind: kind === 'new' ? 'new' : 'method',
+      };
+    }
+    if (ts.isElementAccessExpression(target)) {
+      const arg = target.argumentExpression?.getText().replace(/['"`]/g, '') ?? '?';
+      return {
+        callee: arg,
+        receiver: target.expression.getText().slice(0, 80),
+        callKind: kind === 'new' ? 'new' : 'method',
+      };
+    }
+    return {
+      callee: target.getText().slice(0, 120),
+      callKind: kind === 'new' ? 'new' : 'function',
+    };
+  }
+
+  // Per-Parent order_index-Zaehler. Schluessel ist die parent_temp_id (oder ein
+  // Scope-Sentinel fuer depth-0-Statements, die keinen Parent haben). So bekommt
+  // JEDE Verschachtelungsebene eine eigene, bei 0 startende Reihenfolge.
+  const orderCounters = new Map<string, number>();
+  function nextOrder(scope: ScopeFrame, parentTempId: string | undefined): number {
+    // depth-0-Statements (kein Parent) zaehlen pro Scope ueber scope.orderCounter,
+    // damit jeder Funktions-/Modul-Scope bei 0 beginnt.
+    if (parentTempId === undefined) return scope.orderCounter++;
+    const key = `p:${parentTempId}`;
+    const cur = orderCounters.get(key) ?? 0;
+    orderCounters.set(key, cur + 1);
+    return cur;
+  }
+
+  // Emit-Helper: erzeugt ein ParsedStatement im aktuellen Scope.
+  function emit(
+    node: ts.Node,
+    statementType: string,
+    depth: number,
+    parentTempId: string | undefined,
+    extra: Partial<ParsedStatement> = {},
+  ): ParsedStatement {
+    const scope = currentScope();
+    // Top-Level NUR wenn im Modul-Scope UND direkt darin (nicht in Block/if/for/try).
+    const isTop = scope.scopeType === 'module' && depth === 0;
+    const st: ParsedStatement = {
+      temp_id: nextTempId(),
+      parent_temp_id: parentTempId,
+      scope_type: scope.scopeType,
+      scope_name: scope.scopeName,
+      statement_type: statementType,
+      node_kind: ts.SyntaxKind[node.kind],
+      line_start: lineOf(node),
+      line_end: getLineEnd(sourceFile, node),
+      order_index: nextOrder(scope, parentTempId),
+      depth,
+      text: snippet(node),
+      is_top_level: isTop,
+      is_awaited: false,
+      ...extra,
+    };
+    statements.push(st);
+    return st;
+  }
+
+  // Sucht die unmittelbaren Calls/New innerhalb eines Ausdrucks (nicht rekursiv
+  // ueber verschachtelte Funktionskoerper hinaus) und legt CallEdges an.
+  // `awaited` markiert ob der Ausdruck in einem await steht.
+  function collectCallsInExpression(
+    expr: ts.Node,
+    stmtTempId: string,
+    awaited: boolean,
+  ): void {
+    const scope = currentScope();
+    function walk(n: ts.Node): void {
+      // Nicht in verschachtelte Funktions-Bodies absteigen — deren Calls
+      // gehoeren zu deren eigenem Scope (separat behandelt).
+      if (
+        ts.isFunctionDeclaration(n) ||
+        ts.isFunctionExpression(n) ||
+        ts.isArrowFunction(n) ||
+        ts.isMethodDeclaration(n)
+      ) {
+        return;
+      }
+      if (ts.isCallExpression(n)) {
+        const d = describeCall(n, 'call');
+        callEdges.push({
+          statement_temp_id: stmtTempId,
+          caller_scope: scope.scopeName,
+          callee_name: d.callee,
+          callee_receiver: d.receiver,
+          line_number: lineOf(n),
+          call_kind: awaited ? 'await' : d.callKind,
+        });
+      } else if (ts.isNewExpression(n)) {
+        const d = describeCall(n, 'new');
+        callEdges.push({
+          statement_temp_id: stmtTempId,
+          caller_scope: scope.scopeName,
+          callee_name: d.callee,
+          callee_receiver: d.receiver,
+          line_number: lineOf(n),
+          call_kind: 'new',
+        });
+      }
+      ts.forEachChild(n, walk);
+    }
+    ts.forEachChild(expr, walk);
+    // Falls der Ausdruck selbst direkt ein Call/New ist (forEachChild ueberspringt den Root):
+    if (ts.isCallExpression(expr)) {
+      const d = describeCall(expr, 'call');
+      callEdges.push({
+        statement_temp_id: stmtTempId,
+        caller_scope: scope.scopeName,
+        callee_name: d.callee,
+        callee_receiver: d.receiver,
+        line_number: lineOf(expr),
+        call_kind: awaited ? 'await' : d.callKind,
+      });
+    } else if (ts.isNewExpression(expr)) {
+      const d = describeCall(expr, 'new');
+      callEdges.push({
+        statement_temp_id: stmtTempId,
+        caller_scope: scope.scopeName,
+        callee_name: d.callee,
+        callee_receiver: d.receiver,
+        line_number: lineOf(expr),
+        call_kind: 'new',
+      });
+    }
+  }
+
+  // Prueft ob ein Ausdruck (oder sein direkter inneren Ausdruck) ein await ist.
+  function unwrapAwait(expr: ts.Expression): { inner: ts.Expression; awaited: boolean } {
+    if (ts.isAwaitExpression(expr)) {
+      return { inner: expr.expression, awaited: true };
+    }
+    return { inner: expr, awaited: false };
+  }
+
+  // Verarbeitet eine Liste von Statements innerhalb eines Blocks/Scopes.
+  // depth = Verschachtelung relativ zum aktuellen Scope.
+  function processStatements(
+    nodes: readonly ts.Statement[],
+    depth: number,
+    parentTempId: string | undefined,
+  ): void {
+    for (const stmt of nodes) {
+      processStatement(stmt, depth, parentTempId);
+    }
+  }
+
+  // Verarbeitet einen Funktions-/Methoden-Body als neuen Scope.
+  function enterFunctionScope(
+    name: string | null,
+    scopeType: string,
+    body: ts.Node | undefined,
+  ): void {
+    if (!body) return;
+    scopeStack.push({ scopeType, scopeName: name, orderCounter: 0 });
+    if (ts.isBlock(body)) {
+      processStatements(body.statements, 0, undefined);
+    } else {
+      // Arrow mit Expression-Body: der Ausdruck ist das einzige "Statement".
+      const { inner, awaited } = unwrapAwait(body as ts.Expression);
+      const st = emit(body, 'return', 0, undefined, { is_awaited: awaited });
+      collectCallsInExpression(inner, st.temp_id, awaited);
+    }
+    scopeStack.pop();
+  }
+
+  // Kern: ein einzelnes Statement verarbeiten.
+  function processStatement(
+    node: ts.Node,
+    depth: number,
+    parentTempId: string | undefined,
+  ): void {
+    // --- Funktions-/Klassendeklarationen: eigenen Scope eroeffnen ---
+    if (ts.isFunctionDeclaration(node)) {
+      enterFunctionScope(node.name?.getText() ?? null, 'function', node.body);
+      return;
+    }
+    if (ts.isClassDeclaration(node)) {
+      // Methoden der Klasse als eigene Scopes verarbeiten.
+      for (const member of node.members) {
+        if (ts.isMethodDeclaration(member) || ts.isConstructorDeclaration(member)) {
+          const mName = ts.isConstructorDeclaration(member)
+            ? `${node.name?.getText() ?? 'anon'}.constructor`
+            : `${node.name?.getText() ?? 'anon'}.${member.name.getText()}`;
+          enterFunctionScope(mName, 'method', member.body);
+        }
+      }
+      return;
+    }
+
+    // --- Kontrollfluss-Statements ---
+    if (ts.isIfStatement(node)) {
+      const st = emit(node, 'if', depth, parentTempId, {
+        condition_text: node.expression.getText().slice(0, 200),
+      });
+      collectCallsInExpression(node.expression, st.temp_id, false);
+      processBranch(node.thenStatement, depth + 1, st.temp_id);
+      if (node.elseStatement) processBranch(node.elseStatement, depth + 1, st.temp_id);
+      return;
+    }
+    if (ts.isForStatement(node) || ts.isForOfStatement(node) || ts.isForInStatement(node)) {
+      const cond = ts.isForStatement(node)
+        ? node.condition?.getText()
+        : node.expression.getText();
+      const st = emit(node, 'for', depth, parentTempId, {
+        condition_text: cond?.slice(0, 200),
+      });
+      processBranch(node.statement, depth + 1, st.temp_id);
+      return;
+    }
+    if (ts.isWhileStatement(node)) {
+      const st = emit(node, 'while', depth, parentTempId, {
+        condition_text: node.expression.getText().slice(0, 200),
+      });
+      collectCallsInExpression(node.expression, st.temp_id, false);
+      processBranch(node.statement, depth + 1, st.temp_id);
+      return;
+    }
+    if (ts.isDoStatement(node)) {
+      const st = emit(node, 'do', depth, parentTempId, {
+        condition_text: node.expression.getText().slice(0, 200),
+      });
+      processBranch(node.statement, depth + 1, st.temp_id);
+      return;
+    }
+    if (ts.isSwitchStatement(node)) {
+      const st = emit(node, 'switch', depth, parentTempId, {
+        condition_text: node.expression.getText().slice(0, 200),
+      });
+      collectCallsInExpression(node.expression, st.temp_id, false);
+      for (const clause of node.caseBlock.clauses) {
+        processStatements(clause.statements, depth + 1, st.temp_id);
+      }
+      return;
+    }
+    if (ts.isTryStatement(node)) {
+      const st = emit(node, 'try', depth, parentTempId);
+      processStatements(node.tryBlock.statements, depth + 1, st.temp_id);
+      if (node.catchClause) {
+        processStatements(node.catchClause.block.statements, depth + 1, st.temp_id);
+      }
+      if (node.finallyBlock) {
+        processStatements(node.finallyBlock.statements, depth + 1, st.temp_id);
+      }
+      return;
+    }
+    if (ts.isThrowStatement(node)) {
+      const st = emit(node, 'throw', depth, parentTempId);
+      if (node.expression) collectCallsInExpression(node.expression, st.temp_id, false);
+      return;
+    }
+    if (ts.isReturnStatement(node)) {
+      let awaited = false;
+      let inner: ts.Expression | undefined = node.expression;
+      if (node.expression) {
+        const u = unwrapAwait(node.expression);
+        inner = u.inner;
+        awaited = u.awaited;
+      }
+      const st = emit(node, 'return', depth, parentTempId, { is_awaited: awaited });
+      if (inner) collectCallsInExpression(inner, st.temp_id, awaited);
+      return;
+    }
+    if (ts.isBlock(node)) {
+      // Nackter Block: Statements eine Ebene tiefer, aber kein eigener Scope.
+      processStatements(node.statements, depth, parentTempId);
+      return;
+    }
+
+    // --- Variable-Deklarationen (mit moeglichem Call/await im Initializer) ---
+    if (ts.isVariableStatement(node)) {
+      for (const decl of node.declarationList.declarations) {
+        const assignedTo = decl.name.getText().slice(0, 120);
+        let awaited = false;
+        let init = decl.initializer;
+        if (init) {
+          const u = unwrapAwait(init);
+          init = u.inner;
+          awaited = u.awaited;
+        }
+        const st = emit(decl, awaited ? 'await' : 'variable', depth, parentTempId, {
+          assigned_to: assignedTo,
+          is_awaited: awaited,
+        });
+        if (init) collectCallsInExpression(init, st.temp_id, awaited);
+      }
+      return;
+    }
+
+    // --- Expression-Statements (calls, assignments, await) ---
+    if (ts.isExpressionStatement(node)) {
+      const expr = node.expression;
+      // Assignment?
+      if (
+        ts.isBinaryExpression(expr) &&
+        expr.operatorToken.kind === ts.SyntaxKind.EqualsToken
+      ) {
+        const rhs = unwrapAwait(expr.right);
+        const st = emit(node, rhs.awaited ? 'await' : 'assignment', depth, parentTempId, {
+          assigned_to: expr.left.getText().slice(0, 120),
+          is_awaited: rhs.awaited,
+        });
+        collectCallsInExpression(rhs.inner, st.temp_id, rhs.awaited);
+        return;
+      }
+      // await expr;
+      if (ts.isAwaitExpression(expr)) {
+        const st = emit(node, 'await', depth, parentTempId, { is_awaited: true });
+        collectCallsInExpression(expr.expression, st.temp_id, true);
+        return;
+      }
+      // new expr;
+      if (ts.isNewExpression(expr)) {
+        const d = describeCall(expr, 'new');
+        const st = emit(node, 'new', depth, parentTempId, {
+          callee: d.callee,
+          receiver: d.receiver,
+        });
+        collectCallsInExpression(expr, st.temp_id, false);
+        return;
+      }
+      // plain call expr;
+      if (ts.isCallExpression(expr)) {
+        const d = describeCall(expr, 'call');
+        const st = emit(node, 'call', depth, parentTempId, {
+          callee: d.callee,
+          receiver: d.receiver,
+        });
+        collectCallsInExpression(expr, st.temp_id, false);
+        return;
+      }
+      // generischer Ausdruck
+      const st = emit(node, 'expression', depth, parentTempId);
+      collectCallsInExpression(expr, st.temp_id, false);
+      return;
+    }
+
+    // --- Fallback: sonstige Statements generisch erfassen, in Bodies absteigen ---
+    // (z.B. labeled statements). Wir erfassen sie als 'expression' und steigen
+    // NICHT weiter ab, um Doppelzaehlung zu vermeiden.
+    emit(node, 'expression', depth, parentTempId);
+  }
+
+  // Verarbeitet einen Branch-Body (then/else/loop-body): ist es ein Block,
+  // verarbeiten wir dessen Statements; sonst das einzelne Statement direkt.
+  function processBranch(
+    node: ts.Statement,
+    depth: number,
+    parentTempId: string | undefined,
+  ): void {
+    if (ts.isBlock(node)) {
+      processStatements(node.statements, depth, parentTempId);
+    } else {
+      processStatement(node, depth, parentTempId);
+    }
+  }
+
+  // Einstieg: Top-Level-Statements des Moduls.
+  processStatements(sourceFile.statements, 0, undefined);
+
+  return { statements, callEdges };
+}
+
+// ---------------------------------------------------------------------------
 // Main parse function
 // ---------------------------------------------------------------------------
 
@@ -639,8 +1075,9 @@ function parse(content: string, filePath: string): ParseResult {
 
   symbols.push(...extractStringLiterals(content, { includeSingleQuotes: true }));
 
+  const { statements, callEdges } = extractFlow(sourceFile);
 
-  return { symbols, references };
+  return { symbols, references, statements, callEdges };
 }
 
 // ---------------------------------------------------------------------------

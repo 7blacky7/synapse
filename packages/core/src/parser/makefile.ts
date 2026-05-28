@@ -30,7 +30,7 @@ class MakefileParser implements LanguageParser {
       || filePath.endsWith('.mk');
 
     if (!isMakefile && !filePath.endsWith('.mk')) {
-      return { symbols, references };
+      return { symbols, references, statements: [], callEdges: [] };
     }
 
     // ══════════════════════════════════════════════
@@ -242,7 +242,7 @@ class MakefileParser implements LanguageParser {
     symbols.push(...extractStringLiterals(content, { includeSingleQuotes: true }));
 
 
-    return { symbols, references };
+    return { symbols, references, statements: [], callEdges: [] };
   }
 }
 

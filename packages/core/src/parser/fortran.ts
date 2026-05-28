@@ -8,11 +8,130 @@
  * ANSATZ: Regex-basiert (case-insensitive)
  */
 
-import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
+import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser, ParsedStatement, ParsedCallEdge } from './types.js';
 import { extractStringLiterals } from './types.js';
 
 function lineAt(text: string, pos: number): number {
   return text.substring(0, pos).split('\n').length;
+}
+
+// ---------------------------------------------------------------------------
+// Flow extraction (Fortran) — case-insensitive, line-based
+// ---------------------------------------------------------------------------
+
+function lineAtF(text: string, pos: number): number {
+  return text.substring(0, pos).split('\n').length;
+}
+
+function extractFlowFortran(content: string): { statements: ParsedStatement[]; callEdges: ParsedCallEdge[] } {
+  const statements: ParsedStatement[] = [];
+  const callEdges: ParsedCallEdge[] = [];
+  let tempIdCounter = 0;
+  const nextId = (): string => `s${tempIdCounter++}`;
+
+  function extractCalls(expr: string, stmtId: string, scopeName: string | null, lineNo: number): void {
+    // Fortran function/subroutine calls: name( or CALL name(
+    const callRe = /\bCALL\s+(\w+)\s*\(/gi;
+    let mc: RegExpExecArray | null;
+    while ((mc = callRe.exec(expr)) !== null) {
+      callEdges.push({ statement_temp_id: stmtId, caller_scope: scopeName, callee_name: mc[1], line_number: lineNo, call_kind: 'function' });
+    }
+    const funcRe = /(?<![%\w])([a-zA-Z_]\w*)\s*\(/g;
+    while ((mc = funcRe.exec(expr)) !== null) {
+      const name = mc[1].toLowerCase();
+      if (['if','do','while','select','case','return','goto','stop','exit','cycle','then','else','endif','enddo','write','read','print','format','implicit','intent','allocate','deallocate','nullify','associated','present','size','len','trim','adjustl','adjustr','max','min','abs','mod','real','int','char','ichar','index','scan','verify'].includes(name)) continue;
+      callEdges.push({ statement_temp_id: stmtId, caller_scope: scopeName, callee_name: mc[1], line_number: lineNo, call_kind: 'function' });
+    }
+  }
+
+  // Find subroutine/function bodies
+  const allLines = content.split('\n');
+
+  interface SubBody { name: string; startLine: number; lines: { text: string; lineNo: number }[]; }
+
+  function findSubBodies(): SubBody[] {
+    const bodies: SubBody[] = [];
+    const startRe = /^\s*(?:(?:pure|elemental|recursive|impure)\s+)*(?:subroutine|function)\s+(\w+)/i;
+    const endRe = /^\s*end\s*(?:subroutine|function)\b/i;
+    let i = 0;
+    while (i < allLines.length) {
+      const sm = startRe.exec(allLines[i]);
+      if (sm) {
+        const name = sm[1];
+        const bodyLines: { text: string; lineNo: number }[] = [];
+        let j = i + 1;
+        while (j < allLines.length) {
+          if (endRe.test(allLines[j])) { j++; break; }
+          bodyLines.push({ text: allLines[j], lineNo: j + 1 });
+          j++;
+        }
+        bodies.push({ name, startLine: i + 1, lines: bodyLines });
+        i = j;
+      } else {
+        i++;
+      }
+    }
+    return bodies;
+  }
+
+  function processBody(sb: SubBody): void {
+    let order = 0;
+    for (const { text, lineNo } of sb.lines) {
+      const trimmed = text.trim();
+      if (!trimmed || /^!/.test(trimmed)) continue;
+      // Strip inline comments
+      const code = trimmed.replace(/!.*$/, '').trim();
+      if (!code) continue;
+
+      function emit(type: string, kind: string, extra: Partial<ParsedStatement> = {}): ParsedStatement {
+        const id = nextId();
+        const st: ParsedStatement = { temp_id: id, parent_temp_id: undefined, scope_type: 'function', scope_name: sb.name, statement_type: type, node_kind: kind, line_start: lineNo, order_index: order++, depth: 0, is_top_level: false, is_awaited: false, text: code.slice(0, 240), ...extra };
+        statements.push(st);
+        return st;
+      }
+
+      if (/^\s*IF\s*\(/i.test(code)) {
+        const cm = code.match(/IF\s*\((.+)/i); const cond = cm ? cm[1].replace(/\)\s*(?:THEN)?.*$/i, '').slice(0, 200) : undefined;
+        const st = emit('if', 'IfStatement', { condition_text: cond });
+        if (cond) extractCalls(cond, st.temp_id, sb.name, lineNo);
+      } else if (/^\s*DO\b/i.test(code)) {
+        const cm = code.match(/DO\s+(.+)/i); const cond = cm ? cm[1].slice(0, 200) : undefined;
+        const st = emit('for', 'DoLoop', { condition_text: cond });
+        if (cond) extractCalls(cond, st.temp_id, sb.name, lineNo);
+      } else if (/^\s*DO\s+WHILE\s*\(/i.test(code)) {
+        const cm = code.match(/DO\s+WHILE\s*\((.+)/i); const cond = cm ? cm[1].replace(/\)\s*$/, '').slice(0, 200) : undefined;
+        const st = emit('while', 'DoWhileLoop', { condition_text: cond });
+        if (cond) extractCalls(cond, st.temp_id, sb.name, lineNo);
+      } else if (/^\s*SELECT\s+CASE\s*\(/i.test(code)) {
+        const cm = code.match(/SELECT\s+CASE\s*\((.+)/i); const cond = cm ? cm[1].replace(/\)\s*$/, '').slice(0, 200) : undefined;
+        const st = emit('switch', 'SelectCase', { condition_text: cond });
+        if (cond) extractCalls(cond, st.temp_id, sb.name, lineNo);
+      } else if (/^\s*CALL\s+\w+/i.test(code)) {
+        const cm = code.match(/CALL\s+(\w+)/i);
+        const st = emit('call', 'CallStatement', { callee: cm ? cm[1] : undefined });
+        extractCalls(code, st.temp_id, sb.name, lineNo);
+      } else if (/^\s*RETURN\b/i.test(code)) {
+        emit('return', 'ReturnStatement');
+      } else if (/^\s*GOTO\s+\d+/i.test(code)) {
+        const cm = code.match(/GOTO\s+(\d+)/i);
+        emit('goto', 'GotoStatement', { callee: cm ? cm[1] : undefined });
+      } else if (/^\w+\s*=\s*.+/.test(code) && !/^\s*(?:IF|DO|SELECT|CALL|RETURN|GOTO|END|USE|IMPLICIT|WRITE|READ|PRINT|ALLOCATE|DEALLOCATE)/i.test(code)) {
+        const am = code.match(/^(\w+(?:\([^)]*\))?)\s*=\s*(.+)/);
+        if (am) {
+          const st = emit('assignment', 'AssignmentStatement', { assigned_to: am[1].slice(0, 120) });
+          extractCalls(am[2], st.temp_id, sb.name, lineNo);
+        }
+      } else if (/^\s*WRITE\s*\(/i.test(code) || /^\s*PRINT\s+/i.test(code) || /^\s*READ\s*\(/i.test(code)) {
+        const ioM = code.match(/^(\w+)/i);
+        emit('call', 'IOStatement', { callee: ioM ? ioM[1].toUpperCase() : 'IO' });
+      }
+    }
+  }
+
+  const bodies = findSubBodies();
+  for (const sb of bodies) processBody(sb);
+
+  return { statements, callEdges };
 }
 
 class FortranParser implements LanguageParser {
@@ -196,8 +315,8 @@ class FortranParser implements LanguageParser {
 
     symbols.push(...extractStringLiterals(content));
 
-
-    return { symbols, references };
+    const { statements, callEdges } = extractFlowFortran(content);
+    return { symbols, references, statements, callEdges };
   }
 }
 

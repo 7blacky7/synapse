@@ -7,7 +7,7 @@
  * ANSATZ: Regex-basiert — Python hat einrueckungsbasierte Syntax
  */
 
-import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
+import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser, ParsedStatement, ParsedCallEdge } from './types.js';
 import { extractStringLiterals } from './types.js';
 import { formatRouteName, isLikelyHttpPath } from './patterns/http.js';
 import { parseEmbeddedSql, looksLikeSql } from './patterns/sql.js';
@@ -20,6 +20,425 @@ function lineAt(text: string, pos: number): number {
 /** Prueft ob ein Name "exported" ist (kein fuehrender Underscore) */
 function isPublic(name: string): boolean {
   return !name.startsWith('_');
+}
+
+// ---------------------------------------------------------------------------
+// Flow-Extraction fuer Python
+// ---------------------------------------------------------------------------
+// Erfasst ablaufrelevante Statements + CallEdges aus Python-Code.
+// Ansatz: zeilenbasiert mit Einrueckungstiefe-Tracking.
+// Scopes: 'module' (indent=0), 'function'/'method' (def/async def).
+// is_top_level = scope_type==='module' && depth===0.
+// ---------------------------------------------------------------------------
+
+interface PyScope {
+  type: string;      // 'module' | 'function' | 'method'
+  name: string | null;
+  indent: number;    // Einrueckung des Scope-Headers
+  orderCounter: number;
+}
+
+function extractPythonFlow(
+  content: string,
+  lines: string[],
+): { statements: ParsedStatement[]; callEdges: ParsedCallEdge[] } {
+  const statements: ParsedStatement[] = [];
+  const callEdges: ParsedCallEdge[] = [];
+  let tempId = 0;
+  const nextId = () => `s${tempId++}`;
+  const orderCounters = new Map<string, number>();
+
+  function nextOrder(parentId: string | undefined, scope: PyScope): number {
+    if (parentId === undefined) return scope.orderCounter++;
+    const key = `p:${parentId}`;
+    const cur = orderCounters.get(key) ?? 0;
+    orderCounters.set(key, cur + 1);
+    return cur;
+  }
+
+  // Scope-Stack: module ist der aeussere Scope
+  const scopeStack: PyScope[] = [{ type: 'module', name: null, indent: -1, orderCounter: 0 }];
+  const currentScope = () => scopeStack[scopeStack.length - 1];
+
+  // Parent-Stack: welches Statement ist der aktuelle "Container" pro depth
+  // key = einrueckungstiefe -> temp_id des letzten Container-Statements
+  const parentAtDepth = new Map<number, string>();
+
+  // Hilfsfunktionen fuer callEdge-Extraktion aus einem Ausdruck
+  const callRe = /\b([\w.]+)\s*\(/g;
+  function extractCalls(expr: string, stmtId: string, scopeName: string | null, line: number, isAwaited: boolean): void {
+    callRe.lastIndex = 0;
+    let cm: RegExpExecArray | null;
+    while ((cm = callRe.exec(expr)) !== null) {
+      const raw = cm[1];
+      if (!raw || /^(if|for|while|with|except|return|yield|raise|not|and|or|in|is|lambda|print|len|range|type|isinstance|hasattr|getattr|setattr)$/.test(raw)) continue;
+      const parts = raw.split('.');
+      const callee = parts[parts.length - 1];
+      const receiver = parts.length > 1 ? parts.slice(0, -1).join('.') : undefined;
+      const callKind = isAwaited ? 'await' : (receiver ? 'method' : 'function');
+      callEdges.push({
+        statement_temp_id: stmtId,
+        caller_scope: scopeName,
+        callee_name: callee,
+        callee_receiver: receiver,
+        line_number: line,
+        call_kind: callKind,
+      });
+    }
+  }
+
+  // Berechne Einrueckungstiefe (Anzahl Leerzeichen)
+  const getIndent = (line: string) => line.match(/^(\s*)/)?.[1].length ?? 0;
+
+  // Scope-Austritt wenn Einrueckung zurueckgeht
+  function popScopesForIndent(indent: number): void {
+    while (scopeStack.length > 1 && scopeStack[scopeStack.length - 1].indent >= indent) {
+      scopeStack.pop();
+    }
+  }
+
+  // Verarbeitung einer einzelnen Zeile
+  const defRe = /^(\s*)(async\s+)?def\s+(\w+)\s*\(/;
+  const classDefRe = /^(\s*)class\s+(\w+)/;
+  const ifRe = /^(\s*)if\s+(.+):/;
+  const elifRe = /^(\s*)elif\s+(.+):/;
+  const elseRe = /^(\s*)else\s*:/;
+  const forRe = /^(\s*)(?:async\s+)?for\s+(\S+)\s+in\s+(.+):/;
+  const whileRe = /^(\s*)while\s+(.+):/;
+  const tryRe = /^(\s*)try\s*:/;
+  const exceptRe = /^(\s*)except(?:\s+(.+))?:/;
+  const finallyRe = /^(\s*)finally\s*:/;
+  const withRe = /^(\s*)(?:async\s+)?with\s+(.+):/;
+  const returnRe = /^(\s*)return(?:\s+(.+))?/;
+  const yieldRe = /^(\s*)yield(?:\s+(.+))?/;
+  const raiseRe = /^(\s*)raise(?:\s+(.+))?/;
+  const awaitRe = /^(\s*)([\w.]+\s*=\s*)?await\s+(.+)/;
+  const assignRe = /^(\s*)([\w.[\]"']+)\s*(?:[+\-*/|&^%]?=(?!=))\s*(.+)/;
+  const callStmtRe = /^(\s*)([\w.]+)\s*\(/;
+
+  for (let i = 0; i < lines.length; i++) {
+    const raw = lines[i];
+    const lineNum = i + 1;
+    const trimmed = raw.trimEnd();
+    if (!trimmed.trim() || trimmed.trim().startsWith('#')) continue;
+
+    const indent = getIndent(raw);
+
+    // Scope-Austritt
+    popScopesForIndent(indent);
+    const scope = currentScope();
+
+    // Berechne depth = Anzahl aktiver scopes - 1 (module=0, jeder neue scope +1)
+    // Aber depth im Statement-Sinne: wie tief innerhalb des aktuellen Scopes
+    // Wir bestimmen depth als Einrueckungsdifferenz zum Scope-Kopf / 4 (oder 1 Stufe)
+    const scopeIndent = scope.indent < 0 ? 0 : scope.indent + 4; // Erwartete Einrueckung im Scope
+    const depth = Math.max(0, Math.floor((indent - scopeIndent) / 4));
+
+    // Parent-Statement fuer aktuelle Tiefe
+    // Wir verwenden indent-basiertes Parent-Tracking
+    // Ein Statement bei indent X hat als Parent das letzte Container-Statement bei indent < X
+    let parentId: string | undefined = undefined;
+    if (indent > 0) {
+      // Suche den naechsten Parent mit kleinerem indent
+      for (let pi = indent - 1; pi >= 0; pi--) {
+        if (parentAtDepth.has(pi)) {
+          parentId = parentAtDepth.get(pi);
+          break;
+        }
+      }
+    }
+
+    const isTop = scope.type === 'module' && depth === 0;
+
+    // def/async def -> neuer Scope
+    let dm: RegExpExecArray | null;
+    if ((dm = defRe.exec(trimmed)) !== null) {
+      const funcName = dm[3];
+      const parentClass = scope.type === 'class' ? scope.name : null;
+      const scopeType = parentClass ? 'method' : 'function';
+      const fullName = parentClass ? `${parentClass}.${funcName}` : funcName;
+      // Push als neuen Scope - aber wir registrieren ihn nicht als Statement (Deklaration, kein Ablauf)
+      scopeStack.push({ type: scopeType, name: fullName, indent, orderCounter: 0 });
+      // Loesche parent-Tracking fuer tiefere Ebenen
+      for (const k of Array.from(parentAtDepth.keys())) {
+        if (k >= indent) parentAtDepth.delete(k);
+      }
+      continue;
+    }
+
+    // class -> neuer Scope
+    if ((dm = classDefRe.exec(trimmed)) !== null) {
+      scopeStack.push({ type: 'class', name: dm[2], indent, orderCounter: 0 });
+      for (const k of Array.from(parentAtDepth.keys())) {
+        if (k >= indent) parentAtDepth.delete(k);
+      }
+      continue;
+    }
+
+    // if
+    if ((dm = ifRe.exec(trimmed)) !== null) {
+      const cond = dm[2].slice(0, 200);
+      const id = nextId();
+      statements.push({
+        temp_id: id, parent_temp_id: parentId,
+        scope_type: scope.type, scope_name: scope.name,
+        statement_type: 'if', node_kind: 'if',
+        line_start: lineNum, line_end: lineNum,
+        order_index: nextOrder(parentId, scope), depth,
+        text: trimmed.slice(0, 240), is_top_level: isTop, is_awaited: false,
+        condition_text: cond,
+      });
+      parentAtDepth.set(indent, id);
+      extractCalls(cond, id, scope.name, lineNum, false);
+      continue;
+    }
+
+    // elif
+    if ((dm = elifRe.exec(trimmed)) !== null) {
+      const cond = dm[2].slice(0, 200);
+      const id = nextId();
+      statements.push({
+        temp_id: id, parent_temp_id: parentId,
+        scope_type: scope.type, scope_name: scope.name,
+        statement_type: 'if', node_kind: 'elif',
+        line_start: lineNum, line_end: lineNum,
+        order_index: nextOrder(parentId, scope), depth,
+        text: trimmed.slice(0, 240), is_top_level: isTop, is_awaited: false,
+        condition_text: cond,
+      });
+      parentAtDepth.set(indent, id);
+      extractCalls(cond, id, scope.name, lineNum, false);
+      continue;
+    }
+
+    // else
+    if (elseRe.test(trimmed)) {
+      const id = nextId();
+      statements.push({
+        temp_id: id, parent_temp_id: parentId,
+        scope_type: scope.type, scope_name: scope.name,
+        statement_type: 'if', node_kind: 'else',
+        line_start: lineNum, line_end: lineNum,
+        order_index: nextOrder(parentId, scope), depth,
+        text: 'else:', is_top_level: isTop, is_awaited: false,
+      });
+      parentAtDepth.set(indent, id);
+      continue;
+    }
+
+    // for
+    if ((dm = forRe.exec(trimmed)) !== null) {
+      const cond = `${dm[2]} in ${dm[3]}`.slice(0, 200);
+      const id = nextId();
+      statements.push({
+        temp_id: id, parent_temp_id: parentId,
+        scope_type: scope.type, scope_name: scope.name,
+        statement_type: 'for', node_kind: 'for',
+        line_start: lineNum, line_end: lineNum,
+        order_index: nextOrder(parentId, scope), depth,
+        text: trimmed.slice(0, 240), is_top_level: isTop, is_awaited: false,
+        condition_text: cond,
+      });
+      parentAtDepth.set(indent, id);
+      extractCalls(dm[3], id, scope.name, lineNum, false);
+      continue;
+    }
+
+    // while
+    if ((dm = whileRe.exec(trimmed)) !== null) {
+      const cond = dm[2].slice(0, 200);
+      const id = nextId();
+      statements.push({
+        temp_id: id, parent_temp_id: parentId,
+        scope_type: scope.type, scope_name: scope.name,
+        statement_type: 'while', node_kind: 'while',
+        line_start: lineNum, line_end: lineNum,
+        order_index: nextOrder(parentId, scope), depth,
+        text: trimmed.slice(0, 240), is_top_level: isTop, is_awaited: false,
+        condition_text: cond,
+      });
+      parentAtDepth.set(indent, id);
+      extractCalls(cond, id, scope.name, lineNum, false);
+      continue;
+    }
+
+    // try
+    if (tryRe.test(trimmed)) {
+      const id = nextId();
+      statements.push({
+        temp_id: id, parent_temp_id: parentId,
+        scope_type: scope.type, scope_name: scope.name,
+        statement_type: 'try', node_kind: 'try',
+        line_start: lineNum, line_end: lineNum,
+        order_index: nextOrder(parentId, scope), depth,
+        text: 'try:', is_top_level: isTop, is_awaited: false,
+      });
+      parentAtDepth.set(indent, id);
+      continue;
+    }
+
+    // except
+    if ((dm = exceptRe.exec(trimmed)) !== null) {
+      const id = nextId();
+      statements.push({
+        temp_id: id, parent_temp_id: parentId,
+        scope_type: scope.type, scope_name: scope.name,
+        statement_type: 'try', node_kind: 'except',
+        line_start: lineNum, line_end: lineNum,
+        order_index: nextOrder(parentId, scope), depth,
+        text: trimmed.slice(0, 240), is_top_level: isTop, is_awaited: false,
+        condition_text: dm[2]?.slice(0, 200),
+      });
+      parentAtDepth.set(indent, id);
+      continue;
+    }
+
+    // finally
+    if (finallyRe.test(trimmed)) {
+      const id = nextId();
+      statements.push({
+        temp_id: id, parent_temp_id: parentId,
+        scope_type: scope.type, scope_name: scope.name,
+        statement_type: 'try', node_kind: 'finally',
+        line_start: lineNum, line_end: lineNum,
+        order_index: nextOrder(parentId, scope), depth,
+        text: 'finally:', is_top_level: isTop, is_awaited: false,
+      });
+      parentAtDepth.set(indent, id);
+      continue;
+    }
+
+    // with
+    if ((dm = withRe.exec(trimmed)) !== null) {
+      const id = nextId();
+      statements.push({
+        temp_id: id, parent_temp_id: parentId,
+        scope_type: scope.type, scope_name: scope.name,
+        statement_type: 'try', node_kind: 'with',
+        line_start: lineNum, line_end: lineNum,
+        order_index: nextOrder(parentId, scope), depth,
+        text: trimmed.slice(0, 240), is_top_level: isTop, is_awaited: false,
+        condition_text: dm[2].slice(0, 200),
+      });
+      parentAtDepth.set(indent, id);
+      extractCalls(dm[2], id, scope.name, lineNum, false);
+      continue;
+    }
+
+    // return
+    if ((dm = returnRe.exec(trimmed)) !== null) {
+      const expr = dm[2] ?? '';
+      const id = nextId();
+      statements.push({
+        temp_id: id, parent_temp_id: parentId,
+        scope_type: scope.type, scope_name: scope.name,
+        statement_type: 'return', node_kind: 'return',
+        line_start: lineNum, line_end: lineNum,
+        order_index: nextOrder(parentId, scope), depth,
+        text: trimmed.slice(0, 240), is_top_level: isTop, is_awaited: false,
+      });
+      if (expr) extractCalls(expr, id, scope.name, lineNum, false);
+      continue;
+    }
+
+    // yield
+    if ((dm = yieldRe.exec(trimmed)) !== null) {
+      const expr = dm[2] ?? '';
+      const id = nextId();
+      statements.push({
+        temp_id: id, parent_temp_id: parentId,
+        scope_type: scope.type, scope_name: scope.name,
+        statement_type: 'return', node_kind: 'yield',
+        line_start: lineNum, line_end: lineNum,
+        order_index: nextOrder(parentId, scope), depth,
+        text: trimmed.slice(0, 240), is_top_level: isTop, is_awaited: false,
+      });
+      if (expr) extractCalls(expr, id, scope.name, lineNum, false);
+      continue;
+    }
+
+    // raise
+    if ((dm = raiseRe.exec(trimmed)) !== null) {
+      const expr = dm[2] ?? '';
+      const id = nextId();
+      statements.push({
+        temp_id: id, parent_temp_id: parentId,
+        scope_type: scope.type, scope_name: scope.name,
+        statement_type: 'throw', node_kind: 'raise',
+        line_start: lineNum, line_end: lineNum,
+        order_index: nextOrder(parentId, scope), depth,
+        text: trimmed.slice(0, 240), is_top_level: isTop, is_awaited: false,
+      });
+      if (expr) extractCalls(expr, id, scope.name, lineNum, false);
+      continue;
+    }
+
+    // await expr (mit optionaler Zuweisung)
+    if ((dm = awaitRe.exec(trimmed)) !== null) {
+      const assignTo = dm[2]?.trim().replace(/\s*=\s*$/, '');
+      const expr = dm[3];
+      const id = nextId();
+      statements.push({
+        temp_id: id, parent_temp_id: parentId,
+        scope_type: scope.type, scope_name: scope.name,
+        statement_type: 'await', node_kind: 'await',
+        line_start: lineNum, line_end: lineNum,
+        order_index: nextOrder(parentId, scope), depth,
+        text: trimmed.slice(0, 240), is_top_level: isTop, is_awaited: true,
+        assigned_to: assignTo?.slice(0, 120),
+      });
+      extractCalls(expr, id, scope.name, lineNum, true);
+      continue;
+    }
+
+    // assignment: x = expr
+    if ((dm = assignRe.exec(trimmed)) !== null) {
+      const lhs = dm[2].slice(0, 120);
+      const rhs = dm[3];
+      // Pruefe auf new-Aufruf (Python: keine new-Syntax, aber ClassName() zaehlt als call)
+      const id = nextId();
+      statements.push({
+        temp_id: id, parent_temp_id: parentId,
+        scope_type: scope.type, scope_name: scope.name,
+        statement_type: 'assignment', node_kind: 'assignment',
+        line_start: lineNum, line_end: lineNum,
+        order_index: nextOrder(parentId, scope), depth,
+        text: trimmed.slice(0, 240), is_top_level: isTop, is_awaited: false,
+        assigned_to: lhs,
+      });
+      extractCalls(rhs, id, scope.name, lineNum, false);
+      continue;
+    }
+
+    // plain call statement
+    if ((dm = callStmtRe.exec(trimmed)) !== null) {
+      const callExpr = dm[2];
+      const parts = callExpr.split('.');
+      const callee = parts[parts.length - 1];
+      const receiver = parts.length > 1 ? parts.slice(0, -1).join('.') : undefined;
+      const id = nextId();
+      statements.push({
+        temp_id: id, parent_temp_id: parentId,
+        scope_type: scope.type, scope_name: scope.name,
+        statement_type: 'call', node_kind: 'call',
+        line_start: lineNum, line_end: lineNum,
+        order_index: nextOrder(parentId, scope), depth,
+        text: trimmed.slice(0, 240), is_top_level: isTop, is_awaited: false,
+        callee, receiver,
+      });
+      callEdges.push({
+        statement_temp_id: id, caller_scope: scope.name,
+        callee_name: callee, callee_receiver: receiver,
+        line_number: lineNum,
+        call_kind: receiver ? 'method' : 'function',
+      });
+      // Auch Argumente auf calls scannen
+      extractCalls(trimmed.slice(dm[0].length), id, scope.name, lineNum, false);
+      continue;
+    }
+  }
+
+  return { statements, callEdges };
 }
 
 class PythonParser implements LanguageParser {
@@ -364,7 +783,8 @@ class PythonParser implements LanguageParser {
       }
     }
 
-    return { symbols, references };
+    const { statements, callEdges } = extractPythonFlow(content, lines);
+    return { symbols, references, statements, callEdges };
   }
 
   /** Findet das Ende eines eingerueckten Blocks (naechste Zeile mit <= Einrueckung) */

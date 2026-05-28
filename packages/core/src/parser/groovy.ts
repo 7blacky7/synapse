@@ -8,7 +8,7 @@
  * ANSATZ: Regex-basiert
  */
 
-import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
+import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser, ParsedStatement, ParsedCallEdge } from './types.js';
 import { extractStringLiterals } from './types.js';
 import { formatRouteName, isLikelyHttpPath, HTTP_VERBS } from './patterns/http.js';
 import { parseEmbeddedSql, looksLikeSql } from './patterns/sql.js';
@@ -332,7 +332,185 @@ class GroovyParser implements LanguageParser {
       symbols.push(...parseEmbeddedSql(body, filePath, baseLine));
     }
 
-    return { symbols, references };
+    // ══════════════════════════════════════════════
+    // FLOW: Statements + CallEdges
+    // ══════════════════════════════════════════════
+    const statements: ParsedStatement[] = [];
+    const callEdges: ParsedCallEdge[] = [];
+    let tid = 0;
+    const nid = (): string => `s${tid++}`;
+    const oc = new Map<string, number>();
+    const nord = (p: string | undefined): number => { const k = p ?? 'root'; const v = oc.get(k) ?? 0; oc.set(k, v + 1); return v; };
+    interface GS { type: string; name: string | null; }
+    const ss: GS[] = [{ type: 'module', name: null }];
+    const cs = (): GS => ss[ss.length - 1];
+
+    function es(st: string, line: number, pid: string | undefined, depth: number, extra: Partial<ParsedStatement> = {}): ParsedStatement {
+      const sc = cs(); const id = nid();
+      const s: ParsedStatement = { temp_id: id, parent_temp_id: pid, scope_type: sc.type, scope_name: sc.name, statement_type: st, line_start: line, order_index: nord(pid), depth, is_top_level: sc.type === 'module' && depth === 0, is_awaited: false, ...extra };
+      statements.push(s); return s;
+    }
+    function ec(sid: string, callee: string, recv: string | undefined, line: number, kind: string): void {
+      callEdges.push({ statement_temp_id: sid, caller_scope: cs().name, callee_name: callee, callee_receiver: recv, line_number: line, call_kind: kind });
+    }
+
+    const gLines = content.split('\n');
+    interface GF { pid: string | undefined; depth: number; braceDepthAtOpen: number; scopeIdx: number; }
+    const fs: GF[] = [{ pid: undefined, depth: 0, braceDepthAtOpen: 0, scopeIdx: 0 }];
+    const tf = (): GF => fs[fs.length - 1];
+    let braceDepth = 0;
+
+    for (let i = 0; i < gLines.length; i++) {
+      const raw = gLines[i];
+      const tr = raw.replace(/\/\/.*$/, '').trim();
+      const ln = i + 1;
+      if (!tr || tr.startsWith('*') || tr.startsWith('/*')) continue;
+
+      const openB = (tr.match(/\{/g) || []).length;
+      const closeB = (tr.match(/\}/g) || []).length;
+
+      // Pop frames for leading close braces BEFORE reading current frame
+      if (closeB > openB) {
+        braceDepth -= (closeB - openB);
+        while (fs.length > 1 && braceDepth < fs[fs.length - 1].braceDepthAtOpen) { const p = fs.pop()!; if (ss.length > p.scopeIdx) ss.splice(p.scopeIdx); }
+      }
+
+      const f = tf();
+      const d = f.depth;
+
+      // class / interface / trait declaration
+      const classM = /^(?:(?:abstract|final|public|protected|private|static)\s+)*(?:class|interface|trait|enum)\s+(\w+)/.exec(tr);
+      if (classM) {
+        const name = classM[1];
+        if (openB > closeB) {
+          ss.push({ type: 'class', name });
+          fs.push({ pid: undefined, depth: 0, braceDepthAtOpen: braceDepth + openB - closeB, scopeIdx: ss.length - 1 });
+        }
+        braceDepth += openB - closeB;
+        continue;
+      }
+
+      // method / function declaration
+      const fnM = /^(?:(?:public|protected|private|static|def|void|abstract|final|override|synchronized)\s+)*(?:def\s+)?(\w+)\s*\(/.exec(tr);
+      if (fnM && /\{/.test(tr) && !/^(?:if|while|for|switch|try|catch|finally|new)\b/.test(tr)) {
+        const name = fnM[1];
+        const sc = cs();
+        const scopeType = sc.type === 'class' ? 'method' : 'function';
+        const scopeName = sc.type === 'class' && sc.name ? `${sc.name}.${name}` : name;
+        if (openB > closeB) {
+          ss.push({ type: scopeType, name: scopeName });
+          fs.push({ pid: undefined, depth: 0, braceDepthAtOpen: braceDepth + openB - closeB, scopeIdx: ss.length - 1 });
+        }
+        braceDepth += openB - closeB;
+        continue;
+      }
+
+      // if / else if
+      const ifM = /^(?:else\s+)?if\s*\((.{0,200})\)/.exec(tr);
+      if (ifM) {
+        const st = es('if', ln, f.pid, d, { condition_text: ifM[1].slice(0, 200), text: tr.slice(0, 120) });
+        if (openB > closeB) { fs.push({ pid: st.temp_id, depth: d + 1, braceDepthAtOpen: braceDepth + openB - closeB, scopeIdx: ss.length - 1 }); }
+        braceDepth += openB - closeB;
+        continue;
+      }
+      if (/^\}\s*else\s*\{/.test(tr) || /^else\s*\{/.test(tr)) { braceDepth += openB - closeB; continue; }
+
+      // while
+      const whM = /^while\s*\((.{0,200})\)/.exec(tr);
+      if (whM) {
+        const st = es('while', ln, f.pid, d, { condition_text: whM[1].slice(0, 200), text: tr.slice(0, 120) });
+        if (openB > closeB) { fs.push({ pid: st.temp_id, depth: d + 1, braceDepthAtOpen: braceDepth + openB - closeB, scopeIdx: ss.length - 1 }); }
+        braceDepth += openB - closeB;
+        continue;
+      }
+
+      // for / each
+      const forM = /^for\s*\((.{0,200})\)/.exec(tr);
+      if (forM) {
+        const st = es('for', ln, f.pid, d, { condition_text: forM[1].slice(0, 200), text: tr.slice(0, 120) });
+        if (openB > closeB) { fs.push({ pid: st.temp_id, depth: d + 1, braceDepthAtOpen: braceDepth + openB - closeB, scopeIdx: ss.length - 1 }); }
+        braceDepth += openB - closeB;
+        continue;
+      }
+
+      // switch
+      const swM = /^switch\s*\((.{0,200})\)/.exec(tr);
+      if (swM) {
+        const st = es('switch', ln, f.pid, d, { condition_text: swM[1].slice(0, 200), text: tr.slice(0, 120) });
+        if (openB > closeB) { fs.push({ pid: st.temp_id, depth: d + 1, braceDepthAtOpen: braceDepth + openB - closeB, scopeIdx: ss.length - 1 }); }
+        braceDepth += openB - closeB;
+        continue;
+      }
+
+      // try / catch / finally
+      if (/^try\s*\{/.test(tr)) {
+        const st = es('try', ln, f.pid, d, { text: tr.slice(0, 120) });
+        fs.push({ pid: st.temp_id, depth: d + 1, braceDepthAtOpen: braceDepth + openB - closeB, scopeIdx: ss.length - 1 });
+        braceDepth += openB - closeB;
+        continue;
+      }
+      if (/^\}\s*catch\b|\}\s*finally\b/.test(tr)) { braceDepth += openB - closeB; continue; }
+
+      // throw
+      if (/^throw\b/.test(tr)) { es('throw', ln, f.pid, d, { text: tr.slice(0, 120) }); continue; }
+      // return
+      if (/^return\b/.test(tr)) { const st = es('return', ln, f.pid, d, { text: tr.slice(0, 120) }); const cM = /(\w+)\s*\(/.exec(tr.slice(6)); if (cM) ec(st.temp_id, cM[1], undefined, ln, 'function'); continue; }
+
+      // assignment: type var = expr  or  def var = expr  or  var = expr
+      const assignM = /^(?:(?:def|final|var|val)\s+)?(\w+)\s*(?:[+\-*\/]?=)(?!=)\s*(.+)/.exec(tr);
+      if (assignM && !/^(?:if|while|for|switch|try|throw|return|class|interface|trait|enum|new)\b/.test(tr)) {
+        const rhs = assignM[2];
+        const callM = /(\w+)\s*\(/.exec(rhs);
+        const newM = /new\s+(\w+)\s*\(/.exec(rhs);
+        const st = es(newM ? 'new' : 'assignment', ln, f.pid, d, { assigned_to: assignM[1], text: tr.slice(0, 120) });
+        if (newM) ec(st.temp_id, newM[1], undefined, ln, 'new');
+        else if (callM) ec(st.temp_id, callM[1], undefined, ln, 'function');
+        braceDepth += openB - closeB;
+        while (fs.length > 1 && braceDepth < fs[fs.length - 1].braceDepthAtOpen) { const p = fs.pop()!; if (ss.length > p.scopeIdx) ss.splice(p.scopeIdx); }
+        continue;
+      }
+
+      // new Expr(...).method() or new Expr(...)
+      if (/^new\s+\w/.test(tr)) {
+        const newM = /^new\s+(\w+)\s*\(/.exec(tr);
+        const chainM = /^new\s+\w+\s*\([^)]*\)\.(\w+)\s*\(/.exec(tr);
+        if (chainM) {
+          const st = es('call', ln, f.pid, d, { callee: chainM[1], text: tr.slice(0, 120) });
+          ec(st.temp_id, chainM[1], newM?.[1], ln, 'method');
+        } else if (newM) {
+          const st = es('new', ln, f.pid, d, { callee: newM[1], text: tr.slice(0, 120) });
+          ec(st.temp_id, newM[1], undefined, ln, 'new');
+        }
+      // method call: obj.method() or func()
+      } else {
+        const mCallM = /^(\w+)\.(\w+)\s*\(/.exec(tr);
+        if (mCallM && !/^(?:if|while|for|switch|try|throw|return|class)\b/.test(tr)) {
+          const st = es('call', ln, f.pid, d, { callee: mCallM[2], receiver: mCallM[1], text: tr.slice(0, 120) });
+          ec(st.temp_id, mCallM[2], mCallM[1], ln, 'method');
+        } else {
+          const plainCallM = /^(\w+)\s*\(/.exec(tr);
+          if (plainCallM && !/^(?:if|while|for|switch|try|throw|return|class|interface|trait|enum|new|def)\b/.test(tr)) {
+            const st = es('call', ln, f.pid, d, { callee: plainCallM[1], text: tr.slice(0, 120) });
+            ec(st.temp_id, plainCallM[1], undefined, ln, 'function');
+          }
+        }
+      }
+
+      // Gradle DSL: task/plugins/dependencies blocks
+      if (isGradle && /^(?:task|plugins|dependencies|repositories|configurations)\s*\{?/.test(tr)) {
+        const dslM = /^(\w+)/.exec(tr);
+        if (dslM) {
+          const st = es('call', ln, f.pid, d, { callee: dslM[1], text: tr.slice(0, 120) });
+          ec(st.temp_id, dslM[1], undefined, ln, 'function');
+          if (openB > closeB) { fs.push({ pid: st.temp_id, depth: d + 1, braceDepthAtOpen: braceDepth + openB - closeB, scopeIdx: ss.length - 1 }); }
+        }
+      }
+
+      // Only accumulate open braces here; close braces handled at top of loop
+      if (openB > closeB) braceDepth += (openB - closeB);
+    }
+
+    return { symbols, references, statements, callEdges };
   }
 
   private findClosingBrace(content: string, openPos: number): number {

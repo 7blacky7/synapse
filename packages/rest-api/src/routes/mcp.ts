@@ -73,6 +73,10 @@ import {
   getReferences,
   fullTextSearchCode,
   getFileContent,
+  getStatements,
+  getCallEdges,
+  getExecutionFlow,
+  getEntrypoints,
   // Media
   indexMediaDirectory,
   searchMedia,
@@ -716,14 +720,14 @@ const MCP_TOOLS = [
   // 14. code_intel
   {
     name: 'code_intel',
-    description: 'Strukturierte Lese-Abfragen ueber den eigenen Code-Index des Projekts (PostgreSQL): Dateibaum, Funktionen, Variablen, Symbole, Querverweise, Volltext-Suche, Dateiinhalt. Read-Only auf eigene indexierte Projekt-Daten. Keine fremden Repositories, keine externen Systeme.',
+    description: 'Strukturierte Lese-Abfragen ueber den eigenen Code-Index des Projekts (PostgreSQL): Dateibaum, Funktionen, Variablen, Symbole, Querverweise, Volltext-Suche, Dateiinhalt sowie die Ablauf-Ebene (Statements, Call-Kanten, Execution-Flow, Entrypoints). Read-Only auf eigene indexierte Projekt-Daten. Keine fremden Repositories, keine externen Systeme.',
     inputSchema: {
       type: 'object',
       properties: {
         action: {
           type: 'string',
-          enum: ['tree', 'functions', 'variables', 'symbols', 'references', 'search', 'file'],
-          description: 'Aktion: tree|functions|variables|symbols|references|search|file',
+          enum: ['tree', 'functions', 'variables', 'symbols', 'references', 'search', 'file', 'statements', 'calls', 'flow', 'entrypoints'],
+          description: 'Aktion: tree|functions|variables|symbols|references|search|file|statements|calls|flow|entrypoints',
         },
         project: { type: 'string', description: 'Projekt-Name (erforderlich)' },
         agent_id: { type: 'string', description: 'Agent-ID fuer Onboarding' },
@@ -750,6 +754,9 @@ const MCP_TOOLS = [
         from_line: { type: 'number', description: 'file: Start-Zeile (1-basiert, Standard: 1)' },
         to_line: { type: 'number', description: 'file: End-Zeile inklusiv (Standard: letzte Zeile). Auto-Reduce bei > 80k Zeichen.' },
         truncate_long_lines: { type: 'number', description: 'file: Zeilen laenger als N Zeichen kuerzen + Marker. 0 = aus (Standard).' },
+        scope: { type: 'string', description: 'Scope-Name-Filter fuer statements/flow (z.B. Funktionsname). Ohne scope bei flow: Top-Level-Ausfuehrung der Datei.' },
+        callee: { type: 'string', description: 'callee_name-Filter fuer calls-Action (aufgerufener Funktions-/Methodenname).' },
+        top_level_only: { type: 'boolean', description: 'Nur Top-Level-Statements zurueckgeben (fuer statements).' },
       },
       required: ['action', 'project'],
     },
@@ -2804,6 +2811,24 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
           });
           if (!file) return { success: false, message: `Datei nicht gefunden: ${filePath}`, project };
           return { success: true, ...file, project };
+        }
+        case 'statements': {
+          const statements = await getStatements(project, str(args, 'file_path'), str(args, 'scope'), bool(args, 'top_level_only'));
+          return { success: true, statements, count: statements.length, project };
+        }
+        case 'calls': {
+          const callEdges = await getCallEdges(project, str(args, 'file_path'), str(args, 'callee'));
+          return { success: true, call_edges: callEdges, count: callEdges.length, project };
+        }
+        case 'flow': {
+          const filePath = str(args, 'file_path') ?? str(args, 'path');
+          if (!filePath) throw new Error('Parameter "file_path" ist erforderlich fuer action "flow"');
+          const flow = await getExecutionFlow(project, filePath, str(args, 'scope'));
+          return { success: true, ...flow, project };
+        }
+        case 'entrypoints': {
+          const entrypoints = await getEntrypoints(project, str(args, 'file_path'), num(args, 'limit'));
+          return { success: true, entrypoints, count: entrypoints.length, project };
         }
         default:
           return { success: false, error: `Unbekannte code_intel action: "${action}"` };

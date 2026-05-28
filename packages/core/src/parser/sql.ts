@@ -6,7 +6,7 @@
  * ANSATZ: Regex-basiert — SQL hat strukturierte Syntax ohne tiefe Verschachtelung
  */
 
-import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
+import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser, ParsedStatement, ParsedCallEdge } from './types.js';
 import { extractStringLiterals } from './types.js';
 
 /** Zeilennummer fuer eine Position im Text (1-basiert) */
@@ -480,9 +480,120 @@ class SqlParser implements LanguageParser {
 
     symbols.push(...extractStringLiterals(content, { includeSingleQuotes: true }));
 
-
-    return { symbols, references };
+    const { statements, callEdges } = extractSqlFlow(content);
+    return { symbols, references, statements, callEdges };
   }
+}
+
+// ---------------------------------------------------------------------------
+// Execution-Flow Extraktion fuer SQL
+// Jede SQL-Anweisung = ein Statement in Datei-Reihenfolge (module scope).
+// Aufgerufene Funktionen/Prozeduren werden als callEdges erfasst.
+// ---------------------------------------------------------------------------
+function extractSqlFlow(content: string): { statements: ParsedStatement[]; callEdges: ParsedCallEdge[] } {
+  const statements: ParsedStatement[] = [];
+  const callEdges: ParsedCallEdge[] = [];
+  let tempId = 0;
+  const nextId = (): string => `s${tempId++}`;
+  let orderCounter = 0;
+
+  function lineAt(pos: number): number {
+    return content.substring(0, pos).split('\n').length;
+  }
+
+  // Strip comments for scanning but keep positions
+  function stripForScan(sql: string): string {
+    return sql
+      .replace(/--[^\n]*/g, m => ' '.repeat(m.length))
+      .replace(/\/\*[\s\S]*?\*\//g, m => ' '.repeat(m.length));
+  }
+
+  const stripped = stripForScan(content);
+
+  // Find statement boundaries by splitting on ';'
+  // We track position in original content
+  let pos = 0;
+  const stmtBoundaries: Array<{ start: number; end: number }> = [];
+
+  let stmtStart = 0;
+  // skip leading whitespace/comments
+  while (pos < stripped.length) {
+    if (stripped[pos] === ';') {
+      stmtBoundaries.push({ start: stmtStart, end: pos });
+      stmtStart = pos + 1;
+    }
+    pos++;
+  }
+  // last statement without trailing ;
+  if (stmtStart < stripped.length && stripped.substring(stmtStart).trim()) {
+    stmtBoundaries.push({ start: stmtStart, end: stripped.length });
+  }
+
+  for (const { start, end } of stmtBoundaries) {
+    const raw = content.substring(start, end).trim();
+    if (!raw) continue;
+
+    const upper = raw.replace(/\s+/g, ' ').toUpperCase().slice(0, 100);
+    const lineStart = lineAt(start + content.substring(start).search(/\S/));
+    const lineEnd = lineAt(end);
+
+    // Determine statement type
+    let stmtType = 'expression';
+    let stmtName: string | undefined;
+
+    if (/^SELECT\b/.test(upper)) { stmtType = 'call'; stmtName = 'SELECT'; }
+    else if (/^INSERT\b/.test(upper)) { stmtType = 'call'; stmtName = 'INSERT'; }
+    else if (/^UPDATE\b/.test(upper)) { stmtType = 'call'; stmtName = 'UPDATE'; }
+    else if (/^DELETE\b/.test(upper)) { stmtType = 'call'; stmtName = 'DELETE'; }
+    else if (/^CREATE\s+(?:OR\s+REPLACE\s+)?(?:FUNCTION|PROCEDURE)\b/.test(upper)) { stmtType = 'variable'; stmtName = 'CREATE FUNCTION'; }
+    else if (/^CREATE\s+(?:OR\s+REPLACE\s+)?(?:TABLE|VIEW|INDEX|TRIGGER|SEQUENCE|TYPE)\b/.test(upper)) { stmtType = 'variable'; stmtName = 'CREATE'; }
+    else if (/^ALTER\b/.test(upper)) { stmtType = 'assignment'; stmtName = 'ALTER'; }
+    else if (/^DROP\b/.test(upper)) { stmtType = 'call'; stmtName = 'DROP'; }
+    else if (/^GRANT\b|\bREVOKE\b/.test(upper)) { stmtType = 'assignment'; stmtName = upper.split(' ')[0]; }
+    else if (/^BEGIN\b|^START\s+TRANSACTION\b/.test(upper)) { stmtType = 'call'; stmtName = 'BEGIN'; }
+    else if (/^COMMIT\b/.test(upper)) { stmtType = 'return'; stmtName = 'COMMIT'; }
+    else if (/^ROLLBACK\b/.test(upper)) { stmtType = 'throw'; stmtName = 'ROLLBACK'; }
+    else if (/^CALL\b|^EXECUTE\b|^EXEC\b/.test(upper)) { stmtType = 'call'; stmtName = upper.split(/\s+/)[1]; }
+    else if (/^SET\b/.test(upper)) { stmtType = 'assignment'; stmtName = 'SET'; }
+    else if (/^IF\b/.test(upper)) { stmtType = 'if'; stmtName = 'IF'; }
+
+    const id = nextId();
+    const st: ParsedStatement = {
+      temp_id: id,
+      scope_type: 'module',
+      scope_name: null,
+      statement_type: stmtType,
+      line_start: lineStart,
+      line_end: lineEnd,
+      order_index: orderCounter++,
+      depth: 0,
+      is_top_level: true,
+      is_awaited: false,
+      text: raw.replace(/\s+/g, ' ').slice(0, 240),
+      callee: stmtName,
+    };
+    statements.push(st);
+
+    // Extract CALL/EXECUTE targets and function calls
+    const callExecM = /^(?:CALL|EXECUTE|EXEC)\s+(\w+)/i.exec(raw);
+    if (callExecM) {
+      callEdges.push({ statement_temp_id: id, caller_scope: null, callee_name: callExecM[1], line_number: lineStart, call_kind: 'function' });
+    }
+
+    // Extract function calls in expressions: func_name(
+    const funcCallRe = /\b([a-zA-Z_]\w+)\s*\(/g;
+    const SQL_BUILTINS = new Set(['SELECT','INSERT','UPDATE','DELETE','FROM','WHERE','JOIN','ON','AND','OR','NOT','IN','AS','IF','CASE','WHEN','THEN','ELSE','END','COALESCE','NULLIF','CAST','CONVERT','COUNT','SUM','AVG','MIN','MAX','NOW','DATE','TIME','YEAR','MONTH','DAY']);
+    let fm: RegExpExecArray | null;
+    while ((fm = funcCallRe.exec(raw)) !== null) {
+      const name = fm[1].toUpperCase();
+      if (SQL_BUILTINS.has(name)) continue;
+      if (/^[A-Z_][A-Z0-9_]*$/.test(name) && name.length > 2) {
+        callEdges.push({ statement_temp_id: id, caller_scope: null, callee_name: fm[1], line_number: lineAt(start + fm.index), call_kind: 'function', confidence: 0.7 });
+      }
+    }
+  }
+
+  return { statements, callEdges };
 }
 
 export const sqlParser = new SqlParser();

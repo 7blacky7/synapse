@@ -7,7 +7,7 @@
  * ANSATZ: Regex-basiert
  */
 
-import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
+import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser, ParsedStatement, ParsedCallEdge } from './types.js';
 import { extractStringLiterals } from './types.js';
 import { formatRouteName, isLikelyHttpPath, HTTP_VERBS } from './patterns/http.js';
 import { parseEmbeddedSql, looksLikeSql } from './patterns/sql.js';
@@ -357,7 +357,202 @@ class PhpParser implements LanguageParser {
       }
     }
 
-    return { symbols, references };
+    // ══════════════════════════════════════════════
+    // FLOW: Statements + CallEdges
+    // ══════════════════════════════════════════════
+    const statements: ParsedStatement[] = [];
+    const callEdges: ParsedCallEdge[] = [];
+    let tempId = 0;
+    const nextTmpId = (): string => `s${tempId++}`;
+    const orderCounters = new Map<string, number>();
+    function nextOrder(parentId: string | undefined): number {
+      const key = parentId ?? 'root';
+      const cur = orderCounters.get(key) ?? 0;
+      orderCounters.set(key, cur + 1);
+      return cur;
+    }
+
+    interface PhpScope { type: string; name: string | null; }
+    const scopeStack: PhpScope[] = [{ type: 'module', name: null }];
+    const curScope = (): PhpScope => scopeStack[scopeStack.length - 1];
+
+    function emitS(
+      stmtType: string, lineStart: number, parentId: string | undefined, depth: number,
+      extra: Partial<ParsedStatement> = {},
+    ): ParsedStatement {
+      const sc = curScope();
+      const id = nextTmpId();
+      const st: ParsedStatement = {
+        temp_id: id, parent_temp_id: parentId,
+        scope_type: sc.type, scope_name: sc.name,
+        statement_type: stmtType,
+        line_start: lineStart, order_index: nextOrder(parentId), depth,
+        is_top_level: sc.type === 'module' && depth === 0,
+        is_awaited: false, ...extra,
+      };
+      statements.push(st);
+      return st;
+    }
+    function emitC(stmtId: string, callee: string, receiver: string | undefined, line: number, kind: string): void {
+      callEdges.push({ statement_temp_id: stmtId, caller_scope: curScope().name, callee_name: callee, callee_receiver: receiver, line_number: line, call_kind: kind });
+    }
+
+    const phpLines = content.split('\n');
+    // brace-depth tracking for scope enter/exit
+    let braceDepth = 0;
+    // stack: { parentId, depth, braceDepthAtOpen, scopeIdx }
+    interface PhpFrame { parentId: string | undefined; stmtDepth: number; braceDepthAtOpen: number; scopeName: string | null; scopeType: string; }
+    const frameStack: PhpFrame[] = [{ parentId: undefined, stmtDepth: 0, braceDepthAtOpen: 0, scopeName: null, scopeType: 'module' }];
+    const topFrame = (): PhpFrame => frameStack[frameStack.length - 1];
+
+    for (let i = 0; i < phpLines.length; i++) {
+      const rawLine = phpLines[i];
+      const trimmed = rawLine.replace(/\/\/.*$/, '').trim();
+      const lineNum = i + 1;
+      if (!trimmed || trimmed.startsWith('//') || trimmed.startsWith('#') || trimmed.startsWith('*')) continue;
+
+      // Count braces
+      const openBraces = (trimmed.match(/\{/g) || []).length;
+      const closeBraces = (trimmed.match(/\}/g) || []).length;
+
+      // Pop frames when braces close
+      const prevDepth = braceDepth;
+      // Process close braces first
+      const netClose = closeBraces - openBraces;
+
+      const frame = topFrame();
+      const stmtDepth = frame.stmtDepth;
+
+      // if / elseif
+      const ifMatch = /^\}?\s*(?:elseif|if)\s*\((.{1,200})\)/.exec(trimmed);
+      if (ifMatch) {
+        const st = emitS('if', lineNum, frame.parentId, stmtDepth, { condition_text: ifMatch[1].slice(0, 200), text: trimmed.slice(0, 120) });
+        if (openBraces > 0) frameStack.push({ parentId: st.temp_id, stmtDepth: stmtDepth + 1, braceDepthAtOpen: braceDepth + 1, scopeName: frame.scopeName, scopeType: frame.scopeType });
+        braceDepth += openBraces - closeBraces;
+        continue;
+      }
+
+      // while / do
+      const whileMatch = /^while\s*\((.{1,200})\)/.exec(trimmed);
+      if (whileMatch) {
+        const st = emitS('while', lineNum, frame.parentId, stmtDepth, { condition_text: whileMatch[1].slice(0, 200), text: trimmed.slice(0, 120) });
+        if (openBraces > 0) frameStack.push({ parentId: st.temp_id, stmtDepth: stmtDepth + 1, braceDepthAtOpen: braceDepth + 1, scopeName: frame.scopeName, scopeType: frame.scopeType });
+        braceDepth += openBraces - closeBraces;
+        continue;
+      }
+
+      // for / foreach
+      const forMatch = /^for(?:each)?\s*\((.{1,200})\)/.exec(trimmed);
+      if (forMatch) {
+        const st = emitS('for', lineNum, frame.parentId, stmtDepth, { condition_text: forMatch[1].slice(0, 200), text: trimmed.slice(0, 120) });
+        if (openBraces > 0) frameStack.push({ parentId: st.temp_id, stmtDepth: stmtDepth + 1, braceDepthAtOpen: braceDepth + 1, scopeName: frame.scopeName, scopeType: frame.scopeType });
+        braceDepth += openBraces - closeBraces;
+        continue;
+      }
+
+      // switch
+      const switchMatch = /^switch\s*\((.{1,200})\)/.exec(trimmed);
+      if (switchMatch) {
+        const st = emitS('switch', lineNum, frame.parentId, stmtDepth, { condition_text: switchMatch[1].slice(0, 200), text: trimmed.slice(0, 120) });
+        if (openBraces > 0) frameStack.push({ parentId: st.temp_id, stmtDepth: stmtDepth + 1, braceDepthAtOpen: braceDepth + 1, scopeName: frame.scopeName, scopeType: frame.scopeType });
+        braceDepth += openBraces - closeBraces;
+        continue;
+      }
+
+      // try / catch / finally
+      if (/^try\s*\{/.test(trimmed)) {
+        const st = emitS('try', lineNum, frame.parentId, stmtDepth, { text: trimmed.slice(0, 120) });
+        frameStack.push({ parentId: st.temp_id, stmtDepth: stmtDepth + 1, braceDepthAtOpen: braceDepth + 1, scopeName: frame.scopeName, scopeType: frame.scopeType });
+        braceDepth += openBraces - closeBraces;
+        continue;
+      }
+      if (/^\}\s*catch\b/.test(trimmed) || /^\}\s*finally\b/.test(trimmed)) {
+        braceDepth += openBraces - closeBraces;
+        continue;
+      }
+
+      // throw
+      if (/^throw\b/.test(trimmed)) {
+        emitS('throw', lineNum, frame.parentId, stmtDepth, { text: trimmed.slice(0, 120) });
+        continue;
+      }
+
+      // return
+      if (/^return\b/.test(trimmed)) {
+        const callM = /(\w+)\s*\(/.exec(trimmed.slice(6));
+        const st = emitS('return', lineNum, frame.parentId, stmtDepth, { text: trimmed.slice(0, 120) });
+        if (callM) emitC(st.temp_id, callM[1], undefined, lineNum, 'function');
+        continue;
+      }
+
+      // function / method declaration
+      const fnMatch = /^(?:(?:public|protected|private|static|abstract|final)\s+)*function\s+(\w+)\s*\(/.exec(trimmed);
+      if (fnMatch) {
+        const fnName = fnMatch[1];
+        const sc = curScope();
+        const fnType = sc.type === 'class' ? 'method' : 'function';
+        const scopeName2 = sc.type === 'class' && sc.name ? `${sc.name}.${fnName}` : fnName;
+        if (openBraces > 0) {
+          scopeStack.push({ type: fnType, name: scopeName2 });
+          frameStack.push({ parentId: undefined, stmtDepth: 0, braceDepthAtOpen: braceDepth + openBraces - closeBraces, scopeName: scopeName2, scopeType: fnType });
+        }
+        braceDepth += openBraces - closeBraces;
+        continue;
+      }
+
+      // class declaration
+      const classMatch = /^(?:abstract\s+|final\s+)?class\s+(\w+)/.exec(trimmed);
+      if (classMatch && openBraces > 0) {
+        scopeStack.push({ type: 'class', name: classMatch[1] });
+        frameStack.push({ parentId: undefined, stmtDepth: 0, braceDepthAtOpen: braceDepth + openBraces - closeBraces, scopeName: classMatch[1], scopeType: 'class' });
+        braceDepth += openBraces - closeBraces;
+        continue;
+      }
+
+      // assignment: $var = expr
+      const assignMatch = /^(\$\w+(?:->\w+)?)\s*(?:[.+\-*]?=)(?!=)\s*(.+)/.exec(trimmed);
+      if (assignMatch) {
+        const callM = /(\w+)\s*\(/.exec(assignMatch[2]);
+        const st = emitS('assignment', lineNum, frame.parentId, stmtDepth, { assigned_to: assignMatch[1].slice(0, 120), text: trimmed.slice(0, 120) });
+        if (callM) emitC(st.temp_id, callM[1], undefined, lineNum, 'function');
+        braceDepth += openBraces - closeBraces;
+        // pop frames for close braces
+        while (frameStack.length > 1 && braceDepth < frameStack[frameStack.length - 1].braceDepthAtOpen) {
+          const popped = frameStack.pop()!;
+          if (popped.scopeType !== frame.scopeType || popped.scopeName !== frame.scopeName) scopeStack.pop();
+        }
+        continue;
+      }
+
+      // method call: $obj->method() or ClassName::method() or functionCall()
+      const methodCallM = /^(?:\$(\w+)->|(\w+)::)?(\w+)\s*\(/.exec(trimmed);
+      if (methodCallM && !/^(?:if|while|for|foreach|switch|function|class|return|throw|echo|print|new)\b/.test(trimmed)) {
+        const receiver = methodCallM[1] || methodCallM[2];
+        const callee = methodCallM[3];
+        const kind = receiver ? (methodCallM[1] ? 'method' : 'method') : 'function';
+        const st = emitS('call', lineNum, frame.parentId, stmtDepth, { callee, receiver, text: trimmed.slice(0, 120) });
+        emitC(st.temp_id, callee, receiver, lineNum, kind);
+        braceDepth += openBraces - closeBraces;
+        while (frameStack.length > 1 && braceDepth < frameStack[frameStack.length - 1].braceDepthAtOpen) {
+          const popped = frameStack.pop()!;
+          if (popped.scopeType !== frame.scopeType || popped.scopeName !== frame.scopeName) scopeStack.pop();
+        }
+        continue;
+      }
+
+      // echo / print
+      if (/^echo\b|^print\b/.test(trimmed)) {
+        emitS('call', lineNum, frame.parentId, stmtDepth, { callee: trimmed.startsWith('echo') ? 'echo' : 'print', text: trimmed.slice(0, 120) });
+      }
+
+      braceDepth += openBraces - closeBraces;
+      while (frameStack.length > 1 && braceDepth < frameStack[frameStack.length - 1].braceDepthAtOpen) {
+        const popped = frameStack.pop()!;
+        if (popped.scopeType !== frame.scopeType || popped.scopeName !== frame.scopeName) scopeStack.pop();
+      }
+    }
+
+    return { symbols, references, statements, callEdges };
   }
 
   private findClosingBrace(content: string, openPos: number): number {

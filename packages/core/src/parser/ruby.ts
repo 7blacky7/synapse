@@ -7,7 +7,7 @@
  * ANSATZ: Regex-basiert — Ruby hat klare Keyword-basierte Syntax
  */
 
-import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
+import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser, ParsedStatement, ParsedCallEdge } from './types.js';
 import { extractStringLiterals } from './types.js';
 import { formatRouteName, isLikelyHttpPath, HTTP_VERBS } from './patterns/http.js';
 import { parseEmbeddedSql, looksLikeSql } from './patterns/sql.js';
@@ -309,7 +309,239 @@ class RubyParser implements LanguageParser {
       }
     }
 
-    return { symbols, references };
+    // ══════════════════════════════════════════════
+    // FLOW: Statements + CallEdges
+    // ══════════════════════════════════════════════
+    const statements: ParsedStatement[] = [];
+    const callEdges: ParsedCallEdge[] = [];
+    let tempId = 0;
+    const nextId = (): string => `s${tempId++}`;
+
+    // Per-parent order counters (key: parent_temp_id or 'root' for top-level)
+    const orderCounters = new Map<string, number>();
+    function nextOrder(parentId: string | undefined): number {
+      const key = parentId ?? 'root';
+      const cur = orderCounters.get(key) ?? 0;
+      orderCounters.set(key, cur + 1);
+      return cur;
+    }
+
+    // Track current scope for function/method bodies
+    interface RubyScope { type: string; name: string | null; }
+    const scopeStack: RubyScope[] = [{ type: 'module', name: null }];
+    const curScope = (): RubyScope => scopeStack[scopeStack.length - 1];
+
+    function emitStmt(
+      stmtType: string, lineStart: number, lineEnd: number | undefined,
+      parentId: string | undefined, depth: number,
+      extra: Partial<ParsedStatement> = {},
+    ): ParsedStatement {
+      const sc = curScope();
+      const id = nextId();
+      const st: ParsedStatement = {
+        temp_id: id,
+        parent_temp_id: parentId,
+        scope_type: sc.type,
+        scope_name: sc.name,
+        statement_type: stmtType,
+        line_start: lineStart,
+        line_end: lineEnd,
+        order_index: nextOrder(parentId),
+        depth,
+        is_top_level: sc.type === 'module' && depth === 0,
+        is_awaited: false,
+        ...extra,
+      };
+      statements.push(st);
+      return st;
+    }
+
+    function emitCall(stmtId: string, calleeName: string, receiver: string | undefined, line: number, kind: string): void {
+      callEdges.push({
+        statement_temp_id: stmtId,
+        caller_scope: curScope().name,
+        callee_name: calleeName,
+        callee_receiver: receiver,
+        line_number: line,
+        call_kind: kind,
+      });
+    }
+
+    // Process lines for flow extraction
+    // Strategy: scan each line, identify statement types, track depth via indent
+    // For Ruby we use line-by-line scanning with indent tracking
+    const flowLines = content.split('\n');
+
+    // Stack of { parentId, depth } for block nesting
+    interface BlockFrame { parentId: string | undefined; depth: number; indentLevel: number; }
+    const blockStack: BlockFrame[] = [{ parentId: undefined, depth: 0, indentLevel: -1 }];
+    const curBlock = (): BlockFrame => blockStack[blockStack.length - 1];
+
+    // Track open method/function scopes so we set scopeStack correctly
+    // We do a simplified approach: track def/end pairs by indent
+    interface ScopeEntry { name: string; type: string; indent: number; }
+    const defStack: ScopeEntry[] = [];
+
+    // Method call pattern: receiver.method(args) or method(args) or method arg
+    const callRe = /^(\s*)(?:(\w[\w.]*)\.)(\w+[?!]?)\s*(?:\(|$|\s+(?!do\b|{))/;
+    const funcCallRe = /^(\s*)(\w[\w:]*[?!]?)\s*(?:\((?:[^)]*)\)|(?!\s*=))/;
+
+    for (let i = 0; i < flowLines.length; i++) {
+      const rawLine = flowLines[i];
+      const trimmed = rawLine.trim();
+      const lineNum = i + 1;
+      if (!trimmed || trimmed.startsWith('#')) continue;
+
+      const indent = rawLine.search(/\S/);
+
+      // Pop block/scope stack when indent decreases past a frame
+      while (blockStack.length > 1 && indent <= blockStack[blockStack.length - 1].indentLevel) {
+        blockStack.pop();
+      }
+
+      // Pop def scope when we hit 'end' at matching indent
+      if (/^end\b/.test(trimmed) && defStack.length > 0) {
+        const top = defStack[defStack.length - 1];
+        if (indent <= top.indent) {
+          defStack.pop();
+          scopeStack.pop();
+        }
+        continue;
+      }
+
+      const parent = curBlock();
+      const depth = parent.depth;
+
+      // def method_name
+      const defMatch = /^def\s+(self\.)?(\w+[?!=]?)/.exec(trimmed);
+      if (defMatch) {
+        const name = (defMatch[1] ? 'self.' : '') + defMatch[2];
+        const st = emitStmt('call', lineNum, undefined, parent.parentId, depth, { callee: name, text: trimmed.slice(0, 120) });
+        defStack.push({ name, type: 'method', indent });
+        scopeStack.push({ type: 'method', name });
+        blockStack.push({ parentId: st.temp_id, depth: depth + 1, indentLevel: indent });
+        continue;
+      }
+
+      // class / module
+      const classMatch = /^(?:class|module)\s+(\w[\w:]*)/.exec(trimmed);
+      if (classMatch) {
+        emitStmt('expression', lineNum, undefined, parent.parentId, depth, { text: trimmed.slice(0, 120) });
+        defStack.push({ name: classMatch[1], type: 'class', indent });
+        scopeStack.push({ type: 'class', name: classMatch[1] });
+        blockStack.push({ parentId: undefined, depth: depth + 1, indentLevel: indent });
+        continue;
+      }
+
+      // if / unless / elsif
+      const ifMatch = /^(if|unless|elsif)\s+(.+)/.exec(trimmed);
+      if (ifMatch) {
+        const st = emitStmt(ifMatch[1] === 'elsif' ? 'if' : ifMatch[1] === 'unless' ? 'if' : 'if',
+          lineNum, undefined, parent.parentId, depth,
+          { condition_text: ifMatch[2].slice(0, 200), text: trimmed.slice(0, 120) });
+        blockStack.push({ parentId: st.temp_id, depth: depth + 1, indentLevel: indent });
+        continue;
+      }
+
+      // while / until
+      const whileMatch = /^(while|until)\s+(.+)/.exec(trimmed);
+      if (whileMatch) {
+        const st = emitStmt('while', lineNum, undefined, parent.parentId, depth,
+          { condition_text: whileMatch[2].slice(0, 200), text: trimmed.slice(0, 120) });
+        blockStack.push({ parentId: st.temp_id, depth: depth + 1, indentLevel: indent });
+        continue;
+      }
+
+      // for x in y
+      const forMatch = /^for\s+\w+\s+in\s+(.+)/.exec(trimmed);
+      if (forMatch) {
+        const st = emitStmt('for', lineNum, undefined, parent.parentId, depth,
+          { condition_text: forMatch[1].slice(0, 200), text: trimmed.slice(0, 120) });
+        blockStack.push({ parentId: st.temp_id, depth: depth + 1, indentLevel: indent });
+        continue;
+      }
+
+      // case
+      if (/^case\b/.test(trimmed)) {
+        const st = emitStmt('switch', lineNum, undefined, parent.parentId, depth, { text: trimmed.slice(0, 120) });
+        blockStack.push({ parentId: st.temp_id, depth: depth + 1, indentLevel: indent });
+        continue;
+      }
+
+      // when (like else-branch in switch)
+      if (/^when\b/.test(trimmed)) continue; // handled by parent case block
+
+      // begin / rescue / ensure
+      if (/^begin\b/.test(trimmed)) {
+        const st = emitStmt('try', lineNum, undefined, parent.parentId, depth, { text: trimmed.slice(0, 120) });
+        blockStack.push({ parentId: st.temp_id, depth: depth + 1, indentLevel: indent });
+        continue;
+      }
+      if (/^rescue\b|^ensure\b/.test(trimmed)) continue; // sub-blocks of try
+
+      // return
+      if (/^return\b/.test(trimmed)) {
+        emitStmt('return', lineNum, undefined, parent.parentId, depth, { text: trimmed.slice(0, 120) });
+        continue;
+      }
+
+      // raise / throw
+      if (/^raise\b|^throw\b/.test(trimmed)) {
+        emitStmt('throw', lineNum, undefined, parent.parentId, depth, { text: trimmed.slice(0, 120) });
+        continue;
+      }
+
+      // require / require_relative
+      if (/^require(?:_relative)?\s/.test(trimmed)) {
+        const nm = /^require(?:_relative)?\s+['"]([^'"]+)['"]/.exec(trimmed);
+        const st = emitStmt('call', lineNum, undefined, parent.parentId, depth,
+          { callee: 'require', text: trimmed.slice(0, 120) });
+        if (nm) emitCall(st.temp_id, 'require', undefined, lineNum, 'function');
+        continue;
+      }
+
+      // include / extend / prepend
+      if (/^(?:include|extend|prepend)\s+\w/.test(trimmed)) {
+        const nm = /^(include|extend|prepend)\s+(\w[\w:]*)/.exec(trimmed);
+        if (nm) {
+          const st = emitStmt('call', lineNum, undefined, parent.parentId, depth,
+            { callee: nm[1], text: trimmed.slice(0, 120) });
+          emitCall(st.temp_id, nm[1], undefined, lineNum, 'function');
+        }
+        continue;
+      }
+
+      // Assignment: x = expr or @x = expr
+      const assignMatch = /^([@$]?\w+(?:\.\w+)?)\s*(?:\|\|=|&&=|[+\-*\/]?=)(?!=)\s*(.+)/.exec(trimmed);
+      if (assignMatch && !/^(if|unless|while|until|for|case|begin|def|class|module|end|return|raise|throw|require|include|extend|prepend)\b/.test(trimmed)) {
+        const rhs = assignMatch[2];
+        const callMatch2 = /(\w+)\s*\(/.exec(rhs);
+        const st = emitStmt('assignment', lineNum, undefined, parent.parentId, depth,
+          { assigned_to: assignMatch[1].slice(0, 120), text: trimmed.slice(0, 120) });
+        if (callMatch2) emitCall(st.temp_id, callMatch2[1], undefined, lineNum, 'function');
+        continue;
+      }
+
+      // Method call: receiver.method or standalone method call
+      const methodMatch = /^(\w[\w.]*?)\.(\w+[?!]?)\s*(?:\(|$|\s)/.exec(trimmed);
+      if (methodMatch) {
+        const st = emitStmt('call', lineNum, undefined, parent.parentId, depth,
+          { callee: methodMatch[2], receiver: methodMatch[1], text: trimmed.slice(0, 120) });
+        emitCall(st.temp_id, methodMatch[2], methodMatch[1], lineNum, 'method');
+        continue;
+      }
+
+      // Standalone function call
+      const plainCallMatch = /^(\w[\w:]*[?!]?)\s*(?:\(|(?![\s]*=))/.exec(trimmed);
+      if (plainCallMatch && !/^(else|elsif|end|when|rescue|ensure|then|do)\b/.test(trimmed)) {
+        const st = emitStmt('call', lineNum, undefined, parent.parentId, depth,
+          { callee: plainCallMatch[1], text: trimmed.slice(0, 120) });
+        emitCall(st.temp_id, plainCallMatch[1], undefined, lineNum, 'function');
+        continue;
+      }
+    }
+
+    return { symbols, references, statements, callEdges };
   }
 
   /** Findet das passende 'end' fuer einen Block */

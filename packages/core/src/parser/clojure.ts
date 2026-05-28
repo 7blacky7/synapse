@@ -8,7 +8,7 @@
  * ANSATZ: Regex-basiert
  */
 
-import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
+import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser, ParsedStatement, ParsedCallEdge } from './types.js';
 import { extractStringLiterals } from './types.js';
 import { formatRouteName, isLikelyHttpPath, HTTP_VERBS } from './patterns/http.js';
 import { parseEmbeddedSql, looksLikeSql } from './patterns/sql.js';
@@ -324,7 +324,78 @@ class ClojureParser implements LanguageParser {
       symbols.push(...parseEmbeddedSql(sqlContent, filePath, baseLine));
     }
 
-    return { symbols, references };
+    // ══════════════════════════════════════════════
+    // Flow extraction
+    // ══════════════════════════════════════════════
+    const statements: ParsedStatement[] = [];
+    const callEdges: ParsedCallEdge[] = [];
+    let tempIdCounter = 0;
+    const nextId = () => `s${tempIdCounter++}`;
+    let orderIndex = 0;
+
+    // Top-level defn / defn- as function statements
+    const defnFlowRe = /^\(defn-?\s+([\w*+!?<>=-]+)(?:\s+"[^"]*")?\s*\[([^\]]*)\]\s*([\s\S]*?)(?=^\(defn|\(def|\z)/gm;
+    while ((m = defnFlowRe.exec(content)) !== null) {
+      const name = m[1];
+      const lineStart = lineAt(content, m.index);
+      const tid = nextId();
+      statements.push({
+        temp_id: tid,
+        scope_type: 'module',
+        scope_name: null,
+        statement_type: 'function',
+        node_kind: 'defn',
+        line_start: lineStart,
+        order_index: orderIndex++,
+        depth: 0,
+        is_top_level: true,
+        is_awaited: false,
+        callee: name,
+        text: `(defn ${name} ...)`.slice(0, 240),
+      });
+
+      // Extract calls in the body: (callee ...) patterns
+      const body = m[3] || '';
+      const callRe = /\(([a-z][a-z0-9*+!?/<>=-]*)\s/g;
+      let cm: RegExpExecArray | null;
+      while ((cm = callRe.exec(body)) !== null) {
+        const callee = cm[1];
+        if (['if', 'let', 'when', 'cond', 'case', 'do', 'fn', 'loop', 'recur', 'and', 'or', 'not'].includes(callee)) continue;
+        callEdges.push({
+          statement_temp_id: tid,
+          caller_scope: name,
+          callee_name: callee,
+          line_number: lineStart,
+          call_kind: 'function',
+          confidence: 0.8,
+        });
+      }
+    }
+
+    // Top-level def statements (non-function)
+    const defFlowRe = /^\(def(?:once)?\s+([\w*+!?<>=-]+)/gm;
+    while ((m = defFlowRe.exec(content)) !== null) {
+      const name = m[1];
+      if (statements.some(s => s.callee === name)) continue;
+      const lineStart = lineAt(content, m.index);
+      const tid = nextId();
+      statements.push({
+        temp_id: tid,
+        scope_type: 'module',
+        scope_name: null,
+        statement_type: 'variable',
+        node_kind: 'def',
+        line_start: lineStart,
+        order_index: orderIndex++,
+        depth: 0,
+        is_top_level: true,
+        is_awaited: false,
+        assigned_to: name,
+        text: m[0].trim().slice(0, 240),
+      });
+    }
+
+    return { symbols, references, statements, callEdges };
   }
 }
 

@@ -7,7 +7,7 @@
  * ANSATZ: Regex-basiert — Lua hat minimale, klare Syntax
  */
 
-import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
+import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser, ParsedStatement, ParsedCallEdge } from './types.js';
 import { extractStringLiterals } from './types.js';
 import { formatRouteName, isLikelyHttpPath, HTTP_VERBS } from './patterns/http.js';
 
@@ -308,7 +308,151 @@ class LuaParser implements LanguageParser {
       });
     }
 
-    return { symbols, references };
+    // ══════════════════════════════════════════════
+    // FLOW: Statements + CallEdges
+    // ══════════════════════════════════════════════
+    const statements: ParsedStatement[] = [];
+    const callEdges: ParsedCallEdge[] = [];
+    let tid = 0;
+    const nid = (): string => `s${tid++}`;
+    const oc = new Map<string, number>();
+    const nord = (p: string | undefined): number => { const k = p ?? 'root'; const v = oc.get(k) ?? 0; oc.set(k, v + 1); return v; };
+
+    interface LS { type: string; name: string | null; }
+    const ss: LS[] = [{ type: 'module', name: null }];
+    const cs = (): LS => ss[ss.length - 1];
+
+    function es(st: string, line: number, pid: string | undefined, depth: number, extra: Partial<ParsedStatement> = {}): ParsedStatement {
+      const sc = cs();
+      const id = nid();
+      const s: ParsedStatement = { temp_id: id, parent_temp_id: pid, scope_type: sc.type, scope_name: sc.name, statement_type: st, line_start: line, order_index: nord(pid), depth, is_top_level: sc.type === 'module' && depth === 0, is_awaited: false, ...extra };
+      statements.push(s); return s;
+    }
+    function ec(sid: string, callee: string, recv: string | undefined, line: number, kind: string): void {
+      callEdges.push({ statement_temp_id: sid, caller_scope: cs().name, callee_name: callee, callee_receiver: recv, line_number: line, call_kind: kind });
+    }
+
+    const luaLines = content.split('\n');
+    interface LF { pid: string | undefined; depth: number; indentLevel: number; }
+    const fs: LF[] = [{ pid: undefined, depth: 0, indentLevel: -1 }];
+    const tf = (): LF => fs[fs.length - 1];
+
+    interface FnEntry { name: string; indent: number; }
+    const fnStack: FnEntry[] = [];
+
+    for (let i = 0; i < luaLines.length; i++) {
+      const raw = luaLines[i];
+      const tr = raw.trim();
+      const ln = i + 1;
+      if (!tr || tr.startsWith('--')) continue;
+      const indent = raw.search(/\S/);
+
+      // pop block frames on 'end' or 'until'
+      if (/^end\b|^until\b/.test(tr)) {
+        if (fnStack.length > 0 && indent <= fnStack[fnStack.length - 1].indent) {
+          fnStack.pop(); ss.pop();
+        }
+        if (fs.length > 1) fs.pop();
+        continue;
+      }
+      while (fs.length > 1 && indent < fs[fs.length - 1].indentLevel) fs.pop();
+
+      const f = tf();
+      const d = f.depth;
+
+      // function declaration: function name() or local function name()
+      const fnM = /^(?:local\s+)?function\s+([\w.:]+)\s*\(/.exec(tr);
+      if (fnM) {
+        const name = fnM[1];
+        const st = es('call', ln, f.pid, d, { callee: name, text: tr.slice(0, 120) });
+        fnStack.push({ name, indent });
+        ss.push({ type: 'function', name });
+        fs.push({ pid: st.temp_id, depth: d + 1, indentLevel: indent });
+        continue;
+      }
+      // local name = function(...)
+      const fnAssignM = /^(?:local\s+)?(\w+)\s*=\s*function\s*\(/.exec(tr);
+      if (fnAssignM) {
+        const name = fnAssignM[1];
+        const st = es('variable', ln, f.pid, d, { assigned_to: name, text: tr.slice(0, 120) });
+        fnStack.push({ name, indent });
+        ss.push({ type: 'function', name });
+        fs.push({ pid: st.temp_id, depth: d + 1, indentLevel: indent });
+        continue;
+      }
+
+      // if / elseif
+      const ifM = /^(?:if|elseif)\s+(.+)\s+then\b/.exec(tr);
+      if (ifM) {
+        const st = es('if', ln, f.pid, d, { condition_text: ifM[1].slice(0, 200), text: tr.slice(0, 120) });
+        fs.push({ pid: st.temp_id, depth: d + 1, indentLevel: indent });
+        continue;
+      }
+      if (/^else\b/.test(tr)) continue;
+
+      // while
+      const whM = /^while\s+(.+)\s+do\b/.exec(tr);
+      if (whM) {
+        const st = es('while', ln, f.pid, d, { condition_text: whM[1].slice(0, 200), text: tr.slice(0, 120) });
+        fs.push({ pid: st.temp_id, depth: d + 1, indentLevel: indent });
+        continue;
+      }
+
+      // for
+      const forM = /^for\s+(.+)\s+do\b/.exec(tr);
+      if (forM) {
+        const st = es('for', ln, f.pid, d, { condition_text: forM[1].slice(0, 200), text: tr.slice(0, 120) });
+        fs.push({ pid: st.temp_id, depth: d + 1, indentLevel: indent });
+        continue;
+      }
+
+      // repeat
+      if (/^repeat\b/.test(tr)) {
+        const st = es('do', ln, f.pid, d, { text: tr.slice(0, 120) });
+        fs.push({ pid: st.temp_id, depth: d + 1, indentLevel: indent });
+        continue;
+      }
+
+      // return
+      if (/^return\b/.test(tr)) { es('return', ln, f.pid, d, { text: tr.slice(0, 120) }); continue; }
+      // error (throw-like)
+      if (/^error\s*\(/.test(tr)) { const st = es('throw', ln, f.pid, d, { text: tr.slice(0, 120) }); ec(st.temp_id, 'error', undefined, ln, 'function'); continue; }
+
+      // require
+      if (/require\s*[\("']/.test(tr)) {
+        const rM = /require\s*[\("']([^"')]+)[\)"']/.exec(tr);
+        const assignM2 = /^(?:local\s+)?(\w+)\s*=/.exec(tr);
+        const st = es(assignM2 ? 'variable' : 'call', ln, f.pid, d, { callee: 'require', assigned_to: assignM2?.[1], text: tr.slice(0, 120) });
+        ec(st.temp_id, 'require', undefined, ln, 'function');
+        continue;
+      }
+
+      // local var = expr or var = expr
+      const assignM = /^(?:local\s+)?(\w+)\s*=\s*(.+)/.exec(tr);
+      if (assignM && !/^(?:if|while|for|repeat|function|return|else|end)\b/.test(tr)) {
+        const rhs = assignM[2];
+        const callM = /(\w+)\s*\(/.exec(rhs);
+        const st = es('variable', ln, f.pid, d, { assigned_to: assignM[1], text: tr.slice(0, 120) });
+        if (callM) ec(st.temp_id, callM[1], undefined, ln, 'function');
+        continue;
+      }
+
+      // method call: obj:method() or obj.method() or func()
+      const mCallM = /^([\w.]+)[.:](\w+)\s*\(/.exec(tr);
+      if (mCallM) {
+        const st = es('call', ln, f.pid, d, { callee: mCallM[2], receiver: mCallM[1], text: tr.slice(0, 120) });
+        ec(st.temp_id, mCallM[2], mCallM[1], ln, 'method');
+        continue;
+      }
+      const plainCallM = /^(\w+)\s*\(/.exec(tr);
+      if (plainCallM && !/^(?:if|while|for|function|return|local|end)\b/.test(tr)) {
+        const st = es('call', ln, f.pid, d, { callee: plainCallM[1], text: tr.slice(0, 120) });
+        ec(st.temp_id, plainCallM[1], undefined, ln, 'function');
+        continue;
+      }
+    }
+
+    return { symbols, references, statements, callEdges };
   }
 
   /** Findet das passende 'end' */

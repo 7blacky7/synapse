@@ -8,7 +8,7 @@
  * ANSATZ: Regex-basiert
  */
 
-import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
+import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser, ParsedStatement, ParsedCallEdge } from './types.js';
 import { extractStringLiterals } from './types.js';
 import { formatRouteName, isLikelyHttpPath } from './patterns/http.js';
 
@@ -283,7 +283,83 @@ class ErlangParser implements LanguageParser {
       });
     }
 
-    return { symbols, references };
+    // ══════════════════════════════════════════════
+    // Flow extraction: exported function clauses + call edges
+    // ══════════════════════════════════════════════
+    const statements: ParsedStatement[] = [];
+    const callEdges: ParsedCallEdge[] = [];
+    let tempIdCounter = 0;
+    const nextId = () => `s${tempIdCounter++}`;
+    let orderIndex = 0;
+
+    // Determine exported functions from -export([...]).
+    const exportedFns = new Set<string>();
+    const expRe = /^-export\(\[([^\]]*)\]\)\./gm;
+    while ((m = expRe.exec(content)) !== null) {
+      for (const entry of m[1].split(',')) {
+        const fn = entry.trim().split('/')[0];
+        if (fn) exportedFns.add(fn);
+      }
+    }
+
+    // Function clauses: name(args) [when ...] ->
+    const funcFlowRe = /^(\w+)\(([^)]*)\)\s*(?:when\s+[^-]+)?\s*->\s*([^\n.]*(?:\n(?!\w+\().*)*)/gm;
+    const seenFns = new Set<string>();
+    while ((m = funcFlowRe.exec(content)) !== null) {
+      const name = m[1];
+      const body = m[3] || '';
+      if (['case', 'if', 'receive', 'try', 'fun'].includes(name)) continue;
+      if (name.startsWith('-')) continue;
+      if (seenFns.has(name)) continue;
+      seenFns.add(name);
+      const lineStart = lineAt(content, m.index);
+      const tid = nextId();
+      statements.push({
+        temp_id: tid,
+        scope_type: 'module',
+        scope_name: null,
+        statement_type: 'function',
+        node_kind: 'FunctionClause',
+        line_start: lineStart,
+        order_index: orderIndex++,
+        depth: 0,
+        is_top_level: true,
+        is_awaited: false,
+        callee: name,
+        text: `${name}(...) ->`.slice(0, 240),
+      });
+
+      // Extract calls: mod:func( or func(
+      const remoteCallRe = /\b(\w+):(\w+)\s*\(/g;
+      let rm: RegExpExecArray | null;
+      while ((rm = remoteCallRe.exec(body)) !== null) {
+        callEdges.push({
+          statement_temp_id: tid,
+          caller_scope: name,
+          callee_name: rm[2],
+          callee_receiver: rm[1],
+          line_number: lineStart,
+          call_kind: 'method',
+          confidence: 0.9,
+        });
+      }
+      const localCallRe = /\b([a-z_]\w*)\s*\(/g;
+      let lm: RegExpExecArray | null;
+      while ((lm = localCallRe.exec(body)) !== null) {
+        const callee = lm[1];
+        if (['case', 'if', 'receive', 'try', 'fun', 'when', 'begin', 'end'].includes(callee)) continue;
+        callEdges.push({
+          statement_temp_id: tid,
+          caller_scope: name,
+          callee_name: callee,
+          line_number: lineStart,
+          call_kind: 'function',
+          confidence: 0.7,
+        });
+      }
+    }
+
+    return { symbols, references, statements, callEdges };
   }
 }
 

@@ -9,7 +9,7 @@
  * ANSATZ: Regex-basiert
  */
 
-import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
+import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser, ParsedStatement, ParsedCallEdge } from './types.js';
 import { extractStringLiterals } from './types.js';
 import { HTTP_VERBS, formatRouteName, isLikelyHttpPath } from './patterns/http.js';
 import { parseEmbeddedSql, looksLikeSql } from './patterns/sql.js';
@@ -410,7 +410,92 @@ class ElixirParser implements LanguageParser {
       }
     }
 
-    return { symbols, references };
+    // ══════════════════════════════════════════════
+    // Flow extraction: def/defp functions + call edges
+    // ══════════════════════════════════════════════
+    const statements: ParsedStatement[] = [];
+    const callEdges: ParsedCallEdge[] = [];
+    let tempIdCounter = 0;
+    const nextId = () => `s${tempIdCounter++}`;
+    const orderCounters = new Map<string, number>();
+    const nextOrder = (scope: string | null) => {
+      const key = scope ?? '__module__';
+      const cur = orderCounters.get(key) ?? 0;
+      orderCounters.set(key, cur + 1);
+      return cur;
+    };
+
+    // defmodule-level functions: def/defp/defmacro
+    const defFlowRe = /^(\s*)(def|defp|defmacro|defmacrop)\s+(\w+[?!]?)(?:\(([^)]*)\))?\s+do\b/gm;
+    const seenDefs = new Set<string>();
+    while ((m = defFlowRe.exec(content)) !== null) {
+      const indent = m[1].replace(/\n/g, '').length;
+      const kind = m[2];
+      const name = m[3];
+      const paramsRaw = m[4] || '';
+      const lineStart = lineAt(content, m.index);
+      const parentMod = this.findParentModule(content, m.index);
+      const scopeKey = `${parentMod ?? ''}::${name}`;
+      if (seenDefs.has(scopeKey)) continue;
+      seenDefs.add(scopeKey);
+
+      const isPublic = !kind.endsWith('p');
+      const tid = nextId();
+      statements.push({
+        temp_id: tid,
+        scope_type: parentMod ? 'method' : 'module',
+        scope_name: parentMod ?? null,
+        statement_type: 'function',
+        node_kind: kind,
+        line_start: lineStart,
+        order_index: nextOrder(parentMod ?? null),
+        depth: indent > 2 ? 1 : 0,
+        is_top_level: indent <= 2,
+        is_awaited: false,
+        callee: name,
+        text: `${kind} ${name}(${paramsRaw}) do`.slice(0, 240),
+      });
+
+      // Extract calls from function body (lines until next same-level def or end)
+      const bodyStart = m.index + m[0].length;
+      const bodyEnd = content.indexOf('\n  end', bodyStart);
+      const body = bodyEnd > 0 ? content.substring(bodyStart, bodyEnd) : content.substring(bodyStart, bodyStart + 500);
+
+      const seenCalls = new Set<string>();
+      const addEdge = (full: string, conf: number) => {
+        const parts = full.split('.');
+        const callee = parts.pop() || full;
+        const receiver = parts.length > 0 ? parts.join('.') : undefined;
+        const key = `${receiver ?? ''}.${callee}`;
+        if (seenCalls.has(key)) return;
+        seenCalls.add(key);
+        callEdges.push({
+          statement_temp_id: tid,
+          caller_scope: name,
+          callee_name: callee,
+          callee_receiver: receiver,
+          line_number: lineStart,
+          call_kind: receiver ? 'method' : 'function',
+          confidence: conf,
+        });
+      };
+
+      // Pipe calls: expr |> Module.func or |> func
+      const pipeRe = /\|>\s*([\w.]+)/g;
+      let pm: RegExpExecArray | null;
+      while ((pm = pipeRe.exec(body)) !== null) addEdge(pm[1], 0.9);
+
+      // Direct calls: func( or Module.func(
+      const callRe = /\b([\w.]+)\s*\(/g;
+      let cm: RegExpExecArray | null;
+      while ((cm = callRe.exec(body)) !== null) {
+        const full = cm[1];
+        if (['if', 'case', 'cond', 'with', 'receive', 'try', 'fn', 'for', 'unless', 'when'].includes(full)) continue;
+        addEdge(full, 0.8);
+      }
+    }
+
+    return { symbols, references, statements, callEdges };
   }
 
   private findEnd(content: string, startPos: number): number {

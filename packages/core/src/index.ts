@@ -224,6 +224,10 @@ export {
   getVariables,
   getSymbols,
   getReferences,
+  getStatements,
+  getCallEdges,
+  getExecutionFlow,
+  getEntrypoints,
   fullTextSearchCode,
   getFileContent,
   applyContentRange,
@@ -322,7 +326,7 @@ export type {
   SpecialistJobResult,
 } from './services/specialist-queue.js';
 
-export type { FunctionInfo, VariableInfo, SymbolInfo, ReferenceInfo, ReferencesResult, FullTextSearchResult, FileContentResult, FileContentOptions, TreeOptions } from './services/code-intel.js';
+export type { FunctionInfo, VariableInfo, SymbolInfo, ReferenceInfo, ReferencesResult, FullTextSearchResult, FileContentResult, FileContentOptions, TreeOptions, StatementInfo, CallEdgeInfo, ExecutionFlowResult, EntrypointInfo } from './services/code-intel.js';
 export type { BatchEdit, BatchResult } from './services/code-write.js';
 
 // File-Versionierung (Schritt 1)

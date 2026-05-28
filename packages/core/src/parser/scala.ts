@@ -8,7 +8,7 @@
  * ANSATZ: Regex-basiert
  */
 
-import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
+import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser, ParsedStatement, ParsedCallEdge } from './types.js';
 import { extractStringLiterals } from './types.js';
 import { formatRouteName, isLikelyHttpPath, HTTP_VERBS } from './patterns/http.js';
 
@@ -359,7 +359,103 @@ class ScalaParser implements LanguageParser {
     }
 
 
-    return { symbols, references };
+    // ══════════════════════════════════════════════
+    // Flow extraction: top-level defs + call edges
+    // ══════════════════════════════════════════════
+    const statements: ParsedStatement[] = [];
+    const callEdges: ParsedCallEdge[] = [];
+    let tempIdCounter = 0;
+    const nextId = () => `s${tempIdCounter++}`;
+    const orderCounters = new Map<string, number>();
+    const nextOrder = (parentId: string | undefined) => {
+      const key = parentId ?? '__root__';
+      const cur = orderCounters.get(key) ?? 0;
+      orderCounters.set(key, cur + 1);
+      return cur;
+    };
+
+    // Top-level def statements
+    const defFlowRe = /^(\s*)((?:(?:private|protected|final|override|implicit|inline|lazy|transparent|infix)\s+(?:\[\w+\]\s*)?)*)?def\s+(\w+)(?:\[([^\]]*)\])?\s*(?:\(([^)]*)\))*(?:\s*:\s*([^\n={]+))?(?:\s*=\s*([^\n{]*))?/gm;
+    while ((m = defFlowRe.exec(content)) !== null) {
+      const indent = m[1].replace(/\n/g, '').length;
+      if (indent > 0) continue; // skip indented method bodies
+      const name = m[3];
+      const lineStart = lineAt(content, m.index);
+      const isTop = indent === 0;
+      const tid = nextId();
+      statements.push({
+        temp_id: tid,
+        scope_type: 'module',
+        scope_name: null,
+        statement_type: 'function',
+        node_kind: 'DefDef',
+        line_start: lineStart,
+        order_index: nextOrder(undefined),
+        depth: 0,
+        is_top_level: isTop,
+        is_awaited: false,
+        callee: name,
+        text: m[0].trim().slice(0, 240),
+      });
+
+      // Extract calls from the method body (RHS after `=`)
+      const rhs = m[7] || '';
+      const callRe2 = /\b([a-z_]\w*)\s*\(/g;
+      let cm: RegExpExecArray | null;
+      while ((cm = callRe2.exec(rhs)) !== null) {
+        const callee = cm[1];
+        if (['if', 'while', 'for', 'match', 'try', 'catch', 'new'].includes(callee)) continue;
+        callEdges.push({
+          statement_temp_id: tid,
+          caller_scope: name,
+          callee_name: callee,
+          line_number: lineStart,
+          call_kind: 'function',
+          confidence: 0.8,
+        });
+      }
+    }
+
+    // Top-level val/var statements (indent 0)
+    const valFlowRe = /^(val|var)\s+(\w+)(?:\s*:\s*(\S[^\n=]*))?(?:\s*=\s*([^\n]+))?/gm;
+    while ((m = valFlowRe.exec(content)) !== null) {
+      const kind = m[1];
+      const name = m[2];
+      const rhs = m[4] || '';
+      const lineStart = lineAt(content, m.index);
+      const tid = nextId();
+      statements.push({
+        temp_id: tid,
+        scope_type: 'module',
+        scope_name: null,
+        statement_type: 'variable',
+        node_kind: kind === 'val' ? 'ValDef' : 'VarDef',
+        line_start: lineStart,
+        order_index: nextOrder(undefined),
+        depth: 0,
+        is_top_level: true,
+        is_awaited: false,
+        assigned_to: name,
+        text: m[0].trim().slice(0, 240),
+      });
+      // Extract calls from RHS
+      const callRe3 = /\b([a-z_]\w*)\s*\(/g;
+      let cm2: RegExpExecArray | null;
+      while ((cm2 = callRe3.exec(rhs)) !== null) {
+        const callee = cm2[1];
+        if (['if', 'while', 'for', 'match', 'try', 'catch', 'new'].includes(callee)) continue;
+        callEdges.push({
+          statement_temp_id: tid,
+          caller_scope: null,
+          callee_name: callee,
+          line_number: lineStart,
+          call_kind: 'function',
+          confidence: 0.7,
+        });
+      }
+    }
+
+    return { symbols, references, statements, callEdges };
   }
 
   private findClosingBrace(content: string, openPos: number): number {

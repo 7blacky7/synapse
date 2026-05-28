@@ -266,7 +266,7 @@ class ProtobufParser implements LanguageParser {
       }
     }
 
-    return { symbols, references };
+    return { symbols, references, statements: [], callEdges: [] };
   }
 
   private parseFields(
