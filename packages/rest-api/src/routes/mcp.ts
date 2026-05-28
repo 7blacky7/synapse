@@ -986,6 +986,23 @@ const MCP_TOOLS = [
       },
     },
   },
+  // 20. workspace — pro-Projekt Docker-Container fuer Shell + File-Sync (server-seitig auf Unraid)
+  {
+    name: 'workspace',
+    description: 'Pro-Projekt isolierter Docker-Sandbox-Container (synapse-workspace:latest) auf dem Synapse-Server. Lazy-Start, Idle-Stop nach 10 Min, LRU-Eviction bei Cap. Actions: list, start, stop, pin, exec (Shell-Kommando), materialize (PG.code_files -> Container-FS), commit (Container-FS -> PG). exec laeuft als user synapse(1000), WorkingDir /workspace, Default-Timeout 60s. Funktioniert nur wenn synapse-api Container den Docker-Socket gemountet hat.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', enum: ['list', 'start', 'stop', 'pin', 'unpin', 'exec', 'materialize', 'commit'], description: 'Aktion' },
+        project: { type: 'string', description: 'Projekt-Name (Pflicht ausser bei list)' },
+        command: { type: 'string', description: 'Shell-Kommando fuer exec (Pflicht bei exec)' },
+        timeout_ms: { type: 'number', description: 'exec: Hard-Timeout in ms (Default 60000)' },
+        working_dir: { type: 'string', description: 'exec: alternativer WorkingDir (Default /workspace)' },
+        ignore_patterns: { type: 'array', items: { type: 'string' }, description: 'materialize/commit: glob-Patterns die uebersprungen werden (Default: node_modules, .git, dist, build, target, .next, coverage, __pycache__, ...)' },
+      },
+      required: ['action'],
+    },
+  },
 ];
 
 interface PendingIdea {
@@ -3307,6 +3324,65 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
           ? `Dieses Tool hat mehrere Actions: ${Object.keys(toolGuide.actions).join(', ')}. Rufe guide({ tool_name: "${toolName}", action_name: "<action>" }) fuer Detail-Doku.`
           : undefined,
       };
+    }
+
+    case 'workspace': {
+      const { getWorkspaceOrchestrator } = await import('../services/workspace-orchestrator.js');
+      const orch = getWorkspaceOrchestrator();
+      if (!orch || !orch.isAvailable()) {
+        return { success: false, error: 'Workspace-Orchestrator nicht verfuegbar (Docker-Socket fehlt oder ausgeschaltet)' };
+      }
+      switch (action) {
+        case 'list': {
+          const workspaces = await orch.listWorkspaces();
+          return { success: true, workspaces, count: workspaces.length };
+        }
+        case 'start': {
+          const project = reqStr(args, 'project');
+          const containerId = await orch.ensureProjectRunning(project);
+          return { success: true, project, container_id: containerId };
+        }
+        case 'stop': {
+          const project = reqStr(args, 'project');
+          await orch.stopProject(project, 'mcp-manual');
+          return { success: true, project, stopped: true };
+        }
+        case 'pin': {
+          const project = reqStr(args, 'project');
+          await orch.pin(project, true);
+          return { success: true, project, pinned: true };
+        }
+        case 'unpin': {
+          const project = reqStr(args, 'project');
+          await orch.pin(project, false);
+          return { success: true, project, pinned: false };
+        }
+        case 'exec': {
+          const project = reqStr(args, 'project');
+          const command = reqStr(args, 'command');
+          const result = await orch.exec(project, command, {
+            timeoutMs: num(args, 'timeout_ms'),
+            workingDir: str(args, 'working_dir'),
+          });
+          return { success: true, project, ...result };
+        }
+        case 'materialize': {
+          const project = reqStr(args, 'project');
+          const ignorePatterns = Array.isArray((args as Record<string, unknown>).ignore_patterns)
+            ? (args as Record<string, unknown>).ignore_patterns as string[] : undefined;
+          const r = await orch.materialize(project, { ignorePatterns });
+          return { success: true, project, ...r };
+        }
+        case 'commit': {
+          const project = reqStr(args, 'project');
+          const ignorePatterns = Array.isArray((args as Record<string, unknown>).ignore_patterns)
+            ? (args as Record<string, unknown>).ignore_patterns as string[] : undefined;
+          const r = await orch.commit(project, { ignorePatterns });
+          return { success: true, project, ...r };
+        }
+        default:
+          return { success: false, error: `Unbekannte workspace action: "${action}"` };
+      }
     }
 
     default:
