@@ -66,8 +66,9 @@ async function qdrantScroll(filter?: Record<string, unknown>, limit = 1000): Pro
   return data.result.points;
 }
 
-async function qdrantSearch(vector: number[], limit = 10): Promise<QdrantPoint[]> {
-  const body = { vector, limit, with_payload: true };
+async function qdrantSearch(vector: number[], limit = 10, filter?: Record<string, unknown>): Promise<QdrantPoint[]> {
+  const body: Record<string, unknown> = { vector, limit, with_payload: true };
+  if (filter) body.filter = filter;
   const res = await fetch(`${SKILL_QDRANT_URL}/collections/${SKILL_COLLECTION}/points/search`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -99,10 +100,13 @@ export interface SkillSection {
   tags: string[];
 }
 
-/** Semantische Suche ueber alle Skills + Sections. */
-export async function searchSkills(query: string, limit = 5): Promise<SkillSearchHit[]> {
+/** Semantische Suche ueber alle Skills + Sections. Optional skill_name → nur innerhalb dieses Skills suchen. */
+export async function searchSkills(query: string, limit = 5, skillName?: string): Promise<SkillSearchHit[]> {
   const vec = await getQueryEmbedding(query);
-  const hits = await qdrantSearch(vec, limit);
+  const filter = skillName
+    ? { must: [{ key: 'skill_name', match: { value: skillName } }] }
+    : undefined;
+  const hits = await qdrantSearch(vec, limit, filter);
   return hits.map((h) => ({
     skill_name: h.payload?.skill_name ?? '',
     section: h.payload?.section ?? '',
