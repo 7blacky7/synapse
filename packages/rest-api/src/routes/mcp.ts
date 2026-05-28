@@ -2908,13 +2908,21 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
         if (!Array.isArray(opsRaw) || opsRaw.length === 0) {
           return { success: false, error: 'invalid_ops', message: 'ops[] muss ein Array mit mindestens 1 Element sein.' };
         }
-        const result = await planBatch({
-          project,
-          agent_id: agentId,
-          ops: opsRaw as import('@synapse/core').FileBatchOp[],
-          open_for_coedit: typeof args.open_for_coedit === 'boolean' ? args.open_for_coedit as boolean : undefined,
-          reason: str(args, 'reason'),
-        });
+        let result;
+        try {
+          result = await planBatch({
+            project,
+            agent_id: agentId,
+            ops: opsRaw as import('@synapse/core').FileBatchOp[],
+            open_for_coedit: typeof args.open_for_coedit === 'boolean' ? args.open_for_coedit as boolean : undefined,
+            reason: str(args, 'reason'),
+          });
+        } catch (err) {
+          // planBatch wirft bei Validation-Fails (z.B. create auf existierender Datei,
+          // overlap, anchor-mismatch). Strukturiert zurueckgeben statt outer-catch
+          // zu lassen — sonst sieht die KI nur "Tool execution error".
+          return { success: false, error: 'plan_failed', message: (err as Error).message };
+        }
         // auto_commit:true -> direkt commit, ABER nur wenn alle Previews ok sind.
         const allPreviewsOk = result.previews?.every(p => p.ok) ?? true;
         if (args.auto_commit === true && allPreviewsOk) {
@@ -2932,11 +2940,15 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
       }
       if (action === 'commit') {
         const planId = reqStr(args, 'plan_id');
-        const result = await commitBatch({ plan_id: planId, agent_id: agentId, agent_note: str(args, 'agent_note') });
-        if (result.success) {
-          return { ...result, message: `Plan ${result.plan_id} committed — ${result.committed} Datei(en) geaendert. batch_id=${result.batch_id}.` };
+        try {
+          const result = await commitBatch({ plan_id: planId, agent_id: agentId, agent_note: str(args, 'agent_note') });
+          if (result.success) {
+            return { ...result, message: `Plan ${result.plan_id} committed — ${result.committed} Datei(en) geaendert. batch_id=${result.batch_id}.` };
+          }
+          return result;
+        } catch (err) {
+          return { success: false, error: 'commit_failed', message: (err as Error).message };
         }
-        return result;
       }
       if (action === 'cancel') {
         const planId = reqStr(args, 'plan_id');
