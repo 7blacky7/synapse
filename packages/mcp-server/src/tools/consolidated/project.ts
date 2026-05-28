@@ -251,17 +251,25 @@ const projectTool: ConsolidatedTool = {
         }
 
         case 'status': {
-          // Akzeptiert path ODER project — Web-KIs uebergeben oft nur project.
+          // Akzeptiert project ODER path. Web-KIs uebergeben meist nur project.
+          // Wenn project nicht registriert ist (kein lokaler Pfad bekannt), liefern
+          // wir trotzdem die Code/Qdrant-Stats statt zu crashen.
           let path = str(args, 'path');
-          if (!path) {
-            const project = str(args, 'project');
-            if (!project) return { success: false, error: 'project oder path erforderlich' };
+          const project = str(args, 'project');
+          if (!path && project) {
             const { getProjectPath } = await import('../index.js');
             path = getProjectPath(project);
-            if (!path) return { success: false, error: `Projekt "${project}" nicht registriert — path uebergeben oder zuerst init`};
           }
-          const result = await getProjectStatusWithStats(path);
-          return result;
+          if (!path && !project) {
+            return { success: false, error: 'project oder path erforderlich' };
+          }
+          if (path) {
+            return await getProjectStatusWithStats(path);
+          }
+          // Fallback: nur Stats anhand des Projektnamens
+          const { getProjectStats } = await import('@synapse/core');
+          const stats = await getProjectStats(project!);
+          return { success: true, stats, message: `Projekt "${project}" nicht lokal registriert — nur Index-Stats verfuegbar` };
         }
 
         case 'list': {
