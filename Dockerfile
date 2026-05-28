@@ -1,5 +1,6 @@
 # Synapse REST API
-FROM node:20-alpine
+# Node 22-LTS — pnpm@latest verwendet intern node:sqlite, was Node 22+ erfordert.
+FROM node:22-alpine
 
 # pnpm installieren
 RUN corepack enable && corepack prepare pnpm@latest --activate
