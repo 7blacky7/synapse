@@ -722,7 +722,7 @@ const MCP_TOOLS = [
   // 14. code_intel
   {
     name: 'code_intel',
-    description: 'Strukturierte Lese-Abfragen ueber den eigenen Code-Index des Projekts (PostgreSQL): Dateibaum, Funktionen, Variablen, Symbole, Querverweise, Volltext-Suche, Dateiinhalt sowie die Ablauf-Ebene (Statements, Call-Kanten, Execution-Flow, Entrypoints). Read-Only auf eigene indexierte Projekt-Daten. Keine fremden Repositories, keine externen Systeme.',
+    description: 'Strukturierte Lese-Abfragen ueber den eigenen Code-Index des Projekts: Dateibaum, Funktionen, Variablen, Symbole, Querverweise, Suche, Dateiinhalt sowie die Ablauf-Ebene (Statements, Call-Kanten, Execution-Flow, Entrypoints). Read-Only auf eigene indexierte Projekt-Daten. SUCHE: action="search" hat ZWEI Modi: Default = PG-Volltext (lexikalisch, schnell, exakte Begriffe); semantic:true = Qdrant-Embedding (konzeptuell, fuzzy, "wie wird X gehandhabt"). Antwort enthaelt mode:"fulltext"|"semantic". Damit ist das alte separate search(action:"code") nicht mehr noetig — code_intel kann beides.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -750,7 +750,8 @@ const MCP_TOOLS = [
           enum: ['function', 'variable', 'string', 'comment', 'import', 'export', 'class', 'interface', 'enum', 'const_object', 'todo', 'route', 'sql_query', 'table', 'column', 'index', 'view', 'trigger', 'constraint'],
           description: 'Symbol-Typ fuer symbols-Action',
         },
-        query: { type: 'string', description: 'Suchbegriff fuer search-Action (Volltext)' },
+        query: { type: 'string', description: 'Suchbegriff fuer search-Action' },
+        semantic: { type: 'boolean', description: 'search: true = Qdrant-Embedding-Suche (konzeptuell/fuzzy). Default false = PG-Volltext (lexikalisch/exakt).' },
         file_type: { type: 'string', description: 'Dateityp-Filter fuer search-Action (z.B. "ts", "js")' },
         limit: { type: 'number', description: 'Max. Ergebnisse fuer search-Action (Standard: 20)' },
         from_line: { type: 'number', description: 'file: Start-Zeile (1-basiert, Standard: 1)' },
@@ -2824,8 +2825,24 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
           return { success: true, ...result, project };
         }
         case 'search': {
-          const results = await fullTextSearchCode(project, reqStr(args, 'query'), str(args, 'file_type'), num(args, 'limit') ?? 20);
-          return { success: true, results, count: results.length, project };
+          const query = reqStr(args, 'query');
+          const fileType = str(args, 'file_type');
+          const limit = num(args, 'limit') ?? 20;
+          // semantic:true → Qdrant Embedding-Suche (konzeptuell). Default = PG-Volltext (lexikalisch).
+          if (args.semantic === true) {
+            const sem = await searchCode(query, project, fileType, limit);
+            const results = sem.map(r => ({
+              file_path: r.payload.file_path,
+              file_type: r.payload.file_type,
+              line_start: r.payload.line_start,
+              line_end: r.payload.line_end,
+              score: r.score,
+              content: r.payload.content,
+            }));
+            return { success: true, results, count: results.length, mode: 'semantic', project };
+          }
+          const results = await fullTextSearchCode(project, query, fileType, limit);
+          return { success: true, results, count: results.length, mode: 'fulltext', project };
         }
         case 'file': {
           const filePath = str(args, 'file_path') ?? str(args, 'path');
