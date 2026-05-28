@@ -153,20 +153,64 @@ export async function getEmbeddingProvider(): Promise<EmbeddingProvider> {
   return _provider;
 }
 
-/**
- * Generiert Embedding fuer einen Text
- */
-export async function embed(text: string): Promise<number[]> {
-  const provider = await getEmbeddingProvider();
-  return provider.embed(text);
+// ───── Globale Embedding-Queue ────────────────────────────────────────────
+// Verhindert dass parallele parseAndEmbed-Workers Google mit zig gleichzeitigen
+// Batch-Requests bombardieren → 429-Sturm. Begrenzt die Concurrency cluster-weit
+// auf MAX_CONCURRENT (Default 2) + optionale Mindest-Pause zwischen Calls.
+const MAX_CONCURRENT_EMBED = Number(process.env.EMBED_MAX_CONCURRENT ?? 2);
+const MIN_GAP_MS = Number(process.env.EMBED_MIN_GAP_MS ?? 100);
+
+let activeEmbedCalls = 0;
+let lastEmbedFinishMs = 0;
+const embedQueue: Array<() => void> = [];
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+async function acquireEmbedSlot(): Promise<void> {
+  if (activeEmbedCalls < MAX_CONCURRENT_EMBED) {
+    activeEmbedCalls++;
+  } else {
+    await new Promise<void>((resolve) => embedQueue.push(resolve));
+    activeEmbedCalls++;
+  }
+  // Mindest-Abstand seit letztem Finish
+  const gap = Date.now() - lastEmbedFinishMs;
+  if (gap < MIN_GAP_MS) await sleep(MIN_GAP_MS - gap);
+}
+
+function releaseEmbedSlot(): void {
+  activeEmbedCalls--;
+  lastEmbedFinishMs = Date.now();
+  const next = embedQueue.shift();
+  if (next) next();
 }
 
 /**
- * Generiert Embeddings fuer mehrere Texte
+ * Generiert Embedding fuer einen Text — durchlaeuft die globale Queue.
+ */
+export async function embed(text: string): Promise<number[]> {
+  const provider = await getEmbeddingProvider();
+  await acquireEmbedSlot();
+  try {
+    return await provider.embed(text);
+  } finally {
+    releaseEmbedSlot();
+  }
+}
+
+/**
+ * Generiert Embeddings fuer mehrere Texte — durchlaeuft die globale Queue.
  */
 export async function embedBatch(texts: string[]): Promise<number[][]> {
   const provider = await getEmbeddingProvider();
-  return provider.embedBatch(texts);
+  await acquireEmbedSlot();
+  try {
+    return await provider.embedBatch(texts);
+  } finally {
+    releaseEmbedSlot();
+  }
 }
 
 /**
