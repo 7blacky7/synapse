@@ -999,7 +999,7 @@ const MCP_TOOLS = [
   // 20. workspace — pro-Projekt Docker-Container fuer Shell + File-Sync (server-seitig auf Unraid)
   {
     name: 'workspace',
-    description: 'Lifecycle-Management der pro-Projekt Docker-Sandbox-Container (synapse-workspace:latest) auf dem Synapse-Server. ⚠️ FUER SHELL-AUSFUEHRUNG: nutze IMMER das shell-Tool (Auto-Routing: lokaler Daemon vs Workspace; isolated:true fuer Container-Erzwingung). Dieses workspace-Tool ist nur fuer Lifecycle: list (Status aller Container), start/stop (manuell), pin/unpin (vor Idle-Eviction schuetzen), materialize (FULL sync PG→Container — selten noetig, Auto-Sync laeuft via PG-LISTEN/NOTIFY). exec-Action existiert noch, aber lieber shell({isolated:true}) verwenden — gleiche Engine, einheitliche Antwort, executed_via-Feld. WORKFLOW: Files via files-Tool in code_files → automatisch in Container synchronisiert. Source-Files im /workspace sind READ-ONLY (mode 0444); install/build schreiben in /workspace/node_modules bzw. /workspace/dist (writable). Lifecycle: Idle-Stop nach 10 Min, LRU-Eviction bei Cap. Actions: list, start, stop, pin, unpin, materialize, exec (deprecated → shell), commit (deprecated → files-Tool).',
+    description: 'Lifecycle-Management der pro-Projekt Docker-Sandbox-Container (synapse-workspace:latest) auf dem Synapse-Server. ⚠️ FUER SHELL-AUSFUEHRUNG: nutze IMMER das shell-Tool (Auto-Routing: lokaler Daemon vs Workspace; isolated:true fuer Container-Erzwingung). Dieses workspace-Tool ist nur fuer Lifecycle: list (Status aller Container), start/stop (manuell), pin/unpin (vor Idle-Eviction schuetzen), materialize (FULL sync PG→Container — selten noetig, Auto-Sync laeuft via PG-LISTEN/NOTIFY). exec-Action existiert noch, aber lieber shell({isolated:true}) verwenden — gleiche Engine, einheitliche Antwort, executed_via-Feld. WORKFLOW: Files via files-Tool in code_files → automatisch in Container synchronisiert. Source-Files im /workspace sind READ-ONLY (mode 0444); install/build schreiben in /workspace/node_modules bzw. /workspace/dist (writable). Lifecycle: Idle-Stop nach 10 Min, LRU-Eviction bei Cap. 🌐 NETZWERK: Jede Workspace-Response liefert dns_name (z.B. "synapse-ws-<project>"). Andere proxynet-Container (insbesondere ki-browser) erreichen den Workspace via http://<dns_name>:<port> — NIE die Container-IP nutzen, die wechselt bei Restart. Actions: list, start, stop, pin, unpin, materialize, exec (deprecated → shell), commit (deprecated → files-Tool).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -3519,15 +3519,19 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
       if (!orch || !orch.isAvailable()) {
         return { success: false, error: 'Workspace-Orchestrator nicht verfuegbar (Docker-Socket fehlt oder ausgeschaltet)' };
       }
+      // Helper: jede workspace-Response bekommt dns_name damit ki-browser
+      // den DNS-Namen statt der wechselnden IP nutzt.
+      const dnsForProject = (p: string): string => orch.internalUrl(p, 0).replace(/:0$/, '').replace(/^http:\/\//, '');
       switch (action) {
         case 'list': {
           const workspaces = await orch.listWorkspaces();
-          return { success: true, workspaces, count: workspaces.length };
+          const enriched = workspaces.map((w) => ({ ...w, dns_name: dnsForProject(w.project) }));
+          return { success: true, workspaces: enriched, count: enriched.length };
         }
         case 'start': {
           const project = reqStr(args, 'project');
           const containerId = await orch.ensureProjectRunning(project);
-          return { success: true, project, container_id: containerId };
+          return { success: true, project, container_id: containerId, dns_name: dnsForProject(project), dns_hint: `Andere proxynet-Container (z.B. ki-browser) erreichen diesen Workspace via http://${dnsForProject(project)}:<port>. Niemals IP verwenden — die wechselt bei Restart.` };
         }
         case 'stop': {
           const project = reqStr(args, 'project');
@@ -3555,7 +3559,7 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
             workingDir: str(args, 'working_dir'),
             exposePorts,
           });
-          return { success: true, project, ...result };
+          return { success: true, project, dns_name: dnsForProject(project), ...result };
         }
         case 'materialize': {
           const project = reqStr(args, 'project');
