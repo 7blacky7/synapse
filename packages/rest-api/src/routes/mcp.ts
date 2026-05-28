@@ -989,7 +989,7 @@ const MCP_TOOLS = [
   // 20. workspace — pro-Projekt Docker-Container fuer Shell + File-Sync (server-seitig auf Unraid)
   {
     name: 'workspace',
-    description: 'Pro-Projekt isolierter Docker-Sandbox-Container (synapse-workspace:latest) auf dem Synapse-Server. Lazy-Start, Idle-Stop nach 10 Min, LRU-Eviction bei Cap. Actions: list, start, stop, pin, exec (Shell-Kommando), materialize (PG.code_files -> Container-FS), commit (Container-FS -> PG). exec laeuft als user synapse(1000), WorkingDir /workspace, Default-Timeout 60s. Funktioniert nur wenn synapse-api Container den Docker-Socket gemountet hat.',
+    description: 'Pro-Projekt isolierter Docker-Sandbox-Container (synapse-workspace:latest) auf dem Synapse-Server. EINFACHSTE NUTZUNG: workspace({action:"exec", project:"<name>", command:"<shell>"}). Der Container wird beim ersten exec/materialize/commit automatisch erstellt + gestartet (Lazy-Start), du brauchst KEIN vorheriges "start" — projekt-name reicht. Lifecycle: Idle-Stop nach 10 Min, LRU-Eviction bei Cap. Actions: exec (Default-Use-Case, Shell-Kommando, startet Container falls noetig), list (Status aller), start (manuell, selten noetig), stop (Container stoppen, Volume bleibt), pin/unpin (vor LRU schuetzen), materialize (PG.code_files -> Container-FS, startet Container), commit (Container-FS -> PG). exec laeuft als user synapse(1000), WorkingDir /workspace, Default-Timeout 60s. Funktioniert nur wenn synapse-api Container den Docker-Socket gemountet hat.',
     inputSchema: {
       type: 'object',
       properties: {
