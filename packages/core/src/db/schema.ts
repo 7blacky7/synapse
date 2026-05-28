@@ -241,6 +241,10 @@ CREATE INDEX IF NOT EXISTS idx_code_symbols_project ON code_symbols(project);
 CREATE INDEX IF NOT EXISTS idx_code_symbols_type ON code_symbols(project, symbol_type);
 CREATE INDEX IF NOT EXISTS idx_code_symbols_name ON code_symbols(project, name);
 CREATE INDEX IF NOT EXISTS idx_code_symbols_file ON code_symbols(project, file_path);
+-- parent_symbol hat einen self-FK (parent_symbol -> id) ON DELETE CASCADE. Ohne Index
+-- muss jeder Symbol-DELETE die Tabelle seq-scannen, um Cascade-Kinder zu finden →
+-- per-Datei-DELETE wird bei großen/duplizierten Dateien extrem langsam (Minuten).
+CREATE INDEX IF NOT EXISTS idx_code_symbols_parent_symbol ON code_symbols(parent_symbol);
 
 CREATE TABLE IF NOT EXISTS code_references (
   id TEXT PRIMARY KEY,
