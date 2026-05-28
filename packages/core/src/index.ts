@@ -349,6 +349,15 @@ export {
 } from './services/wrapper-status.js';
 export type { WrapperStatusRow } from './services/wrapper-status.js';
 
+// Daemon-Heartbeat (Auto-Routing shell ↔ workspace)
+export {
+  upsertDaemonHeartbeat,
+  isDaemonAliveForProject,
+  getDaemonHeartbeat,
+  clearDaemonHeartbeat,
+} from './services/daemon-heartbeat.js';
+export type { DaemonHeartbeatRow } from './services/daemon-heartbeat.js';
+
 // Project-Init-Queue (Self-Service Project-Bootstrap fuer Web-KIs)
 export {
   isValidProjectName,

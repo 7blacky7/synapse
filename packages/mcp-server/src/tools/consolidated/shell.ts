@@ -24,9 +24,82 @@ import {
   getShellJobLogLines,
   searchShellJobLog,
   insertCompletedShellJob,
+  isDaemonAliveForProject,
 } from '@synapse/core';
 
 const STREAMS_DIR = path.join(os.homedir(), '.synapse', 'shell-streams');
+
+function getSynapseApiUrl(): string {
+  if (process.env.SYNAPSE_API_URL) return process.env.SYNAPSE_API_URL.replace(/\/+$/, '');
+  try {
+    const cfgPath = path.join(os.homedir(), '.synapse', 'file-watcher', 'config.json');
+    const raw = fs.readFileSync(cfgPath, 'utf8');
+    const cfg = JSON.parse(raw) as { synapse_api_url?: string };
+    if (cfg.synapse_api_url) return cfg.synapse_api_url.replace(/\/+$/, '');
+  } catch { /* fallback */ }
+  return 'http://127.0.0.1:3456';
+}
+
+async function execViaWorkspace(
+  project: string,
+  command: string,
+  cwdRel: string | undefined,
+  timeoutMs: number,
+  tailLines: number | undefined,
+): Promise<Record<string, unknown>> {
+  const base = getSynapseApiUrl();
+  const url = `${base}/api/projects/${encodeURIComponent(project)}/workspace/exec`;
+  const body: Record<string, unknown> = { command, timeoutMs };
+  if (cwdRel) body.workingDir = `/workspace/${cwdRel.replace(/^\/+/, '')}`;
+  try {
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), timeoutMs + 10_000);
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: ctl.signal,
+    });
+    clearTimeout(timer);
+    if (!res.ok) {
+      return {
+        success: false,
+        executed_via: 'workspace',
+        error: 'workspace_http_error',
+        message: `HTTP ${res.status} ${res.statusText}`,
+      };
+    }
+    const data = (await res.json()) as {
+      success?: boolean;
+      stdout?: string;
+      stderr?: string;
+      exitCode?: number;
+      timedOut?: boolean;
+      durationMs?: number;
+      error?: { message?: string };
+    };
+    const stdout = data.stdout ?? '';
+    const lines = stdout.split('\n');
+    const tail = tailLines ? lines.slice(-tailLines) : lines;
+    return {
+      success: !data.error && data.exitCode === 0 && !data.timedOut,
+      executed_via: 'workspace',
+      status: data.timedOut ? 'timeout' : (data.exitCode === 0 ? 'done' : 'failed'),
+      exit_code: data.exitCode,
+      tail,
+      stderr_tail: data.stderr ? data.stderr.split('\n').slice(-20) : undefined,
+      duration_ms: data.durationMs,
+      error: data.error?.message,
+    };
+  } catch (err) {
+    return {
+      success: false,
+      executed_via: 'workspace',
+      error: 'workspace_unavailable',
+      message: `synapse-api ${base} nicht erreichbar: ${(err as Error).message}`,
+    };
+  }
+}
 
 function readStreamLog(streamId: string | undefined | null): string | undefined {
   if (!streamId) return undefined;
@@ -41,7 +114,7 @@ export const shellTool: ConsolidatedTool = {
   definition: {
     name: 'shell',
     description:
-      'Projekt-scoped Shell-Ausfuehrung mit Active-Gate. Prueft beim FileWatcher-Daemon ob das Projekt aktiv ist und fuehrt das Kommando im Projektpfad aus. Actions: exec (default) | get_stream (Live laufende Jobs) | history (Liste vergangener Jobs mit output_line_count) | get (Job-Details + voller Output) | log (Zeilenrange ODER Such-Treffer im Output, mit Zeilennummern).',
+      'Projekt-scoped Shell. AUTO-ROUTING (Default): aktiver lokaler Daemon (Heartbeat <30s) → exec via shell-queue (echtes FS, native Tools, git/sudo/GPU). Sonst → exec im Workspace-Docker-Container auf der synapse-api (isoliert, Source read-only). Antwort hat executed_via: "local"|"workspace". target:"workspace" oder isolated:true erzwingt den Container fuer isolierte Tests / Build-Sandboxing. target:"local" erzwingt Daemon. Source-Files IMMER via files-Tool editieren (Auto-Versionierung; im Workspace ist Source mode 0444). shell ist fuer install/build/test/git/etc. Actions: exec (default) | get_stream | history | get | log.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -70,6 +143,8 @@ export const shellTool: ConsolidatedTool = {
         timeout_ms: { type: 'number', description: 'Default 30000' },
         tail_lines: { type: 'number', description: 'Default 5' },
         cwd_relative: { type: 'string', description: 'Unterpfad innerhalb des Projekt-Roots' },
+        target: { type: 'string', enum: ['auto', 'local', 'workspace'], description: 'exec: "auto" (Default, Heartbeat-basiert) | "local" (Daemon erzwingen) | "workspace" (Docker-Container erzwingen)' },
+        isolated: { type: 'boolean', description: 'exec: Kurzform fuer target="workspace" — fuer isolierte Tests im Docker-Container (Default false)' },
         since_last_read: {
           type: 'boolean',
           description: 'get_stream: nur neue Zeilen seit letztem Call (Default true)',
@@ -166,13 +241,30 @@ export const shellTool: ConsolidatedTool = {
     const timeoutMs = num(args, 'timeout_ms');
     const tailLines = num(args, 'tail_lines');
 
-    const result = (await execShellInProject({
-      project,
-      command,
-      cwd_relative: cwdRel,
-      timeout_ms: timeoutMs,
-      tail_lines: tailLines,
-    })) as Record<string, unknown>;
+    // Auto-Routing local ↔ workspace (siehe Tool-Description)
+    const targetArg = (str(args, 'target') ?? 'auto').toLowerCase();
+    const isolated = args.isolated === true;
+    let target: 'local' | 'workspace';
+    if (isolated || targetArg === 'workspace') target = 'workspace';
+    else if (targetArg === 'local') target = 'local';
+    else {
+      const alive = await isDaemonAliveForProject(project).catch(() => false);
+      target = alive ? 'local' : 'workspace';
+    }
+
+    let result: Record<string, unknown>;
+    if (target === 'workspace') {
+      result = await execViaWorkspace(project, command, cwdRel, timeoutMs ?? 30000, tailLines);
+    } else {
+      result = (await execShellInProject({
+        project,
+        command,
+        cwd_relative: cwdRel,
+        timeout_ms: timeoutMs,
+        tail_lines: tailLines,
+      })) as Record<string, unknown>;
+      result['executed_via'] = 'local';
+    }
 
     // History persistieren — damit eigene MCP-Aufrufe in shell history /
     // shell get / shell log auftauchen (gleiche Tabelle wie REST-Queue).

@@ -127,6 +127,8 @@ import {
   getShellJobById,
   getShellJobLogLines,
   searchShellJobLog,
+  // Daemon-Heartbeat (Auto-Routing shell ↔ workspace)
+  isDaemonAliveForProject,
   // Error Patterns (code_check)
   addErrorPattern,
   listErrorPatterns,
@@ -928,7 +930,7 @@ const MCP_TOOLS = [
   // 16. shell
   {
     name: 'shell',
-    description: 'Shell-Kommando im eigenen Projekt-Verzeichnis ausfuehren (Queue → lokaler FileWatcher-Daemon auf dem User-PC). cwd ist auf das Projekt-Root + optional Unterpfad beschraenkt; nicht auf beliebige Verzeichnisse des Hosts. Wirkt nur wenn der User den Daemon und das Projekt aktiv hat. Keine externen Systeme.',
+    description: 'Shell-Kommando im Projekt-Verzeichnis ausfuehren. AUTO-ROUTING (Default): laeuft ein lokaler FileWatcher-Daemon (frischer Heartbeat <30s) → Job geht via shell-queue an den Daemon (echtes FS, native Tools, git/sudo/GPU verfuegbar). Sonst → exec im Workspace-Docker-Container auf der synapse-api (isoliert, Source read-only). Antwort enthaelt executed_via: "local"|"workspace" damit die KI sieht wo es lief. EXPLIZIT erzwingen: isolated:true (oder target:"workspace") zwingt Container — sinnvoll fuer isolierte Tests, Build-Sandboxing, dependency-Experimente. target:"local" zwingt Daemon (Error wenn keiner aktiv). cwd ist auf das Projekt-Root + optional cwd_relative beschraenkt. WICHTIG: Source-Files in beiden Modi via files-Tool editieren (Auto-Versionierung; im Workspace ist Source mode 0444). shell ist fuer install/build/test/git/etc.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -949,6 +951,8 @@ const MCP_TOOLS = [
         timeout_ms: { type: 'number', description: 'Default 30000' },
         tail_lines: { type: 'number', description: 'Default 5' },
         cwd_relative: { type: 'string', description: 'Unterpfad innerhalb des Projekt-Roots' },
+        target: { type: 'string', enum: ['auto', 'local', 'workspace'], description: 'exec: "auto" (Default, Heartbeat-basiert) | "local" (Daemon erzwingen) | "workspace" (Docker-Container erzwingen)' },
+        isolated: { type: 'boolean', description: 'exec: Kurzform fuer target="workspace" — fuer isolierte Tests im Docker-Container (Default false)' },
       },
       required: ['action'],
     },
@@ -3213,22 +3217,79 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
         return { success: false, error: `Unbekannte shell action: "${shellAction}"` };
       }
 
+      const project = reqStr(args, 'project');
+      const command = reqStr(args, 'command');
+      const cwdRel = str(args, 'cwd_relative');
       const timeoutMs = num(args, 'timeout_ms') ?? 30000;
+      const tailLines = num(args, 'tail_lines');
+
+      // Auto-Routing: target=auto|local|workspace (Default auto). isolated=true ist
+      // Kurzform fuer target=workspace. Auto entscheidet anhand daemon_heartbeats:
+      // frischer Heartbeat (<30s) → local (shell-queue), sonst → workspace (Docker).
+      const targetArg = (str(args, 'target') ?? 'auto').toLowerCase();
+      const isolated = args.isolated === true;
+      let target: 'local' | 'workspace';
+      if (isolated || targetArg === 'workspace') {
+        target = 'workspace';
+      } else if (targetArg === 'local') {
+        target = 'local';
+      } else {
+        const alive = await isDaemonAliveForProject(project).catch(() => false);
+        target = alive ? 'local' : 'workspace';
+      }
+
+      if (target === 'workspace') {
+        const { getWorkspaceOrchestrator } = await import('../services/workspace-orchestrator.js');
+        const orch = getWorkspaceOrchestrator();
+        if (!orch || !orch.isAvailable()) {
+          return {
+            success: false,
+            executed_via: 'workspace',
+            error: 'workspace_unavailable',
+            message: 'Workspace-Orchestrator nicht verfuegbar (Docker-Socket fehlt oder deaktiviert) UND kein lokaler Daemon aktiv.',
+          };
+        }
+        try {
+          const r = await orch.exec(project, command, {
+            timeoutMs,
+            workingDir: cwdRel ? `/workspace/${cwdRel.replace(/^\/+/, '')}` : undefined,
+          });
+          const tail = tailLines && r.stdout
+            ? r.stdout.split('\n').slice(-tailLines)
+            : r.stdout.split('\n');
+          return {
+            success: r.exitCode === 0 && !r.timedOut,
+            executed_via: 'workspace',
+            status: r.timedOut ? 'timeout' : (r.exitCode === 0 ? 'done' : 'failed'),
+            exit_code: r.exitCode,
+            tail,
+            stderr_tail: r.stderr ? r.stderr.split('\n').slice(-20) : undefined,
+            duration_ms: r.durationMs,
+          };
+        } catch (err) {
+          return {
+            success: false,
+            executed_via: 'workspace',
+            error: 'workspace_exec_failed',
+            message: (err as Error).message,
+          };
+        }
+      }
+
+      // target === 'local' — bestehender Queue-Pfad
       const { id, stream_id } = await enqueueShellJob({
-        project: reqStr(args, 'project'),
-        command: reqStr(args, 'command'),
-        cwd_relative: str(args, 'cwd_relative'),
+        project,
+        command,
+        cwd_relative: cwdRel,
         timeout_ms: timeoutMs,
-        tail_lines: num(args, 'tail_lines'),
+        tail_lines: tailLines,
       });
 
       const result = await waitForShellJob(id, timeoutMs + 5000);
 
-      // Wichtig fuer Web-KI-Connectors: explizites success-Flag +
-      // actionable message - sonst hangt der Connector beim
-      // project_inactive/unknown_project-Fall stillschweigend.
       return {
         success: !result.error,
+        executed_via: 'local',
         status: result.status,
         stream_id: result.stream_id,
         exit_code: result.exit_code,

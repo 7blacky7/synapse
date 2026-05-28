@@ -20,6 +20,7 @@ import { WatcherManager } from './manager.js';
 import { startShellJobWorker, type ShellJobWorkerHandle } from './shell-job-worker.js';
 import { startSpecialistJobWorker, type SpecialistJobWorkerHandle } from './specialist-job-worker.js';
 import { startProjectInitWorker, type ProjectInitWorkerHandle } from './project-init-worker.js';
+import { startDaemonHeartbeat, type DaemonHeartbeatHandle } from './daemon-heartbeat.js';
 
 async function main(): Promise<void> {
   ensureConfigDir();
@@ -62,6 +63,17 @@ async function main(): Promise<void> {
     projectInitWorker = await startProjectInitWorker(manager);
   } catch (err) {
     console.error('[daemon] Project-Init-Worker konnte nicht gestartet werden:', err);
+  }
+
+  // Daemon-Heartbeat: meldet aktive Projekte in PG, damit das shell-Tool
+  // (synapse-api) bei Auto-Routing weiss ob ein lokaler Daemon laeuft.
+  let heartbeat: DaemonHeartbeatHandle | null = null;
+  if (process.env.DAEMON_HEARTBEAT_DISABLED !== '1') {
+    try {
+      heartbeat = startDaemonHeartbeat(manager);
+    } catch (err) {
+      console.error('[daemon] Heartbeat konnte nicht gestartet werden:', err);
+    }
   }
 
   const app = buildApi({ manager });
@@ -123,6 +135,14 @@ async function main(): Promise<void> {
         await projectInitWorker.stop();
       } catch (err) {
         console.error('[daemon] Project-Init-Worker stop Fehler:', err);
+      }
+    }
+
+    if (heartbeat !== null) {
+      try {
+        await heartbeat.stop();
+      } catch (err) {
+        console.error('[daemon] Heartbeat stop Fehler:', err);
       }
     }
 

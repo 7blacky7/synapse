@@ -71,6 +71,15 @@ export type {
 // Agent-ID Resolver — geteilt zwischen MCP-Server, REST-API und Core-Services
 export { resolveAgentId } from './agent-id-resolver.js';
 
+// Daemon-Heartbeat (Auto-Routing shell ↔ workspace)
+export {
+  upsertDaemonHeartbeat,
+  isDaemonAliveForProject,
+  getDaemonHeartbeat,
+  clearDaemonHeartbeat,
+} from './daemon-heartbeat.js';
+export type { DaemonHeartbeatRow } from './daemon-heartbeat.js';
+
 // Wrapper-Status (PG Source-of-Truth fuer laufende Spezialisten)
 export {
   upsertWrapperStatus,

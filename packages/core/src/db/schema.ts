@@ -855,6 +855,20 @@ CREATE INDEX IF NOT EXISTS idx_project_workspaces_active_activity
 CREATE INDEX IF NOT EXISTS idx_project_workspaces_status
   ON project_workspaces(status);
 
+-- daemon_heartbeats — pro Projekt: laeuft ein lokaler FileWatcher-Daemon?
+-- Der lokale Daemon UPSERTed last_seen=NOW() alle 10s pro aktivem Projekt.
+-- shell-Tool nutzt die Tabelle fuer Auto-Routing:
+--   last_seen > NOW() - 30s  → exec via shell-queue (lokaler Daemon)
+--   sonst                    → exec via Workspace-Container (synapse-api)
+CREATE TABLE IF NOT EXISTS daemon_heartbeats (
+  project TEXT PRIMARY KEY,
+  hostname TEXT NOT NULL,
+  daemon_pid INTEGER,
+  last_seen TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_daemon_heartbeats_last_seen
+  ON daemon_heartbeats(last_seen DESC);
+
 -- NOTIFY-Trigger fuer code_files Aenderungen → WorkspaceOrchestrator hoert
 -- per LISTEN und materialisiert geaenderte Datei in aktive Container.
 -- Pattern: "PG ist Source-of-Truth, Container ist live-Mirror der relevanten Files."
