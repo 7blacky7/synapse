@@ -3555,8 +3555,7 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
             workingDir: str(args, 'working_dir'),
             exposePorts,
           });
-          return { success: true, project, ...result };</replace>
-<parameter name="reason">workspace.exec expose_ports Param durchreichen — Response liefert internal_urls
+          return { success: true, project, ...result };
         }
         case 'materialize': {
           const project = reqStr(args, 'project');
