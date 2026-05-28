@@ -18,7 +18,16 @@
 
 import Docker from 'dockerode';
 import { PassThrough } from 'node:stream';
+import * as tar from 'tar-stream';
+import { minimatch } from 'minimatch';
+import { createHash } from 'node:crypto';
 import { getPool } from '@synapse/core';
+
+const DEFAULT_IGNORE_PATTERNS = [
+  'node_modules/**', '.git/**', 'dist/**', 'build/**', 'target/**',
+  '.next/**', '.nuxt/**', 'coverage/**', '__pycache__/**', '.pytest_cache/**',
+  '*.tsbuildinfo', '.DS_Store', '.cache/**',
+];
 
 export interface WorkspaceConfig {
   socketPath?: string;            // default /var/run/docker.sock
@@ -252,6 +261,141 @@ export class WorkspaceOrchestrator {
     // Activity bei jedem exec frischen — Idle-Timer nicht versehentlich triggern.
     await this.recordActivity(project);
     return { stdout, stderr, exitCode, timedOut, durationMs: Date.now() - t0 };
+  }
+
+  /**
+   * Kopiert ALLE PG-Files des Projekts (code_files.content) in den Workspace-Container
+   * unter /workspace. Verwendet docker putArchive mit einem in-memory Tar-Stream.
+   * Owner: synapse (1000:1000), Mode 0644.
+   * Optional: ignorePatterns ueberschreibt die Defaults.
+   */
+  async materialize(
+    project: string,
+    opts: { ignorePatterns?: string[] } = {}
+  ): Promise<{ files: number; bytes: number; durationMs: number }> {
+    if (!this.dockerAvailable) throw new Error('Workspace-Orchestrator nicht verfuegbar');
+    const containerId = await this.ensureProjectRunning(project);
+    const container = this.docker.getContainer(containerId);
+    const t0 = Date.now();
+    const pool = getPool();
+    const ignore = opts.ignorePatterns ?? DEFAULT_IGNORE_PATTERNS;
+
+    const r = await pool.query(
+      'SELECT file_path, content FROM code_files WHERE project = $1 AND content IS NOT NULL',
+      [project]
+    );
+
+    const pack = tar.pack();
+    let files = 0;
+    let bytes = 0;
+    for (const row of r.rows) {
+      const fp = row.file_path as string;
+      if (ignore.some(p => minimatch(fp, p, { dot: true }))) continue;
+      const content = Buffer.from(row.content as string, 'utf8');
+      // tar.entry async via Promise (pack.entry callback signaling)
+      await new Promise<void>((resolve, reject) => {
+        const entry = pack.entry(
+          { name: fp, size: content.length, mode: 0o644, uid: 1000, gid: 1000, mtime: new Date() },
+          (err) => (err ? reject(err) : resolve())
+        );
+        entry.end(content);
+      });
+      files++;
+      bytes += content.length;
+    }
+    pack.finalize();
+
+    // Container erwartet, dass /workspace existiert (legt unsere Image-CMD an).
+    await container.putArchive(pack as unknown as NodeJS.ReadableStream, { path: '/workspace' });
+    await this.recordActivity(project);
+    return { files, bytes, durationMs: Date.now() - t0 };
+  }
+
+  /**
+   * Liest den /workspace-Inhalt aus dem Container und persistiert geaenderte/neue
+   * Dateien in code_files (PG). Vergleicht content_hash → unveraenderte werden
+   * uebersprungen. Ignore-Patterns (Default: node_modules, .git, dist, build, ...).
+   * Setzt indexed_at=NOW(), parsed_at=NULL bei Aenderung → Daemon parst nach.
+   */
+  async commit(
+    project: string,
+    opts: { ignorePatterns?: string[] } = {}
+  ): Promise<{ created: number; updated: number; unchanged: number; skipped: number; durationMs: number }> {
+    if (!this.dockerAvailable) throw new Error('Workspace-Orchestrator nicht verfuegbar');
+    const containerId = await this.ensureProjectRunning(project);
+    const container = this.docker.getContainer(containerId);
+    const t0 = Date.now();
+    const pool = getPool();
+    const ignore = opts.ignorePatterns ?? DEFAULT_IGNORE_PATTERNS;
+
+    // Bestehende Hashes laden, um Unchanged-Detection ohne Round-trips pro Datei.
+    const existing = new Map<string, string>();
+    {
+      const er = await pool.query(
+        'SELECT file_path, content_hash FROM code_files WHERE project = $1',
+        [project]
+      );
+      for (const row of er.rows) existing.set(row.file_path, row.content_hash);
+    }
+
+    // getArchive liefert tar des Verzeichnisses; Entries sind als 'workspace/...' praefixiert.
+    const stream = await container.getArchive({ path: '/workspace' });
+    const extract = tar.extract();
+    const entries: Array<{ path: string; content: Buffer }> = [];
+
+    await new Promise<void>((resolve, reject) => {
+      extract.on('entry', (header, entryStream, next) => {
+        if (header.type !== 'file') {
+          entryStream.resume();
+          entryStream.on('end', next);
+          return;
+        }
+        // Header-Name z.B. "workspace/src/index.ts" → relative "src/index.ts"
+        let relPath = header.name;
+        if (relPath.startsWith('workspace/')) relPath = relPath.slice('workspace/'.length);
+        else if (relPath === 'workspace') { entryStream.resume(); entryStream.on('end', next); return; }
+        const chunks: Buffer[] = [];
+        entryStream.on('data', (c: Buffer) => chunks.push(c));
+        entryStream.on('end', () => {
+          entries.push({ path: relPath, content: Buffer.concat(chunks) });
+          next();
+        });
+        entryStream.on('error', err => reject(err));
+      });
+      extract.on('finish', () => resolve());
+      extract.on('error', err => reject(err));
+      (stream as NodeJS.ReadableStream).pipe(extract);
+    });
+
+    let created = 0, updated = 0, unchanged = 0, skipped = 0;
+    for (const { path: fp, content } of entries) {
+      if (ignore.some(p => minimatch(fp, p, { dot: true }))) { skipped++; continue; }
+      // NUL-Bytes strippen (PG UTF8) — selbe Defensive wie in code.ts.
+      const text = content.toString('utf8').replace(/\0/g, '');
+      const hash = createHash('sha256').update(text).digest('hex');
+      const prevHash = existing.get(fp);
+      if (prevHash === hash) { unchanged++; continue; }
+
+      const fileName = fp.split('/').pop() ?? fp;
+      const fileType = (fileName.includes('.') ? fileName.split('.').pop() : '') ?? '';
+      await pool.query(
+        `INSERT INTO code_files (id, project, file_path, file_name, file_type, chunk_count, file_size, content, content_hash, indexed_at, updated_at)
+         VALUES (gen_random_uuid(), $1, $2, $3, $4, 0, $5, $6, $7, NOW(), NOW())
+         ON CONFLICT (project, file_path) DO UPDATE SET
+           file_name=EXCLUDED.file_name,
+           file_type=EXCLUDED.file_type,
+           file_size=EXCLUDED.file_size,
+           content=EXCLUDED.content,
+           content_hash=EXCLUDED.content_hash,
+           parsed_at=NULL,
+           indexed_at=NOW(),
+           updated_at=NOW()`,
+        [project, fp, fileName, fileType, text.length, text, hash]
+      );
+      if (prevHash) updated++; else created++;
+    }
+    await this.recordActivity(project);
+    return { created, updated, unchanged, skipped, durationMs: Date.now() - t0 };
   }
 
   async pin(project: string, pinned: boolean): Promise<void> {

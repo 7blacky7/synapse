@@ -78,6 +78,43 @@ export async function workspaceRoutes(fastify: FastifyInstance): Promise<void> {
   );
 
   /**
+   * POST /api/projects/:name/workspace/materialize
+   * PG.code_files → Container-FS /workspace. Body: { ignorePatterns?: string[] }
+   */
+  fastify.post<{
+    Params: { name: string };
+    Body: { ignorePatterns?: string[] };
+  }>('/api/projects/:name/workspace/materialize', async (request, reply) => {
+    const orch = ensureAvailable(reply);
+    if (!orch) return;
+    try {
+      const result = await orch.materialize(request.params.name, { ignorePatterns: request.body?.ignorePatterns });
+      return { success: true, project: request.params.name, ...result };
+    } catch (err) {
+      return reply.status(500).send({ success: false, error: { message: String(err) } });
+    }
+  });
+
+  /**
+   * POST /api/projects/:name/workspace/commit
+   * Container-FS /workspace → PG.code_files (mit Hash-Diff, parsed_at=NULL bei Aenderung).
+   * Body: { ignorePatterns?: string[] }
+   */
+  fastify.post<{
+    Params: { name: string };
+    Body: { ignorePatterns?: string[] };
+  }>('/api/projects/:name/workspace/commit', async (request, reply) => {
+    const orch = ensureAvailable(reply);
+    if (!orch) return;
+    try {
+      const result = await orch.commit(request.params.name, { ignorePatterns: request.body?.ignorePatterns });
+      return { success: true, project: request.params.name, ...result };
+    } catch (err) {
+      return reply.status(500).send({ success: false, error: { message: String(err) } });
+    }
+  });
+
+  /**
    * POST /api/projects/:name/workspace/exec
    * Body: { command: string; timeoutMs?: number; workingDir?: string }
    * Synchron: wartet bis Kommando fertig oder timeout. Liefert stdout/stderr/exitCode.
