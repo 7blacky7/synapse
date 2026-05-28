@@ -101,16 +101,22 @@ export class GoogleEmbeddingProvider implements EmbeddingProvider {
     }, 'Google Embedding');
 
     const data = await response.json() as { embedding: { values: number[] } };
+    console.error(`[Embed] → Google ${this.model} single: 1 text (${text.length}c) → ${data.embedding.values.length} dim`);
     return data.embedding.values;
   }
 
   async embedBatch(texts: string[]): Promise<number[][]> {
     const BATCH_SIZE = 100; // Google API Limit
     const allEmbeddings: number[][] = [];
+    const totalChars = texts.reduce((s, t) => s + t.length, 0);
+    const batchCount = Math.ceil(texts.length / BATCH_SIZE);
 
     for (let i = 0; i < texts.length; i += BATCH_SIZE) {
       const batch = texts.slice(i, i + BATCH_SIZE);
+      const batchIdx = Math.floor(i / BATCH_SIZE) + 1;
       const url = `${BASE_URL}/models/${this.model}:batchEmbedContents?key=${this.apiKey}`;
+      const t0 = Date.now();
+      console.error(`[Embed] → Google ${this.model} batch ${batchIdx}/${batchCount}: ${batch.length} texts (${totalChars}c total)`);
       const response = await fetchWithRetry(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -125,6 +131,7 @@ export class GoogleEmbeddingProvider implements EmbeddingProvider {
 
       const data = await response.json() as { embeddings: Array<{ values: number[] }> };
       allEmbeddings.push(...data.embeddings.map(e => e.values));
+      console.error(`[Embed] ← Google: ${data.embeddings.length} embeddings (${data.embeddings[0]?.values.length ?? '?'} dim) in ${Date.now() - t0}ms`);
     }
 
     return allEmbeddings;
