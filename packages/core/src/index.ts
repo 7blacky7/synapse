@@ -350,6 +350,10 @@ export {
 } from './services/wrapper-status.js';
 export type { WrapperStatusRow } from './services/wrapper-status.js';
 
+// Skills (EXPERIMENTAL — Qdrant Skill-DB access)
+export { searchSkills, listSkills, getSkillSection, getSkillFull } from './services/skills.js';
+export type { SkillSearchHit, SkillListEntry, SkillSection } from './services/skills.js';
+
 // Daemon-Heartbeat (Auto-Routing shell ↔ workspace)
 export {
   upsertDaemonHeartbeat,

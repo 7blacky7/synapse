@@ -1013,6 +1013,22 @@ const MCP_TOOLS = [
       required: ['action'],
     },
   },
+  // 21. skills (EXPERIMENTAL) — Zugriff auf User-eigene Skill-DB (Qdrant collection 'skills')
+  {
+    name: 'skills',
+    description: 'EXPERIMENTAL: Direkter Lese-Zugriff auf die User-Skill-Datenbank (Qdrant collection "skills" auf Unraid). Ersetzt das vorherige Pattern "via shell ein Node-Skript starten" — KI kann jetzt direkt search/list/get. ⚠️ EXPERIMENTAL weil die Skill-DB in einer kommenden Iteration umgebaut wird (Trennung private vs allgemeine Skills) — die Action-Signatur kann sich aendern. Actions: search (semantic, default 5 hits), list (alle skill_names + section_counts, optional gefiltert auf 1 skill_name fuer dessen Sections), get_section (skill_name + section → content + tags), get_full (alle sections eines skills auf einmal).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', enum: ['search', 'list', 'get_section', 'get_full'], description: 'search | list | get_section | get_full' },
+        query: { type: 'string', description: 'search: Suchbegriff (semantisch)' },
+        skill_name: { type: 'string', description: 'list (optional, filter): nur Sections eines Skills. get_section/get_full: Pflicht.' },
+        section: { type: 'string', description: 'get_section: Section-Name (Pflicht)' },
+        limit: { type: 'number', description: 'search: max Hits (Default 5, Max 20)' },
+      },
+      required: ['action'],
+    },
+  },
 ];
 
 interface PendingIdea {
@@ -3552,6 +3568,35 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
         }
         default:
           return { success: false, error: `Unbekannte workspace action: "${action}"` };
+      }
+    }
+
+    case 'skills': {
+      const { searchSkills, listSkills, getSkillSection, getSkillFull } = await import('@synapse/core');
+      switch (action) {
+        case 'search': {
+          const query = reqStr(args, 'query');
+          const limit = Math.min(num(args, 'limit') ?? 5, 20);
+          const hits = await searchSkills(query, limit);
+          return { success: true, experimental: true, count: hits.length, hits };
+        }
+        case 'list': {
+          const skillName = str(args, 'skill_name');
+          const skills = await listSkills(skillName);
+          return { success: true, experimental: true, count: skills.length, skills };
+        }
+        case 'get_section': {
+          const sec = await getSkillSection(reqStr(args, 'skill_name'), reqStr(args, 'section'));
+          if (!sec) return { success: false, experimental: true, error: 'not_found', message: 'skill_name + section nicht gefunden' };
+          return { success: true, experimental: true, ...sec };
+        }
+        case 'get_full': {
+          const sections = await getSkillFull(reqStr(args, 'skill_name'));
+          if (sections.length === 0) return { success: false, experimental: true, error: 'not_found', message: 'skill_name nicht gefunden' };
+          return { success: true, experimental: true, skill_name: sections[0].skill_name, section_count: sections.length, sections };
+        }
+        default:
+          return { success: false, error: `Unbekannte skills action: "${action}"` };
       }
     }
 
