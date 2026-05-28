@@ -1427,6 +1427,45 @@ export async function searchCode(
 }
 
 /**
+ * Batch-Variante von searchCode: mehrere Queries auf einmal.
+ * Optimiert: alle Queries in EINEM embedBatch-Call (statt N Round-Trips zu Google).
+ * Qdrant selbst kann pro Vektor nur einzeln gesucht werden — die N Searches laufen parallel.
+ */
+export interface CodeSearchBatchItem {
+  query: string;
+  count: number;
+  hits: CodeSearchResult[];
+}
+
+export async function searchCodeBatch(
+  queries: string[],
+  projectName: string,
+  fileType?: string,
+  limitPerQuery: number = 5,
+): Promise<CodeSearchBatchItem[]> {
+  if (!projectName) throw new Error('Projekt muss angegeben werden fuer Code-Suche');
+  if (queries.length === 0) return [];
+
+  // Embedding-Batch — Spart N-1 API-Roundtrips zu Google
+  const vectors = await embedBatch(queries);
+
+  const collectionName = COLLECTIONS.projectCode(projectName);
+  const filter: Record<string, unknown> = { must: [{ key: 'project', match: { value: projectName } }] };
+  if (fileType) (filter.must as Array<Record<string, unknown>>).push({ key: 'file_type', match: { value: fileType } });
+
+  // Parallel Qdrant-Searches (Qdrant unterstuetzt keinen Vector-Array-Input)
+  const results = await Promise.all(
+    vectors.map((vec) => searchVectors<CodeChunkPayload>(collectionName, vec, limitPerQuery, filter)),
+  );
+
+  return queries.map((query, i) => ({
+    query,
+    count: results[i].length,
+    hits: results[i],
+  }));
+}
+
+/**
  * Befuellt code_files aus bestehenden Qdrant-Vektoren (einmaliger Backfill).
  * Wird bei project init aufgerufen wenn PG-Tabelle leer oder Dateien ohne content sind.
  * Liest bei Backfill auch Dateiinhalt vom Filesystem ein.

@@ -9,6 +9,7 @@ import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import {
   // Code-Suche
   searchCode,
+  searchCodeBatch,
   searchDocsWithFallback,
   listCollections,
   scrollVectors,
@@ -722,14 +723,14 @@ const MCP_TOOLS = [
   // 14. code_intel
   {
     name: 'code_intel',
-    description: 'Strukturierte Lese-Abfragen ueber den eigenen Code-Index des Projekts: Dateibaum, Funktionen, Variablen, Symbole, Querverweise, Suche, Dateiinhalt sowie die Ablauf-Ebene (Statements, Call-Kanten, Execution-Flow, Entrypoints). Read-Only auf eigene indexierte Projekt-Daten. SUCHE: action="search" hat ZWEI Modi: Default = PG-Volltext (lexikalisch, schnell, exakte Begriffe); semantic:true = Qdrant-Embedding (konzeptuell, fuzzy, "wie wird X gehandhabt"). Antwort enthaelt mode:"fulltext"|"semantic". Damit ist das alte separate search(action:"code") nicht mehr noetig — code_intel kann beides.',
+    description: 'Strukturierte Lese-Abfragen ueber den eigenen Code-Index des Projekts: Dateibaum, Funktionen, Variablen, Symbole, Querverweise, Suche, Dateiinhalt sowie die Ablauf-Ebene (Statements, Call-Kanten, Execution-Flow, Entrypoints). Read-Only auf eigene indexierte Projekt-Daten. SUCHE: action="search" hat ZWEI Modi: Default = PG-Volltext (lexikalisch); semantic:true = Qdrant-Embedding (konzeptuell). Antwort enthaelt mode-Feld. BATCH-SUCHE: action="search_batch" + queries[] (1..10) macht alle Queries semantisch in EINEM Call — Embeddings gebatched zu Google, parallel gegen Qdrant. Ideal wenn KI mehrere Discovery-Aspekte gleichzeitig abklopfen will. Damit deckt code_intel sowohl exakte als auch konzeptuelle Suche ab — das alte separate search(action:"code") wird nicht mehr gebraucht.',
     inputSchema: {
       type: 'object',
       properties: {
         action: {
           type: 'string',
-          enum: ['tree', 'functions', 'variables', 'symbols', 'references', 'search', 'file', 'statements', 'calls', 'flow', 'entrypoints'],
-          description: 'Aktion: tree|functions|variables|symbols|references|search|file|statements|calls|flow|entrypoints',
+          enum: ['tree', 'functions', 'variables', 'symbols', 'references', 'search', 'search_batch', 'file', 'statements', 'calls', 'flow', 'entrypoints'],
+          description: 'Aktion: tree|functions|variables|symbols|references|search|search_batch|file|statements|calls|flow|entrypoints',
         },
         project: { type: 'string', description: 'Projekt-Name (erforderlich)' },
         agent_id: { type: 'string', description: 'Agent-ID fuer Onboarding' },
@@ -752,6 +753,8 @@ const MCP_TOOLS = [
         },
         query: { type: 'string', description: 'Suchbegriff fuer search-Action' },
         semantic: { type: 'boolean', description: 'search: true = Qdrant-Embedding-Suche (konzeptuell/fuzzy). Default false = PG-Volltext (lexikalisch/exakt).' },
+        queries: { type: 'array', items: { type: 'string' }, description: 'search_batch: 1..10 semantische Queries in EINEM Call. Embeddings werden gebatched an Google → spart N-1 API-Roundtrips. Antwort enthaelt results[] mit {query, count, hits}.' },
+        limit_per_query: { type: 'number', description: 'search_batch: Max Hits pro Query (Default 5)' },
         file_type: { type: 'string', description: 'Dateityp-Filter fuer search-Action (z.B. "ts", "js")' },
         limit: { type: 'number', description: 'Max. Ergebnisse fuer search-Action (Standard: 20)' },
         from_line: { type: 'number', description: 'file: Start-Zeile (1-basiert, Standard: 1)' },
@@ -2823,6 +2826,33 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
         case 'references': {
           const result = await getReferences(project, reqStr(args, 'name'));
           return { success: true, ...result, project };
+        }
+        case 'search_batch': {
+          // Mehrere semantic Queries in EINEM Call — alle Embeddings in 1 Google-Batch.
+          const queriesRaw = (args as Record<string, unknown>).queries;
+          if (!Array.isArray(queriesRaw) || queriesRaw.length === 0) {
+            return { success: false, error: 'invalid_queries', message: 'queries[] muss ein Array mit >=1 String sein.' };
+          }
+          if (queriesRaw.length > 10) {
+            return { success: false, error: 'too_many_queries', message: `Max 10 queries pro Batch (got ${queriesRaw.length}).` };
+          }
+          const queries = queriesRaw.map((q) => String(q)).filter((q) => q.trim().length > 0);
+          const fileType = str(args, 'file_type');
+          const limitPerQuery = num(args, 'limit_per_query') ?? 5;
+          const items = await searchCodeBatch(queries, project, fileType, limitPerQuery);
+          const results = items.map((it) => ({
+            query: it.query,
+            count: it.count,
+            hits: it.hits.map((h) => ({
+              file_path: h.payload.file_path,
+              file_type: h.payload.file_type,
+              line_start: h.payload.line_start,
+              line_end: h.payload.line_end,
+              score: h.score,
+              content: h.payload.content,
+            })),
+          }));
+          return { success: true, mode: 'semantic', queries_count: queries.length, results, project };
         }
         case 'search': {
           const query = reqStr(args, 'query');

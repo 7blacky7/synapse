@@ -135,6 +135,7 @@ export {
   verifyProjectAgainstFilesystem,
   handleFileEvent,
   searchCode,
+  searchCodeBatch,
   getProjectStats,
   searchFilesByPath,
   backfillCodeFiles,
