@@ -2,8 +2,9 @@
 # Node 22-LTS — pnpm@latest verwendet intern node:sqlite, was Node 22+ erfordert.
 FROM node:22-alpine
 
-# pnpm installieren
-RUN corepack enable && corepack prepare pnpm@latest --activate
+# pnpm installieren — pin auf 10.33 (matched lokale Version, pnpm@latest 11+ ist
+# bei Ignored-Build-Scripts (ssh2, cpu-features) strikt und bricht den Install ab)
+RUN corepack enable && corepack prepare pnpm@10.33.0 --activate
 
 WORKDIR /app
 
