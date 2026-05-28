@@ -705,8 +705,12 @@ export async function parseUnparsedFiles(projectName: string): Promise<number> {
       while (nextIndex < filePaths.length) {
         const idx = nextIndex++;
         const filePath = filePaths[idx];
+        const t0 = Date.now();
+        console.error(`[Synapse] [W${workerId}] Parse-Start: ${projectName}/${filePath}`);
         try {
           await parseAndEmbed(projectName, filePath);
+          const dt = Date.now() - t0;
+          if (dt > 3000) console.error(`[Synapse] [W${workerId}] Parse-Done (langsam): ${filePath} in ${dt}ms`);
           parsed++;
           if (parsed % 20 === 0) {
             const remaining = total - parsed - failed;

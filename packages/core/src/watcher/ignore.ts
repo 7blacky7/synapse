@@ -49,6 +49,14 @@ const DEFAULT_IGNORES = [
   '.nuxt',
   '.output',
   'target',
+  '.svelte-kit',
+  '.astro',
+  '.vercel',
+  '.netlify',
+  '.docusaurus',
+  '.expo',
+  '.serverless',
+  '.serena',
 
   // IDE/Editor
   '.idea',
