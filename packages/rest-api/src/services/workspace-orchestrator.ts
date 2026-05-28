@@ -133,11 +133,17 @@ export class WorkspaceOrchestrator {
       client.on('notification', (msg) => {
         if (msg.channel !== 'synapse_code_file_change' || !msg.payload) return;
         try {
-          const { project, file_path } = JSON.parse(msg.payload) as { project: string; file_path: string };
+          const { project, file_path, action } = JSON.parse(msg.payload) as { project: string; file_path: string; action: string };
           if (!project || !file_path) return;
-          this.materializeFile(project, file_path).catch(err =>
-            console.error(`[Workspaces] auto-sync ${project}:${file_path} failed: ${(err as Error).message}`)
-          );
+          if (action === 'DELETE') {
+            this.deleteFile(project, file_path).catch(err =>
+              console.error(`[Workspaces] auto-delete ${project}:${file_path} failed: ${(err as Error).message}`)
+            );
+          } else {
+            this.materializeFile(project, file_path).catch(err =>
+              console.error(`[Workspaces] auto-sync ${project}:${file_path} failed: ${(err as Error).message}`)
+            );
+          }
         } catch { /* malformed payload — ignore */ }
       });
       client.on('error', (err) => {
@@ -157,6 +163,11 @@ export class WorkspaceOrchestrator {
    * Workspace aktuell active + Container wirklich running ist. Sonst no-op
    * (Files werden beim naechsten ensureProjectRunning per voller materialize
    * automatisch nachgeholt — siehe Container-Start).
+   *
+   * READ-ONLY-ENFORCEMENT: tar-Entry mit uid=0 gid=0 mode=0444 → Container-User
+   * synapse(1000) kann lesen, NICHT modifizieren/loeschen via shell. Schreib-
+   * versuche per "echo > file" oder "sed -i" laufen ins "Permission denied".
+   * Aenderungen MUESSEN ueber files-Tool (PG) gehen → auto-sync hierher.
    */
   async materializeFile(project: string, filePath: string): Promise<boolean> {
     if (!this.dockerAvailable) return false;
@@ -176,7 +187,8 @@ export class WorkspaceOrchestrator {
     const pack = tar.pack();
     await new Promise<void>((resolve, reject) => {
       const entry = pack.entry(
-        { name: filePath, size: content.length, mode: 0o644, uid: 1000, gid: 1000, mtime: new Date() },
+        // uid:0 + mode:0444 → read-only fuer synapse user (Lockdown)
+        { name: filePath, size: content.length, mode: 0o444, uid: 0, gid: 0, mtime: new Date() },
         (err) => (err ? reject(err) : resolve())
       );
       entry.end(content);
@@ -184,8 +196,44 @@ export class WorkspaceOrchestrator {
     pack.finalize();
     await this.docker.getContainer(row.containerId).putArchive(pack as unknown as NodeJS.ReadableStream, { path: '/workspace' });
     this.autoSyncCount++;
-    console.error(`[Workspaces] auto-sync ${project}: ${filePath} (${content.length}B)`);
+    console.error(`[Workspaces] auto-sync ${project}: ${filePath} (${content.length}B, ro)`);
     return true;
+  }
+
+  /**
+   * Loescht EINE Datei im Container (PG-DELETE oder content→NULL trigger).
+   * No-op wenn Container nicht aktiv. docker exec mit User 0 (root) damit
+   * read-only-Source-Files (mode 0444 root-owned) gelocht werden koennen.
+   */
+  async deleteFile(project: string, filePath: string): Promise<boolean> {
+    if (!this.dockerAvailable) return false;
+    const row = await this.loadRow(project);
+    if (!row || row.status !== 'active' || !row.containerId) return false;
+    const running = await this.isContainerRunning(row.containerId);
+    if (!running) return false;
+
+    // Pfad-Saniterung: keine ".." traversal, kein absoluter Pfad
+    const clean = filePath.replace(/^\/+/, '').split('/').filter(seg => seg && seg !== '..').join('/');
+    if (!clean) return false;
+
+    const container = this.docker.getContainer(row.containerId);
+    try {
+      const exec = await container.exec({
+        Cmd: ['/bin/sh', '-c', `rm -f /workspace/${clean.replace(/'/g, "'\\''")}`],
+        AttachStdout: false,
+        AttachStderr: false,
+        Tty: false,
+        User: '0', // root, damit auch read-only Source-Files entfernt werden koennen
+      });
+      const stream = await exec.start({ hijack: true, stdin: false });
+      await new Promise<void>((resolve) => stream.on('end', () => resolve()));
+      this.autoSyncCount++;
+      console.error(`[Workspaces] auto-delete ${project}: ${clean}`);
+      return true;
+    } catch (err) {
+      console.error(`[Workspaces] delete ${project}:${clean} exec failed: ${(err as Error).message}`);
+      return false;
+    }
   }
 
   /**
@@ -376,10 +424,12 @@ export class WorkspaceOrchestrator {
       const fp = row.file_path as string;
       if (ignore.some(p => minimatch(fp, p, { dot: true }))) continue;
       const content = Buffer.from(row.content as string, 'utf8');
-      // tar.entry async via Promise (pack.entry callback signaling)
+      // Lockdown: uid=0 + mode=0444 → synapse user kann lesen, nicht modifizieren.
+      // Shell-Schreibversuche auf Source ("echo > foo.ts", "sed -i") laufen ins
+      // Permission denied. KI muss files-Tool nutzen → PG-Sync hierher.
       await new Promise<void>((resolve, reject) => {
         const entry = pack.entry(
-          { name: fp, size: content.length, mode: 0o644, uid: 1000, gid: 1000, mtime: new Date() },
+          { name: fp, size: content.length, mode: 0o444, uid: 0, gid: 0, mtime: new Date() },
           (err) => (err ? reject(err) : resolve())
         );
         entry.end(content);
