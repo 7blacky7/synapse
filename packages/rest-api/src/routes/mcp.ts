@@ -841,6 +841,7 @@ const MCP_TOOLS = [
               shift_mode: { type: 'string', enum: ['auto', 'absolute'], description: 'Default "auto" = line-Ops auf gleicher Datei werden reverse-order appliziert (User gibt Zeilen aus Pre-Plan-Snapshot an). "absolute" = Op wird in Plan-Reihenfolge mit den angegebenen Zeilen auf den aktuellen Buffer-Stand bezogen.' },
               anchor_text: { type: 'string', description: '(optional): Pre-flight Verifikation — pruefe dass die Ziel-Zeile (line_start fuer replace/delete, after_line fuer insert) exakt diesen Text enthaelt (.trim()-vergleich). Mismatch -> harter Error, KEINE Mutation. Schuetzt vor Drift zwischen plan() und commit().' },
               anchor_contains: { type: 'string', description: '(optional): Wie anchor_text, aber Substring-Match statt Exact.' },
+              upsert: { type: 'boolean', description: '(optional, nur fuer action="create"): wenn true und die Datei existiert bereits, wird der content als update ueberschrieben statt zu failen. Default false — bewusst opt-in damit KI nicht versehentlich existierende Files killt.' },
             },
             required: ['file_path', 'action'],
           },
@@ -891,6 +892,7 @@ const MCP_TOOLS = [
               shift_mode: { type: 'string', enum: ['auto', 'absolute'], description: 'Default "auto" = line-Ops auf gleicher Datei werden reverse-order appliziert (User gibt Zeilen aus Pre-Plan-Snapshot an). "absolute" = Op wird in Plan-Reihenfolge mit den angegebenen Zeilen auf den aktuellen Buffer-Stand bezogen.' },
               anchor_text: { type: 'string', description: '(optional): Pre-flight Verifikation — pruefe dass die Ziel-Zeile (line_start fuer replace/delete, after_line fuer insert) exakt diesen Text enthaelt (.trim()-vergleich). Mismatch -> harter Error, KEINE Mutation.' },
               anchor_contains: { type: 'string', description: '(optional): Wie anchor_text, aber Substring-Match statt Exact.' },
+              upsert: { type: 'boolean', description: '(optional, nur fuer action="create"): wenn true und die Datei existiert bereits, wird der content als update ueberschrieben statt zu failen. Default false — bewusst opt-in damit KI nicht versehentlich existierende Files killt.' },
               new_path: { type: 'string' },
               reason: { type: 'string' },
               edits: {

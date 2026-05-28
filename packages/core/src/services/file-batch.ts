@@ -102,6 +102,14 @@ export interface FileBatchOp {
    */
   anchor_text?: string;
   anchor_contains?: string;
+  /**
+   * Nur fuer action='create': wenn true und die Datei existiert bereits,
+   * wird die Op als 'update' (Komplett-Ersetzung) behandelt statt zu failen.
+   * Default false — sicheres Default-Verhalten (Schutz vor versehentlichem
+   * Ueberschreiben). KI soll upsert:true nur setzen wenn sie wirklich
+   * "create oder ueberschreiben" meint.
+   */
+  upsert?: boolean;
 }
 
 /**
@@ -362,7 +370,14 @@ function applyOpInMemory(
       }
       if (src.deleted) throw new Error('create: Datei wurde in dieser Batch geloescht');
       if (src.finalContent !== '') {
-        throw new Error('create: Datei existiert bereits — nutze "update" oder "search_replace"');
+        // Upsert-Modus: existierende Datei wird ueberschrieben (wie update).
+        if (op.upsert === true) {
+          const before = sizeBefore;
+          src.finalContent = op.content;
+          src.finalHash = contentHash(op.content);
+          return { context: `create(upsert): ${op.content.length} Zeichen`, sizeBefore: before, sizeAfter: op.content.length };
+        }
+        throw new Error(`create: Datei "${op.file_path}" existiert bereits — nutze "update", "search_replace" oder upsert:true`);
       }
       src.finalContent = op.content;
       src.finalHash = contentHash(op.content);
