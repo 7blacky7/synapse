@@ -172,8 +172,9 @@ async function acquireEmbedSlot(): Promise<void> {
   if (activeEmbedCalls < MAX_CONCURRENT_EMBED) {
     activeEmbedCalls++;
   } else {
+    // Wartender bekommt den Slot uebertragen (release zaehlt nicht runter).
+    // Daher hier KEIN ++ — sonst akkumuliert der Counter und alle queuen ewig.
     await new Promise<void>((resolve) => embedQueue.push(resolve));
-    activeEmbedCalls++;
   }
   // Mindest-Abstand seit letztem Finish
   const gap = Date.now() - lastEmbedFinishMs;
@@ -181,10 +182,14 @@ async function acquireEmbedSlot(): Promise<void> {
 }
 
 function releaseEmbedSlot(): void {
-  activeEmbedCalls--;
   lastEmbedFinishMs = Date.now();
   const next = embedQueue.shift();
-  if (next) next();
+  if (next) {
+    // Slot bleibt belegt — uebergeben an den Wartenden.
+    next();
+  } else {
+    activeEmbedCalls--;
+  }
 }
 
 /**
