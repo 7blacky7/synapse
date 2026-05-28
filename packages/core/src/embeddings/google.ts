@@ -21,9 +21,10 @@
 
 import { EmbeddingProvider } from './types.js';
 
-// gemini-embedding-001 (stable) statt -2-preview — Preview hat striktes Per-Minute-Quota.
+// gemini-embedding-2 (stable, ohne -preview) — das Preview-Modell hatte striktes
+// Per-Minute-Quota; der stable Release hat normales Quota.
 // outputDimensionality=3072 macht den Output kompatibel zu existierenden Qdrant-Collections.
-const DEFAULT_MODEL = 'gemini-embedding-001';
+const DEFAULT_MODEL = 'gemini-embedding-2';
 const OUTPUT_DIMENSIONALITY = 3072;
 const BASE_URL = 'https://generativelanguage.googleapis.com/v1beta';
 
