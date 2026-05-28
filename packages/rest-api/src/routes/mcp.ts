@@ -2908,19 +2908,64 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
         if (!Array.isArray(opsRaw) || opsRaw.length === 0) {
           return { success: false, error: 'invalid_ops', message: 'ops[] muss ein Array mit mindestens 1 Element sein.' };
         }
+        const opsTyped = opsRaw as import('@synapse/core').FileBatchOp[];
+
+        // auto_commit + Multi-File: per-File-Atomicity. Wir gruppieren nach file_path
+        // und committen jede Datei isoliert — ein Fehler auf File X bricht nicht
+        // die Ops auf File Y ab.
+        const filePaths = new Set(opsTyped.map((o) => o.file_path));
+        if (args.auto_commit === true && filePaths.size > 1) {
+          const byFile = new Map<string, import('@synapse/core').FileBatchOp[]>();
+          for (const op of opsTyped) {
+            const list = byFile.get(op.file_path) ?? [];
+            list.push(op);
+            byFile.set(op.file_path, list);
+          }
+          const committed: Array<{ file_path: string; batch_id: string; ops: number }> = [];
+          const failed: Array<{ file_path: string; error: string; message: string }> = [];
+          for (const [filePath, fileOps] of byFile) {
+            try {
+              const plan = await planBatch({
+                project,
+                agent_id: agentId,
+                ops: fileOps,
+                open_for_coedit: typeof args.open_for_coedit === 'boolean' ? args.open_for_coedit as boolean : undefined,
+                reason: str(args, 'reason'),
+              });
+              const c = await commitBatch({ plan_id: plan.plan_id, agent_id: agentId, agent_note: str(args, 'agent_note') });
+              if (c.success) {
+                committed.push({ file_path: filePath, batch_id: String(c.batch_id ?? plan.plan_id), ops: fileOps.length });
+              } else {
+                failed.push({ file_path: filePath, error: c.error ?? 'commit_failed', message: c.message ?? 'commit failed' });
+              }
+            } catch (err) {
+              failed.push({ file_path: filePath, error: 'plan_failed', message: (err as Error).message });
+            }
+          }
+          return {
+            success: failed.length === 0,
+            mode: 'per_file_atomic',
+            committed,
+            failed,
+            committed_count: committed.length,
+            failed_count: failed.length,
+            message: failed.length === 0
+              ? `${committed.length}/${byFile.size} Datei(en) committed.`
+              : `${committed.length}/${byFile.size} committed, ${failed.length} fehlgeschlagen — Details in "failed[]".`,
+          };
+        }
+
+        // Single-File ODER auto_commit:false → klassischer Plan-Pfad (atomic).
         let result;
         try {
           result = await planBatch({
             project,
             agent_id: agentId,
-            ops: opsRaw as import('@synapse/core').FileBatchOp[],
+            ops: opsTyped,
             open_for_coedit: typeof args.open_for_coedit === 'boolean' ? args.open_for_coedit as boolean : undefined,
             reason: str(args, 'reason'),
           });
         } catch (err) {
-          // planBatch wirft bei Validation-Fails (z.B. create auf existierender Datei,
-          // overlap, anchor-mismatch). Strukturiert zurueckgeben statt outer-catch
-          // zu lassen — sonst sieht die KI nur "Tool execution error".
           return { success: false, error: 'plan_failed', message: (err as Error).message };
         }
         // auto_commit:true -> direkt commit, ABER nur wenn alle Previews ok sind.
