@@ -855,6 +855,30 @@ CREATE INDEX IF NOT EXISTS idx_project_workspaces_active_activity
 CREATE INDEX IF NOT EXISTS idx_project_workspaces_status
   ON project_workspaces(status);
 
+-- NOTIFY-Trigger fuer code_files Aenderungen → WorkspaceOrchestrator hoert
+-- per LISTEN und materialisiert geaenderte Datei in aktive Container.
+-- Pattern: "PG ist Source-of-Truth, Container ist live-Mirror der relevanten Files."
+CREATE OR REPLACE FUNCTION notify_code_file_change() RETURNS trigger AS $$
+BEGIN
+  -- Nur bei tatsaechlichem Content-Update bzw. Insert mit Content.
+  IF NEW.content IS NULL THEN RETURN NEW; END IF;
+  IF TG_OP = 'UPDATE' AND OLD.content IS NOT NULL AND OLD.content_hash = NEW.content_hash THEN
+    RETURN NEW;   -- Hash unveraendert → kein Sync noetig.
+  END IF;
+  PERFORM pg_notify('synapse_code_file_change', json_build_object(
+    'project',   NEW.project,
+    'file_path', NEW.file_path,
+    'action',    TG_OP
+  )::text);
+  RETURN NEW;
+END
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_notify_code_file_change ON code_files;
+CREATE TRIGGER trg_notify_code_file_change
+  AFTER INSERT OR UPDATE OF content, content_hash ON code_files
+  FOR EACH ROW EXECUTE FUNCTION notify_code_file_change();
+
 `;
 
 export async function ensureSchema(): Promise<void> {

@@ -169,6 +169,20 @@ export async function startServer(): Promise<void> {
     console.log('[Synapse API] Workspace-Orchestrator per WORKSPACE_DISABLED=1 ausgeschaltet');
   }
 
+  // Parser-Worker: server-seitige parseUnparsedFiles-Schleife. Schliesst die Luecke
+  // wenn KEIN lokaler FileWatcher-Daemon laeuft — Files die via files-Tool / Web-KI
+  // in code_files landen, werden hier nachgezogen + code_intel sieht sie.
+  // ENV: PARSER_LOOP_DISABLED=1 (default an); PARSER_LOOP_INTERVAL_MS (default 30000).
+  if (process.env.PARSER_LOOP_DISABLED !== '1') {
+    const { initParserWorker } = await import('./services/parser-worker.js');
+    const pwCfg: Record<string, unknown> = {};
+    if (process.env.PARSER_LOOP_INTERVAL_MS) pwCfg.intervalMs = parseInt(process.env.PARSER_LOOP_INTERVAL_MS, 10);
+    if (process.env.PARSER_LOOP_MAX_PER_TICK) pwCfg.maxPerTick = parseInt(process.env.PARSER_LOOP_MAX_PER_TICK, 10);
+    initParserWorker(pwCfg);
+  } else {
+    console.log('[Synapse API] Parser-Worker per PARSER_LOOP_DISABLED=1 ausgeschaltet');
+  }
+
   // Server erstellen und starten
   const server = await createServer();
 

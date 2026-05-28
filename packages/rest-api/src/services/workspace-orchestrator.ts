@@ -21,6 +21,7 @@ import { PassThrough } from 'node:stream';
 import * as tar from 'tar-stream';
 import { minimatch } from 'minimatch';
 import { createHash } from 'node:crypto';
+import type { PoolClient } from 'pg';
 import { getPool } from '@synapse/core';
 
 const DEFAULT_IGNORE_PATTERNS = [
@@ -75,6 +76,8 @@ export class WorkspaceOrchestrator {
   private cfg: Required<WorkspaceConfig>;
   private idleTimer: NodeJS.Timeout | null = null;
   private dockerAvailable = false;
+  private listenClient: PoolClient | null = null;
+  private autoSyncCount = 0;
 
   constructor(cfg: WorkspaceConfig = {}) {
     this.cfg = { ...DEFAULTS, ...cfg } as Required<WorkspaceConfig>;
@@ -88,6 +91,7 @@ export class WorkspaceOrchestrator {
       this.dockerAvailable = true;
       console.error(`[Workspaces] Docker erreichbar (socket=${this.cfg.socketPath}, image=${this.cfg.image}, maxConcurrent=${this.cfg.maxConcurrent}, idleStop=${this.cfg.idleStopMinutes}min)`);
       this.startIdleStopLoop();
+      this.startListening().catch(err => console.error(`[Workspaces] LISTEN-Start fehlgeschlagen: ${(err as Error).message}`));
       return true;
     } catch (err) {
       this.dockerAvailable = false;
@@ -102,6 +106,86 @@ export class WorkspaceOrchestrator {
 
   shutdown(): void {
     if (this.idleTimer) { clearInterval(this.idleTimer); this.idleTimer = null; }
+    if (this.listenClient) {
+      const c = this.listenClient; this.listenClient = null;
+      c.query('UNLISTEN *').catch(() => {});
+      c.release();
+    }
+  }
+
+  getStats(): { autoSyncCount: number; dockerAvailable: boolean; listening: boolean } {
+    return { autoSyncCount: this.autoSyncCount, dockerAvailable: this.dockerAvailable, listening: !!this.listenClient };
+  }
+
+  /**
+   * LISTEN auf 'synapse_code_file_change' (PG-Trigger NOTIFY auf code_files).
+   * Bei jeder Aenderung: wenn das Projekt einen aktiven Workspace hat, wird die
+   * EINE geaenderte Datei in den Container geschoben (incremental materialize).
+   * → "PG = Source of Truth, Container = live-Mirror".
+   * Selbst-heilend: bei Connection-Fehler reconnect nach 5s.
+   */
+  private async startListening(): Promise<void> {
+    try {
+      const client = await getPool().connect();
+      await client.query('LISTEN synapse_code_file_change');
+      this.listenClient = client;
+      console.error('[Workspaces] LISTEN synapse_code_file_change aktiv (PG → Container auto-sync)');
+      client.on('notification', (msg) => {
+        if (msg.channel !== 'synapse_code_file_change' || !msg.payload) return;
+        try {
+          const { project, file_path } = JSON.parse(msg.payload) as { project: string; file_path: string };
+          if (!project || !file_path) return;
+          this.materializeFile(project, file_path).catch(err =>
+            console.error(`[Workspaces] auto-sync ${project}:${file_path} failed: ${(err as Error).message}`)
+          );
+        } catch { /* malformed payload — ignore */ }
+      });
+      client.on('error', (err) => {
+        console.error(`[Workspaces] LISTEN client error: ${err.message} — reconnect in 5s`);
+        this.listenClient = null;
+        try { client.release(true); } catch { /* ignore */ }
+        setTimeout(() => this.startListening().catch(() => {}), 5_000);
+      });
+    } catch (err) {
+      console.error(`[Workspaces] LISTEN-Connect fehlgeschlagen: ${(err as Error).message} — retry in 10s`);
+      setTimeout(() => this.startListening().catch(() => {}), 10_000);
+    }
+  }
+
+  /**
+   * Schiebt EINE Datei in den Container des Projekts — aber NUR wenn der
+   * Workspace aktuell active + Container wirklich running ist. Sonst no-op
+   * (Files werden beim naechsten ensureProjectRunning per voller materialize
+   * automatisch nachgeholt — siehe Container-Start).
+   */
+  async materializeFile(project: string, filePath: string): Promise<boolean> {
+    if (!this.dockerAvailable) return false;
+    const row = await this.loadRow(project);
+    if (!row || row.status !== 'active' || !row.containerId) return false;
+    const running = await this.isContainerRunning(row.containerId);
+    if (!running) return false;
+
+    const pool = getPool();
+    const r = await pool.query(
+      'SELECT content FROM code_files WHERE project=$1 AND file_path=$2 AND content IS NOT NULL',
+      [project, filePath]
+    );
+    if (!r.rows[0]?.content) return false;
+    const content = Buffer.from(r.rows[0].content as string, 'utf8');
+
+    const pack = tar.pack();
+    await new Promise<void>((resolve, reject) => {
+      const entry = pack.entry(
+        { name: filePath, size: content.length, mode: 0o644, uid: 1000, gid: 1000, mtime: new Date() },
+        (err) => (err ? reject(err) : resolve())
+      );
+      entry.end(content);
+    });
+    pack.finalize();
+    await this.docker.getContainer(row.containerId).putArchive(pack as unknown as NodeJS.ReadableStream, { path: '/workspace' });
+    this.autoSyncCount++;
+    console.error(`[Workspaces] auto-sync ${project}: ${filePath} (${content.length}B)`);
+    return true;
   }
 
   /**
