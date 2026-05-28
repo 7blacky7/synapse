@@ -1387,8 +1387,11 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
         case 'stop':
           return { success: false, error: 'Action "stop" ist nur ueber MCP Server (stdio) verfuegbar — FileWatcher benoetigt' };
         case 'status': {
-          const project = reqStr(args, 'path');
-          const codeStats = await getProjectStats(project.split(/[/\\]/).pop() || project);
+          // Akzeptiert path ODER project (Web-KIs uebergeben oft project statt path).
+          const raw = str(args, 'project') ?? str(args, 'path');
+          if (!raw) return { success: false, error: 'project oder path erforderlich' };
+          const projectName = raw.split(/[/\\]/).pop() || raw;
+          const codeStats = await getProjectStats(projectName);
           return { success: true, stats: codeStats };
         }
         case 'list': {

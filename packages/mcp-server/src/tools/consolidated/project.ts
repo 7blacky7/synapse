@@ -251,7 +251,15 @@ const projectTool: ConsolidatedTool = {
         }
 
         case 'status': {
-          const path = reqStr(args, 'path');
+          // Akzeptiert path ODER project — Web-KIs uebergeben oft nur project.
+          let path = str(args, 'path');
+          if (!path) {
+            const project = str(args, 'project');
+            if (!project) return { success: false, error: 'project oder path erforderlich' };
+            const { getProjectPath } = await import('../index.js');
+            path = getProjectPath(project);
+            if (!path) return { success: false, error: `Projekt "${project}" nicht registriert — path uebergeben oder zuerst init`};
+          }
           const result = await getProjectStatusWithStats(path);
           return result;
         }
