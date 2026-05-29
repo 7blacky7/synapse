@@ -3697,8 +3697,21 @@ export async function mcpRoutes(fastify: FastifyInstance): Promise<void> {
           if (derivedAgentId && !toolArgs.agent_id) {
             toolArgs.agent_id = derivedAgentId;
           }
-          const toolResult = await handleToolCall(toolName, toolArgs);
-          result = { content: [{ type: 'text', text: JSON.stringify(toolResult, null, 2) }] };
+          try {
+            const toolResult = await handleToolCall(toolName, toolArgs);
+            result = { content: [{ type: 'text', text: JSON.stringify(toolResult, null, 2) }] };
+          } catch (toolErr) {
+            // Tool-Fehler (z.B. fehlender Pflicht-Parameter wie file_path) als
+            // MCP tool-result mit isError zurueckgeben — NICHT als HTTP 500.
+            // Sonst wertet der Cloud-MCP-Layer (claude.ai) das 5xx als retryable
+            // Transport-Fehler ("502 retry_after"), und die KI haelt einen reinen
+            // Parameter-Fehler faelschlich fuer einen Server-/Bridge-Ausfall.
+            // Mit isError sieht die KI die Klartext-Meldung und kann den Parameter
+            // ergaenzen, statt auf FS/Fallback auszuweichen.
+            const msg = toolErr instanceof Error ? toolErr.message : String(toolErr);
+            console.error(`[MCP] Tool-Fehler (${toolName}): ${msg}`);
+            result = { content: [{ type: 'text', text: `Fehler im Tool "${toolName}": ${msg}` }], isError: true };
+          }
           break;
         }
 
@@ -3771,8 +3784,21 @@ export async function mcpRoutes(fastify: FastifyInstance): Promise<void> {
           if (derivedAgentId && !toolArgs.agent_id) {
             toolArgs.agent_id = derivedAgentId;
           }
-          const toolResult = await handleToolCall(toolName, toolArgs);
-          result = { content: [{ type: 'text', text: JSON.stringify(toolResult, null, 2) }] };
+          try {
+            const toolResult = await handleToolCall(toolName, toolArgs);
+            result = { content: [{ type: 'text', text: JSON.stringify(toolResult, null, 2) }] };
+          } catch (toolErr) {
+            // Tool-Fehler (z.B. fehlender Pflicht-Parameter wie file_path) als
+            // MCP tool-result mit isError zurueckgeben — NICHT als HTTP 500.
+            // Sonst wertet der Cloud-MCP-Layer (claude.ai) das 5xx als retryable
+            // Transport-Fehler ("502 retry_after"), und die KI haelt einen reinen
+            // Parameter-Fehler faelschlich fuer einen Server-/Bridge-Ausfall.
+            // Mit isError sieht die KI die Klartext-Meldung und kann den Parameter
+            // ergaenzen, statt auf FS/Fallback auszuweichen.
+            const msg = toolErr instanceof Error ? toolErr.message : String(toolErr);
+            console.error(`[MCP] Tool-Fehler (${toolName}): ${msg}`);
+            result = { content: [{ type: 'text', text: `Fehler im Tool "${toolName}": ${msg}` }], isError: true };
+          }
           break;
         }
 
