@@ -124,8 +124,12 @@ CREATE TABLE IF NOT EXISTS projects (
   path TEXT NOT NULL,
   created_at TIMESTAMPTZ DEFAULT NOW(),
   last_access TIMESTAMPTZ DEFAULT NOW(),
+  enabled BOOLEAN NOT NULL DEFAULT TRUE,
   PRIMARY KEY (name, hostname)
 );
+-- Migration: enabled-Flag fuer bestehende Tabellen (deaktivierte Projekte
+-- werden vom Parser-Worker uebersprungen — siehe parser-worker.ts).
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS enabled BOOLEAN NOT NULL DEFAULT TRUE;
 
 CREATE TABLE IF NOT EXISTS agent_events (
   id SERIAL PRIMARY KEY,

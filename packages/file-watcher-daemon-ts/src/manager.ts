@@ -20,6 +20,7 @@ import {
   indexFile,
   removeFile,
   getProjectRoot,
+  setProjectEnabled,
 } from '@synapse/core';
 import {
   DaemonConfig,
@@ -141,6 +142,8 @@ export class WatcherManager {
     if (!p) throw new Error(`Projekt "${name}" nicht gefunden`);
     p.enabled = true;
     saveConfig(this.config);
+    // enabled-Flag server-seitig spiegeln, damit der Parser-Worker es respektiert.
+    try { await setProjectEnabled(name, true); } catch (e) { console.error(`[manager] setProjectEnabled(${name},true) fehlgeschlagen:`, (e as Error).message); }
     if (!this.instances.has(name)) this.spawnWatcher(p);
     this.emitChange(`enable:${name}`);
   }
@@ -151,6 +154,8 @@ export class WatcherManager {
     if (!p) throw new Error(`Projekt "${name}" nicht gefunden`);
     p.enabled = false;
     saveConfig(this.config);
+    // enabled-Flag server-seitig spiegeln → Parser-Worker ueberspringt das Projekt.
+    try { await setProjectEnabled(name, false); } catch (e) { console.error(`[manager] setProjectEnabled(${name},false) fehlgeschlagen:`, (e as Error).message); }
     await this.stopWatcher(name);
     this.emitChange(`disable:${name}`);
   }

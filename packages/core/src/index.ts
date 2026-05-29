@@ -93,6 +93,7 @@ export {
   toRelativePath,
   toAbsolutePath,
   registerVirtualProject,
+  setProjectEnabled,
 } from './services/project-registry.js';
 
 // Specialist Respawn Trigger (geteilt zwischen stdio MCP + REST API)

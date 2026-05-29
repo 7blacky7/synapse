@@ -74,15 +74,16 @@ export class ParserWorker {
     const pool = getPool();
 
     // Projekte mit unparsed Files (content vorhanden, parsed_at NULL).
-    // GUARD: Nur Projekte verarbeiten, die in der projects-Registry stehen.
-    // Sonst werden verwaiste code_files-Leichen (z.B. ein versehentlich als
-    // Projekt initialisiertes Home-Verzeichnis) weiter geparst & embedded,
-    // obwohl das Projekt laengst aus der Registry entfernt wurde.
+    // GUARD: Nur Projekte verarbeiten, die in der projects-Registry stehen
+    // UND enabled sind. Sonst werden (a) verwaiste code_files-Leichen (z.B. ein
+    // versehentlich als Projekt initialisiertes Home-Verzeichnis) oder (b) im
+    // Tray/Daemon deaktivierte Projekte weiter geparst & embedded. Das enabled-Flag
+    // wird vom Daemon via setProjectEnabled() server-seitig gespiegelt.
     const r = await pool.query(
       `SELECT cf.project, count(*)::int unparsed
          FROM code_files cf
         WHERE cf.content IS NOT NULL AND cf.parsed_at IS NULL
-          AND EXISTS (SELECT 1 FROM projects p WHERE p.name = cf.project)
+          AND EXISTS (SELECT 1 FROM projects p WHERE p.name = cf.project AND p.enabled)
         GROUP BY cf.project
         ORDER BY unparsed DESC
         LIMIT $1`,

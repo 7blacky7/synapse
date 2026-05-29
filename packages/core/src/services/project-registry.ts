@@ -84,3 +84,17 @@ export async function registerVirtualProject(name: string): Promise<void> {
     [name]
   );
 }
+
+/**
+ * Setzt das enabled-Flag fuer ALLE Registry-Eintraege eines Projekts
+ * (ueber alle Hostnames inkl. dem virtuellen rest-api-Eintrag).
+ * Der Parser-Worker (rest-api) verarbeitet nur Projekte mit enabled=true —
+ * so wirkt der Tray/Daemon-Deaktiviert-Schalter auch server-seitig.
+ */
+export async function setProjectEnabled(name: string, enabled: boolean): Promise<void> {
+  const pool = getPool();
+  await pool.query(
+    `UPDATE projects SET enabled = $2 WHERE name = $1`,
+    [name, enabled]
+  );
+}
