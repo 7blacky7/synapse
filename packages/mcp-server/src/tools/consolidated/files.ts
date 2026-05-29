@@ -68,7 +68,7 @@ export const filesTool: ConsolidatedTool = {
         },
         file_path: {
           type: 'string',
-          description: 'Dateipfad (relativ zum Projekt)',
+          description: 'Dateipfad relativ zum Projekt-Root. PFLICHT fuer create/update/delete/move/copy/read/replace_lines/insert_after/delete_lines/search_replace/search_replace_batch/versions/get_version/restore — OHNE file_path schlagen diese Aktionen fehl (niemals weglassen!). Nur plan/commit/cancel/plan_status/history/restore_batch brauchen es nicht (Pfade stehen dort in ops[]/batch_id).',
         },
         content: {
           type: 'string',
