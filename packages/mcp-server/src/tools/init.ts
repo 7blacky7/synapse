@@ -26,6 +26,7 @@
 
 import * as path from 'path';
 import * as fs from 'fs';
+import * as os from 'os';
 import {
   initSynapse,
   verifyProjectAgainstFilesystem,
@@ -183,6 +184,60 @@ async function tryReactivateProject(
  * @param indexDocs - Framework-Docs vorladen (default: true)
  * @param agentId - Optionale Agent-ID fuer Onboarding (neue Agenten sehen Regeln)
  */
+/**
+ * GUARD: Verhindert, dass das Home-Verzeichnis oder System-/Tool-Ordner als
+ * Projekt-Root indexiert werden. Sonst landen globale Caches wie
+ * ~/.local/share/pnpm, ~/.cargo/registry oder ~/.claude/.credentials.json in
+ * code_files und werden an die Embedding-API geschickt. Projekte gehoeren
+ * nach ~/dev/<name>.
+ *
+ * @returns null wenn der Pfad ok ist, sonst ein InitResult mit success:false.
+ */
+function checkProjectRoot(projectPath: string, name: string): InitResult | null {
+  const home = os.homedir();
+  const resolved = path.resolve(projectPath);
+
+  const isHomeItself = resolved === home;
+  const rel = path.relative(home, resolved);
+  const insideHome = rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
+  const topSegment = insideHome ? rel.split(path.sep)[0] : '';
+  const FORBIDDEN_HOME_DIRS = new Set([
+    '.local', '.cargo', '.config', '.cache', '.ssh', '.gnupg', '.npm', '.pnpm',
+    '.codex', '.claude', '.rustup', '.nvm', '.mozilla', '.docker', '.kube', '.aws',
+    '.synapse', '.var', '.gradle', '.m2', 'go',
+  ]);
+  const isForbiddenDir = insideHome && FORBIDDEN_HOME_DIRS.has(topSegment);
+
+  if (!isHomeItself && !isForbiddenDir) {
+    return null; // Pfad ist ok
+  }
+
+  // Auf ~/dev/<name> umlenken; Verzeichnis anlegen, falls noch keins existiert.
+  const devPath = path.join(home, 'dev', name);
+  let created = false;
+  try {
+    if (!fs.existsSync(devPath)) {
+      fs.mkdirSync(devPath, { recursive: true });
+      created = true;
+    }
+  } catch (err) {
+    console.error(`[init] Konnte ${devPath} nicht anlegen:`, (err as Error).message);
+  }
+
+  return {
+    success: false,
+    project: name,
+    path: projectPath,
+    message:
+      `⛔ "${projectPath}" ist kein gueltiger Projekt-Root (Home-Verzeichnis bzw. System-/Tool-Ordner).\n` +
+      `Sonst landen globale Caches wie ~/.local/share/pnpm, ~/.cargo/registry oder ~/.claude/.credentials.json im Index und gehen an die Embedding-API.\n\n` +
+      `➡️  Projekte gehoeren nach ~/dev/<name>. ` +
+      (created
+        ? `Verzeichnis "${devPath}" wurde angelegt — bitte init dort erneut aufrufen (projectPath="${devPath}").`
+        : `Bitte init mit projectPath="${devPath}" erneut aufrufen.`),
+  };
+}
+
 export async function initProjekt(
   projectPath: string,
   projectName?: string,
@@ -191,6 +246,13 @@ export async function initProjekt(
 ): Promise<InitResult> {
   // Projekt-Name aus Pfad ableiten wenn nicht angegeben
   const name = projectName || path.basename(projectPath);
+
+  // GUARD: Home-Verzeichnis / System-Ordner niemals als Projekt-Root (siehe checkProjectRoot)
+  const rootError = checkProjectRoot(projectPath, name);
+  if (rootError) {
+    console.error(`[init] Abgelehnt: "${projectPath}" ist kein gueltiger Projekt-Root → ~/dev/${name}`);
+    return rootError;
+  }
 
   // Fast-Path: Projekt in dieser Session bereits aktiviert → initSynapse ueberspringen
   // ABER: vorher pruefen ob der Daemon noch lebt — sonst returnen wir "aktiv" obwohl
