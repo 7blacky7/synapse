@@ -137,7 +137,7 @@ import {
   resolveAgentId,
 } from '@synapse/core';
 import { minimatch } from 'minimatch';
-import { GUIDE_OVERVIEW, TOOL_GUIDES, logToolCall } from '@synapse/core';
+import { GUIDE_OVERVIEW, TOOL_GUIDES, logToolCall, queryToolCalls } from '@synapse/core';
 import { randomUUID } from 'crypto';
 
 /**
@@ -940,7 +940,7 @@ const MCP_TOOLS = [
     inputSchema: {
       type: 'object',
       properties: {
-        action: { type: 'string', enum: ['exec', 'get_stream', 'history', 'get', 'log'], description: 'Default: exec. log + id liefert Zeilenrange (1-100); log + id + query liefert Such-Treffer mit Zeilennummern.' },
+        action: { type: 'string', enum: ['exec', 'get_stream', 'history', 'get', 'log', 'activity'], description: 'Default: exec. log + id liefert Zeilenrange (1-100); log + id + query liefert Such-Treffer mit Zeilennummern.' },
         id: { type: 'string', description: 'Job-UUID (Pflicht fuer get/log)' },
         limit: { type: 'number', description: 'history: max Jobs (Default 20, Max 200)' },
         offset: { type: 'number', description: 'history: Skip N (Default 0)' },
@@ -956,6 +956,12 @@ const MCP_TOOLS = [
         stream_id: { type: 'string', description: 'Pflicht fuer get_stream (noch nicht implementiert via REST)' },
         timeout_ms: { type: 'number', description: 'Default 30000' },
         tail_lines: { type: 'number', description: 'Default 5' },
+        agent_ids: { type: 'array', items: { type: 'string' }, description: 'activity: Filter auf Agenten (Namen ODER IDs, z.B. ["sub-r0"]). Ohne = alle.' },
+        tools: { type: 'array', items: { type: 'string' }, description: 'activity: Filter auf Tools (z.B. ["files","memory"]). Ohne = alle Tools interleaved.' },
+        detail: { type: 'string', enum: ['meta', 'summary', 'full'], description: 'activity: Rueckgabe-Tiefe. meta(Default)=ohne result; summary=+Vorschau; full=result bis Cap.' },
+        mutations_only: { type: 'boolean', description: 'activity: nur Schreibzugriffe (files.create/update, memory.write, ...).' },
+        errors_only: { type: 'boolean', description: 'activity: nur fehlgeschlagene Calls.' },
+        since: { type: 'string', description: 'activity: ISO-Timestamp — nur Eintraege ab dann.' },
         cwd_relative: { type: 'string', description: 'Unterpfad innerhalb des Projekt-Roots' },
         target: { type: 'string', enum: ['auto', 'local', 'workspace'], description: 'exec: "auto" (Default, Heartbeat-basiert) | "local" (Daemon erzwingen) | "workspace" (Docker-Container erzwingen)' },
         isolated: { type: 'boolean', description: 'exec: Kurzform fuer target="workspace" — fuer isolierte Tests im Docker-Container (Default false)' },
@@ -3337,6 +3343,21 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
         const result = await getShellJobLogLines(id, num(args, 'from_line'), num(args, 'to_line'));
         if (!result) return { success: false, error: 'unknown_job', message: `Job ${id} nicht gefunden` };
         return { success: true, ...result };
+      }
+
+      if (shellAction === 'activity') {
+        const a = args as Record<string, unknown>;
+        const rows = await queryToolCalls({
+          project: str(args, 'project'),
+          agentId: Array.isArray(a.agent_ids) ? (a.agent_ids as string[]) : undefined,
+          tool: Array.isArray(a.tools) ? (a.tools as string[]) : undefined,
+          status: a.errors_only === true ? 'error' : undefined,
+          mutationsOnly: a.mutations_only === true,
+          since: str(args, 'since'),
+          limit: num(args, 'limit'),
+          detail: (str(args, 'detail') as 'meta' | 'summary' | 'full' | undefined) ?? 'meta',
+        });
+        return { success: true, count: rows.length, detail: str(args, 'detail') ?? 'meta', activity: rows };
       }
 
       if (shellAction !== 'exec') {

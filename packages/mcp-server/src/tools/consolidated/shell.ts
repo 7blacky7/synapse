@@ -12,7 +12,7 @@
  */
 
 import type { ConsolidatedTool } from './types.js';
-import { str, num, reqStr } from './types.js';
+import { str, num, reqStr, strArray } from './types.js';
 import os from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -25,6 +25,7 @@ import {
   searchShellJobLog,
   insertCompletedShellJob,
   isDaemonAliveForProject,
+  queryToolCalls,
 } from '@synapse/core';
 
 const STREAMS_DIR = path.join(os.homedir(), '.synapse', 'shell-streams');
@@ -120,8 +121,8 @@ export const shellTool: ConsolidatedTool = {
       properties: {
         action: {
           type: 'string',
-          enum: ['exec', 'get_stream', 'history', 'get', 'log'],
-          description: 'Default: exec. log + id liefert Zeilenrange (Default 1-100); log + id + query liefert Such-Treffer mit Zeilennummern.',
+          enum: ['exec', 'get_stream', 'history', 'get', 'log', 'activity'],
+          description: 'Default: exec. history/get/log = Shell-Jobs (Detail-Lupe, voller Output). activity = Multi-Agenten-Aufsicht ueber ALLE Tool-Aufrufe (Shell + jedes andere Tool), interleaved nach Zeit.',
         },
         project: { type: 'string', description: 'Projekt-Name (Pflicht fuer exec; optional fuer history Filter)' },
         command: { type: 'string', description: 'Shell-Kommando (Pflicht fuer exec)' },
@@ -149,6 +150,12 @@ export const shellTool: ConsolidatedTool = {
           type: 'boolean',
           description: 'get_stream: nur neue Zeilen seit letztem Call (Default true)',
         },
+        agent_ids: { type: 'array', items: { type: 'string' }, description: 'activity: Filter auf Agenten (Namen ODER IDs, z.B. ["sub-r0","flow-lead"]). Ohne = alle.' },
+        tools: { type: 'array', items: { type: 'string' }, description: 'activity: Filter auf Tools (z.B. ["files","memory"]). Ohne = alle Tools interleaved.' },
+        detail: { type: 'string', enum: ['meta', 'summary', 'full'], description: 'activity: Rueckgabe-Tiefe. meta(Default)=Tool+Action+Args+Status+Dauer (KEIN result); summary=+result-Vorschau; full=gespeichertes result bis Cap.' },
+        mutations_only: { type: 'boolean', description: 'activity: nur Schreibzugriffe (files.create/update, memory.write, ...).' },
+        errors_only: { type: 'boolean', description: 'activity: nur fehlgeschlagene Calls.' },
+        since: { type: 'string', description: 'activity: ISO-Timestamp — nur Eintraege ab dann.' },
       },
       required: ['action'],
     },
@@ -227,6 +234,20 @@ export const shellTool: ConsolidatedTool = {
         };
       }
       return { content: [{ type: 'text', text: JSON.stringify({ success: true, ...result }, null, 2) }] };
+    }
+
+    if (action === 'activity') {
+      const rows = await queryToolCalls({
+        project: str(args, 'project'),
+        agentId: strArray(args, 'agent_ids'),
+        tool: strArray(args, 'tools'),
+        status: args.errors_only === true ? 'error' : undefined,
+        mutationsOnly: args.mutations_only === true,
+        since: str(args, 'since'),
+        limit: num(args, 'limit'),
+        detail: (str(args, 'detail') as 'meta' | 'summary' | 'full' | undefined) ?? 'meta',
+      });
+      return { content: [{ type: 'text', text: JSON.stringify({ success: true, count: rows.length, detail: str(args, 'detail') ?? 'meta', activity: rows }, null, 2) }] };
     }
 
     if (action !== 'exec') {
