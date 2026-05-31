@@ -72,7 +72,7 @@ export type {
 export { resolveAgentId } from './agent-id-resolver.js';
 
 // Tool-Call Activity-Log — zentraler Audit-Store fuer shell(action:"activity")
-export { logToolCall, isMutationAction, queryToolCalls } from './tool-call-log.js';
+export { logToolCall, isMutationAction, queryToolCalls, expireOldToolCalls } from './tool-call-log.js';
 export type {
   ToolCallLogEntry,
   ToolCallRow,

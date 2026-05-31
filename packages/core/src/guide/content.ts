@@ -193,6 +193,12 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
         example: 'shell({ action: "log", id: "<uuid>", query: "fehler|error|warning", regex: true })',
         tips: 'Substring-Suche ist case-insensitive default. Fuer Zahlen einfach query: "42" (substring) statt regex. Treffer kommen mit line_number + content; truncated:true wenn mehr als max_matches.',
       },
+      activity: {
+        description: 'Multi-Agenten-Aufsicht: liest den zentralen Activity-Store (tool_calls) — ALLE Tool-Aufrufe aller Agenten, interleaved nach Zeit (neueste zuerst). Shell-Jobs erscheinen als tool="shell"-Metazeile zwischen allen anderen Tools, so dass du den Gesamtverlauf eines Agenten in EINEM Call siehst. Anders als history, das NUR Shell-Jobs zeigt.',
+        params: 'project; agent_ids[] (Agenten-Namen ODER IDs); tools[] (z.B. ["files","memory"], ohne = alle Tools interleaved); detail (meta=Default | summary | full); mutations_only (bool); errors_only (bool); since (ISO-Timestamp); limit (Default 50, Max 500). Alle Filter sind kombinierbar (AND-verknuepft).',
+        example: 'shell({ action: "activity", project: "synapse", agent_ids: ["sub-r0"], mutations_only: true, detail: "summary" })',
+        tips: 'detail steuert NUR die Rueckgabe-Tiefe (Context-Schutz, nicht den Speicher): meta=Tool+Action+Args+Status+Dauer OHNE result (Default); summary=+result-Vorschau (~200 Zeichen); full=gespeichertes result bis Cap (32KB). agent_ids/tools akzeptieren auch JSON-String oder Komma-Form (Connector-Quirk wird robust geparst). WICHTIG: Ein Eintrag wird nur dann mit agent_id attribuiert, wenn der Agent bei seinen Calls agent_id mitschickt — sonst agent_id=null (z.B. claude.ai-Connector ohne Anmeldung). Wer Aufsicht will, muss agent_id konsequent durchreichen.',
+      },
     },
     workflow_examples: [
       'Workflow: Long-running Build im Hintergrund starten + spaeter Status pruefen.\\n  1) shell({ action: "exec", project: "synapse", command: "pnpm -r build", timeout_ms: 5000 }) → status=timeout, stream_id zurueck\\n  2) ... beliebig spaeter ...\\n  3) shell({ action: "history", project: "synapse", limit: 5 }) → letzten Job finden\\n  4) shell({ action: "get", id: "<uuid>" }) → status=done/failed, voller output',

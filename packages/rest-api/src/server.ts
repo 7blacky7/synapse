@@ -199,6 +199,28 @@ export async function startServer(): Promise<void> {
     console.log('[Synapse API] Parser-Worker per PARSER_LOOP_DISABLED=1 ausgeschaltet');
   }
 
+  // Tool-Call-Retention: aeltert Eintraege im Activity-Store (tool_calls) aus.
+  // Laeuft hier (24/7-REST) statt im lokalen Daemon, da die DB zentral ist. ENV:
+  //   TOOLCALL_RETENTION_DISABLED=1        — Worker ausschalten
+  //   SYNAPSE_TOOLCALL_RETENTION_DAYS=N    — Frist in Tagen (Default 90)
+  //   TOOLCALL_RETENTION_INTERVAL_MS=N     — Lauf-Intervall (Default 6h)
+  if (process.env.TOOLCALL_RETENTION_DISABLED !== '1') {
+    const { expireOldToolCalls } = await import('@synapse/core');
+    const retentionIntervalMs = process.env.TOOLCALL_RETENTION_INTERVAL_MS
+      ? parseInt(process.env.TOOLCALL_RETENTION_INTERVAL_MS, 10)
+      : 6 * 60 * 60 * 1000;
+    const runRetention = (): void => {
+      void expireOldToolCalls().then((n) => {
+        if (n > 0) console.log(`[Synapse API] Tool-Call-Retention: ${n} Eintraege ausgealtert`);
+      });
+    };
+    runRetention(); // einmal beim Start
+    setInterval(runRetention, retentionIntervalMs).unref();
+    console.log(`[Synapse API] Tool-Call-Retention aktiv (Intervall ${retentionIntervalMs}ms)`);
+  } else {
+    console.log('[Synapse API] Tool-Call-Retention per TOOLCALL_RETENTION_DISABLED=1 ausgeschaltet');
+  }
+
   // Server erstellen und starten
   const server = await createServer();
 

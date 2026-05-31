@@ -170,3 +170,31 @@ export async function queryToolCalls(f: ActivityFilters): Promise<ToolCallRow[]>
   const res = await pool.query<ToolCallRow>(sql, params);
   return res.rows;
 }
+
+/**
+ * Retention: loescht tool_calls-Eintraege aelter als die konfigurierte Frist.
+ * Frist via Argument oder Env SYNAPSE_TOOLCALL_RETENTION_DAYS (Default 90 Tage,
+ * konservativ). Best-effort — faengt Fehler selbst ab, wirft nie (der periodische
+ * Worker soll weiterlaufen). Returnt die Anzahl geloeschter Zeilen. Altert auch
+ * die Alt-Eintraege (source='mcp', kein Backfill) automatisch aus.
+ */
+export async function expireOldToolCalls(retentionDays?: number): Promise<number> {
+  const days = (() => {
+    if (typeof retentionDays === 'number' && Number.isFinite(retentionDays) && retentionDays > 0) {
+      return Math.floor(retentionDays);
+    }
+    const env = Number(process.env.SYNAPSE_TOOLCALL_RETENTION_DAYS);
+    return Number.isFinite(env) && env > 0 ? Math.floor(env) : 90;
+  })();
+  try {
+    const pool = getPool();
+    const res = await pool.query(
+      `DELETE FROM tool_calls WHERE ts < now() - ($1 || ' days')::interval`,
+      [String(days)],
+    );
+    return res.rowCount ?? 0;
+  } catch (err) {
+    console.error('[tool-call-log] expireOldToolCalls fehlgeschlagen:', (err as Error).message);
+    return 0;
+  }
+}

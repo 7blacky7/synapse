@@ -3349,8 +3349,8 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
         const a = args as Record<string, unknown>;
         const rows = await queryToolCalls({
           project: str(args, 'project'),
-          agentId: Array.isArray(a.agent_ids) ? (a.agent_ids as string[]) : undefined,
-          tool: Array.isArray(a.tools) ? (a.tools as string[]) : undefined,
+          agentId: strArray(a, 'agent_ids'),
+          tool: strArray(a, 'tools'),
           status: (a.errors_only === true || a.errors_only === 'true') ? 'error' : undefined,
           mutationsOnly: a.mutations_only === true || a.mutations_only === 'true',
           since: str(args, 'since'),
