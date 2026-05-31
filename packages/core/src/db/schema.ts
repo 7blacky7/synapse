@@ -574,6 +574,36 @@ CREATE TABLE IF NOT EXISTS shell_stream_chunks (
 CREATE INDEX IF NOT EXISTS idx_shell_stream_chunks_job ON shell_stream_chunks(job_id, chunk_index);
 
 -- ==========================================================================
+-- Tool-Call Activity-Store: zentraler Audit-Log ALLER MCP-Tool-Aufrufe.
+-- Quelle der Multi-Agenten-Aufsicht via shell(action:"activity"). Shell-Jobs
+-- werden als tool='shell'-Metazeile mit-interleaved; ihr voller Output bleibt
+-- in shell_jobs. agent_id ist die echte Attribution (source nur Fallback).
+-- Basis-Tabelle existiert bereits in produktiver DB (CREATE IF NOT EXISTS = no-op);
+-- die ALTER-Spalten sind die additive Activity-Store-Erweiterung.
+-- ==========================================================================
+CREATE TABLE IF NOT EXISTS tool_calls (
+  id BIGSERIAL PRIMARY KEY,
+  project TEXT,
+  tool_name TEXT NOT NULL,
+  action TEXT,
+  source TEXT,
+  args_preview TEXT,
+  ok BOOLEAN DEFAULT true,
+  ts TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+ALTER TABLE tool_calls ADD COLUMN IF NOT EXISTS agent_id         TEXT;
+ALTER TABLE tool_calls ADD COLUMN IF NOT EXISTS duration_ms      INTEGER;
+ALTER TABLE tool_calls ADD COLUMN IF NOT EXISTS error            TEXT;
+ALTER TABLE tool_calls ADD COLUMN IF NOT EXISTS result           TEXT;
+ALTER TABLE tool_calls ADD COLUMN IF NOT EXISTS result_bytes     INTEGER;
+ALTER TABLE tool_calls ADD COLUMN IF NOT EXISTS result_truncated BOOLEAN DEFAULT false;
+ALTER TABLE tool_calls ADD COLUMN IF NOT EXISTS is_mutation      BOOLEAN DEFAULT false;
+CREATE INDEX IF NOT EXISTS idx_tool_calls_project_ts ON tool_calls(project, ts DESC);
+CREATE INDEX IF NOT EXISTS idx_tool_calls_agent ON tool_calls(agent_id, ts DESC);
+CREATE INDEX IF NOT EXISTS idx_tool_calls_tool  ON tool_calls(tool_name, ts DESC);
+CREATE INDEX IF NOT EXISTS idx_tool_calls_mut   ON tool_calls(ts DESC) WHERE is_mutation;
+
+-- ==========================================================================
 -- Specialist-Queue: REST-API ↔ FileWatcher-Daemon Specialist-Calls.
 -- Alle Specialist-Actions (spawn, stop, purge, wake, etc.) werden via PG
 -- Queue an den lokalen Daemon delegiert. Erlaubt Web-KIs (REST) Spezialisten
