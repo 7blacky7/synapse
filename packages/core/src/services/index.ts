@@ -71,6 +71,15 @@ export type {
 // Agent-ID Resolver — geteilt zwischen MCP-Server, REST-API und Core-Services
 export { resolveAgentId } from './agent-id-resolver.js';
 
+// Tool-Call Activity-Log — zentraler Audit-Store fuer shell(action:"activity")
+export { logToolCall, isMutationAction, queryToolCalls } from './tool-call-log.js';
+export type {
+  ToolCallLogEntry,
+  ToolCallRow,
+  ActivityFilters,
+  ActivityDetail,
+} from './tool-call-log.js';
+
 // Daemon-Heartbeat (Auto-Routing shell ↔ workspace)
 export {
   upsertDaemonHeartbeat,

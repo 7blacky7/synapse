@@ -103,6 +103,10 @@ export type { RespawnDecision } from './services/specialist-respawn.js';
 // Agent-ID Resolver (zentrale Fallback-Logik fuer audit-relevante Schreib-Ops)
 export { resolveAgentId } from './services/agent-id-resolver.js';
 
+// Tool-Call Activity-Log (zentraler Audit-Store fuer shell(action:"activity"))
+export { logToolCall, isMutationAction, queryToolCalls } from './services/tool-call-log.js';
+export type { ToolCallLogEntry, ToolCallRow, ActivityFilters, ActivityDetail } from './services/tool-call-log.js';
+
 // Model-Registry Service (DB-Loader fuer Spezialisten-Modelle)
 export {
   getModel,

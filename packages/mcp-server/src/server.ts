@@ -23,7 +23,7 @@ import {
   acknowledgeEventTool,
 } from './tools/index.js';
 
-import { getPendingEvents, TOOL_GUIDES, ensureSchema } from '@synapse/core';
+import { getPendingEvents, TOOL_GUIDES, ensureSchema, logToolCall, resolveAgentId } from '@synapse/core';
 import { ensureAgentsSchema, detectClaudeCli, heartbeatController, readStatus, postToInbox, postMessage, checkInbox } from '@synapse/agents';
 
 import {
@@ -195,6 +195,7 @@ export function createServer(): Server {
   // Tool-Aufrufe verarbeiten
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;
+    const _t0 = Date.now();
 
     // Globale Parameter fuer Agent-Onboarding extrahieren
     const agentId = args?.agent_id as string | undefined;
@@ -650,6 +651,21 @@ export function createServer(): Server {
       };
     }
     })();
+    // Activity-Log (best-effort, non-blocking) — stdio-Pfad.
+    const _resp = baseResp as { content?: Array<{ text?: string }>; isError?: boolean };
+    const _text = _resp.content?.[0]?.text ?? null;
+    void logToolCall({
+      project: typeof projectName === 'string' ? projectName : null,
+      agentId: resolveAgentId(typeof agentId === 'string' ? agentId : null),
+      source: 'stdio',
+      tool: name,
+      action: typeof (args as Record<string, unknown> | undefined)?.action === 'string' ? ((args as Record<string, unknown>).action as string) : null,
+      argsPreview: JSON.stringify(args ?? {}).slice(0, 500),
+      ok: !_resp.isError,
+      error: _resp.isError ? (_text ?? 'error') : null,
+      durationMs: Date.now() - _t0,
+      result: _text,
+    });
     return attachToolGuide(baseResp as { content: Array<{ type: string; text: string }>; isError?: boolean });
   });
 

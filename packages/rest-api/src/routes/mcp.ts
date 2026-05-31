@@ -137,7 +137,7 @@ import {
   resolveAgentId,
 } from '@synapse/core';
 import { minimatch } from 'minimatch';
-import { GUIDE_OVERVIEW, TOOL_GUIDES } from '@synapse/core';
+import { GUIDE_OVERVIEW, TOOL_GUIDES, logToolCall } from '@synapse/core';
 import { randomUUID } from 'crypto';
 
 /**
@@ -3697,8 +3697,13 @@ export async function mcpRoutes(fastify: FastifyInstance): Promise<void> {
           if (derivedAgentId && !toolArgs.agent_id) {
             toolArgs.agent_id = derivedAgentId;
           }
+          const _t0 = Date.now();
+          let _logOk = true;
+          let _logErr: string | null = null;
+          let _logResult: string | null = null;
           try {
             const toolResult = await handleToolCall(toolName, toolArgs);
+            _logResult = JSON.stringify(toolResult);
             result = { content: [{ type: 'text', text: JSON.stringify(toolResult, null, 2) }] };
           } catch (toolErr) {
             // Tool-Fehler (z.B. fehlender Pflicht-Parameter wie file_path) als
@@ -3710,8 +3715,23 @@ export async function mcpRoutes(fastify: FastifyInstance): Promise<void> {
             // ergaenzen, statt auf FS/Fallback auszuweichen.
             const msg = toolErr instanceof Error ? toolErr.message : String(toolErr);
             console.error(`[MCP] Tool-Fehler (${toolName}): ${msg}`);
+            _logOk = false;
+            _logErr = msg;
             result = { content: [{ type: 'text', text: `Fehler im Tool "${toolName}": ${msg}` }], isError: true };
           }
+          // Activity-Log (best-effort, non-blocking) — Cloud-Pfad.
+          void logToolCall({
+            project: typeof toolArgs.project === 'string' ? toolArgs.project : null,
+            agentId: resolveAgentId(typeof toolArgs.agent_id === 'string' ? toolArgs.agent_id : null) ?? derivedAgentId ?? null,
+            source: 'cloud',
+            tool: toolName,
+            action: typeof toolArgs.action === 'string' ? toolArgs.action : null,
+            argsPreview: JSON.stringify(toolArgs).slice(0, 500),
+            ok: _logOk,
+            error: _logErr,
+            durationMs: Date.now() - _t0,
+            result: _logResult,
+          });
           break;
         }
 
@@ -3784,8 +3804,13 @@ export async function mcpRoutes(fastify: FastifyInstance): Promise<void> {
           if (derivedAgentId && !toolArgs.agent_id) {
             toolArgs.agent_id = derivedAgentId;
           }
+          const _t0 = Date.now();
+          let _logOk = true;
+          let _logErr: string | null = null;
+          let _logResult: string | null = null;
           try {
             const toolResult = await handleToolCall(toolName, toolArgs);
+            _logResult = JSON.stringify(toolResult);
             result = { content: [{ type: 'text', text: JSON.stringify(toolResult, null, 2) }] };
           } catch (toolErr) {
             // Tool-Fehler (z.B. fehlender Pflicht-Parameter wie file_path) als
@@ -3797,8 +3822,23 @@ export async function mcpRoutes(fastify: FastifyInstance): Promise<void> {
             // ergaenzen, statt auf FS/Fallback auszuweichen.
             const msg = toolErr instanceof Error ? toolErr.message : String(toolErr);
             console.error(`[MCP] Tool-Fehler (${toolName}): ${msg}`);
+            _logOk = false;
+            _logErr = msg;
             result = { content: [{ type: 'text', text: `Fehler im Tool "${toolName}": ${msg}` }], isError: true };
           }
+          // Activity-Log (best-effort, non-blocking) — Cloud-Pfad.
+          void logToolCall({
+            project: typeof toolArgs.project === 'string' ? toolArgs.project : null,
+            agentId: resolveAgentId(typeof toolArgs.agent_id === 'string' ? toolArgs.agent_id : null) ?? derivedAgentId ?? null,
+            source: 'cloud',
+            tool: toolName,
+            action: typeof toolArgs.action === 'string' ? toolArgs.action : null,
+            argsPreview: JSON.stringify(toolArgs).slice(0, 500),
+            ok: _logOk,
+            error: _logErr,
+            durationMs: Date.now() - _t0,
+            result: _logResult,
+          });
           break;
         }
 
