@@ -26,11 +26,14 @@ export interface EnqueueArgs {
   cwd_relative?: string;
   timeout_ms?: number;
   tail_lines?: number;
+  /** Echte Attribution: welcher Agent den Job abgesetzt hat (NULL = unbekannt). */
+  agent_id?: string | null;
 }
 
 export interface ShellJobRow {
   id: string;
   project: string;
+  agent_id: string | null;
   command: string;
   cwd_relative: string | null;
   timeout_ms: number;
@@ -107,8 +110,8 @@ export async function enqueueShellJob(
   const pool = getPool();
   const streamId = randomUUID().replace(/-/g, '').slice(0, 16);
   const res = await pool.query<{ id: string }>(
-    `INSERT INTO shell_jobs (project, command, cwd_relative, timeout_ms, tail_lines, stream_id)
-     VALUES ($1, $2, $3, $4, $5, $6)
+    `INSERT INTO shell_jobs (project, command, cwd_relative, timeout_ms, tail_lines, stream_id, agent_id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)
      RETURNING id`,
     [
       args.project,
@@ -117,6 +120,7 @@ export async function enqueueShellJob(
       args.timeout_ms ?? 30_000,
       args.tail_lines ?? 5,
       streamId,
+      args.agent_id ?? null,
     ],
   );
   return { id: res.rows[0].id, stream_id: streamId };
@@ -330,6 +334,8 @@ export async function insertCompletedShellJob(args: {
   output?: string;
   stream_id?: string;
   source: 'mcp_local' | 'rest_queue';
+  /** Attribution: welcher Agent den Job abgesetzt hat (NULL = unbekannt). */
+  agent_id?: string | null;
 }): Promise<{ id: string }> {
   const pool = getPool();
   let output = args.output ?? null;
@@ -342,8 +348,8 @@ export async function insertCompletedShellJob(args: {
     `INSERT INTO shell_jobs (
        project, command, cwd_relative, timeout_ms, tail_lines,
        status, exit_code, tail, error, message, output, output_truncated,
-       stream_id, claimed_by, claimed_at, completed_at
-     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,NOW(),NOW())
+       stream_id, claimed_by, agent_id, claimed_at, completed_at
+     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,NOW(),NOW())
      RETURNING id`,
     [
       args.project,
@@ -360,6 +366,7 @@ export async function insertCompletedShellJob(args: {
       truncated,
       args.stream_id ?? null,
       args.source,
+      args.agent_id ?? null,
     ],
   );
   return { id: res.rows[0].id };
@@ -379,6 +386,7 @@ function countLines(s: string | null | undefined): number {
 export interface ShellJobSummary {
   id: string;
   project: string;
+  agent_id: string | null;
   command: string;
   cwd_relative: string | null;
   status: ShellJobRow['status'];
@@ -424,7 +432,7 @@ export async function getShellJobs(opts: {
   // length(output) - length(replace(output, E'\n', '')) zaehlt Newlines in PG
   // direkt — billig + spart Datenuebertragung des output-TEXT-Felds.
   const { rows } = await pool.query(
-    `SELECT id, project, command, cwd_relative, status, exit_code, tail, error,
+    `SELECT id, project, agent_id, command, cwd_relative, status, exit_code, tail, error,
             message, output_truncated, stream_id, claimed_by AS source,
             created_at, completed_at,
             CASE

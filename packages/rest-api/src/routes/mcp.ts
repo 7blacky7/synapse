@@ -963,6 +963,7 @@ const MCP_TOOLS = [
         errors_only: { type: 'boolean', description: 'activity: nur fehlgeschlagene Calls.' },
         since: { type: 'string', description: 'activity: ISO-Timestamp — nur Eintraege ab dann.' },
         cwd_relative: { type: 'string', description: 'Unterpfad innerhalb des Projekt-Roots' },
+        agent_id: { type: 'string', description: 'exec: Attribution — welcher Agent den Job absetzt. Taucht in shell(history) + shell(activity) auf. Optional: Cloud leitet es aus dem Header ab, Spezialisten aus SYNAPSE_AGENT_NAME.' },
         target: { type: 'string', enum: ['auto', 'local', 'workspace'], description: 'exec: "auto" (Default, Heartbeat-basiert) | "local" (Daemon erzwingen) | "workspace" (Docker-Container erzwingen)' },
         isolated: { type: 'boolean', description: 'exec: Kurzform fuer target="workspace" — fuer isolierte Tests im Docker-Container (Default false)' },
       },
@@ -3430,6 +3431,10 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
         cwd_relative: cwdRel,
         timeout_ms: timeoutMs,
         tail_lines: tailLines,
+        // Attribution: args.agent_id ist im Cloud-Pfad bereits aus dem Header
+        // befuellt (deriveAgentIdFromHeaders) bzw. vom Caller gesetzt; Spezialist
+        // faellt ueber resolveAgentId auf SYNAPSE_AGENT_NAME zurueck.
+        agent_id: resolveAgentId(str(args, 'agent_id')),
       });
 
       const result = await waitForShellJob(id, timeoutMs + 5000);

@@ -546,10 +546,15 @@ CREATE TABLE IF NOT EXISTS shell_jobs (
 ALTER TABLE shell_jobs ADD COLUMN IF NOT EXISTS message TEXT;
 ALTER TABLE shell_jobs ADD COLUMN IF NOT EXISTS output TEXT;
 ALTER TABLE shell_jobs ADD COLUMN IF NOT EXISTS output_truncated BOOLEAN DEFAULT false;
+-- agent_id: echte Attribution des dispatchenden Agenten (Multi-Agenten-Aufsicht).
+--   Cloud: aus Header abgeleitet (deriveAgentIdFromHeaders); Spezialist: SYNAPSE_AGENT_NAME;
+--   sonst explizit. shell(history) + shell(activity) zeigen damit WER den Job absetzte.
+ALTER TABLE shell_jobs ADD COLUMN IF NOT EXISTS agent_id TEXT;
 
 CREATE INDEX IF NOT EXISTS idx_shell_jobs_project_status ON shell_jobs(project, status);
 CREATE INDEX IF NOT EXISTS idx_shell_jobs_created ON shell_jobs(created_at) WHERE status = 'pending';
 CREATE INDEX IF NOT EXISTS idx_shell_jobs_history ON shell_jobs(project, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_shell_jobs_agent ON shell_jobs(agent_id) WHERE agent_id IS NOT NULL;
 
 CREATE OR REPLACE FUNCTION notify_shell_job_created() RETURNS TRIGGER AS $$
 BEGIN

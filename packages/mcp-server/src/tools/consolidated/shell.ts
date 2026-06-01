@@ -26,6 +26,7 @@ import {
   insertCompletedShellJob,
   isDaemonAliveForProject,
   queryToolCalls,
+  resolveAgentId,
 } from '@synapse/core';
 
 const STREAMS_DIR = path.join(os.homedir(), '.synapse', 'shell-streams');
@@ -144,6 +145,7 @@ export const shellTool: ConsolidatedTool = {
         timeout_ms: { type: 'number', description: 'Default 30000' },
         tail_lines: { type: 'number', description: 'Default 5' },
         cwd_relative: { type: 'string', description: 'Unterpfad innerhalb des Projekt-Roots' },
+        agent_id: { type: 'string', description: 'exec: Attribution — welcher Agent den Job absetzt. Taucht in shell(history) + shell(activity) auf. Optional; Spezialisten via SYNAPSE_AGENT_NAME automatisch.' },
         target: { type: 'string', enum: ['auto', 'local', 'workspace'], description: 'exec: "auto" (Default, Heartbeat-basiert) | "local" (Daemon erzwingen) | "workspace" (Docker-Container erzwingen)' },
         isolated: { type: 'boolean', description: 'exec: Kurzform fuer target="workspace" — fuer isolierte Tests im Docker-Container (Default false)' },
         since_last_read: {
@@ -315,6 +317,7 @@ export const shellTool: ConsolidatedTool = {
         output: readStreamLog(streamId),
         stream_id: streamId,
         source: 'mcp_local',
+        agent_id: resolveAgentId(str(args, 'agent_id')),
       });
       // History-ID anhaengen damit der User sie via "shell get" abholen kann
       (result as Record<string, unknown>)['id'] = persistedId.id;
