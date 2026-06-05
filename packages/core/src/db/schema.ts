@@ -81,7 +81,22 @@ CREATE TABLE IF NOT EXISTS agent_sessions (
 );
 
 -- Migration: server_instance_id nachtraeglich hinzufuegen
+-- HINWEIS: agent_sessions.server_instance_id ist seit agent_onboardings obsolet
+-- (wird nicht mehr geschrieben) — Spalte bleibt fuer Bestandsdaten erhalten.
 ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS server_instance_id TEXT;
+
+-- Onboarding-Gedaechtnis: einmal pro (Agent, Projekt, Server-Prozess).
+-- Ersetzt den server_instance_id-Vergleich auf agent_sessions, der zwei Defekte hatte:
+-- (1) Ping-Pong: mehrere Prozesse ueberschreiben sich gegenseitig die eine Zeile (UNIQUE(id)),
+-- (2) Project-Mismatch: SELECT prueft id+project, INSERT aktualisiert project nie →
+--     Agent in zweitem Projekt wurde bei JEDEM Tool-Call neu ongeboardet.
+CREATE TABLE IF NOT EXISTS agent_onboardings (
+  agent_id TEXT NOT NULL,
+  project TEXT NOT NULL,
+  server_instance_id TEXT NOT NULL,
+  onboarded_at TIMESTAMPTZ DEFAULT NOW(),
+  PRIMARY KEY (agent_id, project, server_instance_id)
+);
 
 CREATE TABLE IF NOT EXISTS chat_messages (
   id SERIAL PRIMARY KEY,

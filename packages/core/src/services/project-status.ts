@@ -137,12 +137,21 @@ export function clearProjectStatus(projectPath: string): void {
   }
 }
 
+/** In-Memory-Schnellpfad: (instance, agent, project)-Keys die dieser Prozess schon
+ *  ongeboardet hat — spart den PG-Roundtrip bei JEDEM weiteren Tool-Call. */
+const onboardedKeys = new Set<string>();
+
+/** Einmal pro Prozess: tote Instance-Rows aus agent_onboardings raeumen */
+let onboardingCleanupDone = false;
+
 /**
  * Prueft ob ein Agent in dieser Server-Instanz bereits ongeboardet wurde.
- * Nutzt server_instance_id in PG agent_sessions:
- *   - Gleiche Instance-ID → Agent kennt die Regeln → false (nicht neu)
- *   - Andere/keine Instance-ID → neue Session → true (Onboarding noetig)
- *   - Kein Record → Agent komplett unbekannt → true + auto-INSERT
+ * Nutzt die Tabelle agent_onboardings mit PK(agent_id, project, server_instance_id):
+ *   - INSERT ON CONFLICT DO NOTHING → rowCount 1 = neu (Onboarding), 0 = bekannt
+ *   - Einmal pro (Agent, Projekt, Server-Prozess) — kein Ping-Pong zwischen Prozessen,
+ *     kein Project-Mismatch (frueher: server_instance_id-Vergleich auf agent_sessions
+ *     mit UNIQUE(id) → Onboarding-Spam bei jedem Tool-Call, siehe schema.ts)
+ *   - Zusaetzlich In-Memory-Set als Schnellpfad (einmal pro Prozess reicht dem Modell)
  *
  * @returns true wenn Agent NEU ist (Onboarding zeigen), false wenn bereits bekannt
  */
@@ -151,38 +160,45 @@ export async function registerAgent(
   agentId: string,
   serverInstanceId: string
 ): Promise<boolean> {
+  const key = `${serverInstanceId}:${agentId}:${project}`;
+  if (onboardedKeys.has(key)) {
+    return false;
+  }
+
   try {
     const pool = getPool();
 
-    // Pruefen ob Agent mit dieser server_instance_id schon bekannt ist
+    // Retention: Instance-IDs sind prozess-gebunden — Rows aelter als 7 Tage sind tot.
+    // Fire-and-forget, einmal pro Prozess.
+    if (!onboardingCleanupDone) {
+      onboardingCleanupDone = true;
+      pool
+        .query(`DELETE FROM agent_onboardings WHERE onboarded_at < NOW() - INTERVAL '7 days'`)
+        .catch(() => {});
+    }
+
     const result = await pool.query(
-      `SELECT server_instance_id FROM agent_sessions WHERE id = $1 AND project = $2 LIMIT 1`,
-      [agentId, project]
-    );
-
-    if (result.rows.length === 0) {
-      // Agent komplett unbekannt → auto-INSERT + Onboarding
-      await pool.query(
-        `INSERT INTO agent_sessions (id, project, status, server_instance_id, registered_at)
-         VALUES ($1, $2, 'active', $3, NOW())
-         ON CONFLICT (id) DO UPDATE SET server_instance_id = $3`,
-        [agentId, project, serverInstanceId]
-      );
-      return true;
-    }
-
-    const currentInstanceId = result.rows[0].server_instance_id;
-    if (currentInstanceId === serverInstanceId) {
-      // Gleiche Server-Instanz → schon ongeboardet
-      return false;
-    }
-
-    // Andere/keine Instance-ID → neue Session → Onboarding + UPDATE
-    await pool.query(
-      `UPDATE agent_sessions SET server_instance_id = $3 WHERE id = $1 AND project = $2`,
+      `INSERT INTO agent_onboardings (agent_id, project, server_instance_id)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (agent_id, project, server_instance_id) DO NOTHING`,
       [agentId, project, serverInstanceId]
     );
-    return true;
+    onboardedKeys.add(key);
+
+    const isFirstVisit = (result.rowCount ?? 0) > 0;
+
+    if (isFirstVisit) {
+      // Session-Tracking beibehalten (isAgentKnown, events) — ohne Instance-Ueberschreiben.
+      // ON CONFLICT DO NOTHING: chat.registerAgent pflegt model/status, hier nur Existenz.
+      await pool.query(
+        `INSERT INTO agent_sessions (id, project, status, registered_at)
+         VALUES ($1, $2, 'active', NOW())
+         ON CONFLICT (id) DO NOTHING`,
+        [agentId, project]
+      );
+    }
+
+    return isFirstVisit;
   } catch {
     // Bei PG-Fehler sicherheitshalber Onboarding zeigen
     return true;
