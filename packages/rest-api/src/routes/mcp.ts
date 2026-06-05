@@ -50,6 +50,9 @@ import {
   deleteProposals,
   searchProposals,
   updateProposal,
+  // Onboarding (geteilt mit MCP-Server via agent_onboardings-Tabelle in PG)
+  registerAgent,
+  getRulesForNewAgent,
   // Chat
   registerChatAgent,
   registerAgentsBatch,
@@ -1280,6 +1283,71 @@ function deriveAgentIdFromHeaders(headers: Record<string, unknown>): string | un
     return 'gpt-web';
   }
   return undefined;
+}
+
+// =====================================================================
+// REST-Onboarding — Projekt-Regeln einmal pro (Agent, Projekt, Prozess)
+// =====================================================================
+// Gleiches Gedaechtnis wie der MCP-Server: registerAgent() schreibt in die
+// PG-Tabelle agent_onboardings (PK agent_id, project, server_instance_id) —
+// lokaler MCP-stdio-Pfad und REST-API-Pfad teilen sich damit den Stand.
+// Bewusst OHNE Dateisystem-Check (status.json existiert im Container nicht)
+// und ohne ensureHandoffRules (Auto-Inject bleibt Sache des MCP-Servers).
+const REST_INSTANCE_ID = randomUUID();
+
+type RestAgentRole = 'koordinator' | 'spezialist' | 'subagent';
+
+async function attachRestOnboarding(
+  result: unknown,
+  args: Record<string, unknown>
+): Promise<unknown> {
+  const agentId = typeof args.agent_id === 'string' ? args.agent_id : undefined;
+  const project = typeof args.project === 'string' ? args.project : undefined;
+  if (!agentId || !project) return result;
+  // Nur plain Objects erweiterbar — Arrays/Primitives unveraendert durchreichen
+  if (typeof result !== 'object' || result === null || Array.isArray(result)) return result;
+
+  try {
+    const isFirstVisit = await registerAgent(project, agentId, REST_INSTANCE_ID);
+    if (!isFirstVisit) return result;
+
+    // Rollenerkennung identisch zum MCP-Server (tools/onboarding.ts)
+    const role: RestAgentRole =
+      args.role === 'koordinator' || args.role === 'spezialist' || args.role === 'subagent'
+        ? args.role
+        : agentId === 'koordinator' || agentId.startsWith('koordinator-')
+          ? 'koordinator'
+          : agentId.startsWith('spezialist-') || agentId.startsWith('specialist-')
+            ? 'spezialist'
+            : 'subagent';
+
+    const allRules = await getRulesForNewAgent(project);
+    const rules = allRules
+      .filter((m) => {
+        const tags = m.tags || [];
+        if (tags.includes('coordinator-only') && role !== 'koordinator') return false;
+        if (tags.includes('specialist-only') && role !== 'spezialist') return false;
+        if (tags.includes('subagent-only') && role !== 'subagent') return false;
+        return true;
+      })
+      .map((m) => ({ name: m.name, content: m.content }));
+
+    if (rules.length === 0) {
+      return { ...result, agentOnboarding: { isFirstVisit: true } };
+    }
+
+    return {
+      ...result,
+      agentOnboarding: {
+        isFirstVisit: true,
+        message: '📋 WILLKOMMEN! Als neuer Agent beachte bitte folgende Projekt-Regeln:',
+        rules,
+      },
+    };
+  } catch {
+    // Onboarding darf nie den Tool-Call brechen
+    return result;
+  }
 }
 
 async function handleToolCall(name: string, args: Record<string, unknown>): Promise<unknown> {
@@ -3728,7 +3796,7 @@ export async function mcpRoutes(fastify: FastifyInstance): Promise<void> {
           let _logErr: string | null = null;
           let _logResult: string | null = null;
           try {
-            const toolResult = await handleToolCall(toolName, toolArgs);
+            const toolResult = await attachRestOnboarding(await handleToolCall(toolName, toolArgs), toolArgs);
             _logResult = JSON.stringify(toolResult);
             result = { content: [{ type: 'text', text: JSON.stringify(toolResult, null, 2) }] };
           } catch (toolErr) {
@@ -3835,7 +3903,7 @@ export async function mcpRoutes(fastify: FastifyInstance): Promise<void> {
           let _logErr: string | null = null;
           let _logResult: string | null = null;
           try {
-            const toolResult = await handleToolCall(toolName, toolArgs);
+            const toolResult = await attachRestOnboarding(await handleToolCall(toolName, toolArgs), toolArgs);
             _logResult = JSON.stringify(toolResult);
             result = { content: [{ type: 'text', text: JSON.stringify(toolResult, null, 2) }] };
           } catch (toolErr) {
