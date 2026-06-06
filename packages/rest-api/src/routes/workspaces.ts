@@ -19,13 +19,20 @@ function ensureAvailable(reply: import('fastify').FastifyReply): ReturnType<type
 }
 
 export async function workspaceRoutes(fastify: FastifyInstance): Promise<void> {
-  /** GET /api/workspaces — Liste aller bekannten Workspaces mit Status. */
+  /** GET /api/workspaces — Liste aller bekannten Workspaces mit Status.
+   *  Liest nur aus PG (project_workspaces = Source of Truth) — braucht KEIN Docker.
+   *  503 bleibt den Aktionen (start/stop/exec) vorbehalten, die wirklich Docker brauchen. */
   fastify.get('/api/workspaces', async (_request, reply) => {
-    const orch = ensureAvailable(reply);
-    if (!orch) return;
+    const orch = getWorkspaceOrchestrator();
+    if (!orch) {
+      return reply.status(503).send({
+        success: false,
+        error: { message: 'Workspace-Orchestrator nicht initialisiert' },
+      });
+    }
     try {
       const workspaces = await orch.listWorkspaces();
-      return { success: true, workspaces, count: workspaces.length };
+      return { success: true, workspaces, count: workspaces.length, docker_available: orch.isAvailable() };
     } catch (err) {
       return reply.status(500).send({ success: false, error: { message: String(err) } });
     }
