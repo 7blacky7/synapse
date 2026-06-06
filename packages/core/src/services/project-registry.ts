@@ -78,8 +78,9 @@ export function toAbsolutePath(projectRoot: string, relativePath: string): strin
 export async function registerVirtualProject(name: string): Promise<void> {
   const pool = getPool();
   await pool.query(
-    `INSERT INTO projects (name, hostname, path, created_at, last_access)
-     VALUES ($1, 'rest-api', '/virtual/rest-api', NOW(), NOW())
+    `INSERT INTO projects (name, hostname, path, created_at, last_access, enabled)
+     VALUES ($1, 'rest-api', '/virtual/rest-api', NOW(), NOW(),
+             COALESCE((SELECT bool_or(p2.enabled) FROM projects p2 WHERE p2.name = $1), true))
      ON CONFLICT (name, hostname) DO UPDATE SET last_access = NOW()`,
     [name]
   );

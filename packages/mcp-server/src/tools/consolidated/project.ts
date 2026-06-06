@@ -31,8 +31,8 @@ const projectTool: ConsolidatedTool = {
       properties: {
         action: {
           type: 'string',
-          enum: ['init', 'init_status', 'complete_setup', 'detect_tech', 'cleanup', 'stop', 'status', 'list'],
-          description: 'Aktion: init | init_status | complete_setup | detect_tech | cleanup | stop | status | list',
+          enum: ['init', 'init_status', 'complete_setup', 'detect_tech', 'cleanup', 'stop', 'status', 'list', 'enable', 'disable'],
+          description: 'Aktion: init | init_status | complete_setup | detect_tech | cleanup | stop | status | list | enable | disable. enable/disable schalten das Projekt in PG (Source of Truth) — Parser-Worker und FileWatcher-Daemon folgen.',
         },
         path: {
           type: 'string',
@@ -284,10 +284,27 @@ const projectTool: ConsolidatedTool = {
           };
         }
 
+        case 'enable':
+        case 'disable': {
+          const project = str(args, 'project') ?? str(args, 'name');
+          if (!project) {
+            return { success: false, message: 'Parameter "project" ist erforderlich' };
+          }
+          const { setProjectEnabled } = await import('@synapse/core');
+          const enabled = action === 'enable';
+          await setProjectEnabled(project, enabled);
+          return {
+            success: true,
+            project,
+            enabled,
+            message: `Projekt "${project}" ${enabled ? 'aktiviert' : 'deaktiviert'} (PG = Source of Truth). Parser-Worker folgt sofort, FileWatcher-Daemon beim naechsten Sync.`,
+          };
+        }
+
         default:
           return {
             success: false,
-            message: `Unbekannte action: "${action}". Gültig sind: init | complete_setup | detect_tech | cleanup | stop | status | list`,
+            message: `Unbekannte action: "${action}". Gültig sind: init | complete_setup | detect_tech | cleanup | stop | status | list | enable | disable`,
           };
       }
     } catch (error) {

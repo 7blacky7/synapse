@@ -18,6 +18,7 @@ import {
   detectTechnologies,
   indexProjectTechnologies,
   getProjectStats,
+  setProjectEnabled,
   getCollectionStats,
   // Plan
   getPlan,
@@ -177,8 +178,8 @@ const MCP_TOOLS = [
       properties: {
         action: {
           type: 'string',
-          enum: ['init', 'init_status', 'complete_setup', 'detect_tech', 'cleanup', 'stop', 'status', 'list'],
-          description: 'Aktion: init | init_status | complete_setup | detect_tech | cleanup | stop | status | list',
+          enum: ['init', 'init_status', 'complete_setup', 'detect_tech', 'cleanup', 'stop', 'status', 'list', 'enable', 'disable'],
+          description: 'Aktion: init | init_status | complete_setup | detect_tech | cleanup | stop | status | list | enable | disable. enable/disable schalten das Projekt in PG (Source of Truth) — Parser-Worker und FileWatcher-Daemon folgen.',
         },
         path: { type: 'string', description: 'Absoluter Pfad zum Projekt-Ordner. Bei action="init" optional — ohne path queued der Job an den Daemon und resolved gegen WORKSPACE_ROOT/name.' },
         name: { type: 'string', description: 'Projekt-Name. Pflicht fuer init wenn kein path gegeben. Erlaubt: 2-64 Zeichen [a-zA-Z0-9_-], beginnt mit Buchstabe/Ziffer.' },
@@ -1498,6 +1499,19 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
             .filter(c => c.startsWith('project_'))
             .map(c => c.replace('project_', ''));
           return { success: true, count: projects.length, projects };
+        }
+        case 'enable':
+        case 'disable': {
+          const project = str(args, 'project') ?? str(args, 'name');
+          if (!project) return { success: false, error: 'project erforderlich' };
+          const enabled = action === 'enable';
+          await setProjectEnabled(project, enabled);
+          return {
+            success: true,
+            project,
+            enabled,
+            message: `Projekt "${project}" ${enabled ? 'aktiviert' : 'deaktiviert'} (PG = Source of Truth). Parser-Worker folgt sofort, FileWatcher-Daemon beim naechsten Sync.`,
+          };
         }
         default:
           return { success: false, error: `Unbekannte project action: "${action}"` };

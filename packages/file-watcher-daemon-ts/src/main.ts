@@ -21,9 +21,22 @@ import { startShellJobWorker, type ShellJobWorkerHandle } from './shell-job-work
 import { startSpecialistJobWorker, type SpecialistJobWorkerHandle } from './specialist-job-worker.js';
 import { startProjectInitWorker, type ProjectInitWorkerHandle } from './project-init-worker.js';
 import { startDaemonHeartbeat, type DaemonHeartbeatHandle } from './daemon-heartbeat.js';
+import { startEnabledSync, type EnabledSyncHandle } from './enabled-sync.js';
 
 async function main(): Promise<void> {
   ensureConfigDir();
+
+  // Single-Instance: lebt der Daemon aus daemon.pid noch, beenden wir uns
+  // sofort — zwei parallele Daemons fuehren zu doppeltem Sync, doppeltem
+  // Heartbeat und divergenter config.json (Stand 2026-06-06 liefen zwei).
+  try {
+    const oldPid = Number(fs.readFileSync(pidFilePath(), 'utf8').trim());
+    if (oldPid && oldPid !== process.pid) {
+      process.kill(oldPid, 0); // wirft wenn Prozess nicht mehr existiert
+      console.error(`[daemon] Daemon laeuft bereits (PID ${oldPid}) — beende.`);
+      process.exit(0);
+    }
+  } catch { /* kein PID-File oder Prozess tot -> normal starten */ }
 
   const manager = new WatcherManager();
   const { port, projekte } = manager.statusAll();
@@ -74,6 +87,14 @@ async function main(): Promise<void> {
     } catch (err) {
       console.error('[daemon] Heartbeat konnte nicht gestartet werden:', err);
     }
+  }
+
+  // PG = Source of Truth fuer enabled: Start-Sync + periodischer Abgleich.
+  let enabledSync: EnabledSyncHandle | null = null;
+  try {
+    enabledSync = startEnabledSync(manager);
+  } catch (err) {
+    console.error('[daemon] Enabled-Sync konnte nicht gestartet werden:', err);
   }
 
   const app = buildApi({ manager });
@@ -144,6 +165,10 @@ async function main(): Promise<void> {
       } catch (err) {
         console.error('[daemon] Heartbeat stop Fehler:', err);
       }
+    }
+
+    if (enabledSync !== null) {
+      try { enabledSync.stop(); } catch { /* ignore */ }
     }
 
     try {
