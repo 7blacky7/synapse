@@ -129,6 +129,16 @@ async function main(): Promise<void> {
     shuttingDown = true;
     console.error(`[daemon] ${signal} empfangen — graceful Shutdown...`);
 
+    // Hard-Exit-Fallback: haengt ein stop() (z.B. blockierter PG-Client),
+    // lebte der Prozess sonst ewig weiter — SIGTERM wirkte scheinbar gar
+    // nicht (User-Report 2026-06-06: Tray-"Deaktivieren" ohne Wirkung,
+    // Daemon ueberlebte mehrere kill-Versuche). Nach 5s harter Exit.
+    const hardExit = setTimeout(() => {
+      console.error('[daemon] Shutdown haengt (>5s) — harter Exit.');
+      process.exit(1);
+    }, 5_000);
+    hardExit.unref();
+
     try {
       await app.close();
     } catch (err) {
