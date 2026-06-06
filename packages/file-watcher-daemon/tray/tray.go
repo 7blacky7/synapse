@@ -52,7 +52,7 @@ type ChannelsResponse struct {
 // Workspace = ein Container-Workspace auf der synapse-api (siehe project_workspaces Tabelle).
 type Workspace struct {
 	Project     string `json:"project"`
-	Status      string `json:"status"`       // running | stopped | error | ...
+	Status      string `json:"status"`       // active | warming | cold | stopping | error (project_workspaces.status)
 	Pinned      bool   `json:"pinned"`
 	ContainerId string `json:"container_id"`
 }
@@ -526,6 +526,9 @@ func workspaceAction(project, action string, body string) {
 		return
 	}
 	resp.Body.Close()
+	// Poll-Throttle uebersteuern: ohne Reset bliebe der angezeigte Status
+	// nach Start/Stop bis zu 30s alt (nextWorkspacePoll liegt in der Zukunft).
+	nextWorkspacePoll = time.Time{}
 	triggerRefresh()
 }
 
@@ -651,7 +654,7 @@ func rebuildMenu(projs []Project) {
 	if workspacesAvailable {
 		running := 0
 		for _, w := range workspaces {
-			if w.Status == "running" {
+			if w.Status == "active" || w.Status == "warming" {
 				running++
 			}
 		}
@@ -666,8 +669,13 @@ func rebuildMenu(projs []Project) {
 		for _, w := range workspaces {
 			wsCopy := w
 			label := "○  " + wsCopy.Project
-			if wsCopy.Status == "running" {
+			switch wsCopy.Status {
+			case "active":
 				label = "●  " + wsCopy.Project
+			case "warming", "stopping":
+				label = "◐  " + wsCopy.Project
+			case "error":
+				label = "⚠  " + wsCopy.Project
 			}
 			if wsCopy.Pinned {
 				label += "  📌"
