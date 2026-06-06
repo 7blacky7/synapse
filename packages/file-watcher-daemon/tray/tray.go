@@ -401,11 +401,21 @@ func daemonStarten() {
 	_ = os.WriteFile(startTrigger, []byte("1"), 0644)
 }
 
-func quitApp() {
+// daemonStoppen schreibt stop-requested — start-watcher.sh stoppt den Daemon.
+// Der Tray-Prozess laeuft weiter (Menuepunkt "Deaktivieren").
+func daemonStoppen() {
 	home, _ := os.UserHomeDir()
 	stopTrigger := filepath.Join(home, ".synapse", "file-watcher", "stop-requested")
 	_ = os.WriteFile(stopTrigger, []byte(""), 0644)
+}
+
+// quitApp stoppt den Daemon UND beendet den Tray-Prozess wirklich.
+// systray.Quit() allein liess den Fyne-Loop haengen (Prozess lebte weiter,
+// User-Report 2026-06-06) — daher harter os.Exit-Fallback nach Grace-Period.
+func quitApp() {
+	daemonStoppen()
 	systray.Quit()
+	time.AfterFunc(2*time.Second, func() { os.Exit(0) })
 }
 
 func openConfigDir(path string) {
@@ -700,7 +710,14 @@ func rebuildMenu(projs []Project) {
 			triggerRefresh()
 		}
 	}()
-	mQuit := systray.AddMenuItem("Beenden", "")
+	mDisable := systray.AddMenuItem("Deaktivieren", "Daemon stoppen — Tray laeuft weiter")
+	go func() {
+		for range mDisable.ClickedCh {
+			daemonStoppen()
+			triggerRefresh()
+		}
+	}()
+	mQuit := systray.AddMenuItem("Beenden", "Daemon stoppen + Tray beenden")
 	go func() {
 		for range mQuit.ClickedCh {
 			quitApp()
