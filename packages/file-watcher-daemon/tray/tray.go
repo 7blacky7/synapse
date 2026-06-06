@@ -88,6 +88,7 @@ var (
 	workspaces             []Workspace
 	workspacesAvailable    bool
 	lastWorkspaceSignature string
+	nextWorkspacePoll      time.Time
 
 	// DB connection
 	db                     *sql.DB
@@ -131,6 +132,12 @@ type ChatWindow struct {
 }
 
 func main() {
+	// Single-Instance: zweite Instanz beendet sich sofort (flock/LockFileEx).
+	lockFile := acquireSingleInstanceLock()
+	if lockFile != nil {
+		defer lockFile.Close()
+	}
+
 	myApp = app.New()
 
 	start, end := systray.RunWithExternalLoop(onReady, func() {
@@ -735,11 +742,20 @@ func refresh() {
 
 	systray.SetIcon(makeIcon(connected))
 
-	// Workspaces parallel pollen (synapse-api)
-	ws, wsOK := fetchWorkspaces()
-	workspaces = ws
-	workspacesAvailable = wsOK
-	wsSig := getWorkspaceSignature(ws, wsOK)
+	// Workspaces gedrosselt pollen (synapse-api): alle 30s reicht fuers
+	// Tray-Menue — refresh() laeuft im 1s/10s-Takt und wuerde sonst die
+	// API-Logs fluten. Bei Fehler/nicht verfuegbar: 5min Backoff.
+	if time.Now().After(nextWorkspacePoll) {
+		ws, wsOK := fetchWorkspaces()
+		workspaces = ws
+		workspacesAvailable = wsOK
+		if wsOK {
+			nextWorkspacePoll = time.Now().Add(30 * time.Second)
+		} else {
+			nextWorkspacePoll = time.Now().Add(5 * time.Minute)
+		}
+	}
+	wsSig := getWorkspaceSignature(workspaces, workspacesAvailable)
 
 	sig := getProjectSignature(projs)
 
