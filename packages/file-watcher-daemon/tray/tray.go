@@ -710,13 +710,17 @@ func rebuildMenu(projs []Project) {
 			triggerRefresh()
 		}
 	}()
-	mDisable := systray.AddMenuItem("Deaktivieren", "Daemon stoppen — Tray laeuft weiter")
-	go func() {
-		for range mDisable.ClickedCh {
-			daemonStoppen()
-			triggerRefresh()
-		}
-	}()
+	// "Deaktivieren" nur wenn der Daemon laeuft — offline zeigt das Menue
+	// oben bereits "Daemon starten" (rebuildMenu laeuft bei Statuswechsel neu).
+	if connected {
+		mDisable := systray.AddMenuItem("Deaktivieren", "Daemon stoppen — Tray laeuft weiter")
+		go func() {
+			for range mDisable.ClickedCh {
+				daemonStoppen()
+				triggerRefresh()
+			}
+		}()
+	}
 	mQuit := systray.AddMenuItem("Beenden", "Daemon stoppen + Tray beenden")
 	go func() {
 		for range mQuit.ClickedCh {
