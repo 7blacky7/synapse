@@ -23,5 +23,11 @@ services:
       # API Config
       - API_PORT=3456
       - API_HOST=0.0.0.0
+    volumes:
+      # Docker-Socket: PFLICHT fuer den Workspace-Orchestrator (pro-Projekt
+      # Sandbox-Container synapse-workspace). Ohne Socket laeuft die API
+      # normal weiter, aber workspace(start/stop) + shell(isolated) sind
+      # deaktiviert (503).
+      - /var/run/docker.sock:/var/run/docker.sock
     # Falls Qdrant/Ollama im gleichen Docker-Netzwerk:
     # network_mode: host
