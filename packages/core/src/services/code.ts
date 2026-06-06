@@ -248,6 +248,14 @@ export async function parseAndEmbed(project: string, filePath: string): Promise<
       idemRow.rows[0].min_embedded_at &&
       new Date(idemRow.rows[0].min_embedded_at) >= new Date(idemRow.rows[0].indexed_at)
     ) {
+      // parsed_at heilen falls NULL (z.B. durch file_path-Move zurueckgesetzt):
+      // ohne das findet der parser-worker die fertige Datei jeden Tick erneut
+      // im Backlog (parsed_at IS NULL) und loopt endlos ueber den Skip-Pfad.
+      await pool.query(
+        `UPDATE code_files SET parsed_at = NOW()
+          WHERE project = $1 AND file_path = $2 AND parsed_at IS NULL`,
+        [project, filePath]
+      );
       return; // Already embedded, nichts zu tun
     }
 
