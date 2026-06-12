@@ -89,7 +89,7 @@ RUN apt-get update \
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       gdb lldb valgrind strace ltrace \
-      cppcheck clang clang-tidy shellcheck patchelf \
+      cppcheck clang clang-tidy lld shellcheck patchelf \
       libgtest-dev catch2 python3-pytest \
  && cmake -S /usr/src/googletest -B /tmp/gtest-build \
  && cmake --build /tmp/gtest-build --target install -j"$(nproc)" \
@@ -129,6 +129,22 @@ RUN apt-get update \
       gcc-riscv64-linux-gnu g++-riscv64-linux-gnu \
       gcc-arm-none-eabi libnewlib-arm-none-eabi \
       gcc-avr avr-libc \
+ && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# ---------------------------------------------------------------------------
+# Layer 5b — System-Emulation + Boot-Tooling (moo-Gates, OS-Dev, WS4).
+# qemu-system: GANZE Maschinen booten (x86_64 + ARM64) — reine TCG-Software-
+# Emulation, kein KVM noetig (langsamer als nativ, aber sandbox-tauglich).
+# OVMF/AAVMF: UEFI-Firmware fuer uefi-/arm64-Smokes. grub-mkrescue kommt aus
+# grub-common; grub-pc-bin (BIOS) + grub-efi-amd64-bin (UEFI) liefern die
+# Module; xorriso + mtools bauen die bootfaehigen ISOs.
+# ---------------------------------------------------------------------------
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      qemu-system-x86 qemu-system-arm qemu-utils \
+      ovmf qemu-efi-aarch64 \
+      grub-common grub-pc-bin grub-efi-amd64-bin \
+      xorriso mtools \
  && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # ---------------------------------------------------------------------------
@@ -199,6 +215,22 @@ RUN apt-get update \
  && curl -fsSL https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz | tar -C /usr/local -xz
 
 # ---------------------------------------------------------------------------
+# Layer 8b — Service-Rollen-Grundausstattung (WS4 Workspace-Rollen).
+# DB-Server als normale Binaries — laufen als User synapse mit Daten im
+# persistenten HOME-Volume (initdb $HOME/pgdata, redis --dir $HOME).
+# Kein systemd, kein root: der Rollen-init_command startet die Dienste
+# (z.B. pg_ctl start). reset_home = DB-Reset. uv: schneller Python-
+# Paketmanager als Standalone-Binary nach /usr/local/bin.
+# ---------------------------------------------------------------------------
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      postgresql postgresql-client redis-server \
+ && apt-get clean && rm -rf /var/lib/apt/lists/* \
+ && curl -fsSL https://astral.sh/uv/install.sh \
+      | env UV_INSTALL_DIR=/usr/local/bin INSTALLER_NO_MODIFY_PATH=1 sh \
+ && uv --version
+
+# ---------------------------------------------------------------------------
 # Layer 9 — User, ENV-Ergonomie, Selbstbedienungs-Defaults.
 # PIP_BREAK_SYSTEM_PACKAGES: PEP-668-Override — im Wegwerf-Sandbox-Container
 #   legitim (pip install --user landet im persistenten HOME-Volume).
@@ -212,7 +244,7 @@ ENV PIP_BREAK_SYSTEM_PACKAGES=1 \
     CARGO_HOME=/home/synapse/.cargo \
     GOPATH=/home/synapse/go \
     CCACHE_DIR=/home/synapse/.cache/ccache \
-    PATH=/usr/lib/ccache:/opt/rust/bin:/usr/local/go/bin:/home/synapse/.cargo/bin:/home/synapse/.local/bin:/home/synapse/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+    PATH=/usr/lib/ccache:/opt/rust/bin:/usr/local/go/bin:/home/synapse/.cargo/bin:/home/synapse/.local/bin:/home/synapse/go/bin:/usr/lib/postgresql/15/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 RUN git config --system safe.directory '*' \
  && groupadd -g 1000 synapse \
  && useradd -m -u 1000 -g 1000 -s /bin/bash synapse \

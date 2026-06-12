@@ -22,11 +22,13 @@ Schlankere Projekte: eigenes Image via `workspace(configure, image: ...)`.
 |---|---|
 | Toolchain | gcc/g++/make, cmake, ninja, meson, ccache (PATH-transparent), pkg-config, git |
 | Dev-Libs (linken!) | sqlite3, SDL2/_image/_ttf/_mixer, curl, OpenSSL, zlib, png/jpeg/freetype, ncurses, readline, pcre2, libpq, xml2, yaml, boost |
-| Debug/Analyse | gdb, lldb, valgrind, strace, ltrace, cppcheck, clang/clang-tidy, shellcheck, patchelf; Sanitizer via `-fsanitize=address,undefined,...` |
+| Debug/Analyse | gdb, lldb, valgrind, strace, ltrace, cppcheck, clang/clang-tidy, **lld** (ld.lld/lld-link), shellcheck, patchelf; Sanitizer via `-fsanitize=address,undefined,...` |
 | Tests | googletest (gebaut, `-lgtest`), catch2 (v2), pytest; jest/vitest pro Projekt via npm |
 | Multimedia/GL | Mesa (GL **und** Vulkan, llvmpipe Software-Rendering), OpenAL, ALSA/Pulse, ffmpeg, **Xvfb** (headless GUI/SDL), Browser-Runtime-Libs (fuer selbstinstallierte Playwright-Browser) |
 | Windows | MinGW gcc/g++ (Cross-Build), **wine64** (.exe ausfuehren), `/opt/mingw-extras` (sqlite3 + SDL2/_image als MinGW-Libs) |
 | Cross/Embedded | aarch64/armhf/riscv64-GCC (+g++), arm-none-eabi (+newlib), AVR, **qemu-user-static** (Binaries direkt ausfuehren) |
+| System-Emulation/Boot | **qemu-system** x86_64 + ARM64 (TCG, kein KVM noetig), qemu-utils, **OVMF/AAVMF** (UEFI-Firmware), **grub-mkrescue** (grub-pc-bin + grub-efi-amd64-bin), xorriso, mtools — Boot-ISOs bauen UND booten |
+| Services (WS4-Rollen) | **PostgreSQL 15** (Server-Binaries, PATH enthaelt /usr/lib/postgresql/15/bin), **redis-server**, **uv** (/usr/local/bin) — laufen als User synapse, Daten im HOME-Volume, Start via Rollen-`init_command` |
 | Runtimen | Node 20 + pnpm, Python 3 (+venv/dev), **Rust** (/opt/rust, stable + clippy/rustfmt + Targets windows-gnu/aarch64/wasm32), **Go** (/usr/local/go), OpenJDK 17 headless, Ruby, PHP-CLI |
 
 ## Selbstbedienungs-Architektur (warum das funktioniert)
@@ -90,8 +92,9 @@ verifiziert (HTTP 200). Bricht ein Download im Build: Pin pruefen.
 
 ## Multi-Workspace (WS3): Backend + App im selben Netz testen
 
-Pro Projekt sind bis zu **3 benannte Workspaces** moeglich (Param `name`,
-Default `main`; Regex `^[a-z0-9][a-z0-9-]{0,19}$`). Alle teilen sich das
+Pro Projekt sind mehrere **benannte Workspaces** moeglich (Cap via ENV
+`SYNAPSE_WS_PER_PROJECT_CAP`, Default 6; Param `name`, Default `main`;
+Regex `^[a-z0-9][a-z0-9-]{0,19}$`). Alle teilen sich das
 `/workspace`-Volume (eine Quelle, ein PG-Sync), haben aber **eigenes**
 Home-Volume, eigene Caps und eigenes Image (`configure` mit `name`).
 DNS im proxynet = Container-Name: `main` heisst wie bisher
@@ -115,3 +118,38 @@ Hinweise: Builds besser im Home (`~/build-server`, `~/build-app`) oder in
 getrennten Unterordnern ausfuehren — `/workspace` ist geteilt, parallele
 Builds in denselben Output-Ordner (z.B. `dist/`) beissen sich. Der globale
 Container-Cap (LRU) zaehlt weiterhin Container, nicht Projekte.
+
+
+## Workspace-Rollen (WS4): Rolle = Template, Instanz = Geraet
+
+Rollen sind editierbare Templates (image, caps, `init_command`) — global
+oder projekt-scoped, **NIE fest**: `workspace(role_set/role_list/role_delete)`
+(`project` weglassen = global; projekt-scoped schlaegt global). Jede Rolle ist
+**beliebig oft instanziierbar**; der Workspace-Name bleibt frei (db-1, db-2,
+app, qa, ...). `init_command` laeuft nach JEDEM Container-Start als User
+synapse (Dienste-Bootstrap, 120s Timeout; Fehler → `last_error`, Container
+bleibt nutzbar; Template-Edits wirken ab dem naechsten Start).
+
+Seed-Rollen (nur Startpunkt): `dev`, `server`, `app`, `wine-qa`,
+`db-postgres` (initdb in `$HOME/pgdata` + pg_ctl start, Port 5432, Socket
+`/tmp`), `db-redis` (Port 6379, Persistenz im HOME).
+
+Kochrezept "3 Geraete" (db ↔ app ↔ wine-qa):
+
+```text
+1. workspace(exec, project, name:"db-1", role:"db-postgres",
+     command:"pg_isready -h /tmp")    # Instanz entsteht lazy, init faehrt PG hoch
+2. workspace(exec, project, name:"app", role:"server",
+     command:"node server.js &", expose_ports:[3000])
+   # app erreicht die DB: postgres://synapse@synapse-ws-<projekt>-db-1:5432
+3. workspace(exec, project, name:"qa", role:"wine-qa",
+     command:"curl -s http://synapse-ws-<projekt>-app:3000/health")
+   # + Windows-Client: WINEDLLOVERRIDES="mscoree,mshtml=" xvfb-run -a wine64 client.exe
+4. Zweite DB? name:"db-2", role:"db-postgres" — gleiche Rolle, neue Instanz.
+   Rollen sind Templates, keine Slots.
+```
+
+Ehrlichkeit Mobile: echtes iOS ist ohne Apple-HW unmoeglich (Tier 3);
+Android-Emulator braucht KVM → Tier-2-Image, andockbar als Rolle
+(`role_set` mit eigenem `image`). Das Muster "N Geraete im selben Netz"
+funktioniert heute mit Linux-Instanzen.
