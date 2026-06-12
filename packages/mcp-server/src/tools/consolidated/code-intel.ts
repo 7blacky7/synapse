@@ -148,7 +148,7 @@ export const codeIntelTool: ConsolidatedTool = {
         },
         limit: {
           type: 'number',
-          description: 'Max. Ergebnisse fuer search-Action (Standard: 20)',
+          description: 'Max. Ergebnisse (search: Standard 20; entrypoints: Standard 200)',
         },
 
         // --- file (range + truncation) ---
@@ -307,7 +307,7 @@ export const codeIntelTool: ConsolidatedTool = {
       case 'entrypoints': {
         const filePath = str(args, 'file_path');
         const limit = num(args, 'limit') ?? 200;
-        const entrypoints = await getEntrypoints(project, filePath, limit);
+        const entrypoints = await getEntrypoints(project, filePath, limit, args.include_declarations === true);
         return { success: true, entrypoints, count: entrypoints.length, project };
       }
 

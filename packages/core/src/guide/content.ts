@@ -327,10 +327,10 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
         tips: 'Beantwortet "was macht diese Funktion Schritt fuer Schritt" OHNE den Code zu lesen — oft billiger als file() bei langen Funktionen.',
       },
       entrypoints: {
-        description: 'Projektweite Top-Level-Ausfuehrungspunkte. ACHTUNG: aktuell UNGEFILTERT (kein path/limit-Param) und verrauscht (zaehlt auch export interface/type als Entrypoint) — auf grossen Projekten 200+ Eintraege mit vollem Text.',
-        params: '— (keine Filter verfuegbar)',
-        example: 'code_intel({ action: "entrypoints", project: "kleines-projekt" })',
-        tips: 'Auf grossen Projekten MEIDEN. Besser: statements mit top_level_only: true + file_path auf die vermutete Einstiegsdatei — gleiche Info, gefiltert.',
+        description: 'Projektweite Top-Level-Ausfuehrungspunkte (echte Seiteneffekte beim Import/Start: main().catch, dotenvConfig() etc.). Reine Deklarations-/Re-Export-Statements und .sql-Dateien sind per Default ausgefiltert.',
+        params: 'file_path (LIKE-Filter, empfohlen auf grossen Projekten), limit (Default 200), include_declarations (bool, Default false — true liefert auch export interface/type/Re-Exports und SQL)',
+        example: 'code_intel({ action: "entrypoints", project: "synapse", file_path: "%runtime%", limit: 20 })',
+        tips: 'Fuer die Seiteneffekte EINER bestimmten Datei ist statements(top_level_only: true, file_path) die praezisere Alternative (zeigt auch Imports + Modul-Variablen).',
       },
     },
     workflow_examples: [

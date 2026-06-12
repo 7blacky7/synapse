@@ -746,7 +746,7 @@ const MCP_TOOLS = [
         show_comments: { type: 'boolean', description: 'Kommentare unter Dateien anzeigen (Standard: false, fuer tree)' },
         show_functions: { type: 'boolean', description: 'Funktionsnamen auflisten (Standard: false, fuer tree)' },
         show_imports: { type: 'boolean', description: 'Import-Statements auflisten (Standard: false, fuer tree)' },
-        file_path: { type: 'string', description: 'Datei-Pfad-Filter (LIKE-Pattern, fuer functions/variables/symbols/file)' },
+        file_path: { type: 'string', description: 'Datei-Pfad-Filter (LIKE-Pattern, fuer functions/variables/symbols/file/statements/calls/entrypoints)' },
         name: { type: 'string', description: 'Symbol-Name-Filter (fuer functions/variables/symbols/references)' },
         exported_only: { type: 'boolean', description: 'Nur exportierte Funktionen zurueckgeben (fuer functions)' },
         with_values: { type: 'boolean', description: 'Wert-Spalte einschliessen (fuer variables)' },
@@ -760,7 +760,8 @@ const MCP_TOOLS = [
         queries: { type: 'array', items: { type: 'string' }, description: 'search_batch: 1..10 semantische Queries in EINEM Call. Embeddings werden gebatched an Google → spart N-1 API-Roundtrips. Antwort enthaelt results[] mit {query, count, hits}.' },
         limit_per_query: { type: 'number', description: 'search_batch: Max Hits pro Query (Default 5)' },
         file_type: { type: 'string', description: 'Dateityp-Filter fuer search-Action (z.B. "ts", "js")' },
-        limit: { type: 'number', description: 'Max. Ergebnisse fuer search-Action (Standard: 20)' },
+        limit: { type: 'number', description: 'Max. Ergebnisse (search: Standard 20; entrypoints: Standard 200)' },
+        include_declarations: { type: 'boolean', description: 'entrypoints: auch reine Deklarations-/Re-Export-Statements und SQL-Dateien liefern (Standard: false = nur echte Seiteneffekte)' },
         from_line: { type: 'number', description: 'file: Start-Zeile (1-basiert, Standard: 1)' },
         to_line: { type: 'number', description: 'file: End-Zeile inklusiv (Standard: letzte Zeile). Auto-Reduce bei > 80k Zeichen.' },
         truncate_long_lines: { type: 'number', description: 'file: Zeilen laenger als N Zeichen kuerzen + Marker. 0 = aus (Standard).' },
@@ -3013,7 +3014,7 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
           return { success: true, ...flow, project };
         }
         case 'entrypoints': {
-          const entrypoints = await getEntrypoints(project, str(args, 'file_path'), num(args, 'limit'));
+          const entrypoints = await getEntrypoints(project, str(args, 'file_path'), num(args, 'limit'), args.include_declarations === true);
           return { success: true, entrypoints, count: entrypoints.length, project };
         }
         default:

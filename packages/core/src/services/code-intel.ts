@@ -970,14 +970,19 @@ export interface EntrypointInfo {
 /**
  * Liefert projektweit alle Top-Level (Modul-Scope, depth 0) ausfuehrbaren
  * Statements — die "Entrypoints", also was beim Importieren/Ausfuehren der
- * jeweiligen Datei passiert. Nicht-ausfuehrbare reine Deklarations-Statements
- * (z.B. blosse 'variable'-Deklarationen) sind enthalten, koennen aber via
- * optionalem filePath eingegrenzt werden.
+ * jeweiligen Datei passiert.
+ *
+ * Default (includeDeclarations=false): reine Deklarations-/Re-Export-Statements
+ * ("export interface/type/declare", "export *", "export {...}"), SQL-Kommentare
+ * und .sql-Dateien (Migrations) werden ausgefiltert — uebrig bleiben echte
+ * Seiteneffekte wie main().catch(...), dotenvConfig() etc.
+ * includeDeclarations=true stellt das alte ungefilterte Verhalten wieder her.
  */
 export async function getEntrypoints(
   project: string,
   filePath?: string,
-  limit: number = 200
+  limit: number = 200,
+  includeDeclarations = false
 ): Promise<EntrypointInfo[]> {
   const pool = getPool();
   const params: unknown[] = [project];
@@ -991,6 +996,18 @@ export async function getEntrypoints(
     `statement_type IN ('call','await','expression','new','if','for','while','switch','try','throw')`,
     `(text IS NULL OR (text NOT LIKE 'import %' AND text NOT LIKE 'interface %' AND text NOT LIKE 'type %' AND text NOT LIKE 'const enum %' AND text NOT LIKE 'declare %'))`,
   ];
+
+  if (!includeDeclarations) {
+    // BUGFIX 2026-06-12 (Koordinator3): Die indizierten Texte beginnen real mit
+    // "export ..." — die alten NOT-LIKE-Filter ('interface %', 'type %') griffen
+    // dadurch nie und entrypoints lieferte hunderte Deklarations-Zeilen.
+    // Zusaetzlich: SQL-Migrations sind keine Runtime-Entrypoints des Projekts.
+    conditions.push(
+      `(text IS NULL OR (text NOT LIKE 'export interface %' AND text NOT LIKE 'export type %' AND text NOT LIKE 'export declare %' AND text NOT LIKE 'export * %' AND text NOT LIKE 'export {%' AND text NOT LIKE '--%'))`,
+      `file_path NOT LIKE '%.sql'`,
+      `(text IS NOT NULL AND btrim(text) <> '')`
+    );
+  }
 
   if (filePath) {
     params.push(`%${filePath}%`);
