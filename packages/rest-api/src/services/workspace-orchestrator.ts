@@ -577,7 +577,7 @@ export class WorkspaceOrchestrator {
     const sets: string[] = [];
     const vals: unknown[] = [project];
     const applied: Record<string, unknown> = {};
-    const push = (col: string, v: unknown): void => { vals.push(v); sets.push(`${col}=${vals.length}`); applied[col] = v; };
+    const push = (col: string, v: unknown): void => { vals.push(v); sets.push(col + '=' + '$' + String(vals.length)); applied[col] = v; };
     if (opts.cpuLimit !== undefined && Number.isFinite(opts.cpuLimit) && opts.cpuLimit > 0 && opts.cpuLimit <= 32) push('cpu_limit', opts.cpuLimit);
     if (opts.memLimitMb !== undefined && Number.isInteger(opts.memLimitMb) && opts.memLimitMb >= 128) push('mem_limit_mb', opts.memLimitMb);
     if (opts.pidsLimit !== undefined && Number.isInteger(opts.pidsLimit) && opts.pidsLimit >= 16) push('pids_limit', opts.pidsLimit);
