@@ -103,6 +103,25 @@ export async function workspaceRoutes(fastify: FastifyInstance): Promise<void> {
   });
 
   /**
+   * POST /api/projects/:name/workspace/reset-home
+   * WS2-A2: HOME-Volume (/home/synapse) zuruecksetzen — Selbstheilung wenn
+   * sich npm/pip/cargo/rustup-Caches oder Configs im Home zerschossen haben.
+   * Stoppt den Container, entfernt das Home-Volume; naechster Start = frisch.
+   */
+  fastify.post<{
+    Params: { name: string };
+  }>('/api/projects/:name/workspace/reset-home', async (request, reply) => {
+    const orch = ensureAvailable(reply);
+    if (!orch) return;
+    try {
+      const result = await orch.resetHome(request.params.name);
+      return { success: true, project: request.params.name, ...result };
+    } catch (err) {
+      return reply.status(500).send({ success: false, error: { message: String(err) } });
+    }
+  });
+
+  /**
    * POST /api/projects/:name/workspace/commit
    * Container-FS /workspace → PG.code_files (mit Hash-Diff, parsed_at=NULL bei Aenderung).
    * Body: { ignorePatterns?: string[] }

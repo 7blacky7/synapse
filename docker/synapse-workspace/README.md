@@ -1,0 +1,88 @@
+# synapse-workspace — Docker-Image fuer die Projekt-Sandboxen
+
+Das Image hinter `workspace`/`shell(isolated:true)`. Seit Plan **WS2**
+(2026-06-12) auf **volle KI-Selbstbedienung** ausgelegt: bauen, linken,
+debuggen, testen und ausfuehren — ohne Host-Eingriff.
+
+## Bauen (Unraid / Build-Host mit Netz)
+
+```bash
+cd docker/synapse-workspace
+docker build -t synapse-workspace:latest .
+# danach: laufende Workspace-Container neu starten (workspace stop/start),
+# damit Image + neues HOME-Volume greifen.
+```
+
+Erwartete Groesse: **~6–7 GB** (bewusst akzeptiert; User-Entscheid).
+Schlankere Projekte: eigenes Image via `workspace(configure, image: ...)`.
+
+## Was drin ist (Tier 1, Quelle: Memory workspace-test-tools-roadmap)
+
+| Bereich | Inhalt |
+|---|---|
+| Toolchain | gcc/g++/make, cmake, ninja, meson, ccache (PATH-transparent), pkg-config, git |
+| Dev-Libs (linken!) | sqlite3, SDL2/_image/_ttf/_mixer, curl, OpenSSL, zlib, png/jpeg/freetype, ncurses, readline, pcre2, libpq, xml2, yaml, boost |
+| Debug/Analyse | gdb, lldb, valgrind, strace, ltrace, cppcheck, clang/clang-tidy, shellcheck, patchelf; Sanitizer via `-fsanitize=address,undefined,...` |
+| Tests | googletest (gebaut, `-lgtest`), catch2 (v2), pytest; jest/vitest pro Projekt via npm |
+| Multimedia/GL | Mesa (GL **und** Vulkan, llvmpipe Software-Rendering), OpenAL, ALSA/Pulse, ffmpeg, **Xvfb** (headless GUI/SDL), Browser-Runtime-Libs (fuer selbstinstallierte Playwright-Browser) |
+| Windows | MinGW gcc/g++ (Cross-Build), **wine64** (.exe ausfuehren), `/opt/mingw-extras` (sqlite3 + SDL2/_image als MinGW-Libs) |
+| Cross/Embedded | aarch64/armhf/riscv64-GCC (+g++), arm-none-eabi (+newlib), AVR, **qemu-user-static** (Binaries direkt ausfuehren) |
+| Runtimen | Node 20 + pnpm, Python 3 (+venv/dev), **Rust** (/opt/rust, stable + clippy/rustfmt + Targets windows-gnu/aarch64/wasm32), **Go** (/usr/local/go), OpenJDK 17 headless, Ruby, PHP-CLI |
+
+## Selbstbedienungs-Architektur (warum das funktioniert)
+
+1. **/home/synapse ist ein persistentes Volume pro Projekt** (WS2-A1,
+   `synapse-workspace-home-<project>`): pip --user, npm-Caches, cargo install,
+   rustup-Eigentoolchains, ccache, venvs, WINEPREFIX — alles ueberlebt
+   Container-Restarts. Kaputt? → `workspace(reset_home)` (WS2-A2).
+2. **Netz vorhanden** (deb/pypi/npm/github erreichbar) — Registries gehen,
+   `apt` aber NICHT (ReadonlyRootfs, kein root): Systempakete kommen NUR
+   uebers Image. Fehlt eines dauerhaft → hier ins Dockerfile + Rebuild.
+3. **ENV-Ergonomie**: `PIP_BREAK_SYSTEM_PACKAGES=1` (PEP-668-Override, in der
+   Sandbox legitim), `CARGO_HOME`/`GOPATH`/`CCACHE_DIR` → HOME-Volume,
+   ccache-Wrapper im PATH, `git safe.directory=*` (Quellen gehoeren root).
+4. **/tmp ist tmpfs mit exec** (WS2-A1) — kompilierte Wegwerf-Binaries laufen.
+
+### Kochrezepte fuer die KI
+
+```bash
+# Python: venv im HOME (persistent) ODER direkt pip install --user
+python3 -m venv ~/venvs/foo && ~/venvs/foo/bin/pip install requests
+
+# Windows-Build + AUSFUEHREN (headless):
+x86_64-w64-mingw32-gcc app.c -I/opt/mingw-extras/include \
+  -L/opt/mingw-extras/lib -lsqlite3 -lSDL2 -o app.exe
+WINEDLLOVERRIDES="mscoree,mshtml=" xvfb-run -a wine64 app.exe
+
+# ARM bauen + sofort ausfuehren (kein binfmt noetig):
+aarch64-linux-gnu-gcc -static t.c -o t && qemu-aarch64-static ./t
+
+# GL/Vulkan headless: xvfb-run -a glxinfo | head; vulkaninfo --summary
+# Rust-Sondertoolchain selbst ziehen (Image-Toolchain ist read-only):
+RUSTUP_HOME=$HOME/.rustup rustup toolchain install nightly
+```
+
+## Bewusste Auslassungen (+ Selbstbedienungs-Weg)
+
+- **.NET**: `dotnet-install.sh` ins HOME. **emscripten**: emsdk ins HOME.
+  **wasmtime**: `cargo install wasmtime-cli`. **Playwright-Browser**:
+  `npx playwright install chromium` (Systemlibs sind im Image).
+- **wine32**: nur x64-Windows-Binaries (eigene MinGW-x86_64-Builds reichen).
+- **Android (NDK/SDK/Emulator), KVM/QEMU-system, DinD**: eigenes
+  **Tier-2-Image** (Privilegien/Devices noetig) — siehe Roadmap-Memory;
+  Matrix-Idee: `synapse-workspace-android`, via configure pro Projekt setzbar.
+- **macOS**: unmoeglich ohne Apple-HW (Tier 3); WebKit-Tests via Playwright.
+
+## Versions-Pins (Layer 7/8) — Update-Anleitung
+
+| Pin | Wert | Update |
+|---|---|---|
+| sqlite-Amalgamation | 3450300 (2024er-Pfad) | sqlite.org/download → ENV `SQLITE_AMALGAMATION` + Jahres-Pfad in Layer 7 |
+| SDL2-mingw | 2.30.5 | github.com/libsdl-org/SDL releases → ENV `SDL2_MINGW_VERSION` |
+| SDL2_image-mingw | 2.8.2 | analog `SDL2_IMAGE_MINGW_VERSION` |
+| Go | 1.23.4 | go.dev/dl → ENV `GO_VERSION` |
+| Node | 20 (NodeSource) | ENV `NODE_VERSION` |
+| Rust | stable zur Buildzeit | Rebuild zieht aktuelles stable |
+
+Alle Pins + kritische Paketnamen wurden am 2026-06-12 gegen die Quellen
+verifiziert (HTTP 200). Bricht ein Download im Build: Pin pruefen.

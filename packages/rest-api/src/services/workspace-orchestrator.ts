@@ -276,10 +276,17 @@ export class WorkspaceOrchestrator {
     // Volume + Container starten.
     const volumeName = row.volumeName ?? `${this.cfg.volumeNamePrefix}-${sanitize(project)}`;
     await this.ensureVolume(volumeName);
+    // WS2-A1: Zweites Volume fuer /home/synapse — persistentes, schreibbares HOME
+    // pro Projekt. Ohne das liegt $HOME im ReadonlyRootfs und npm/pip/cargo/
+    // rustup/ccache sind funktionsunfaehig (Selbstbedienungs-Blockade).
+    // Docker copy-on-first-use uebernimmt beim ersten Mount Inhalt+Ownership
+    // (synapse 1000:1000) aus dem Image. Reset via resetHome().
+    const homeVolumeName = `${this.cfg.volumeNamePrefix}-home-${sanitize(project)}`;
+    await this.ensureVolume(homeVolumeName);
     await pool.query(`UPDATE project_workspaces SET status='warming', volume_name=$2, updated_at=NOW() WHERE project=$1`, [project, volumeName]);
 
     try {
-      const containerId = await this.createAndStartContainer(project, row, volumeName);
+      const containerId = await this.createAndStartContainer(project, row, volumeName, homeVolumeName);
       await pool.query(
         `UPDATE project_workspaces
             SET container_id=$2, status='active', last_started_at=NOW(),
@@ -322,6 +329,33 @@ export class WorkspaceOrchestrator {
     }
     console.error(`[Workspaces] stopped ${project}: ${reason}`);
     await this.markStopped(project, reason);
+  }
+
+  /**
+   * WS2-A2: Setzt das persistente HOME-Volume des Projekts zurueck (Selbstheilung).
+   * Stoppt den Container (Volume sonst in-use), entfernt
+   * <volumeNamePrefix>-home-<project>; der naechste Start legt via Docker
+   * copy-on-first-use ein frisches HOME aus dem Image an.
+   * /workspace (Projekt-Quellen) bleibt unberuehrt. Der Home-Volume-Name ist
+   * deterministisch aus dem Prefix abgeleitet — bewusst kein PG-Feld.
+   */
+  async resetHome(project: string): Promise<{ volume: string; removed: boolean }> {
+    if (!this.dockerAvailable) {
+      throw new Error('Workspace-Orchestrator nicht verfuegbar (Docker-Socket nicht erreichbar)');
+    }
+    const homeVolumeName = `${this.cfg.volumeNamePrefix}-home-${sanitize(project)}`;
+    await this.stopProject(project, 'reset-home');
+    let removed = false;
+    try {
+      await this.docker.getVolume(homeVolumeName).remove({ force: true });
+      removed = true;
+    } catch (err) {
+      // Volume existiert (noch) nicht — z.B. nie gestartet seit WS2-A1.
+      // Dann ist das Ziel (frisches Home beim naechsten Start) ohnehin erfuellt.
+      console.error(`[Workspaces] reset-home ${project}: remove uebersprungen (${(err as Error).message})`);
+    }
+    console.error(`[Workspaces] reset-home ${project}: ${homeVolumeName} removed=${removed}`);
+    return { volume: homeVolumeName, removed };
   }
 
   /**
@@ -686,7 +720,8 @@ export class WorkspaceOrchestrator {
   private async createAndStartContainer(
     project: string,
     row: { image: string; cpuLimit: number; memLimitMb: number; pidsLimit: number; tmpfsMb: number },
-    volumeName: string
+    volumeName: string,
+    homeVolumeName: string
   ): Promise<string> {
     const name = `${this.cfg.containerNamePrefix}-${sanitize(project)}`;
     // Falls Restmuell mit gleichem Namen existiert: aufraeumen.
@@ -707,8 +742,13 @@ export class WorkspaceOrchestrator {
         NetworkMode: this.cfg.network,
         AutoRemove: false,
         ReadonlyRootfs: true,
-        Tmpfs: { '/tmp': `size=${Math.max(16, Math.round(row.tmpfsMb || 256))}m,uid=1000,gid=1000` },
-        Binds: [`${volumeName}:/workspace`],
+        // exec-Flag: Docker-Tmpfs-Default ist noexec — das blockt kompilierte
+        // Binaries/venv-Skripte in /tmp (real beobachtet). Im Sandbox-Container
+        // ist exec dort kein Mehr-Risiko (/workspace ist ohnehin exec-faehig).
+        Tmpfs: { '/tmp': `size=${Math.max(16, Math.round(row.tmpfsMb || 256))}m,exec,uid=1000,gid=1000` },
+        // /workspace = Projekt-Quellen (PG-Sync), /home/synapse = persistentes
+        // schreibbares HOME (npm/pip/cargo/rustup/ccache-Selbstbedienung, WS2-A1).
+        Binds: [`${volumeName}:/workspace`, `${homeVolumeName}:/home/synapse`],
         // Resource-Caps
         NanoCpus: Math.round(row.cpuLimit * 1e9),
         Memory: row.memLimitMb * 1024 * 1024,
