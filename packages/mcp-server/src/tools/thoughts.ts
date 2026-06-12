@@ -26,21 +26,30 @@ export async function addThought(
   taskStatus?: 'todo' | 'in_progress' | 'done' | 'blocked'
 ): Promise<{
   success: boolean;
-  thought: Thought | null;
+  id: string | null;
+  tags?: string[];
+  timestamp?: Thought['timestamp'];
+  content_length?: number;
+  content_preview?: string;
   message: string;
 }> {
   try {
     const thought = await addThoughtCore(project, source, content, tags, taskId, taskStatus);
 
+    // Anti-Echo (DX-Befund 4): id + Preview statt komplettem Content-Echo.
     return {
       success: true,
-      thought,
+      id: thought.id,
+      tags: thought.tags,
+      timestamp: thought.timestamp,
+      content_length: thought.content.length,
+      content_preview: thought.content.length > 120 ? `${thought.content.slice(0, 120)}…` : thought.content,
       message: `Gedanke gespeichert von "${source}"`,
     };
   } catch (error) {
     return {
       success: false,
-      thought: null,
+      id: null,
       message: `Fehler beim Speichern des Gedankens: ${error}`,
     };
   }
@@ -57,27 +66,34 @@ export async function addThoughtsBatchTool(
 ): Promise<{
   success: boolean;
   count: number;
-  thoughts: Thought[];
+  ids: string[];
+  thoughts: Array<{ id: string; tags?: string[]; content_preview: string }>;
   warning?: string;
   message: string;
 }> {
   try {
     if (items.length === 0) {
-      return { success: false, count: 0, thoughts: [], message: 'items darf nicht leer sein' };
+      return { success: false, count: 0, ids: [], thoughts: [], message: 'items darf nicht leer sein' };
     }
     if (items.length > 50) {
-      return { success: false, count: 0, thoughts: [], message: `Batch-Limit: Max 50 Items pro Call. Erhalten: ${items.length}` };
+      return { success: false, count: 0, ids: [], thoughts: [], message: `Batch-Limit: Max 50 Items pro Call. Erhalten: ${items.length}` };
     }
     const valid = items.filter(i => typeof i.content === 'string' && i.content.length > 0);
     if (valid.length === 0) {
-      return { success: false, count: 0, thoughts: [], message: 'Keine gueltigen Items (content fehlt oder leer)' };
+      return { success: false, count: 0, ids: [], thoughts: [], message: 'Keine gueltigen Items (content fehlt oder leer)' };
     }
 
     const result = await addThoughtsBatchCore(project, source, valid, taskStatus);
+    // Anti-Echo (DX-Befund 4): ids + Previews statt komplettem Content-Echo.
     return {
       success: true,
       count: result.thoughts.length,
-      thoughts: result.thoughts,
+      ids: result.thoughts.map(t => t.id),
+      thoughts: result.thoughts.map(t => ({
+        id: t.id,
+        tags: t.tags,
+        content_preview: t.content.length > 120 ? `${t.content.slice(0, 120)}…` : t.content,
+      })),
       warning: result.warning,
       message: `${result.thoughts.length} Gedanken gespeichert von "${source}" (Batch)`,
     };
@@ -85,6 +101,7 @@ export async function addThoughtsBatchTool(
     return {
       success: false,
       count: 0,
+      ids: [],
       thoughts: [],
       message: `Fehler beim Batch-Speichern der Gedanken: ${error}`,
     };

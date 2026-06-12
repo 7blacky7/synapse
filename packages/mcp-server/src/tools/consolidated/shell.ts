@@ -197,6 +197,10 @@ export const shellTool: ConsolidatedTool = {
     }
 
     if (action === 'get') {
+      const jobId = reqStr(args, 'id');
+      if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(jobId)) {
+        return { content: [{ type: 'text', text: JSON.stringify({ success: false, error: 'invalid_job_id', message: `"${jobId}" ist keine Job-UUID${/^[0-9a-f]{16}$/i.test(jobId) ? ' (das ist eine stream_id)' : ''} — nutze das id-Feld der exec-Antwort oder shell(history).` }, null, 2) }] };
+      }
       const job = await getShellJobById(reqStr(args, 'id'));
       if (!job) {
         return {
@@ -217,6 +221,9 @@ export const shellTool: ConsolidatedTool = {
 
     if (action === 'log') {
       const id = reqStr(args, 'id');
+      if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
+        return { content: [{ type: 'text', text: JSON.stringify({ success: false, error: 'invalid_job_id', message: `"${id}" ist keine Job-UUID${/^[0-9a-f]{16}$/i.test(id) ? ' (das ist eine stream_id)' : ''} — nutze das id-Feld der exec-Antwort oder shell(history).` }, null, 2) }] };
+      }
       const query = str(args, 'query');
       // Mit query → Such-Modus; ohne query → Range-Modus.
       if (query) {

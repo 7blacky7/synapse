@@ -219,7 +219,22 @@ const memoryTool: ConsolidatedTool = {
             | undefined;
 
           const result = await listMemories(project, category);
-          return result;
+          // DX-Befund 3: Limit + names_only gegen Context-Voll-Dump.
+          const a = args as Record<string, unknown>;
+          const rawLimit = typeof a.limit === 'number' ? a.limit : 100;
+          const all = result.memories ?? [];
+          const sliced = all.slice(0, Math.max(1, rawLimit));
+          const namesOnly = a.names_only === true;
+          return {
+            success: result.success,
+            memories: namesOnly ? sliced.map((m) => m.name) : sliced,
+            total: all.length,
+            truncated: all.length > sliced.length,
+            ...(all.length > sliced.length
+              ? { tip: `${all.length} Memories insgesamt, ${sliced.length} geliefert — limit erhoehen, category filtern, names_only: true oder gezielt search(action: "memory").` }
+              : {}),
+            message: result.message,
+          };
         }
 
         case 'delete': {
