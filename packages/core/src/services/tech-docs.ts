@@ -292,7 +292,8 @@ export async function searchTechDocs(
 export async function getDocsForFile(
   filePath: string,
   agentId: string,
-  project: string
+  project: string,
+  opts?: { limit?: number; frameworks?: string[] }
 ): Promise<{
   warnings: Array<{ framework: string; version: string; docs: Array<{ section: string; type: string; content: string }> }>;
   agentCutoff: string | null;
@@ -307,7 +308,12 @@ export async function getDocsForFile(
 
   // 2. Datei-Extension → moegliche Frameworks ableiten
   const ext = filePath.split('.').pop()?.toLowerCase() || '';
-  const frameworkHints = getFrameworkHintsForExtension(ext);
+  let frameworkHints = getFrameworkHintsForExtension(ext);
+  // DX-Befund 7: optionaler expliziter Framework-Filter (z.B. nur 'fastify')
+  const requested = opts?.frameworks?.map((f) => f.toLowerCase()).filter(Boolean);
+  if (requested && requested.length > 0) {
+    frameworkHints = frameworkHints.filter((h) => requested.includes(h));
+  }
 
   if (frameworkHints.length === 0) {
     return { warnings: [], agentCutoff };
@@ -336,26 +342,40 @@ export async function getDocsForFile(
     return { warnings: [], agentCutoff };
   }
 
-  // 4. Nach Framework gruppieren
+  // 4. Nach Framework gruppieren — DX-Befund 7: Dedupe (Section + Content-
+  // Praefix) und hartes Limit pro Framework, sonst ist der Wissens-Airbag
+  // selbst ein Context-Killer (z.B. dieselbe CVE mehrfach in Varianten).
+  const perFrameworkLimit = Math.max(1, opts?.limit ?? 5);
   const grouped = new Map<string, { version: string; docs: Array<{ section: string; type: string; content: string }> }>();
+  const seenSection = new Set<string>();
+  const seenContent = new Set<string>();
 
   for (const row of result.rows) {
     const key = row.framework;
     if (!grouped.has(key)) {
       grouped.set(key, { version: row.version, docs: [] });
     }
-    grouped.get(key)!.docs.push({
+    const bucket = grouped.get(key)!;
+    if (bucket.docs.length >= perFrameworkLimit) continue;
+    const secKey = `${key}::${String(row.section).trim().toLowerCase()}`;
+    const contentKey = `${key}::${String(row.content).replace(/\s+/g, ' ').trim().toLowerCase().slice(0, 160)}`;
+    if (seenSection.has(secKey) || seenContent.has(contentKey)) continue;
+    seenSection.add(secKey);
+    seenContent.add(contentKey);
+    bucket.docs.push({
       section: row.section,
       type: row.type,
       content: row.content,
     });
   }
 
-  const warnings = Array.from(grouped.entries()).map(([framework, data]) => ({
-    framework,
-    version: data.version,
-    docs: data.docs,
-  }));
+  const warnings = Array.from(grouped.entries())
+    .filter(([, data]) => data.docs.length > 0)
+    .map(([framework, data]) => ({
+      framework,
+      version: data.version,
+      docs: data.docs,
+    }));
 
   return { warnings, agentCutoff };
 }

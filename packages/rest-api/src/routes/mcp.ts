@@ -258,7 +258,8 @@ const MCP_TOOLS = [
           ],
           description: 'Dateipfad (erforderlich fuer find_for_file). Array erlaubt fuer: find_for_file',
         },
-        limit: { type: 'number', description: 'Max. Ergebnisse (optional, Standard: 10 fuer find_for_file)' },
+        limit: { type: 'number', description: 'Max. Ergebnisse (optional, Standard: 10 fuer find_for_file; list: Standard 100)' },
+        names_only: { type: 'boolean', description: 'Nur fuer list: ausschliesslich Memory-Namen liefern (minimaler Context)' },
         codeLimit: { type: 'number', description: 'Max. Code-Chunks (optional, Standard: 10 fuer read_with_code)' },
         includeSemanticMatches: { type: 'boolean', description: 'Semantische Matches einbeziehen (optional, Standard: true fuer read_with_code)' },
         dry_run: { type: 'boolean', description: 'Preview-Modus — NUR aktiv wenn name/id ein Array ist (Batch-Delete). Bei Single-String wird sofort geloescht, dry_run wird ignoriert. Wenn die UI eine Bestaetigung erzwingen soll, ruf erst mit Array + dry_run:true auf, dann mit Array ohne dry_run.' },
@@ -381,8 +382,10 @@ const MCP_TOOLS = [
         status: {
           type: 'string',
           enum: ['todo', 'in_progress', 'done', 'blocked'],
-          description: 'Neuer Task-Status (fuer update_task)',
+          description: 'Neuer Task-Status (fuer update_task); bei action=get: optionaler Task-Filter',
         },
+        compact: { type: 'boolean', description: 'Nur fuer get: Tasks ohne description liefern (id/title/status/priority) — Context-sparend' },
+        limit: { type: 'number', description: 'Nur fuer get: max. Anzahl Tasks in der Antwort' },
       },
       required: ['action', 'project'],
     },
@@ -637,7 +640,7 @@ const MCP_TOOLS = [
           enum: ['add', 'search', 'get_for_file'],
           description: 'Aktion: add (Indexieren), search (Suchen), get_for_file (Wissens-Airbag)',
         },
-        framework: { type: 'string', description: 'Framework/Sprache (z.B. react, python, express)' },
+        framework: { type: 'string', description: 'Framework/Sprache (z.B. react, python, express); bei get_for_file: optionaler Framework-Filter' },
         version: { type: 'string', description: 'Version (z.B. 19.0, 3.12)' },
         section: { type: 'string', description: 'Abschnitt (z.B. hooks, routing, breaking-changes)' },
         content: { type: 'string', description: 'Inhalt des Docs' },
@@ -816,6 +819,7 @@ const MCP_TOOLS = [
         batch_id: { type: 'string', description: 'Batch-ID (fuer restore_batch — rollt alle Files einer Multi-File-Batch zurueck).' },
         plan_id: { type: 'string', description: 'Plan-ID (fuer commit, cancel, plan_status). String wegen BIGSERIAL.' },
         agent_id: { type: 'string', description: 'Optional: Audit-Agent fuer file_versions. Bei Web-KI-Calls ohne Wrapper wird agent_id aus User-Agent/X-Openai-Session abgeleitet (z.B. "gpt-<8charsessionid>"). DARF weggelassen oder leer sein — Server ergaenzt automatisch. AUSNAHME action=history: dort wirkt agent_id als EXAKTER Read-Filter — fuer die volle Projekt-History weglassen!' },
+        agent_filter: { type: 'string', description: 'Nur fuer history: expliziter exakter Agent-Filter (bevorzugt gegenueber agent_id-als-Filter)' },
         ops: {
           type: 'array',
           description: 'Multi-File Edit-Plan: 1..100 Operationen ueber mehrere Dateien. Aktionen: create, update, search_replace, search_replace_batch, replace_lines, insert_after, delete_lines, delete (ganze Datei), move (-> new_path), copy (-> new_path).',
@@ -924,6 +928,7 @@ const MCP_TOOLS = [
         version_id: { type: 'string', description: 'Pflicht fuer restore' },
         batch_id: { type: 'string', description: 'Pflicht fuer restore_batch' },
         agent_id: { type: 'string', description: 'Optionale Agent-ID (Audit-Trail). AUSNAHME action=history: wirkt als exakter Read-Filter — fuer volle Projekt-History weglassen.' },
+        agent_filter: { type: 'string', description: 'Nur fuer history: expliziter exakter Agent-Filter (bevorzugt gegenueber agent_id-als-Filter)' },
         open_for_coedit: { type: 'boolean', description: 'plan: ob Co-Edits erlaubt sind (default true)' },
         auto_commit: { type: 'boolean', description: 'plan + commit in einem Call (default false). Versionierung bleibt aktiv.' },
         agent_note: { type: 'string', description: '(optional): KI-eigene Beobachtungen pro Batch (zusaetzlich zum User-reason).' },
@@ -1761,12 +1766,23 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
         }
         case 'list': {
           const category = str(args, 'category') as 'documentation' | 'note' | 'architecture' | 'decision' | 'rules' | 'other' | undefined;
-          const memories = await listMemories(project, category);
+          const all = await listMemories(project, category);
+          // DX-Befund 3: ohne Limit war list bei 200+ Memories ein Context-Killer.
+          const listLimit = Math.max(1, num(args, 'limit') ?? 100);
+          const sliced = all.slice(0, listLimit);
+          const namesOnly = args.names_only === true;
           return {
-            memories: memories.map(m => ({
-              name: m.name, category: m.category, tags: m.tags,
-              sizeChars: m.content.length, updatedAt: m.updatedAt,
-            })),
+            memories: namesOnly
+              ? sliced.map(m => m.name)
+              : sliced.map(m => ({
+                  name: m.name, category: m.category, tags: m.tags,
+                  sizeChars: m.content.length, updatedAt: m.updatedAt,
+                })),
+            total: all.length,
+            truncated: all.length > sliced.length,
+            ...(all.length > sliced.length
+              ? { tip: `${all.length} Memories insgesamt, ${sliced.length} geliefert — limit erhoehen, category filtern, names_only: true nutzen oder gezielt search(action: "memory").` }
+              : {}),
           };
         }
         case 'delete': {
@@ -1843,15 +1859,27 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
             str(args, 'task_id'),
             str(args, 'task_status') as Parameters<typeof addThought>[5]
           );
+          // Anti-Echo (DX-Befund 4): nicht den kompletten Content zurueckspielen,
+          // den der Agent gerade selbst geschrieben hat — id + Preview reichen.
+          const t = result as unknown as { id: string; tags?: string[]; timestamp?: string; content: string };
+          const trimmed = {
+            success: true,
+            id: t.id,
+            tags: t.tags,
+            timestamp: t.timestamp,
+            content_length: t.content.length,
+            content_preview: t.content.length > 120 ? `${t.content.slice(0, 120)}…` : t.content,
+            message: `Gedanke gespeichert von "${source}"`,
+          };
           if (args.trigger_respawn === true) {
             const { maybeTriggerRespawn } = await import('@synapse/core');
             const decision = await maybeTriggerRespawn(project, source);
             return {
-              ...(result as unknown as Record<string, unknown>),
+              ...trimmed,
               respawn: { triggered: decision.triggered, message: decision.message },
             };
           }
-          return result;
+          return trimmed;
         }
         case 'add_batch': {
           const project = reqStr(args, 'project');
@@ -1884,7 +1912,13 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
           return {
             success: true,
             count: result.thoughts.length,
-            thoughts: result.thoughts,
+            ids: result.thoughts.map(t => t.id),
+            // Anti-Echo (DX-Befund 4): nur Previews statt vollem Content
+            thoughts: result.thoughts.map(t => ({
+              id: t.id,
+              tags: t.tags,
+              content_preview: t.content.length > 120 ? `${t.content.slice(0, 120)}…` : t.content,
+            })),
             warning: result.warning,
             message: `${result.thoughts.length} Gedanken gespeichert von "${source}" (Batch)`,
           };
@@ -1956,8 +1990,31 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
     case 'plan': {
       const project = reqStr(args, 'project');
       switch (action) {
-        case 'get':
-          return (await getPlan(project)) || { message: 'Kein Plan gefunden' };
+        case 'get': {
+          const plan = await getPlan(project);
+          if (!plan) return { message: 'Kein Plan gefunden' };
+          // DX-Befund 5: Vollabwurf vermeiden — status-Filter, compact, limit.
+          const p = plan as unknown as Record<string, unknown> & { tasks?: Array<Record<string, unknown>> };
+          const allTasks = Array.isArray(p.tasks) ? p.tasks : [];
+          const statusFilter = str(args, 'status');
+          const filtered = statusFilter ? allTasks.filter(t => t.status === statusFilter) : allTasks;
+          const taskLimit = num(args, 'limit');
+          const limited = taskLimit && taskLimit > 0 ? filtered.slice(0, taskLimit) : filtered;
+          const compact = args.compact === true;
+          const tasks = compact
+            ? limited.map(t => ({ id: t.id, title: t.title, status: t.status, priority: t.priority }))
+            : limited;
+          return {
+            ...p,
+            tasks,
+            tasks_total: allTasks.length,
+            tasks_returned: tasks.length,
+            ...(statusFilter ? { tasks_status_filter: statusFilter } : {}),
+            ...(compact || tasks.length < allTasks.length
+              ? { tip: 'Task-Liste gefiltert/kompakt — volle Descriptions via plan(get) ohne compact/status/limit.' }
+              : {}),
+          };
+        }
         case 'update':
           return await updatePlan(project, {
             name: str(args, 'name'),
@@ -2720,7 +2777,7 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
           const filePaths = strArray(args, 'file_path');
           if (filePaths && filePaths.length > 1) {
             const settled = await Promise.allSettled(
-              filePaths.map(fp => getDocsForFile(fp, agentId, project))
+              filePaths.map(fp => getDocsForFile(fp, agentId, project, { limit: num(args, 'limit'), frameworks: str(args, 'framework') ? [str(args, 'framework') as string] : undefined }))
             );
             const results: unknown[] = [];
             const errors: string[] = [];
@@ -3191,8 +3248,11 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
       }
       if (action === 'history') {
         const limit = num(args, 'limit') ?? 50;
+        // DX-Befund 1: agent_filter ist der explizite Filter; agent_id bleibt
+        // aus Kompatibilitaet wirksam, aber 0-Treffer liefern jetzt einen tip.
+        const agentFilter = str(args, 'agent_filter') ?? str(args, 'agent_id') ?? undefined;
         const entries = await listFileHistory(project, {
-          agent_id: str(args, 'agent_id') ?? undefined, // READ-FILTER: kein resolveAgentId
+          agent_id: agentFilter, // READ-FILTER: kein resolveAgentId
           file_path: str(args, 'file_path'),
           since: str(args, 'since'),
           limit,
@@ -3207,7 +3267,9 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
           entries,
           tip: entries.length > 0
             ? 'Eintraege chronologisch (neueste zuerst). reason = "Warum" der Aenderung. Voller Inhalt: files(action: "get_version", version_id). feature_tag und parent_version_id zeigen Feature-Group bzw. Korrektur-Chain.'
-            : 'Keine Eintraege fuer diese Filter.',
+            : (agentFilter
+                ? `0 Treffer MIT Agent-Filter "${agentFilter}" — agent_id/agent_filter wirken bei history als EXAKTER Filter. Fuer die volle Projekt-History beide weglassen.`
+                : 'Keine Eintraege fuer diese Filter.'),
         };
       }
 
@@ -3415,6 +3477,10 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
       }
 
       if (shellAction === 'get') {
+        const jobId = reqStr(args, 'id');
+        if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(jobId)) {
+          return { success: false, error: 'invalid_job_id', message: `"${jobId}" ist keine Job-UUID${/^[0-9a-f]{16}$/i.test(jobId) ? ' (das ist eine stream_id)' : ''} — nutze das id-Feld der exec-Antwort oder shell(history).` };
+        }
         const job = await getShellJobById(reqStr(args, 'id'));
         if (!job) {
           return { success: false, error: 'unknown_job', message: `Job ${reqStr(args, 'id')} nicht gefunden` };
@@ -3424,6 +3490,9 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
 
       if (shellAction === 'log') {
         const id = reqStr(args, 'id');
+        if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
+          return { success: false, error: 'invalid_job_id', message: `"${id}" ist keine Job-UUID${/^[0-9a-f]{16}$/i.test(id) ? ' (das ist eine stream_id)' : ''} — nutze das id-Feld der exec-Antwort oder shell(history).` };
+        }
         const query = str(args, 'query');
         if (query) {
           const result = await searchShellJobLog(id, query, {
@@ -3536,6 +3605,7 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
       return {
         success: !result.error,
         executed_via: 'local',
+        id, // Job-UUID fuer shell(get)/shell(log) — DX-Befund 2
         status: result.status,
         stream_id: result.stream_id,
         exit_code: result.exit_code,

@@ -346,8 +346,9 @@ export const filesTool: ConsolidatedTool = {
     if (action === 'history') {
       const project = reqStr(args, 'project');
       const limit = num(args, 'limit') ?? 50;
+      const agentFilter = str(args, 'agent_filter') ?? str(args, 'agent_id') ?? undefined;
       const entries = await listFileHistory(project, {
-        agent_id: str(args, 'agent_id') ?? undefined, // READ-FILTER: kein resolveAgentId
+        agent_id: agentFilter, // READ-FILTER: kein resolveAgentId (DX-Befund 1)
         file_path: str(args, 'file_path'),
         since: str(args, 'since'),
         limit,
@@ -359,6 +360,9 @@ export const filesTool: ConsolidatedTool = {
         success: true,
         project,
         count: entries.length,
+        ...(entries.length === 0 && agentFilter
+          ? { tip: `0 Treffer MIT Agent-Filter "${agentFilter}" — agent_id/agent_filter wirken bei history als EXAKTER Filter. Fuer die volle Projekt-History beide weglassen.` }
+          : {}),
         entries,
         tip: entries.length > 0
           ? 'Eintraege chronologisch (neueste zuerst). reason = "Warum" der Aenderung. Voller Inhalt einer Version: files(action: "get_version", version_id). feature_tag und parent_version_id zeigen Feature-Group bzw. Korrektur-Chain.'

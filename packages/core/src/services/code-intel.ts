@@ -231,7 +231,7 @@ export async function getProjectTree(
   }
 
   lines.push(`---`);
-  lines.push(`${filesResult.rows.length} Dateien | Root: ${projectRoot}`);
+  lines.push(`${filesResult.rows.length} Dateien | Projekt: ${project}`);
 
   return lines.join('\n');
 }
@@ -353,7 +353,11 @@ export async function getVariables(
   }
 
   const where = conditions.join(' AND ');
-  const valueCol = withValues ? ', cs.value' : '';
+  // DX-Befund 8b: value serverseitig kuerzen — grosse Konstanten (Template-
+  // Literals, const-Objekte) sprengen sonst ungekuerzt den Caller-Context.
+  const valueCol = withValues
+    ? `, CASE WHEN length(cs.value) > 500 THEN left(cs.value, 500) || ' …[value gekuerzt, ' || length(cs.value) || ' Zeichen gesamt]' ELSE cs.value END AS value`
+    : '';
 
   const result = await pool.query(
     `SELECT

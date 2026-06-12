@@ -105,7 +105,26 @@ export const planTool: ConsolidatedTool = {
     switch (action) {
       case 'get': {
         const result = await getProjectPlan(project);
-        return result;
+        if (!result) return result;
+        // DX-Befund 5: status-Filter, compact, limit gegen Vollabwurf.
+        const a = args as Record<string, unknown>;
+        const p = result as unknown as Record<string, unknown> & { tasks?: Array<Record<string, unknown>> };
+        const allTasks = Array.isArray(p.tasks) ? p.tasks : [];
+        const statusFilter = typeof a.status === 'string' ? a.status : undefined;
+        const filtered = statusFilter ? allTasks.filter((t) => t.status === statusFilter) : allTasks;
+        const taskLimit = typeof a.limit === 'number' && a.limit > 0 ? a.limit : undefined;
+        const limited = taskLimit ? filtered.slice(0, taskLimit) : filtered;
+        const compact = a.compact === true;
+        const tasks = compact
+          ? limited.map((t) => ({ id: t.id, title: t.title, status: t.status, priority: t.priority }))
+          : limited;
+        return {
+          ...p,
+          tasks,
+          tasks_total: allTasks.length,
+          tasks_returned: tasks.length,
+          ...(statusFilter ? { tasks_status_filter: statusFilter } : {}),
+        };
       }
 
       case 'update': {
