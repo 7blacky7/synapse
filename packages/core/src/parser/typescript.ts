@@ -902,6 +902,45 @@ function extractFlow(
     scopeStack.pop();
   }
 
+  // DX-Befund 8a: Steigt in Funktions-Werte ab, die NICHT als Deklaration
+  // dastehen: const f = () => {...}, obj.handler = async () => {...} und
+  // Funktions-Properties in Objekt-Literalen (handler: async (args) => {...}).
+  // Objekt-/Array-Literale werden bis objDepth 3 verschachtelt durchsucht,
+  // damit Tool-Definitionen wie { handler: ..., hooks: { onError: ... } }
+  // vollstaendig indexiert werden. Scope-Name: baseName.propName / baseName[i].
+  function descendIntoFunctionInitializer(
+    baseName: string,
+    value: ts.Expression,
+    objDepth = 0,
+  ): void {
+    if (ts.isArrowFunction(value) || ts.isFunctionExpression(value)) {
+      enterFunctionScope(baseName, objDepth > 0 ? 'method' : 'function', value.body);
+      return;
+    }
+    if (ts.isParenthesizedExpression(value) || ts.isAsExpression(value) || ts.isSatisfiesExpression(value)) {
+      descendIntoFunctionInitializer(baseName, value.expression, objDepth);
+      return;
+    }
+    if (objDepth >= 3) return;
+    if (ts.isObjectLiteralExpression(value)) {
+      for (const prop of value.properties) {
+        if (ts.isPropertyAssignment(prop)) {
+          const propName = prop.name.getText().replace(/['"`]/g, '').slice(0, 80);
+          descendIntoFunctionInitializer(`${baseName}.${propName}`, prop.initializer, objDepth + 1);
+        } else if (ts.isMethodDeclaration(prop)) {
+          const propName = prop.name.getText().slice(0, 80);
+          enterFunctionScope(`${baseName}.${propName}`, 'method', prop.body);
+        }
+      }
+      return;
+    }
+    if (ts.isArrayLiteralExpression(value)) {
+      value.elements.forEach((el, i) => {
+        descendIntoFunctionInitializer(`${baseName}[${i}]`, el, objDepth + 1);
+      });
+    }
+  }
+
   // Kern: ein einzelnes Statement verarbeiten.
   function processStatement(
     node: ts.Node,
@@ -921,6 +960,10 @@ function extractFlow(
             ? `${node.name?.getText() ?? 'anon'}.constructor`
             : `${node.name?.getText() ?? 'anon'}.${member.name.getText()}`;
           enterFunctionScope(mName, 'method', member.body);
+        } else if (ts.isPropertyDeclaration(member) && member.initializer) {
+          // DX-Befund 8a: Klassen-Property-Arrows (handler = async () => {...}).
+          const pName = `${node.name?.getText() ?? 'anon'}.${member.name.getText()}`;
+          descendIntoFunctionInitializer(pName, member.initializer);
         }
       }
       return;
@@ -1021,6 +1064,8 @@ function extractFlow(
           is_awaited: awaited,
         });
         if (init) collectCallsInExpression(init, st.temp_id, awaited);
+        // DX-Befund 8a: Funktions-Initializer als eigene Scopes traversieren.
+        if (init) descendIntoFunctionInitializer(assignedTo, init);
       }
       return;
     }
@@ -1039,6 +1084,8 @@ function extractFlow(
           is_awaited: rhs.awaited,
         });
         collectCallsInExpression(rhs.inner, st.temp_id, rhs.awaited);
+        // DX-Befund 8a: obj.handler = async () => {...} als Scope erfassen.
+        descendIntoFunctionInitializer(expr.left.getText().slice(0, 120), rhs.inner);
         return;
       }
       // await expr;
@@ -1070,6 +1117,14 @@ function extractFlow(
       // generischer Ausdruck
       const st = emit(node, 'expression', depth, parentTempId);
       collectCallsInExpression(expr, st.temp_id, false);
+      return;
+    }
+
+    // --- export default { ... } / export default () => {...} ---
+    if (ts.isExportAssignment(node)) {
+      const st = emit(node, 'expression', depth, parentTempId);
+      collectCallsInExpression(node.expression, st.temp_id, false);
+      descendIntoFunctionInitializer('default', node.expression);
       return;
     }
 
