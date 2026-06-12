@@ -969,7 +969,7 @@ VALUES
   (NULL, 'app', 'synapse-workspace:latest', 1.0, 1024, 256, NULL,
    'Client-/App-Instanz — spricht andere Instanzen ueber proxynet-DNS an, wie ein eigenes Geraet im Netz.'),
   (NULL, 'wine-qa', 'synapse-workspace:latest', 1.0, 1024, 1024, NULL,
-   'Windows-QA: MinGW-Builds mit xvfb-run wine64 app.exe testen (WINEPREFIX im persistenten HOME).'),
+   'Windows-QA: MinGW-Builds mit wine app.exe testen (Launcher heisst wine, nicht wine64; GUI/SDL headless via xvfb-run; WINEPREFIX im persistenten HOME).'),
   (NULL, 'db-postgres', 'synapse-workspace:latest', 1.0, 1024, 256,
    $wsr1$export PGDATA="$HOME/pgdata"; if [ ! -s "$PGDATA/PG_VERSION" ]; then initdb -D "$PGDATA" -U synapse --auth=trust >/dev/null; { echo "listen_addresses='*'"; echo "unix_socket_directories='/tmp'"; } >> "$PGDATA/postgresql.conf"; echo "host all all 0.0.0.0/0 trust" >> "$PGDATA/pg_hba.conf"; fi; pg_ctl -D "$PGDATA" status >/dev/null 2>&1 || pg_ctl -D "$PGDATA" -l "$HOME/pg.log" -w start$wsr1$,
    'PostgreSQL-15-Instanz: Daten in $HOME/pgdata (reset_home = DB-Reset), trust-Auth im Sandbox-Netz, erreichbar via synapse-ws-<projekt>-<name>:5432; lokal psql -h /tmp.'),

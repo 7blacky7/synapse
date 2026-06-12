@@ -25,7 +25,7 @@ Schlankere Projekte: eigenes Image via `workspace(configure, image: ...)`.
 | Debug/Analyse | gdb, lldb, valgrind, strace, ltrace, cppcheck, clang/clang-tidy, **lld** (ld.lld/lld-link), shellcheck, patchelf; Sanitizer via `-fsanitize=address,undefined,...` |
 | Tests | googletest (gebaut, `-lgtest`), catch2 (v2), pytest; jest/vitest pro Projekt via npm |
 | Multimedia/GL | Mesa (GL **und** Vulkan, llvmpipe Software-Rendering), OpenAL, ALSA/Pulse, ffmpeg, **Xvfb** (headless GUI/SDL), Browser-Runtime-Libs (fuer selbstinstallierte Playwright-Browser) |
-| Windows | MinGW gcc/g++ (Cross-Build), **wine64** (.exe ausfuehren), `/opt/mingw-extras` (sqlite3 + SDL2/_image als MinGW-Libs) |
+| Windows | MinGW gcc/g++ (Cross-Build), **wine** 8.0 (.exe ausfuehren; Launcher heisst `wine`, nicht `wine64`), `/opt/mingw-extras` (sqlite3 + SDL2/_image als MinGW-Libs) |
 | Cross/Embedded | aarch64/armhf/riscv64-GCC (+g++), arm-none-eabi (+newlib), AVR, **qemu-user-static** (Binaries direkt ausfuehren) |
 | System-Emulation/Boot | **qemu-system** x86_64 + ARM64 (TCG, kein KVM noetig), qemu-utils, **OVMF/AAVMF** (UEFI-Firmware), **grub-mkrescue** (grub-pc-bin + grub-efi-amd64-bin), xorriso, mtools — Boot-ISOs bauen UND booten |
 | Services (WS4-Rollen) | **PostgreSQL 15** (Server-Binaries, PATH enthaelt /usr/lib/postgresql/15/bin), **redis-server**, **uv** (/usr/local/bin) — laufen als User synapse, Daten im HOME-Volume, Start via Rollen-`init_command` |
@@ -54,7 +54,7 @@ python3 -m venv ~/venvs/foo && ~/venvs/foo/bin/pip install requests
 # Windows-Build + AUSFUEHREN (headless):
 x86_64-w64-mingw32-gcc app.c -I/opt/mingw-extras/include \
   -L/opt/mingw-extras/lib -lsqlite3 -lSDL2 -o app.exe
-WINEDLLOVERRIDES="mscoree,mshtml=" xvfb-run -a wine64 app.exe
+WINEDLLOVERRIDES="mscoree,mshtml=" xvfb-run -a wine app.exe
 
 # ARM bauen + sofort ausfuehren (kein binfmt noetig):
 aarch64-linux-gnu-gcc -static t.c -o t && qemu-aarch64-static ./t
@@ -144,7 +144,7 @@ Kochrezept "3 Geraete" (db ↔ app ↔ wine-qa):
    # app erreicht die DB: postgres://synapse@synapse-ws-<projekt>-db-1:5432
 3. workspace(exec, project, name:"qa", role:"wine-qa",
      command:"curl -s http://synapse-ws-<projekt>-app:3000/health")
-   # + Windows-Client: WINEDLLOVERRIDES="mscoree,mshtml=" xvfb-run -a wine64 client.exe
+   # + Windows-Client: WINEDLLOVERRIDES="mscoree,mshtml=" xvfb-run -a wine client.exe
 4. Zweite DB? name:"db-2", role:"db-postgres" — gleiche Rolle, neue Instanz.
    Rollen sind Templates, keine Slots.
 ```

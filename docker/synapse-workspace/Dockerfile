@@ -151,7 +151,7 @@ RUN apt-get update \
 # Layer 6 — Wine (x64): Windows-.exe AUSFUEHREN (MinGW-Builds testen).
 # Nur wine64 — bookworm-multiarch/wine32 bewusst weggelassen (x64 reicht
 # fuer eigene MinGW-x86_64-Builds). WINEPREFIX entsteht beim ersten Lauf
-# in $HOME/.wine (persistentes HOME-Volume). Headless: xvfb-run wine64 app.exe
+# in $HOME/.wine (persistentes HOME-Volume). Headless: xvfb-run wine app.exe
 # bzw. WINEDLLOVERRIDES="mscoree,mshtml=" gegen Gecko/Mono-Dialoge.
 # ---------------------------------------------------------------------------
 RUN apt-get update \
@@ -229,6 +229,15 @@ RUN apt-get update \
  && curl -fsSL https://astral.sh/uv/install.sh \
       | env UV_INSTALL_DIR=/usr/local/bin INSTALLER_NO_MODIFY_PATH=1 sh \
  && uv --version
+
+# ---------------------------------------------------------------------------
+# Layer 8c — Nachzuegler (bewusst am Ende statt in Layer 4: so bleibt der
+# Docker-Cache der dicken Layer beim Rebuild erhalten). xauth wird von
+# xvfb-run zwingend gebraucht (WS4-5-Befund: "xauth command not found").
+# ---------------------------------------------------------------------------
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends xauth \
+ && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # ---------------------------------------------------------------------------
 # Layer 9 — User, ENV-Ergonomie, Selbstbedienungs-Defaults.
