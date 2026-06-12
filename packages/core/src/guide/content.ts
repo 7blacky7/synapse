@@ -228,10 +228,11 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
       'Wo wird X verwendet: references.',
       'Interfaces/Klassen/Enums: symbols.',
       'Datei-Content lesen: file (mit Zeilenbereich bei grossen Files!).',
-      'Code durchsuchen: search (PG-Volltext + Qdrant-Fallback).',
+      'Code durchsuchen: search (lexikalisch ODER semantic: true) / search_batch (mehrere semantische Queries in einem Call).',
+      'Ablauf verstehen: flow (Funktion Schritt fuer Schritt), statements (top_level_only fuer Modul-Seiteneffekte), calls (wer ruft X).',
     ].join(' '),
     when_not_to_use: [
-      'Konzeptuelle Fragen ("wie funktioniert X?") — nutze search(action: "code") (semantisch).',
+      'Konzeptuelle Fragen ("wie funktioniert X?") — bleib im Tool: search mit semantic: true, oder search_batch fuer mehrere Fragen in einem Call.',
       'Nicht-Code-Dateien wie Images/Binaerdateien.',
     ].join(' '),
     param_tips: [
@@ -270,7 +271,7 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
         description: 'Variablen/Konstanten einer Datei oder nach Name.',
         params: 'file_path, name, with_values',
         example: 'code_intel({ action: "variables", project: "synapse", file_path: "packages/core/src/config.ts", with_values: true })',
-        tips: 'with_values: true fuer Config-/Konstanten-Inspektion.',
+        tips: 'with_values: true fuer Config-/Konstanten-Inspektion. ACHTUNG: value kommt UNGEKUERZT — grosse Konstanten (Template-Literals, const-Objekte) bedeuten mehrere KB pro Treffer. Vorher mit name/file_path eng filtern.',
       },
       symbols: {
         description: 'Klassen, Interfaces, Enums, Types, Tables (fuer SQL).',
@@ -285,14 +286,20 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
         tips: 'Perfekt fuer Impact-Analyse: "wenn ich das aendere, was muss ich nachziehen?"',
       },
       search: {
-        description: 'PG-Volltextsuche auf Code mit Qdrant-Fallback.',
-        params: 'query (req), file_type, limit',
-        example: 'code_intel({ action: "search", project: "synapse", query: "enqueueShellJob", file_type: "ts", limit: 5 })',
-        tips: 'Fuer fuzzy/konzeptuelle Suche besser search(action: "code") — das ist semantisch (Embeddings).',
+        description: 'Code-Suche mit ZWEI Modi: Default = PG-Volltext (lexikalisch, exakte Identifier, <b>-Headlines), semantic: true = Qdrant-Embeddings (konzeptuell/fuzzy, ~30-Zeilen-Chunks). Antwort enthaelt mode ("fulltext"|"semantic") zur Selbstkontrolle.',
+        params: 'query (req), semantic (bool, Default false), file_type (Extension ohne Punkt), limit',
+        example: 'code_intel({ action: "search", project: "synapse", query: "DNS-Name fuer Container generieren", semantic: true, limit: 3 })',
+        tips: 'Faustregel: Identifier/exakter String → Default (fulltext). Konzept/"wo passiert X" → semantic: true. Semantic-Treffer sind grosse Chunks — limit 3-5 setzen, mehr sprengt Context.',
+      },
+      search_batch: {
+        description: 'Mehrere SEMANTISCHE Queries in EINEM Call — Embeddings gebatched (1 API-Roundtrip statt N), parallel gegen Qdrant. Antwort: results[] mit { query, count, hits } pro Query.',
+        params: 'queries (req, Array 1..10), limit_per_query (Default 5)',
+        example: 'code_intel({ action: "search_batch", project: "synapse", queries: ["wo wird der plan gespeichert", "wie laeuft das embedding"], limit_per_query: 3 })',
+        tips: 'DER Discovery-Einstieg: beim Erkunden eines unbekannten Bereichs 3-5 Aspekte gleichzeitig abklopfen statt 5 einzelne search-Calls. limit_per_query: 3 reicht fast immer.',
       },
       file: {
         description: 'Datei-Inhalt lesen. Liefert immer total_lines und returned_range: { from, to, eof }.',
-        params: 'file_path (req); optional: from_line (1-basiert, Standard 1), to_line (inklusiv, Standard Ende), truncate_long_lines (Zeilen > N kuerzen + Marker, 0 = aus)',
+        params: 'file_path (req; path wird als Alias akzeptiert); optional: from_line (1-basiert, Standard 1), to_line (inklusiv, Standard Ende), truncate_long_lines (Zeilen > N kuerzen + Marker, 0 = aus)',
         example: 'code_intel({ action: "file", project: "synapse", file_path: "README.md", from_line: 1, to_line: 100 })',
         tips: [
           'Auto-Reduce: Range > 80k Zeichen wird automatisch reduziert — returned_range.eof=false zeigt das an.',
@@ -301,7 +308,36 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
           'Sehr lange Zeilen: truncate_long_lines=200 setzen.',
         ].join(' '),
       },
+      statements: {
+        description: 'Ablauf-Ebene: geordnete Statements (depth, parent_statement_id, condition_text, is_awaited) eines Scopes oder einer Datei. ~18 Felder pro Statement — NUR gefiltert verwenden!',
+        params: 'file_path und/oder scope (Funktionsname); top_level_only (bool) fuer Modul-Ebene',
+        example: 'code_intel({ action: "statements", project: "synapse", file_path: "packages/core/src/config.ts", top_level_only: true })',
+        tips: 'top_level_only: true ist der saubere Weg fuer "welche Seiteneffekte hat das Modul beim Import" (Imports, Top-Level-Calls, Modul-Variablen). NIEMALS ohne file_path/scope projektweit aufrufen.',
+      },
+      calls: {
+        description: 'Aufruf-Kanten (wer ruft was; call_kind: function|method|await|new, confidence). Killer-Use-Case: callee gesetzt = "wer ruft Funktion X" projektweit in einem Call.',
+        params: 'callee (Funktions-/Methodenname) und/oder file_path',
+        example: 'code_intel({ action: "calls", project: "synapse", callee: "listFileHistory" })',
+        tips: 'Nur file_path ohne callee liefert ALLE Kanten der Datei inkl. Trivial-Calls (Math.min, push) — auf grossen Dateien Hunderte. Fuer Impact-Analyse: calls(callee) + references(name) kombinieren; functions(name) liefert usage_count als Soll-Gegenprobe.',
+      },
+      flow: {
+        description: 'Execution-Flow eines Scopes in Ausfuehrungsreihenfolge. Ohne scope: Top-Level-Ausfuehrung der Datei.',
+        params: 'file_path (req), scope (Funktionsname, empfohlen)',
+        example: 'code_intel({ action: "flow", project: "synapse", file_path: "packages/core/src/services/file-versions.ts", scope: "restoreFileVersion" })',
+        tips: 'Beantwortet "was macht diese Funktion Schritt fuer Schritt" OHNE den Code zu lesen — oft billiger als file() bei langen Funktionen.',
+      },
+      entrypoints: {
+        description: 'Projektweite Top-Level-Ausfuehrungspunkte. ACHTUNG: aktuell UNGEFILTERT (kein path/limit-Param) und verrauscht (zaehlt auch export interface/type als Entrypoint) — auf grossen Projekten 200+ Eintraege mit vollem Text.',
+        params: '— (keine Filter verfuegbar)',
+        example: 'code_intel({ action: "entrypoints", project: "kleines-projekt" })',
+        tips: 'Auf grossen Projekten MEIDEN. Besser: statements mit top_level_only: true + file_path auf die vermutete Einstiegsdatei — gleiche Info, gefiltert.',
+      },
     },
+    workflow_examples: [
+      'Workflow Discovery (unbekannter Bereich): 1) tree(path, depth: 1) fuer Struktur → 2) search_batch mit 3-5 Aspekt-Queries (limit_per_query: 3) fuer Kandidaten → 3) functions(file_path) fuer Signaturen statt Code → 4) file(from_line/to_line) NUR fuer die wirklich relevanten Zeilen.',
+      'Workflow Impact-Analyse vor Refactoring: 1) references(name: "X") fuer alle Verwendungsstellen mit Kontext → 2) calls(callee: "X") fuer Aufruf-Kanten mit call_kind → 3) functions(name: "X") und usage_count als Gegenprobe (weicht calls ab → Index-Luecke, references glauben).',
+      'Workflow "Was macht Funktion Y?": 1) flow(file_path, scope: "Y") fuer die Schritte in Reihenfolge → 2) nur bei Bedarf file() auf die exakte Zeilen-Range aus dem flow-Ergebnis.',
+    ],
   },
 
   // -------------------------------------------------------------------------
@@ -605,6 +641,16 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
         params: 'query (req), framework, type, source, project, limit, scope (project|global|all)',
         example: 'search({ action: "tech_docs", query: "hooks lifecycle", framework: "react", project: "synapse" })',
         tips: 'scope: "global" fuer allgemeine Docs, "project" fuer kuratierte Projekt-Docs.',
+      },
+      proposals: {
+        description: 'Proposals semantisch durchsuchen (Beschreibung + Inhalt).',
+        params: 'query (req), project, limit',
+        example: 'search({ action: "proposals", project: "synapse", query: "workspace routing", limit: 3 })',
+      },
+      media: {
+        description: 'Indexierte Bilder/Videos semantisch durchsuchen (setzt admin(index_media) voraus).',
+        params: 'query (req), project, media_type (image|video), limit',
+        example: 'search({ action: "media", project: "synapse", query: "dashboard screenshot", media_type: "image" })',
       },
     },
   },
@@ -1031,6 +1077,16 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
         example: 'project({ action: "complete_setup", project: "synapse", phase: "post-indexing" })',
         tips: 'Nur nach init aufrufen. Zwei Phasen: initial → dann post-indexing.',
       },
+      enable: {
+        description: 'Projekt in PG aktivieren (Source of Truth) — Parser-Worker und FileWatcher-Daemon folgen.',
+        params: 'project (req)',
+        example: 'project({ action: "enable", project: "synapse" })',
+      },
+      disable: {
+        description: 'Projekt deaktivieren — Indexierung/Sync pausieren ohne Daten zu loeschen (Gegenstueck: enable).',
+        params: 'project (req)',
+        example: 'project({ action: "disable", project: "altes-projekt" })',
+      },
     },
   },
 
@@ -1099,6 +1155,7 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
       list: { description: 'Alle aktiven Agenten anzeigen.' },
       inbox_send: { description: 'Nachricht in Spezialisten-Inbox legen (offline-faehig).' },
       inbox_check: { description: 'Eigene Inbox lesen.' },
+      unregister_batch: { description: 'Mehrere Agenten in einem Call abmelden.', params: 'ids (req, Array), project' },
     },
     anti_patterns: [
       'send ohne vorheriges register — Sender-ID nicht im System bekannt.',
@@ -1227,7 +1284,7 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
   // workspace — Docker-Sandbox-Lifecycle (pro Projekt, bis zu 3 benannte)
   // -------------------------------------------------------------------------
   workspace: {
-    summary: 'Lifecycle der pro-Projekt Docker-Sandbox-Container auf der synapse-api. NUR Lifecycle (list/start/stop/pin/unpin/configure/materialize) — fuer Shell-Ausfuehrung IMMER shell (Auto-Routing bzw. isolated:true). Bis zu 3 benannte Workspaces pro Projekt (Param name, Default "main"); /workspace (Source, read-only) ist geteilt, Home-Volume pro Workspace. Container entstehen LAZY beim ersten Bedarf — nichts manuell vorstarten. Workspaces sind reine TEST-Sandboxen.',
+    summary: 'Lifecycle der pro-Projekt Docker-Sandbox-Container auf der synapse-api. NUR Lifecycle (list/start/stop/pin/unpin/configure/materialize/reset_home) — fuer Shell-Ausfuehrung IMMER shell (Auto-Routing bzw. isolated:true). Bis zu 3 benannte Workspaces pro Projekt (Param name, Default "main"); /workspace (Source, read-only) ist geteilt, Home-Volume pro Workspace. Container entstehen LAZY beim ersten Bedarf — nichts manuell vorstarten. Workspaces sind reine TEST-Sandboxen.',
     when_to_use: 'Container-Status pruefen (list). Ressourcen anpassen (configure: cpu/mem/pids/tmpfs/image — greift beim naechsten Start). Vor Idle-Eviction schuetzen (pin). Kaputtes Home heilen (reset_home). Integrationstests zwischen 2-3 Containern via proxynet-DNS http://synapse-ws-<projekt>[-<name>]:<port>.',
     when_not_to_use: 'Shell-Kommandos ausfuehren — nutze shell (die exec-Action hier ist deprecated). Dateien schreiben — nutze files (Auto-Sync in den Container). Dauerbetrieb — Idle-Stop nach 10 Min und LRU-Eviction sind gewollt.',
     param_tips: 'name: Ziel-Workspace (Default main; main behaelt den DNS-Namen ohne Suffix). configure wirkt erst beim naechsten Container-Start. Jede Antwort liefert dns_name — IMMER den DNS-Namen nutzen, NIE die Container-IP (wechselt bei Restart).',
