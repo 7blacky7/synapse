@@ -1281,15 +1281,17 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
   },
 
   // -------------------------------------------------------------------------
-  // workspace — Docker-Sandbox-Lifecycle (pro Projekt, bis zu 3 benannte)
+  // workspace — Docker-Sandbox-Lifecycle (pro Projekt, Rollen + benannte Instanzen)
   // -------------------------------------------------------------------------
   workspace: {
-    summary: 'Lifecycle der pro-Projekt Docker-Sandbox-Container auf der synapse-api. NUR Lifecycle (list/start/stop/pin/unpin/configure/materialize/reset_home) — fuer Shell-Ausfuehrung IMMER shell (Auto-Routing bzw. isolated:true). Bis zu 3 benannte Workspaces pro Projekt (Param name, Default "main"); /workspace (Source, read-only) ist geteilt, Home-Volume pro Workspace. Container entstehen LAZY beim ersten Bedarf — nichts manuell vorstarten. Workspaces sind reine TEST-Sandboxen.',
-    when_to_use: 'Container-Status pruefen (list). Ressourcen anpassen (configure: cpu/mem/pids/tmpfs/image — greift beim naechsten Start). Vor Idle-Eviction schuetzen (pin). Kaputtes Home heilen (reset_home). Integrationstests zwischen 2-3 Containern via proxynet-DNS http://synapse-ws-<projekt>[-<name>]:<port>.',
+    summary: 'Lifecycle der pro-Projekt Docker-Sandbox-Container auf der synapse-api. NUR Lifecycle (list/start/stop/pin/unpin/configure/materialize/reset_home) — fuer Shell-Ausfuehrung IMMER shell (Auto-Routing bzw. isolated:true). Benannte Workspaces pro Projekt (Param name, Default "main"; Cap via ENV SYNAPSE_WS_PER_PROJECT_CAP, Default 6); WS4-ROLLEN: Rolle = editierbares Template (role_set/role_list/role_delete; project weglassen = global, projekt-scoped schlaegt global), Workspace = Instanz — jede Rolle ist beliebig oft instanziierbar (start/exec mit role + frei waehlbarem name: db-1, db-2, app, qa), init_command laeuft nach JEDEM Container-Start (Dienste-Bootstrap, Fehler -> last_error); /workspace (Source, read-only) ist geteilt, Home-Volume pro Workspace. Container entstehen LAZY beim ersten Bedarf — nichts manuell vorstarten. Workspaces sind reine TEST-Sandboxen.',
+    when_to_use: 'Container-Status pruefen (list). Ressourcen anpassen (configure: cpu/mem/pids/tmpfs/image — greift beim naechsten Start). Vor Idle-Eviction schuetzen (pin). Kaputtes Home heilen (reset_home). Integrationstests zwischen Containern via proxynet-DNS http://synapse-ws-<projekt>[-<name>]:<port>. Rollen-Templates pflegen (role_set/role_list/role_delete) und Multi-Geraete-Setups bauen: db-1 (role db-postgres) + app (role server) + qa (role wine-qa) verhalten sich wie 3 Geraete im selben Netz — zweite DB? name db-2, gleiche Rolle.',
     when_not_to_use: 'Shell-Kommandos ausfuehren — nutze shell (die exec-Action hier ist deprecated). Dateien schreiben — nutze files (Auto-Sync in den Container). Dauerbetrieb — Idle-Stop nach 10 Min und LRU-Eviction sind gewollt.',
-    param_tips: 'name: Ziel-Workspace (Default main; main behaelt den DNS-Namen ohne Suffix). configure wirkt erst beim naechsten Container-Start. Jede Antwort liefert dns_name — IMMER den DNS-Namen nutzen, NIE die Container-IP (wechselt bei Restart).',
+    param_tips: 'name: Ziel-Workspace (Default main; main behaelt den DNS-Namen ohne Suffix). configure wirkt erst beim naechsten Container-Start. Jede Antwort liefert dns_name — IMMER den DNS-Namen nutzen, NIE die Container-IP (wechselt bei Restart). role: wirkt nur bei ERST-Anlage einer Instanz (Template-Werte werden in die Row kopiert; danach configure nutzen); Template-Edits wirken ab dem naechsten Container-Start der Instanzen.',
     examples: [
       'workspace({ action: "list" })',
+      'workspace({ action: "role_list" })',
+      'workspace({ action: "exec", project: "synapse", name: "db-1", role: "db-postgres", command: "pg_isready -h /tmp" })',
       'workspace({ action: "configure", project: "synapse", mem_limit_mb: 2048, tmpfs_mb: 1024 })',
       'workspace({ action: "pin", project: "synapse", name: "server" })',
     ],
@@ -1297,6 +1299,7 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
       'workspace(exec) statt shell({ isolated: true }) — gleiche Engine, aber shell hat einheitliches Antwortformat + executed_via.',
       'Container manuell vorstarten "damit er bereit ist" — Lazy-Start macht das automatisch.',
       'Container-IPs verdrahten — nach jedem Restart ungueltig, dns_name verwenden.',
+      'Eine Rolle als festen Slot behandeln — Rollen sind Templates: dieselbe Rolle mehrfach instanziieren (db-1, db-2) ist der Normalfall.',
     ],
   },
 
