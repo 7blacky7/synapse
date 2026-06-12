@@ -895,6 +895,7 @@ CREATE TABLE IF NOT EXISTS project_workspaces (
   cpu_limit         REAL NOT NULL DEFAULT 1.0,     -- CPUs
   mem_limit_mb      INT  NOT NULL DEFAULT 512,     -- MB
   pids_limit        INT  NOT NULL DEFAULT 200,
+  tmpfs_mb          INT  NOT NULL DEFAULT 256,    -- /tmp tmpfs-Groesse in MB (Container-Start)
   pinned            BOOLEAN NOT NULL DEFAULT FALSE, -- LRU verschont gepinte
   last_activity_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   last_started_at   TIMESTAMPTZ,
@@ -903,6 +904,8 @@ CREATE TABLE IF NOT EXISTS project_workspaces (
   created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+-- Migration fuer Bestands-DBs (CREATE TABLE IF NOT EXISTS migriert nicht):
+ALTER TABLE project_workspaces ADD COLUMN IF NOT EXISTS tmpfs_mb INT NOT NULL DEFAULT 256;
 -- LRU-/Idle-Stopper-Query: WHERE status='active' ORDER BY last_activity_at
 CREATE INDEX IF NOT EXISTS idx_project_workspaces_active_activity
   ON project_workspaces(last_activity_at) WHERE status = 'active';
