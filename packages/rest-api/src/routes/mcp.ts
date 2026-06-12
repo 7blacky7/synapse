@@ -1010,17 +1010,22 @@ const MCP_TOOLS = [
   // 20. workspace — pro-Projekt Docker-Container fuer Shell + File-Sync (server-seitig auf Unraid)
   {
     name: 'workspace',
-    description: 'Lifecycle-Management der pro-Projekt Docker-Sandbox-Container (synapse-workspace:latest) auf dem Synapse-Server. ⚠️ FUER SHELL-AUSFUEHRUNG: nutze IMMER das shell-Tool (Auto-Routing: lokaler Daemon vs Workspace; isolated:true fuer Container-Erzwingung). Dieses workspace-Tool ist nur fuer Lifecycle: list (Status aller Container), start/stop (manuell), pin/unpin (vor Idle-Eviction schuetzen), materialize (FULL sync PG→Container — selten noetig, Auto-Sync laeuft via PG-LISTEN/NOTIFY). exec-Action existiert noch, aber lieber shell({isolated:true}) verwenden — gleiche Engine, einheitliche Antwort, executed_via-Feld. WORKFLOW: Files via files-Tool in code_files → automatisch in Container synchronisiert. Source-Files im /workspace sind READ-ONLY (mode 0444); install/build schreiben in /workspace/node_modules bzw. /workspace/dist (writable). Lifecycle: Idle-Stop nach 10 Min, LRU-Eviction bei Cap. 🌐 NETZWERK: Jede Workspace-Response liefert dns_name (z.B. "synapse-ws-<project>"). Andere proxynet-Container (insbesondere ki-browser) erreichen den Workspace via http://<dns_name>:<port> — NIE die Container-IP nutzen, die wechselt bei Restart. Actions: list, start, stop, pin, unpin, materialize, exec (deprecated → shell), commit (deprecated → files-Tool).',
+    description: 'Lifecycle-Management der pro-Projekt Docker-Sandbox-Container (synapse-workspace:latest) auf dem Synapse-Server. ⚠️ FUER SHELL-AUSFUEHRUNG: nutze IMMER das shell-Tool (Auto-Routing: lokaler Daemon vs Workspace; isolated:true fuer Container-Erzwingung). Dieses workspace-Tool ist nur fuer Lifecycle: list (Status aller Container), start/stop (manuell), pin/unpin (vor Idle-Eviction schuetzen), materialize (FULL sync PG→Container — selten noetig, Auto-Sync laeuft via PG-LISTEN/NOTIFY). exec-Action existiert noch, aber lieber shell({isolated:true}) verwenden — gleiche Engine, einheitliche Antwort, executed_via-Feld. WORKFLOW: Files via files-Tool in code_files → automatisch in Container synchronisiert. Source-Files im /workspace sind READ-ONLY (mode 0444); install/build schreiben in /workspace/node_modules bzw. /workspace/dist (writable). Lifecycle: Idle-Stop nach 10 Min, LRU-Eviction bei Cap. 🌐 NETZWERK: Jede Workspace-Response liefert dns_name (z.B. "synapse-ws-<project>"). Andere proxynet-Container (insbesondere ki-browser) erreichen den Workspace via http://<dns_name>:<port> — NIE die Container-IP nutzen, die wechselt bei Restart. Actions: list, start, stop, pin, unpin, materialize, exec (deprecated → shell), commit (deprecated → files-Tool), configure (cpu_limit/mem_limit_mb/pids_limit/tmpfs_mb/image pro Projekt setzen — greift beim naechsten Container-Start; fuer Build-/Test-Szenarien z.B. mem_limit_mb: 2048, tmpfs_mb: 1024).',
     inputSchema: {
       type: 'object',
       properties: {
-        action: { type: 'string', enum: ['list', 'start', 'stop', 'pin', 'unpin', 'exec', 'materialize', 'commit'], description: 'Aktion' },
+        action: { type: 'string', enum: ['list', 'start', 'stop', 'pin', 'unpin', 'exec', 'materialize', 'commit', 'configure'], description: 'Aktion' },
         project: { type: 'string', description: 'Projekt-Name (Pflicht ausser bei list)' },
         command: { type: 'string', description: 'Shell-Kommando fuer exec (Pflicht bei exec)' },
         timeout_ms: { type: 'number', description: 'exec: Hard-Timeout in ms (Default 60000)' },
         working_dir: { type: 'string', description: 'exec: alternativer WorkingDir (Default /workspace)' },
         expose_ports: { type: 'array', items: { type: 'number' }, description: 'exec: gewuenschte Container-Ports — Response liefert internal_urls mit DNS-Namen "http://synapse-ws-<project>:<port>", erreichbar von anderen proxynet-Containern (z.B. ki-browser). Kein Host-Port, keine Konflikte.' },
         ignore_patterns: { type: 'array', items: { type: 'string' }, description: 'materialize/commit: glob-Patterns die uebersprungen werden (Default: node_modules, .git, dist, build, target, .next, coverage, __pycache__, ...)' },
+        cpu_limit: { type: 'number', description: 'configure: CPU-Kerne (0-32, z.B. 2)' },
+        mem_limit_mb: { type: 'number', description: 'configure: RAM-Limit in MB (min 128)' },
+        pids_limit: { type: 'number', description: 'configure: max. Prozesse (min 16)' },
+        tmpfs_mb: { type: 'number', description: 'configure: /tmp-Groesse in MB (min 16, Default 256)' },
+        image: { type: 'string', description: 'configure: Docker-Image fuer dieses Projekt (Default synapse-workspace:latest)' },
       },
       required: ['action'],
     },
@@ -3682,6 +3687,24 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
             ? (args as Record<string, unknown>).ignore_patterns as string[] : undefined;
           const r = await orch.commit(project, { ignorePatterns });
           return { success: true, project, ...r };
+        }
+        case 'configure': {
+          const project = reqStr(args, 'project');
+          const r = await orch.configure(project, {
+            cpuLimit: num(args, 'cpu_limit'),
+            memLimitMb: num(args, 'mem_limit_mb'),
+            pidsLimit: num(args, 'pids_limit'),
+            tmpfsMb: num(args, 'tmpfs_mb'),
+            image: str(args, 'image'),
+          });
+          return {
+            success: true,
+            project,
+            ...r,
+            hint: r.requiresRestart
+              ? 'Workspace ist aktiv — Aenderungen greifen nach workspace(stop) + start/exec.'
+              : 'Aenderungen greifen beim naechsten Container-Start.',
+          };
         }
         default:
           return { success: false, error: `Unbekannte workspace action: "${action}"` };

@@ -48,6 +48,7 @@ export interface WorkspaceInfo {
   image: string;
   cpuLimit: number;
   memLimitMb: number;
+  tmpfsMb: number;
   pinned: boolean;
   lastActivityAt: Date;
   lastStartedAt: Date | null;
@@ -562,10 +563,38 @@ export class WorkspaceOrchestrator {
     await pool.query(`UPDATE project_workspaces SET pinned=$2, updated_at=NOW() WHERE project=$1`, [project, pinned]);
   }
 
+  /**
+   * Setzt Workspace-Konfiguration pro Projekt (nur PG-Row). Aenderungen an
+   * cpu/mem/pids/tmpfs/image greifen beim NAECHSTEN Container-Start —
+   * ein laufender Container behaelt seine Caps (stop + start zum Anwenden).
+   */
+  async configure(
+    project: string,
+    opts: { cpuLimit?: number; memLimitMb?: number; pidsLimit?: number; tmpfsMb?: number; image?: string }
+  ): Promise<{ applied: Record<string, unknown>; requiresRestart: boolean }> {
+    const pool = getPool();
+    await pool.query(`INSERT INTO project_workspaces (project) VALUES ($1) ON CONFLICT (project) DO NOTHING`, [project]);
+    const sets: string[] = [];
+    const vals: unknown[] = [project];
+    const applied: Record<string, unknown> = {};
+    const push = (col: string, v: unknown): void => { vals.push(v); sets.push(`${col}=${vals.length}`); applied[col] = v; };
+    if (opts.cpuLimit !== undefined && Number.isFinite(opts.cpuLimit) && opts.cpuLimit > 0 && opts.cpuLimit <= 32) push('cpu_limit', opts.cpuLimit);
+    if (opts.memLimitMb !== undefined && Number.isInteger(opts.memLimitMb) && opts.memLimitMb >= 128) push('mem_limit_mb', opts.memLimitMb);
+    if (opts.pidsLimit !== undefined && Number.isInteger(opts.pidsLimit) && opts.pidsLimit >= 16) push('pids_limit', opts.pidsLimit);
+    if (opts.tmpfsMb !== undefined && Number.isInteger(opts.tmpfsMb) && opts.tmpfsMb >= 16) push('tmpfs_mb', opts.tmpfsMb);
+    if (opts.image !== undefined && /^[a-zA-Z0-9._\/:@-]+$/.test(opts.image)) push('image', opts.image);
+    if (sets.length === 0) {
+      throw new Error('configure: keine gueltigen Felder (cpu_limit 0-32, mem_limit_mb>=128, pids_limit>=16, tmpfs_mb>=16, image)');
+    }
+    await pool.query(`UPDATE project_workspaces SET ${sets.join(', ')}, updated_at=NOW() WHERE project=$1`, vals);
+    const row = await this.loadRow(project);
+    return { applied, requiresRestart: row?.status === 'active' };
+  }
+
   async listWorkspaces(): Promise<WorkspaceInfo[]> {
     const pool = getPool();
     const r = await pool.query(
-      `SELECT project, container_id, status, image, cpu_limit, mem_limit_mb, pinned,
+      `SELECT project, container_id, status, image, cpu_limit, mem_limit_mb, tmpfs_mb, pinned,
               last_activity_at, last_started_at, last_stopped_at, last_error
          FROM project_workspaces ORDER BY (status='active') DESC, last_activity_at DESC`
     );
@@ -582,6 +611,7 @@ export class WorkspaceOrchestrator {
       image: r.image as string,
       cpuLimit: Number(r.cpu_limit),
       memLimitMb: Number(r.mem_limit_mb),
+      tmpfsMb: Number(r.tmpfs_mb),
       pinned: r.pinned as boolean,
       lastActivityAt: new Date(r.last_activity_at as string),
       lastStartedAt: r.last_started_at ? new Date(r.last_started_at as string) : null,
@@ -590,10 +620,10 @@ export class WorkspaceOrchestrator {
     };
   }
 
-  private async loadRow(project: string): Promise<{ containerId: string | null; status: string; image: string; volumeName: string | null; cpuLimit: number; memLimitMb: number; pidsLimit: number; pinned: boolean } | null> {
+  private async loadRow(project: string): Promise<{ containerId: string | null; status: string; image: string; volumeName: string | null; cpuLimit: number; memLimitMb: number; pidsLimit: number; tmpfsMb: number; pinned: boolean } | null> {
     const pool = getPool();
     const r = await pool.query(
-      `SELECT container_id, status, image, volume_name, cpu_limit, mem_limit_mb, pids_limit, pinned
+      `SELECT container_id, status, image, volume_name, cpu_limit, mem_limit_mb, pids_limit, tmpfs_mb, pinned
          FROM project_workspaces WHERE project=$1`,
       [project]
     );
@@ -607,6 +637,7 @@ export class WorkspaceOrchestrator {
       cpuLimit: Number(x.cpu_limit),
       memLimitMb: Number(x.mem_limit_mb),
       pidsLimit: Number(x.pids_limit),
+      tmpfsMb: Number(x.tmpfs_mb),
       pinned: x.pinned,
     };
   }
@@ -654,7 +685,7 @@ export class WorkspaceOrchestrator {
 
   private async createAndStartContainer(
     project: string,
-    row: { image: string; cpuLimit: number; memLimitMb: number; pidsLimit: number },
+    row: { image: string; cpuLimit: number; memLimitMb: number; pidsLimit: number; tmpfsMb: number },
     volumeName: string
   ): Promise<string> {
     const name = `${this.cfg.containerNamePrefix}-${sanitize(project)}`;
@@ -676,7 +707,7 @@ export class WorkspaceOrchestrator {
         NetworkMode: this.cfg.network,
         AutoRemove: false,
         ReadonlyRootfs: true,
-        Tmpfs: { '/tmp': 'size=64m,uid=1000,gid=1000' },
+        Tmpfs: { '/tmp': `size=${Math.max(16, Math.round(row.tmpfsMb || 256))}m,uid=1000,gid=1000` },
         Binds: [`${volumeName}:/workspace`],
         // Resource-Caps
         NanoCpus: Math.round(row.cpuLimit * 1e9),

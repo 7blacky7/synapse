@@ -122,6 +122,25 @@ export async function workspaceRoutes(fastify: FastifyInstance): Promise<void> {
   });
 
   /**
+   * PATCH /api/projects/:name/workspace/config
+   * Setzt cpu_limit/mem_limit_mb/pids_limit/tmpfs_mb/image (PG-Row) —
+   * greift beim naechsten Container-Start.
+   */
+  fastify.patch<{
+    Params: { name: string };
+    Body: { cpuLimit?: number; memLimitMb?: number; pidsLimit?: number; tmpfsMb?: number; image?: string };
+  }>('/api/projects/:name/workspace/config', async (request, reply) => {
+    const orch = ensureAvailable(reply);
+    if (!orch) return;
+    try {
+      const r = await orch.configure(request.params.name, request.body ?? {});
+      return { success: true, project: request.params.name, ...r };
+    } catch (err) {
+      return reply.status(500).send({ success: false, error: { message: String(err) } });
+    }
+  });
+
+  /**
    * POST /api/projects/:name/workspace/exec
    * Body: { command: string; timeoutMs?: number; workingDir?: string }
    * Synchron: wartet bis Kommando fertig oder timeout. Liefert stdout/stderr/exitCode.
