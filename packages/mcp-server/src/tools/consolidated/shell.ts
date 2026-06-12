@@ -130,7 +130,7 @@ export const shellTool: ConsolidatedTool = {
         project: { type: 'string', description: 'Projekt-Name (Pflicht fuer exec; optional fuer history Filter)' },
         command: { type: 'string', description: 'Shell-Kommando (Pflicht fuer exec)' },
         stream_id: { type: 'string', description: 'Pflicht fuer get_stream' },
-        id: { type: 'string', description: 'Job-UUID (Pflicht fuer get und log)' },
+        id: { type: 'string', description: 'Job-UUID (Pflicht fuer get und log). NICHT die stream_id aus der exec-Antwort — die Job-UUID liefert shell(history).' },
         limit: { type: 'number', description: 'history: max Jobs (Default 20, Max 200)' },
         offset: { type: 'number', description: 'history: Skip N Jobs (Default 0)' },
         status: {

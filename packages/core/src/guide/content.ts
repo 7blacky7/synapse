@@ -43,7 +43,7 @@ export interface ToolGuide {
 export const GUIDE_OVERVIEW = `
 # Synapse REST-API — Quick-Start fuer Web-KIs
 
-Du bist mit einem Synapse-Projekt verbunden. 17 Tools + dieses guide-Tool.
+Du bist mit einem Synapse-Projekt verbunden. 19 Tools + dieses guide-Tool.
 
 ## Scope (wichtig fuer Web-KI-Connectors)
 
@@ -78,7 +78,9 @@ Notizbuch + Code-Editor + Sub-Hilfsagenten.
 1. admin(action: "index_stats")       — Projekt-Regeln + Statistik
 2. guide()                            — diese Uebersicht
 3. guide({ tool_name: "code_intel" }) — Deep-Dive fuer jedes Tool bei Bedarf
-4. memory(action: "list")             — welches Projekt-Wissen existiert?
+4. search(action: "memory", query: "<thema>") — Projekt-Wissen gezielt finden
+   (memory(list) hat KEIN limit — bei 100+ Memories sprengt der Dump deinen Context;
+    wenn list, dann IMMER mit category-Filter)
 5. code_intel(action: "tree", depth: 1) — Projektstruktur in einem Call
 
 ## Tool-Kategorien
@@ -95,8 +97,17 @@ Notizbuch + Code-Editor + Sub-Hilfsagenten.
 **Projekt-Management:**
   admin, project
 
-**Shell & Runtime** (braucht aktiven Watcher + shell-Worker auf dem Ziel-PC):
-  shell — Befehle laufen ueber PG-Queue, der lokale Worker fuehrt sie aus. Ist der Watcher aus, bleiben Jobs pending.
+**Shell & Runtime** (Auto-Routing local/workspace):
+  shell — laeuft auf dem Ziel-PC ein FileWatcher-Daemon (Heartbeat <30s), geht
+  exec via PG-Queue lokal (echtes FS, native Tools); sonst automatisch im
+  Docker-Workspace-Container der synapse-api (isoliert, Source read-only).
+  executed_via in der Antwort zeigt den Pfad; isolated:true erzwingt den
+  Container, target:"local" erzwingt den Daemon.
+
+**Sandbox & Multi-File:**
+  workspace — Docker-Test-Container-Lifecycle (bis zu 3 benannte pro Projekt,
+  lazy erzeugt, Idle-Stop 10 Min, LRU-Cap). files_batch — atomare Multi-File-
+  Edits (Alias fuer files plan/commit). skills — Skill-Bibliothek (Best Practices).
 
 **Agenten-Koordination** (PostgreSQL-basiert, ueberall verfuegbar):
   chat, channel, event — REST und lokaler MCP gleichermassen.
@@ -128,7 +139,7 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
   // shell — Queue-basierte Shell-Ausfuehrung mit History
   // -------------------------------------------------------------------------
   shell: {
-    summary: 'Fuehrt Shell-Kommandos auf dem Ziel-PC aus (via PostgreSQL-Queue + lokalem shell-Worker im FileWatcher-Daemon). Funktioniert sowohl ueber lokalen MCP als auch ueber REST/Web-KI — solange auf dem Ziel-PC der Watcher laeuft. Voller Output in PG persistiert — Logs koennen Stunden spaeter abgerufen werden. Fehlerinterpretation: error="project_inactive" → Projekt im Tray aktivieren. Status bleibt "pending" und ueberschreitet den timeout_ms ohne dass irgendetwas passiert → Watcher laeuft nicht (Daemon down auf dem Ziel-PC). Sofortige Validierungs-Fehler (Syntax/Pfad) → eigene Eingabe pruefen.',
+    summary: 'Fuehrt Shell-Kommandos aus — AUTO-ROUTING: laeuft auf dem Ziel-PC ein FileWatcher-Daemon (Heartbeat <30s), wird lokal via PostgreSQL-Queue ausgefuehrt (echtes FS, native Tools); sonst automatisch im Docker-Workspace-Container der synapse-api (isoliert, Source read-only). executed_via in der Antwort zeigt den Pfad; target/isolated steuern das Routing explizit, workspace waehlt den Ziel-Container (Multi-Workspace). Voller Output in PG persistiert — Logs koennen Stunden spaeter abgerufen werden. Fehlerinterpretation: error="project_inactive" → Projekt im Tray aktivieren. error="workspace_unavailable" → weder lokaler Daemon aktiv noch Docker-Workspace verfuegbar. Bei erzwungenem target:"local" bleibt ein Job auf "pending" haengen wenn der Daemon down ist. Sofortige Validierungs-Fehler (Syntax/Pfad) → eigene Eingabe pruefen.',
     when_to_use: [
       'Ein-Zeilen-Commands fuer Status-Checks (git log, ls, pwd).',
       'Build-/Test-Ausfuehrung (pnpm build, pytest).',
@@ -167,9 +178,9 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
     actions: {
       exec: {
         description: 'Kommando synchron ausfuehren, Ergebnis in Response. Voller Output wird automatisch in PG gespeichert (gecappt 1MB).',
-        params: 'project (req), command (req), timeout_ms, tail_lines, cwd_relative',
+        params: 'project (req), command (req), timeout_ms, tail_lines, cwd_relative, target (auto|local|workspace, Default auto), isolated (bool = Kurzform target:workspace), workspace (Ziel-Container bei Multi-Workspace, Default main), agent_id (Attribution fuer history/activity)',
         example: 'shell({ action: "exec", project: "synapse", command: "echo hallo" })',
-        tips: 'Default action — wenn du kein action angibst, ist es "exec". Bei project_inactive bekommst du klare message statt stillem Hangen.',
+        tips: 'Default action — wenn du kein action angibst, ist es "exec". Bei project_inactive bekommst du klare message statt stillem Hangen. FALLE: die exec-Antwort enthaelt stream_id — das ist NICHT die Job-ID! get/log brauchen die Job-UUID; die bekommst du via history (limit: 1). tail_lines Default ist 5 — bei mehrzeiligem Output direkt hoeher setzen, sonst kostet dich das einen zweiten Call.',
       },
       get_stream: {
         description: 'Live-Tail eines laufenden Jobs (nur via lokalem MCP, REST gibt 501).',
@@ -440,7 +451,7 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
         description: 'Audit-Log: chronologische Liste aller Datei-Aenderungen mit Begruendung. Crash-Recovery: nach Session-Crash kann eine neue Session sehen "wer hat wann was warum geaendert" und gegebenenfalls Versionen wiederherstellen. Filter nach feature_tag (exakter Match) oder version_id (rekursive parent-chain via parent_version_id).',
         params: 'project (req); optional: agent_id (Filter), file_path (Praefix-Match), since (ISO-Timestamp), limit (Standard 50, Max 500), feature_tag (, exakter Match), version_id (, BIGINT als String — liefert die Korrektur-Chain ab dieser Version rekursiv).',
         example: 'files({ action: "history", project: "synapse", feature_tag: "idea-thought-task-link", limit: 20 })',
-        tips: 'reason wird beim Schreiben mitgegeben (files write-actions + plan/commit). Eintraege enthalten file_path, edit_action, agent_id, batch_id, reason, created_at und feature_tag, parent_version_id, git_commit_sha. Voller Inhalt einer Version: files(action: "get_version", version_id). version_id-Filter ist projektgebunden (Cross-Project-Schutz).',
+        tips: 'reason wird beim Schreiben mitgegeben (files write-actions + plan/commit). Eintraege enthalten file_path, edit_action, agent_id, batch_id, reason, created_at und feature_tag, parent_version_id, git_commit_sha. Voller Inhalt einer Version: files(action: "get_version", version_id). version_id-Filter ist projektgebunden (Cross-Project-Schutz). FALLE: agent_id wirkt hier als EXAKTER Read-Filter, NICHT als Attribution — wer reflexhaft seine eigene agent_id mitschickt, filtert die Edits aller anderen Agenten weg und bekommt count=0. Fuer die volle Projekt-History agent_id WEGLASSEN.',
       },
     },
   },
@@ -654,9 +665,10 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
         tips: 'Perfekt wenn du Wissen + Code-Kontext zusammen brauchst. codeLimit klein halten.',
       },
       list: {
-        description: 'Alle Memories auflisten (optional nach category filtern).',
+        description: 'Alle Memories auflisten (optional nach category filtern). ACHTUNG: KEIN limit-Parameter — auf gewachsenen Projekten (100+ Memories) ist ein ungefiltertes list ein Context-Killer.',
         params: 'project (req), category',
         example: 'memory({ action: "list", project: "synapse", category: "rules" })',
+        tips: 'IMMER mit category filtern oder gleich search(action: "memory", query) nutzen — semantische Suche liefert die 10 relevanten statt 200+ Eintraege.',
       },
       update: {
         description: 'Einzelne Felder eines Memory aendern ohne alles neu zu schreiben.',
@@ -1209,6 +1221,53 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
         example: 'specialist({ action: "capabilities" })',
       },
     },
+  },
+
+  // -------------------------------------------------------------------------
+  // workspace — Docker-Sandbox-Lifecycle (pro Projekt, bis zu 3 benannte)
+  // -------------------------------------------------------------------------
+  workspace: {
+    summary: 'Lifecycle der pro-Projekt Docker-Sandbox-Container auf der synapse-api. NUR Lifecycle (list/start/stop/pin/unpin/configure/materialize) — fuer Shell-Ausfuehrung IMMER shell (Auto-Routing bzw. isolated:true). Bis zu 3 benannte Workspaces pro Projekt (Param name, Default "main"); /workspace (Source, read-only) ist geteilt, Home-Volume pro Workspace. Container entstehen LAZY beim ersten Bedarf — nichts manuell vorstarten. Workspaces sind reine TEST-Sandboxen.',
+    when_to_use: 'Container-Status pruefen (list). Ressourcen anpassen (configure: cpu/mem/pids/tmpfs/image — greift beim naechsten Start). Vor Idle-Eviction schuetzen (pin). Kaputtes Home heilen (reset_home). Integrationstests zwischen 2-3 Containern via proxynet-DNS http://synapse-ws-<projekt>[-<name>]:<port>.',
+    when_not_to_use: 'Shell-Kommandos ausfuehren — nutze shell (die exec-Action hier ist deprecated). Dateien schreiben — nutze files (Auto-Sync in den Container). Dauerbetrieb — Idle-Stop nach 10 Min und LRU-Eviction sind gewollt.',
+    param_tips: 'name: Ziel-Workspace (Default main; main behaelt den DNS-Namen ohne Suffix). configure wirkt erst beim naechsten Container-Start. Jede Antwort liefert dns_name — IMMER den DNS-Namen nutzen, NIE die Container-IP (wechselt bei Restart).',
+    examples: [
+      'workspace({ action: "list" })',
+      'workspace({ action: "configure", project: "synapse", mem_limit_mb: 2048, tmpfs_mb: 1024 })',
+      'workspace({ action: "pin", project: "synapse", name: "server" })',
+    ],
+    anti_patterns: [
+      'workspace(exec) statt shell({ isolated: true }) — gleiche Engine, aber shell hat einheitliches Antwortformat + executed_via.',
+      'Container manuell vorstarten "damit er bereit ist" — Lazy-Start macht das automatisch.',
+      'Container-IPs verdrahten — nach jedem Restart ungueltig, dns_name verwenden.',
+    ],
+  },
+
+  // -------------------------------------------------------------------------
+  // files_batch — Alias fuer files(plan/commit/...) gegen Client-Schema-Caching
+  // -------------------------------------------------------------------------
+  files_batch: {
+    summary: 'Identische Implementierung wie files fuer Multi-File-Edits (plan/commit/cancel/plan_status/history/restore/restore_batch) — als eigenes Tool exponiert, weil manche MCP-Clients die action-Enum von files cachen und neue Werte nicht erkennen. Funktional gilt ALLES aus guide({ tool_name: "files" }).',
+    when_to_use: 'Wenn files(action: "plan") vom Client abgelehnt wird (Schema-Cache). Atomare Edits ueber mehrere Dateien: plan (Trockenlauf mit Hash-Erfassung) → commit. auto_commit: true spart den zweiten Call wenn kein Review noetig.',
+    when_not_to_use: 'Einzeldatei-Edits — direkt files(update/search_replace). Reines Lesen — files(read) oder code_intel.',
+    param_tips: 'ops[]: 1..100 Operationen, jede mit eigenem file_path + action. anchor_text/anchor_contains pro Op = Drift-Schutz. ACHTUNG: history hier hat dieselbe agent_id-FILTER-Falle wie files(history) — fuer volle Projekt-History agent_id weglassen.',
+    examples: [
+      'files_batch({ action: "plan", project: "synapse", auto_commit: true, reason: "Refactor X", ops: [{ file_path: "a.ts", action: "search_replace", search: "alt", replace: "neu" }] })',
+    ],
+  },
+
+  // -------------------------------------------------------------------------
+  // skills — Skill-Bibliothek (Qdrant, EXPERIMENTAL)
+  // -------------------------------------------------------------------------
+  skills: {
+    summary: 'EXPERIMENTAL: Lese-Zugriff auf die projektuebergreifende Skill-Datenbank (Best-Practice-Chunks). Actions: search (semantisch, optional skill_name-Filter), list (Skill-Namen + Section-Counts), get_section, get_full (alle Sections eines Skills). Signatur kann sich bei der geplanten Umstrukturierung aendern.',
+    when_to_use: 'Session-Start: search("<projekt>-nutzung") — gibt es einen Skill zum Projekt/Workflow? Vor unbekannten Workflows: get_full("<skill>") fuer Regeln + Pitfalls.',
+    when_not_to_use: 'Projektspezifisches Wissen — liegt in memory. Code-Suche — code_intel.',
+    param_tips: 'search: limit Default 5 (Max 20). skill_name bei get_section/get_full Pflicht. KEIN project-Parameter — die Skill-DB ist global.',
+    examples: [
+      'skills({ action: "search", query: "synapse-nutzung onboarding" })',
+      'skills({ action: "get_full", skill_name: "synapse-agent-regeln" })',
+    ],
   },
 
   watcher: {

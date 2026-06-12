@@ -601,7 +601,7 @@ export const filesTool: ConsolidatedTool = {
       }
 
       default:
-        throw new Error(`Unbekannte files action: ${action}. Erlaubt: create, update, read, delete, move, copy, replace_lines, insert_after, delete_lines, search_replace, search_replace_batch, versions, get_version, restore, restore_batch`);
+        throw new Error(`Unbekannte files action: ${action}. Erlaubt: create, update, read, delete, move, copy, replace_lines, insert_after, delete_lines, search_replace, search_replace_batch, versions, get_version, restore, restore_batch, history, plan, commit, cancel, plan_status`);
     }
   },
 };

@@ -782,7 +782,7 @@ const MCP_TOOLS = [
         action: {
           type: 'string',
           enum: ['create', 'update', 'delete', 'move', 'copy', 'read', 'replace_lines', 'insert_after', 'delete_lines', 'search_replace', 'search_replace_batch', 'versions', 'get_version', 'restore', 'restore_batch', 'plan', 'commit', 'cancel', 'plan_status', 'history'],
-          description: 'Datei-Aktion. versions/get_version/restore/restore_batch arbeiten auf der Versionshistorie. plan/commit/cancel/plan_status implementieren atomare Multi-File-Edits ueber mehrere Dateien. history listet Aenderungen mit Begruendung (Crash-Recovery).',
+          description: 'Datei-Aktion. versions/get_version/restore/restore_batch arbeiten auf der Versionshistorie. plan/commit/cancel/plan_status implementieren atomare Multi-File-Edits ueber mehrere Dateien. history listet Aenderungen mit Begruendung (Crash-Recovery) — agent_id wirkt dort als EXAKTER Filter, fuer die volle Projekt-History weglassen.',
         },
         project: { type: 'string', description: 'Projekt-Name' },
         file_path: { type: 'string', description: 'Dateipfad relativ zum Projekt-Root. PFLICHT fuer create/update/delete/move/copy/read/replace_lines/insert_after/delete_lines/search_replace/search_replace_batch/versions/get_version/restore — OHNE file_path schlagen diese Aktionen fehl (niemals weglassen!). Nur plan/commit/cancel/plan_status/history/restore_batch brauchen es nicht (Pfade stehen dort in ops[]/batch_id).' },
@@ -814,7 +814,7 @@ const MCP_TOOLS = [
         version_id: { type: 'string', description: 'Versions-ID (BIGSERIAL als String). Pflicht fuer get_version/restore. Bei history (): zeigt Korrektur-Chain ab dieser Version (rekursiv via parent_version_id).' },
         batch_id: { type: 'string', description: 'Batch-ID (fuer restore_batch — rollt alle Files einer Multi-File-Batch zurueck).' },
         plan_id: { type: 'string', description: 'Plan-ID (fuer commit, cancel, plan_status). String wegen BIGSERIAL.' },
-        agent_id: { type: 'string', description: 'Optional: Audit-Agent fuer file_versions. Bei Web-KI-Calls ohne Wrapper wird agent_id aus User-Agent/X-Openai-Session abgeleitet (z.B. "gpt-<8charsessionid>"). DARF weggelassen oder leer sein — Server ergaenzt automatisch.' },
+        agent_id: { type: 'string', description: 'Optional: Audit-Agent fuer file_versions. Bei Web-KI-Calls ohne Wrapper wird agent_id aus User-Agent/X-Openai-Session abgeleitet (z.B. "gpt-<8charsessionid>"). DARF weggelassen oder leer sein — Server ergaenzt automatisch. AUSNAHME action=history: dort wirkt agent_id als EXAKTER Read-Filter — fuer die volle Projekt-History weglassen!' },
         ops: {
           type: 'array',
           description: 'Multi-File Edit-Plan: 1..100 Operationen ueber mehrere Dateien. Aktionen: create, update, search_replace, search_replace_batch, replace_lines, insert_after, delete_lines, delete (ganze Datei), move (-> new_path), copy (-> new_path).',
@@ -922,7 +922,7 @@ const MCP_TOOLS = [
         plan_id: { type: 'string', description: 'Pflicht fuer commit, cancel, plan_status' },
         version_id: { type: 'string', description: 'Pflicht fuer restore' },
         batch_id: { type: 'string', description: 'Pflicht fuer restore_batch' },
-        agent_id: { type: 'string', description: 'Optionale Agent-ID (Audit-Trail)' },
+        agent_id: { type: 'string', description: 'Optionale Agent-ID (Audit-Trail). AUSNAHME action=history: wirkt als exakter Read-Filter — fuer volle Projekt-History weglassen.' },
         open_for_coedit: { type: 'boolean', description: 'plan: ob Co-Edits erlaubt sind (default true)' },
         auto_commit: { type: 'boolean', description: 'plan + commit in einem Call (default false). Versionierung bleibt aktiv.' },
         agent_note: { type: 'string', description: '(optional): KI-eigene Beobachtungen pro Batch (zusaetzlich zum User-reason).' },
@@ -945,7 +945,7 @@ const MCP_TOOLS = [
       type: 'object',
       properties: {
         action: { type: 'string', enum: ['exec', 'get_stream', 'history', 'get', 'log', 'activity'], description: 'Default: exec. log + id liefert Zeilenrange (1-100); log + id + query liefert Such-Treffer mit Zeilennummern.' },
-        id: { type: 'string', description: 'Job-UUID (Pflicht fuer get/log)' },
+        id: { type: 'string', description: 'Job-UUID (Pflicht fuer get/log). NICHT die stream_id aus der exec-Antwort — die Job-UUID liefert shell(history).' },
         limit: { type: 'number', description: 'history: max Jobs (Default 20, Max 200)' },
         offset: { type: 'number', description: 'history: Skip N (Default 0)' },
         status: { type: 'string', enum: ['pending', 'running', 'done', 'failed', 'rejected', 'timeout'], description: 'history: Filter auf Status' },
