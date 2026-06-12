@@ -86,3 +86,32 @@ RUSTUP_HOME=$HOME/.rustup rustup toolchain install nightly
 
 Alle Pins + kritische Paketnamen wurden am 2026-06-12 gegen die Quellen
 verifiziert (HTTP 200). Bricht ein Download im Build: Pin pruefen.
+
+
+## Multi-Workspace (WS3): Backend + App im selben Netz testen
+
+Pro Projekt sind bis zu **3 benannte Workspaces** moeglich (Param `name`,
+Default `main`; Regex `^[a-z0-9][a-z0-9-]{0,19}$`). Alle teilen sich das
+`/workspace`-Volume (eine Quelle, ein PG-Sync), haben aber **eigenes**
+Home-Volume, eigene Caps und eigenes Image (`configure` mit `name`).
+DNS im proxynet = Container-Name: `main` heisst wie bisher
+`synapse-ws-<projekt>`, benannte heissen `synapse-ws-<projekt>-<name>`.
+
+Kochrezept Netzwerk-Integrationstest (Backend ↔ Client):
+
+```text
+1. workspace(configure, project, name:"server", mem_limit_mb: 1024)   # optional
+2. workspace(exec, project, name:"server",
+     command:"node server.js &", expose_ports:[3000])
+   → internal_urls: { 3000: "http://synapse-ws-<projekt>-server:3000" }
+3. shell(exec, project, isolated:true, workspace:"app",
+     command:"curl -s http://synapse-ws-<projekt>-server:3000/health")
+   → echter HTTP-Roundtrip ueber das Docker-Netz, wie im Einsatz.
+4. workspace(pin, project, name:"server")   # Server gegen Idle-Stop schuetzen
+5. reset_home/stop wirken pro Workspace (name mitgeben).
+```
+
+Hinweise: Builds besser im Home (`~/build-server`, `~/build-app`) oder in
+getrennten Unterordnern ausfuehren — `/workspace` ist geteilt, parallele
+Builds in denselben Output-Ordner (z.B. `dist/`) beissen sich. Der globale
+Container-Cap (LRU) zaehlt weiterhin Container, nicht Projekte.

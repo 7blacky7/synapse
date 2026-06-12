@@ -43,6 +43,8 @@ export interface WorkspaceConfig {
 
 export interface WorkspaceInfo {
   project: string;
+  /** WS3: Workspace-Name innerhalb des Projekts ('main' = Default). */
+  name: string;
   containerId: string | null;
   status: 'cold' | 'warming' | 'active' | 'stopping' | 'error';
   image: string;
@@ -172,10 +174,10 @@ export class WorkspaceOrchestrator {
    */
   async materializeFile(project: string, filePath: string): Promise<boolean> {
     if (!this.dockerAvailable) return false;
-    const row = await this.loadRow(project);
-    if (!row || row.status !== 'active' || !row.containerId) return false;
-    const running = await this.isContainerRunning(row.containerId);
-    if (!running) return false;
+    // WS3: /workspace-Volume ist ueber alle Workspaces des Projekts geteilt —
+    // irgendein laufender Container reicht fuer den Sync.
+    const containerId = await this.anyActiveContainerId(project);
+    if (!containerId) return false;
 
     const pool = getPool();
     const r = await pool.query(
@@ -195,7 +197,7 @@ export class WorkspaceOrchestrator {
       entry.end(content);
     });
     pack.finalize();
-    await this.docker.getContainer(row.containerId).putArchive(pack as unknown as NodeJS.ReadableStream, { path: '/workspace' });
+    await this.docker.getContainer(containerId).putArchive(pack as unknown as NodeJS.ReadableStream, { path: '/workspace' });
     this.autoSyncCount++;
     console.error(`[Workspaces] auto-sync ${project}: ${filePath} (${content.length}B, ro)`);
     return true;
@@ -208,16 +210,14 @@ export class WorkspaceOrchestrator {
    */
   async deleteFile(project: string, filePath: string): Promise<boolean> {
     if (!this.dockerAvailable) return false;
-    const row = await this.loadRow(project);
-    if (!row || row.status !== 'active' || !row.containerId) return false;
-    const running = await this.isContainerRunning(row.containerId);
-    if (!running) return false;
+    const containerId = await this.anyActiveContainerId(project);
+    if (!containerId) return false;
 
     // Pfad-Saniterung: keine ".." traversal, kein absoluter Pfad
     const clean = filePath.replace(/^\/+/, '').split('/').filter(seg => seg && seg !== '..').join('/');
     if (!clean) return false;
 
-    const container = this.docker.getContainer(row.containerId);
+    const container = this.docker.getContainer(containerId);
     try {
       const exec = await container.exec({
         Cmd: ['/bin/sh', '-c', `rm -f /workspace/${clean.replace(/'/g, "'\\''")}`],
@@ -243,81 +243,93 @@ export class WorkspaceOrchestrator {
    * Aktualisiert last_activity_at in jedem Fall.
    * @returns containerId
    */
-  async ensureProjectRunning(project: string): Promise<string> {
+  async ensureProjectRunning(project: string, ws = 'main'): Promise<string> {
     if (!this.dockerAvailable) {
       throw new Error('Workspace-Orchestrator nicht verfuegbar (Docker-Socket nicht erreichbar)');
     }
     const pool = getPool();
+    const { ws: wsName, suffix } = this.wsKey(project, ws);
+
+    // WS3-Cap: max 3 benannte Workspaces pro Projekt (nur bei NEUEM Namen relevant).
+    const cap = await pool.query(
+      `SELECT count(*) FILTER (WHERE name=$2)::int AS me, count(*)::int AS total
+         FROM project_workspaces WHERE project=$1`,
+      [project, wsName]
+    );
+    if (cap.rows[0].me === 0 && cap.rows[0].total >= 3) {
+      throw new Error(`Workspace-Cap erreicht: Projekt "${project}" hat bereits 3 Workspaces — erst einen stoppen/entfernen`);
+    }
 
     // Row sicherstellen + Activity vormerken (UPSERT).
     await pool.query(
-      `INSERT INTO project_workspaces (project, last_activity_at) VALUES ($1, NOW())
-       ON CONFLICT (project) DO UPDATE SET last_activity_at = NOW(), updated_at = NOW()`,
-      [project]
+      `INSERT INTO project_workspaces (project, name, last_activity_at) VALUES ($1, $2, NOW())
+       ON CONFLICT (project, name) DO UPDATE SET last_activity_at = NOW(), updated_at = NOW()`,
+      [project, wsName]
     );
 
-    const row = await this.loadRow(project);
-    if (!row) throw new Error(`Workspace-Row fuer ${project} fehlt nach UPSERT`);
+    const row = await this.loadRow(project, wsName);
+    if (!row) throw new Error(`Workspace-Row fuer ${project}/${wsName} fehlt nach UPSERT`);
 
     // Pruefen: laeuft Container wirklich?
     if (row.containerId && row.status === 'active') {
       const running = await this.isContainerRunning(row.containerId);
       if (running) return row.containerId;
       // Stale: Container weg → status reset.
-      await this.markStopped(project, 'container war stale (nicht mehr running)');
+      await this.markStopped(project, 'container war stale (nicht mehr running)', wsName);
     }
 
     // LRU-Eviction wenn Cap erreicht.
     const active = await this.countActive();
     if (active >= this.cfg.maxConcurrent) {
-      await this.evictLru(project);
+      await this.evictLru(project, wsName);
     }
 
-    // Volume + Container starten.
+    // Volumes + Container starten. /workspace-Volume ist pro PROJEKT (geteilt
+    // ueber alle Workspaces — eine Quelle, ein Sync); Home-Volume pro WORKSPACE.
     const volumeName = row.volumeName ?? `${this.cfg.volumeNamePrefix}-${sanitize(project)}`;
     await this.ensureVolume(volumeName);
-    // WS2-A1: Zweites Volume fuer /home/synapse — persistentes, schreibbares HOME
-    // pro Projekt. Ohne das liegt $HOME im ReadonlyRootfs und npm/pip/cargo/
+    // WS2-A1: Zweites Volume fuer /home/synapse — persistentes, schreibbares HOME.
+    // Ohne das liegt $HOME im ReadonlyRootfs und npm/pip/cargo/
     // rustup/ccache sind funktionsunfaehig (Selbstbedienungs-Blockade).
     // Docker copy-on-first-use uebernimmt beim ersten Mount Inhalt+Ownership
     // (synapse 1000:1000) aus dem Image. Reset via resetHome().
-    const homeVolumeName = `${this.cfg.volumeNamePrefix}-home-${sanitize(project)}`;
+    const homeVolumeName = `${this.cfg.volumeNamePrefix}-home-${sanitize(project)}${suffix}`;
     await this.ensureVolume(homeVolumeName);
-    await pool.query(`UPDATE project_workspaces SET status='warming', volume_name=$2, updated_at=NOW() WHERE project=$1`, [project, volumeName]);
+    await pool.query(`UPDATE project_workspaces SET status='warming', volume_name=$3, updated_at=NOW() WHERE project=$1 AND name=$2`, [project, wsName, volumeName]);
 
     try {
-      const containerId = await this.createAndStartContainer(project, row, volumeName, homeVolumeName);
+      const containerId = await this.createAndStartContainer(project, wsName, row, volumeName, homeVolumeName);
       await pool.query(
         `UPDATE project_workspaces
-            SET container_id=$2, status='active', last_started_at=NOW(),
+            SET container_id=$3, status='active', last_started_at=NOW(),
                 last_error=NULL, updated_at=NOW()
-          WHERE project=$1`,
-        [project, containerId]
+          WHERE project=$1 AND name=$2`,
+        [project, wsName, containerId]
       );
       return containerId;
     } catch (err) {
       const msg = (err as Error).message;
       await pool.query(
-        `UPDATE project_workspaces SET status='error', last_error=$2, updated_at=NOW() WHERE project=$1`,
-        [project, msg]
+        `UPDATE project_workspaces SET status='error', last_error=$3, updated_at=NOW() WHERE project=$1 AND name=$2`,
+        [project, wsName, msg]
       );
-      throw new Error(`Container-Start fuer ${project} fehlgeschlagen: ${msg}`);
+      throw new Error(`Container-Start fuer ${project}/${wsName} fehlgeschlagen: ${msg}`);
     }
   }
 
   /** Markiert nur Activity, kein Container-Start. Fuer leichte Touches. */
-  async recordActivity(project: string): Promise<void> {
+  async recordActivity(project: string, ws = 'main'): Promise<void> {
     const pool = getPool();
-    await pool.query(`UPDATE project_workspaces SET last_activity_at=NOW(), updated_at=NOW() WHERE project=$1`, [project]);
+    await pool.query(`UPDATE project_workspaces SET last_activity_at=NOW(), updated_at=NOW() WHERE project=$1 AND name=$2`, [project, ws]);
   }
 
   /** Stoppt den Container (Volume bleibt, Daten persistent). */
-  async stopProject(project: string, reason = 'manual'): Promise<void> {
+  async stopProject(project: string, reason = 'manual', ws = 'main'): Promise<void> {
     if (!this.dockerAvailable) return;
     const pool = getPool();
-    const row = await this.loadRow(project);
+    const row = await this.loadRow(project, ws);
     if (!row || !row.containerId) return;
-    await pool.query(`UPDATE project_workspaces SET status='stopping', updated_at=NOW() WHERE project=$1`, [project]);
+    await pool.query(`UPDATE project_workspaces SET status='stopping', updated_at=NOW() WHERE project=$1 AND name=$2`, [project, ws]);
     // Last-Will Log-Line vorm Stop
     await this.appendToLog(row.containerId, `STOP requested (${reason})`).catch(() => {});
     try {
@@ -327,8 +339,8 @@ export class WorkspaceOrchestrator {
     } catch (err) {
       console.error(`[Workspaces] Stop ${project} (${reason}): ${(err as Error).message}`);
     }
-    console.error(`[Workspaces] stopped ${project}: ${reason}`);
-    await this.markStopped(project, reason);
+    console.error(`[Workspaces] stopped ${project}/${ws}: ${reason}`);
+    await this.markStopped(project, reason, ws);
   }
 
   /**
@@ -339,12 +351,13 @@ export class WorkspaceOrchestrator {
    * /workspace (Projekt-Quellen) bleibt unberuehrt. Der Home-Volume-Name ist
    * deterministisch aus dem Prefix abgeleitet — bewusst kein PG-Feld.
    */
-  async resetHome(project: string): Promise<{ volume: string; removed: boolean }> {
+  async resetHome(project: string, ws = 'main'): Promise<{ volume: string; removed: boolean }> {
     if (!this.dockerAvailable) {
       throw new Error('Workspace-Orchestrator nicht verfuegbar (Docker-Socket nicht erreichbar)');
     }
-    const homeVolumeName = `${this.cfg.volumeNamePrefix}-home-${sanitize(project)}`;
-    await this.stopProject(project, 'reset-home');
+    const { ws: wsName, suffix } = this.wsKey(project, ws);
+    const homeVolumeName = `${this.cfg.volumeNamePrefix}-home-${sanitize(project)}${suffix}`;
+    await this.stopProject(project, 'reset-home', wsName);
     let removed = false;
     try {
       await this.docker.getVolume(homeVolumeName).remove({ force: true });
@@ -365,19 +378,21 @@ export class WorkspaceOrchestrator {
    * timeoutMs: hard kill nach N ms (Default 60s).
    */
   /** Berechnet die proxynet-interne URL fuer einen Workspace-Container + Port. */
-  internalUrl(project: string, port: number): string {
-    return `http://${this.cfg.containerNamePrefix}-${sanitize(project)}:${port}`;
+  internalUrl(project: string, port: number, ws = 'main'): string {
+    const { suffix } = this.wsKey(project, ws);
+    return `http://${this.cfg.containerNamePrefix}-${sanitize(project)}${suffix}:${port}`;
   }
 
   async exec(
     project: string,
     command: string,
-    opts: { timeoutMs?: number; workingDir?: string; exposePorts?: number[] } = {}
+    opts: { timeoutMs?: number; workingDir?: string; exposePorts?: number[]; workspace?: string } = {}
   ): Promise<{ stdout: string; stderr: string; exitCode: number | null; timedOut: boolean; durationMs: number; internal_urls?: Record<number, string> }> {
     if (!this.dockerAvailable) {
       throw new Error('Workspace-Orchestrator nicht verfuegbar (Docker-Socket nicht erreichbar)');
     }
-    const containerId = await this.ensureProjectRunning(project);
+    const { ws: wsName } = this.wsKey(project, opts.workspace ?? 'main');
+    const containerId = await this.ensureProjectRunning(project, wsName);
     const container = this.docker.getContainer(containerId);
     const timeoutMs = opts.timeoutMs ?? 60_000;
     const t0 = Date.now();
@@ -436,14 +451,14 @@ export class WorkspaceOrchestrator {
     } catch { /* ignore */ }
 
     // Activity bei jedem exec frischen — Idle-Timer nicht versehentlich triggern.
-    await this.recordActivity(project);
+    await this.recordActivity(project, wsName);
 
     const dt = Date.now() - t0;
     console.error(`[Workspaces] exec ${project} done: exit=${exitCode} stdout=${stdout.length}B stderr=${stderr.length}B in ${dt}ms${timedOut ? ' [TIMEOUT]' : ''}`);
     void this.appendToLog(containerId, `EXIT: code=${exitCode} duration=${dt}ms stdout=${stdout.length}B stderr=${stderr.length}B${timedOut ? ' TIMEOUT' : ''}`);
 
     const internal_urls: Record<number, string> = {};
-    if (opts.exposePorts) for (const p of opts.exposePorts) internal_urls[p] = this.internalUrl(project, p);
+    if (opts.exposePorts) for (const p of opts.exposePorts) internal_urls[p] = this.internalUrl(project, p, wsName);
 
     return { stdout, stderr, exitCode, timedOut, durationMs: dt, ...(opts.exposePorts ? { internal_urls } : {}) };
   }
@@ -459,7 +474,9 @@ export class WorkspaceOrchestrator {
     opts: { ignorePatterns?: string[] } = {}
   ): Promise<{ files: number; bytes: number; durationMs: number }> {
     if (!this.dockerAvailable) throw new Error('Workspace-Orchestrator nicht verfuegbar');
-    const containerId = await this.ensureProjectRunning(project);
+    // WS3: /workspace-Volume ist projektweit geteilt — ein bereits laufender
+    // Container (egal welcher Workspace) reicht; sonst main starten.
+    const containerId = (await this.anyActiveContainerId(project)) ?? (await this.ensureProjectRunning(project));
     const container = this.docker.getContainer(containerId);
     const t0 = Date.now();
     const pool = getPool();
@@ -516,7 +533,7 @@ export class WorkspaceOrchestrator {
     opts: { ignorePatterns?: string[] } = {}
   ): Promise<{ created: number; updated: number; unchanged: number; skipped: number; durationMs: number }> {
     if (!this.dockerAvailable) throw new Error('Workspace-Orchestrator nicht verfuegbar');
-    const containerId = await this.ensureProjectRunning(project);
+    const containerId = (await this.anyActiveContainerId(project)) ?? (await this.ensureProjectRunning(project));
     const container = this.docker.getContainer(containerId);
     const t0 = Date.now();
     const pool = getPool();
@@ -592,9 +609,9 @@ export class WorkspaceOrchestrator {
     return { created, updated, unchanged, skipped, durationMs: Date.now() - t0 };
   }
 
-  async pin(project: string, pinned: boolean): Promise<void> {
+  async pin(project: string, pinned: boolean, ws = 'main'): Promise<void> {
     const pool = getPool();
-    await pool.query(`UPDATE project_workspaces SET pinned=$2, updated_at=NOW() WHERE project=$1`, [project, pinned]);
+    await pool.query(`UPDATE project_workspaces SET pinned=$2, updated_at=NOW() WHERE project=$1 AND name=$3`, [project, pinned, ws]);
   }
 
   /**
@@ -604,12 +621,14 @@ export class WorkspaceOrchestrator {
    */
   async configure(
     project: string,
-    opts: { cpuLimit?: number; memLimitMb?: number; pidsLimit?: number; tmpfsMb?: number; image?: string }
+    opts: { cpuLimit?: number; memLimitMb?: number; pidsLimit?: number; tmpfsMb?: number; image?: string },
+    ws = 'main'
   ): Promise<{ applied: Record<string, unknown>; requiresRestart: boolean }> {
     const pool = getPool();
-    await pool.query(`INSERT INTO project_workspaces (project) VALUES ($1) ON CONFLICT (project) DO NOTHING`, [project]);
+    const { ws: wsName } = this.wsKey(project, ws);
+    await pool.query(`INSERT INTO project_workspaces (project, name) VALUES ($1, $2) ON CONFLICT (project, name) DO NOTHING`, [project, wsName]);
     const sets: string[] = [];
-    const vals: unknown[] = [project];
+    const vals: unknown[] = [project, wsName];
     const applied: Record<string, unknown> = {};
     const push = (col: string, v: unknown): void => { vals.push(v); sets.push(col + '=' + '$' + String(vals.length)); applied[col] = v; };
     if (opts.cpuLimit !== undefined && Number.isFinite(opts.cpuLimit) && opts.cpuLimit > 0 && opts.cpuLimit <= 32) push('cpu_limit', opts.cpuLimit);
@@ -620,17 +639,17 @@ export class WorkspaceOrchestrator {
     if (sets.length === 0) {
       throw new Error('configure: keine gueltigen Felder (cpu_limit 0-32, mem_limit_mb>=128, pids_limit>=16, tmpfs_mb>=16, image)');
     }
-    await pool.query(`UPDATE project_workspaces SET ${sets.join(', ')}, updated_at=NOW() WHERE project=$1`, vals);
-    const row = await this.loadRow(project);
+    await pool.query(`UPDATE project_workspaces SET ${sets.join(', ')}, updated_at=NOW() WHERE project=$1 AND name=$2`, vals);
+    const row = await this.loadRow(project, wsName);
     return { applied, requiresRestart: row?.status === 'active' };
   }
 
   async listWorkspaces(): Promise<WorkspaceInfo[]> {
     const pool = getPool();
     const r = await pool.query(
-      `SELECT project, container_id, status, image, cpu_limit, mem_limit_mb, tmpfs_mb, pinned,
+      `SELECT project, name, container_id, status, image, cpu_limit, mem_limit_mb, tmpfs_mb, pinned,
               last_activity_at, last_started_at, last_stopped_at, last_error
-         FROM project_workspaces ORDER BY (status='active') DESC, last_activity_at DESC`
+         FROM project_workspaces ORDER BY (status='active') DESC, project, name, last_activity_at DESC`
     );
     return r.rows.map(this.rowToInfo);
   }
@@ -640,6 +659,7 @@ export class WorkspaceOrchestrator {
   private rowToInfo(r: Record<string, unknown>): WorkspaceInfo {
     return {
       project: r.project as string,
+      name: (r.name as string | undefined) ?? 'main',
       containerId: (r.container_id as string | null) ?? null,
       status: r.status as WorkspaceInfo['status'],
       image: r.image as string,
@@ -654,12 +674,12 @@ export class WorkspaceOrchestrator {
     };
   }
 
-  private async loadRow(project: string): Promise<{ containerId: string | null; status: string; image: string; volumeName: string | null; cpuLimit: number; memLimitMb: number; pidsLimit: number; tmpfsMb: number; pinned: boolean } | null> {
+  private async loadRow(project: string, ws = 'main'): Promise<{ containerId: string | null; status: string; image: string; volumeName: string | null; cpuLimit: number; memLimitMb: number; pidsLimit: number; tmpfsMb: number; pinned: boolean } | null> {
     const pool = getPool();
     const r = await pool.query(
       `SELECT container_id, status, image, volume_name, cpu_limit, mem_limit_mb, pids_limit, tmpfs_mb, pinned
-         FROM project_workspaces WHERE project=$1`,
-      [project]
+         FROM project_workspaces WHERE project=$1 AND name=$2`,
+      [project, ws]
     );
     if (!r.rows[0]) return null;
     const x = r.rows[0];
@@ -682,22 +702,53 @@ export class WorkspaceOrchestrator {
     return r.rows[0].c;
   }
 
-  private async evictLru(excludeProject: string): Promise<void> {
+  /**
+   * WS3: Validiert einen Workspace-Namen und liefert den Namens-Suffix.
+   * 'main' (Default) traegt KEINEN Suffix — Container-/Volume-/DNS-Namen des
+   * Bestands bleiben unveraendert. Andere Workspaces: -<name>.
+   */
+  private wsKey(project: string, ws: string): { ws: string; suffix: string } {
+    const clean = (ws || 'main').toLowerCase();
+    if (clean !== 'main' && !/^[a-z0-9][a-z0-9-]{0,19}$/.test(clean)) {
+      throw new Error(`Ungueltiger Workspace-Name "${ws}" fuer ${project} (erlaubt: ^[a-z0-9][a-z0-9-]{0,19}$)`);
+    }
+    return { ws: clean, suffix: clean === 'main' ? '' : `-${clean}` };
+  }
+
+  /**
+   * WS3: Liefert die Container-ID IRGENDEINES laufenden Workspace des Projekts
+   * (fuer /workspace-Sync — das Volume ist geteilt). null wenn keiner laeuft.
+   */
+  private async anyActiveContainerId(project: string): Promise<string | null> {
     const pool = getPool();
     const r = await pool.query(
-      `SELECT project FROM project_workspaces
-        WHERE status='active' AND pinned=false AND project <> $1
+      `SELECT container_id FROM project_workspaces
+        WHERE project=$1 AND status='active' AND container_id IS NOT NULL
+        ORDER BY (name='main') DESC, last_activity_at DESC`,
+      [project]
+    );
+    for (const row of r.rows) {
+      if (await this.isContainerRunning(row.container_id)) return row.container_id;
+    }
+    return null;
+  }
+
+  private async evictLru(excludeProject: string, excludeWs = 'main'): Promise<void> {
+    const pool = getPool();
+    const r = await pool.query(
+      `SELECT project, name FROM project_workspaces
+        WHERE status='active' AND pinned=false AND NOT (project = $1 AND name = $2)
         ORDER BY last_activity_at ASC LIMIT 1`,
-      [excludeProject]
+      [excludeProject, excludeWs]
     );
     if (!r.rows[0]) {
       // Nichts evictierbar (alles pinned). Wir starten trotzdem → temporaere Ueberschreitung
       console.error(`[Workspaces] LRU-Eviction: nichts evictierbar (alle aktiven gepint), Cap wird temporaer ueberschritten`);
       return;
     }
-    const victim = r.rows[0].project;
-    console.error(`[Workspaces] LRU-Eviction: stoppe ${victim} fuer ${excludeProject}`);
-    await this.stopProject(victim, 'lru-evicted');
+    const victim = r.rows[0];
+    console.error(`[Workspaces] LRU-Eviction: stoppe ${victim.project}/${victim.name} fuer ${excludeProject}/${excludeWs}`);
+    await this.stopProject(victim.project, 'lru-evicted', victim.name);
   }
 
   private async isContainerRunning(containerId: string): Promise<boolean> {
@@ -719,11 +770,15 @@ export class WorkspaceOrchestrator {
 
   private async createAndStartContainer(
     project: string,
+    ws: string,
     row: { image: string; cpuLimit: number; memLimitMb: number; pidsLimit: number; tmpfsMb: number },
     volumeName: string,
     homeVolumeName: string
   ): Promise<string> {
-    const name = `${this.cfg.containerNamePrefix}-${sanitize(project)}`;
+    const { suffix } = this.wsKey(project, ws);
+    // WS3: 'main' behaelt den Bestandsnamen synapse-ws-<p>; andere Workspaces
+    // heissen synapse-ws-<p>-<name> — das ist zugleich ihr proxynet-DNS-Name.
+    const name = `${this.cfg.containerNamePrefix}-${sanitize(project)}${suffix}`;
     // Falls Restmuell mit gleichem Namen existiert: aufraeumen.
     try {
       const stale = this.docker.getContainer(name);
@@ -733,11 +788,11 @@ export class WorkspaceOrchestrator {
     const create = await this.docker.createContainer({
       name,
       Image: row.image,
-      Labels: { 'synapse.workspace': 'true', 'synapse.project': project },
+      Labels: { 'synapse.workspace': 'true', 'synapse.project': project, 'synapse.workspace-name': ws },
       Tty: false,
       OpenStdin: false,
       WorkingDir: '/workspace',
-      Env: [`SYNAPSE_PROJECT=${project}`],
+      Env: [`SYNAPSE_PROJECT=${project}`, `SYNAPSE_WORKSPACE=${ws}`],
       HostConfig: {
         NetworkMode: this.cfg.network,
         AutoRemove: false,
@@ -783,14 +838,14 @@ export class WorkspaceOrchestrator {
     } catch { /* best-effort, no log noise */ }
   }
 
-  private async markStopped(project: string, reason: string): Promise<void> {
+  private async markStopped(project: string, reason: string, ws = 'main'): Promise<void> {
     const pool = getPool();
     await pool.query(
       `UPDATE project_workspaces
           SET status='cold', container_id=NULL, last_stopped_at=NOW(),
               last_error=$2, updated_at=NOW()
-        WHERE project=$1`,
-      [project, reason]
+        WHERE project=$1 AND name=$3`,
+      [project, reason, ws]
     );
   }
 
@@ -806,12 +861,12 @@ export class WorkspaceOrchestrator {
     const pool = getPool();
     const cutoff = new Date(Date.now() - this.cfg.idleStopMinutes * 60_000);
     const r = await pool.query(
-      `SELECT project FROM project_workspaces
+      `SELECT project, name FROM project_workspaces
         WHERE status='active' AND pinned=false AND last_activity_at < $1`,
       [cutoff]
     );
     for (const row of r.rows) {
-      await this.stopProject(row.project, `idle > ${this.cfg.idleStopMinutes}min`);
+      await this.stopProject(row.project, `idle > ${this.cfg.idleStopMinutes}min`, row.name);
     }
   }
 }

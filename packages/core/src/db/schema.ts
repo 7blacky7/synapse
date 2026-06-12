@@ -906,6 +906,23 @@ CREATE TABLE IF NOT EXISTS project_workspaces (
 );
 -- Migration fuer Bestands-DBs (CREATE TABLE IF NOT EXISTS migriert nicht):
 ALTER TABLE project_workspaces ADD COLUMN IF NOT EXISTS tmpfs_mb INT NOT NULL DEFAULT 256;
+
+-- WS3: Multi-Workspace pro Projekt — Identitaet wird (project, name).
+-- Bestandszeilen werden automatisch zum Workspace 'main' (DEFAULT), die
+-- Container-/Volume-/DNS-Namen von 'main' bleiben unveraendert (Kompat).
+ALTER TABLE project_workspaces ADD COLUMN IF NOT EXISTS name TEXT NOT NULL DEFAULT 'main';
+-- PK-Umbau project -> (project, name), idempotent: greift nur, solange der
+-- PK noch 1-spaltig ist. Laeuft im selben pool.query(SCHEMA_SQL)-Aufruf
+-- (Simple-Query, kein Statement-Splitting — DO-Block bleibt intakt).
+DO $ws3$
+BEGIN
+  IF (SELECT array_length(conkey, 1) FROM pg_constraint
+       WHERE conrelid = 'project_workspaces'::regclass AND contype = 'p') = 1 THEN
+    ALTER TABLE project_workspaces DROP CONSTRAINT project_workspaces_pkey;
+    ALTER TABLE project_workspaces ADD PRIMARY KEY (project, name);
+  END IF;
+END
+$ws3$;
 -- LRU-/Idle-Stopper-Query: WHERE status='active' ORDER BY last_activity_at
 CREATE INDEX IF NOT EXISTS idx_project_workspaces_active_activity
   ON project_workspaces(last_activity_at) WHERE status = 'active';

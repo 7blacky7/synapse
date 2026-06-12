@@ -48,11 +48,13 @@ async function execViaWorkspace(
   cwdRel: string | undefined,
   timeoutMs: number,
   tailLines: number | undefined,
+  workspace?: string,
 ): Promise<Record<string, unknown>> {
   const base = getSynapseApiUrl();
   const url = `${base}/api/projects/${encodeURIComponent(project)}/workspace/exec`;
   const body: Record<string, unknown> = { command, timeoutMs };
   if (cwdRel) body.workingDir = `/workspace/${cwdRel.replace(/^\/+/, '')}`;
+  if (workspace) body.workspace = workspace;
   try {
     const ctl = new AbortController();
     const timer = setTimeout(() => ctl.abort(), timeoutMs + 10_000);
@@ -148,6 +150,7 @@ export const shellTool: ConsolidatedTool = {
         agent_id: { type: 'string', description: 'exec: Attribution — welcher Agent den Job absetzt. Taucht in shell(history) + shell(activity) auf. Optional; Spezialisten via SYNAPSE_AGENT_NAME automatisch.' },
         target: { type: 'string', enum: ['auto', 'local', 'workspace'], description: 'exec: "auto" (Default, Heartbeat-basiert) | "local" (Daemon erzwingen) | "workspace" (Docker-Container erzwingen)' },
         isolated: { type: 'boolean', description: 'exec: Kurzform fuer target="workspace" — fuer isolierte Tests im Docker-Container (Default false)' },
+        workspace: { type: 'string', description: 'exec: WS3 — benannter Ziel-Workspace im Container-Modus (Default "main"). Max 3 pro Projekt; alle teilen /workspace, eigenes Home/Caps/Image; DNS synapse-ws-<projekt>-<name> (main ohne Suffix). Wirkt nur bei target=workspace/isolated.' },
         since_last_read: {
           type: 'boolean',
           description: 'get_stream: nur neue Zeilen seit letztem Call (Default true)',
@@ -277,7 +280,7 @@ export const shellTool: ConsolidatedTool = {
 
     let result: Record<string, unknown>;
     if (target === 'workspace') {
-      result = await execViaWorkspace(project, command, cwdRel, timeoutMs ?? 30000, tailLines);
+      result = await execViaWorkspace(project, command, cwdRel, timeoutMs ?? 30000, tailLines, str(args, 'workspace'));
     } else {
       result = (await execShellInProject({
         project,

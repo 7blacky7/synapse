@@ -38,15 +38,17 @@ export async function workspaceRoutes(fastify: FastifyInstance): Promise<void> {
     }
   });
 
-  /** POST /api/projects/:name/workspace/start — Container starten (lazy ensure). */
-  fastify.post<{ Params: { name: string } }>(
+  /** POST /api/projects/:name/workspace/start — Container starten (lazy ensure).
+   *  Body: { workspace?: string } — WS3: benannter Workspace (Default 'main'). */
+  fastify.post<{ Params: { name: string }; Body: { workspace?: string } }>(
     '/api/projects/:name/workspace/start',
     async (request, reply) => {
       const orch = ensureAvailable(reply);
       if (!orch) return;
+      const ws = request.body?.workspace ?? 'main';
       try {
-        const containerId = await orch.ensureProjectRunning(request.params.name);
-        return { success: true, project: request.params.name, container_id: containerId };
+        const containerId = await orch.ensureProjectRunning(request.params.name, ws);
+        return { success: true, project: request.params.name, workspace: ws, container_id: containerId };
       } catch (err) {
         return reply.status(500).send({ success: false, error: { message: String(err) } });
       }
@@ -54,30 +56,32 @@ export async function workspaceRoutes(fastify: FastifyInstance): Promise<void> {
   );
 
   /** POST /api/projects/:name/workspace/stop — Container stoppen (Volume bleibt). */
-  fastify.post<{ Params: { name: string } }>(
+  fastify.post<{ Params: { name: string }; Body: { workspace?: string } }>(
     '/api/projects/:name/workspace/stop',
     async (request, reply) => {
       const orch = ensureAvailable(reply);
       if (!orch) return;
+      const ws = request.body?.workspace ?? 'main';
       try {
-        await orch.stopProject(request.params.name, 'api-manual');
-        return { success: true, project: request.params.name, stopped: true };
+        await orch.stopProject(request.params.name, 'api-manual', ws);
+        return { success: true, project: request.params.name, workspace: ws, stopped: true };
       } catch (err) {
         return reply.status(500).send({ success: false, error: { message: String(err) } });
       }
     }
   );
 
-  /** POST /api/projects/:name/workspace/pin — Body: { pinned: boolean }. */
-  fastify.post<{ Params: { name: string }; Body: { pinned?: boolean } }>(
+  /** POST /api/projects/:name/workspace/pin — Body: { pinned?: boolean; workspace?: string }. */
+  fastify.post<{ Params: { name: string }; Body: { pinned?: boolean; workspace?: string } }>(
     '/api/projects/:name/workspace/pin',
     async (request, reply) => {
       const orch = ensureAvailable(reply);
       if (!orch) return;
       const pinned = request.body?.pinned ?? true;
+      const ws = request.body?.workspace ?? 'main';
       try {
-        await orch.pin(request.params.name, pinned);
-        return { success: true, project: request.params.name, pinned };
+        await orch.pin(request.params.name, pinned, ws);
+        return { success: true, project: request.params.name, workspace: ws, pinned };
       } catch (err) {
         return reply.status(500).send({ success: false, error: { message: String(err) } });
       }
@@ -110,12 +114,14 @@ export async function workspaceRoutes(fastify: FastifyInstance): Promise<void> {
    */
   fastify.post<{
     Params: { name: string };
+    Body: { workspace?: string };
   }>('/api/projects/:name/workspace/reset-home', async (request, reply) => {
     const orch = ensureAvailable(reply);
     if (!orch) return;
+    const ws = request.body?.workspace ?? 'main';
     try {
-      const result = await orch.resetHome(request.params.name);
-      return { success: true, project: request.params.name, ...result };
+      const result = await orch.resetHome(request.params.name, ws);
+      return { success: true, project: request.params.name, workspace: ws, ...result };
     } catch (err) {
       return reply.status(500).send({ success: false, error: { message: String(err) } });
     }
@@ -147,13 +153,14 @@ export async function workspaceRoutes(fastify: FastifyInstance): Promise<void> {
    */
   fastify.patch<{
     Params: { name: string };
-    Body: { cpuLimit?: number; memLimitMb?: number; pidsLimit?: number; tmpfsMb?: number; image?: string };
+    Body: { cpuLimit?: number; memLimitMb?: number; pidsLimit?: number; tmpfsMb?: number; image?: string; workspace?: string };
   }>('/api/projects/:name/workspace/config', async (request, reply) => {
     const orch = ensureAvailable(reply);
     if (!orch) return;
+    const ws = request.body?.workspace ?? 'main';
     try {
-      const r = await orch.configure(request.params.name, request.body ?? {});
-      return { success: true, project: request.params.name, ...r };
+      const r = await orch.configure(request.params.name, request.body ?? {}, ws);
+      return { success: true, project: request.params.name, workspace: ws, ...r };
     } catch (err) {
       return reply.status(500).send({ success: false, error: { message: String(err) } });
     }
@@ -161,12 +168,14 @@ export async function workspaceRoutes(fastify: FastifyInstance): Promise<void> {
 
   /**
    * POST /api/projects/:name/workspace/exec
-   * Body: { command: string; timeoutMs?: number; workingDir?: string }
+   * Body: { command: string; timeoutMs?: number; workingDir?: string;
+   *         workspace?: string; exposePorts?: number[] }
    * Synchron: wartet bis Kommando fertig oder timeout. Liefert stdout/stderr/exitCode.
+   * WS3: workspace waehlt den benannten Container (Default 'main').
    */
   fastify.post<{
     Params: { name: string };
-    Body: { command?: string; timeoutMs?: number; workingDir?: string };
+    Body: { command?: string; timeoutMs?: number; workingDir?: string; workspace?: string; exposePorts?: number[] };
   }>('/api/projects/:name/workspace/exec', async (request, reply) => {
     const orch = ensureAvailable(reply);
     if (!orch) return;
@@ -177,12 +186,17 @@ export async function workspaceRoutes(fastify: FastifyInstance): Promise<void> {
         error: { message: 'command (string) ist erforderlich im Body' },
       });
     }
+    const ws = request.body?.workspace ?? 'main';
     try {
       const result = await orch.exec(request.params.name, command, {
         timeoutMs: request.body.timeoutMs,
         workingDir: request.body.workingDir,
+        workspace: ws,
+        exposePorts: Array.isArray(request.body.exposePorts)
+          ? request.body.exposePorts.map(Number).filter(Number.isFinite)
+          : undefined,
       });
-      return { success: true, project: request.params.name, ...result };
+      return { success: true, project: request.params.name, workspace: ws, ...result };
     } catch (err) {
       return reply.status(500).send({ success: false, error: { message: String(err) } });
     }
