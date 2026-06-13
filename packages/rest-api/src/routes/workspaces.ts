@@ -128,6 +128,32 @@ export async function workspaceRoutes(fastify: FastifyInstance): Promise<void> {
   });
 
   /**
+   * POST /api/projects/:name/workspace/make-writable
+   * Body: { path: string; workspace?: string }
+   * Gibt einen Pfad unterhalb /workspace fuer User synapse frei (chown + u+rwX,
+   * mkdir -p inklusive) — fuer Build-Artefakte (target/, build/, dist/). Der
+   * PG-Sync legt Source-Files als root/0444 an; das Volume selbst ist rw.
+   */
+  fastify.post<{
+    Params: { name: string };
+    Body: { path?: string; workspace?: string };
+  }>('/api/projects/:name/workspace/make-writable', async (request, reply) => {
+    const orch = ensureAvailable(reply);
+    if (!orch) return;
+    const p = request.body?.path;
+    if (!p || typeof p !== 'string') {
+      return reply.status(400).send({ success: false, error: { message: 'path (string) ist erforderlich im Body' } });
+    }
+    const ws = request.body?.workspace ?? 'main';
+    try {
+      const result = await orch.makeWritable(request.params.name, p, ws);
+      return { success: true, project: request.params.name, workspace: ws, ...result };
+    } catch (err) {
+      return reply.status(500).send({ success: false, error: { message: String(err) } });
+    }
+  });
+
+  /**
    * POST /api/projects/:name/workspace/commit
    * Container-FS /workspace → PG.code_files (mit Hash-Diff, parsed_at=NULL bei Aenderung).
    * Body: { ignorePatterns?: string[] }

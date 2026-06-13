@@ -394,6 +394,47 @@ export class WorkspaceOrchestrator {
   }
 
   /**
+   * WS5-DX: Gibt einen Pfad unterhalb /workspace im Container zum Schreiben
+   * fuer User synapse frei (Build-Artefakte: target/, build/, dist/, .venv/).
+   * Hintergrund (empirisch 2026-06-13, moo cargo-Build): das /workspace-Volume
+   * ist rw gemountet — die Read-Only-Wirkung entsteht NUR durch root-Ownership
+   * + Mode 0444 aus dem PG-Sync. Diese Methode chownt den Teilbaum via
+   * root-exec auf synapse (1000:1000) und setzt u+rwX. Source of Truth bleibt
+   * PG: der Sync ueberschreibt synchronisierte Dateien wieder mit root/0444 —
+   * make_writable ist fuer BUILD-OUTPUT gedacht, Source-Edits laufen weiter
+   * ueber das files-Tool. Ganz-/workspace-Freigabe ist bewusst verboten.
+   */
+  async makeWritable(project: string, relPath: string, ws = 'main'): Promise<{ path: string }> {
+    if (!this.dockerAvailable) {
+      throw new Error('Workspace-Orchestrator nicht verfuegbar (Docker-Socket nicht erreichbar)');
+    }
+    const clean = (relPath || '').replace(/^\.\/+/, '').replace(/^\/+|\/+$/g, '');
+    if (!clean || clean === '.' || clean.includes('..') || !/^[A-Za-z0-9._\/-]+$/.test(clean)) {
+      throw new Error(`make_writable: ungueltiger Pfad "${relPath}" — relativer Pfad unterhalb /workspace (kein "..", nicht "." / komplettes /workspace)`);
+    }
+    const { ws: wsName } = this.wsKey(project, ws);
+    const containerId = await this.ensureProjectRunning(project, wsName);
+    const container = this.docker.getContainer(containerId);
+    const exec = await container.exec({
+      Cmd: ['/bin/sh', '-c', `mkdir -p '/workspace/${clean}' && chown -R 1000:1000 '/workspace/${clean}' && chmod -R u+rwX '/workspace/${clean}'`],
+      AttachStdout: true,
+      AttachStderr: true,
+      Tty: false,
+      User: '0',
+    });
+    const stream = await exec.start({ hijack: true, stdin: false });
+    await new Promise<void>((resolve) => { stream.on('end', () => resolve()); stream.on('error', () => resolve()); });
+    const info = await exec.inspect().catch(() => null);
+    if (info && info.ExitCode !== null && info.ExitCode !== 0) {
+      throw new Error(`make_writable: chown/chmod fehlgeschlagen (exit ${info.ExitCode})`);
+    }
+    void this.appendToLog(containerId, `MAKE_WRITABLE: /workspace/${clean}`);
+    await this.recordActivity(project, wsName);
+    console.error(`[Workspaces] ${project}/${wsName}: make_writable /workspace/${clean}`);
+    return { path: `/workspace/${clean}` };
+  }
+
+  /**
    * Fuehrt ein Shell-Kommando im Workspace-Container des Projekts aus.
    * Startet den Container falls noetig (ensureProjectRunning).
    * Sammelt stdout/stderr getrennt via Stream-Demux.
