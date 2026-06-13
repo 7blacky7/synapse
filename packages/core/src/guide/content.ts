@@ -79,8 +79,8 @@ Notizbuch + Code-Editor + Sub-Hilfsagenten.
 2. guide()                            — diese Uebersicht
 3. guide({ tool_name: "code_intel" }) — Deep-Dive fuer jedes Tool bei Bedarf
 4. search(action: "memory", query: "<thema>") — Projekt-Wissen gezielt finden
-   (memory(list) hat KEIN limit — bei 100+ Memories sprengt der Dump deinen Context;
-    wenn list, dann IMMER mit category-Filter)
+   (memory(list) liefert max. limit Eintraege, Standard 100 — names_only: true
+    oder category-Filter machen es noch kompakter; total/truncated zeigen den Rest)
 5. code_intel(action: "tree", depth: 1) — Projektstruktur in einem Call
 
 ## Tool-Kategorien
@@ -180,7 +180,7 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
         description: 'Kommando synchron ausfuehren, Ergebnis in Response. Voller Output wird automatisch in PG gespeichert (gecappt 1MB).',
         params: 'project (req), command (req), timeout_ms, tail_lines, cwd_relative, target (auto|local|workspace, Default auto), isolated (bool = Kurzform target:workspace), workspace (Ziel-Container bei Multi-Workspace, Default main), agent_id (Attribution fuer history/activity)',
         example: 'shell({ action: "exec", project: "synapse", command: "echo hallo" })',
-        tips: 'Default action — wenn du kein action angibst, ist es "exec". Bei project_inactive bekommst du klare message statt stillem Hangen. FALLE: die exec-Antwort enthaelt stream_id — das ist NICHT die Job-ID! get/log brauchen die Job-UUID; die bekommst du via history (limit: 1). tail_lines Default ist 5 — bei mehrzeiligem Output direkt hoeher setzen, sonst kostet dich das einen zweiten Call.',
+        tips: 'Default action — wenn du kein action angibst, ist es "exec". Bei project_inactive bekommst du klare message statt stillem Hangen. Die exec-Antwort enthaelt id (= Job-UUID fuer get/log) UND stream_id. Falsche/verwechselte ID liefert jetzt einen klaren invalid_job_id-Fehler statt einer rohen PG-Meldung. tail_lines Default ist 5 — bei mehrzeiligem Output direkt hoeher setzen, sonst kostet dich das einen zweiten Call.',
       },
       get_stream: {
         description: 'Live-Tail eines laufenden Jobs (nur via lokalem MCP, REST gibt 501).',
@@ -487,7 +487,7 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
         description: 'Audit-Log: chronologische Liste aller Datei-Aenderungen mit Begruendung. Crash-Recovery: nach Session-Crash kann eine neue Session sehen "wer hat wann was warum geaendert" und gegebenenfalls Versionen wiederherstellen. Filter nach feature_tag (exakter Match) oder version_id (rekursive parent-chain via parent_version_id).',
         params: 'project (req); optional: agent_id (Filter), file_path (Praefix-Match), since (ISO-Timestamp), limit (Standard 50, Max 500), feature_tag (, exakter Match), version_id (, BIGINT als String — liefert die Korrektur-Chain ab dieser Version rekursiv).',
         example: 'files({ action: "history", project: "synapse", feature_tag: "idea-thought-task-link", limit: 20 })',
-        tips: 'reason wird beim Schreiben mitgegeben (files write-actions + plan/commit). Eintraege enthalten file_path, edit_action, agent_id, batch_id, reason, created_at und feature_tag, parent_version_id, git_commit_sha. Voller Inhalt einer Version: files(action: "get_version", version_id). version_id-Filter ist projektgebunden (Cross-Project-Schutz). FALLE: agent_id wirkt hier als EXAKTER Read-Filter, NICHT als Attribution — wer reflexhaft seine eigene agent_id mitschickt, filtert die Edits aller anderen Agenten weg und bekommt count=0. Fuer die volle Projekt-History agent_id WEGLASSEN.',
+        tips: 'reason wird beim Schreiben mitgegeben (files write-actions + plan/commit). Eintraege enthalten file_path, edit_action, agent_id, batch_id, reason, created_at und feature_tag, parent_version_id, git_commit_sha. Voller Inhalt einer Version: files(action: "get_version", version_id). version_id-Filter ist projektgebunden (Cross-Project-Schutz). FALLE: agent_id wirkt hier als EXAKTER Read-Filter, NICHT als Attribution — fuer die volle Projekt-History weglassen. Expliziter Filter: agent_filter. 0 Treffer mit gesetztem Filter liefern jetzt einen erklaerenden tip statt stillem count=0.',
       },
     },
   },
@@ -810,7 +810,7 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
   },
 
   plan: {
-    summary: 'Projekt-Plan und Tasks verwalten: abrufen, aktualisieren und neue Tasks hinzufuegen.',
+    summary: 'Projekt-Plan und Tasks verwalten: abrufen (mit status-Filter, compact und limit gegen Context-Vollabwurf — Antwort enthaelt tasks_total/tasks_returned), aktualisieren und neue Tasks hinzufuegen.',
     when_to_use: [
       'Aktuellen Plan und Tasks anzeigen: get.',
       'Plan-Metadaten aktualisieren (Ziele, Architektur): update.',
@@ -977,10 +977,10 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
     ],
     actions: {
       get_for_file: {
-        description: 'Wissens-Airbag: Relevante Warnings/Docs fuer eine Datei abrufen.',
-        params: 'file_path (req, String oder Array), agent_id (req), project (req)',
-        example: 'docs({ action: "get_for_file", file_path: "src/api.ts", agent_id: "mein-agent", project: "synapse" })',
-        tips: 'VOR jeder Datei-Bearbeitung aufrufen. Array fuer Multi-File. Warnings NICHT ignorieren.',
+        description: 'Wissens-Airbag: Relevante Warnings/Docs fuer eine Datei abrufen — dedupliziert (Section + Content-Praefix) und hart limitiert pro Framework.',
+        params: 'file_path (req, String oder Array), agent_id (req), project (req); optional: limit (pro Framework, Standard 5), framework (Filter auf EIN Framework, z.B. "fastify")',
+        example: 'docs({ action: "get_for_file", file_path: "src/api.ts", agent_id: "mein-agent", project: "synapse", framework: "fastify", limit: 3 })',
+        tips: 'VOR jeder Datei-Bearbeitung aufrufen. Array fuer Multi-File. Warnings NICHT ignorieren. Framework-Zuordnung laeuft ueber die Datei-Extension (.ts matcht u.a. react UND fastify) — mit framework: "<name>" gezielt eingrenzen.',
       },
       search: {
         description: 'Tech-Docs semantisch durchsuchen.',
@@ -1281,15 +1281,17 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
   },
 
   // -------------------------------------------------------------------------
-  // workspace — Docker-Sandbox-Lifecycle (pro Projekt, bis zu 3 benannte)
+  // workspace — Docker-Sandbox-Lifecycle (pro Projekt, Rollen + benannte Instanzen)
   // -------------------------------------------------------------------------
   workspace: {
-    summary: 'Lifecycle der pro-Projekt Docker-Sandbox-Container auf der synapse-api. NUR Lifecycle (list/start/stop/pin/unpin/configure/materialize/reset_home) — fuer Shell-Ausfuehrung IMMER shell (Auto-Routing bzw. isolated:true). Bis zu 3 benannte Workspaces pro Projekt (Param name, Default "main"); /workspace (Source, read-only) ist geteilt, Home-Volume pro Workspace. Container entstehen LAZY beim ersten Bedarf — nichts manuell vorstarten. Workspaces sind reine TEST-Sandboxen.',
-    when_to_use: 'Container-Status pruefen (list). Ressourcen anpassen (configure: cpu/mem/pids/tmpfs/image — greift beim naechsten Start). Vor Idle-Eviction schuetzen (pin). Kaputtes Home heilen (reset_home). Integrationstests zwischen 2-3 Containern via proxynet-DNS http://synapse-ws-<projekt>[-<name>]:<port>.',
+    summary: 'Lifecycle der pro-Projekt Docker-Sandbox-Container auf der synapse-api. NUR Lifecycle (list/start/stop/pin/unpin/configure/materialize/reset_home) — fuer Shell-Ausfuehrung IMMER shell (Auto-Routing bzw. isolated:true). Benannte Workspaces pro Projekt (Param name, Default "main"; Cap via ENV SYNAPSE_WS_PER_PROJECT_CAP, Default 6); WS4-ROLLEN: Rolle = editierbares Template (role_set/role_list/role_delete; project weglassen = global, projekt-scoped schlaegt global), Workspace = Instanz — jede Rolle ist beliebig oft instanziierbar (start/exec mit role + frei waehlbarem name: db-1, db-2, app, qa), init_command laeuft nach JEDEM Container-Start (Dienste-Bootstrap, Fehler -> last_error); /workspace (Source, read-only) ist geteilt, Home-Volume pro Workspace. WS5-CONTAINER-BUILDS: Rolle container-builder (Image synapse-workspace-podman:latest) baut/testet Dockerfiles + docker-compose der User-Projekte mit rootless Podman (docker = podman-Alias, daemonless, Storage im HOME-Volume); devices/security_opts am Rollen-Template wirken NUR wenn die Rolle in ENV SYNAPSE_WS_PRIVILEGED_ROLES allowlisted ist — sonst verweigert der Orchestrator den Start hart. Kein --privileged, kein docker.sock — existiert bewusst nicht. Container entstehen LAZY beim ersten Bedarf — nichts manuell vorstarten. Workspaces sind reine TEST-Sandboxen.',
+    when_to_use: 'Container-Status pruefen (list). Ressourcen anpassen (configure: cpu/mem/pids/tmpfs/image — greift beim naechsten Start). Vor Idle-Eviction schuetzen (pin). Kaputtes Home heilen (reset_home). Build-Pfad unter /workspace zum Schreiben freigeben: make_writable mit path (z.B. compiler/target oder build) — noetig weil der PG-Sync Source-Files als root/0444 anlegt, das /workspace-Volume selbst ist rw; fuer Build-Artefakte gedacht, Source-Edits weiter via files-Tool. Integrationstests zwischen Containern via proxynet-DNS http://synapse-ws-<projekt>[-<name>]:<port>. Rollen-Templates pflegen (role_set/role_list/role_delete) und Multi-Geraete-Setups bauen: db-1 (role db-postgres) + app (role server) + qa (role wine-qa) verhalten sich wie 3 Geraete im selben Netz — zweite DB? name db-2, gleiche Rolle.',
     when_not_to_use: 'Shell-Kommandos ausfuehren — nutze shell (die exec-Action hier ist deprecated). Dateien schreiben — nutze files (Auto-Sync in den Container). Dauerbetrieb — Idle-Stop nach 10 Min und LRU-Eviction sind gewollt.',
-    param_tips: 'name: Ziel-Workspace (Default main; main behaelt den DNS-Namen ohne Suffix). configure wirkt erst beim naechsten Container-Start. Jede Antwort liefert dns_name — IMMER den DNS-Namen nutzen, NIE die Container-IP (wechselt bei Restart).',
+    param_tips: 'name: Ziel-Workspace (Default main; main behaelt den DNS-Namen ohne Suffix). configure wirkt erst beim naechsten Container-Start. Jede Antwort liefert dns_name — IMMER den DNS-Namen nutzen, NIE die Container-IP (wechselt bei Restart). role: wirkt nur bei ERST-Anlage einer Instanz (Template-Werte werden in die Row kopiert; danach configure nutzen); Template-Edits wirken ab dem naechsten Container-Start der Instanzen.',
     examples: [
       'workspace({ action: "list" })',
+      'workspace({ action: "role_list" })',
+      'workspace({ action: "exec", project: "synapse", name: "db-1", role: "db-postgres", command: "pg_isready -h /tmp" })',
       'workspace({ action: "configure", project: "synapse", mem_limit_mb: 2048, tmpfs_mb: 1024 })',
       'workspace({ action: "pin", project: "synapse", name: "server" })',
     ],
@@ -1297,6 +1299,7 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
       'workspace(exec) statt shell({ isolated: true }) — gleiche Engine, aber shell hat einheitliches Antwortformat + executed_via.',
       'Container manuell vorstarten "damit er bereit ist" — Lazy-Start macht das automatisch.',
       'Container-IPs verdrahten — nach jedem Restart ungueltig, dns_name verwenden.',
+      'Eine Rolle als festen Slot behandeln — Rollen sind Templates: dieselbe Rolle mehrfach instanziieren (db-1, db-2) ist der Normalfall.',
     ],
   },
 

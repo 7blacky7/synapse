@@ -258,7 +258,8 @@ const MCP_TOOLS = [
           ],
           description: 'Dateipfad (erforderlich fuer find_for_file). Array erlaubt fuer: find_for_file',
         },
-        limit: { type: 'number', description: 'Max. Ergebnisse (optional, Standard: 10 fuer find_for_file)' },
+        limit: { type: 'number', description: 'Max. Ergebnisse (optional, Standard: 10 fuer find_for_file; list: Standard 100)' },
+        names_only: { type: 'boolean', description: 'Nur fuer list: ausschliesslich Memory-Namen liefern (minimaler Context)' },
         codeLimit: { type: 'number', description: 'Max. Code-Chunks (optional, Standard: 10 fuer read_with_code)' },
         includeSemanticMatches: { type: 'boolean', description: 'Semantische Matches einbeziehen (optional, Standard: true fuer read_with_code)' },
         dry_run: { type: 'boolean', description: 'Preview-Modus — NUR aktiv wenn name/id ein Array ist (Batch-Delete). Bei Single-String wird sofort geloescht, dry_run wird ignoriert. Wenn die UI eine Bestaetigung erzwingen soll, ruf erst mit Array + dry_run:true auf, dann mit Array ohne dry_run.' },
@@ -381,8 +382,10 @@ const MCP_TOOLS = [
         status: {
           type: 'string',
           enum: ['todo', 'in_progress', 'done', 'blocked'],
-          description: 'Neuer Task-Status (fuer update_task)',
+          description: 'Neuer Task-Status (fuer update_task); bei action=get: optionaler Task-Filter',
         },
+        compact: { type: 'boolean', description: 'Nur fuer get: Tasks ohne description liefern (id/title/status/priority) — Context-sparend' },
+        limit: { type: 'number', description: 'Nur fuer get: max. Anzahl Tasks in der Antwort' },
       },
       required: ['action', 'project'],
     },
@@ -637,7 +640,7 @@ const MCP_TOOLS = [
           enum: ['add', 'search', 'get_for_file'],
           description: 'Aktion: add (Indexieren), search (Suchen), get_for_file (Wissens-Airbag)',
         },
-        framework: { type: 'string', description: 'Framework/Sprache (z.B. react, python, express)' },
+        framework: { type: 'string', description: 'Framework/Sprache (z.B. react, python, express); bei get_for_file: optionaler Framework-Filter' },
         version: { type: 'string', description: 'Version (z.B. 19.0, 3.12)' },
         section: { type: 'string', description: 'Abschnitt (z.B. hooks, routing, breaking-changes)' },
         content: { type: 'string', description: 'Inhalt des Docs' },
@@ -816,6 +819,7 @@ const MCP_TOOLS = [
         batch_id: { type: 'string', description: 'Batch-ID (fuer restore_batch — rollt alle Files einer Multi-File-Batch zurueck).' },
         plan_id: { type: 'string', description: 'Plan-ID (fuer commit, cancel, plan_status). String wegen BIGSERIAL.' },
         agent_id: { type: 'string', description: 'Optional: Audit-Agent fuer file_versions. Bei Web-KI-Calls ohne Wrapper wird agent_id aus User-Agent/X-Openai-Session abgeleitet (z.B. "gpt-<8charsessionid>"). DARF weggelassen oder leer sein — Server ergaenzt automatisch. AUSNAHME action=history: dort wirkt agent_id als EXAKTER Read-Filter — fuer die volle Projekt-History weglassen!' },
+        agent_filter: { type: 'string', description: 'Nur fuer history: expliziter exakter Agent-Filter (bevorzugt gegenueber agent_id-als-Filter)' },
         ops: {
           type: 'array',
           description: 'Multi-File Edit-Plan: 1..100 Operationen ueber mehrere Dateien. Aktionen: create, update, search_replace, search_replace_batch, replace_lines, insert_after, delete_lines, delete (ganze Datei), move (-> new_path), copy (-> new_path).',
@@ -924,6 +928,7 @@ const MCP_TOOLS = [
         version_id: { type: 'string', description: 'Pflicht fuer restore' },
         batch_id: { type: 'string', description: 'Pflicht fuer restore_batch' },
         agent_id: { type: 'string', description: 'Optionale Agent-ID (Audit-Trail). AUSNAHME action=history: wirkt als exakter Read-Filter — fuer volle Projekt-History weglassen.' },
+        agent_filter: { type: 'string', description: 'Nur fuer history: expliziter exakter Agent-Filter (bevorzugt gegenueber agent_id-als-Filter)' },
         open_for_coedit: { type: 'boolean', description: 'plan: ob Co-Edits erlaubt sind (default true)' },
         auto_commit: { type: 'boolean', description: 'plan + commit in einem Call (default false). Versionierung bleibt aktiv.' },
         agent_note: { type: 'string', description: '(optional): KI-eigene Beobachtungen pro Batch (zusaetzlich zum User-reason).' },
@@ -1012,12 +1017,18 @@ const MCP_TOOLS = [
   // 20. workspace — pro-Projekt Docker-Container fuer Shell + File-Sync (server-seitig auf Unraid)
   {
     name: 'workspace',
-    description: 'Lifecycle-Management der pro-Projekt Docker-Sandbox-Container (synapse-workspace:latest) auf dem Synapse-Server. ⚠️ FUER SHELL-AUSFUEHRUNG: nutze IMMER das shell-Tool (Auto-Routing: lokaler Daemon vs Workspace; isolated:true fuer Container-Erzwingung). Dieses workspace-Tool ist nur fuer Lifecycle: list (Status aller Container), start/stop (manuell), pin/unpin (vor Idle-Eviction schuetzen), materialize (FULL sync PG→Container — selten noetig, Auto-Sync laeuft via PG-LISTEN/NOTIFY). exec-Action existiert noch, aber lieber shell({isolated:true}) verwenden — gleiche Engine, einheitliche Antwort, executed_via-Feld. WORKFLOW: Files via files-Tool in code_files → automatisch in Container synchronisiert. Source-Files im /workspace sind READ-ONLY (mode 0444); install/build schreiben in /workspace/node_modules bzw. /workspace/dist (writable). Lifecycle: Idle-Stop nach 10 Min, LRU-Eviction bei Cap. 🌐 NETZWERK: Jede Workspace-Response liefert dns_name (z.B. "synapse-ws-<project>"). Andere proxynet-Container (insbesondere ki-browser) erreichen den Workspace via http://<dns_name>:<port> — NIE die Container-IP nutzen, die wechselt bei Restart. Actions: list, start, stop, pin, unpin, materialize, exec (deprecated → shell), commit (deprecated → files-Tool), configure (cpu_limit/mem_limit_mb/pids_limit/tmpfs_mb/image pro Projekt setzen — greift beim naechsten Container-Start; fuer Build-/Test-Szenarien z.B. mem_limit_mb: 2048, tmpfs_mb: 1024), reset_home (HOME-Volume /home/synapse zuruecksetzen — Selbstheilung wenn npm/pip/cargo/rustup-Caches oder Configs im persistenten Home kaputt sind; stoppt den Container, /workspace bleibt unberuehrt). 🔀 WS3 MULTI-WORKSPACE: Bis zu 3 BENANNTE Workspaces pro Projekt (Param name, Default "main") — z.B. Backend in name:"server", App/Client in name:"app". Alle teilen /workspace (eine Quelle, ein Sync), haben aber EIGENES Home-Volume, eigene Caps und eigenes Image (configure mit name). Sie erreichen sich gegenseitig ueber proxynet-DNS: main = http://synapse-ws-<projekt>:<port> (unveraendert), benannte = http://synapse-ws-<projekt>-<name>:<port>. Use-Case: Backend in "server" starten (exec mit expose_ports), aus "app" oder main per curl dagegen testen — Netzwerk-Integrationstest wie im echten Einsatz, ohne die Sandbox zu verlassen.',
+    description: 'Lifecycle-Management der pro-Projekt Docker-Sandbox-Container (synapse-workspace:latest) auf dem Synapse-Server. ⚠️ FUER SHELL-AUSFUEHRUNG: nutze IMMER das shell-Tool (Auto-Routing: lokaler Daemon vs Workspace; isolated:true fuer Container-Erzwingung). Dieses workspace-Tool ist nur fuer Lifecycle: list (Status aller Container), start/stop (manuell), pin/unpin (vor Idle-Eviction schuetzen), materialize (FULL sync PG→Container — selten noetig, Auto-Sync laeuft via PG-LISTEN/NOTIFY). exec-Action existiert noch, aber lieber shell({isolated:true}) verwenden — gleiche Engine, einheitliche Antwort, executed_via-Feld. WORKFLOW: Files via files-Tool in code_files → automatisch in Container synchronisiert. Source-Files im /workspace sind READ-ONLY (mode 0444); install/build schreiben in /workspace/node_modules bzw. /workspace/dist (writable). Lifecycle: Idle-Stop nach 10 Min, LRU-Eviction bei Cap. 🌐 NETZWERK: Jede Workspace-Response liefert dns_name (z.B. "synapse-ws-<project>"). Andere proxynet-Container (insbesondere ki-browser) erreichen den Workspace via http://<dns_name>:<port> — NIE die Container-IP nutzen, die wechselt bei Restart. Actions: list, start, stop, pin, unpin, materialize, exec (deprecated → shell), commit (deprecated → files-Tool), configure (cpu_limit/mem_limit_mb/pids_limit/tmpfs_mb/image pro Projekt setzen — greift beim naechsten Container-Start; fuer Build-/Test-Szenarien z.B. mem_limit_mb: 2048, tmpfs_mb: 1024), reset_home (HOME-Volume /home/synapse zuruecksetzen — Selbstheilung wenn npm/pip/cargo/rustup-Caches oder Configs im persistenten Home kaputt sind; stoppt den Container, /workspace bleibt unberuehrt), make_writable (Pfad unterhalb /workspace fuer Build-Artefakte freigeben — chown auf synapse via root-exec; noetig weil der PG-Sync Source-Files als root/0444 anlegt, das Volume selbst ist rw; z.B. path: compiler/target). 🔀 WS3 MULTI-WORKSPACE + WS4 ROLLEN: Benannte Workspaces pro Projekt (Cap ENV SYNAPSE_WS_PER_PROJECT_CAP, Default 6). Rolle = Template (role_set/role_list/role_delete; project weglassen = global), Workspace = Instanz: start/exec mit role:"db-postgres" + name:"db-1" instanziiert ein Template — beliebig oft (db-1, db-2, app, qa, ...), init_command faehrt Dienste nach jedem Start hoch. So entstehen Multi-Geraete-Setups (db ↔ app ↔ wine-qa) im selben proxynet (Param name, Default "main") — z.B. Backend in name:"server", App/Client in name:"app". Alle teilen /workspace (eine Quelle, ein Sync), haben aber EIGENES Home-Volume, eigene Caps und eigenes Image (configure mit name). Sie erreichen sich gegenseitig ueber proxynet-DNS: main = http://synapse-ws-<projekt>:<port> (unveraendert), benannte = http://synapse-ws-<projekt>-<name>:<port>. Use-Case: Backend in "server" starten (exec mit expose_ports), aus "app" oder main per curl dagegen testen — Netzwerk-Integrationstest wie im echten Einsatz, ohne die Sandbox zu verlassen. 🔐 WS5 CONTAINER-BUILDS: Rolle container-builder (Tier-2-Image synapse-workspace-podman:latest) baut/testet Dockerfiles + docker-compose der User-Projekte mit rootless Podman (docker = podman-Alias, daemonless, fuse-overlayfs, Storage im HOME-Volume). Privilegierte Rollen-Optionen (devices/security_opts via role_set) wirken NUR wenn die Rolle in ENV SYNAPSE_WS_PRIVILEGED_ROLES (Komma-Liste) allowlisted ist — sonst verweigert der Orchestrator den Container-Start hart. Kein --privileged, kein docker.sock-Mount — gibt es bewusst nicht.',
     inputSchema: {
       type: 'object',
       properties: {
-        action: { type: 'string', enum: ['list', 'start', 'stop', 'pin', 'unpin', 'exec', 'materialize', 'commit', 'configure', 'reset_home'], description: 'Aktion' },
-        name: { type: 'string', description: 'WS3: Benannter Workspace innerhalb des Projekts (Default "main"). Max 3 pro Projekt, Regex ^[a-z0-9][a-z0-9-]{0,19}$. Gilt fuer start/stop/pin/unpin/exec/configure/reset_home. DNS: main=synapse-ws-<projekt>, sonst synapse-ws-<projekt>-<name>.' },
+        action: { type: 'string', enum: ['list', 'start', 'stop', 'pin', 'unpin', 'exec', 'materialize', 'commit', 'configure', 'reset_home', 'make_writable', 'role_set', 'role_list', 'role_delete'], description: 'Aktion' },
+        role: { type: 'string', description: 'WS4 Rollen-Template. Bei start/exec: Template fuer die ERST-Anlage der Instanz (name frei waehlbar; eine Rolle ist beliebig oft instanziierbar — db-1, db-2, app, qa, ...). Bei role_set/role_delete: Name der Rolle (^[a-z0-9][a-z0-9-]{0,29}$). Rollen sind NIE fest: role_set ueberschreibt; project weglassen = globale Rolle, projekt-scoped schlaegt global.' },
+        init_command: { type: 'string', description: 'Nur role_set: Kommando das nach JEDEM Container-Start einer Instanz dieser Rolle laeuft (User synapse, 120s Timeout) — Dienste-Bootstrap, z.B. initdb + pg_ctl start. Fehler -> last_error, Container bleibt nutzbar.' },
+        description: { type: 'string', description: 'Nur role_set: Kurzbeschreibung der Rolle.' },
+        devices: { type: 'array', items: { type: 'string' }, description: 'Nur role_set (WS5): Geraete-Whitelist der Rolle — erlaubt sind ausschliesslich /dev/fuse, /dev/kvm, /dev/net/tun. Wirkt NUR wenn die Rolle in ENV SYNAPSE_WS_PRIVILEGED_ROLES steht, sonst verweigert der Start. Leeren: role_delete + role_set neu (leeres Array wird als nicht-gesetzt behandelt).' },
+        security_opts: { type: 'array', items: { type: 'string' }, description: 'Nur role_set (WS5): SecurityOpt-Whitelist — erlaubt sind ausschliesslich seccomp=unconfined, apparmor=unconfined, label=disable. Gleiches ENV-Gate wie devices. --privileged und docker.sock existieren bewusst NICHT.' },
+        name: { type: 'string', description: 'WS3: Benannter Workspace innerhalb des Projekts (Default "main"). Cap pro Projekt via ENV SYNAPSE_WS_PER_PROJECT_CAP (Default 6), Regex ^[a-z0-9][a-z0-9-]{0,19}$. Gilt fuer start/stop/pin/unpin/exec/configure/reset_home. DNS: main=synapse-ws-<projekt>, sonst synapse-ws-<projekt>-<name>.' },
+        path: { type: 'string', description: 'make_writable: relativer Pfad unterhalb /workspace, der fuer User synapse schreibbar gemacht wird (chown -R + u+rwX, mkdir -p inklusive). Fuer BUILD-ARTEFAKTE gedacht (z.B. compiler/target, build, dist) — der PG-Sync legt Source-Files als root/0444 an, das /workspace-Volume selbst ist rw. Kein "..", nicht "." (Komplett-Freigabe verboten). Source-Edits weiterhin via files-Tool.' },
         project: { type: 'string', description: 'Projekt-Name (Pflicht ausser bei list)' },
         command: { type: 'string', description: 'Shell-Kommando fuer exec (Pflicht bei exec)' },
         timeout_ms: { type: 'number', description: 'exec: Hard-Timeout in ms (Default 60000)' },
@@ -1758,12 +1769,23 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
         }
         case 'list': {
           const category = str(args, 'category') as 'documentation' | 'note' | 'architecture' | 'decision' | 'rules' | 'other' | undefined;
-          const memories = await listMemories(project, category);
+          const all = await listMemories(project, category);
+          // DX-Befund 3: ohne Limit war list bei 200+ Memories ein Context-Killer.
+          const listLimit = Math.max(1, num(args, 'limit') ?? 100);
+          const sliced = all.slice(0, listLimit);
+          const namesOnly = args.names_only === true;
           return {
-            memories: memories.map(m => ({
-              name: m.name, category: m.category, tags: m.tags,
-              sizeChars: m.content.length, updatedAt: m.updatedAt,
-            })),
+            memories: namesOnly
+              ? sliced.map(m => m.name)
+              : sliced.map(m => ({
+                  name: m.name, category: m.category, tags: m.tags,
+                  sizeChars: m.content.length, updatedAt: m.updatedAt,
+                })),
+            total: all.length,
+            truncated: all.length > sliced.length,
+            ...(all.length > sliced.length
+              ? { tip: `${all.length} Memories insgesamt, ${sliced.length} geliefert — limit erhoehen, category filtern, names_only: true nutzen oder gezielt search(action: "memory").` }
+              : {}),
           };
         }
         case 'delete': {
@@ -1840,15 +1862,27 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
             str(args, 'task_id'),
             str(args, 'task_status') as Parameters<typeof addThought>[5]
           );
+          // Anti-Echo (DX-Befund 4): nicht den kompletten Content zurueckspielen,
+          // den der Agent gerade selbst geschrieben hat — id + Preview reichen.
+          const t = result as unknown as { id: string; tags?: string[]; timestamp?: string; content: string };
+          const trimmed = {
+            success: true,
+            id: t.id,
+            tags: t.tags,
+            timestamp: t.timestamp,
+            content_length: t.content.length,
+            content_preview: t.content.length > 120 ? `${t.content.slice(0, 120)}…` : t.content,
+            message: `Gedanke gespeichert von "${source}"`,
+          };
           if (args.trigger_respawn === true) {
             const { maybeTriggerRespawn } = await import('@synapse/core');
             const decision = await maybeTriggerRespawn(project, source);
             return {
-              ...(result as unknown as Record<string, unknown>),
+              ...trimmed,
               respawn: { triggered: decision.triggered, message: decision.message },
             };
           }
-          return result;
+          return trimmed;
         }
         case 'add_batch': {
           const project = reqStr(args, 'project');
@@ -1881,7 +1915,13 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
           return {
             success: true,
             count: result.thoughts.length,
-            thoughts: result.thoughts,
+            ids: result.thoughts.map(t => t.id),
+            // Anti-Echo (DX-Befund 4): nur Previews statt vollem Content
+            thoughts: result.thoughts.map(t => ({
+              id: t.id,
+              tags: t.tags,
+              content_preview: t.content.length > 120 ? `${t.content.slice(0, 120)}…` : t.content,
+            })),
             warning: result.warning,
             message: `${result.thoughts.length} Gedanken gespeichert von "${source}" (Batch)`,
           };
@@ -1953,8 +1993,31 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
     case 'plan': {
       const project = reqStr(args, 'project');
       switch (action) {
-        case 'get':
-          return (await getPlan(project)) || { message: 'Kein Plan gefunden' };
+        case 'get': {
+          const plan = await getPlan(project);
+          if (!plan) return { message: 'Kein Plan gefunden' };
+          // DX-Befund 5: Vollabwurf vermeiden — status-Filter, compact, limit.
+          const p = plan as unknown as Record<string, unknown> & { tasks?: Array<Record<string, unknown>> };
+          const allTasks = Array.isArray(p.tasks) ? p.tasks : [];
+          const statusFilter = str(args, 'status');
+          const filtered = statusFilter ? allTasks.filter(t => t.status === statusFilter) : allTasks;
+          const taskLimit = num(args, 'limit');
+          const limited = taskLimit && taskLimit > 0 ? filtered.slice(0, taskLimit) : filtered;
+          const compact = args.compact === true;
+          const tasks = compact
+            ? limited.map(t => ({ id: t.id, title: t.title, status: t.status, priority: t.priority }))
+            : limited;
+          return {
+            ...p,
+            tasks,
+            tasks_total: allTasks.length,
+            tasks_returned: tasks.length,
+            ...(statusFilter ? { tasks_status_filter: statusFilter } : {}),
+            ...(compact || tasks.length < allTasks.length
+              ? { tip: 'Task-Liste gefiltert/kompakt — volle Descriptions via plan(get) ohne compact/status/limit.' }
+              : {}),
+          };
+        }
         case 'update':
           return await updatePlan(project, {
             name: str(args, 'name'),
@@ -2717,7 +2780,7 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
           const filePaths = strArray(args, 'file_path');
           if (filePaths && filePaths.length > 1) {
             const settled = await Promise.allSettled(
-              filePaths.map(fp => getDocsForFile(fp, agentId, project))
+              filePaths.map(fp => getDocsForFile(fp, agentId, project, { limit: num(args, 'limit'), frameworks: str(args, 'framework') ? [str(args, 'framework') as string] : undefined }))
             );
             const results: unknown[] = [];
             const errors: string[] = [];
@@ -3188,8 +3251,11 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
       }
       if (action === 'history') {
         const limit = num(args, 'limit') ?? 50;
+        // DX-Befund 1: agent_filter ist der explizite Filter; agent_id bleibt
+        // aus Kompatibilitaet wirksam, aber 0-Treffer liefern jetzt einen tip.
+        const agentFilter = str(args, 'agent_filter') ?? str(args, 'agent_id') ?? undefined;
         const entries = await listFileHistory(project, {
-          agent_id: str(args, 'agent_id') ?? undefined, // READ-FILTER: kein resolveAgentId
+          agent_id: agentFilter, // READ-FILTER: kein resolveAgentId
           file_path: str(args, 'file_path'),
           since: str(args, 'since'),
           limit,
@@ -3204,7 +3270,9 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
           entries,
           tip: entries.length > 0
             ? 'Eintraege chronologisch (neueste zuerst). reason = "Warum" der Aenderung. Voller Inhalt: files(action: "get_version", version_id). feature_tag und parent_version_id zeigen Feature-Group bzw. Korrektur-Chain.'
-            : 'Keine Eintraege fuer diese Filter.',
+            : (agentFilter
+                ? `0 Treffer MIT Agent-Filter "${agentFilter}" — agent_id/agent_filter wirken bei history als EXAKTER Filter. Fuer die volle Projekt-History beide weglassen.`
+                : 'Keine Eintraege fuer diese Filter.'),
         };
       }
 
@@ -3412,6 +3480,10 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
       }
 
       if (shellAction === 'get') {
+        const jobId = reqStr(args, 'id');
+        if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(jobId)) {
+          return { success: false, error: 'invalid_job_id', message: `"${jobId}" ist keine Job-UUID${/^[0-9a-f]{16}$/i.test(jobId) ? ' (das ist eine stream_id)' : ''} — nutze das id-Feld der exec-Antwort oder shell(history).` };
+        }
         const job = await getShellJobById(reqStr(args, 'id'));
         if (!job) {
           return { success: false, error: 'unknown_job', message: `Job ${reqStr(args, 'id')} nicht gefunden` };
@@ -3421,6 +3493,9 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
 
       if (shellAction === 'log') {
         const id = reqStr(args, 'id');
+        if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
+          return { success: false, error: 'invalid_job_id', message: `"${id}" ist keine Job-UUID${/^[0-9a-f]{16}$/i.test(id) ? ' (das ist eine stream_id)' : ''} — nutze das id-Feld der exec-Antwort oder shell(history).` };
+        }
         const query = str(args, 'query');
         if (query) {
           const result = await searchShellJobLog(id, query, {
@@ -3533,6 +3608,7 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
       return {
         success: !result.error,
         executed_via: 'local',
+        id, // Job-UUID fuer shell(get)/shell(log) — DX-Befund 2
         status: result.status,
         stream_id: result.stream_id,
         exit_code: result.exit_code,
@@ -3648,7 +3724,7 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
         }
         case 'start': {
           const project = reqStr(args, 'project');
-          const containerId = await orch.ensureProjectRunning(project, wsArg);
+          const containerId = await orch.ensureProjectRunning(project, wsArg, str(args, 'role'));
           return { success: true, project, workspace: wsArg, container_id: containerId, dns_name: dnsForProject(project, wsArg), dns_hint: `Andere proxynet-Container (z.B. ki-browser oder andere Workspaces dieses Projekts) erreichen diesen Workspace via http://${dnsForProject(project, wsArg)}:<port>. Niemals IP verwenden — die wechselt bei Restart.` };
         }
         case 'stop': {
@@ -3677,6 +3753,7 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
             workingDir: str(args, 'working_dir'),
             exposePorts,
             workspace: wsArg,
+            role: str(args, 'role'),
           });
           return { success: true, project, workspace: wsArg, dns_name: dnsForProject(project, wsArg), ...result };
         }
@@ -3723,6 +3800,41 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
             ...r,
             hint: 'Container gestoppt + HOME-Volume entfernt. Naechster workspace-Zugriff startet mit frischem /home/synapse (Caches/Toolchains im Home sind weg, /workspace unveraendert).',
           };
+        }
+        case 'make_writable': {
+          const project = reqStr(args, 'project');
+          const r = await orch.makeWritable(project, reqStr(args, 'path'), wsArg);
+          return {
+            success: true,
+            project,
+            workspace: wsArg,
+            ...r,
+            hint: 'Pfad gehoert jetzt synapse (u+rwX) — gedacht fuer Build-Artefakte (target/, build/, dist/). Source-Edits weiter via files-Tool: der PG-Sync setzt synchronisierte Dateien wieder auf root/0444.',
+          };
+        }
+        case 'role_set': {
+          const role = await orch.roleSet({
+            project: str(args, 'project') ?? null,   // weggelassen = globale Rolle
+            role: reqStr(args, 'role'),
+            image: str(args, 'image'),
+            cpuLimit: num(args, 'cpu_limit'),
+            memLimitMb: num(args, 'mem_limit_mb'),
+            pidsLimit: num(args, 'pids_limit'),
+            tmpfsMb: num(args, 'tmpfs_mb'),
+            initCommand: str(args, 'init_command'),
+            description: str(args, 'description'),
+            devices: strArray(args, 'devices'),
+            securityOpts: strArray(args, 'security_opts'),
+          });
+          return { success: true, role, hint: 'Rolle = Template. Instanziieren: workspace(start|exec, name: "<instanz>", role: "<rolle>") — beliebig oft (db-1, db-2, ...). Template-Aenderungen wirken ab dem naechsten Container-Start der Instanzen.' };
+        }
+        case 'role_list': {
+          const roles = await orch.roleList(str(args, 'project'));
+          return { success: true, count: roles.length, roles, hint: 'project-Param zeigt globale + projekt-scoped Rollen; projekt-scoped schlaegt global bei gleichem Namen.' };
+        }
+        case 'role_delete': {
+          const deleted = await orch.roleDelete(reqStr(args, 'role'), str(args, 'project') ?? null);
+          return { success: true, deleted, hint: deleted ? 'Rolle entfernt — bestehende Instanzen behalten ihre Row-Konfiguration, nur der init_command-Lookup laeuft kuenftig ins Leere.' : 'Keine Rolle mit diesem Namen im angegebenen Scope (project weglassen = global).' };
         }
         default:
           return { success: false, error: `Unbekannte workspace action: "${action}"` };

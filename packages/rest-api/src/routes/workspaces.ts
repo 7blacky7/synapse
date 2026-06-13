@@ -40,14 +40,14 @@ export async function workspaceRoutes(fastify: FastifyInstance): Promise<void> {
 
   /** POST /api/projects/:name/workspace/start — Container starten (lazy ensure).
    *  Body: { workspace?: string } — WS3: benannter Workspace (Default 'main'). */
-  fastify.post<{ Params: { name: string }; Body: { workspace?: string } }>(
+  fastify.post<{ Params: { name: string }; Body: { workspace?: string; role?: string } }>(
     '/api/projects/:name/workspace/start',
     async (request, reply) => {
       const orch = ensureAvailable(reply);
       if (!orch) return;
       const ws = request.body?.workspace ?? 'main';
       try {
-        const containerId = await orch.ensureProjectRunning(request.params.name, ws);
+        const containerId = await orch.ensureProjectRunning(request.params.name, ws, request.body?.role);
         return { success: true, project: request.params.name, workspace: ws, container_id: containerId };
       } catch (err) {
         return reply.status(500).send({ success: false, error: { message: String(err) } });
@@ -128,6 +128,32 @@ export async function workspaceRoutes(fastify: FastifyInstance): Promise<void> {
   });
 
   /**
+   * POST /api/projects/:name/workspace/make-writable
+   * Body: { path: string; workspace?: string }
+   * Gibt einen Pfad unterhalb /workspace fuer User synapse frei (chown + u+rwX,
+   * mkdir -p inklusive) — fuer Build-Artefakte (target/, build/, dist/). Der
+   * PG-Sync legt Source-Files als root/0444 an; das Volume selbst ist rw.
+   */
+  fastify.post<{
+    Params: { name: string };
+    Body: { path?: string; workspace?: string };
+  }>('/api/projects/:name/workspace/make-writable', async (request, reply) => {
+    const orch = ensureAvailable(reply);
+    if (!orch) return;
+    const p = request.body?.path;
+    if (!p || typeof p !== 'string') {
+      return reply.status(400).send({ success: false, error: { message: 'path (string) ist erforderlich im Body' } });
+    }
+    const ws = request.body?.workspace ?? 'main';
+    try {
+      const result = await orch.makeWritable(request.params.name, p, ws);
+      return { success: true, project: request.params.name, workspace: ws, ...result };
+    } catch (err) {
+      return reply.status(500).send({ success: false, error: { message: String(err) } });
+    }
+  });
+
+  /**
    * POST /api/projects/:name/workspace/commit
    * Container-FS /workspace → PG.code_files (mit Hash-Diff, parsed_at=NULL bei Aenderung).
    * Body: { ignorePatterns?: string[] }
@@ -175,7 +201,7 @@ export async function workspaceRoutes(fastify: FastifyInstance): Promise<void> {
    */
   fastify.post<{
     Params: { name: string };
-    Body: { command?: string; timeoutMs?: number; workingDir?: string; workspace?: string; exposePorts?: number[] };
+    Body: { command?: string; timeoutMs?: number; workingDir?: string; workspace?: string; role?: string; exposePorts?: number[] };
   }>('/api/projects/:name/workspace/exec', async (request, reply) => {
     const orch = ensureAvailable(reply);
     if (!orch) return;
@@ -192,11 +218,54 @@ export async function workspaceRoutes(fastify: FastifyInstance): Promise<void> {
         timeoutMs: request.body.timeoutMs,
         workingDir: request.body.workingDir,
         workspace: ws,
+        role: request.body.role,
         exposePorts: Array.isArray(request.body.exposePorts)
           ? request.body.exposePorts.map(Number).filter(Number.isFinite)
           : undefined,
       });
       return { success: true, project: request.params.name, workspace: ws, ...result };
+    } catch (err) {
+      return reply.status(500).send({ success: false, error: { message: String(err) } });
+    }
+  });
+
+  /**
+   * WS4: Workspace-Rollen — Rolle = Template, Workspace = Instanz.
+   * Rollen sind NIE fest (editierbar, global oder projekt-scoped) und beliebig
+   * oft instanziierbar (start/exec mit role + frei waehlbarem name — db-1, db-2,
+   * app, qa, ...). Reine PG-Operationen, brauchen kein Docker.
+   */
+  fastify.get<{ Querystring: { project?: string } }>('/api/workspace-roles', async (request, reply) => {
+    const orch = getWorkspaceOrchestrator();
+    if (!orch) return reply.status(503).send({ success: false, error: { message: 'Workspace-Orchestrator nicht initialisiert' } });
+    try {
+      const roles = await orch.roleList(request.query?.project);
+      return { success: true, roles, count: roles.length };
+    } catch (err) {
+      return reply.status(500).send({ success: false, error: { message: String(err) } });
+    }
+  });
+
+  fastify.post<{ Body: { project?: string | null; role?: string; image?: string; cpuLimit?: number; memLimitMb?: number; pidsLimit?: number; tmpfsMb?: number; initCommand?: string; description?: string; devices?: string[]; securityOpts?: string[] } }>('/api/workspace-roles', async (request, reply) => {
+    const orch = getWorkspaceOrchestrator();
+    if (!orch) return reply.status(503).send({ success: false, error: { message: 'Workspace-Orchestrator nicht initialisiert' } });
+    if (!request.body?.role) {
+      return reply.status(400).send({ success: false, error: { message: 'role (string) ist erforderlich im Body' } });
+    }
+    try {
+      const role = await orch.roleSet({ ...request.body, role: request.body.role });
+      return { success: true, role };
+    } catch (err) {
+      return reply.status(500).send({ success: false, error: { message: String(err) } });
+    }
+  });
+
+  fastify.delete<{ Params: { role: string }; Querystring: { project?: string } }>('/api/workspace-roles/:role', async (request, reply) => {
+    const orch = getWorkspaceOrchestrator();
+    if (!orch) return reply.status(503).send({ success: false, error: { message: 'Workspace-Orchestrator nicht initialisiert' } });
+    try {
+      const deleted = await orch.roleDelete(request.params.role, request.query?.project ?? null);
+      return { success: true, deleted };
     } catch (err) {
       return reply.status(500).send({ success: false, error: { message: String(err) } });
     }

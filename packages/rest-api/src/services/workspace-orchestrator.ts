@@ -243,21 +243,39 @@ export class WorkspaceOrchestrator {
    * Aktualisiert last_activity_at in jedem Fall.
    * @returns containerId
    */
-  async ensureProjectRunning(project: string, ws = 'main'): Promise<string> {
+  async ensureProjectRunning(project: string, ws = 'main', role?: string): Promise<string> {
     if (!this.dockerAvailable) {
       throw new Error('Workspace-Orchestrator nicht verfuegbar (Docker-Socket nicht erreichbar)');
     }
     const pool = getPool();
     const { ws: wsName, suffix } = this.wsKey(project, ws);
 
-    // WS3-Cap: max 3 benannte Workspaces pro Projekt (nur bei NEUEM Namen relevant).
+    // WS4: Cap pro Projekt konfigurierbar (ENV SYNAPSE_WS_PER_PROJECT_CAP,
+    // Default 6) statt hart 3 — Rollen-Instanzen (db-1, app, qa, ...) brauchen Luft.
+    const perProjectCap = this.perProjectCap();
     const cap = await pool.query(
       `SELECT count(*) FILTER (WHERE name=$2)::int AS me, count(*)::int AS total
          FROM project_workspaces WHERE project=$1`,
       [project, wsName]
     );
-    if (cap.rows[0].me === 0 && cap.rows[0].total >= 3) {
-      throw new Error(`Workspace-Cap erreicht: Projekt "${project}" hat bereits 3 Workspaces — erst einen stoppen/entfernen`);
+    if (cap.rows[0].me === 0 && cap.rows[0].total >= perProjectCap) {
+      throw new Error(`Workspace-Cap erreicht: Projekt "${project}" hat bereits ${cap.rows[0].total} Workspaces (Cap ${perProjectCap}, ENV SYNAPSE_WS_PER_PROJECT_CAP) — erst einen stoppen/entfernen`);
+    }
+
+    // WS4: Rolle = Template, Workspace = Instanz. Der role-Param wirkt nur bei
+    // ERST-Anlage der Instanz (Template-Werte werden in die Row kopiert; danach
+    // gilt die Row, Umkonfigurieren via configure). Projekt-Rolle vor globaler.
+    if (role) {
+      const tpl = await this.loadRoleTemplate(project, role);
+      if (!tpl) {
+        throw new Error(`Workspace-Rolle "${role}" nicht gefunden (weder projekt-scoped noch global) — workspace(role_list) zeigt verfuegbare Rollen`);
+      }
+      await pool.query(
+        `INSERT INTO project_workspaces (project, name, role, image, cpu_limit, mem_limit_mb, pids_limit, tmpfs_mb, last_activity_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
+         ON CONFLICT (project, name) DO NOTHING`,
+        [project, wsName, role, tpl.image, tpl.cpuLimit, tpl.memLimitMb, tpl.pidsLimit, tpl.tmpfsMb]
+      );
     }
 
     // Row sicherstellen + Activity vormerken (UPSERT).
@@ -306,6 +324,10 @@ export class WorkspaceOrchestrator {
           WHERE project=$1 AND name=$2`,
         [project, wsName, containerId]
       );
+      // WS4: Rollen-init_command — laeuft nach JEDEM Start (Dienste hochfahren,
+      // z.B. initdb + pg_ctl). Template wird live gelesen (Edits wirken ab dem
+      // naechsten Start). Fehler → last_error, Container bleibt nutzbar.
+      await this.runRoleInit(project, wsName, containerId).catch(() => {});
       return containerId;
     } catch (err) {
       const msg = (err as Error).message;
@@ -372,6 +394,47 @@ export class WorkspaceOrchestrator {
   }
 
   /**
+   * WS5-DX: Gibt einen Pfad unterhalb /workspace im Container zum Schreiben
+   * fuer User synapse frei (Build-Artefakte: target/, build/, dist/, .venv/).
+   * Hintergrund (empirisch 2026-06-13, moo cargo-Build): das /workspace-Volume
+   * ist rw gemountet — die Read-Only-Wirkung entsteht NUR durch root-Ownership
+   * + Mode 0444 aus dem PG-Sync. Diese Methode chownt den Teilbaum via
+   * root-exec auf synapse (1000:1000) und setzt u+rwX. Source of Truth bleibt
+   * PG: der Sync ueberschreibt synchronisierte Dateien wieder mit root/0444 —
+   * make_writable ist fuer BUILD-OUTPUT gedacht, Source-Edits laufen weiter
+   * ueber das files-Tool. Ganz-/workspace-Freigabe ist bewusst verboten.
+   */
+  async makeWritable(project: string, relPath: string, ws = 'main'): Promise<{ path: string }> {
+    if (!this.dockerAvailable) {
+      throw new Error('Workspace-Orchestrator nicht verfuegbar (Docker-Socket nicht erreichbar)');
+    }
+    const clean = (relPath || '').replace(/^\.\/+/, '').replace(/^\/+|\/+$/g, '');
+    if (!clean || clean === '.' || clean.includes('..') || !/^[A-Za-z0-9._\/-]+$/.test(clean)) {
+      throw new Error(`make_writable: ungueltiger Pfad "${relPath}" — relativer Pfad unterhalb /workspace (kein "..", nicht "." / komplettes /workspace)`);
+    }
+    const { ws: wsName } = this.wsKey(project, ws);
+    const containerId = await this.ensureProjectRunning(project, wsName);
+    const container = this.docker.getContainer(containerId);
+    const exec = await container.exec({
+      Cmd: ['/bin/sh', '-c', `mkdir -p '/workspace/${clean}' && chown -R 1000:1000 '/workspace/${clean}' && chmod -R u+rwX '/workspace/${clean}'`],
+      AttachStdout: true,
+      AttachStderr: true,
+      Tty: false,
+      User: '0',
+    });
+    const stream = await exec.start({ hijack: true, stdin: false });
+    await new Promise<void>((resolve) => { stream.on('end', () => resolve()); stream.on('error', () => resolve()); });
+    const info = await exec.inspect().catch(() => null);
+    if (info && info.ExitCode !== null && info.ExitCode !== 0) {
+      throw new Error(`make_writable: chown/chmod fehlgeschlagen (exit ${info.ExitCode})`);
+    }
+    void this.appendToLog(containerId, `MAKE_WRITABLE: /workspace/${clean}`);
+    await this.recordActivity(project, wsName);
+    console.error(`[Workspaces] ${project}/${wsName}: make_writable /workspace/${clean}`);
+    return { path: `/workspace/${clean}` };
+  }
+
+  /**
    * Fuehrt ein Shell-Kommando im Workspace-Container des Projekts aus.
    * Startet den Container falls noetig (ensureProjectRunning).
    * Sammelt stdout/stderr getrennt via Stream-Demux.
@@ -386,13 +449,13 @@ export class WorkspaceOrchestrator {
   async exec(
     project: string,
     command: string,
-    opts: { timeoutMs?: number; workingDir?: string; exposePorts?: number[]; workspace?: string } = {}
+    opts: { timeoutMs?: number; workingDir?: string; exposePorts?: number[]; workspace?: string; role?: string } = {}
   ): Promise<{ stdout: string; stderr: string; exitCode: number | null; timedOut: boolean; durationMs: number; internal_urls?: Record<number, string> }> {
     if (!this.dockerAvailable) {
       throw new Error('Workspace-Orchestrator nicht verfuegbar (Docker-Socket nicht erreichbar)');
     }
     const { ws: wsName } = this.wsKey(project, opts.workspace ?? 'main');
-    const containerId = await this.ensureProjectRunning(project, wsName);
+    const containerId = await this.ensureProjectRunning(project, wsName, opts.role);
     const container = this.docker.getContainer(containerId);
     const timeoutMs = opts.timeoutMs ?? 60_000;
     const t0 = Date.now();
@@ -696,6 +759,140 @@ export class WorkspaceOrchestrator {
     };
   }
 
+  /** WS4: Workspaces pro Projekt — konfigurierbar statt hart 3 (Rollen-Instanzen). */
+  private perProjectCap(): number {
+    const n = parseInt(process.env.SYNAPSE_WS_PER_PROJECT_CAP || '', 10);
+    return Number.isFinite(n) && n >= 1 ? n : 6;
+  }
+
+  /** WS5: ENV-Allowlist fuer privilegierte Rollen (devices/security_opts). */
+  private privilegedRoleAllowed(role: string): boolean {
+    return (process.env.SYNAPSE_WS_PRIVILEGED_ROLES || '')
+      .split(',').map(s => s.trim().toLowerCase()).filter(Boolean)
+      .includes(role.toLowerCase());
+  }
+
+  /** WS4: Laedt ein Rollen-Template — projekt-scoped schlaegt globale Rolle gleichen Namens. */
+  private async loadRoleTemplate(project: string, role: string): Promise<{ image: string; cpuLimit: number; memLimitMb: number; pidsLimit: number; tmpfsMb: number; initCommand: string | null; devices: string[]; securityOpts: string[] } | null> {
+    const pool = getPool();
+    const r = await pool.query(
+      `SELECT image, cpu_limit, mem_limit_mb, pids_limit, tmpfs_mb, init_command, devices, security_opts
+         FROM workspace_roles
+        WHERE role = $2 AND (project = $1 OR project IS NULL)
+        ORDER BY (project IS NOT NULL) DESC
+        LIMIT 1`,
+      [project, role.toLowerCase()]
+    );
+    if (!r.rows[0]) return null;
+    const x = r.rows[0];
+    return {
+      image: x.image,
+      cpuLimit: Number(x.cpu_limit),
+      memLimitMb: Number(x.mem_limit_mb),
+      pidsLimit: Number(x.pids_limit),
+      tmpfsMb: Number(x.tmpfs_mb),
+      initCommand: (x.init_command as string | null) ?? null,
+      devices: (x.devices as string[] | null) ?? [],
+      securityOpts: (x.security_opts as string[] | null) ?? [],
+    };
+  }
+
+  /**
+   * WS4: Fuehrt den Rollen-init_command der Instanz aus (nach jedem Container-
+   * Start). Dienste-Bootstrap als User synapse (z.B. initdb + pg_ctl start,
+   * redis-server --daemonize). Fehler sind nicht fatal: last_error wird gesetzt,
+   * der Container bleibt nutzbar. Kein Rekursionsrisiko: zum Zeitpunkt des
+   * Aufrufs ist status='active' — exec→ensureProjectRunning returned early.
+   */
+  private async runRoleInit(project: string, ws: string, containerId: string): Promise<void> {
+    const pool = getPool();
+    const r = await pool.query(`SELECT role FROM project_workspaces WHERE project=$1 AND name=$2`, [project, ws]);
+    const role = (r.rows[0]?.role as string | null) ?? null;
+    if (!role) return;
+    const tpl = await this.loadRoleTemplate(project, role);
+    if (!tpl?.initCommand) return;
+    void this.appendToLog(containerId, `ROLE-INIT (${role}): ${tpl.initCommand.slice(0, 200)}`);
+    try {
+      const res = await this.exec(project, tpl.initCommand, { workspace: ws, timeoutMs: 120_000 });
+      if (res.exitCode !== 0) {
+        const msg = `role-init "${role}" exit=${res.exitCode}: ${(res.stderr || res.stdout).slice(0, 500)}`;
+        await pool.query(`UPDATE project_workspaces SET last_error=$3, updated_at=NOW() WHERE project=$1 AND name=$2`, [project, ws, msg]);
+        console.error(`[Workspaces] ${project}/${ws} ${msg}`);
+      } else {
+        console.error(`[Workspaces] ${project}/${ws} role-init "${role}" OK (${res.durationMs}ms)`);
+      }
+    } catch (err) {
+      const msg = `role-init "${role}" failed: ${(err as Error).message}`;
+      await pool.query(`UPDATE project_workspaces SET last_error=$3, updated_at=NOW() WHERE project=$1 AND name=$2`, [project, ws, msg]).catch(() => {});
+      console.error(`[Workspaces] ${project}/${ws} ${msg}`);
+    }
+  }
+
+  // ─── WS4: Rollen-Templates (Rolle = Template, Workspace = Instanz) ─────────
+  // Rollen sind NIE fest: via role_set/role_delete editierbar (global ODER
+  // projekt-scoped), jede Rolle ist beliebig oft instanziierbar (db-1, db-2, ...).
+
+  async roleSet(opts: { project?: string | null; role: string; image?: string; cpuLimit?: number; memLimitMb?: number; pidsLimit?: number; tmpfsMb?: number; initCommand?: string | null; description?: string | null; devices?: string[]; securityOpts?: string[] }): Promise<Record<string, unknown>> {
+    const role = (opts.role || '').toLowerCase();
+    if (!/^[a-z0-9][a-z0-9-]{0,29}$/.test(role)) {
+      throw new Error(`Ungueltiger Rollen-Name "${opts.role}" (erlaubt: ^[a-z0-9][a-z0-9-]{0,29}$)`);
+    }
+    if (opts.image !== undefined && !/^[a-zA-Z0-9._\/:@-]+$/.test(opts.image)) throw new Error('role_set: ungueltiges image');
+    if (opts.cpuLimit !== undefined && !(Number.isFinite(opts.cpuLimit) && opts.cpuLimit > 0 && opts.cpuLimit <= 32)) throw new Error('role_set: cpu_limit 0-32');
+    if (opts.memLimitMb !== undefined && !(Number.isInteger(opts.memLimitMb) && opts.memLimitMb >= 128)) throw new Error('role_set: mem_limit_mb >= 128');
+    if (opts.pidsLimit !== undefined && !(Number.isInteger(opts.pidsLimit) && opts.pidsLimit >= 16)) throw new Error('role_set: pids_limit >= 16');
+    if (opts.tmpfsMb !== undefined && !(Number.isInteger(opts.tmpfsMb) && opts.tmpfsMb >= 16)) throw new Error('role_set: tmpfs_mb >= 16');
+    // WS5: enge Whitelists — wirksam werden devices/security_opts ohnehin erst,
+    // wenn die Rolle in ENV SYNAPSE_WS_PRIVILEGED_ROLES allowlisted ist.
+    if (opts.devices !== undefined && (!Array.isArray(opts.devices) || opts.devices.some(d => typeof d !== 'string' || !/^\/dev\/(fuse|kvm|net\/tun)$/.test(d)))) {
+      throw new Error('role_set: devices — erlaubt sind nur /dev/fuse, /dev/kvm, /dev/net/tun (kein --privileged, kein docker.sock)');
+    }
+    if (opts.securityOpts !== undefined && (!Array.isArray(opts.securityOpts) || opts.securityOpts.some(s => !['seccomp=unconfined', 'apparmor=unconfined', 'label=disable'].includes(s)))) {
+      throw new Error('role_set: security_opts — erlaubt sind nur seccomp=unconfined, apparmor=unconfined, label=disable');
+    }
+    const pool = getPool();
+    const r = await pool.query(
+      `INSERT INTO workspace_roles (project, role, image, cpu_limit, mem_limit_mb, pids_limit, tmpfs_mb, init_command, description, devices, security_opts)
+       VALUES ($1, $2, COALESCE($3, 'synapse-workspace:latest'), COALESCE($4, 1.0), COALESCE($5, 512), COALESCE($6, 200), COALESCE($7, 256), $8, $9, COALESCE($10::text[], '{}'), COALESCE($11::text[], '{}'))
+       ON CONFLICT ((COALESCE(project, '')), role) DO UPDATE SET
+         image        = COALESCE($3, workspace_roles.image),
+         cpu_limit    = COALESCE($4, workspace_roles.cpu_limit),
+         mem_limit_mb = COALESCE($5, workspace_roles.mem_limit_mb),
+         pids_limit   = COALESCE($6, workspace_roles.pids_limit),
+         tmpfs_mb     = COALESCE($7, workspace_roles.tmpfs_mb),
+         init_command = COALESCE($8, workspace_roles.init_command),
+         description  = COALESCE($9, workspace_roles.description),
+         devices       = COALESCE($10::text[], workspace_roles.devices),
+         security_opts = COALESCE($11::text[], workspace_roles.security_opts),
+         updated_at   = NOW()
+       RETURNING project, role, image, cpu_limit, mem_limit_mb, pids_limit, tmpfs_mb, init_command, description, devices, security_opts`,
+      [opts.project ?? null, role, opts.image ?? null, opts.cpuLimit ?? null, opts.memLimitMb ?? null, opts.pidsLimit ?? null, opts.tmpfsMb ?? null, opts.initCommand ?? null, opts.description ?? null, opts.devices ?? null, opts.securityOpts ?? null]
+    );
+    return r.rows[0];
+  }
+
+  async roleList(project?: string): Promise<Array<Record<string, unknown>>> {
+    const pool = getPool();
+    const r = await pool.query(
+      `SELECT project, role, image, cpu_limit, mem_limit_mb, pids_limit, tmpfs_mb, init_command, description, devices, security_opts, updated_at,
+              (project IS NULL) AS is_global
+         FROM workspace_roles
+        WHERE project IS NULL OR project = $1
+        ORDER BY role, (project IS NOT NULL) DESC`,
+      [project ?? null]
+    );
+    return r.rows;
+  }
+
+  async roleDelete(role: string, project?: string | null): Promise<boolean> {
+    const pool = getPool();
+    const r = await pool.query(
+      `DELETE FROM workspace_roles WHERE role = $1 AND COALESCE(project, '') = COALESCE($2, '')`,
+      [role.toLowerCase(), project ?? null]
+    );
+    return (r.rowCount ?? 0) > 0;
+  }
+
   private async countActive(): Promise<number> {
     const pool = getPool();
     const r = await pool.query(`SELECT count(*)::int c FROM project_workspaces WHERE status='active'`);
@@ -785,6 +982,28 @@ export class WorkspaceOrchestrator {
       await stale.remove({ force: true }).catch(() => {});
     } catch { /* nicht existent, gut */ }
 
+    // WS5: privilegierte Rollen-Optionen (devices/security_opts) — live aus dem
+    // Rollen-Template (wie init_command), NICHT aus der Instanz-Row. Wirksam
+    // NUR wenn die Rolle in ENV SYNAPSE_WS_PRIVILEGED_ROLES allowlisted ist;
+    // sonst harter Start-Fehler. Kein --privileged, kein docker.sock — nur die
+    // enge, in roleSet validierte Options-Whitelist.
+    const pool = getPool();
+    const roleRow = await pool.query(`SELECT role FROM project_workspaces WHERE project=$1 AND name=$2`, [project, ws]);
+    const instanceRole = (roleRow.rows[0]?.role as string | null) ?? null;
+    let privDevices: string[] = [];
+    let privSecurityOpts: string[] = [];
+    if (instanceRole) {
+      const tpl = await this.loadRoleTemplate(project, instanceRole);
+      if (tpl && (tpl.devices.length > 0 || tpl.securityOpts.length > 0)) {
+        if (!this.privilegedRoleAllowed(instanceRole)) {
+          throw new Error(`Rolle "${instanceRole}" verlangt privilegierte Optionen (devices=${tpl.devices.join(',') || '-'}; security_opts=${tpl.securityOpts.join(',') || '-'}), steht aber nicht in ENV SYNAPSE_WS_PRIVILEGED_ROLES — Start verweigert (Opt-in pro Deployment)`);
+        }
+        privDevices = tpl.devices;
+        privSecurityOpts = tpl.securityOpts;
+        console.error(`[Workspaces] ${project}/${ws}: privilegierte Rolle "${instanceRole}" allowlisted — devices=[${privDevices.join(',')}] security_opts=[${privSecurityOpts.join(',')}]`);
+      }
+    }
+
     const create = await this.docker.createContainer({
       name,
       Image: row.image,
@@ -809,6 +1028,9 @@ export class WorkspaceOrchestrator {
         Memory: row.memLimitMb * 1024 * 1024,
         MemorySwap: row.memLimitMb * 1024 * 1024,   // kein Swap-Spielraum
         PidsLimit: row.pidsLimit,
+        // WS5: privilegierte Optionen — nur gesetzt wenn Rolle allowlisted (Gate oben).
+        ...(privDevices.length > 0 ? { Devices: privDevices.map(d => ({ PathOnHost: d, PathInContainer: d, CgroupPermissions: 'rwm' })) } : {}),
+        ...(privSecurityOpts.length > 0 ? { SecurityOpt: privSecurityOpts } : {}),
       },
       // PID 1 = tail -F /tmp/ws.log → docker logs zeigt alle exec/materialize/start/stop
       // Events die der Orchestrator dorthin appended. /tmp ist tmpfs (siehe oben),
