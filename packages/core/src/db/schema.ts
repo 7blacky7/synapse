@@ -956,6 +956,16 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_workspace_roles_scope_role
 -- fuer init_command bei jedem Start; Template-Edits wirken ab naechstem Start).
 ALTER TABLE project_workspaces ADD COLUMN IF NOT EXISTS role TEXT;
 
+-- WS5: Privilegierte Rollen-Optionen fuer Container-Builds (rootless Podman).
+-- devices: enge Whitelist (/dev/fuse fuer fuse-overlayfs; /dev/kvm spaeter fuer
+-- Android/QEMU-KVM; /dev/net/tun fuer VPN-/Netz-Tests). security_opts: feste
+-- Whitelist (seccomp=unconfined, apparmor=unconfined, label=disable).
+-- NIEMALS --privileged, NIEMALS docker.sock-Mount. Der Orchestrator wendet die
+-- Optionen NUR an, wenn die Rolle in ENV SYNAPSE_WS_PRIVILEGED_ROLES
+-- (Komma-Liste) allowlisted ist — sonst wird der Start hart verweigert.
+ALTER TABLE workspace_roles ADD COLUMN IF NOT EXISTS devices       TEXT[] NOT NULL DEFAULT '{}';
+ALTER TABLE workspace_roles ADD COLUMN IF NOT EXISTS security_opts TEXT[] NOT NULL DEFAULT '{}';
+
 -- WS4-Seed: globale Start-Rollen — NUR Startpunkt, NICHTS ist fest:
 -- role_set ueberschreibt/ergaenzt, role_delete entfernt, jede Rolle ist
 -- beliebig oft instanziierbar (db-1, db-2, app, qa, ...).
@@ -976,6 +986,18 @@ VALUES
   (NULL, 'db-redis', 'synapse-workspace:latest', 1.0, 512, 256,
    $wsr2$redis-cli -h 127.0.0.1 ping >/dev/null 2>&1 || redis-server --daemonize yes --dir "$HOME" --bind 0.0.0.0 --protected-mode no$wsr2$,
    'Redis-Instanz: Persistenz in $HOME, erreichbar via synapse-ws-<projekt>-<name>:6379 (Sandbox: protected-mode off).')
+ON CONFLICT ((COALESCE(project, '')), role) DO NOTHING;
+
+-- WS5-Seed: container-builder — rootless Podman/Buildah (Tier-2-Image, FROM
+-- synapse-workspace:latest). Daemonless: kein init_command noetig; Image-Storage
+-- (graphroot) liegt im persistenten HOME (reset_home = Registry-Reset).
+-- Start wird vom Orchestrator VERWEIGERT solange die Rolle nicht in
+-- SYNAPSE_WS_PRIVILEGED_ROLES steht (bewusstes Opt-in pro Deployment).
+INSERT INTO workspace_roles (project, role, image, cpu_limit, mem_limit_mb, pids_limit, tmpfs_mb, init_command, description, devices, security_opts)
+VALUES
+  (NULL, 'container-builder', 'synapse-workspace-podman:latest', 2.0, 2048, 400, 1024, NULL,
+   'Container-Builds: docker/podman build, run und compose der User-Projekte testen (docker = podman-Alias, rootless, fuse-overlayfs). Benoetigt ENV SYNAPSE_WS_PRIVILEGED_ROLES=container-builder + Tier-2-Image.',
+   ARRAY['/dev/fuse'], ARRAY['seccomp=unconfined','apparmor=unconfined'])
 ON CONFLICT ((COALESCE(project, '')), role) DO NOTHING;
 
 -- daemon_heartbeats — pro Projekt: laeuft ein lokaler FileWatcher-Daemon?
