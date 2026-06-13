@@ -240,6 +240,24 @@ RUN apt-get update \
  && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # ---------------------------------------------------------------------------
+# Layer 8d — LLVM 18 (apt.llvm.org, offizielles LLVM-Projekt-Repo).
+# moo-Compiler (inkwell / llvm-sys v181) braucht LLVM 18.1.x — bookworm
+# liefert nur 14/15 (empirischer Befund moo-Build-Smoke 2026-06-13).
+# llvm-18-dev bringt llvm-config-18 + statische Libs; libpolly-18-dev wird
+# von llvm-sys statisch dazugelinkt. LLVM_SYS_181_PREFIX zeigt cargo/llvm-sys
+# direkt auf die Installation — kein PATH-Gefummel noetig.
+# ---------------------------------------------------------------------------
+RUN mkdir -p /etc/apt/keyrings \
+ && curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key -o /etc/apt/keyrings/apt-llvm-org.asc \
+ && echo "deb [signed-by=/etc/apt/keyrings/apt-llvm-org.asc] http://apt.llvm.org/bookworm/ llvm-toolchain-bookworm-18 main" \
+      > /etc/apt/sources.list.d/llvm18.list \
+ && apt-get update \
+ && apt-get install -y --no-install-recommends \
+      llvm-18-dev libpolly-18-dev libzstd-dev libffi-dev \
+ && apt-get clean && rm -rf /var/lib/apt/lists/*
+ENV LLVM_SYS_181_PREFIX=/usr/lib/llvm-18
+
+# ---------------------------------------------------------------------------
 # Layer 9 — User, ENV-Ergonomie, Selbstbedienungs-Defaults.
 # PIP_BREAK_SYSTEM_PACKAGES: PEP-668-Override — im Wegwerf-Sandbox-Container
 #   legitim (pip install --user landet im persistenten HOME-Volume).

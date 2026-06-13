@@ -23,6 +23,7 @@ Schlankere Projekte: eigenes Image via `workspace(configure, image: ...)`.
 | Toolchain | gcc/g++/make, cmake, ninja, meson, ccache (PATH-transparent), pkg-config, git |
 | Dev-Libs (linken!) | sqlite3, SDL2/_image/_ttf/_mixer, curl, OpenSSL, zlib, png/jpeg/freetype, ncurses, readline, pcre2, libpq, xml2, yaml, boost |
 | Debug/Analyse | gdb, lldb, valgrind, strace, ltrace, cppcheck, clang/clang-tidy, **lld** (ld.lld/lld-link), shellcheck, patchelf; Sanitizer via `-fsanitize=address,undefined,...` |
+| LLVM | **LLVM 18** (apt.llvm.org: llvm-18-dev + libpolly-18-dev, `LLVM_SYS_181_PREFIX=/usr/lib/llvm-18`) — fuer llvm-sys/inkwell (moo-Compiler); System-clang bleibt 14 |
 | Tests | googletest (gebaut, `-lgtest`), catch2 (v2), pytest; jest/vitest pro Projekt via npm |
 | Multimedia/GL | Mesa (GL **und** Vulkan, llvmpipe Software-Rendering), OpenAL, ALSA/Pulse, ffmpeg, **Xvfb** (headless GUI/SDL), Browser-Runtime-Libs (fuer selbstinstallierte Playwright-Browser) |
 | Windows | MinGW gcc/g++ (Cross-Build), **wine** 8.0 (.exe ausfuehren; Launcher heisst `wine`, nicht `wine64`), `/opt/mingw-extras` (sqlite3 + SDL2/_image als MinGW-Libs) |
