@@ -10,9 +10,13 @@
 # laeuft AUSSERHALB im synapse-api-Container und treibt diesen Container via
 # 'docker exec -i <container> codex ...' (DIND-5).
 #
-# Codex wird ueber den NATIVEN Installer installiert (standalone Binary nach
-# ~/.local/bin). Native Binary => glibc-Base (debian), NICHT alpine/musl.
-# (Alternativ npm '@openai/codex' — hier bewusst der native Installer, wie claude.)
+# Codex-Installation: npm '@openai/codex' (node-Base). Der native Installer
+# (chatgpt.com/codex/install.sh) ist Stand 2026-06-15 upstream DEFEKT: er
+# resolved v0.139.0, bricht aber ab mit 'Could not find SHA-256 digest for
+# codex-package-x86_64-unknown-linux-musl.tar.gz in codex-package_SHA256SUMS'
+# (Exit 1 -> Build-Abbruch). Daher der vom Header dokumentierte npm-Fallback,
+# empirisch verifiziert (dind-verifier 2026-06-15): codex-cli 0.139.0, exit 0,
+# Binary /usr/local/bin/codex. node-Base statt debian-slim noetig fuer npm.
 #
 # Self-Update: der Entrypoint aktualisiert Codex bei jedem (Neu-)Start (graceful).
 # Persistenz: ~/.codex (auth.json — ChatGPT-/API-Auth) + ~/.local (Binary +
@@ -24,25 +28,24 @@
 # ODER ENV OPENAI_API_KEY. Einmaliger interaktiver Schritt via Web-Terminal (DIND-4).
 # ============================================================================
 
-FROM debian:bookworm-slim
+FROM node:22-bookworm-slim
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Minimal-Abhaengigkeiten: Installer (curl/bash), TLS (ca-certificates),
-# git (einige CLI-Workflows nutzen es).
+# Minimal-Abhaengigkeiten: TLS (ca-certificates), git (CLI-Workflows),
+# curl/bash (Diagnose/Self-Update). node+npm bringt das Base-Image mit.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         curl ca-certificates git bash \
     && rm -rf /var/lib/apt/lists/*
 
-# Nativer Codex-Installer (kein npm, kein Node). Baked-in beim Build; der
-# Entrypoint holt beim Start das jeweils neueste Update.
-# TODO(DIND-2-verify): Build empirisch testen (curl chatgpt.com/codex/install.sh
-# muss in der Build-Umgebung erreichbar sein). Fallback dokumentiert: npm i -g @openai/codex.
-RUN curl -fsSL https://chatgpt.com/codex/install.sh | sh
+# Codex via npm (globaler Install -> /usr/local/bin/codex). Baked-in beim Build;
+# der Entrypoint aktualisiert beim Start (npm i -g @openai/codex@latest, idempotent).
+RUN npm install -g @openai/codex
 
-# Der native Installer legt das Binary nach ~/.local/bin.
-ENV PATH="/root/.local/bin:${PATH}"
+# npm-globals liegen in /usr/local/bin (im PATH); ~/.local/bin zusaetzlich, falls
+# spaetere Self-Updates dorthin schreiben.
+ENV PATH="/root/.local/bin:/usr/local/bin:${PATH}"
 # Credentials-Verzeichnis explizit fixieren (default ~/.codex) -> persistentes Volume.
 ENV CODEX_HOME="/root/.codex"
 

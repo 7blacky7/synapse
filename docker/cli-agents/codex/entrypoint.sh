@@ -28,21 +28,14 @@ if command -v codex >/dev/null 2>&1; then
         codex update >/tmp/codex-update.log 2>&1 \
             || log "WARN: 'codex update' fehlgeschlagen -> behalte vorhandene Version."
     else
-        log "Kein 'codex update' -> nativer Installer (graceful) ..."
-        curl -fsSL --retry 5 --retry-all-errors --connect-timeout 15 \
-            https://chatgpt.com/codex/install.sh | sh >/tmp/codex-install.log 2>&1 \
-            || log "WARN: Codex-Self-Reinstall fehlgeschlagen -> behalte vorhandene Version."
+        log "Kein 'codex update' -> npm-Update (graceful) ..."
+        npm install -g @openai/codex@latest >/tmp/codex-install.log 2>&1 \
+            || log "WARN: Codex-Self-Update (npm) fehlgeschlagen -> behalte vorhandene Version."
     fi
 else
-    log "Codex fehlt -> nativer Installer auf das Volume ..."
-    if curl -fsSL --retry 5 --retry-all-errors --connect-timeout 15 \
-            https://chatgpt.com/codex/install.sh -o /tmp/install-codex.sh; then
-        sh /tmp/install-codex.sh >/tmp/codex-install.log 2>&1 \
-            || log "WARN: Codex-Installer fehlgeschlagen (Log: /tmp/codex-install.log)."
-        rm -f /tmp/install-codex.sh
-    else
-        log "WARN: Download des Codex-Installers fehlgeschlagen -> fahre fort (graceful)."
-    fi
+    log "Codex fehlt -> npm-Install (graceful) ..."
+    npm install -g @openai/codex@latest >/tmp/codex-install.log 2>&1 \
+        || log "WARN: Codex-npm-Install fehlgeschlagen (Log: /tmp/codex-install.log) -> fahre fort (graceful)."
 fi
 
 log "Aktive Codex-Version: $(codex --version 2>/dev/null || echo 'unbekannt')"

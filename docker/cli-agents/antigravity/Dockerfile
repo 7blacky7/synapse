@@ -44,13 +44,13 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 # Nativer Antigravity-CLI-Installer (kein npm, kein Node). Installiert nach
-# ~/.local/bin/agy. Baked-in beim Build; der Entrypoint holt beim Start Updates.
-# --skip-path: kein Profil-PATH-Append (PATH wird unten explizit gesetzt).
-# graceful: Build bricht nicht ab falls der Installer im Build-Netz scheitert
-# (Entrypoint versucht es beim Start erneut). TODO(DIND-2-verify): Build
-# empirisch testen (Installer-URL erreichbar, Binary-Ort bestaetigen).
-RUN curl -fsSL https://antigravity.google/cli/install.sh | bash -s -- --skip-path \
-    || echo "WARN: agy-Installer beim Build fehlgeschlagen -> Entrypoint retryt (graceful)."
+# ~/.local/bin/agy (Default TARGET_DIR des Installers; via -d/--dir aenderbar).
+# Der Installer kennt NUR -d/--dir + -h/--help — KEIN --skip-path (jeder
+# unbekannte Flag triggert die Usage + Exit 1). Daher ohne Flags aufrufen.
+# Baked-in beim Build; der Entrypoint holt beim Start Updates.
+# DIND-2-verify (2026-06-15, dind-verifier): empirisch verifiziert — Installer
+# legt /root/.local/bin/agy ab, 'agy --version' -> 1.0.8, exit 0.
+RUN curl -fsSL https://antigravity.google/cli/install.sh | bash
 
 # Der native Installer legt das Binary nach ~/.local/bin.
 ENV PATH="/root/.local/bin:${PATH}"
