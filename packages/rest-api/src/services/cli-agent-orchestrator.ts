@@ -83,15 +83,21 @@ const CLI_TYPES: Record<string, CliTypeSpec> = {
       { volumeKey: 'local', path: '/root/.local' },
     ],
   },
-  // Antigravity / Google Gemini CLI — npm-Install im Image, OAuth-Creds in
-  // /root/.gemini (oauth_creds.json + settings.json). Image: docker/cli-agents/antigravity/.
+  // Antigravity CLI (Google) — Binary 'agy' (Go-based), NICHT Gemini CLI.
+  // Belegt durch model_registry (fullId 'agy-1.0.2', provider 'antigravity') +
+  // packages/agents-antigravity/runtime.ts (spawn('agy', ['-p', ...])). Nativer
+  // Installer nach /root/.local/bin/agy. Auth ueber OS-Keyring (Linux Secret
+  // Service, Store unter /root/.local/share/keyrings -> via 'local'-Mount
+  // persistent) + Profil-/Config-Dir. Image: docker/cli-agents/antigravity/.
   antigravity: {
     image: 'synapse-cli-antigravity:latest',
-    binary: 'gemini',
-    versionCmd: 'gemini --version',
+    binary: 'agy',
+    versionCmd: 'agy --version',
     workdir: '/agent',
     mounts: [
-      { volumeKey: 'auth', path: '/root/.gemini' },
+      // auth: agy Profil-/Config-Dir. TODO(DIND-3): exakten Pfad bestaetigen
+      // (Keyring-Store liegt unter /root/.local/share/keyrings, vom local-Mount gedeckt).
+      { volumeKey: 'auth', path: '/root/.antigravity' },
       { volumeKey: 'local', path: '/root/.local' },
     ],
   },
