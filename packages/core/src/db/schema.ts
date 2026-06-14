@@ -1062,8 +1062,53 @@ CREATE TRIGGER trg_notify_code_file_change
 
 `;
 
+const AUTH_SCHEMA_SQL = `
+-- ==========================================================================
+-- PLAN-002: 2FA / Auth — Synapse-System-Tabellen (KEINE Projekt-Daten!).
+-- Ersetzen die In-Memory-Maps aus rest-api/src/routes/oauth.ts (persistent).
+-- ==========================================================================
+
+-- TOTP-Secret (Single-Row, id=1). Bootstrap optional aus ENV SYNAPSE_TOTP_SECRET.
+CREATE TABLE IF NOT EXISTS auth_totp (
+  id INTEGER PRIMARY KEY DEFAULT 1,
+  secret TEXT NOT NULL,
+  confirmed_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  CONSTRAINT auth_totp_singleton CHECK (id = 1)
+);
+
+-- Registrierte OAuth-Clients (ersetzt In-Memory registeredClients).
+CREATE TABLE IF NOT EXISTS auth_oauth_clients (
+  client_id TEXT PRIMARY KEY,
+  client_secret TEXT,
+  redirect_uris TEXT[] DEFAULT '{}',
+  client_name TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Tokens: access | refresh | authcode | session | service.
+-- token_hash = SHA-256 des Klartext-Tokens (Klartext wird NIE gespeichert).
+-- parent_token: Refresh->Access bzw. Rotations-Kette. code_challenge/redirect_uri: PKCE-authcode.
+CREATE TABLE IF NOT EXISTS auth_tokens (
+  token_hash TEXT PRIMARY KEY,
+  kind TEXT NOT NULL,
+  client_id TEXT REFERENCES auth_oauth_clients(client_id) ON DELETE CASCADE,
+  scope TEXT,
+  label TEXT,
+  redirect_uri TEXT,
+  code_challenge TEXT,
+  parent_token TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  expires_at TIMESTAMPTZ,
+  last_used_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_auth_tokens_kind_expires ON auth_tokens(kind, expires_at);
+CREATE INDEX IF NOT EXISTS idx_auth_tokens_client ON auth_tokens(client_id);
+`;
+
 export async function ensureSchema(): Promise<void> {
   const pool = getPool();
   await pool.query(SCHEMA_SQL);
+  await pool.query(AUTH_SCHEMA_SQL);
   console.error('[Synapse] PostgreSQL Schema bereit');
 }

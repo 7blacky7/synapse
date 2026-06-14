@@ -18,4 +18,6 @@ export { filesRoutes } from './files.js';
 export { fsEventsRoutes } from './fs-events.js';
 export { shellRoutes } from './shell.js';
 export { specialistRoutes } from './specialists.js';
+export { authRoutes } from './auth.js';
 export { workspaceRoutes } from './workspaces.js';
+export { graphRoutes } from './graph.js';

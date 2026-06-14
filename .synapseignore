@@ -33,7 +33,7 @@ test-synapsevoll/
 
 # Dokumentation (verdraengt Code-Scores)
 docs/
-README.md
+
 
 # Synapse-eigene Daten
 .synapse/

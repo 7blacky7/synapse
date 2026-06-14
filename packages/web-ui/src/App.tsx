@@ -2,20 +2,69 @@ import { useState, useEffect } from 'react';
 import Chat from './components/Chat';
 import MemorySearch from './components/MemorySearch';
 import Dashboard from './components/Dashboard';
+import GraphView from './components/GraphView';
+import Login from './components/Login';
 import { getProjects, ProjectInfo } from './api/synapse-client';
+import { getAuthStatus, logout as authLogout, AUTH_UNAUTHORIZED_EVENT } from './api/auth';
 
-type Tab = 'chat' | 'memory' | 'dashboard';
+// Nav-Stationen. Eine weitere View (z.B. 'graph' fuer GRAPH-2) wird hier ergaenzt:
+//   1. Tab-Union erweitern, 2. Tab-Button im Header, 3. Render-Zweig in <main>.
+type Tab = 'chat' | 'memory' | 'dashboard' | 'graph';
+
+type AuthState = 'checking' | 'login' | 'authed';
 
 function App() {
+  const [authState, setAuthState] = useState<AuthState>('checking');
+  const [totpConfigured, setTotpConfigured] = useState(false);
   const [activeTab, setActiveTab] = useState<Tab>('chat');
   const [currentProject, setCurrentProject] = useState<string>('');
   const [projects, setProjects] = useState<ProjectInfo[]>([]);
   const [loadingProjects, setLoadingProjects] = useState(true);
   const [apiError, setApiError] = useState<string | null>(null);
 
+  // Login-Gate: beim App-Start Auth-Status pruefen.
   useEffect(() => {
-    loadProjects();
+    checkAuth();
   }, []);
+
+  // 401-Interceptor (apiFetch) feuert dieses Event -> zurueck zum Login.
+  useEffect(() => {
+    const onUnauthorized = () => {
+      setTotpConfigured(true);
+      setAuthState('login');
+    };
+    window.addEventListener(AUTH_UNAUTHORIZED_EVENT, onUnauthorized);
+    return () => window.removeEventListener(AUTH_UNAUTHORIZED_EVENT, onUnauthorized);
+  }, []);
+
+  // Projekte erst laden, wenn authentifiziert.
+  useEffect(() => {
+    if (authState === 'authed') {
+      loadProjects();
+    }
+  }, [authState]);
+
+  const checkAuth = async () => {
+    try {
+      const status = await getAuthStatus();
+      setTotpConfigured(status.totpConfigured);
+      setAuthState(status.authenticated ? 'authed' : 'login');
+    } catch {
+      // Status nicht erreichbar -> Login-Screen anbieten (Setup-Modus default).
+      setTotpConfigured(false);
+      setAuthState('login');
+    }
+  };
+
+  const handleLoginSuccess = () => {
+    setAuthState('authed');
+  };
+
+  const handleLogout = async () => {
+    await authLogout();
+    setTotpConfigured(true);
+    setAuthState('login');
+  };
 
   const loadProjects = async () => {
     setLoadingProjects(true);
@@ -33,6 +82,19 @@ function App() {
       setLoadingProjects(false);
     }
   };
+
+  // Auth-Gate: erst Spinner, dann Login-Screen, dann die App.
+  if (authState === 'checking') {
+    return (
+      <div style={styles.gate}>
+        <span style={styles.loading}>Lade...</span>
+      </div>
+    );
+  }
+
+  if (authState === 'login') {
+    return <Login totpConfigured={totpConfigured} onSuccess={handleLoginSuccess} />;
+  }
 
   return (
     <div style={styles.container}>
@@ -66,6 +128,15 @@ function App() {
           >
             Dashboard
           </button>
+          <button
+            style={{
+              ...styles.tab,
+              ...(activeTab === 'graph' ? styles.activeTab : {}),
+            }}
+            onClick={() => setActiveTab('graph')}
+          >
+            Graph
+          </button>
         </div>
         <div style={styles.projectSelector}>
           <label htmlFor="project" style={styles.label}>Projekt:</label>
@@ -91,6 +162,9 @@ function App() {
           <button onClick={loadProjects} style={styles.refreshButton} title="Projekte neu laden">
             ↻
           </button>
+          <button onClick={handleLogout} style={styles.refreshButton} title="Abmelden">
+            Logout
+          </button>
         </div>
       </header>
 
@@ -105,11 +179,19 @@ function App() {
         {activeTab === 'chat' && <Chat project={currentProject} />}
         {activeTab === 'memory' && <MemorySearch project={currentProject} />}
         {activeTab === 'dashboard' && <Dashboard project={currentProject} />}
+        {activeTab === 'graph' && <GraphView project={currentProject} />}
       </main>
     </div>
   );
 }
 const styles: Record<string, React.CSSProperties> = {
+  gate: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    height: '100vh',
+    background: '#1a1a2e',
+  },
   container: {
     display: 'flex',
     flexDirection: 'column',
