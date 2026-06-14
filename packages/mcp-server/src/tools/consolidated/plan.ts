@@ -75,7 +75,16 @@ export const planTool: ConsolidatedTool = {
         status: {
           type: 'string',
           enum: ['todo', 'in_progress', 'done', 'blocked'],
-          description: 'Neuer Task-Status (fuer update_task)',
+          description: 'Neuer Task-Status (fuer update_task); bei action=get: optionaler Task-Filter',
+        },
+        // nur fuer get: Vollabwurf vermeiden (DX-Befund 5) — Handler unterstuetzt das bereits
+        compact: {
+          type: 'boolean',
+          description: 'Nur fuer get: Tasks ohne description liefern (id/title/status/priority) — Context-sparend',
+        },
+        limit: {
+          type: 'number',
+          description: 'Nur fuer get: max. Anzahl Tasks in der Antwort',
         },
         // fuer "add_tasks_batch"
         tasks: {

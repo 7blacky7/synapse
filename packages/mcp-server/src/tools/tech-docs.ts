@@ -73,7 +73,8 @@ export async function searchTechDocsTool(
 export async function getDocsForFileTool(
   filePath: string,
   agentId: string,
-  project: string
+  project: string,
+  opts?: { limit?: number; frameworks?: string[] }
 ): Promise<{
   success: boolean;
   warnings: Array<{ framework: string; version: string; docs: Array<{ section: string; type: string; content: string }> }>;
@@ -81,7 +82,7 @@ export async function getDocsForFileTool(
   message: string;
 }> {
   try {
-    const result = await coreGetDocsForFile(filePath, agentId, project);
+    const result = await coreGetDocsForFile(filePath, agentId, project, opts);
 
     if (result.warnings.length === 0) {
       return {
