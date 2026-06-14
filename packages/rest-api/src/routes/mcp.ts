@@ -3825,6 +3825,7 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
             description: str(args, 'description'),
             devices: strArray(args, 'devices'),
             securityOpts: strArray(args, 'security_opts'),
+            capAdd: strArray(args, 'cap_add'),
           });
           return { success: true, role, hint: 'Rolle = Template. Instanziieren: workspace(start|exec, name: "<instanz>", role: "<rolle>") — beliebig oft (db-1, db-2, ...). Template-Aenderungen wirken ab dem naechsten Container-Start der Instanzen.' };
         }

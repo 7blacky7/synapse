@@ -773,10 +773,10 @@ export class WorkspaceOrchestrator {
   }
 
   /** WS4: Laedt ein Rollen-Template — projekt-scoped schlaegt globale Rolle gleichen Namens. */
-  private async loadRoleTemplate(project: string, role: string): Promise<{ image: string; cpuLimit: number; memLimitMb: number; pidsLimit: number; tmpfsMb: number; initCommand: string | null; devices: string[]; securityOpts: string[] } | null> {
+  private async loadRoleTemplate(project: string, role: string): Promise<{ image: string; cpuLimit: number; memLimitMb: number; pidsLimit: number; tmpfsMb: number; initCommand: string | null; devices: string[]; securityOpts: string[]; capAdd: string[] } | null> {
     const pool = getPool();
     const r = await pool.query(
-      `SELECT image, cpu_limit, mem_limit_mb, pids_limit, tmpfs_mb, init_command, devices, security_opts
+      `SELECT image, cpu_limit, mem_limit_mb, pids_limit, tmpfs_mb, init_command, devices, security_opts, cap_add
          FROM workspace_roles
         WHERE role = $2 AND (project = $1 OR project IS NULL)
         ORDER BY (project IS NOT NULL) DESC
@@ -794,6 +794,7 @@ export class WorkspaceOrchestrator {
       initCommand: (x.init_command as string | null) ?? null,
       devices: (x.devices as string[] | null) ?? [],
       securityOpts: (x.security_opts as string[] | null) ?? [],
+      capAdd: (x.cap_add as string[] | null) ?? [],
     };
   }
 
@@ -832,7 +833,7 @@ export class WorkspaceOrchestrator {
   // Rollen sind NIE fest: via role_set/role_delete editierbar (global ODER
   // projekt-scoped), jede Rolle ist beliebig oft instanziierbar (db-1, db-2, ...).
 
-  async roleSet(opts: { project?: string | null; role: string; image?: string; cpuLimit?: number; memLimitMb?: number; pidsLimit?: number; tmpfsMb?: number; initCommand?: string | null; description?: string | null; devices?: string[]; securityOpts?: string[] }): Promise<Record<string, unknown>> {
+  async roleSet(opts: { project?: string | null; role: string; image?: string; cpuLimit?: number; memLimitMb?: number; pidsLimit?: number; tmpfsMb?: number; initCommand?: string | null; description?: string | null; devices?: string[]; securityOpts?: string[]; capAdd?: string[] }): Promise<Record<string, unknown>> {
     const role = (opts.role || '').toLowerCase();
     if (!/^[a-z0-9][a-z0-9-]{0,29}$/.test(role)) {
       throw new Error(`Ungueltiger Rollen-Name "${opts.role}" (erlaubt: ^[a-z0-9][a-z0-9-]{0,29}$)`);
@@ -850,10 +851,13 @@ export class WorkspaceOrchestrator {
     if (opts.securityOpts !== undefined && (!Array.isArray(opts.securityOpts) || opts.securityOpts.some(s => !['seccomp=unconfined', 'apparmor=unconfined', 'label=disable'].includes(s)))) {
       throw new Error('role_set: security_opts — erlaubt sind nur seccomp=unconfined, apparmor=unconfined, label=disable');
     }
+    if (opts.capAdd !== undefined && (!Array.isArray(opts.capAdd) || opts.capAdd.some(c => !['SETUID', 'SETGID'].includes(c)))) {
+      throw new Error('role_set: cap_add — erlaubt sind nur SETUID, SETGID (rootless-Podman newuidmap/newgidmap; kein --privileged)');
+    }
     const pool = getPool();
     const r = await pool.query(
-      `INSERT INTO workspace_roles (project, role, image, cpu_limit, mem_limit_mb, pids_limit, tmpfs_mb, init_command, description, devices, security_opts)
-       VALUES ($1, $2, COALESCE($3, 'synapse-workspace:latest'), COALESCE($4, 1.0), COALESCE($5, 512), COALESCE($6, 200), COALESCE($7, 256), $8, $9, COALESCE($10::text[], '{}'), COALESCE($11::text[], '{}'))
+      `INSERT INTO workspace_roles (project, role, image, cpu_limit, mem_limit_mb, pids_limit, tmpfs_mb, init_command, description, devices, security_opts, cap_add)
+       VALUES ($1, $2, COALESCE($3, 'synapse-workspace:latest'), COALESCE($4, 1.0), COALESCE($5, 512), COALESCE($6, 200), COALESCE($7, 256), $8, $9, COALESCE($10::text[], '{}'), COALESCE($11::text[], '{}'), COALESCE($12::text[], '{}'))
        ON CONFLICT ((COALESCE(project, '')), role) DO UPDATE SET
          image        = COALESCE($3, workspace_roles.image),
          cpu_limit    = COALESCE($4, workspace_roles.cpu_limit),
@@ -864,9 +868,10 @@ export class WorkspaceOrchestrator {
          description  = COALESCE($9, workspace_roles.description),
          devices       = COALESCE($10::text[], workspace_roles.devices),
          security_opts = COALESCE($11::text[], workspace_roles.security_opts),
+         cap_add       = COALESCE($12::text[], workspace_roles.cap_add),
          updated_at   = NOW()
-       RETURNING project, role, image, cpu_limit, mem_limit_mb, pids_limit, tmpfs_mb, init_command, description, devices, security_opts`,
-      [opts.project ?? null, role, opts.image ?? null, opts.cpuLimit ?? null, opts.memLimitMb ?? null, opts.pidsLimit ?? null, opts.tmpfsMb ?? null, opts.initCommand ?? null, opts.description ?? null, opts.devices ?? null, opts.securityOpts ?? null]
+       RETURNING project, role, image, cpu_limit, mem_limit_mb, pids_limit, tmpfs_mb, init_command, description, devices, security_opts, cap_add`,
+      [opts.project ?? null, role, opts.image ?? null, opts.cpuLimit ?? null, opts.memLimitMb ?? null, opts.pidsLimit ?? null, opts.tmpfsMb ?? null, opts.initCommand ?? null, opts.description ?? null, opts.devices ?? null, opts.securityOpts ?? null, opts.capAdd ?? null]
     );
     return r.rows[0];
   }
@@ -874,7 +879,7 @@ export class WorkspaceOrchestrator {
   async roleList(project?: string): Promise<Array<Record<string, unknown>>> {
     const pool = getPool();
     const r = await pool.query(
-      `SELECT project, role, image, cpu_limit, mem_limit_mb, pids_limit, tmpfs_mb, init_command, description, devices, security_opts, updated_at,
+      `SELECT project, role, image, cpu_limit, mem_limit_mb, pids_limit, tmpfs_mb, init_command, description, devices, security_opts, cap_add, updated_at,
               (project IS NULL) AS is_global
          FROM workspace_roles
         WHERE project IS NULL OR project = $1
@@ -992,14 +997,16 @@ export class WorkspaceOrchestrator {
     const instanceRole = (roleRow.rows[0]?.role as string | null) ?? null;
     let privDevices: string[] = [];
     let privSecurityOpts: string[] = [];
+    let privCapAdd: string[] = [];
     if (instanceRole) {
       const tpl = await this.loadRoleTemplate(project, instanceRole);
-      if (tpl && (tpl.devices.length > 0 || tpl.securityOpts.length > 0)) {
+      if (tpl && (tpl.devices.length > 0 || tpl.securityOpts.length > 0 || tpl.capAdd.length > 0)) {
         if (!this.privilegedRoleAllowed(instanceRole)) {
           throw new Error(`Rolle "${instanceRole}" verlangt privilegierte Optionen (devices=${tpl.devices.join(',') || '-'}; security_opts=${tpl.securityOpts.join(',') || '-'}), steht aber nicht in ENV SYNAPSE_WS_PRIVILEGED_ROLES — Start verweigert (Opt-in pro Deployment)`);
         }
         privDevices = tpl.devices;
         privSecurityOpts = tpl.securityOpts;
+        privCapAdd = tpl.capAdd;
         console.error(`[Workspaces] ${project}/${ws}: privilegierte Rolle "${instanceRole}" allowlisted — devices=[${privDevices.join(',')}] security_opts=[${privSecurityOpts.join(',')}]`);
       }
     }
@@ -1031,6 +1038,7 @@ export class WorkspaceOrchestrator {
         // WS5: privilegierte Optionen — nur gesetzt wenn Rolle allowlisted (Gate oben).
         ...(privDevices.length > 0 ? { Devices: privDevices.map(d => ({ PathOnHost: d, PathInContainer: d, CgroupPermissions: 'rwm' })) } : {}),
         ...(privSecurityOpts.length > 0 ? { SecurityOpt: privSecurityOpts } : {}),
+        ...(privCapAdd.length > 0 ? { CapAdd: privCapAdd } : {}),
       },
       // PID 1 = tail -F /tmp/ws.log → docker logs zeigt alle exec/materialize/start/stop
       // Events die der Orchestrator dorthin appended. /tmp ist tmpfs (siehe oben),

@@ -965,6 +965,7 @@ ALTER TABLE project_workspaces ADD COLUMN IF NOT EXISTS role TEXT;
 -- (Komma-Liste) allowlisted ist — sonst wird der Start hart verweigert.
 ALTER TABLE workspace_roles ADD COLUMN IF NOT EXISTS devices       TEXT[] NOT NULL DEFAULT '{}';
 ALTER TABLE workspace_roles ADD COLUMN IF NOT EXISTS security_opts TEXT[] NOT NULL DEFAULT '{}';
+ALTER TABLE workspace_roles ADD COLUMN IF NOT EXISTS cap_add       TEXT[] NOT NULL DEFAULT '{}';
 
 -- WS4-Seed: globale Start-Rollen — NUR Startpunkt, NICHTS ist fest:
 -- role_set ueberschreibt/ergaenzt, role_delete entfernt, jede Rolle ist
@@ -993,12 +994,16 @@ ON CONFLICT ((COALESCE(project, '')), role) DO NOTHING;
 -- (graphroot) liegt im persistenten HOME (reset_home = Registry-Reset).
 -- Start wird vom Orchestrator VERWEIGERT solange die Rolle nicht in
 -- SYNAPSE_WS_PRIVILEGED_ROLES steht (bewusstes Opt-in pro Deployment).
-INSERT INTO workspace_roles (project, role, image, cpu_limit, mem_limit_mb, pids_limit, tmpfs_mb, init_command, description, devices, security_opts)
+INSERT INTO workspace_roles (project, role, image, cpu_limit, mem_limit_mb, pids_limit, tmpfs_mb, init_command, description, devices, security_opts, cap_add)
 VALUES
   (NULL, 'container-builder', 'synapse-workspace-podman:latest', 2.0, 2048, 400, 1024, NULL,
    'Container-Builds: docker/podman build, run und compose der User-Projekte testen (docker = podman-Alias, rootless, fuse-overlayfs). Benoetigt ENV SYNAPSE_WS_PRIVILEGED_ROLES=container-builder + Tier-2-Image.',
-   ARRAY['/dev/fuse'], ARRAY['seccomp=unconfined','apparmor=unconfined'])
+   ARRAY['/dev/fuse'], ARRAY['seccomp=unconfined','apparmor=unconfined'], ARRAY['SETUID','SETGID'])
 ON CONFLICT ((COALESCE(project, '')), role) DO NOTHING;
+-- WS5-4: rootless Podman braucht CAP_SETUID/SETGID (newuidmap/newgidmap -> uid_map).
+-- Bestands-DBs nachziehen (Seed oben greift wegen ON CONFLICT DO NOTHING nicht).
+UPDATE workspace_roles SET cap_add = ARRAY['SETUID','SETGID']
+ WHERE project IS NULL AND role = 'container-builder' AND (cap_add IS NULL OR cap_add = '{}');
 
 -- daemon_heartbeats — pro Projekt: laeuft ein lokaler FileWatcher-Daemon?
 -- Der lokale Daemon UPSERTed last_seen=NOW() alle 10s pro aktivem Projekt.
@@ -1057,8 +1062,53 @@ CREATE TRIGGER trg_notify_code_file_change
 
 `;
 
+const AUTH_SCHEMA_SQL = `
+-- ==========================================================================
+-- PLAN-002: 2FA / Auth — Synapse-System-Tabellen (KEINE Projekt-Daten!).
+-- Ersetzen die In-Memory-Maps aus rest-api/src/routes/oauth.ts (persistent).
+-- ==========================================================================
+
+-- TOTP-Secret (Single-Row, id=1). Bootstrap optional aus ENV SYNAPSE_TOTP_SECRET.
+CREATE TABLE IF NOT EXISTS auth_totp (
+  id INTEGER PRIMARY KEY DEFAULT 1,
+  secret TEXT NOT NULL,
+  confirmed_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  CONSTRAINT auth_totp_singleton CHECK (id = 1)
+);
+
+-- Registrierte OAuth-Clients (ersetzt In-Memory registeredClients).
+CREATE TABLE IF NOT EXISTS auth_oauth_clients (
+  client_id TEXT PRIMARY KEY,
+  client_secret TEXT,
+  redirect_uris TEXT[] DEFAULT '{}',
+  client_name TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Tokens: access | refresh | authcode | session | service.
+-- token_hash = SHA-256 des Klartext-Tokens (Klartext wird NIE gespeichert).
+-- parent_token: Refresh->Access bzw. Rotations-Kette. code_challenge/redirect_uri: PKCE-authcode.
+CREATE TABLE IF NOT EXISTS auth_tokens (
+  token_hash TEXT PRIMARY KEY,
+  kind TEXT NOT NULL,
+  client_id TEXT REFERENCES auth_oauth_clients(client_id) ON DELETE CASCADE,
+  scope TEXT,
+  label TEXT,
+  redirect_uri TEXT,
+  code_challenge TEXT,
+  parent_token TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  expires_at TIMESTAMPTZ,
+  last_used_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_auth_tokens_kind_expires ON auth_tokens(kind, expires_at);
+CREATE INDEX IF NOT EXISTS idx_auth_tokens_client ON auth_tokens(client_id);
+`;
+
 export async function ensureSchema(): Promise<void> {
   const pool = getPool();
   await pool.query(SCHEMA_SQL);
+  await pool.query(AUTH_SCHEMA_SQL);
   console.error('[Synapse] PostgreSQL Schema bereit');
 }

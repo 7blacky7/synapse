@@ -11,6 +11,7 @@ import { dirname, join } from 'node:path';
 import { existsSync } from 'node:fs';
 import { getConfig, initSynapse, getPool, registerVirtualProject } from '@synapse/core';
 import { errorHandler } from './middleware/error.js';
+import { registerAuthHook } from './middleware/auth-hook.js';
 import {
   statusRoutes,
   projectRoutes,
@@ -29,6 +30,8 @@ import {
   shellRoutes,
   specialistRoutes,
   workspaceRoutes,
+  authRoutes,
+  graphRoutes,
 } from './routes/index.js';
 
 /**
@@ -49,6 +52,13 @@ export async function createServer(): Promise<FastifyInstance> {
 
   // Error Handler
   fastify.setErrorHandler(errorHandler);
+
+  // Globaler Auth-Hook (AUTH-4, PLAN-002): gated /api/* + /mcp/* via Bearer-Token
+  // (PG-validiert). Allowlist (OAuth, /api/auth/*, /health, Web-UI-Assets, SPA),
+  // SSE-Sonderbehandlung (Cookie/?sse_token=) und ENV-Notausgang
+  // SYNAPSE_AUTH_DISABLED=1 sind in registerAuthHook gekapselt. Frueh registriert,
+  // damit onRequest VOR allen Routen-Handlern feuert.
+  registerAuthHook(fastify);
 
   // OAuth zuerst (für /.well-known Endpoints)
   await fastify.register(oauthRoutes);
@@ -72,6 +82,13 @@ export async function createServer(): Promise<FastifyInstance> {
   await fastify.register(shellRoutes);
   await fastify.register(specialistRoutes);
   await fastify.register(workspaceRoutes);
+
+  // Graph-View (PLAN-003 / GRAPH-1): /api/graph/* — Aggregationen direkt aus
+  // @synapse/core (PG + Qdrant), kein HTTP-Loopback. Hinter Auth-Hook (AUTH-4).
+  await fastify.register(graphRoutes);
+
+  // Web-UI-Auth (AUTH-5): /api/auth/* — im Auth-Hook allowlisted (Bootstrap).
+  await fastify.register(authRoutes);
 
   // Health Check
   fastify.get('/health', async () => ({ status: 'ok' }));

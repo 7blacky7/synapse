@@ -3,6 +3,8 @@
  * Kommuniziert mit der REST-API
  */
 
+import { apiFetch } from './auth';
+
 const API_BASE = '/api';
 
 export interface ProjectInfo {
@@ -14,7 +16,7 @@ export interface ProjectInfo {
  * Holt alle verfuegbaren Projekte
  */
 export async function getProjects(): Promise<ProjectInfo[]> {
-  const response = await fetch(`${API_BASE}/projects`);
+  const response = await apiFetch(`${API_BASE}/projects`);
 
   if (!response.ok) {
     throw new Error(`HTTP ${response.status}`);
@@ -33,7 +35,7 @@ export async function getProjects(): Promise<ProjectInfo[]> {
  * Initialisiert ein Projekt
  */
 export async function initProject(path: string, name?: string): Promise<{ project: string; message: string }> {
-  const response = await fetch(`${API_BASE}/projects/init`, {
+  const response = await apiFetch(`${API_BASE}/projects/init`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ path, name }),
@@ -86,7 +88,7 @@ export async function sendChatMessage(
   _image?: string,
   sessionId?: string
 ): Promise<ChatResponse> {
-  const response = await fetch(`${API_BASE}/chat`, {
+  const response = await apiFetch(`${API_BASE}/chat`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -123,7 +125,7 @@ export async function searchMemories(
     params.set('project', project);
   }
 
-  const response = await fetch(`${API_BASE}/memory/search?${params}`);
+  const response = await apiFetch(`${API_BASE}/memory/search?${params}`);
 
   if (!response.ok) {
     const error = await response.json().catch(() => ({ error: 'Unbekannter Fehler' }));
@@ -147,7 +149,7 @@ export async function listMemories(
     params.set('category', category);
   }
 
-  const response = await fetch(`${API_BASE}/memory/list?${params}`);
+  const response = await apiFetch(`${API_BASE}/memory/list?${params}`);
 
   if (!response.ok) {
     const error = await response.json().catch(() => ({ error: 'Unbekannter Fehler' }));
@@ -168,7 +170,7 @@ export async function saveMemory(
   category: string = 'note',
   tags: string[] = []
 ): Promise<MemoryResult> {
-  const response = await fetch(`${API_BASE}/memory`, {
+  const response = await apiFetch(`${API_BASE}/memory`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -197,7 +199,7 @@ export async function deleteMemory(
   project: string,
   name: string
 ): Promise<void> {
-  const response = await fetch(
+  const response = await apiFetch(
     `${API_BASE}/memory/${encodeURIComponent(project)}/${encodeURIComponent(name)}`,
     {
       method: 'DELETE',
@@ -237,7 +239,7 @@ export async function searchCode(
     params.set('fileType', fileType);
   }
 
-  const response = await fetch(`${API_BASE}/code/search?${params}`);
+  const response = await apiFetch(`${API_BASE}/code/search?${params}`);
 
   if (!response.ok) {
     const error = await response.json().catch(() => ({ error: 'Unbekannter Fehler' }));
@@ -280,7 +282,7 @@ export interface SpecialistListResponse {
  * Holt alle Spezialisten eines Projekts
  */
 export async function getSpecialists(project: string): Promise<SpecialistListResponse> {
-  const response = await fetch(`${API_BASE}/projects/${encodeURIComponent(project)}/specialists`);
+  const response = await apiFetch(`${API_BASE}/projects/${encodeURIComponent(project)}/specialists`);
   if (!response.ok) {
     const error = await response.json().catch(() => ({}));
     throw new Error(error.error?.message || `HTTP ${response.status}`);
@@ -298,7 +300,7 @@ export async function spawnSpecialist(
   cwd?: string,
   allowedTools?: string[]
 ): Promise<any> {
-  const response = await fetch(`${API_BASE}/projects/${encodeURIComponent(project)}/specialists/spawn`, {
+  const response = await apiFetch(`${API_BASE}/projects/${encodeURIComponent(project)}/specialists/spawn`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ name, model, cwd, allowedTools }),
@@ -314,7 +316,7 @@ export async function spawnSpecialist(
  * Stoppt einen Spezialisten
  */
 export async function stopSpecialist(project: string, specName: string): Promise<any> {
-  const response = await fetch(
+  const response = await apiFetch(
     `${API_BASE}/projects/${encodeURIComponent(project)}/specialists/${encodeURIComponent(specName)}/stop`,
     { method: 'POST' }
   );
@@ -329,7 +331,7 @@ export async function stopSpecialist(project: string, specName: string): Promise
  * Bereinigt einen Spezialisten
  */
 export async function purgeSpecialist(project: string, specName: string): Promise<any> {
-  const response = await fetch(
+  const response = await apiFetch(
     `${API_BASE}/projects/${encodeURIComponent(project)}/specialists/${encodeURIComponent(specName)}/purge`,
     { method: 'POST' }
   );
@@ -344,7 +346,7 @@ export async function purgeSpecialist(project: string, specName: string): Promis
  * Weckt einen Spezialisten
  */
 export async function wakeSpecialist(project: string, specName: string, message: string): Promise<any> {
-  const response = await fetch(
+  const response = await apiFetch(
     `${API_BASE}/projects/${encodeURIComponent(project)}/specialists/${encodeURIComponent(specName)}/wake`,
     {
       method: 'POST',
@@ -372,7 +374,7 @@ export interface ChannelInfo {
  * Holt alle Channels eines Projekts
  */
 export async function getChannels(project: string): Promise<ChannelInfo[]> {
-  const response = await fetch(`${API_BASE}/projects/${encodeURIComponent(project)}/channels`);
+  const response = await apiFetch(`${API_BASE}/projects/${encodeURIComponent(project)}/channels`);
   if (!response.ok) {
     const error = await response.json().catch(() => ({}));
     throw new Error(error.error?.message || `HTTP ${response.status}`);
@@ -398,7 +400,7 @@ export async function getChannelFeed(project: string, channel: string, limit?: n
   if (limit) {
     params.set('limit', limit.toString());
   }
-  const response = await fetch(
+  const response = await apiFetch(
     `${API_BASE}/projects/${encodeURIComponent(project)}/channels/${encodeURIComponent(channel)}/feed?${params}`
   );
   if (!response.ok) {
@@ -418,7 +420,7 @@ export async function postChannelMessage(
   content: string,
   sender?: string
 ): Promise<any> {
-  const response = await fetch(
+  const response = await apiFetch(
     `${API_BASE}/projects/${encodeURIComponent(project)}/channels/${encodeURIComponent(channel)}/post`,
     {
       method: 'POST',
@@ -467,7 +469,7 @@ export async function getWatcherEvents(project: string, limit?: number): Promise
   if (limit) {
     params.set('limit', limit.toString());
   }
-  const response = await fetch(`${API_BASE}/projects/${encodeURIComponent(project)}/watcher-events?${params}`);
+  const response = await apiFetch(`${API_BASE}/projects/${encodeURIComponent(project)}/watcher-events?${params}`);
   if (!response.ok) {
     const error = await response.json().catch(() => ({}));
     throw new Error(error.error?.message || `HTTP ${response.status}`);
@@ -484,7 +486,7 @@ export async function getFileVersions(project: string, limit?: number): Promise<
   if (limit) {
     params.set('limit', limit.toString());
   }
-  const response = await fetch(`${API_BASE}/projects/${encodeURIComponent(project)}/file-versions?${params}`);
+  const response = await apiFetch(`${API_BASE}/projects/${encodeURIComponent(project)}/file-versions?${params}`);
   if (!response.ok) {
     const error = await response.json().catch(() => ({}));
     throw new Error(error.error?.message || `HTTP ${response.status}`);
