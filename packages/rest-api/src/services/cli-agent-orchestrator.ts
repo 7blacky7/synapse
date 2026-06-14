@@ -133,10 +133,34 @@ export class CliAgentOrchestrator {
   private docker: Docker;
   private cfg: Required<CliAgentConfig>;
   private dockerAvailable = false;
+  /** Per-Agent-Lock: serialisiert start/update/stop/remove gegen Races + Name-Kollision. */
+  private locks = new Map<string, Promise<unknown>>();
 
   constructor(cfg: CliAgentConfig = {}) {
     this.cfg = { ...DEFAULTS, ...cfg };
     this.docker = new Docker({ socketPath: this.cfg.socketPath });
+  }
+
+  /**
+   * Fuehrt fn unter einem per-Agent-Lock aus. Verhindert dass zwei gleichzeitige
+   * Lifecycle-Operationen (z.B. doppeltes start(), oder start()+stop()) auf
+   * denselben Container-Namen rennen (Docker 409 Name-Konflikt) oder die PG-Row
+   * gegeneinander schreiben. Lock ist in-process (eine synapse-api-Instanz).
+   */
+  private async withLock<T>(name: string, fn: () => Promise<T>): Promise<T> {
+    const key = sanitize(name);
+    const prev = this.locks.get(key) ?? Promise.resolve();
+    // Diese Operation reiht sich hinter die vorige ein; nachfolgende warten auf "run".
+    const run = prev.then(() => fn(), () => fn());
+    // Map auf das (Fehler-neutralisierte) Ende dieser Operation setzen.
+    const tail = run.then(() => undefined, () => undefined);
+    this.locks.set(key, tail);
+    try {
+      return await run;
+    } finally {
+      // Nur aufraeumen wenn keine weitere Operation zwischenzeitlich eingereiht wurde.
+      if (this.locks.get(key) === tail) this.locks.delete(key);
+    }
   }
 
   /** Idempotent. Pingt Docker, raeumt verwaiste Status auf. KEIN Auto-Start, KEIN idle-Loop. */
@@ -181,13 +205,26 @@ export class CliAgentOrchestrator {
     return r.rows[0] ? rowToInfo(r.rows[0] as Record<string, unknown>) : null;
   }
 
-  /** Status mit der Docker-Realitaet abgleichen: 'running' o.ae. ohne lebenden Container -> 'stopped'. */
+  /**
+   * Gleicht die PG-Tabelle mit der Docker-Realitaet ab (bei synapse-api-Neustart).
+   * Robust in BEIDE Richtungen:
+   *  (a) PG sagt aktiv (running/starting/updating/stopping), aber der Container
+   *      lebt nicht (oder kein/falsches container_id) -> auf 'stopped' korrigieren.
+   *  (b) Container traegt unser Label und LAEUFT (RestartPolicy unless-stopped hat
+   *      ihn ueberlebt), aber die zugehoerige PG-Row ist nicht 'running' oder hat
+   *      ein stale container_id -> Row wieder auf 'running' + container_id resyncen
+   *      (Adoption). So gehen persistente Container nach einem Neustart nicht
+   *      faelschlich als 'stopped' verloren.
+   * Best-effort: einzelne Fehler werden geloggt, brechen reconcile nicht ab.
+   */
   private async reconcile(): Promise<void> {
     const pool = getPool();
-    const r = await pool.query(
+
+    // (a) PG-aktiv, aber Container tot/fehlt -> stopped.
+    const active = await pool.query(
       `SELECT name, container_id FROM cli_agents WHERE status IN ('running','starting','updating','stopping')`
     );
-    for (const row of r.rows) {
+    for (const row of active.rows) {
       let alive = false;
       if (row.container_id) {
         try {
@@ -198,12 +235,43 @@ export class CliAgentOrchestrator {
         }
       }
       if (!alive) {
-        await pool.query(
-          `UPDATE cli_agents SET status='stopped', container_id=NULL, last_stopped_at=NOW(), updated_at=NOW() WHERE name=$1`,
-          [row.name]
-        );
+        await pool
+          .query(
+            `UPDATE cli_agents SET status='stopped', container_id=NULL, last_stopped_at=NOW(), updated_at=NOW() WHERE name=$1`,
+            [row.name]
+          )
+          .catch((err) => console.error(`[CliAgents] reconcile(a) ${row.name}: ${(err as Error).message}`));
         console.error(`[CliAgents] reconcile: ${row.name} als aktiv markiert, Container fehlt -> stopped`);
       }
+    }
+
+    // (b) Lebende, gelabelte Container den PG-Rows zuordnen (Adoption nach Neustart).
+    try {
+      const containers = await this.docker.listContainers({
+        all: false, // nur laufende
+        filters: { label: ['synapse.cli-agent=true'] },
+      });
+      for (const c of containers) {
+        const name = (c.Labels?.['synapse.cli-name'] || '').trim();
+        if (!name) continue;
+        const row = await pool.query(
+          `SELECT status, container_id FROM cli_agents WHERE name=$1`,
+          [sanitize(name)]
+        );
+        const pg = row.rows[0];
+        if (!pg) continue; // Container ohne Definition -> nicht anfassen (kein Auto-Cleanup im reconcile).
+        if (pg.status !== 'running' || pg.container_id !== c.Id) {
+          await pool
+            .query(
+              `UPDATE cli_agents SET status='running', container_id=$2, last_error=NULL, updated_at=NOW() WHERE name=$1`,
+              [sanitize(name), c.Id]
+            )
+            .catch((err) => console.error(`[CliAgents] reconcile(b) ${name}: ${(err as Error).message}`));
+          console.error(`[CliAgents] reconcile: laufenden Container ${name} adoptiert (${c.Id.slice(0, 12)})`);
+        }
+      }
+    } catch (err) {
+      console.error(`[CliAgents] reconcile(b) listContainers: ${(err as Error).message}`);
     }
   }
 
@@ -264,6 +332,10 @@ export class CliAgentOrchestrator {
   /** Startet den persistenten CLI-Container (idempotent: laeuft er schon, no-op). */
   async start(name: string): Promise<{ name: string; containerId: string; status: string }> {
     this.assertAvailable();
+    return this.withLock(name, () => this._start(name));
+  }
+
+  private async _start(name: string): Promise<{ name: string; containerId: string; status: string }> {
     const row = await this.loadRow(name);
     if (!row) throw new Error(`CLI-Agent "${name}" nicht registriert — zuerst POST /api/cli-agents`);
     const spec = this.resolveSpec(row.cliType);
@@ -306,6 +378,10 @@ export class CliAgentOrchestrator {
    */
   async update(name: string): Promise<{ name: string; status: string; image: string; version: string | null }> {
     this.assertAvailable();
+    return this.withLock(name, () => this._update(name));
+  }
+
+  private async _update(name: string): Promise<{ name: string; status: string; image: string; version: string | null }> {
     const row = await this.loadRow(name);
     if (!row) throw new Error(`CLI-Agent "${name}" nicht registriert`);
     const spec = this.resolveSpec(row.cliType);
@@ -336,6 +412,10 @@ export class CliAgentOrchestrator {
   /** Stoppt + entfernt den Container. Volumes bleiben (persistent). */
   async stop(name: string, reason = 'manual'): Promise<{ name: string; status: string }> {
     this.assertAvailable();
+    return this.withLock(name, () => this._stop(name, reason));
+  }
+
+  private async _stop(name: string, reason = 'manual'): Promise<{ name: string; status: string }> {
     const row = await this.loadRow(name);
     if (!row) throw new Error(`CLI-Agent "${name}" nicht registriert`);
     const pool = getPool();
@@ -386,7 +466,7 @@ export class CliAgentOrchestrator {
     if (row.project) labels['synapse.project'] = row.project;
     const memBytes = row.memLimitMb * 1024 * 1024;
 
-    const create = await this.docker.createContainer({
+    const createOpts = {
       name: containerName,
       Image: row.image,
       Labels: labels,
@@ -412,7 +492,32 @@ export class CliAgentOrchestrator {
       },
       User: '0',
       // KEIN Cmd-Override -> Image-ENTRYPOINT (persistenter Idle-Loop + self-update) laeuft.
-    });
+    };
+
+    let create;
+    try {
+      create = await this.docker.createContainer(createOpts);
+    } catch (err) {
+      const msg = (err as Error).message || '';
+      const status = (err as { statusCode?: number }).statusCode;
+      // Image fehlt (lokal gebaut, nicht in Registry): klare, handlungsweisende Meldung.
+      if (status === 404 || /no such image/i.test(msg)) {
+        throw new Error(
+          `Image "${row.image}" nicht vorhanden — zuerst bauen (docker/cli-agents/${row.cliType}/) und als "${row.image}" taggen, oder per update() pullen.`
+        );
+      }
+      // 409 = Name-Kollision (Race trotz vorherigem force-remove): einmal hart wegraeumen + Retry.
+      if (status === 409 || /Conflict|already in use/i.test(msg)) {
+        try {
+          await this.docker.getContainer(containerName).remove({ force: true });
+        } catch {
+          /* schon weg */
+        }
+        create = await this.docker.createContainer(createOpts);
+      } else {
+        throw err;
+      }
+    }
     await create.start();
     console.error(`[CliAgents] Container erstellt+gestartet: ${containerName} (${create.id.slice(0, 12)})`);
     return create.id;
@@ -545,6 +650,10 @@ export class CliAgentOrchestrator {
 
   /** Entfernt den Agenten komplett (Container weg, PG-Row weg, Volumes optional). */
   async removeAgent(name: string, opts: { removeVolumes?: boolean } = {}): Promise<{ name: string; removed: boolean; volumesRemoved: string[] }> {
+    return this.withLock(name, () => this._removeAgent(name, opts));
+  }
+
+  private async _removeAgent(name: string, opts: { removeVolumes?: boolean } = {}): Promise<{ name: string; removed: boolean; volumesRemoved: string[] }> {
     const row = await this.loadRow(name);
     if (!row) return { name: sanitize(name), removed: false, volumesRemoved: [] };
     if (this.dockerAvailable) {
