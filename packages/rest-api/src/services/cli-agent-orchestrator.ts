@@ -71,7 +71,30 @@ const CLI_TYPES: Record<string, CliTypeSpec> = {
       { volumeKey: 'local', path: '/root/.local' },
     ],
   },
-  // codex / antigravity folgen in DIND-2-Rest (eigene Images + Auth-Pfade).
+  // OpenAI Codex CLI — nativer Installer nach /root/.local, Auth in /root/.codex
+  // (CODEX_HOME/auth.json). Image: docker/cli-agents/codex/.
+  codex: {
+    image: 'synapse-cli-codex:latest',
+    binary: 'codex',
+    versionCmd: 'codex --version',
+    workdir: '/agent',
+    mounts: [
+      { volumeKey: 'auth', path: '/root/.codex' },
+      { volumeKey: 'local', path: '/root/.local' },
+    ],
+  },
+  // Antigravity / Google Gemini CLI — npm-Install im Image, OAuth-Creds in
+  // /root/.gemini (oauth_creds.json + settings.json). Image: docker/cli-agents/antigravity/.
+  antigravity: {
+    image: 'synapse-cli-antigravity:latest',
+    binary: 'gemini',
+    versionCmd: 'gemini --version',
+    workdir: '/agent',
+    mounts: [
+      { volumeKey: 'auth', path: '/root/.gemini' },
+      { volumeKey: 'local', path: '/root/.local' },
+    ],
+  },
 };
 
 export interface CliAgentInfo {
