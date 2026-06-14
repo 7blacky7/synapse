@@ -101,9 +101,13 @@ function isSseRoute(method: string, pathname: string): boolean {
   return method === 'GET' && /^\/api\/projects\/[^/]+\/events\/?$/.test(pathname);
 }
 
-/** Pfad faellt unter den Bearer-Zwang (/api/* oder /mcp/*)? */
-function requiresBearer(pathname: string): boolean {
-  return pathname.startsWith('/api') || pathname.startsWith('/mcp');
+/** Pfad faellt unter den Bearer-Zwang (/api/* , /mcp/* oder MCP-Root POST /)? */
+function requiresBearer(method: string, pathname: string): boolean {
+  if (pathname.startsWith('/api') || pathname.startsWith('/mcp')) return true;
+  // MCP "Streamable HTTP"-Transport laeuft auf POST / (Root). GET / (Web-UI) und
+  // OPTIONS / (CORS-Preflight) bleiben offen; alle Mutationen auf / werden gegated.
+  if (pathname === '/' && method !== 'GET' && method !== 'HEAD' && method !== 'OPTIONS') return true;
+  return false;
 }
 
 function send401(
@@ -114,7 +118,7 @@ function send401(
 ): FastifyReply {
   // MCP-Spec-PFLICHT: /mcp/* braucht WWW-Authenticate mit resource_metadata,
   // sonst findet claude.ai den AuthServer nicht.
-  if (pathname.startsWith('/mcp')) {
+  if (pathname.startsWith('/mcp') || pathname === '/') {
     const baseUrl = getBaseUrl(request);
     reply.header(
       'WWW-Authenticate',
@@ -164,7 +168,7 @@ export function registerAuthHook(fastify: FastifyInstance): void {
 
     // 3) Bearer-Zwang nur fuer /api/* + /mcp/*. Alles andere ist via Allowlist
     //    schon raus; defensiv hier durchlassen wenn es kein gated-Prefix ist.
-    if (!requiresBearer(pathname)) return;
+    if (!requiresBearer(method, pathname)) return;
 
     const token = extractBearer(request);
     if (!token) {
