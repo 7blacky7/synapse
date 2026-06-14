@@ -96,6 +96,35 @@ else
 fi
 
 # ----------------------------------------------------------------------------
+# PLAN-004 / DIND-2 (PREP-ONLY, nichts verdrahtet): Claude Code bereitstellen.
+# ----------------------------------------------------------------------------
+# Nur im DinD-Pfad. Bun-Native-Binary; die Voraussetzungen (libgcc, libstdc++,
+# ripgrep, USE_BUILTIN_RIPGREP=0) liefert das Image. Hier wird das Binary auf
+# den persistenten Share (~/.local, ~/.claude) installiert bzw. aktualisiert,
+# damit Auth + Self-Update Neustarts ueberleben. GRACEFUL: Fehler brechen den
+# Start NICHT ab. KEINE Auth-/MCP-/Wrapper-Verdrahtung (kommt in DIND-3/5).
+export PATH="/root/.local/bin:${PATH}"
+if command -v claude >/dev/null 2>&1; then
+    log "Claude vorhanden -> 'claude update' (graceful) ..."
+    claude update >/var/log/claude-update.log 2>&1 \
+        || log "WARN: 'claude update' fehlgeschlagen -> behalte vorhandene Version."
+    log "Claude-Version: $(claude --version 2>/dev/null || echo unbekannt)"
+else
+    log "Claude fehlt -> nativer Installer auf den Share ..."
+    if curl -fsSL --retry 5 --retry-all-errors --connect-timeout 15 \
+            https://claude.ai/install.sh -o /tmp/install-claude.sh; then
+        if bash /tmp/install-claude.sh >/var/log/claude-install.log 2>&1; then
+            log "Claude installiert: $(claude --version 2>/dev/null || echo unbekannt)"
+        else
+            log "WARN: Claude-Installer fehlgeschlagen -> fahre OHNE Claude fort (graceful). Log: /var/log/claude-install.log"
+        fi
+        rm -f /tmp/install-claude.sh
+    else
+        log "WARN: Download des Claude-Installers fehlgeschlagen -> fahre OHNE Claude fort (graceful)."
+    fi
+fi
+
+# ----------------------------------------------------------------------------
 # IMMER: Node-App starten (exec ersetzt die Shell -> PID 1 Signale gehen an node).
 # ----------------------------------------------------------------------------
 log "Starte Node-App: ${APP_CMD_BIN} ${APP_CMD_ARG}"

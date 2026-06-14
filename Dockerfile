@@ -60,7 +60,18 @@ RUN ln -sf /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm && 
     ln -sf /usr/local/lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx
 
 # Node-Laufzeitabhaengigkeiten auf Alpine (docker:dind ist alpine-basiert)
-RUN apk add --no-cache libstdc++
+# + Claude-Code-Voraussetzungen (PLAN-004 / DIND-2, PREP-ONLY, nichts verdrahtet):
+#   Das native Bun-Binary von Claude Code braucht auf musl/Alpine ZWINGEND
+#   libgcc, libstdc++ UND ripgrep, plus ENV USE_BUILTIN_RIPGREP=0
+#   (offizielle Doku: code.claude.com/docs/en/setup). curl/bash fuer den
+#   Laufzeit-Installer im Entrypoint.
+#   Claude SELBST wird hier NICHT installiert -> der Build bleibt von claude.ai
+#   entkoppelt (Build kann nie daran scheitern). Der Entrypoint provisioniert
+#   und aktualisiert Claude zur Laufzeit auf den persistenten Share (nur im
+#   DinD-Pfad). Default-Verhalten unveraendert.
+RUN apk add --no-cache libstdc++ libgcc ripgrep curl bash
+ENV USE_BUILTIN_RIPGREP=0
+ENV PATH="/root/.local/bin:${PATH}"
 
 WORKDIR /app
 
