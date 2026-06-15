@@ -86,18 +86,20 @@ const CLI_TYPES: Record<string, CliTypeSpec> = {
   // Antigravity CLI (Google) — Binary 'agy' (Go-based), NICHT Gemini CLI.
   // Belegt durch model_registry (fullId 'agy-1.0.2', provider 'antigravity') +
   // packages/agents-antigravity/runtime.ts (spawn('agy', ['-p', ...])). Nativer
-  // Installer nach /root/.local/bin/agy. Auth ueber OS-Keyring (Linux Secret
-  // Service, Store unter /root/.local/share/keyrings -> via 'local'-Mount
-  // persistent) + Profil-/Config-Dir. Image: docker/cli-agents/antigravity/.
+  // Installer nach /root/.local/bin/agy. Auth (DIND-3, empirisch verifiziert
+  // dind-verifier 2026-06-15): agy nutzt KEIN OS-Keyring; sein gesamter State
+  // inkl. der OAuth-Credentials nach dem Link-Login liegt FILE-BASIERT unter
+  // /root/.gemini (Unterordner antigravity-cli/ + config/). /root/.antigravity
+  // bleibt leer. Image: docker/cli-agents/antigravity/.
   antigravity: {
     image: 'synapse-cli-antigravity:latest',
     binary: 'agy',
     versionCmd: 'agy --version',
     workdir: '/agent',
     mounts: [
-      // auth: agy Profil-/Config-Dir. TODO(DIND-3): exakten Pfad bestaetigen
-      // (Keyring-Store liegt unter /root/.local/share/keyrings, vom local-Mount gedeckt).
-      { volumeKey: 'auth', path: '/root/.antigravity' },
+      // auth: agy-State + OAuth-Auth unter /root/.gemini (empirisch verifiziert
+      // -> dort liegt antigravity-cli/ + config/, NICHT /root/.antigravity).
+      { volumeKey: 'auth', path: '/root/.gemini' },
       { volumeKey: 'local', path: '/root/.local' },
     ],
   },

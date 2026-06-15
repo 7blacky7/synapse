@@ -20,11 +20,13 @@
 # (glibc-Base, debian), KEIN npm/Node.
 #
 # Self-Update: der Entrypoint ruft den Installer bei jedem (Neu-)Start erneut
-# auf (idempotent -> latest). Persistenz: agy authentifiziert ueber den
-# OS-Keyring (Linux Secret Service); dessen Store liegt unter
-# /root/.local/share/keyrings und wird zusammen mit dem Binary ueber das
-# /root/.local-Volume persistiert. Das Profil-/Config-Dir (/root/.antigravity)
-# wird separat persistiert.
+# auf (idempotent -> latest). Persistenz (DIND-3, empirisch verifiziert
+# dind-verifier 2026-06-15): agy legt seinen GESAMTEN State unter /root/.gemini
+# ab (Unterordner antigravity-cli/ + config/) — inkl. der OAuth-Credentials nach
+# dem Link-Login. KEIN OS-Keyring/Secret-Service (/root/.local/share/keyrings
+# existiert nie). /root/.antigravity bleibt LEER. Daher wird /root/.gemini
+# persistiert (Auth ueberlebt Neustart); /root/.local deckt nur das Binary +
+# Update-Stand ab.
 #
 # Auth-Verdrahtung (DIND-3) + echtes Wrapper-Driving (DIND-5): hier NICHT
 # verdrahtet.
@@ -60,9 +62,10 @@ WORKDIR /agent
 COPY entrypoint.sh /usr/local/bin/cli-agent-entrypoint.sh
 RUN chmod +x /usr/local/bin/cli-agent-entrypoint.sh
 
-# Persistenz: Binary + Keyring-Store (/root/.local/share/keyrings) ueber
-# /root/.local; Profil/Config ueber /root/.antigravity.
-VOLUME ["/root/.local", "/root/.antigravity"]
+# Persistenz: Binary + Update-Stand ueber /root/.local; agy-State + OAuth-Auth
+# ueber /root/.gemini (empirisch verifiziert: dort liegt antigravity-cli/ +
+# config/, NICHT in /root/.antigravity).
+VOLUME ["/root/.local", "/root/.gemini"]
 
 # Kein EXPOSE/HEALTHCHECK: kein Server. Wird vom externen Wrapper getrieben.
 ENTRYPOINT ["/usr/local/bin/cli-agent-entrypoint.sh"]
