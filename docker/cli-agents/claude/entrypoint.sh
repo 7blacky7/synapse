@@ -39,6 +39,15 @@ fi
 
 log "Aktive Claude-Version: $(claude --version 2>/dev/null || echo 'unbekannt')"
 
+# --- Auth-Hinweis (DIND-3, hier NICHT automatisiert) ---
+# AUTH-PER-LINK (verifiziert dind-verifier 2026-06-15, claude 2.1.177):
+#   - 'claude setup-token' richtet einen langlebigen Auth-Token ein (erfordert
+#     Claude-Abo) -> OAuth-Login per Link, headless-tauglich (Web-Terminal DIND-4).
+#   - Alternativ ENV CLAUDE_CODE_OAUTH_TOKEN (vorab erzeugter Token) ODER
+#     ANTHROPIC_API_KEY.
+# PERSISTENZ: Credentials liegen unter /root/.claude (via Volume gedeckt, siehe
+# Dockerfile) und ueberleben Neustarts/Updates.
+
 # --- Persistent idlen (auf Signale reagieren, kein 'sleep infinity') ---
 log "IDLE — bereit fuer 'docker exec' vom Wrapper in der synapse-api."
 while true; do
