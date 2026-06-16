@@ -3,7 +3,11 @@
  * 1:1 portiert aus synapse-graph/public/app.js (bewaehrte Optik beibehalten).
  */
 
-export const POLL_MS = 8000;
+// Graph-Polling-Intervall. Bewusst hoch + Polling pausiert bei unsichtbarem Tab
+// (siehe engine.ts visibilitychange): ein vergessener Hintergrund-/Standby-Tab
+// erzeugte sonst Dauerlast (alle 8s 2 Requests -> frass die ngrok-Bandbreite).
+// Vorher: 8000.
+export const POLL_MS = 60000;
 
 export const EXT_COLORS: Record<string, string> = {
   ts: '#3178c6', tsx: '#61dafb', js: '#e8c545', mjs: '#e8c545', cjs: '#e8c545',

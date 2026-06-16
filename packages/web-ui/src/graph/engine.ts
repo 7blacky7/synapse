@@ -42,6 +42,7 @@ export class GraphEngine {
   private state: EngineState;
   private detailAbort: AbortController | null = null;
   private pollTimer: number | null = null;
+  private visibilityHandler: (() => void) | null = null;
   private resizeHandler: () => void;
   private destroyed = false;
 
@@ -92,12 +93,38 @@ export class GraphEngine {
     window.addEventListener('resize', this.resizeHandler);
     this.buildLegend('overview');
     this.refresh(true);
+    // Polling NUR bei sichtbarem Tab. Ein vergessener Hintergrund-/Standby-Tab
+    // pollte sonst endlos weiter und frass die ngrok-Bandbreite.
+    this.visibilityHandler = () => {
+      if (document.hidden) {
+        this.stopPolling();
+      } else {
+        this.refresh(true);
+        this.startPolling();
+      }
+    };
+    document.addEventListener('visibilitychange', this.visibilityHandler);
+    if (!document.hidden) this.startPolling();
+  }
+
+  private startPolling(): void {
+    this.stopPolling();
     this.pollTimer = window.setInterval(() => this.refresh(), POLL_MS);
+  }
+
+  private stopPolling(): void {
+    if (this.pollTimer != null) {
+      window.clearInterval(this.pollTimer);
+      this.pollTimer = null;
+    }
   }
 
   destroy(): void {
     this.destroyed = true;
-    if (this.pollTimer != null) window.clearInterval(this.pollTimer);
+    this.stopPolling();
+    if (this.visibilityHandler) {
+      document.removeEventListener('visibilitychange', this.visibilityHandler);
+    }
     if (this.detailAbort) this.detailAbort.abort();
     window.removeEventListener('resize', this.resizeHandler);
     this.cosmos.destroy();
