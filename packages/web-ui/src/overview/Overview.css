@@ -1,0 +1,105 @@
+/* KIOS-2b Layout — alles unter .kios-root gescoped, kollidiert nicht mit dem HUD-CSS.
+   Sektions-INNENleben kommt von den 2c-2g-Komponenten; hier nur Shell + Grid. */
+
+.kios-root {
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+  font-family: var(--font-body);
+  background:
+    radial-gradient(1200px 600px at 78% -10%, var(--glow), transparent 60%),
+    var(--ink);
+  color: var(--text);
+}
+
+/* Top-Bar */
+.kios-topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--sp-4) var(--sp-8);
+  border-bottom: 1px solid var(--line);
+}
+.kios-brand { display: flex; align-items: baseline; gap: var(--sp-3); }
+.kios-brand-mark {
+  width: 12px; height: 12px; border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 12px var(--accent);
+  align-self: center;
+}
+.kios-brand-name {
+  font-family: var(--font-display);
+  font-weight: 800; font-size: 20px; letter-spacing: 0.14em;
+}
+.kios-brand-sub { color: var(--text-dim); font-size: 13px; }
+.kios-topbar-right { display: flex; align-items: center; gap: var(--sp-4); }
+.kios-scope {
+  font-family: var(--font-mono); font-size: 12px;
+  color: var(--accent);
+  border: 1px solid var(--accent); border-radius: var(--radius-pill);
+  padding: 2px var(--sp-3);
+}
+.kios-totp { font-family: var(--font-mono); font-size: 12px; color: var(--text-dim); }
+.kios-theme-toggle {
+  font-family: var(--font-mono); font-size: 12px;
+  background: var(--ink-raised); color: var(--text);
+  border: 1px solid var(--line); border-radius: var(--radius-sm);
+  padding: var(--sp-2) var(--sp-3); cursor: pointer;
+}
+.kios-theme-toggle:hover { border-color: var(--accent); }
+.kios-theme-toggle:focus-visible { outline: none; box-shadow: var(--ring); }
+
+/* Asymmetrisches Grid: Briefing dominant, Signatur rechts; darunter Moat+Flywheel; Hierarchie volle Breite */
+.kios-grid {
+  flex: 1;
+  display: grid;
+  gap: var(--sp-6);
+  padding: var(--sp-8);
+  grid-template-columns: 1.6fr 1fr;
+  grid-template-areas:
+    'briefing signature'
+    'moat     flywheel'
+    'hierarchy hierarchy';
+  align-content: start;
+}
+.kios-cell--briefing  { grid-area: briefing; }
+.kios-cell--signature { grid-area: signature; }
+.kios-cell--moat      { grid-area: moat; }
+.kios-cell--flywheel  { grid-area: flywheel; }
+.kios-cell--hierarchy { grid-area: hierarchy; }
+
+.kios-cell {
+  background: var(--ink-raised);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: var(--sp-6);
+  min-height: 120px;
+}
+.kios-cell--signature { padding: 0; overflow: hidden; }
+
+/* Stub-Optik (bis 2c-2g sie ersetzen) */
+.kios-stub-tag {
+  font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.08em;
+  color: var(--text-dim); text-transform: uppercase;
+}
+.kios-signature-stub {
+  height: 100%; min-height: 220px; display: flex; flex-direction: column;
+  gap: var(--sp-4); align-items: center; justify-content: center; padding: var(--sp-6);
+}
+.kios-stub-nodes { display: flex; flex-wrap: wrap; gap: var(--sp-2); justify-content: center; }
+.kios-stub-nodes span {
+  font-family: var(--font-mono); font-size: 12px;
+  padding: 2px var(--sp-3); border-radius: var(--radius-pill);
+  border: 1px solid var(--line); color: var(--text-dim);
+}
+.kios-stub-nodes span[data-active='true'] { color: var(--accent); border-color: var(--accent); }
+
+/* Responsive: Mobile = Stack */
+@media (max-width: 880px) {
+  .kios-grid {
+    grid-template-columns: 1fr;
+    grid-template-areas: 'briefing' 'signature' 'moat' 'flywheel' 'hierarchy';
+    padding: var(--sp-4);
+  }
+  .kios-topbar { padding: var(--sp-4); }
+}
