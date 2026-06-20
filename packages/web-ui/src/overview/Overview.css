@@ -1,7 +1,7 @@
 /* KIOS Layout — alles unter .kios-root gescoped. Links: Protokoll + Concierge-Chat; rechts: Puls + Flywheel. */
 
 .kios-root {
-  min-height: 100%;
+  height: 100%;
   display: flex;
   flex-direction: column;
   font-family: var(--font-body);
@@ -27,29 +27,20 @@
 .kios-theme-toggle:hover { border-color: var(--accent); }
 .kios-theme-toggle:focus-visible { outline: none; box-shadow: var(--ring); }
 
-/* Grid: links Concierge (spannt 2 Reihen), rechts Puls + Flywheel, unten Hierarchie */
-.kios-grid {
-  flex: 1; display: grid; gap: var(--sp-6); padding: var(--sp-8);
-  grid-template-columns: 1.5fr 1fr;
-  grid-template-rows: minmax(240px, 1fr) auto auto;
-  grid-template-areas:
-    'concierge signature'
-    'concierge flywheel'
-    'hierarchy hierarchy';
-  align-content: stretch;
-}
-.kios-cell--concierge { grid-area: concierge; padding: 0; min-height: 600px; }
-.kios-cell--signature { grid-area: signature; }
-.kios-cell--flywheel  { grid-area: flywheel; }
-.kios-cell--hierarchy { grid-area: hierarchy; }
+/* Layout: oben [Concierge | Puls+Flywheel], darunter Hierarchie. Ganze Flaeche scrollt. */
+.kios-main { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: var(--sp-6); padding: var(--sp-8); overflow-y: auto; }
+.kios-cols { display: flex; gap: var(--sp-6); align-items: stretch; }
+.kios-col-left { flex: 1.5; min-width: 0; height: clamp(440px, 72vh, 880px); }
+.kios-col-right { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: var(--sp-6); }
 
 .kios-cell { background: var(--ink-raised); border: 1px solid var(--line); border-radius: var(--radius); padding: var(--sp-6); }
-.kios-cell--signature { padding: 0; overflow: hidden; }
+.kios-cell--signature { padding: 0; overflow: hidden; flex: 1; min-height: 240px; }
+.kios-cell--flywheel { flex-shrink: 0; }
 
-/* Concierge-Spalte: Protokoll (flex) + Griff + Chat-Dock */
-.kios-concierge { display: flex; flex-direction: column; height: 100%; min-height: 600px; }
-.kios-proto-scroll { flex: 1; overflow-y: auto; padding: var(--sp-6); min-height: 120px; }
-.kios-chat-dock { display: flex; flex-direction: column; border-top: 1px solid var(--line); min-height: 140px; }
+/* Concierge-Spalte: FESTE Hoehe (= linke Spalte). Chat-Resize bleibt INTERN -> rechts bewegt sich nicht. */
+.kios-concierge { display: flex; flex-direction: column; height: 100%; min-height: 0; background: var(--ink-raised); border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
+.kios-proto-scroll { flex: 1; overflow-y: auto; padding: var(--sp-6); min-height: 0; }
+.kios-chat-dock { display: flex; flex-direction: column; border-top: 1px solid var(--line); flex-shrink: 0; }
 
 /* Ziehgriff */
 .kios-drag { height: 14px; display: flex; align-items: center; justify-content: center; cursor: row-resize; color: var(--text-dim); background: var(--ink-sunken); border-top: 1px solid var(--line); user-select: none; touch-action: none; }
@@ -152,7 +143,9 @@
 
 /* Responsive */
 @media (max-width: 880px) {
-  .kios-grid { grid-template-columns: 1fr; grid-template-areas: 'concierge' 'signature' 'flywheel' 'hierarchy'; padding: var(--sp-4); }
+  .kios-main { padding: var(--sp-4); }
+  .kios-cols { flex-direction: column; }
+  .kios-col-left { height: 78vh; }
   .kios-topbar { padding: var(--sp-4); }
   .kios-tok-add { grid-template-columns: 1fr; }
   .kios-tok-row { flex-wrap: wrap; }

@@ -69,19 +69,20 @@ export default function Overview() {
         </div>
       </header>
 
-      <main className="kios-grid">
-        <section className="kios-cell kios-cell--concierge" aria-label="Protokoll und Concierge-Chat">
-          <ConciergeColumn protocol={PROTOCOL} greeting={GREETING} />
-        </section>
-
-        <section className="kios-cell kios-cell--signature" aria-label="Synapsen-Puls">
-          <SignaturePulse nodes={MOCK_PROJECTS.map((p) => ({ id: p.name, label: p.name, active: p.active }))} />
-        </section>
-
-        <section className="kios-cell kios-cell--flywheel" aria-label="Flywheel">
-          <FlywheelSection insights={12} skillsImproved={3} openMigrations={0} />
-        </section>
-
+      <main className="kios-main">
+        <div className="kios-cols">
+          <section className="kios-col-left" aria-label="Protokoll und Concierge-Chat">
+            <ConciergeColumn protocol={PROTOCOL} greeting={GREETING} />
+          </section>
+          <aside className="kios-col-right">
+            <section className="kios-cell kios-cell--signature" aria-label="Synapsen-Puls">
+              <SignaturePulse nodes={MOCK_PROJECTS.map((p) => ({ id: p.name, label: p.name, active: p.active }))} />
+            </section>
+            <section className="kios-cell kios-cell--flywheel" aria-label="Flywheel">
+              <FlywheelSection insights={12} skillsImproved={3} openMigrations={0} />
+            </section>
+          </aside>
+        </div>
         <footer className="kios-cell kios-cell--hierarchy" aria-label="Hierarchie">
           <HierarchyBar projects={MOCK_PROJECTS} agent="claude-opus-4-8" />
         </footer>
