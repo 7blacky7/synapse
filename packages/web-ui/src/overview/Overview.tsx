@@ -1,7 +1,7 @@
 import './tokens.css';
 import './Overview.css';
 import { useKiosTheme } from './useKiosTheme';
-import SignaturePulse from './sections/SignaturePulse';
+import SignatureStage from './sections/SignatureStage';
 import FlywheelSection from './sections/FlywheelSection';
 import HierarchyBar from './sections/HierarchyBar';
 import ConciergeColumn from './sections/ConciergeColumn';
@@ -76,7 +76,7 @@ export default function Overview() {
           </section>
           <aside className="kios-col-right">
             <section className="kios-cell kios-cell--signature" aria-label="Synapsen-Puls">
-              <SignaturePulse nodes={MOCK_PROJECTS.map((p) => ({ id: p.name, label: p.name, active: p.active }))} />
+              <SignatureStage nodes={MOCK_PROJECTS.map((p) => ({ id: p.name, label: p.name, active: p.active }))} />
             </section>
             <section className="kios-cell kios-cell--flywheel" aria-label="Flywheel">
               <FlywheelSection insights={12} skillsImproved={3} openMigrations={0} />

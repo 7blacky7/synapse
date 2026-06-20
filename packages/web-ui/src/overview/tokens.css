@@ -21,6 +21,10 @@
   --ember: #FFB066;
   --pulse: #FF7A18;
   --node: #5B8DEF; /* kuehler Gegenakzent nur fuer inaktive Knoten */
+  /* Such-Modus: "voll geladen" -> gruenes Leuchten */
+  --loaded: #2BD576;
+  --loaded-deep: #12A150;
+  --loaded-bright: #8AF0B6;
 }
 
 /* DARK (Default) */
