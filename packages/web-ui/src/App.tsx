@@ -5,12 +5,14 @@ import Dashboard from './components/Dashboard';
 import GraphView from './components/GraphView';
 import Login from './components/Login';
 import Overview from './overview/Overview';
+import SettingsView from './overview/SettingsView';
+import KnowledgeView from './overview/KnowledgeView';
 import { getProjects, ProjectInfo } from './api/synapse-client';
 import { getAuthStatus, logout as authLogout, AUTH_UNAUTHORIZED_EVENT } from './api/auth';
 
 // Nav-Stationen. Eine weitere View (z.B. 'graph' fuer GRAPH-2) wird hier ergaenzt:
 //   1. Tab-Union erweitern, 2. Tab-Button im Header, 3. Render-Zweig in <main>.
-type Tab = 'uebersicht' | 'chat' | 'memory' | 'dashboard' | 'graph';
+type Tab = 'uebersicht' | 'wissen' | 'chat' | 'memory' | 'dashboard' | 'graph' | 'einstellungen';
 
 type AuthState = 'checking' | 'login' | 'authed';
 
@@ -114,6 +116,15 @@ function App() {
           <button
             style={{
               ...styles.tab,
+              ...(activeTab === 'wissen' ? styles.activeTab : {}),
+            }}
+            onClick={() => setActiveTab('wissen')}
+          >
+            Wissen
+          </button>
+          <button
+            style={{
+              ...styles.tab,
               ...(activeTab === 'chat' ? styles.activeTab : {}),
             }}
             onClick={() => setActiveTab('chat')}
@@ -146,6 +157,15 @@ function App() {
             onClick={() => setActiveTab('graph')}
           >
             Graph
+          </button>
+          <button
+            style={{
+              ...styles.tab,
+              ...(activeTab === 'einstellungen' ? styles.activeTab : {}),
+            }}
+            onClick={() => setActiveTab('einstellungen')}
+          >
+            Einstellungen
           </button>
         </div>
         <div style={styles.projectSelector}>
@@ -187,10 +207,12 @@ function App() {
 
       <main style={styles.main}>
         {activeTab === 'uebersicht' && <Overview />}
+        {activeTab === 'wissen' && <KnowledgeView />}
         {activeTab === 'chat' && <Chat project={currentProject} />}
         {activeTab === 'memory' && <MemorySearch project={currentProject} />}
         {activeTab === 'dashboard' && <Dashboard project={currentProject} />}
         {activeTab === 'graph' && <GraphView project={currentProject} />}
+        {activeTab === 'einstellungen' && <SettingsView />}
       </main>
     </div>
   );
