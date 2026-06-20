@@ -75,7 +75,7 @@ export default function SignatureStage({ nodes = [] }: SignatureStageProps) {
       <style>{STAGE_CSS}</style>
       {mode === 'pulse' ? (
         <div className="kios-stage-layer" key="pulse">
-          <SignaturePulse searchDemo nodes={nodes} />
+          <SignaturePulse searchDemo liveGraph nodes={nodes} />
         </div>
       ) : (
         <div className="kios-stage-layer" key={`shell-${shellIdx}`}>
