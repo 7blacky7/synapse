@@ -3,13 +3,14 @@ import Chat from './components/Chat';
 import MemorySearch from './components/MemorySearch';
 import Dashboard from './components/Dashboard';
 import GraphView from './components/GraphView';
+import KiosView from './kios/KiosView';
 import Login from './components/Login';
 import { getProjects, ProjectInfo } from './api/synapse-client';
 import { getAuthStatus, logout as authLogout, AUTH_UNAUTHORIZED_EVENT } from './api/auth';
 
 // Nav-Stationen. Eine weitere View (z.B. 'graph' fuer GRAPH-2) wird hier ergaenzt:
 //   1. Tab-Union erweitern, 2. Tab-Button im Header, 3. Render-Zweig in <main>.
-type Tab = 'chat' | 'memory' | 'dashboard' | 'graph';
+type Tab = 'chat' | 'memory' | 'dashboard' | 'graph' | 'kios';
 
 type AuthState = 'checking' | 'login' | 'authed';
 
@@ -137,6 +138,15 @@ function App() {
           >
             Graph
           </button>
+          <button
+            style={{
+              ...styles.tab,
+              ...(activeTab === 'kios' ? styles.activeTab : {}),
+            }}
+            onClick={() => setActiveTab('kios')}
+          >
+            KIOS
+          </button>
         </div>
         <div style={styles.projectSelector}>
           <label htmlFor="project" style={styles.label}>Projekt:</label>
@@ -180,6 +190,7 @@ function App() {
         {activeTab === 'memory' && <MemorySearch project={currentProject} />}
         {activeTab === 'dashboard' && <Dashboard project={currentProject} />}
         {activeTab === 'graph' && <GraphView project={currentProject} />}
+        {activeTab === 'kios' && <KiosView />}
       </main>
     </div>
   );

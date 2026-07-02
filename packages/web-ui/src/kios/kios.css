@@ -1,0 +1,169 @@
+/**
+ * KIOS-1: Styles der Rendering-Pipeline-Demo. Alles unter .kios-* gescoped.
+ * Design: dunkle Tiefe passend zur App, Pipeline-Schiene links als
+ * Signatur-Element (Renderings haengen wie Stationen an der Linie).
+ */
+
+.kios-host {
+  position: relative;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background:
+    radial-gradient(900px 340px at 70% -80px, rgba(91, 140, 255, 0.10), transparent 70%),
+    radial-gradient(600px 300px at 10% 110%, rgba(233, 69, 96, 0.06), transparent 70%),
+    #121729;
+  color: #dbe3ff;
+  overflow: hidden;
+}
+
+.kios-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 22px 28px 16px;
+  border-bottom: 1px solid #1d2545;
+}
+.kios-title {
+  margin: 0;
+  font-size: 19px;
+  letter-spacing: 0.5px;
+}
+.kios-title span { color: #5b8cff; font-weight: 400; }
+.kios-sub { margin: 4px 0 0; font-size: 12.5px; color: #7d88ad; }
+.kios-actions { display: flex; align-items: center; gap: 14px; }
+.kios-busy { font-size: 12.5px; color: #9fb0d8; animation: kios-blink 1.6s ease-in-out infinite; }
+
+.kios-btn {
+  cursor: pointer;
+  border: 1px solid #2b3766;
+  background: #161d33;
+  color: #dbe3ff;
+  padding: 9px 18px;
+  border-radius: 8px;
+  font-size: 13.5px;
+  transition: border-color 0.15s, transform 0.1s;
+}
+.kios-btn:hover { border-color: #5b8cff; transform: translateY(-1px); }
+.kios-btn-primary { background: #5b8cff; border-color: #5b8cff; color: #fff; }
+
+.kios-feed { flex: 1; overflow-y: auto; padding: 26px 28px 46px; }
+.kios-col {
+  max-width: 860px;
+  margin: 0 auto;
+  position: relative;
+  padding-left: 26px;
+}
+/* Pipeline-Schiene */
+.kios-col::before {
+  content: '';
+  position: absolute;
+  left: 7px;
+  top: 4px;
+  bottom: 4px;
+  width: 1px;
+  background: linear-gradient(#2b3766, rgba(43, 55, 102, 0.15));
+}
+
+.kios-item { position: relative; margin-bottom: 18px; animation: kios-up 0.35s ease-out both; }
+.kios-item::before {
+  content: '';
+  position: absolute;
+  left: -23px;
+  top: 14px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #121729;
+  border: 2px solid #5b8cff;
+}
+.kios-msg::before { border-color: #3a4a80; width: 7px; height: 7px; left: -22px; }
+
+.kios-msg { display: flex; gap: 12px; align-items: baseline; padding: 4px 2px; }
+.kios-msg p { margin: 0; font-size: 13.5px; line-height: 1.6; color: #b7c2e6; }
+.kios-msg-role {
+  flex: 0 0 auto;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.8px;
+  color: #5b8cff;
+  text-transform: uppercase;
+  padding-top: 2px;
+}
+.kios-msg.user .kios-msg-role { color: #e94560; }
+.kios-msg.user p { color: #dbe3ff; }
+
+.kios-card {
+  background: #151c31;
+  border: 1px solid #232c50;
+  border-radius: 12px;
+  overflow: hidden;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.25);
+}
+.kios-card-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 14px;
+  border-bottom: 1px solid #1d2545;
+  background: rgba(18, 23, 41, 0.6);
+}
+.kios-card-seq {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+  color: #8fa3d8;
+  font-variant-numeric: tabular-nums;
+}
+.kios-card-time { margin-left: auto; font-size: 11px; color: #5e6a95; font-variant-numeric: tabular-nums; }
+.kios-card-live { font-size: 11px; color: #3ddc84; }
+.kios-card-live i { font-style: normal; animation: kios-blink 0.9s steps(2) infinite; margin-left: 2px; }
+.kios-badge {
+  font-size: 10.5px;
+  padding: 2px 8px;
+  border-radius: 9px;
+  background: rgba(91, 140, 255, 0.14);
+  color: #8fb0ff;
+}
+.kios-badge-wait { background: rgba(233, 69, 96, 0.13); color: #ff8aa1; }
+.kios-card-body { padding: 16px 18px 18px; }
+
+.kios-empty {
+  max-width: 560px;
+  margin: 8vh auto 0;
+  color: #8fa0cc;
+  font-size: 14px;
+  line-height: 1.7;
+  border: 1px dashed #2b3766;
+  border-radius: 12px;
+  padding: 22px 26px;
+  background: rgba(21, 28, 49, 0.5);
+}
+.kios-empty p { margin: 0 0 10px; }
+.kios-empty p:last-child { margin: 0; color: #6f7ea9; }
+
+.kios-pill {
+  position: absolute;
+  bottom: 22px;
+  left: 50%;
+  transform: translateX(-50%);
+  cursor: pointer;
+  border: 1px solid #5b8cff;
+  background: #17203c;
+  color: #9db8ff;
+  padding: 8px 16px;
+  border-radius: 999px;
+  font-size: 12.5px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  animation: kios-up 0.25s ease-out both;
+}
+
+@keyframes kios-up { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes kios-blink { 50% { opacity: 0.25; } }
+
+@media (prefers-reduced-motion: reduce) {
+  .kios-item, .kios-pill { animation: none; }
+  .kios-busy, .kios-card-live i { animation: none; }
+}
