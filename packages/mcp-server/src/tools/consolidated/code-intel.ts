@@ -2,13 +2,14 @@
  * Synapse MCP - Consolidated code_intel Tool
  * Strukturierte Code-Abfragen via PostgreSQL (kein Qdrant)
  *
- * 11 Actions:
+ * 12 Actions:
  *   tree        — Projekt-Verzeichnisbaum mit Symbol-Counts
  *   functions   — Funktionen mit usage_count und parent_name
  *   variables   — Variablen, optional mit Wert
  *   symbols     — Generische Symbol-Abfrage nach symbol_type
  *   references  — Definition + alle Referenzen eines Symbols
  *   search      — PostgreSQL-Volltext-Suche (tsv / ts_rank)
+ *   search_batch — Mehrere semantische Queries in EINEM Call (Embeddings gebatched)
  *   file        — Dateiinhalt aus PG laden
  *   statements  — Ablauf-Ebene: Statements einer Datei/Scope
  *   calls       — Ablauf-Ebene: Call-Edges (Aufrufe)
@@ -29,6 +30,7 @@ import {
   fullTextSearchCode,
   getFileContent,
   searchCode,
+  searchCodeBatch,
 } from '@synapse/core';
 
 import { ConsolidatedTool, str, reqStr, num, bool } from './types.js';
@@ -37,15 +39,15 @@ export const codeIntelTool: ConsolidatedTool = {
   definition: {
     name: 'code_intel',
     description:
-      'Strukturierte Code-Abfragen aus PostgreSQL: Dateibaum, Funktionen, Variablen, Symbole, Referenzen, Volltext-Suche und Dateiinhalt.',
+      'Strukturierte Code-Abfragen aus PostgreSQL: Dateibaum, Funktionen, Variablen, Symbole, Referenzen, Volltext-Suche und Dateiinhalt. BATCH-SUCHE: action="search_batch" + queries[] (1..10) macht alle Queries semantisch in EINEM Call (Embeddings gebatched).',
     inputSchema: {
       type: 'object',
       properties: {
         action: {
           type: 'string',
-          enum: ['tree', 'functions', 'variables', 'symbols', 'references', 'search', 'file', 'statements', 'calls', 'flow', 'entrypoints'],
+          enum: ['tree', 'functions', 'variables', 'symbols', 'references', 'search', 'search_batch', 'file', 'statements', 'calls', 'flow', 'entrypoints'],
           description:
-            'Aktion: tree|functions|variables|symbols|references|search|file|statements|calls|flow|entrypoints',
+            'Aktion: tree|functions|variables|symbols|references|search|search_batch|file|statements|calls|flow|entrypoints',
         },
         project: {
           type: 'string',
@@ -150,6 +152,23 @@ export const codeIntelTool: ConsolidatedTool = {
           type: 'number',
           description: 'Max. Ergebnisse (search: Standard 20; entrypoints: Standard 200)',
         },
+        semantic: {
+          type: 'boolean',
+          description: 'search: true = Qdrant-Embedding-Suche (konzeptuell/fuzzy). Default false = PG-Volltext zuerst mit Auto-Fallback.',
+        },
+        queries: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'search_batch: 1..10 semantische Queries in EINEM Call. Embeddings werden gebatched an Google → spart N-1 API-Roundtrips. Antwort enthaelt results[] mit {query, count, hits}.',
+        },
+        limit_per_query: {
+          type: 'number',
+          description: 'search_batch: Max Hits pro Query (Default 5)',
+        },
+        include_declarations: {
+          type: 'boolean',
+          description: 'entrypoints: auch reine Deklarations-/Re-Export-Statements + SQL-Dateien liefern (Standard: false = nur echte Seiteneffekte).',
+        },
 
         // --- file (range + truncation) ---
         from_line: {
@@ -233,6 +252,35 @@ export const codeIntelTool: ConsolidatedTool = {
         return { success: true, ...result, project };
       }
 
+      case 'search_batch': {
+        // Mehrere semantic Queries in EINEM Call — alle Embeddings in 1 Google-Batch.
+        // Paritaet zur REST-API (mcp.ts code_intel search_batch).
+        const queriesRaw = (args as Record<string, unknown>).queries;
+        if (!Array.isArray(queriesRaw) || queriesRaw.length === 0) {
+          return { success: false, error: 'invalid_queries', message: 'queries[] muss ein Array mit >=1 String sein.' };
+        }
+        if (queriesRaw.length > 10) {
+          return { success: false, error: 'too_many_queries', message: `Max 10 queries pro Batch (got ${queriesRaw.length}).` };
+        }
+        const batchQueries = queriesRaw.map((q) => String(q)).filter((q) => q.trim().length > 0);
+        const batchFileType = str(args, 'file_type');
+        const limitPerQuery = num(args, 'limit_per_query') ?? 5;
+        const items = await searchCodeBatch(batchQueries, project, batchFileType, limitPerQuery);
+        const batchResults = items.map((it) => ({
+          query: it.query,
+          count: it.count,
+          hits: it.hits.map((h) => ({
+            file_path: h.payload.file_path,
+            file_type: h.payload.file_type,
+            line_start: h.payload.line_start,
+            line_end: h.payload.line_end,
+            score: h.score,
+            content: h.payload.content,
+          })),
+        }));
+        return { success: true, mode: 'semantic', queries_count: batchQueries.length, results: batchResults, project };
+      }
+
       case 'search': {
         const query = reqStr(args, 'query');
         const fileType = str(args, 'file_type');
@@ -241,6 +289,21 @@ export const codeIntelTool: ConsolidatedTool = {
         // .md-Dateien nur bei explizitem file_type:'md' — sonst aus Code-Suche ausschliessen
         const effectiveFileType = fileType;
         const excludeMd = !fileType;
+
+        // Paritaet mit API: semantic:true -> direkt Qdrant-Embedding-Suche (kein PG-Volltext)
+        if (bool(args, 'semantic')) {
+          const sem = await searchCode(query, project, effectiveFileType, limit);
+          const mapped = sem
+            .filter(r => r.score >= 0.65)
+            .filter(r => !excludeMd || r.payload.file_type !== 'md')
+            .map(r => ({
+              file_path: r.payload.file_path,
+              file_type: r.payload.file_type,
+              headline: (r.payload.content || '').substring(0, 200),
+              rank: r.score,
+            }));
+          return { success: true, results: mapped, count: mapped.length, source: 'semantic', mode: 'semantic', project };
+        }
 
         // PG-Volltext zuerst (schnell, exakt)
         let pgResults = await fullTextSearchCode(project, query, effectiveFileType, limit);

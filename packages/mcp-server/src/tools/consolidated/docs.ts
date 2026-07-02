@@ -247,12 +247,18 @@ export const docsTool: ConsolidatedTool = {
         const agentId = resolveAgentId(rawAgentId);
         if (!agentId) throw new Error('agent_id erforderlich (oder SYNAPSE_AGENT_NAME setzen)');
         const project = reqStr(args, 'project');
+        // get_for_file Filter (Parity mit REST-API mcp.ts): framework + limit an die Docs-Lookup durchreichen
+        const gffLimit = num(args, 'limit');
+        const gffFramework = str(args, 'framework');
+        const gffOpts = (gffLimit !== undefined || gffFramework)
+          ? { limit: gffLimit, frameworks: gffFramework ? [gffFramework] : undefined }
+          : undefined;
 
         // Array-Support: Mehrere Dateien in einem Call
         const filePaths = strArray(args, 'file_path');
         if (filePaths && filePaths.length > 1) {
           const settled = await Promise.allSettled(
-            filePaths.map(fp => getDocsForFileTool(fp, agentId, project))
+            filePaths.map(fp => getDocsForFileTool(fp, agentId, project, gffOpts))
           );
           const results: Array<Record<string, unknown>> = [];
           const errors: string[] = [];
@@ -274,7 +280,7 @@ export const docsTool: ConsolidatedTool = {
 
         // Bestehend: Einzelner Dateipfad
         const filePath = reqStr(args, 'file_path');
-        const result = await getDocsForFileTool(filePath, agentId, project);
+        const result = await getDocsForFileTool(filePath, agentId, project, gffOpts);
 
         return {
           success: result.success,

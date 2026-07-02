@@ -213,6 +213,10 @@ export const filesTool: ConsolidatedTool = {
           type: 'string',
           description: 'history: ISO-Timestamp ab dem Eintraege gelistet werden (z.B. "2026-05-02T10:00:00Z").',
         },
+        agent_filter: {
+          type: 'string',
+          description: 'Nur fuer history: expliziter exakter Agent-Filter (bevorzugt gegenueber agent_id-als-Filter). Handler nutzt agent_filter ?? agent_id als Read-Filter.',
+        },
         feature_tag: {
           type: 'string',
           description: 'Logischer Feature-Group-Tag (z.B. "idea-thought-task-link"). Beim Schreiben → file_versions.feature_tag. Bei history → Filter (exakter Match).',

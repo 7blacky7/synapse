@@ -1005,6 +1005,39 @@ ON CONFLICT ((COALESCE(project, '')), role) DO NOTHING;
 UPDATE workspace_roles SET cap_add = ARRAY['SETUID','SETGID']
  WHERE project IS NULL AND role = 'container-builder' AND (cap_add IS NULL OR cap_add = '{}');
 
+-- ============================================================================
+-- cli_agents — PLAN-004 / DIND-5-prep: persistente CLI-Agenten-Container
+-- ============================================================================
+-- NEUER verwalteter Container-Typ NEBEN project_workspaces (ersetzt ihn NICHT).
+-- Verwaltet persistente CLI-Docker (claude/codex/antigravity) auf dem HOST-Docker
+-- via docker.sock (wie Workspace) — NICHT im inneren DinD. PG = Source-of-Truth.
+-- ZENTRALE ABWEICHUNG zu project_workspaces: PERSISTENT — KEIN idle-stop, KEINE
+-- LRU-Eviction, kein pinned/last_activity. Lifecycle NUR explizit (START/UPDATE/
+-- STOP via REST/WebUI). Feature-gated ueber ENV SYNAPSE_DIND_ENABLED (default aus).
+CREATE TABLE IF NOT EXISTS cli_agents (
+  name            TEXT PRIMARY KEY,                       -- logischer Name (default = cli_type, z.B. 'claude')
+  cli_type        TEXT NOT NULL,                          -- claude | codex | antigravity
+  project         TEXT,                                   -- optionale Projekt-Zuordnung (NULL = global)
+  status          TEXT NOT NULL DEFAULT 'stopped',        -- stopped | starting | running | updating | stopping | error
+  image           TEXT NOT NULL DEFAULT 'synapse-cli-claude:latest',
+  container_id    TEXT,                                   -- Docker-Container-ID (NULL wenn stopped)
+  version         TEXT,                                   -- erkannte CLI-Version
+  auth_volume     TEXT,                                   -- persistentes Volume -> /root/.claude (Auth/Creds)
+  local_volume    TEXT,                                   -- persistentes Volume -> /root/.local (Binary/self-update)
+  cpu_limit       REAL NOT NULL DEFAULT 2.0,              -- CPUs
+  mem_limit_mb    INT  NOT NULL DEFAULT 2048,             -- MB
+  pids_limit      INT  NOT NULL DEFAULT 512,
+  auto_update     BOOLEAN NOT NULL DEFAULT TRUE,          -- Entrypoint self-updatet die CLI bei (Neu-)Start
+  last_started_at TIMESTAMPTZ,
+  last_stopped_at TIMESTAMPTZ,
+  last_updated_at TIMESTAMPTZ,
+  last_error      TEXT,                                   -- letzter Start/Update/Exec-Fehler
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_cli_agents_status ON cli_agents(status);
+CREATE INDEX IF NOT EXISTS idx_cli_agents_cli_type ON cli_agents(cli_type);
+
 -- daemon_heartbeats — pro Projekt: laeuft ein lokaler FileWatcher-Daemon?
 -- Der lokale Daemon UPSERTed last_seen=NOW() alle 10s pro aktivem Projekt.
 -- shell-Tool nutzt die Tabelle fuer Auto-Routing:

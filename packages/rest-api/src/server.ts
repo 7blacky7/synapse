@@ -30,6 +30,7 @@ import {
   shellRoutes,
   specialistRoutes,
   workspaceRoutes,
+  cliAgentRoutes,
   authRoutes,
   graphRoutes,
 } from './routes/index.js';
@@ -82,6 +83,8 @@ export async function createServer(): Promise<FastifyInstance> {
   await fastify.register(shellRoutes);
   await fastify.register(specialistRoutes);
   await fastify.register(workspaceRoutes);
+  // CLI-Agent-Routen (DIND-5): liefern 503 wenn SYNAPSE_DIND_ENABLED!=1.
+  await fastify.register(cliAgentRoutes);
 
   // Graph-View (PLAN-003 / GRAPH-1): /api/graph/* — Aggregationen direkt aus
   // @synapse/core (PG + Qdrant), kein HTTP-Loopback. Hinter Auth-Hook (AUTH-4).
@@ -184,6 +187,20 @@ export async function startServer(): Promise<void> {
     await initWorkspaceOrchestrator(wsCfg);
   } else {
     console.log('[Synapse API] Workspace-Orchestrator per WORKSPACE_DISABLED=1 ausgeschaltet');
+  }
+
+  // CLI-Agent-Orchestrator (PLAN-004 / DIND-5): persistente CLI-Agenten-Container
+  // (claude/codex/antigravity) auf dem HOST-Docker via docker.sock. ADDITIV +
+  // FEATURE-GATED: nur aktiv wenn SYNAPSE_DIND_ENABLED=1 (default aus -> Betrieb,
+  // WorkspaceOrchestrator, REST/Web/Auth 100% unveraendert). Steuerbar per ENV:
+  //   CLI_AGENT_DOCKER_SOCKET=...  — default /var/run/docker.sock
+  //   CLI_AGENT_NETWORK=...        — default proxynet
+  if (process.env.SYNAPSE_DIND_ENABLED === '1') {
+    const { initCliAgentOrchestrator } = await import('./services/cli-agent-orchestrator.js');
+    const cliCfg: Record<string, unknown> = {};
+    if (process.env.CLI_AGENT_DOCKER_SOCKET) cliCfg.socketPath = process.env.CLI_AGENT_DOCKER_SOCKET;
+    if (process.env.CLI_AGENT_NETWORK) cliCfg.network = process.env.CLI_AGENT_NETWORK;
+    await initCliAgentOrchestrator(cliCfg);
   }
 
   // Parser-Worker-Pool: off-thread parser.parse() via node:worker_threads.
