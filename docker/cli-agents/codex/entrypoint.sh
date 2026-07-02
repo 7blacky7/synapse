@@ -40,10 +40,27 @@ fi
 
 log "Aktive Codex-Version: $(codex --version 2>/dev/null || echo 'unbekannt')"
 
-# --- Auth-Hinweis (DIND-3, hier nicht automatisiert) ---
-# Interaktiv einmalig (Web-Terminal, DIND-4): 'codex login --device-auth'.
-# Persistiert in ${CODEX_HOME}/auth.json (Volume) und ueberlebt Neustarts.
-# Alternativ ENV OPENAI_API_KEY oder vorbefuellte auth.json auf dem Volume.
+# --- Credential-Store: im Container explizit file (kein OS-Keyring vorhanden) ---
+mkdir -p "${CODEX_HOME}"
+if ! grep -q 'cli_auth_credentials_store' "${CODEX_HOME}/config.toml" 2>/dev/null; then
+    printf 'cli_auth_credentials_store = "file"\n' >> "${CODEX_HOME}/config.toml"
+    log "config.toml: cli_auth_credentials_store=file gesetzt."
+fi
+
+# --- Auto-Login mit API-Key (DIND-3): ENV gesetzt + noch keine auth.json ---
+# WICHTIG: das alte '--api-key'-Flag wurde entfernt; aktueller Weg ist stdin.
+if [ -n "${OPENAI_API_KEY:-}" ] && [ ! -f "${CODEX_HOME}/auth.json" ]; then
+    log "OPENAI_API_KEY vorhanden + keine auth.json -> codex login --with-api-key ..."
+    printf '%s' "${OPENAI_API_KEY}" | codex login --with-api-key >/tmp/codex-login.log 2>&1 \
+        && log "API-Key-Login OK (auth.json auf Volume)." \
+        || log "WARN: API-Key-Login fehlgeschlagen (Log: /tmp/codex-login.log)."
+fi
+
+# --- Auth-Hinweis (DIND-3, Abo-Weg) ---
+# Abo statt API-Key: einmalig 'codex login --device-auth' (URL + Einmal-Code,
+# WebUI zeigt beides an; Device-Code-Login muss in den ChatGPT-Security-
+# Settings aktiviert sein). Persistiert in ${CODEX_HOME}/auth.json (Volume).
+# Fallback: lokal eingeloggte auth.json aufs Volume kopieren (nicht host-gebunden).
 
 # --- Persistent idlen (auf Signale reagieren, kein 'sleep infinity') ---
 log "IDLE — bereit fuer 'docker exec' vom Wrapper in der synapse-api."
