@@ -3,21 +3,24 @@ import Chat from './components/Chat';
 import MemorySearch from './components/MemorySearch';
 import Dashboard from './components/Dashboard';
 import GraphView from './components/GraphView';
-import KiosView from './kios/KiosView';
 import Login from './components/Login';
+import Overview from './overview/Overview';
+import SettingsView from './overview/SettingsView';
+import KiosView from './kios/KiosView';
+import KnowledgeView from './overview/KnowledgeView';
 import { getProjects, ProjectInfo } from './api/synapse-client';
 import { getAuthStatus, logout as authLogout, AUTH_UNAUTHORIZED_EVENT } from './api/auth';
 
 // Nav-Stationen. Eine weitere View (z.B. 'graph' fuer GRAPH-2) wird hier ergaenzt:
 //   1. Tab-Union erweitern, 2. Tab-Button im Header, 3. Render-Zweig in <main>.
-type Tab = 'chat' | 'memory' | 'dashboard' | 'graph' | 'kios';
+type Tab = 'uebersicht' | 'wissen' | 'chat' | 'memory' | 'dashboard' | 'graph' | 'einstellungen' | 'renderings';
 
 type AuthState = 'checking' | 'login' | 'authed';
 
 function App() {
   const [authState, setAuthState] = useState<AuthState>('checking');
   const [totpConfigured, setTotpConfigured] = useState(false);
-  const [activeTab, setActiveTab] = useState<Tab>('chat');
+  const [activeTab, setActiveTab] = useState<Tab>('uebersicht');
   const [currentProject, setCurrentProject] = useState<string>('');
   const [projects, setProjects] = useState<ProjectInfo[]>([]);
   const [loadingProjects, setLoadingProjects] = useState(true);
@@ -105,6 +108,24 @@ function App() {
           <button
             style={{
               ...styles.tab,
+              ...(activeTab === 'uebersicht' ? styles.activeTab : {}),
+            }}
+            onClick={() => setActiveTab('uebersicht')}
+          >
+            Übersicht
+          </button>
+          <button
+            style={{
+              ...styles.tab,
+              ...(activeTab === 'wissen' ? styles.activeTab : {}),
+            }}
+            onClick={() => setActiveTab('wissen')}
+          >
+            Wissen
+          </button>
+          <button
+            style={{
+              ...styles.tab,
               ...(activeTab === 'chat' ? styles.activeTab : {}),
             }}
             onClick={() => setActiveTab('chat')}
@@ -141,11 +162,20 @@ function App() {
           <button
             style={{
               ...styles.tab,
-              ...(activeTab === 'kios' ? styles.activeTab : {}),
+              ...(activeTab === 'einstellungen' ? styles.activeTab : {}),
             }}
-            onClick={() => setActiveTab('kios')}
+            onClick={() => setActiveTab('einstellungen')}
           >
-            KIOS
+            Einstellungen
+          </button>
+          <button
+            style={{
+              ...styles.tab,
+              ...(activeTab === 'renderings' ? styles.activeTab : {}),
+            }}
+            onClick={() => setActiveTab('renderings')}
+          >
+            Renderings
           </button>
         </div>
         <div style={styles.projectSelector}>
@@ -186,11 +216,14 @@ function App() {
       )}
 
       <main style={styles.main}>
+        {activeTab === 'uebersicht' && <Overview />}
+        {activeTab === 'wissen' && <KnowledgeView />}
         {activeTab === 'chat' && <Chat project={currentProject} />}
         {activeTab === 'memory' && <MemorySearch project={currentProject} />}
         {activeTab === 'dashboard' && <Dashboard project={currentProject} />}
         {activeTab === 'graph' && <GraphView project={currentProject} />}
-        {activeTab === 'kios' && <KiosView />}
+        {activeTab === 'einstellungen' && <SettingsView />}
+        {activeTab === 'renderings' && <KiosView />}
       </main>
     </div>
   );
