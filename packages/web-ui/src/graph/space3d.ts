@@ -275,6 +275,16 @@ export class Space3D {
       x.fillStyle = g;
       x.fillRect(0, 0, 256, 256);
     }
+    // Radiale Maske: Alpha laeuft zum Sprite-Rand garantiert auf 0 aus —
+    // ohne sie schneidet die Canvas-Kante die Blobs hart ab (sichtbares Viereck).
+    x.globalCompositeOperation = 'destination-in';
+    const mask = x.createRadialGradient(128, 128, 0, 128, 128, 128);
+    mask.addColorStop(0, 'rgba(0,0,0,1)');
+    mask.addColorStop(0.62, 'rgba(0,0,0,0.85)');
+    mask.addColorStop(1, 'rgba(0,0,0,0)');
+    x.fillStyle = mask;
+    x.fillRect(0, 0, 256, 256);
+    x.globalCompositeOperation = 'source-over';
     const t = new THREE.CanvasTexture(c);
     t.colorSpace = THREE.SRGBColorSpace;
     return t;
