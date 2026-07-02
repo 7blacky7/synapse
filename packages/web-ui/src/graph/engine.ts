@@ -17,7 +17,7 @@ import {
   EXT_NAMES, SYM_NAMES, TL_COLORS, TL_NAMES, colorFor, sizeFor,
 } from './constants';
 import * as api from './api';
-import { CosmosRenderer } from './cosmos';
+import { Space3D } from './space3d';
 
 type View = 'code' | 'knowledge' | 'timeline';
 type Mode = 'overview' | 'project';
@@ -38,7 +38,7 @@ const KNOW_LAYER_KEYS = ['tasks', 'memories', 'thoughts', 'proposals', 'tags'];
 export class GraphEngine {
   private root: HTMLElement;
   private cy: Core;
-  private cosmos: CosmosRenderer;
+  private space: Space3D;
   private state: EngineState;
   private detailAbort: AbortController | null = null;
   private pollTimer: number | null = null;
@@ -55,7 +55,6 @@ export class GraphEngine {
   private elBreadcrumb!: HTMLElement;
   private elProjects!: HTMLElement;
   private elCy!: HTMLElement;
-  private elStars!: HTMLCanvasElement;
   private elTimeline!: HTMLElement;
   private elPanel!: HTMLElement;
   private elLegendBody!: HTMLElement;
@@ -78,18 +77,14 @@ export class GraphEngine {
     };
     this.buildDom();
     this.cy = this.createCy();
-    this.elStars = document.createElement('canvas');
-    this.elStars.className = 'sg-stars';
-    this.elCy.appendChild(this.elStars);
-    this.cosmos = new CosmosRenderer({
-      cy: this.cy,
+    this.space = new Space3D({
       container: this.elCy,
-      canvas: this.elStars,
       motionEnabled: () => !!this.elMotion?.checked,
-      getMode: () => this.state.mode,
+      onProjectClick: (name) => this.enterProject(name),
+      onCoreToggle: () => this.toggleCore(),
     });
     this.wireHandlers();
-    this.resizeHandler = () => this.cosmos.resize();
+    this.resizeHandler = () => this.space.resize();
     window.addEventListener('resize', this.resizeHandler);
     this.buildLegend('overview');
     this.refresh(true);
@@ -127,7 +122,7 @@ export class GraphEngine {
     }
     if (this.detailAbort) this.detailAbort.abort();
     window.removeEventListener('resize', this.resizeHandler);
-    this.cosmos.destroy();
+    this.space.destroy();
     this.cy.destroy();
     this.root.replaceChildren();
   }
@@ -324,14 +319,6 @@ export class GraphEngine {
   // -------------------------------------------------------------------------
   private wireHandlers(): void {
     const cy = this.cy;
-    cy.on('tap', 'node[type = "project"]', (ev) => this.enterProject(ev.target.id()));
-    cy.on('tap', 'node[type = "center"]', () => {
-      this.state.coreExpanded = !this.state.coreExpanded;
-      this.state.coreJustExpanded = this.state.coreExpanded;
-      this.state.lastHash = '';
-      this.buildLegend('overview');
-      this.refresh(true);
-    });
     cy.on('tap', 'node[type = "file"]', (ev) => this.showFileDetails(ev.target.id()));
     cy.on('tap', 'node[type = "symbol"]', (ev) => this.showFileDetails(ev.target.data('file')));
     cy.on('tap', 'node[kind]', (ev) => {
@@ -357,6 +344,14 @@ export class GraphEngine {
         this.refresh(true);
       });
     }
+  }
+
+  private toggleCore(): void {
+    this.state.coreExpanded = !this.state.coreExpanded;
+    this.state.coreJustExpanded = this.state.coreExpanded;
+    this.state.lastHash = '';
+    this.buildLegend('overview');
+    this.refresh(true);
   }
 
   private symLayers(): string[] { return this.symInputs.filter((i) => i.checked).map((i) => i.getAttribute('data-sym')!); }
@@ -631,9 +626,9 @@ export class GraphEngine {
       body.append(this.lgRow('●', '#7a5cc9', 'Projekt — Planet mit eigener Oberfläche'));
       body.append(this.lgRow('○', '#3ddc84', 'grün leuchtender Ring — läuft (Watcher aktiv)'));
       body.append(this.lgRow('○', '#5b8cff', 'blauer Ring — aktiviert'));
-      body.append(this.lgRow('☀', '#ffcf6b', 'Sonnen (3 Sterntypen) — strahlen die nächsten Projekte an'));
-      body.append(this.lgRow('↻', '#7d88ad', 'Orbits: Planeten + Sonnen kreisen — schaltbar im Ebenen-Menü'));
-      body.append(this.lgRow('❄', '#bcd6f7', 'Eiswelten — fern aller Sonnen wachsen Frost + Polkappen'));
+      body.append(this.lgRow('☀', '#ffcf6b', 'Sonnen (3 Sterntypen) — echte Lichtquellen: Tag/Nacht-Seite'));
+      body.append(this.lgRow('↻', '#7d88ad', 'Geneigte 3D-Orbits — Bewegung schaltbar im Ebenen-Menü'));
+      body.append(this.lgRow('✋', '#9fb0d8', 'Ziehen = Ansicht drehen · Scrollen = Zoom'));
       body.append(this.lgRow('◯', '#7d88ad', 'Größe = Anzahl Dateien'));
     } else if (view === 'code') {
       const usedExts = new Set<string>();
@@ -806,60 +801,10 @@ export class GraphEngine {
   // -------------------------------------------------------------------------
   // Graph-Aufbau
   // -------------------------------------------------------------------------
-  private overviewElements(data: api.OverviewResponse): any[] {
-    const expanded = this.state.coreExpanded;
-    const els: any[] = [{ data: {
-      id: '__synapse__',
-      label: expanded ? 'SYNAPSE — Weißes Loch' : 'SYNAPSE — Schwarzes Loch (Klick öffnet)',
-      type: 'center',
-      hole: expanded ? 'white' : 'black',
-      color: expanded ? '#f2f6ff' : '#05060d',
-      size: expanded ? 64 : 88,
-    } }];
-    if (!expanded) return els;
-    for (const p of data.projekte) {
-      els.push({ data: {
-        id: p.name, label: p.name, type: 'project',
-        color: p.running ? '#3ddc84' : p.enabled ? '#5b8cff' : '#8d99c4',
-        running: !!p.running, enabled: !!p.enabled,
-        size: sizeFor(p.files ?? 1, 18, 56),
-      } });
-      els.push({ data: { id: `e:${p.name}`, source: '__synapse__', target: p.name } });
-    }
-    return els;
-  }
-
-  private spiralPolar(i: number) {
-    return { r: 150 + 30 * Math.sqrt(i + 1) * 1.5, a: i * 2.39996 };
-  }
-  private spiralPos(i: number) {
-    const p = this.spiralPolar(i);
-    return { x: Math.cos(p.a) * p.r, y: Math.sin(p.a) * p.r };
-  }
-
-  private renderOverview(els: any[]): void {
-    const center = els.find((e) => e.data.id === '__synapse__');
-    const projects = els.filter((e) => e.data.type === 'project');
-    const edges = els.filter((e) => e.data.source);
-    if (center) this.cy.add({ ...center, position: { x: 0, y: 0 } });
-    const orbits = new Map<string, { r: number; a: number; w: number }>();
-    projects.forEach((e, i) => {
-      this.cy.add({ ...e, position: this.spiralPos(i) });
-      const polar = this.spiralPolar(i);
-      orbits.set(e.data.id, { r: polar.r, a: polar.a, w: 0.1 * Math.sqrt(150 / polar.r) });
-    });
-    this.cosmos.setOrbits(orbits);
-    this.cy.add(edges);
-    this.cy.fit(undefined, 70);
-    if (this.state.coreJustExpanded) {
-      this.state.coreJustExpanded = false;
-      this.cosmos.pauseMotion(800);
-      projects.forEach((e, i) => {
-        const n = this.cy.getElementById(e.data.id);
-        n.position({ x: 0, y: 0 });
-        n.animate({ position: this.spiralPos(i) }, { duration: 650, easing: 'ease-out-cubic' });
-      });
-    }
+  private renderOverview(data: api.OverviewResponse): void {
+    this.cy.elements().remove();
+    this.space.setData(data.projekte, this.state.coreExpanded, this.state.coreJustExpanded);
+    this.state.coreJustExpanded = false;
   }
 
   private graphElements(data: api.CodeResponse, showExternals: boolean): any[] {
@@ -906,10 +851,6 @@ export class GraphEngine {
 
   private render(els: any[]): void {
     this.cy.elements().remove();
-    if (this.state.mode === 'overview') {
-      this.renderOverview(els);
-      return;
-    }
     this.cy.add(els);
     this.cy.layout({ name: 'cose', animate: false, padding: 40, nodeRepulsion: () => 8000 } as any).run();
   }
@@ -942,8 +883,14 @@ export class GraphEngine {
       let els: any[] | null = null;
       let countsText = '';
       if (this.state.mode === 'overview') {
-        els = this.overviewElements(overview);
-        this.cosmos.syncUniverses(overview.projekte);
+        const hash = 'ov:' + this.state.coreExpanded + ':' + overview.projekte
+          .map((p) => `${p.name}|${p.running ? 1 : 0}|${p.enabled ? 1 : 0}|${p.files ?? 0}`)
+          .sort()
+          .join(',');
+        if (force || hash !== this.state.lastHash) {
+          this.state.lastHash = hash;
+          this.renderOverview(overview);
+        }
         countsText = `${overview.projekte.length} Projekte · Quelle: ${overview.quelle}`;
       } else if (!this.state.project) {
         return;
@@ -1007,6 +954,7 @@ export class GraphEngine {
   }
 
   private enterProject(name: string): void {
+    this.space.setActive(false);
     this.state.mode = 'project';
     this.state.project = name;
     this.state.lastHash = '';
@@ -1017,6 +965,7 @@ export class GraphEngine {
   }
 
   private goOverview(): void {
+    this.space.setActive(true);
     this.state.mode = 'overview';
     this.state.lastHash = '';
     this.clearDetails();

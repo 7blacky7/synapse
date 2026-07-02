@@ -134,6 +134,8 @@
 .sg-proj .sg-meta { margin-left: auto; color: var(--sg-muted); font-size: 12px; }
 
 .sg-cy { grid-area: main; position: relative; }
+.sg-space { position: absolute; inset: 0; z-index: 2; display: block; touch-action: none; cursor: grab; }
+.sg-space:active { cursor: grabbing; }
 .sg-stars { position: absolute; inset: 0; pointer-events: none; z-index: 5; }
 
 .sg-timeline {
