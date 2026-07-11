@@ -4,6 +4,8 @@ set -euo pipefail
 license_url="https://go.microsoft.com/fwlink/?LinkId=2086102"
 root="${MSVC_ROOT:-$HOME/.msvc}"
 tools="${MSVC_WINE_TOOLS:-/opt/msvc-wine}"
+tmpdir="$HOME/.cache/msvc-setup-tmp"
+min_free_kb=12582912  # 12 GiB: ca. 9 GiB Installation + Download-/Entpackreserve
 
 if [[ "${1:-}" != "--accept-license" ]]; then
   cat >&2 <<EOF
@@ -17,7 +19,14 @@ EOF
   exit 64
 fi
 
-mkdir -p "$HOME"
+mkdir -p "$HOME" "$tmpdir"
+free_kb="$(df -Pk "$HOME" | awk 'NR == 2 { print $4 }')"
+if [[ ! "$free_kb" =~ ^[0-9]+$ ]] || (( free_kb < min_free_kb )); then
+  echo "Zu wenig freier Platz im Workspace-HOME: mindestens 12 GiB erforderlich." >&2
+  exit 70
+fi
+export TMPDIR="$tmpdir"
+
 exec 9>"$HOME/.msvc-setup.lock"
 flock 9
 
@@ -29,7 +38,7 @@ fi
 partial="$root.partial"
 rm -rf "$partial"
 mkdir -p "$partial"
-trap 'rm -rf "$partial"' EXIT
+trap 'rm -rf "$partial" "$tmpdir"' EXIT
 
 python3 "$tools/vsdownload.py" --accept-license --dest "$partial"
 "$tools/install.sh" "$partial"
@@ -37,6 +46,7 @@ touch "$partial/.synapse-msvc-ready"
 
 rm -rf "$root"
 mv "$partial" "$root"
+rm -rf "$tmpdir"
 trap - EXIT
 
 echo "MSVC/Windows SDK eingerichtet: $root"

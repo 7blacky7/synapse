@@ -18,8 +18,10 @@ COM-Apartment-/Timing-Verhalten, Application Verifier oder Race-Tests.
 Das Image enthaelt **keine** Microsoft-Binaries. `msvc-wine` selbst weist
 darauf hin, dass Visual Studio und die installierte Toolchain nicht
 redistribuierbar sind. Der User muss die Microsoft-Lizenz lesen und die
-Installation explizit starten. Die Dateien landen in `$HOME/.msvc`; das
-Workspace-HOME ist persistent und projektspezifisch.
+Installation explizit starten. Die Dateien landen in `$HOME/.msvc`; das Workspace-HOME ist persistent und
+projektspezifisch. Auch Download-/Entpack-Temps werden bewusst unter `$HOME`
+statt im begrenzten Workspace-`/tmp` angelegt. Vor dem ersten Setup muessen dort
+mindestens 12 GiB frei sein; sonst endet der Init frueh und klar mit Exit 70.
 
 ## Unraid: Images bauen
 
