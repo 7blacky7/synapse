@@ -48,7 +48,7 @@ shell(exec, project:"moo", target:"workspace", workspace:"msvc",
 Direkter Build:
 
 ```bash
-msvc-run x64 clang-cl /nologo /W4 /WX /MT quelle.c /Feprogramm.exe
+msvc-run x64 clang-cl -fuse-ld=lld /nologo /W4 /WX /MT quelle.c /Feprogramm.exe
 # Alternativ:
 msvc-run x64 clang --target=x86_64-windows-msvc quelle.c -fuse-ld=lld -o programm.exe
 ```

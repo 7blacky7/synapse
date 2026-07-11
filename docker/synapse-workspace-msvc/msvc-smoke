@@ -27,7 +27,7 @@ int main(void) {
 }
 EOF
 
-msvc-run x64 clang-cl /nologo /W4 /WX /MT \
+msvc-run x64 clang-cl -fuse-ld=lld /nologo /W4 /WX /MT \
   "$tmp/windows-sdk-smoke.c" \
   /Fe"$tmp/windows-sdk-smoke.exe" \
   /link mfplat.lib mfuuid.lib ole32.lib uuid.lib
