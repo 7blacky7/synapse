@@ -989,6 +989,16 @@ VALUES
    'Redis-Instanz: Persistenz in $HOME, erreichbar via synapse-ws-<projekt>-<name>:6379 (Sandbox: protected-mode off).')
 ON CONFLICT ((COALESCE(project, '')), role) DO NOTHING;
 
+-- Native Windows-MSVC-Cross-Toolchain (Tier 2). Das Image enthaelt nur
+-- clang-cl/lld-link + msvc-wine-Helfer. MSVC/Windows SDK werden nach
+-- expliziter Lizenzannahme ins persistente HOME geladen und nie redistribuiert.
+-- Keine privilegierten Devices/Capabilities oder Host-Mounts erforderlich.
+INSERT INTO workspace_roles (project, role, image, cpu_limit, mem_limit_mb, pids_limit, tmpfs_mb, init_command, description)
+VALUES
+  (NULL, 'windows-msvc', 'synapse-workspace-msvc:latest', 2.0, 2048, 300, 1024, NULL,
+   'Native Windows-Cross-Builds: clang-cl/lld-link mit echten MSVC-/Windows-SDK-Headers und Import-Libs. Einmalig msvc-setup --accept-license im persistenten HOME; msvc-smoke prueft Media Foundation/WASAPI Build+Link. Kein Ersatz fuer echte Windows-Hardwaretests.')
+ON CONFLICT ((COALESCE(project, '')), role) DO NOTHING;
+
 -- WS5-Seed: container-builder — rootless Podman/Buildah (Tier-2-Image, FROM
 -- synapse-workspace:latest). Daemonless: kein init_command noetig; Image-Storage
 -- (graphroot) liegt im persistenten HOME (reset_home = Registry-Reset).

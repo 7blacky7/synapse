@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+
+cat >"$tmp/windows-sdk-smoke.c" <<'EOF'
+#define COBJMACROS
+#include <windows.h>
+#include <mfapi.h>
+#include <audioclient.h>
+#include <mmdeviceapi.h>
+
+int main(void) {
+    IMFAttributes *attributes = 0;
+    IAudioClient *audio_client = 0;
+    IMMDeviceEnumerator *enumerator = 0;
+    (void)attributes;
+    (void)audio_client;
+    (void)enumerator;
+
+    HRESULT hr = MFStartup(MF_VERSION, MFSTARTUP_NOSOCKET);
+    if (SUCCEEDED(hr)) {
+        MFShutdown();
+    }
+    return SUCCEEDED(hr) ? 0 : 1;
+}
+EOF
+
+msvc-run x64 clang-cl /nologo /W4 /WX /MT \
+  "$tmp/windows-sdk-smoke.c" \
+  /Fe"$tmp/windows-sdk-smoke.exe" \
+  /link mfplat.lib mfuuid.lib ole32.lib uuid.lib
+
+file "$tmp/windows-sdk-smoke.exe"
+if ! file "$tmp/windows-sdk-smoke.exe" | grep -q "PE32+"; then
+  echo "Fehler: Ausgabe ist keine native x64-Windows-PE-Datei" >&2
+  exit 1
+fi
+
+echo "GO: clang-cl + MSVC/Windows SDK + Media-Foundation/WASAPI-Header und Link-Libraries"
+echo "Hinweis: Dies beweist Build/Link, nicht Kamera-, Mikrofon- oder Treiberverhalten."

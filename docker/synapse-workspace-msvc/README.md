@@ -1,0 +1,66 @@
+# synapse-workspace-msvc
+
+Tier-2-Workspace fuer native Windows-C/C++-Cross-Builds mit
+`clang-cl`/`lld-link`, echten MSVC-Headers und echten Windows-SDK-Libraries.
+
+## Was dieser Workspace beweist
+
+- MSVC-kompatibles ABI und PE/COFF-Ausgabe
+- Kompilieren gegen native Windows-Headers, darunter Media Foundation/WASAPI
+- Linken gegen die originalen Windows-SDK-Import-Libraries
+- optionale, hardwarefreie Laufzeit-Smokes unter Wine
+
+Er ersetzt keinen echten Windows-Rechner fuer Kamera, Mikrofon, Treiber,
+COM-Apartment-/Timing-Verhalten, Application Verifier oder Race-Tests.
+
+## Lizenzmodell
+
+Das Image enthaelt **keine** Microsoft-Binaries. `msvc-wine` selbst weist
+darauf hin, dass Visual Studio und die installierte Toolchain nicht
+redistribuierbar sind. Der User muss die Microsoft-Lizenz lesen und die
+Installation explizit starten. Die Dateien landen in `$HOME/.msvc`; das
+Workspace-HOME ist persistent und projektspezifisch.
+
+## Unraid: Images bauen
+
+```bash
+docker build -t synapse-workspace:latest docker/synapse-workspace/
+docker build -t synapse-workspace-msvc:latest docker/synapse-workspace-msvc/
+```
+
+Danach den Synapse-API-Container mit der neuen Schema-Version starten. Sie
+seedet die globale Rolle `windows-msvc`. Keine neue Device-Freigabe, kein
+`--privileged`, kein Docker-Socket und kein Windows-SDK-Host-Mount sind
+erforderlich.
+
+## Nutzung
+
+```text
+workspace(start, project:"moo", name:"msvc", role:"windows-msvc")
+workspace(materialize, project:"moo")
+shell(exec, project:"moo", target:"workspace", workspace:"msvc",
+  command:"msvc-setup --accept-license", timeout_ms:1800000)
+shell(exec, project:"moo", target:"workspace", workspace:"msvc",
+  command:"msvc-smoke", timeout_ms:120000)
+```
+
+Direkter Build:
+
+```bash
+msvc-run x64 clang-cl /nologo /W4 /WX /MT quelle.c /Feprogramm.exe
+# Alternativ:
+msvc-run x64 clang --target=x86_64-windows-msvc quelle.c -fuse-ld=lld -o programm.exe
+```
+
+`msvc-setup` ist idempotent. `workspace(reset_home)` entfernt bewusst auch
+die heruntergeladene Microsoft-Toolchain; danach ist die Lizenzannahme und
+Installation erneut erforderlich.
+
+## Pins
+
+- Basis: `synapse-workspace:latest`
+- LLVM/Clang/LLD: 18 aus dem bereits konfigurierten apt.llvm.org-Repository
+- msvc-wine: `514f8ea34842cd6d831804d0e9658d3a32870ae1`
+
+Beim Update des msvc-wine-Pins zuerst Docker-Build und `msvc-smoke` gegen
+eine frische HOME-Installation ausfuehren.

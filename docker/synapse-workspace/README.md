@@ -132,8 +132,10 @@ synapse (Dienste-Bootstrap, 120s Timeout; Fehler → `last_error`, Container
 bleibt nutzbar; Template-Edits wirken ab dem naechsten Start).
 
 Seed-Rollen (nur Startpunkt): `dev`, `server`, `app`, `wine-qa`,
-`db-postgres` (initdb in `$HOME/pgdata` + pg_ctl start, Port 5432, Socket
-`/tmp`), `db-redis` (Port 6379, Persistenz im HOME).
+`windows-msvc` (Tier-2-Image; echte MSVC-/Windows-SDK-Dateien erst nach
+expliziter Lizenzannahme im persistenten HOME), `db-postgres` (initdb in
+`$HOME/pgdata` + pg_ctl start, Port 5432, Socket `/tmp`) und `db-redis`
+(Port 6379, Persistenz im HOME).
 
 Kochrezept "3 Geraete" (db ↔ app ↔ wine-qa):
 

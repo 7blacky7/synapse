@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+root="${MSVC_ROOT:-$HOME/.msvc}"
+tools="${MSVC_WINE_TOOLS:-/opt/msvc-wine}"
+arch="${1:-x64}"
+
+case "$arch" in
+  x86|x64|arm|arm64) shift || true ;;
+  *)
+    echo "Nutzung: msvc-run <x86|x64|arm|arm64> <befehl> [argumente...]" >&2
+    exit 64
+    ;;
+esac
+
+if [[ ! -f "$root/.synapse-msvc-ready" ]]; then
+  echo "MSVC/Windows SDK fehlt. Zuerst: msvc-setup --accept-license" >&2
+  exit 69
+fi
+if [[ "$#" -eq 0 ]]; then
+  echo "Nutzung: msvc-run <x86|x64|arm|arm64> <befehl> [argumente...]" >&2
+  exit 64
+fi
+
+BIN="$root/bin/$arch"
+export BIN
+# Setzt INCLUDE, LIB und TARGET_TRIPLE fuer native Clang/LLD-Aufrufe.
+# shellcheck disable=SC1091
+. "$tools/msvcenv-native.sh"
+
+exec "$@"

@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+license_url="https://go.microsoft.com/fwlink/?LinkId=2086102"
+root="${MSVC_ROOT:-$HOME/.msvc}"
+tools="${MSVC_WINE_TOOLS:-/opt/msvc-wine}"
+
+if [[ "${1:-}" != "--accept-license" ]]; then
+  cat >&2 <<EOF
+MSVC und Windows SDK sind nicht redistribuierbar und nicht im Image enthalten.
+Lies und akzeptiere zuerst die Microsoft-Lizenz:
+  $license_url
+
+Danach einmalig ausfuehren:
+  msvc-setup --accept-license
+EOF
+  exit 64
+fi
+
+mkdir -p "$HOME"
+exec 9>"$HOME/.msvc-setup.lock"
+flock 9
+
+if [[ -f "$root/.synapse-msvc-ready" ]]; then
+  echo "MSVC/Windows SDK bereits eingerichtet: $root"
+  exit 0
+fi
+
+partial="$root.partial"
+rm -rf "$partial"
+mkdir -p "$partial"
+trap 'rm -rf "$partial"' EXIT
+
+python3 "$tools/vsdownload.py" --accept-license --dest "$partial"
+"$tools/install.sh" "$partial"
+touch "$partial/.synapse-msvc-ready"
+
+rm -rf "$root"
+mv "$partial" "$root"
+trap - EXIT
+
+echo "MSVC/Windows SDK eingerichtet: $root"
+echo "Naechster Schritt: msvc-smoke"
