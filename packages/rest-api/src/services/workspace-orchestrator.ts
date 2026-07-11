@@ -773,10 +773,10 @@ export class WorkspaceOrchestrator {
   }
 
   /** WS4: Laedt ein Rollen-Template — projekt-scoped schlaegt globale Rolle gleichen Namens. */
-  private async loadRoleTemplate(project: string, role: string): Promise<{ image: string; cpuLimit: number; memLimitMb: number; pidsLimit: number; tmpfsMb: number; initCommand: string | null; devices: string[]; securityOpts: string[]; capAdd: string[] } | null> {
+  private async loadRoleTemplate(project: string, role: string): Promise<{ image: string; cpuLimit: number; memLimitMb: number; pidsLimit: number; tmpfsMb: number; initCommand: string | null; initTimeoutMs: number; devices: string[]; securityOpts: string[]; capAdd: string[] } | null> {
     const pool = getPool();
     const r = await pool.query(
-      `SELECT image, cpu_limit, mem_limit_mb, pids_limit, tmpfs_mb, init_command, devices, security_opts, cap_add
+      `SELECT image, cpu_limit, mem_limit_mb, pids_limit, tmpfs_mb, init_command, init_timeout_ms, devices, security_opts, cap_add
          FROM workspace_roles
         WHERE role = $2 AND (project = $1 OR project IS NULL)
         ORDER BY (project IS NOT NULL) DESC
@@ -792,6 +792,7 @@ export class WorkspaceOrchestrator {
       pidsLimit: Number(x.pids_limit),
       tmpfsMb: Number(x.tmpfs_mb),
       initCommand: (x.init_command as string | null) ?? null,
+      initTimeoutMs: Number(x.init_timeout_ms ?? 120_000),
       devices: (x.devices as string[] | null) ?? [],
       securityOpts: (x.security_opts as string[] | null) ?? [],
       capAdd: (x.cap_add as string[] | null) ?? [],
@@ -814,7 +815,7 @@ export class WorkspaceOrchestrator {
     if (!tpl?.initCommand) return;
     void this.appendToLog(containerId, `ROLE-INIT (${role}): ${tpl.initCommand.slice(0, 200)}`);
     try {
-      const res = await this.exec(project, tpl.initCommand, { workspace: ws, timeoutMs: 120_000 });
+      const res = await this.exec(project, tpl.initCommand, { workspace: ws, timeoutMs: tpl.initTimeoutMs });
       if (res.exitCode !== 0) {
         const msg = `role-init "${role}" exit=${res.exitCode}: ${(res.stderr || res.stdout).slice(0, 500)}`;
         await pool.query(`UPDATE project_workspaces SET last_error=$3, updated_at=NOW() WHERE project=$1 AND name=$2`, [project, ws, msg]);
@@ -833,7 +834,7 @@ export class WorkspaceOrchestrator {
   // Rollen sind NIE fest: via role_set/role_delete editierbar (global ODER
   // projekt-scoped), jede Rolle ist beliebig oft instanziierbar (db-1, db-2, ...).
 
-  async roleSet(opts: { project?: string | null; role: string; image?: string; cpuLimit?: number; memLimitMb?: number; pidsLimit?: number; tmpfsMb?: number; initCommand?: string | null; description?: string | null; devices?: string[]; securityOpts?: string[]; capAdd?: string[] }): Promise<Record<string, unknown>> {
+  async roleSet(opts: { project?: string | null; role: string; image?: string; cpuLimit?: number; memLimitMb?: number; pidsLimit?: number; tmpfsMb?: number; initCommand?: string | null; initTimeoutMs?: number; description?: string | null; devices?: string[]; securityOpts?: string[]; capAdd?: string[] }): Promise<Record<string, unknown>> {
     const role = (opts.role || '').toLowerCase();
     if (!/^[a-z0-9][a-z0-9-]{0,29}$/.test(role)) {
       throw new Error(`Ungueltiger Rollen-Name "${opts.role}" (erlaubt: ^[a-z0-9][a-z0-9-]{0,29}$)`);
@@ -843,6 +844,7 @@ export class WorkspaceOrchestrator {
     if (opts.memLimitMb !== undefined && !(Number.isInteger(opts.memLimitMb) && opts.memLimitMb >= 128)) throw new Error('role_set: mem_limit_mb >= 128');
     if (opts.pidsLimit !== undefined && !(Number.isInteger(opts.pidsLimit) && opts.pidsLimit >= 16)) throw new Error('role_set: pids_limit >= 16');
     if (opts.tmpfsMb !== undefined && !(Number.isInteger(opts.tmpfsMb) && opts.tmpfsMb >= 16)) throw new Error('role_set: tmpfs_mb >= 16');
+    if (opts.initTimeoutMs !== undefined && !(Number.isInteger(opts.initTimeoutMs) && opts.initTimeoutMs >= 1_000 && opts.initTimeoutMs <= 3_600_000)) throw new Error('role_set: init_timeout_ms 1000..3600000');
     // WS5: enge Whitelists — wirksam werden devices/security_opts ohnehin erst,
     // wenn die Rolle in ENV SYNAPSE_WS_PRIVILEGED_ROLES allowlisted ist.
     if (opts.devices !== undefined && (!Array.isArray(opts.devices) || opts.devices.some(d => typeof d !== 'string' || !/^\/dev\/(fuse|kvm|net\/tun)$/.test(d)))) {
@@ -856,22 +858,23 @@ export class WorkspaceOrchestrator {
     }
     const pool = getPool();
     const r = await pool.query(
-      `INSERT INTO workspace_roles (project, role, image, cpu_limit, mem_limit_mb, pids_limit, tmpfs_mb, init_command, description, devices, security_opts, cap_add)
-       VALUES ($1, $2, COALESCE($3, 'synapse-workspace:latest'), COALESCE($4, 1.0), COALESCE($5, 512), COALESCE($6, 200), COALESCE($7, 256), $8, $9, COALESCE($10::text[], '{}'), COALESCE($11::text[], '{}'), COALESCE($12::text[], '{}'))
+      `INSERT INTO workspace_roles (project, role, image, cpu_limit, mem_limit_mb, pids_limit, tmpfs_mb, init_command, init_timeout_ms, description, devices, security_opts, cap_add)
+       VALUES ($1, $2, COALESCE($3, 'synapse-workspace:latest'), COALESCE($4, 1.0), COALESCE($5, 512), COALESCE($6, 200), COALESCE($7, 256), $8, COALESCE($9, 120000), $10, COALESCE($11::text[], '{}'), COALESCE($12::text[], '{}'), COALESCE($13::text[], '{}'))
        ON CONFLICT ((COALESCE(project, '')), role) DO UPDATE SET
          image        = COALESCE($3, workspace_roles.image),
          cpu_limit    = COALESCE($4, workspace_roles.cpu_limit),
          mem_limit_mb = COALESCE($5, workspace_roles.mem_limit_mb),
          pids_limit   = COALESCE($6, workspace_roles.pids_limit),
          tmpfs_mb     = COALESCE($7, workspace_roles.tmpfs_mb),
-         init_command = COALESCE($8, workspace_roles.init_command),
-         description  = COALESCE($9, workspace_roles.description),
-         devices       = COALESCE($10::text[], workspace_roles.devices),
-         security_opts = COALESCE($11::text[], workspace_roles.security_opts),
-         cap_add       = COALESCE($12::text[], workspace_roles.cap_add),
+         init_command    = COALESCE($8, workspace_roles.init_command),
+         init_timeout_ms = COALESCE($9, workspace_roles.init_timeout_ms),
+         description     = COALESCE($10, workspace_roles.description),
+         devices         = COALESCE($11::text[], workspace_roles.devices),
+         security_opts   = COALESCE($12::text[], workspace_roles.security_opts),
+         cap_add         = COALESCE($13::text[], workspace_roles.cap_add),
          updated_at   = NOW()
-       RETURNING project, role, image, cpu_limit, mem_limit_mb, pids_limit, tmpfs_mb, init_command, description, devices, security_opts, cap_add`,
-      [opts.project ?? null, role, opts.image ?? null, opts.cpuLimit ?? null, opts.memLimitMb ?? null, opts.pidsLimit ?? null, opts.tmpfsMb ?? null, opts.initCommand ?? null, opts.description ?? null, opts.devices ?? null, opts.securityOpts ?? null, opts.capAdd ?? null]
+       RETURNING project, role, image, cpu_limit, mem_limit_mb, pids_limit, tmpfs_mb, init_command, init_timeout_ms, description, devices, security_opts, cap_add`,
+      [opts.project ?? null, role, opts.image ?? null, opts.cpuLimit ?? null, opts.memLimitMb ?? null, opts.pidsLimit ?? null, opts.tmpfsMb ?? null, opts.initCommand ?? null, opts.initTimeoutMs ?? null, opts.description ?? null, opts.devices ?? null, opts.securityOpts ?? null, opts.capAdd ?? null]
     );
     return r.rows[0];
   }
@@ -879,7 +882,7 @@ export class WorkspaceOrchestrator {
   async roleList(project?: string): Promise<Array<Record<string, unknown>>> {
     const pool = getPool();
     const r = await pool.query(
-      `SELECT project, role, image, cpu_limit, mem_limit_mb, pids_limit, tmpfs_mb, init_command, description, devices, security_opts, cap_add, updated_at,
+      `SELECT project, role, image, cpu_limit, mem_limit_mb, pids_limit, tmpfs_mb, init_command, init_timeout_ms, description, devices, security_opts, cap_add, updated_at,
               (project IS NULL) AS is_global
          FROM workspace_roles
         WHERE project IS NULL OR project = $1

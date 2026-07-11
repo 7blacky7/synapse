@@ -1023,7 +1023,8 @@ const MCP_TOOLS = [
       properties: {
         action: { type: 'string', enum: ['list', 'start', 'stop', 'pin', 'unpin', 'exec', 'materialize', 'commit', 'configure', 'reset_home', 'make_writable', 'role_set', 'role_list', 'role_delete'], description: 'Aktion' },
         role: { type: 'string', description: 'WS4 Rollen-Template. Bei start/exec: Template fuer die ERST-Anlage der Instanz (name frei waehlbar; eine Rolle ist beliebig oft instanziierbar — db-1, db-2, app, qa, ...). Bei role_set/role_delete: Name der Rolle (^[a-z0-9][a-z0-9-]{0,29}$). Rollen sind NIE fest: role_set ueberschreibt; project weglassen = globale Rolle, projekt-scoped schlaegt global.' },
-        init_command: { type: 'string', description: 'Nur role_set: Kommando das nach JEDEM Container-Start einer Instanz dieser Rolle laeuft (User synapse, 120s Timeout) — Dienste-Bootstrap, z.B. initdb + pg_ctl start. Fehler -> last_error, Container bleibt nutzbar.' },
+        init_command: { type: 'string', description: 'Nur role_set: Kommando das nach JEDEM Container-Start als User synapse laeuft. Fehler -> last_error, Container bleibt nutzbar.' },
+        init_timeout_ms: { type: 'number', description: 'Nur role_set: Timeout fuer init_command in Millisekunden (1000..3600000, Standard 120000).' },
         description: { type: 'string', description: 'Nur role_set: Kurzbeschreibung der Rolle.' },
         devices: { type: 'array', items: { type: 'string' }, description: 'Nur role_set (WS5): Geraete-Whitelist der Rolle — erlaubt sind ausschliesslich /dev/fuse, /dev/kvm, /dev/net/tun. Wirkt NUR wenn die Rolle in ENV SYNAPSE_WS_PRIVILEGED_ROLES steht, sonst verweigert der Start. Leeren: role_delete + role_set neu (leeres Array wird als nicht-gesetzt behandelt).' },
         security_opts: { type: 'array', items: { type: 'string' }, description: 'Nur role_set (WS5): SecurityOpt-Whitelist — erlaubt sind ausschliesslich seccomp=unconfined, apparmor=unconfined, label=disable. Gleiches ENV-Gate wie devices. --privileged und docker.sock existieren bewusst NICHT.' },
@@ -3822,6 +3823,7 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
             pidsLimit: num(args, 'pids_limit'),
             tmpfsMb: num(args, 'tmpfs_mb'),
             initCommand: str(args, 'init_command'),
+            initTimeoutMs: num(args, 'init_timeout_ms'),
             description: str(args, 'description'),
             devices: strArray(args, 'devices'),
             securityOpts: strArray(args, 'security_opts'),

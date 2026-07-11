@@ -246,7 +246,7 @@ export async function workspaceRoutes(fastify: FastifyInstance): Promise<void> {
     }
   });
 
-  fastify.post<{ Body: { project?: string | null; role?: string; image?: string; cpuLimit?: number; memLimitMb?: number; pidsLimit?: number; tmpfsMb?: number; initCommand?: string; description?: string; devices?: string[]; securityOpts?: string[]; capAdd?: string[] } }>('/api/workspace-roles', async (request, reply) => {
+  fastify.post<{ Body: { project?: string | null; role?: string; image?: string; cpuLimit?: number; memLimitMb?: number; pidsLimit?: number; tmpfsMb?: number; initCommand?: string; initTimeoutMs?: number; description?: string; devices?: string[]; securityOpts?: string[]; capAdd?: string[] } }>('/api/workspace-roles', async (request, reply) => {
     const orch = getWorkspaceOrchestrator();
     if (!orch) return reply.status(503).send({ success: false, error: { message: 'Workspace-Orchestrator nicht initialisiert' } });
     if (!request.body?.role) {

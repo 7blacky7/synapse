@@ -945,6 +945,7 @@ CREATE TABLE IF NOT EXISTS workspace_roles (
   pids_limit    INT  NOT NULL DEFAULT 200,
   tmpfs_mb      INT  NOT NULL DEFAULT 256,
   init_command  TEXT,
+  init_timeout_ms INT NOT NULL DEFAULT 120000,       -- Rollen-Init, 1s..60min
   description   TEXT,
   created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -966,6 +967,7 @@ ALTER TABLE project_workspaces ADD COLUMN IF NOT EXISTS role TEXT;
 ALTER TABLE workspace_roles ADD COLUMN IF NOT EXISTS devices       TEXT[] NOT NULL DEFAULT '{}';
 ALTER TABLE workspace_roles ADD COLUMN IF NOT EXISTS security_opts TEXT[] NOT NULL DEFAULT '{}';
 ALTER TABLE workspace_roles ADD COLUMN IF NOT EXISTS cap_add       TEXT[] NOT NULL DEFAULT '{}';
+ALTER TABLE workspace_roles ADD COLUMN IF NOT EXISTS init_timeout_ms INT NOT NULL DEFAULT 120000;
 
 -- WS4-Seed: globale Start-Rollen — NUR Startpunkt, NICHTS ist fest:
 -- role_set ueberschreibt/ergaenzt, role_delete entfernt, jede Rolle ist
@@ -993,11 +995,17 @@ ON CONFLICT ((COALESCE(project, '')), role) DO NOTHING;
 -- clang-cl/lld-link + msvc-wine-Helfer. MSVC/Windows SDK werden nach
 -- expliziter Lizenzannahme ins persistente HOME geladen und nie redistribuiert.
 -- Keine privilegierten Devices/Capabilities oder Host-Mounts erforderlich.
-INSERT INTO workspace_roles (project, role, image, cpu_limit, mem_limit_mb, pids_limit, tmpfs_mb, init_command, description)
+INSERT INTO workspace_roles (project, role, image, cpu_limit, mem_limit_mb, pids_limit, tmpfs_mb, init_command, init_timeout_ms, description)
 VALUES
-  (NULL, 'windows-msvc', 'synapse-workspace-msvc:latest', 2.0, 2048, 300, 1024, NULL,
-   'Native Windows-Cross-Builds: clang-cl/lld-link mit echten MSVC-/Windows-SDK-Headers und Import-Libs. Einmalig msvc-setup --accept-license im persistenten HOME; msvc-smoke prueft Media Foundation/WASAPI Build+Link. Kein Ersatz fuer echte Windows-Hardwaretests.')
+  (NULL, 'windows-msvc', 'synapse-workspace-msvc:latest', 2.0, 2048, 300, 1024,
+   'msvc-setup --accept-license', 1800000,
+   'Native Windows-Cross-Builds: clang-cl/lld-link mit echten MSVC-/Windows-SDK-Headers und Import-Libs. MSVC/SDK werden beim ersten Start automatisch mit der vom User freigegebenen Lizenzannahme ins persistente HOME geladen; msvc-smoke prueft Media Foundation/WASAPI Build+Link. Kein Ersatz fuer echte Windows-Hardwaretests.')
 ON CONFLICT ((COALESCE(project, '')), role) DO NOTHING;
+-- Migration des bereits durch eine fruehere Version angelegten Seed-Eintrags.
+-- Nur NULL-Init wird angefasst; eigene Rollen-Konfigurationen gewinnen weiterhin.
+UPDATE workspace_roles
+   SET init_command = 'msvc-setup --accept-license', init_timeout_ms = 1800000, updated_at = NOW()
+ WHERE project IS NULL AND role = 'windows-msvc' AND init_command IS NULL;
 
 -- WS5-Seed: container-builder — rootless Podman/Buildah (Tier-2-Image, FROM
 -- synapse-workspace:latest). Daemonless: kein init_command noetig; Image-Storage

@@ -29,7 +29,8 @@ docker build -t synapse-workspace-msvc:latest docker/synapse-workspace-msvc/
 ```
 
 Danach den Synapse-API-Container mit der neuen Schema-Version starten. Sie
-seedet die globale Rolle `windows-msvc`. Keine neue Device-Freigabe, kein
+seedet die globale Rolle `windows-msvc` mit `msvc-setup --accept-license` als
+automatischem Rollen-Init (30 Minuten Timeout). Keine neue Device-Freigabe, kein
 `--privileged`, kein Docker-Socket und kein Windows-SDK-Host-Mount sind
 erforderlich.
 
@@ -37,9 +38,9 @@ erforderlich.
 
 ```text
 workspace(start, project:"moo", name:"msvc", role:"windows-msvc")
+# Beim ersten Start: Lizenzannahme + MSVC/SDK-Download automatisch.
+# Spaetere Starts: Ready-Marker, kein erneuter Download.
 workspace(materialize, project:"moo")
-shell(exec, project:"moo", target:"workspace", workspace:"msvc",
-  command:"msvc-setup --accept-license", timeout_ms:1800000)
 shell(exec, project:"moo", target:"workspace", workspace:"msvc",
   command:"msvc-smoke", timeout_ms:120000)
 ```
@@ -53,8 +54,8 @@ msvc-run x64 clang --target=x86_64-windows-msvc quelle.c -fuse-ld=lld -o program
 ```
 
 `msvc-setup` ist idempotent. `workspace(reset_home)` entfernt bewusst auch
-die heruntergeladene Microsoft-Toolchain; danach ist die Lizenzannahme und
-Installation erneut erforderlich.
+die heruntergeladene Microsoft-Toolchain; beim naechsten Start installiert der
+Rollen-Init sie mit der vom User dauerhaft freigegebenen Lizenzannahme erneut.
 
 ## Pins
 
