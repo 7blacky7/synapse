@@ -19,14 +19,7 @@ EOF
   exit 64
 fi
 
-mkdir -p "$HOME" "$tmpdir"
-free_kb="$(df -Pk "$HOME" | awk 'NR == 2 { print $4 }')"
-if [[ ! "$free_kb" =~ ^[0-9]+$ ]] || (( free_kb < min_free_kb )); then
-  echo "Zu wenig freier Platz im Workspace-HOME: mindestens 12 GiB erforderlich." >&2
-  exit 70
-fi
-export TMPDIR="$tmpdir"
-
+mkdir -p "$HOME"
 exec 9>"$HOME/.msvc-setup.lock"
 flock 9
 
@@ -34,6 +27,15 @@ if [[ -f "$root/.synapse-msvc-ready" ]]; then
   echo "MSVC/Windows SDK bereits eingerichtet: $root"
   exit 0
 fi
+
+mkdir -p "$tmpdir"
+free_kb="$(df -Pk "$HOME" | awk 'NR == 2 { print $4 }')"
+if [[ ! "$free_kb" =~ ^[0-9]+$ ]] || (( free_kb < min_free_kb )); then
+  rm -rf "$tmpdir"
+  echo "Zu wenig freier Platz im Workspace-HOME: mindestens 12 GiB erforderlich." >&2
+  exit 70
+fi
+export TMPDIR="$tmpdir"
 
 partial="$root.partial"
 rm -rf "$partial"
