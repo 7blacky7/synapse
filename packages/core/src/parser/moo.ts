@@ -1,6 +1,6 @@
 /**
  * MODUL: moo Parser
- * ZWECK: Extrahiert Struktur-Informationen aus moo-Dateien (.moo)
+ * ZWECK: Extrahiert Struktur-Informationen aus moo-Dateien (.moo / .moos)
  *
  * moo ist eine einrueckungsbasierte Sprache (Python-like) mit zweisprachigen Keywords
  * (Deutsch + Englisch + Lern-Modus + 2-Buchstaben-Kurzformen), Unicode-Identifiern
@@ -67,7 +67,7 @@ function isPublic(name: string): boolean {
 
 class MooParser implements LanguageParser {
   language = 'moo';
-  extensions = ['.moo'];
+  extensions = ['.moo', '.moos'];
 
   parse(content: string, _filePath: string): ParseResult {
     const symbols: ParsedSymbol[] = [];
