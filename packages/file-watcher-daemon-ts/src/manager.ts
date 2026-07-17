@@ -52,6 +52,32 @@ export interface AggregateStatus {
   projekte: ProjektStatus[];
 }
 
+// ─── Backpressure: begrenzt gleichzeitige Datei-Indexierungen GLOBAL ───
+// Ohne Limit startet der Initial-Scan aller Projekte zehntausende parallele
+// indexFile()-Operationen gleichzeitig — jede haelt Datei-Content + native
+// Buffer → RSS explodiert (nativer Speicher, NICHT per --max-old-space-size
+// begrenzbar) → OOM nach ~1-2 Min. Mit Limit sind nie mehr als N Dateien
+// gleichzeitig in Bearbeitung; der Rest wartet als billiger Pfad-String
+// (event-Objekt) in der Queue. Content wird erst gelesen wenn ein Slot frei
+// ist → Speicher hat eine feste Obergrenze statt mit Datei-Anzahl zu wachsen.
+const MAX_CONCURRENT_INDEX = Math.max(1, Number(process.env.INDEX_MAX_CONCURRENT ?? 3));
+let activeIndexOps = 0;
+const indexWaiters: Array<() => void> = [];
+function acquireIndexSlot(): Promise<void> {
+  if (activeIndexOps < MAX_CONCURRENT_INDEX) {
+    activeIndexOps++;
+    return Promise.resolve();
+  }
+  // Wartender bekommt den Slot uebergeben (release zaehlt NICHT runter) —
+  // sonst akkumuliert der Counter und alle queuen ewig.
+  return new Promise<void>((resolve) => indexWaiters.push(resolve));
+}
+function releaseIndexSlot(): void {
+  const next = indexWaiters.shift();
+  if (next) next();
+  else activeIndexOps--;
+}
+
 export class WatcherManager {
   private instances = new Map<string, FileWatcherInstance>();
   private config: DaemonConfig;
@@ -230,6 +256,11 @@ export class WatcherManager {
     // indexFile() macht intern: storeFileContent (Hash/mtime-Schutz) + parseAndEmbed
     // (PG -> Qdrant). Kein HTTP-Umweg, kein REST-API-Bedarf, Daemon bleibt
     // standalone. HTTP-API + SSE-Push bleiben offen fuer externe Orchestrierung.
+    //
+    // BACKPRESSURE: Slot holen BEVOR content gelesen/geparst wird. Bei vielen
+    // gleichzeitigen Events (Initial-Scan) warten die ueberzaehligen hier als
+    // billiges event-Objekt statt tausende indexFile()-Buffer parallel zu halten.
+    await acquireIndexSlot();
     try {
       const projektCfg = this.config.projekte.find((p) => p.name === event.project);
       const projectRoot = (await getProjectRoot(event.project)) ?? projektCfg?.pfad;
@@ -249,6 +280,8 @@ export class WatcherManager {
         `[manager] indexieren ${event.type} ${event.path} fehlgeschlagen:`,
         (err as Error).message
       );
+    } finally {
+      releaseIndexSlot();
     }
   }
 }
