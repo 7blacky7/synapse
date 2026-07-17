@@ -173,3 +173,15 @@ export function getParserForFile(filePath: string): LanguageParser | null {
 export function getSupportedExtensions(): string[] {
   return parsers.flatMap(p => p.extensions);
 }
+
+/**
+ * Liefert die Sprach-Namen (LanguageParser.language) fuer eine Datei -
+ * fuer den Tech-Docs Wissens-Airbag (docs get_for_file). Nutzt dieselbe
+ * Registry wie getParserForFile (Single Source of Truth: Extension- +
+ * Dateiname-Matching, inkl. Makefile/Dockerfile). Framework-Docs (react,
+ * fastify, ...) laufen NICHT hierueber, sondern ueber context7 + docs(search).
+ */
+export function getLanguagesForFile(filePath: string): string[] {
+  const parser = getParserForFile(filePath);
+  return parser ? [parser.language] : [];
+}

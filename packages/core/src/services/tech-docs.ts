@@ -19,6 +19,7 @@ import { insertVector, searchVectors, deleteVector } from '../qdrant/operations.
 import { COLLECTIONS } from '../types/index.js';
 import { getAgentSession } from './chat.js';
 import { getContext7Client } from './context7.js';
+import { getLanguagesForFile } from '../parser/index.js';
 
 export interface TechDoc {
   id: string;
@@ -306,9 +307,9 @@ export async function getDocsForFile(
     return { warnings: [], agentCutoff: null };
   }
 
-  // 2. Datei-Extension → moegliche Frameworks ableiten
-  const ext = filePath.split('.').pop()?.toLowerCase() || '';
-  let frameworkHints = getFrameworkHintsForExtension(ext);
+  // 2. Datei -> Sprach-Parser (Registry, Single Source of Truth) -> Sprach-Hints.
+  //    Framework-Docs (react, fastify, ...) laufen NICHT hier, sondern via context7 + docs(search).
+  let frameworkHints = getLanguagesForFile(filePath);
   // DX-Befund 7: optionaler expliziter Framework-Filter (z.B. nur 'fastify')
   const requested = opts?.frameworks?.map((f) => f.toLowerCase()).filter(Boolean);
   if (requested && requested.length > 0) {
@@ -378,32 +379,6 @@ export async function getDocsForFile(
     }));
 
   return { warnings, agentCutoff };
-}
-
-/**
- * Hilfsfunktion: Datei-Extension → moegliche Framework-Namen
- */
-function getFrameworkHintsForExtension(ext: string): string[] {
-  const hints: Record<string, string[]> = {
-    'ts': ['typescript', 'nodejs', 'react', 'vue', 'angular', 'express', 'fastify', 'next'],
-    'tsx': ['typescript', 'react', 'next'],
-    'js': ['nodejs', 'javascript', 'react', 'vue', 'express'],
-    'jsx': ['react', 'javascript'],
-    'vue': ['vue', 'nuxt'],
-    'py': ['python', 'django', 'flask', 'fastapi'],
-    'rs': ['rust'],
-    'go': ['go'],
-    'java': ['java', 'spring'],
-    'kt': ['kotlin'],
-    'swift': ['swift'],
-    'rb': ['ruby', 'rails'],
-    'php': ['php', 'laravel'],
-    'cs': ['dotnet', 'csharp'],
-    'css': ['css', 'tailwind'],
-    'scss': ['sass', 'css'],
-  };
-
-  return hints[ext] || [];
 }
 
 /**
