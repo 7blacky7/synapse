@@ -1062,6 +1062,97 @@ const MCP_TOOLS = [
   },
 ];
 
+// ═══ OUTPUT-SCHEMAS (OpenAI-Empfehlung, Apps-SDK) ════════════════════════════
+// Jedes Tool bekommt ein outputSchema (JSON-Schema des Rueckgabe-Objekts) und
+// — wo bekannt — ein Beispiel-Output in der Beschreibung. Der tools/call-Handler
+// liefert zusaetzlich structuredContent. So versteht das Modell das Rueckgabe-
+// format vorab und kann Felder/IDs in Folge-Calls wiederverwenden.
+// Da die Tools action-gemultiplext sind (heterogene Shapes je action), ist der
+// Envelope permissiv (additionalProperties:true); die wichtigsten/ID-Felder je
+// Tool sind explizit gelistet. Fuer Tools ohne Extras bleibt der Envelope.
+const OUTPUT_ENVELOPE_PROPS: Record<string, unknown> = {
+  success: { type: 'boolean', description: 'true bei Erfolg, false bei Fehler' },
+  error: { type: 'string', description: 'Fehlermeldung wenn success=false' },
+};
+
+const OUTPUT_EXTRAS: Record<string, { props?: Record<string, unknown>; example?: unknown }> = {
+  files: {
+    props: {
+      file_path: { type: 'string' },
+      size: { type: 'number', description: 'Groesse in Bytes/Zeichen' },
+      content: { type: 'string' },
+      total_lines: { type: 'number' },
+      version_id: { type: 'string', description: 'BIGSERIAL-Versions-ID (fuer get_version/restore)' },
+      returned_range: { type: 'object', properties: { from: { type: 'number' }, to: { type: 'number' }, eof: { type: 'boolean' } } },
+    },
+    example: { success: true, file_path: 'src/index.ts', size: 1234, content: '...', total_lines: 42, returned_range: { from: 1, to: 42, eof: true } },
+  },
+  code_intel: {
+    props: {
+      count: { type: 'number' },
+      project: { type: 'string' },
+      mode: { type: 'string', description: 'fulltext | semantic (bei search)' },
+      functions: { type: 'array', items: { type: 'object' } },
+      results: { type: 'array', items: { type: 'object' } },
+    },
+    example: { success: true, count: 1, project: 'synapse', functions: [{ id: 'uuid', file_path: 'src/a.ts', name: 'foo', line_start: 10, line_end: 20, params: ['x:string'], return_type: 'void', is_exported: true }] },
+  },
+  search: {
+    props: { results: { type: 'array', items: { type: 'object' } }, count: { type: 'number' }, mode: { type: 'string' } },
+    example: { success: true, count: 3, mode: 'semantic', results: [{ id: 'uuid', score: 0.82, content: '...' }] },
+  },
+  channel: {
+    props: { channel: { type: 'object', properties: { id: { type: 'number' }, name: { type: 'string' }, project: { type: 'string' } } }, action: { type: 'string' }, messages: { type: 'array', items: { type: 'object' } } },
+    example: { success: true, channel: { id: 566, name: 'general', project: 'synapse' }, action: 'create' },
+  },
+  project: {
+    props: { projects: { type: 'array', items: { type: 'object' } }, job_id: { type: 'string' } },
+    example: { success: true, projects: [{ name: 'synapse', path: '/home/user/dev/synapse', enabled: true }] },
+  },
+  memory: {
+    props: { id: { type: 'string' }, memories: { type: 'array', items: { type: 'object' } } },
+    example: { success: true, id: '123', memories: [{ id: '123', title: '...', content: '...' }] },
+  },
+  thought: {
+    props: { id: { type: 'string' }, thoughts: { type: 'array', items: { type: 'object' } } },
+    example: { success: true, id: '42' },
+  },
+  plan: {
+    props: { plan_id: { type: 'string' }, plan: { type: 'object' } },
+    example: { success: true, plan_id: '7', plan: { name: 'Migration', steps: [] } },
+  },
+  chat: {
+    props: { messages: { type: 'array', items: { type: 'object' } }, message_id: { type: 'number' } },
+    example: { success: true, messages: [{ id: 1, sender: 'agentA', content: '...' }] },
+  },
+  event: {
+    props: { event_id: { type: 'string' }, events: { type: 'array', items: { type: 'object' } } },
+    example: { success: true, event_id: '9' },
+  },
+  admin: {
+    props: { stats: { type: 'object' } },
+    example: { success: true, stats: { code_files: 20096, code_symbols: 535147 } },
+  },
+  workspace: {
+    props: { workspaces: { type: 'array', items: { type: 'object' } } },
+    example: { success: true, workspaces: [{ project: 'synapse', status: 'active', pinned: false }] },
+  },
+};
+
+for (const _t of MCP_TOOLS as any[]) {
+  const extra = OUTPUT_EXTRAS[_t.name as string];
+  _t.outputSchema = {
+    type: 'object',
+    description: `Rueckgabe von "${_t.name}": JSON-Objekt mit success + action-abhaengigen Feldern.`,
+    properties: { ...OUTPUT_ENVELOPE_PROPS, ...(extra?.props ?? {}) },
+    required: ['success'],
+    additionalProperties: true,
+  };
+  if (extra?.example) {
+    _t.description = `${_t.description}\n\nBeispiel-Output:\n${JSON.stringify(extra.example)}`;
+  }
+}
+
 interface PendingIdea {
   content: string;
   project: string;
@@ -3966,7 +4057,16 @@ export async function mcpRoutes(fastify: FastifyInstance): Promise<void> {
           try {
             const toolResult = await attachRestOnboarding(await handleToolCall(toolName, toolArgs), toolArgs);
             _logResult = JSON.stringify(toolResult);
-            result = { content: [{ type: 'text', text: JSON.stringify(toolResult, null, 2) }] };
+            result = {
+              content: [{ type: 'text', text: JSON.stringify(toolResult, null, 2) }],
+              // OpenAI-Empfehlung: strukturierte Ausgabe zusaetzlich zum Text,
+              // damit das Modell (ChatGPT/Claude) Felder + IDs direkt fuer
+              // Folge-Calls nutzen kann (muss zum outputSchema des Tools passen).
+              structuredContent:
+                toolResult && typeof toolResult === 'object' && !Array.isArray(toolResult)
+                  ? toolResult
+                  : { result: toolResult },
+            };
           } catch (toolErr) {
             // Tool-Fehler (z.B. fehlender Pflicht-Parameter wie file_path) als
             // MCP tool-result mit isError zurueckgeben — NICHT als HTTP 500.
@@ -4073,7 +4173,16 @@ export async function mcpRoutes(fastify: FastifyInstance): Promise<void> {
           try {
             const toolResult = await attachRestOnboarding(await handleToolCall(toolName, toolArgs), toolArgs);
             _logResult = JSON.stringify(toolResult);
-            result = { content: [{ type: 'text', text: JSON.stringify(toolResult, null, 2) }] };
+            result = {
+              content: [{ type: 'text', text: JSON.stringify(toolResult, null, 2) }],
+              // OpenAI-Empfehlung: strukturierte Ausgabe zusaetzlich zum Text,
+              // damit das Modell (ChatGPT/Claude) Felder + IDs direkt fuer
+              // Folge-Calls nutzen kann (muss zum outputSchema des Tools passen).
+              structuredContent:
+                toolResult && typeof toolResult === 'object' && !Array.isArray(toolResult)
+                  ? toolResult
+                  : { result: toolResult },
+            };
           } catch (toolErr) {
             // Tool-Fehler (z.B. fehlender Pflicht-Parameter wie file_path) als
             // MCP tool-result mit isError zurueckgeben — NICHT als HTTP 500.
