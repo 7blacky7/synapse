@@ -60,7 +60,19 @@ export function chunkText(text: string, options?: ChunkOptions): TextChunk[] {
   }
 
   const chunks: TextChunk[] = [];
-  const lines = text.split('\n');
+  // Ueberlange EINZELzeilen (generierter/minified Code, z.B. Rust-Bindings) hart
+  // splitten — sonst wird eine solche Zeile zu einem Chunk > chunkSize, der beim
+  // Embedden den Modell-Kontext sprengt ("input length exceeds context length").
+  const lines: string[] = [];
+  for (const rawLine of text.split('\n')) {
+    if (rawLine.length <= chunkSize) {
+      lines.push(rawLine);
+    } else {
+      for (let i = 0; i < rawLine.length; i += chunkSize) {
+        lines.push(rawLine.slice(i, i + chunkSize));
+      }
+    }
+  }
 
   let currentChunk = '';
   let chunkStartLine = 1;
