@@ -11,11 +11,18 @@ export class OllamaEmbeddingProvider implements EmbeddingProvider {
   private baseUrl: string;
   private model: string;
   private modelEnsured = false;
+  private targetDim: number;
 
   constructor() {
     const config = getConfig();
     this.baseUrl = config.embeddings.ollama.url;
     this.model = config.embeddings.ollama.model;
+    // MRL-Truncation (optional): wenn EMBEDDING_TARGET_DIM gesetzt ist, wird der
+    // Embedding-Vektor auf diese Dimension gekuerzt + renormalisiert. Ollama
+    // liefert immer die native Dim (qwen3-embedding:8b = 4096); mit
+    // EMBEDDING_TARGET_DIM=3072 passen die Vektoren in bestehende 3072-Collections
+    // (Drop-in fuer gemini-embedding-2). 0/unset = unveraendert.
+    this.targetDim = Number(process.env.EMBEDDING_TARGET_DIM) || 0;
   }
 
   /**
@@ -134,7 +141,25 @@ export class OllamaEmbeddingProvider implements EmbeddingProvider {
     }
 
     const data = (await response.json()) as OllamaEmbeddingResponse;
-    return data.embedding;
+    return this.applyTargetDim(data.embedding);
+  }
+
+  /**
+   * MRL-Truncation: kuerzt den Vektor auf targetDim (die ersten N Dimensionen —
+   * bei MRL-trainierten Modellen wie Qwen3 die informationsdichtesten) und
+   * normalisiert auf Laenge 1 (korrekte Cosine-Similarity). No-op wenn targetDim
+   * unset/0 oder der Vektor bereits <= targetDim ist.
+   */
+  private applyTargetDim(vec: number[]): number[] {
+    if (!this.targetDim || this.targetDim <= 0 || vec.length <= this.targetDim) {
+      return vec;
+    }
+    const truncated = vec.slice(0, this.targetDim);
+    let sumSq = 0;
+    for (const x of truncated) sumSq += x * x;
+    const norm = Math.sqrt(sumSq);
+    if (norm === 0) return truncated;
+    return truncated.map(x => x / norm);
   }
 
   /**
