@@ -125,30 +125,52 @@ export class OllamaEmbeddingProvider implements EmbeddingProvider {
       await this.ensureModel();
     }
 
-    // Input-Cap: Ollama laedt das Embedding-Modell mit begrenztem num_ctx (Default
-    // 4096). Laengere Inputs -> HTTP 500 "input length exceeds the context length".
-    // Defensiv kappen (deckt auch ungechunkte Calls wie checkErrorPatterns ab),
-    // damit ueberlanger Text wenigstens auf seinem Anfang embedded wird statt zu failen.
-    const maxChars = Number(process.env.EMBEDDING_MAX_INPUT_CHARS) || 12000;
-    const input = text.length > maxChars ? text.slice(0, maxChars) : text;
+    // num_ctx anheben: Ollama laedt Embedding-Modelle per Default mit nur 4096
+    // Token. Lange Memories/Thoughts/Chunks sprengen das ("input length exceeds
+    // the context length" -> HTTP 500). Wir setzen num_ctx (Default 8192) direkt
+    // in der Anfrage, damit auch langer Text KOMPLETT embedded wird statt zu failen.
+    const numCtx = Number(process.env.EMBEDDING_NUM_CTX) || 8192;
+    // Sichere Stueckgroesse: garantiert < numCtx Token selbst bei sehr dichtem
+    // Text (~2 Zeichen/Token), mit Marge.
+    const maxChars = Number(process.env.EMBEDDING_MAX_INPUT_CHARS) || (numCtx * 2 - 384);
 
+    // Passt in einen Pass → direkt embedden.
+    if (text.length <= maxChars) {
+      return this.applyTargetDim(await this.embedRaw(text, numCtx));
+    }
+
+    // Zu lang → in Stuecke splitten, jedes embedden, Vektoren mitteln (mean-pooling)
+    // + renormalisieren. So geht KEIN Content verloren (statt zu truncaten) und der
+    // Kontext wird nie gesprengt — egal wie lang der Text ist (Memory/Thoughts/Docs).
+    const vectors: number[][] = [];
+    for (let i = 0; i < text.length; i += maxChars) {
+      vectors.push(await this.embedRaw(text.slice(i, i + maxChars), numCtx));
+    }
+    const dim = vectors[0].length;
+    const mean = new Array<number>(dim).fill(0);
+    for (const v of vectors) {
+      for (let j = 0; j < dim; j++) mean[j] += v[j];
+    }
+    for (let j = 0; j < dim; j++) mean[j] /= vectors.length;
+    return this.applyTargetDim(mean);
+  }
+
+  /** Ein einzelner Embed-Call an Ollama (mit num_ctx). Ohne Dim-Truncation. */
+  private async embedRaw(text: string, numCtx: number): Promise<number[]> {
     const response = await fetch(`${this.baseUrl}/api/embeddings`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         model: this.model,
-        prompt: input,
+        prompt: text,
+        options: { num_ctx: numCtx },
       }),
     });
-
     if (!response.ok) {
       throw new Error(`Ollama Fehler: ${response.status} ${response.statusText}`);
     }
-
     const data = (await response.json()) as OllamaEmbeddingResponse;
-    return this.applyTargetDim(data.embedding);
+    return data.embedding;
   }
 
   /**
