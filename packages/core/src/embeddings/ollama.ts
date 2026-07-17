@@ -125,6 +125,13 @@ export class OllamaEmbeddingProvider implements EmbeddingProvider {
       await this.ensureModel();
     }
 
+    // Input-Cap: Ollama laedt das Embedding-Modell mit begrenztem num_ctx (Default
+    // 4096). Laengere Inputs -> HTTP 500 "input length exceeds the context length".
+    // Defensiv kappen (deckt auch ungechunkte Calls wie checkErrorPatterns ab),
+    // damit ueberlanger Text wenigstens auf seinem Anfang embedded wird statt zu failen.
+    const maxChars = Number(process.env.EMBEDDING_MAX_INPUT_CHARS) || 12000;
+    const input = text.length > maxChars ? text.slice(0, maxChars) : text;
+
     const response = await fetch(`${this.baseUrl}/api/embeddings`, {
       method: 'POST',
       headers: {
@@ -132,7 +139,7 @@ export class OllamaEmbeddingProvider implements EmbeddingProvider {
       },
       body: JSON.stringify({
         model: this.model,
-        prompt: text,
+        prompt: input,
       }),
     });
 
