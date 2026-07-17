@@ -1137,6 +1137,38 @@ const OUTPUT_EXTRAS: Record<string, { props?: Record<string, unknown>; example?:
     props: { workspaces: { type: 'array', items: { type: 'object' } } },
     example: { success: true, workspaces: [{ project: 'synapse', status: 'active', pinned: false }] },
   },
+  proposal: {
+    props: { proposals: { type: 'array', items: { type: 'object' } }, count: { type: 'number' }, message: { type: 'string' } },
+    example: { success: true, count: 3, proposals: [{ id: 'uuid', filePath: 'src/x.ts', description: '...', author: 'agentA', status: 'pending', tags: ['refactor'], createdAt: '2026-05-02T16:39:39Z' }] },
+  },
+  specialist: {
+    props: { wrappers: { type: 'object' }, supportedModels: { type: 'array', items: { type: 'object' } }, daemons: { type: 'array', items: { type: 'object' } }, specialists: { type: 'array', items: { type: 'object' } }, message: { type: 'string' } },
+    example: { success: true, wrappers: { total: 65, active: 37 }, supportedModels: [{ alias: 'opus', provider: 'anthropic', context_window: 200000 }], message: '37 aktive Wrapper' },
+  },
+  docs: {
+    props: { results: { type: 'array', items: { type: 'object' } }, message: { type: 'string' } },
+    example: { success: true, results: [{ id: 'uuid', score: 0.72, framework: 'fastify', version: 'latest', section: 'JWT', content: '...', type: 'code-example', source: 'context7' }], message: '2 Tech-Docs gefunden' },
+  },
+  guide: {
+    props: { scope: { type: 'string' }, tool: { type: 'string' }, guide: { type: 'object' }, tip: { type: 'string' } },
+    example: { success: true, scope: 'tool', tool: 'files', guide: { summary: '...', when_to_use: '...', examples: ['files({ action: "create", ... })'], actions: {} } },
+  },
+  files_batch: {
+    props: { project: { type: 'string' }, count: { type: 'number' }, entries: { type: 'array', items: { type: 'object' } }, plan_id: { type: 'string' }, status: { type: 'string' } },
+    example: { success: true, project: 'synapse', count: 1, entries: [{ id: '6595', file_path: 'x.html', edit_action: 'create', agent_id: null, reason: '...', created_at: '2026-07-17T07:19:36Z' }] },
+  },
+  shell: {
+    props: { count: { type: 'number' }, jobs: { type: 'array', items: { type: 'object' } }, stream_id: { type: 'string' }, exit_code: { type: 'number' }, status: { type: 'string' } },
+    example: { success: true, count: 1, jobs: [{ id: 'uuid', command: 'docker build ...', status: 'done', exit_code: 0, tail: ['#12 DONE'], created_at: '2026-07-11T11:40:22Z' }] },
+  },
+  code_check: {
+    props: { patterns: { type: 'array', items: { type: 'object' } }, count: { type: 'number' } },
+    example: { success: true, count: 1, patterns: [{ id: 'uuid', description: '...', fix: '...', severity: 'warning', modelScope: 'all', foundBy: 'agentA' }] },
+  },
+  skills: {
+    props: { experimental: { type: 'boolean' }, count: { type: 'number' }, skills: { type: 'array', items: { type: 'object' } } },
+    example: { success: true, experimental: true, count: 159, skills: [{ skill_name: 'react:components', section_count: 13, sections: ['overview', 'pitfalls'] }] },
+  },
 };
 
 for (const _t of MCP_TOOLS as any[]) {
