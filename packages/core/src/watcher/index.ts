@@ -337,6 +337,7 @@ export function startFileWatcher(options: FileWatcherOptions): FileWatcherInstan
   // ═══ PG-Watcher: Externe Aenderungen aus PostgreSQL auf Festplatte synchen ═══
   let lastPgCheck = new Date(0).toISOString();
   let pgPollInterval: NodeJS.Timeout | null = null;
+  let pgPollBusy = false;  // Re-Entrancy-Guard: verhindert Ueberlappen langsamer Polls (OOM-Schutz)
 
   // Start PG-Watcher (async setup, doesn't block return)
   (async () => {
@@ -349,10 +350,17 @@ export function startFileWatcher(options: FileWatcherOptions): FileWatcherInstan
       const pool = getPool();
 
       pgPollInterval = setInterval(async () => {
+        if (pgPollBusy) return;  // vorheriger Poll laeuft noch → diesen Tick ueberspringen
+        pgPollBusy = true;
         try {
-          // 1. Changed/new files: PG content newer than local
+          // 1. Changed/new files: Kandidaten OHNE content laden — nur den Hash.
+          //    Der grosse content (inkl. Multi-MB-PDFs/Binaries) wird NICHT fuer
+          //    den ganzen Batch in den Speicher gezogen, sondern erst geholt wenn
+          //    eine Datei wirklich geschrieben werden muss. Alle Contents
+          //    gleichzeitig im Query-Result zu halten war der native-Buffer-
+          //    Treiber des OOM (RSS waechst ueber den JS-Heap-Cap hinaus).
           const changed = await pool.query(
-            `SELECT file_path, content, content_hash, updated_at
+            `SELECT file_path, content_hash, updated_at
              FROM code_files
              WHERE project = $1 AND updated_at > $2
                AND content IS NOT NULL AND deleted_at IS NULL`,
@@ -361,6 +369,10 @@ export function startFileWatcher(options: FileWatcherOptions): FileWatcherInstan
 
           for (const row of changed.rows) {
             const relativePath: string = row.file_path;
+            // Ignore-Regeln auch auf PG→FS anwenden — sonst synct/loopt der Poller
+            // .gitignore/.synapseignore-Dateien (war Ursache der README.md-
+            // Endlosschleife bei Rows, die vor dem Ignore-Eintrag ingestiert wurden).
+            if (shouldIgnore(ig, relativePath)) continue;
             // BUGFIX 2026-05-07 (unlink-bootstrap-race): wenn fuer dieses File
             // ein chokidar-unlink-Event pending ist (User hat gerade rm/mv
             // gemacht, Debounce 1500ms laeuft noch), darf der PG-Watcher es
@@ -372,24 +384,33 @@ export function startFileWatcher(options: FileWatcherOptions): FileWatcherInstan
               continue;
             }
             const filePath = path.join(projectPath, relativePath);  // absolut rekonstruieren
+            const exists = fs.existsSync(filePath);
             let localHash: string | null = null;
-            if (fs.existsSync(filePath)) {
+            if (exists) {
               localHash = crypto.createHash('sha256').update(fs.readFileSync(filePath, 'utf-8')).digest('hex');
             }
-            if (localHash !== row.content_hash) {
-              // Nur ueberschreiben wenn DB neuer als Disk (oder Disk existiert nicht)
-              if (fs.existsSync(filePath)) {
-                const diskMtime = fs.statSync(filePath).mtimeMs;
-                const dbUpdatedAt = new Date(row.updated_at).getTime();
-                if (diskMtime > dbUpdatedAt) {
-                  console.error(`[Synapse] PG→FS Skip (Disk neuer): ${path.basename(filePath)}`);
-                  continue;
-                }
+            if (localHash === row.content_hash) continue;  // konvergiert → nichts zu tun
+            // Nur ueberschreiben wenn DB neuer als Disk (oder Disk existiert nicht)
+            if (exists) {
+              const diskMtime = fs.statSync(filePath).mtimeMs;
+              const dbUpdatedAt = new Date(row.updated_at).getTime();
+              if (diskMtime > dbUpdatedAt) {
+                console.error(`[Synapse] PG→FS Skip (Disk neuer): ${path.basename(filePath)}`);
+                continue;
               }
-              fs.mkdirSync(path.dirname(filePath), { recursive: true });
-              fs.writeFileSync(filePath, row.content, 'utf-8');
-              console.error(`[Synapse] PG→FS Sync: ${path.basename(filePath)}`);
             }
+            // Content erst JETZT holen — nur fuer die wenigen Rows die wirklich
+            // geschrieben werden, nicht fuer den ganzen Batch.
+            const contentRes = await pool.query(
+              `SELECT content FROM code_files
+               WHERE project = $1 AND file_path = $2 AND deleted_at IS NULL`,
+              [projectName, relativePath]
+            );
+            const content: string | undefined = contentRes.rows[0]?.content;
+            if (content == null) continue;
+            fs.mkdirSync(path.dirname(filePath), { recursive: true });
+            fs.writeFileSync(filePath, content, 'utf-8');
+            console.error(`[Synapse] PG→FS Sync: ${path.basename(filePath)}`);
           }
 
           // 2. Soft-deleted files
@@ -423,6 +444,8 @@ export function startFileWatcher(options: FileWatcherOptions): FileWatcherInstan
           }
         } catch {
           // PG not reachable — ignore, next poll will retry
+        } finally {
+          pgPollBusy = false;  // Poll fertig → naechster Tick darf laufen
         }
       }, 2000);
     } catch {

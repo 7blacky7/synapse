@@ -52,7 +52,7 @@ type ChannelsResponse struct {
 // Workspace = ein Container-Workspace auf der synapse-api (siehe project_workspaces Tabelle).
 type Workspace struct {
 	Project     string `json:"project"`
-	Status      string `json:"status"`       // active | warming | cold | stopping | error (project_workspaces.status)
+	Status      string `json:"status"` // active | warming | cold | stopping | error (project_workspaces.status)
 	Pinned      bool   `json:"pinned"`
 	ContainerId string `json:"container_id"`
 }
@@ -70,18 +70,18 @@ type ProjectMenuHandles struct {
 }
 
 var (
-	myApp                  fyne.App
-	menuMutex              sync.Mutex
-	projects               []Project
-	connected              bool
-	port                   int
-	sseActive              atomic.Bool
-	refreshChan            = make(chan struct{}, 1)
-	stopChan               = make(chan struct{})
-	lastProjectSignature   string
-	wasOnline              bool
-	projectHandles         = make(map[string]*ProjectMenuHandles)
-	statusItem             *systray.MenuItem
+	myApp                fyne.App
+	menuMutex            sync.Mutex
+	projects             []Project
+	connected            bool
+	port                 int
+	sseActive            atomic.Bool
+	refreshChan          = make(chan struct{}, 1)
+	stopChan             = make(chan struct{})
+	lastProjectSignature string
+	wasOnline            bool
+	projectHandles       = make(map[string]*ProjectMenuHandles)
+	statusItem           *systray.MenuItem
 
 	// synapse-api (Workspaces)
 	synapseApiUrl          string
@@ -90,45 +90,52 @@ var (
 	lastWorkspaceSignature string
 	nextWorkspacePoll      time.Time
 
+	// Channels: Rebuild-Trigger. Ohne das erscheinen neu angelegte Channels
+	// erst nach manuellem "Neu laden", weil getProjectSignature nur Projektnamen
+	// hasht (Channels waren im Trigger unsichtbar).
+	lastChannelSignature string
+	currentChannelSig    string
+	nextChannelPoll      time.Time
+
 	// DB connection
-	db                     *sql.DB
-	dbErr                  error
+	db    *sql.DB
+	dbErr error
 
 	// Window tracking
-	openWindows            = make(map[string]*DetailWindow)
-	windowLock             sync.Mutex
-	openChats              = make(map[string]*ChatWindow)
-	chatLock               sync.Mutex
+	openWindows = make(map[string]*DetailWindow)
+	windowLock  sync.Mutex
+	openChats   = make(map[string]*ChatWindow)
+	chatLock    sync.Mutex
 )
 
 // DetailWindow represents the main detail tabs for a project
 type DetailWindow struct {
-	Window       fyne.Window
-	ProjectName  string
-	AgentTable   *widget.Table
-	AgentRows    [][]string
-	EventTable   *widget.Table
-	EventRows    [][]string
-	FilterEntry  *widget.Entry
-	PathLabel    *widget.Label
-	ActiveLabel  *widget.Label
-	ChunksLabel  *widget.Label
-	FilesLabel   *widget.Label
+	Window      fyne.Window
+	ProjectName string
+	AgentTable  *widget.Table
+	AgentRows   [][]string
+	EventTable  *widget.Table
+	EventRows   [][]string
+	FilterEntry *widget.Entry
+	PathLabel   *widget.Label
+	ActiveLabel *widget.Label
+	ChunksLabel *widget.Label
+	FilesLabel  *widget.Label
 }
 
 // ChatWindow represents the channel chat window
 type ChatWindow struct {
-	Window       fyne.Window
-	ProjectName  string
-	ChannelName  string
+	Window        fyne.Window
+	ProjectName   string
+	ChannelName   string
 	MessageBox    *fyne.Container
 	MessageScroll *container.Scroll
-	LastMsgID    int64
-	AgentTable   *widget.Table
-	AgentRows    [][]string
-	InputEntry   *widget.Entry
-	loadingMsgs  atomic.Bool
-	loadingAgs   atomic.Bool
+	LastMsgID     int64
+	AgentTable    *widget.Table
+	AgentRows     [][]string
+	InputEntry    *widget.Entry
+	loadingMsgs   atomic.Bool
+	loadingAgs    atomic.Bool
 }
 
 func main() {
@@ -442,7 +449,7 @@ func toggleProject(name string, currentlyEnabled bool) {
 	// 1. ZUERST frischen State holen
 	uStatus := fmt.Sprintf("http://127.0.0.1:%d/projects/%s/status", port, url.QueryEscape(name))
 	client := &http.Client{Timeout: 1 * time.Second}
-	
+
 	enabled := currentlyEnabled
 	respStatus, err := client.Get(uStatus)
 	if err != nil {
@@ -554,6 +561,30 @@ func getProjectSignature(projs []Project) string {
 	}
 	// Sign with sorting to keep signature stable
 	return strings.Join(names, "|")
+}
+
+// getChannelSignature holt fuer jedes Projekt die Channel-Liste und baut daraus
+// eine Signatur. Aendert sie sich (neuer/geloeschter Channel), loest refresh()
+// einen Menue-Rebuild aus — sonst erschienen neue Channels erst nach manuellem
+// "Neu laden".
+func getChannelSignature(projs []Project, p int) string {
+	client := &http.Client{Timeout: 1 * time.Second}
+	parts := make([]string, 0, len(projs))
+	for _, proj := range projs {
+		channelsUrl := fmt.Sprintf("http://127.0.0.1:%d/projects/%s/channels", p, url.QueryEscape(proj.Name))
+		var names []string
+		if chResp, err := client.Get(channelsUrl); err == nil {
+			var chData ChannelsResponse
+			if json.NewDecoder(chResp.Body).Decode(&chData) == nil {
+				for _, ch := range chData.Channels {
+					names = append(names, ch.Name)
+				}
+			}
+			chResp.Body.Close()
+		}
+		parts = append(parts, proj.Name+"#"+strings.Join(names, ","))
+	}
+	return strings.Join(parts, "|")
 }
 
 func rebuildMenu(projs []Project) {
@@ -738,6 +769,7 @@ func rebuildMenu(projs []Project) {
 
 	lastProjectSignature = getProjectSignature(projs)
 	lastWorkspaceSignature = getWorkspaceSignature(workspaces, workspacesAvailable)
+	lastChannelSignature = currentChannelSig
 	wasOnline = connected
 }
 
@@ -748,9 +780,12 @@ func refresh() {
 	port = readPort()
 
 	u := fmt.Sprintf("http://127.0.0.1:%d/projects", port)
-	client := &http.Client{Timeout: 1 * time.Second}
+	// 3s statt 1s: waehrend der Daemon kurz beschaeftigt ist (Initial-Scan,
+	// GC-Pause) soll die Online-Probe nicht in den Timeout laufen und faelschlich
+	// OFFLINE flackern. Ein wirklich toter Daemon antwortet gar nicht → schnell offline.
+	client := &http.Client{Timeout: 3 * time.Second}
 	resp, err := client.Get(u)
-	
+
 	var projs []Project
 	if err != nil {
 		connected = false
@@ -786,10 +821,18 @@ func refresh() {
 	}
 	wsSig := getWorkspaceSignature(workspaces, workspacesAvailable)
 
+	// Channels gedrosselt pollen (alle 5s) — damit neu angelegte Channels einen
+	// Rebuild ausloesen, ohne dass refresh() (1s-Takt) die API mit N Calls/s flutet.
+	if connected && time.Now().After(nextChannelPoll) {
+		currentChannelSig = getChannelSignature(projs, port)
+		nextChannelPoll = time.Now().Add(5 * time.Second)
+	}
+
 	sig := getProjectSignature(projs)
 
-	// Fall 1: Online status changed OR projects set changed OR workspaces changed -> Full rebuild
-	if connected != wasOnline || sig != lastProjectSignature || wsSig != lastWorkspaceSignature {
+	// Fall 1: Online-Status ODER Projekt-Set ODER Workspaces ODER Channel-Set
+	//         geaendert -> Full rebuild
+	if connected != wasOnline || sig != lastProjectSignature || wsSig != lastWorkspaceSignature || currentChannelSig != lastChannelSignature {
 		rebuildMenu(projs)
 		return
 	}
