@@ -288,6 +288,8 @@ export type CommitBatchResult =
       batch_id: string;
       committed: number;
       files: Array<{ file_path: string; size: number; hash: string; created: boolean; deleted?: boolean }>;
+      embeddings_pending?: boolean;
+      embeddings_hint?: string;
     }
   | {
       success: false;
@@ -852,6 +854,16 @@ export async function commitBatch(args: {
     batch_id: args.plan_id,
     committed: writtenFiles.length,
     files: writtenFiles,
+    // Nicht-blockierender Hinweis: committete Dateien werden noch embedded.
+    ...(writtenFiles.some(f => !f.deleted)
+      ? {
+          embeddings_pending: true,
+          embeddings_hint:
+            'Struktur/Symbole (code_intel) sind sofort nutzbar. Die semantische Suche (Embeddings) ' +
+            'spiegelt diese Aenderung noch nicht — laeuft im Hintergrund nach. Kein Blocker: warten ' +
+            'oder mit etwas anderem weiterarbeiten; nicht extra danach suchen.',
+        }
+      : {}),
   };
 }
 

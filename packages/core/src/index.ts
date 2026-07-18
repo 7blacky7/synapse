@@ -146,6 +146,9 @@ export {
   backfillCodeFiles,
   parseUnparsedFiles,
   linkCrossFileReferences,
+  getEmbeddingPending,
+  embeddingPendingHint,
+  EMBEDDING_PENDING_HINT,
   // Media
   indexMediaFile,
   indexMediaDirectory,

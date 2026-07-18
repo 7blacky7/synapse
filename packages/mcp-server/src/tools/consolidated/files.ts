@@ -30,6 +30,7 @@ import {
   cancelBatch,
   getBatchPlan,
   resolveAgentId,
+  embeddingPendingHint,
 } from '@synapse/core';
 import type { BatchEdit, FileBatchOp } from '@synapse/core';
 
@@ -427,6 +428,10 @@ export const filesTool: ConsolidatedTool = {
           // Docs-Check darf Write nicht blockieren
         }
       }
+      // Nicht-blockierender Embedding-Lag-Hinweis (Symbole sofort da, Vektoren laden nach).
+      try {
+        Object.assign(response, await embeddingPendingHint(project, filePath));
+      } catch { /* Hinweis darf Write nicht blockieren */ }
       return response;
     }
 
@@ -464,6 +469,7 @@ export const filesTool: ConsolidatedTool = {
           file_path: filePath,
           size: rawContent.length,
           ...ranged,
+          ...(await embeddingPendingHint(project, filePath)),
         };
       }
 
@@ -478,7 +484,7 @@ export const filesTool: ConsolidatedTool = {
           newPath = toRelativePath(projectRootPath, newPath);
         }
         await moveFileInPg(project, filePath, newPath);
-        return { success: true, message: `Datei verschoben: "${filePath}" → "${newPath}"` };
+        return { success: true, message: `Datei verschoben: "${filePath}" → "${newPath}"`, ...(await embeddingPendingHint(project, newPath)) };
       }
 
       case 'copy': {
@@ -487,7 +493,7 @@ export const filesTool: ConsolidatedTool = {
           newPath = toRelativePath(projectRootPath, newPath);
         }
         await copyFileInPg(project, filePath, newPath);
-        return { success: true, message: `Datei kopiert: "${filePath}" → "${newPath}"` };
+        return { success: true, message: `Datei kopiert: "${filePath}" → "${newPath}"`, ...(await embeddingPendingHint(project, newPath)) };
       }
 
       case 'replace_lines': {

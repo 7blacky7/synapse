@@ -100,6 +100,7 @@ import {
   searchReplace,
   searchReplaceBatch,
   applyContentRange,
+  embeddingPendingHint,
   // File-Versionierung (Schritt 1)
   listFileVersions,
   getFileVersion,
@@ -3450,6 +3451,7 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
               hint: `${result.warnings.length} bekannte Fehler-Patterns matchen deinen Code`,
             };
           }
+          Object.assign(response, await embeddingPendingHint(project, filePath));
           return response;
         }
         case 'update': {
@@ -3463,6 +3465,7 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
               hint: `${result.warnings.length} bekannte Fehler-Patterns matchen deinen Code`,
             };
           }
+          Object.assign(response, await embeddingPendingHint(project, filePath));
           return response;
         }
         case 'delete': {
@@ -3472,12 +3475,12 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
         case 'move': {
           const newPath = reqStr(args, 'new_path');
           await moveFileInPg(project, filePath, newPath);
-          return { success: true, message: `Datei verschoben: "${filePath}" → "${newPath}"` };
+          return { success: true, message: `Datei verschoben: "${filePath}" → "${newPath}"`, ...(await embeddingPendingHint(project, newPath)) };
         }
         case 'copy': {
           const newPath = reqStr(args, 'new_path');
           await copyFileInPg(project, filePath, newPath);
-          return { success: true, message: `Datei kopiert: "${filePath}" → "${newPath}"` };
+          return { success: true, message: `Datei kopiert: "${filePath}" → "${newPath}"`, ...(await embeddingPendingHint(project, newPath)) };
         }
         case 'read': {
           const rawContent = await getFileContentFromPg(project, filePath);
@@ -3494,6 +3497,7 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
             file_path: filePath,
             size: rawContent.length,
             ...ranged,
+            ...(await embeddingPendingHint(project, filePath)),
           };
         }
         case 'replace_lines': {
@@ -3513,6 +3517,7 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
               hint: `${result.warnings.length} bekannte Fehler-Patterns matchen deinen Code`,
             };
           }
+          Object.assign(response, await embeddingPendingHint(project, filePath));
           return response;
         }
         case 'insert_after': {
@@ -3531,6 +3536,7 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
               hint: `${result.warnings.length} bekannte Fehler-Patterns matchen deinen Code`,
             };
           }
+          Object.assign(response, await embeddingPendingHint(project, filePath));
           return response;
         }
         case 'delete_lines': {
@@ -3549,6 +3555,7 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
               hint: `${result.warnings.length} bekannte Fehler-Patterns matchen deinen Code`,
             };
           }
+          Object.assign(response, await embeddingPendingHint(project, filePath));
           return response;
         }
         case 'search_replace': {
@@ -3567,6 +3574,7 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
               hint: `${result.warnings.length} bekannte Fehler-Patterns matchen deinen Code`,
             };
           }
+          Object.assign(response, await embeddingPendingHint(project, filePath));
           return response;
         }
         case 'search_replace_batch': {
@@ -3597,6 +3605,7 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
               hint: `${result.warnings.length} bekannte Fehler-Patterns matchen deinen Code`,
             };
           }
+          Object.assign(response, await embeddingPendingHint(project, filePath));
           return response;
         }
         default:
