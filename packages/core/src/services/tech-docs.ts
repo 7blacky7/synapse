@@ -388,10 +388,16 @@ export async function deleteTechDoc(
   id: string,
   project?: string
 ): Promise<{ success: boolean; warning?: string }> {
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
+    return { success: false, warning: `Ungueltige Tech-Doc-ID "${id}" — vollstaendige UUID erwartet (kein Praefix-Match)` };
+  }
   // 1. PostgreSQL (Write-Primary)
   const pool = getPool();
   try {
-    await pool.query('DELETE FROM tech_docs WHERE id = $1', [id]);
+    const delRes = await pool.query('DELETE FROM tech_docs WHERE id = $1', [id]);
+    if (delRes.rowCount === 0) {
+      return { success: false, warning: `Kein Tech-Doc mit id "${id}" gefunden — nichts geloescht` };
+    }
   } catch (error) {
     console.error('[Synapse TechDocs] PostgreSQL DELETE fehlgeschlagen:', error);
     return { success: false, warning: `DB-Fehler beim Loeschen: ${error}` };
@@ -430,6 +436,9 @@ export async function updateTechDoc(
   },
   project?: string
 ): Promise<{ success: boolean; message: string; warning?: string }> {
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
+    return { success: false, message: `Ungueltige Tech-Doc-ID "${id}" — vollstaendige UUID erwartet (kein Praefix-Match)` };
+  }
   const pool = getPool();
 
   // 1. Bestehenden Datensatz laden (fuer nicht geaenderte Felder + Merge)
