@@ -70,6 +70,8 @@ import {
   addTechDoc,
   searchTechDocs,
   getDocsForFile,
+  deleteTechDoc,
+  updateTechDoc,
   // Code Intelligence
   getProjectTree,
   getFunctions,
@@ -637,8 +639,8 @@ const MCP_TOOLS = [
       properties: {
         action: {
           type: 'string',
-          enum: ['add', 'search', 'get_for_file'],
-          description: 'Aktion: add (Indexieren), search (Suchen), get_for_file (Wissens-Airbag)',
+          enum: ['add', 'search', 'get_for_file', 'update', 'delete'],
+          description: 'Aktion: add (Indexieren), search (Suchen), get_for_file (Wissens-Airbag), update (Tech-Doc aktualisieren), delete (Tech-Doc loeschen)',
         },
         framework: { type: 'string', description: 'Framework/Sprache (z.B. react, python, express); bei get_for_file: optionaler Framework-Filter' },
         version: { type: 'string', description: 'Version (z.B. 19.0, 3.12)' },
@@ -663,6 +665,7 @@ const MCP_TOOLS = [
         },
         agent_id: { type: 'string', description: 'Agent-ID fuer Cutoff-Ermittlung' },
         project: { type: 'string', description: 'Projekt-Name (optional)' },
+        id: { type: 'string', description: 'Tech-Doc-ID (Pflicht fuer update/delete; stammt aus docs search)' },
         docs: {
           type: 'array',
           description: 'Bulk-Mode fuer add: 1..50 Tech-Docs in einem Call. Jedes Item: { framework, version, section, content, type, category?, source? }. project gilt fuer alle. Best-effort.',
@@ -2915,6 +2918,25 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
           }
           const result = await getDocsForFile(reqStr(args, 'file_path'), agentId, project);
           return { success: true, ...result };
+        }
+        case 'update': {
+          const id = reqStr(args, 'id');
+          const project = str(args, 'project');
+          const updates: Record<string, string> = {};
+          const f = str(args, 'framework'); if (f !== undefined) updates.framework = f;
+          const v = str(args, 'version'); if (v !== undefined) updates.version = v;
+          const s = str(args, 'section'); if (s !== undefined) updates.section = s;
+          const c = str(args, 'content'); if (c !== undefined) updates.content = c;
+          const t = str(args, 'type'); if (t !== undefined) updates.type = t;
+          const cat = str(args, 'category'); if (cat !== undefined) updates.category = cat;
+          const result = await updateTechDoc(id, updates as unknown as Parameters<typeof updateTechDoc>[1], project);
+          return result;
+        }
+        case 'delete': {
+          const id = reqStr(args, 'id');
+          const project = str(args, 'project');
+          const result = await deleteTechDoc(id, project);
+          return { success: result.success, message: `Tech-Doc "${id}" geloescht`, warning: result.warning };
         }
         default:
           return { success: false, error: `Unbekannte docs action: "${action}"` };

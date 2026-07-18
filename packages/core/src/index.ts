@@ -270,6 +270,7 @@ export {
   searchTechDocs,
   getDocsForFile,
   deleteTechDoc,
+  updateTechDoc,
   // Events
   emitEvent,
   acknowledgeEvent,

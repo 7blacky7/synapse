@@ -6,6 +6,8 @@ import {
   addTechDoc as coreAddTechDoc,
   searchTechDocs as coreSearchTechDocs,
   getDocsForFile as coreGetDocsForFile,
+  deleteTechDoc as coreDeleteTechDoc,
+  updateTechDoc as coreUpdateTechDoc,
 } from '@synapse/core';
 import type { TechDocType } from '@synapse/core';
 
@@ -73,7 +75,8 @@ export async function searchTechDocsTool(
 export async function getDocsForFileTool(
   filePath: string,
   agentId: string,
-  project: string
+  project: string,
+  opts?: { limit?: number; frameworks?: string[] }
 ): Promise<{
   success: boolean;
   warnings: Array<{ framework: string; version: string; docs: Array<{ section: string; type: string; content: string }> }>;
@@ -81,7 +84,7 @@ export async function getDocsForFileTool(
   message: string;
 }> {
   try {
-    const result = await coreGetDocsForFile(filePath, agentId, project);
+    const result = await coreGetDocsForFile(filePath, agentId, project, opts);
 
     if (result.warnings.length === 0) {
       return {
@@ -102,4 +105,33 @@ export async function getDocsForFileTool(
   } catch (error) {
     return { success: false, warnings: [], agentCutoff: null, message: `Fehler: ${error}` };
   }
+}
+
+/**
+ * Aktualisiert ein bestehendes Tech-Doc (nur uebergebene Felder). Loest bei
+ * Content-/Metadaten-Aenderung ein Qdrant-Re-Embed aus.
+ */
+export async function updateTechDocTool(
+  id: string,
+  updates: {
+    framework?: string;
+    version?: string;
+    section?: string;
+    content?: string;
+    type?: TechDocType;
+    category?: string;
+  },
+  project?: string
+): Promise<{ success: boolean; message: string; warning?: string }> {
+  return coreUpdateTechDoc(id, updates, project);
+}
+
+/**
+ * Loescht ein einzelnes Tech-Doc (PostgreSQL + Qdrant) anhand seiner id.
+ */
+export async function deleteTechDocTool(
+  id: string,
+  project?: string
+): Promise<{ success: boolean; warning?: string }> {
+  return coreDeleteTechDoc(id, project);
 }

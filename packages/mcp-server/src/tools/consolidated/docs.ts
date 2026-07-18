@@ -12,6 +12,8 @@ import {
   addTechDocTool,
   searchTechDocsTool,
   getDocsForFileTool,
+  updateTechDocTool,
+  deleteTechDocTool,
 } from '../tech-docs.js';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import { resolveAgentId } from '@synapse/core';
@@ -25,8 +27,8 @@ export const docsTool: ConsolidatedTool = {
       properties: {
         action: {
           type: 'string',
-          enum: ['add', 'search', 'get_for_file'],
-          description: 'Aktion: add (Indexieren), search (Suchen), get_for_file (Wissens-Airbag)',
+          enum: ['add', 'search', 'get_for_file', 'update', 'delete'],
+          description: 'Aktion: add (Indexieren), search (Suchen), get_for_file (Wissens-Airbag), update (Tech-Doc aktualisieren), delete (Tech-Doc loeschen)',
         },
         // ===== ACTION: add =====
         framework: {
@@ -95,6 +97,11 @@ export const docsTool: ConsolidatedTool = {
         agent_id: {
           type: 'string',
           description: 'Agent-ID fuer Cutoff-Ermittlung',
+        },
+        // ===== ACTION: update / delete =====
+        id: {
+          type: 'string',
+          description: 'Tech-Doc-ID (Pflicht fuer update/delete; stammt aus docs search)',
         },
         // ===== GEMEINSAM =====
         project: {
@@ -282,6 +289,27 @@ export const docsTool: ConsolidatedTool = {
           agentCutoff: result.agentCutoff,
           message: result.message,
         };
+      }
+
+      case 'update': {
+        const id = reqStr(args, 'id');
+        const project = str(args, 'project');
+        const updates: Record<string, string> = {};
+        const f = str(args, 'framework'); if (f !== undefined) updates.framework = f;
+        const v = str(args, 'version'); if (v !== undefined) updates.version = v;
+        const s = str(args, 'section'); if (s !== undefined) updates.section = s;
+        const c = str(args, 'content'); if (c !== undefined) updates.content = c;
+        const t = str(args, 'type'); if (t !== undefined) updates.type = t;
+        const cat = str(args, 'category'); if (cat !== undefined) updates.category = cat;
+        const result = await updateTechDocTool(id, updates as unknown as Parameters<typeof updateTechDocTool>[1], project);
+        return result;
+      }
+
+      case 'delete': {
+        const id = reqStr(args, 'id');
+        const project = str(args, 'project');
+        const result = await deleteTechDocTool(id, project);
+        return { success: result.success, message: `Tech-Doc "${id}" geloescht`, warning: result.warning };
       }
 
       default:

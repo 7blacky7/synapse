@@ -410,3 +410,91 @@ export async function deleteTechDoc(
   console.error(`[Synapse TechDocs] Doc "${id}" geloescht`);
   return { success: true, warning };
 }
+
+/**
+ * Aktualisiert ein bestehendes Tech-Doc in PostgreSQL + Qdrant.
+ * Nur uebergebene Felder werden geaendert (Merge mit dem Bestand); jede
+ * Aenderung loest ein Qdrant-Re-Embed aus (Upsert ueberschreibt den Punkt bei
+ * gleicher id). indexed_at wird neu gesetzt, damit der Wissens-Airbag die
+ * Aktualisierung als "neuer als Cutoff" erkennt.
+ */
+export async function updateTechDoc(
+  id: string,
+  updates: {
+    framework?: string;
+    version?: string;
+    section?: string;
+    content?: string;
+    type?: TechDocType;
+    category?: string;
+  },
+  project?: string
+): Promise<{ success: boolean; message: string; warning?: string }> {
+  const pool = getPool();
+
+  // 1. Bestehenden Datensatz laden (fuer nicht geaenderte Felder + Merge)
+  let existing;
+  try {
+    existing = await pool.query(
+      'SELECT framework, version, section, content, type, category, source FROM tech_docs WHERE id = $1',
+      [id]
+    );
+  } catch (error) {
+    console.error('[Synapse TechDocs] PostgreSQL SELECT (update) fehlgeschlagen:', error);
+    return { success: false, message: `DB-Fehler beim Laden: ${error}` };
+  }
+  if (existing.rows.length === 0) {
+    return { success: false, message: `Tech-Doc "${id}" nicht gefunden` };
+  }
+  const cur = existing.rows[0];
+
+  // 2. Felder mergen (nur uebergebene ueberschreiben)
+  const framework = (updates.framework ?? cur.framework).toLowerCase();
+  const version = updates.version ?? cur.version;
+  const section = updates.section ?? cur.section;
+  const content = updates.content ?? cur.content;
+  const type = updates.type ?? cur.type;
+  const category = updates.category ?? cur.category;
+  const source = cur.source;
+  const contentHash = createHash('sha256').update(content).digest('hex');
+  const now = new Date().toISOString();
+
+  // 3. PostgreSQL (Source of Truth)
+  try {
+    await pool.query(
+      `UPDATE tech_docs
+       SET framework = $2, version = $3, section = $4, content = $5,
+           type = $6, category = $7, content_hash = $8, indexed_at = $9
+       WHERE id = $1`,
+      [id, framework, version, section, content, type, category, contentHash, now]
+    );
+  } catch (error) {
+    console.error('[Synapse TechDocs] PostgreSQL UPDATE fehlgeschlagen:', error);
+    return { success: false, message: `DB-Fehler beim Aktualisieren: ${error}` };
+  }
+
+  // 4. Qdrant Re-Embed (Upsert ueberschreibt den Punkt bei gleicher id)
+  let warning: string | undefined;
+  try {
+    const collectionName = project ? COLLECTIONS.projectDocs(project) : COLLECTIONS.techDocs;
+    await ensureCollection(collectionName);
+    const vector = await embed(`${framework} ${version} ${section} ${content}`);
+    await insertVector(collectionName, vector, {
+      framework,
+      version,
+      section,
+      content,
+      type,
+      category,
+      source,
+      content_hash: contentHash,
+      indexed_at: now,
+    }, id);
+  } catch (error) {
+    console.error('[Synapse TechDocs] Qdrant-Update fehlgeschlagen:', error);
+    warning = `Qdrant-Update fehlgeschlagen: ${error}`;
+  }
+
+  console.error(`[Synapse TechDocs] Doc "${id}" aktualisiert`);
+  return { success: true, message: `Tech-Doc "${id}" aktualisiert`, warning };
+}
