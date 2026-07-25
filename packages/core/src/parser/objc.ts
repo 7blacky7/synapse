@@ -151,7 +151,10 @@ class ObjcParser implements LanguageParser {
   language = 'objc';
   extensions = ['.m', '.mm'];
   /** Bei inhaltlichen Parser-Aenderungen erhoehen (siehe LanguageParser.version). */
-  version = 1;
+  /**
+   * 2 = reine C-Funktionen werden erfasst, nicht mehr nur Methoden mit +/-.
+   */
+  version = 2;
 
   parse(content: string, filePath: string): ParseResult {
     const symbols: ParsedSymbol[] = [];
@@ -290,6 +293,43 @@ class ObjcParser implements LanguageParser {
         return_type: propType,
         line_start: lineAt(content, m.index),
         is_exported: !/\breadonly\b/.test(attrs) || true,
+      });
+    }
+
+    // ══════════════════════════════════════════════
+    // 6b. Reine C-Funktionen
+    // ══════════════════════════════════════════════
+    // Eine .m-Datei ist C mit Objective-C-Erweiterungen. Ohne diesen Zweig
+    // erfasst der Parser AUSSCHLIESSLICH Methoden mit + oder - und uebersieht
+    // jede gewoehnliche C-Funktion. Belegt an moo_ui_host_effects_cocoa.m:
+    // 346 Zeilen mit drei sichtbaren static-Funktionen, im Index null Funktionen.
+    // Muster wie im C-Parser, inklusive der dortigen static-Erkennung.
+    const cFuncRe = /^((?:static|inline|extern|__attribute__\([^)]*\)\s*)*\s*)((?:const\s+)?(?:unsigned\s+|signed\s+|long\s+|short\s+)?(?:struct\s+)?\w[\w*\s]*?)\s+(\*?\w+)\s*\(([^)]*)\)\s*\{/gm;
+    while ((m = cFuncRe.exec(content)) !== null) {
+      const qualifiers = m[1].trim();
+      const returnType = m[2].trim();
+      const funcName = m[3].replace(/^\*/, '');
+      const paramsRaw = m[4];
+
+      // Kontrollfluss sieht wie ein Funktionskopf aus — "if (x) {" passt sonst.
+      if (['if', 'for', 'while', 'switch', 'return', 'else', 'do'].includes(returnType)) continue;
+      if (['if', 'for', 'while', 'switch'].includes(funcName)) continue;
+
+      const params = paramsRaw.trim() === 'void' || paramsRaw.trim() === '' ? [] : paramsRaw
+        .split(',')
+        .map(p => p.trim().split(/\s+/).pop()?.replace(/[*&]/g, '') || '')
+        .filter(p => p && p !== '...');
+
+      // static kann in den Qualifiern ODER im Rueckgabetyp stehen.
+      const istStatic = /\bstatic\b/.test(qualifiers) || /\bstatic\b/.test(returnType);
+
+      symbols.push({
+        symbol_type: 'function',
+        name: funcName,
+        params,
+        return_type: returnType,
+        line_start: lineAt(content, m.index),
+        is_exported: !istStatic,
       });
     }
 
