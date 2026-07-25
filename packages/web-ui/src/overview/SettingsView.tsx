@@ -2,6 +2,7 @@
 // 'Mein Wissen' ist jetzt ein eigener Tab (KnowledgeView). Tokens spaeter serverseitig VERSCHLUESSELT.
 import { useState, useRef } from 'react';
 import { useKiosTheme } from './useKiosTheme';
+import AgentRuntimeSection from './AgentRuntimeSection';
 import './tokens.css';
 import './Overview.css';
 
@@ -37,6 +38,8 @@ export default function SettingsView() {
     <div className="kios-root" data-theme={theme} style={{ overflowY: 'auto' }}>
       <div className="kios-settings">
         <h1 className="kios-settings-h1">Einstellungen</h1>
+
+        <AgentRuntimeSection />
 
         <section className="kios-cell">
           <span className="kios-stub-tag">Git-Tokens & Accounts — getrennt nach Kontext</span>

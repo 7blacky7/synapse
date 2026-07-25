@@ -648,6 +648,17 @@ export async function parseAndEmbed(project: string, filePath: string): Promise<
   }
   chunksClient.release();
 
+  // ENTKOPPLUNG (Embedding-Lag): Sobald Symbole + Chunks in PG stehen, ist die
+  // Datei strukturell fertig — code_intel (functions/symbols/statements) zeigt sie
+  // ab jetzt vollstaendig. parsed_at deshalb HIER setzen, NICHT erst nach dem
+  // langsamen embedBatch(). indexed_at (unten) markiert den Embedding-Abschluss.
+  if (parseSuccess) {
+    await pool.query(
+      `UPDATE code_files SET parsed_at = NOW() WHERE project = $1 AND file_path = $2`,
+      [project, filePath]
+    );
+  }
+
   // --- Embeddings generieren + in Qdrant einfuegen ---
   // SKIP wenn env SYNAPSE_SKIP_EMBEDDINGS=1 gesetzt — Parser-Symbole bleiben in PG,
   // aber kein Qdrant-Vektor-Update. Spart Embedding-API-Kosten bei Reparse-Iterationen.
@@ -688,10 +699,12 @@ export async function parseAndEmbed(project: string, filePath: string): Promise<
     );
   }
 
-  // code_files aktualisieren: parsed_at nur wenn Symbole erfolgreich geschrieben
+  // Embedding fertig (oder via SYNAPSE_SKIP_EMBEDDINGS uebersprungen) → indexed_at.
+  // parsed_at wurde bereits nach dem Chunk-Commit gesetzt (Entkopplung oben). Bei
+  // parseSuccess=false bleibt parsed_at NULL → Backlog-Query holt die Datei fuer
+  // einen Symbol-Retry.
   await pool.query(
-    `UPDATE code_files
-     SET ${parseSuccess ? 'parsed_at = NOW(),' : ''} indexed_at = NOW(), chunk_count = $3
+    `UPDATE code_files SET indexed_at = NOW(), chunk_count = $3
      WHERE project = $1 AND file_path = $2`,
     [project, filePath, chunks.length]
   );
@@ -711,14 +724,62 @@ export async function parseAndEmbed(project: string, filePath: string): Promise<
 // SELECTen + neue Workers starten, die dieselben Files doppelt parsen).
 const activeParseProjects = new Set<string>();
 
+/** Nicht-blockierender Hinweis-Text fuer aufrufende KIs. */
+export const EMBEDDING_PENDING_HINT =
+  'Struktur/Symbole (code_intel) sind sofort nutzbar. Die semantische Suche (Embeddings) ' +
+  'spiegelt diese Aenderung noch nicht — laeuft im Hintergrund nach. Kein Blocker: warten ' +
+  'oder mit etwas anderem weiterarbeiten; nicht extra danach suchen.';
+
+/**
+ * Live-Status: hinken die Embeddings (Qdrant-Vektoren) dem aktuellen Datei-Inhalt
+ * hinterher? true = Symbole/Struktur sind da, aber die semantische Suche spiegelt
+ * diese Version noch nicht (parseAndEmbed laeuft/steht aus). Signal: indexed_at
+ * fehlt ODER ist aelter als der letzte Content-Write (updated_at). Reiner Hinweis.
+ */
+export async function getEmbeddingPending(project: string, filePath: string): Promise<boolean> {
+  const pool = getPool();
+  try {
+    const r = await pool.query(
+      `SELECT (indexed_at IS NULL OR indexed_at < updated_at) AS pending
+         FROM code_files
+        WHERE project = $1 AND file_path = $2 AND content IS NOT NULL`,
+      [project, filePath]
+    );
+    return r.rows[0]?.pending === true;
+  } catch {
+    return false; // Status-Check darf nie eine File-Op kippen
+  }
+}
+
+/**
+ * Bequemer Wrapper: liefert das aufsteckbare Hinweis-Objekt oder {} (nicht pending).
+ * Nutzung in Tool-Handlern: Object.assign(response, await embeddingPendingHint(p, f)).
+ */
+export async function embeddingPendingHint(
+  project: string,
+  filePath: string
+): Promise<{ embeddings_pending?: true; embeddings_hint?: string }> {
+  return (await getEmbeddingPending(project, filePath))
+    ? { embeddings_pending: true, embeddings_hint: EMBEDDING_PENDING_HINT }
+    : {};
+}
+
 export async function parseUnparsedFiles(projectName: string): Promise<number> {
   if (activeParseProjects.has(projectName)) {
     return 0; // Background-Crew laeuft noch — neuer Tick uebersprungen.
   }
 
   const pool = getPool();
+  // Backlog = (a) nie geparste Dateien (parsed_at NULL) ODER (b) geparst, aber
+  // Embedding blieb offen (indexed_at NULL) und seit >5min unveraendert = ein
+  // abgebrochener/verlorener Embed-Lauf (kein noch laufender). Der 5min-Guard
+  // verhindert, dass der Worker in-flight-Embeddings (z.B. langsames Ollama)
+  // doppelt antriggert und den Backlog weiter aufblaeht.
   const result = await pool.query(
-    'SELECT file_path FROM code_files WHERE project = $1 AND content IS NOT NULL AND parsed_at IS NULL',
+    `SELECT file_path FROM code_files
+      WHERE project = $1 AND content IS NOT NULL
+        AND (parsed_at IS NULL
+             OR (indexed_at IS NULL AND updated_at < NOW() - INTERVAL '5 minutes'))`,
     [projectName]
   );
 

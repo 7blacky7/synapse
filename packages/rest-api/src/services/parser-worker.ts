@@ -82,7 +82,9 @@ export class ParserWorker {
     const r = await pool.query(
       `SELECT cf.project, count(*)::int unparsed
          FROM code_files cf
-        WHERE cf.content IS NOT NULL AND cf.parsed_at IS NULL
+        WHERE cf.content IS NOT NULL
+          AND (cf.parsed_at IS NULL
+               OR (cf.indexed_at IS NULL AND cf.updated_at < NOW() - INTERVAL '5 minutes'))
           AND EXISTS (SELECT 1 FROM projects p WHERE p.name = cf.project AND p.enabled)
         GROUP BY cf.project
         ORDER BY unparsed DESC
