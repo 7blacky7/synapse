@@ -124,6 +124,37 @@ function extractFlowCpp(content: string): { statements: ParsedStatement[]; callE
     return { cond: cond ? cond.slice(0, 200) : undefined, rest };
   }
 
+  // Zerlegt eine Zeile in ihre einzelnen Statements. Geschnitten wird nur an
+  // Semikolons auf Tiefe 0 und ausserhalb von Literalen — die Semikolons in
+  // 'for (i = 0; i < n; i++)' liegen in Tiefe 1 und bleiben unangetastet.
+  function splitTopLevelCpp(s: string): string[] {
+    const segmente: string[] = [];
+    let depth = 0;
+    let start = 0;
+    for (let i = 0; i < s.length; i++) {
+      const ch = s[i];
+      if (ch === '"' || ch === "'") {
+        const quote = ch;
+        i++;
+        while (i < s.length && s[i] !== quote) {
+          if (s[i] === '\\') i++;
+          i++;
+        }
+        continue;
+      }
+      if (ch === '(' || ch === '[' || ch === '{') depth++;
+      else if (ch === ')' || ch === ']' || ch === '}') depth--;
+      else if (ch === ';' && depth <= 0) {
+        const seg = s.slice(start, i + 1).trim();
+        if (seg) segmente.push(seg);
+        start = i + 1;
+      }
+    }
+    const rest = s.slice(start).trim();
+    if (rest) segmente.push(rest);
+    return segmente;
+  }
+
   interface FuncBody { name: string; bodyOffset: number; bodyContent: string; }
   function findBodies(src: string): FuncBody[] {
     const stripped = stripComments(src);
@@ -166,24 +197,59 @@ function extractFlowCpp(content: string): { statements: ParsedStatement[]; callE
         return st;
       }
 
+      // Rumpf hinter einem einzeiligen Kontrollfluss-Kopf: 'if (!ok) return;' oder
+      // 'if (x) { f(); }'. Ohne das verlaesst die Schleife die Zeile nach dem Kopf
+      // und alles dahinter faellt weg. Die Aufrufe daraus tauchten vorher nur
+      // zufaellig auf, solange der fehlerhafte condition_text den Rumpf mitschleppte.
+      function verarbeiteRumpf(rumpf: string, elternId: string): void {
+        for (const segment of splitTopLevelCpp(rumpf)) {
+          if (/^return\b/.test(segment)) {
+            const rst = emit('return', 'ReturnStatement', { text: segment.slice(0, 240), parent_temp_id: elternId, depth: 1 });
+            const expr = segment.replace(/^return\s*/, '').replace(/;$/, '');
+            if (expr) extractCalls(expr, rst.temp_id, scopeName, fileLine);
+            continue;
+          }
+          if (/^throw\b/.test(segment)) {
+            const rst = emit('throw', 'ThrowStatement', { text: segment.slice(0, 240), parent_temp_id: elternId, depth: 1 });
+            extractCalls(segment.replace(/^throw\s*/, '').replace(/;$/, ''), rst.temp_id, scopeName, fileLine);
+            continue;
+          }
+          const ram = segment.match(/^(\w[\w.*\[\]:>-]*)\s*(?:[+*/%&|^-]?=)\s*(.+);$/);
+          if (ram) {
+            const rst = emit('assignment', 'AssignmentExpression', { assigned_to: ram[1].slice(0, 120), text: segment.slice(0, 240), parent_temp_id: elternId, depth: 1 });
+            extractCalls(ram[2], rst.temp_id, scopeName, fileLine);
+            continue;
+          }
+          if (istCallStatement(segment)) {
+            const rcm = segment.match(/(?:(\w[\w.*\[\]:>-]*)(?:->|\.))?(\w+)\s*\(/);
+            const rst = emit('call', 'CallExpression', { callee: rcm ? rcm[2] : undefined, receiver: rcm && rcm[1] ? rcm[1] : undefined, text: segment.slice(0, 240), parent_temp_id: elternId, depth: 1 });
+            extractCalls(segment, rst.temp_id, scopeName, fileLine);
+          }
+        }
+      }
+
       if (/^\s*if\s*\(/.test(line)) {
-        const { cond } = kopfAufteilenCpp(line, 'if');
+        const { cond, rest } = kopfAufteilenCpp(line, 'if');
         const st = emit('if', 'IfStatement', { condition_text: cond });
         if (cond) extractCalls(cond, st.temp_id, scopeName, fileLine);
+        if (rest) verarbeiteRumpf(rest, st.temp_id);
       } else if (/^\s*for\s*\(/.test(line)) {
-        const { cond } = kopfAufteilenCpp(line, 'for');
+        const { cond, rest } = kopfAufteilenCpp(line, 'for');
         const st = emit('for', 'ForStatement', { condition_text: cond });
         if (cond) extractCalls(cond, st.temp_id, scopeName, fileLine);
+        if (rest) verarbeiteRumpf(rest, st.temp_id);
       } else if (/^\s*while\s*\(/.test(line)) {
-        const { cond } = kopfAufteilenCpp(line, 'while');
+        const { cond, rest } = kopfAufteilenCpp(line, 'while');
         const st = emit('while', 'WhileStatement', { condition_text: cond });
         if (cond) extractCalls(cond, st.temp_id, scopeName, fileLine);
+        if (rest) verarbeiteRumpf(rest, st.temp_id);
       } else if (/^\s*do\s*\{/.test(line)) {
         emit('do', 'DoStatement');
       } else if (/^\s*switch\s*\(/.test(line)) {
-        const { cond } = kopfAufteilenCpp(line, 'switch');
+        const { cond, rest } = kopfAufteilenCpp(line, 'switch');
         const st = emit('switch', 'SwitchStatement', { condition_text: cond });
         if (cond) extractCalls(cond, st.temp_id, scopeName, fileLine);
+        if (rest) verarbeiteRumpf(rest, st.temp_id);
       } else if (/^\s*try\s*\{/.test(line)) {
         emit('try', 'TryStatement');
       } else if (/^\s*throw\b/.test(line)) {
