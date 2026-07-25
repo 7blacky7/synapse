@@ -353,7 +353,22 @@ export async function parseAndEmbed(project: string, filePath: string): Promise<
   if (!parser) {
     // Unbekannter Filetype (z.B. json, png, gitignore, txt) — kein Parser noetig.
     // parsed_at trotzdem setzen damit der Loop ihn nicht ewig wieder versucht.
-    // Re-Process bei content-Aenderung erfolgt automatisch (Hash-Diff setzt parsed_at=NULL).
+    //
+    // ACHTUNG, hier stand frueher: "Re-Process bei content-Aenderung erfolgt
+    // automatisch (Hash-Diff setzt parsed_at=NULL)". Das stimmt fuer diesen Pfad
+    // NICHT. upsertCodeFile aktualisiert bei ON CONFLICT nur content,
+    // content_hash und updated_at — parsed_at bleibt stehen. Ein parsed_at=NULL
+    // bei Aenderung gibt es ausschliesslich im Workspace-Sync der REST-API
+    // (workspace-orchestrator.ts) und beim move in code-write.ts.
+    // In der Praxis faellt das selten auf, weil der Watcher bei einer Aenderung
+    // ohnehin direkt parseAndEmbed ruft. Wer aber einen Schreibpfad baut, der nur
+    // upsertCodeFile nutzt, bekommt KEIN automatisches Nachparsen und muss
+    // parsed_at selbst zuruecksetzen.
+    //
+    // Folge dieser Luecke, real passiert: eine Datei, die einmal mit null Symbolen
+    // durchlief, wird nie wieder angefasst — auch dann nicht, wenn der Parser
+    // inzwischen besser ist. 33 Dateien standen so monatelang leer im Index
+    // (INDEX-2). Nachfuehren bei Parser-Aenderungen ist INDEX-3.
     await pool.query(
       `UPDATE code_files SET parsed_at = NOW(), indexed_at = NOW()
          WHERE project = $1 AND file_path = $2`,
