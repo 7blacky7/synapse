@@ -310,7 +310,11 @@ export function searchReplace(
     const regex = new RegExp(flexibleSearch, 'g');
     const matchArr = content.match(regex);
     if (matchArr && matchArr.length > 0) {
-      return { content: content.replace(regex, replace), count: matchArr.length };
+      // Callback-Form (FILES-1): der Rueckgabewert einer Funktion wird NICHT als
+      // Ersatzmuster interpretiert. Mit einem String-Ersatz wuerden die
+      // Dollar-Sonderfolgen (Dollar vor Und-Zeichen, Backtick, Apostroph oder Ziffer)
+      // expandiert und koennten die Datei still zerstoeren.
+      return { content: content.replace(regex, () => replace), count: matchArr.length };
     }
   } catch {
     // Ungültiger Regex (edge case) — fall through zu exaktem Match
