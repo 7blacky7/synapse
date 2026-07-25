@@ -743,6 +743,20 @@ func rebuildMenu(projs []Project) {
 	}
 
 	systray.AddSeparator()
+
+	// TRAY-3: Verbindung zur Synapse-API einrichten. Der Menuetext zeigt sofort,
+	// ob schon ein Token hinterlegt ist — der Nutzer muss nirgends nachsehen.
+	verbindungsLabel := "Mit Synapse verbinden …"
+	if apiToken() != "" {
+		verbindungsLabel = "Synapse-Verbindung …"
+	}
+	mVerbinden := systray.AddMenuItem(verbindungsLabel, "Zugang zur Synapse-API einrichten")
+	go func() {
+		for range mVerbinden.ClickedCh {
+			fyne.Do(zeigeVerbindungsFenster)
+		}
+	}()
+
 	mReload := systray.AddMenuItem("Neu laden", "")
 	go func() {
 		for range mReload.ClickedCh {
@@ -1112,6 +1126,99 @@ func openDetail(name string) {
 	})
 
 	go w.ReloadAll()
+}
+
+// zeigeVerbindungsFenster oeffnet die Verbindungs-Einrichtung (TRAY-3).
+//
+// Der Nutzer tippt den 6-stelligen Code aus seiner Authenticator-App ein, der
+// Tray holt sich damit selbst ein Token (6 Monate gueltig) und schreibt es in
+// die config.json. Kein Terminal, kein curl, kein Datei-Editieren.
+func zeigeVerbindungsFenster() {
+	fenster := myApp.NewWindow("Synapse-Verbindung")
+
+	status := widget.NewLabel("Status wird geprueft …")
+	status.Wrapping = fyne.TextWrapWord
+
+	hinweis := widget.NewLabel(
+		"Oeffne deine Authenticator-App und gib den aktuellen 6-stelligen Code ein.\n" +
+			"Der Zugang gilt danach ein halbes Jahr — du musst das nicht taeglich wiederholen.")
+	hinweis.Wrapping = fyne.TextWrapWord
+
+	codeFeld := widget.NewEntry()
+	codeFeld.SetPlaceHolder("z. B. 123456")
+
+	ergebnis := widget.NewLabel("")
+	ergebnis.Wrapping = fyne.TextWrapWord
+
+	// Aktuellen Zustand im Hintergrund ermitteln, damit das Fenster sofort aufgeht.
+	go func() {
+		var text string
+		if apiToken() == "" {
+			text = "Noch nicht verbunden — es ist kein Zugang hinterlegt."
+		} else if basis, err := apiVerbindungPruefen(); err != nil {
+			text = "Ein Zugang ist hinterlegt, wird aber abgelehnt oder ist nicht erreichbar:\n" +
+				err.Error() + "\n\nMit einem neuen Code kannst du ihn hier ersetzen."
+		} else {
+			text = "Verbunden mit " + basis
+		}
+		fyne.Do(func() { status.SetText(text) })
+	}()
+
+	var knopf *widget.Button
+	verbinden := func() {
+		code := strings.TrimSpace(codeFeld.Text)
+		if code == "" {
+			ergebnis.SetText("Bitte den Code aus der App eingeben.")
+			return
+		}
+		knopf.Disable()
+		ergebnis.SetText("Verbinde …")
+
+		go func() {
+			antwort, err := apiHoleServiceToken(code, "tray")
+			if err == nil {
+				err = speichereApiToken(antwort.Token)
+			}
+
+			var meldung string
+			if err != nil {
+				meldung = "Hat nicht geklappt: " + err.Error()
+			} else if basis, pruefErr := apiVerbindungPruefen(); pruefErr != nil {
+				// Gespeichert, aber der Gegentest scheitert — ehrlich benennen statt
+				// Erfolg zu melden.
+				meldung = "Zugang gespeichert, aber der Test schlug fehl: " + pruefErr.Error()
+			} else {
+				meldung = "Verbunden mit " + basis + ".\nGueltig bis " +
+					zeitLesbar(antwort.ExpiresAt) + ". Der Zugang ist gespeichert."
+			}
+
+			fyne.Do(func() {
+				ergebnis.SetText(meldung)
+				codeFeld.SetText("")
+				knopf.Enable()
+				if err == nil {
+					status.SetText("Verbunden.")
+					triggerRefresh()
+				}
+			})
+		}()
+	}
+
+	// Enter im Eingabefeld loest ebenfalls aus — sonst tippt man den Code und
+	// sucht dann den Knopf.
+	codeFeld.OnSubmitted = func(string) { verbinden() }
+	knopf = widget.NewButton("Verbinden", verbinden)
+
+	fenster.SetContent(container.NewVBox(
+		status,
+		widget.NewSeparator(),
+		hinweis,
+		codeFeld,
+		knopf,
+		ergebnis,
+	))
+	fenster.Resize(fyne.NewSize(460, 340))
+	fenster.Show()
 }
 
 func (w *DetailWindow) ReloadAll() {

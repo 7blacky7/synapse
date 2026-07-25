@@ -27,6 +27,7 @@ package main
 // der Tunnel weg ist.
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -138,16 +139,37 @@ func forgetBase(base string) {
 // zurueckgegeben — sonst wuerde ein Auth-Fehler als "Server nicht erreichbar"
 // erscheinen und man debuggt an der falschen Stelle.
 func apiRequest(method, path string, out interface{}) (base string, err error) {
+	return apiRequestBody(method, path, nil, out)
+}
+
+// apiRequestBody wie apiRequest, zusaetzlich mit JSON-Body (darf nil sein).
+func apiRequestBody(method, path string, body interface{}, out interface{}) (base string, err error) {
+	var payload []byte
+	if body != nil {
+		var mErr error
+		payload, mErr = json.Marshal(body)
+		if mErr != nil {
+			return "", mErr
+		}
+	}
+
 	var lastErr error
 	token := apiToken()
 
 	for _, b := range apiBases() {
-		req, reqErr := http.NewRequest(method, b+path, nil)
+		var rdr io.Reader
+		if payload != nil {
+			rdr = bytes.NewReader(payload)
+		}
+		req, reqErr := http.NewRequest(method, b+path, rdr)
 		if reqErr != nil {
 			lastErr = reqErr
 			continue
 		}
 		req.Header.Set("Accept", "application/json")
+		if payload != nil {
+			req.Header.Set("Content-Type", "application/json")
+		}
 		if token != "" {
 			req.Header.Set("Authorization", "Bearer "+token)
 		}
@@ -357,4 +379,117 @@ func apiReembedProject(project string) (apiReembedResponse, error) {
 // Aufrufer, damit die Pfadbildung an EINER Stelle liegt.
 func urlSeg(s string) string {
 	return strings.ReplaceAll(url.PathEscape(s), "/", "%2F")
+}
+
+// ---------------------------------------------------------------------------
+// Verbinden: Service-Token holen und ablegen (TRAY-3)
+// ---------------------------------------------------------------------------
+
+type apiServiceTokenResponse struct {
+	Success   bool   `json:"success"`
+	Token     string `json:"token"`
+	ExpiresAt string `json:"expiresAt"`
+	Scope     string `json:"scope"`
+	Error     *struct {
+		Code    string `json:"code"`
+		Message string `json:"message"`
+	} `json:"error"`
+}
+
+// apiHoleServiceToken tauscht einen 6-stelligen TOTP-Code gegen ein langlebiges
+// Token (6 Monate). Der Endpunkt ist bewusst NICHT Bearer-gated — der Code aus
+// der Authenticator-App IST die Legitimation. Genau deshalb kann der Tray sich
+// hiermit ohne Vorwissen selbst verbinden.
+func apiHoleServiceToken(code, label string) (apiServiceTokenResponse, error) {
+	var r apiServiceTokenResponse
+	body := map[string]string{"code": code, "label": label}
+	_, err := apiRequestBody(http.MethodPost, "/api/auth/service-token", body, &r)
+	if err != nil {
+		return r, err
+	}
+	if !r.Success {
+		if r.Error != nil {
+			if r.Error.Code == "invalid_code" {
+				return r, fmt.Errorf("Der Code wurde nicht akzeptiert. Er gilt nur 30 Sekunden — nimm den aktuellen aus der App.")
+			}
+			return r, fmt.Errorf("%s", r.Error.Message)
+		}
+		return r, fmt.Errorf("Server hat das Token abgelehnt.")
+	}
+	if r.Token == "" {
+		return r, fmt.Errorf("Antwort enthielt kein Token.")
+	}
+	return r, nil
+}
+
+// speichereApiToken schreibt das Token als synapse_api_token in die config.json
+// des FileWatcher-Daemons.
+//
+// Vorsichtsmassnahmen: die Datei wird als map[string]json.RawMessage gelesen, damit
+// ALLE anderen Felder (port, projekte, synapse_api_url, ...) unveraendert erhalten
+// bleiben — auch solche, die dieser Tray gar nicht kennt. Geschrieben wird in eine
+// Temp-Datei und dann umbenannt, damit ein Absturz mittendrin die Config nicht
+// zerreisst.
+func speichereApiToken(token string) error {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("Home-Verzeichnis nicht ermittelbar: %v", err)
+	}
+	dir := filepath.Join(home, ".synapse", "file-watcher")
+	cfgPath := filepath.Join(dir, "config.json")
+
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("Konfigurationsordner nicht anlegbar: %v", err)
+	}
+
+	felder := map[string]json.RawMessage{}
+	if data, readErr := os.ReadFile(cfgPath); readErr == nil {
+		if jErr := json.Unmarshal(data, &felder); jErr != nil {
+			// Lieber abbrechen als eine unlesbare Config ueberschreiben.
+			return fmt.Errorf("config.json ist nicht lesbar (%v) — bitte pruefen, es wurde nichts geaendert", jErr)
+		}
+	}
+
+	kodiert, err := json.Marshal(token)
+	if err != nil {
+		return err
+	}
+	felder["synapse_api_token"] = kodiert
+
+	neu, err := json.MarshalIndent(felder, "", "  ")
+	if err != nil {
+		return err
+	}
+	neu = append(neu, '\n')
+
+	tmp := cfgPath + ".tmp"
+	if err := os.WriteFile(tmp, neu, 0o600); err != nil {
+		return fmt.Errorf("Schreiben fehlgeschlagen: %v", err)
+	}
+	if err := os.Rename(tmp, cfgPath); err != nil {
+		os.Remove(tmp)
+		return fmt.Errorf("Ersetzen der config.json fehlgeschlagen: %v", err)
+	}
+	return nil
+}
+
+// apiVerbindungPruefen testet das aktuell hinterlegte Token gegen /api/status.
+// Liefert die antwortende Basis-Adresse zurueck, damit der Nutzer sieht WOHIN
+// der Tray spricht — Tunnel oder lokale IP.
+func apiVerbindungPruefen() (basis string, err error) {
+	if apiToken() == "" {
+		return "", fmt.Errorf("kein Token hinterlegt")
+	}
+	return apiRequest(http.MethodGet, "/api/status", nil)
+}
+
+// zeitLesbar macht aus einem ISO-Zeitstempel ein deutsches Datum. Bei
+// unbekanntem Format wird der Rohwert durchgereicht.
+func zeitLesbar(iso string) string {
+	for _, layout := range []string{time.RFC3339Nano, time.RFC3339, "2006-01-02 15:04:05.999999-07"} {
+		if t, err := time.Parse(layout, iso); err == nil {
+			return t.Local().Format("02.01.2006")
+		}
+	}
+	return iso
 }
