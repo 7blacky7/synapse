@@ -1015,6 +1015,21 @@ export async function removeFile(
   filePath: string,
   projectName: string
 ): Promise<void> {
+  // SYNC-1b: Stand sichern BEVOR geloescht wird — danach ist der Inhalt weg.
+  // Damit erscheint die Loeschung im Tray-Events-Tab und bleibt per
+  // files(restore) zurueckholbar. Fehler hier duerfen das Loeschen nicht kippen.
+  try {
+    const { snapshotFileVersion } = await import('./code-write.js');
+    await snapshotFileVersion(
+      projectName,
+      filePath,
+      'fs_delete',
+      'Datei auf dem Dateisystem geloescht (nicht ueber das files-Tool)'
+    );
+  } catch (snapErr) {
+    console.error(`[Synapse] Snapshot vor Loeschen fehlgeschlagen fuer ${filePath}: ${snapErr}`);
+  }
+
   try {
     await deleteCodeFile(projectName, filePath);
   } catch (pgErr) {
@@ -1042,6 +1057,22 @@ export async function renameCodeFile(
 ): Promise<boolean> {
   if (oldPath === newPath) return false;
   const pool = getPool();
+
+  // SYNC-1b: Stand unter dem ALTEN Pfad festhalten, bevor er umgeschrieben wird.
+  // Der Eintrag traegt den alten Pfad und nennt das Ziel in der Begruendung — so
+  // ist im Events-Tab erkennbar, woher die Datei kam. Ausserhalb der Transaktion,
+  // damit ein Fehler beim Protokollieren die Umbenennung nicht verhindert.
+  try {
+    const { snapshotFileVersion } = await import('./code-write.js');
+    await snapshotFileVersion(
+      project,
+      oldPath,
+      'fs_move',
+      `Auf dem Dateisystem verschoben nach: ${newPath}`
+    );
+  } catch (snapErr) {
+    console.error(`[Synapse] Snapshot vor Verschieben fehlgeschlagen fuer ${oldPath}: ${snapErr}`);
+  }
 
   let affected = false;
   try {

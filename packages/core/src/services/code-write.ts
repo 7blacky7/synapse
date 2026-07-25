@@ -601,6 +601,39 @@ export async function updateFileInPg(
 }
 
 /**
+ * SYNC-1b: Sichert den AKTUELLEN Stand einer Datei als file_versions-Eintrag,
+ * ohne sie zu veraendern.
+ *
+ * Gedacht fuer Vorgaenge, die den Inhalt nicht ersetzen, sondern ihn oder seinen
+ * Ort verschwinden lassen — Loeschen und Verschieben auf dem Dateisystem. Ohne
+ * diesen Schnappschuss waeren beide im Tray unsichtbar und nicht rueckholbar.
+ *
+ * MUSS VOR der eigentlichen Mutation aufgerufen werden: danach ist der Inhalt
+ * (beim Loeschen) bzw. der alte Pfad (beim Verschieben) nicht mehr greifbar.
+ *
+ * Liefert true, wenn ein Eintrag entstanden ist (Datei war bekannt und hatte Inhalt).
+ */
+export async function snapshotFileVersion(
+  project: string,
+  filePath: string,
+  editAction: string,
+  reason: string,
+  agentId: string = FS_AGENT_ID
+): Promise<boolean> {
+  const pool = getPool();
+  const res = await pool.query(
+    `INSERT INTO file_versions
+       (project, file_path, content, content_hash, edit_action, agent_id, size_bytes, reason)
+     SELECT cf.project, cf.file_path, cf.content, cf.content_hash, $3, $4,
+            COALESCE(cf.file_size, OCTET_LENGTH(cf.content)), $5
+       FROM code_files cf
+      WHERE cf.project = $1 AND cf.file_path = $2 AND cf.content IS NOT NULL`,
+    [project, filePath, editAction, agentId, reason]
+  );
+  return (res.rowCount ?? 0) > 0;
+}
+
+/**
  * Setzt deleted_at = NOW() fuer eine Datei (Soft-Delete, kein echtes Loeschen).
  */
 export async function softDeleteFile(
