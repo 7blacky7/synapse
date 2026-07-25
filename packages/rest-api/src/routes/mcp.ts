@@ -1503,14 +1503,16 @@ async function attachRestOnboarding(
             : 'subagent';
 
     const allRules = await getRulesForNewAgent(project);
+    // Rollenbindung ueber die gemeinsame Erkennung in core (agent-rollen.ts) —
+    // tolerant gegenueber Schreibweisen, und dieselbe Logik wie im lokalen Weg.
+    const { regelSichtbarFuer, tagVerdacht } = await import('@synapse/core');
+    for (const m of allRules) {
+      for (const hinweis of tagVerdacht(m.tags)) {
+        console.warn(`[Onboarding] Regel "${m.name}" (${project}): ${hinweis}`);
+      }
+    }
     const rules = allRules
-      .filter((m) => {
-        const tags = m.tags || [];
-        if (tags.includes('coordinator-only') && role !== 'koordinator') return false;
-        if (tags.includes('specialist-only') && role !== 'spezialist') return false;
-        if (tags.includes('subagent-only') && role !== 'subagent') return false;
-        return true;
-      })
+      .filter((m) => regelSichtbarFuer(m.tags, role))
       .map((m) => ({ name: m.name, content: m.content }));
 
     if (rules.length === 0) {

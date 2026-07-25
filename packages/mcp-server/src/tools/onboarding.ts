@@ -161,14 +161,18 @@ export async function checkAgentOnboarding(
     // Regeln neu laden falls Handoff-Regeln gerade erstellt wurden
     const allRules = await getRulesForNewAgent(project);
 
-    // Rollenspezifische Regeln filtern
-    const finalRules = allRules.filter(m => {
-      const tags = m.tags || [];
-      if (tags.includes('coordinator-only') && !isCoordinator) return false;
-      if (tags.includes('specialist-only') && effectiveRole !== 'spezialist') return false;
-      if (tags.includes('subagent-only') && effectiveRole !== 'subagent') return false;
-      return true;
-    });
+    // Rollenspezifische Regeln filtern — gemeinsame Erkennung aus core
+    // (agent-rollen.ts), damit dieser Weg und die REST-API nicht auseinanderlaufen.
+    // Der exakte Vergleich von vorher liess z.B. "koordinator-only" (deutsch)
+    // stillschweigend durchfallen: die Regel ging dann an alle Rollen.
+    const { regelSichtbarFuer, tagVerdacht } = await import('@synapse/core');
+    for (const m of allRules) {
+      for (const hinweis of tagVerdacht(m.tags)) {
+        console.error(`[Onboarding] Regel "${m.name}" (${project}): ${hinweis}`);
+      }
+    }
+    const finalRules = allRules.filter((m) => regelSichtbarFuer(m.tags, effectiveRole));
+    void isCoordinator;
 
     if (finalRules.length === 0) {
       return { isFirstVisit: true };

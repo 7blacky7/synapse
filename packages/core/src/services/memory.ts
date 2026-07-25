@@ -215,6 +215,17 @@ export async function writeMemory(
   category: Memory['category'] = 'note',
   tags: string[] = []
 ): Promise<Memory> {
+  // Bei Regeln pruefen, ob eine Rollenbindung gemeint war, aber nicht wirksam ist.
+  // Nur ein Hinweis, kein Eingriff — die Memory wird unveraendert geschrieben.
+  // Ohne das faellt ein vergessenes oder falsch geschriebenes "-only" niemandem
+  // auf, weil nichts fehlschlaegt: die Regel geht dann still an alle Rollen.
+  if (category === 'rules') {
+    const { tagVerdacht } = await import('./agent-rollen.js');
+    for (const hinweis of tagVerdacht(tags)) {
+      console.error(`[Memory] Regel "${name}" (${project}): ${hinweis}`);
+    }
+  }
+
   const collectionName = COLLECTIONS.projectMemories(project);
   await ensureCollection(collectionName);
 
