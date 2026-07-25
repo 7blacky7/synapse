@@ -50,6 +50,13 @@ export const REFRESH_TTL_MS = 120 * DAY;
 export const AUTHCODE_TTL_MS = 10 * MINUTE;
 /** Web-UI Session-Token Lebensdauer: 24h. */
 export const SESSION_TTL_MS = 24 * HOUR;
+/**
+ * Service-Token Lebensdauer: 6 Monate (180 Tage).
+ * Fuer dauerhaft laufende Prozesse ohne Bedienung — Daemon, Tray. Ein 24h-Token
+ * waere dort unbrauchbar, weil jeden Tag ein TOTP-Code eingetippt werden muesste.
+ * Widerruf jederzeit ueber DELETE /api/auth/sessions/:id.
+ */
+export const SERVICE_TOKEN_TTL_MS = 180 * DAY;
 
 /** Default-Aussteller/Label fuer die otpauth-URI (Authenticator-App). */
 const DEFAULT_ISSUER = 'Synapse';

@@ -36,6 +36,7 @@ import {
   listTokens,
   getTokenRow,
   SESSION_TTL_MS,
+  SERVICE_TOKEN_TTL_MS,
   type AuthTokenRow,
 } from '../services/auth.js';
 
@@ -229,6 +230,63 @@ export async function authRoutes(fastify: FastifyInstance): Promise<void> {
       expiresAt: issued.expiresAt,
     });
   });
+
+  /**
+   * POST /api/auth/service-token  (TRAY-3)
+   *
+   * Stellt ein LANGLEBIGES Token (6 Monate) fuer einen dauerhaft laufenden
+   * Prozess aus — FileWatcher-Daemon, Tray. Gate ist derselbe TOTP-Code wie bei
+   * /api/auth/verify: einmal am Handy abgelesen, danach laeuft der Dienst durch.
+   *
+   * UNTERSCHIEDE zu /api/auth/verify:
+   *   - 6 Monate statt 24h (SERVICE_TOKEN_TTL_MS)
+   *   - KEIN Session-Cookie — ein Daemon ist kein Browser
+   *   - scope 'daemon' bzw. 'daemon:<label>' zur Kennzeichnung
+   *
+   * Der Auth-Hook wertet scope derzeit NICHT aus; das Feld dient allein der
+   * Wiedererkennung in GET /api/auth/sessions. Ein Token laesst sich dort
+   * jederzeit einsehen und per DELETE /api/auth/sessions/:id widerrufen —
+   * darum eine feste Laufzeit statt "unbegrenzt".
+   */
+  fastify.post<{ Body: { code?: string; label?: string } }>(
+    '/api/auth/service-token',
+    async (request, reply) => {
+      const code = (request.body?.code ?? '').toString().trim();
+      if (!code) {
+        return reply.code(400).send({
+          success: false,
+          error: { code: 'invalid_request', message: 'code fehlt' },
+        });
+      }
+
+      const valid = await verifyTotp(code);
+      if (!valid) {
+        return reply.code(401).send({
+          success: false,
+          error: { code: 'invalid_code', message: 'TOTP-Code ungueltig' },
+        });
+      }
+
+      // Label nur als Erkennungshilfe — auf harmlose Zeichen begrenzen, damit
+      // die Session-Liste lesbar bleibt.
+      const rawLabel = (request.body?.label ?? '').toString().trim();
+      const label = rawLabel.replace(/[^\w.-]/g, '').slice(0, 40);
+      const scope = label ? `daemon:${label}` : 'daemon';
+
+      const issued = await issueSessionToken(scope, SERVICE_TOKEN_TTL_MS);
+
+      return reply.send({
+        success: true,
+        token: issued.token,
+        expiresAt: issued.expiresAt,
+        scope,
+        hint:
+          'Als synapse_api_token in ~/.synapse/file-watcher/config.json eintragen ' +
+          '(oder als SYNAPSE_API_TOKEN in die Umgebung). Widerruf: ' +
+          'GET /api/auth/sessions zum Auflisten, DELETE /api/auth/sessions/:id zum Loeschen.',
+      });
+    }
+  );
 
   /**
    * POST /api/auth/logout
