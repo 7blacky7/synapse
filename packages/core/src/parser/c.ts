@@ -370,8 +370,9 @@ class CParser implements LanguageParser {
    * Nicht bei Formatierung oder Kommentaren. Siehe LanguageParser.version.
    * 2 = Klammer-Scanner statt \([^)]*\), condition_text balanciert, ++/--,
    *     mehrere Statements pro Zeile, Rumpf hinter einzeiligem Kontrollfluss-Kopf.
+   * 3 = static wird auch erkannt, wenn es im Rueckgabetyp steht (is_exported).
    */
-  version = 2;
+  version = 3;
 
   parse(content: string, filePath: string): ParseResult {
     const symbols: ParsedSymbol[] = [];
@@ -572,7 +573,12 @@ class CParser implements LanguageParser {
         })
         .filter(p => p && p !== '...');
 
-      const isStatic = qualifiers.includes('static');
+      // static kann je nach Signatur-Reihenfolge in der Qualifier-Gruppe ODER
+      // im Rueckgabetyp landen: bei "static inline void ensure_gtk(void)" meldet
+      // der Parser return_type "static inline void". Wer nur die Qualifier
+      // prueft, haelt eine dateiinterne Funktion fuer oeffentliche Schnittstelle
+      // — code_intel(functions, exported_only) liefert dann ein zu grosses Bild.
+      const isStatic = /\bstatic\b/.test(qualifiers) || /\bstatic\b/.test(returnType);
 
       symbols.push({
         symbol_type: 'function',

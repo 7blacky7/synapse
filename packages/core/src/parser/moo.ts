@@ -68,8 +68,11 @@ function isPublic(name: string): boolean {
 class MooParser implements LanguageParser {
   language = 'moo';
   extensions = ['.moo', '.moos'];
-  /** Bei inhaltlichen Parser-Aenderungen erhoehen (siehe LanguageParser.version). */
-  version = 1;
+  /**
+   * Bei inhaltlichen Parser-Aenderungen erhoehen (siehe LanguageParser.version).
+   * 2 = Ausgabe-Anweisungen (zeige/show/ze) ergeben Statement und Call-Kante.
+   */
+  version = 2;
 
   parse(content: string, _filePath: string): ParseResult {
     const symbols: ParsedSymbol[] = [];
@@ -815,6 +818,35 @@ function extractMooFlow(content: string): { statements: ParsedStatement[]; callE
         const rhsCallM = /=\s*([\p{L}_][\p{L}\p{N}_]*)\s*\(/u.exec(trimmed);
         if (rhsCallM && !IF_KW.test(rhsCallM[1]) && !FUNC_KW.test(rhsCallM[1])) {
           callEdges.push({ statement_temp_id: id, caller_scope: scopeName, callee_name: rhsCallM[1], line_number: lineNum, call_kind: 'function' });
+        }
+        i++; continue;
+      }
+
+      // Ausgabe-Anweisung: zeige <ausdruck>
+      // OHNE diesen Zweig faellt eine Datei, die nur aus Ausgaben besteht,
+      // komplett aus dem Index — nach dem Schluesselwort folgt ein Leerzeichen
+      // und keine Klammer, also greift auch der Aufruf-Zweig unten nicht.
+      // Belegt an compiler/tests/test_crypto.moos: sechs Zeilen mit je einem
+      // Aufruf, im Index null Statements, null Kanten, null Symbole.
+      const zeigeM = /^(?:zeige|show|ze|zeige_auf_bildschirm)\b\s*(.+)$/u.exec(trimmed);
+      if (zeigeM) {
+        const ausdruck = zeigeM[1];
+        const id = nextId();
+        // Der aeusserste Aufruf im Ausdruck wird zur Call-Kante. Verschachtelte
+        // Aufrufe bleiben vorerst aussen vor — dieselbe Grenze wie im
+        // Zuweisungs-Zweig darueber, damit sich beide gleich verhalten.
+        const innererAufruf = /([\p{L}_][\p{L}\p{N}_]*)\s*\(/u.exec(ausdruck);
+        statements.push({
+          temp_id: id, parent_temp_id: parentId,
+          scope_type: scopeType, scope_name: scopeName,
+          statement_type: 'call', line_start: lineNum,
+          order_index: nextOrder(parentId, sc),
+          depth, is_top_level: scopeType === 'function' && depth === 0, is_awaited: false,
+          callee: innererAufruf ? innererAufruf[1] : undefined,
+          text: trimmed.slice(0, 200),
+        });
+        if (innererAufruf) {
+          callEdges.push({ statement_temp_id: id, caller_scope: scopeName, callee_name: innererAufruf[1], line_number: lineNum, call_kind: 'function' });
         }
         i++; continue;
       }
