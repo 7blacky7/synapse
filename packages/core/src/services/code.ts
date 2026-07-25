@@ -896,6 +896,38 @@ export async function resetProjectEmbeddings(project: string): Promise<{
   };
 }
 
+/**
+ * Setzt die Parse-Buchhaltung eines Projekts zurueck, damit der Backlog alle
+ * Dateien neu parst UND neu embedded.
+ *
+ * Unterschied zu resetProjectEmbeddings(): dort bleibt parsed_at bewusst stehen
+ * (Symbole/Statements gelten weiter, nur die Vektoren sind wertlos). Hier ist
+ * genau das Gegenteil gewollt — nach einer Parser-Aenderung sind die abgeleiteten
+ * Symbole, Statements und Call-Kanten selbst veraltet.
+ *
+ * Greift ueber Backlog-Bedingung (a) in parseUnparsedFiles: parsed_at IS NULL.
+ * Die Qdrant-Collection wird NICHT verworfen — parseAndEmbed ueberschreibt die
+ * Punkte pro Datei, ein Dimensionswechsel ist hier nicht das Thema.
+ */
+export async function resetProjectParse(project: string): Promise<{
+  project: string;
+  filesReset: number;
+}> {
+  const pool = getPool();
+  const res = await pool.query(
+    `UPDATE code_files SET parsed_at = NULL, indexed_at = NULL
+      WHERE project = $1 AND content IS NOT NULL`,
+    [project]
+  );
+
+  console.error(
+    `[Synapse] Parse-Stand zurueckgesetzt fuer "${project}": ${res.rowCount} Dateien. ` +
+      `Backlog parst und embedded im Hintergrund nach.`
+  );
+
+  return { project, filesReset: res.rowCount ?? 0 };
+}
+
 export async function parseUnparsedFiles(projectName: string): Promise<number> {
   if (activeParseProjects.has(projectName)) {
     return 0; // Background-Crew laeuft noch — neuer Tick uebersprungen.

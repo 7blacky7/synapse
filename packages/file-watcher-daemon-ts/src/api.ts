@@ -12,13 +12,17 @@
  *   POST   /projects                      { "name": str, "pfad": str }
  *   POST   /projects/:name/enable
  *   POST   /projects/:name/disable
+ *   POST   /projects/:name/reindex        Parse-Stand verwerfen, Backlog parst neu
+ *   POST   /projects/:name/open-file      Datei im Standard-Editor oeffnen (Body: Pfad)
  *   DELETE /projects/:name
  */
 
 import os from 'node:os';
 import fs from 'node:fs';
+import path from 'node:path';
+import { spawn } from 'node:child_process';
 import Fastify, { type FastifyInstance, type FastifyReply } from 'fastify';
-import { getPool, listChannels, getChannelMessages, postChannelMessage, listActiveAgents, listWrapperStatus, getWrapperStatus, removeWrapperStatus } from '@synapse/core';
+import { getPool, listChannels, getChannelMessages, postChannelMessage, listActiveAgents, listWrapperStatus, getWrapperStatus, removeWrapperStatus, resetProjectParse } from '@synapse/core';
 import type { WrapperStatusRow } from '@synapse/core';
 import { readStatus, removeSpecialist } from '@synapse/agents';
 import type { WatcherManager } from './manager.js';
@@ -80,6 +84,15 @@ export function buildApi(opts: BuildApiOptions): FastifyInstance {
     logger: false,
     disableRequestLogging: true,
   });
+
+  // Fastify kennt ab Werk nur application/json. Der Tray schickt den Dateipfad
+  // an /projects/:name/open-file aber als text/plain — ohne diesen Parser
+  // antwortet die Route mit 415 statt zu oeffnen (TRAY-5).
+  app.addContentTypeParser(
+    'text/plain',
+    { parseAs: 'string' },
+    (_req, body, done) => done(null, body),
+  );
 
   // ---- GET /health --------------------------------------------------------
   app.get('/health', async () => ({
@@ -178,6 +191,78 @@ export function buildApi(opts: BuildApiOptions): FastifyInstance {
   app.delete<{ Params: { name: string } }>('/projects/:name', async (req, reply) => {
     return safeCall(reply, () => manager.unregister(req.params.name));
   });
+
+  // ---- POST /projects/:name/reindex --------------------------------------
+  // TRAY-5: Der Tray-Button "Neu indexieren" rief diese Route schon immer auf,
+  // es gab sie nur nie — der Fehler wurde im Tray verschluckt und als Erfolg
+  // gemeldet. Setzt parsed_at/indexed_at zurueck; das eigentliche Parsen macht
+  // der ParserWorker der REST-API ueber seinen Backlog, nicht dieser Daemon.
+  app.post<{ Params: { name: string } }>(
+    '/projects/:name/reindex',
+    async (req, reply) => {
+      const { name } = req.params;
+      if (!manager.status(name)) {
+        reply.code(404);
+        return { error: 'unknown project' };
+      }
+      try {
+        const result = await resetProjectParse(name);
+        return { ok: true, ...result };
+      } catch (err) {
+        reply.code(500);
+        return { ok: false, error: (err as Error).message };
+      }
+    },
+  );
+
+  // ---- POST /projects/:name/open-file ------------------------------------
+  // TRAY-5: Oeffnet eine Datei im Standard-Programm des Nutzers. Body ist der
+  // Pfad als Klartext (so schickt ihn der Tray seit jeher).
+  // Der Daemon lauscht zwar nur auf 127.0.0.1, der Pfad wird trotzdem gegen den
+  // Projekt-Root geprueft: sonst waere das ein Hebel, ueber den Browser-Requests
+  // beliebige Dateien auf dem Rechner oeffnen koennten.
+  app.post<{ Params: { name: string } }>(
+    '/projects/:name/open-file',
+    async (req, reply) => {
+      const { name } = req.params;
+      const info = manager.status(name);
+      if (!info) {
+        reply.code(404);
+        return { error: 'unknown project' };
+      }
+
+      const roh = typeof req.body === 'string' ? req.body.trim() : '';
+      if (!roh) {
+        reply.code(400);
+        return { error: 'kein Pfad im Body' };
+      }
+
+      const root = path.resolve(info.pfad);
+      const ziel = path.resolve(root, roh);
+      if (ziel !== root && !ziel.startsWith(root + path.sep)) {
+        reply.code(400);
+        return { error: 'Pfad liegt ausserhalb des Projekts' };
+      }
+      if (!fs.existsSync(ziel)) {
+        reply.code(404);
+        return { error: 'Datei existiert nicht' };
+      }
+
+      const opener =
+        process.platform === 'darwin' ? 'open'
+        : process.platform === 'win32' ? 'explorer'
+        : 'xdg-open';
+      try {
+        // Losgeloest starten: der Editor soll den Daemon ueberleben.
+        const kind = spawn(opener, [ziel], { detached: true, stdio: 'ignore' });
+        kind.unref();
+        return { ok: true, opened: ziel };
+      } catch (err) {
+        reply.code(500);
+        return { ok: false, error: (err as Error).message };
+      }
+    },
+  );
 
   // ---- GET /projects/:name/history ---------------------------------------
   // Letzte N watcher_events (Default 50). Quelle: PostgreSQL watcher_events —

@@ -149,6 +149,7 @@ export {
   getEmbeddingPending,
   embeddingPendingHint,
   resetProjectEmbeddings,
+  resetProjectParse,
   EMBEDDING_PENDING_HINT,
   // Media
   indexMediaFile,

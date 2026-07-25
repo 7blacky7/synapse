@@ -1048,11 +1048,35 @@ func openDetail(name string) {
 		dialog.ShowConfirm("Löschen?", fmt.Sprintf("Projekt '%s' wirklich löschen?\nIndex und Watcher-Eintrag werden entfernt.\nDer Ordner auf der Platte bleibt unberührt.", name), func(ok bool) {
 			if ok {
 				go func() {
-					u := fmt.Sprintf("http://127.0.0.1:%d/projects/%s/delete", port, url.QueryEscape(name))
-					client := &http.Client{Timeout: 1 * time.Second}
-					resp, err := client.Post(u, "application/json", bytes.NewReader([]byte("{}")))
-					if err == nil {
-						resp.Body.Close()
+					// TRAY-5: Frueher ging hier ein POST auf /projects/<name>/delete raus,
+					// das der Daemon nie kannte. Er hat DELETE /projects/<name> — genau
+					// diese Route wird jetzt benutzt, eine neue braucht es nicht.
+					// Ausserdem wurde jeder Fehler verschluckt: das Fenster ging zu und
+					// der Eintrag verschwand aus der Liste, egal ob wirklich etwas
+					// geloescht wurde. Beim naechsten Refresh war das Projekt wieder da.
+					u := fmt.Sprintf("http://127.0.0.1:%d/projects/%s", port, url.QueryEscape(name))
+					req, err := http.NewRequest(http.MethodDelete, u, nil)
+					var fehler error
+					if err != nil {
+						fehler = err
+					} else {
+						client := &http.Client{Timeout: 5 * time.Second}
+						resp, ferr := client.Do(req)
+						if ferr != nil {
+							fehler = ferr
+						} else {
+							status := resp.StatusCode
+							resp.Body.Close()
+							if status >= 400 {
+								fehler = fmt.Errorf("Daemon antwortete mit HTTP %d — das Projekt wurde NICHT geloescht.", status)
+							}
+						}
+					}
+					if fehler != nil {
+						fyne.Do(func() {
+							dialog.ShowError(fehler, w.Window)
+						})
+						return
 					}
 					fyne.Do(func() {
 						w.Window.Hide()
