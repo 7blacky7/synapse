@@ -269,7 +269,21 @@ export function enqueueParseAndEmbed(project: string, filePath: string): void {
  * Stage 2: Symbole parsen, Chunks erstellen, Embeddings generieren.
  * Liest Inhalt aus PostgreSQL (nicht Filesystem).
  */
-export async function parseAndEmbed(project: string, filePath: string): Promise<void> {
+export async function parseAndEmbed(
+  project: string,
+  filePath: string,
+  opts?: {
+    /**
+     * Umgeht den Idempotenz-Skip. NOETIG fuer jeden gewollten Reparse: der Skip
+     * kehrt zurueck, sobald die Datei embedded ist — und heilt dabei parsed_at
+     * auf NOW(). Ohne diese Option meldet ein Reparse Erfolg, ohne je geparst
+     * zu haben, und die Datei behaelt ihre alten Symbole.
+     */
+    erzwingeParse?: boolean;
+    /** Wie SYNAPSE_SKIP_EMBEDDINGS=1, aber als Parameter statt als Umgebung. */
+    ohneEmbeddings?: boolean;
+  }
+): Promise<void> {
   const pool = getPool();
 
   // RACE-SCHUTZ (Cross-Process) ohne Outer-Lock:
@@ -291,6 +305,7 @@ export async function parseAndEmbed(project: string, filePath: string): Promise<
       [project, filePath]
     );
     if (
+      !opts?.erzwingeParse &&
       idemRow.rows[0]?.indexed_at &&
       idemRow.rows[0].unembedded === '0' &&
       idemRow.rows[0].min_embedded_at &&
@@ -701,9 +716,16 @@ export async function parseAndEmbed(project: string, filePath: string): Promise<
   // (1) pg_advisory_xact_lock serialisiert Calls auf (project, filePath).
   // (2) DELETE + INSERT in einer Transaktion → atomar.
   // (3) Single multi-VALUES INSERT statt N Einzel-Queries (auch schneller).
-  const chunks = chunkFile(content, filePath, project);
-  const chunksClient = await pool.connect();
-  try {
+  //
+  // REPARSE: Bei ohneEmbeddings bleibt dieser Block KOMPLETT aus. Chunks sind die
+  // Vorstufe der Vektoren und gehoeren zu ihnen — wer sie neu schreibt, setzt
+  // embedded_at auf NULL und loest damit genau den Reembed aus, den die Option
+  // verhindern soll (an code.ts nachgemessen: 74 Chunks fielen auf NULL).
+  // Zulaessig, weil das Chunking inhaltsbasiert ist: ein Parser-Update aendert
+  // den Dateiinhalt nicht, die vorhandenen Chunks bleiben also gueltig.
+  const chunks = opts?.ohneEmbeddings ? [] : chunkFile(content, filePath, project);
+  const chunksClient = opts?.ohneEmbeddings ? null : await pool.connect();
+  if (chunksClient) try {
     await chunksClient.query('BEGIN');
     await chunksClient.query('SELECT pg_advisory_xact_lock(hashtext($1))', [
       `chunks:${project}:${filePath}`,
@@ -743,7 +765,8 @@ export async function parseAndEmbed(project: string, filePath: string): Promise<
     chunksClient.release();
     return;
   }
-  chunksClient.release();
+  // Optional, weil der Block bei ohneEmbeddings gar keine Verbindung geholt hat.
+  chunksClient?.release();
 
   // ENTKOPPLUNG (Embedding-Lag): Sobald Symbole + Chunks in PG stehen, ist die
   // Datei strukturell fertig — code_intel (functions/symbols/statements) zeigt sie
@@ -767,7 +790,7 @@ export async function parseAndEmbed(project: string, filePath: string): Promise<
   // --- Embeddings generieren + in Qdrant einfuegen ---
   // SKIP wenn env SYNAPSE_SKIP_EMBEDDINGS=1 gesetzt — Parser-Symbole bleiben in PG,
   // aber kein Qdrant-Vektor-Update. Spart Embedding-API-Kosten bei Reparse-Iterationen.
-  const skipEmbeddings = process.env.SYNAPSE_SKIP_EMBEDDINGS === '1';
+  const skipEmbeddings = opts?.ohneEmbeddings === true || process.env.SYNAPSE_SKIP_EMBEDDINGS === '1';
   if (chunks.length > 0 && !skipEmbeddings) {
     const collectionName = await ensureProjectCollection(project);
 
@@ -983,6 +1006,95 @@ export async function resetProjectParse(project: string): Promise<{
   );
 
   return { project, filesReset: res.rowCount ?? 0 };
+}
+
+/**
+ * REPARSE-1: Symbole, Statements und Call-Kanten eines Projekts neu erzeugen,
+ * OHNE die Embeddings anzufassen.
+ *
+ * WARUM DAS ERLAUBT IST: Das Chunking ist rein inhaltsbasiert (Zeichenlaenge +
+ * Ueberlappung, siehe ../chunking/index.js), und der Qdrant-Payload enthaelt
+ * file_path, chunk_index, content und Zeilenbereich — keine Symbole. Aendert
+ * sich nur der PARSER, sind Chunks und Vektoren unveraendert gueltig. Ein
+ * Reembed waere reine Verschwendung.
+ *
+ * ABGRENZUNG:
+ *   resetProjectEmbeddings() — Vektoren weg, Parse bleibt (Modellwechsel).
+ *   resetProjectParse()      — beides weg, Backlog macht alles neu (teuer).
+ *   reparseProject()         — nur der Parse, sofort und gezielt (dieses hier).
+ *
+ * WICHTIG: Laeuft mit erzwingeParse, umgeht also bewusst den Idempotenz-Skip.
+ * Ohne das wuerde bei jeder sauber embeddeten Datei nichts passieren.
+ *
+ * @param extensions optional, z.B. ['cpp','hpp'] — ohne Punkt, ohne Filter alle.
+ * @param nurVeraltete optional: nur Dateien, deren parser_version kleiner ist
+ *        als die des zustaendigen Parsers. NULL zaehlt hier MIT — anders als im
+ *        Backlog, denn hier hat jemand den Reparse ausdruecklich angefordert.
+ */
+export async function reparseProject(
+  projectName: string,
+  optionen?: { extensions?: string[]; nurVeraltete?: boolean }
+): Promise<{ project: string; geplant: number; erfolgreich: number; fehlgeschlagen: number; fehler: string[] }> {
+  const pool = getPool();
+  const params: unknown[] = [projectName];
+  let where = 'project = $1 AND content IS NOT NULL';
+
+  if (optionen?.extensions?.length) {
+    params.push(optionen.extensions.map(e => e.replace(/^\./, '').toLowerCase()));
+    where += ` AND lower(reverse(split_part(reverse(file_path), '.', 1))) = ANY($${params.length}::text[])`;
+  }
+
+  if (optionen?.nurVeraltete) {
+    const { getVersionierteExtensions } = await import('../parser/index.js');
+    const versioniert = getVersionierteExtensions();
+    if (versioniert.length === 0) {
+      return { project: projectName, geplant: 0, erfolgreich: 0, fehlgeschlagen: 0, fehler: [] };
+    }
+    params.push(versioniert.map(v => v.extension), versioniert.map(v => v.version));
+    where += ` AND EXISTS (
+      SELECT 1 FROM unnest($${params.length - 1}::text[], $${params.length}::int[]) AS pv(ext, ver)
+       WHERE pv.ext = lower(reverse(split_part(reverse(code_files.file_path), '.', 1)))
+         AND (code_files.parser_version IS NULL OR code_files.parser_version < pv.ver))`;
+  }
+
+  const { rows } = await pool.query(
+    `SELECT file_path FROM code_files WHERE ${where} ORDER BY file_path`,
+    params
+  );
+
+  console.error(`[Synapse] Reparse "${projectName}": ${rows.length} Dateien, Embeddings bleiben unangetastet.`);
+
+  let erfolgreich = 0;
+  let fehlgeschlagen = 0;
+  const fehler: string[] = [];
+  for (const row of rows) {
+    try {
+      await parseAndEmbed(projectName, row.file_path, { erzwingeParse: true, ohneEmbeddings: true });
+      erfolgreich++;
+      if (erfolgreich % 50 === 0) {
+        console.error(`[Synapse] Reparse "${projectName}": ${erfolgreich}/${rows.length}`);
+      }
+    } catch (err) {
+      fehlgeschlagen++;
+      // Nur die ersten Meldungen sammeln — der Aufrufer soll eine Antwort
+      // bekommen, keinen Roman. Vollstaendig steht alles im Log.
+      if (fehler.length < 10) fehler.push(`${row.file_path}: ${String(err)}`);
+      console.error(`[Synapse] Reparse FEHLER ${row.file_path}:`, err);
+    }
+  }
+
+  // Cross-File-Verweise haengen an den neuen Symbol-IDs und muessen mit.
+  try {
+    const verknuepft = await linkCrossFileReferences(projectName);
+    console.error(`[Synapse] Reparse "${projectName}": ${verknuepft} Cross-File-Verweise neu verknuepft.`);
+  } catch (err) {
+    console.error('[Synapse] Cross-File-Verknuepfung nach Reparse fehlgeschlagen:', err);
+  }
+
+  console.error(
+    `[Synapse] Reparse "${projectName}" fertig: ${erfolgreich} erfolgreich, ${fehlgeschlagen} fehlgeschlagen.`
+  );
+  return { project: projectName, geplant: rows.length, erfolgreich, fehlgeschlagen, fehler };
 }
 
 export async function parseUnparsedFiles(projectName: string): Promise<number> {

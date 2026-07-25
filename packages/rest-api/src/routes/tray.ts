@@ -16,7 +16,7 @@
  */
 
 import { FastifyInstance } from 'fastify';
-import { getPool, resetProjectEmbeddings } from '@synapse/core';
+import { getPool, resetProjectEmbeddings, reparseProject } from '@synapse/core';
 
 /** Obergrenze fuer alle Listen-Endpunkte — schuetzt vor versehentlichen Vollscans. */
 const MAX_LIMIT = 500;
@@ -136,6 +136,64 @@ export async function trayRoutes(fastify: FastifyInstance): Promise<void> {
         order: sinceId === null ? 'desc' : 'asc',
         count: rows.length,
         messages: rows,
+      };
+    }
+  );
+
+  /**
+   * POST /api/projects/:name/reparse  (REPARSE-2)
+   *
+   * Erzeugt Symbole, Statements und Call-Kanten neu — OHNE die Embeddings
+   * anzufassen. Fuer den Fall, dass ein Parser besser geworden ist: der
+   * Dateiinhalt hat sich nicht geaendert, die Chunks und Vektoren bleiben
+   * gueltig, nur die abgeleiteten Symbole sind veraltet.
+   *
+   * ABGRENZUNG, damit niemand den teuren Weg waehlt:
+   *   reindex  verwirft Parse UND Embeddings (kostet Rechenzeit und Geld)
+   *   reembed  verwirft nur die Vektoren (nach einem Modellwechsel)
+   *   reparse  erzeugt nur die Symbole neu (dieser Endpunkt)
+   *
+   * Body optional: { extensions: ["cpp","hpp"], nur_veraltete: true }.
+   * nur_veraltete nimmt auch Dateien mit parser_version NULL mit — anders als
+   * der Backlog, denn hier hat jemand den Reparse ausdruecklich angefordert.
+   *
+   * Antwortet SOFORT, der Lauf geht im Hintergrund weiter.
+   */
+  fastify.post<{
+    Params: { name: string };
+    Body?: { extensions?: string[]; nur_veraltete?: boolean };
+  }>(
+    '/api/projects/:name/reparse',
+    async (request, reply) => {
+      const { name } = request.params;
+      const { rows } = await getPool().query(
+        'SELECT 1 FROM projects WHERE name = $1',
+        [name]
+      );
+      if (rows.length === 0) {
+        return reply.code(404).send({
+          success: false,
+          error: 'project_not_found',
+          message: `Projekt "${name}" ist nicht registriert.`,
+        });
+      }
+
+      const extensions = request.body?.extensions;
+      const nurVeraltete = request.body?.nur_veraltete === true;
+
+      void reparseProject(name, { extensions, nurVeraltete }).catch((err) => {
+        request.log.error({ err }, 'reparse abgebrochen');
+      });
+
+      return {
+        success: true,
+        project: name,
+        message:
+          `Reparse fuer "${name}" gestartet` +
+          (extensions?.length ? ` (nur ${extensions.join(', ')})` : '') +
+          (nurVeraltete ? ', nur veraltete Parse-Staende' : '') +
+          '. Symbole werden neu erzeugt, die Embeddings bleiben unangetastet. ' +
+          'Der Lauf geht im Hintergrund weiter.',
       };
     }
   );

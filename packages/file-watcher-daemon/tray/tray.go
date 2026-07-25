@@ -1006,8 +1006,8 @@ func openDetail(name string) {
 	tabStatus := container.NewBorder(nil, container.NewHBox(btnRefS), nil, nil, statusForm)
 
 	// Tab 4: Aktionen
-	btnReindex := widget.NewButton("Neu indexieren", func() {
-		dialog.ShowConfirm("Neu indexieren?", fmt.Sprintf("Projekt '%s' komplett neu indexieren?", name), func(ok bool) {
+	btnReindex := widget.NewButton("Neu indexieren (alles)", func() {
+		dialog.ShowConfirm("Neu indexieren?", fmt.Sprintf("Projekt '%s' komplett neu indexieren?\n\nVerwirft Parse UND Embeddings: jede Datei wird neu eingelesen\nund neu embedded. Das kostet Rechenzeit und Geld.\n\nWenn nur ein Parser besser geworden ist, reicht 'Neu parsen'.", name), func(ok bool) {
 			if ok {
 				go func() {
 					u := fmt.Sprintf("http://127.0.0.1:%d/projects/%s/reindex", port, url.QueryEscape(name))
@@ -1038,6 +1038,48 @@ func openDetail(name string) {
 							return
 						}
 						dialog.ShowInformation("Reindex", meldung, w.Window)
+					})
+				}()
+			}
+		}, w.Window)
+	})
+
+	// REPARSE-3: Symbole neu erzeugen, Embeddings unangetastet lassen.
+	// Der Gegenpart zu "Neu indexieren": nach einer Parser-Verbesserung sind nur
+	// die abgeleiteten Symbole veraltet, der Dateiinhalt und damit die Vektoren
+	// sind unveraendert gueltig.
+	btnReparse := widget.NewButton("Neu parsen (nur Symbole)", func() {
+		dialog.ShowConfirm("Neu parsen?", fmt.Sprintf("Projekt '%s' neu parsen?\n\nErzeugt Symbole, Statements und Call-Kanten neu.\nDie Embeddings bleiben unangetastet — keine Kosten.\n\nSinnvoll, wenn ein Parser verbessert wurde und der\nbestehende Index noch die alten Symbole zeigt.", name), func(ok bool) {
+			if ok {
+				go func() {
+					u := fmt.Sprintf("http://127.0.0.1:%d/projects/%s/reparse", port, url.QueryEscape(name))
+					client := &http.Client{Timeout: 5 * time.Second}
+					resp, err := client.Post(u, "application/json", bytes.NewReader([]byte("{}")))
+					// Fehler NICHT verschlucken — siehe btnReindex: dort wurde frueher
+					// jeder Fehler geschluckt und trotzdem Erfolg gemeldet, weshalb
+					// monatelang niemand merkte, dass die Route gar nicht existierte.
+					var meldung string
+					var fehler error
+					if err != nil {
+						fehler = err
+					} else {
+						status := resp.StatusCode
+						resp.Body.Close()
+						switch {
+						case status == 404:
+							fehler = fmt.Errorf("Der Daemon kennt /projects/%s/reparse nicht (HTTP 404). Daemon zu alt?", name)
+						case status >= 400:
+							fehler = fmt.Errorf("Daemon antwortete mit HTTP %d.", status)
+						default:
+							meldung = "Reparse gestartet. Symbole werden neu erzeugt, die Embeddings bleiben unangetastet.\nFortschritt im Daemon-Log."
+						}
+					}
+					fyne.Do(func() {
+						if fehler != nil {
+							dialog.ShowError(fehler, w.Window)
+							return
+						}
+						dialog.ShowInformation("Reparse", meldung, w.Window)
 					})
 				}()
 			}
@@ -1124,6 +1166,7 @@ func openDetail(name string) {
 	})
 
 	tabAktionen := container.NewVBox(
+		btnReparse,
 		btnReindex,
 		btnReembed,
 		btnDelete,

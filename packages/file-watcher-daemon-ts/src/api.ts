@@ -22,7 +22,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import Fastify, { type FastifyInstance, type FastifyReply } from 'fastify';
-import { getPool, listChannels, getChannelMessages, postChannelMessage, listActiveAgents, listWrapperStatus, getWrapperStatus, removeWrapperStatus, resetProjectParse } from '@synapse/core';
+import { getPool, listChannels, getChannelMessages, postChannelMessage, listActiveAgents, listWrapperStatus, getWrapperStatus, removeWrapperStatus, resetProjectParse, reparseProject } from '@synapse/core';
 import type { WrapperStatusRow } from '@synapse/core';
 import { readStatus, removeSpecialist } from '@synapse/agents';
 import type { WatcherManager } from './manager.js';
@@ -212,6 +212,47 @@ export function buildApi(opts: BuildApiOptions): FastifyInstance {
         reply.code(500);
         return { ok: false, error: (err as Error).message };
       }
+    },
+  );
+
+  // ---- POST /projects/:name/reparse --------------------------------------
+  // REPARSE-2: Symbole neu erzeugen, Embeddings NICHT anfassen.
+  //
+  // Unterschied zu /reindex, der wichtig ist: reindex verwirft Parse UND
+  // Embeddings — jede Datei wird neu eingelesen und neu embedded, das kostet
+  // Rechenzeit und Geld. reparse erzeugt nur Symbole, Statements und
+  // Call-Kanten neu und laesst die Vektoren in Ruhe. Nach einer
+  // Parser-Verbesserung ist genau das gewollt: der Dateiinhalt hat sich nicht
+  // geaendert, die Chunks sind unveraendert gueltig.
+  //
+  // ANTWORTET SOFORT: ein Reparse ueber tausende Dateien laeuft laenger als
+  // jedes HTTP-Timeout. Fortschritt steht im Daemon-Log.
+  app.post<{
+    Params: { name: string };
+    Body?: { extensions?: string[]; nur_veraltete?: boolean };
+  }>(
+    '/projects/:name/reparse',
+    async (req, reply) => {
+      const { name } = req.params;
+      if (!manager.status(name)) {
+        reply.code(404);
+        return { error: 'unknown project' };
+      }
+      const extensions = req.body?.extensions;
+      const nurVeraltete = req.body?.nur_veraltete === true;
+
+      // Bewusst NICHT awaited — der Aufrufer bekommt sofort Antwort.
+      void reparseProject(name, { extensions, nurVeraltete }).catch((err) => {
+        console.error(`[Synapse] Reparse "${name}" abgebrochen:`, err);
+      });
+
+      return {
+        ok: true,
+        project: name,
+        message:
+          'Reparse gestartet. Symbole werden neu erzeugt, die Embeddings bleiben unangetastet. ' +
+          'Fortschritt im Daemon-Log.',
+      };
     },
   );
 
