@@ -103,6 +103,27 @@ function extractFlowCpp(content: string): { statements: ParsedStatement[]; callE
     return close >= 0 && text.slice(close + 1).trim() === ';';
   }
 
+  // Zerlegt einen Kontrollfluss-Kopf in Bedingung und Rest der Zeile.
+  // cond = alles zwischen der ersten '(' nach dem Keyword und der zugehoerigen ')'.
+  //        Vorher fraß /kw\s*\((.+)/ gierig bis Zeilenende und schnitt nur eine ')'
+  //        am Zeilenende ab — bei 'if (!f(a)) return;' blieb der Rumpf in der Bedingung.
+  // rest = was dahinter noch auf der Zeile steht, ohne umschliessende Braces.
+  function kopfAufteilenCpp(line: string, keyword: string): { cond?: string; rest: string } {
+    const kw = new RegExp(`\\b${keyword}\\s*\\(`).exec(line);
+    if (!kw) return { rest: '' };
+    const openIdx = kw.index + kw[0].length - 1;
+    const close = matchParenCpp(line, openIdx);
+    if (close < 0) {
+      const roh = line.slice(openIdx + 1).trim();
+      return { cond: roh ? roh.slice(0, 200) : undefined, rest: '' };
+    }
+    const cond = line.slice(openIdx + 1, close).trim();
+    let rest = line.slice(close + 1).trim();
+    if (rest.startsWith('{')) rest = rest.slice(1).trim();
+    if (rest.endsWith('}')) rest = rest.slice(0, -1).trim();
+    return { cond: cond ? cond.slice(0, 200) : undefined, rest };
+  }
+
   interface FuncBody { name: string; bodyOffset: number; bodyContent: string; }
   function findBodies(src: string): FuncBody[] {
     const stripped = stripComments(src);
@@ -146,21 +167,21 @@ function extractFlowCpp(content: string): { statements: ParsedStatement[]; callE
       }
 
       if (/^\s*if\s*\(/.test(line)) {
-        const cm = line.match(/if\s*\((.+)/); const cond = cm ? cm[1].replace(/\)\s*\{?\s*$/, '').slice(0, 200) : undefined;
+        const { cond } = kopfAufteilenCpp(line, 'if');
         const st = emit('if', 'IfStatement', { condition_text: cond });
         if (cond) extractCalls(cond, st.temp_id, scopeName, fileLine);
       } else if (/^\s*for\s*\(/.test(line)) {
-        const cm = line.match(/for\s*\((.+)/); const cond = cm ? cm[1].replace(/\)\s*\{?\s*$/, '').slice(0, 200) : undefined;
+        const { cond } = kopfAufteilenCpp(line, 'for');
         const st = emit('for', 'ForStatement', { condition_text: cond });
         if (cond) extractCalls(cond, st.temp_id, scopeName, fileLine);
       } else if (/^\s*while\s*\(/.test(line)) {
-        const cm = line.match(/while\s*\((.+)/); const cond = cm ? cm[1].replace(/\)\s*\{?\s*$/, '').slice(0, 200) : undefined;
+        const { cond } = kopfAufteilenCpp(line, 'while');
         const st = emit('while', 'WhileStatement', { condition_text: cond });
         if (cond) extractCalls(cond, st.temp_id, scopeName, fileLine);
       } else if (/^\s*do\s*\{/.test(line)) {
         emit('do', 'DoStatement');
       } else if (/^\s*switch\s*\(/.test(line)) {
-        const cm = line.match(/switch\s*\((.+)/); const cond = cm ? cm[1].replace(/\)\s*\{?\s*$/, '').slice(0, 200) : undefined;
+        const { cond } = kopfAufteilenCpp(line, 'switch');
         const st = emit('switch', 'SwitchStatement', { condition_text: cond });
         if (cond) extractCalls(cond, st.temp_id, scopeName, fileLine);
       } else if (/^\s*try\s*\{/.test(line)) {
