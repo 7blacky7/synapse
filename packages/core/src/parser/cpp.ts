@@ -67,6 +67,42 @@ function extractFlowCpp(content: string): { statements: ParsedStatement[]; callE
     }
   }
 
+  // Findet zur oeffnenden Klammer bei openIdx die passende schliessende Klammer.
+  // Zaehlt Verschachtelung und ueberspringt String-/Char-Literale samt Escapes.
+  // -1 wenn die Klammer im uebergebenen Text nicht geschlossen wird.
+  function matchParenCpp(s: string, openIdx: number): number {
+    let depth = 0;
+    for (let i = openIdx; i < s.length; i++) {
+      const ch = s[i];
+      if (ch === '"' || ch === "'") {
+        const quote = ch;
+        i++;
+        while (i < s.length && s[i] !== quote) {
+          if (s[i] === '\\') i++;
+          i++;
+        }
+        continue;
+      }
+      if (ch === '(') depth++;
+      else if (ch === ')') {
+        depth--;
+        if (depth === 0) return i;
+      }
+    }
+    return -1;
+  }
+
+  // Ist das Segment ein reines Aufruf-Statement? Kopf, balancierte Klammer,
+  // danach nur noch ';'. Ersetzt \([^)]*\), das jede ')' im Argument verbot und
+  // damit jeden Aufruf mit verschachteltem Aufruf komplett durchfallen liess.
+  function istCallStatement(text: string): boolean {
+    const kopf = /^(?:\w[\w.*\[\]:>-]*::)?(?:\w[\w.*\[\]:>-]*\s*(?:->|\.)\s*)*[A-Za-z_]\w*\s*(?:<[^<>()]*>)?\s*\(/.exec(text);
+    if (!kopf) return false;
+    const openIdx = kopf[0].lastIndexOf('(');
+    const close = matchParenCpp(text, openIdx);
+    return close >= 0 && text.slice(close + 1).trim() === ';';
+  }
+
   interface FuncBody { name: string; bodyOffset: number; bodyContent: string; }
   function findBodies(src: string): FuncBody[] {
     const stripped = stripComments(src);
@@ -152,7 +188,7 @@ function extractFlowCpp(content: string): { statements: ParsedStatement[]; callE
         const nm = trimmed.match(/\bnew\s+(\w+)/);
         const st = emit('new', 'NewExpression', { callee: nm ? nm[1] : undefined });
         extractCalls(trimmed, st.temp_id, scopeName, fileLine);
-      } else if (/^\s*(?:\w[\w.*\[\]:>-]*::)?(?:\w[\w.*\[\]:>-]*\s*(?:->|\.))*\s*\w+\s*\([^)]*\)\s*;/.test(line) && !/^\s*(?:if|for|while|switch|return|throw|try|catch)/.test(line)) {
+      } else if (!/^\s*(?:if|for|while|switch|return|throw|try|catch)\b/.test(line) && istCallStatement(trimmed)) {
         const cm2 = trimmed.match(/(?:(\w[\w.*\[\]:>-]*)(?:->|\.))?(\w+)\s*\(/);
         if (cm2) {
           const st = emit('call', 'CallExpression', { callee: cm2[2], receiver: cm2[1] || undefined });
