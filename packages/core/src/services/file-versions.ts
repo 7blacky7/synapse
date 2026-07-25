@@ -86,18 +86,26 @@ export async function getFileVersion(
  */
 export async function restoreFileVersion(
   versionId: string | number,
-  agentId?: string
+  agentId?: string,
+  reason?: string
 ): Promise<{ project: string; file_path: string; restored_from: string }> {
   const version = await getFileVersion(versionId);
   if (!version) {
     throw new Error(`Version ${versionId} nicht gefunden.`);
   }
+  // reason geht als eigener Parameter in die Version, NICHT in edit_action:
+  // dort steht `restore:<id>` und liefert der Anzeige Aktion und Quellversion.
+  // Frueher wurde gar kein reason gesetzt — im Events-Tab war beim Zurueckrollen
+  // deshalb nie zu erkennen, WARUM es passiert ist. Genau dort ist die Frage am
+  // dringendsten, weil ein Restore immer so aussieht, als sei etwas schiefgegangen.
   await updateFileInPg(
     version.project,
     version.file_path,
     version.content,
     agentId,
-    `restore:${version.id}`
+    `restore:${version.id}`,
+    undefined,
+    reason
   );
   return {
     project: version.project,
@@ -208,7 +216,8 @@ export async function listBatchVersions(
  */
 export async function restoreBatch(
   batchId: string | number,
-  agentId?: string
+  agentId?: string,
+  reason?: string
 ): Promise<Array<{ project: string; file_path: string; restored_from: string }>> {
   const versions = await listBatchVersions(batchId);
   if (versions.length === 0) {
@@ -216,7 +225,9 @@ export async function restoreBatch(
   }
   const out: Array<{ project: string; file_path: string; restored_from: string }> = [];
   for (const v of versions) {
-    const r = await restoreFileVersion(v.id, agentId);
+    // Derselbe Grund an jede Datei der Batch — sonst traegt beim Zurueckrollen
+    // eines Multi-File-Sets nur ein Teil der Zeilen eine Erklaerung.
+    const r = await restoreFileVersion(v.id, agentId, reason);
     out.push(r);
   }
   return out;

@@ -3255,7 +3255,7 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
       }
       if (action === 'restore') {
         const versionId = reqStr(args, 'version_id');
-        const r = await restoreFileVersion(versionId, agentId);
+        const r = await restoreFileVersion(versionId, agentId, str(args, 'reason'));
         return {
           success: true,
           ...r,
@@ -3264,7 +3264,7 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
       }
       if (action === 'restore_batch') {
         const batchId = reqStr(args, 'batch_id');
-        const restored = await restoreBatch(batchId, agentId);
+        const restored = await restoreBatch(batchId, agentId, str(args, 'reason'));
         return {
           success: true,
           batch_id: batchId,

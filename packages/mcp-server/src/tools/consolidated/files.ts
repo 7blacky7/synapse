@@ -254,7 +254,7 @@ export const filesTool: ConsolidatedTool = {
     }
     if (action === 'restore') {
       const versionId = reqStr(args, 'version_id');
-      const r = await restoreFileVersion(versionId, agentId);
+      const r = await restoreFileVersion(versionId, agentId, reason);
       return {
         success: true,
         ...r,
@@ -263,7 +263,7 @@ export const filesTool: ConsolidatedTool = {
     }
     if (action === 'restore_batch') {
       const batchId = reqStr(args, 'batch_id');
-      const restored = await restoreBatch(batchId, agentId);
+      const restored = await restoreBatch(batchId, agentId, reason);
       return {
         success: true,
         batch_id: batchId,
