@@ -1048,8 +1048,8 @@ func openDetail(name string) {
 	// Der Gegenpart zu "Neu indexieren": nach einer Parser-Verbesserung sind nur
 	// die abgeleiteten Symbole veraltet, der Dateiinhalt und damit die Vektoren
 	// sind unveraendert gueltig.
-	btnReparse := widget.NewButton("Neu parsen (nur Symbole)", func() {
-		dialog.ShowConfirm("Neu parsen?", fmt.Sprintf("Projekt '%s' neu parsen?\n\nErzeugt Symbole, Statements und Call-Kanten neu.\nDie Embeddings bleiben unangetastet — keine Kosten.\n\nSinnvoll, wenn ein Parser verbessert wurde und der\nbestehende Index noch die alten Symbole zeigt.", name), func(ok bool) {
+	btnReparse := widget.NewButton("Neu parsen (ohne Embeddings)", func() {
+		dialog.ShowConfirm("Neu parsen?", fmt.Sprintf("Projekt '%s' neu parsen?\n\nErzeugt ALLES neu, was der Parser liefert:\nFunktionen, Klassen, Variablen, Importe, Strings,\nStatements, Aufruf-Kanten und Cross-File-Verweise.\n\nNur die Embeddings bleiben unangetastet — deshalb\nkostet es nichts. Sinnvoll, wenn ein Parser verbessert\nwurde und der Index noch den alten Stand zeigt.", name), func(ok bool) {
 			if ok {
 				go func() {
 					u := fmt.Sprintf("http://127.0.0.1:%d/projects/%s/reparse", port, url.QueryEscape(name))
