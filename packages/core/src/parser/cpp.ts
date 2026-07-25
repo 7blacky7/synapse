@@ -28,6 +28,55 @@ function lineAtCpp(text: string, pos: number): number {
   return text.substring(0, pos).split('\n').length;
 }
 
+// Ersetzt Kommentare durch Leerzeichen, bei gleichbleibender Laenge. Steht auf
+// Modulebene, weil sowohl extractFlowCpp als auch parse() darauf zugreifen.
+function stripComments(src: string): string {
+  return src
+    .replace(/\/\*[\s\S]*?\*\//g, m => m.replace(/[^\n]/g, ' '))
+    .replace(/\/\/[^\n]*/g, m => ' '.repeat(m.length));
+}
+
+// Ersetzt den INHALT von Zeichenketten-, Zeichen- und Raw-String-Literalen durch
+// Leerzeichen, bei gleichbleibender Laenge — alle Positionen bleiben also gueltig.
+// Noetig, weil eine geschweifte Klammer in einem Literal (etwa "~B() {") sonst
+// beim Klammerzaehlen mitzaehlt und die Rumpf-Grenze verschiebt: die Funktion
+// verschluckt den nachfolgenden Code und dessen Statements landen im falschen
+// Scope. Ohne Fehlermeldung und ohne auffaellige Symbolzahl. (CPARSER-15 B1)
+function maskiereLiterale(src: string): string {
+  const aus = src.split('');
+  let i = 0;
+  while (i < src.length) {
+    const c = src[i];
+    // Raw-String: R"trenner( ... )trenner"
+    if (c === 'R' && src[i + 1] === '"') {
+      const klammer = src.indexOf('(', i + 2);
+      if (klammer !== -1 && klammer - (i + 2) < 20) {
+        const trenner = src.slice(i + 2, klammer);
+        const schluss = src.indexOf(')' + trenner + '"', klammer);
+        const bis = schluss === -1 ? src.length : schluss + trenner.length + 2;
+        for (let k = klammer + 1; k < bis && k < src.length; k++) {
+          if (src[k] !== '\n') aus[k] = ' ';
+        }
+        i = bis;
+        continue;
+      }
+    }
+    if (c === '"' || c === "'") {
+      let k = i + 1;
+      while (k < src.length) {
+        if (src[k] === '\\') { k += 2; continue; }
+        if (src[k] === c || src[k] === '\n') break;
+        k++;
+      }
+      for (let j = i + 1; j < k && j < src.length; j++) aus[j] = ' ';
+      i = k + 1;
+      continue;
+    }
+    i++;
+  }
+  return aus.join('');
+}
+
 function extractFlowCpp(content: string): { statements: ParsedStatement[]; callEdges: ParsedCallEdge[] } {
   const statements: ParsedStatement[] = [];
   const callEdges: ParsedCallEdge[] = [];
@@ -42,11 +91,6 @@ function extractFlowCpp(content: string): { statements: ParsedStatement[]; callE
     return cur;
   }
 
-  function stripComments(src: string): string {
-    return src
-      .replace(/\/\*[\s\S]*?\*\//g, m => m.replace(/[^\n]/g, ' '))
-      .replace(/\/\/[^\n]*/g, m => ' '.repeat(m.length));
-  }
 
   function extractCalls(expr: string, stmtId: string, scopeName: string | null, lineNo: number): void {
     const methodRe = /(\w+)\s*(?:->|\.)\s*(\w+)\s*\(/g;
@@ -190,7 +234,9 @@ function extractFlowCpp(content: string): { statements: ParsedStatement[]; callE
   // wird, besucht processBody nie — gemessen lagen so ueber 90 % einer Datei
   // ausserhalb jedes erkannten Bodys.
   function findBodies(src: string): FuncBody[] {
-    const stripped = stripComments(src);
+    // Literale mitmaskieren: eine Klammer in einer Zeichenkette darf die
+    // Rumpf-Grenzen nicht verschieben (CPARSER-15 B1).
+    const stripped = maskiereLiterale(stripComments(src));
 
     // class/struct-Bloecke, um Methoden ihren Typ zuzuordnen (scope_name).
     const typBloecke: { name: string; start: number; end: number }[] = [];
@@ -366,6 +412,19 @@ function extractFlowCpp(content: string): { statements: ParsedStatement[]; callE
         if (rest) verarbeiteRumpf(rest, st.temp_id);
       } else if (/^\s*try\s*\{/.test(line)) {
         emit('try', 'TryStatement');
+      } else if (/^\s*(?:break|continue)\s*;/.test(line)) {
+        // Sprunganweisungen sind eigenstaendige Statements. Ohne sie fehlt in einer
+        // Schleife oder einem switch genau der Teil, der den Ablauf steuert.
+        // (CPARSER-15 B3, zugleich CPARSER-8)
+        const wort = /^\s*break/.test(line) ? 'break' : 'continue';
+        emit(wort, wort === 'break' ? 'BreakStatement' : 'ContinueStatement');
+      } else if (/^\s*goto\s+\w+\s*;/.test(line)) {
+        emit('goto', 'GotoStatement');
+      } else if (/^\s*(?:case\s+[^:;]+|default)\s*:/.test(line)) {
+        // case- und default-Label. Das Muster verlangt den Doppelpunkt und trifft
+        // deshalb weder "= default;" noch Zugriffslabel wie public:.
+        const cm3 = trimmed.match(/^case\s+([^:;]+?)\s*:/);
+        emit('case', 'SwitchCase', { condition_text: cm3 ? cm3[1].slice(0, 120) : undefined });
       } else if (/^\s*throw\b/.test(line)) {
         const st = emit('throw', 'ThrowStatement');
         extractCalls(trimmed.replace(/^throw\s*/, '').replace(/;$/, ''), st.temp_id, scopeName, fileLine);
@@ -373,14 +432,30 @@ function extractFlowCpp(content: string): { statements: ParsedStatement[]; callE
         const expr = trimmed.replace(/^return\s*/, '').replace(/;$/, '');
         const st = emit('return', 'ReturnStatement');
         if (expr) extractCalls(expr, st.temp_id, scopeName, fileLine);
-      } else if (/^\s*\w[\w.*\[\]:>-]*\s*(?:[+*/%&|^-]?=)\s*.+;/.test(line) && !/^\s*(?:if|for|while|switch|return|throw|try|catch)/.test(line)) {
-        const am = trimmed.match(/^(\w[\w.*\[\]:>-]*)\s*(?:[+*/%&|^-]?=)\s*(.+);/);
+      } else if (/^\s*\w[\w.*:>-]*(?:\[(?:[^\[\]\n]|\[[^\[\]\n]*\])*\][\w.*:>-]*)*\s*(?:[+*/%&|^-]?=)\s*.+;/.test(line) && !/^\s*(?:if|for|while|switch|return|throw|try|catch)/.test(line)) {
+        // Der Index darf beliebige Zeichen enthalten, etwa eine Zeichenkette oder
+        // einen Aufruf: karte["schluessel"] = 1; oder liste[f(x)] = y;
+        // Die alte Zeichenklasse kannte nur Wortzeichen im Index. (CPARSER-15 B8)
+        const am = trimmed.match(/^(\w[\w.*:>-]*(?:\[(?:[^\[\]\n]|\[[^\[\]\n]*\])*\][\w.*:>-]*)*)\s*(?:[+*/%&|^-]?=)\s*(.+);/);
         if (am) {
           const st = emit('assignment', 'AssignmentExpression', { assigned_to: am[1].slice(0, 120) });
           extractCalls(am[2], st.temp_id, scopeName, fileLine);
         }
-      } else if (/^\s*(?:auto|const|int|long|short|unsigned|signed|float|double|bool|char|std::\w+|string|vector|map|set|unique_ptr|shared_ptr)\s+\w+/.test(line)) {
-        const vm = trimmed.match(/\w+\s+\*?(\w+)\s*(?:=|{)\s*(.+?)[;{]?$/);
+      } else if (/^\s*(?:auto|const|int|long|short|unsigned|signed|float|double|bool|char|std::\w+|string|vector|map|set|unique_ptr|shared_ptr)(?:\s*<[^;{}]*>)?\s*[*&]?\s+\w+/.test(line)) {
+        // Zwei Erweiterungen (CPARSER-15 B7): der Typ darf Template-Argumente
+        // tragen (nach std::map folgt eine spitze Klammer, kein Leerzeichen), und
+        // eine Deklaration OHNE Initialisierung ist ebenfalls ein Statement —
+        // std::map<std::string, int> ergebnis; wurde bisher gar nicht erfasst.
+        // Der Name ist das letzte Wort vor Gleichheitszeichen, Klammer oder Semikolon.
+        // Erst das bewaehrte Muster fuer Deklarationen MIT Initialisierung. Es
+        // laesst das Semikolon bewusst optional, damit mehrzeilige Deklarationen
+        // wie "auto x = f(" erhalten bleiben.
+        let vm = trimmed.match(/\w+\s+\*?(\w+)\s*(?:=|{)\s*(.+?)[;{]?$/);
+        // Nur wenn das nicht greift: reine Deklaration OHNE Initialisierung,
+        // etwa std::map<std::string, int> ergebnis; (CPARSER-15 B7)
+        // Auch "Typ name(argumente);" — Initialisierung ueber den Konstruktor
+        // statt ueber ein Gleichheitszeichen, etwa std::unique_ptr<char[]> p(new char[n]);
+        if (!vm) vm = trimmed.match(/[\w>*&\]]\s*\**&?\s*(\w+)\s*[;(]/);
         if (vm) {
           const st = emit('variable', 'VariableDeclaration', { assigned_to: vm[1].slice(0, 120) });
           if (vm[2]) extractCalls(vm[2], st.temp_id, scopeName, fileLine);
@@ -389,6 +464,17 @@ function extractFlowCpp(content: string): { statements: ParsedStatement[]; callE
         const nm = trimmed.match(/\bnew\s+(\w+)/);
         const st = emit('new', 'NewExpression', { callee: nm ? nm[1] : undefined });
         extractCalls(trimmed, st.temp_id, scopeName, fileLine);
+      } else if (/^\s*(?!return\b|delete\b|new\b|throw\b|case\b|goto\b|else\b|using\b|typedef\b|friend\b|public\b|private\b|protected\b|template\b|namespace\b|class\b|struct\b|enum\b|union\b|operator\b)[A-Za-z_]\w*(?:::[A-Za-z_]\w*)*(?:\s*<[^;{}<>]*(?:<[^;{}<>]*>)?[^;{}<>]*>)?(?:\s*[*&]+)?\s+([A-Za-z_]\w*)\s*(?:;|=[^=]|\([^;()]*\)\s*;)/.test(line)) {
+        // Deklaration mit BENUTZERDEFINIERTEM Typ, etwa Behaelter b(5, "test");
+        // Der Zweig darueber prueft gegen eine feste Liste von Typwoertern, in der
+        // eigene Klassennamen naturgemaess nie stehen. Die Abgrenzung zum Aufruf ist
+        // strukturell: eine Deklaration hat ZWEI durch Leerzeichen getrennte Woerter
+        // vor der Klammer, ein Aufruf nur eines. (CPARSER-15 B9)
+        const dm = trimmed.match(/^\w[\w:]*(?:\s*<[^;{}<>]*(?:<[^;{}<>]*>)?[^;{}<>]*>)?(?:\s*[*&]+)?\s+([A-Za-z_]\w*)\s*(?:=\s*([^;]+))?/);
+        if (dm) {
+          const st = emit('variable', 'VariableDeclaration', { assigned_to: dm[1].slice(0, 120) });
+          if (dm[2]) extractCalls(dm[2], st.temp_id, scopeName, fileLine);
+        }
       } else if (!/^\s*(?:if|for|while|switch|return|throw|try|catch)\b/.test(line) && istCallStatement(trimmed)) {
         const cm2 = trimmed.match(/(?:(\w[\w.*\[\]:>-]*)(?:->|\.))?(\w+)\s*\(/);
         if (cm2) {
@@ -431,8 +517,26 @@ class CppParser implements LanguageParser {
    * 2 = Klammer-Scanner im Call-Zweig, condition_text balanciert, Rumpf hinter
    *     einzeiligem Kopf, findBodies erkennt Methoden und mehrzeilige Signaturen,
    *     methodRe ohne katastrophales Backtracking.
+   * 3 = Parameterlisten duerfen eine Ebene verschachtelte Klammern enthalten,
+   *     damit Funktionszeiger-Parameter wie void(*cb)(int) das Funktionssymbol
+   *     nicht mehr verhindern (CPARSER-11).
+   * 4 = Destruktoren, operator-Ueberladungen und Konstruktoren mit
+   *     Initialisierungsliste werden als Funktionssymbole erfasst (CPARSER-12).
+   * 5 = Zeichenketten-, Zeichen- und Raw-String-Literale werden beim
+   *     Klammerzaehlen uebersprungen, damit eine Klammer im Literal die
+   *     Rumpf-Grenze nicht verschiebt (CPARSER-15 B1).
+   * 6 = break, continue, goto sowie case- und default-Label werden als eigene
+   *     Statements erfasst (CPARSER-15 B3, zugleich CPARSER-8).
+   * 7 = Komma im Rueckgabetyp (Template-Argumente) bei freien Funktionen und
+   *     bei Klasse::Methode. methodRe bleibt bewusst unveraendert, dort
+   *     verschoebe dasselbe Komma nur die Fundstellen (CPARSER-15 B2).
+   * 8 = Deklarationen mit Template-Typ und ohne Initialisierung sowie
+   *     Zuweisungen an indizierte Ausdruecke mit beliebigem Index werden als
+   *     Statements erfasst (CPARSER-15 B7 und B8).
+   * 9 = Deklarationen mit benutzerdefiniertem Typ werden erfasst; die feste
+   *     Liste von Typwoertern kannte eigene Klassennamen nicht (CPARSER-15 B9).
    */
-  version = 2;
+  version = 9;
   extensions = ['.cpp', '.hpp', '.cc', '.cxx', '.hxx', '.hh'];
 
   parse(content: string, filePath: string): ParseResult {
@@ -440,6 +544,10 @@ class CppParser implements LanguageParser {
     const references: ParsedReference[] = [];
     let m: RegExpExecArray | null;
     const isHeader = /\.(?:hpp|hxx|hh|h)$/.test(filePath);
+    // Einmal je Datei: Kommentare und Literal-Inhalte maskiert, Laenge und damit
+    // alle Positionen unveraendert. Grundlage fuer das Klammerzaehlen in
+    // findClosingBrace (CPARSER-15 B1).
+    const maskiert = maskiereLiterale(stripComments(content));
 
     // ══════════════════════════════════════════════
     // 1. #include
@@ -493,9 +601,13 @@ class CppParser implements LanguageParser {
     const nsRe = /^namespace\s+(\w+)\s*\{/gm;
     while ((m = nsRe.exec(content)) !== null) {
       symbols.push({
+        // Der Namensraum wird unter SEINEM Namen abgelegt, nicht unter dem Wort
+        // "namespace" — vorher hiessen alle Eintraege gleich und der Namensraum war
+        // nicht auffindbar. symbol_type bleibt variable, weil das Schema keinen
+        // eigenen Typ dafuer kennt. (CPARSER-15 B6, Teilloesung)
         symbol_type: 'variable',
-        name: 'namespace',
-        value: m[1],
+        name: m[1],
+        value: 'namespace',
         line_start: lineAt(content, m.index),
         is_exported: true,
       });
@@ -510,7 +622,7 @@ class CppParser implements LanguageParser {
       const name = m[2];
       const baseClause = m[3];
       const lineStart = lineAt(content, m.index);
-      const lineEnd = this.findClosingBrace(content, m.index + m[0].length - 1);
+      const lineEnd = this.findClosingBrace(maskiert, m.index + m[0].length - 1);
 
       const bases: string[] = [];
       if (baseClause) {
@@ -574,7 +686,7 @@ class CppParser implements LanguageParser {
     // Jetzt ist Whitespace an jeder Stelle nur auf EINEM Weg konsumierbar:
     // zwischen Typ-Tokens als expliziter Trenner, und vor einem Qualifier, der
     // dann auch wirklich folgen muss.
-    const methodRe = /^([ \t]+)(?:(?:virtual|static|explicit|inline|constexpr|override|final|noexcept)\s+)*((?:const\s+)?\w[\w:<>*&]*(?:\s+[\w:<>*&]+)*?)\s+(\w+)\s*\(([^)]*)\)(?:\s*(?:const|noexcept|override|final))*\s*\{/gm;
+    const methodRe = /^([ \t]+)(?:(?:virtual|static|explicit|inline|constexpr|override|final|noexcept)\s+)*((?:const\s+)?\w[\w:<>*&]*(?:\s+[\w:<>*&]+)*?)\s+(\w+)\s*\(((?:[^()]|\([^()]*\))*)\)(?:\s*(?:const|noexcept|override|final))*\s*\{/gm;
     while ((m = methodRe.exec(content)) !== null) {
       const returnType = m[2].trim();
       const funcName = m[3];
@@ -593,14 +705,68 @@ class CppParser implements LanguageParser {
         params,
         return_type: returnType,
         line_start: lineStart,
-        line_end: this.findClosingBrace(content, m.index + m[0].length - 1),
+        line_end: this.findClosingBrace(maskiert, m.index + m[0].length - 1),
         is_exported: isHeader,
         parent_id: parentType,
       });
     }
 
+    // Destruktoren — erkennbar an der fuehrenden Tilde, kein Rueckgabetyp (CPARSER-12)
+    const dtorRe = /^([ \t]+)(?:virtual\s+)?~(\w+)\s*\(\s*\)\s*(?:override\s*)?(?:noexcept\s*)?\{/gm;
+    while ((m = dtorRe.exec(content)) !== null) {
+      symbols.push({
+        symbol_type: 'function',
+        name: '~' + m[2],
+        params: [],
+        return_type: '',
+        line_start: lineAt(content, m.index),
+        line_end: this.findClosingBrace(maskiert, m.index + m[0].length - 1),
+        is_exported: isHeader,
+        parent_id: this.findParentType(content, m.index),
+      });
+    }
+
+    // operator-Ueberladungen — erkennbar am Schluesselwort operator (CPARSER-12)
+    const operatorRe = /^([ \t]+)(?:([\w:<>*&,\s]+?)\s+)?operator\s*([^\s(]{1,3}|\(\))\s*\(((?:[^()]|\([^()]*\))*)\)\s*(?:const\s*)?(?:noexcept\s*)?\{/gm;
+    while ((m = operatorRe.exec(content)) !== null) {
+      symbols.push({
+        symbol_type: 'function',
+        name: 'operator' + m[3],
+        params: this.parseParams(m[4]),
+        return_type: (m[2] || '').trim(),
+        line_start: lineAt(content, m.index),
+        line_end: this.findClosingBrace(maskiert, m.index + m[0].length - 1),
+        is_exported: isHeader,
+        parent_id: this.findParentType(content, m.index),
+      });
+    }
+
+    // Konstruktoren mit Initialisierungsliste — Klammerpaar, Doppelpunkt, Initialisierer.
+    // Der Rumpf beginnt erst nach der Liste, deshalb wird bis zur oeffnenden Klammer gematcht.
+    // Aufrufe koennen hier nicht hineinrutschen: ein Aufruf hat keine Initialisierungsliste. (CPARSER-12)
+    const ctorInitRe = /^([ \t]+)(?:explicit\s+)?(\w+)\s*\(((?:[^()]|\([^()]*\))*)\)\s*:\s*[^;{]*\{/gm;
+    while ((m = ctorInitRe.exec(content)) !== null) {
+      const ctorName = m[2];
+      if (['if', 'for', 'while', 'switch', 'catch', 'return', 'do', 'else'].includes(ctorName)) continue;
+      symbols.push({
+        symbol_type: 'function',
+        name: ctorName,
+        params: this.parseParams(m[3]),
+        return_type: '',
+        line_start: lineAt(content, m.index),
+        line_end: this.findClosingBrace(maskiert, m.index + m[0].length - 1),
+        is_exported: isHeader,
+        parent_id: this.findParentType(content, m.index),
+      });
+    }
+
     // Free functions (top-level)
-    const freeFuncRe = /^(?:(?:inline|static|extern|constexpr|template\s*<[^>]+>\s*\n\s*)*)((?:const\s+)?(?:\w[\w:<>*&\s]*?))\s+(\w+)\s*\(([^)]*)\)(?:\s*(?:const|noexcept))*\s*\{/gm;
+    // Das Komma in der Zeichenklasse erlaubt Template-Argumente im Rueckgabetyp,
+    // etwa std::map<std::string, int> oder std::pair<A, B>. Ohne es wurde die
+    // Funktion GAR NICHT als Symbol erkannt. Klammern sind in der Klasse nicht
+    // enthalten, deshalb kann eine Parameterliste nicht als Typ gelesen werden.
+    // (CPARSER-15 B2)
+    const freeFuncRe = /^(?:(?:inline|static|extern|constexpr|template\s*<[^>]+>\s*\n\s*)*)((?:const\s+)?(?:\w[\w:<>*&,\s]*?))\s+(\w+)\s*\(((?:[^()]|\([^()]*\))*)\)(?:\s*(?:const|noexcept))*\s*\{/gm;
     while ((m = freeFuncRe.exec(content)) !== null) {
       const returnType = m[1].trim();
       const funcName = m[2];
@@ -621,13 +787,14 @@ class CppParser implements LanguageParser {
         params,
         return_type: returnType,
         line_start: lineStart,
-        line_end: this.findClosingBrace(content, m.index + m[0].length - 1),
+        line_end: this.findClosingBrace(maskiert, m.index + m[0].length - 1),
         is_exported: !m[0].includes('static'),
       });
     }
 
     // Scope-resolved methods: RetType ClassName::method(...)
-    const scopeMethodRe = /^((?:const\s+)?(?:\w[\w:<>*&\s]*?))\s+(\w+)::(\w+)\s*\(([^)]*)\)(?:\s*(?:const|noexcept))*\s*\{/gm;
+    // Komma im Rueckgabetyp, siehe freeFuncRe (CPARSER-15 B2).
+    const scopeMethodRe = /^((?:const\s+)?(?:\w[\w:<>*&,\s]*?))\s+(\w+)::(\w+)\s*\(((?:[^()]|\([^()]*\))*)\)(?:\s*(?:const|noexcept))*\s*\{/gm;
     while ((m = scopeMethodRe.exec(content)) !== null) {
       const returnType = m[1].trim();
       const className = m[2];
@@ -643,7 +810,7 @@ class CppParser implements LanguageParser {
         params,
         return_type: returnType,
         line_start: lineStart,
-        line_end: this.findClosingBrace(content, m.index + m[0].length - 1),
+        line_end: this.findClosingBrace(maskiert, m.index + m[0].length - 1),
         is_exported: true,
         parent_id: className,
       });
