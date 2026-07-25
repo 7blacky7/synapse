@@ -59,6 +59,13 @@ export interface DaemonConfig {
   projekte: ProjektConfig[];
   /** Optional: Root-Verzeichnis fuer Self-Service Project-Init via REST. */
   workspace_root?: string;
+  /**
+   * Felder, die NICHT dem Daemon gehoeren. Der Go-Tray legt in derselben Datei
+   * z.B. synapse_api_token ab. Sie werden hier nur durchgereicht, nie ausgewertet
+   * — aber sie muessen erhalten bleiben, sonst loescht der Daemon sie beim
+   * naechsten Speichern (siehe loadConfig).
+   */
+  [fremdesFeld: string]: unknown;
 }
 
 /** Basis-Verzeichnis: ~/.synapse/file-watcher */
@@ -113,6 +120,12 @@ export function loadConfig(): DaemonConfig {
       return defaultConfig();
     }
     const cfg: DaemonConfig = {
+      // Fremdfelder ZUERST uebernehmen, danach die eigenen validiert daruebersetzen.
+      // Ohne diesen Spread baute loadConfig ein Objekt aus nur den bekannten
+      // Feldern, und saveConfig schrieb genau das zurueck — alles andere war weg.
+      // So ist am 2026-07-25 das synapse_api_token des Trays verschwunden, das
+      // der Nutzer kurz zuvor eingerichtet hatte.
+      ...parsed,
       port: typeof parsed.port === 'number' ? parsed.port : DEFAULT_PORT,
       synapse_api_url:
         typeof parsed.synapse_api_url === 'string' && parsed.synapse_api_url
