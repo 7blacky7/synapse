@@ -446,13 +446,16 @@ export async function createFileInPg(
 ): Promise<{ warnings?: ErrorPatternWarning[] }> {
   const resolvedAgentId = resolveAgentId(agentId);
   let warnings: ErrorPatternWarning[] | undefined;
+  // Nebenlaeufig, aus demselben Grund wie in updateFileInPg: der Inhalt wird
+  // ungekuerzt embeddet, das darf den Schreibvorgang nicht aufhalten.
   if (resolvedAgentId) {
-    try {
-      const result = await checkErrorPatterns(content, resolvedAgentId);
-      if (result.length > 0) warnings = result;
-    } catch {
-      // non-blocking — ignore errors
-    }
+    void checkErrorPatterns(content, resolvedAgentId)
+      .then((treffer) => {
+        for (const w of treffer) {
+          console.error('[code-write] Fehlermuster (' + w.severity + ') bei ' + filePath + ': ' + w.description);
+        }
+      })
+      .catch(() => { /* nebenlaeufig — siehe updateFileInPg */ });
   }
 
   const { v4: uuidv4 } = await import('uuid');
@@ -530,17 +533,28 @@ export async function updateFileInPg(
 ): Promise<{ warnings?: ErrorPatternWarning[] }> {
   const resolvedAgentId = resolveAgentId(agentId);
   let warnings: ErrorPatternWarning[] | undefined;
-  // SYNC-1: Fuer FS-Aenderungen wird die Fehler-Pattern-Pruefung uebersprungen.
-  // checkErrorPatterns ruft embed() SYNCHRON auf — bei jedem Speichern im Editor
-  // waere das eine Embedding-Latenz mitten im Watcher-Pfad. Die Pruefung zielt auf
-  // agentengeschriebenen Inhalt, nicht auf Editor-Speicherungen.
+  // Die Fehlermuster-Pruefung laeuft NEBENLAEUFIG — ein Embedding hat im
+  // synchronen Schreibpfad nichts zu suchen.
+  //
+  // checkErrorPatterns embeddet den uebergebenen Inhalt ungekuerzt. Gemessen am
+  // 2026-07-25: 22 KB brauchten 5,0 s, 91 KB brauchten 21,7 s, ein
+  // search_replace auf derselben Datei 41,8 s — Groessenfaktor 4,1 bei
+  // Zeitfaktor 4,3, also etwa 0,24 ms pro Zeichen. Der Aufruf lag VOR der ersten
+  // PG-Verbindung: die Datenbank war nie blockiert, nur die Antwort des Tools.
+  // Da ein Multi-File-Plan mit auto_commit jede Datei einzeln committet, summierte
+  // sich das ungebremst — 60 Parser-Dateien dauerten rund 33 Minuten statt Sekunden.
+  //
+  // FS-Aenderungen bleiben ausgenommen: die Pruefung zielt auf agentengeschriebenen
+  // Inhalt, nicht auf Editor-Speicherungen. Treffer landen jetzt im Log, nicht mehr
+  // im Rueckgabewert — der Schreibvorgang ist vorbei, bevor das Ergebnis da ist.
   if (resolvedAgentId && resolvedAgentId !== FS_AGENT_ID) {
-    try {
-      const result = await checkErrorPatterns(newContent, resolvedAgentId);
-      if (result.length > 0) warnings = result;
-    } catch {
-      // non-blocking — ignore errors
-    }
+    void checkErrorPatterns(newContent, resolvedAgentId)
+      .then((treffer) => {
+        for (const w of treffer) {
+          console.error('[code-write] Fehlermuster (' + w.severity + ') bei ' + filePath + ': ' + w.description);
+        }
+      })
+      .catch(() => { /* nebenlaeufig — ein Fehler hier darf den Schreibvorgang nicht beruehren */ });
   }
 
   const pool = getPool();

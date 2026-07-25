@@ -3329,24 +3329,60 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
           }
           const committed: Array<{ file_path: string; batch_id: string; ops: number }> = [];
           const failed: Array<{ file_path: string; error: string; message: string }> = [];
-          for (const [filePath, fileOps] of byFile) {
-            try {
-              const plan = await planBatch({
-                project,
-                agent_id: agentId,
-                ops: fileOps,
-                open_for_coedit: typeof args.open_for_coedit === 'boolean' ? args.open_for_coedit as boolean : undefined,
-                reason: str(args, 'reason'),
-              });
-              const c = await commitBatch({ plan_id: plan.plan_id, agent_id: agentId, agent_note: str(args, 'agent_note') });
-              if (c.success) {
-                committed.push({ file_path: filePath, batch_id: String(c.batch_id ?? plan.plan_id), ops: fileOps.length });
-              } else {
-                failed.push({ file_path: filePath, error: c.error ?? 'commit_failed', message: c.message ?? 'commit failed' });
+
+          // Die Dateien sind voneinander unabhaengig: jede bekommt ihren eigenen Plan,
+          // ihren eigenen Commit und ihre eigene Sperre. Hintereinander abgearbeitet
+          // summierte sich hier jede Einzel-Latenz auf. Am 2026-07-25 brauchte EIN
+          // Aufruf ueber 60 Parser-Dateien so von 21:19 bis 21:52 — im Event-Log als
+          // 60 Batches im Abstand von 10-25 s sichtbar. Dass 50 Agenten mit
+          // gleichzeitigen Batch-Auftraegen in wenigen Sekunden durchliefen, zeigt:
+          // die Arbeit vertraegt Parallelitaet, sie wurde hier nur verhindert.
+          //
+          // Gedeckelt, weil der PG-Pool 20 Verbindungen hat und ein Commit mehrere
+          // davon braucht — ohne Deckel wuerden 100 Ops den Pool leerraeumen und
+          // andere Arbeit im selben Prozess ausbremsen.
+          type Ergebnis =
+            | { art: 'ok'; wert: { file_path: string; batch_id: string; ops: number } }
+            | { art: 'fehler'; wert: { file_path: string; error: string; message: string } };
+          const eintraege = [...byFile.entries()];
+          const ergebnisse: Array<Ergebnis | undefined> = new Array(eintraege.length);
+          const GLEICHZEITIG = 8;
+          let naechster = 0;
+
+          const arbeite = async (): Promise<void> => {
+            while (naechster < eintraege.length) {
+              const index = naechster++;
+              const [filePath, fileOps] = eintraege[index];
+              try {
+                const plan = await planBatch({
+                  project,
+                  agent_id: agentId,
+                  ops: fileOps,
+                  open_for_coedit: typeof args.open_for_coedit === 'boolean' ? args.open_for_coedit as boolean : undefined,
+                  reason: str(args, 'reason'),
+                });
+                const c = await commitBatch({ plan_id: plan.plan_id, agent_id: agentId, agent_note: str(args, 'agent_note') });
+                if (c.success) {
+                  ergebnisse[index] = { art: 'ok', wert: { file_path: filePath, batch_id: String(c.batch_id ?? plan.plan_id), ops: fileOps.length } };
+                } else {
+                  ergebnisse[index] = { art: 'fehler', wert: { file_path: filePath, error: c.error ?? 'commit_failed', message: c.message ?? 'commit failed' } };
+                }
+              } catch (err) {
+                ergebnisse[index] = { art: 'fehler', wert: { file_path: filePath, error: 'plan_failed', message: (err as Error).message } };
               }
-            } catch (err) {
-              failed.push({ file_path: filePath, error: 'plan_failed', message: (err as Error).message });
             }
+          };
+
+          await Promise.all(
+            Array.from({ length: Math.min(GLEICHZEITIG, eintraege.length) }, () => arbeite())
+          );
+
+          // Eingabe-Reihenfolge wiederherstellen, damit committed[] und failed[]
+          // dieselbe Ordnung haben wie vorher.
+          for (const e of ergebnisse) {
+            if (!e) continue;
+            if (e.art === 'ok') committed.push(e.wert);
+            else failed.push(e.wert);
           }
           return {
             success: failed.length === 0,
