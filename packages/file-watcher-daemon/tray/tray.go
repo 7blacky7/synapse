@@ -997,13 +997,33 @@ func openDetail(name string) {
 			if ok {
 				go func() {
 					u := fmt.Sprintf("http://127.0.0.1:%d/projects/%s/reindex", port, url.QueryEscape(name))
-					client := &http.Client{Timeout: 1 * time.Second}
+					client := &http.Client{Timeout: 5 * time.Second}
 					resp, err := client.Post(u, "application/json", bytes.NewReader([]byte("{}")))
-					if err == nil {
+					// Frueher wurde JEDER Fehler verschluckt und trotzdem "Reindex
+					// gestartet" gemeldet. Dadurch fiel nie auf, dass der Daemon diese
+					// Route gar nicht hat. Jetzt ehrlich melden was passiert ist.
+					var meldung string
+					var fehler error
+					if err != nil {
+						fehler = err
+					} else {
+						status := resp.StatusCode
 						resp.Body.Close()
+						switch {
+						case status == 404:
+							fehler = fmt.Errorf("Der Daemon kennt /projects/%s/reindex nicht (HTTP 404).", name)
+						case status >= 400:
+							fehler = fmt.Errorf("Daemon antwortete mit HTTP %d.", status)
+						default:
+							meldung = "Reindex gestartet. Fortschritt im Daemon-Log."
+						}
 					}
 					fyne.Do(func() {
-						dialog.ShowInformation("Reindex", "Reindex gestartet. Fortschritt im Daemon-Log.", w.Window)
+						if fehler != nil {
+							dialog.ShowError(fehler, w.Window)
+							return
+						}
+						dialog.ShowInformation("Reindex", meldung, w.Window)
 					})
 				}()
 			}
@@ -1032,8 +1052,42 @@ func openDetail(name string) {
 		}, w.Window)
 	})
 
+	// REEMBED-3: Nach einem Wechsel des Embedding-Modells sind die alten Vektoren
+	// wertlos (anderer Vektorraum) und bei abweichender Dimension unbrauchbar.
+	// Verwirft die Qdrant-Collection und laesst neu embedden — PostgreSQL bleibt
+	// inhaltlich unangetastet, zurueckgesetzt werden nur die Embedding-Marker.
+	btnReembed := widget.NewButton("Embeddings neu erzeugen", func() {
+		dialog.ShowConfirm(
+			"Embeddings neu erzeugen?",
+			fmt.Sprintf("Alle Code-Embeddings von '%s' verwerfen und neu erzeugen?\n\n"+
+				"Fuer den Fall dass das Embedding-Modell gewechselt wurde.\n"+
+				"Die Qdrant-Collection wird neu angelegt, PostgreSQL bleibt unveraendert\n"+
+				"(Inhalte, Symbole, Chunks und Versionen bleiben erhalten).\n\n"+
+				"Das Neu-Embedden laeuft danach im Hintergrund und kann dauern.", name),
+			func(ok bool) {
+				if !ok {
+					return
+				}
+				go func() {
+					res, err := apiReembedProject(name)
+					fyne.Do(func() {
+						if err != nil {
+							dialog.ShowError(err, w.Window)
+							return
+						}
+						if !res.Success {
+							dialog.ShowError(fmt.Errorf("%s: %s", res.Error, res.Message), w.Window)
+							return
+						}
+						dialog.ShowInformation("Embeddings zurueckgesetzt", res.Message, w.Window)
+					})
+				}()
+			}, w.Window)
+	})
+
 	tabAktionen := container.NewVBox(
 		btnReindex,
+		btnReembed,
 		btnDelete,
 	)
 
@@ -1067,6 +1121,21 @@ func (w *DetailWindow) ReloadAll() {
 }
 
 func (w *DetailWindow) ReloadAgenten() {
+	// TRAY-2: API zuerst. Der PG-Zweig darunter bleibt vorerst als LETZTER
+	// Fallback stehen, damit der Tray auch gegen eine Instanz laeuft, auf der
+	// die neuen Endpunkte noch nicht deployed sind. Entfaellt sobald TRAY-1 ueberall live ist.
+	if agents, apiErr := apiFetchAgents(w.ProjectName); apiErr == nil {
+		var apiRows [][]string
+		for _, a := range agents {
+			apiRows = append(apiRows, []string{a.AgentName, a.Model, a.Status, a.TokensPercent + "%", a.LastActivity})
+		}
+		fyne.Do(func() {
+			w.AgentRows = apiRows
+			w.AgentTable.Refresh()
+		})
+		return
+	}
+
 	rows, err := dbQuery("SELECT agent_name, COALESCE(model, ''), status, COALESCE(tokens_percent::text, '0'), COALESCE(last_activity::text, '') FROM wrapper_status WHERE project = $1 ORDER BY last_activity DESC NULLS LAST", w.ProjectName)
 	if err != nil {
 		return
@@ -1086,7 +1155,43 @@ func (w *DetailWindow) ReloadAgenten() {
 	})
 }
 
+// kuerzeAnzeige entfernt Zeilenumbrueche und begrenzt auf 200 Runen — identisch
+// fuer den API- und den PG-Zweig, damit beide dieselbe Darstellung liefern.
+func kuerzeAnzeige(s string) string {
+	s = strings.ReplaceAll(s, "\n", " ")
+	s = strings.ReplaceAll(s, "\r", " ")
+	r := []rune(s)
+	if len(r) > 200 {
+		return string(r[:200]) + "…"
+	}
+	return s
+}
+
 func (w *DetailWindow) ReloadEvents() {
+	filter := strings.ToLower(w.FilterEntry.Text)
+
+	// TRAY-2: API zuerst, PG als letzter Fallback (siehe ReloadAgenten).
+	if versions, apiErr := apiFetchFileVersions(w.ProjectName, 50); apiErr == nil {
+		var apiRows [][]string
+		for _, v := range versions {
+			if filter != "" {
+				haystack := strings.ToLower(v.AgentId + " " + v.FilePath + " " + v.Reason + " " + v.FeatureTag)
+				if !strings.Contains(haystack, filter) {
+					continue
+				}
+			}
+			apiRows = append(apiRows, []string{
+				v.CreatedAt, v.AgentId, v.FilePath, v.EditAction,
+				kuerzeAnzeige(v.Reason), kuerzeAnzeige(v.FeatureTag),
+			})
+		}
+		fyne.Do(func() {
+			w.EventRows = apiRows
+			w.EventTable.Refresh()
+		})
+		return
+	}
+
 	rows, err := dbQuery("SELECT COALESCE(agent_id, '<unbekannt>'), COALESCE(file_path, ''), COALESCE(edit_action, ''), COALESCE(reason, ''), COALESCE(feature_tag, ''), to_char(created_at, 'DD.MM. HH24:MI:SS') FROM file_versions WHERE project = $1 ORDER BY id DESC LIMIT 50", w.ProjectName)
 	if err != nil {
 		return

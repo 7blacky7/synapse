@@ -64,6 +64,8 @@ import {
   searchVectors,
   deleteByFilePath,
   updatePayloadByFilePath,
+  deleteCollection,
+  getCollectionVectorSize,
 } from '../qdrant/index.js';
 import { embed, embedBatch, embedMedia, supportsMultimodal } from '../embeddings/index.js';
 import { chunkFile } from '../chunking/index.js';
@@ -762,6 +764,90 @@ export async function embeddingPendingHint(
   return (await getEmbeddingPending(project, filePath))
     ? { embeddings_pending: true, embeddings_hint: EMBEDDING_PENDING_HINT }
     : {};
+}
+
+/**
+ * REEMBED-1: Alle Code-Embeddings eines Projekts verwerfen und neu erzeugen lassen.
+ *
+ * ANWENDUNGSFALL: Embedding-Modell gewechselt. Die alten Vektoren sind dann
+ * wertlos (anderer Vektorraum) und bei abweichender Dimension sogar unbrauchbar.
+ *
+ * WAS PASSIERT:
+ *   1. Qdrant-Code-Collection des Projekts wird GELOESCHT und neu angelegt.
+ *      Loeschen statt Leeren, weil ein neues Modell eine andere Vektor-Dimension
+ *      haben kann — ensureProjectCollection legt sie mit der aktuellen an.
+ *   2. code_chunks.embedded_at und code_files.indexed_at werden auf NULL gesetzt.
+ *
+ * WAS NICHT PASSIERT — PostgreSQL bleibt inhaltlich unangetastet:
+ *   code_files.content, code_symbols, code_chunks.content, code_statements,
+ *   code_call_edges und file_versions werden NICHT beruehrt. Es wird weder neu
+ *   eingelesen noch neu geparst — die Chunks stehen bereits in PG.
+ *
+ * WARUM die zwei Spalten trotzdem muessen: parseAndEmbed hat am Anfang einen
+ * Idempotenz-Skip (indexed_at gesetzt + 0 unembedded + min(embedded_at) >=
+ * indexed_at -> return). Ohne Reset dieser reinen Buchhaltungs-Marker kaeme jede
+ * Datei sofort mit "Already embedded" zurueck und es wuerde nichts neu embedded.
+ *
+ * DANACH: der Backlog uebernimmt von selbst. parseUnparsedFiles holt Dateien mit
+ * indexed_at IS NULL (Bedingung b) und laesst sie durch parseAndEmbed laufen —
+ * im Hintergrund, mit den bestehenden Worker-Limits.
+ *
+ * Idempotent: mehrfach aufrufbar.
+ */
+export async function resetProjectEmbeddings(project: string): Promise<{
+  project: string;
+  collection: string;
+  vectorSizeBefore: number | null;
+  vectorSizeAfter: number | null;
+  chunksReset: number;
+  filesReset: number;
+}> {
+  const pool = getPool();
+  const collection = COLLECTIONS.projectCode(project);
+
+  // Dimension vorher festhalten — macht einen Modellwechsel im Log sichtbar.
+  let vectorSizeBefore: number | null = null;
+  try {
+    vectorSizeBefore = await getCollectionVectorSize(collection);
+  } catch {
+    // Collection existiert evtl. noch gar nicht — kein Fehlerfall.
+  }
+
+  await deleteCollection(collection);
+  await ensureProjectCollection(project);
+
+  let vectorSizeAfter: number | null = null;
+  try {
+    vectorSizeAfter = await getCollectionVectorSize(collection);
+  } catch {
+    // Groesse ist nur informativ.
+  }
+
+  // Buchhaltung zuruecksetzen. parsed_at bleibt bewusst stehen: Symbole und
+  // Statements sind unveraendert gueltig, es soll NICHT neu geparst werden.
+  const chunksRes = await pool.query(
+    `UPDATE code_chunks SET embedded_at = NULL WHERE project = $1`,
+    [project]
+  );
+  const filesRes = await pool.query(
+    `UPDATE code_files SET indexed_at = NULL WHERE project = $1 AND content IS NOT NULL`,
+    [project]
+  );
+
+  console.error(
+    `[Synapse] Embeddings zurueckgesetzt fuer "${project}": ${chunksRes.rowCount} Chunks, ` +
+      `${filesRes.rowCount} Dateien. Dimension ${vectorSizeBefore ?? '?'} -> ${vectorSizeAfter ?? '?'}. ` +
+      `Backlog embedded im Hintergrund nach.`
+  );
+
+  return {
+    project,
+    collection,
+    vectorSizeBefore,
+    vectorSizeAfter,
+    chunksReset: chunksRes.rowCount ?? 0,
+    filesReset: filesRes.rowCount ?? 0,
+  };
 }
 
 export async function parseUnparsedFiles(projectName: string): Promise<number> {
