@@ -100,7 +100,12 @@ function extractFlowCpp(content: string): { statements: ParsedStatement[]; callE
     if (!kopf) return false;
     const openIdx = kopf[0].lastIndexOf('(');
     const close = matchParenCpp(text, openIdx);
-    return close >= 0 && text.slice(close + 1).trim() === ';';
+    if (close < 0) return false;
+    // Nach der Klammer darf nur noch das Semikolon stehen, ein nachgestellter
+    // Kommentar ist erlaubt. processBody arbeitet auf dem Original inklusive
+    // Kommentaren, deshalb ist 'f(x); // warum' ein realer Fall — wkv.cpp:199
+    // ging genau daran verloren.
+    return /^;(?:\s*(?:\/\/[^\n]*|\/\*[\s\S]*?\*\/))?\s*$/.test(text.slice(close + 1).trim());
   }
 
   // Zerlegt einen Kontrollfluss-Kopf in Bedingung und Rest der Zeile.
@@ -156,24 +161,102 @@ function extractFlowCpp(content: string): { statements: ParsedStatement[]; callE
   }
 
   interface FuncBody { name: string; bodyOffset: number; bodyContent: string; }
+
+  // Kein Funktionsname, sondern ein Kontrollfluss-/Sprachkonstrukt vor der Klammer.
+  const KEIN_FUNKTIONSNAME = new Set([
+    'if', 'for', 'while', 'switch', 'catch', 'do', 'else', 'return', 'try',
+    'sizeof', 'typeof', 'alignof', 'decltype', 'new', 'delete', 'throw',
+    'case', 'default', 'static_cast', 'dynamic_cast', 'reinterpret_cast', 'const_cast',
+  ]);
+
+  // Findet die zur oeffnenden Klammer bei openIdx passende schliessende Brace.
+  function findeBlockEnde(src: string, openBrace: number): number {
+    let depth = 1;
+    let i = openBrace + 1;
+    while (i < src.length && depth > 0) {
+      if (src[i] === '{') depth++;
+      else if (src[i] === '}') depth--;
+      i++;
+    }
+    return i;
+  }
+
+  // Erkennt Funktions- und Methodenbodies per Scanner statt per zeilenverankerter
+  // Regex. Die alte funcRe verlangte eine EINZEILIGE Signatur am Zeilenanfang mit
+  // '{' am Ende und beschrieb die Parameterliste als \([^)]*\). Damit fielen durch:
+  // eingerueckte Methoden in class/struct-Bloecken, mehrzeilige Signaturen,
+  // Parameterlisten mit eigenen Klammern (Funktionszeiger, Default-Argument mit
+  // Aufruf) und Konstruktoren mit Initializer-Liste. Alles, was hier nicht erkannt
+  // wird, besucht processBody nie — gemessen lagen so ueber 90 % einer Datei
+  // ausserhalb jedes erkannten Bodys.
   function findBodies(src: string): FuncBody[] {
     const stripped = stripComments(src);
-    const bodies: FuncBody[] = [];
-    // free functions + scope-resolved methods
-    const funcRe = /^(?:(?:(?:static|inline|virtual|explicit|constexpr|override|final|noexcept|extern|template\s*<[^>]+>)\s+)*)(?:(?:const\s+)?(?:\w[\w:<>*&\s]*?))\s+(?:(\w+)::)?(\w+)\s*\([^)]*\)(?:\s*(?:const|noexcept|override|final|\s))*\s*\{/gm;
-    let m: RegExpExecArray | null;
-    while ((m = funcRe.exec(stripped)) !== null) {
-      const name = m[2];
-      if (['if','for','while','switch','catch','do','else','return','try'].includes(name)) continue;
-      const openBrace = m.index + m[0].length - 1;
-      let depth = 1; let i = openBrace + 1;
-      while (i < src.length && depth > 0) {
-        if (src[i] === '{') depth++;
-        else if (src[i] === '}') depth--;
-        i++;
+
+    // class/struct-Bloecke, um Methoden ihren Typ zuzuordnen (scope_name).
+    const typBloecke: { name: string; start: number; end: number }[] = [];
+    const typRe = /\b(?:class|struct)\s+(\w+)(?:\s*:[^{;]{0,300})?\s*\{/g;
+    let tm: RegExpExecArray | null;
+    while ((tm = typRe.exec(stripped)) !== null) {
+      const ob = tm.index + tm[0].length - 1;
+      typBloecke.push({ name: tm[1], start: ob + 1, end: findeBlockEnde(stripped, ob) });
+    }
+
+    const treffer: { name: string; openBrace: number; end: number }[] = [];
+    for (let i = 0; i < stripped.length; i++) {
+      if (stripped[i] !== '(') continue;
+      const close = matchParenCpp(stripped, i);
+      if (close < 0) continue;
+
+      // Name direkt vor der Klammer (Rueckwaerts-Lookback ohne slice).
+      let j = i - 1;
+      while (j >= 0 && /\s/.test(stripped[j])) j--;
+      const nameEnde = j;
+      while (j >= 0 && /[\w~]/.test(stripped[j])) j--;
+      if (j === nameEnde) continue;
+      const name = stripped.slice(j + 1, nameEnde + 1);
+      if (!/^[~A-Za-z_]/.test(name) || KEIN_FUNKTIONSNAME.has(name)) continue;
+
+      // Optionaler Qualifier davor: Klasse::name
+      let qualifizierer = '';
+      let k = j;
+      while (k >= 0 && /\s/.test(stripped[k])) k--;
+      if (k >= 1 && stripped[k] === ':' && stripped[k - 1] === ':') {
+        let q = k - 2;
+        while (q >= 0 && /\s/.test(stripped[q])) q--;
+        const qEnde = q;
+        while (q >= 0 && /\w/.test(stripped[q])) q--;
+        if (q !== qEnde) qualifizierer = stripped.slice(q + 1, qEnde + 1) + '::';
       }
-      const fullName = m[1] ? `${m[1]}::${name}` : name;
-      bodies.push({ name: fullName, bodyOffset: openBrace + 1, bodyContent: src.slice(openBrace + 1, i - 1) });
+
+      // Nach der Klammer: Qualifier, optionale Initializer-Liste, dann '{'.
+      const nach = stripped.slice(close + 1, close + 500);
+      const kopfEnde = /^\s*(?:(?:const|noexcept|override|final|volatile|mutable|constexpr|&&?|throw\s*\([^)]*\)|->\s*[\w:<>*&,\s]+)\s*)*(?::[^{;]{0,400})?\{/.exec(nach);
+      if (!kopfEnde) continue;
+
+      const openBrace = close + kopfEnde[0].length;
+      if (stripped[openBrace] !== '{') continue;
+      treffer.push({ name: qualifizierer + name, openBrace, end: findeBlockEnde(stripped, openBrace) });
+    }
+
+    // Verschachtelte Treffer verwerfen: ein Lambda innerhalb einer Funktion wuerde
+    // dieselben Zeilen ein zweites Mal liefern und alle Statements verdoppeln.
+    // Methoden in Klassenbloecken sind davon NICHT betroffen — ein class-Block ist
+    // kein erkannter Funktionsbody.
+    treffer.sort((a, b) => a.openBrace - b.openBrace);
+    const bodies: FuncBody[] = [];
+    let letztesEnde = -1;
+    for (const t of treffer) {
+      if (t.openBrace < letztesEnde) continue;
+      let voll = t.name;
+      if (!voll.includes('::')) {
+        const typ = typBloecke
+          .filter(tb => t.openBrace > tb.start && t.openBrace < tb.end)
+          .sort((a, b) => (b.end - b.start) - (a.end - a.start))
+          .pop();
+        if (typ) voll = `${typ.name}::${voll}`;
+      }
+      bodies.push({ name: voll, bodyOffset: t.openBrace + 1, bodyContent: src.slice(t.openBrace + 1, t.end - 1) });
+      letztesEnde = t.end;
     }
     return bodies;
   }
