@@ -108,6 +108,27 @@ export interface ParseResult {
 export interface LanguageParser {
   language: string;
   extensions: string[];
+  /**
+   * Version dieses Parsers. Fehlt sie, gilt 1.
+   *
+   * WOFUER: In code_files steht je Datei, mit welcher Parser-Version sie zuletzt
+   * geparst wurde. Liegt der gespeicherte Wert unter dieser Konstante, zieht der
+   * Backlog die Datei selbsttaetig nach. Ohne das behaelt eine Datei ihre alten
+   * Symbole fuer immer — die Datei auf der Platte aendert sich ja nicht, wenn der
+   * PARSER besser wird, also meldet der Watcher nichts. Genau daran standen 33
+   * Dateien monatelang leer im Index (INDEX-2).
+   *
+   * WANN ERHOEHEN: bei jeder INHALTLICHEN Aenderung am Parser, die andere oder
+   * mehr Symbole, Statements oder Call-Kanten liefert. NICHT bei Formatierung,
+   * Kommentaren oder Umbenennungen.
+   *
+   * BEWUSST NICHT AUTOMATISCH: die Version wird nicht aus einem Hash der Datei
+   * abgeleitet, sonst loest jede Formatierung einen Vollreparse dieser Sprache
+   * aus. Der Preis dafuer ist, dass man sie von Hand erhoehen muss — wer das
+   * vergisst, bekommt keinen Fehler, sondern einen Mechanismus, der aussieht als
+   * liefe er. Deshalb steht dieser Hinweis auch in den Parser-Modulen selbst.
+   */
+  version?: number;
   parse(content: string, filePath: string): ParseResult;
 }
 

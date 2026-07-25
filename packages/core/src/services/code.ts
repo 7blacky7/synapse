@@ -410,10 +410,19 @@ export async function parseAndEmbed(project: string, filePath: string): Promise<
             dauerMs: (poolErr as { limitMs?: number }).limitMs,
             dateiBytes: content.length,
           });
+          // parser_version TROTZ Timeout hochschreiben. Sonst bliebe die Datei
+          // veraltet, wuerde beim naechsten Durchlauf erneut geholt, kippte wieder
+          // — eine Endlosschleife. Mit gesetzter Version unterbleibt der zweite
+          // Versuch mit DERSELBEN Parser-Version; faellig wird die Datei erst
+          // wieder, wenn jemand den Parser anfasst und die Version erhoeht — und
+          // genau dann ist die Chance da, dass der Fehler behoben ist.
+          // Der Eintrag in parse_failures bleibt bestehen und zeigt weiterhin an,
+          // DASS hier etwas fehlgeschlagen ist. 'Fehlgeschlagen' und 'ueberholt'
+          // bleiben zwei getrennte Aussagen.
           await pool.query(
-            `UPDATE code_files SET parsed_at = NOW(), indexed_at = NOW()
+            `UPDATE code_files SET parsed_at = NOW(), indexed_at = NOW(), parser_version = $3
                WHERE project = $1 AND file_path = $2`,
-            [project, filePath]
+            [project, filePath, parser.version ?? 1]
           );
           return;
         }
@@ -741,9 +750,12 @@ export async function parseAndEmbed(project: string, filePath: string): Promise<
   // ab jetzt vollstaendig. parsed_at deshalb HIER setzen, NICHT erst nach dem
   // langsamen embedBatch(). indexed_at (unten) markiert den Embedding-Abschluss.
   if (parseSuccess) {
+    // parser_version mitschreiben: damit ist erkennbar, ob dieser Stand von einem
+    // aelteren Parser stammt. Bliebe die Spalte NULL, wuerde die Datei nie
+    // nachgezogen — NULL heisst bewusst 'unbekannt', nicht 'veraltet'.
     await pool.query(
-      `UPDATE code_files SET parsed_at = NOW() WHERE project = $1 AND file_path = $2`,
-      [project, filePath]
+      `UPDATE code_files SET parsed_at = NOW(), parser_version = $3 WHERE project = $1 AND file_path = $2`,
+      [project, filePath, parser.version ?? 1]
     );
     // Die Datei laeuft wieder durch: einen etwaigen Ausfall-Eintrag aufloesen.
     // Ohne das fuellt sich parse_failures mit laengst reparierten Faellen und
@@ -984,12 +996,33 @@ export async function parseUnparsedFiles(projectName: string): Promise<number> {
   // abgebrochener/verlorener Embed-Lauf (kein noch laufender). Der 5min-Guard
   // verhindert, dass der Worker in-flight-Embeddings (z.B. langsames Ollama)
   // doppelt antriggert und den Backlog weiter aufblaeht.
+  // (c) INDEX-3: der gespeicherte Parse stammt von einer aelteren Parser-Version.
+  // Die Datei auf der Platte aendert sich nicht, wenn der PARSER besser wird —
+  // ohne diesen Zweig behaelt sie ihre schlechteren Symbole fuer immer. Genau
+  // daran standen 33 Dateien monatelang leer im Index (INDEX-2).
+  // parser_version IS NULL bleibt bewusst aussen vor: NULL heisst UNBEKANNT, nicht
+  // veraltet. Wuerde NULL zaehlen, reparste allein die Einfuehrung dieser Spalte
+  // den gesamten Bestand auf einen Schlag.
+  // Die Endung wird ohne Regex ermittelt (reverse/split_part), weil ein
+  // Regex-Anker im Ersetzungstext dieses Edits selbst zum Problem wird.
+  const { getVersionierteExtensions } = await import('../parser/index.js');
+  const versioniert = getVersionierteExtensions();
+  const params: unknown[] = [projectName];
+  let veraltetBedingung = '';
+  if (versioniert.length > 0) {
+    params.push(versioniert.map(v => v.extension), versioniert.map(v => v.version));
+    veraltetBedingung = `OR (parser_version IS NOT NULL AND EXISTS (
+               SELECT 1 FROM unnest($2::text[], $3::int[]) AS pv(ext, ver)
+                WHERE pv.ext = lower(reverse(split_part(reverse(code_files.file_path), '.', 1)))
+                  AND code_files.parser_version < pv.ver))`;
+  }
   const result = await pool.query(
     `SELECT file_path FROM code_files
       WHERE project = $1 AND content IS NOT NULL
         AND (parsed_at IS NULL
-             OR (indexed_at IS NULL AND updated_at < NOW() - INTERVAL '5 minutes'))`,
-    [projectName]
+             OR (indexed_at IS NULL AND updated_at < NOW() - INTERVAL '5 minutes')
+             ${veraltetBedingung})`,
+    params
   );
 
   if (result.rows.length === 0) return 0;

@@ -185,3 +185,38 @@ export function getLanguagesForFile(filePath: string): string[] {
   const parser = getParserForFile(filePath);
   return parser ? [parser.language] : [];
 }
+
+/**
+ * Aktuelle Version des fuer diese Datei zustaendigen Parsers (Default 1).
+ */
+export function getParserVersionForFile(filePath: string): number {
+  return getParserForFile(filePath)?.version ?? 1;
+}
+
+/**
+ * Alle Endungen, deren Parser eine Version ueber 1 hat, mit dieser Version.
+ *
+ * Wird fuer den Backlog-Abgleich gebraucht: nur diese Endungen koennen ueberhaupt
+ * einen veralteten Stand haben. Bei Version 1 ist nichts zu holen, das haelt die
+ * Vergleichsliste in der SQL-Abfrage klein.
+ *
+ * Bewusst ueber die ENDUNG und nicht ueber file_type: bei .moos steht in
+ * code_files.file_type 'moos', die Sprache heisst aber 'moo' — ein Abgleich ueber
+ * file_type wuerde die Zuordnung verfehlen.
+ */
+export function getVersionierteExtensions(): Array<{ extension: string; version: number }> {
+  const raus: Array<{ extension: string; version: number }> = [];
+  const gesehen = new Set<string>();
+  for (const parser of parsers) {
+    const v = parser.version ?? 1;
+    if (v <= 1) continue;
+    for (const ext of parser.extensions) {
+      const ohnePunkt = ext.startsWith('.') ? ext.slice(1) : ext;
+      const key = ohnePunkt.toLowerCase();
+      if (gesehen.has(key)) continue;
+      gesehen.add(key);
+      raus.push({ extension: key, version: v });
+    }
+  }
+  return raus;
+}

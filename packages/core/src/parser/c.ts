@@ -364,6 +364,14 @@ function extractFlowC(content: string): { statements: ParsedStatement[]; callEdg
 class CParser implements LanguageParser {
   language = 'c';
   extensions = ['.c', '.h'];
+  /**
+   * Bei INHALTLICHEN Aenderungen erhoehen (andere/mehr Symbole, Statements oder
+   * Call-Kanten) — dann zieht der Backlog alle C-Dateien selbsttaetig nach.
+   * Nicht bei Formatierung oder Kommentaren. Siehe LanguageParser.version.
+   * 2 = Klammer-Scanner statt \([^)]*\), condition_text balanciert, ++/--,
+   *     mehrere Statements pro Zeile, Rumpf hinter einzeiligem Kontrollfluss-Kopf.
+   */
+  version = 2;
 
   parse(content: string, filePath: string): ParseResult {
     const symbols: ParsedSymbol[] = [];

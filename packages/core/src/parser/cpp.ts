@@ -424,6 +424,15 @@ function extractFlowCpp(content: string): { statements: ParsedStatement[]; callE
 
 class CppParser implements LanguageParser {
   language = 'cpp';
+  /**
+   * Bei INHALTLICHEN Aenderungen erhoehen (andere/mehr Symbole, Statements oder
+   * Call-Kanten) — dann zieht der Backlog alle C++-Dateien selbsttaetig nach.
+   * Nicht bei Formatierung oder Kommentaren. Siehe LanguageParser.version.
+   * 2 = Klammer-Scanner im Call-Zweig, condition_text balanciert, Rumpf hinter
+   *     einzeiligem Kopf, findBodies erkennt Methoden und mehrzeilige Signaturen,
+   *     methodRe ohne katastrophales Backtracking.
+   */
+  version = 2;
   extensions = ['.cpp', '.hpp', '.cc', '.cxx', '.hxx', '.hh'];
 
   parse(content: string, filePath: string): ParseResult {

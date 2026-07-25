@@ -219,6 +219,11 @@ CREATE INDEX IF NOT EXISTS idx_file_versions_batch ON file_versions(batch_id) WH
 -- Migration: Neue Spalten fuer Code-Intelligence
 ALTER TABLE code_files ADD COLUMN IF NOT EXISTS content TEXT;
 ALTER TABLE code_files ADD COLUMN IF NOT EXISTS content_hash TEXT;
+-- INDEX-3: mit welcher Parser-Version wurde die Datei zuletzt geparst?
+-- NULL bedeutet UNBEKANNT und loest bewusst KEINEN Reparse aus — sonst wuerde
+-- die Einfuehrung selbst den gesamten Bestand auf einen Schlag neu parsen.
+-- Die Spalte fuellt sich beim naechsten regulaeren Parse jeder Datei.
+ALTER TABLE code_files ADD COLUMN IF NOT EXISTS parser_version INTEGER;
 ALTER TABLE code_files ADD COLUMN IF NOT EXISTS parsed_at TIMESTAMPTZ;
 ALTER TABLE code_files ADD COLUMN IF NOT EXISTS tsv TSVECTOR;
 ALTER TABLE code_files ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;
