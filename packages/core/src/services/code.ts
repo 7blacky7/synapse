@@ -377,6 +377,21 @@ export async function parseAndEmbed(project: string, filePath: string): Promise<
           parseResult = poolResult;
         }
       } catch (poolErr) {
+        if ((poolErr as Error).name === 'ParseTimeoutError') {
+          // Die Reissleine hat gezogen. NICHT im Main-Thread nachparsen — genau
+          // dort wuerde der Parse ebenfalls nicht zurueckkehren und den ganzen
+          // Prozess aufhaengen. Datei ueberspringen und weitermachen.
+          // parsed_at wird gesetzt, damit der Loop sie nicht endlos neu versucht;
+          // aendert sich ihr Inhalt, setzt der Hash-Diff parsed_at wieder auf NULL
+          // und sie bekommt automatisch eine neue Chance.
+          console.error(`[Synapse] PARSE-TIMEOUT ${project}/${filePath}: ${(poolErr as Error).message}. Datei uebersprungen, Lauf laeuft weiter.`);
+          await pool.query(
+            `UPDATE code_files SET parsed_at = NOW(), indexed_at = NOW()
+               WHERE project = $1 AND file_path = $2`,
+            [project, filePath]
+          );
+          return;
+        }
         console.error(`[Synapse] Worker-Pool parse fehlgeschlagen fuer ${filePath}, fallback sync:`, (poolErr as Error).message);
         parseResult = parser.parse(content, filePath);
       }
