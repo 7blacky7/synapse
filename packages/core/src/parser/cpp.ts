@@ -228,13 +228,44 @@ function extractFlowCpp(content: string): { statements: ParsedStatement[]; callE
         if (q !== qEnde) qualifizierer = stripped.slice(q + 1, qEnde + 1) + '::';
       }
 
-      // Nach der Klammer: Qualifier, optionale Initializer-Liste, dann '{'.
-      const nach = stripped.slice(close + 1, close + 500);
-      const kopfEnde = /^\s*(?:(?:const|noexcept|override|final|volatile|mutable|constexpr|&&?|throw\s*\([^)]*\)|->\s*[\w:<>*&,\s]+)\s*)*(?::[^{;]{0,400})?\{/.exec(nach);
-      if (!kopfEnde) continue;
-
-      const openBrace = close + kopfEnde[0].length;
-      if (stripped[openBrace] !== '{') continue;
+      // Nach der Klammer folgen optionale Qualifier (const, noexcept, override,
+      // trailing return type), eine optionale Konstruktor-Initializer-Liste und
+      // dann '{'. Bewusst ein linearer Scanner statt einer Regex: die erste
+      // Fassung hatte verschachtelte Quantoren, die beide Whitespace fressen
+      // konnten, und ist an spine_mem_pool.cpp (27 KB) in katastrophales
+      // Backtracking gelaufen — ueber 30 s fuer eine Datei, der Reparse stand.
+      const grenze = Math.min(stripped.length, close + 600);
+      let p = close + 1;
+      while (p < grenze) {
+        const ch = stripped[p];
+        if (ch === ' ' || ch === '\t' || ch === '\n' || ch === '\r') { p++; continue; }
+        if (ch === '{') break;
+        // Kein Funktionskopf: Deklaration, Zuweisung, unbalancierte Klammer.
+        if (ch === ';' || ch === '=' || ch === ')' || ch === ',') { p = grenze; break; }
+        if (ch === '(') {
+          const zu = matchParenCpp(stripped, p);
+          if (zu < 0) { p = grenze; break; }
+          p = zu + 1;
+          continue;
+        }
+        if (ch === ':' && stripped[p + 1] !== ':') {
+          // Konstruktor-Initializer-Liste bis zur zugehoerigen '{'
+          let d = 0;
+          p++;
+          while (p < grenze) {
+            const c2 = stripped[p];
+            if (c2 === '(' || c2 === '[') d++;
+            else if (c2 === ')' || c2 === ']') d--;
+            else if (c2 === ';' && d <= 0) { p = grenze; break; }
+            else if (c2 === '{' && d <= 0) break;
+            p++;
+          }
+          break;
+        }
+        p++;
+      }
+      if (p >= grenze || stripped[p] !== '{') continue;
+      const openBrace = p;
       treffer.push({ name: qualifizierer + name, openBrace, end: findeBlockEnde(stripped, openBrace) });
     }
 
@@ -523,7 +554,18 @@ class CppParser implements LanguageParser {
     // 6. Methoden / Funktionen
     // ══════════════════════════════════════════════
     // Class methods (inline in header)
-    const methodRe = /^([ \t]+)(?:(?:virtual|static|explicit|inline|constexpr|override|final|noexcept)\s+)*((?:const\s+)?(?:\w[\w:<>*&\s]*?))\s+(\w+)\s*\(([^)]*)\)(?:\s*(?:const|noexcept|override|final|\s))*\s*\{/gm;
+    // ACHTUNG, hier hing der Parser: die fruehere Fassung hatte \s IN der
+    // Zeichenklasse des Rueckgabetyps (lazy) UND direkt danach \s+, plus am Ende
+    // eine Gruppe (?:\s*(?:const|...|\s))* mit \s als eigener Alternative. Beides
+    // erlaubt, dieselbe Leerzeichenkette auf exponentiell viele Arten aufzuteilen.
+    // An einer Zeile wie 'virtual void f(T * x)<52 Leerzeichen>= 0;' (Spalten-
+    // Alignment mehrerer pure-virtual-Deklarationen) lief der Match dadurch
+    // endlos. Betroffen war llama.cpp-cuda/.../spine_mem_pool.cpp, die deshalb
+    // seit 2026-05 mit 0 Symbolen im Index stand, ohne dass es auffiel.
+    // Jetzt ist Whitespace an jeder Stelle nur auf EINEM Weg konsumierbar:
+    // zwischen Typ-Tokens als expliziter Trenner, und vor einem Qualifier, der
+    // dann auch wirklich folgen muss.
+    const methodRe = /^([ \t]+)(?:(?:virtual|static|explicit|inline|constexpr|override|final|noexcept)\s+)*((?:const\s+)?\w[\w:<>*&]*(?:\s+[\w:<>*&]+)*?)\s+(\w+)\s*\(([^)]*)\)(?:\s*(?:const|noexcept|override|final))*\s*\{/gm;
     while ((m = methodRe.exec(content)) !== null) {
       const returnType = m[2].trim();
       const funcName = m[3];
