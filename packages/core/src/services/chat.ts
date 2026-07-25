@@ -144,6 +144,48 @@ export async function unregisterAgent(id: string): Promise<void> {
 }
 
 /**
+ * Meldet Sessions ab, die seit einer Frist kein Lebenszeichen mehr zeigen.
+ *
+ * Hintergrund: der Status wechselte nur durch ausdrueckliches Abmelden auf
+ * 'inactive'. Wer gepurgt wurde, abgestuerzt ist oder einfach verschwand, blieb
+ * dauerhaft 'active' — am 2026-07-26 standen so 28 Eintraege in der Liste, der
+ * aelteste vom 15. Maerz, ohne einen einzigen lebenden Prozess dahinter.
+ * 'active' war damit kein Lebenszeichen, sondern nur "hat sich mal angemeldet".
+ *
+ * Als Lebenszeichen gilt, was Aktivitaet wirklich belegt:
+ *   - der letzte Tool-Aufruf des Agenten (tool_calls.ts)
+ *   - der Heartbeat seines Wrappers (wrapper_status.last_activity) — dadurch
+ *     bleibt ein Spezialist verschont, der lebt und nur gerade wartet
+ *   - die Anmeldung selbst, fuer Agenten die noch nichts getan haben
+ *
+ * Es wird ausschliesslich der Status gesetzt, nichts geloescht: eine neue
+ * Anmeldung holt die Session sofort zurueck.
+ */
+export async function expireIdleAgentSessions(stunden?: number): Promise<number> {
+  const ausUmgebung = Number(process.env.SYNAPSE_SESSION_IDLE_HOURS);
+  const frist = stunden ?? (Number.isFinite(ausUmgebung) && ausUmgebung > 0 ? ausUmgebung : 4);
+  const pool = getPool();
+  const ergebnis = await pool.query<{ id: string }>(
+    `UPDATE agent_sessions s
+        SET status = 'inactive'
+      WHERE s.status = 'active'
+        AND GREATEST(
+              s.registered_at,
+              COALESCE((SELECT MAX(t.ts) FROM tool_calls t WHERE t.agent_id = s.id), s.registered_at),
+              COALESCE((SELECT MAX(w.last_activity) FROM wrapper_status w WHERE w.agent_name = s.id), s.registered_at)
+            ) < NOW() - (($1::numeric) * INTERVAL '1 hour')
+      RETURNING s.id`,
+    [frist]
+  );
+  const anzahl = ergebnis.rowCount ?? 0;
+  if (anzahl > 0) {
+    const namen = ergebnis.rows.map((zeile) => zeile.id).join(', ');
+    console.error(`[Synapse Chat] ${anzahl} Session(s) ohne Lebenszeichen seit ${frist}h abgemeldet: ${namen}`);
+  }
+  return anzahl;
+}
+
+/**
  * Holt die Session eines Agenten
  */
 export async function getAgentSession(id: string): Promise<AgentSession | null> {

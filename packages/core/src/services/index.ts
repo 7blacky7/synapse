@@ -23,6 +23,7 @@ export {
   registerAgentsBatch,
   unregisterAgent,
   unregisterAgentsBatch,
+  expireIdleAgentSessions,
   getAgentSession,
   listActiveAgents,
   sendMessage,

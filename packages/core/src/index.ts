@@ -272,6 +272,7 @@ export {
   registerAgentsBatch,
   unregisterAgent as unregisterChatAgent,
   unregisterAgentsBatch,
+  expireIdleAgentSessions,
   getAgentSession,
   listActiveAgents,
   sendMessage as sendChatMessage,

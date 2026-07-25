@@ -242,6 +242,31 @@ export async function startServer(): Promise<void> {
     console.log('[Synapse API] Tool-Call-Retention per TOOLCALL_RETENTION_DISABLED=1 ausgeschaltet');
   }
 
+  // Session-Reaper: meldet Agenten-Sessions ab, die seit Stunden kein Lebenszeichen
+  // mehr zeigen. Ohne das bleibt jede Session ewig 'active' — gepurgte, abgestuerzte
+  // und verschwundene Agenten inklusive. Am 2026-07-26 zeigte die Liste 28 Eintraege
+  // ohne einen einzigen lebenden Prozess, den aeltesten vom 15. Maerz. Laeuft hier
+  // statt im lokalen Daemon, weil die DB zentral ist und dieser Prozess 24/7 laeuft.
+  //   SESSION_REAPER_DISABLED=1        — Worker ausschalten
+  //   SYNAPSE_SESSION_IDLE_HOURS=N     — Frist ohne Lebenszeichen (Default 4)
+  //   SESSION_REAPER_INTERVAL_MS=N     — Lauf-Intervall (Default 30 min)
+  if (process.env.SESSION_REAPER_DISABLED !== '1') {
+    const { expireIdleAgentSessions } = await import('@synapse/core');
+    const reaperIntervalMs = process.env.SESSION_REAPER_INTERVAL_MS
+      ? parseInt(process.env.SESSION_REAPER_INTERVAL_MS, 10)
+      : 30 * 60 * 1000;
+    const runReaper = (): void => {
+      void expireIdleAgentSessions().then((n) => {
+        if (n > 0) console.log(`[Synapse API] Session-Reaper: ${n} Session(s) abgemeldet`);
+      });
+    };
+    runReaper(); // einmal beim Start
+    setInterval(runReaper, reaperIntervalMs).unref();
+    console.log(`[Synapse API] Session-Reaper aktiv (Intervall ${reaperIntervalMs}ms)`);
+  } else {
+    console.log('[Synapse API] Session-Reaper per SESSION_REAPER_DISABLED=1 ausgeschaltet');
+  }
+
   // Server erstellen und starten
   const server = await createServer();
 
