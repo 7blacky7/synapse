@@ -241,7 +241,8 @@ export interface OpPreview {
   file_path: string;
   action: FileBatchOpAction;
   ok: boolean;
-  /** Bytes vorher / nachher der einzelnen Op (im Plan-Trockenlauf) */
+  /** UTF-8-Bytes vorher / nachher der einzelnen Op (im Plan-Trockenlauf) — beide
+      Werte in DERSELBEN Einheit, siehe utf8Bytes(). */
   size_before?: number;
   size_after?: number;
   /** Erste 200 Zeichen des Diff-Kontexts (best effort) */
@@ -348,6 +349,22 @@ function verifyAnchor(
 }
 
 /**
+ * UTF-8-Bytes eines Strings — dieselbe Einheit, in der die Datei anschliessend
+ * in PG und auf der Platte liegt.
+ *
+ * NICHT durch s.length ersetzen: das zaehlt UTF-16-Einheiten, nicht Bytes. Bei
+ * reinem ASCII sind beide Zahlen gleich und der Unterschied faellt nicht auf;
+ * sobald Umlaute oder Emojis vorkommen, weichen sie ab — und immer in dieselbe
+ * Richtung, s.length faellt zu KLEIN aus. Solange size_before in Bytes und
+ * size_after in Zeichen gemeldet wurde, konnte eine vergroessernde Aenderung
+ * als Schrumpfung erscheinen und damit genau den Alarm unterdruecken, fuer den
+ * die Vorschau-Groesse gedacht ist (FILES-3).
+ */
+function utf8Bytes(s: string): number {
+  return Buffer.byteLength(s, 'utf8');
+}
+
+/**
  * Wendet eine Op sequenziell auf die Buffer-Map an. Mutiert die Buffer direkt
  * (bei move/copy mehrere Files gleichzeitig). Wirft bei semantischen Fehlern.
  *
@@ -361,7 +378,7 @@ function applyOpInMemory(
 ): { context: string; sizeBefore: number; sizeAfter: number } {
   const src = buffers.get(op.file_path);
   if (!src) throw new Error(`Buffer fuer "${op.file_path}" nicht geladen`);
-  const sizeBefore = Buffer.byteLength(src.finalContent, 'utf8');
+  const sizeBefore = utf8Bytes(src.finalContent);
 
   // Edit-Ops + create operieren nur auf src
   switch (op.action) {
@@ -377,14 +394,14 @@ function applyOpInMemory(
           const before = sizeBefore;
           src.finalContent = op.content;
           src.finalHash = contentHash(op.content);
-          return { context: `create(upsert): ${op.content.length} Zeichen`, sizeBefore: before, sizeAfter: op.content.length };
+          return { context: `create(upsert): ${utf8Bytes(op.content)} bytes`, sizeBefore: before, sizeAfter: utf8Bytes(op.content) };
         }
         throw new Error(`create: Datei "${op.file_path}" existiert bereits — nutze "update", "search_replace" oder upsert:true`);
       }
       src.finalContent = op.content;
       src.finalHash = contentHash(op.content);
       src.wasNewlyCreated = true;
-      return { context: `create: ${op.content.length} Zeichen`, sizeBefore: 0, sizeAfter: op.content.length };
+      return { context: `create: ${utf8Bytes(op.content)} bytes`, sizeBefore: 0, sizeAfter: utf8Bytes(op.content) };
     }
     case 'update': {
       if (op.content === undefined) throw new Error('update: content fehlt');
@@ -417,7 +434,7 @@ function applyOpInMemory(
       }
       src.finalContent = op.content;
       src.finalHash = contentHash(op.content);
-      return { context: `update: ${op.content.length} Zeichen`, sizeBefore, sizeAfter: op.content.length };
+      return { context: `update: ${utf8Bytes(op.content)} bytes`, sizeBefore, sizeAfter: utf8Bytes(op.content) };
     }
     case 'search_replace': {
       if (op.search === undefined) throw new Error('search_replace: search fehlt');
@@ -430,7 +447,7 @@ function applyOpInMemory(
       }
       src.finalContent = r.content;
       src.finalHash = contentHash(r.content);
-      return { context: `search_replace: ${r.count} ersetzt`, sizeBefore, sizeAfter: r.content.length };
+      return { context: `search_replace: ${r.count} ersetzt`, sizeBefore, sizeAfter: utf8Bytes(r.content) };
     }
     case 'search_replace_batch': {
       if (!op.edits || op.edits.length === 0) throw new Error('search_replace_batch: edits[] fehlt');
@@ -439,7 +456,7 @@ function applyOpInMemory(
       if (r.result.applied === 0) throw new Error(`search_replace_batch: 0/${r.result.total} angewendet`);
       src.finalContent = r.content;
       src.finalHash = contentHash(r.content);
-      return { context: `search_replace_batch: ${r.result.applied}/${r.result.total}`, sizeBefore, sizeAfter: r.content.length };
+      return { context: `search_replace_batch: ${r.result.applied}/${r.result.total}`, sizeBefore, sizeAfter: utf8Bytes(r.content) };
     }
     case 'replace_lines': {
       if (op.line_start === undefined || op.line_end === undefined || op.content === undefined) {
@@ -450,7 +467,7 @@ function applyOpInMemory(
       const newContent = replaceLines(src.finalContent, op.line_start, op.line_end, op.content);
       src.finalContent = newContent;
       src.finalHash = contentHash(newContent);
-      return { context: `replace_lines: ${op.line_start}-${op.line_end}`, sizeBefore, sizeAfter: newContent.length };
+      return { context: `replace_lines: ${op.line_start}-${op.line_end}`, sizeBefore, sizeAfter: utf8Bytes(newContent) };
     }
     case 'insert_after': {
       if (op.after_line === undefined || op.content === undefined) {
@@ -461,7 +478,7 @@ function applyOpInMemory(
       const newContent = insertAfterLine(src.finalContent, op.after_line, op.content);
       src.finalContent = newContent;
       src.finalHash = contentHash(newContent);
-      return { context: `insert_after: nach Zeile ${op.after_line}`, sizeBefore, sizeAfter: newContent.length };
+      return { context: `insert_after: nach Zeile ${op.after_line}`, sizeBefore, sizeAfter: utf8Bytes(newContent) };
     }
     case 'delete_lines': {
       if (op.line_start === undefined || op.line_end === undefined) {
@@ -472,7 +489,7 @@ function applyOpInMemory(
       const newContent = deleteLines(src.finalContent, op.line_start, op.line_end);
       src.finalContent = newContent;
       src.finalHash = contentHash(newContent);
-      return { context: `delete_lines: ${op.line_start}-${op.line_end}`, sizeBefore, sizeAfter: newContent.length };
+      return { context: `delete_lines: ${op.line_start}-${op.line_end}`, sizeBefore, sizeAfter: utf8Bytes(newContent) };
     }
     case 'delete': {
       if (src.deleted || src.finalContent === '') throw new Error('delete: Datei existiert nicht (oder schon geloescht in dieser Batch)');
@@ -509,7 +526,7 @@ function applyOpInMemory(
       dst.finalHash = src.finalHash;
       dst.deleted = false;
       dst.wasNewlyCreated = true;
-      return { context: `copy: -> ${op.new_path} (${src.finalContent.length} bytes)`, sizeBefore, sizeAfter: src.finalContent.length };
+      return { context: `copy: -> ${op.new_path} (${utf8Bytes(src.finalContent)} bytes)`, sizeBefore, sizeAfter: utf8Bytes(src.finalContent) };
     }
     default:
       throw new Error(`Unbekannte Op-Action: ${(op as FileBatchOp).action}`);
