@@ -385,6 +385,16 @@ export async function parseAndEmbed(project: string, filePath: string): Promise<
           // aendert sich ihr Inhalt, setzt der Hash-Diff parsed_at wieder auf NULL
           // und sie bekommt automatisch eine neue Chance.
           console.error(`[Synapse] PARSE-TIMEOUT ${project}/${filePath}: ${(poolErr as Error).message}. Datei uebersprungen, Lauf laeuft weiter.`);
+          const { vermerkeAusfall } = await import('../db/parse-failures.js');
+          await vermerkeAusfall(pool, {
+            project,
+            filePath,
+            grund: 'timeout',
+            details: (poolErr as Error).message,
+            parser: parser.language,
+            dauerMs: (poolErr as { limitMs?: number }).limitMs,
+            dateiBytes: content.length,
+          });
           await pool.query(
             `UPDATE code_files SET parsed_at = NOW(), indexed_at = NOW()
                WHERE project = $1 AND file_path = $2`,
@@ -720,6 +730,11 @@ export async function parseAndEmbed(project: string, filePath: string): Promise<
       `UPDATE code_files SET parsed_at = NOW() WHERE project = $1 AND file_path = $2`,
       [project, filePath]
     );
+    // Die Datei laeuft wieder durch: einen etwaigen Ausfall-Eintrag aufloesen.
+    // Ohne das fuellt sich parse_failures mit laengst reparierten Faellen und
+    // wird wertlos, weil ihr niemand mehr traut.
+    const { loeseAusfallAuf } = await import('../db/parse-failures.js');
+    await loeseAusfallAuf(pool, project, filePath);
   }
 
   // --- Embeddings generieren + in Qdrant einfuegen ---
