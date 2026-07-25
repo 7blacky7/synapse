@@ -20,5 +20,6 @@ export { shellRoutes } from './shell.js';
 export { specialistRoutes } from './specialists.js';
 export { authRoutes } from './auth.js';
 export { workspaceRoutes } from './workspaces.js';
+export { trayRoutes } from './tray.js';
 export { cliAgentRoutes } from './cli-agents.js';
 export { graphRoutes } from './graph.js';

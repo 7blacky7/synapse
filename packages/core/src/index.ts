@@ -148,6 +148,7 @@ export {
   linkCrossFileReferences,
   getEmbeddingPending,
   embeddingPendingHint,
+  resetProjectEmbeddings,
   EMBEDDING_PENDING_HINT,
   // Media
   indexMediaFile,
