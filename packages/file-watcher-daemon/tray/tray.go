@@ -1545,61 +1545,70 @@ func (w *ChatWindow) ReloadMessages() {
 	}
 	defer w.loadingMsgs.Store(false)
 
-	var query string
-	var args []interface{}
-
 	firstLoad := w.LastMsgID == 0
-	if firstLoad {
-		query = "SELECT m.id, m.sender, m.content, to_char(m.created_at, 'DD.MM. HH24:MI:SS') FROM specialist_channel_messages m JOIN specialist_channels c ON c.id = m.channel_id WHERE c.project = $1 AND c.name = $2 ORDER BY m.id DESC LIMIT 50"
-		args = []interface{}{w.ProjectName, w.ChannelName}
-	} else {
-		query = "SELECT m.id, m.sender, m.content, to_char(m.created_at, 'DD.MM. HH24:MI:SS') FROM specialist_channel_messages m JOIN specialist_channels c ON c.id = m.channel_id WHERE c.project = $1 AND c.name = $2 AND m.id > $3 ORDER BY m.id LIMIT 50"
-		args = []interface{}{w.ProjectName, w.ChannelName, w.LastMsgID}
-	}
-
-	rows, err := dbQuery(query, args...)
-	if err != nil {
-		return
-	}
-	defer rows.Close()
 
 	var newMsgs [][]string
 	var maxID = w.LastMsgID
-	for rows.Next() {
-		var id int64
-		var sender, content, timeStr string
-		if err := rows.Scan(&id, &sender, &content, &timeStr); err == nil {
+
+	// TRAY-6: API zuerst. apiFetchChannelMessages liefert IMMER aufsteigend —
+	// das Umdrehen beim Erst-Laden ist deshalb allein Sache des PG-Zweigs.
+	if msgs, err := apiFetchChannelMessages(w.ProjectName, w.ChannelName, w.LastMsgID, 50); err == nil {
+		for _, m := range msgs {
 			// Voller Inhalt inkl. Zeilenumbrüche — Wrapping-Label rendert das sauber.
-			newMsgs = append(newMsgs, []string{timeStr, sender, content})
-			if id > maxID {
-				maxID = id
+			newMsgs = append(newMsgs, []string{m.CreatedAt, m.Sender, m.Content})
+			if m.Id > maxID {
+				maxID = m.Id
+			}
+		}
+	} else {
+		// Rueckfallebene: direkt an PostgreSQL, wie vor der Umstellung.
+		var query string
+		var args []interface{}
+		if firstLoad {
+			query = "SELECT m.id, m.sender, m.content, to_char(m.created_at, 'DD.MM. HH24:MI:SS') FROM specialist_channel_messages m JOIN specialist_channels c ON c.id = m.channel_id WHERE c.project = $1 AND c.name = $2 ORDER BY m.id DESC LIMIT 50"
+			args = []interface{}{w.ProjectName, w.ChannelName}
+		} else {
+			query = "SELECT m.id, m.sender, m.content, to_char(m.created_at, 'DD.MM. HH24:MI:SS') FROM specialist_channel_messages m JOIN specialist_channels c ON c.id = m.channel_id WHERE c.project = $1 AND c.name = $2 AND m.id > $3 ORDER BY m.id LIMIT 50"
+			args = []interface{}{w.ProjectName, w.ChannelName, w.LastMsgID}
+		}
+
+		rows, dbErr := dbQuery(query, args...)
+		if dbErr != nil {
+			return
+		}
+		defer rows.Close()
+
+		for rows.Next() {
+			var id int64
+			var sender, content, timeStr string
+			if scanErr := rows.Scan(&id, &sender, &content, &timeStr); scanErr == nil {
+				newMsgs = append(newMsgs, []string{timeStr, sender, content})
+				if id > maxID {
+					maxID = id
+				}
+			}
+		}
+
+		// Nur dieser Weg liefert beim Erst-Laden absteigend.
+		if firstLoad {
+			for i, j := 0, len(newMsgs)-1; i < j; i, j = i+1, j-1 {
+				newMsgs[i], newMsgs[j] = newMsgs[j], newMsgs[i]
 			}
 		}
 	}
 
 	if len(newMsgs) > 0 {
 		w.LastMsgID = maxID
-		if firstLoad {
-			for i, j := 0, len(newMsgs)-1; i < j; i, j = i+1, j-1 {
-				newMsgs[i], newMsgs[j] = newMsgs[j], newMsgs[i]
-			}
-			fyne.Do(func() {
+		fyne.Do(func() {
+			if firstLoad {
 				w.MessageBox.RemoveAll()
-				for _, m := range newMsgs {
-					w.MessageBox.Add(makeMsgItem(m[0], m[1], m[2]))
-				}
-				w.MessageBox.Refresh()
-				w.MessageScroll.ScrollToBottom()
-			})
-		} else {
-			fyne.Do(func() {
-				for _, m := range newMsgs {
-					w.MessageBox.Add(makeMsgItem(m[0], m[1], m[2]))
-				}
-				w.MessageBox.Refresh()
-				w.MessageScroll.ScrollToBottom()
-			})
-		}
+			}
+			for _, m := range newMsgs {
+				w.MessageBox.Add(makeMsgItem(m[0], m[1], m[2]))
+			}
+			w.MessageBox.Refresh()
+			w.MessageScroll.ScrollToBottom()
+		})
 	}
 }
 
@@ -1617,17 +1626,24 @@ func (w *ChatWindow) ReloadAgents() {
 	}
 	defer w.loadingAgs.Store(false)
 
-	rows, err := dbQuery("SELECT id, COALESCE(model, '') FROM agent_sessions WHERE project = $1 AND status = 'active' ORDER BY id", w.ProjectName)
-	if err != nil {
-		return
-	}
-	defer rows.Close()
-
+	// TRAY-6: API zuerst, PostgreSQL nur noch als Rueckfallebene.
 	var newRows [][]string
-	for rows.Next() {
-		var id, model string
-		if err := rows.Scan(&id, &model); err == nil {
-			newRows = append(newRows, []string{id, model})
+	if sessions, err := apiFetchSessions(w.ProjectName); err == nil {
+		for _, s := range sessions {
+			newRows = append(newRows, []string{s.Id, s.Model})
+		}
+	} else {
+		rows, dbErr := dbQuery("SELECT id, COALESCE(model, '') FROM agent_sessions WHERE project = $1 AND status = 'active' ORDER BY id", w.ProjectName)
+		if dbErr != nil {
+			return
+		}
+		defer rows.Close()
+
+		for rows.Next() {
+			var id, model string
+			if scanErr := rows.Scan(&id, &model); scanErr == nil {
+				newRows = append(newRows, []string{id, model})
+			}
 		}
 	}
 	fyne.Do(func() {

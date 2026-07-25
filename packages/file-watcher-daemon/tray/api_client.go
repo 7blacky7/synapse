@@ -291,8 +291,12 @@ type apiFileVersionsResponse struct {
 	Versions []apiFileVersion `json:"versions"`
 }
 
+// Id ist bewusst ein String: agent_sessions.id ist laut schema.ts
+// TEXT PRIMARY KEY (der Agent-Name, z.B. "koordinator"), keine Zahl.
+// Mit int64 waere jedes Decode fehlgeschlagen und der Tray waere still
+// auf die PG-Abfrage zurueckgefallen (TRAY-6).
 type apiSession struct {
-	Id    int64  `json:"id"`
+	Id    string `json:"id"`
 	Model string `json:"model"`
 }
 
