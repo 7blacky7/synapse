@@ -97,6 +97,44 @@ function extractFlowC(content: string): { statements: ParsedStatement[]; callEdg
     }
   }
 
+  // Findet zur oeffnenden Klammer bei openIdx die passende schliessende Klammer.
+  // Zaehlt Verschachtelung und ueberspringt String-/Char-Literale samt Escapes.
+  // -1 wenn die Klammer im uebergebenen Text nicht geschlossen wird.
+  function matchParen(s: string, openIdx: number): number {
+    let depth = 0;
+    for (let i = openIdx; i < s.length; i++) {
+      const ch = s[i];
+      if (ch === '"' || ch === "'") {
+        const quote = ch;
+        i++;
+        while (i < s.length && s[i] !== quote) {
+          if (s[i] === '\\') i++;
+          i++;
+        }
+        continue;
+      }
+      if (ch === '(') depth++;
+      else if (ch === ')') {
+        depth--;
+        if (depth === 0) return i;
+      }
+    }
+    return -1;
+  }
+
+  // Bedingung eines Kontrollfluss-Kopfes: alles zwischen der ersten '(' nach dem
+  // Keyword und der zugehoerigen ')'. Ersetzt das gierige /kw\s*\((.+)/, das den
+  // Rumpf mitgefressen und nur eine ')' am Zeilenende abgeschnitten hat.
+  function extractCondition(line: string, keyword: string): string | undefined {
+    const kw = new RegExp(`\\b${keyword}\\s*\\(`).exec(line);
+    if (!kw) return undefined;
+    const openIdx = kw.index + kw[0].length - 1;
+    const close = matchParen(line, openIdx);
+    const raw = close < 0 ? line.slice(openIdx + 1) : line.slice(openIdx + 1, close);
+    const cond = raw.trim();
+    return cond ? cond.slice(0, 200) : undefined;
+  }
+
   function processBody(
     body: string,
     bodyOffset: number,
@@ -111,33 +149,27 @@ function extractFlowC(content: string): { statements: ParsedStatement[]; callEdg
     // We scan line by line for control-flow keywords and call statements
     // using a simplified regex approach (no full AST).
     const lines = body.split('\n');
+    // Startzeile des Bodys einmal berechnen statt pro Zeile neu (war O(n^2)).
+    const bodyStartLine = lineAt(content, bodyOffset);
     let i = 0;
     while (i < lines.length) {
       const line = lines[i];
       const trimmed = line.trim();
       if (!trimmed || trimmed.startsWith('//') || trimmed.startsWith('/*') || trimmed.startsWith('*')) { i++; continue; }
 
-      const absLine = lineAt(body.slice(0, lines.slice(0, i).join('\n').length + (i > 0 ? 1 : 0)), 0) + lineAt(body, lines.slice(0, i).join('\n').length + (i > 0 ? 1 : 0)) - 1 || 1;
-      // Compute actual line in file
-      const lineInFile = lineAt(body.slice(0, lines.slice(0, i).reduce((a, l) => a + l.length + 1, 0)), 0) +
-        lineAt(body, lines.slice(0, i).reduce((a, l) => a + l.length + 1, 0)) - 1 || 1;
-      // Simpler: count newlines in bodyOffset prefix + current position
-      const lineOffset = body.slice(0, lines.slice(0, i).reduce((a, l) => a + l.length + 1, 0)).split('\n').length;
-      const fileLine = lineAt(content, bodyOffset) + lineOffset - 1;
+      const fileLine = bodyStartLine + i;
 
       // if (...) {
       if (/^\s*if\s*\(/.test(line)) {
-        const condMatch = line.match(/if\s*\((.+)/);
-        const cond = condMatch ? condMatch[1].replace(/\)\s*\{?\s*$/, '').slice(0, 200) : undefined;
+        const cond = extractCondition(line, 'if');
         const stId = nextId();
         statements.push({ temp_id: stId, parent_temp_id: parentId, scope_type: scopeType, scope_name: scopeName, statement_type: 'if', node_kind: 'IfStatement', line_start: fileLine, order_index: nextOrder(parentId, scopeCounter), depth, is_top_level: isTop, is_awaited: false, condition_text: cond, text: trimmed.slice(0, 240) });
-        if (condMatch) extractCallsFromExpr(cond || '', stId, scopeName, fileLine);
+        if (cond) extractCallsFromExpr(cond, stId, scopeName, fileLine);
         i++; continue;
       }
       // for (...) {
       if (/^\s*for\s*\(/.test(line)) {
-        const condMatch = line.match(/for\s*\((.+)/);
-        const cond = condMatch ? condMatch[1].replace(/\)\s*\{?\s*$/, '').slice(0, 200) : undefined;
+        const cond = extractCondition(line, 'for');
         const stId = nextId();
         statements.push({ temp_id: stId, parent_temp_id: parentId, scope_type: scopeType, scope_name: scopeName, statement_type: 'for', node_kind: 'ForStatement', line_start: fileLine, order_index: nextOrder(parentId, scopeCounter), depth, is_top_level: isTop, is_awaited: false, condition_text: cond, text: trimmed.slice(0, 240) });
         if (cond) extractCallsFromExpr(cond, stId, scopeName, fileLine);
@@ -145,8 +177,7 @@ function extractFlowC(content: string): { statements: ParsedStatement[]; callEdg
       }
       // while (...) {
       if (/^\s*while\s*\(/.test(line)) {
-        const condMatch = line.match(/while\s*\((.+)/);
-        const cond = condMatch ? condMatch[1].replace(/\)\s*\{?\s*$/, '').slice(0, 200) : undefined;
+        const cond = extractCondition(line, 'while');
         const stId = nextId();
         statements.push({ temp_id: stId, parent_temp_id: parentId, scope_type: scopeType, scope_name: scopeName, statement_type: 'while', node_kind: 'WhileStatement', line_start: fileLine, order_index: nextOrder(parentId, scopeCounter), depth, is_top_level: isTop, is_awaited: false, condition_text: cond, text: trimmed.slice(0, 240) });
         if (cond) extractCallsFromExpr(cond, stId, scopeName, fileLine);
@@ -160,8 +191,7 @@ function extractFlowC(content: string): { statements: ParsedStatement[]; callEdg
       }
       // switch (...) {
       if (/^\s*switch\s*\(/.test(line)) {
-        const condMatch = line.match(/switch\s*\((.+)/);
-        const cond = condMatch ? condMatch[1].replace(/\)\s*\{?\s*$/, '').slice(0, 200) : undefined;
+        const cond = extractCondition(line, 'switch');
         const stId = nextId();
         statements.push({ temp_id: stId, parent_temp_id: parentId, scope_type: scopeType, scope_name: scopeName, statement_type: 'switch', node_kind: 'SwitchStatement', line_start: fileLine, order_index: nextOrder(parentId, scopeCounter), depth, is_top_level: isTop, is_awaited: false, condition_text: cond, text: trimmed.slice(0, 240) });
         if (cond) extractCallsFromExpr(cond, stId, scopeName, fileLine);
@@ -201,14 +231,31 @@ function extractFlowC(content: string): { statements: ParsedStatement[]; callEdg
           i++; continue;
         }
       }
-      // function call statement: name(...);  or  obj->method(...);
-      if (/^\s*(?:\w[\w.*\[\]>-]*\s*(?:->|\.)?\s*)?\w+\s*\([^)]*\)\s*;/.test(line) && !/^\s*(?:if|for|while|switch|return|goto|typedef|struct|enum|union)/.test(line)) {
-        const callMatch = trimmed.match(/^(?:(\w[\w.*\[\]>-]*)(?:->|\.))?\s*(\w+)\s*\(([^)]*)\)\s*;/);
-        if (callMatch) {
+      // Postfix-/Praefix-Inkrement als eigenes Statement: d->tombs++;  ++i;
+      // Die Assignment-Regex verlangt ein '=' und hat diese Zeilen nie erfasst.
+      if (/^(?:\+\+|--)?\s*\w[\w.*\[\]>-]*\s*(?:\+\+|--)?\s*;$/.test(trimmed) && /\+\+|--/.test(trimmed)) {
+        const target = trimmed.replace(/\+\+|--/g, '').replace(/;$/, '').trim();
+        if (target) {
           const stId = nextId();
-          statements.push({ temp_id: stId, parent_temp_id: parentId, scope_type: scopeType, scope_name: scopeName, statement_type: 'call', node_kind: 'CallExpression', line_start: fileLine, order_index: nextOrder(parentId, scopeCounter), depth, is_top_level: isTop, is_awaited: false, callee: callMatch[2], receiver: callMatch[1] || undefined, text: trimmed.slice(0, 240) });
-          extractCallsFromExpr(trimmed, stId, scopeName, fileLine);
+          statements.push({ temp_id: stId, parent_temp_id: parentId, scope_type: scopeType, scope_name: scopeName, statement_type: 'assignment', node_kind: 'UpdateExpression', line_start: fileLine, order_index: nextOrder(parentId, scopeCounter), depth, is_top_level: isTop, is_awaited: false, assigned_to: target.slice(0, 120), text: trimmed.slice(0, 240) });
           i++; continue;
+        }
+      }
+      // function call statement: name(...);  or  obj->method(...);
+      // Klammerende per Scanner statt \([^)]*\): ein verschachtelter Aufruf als
+      // Argument (moo_dict_remove(d, moo_string_new("x"));) liess die Zeile sonst
+      // durch alle Zweige fallen — kein Statement UND keine Call-Kante.
+      if (!/^(?:if|for|while|switch|return|goto|typedef|struct|enum|union)\b/.test(trimmed)) {
+        const callHead = trimmed.match(/^(?:(\w[\w.*\[\]>-]*?)\s*(?:->|\.)\s*)?([A-Za-z_]\w*)\s*\(/);
+        if (callHead) {
+          const openIdx = callHead[0].length - 1;
+          const closeIdx = matchParen(trimmed, openIdx);
+          if (closeIdx >= 0 && trimmed.slice(closeIdx + 1).trim() === ';') {
+            const stId = nextId();
+            statements.push({ temp_id: stId, parent_temp_id: parentId, scope_type: scopeType, scope_name: scopeName, statement_type: 'call', node_kind: 'CallExpression', line_start: fileLine, order_index: nextOrder(parentId, scopeCounter), depth, is_top_level: isTop, is_awaited: false, callee: callHead[2], receiver: callHead[1] || undefined, text: trimmed.slice(0, 240) });
+            extractCallsFromExpr(trimmed, stId, scopeName, fileLine);
+            i++; continue;
+          }
         }
       }
 
