@@ -34,6 +34,8 @@ function stripComments(sql: string): string {
 class SqlParser implements LanguageParser {
   language = 'sql';
   extensions = ['.sql', '.pgsql', '.psql', '.plsql', '.ddl', '.dml'];
+  /** Bei inhaltlichen Parser-Aenderungen erhoehen (siehe LanguageParser.version). */
+  version = 1;
 
   parse(content: string, filePath: string): ParseResult {
     const symbols: ParsedSymbol[] = [];

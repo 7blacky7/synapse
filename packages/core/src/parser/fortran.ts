@@ -137,6 +137,8 @@ function extractFlowFortran(content: string): { statements: ParsedStatement[]; c
 class FortranParser implements LanguageParser {
   language = 'fortran';
   extensions = ['.f90', '.f95', '.f03', '.f08', '.f', '.for'];
+  /** Bei inhaltlichen Parser-Aenderungen erhoehen (siehe LanguageParser.version). */
+  version = 1;
 
   parse(content: string, filePath: string): ParseResult {
     const symbols: ParsedSymbol[] = [];

@@ -18,6 +18,8 @@ function lineAt(text: string, pos: number): number {
 class ValaParser implements LanguageParser {
   language = 'vala';
   extensions = ['.vala', '.vapi'];
+  /** Bei inhaltlichen Parser-Aenderungen erhoehen (siehe LanguageParser.version). */
+  version = 1;
 
   parse(content: string, filePath: string): ParseResult {
     const symbols: ParsedSymbol[] = [];

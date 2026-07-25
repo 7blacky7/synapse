@@ -226,6 +226,8 @@ function extractSwiftFlow(content: string): { statements: ParsedStatement[]; cal
 class SwiftParser implements LanguageParser {
   language = 'swift';
   extensions = ['.swift'];
+  /** Bei inhaltlichen Parser-Aenderungen erhoehen (siehe LanguageParser.version). */
+  version = 1;
 
   parse(content: string, filePath: string): ParseResult {
     const symbols: ParsedSymbol[] = [];

@@ -17,6 +17,8 @@ function lineAt(text: string, pos: number): number {
 class MesonParser implements LanguageParser {
   language = 'meson';
   extensions = ['.wrap'];
+  /** Bei inhaltlichen Parser-Aenderungen erhoehen (siehe LanguageParser.version). */
+  version = 1;
 
   parse(content: string, filePath: string): ParseResult {
     const symbols: ParsedSymbol[] = [];

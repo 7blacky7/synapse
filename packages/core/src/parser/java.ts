@@ -296,6 +296,8 @@ function extractJavaFlow(content: string): { statements: ParsedStatement[]; call
 class JavaParser implements LanguageParser {
   language = 'java';
   extensions = ['.java'];
+  /** Bei inhaltlichen Parser-Aenderungen erhoehen (siehe LanguageParser.version). */
+  version = 1;
 
   parse(content: string, filePath: string): ParseResult {
     const symbols: ParsedSymbol[] = [];

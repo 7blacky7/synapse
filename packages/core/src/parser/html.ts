@@ -12,6 +12,8 @@ import { extractStringLiterals } from './types.js';
 class HtmlParser implements LanguageParser {
   language = 'html';
   extensions = ['.html', '.htm', '.xhtml', '.xml'];
+  /** Bei inhaltlichen Parser-Aenderungen erhoehen (siehe LanguageParser.version). */
+  version = 1;
 
   parse(content: string, _filePath: string): ParseResult {
     const symbols: ParsedSymbol[] = [];

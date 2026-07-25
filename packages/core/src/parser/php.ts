@@ -27,6 +27,8 @@ function isExportedMod(modifiers: string): boolean {
 class PhpParser implements LanguageParser {
   language = 'php';
   extensions = ['.php'];
+  /** Bei inhaltlichen Parser-Aenderungen erhoehen (siehe LanguageParser.version). */
+  version = 1;
 
   parse(content: string, filePath: string): ParseResult {
     const symbols: ParsedSymbol[] = [];

@@ -288,6 +288,8 @@ function extractCSharpFlow(content: string): { statements: ParsedStatement[]; ca
 class CSharpParser implements LanguageParser {
   language = 'csharp';
   extensions = ['.cs'];
+  /** Bei inhaltlichen Parser-Aenderungen erhoehen (siehe LanguageParser.version). */
+  version = 1;
 
   parse(content: string, filePath: string): ParseResult {
     const symbols: ParsedSymbol[] = [];

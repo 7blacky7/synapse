@@ -218,6 +218,8 @@ function extractDartFlow(content: string): { statements: ParsedStatement[]; call
 class DartParser implements LanguageParser {
   language = 'dart';
   extensions = ['.dart'];
+  /** Bei inhaltlichen Parser-Aenderungen erhoehen (siehe LanguageParser.version). */
+  version = 1;
 
   parse(content: string, filePath: string): ParseResult {
     const symbols: ParsedSymbol[] = [];

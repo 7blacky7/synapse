@@ -21,6 +21,8 @@ function endLineAt(text: string, pos: number, matchLength: number): number {
 class CssParser implements LanguageParser {
   language = 'css';
   extensions = ['.css', '.scss', '.less', '.sass'];
+  /** Bei inhaltlichen Parser-Aenderungen erhoehen (siehe LanguageParser.version). */
+  version = 1;
 
   parse(content: string, filePath: string): ParseResult {
     const symbols: ParsedSymbol[] = [];

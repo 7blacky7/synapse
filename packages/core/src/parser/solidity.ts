@@ -316,6 +316,8 @@ function extractSolidityFlow(content: string): { statements: ParsedStatement[]; 
 class SolidityParser implements LanguageParser {
   language = 'solidity';
   extensions = ['.sol'];
+  /** Bei inhaltlichen Parser-Aenderungen erhoehen (siehe LanguageParser.version). */
+  version = 1;
 
   parse(content: string, filePath: string): ParseResult {
     const symbols: ParsedSymbol[] = [];

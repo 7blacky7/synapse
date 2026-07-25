@@ -18,6 +18,8 @@ function lineAt(text: string, pos: number): number {
 class LinkerScriptParser implements LanguageParser {
   language = 'linker';
   extensions = ['.ld', '.lds', '.x'];
+  /** Bei inhaltlichen Parser-Aenderungen erhoehen (siehe LanguageParser.version). */
+  version = 1;
 
   parse(content: string, _filePath: string): ParseResult {
     const symbols: ParsedSymbol[] = [];

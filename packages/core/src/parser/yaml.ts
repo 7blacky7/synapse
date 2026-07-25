@@ -13,6 +13,8 @@ import { extractStringLiterals } from './types.js';
 class YamlParser implements LanguageParser {
   language = 'yaml';
   extensions = ['.yaml', '.yml'];
+  /** Bei inhaltlichen Parser-Aenderungen erhoehen (siehe LanguageParser.version). */
+  version = 1;
 
   parse(content: string, filePath: string): ParseResult {
     const symbols: ParsedSymbol[] = [];

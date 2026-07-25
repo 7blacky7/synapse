@@ -346,6 +346,8 @@ function extractGoFlow(
 class GoParser implements LanguageParser {
   language = 'go';
   extensions = ['.go'];
+  /** Bei inhaltlichen Parser-Aenderungen erhoehen (siehe LanguageParser.version). */
+  version = 1;
 
   parse(content: string, filePath: string): ParseResult {
     const symbols: ParsedSymbol[] = [];

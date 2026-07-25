@@ -134,6 +134,8 @@ function extractFlowV(content: string): { statements: ParsedStatement[]; callEdg
 class VlangParser implements LanguageParser {
   language = 'vlang';
   extensions = ['.v', '.vv'];
+  /** Bei inhaltlichen Parser-Aenderungen erhoehen (siehe LanguageParser.version). */
+  version = 1;
 
   parse(content: string, filePath: string): ParseResult {
     const symbols: ParsedSymbol[] = [];

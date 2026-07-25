@@ -18,6 +18,8 @@ function lineAt(text: string, pos: number): number {
 class TclParser implements LanguageParser {
   language = 'tcl';
   extensions = ['.tcl', '.tk', '.itcl'];
+  /** Bei inhaltlichen Parser-Aenderungen erhoehen (siehe LanguageParser.version). */
+  version = 1;
 
   parse(content: string, filePath: string): ParseResult {
     const symbols: ParsedSymbol[] = [];

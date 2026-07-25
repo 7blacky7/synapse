@@ -1184,5 +1184,7 @@ function parse(content: string, filePath: string): ParseResult {
 export const typescriptParser: LanguageParser = {
   language: 'typescript',
   extensions: ['.ts', '.tsx', '.js', '.jsx', '.mts', '.mjs'],
+  /** Bei inhaltlichen Parser-Aenderungen erhoehen (siehe LanguageParser.version). */
+  version: 1,
   parse,
 };
