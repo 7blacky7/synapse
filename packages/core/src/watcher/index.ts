@@ -378,6 +378,11 @@ export function startFileWatcher(options: FileWatcherOptions): FileWatcherInstan
             [projectName, lastPgCheck]
           );
 
+          // Zeilen, die dieser Tick bewusst NICHT geschrieben hat. Sie halten den
+          // Checkpoint zurueck, damit der naechste Tick sie erneut sieht.
+          const alsIso = (wert: string | Date): string =>
+            typeof wert === 'string' ? wert : new Date(wert).toISOString();
+          const zurueckgestellt: string[] = [];
           for (const row of changed.rows) {
             const relativePath: string = row.file_path;
             // Ignore-Regeln auch auf PG→FS anwenden — sonst synct/loopt der Poller
@@ -391,6 +396,7 @@ export function startFileWatcher(options: FileWatcherOptions): FileWatcherInstan
             // gemacht und der unlink-Handler skippt mit "Rename-detected".
             const pending = pendingEvents.get(relativePath);
             if (pending && pending.type === 'unlink') {
+              zurueckgestellt.push(alsIso(row.updated_at));
               console.error(`[Synapse] PG→FS Skip (unlink pending): ${path.basename(relativePath)}`);
               continue;
             }
@@ -422,6 +428,7 @@ export function startFileWatcher(options: FileWatcherOptions): FileWatcherInstan
                 [projectName, relativePath, localHash]
               );
               if ((bekannt.rowCount ?? 0) === 0) {
+                zurueckgestellt.push(alsIso(row.updated_at));
                 console.error(
                   `[Synapse] PG→FS Skip (fremde Aenderung auf der Platte, nicht ueberschrieben): ${relativePath}`
                 );
@@ -469,7 +476,20 @@ export function startFileWatcher(options: FileWatcherOptions): FileWatcherInstan
               const ts = typeof r.updated_at === 'string' ? r.updated_at : new Date(r.updated_at).toISOString();
               return ts > max ? ts : max;
             }, lastPgCheck);
-            lastPgCheck = maxUpdated;
+            // Eine zurueckgestellte Zeile darf der Checkpoint NICHT ueberspringen:
+            // sonst faellt sie aus dem Fenster updated_at > lastPgCheck und wird nie
+            // wieder geholt — der in den Skip-Zweigen zugesagte naechste Tick kommt
+            // fuer sie dann nicht mehr. Im Log standen dafuer 143 Faelle (fremde
+            // Aenderung) und 150 (pending unlink). Deshalb hoechstens bis knapp vor
+            // die aelteste zurueckgestellte Zeile vorruecken. Das erneute Pruefen ist
+            // billig: konvergierte Dateien fallen oben am Hash-Vergleich heraus.
+            let neuerStand = maxUpdated;
+            if (zurueckgestellt.length > 0) {
+              const aelteste = zurueckgestellt.reduce((min, ts) => (ts < min ? ts : min));
+              const knappDavor = new Date(new Date(aelteste).getTime() - 1).toISOString();
+              if (knappDavor < neuerStand) neuerStand = knappDavor;
+            }
+            lastPgCheck = neuerStand;
           }
         } catch {
           // PG not reachable — ignore, next poll will retry

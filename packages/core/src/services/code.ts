@@ -295,10 +295,23 @@ export async function parseAndEmbed(
   // Frueherer Outer-pg_advisory_lock wurde entfernt: hielt eine Pool-Connection ueber die gesamte
   // Funktionsdauer (inkl. embedBatch) → Connection-Pool-Starvation bei initial-scan vieler Files.
   {
-    // Hash-Idempotenz-Skip: wenn Datei bereits indexed_at gesetzt hat UND alle Chunks
-    // embedded sind UND min(embedded_at) >= indexed_at → nichts zu tun, return.
+    // Idempotenz-Skip: die Datei ist fertig, wenn alle Chunks embedded sind UND
+    // die Embeddings juenger sind als der letzte Inhaltsstand (updated_at).
+    //
+    // Hier stand bis 2026-07-25 ein Vergleich gegen indexed_at. Der konnte nie
+    // zutreffen: indexed_at wird am ENDE dieser Funktion gesetzt, unmittelbar nach
+    // dem UPDATE das embedded_at auf NOW() setzt — zwei getrennte Statements, also
+    // ist indexed_at immer strikt groesser als min(embedded_at). upsertCodeFile
+    // setzt indexed_at ausserdem schon beim Anlegen, lange vor dem ersten
+    // Embedding. Der Skip lief dadurch bei keiner einzigen Datei an; die Invariante
+    // aus regel-keine-vfs-drift war seit ihrer Einfuehrung wirkungslos.
+    //
+    // updated_at ist der richtige Bezug: es bewegt sich ausschliesslich in
+    // upsertCodeFile (kein Trigger auf code_files), also genau dann wenn sich der
+    // Inhalt aendert. Fehlt es bei einer Altzeile, gilt die Datei NICHT als fertig —
+    // ohne bekannten Inhaltsstand ist der Vergleich nicht entscheidbar.
     const idemRow = await pool.query(
-      `SELECT cf.content_hash, cf.indexed_at,
+      `SELECT cf.content_hash, cf.indexed_at, cf.updated_at,
               (SELECT MIN(cc.embedded_at) FROM code_chunks cc WHERE cc.project=cf.project AND cc.file_path=cf.file_path) AS min_embedded_at,
               (SELECT COUNT(*) FROM code_chunks cc WHERE cc.project=cf.project AND cc.file_path=cf.file_path AND cc.embedded_at IS NULL) AS unembedded
          FROM code_files cf WHERE cf.project=$1 AND cf.file_path=$2`,
@@ -309,7 +322,8 @@ export async function parseAndEmbed(
       idemRow.rows[0]?.indexed_at &&
       idemRow.rows[0].unembedded === '0' &&
       idemRow.rows[0].min_embedded_at &&
-      new Date(idemRow.rows[0].min_embedded_at) >= new Date(idemRow.rows[0].indexed_at)
+      idemRow.rows[0].updated_at &&
+      new Date(idemRow.rows[0].min_embedded_at) >= new Date(idemRow.rows[0].updated_at)
     ) {
       // parsed_at heilen falls NULL (z.B. durch file_path-Move zurueckgesetzt):
       // ohne das findet der parser-worker die fertige Datei jeden Tick erneut
