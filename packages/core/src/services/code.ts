@@ -147,9 +147,6 @@ export async function storeFileContent(
       ? projectRoot + filePath
       : projectRoot + '/' + filePath;
 
-  // DEBUG: Pfad-Analyse in Datei loggen
-  try { require('fs').appendFileSync('/tmp/synapse-path-debug.log', `${new Date().toISOString()} storeFileContent: filePath="${filePath}" isAbsolute=${filePath.startsWith('/')} projectRoot="${projectRoot}"\n`); } catch {}
-
   const fileData = readFileWithMetadata(absolutePath, projectName);
   if (!fileData) {
     console.error(`[Synapse] Datei nicht lesbar: ${absolutePath}`);
@@ -158,28 +155,77 @@ export async function storeFileContent(
 
   const contentHash = crypto.createHash('sha256').update(fileData.content).digest('hex');
 
-  // Hash-Vergleich — ueberspringen wenn unveraendert oder PG neuer
+  // SYNC-1: Entscheidung ueber HASHES, nicht ueber Zeitstempel.
+  //
+  // Frueher stand hier ein mtime-Vergleich: war code_files.updated_at neuer als die
+  // mtime der Datei, wurde die FS-Aenderung still verworfen. Das ist aus zwei Gruenden
+  // falsch. Erstens ist die mtime keine verlaessliche Kausalitaet — cp -p, rsync -a,
+  // entpackte Archive und Uhren-Drift erzeugen alte Zeitstempel auf neuem Inhalt.
+  // Zweitens hat anschliessend der PG→FS-Sync den alten Stand zurueckgeschrieben:
+  // aus "nicht uebernommen" wurde "aktiv ueberschrieben", ohne jede Meldung.
+  // Reproduziert am 2026-07-25 mit nachweislichem Datenverlust.
+  //
+  // Stattdessen wird gefragt: KENNT PG diesen Hash?
+  //   - identisch mit dem aktuellen Stand  -> konvergiert, nichts zu tun
+  //   - bekannt aus file_versions          -> die Platte hinkt hinterher (z.B. ein
+  //                                           files()-Write ist noch nicht ausgeliefert).
+  //                                           NICHT nach PG uebernehmen, sonst wuerde
+  //                                           ein aktuellerer Stand zurueckgedreht.
+  //   - unbekannt                          -> echte fremde Aenderung -> versioniert uebernehmen
+  let bekannteDatei = false;
   try {
     const existing = await pool.query(
-      'SELECT content_hash, updated_at FROM code_files WHERE project = $1 AND file_path = $2',
+      'SELECT content_hash FROM code_files WHERE project = $1 AND file_path = $2',
       [projectName, filePath]  // RELATIV in DB
     );
     if (existing.rows[0]) {
+      bekannteDatei = true;
       if (existing.rows[0].content_hash === contentHash) {
-        return false; // Gleicher Inhalt
+        return false; // Gleicher Inhalt — konvergiert
       }
-      // Unterschiedlicher Inhalt: PG neuer als Disk? → PG nicht ueberschreiben
-      // (z.B. files(search_replace) hat PG geaendert, Disk ist noch alt)
-      const diskMtime = fs.statSync(absolutePath).mtimeMs;
-      const dbUpdatedAt = new Date(existing.rows[0].updated_at).getTime();
-      if (dbUpdatedAt > diskMtime) {
-        return false; // PG ist neuer — nicht ueberschreiben (PG→FS Sync wird synchronisieren)
+
+      const frueher = await pool.query(
+        `SELECT 1 FROM file_versions
+          WHERE project = $1 AND file_path = $2 AND content_hash = $3
+          LIMIT 1`,
+        [projectName, filePath, contentHash]
+      );
+      if ((frueher.rowCount ?? 0) > 0) {
+        console.error(
+          `[Synapse] FS→PG Skip (Platte zeigt einen aelteren bekannten Stand): ${filePath}`
+        );
+        return false; // PG→FS-Sync gleicht das ab
       }
     }
-  } catch {
-    // PG nicht erreichbar — fail-open
+  } catch (err) {
+    // PG nicht erreichbar — fail-open, aber nicht stillschweigend.
+    console.error(`[Synapse] FS→PG: Hash-Pruefung fehlgeschlagen fuer ${filePath}: ${err}`);
   }
 
+  if (bekannteDatei) {
+    // Bekannte Datei mit unbekanntem Inhalt = jemand hat sie ausserhalb von Synapse
+    // geaendert. Ueber updateFileInPg statt upsertCodeFile, weil das den BISHERIGEN
+    // PG-Stand vorher als file_versions-Eintrag sichert. Dadurch ist die Uebernahme
+    // verlustfrei (der alte Stand bleibt per restore erreichbar), im Tray sichtbar
+    // und einem Urheber zugeordnet.
+    // Dynamischer Import: code-write.ts importiert enqueueParseAndEmbed aus dieser
+    // Datei — ein statischer Rueckimport waere ein Zyklus.
+    const { updateFileInPg, FS_AGENT_ID } = await import('./code-write.js');
+    await updateFileInPg(
+      projectName,
+      filePath,
+      fileData.content,
+      FS_AGENT_ID,
+      'fs_change',
+      undefined,
+      'Aenderung direkt auf dem Dateisystem erkannt (nicht ueber das files-Tool)'
+    );
+    console.error(`[Synapse] FS→PG uebernommen + versioniert: ${filePath}`);
+    return true;
+  }
+
+  // Unbekannte Datei = Erstindexierung. BEWUSST ohne Versions-Eintrag: ein
+  // Initial-Scan wuerde sonst tausende Eintraege erzeugen und die History fluten.
   const fileSize = fs.statSync(absolutePath).size;
   await upsertCodeFile(
     projectName, filePath, path.basename(filePath), fileData.fileType,

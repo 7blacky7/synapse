@@ -390,12 +390,30 @@ export function startFileWatcher(options: FileWatcherOptions): FileWatcherInstan
               localHash = crypto.createHash('sha256').update(fs.readFileSync(filePath, 'utf-8')).digest('hex');
             }
             if (localHash === row.content_hash) continue;  // konvergiert → nichts zu tun
-            // Nur ueberschreiben wenn DB neuer als Disk (oder Disk existiert nicht)
-            if (exists) {
-              const diskMtime = fs.statSync(filePath).mtimeMs;
-              const dbUpdatedAt = new Date(row.updated_at).getTime();
-              if (diskMtime > dbUpdatedAt) {
-                console.error(`[Synapse] PG→FS Skip (Disk neuer): ${path.basename(filePath)}`);
+            // SYNC-1: Ueberschreiben nur, wenn PG den Inhalt auf der Platte KENNT.
+            //
+            // Frueher entschied hier die mtime ("Disk neuer? dann nicht anfassen").
+            // Das hat fremde Aenderungen zerstoert, sobald ihre mtime aelter war als
+            // code_files.updated_at — bei cp -p, rsync -a, entpackten Archiven oder
+            // Uhren-Drift ist das der Normalfall. Reproduziert am 2026-07-25: Datei
+            // geaendert, mtime zurueckgesetzt, Inhalt war anschliessend weg.
+            //
+            // Jetzt gilt: kennt PG den Disk-Hash als frueheren Stand, hinkt die Platte
+            // nur hinterher und darf aktualisiert werden. Ist der Hash UNBEKANNT, hat
+            // jemand die Datei ausserhalb von Synapse geaendert und der Watcher hat sie
+            // noch nicht eingesammelt — dann stehen lassen und den naechsten Tick
+            // abwarten. Das Einsammeln erledigt storeFileContent (versioniert).
+            if (exists && localHash) {
+              const bekannt = await pool.query(
+                `SELECT 1 FROM file_versions
+                  WHERE project = $1 AND file_path = $2 AND content_hash = $3
+                  LIMIT 1`,
+                [projectName, relativePath, localHash]
+              );
+              if ((bekannt.rowCount ?? 0) === 0) {
+                console.error(
+                  `[Synapse] PG→FS Skip (fremde Aenderung auf der Platte, nicht ueberschrieben): ${relativePath}`
+                );
                 continue;
               }
             }

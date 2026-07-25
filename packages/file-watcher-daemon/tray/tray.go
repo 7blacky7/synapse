@@ -1369,13 +1369,14 @@ func (w *DetailWindow) ReloadStatus() {
 		if v, ok := statusMap["enabled"].(bool); ok && v {
 			active = "ja"
 		}
-		chunks := "-"
-		if v, ok := statusMap["chunks"].(float64); ok {
-			chunks = fmt.Sprintf("%d", int(v))
-		}
-		files := "-"
-		if v, ok := statusMap["files"].(float64); ok {
-			files = fmt.Sprintf("%d", int(v))
+		// Chunks und Dateien kommen aus der API, NICHT vom Daemon: dessen
+		// /projects/:name/status liefert nur name/pfad/enabled/running. Der Tray
+		// las hier frueher statusMap["chunks"]/["files"] — Felder, die es dort nie
+		// gab — und zeigte deshalb dauerhaft "-", ununterscheidbar von "Wert ist 0".
+		chunks, files := "-", "-"
+		if st, statErr := apiFetchStats(w.ProjectName); statErr == nil && st.Success {
+			chunks = fmt.Sprintf("%d", st.Stats.Collections.Code.Vectors)
+			files = fmt.Sprintf("%d", st.Stats.TotalFiles)
 		}
 
 		fyne.Do(func() {

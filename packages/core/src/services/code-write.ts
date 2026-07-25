@@ -40,6 +40,15 @@ import { checkErrorPatterns, type ErrorPatternWarning } from './error-patterns.j
 import { resolveAgentId } from './agent-id-resolver.js';
 
 /**
+ * SYNC-1: agent_id fuer Aenderungen, die direkt auf dem Dateisystem passiert sind
+ * (Editor, git checkout, Skript) und vom FileWatcher aufgesammelt wurden — im
+ * Gegensatz zu Aenderungen ueber das files-Tool, die einen echten Agenten haben.
+ * Als Konstante, damit Schreiber und Leser (Tray-Events, history-Filter) denselben
+ * Wert benutzen.
+ */
+export const FS_AGENT_ID = 'filesystem';
+
+/**
  * IDEA-3a: Optionale Enrichment-Felder fuer file_versions.
  * Alle Felder additive/nullable — bestehende Aufrufer ohne diese Felder laufen unveraendert weiter.
  */
@@ -517,7 +526,11 @@ export async function updateFileInPg(
 ): Promise<{ warnings?: ErrorPatternWarning[] }> {
   const resolvedAgentId = resolveAgentId(agentId);
   let warnings: ErrorPatternWarning[] | undefined;
-  if (resolvedAgentId) {
+  // SYNC-1: Fuer FS-Aenderungen wird die Fehler-Pattern-Pruefung uebersprungen.
+  // checkErrorPatterns ruft embed() SYNCHRON auf — bei jedem Speichern im Editor
+  // waere das eine Embedding-Latenz mitten im Watcher-Pfad. Die Pruefung zielt auf
+  // agentengeschriebenen Inhalt, nicht auf Editor-Speicherungen.
+  if (resolvedAgentId && resolvedAgentId !== FS_AGENT_ID) {
     try {
       const result = await checkErrorPatterns(newContent, resolvedAgentId);
       if (result.length > 0) warnings = result;

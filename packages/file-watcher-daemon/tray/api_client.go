@@ -314,6 +314,21 @@ type apiChannelMessagesResponse struct {
 	Messages []apiChannelMessage `json:"messages"`
 }
 
+// apiStatsResponse spiegelt GET /api/projects/:name/stats (routes/stats.ts).
+type apiStatsResponse struct {
+	Success bool `json:"success"`
+	Stats   struct {
+		Project      string `json:"project"`
+		TotalFiles   int    `json:"totalFiles"`
+		TotalVectors int    `json:"totalVectors"`
+		Collections  struct {
+			Code struct {
+				Vectors int `json:"vectors"`
+			} `json:"code"`
+		} `json:"collections"`
+	} `json:"stats"`
+}
+
 type apiReembedResponse struct {
 	Success          bool   `json:"success"`
 	ChunksReset      int    `json:"chunksReset"`
@@ -343,6 +358,15 @@ func apiFetchFileVersions(project string, limit int) ([]apiFileVersion, error) {
 		return nil, err
 	}
 	return r.Versions, nil
+}
+
+// apiFetchStats liefert Datei- und Chunk-Zahlen des Index. Der lokale Daemon
+// kennt diese Werte NICHT — sein /projects/:name/status liefert nur Pfad und
+// Laufzustand. Genau deshalb stand im Status-Tab dauerhaft "-".
+func apiFetchStats(project string) (apiStatsResponse, error) {
+	var r apiStatsResponse
+	err := apiGet("/api/projects/"+urlSeg(project)+"/stats", &r)
+	return r, err
 }
 
 func apiFetchSessions(project string) ([]apiSession, error) {
