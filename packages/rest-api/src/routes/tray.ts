@@ -51,31 +51,11 @@ export async function trayRoutes(fastify: FastifyInstance): Promise<void> {
     }
   );
 
-  /**
-   * GET /api/projects/:name/file-versions?limit=50
-   * Letzte Datei-Aenderungen (Audit-Trail). Ersetzt tray.go:1090.
-   */
-  fastify.get<{ Params: { name: string }; Querystring: { limit?: string } }>(
-    '/api/projects/:name/file-versions',
-    async (request) => {
-      const { name } = request.params;
-      const limit = clampLimit(request.query.limit, 50);
-      const { rows } = await getPool().query(
-        `SELECT COALESCE(agent_id, '<unbekannt>')                  AS agent_id,
-                COALESCE(file_path, '')                            AS file_path,
-                COALESCE(edit_action, '')                          AS edit_action,
-                COALESCE(reason, '')                               AS reason,
-                COALESCE(feature_tag, '')                          AS feature_tag,
-                to_char(created_at, 'DD.MM. HH24:MI:SS')           AS created_at
-           FROM file_versions
-          WHERE project = $1
-          ORDER BY id DESC
-          LIMIT $2`,
-        [name, limit]
-      );
-      return { success: true, project: name, count: rows.length, versions: rows };
-    }
-  );
+  // HINWEIS: GET /api/projects/:name/file-versions gibt es NICHT hier — die Route
+  // existiert bereits in routes/specialists.ts und liefert sogar mehr Felder
+  // (id, batch_id, content_hash, agent_note, ...). Eine zweite Deklaration liess
+  // Fastify beim Start mit FST_ERR_DUPLICATED_ROUTE abstuerzen. Der Tray nutzt
+  // die bestehende Route; api_client.go ist auf deren Antwortform angepasst.
 
   /**
    * GET /api/projects/:name/sessions

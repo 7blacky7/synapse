@@ -219,13 +219,42 @@ type apiAgentsResponse struct {
 	Agents  []apiAgent `json:"agents"`
 }
 
+// apiFileVersion spiegelt die BESTEHENDE Route in routes/specialists.ts.
+// Deren Felder sind nullable (kein COALESCE) und created_at ist ein roher
+// PG-Zeitstempel — beides wird hier abgefangen statt serverseitig.
 type apiFileVersion struct {
-	AgentId    string `json:"agent_id"`
-	FilePath   string `json:"file_path"`
-	EditAction string `json:"edit_action"`
-	Reason     string `json:"reason"`
-	FeatureTag string `json:"feature_tag"`
-	CreatedAt  string `json:"created_at"`
+	Id         string  `json:"id"`
+	FilePath   string  `json:"file_path"`
+	EditAction *string `json:"edit_action"`
+	AgentId    *string `json:"agent_id"`
+	Reason     *string `json:"reason"`
+	FeatureTag *string `json:"feature_tag"`
+	CreatedAt  string  `json:"created_at"`
+}
+
+// oderLeer macht aus einem nullable Feld einen anzeigbaren String.
+func oderLeer(s *string, fallback string) string {
+	if s == nil || *s == "" {
+		return fallback
+	}
+	return *s
+}
+
+// pgZeitKurz formatiert "2026-07-25 13:10:15.123456+02" als "25.07. 13:10:15" —
+// dieselbe Darstellung, die frueher to_char() in der SQL-Abfrage erzeugt hat.
+// Bei unbekanntem Format wird der Rohwert durchgereicht statt zu raten.
+func pgZeitKurz(roh string) string {
+	for _, layout := range []string{
+		"2006-01-02 15:04:05.999999-07",
+		"2006-01-02 15:04:05.999999Z07:00",
+		"2006-01-02T15:04:05.999999Z07:00",
+		"2006-01-02 15:04:05",
+	} {
+		if t, err := time.Parse(layout, roh); err == nil {
+			return t.Format("02.01. 15:04:05")
+		}
+	}
+	return roh
 }
 
 type apiFileVersionsResponse struct {

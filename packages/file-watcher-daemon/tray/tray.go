@@ -1175,14 +1175,16 @@ func (w *DetailWindow) ReloadEvents() {
 		var apiRows [][]string
 		for _, v := range versions {
 			if filter != "" {
-				haystack := strings.ToLower(v.AgentId + " " + v.FilePath + " " + v.Reason + " " + v.FeatureTag)
+				haystack := strings.ToLower(oderLeer(v.AgentId, "") + " " + v.FilePath + " " +
+					oderLeer(v.Reason, "") + " " + oderLeer(v.FeatureTag, ""))
 				if !strings.Contains(haystack, filter) {
 					continue
 				}
 			}
 			apiRows = append(apiRows, []string{
-				v.CreatedAt, v.AgentId, v.FilePath, v.EditAction,
-				kuerzeAnzeige(v.Reason), kuerzeAnzeige(v.FeatureTag),
+				pgZeitKurz(v.CreatedAt), oderLeer(v.AgentId, "<unbekannt>"), v.FilePath,
+				oderLeer(v.EditAction, ""),
+				kuerzeAnzeige(oderLeer(v.Reason, "")), kuerzeAnzeige(oderLeer(v.FeatureTag, "")),
 			})
 		}
 		fyne.Do(func() {
