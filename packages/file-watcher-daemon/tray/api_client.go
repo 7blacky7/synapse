@@ -41,10 +41,13 @@ import (
 )
 
 const (
-	// Letzte Instanz der Kette — der TS-Daemon-Default.
-	apiFallbackLoopback = "http://127.0.0.1:3456"
-	// Vorletzte Instanz: der Server im lokalen Netz. Bewusst ueberschreibbar,
-	// damit die Adresse nicht wieder im Binary festwaechst.
+	// Standardweg: der oeffentliche Tunnel. Die REST-API laeuft auf dem Server,
+	// NICHT auf dem Rechner des Nutzers — ein Loopback-Default waere hier falsch
+	// (der TS-Daemon nutzt 127.0.0.1 zu Recht, aber der laeuft auch dort).
+	apiDefaultTunnel = "https://synapse.moosynapse.org"
+	// Fallback: derselbe Server im lokalen Netz. Setzt voraus, dass der Container
+	// den Port veroeffentlicht (-p 3456:3456); ohne das ist die Adresse tot.
+	// Ueberschreibbar per SYNAPSE_API_FALLBACK_URL, damit sie nicht im Binary festwaechst.
 	apiFallbackLocalDefault = "http://192.168.50.65:3456"
 )
 
@@ -106,13 +109,14 @@ func apiBases() []string {
 
 	add(readTrayConfig().SynapseApiUrl)
 
+	add(apiDefaultTunnel)
+
 	if fb := os.Getenv("SYNAPSE_API_FALLBACK_URL"); fb != "" {
 		add(fb)
 	} else {
 		add(apiFallbackLocalDefault)
 	}
 
-	add(apiFallbackLoopback)
 	return out
 }
 
@@ -153,7 +157,10 @@ func apiRequestBody(method, path string, body interface{}, out interface{}) (bas
 		}
 	}
 
-	var lastErr error
+	// Fehler JE Adresse sammeln. Frueher wurde nur der letzte behalten — dann
+	// sieht der Nutzer bloss das letzte Kettenglied und sucht an der falschen
+	// Stelle, obwohl alle Adressen probiert wurden.
+	var versuche []string
 	token := apiToken()
 
 	for _, b := range apiBases() {
@@ -163,7 +170,7 @@ func apiRequestBody(method, path string, body interface{}, out interface{}) (bas
 		}
 		req, reqErr := http.NewRequest(method, b+path, rdr)
 		if reqErr != nil {
-			lastErr = reqErr
+			versuche = append(versuche, b+": "+reqErr.Error())
 			continue
 		}
 		req.Header.Set("Accept", "application/json")
@@ -176,7 +183,7 @@ func apiRequestBody(method, path string, body interface{}, out interface{}) (bas
 
 		resp, doErr := apiHttpClient.Do(req)
 		if doErr != nil {
-			lastErr = doErr
+			versuche = append(versuche, b+": nicht erreichbar")
 			forgetBase(b)
 			continue // nicht erreichbar -> naechste Basis
 		}
@@ -185,7 +192,7 @@ func apiRequestBody(method, path string, body interface{}, out interface{}) (bas
 		resp.Body.Close()
 
 		if resp.StatusCode >= 500 {
-			lastErr = fmt.Errorf("%s: HTTP %d", b, resp.StatusCode)
+			versuche = append(versuche, fmt.Sprintf("%s: HTTP %d", b, resp.StatusCode))
 			forgetBase(b)
 			continue // Serverfehler -> naechste Basis versuchen
 		}
@@ -194,13 +201,13 @@ func apiRequestBody(method, path string, body interface{}, out interface{}) (bas
 			return b, fmt.Errorf("HTTP %d von %s: %s", resp.StatusCode, b, strings.TrimSpace(string(body)))
 		}
 		if readErr != nil {
-			lastErr = readErr
+			versuche = append(versuche, b+": Antwort nicht lesbar")
 			continue
 		}
 
 		if out != nil {
 			if jsonErr := json.Unmarshal(body, out); jsonErr != nil {
-				lastErr = fmt.Errorf("%s: ungueltiges JSON: %v", b, jsonErr)
+				versuche = append(versuche, fmt.Sprintf("%s: ungueltiges JSON", b))
 				continue
 			}
 		}
@@ -208,10 +215,10 @@ func apiRequestBody(method, path string, body interface{}, out interface{}) (bas
 		return b, nil
 	}
 
-	if lastErr == nil {
-		lastErr = fmt.Errorf("keine API-Basis konfiguriert")
+	if len(versuche) == 0 {
+		return "", fmt.Errorf("Keine API-Adresse konfiguriert.")
 	}
-	return "", fmt.Errorf("Synapse-API nicht erreichbar: %v", lastErr)
+	return "", fmt.Errorf("Keine der Adressen hat geantwortet:\n  • %s", strings.Join(versuche, "\n  • "))
 }
 
 func apiGet(path string, out interface{}) error {
