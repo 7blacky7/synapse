@@ -434,6 +434,73 @@ export function contentHash(content: string): string {
 /**
  * Erstellt eine neue Datei in code_files (INSERT) und startet parseAndEmbed fire-and-forget.
  */
+/**
+ * Obergrenze fuer den Text, der an die Fehlermuster-Pruefung geht.
+ *
+ * Eine ganze Quelldatei zu embedden kostet Rechenzeit auf dem Ollama-Server und
+ * bringt nichts: ein einzelner Vektor ueber 91 KB verwischt jedes konkrete
+ * Muster. Gemessen am 2026-07-26 rund 0,24 ms pro Zeichen — bei 233 KB also ueber
+ * 50 Sekunden fuer eine Auskunft, die niemand gelesen hat.
+ */
+const PRUEFTEXT_MAX_ZEICHEN = 4000;
+
+/** Kontext links und rechts der Aenderung, damit ein Muster erkennbar bleibt. */
+const PRUEFTEXT_KONTEXT = 200;
+
+/**
+ * Liefert den tatsaechlich geaenderten Abschnitt zwischen zwei Staenden.
+ *
+ * Gemeinsamer Anfang und gemeinsames Ende werden abgeschnitten, uebrig bleibt
+ * genau die Aenderung — plus etwas Kontext, weil ein Fehlermuster sonst nicht
+ * wiederzuerkennen ist. Das ist O(n) mit winzigem Faktor und braucht keinen
+ * Diff-Algorithmus.
+ *
+ * Das Ergebnis ist nicht nur kuerzer, sondern TRENNSCHAERFER als der alte
+ * Gesamtinhalt: ein Vektor ueber zehn geaenderte Zeilen trifft ein Muster,
+ * einer ueber die ganze Datei mittelt es weg.
+ *
+ * Leeres Ergebnis heisst: nichts geaendert, also nichts zu pruefen.
+ */
+function geaenderterAbschnitt(alt: string, neu: string): string {
+  if (!alt) return neu.slice(0, PRUEFTEXT_MAX_ZEICHEN);
+
+  const kuerzere = Math.min(alt.length, neu.length);
+  let start = 0;
+  while (start < kuerzere && alt[start] === neu[start]) start++;
+
+  let endeAlt = alt.length;
+  let endeNeu = neu.length;
+  while (endeAlt > start && endeNeu > start && alt[endeAlt - 1] === neu[endeNeu - 1]) {
+    endeAlt--;
+    endeNeu--;
+  }
+
+  if (endeNeu <= start && endeAlt <= start) return ''; // identisch
+
+  const von = Math.max(0, start - PRUEFTEXT_KONTEXT);
+  const bis = Math.min(neu.length, endeNeu + PRUEFTEXT_KONTEXT);
+  return neu.slice(von, bis).slice(0, PRUEFTEXT_MAX_ZEICHEN);
+}
+
+/**
+ * Startet die Fehlermuster-Pruefung, ohne auf sie zu warten.
+ *
+ * Nebenlaeufig, weil ein Embedding im synchronen Schreibpfad nichts zu suchen hat:
+ * es lag dort VOR der ersten PG-Verbindung und hat nicht die Datenbank aufgehalten,
+ * sondern die Antwort des Tools. Treffer landen im Log, nicht im Rueckgabewert —
+ * der Schreibvorgang ist vorbei, bevor das Ergebnis eintrifft.
+ */
+function pruefeFehlermusterNebenlaeufig(pruefText: string, agentId: string, filePath: string): void {
+  if (!pruefText.trim()) return;
+  void checkErrorPatterns(pruefText, agentId)
+    .then((treffer) => {
+      for (const w of treffer) {
+        console.error('[code-write] Fehlermuster (' + w.severity + ') bei ' + filePath + ': ' + w.description);
+      }
+    })
+    .catch(() => { /* nebenlaeufig — ein Fehler hier darf den Schreibvorgang nicht beruehren */ });
+}
+
 export async function createFileInPg(
   project: string,
   filePath: string,
@@ -446,16 +513,10 @@ export async function createFileInPg(
 ): Promise<{ warnings?: ErrorPatternWarning[] }> {
   const resolvedAgentId = resolveAgentId(agentId);
   let warnings: ErrorPatternWarning[] | undefined;
-  // Nebenlaeufig, aus demselben Grund wie in updateFileInPg: der Inhalt wird
-  // ungekuerzt embeddet, das darf den Schreibvorgang nicht aufhalten.
+  // Neue Datei: alles daran ist neu, der Anfang steht also fuer die Aenderung.
+  // Trotzdem gedeckelt — auch eine frisch angelegte Datei kann gross sein.
   if (resolvedAgentId) {
-    void checkErrorPatterns(content, resolvedAgentId)
-      .then((treffer) => {
-        for (const w of treffer) {
-          console.error('[code-write] Fehlermuster (' + w.severity + ') bei ' + filePath + ': ' + w.description);
-        }
-      })
-      .catch(() => { /* nebenlaeufig — siehe updateFileInPg */ });
+    pruefeFehlermusterNebenlaeufig(content.slice(0, PRUEFTEXT_MAX_ZEICHEN), resolvedAgentId, filePath);
   }
 
   const { v4: uuidv4 } = await import('uuid');
@@ -547,15 +608,9 @@ export async function updateFileInPg(
   // FS-Aenderungen bleiben ausgenommen: die Pruefung zielt auf agentengeschriebenen
   // Inhalt, nicht auf Editor-Speicherungen. Treffer landen jetzt im Log, nicht mehr
   // im Rueckgabewert — der Schreibvorgang ist vorbei, bevor das Ergebnis da ist.
-  if (resolvedAgentId && resolvedAgentId !== FS_AGENT_ID) {
-    void checkErrorPatterns(newContent, resolvedAgentId)
-      .then((treffer) => {
-        for (const w of treffer) {
-          console.error('[code-write] Fehlermuster (' + w.severity + ') bei ' + filePath + ': ' + w.description);
-        }
-      })
-      .catch(() => { /* nebenlaeufig — ein Fehler hier darf den Schreibvorgang nicht beruehren */ });
-  }
+  // Die Pruefung steht weiter unten, nach dem Commit: erst dort liegt der alte
+  // Inhalt aus dem Versions-Snapshot vor, und nur damit laesst sich der geaenderte
+  // Abschnitt bestimmen.
 
   const pool = getPool();
 
@@ -564,12 +619,17 @@ export async function updateFileInPg(
 
   const client = await pool.connect();
   let rowCount = 0;
+  let alterInhalt: string | undefined;
   try {
     await client.query('BEGIN');
 
     // Snapshot: alten Inhalt sichern — nur wenn vorhanden UND vom neuen verschieden.
     // Verhindert Versions-Spam durch idempotente Writes (gleicher Inhalt 2x geschrieben).
-    await client.query(
+    //
+    // RETURNING liefert den alten Stand gleich mit: damit kennt die Fehlermuster-
+    // Pruefung weiter unten den geaenderten Abschnitt, ohne eine zweite Abfrage.
+    // Bleibt die Zeile aus, war der Inhalt unveraendert — dann gibt es nichts zu pruefen.
+    const schnappschuss = await client.query<{ content: string }>(
       `INSERT INTO file_versions (project, file_path, content, content_hash, edit_action, agent_id, batch_id, size_bytes, reason, feature_tag, parent_version_id, git_commit_sha, agent_note)
        SELECT cf.project, cf.file_path, cf.content, cf.content_hash, $3, $4, $5,
               COALESCE(cf.file_size, OCTET_LENGTH(cf.content)), $7, $8, $9, $10, $11
@@ -577,7 +637,8 @@ export async function updateFileInPg(
        WHERE cf.project = $1
          AND cf.file_path = $2
          AND cf.content IS NOT NULL
-         AND cf.content_hash IS DISTINCT FROM $6`,
+         AND cf.content_hash IS DISTINCT FROM $6
+       RETURNING content`,
       [
         project,
         filePath,
@@ -600,6 +661,7 @@ export async function updateFileInPg(
       [project, filePath, newContent, hash, fileSize]
     );
     rowCount = result.rowCount ?? 0;
+    alterInhalt = schnappschuss.rows[0]?.content;
 
     await client.query('COMMIT');
   } catch (err) {
@@ -611,6 +673,12 @@ export async function updateFileInPg(
 
   if (rowCount === 0) {
     console.error(`[code-write] updateFileInPg: Keine Datei gefunden fuer ${project}/${filePath}`);
+  }
+
+  // Geprueft wird nur der geaenderte Abschnitt, nicht die ganze Datei. Fehlt die
+  // Snapshot-Zeile, war der Inhalt identisch — dann gibt es nichts zu pruefen.
+  if (resolvedAgentId && resolvedAgentId !== FS_AGENT_ID && alterInhalt !== undefined) {
+    pruefeFehlermusterNebenlaeufig(geaenderterAbschnitt(alterInhalt, newContent), resolvedAgentId, filePath);
   }
 
   enqueueParseAndEmbed(project, filePath);
