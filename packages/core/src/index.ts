@@ -78,6 +78,11 @@ export {
   shouldIgnore,
   createDefaultIgnore,
   getDefaultIgnores,
+  // IGN-3: Regeln aus project_ignore_rules
+  aktualisiereIgnoreRegeln,
+  gepufferteIgnoreRegeln,
+  verwirfIgnoreRegeln,
+  erklaereIgnore,
 } from './watcher/index.js';
 export type { FileWatcherOptions, FileWatcherInstance } from './watcher/index.js';
 
@@ -645,3 +650,14 @@ export async function initSynapse(projectName: string): Promise<boolean> {
   console.error(`[Synapse] Projekt "${projectName}" bereit`);
   return true;
 }
+
+// IGN-2: Pflege der Ignore-Regeln (anlegen, entfernen, schalten, Pfad pruefen)
+export {
+  listeIgnoreRegeln,
+  fuegeIgnoreRegelnHinzu,
+  entferneIgnoreRegel,
+  schalteIgnoreRegel,
+  pruefeIgnorePfad,
+} from './services/ignore-rules.js';
+export type { IgnoreRegel } from './services/ignore-rules.js';
+

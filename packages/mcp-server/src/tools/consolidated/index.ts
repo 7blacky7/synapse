@@ -25,3 +25,4 @@ export { codeCheckTool } from './code-check.js';
 export { filesTool } from './files.js';
 export { shellTool } from './shell.js';
 export { guideTool } from './guide.js';
+export { ignoreTool } from './ignore.js';

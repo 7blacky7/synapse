@@ -30,7 +30,7 @@ import chokidar, { FSWatcher } from 'chokidar';
 import { Ignore } from 'ignore';
 import { FileEvent } from '../types/index.js';
 import { getConfig } from '../config.js';
-import { loadGitignore, shouldIgnore } from './ignore.js';
+import { loadGitignore, shouldIgnore, aktualisiereIgnoreRegeln } from './ignore.js';
 import { isBinaryFile, isExtractableDocument, isMultimodalFile, getFileType, MAX_MEDIA_SIZE_MB } from './binary.js';
 
 export * from './binary.js';
@@ -70,7 +70,18 @@ export function startFileWatcher(options: FileWatcherOptions): FileWatcherInstan
   console.error(`[Synapse] Starte FileWatcher fuer "${projectName}" in ${projectPath}`);
 
   // Gitignore laden (mutable - wird bei .synapseignore Aenderung neu geladen)
-  let ig: Ignore = loadGitignore(projectPath);
+  let ig: Ignore = loadGitignore(projectPath, projectName);
+
+  // IGN-3: Die Regeln aus der Datenbank stehen erst nach einer Abfrage bereit.
+  // Bis dahin gilt der Notnagel (.synapseignore vom Dateisystem); sobald die
+  // Regeln geladen sind, wird die Instanz ersetzt. Bewusst nicht abgewartet,
+  // damit der Start des Watchers nicht an der Datenbank haengt.
+  void aktualisiereIgnoreRegeln(projectName).then((anzahl) => {
+    if (anzahl > 0) {
+      ig = loadGitignore(projectPath, projectName);
+      console.error(`[Synapse] ${anzahl} Ignore-Regeln aus der Datenbank uebernommen ("${projectName}")`);
+    }
+  });
 
   // Pfade zu ignore Dateien
   const synapseignorePath = path.join(projectPath, '.synapseignore');
@@ -108,7 +119,7 @@ export function startFileWatcher(options: FileWatcherOptions): FileWatcherInstan
       console.error(`[Synapse] Ignore-Datei geaendert: ${relativePath}`);
 
       // Ignore-Patterns neu laden
-      ig = loadGitignore(projectPath);
+      ig = loadGitignore(projectPath, projectName);
 
       // Callback aufrufen mit neuen Patterns
       if (onIgnoreChange) {

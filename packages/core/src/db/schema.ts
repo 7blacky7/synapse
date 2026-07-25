@@ -1065,6 +1065,69 @@ CREATE TRIGGER trg_notify_code_file_change
   AFTER INSERT OR UPDATE OR DELETE ON code_files
   FOR EACH ROW EXECUTE FUNCTION notify_code_file_change();
 
+-- ==========================================================================
+-- project_ignore_rules (IGN-1): Ignore-Regeln je Projekt in PG statt in der
+-- Datei .synapseignore auf der Platte.
+--
+-- WARUM: Lokaler Daemon und API lasen die Datei bisher jeder fuer sich vom FS.
+-- Damit hatte jeder Prozess seine eigene Wahrheit, und ein Umschalten wirkte
+-- je nach Prozess zu unterschiedlichen Zeitpunkten. Die Tabelle ist die
+-- gemeinsame Quelle, ueber die beide dieselben Regeln sehen.
+--
+-- SEMANTIK wie bei gitignore:
+--   sort_order  bestimmt die Reihenfolge; die spaetere Regel gewinnt.
+--   pattern     beginnt mit ! fuer eine Ausnahme von einer breiteren Regel.
+--   scope       begrenzt ein Muster auf einen Teilbaum (NULL = ganzes Projekt).
+--   enabled     schaltet eine Regel ab, OHNE sie zu verlieren — der Kernzweck.
+--   locked      Regeln, die nicht abgeschaltet werden duerfen (node_modules,
+--               .git, dist, .env). Schutz davor, dass ein versehentliches
+--               Freigeben heruntergeladene Pakete in den Index zieht.
+--
+-- .gitignore bleibt zusaetzlich aktiv und wird weiter vom FS gelesen, sonst
+-- muesste man node_modules/dist doppelt pflegen.
+-- ==========================================================================
+CREATE TABLE IF NOT EXISTS project_ignore_rules (
+  id BIGSERIAL PRIMARY KEY,
+  project TEXT NOT NULL,
+  pattern TEXT NOT NULL,
+  scope TEXT,
+  enabled BOOLEAN NOT NULL DEFAULT TRUE,
+  locked BOOLEAN NOT NULL DEFAULT FALSE,
+  kommentar TEXT,
+  sort_order INT NOT NULL DEFAULT 100,
+  created_by TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_project_ignore_rules_eindeutig
+  ON project_ignore_rules(project, pattern, COALESCE(scope, ''));
+CREATE INDEX IF NOT EXISTS idx_project_ignore_rules_aktiv
+  ON project_ignore_rules(project, sort_order) WHERE enabled;
+
+-- Regel-Aenderung sofort an alle Prozesse melden (Daemon, API, Parser-Worker).
+-- Ohne diese Benachrichtigung haelt jeder Prozess seinen alten Stand und die
+-- Zusage "innerhalb einer Minute sichtbar bzw. unsichtbar" waere nicht haltbar.
+CREATE OR REPLACE FUNCTION notify_ignore_rules_change() RETURNS trigger AS $$
+BEGIN
+  PERFORM pg_notify('synapse_ignore_rules', COALESCE(NEW.project, OLD.project));
+  RETURN NULL;
+END
+$$ LANGUAGE plpgsql;
+
+-- IGN-4: Markierung der ausgeblendeten Dateien. Materialisiert, damit die
+-- Lesepfade mit einem simplen "NOT ignored" filtern koennen, statt bei jeder
+-- Abfrage saemtliche Muster gegen jeden Pfad zu pruefen. Wird bei jeder
+-- Regel-Aenderung neu berechnet (markiereIgnorierteDateien).
+ALTER TABLE code_files ADD COLUMN IF NOT EXISTS ignored BOOLEAN NOT NULL DEFAULT FALSE;
+CREATE INDEX IF NOT EXISTS idx_code_files_sichtbar ON code_files(project, file_path) WHERE NOT ignored;
+
+DROP TRIGGER IF EXISTS trg_notify_ignore_rules ON project_ignore_rules;
+CREATE TRIGGER trg_notify_ignore_rules
+  AFTER INSERT OR UPDATE OR DELETE ON project_ignore_rules
+  FOR EACH ROW EXECUTE FUNCTION notify_ignore_rules_change();
+
+
 `;
 
 const AUTH_SCHEMA_SQL = `

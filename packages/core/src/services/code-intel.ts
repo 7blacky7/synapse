@@ -121,8 +121,11 @@ export async function getProjectTree(
     : '';
 
   const filesResult = await pool.query(
+    // IGN-4: ausgeblendete Dateien (code_files.ignored) gehoeren nicht in den
+    // Baum. Der Filter sitzt in der Unterabfrage, damit die dynamisch gebaute
+    // WHERE-Klausel unveraendert bleibt.
     `SELECT cf.file_path, cf.file_name, cf.file_type ${lineCols} ${countCols}
-     FROM code_files cf ${where} ORDER BY cf.file_path`,
+     FROM (SELECT * FROM code_files WHERE NOT ignored) cf ${where} ORDER BY cf.file_path`,
     params
   );
 
@@ -603,6 +606,7 @@ export async function fullTextSearchCode(
        ts_rank(tsv, plainto_tsquery('english', $2)) AS rank
      FROM code_files
      WHERE project = $1
+       AND NOT ignored
        AND tsv @@ plainto_tsquery('english', $2)
        ${typeFilter}
      ORDER BY rank DESC

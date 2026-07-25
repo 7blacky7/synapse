@@ -549,7 +549,7 @@ export async function cleanupProjekt(
   console.error(`[Synapse MCP] Cleanup für "${projectName}"...`);
 
   // .synapseignore und .gitignore neu laden
-  const ig = loadGitignore(projectPath);
+  const ig = loadGitignore(projectPath, projectName);
 
   // Vektor-Collection fuer Code (Suffix _code, gleich wie ensureProjectCollection anlegt)
   const collectionName = `project_${projectName}_code`;

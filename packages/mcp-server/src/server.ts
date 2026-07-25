@@ -41,6 +41,7 @@ import {
   adminTool,
   codeIntelTool,
   codeCheckTool,
+  ignoreTool,
   filesTool,
   shellTool,
   guideTool,
@@ -186,6 +187,7 @@ export function createServer(): Server {
       adminTool.definition,
       codeIntelTool.definition,
       codeCheckTool.definition,
+      ignoreTool.definition,
       filesTool.definition,
       shellTool.definition,
       guideTool.definition,
@@ -623,6 +625,9 @@ export function createServer(): Server {
 
         case 'code_check':
           return withOnboarding(await codeCheckTool.handler(args as Record<string, unknown>));
+
+        case 'ignore':
+          return withOnboarding(await ignoreTool.handler(args as Record<string, unknown>));
 
         case 'files':
           return withOnboarding(await filesTool.handler(args as Record<string, unknown>));

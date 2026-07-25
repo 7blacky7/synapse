@@ -1760,12 +1760,68 @@ export async function searchCode(
   }
 
   const collectionName = COLLECTIONS.projectCode(projectName);
-  return searchVectors<CodeChunkPayload>(
+  // IGN-8 (Fall A): mehr Treffer holen als angefordert, weil gleich ausgeblendete
+  // wegfallen koennen. Der Zuschlag ist begrenzt — bei sehr vielen ausgeblendeten
+  // Dateien kann das Ergebnis kuerzer als limit sein. Das ist ehrlicher als so
+  // lange nachzuladen, bis die Zahl stimmt.
+  const roheTreffer = await searchVectors<CodeChunkPayload>(
     collectionName,
     queryVector,
-    limit,
+    Math.min(limit * 3, limit + 60),
     must.length > 0 ? filter : undefined
   );
+  return ohneAusgeblendete(projectName, roheTreffer, limit);
+}
+
+/**
+ * Entfernt Treffer aus ausgeblendeten Dateien (code_files.ignored, IGN-4).
+ *
+ * BEWUSST ueber PostgreSQL statt ueber ein Feld im Qdrant-Payload: so gibt es
+ * nur EINE Wahrheit darueber, was ausgeblendet ist. Ein zweites Flag im Vektor-
+ * Speicher muesste bei jeder Regel-Aenderung mitgezogen werden, und wenn das
+ * einmal misslingt, blendet die eine Suche aus, was die andere noch zeigt —
+ * beide Ergebnisse sehen fuer sich plausibel aus, der Widerspruch faellt im
+ * Betrieb nicht auf.
+ *
+ * Die Vektoren bleiben unangetastet. Wird die Regel abgeschaltet, sind dieselben
+ * Treffer sofort wieder da, ohne neu zu embedden — sofern der Inhalt sich nicht
+ * geaendert hat. Diese Hash-Pruefung gehoert in den Freigabe-Durchlauf (IGN-6).
+ */
+async function ohneAusgeblendete<T extends { payload?: { file_path?: string } | null }>(
+  project: string,
+  treffer: T[],
+  limit: number,
+): Promise<T[]> {
+  if (treffer.length === 0) return treffer;
+
+  const pfade = [
+    ...new Set(
+      treffer
+        .map((eintrag) => eintrag.payload?.file_path)
+        .filter((pfad): pfad is string => typeof pfad === 'string' && pfad.length > 0),
+    ),
+  ];
+  if (pfade.length === 0) return treffer.slice(0, limit);
+
+  try {
+    const ergebnis = await getPool().query<{ file_path: string }>(
+      'SELECT file_path FROM code_files WHERE project = $1 AND file_path = ANY($2) AND ignored',
+      [project, pfade],
+    );
+    if (ergebnis.rows.length === 0) return treffer.slice(0, limit);
+    const ausgeblendet = new Set(ergebnis.rows.map((zeile) => zeile.file_path));
+    return treffer
+      .filter((eintrag) => {
+        const pfad = eintrag.payload?.file_path;
+        return !pfad || !ausgeblendet.has(pfad);
+      })
+      .slice(0, limit);
+  } catch (fehler) {
+    // Datenbank nicht erreichbar: lieber vollstaendig liefern als gar nichts.
+    // Ausblenden ist eine Frage des Rauschens, nicht der Sicherheit.
+    console.error('[Synapse] Ausblenden der ignorierten Treffer misslungen:', (fehler as Error).message);
+    return treffer.slice(0, limit);
+  }
 }
 
 /**
@@ -1796,8 +1852,22 @@ export async function searchCodeBatch(
   if (fileType) (filter.must as Array<Record<string, unknown>>).push({ key: 'file_type', match: { value: fileType } });
 
   // Parallel Qdrant-Searches (Qdrant unterstuetzt keinen Vector-Array-Input)
+  const roheErgebnisse = await Promise.all(
+    vectors.map((vec) =>
+      searchVectors<CodeChunkPayload>(
+        collectionName,
+        vec,
+        Math.min(limitPerQuery * 3, limitPerQuery + 60),
+        filter,
+      ),
+    ),
+  );
+
+  // IGN-8: dieselbe Ausblendung wie in searchCode. Ohne das waere die
+  // Batch-Suche ein Loch, durch das ausgeblendete Dateien doch wieder
+  // auftauchen — und zwar nur dort, was beim Suchen des Fehlers in die Irre fuehrt.
   const results = await Promise.all(
-    vectors.map((vec) => searchVectors<CodeChunkPayload>(collectionName, vec, limitPerQuery, filter)),
+    roheErgebnisse.map((treffer) => ohneAusgeblendete(projectName, treffer, limitPerQuery)),
   );
 
   return queries.map((query, i) => ({

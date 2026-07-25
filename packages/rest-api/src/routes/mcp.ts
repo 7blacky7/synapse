@@ -145,6 +145,13 @@ import {
 } from '@synapse/core';
 import { minimatch } from 'minimatch';
 import { GUIDE_OVERVIEW, TOOL_GUIDES, logToolCall, queryToolCalls } from '@synapse/core';
+import {
+  listeIgnoreRegeln,
+  fuegeIgnoreRegelnHinzu,
+  entferneIgnoreRegel,
+  schalteIgnoreRegel,
+  pruefeIgnorePfad,
+} from '@synapse/core';
 import { randomUUID } from 'crypto';
 
 /**
@@ -1006,6 +1013,29 @@ const MCP_TOOLS = [
       required: ['action'],
     },
   },
+  // 19. ignore — welche Dateien Synapse sieht (IGN-2)
+  {
+    name: 'ignore',
+    description:
+      'Regelt, welche Dateien Synapse indexiert und anzeigt (frueher die Datei .synapseignore). Die Regeln liegen pro Projekt in der Datenbank und gelten fuer den lokalen Daemon und die API gleichermassen. ' +
+      'Einzelne Regeln lassen sich ABSCHALTEN statt loeschen (enable/disable) — die Regel bleibt erhalten. ' +
+      'Gesperrte Regeln (node_modules, .git, dist, .env, .mcp.json) sind nicht abschaltbar, damit kein Paket- oder Build-Verzeichnis in den Index geraet. ' +
+      'action="test" beantwortet: wird dieser Pfad ignoriert, und durch WELCHE Regel.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', enum: ['list', 'add', 'remove', 'enable', 'disable', 'test'], description: 'Aktion' },
+        project: { type: 'string', description: 'Projekt-Name (Pflicht)' },
+        pattern: { type: 'string', description: 'Muster wie "*.txt" oder "docs/" — Pflicht fuer add, remove, enable, disable' },
+        patterns: { type: 'array', items: { type: 'string' }, description: 'Mehrere Muster auf einmal (nur fuer add)' },
+        scope: { type: 'string', description: 'Optional fuer add: Muster nur unterhalb dieses Teilbaums anwenden' },
+        kommentar: { type: 'string', description: 'Optional fuer add: wofuer die Regel da ist' },
+        file_path: { type: 'string', description: 'Pflicht fuer test: der zu pruefende Pfad, relativ zum Projekt' },
+        agent_id: { type: 'string', description: 'Agent-ID' },
+      },
+      required: ['action', 'project'],
+    },
+  },
   // 18. guide — Web-KI-Onboarding + Tool-Dokumentation (nur REST-API)
   {
     name: 'guide',
@@ -1168,6 +1198,10 @@ const OUTPUT_EXTRAS: Record<string, { props?: Record<string, unknown>; example?:
   code_check: {
     props: { patterns: { type: 'array', items: { type: 'object' } }, count: { type: 'number' } },
     example: { success: true, count: 1, patterns: [{ id: 'uuid', description: '...', fix: '...', severity: 'warning', modelScope: 'all', foundBy: 'agentA' }] },
+  },
+  ignore: {
+    props: { count: { type: 'number' }, rules: { type: 'array', items: { type: 'object' } }, ignoriert: { type: 'boolean' }, regel: { type: 'string' }, herkunft: { type: 'string' } },
+    example: { success: true, count: 19, rules: [{ pattern: '*.txt', enabled: true, locked: false, kommentar: 'Nicht-Code-Dateien' }] },
   },
   skills: {
     props: { experimental: { type: 'boolean' }, count: { type: 'number' }, skills: { type: 'array', items: { type: 'object' } } },
@@ -3802,6 +3836,60 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
         }
         default:
           return { success: false, error: `Unbekannte code_check action: "${ccAction}"` };
+      }
+    }
+
+    // =================================================================
+    // 19. IGNORE — welche Dateien Synapse sieht (IGN-2)
+    // =================================================================
+    case 'ignore': {
+      const igAktion = reqStr(args, 'action');
+      const igProjekt = reqStr(args, 'project');
+      switch (igAktion) {
+        case 'list': {
+          const regeln = await listeIgnoreRegeln(igProjekt);
+          return {
+            success: true,
+            count: regeln.length,
+            rules: regeln,
+            hinweis:
+              'Reihenfolge zaehlt: die spaetere Regel gewinnt. Gesperrte Regeln (locked) lassen sich nicht abschalten — ' +
+              'sie halten Paket- und Build-Verzeichnisse aus dem Index.',
+          };
+        }
+        case 'add': {
+          const einzeln = str(args, 'pattern');
+          const mehrere = Array.isArray(args.patterns) ? (args.patterns as string[]) : [];
+          const liste = mehrere.length ? mehrere : einzeln ? [einzeln] : [];
+          if (!liste.length) throw new Error('pattern oder patterns[] erforderlich');
+          const ergebnis = await fuegeIgnoreRegelnHinzu(
+            igProjekt,
+            liste.map((muster) => ({ pattern: muster, scope: str(args, 'scope'), kommentar: str(args, 'kommentar') })),
+            resolveAgentId(str(args, 'agent_id')) ?? undefined,
+          );
+          return {
+            success: true,
+            ...ergebnis,
+            message:
+              `${ergebnis.hinzugefuegt.length} Regel(n) angelegt` +
+              (ergebnis.uebersprungen.length ? `, ${ergebnis.uebersprungen.length} gab es schon` : ''),
+          };
+        }
+        case 'remove': {
+          const ergebnis = await entferneIgnoreRegel(igProjekt, reqStr(args, 'pattern'));
+          return { success: ergebnis.entfernt, ...ergebnis };
+        }
+        case 'enable':
+        case 'disable': {
+          const ergebnis = await schalteIgnoreRegel(igProjekt, reqStr(args, 'pattern'), igAktion === 'enable');
+          return { success: ergebnis.geschaltet, ...ergebnis };
+        }
+        case 'test': {
+          const ergebnis = await pruefeIgnorePfad(igProjekt, reqStr(args, 'file_path'));
+          return { success: true, ...ergebnis };
+        }
+        default:
+          return { success: false, error: `Unbekannte ignore action: "${igAktion}"` };
       }
     }
 
