@@ -43,7 +43,7 @@ export interface ToolGuide {
 export const GUIDE_OVERVIEW = `
 # Synapse REST-API — Quick-Start fuer Web-KIs
 
-Du bist mit einem Synapse-Projekt verbunden. 19 Tools + dieses guide-Tool.
+Du bist mit einem Synapse-Projekt verbunden. 21 Tools + dieses guide-Tool.
 
 ## Scope (wichtig fuer Web-KI-Connectors)
 
@@ -372,13 +372,14 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
       'update-Action um 1 Zeile zu aendern — DU SCHREIBST DIE GANZE DATEI NEU. Nutze search_replace.',
       'search_replace mit nur einem einzigen Wort als search — matcht oft mehrfach, schlaegt fehl.',
       'read OHNE line_start auf grossen Dateien — Token-Overflow.',
-      'create auf existierende Datei — ueberschreibt ohne Warnung!',
+      'davon ausgehen dass create einen existierenden Pfad blind ueberschreibt -- seit IGN-8 (2026-07-26) geht create auf einen bereits vorhandenen Pfad stattdessen in einen Planmodus (aktueller_inhalt + plan_id statt Direktschreiben, erst commit wendet es an).',
     ],
     actions: {
       create: {
-        description: 'Neue Datei erstellen. Ueberschreibt falls schon da.',
+        description: 'Neue Datei erstellen. Existiert der Pfad bereits, wird NICHT ueberschrieben (seit IGN-8, 2026-07-26) -- stattdessen liefert die Antwort applied:false, aktueller_inhalt (der echte Bestand) und eine plan_id. Erst files(action:"commit", plan_id:...) wendet die Aenderung an.',
         params: 'file_path, content',
         example: 'files({ action: "create", project: "synapse", file_path: "test.txt", content: "hi" })',
+        tips: 'Kommt applied:false zurueck: aktueller_inhalt zeigt was schon drinsteht, plan_id direkt committen oder erst per files(action:"plan", ops:[...]) auf demselben Pfad anpassen. Fuer eine bewusste Aenderung an bekanntem Bestand ist search_replace/replace_lines meist der direktere Weg.',
       },
       update: {
         description: '⚠️ Ueberschreibt GANZE Datei. Meistens falsch. Nutze search_replace stattdessen.',
@@ -1086,6 +1087,70 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
         description: 'Projekt deaktivieren — Indexierung/Sync pausieren ohne Daten zu loeschen (Gegenstueck: enable).',
         params: 'project (req)',
         example: 'project({ action: "disable", project: "altes-projekt" })',
+      },
+    },
+  },
+
+  ignore: {
+    summary: 'Regelt, welche Dateien Synapse indexiert und anzeigt (Ersatz fuer die frueher genutzte Datei .synapseignore). Regeln liegen pro Projekt in der Datenbank (project_ignore_rules) und gelten fuer lokalen Daemon und API gleichermassen.',
+    when_to_use: [
+      'Aktive Regeln ansehen: list.',
+      'Neues Muster ausschliessen, z.B. generierte Dateien oder Rauschen in der Suche: add.',
+      'Regel voruebergehend abschalten OHNE sie zu verlieren: disable -- spaeter mit enable wieder aktivieren.',
+      'Regel endgueltig entfernen: remove.',
+      'Pruefen warum ein Pfad nicht auftaucht, und durch WELCHE Regel: test.',
+    ].join(' '),
+    when_not_to_use: [
+      'Eine einzelne Datei nur einmalig ausblenden wollen -- Regeln gelten projektweit, es gibt keine Einmal-Ausnahme.',
+      'node_modules/.git/dist/.env/.mcp.json aus dem Index nehmen wollen -- diese Regeln sind gesperrt (locked), genau dafuer.',
+    ].join(' '),
+    param_tips: [
+      'pattern folgt gitignore-Syntax: "docs/" ein Verzeichnis, "*.txt" eine Endung, "!ausnahme.txt" eine Ausnahme von einer breiteren Regel.',
+      'scope begrenzt ein Muster auf einen Teilbaum statt projektweit zu gelten.',
+      'Reihenfolge zaehlt wie bei gitignore: die SPAETERE Regel gewinnt.',
+      'Gesperrte Regeln (locked:true in list) lassen sich nicht abschalten oder entfernen -- Schutz gegen versehentliches Freigeben von node_modules & co.',
+    ].join('\\n'),
+    examples: [
+      'ignore({ action: "list", project: "synapse" })',
+      'ignore({ action: "add", project: "synapse", pattern: "generated/", kommentar: "Codegen-Output" })',
+      'ignore({ action: "disable", project: "synapse", pattern: "docs/" })',
+      'ignore({ action: "test", project: "synapse", file_path: "docs/handbuch.md" })',
+    ],
+    anti_patterns: [
+      'Eine gesperrte Regel per remove/disable umgehen wollen -- schlaegt mit klarer Begruendung fehl, das ist Absicht.',
+      'Eine Regel loeschen (remove) um sie nur kurz auszusetzen -- nutze disable, dann bleibt sie erhalten und ist mit enable sofort wieder da.',
+      'Nach add erwarten dass eine schon indexierte Datei sofort aus JEDER Ansicht verschwindet, ohne zu pruefen -- Baum und Volltextsuche ziehen sofort nach, teste im Zweifel mit test oder einem erneuten tree/search.',
+    ],
+    actions: {
+      list: {
+        description: 'Alle Regeln des Projekts anzeigen, inklusive Sperr- (locked) und Aktiv-Status (enabled).',
+        example: 'ignore({ action: "list", project: "synapse" })',
+      },
+      add: {
+        description: 'Eine oder mehrere Regeln anlegen. Bereits vorhandene Muster werden uebersprungen statt zu scheitern.',
+        params: 'pattern ODER patterns[] (req), scope, kommentar',
+        example: 'ignore({ action: "add", project: "synapse", pattern: "*.snap" })',
+        tips: 'Ohne sort_order wird ans Ende gehaengt -- neue Regeln wirken SPAETER als bestehende (gitignore-Semantik). Antwort nennt unter neuAusgeblendet/neuSichtbar, welche bereits indexierten Dateien betroffen sind.',
+      },
+      remove: {
+        description: 'Regel endgueltig entfernen. Gesperrte Regeln werden mit Begruendung abgewiesen.',
+        params: 'pattern (req)',
+        example: 'ignore({ action: "remove", project: "synapse", pattern: "*.snap" })',
+      },
+      enable: {
+        description: 'Regel wieder aktivieren.',
+        params: 'pattern (req)',
+        example: 'ignore({ action: "enable", project: "synapse", pattern: "docs/" })',
+      },
+      disable: {
+        description: 'Regel abschalten OHNE sie zu verlieren -- der eigentliche Zweck der Tabelle gegenueber der frueheren Datei. Gesperrte Regeln lassen sich nicht abschalten.',
+        params: 'pattern (req)',
+        example: 'ignore({ action: "disable", project: "synapse", pattern: "docs/" })',
+      },
+      test: {
+        description: 'Prueft ob ein Pfad ignoriert wird, und durch WELCHE Regel (Muster + Herkunft: standard/gitignore/datenbank).',
+        params: 'file_path (req)',
+        example: 'ignore({ action: "test", project: "synapse", file_path: "docs/handbuch.md" })',
       },
     },
   },
