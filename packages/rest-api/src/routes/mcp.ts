@@ -151,6 +151,7 @@ import {
   entferneIgnoreRegel,
   schalteIgnoreRegel,
   pruefeIgnorePfad,
+  pruefeUndBereiteSchreibenVor,
 } from '@synapse/core';
 import { randomUUID } from 'crypto';
 
@@ -3514,8 +3515,33 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
       switch (action) {
         case 'create': {
           const content = reqStr(args, 'content');
+          const vorbereitung = await pruefeUndBereiteSchreibenVor({ project, filePath, content, aktion: 'create', agentId, reason: str(args, 'reason') });
+          if (vorbereitung.modus === 'plan') {
+            const grundText = vorbereitung.hinweis.ignoriert
+              ? `Pfad "${filePath}" existiert bereits UND ist durch die Regel "${vorbereitung.hinweis.regel}" ausgeblendet`
+              : `Pfad "${filePath}" existiert bereits`;
+            return {
+              success: true,
+              applied: false,
+              ignoriert: vorbereitung.hinweis.ignoriert,
+              regel: vorbereitung.hinweis.regel,
+              herkunft: vorbereitung.hinweis.herkunft,
+              aktueller_inhalt: vorbereitung.aktueller_inhalt,
+              plan_id: vorbereitung.plan.plan_id,
+              message:
+                `${grundText} — deshalb NICHT direkt geschrieben` +
+                (vorbereitung.hinweis.ignoriert ? ` (die vorhandene Datei war fuer dich unsichtbar, ein Ueberschreiben waere blind gewesen)` : ` (create ueberschreibt sonst ungeprueft — Schutz vor versehentlichem Datenverlust)`) +
+                `. aktueller_inhalt zeigt den Bestand. Ein Plan (${vorbereitung.plan.plan_id}) mit deinem Inhalt liegt bereit — bei Bedarf mit files(action:"plan", ops:[...]) auf demselben Pfad anpassen, dann committen mit files(action:"commit", plan_id:"${vorbereitung.plan.plan_id}").` +
+                (vorbereitung.hinweis.ignoriert ? ` Nach dem Commit bleibt der Pfad ausgeblendet, bis die Regel abgeschaltet wird: ignore(action:"disable", pattern:"${vorbereitung.hinweis.regel}").` : ''),
+            };
+          }
           const result = await createFileInPg(project, filePath, content, agentId, str(args, 'reason'), undefined, undefined, enrichment);
           const response: Record<string, unknown> = { success: true, message: `Datei "${filePath}" erstellt (${content.length} Zeichen)` };
+          if (vorbereitung.modus === 'direkt_mit_hinweis') {
+            response.ignoriert = true;
+            response.regel = vorbereitung.hinweis.regel;
+            response.message += ` — ACHTUNG: Pfad ist durch die Regel "${vorbereitung.hinweis.regel}" ignoriert und wird in ca. einer Minute aus Suche/Baum ausgeblendet. Freigeben: ignore(action:"disable", pattern:"${vorbereitung.hinweis.regel}").`;
+          }
           if (result.warnings?.length) {
             response.errorPatterns = {
               count: result.warnings.length,
@@ -3528,8 +3554,29 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
         }
         case 'update': {
           const content = reqStr(args, 'content');
+          const vorbereitung = await pruefeUndBereiteSchreibenVor({ project, filePath, content, aktion: 'update', agentId, reason: str(args, 'reason') });
+          if (vorbereitung.modus === 'plan') {
+            return {
+              success: true,
+              applied: false,
+              ignoriert: true,
+              regel: vorbereitung.hinweis.regel,
+              herkunft: vorbereitung.hinweis.herkunft,
+              aktueller_inhalt: vorbereitung.aktueller_inhalt,
+              plan_id: vorbereitung.plan.plan_id,
+              message:
+                `Pfad "${filePath}" ist durch die Regel "${vorbereitung.hinweis.regel}" ausgeblendet — deshalb NICHT direkt geschrieben. ` +
+                `aktueller_inhalt zeigt den Bestand. Ein Plan (${vorbereitung.plan.plan_id}) mit deinem Inhalt liegt bereit — bei Bedarf anpassen, dann committen mit files(action:"commit", plan_id:"${vorbereitung.plan.plan_id}"). ` +
+                `Nach dem Commit bleibt der Pfad ausgeblendet, bis die Regel abgeschaltet wird: ignore(action:"disable", pattern:"${vorbereitung.hinweis.regel}").`,
+            };
+          }
           const result = await updateFileInPg(project, filePath, content, agentId, undefined, undefined, str(args, 'reason'), enrichment);
           const response: Record<string, unknown> = { success: true, message: `Datei "${filePath}" aktualisiert (${content.length} Zeichen)` };
+          if (vorbereitung.modus === 'direkt_mit_hinweis') {
+            response.ignoriert = true;
+            response.regel = vorbereitung.hinweis.regel;
+            response.message += ` — ACHTUNG: Pfad ist durch die Regel "${vorbereitung.hinweis.regel}" ignoriert und wird in ca. einer Minute aus Suche/Baum ausgeblendet. Freigeben: ignore(action:"disable", pattern:"${vorbereitung.hinweis.regel}").`;
+          }
           if (result.warnings?.length) {
             response.errorPatterns = {
               count: result.warnings.length,
@@ -3914,12 +3961,12 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
           };
         }
         case 'remove': {
-          const ergebnis = await entferneIgnoreRegel(igProjekt, reqStr(args, 'pattern'));
+          const ergebnis = await entferneIgnoreRegel(igProjekt, reqStr(args, 'pattern'), resolveAgentId(str(args, 'agent_id')));
           return { success: ergebnis.entfernt, ...ergebnis };
         }
         case 'enable':
         case 'disable': {
-          const ergebnis = await schalteIgnoreRegel(igProjekt, reqStr(args, 'pattern'), igAktion === 'enable');
+          const ergebnis = await schalteIgnoreRegel(igProjekt, reqStr(args, 'pattern'), igAktion === 'enable', resolveAgentId(str(args, 'agent_id')));
           return { success: ergebnis.geschaltet, ...ergebnis };
         }
         case 'test': {

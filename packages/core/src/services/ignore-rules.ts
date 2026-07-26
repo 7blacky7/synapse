@@ -30,6 +30,9 @@ import {
   loadGitignore,
   shouldIgnore,
 } from '../watcher/ignore.js';
+import { getFileContentFromPg, contentHash } from './code-write.js';
+import { planBatch } from './file-batch.js';
+import type { FileBatchOp, PlanBatchResult } from './file-batch.js';
 
 export interface IgnoreRegel {
   id: string;
@@ -95,6 +98,15 @@ export async function fuegeIgnoreRegelnHinzu(
   const auswirkung = hinzugefuegt.length
     ? await nachRegelAenderung(project)
     : { neuAusgeblendet: [], neuSichtbar: [] };
+  if (hinzugefuegt.length) {
+    await protokolliereIgnoreEreignis({
+      project,
+      pattern: hinzugefuegt.join(', '),
+      editAction: 'ignore_add',
+      agentId,
+      auswirkung,
+    });
+  }
   return { hinzugefuegt, uebersprungen, ...auswirkung };
 }
 
@@ -106,6 +118,7 @@ export async function fuegeIgnoreRegelnHinzu(
 export async function entferneIgnoreRegel(
   project: string,
   muster: string,
+  agentId?: string | null,
 ): Promise<{ entfernt: boolean; grund?: string } & Partial<Auswirkung>> {
   const pool = getPool();
   const vorhanden = await pool.query<{ locked: boolean }>(
@@ -123,7 +136,9 @@ export async function entferneIgnoreRegel(
     };
   }
   await pool.query('DELETE FROM project_ignore_rules WHERE project = $1 AND pattern = $2', [project, muster]);
-  return { entfernt: true, ...(await nachRegelAenderung(project)) };
+  const auswirkung = await nachRegelAenderung(project);
+  await protokolliereIgnoreEreignis({ project, pattern: muster, editAction: 'ignore_remove', agentId, auswirkung });
+  return { entfernt: true, ...auswirkung };
 }
 
 /**
@@ -135,6 +150,7 @@ export async function schalteIgnoreRegel(
   project: string,
   muster: string,
   aktiv: boolean,
+  agentId?: string | null,
 ): Promise<{ geschaltet: boolean; grund?: string } & Partial<Auswirkung>> {
   const pool = getPool();
   const vorhanden = await pool.query<{ locked: boolean; enabled: boolean }>(
@@ -158,7 +174,15 @@ export async function schalteIgnoreRegel(
     'UPDATE project_ignore_rules SET enabled = $3, updated_at = NOW() WHERE project = $1 AND pattern = $2',
     [project, muster, aktiv],
   );
-  return { geschaltet: true, ...(await nachRegelAenderung(project)) };
+  const auswirkung = await nachRegelAenderung(project);
+  await protokolliereIgnoreEreignis({
+    project,
+    pattern: muster,
+    editAction: aktiv ? 'ignore_enable' : 'ignore_disable',
+    agentId,
+    auswirkung,
+  });
+  return { geschaltet: true, ...auswirkung };
 }
 
 /**
@@ -200,6 +224,45 @@ async function nachRegelAenderung(project: string): Promise<Auswirkung> {
   await aktualisiereIgnoreRegeln(project);
   const markiert = await markiereIgnorierteDateien(project);
   return { neuAusgeblendet: markiert.neuAusgeblendet, neuSichtbar: markiert.neuSichtbar };
+}
+
+/**
+ * Traegt eine Regel-Aenderung als sichtbares Ereignis in file_versions ein.
+ *
+ * WARUM file_versions UND NICHT watcher_events: der aktuell genutzte Go-Tray
+ * (tray.go, ReloadEvents) zeigt im Events-Tab ausschliesslich file_versions —
+ * ueber die API primaer, mit direktem PG-Zugriff als Fallback. watcher_events
+ * ist ein aelterer Pfad, den nur die abgeloeste bash/zenity- und moo-Anzeige
+ * lesen. Ohne diesen Eintrag bliebe ein Ent-/Ignorieren im tatsaechlich
+ * genutzten Tray unsichtbar, obwohl es das Sichtbarkeitsmodell des ganzen
+ * Projekts aendert.
+ *
+ * Rein informativ, kein echter Dateiinhalt (content bleibt leer, size_bytes
+ * bleibt 0) — pattern steht im file_path-Feld, damit es in der Tray-Spalte
+ * "Datei" lesbar auftaucht. Best-effort: ein Fehler hier darf die eigentliche
+ * Regel-Aenderung nicht zu Fall bringen.
+ */
+async function protokolliereIgnoreEreignis(args: {
+  project: string;
+  pattern: string;
+  editAction: 'ignore_add' | 'ignore_remove' | 'ignore_enable' | 'ignore_disable';
+  agentId?: string | null;
+  auswirkung: Auswirkung;
+}): Promise<void> {
+  const { project, pattern, editAction, agentId, auswirkung } = args;
+  const teile: string[] = [];
+  if (auswirkung.neuAusgeblendet.length) teile.push(`${auswirkung.neuAusgeblendet.length} Datei(en) ausgeblendet`);
+  if (auswirkung.neuSichtbar.length) teile.push(`${auswirkung.neuSichtbar.length} Datei(en) wieder sichtbar`);
+  const reason = teile.length ? teile.join(', ') : 'keine bereits indexierte Datei betroffen';
+  try {
+    await getPool().query(
+      `INSERT INTO file_versions (project, file_path, content, content_hash, edit_action, agent_id, reason, size_bytes)
+       VALUES ($1, $2, '', $3, $4, $5, $6, 0)`,
+      [project, pattern, contentHash(''), editAction, agentId ?? null, reason],
+    );
+  } catch (fehler) {
+    console.error('[Synapse] Ignore-Ereignis nicht protokolliert (best-effort):', (fehler as Error).message);
+  }
 }
 
 /**
@@ -295,4 +358,106 @@ async function ermittleProjektWurzel(project: string): Promise<string> {
     );
   }
   return pfad;
+}
+
+
+/** Was pruefeUndBereiteSchreibenVor ueber die Lage eines Pfades herausgefunden hat. */
+export interface IgnorierterSchreibHinweis {
+  ignoriert: boolean;
+  regel: string | null;
+  herkunft: string | null;
+  bestandExistiertBereits: boolean;
+}
+
+export type SchreibVorbereitung =
+  | { modus: 'direkt' }
+  | { modus: 'direkt_mit_hinweis'; hinweis: IgnorierterSchreibHinweis }
+  | { modus: 'plan'; hinweis: IgnorierterSchreibHinweis; plan: PlanBatchResult; aktueller_inhalt: string };
+
+/**
+ * Bereitet ein create/update vor, BEVOR geschrieben wird. Zwei unabhaengige
+ * Gruende koennen in den Planmodus fuehren:
+ *
+ * GRUND 1 — create auf einen bereits existierenden Pfad, UNABHAENGIG vom
+ *   Ignore-Zustand. createFileInPg ueberschreibt sonst ohne jede Pruefung
+ *   (ON CONFLICT DO UPDATE) — GEMESSEN am 2026-07-26: eine bestehende Funktion
+ *   ging so ersatzlos verloren, ohne Fehlermeldung. Kein Upsert-Bypass: alles
+ *   ist ohnehin versioniert (file_versions), ein Rollback ist jederzeit
+ *   moeglich — das Sicherheitsnetz ist der Plan selbst.
+ * GRUND 2 (Fall C) — die Datei ist ignoriert UND existiert bereits, betrifft
+ *   create UND update. Eine ignorierte Datei ist fuer die KI unsichtbar, sie
+ *   kann also nicht wissen was schon drinsteht.
+ *
+ * WEITERE FAELLE:
+ * - Nicht ignoriert, existiert noch nicht: normal schreiben (modus 'direkt').
+ * - Ignoriert, existiert noch nicht (Fall B, brandneu unter einer Regel
+ *   angelegt): direkt schreiben ist unbedenklich, nichts zu verlieren — nur
+ *   ein Hinweis, damit die KI weiss dass die Datei gleich aus Suche/Baum
+ *   verschwindet (modus 'direkt_mit_hinweis').
+ * - update auf einen bestehenden, NICHT ignorierten Pfad: normal schreiben —
+ *   'update' impliziert per Definition, dass der Aufrufer die Datei kennt.
+ *
+ * Im Planmodus: ein Plan (planBatch) mit der gewuenschten Aenderung als
+ * einzelner Op wird angelegt, aber NICHT committed. Die Antwort enthaelt den
+ * AKTUELLEN Inhalt und die plan_id, damit die KI die Aenderung gegen das
+ * Bestehende abgleichen und bei Bedarf anpassen kann, bevor sie committed.
+ * Der Anker fuer den Op wird aus der ersten nicht-leeren Zeile des BESTEHENDEN
+ * Inhalts abgeleitet (nicht von der KI angegeben) — das reicht, weil Plan und
+ * Pruefung im selben Aufruf entstehen, es also keine Zeit fuer Drift gibt.
+ */
+export async function pruefeUndBereiteSchreibenVor(args: {
+  project: string;
+  filePath: string;
+  content: string;
+  aktion: 'create' | 'update';
+  agentId?: string;
+  reason?: string;
+}): Promise<SchreibVorbereitung> {
+  const { project, filePath, content, aktion, agentId, reason } = args;
+
+  const bestehenderInhalt = await getFileContentFromPg(project, filePath);
+  const bestandExistiertBereits = bestehenderInhalt !== null;
+  const pruefung = await pruefeIgnorePfad(project, filePath);
+  const hinweis: IgnorierterSchreibHinweis = {
+    ignoriert: pruefung.ignoriert,
+    regel: pruefung.regel,
+    herkunft: pruefung.herkunft,
+    bestandExistiertBereits,
+  };
+
+  const wegenExistenz = aktion === 'create' && bestandExistiertBereits;
+  const wegenIgnore = pruefung.ignoriert && bestandExistiertBereits;
+
+  if (!wegenExistenz && !wegenIgnore) {
+    if (pruefung.ignoriert && !bestandExistiertBereits) {
+      return { modus: 'direkt_mit_hinweis', hinweis }; // Fall B
+    }
+    return { modus: 'direkt' };
+  }
+
+  const ankerZeile =
+    bestehenderInhalt!
+      .split('\n')
+      .map((zeile) => zeile.trim())
+      .find((zeile) => zeile.length > 0) ?? bestehenderInhalt!.slice(0, 40);
+
+  const op: FileBatchOp = {
+    file_path: filePath,
+    action: 'update',
+    content,
+    anchor_contains: ankerZeile,
+  };
+
+  const grundText = wegenIgnore
+    ? `Ignorierter, bereits vorhandener Pfad "${filePath}" — Plan statt Direktschreiben`
+    : `Pfad "${filePath}" existiert bereits — create wuerde sonst ungeprueft ueberschreiben, Plan statt Direktschreiben`;
+
+  const plan = await planBatch({
+    project,
+    agent_id: agentId,
+    ops: [op],
+    reason: reason ?? grundText,
+  });
+
+  return { modus: 'plan', hinweis, plan, aktueller_inhalt: bestehenderInhalt };
 }

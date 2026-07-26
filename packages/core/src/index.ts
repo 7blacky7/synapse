@@ -662,6 +662,7 @@ export {
   entferneIgnoreRegel,
   schalteIgnoreRegel,
   pruefeIgnorePfad,
+  pruefeUndBereiteSchreibenVor,
 } from './services/ignore-rules.js';
-export type { IgnoreRegel } from './services/ignore-rules.js';
+export type { IgnoreRegel, SchreibVorbereitung, IgnorierterSchreibHinweis } from './services/ignore-rules.js';
 

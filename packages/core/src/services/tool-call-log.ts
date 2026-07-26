@@ -101,6 +101,8 @@ export type ActivityDetail = 'meta' | 'summary' | 'full';
 
 export interface ActivityFilters {
   project?: string;
+  /** Einzelnen Eintrag per ID abrufen (Detail-Ansicht). Kombinierbar mit detail:'full'. */
+  id?: string;
   /** Akzeptiert Agenten-Namen ODER IDs (gleicher Spaltenwert agent_id). */
   agentId?: string[];
   tool?: string[];
@@ -144,6 +146,7 @@ export async function queryToolCalls(f: ActivityFilters): Promise<ToolCallRow[]>
   let i = 1;
 
   if (f.project) { where.push(`project = $${i++}`); params.push(f.project); }
+  if (f.id) { where.push(`id::text = $${i++}`); params.push(f.id); }
   if (f.agentId && f.agentId.length) { where.push(`agent_id = ANY($${i++})`); params.push(f.agentId); }
   if (f.tool && f.tool.length) { where.push(`tool_name = ANY($${i++})`); params.push(f.tool); }
   if (f.status === 'error') where.push('ok = false');

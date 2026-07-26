@@ -110,17 +110,20 @@ var (
 
 // DetailWindow represents the main detail tabs for a project
 type DetailWindow struct {
-	Window      fyne.Window
-	ProjectName string
-	AgentTable  *widget.Table
-	AgentRows   [][]string
-	EventTable  *widget.Table
-	EventRows   [][]string
-	FilterEntry *widget.Entry
-	PathLabel   *widget.Label
-	ActiveLabel *widget.Label
-	ChunksLabel *widget.Label
-	FilesLabel  *widget.Label
+	Window        fyne.Window
+	ProjectName   string
+	AgentTable    *widget.Table
+	AgentRows     [][]string
+	EventTable    *widget.Table
+	EventRows     [][]string
+	ActivityTable *widget.Table
+	ActivityRows  [][]string
+	ActivityIDs   []string
+	FilterEntry   *widget.Entry
+	PathLabel     *widget.Label
+	ActiveLabel   *widget.Label
+	ChunksLabel   *widget.Label
+	FilesLabel    *widget.Label
 }
 
 // ChatWindow represents the channel chat window
@@ -986,7 +989,47 @@ func openDetail(name string) {
 		w.EventTable,
 	)
 
-	// Tab 3: Status
+	// Tab 3: Aktivitaet — ALLE geloggten Tool-Aufrufe (tool_calls: code_intel,
+	// files, shell, alles). Details-Knopf oeffnet ein eigenes Fenster mit dem
+	// vollen (ungekuerzten) Inhalt der ausgewaehlten Zeile.
+	w.ActivityTable = widget.NewTable(
+		func() (int, int) { return len(w.ActivityRows), 7 },
+		func() fyne.CanvasObject { return widget.NewLabel("Template") },
+		func(id widget.TableCellID, cell fyne.CanvasObject) {
+			label := cell.(*widget.Label)
+			if id.Row < len(w.ActivityRows) && id.Col < 7 {
+				label.SetText(w.ActivityRows[id.Row][id.Col])
+			}
+		},
+	)
+	w.ActivityTable.SetColumnWidth(0, 130)
+	w.ActivityTable.SetColumnWidth(1, 110)
+	w.ActivityTable.SetColumnWidth(2, 150)
+	w.ActivityTable.SetColumnWidth(3, 120)
+	w.ActivityTable.SetColumnWidth(4, 60)
+	w.ActivityTable.SetColumnWidth(5, 80)
+	w.ActivityTable.SetColumnWidth(6, 320)
+
+	var selectedActivityRow = -1
+	w.ActivityTable.OnSelected = func(id widget.TableCellID) {
+		selectedActivityRow = id.Row
+	}
+
+	btnRefAkt := widget.NewButton("Aktualisieren", func() {
+		go w.ReloadActivity()
+	})
+	btnDetailAkt := widget.NewButton("Details", func() {
+		if selectedActivityRow >= 0 && selectedActivityRow < len(w.ActivityIDs) {
+			id := w.ActivityIDs[selectedActivityRow]
+			go showActivityDetailWindow(name, id)
+		} else {
+			dialog.ShowInformation("Details", "Keine Zeile ausgewählt.", w.Window)
+		}
+	})
+
+	tabAktivitaet := container.NewBorder(nil, container.NewHBox(btnRefAkt, btnDetailAkt), nil, nil, w.ActivityTable)
+
+	// Tab 4: Status
 	w.PathLabel = widget.NewLabel("-")
 	w.ActiveLabel = widget.NewLabel("-")
 	w.ChunksLabel = widget.NewLabel("-")
@@ -1175,6 +1218,7 @@ func openDetail(name string) {
 	tabs := container.NewAppTabs(
 		container.NewTabItem("Agenten", tabAgenten),
 		container.NewTabItem("Events", tabEvents),
+		container.NewTabItem("Aktivität", tabAktivitaet),
 		container.NewTabItem("Status", tabStatus),
 		container.NewTabItem("Aktionen", tabAktionen),
 	)
@@ -1291,6 +1335,7 @@ func zeigeVerbindungsFenster() {
 func (w *DetailWindow) ReloadAll() {
 	w.ReloadAgenten()
 	w.ReloadEvents()
+	w.ReloadActivity()
 	w.ReloadStatus()
 }
 
@@ -1409,6 +1454,131 @@ func (w *DetailWindow) ReloadEvents() {
 		w.EventRows = newRows
 		w.EventTable.Refresh()
 	})
+}
+
+// okText macht aus dem bool-Erfolgsfeld eine anzeigbare Kurzform.
+func okText(ok bool) string {
+	if ok {
+		return "OK"
+	}
+	return "FEHLER"
+}
+
+// dauerText macht aus einer nullable Millisekundenzahl einen anzeigbaren String.
+func dauerText(ms *int) string {
+	if ms == nil {
+		return "-"
+	}
+	return fmt.Sprintf("%d", *ms)
+}
+
+func (w *DetailWindow) ReloadActivity() {
+	// TRAY-2-Muster: API zuerst, PG als letzter Fallback (siehe ReloadEvents).
+	if calls, apiErr := apiFetchToolCalls(w.ProjectName, 50); apiErr == nil {
+		var apiRows [][]string
+		var ids []string
+		for _, c := range calls {
+			apiRows = append(apiRows, []string{
+				pgZeitKurz(c.Ts), c.ToolName, oderLeer(c.Action, ""),
+				oderLeer(c.AgentId, "<unbekannt>"), okText(c.Ok), dauerText(c.DurationMs),
+				kuerzeAnzeige(oderLeer(c.ResultPreview, "")),
+			})
+			ids = append(ids, c.Id)
+		}
+		fyne.Do(func() {
+			w.ActivityRows = apiRows
+			w.ActivityIDs = ids
+			w.ActivityTable.Refresh()
+		})
+		return
+	}
+
+	rows, err := dbQuery(
+		"SELECT id::text, to_char(ts, 'DD.MM. HH24:MI:SS'), tool_name, COALESCE(action,''), "+
+			"COALESCE(agent_id,'<unbekannt>'), COALESCE(ok,true), COALESCE(duration_ms::text,'-'), "+
+			"COALESCE(left(result,200),'') FROM tool_calls WHERE project = $1 ORDER BY ts DESC LIMIT 50",
+		w.ProjectName,
+	)
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+
+	var newRows [][]string
+	var ids []string
+	for rows.Next() {
+		var id, zeit, tool, action, agent, dauer, ergebnis string
+		var ok bool
+		if scanErr := rows.Scan(&id, &zeit, &tool, &action, &agent, &ok, &dauer, &ergebnis); scanErr == nil {
+			newRows = append(newRows, []string{zeit, tool, action, agent, okText(ok), dauer, kuerzeAnzeige(ergebnis)})
+			ids = append(ids, id)
+		}
+	}
+	fyne.Do(func() {
+		w.ActivityRows = newRows
+		w.ActivityIDs = ids
+		w.ActivityTable.Refresh()
+	})
+}
+
+// showActivityDetailWindow oeffnet ein EIGENES Fenster mit dem vollen Inhalt
+// eines einzelnen Tool-Call-Eintrags (Argumente + Ergebnis ungekuerzt bis zum
+// serverseitigen Cap) — aufgerufen ueber den \"Details\"-Knopf im Aktivitaet-Tab.
+func showActivityDetailWindow(projectName, id string) {
+	fenster := myApp.NewWindow("Tool-Call: " + id)
+
+	kopf := widget.NewLabel("Wird geladen …")
+	kopf.Wrapping = fyne.TextWrapWord
+
+	argsBox := widget.NewMultiLineEntry()
+	argsBox.Wrapping = fyne.TextWrapWord
+	argsBox.Disable()
+	ergebnisBox := widget.NewMultiLineEntry()
+	ergebnisBox.Wrapping = fyne.TextWrapWord
+	ergebnisBox.Disable()
+
+	split := container.NewVSplit(
+		container.NewBorder(widget.NewLabel("Argumente:"), nil, nil, nil, container.NewVScroll(argsBox)),
+		container.NewBorder(widget.NewLabel("Ergebnis:"), nil, nil, nil, container.NewVScroll(ergebnisBox)),
+	)
+	split.Offset = 0.35
+
+	fenster.SetContent(container.NewBorder(
+		container.NewVBox(kopf, widget.NewSeparator()),
+		nil, nil, nil,
+		split,
+	))
+	fenster.Resize(fyne.NewSize(820, 640))
+	fenster.Show()
+
+	go func() {
+		detail, err := apiFetchToolCallDetail(projectName, id)
+		fyne.Do(func() {
+			if err != nil {
+				kopf.SetText("Konnte Details nicht laden: " + err.Error())
+				return
+			}
+			fehlerZeile := ""
+			if detail.Error != nil && *detail.Error != "" {
+				fehlerZeile = "\nFehler: " + *detail.Error
+			}
+			kopf.SetText(fmt.Sprintf(
+				"%s\nTool: %s   Action: %s\nAgent: %s   Status: %s   Dauer: %s ms%s",
+				pgZeitKurz(detail.Ts), detail.ToolName, oderLeer(detail.Action, "-"),
+				oderLeer(detail.AgentId, "<unbekannt>"), okText(detail.Ok), dauerText(detail.DurationMs), fehlerZeile,
+			))
+			argsBox.SetText(oderLeer(detail.ArgsPreview, "(keine Argumente aufgezeichnet)"))
+			ergebnisText := oderLeer(detail.Result, "(kein Ergebnis gespeichert)")
+			if detail.ResultTruncated != nil && *detail.ResultTruncated {
+				bytes := 0
+				if detail.ResultBytes != nil {
+					bytes = *detail.ResultBytes
+				}
+				ergebnisText += fmt.Sprintf("\n\n… gekuerzt, volle Groesse: %d Bytes", bytes)
+			}
+			ergebnisBox.SetText(ergebnisText)
+		})
+	}()
 }
 
 func (w *DetailWindow) ReloadStatus() {

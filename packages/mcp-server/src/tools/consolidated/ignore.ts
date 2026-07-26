@@ -82,13 +82,13 @@ export const ignoreTool: ConsolidatedTool = {
       }
 
       case 'remove': {
-        const ergebnis = await entferneIgnoreRegel(project, reqStr(args, 'pattern'));
+        const ergebnis = await entferneIgnoreRegel(project, reqStr(args, 'pattern'), resolveAgentId(str(args, 'agent_id')));
         return { success: ergebnis.entfernt, ...ergebnis };
       }
 
       case 'enable':
       case 'disable': {
-        const ergebnis = await schalteIgnoreRegel(project, reqStr(args, 'pattern'), action === 'enable');
+        const ergebnis = await schalteIgnoreRegel(project, reqStr(args, 'pattern'), action === 'enable', resolveAgentId(str(args, 'agent_id')));
         return { success: ergebnis.geschaltet, ...ergebnis };
       }
 

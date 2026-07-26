@@ -12,6 +12,7 @@ import {
   listChannels,
   getChannelMessages,
   postChannelMessage,
+  queryToolCalls,
 } from '@synapse/core';
 
 export async function specialistRoutes(fastify: FastifyInstance): Promise<void> {
@@ -515,6 +516,56 @@ export async function specialistRoutes(fastify: FastifyInstance): Promise<void> 
         project: name,
         versions: rows,
       };
+    } catch (error) {
+      return reply.status(500).send({
+        success: false,
+        error: { message: String(error) },
+      });
+    }
+  });
+
+  /**
+   * GET /api/projects/:name/tool-calls
+   * Letzte Eintraege aus dem zentralen Tool-Call-Audit-Log (ALLE MCP-Tool-
+   * Aufrufe: code_intel, files, shell, etc. — siehe tool-call-log.ts).
+   * detail='summary': args_preview + kurze Ergebnis-Vorschau, kein volles
+   * Ergebnis — haelt die Liste leicht, auch bei 50+ Zeilen mit grossen Results.
+   * Fuer den vollen Inhalt einer einzelnen Zeile: /tool-calls/:id.
+   */
+  fastify.get<{
+    Params: { name: string };
+    Querystring: { limit?: string };
+  }>('/api/projects/:name/tool-calls', async (request, reply) => {
+    const { name } = request.params;
+    const limit = request.query.limit ? Number(request.query.limit) : 50;
+
+    try {
+      const calls = await queryToolCalls({ project: name, limit, detail: 'summary' });
+      return { success: true, project: name, calls };
+    } catch (error) {
+      return reply.status(500).send({
+        success: false,
+        error: { message: String(error) },
+      });
+    }
+  });
+
+  /**
+   * GET /api/projects/:name/tool-calls/:id
+   * Ein einzelner Tool-Call MIT vollem Ergebnis (detail='full') — fuer das
+   * Detail-Fenster, das beim Anklicken einer Zeile im Aktivitaet-Tab aufgeht.
+   */
+  fastify.get<{
+    Params: { name: string; id: string };
+  }>('/api/projects/:name/tool-calls/:id', async (request, reply) => {
+    const { name, id } = request.params;
+
+    try {
+      const rows = await queryToolCalls({ project: name, id, detail: 'full', limit: 1 });
+      if (!rows.length) {
+        return reply.status(404).send({ success: false, error: { message: `Tool-Call ${id} nicht gefunden` } });
+      }
+      return { success: true, project: name, call: rows[0] };
     } catch (error) {
       return reply.status(500).send({
         success: false,

@@ -364,6 +364,69 @@ func apiFetchFileVersions(project string, limit int) ([]apiFileVersion, error) {
 	return r.Versions, nil
 }
 
+// apiToolCall ist die LEICHTGEWICHTIGE Zeile fuer die Liste (detail=summary
+// auf Server-Seite): args_preview + eine kurze Ergebnis-Vorschau, kein volles
+// Ergebnis. Quelle ist tool_calls — der zentrale Audit-Log ALLER MCP-Tool-
+// Aufrufe (code_intel, files, shell, alles), nicht nur Datei-Schreibzugriffe.
+type apiToolCall struct {
+	Id              string  `json:"id"`
+	Ts              string  `json:"ts"`
+	ToolName        string  `json:"tool_name"`
+	Action          *string `json:"action"`
+	AgentId         *string `json:"agent_id"`
+	Ok              bool    `json:"ok"`
+	DurationMs      *int    `json:"duration_ms"`
+	ResultPreview   *string `json:"result_preview"`
+	ResultBytes     *int    `json:"result_bytes"`
+	ResultTruncated *bool   `json:"result_truncated"`
+}
+
+type apiToolCallsResponse struct {
+	Success bool          `json:"success"`
+	Calls   []apiToolCall `json:"calls"`
+}
+
+// apiToolCallDetail ist die VOLLE Zeile (detail=full) fuer das Detail-Fenster:
+// zusaetzlich Result (ungekuerzt bis zum serverseitigen Cap) und Error.
+type apiToolCallDetail struct {
+	Id              string  `json:"id"`
+	Ts              string  `json:"ts"`
+	Project         *string `json:"project"`
+	ToolName        string  `json:"tool_name"`
+	Action          *string `json:"action"`
+	AgentId         *string `json:"agent_id"`
+	ArgsPreview     *string `json:"args_preview"`
+	Ok              bool    `json:"ok"`
+	Error           *string `json:"error"`
+	DurationMs      *int    `json:"duration_ms"`
+	Result          *string `json:"result"`
+	ResultBytes     *int    `json:"result_bytes"`
+	ResultTruncated *bool   `json:"result_truncated"`
+}
+
+type apiToolCallDetailResponse struct {
+	Success bool              `json:"success"`
+	Call    apiToolCallDetail `json:"call"`
+}
+
+func apiFetchToolCalls(project string, limit int) ([]apiToolCall, error) {
+	var r apiToolCallsResponse
+	path := fmt.Sprintf("/api/projects/%s/tool-calls?limit=%d", urlSeg(project), limit)
+	if err := apiGet(path, &r); err != nil {
+		return nil, err
+	}
+	return r.Calls, nil
+}
+
+func apiFetchToolCallDetail(project, id string) (apiToolCallDetail, error) {
+	var r apiToolCallDetailResponse
+	path := fmt.Sprintf("/api/projects/%s/tool-calls/%s", urlSeg(project), urlSeg(id))
+	if err := apiGet(path, &r); err != nil {
+		return apiToolCallDetail{}, err
+	}
+	return r.Call, nil
+}
+
 // apiFetchStats liefert Datei- und Chunk-Zahlen des Index. Der lokale Daemon
 // kennt diese Werte NICHT — sein /projects/:name/status liefert nur Pfad und
 // Laufzustand. Genau deshalb stand im Status-Tab dauerhaft "-".
