@@ -269,19 +269,34 @@ func oderLeer(s *string, fallback string) string {
 	return *s
 }
 
-// pgZeitKurz formatiert "2026-07-25 13:10:15.123456+02" als "25.07. 13:10:15" —
-// dieselbe Darstellung, die frueher to_char() in der SQL-Abfrage erzeugt hat.
+// pgZeitKurz formatiert einen Zeitstempel als "25.07. 13:10:15" — dieselbe
+// Darstellung, die frueher to_char() in der SQL-Abfrage erzeugt hat.
 // Bei unbekanntem Format wird der Rohwert durchgereicht statt zu raten.
+//
+// ZEITZONE (gefunden 2026-07-26, Nutzer-Beschwerde "ich hasse Zeitverschiebung"):
+// Zeitstempel aus der REST-API sind IMMER UTC (JSON-Serialisierung von
+// timestamptz haengt "Z" an) — diese drei Layouts tragen eine explizite Zone
+// und werden deshalb per .Local() auf die Zeitzone DIESER Maschine umgerechnet.
+// Ohne das zeigte der Tray woertlich die UTC-Ziffern an, als waeren es die
+// eigenen — bei Sommerzeit zwei Stunden daneben.
 func pgZeitKurz(roh string) string {
 	for _, layout := range []string{
 		"2006-01-02 15:04:05.999999-07",
 		"2006-01-02 15:04:05.999999Z07:00",
 		"2006-01-02T15:04:05.999999Z07:00",
-		"2006-01-02 15:04:05",
 	} {
 		if t, err := time.Parse(layout, roh); err == nil {
-			return t.Format("02.01. 15:04:05")
+			return t.Local().Format("02.01. 15:04:05")
 		}
+	}
+	// VIERTES LAYOUT BEWUSST OHNE .Local(): kommt aus dem direkten PG-Fallback
+	// (to_char(spalte, 'DD.MM. HH24:MI:SS') OHNE AT TIME ZONE), der die
+	// SESSION-Zeitzone von PostgreSQL benutzt (hier: Europe/Berlin, siehe SHOW
+	// timezone) — die Ziffern sind bereits lokale Wanduhrzeit. Go's time.Parse
+	// stuft eine zonenlose Zeichenkette als UTC ein; ein zusaetzliches .Local()
+	// wuerde die bereits richtige Zeit ein zweites Mal verschieben.
+	if t, err := time.Parse("2006-01-02 15:04:05", roh); err == nil {
+		return t.Format("02.01. 15:04:05")
 	}
 	return roh
 }

@@ -1768,7 +1768,7 @@ func (w *ChatWindow) ReloadMessages() {
 	if msgs, err := apiFetchChannelMessages(w.ProjectName, w.ChannelName, w.LastMsgID, 50); err == nil {
 		for _, m := range msgs {
 			// Voller Inhalt inkl. Zeilenumbrüche — Wrapping-Label rendert das sauber.
-			newMsgs = append(newMsgs, []string{m.CreatedAt, m.Sender, m.Content})
+			newMsgs = append(newMsgs, []string{pgZeitKurz(m.CreatedAt), m.Sender, m.Content})
 			if m.Id > maxID {
 				maxID = m.Id
 			}
