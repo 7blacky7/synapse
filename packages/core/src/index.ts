@@ -663,6 +663,7 @@ export {
   schalteIgnoreRegel,
   pruefeIgnorePfad,
   pruefeUndBereiteSchreibenVor,
+  markiereEinzelneDateiIgnoriert,
 } from './services/ignore-rules.js';
 export type { IgnoreRegel, SchreibVorbereitung, IgnorierterSchreibHinweis } from './services/ignore-rules.js';
 

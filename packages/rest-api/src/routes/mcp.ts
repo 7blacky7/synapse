@@ -152,6 +152,7 @@ import {
   schalteIgnoreRegel,
   pruefeIgnorePfad,
   pruefeUndBereiteSchreibenVor,
+  markiereEinzelneDateiIgnoriert,
 } from '@synapse/core';
 import { randomUUID } from 'crypto';
 
@@ -3538,6 +3539,7 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
           const result = await createFileInPg(project, filePath, content, agentId, str(args, 'reason'), undefined, undefined, enrichment);
           const response: Record<string, unknown> = { success: true, message: `Datei "${filePath}" erstellt (${content.length} Zeichen)` };
           if (vorbereitung.modus === 'direkt_mit_hinweis') {
+            await markiereEinzelneDateiIgnoriert(project, filePath);
             response.ignoriert = true;
             response.regel = vorbereitung.hinweis.regel;
             response.message += ` — ACHTUNG: Pfad ist durch die Regel "${vorbereitung.hinweis.regel}" ignoriert und wird in ca. einer Minute aus Suche/Baum ausgeblendet. Freigeben: ignore(action:"disable", pattern:"${vorbereitung.hinweis.regel}").`;
@@ -3573,6 +3575,7 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
           const result = await updateFileInPg(project, filePath, content, agentId, undefined, undefined, str(args, 'reason'), enrichment);
           const response: Record<string, unknown> = { success: true, message: `Datei "${filePath}" aktualisiert (${content.length} Zeichen)` };
           if (vorbereitung.modus === 'direkt_mit_hinweis') {
+            await markiereEinzelneDateiIgnoriert(project, filePath);
             response.ignoriert = true;
             response.regel = vorbereitung.hinweis.regel;
             response.message += ` — ACHTUNG: Pfad ist durch die Regel "${vorbereitung.hinweis.regel}" ignoriert und wird in ca. einer Minute aus Suche/Baum ausgeblendet. Freigeben: ignore(action:"disable", pattern:"${vorbereitung.hinweis.regel}").`;

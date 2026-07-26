@@ -342,6 +342,39 @@ export async function markiereIgnorierteDateien(project: string): Promise<{
 }
 
 /**
+ * Markiert eine EINZELNE, gerade erst geschriebene Datei als ignoriert.
+ *
+ * LUECKE, LIVE GEFUNDEN 2026-07-26: Fall B (pruefeUndBereiteSchreibenVor,
+ * modus='direkt_mit_hinweis') legt eine brandneue Datei unter einer aktiven
+ * Regel an und verspricht im Hinweistext "wird in ca. einer Minute aus Suche/
+ * Baum ausgeblendet" -- aber createFileInPg setzt code_files.ignored NIE,
+ * die Spalte bleibt beim INSERT-Default (false) stehen. Reproduziert: eine so
+ * angelegte Datei blieb im Baum sichtbar, bis eine VOELLIG UNABHAENGIGE
+ * Regel-Aenderung zufaellig einen vollstaendigen Neudurchlauf ausloeste.
+ *
+ * Diese Funktion wird von den Tool-Handlern (rest-api/mcp-server) direkt NACH
+ * createFileInPg/updateFileInPg aufgerufen, wenn pruefeUndBereiteSchreibenVor
+ * modus='direkt_mit_hinweis' zurueckgegeben hat -- die Datei existiert dann
+ * bereits in code_files und braucht nur noch die Markierung.
+ *
+ * Best-effort: ein Fehler hier darf das eigentliche Schreiben nicht zu Fall
+ * bringen, deshalb try/catch statt throw.
+ */
+export async function markiereEinzelneDateiIgnoriert(project: string, filePath: string): Promise<void> {
+  try {
+    await getPool().query(
+      'UPDATE code_files SET ignored = TRUE WHERE project = $1 AND file_path = $2',
+      [project, filePath],
+    );
+  } catch (fehler) {
+    console.error(
+      `[Synapse] Konnte "${filePath}" nicht als ignoriert markieren (best-effort):`,
+      (fehler as Error).message,
+    );
+  }
+}
+
+/**
  * Projektwurzel aus der Tabelle projects. Wird gebraucht, weil die .gitignore
  * weiterhin vom Dateisystem gelesen wird — die Regeln aus der Datenbank allein
  * ergaeben ein unvollstaendiges Bild.

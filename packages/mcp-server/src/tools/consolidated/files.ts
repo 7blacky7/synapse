@@ -32,6 +32,7 @@ import {
   resolveAgentId,
   embeddingPendingHint,
   pruefeUndBereiteSchreibenVor,
+  markiereEinzelneDateiIgnoriert,
 } from '@synapse/core';
 import type { BatchEdit, FileBatchOp } from '@synapse/core';
 
@@ -464,6 +465,7 @@ export const filesTool: ConsolidatedTool = {
         const response: Record<string, unknown> = { success: true, message: `Datei "${filePath}" erstellt (${content.length} Zeichen)` };
         if (wasFixed) response.autoFixed = 'Content war doppelt escaped (\\n statt Newlines) — automatisch korrigiert.';
         if (vorbereitung.modus === 'direkt_mit_hinweis') {
+          await markiereEinzelneDateiIgnoriert(project, filePath);
           response.ignoriert = true;
           response.regel = vorbereitung.hinweis.regel;
           response.message += ` — ACHTUNG: Pfad ist durch die Regel "${vorbereitung.hinweis.regel}" ignoriert und wird in ca. einer Minute aus Suche/Baum ausgeblendet. Freigeben: ignore(action:"disable", pattern:"${vorbereitung.hinweis.regel}").`;
@@ -494,6 +496,7 @@ export const filesTool: ConsolidatedTool = {
         const response: Record<string, unknown> = { success: true, message: `Datei "${filePath}" aktualisiert (${content.length} Zeichen)` };
         if (wasFixed) response.autoFixed = 'Content war doppelt escaped (\\n statt Newlines) — automatisch korrigiert.';
         if (vorbereitung.modus === 'direkt_mit_hinweis') {
+          await markiereEinzelneDateiIgnoriert(project, filePath);
           response.ignoriert = true;
           response.regel = vorbereitung.hinweis.regel;
           response.message += ` — ACHTUNG: Pfad ist durch die Regel "${vorbereitung.hinweis.regel}" ignoriert und wird in ca. einer Minute aus Suche/Baum ausgeblendet. Freigeben: ignore(action:"disable", pattern:"${vorbereitung.hinweis.regel}").`;
