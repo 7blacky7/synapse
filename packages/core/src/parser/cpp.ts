@@ -535,8 +535,12 @@ class CppParser implements LanguageParser {
    *     Statements erfasst (CPARSER-15 B7 und B8).
    * 9 = Deklarationen mit benutzerdefiniertem Typ werden erfasst; die feste
    *     Liste von Typwoertern kannte eigene Klassennamen nicht (CPARSER-15 B9).
+   * 10 = C++20-Attribute, verschachtelte class/struct/union-Typen, qualifizierte
+   *      Enum-Basistypen, mehrteilige Klasse::Unterklasse::Methode-Namen sowie
+   *      Konstruktoren, Destruktoren und Operatoren in und ausserhalb von Klassen
+   *      werden als einheitliche Funktionssymbole erfasst (Deep-Fixture 2026-07-27).
    */
-  version = 9;
+  version = 10;
   extensions = ['.cpp', '.hpp', '.cc', '.cxx', '.hxx', '.hh'];
 
   parse(content: string, filePath: string): ParseResult {
@@ -548,6 +552,8 @@ class CppParser implements LanguageParser {
     // alle Positionen unveraendert. Grundlage fuer das Klammerzaehlen in
     // findClosingBrace (CPARSER-15 B1).
     const maskiert = maskiereLiterale(stripComments(content));
+    const typeRanges = this.collectTypeRanges(maskiert);
+    const parentTypeAt = (pos: number): string | undefined => this.findParentType(typeRanges, pos);
 
     // ══════════════════════════════════════════════
     // 1. #include
@@ -598,7 +604,7 @@ class CppParser implements LanguageParser {
     // ══════════════════════════════════════════════
     // 3. Namespaces
     // ══════════════════════════════════════════════
-    const nsRe = /^namespace\s+(\w+)\s*\{/gm;
+    const nsRe = /^[ \t]*namespace\s+([\w:]+)\s*\{/gm;
     while ((m = nsRe.exec(content)) !== null) {
       symbols.push({
         // Der Namensraum wird unter SEINEM Namen abgelegt, nicht unter dem Wort
@@ -616,7 +622,7 @@ class CppParser implements LanguageParser {
     // ══════════════════════════════════════════════
     // 4. Classes & Structs
     // ══════════════════════════════════════════════
-    const classRe = /^(?:template\s*<[^>]+>\s*\n\s*)?(class|struct)\s+(?:\[\[[\w:]+\]\]\s+)?(\w+)(?:\s+final)?(?:\s*:\s*(?:public|protected|private)\s+([\w:<>,\s]+))?\s*\{/gm;
+    const classRe = /^[ \t]*(?:template\s*<[^>]+>\s*\n\s*)?(class|struct|union)\s+(?:\[\[[^\]\n]+\]\]\s+)?(\w+)(?:\s*<[^>{;]+>)?(?:\s+final)?(?:\s*:\s*((?:(?:public|protected|private|virtual)\s+)?[\w:<>,\s]+))?\s*\{/gm;
     while ((m = classRe.exec(content)) !== null) {
       const kind = m[1];
       const name = m[2];
@@ -639,6 +645,7 @@ class CppParser implements LanguageParser {
         line_start: lineStart,
         line_end: lineEnd,
         is_exported: isHeader,
+        parent_id: parentTypeAt(m.index),
       });
 
       for (const base of bases) {
@@ -653,7 +660,7 @@ class CppParser implements LanguageParser {
     // ══════════════════════════════════════════════
     // 5. Enums (enum class / enum)
     // ══════════════════════════════════════════════
-    const enumRe = /^enum\s+(?:class\s+)?(\w+)(?:\s*:\s*\w+)?\s*\{([\s\S]*?)\}\s*;/gm;
+    const enumRe = /^[ \t]*enum\s+(?:class\s+)?(\w+)(?:\s*:\s*[\w:<>]+)?\s*\{([\s\S]*?)\}\s*;/gm;
     while ((m = enumRe.exec(content)) !== null) {
       const name = m[1];
       const body = m[2];
@@ -686,7 +693,7 @@ class CppParser implements LanguageParser {
     // Jetzt ist Whitespace an jeder Stelle nur auf EINEM Weg konsumierbar:
     // zwischen Typ-Tokens als expliziter Trenner, und vor einem Qualifier, der
     // dann auch wirklich folgen muss.
-    const methodRe = /^([ \t]+)(?:(?:virtual|static|explicit|inline|constexpr|override|final|noexcept)\s+)*((?:const\s+)?\w[\w:<>*&]*(?:\s+[\w:<>*&]+)*?)\s+(\w+)\s*\(((?:[^()]|\([^()]*\))*)\)(?:\s*(?:const|noexcept|override|final))*\s*\{/gm;
+    const methodRe = /^([ \t]+)(?:\[\[[^\]\n]+\]\]\s*)*(?:(?:virtual|static|explicit|inline|constexpr|consteval|constinit|override|final|noexcept)\s+)*((?:const\s+)?\w[\w:<>*&]*(?:\s+[\w:<>*&]+)*?)\s+(\w+)\s*\(((?:[^()]|\([^()]*\))*)\)(?:\s*(?:const|noexcept|override|final|&|&&))*\s*\{/gm;
     while ((m = methodRe.exec(content)) !== null) {
       const returnType = m[2].trim();
       const funcName = m[3];
@@ -697,7 +704,7 @@ class CppParser implements LanguageParser {
       if (['class', 'struct', 'namespace', 'enum'].includes(returnType)) continue;
 
       const params = this.parseParams(paramsRaw);
-      const parentType = this.findParentType(content, m.index);
+      const parentType = parentTypeAt(m.index);
 
       symbols.push({
         symbol_type: 'function',
@@ -712,7 +719,7 @@ class CppParser implements LanguageParser {
     }
 
     // Destruktoren — erkennbar an der fuehrenden Tilde, kein Rueckgabetyp (CPARSER-12)
-    const dtorRe = /^([ \t]+)(?:virtual\s+)?~(\w+)\s*\(\s*\)\s*(?:override\s*)?(?:noexcept\s*)?\{/gm;
+    const dtorRe = /^([ \t]+)(?:\[\[[^\]\n]+\]\]\s*)*(?:(?:virtual|inline|constexpr)\s+)*~(\w+)\s*\(\s*\)\s*(?:override\s*)?(?:noexcept\s*)?\{/gm;
     while ((m = dtorRe.exec(content)) !== null) {
       symbols.push({
         symbol_type: 'function',
@@ -722,32 +729,46 @@ class CppParser implements LanguageParser {
         line_start: lineAt(content, m.index),
         line_end: this.findClosingBrace(maskiert, m.index + m[0].length - 1),
         is_exported: isHeader,
-        parent_id: this.findParentType(content, m.index),
+        parent_id: parentTypeAt(m.index),
       });
     }
 
-    // operator-Ueberladungen — erkennbar am Schluesselwort operator (CPARSER-12)
-    const operatorRe = /^([ \t]+)(?:([\w:<>*&,\s]+?)\s+)?operator\s*([^\s(]{1,3}|\(\))\s*\(((?:[^()]|\([^()]*\))*)\)\s*(?:const\s*)?(?:noexcept\s*)?\{/gm;
+    // Operatoren: inline, frei und qualifiziert (Class::operator). Neben
+    // Satzzeichen-Operatoren werden auch Konversionsoperatoren wie operator bool
+    // erfasst. Attribute und C++20-Qualifier duerfen davor stehen.
+    const operatorRe = /^([ \t]*)(?:\[\[[^\]\n]+\]\]\s*)*(?:(?:virtual|static|inline|constexpr|consteval|explicit)\s+)*(?:((?:const\s+)?[\w:<>*&,]+(?:\s+[\w:<>*&,]+)*)\s+)?(?:(\w+(?:::\w+)*)::)?operator\s*(\(\)|\[\]|[A-Za-z_]\w*(?:::\w+)*(?:<[^()\n]+>)?|[^\s(]+)\s*\(((?:[^()]|\([^()]*\))*)\)(?:\s*(?:const|noexcept|override|final|&|&&))*\s*\{/gm;
     while ((m = operatorRe.exec(content)) !== null) {
+      const lineStart = lineAt(content, m.index);
+      const operatorToken = m[4];
+      const operatorName = /^[A-Za-z_]/.test(operatorToken) ? `operator ${operatorToken}` : 'operator' + operatorToken;
+      const parentType = m[3] || parentTypeAt(m.index);
+      const existing = symbols.find(s => s.symbol_type === 'function' && s.name === operatorName && s.line_start === lineStart);
+      if (existing) {
+        existing.params = this.parseParams(m[5]);
+        existing.return_type = (m[2] || '').trim();
+        existing.parent_id = parentType;
+        continue;
+      }
       symbols.push({
         symbol_type: 'function',
-        name: 'operator' + m[3],
-        params: this.parseParams(m[4]),
+        name: operatorName,
+        params: this.parseParams(m[5]),
         return_type: (m[2] || '').trim(),
-        line_start: lineAt(content, m.index),
+        line_start: lineStart,
         line_end: this.findClosingBrace(maskiert, m.index + m[0].length - 1),
-        is_exported: isHeader,
-        parent_id: this.findParentType(content, m.index),
+        is_exported: isHeader || !m[1],
+        parent_id: parentType,
       });
     }
 
     // Konstruktoren mit Initialisierungsliste — Klammerpaar, Doppelpunkt, Initialisierer.
     // Der Rumpf beginnt erst nach der Liste, deshalb wird bis zur oeffnenden Klammer gematcht.
     // Aufrufe koennen hier nicht hineinrutschen: ein Aufruf hat keine Initialisierungsliste. (CPARSER-12)
-    const ctorInitRe = /^([ \t]+)(?:explicit\s+)?(\w+)\s*\(((?:[^()]|\([^()]*\))*)\)\s*:\s*[^;{]*\{/gm;
+    const ctorInitRe = /^([ \t]+)(?:\[\[[^\]\n]+\]\]\s*)*(?:(?:explicit|constexpr|consteval|inline)\s+)*(\w+)\s*\(((?:[^()]|\([^()]*\))*)\)\s*(?:noexcept\s*)?:\s*[^;{]*\{/gm;
     while ((m = ctorInitRe.exec(content)) !== null) {
       const ctorName = m[2];
-      if (['if', 'for', 'while', 'switch', 'catch', 'return', 'do', 'else'].includes(ctorName)) continue;
+      const parentType = parentTypeAt(m.index);
+      if (!parentType || parentType.split('::').pop() !== ctorName) continue;
       symbols.push({
         symbol_type: 'function',
         name: ctorName,
@@ -756,7 +777,45 @@ class CppParser implements LanguageParser {
         line_start: lineAt(content, m.index),
         line_end: this.findClosingBrace(maskiert, m.index + m[0].length - 1),
         is_exported: isHeader,
-        parent_id: this.findParentType(content, m.index),
+        parent_id: parentType,
+      });
+    }
+
+    // Inline-Konstruktor ohne Initialisierungsliste, aber mit echtem Rumpf.
+    const ctorBodyRe = /^([ \t]+)(?:\[\[[^\]\n]+\]\]\s*)*(?:(?:explicit|constexpr|consteval|inline)\s+)*(\w+)\s*\(((?:[^()]|\([^()]*\))*)\)\s*(?:noexcept\s*)?\{/gm;
+    while ((m = ctorBodyRe.exec(content)) !== null) {
+      const ctorName = m[2];
+      const parentType = parentTypeAt(m.index);
+      if (!parentType || parentType.split('::').pop() !== ctorName) continue;
+      const lineStart = lineAt(content, m.index);
+      if (symbols.some(s => s.symbol_type === 'function' && s.name === ctorName && s.line_start === lineStart)) continue;
+      symbols.push({
+        symbol_type: 'function',
+        name: ctorName,
+        params: this.parseParams(m[3]),
+        return_type: '',
+        line_start: lineStart,
+        line_end: this.findClosingBrace(maskiert, m.index + m[0].length - 1),
+        is_exported: isHeader,
+        parent_id: parentType,
+      });
+    }
+
+    // Explizit defaultete oder geloeschte Inline-Special-Member sind Definitionen,
+    // obwohl sie keinen Rumpf besitzen.
+    const inlineDefaultSpecialRe = /^([ \t]+)(?:\[\[[^\]\n]+\]\]\s*)*(?:(?:explicit|constexpr|consteval|inline|virtual)\s+)*(~?\w+)\s*\(((?:[^()]|\([^()]*\))*)\)\s*(?:noexcept\s*)?=\s*(?:default|delete)\s*;/gm;
+    while ((m = inlineDefaultSpecialRe.exec(content)) !== null) {
+      const rawName = m[2];
+      const parentType = parentTypeAt(m.index);
+      if (!parentType || parentType.split('::').pop() !== rawName.replace(/^~/, '')) continue;
+      symbols.push({
+        symbol_type: 'function',
+        name: rawName,
+        params: this.parseParams(m[3]),
+        return_type: '',
+        line_start: lineAt(content, m.index),
+        is_exported: isHeader,
+        parent_id: parentType,
       });
     }
 
@@ -766,7 +825,7 @@ class CppParser implements LanguageParser {
     // Funktion GAR NICHT als Symbol erkannt. Klammern sind in der Klasse nicht
     // enthalten, deshalb kann eine Parameterliste nicht als Typ gelesen werden.
     // (CPARSER-15 B2)
-    const freeFuncRe = /^(?:(?:inline|static|extern|constexpr|template\s*<[^>]+>\s*\n\s*)*)((?:const\s+)?(?:\w[\w:<>*&,\s]*?))\s+(\w+)\s*\(((?:[^()]|\([^()]*\))*)\)(?:\s*(?:const|noexcept))*\s*\{/gm;
+    const freeFuncRe = /^(?:[ \t]*\[\[[^\]\n]+\]\]\s*)*(?:(?:inline|static|extern|constexpr|consteval|explicit|virtual|template\s*<[^>]+>\s*\n\s*)*)((?:const\s+)?(?:\w[\w:<>*&,\s]*?))\s+(\w+)\s*\(((?:[^()]|\([^()]*\))*)\)(?:\s*(?:const|noexcept|&|&&))*\s*\{/gm;
     while ((m = freeFuncRe.exec(content)) !== null) {
       const returnType = m[1].trim();
       const funcName = m[2];
@@ -774,7 +833,8 @@ class CppParser implements LanguageParser {
       const lineStart = lineAt(content, m.index);
 
       if (['if', 'for', 'while', 'switch', 'catch', 'return', 'do', 'class', 'struct', 'namespace', 'enum'].includes(funcName)) continue;
-      if (['class', 'struct', 'namespace', 'enum'].includes(returnType)) continue;
+      if (['class', 'struct', 'namespace', 'enum', 'explicit', 'virtual'].includes(returnType)) continue;
+      if (returnType.includes('operator') || /\b(?:public|protected|private)\s*:/.test(returnType)) continue;
 
       // Skip if already found as method
       if (symbols.some(s => s.symbol_type === 'function' && s.name === funcName && s.line_start === lineStart)) continue;
@@ -794,32 +854,80 @@ class CppParser implements LanguageParser {
 
     // Scope-resolved methods: RetType ClassName::method(...)
     // Komma im Rueckgabetyp, siehe freeFuncRe (CPARSER-15 B2).
-    const scopeMethodRe = /^((?:const\s+)?(?:\w[\w:<>*&,\s]*?))\s+(\w+)::(\w+)\s*\(((?:[^()]|\([^()]*\))*)\)(?:\s*(?:const|noexcept))*\s*\{/gm;
+    const scopeMethodRe = /^(?:[ \t]*\[\[[^\]\n]+\]\]\s*)*((?:const\s+)?(?:\w[\w:<>*&,\s]*?))\s+((?:\w+::)+)(\w+)\s*\(((?:[^()]|\([^()]*\))*)\)(?:\s*(?:const|noexcept|&|&&))*\s*\{/gm;
     while ((m = scopeMethodRe.exec(content)) !== null) {
       const returnType = m[1].trim();
-      const className = m[2];
+      const className = m[2].replace(/::$/, '');
       const methodName = m[3];
       const paramsRaw = m[4];
       const lineStart = lineAt(content, m.index);
-
       const params = this.parseParams(paramsRaw);
+      const existing = symbols.find(s => s.symbol_type === 'function' && s.name === methodName && s.line_start === lineStart);
 
-      symbols.push({
-        symbol_type: 'function',
-        name: methodName,
-        params,
-        return_type: returnType,
-        line_start: lineStart,
-        line_end: this.findClosingBrace(maskiert, m.index + m[0].length - 1),
-        is_exported: true,
-        parent_id: className,
-      });
+      if (existing) {
+        existing.params = params;
+        existing.return_type = returnType;
+        existing.parent_id = className;
+      } else {
+        symbols.push({
+          symbol_type: 'function',
+          name: methodName,
+          params,
+          return_type: returnType,
+          line_start: lineStart,
+          line_end: this.findClosingBrace(maskiert, m.index + m[0].length - 1),
+          is_exported: true,
+          parent_id: className,
+        });
+      }
 
       references.push({
         symbol_name: className,
         line_number: lineStart,
         context: `${className}::${methodName}(...)`.slice(0, 80),
       });
+    }
+
+    // Qualifizierte Konstruktoren und Destruktoren, auch ueber mehrere Ebenen
+    // wie Entity::Builder::Builder. Rueckgabetyp existiert hier absichtlich nicht.
+    const scopeSpecialRe = /^[ \t]*(?:\[\[[^\]\n]+\]\]\s*)*(?:(?:explicit|constexpr|consteval|inline|virtual)\s+)*((?:\w+::)+)(~?\w+)\s*\(((?:[^()]|\([^()]*\))*)\)\s*(?:noexcept\s*)?(?::\s*[^;{]*)?\{/gm;
+    while ((m = scopeSpecialRe.exec(content)) !== null) {
+      const className = m[1].replace(/::$/, '');
+      const specialName = m[2];
+      if (className.split('::').pop() !== specialName.replace(/^~/, '')) continue;
+      const lineStart = lineAt(content, m.index);
+      if (symbols.some(s => s.symbol_type === 'function' && s.name === specialName && s.line_start === lineStart)) continue;
+      symbols.push({
+        symbol_type: 'function',
+        name: specialName,
+        params: this.parseParams(m[3]),
+        return_type: '',
+        line_start: lineStart,
+        line_end: this.findClosingBrace(maskiert, m.index + m[0].length - 1),
+        is_exported: true,
+        parent_id: className,
+      });
+      references.push({ symbol_name: className, line_number: lineStart, context: `${className}::${specialName}(...)`.slice(0, 80) });
+    }
+
+    // Qualifizierte default/delete-Definitionen ohne Rumpf.
+    const scopeDefaultSpecialRe = /^[ \t]*((?:\w+::)+)(~?\w+)\s*\(((?:[^()]|\([^()]*\))*)\)\s*(?:noexcept\s*)?=\s*(?:default|delete)\s*;/gm;
+    while ((m = scopeDefaultSpecialRe.exec(content)) !== null) {
+      const className = m[1].replace(/::$/, '');
+      const specialName = m[2];
+      if (className.split('::').pop() !== specialName.replace(/^~/, '')) continue;
+      const lineStart = lineAt(content, m.index);
+      if (symbols.some(s => s.symbol_type === 'function' && s.name === specialName && s.line_start === lineStart)) continue;
+      symbols.push({
+        symbol_type: 'function',
+        name: specialName,
+        params: this.parseParams(m[3]),
+        return_type: '',
+        line_start: lineStart,
+        is_exported: true,
+        parent_id: className,
+      });
+      references.push({ symbol_name: className, line_number: lineStart, context: `${className}::${specialName} = default/delete`.slice(0, 80) });
     }
 
     // ══════════════════════════════════════════════
@@ -965,13 +1073,48 @@ class CppParser implements LanguageParser {
 
   private parseParams(raw: string): string[] {
     if (!raw.trim() || raw.trim() === 'void') return [];
-    return raw
-      .split(',')
-      .map(p => {
-        const parts = p.trim().split(/\s+/);
-        return parts[parts.length - 1]?.replace(/[*&]/g, '') || '';
+
+    const teile: string[] = [];
+    let start = 0;
+    let rund = 0;
+    let eckig = 0;
+    let spitz = 0;
+    let geschweift = 0;
+    let quote = '';
+    for (let i = 0; i < raw.length; i++) {
+      const ch = raw[i];
+      if (quote) {
+        if (ch === '\\') { i++; continue; }
+        if (ch === quote) quote = '';
+        continue;
+      }
+      if (ch === '"' || ch === "'") { quote = ch; continue; }
+      if (ch === '(') rund++;
+      else if (ch === ')') rund--;
+      else if (ch === '[') eckig++;
+      else if (ch === ']') eckig--;
+      else if (ch === '<') spitz++;
+      else if (ch === '>') spitz = Math.max(0, spitz - 1);
+      else if (ch === '{') geschweift++;
+      else if (ch === '}') geschweift--;
+      else if (ch === ',' && rund === 0 && eckig === 0 && spitz === 0 && geschweift === 0) {
+        teile.push(raw.slice(start, i));
+        start = i + 1;
+      }
+    }
+    teile.push(raw.slice(start));
+
+    return teile
+      .map(param => {
+        const ohneDefault = param.replace(/\s*=\s*[\s\S]*$/, '').trim();
+        const funktionszeiger = ohneDefault.match(/\(\s*[*&]\s*([A-Za-z_]\w*)\s*\)/);
+        if (funktionszeiger) return funktionszeiger[1];
+        const arrayName = ohneDefault.match(/([A-Za-z_]\w*)\s*\[[^\]]*\]\s*$/);
+        if (arrayName) return arrayName[1];
+        const namen = ohneDefault.match(/([A-Za-z_]\w*)\s*(?:\.\.\.)?\s*$/);
+        return namen ? namen[1] : '';
       })
-      .filter(p => p && p !== '...');
+      .filter(p => p && p !== 'void');
   }
 
   private findClosingBrace(content: string, openPos: number): number {
@@ -984,10 +1127,33 @@ class CppParser implements LanguageParser {
     return lineAt(content, content.length);
   }
 
-  private findParentType(content: string, pos: number): string | undefined {
-    const before = content.substring(0, pos);
-    const classMatch = before.match(/(?:class|struct)\s+(\w+)[^{]*\{[^}]*$/);
-    return classMatch ? classMatch[1] : undefined;
+  private collectTypeRanges(content: string): Array<{ name: string; start: number; end: number }> {
+    const ranges: Array<{ name: string; start: number; end: number }> = [];
+    const typeRe = /^[ \t]*(?:class|struct|union)\s+(?:\[\[[^\]\n]+\]\]\s+)?(\w+)(?:\s*<[^>{;\n]+>)?(?:\s+final)?(?:\s*:[^{;]+)?\s*\{/gm;
+    let match: RegExpExecArray | null;
+    while ((match = typeRe.exec(content)) !== null) {
+      const open = match.index + match[0].lastIndexOf('{');
+      const end = this.findClosingBraceOffset(content, open);
+      if (end > open) ranges.push({ name: match[1], start: open, end });
+    }
+    return ranges;
+  }
+
+  private findParentType(ranges: Array<{ name: string; start: number; end: number }>, pos: number): string | undefined {
+    const parents = ranges
+      .filter(range => pos > range.start && pos < range.end)
+      .sort((a, b) => a.start - b.start);
+    return parents.length > 0 ? parents.map(parent => parent.name).join('::') : undefined;
+  }
+
+  private findClosingBraceOffset(content: string, openPos: number): number {
+    let depth = 1;
+    for (let i = openPos + 1; i < content.length; i++) {
+      if (content[i] === '{') depth++;
+      else if (content[i] === '}') depth--;
+      if (depth === 0) return i;
+    }
+    return content.length;
   }
 }
 
