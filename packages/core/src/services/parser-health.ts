@@ -40,6 +40,24 @@ const MIN_ZEILEN_FUER_BEFUND = 200;
 /** Unter dieser Zeilenabdeckung ist eine grosse Datei auffaellig (in Prozent). */
 const MIN_DECKUNG_PROZENT = 5;
 
+/**
+ * Ab wie viel Material der Vergleich zweier Endungen desselben Parsers ueberhaupt
+ * etwas aussagt. Eine der beiden Schwellen genuegt.
+ *
+ * WARUM ES DIESE GRENZE BRAUCHT: ohne sie meldete die Uebersicht fuer das Projekt
+ * synapse "Liefert bei sh Funktionen, bei fish dagegen keine einzige — Verdacht auf
+ * eine Luecke fuer diese Endung". Die Stichprobe bestand aus EINER .fish-Datei mit
+ * 16 Zeilen, und die enthaelt nur set und alias, also konstruktiv keine Funktion.
+ * Gegenprobe am Parser selbst: eine .fish-Datei mit zwei Funktionen liefert beide
+ * (gruss, _intern) — es gibt keine Luecke.
+ *
+ * Ein Fehlalarm ist hier teurer als ein uebersehener Fall: dieses Modul existiert,
+ * damit man seinen Befunden glaubt. Wer zweimal einer Warnung nachgeht, die aus
+ * einer einzigen Datei stammt, liest die dritte nicht mehr.
+ */
+const MIN_DATEIEN_FUER_TYP_BEFUND = 3;
+const MIN_ZEILEN_FUER_TYP_BEFUND = 200;
+
 export interface ParserGesundheitDatei {
   project: string;
   file_path: string;
@@ -552,7 +570,10 @@ interface ParserZeile {
  * Kein Vergleich gegen einen Durchschnitt — siehe Modulkopf.
  */
 function bewerteParser(zeilen: ParserZeile[]): ParserBefundGesamt[] {
-  const jeParser = new Map<string, { g: ParserBefundGesamt; typen: Map<string, { fn: number; dateien: number }> }>();
+  const jeParser = new Map<
+    string,
+    { g: ParserBefundGesamt; typen: Map<string, { fn: number; dateien: number; zeilen: number }> }
+  >();
 
   for (const z of zeilen) {
     let eintrag = jeParser.get(z.parser);
@@ -573,7 +594,7 @@ function bewerteParser(zeilen: ParserZeile[]): ParserBefundGesamt[] {
     eintrag.g.statements_gesamt += Number(z.stmt);
     eintrag.g.symbole_gesamt += Number(z.sym);
     eintrag.g.text_symbole_gesamt += Number(z.text);
-    eintrag.typen.set(z.file_type ?? '?', { fn, dateien: z.dateien });
+    eintrag.typen.set(z.file_type ?? '?', { fn, dateien: z.dateien, zeilen: Number(z.zeilen) });
   }
 
   const raus: ParserBefundGesamt[] = [];
@@ -601,13 +622,25 @@ function bewerteParser(zeilen: ParserZeile[]): ParserBefundGesamt[] {
     }
 
     // Liefert bei einem Dateityp normal, bei einem anderen nie.
+    // Die leere Seite braucht genug Material, sonst ist "keine einzige Funktion"
+    // keine Aussage ueber den Parser, sondern ueber die Datei (siehe
+    // MIN_DATEIEN_FUER_TYP_BEFUND). Die volle Seite braucht keine Schwelle: eine
+    // gefundene Funktion ist ein Positivbeweis, egal wie klein die Stichprobe ist.
     if (typen.size > 1) {
-      const leer = [...typen.entries()].filter(([, v]) => v.fn === 0).map(([t]) => t);
+      const leerEintraege = [...typen.entries()].filter(
+        ([, v]) =>
+          v.fn === 0 &&
+          (v.dateien >= MIN_DATEIEN_FUER_TYP_BEFUND || v.zeilen >= MIN_ZEILEN_FUER_TYP_BEFUND)
+      );
+      const leer = leerEintraege.map(([t]) => t);
       const voll = [...typen.entries()].filter(([, v]) => v.fn > 0).map(([t]) => t);
       if (leer.length > 0 && voll.length > 0) {
+        const basis = leerEintraege
+          .map(([t, v]) => `${t}: ${fmt(v.dateien)} Dateien, ${fmt(v.zeilen)} Zeilen`)
+          .join('; ');
         g.befund.push(
           `Liefert bei ${voll.join(', ')} Funktionen, bei ${leer.join(', ')} dagegen keine einzige — ` +
-            `Verdacht auf eine Luecke fuer diese Endung.`
+            `Verdacht auf eine Luecke fuer diese Endung (Datenbasis ${basis}).`
         );
       }
     }
