@@ -15,7 +15,7 @@
  *   - Logs: Konsolenausgabe bei Backup/Restore
  *
  * ABHÄNGIGKEITEN:
- *   - ../qdrant/operations.js (intern) - scrollVectors
+ *   - ../qdrant/operations.js (intern) - scrollePunkteMitPayload
  *   - fs, path, os (extern) - Dateisystem
  *
  * HINWEISE:
@@ -27,7 +27,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { scrollVectors } from '../qdrant/operations.js';
+import { scrollePunkteMitPayload } from '../qdrant/operations.js';
 import { COLLECTIONS } from '../types/index.js';
 import { getPool } from '../db/client.js';
 
@@ -50,7 +50,8 @@ export function getBackupDir(): string {
 }
 
 /**
- * Sichert alle Payloads einer Qdrant-Collection als JSONL-Datei
+ * Sichert ALLE Payloads einer Qdrant-Collection als JSONL-Datei (paginiert,
+ * ohne Obergrenze). Vektoren werden nicht gesichert, nur id und payload.
  * Gibt Anzahl gesicherter Eintraege zurueck
  */
 export async function dumpCollectionToFile(
@@ -65,10 +66,14 @@ export async function dumpCollectionToFile(
   let allPoints: Array<{ id: string; payload: Record<string, unknown> }> = [];
 
   try {
-    allPoints = await scrollVectors<Record<string, unknown>>(
+    // Paginiert, nicht die erste Seite: hier stand scrollVectors mit limit 10000.
+    // Gemessen am 28.07.2026 lagen zwei Collections darueber — llama.cpp-cuda mit
+    // 19286 und moo mit 15320 Punkten. Deren Sicherung enthielt 10000 Eintraege
+    // und meldete Erfolg. Ein Backup, das stillschweigend ein Drittel bis die
+    // Haelfte verliert, faellt erst beim Restore auf, und dann ist es zu spaet.
+    allPoints = await scrollePunkteMitPayload<Record<string, unknown>>(
       collectionName,
-      {},
-      10000
+      {}
     );
   } catch (error) {
     console.error(`[Synapse Backup] Konnte Collection "${collectionName}" nicht lesen: ${error}`);

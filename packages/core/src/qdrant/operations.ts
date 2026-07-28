@@ -437,3 +437,43 @@ export async function scrollePunktIds(
 
   return ids;
 }
+
+/**
+ * Liefert ALLE Punkte zu einem Filter samt Payload — mit Paginierung.
+ *
+ * Gegenstueck zu scrollePunktIds fuer Aufrufer, die den Payload brauchen. Das
+ * Backup ist der wichtigste davon: dort entscheidet Vollstaendigkeit darueber,
+ * ob eine Sicherung ihren Zweck erfuellt.
+ *
+ * Vektoren bleiben bewusst aussen vor — das Backup schreibt ohnehin nur id und
+ * payload, und bei 3072 Dimensionen je Punkt waere das ein Vielfaches an
+ * Uebertragung fuer Daten, die niemand liest.
+ */
+export async function scrollePunkteMitPayload<T>(
+  collection: string,
+  filter: Record<string, unknown>,
+  seitenGroesse: number = 1000
+): Promise<Array<{ id: string; payload: T }>> {
+  const client = getQdrantClient();
+  const raus: Array<{ id: string; payload: T }> = [];
+  let offset: unknown = undefined;
+  // Ein leeres Filter-Objekt ist kein Filter: Qdrant erwartet dann gar keinen.
+  const wirklicherFilter = Object.keys(filter ?? {}).length > 0 ? filter : undefined;
+
+  for (;;) {
+    const seite = await client.scroll(collection, {
+      filter: wirklicherFilter as any,
+      limit: seitenGroesse,
+      with_payload: true,
+      with_vector: false,
+      offset: offset as any,
+    });
+    for (const punkt of seite.points) {
+      raus.push({ id: punkt.id as string, payload: punkt.payload as T });
+    }
+    if (!seite.next_page_offset) break;
+    offset = seite.next_page_offset;
+  }
+
+  return raus;
+}
