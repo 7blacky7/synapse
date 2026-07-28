@@ -361,11 +361,16 @@ function extractFlowCpp(content: string): { statements: ParsedStatement[]; callE
     const sc = { v: 0 };
     const lines = body.split('\n');
     let i = 0;
+    // Laufender Zeichen-Offset statt lines.slice(0, i).reduce(...) je Zeile: die
+    // alte Fassung summierte fuer JEDE Zeile die Laengen aller vorherigen Zeilen
+    // neu auf und legte dafuer zusaetzlich ein Teil-Array an — O(Zeilen^2) pro
+    // Funktionsrumpf. Gemessen faellt das ab etwa 4000 Zeilen Rumpflaenge ins
+    // Gewicht (8000 Zeilen: Faktor 2.76 statt 2.0 bei Verdopplung).
+    let charOffset = 0;
     while (i < lines.length) {
       const line = lines[i];
       const trimmed = line.trim();
-      if (!trimmed || /^\/[/*]/.test(trimmed) || /^\*/.test(trimmed)) { i++; continue; }
-      const charOffset = lines.slice(0, i).reduce((a, l) => a + l.length + 1, 0);
+      if (!trimmed || /^\/[/*]/.test(trimmed) || /^\*/.test(trimmed)) { charOffset += line.length + 1; i++; continue; }
       const fileLine = lineAtCpp(content, bodyOffset + charOffset);
       const isTop = false; // inside function body, never top-level
 
@@ -501,6 +506,7 @@ function extractFlowCpp(content: string): { statements: ParsedStatement[]; callE
           extractCalls(trimmed, st.temp_id, scopeName, fileLine);
         }
       }
+      charOffset += line.length + 1;
       i++;
     }
   }
@@ -559,8 +565,13 @@ class CppParser implements LanguageParser {
    *      Konstruktoren, Destruktoren und Operatoren in und ausserhalb von Klassen
    *      werden als einheitliche Funktionssymbole erfasst (Deep-Fixture 2026-07-27).
    * 11 = Zeilenberechnung ueber Index statt Praefix-Kopie (siehe lineAt).
+   * 12 = processBody fuehrt den Zeichen-Offset mit, statt ihn je Zeile aus allen
+   *      vorherigen Zeilen neu aufzusummieren (O(Zeilen^2) je Funktionsrumpf),
+   *      und die Dubletten-Pruefungen schlagen in einem Index nach, statt je
+   *      Treffer die gesamte bisherige Symbolliste zu durchsuchen. findParentType
+   *      nutzt Binaersuche und Elternkette statt filter+sort ueber alle Typen.
    */
-  version = 11;
+  version = 12;
   extensions = ['.cpp', '.hpp', '.cc', '.cxx', '.hxx', '.hh'];
 
   parse(content: string, filePath: string): ParseResult {
@@ -573,7 +584,31 @@ class CppParser implements LanguageParser {
     // findClosingBrace (CPARSER-15 B1).
     const maskiert = maskiereLiterale(stripComments(content));
     const typeRanges = this.collectTypeRanges(maskiert);
-    const parentTypeAt = (pos: number): string | undefined => this.findParentType(typeRanges, pos);
+    const typEltern = this.baueTypEltern(typeRanges);
+    const parentTypeAt = (pos: number): string | undefined => this.findParentType(typeRanges, typEltern, pos);
+
+    // Nachschlag fuer die Dubletten-Pruefungen weiter unten. Die suchten bisher
+    // je Treffer mit symbols.some/find die KOMPLETTE bisherige Ausgabe ab, also
+    // O(Treffer x Symbole) — laut CPU-Profil der groesste verbliebene Posten in
+    // dieser Datei (44 % Eigenzeit in parse, weitere 9 % im Praedikat).
+    // Der Index wird absichtlich erst beim Nachschlagen nachgezogen: so muss
+    // keine der elf push-Stellen angefasst werden, und der Nachzieh-Lauf kostet
+    // ueber den gesamten Parse zusammen nur einen Durchlauf durch symbols.
+    // find und some lieferten stets den ERSTEN passenden Eintrag — deshalb wird
+    // ein bereits belegter Schluessel hier nie ueberschrieben.
+    const funktionsIndex = new Map<string, ParsedSymbol>();
+    let indexBis = 0;
+    const holeFunktion = (name: string, zeile: number): ParsedSymbol | undefined => {
+      for (; indexBis < symbols.length; indexBis++) {
+        const s = symbols[indexBis];
+        if (s.symbol_type !== 'function' || !s.name) continue;
+        // Zeile vor Name: so bleibt der Schluessel eindeutig, egal welche Zeichen
+        // der Name traegt (Operatoren, Destruktoren, qualifizierte Namen).
+        const schluessel = `${s.line_start}#${s.name}`;
+        if (!funktionsIndex.has(schluessel)) funktionsIndex.set(schluessel, s);
+      }
+      return funktionsIndex.get(`${zeile}#${name}`);
+    };
 
     // ══════════════════════════════════════════════
     // 1. #include
@@ -762,7 +797,7 @@ class CppParser implements LanguageParser {
       const operatorToken = m[4];
       const operatorName = /^[A-Za-z_]/.test(operatorToken) ? `operator ${operatorToken}` : 'operator' + operatorToken;
       const parentType = m[3] || parentTypeAt(m.index);
-      const existing = symbols.find(s => s.symbol_type === 'function' && s.name === operatorName && s.line_start === lineStart);
+      const existing = holeFunktion(operatorName, lineStart);
       if (existing) {
         existing.params = this.parseParams(m[5]);
         existing.return_type = (m[2] || '').trim();
@@ -808,7 +843,7 @@ class CppParser implements LanguageParser {
       const parentType = parentTypeAt(m.index);
       if (!parentType || parentType.split('::').pop() !== ctorName) continue;
       const lineStart = lineAt(content, m.index);
-      if (symbols.some(s => s.symbol_type === 'function' && s.name === ctorName && s.line_start === lineStart)) continue;
+      if (holeFunktion(ctorName, lineStart)) continue;
       symbols.push({
         symbol_type: 'function',
         name: ctorName,
@@ -857,7 +892,7 @@ class CppParser implements LanguageParser {
       if (returnType.includes('operator') || /\b(?:public|protected|private)\s*:/.test(returnType)) continue;
 
       // Skip if already found as method
-      if (symbols.some(s => s.symbol_type === 'function' && s.name === funcName && s.line_start === lineStart)) continue;
+      if (holeFunktion(funcName, lineStart)) continue;
 
       const params = this.parseParams(paramsRaw);
 
@@ -882,7 +917,7 @@ class CppParser implements LanguageParser {
       const paramsRaw = m[4];
       const lineStart = lineAt(content, m.index);
       const params = this.parseParams(paramsRaw);
-      const existing = symbols.find(s => s.symbol_type === 'function' && s.name === methodName && s.line_start === lineStart);
+      const existing = holeFunktion(methodName, lineStart);
 
       if (existing) {
         existing.params = params;
@@ -916,7 +951,7 @@ class CppParser implements LanguageParser {
       const specialName = m[2];
       if (className.split('::').pop() !== specialName.replace(/^~/, '')) continue;
       const lineStart = lineAt(content, m.index);
-      if (symbols.some(s => s.symbol_type === 'function' && s.name === specialName && s.line_start === lineStart)) continue;
+      if (holeFunktion(specialName, lineStart)) continue;
       symbols.push({
         symbol_type: 'function',
         name: specialName,
@@ -937,7 +972,7 @@ class CppParser implements LanguageParser {
       const specialName = m[2];
       if (className.split('::').pop() !== specialName.replace(/^~/, '')) continue;
       const lineStart = lineAt(content, m.index);
-      if (symbols.some(s => s.symbol_type === 'function' && s.name === specialName && s.line_start === lineStart)) continue;
+      if (holeFunktion(specialName, lineStart)) continue;
       symbols.push({
         symbol_type: 'function',
         name: specialName,
@@ -1159,11 +1194,51 @@ class CppParser implements LanguageParser {
     return ranges;
   }
 
-  private findParentType(ranges: Array<{ name: string; start: number; end: number }>, pos: number): string | undefined {
-    const parents = ranges
-      .filter(range => pos > range.start && pos < range.end)
-      .sort((a, b) => a.start - b.start);
-    return parents.length > 0 ? parents.map(parent => parent.name).join('::') : undefined;
+  /**
+   * Zu jedem Typbereich der unmittelbar umschliessende Bereich, einmal ueber
+   * einen Stapel bestimmt. collectTypeRanges liefert die Bereiche nach start
+   * aufsteigend, weil die Regex die Datei von vorn durchlaeuft.
+   */
+  private baueTypEltern(ranges: Array<{ name: string; start: number; end: number }>): Int32Array {
+    const eltern = new Int32Array(ranges.length).fill(-1);
+    const stapel: number[] = [];
+    for (let i = 0; i < ranges.length; i++) {
+      while (stapel.length > 0 && ranges[stapel[stapel.length - 1]].end <= ranges[i].start) stapel.pop();
+      eltern[i] = stapel.length > 0 ? stapel[stapel.length - 1] : -1;
+      stapel.push(i);
+    }
+    return eltern;
+  }
+
+  private findParentType(
+    ranges: Array<{ name: string; start: number; end: number }>,
+    eltern: Int32Array,
+    pos: number,
+  ): string | undefined {
+    // Vorher lief hier je Treffer ein filter ueber ALLE Typbereiche plus ein
+    // sort — O(Typen x Treffer). Gemessen war das der Treiber: bei Material aus
+    // vielen Klassen stieg der Faktor je Verdopplung auf 3.16, bei gleich viel
+    // Material aus freien Funktionen blieb er bei 2.50.
+    // Jetzt: Binaersuche auf den innersten Bereich, dann entlang der Elternkette
+    // nach aussen. Die Kette wird dabei Ebene fuer Ebene GEPRUEFT und nicht
+    // blind uebernommen, damit bei unbalancierten Klammern genau die Bereiche
+    // zusammenkommen, die pos wirklich enthalten — wie beim alten filter.
+    let lo = 0;
+    let hi = ranges.length;
+    while (lo < hi) {
+      const mitte = (lo + hi) >> 1;
+      if (ranges[mitte].start < pos) lo = mitte + 1;
+      else hi = mitte;
+    }
+    let k = lo - 1;
+    while (k >= 0 && !(pos > ranges[k].start && pos < ranges[k].end)) k = eltern[k];
+    if (k < 0) return undefined;
+    const namen: string[] = [];
+    for (let i = k; i >= 0; i = eltern[i]) {
+      if (pos > ranges[i].start && pos < ranges[i].end) namen.push(ranges[i].name);
+    }
+    namen.reverse();
+    return namen.join('::');
   }
 
   private findClosingBraceOffset(content: string, openPos: number): number {

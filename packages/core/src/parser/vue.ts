@@ -31,7 +31,11 @@ class VueParser implements LanguageParser {
   /** Bei inhaltlichen Parser-Aenderungen erhoehen (siehe LanguageParser.version). */
   // 2: Zeilenberechnung ueber Index statt Praefix-Kopie (siehe lineAt).
   // 3: Alle <script>-Bloecke statt nur einem (siehe parse).
-  version = 3;
+  // 4: Zeilennummern zeigten eine Zeile zu weit nach oben — ^\s* verschluckte den
+  //    Zeilenumbruch der Leerzeile davor (siehe parseImports); zusaetzlich rechneten
+  //    methods und computed der Options-API mit einem Offset relativ zum
+  //    Gruppeninhalt statt zum Gesamttreffer.
+  version = 4;
 
   parse(content: string, filePath: string): ParseResult {
     const symbols: ParsedSymbol[] = [];
@@ -138,7 +142,15 @@ class VueParser implements LanguageParser {
   ): void {
     let m: RegExpExecArray | null;
 
-    const importRe = /^\s*import\s+(?:\{([^}]+)\}\s+from\s+)?(?:(\w+)\s+from\s+)?['"]([^'"]+)['"]/gm;
+    // [^\S\r\n]* statt \s*: \s schliesst den Zeilenumbruch ein. Bei /^\s*import/gm
+    // greift ^ schon am Anfang der LEERzeile davor, \s* frisst den Umbruch, und der
+    // Treffer beginnt damit eine Zeile vor dem Symbol, das er beschreibt — die
+    // Sprungmarke landete im Editor eine Zeile daneben. Die Klasse bedeutet
+    // "Whitespace ausser Zeilenumbruch", sodass ^ nur noch an der Zeile des Symbols
+    // selbst greifen kann. Die Treffermenge bleibt gleich, nur die Startposition
+    // aendert sich; steht das Symbol schon in der Ankerzeile, bleibt alles wie
+    // bisher. Gleiche Korrektur an allen ^-Mustern dieser Datei.
+    const importRe = /^[^\S\r\n]*import\s+(?:\{([^}]+)\}\s+from\s+)?(?:(\w+)\s+from\s+)?['"]([^'"]+)['"]/gm;
     while ((m = importRe.exec(script)) !== null) {
       const named = m[1] ? m[1].split(',').map(n => n.trim().split(' as ').pop()!.trim()).filter(Boolean) : [];
       const defaultImport = m[2];
@@ -243,7 +255,7 @@ class VueParser implements LanguageParser {
     }
 
     // Functions
-    const funcRe = /^\s*(?:async\s+)?function\s+(\w+)\s*\(([^)]*)\)/gm;
+    const funcRe = /^[^\S\r\n]*(?:async\s+)?function\s+(\w+)\s*\(([^)]*)\)/gm;
     while ((m = funcRe.exec(script)) !== null) {
       const params = m[2].split(',').map(p => p.trim().split(':')[0].split('=')[0].trim()).filter(Boolean);
       symbols.push({
@@ -312,14 +324,18 @@ class VueParser implements LanguageParser {
     const methodsRe = /methods\s*:\s*\{([\s\S]*?)\n\s*\}/;
     m = methodsRe.exec(script);
     if (m) {
-      const methodRe = /^\s*(?:async\s+)?(\w+)\s*\(/gm;
+      const methodRe = /^[^\S\r\n]*(?:async\s+)?(\w+)\s*\(/gm;
+      // mm.index zaehlt ab dem Anfang von m[1], nicht ab dem Anfang des Treffers:
+      // die Laenge von "methods: {" fehlte in der Rechnung, sodass die Zeile
+      // zusaetzlich zum ^\s*-Fehler zu weit oben lag.
+      const blockOffset = offset + m.index + m[0].indexOf(m[1]);
       let mm: RegExpExecArray | null;
       while ((mm = methodRe.exec(m[1])) !== null) {
         symbols.push({
           symbol_type: 'function',
           name: mm[1],
           value: 'method',
-          line_start: lineAt(content, offset + (m?.index || 0) + mm.index),
+          line_start: lineAt(content, blockOffset + mm.index),
           is_exported: false,
         });
       }
@@ -329,7 +345,9 @@ class VueParser implements LanguageParser {
     const computedRe = /computed\s*:\s*\{([\s\S]*?)\n\s*\}/;
     m = computedRe.exec(script);
     if (m) {
-      const compRe = /^\s*(\w+)\s*(?:\(|:)/gm;
+      const compRe = /^[^\S\r\n]*(\w+)\s*(?:\(|:)/gm;
+      // cm.index ist relativ zum Gruppeninhalt m[1] — siehe methods.
+      const blockOffset = offset + m.index + m[0].indexOf(m[1]);
       let cm: RegExpExecArray | null;
       while ((cm = compRe.exec(m[1])) !== null) {
         if (['get', 'set'].includes(cm[1])) continue;
@@ -337,7 +355,7 @@ class VueParser implements LanguageParser {
           symbol_type: 'variable',
           name: cm[1],
           value: 'computed',
-          line_start: lineAt(content, offset + (m?.index || 0) + cm.index),
+          line_start: lineAt(content, blockOffset + cm.index),
           is_exported: false,
         });
       }

@@ -25,12 +25,77 @@ function lineAt(text: string, pos: number): number {
   return zeileFuerPosition(zeilenCacheIndex, pos);
 }
 
+// Muster als Modul-Konstanten, weil trefferListe ueber die Regex-IDENTITAET
+// zwischenspeichert. Je Muster zwei Fassungen: sticky (ohne ^) fuer die Probe
+// genau an der Startposition, global (mit ^ und m) fuer die Zeilenanfaenge.
+const RPC_S = /\s*rpc\s+(\w+)\s*\(\s*(stream\s+)?(\w+)\s*\)\s*returns\s*\(\s*(stream\s+)?(\w+)\s*\)/y;
+const RPC_G = /^\s*rpc\s+(\w+)\s*\(\s*(stream\s+)?(\w+)\s*\)\s*returns\s*\(\s*(stream\s+)?(\w+)\s*\)/gm;
+const FELD_S = /\s*(optional|required|repeated)?\s*(map<\s*\w+\s*,\s*\w+\s*>|[\w.]+)\s+(\w+)\s*=\s*(\d+)/y;
+const FELD_G = /^\s*(optional|required|repeated)?\s*(map<\s*\w+\s*,\s*\w+\s*>|[\w.]+)\s+(\w+)\s*=\s*(\d+)/gm;
+const ONEOF_S = /\s*oneof\s+(\w+)\s*\{/y;
+const ONEOF_G = /^\s*oneof\s+(\w+)\s*\{/gm;
+
+// Trefferliste eines Musters, einmal je Datei aufgebaut.
+const trefferCache = new Map<RegExp, { text: string; treffer: RegExpExecArray[] }>();
+function trefferListe(text: string, globalRe: RegExp): RegExpExecArray[] {
+  const alt = trefferCache.get(globalRe);
+  if (alt && alt.text === text) return alt.treffer;
+  const treffer: RegExpExecArray[] = [];
+  globalRe.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = globalRe.exec(text)) !== null) {
+    treffer.push(m);
+    if (globalRe.lastIndex === m.index) globalRe.lastIndex++;
+  }
+  trefferCache.set(globalRe, { text, treffer });
+  return treffer;
+}
+
+// Sucht ein an ^ verankertes Muster ab startPos, OHNE den Dateirest zu kopieren.
+// Bildet content.substring(startPos) + Regex mit m-Flag EXAKT nach: in der Kopie
+// gilt Position 0 als Zeilenanfang, auch wenn startPos mitten in einer Zeile
+// liegt. Deshalb wird zuerst genau an startPos geprueft (sticky, ohne ^), erst
+// danach an den echten Zeilenanfaengen.
+// Diese Sonderprobe ist kein Schoenheitsfehler: das erste Feld einer message traf
+// frueher bei Kopie-Position 0 zu und bekam dadurch die Zeilennummer der
+// message-Kopfzeile. Wer sie weglaesst, verschiebt still genau diese Nummer.
+//
+// Der zweite Teil laeuft ueber die vorbereitete Liste statt ueber einen neuen
+// Scan. Das ist der eigentliche Hebel: eine Suche, die NICHTS findet, lief sonst
+// je Block bis zum Dateiende. Gemessen an protobuf-Material ohne oneof waren das
+// Faktor 3.53 je Verdopplung; mit oneof in jeder message 1.08.
+// Dabei gilt eine Annahme, die hier zutrifft: ein global gesammelter Treffer darf
+// keinen spaeteren Kandidaten verschlucken. startPos liegt immer unmittelbar
+// hinter einer oeffnenden Klammer, davor steht also kein reiner Whitespace-Lauf,
+// ueber den ein frueherer Treffer hinweggreifen koennte.
+function* trefferAb(text: string, startPos: number, stickyRe: RegExp, globalRe: RegExp): Generator<RegExpExecArray> {
+  stickyRe.lastIndex = startPos;
+  const erster = stickyRe.exec(text);
+  let weiterAb = startPos;
+  if (erster) {
+    yield erster;
+    weiterAb = stickyRe.lastIndex > startPos ? stickyRe.lastIndex : startPos + 1;
+  }
+  const liste = trefferListe(text, globalRe);
+  let lo = 0;
+  let hi = liste.length;
+  while (lo < hi) {
+    const mitte = (lo + hi) >> 1;
+    if (liste[mitte].index < weiterAb) lo = mitte + 1;
+    else hi = mitte;
+  }
+  for (let i = lo; i < liste.length; i++) yield liste[i];
+}
+
 class ProtobufParser implements LanguageParser {
   language = 'protobuf';
   extensions = ['.proto'];
   /** Bei inhaltlichen Parser-Aenderungen erhoehen (siehe LanguageParser.version). */
   // 2: Zeilenberechnung ueber Index statt Praefix-Kopie (siehe lineAt).
-  version = 2;
+  // 3: rpc- und Feldsuche laufen direkt auf content statt auf einer Kopie des
+  //    Dateirests und schlagen in einer vorbereiteten Trefferliste nach, statt
+  //    je Block neu zu scannen (siehe trefferAb).
+  version = 3;
 
   parse(content: string, filePath: string): ParseResult {
     const symbols: ParsedSymbol[] = [];
@@ -182,12 +247,11 @@ class ProtobufParser implements LanguageParser {
       });
 
       // Parse RPCs inside the service
+      // Ohne content.substring(blockStart): die Kopie des gesamten Dateirests
+      // fiel je service an, obwohl die Schleife am Blockende abbricht.
       const blockStart = m.index + m[0].length;
-      const blockContent = content.substring(blockStart);
-      const rpcRe = /^\s*rpc\s+(\w+)\s*\(\s*(stream\s+)?(\w+)\s*\)\s*returns\s*\(\s*(stream\s+)?(\w+)\s*\)/gm;
-      let rm: RegExpExecArray | null;
-      while ((rm = rpcRe.exec(blockContent)) !== null) {
-        const rpcLine = lineAt(content, blockStart + rm.index);
+      for (const rm of trefferAb(content, blockStart, RPC_S, RPC_G)) {
+        const rpcLine = lineAt(content, rm.index);
         if (rpcLine > lineEnd) break;
 
         const rpcName = rm[1];
@@ -285,12 +349,11 @@ class ProtobufParser implements LanguageParser {
     content: string, blockStart: number, blockLineEnd: number,
     parentName: string, symbols: ParsedSymbol[], references: ParsedReference[]
   ): void {
-    const block = content.substring(blockStart);
     // Regular fields: optional/required/repeated type name = number;
-    const fieldRe = /^\s*(optional|required|repeated)?\s*(map<\s*\w+\s*,\s*\w+\s*>|[\w.]+)\s+(\w+)\s*=\s*(\d+)/gm;
-    let fm: RegExpExecArray | null;
-    while ((fm = fieldRe.exec(block)) !== null) {
-      const fieldLine = lineAt(content, blockStart + fm.index);
+    // Ohne const block = content.substring(blockStart): die Kopie des gesamten
+    // Dateirests fiel je message an und wurde hier sogar zweimal durchsucht.
+    for (const fm of trefferAb(content, blockStart, FELD_S, FELD_G)) {
+      const fieldLine = lineAt(content, fm.index);
       if (fieldLine > blockLineEnd) break;
 
       const modifier = fm[1] || '';
@@ -319,10 +382,8 @@ class ProtobufParser implements LanguageParser {
     }
 
     // Oneof
-    const oneofRe = /^\s*oneof\s+(\w+)\s*\{/gm;
-    let om: RegExpExecArray | null;
-    while ((om = oneofRe.exec(block)) !== null) {
-      const oneofLine = lineAt(content, blockStart + om.index);
+    for (const om of trefferAb(content, blockStart, ONEOF_S, ONEOF_G)) {
+      const oneofLine = lineAt(content, om.index);
       if (oneofLine > blockLineEnd) break;
 
       symbols.push({

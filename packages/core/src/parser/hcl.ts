@@ -25,12 +25,108 @@ function lineAt(text: string, pos: number): number {
   return zeileFuerPosition(zeilenCacheIndex, pos);
 }
 
+// Muster, die frueher je Block in einer frischen Kopie des Dateirests gesucht
+// wurden. Als Modul-Konstanten, weil trefferListe ueber die Regex-IDENTITAET
+// zwischenspeichert — in einer Schleife erzeugte Literale waeren jedes Mal ein
+// neues Objekt und der Zwischenspeicher damit wirkungslos.
+// Je Muster zwei Fassungen: sticky (ohne ^) fuer die Probe genau an der
+// Startposition, global (mit ^ und m) fuer die echten Zeilenanfaenge.
+const TYP_S = /\s*type\s*=\s*(.+)/y;
+const TYP_G = /^\s*type\s*=\s*(.+)/gm;
+const STANDARD_S = /\s*default\s*=\s*(.+)/y;
+const STANDARD_G = /^\s*default\s*=\s*(.+)/gm;
+const BESCHREIBUNG_S = /\s*description\s*=\s*"([^"]+)"/y;
+const BESCHREIBUNG_G = /^\s*description\s*=\s*"([^"]+)"/gm;
+const WERT_S = /\s*value\s*=\s*(.+)/y;
+const WERT_G = /^\s*value\s*=\s*(.+)/gm;
+const QUELLE_S = /\s*source\s*=\s*"([^"]+)"/y;
+const QUELLE_G = /^\s*source\s*=\s*"([^"]+)"/gm;
+const VON_S = /\s*from\s*=\s*(\S+)/y;
+const VON_G = /^\s*from\s*=\s*(\S+)/gm;
+const NACH_S = /\s*to\s*=\s*(\S+)/y;
+const NACH_G = /^\s*to\s*=\s*(\S+)/gm;
+const KENNUNG_S = /\s*id\s*=\s*"([^"]+)"/y;
+const KENNUNG_G = /^\s*id\s*=\s*"([^"]+)"/gm;
+const LOKAL_S = /\s*(\w+)\s*=\s*(.+)/y;
+const LOKAL_G = /^\s*(\w+)\s*=\s*(.+)/gm;
+
+// Trefferliste eines Musters, einmal je Datei aufgebaut. Ersetzt die Suche im
+// kopierten Dateirest: pro Block bleibt nur noch eine Binaersuche.
+const trefferCache = new Map<RegExp, { text: string; treffer: RegExpExecArray[] }>();
+function trefferListe(text: string, globalRe: RegExp): RegExpExecArray[] {
+  const alt = trefferCache.get(globalRe);
+  if (alt && alt.text === text) return alt.treffer;
+  const treffer: RegExpExecArray[] = [];
+  globalRe.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = globalRe.exec(text)) !== null) {
+    treffer.push(m);
+    if (globalRe.lastIndex === m.index) globalRe.lastIndex++;
+  }
+  trefferCache.set(globalRe, { text, treffer });
+  return treffer;
+}
+
+/**
+ * Ersetzt content.substring(pos).match(/^.../m) — ohne Kopie und ohne neuen Scan.
+ * Zwei Teile, die zusammen die alte Semantik ergeben:
+ *  1. Probe genau an pos: in der Kopie galt Position 0 als Zeilenanfang, auch
+ *     wenn pos mitten in einer Zeile liegt (hier immer direkt hinter '{').
+ *     Ohne diese Probe faende 'variable "x" { type = string }' auf EINER Zeile
+ *     nichts mehr.
+ *  2. sonst der erste vorbereitete Treffer mit Index >= pos, per Binaersuche.
+ * Zu (2) gilt eine Annahme, die fuer die hier verwendeten Muster geprueft ist:
+ * ein global gesammelter Treffer darf keinen spaeteren Kandidaten verschlucken.
+ * Alle Muster beginnen mit \s* und enden am Zeilenende; ein Treffer kann davor
+ * hoechstens Leerzeilen mitnehmen und traegt dann dasselbe Capture wie der
+ * verschluckte Kandidat. Genutzt werden ausschliesslich die Captures.
+ */
+function ersterTrefferAb(text: string, pos: number, stickyRe: RegExp, globalRe: RegExp): RegExpExecArray | null {
+  stickyRe.lastIndex = pos;
+  const direkt = stickyRe.exec(text);
+  if (direkt) return direkt;
+  const liste = trefferListe(text, globalRe);
+  let lo = 0;
+  let hi = liste.length;
+  while (lo < hi) {
+    const mitte = (lo + hi) >> 1;
+    if (liste[mitte].index < pos) lo = mitte + 1;
+    else hi = mitte;
+  }
+  return lo < liste.length ? liste[lo] : null;
+}
+
+// Wie ersterTrefferAb, liefert aber ALLE Treffer ab pos der Reihe nach — fuer
+// Schleifen, die ohnehin am Blockende abbrechen. Auch hier ueber die
+// vorbereitete Liste: sonst laeuft die Suche nach dem letzten Eintrag eines
+// Blocks bis zum Dateiende weiter.
+function* trefferAb(text: string, startPos: number, stickyRe: RegExp, globalRe: RegExp): Generator<RegExpExecArray> {
+  stickyRe.lastIndex = startPos;
+  const erster = stickyRe.exec(text);
+  let weiterAb = startPos;
+  if (erster) {
+    yield erster;
+    weiterAb = stickyRe.lastIndex > startPos ? stickyRe.lastIndex : startPos + 1;
+  }
+  const liste = trefferListe(text, globalRe);
+  let lo = 0;
+  let hi = liste.length;
+  while (lo < hi) {
+    const mitte = (lo + hi) >> 1;
+    if (liste[mitte].index < weiterAb) lo = mitte + 1;
+    else hi = mitte;
+  }
+  for (let i = lo; i < liste.length; i++) yield liste[i];
+}
+
 class HclParser implements LanguageParser {
   language = 'hcl';
   extensions = ['.tf', '.hcl'];
   /** Bei inhaltlichen Parser-Aenderungen erhoehen (siehe LanguageParser.version). */
   // 2: Zeilenberechnung ueber Index statt Praefix-Kopie (siehe lineAt).
-  version = 2;
+  // 3: Alle sieben Block-Auswertungen suchen direkt in content statt in einer
+  //    Kopie des Dateirests (siehe ersterTrefferAb, trefferAb, parseAttributes).
+  version = 3;
 
   parse(content: string, filePath: string): ParseResult {
     const symbols: ParsedSymbol[] = [];
@@ -146,10 +242,12 @@ class HclParser implements LanguageParser {
       const lineEnd = this.findClosingBrace(content, m.index + m[0].length - 1);
 
       // Extract type and default from block
-      const block = content.substring(m.index + m[0].length);
-      const typeMatch = block.match(/^\s*type\s*=\s*(.+)/m);
-      const defaultMatch = block.match(/^\s*default\s*=\s*(.+)/m);
-      const descMatch = block.match(/^\s*description\s*=\s*"([^"]+)"/m);
+      // Ohne Kopie des Dateirests: content.substring(...) fiel je Variable an und
+      // wurde dreimal vollstaendig durchsucht — O(Variablen x Dateigroesse).
+      const blockStart = m.index + m[0].length;
+      const typeMatch = ersterTrefferAb(content, blockStart, TYP_S, TYP_G);
+      const defaultMatch = ersterTrefferAb(content, blockStart, STANDARD_S, STANDARD_G);
+      const descMatch = ersterTrefferAb(content, blockStart, BESCHREIBUNG_S, BESCHREIBUNG_G);
 
       const varType = typeMatch ? typeMatch[1].trim() : undefined;
       const defaultVal = defaultMatch ? defaultMatch[1].trim().slice(0, 100) : undefined;
@@ -184,8 +282,7 @@ class HclParser implements LanguageParser {
       const lineStart = lineAt(content, m.index);
       const lineEnd = this.findClosingBrace(content, m.index + m[0].length - 1);
 
-      const block = content.substring(m.index + m[0].length);
-      const valueMatch = block.match(/^\s*value\s*=\s*(.+)/m);
+      const valueMatch = ersterTrefferAb(content, m.index + m[0].length, WERT_S, WERT_G);
       const value = valueMatch ? valueMatch[1].trim().slice(0, 200) : 'output';
 
       symbols.push({
@@ -207,8 +304,7 @@ class HclParser implements LanguageParser {
       const lineStart = lineAt(content, m.index);
       const lineEnd = this.findClosingBrace(content, m.index + m[0].length - 1);
 
-      const block = content.substring(m.index + m[0].length);
-      const sourceMatch = block.match(/^\s*source\s*=\s*"([^"]+)"/m);
+      const sourceMatch = ersterTrefferAb(content, m.index + m[0].length, QUELLE_S, QUELLE_G);
       const source = sourceMatch ? sourceMatch[1] : undefined;
 
       symbols.push({
@@ -238,11 +334,10 @@ class HclParser implements LanguageParser {
       const lineEnd = this.findClosingBrace(content, m.index + m[0].length - 1);
 
       // Extract local values
-      const block = content.substring(m.index + m[0].length);
-      const localValRe = /^\s*(\w+)\s*=\s*(.+)/gm;
-      let lm: RegExpExecArray | null;
-      while ((lm = localValRe.exec(block)) !== null) {
-        const localLine = lineAt(content, m.index + m[0].length + lm.index);
+      // Ohne Kopie: die Schleife bricht ohnehin am Blockende ab, die Kopie des
+      // gesamten Dateirests fiel trotzdem je locals-Block an.
+      for (const lm of trefferAb(content, m.index + m[0].length, LOKAL_S, LOKAL_G)) {
+        const localLine = lineAt(content, lm.index);
         if (localLine > lineEnd) break;
 
         symbols.push({
@@ -261,9 +356,9 @@ class HclParser implements LanguageParser {
     const movedRe = /^moved\s*\{/gm;
     while ((m = movedRe.exec(content)) !== null) {
       const lineStart = lineAt(content, m.index);
-      const block = content.substring(m.index + m[0].length);
-      const fromMatch = block.match(/^\s*from\s*=\s*(\S+)/m);
-      const toMatch = block.match(/^\s*to\s*=\s*(\S+)/m);
+      const movedStart = m.index + m[0].length;
+      const fromMatch = ersterTrefferAb(content, movedStart, VON_S, VON_G);
+      const toMatch = ersterTrefferAb(content, movedStart, NACH_S, NACH_G);
 
       if (fromMatch && toMatch) {
         symbols.push({
@@ -282,9 +377,9 @@ class HclParser implements LanguageParser {
     const importRe = /^import\s*\{/gm;
     while ((m = importRe.exec(content)) !== null) {
       const lineStart = lineAt(content, m.index);
-      const block = content.substring(m.index + m[0].length);
-      const toMatch = block.match(/^\s*to\s*=\s*(\S+)/m);
-      const idMatch = block.match(/^\s*id\s*=\s*"([^"]+)"/m);
+      const importStart = m.index + m[0].length;
+      const toMatch = ersterTrefferAb(content, importStart, NACH_S, NACH_G);
+      const idMatch = ersterTrefferAb(content, importStart, KENNUNG_S, KENNUNG_G);
 
       if (toMatch) {
         symbols.push({
@@ -337,13 +432,21 @@ class HclParser implements LanguageParser {
     content: string, blockStart: number, blockLineEnd: number,
     parentName: string, symbols: ParsedSymbol[], references: ParsedReference[]
   ): void {
-    const block = content.substring(blockStart);
-    const lines = block.split('\n');
     let currentLine = lineAt(content, blockStart);
     let depth = 0;
 
-    for (const line of lines) {
+    // Zeilen ab blockStart durchlaufen, OHNE den Dateirest zu kopieren und zu
+    // zerlegen. Das war die teuerste der sieben Stellen: je resource eine volle
+    // Kopie PLUS ein Array aller restlichen Zeilen, obwohl die Schleife am
+    // Blockende abbricht. Die Zerlegung ist zeichengleich nachgebildet: erste
+    // Zeile ist der REST der Zeile ab blockStart, danach ganze Zeilen.
+    let zeilenStart = blockStart;
+    for (;;) {
       if (currentLine > blockLineEnd) break;
+      let zeilenEnde = content.indexOf('\n', zeilenStart);
+      const letzteZeile = zeilenEnde === -1;
+      if (letzteZeile) zeilenEnde = content.length;
+      const line = content.slice(zeilenStart, zeilenEnde);
       const trimmed = line.trim();
 
       for (const ch of line) {
@@ -378,6 +481,8 @@ class HclParser implements LanguageParser {
         }
       }
       currentLine++;
+      if (letzteZeile) break;
+      zeilenStart = zeilenEnde + 1;
     }
   }
 

@@ -308,7 +308,10 @@ class JavaParser implements LanguageParser {
   /** Bei inhaltlichen Parser-Aenderungen erhoehen (siehe LanguageParser.version). */
   // 2: Zeilenberechnung ueber Index statt Praefix-Kopie (siehe lineAt).
   // 3: Eltern-Typ ueber vorberechnete Grenzen statt Rueckwaertssuche je Treffer.
-  version = 3;
+  // 4: Eltern-Typ ist jetzt die INNERSTE umschliessende Deklaration. Version 3
+  //    bildete die alte match()-Semantik nach und verlor den Eltern-Typ, sobald
+  //    vor der Fundstelle eine schliessende Klammer stand (siehe findParentType).
+  version = 4;
 
   parse(content: string, filePath: string): ParseResult {
     const symbols: ParsedSymbol[] = [];
@@ -606,53 +609,74 @@ class JavaParser implements LanguageParser {
     return lineAt(content, content.length);
   }
 
-  // Typ-Grenzen EINMAL vorwaerts sammeln statt pro Treffer rueckwaerts zu suchen.
+  // Typ-Bereiche EINMAL vorwaerts sammeln statt pro Treffer rueckwaerts zu suchen.
   private grenzenText: string | null = null;
-  private typDeklarationen: Array<{ klammer: number; name: string }> = [];
-  private schliessendeKlammern: number[] = [];
+  private typBereiche: Array<{ name: string; start: number; end: number; eltern: number }> = [];
 
   private bereiteTypGrenzenVor(content: string): void {
     if (content === this.grenzenText) return;
     this.grenzenText = content;
-    this.typDeklarationen = [];
-    this.schliessendeKlammern = [];
+    const nameAnKlammer = new Map<number, string>();
     const deklRe = /(?:class|interface|enum|record)\s+(\w+)[^{]*\{/g;
     let d: RegExpExecArray | null;
     while ((d = deklRe.exec(content)) !== null) {
-      this.typDeklarationen.push({ klammer: d.index + d[0].length - 1, name: d[1] });
+      nameAnKlammer.set(d.index + d[0].length - 1, d[1]);
     }
+    // Ein einziger Durchlauf mit Klammer-Stapel paart jede oeffnende Klammer mit
+    // ihrer schliessenden. Das ergibt echte Bereiche und bleibt linear in der
+    // Dateigroesse — die Vorberechnung aus Version 3 wird dadurch nicht teurer.
+    const bereiche: Array<{ name: string; start: number; end: number; eltern: number }> = [];
+    const offen: number[] = [];
     for (let i = 0; i < content.length; i++) {
-      if (content.charCodeAt(i) === 125) this.schliessendeKlammern.push(i);
+      const zeichen = content.charCodeAt(i);
+      if (zeichen === 123) offen.push(i);
+      else if (zeichen === 125) {
+        const auf = offen.pop();
+        if (auf === undefined) continue;
+        const name = nameAnKlammer.get(auf);
+        if (name !== undefined) bereiche.push({ name, start: auf, end: i, eltern: -1 });
+      }
     }
+    bereiche.sort((x, y) => x.start - y.start);
+    // Elternkette: Typ-Bereiche sind ineinander geschachtelt und ueberlappen nie,
+    // deshalb genuegt ein Stapel ueber die nach start sortierte Liste.
+    const stapel: number[] = [];
+    for (let i = 0; i < bereiche.length; i++) {
+      while (stapel.length > 0 && bereiche[stapel[stapel.length - 1]].end < bereiche[i].start) stapel.pop();
+      bereiche[i].eltern = stapel.length > 0 ? stapel[stapel.length - 1] : -1;
+      stapel.push(i);
+    }
+    this.typBereiche = bereiche;
   }
 
   /**
-   * In welcher Typ-Deklaration liegt pos? Bildet die alte Regex exakt nach,
-   * einschliesslich ihrer Eigenheit: String.match ohne g liefert den am weitesten
-   * LINKS beginnenden Treffer, bei Verschachtelung also die AEUSSERE Deklaration.
-   * \{[^}]*$ verlangt, dass zwischen oeffnender Klammer und pos keine schliessende
-   * liegt — gesucht ist die erste Deklaration hinter der letzten schliessenden
-   * Klammer vor pos. Beides per Binaersuche statt per Praefix-Kopie.
+   * In welcher Typ-Deklaration liegt pos? Geliefert wird die INNERSTE
+   * umschliessende: der Scope eines Symbols ist die naechstgelegene Deklaration,
+   * die es enthaelt — nur sie ergibt einen richtigen qualifizierten Namen.
+   *
+   * Bis Version 3 wurde hier die Eigenheit von String.match ohne g nachgebildet
+   * ("erste Deklaration hinter der letzten schliessenden Klammer vor pos"). Das
+   * war in zwei Faellen falsch: bei direkt verschachtelten Deklarationen lieferte
+   * es die AEUSSERE, und — weit haeufiger — sobald vor pos ueberhaupt eine
+   * schliessende Klammer stand und danach keine neue Deklaration folgte, lieferte
+   * es gar nichts. Schon die zweite Methode einer gewoehnlichen Klasse verlor so
+   * ihren Eltern-Typ.
    */
   private findParentType(content: string, pos: number): string | undefined {
     this.bereiteTypGrenzenVor(content);
+    const bereiche = this.typBereiche;
     let lo = 0;
-    let hi = this.schliessendeKlammern.length;
+    let hi = bereiche.length;
     while (lo < hi) {
       const mitte = (lo + hi) >> 1;
-      if (this.schliessendeKlammern[mitte] < pos) lo = mitte + 1;
+      if (bereiche[mitte].start < pos) lo = mitte + 1;
       else hi = mitte;
     }
-    const letzteZu = lo > 0 ? this.schliessendeKlammern[lo - 1] : -1;
-    let a = 0;
-    let b = this.typDeklarationen.length;
-    while (a < b) {
-      const mitte = (a + b) >> 1;
-      if (this.typDeklarationen[mitte].klammer <= letzteZu) a = mitte + 1;
-      else b = mitte;
-    }
-    const kandidat = this.typDeklarationen[a];
-    return kandidat && kandidat.klammer < pos ? kandidat.name : undefined;
+    // Letzter Bereich, der vor pos beginnt. Endet er schon vor pos, ist er ein
+    // abgeschlossener Nachbar — dann ueber die Elternkette nach aussen weiter.
+    let i = lo - 1;
+    while (i >= 0 && bereiche[i].end <= pos) i = bereiche[i].eltern;
+    return i >= 0 ? bereiche[i].name : undefined;
   }
 }
 

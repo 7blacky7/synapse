@@ -11,17 +11,48 @@
 import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser, ParsedStatement, ParsedCallEdge } from './types.js';
 import { extractStringLiterals, erstelleZeilenIndex, zeileFuerPosition } from './types.js';
 
-// Zeilenindex je Datei zwischenspeichern — siehe zeileFuerPosition in types.ts.
+// Zeilenindex je Text zwischenspeichern — siehe zeileFuerPosition in types.ts.
 // Vorher wurde pro Treffer ein Praefix der Datei kopiert und zerlegt: das ist
 // O(Treffer x Dateigroesse) und laesst grosse Dateien praktisch nie fertig werden.
-let zeilenCacheText: string | null = null;
-let zeilenCacheIndex: number[] = [];
+//
+// WARUM EIN CACHE UEBER MEHRERE TEXTE, obwohl es jetzt nur noch einen gibt:
+// parseBlock hat frueher bei der Rekursion den AUSGESCHNITTENEN Rumpf als neuen
+// Text weitergereicht, waehrend die oberste Ebene je Funktion wieder mit dem vollen
+// Dateiinhalt arbeitete. Mit einem Slot wurde der Index des ganzen Textes deshalb je
+// Funktion neu gebaut — gemessen an 587 KB: 3601 Indexbauten ueber 238 Mio. Zeichen,
+// das 406-fache der Dateigroesse. Bei 40-fach verschachteltem Material war der Parser
+// dadurch LANGSAMER als vor der Umstellung auf den Index (923 ms gegen 540 ms),
+// derselbe Rueckschlag wie in cpp.ts. Ein Ring mit 2, 4 oder 8 Slots half messbar
+// NICHT (unveraendert 3601 Bauten) — je Funktion waren mehr Texte im Spiel als Slots.
+// Seit parseBlock mit Grenzen auf content arbeitet, gibt es nur noch EINEN Text und
+// der Index wird genau einmal je Datei gebaut. Der Cache bleibt trotzdem textbasiert:
+// er kostet dann einen Eintrag, faengt aber sofort ab, wenn hier wieder jemand einen
+// Teiltext hineinreicht. Geleert wird er zu Beginn jeder parse-Fassung, damit nichts
+// ueber Dateien hinweg liegen bleibt.
+//
+// Klebrige Regexe (Flag y): sie ersetzen die frueheren ^-verankerten Muster auf
+// body.slice(pos). Ohne ausgeschnittenen Rumpf gibt es keinen Textanfang mehr, an dem
+// ^ greifen koennte; lastIndex leistet dasselbe ohne Teilstring. Vor jedem exec wird
+// lastIndex gesetzt, es gibt also keinen Zustand ueber Aufrufe hinweg.
+const reIf = /if\s*\(/y;
+const reElse = /\s*else\s*\{/y;
+const reFor = /for\s*\(/y;
+const reWhile = /while\s*\(/y;
+const reReq = /(require|revert)\s*\(/y;
+const reEmit = /emit\s+(\w+)\s*\(/y;
+const reRet = /return\b/y;
+const reCall = /([a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)*)\s*\(/y;
+let zeilenCache = new Map<string, number[]>();
+function zeilenCacheLeeren(): void {
+  zeilenCache = new Map();
+}
 function lineAt(text: string, pos: number): number {
-  if (text !== zeilenCacheText) {
-    zeilenCacheText = text;
-    zeilenCacheIndex = erstelleZeilenIndex(text);
+  let index = zeilenCache.get(text);
+  if (index === undefined) {
+    index = erstelleZeilenIndex(text);
+    zeilenCache.set(text, index);
   }
-  return zeileFuerPosition(zeilenCacheIndex, pos);
+  return zeileFuerPosition(index, pos);
 }
 
 // ---------------------------------------------------------------------------
@@ -78,91 +109,100 @@ function extractSolidityFlow(content: string): { statements: ParsedStatement[]; 
   }
 
   // Find matching closing brace position (char index)
-  function findClose(src: string, openIdx: number): number {
+  // Findet die zur oeffnenden Klammer bei openIdx passende schliessende Klammer.
+  // ende begrenzt die Suche auf den umgebenden Block; ohne Angabe gilt der ganze Text.
+  // Frueher ergab sich diese Grenze von selbst, weil auf einem ausgeschnittenen
+  // Rumpf gesucht wurde — die Begrenzung ersetzt das Ausschneiden.
+  function findClose(src: string, openIdx: number, ende: number = src.length): number {
     let depth = 1;
-    for (let i = openIdx + 1; i < src.length; i++) {
+    for (let i = openIdx + 1; i < ende; i++) {
       if (src[i] === '{') depth++;
       else if (src[i] === '}') { depth--; if (depth === 0) return i; }
     }
-    return src.length - 1;
+    return ende - 1;
   }
 
-  function charToLine(src: string, pos: number): number {
-    return lineAt(src, pos);
+  // Naechstes Semikolon, aber nur bis zum Blockende. Ersetzt body.indexOf(';'),
+  // das am ausgeschnittenen Rumpf von selbst an der Blockgrenze endete.
+  function semikolonBis(von: number, ende: number): number {
+    const i = content.indexOf(';', von);
+    return i >= 0 && i < ende ? i : -1;
   }
 
-  // Parse a block body (between { }) recursively
+  function charToLine(pos: number): number {
+    return lineAt(content, pos);
+  }
+
+  // Verarbeitet einen Block zwischen { und }. blockStart und blockEnd sind
+  // Positionen in content — es wird NICHTS mehr ausgeschnitten (siehe Modulkopf).
   function parseBlock(
-    src: string,           // full content
-    blockStart: number,    // position of '{'
-    blockEnd: number,      // position of '}'
+    blockStart: number,    // Position von '{' in content
+    blockEnd: number,      // Position von '}' in content
     scopeType: string,
     scopeName: string | null,
     depth: number,
     parentId: string | undefined,
     scopeCounter: { n: number },
   ): void {
-    const body = src.substring(blockStart + 1, blockEnd);
-    const baseOffset = blockStart + 1;
-
-    // Strip comments for matching (but keep positions via offset)
-    let pos = 0;
-    while (pos < body.length) {
-      // Skip strings
-      if (body[pos] === '"' || body[pos] === "'") {
-        const q = body[pos]; pos++;
-        while (pos < body.length && body[pos] !== q) { if (body[pos] === '\\') pos++; pos++; }
+    let pos = blockStart + 1;
+    while (pos < blockEnd) {
+      // Zeichenketten ueberspringen
+      if (content[pos] === '"' || content[pos] === "'") {
+        const q = content[pos]; pos++;
+        while (pos < blockEnd && content[pos] !== q) { if (content[pos] === '\\') pos++; pos++; }
         pos++; continue;
       }
-      // Skip line comment
-      if (body[pos] === '/' && body[pos+1] === '/') {
-        while (pos < body.length && body[pos] !== '\n') pos++;
+      // Zeilenkommentar
+      if (content[pos] === '/' && content[pos + 1] === '/') {
+        while (pos < blockEnd && content[pos] !== '\n') pos++;
         continue;
       }
-      // Skip block comment
-      if (body[pos] === '/' && body[pos+1] === '*') {
+      // Blockkommentar
+      if (content[pos] === '/' && content[pos + 1] === '*') {
         pos += 2;
-        while (pos < body.length - 1 && !(body[pos] === '*' && body[pos+1] === '/')) pos++;
+        while (pos < blockEnd - 1 && !(content[pos] === '*' && content[pos + 1] === '/')) pos++;
         pos += 2; continue;
       }
 
       // if(...) { ... } [else { ... }]
-      const ifM = /^if\s*\(/.exec(body.slice(pos));
+      reIf.lastIndex = pos;
+      const ifM = reIf.exec(content);
       if (ifM) {
-        const absPos = baseOffset + pos;
-        const lineStart = charToLine(src, absPos);
-        // find condition end
+        const lineStart = charToLine(pos);
         let condEnd = pos + ifM[0].length - 1;
         let pDepth = 1;
-        while (condEnd < body.length && pDepth > 0) {
+        while (condEnd < blockEnd && pDepth > 0) {
           condEnd++;
-          if (body[condEnd] === '(') pDepth++;
-          else if (body[condEnd] === ')') pDepth--;
+          if (content[condEnd] === '(') pDepth++;
+          else if (content[condEnd] === ')') pDepth--;
         }
-        const condText = body.substring(pos + 3, condEnd).trim().slice(0, 200);
-        // find then-block
+        // Start aus der Trefferlaenge, nicht aus einer festen Zahl: die oeffnende
+        // Klammer ist das letzte Zeichen des Treffers. Die alte Rechnung pos + 3
+        // stimmte nur bei 'if(' und nahm bei 'if (' die Klammer mit in den Text.
+        const condText = content.substring(pos + ifM[0].length, condEnd).trim().slice(0, 200);
         let thenStart = condEnd + 1;
-        while (thenStart < body.length && /\s/.test(body[thenStart])) thenStart++;
+        while (thenStart < blockEnd && /\s/.test(content[thenStart])) thenStart++;
         let lineEnd = lineStart;
-        if (body[thenStart] === '{') {
-          const thenClose = findClose(body, thenStart);
-          lineEnd = charToLine(src, baseOffset + thenClose);
+        if (content[thenStart] === '{') {
+          const thenClose = findClose(content, thenStart, blockEnd);
+          lineEnd = charToLine(thenClose);
           const st = emitStmt(lineStart, lineEnd, scopeType, scopeName, 'if', depth, parentId, scopeCounter, { condition_text: condText });
-          parseBlock(body, thenStart, thenClose, scopeType, scopeName, depth + 1, st.temp_id, { n: 0 });
+          parseBlock(thenStart, thenClose, scopeType, scopeName, depth + 1, st.temp_id, { n: 0 });
           pos = thenClose + 1;
           // else?
-          const elseM = /^\s*else\s*\{/.exec(body.slice(pos));
+          reElse.lastIndex = pos;
+          const elseM = reElse.exec(content);
           if (elseM) {
             const elseStart = pos + elseM[0].lastIndexOf('{');
-            const elseClose = findClose(body, elseStart);
-            parseBlock(body, elseStart, elseClose, scopeType, scopeName, depth + 1, st.temp_id, { n: orderCounters.get(`p:${st.temp_id}`) ?? 0 });
+            const elseClose = findClose(content, elseStart, blockEnd);
+            parseBlock(elseStart, elseClose, scopeType, scopeName, depth + 1, st.temp_id, { n: orderCounters.get(`p:${st.temp_id}`) ?? 0 });
             pos = elseClose + 1;
           }
         } else {
-          // single-line then
-          const stmtEnd = body.indexOf(';', thenStart);
-          lineEnd = stmtEnd >= 0 ? charToLine(src, baseOffset + stmtEnd) : lineStart;
-          const st = emitStmt(lineStart, lineEnd, scopeType, scopeName, 'if', depth, parentId, scopeCounter, { condition_text: condText });
+          // einzeiliger then-Zweig
+          const stmtEnd = semikolonBis(thenStart, blockEnd);
+          lineEnd = stmtEnd >= 0 ? charToLine(stmtEnd) : lineStart;
+          emitStmt(lineStart, lineEnd, scopeType, scopeName, 'if', depth, parentId, scopeCounter, { condition_text: condText });
           if (stmtEnd >= 0) pos = stmtEnd + 1;
           else pos = thenStart + 1;
         }
@@ -170,25 +210,25 @@ function extractSolidityFlow(content: string): { statements: ParsedStatement[]; 
       }
 
       // for(...) { ... }
-      const forM = /^for\s*\(/.exec(body.slice(pos));
+      reFor.lastIndex = pos;
+      const forM = reFor.exec(content);
       if (forM) {
-        const absPos = baseOffset + pos;
-        const lineStart = charToLine(src, absPos);
+        const lineStart = charToLine(pos);
         let condEnd = pos + forM[0].length - 1;
         let pDepth = 1;
-        while (condEnd < body.length && pDepth > 0) {
+        while (condEnd < blockEnd && pDepth > 0) {
           condEnd++;
-          if (body[condEnd] === '(') pDepth++;
-          else if (body[condEnd] === ')') pDepth--;
+          if (content[condEnd] === '(') pDepth++;
+          else if (content[condEnd] === ')') pDepth--;
         }
-        const condText = body.substring(pos + 4, condEnd).trim().slice(0, 200);
+        const condText = content.substring(pos + forM[0].length, condEnd).trim().slice(0, 200);
         let bodyStart = condEnd + 1;
-        while (bodyStart < body.length && /\s/.test(body[bodyStart])) bodyStart++;
-        if (body[bodyStart] === '{') {
-          const bodyClose = findClose(body, bodyStart);
-          const lineEnd = charToLine(src, baseOffset + bodyClose);
+        while (bodyStart < blockEnd && /\s/.test(content[bodyStart])) bodyStart++;
+        if (content[bodyStart] === '{') {
+          const bodyClose = findClose(content, bodyStart, blockEnd);
+          const lineEnd = charToLine(bodyClose);
           const st = emitStmt(lineStart, lineEnd, scopeType, scopeName, 'for', depth, parentId, scopeCounter, { condition_text: condText });
-          parseBlock(body, bodyStart, bodyClose, scopeType, scopeName, depth + 1, st.temp_id, { n: 0 });
+          parseBlock(bodyStart, bodyClose, scopeType, scopeName, depth + 1, st.temp_id, { n: 0 });
           pos = bodyClose + 1;
         } else {
           emitStmt(lineStart, lineStart, scopeType, scopeName, 'for', depth, parentId, scopeCounter, { condition_text: condText });
@@ -198,25 +238,25 @@ function extractSolidityFlow(content: string): { statements: ParsedStatement[]; 
       }
 
       // while(...) { ... }
-      const whileM = /^while\s*\(/.exec(body.slice(pos));
+      reWhile.lastIndex = pos;
+      const whileM = reWhile.exec(content);
       if (whileM) {
-        const absPos = baseOffset + pos;
-        const lineStart = charToLine(src, absPos);
+        const lineStart = charToLine(pos);
         let condEnd = pos + whileM[0].length - 1;
         let pDepth = 1;
-        while (condEnd < body.length && pDepth > 0) {
+        while (condEnd < blockEnd && pDepth > 0) {
           condEnd++;
-          if (body[condEnd] === '(') pDepth++;
-          else if (body[condEnd] === ')') pDepth--;
+          if (content[condEnd] === '(') pDepth++;
+          else if (content[condEnd] === ')') pDepth--;
         }
-        const condText = body.substring(pos + 6, condEnd).trim().slice(0, 200);
+        const condText = content.substring(pos + whileM[0].length, condEnd).trim().slice(0, 200);
         let bodyStart = condEnd + 1;
-        while (bodyStart < body.length && /\s/.test(body[bodyStart])) bodyStart++;
-        if (body[bodyStart] === '{') {
-          const bodyClose = findClose(body, bodyStart);
-          const lineEnd = charToLine(src, baseOffset + bodyClose);
+        while (bodyStart < blockEnd && /\s/.test(content[bodyStart])) bodyStart++;
+        if (content[bodyStart] === '{') {
+          const bodyClose = findClose(content, bodyStart, blockEnd);
+          const lineEnd = charToLine(bodyClose);
           const st = emitStmt(lineStart, lineEnd, scopeType, scopeName, 'while', depth, parentId, scopeCounter, { condition_text: condText });
-          parseBlock(body, bodyStart, bodyClose, scopeType, scopeName, depth + 1, st.temp_id, { n: 0 });
+          parseBlock(bodyStart, bodyClose, scopeType, scopeName, depth + 1, st.temp_id, { n: 0 });
           pos = bodyClose + 1;
         } else {
           emitStmt(lineStart, lineStart, scopeType, scopeName, 'while', depth, parentId, scopeCounter, { condition_text: condText });
@@ -225,75 +265,75 @@ function extractSolidityFlow(content: string): { statements: ParsedStatement[]; 
         continue;
       }
 
-      // require(...); or revert(...);
-      const reqM = /^(require|revert)\s*\(/.exec(body.slice(pos));
+      // require(...); oder revert(...);
+      reReq.lastIndex = pos;
+      const reqM = reReq.exec(content);
       if (reqM) {
-        const absPos = baseOffset + pos;
-        const lineStart = charToLine(src, absPos);
+        const lineStart = charToLine(pos);
         let argEnd = pos + reqM[0].length - 1;
         let pDepth = 1;
-        while (argEnd < body.length && pDepth > 0) {
+        while (argEnd < blockEnd && pDepth > 0) {
           argEnd++;
-          if (body[argEnd] === '(') pDepth++;
-          else if (body[argEnd] === ')') pDepth--;
+          if (content[argEnd] === '(') pDepth++;
+          else if (content[argEnd] === ')') pDepth--;
         }
-        const argText = body.substring(pos + reqM[1].length + 1, argEnd).trim().slice(0, 200);
+        const argText = content.substring(pos + reqM[0].length, argEnd).trim().slice(0, 200);
         const stmtType = reqM[1] === 'require' ? 'call' : 'throw';
         const st = emitStmt(lineStart, lineStart, scopeType, scopeName, stmtType, depth, parentId, scopeCounter, {
           callee: reqM[1],
           condition_text: argText,
         });
         callEdges.push({ statement_temp_id: st.temp_id, caller_scope: scopeName, callee_name: reqM[1], line_number: lineStart, call_kind: 'function' });
-        pos = argEnd + 2; // skip ');'
+        pos = argEnd + 2; // ');' ueberspringen
         continue;
       }
 
       // emit EventName(...);
-      const emitM = /^emit\s+(\w+)\s*\(/.exec(body.slice(pos));
+      reEmit.lastIndex = pos;
+      const emitM = reEmit.exec(content);
       if (emitM) {
-        const absPos = baseOffset + pos;
-        const lineStart = charToLine(src, absPos);
+        const lineStart = charToLine(pos);
         const st = emitStmt(lineStart, lineStart, scopeType, scopeName, 'call', depth, parentId, scopeCounter, { callee: emitM[1] });
         callEdges.push({ statement_temp_id: st.temp_id, caller_scope: scopeName, callee_name: emitM[1], line_number: lineStart, call_kind: 'function' });
-        const semi = body.indexOf(';', pos);
+        const semi = semikolonBis(pos, blockEnd);
         pos = semi >= 0 ? semi + 1 : pos + emitM[0].length;
         continue;
       }
 
       // return ...;
-      const retM = /^return\b/.exec(body.slice(pos));
+      reRet.lastIndex = pos;
+      const retM = reRet.exec(content);
       if (retM) {
-        const absPos = baseOffset + pos;
-        const lineStart = charToLine(src, absPos);
-        const semi = body.indexOf(';', pos);
+        const lineStart = charToLine(pos);
+        const semi = semikolonBis(pos, blockEnd);
         emitStmt(lineStart, lineStart, scopeType, scopeName, 'return', depth, parentId, scopeCounter);
         pos = semi >= 0 ? semi + 1 : pos + 6;
         continue;
       }
 
-      // Generic statement ending in ;
-      if (body[pos] === ';') { pos++; continue; }
-      if (body[pos] === '{') { pos = findClose(body, pos) + 1; continue; }
-      if (body[pos] === '}') { pos++; continue; }
+      // Sonstiges Statement, endet auf ;
+      if (content[pos] === ';') { pos++; continue; }
+      if (content[pos] === '{') { pos = findClose(content, pos, blockEnd) + 1; continue; }
+      if (content[pos] === '}') { pos++; continue; }
 
-      // Check for a generic function call: identifier(
-      const callM = /^([a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)*)\s*\(/.exec(body.slice(pos));
+      // Allgemeiner Funktionsaufruf: bezeichner(
+      reCall.lastIndex = pos;
+      const callM = reCall.exec(content);
       if (callM) {
-        const absPos = baseOffset + pos;
-        const lineStart = charToLine(src, absPos);
+        const lineStart = charToLine(pos);
         const parts = callM[1].split('.');
         const callee = parts[parts.length - 1];
         const receiver = parts.length > 1 ? parts.slice(0, -1).join('.') : undefined;
-        // find end of statement
+        // Ende des Statements suchen
         let argEnd = pos + callM[0].length - 1;
         let pDepth = 1;
-        while (argEnd < body.length && pDepth > 0) {
+        while (argEnd < blockEnd && pDepth > 0) {
           argEnd++;
-          if (body[argEnd] === '(') pDepth++;
-          else if (body[argEnd] === ')') pDepth--;
+          if (content[argEnd] === '(') pDepth++;
+          else if (content[argEnd] === ')') pDepth--;
         }
-        const semi = body.indexOf(';', argEnd);
-        // Only emit as call if followed by ; (statement level)
+        const semi = semikolonBis(argEnd, blockEnd);
+        // Nur als Aufruf erfassen, wenn ein ; folgt (Statement-Ebene)
         if (semi >= 0 && semi - argEnd < 5) {
           const st = emitStmt(lineStart, lineStart, scopeType, scopeName, 'call', depth, parentId, scopeCounter, { callee, receiver });
           callEdges.push({ statement_temp_id: st.temp_id, caller_scope: scopeName, callee_name: callee, callee_receiver: receiver, line_number: lineStart, call_kind: receiver ? 'method' : 'function' });
@@ -316,7 +356,7 @@ function extractSolidityFlow(content: string): { statements: ParsedStatement[]; 
     if (openBrace < 0) continue;
     const closeBrace = findClose(content, openBrace);
     const scopeCounter = { n: 0 };
-    parseBlock(content, openBrace, closeBrace, 'function', name, 0, undefined, scopeCounter);
+    parseBlock(openBrace, closeBrace, 'function', name, 0, undefined, scopeCounter);
   }
 
   return { statements, callEdges };
@@ -327,9 +367,22 @@ class SolidityParser implements LanguageParser {
   extensions = ['.sol'];
   /** Bei inhaltlichen Parser-Aenderungen erhoehen (siehe LanguageParser.version). */
   // 2: Zeilenberechnung ueber Index statt Praefix-Kopie (siehe lineAt).
-  version = 2;
+  // 3: Zeilenindex je Text statt je Slot (siehe lineAt). Die AUSGABE ist unveraendert
+  //    (13837 Eintraege ueber 10 Faelle gegen den Stand vor 496f003, 0 Abweichungen);
+  //    erhoeht wird trotzdem, weil .sol-Dateien, die vorher in den Parse-Timeout
+  //    gelaufen sind, mit 0 Symbolen als "aktuell geparst" im Index stehen und nur
+  //    ueber eine hoehere Version wieder nachgezogen werden.
+  // 4: parseBlock arbeitet mit Grenzen auf content statt auf ausgeschnittenen Ruempfen.
+  //    AENDERT DIE AUSGABE, und zwar absichtlich: die Zeilennummern verschachtelter
+  //    Statements und ihrer Call-Kanten waren blockrelativ statt dateirelativ (ein if
+  //    aus Quellzeile 6 wurde als 3 gemeldet, ab Ebene 1 war jede Sprungmarke falsch).
+  //    Ausserdem verliert condition_text die fuehrende Klammer, die eine feste
+  //    Startposition bei 'if (' faelschlich mitgenommen hat. Struktur und Reihenfolge
+  //    der Statements bleiben unveraendert.
+  version = 4;
 
   parse(content: string, filePath: string): ParseResult {
+    zeilenCacheLeeren();
     const symbols: ParsedSymbol[] = [];
     const references: ParsedReference[] = [];
     let m: RegExpExecArray | null;

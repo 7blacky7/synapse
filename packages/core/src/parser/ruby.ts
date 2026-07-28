@@ -25,17 +25,84 @@ function lineAt(text: string, pos: number): number {
   return zeileFuerPosition(zeilenCacheIndex, pos);
 }
 
+/** Einmal je Datei vorberechnet, Grundlage fuer findEnd und findParentClass. */
+interface ZeilenIndizes {
+  /** Rueckgabe von findEnd je Startzeile, -1 wenn es kein passendes 'end' gibt. */
+  blockEnde: Int32Array;
+  /** Einrueckung je Zeile (wie line.search(/\S/)), -1 bei leerer Zeile. */
+  einrueckung: Int32Array;
+  /** Letzte nicht-leere Zeile VOR i, sonst -1. */
+  letzteNichtLeere: Int32Array;
+  /** Vorherige nicht-leere Zeile mit ECHT kleinerer Einrueckung, sonst -1. */
+  vorherKleiner: Int32Array;
+}
+
+function baueZeilenIndizes(lines: string[]): ZeilenIndizes {
+  const n = lines.length;
+  const blockEnde = new Int32Array(n).fill(-1);
+  const einrueckung = new Int32Array(n);
+  const letzteNichtLeere = new Int32Array(n);
+  const vorherKleiner = new Int32Array(n).fill(-1);
+
+  // ---- Blockenden fuer ALLE Startzeilen in EINEM Durchlauf ----
+  // Die alte Fassung zaehlte je Treffer ab startIdx+1 mit depth=1 vorwaerts und
+  // gab die erste Zeile zurueck, an der depth auf 0 faellt. Das ist die Suche
+  // nach dem ersten i > s, an dem die Klammerbilanz unter den Stand bei s faellt
+  // — das klassische 'next smaller element' auf der Praefixsumme, das ein Stapel
+  // fuer alle Startzeilen gleichzeitig loest.
+  const summe = new Int32Array(n + 1);
+  for (let i = 0; i < n; i++) {
+    const t = lines[i].trim();
+    let d = 0;
+    if (t && !t.startsWith('#')) {
+      if (/^(class|module|def|do|if|unless|case|while|until|for|begin)\b/.test(t)) d += 1;
+      if (/^end\b/.test(t)) d -= 1;
+    }
+    summe[i + 1] = summe[i] + d;
+  }
+  const stapel: number[] = [];
+  for (let i = 0; i < n; i++) {
+    while (stapel.length > 0 && summe[stapel[stapel.length - 1] + 1] > summe[i + 1]) {
+      blockEnde[stapel.pop() as number] = i + 1;
+    }
+    stapel.push(i);
+  }
+
+  // ---- Einrueckungskette fuer die Elternsuche ----
+  let letzte = -1;
+  const indentStapel: number[] = [];
+  for (let i = 0; i < n; i++) {
+    letzteNichtLeere[i] = letzte;
+    const leer = lines[i].trim() === '';
+    einrueckung[i] = leer ? -1 : lines[i].search(/\S/);
+    if (!leer) {
+      while (indentStapel.length > 0
+        && einrueckung[indentStapel[indentStapel.length - 1]] >= einrueckung[i]) {
+        indentStapel.pop();
+      }
+      vorherKleiner[i] = indentStapel.length > 0 ? indentStapel[indentStapel.length - 1] : -1;
+      indentStapel.push(i);
+      letzte = i;
+    }
+  }
+
+  return { blockEnde, einrueckung, letzteNichtLeere, vorherKleiner };
+}
+
 class RubyParser implements LanguageParser {
   language = 'ruby';
   extensions = ['.rb', '.rake', '.gemspec'];
   /** Bei inhaltlichen Parser-Aenderungen erhoehen (siehe LanguageParser.version). */
   // 2: Zeilenberechnung ueber Index statt Praefix-Kopie (siehe lineAt).
-  version = 2;
+  // 3: findEnd und findParentClass arbeiten auf einmal gebauten Zeilen-Indizes
+  //    statt je Treffer erneut ueber die Zeilen zu laufen (siehe dort).
+  version = 3;
 
   parse(content: string, filePath: string): ParseResult {
     const symbols: ParsedSymbol[] = [];
     const references: ParsedReference[] = [];
     const lines = content.split('\n');
+    const zeilenIdx = baueZeilenIndizes(lines);
     let m: RegExpExecArray | null;
 
     // ══════════════════════════════════════════════
@@ -65,7 +132,7 @@ class RubyParser implements LanguageParser {
     while ((m = moduleRe.exec(content)) !== null) {
       const name = m[2];
       const lineStart = lineAt(content, m.index);
-      const lineEnd = this.findEnd(lines, lineStart - 1, m[1].length);
+      const lineEnd = this.findEnd(lines, zeilenIdx, lineStart - 1);
 
       symbols.push({
         symbol_type: 'class',
@@ -85,7 +152,7 @@ class RubyParser implements LanguageParser {
       const name = m[2];
       const parent = m[3] || null;
       const lineStart = lineAt(content, m.index);
-      const lineEnd = this.findEnd(lines, lineStart - 1, m[1].length);
+      const lineEnd = this.findEnd(lines, zeilenIdx, lineStart - 1);
 
       symbols.push({
         symbol_type: 'class',
@@ -116,14 +183,14 @@ class RubyParser implements LanguageParser {
       const name = m[3];
       const paramsRaw = m[4] || '';
       const lineStart = lineAt(content, m.index);
-      const lineEnd = this.findEnd(lines, lineStart - 1, indent);
+      const lineEnd = this.findEnd(lines, zeilenIdx, lineStart - 1);
 
       const params = paramsRaw
         .split(',')
         .map(p => p.trim().split(/[=:]/)[0].replace(/[*&]/, '').trim())
         .filter(Boolean);
 
-      const parentClass = this.findParentClass(lines, lineStart - 1, indent);
+      const parentClass = this.findParentClass(lines, zeilenIdx, lineStart - 1, indent);
 
       symbols.push({
         symbol_type: 'function',
@@ -144,7 +211,7 @@ class RubyParser implements LanguageParser {
       const kind = m[2];
       const attrs = m[3].split(',').map(s => s.trim().replace(/^:/, '')).filter(Boolean);
       const lineStart = lineAt(content, m.index);
-      const parentClass = this.findParentClass(lines, lineStart - 1, m[1].length);
+      const parentClass = this.findParentClass(lines, zeilenIdx, lineStart - 1, m[1].length);
 
       for (const attr of attrs) {
         symbols.push({
@@ -556,32 +623,33 @@ class RubyParser implements LanguageParser {
     return { symbols, references, statements, callEdges };
   }
 
-  /** Findet das passende 'end' fuer einen Block */
-  private findEnd(lines: string[], startIdx: number, startIndent: number): number {
-    let depth = 1;
-    for (let i = startIdx + 1; i < lines.length; i++) {
-      const line = lines[i].trim();
-      if (!line || line.startsWith('#')) continue;
-
-      if (/^(class|module|def|do|if|unless|case|while|until|for|begin)\b/.test(line)) depth++;
-      if (/^end\b/.test(line)) {
-        depth--;
-        if (depth === 0) return i + 1;
-      }
-    }
-    return lines.length;
+  /**
+   * Findet das passende 'end' fuer einen Block — Nachschlag statt Suche.
+   * Der frueher uebergebene startIndent war unbenutzt und ist entfallen.
+   */
+  private findEnd(lines: string[], idx: ZeilenIndizes, startIdx: number): number {
+    if (startIdx < 0 || startIdx >= lines.length) return lines.length;
+    const ende = idx.blockEnde[startIdx];
+    return ende === -1 ? lines.length : ende;
   }
 
-  private findParentClass(lines: string[], lineIdx: number, indent: number): string | undefined {
-    for (let i = lineIdx - 1; i >= 0; i--) {
-      const line = lines[i];
-      if (!line.trim()) continue;
-      const lineIndent = line.search(/\S/);
-      if (lineIndent < indent) {
-        const classMatch = line.match(/(?:class|module)\s+(\w+(?:::\w+)*)/);
-        if (classMatch) return classMatch[1];
-        break;
+  private findParentClass(lines: string[], idx: ZeilenIndizes, lineIdx: number, indent: number): string | undefined {
+    // Frueher lief hier eine Rueckwaertsschleife ueber JEDE Zeile bis zur ersten
+    // mit kleinerer Einrueckung. Bei indent 0 — also bei jeder def und jedem
+    // attr_* auf oberster Ebene — kann diese Bedingung nie eintreten, die
+    // Schleife lief dann garantiert bis zum Dateianfang: O(Treffer x Datei).
+    // Die Kette springt stattdessen direkt von Einrueckungsebene zu Ebene. Alle
+    // dabei uebersprungenen Zeilen haben eine groessere oder gleiche Einrueckung
+    // und wuerden auch von der alten Schleife verworfen — das Ergebnis ist also
+    // dasselbe, samt des Abbruchs (break) bei der ersten passenden Zeile ohne
+    // class/module.
+    let j = lineIdx >= 0 && lineIdx < lines.length ? idx.letzteNichtLeere[lineIdx] : -1;
+    while (j >= 0) {
+      if (idx.einrueckung[j] < indent) {
+        const classMatch = lines[j].match(/(?:class|module)\s+(\w+(?:::\w+)*)/);
+        return classMatch ? classMatch[1] : undefined;
       }
+      j = idx.vorherKleiner[j];
     }
     return undefined;
   }

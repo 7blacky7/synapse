@@ -31,7 +31,9 @@ class SvelteParser implements LanguageParser {
   /** Bei inhaltlichen Parser-Aenderungen erhoehen (siehe LanguageParser.version). */
   // 2: Zeilenberechnung ueber Index statt Praefix-Kopie (siehe lineAt).
   // 3: Alle <script>-Bloecke statt nur dem ersten (siehe parse).
-  version = 3;
+  // 4: Zeilennummern zeigten eine Zeile zu weit nach oben — ^\s* verschluckte den
+  //    Zeilenumbruch der Leerzeile davor (siehe parseScriptBlock, sechs Muster).
+  version = 4;
 
   parse(content: string, filePath: string): ParseResult {
     const symbols: ParsedSymbol[] = [];
@@ -157,7 +159,15 @@ class SvelteParser implements LanguageParser {
     // ══════════════════════════════════════════════
     // 1. Script: Imports
     // ══════════════════════════════════════════════
-    const importRe = /^\s*import\s+(?:\{([^}]+)\}\s+from\s+)?(?:(\w+)\s+from\s+)?['"]([^'"]+)['"]/gm;
+    // [^\S\r\n]* statt \s*: \s schliesst den Zeilenumbruch ein. Bei /^\s*import/gm
+    // greift ^ schon am Anfang der LEERzeile davor, \s* frisst den Umbruch, und der
+    // Treffer beginnt damit eine Zeile vor dem Symbol, das er beschreibt — die
+    // Sprungmarke landete im Editor eine Zeile daneben. Die Klasse bedeutet
+    // "Whitespace ausser Zeilenumbruch", sodass ^ nur noch an der Zeile des Symbols
+    // selbst greifen kann. Die Treffermenge bleibt gleich, nur die Startposition
+    // aendert sich; steht das Symbol schon in der Ankerzeile, bleibt alles wie
+    // bisher. Gleiche Korrektur an allen ^-Mustern dieser Datei.
+    const importRe = /^[^\S\r\n]*import\s+(?:\{([^}]+)\}\s+from\s+)?(?:(\w+)\s+from\s+)?['"]([^'"]+)['"]/gm;
     while ((m = importRe.exec(scriptContent)) !== null) {
       const named = m[1] ? m[1].split(',').map(n => n.trim().split(' as ').pop()!.trim()).filter(Boolean) : [];
       const defaultImport = m[2];
@@ -194,7 +204,7 @@ class SvelteParser implements LanguageParser {
     // ══════════════════════════════════════════════
     // 2. Script: Props (export let)
     // ══════════════════════════════════════════════
-    const propRe = /^\s*export\s+let\s+(\w+)(?:\s*:\s*(\w[\w<>|&\s]*))?(?:\s*=\s*([^\n;]+))?/gm;
+    const propRe = /^[^\S\r\n]*export\s+let\s+(\w+)(?:\s*:\s*(\w[\w<>|&\s]*))?(?:\s*=\s*([^\n;]+))?/gm;
     while ((m = propRe.exec(scriptContent)) !== null) {
       symbols.push({
         symbol_type: 'variable',
@@ -209,7 +219,7 @@ class SvelteParser implements LanguageParser {
     // ══════════════════════════════════════════════
     // 3. Script: Functions
     // ══════════════════════════════════════════════
-    const funcRe = /^\s*(?:export\s+)?(?:async\s+)?function\s+(\w+)\s*\(([^)]*)\)/gm;
+    const funcRe = /^[^\S\r\n]*(?:export\s+)?(?:async\s+)?function\s+(\w+)\s*\(([^)]*)\)/gm;
     while ((m = funcRe.exec(scriptContent)) !== null) {
       const params = m[2].split(',').map(p => p.trim().split(':')[0].split('=')[0].trim()).filter(Boolean);
       symbols.push({
@@ -222,7 +232,7 @@ class SvelteParser implements LanguageParser {
     }
 
     // Arrow functions assigned to const/let
-    const arrowRe = /^\s*(?:export\s+)?(?:const|let)\s+(\w+)\s*=\s*(?:async\s+)?(?:\(([^)]*)\)|(\w+))\s*=>/gm;
+    const arrowRe = /^[^\S\r\n]*(?:export\s+)?(?:const|let)\s+(\w+)\s*=\s*(?:async\s+)?(?:\(([^)]*)\)|(\w+))\s*=>/gm;
     while ((m = arrowRe.exec(scriptContent)) !== null) {
       const params = (m[2] || m[3] || '').split(',').map(p => p.trim().split(':')[0].trim()).filter(Boolean);
       symbols.push({
@@ -237,7 +247,7 @@ class SvelteParser implements LanguageParser {
     // ══════════════════════════════════════════════
     // 4. Script: Constants / Variables (not props or functions)
     // ══════════════════════════════════════════════
-    const varRe = /^\s*(?:export\s+)?(?:const|let)\s+(\w+)(?:\s*:\s*(\w[\w<>|&\s]*))?(?:\s*=\s*(?!(?:async\s+)?(?:\(|function|\w+\s*=>))([^\n;]+))?/gm;
+    const varRe = /^[^\S\r\n]*(?:export\s+)?(?:const|let)\s+(\w+)(?:\s*:\s*(\w[\w<>|&\s]*))?(?:\s*=\s*(?!(?:async\s+)?(?:\(|function|\w+\s*=>))([^\n;]+))?/gm;
     while ((m = varRe.exec(scriptContent)) !== null) {
       const name = m[1];
       const lineStart = lineAt(content, scriptOffset + m.index);
@@ -257,7 +267,7 @@ class SvelteParser implements LanguageParser {
     // ══════════════════════════════════════════════
     // 5. Script: Reactive statements ($:)
     // ══════════════════════════════════════════════
-    const reactiveRe = /^\s*\$:\s*(?:(\w+)\s*=\s*)?(.+)/gm;
+    const reactiveRe = /^[^\S\r\n]*\$:\s*(?:(\w+)\s*=\s*)?(.+)/gm;
     while ((m = reactiveRe.exec(scriptContent)) !== null) {
       const name = m[1] || '$';
       symbols.push({

@@ -30,7 +30,9 @@ class GraphQLParser implements LanguageParser {
   extensions = ['.graphql', '.gql'];
   /** Bei inhaltlichen Parser-Aenderungen erhoehen (siehe LanguageParser.version). */
   // 2: Zeilenberechnung ueber Index statt Praefix-Kopie (siehe lineAt).
-  version = 2;
+  // 3: parseFields laeuft ueber die Zeilen ab blockStart statt ueber eine Kopie
+  //    des gesamten Dateirests (siehe dort).
+  version = 3;
 
   parse(content: string, filePath: string): ParseResult {
     const symbols: ParsedSymbol[] = [];
@@ -343,12 +345,23 @@ class GraphQLParser implements LanguageParser {
     content: string, blockStart: number, blockLineEnd: number,
     parentName: string, symbols: ParsedSymbol[], references: ParsedReference[]
   ): void {
-    const lines = content.substring(blockStart).split('\n');
     let currentLine = lineAt(content, blockStart);
     let depth = 0;
 
-    for (const line of lines) {
+    // Zeilen ab blockStart durchlaufen, OHNE den Dateirest zu kopieren und zu
+    // zerlegen. content.substring(blockStart).split('\n') kostete pro Typ eine
+    // volle Kopie samt Zerlegung des restlichen Dateiinhalts — also
+    // O(Typen x Dateigroesse), obwohl die Schleife meist nach wenigen Zeilen
+    // abbricht. Die Zerlegung ist zeichengleich nachgebildet: die erste Zeile ist
+    // der REST der Zeile ab blockStart, danach folgen ganze Zeilen, und ein Text
+    // ohne abschliessenden Umbruch endet wie bei split mit der letzten Teilzeile.
+    let zeilenStart = blockStart;
+    for (;;) {
       if (currentLine > blockLineEnd) break;
+      let zeilenEnde = content.indexOf('\n', zeilenStart);
+      const letzteZeile = zeilenEnde === -1;
+      if (letzteZeile) zeilenEnde = content.length;
+      const line = content.slice(zeilenStart, zeilenEnde);
       const trimmed = line.trim();
 
       // Track brace depth to skip nested types
@@ -386,6 +399,8 @@ class GraphQLParser implements LanguageParser {
         }
       }
       currentLine++;
+      if (letzteZeile) break;
+      zeilenStart = zeilenEnde + 1;
     }
   }
 

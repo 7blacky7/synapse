@@ -27,12 +27,41 @@ function lineAt(text: string, pos: number): number {
   return zeileFuerPosition(zeilenCacheIndex, pos);
 }
 
+// Alle Vorkommen des Wortes 'defmodule' samt zugehoerigem Modulnamen, einmal je
+// Datei. Grundlage fuer findParentModule — dort steht, warum ALLE Vorkommen
+// gebraucht werden und nicht nur die vollstaendigen 'defmodule X do'.
+// modulEnden[i] ist das Ende des vollstaendigen Musters oder -1, wenn an dieser
+// Stelle kein vollstaendiges 'defmodule X do' steht.
+let modulCacheText: string | null = null;
+let modulPositionen: number[] = [];
+let modulNamen: (string | undefined)[] = [];
+let modulEnden: number[] = [];
+function modulIndexAufbauen(text: string): void {
+  if (text === modulCacheText) return;
+  modulCacheText = text;
+  modulPositionen = [];
+  modulNamen = [];
+  modulEnden = [];
+  const wortRe = /defmodule/g;
+  const vollRe = /defmodule\s+([\w.]+)\s+do\b/y;
+  let w: RegExpExecArray | null;
+  while ((w = wortRe.exec(text)) !== null) {
+    modulPositionen.push(w.index);
+    vollRe.lastIndex = w.index;
+    const v = vollRe.exec(text);
+    modulNamen.push(v ? v[1] : undefined);
+    modulEnden.push(v ? vollRe.lastIndex : -1);
+  }
+}
+
 class ElixirParser implements LanguageParser {
   language = 'elixir';
   extensions = ['.ex', '.exs'];
   /** Bei inhaltlichen Parser-Aenderungen erhoehen (siehe LanguageParser.version). */
   // 2: Zeilenberechnung ueber Index statt Praefix-Kopie (siehe lineAt).
-  version = 2;
+  // 3: findEnd ohne Kopie des Dateirests, findParentModule ueber einen einmal
+  //    gebauten defmodule-Index statt ueber eine Praefix-Kopie (siehe dort).
+  version = 3;
 
   parse(content: string, filePath: string): ParseResult {
     const symbols: ParsedSymbol[] = [];
@@ -513,11 +542,18 @@ class ElixirParser implements LanguageParser {
   private findEnd(content: string, startPos: number): number {
     // Find matching 'end' for 'do' blocks
     let depth = 0;
-    const lines = content.substring(startPos).split('\n');
     let currentLine = lineAt(content, startPos);
 
-    for (const line of lines) {
-      const trimmed = line.trim();
+    // Zeilen ab startPos lesen, OHNE den Dateirest zu kopieren und zu zerlegen:
+    // findEnd wird je defmodule, defprotocol und defimpl gerufen, die alte Kopie
+    // samt split machte das O(Treffer x Dateigroesse). Die Zerlegung ist
+    // zeichengleich nachgebildet.
+    let zeilenStart = startPos;
+    for (;;) {
+      let zeilenEnde = content.indexOf('\n', zeilenStart);
+      const letzteZeile = zeilenEnde === -1;
+      if (letzteZeile) zeilenEnde = content.length;
+      const trimmed = content.slice(zeilenStart, zeilenEnde).trim();
       // Count do/end blocks
       const doMatches = trimmed.match(/\b(do|fn)\b/g);
       const endMatches = trimmed.match(/\bend\b/g);
@@ -525,14 +561,40 @@ class ElixirParser implements LanguageParser {
       if (endMatches) depth -= endMatches.length;
       if (depth <= 0) return currentLine;
       currentLine++;
+      if (letzteZeile) break;
+      zeilenStart = zeilenEnde + 1;
     }
     return currentLine;
   }
 
   private findParentModule(content: string, pos: number): string | undefined {
-    const before = content.substring(0, pos);
-    const moduleMatch = before.match(/defmodule\s+([\w.]+)\s+do\b(?:(?!defmodule)[\s\S])*$/);
-    return moduleMatch ? moduleMatch[1] : undefined;
+    // Frueher: content.substring(0, pos) + eine an $ verankerte Regex. Das ist
+    // Muster A — pro def/defp/defdelegate/defstruct eine Praefix-Kopie UND ein
+    // Ruecklauf ueber den gesamten Praefix, also O(Treffer x Dateigroesse).
+    //
+    // Die alte Regex lautete:
+    //   defmodule\s+([\w.]+)\s+do\b(?:(?!defmodule)[\s\S])*$
+    // String.match ohne g-Flag liefert den am weitesten LINKS beginnenden
+    // Treffer; der Nachlauf verbietet jedes weitere Vorkommen von 'defmodule'
+    // bis zum Praefixende. Zusammen heisst das genau: das LETZTE Vorkommen von
+    // 'defmodule' vor pos muss selbst ein vollstaendiges 'defmodule X do' sein.
+    // Ist es das nicht, liefert die Regex NICHTS — ein unvollstaendiges spaeteres
+    // defmodule blockiert alle frueheren Kandidaten. Genau das bildet der Index
+    // nach, deshalb wird hier nicht einfach 'das naechste Modul davor' gesucht.
+    modulIndexAufbauen(content);
+    let lo = 0;
+    let hi = modulPositionen.length;
+    while (lo < hi) {
+      const mitte = (lo + hi) >> 1;
+      if (modulPositionen[mitte] < pos) lo = mitte + 1;
+      else hi = mitte;
+    }
+    const i = lo - 1;
+    if (i < 0) return undefined;
+    // Das zugehoerige 'do' muss noch vor pos liegen, sonst lag der Treffer
+    // ausserhalb der frueheren Praefix-Kopie.
+    if (modulEnden[i] === -1 || modulEnden[i] > pos) return undefined;
+    return modulNamen[i];
   }
 }
 
