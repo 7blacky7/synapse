@@ -1451,7 +1451,10 @@ function walkProjectFiles(projectRoot: string): string[] {
           const stat = fs.statSync(abs);
           const sizeMB = stat.size / (1024 * 1024);
           const maxSize = isDocument ? 50 : isMedia ? MAX_MEDIA_SIZE_MB : config.files.maxSizeMB;
-          if (sizeMB > maxSize) continue;
+          // maxSize <= 0 bedeutet "unbegrenzt" (gleiche Semantik wie im Watcher).
+          // Ohne diese Ausnahme liefert der Walk bei maxSizeMB=0 eine LEERE Liste,
+          // und verifyProjectAgainstFilesystem loescht daraufhin jede PG-Zeile.
+          if (maxSize > 0 && sizeMB > maxSize) continue;
           // Binaer-Ausschluss (ausser Dokumente/Media)
           if (!isDocument && !isMedia) {
             const buffer = fs.readFileSync(abs).subarray(0, 512);

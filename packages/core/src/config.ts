@@ -36,7 +36,9 @@ export function loadConfig(): SynapseConfig {
       apiKey: process.env.CONTEXT7_API_KEY || undefined,
     },
     files: {
-      maxSizeMB: parseFloat(process.env.MAX_FILE_SIZE_MB || '5'),
+      // 0 oder unset = kein Groessenlimit fuer reine Text-/Code-Dateien.
+      // Dokumente und Medien behalten ihre separaten festen Schutzlimits.
+      maxSizeMB: parseFloat(process.env.MAX_FILE_SIZE_MB || '0'),
       chunkSize: parseInt(process.env.CHUNK_SIZE || '1500', 10),
       chunkOverlap: parseInt(process.env.CHUNK_OVERLAP || '300', 10),
       debounceMs: parseInt(process.env.DEBOUNCE_MS || '500', 10),

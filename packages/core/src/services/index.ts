@@ -18,6 +18,7 @@ export * from './project-status.js';
 export * from './global-search.js';
 export * from './proposals.js';
 export * from './backup.js';
+export * from './ignore-rules.js';
 export {
   registerAgent,
   registerAgentsBatch,

@@ -43,6 +43,22 @@ interface WorkerSlot {
   current: PendingResolver | null;
   retries: number;
   timer: NodeJS.Timeout | null;
+  /** Laufender Auftrag — fuer die Fortschritts-Abfrage (siehe getParserActivity). */
+  laufendeDatei: string | null;
+  startedAt: number | null;
+  zeichen: number;
+}
+
+/** Momentaufnahme eines laufenden Parse-Vorgangs. */
+export interface ParserAktivitaet {
+  slot: number;
+  filePath: string;
+  /** Bisherige Laufzeit in Millisekunden. */
+  laufzeitMs: number;
+  /** Groesse des Inhalts in Zeichen — grosse Dateien duerfen lange brauchen. */
+  zeichen: number;
+  /** Zeitlimit dieses Parses; 0 = ohne Reissleine (laeuft bis fertig). */
+  limitMs: number;
 }
 
 const MAX_RETRIES = 3;
@@ -78,7 +94,14 @@ export class ParseTimeoutError extends Error {
  * es soll Haenger fangen, nicht langsame Rechner bestrafen.
  */
 function parseTimeoutFor(contentLength: number): number {
-  const ausEnv = Number(process.env.PARSER_TIMEOUT_MS);
+  const roh = process.env.PARSER_TIMEOUT_MS;
+  // Leerstring bewusst nicht als 0 werten — Number('') waere 0 und wuerde die
+  // Reissleine still abschalten, sobald die Variable nur gesetzt-aber-leer ist.
+  const ausEnv = roh === undefined || roh.trim() === '' ? NaN : Number(roh);
+  // Ausdrueckliche 0 = Reissleine aus: der Parse laeuft, bis er fertig ist.
+  // Preis: ein echter Haenger (Backtracking) belegt seinen Worker dauerhaft.
+  // Die uebrigen Worker des Pools arbeiten weiter.
+  if (Number.isFinite(ausEnv) && ausEnv === 0) return 0;
   if (Number.isFinite(ausEnv) && ausEnv > 0) return ausEnv;
   return Math.min(30_000 + Math.floor(contentLength / 100_000) * 15_000, 180_000);
 }
@@ -117,6 +140,9 @@ export class ParserWorkerPool {
       current: null,
       retries,
       timer: null,
+      laufendeDatei: null,
+      startedAt: null,
+      zeichen: 0,
     };
     this.slots[index] = slot;
 
@@ -126,6 +152,8 @@ export class ParserWorkerPool {
       slot.current = null;
       slot.busy = false;
       slot.retries = 0;
+      slot.laufendeDatei = null;
+      slot.startedAt = null;
       if (resolver) {
         if (msg.ok) resolver.resolve(msg.result);
         else resolver.reject(new Error(msg.error));
@@ -139,6 +167,8 @@ export class ParserWorkerPool {
       const resolver = slot.current;
       slot.current = null;
       slot.busy = false;
+      slot.laufendeDatei = null;
+      slot.startedAt = null;
       try { worker.terminate(); } catch { /* ignore */ }
 
       if (resolver) {
@@ -151,7 +181,10 @@ export class ParserWorkerPool {
         // eslint-disable-next-line no-console
         console.error(`[parser-worker-pool] slot ${index} exceeded ${MAX_RETRIES} retries; not respawning`);
         // slot bleibt leer; drainQueue ueberspringt es
-        this.slots[index] = { worker, busy: true, current: null, retries: nextRetries, timer: null };
+        this.slots[index] = {
+          worker, busy: true, current: null, retries: nextRetries, timer: null,
+          laufendeDatei: null, startedAt: null, zeichen: 0,
+        };
         return;
       }
       this.spawnSlot(index, nextRetries);
@@ -190,6 +223,9 @@ export class ParserWorkerPool {
   private dispatch(slot: WorkerSlot, args: ParseArgs, resolver: PendingResolver): void {
     slot.busy = true;
     slot.current = resolver;
+    slot.laufendeDatei = args.filePath;
+    slot.startedAt = Date.now();
+    slot.zeichen = args.content.length;
 
     // REISSLEINE: haengt der Worker (typisch: Backtracking in einer Regex), wird
     // er hart beendet und der Slot neu aufgesetzt. Die Datei faellt aus, der Lauf
@@ -198,11 +234,15 @@ export class ParserWorkerPool {
     // Symbolen im Index stand, ohne dass es irgendwo aufgefallen waere.
     const index = this.slots.indexOf(slot);
     const limitMs = parseTimeoutFor(args.content.length);
+    // limitMs === 0 => keine Reissleine, der Parse laeuft bis zum Ergebnis durch.
+    if (limitMs > 0) {
     slot.timer = setTimeout(() => {
       slot.timer = null;
       const wartender = slot.current;
       slot.current = null;
       slot.busy = false;
+      slot.laufendeDatei = null;
+      slot.startedAt = null;
       // eslint-disable-next-line no-console
       console.error(`[parser-worker-pool] PARSE-TIMEOUT nach ${limitMs} ms: ${args.filePath} — Worker wird beendet, Datei uebersprungen`);
       try { slot.worker.terminate(); } catch { /* ignore */ }
@@ -210,8 +250,9 @@ export class ParserWorkerPool {
       if (index >= 0 && !this.shuttingDown) this.spawnSlot(index);
       this.drainQueue();
     }, limitMs);
-    // Der Timer darf den Prozess nicht am Leben halten.
-    if (typeof slot.timer.unref === 'function') slot.timer.unref();
+      // Der Timer darf den Prozess nicht am Leben halten.
+      if (typeof slot.timer.unref === 'function') slot.timer.unref();
+    }
 
     try {
       slot.worker.postMessage(args);
@@ -221,6 +262,37 @@ export class ParserWorkerPool {
       slot.current = null;
       resolver.reject(err instanceof Error ? err : new Error(String(err)));
     }
+  }
+
+  /**
+   * Momentaufnahme aller gerade laufenden Parses.
+   *
+   * Beantwortet die Frage "arbeitet er noch oder haengt er?" NICHT abschliessend:
+   * ein Worker, der in einem einzigen regex.exec() feststeckt, ist von aussen
+   * nicht von einem langsam arbeitenden zu unterscheiden — er kann nichts melden,
+   * weil sein Thread blockiert ist. Was die Laufzeit aber zeigt: WELCHE Datei wie
+   * lange belegt, gemessen an ihrer Groesse. Eine 7-MB-Datei nach 20 s ist normal,
+   * eine 3-KB-Datei nach 20 s ist ein Haenger.
+   */
+  aktivitaet(): ParserAktivitaet[] {
+    const jetzt = Date.now();
+    const laufende: ParserAktivitaet[] = [];
+    this.slots.forEach((slot, i) => {
+      if (!slot || !slot.busy || !slot.laufendeDatei || slot.startedAt === null) return;
+      laufende.push({
+        slot: i,
+        filePath: slot.laufendeDatei,
+        laufzeitMs: jetzt - slot.startedAt,
+        zeichen: slot.zeichen,
+        limitMs: parseTimeoutFor(slot.zeichen),
+      });
+    });
+    return laufende;
+  }
+
+  /** Wartende Auftraege, die noch keinen freien Worker bekommen haben. */
+  warteschlange(): number {
+    return this.queue.length;
   }
 
   private drainQueue(): void {
@@ -271,6 +343,17 @@ export function getParserPool(): ParserWorkerPool | null {
     singleton.init();
   }
   return singleton;
+}
+
+/**
+ * Laufende Parses des aktiven Pools — fuer Tools/Diagnose abfragbar.
+ * Liefert eine leere Liste, wenn der Pool deaktiviert ist oder nichts laeuft.
+ */
+export function getParserActivity(): { laufend: ParserAktivitaet[]; wartend: number; poolAktiv: boolean } {
+  if (!singleton || singletonDisabled) {
+    return { laufend: [], wartend: 0, poolAktiv: false };
+  }
+  return { laufend: singleton.aktivitaet(), wartend: singleton.warteschlange(), poolAktiv: true };
 }
 
 /** Test-Hook: setzt Singleton zurueck (nur fuer Tests / Reload-Szenarien). */

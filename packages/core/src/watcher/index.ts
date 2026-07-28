@@ -155,8 +155,10 @@ export function startFileWatcher(options: FileWatcherOptions): FileWatcherInstan
         const stats = fs.statSync(filePath);
         const sizeMB = stats.size / (1024 * 1024);
         const maxSize = isDocument ? 50 : isMedia ? MAX_MEDIA_SIZE_MB : config.files.maxSizeMB;
-        if (sizeMB > maxSize) {
-          console.error(`[Synapse] Datei zu gross (${sizeMB.toFixed(2)}MB): ${relativePath}`);
+        // Fuer reine Text-/Code-Dateien bedeutet maxSize <= 0: unbegrenzt.
+        // Dokumente und Medien liefern weiterhin positive feste Limits.
+        if (maxSize > 0 && sizeMB > maxSize) {
+          console.error(`[Synapse] Datei zu gross (${sizeMB.toFixed(2)}MB > ${maxSize}MB): ${relativePath}`);
           return;
         }
       } catch {

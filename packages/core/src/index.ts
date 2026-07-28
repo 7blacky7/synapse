@@ -78,11 +78,6 @@ export {
   shouldIgnore,
   createDefaultIgnore,
   getDefaultIgnores,
-  // IGN-3: Regeln aus project_ignore_rules
-  aktualisiereIgnoreRegeln,
-  gepufferteIgnoreRegeln,
-  verwirfIgnoreRegeln,
-  erklaereIgnore,
 } from './watcher/index.js';
 export type { FileWatcherOptions, FileWatcherInstance } from './watcher/index.js';
 
@@ -110,8 +105,6 @@ export { resolveAgentId } from './services/agent-id-resolver.js';
 
 // Tool-Call Activity-Log (zentraler Audit-Store fuer shell(action:"activity"))
 export { logToolCall, isMutationAction, queryToolCalls, expireOldToolCalls } from './services/tool-call-log.js';
-export { erlaubteRollen, regelSichtbarFuer, tagVerdacht } from './services/agent-rollen.js';
-export type { AgentRolle } from './services/agent-rollen.js';
 export type { ToolCallLogEntry, ToolCallRow, ActivityFilters, ActivityDetail } from './services/tool-call-log.js';
 
 // Model-Registry Service (DB-Loader fuer Spezialisten-Modelle)
@@ -155,10 +148,10 @@ export {
   linkCrossFileReferences,
   getEmbeddingPending,
   embeddingPendingHint,
+  EMBEDDING_PENDING_HINT,
   resetProjectEmbeddings,
   resetProjectParse,
   reparseProject,
-  EMBEDDING_PENDING_HINT,
   // Media
   indexMediaFile,
   indexMediaDirectory,
@@ -269,16 +262,29 @@ export {
   getBackupDir,
   getBackupStats,
   backupProject,
+  // Ignore-Regeln
+  listeIgnoreRegeln,
+  fuegeIgnoreRegelnHinzu,
+  entferneIgnoreRegel,
+  schalteIgnoreRegel,
+  pruefeIgnorePfad,
+  markiereIgnorierteDateien,
+  markiereEinzelneDateiIgnoriert,
+  pruefeUndBereiteSchreibenVor,
   // Chat
   registerAgent as registerChatAgent,
   registerAgentsBatch,
   unregisterAgent as unregisterChatAgent,
   unregisterAgentsBatch,
-  expireIdleAgentSessions,
   getAgentSession,
   listActiveAgents,
+  expireIdleAgentSessions,
   sendMessage as sendChatMessage,
   getMessages as getChatMessages,
+  // Agent-Rollen (Regel-Sichtbarkeit — geteilt von MCP-Server und REST-API)
+  erlaubteRollen,
+  regelSichtbarFuer,
+  tagVerdacht,
   // Tech-Docs
   addTechDoc,
   searchTechDocs,
@@ -433,8 +439,8 @@ export type {
   SearchType,
 } from './services/global-search.js';
 // Parser Worker-Threads Pool
-export { getParserPool, resetParserPool, ParserWorkerPool } from './parser/worker-pool.js';
-export type { ParseArgs } from './parser/worker-pool.js';
+export { getParserPool, resetParserPool, ParserWorkerPool, getParserActivity } from './parser/worker-pool.js';
+export type { ParseArgs, ParserAktivitaet } from './parser/worker-pool.js';
 
 export type { ProjectStatus } from './services/project-status.js';
 export { getProjectStatus, setProjectStatus, isProjectInitialized, updateLastAccess, clearProjectStatus, isAgentKnown, registerAgent } from './services/project-status.js';
@@ -654,16 +660,3 @@ export async function initSynapse(projectName: string): Promise<boolean> {
   console.error(`[Synapse] Projekt "${projectName}" bereit`);
   return true;
 }
-
-// IGN-2: Pflege der Ignore-Regeln (anlegen, entfernen, schalten, Pfad pruefen)
-export {
-  listeIgnoreRegeln,
-  fuegeIgnoreRegelnHinzu,
-  entferneIgnoreRegel,
-  schalteIgnoreRegel,
-  pruefeIgnorePfad,
-  pruefeUndBereiteSchreibenVor,
-  markiereEinzelneDateiIgnoriert,
-} from './services/ignore-rules.js';
-export type { IgnoreRegel, SchreibVorbereitung, IgnorierterSchreibHinweis } from './services/ignore-rules.js';
-
