@@ -1284,49 +1284,179 @@ export async function reparseProject(
   return { project: projectName, geplant: rows.length, erfolgreich, fehlgeschlagen, fehler };
 }
 
+/**
+ * INDEX-3: die EINE Stelle, die beantwortet, wann eine Datei faellig ist.
+ *
+ * WARUM ALS FUNKTION UND NICHT ZWEIMAL ALS SQL: genau diese Doppelung war der
+ * Fehler. Die Backlog-Query hier kannte den Fall "Parser ist neuer als der
+ * gespeicherte Stand", die Projektauswahl im parser-worker der REST-API nicht.
+ * Ein Projekt, dessen Dateien AUSSCHLIESSLICH veraltet waren, tauchte deshalb in
+ * keinem Tick auf, parseUnparsedFiles wurde dafuer nie gerufen, und der gesamte
+ * Nachziehmechanismus lief ins Leere. Beleg vom 28.07.2026: moo hatte 361
+ * faellige Dateien, aber nur 2 mit parsed_at NULL. Alle Parser-Versions-
+ * erhoehungen jenes Tages waren dadurch folgenlos.
+ *
+ * DREI GRUENDE, in dieser Reihenfolge ausgewertet:
+ *   neu         — parsed_at IS NULL, noch nie angefasst.
+ *   embed_offen — geparst, aber das Embedding blieb liegen. Der 5-Minuten-Guard
+ *                 haelt laufende Embed-Vorgaenge heraus: langsames Ollama ist
+ *                 kein Abbruch, und ein zweiter Anlauf blaeht nur den Backlog auf.
+ *   veraltet    — der gespeicherte Stand stammt von einer aelteren Parser-Version.
+ *                 Die Datei auf der Platte aendert sich nicht, wenn der PARSER
+ *                 besser wird; ohne diesen Zweig behaelt sie ihre schlechteren
+ *                 Symbole fuer immer (so standen 33 Dateien monatelang leer im
+ *                 Index, INDEX-2).
+ *
+ * parser_version IS NULL ZAEHLT MIT, anders als bis zum 28.07.2026. Der damalige
+ * Einwand ("NULL heisst UNBEKANNT, nicht veraltet — sonst reparst allein die
+ * Einfuehrung der Spalte den gesamten Bestand") galt einer Liste, die auch
+ * Version-1-Parser enthalten haette. getVersionierteExtensions() liefert
+ * ausschliesslich Endungen mit Version > 1: wer dort NULL stehen hat, wurde
+ * nachweislich vor der betreffenden Parser-Aenderung geparst und ist zu Recht
+ * faellig. Dateien ohne Parser und Parser auf Version 1 bleiben konstruktiv
+ * aussen vor, weil ihre Endung gar nicht erst in der Liste steht.
+ *
+ * @param ersterParam Nummer des ERSTEN Platzhalters, den diese Bedingung belegt.
+ *        Sie belegt zwei aufeinanderfolgende (Endungen, Versionen) oder keinen.
+ */
+async function baueFaelligkeitsBedingung(ersterParam: number): Promise<{
+  sql: string;
+  params: unknown[];
+  grundSql: string;
+}> {
+  const { getVersionierteExtensions } = await import('../parser/index.js');
+  const versioniert = getVersionierteExtensions();
+  const params: unknown[] = [];
+  let veraltet = '';
+  if (versioniert.length > 0) {
+    params.push(versioniert.map(v => v.extension), versioniert.map(v => v.version));
+    // Die Platzhalter-Nummern werden zusammengesetzt statt interpoliert: zwei
+    // Dollarzeichen hintereinander sind im Ersetzungstext eines files-Edits ein
+    // Sonderzeichen und fielen dort zu einem einzigen zusammen (siehe Memory
+    // regel-files-tool-dollar-falle). Aus demselben Grund wird die Endung ohne
+    // Regex ermittelt, ueber reverse/split_part.
+    const pExt = '$' + ersterParam;
+    const pVer = '$' + (ersterParam + 1);
+    veraltet = `
+             OR EXISTS (
+                  SELECT 1 FROM unnest(${pExt}::text[], ${pVer}::int[]) AS pv(ext, ver)
+                   WHERE pv.ext = lower(reverse(split_part(reverse(code_files.file_path), '.', 1)))
+                     AND (code_files.parser_version IS NULL OR code_files.parser_version < pv.ver))`;
+  }
+
+  const sql = `code_files.content IS NOT NULL
+        AND (code_files.parsed_at IS NULL
+             OR (code_files.indexed_at IS NULL AND code_files.updated_at < NOW() - INTERVAL '5 minutes')${veraltet})`;
+
+  // Reihenfolge identisch zur Bedingung oben. Weicht sie ab, bekommt eine Datei
+  // einen Grund, der ihre Aufnahme nicht erklaert — und der Worker behandelt sie
+  // falsch, weil er genau an diesem Grund entscheidet.
+  const grundSql = `CASE
+          WHEN code_files.parsed_at IS NULL THEN 'neu'
+          WHEN code_files.indexed_at IS NULL AND code_files.updated_at < NOW() - INTERVAL '5 minutes' THEN 'embed_offen'
+          ELSE 'veraltet' END`;
+
+  return { sql, params, grundSql };
+}
+
+/**
+ * Projekte mit offenem Parse-Backlog, das groesste zuerst.
+ *
+ * Der parser-worker der REST-API ruft ausschliesslich diese Funktion und
+ * formuliert die Faelligkeit NICHT selbst — siehe baueFaelligkeitsBedingung.
+ *
+ * GUARD: nur Projekte aus der projects-Registry, die enabled sind. Sonst wuerden
+ * verwaiste code_files-Leichen (etwa ein versehentlich indiziertes Home-
+ * Verzeichnis) oder im Tray abgeschaltete Projekte weiter geparst und embedded.
+ */
+export async function projekteMitBacklog(
+  limit: number
+): Promise<Array<{ project: string; faellig: number }>> {
+  const pool = getPool();
+  const { sql: faellig, params } = await baueFaelligkeitsBedingung(1);
+  params.push(limit);
+  const pLimit = '$' + params.length;
+  const { rows } = await pool.query(
+    `SELECT code_files.project, count(*)::int AS faellig
+       FROM code_files
+      WHERE ${faellig}
+        AND EXISTS (SELECT 1 FROM projects p WHERE p.name = code_files.project AND p.enabled)
+      GROUP BY code_files.project
+      ORDER BY faellig DESC
+      LIMIT ${pLimit}`,
+    params
+  );
+  return rows.map((r: { project: string; faellig: number }) => ({
+    project: r.project,
+    faellig: r.faellig,
+  }));
+}
+
+/**
+ * Arbeitet den Parse-Backlog eines Projekts ab. Welche Datei faellig ist und aus
+ * welchem Grund, steht in baueFaelligkeitsBedingung — hier wird nur gehandelt.
+ * Dynamisches Auto-Scaling: Worker-Count skaliert mit Queue-Groesse.
+ *
+ * VERALTETE DATEIEN LAUFEN ANDERS, beides zwingend:
+ *   erzwingeParse   — ohne das greift der Idempotenz-Skip in parseAndEmbed. Die
+ *                     Funktion kehrt sofort zurueck, parser_version bleibt alt,
+ *                     und die Datei ist im naechsten Tick wieder faellig: eine
+ *                     Endlosschleife, die dabei nichts tut. Betraf am 28.07.2026
+ *                     1486 von 2170 faelligen Dateien.
+ *   ohneEmbeddings  — nur der Parser ist neuer, der Inhalt ist unveraendert. Die
+ *                     Chunks und ihre Vektoren bleiben gueltig; sie neu zu rechnen
+ *                     kostet bei ~870 ms je Chunk Tage und aendert nichts.
+ *
+ * DROSSEL: pro Lauf werden hoechstens SYNAPSE_REPARSE_MAX_PRO_LAUF veraltete
+ * Dateien angefasst (Default 200, 0 = unbegrenzt). NEUE und EMBED_OFFENE Dateien
+ * sind ausgenommen — sie sind die eigentliche Aufgabe des Backlogs und duerfen
+ * nicht warten. Die Drossel verhindert, dass eine einzelne Parser-Versions-
+ * erhoehung tausende Dateien auf einen Schlag durch die CPU zieht; der naechste
+ * Tick macht dort weiter, wo dieser aufgehoert hat.
+ */
 export async function parseUnparsedFiles(projectName: string): Promise<number> {
   if (activeParseProjects.has(projectName)) {
     return 0; // Background-Crew laeuft noch — neuer Tick uebersprungen.
   }
 
   const pool = getPool();
-  // Backlog = (a) nie geparste Dateien (parsed_at NULL) ODER (b) geparst, aber
-  // Embedding blieb offen (indexed_at NULL) und seit >5min unveraendert = ein
-  // abgebrochener/verlorener Embed-Lauf (kein noch laufender). Der 5min-Guard
-  // verhindert, dass der Worker in-flight-Embeddings (z.B. langsames Ollama)
-  // doppelt antriggert und den Backlog weiter aufblaeht.
-  // (c) INDEX-3: der gespeicherte Parse stammt von einer aelteren Parser-Version.
-  // Die Datei auf der Platte aendert sich nicht, wenn der PARSER besser wird —
-  // ohne diesen Zweig behaelt sie ihre schlechteren Symbole fuer immer. Genau
-  // daran standen 33 Dateien monatelang leer im Index (INDEX-2).
-  // parser_version IS NULL bleibt bewusst aussen vor: NULL heisst UNBEKANNT, nicht
-  // veraltet. Wuerde NULL zaehlen, reparste allein die Einfuehrung dieser Spalte
-  // den gesamten Bestand auf einen Schlag.
-  // Die Endung wird ohne Regex ermittelt (reverse/split_part), weil ein
-  // Regex-Anker im Ersetzungstext dieses Edits selbst zum Problem wird.
-  const { getVersionierteExtensions } = await import('../parser/index.js');
-  const versioniert = getVersionierteExtensions();
-  const params: unknown[] = [projectName];
-  let veraltetBedingung = '';
-  if (versioniert.length > 0) {
-    params.push(versioniert.map(v => v.extension), versioniert.map(v => v.version));
-    veraltetBedingung = `OR (parser_version IS NOT NULL AND EXISTS (
-               SELECT 1 FROM unnest($2::text[], $3::int[]) AS pv(ext, ver)
-                WHERE pv.ext = lower(reverse(split_part(reverse(code_files.file_path), '.', 1)))
-                  AND code_files.parser_version < pv.ver))`;
-  }
+  const { sql: faellig, params, grundSql } = await baueFaelligkeitsBedingung(2);
+  // ORDER BY grund sortiert alphabetisch: embed_offen, neu, veraltet. Genau die
+  // gewuenschte Reihenfolge — liegengebliebene Arbeit vor Nachzug.
   const result = await pool.query(
-    `SELECT file_path FROM code_files
-      WHERE project = $1 AND content IS NOT NULL
-        AND (parsed_at IS NULL
-             OR (indexed_at IS NULL AND updated_at < NOW() - INTERVAL '5 minutes')
-             ${veraltetBedingung})`,
-    params
+    `SELECT code_files.file_path, ${grundSql} AS grund
+       FROM code_files
+      WHERE code_files.project = $1 AND ${faellig}
+      ORDER BY grund, code_files.file_path`,
+    [projectName, ...params]
   );
 
-  if (result.rows.length === 0) return 0;
+  // Nur eine gueltige, nicht-negative Zahl zaehlt. Number('') ist 0 und
+  // Number('abc') ist NaN — beides wuerde als "unbegrenzt" durchgehen und die
+  // Drossel bei einem Tippfehler in der Umgebung still abschalten.
+  const drosselText = process.env.SYNAPSE_REPARSE_MAX_PRO_LAUF;
+  const drosselZahl = Number(drosselText);
+  const maxVeraltet =
+    drosselText !== undefined &&
+    drosselText.trim() !== '' &&
+    Number.isInteger(drosselZahl) &&
+    drosselZahl >= 0
+      ? drosselZahl
+      : 200;
+  const eintraege: Array<{ file_path: string; grund: string }> = [];
+  let veraltetGesehen = 0;
+  for (const row of result.rows as Array<{ file_path: string; grund: string }>) {
+    if (row.grund === 'veraltet') {
+      veraltetGesehen++;
+      if (maxVeraltet > 0 && veraltetGesehen > maxVeraltet) continue;
+    }
+    eintraege.push(row);
+  }
+  const veraltetVertagt = maxVeraltet > 0 ? Math.max(0, veraltetGesehen - maxVeraltet) : 0;
 
-  const total = result.rows.length;
+  if (eintraege.length === 0) return 0;
+
+  const total = eintraege.length;
 
   // Worker-Count basierend auf Queue-Groesse bestimmen
   function getWorkerCount(remaining: number): number {
@@ -1337,9 +1467,13 @@ export async function parseUnparsedFiles(projectName: string): Promise<number> {
   }
 
   const initialWorkers = getWorkerCount(total);
-  console.error(`[Synapse] ${total} ungeparste Dateien — starte mit ${initialWorkers} Worker(n)...`);
-
-  const filePaths = result.rows.map((r: { file_path: string }) => r.file_path);
+  const zaehle = (g: string) => eintraege.filter(e => e.grund === g).length;
+  console.error(
+    `[Synapse] ${projectName}: ${total} faellige Dateien (${zaehle('neu')} neu, ` +
+      `${zaehle('embed_offen')} embed offen, ${zaehle('veraltet')} veraltet) — ` +
+      `starte mit ${initialWorkers} Worker(n)...` +
+      (veraltetVertagt > 0 ? ` ${veraltetVertagt} veraltete auf den naechsten Lauf vertagt.` : '')
+  );
 
   activeParseProjects.add(projectName);
   setImmediate(async () => {
@@ -1348,13 +1482,18 @@ export async function parseUnparsedFiles(projectName: string): Promise<number> {
     let failed = 0;
 
     async function worker(workerId: number): Promise<void> {
-      while (nextIndex < filePaths.length) {
+      while (nextIndex < eintraege.length) {
         const idx = nextIndex++;
-        const filePath = filePaths[idx];
+        const { file_path: filePath, grund } = eintraege[idx];
         const t0 = Date.now();
-        console.error(`[Synapse] [W${workerId}] Parse-Start: ${projectName}/${filePath}`);
+        console.error(`[Synapse] [W${workerId}] Parse-Start (${grund}): ${projectName}/${filePath}`);
         try {
-          await parseAndEmbed(projectName, filePath);
+          // Begruendung der beiden Optionen steht im Docblock der Funktion.
+          await parseAndEmbed(
+            projectName,
+            filePath,
+            grund === 'veraltet' ? { erzwingeParse: true, ohneEmbeddings: true } : undefined
+          );
           const dt = Date.now() - t0;
           if (dt > 3000) console.error(`[Synapse] [W${workerId}] Parse-Done (langsam): ${filePath} in ${dt}ms`);
           parsed++;

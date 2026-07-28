@@ -145,6 +145,7 @@ export {
   searchFilesByPath,
   backfillCodeFiles,
   parseUnparsedFiles,
+  projekteMitBacklog,
   linkCrossFileReferences,
   getEmbeddingPending,
   embeddingPendingHint,

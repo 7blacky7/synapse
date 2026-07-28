@@ -6,8 +6,9 @@
  *        neue Files nichts zeigen.
  *
  * INPUT:  intervalMs (Default 30s), enabled-Flag
- * OUTPUT: ruft parseUnparsedFiles(project) fuer alle Projekte mit unembedded
- *         Backlog. Optional: konsumiert project-init-queue Jobs (TODO Phase B).
+ * OUTPUT: ruft parseUnparsedFiles(project) fuer alle Projekte mit offenem
+ *         Backlog — welche das sind, beantwortet projekteMitBacklog() in core.
+ *         Optional: konsumiert project-init-queue Jobs (TODO Phase B).
  *
  * NEBENEFFEKTE:
  *   - PostgreSQL: SELECT auf code_files, parseAndEmbed-Aufrufe (DELETE+INSERT
@@ -20,7 +21,7 @@
  *   Daemon existiert — Doppel-Arbeit, aber kein Schaden.
  */
 
-import { getPool, parseUnparsedFiles, expirePendingProjectInitJobs } from '@synapse/core';
+import { parseUnparsedFiles, projekteMitBacklog, expirePendingProjectInitJobs } from '@synapse/core';
 
 export interface ParserWorkerConfig {
   intervalMs?: number;       // default 30_000
@@ -71,39 +72,30 @@ export class ParserWorker {
 
   private async tick(): Promise<void> {
     this.ticksDone++;
-    const pool = getPool();
 
-    // Projekte mit unparsed Files (content vorhanden, parsed_at NULL).
-    // GUARD: Nur Projekte verarbeiten, die in der projects-Registry stehen
-    // UND enabled sind. Sonst werden (a) verwaiste code_files-Leichen (z.B. ein
-    // versehentlich als Projekt initialisiertes Home-Verzeichnis) oder (b) im
-    // Tray/Daemon deaktivierte Projekte weiter geparst & embedded. Das enabled-Flag
-    // wird vom Daemon via setProjectEnabled() server-seitig gespiegelt.
-    const r = await pool.query(
-      `SELECT cf.project, count(*)::int unparsed
-         FROM code_files cf
-        WHERE cf.content IS NOT NULL
-          AND (cf.parsed_at IS NULL
-               OR (cf.indexed_at IS NULL AND cf.updated_at < NOW() - INTERVAL '5 minutes'))
-          AND EXISTS (SELECT 1 FROM projects p WHERE p.name = cf.project AND p.enabled)
-        GROUP BY cf.project
-        ORDER BY unparsed DESC
-        LIMIT $1`,
-      [this.cfg.maxPerTick]
-    );
+    // WELCHE PROJEKTE FAELLIG SIND, ENTSCHEIDET CORE — nicht dieser Worker.
+    // Hier stand bis zum 28.07.2026 eine eigene Query, die nur parsed_at und
+    // indexed_at kannte. Ein Projekt, dessen Dateien ausschliesslich VERALTET
+    // waren (Parser-Version erhoeht, Inhalt unveraendert), tauchte darin nie auf.
+    // parseUnparsedFiles kannte den Fall bereits, wurde fuer solche Projekte aber
+    // nie gerufen — der Nachziehmechanismus war dadurch wirkungslos, obwohl beide
+    // Haelften einzeln richtig aussahen. Eine zweite Formulierung derselben Regel
+    // laeuft frueher oder spaeter wieder auseinander; deshalb genau eine.
+    // Der Registry- und enabled-Guard steckt ebenfalls in projekteMitBacklog().
+    const projekte = await projekteMitBacklog(this.cfg.maxPerTick);
 
-    if (r.rows.length === 0) {
+    if (projekte.length === 0) {
       // Stale init-jobs aufraeumen (15 Min-Cutoff) — kostet nichts wenn nichts da.
       await expirePendingProjectInitJobs(900).catch(() => 0);
       return;
     }
 
-    for (const row of r.rows) {
+    for (const row of projekte) {
       try {
         const n = await parseUnparsedFiles(row.project);
         if (n > 0) {
           this.filesDone += n;
-          console.error(`[parser-worker] ${row.project}: ${n} files geparst (Backlog war ${row.unparsed})`);
+          console.error(`[parser-worker] ${row.project}: ${n} files geparst (Backlog war ${row.faellig})`);
         }
       } catch (err) {
         console.error(`[parser-worker] ${row.project} fehlgeschlagen: ${(err as Error).message}`);
