@@ -1637,24 +1637,41 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
             };
           }
 
-          // Bestehender Pfad-Modus (Doku-Indexierung ohne Anlegen).
+          // Bestehender Pfad-Modus (Doku-Indexierung ohne Anlegen). Dieser Zweig
+          // kann NICHT vollstaendig einrichten: registerProject() stempelt den
+          // Hostnamen intern per os.hostname() — von hier aus waere das der
+          // Hostname des API-Containers, nicht der des Ziel-PCs, und der
+          // Eintrag waere fuer den dortigen FileWatcher-Daemon unsichtbar.
+          // Einen lokalen FileWatcher kann die REST-API ohnehin nicht starten.
+          // Frueher meldete dieser Zweig trotzdem success:true — nur der
+          // message-Text verriet die Luecke ("FileWatcher nicht verfuegbar ueber
+          // HTTP"). Jetzt ehrlich: success:false, solange PG-Registrierung und
+          // Watcher fehlen. Volle Einrichtung: Self-Service-Zweig oben (kein
+          // "path", nur "name") oder lokaler MCP-Server (stdio).
           const projectName = requestedName || explicitPath.split(/[/\\]/).pop() || 'unknown';
           let techs: Awaited<ReturnType<typeof detectTechnologies>> = [];
           let docsIndexed = 0;
 
           if (indexDocs) {
-            techs = await detectTechnologies(explicitPath);
-            const result = await indexProjectTechnologies(techs);
-            docsIndexed = result.indexed;
+            try {
+              techs = await detectTechnologies(explicitPath);
+              const result = await indexProjectTechnologies(techs);
+              docsIndexed = result.indexed;
+            } catch {
+              // Docs-Indexierung kann ohne FS-Zugriff auf explicitPath scheitern — kein Fail des Gesamtaufrufs.
+            }
           }
 
           return {
-            success: true,
+            success: false,
+            error: 'watcher_not_registered',
             project: projectName,
             path: explicitPath,
             technologies: techs,
             docsIndexed,
-            message: `Projekt "${projectName}" - Docs indexiert (FileWatcher nicht verfuegbar ueber HTTP)`,
+            registered_in_db: false,
+            watcher_active: false,
+            message: `Projekt "${projectName}": Docs indexiert (${docsIndexed}), aber NICHT in PostgreSQL registriert und KEIN FileWatcher gestartet — dieser REST-Aufruf kann das fuer einen expliziten Pfad nicht leisten (Hostname-Problem, siehe Code-Kommentar). Fuer vollstaendige Einrichtung project(action:"init", name:"${projectName}") OHNE path aufrufen (Self-Service ueber den lokalen Daemon) oder lokal ueber den MCP-Server (stdio) initialisieren.`,
           };
         }
         case 'init_status': {
