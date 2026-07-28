@@ -1821,9 +1821,16 @@ function walkProjectFiles(projectRoot: string): string[] {
 export async function verifyProjectAgainstFilesystem(
   project: string,
   projectRoot: string
-): Promise<{ renamed: number; added: number; removed: number; updated: number }> {
+): Promise<{
+  renamed: number;
+  added: number;
+  removed: number;
+  updated: number;
+  /** Bilder/Videos, die hier bewusst NICHT in den Code-Index wandern. */
+  mediaUebersprungen: number;
+}> {
   const pool = getPool();
-  const stats = { renamed: 0, added: 0, removed: 0, updated: 0 };
+  const stats = { renamed: 0, added: 0, removed: 0, updated: 0, mediaUebersprungen: 0 };
 
   // 1. Rekursiver Walk + Hash fuer alle Disk-Dateien
   const absFiles = walkProjectFiles(projectRoot);
@@ -1909,8 +1916,37 @@ export async function verifyProjectAgainstFilesystem(
   }
 
   // 3. Neue Dateien (Rest in diskMap) → indexieren
+  //
+  // KLASSIFIKATION WIE IN handleFileEvent: Dokument > Media > Code. Hier stand bis
+  // zum 28.07.2026 ein blankes indexFile() fuer ALLES, was auf der Platte lag.
+  //
+  // WAS DAS ANGERICHTET HAT: walkProjectFiles laesst Media und Dokumente bewusst am
+  // Binaer-Check vorbei (Zeile ~1797, 'if (!isDocument && !isMedia)') — sie sollen
+  // ueber ihren eigenen Weg laufen. Der Watcher sortiert sie danach korrekt aus, der
+  // Verify-Pfad hier tat es nicht. Eine PNG wurde damit als Textdatei gelesen, ihre
+  // Bytes verlustbehaftet als UTF-8 dekodiert und in Chunks zerlegt.
+  // GEMESSEN AM 28.07.2026, projektuebergreifend: 1426 PNG-Dateien mit 149 MB Inhalt
+  // und 35.666 Chunks im Code-Index (browsergame 50 Dateien/30.265 Chunks, moo 1178/5375).
+  // 2375 dieser Chunks waren bereits EMBEDDED — es liegen echte Vektoren aus Byte-Salat
+  // in Qdrant, gerechnet ueber den normalen Text-Pfad. Eine Stichprobe hatte 36 Prozent
+  // druckbare Zeichen, der Rest waren Ersatzzeichen.
+  //
+  // Bilder gehoeren AUSSCHLIESSLICH ueber indexMediaFile in die Media-Collection, und
+  // das auch nur, wenn der User es ausdruecklich anfordert (admin(index_media)) — sie
+  // brauchen ein multimodales Modell, das der Text-Pfad gar nicht hat.
+  const { isMultimodalFile } = await import('../watcher/binary.js');
   for (const [rel] of diskMap) {
     try {
+      const absPfad = path.join(projectRoot, rel);
+      if (isExtractableDocument(absPfad)) {
+        await indexDocument(absPfad, project);
+        stats.added++;
+        continue;
+      }
+      if (isMultimodalFile(absPfad)) {
+        stats.mediaUebersprungen++;
+        continue;
+      }
       const n = await indexFile(rel, project, projectRoot);
       if (n > 0) stats.added++;
     } catch {
@@ -1919,7 +1955,9 @@ export async function verifyProjectAgainstFilesystem(
   }
 
   console.error(
-    `[Synapse] Verify "${project}": ${stats.renamed} umbenannt, ${stats.added} neu, ${stats.updated} aktualisiert, ${stats.removed} entfernt`
+    `[Synapse] Verify "${project}": ${stats.renamed} umbenannt, ${stats.added} neu, ` +
+      `${stats.updated} aktualisiert, ${stats.removed} entfernt` +
+      (stats.mediaUebersprungen > 0 ? `, ${stats.mediaUebersprungen} Media uebersprungen` : '')
   );
   return stats;
 }

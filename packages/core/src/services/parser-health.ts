@@ -123,7 +123,7 @@ export async function getParserGesundheitDatei(
   if (dateiRes.rows.length === 0) return null;
   const datei = dateiRes.rows[0];
 
-  const [symRes, stmtRes, belegtRes, kantenRes, refRes] = await Promise.all([
+  const [symRes, stmtRes, belegtRes, kantenRes, refRes, chunkRes] = await Promise.all([
     pool.query(
       `SELECT symbol_type, count(*)::int AS n
          FROM code_symbols WHERE project = $1 AND file_path = $2 GROUP BY symbol_type`,
@@ -149,7 +149,15 @@ export async function getParserGesundheitDatei(
       `SELECT count(*)::int AS n FROM code_references WHERE project = $1 AND file_path = $2`,
       [project, filePath]
     ),
+    // Chunks ohne Vektor. Braucht es fuer das embedded-Feld: indexed_at allein
+    // beantwortet die Frage nicht (siehe Kommentar dort).
+    pool.query(
+      `SELECT count(*)::int AS n FROM code_chunks
+        WHERE project = $1 AND file_path = $2 AND embedded_at IS NULL`,
+      [project, filePath]
+    ),
   ]);
+  const offeneChunks: number = chunkRes.rows[0].n;
 
   let gesamt = 0, funktionen = 0, klassen = 0, variablen = 0, imports = 0, text = 0;
   for (const r of symRes.rows) {
@@ -193,7 +201,13 @@ export async function getParserGesundheitDatei(
     belegte_zeilen: belegte,
     deckung_prozent: zeilen > 0 ? Math.round((belegte / zeilen) * 1000) / 10 : 0,
     geparst_am: datei.parsed_at ? new Date(datei.parsed_at).toISOString() : null,
-    embedded: datei.indexed_at !== null,
+    // NICHT indexed_at allein. Das Feld sagte bis zum 28.07.2026 "embedded: true",
+    // sobald indexed_at gesetzt war — und drei Ausgaenge in parseAndEmbed setzen
+    // genau das und kehren VOR dem Embed-Block zurueck (leere Datei, PARSER_MAX_BYTES,
+    // kein Parser zustaendig). Fuer icon.png meldete health deshalb "embedded: true",
+    // waehrend alle 26 Chunks der Datei ohne embedded_at dastanden. Ausgerechnet den
+    // Fall, den man hier sehen will, verdeckte das Feld.
+    embedded: datei.indexed_at !== null && offeneChunks === 0,
     letzter_ausfall: ausfall,
     befund: [],
   };
