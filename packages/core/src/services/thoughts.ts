@@ -68,8 +68,9 @@ export async function addThought(
   const collectionName = COLLECTIONS.projectThoughts(project);
   await ensureCollection(collectionName);
 
-  // Embedding generieren
-  const vector = await embed(content);
+  // Das Embedding passiert NICHT mehr hier, sondern nebenlaeufig nach dem PG-Schreiben
+  // (siehe unten). Frueher stand an dieser Stelle ein await embed(content) VOR dem Insert —
+  // damit hing das Speichern eines Gedankens an der Auslastung der Embedding-Queue.
 
   // Thought erstellen
   // Thought erstellen
@@ -83,15 +84,6 @@ export async function addThought(
     task_id: taskId,
   };
 
-  // Payload erstellen
-  const payload: ThoughtPayload = {
-    project: thought.project,
-    source: thought.source,
-    content: thought.content,
-    tags: thought.tags,
-    timestamp: thought.timestamp,
-  };
-  if (taskId) (payload as ThoughtPayload & { task_id?: string }).task_id = taskId;
 
   // 1. PostgreSQL (Write-Primary) — fail-fast: wirft bei Fehler
   const pool = getPool();
@@ -102,14 +94,16 @@ export async function addThought(
     [thought.id, project, source, content, tags, thought.timestamp, taskId ?? null]
   );
 
-  // 2. Qdrant (Vektor-Index) — Warning bei Fehler, PG-Daten bleiben erhalten
+  // 2. Qdrant (Vektor-Index) — NEBENLAEUFIG seit EMBED-1.
+  // Der Aufruf kehrt zurueck, sobald der Gedanke in PostgreSQL steht. Bis der Vektor da ist,
+  // bleibt embedded_at NULL und der Backlog sieht den Eintrag.
+  // WARUM DAS HIER BESONDERS ZAEHLT: jeder Session-Handoff ist ein Gedanke. Lief im Hintergrund
+  // ein grosser Embedding-Lauf, blockierte frueher genau der Aufruf, mit dem eine Session ihren
+  // letzten Stand sichert — und lief in ein Timeout, obwohl der Text laengst geschrieben war.
   let warning: string | undefined;
-  try {
-    await insertVector(collectionName, vector, payload, thought.id);
-  } catch (error) {
-    console.error('[Synapse] Qdrant Thought-Write fehlgeschlagen:', error);
-    warning = `Qdrant-Write fehlgeschlagen: ${error}`;
-  }
+  void embeddeThoughtNach(project, thought.id).catch(err => {
+    console.error(`[Synapse] Thought-Embedding fehlgeschlagen, Backlog holt es nach:`, err);
+  });
 
   // 3. Optional: Task-Status atomar mit setzen (wenn taskId + taskStatus)
   if (taskId && taskStatus) {
@@ -154,10 +148,9 @@ export async function addThoughtsBatch(
     task_id: item.task_id,
   }));
 
-  // 1. Embeddings im Batch
-  const texts = thoughts.map(t => t.content);
-  const { embedBatch } = await import('../embeddings/index.js');
-  const vectors = await embedBatch(texts);
+  // Die Embeddings entstehen NICHT mehr hier. Frueher lief an dieser Stelle ein embedBatch
+  // ueber alle Texte, BEVOR ueberhaupt etwas in PostgreSQL stand — bei belegter Queue hing
+  // damit das Speichern eines ganzen Batches, obwohl noch keine Zeile geschrieben war.
 
   // 2. PostgreSQL: Multi-Row INSERT in einem Statement
   const pool = getPool();
@@ -175,28 +168,22 @@ export async function addThoughtsBatch(
     values
   );
 
-  // 3. Qdrant: insertVectors-Batch (ein Upsert-Call)
-  let warning: string | undefined;
-  try {
-    const { insertVectors } = await import('../qdrant/index.js');
-    await insertVectors<ThoughtPayload>(
-      collectionName,
-      thoughts.map((t, i) => ({
-        vector: vectors[i],
-        payload: {
-          project: t.project,
-          source: t.source,
-          content: t.content,
-          tags: t.tags,
-          timestamp: t.timestamp,
-        },
-        id: t.id,
-      }))
-    );
-  } catch (error) {
-    console.error('[Synapse] Qdrant Thoughts-Batch-Add fehlgeschlagen:', error);
-    warning = `Qdrant-Write fehlgeschlagen: ${error}`;
-  }
+  // 3. Qdrant — NEBENLAEUFIG seit EMBED-1.
+  // Die Zeilen stehen in PostgreSQL und sind sofort abrufbar; embedded_at ist bei allen NULL,
+  // sie sind also auch dann fuer den Backlog sichtbar, wenn hier etwas schiefgeht.
+  // SEQUENZIELL VERKETTET, nicht N-fach parallel: ein Batch mit fuenfzig Gedanken wuerde sonst
+  // fuenfzig Embeddings gleichzeitig anstossen und die Queue (zwei Slots) selbst verstopfen —
+  // also genau den Zustand herstellen, gegen den diese Umstellung gebaut ist.
+  const warning: string | undefined = undefined;
+  void (async () => {
+    for (const t of thoughts) {
+      try {
+        await embeddeThoughtNach(project, t.id);
+      } catch (err) {
+        console.error(`[Synapse] Thought-Batch-Embedding fehlgeschlagen (${t.id}), Backlog holt es nach:`, err);
+      }
+    }
+  })();
 
   // 4. Optional: Task-Status fuer alle items mit task_id setzen
   if (taskStatus) {
@@ -317,29 +304,18 @@ export async function updateThought(
 
   // 3. PostgreSQL UPDATE (Write-Primary) — fail-fast: wirft bei Fehler
   await pool.query(
-    `UPDATE thoughts SET content = $1, tags = $2 WHERE id = $3`,
+    `UPDATE thoughts SET content = $1, tags = $2, embedded_at = NULL WHERE id = $3`,
     [mergedContent, mergedTags, id]
   );
 
-  // 4. Qdrant Vektor upserten — Warning bei Fehler, PG-Daten bleiben erhalten
-  let warning: string | undefined;
-  try {
-    const collectionName = COLLECTIONS.projectThoughts(project);
-    await ensureCollection(collectionName);
-    const vector = await embed(mergedContent);
-    const payload: ThoughtPayload = {
-      project,
-      source: row.source,
-      content: mergedContent,
-      tags: mergedTags,
-      timestamp: row.timestamp instanceof Date ? row.timestamp.toISOString() : row.timestamp,
-    };
-    await deleteVector(collectionName, id);
-    await insertVector(collectionName, vector, payload, id);
-  } catch (error) {
-    console.error('[Synapse] Qdrant Thought-Update fehlgeschlagen:', error);
-    warning = `Qdrant-Write fehlgeschlagen: ${error}`;
-  }
+  // 4. Qdrant — NEBENLAEUFIG seit EMBED-1.
+  // Das UPDATE oben hat embedded_at genullt: der alte Vektor beschreibt den alten Text und ist
+  // ab sofort falsch. Die Zeile ist damit fuer den Backlog sichtbar; der Aufruf hier ist nur
+  // der schnelle Weg zum selben Ergebnis.
+  const warning: string | undefined = undefined;
+  void embeddeThoughtNach(project, id).catch(err => {
+    console.error(`[Synapse] Thought-Update-Embedding fehlgeschlagen, Backlog holt es nach:`, err);
+  });
 
   // 5. Aktualisierter Thought zurueckgeben
   const updatedThought: Thought = {
@@ -494,4 +470,51 @@ export async function getThoughtsByIds(
       tags: r.payload.tags,
       timestamp: r.payload.timestamp,
     }));
+}
+
+
+/**
+ * EMBED-1: traegt den Vektor eines Gedankens nach.
+ *
+ * Gerufen von addThought OHNE await und vom Backlog fuer alles, was dabei liegengeblieben ist.
+ * embedded_at wird ERST nach erfolgreichem insertVector gesetzt — faellt das Embedding aus,
+ * bleibt die Spalte NULL und der Backlog holt den Eintrag erneut.
+ *
+ * Warum der Inhalt frisch aus PG kommt statt als Parameter: zwischen dem Schreiben und dem
+ * Nachreichen kann der Gedanke aktualisiert worden sein; dann soll der NEUE Stand embedded
+ * werden, nicht der alte.
+ */
+export async function embeddeThoughtNach(project: string, id: string): Promise<void> {
+  const pool = getPool();
+
+  // ⚠️ thoughts IST ANDERS GEBAUT als memories und proposals: es gibt KEIN created_at und
+  // KEIN updated_at, sondern eine einzelne Spalte "timestamp". Wer hier oder im Backlog nach
+  // updated_at sortiert oder sie ausliest, bekommt zur Laufzeit einen Spaltenfehler — der
+  // Code sieht dabei genauso aus wie der funktionierende in memory.ts.
+  const { rows } = await pool.query(
+    `SELECT source, content, tags, timestamp, task_id
+       FROM thoughts WHERE id = $1 AND project = $2`,
+    [id, project]
+  );
+  if (rows.length === 0) return; // zwischenzeitlich geloescht
+  const row = rows[0];
+
+  const collectionName = COLLECTIONS.projectThoughts(project);
+  await ensureCollection(collectionName);
+
+  const vector = await embed(row.content);
+  const payload: ThoughtPayload = {
+    project,
+    source: row.source,
+    content: row.content,
+    tags: row.tags ?? [],
+    timestamp: new Date(row.timestamp).toISOString(),
+  };
+  if (row.task_id) (payload as ThoughtPayload & { task_id?: string }).task_id = row.task_id;
+
+  // Gleiche id wie die PG-Zeile: delete + insert wirkt als upsert. Das delete darf fehlen.
+  await deleteVector(collectionName, id).catch(() => { /* existierte noch nicht */ });
+  await insertVector(collectionName, vector, payload, id);
+
+  await pool.query('UPDATE thoughts SET embedded_at = NOW() WHERE id = $1', [id]);
 }

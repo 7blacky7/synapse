@@ -93,20 +93,6 @@ export async function createProposal(
     updatedAt: now,
   };
 
-  // Embedding aus description + filePath generieren
-  const vector = await embed(`${description} ${filePath}`);
-
-  const payload: ProposalPayload = {
-    project: proposal.project,
-    file_path: proposal.filePath,
-    suggested_content: proposal.suggestedContent,
-    description: proposal.description,
-    author: proposal.author,
-    status: proposal.status,
-    tags: proposal.tags,
-    created_at: proposal.createdAt,
-    updated_at: proposal.updatedAt,
-  };
 
   // 1. PostgreSQL (Write-Primary) — fail-fast: wirft bei Fehler
   const pool = getPool();
@@ -117,14 +103,13 @@ export async function createProposal(
     [id, project, filePath, suggestedContent, description, author, 'pending', tags, now, now]
   );
 
-  // 2. Qdrant (Vektor-Index) — Warning bei Fehler, PG-Daten bleiben erhalten
+  // 2. Qdrant (Vektor-Index) — NEBENLAEUFIG seit EMBED-1.
+  // Der Aufruf kehrt zurueck, sobald das Proposal in PostgreSQL steht; bis der Vektor da ist,
+  // bleibt embedded_at NULL und der Backlog sieht den Eintrag.
   let warning: string | undefined;
-  try {
-    await insertVector(COLLECTION_NAME, vector, payload, id);
-  } catch (error) {
-    console.error('[Synapse] Qdrant Proposal-Write fehlgeschlagen:', error);
-    warning = `Qdrant-Write fehlgeschlagen: ${error}`;
-  }
+  void embeddeProposalNach(project, id).catch(err => {
+    console.error(`[Synapse] Proposal-Embedding fehlgeschlagen, Backlog holt es nach:`, err);
+  });
 
   console.error(`[Synapse] Proposal "${id}" erstellt fuer "${filePath}" in Projekt "${project}"`);
   return { ...proposal, warning };
@@ -467,4 +452,47 @@ function payloadToProposal(id: string, payload: ProposalPayload): Proposal {
     createdAt: payload.created_at,
     updatedAt: payload.updated_at,
   };
+}
+
+
+/**
+ * EMBED-1: traegt den Vektor eines Proposals nach.
+ *
+ * Gerufen von createProposal OHNE await und vom Backlog fuer alles, was dabei liegengeblieben
+ * ist. embedded_at wird ERST nach erfolgreichem insertVector gesetzt; faellt das Embedding aus,
+ * bleibt die Spalte NULL und der Backlog holt den Eintrag erneut.
+ */
+export async function embeddeProposalNach(project: string, id: string): Promise<void> {
+  const pool = getPool();
+  const { rows } = await pool.query(
+    `SELECT file_path, suggested_content, description, author, status, tags, created_at, updated_at
+       FROM proposals WHERE id = $1 AND project = $2`,
+    [id, project]
+  );
+  if (rows.length === 0) return; // zwischenzeitlich geloescht
+  const row = rows[0];
+
+  const COLLECTION_NAME = getCollectionName(project);
+  await ensureCollection(COLLECTION_NAME);
+
+  // Derselbe Text wie im Schreibpfad: description + file_path. Wer das hier aendert, ohne es
+  // dort zu aendern, bekommt zwei verschiedene Vektoren fuer denselben Eintrag — je nachdem,
+  // ob er beim Schreiben oder ueber den Backlog entstanden ist.
+  const vector = await embed(`${row.description} ${row.file_path}`);
+  const payload: ProposalPayload = {
+    project,
+    file_path: row.file_path,
+    suggested_content: row.suggested_content,
+    description: row.description,
+    author: row.author,
+    status: row.status,
+    tags: row.tags ?? [],
+    created_at: new Date(row.created_at).toISOString(),
+    updated_at: new Date(row.updated_at).toISOString(),
+  };
+
+  await deleteVector(COLLECTION_NAME, id).catch(() => { /* existierte noch nicht */ });
+  await insertVector(COLLECTION_NAME, vector, payload, id);
+
+  await pool.query('UPDATE proposals SET embedded_at = NOW() WHERE id = $1', [id]);
 }

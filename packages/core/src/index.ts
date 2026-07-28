@@ -131,6 +131,14 @@ export type { ShellExecArgs, ShellGetStreamArgs } from './services/shell-exec.js
 // Migrations
 export { migrateToRelativePaths } from './migrations/migrate-to-relative-paths.js';
 
+// Embedding-Backlog (EMBED-1): Nachzug fuer nebenlaeufig angestossene Embeddings
+export {
+  embeddeOffeneEintraege,
+  zaehleOffeneEmbeddings,
+  EMBED_PENDING_HINT,
+} from './services/embed-backlog.js';
+export type { BacklogErgebnis } from './services/embed-backlog.js';
+
 export {
   // Code
   indexFile,

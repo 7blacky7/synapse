@@ -21,7 +21,7 @@
  *   Daemon existiert — Doppel-Arbeit, aber kein Schaden.
  */
 
-import { parseUnparsedFiles, projekteMitBacklog, expirePendingProjectInitJobs } from '@synapse/core';
+import { parseUnparsedFiles, projekteMitBacklog, expirePendingProjectInitJobs, embeddeOffeneEintraege } from '@synapse/core';
 
 export interface ParserWorkerConfig {
   intervalMs?: number;       // default 30_000
@@ -72,6 +72,24 @@ export class ParserWorker {
 
   private async tick(): Promise<void> {
     this.ticksDone++;
+
+    // EMBEDDING-BACKLOG (EMBED-1) — bewusst VOR der Projektauswahl unten.
+    // Die Schreibpfade von memories stossen ihr Embedding seit EMBED-1 nebenlaeufig an; faellt
+    // es aus, bleibt embedded_at NULL und der Eintrag ist fuer die semantische Suche unsichtbar,
+    // ohne dass irgendetwas fehlschlaegt. Hier wird er nachgeholt.
+    // WARUM NICHT WEITER UNTEN: projekteMitBacklog() liefert nur Projekte mit CODE-Rueckstand,
+    // und bei leerer Liste kehrt tick() sofort zurueck. Ein Aufruf dahinter wuerde also genau
+    // dann nie laufen, wenn sonst nichts zu tun ist — dem Normalfall.
+    // Klein gedrosselt: der Nachzug darf die zwei Slots der Embedding-Queue nicht selbst
+    // belegen, sonst bremst er die interaktiven Schreibvorgaenge aus, fuer die EMBED-1 gebaut ist.
+    try {
+      const nachtrag = await embeddeOffeneEintraege(10);
+      if (nachtrag.nachgetragen > 0) {
+        console.error(`[parser-worker] Embedding-Backlog: ${nachtrag.nachgetragen} nachgetragen`);
+      }
+    } catch (err) {
+      console.error(`[parser-worker] Embedding-Backlog fehlgeschlagen: ${(err as Error).message}`);
+    }
 
     // WELCHE PROJEKTE FAELLIG SIND, ENTSCHEIDET CORE — nicht dieser Worker.
     // Hier stand bis zum 28.07.2026 eine eigene Query, die nur parsed_at und
