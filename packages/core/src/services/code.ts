@@ -1626,12 +1626,32 @@ export async function renameCodeFile(
     console.error(`[Synapse] Snapshot vor Verschieben fehlgeschlagen fuer ${oldPath}: ${snapErr}`);
   }
 
+  // DEDIZIERTER CLIENT, NICHT pool.query. Hier stand bis zum 28.07.2026
+  // pool.query('BEGIN') gefolgt von pool.query(UPDATE ...) und pool.query('COMMIT').
+  // Der Pool darf jede dieser Anweisungen auf einer ANDEREN Verbindung ausfuehren:
+  // dann oeffnet das BEGIN eine Transaktion, die kein UPDATE enthaelt, die UPDATEs
+  // laufen im Autocommit, und das COMMIT beendet eine leere Transaktion. Die
+  // Transaktion ist eine Luege, und im Fehlerfall rollt das ROLLBACK nichts zurueck.
+  // Hier kam erschwerend hinzu, dass SET CONSTRAINTS ALL DEFERRED nur fuer die
+  // Transaktion DERSELBEN Verbindung gilt — auf einer fremden Verbindung ist es
+  // wirkungslos, und genau darauf verlaesst sich dieser Block.
+  //
+  // WAS DIESES MUSTER ANGERICHTET HAT: am 27./28.03.2026 verlor ki-browser-standalone
+  // auf diese Weise die Symbole von 132 Dateien. code_files.chunk_count stand dort auf
+  // 1..30, code_chunks war leer — die INSERTs liefen nachweislich und wurden von
+  // fremden ROLLBACKs auf derselben Verbindung verworfen. In parseAndEmbed ist das
+  // seit dem Race-Fix vom 10.05. behoben (Invariante 3 in der Memory
+  // regel-keine-vfs-drift); renameCodeFile war die letzte verbliebene Stelle.
+  // Sie ist bislang schadensfrei geblieben (0 verwaiste Symbole projektuebergreifend
+  // gemessen) — das war Glueck, kein Schutz: Renames kommen einzeln, der Maerz-Schaden
+  // brauchte 35 parallele Dateien pro Sekunde.
   let affected = false;
+  const renameClient = await pool.connect();
   try {
-    await pool.query('BEGIN');
-    await pool.query('SET CONSTRAINTS ALL DEFERRED');
+    await renameClient.query('BEGIN');
+    await renameClient.query('SET CONSTRAINTS ALL DEFERRED');
 
-    const fileUpd = await pool.query(
+    const fileUpd = await renameClient.query(
       `UPDATE code_files SET file_path = $1, file_name = $2, updated_at = NOW()
        WHERE project = $3 AND file_path = $4`,
       [newPath, path.basename(newPath), project, oldPath]
@@ -1639,25 +1659,27 @@ export async function renameCodeFile(
     affected = (fileUpd.rowCount ?? 0) > 0;
 
     if (affected) {
-      await pool.query(
+      await renameClient.query(
         `UPDATE code_symbols SET file_path = $1 WHERE project = $2 AND file_path = $3`,
         [newPath, project, oldPath]
       );
-      await pool.query(
+      await renameClient.query(
         `UPDATE code_references SET file_path = $1 WHERE project = $2 AND file_path = $3`,
         [newPath, project, oldPath]
       );
-      await pool.query(
+      await renameClient.query(
         `UPDATE code_chunks SET file_path = $1 WHERE project = $2 AND file_path = $3`,
         [newPath, project, oldPath]
       );
     }
 
-    await pool.query('COMMIT');
+    await renameClient.query('COMMIT');
   } catch (err) {
-    await pool.query('ROLLBACK').catch(() => {});
+    await renameClient.query('ROLLBACK').catch(() => {});
     console.error(`[Synapse] renameCodeFile fehlgeschlagen ${oldPath} → ${newPath}:`, err);
     throw err;
+  } finally {
+    renameClient.release();
   }
 
   if (!affected) return false;
