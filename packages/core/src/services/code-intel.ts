@@ -57,6 +57,23 @@ export interface TreeOptions {
    * eines Projekts mit Datei und Zeilennummer.
    */
   comment_contains?: string;
+  /** Anzeigelaenge je Kommentarzeile in Zeichen (Standard 100). */
+  comment_chars?: number;
+  /**
+   * Startpunkt im Kommentartext (Standard 0). Zusammen mit comment_chars ein
+   * Fenster: comment_from:5 + comment_chars:20 zeigt die Zeichen 5 bis 24.
+   * Ein Ausschnitt, der nicht am Anfang beginnt, wird mit einer Ellipse markiert.
+   */
+  comment_from?: number;
+  /**
+   * Die ersten N Kommentare je Datei ueberspringen (Standard 0). Damit wird die
+   * Anzeige zur Blaetterfunktion: comment_skip:9 + show_comments:6 liefert die
+   * Kommentare 10 bis 15. Bewusst KEINE Auswahl ueber Indexlisten — ein Index
+   * verschiebt sich, sobald jemand oben in der Datei einen Kommentar einfuegt,
+   * eine notierte Auswahl zeigt beim naechsten Mal etwas anderes. Wer stabile
+   * Adressen braucht, nimmt die Zeilennummer und code_intel(action:'file').
+   */
+  comment_skip?: number;
   /** Funktionsnamen auflisten (Standard: false) */
   show_functions?: boolean;
   /** Import-Statements auflisten (Standard: false) */
@@ -98,15 +115,19 @@ function ersteZeileMitInhalt(wert: string | null | undefined, treffer?: string):
     .split('\n')
     .map((zeile: string) => zeile.replace(/^\s*\*+\s?/, '').trim().replace(/\s+/g, ' '))
     .filter((zeile: string) => zeile.length > 0);
+  // Ab der interessanten Zeile wird der REST des Kommentars angehaengt, zu einer
+  // Zeile verbunden. Sonst koennte comment_chars nie ueber die erste Zeile hinaus
+  // reichen — und ein grosser Wert waere wirkungslos, statt mehr zu zeigen.
+  const abIndex = (start: number) => zeilen.slice(start).join(' ');
   // Wurde gefiltert, ist die TREFFENDE Zeile die interessante — nicht die erste.
   // Ein Blockkommentar kann 500 Zeichen lang sein; wer nach 'GET' sucht und die
   // Kopfzeile zu sehen bekommt, erkennt nicht, warum der Treffer zustande kam.
   if (treffer) {
     const gesucht = treffer.toLowerCase();
-    const passend = zeilen.find((zeile: string) => zeile.toLowerCase().includes(gesucht));
-    if (passend) return passend;
+    const pos = zeilen.findIndex((zeile: string) => zeile.toLowerCase().includes(gesucht));
+    if (pos >= 0) return abIndex(pos);
   }
-  return zeilen[0] ?? '';
+  return abIndex(0);
 }
 
 /**
@@ -127,6 +148,9 @@ export async function getProjectTree(
     show_counts = true,
     show_comments = false,
     comment_contains,
+    comment_chars,
+    comment_from,
+    comment_skip,
     show_functions = false,
     show_imports = false,
     file_type,
@@ -248,7 +272,14 @@ export async function getProjectTree(
       if (kommentarAnzahl > 0) {
         // COUNT(*) OVER() zaehlt VOR dem LIMIT und liefert damit die echte Gesamtzahl
         // in derselben Abfrage — ohne zweiten Roundtrip je Datei.
-        const kommentarParams: unknown[] = [project, f.file_path, kommentarAnzahl];
+        // Reihenfolge zaehlt: der OFFSET muss VOR dem optionalen Filter stehen,
+        // damit dessen $-Nummer (ueber kommentarParams.length) weiter stimmt.
+        const kommentarParams: unknown[] = [
+          project,
+          f.file_path,
+          kommentarAnzahl,
+          Math.max(0, Math.floor(comment_skip ?? 0)),
+        ];
         let kommentarFilter = '';
         if (comment_contains) {
           kommentarParams.push(`%${comment_contains}%`);
@@ -257,17 +288,33 @@ export async function getProjectTree(
         const commentResult = await pool.query(
           `SELECT value, line_start, COUNT(*) OVER() AS gesamt FROM code_symbols
            WHERE project = $1 AND file_path = $2 AND symbol_type = 'comment'${kommentarFilter}
-           ORDER BY line_start LIMIT $3`,
+           ORDER BY line_start LIMIT $3 OFFSET $4`,
           kommentarParams
         );
+        const ab = Math.max(0, Math.floor(comment_from ?? 0));
+        const laenge = Math.max(1, Math.floor(comment_chars ?? 100));
         for (const zeileDb of commentResult.rows) {
-          const comment = ersteZeileMitInhalt(zeileDb.value, comment_contains);
-          if (comment) lines.push(`    /** Z${zeileDb.line_start}: ${comment.substring(0, 100)} */`);
+          const voll = ersteZeileMitInhalt(zeileDb.value, comment_contains);
+          // Fenster ueber den Text. Ein Ausschnitt, der nicht am Anfang beginnt oder
+          // vor dem Ende aufhoert, bekommt eine Ellipse — sonst sieht ein Schnitt aus
+          // wie der echte Text, und genau das ist der Fehler, den wir hier bekaempfen.
+          const rest = voll.slice(ab);
+          const fenster = rest.slice(0, laenge);
+          if (!fenster) continue;
+          const comment = (ab > 0 ? '…' : '') + fenster + (rest.length > laenge ? '…' : '');
+          lines.push(`    /** Z${zeileDb.line_start}: ${comment} */`);
         }
         const gesamt = commentResult.rows.length > 0 ? parseInt(commentResult.rows[0].gesamt, 10) : 0;
-        if (gesamt > commentResult.rows.length) {
+        const uebersprungen = Math.max(0, Math.floor(comment_skip ?? 0));
+        const nichtGezeigt = gesamt - commentResult.rows.length - uebersprungen;
+        // Nur melden, wenn es ueberhaupt Kommentare gibt: "9 uebersprungen (von 0)"
+        // waere eine Meldung ueber nichts.
+        if (gesamt > 0 && (uebersprungen > 0 || nichtGezeigt > 0)) {
           // Ausdruecklich ausweisen: eine stille Kappung liest sich wie Vollstaendigkeit.
-          lines.push(`    /** ... ${gesamt - commentResult.rows.length} weitere Kommentare nicht gezeigt (von ${gesamt}) */`);
+          const teile: string[] = [];
+          if (uebersprungen > 0) teile.push(`${uebersprungen} uebersprungen`);
+          if (nichtGezeigt > 0) teile.push(`${nichtGezeigt} weitere nicht gezeigt`);
+          lines.push(`    /** ... ${teile.join(', ')} (von ${gesamt}) */`);
         }
       }
 

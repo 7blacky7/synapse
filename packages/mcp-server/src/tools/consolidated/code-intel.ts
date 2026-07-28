@@ -107,6 +107,20 @@ export const codeIntelTool: ConsolidatedTool = {
           description:
             "Sucht im INHALT des Symbols statt im Namen (fuer symbols). PFLICHT fuer Kommentare, Strings und TODOs: die tragen name=NULL, ein name-Filter findet dort nie etwas. Beispiel: symbol_type='comment' + value_contains='@SYN-'.",
         },
+        comment_chars: {
+          type: 'integer',
+          description: 'Anzeigelaenge je Kommentarzeile in Zeichen (fuer tree, Standard 100).',
+        },
+        comment_from: {
+          type: 'integer',
+          description:
+            'Startpunkt im Kommentartext (fuer tree, Standard 0). Mit comment_chars ein Fenster: comment_from=5 + comment_chars=20 zeigt Zeichen 5 bis 24.',
+        },
+        comment_skip: {
+          type: 'integer',
+          description:
+            'Die ersten N Kommentare je Datei ueberspringen (fuer tree, Standard 0). Blaetterfunktion: comment_skip=9 + show_comments=6 liefert Kommentar 10 bis 15.',
+        },
         comment_contains: {
           type: 'string',
           description:
@@ -210,6 +224,9 @@ export const codeIntelTool: ConsolidatedTool = {
           show_counts: bool(args, 'show_counts'),
           show_comments: args.show_comments as boolean | number | string | undefined,
           comment_contains: str(args, 'comment_contains'),
+          comment_chars: num(args, 'comment_chars'),
+          comment_from: num(args, 'comment_from'),
+          comment_skip: num(args, 'comment_skip'),
           show_functions: bool(args, 'show_functions'),
           show_imports: bool(args, 'show_imports'),
           file_type: str(args, 'file_type'),
