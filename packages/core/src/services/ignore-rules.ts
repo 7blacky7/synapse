@@ -84,6 +84,16 @@ export function loeseDauerInSekunden(dauer: string | number | undefined): number
  * enthaelt. Statt die Regel dauerhaft abzuschalten und das Zurueckstellen zu
  * vergessen, setzt sie eine Frist: danach greift die Regel von selbst wieder.
  *
+ * WARUM DIE FRIST KEIN KOMFORT IST, sondern der Kern der Sache: die Einblendung
+ * wirkt PROJEKTWEIT, nicht nur fuer den Agenten, der sie gesetzt hat. Wer sie
+ * dauerhaft abschaltet und es vergisst, hinterlaesst jedem nachfolgenden Agenten
+ * einen verschmutzten Kontext — und der weiss nicht einmal, warum die Suche
+ * ploetzlich Rauschen liefert. Ein vergessenes Zuruecksetzen ist hier also kein
+ * Schoenheitsfehler, sondern trifft alle. Die Frist macht daraus einen Zugriff,
+ * der sich selbst begrenzt.
+ * Deshalb im Zweifel die KURZE Dauer waehlen: eine Stunde reicht fuer eine
+ * Recherche, ein Tag verschmutzt eine ganze Schicht.
+ *
  * Auf eine SPERRE ist das ausdruecklich nicht anwendbar. Eine Sperre haelt
  * Inhalte aus der Datenbank heraus; was einmal drin ist, ist drin, und eine
  * Frist waere dort eine Zusage, die niemand einhalten kann.
