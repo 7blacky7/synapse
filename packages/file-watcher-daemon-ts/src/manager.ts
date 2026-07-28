@@ -18,9 +18,11 @@ import {
   FileWatcherInstance,
   FileEvent,
   indexFile,
+  indexDocument,
   removeFile,
   getProjectRoot,
   setProjectEnabled,
+  klassifiziereDatei,
 } from '@synapse/core';
 import {
   DaemonConfig,
@@ -273,7 +275,21 @@ export class WatcherManager {
       if (event.type === 'unlink') {
         await removeFile(relPath, event.project);
       } else {
-        await indexFile(relPath, event.project, projectRoot);
+        // KLASSIFIKATION PFLICHT. Hier stand bis zum 28.07.2026 ein blankes
+        // indexFile() — dieser Pfad umging damit die Aussortierung, die
+        // handleFileEvent im core laengst hatte. Eine PNG, die in ein ueberwachtes
+        // Projekt gelegt wurde, landete als UTF-8-dekodierter Byte-Salat im
+        // Code-Index. Belegt an den Zeitmustern: 28 PNGs in einem Projekt verteilt
+        // ueber 21 verschiedene Minuten und 8,2 Stunden — das kann kein Scan sein.
+        const art = klassifiziereDatei(relPath);
+        if (art === 'media') {
+          // Nur ueber admin(index_media), nur auf Anweisung des Users.
+          console.error(`[manager] Media uebersprungen: ${relPath}`);
+        } else if (art === 'dokument') {
+          await indexDocument(relPath, event.project);
+        } else {
+          await indexFile(relPath, event.project, projectRoot);
+        }
       }
     } catch (err) {
       console.error(

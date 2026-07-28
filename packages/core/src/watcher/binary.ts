@@ -175,6 +175,30 @@ const EXTRACTABLE_DOCUMENT_EXTENSIONS = new Set([
 /**
  * Prueft ob eine Datei ein extrahierbares Dokument ist (PDF, Word, Excel)
  */
+/**
+ * WOHIN GEHOERT DIESE DATEI? Die eine Stelle, die das beantwortet.
+ *
+ * WARUM ES DIESE FUNKTION GIBT: dieselbe Klassifikation stand am 28.07.2026 an vier
+ * Stellen — und zwei davon hatten sie gar nicht. handleFileEvent sortierte Media
+ * korrekt aus, verifyProjectAgainstFilesystem nicht, und die beiden
+ * ereignisgetriebenen Wege (file-watcher-daemon-ts/manager.ts:forwardEvent und
+ * rest-api/routes/fs-events.ts) riefen indexFile ohne jede Pruefung. Ergebnis: 1426
+ * PNG-Dateien mit 149 MB und 35.666 Chunks im Code-Index, 2375 davon als Vektoren
+ * aus Byte-Salat in Qdrant. Wer die Antwort hier aendert, aendert sie fuer alle.
+ *
+ * 'media'    Bilder/Videos. Gehoeren AUSSCHLIESSLICH ueber indexMediaFile in die
+ *            Media-Collection, brauchen ein multimodales Modell und werden nur auf
+ *            ausdrueckliche Anweisung des Users indiziert. Der Text-Pfad hat dieses
+ *            Modell nicht — er liest die Bytes als UTF-8 und erzeugt Zeichensalat.
+ * 'dokument' PDF und Verwandte. Eigene Pipeline (indexDocument), eigene Collection.
+ * 'code'     Alles andere, also der normale Text-Pfad.
+ */
+export function klassifiziereDatei(filePath: string): 'media' | 'dokument' | 'code' {
+  if (isExtractableDocument(filePath)) return 'dokument';
+  if (isMultimodalFile(filePath)) return 'media';
+  return 'code';
+}
+
 export function isExtractableDocument(filePath: string): boolean {
   const ext = getFileExtension(filePath);
   return EXTRACTABLE_DOCUMENT_EXTENSIONS.has(ext);

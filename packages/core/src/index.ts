@@ -70,6 +70,7 @@ export {
   isBinaryExtension,
   isExtractableDocument,
   isMultimodalFile,
+  klassifiziereDatei,
   getMediaMimeType,
   getMediaCategory,
   getFileType,
