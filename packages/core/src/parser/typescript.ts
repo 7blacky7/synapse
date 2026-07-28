@@ -568,40 +568,121 @@ function extractSymbols(
 
   ts.forEachChild(sourceFile, visitNode);
 
-  // ---- Comments (regex pass on full text) ----------------------------------
-  // Zeilenumbrueche EINMAL vorberechnen: vorher wurde pro Kommentar-Treffer ein
-  // Praefix des gesamten Textes kopiert und zerlegt, also O(Treffer x Dateigroesse).
+  // ---- Comments (lexikalischer Scanner auf dem vorhandenen Quelltext) -----
+  // Der Scanner kennt String-, Template- und RegExp-Kontext. Dadurch werden
+  // https:// in Strings und Escapes in RegExp-Literalen nicht als Kommentare
+  // missverstanden. Benachbarte normale //-Zeilen werden zusammengefasst;
+  // das gilt absichtlich auch fuer einen nachgestellten //-Kommentar und die
+  // direkt folgende eigenstaendige //-Zeile, solange keine Codezeile dazwischen
+  // liegt. TODO/FIXME/HACK bleibt ausschliesslich ein todo-Symbol.
   const zeilenIndexVoll = erstelleZeilenIndex(fullText);
-  // Block / JSDoc comments: /** ... */ and /* ... */
-  const blockCommentRe = /\/\*\*([\s\S]*?)\*\/|\/\*([\s\S]*?)\*\//g;
-  let m: RegExpExecArray | null;
-  while ((m = blockCommentRe.exec(fullText)) !== null) {
-    const content = (m[1] ?? m[2]).trim();
-    if (!content) continue;
-    const line_start = zeileFuerPosition(zeilenIndexVoll, m.index);
-    const linesInComment = m[0].split('\n').length;
-    symbols.push({
-      symbol_type: 'comment',
-      name: null,
-      value: content.slice(0, 500),
-      line_start,
-      line_end: line_start + linesInComment - 1,
-      is_exported: false,
-    });
-  }
+  const scanner = ts.createScanner(
+    ts.ScriptTarget.Latest,
+    false,
+    ts.LanguageVariant.Standard,
+    fullText,
+  );
+  let zeilenKommentarGruppe: {
+    line_start: number;
+    line_end: number;
+    values: string[];
+  } | null = null;
 
-  // TODO / FIXME / HACK via single-line comments
-  const todoRe = /\/\/\s*(TODO|FIXME|HACK)[:\s]+(.*)/g;
-  while ((m = todoRe.exec(fullText)) !== null) {
-    const line_start = zeileFuerPosition(zeilenIndexVoll, m.index);
-    symbols.push({
-      symbol_type: 'todo',
-      name: null,
-      value: `${m[1]}: ${m[2].trim()}`,
-      line_start,
-      is_exported: false,
-    });
+  const flushZeilenKommentarGruppe = (): void => {
+    if (!zeilenKommentarGruppe) return;
+    const content = zeilenKommentarGruppe.values.join('\n').trim();
+    if (content) {
+      symbols.push({
+        symbol_type: 'comment',
+        name: null,
+        value: content.slice(0, 500),
+        line_start: zeilenKommentarGruppe.line_start,
+        line_end: zeilenKommentarGruppe.line_end,
+        is_exported: false,
+      });
+    }
+    zeilenKommentarGruppe = null;
+  };
+
+  // Die Scanner-API verlangt nach dem Ende einer Template-Interpolation einen
+  // expliziten reScanTemplateToken(). Die Tiefenliste verhindert, dass ein
+  // geschachteltes Objektliteral dessen schliessende Klammer faelschlich als
+  // Ende der ${...}-Interpolation behandelt.
+  const templateExpressionBraceDepths: number[] = [];
+  let token: ts.SyntaxKind;
+  while (true) {
+    token = scanner.scan();
+    if (token === ts.SyntaxKind.EndOfFileToken) break;
+
+    if (
+      token === ts.SyntaxKind.TemplateHead ||
+      token === ts.SyntaxKind.TemplateMiddle
+    ) {
+      templateExpressionBraceDepths.push(1);
+    } else if (
+      token === ts.SyntaxKind.OpenBraceToken &&
+      templateExpressionBraceDepths.length > 0
+    ) {
+      templateExpressionBraceDepths[templateExpressionBraceDepths.length - 1]++;
+    } else if (
+      token === ts.SyntaxKind.CloseBraceToken &&
+      templateExpressionBraceDepths.length > 0
+    ) {
+      const lastDepth = templateExpressionBraceDepths.length - 1;
+      templateExpressionBraceDepths[lastDepth]--;
+      if (templateExpressionBraceDepths[lastDepth] === 0) {
+        templateExpressionBraceDepths.pop();
+        token = scanner.reScanTemplateToken(false);
+        if (token === ts.SyntaxKind.TemplateMiddle) {
+          templateExpressionBraceDepths.push(1);
+        }
+      }
+    }
+
+    if (token === ts.SyntaxKind.MultiLineCommentTrivia) {
+      flushZeilenKommentarGruppe();
+      const tokenText = scanner.getTokenText();
+      const content = tokenText.slice(2, -2).trim();
+      if (!content) continue;
+      const line_start = zeileFuerPosition(zeilenIndexVoll, scanner.getTokenPos());
+      const linesInComment = tokenText.split('\n').length;
+      symbols.push({
+        symbol_type: 'comment',
+        name: null,
+        value: content.slice(0, 500),
+        line_start,
+        line_end: line_start + linesInComment - 1,
+        is_exported: false,
+      });
+      continue;
+    }
+
+    if (token !== ts.SyntaxKind.SingleLineCommentTrivia) continue;
+    const line_start = zeileFuerPosition(zeilenIndexVoll, scanner.getTokenPos());
+    const commentText = scanner.getTokenText().slice(2).trim();
+    const todo = /^(TODO|FIXME|HACK)[:\s]+(.*)/.exec(commentText);
+    if (todo) {
+      flushZeilenKommentarGruppe();
+      symbols.push({
+        symbol_type: 'todo',
+        name: null,
+        value: `${todo[1]}: ${todo[2].trim()}`,
+        line_start,
+        is_exported: false,
+      });
+      continue;
+    }
+
+    if (zeilenKommentarGruppe && line_start === zeilenKommentarGruppe.line_end + 1) {
+      zeilenKommentarGruppe.line_end = line_start;
+      zeilenKommentarGruppe.values.push(commentText);
+    } else {
+      flushZeilenKommentarGruppe();
+      zeilenKommentarGruppe = { line_start, line_end: line_start, values: [commentText] };
+    }
   }
+  flushZeilenKommentarGruppe();
+
 
   return { symbols, definedNames };
 }
@@ -1187,6 +1268,7 @@ export const typescriptParser: LanguageParser = {
   extensions: ['.ts', '.tsx', '.js', '.jsx', '.mts', '.mjs'],
   /** Bei inhaltlichen Parser-Aenderungen erhoehen (siehe LanguageParser.version). */
   // 2: Zeilenberechnung ueber Index statt Praefix-Kopie (Kommentar-Durchlauf).
-  version: 2,
+  // 3: Lexikalischer Kommentar-Scanner statt Volltext-Regex; Strings bleiben kommentar-frei.
+  version: 3,
   parse,
 };

@@ -109,7 +109,8 @@ class HtmlParser implements LanguageParser {
   //    auf der Platte aendert sich ja nicht, wenn der PARSER besser wird — und
   //    beim PARSE-TIMEOUT schreibt code.ts parsed_at UND parser_version
   //    trotzdem fort, die Datei gilt also bereits als aktuell geparst.
-  version = 3;
+  // 4: Eingebettete JS-Kommentare profitieren vom Scanner des TypeScript-Parsers.
+  version = 4;
 
   parse(content: string, filePath: string): ParseResult {
     const symbols: ParsedSymbol[] = [];

@@ -47,7 +47,14 @@ function lesSollwerte(text) {
   const treffer = [];
   for (const zeile of text.split('\n')) {
     const m = /\[([^\]\n]+)\]\s*->\s*Zeile\s+(\d+)/.exec(zeile);
-    if (m) treffer.push({ name: m[1], zeile: Number(m[2]) });
+    if (!m) continue;
+    const symbol_type = m[1] === 'comment' || m[1] === 'todo' ? m[1] : null;
+    treffer.push({
+      name: symbol_type ? null : m[1],
+      symbol_type,
+      label: m[1],
+      zeile: Number(m[2]),
+    });
   }
   return treffer;
 }
@@ -67,6 +74,10 @@ function selbsttest() {
   const gelesen = lesSollwerte(roh);
   if (gelesen.length !== 1 || gelesen[0].name !== 'feld' || gelesen[0].zeile !== 42) {
     return 'Selbsttest: das Sollwert-Format wird nicht korrekt gelesen';
+  }
+  const typ = lesSollwerte('// [comment] -> Zeile 2\n')[0];
+  if (!typ || typ.symbol_type !== 'comment' || typ.name !== null || typ.zeile !== 2) {
+    return 'Selbsttest: typisierte Kommentar-Sollwerte werden nicht korrekt gelesen';
   }
   if (lesSollwerte('# nur Text, keine Zusage\n').length !== 0) {
     return 'Selbsttest: eine Datei ohne Zusagen liefert faelschlich Sollwerte';
@@ -137,9 +148,16 @@ for (const datei of dateien) {
     // Zeile verschoben. Der Lauf MUSS dadurch rot werden.
     const erwartet = gegenprobe && i === 0 ? soll.zeile + 1 : soll.zeile;
     geprueft++;
-    const gleichnamige = symbole.filter((s) => s.name === soll.name);
+    const suchbezeichnung = soll.symbol_type ?? soll.name;
+    const gleichnamige = symbole.filter((s) => {
+      if (soll.symbol_type) {
+        // Die Header-Zusage selbst ist ein Kommentar, aber kein Testkandidat.
+        return s.symbol_type === soll.symbol_type && !(s.value ?? '').includes('-> Zeile');
+      }
+      return s.name === soll.name;
+    });
     if (gleichnamige.length === 0) {
-      abweichungen.push(`${datei}: [${soll.name}] erwartet Zeile ${erwartet}, aber kein Symbol dieses Namens`);
+      abweichungen.push(`${datei}: [${suchbezeichnung}] erwartet Zeile ${erwartet}, aber kein passendes Symbol`);
       continue;
     }
     if (gleichnamige.some((s) => s.line_start === erwartet)) {
@@ -147,7 +165,7 @@ for (const datei of dateien) {
       continue;
     }
     const ist = gleichnamige.map((s) => s.line_start).join('/');
-    abweichungen.push(`${datei}: [${soll.name}] erwartet Zeile ${erwartet}, tatsaechlich ${ist}`);
+    abweichungen.push(`${datei}: [${suchbezeichnung}] erwartet Zeile ${erwartet}, tatsaechlich ${ist}`);
   }
 }
 
@@ -168,7 +186,7 @@ if (gegenprobe) {
     process.exit(1);
   }
   console.log('Gegenprobe bestanden: die verschobene Zeile wurde erkannt.');
-  process.exit(0);
+  process.exit(1);
 }
 
 process.exit(abweichungen.length === 0 ? 0 : 1);
