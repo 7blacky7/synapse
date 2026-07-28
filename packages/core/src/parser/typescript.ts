@@ -13,7 +13,7 @@ import type {
   ParsedStatement,
   ParsedCallEdge,
 } from './types.js';
-import { extractStringLiterals } from './types.js';
+import { extractStringLiterals, erstelleZeilenIndex, zeileFuerPosition } from './types.js';
 import { HTTP_VERBS, NEST_DECORATORS, formatRouteName, isLikelyHttpPath } from './patterns/http.js';
 import { SQL_DB_METHODS, SQL_TAGS, parseEmbeddedSql, looksLikeSql } from './patterns/sql.js';
 
@@ -569,14 +569,16 @@ function extractSymbols(
   ts.forEachChild(sourceFile, visitNode);
 
   // ---- Comments (regex pass on full text) ----------------------------------
+  // Zeilenumbrueche EINMAL vorberechnen: vorher wurde pro Kommentar-Treffer ein
+  // Praefix des gesamten Textes kopiert und zerlegt, also O(Treffer x Dateigroesse).
+  const zeilenIndexVoll = erstelleZeilenIndex(fullText);
   // Block / JSDoc comments: /** ... */ and /* ... */
   const blockCommentRe = /\/\*\*([\s\S]*?)\*\/|\/\*([\s\S]*?)\*\//g;
   let m: RegExpExecArray | null;
   while ((m = blockCommentRe.exec(fullText)) !== null) {
     const content = (m[1] ?? m[2]).trim();
     if (!content) continue;
-    const linesBefore = fullText.slice(0, m.index).split('\n');
-    const line_start = linesBefore.length;
+    const line_start = zeileFuerPosition(zeilenIndexVoll, m.index);
     const linesInComment = m[0].split('\n').length;
     symbols.push({
       symbol_type: 'comment',
@@ -591,8 +593,7 @@ function extractSymbols(
   // TODO / FIXME / HACK via single-line comments
   const todoRe = /\/\/\s*(TODO|FIXME|HACK)[:\s]+(.*)/g;
   while ((m = todoRe.exec(fullText)) !== null) {
-    const linesBefore = fullText.slice(0, m.index).split('\n');
-    const line_start = linesBefore.length;
+    const line_start = zeileFuerPosition(zeilenIndexVoll, m.index);
     symbols.push({
       symbol_type: 'todo',
       name: null,
@@ -1185,6 +1186,7 @@ export const typescriptParser: LanguageParser = {
   language: 'typescript',
   extensions: ['.ts', '.tsx', '.js', '.jsx', '.mts', '.mjs'],
   /** Bei inhaltlichen Parser-Aenderungen erhoehen (siehe LanguageParser.version). */
-  version: 1,
+  // 2: Zeilenberechnung ueber Index statt Praefix-Kopie (Kommentar-Durchlauf).
+  version: 2,
   parse,
 };

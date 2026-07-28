@@ -8,16 +8,25 @@
  */
 
 import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser, ParsedStatement, ParsedCallEdge } from './types.js';
-import { extractStringLiterals } from './types.js';
+import { extractStringLiterals, erstelleZeilenIndex, zeileFuerPosition } from './types.js';
 import { formatRouteName, isLikelyHttpPath, HTTP_VERBS } from './patterns/http.js';
 import { parseEmbeddedSql, looksLikeSql } from './patterns/sql.js';
 
+// Zeilenindex je Datei zwischenspeichern — siehe zeileFuerPosition in types.ts.
+// Vorher wurde pro Treffer ein Praefix der Datei kopiert und zerlegt: das ist
+// O(Treffer x Dateigroesse) und laesst grosse Dateien praktisch nie fertig werden.
+let zeilenCacheText: string | null = null;
+let zeilenCacheIndex: number[] = [];
 function lineAt(text: string, pos: number): number {
-  return text.substring(0, pos).split('\n').length;
+  if (text !== zeilenCacheText) {
+    zeilenCacheText = text;
+    zeilenCacheIndex = erstelleZeilenIndex(text);
+  }
+  return zeileFuerPosition(zeilenCacheIndex, pos);
 }
 
 function endLineAt(text: string, pos: number, matchLength: number): number {
-  return text.substring(0, pos + matchLength).split('\n').length;
+  return lineAt(text, pos + matchLength);
 }
 
 // ---------------------------------------------------------------------------
@@ -25,7 +34,7 @@ function endLineAt(text: string, pos: number, matchLength: number): number {
 // ---------------------------------------------------------------------------
 
 function lineAtCpp(text: string, pos: number): number {
-  return text.substring(0, pos).split('\n').length;
+  return lineAt(text, pos);
 }
 
 // Ersetzt Kommentare durch Leerzeichen, bei gleichbleibender Laenge. Steht auf
@@ -539,8 +548,9 @@ class CppParser implements LanguageParser {
    *      Enum-Basistypen, mehrteilige Klasse::Unterklasse::Methode-Namen sowie
    *      Konstruktoren, Destruktoren und Operatoren in und ausserhalb von Klassen
    *      werden als einheitliche Funktionssymbole erfasst (Deep-Fixture 2026-07-27).
+   * 11 = Zeilenberechnung ueber Index statt Praefix-Kopie (siehe lineAt).
    */
-  version = 10;
+  version = 11;
   extensions = ['.cpp', '.hpp', '.cc', '.cxx', '.hxx', '.hh'];
 
   parse(content: string, filePath: string): ParseResult {

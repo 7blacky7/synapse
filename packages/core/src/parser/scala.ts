@@ -9,18 +9,28 @@
  */
 
 import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser, ParsedStatement, ParsedCallEdge } from './types.js';
-import { extractStringLiterals } from './types.js';
+import { extractStringLiterals, erstelleZeilenIndex, zeileFuerPosition } from './types.js';
 import { formatRouteName, isLikelyHttpPath, HTTP_VERBS } from './patterns/http.js';
 
+// Zeilenindex je Datei zwischenspeichern — siehe zeileFuerPosition in types.ts.
+// Vorher wurde pro Treffer ein Praefix der Datei kopiert und zerlegt: das ist
+// O(Treffer x Dateigroesse) und laesst grosse Dateien praktisch nie fertig werden.
+let zeilenCacheText: string | null = null;
+let zeilenCacheIndex: number[] = [];
 function lineAt(text: string, pos: number): number {
-  return text.substring(0, pos).split('\n').length;
+  if (text !== zeilenCacheText) {
+    zeilenCacheText = text;
+    zeilenCacheIndex = erstelleZeilenIndex(text);
+  }
+  return zeileFuerPosition(zeilenCacheIndex, pos);
 }
 
 class ScalaParser implements LanguageParser {
   language = 'scala';
   extensions = ['.scala', '.sc'];
   /** Bei inhaltlichen Parser-Aenderungen erhoehen (siehe LanguageParser.version). */
-  version = 1;
+  // 2: Zeilenberechnung ueber Index statt Praefix-Kopie (siehe lineAt).
+  version = 2;
 
   parse(content: string, filePath: string): ParseResult {
     const symbols: ParsedSymbol[] = [];
@@ -305,6 +315,9 @@ class ScalaParser implements LanguageParser {
       if (!isLikelyHttpPath(path)) continue;
       const block = m[2];
       const baseLine = lineAt(content, m.index);
+      // Eigener Index fuer den Block: lineAt haelt nur EINEN Text im Cache. Ein
+      // Wechsel zwischen content und block wuerde ihn bei jedem Treffer verwerfen.
+      const blockZeilenIndex = erstelleZeilenIndex(block);
       const verbRe = /\b(get|post|put|patch|delete|head|options)\s*[{(]/g;
       let v: RegExpExecArray | null;
       let foundVerb = false;
@@ -317,7 +330,7 @@ class ScalaParser implements LanguageParser {
           name: formatRouteName(verb, path),
           value: path,
           params: [verb.toUpperCase()],
-          line_start: baseLine + block.substring(0, v.index).split('\n').length - 1,
+          line_start: baseLine + zeileFuerPosition(blockZeilenIndex, v.index) - 1,
           is_exported: false,
         });
       }
