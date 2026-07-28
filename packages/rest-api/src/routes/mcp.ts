@@ -140,6 +140,7 @@ import {
   searchShellJobLog,
   // Daemon-Heartbeat (Auto-Routing shell ↔ workspace)
   isDaemonAliveForProject,
+  getProjectRegistryRows,
   // Error Patterns (code_check)
   addErrorPattern,
   listErrorPatterns,
@@ -1703,7 +1704,21 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
           if (!raw) return { success: false, error: 'project oder path erforderlich' };
           const projectName = raw.split(/[/\\]/).pop() || raw;
           const codeStats = await getProjectStats(projectName);
-          return { success: true, stats: codeStats };
+          // Ehrlicher Status statt nur Code-Stats: registriert? Watcher aktiv?
+          // setupPhase (status.json) verwaltet ausschliesslich der lokale
+          // MCP-Server (stdio, setup.ts) — von REST aus nicht lesbar, deshalb
+          // explizit als unbekannt markiert statt stillschweigend wegzulassen.
+          const registry = await getProjectRegistryRows(projectName);
+          const watcherActive = await isDaemonAliveForProject(projectName);
+          return {
+            success: true,
+            stats: codeStats,
+            registered_in_db: registry.length > 0,
+            registry,
+            watcher_active: watcherActive,
+            setup_phase: null,
+            setup_phase_note: 'setupPhase (status.json) wird nur vom lokalen MCP-Server (stdio) verwaltet und ist ueber REST nicht einsehbar.',
+          };
         }
         case 'list': {
           const collections = await listCollections();
