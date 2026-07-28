@@ -17,13 +17,15 @@
  *
  * NEBENEFFEKTE:
  *   - Dateisystem: Liest README.md aus dem Projekt-Verzeichnis
- *   - setProjectStatus: Setzt setupPhase in .synapse/status.json ('initial-pending', 'initial-done', 'complete')
+ *   - setSetupPhase: Setzt setupPhase in PostgreSQL (project_setup_status), Quelle der
+ *     Wahrheit ('initial-pending', 'initial-done', 'complete'). status.json wird
+ *     zusaetzlich als Cache/Fallback geschrieben (best effort).
  *   - Kein Qdrant-Zugriff — Memories werden vom Aufrufer per write_memory gespeichert
  */
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { setProjectStatus } from '@synapse/core';
+import { setSetupPhase } from '@synapse/core';
 import type { DetectedTechnology } from '@synapse/core';
 
 /** Eine Setup-Frage die dem User gestellt wird */
@@ -174,21 +176,24 @@ Wenn alle Fragen beantwortet sind, rufe \`complete_setup\` auf.`;
 }
 
 /**
- * Schliesst eine Setup-Phase ab und setzt den Status
+ * Schliesst eine Setup-Phase ab und setzt den Status.
+ * PG (project_setup_status) ist die Quelle der Wahrheit; status.json wird
+ * zusaetzlich als Cache/Fallback geschrieben (best effort, siehe setSetupPhase).
  */
-export function completeSetup(
+export async function completeSetup(
+  project: string,
   projectPath: string,
   phase: 'initial' | 'post-indexing'
-): { success: boolean; message: string; nextPhase: string } {
+): Promise<{ success: boolean; message: string; nextPhase: string }> {
   if (phase === 'initial') {
-    setProjectStatus(projectPath, { setupPhase: 'initial-done' });
+    await setSetupPhase(project, 'initial-done', { projectPath, updatedBy: 'mcp-stdio:setup' });
     return {
       success: true,
       message: 'Initial-Setup abgeschlossen. Nach der Code-Indexierung kann das Post-Indexing-Setup gestartet werden.',
       nextPhase: 'initial-done',
     };
   } else {
-    setProjectStatus(projectPath, { setupPhase: 'complete' });
+    await setSetupPhase(project, 'complete', { projectPath, updatedBy: 'mcp-stdio:setup' });
     return {
       success: true,
       message: 'Projekt-Setup vollstaendig abgeschlossen. Alle Regeln sind gespeichert.',
@@ -205,5 +210,5 @@ export async function completeSetupTool(
   phase: 'initial' | 'post-indexing',
   projectPath: string
 ): Promise<{ success: boolean; message: string; nextPhase: string }> {
-  return completeSetup(projectPath, phase);
+  return completeSetup(project, projectPath, phase);
 }

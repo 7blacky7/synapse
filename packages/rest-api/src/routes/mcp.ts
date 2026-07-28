@@ -146,6 +146,8 @@ import {
   listErrorPatterns,
   deleteErrorPattern,
   resolveAgentId,
+  getSetupPhase,
+  setSetupPhase,
 } from '@synapse/core';
 import { minimatch } from 'minimatch';
 import { GUIDE_OVERVIEW, TOOL_GUIDES, logToolCall, queryToolCalls } from '@synapse/core';
@@ -1688,8 +1690,23 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
             message: job.message,
           };
         }
-        case 'complete_setup':
-          return { success: false, error: 'Action "complete_setup" ist nur ueber MCP Server (stdio) verfuegbar' };
+        case 'complete_setup': {
+          const project = reqStr(args, 'project');
+          const phase = str(args, 'phase') as 'initial' | 'post-indexing' | undefined;
+          if (!phase) {
+            return { success: false, message: 'Parameter "phase" ist erforderlich' };
+          }
+          const nextPhase = phase === 'initial' ? 'initial-done' : 'complete';
+          const requestedBy = resolveAgentId(str(args, 'agent_id')) ?? undefined;
+          await setSetupPhase(project, nextPhase, { updatedBy: requestedBy ?? 'rest-api' });
+          return {
+            success: true,
+            message: phase === 'initial'
+              ? 'Initial-Setup abgeschlossen. Nach der Code-Indexierung kann das Post-Indexing-Setup gestartet werden.'
+              : 'Projekt-Setup vollstaendig abgeschlossen. Alle Regeln sind gespeichert.',
+            nextPhase,
+          };
+        }
         case 'detect_tech': {
           const techs = await detectTechnologies(reqStr(args, 'path'));
           return { technologies: techs };
@@ -1705,19 +1722,19 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
           const projectName = raw.split(/[/\\]/).pop() || raw;
           const codeStats = await getProjectStats(projectName);
           // Ehrlicher Status statt nur Code-Stats: registriert? Watcher aktiv?
-          // setupPhase (status.json) verwaltet ausschliesslich der lokale
-          // MCP-Server (stdio, setup.ts) — von REST aus nicht lesbar, deshalb
-          // explizit als unbekannt markiert statt stillschweigend wegzulassen.
+          // setupPhase kommt seit SETUP-1 aus PostgreSQL (project_setup_status) —
+          // dieselbe Quelle wie der lokale MCP-Server (stdio), ueber REST also
+          // ebenso einsehbar. status.json ist nur noch Cache/Fallback.
           const registry = await getProjectRegistryRows(projectName);
           const watcherActive = await isDaemonAliveForProject(projectName);
+          const setupPhase = await getSetupPhase(projectName);
           return {
             success: true,
             stats: codeStats,
             registered_in_db: registry.length > 0,
             registry,
             watcher_active: watcherActive,
-            setup_phase: null,
-            setup_phase_note: 'setupPhase (status.json) wird nur vom lokalen MCP-Server (stdio) verwaltet und ist ueber REST nicht einsehbar.',
+            setup_phase: setupPhase,
           };
         }
         case 'list': {

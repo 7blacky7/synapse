@@ -174,6 +174,21 @@ CREATE TABLE IF NOT EXISTS projects (
 -- werden vom Parser-Worker uebersprungen — siehe parser-worker.ts).
 ALTER TABLE projects ADD COLUMN IF NOT EXISTS enabled BOOLEAN NOT NULL DEFAULT TRUE;
 
+-- SETUP-1: Setup-Phase-Tracking (projektweiter Einrichtungsfortschritt).
+-- Eigene Tabelle statt Spalte in projects, weil projects PK (name, hostname)
+-- hat — pro Projekt eine Zeile JE HOSTNAME (inkl. virtuellem 'rest-api'-Eintrag,
+-- siehe registerVirtualProject). setupPhase ist aber projektweit: ein Setup wird
+-- oft lokal begonnen und soll ueber die REST-API (virtueller Host) abgeschlossen
+-- werden koennen. Als Spalte in projects gaebe es N Kopien desselben Werts ohne
+-- eindeutige Quelle. Ersetzt .synapse/status.json als primaere Datenquelle, analog
+-- zu wrapper_status fuer Spezialisten. status.json bleibt optionaler Cache/Fallback.
+CREATE TABLE IF NOT EXISTS project_setup_status (
+  project TEXT PRIMARY KEY,
+  setup_phase TEXT NOT NULL DEFAULT 'none',  -- none|initial-pending|initial-done|post-indexing-pending|complete
+  updated_by TEXT,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 CREATE TABLE IF NOT EXISTS agent_events (
   id SERIAL PRIMARY KEY,
   project TEXT NOT NULL,

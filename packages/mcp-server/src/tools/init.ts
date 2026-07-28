@@ -42,6 +42,7 @@ import {
   getPool,
   getProjectStatus,
   setProjectStatus,
+  setSetupPhase,
   updateLastAccess,
   registerAgent,
   getRulesForNewAgent,
@@ -402,7 +403,7 @@ export async function initProjekt(
     if (existingRules.length === 0) {
       const { buildSetupWizard, readReadmeExcerpt } = await import('./setup.js');
       const readmeExcerpt = readReadmeExcerpt(projectPath);
-      setProjectStatus(projectPath, { setupPhase: 'initial-pending' });
+      await setSetupPhase(name, 'initial-pending', { projectPath, updatedBy: 'mcp-stdio:init' });
       const wizard = buildSetupWizard('initial', technologies, readmeExcerpt);
       setupRequired = {
         phase: wizard.phase,
