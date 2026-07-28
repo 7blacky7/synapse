@@ -70,6 +70,34 @@ CREATE TABLE IF NOT EXISTS proposals (
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- Nachzug fuer nebenlaeufiges Embedding (EMBED-1, 2026-07-28).
+-- Der Schreibvorgang kehrt zurueck, sobald die Zeile in PostgreSQL steht; der Vektor wird
+-- nachgereicht. embedded_at IS NULL ist die Backlog-Bedingung — ohne diese Spalte waere ein
+-- fehlgeschlagenes Embedding STILL VERLOREN: der Eintrag ist ueber PG abrufbar, hat aber nie
+-- einen Vektor, und niemand merkt es.
+--
+-- WARUM DEFAULT NOW() UND DIREKT DANACH DROP DEFAULT, in genau dieser Reihenfolge:
+-- ADD COLUMN mit DEFAULT fuellt die BESTEHENDEN Zeilen mit diesem Wert. Der Altbestand gilt
+-- damit als erledigt — er hat seine Vektoren ja bereits. Ohne das waere jede vorhandene Memory
+-- und jeder Gedanke ab sofort faellig, und die Einfuehrung dieser Spalte wuerde genau die
+-- Massen-Embedding-Welle ausloesen, gegen die sie gebaut ist.
+-- Das anschliessende DROP DEFAULT sorgt dafuer, dass NEUE Zeilen NULL bekommen und damit vom
+-- Backlog gesehen werden. Beides zusammen ist idempotent: beim zweiten Lauf greift
+-- IF NOT EXISTS, das DROP DEFAULT ist dann ein No-op.
+ALTER TABLE memories  ADD COLUMN IF NOT EXISTS embedded_at TIMESTAMPTZ DEFAULT NOW();
+ALTER TABLE memories  ALTER COLUMN embedded_at DROP DEFAULT;
+ALTER TABLE thoughts  ADD COLUMN IF NOT EXISTS embedded_at TIMESTAMPTZ DEFAULT NOW();
+ALTER TABLE thoughts  ALTER COLUMN embedded_at DROP DEFAULT;
+ALTER TABLE proposals ADD COLUMN IF NOT EXISTS embedded_at TIMESTAMPTZ DEFAULT NOW();
+ALTER TABLE proposals ALTER COLUMN embedded_at DROP DEFAULT;
+
+-- Teil-Indizes: der Backlog fragt ausschliesslich nach den offenen Zeilen, und das sind im
+-- Normalbetrieb sehr wenige. Ein Teil-Index bleibt dadurch winzig, auch wenn die Tabellen wachsen.
+CREATE INDEX IF NOT EXISTS idx_memories_embed_backlog  ON memories(project)  WHERE embedded_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_thoughts_embed_backlog  ON thoughts(project)  WHERE embedded_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_proposals_embed_backlog ON proposals(project) WHERE embedded_at IS NULL;
+
+
 CREATE TABLE IF NOT EXISTS agent_sessions (
   id TEXT PRIMARY KEY,
   project TEXT NOT NULL,
