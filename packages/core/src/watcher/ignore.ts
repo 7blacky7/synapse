@@ -203,6 +203,35 @@ export function getDefaultIgnores(): string[] {
   return [...DEFAULT_IGNORES];
 }
 
+/**
+ * Regeln, die den Weg zwischen Dateisystem und Datenbank BLOCKIEREN duerfen.
+ * Das ist die kleine, scharfe Menge — nicht zu verwechseln mit dem Ausblenden.
+ *
+ * Enthalten sind:
+ *   1. DEFAULT_IGNORES aus dem Code (Paketordner, .git, Secrets). Fest
+ *      einprogrammiert, weil sie unter keinen Umstaenden in die Datenbank
+ *      duerfen.
+ *   2. Die DB-Regeln mit modus='gesperrt'. Dafuer da, dass ein neues Framework
+ *      mit einem noch unbekannten Ordner nicht erst einen Code-Release braucht.
+ *
+ * AUSDRUECKLICH NICHT ENTHALTEN ist .gitignore. Was dort steht, ist meist
+ * Aufraeum-Kram (Build-Ausgaben, Logdateien) und kein Schutzbeduerfnis; und die
+ * Datei selbst will man aendern koennen. Ihre Muster wirken weiterhin ueber
+ * loadGitignore auf die SICHTBARKEIT — nur eben nicht mehr auf die Existenz.
+ *
+ * NICHT enthalten sind die ausgeblendeten Regeln. Eine ausgeblendete Datei
+ * laeuft voellig normal zwischen Platte und Datenbank hin und her; sie ist nur
+ * in der Suche unsichtbar.
+ */
+export function ladeSperrRegeln(_projectPath: string, project?: string): Ignore {
+  const ig = ignore();
+  ig.add(DEFAULT_IGNORES);
+
+  const gesperrt = gepufferteSperrRegeln(project);
+  if (gesperrt?.length) ig.add(gesperrt);
+  return ig;
+}
+
 // ─── IGN-3: Regeln aus PostgreSQL ────────────────────────────────────────────
 //
 // Der Watcher prueft die Regeln bei jedem Datei-Ereignis — ein Datenbank-Zugriff
@@ -216,7 +245,14 @@ export function getDefaultIgnores(): string[] {
 const REGEL_GUELTIGKEIT_MS = 30_000;
 
 interface RegelStand {
+  /** Alle aktiven Muster — fuer die Sichtbarkeit (Suche, Baum, Embeddings). */
   muster: string[];
+  /**
+   * Nur die Muster mit modus='gesperrt'. Diese und NUR diese duerfen den Weg
+   * zwischen Dateisystem und Datenbank blockieren. Ausgeblendete Pfade laufen
+   * normal durch — sie sind unsichtbar, nicht abwesend.
+   */
+  gesperrt: string[];
   geladenAm: number;
 }
 
@@ -229,13 +265,34 @@ const laufendeAbfragen = new Set<string>();
  * Hintergrund an, blockiert dabei aber nicht — der Aufrufer ist synchron.
  */
 export function gepufferteIgnoreRegeln(project?: string): string[] | null {
+  return gepufferterStand(project)?.muster ?? null;
+}
+
+/**
+ * Liefert NUR die gesperrten Muster eines Projekts. Getrennt von den
+ * ausgeblendeten, weil die beiden verschiedene Dinge tun:
+ *
+ *   gesperrt      darf den Weg zwischen Dateisystem und Datenbank blockieren
+ *   ausgeblendet  darf das ausdruecklich NICHT — nur die Sichtbarkeit
+ *
+ * Bis zum 28.07.2026 galt beides als dasselbe. Eine Datei unter einer
+ * Ausblend-Regel wurde in der Datenbank angelegt, kam aber nie auf die Platte;
+ * der Daemon versuchte es nicht einmal. Wer das nicht wusste, bekam ein
+ * erfolgreiches Ergebnis und eine Datei, die es nirgends gab.
+ */
+export function gepufferteSperrRegeln(project?: string): string[] | null {
+  return gepufferterStand(project)?.gesperrt ?? null;
+}
+
+/** Gemeinsamer Zugriff samt Nachladen im Hintergrund. */
+function gepufferterStand(project?: string): RegelStand | null {
   if (!project) return null;
   const stand = regelSpeicher.get(project);
   if (!stand) return null;
   if (Date.now() - stand.geladenAm > REGEL_GUELTIGKEIT_MS && !laufendeAbfragen.has(project)) {
     void aktualisiereIgnoreRegeln(project);
   }
-  return stand.muster;
+  return stand;
 }
 
 /**
@@ -252,12 +309,13 @@ export async function aktualisiereIgnoreRegeln(project: string): Promise<number>
   laufendeAbfragen.add(project);
   try {
     const { getPool } = await import('../db/client.js');
-    const ergebnis = await getPool().query<{ pattern: string }>(
-      'SELECT pattern FROM project_ignore_rules WHERE project = $1 AND enabled ORDER BY sort_order, id',
+    const ergebnis = await getPool().query<{ pattern: string; modus: string }>(
+      'SELECT pattern, modus FROM project_ignore_rules WHERE project = $1 AND enabled ORDER BY sort_order, id',
       [project],
     );
     regelSpeicher.set(project, {
       muster: ergebnis.rows.map((zeile) => zeile.pattern),
+      gesperrt: ergebnis.rows.filter((zeile) => zeile.modus === 'gesperrt').map((zeile) => zeile.pattern),
       geladenAm: Date.now(),
     });
     return ergebnis.rowCount ?? 0;

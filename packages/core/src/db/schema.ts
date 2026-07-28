@@ -1133,6 +1133,55 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_project_ignore_rules_eindeutig
 CREATE INDEX IF NOT EXISTS idx_project_ignore_rules_aktiv
   ON project_ignore_rules(project, sort_order) WHERE enabled;
 
+-- IGN-9 (28.07.2026): modus trennt zwei Dinge, die vorher eines waren.
+--
+--   'gesperrt'      Der Inhalt darf NIE in die Datenbank. Der lokale Daemon
+--                   fragt vor dem Senden und schickt gar nicht erst los.
+--                   Gilt in BEIDEN Richtungen, also auch fuer PG->FS.
+--                   Dafuer da: Secrets, Paketordner, Build-Ausgaben und alles,
+--                   was ein kuenftiges Framework mitbringt und wofuer es noch
+--                   keine fest einprogrammierte Regel gibt.
+--
+--   'ausgeblendet'  Nur die SICHTBARKEIT in code_intel ist betroffen, sowohl
+--                   die lexikalische als auch die semantische Suche (Embeddings
+--                   und Inhalte ueber PG). Zweck ist es, Rauschen aus dem
+--                   KI-Kontext zu halten.
+--                   ⚠️ Die Datei laeuft trotzdem voellig normal zwischen
+--                   Dateisystem und Datenbank hin und her. Ausblenden heisst
+--                   NICHT, dass sie verschwindet.
+--
+-- WARUM DIE TRENNUNG: bis zum 28.07. galt beides als dasselbe. Eine Datei unter
+-- einer Ausblend-Regel wurde in PG angelegt, aber nie auf die Platte
+-- geschrieben — der Daemon versuchte es nicht einmal. Wer eine Fixture unter
+-- __testdata__/ anlegte, bekam ein erfolgreiches ok:true und eine Datei, die es
+-- auf der Platte nie gab. Der Hinweistext sprach von "wird aus Suche/Baum
+-- ausgeblendet" und liess damit genau den Teil weg, der wehtut.
+--
+-- MIGRATION: die bisherigen locked-Regeln (node_modules, .git, dist, .env,
+-- .mcp.json) werden 'gesperrt', alle uebrigen 'ausgeblendet'. Damit aendert
+-- sich fuer den Schutz nichts, waehrend ausgeblendete Pfade ihren Weg auf die
+-- Platte zurueckbekommen.
+ALTER TABLE project_ignore_rules
+  ADD COLUMN IF NOT EXISTS modus TEXT NOT NULL DEFAULT 'ausgeblendet';
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.constraint_column_usage
+    WHERE table_name = 'project_ignore_rules' AND constraint_name = 'project_ignore_rules_modus_check'
+  ) THEN
+    ALTER TABLE project_ignore_rules
+      ADD CONSTRAINT project_ignore_rules_modus_check
+      CHECK (modus IN ('gesperrt', 'ausgeblendet'));
+  END IF;
+END $$;
+
+-- Einmalige Migration des Altbestands: locked war bisher der einzige Hinweis
+-- darauf, dass eine Regel schuetzen und nicht nur aufraeumen soll.
+UPDATE project_ignore_rules SET modus = 'gesperrt' WHERE locked AND modus = 'ausgeblendet';
+
+CREATE INDEX IF NOT EXISTS idx_project_ignore_rules_modus
+  ON project_ignore_rules(project, modus) WHERE enabled;
 -- Regel-Aenderung sofort an alle Prozesse melden (Daemon, API, Parser-Worker).
 -- Ohne diese Benachrichtigung haelt jeder Prozess seinen alten Stand und die
 -- Zusage "innerhalb einer Minute sichtbar bzw. unsichtbar" waere nicht haltbar.

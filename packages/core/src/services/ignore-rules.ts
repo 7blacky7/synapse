@@ -34,12 +34,28 @@ import { getFileContentFromPg, contentHash } from './code-write.js';
 import { planBatch } from './file-batch.js';
 import type { FileBatchOp, PlanBatchResult } from './file-batch.js';
 
+/**
+ * Was eine Regel bewirkt. Zwei verschiedene Dinge, die bis zum 28.07.2026
+ * faelschlich eines waren:
+ *
+ *   'ausgeblendet'  Nur die Sichtbarkeit in code_intel — lexikalisch UND
+ *                   semantisch. Zweck: Rauschen aus dem KI-Kontext halten.
+ *                   Die Datei laeuft voellig normal zwischen Platte und
+ *                   Datenbank hin und her.
+ *   'gesperrt'      Der Inhalt darf gar nicht erst in die Datenbank. Der
+ *                   lokale Daemon fragt vor dem Senden und schickt nichts los.
+ *                   Fuer Secrets und fuer alles, was ein kuenftiges Framework
+ *                   mitbringt und wofuer es noch keine Code-Regel gibt.
+ */
+export type IgnoreModus = 'ausgeblendet' | 'gesperrt';
+
 export interface IgnoreRegel {
   id: string;
   pattern: string;
   scope: string | null;
   enabled: boolean;
   locked: boolean;
+  modus: IgnoreModus;
   kommentar: string | null;
   sort_order: number;
 }
@@ -47,7 +63,7 @@ export interface IgnoreRegel {
 /** Alle Regeln eines Projekts, in Wirkreihenfolge (spaetere gewinnt). */
 export async function listeIgnoreRegeln(project: string): Promise<IgnoreRegel[]> {
   const ergebnis = await getPool().query<IgnoreRegel>(
-    `SELECT id::text AS id, pattern, scope, enabled, locked, kommentar, sort_order
+    `SELECT id::text AS id, pattern, scope, enabled, locked, modus, kommentar, sort_order
        FROM project_ignore_rules
       WHERE project = $1
       ORDER BY sort_order, id`,
@@ -64,7 +80,13 @@ export async function listeIgnoreRegeln(project: string): Promise<IgnoreRegel[]>
  */
 export async function fuegeIgnoreRegelnHinzu(
   project: string,
-  regeln: Array<{ pattern: string; scope?: string; kommentar?: string; sort_order?: number }>,
+  regeln: Array<{
+    pattern: string;
+    scope?: string;
+    kommentar?: string;
+    sort_order?: number;
+    modus?: IgnoreModus;
+  }>,
   agentId?: string | null,
 ): Promise<{ hinzugefuegt: string[]; uebersprungen: string[] } & Auswirkung> {
   const pool = getPool();
@@ -81,11 +103,21 @@ export async function fuegeIgnoreRegelnHinzu(
     const muster = regel.pattern.trim();
     if (!muster) continue;
     const eingefuegt = await pool.query(
-      `INSERT INTO project_ignore_rules (project, pattern, scope, kommentar, sort_order, created_by)
-       VALUES ($1, $2, $3, $4, $5, $6)
+      `INSERT INTO project_ignore_rules (project, pattern, scope, kommentar, sort_order, created_by, modus)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
        ON CONFLICT DO NOTHING
        RETURNING id`,
-      [project, muster, regel.scope ?? null, regel.kommentar ?? null, regel.sort_order ?? naechste, agentId ?? null],
+      [
+        project,
+        muster,
+        regel.scope ?? null,
+        regel.kommentar ?? null,
+        regel.sort_order ?? naechste,
+        agentId ?? null,
+        // Standard ist ausblenden: die haeufigere und die harmlosere Wahl.
+        // Sperren ist der Eingriff, der ausdruecklich verlangt werden muss.
+        regel.modus === 'gesperrt' ? 'gesperrt' : 'ausgeblendet',
+      ],
     );
     if (eingefuegt.rowCount) {
       hinzugefuegt.push(muster);

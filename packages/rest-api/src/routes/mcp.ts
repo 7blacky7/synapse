@@ -1040,6 +1040,7 @@ const MCP_TOOLS = [
         patterns: { type: 'array', items: { type: 'string' }, description: 'Mehrere Muster auf einmal (nur fuer add)' },
         scope: { type: 'string', description: 'Optional fuer add: Muster nur unterhalb dieses Teilbaums anwenden' },
         kommentar: { type: 'string', description: 'Optional fuer add: wofuer die Regel da ist' },
+        modus: { type: 'string', enum: ['ausgeblendet', 'gesperrt'], description: "Optional fuer add (Standard 'ausgeblendet'). 'ausgeblendet' betrifft NUR die Sichtbarkeit in code_intel, lexikalisch wie semantisch — die Datei laeuft weiterhin voellig normal zwischen Platte und Datenbank. 'gesperrt' haelt den Inhalt aus der Datenbank heraus: der lokale Daemon fragt vor dem Senden und schickt nichts los. Sperren ist der Eingriff, Ausblenden das Aufraeumen." },
         file_path: { type: 'string', description: 'Pflicht fuer test: der zu pruefende Pfad, relativ zum Projekt' },
         agent_id: { type: 'string', description: 'Agent-ID' },
       },
@@ -3991,7 +3992,12 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
           if (!liste.length) throw new Error('pattern oder patterns[] erforderlich');
           const ergebnis = await fuegeIgnoreRegelnHinzu(
             igProjekt,
-            liste.map((muster) => ({ pattern: muster, scope: str(args, 'scope'), kommentar: str(args, 'kommentar') })),
+            liste.map((muster) => ({
+              pattern: muster,
+              scope: str(args, 'scope'),
+              kommentar: str(args, 'kommentar'),
+              modus: str(args, 'modus') === 'gesperrt' ? ('gesperrt' as const) : ('ausgeblendet' as const),
+            })),
             resolveAgentId(str(args, 'agent_id')) ?? undefined,
           );
           return {
