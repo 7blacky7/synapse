@@ -142,6 +142,35 @@ export interface LanguageParser {
  *                                   wo einfache Quotes String-Literale sind, NICHT char-literals).
  * @param opts.includeBackticks     Wenn true, werden auch `foo` Template-Strings erfasst.
  */
+export function erstelleZeilenIndex(content: string): number[] {
+  const umbrueche: number[] = [];
+  for (let i = 0; i < content.length; i++) {
+    if (content.charCodeAt(i) === 10) umbrueche.push(i);
+  }
+  return umbrueche;
+}
+
+/**
+ * 1-basierte Zeilennummer zu einer Zeichenposition, per Binaersuche im Index.
+ *
+ * WARUM DAS WICHTIG IST: Hier stand frueher pro Treffer eine Schleife, die ab
+ * Position 0 alle Zeilenumbrueche neu zaehlte. Das ist O(Treffer x Dateigroesse).
+ * Bei einer 7-MB-HTML mit rund 700.000 Wort-Treffern sind das ~2,5 Billionen
+ * Zeichenvergleiche — der Parse lief ueber 45 Minuten und war nie fertig, obwohl
+ * derselbe Parser 1,3 MB in 3 ms schafft. Die Regex-Muster waren nie das Problem;
+ * einzeln gemessen sind sie alle unauffaellig.
+ */
+export function zeileFuerPosition(umbrueche: number[], pos: number): number {
+  let lo = 0;
+  let hi = umbrueche.length;
+  while (lo < hi) {
+    const mitte = (lo + hi) >> 1;
+    if (umbrueche[mitte] < pos) lo = mitte + 1;
+    else hi = mitte;
+  }
+  return lo + 1;
+}
+
 export function extractStringLiterals(
   content: string,
   opts: { includeSingleQuotes?: boolean; includeBackticks?: boolean } = {}
@@ -153,13 +182,12 @@ export function extractStringLiterals(
 
   const out: ParsedSymbol[] = [];
   const seen = new Set<string>();
+  const zeilenIndex = erstelleZeilenIndex(content);
   let m: RegExpExecArray | null;
   while ((m = re.exec(content)) !== null) {
     const lit = m[1] ?? m[2] ?? m[3];
     if (!lit || /\s/.test(lit)) continue;
-    // Zeile berechnen
-    let line = 1;
-    for (let i = 0; i < m.index; i++) if (content.charCodeAt(i) === 10) line++;
+    const line = zeileFuerPosition(zeilenIndex, m.index);
     const dedup = `${lit}@${line}`;
     if (seen.has(dedup)) continue;
     seen.add(dedup);

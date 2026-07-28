@@ -7,17 +7,22 @@
  */
 
 import type { ParseResult, LanguageParser, ParsedSymbol } from './types.js';
-import { extractStringLiterals } from './types.js';
+import { extractStringLiterals, erstelleZeilenIndex, zeileFuerPosition } from './types.js';
 
 class HtmlParser implements LanguageParser {
   language = 'html';
   extensions = ['.html', '.htm', '.xhtml', '.xml'];
   /** Bei inhaltlichen Parser-Aenderungen erhoehen (siehe LanguageParser.version). */
-  version = 1;
+  // 2: Zeilenberechnung ueber Index statt Zaehlschleife. Erhoeht, damit Dateien,
+  // die zuvor am PARSE-TIMEOUT scheiterten (parsed_at gesetzt, 0 Symbole), vom
+  // Backlog erneut geholt werden.
+  version = 2;
 
   parse(content: string, _filePath: string): ParseResult {
     const symbols: ParsedSymbol[] = [];
     const references: never[] = [];
+    // Zeilenumbrueche EINMAL vorberechnen — siehe zeileFuerPosition in types.ts.
+    const zeilenIndex = erstelleZeilenIndex(content);
 
     // 1. Alle String-Literale (Attribute wie class="foo", id="bar")
     symbols.push(...extractStringLiterals(content, { includeSingleQuotes: true }));
@@ -30,8 +35,7 @@ class HtmlParser implements LanguageParser {
     while ((m = tagRe.exec(content)) !== null) {
       const text = m[1].trim();
       if (text.length < 2 || text.length > 64 || /\s/.test(text)) continue;
-      let line = 1;
-      for (let i = 0; i < m.index; i++) if (content.charCodeAt(i) === 10) line++;
+      const line = zeileFuerPosition(zeilenIndex, m.index);
       const dedup = `${text}@${line}`;
       if (textSeen.has(dedup)) continue;
       textSeen.add(dedup);
@@ -49,8 +53,7 @@ class HtmlParser implements LanguageParser {
     while ((m = commentRe.exec(content)) !== null) {
       const text = m[1].trim();
       if (text.length < 3) continue;
-      let line = 1;
-      for (let i = 0; i < m.index; i++) if (content.charCodeAt(i) === 10) line++;
+      const line = zeileFuerPosition(zeilenIndex, m.index);
       symbols.push({
         symbol_type: 'comment',
         name: null,
@@ -67,8 +70,7 @@ class HtmlParser implements LanguageParser {
     const tokenSeen = new Set<string>();
     const pushWord = (word: string, absPos: number) => {
       if (word.length < 4 || word.length > 64) return;
-      let line = 1;
-      for (let i = 0; i < absPos; i++) if (content.charCodeAt(i) === 10) line++;
+      const line = zeileFuerPosition(zeilenIndex, absPos);
       const dedup = `${word}@${line}`;
       if (tokenSeen.has(dedup)) return;
       tokenSeen.add(dedup);
