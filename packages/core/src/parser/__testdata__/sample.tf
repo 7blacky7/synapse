@@ -2,7 +2,7 @@
 #
 # WOFUER: Diese Datei enthaelt absichtlich den Fall, bei dem die gemeldete
 # Zeilennummer frueher falsch war: der ERSTE Eintrag eines locals-Blocks bekam
-# die Zeilennummer der "locals {"-Kopfzeile statt seiner eigenen. Ursache ist
+# die Zeilennummer der [locals {]-Kopfzeile statt seiner eigenen. Ursache ist
 # das fuehrende \s* des Musters zusammen mit der Suche, die unmittelbar hinter
 # der oeffnenden Klammer ansetzt — also noch auf der Kopfzeile.
 # An nachgebautem Material lagen dadurch 49,7 % der local-Zeilennummern daneben.
@@ -17,11 +17,11 @@
 #   local [local.name_prefix] -> Zeile 66   (erster Eintrag des locals-Blocks)
 #   local [local.common_tags] -> Zeile 67
 #   class [terraform]         -> Zeile 26
-# Der ALTE Stand meldete fuer "local.name_prefix" eine Zeile zu frueh.
+# Der ALTE Stand meldete fuer [local.name_prefix] eine Zeile zu frueh.
 #
 # PRUEFEN: parse() auf diese Datei anwenden und die line_start-Werte gegen die
 # Liste oben halten. Wenn du diese Datei aenderst, ZIEH DIE NUMMERN OBEN NACH —
-# sie sind der Sollwert.
+# sie sind der Sollwert. MASCHINENLESBAR: jede Zeile der Form [name] -> Zeile N.
 
 terraform {
   required_version = ">= 1.5"

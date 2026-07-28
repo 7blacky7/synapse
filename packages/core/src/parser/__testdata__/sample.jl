@@ -11,12 +11,12 @@
 #   struct-Feld [max_tokens]  -> Zeile 40
 #   struct-Feld [name]        -> Zeile 48   (erstes Feld von Agent)
 #   struct-Feld [config]      -> Zeile 49
-# Der ALTE Stand meldete fuer "model" und "name" jeweils EINE Zeile zu frueh,
+# Der ALTE Stand meldete fuer [model] und [name] jeweils EINE Zeile zu frueh,
 # naemlich die Zeile des struct-Kopfes.
 #
 # PRUEFEN: parse() auf diese Datei anwenden und die line_start-Werte der
 # Symbole mit parent_id gegen die Liste oben halten. Wenn du diese Datei
-# aenderst, ZIEH DIE NUMMERN OBEN NACH — sie sind der Sollwert.
+# aenderst, ZIEH DIE NUMMERN OBEN NACH — sie sind der Sollwert. MASCHINENLESBAR: jede Zeile der Form [name] -> Zeile N.
 
 module SynapseAgent
 
