@@ -338,16 +338,19 @@ export async function updatePayloadByFilePath(
   const client = getQdrantClient();
   const fileName = newFilePath.split('/').pop() || newFilePath;
 
-  // Alle Punkte mit dem alten Pfad finden
-  const points = await scrollVectors<{ file_path: string }>(
-    collection,
-    { must: [{ key: 'file_path', match: { value: oldFilePath } }] },
-    1000
-  );
+  // Alle Punkte mit dem alten Pfad finden — ueber die paginierende Variante.
+  // Hier stand scrollVectors mit limit 1000. Das liefert nur die erste Seite:
+  // bei einer Datei mit mehr als 1000 Chunks wurden nur die ersten 1000 Punkte
+  // umbenannt, der Rest behielt den ALTEN file_path. Solche Punkte werden zur
+  // Karteileiche — die Suche liefert Treffer auf einen Pfad, den es nicht mehr
+  // gibt, und nichts schlaegt dabei fehl, es faellt also niemandem auf.
+  // index.html mit 5950 Chunks ist genau dieser Fall.
+  // Payload und Vektoren werden nicht gebraucht, nur die IDs.
+  const ids = await scrollePunktIds(collection, {
+    must: [{ key: 'file_path', match: { value: oldFilePath } }],
+  });
 
-  if (points.length === 0) return 0;
-
-  const ids = points.map(p => p.id);
+  if (ids.length === 0) return 0;
   try {
     await client.setPayload(collection, {
       wait: true,
@@ -367,7 +370,16 @@ export async function updatePayloadByFilePath(
 }
 
 /**
- * Holt alle Vektoren mit einem bestimmten Filter
+ * Holt EINE SEITE Punkte zu einem Filter — hoechstens limit Stueck.
+ *
+ * NICHT "alle": next_page_offset wird nicht ausgewertet, alles jenseits der
+ * ersten Seite fehlt stillschweigend. Wer wirklich jeden Treffer braucht, nimmt
+ * scrollePunktIds (paginiert, liefert die IDs).
+ *
+ * Diese Beschreibung lautete frueher "Holt alle Vektoren mit einem bestimmten
+ * Filter". Das war die eigentliche Fehlerquelle: updatePayloadByFilePath verliess
+ * sich darauf und benannte bei grossen Dateien nur die ersten 1000 Punkte um.
+ * Wer eine Hilfsfunktion falsch beschreibt, verteilt den Fehler auf alle Aufrufer.
  */
 export async function scrollVectors<T>(
   collection: string,
