@@ -76,6 +76,19 @@ function* trefferAb(text: string, startPos: number, stickyRe: RegExp, globalRe: 
   for (let i = lo; i < liste.length; i++) yield liste[i];
 }
 
+// Zeilennummer eines Treffers, gerechnet ab dem ersten NICHT-Leerzeichen des
+// Treffers statt ab seinem Anfang.
+// Die Muster hier beginnen mit \s+, und das greift ueber Zeilenumbrueche hinweg:
+// der Treffer beginnt dann unmittelbar hinter dem struct-Kopf oder auf einer
+// Leerzeile, waehrend das Feld selbst erst auf der naechsten Zeile steht. Das
+// erste Feld eines struct trug dadurch die Zeilennummer der Kopfzeile.
+// Gemessen gegen die Quelle waren 27 % der struct-Feld-Zeilen um genau eine
+// Zeile zu klein.
+function trefferZeile(text: string, m: RegExpExecArray, basis = 0): number {
+  const versatz = m[0].search(/\S/);
+  return lineAt(text, basis + m.index + (versatz > 0 ? versatz : 0));
+}
+
 // Muster als Modul-Konstanten, weil trefferListe ueber die Regex-IDENTITAET
 // zwischenspeichert.
 const ENDE_S = /\s*end\b/y;
@@ -276,7 +289,7 @@ class JuliaParser implements LanguageParser {
       const feldGrenze = endIdx > 0 ? feldStart + endIdx : content.length;
       for (const fm of trefferAb(content, feldStart, FELD_S, FELD_G)) {
         if (fm.index >= feldGrenze) break;
-        const fieldLine = lineAt(content, fm.index);
+        const fieldLine = trefferZeile(content, fm);
         if (fieldLine > lineEnd) break;
 
         symbols.push({

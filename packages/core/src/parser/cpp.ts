@@ -25,14 +25,41 @@ let cacheIndexA: number[] = [];
 let cacheTextB: string | null = null;
 let cacheIndexB: number[] = [];
 function lineAt(text: string, pos: number): number {
-  if (text === cacheTextA) return zeileFuerPosition(cacheIndexA, pos);
-  if (text === cacheTextB) return zeileFuerPosition(cacheIndexB, pos);
+  // BEI EINEM TREFFER WIRD DER SLOT AUF DIESES OBJEKT GESETZT, und das ist kein
+  // ueberfluessiges Zuweisen: text === cacheTextA ist nur dann ein Zeigervergleich,
+  // wenn es DASSELBE Objekt ist. Bei zwei verschiedenen Objekten mit GLEICHEM
+  // Inhalt muss V8 bis zum letzten Zeichen vergleichen, um Gleichheit festzustellen
+  // — das ist O(Dateigroesse) PRO AUFRUF. Ohne die Zuweisung bleibt das alte Objekt
+  // stehen und jeder weitere Treffer zahlt erneut (gemessen an 2,2 MB: 74 us je
+  // Aufruf, 357 ms von 855 ms Gesamtlaufzeit). Danach ist es ein Zeigervergleich.
+  if (text === cacheTextA) { cacheTextA = text; return zeileFuerPosition(cacheIndexA, pos); }
+  if (text === cacheTextB) { cacheTextB = text; return zeileFuerPosition(cacheIndexB, pos); }
   // Unbekannter Text: aeltesten Slot verdraengen, neuen nach vorne.
   cacheTextB = cacheTextA;
   cacheIndexB = cacheIndexA;
   cacheTextA = text;
   cacheIndexA = erstelleZeilenIndex(text);
   return zeileFuerPosition(cacheIndexA, pos);
+}
+
+// Die maskierte Fassung (Kommentare und Literalinhalte durch Leerzeichen ersetzt,
+// Laenge unveraendert) wird je Rohtext EINMAL gebaut und geteilt. Vorher bauten
+// parse() und findBodies() sie unabhaengig voneinander — zwei Strings mit exakt
+// gleichem Inhalt, aber verschiedene Objekte. Das kostete doppelt: einmal den
+// zweiten vollstaendigen Durchlauf, und dann dauerhaft den Inhaltsvergleich im
+// Zeilenindex-Cache oben, weil dieser die beiden Objekte nicht unterscheiden kann,
+// ohne sie ganz zu vergleichen.
+// Der Vergleich hier ist unkritisch: Aufrufer reichen immer DASSELBE content-Objekt
+// herein, es ist also ein Zeigervergleich. Beim Wechsel auf eine andere Datei
+// unterscheiden sich die Laengen praktisch immer, dann bricht V8 sofort ab.
+let maskeRohtext: string | null = null;
+let maskeErgebnis = '';
+function maskierteFassung(src: string): string {
+  if (src !== maskeRohtext) {
+    maskeRohtext = src;
+    maskeErgebnis = maskiereLiterale(stripComments(src));
+  }
+  return maskeErgebnis;
 }
 
 function endLineAt(text: string, pos: number, matchLength: number): number {
@@ -255,7 +282,8 @@ function extractFlowCpp(content: string): { statements: ParsedStatement[]; callE
   function findBodies(src: string): FuncBody[] {
     // Literale mitmaskieren: eine Klammer in einer Zeichenkette darf die
     // Rumpf-Grenzen nicht verschieben (CPARSER-15 B1).
-    const stripped = maskiereLiterale(stripComments(src));
+    // Geteilte Fassung, siehe maskierteFassung im Modulkopf.
+    const stripped = maskierteFassung(src);
 
     // class/struct-Bloecke, um Methoden ihren Typ zuzuordnen (scope_name).
     const typBloecke: { name: string; start: number; end: number }[] = [];
@@ -571,7 +599,12 @@ class CppParser implements LanguageParser {
    *      Treffer die gesamte bisherige Symbolliste zu durchsuchen. findParentType
    *      nutzt Binaersuche und Elternkette statt filter+sort ueber alle Typen.
    */
-  version = 12;
+  // 13: maskierte Fassung nur noch einmal je Datei bauen und teilen (siehe
+  //     maskierteFassung). Rein innerlich, die AUSGABE ist unveraendert — die
+  //     Erhoehung dient nur dem Nachziehen. Der Grund war nicht der doppelte
+  //     Durchlauf an sich, sondern dass zwei inhaltsgleiche String-Objekte den
+  //     Vergleich im Zeilenindex-Cache auf O(Dateigroesse) je Aufruf hoben.
+  version = 13;
   extensions = ['.cpp', '.hpp', '.cc', '.cxx', '.hxx', '.hh'];
 
   parse(content: string, filePath: string): ParseResult {
@@ -582,7 +615,7 @@ class CppParser implements LanguageParser {
     // Einmal je Datei: Kommentare und Literal-Inhalte maskiert, Laenge und damit
     // alle Positionen unveraendert. Grundlage fuer das Klammerzaehlen in
     // findClosingBrace (CPARSER-15 B1).
-    const maskiert = maskiereLiterale(stripComments(content));
+    const maskiert = maskierteFassung(content);
     const typeRanges = this.collectTypeRanges(maskiert);
     const typEltern = this.baueTypEltern(typeRanges);
     const parentTypeAt = (pos: number): string | undefined => this.findParentType(typeRanges, typEltern, pos);

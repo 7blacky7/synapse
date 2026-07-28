@@ -381,8 +381,11 @@ class CParser implements LanguageParser {
    *     mehrere Statements pro Zeile, Rumpf hinter einzeiligem Kontrollfluss-Kopf.
    * 3 = static wird auch erkannt, wenn es im Rueckgabetyp steht (is_exported).
    * 4 = Zeilenberechnung ueber Index statt Praefix-Kopie (siehe lineAt).
+   * 5 = eingerueckte Funktions-Prototypen in Headern werden erkannt (siehe protoRe).
+   *     Am echten Bestand: 10675 -> 14953 Prototypen ueber 1238 .h-Dateien. Die 18
+   *     entfallenen Eintraege sind Funktionszeiger-Typedefs, also eine Korrektur.
    */
-  version = 4;
+  version = 5;
 
   parse(content: string, filePath: string): ParseResult {
     const symbols: ParsedSymbol[] = [];
@@ -603,13 +606,28 @@ class CParser implements LanguageParser {
 
     // Funktions-Prototypen (in .h)
     if (isHeader) {
-      const protoRe = /^((?:extern\s+)?)((?:const\s+)?(?:unsigned\s+|signed\s+|long\s+|short\s+)?(?:struct\s+)?\w[\w*\s]*?)\s+(\*?\w+)\s*\(([^)]*)\)\s*;/gm;
+      // [ \t]* NACH dem ^: eine Deklaration steht selten am Zeilenanfang. In einem
+      // extern "C" {-Block ist praktisch JEDE eingerueckt, und ohne diese Erlaubnis
+      // fand das Muster dort gar nichts — ggml.h verlor auf diese Weise alle 354
+      // Deklarationen und meldete stattdessen 10 #define-Makros als "Funktionen".
+      // Ueber 1238 echte .h-Dateien fehlten dadurch 4944 Prototypen in 287 Dateien.
+      // Gegenprobe: das Makro-Praefix (GGML_API) war NICHT die Ursache — wird nur es
+      // entfernt, findet das alte Muster weiterhin null.
+      const protoRe = /^[ \t]*((?:extern\s+)?)((?:const\s+)?(?:unsigned\s+|signed\s+|long\s+|short\s+)?(?:struct\s+)?\w[\w*\s]*?)\s+(\*?\w+)\s*\(([^)]*)\)\s*;/gm;
       while ((m = protoRe.exec(content)) !== null) {
         const returnType = m[2].trim();
         const funcName = m[3].replace(/^\*/, '');
         const paramsRaw = m[4];
 
-        if (['if', 'for', 'while', 'switch', 'return', 'typedef'].includes(returnType)) continue;
+        // Wortgrenze statt exakter Gleichheit, aus zwei Gruenden:
+        // 1. Mit erlaubter Einrueckung wuerde "else return foo(...);" aus einer
+        //    Single-Header-Bibliothek als Deklaration durchgehen (Rueckgabetyp waere
+        //    "else return"). Gemessen: 7 solche Faelle in stb_image.h und VHACD.h.
+        // 2. "typedef int mbedtls_ssl_send_t(...)" ist ein Funktionszeiger-TYPEDEF,
+        //    keine Funktion. Die alte Pruefung auf exakt "typedef" liess es durch,
+        //    weil der Rueckgabetyp "typedef int" lautet — 18 solche Eintraege standen
+        //    faelschlich als Funktion im Index.
+        if (/\b(?:if|for|while|switch|return|typedef|else|do|case|goto)\b/.test(returnType)) continue;
 
         const params = paramsRaw === 'void' ? [] : paramsRaw
           .split(',')

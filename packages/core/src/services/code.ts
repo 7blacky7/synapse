@@ -508,10 +508,21 @@ export async function parseAndEmbed(
     // kippt, der naechste Tick holt sie wieder. Genau dagegen wurde der Skip-Pfad
     // fuer fehlende Parser einst gebaut; der Absturz-Fall fehlte.
     //
-    // BELEGT AN groovy.ts:366 — sc.type auf einem leergelaufenen Scope-Stack bei
-    // unausgeglichenen Klammern. 8 von 10 echten Gradle-Dateien im Bestand stuerzten
-    // ab, alle mit parsed_at IS NULL. Mit Minimalbeispielen laeuft derselbe Parser
-    // sauber — deshalb ist es nie jemandem aufgefallen.
+    // BELEGT AN groovy.ts:366 — sc.type auf einem leergelaufenen Scope-Stack. 8 von 22
+    // echten Gradle-Dateien im Bestand stuerzten ab. Ursache sind NICHT unausgeglichene
+    // Klammern, sondern ZWEI aufeinander folgende Bloecke auf Modulebene (in
+    // Gradle-Dateien der Normalfall: allprojects{} subprojects{} tasks.register{}):
+    // jeder traegt scopeIdx 0, jeder schliessende leerte per splice(0) den ganzen
+    // Stapel. Ein Block allein reicht nicht — deshalb laufen Minimalbeispiele sauber
+    // durch und es ist nie jemandem aufgefallen.
+    //
+    // ⚠️ parsed_at IST KEIN ZUVERLAESSIGER DETEKTOR fuer abstuerzende Dateien. Ich hatte
+    // hier zuerst "alle mit parsed_at IS NULL" stehen — das war eine Aussage ueber meine
+    // Stichprobe (LIMIT 10 nach Groesse), nicht ueber den Bestand. Ueber alle 22 gerechnet:
+    // die Richtung "parsed_at NULL -> stuerzt ab" haelt (6 von 6), die Gegenrichtung nicht
+    // (2 der 8 abstuerzenden Dateien haben parsed_at gesetzt, vermutlich aus einem Lauf vor
+    // der Aenderung). Wer abstuerzende Dateien ueber parsed_at sucht, findet 6 von 8.
+    // Der belastbare Nachweis ist der Laufzeittest, nicht die Korrelation.
     //
     // BEHANDLUNG WIE BEIM TIMEOUT und aus denselben Gruenden: Eintrag in
     // parse_failures, damit der Ausfall SICHTBAR wird (diese Tabelle war bis heute

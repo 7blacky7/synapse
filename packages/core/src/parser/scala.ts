@@ -538,6 +538,13 @@ class ScalaParser implements LanguageParser {
    * es die AEUSSERE — in Scala trifft das jedes companion object am Anfang einer
    * Klasse — und, weit haeufiger, sobald vor pos ueberhaupt eine schliessende
    * Klammer stand und danach keine neue Deklaration folgte, lieferte es gar nichts.
+   *
+   * ABWEICHUNG VON cpp.ts, bewusst und nicht zu "vereinheitlichen": cpp liefert den
+   * vollen Pfad ("Aussen::Innen"), die uebrigen acht Parser nur den innersten Namen.
+   * Grund: java.ts und dart.ts erkennen Konstruktoren daran, dass der Eltern-Typ
+   * GLEICH dem Symbolnamen ist. Ein Pfad waere nie gleich dem Namen — saemtliche
+   * Konstruktoren fielen aus dem Index. Wer das angleichen will, muss zuerst diesen
+   * Vergleich umbauen.
    */
   private findParentType(content: string, pos: number): string | undefined {
     this.bereiteTypGrenzenVor(content);

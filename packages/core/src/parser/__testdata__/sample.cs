@@ -77,6 +77,27 @@ namespace Synapse.Core
             => new(name, new AgentConfig(), null!);
     }
 
+    // Verschachtelung fuer den findParentType-Fall: Entry steht DIREKT am Anfang
+    // von Registry, ohne schliessende Klammer dazwischen. Bis Parser-Version 3
+    // lieferte der Eltern-Typ hier die AEUSSERE Deklaration (Registry) statt Entry.
+    // Describe/DescribeTwice und Lookup/Count decken zusaetzlich den haeufigeren
+    // Fall ab: ab der ZWEITEN Methode ging der Eltern-Typ ganz verloren.
+    public class Registry
+    {
+        public class Entry
+        {
+            public string Key;
+
+            public string Describe() => Key;
+
+            public string DescribeTwice() => Key + Key;
+        }
+
+        public Entry Lookup(string key) => null!;
+
+        public int Count() => 0;
+    }
+
     public delegate void StatusChanged(Status oldStatus, Status newStatus);
 
     // TODO: add health check endpoint

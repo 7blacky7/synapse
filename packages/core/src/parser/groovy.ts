@@ -359,7 +359,9 @@ class GroovyParser implements LanguageParser {
     const nord = (p: string | undefined): number => { const k = p ?? 'root'; const v = oc.get(k) ?? 0; oc.set(k, v + 1); return v; };
     interface GS { type: string; name: string | null; }
     const ss: GS[] = [{ type: 'module', name: null }];
-    const cs = (): GS => ss[ss.length - 1];
+    // Rueckfallebene: ss darf nie leer sein, sonst wirft jeder Zugriff auf sc.type.
+    // Die Ursache ist unten beim splice abgesichert; das hier faengt kuenftige Wege ab.
+    const cs = (): GS => ss[ss.length - 1] ?? { type: 'module', name: null };
 
     function es(st: string, line: number, pid: string | undefined, depth: number, extra: Partial<ParsedStatement> = {}): ParsedStatement {
       const sc = cs(); const id = nid();
@@ -371,6 +373,13 @@ class GroovyParser implements LanguageParser {
     }
 
     const gLines = content.split('\n');
+    // scopeIdx = auf welche Laenge der Scope-Stapel beim Schliessen dieses Blocks
+    // zurueckgeschnitten wird. Wer selbst einen Scope anlegt (Klasse, Methode), traegt
+    // ss.length - 1 ein und raeumt ihn damit wieder ab. Wer KEINEN anlegt (if, while,
+    // for, switch, try, Gradle-DSL), muss ss.length eintragen — sonst entfernt er den
+    // Scope, den er nur vorgefunden hat. Genau das war bis heute der Fall: bei
+    // scopeIdx 0 fuehrte es zum Absturz (leerer Stapel), darueber still zu einer
+    // falschen Zuordnung fuer alles, was nach dem Block kommt.
     interface GF { pid: string | undefined; depth: number; braceDepthAtOpen: number; scopeIdx: number; }
     const fs: GF[] = [{ pid: undefined, depth: 0, braceDepthAtOpen: 0, scopeIdx: 0 }];
     const tf = (): GF => fs[fs.length - 1];
@@ -388,7 +397,12 @@ class GroovyParser implements LanguageParser {
       // Pop frames for leading close braces BEFORE reading current frame
       if (closeB > openB) {
         braceDepth -= (closeB - openB);
-        while (fs.length > 1 && braceDepth < fs[fs.length - 1].braceDepthAtOpen) { const p = fs.pop()!; if (ss.length > p.scopeIdx) ss.splice(p.scopeIdx); }
+        // p.scopeIdx > 0: Index 0 ist der Modul-Scope und wird nie abgeschnitten.
+        // Ohne diese Grenze leerte ss.splice(0) den kompletten Stapel, und der naechste
+        // Zugriff auf cs().type warf einen TypeError — das traf 13 von 17 echten
+        // Gradle-Dateien. Bloecke auf Modulebene (plugins { ... }) tragen scopeIdx 0,
+        // weil sie selbst keinen Scope anlegen; sie duerfen also auch keinen entfernen.
+        while (fs.length > 1 && braceDepth < fs[fs.length - 1].braceDepthAtOpen) { const p = fs.pop()!; if (p.scopeIdx > 0 && ss.length > p.scopeIdx) ss.splice(p.scopeIdx); }
       }
 
       const f = tf();
@@ -425,7 +439,7 @@ class GroovyParser implements LanguageParser {
       const ifM = /^(?:else\s+)?if\s*\((.{0,200})\)/.exec(tr);
       if (ifM) {
         const st = es('if', ln, f.pid, d, { condition_text: ifM[1].slice(0, 200), text: tr.slice(0, 120) });
-        if (openB > closeB) { fs.push({ pid: st.temp_id, depth: d + 1, braceDepthAtOpen: braceDepth + openB - closeB, scopeIdx: ss.length - 1 }); }
+        if (openB > closeB) { fs.push({ pid: st.temp_id, depth: d + 1, braceDepthAtOpen: braceDepth + openB - closeB, scopeIdx: ss.length }); }
         braceDepth += openB - closeB;
         continue;
       }
@@ -435,7 +449,7 @@ class GroovyParser implements LanguageParser {
       const whM = /^while\s*\((.{0,200})\)/.exec(tr);
       if (whM) {
         const st = es('while', ln, f.pid, d, { condition_text: whM[1].slice(0, 200), text: tr.slice(0, 120) });
-        if (openB > closeB) { fs.push({ pid: st.temp_id, depth: d + 1, braceDepthAtOpen: braceDepth + openB - closeB, scopeIdx: ss.length - 1 }); }
+        if (openB > closeB) { fs.push({ pid: st.temp_id, depth: d + 1, braceDepthAtOpen: braceDepth + openB - closeB, scopeIdx: ss.length }); }
         braceDepth += openB - closeB;
         continue;
       }
@@ -444,7 +458,7 @@ class GroovyParser implements LanguageParser {
       const forM = /^for\s*\((.{0,200})\)/.exec(tr);
       if (forM) {
         const st = es('for', ln, f.pid, d, { condition_text: forM[1].slice(0, 200), text: tr.slice(0, 120) });
-        if (openB > closeB) { fs.push({ pid: st.temp_id, depth: d + 1, braceDepthAtOpen: braceDepth + openB - closeB, scopeIdx: ss.length - 1 }); }
+        if (openB > closeB) { fs.push({ pid: st.temp_id, depth: d + 1, braceDepthAtOpen: braceDepth + openB - closeB, scopeIdx: ss.length }); }
         braceDepth += openB - closeB;
         continue;
       }
@@ -453,7 +467,7 @@ class GroovyParser implements LanguageParser {
       const swM = /^switch\s*\((.{0,200})\)/.exec(tr);
       if (swM) {
         const st = es('switch', ln, f.pid, d, { condition_text: swM[1].slice(0, 200), text: tr.slice(0, 120) });
-        if (openB > closeB) { fs.push({ pid: st.temp_id, depth: d + 1, braceDepthAtOpen: braceDepth + openB - closeB, scopeIdx: ss.length - 1 }); }
+        if (openB > closeB) { fs.push({ pid: st.temp_id, depth: d + 1, braceDepthAtOpen: braceDepth + openB - closeB, scopeIdx: ss.length }); }
         braceDepth += openB - closeB;
         continue;
       }
@@ -461,7 +475,7 @@ class GroovyParser implements LanguageParser {
       // try / catch / finally
       if (/^try\s*\{/.test(tr)) {
         const st = es('try', ln, f.pid, d, { text: tr.slice(0, 120) });
-        fs.push({ pid: st.temp_id, depth: d + 1, braceDepthAtOpen: braceDepth + openB - closeB, scopeIdx: ss.length - 1 });
+        fs.push({ pid: st.temp_id, depth: d + 1, braceDepthAtOpen: braceDepth + openB - closeB, scopeIdx: ss.length });
         braceDepth += openB - closeB;
         continue;
       }
@@ -482,7 +496,12 @@ class GroovyParser implements LanguageParser {
         if (newM) ec(st.temp_id, newM[1], undefined, ln, 'new');
         else if (callM) ec(st.temp_id, callM[1], undefined, ln, 'function');
         braceDepth += openB - closeB;
-        while (fs.length > 1 && braceDepth < fs[fs.length - 1].braceDepthAtOpen) { const p = fs.pop()!; if (ss.length > p.scopeIdx) ss.splice(p.scopeIdx); }
+        // p.scopeIdx > 0: Index 0 ist der Modul-Scope und wird nie abgeschnitten.
+        // Ohne diese Grenze leerte ss.splice(0) den kompletten Stapel, und der naechste
+        // Zugriff auf cs().type warf einen TypeError — das traf 13 von 17 echten
+        // Gradle-Dateien. Bloecke auf Modulebene (plugins { ... }) tragen scopeIdx 0,
+        // weil sie selbst keinen Scope anlegen; sie duerfen also auch keinen entfernen.
+        while (fs.length > 1 && braceDepth < fs[fs.length - 1].braceDepthAtOpen) { const p = fs.pop()!; if (p.scopeIdx > 0 && ss.length > p.scopeIdx) ss.splice(p.scopeIdx); }
         continue;
       }
 
@@ -518,7 +537,7 @@ class GroovyParser implements LanguageParser {
         if (dslM) {
           const st = es('call', ln, f.pid, d, { callee: dslM[1], text: tr.slice(0, 120) });
           ec(st.temp_id, dslM[1], undefined, ln, 'function');
-          if (openB > closeB) { fs.push({ pid: st.temp_id, depth: d + 1, braceDepthAtOpen: braceDepth + openB - closeB, scopeIdx: ss.length - 1 }); }
+          if (openB > closeB) { fs.push({ pid: st.temp_id, depth: d + 1, braceDepthAtOpen: braceDepth + openB - closeB, scopeIdx: ss.length }); }
         }
       }
 
@@ -591,6 +610,13 @@ class GroovyParser implements LanguageParser {
    * schliessende Klammer stand und danach keine neue Deklaration folgte, lieferte
    * es gar nichts. Schon die zweite Methode einer gewoehnlichen Klasse verlor so
    * ihren Eltern-Typ.
+   *
+   * ABWEICHUNG VON cpp.ts, bewusst und nicht zu "vereinheitlichen": cpp liefert den
+   * vollen Pfad ("Aussen::Innen"), die uebrigen acht Parser nur den innersten Namen.
+   * Grund: java.ts und dart.ts erkennen Konstruktoren daran, dass der Eltern-Typ
+   * GLEICH dem Symbolnamen ist. Ein Pfad waere nie gleich dem Namen — saemtliche
+   * Konstruktoren fielen aus dem Index. Wer das angleichen will, muss zuerst diesen
+   * Vergleich umbauen.
    */
   private findParentType(content: string, pos: number): string | undefined {
     this.bereiteTypGrenzenVor(content);

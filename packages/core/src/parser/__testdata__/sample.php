@@ -85,4 +85,19 @@ function createAgent(string $name, ?AgentConfig $config = null): SynapseAgent {
     return new SynapseAgent($name, $config ?? new AgentConfig());
 }
 
+// Zum findParentType-Fall: PHP kennt KEINE benannten verschachtelten Klassen (nur
+// anonyme Klassen innerhalb von Methoden, und die haben keinen Namen, auf den sich
+// ein Eltern-Typ beziehen koennte). Der Verschachtelungsfall ist hier also
+// sprachlich nicht darstellbar. Belegbar bleibt der haeufigere Fall: ab der ZWEITEN
+// Methode einer Klasse ging der Eltern-Typ bis Parser-Version 3 ganz verloren.
+class Registry {
+    public function lookup(string $key): ?string {
+        return null;
+    }
+
+    public function count(): int {
+        return 0;
+    }
+}
+
 // FIXME: add retry logic for model calls

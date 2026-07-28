@@ -25,6 +25,18 @@ function lineAt(text: string, pos: number): number {
   return zeileFuerPosition(zeilenCacheIndex, pos);
 }
 
+// Zeilennummer eines Treffers, gerechnet ab dem ersten NICHT-Leerzeichen des
+// Treffers statt ab seinem Anfang.
+// Die Muster hier beginnen mit \s*, und das greift ueber Zeilenumbrueche hinweg:
+// bei der Probe direkt hinter 'locals {' liegt der Trefferanfang noch auf der
+// Kopfzeile, waehrend der Eintrag selbst erst auf der naechsten Zeile steht.
+// Das erste local eines Blocks trug dadurch die Zeilennummer der locals-Zeile.
+// Gleiche Ursache und zeichengleicher Helfer wie in julia.ts und protobuf.ts.
+function trefferZeile(text: string, m: RegExpExecArray, basis = 0): number {
+  const versatz = m[0].search(/\S/);
+  return lineAt(text, basis + m.index + (versatz > 0 ? versatz : 0));
+}
+
 // Muster, die frueher je Block in einer frischen Kopie des Dateirests gesucht
 // wurden. Als Modul-Konstanten, weil trefferListe ueber die Regex-IDENTITAET
 // zwischenspeichert — in einer Schleife erzeugte Literale waeren jedes Mal ein
@@ -337,7 +349,7 @@ class HclParser implements LanguageParser {
       // Ohne Kopie: die Schleife bricht ohnehin am Blockende ab, die Kopie des
       // gesamten Dateirests fiel trotzdem je locals-Block an.
       for (const lm of trefferAb(content, m.index + m[0].length, LOKAL_S, LOKAL_G)) {
-        const localLine = lineAt(content, lm.index);
+        const localLine = trefferZeile(content, lm);
         if (localLine > lineEnd) break;
 
         symbols.push({

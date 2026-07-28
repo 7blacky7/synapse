@@ -1,3 +1,29 @@
+// FIXTURE MIT SOLLWERTEN — Zeilennummern der Parser-Ausgabe (protobuf.ts).
+//
+// WOFUER: Diese Datei enthaelt absichtlich die Faelle, bei denen die gemeldete
+// Zeilennummer frueher falsch war. Betroffen waren FUENF Symbolarten, nicht nur
+// die Felder: message- und enum-Deklarationen (weil das fuehrende (\s*) des
+// Musters ueber die Leerzeile davor greift), sowie das jeweils ERSTE Feld, das
+// erste oneof und das erste rpc eines Blocks (weil dort die Suche unmittelbar
+// hinter der oeffnenden Klammer beginnt, also noch auf der Kopfzeile).
+// An echtem Bestand lagen dadurch 52 % der message-, 56 % der enum- und 59 %
+// der oneof-Zeilennummern daneben.
+//
+// SOLL (Stand ab dem trefferZeile-Fix, Symbol -> Zeile die es tragen MUSS):
+//   enum   [Status]             -> Zeile 37
+//   Wert   [STATUS_UNSPECIFIED] -> Zeile 38   (erster Wert des enum)
+//   class  [AgentConfig]        -> Zeile 45
+//   Feld   [model]              -> Zeile 46   (erstes Feld der message)
+//   class  [ProcessResult]      -> Zeile 89
+//   oneof  [outcome]            -> Zeile 90   (erstes oneof der message)
+//   class  [AgentService]       -> Zeile 97
+//   rpc    [CreateAgent]        -> Zeile 98   (erstes rpc des service)
+// Der ALTE Stand meldete fuer JEDES dieser Symbole eine Zeile zu frueh.
+//
+// PRUEFEN: parse() auf diese Datei anwenden und die line_start-Werte gegen die
+// Liste oben halten. Wenn du diese Datei aenderst, ZIEH DIE NUMMERN OBEN NACH —
+// sie sind der Sollwert.
+
 syntax = "proto3";
 
 package synapse.api.v1;
@@ -58,6 +84,14 @@ message ProcessRequest {
 message ProcessResponse {
   string response = 1;
   int32 tokens_used = 2;
+}
+
+message ProcessResult {
+  oneof outcome {
+    ProcessResponse success = 1;
+    string error_message = 2;
+  }
+  int32 retries = 3;
 }
 
 service AgentService {

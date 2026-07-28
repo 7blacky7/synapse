@@ -368,6 +368,9 @@ class DartParser implements LanguageParser {
 
       const parentType = this.findParentType(content, m.index);
       if (parentType !== name) continue;
+      // Position des Namens, nicht des Treffers: das fuehrende \s* der ctorRe kann
+      // den Zeilenumbruch mitgefressen haben und laege dann in der Vorzeile.
+      if (!this.istKonstruktorDeklaration(content, m.index + m[1].length)) continue;
 
       const params = paramsRaw
         .split(',')
@@ -584,8 +587,21 @@ class DartParser implements LanguageParser {
    * schliessende Klammer stand und danach keine neue Deklaration folgte, lieferte
    * es gar nichts. Schon die zweite Methode einer gewoehnlichen Klasse verlor so
    * ihren Eltern-Typ.
+   *
+   * ABWEICHUNG VON cpp.ts, bewusst und nicht zu "vereinheitlichen": cpp liefert den
+   * vollen Pfad ("Aussen::Innen"), die uebrigen acht Parser nur den innersten Namen.
+   * Grund: java.ts und dart.ts erkennen Konstruktoren daran, dass der Eltern-Typ
+   * GLEICH dem Symbolnamen ist. Ein Pfad waere nie gleich dem Namen — saemtliche
+   * Konstruktoren fielen aus dem Index. Wer das angleichen will, muss zuerst diesen
+   * Vergleich umbauen.
    */
   private findParentType(content: string, pos: number): string | undefined {
+    const i = this.findParentIndex(content, pos);
+    return i >= 0 ? this.typBereiche[i].name : undefined;
+  }
+
+  /** Index der innersten Typ-Deklaration, die pos umschliesst; -1 wenn keine. */
+  private findParentIndex(content: string, pos: number): number {
     this.bereiteTypGrenzenVor(content);
     const bereiche = this.typBereiche;
     let lo = 0;
@@ -599,7 +615,40 @@ class DartParser implements LanguageParser {
     // abgeschlossener Nachbar — dann ueber die Elternkette nach aussen weiter.
     let i = lo - 1;
     while (i >= 0 && bereiche[i].end <= pos) i = bereiche[i].eltern;
-    return i >= 0 ? bereiche[i].name : undefined;
+    return i;
+  }
+
+  /**
+   * Trennt Konstruktor-DEKLARATION von Konstruktor-AUFRUF. Die ctorRe kann das
+   * nicht: "Foo(a: 1);" sieht in beiden Faellen gleich aus. Bis Version 3 hat der
+   * Vergleich parentType === name das nebenbei miterledigt — aber nur, weil
+   * findParentType meist ueberhaupt keinen Eltern-Typ lieferte. Dieser Schutz war
+   * ein Zufall, kein Entwurf; er fiel mit der Korrektur von findParentType weg und
+   * muss hier echt nachgeliefert werden, sonst landen copyWith-Rumpfe als
+   * Konstruktoren im Index.
+   *
+   * Zwei Bedingungen, die erst ZUSAMMEN alle geprueften Aufruf-Formen ausschliessen:
+   *  1. Die Deklaration steht DIREKT im Rumpf ihres Typs. Ein Aufruf innerhalb
+   *     einer Methode liegt eine Klammerebene tiefer.
+   *  2. Unmittelbar davor steht kein Ausdruckskontext. Das faengt die Aufrufe ohne
+   *     eigene Klammerebene ab — vor allem "=> Foo(...)" bei copyWith und Gettern.
+   * Jede Bedingung allein laesst Faelle durch: 1. nicht die Pfeil-Rumpfe, 2. nicht
+   * ein alleinstehendes "Foo(a: 1);" als Statement.
+   */
+  private istKonstruktorDeklaration(content: string, start: number): boolean {
+    const i = this.findParentIndex(content, start);
+    if (i < 0) return false;
+    let tiefe = 0;
+    for (let k = this.typBereiche[i].start + 1; k < start; k++) {
+      const zeichen = content.charCodeAt(k);
+      if (zeichen === 123) tiefe++;
+      else if (zeichen === 125) tiefe--;
+    }
+    if (tiefe !== 0) return false;
+    const davor = content.slice(0, start).trimEnd();
+    if (davor === '') return true;
+    if (/(?:=>|[=(\[,:?])$/.test(davor)) return false;
+    return !/\b(?:return|await|yield|throw|new|const|final|var)$/.test(davor);
   }
 }
 
