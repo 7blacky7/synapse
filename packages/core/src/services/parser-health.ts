@@ -291,11 +291,17 @@ function erzeugeBefund(d: ParserGesundheitDatei): string[] {
   }
 
   if (d.veraltet) {
+    // HIER STAND BIS 29fbe29: "wird derzeit NICHT automatisch nachgezogen" fuer den
+    // NULL-Fall. Das stimmte, solange der Backlog parser_version NULL ausschloss.
+    // Seit dem Nachzieh-Fix zaehlt NULL mit — getVersionierteExtensions() liefert nur
+    // Endungen mit Version ueber 1, ein NULL dort ist also ein Beweis fuer einen alten
+    // Stand und kein Unbekanntes. Der einzige verbliebene Grund, aus dem eine faellige
+    // Datei liegen bleibt, ist ein in der Registry deaktiviertes Projekt.
     befund.push(
-      d.parser_version === null
-        ? `Parse-Stand ohne Versionsangabe, aktuell ist Version ${d.parser_version_aktuell} — ` +
-          `wird derzeit NICHT automatisch nachgezogen.`
-        : `Geparst mit Parser-Version ${d.parser_version}, aktuell ist ${d.parser_version_aktuell}.`
+      (d.parser_version === null
+        ? `Parse-Stand ohne Versionsangabe, aktuell ist Version ${d.parser_version_aktuell}`
+        : `Geparst mit Parser-Version ${d.parser_version}, aktuell ist ${d.parser_version_aktuell}`) +
+        ` — faellig fuer den Nachzug, sofern das Projekt in der Registry aktiviert ist.`
     );
   }
 
