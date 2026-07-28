@@ -30,17 +30,129 @@ class SvelteParser implements LanguageParser {
   extensions = ['.svelte'];
   /** Bei inhaltlichen Parser-Aenderungen erhoehen (siehe LanguageParser.version). */
   // 2: Zeilenberechnung ueber Index statt Praefix-Kopie (siehe lineAt).
-  version = 2;
+  // 3: Alle <script>-Bloecke statt nur dem ersten (siehe parse).
+  version = 3;
 
   parse(content: string, filePath: string): ParseResult {
     const symbols: ParsedSymbol[] = [];
     const references: ParsedReference[] = [];
     let m: RegExpExecArray | null;
 
-    // Extract script block content
-    const scriptMatch = content.match(/<script(?:\s+[^>]*)?>([\s\S]*?)<\/script>/i);
-    const scriptContent = scriptMatch ? scriptMatch[1] : '';
-    const scriptOffset = scriptMatch ? content.indexOf(scriptMatch[1]) : 0;
+    // ══════════════════════════════════════════════
+    // 1.-7. Script-Bloecke — jeder einzeln
+    // ══════════════════════════════════════════════
+    // Eine Svelte-Datei hat regelmaessig ZWEI <script>-Bloecke nebeneinander:
+    // den Instanz-Block und <script context="module"> (Svelte 5: <script module>).
+    // Frueher las content.match nur den ERSTEN — alles im zweiten fehlte still im
+    // Index. matchAll liefert die Bloecke in Dateireihenfolge; die Ergebnisse
+    // werden in derselben Reihenfolge angehaengt, damit die Zeilennummern ueber
+    // die Blockgrenze hinweg nicht rueckwaerts springen.
+    const scriptRe = /<script(?:\s+[^>]*)?>([\s\S]*?)<\/script>/gi;
+    // Store-Referenzen werden wie bisher ueber die ganze Datei dedupliziert,
+    // nicht je Block — sonst erschiene derselbe Store zweimal.
+    const seenStores = new Set<string>();
+    for (const block of content.matchAll(scriptRe)) {
+      const blockSymbols: ParsedSymbol[] = [];
+      const blockReferences: ParsedReference[] = [];
+      // Offset des Inhalts = Blockanfang + Laenge des oeffnenden Tags. Frueher
+      // stand hier content.indexOf(inhalt): das findet bei mehreren Bloecken
+      // immer den ersten und faellt bei leerem Inhalt auf 0 zurueck.
+      const scriptOffset = (block.index ?? 0) + block[0].indexOf('>') + 1;
+      this.parseScriptBlock(block[1] || '', scriptOffset, content, blockSymbols, blockReferences, seenStores);
+      symbols.push(...blockSymbols);
+      references.push(...blockReferences);
+    }
+
+    // ══════════════════════════════════════════════
+    // 8. Template: Component usage
+    // ══════════════════════════════════════════════
+    const componentRe = /<([A-Z]\w+)/g;
+    const seenComponents = new Set<string>();
+    while ((m = componentRe.exec(content)) !== null) {
+      const name = m[1];
+      if (seenComponents.has(name)) continue;
+      seenComponents.add(name);
+      references.push({
+        symbol_name: name,
+        line_number: lineAt(content, m.index),
+        context: `<${name} ...>`,
+      });
+    }
+
+    // ══════════════════════════════════════════════
+    // 9. Template: Slots
+    // ══════════════════════════════════════════════
+    const slotRe = /<slot\s+name=["'](\w+)["']/g;
+    while ((m = slotRe.exec(content)) !== null) {
+      symbols.push({
+        symbol_type: 'variable',
+        name: `slot:${m[1]}`,
+        value: 'named slot',
+        line_start: lineAt(content, m.index),
+        is_exported: true,
+      });
+    }
+
+    // Default slot
+    if (/<slot\s*\/?>/.test(content) && !/<slot\s+name=/.test(content.match(/<slot\s*\/?>/)?.[0] || '')) {
+      const slotMatch = content.match(/<slot\s*\/?>/);
+      if (slotMatch) {
+        symbols.push({
+          symbol_type: 'variable',
+          name: 'slot:default',
+          value: 'default slot',
+          line_start: lineAt(content, content.indexOf(slotMatch[0])),
+          is_exported: true,
+        });
+      }
+    }
+
+    // ══════════════════════════════════════════════
+    // 10. Style block
+    // ══════════════════════════════════════════════
+    const styleMatch = content.match(/<style(?:\s+[^>]*)?>[\s\S]*?<\/style>/i);
+    if (styleMatch) {
+      symbols.push({
+        symbol_type: 'variable',
+        name: 'style',
+        value: styleMatch[0].includes('lang=') ? 'scoped (preprocessor)' : 'scoped',
+        line_start: lineAt(content, content.indexOf(styleMatch[0])),
+        is_exported: false,
+      });
+    }
+
+    // ══════════════════════════════════════════════
+    // 11. TODO / FIXME / HACK
+    // ══════════════════════════════════════════════
+    const todoRe = /(?:\/\/|<!--)\s*(TODO|FIXME|HACK):?\s*(.*?)(?:-->)?$/gim;
+    while ((m = todoRe.exec(content)) !== null) {
+      symbols.push({
+        symbol_type: 'todo',
+        name: null,
+        value: m[0].trim(),
+        line_start: lineAt(content, m.index),
+        is_exported: false,
+      });
+    }
+
+    symbols.push(...extractStringLiterals(content, { includeSingleQuotes: true }));
+
+
+    return { symbols, references, statements: [], callEdges: [] };
+  }
+
+  /**
+   * Wertet EINEN <script>-Block aus (Abschnitte 1-7).
+   * scriptOffset ist die Position des Blockinhalts in der Gesamtdatei — alle
+   * Zeilennummern entstehen aus scriptOffset + Trefferposition und sind damit
+   * Zeilen der Datei, nicht des Blocks.
+   * seenStores wird dateiweit geteilt (siehe Aufrufer).
+   */
+  private parseScriptBlock(
+    scriptContent: string, scriptOffset: number, content: string,
+    symbols: ParsedSymbol[], references: ParsedReference[], seenStores: Set<string>
+  ): void {
+    let m: RegExpExecArray | null;
 
     // ══════════════════════════════════════════════
     // 1. Script: Imports
@@ -161,7 +273,6 @@ class SvelteParser implements LanguageParser {
     // 6. Script: Store subscriptions ($storeName)
     // ══════════════════════════════════════════════
     const storeRe = /\$(\w+)/g;
-    const seenStores = new Set<string>();
     while ((m = storeRe.exec(scriptContent)) !== null) {
       const name = m[1];
       if (name === ':' || seenStores.has(name)) continue;
@@ -188,83 +299,6 @@ class SvelteParser implements LanguageParser {
         is_exported: false,
       });
     }
-
-    // ══════════════════════════════════════════════
-    // 8. Template: Component usage
-    // ══════════════════════════════════════════════
-    const componentRe = /<([A-Z]\w+)/g;
-    const seenComponents = new Set<string>();
-    while ((m = componentRe.exec(content)) !== null) {
-      const name = m[1];
-      if (seenComponents.has(name)) continue;
-      seenComponents.add(name);
-      references.push({
-        symbol_name: name,
-        line_number: lineAt(content, m.index),
-        context: `<${name} ...>`,
-      });
-    }
-
-    // ══════════════════════════════════════════════
-    // 9. Template: Slots
-    // ══════════════════════════════════════════════
-    const slotRe = /<slot\s+name=["'](\w+)["']/g;
-    while ((m = slotRe.exec(content)) !== null) {
-      symbols.push({
-        symbol_type: 'variable',
-        name: `slot:${m[1]}`,
-        value: 'named slot',
-        line_start: lineAt(content, m.index),
-        is_exported: true,
-      });
-    }
-
-    // Default slot
-    if (/<slot\s*\/?>/.test(content) && !/<slot\s+name=/.test(content.match(/<slot\s*\/?>/)?.[0] || '')) {
-      const slotMatch = content.match(/<slot\s*\/?>/);
-      if (slotMatch) {
-        symbols.push({
-          symbol_type: 'variable',
-          name: 'slot:default',
-          value: 'default slot',
-          line_start: lineAt(content, content.indexOf(slotMatch[0])),
-          is_exported: true,
-        });
-      }
-    }
-
-    // ══════════════════════════════════════════════
-    // 10. Style block
-    // ══════════════════════════════════════════════
-    const styleMatch = content.match(/<style(?:\s+[^>]*)?>[\s\S]*?<\/style>/i);
-    if (styleMatch) {
-      symbols.push({
-        symbol_type: 'variable',
-        name: 'style',
-        value: styleMatch[0].includes('lang=') ? 'scoped (preprocessor)' : 'scoped',
-        line_start: lineAt(content, content.indexOf(styleMatch[0])),
-        is_exported: false,
-      });
-    }
-
-    // ══════════════════════════════════════════════
-    // 11. TODO / FIXME / HACK
-    // ══════════════════════════════════════════════
-    const todoRe = /(?:\/\/|<!--)\s*(TODO|FIXME|HACK):?\s*(.*?)(?:-->)?$/gim;
-    while ((m = todoRe.exec(content)) !== null) {
-      symbols.push({
-        symbol_type: 'todo',
-        name: null,
-        value: m[0].trim(),
-        line_start: lineAt(content, m.index),
-        is_exported: false,
-      });
-    }
-
-    symbols.push(...extractStringLiterals(content, { includeSingleQuotes: true }));
-
-
-    return { symbols, references, statements: [], callEdges: [] };
   }
 }
 

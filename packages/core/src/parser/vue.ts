@@ -30,60 +30,50 @@ class VueParser implements LanguageParser {
   extensions = ['.vue'];
   /** Bei inhaltlichen Parser-Aenderungen erhoehen (siehe LanguageParser.version). */
   // 2: Zeilenberechnung ueber Index statt Praefix-Kopie (siehe lineAt).
-  version = 2;
+  // 3: Alle <script>-Bloecke statt nur einem (siehe parse).
+  version = 3;
 
   parse(content: string, filePath: string): ParseResult {
     const symbols: ParsedSymbol[] = [];
     const references: ParsedReference[] = [];
     let m: RegExpExecArray | null;
 
-    // Detect script setup vs options API
-    const setupMatch = content.match(/<script\s+setup(?:\s+[^>]*)?>[\s\S]*?<\/script>/i);
-    const scriptMatch = content.match(/<script(?:\s+[^>]*)?>[\s\S]*?<\/script>/i);
-    const isSetup = !!setupMatch;
-    const scriptBlock = (setupMatch || scriptMatch)?.[0] || '';
-    const scriptContent = scriptBlock.replace(/<\/?script[^>]*>/gi, '');
-    const scriptOffset = content.indexOf(scriptContent);
-
     // ══════════════════════════════════════════════
-    // 1. Imports
+    // 1. Script-Bloecke — jeder einzeln
     // ══════════════════════════════════════════════
-    const importRe = /^\s*import\s+(?:\{([^}]+)\}\s+from\s+)?(?:(\w+)\s+from\s+)?['"]([^'"]+)['"]/gm;
-    while ((m = importRe.exec(scriptContent)) !== null) {
-      const named = m[1] ? m[1].split(',').map(n => n.trim().split(' as ').pop()!.trim()).filter(Boolean) : [];
-      const defaultImport = m[2];
-      const source = m[3];
-      const lineStart = lineAt(content, scriptOffset + m.index);
+    // Eine SFC hat regelmaessig BEIDE Bloecke nebeneinander: <script setup> fuer
+    // die Composition API und <script> fuer alles, was ausserhalb des
+    // setup-Scopes stehen muss (benannte Exporte, defineComponent-Optionen).
+    // Frueher waehlte (setupMatch || scriptMatch) genau EINEN aus — alles im
+    // anderen fehlte still im Index. Jeder Block wird jetzt mit dem Zweig
+    // ausgewertet, der zu seinen Attributen passt. matchAll liefert die Bloecke
+    // in Dateireihenfolge; die Ergebnisse werden in derselben Reihenfolge
+    // angehaengt, damit die Zeilennummern ueber die Blockgrenze hinweg nicht
+    // rueckwaerts springen.
+    const scriptRe = /<script(\s+[^>]*)?>([\s\S]*?)<\/script>/gi;
+    for (const block of content.matchAll(scriptRe)) {
+      // Je Block eigene Listen: die Dedup-Pruefung in parseSetupScript (arrowRe)
+      // vergleicht nur den Namen und wuerde sonst ein gleichnamiges Symbol des
+      // zweiten Blocks verschlucken.
+      const blockSymbols: ParsedSymbol[] = [];
+      const blockReferences: ParsedReference[] = [];
+      const attribute = block[1] || '';
+      const scriptContent = block[2] || '';
+      // Offset des Inhalts = Blockanfang + Laenge des oeffnenden Tags. Frueher
+      // stand hier content.indexOf(inhalt): das findet bei mehreren Bloecken
+      // immer den ersten und faellt bei leerem Inhalt auf 0 zurueck.
+      const scriptOffset = (block.index ?? 0) + block[0].indexOf('>') + 1;
+      const isSetup = /(?:^|\s)setup(?:[\s=]|$)/i.test(attribute);
 
-      if (defaultImport) {
-        symbols.push({
-          symbol_type: 'import',
-          name: defaultImport,
-          value: source,
-          line_start: lineStart,
-          is_exported: false,
-        });
+      this.parseImports(scriptContent, scriptOffset, content, blockSymbols, blockReferences);
+      if (isSetup) {
+        this.parseSetupScript(scriptContent, scriptOffset, content, blockSymbols, blockReferences);
+      } else {
+        this.parseOptionsAPI(scriptContent, scriptOffset, content, blockSymbols, blockReferences);
       }
-      for (const name of named) {
-        symbols.push({
-          symbol_type: 'import',
-          name,
-          value: source,
-          line_start: lineStart,
-          is_exported: false,
-        });
-      }
-      references.push({
-        symbol_name: source.split('/').pop()?.replace(/\.\w+$/, '') || source,
-        line_number: lineStart,
-        context: m[0].trim().slice(0, 80),
-      });
-    }
 
-    if (isSetup) {
-      this.parseSetupScript(scriptContent, scriptOffset, content, symbols, references);
-    } else {
-      this.parseOptionsAPI(scriptContent, scriptOffset, content, symbols, references);
+      symbols.push(...blockSymbols);
+      references.push(...blockReferences);
     }
 
     // ══════════════════════════════════════════════
@@ -136,6 +126,49 @@ class VueParser implements LanguageParser {
 
 
     return { symbols, references, statements: [], callEdges: [] };
+  }
+
+  /**
+   * Imports EINES <script>-Blocks. offset ist die Position des Blockinhalts in
+   * der Gesamtdatei, damit die Zeilennummern Datei-Zeilen sind, nicht Block-Zeilen.
+   */
+  private parseImports(
+    script: string, offset: number, content: string,
+    symbols: ParsedSymbol[], references: ParsedReference[]
+  ): void {
+    let m: RegExpExecArray | null;
+
+    const importRe = /^\s*import\s+(?:\{([^}]+)\}\s+from\s+)?(?:(\w+)\s+from\s+)?['"]([^'"]+)['"]/gm;
+    while ((m = importRe.exec(script)) !== null) {
+      const named = m[1] ? m[1].split(',').map(n => n.trim().split(' as ').pop()!.trim()).filter(Boolean) : [];
+      const defaultImport = m[2];
+      const source = m[3];
+      const lineStart = lineAt(content, offset + m.index);
+
+      if (defaultImport) {
+        symbols.push({
+          symbol_type: 'import',
+          name: defaultImport,
+          value: source,
+          line_start: lineStart,
+          is_exported: false,
+        });
+      }
+      for (const name of named) {
+        symbols.push({
+          symbol_type: 'import',
+          name,
+          value: source,
+          line_start: lineStart,
+          is_exported: false,
+        });
+      }
+      references.push({
+        symbol_name: source.split('/').pop()?.replace(/\.\w+$/, '') || source,
+        line_number: lineStart,
+        context: m[0].trim().slice(0, 80),
+      });
+    }
   }
 
   private parseSetupScript(
