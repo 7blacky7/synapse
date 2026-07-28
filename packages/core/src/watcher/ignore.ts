@@ -290,6 +290,12 @@ interface RegelStand {
    */
   gesperrt: string[];
   geladenAm: number;
+  /**
+   * Zeitpunkt, ab dem neu geladen werden MUSS. Normalerweise geladenAm plus
+   * REGEL_GUELTIGKEIT_MS, bei einer laufenden Einblendungsfrist aber deren Ende —
+   * sonst bliebe eine Datei ueber das zugesagte Fristende hinaus sichtbar.
+   */
+  gueltigBis: number;
 }
 
 const regelSpeicher = new Map<string, RegelStand>();
@@ -325,7 +331,7 @@ function gepufferterStand(project?: string): RegelStand | null {
   if (!project) return null;
   const stand = regelSpeicher.get(project);
   if (!stand) return null;
-  if (Date.now() - stand.geladenAm > REGEL_GUELTIGKEIT_MS && !laufendeAbfragen.has(project)) {
+  if (Date.now() > stand.gueltigBis && !laufendeAbfragen.has(project)) {
     void aktualisiereIgnoreRegeln(project);
   }
   return stand;
@@ -345,14 +351,45 @@ export async function aktualisiereIgnoreRegeln(project: string): Promise<number>
   laufendeAbfragen.add(project);
   try {
     const { getPool } = await import('../db/client.js');
-    const ergebnis = await getPool().query<{ pattern: string; modus: string }>(
-      'SELECT pattern, modus FROM project_ignore_rules WHERE project = $1 AND enabled ORDER BY sort_order, id',
+    // eingeblendet_bis hebt eine Ausblend-Regel voruebergehend auf. Die Pruefung
+    // laeuft ueber NOW() in der Datenbank, damit die Zeitrechnung an EINER Stelle
+    // stattfindet und nicht von der Uhr des jeweiligen Prozesses abhaengt.
+    const ergebnis = await getPool().query<{
+      pattern: string;
+      modus: string;
+      befristet_offen: boolean;
+      restsekunden: number | null;
+    }>(
+      `SELECT pattern,
+              modus,
+              (modus = 'ausgeblendet' AND eingeblendet_bis IS NOT NULL AND eingeblendet_bis > NOW()) AS befristet_offen,
+              CASE WHEN eingeblendet_bis > NOW()
+                   THEN EXTRACT(EPOCH FROM (eingeblendet_bis - NOW()))
+              END AS restsekunden
+         FROM project_ignore_rules
+        WHERE project = $1 AND enabled
+        ORDER BY sort_order, id`,
       [project],
     );
+    // Eine Regel mit laufender Frist zaehlt nicht zur Sichtbarkeitsmenge — genau
+    // das ist die Einblendung.
+    const sichtbarkeit = ergebnis.rows.filter((zeile) => !zeile.befristet_offen);
+    // Laeuft demnaechst eine Frist ab, muss der Zwischenspeicher SPAETESTENS dann
+    // erneuert werden. Sonst bliebe die Datei ueber das Fristende hinaus sichtbar,
+    // und eine Zusage "eine Stunde" waere in Wahrheit "eine Stunde plus was der
+    // Puffer noch haelt".
+    const naechsteFrist = ergebnis.rows
+      .map((zeile) => (zeile.restsekunden === null ? null : Number(zeile.restsekunden)))
+      .filter((sek): sek is number => sek !== null && sek > 0)
+      .sort((a, b) => a - b)[0];
     regelSpeicher.set(project, {
-      muster: ergebnis.rows.map((zeile) => zeile.pattern),
+      muster: sichtbarkeit.map((zeile) => zeile.pattern),
       gesperrt: ergebnis.rows.filter((zeile) => zeile.modus === 'gesperrt').map((zeile) => zeile.pattern),
       geladenAm: Date.now(),
+      gueltigBis:
+        naechsteFrist !== undefined
+          ? Date.now() + Math.min(naechsteFrist * 1000, REGEL_GUELTIGKEIT_MS)
+          : Date.now() + REGEL_GUELTIGKEIT_MS,
     });
     return ergebnis.rowCount ?? 0;
   } catch (error) {

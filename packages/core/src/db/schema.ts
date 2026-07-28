@@ -1182,6 +1182,23 @@ UPDATE project_ignore_rules SET modus = 'gesperrt' WHERE locked AND modus = 'aus
 
 CREATE INDEX IF NOT EXISTS idx_project_ignore_rules_modus
   ON project_ignore_rules(project, modus) WHERE enabled;
+
+-- IGN-10 (28.07.2026): befristete Einblendung.
+--
+-- WOFUER: eine KI braucht gelegentlich genau die Datei, die jemand bewusst
+-- ausgeblendet hat — weil sie den Kontext zumuellt, aber eben doch die Antwort
+-- enthaelt. Sie soll sie sich holen koennen, OHNE die Regel dauerhaft zu
+-- kippen und ohne daran denken zu muessen, sie wieder einzuschalten.
+-- eingeblendet_bis hebt die Regel bis zu diesem Zeitpunkt auf; danach greift
+-- sie von selbst wieder. Ein vergessenes Zuruecksetzen kann es damit nicht
+-- geben.
+--
+-- NULL = keine Befristung, die Regel wirkt normal.
+-- Wirkt NUR fuer modus='ausgeblendet'. Eine Sperre laesst sich nicht auf Zeit
+-- aufheben: sie haelt Inhalte aus der Datenbank heraus, und was einmal drin
+-- ist, ist drin — eine Frist waere dort eine Zusage, die niemand einhalten kann.
+ALTER TABLE project_ignore_rules
+  ADD COLUMN IF NOT EXISTS eingeblendet_bis TIMESTAMPTZ;
 -- Regel-Aenderung sofort an alle Prozesse melden (Daemon, API, Parser-Worker).
 -- Ohne diese Benachrichtigung haelt jeder Prozess seinen alten Stand und die
 -- Zusage "innerhalb einer Minute sichtbar bzw. unsichtbar" waere nicht haltbar.

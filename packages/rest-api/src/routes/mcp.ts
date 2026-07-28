@@ -151,6 +151,7 @@ import { GUIDE_OVERVIEW, TOOL_GUIDES, logToolCall, queryToolCalls } from '@synap
 import {
   listeIgnoreRegeln,
   fuegeIgnoreRegelnHinzu,
+  blendeVoruebergehendEin,
   entferneIgnoreRegel,
   schalteIgnoreRegel,
   pruefeIgnorePfad,
@@ -1034,9 +1035,10 @@ const MCP_TOOLS = [
     inputSchema: {
       type: 'object',
       properties: {
-        action: { type: 'string', enum: ['list', 'add', 'remove', 'enable', 'disable', 'test'], description: 'Aktion' },
+        action: { type: 'string', enum: ['list', 'add', 'remove', 'enable', 'disable', 'test', 'einblenden'], description: 'Aktion' },
         project: { type: 'string', description: 'Projekt-Name (Pflicht)' },
-        pattern: { type: 'string', description: 'Muster wie "*.txt" oder "docs/" — Pflicht fuer add, remove, enable, disable' },
+        pattern: { type: 'string', description: 'Muster wie "*.txt" oder "docs/" — Pflicht fuer add, remove, enable, disable, einblenden' },
+        dauer: { type: 'string', description: "Pflicht fuer einblenden: wie lange die Regel ausgesetzt wird. '30s', '5m', '2h', '1d' oder eine Zahl (Sekunden). Danach greift sie VON SELBST wieder — gedacht fuer den Fall, dass du genau die ausgeblendete Datei brauchst, sie aber nicht dauerhaft im Kontext haben willst." },
         patterns: { type: 'array', items: { type: 'string' }, description: 'Mehrere Muster auf einmal (nur fuer add)' },
         scope: { type: 'string', description: 'Optional fuer add: Muster nur unterhalb dieses Teilbaums anwenden' },
         kommentar: { type: 'string', description: 'Optional fuer add: wofuer die Regel da ist' },
@@ -3985,6 +3987,23 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
               'sie halten Paket- und Build-Verzeichnisse aus dem Index.',
           };
         }
+        case 'einblenden': {
+          const muster = reqStr(args, 'pattern');
+          const dauer = str(args, 'dauer');
+          if (!dauer) throw new Error("dauer erforderlich, z.B. '5m', '2h', '1d'");
+          const ergebnis = await blendeVoruebergehendEin(igProjekt, muster, dauer);
+          if (!ergebnis.ok) return { success: false, error: ergebnis.grund, pattern: muster };
+          return {
+            success: true,
+            pattern: muster,
+            eingeblendet_bis: ergebnis.bis,
+            sekunden: ergebnis.sekunden,
+            message:
+              `"${muster}" ist fuer ${ergebnis.sekunden} Sekunden eingeblendet (bis ${ergebnis.bis}). ` +
+              'Danach greift die Regel von selbst wieder — du musst nichts zuruecksetzen.',
+          };
+        }
+
         case 'add': {
           const einzeln = str(args, 'pattern');
           const mehrere = Array.isArray(args.patterns) ? (args.patterns as string[]) : [];

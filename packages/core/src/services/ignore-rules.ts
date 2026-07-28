@@ -60,6 +60,70 @@ export interface IgnoreRegel {
   sort_order: number;
 }
 
+/**
+ * Wandelt eine Dauerangabe in Sekunden. Erlaubt sind '30s', '5m', '2h', '1d'
+ * und eine nackte Zahl (dann Sekunden). Alles andere ergibt null.
+ */
+export function loeseDauerInSekunden(dauer: string | number | undefined): number | null {
+  if (dauer === undefined || dauer === null) return null;
+  if (typeof dauer === 'number') return Number.isFinite(dauer) && dauer > 0 ? Math.floor(dauer) : null;
+  const text = String(dauer).trim().toLowerCase();
+  const treffer = /^(\d+)\s*([smhd]?)$/.exec(text);
+  if (!treffer) return null;
+  const zahl = parseInt(treffer[1], 10);
+  if (!Number.isFinite(zahl) || zahl <= 0) return null;
+  const faktor = { s: 1, m: 60, h: 3600, d: 86400, '': 1 }[treffer[2]] ?? 1;
+  return zahl * faktor;
+}
+
+/**
+ * Blendet eine ausgeblendete Regel VORUEBERGEHEND ein.
+ *
+ * WOFUER: eine KI braucht gelegentlich genau die Datei, die jemand bewusst
+ * ausgeblendet hat — weil sie den Kontext zumuellt, aber eben doch die Antwort
+ * enthaelt. Statt die Regel dauerhaft abzuschalten und das Zurueckstellen zu
+ * vergessen, setzt sie eine Frist: danach greift die Regel von selbst wieder.
+ *
+ * Auf eine SPERRE ist das ausdruecklich nicht anwendbar. Eine Sperre haelt
+ * Inhalte aus der Datenbank heraus; was einmal drin ist, ist drin, und eine
+ * Frist waere dort eine Zusage, die niemand einhalten kann.
+ */
+export async function blendeVoruebergehendEin(
+  project: string,
+  pattern: string,
+  dauer: string | number,
+): Promise<{ ok: boolean; bis?: string; sekunden?: number; grund?: string }> {
+  const sekunden = loeseDauerInSekunden(dauer);
+  if (sekunden === null) {
+    return { ok: false, grund: "Dauer nicht verstanden. Erlaubt: '30s', '5m', '2h', '1d' oder eine Zahl (Sekunden)." };
+  }
+  const pool = getPool();
+  const vorhanden = await pool.query<{ modus: string }>(
+    'SELECT modus FROM project_ignore_rules WHERE project = $1 AND pattern = $2',
+    [project, pattern],
+  );
+  if (!vorhanden.rowCount) return { ok: false, grund: `Regel "${pattern}" gibt es in diesem Projekt nicht.` };
+  if (vorhanden.rows[0].modus === 'gesperrt') {
+    return {
+      ok: false,
+      grund:
+        `Regel "${pattern}" ist GESPERRT, nicht ausgeblendet. Eine Sperre laesst sich nicht auf Zeit aufheben — ` +
+        'sie haelt Inhalte aus der Datenbank heraus, und was einmal drin ist, bleibt drin. ' +
+        'Wenn der Inhalt wirklich hinein soll: die Regel dauerhaft auf "ausgeblendet" umstellen oder entfernen.',
+    };
+  }
+  const gesetzt = await pool.query<{ bis: string }>(
+    `UPDATE project_ignore_rules
+        SET eingeblendet_bis = NOW() + ($3 || ' seconds')::interval, updated_at = NOW()
+      WHERE project = $1 AND pattern = $2
+      RETURNING to_char(eingeblendet_bis, 'YYYY-MM-DD HH24:MI:SS') AS bis`,
+    [project, pattern, String(sekunden)],
+  );
+  verwirfIgnoreRegeln(project);
+  await aktualisiereIgnoreRegeln(project);
+  return { ok: true, bis: gesetzt.rows[0]?.bis, sekunden };
+}
+
 /** Alle Regeln eines Projekts, in Wirkreihenfolge (spaetere gewinnt). */
 export async function listeIgnoreRegeln(project: string): Promise<IgnoreRegel[]> {
   const ergebnis = await getPool().query<IgnoreRegel>(

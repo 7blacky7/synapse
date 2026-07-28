@@ -275,6 +275,8 @@ export {
   // Ignore-Regeln
   listeIgnoreRegeln,
   fuegeIgnoreRegelnHinzu,
+  blendeVoruebergehendEin,
+  loeseDauerInSekunden,
   entferneIgnoreRegel,
   schalteIgnoreRegel,
   pruefeIgnorePfad,
