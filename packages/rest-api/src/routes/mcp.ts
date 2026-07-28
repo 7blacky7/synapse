@@ -26,6 +26,7 @@ import {
   addTask,
   // Thought
   addThought,
+  EMBED_PENDING_HINT,
   getThoughts,
   getThoughtsByIds,
   searchThoughts,
@@ -1913,6 +1914,10 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
             memory: { name: memory.name, category: memory.category, sizeChars: memory.content.length },
             isUpdate: !!existing,
             message: existing ? `Memory "${memory.name}" aktualisiert` : `Memory "${memory.name}" erstellt`,
+            // EMBED-1: steht in PostgreSQL und ist ueber memory(read) sofort da; der Vektor
+            // wird nebenlaeufig nachgereicht.
+            embeddings_pending: true,
+            embeddings_hint: EMBED_PENDING_HINT,
           };
         }
         case 'read': {
@@ -2040,6 +2045,12 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
             content_length: t.content.length,
             content_preview: t.content.length > 120 ? `${t.content.slice(0, 120)}…` : t.content,
             message: `Gedanke gespeichert von "${source}"`,
+            // EMBED-1: der Gedanke steht in PostgreSQL und ist ueber thought(get)/search sofort
+            // auffindbar; der Vektor wird nebenlaeufig nachgereicht. Ohne diesen Hinweis sucht
+            // eine KI direkt nach dem Schreiben semantisch danach, findet nichts und haelt das
+            // Speichern fuer fehlgeschlagen.
+            embeddings_pending: true,
+            embeddings_hint: EMBED_PENDING_HINT,
           };
           if (args.trigger_respawn === true) {
             const { maybeTriggerRespawn } = await import('@synapse/core');
@@ -2314,8 +2325,9 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
           const author = resolveAgentId(rawAuthor);
           if (!author) throw new Error('Parameter "author" ist erforderlich (oder SYNAPSE_AGENT_NAME setzen)');
           const tags = strArray(args, 'tags') ?? [];
+          // EMBED-1: der Vektor wird nebenlaeufig nachgereicht, siehe embeddings_hint unten.
           const proposal = await createProposal(project, filePath, suggested, desc, author, tags);
-          return { success: true, proposal };
+          return { success: true, proposal, embeddings_pending: true, embeddings_hint: EMBED_PENDING_HINT };
         }
         case 'list': {
           const proposals = await listProposals(project, str(args, 'status') as 'pending' | 'reviewed' | 'accepted' | 'rejected' | undefined);

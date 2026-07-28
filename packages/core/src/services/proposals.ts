@@ -225,22 +225,24 @@ export async function updateProposalStatus(
     updated_at: now,
   };
 
-  // Neuen Vektor generieren (bleibt gleich da description/filePath unveraendert)
-  const vector = await embed(`${updatedPayload.description} ${updatedPayload.file_path}`);
+  // Der Vektor entsteht nicht mehr hier, sondern nebenlaeufig (siehe unten).
 
   // 1. PostgreSQL (Write-Primary) — fail-fast: wirft bei Fehler
   const pool = getPool();
-  await pool.query('UPDATE proposals SET status = $1, updated_at = $2 WHERE id = $3', [status, now, id]);
+  await pool.query('UPDATE proposals SET status = $1, updated_at = $2, embedded_at = NULL WHERE id = $3', [status, now, id]);
 
-  // 2. Qdrant (Vektor-Index) — Warning bei Fehler, PG-Daten bleiben erhalten
-  let warning: string | undefined;
-  try {
-    await deleteVector(collName, id);
-    await insertVector(collName, vector, updatedPayload, id);
-  } catch (error) {
-    console.error('[Synapse] Qdrant Proposal-Status-Update fehlgeschlagen:', error);
-    warning = `Qdrant-Write fehlgeschlagen: ${error}`;
-  }
+  // 2. Qdrant — NEBENLAEUFIG seit EMBED-1.
+  // Das UPDATE oben hat embedded_at genullt, die Zeile ist also fuer den Backlog sichtbar.
+  //
+  // ANMERKUNG FUER SPAETER: hier waere sogar das Embedding selbst ueberfluessig. Eine
+  // Statusaenderung beruehrt weder description noch file_path — der Vektor ist danach exakt
+  // derselbe, nur das Payload-Feld status ist veraltet. Richtig waere ein reines Payload-Update
+  // in Qdrant statt eines Neu-Embeddings. Das ist ein eigener Eingriff und gehoert nicht in
+  // diese Umstellung; nebenlaeufig kostet es jetzt wenigstens keine Wartezeit mehr.
+  const warning: string | undefined = undefined;
+  void embeddeProposalNach(project, id).catch(err => {
+    console.error(`[Synapse] Proposal-Status-Embedding fehlgeschlagen, Backlog holt es nach:`, err);
+  });
 
   console.error(`[Synapse] Proposal "${id}" Status geaendert zu "${status}"`);
   return { ...payloadToProposal(id, updatedPayload), warning };
@@ -278,33 +280,18 @@ export async function updateProposal(
 
   // 3. PostgreSQL UPDATE (Write-Primary) — fail-fast: wirft bei Fehler
   await pool.query(
-    `UPDATE proposals SET description = $1, suggested_content = $2, status = $3, updated_at = $4 WHERE id = $5`,
+    `UPDATE proposals SET description = $1, suggested_content = $2, status = $3, updated_at = $4, embedded_at = NULL WHERE id = $5`,
     [mergedDescription, mergedSuggestedContent, mergedStatus, now, id]
   );
 
-  // 4. Qdrant Vektor upserten — Warning bei Fehler, PG-Daten bleiben erhalten
-  let warning: string | undefined;
-  try {
-    const collName = getCollectionName(project);
-    await ensureCollection(collName);
-    const vector = await embed(`${mergedDescription} ${row.file_path}`);
-    const payload: ProposalPayload = {
-      project,
-      file_path: row.file_path,
-      suggested_content: mergedSuggestedContent,
-      description: mergedDescription,
-      author: row.author,
-      status: mergedStatus,
-      tags: row.tags || [],
-      created_at: row.created_at instanceof Date ? row.created_at.toISOString() : row.created_at,
-      updated_at: now,
-    };
-    await deleteVector(collName, id);
-    await insertVector(collName, vector, payload, id);
-  } catch (error) {
-    console.error('[Synapse] Qdrant Proposal-Update fehlgeschlagen:', error);
-    warning = `Qdrant-Write fehlgeschlagen: ${error}`;
-  }
+  // 4. Qdrant — NEBENLAEUFIG seit EMBED-1.
+  // Das UPDATE oben hat embedded_at genullt: description ist Teil des Embedding-Textes, der
+  // alte Vektor ist nach einer Aenderung also tatsaechlich falsch — anders als bei einer reinen
+  // Statusaenderung. Die Zeile ist damit fuer den Backlog sichtbar.
+  const warning: string | undefined = undefined;
+  void embeddeProposalNach(project, id).catch(err => {
+    console.error(`[Synapse] Proposal-Update-Embedding fehlgeschlagen, Backlog holt es nach:`, err);
+  });
 
   // 5. Aktualisierter Proposal zurueckgeben
   const updatedProposal: Proposal = {

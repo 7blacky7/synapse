@@ -174,7 +174,8 @@ export async function addThoughtsBatch(
   // SEQUENZIELL VERKETTET, nicht N-fach parallel: ein Batch mit fuenfzig Gedanken wuerde sonst
   // fuenfzig Embeddings gleichzeitig anstossen und die Queue (zwei Slots) selbst verstopfen —
   // also genau den Zustand herstellen, gegen den diese Umstellung gebaut ist.
-  const warning: string | undefined = undefined;
+  // let statt const: der Task-Status-Block weiter unten schreibt hier noch hinein.
+  let warning: string | undefined;
   void (async () => {
     for (const t of thoughts) {
       try {
