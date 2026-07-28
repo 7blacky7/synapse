@@ -9,10 +9,19 @@
  */
 
 import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser, ParsedStatement, ParsedCallEdge } from './types.js';
-import { extractStringLiterals } from './types.js';
+import { extractStringLiterals, erstelleZeilenIndex, zeileFuerPosition } from './types.js';
 
+// Zeilenindex je Datei zwischenspeichern — siehe zeileFuerPosition in types.ts.
+// Vorher wurde pro Treffer ein Praefix der Datei kopiert und zerlegt: das ist
+// O(Treffer x Dateigroesse) und laesst grosse Dateien praktisch nie fertig werden.
+let zeilenCacheText: string | null = null;
+let zeilenCacheIndex: number[] = [];
 function lineAt(text: string, pos: number): number {
-  return text.substring(0, pos).split('\n').length;
+  if (text !== zeilenCacheText) {
+    zeilenCacheText = text;
+    zeilenCacheIndex = erstelleZeilenIndex(text);
+  }
+  return zeileFuerPosition(zeilenCacheIndex, pos);
 }
 
 // ---------------------------------------------------------------------------
@@ -20,7 +29,7 @@ function lineAt(text: string, pos: number): number {
 // ---------------------------------------------------------------------------
 
 function lineAtF(text: string, pos: number): number {
-  return text.substring(0, pos).split('\n').length;
+  return lineAt(text, pos);
 }
 
 function extractFlowFortran(content: string): { statements: ParsedStatement[]; callEdges: ParsedCallEdge[] } {
@@ -138,7 +147,8 @@ class FortranParser implements LanguageParser {
   language = 'fortran';
   extensions = ['.f90', '.f95', '.f03', '.f08', '.f', '.for'];
   /** Bei inhaltlichen Parser-Aenderungen erhoehen (siehe LanguageParser.version). */
-  version = 1;
+  // 2: Zeilenberechnung ueber Index statt Praefix-Kopie (siehe lineAt).
+  version = 2;
 
   parse(content: string, filePath: string): ParseResult {
     const symbols: ParsedSymbol[] = [];

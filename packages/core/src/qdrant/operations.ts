@@ -387,3 +387,41 @@ export async function scrollVectors<T>(
     payload: point.payload as T,
   }));
 }
+
+/**
+ * Liefert die IDs ALLER Punkte, die dem Filter entsprechen — mit Paginierung.
+ *
+ * ABGRENZUNG ZU scrollVectors: das dortige client.scroll liefert nur die erste
+ * Seite (limit, Standard 100) und wertet next_page_offset nicht aus. Bei einer
+ * Datei mit mehreren tausend Chunks ist die Antwort damit unvollstaendig — wer
+ * darauf ein Aufraeumen stuetzt, laesst Punkte stehen, die es nicht mehr geben
+ * duerfte. Hier wird bis zum Ende durchgeblaettert.
+ *
+ * Payload und Vektoren werden bewusst NICHT mitgeladen: fuer einen Abgleich
+ * gegen eine ID-Menge braucht es sie nicht, und bei 3072 Dimensionen je Punkt
+ * waere das ein Vielfaches an Uebertragung.
+ */
+export async function scrollePunktIds(
+  collection: string,
+  filter: Record<string, unknown>,
+  seitenGroesse: number = 1000
+): Promise<string[]> {
+  const client = getQdrantClient();
+  const ids: string[] = [];
+  let offset: unknown = undefined;
+
+  for (;;) {
+    const seite = await client.scroll(collection, {
+      filter: filter as any,
+      limit: seitenGroesse,
+      with_payload: false,
+      with_vector: false,
+      offset: offset as any,
+    });
+    for (const punkt of seite.points) ids.push(punkt.id as string);
+    if (!seite.next_page_offset) break;
+    offset = seite.next_page_offset;
+  }
+
+  return ids;
+}

@@ -74,6 +74,9 @@ import {
   updatePayloadByFilePath,
   deleteCollection,
   getCollectionVectorSize,
+  getVectors,
+  deleteVectors,
+  scrollePunktIds,
 } from '../qdrant/index.js';
 import { embed, embedBatch, embedMedia, supportsMultimodal } from '../embeddings/index.js';
 import { chunkFile } from '../chunking/index.js';
@@ -869,9 +872,58 @@ export async function parseAndEmbed(
         );
       }
     } else {
-      // Der Inhalt hat sich geaendert — die alten Vektoren der Datei sind damit
-      // ungueltig und muessen weg, bevor die neuen kommen.
-      await deleteByFilePath(collectionName, filePath, project);
+      // Der Inhalt hat sich geaendert. Hier wurde frueher pauschal alles
+      // geloescht und alles neu gerechnet. Das ist fast immer zu viel: bei einer
+      // punktuellen Aenderung bleiben Position UND Inhalt fast aller Chunks
+      // gleich — und weil die Punkt-ID aus genau diesen beiden Groessen gebildet
+      // wird, liegt ihr Vektor bereits richtig in Qdrant.
+      // Gemessen an der Benchmark-Datei: bei einer geaenderten Zeile betrifft das
+      // 5947 von 5950 Chunks. Statt 86 Minuten bleiben ein paar Sekunden.
+      //
+      // GRENZE, bewusst benannt: wird oben etwas EINGEFUEGT oder GELOESCHT,
+      // verschieben sich die chunk_index-Werte dahinter. Damit aendern sich deren
+      // IDs und dieser Weg greift nicht mehr, obwohl der Text derselbe ist
+      // (gemessen: dann sind rund 1250 Chunks betroffen). Das aufzuloesen hiesse,
+      // den Index aus der ID zu nehmen — das entwertet jede bestehende ID und
+      // verlangt eine Migration des Bestands. Bewusst nicht Teil dieser Aenderung.
+      const neueIds = chunks.map(c =>
+        deterministicChunkId(c.project, c.filePath, c.chunkIndex, c.content)
+      );
+      const vorhanden = new Set<string>();
+      for (let i = 0; i < neueIds.length; i += 500) {
+        const treffer = await getVectors<unknown>(collectionName, neueIds.slice(i, i + 500));
+        for (const t of treffer) vorhanden.add(t.id);
+      }
+
+      // Was nicht mehr zur Datei gehoert, muss weg — sonst liefert die Suche
+      // Treffer auf Text, den es nicht mehr gibt. Ermittelt ueber die Differenz
+      // zur neuen ID-Menge statt ueber ein pauschales Loeschen.
+      const gueltig = new Set(neueIds);
+      const alteIds = await scrollePunktIds(collectionName, {
+        must: [
+          { key: 'file_path', match: { value: filePath } },
+          { key: 'project', match: { value: project } },
+        ],
+      });
+      const verwaist = alteIds.filter(id => !gueltig.has(id));
+      if (verwaist.length > 0) await deleteVectors(collectionName, verwaist);
+
+      offen = chunks.filter((_c, i) => !vorhanden.has(neueIds[i]));
+
+      // Die bereits vorhandenen sofort quittieren: der Chunk-Block hat ihre Rows
+      // eben neu geschrieben, embedded_at steht dort auf NULL. Ohne diesen Schritt
+      // gaelten sie als offen und wuerden neu gerechnet, obwohl ihr Vektor da ist.
+      const schonDa = chunks.filter((_c, i) => vorhanden.has(neueIds[i]));
+      if (schonDa.length > 0) {
+        await pool.query(
+          `UPDATE code_chunks SET embedded_at = NOW()
+            WHERE project = $1 AND file_path = $2 AND chunk_index = ANY($3::int[])`,
+          [project, filePath, schonDa.map(c => c.chunkIndex)]
+        );
+        console.error(
+          `[Synapse] ${path.basename(filePath)}: ${schonDa.length}/${chunks.length} Chunks unveraendert wiederverwendet, ${offen.length} neu zu embedden, ${verwaist.length} verwaiste Punkte entfernt`
+        );
+      }
     }
 
     // SCHEIBENWEISE embedden, einfuegen, quittieren.
