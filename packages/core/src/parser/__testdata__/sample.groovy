@@ -1,3 +1,16 @@
+// SOLLWERTE fuer packages/core/tests/fixture-zeilennummern.test.mjs.
+// Eckige Klammern, KEINE Anfuehrungszeichen (siehe Runner-Kopf).
+// Abgedeckt: der ScopeProbe-Fall (Kontrollfluss-Block, gefolgt von einem
+// Statement in derselben Methode) und der Verschachtelungsfall Registry/Entry.
+//   [ScopeProbe] -> Zeile 101
+//   [mitVerzweigung] -> Zeile 102
+//   [mitSchleife] -> Zeile 108
+//   [mitAbsicherung] -> Zeile 115
+//   [Registry] -> Zeile 123
+//   [Entry] -> Zeile 125
+//   [describe] -> Zeile 127
+//   [lookup] -> Zeile 132
+
 package com.synapse.core
 
 import groovy.transform.CompileStatic

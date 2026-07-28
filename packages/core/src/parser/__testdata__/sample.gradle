@@ -1,3 +1,17 @@
+// SOLLWERTE fuer packages/core/tests/fixture-zeilennummern.test.mjs.
+// Eckige Klammern, KEINE Anfuehrungszeichen: der Kopfkommentar wird vom Parser
+// mitgelesen, und Namen in Quotes wuerden zu String-Symbolen desselben Namens.
+// Die Zahlen sind absolut — wer diese Datei bearbeitet, zieht sie nach.
+// Abgedeckt: die Klasse mit ihren Methoden UND zwei Symbole aus Bloecken auf
+// Modulebene (clean aus tasks.register, annotationProcessor aus configurations)
+// — genau die Blockart, die den Scope-Stapel leerlaufen liess.
+//   [Helfer] -> Zeile 52
+//   [name] -> Zeile 53
+//   [beschreibe] -> Zeile 54
+//   [beschreibeZweimal] -> Zeile 56
+//   [clean] -> Zeile 44
+//   [annotationProcessor] -> Zeile 62
+
 // Probe fuer den Scope-Stack-Absturz in groovy.ts (behoben, Parser-Version 4).
 // Struktur aus einer echten Flutter-Plugin-Datei uebernommen:
 // .plugin_symlinks/jni/example/android/build.gradle
