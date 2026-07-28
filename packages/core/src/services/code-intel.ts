@@ -195,7 +195,15 @@ export async function getProjectTree(
           [project, f.file_path]
         );
         if (commentResult.rows.length > 0) {
-          const comment = (commentResult.rows[0].value ?? '').split('\n')[0].trim().replace(/\s+/g, ' ');
+          // Erste Zeile MIT INHALT statt schlicht der ersten Zeile: ein JSDoc-Block
+          // beginnt mit /** und einer leeren Sternchenzeile, deshalb stand hier bisher
+          // fuer jede so kommentierte Datei nur "/** * */" — der Schalter zeigte also
+          // an, DASS ein Kommentar da ist, aber nie WELCHER. Fuehrende Sternchen der
+          // JSDoc-Fortsetzungszeilen werden mit entfernt.
+          const comment = (commentResult.rows[0].value ?? '')
+            .split('\n')
+            .map((zeile: string) => zeile.replace(/^\s*\*+\s?/, '').trim().replace(/\s+/g, ' '))
+            .find((zeile: string) => zeile.length > 0) ?? '';
           if (comment) lines.push(`    /** ${comment.substring(0, 100)} */`);
         }
       }
