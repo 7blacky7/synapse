@@ -80,8 +80,9 @@ export const codeIntelTool: ConsolidatedTool = {
           description: 'Funktions-/Variablen-Counts anzeigen (Standard: true, fuer tree)',
         },
         show_comments: {
-          type: 'boolean',
-          description: 'Kommentare unter Dateien anzeigen (Standard: false, fuer tree)',
+          type: ['boolean', 'integer', 'string'],
+          description:
+            "Kommentare unter Dateien anzeigen (Standard: false, fuer tree). true = einer je Datei, Zahl = so viele, '*' = alle bis 50. Gezeigt werden Zeilennummer und Inhalt; wird gekappt, steht das in der Ausgabe.",
         },
         show_functions: {
           type: 'boolean',
@@ -100,6 +101,16 @@ export const codeIntelTool: ConsolidatedTool = {
         name: {
           type: 'string',
           description: 'Symbol-Name-Filter (fuer functions/variables/symbols/references)',
+        },
+        value_contains: {
+          type: 'string',
+          description:
+            "Sucht im INHALT des Symbols statt im Namen (fuer symbols). PFLICHT fuer Kommentare, Strings und TODOs: die tragen name=NULL, ein name-Filter findet dort nie etwas. Beispiel: symbol_type='comment' + value_contains='@SYN-'.",
+        },
+        comment_contains: {
+          type: 'string',
+          description:
+            "Nur Kommentare zeigen, die diesen Text enthalten (fuer tree, zusammen mit show_comments). Macht den Baum zur Suche: show_comments='*' + comment_contains='@SYN-' listet alle Marken mit Datei und Zeile.",
         },
         exported_only: {
           type: 'boolean',
@@ -197,7 +208,8 @@ export const codeIntelTool: ConsolidatedTool = {
           depth: num(args, 'depth'),
           show_lines: bool(args, 'show_lines'),
           show_counts: bool(args, 'show_counts'),
-          show_comments: bool(args, 'show_comments'),
+          show_comments: args.show_comments as boolean | number | string | undefined,
+          comment_contains: str(args, 'comment_contains'),
           show_functions: bool(args, 'show_functions'),
           show_imports: bool(args, 'show_imports'),
           file_type: str(args, 'file_type'),
@@ -225,7 +237,7 @@ export const codeIntelTool: ConsolidatedTool = {
         const symbolType = reqStr(args, 'symbol_type');
         const filePath = str(args, 'file_path');
         const name = str(args, 'name');
-        const symbols = await getSymbols(project, symbolType, filePath, name, num(args, 'limit') ?? 100);
+        const symbols = await getSymbols(project, symbolType, filePath, name, num(args, 'limit') ?? 100, str(args, 'value_contains'));
         return { success: true, symbols, count: symbols.length, symbol_type: symbolType, project };
       }
 

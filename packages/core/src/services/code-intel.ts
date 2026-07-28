@@ -43,14 +43,70 @@ export interface TreeOptions {
   show_lines?: boolean;
   /** Funktions-/Variablen-Counts anzeigen (Standard: true) */
   show_counts?: boolean;
-  /** Kommentare unter Dateien anzeigen (Standard: false) */
-  show_comments?: boolean;
+  /**
+   * Kommentare unter Dateien anzeigen (Standard: false).
+   * false/weg = keine, true = einer je Datei, Zahl N = bis zu N,
+   * '*' oder 'all' = alle bis KOMMENTAR_OBERGRENZE.
+   * Wird gekappt, steht das ausdruecklich in der Ausgabe.
+   */
+  show_comments?: boolean | number | string;
+  /**
+   * Nur Kommentare zeigen, die diesen Text enthalten (Gross-/Kleinschreibung egal).
+   * Wirkt nur zusammen mit show_comments. Damit wird der Baum zur Suche:
+   * show_comments:'*' + comment_contains:'@SYN-' listet alle Navigationsmarken
+   * eines Projekts mit Datei und Zeilennummer.
+   */
+  comment_contains?: string;
   /** Funktionsnamen auflisten (Standard: false) */
   show_functions?: boolean;
   /** Import-Statements auflisten (Standard: false) */
   show_imports?: boolean;
   /** Nur Dateien mit bestimmtem Typ (z.B. 'typescript', 'sql') */
   file_type?: string;
+}
+
+/**
+ * Obergrenze fuer angezeigte Kommentare JE DATEI. Schuetzt den Baum vor Dateien
+ * wie der 100k-Zeilen-Benchmarkdatei, die allein 11668 Kommentare traegt.
+ * Wird sie erreicht, sagt die Ausgabe das — eine stille Kappung liest sich wie
+ * Vollstaendigkeit und ist damit schlimmer als gar keine Anzeige.
+ */
+const KOMMENTAR_OBERGRENZE = 50;
+
+/** Loest show_comments in eine Anzahl auf. Unbekannte Werte gelten als 'aus'. */
+function loeseKommentarAnzahl(wert: boolean | number | string | undefined): number {
+  if (wert === undefined || wert === null || wert === false) return 0;
+  if (wert === true) return 1;
+  if (typeof wert === 'number') {
+    return Number.isFinite(wert) && wert > 0 ? Math.min(Math.floor(wert), KOMMENTAR_OBERGRENZE) : 0;
+  }
+  const s = String(wert).trim().toLowerCase();
+  if (s === '' || s === 'false' || s === '0' || s === 'nein') return 0;
+  if (s === 'true' || s === 'ja') return 1;
+  if (s === '*' || s === 'all' || s === 'alle') return KOMMENTAR_OBERGRENZE;
+  const n = parseInt(s, 10);
+  return Number.isFinite(n) && n > 0 ? Math.min(n, KOMMENTAR_OBERGRENZE) : 0;
+}
+
+/**
+ * Erste Zeile MIT Inhalt eines Kommentarwerts, ohne fuehrende JSDoc-Sternchen.
+ * Ein Blockkommentar beginnt mit einer leeren Sternchenzeile — wer schlicht die
+ * erste Zeile nimmt, bekommt fuer jede Datei denselben nichtssagenden Rest.
+ */
+function ersteZeileMitInhalt(wert: string | null | undefined, treffer?: string): string {
+  const zeilen = (wert ?? '')
+    .split('\n')
+    .map((zeile: string) => zeile.replace(/^\s*\*+\s?/, '').trim().replace(/\s+/g, ' '))
+    .filter((zeile: string) => zeile.length > 0);
+  // Wurde gefiltert, ist die TREFFENDE Zeile die interessante — nicht die erste.
+  // Ein Blockkommentar kann 500 Zeichen lang sein; wer nach 'GET' sucht und die
+  // Kopfzeile zu sehen bekommt, erkennt nicht, warum der Treffer zustande kam.
+  if (treffer) {
+    const gesucht = treffer.toLowerCase();
+    const passend = zeilen.find((zeile: string) => zeile.toLowerCase().includes(gesucht));
+    if (passend) return passend;
+  }
+  return zeilen[0] ?? '';
 }
 
 /**
@@ -70,6 +126,7 @@ export async function getProjectTree(
     show_lines = true,
     show_counts = true,
     show_comments = false,
+    comment_contains,
     show_functions = false,
     show_imports = false,
     file_type,
@@ -187,24 +244,30 @@ export async function getProjectTree(
       lines.push(`  ${f.file_name}${metaStr}`);
 
       // Kommentare
-      if (show_comments) {
+      const kommentarAnzahl = loeseKommentarAnzahl(show_comments);
+      if (kommentarAnzahl > 0) {
+        // COUNT(*) OVER() zaehlt VOR dem LIMIT und liefert damit die echte Gesamtzahl
+        // in derselben Abfrage — ohne zweiten Roundtrip je Datei.
+        const kommentarParams: unknown[] = [project, f.file_path, kommentarAnzahl];
+        let kommentarFilter = '';
+        if (comment_contains) {
+          kommentarParams.push(`%${comment_contains}%`);
+          kommentarFilter = ` AND value ILIKE $${kommentarParams.length}`;
+        }
         const commentResult = await pool.query(
-          `SELECT value FROM code_symbols
-           WHERE project = $1 AND file_path = $2 AND symbol_type = 'comment'
-           ORDER BY line_start LIMIT 1`,
-          [project, f.file_path]
+          `SELECT value, line_start, COUNT(*) OVER() AS gesamt FROM code_symbols
+           WHERE project = $1 AND file_path = $2 AND symbol_type = 'comment'${kommentarFilter}
+           ORDER BY line_start LIMIT $3`,
+          kommentarParams
         );
-        if (commentResult.rows.length > 0) {
-          // Erste Zeile MIT INHALT statt schlicht der ersten Zeile: ein JSDoc-Block
-          // beginnt mit /** und einer leeren Sternchenzeile, deshalb stand hier bisher
-          // fuer jede so kommentierte Datei nur "/** * */" — der Schalter zeigte also
-          // an, DASS ein Kommentar da ist, aber nie WELCHER. Fuehrende Sternchen der
-          // JSDoc-Fortsetzungszeilen werden mit entfernt.
-          const comment = (commentResult.rows[0].value ?? '')
-            .split('\n')
-            .map((zeile: string) => zeile.replace(/^\s*\*+\s?/, '').trim().replace(/\s+/g, ' '))
-            .find((zeile: string) => zeile.length > 0) ?? '';
-          if (comment) lines.push(`    /** ${comment.substring(0, 100)} */`);
+        for (const zeileDb of commentResult.rows) {
+          const comment = ersteZeileMitInhalt(zeileDb.value, comment_contains);
+          if (comment) lines.push(`    /** Z${zeileDb.line_start}: ${comment.substring(0, 100)} */`);
+        }
+        const gesamt = commentResult.rows.length > 0 ? parseInt(commentResult.rows[0].gesamt, 10) : 0;
+        if (gesamt > commentResult.rows.length) {
+          // Ausdruecklich ausweisen: eine stille Kappung liest sich wie Vollstaendigkeit.
+          lines.push(`    /** ... ${gesamt - commentResult.rows.length} weitere Kommentare nicht gezeigt (von ${gesamt}) */`);
         }
       }
 
@@ -427,7 +490,14 @@ export async function getSymbols(
    * 1,75 MB Antwort, obwohl limit:4 angefordert war. Fuer eine aufrufende KI ist
    * das ein gesprengtes Kontextfenster ohne Vorwarnung.
    */
-  limit: number = 100
+  limit: number = 100,
+  /**
+   * Sucht im INHALT (Spalte value) statt im Namen. Notwendig fuer alles, was gar
+   * keinen Namen hat: Kommentare, Strings und TODOs tragen name=NULL, ein Filter
+   * auf cs.name findet dort GRUNDSAETZLICH nichts — auch dann nicht, wenn der
+   * gesuchte Text sichtbar im Symbol steht.
+   */
+  valueContains?: string
 ): Promise<SymbolInfo[]> {
   const pool = getPool();
 
@@ -441,6 +511,10 @@ export async function getSymbols(
   if (name) {
     params.push(`%${name}%`);
     conditions.push(`cs.name ILIKE $${params.length}`);
+  }
+  if (valueContains) {
+    params.push(`%${valueContains}%`);
+    conditions.push(`cs.value ILIKE $${params.length}`);
   }
 
   const where = conditions.join(' AND ');

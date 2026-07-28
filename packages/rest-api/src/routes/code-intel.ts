@@ -32,6 +32,7 @@ export async function codeIntelRoutes(fastify: FastifyInstance): Promise<void> {
       show_lines?: string;
       show_counts?: string;
       show_comments?: string;
+      comment_contains?: string;
       show_functions?: string;
       show_imports?: string;
       file_type?: string;
@@ -45,6 +46,7 @@ export async function codeIntelRoutes(fastify: FastifyInstance): Promise<void> {
       show_lines,
       show_counts,
       show_comments,
+      comment_contains,
       show_functions,
       show_imports,
       file_type,
@@ -57,7 +59,9 @@ export async function codeIntelRoutes(fastify: FastifyInstance): Promise<void> {
         depth: depth !== undefined ? parseInt(depth, 10) : undefined,
         show_lines: show_lines !== undefined ? show_lines === 'true' : true,
         show_counts: show_counts !== undefined ? show_counts === 'true' : true,
-        show_comments: show_comments === 'true',
+        // Roh durchreichen: der Kern versteht true/false, eine Zahl und '*'.
+        show_comments,
+        comment_contains,
         show_functions: show_functions === 'true',
         show_imports: show_imports === 'true',
         file_type,
@@ -147,10 +151,12 @@ export async function codeIntelRoutes(fastify: FastifyInstance): Promise<void> {
       symbol_type: string;
       file_path?: string;
       name?: string;
+      value_contains?: string;
+      limit?: string;
     };
   }>('/api/projects/:name/code-intel/symbols', async (request, reply) => {
     const { name } = request.params;
-    const { symbol_type, file_path, name: symName } = request.query;
+    const { symbol_type, file_path, name: symName, value_contains, limit } = request.query;
 
     if (!symbol_type) {
       return reply.status(400).send({
@@ -160,7 +166,14 @@ export async function codeIntelRoutes(fastify: FastifyInstance): Promise<void> {
     }
 
     try {
-      const result = await getSymbols(name, symbol_type, file_path, symName);
+      const result = await getSymbols(
+        name,
+        symbol_type,
+        file_path,
+        symName,
+        limit !== undefined ? parseInt(limit, 10) : 100,
+        value_contains
+      );
 
       return {
         success: true,
