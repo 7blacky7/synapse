@@ -363,10 +363,19 @@ export async function parseAndEmbed(
   // der parser-worker-Loop sie nicht ewig erneut versucht. Re-Trigger via content-Aenderung
   // (Hash-Diff in code-write setzt parsed_at zurueck auf NULL).
   if (content === '') {
+    // parser_version MITSCHREIBEN. Ohne das bleibt die Spalte NULL, und sobald der
+    // Backlog NULL als "nachzieh-faellig" behandelt, waere diese Datei eine
+    // Endlosschleife: sie wird geholt, kommt hier wieder heraus, bekommt nie eine
+    // Version und ist im naechsten Tick erneut faellig.
+    // COALESCE: gibt es fuer die Endung gar keinen Parser, bleibt die Spalte NULL —
+    // das ist dann die richtige Aussage und keine Luecke, denn ohne Parser wird die
+    // Datei ohnehin nie faellig.
+    const leerParser = getParserForFile(filePath);
     await pool.query(
-      `UPDATE code_files SET parsed_at = NOW(), indexed_at = NOW(), chunk_count = 0
+      `UPDATE code_files SET parsed_at = NOW(), indexed_at = NOW(), chunk_count = 0,
+              parser_version = COALESCE($3, parser_version)
          WHERE project = $1 AND file_path = $2`,
-      [project, filePath]
+      [project, filePath, leerParser ? (leerParser.version ?? 1) : null]
     );
     return;
   }
@@ -382,10 +391,13 @@ export async function parseAndEmbed(
   const skipBytes = Number(process.env.PARSER_MAX_BYTES || 0);
   if (parser && skipBytes > 0 && content.length > skipBytes) {
     console.error(`[Synapse] Parse SKIPPED (file ${content.length}b > ${skipBytes}b): ${filePath}`);
+    // parser_version mitschreiben — gleiche Begruendung wie beim leeren File: dieser
+    // Ausgang hat immer einen Parser (siehe Bedingung oben), und ohne Version bliebe
+    // die Datei dauerhaft faellig, ohne je zu einem Ergebnis zu kommen.
     await pool.query(
-      `UPDATE code_files SET parsed_at = NOW(), indexed_at = NOW()
+      `UPDATE code_files SET parsed_at = NOW(), indexed_at = NOW(), parser_version = $3
          WHERE project = $1 AND file_path = $2`,
-      [project, filePath]
+      [project, filePath, parser.version ?? 1]
     );
     return;
   }
@@ -733,6 +745,14 @@ export async function parseAndEmbed(
         flowClient.release();
       }
     }
+
+    // TELEMETRIE: festhalten, was der Parser in dieser Datei tatsaechlich
+    // erkannt hat. Ohne diesen Datenpunkt ist "Datei enthaelt nichts" nicht von
+    // "Parser hat nichts erkannt" zu unterscheiden — genau daran stand
+    // index.html monatelang mit 0 Funktionen im Index.
+    // Additiv: kein Lock, keine Transaktion, Fehler werden drinnen geschluckt.
+    const { schreibeParserCoverage } = await import('./parser-health.js');
+    await schreibeParserCoverage(project, filePath, fileType, parser, parseResult, content);
   }
 
   // --- Chunks erstellen + in code_chunks speichern ---
@@ -989,10 +1009,19 @@ export async function parseAndEmbed(
   // parsed_at wurde bereits nach dem Chunk-Commit gesetzt (Entkopplung oben). Bei
   // parseSuccess=false bleibt parsed_at NULL → Backlog-Query holt die Datei fuer
   // einen Symbol-Retry.
+  // chunk_count NUR schreiben, wenn die Chunks in diesem Lauf auch berechnet wurden.
+  //
+  // ⚠️ HIER STAND chunks.length OHNE FALLUNTERSCHEIDUNG. Bei ohneEmbeddings ist
+  // chunks bewusst ein leeres Array (der Chunk-Block wird uebersprungen, weil der
+  // Inhalt unveraendert ist) — geschrieben wurde damit chunk_count = 0, obwohl die
+  // Chunks unveraendert in code_chunks liegen. Jeder Reparse hat so die Statistik
+  // einer Datei zerstoert: 2035 Dateien standen am 28.07.2026 auf chunk_count = 0
+  // bei vorhandenen Chunks, davon 1937 allein in moo nach einem reparseProject-Lauf.
+  // NULL laesst den bestehenden Wert stehen.
   await pool.query(
-    `UPDATE code_files SET indexed_at = NOW(), chunk_count = $3
+    `UPDATE code_files SET indexed_at = NOW(), chunk_count = COALESCE($3, chunk_count)
      WHERE project = $1 AND file_path = $2`,
-    [project, filePath, chunks.length]
+    [project, filePath, opts?.ohneEmbeddings ? null : chunks.length]
   );
 
   console.error(`[Synapse] Geparst+Embedded: ${path.basename(filePath)} (${chunks.length} Chunks)`);
