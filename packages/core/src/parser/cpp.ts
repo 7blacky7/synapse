@@ -15,14 +15,24 @@ import { parseEmbeddedSql, looksLikeSql } from './patterns/sql.js';
 // Zeilenindex je Datei zwischenspeichern — siehe zeileFuerPosition in types.ts.
 // Vorher wurde pro Treffer ein Praefix der Datei kopiert und zerlegt: das ist
 // O(Treffer x Dateigroesse) und laesst grosse Dateien praktisch nie fertig werden.
-let zeilenCacheText: string | null = null;
-let zeilenCacheIndex: number[] = [];
+//
+// ZWEI SLOTS, mit Absicht: dieser Parser arbeitet abwechselnd auf dem Originaltext
+// und auf einer maskierten Fassung (siehe maskiereLiterale). Mit nur EINEM Slot wurde
+// der Index bei praktisch jedem Aufruf verworfen und neu aufgebaut — gemessen war das
+// LANGSAMER als die alte Praefix-Kopie (200KB: 694ms vorher, 1464ms mit einem Slot).
+let cacheTextA: string | null = null;
+let cacheIndexA: number[] = [];
+let cacheTextB: string | null = null;
+let cacheIndexB: number[] = [];
 function lineAt(text: string, pos: number): number {
-  if (text !== zeilenCacheText) {
-    zeilenCacheText = text;
-    zeilenCacheIndex = erstelleZeilenIndex(text);
-  }
-  return zeileFuerPosition(zeilenCacheIndex, pos);
+  if (text === cacheTextA) return zeileFuerPosition(cacheIndexA, pos);
+  if (text === cacheTextB) return zeileFuerPosition(cacheIndexB, pos);
+  // Unbekannter Text: aeltesten Slot verdraengen, neuen nach vorne.
+  cacheTextB = cacheTextA;
+  cacheIndexB = cacheIndexA;
+  cacheTextA = text;
+  cacheIndexA = erstelleZeilenIndex(text);
+  return zeileFuerPosition(cacheIndexA, pos);
 }
 
 function endLineAt(text: string, pos: number, matchLength: number): number {

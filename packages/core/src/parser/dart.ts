@@ -229,7 +229,8 @@ class DartParser implements LanguageParser {
   extensions = ['.dart'];
   /** Bei inhaltlichen Parser-Aenderungen erhoehen (siehe LanguageParser.version). */
   // 2: Zeilenberechnung ueber Index statt Praefix-Kopie (siehe lineAt).
-  version = 2;
+  // 3: Eltern-Typ ueber vorberechnete Grenzen statt Rueckwaertssuche je Treffer.
+  version = 3;
 
   parse(content: string, filePath: string): ParseResult {
     const symbols: ParsedSymbol[] = [];
@@ -526,10 +527,57 @@ class DartParser implements LanguageParser {
     return lineAt(content, content.length);
   }
 
+  // Typ-Grenzen EINMAL vorwaerts sammeln statt pro Treffer rueckwaerts zu suchen.
+  // Vorher kopierte findParentType je Treffer den gesamten Datei-Praefix und liess
+  // eine $-verankerte Regex darueber laufen — O(Treffer x Dateigroesse).
+  private grenzenText: string | null = null;
+  private typDeklarationen: Array<{ klammer: number; name: string }> = [];
+  private schliessendeKlammern: number[] = [];
+
+  private bereiteTypGrenzenVor(content: string): void {
+    if (content === this.grenzenText) return;
+    this.grenzenText = content;
+    this.typDeklarationen = [];
+    this.schliessendeKlammern = [];
+    const deklRe = /(?:class|mixin|enum|extension)\s+(\w+)[^{]*\{/g;
+    let d: RegExpExecArray | null;
+    while ((d = deklRe.exec(content)) !== null) {
+      this.typDeklarationen.push({ klammer: d.index + d[0].length - 1, name: d[1] });
+    }
+    for (let i = 0; i < content.length; i++) {
+      if (content.charCodeAt(i) === 125) this.schliessendeKlammern.push(i);
+    }
+  }
+
+  /**
+   * In welcher Typ-Deklaration liegt pos?
+   *
+   * Bildet die alte Regex exakt nach, einschliesslich ihrer Eigenheit: String.match
+   * ohne g-Flag liefert den am weitesten LINKS beginnenden Treffer. Bei verschachtelten
+   * Deklarationen ist das die AEUSSERE, nicht die naechstgelegene. Der Teilausdruck
+   * \{[^}]*$ verlangt, dass zwischen der oeffnenden Klammer und pos keine schliessende
+   * liegt — gesucht ist also die erste Deklaration hinter der letzten schliessenden
+   * Klammer vor pos. Beides per Binaersuche statt per Praefix-Kopie.
+   */
   private findParentType(content: string, pos: number): string | undefined {
-    const before = content.substring(0, pos);
-    const match = before.match(/(?:class|mixin|enum|extension)\s+(\w+)[^{]*\{[^}]*$/);
-    return match ? match[1] : undefined;
+    this.bereiteTypGrenzenVor(content);
+    let lo = 0;
+    let hi = this.schliessendeKlammern.length;
+    while (lo < hi) {
+      const mitte = (lo + hi) >> 1;
+      if (this.schliessendeKlammern[mitte] < pos) lo = mitte + 1;
+      else hi = mitte;
+    }
+    const letzteZu = lo > 0 ? this.schliessendeKlammern[lo - 1] : -1;
+    let a = 0;
+    let b = this.typDeklarationen.length;
+    while (a < b) {
+      const mitte = (a + b) >> 1;
+      if (this.typDeklarationen[mitte].klammer <= letzteZu) a = mitte + 1;
+      else b = mitte;
+    }
+    const kandidat = this.typDeklarationen[a];
+    return kandidat && kandidat.klammer < pos ? kandidat.name : undefined;
   }
 }
 
