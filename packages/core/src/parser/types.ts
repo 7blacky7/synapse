@@ -133,14 +133,7 @@ export interface LanguageParser {
 }
 
 /**
- * Extrahiert String-Literale aus Source-Code als ParsedSymbols (symbol_type='string').
- * Erfasst "identifier-like" Strings (2-64 Zeichen, keine Whitespaces) damit sie via
- * code_intel.references auffindbar sind (z.B. Dict-Keys, Match-Arms, lokalisierte Keywords).
- *
- * @param content  Datei-Inhalt
- * @param opts.includeSingleQuotes  Wenn true, werden auch 'foo' Strings erfasst (nur Sprachen
- *                                   wo einfache Quotes String-Literale sind, NICHT char-literals).
- * @param opts.includeBackticks     Wenn true, werden auch `foo` Template-Strings erfasst.
+ * Positionen aller Zeilenumbrueche einer Datei — Grundlage fuer zeileFuerPosition.
  */
 export function erstelleZeilenIndex(content: string): number[] {
   const umbrueche: number[] = [];
@@ -171,6 +164,90 @@ export function zeileFuerPosition(umbrueche: number[], pos: number): number {
   return lo + 1;
 }
 
+/**
+ * Parst einen eingebetteten Sprachblock (z.B. <script> oder <style> in HTML) mit
+ * einem anderen Parser und rechnet dessen Zeilennummern auf die Wirtsdatei um.
+ *
+ * WARUM DAS NOETIG IST: der eingebettete Parser sieht nur den Block und zaehlt
+ * dessen Zeilen ab 1. Ohne Umrechnung zeigen alle Symbole eines <script>-Blocks,
+ * der bei Zeile 64.000 beginnt, auf die ersten Hundert Zeilen der Datei — also
+ * auf fremdes Markup. Die Rechnung: die erste Zeile des Blocks liegt auf jener
+ * Zeile der Wirtsdatei, in der blockStartPos steht; alles Weitere ist eine
+ * Verschiebung um diesen Betrag minus eins, weil beide Zaehlungen 1-basiert sind.
+ *
+ * TEMP-ID-PRAEFIX: Statement-IDs sind nur innerhalb EINES Parse-Laufs eindeutig.
+ * Enthaelt eine Datei mehrere Bloecke, vergeben diese dieselben IDs, und die
+ * parent-Verknuepfung zeigt beim Persistieren auf den falschen Block. Wer mehrere
+ * Bloecke parst, MUSS je Block einen eigenen Praefix setzen.
+ *
+ * @param gesamtInhalt   Inhalt der Wirtsdatei (fuer die Zeilenberechnung)
+ * @param blockInhalt    Inhalt des eingebetteten Blocks
+ * @param blockStartPos  Zeichenposition des Block-INHALTS in der Wirtsdatei
+ * @param parser         Zielparser (z.B. typescriptParser, cssParser)
+ * @param virtuellerPfad Pfad, den der Zielparser sieht — seine Endung entscheidet
+ *                       ueber den Dialekt (z.B. .scss gegenueber .css)
+ */
+export function parseEingebettet(
+  gesamtInhalt: string,
+  blockInhalt: string,
+  blockStartPos: number,
+  parser: LanguageParser,
+  virtuellerPfad: string,
+  opts: { zeilenIndex?: number[]; tempIdPraefix?: string } = {},
+): ParseResult {
+  const leer: ParseResult = { symbols: [], references: [], statements: [], callEdges: [] };
+  if (blockInhalt.trim().length === 0) return leer;
+
+  const index = opts.zeilenIndex ?? erstelleZeilenIndex(gesamtInhalt);
+  const versatz = zeileFuerPosition(index, blockStartPos) - 1;
+  const praefix = opts.tempIdPraefix ?? '';
+
+  let teil: ParseResult;
+  try {
+    teil = parser.parse(blockInhalt, virtuellerPfad);
+  } catch {
+    // Ein kaputter eingebetteter Block darf den Parse der Wirtsdatei nicht kippen:
+    // sonst verliert eine 100.000-Zeilen-Datei wegen eines Tippfehlers in einem
+    // einzigen <script>-Tag ihren gesamten Index.
+    return leer;
+  }
+
+  const verschoben = (n: number | undefined): number | undefined =>
+    typeof n === 'number' ? n + versatz : undefined;
+
+  return {
+    symbols: teil.symbols.map(s => ({
+      ...s,
+      line_start: s.line_start + versatz,
+      line_end: verschoben(s.line_end),
+    })),
+    references: teil.references.map(r => ({ ...r, line_number: r.line_number + versatz })),
+    statements: (teil.statements ?? []).map(s => ({
+      ...s,
+      temp_id: praefix + s.temp_id,
+      parent_temp_id: s.parent_temp_id === undefined ? undefined : praefix + s.parent_temp_id,
+      line_start: s.line_start + versatz,
+      line_end: verschoben(s.line_end),
+    })),
+    callEdges: (teil.callEdges ?? []).map(c => ({
+      ...c,
+      statement_temp_id:
+        c.statement_temp_id === undefined ? undefined : praefix + c.statement_temp_id,
+      line_number: c.line_number + versatz,
+    })),
+  };
+}
+
+/**
+ * Extrahiert String-Literale aus Source-Code als ParsedSymbols (symbol_type='string').
+ * Erfasst "identifier-like" Strings (2-64 Zeichen, keine Whitespaces) damit sie via
+ * code_intel.references auffindbar sind (z.B. Dict-Keys, Match-Arms, lokalisierte Keywords).
+ *
+ * @param content  Datei-Inhalt
+ * @param opts.includeSingleQuotes  Wenn true, werden auch 'foo' Strings erfasst (nur Sprachen
+ *                                   wo einfache Quotes String-Literale sind, NICHT char-literals).
+ * @param opts.includeBackticks     Wenn true, werden auch `foo` Template-Strings erfasst.
+ */
 export function extractStringLiterals(
   content: string,
   opts: { includeSingleQuotes?: boolean; includeBackticks?: boolean } = {}

@@ -8,21 +8,18 @@
  */
 
 import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
-import { extractStringLiterals } from './types.js';
-
-function lineAt(text: string, pos: number): number {
-  return text.substring(0, pos).split('\n').length;
-}
-
-function endLineAt(text: string, pos: number, matchLength: number): number {
-  return text.substring(0, pos + matchLength).split('\n').length;
-}
+import { extractStringLiterals, erstelleZeilenIndex, zeileFuerPosition } from './types.js';
 
 class CssParser implements LanguageParser {
   language = 'css';
   extensions = ['.css', '.scss', '.less', '.sass'];
   /** Bei inhaltlichen Parser-Aenderungen erhoehen (siehe LanguageParser.version). */
-  version = 1;
+  // 2: Zeilennummern ueber den Zeilenindex statt ueber substring().split() je
+  //    Fundstelle. Das war O(Treffer x Dateigroesse) und kostete beim
+  //    eingebetteten <style>-Block einer 7-MB-HTML allein 7,4 Sekunden — dieselbe
+  //    Falle, die bei zeileFuerPosition in types.ts beschrieben ist. Die
+  //    gelieferten Zeilen sind unveraendert, nur die Laufzeit faellt.
+  version = 2;
 
   parse(content: string, filePath: string): ParseResult {
     const symbols: ParsedSymbol[] = [];
@@ -30,6 +27,11 @@ class CssParser implements LanguageParser {
     let m: RegExpExecArray | null;
     const isScss = /\.scss$/.test(filePath);
     const isLess = /\.less$/.test(filePath);
+    // Zeilenumbrueche EINMAL vorberechnen — siehe zeileFuerPosition in types.ts.
+    const zeilenIndex = erstelleZeilenIndex(content);
+    const zeile = (pos: number): number => zeileFuerPosition(zeilenIndex, pos);
+    const zeileEnde = (pos: number, len: number): number =>
+      zeileFuerPosition(zeilenIndex, pos + len);
 
     // ══════════════════════════════════════════════
     // 1. @import / @use / @forward
@@ -43,12 +45,12 @@ class CssParser implements LanguageParser {
         symbol_type: 'import',
         name,
         value: path,
-        line_start: lineAt(content, m.index),
+        line_start: zeile(m.index),
         is_exported: false,
       });
       references.push({
         symbol_name: name,
-        line_number: lineAt(content, m.index),
+        line_number: zeile(m.index),
         context: `@${kind} '${path}'`,
       });
     }
@@ -63,7 +65,7 @@ class CssParser implements LanguageParser {
           symbol_type: 'variable',
           name: m[1],
           value: m[2].trim().slice(0, 200),
-          line_start: lineAt(content, m.index),
+          line_start: zeile(m.index),
           is_exported: !m[2].includes('!default') || true,
         });
       }
@@ -78,7 +80,7 @@ class CssParser implements LanguageParser {
           symbol_type: 'variable',
           name: m[1],
           value: m[2].trim().slice(0, 200),
-          line_start: lineAt(content, m.index),
+          line_start: zeile(m.index),
           is_exported: true,
         });
       }
@@ -91,7 +93,7 @@ class CssParser implements LanguageParser {
         symbol_type: 'variable',
         name: m[1],
         value: m[2].trim().slice(0, 200),
-        line_start: lineAt(content, m.index),
+        line_start: zeile(m.index),
         is_exported: true,
       });
     }
@@ -108,7 +110,7 @@ class CssParser implements LanguageParser {
           name: m[1],
           value: 'mixin',
           params,
-          line_start: lineAt(content, m.index),
+          line_start: zeile(m.index),
           is_exported: true,
         });
       }
@@ -120,7 +122,7 @@ class CssParser implements LanguageParser {
       while ((m = includeRe.exec(content)) !== null) {
         references.push({
           symbol_name: m[1],
-          line_number: lineAt(content, m.index),
+          line_number: zeile(m.index),
           context: `@include ${m[1]}`,
         });
       }
@@ -134,7 +136,7 @@ class CssParser implements LanguageParser {
           symbol_type: 'class',
           name: `%${m[1]}`,
           value: 'placeholder',
-          line_start: lineAt(content, m.index),
+          line_start: zeile(m.index),
           is_exported: true,
         });
       }
@@ -145,7 +147,7 @@ class CssParser implements LanguageParser {
     while ((m = extendRe.exec(content)) !== null) {
       references.push({
         symbol_name: m[1],
-        line_number: lineAt(content, m.index),
+        line_number: zeile(m.index),
         context: `@extend ${m[1]}`,
       });
     }
@@ -159,8 +161,8 @@ class CssParser implements LanguageParser {
         symbol_type: 'function',
         name: m[1],
         value: 'keyframes',
-        line_start: lineAt(content, m.index),
-        line_end: endLineAt(content, m.index, m[0].length),
+        line_start: zeile(m.index),
+        line_end: zeileEnde(m.index, m[0].length),
         is_exported: true,
       });
     }
@@ -174,7 +176,7 @@ class CssParser implements LanguageParser {
         symbol_type: 'variable',
         name: '@media',
         value: m[1].trim().slice(0, 200),
-        line_start: lineAt(content, m.index),
+        line_start: zeile(m.index),
         is_exported: false,
       });
     }
@@ -189,8 +191,8 @@ class CssParser implements LanguageParser {
         symbol_type: 'variable',
         name: '@font-face',
         value: familyMatch ? familyMatch[1].trim() : undefined,
-        line_start: lineAt(content, m.index),
-        line_end: endLineAt(content, m.index, m[0].length),
+        line_start: zeile(m.index),
+        line_end: zeileEnde(m.index, m[0].length),
         is_exported: true,
       });
     }
@@ -210,7 +212,7 @@ class CssParser implements LanguageParser {
         symbol_type: 'class',
         name: selector,
         value: 'selector',
-        line_start: lineAt(content, m.index),
+        line_start: zeile(m.index),
         is_exported: true,
       });
     }
@@ -224,7 +226,7 @@ class CssParser implements LanguageParser {
         symbol_type: 'todo',
         name: null,
         value: m[0].trim(),
-        line_start: lineAt(content, m.index),
+        line_start: zeile(m.index),
         is_exported: false,
       });
     }
@@ -242,8 +244,8 @@ class CssParser implements LanguageParser {
         symbol_type: 'comment',
         name: null,
         value: text.slice(0, 500),
-        line_start: lineAt(content, m.index),
-        line_end: endLineAt(content, m.index, m[0].length),
+        line_start: zeile(m.index),
+        line_end: zeileEnde(m.index, m[0].length),
         is_exported: false,
       });
     }
