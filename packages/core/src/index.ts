@@ -355,6 +355,8 @@ export type {
 
 export type { FunctionInfo, VariableInfo, SymbolInfo, ReferenceInfo, ReferencesResult, FullTextSearchResult, FileContentResult, FileContentOptions, TreeOptions, StatementInfo, CallEdgeInfo, ExecutionFlowResult, EntrypointInfo } from './services/code-intel.js';
 export type { BatchEdit, BatchResult } from './services/code-write.js';
+export { getParserGesundheitDatei, getParserGesundheitUebersicht, backfillParserCoverage, schreibeParserCoverage } from './services/parser-health.js';
+export type { ParserGesundheitDatei, ParserGesundheitUebersicht, ParserBefundGesamt, ParserUebersichtDatei } from './services/parser-health.js';
 
 // File-Versionierung (Schritt 1)
 export {

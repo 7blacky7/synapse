@@ -29,6 +29,8 @@ import {
   fullTextSearchCode,
   getFileContent,
   searchCode,
+  getParserGesundheitDatei,
+  getParserGesundheitUebersicht,
 } from '@synapse/core';
 
 import { ConsolidatedTool, str, reqStr, num, bool } from './types.js';
@@ -43,7 +45,7 @@ export const codeIntelTool: ConsolidatedTool = {
       properties: {
         action: {
           type: 'string',
-          enum: ['tree', 'functions', 'variables', 'symbols', 'references', 'search', 'file', 'statements', 'calls', 'flow', 'entrypoints'],
+          enum: ['tree', 'functions', 'variables', 'symbols', 'references', 'search', 'file', 'statements', 'calls', 'flow', 'entrypoints', 'health'],
           description:
             'Aktion: tree|functions|variables|symbols|references|search|file|statements|calls|flow|entrypoints',
         },
@@ -311,9 +313,29 @@ export const codeIntelTool: ConsolidatedTool = {
         return { success: true, entrypoints, count: entrypoints.length, project };
       }
 
+      case 'health': {
+        // Diagnose statt Raten: unterscheidet "Datei ist leer" von "Parser hat
+        // nichts erkannt". Genau diese Unterscheidung fehlte, als index.html mit
+        // 100.001 Zeilen functions=0 meldete.
+        const filePath = str(args, 'file_path');
+        if (!filePath) {
+          // Ohne file_path: Projekt-Uebersicht. Zuerst die parser-weiten Befunde,
+          // dann die auffaelligen Einzeldateien.
+          const uebersicht = await getParserGesundheitUebersicht(project, {
+            limit: num(args, 'limit'),
+          });
+          return { success: true, uebersicht, project };
+        }
+        const health = await getParserGesundheitDatei(project, filePath);
+        if (!health) {
+          return { success: false, error: `Datei nicht im Index: ${filePath}`, project };
+        }
+        return { success: true, health, project };
+      }
+
       default:
         throw new Error(
-          `Unbekannte action: "${action}". Erlaubte Werte: tree, functions, variables, symbols, references, search, file, statements, calls, flow, entrypoints`
+          `Unbekannte action: "${action}". Erlaubte Werte: tree, functions, variables, symbols, references, search, file, statements, calls, flow, entrypoints, health`
         );
     }
   },

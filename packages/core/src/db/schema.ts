@@ -1127,6 +1127,45 @@ CREATE TRIGGER trg_notify_ignore_rules
   AFTER INSERT OR UPDATE OR DELETE ON project_ignore_rules
   FOR EACH ROW EXECUTE FUNCTION notify_ignore_rules_change();
 
+-- ===========================================================================
+-- PARSE-COVERAGE: wieviel hat der Parser in einer Datei tatsaechlich erkannt?
+--
+-- WARUM: Der Index konnte bisher nicht zwischen "in der Datei ist nichts" und
+-- "der Parser hat nichts erkannt" unterscheiden. index.html stand mit 100.001
+-- Zeilen und 0 Funktionen im Index, ohne dass irgendetwas darauf hinwies.
+-- parse_failures erfasst nur Totalausfaelle (Timeout); diese Tabelle erfasst,
+-- was INNERHALB erfolgreich geparster Dateien herauskam.
+--
+-- EIN DATENSATZ JE DATEI, per Upsert bei jedem Parse. Kein Eintrag pro Zeile --
+-- bei einer 100.001-Zeilen-Datei waere das die falsche Groessenordnung.
+--
+-- BEWUSST OHNE SPALTE "auffaellig": ein gespeicherter Schwellwert veraltet
+-- still, und genau diese Sorte Fehler soll die Tabelle aufdecken. Die Bewertung
+-- entsteht bei jeder Abfrage neu (siehe services/parser-health.ts).
+CREATE TABLE IF NOT EXISTS parse_coverage (
+  project         TEXT NOT NULL,
+  file_path       TEXT NOT NULL,
+  file_type       TEXT,
+  parser          TEXT,
+  parser_version  INTEGER,
+  datei_bytes     INTEGER,
+  zeilen_gesamt   INTEGER NOT NULL DEFAULT 0,
+  belegte_zeilen  INTEGER NOT NULL DEFAULT 0,
+  n_symbole       INTEGER NOT NULL DEFAULT 0,
+  n_funktionen    INTEGER NOT NULL DEFAULT 0,
+  n_klassen       INTEGER NOT NULL DEFAULT 0,
+  n_variablen     INTEGER NOT NULL DEFAULT 0,
+  n_imports       INTEGER NOT NULL DEFAULT 0,
+  n_text_symbole  INTEGER NOT NULL DEFAULT 0,
+  n_statements    INTEGER NOT NULL DEFAULT 0,
+  n_call_edges    INTEGER NOT NULL DEFAULT 0,
+  dauer_ms        INTEGER,
+  gemessen_am     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (project, file_path)
+);
+CREATE INDEX IF NOT EXISTS idx_parse_coverage_parser ON parse_coverage(project, parser);
+
+
 
 `;
 

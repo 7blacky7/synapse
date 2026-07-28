@@ -84,6 +84,8 @@ import {
   getCallEdges,
   getExecutionFlow,
   getEntrypoints,
+  getParserGesundheitDatei,
+  getParserGesundheitUebersicht,
   // Media
   indexMediaDirectory,
   searchMedia,
@@ -749,8 +751,8 @@ const MCP_TOOLS = [
       properties: {
         action: {
           type: 'string',
-          enum: ['tree', 'functions', 'variables', 'symbols', 'references', 'search', 'search_batch', 'file', 'statements', 'calls', 'flow', 'entrypoints'],
-          description: 'Aktion: tree|functions|variables|symbols|references|search|search_batch|file|statements|calls|flow|entrypoints',
+          enum: ['tree', 'functions', 'variables', 'symbols', 'references', 'search', 'search_batch', 'file', 'statements', 'calls', 'flow', 'entrypoints', 'health'],
+          description: 'Aktion: tree|functions|variables|symbols|references|search|search_batch|file|statements|calls|flow|entrypoints|health',
         },
         project: { type: 'string', description: 'Projekt-Name (erforderlich)' },
         agent_id: { type: 'string', description: 'Agent-ID fuer Onboarding' },
@@ -3263,6 +3265,22 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
         case 'entrypoints': {
           const entrypoints = await getEntrypoints(project, str(args, 'file_path'), num(args, 'limit'), args.include_declarations === true);
           return { success: true, entrypoints, count: entrypoints.length, project };
+        }
+        case 'health': {
+          // Siehe MCP-Server: Diagnose einer Datei, wenn Symbolzahlen unerwartet
+          // niedrig sind. Antwort ist bewusst klein (nur Kennzahlen + Befundsaetze).
+          const filePath = str(args, 'file_path');
+          if (!filePath) {
+            const uebersicht = await getParserGesundheitUebersicht(project, {
+              limit: num(args, 'limit'),
+            });
+            return { success: true, uebersicht, project };
+          }
+          const health = await getParserGesundheitDatei(project, filePath);
+          if (!health) {
+            return { success: false, error: `Datei nicht im Index: ${filePath}`, project };
+          }
+          return { success: true, health, project };
         }
         default:
           return { success: false, error: `Unbekannte code_intel action: "${action}"` };

@@ -243,11 +243,19 @@ function erzeugeBefund(d: ParserGesundheitDatei): string[] {
     befund.push(`Noch nicht geparst — die Datei steht im Backlog.`);
   }
 
-  // Der Fall, der diese ganze Untersuchung ausgeloest hat.
-  if (d.zeilen_gesamt >= MIN_ZEILEN_FUER_BEFUND && d.symbole.funktionen === 0 && d.statements === 0) {
+  // TOTALAUSFALL: nicht eine einzige Zeile ist belegt.
+  //
+  // ⚠️ HIER STAND URSPRUENGLICH "0 functions und 0 statements". Das war falsch und
+  // erzeugte Fehlalarme: CSS, Markdown, YAML und Markup haben konstruktiv keine
+  // Funktionen. graph.css (271 Zeilen) wurde so als kaputt gemeldet, obwohl der
+  // CSS-Parser sauber 62 Selektoren geliefert hatte. Ein Melder, der staendig
+  // Unsinn meldet, wird ignoriert — und ist damit schlimmer als keiner.
+  // Gezaehlt wird deshalb, ob UEBERHAUPT etwas erkannt wurde, nicht ob es
+  // ausgerechnet Funktionen waren.
+  if (d.zeilen_gesamt >= MIN_ZEILEN_FUER_BEFUND && d.belegte_zeilen === 0) {
     befund.push(
-      `${fmt(d.zeilen_gesamt)} Zeilen, aber 0 functions und 0 statements — ` +
-        `der Parser hat in dieser Datei keinen Code erkannt.`
+      `${fmt(d.zeilen_gesamt)} Zeilen, aber nichts erkannt — kein Symbol, kein Statement, ` +
+        `keine belegte Zeile.`
     );
   }
 
@@ -261,7 +269,10 @@ function erzeugeBefund(d: ParserGesundheitDatei): string[] {
   }
 
   // Symbolerkennung faellt aus, Ablauf-Ebene laeuft: zwei getrennte Wege im Parser.
-  if (d.symbole.gesamt === 0 && d.statements > 0) {
+  // Mindestgroesse, weil ein Einzeiler-Skript voellig zu Recht 0 Symbole und ein
+  // Statement hat — drei solche .sh-Dateien mit je einer Zeile standen sonst in
+  // der Liste der Auffaelligkeiten.
+  if (d.symbole.gesamt === 0 && d.statements > 0 && d.zeilen_gesamt >= MIN_ZEILEN_FUER_BEFUND) {
     befund.push(
       `0 Symbole, aber ${fmt(d.statements)} Statements — die Symbolerkennung faellt aus, ` +
         `waehrend die Ablauf-Ebene liefert.`
@@ -499,9 +510,9 @@ export async function getParserGesundheitUebersicht(
               n_funktionen, n_text_symbole, n_statements
          FROM parse_coverage
         WHERE project = $1 AND parser IS NOT NULL ${parserFilter}
-          AND ( (zeilen_gesamt >= ${MIN_ZEILEN_FUER_BEFUND} AND n_funktionen = 0 AND n_statements = 0)
+          AND ( (zeilen_gesamt >= ${MIN_ZEILEN_FUER_BEFUND} AND belegte_zeilen = 0)
              OR (n_symbole > 0 AND n_text_symbole = n_symbole AND zeilen_gesamt >= ${MIN_ZEILEN_FUER_BEFUND})
-             OR (n_symbole = 0 AND n_statements > 0)
+             OR (n_symbole = 0 AND n_statements > 0 AND zeilen_gesamt >= ${MIN_ZEILEN_FUER_BEFUND})
              OR (zeilen_gesamt >= ${MIN_ZEILEN_FUER_BEFUND} AND belegte_zeilen > 0
                  AND belegte_zeilen * 100 < zeilen_gesamt * ${MIN_DECKUNG_PROZENT}) )
         ORDER BY zeilen_gesamt DESC
@@ -562,16 +573,23 @@ function bewerteParser(zeilen: ParserZeile[]): ParserBefundGesamt[] {
   const raus: ParserBefundGesamt[] = [];
   for (const { g, typen } of jeParser.values()) {
     // DER FALL, DER RELATIV NIE AUFFAELLT: alles kaputt, also nichts auffaellig.
-    if (g.funktionen_gesamt === 0 && g.statements_gesamt === 0 && g.zeilen_gesamt >= MIN_ZEILEN_PARSER_BEFUND) {
+    // Gemessen wird "gar nichts erkannt", nicht "keine Funktionen" — sonst waeren
+    // reine Markup- und Stylesheet-Parser dauerhaft falsch beschuldigt.
+    if (g.symbole_gesamt === 0 && g.statements_gesamt === 0 && g.zeilen_gesamt >= MIN_ZEILEN_PARSER_BEFUND) {
       g.befund.push(
         `FLAECHENDECKEND: ueber alle ${fmt(g.dateien)} Dateien (${fmt(g.zeilen_gesamt)} Zeilen) ` +
-          `liefert dieser Parser 0 functions und 0 statements. Kein Einzelfall — der Parser selbst greift nicht.`
+          `liefert dieser Parser ueberhaupt nichts — kein Symbol, kein Statement. ` +
+          `Kein Einzelfall, der Parser selbst greift nicht.`
       );
     }
 
-    if (g.symbole_gesamt > 0 && g.text_symbole_gesamt === g.symbole_gesamt) {
+    // Auch das ist ein flaechendeckender Ausfall, nur ein subtilerer: der Parser
+    // liefert etwas, aber nur Woerter. Genau dieser Zustand hat monatelang
+    // niemandem auffallen koennen.
+    if (g.symbole_gesamt > 0 && g.text_symbole_gesamt === g.symbole_gesamt && g.statements_gesamt === 0) {
       g.befund.push(
-        `Die gesamte Ausgabe besteht aus Text (${fmt(g.symbole_gesamt)} string/comment, sonst nichts) — ` +
+        `FLAECHENDECKEND: die gesamte Ausgabe ueber ${fmt(g.dateien)} Dateien besteht aus Text ` +
+          `(${fmt(g.symbole_gesamt)} string/comment, kein einziges Code-Symbol, keine Statements) — ` +
           `der Parser zerlegt die Dateien nur in Woerter.`
       );
     }
@@ -605,8 +623,8 @@ function mappeUebersichtDatei(r: {
     : 0;
 
   let befund: string;
-  if (r.n_funktionen === 0 && r.n_statements === 0) {
-    befund = `${fmt(r.zeilen_gesamt)} Zeilen, aber 0 functions und 0 statements.`;
+  if (r.belegte_zeilen === 0) {
+    befund = `${fmt(r.zeilen_gesamt)} Zeilen, aber nichts erkannt.`;
   } else if (r.n_symbole > 0 && r.n_text_symbole === r.n_symbole) {
     befund = `Alle ${fmt(r.n_symbole)} Symbole sind Text — kein Code-Symbol.`;
   } else if (r.n_symbole === 0 && r.n_statements > 0) {
@@ -624,4 +642,94 @@ function mappeUebersichtDatei(r: {
     deckung_prozent: deckung,
     befund,
   };
+}
+
+
+// ===========================================================================
+// SCHREIBPFAD: bei jedem Parse fortschreiben
+// ===========================================================================
+
+/**
+ * Schreibt die Coverage-Kennzahlen einer gerade geparsten Datei fort.
+ *
+ * ⚠️ KOSTEN — DIE WICHTIGSTE EIGENSCHAFT DIESER FUNKTION:
+ * Alles hier ist O(Symbole + Statements + Dateilaenge), jeweils EIN Durchlauf.
+ * Es wird nichts pro Treffer gesucht und nichts pro Treffer gezaehlt. Der Anlass
+ * fuer diese Vorsicht ist real: eine Zeilenberechnung, die pro Treffer ab
+ * Position 0 durchzaehlte, liess eine 7-MB-Datei ueber 45 Minuten laufen.
+ *
+ * BEWUSST NICHT erstelleZeilenIndex(): die Funktion ist zwar ebenfalls O(n),
+ * legt aber ein Array mit einer Zahl je Zeile an (bei index.html 100.001
+ * Eintraege), das hier niemand braucht. Wo ein Symbol liegt, WEISS der Parser
+ * bereits — line_start ist gesetzt, es wird keine Position neu berechnet.
+ *
+ * Fehler werden geschluckt: Telemetrie darf einen Indexlauf niemals stoppen.
+ */
+export async function schreibeParserCoverage(
+  project: string,
+  filePath: string,
+  fileType: string | null,
+  parser: { language: string; version?: number },
+  ergebnis: {
+    symbols: Array<{ symbol_type: string; line_start: number }>;
+    statements?: Array<{ line_start: number }>;
+    callEdges?: unknown[];
+  },
+  content: string,
+  dauerMs?: number
+): Promise<void> {
+  try {
+    const belegte = new Set<number>();
+    let gesamt = 0, funktionen = 0, klassen = 0, variablen = 0, imports = 0, text = 0;
+
+    for (const s of ergebnis.symbols) {
+      gesamt++;
+      belegte.add(s.line_start);
+      switch (s.symbol_type) {
+        case 'function': funktionen++; break;
+        case 'class': case 'interface': case 'struct': klassen++; break;
+        case 'variable': case 'const_object': variablen++; break;
+        case 'import': imports++; break;
+      }
+      if (TEXT_TYPEN.has(s.symbol_type)) text++;
+    }
+
+    const statements = ergebnis.statements ?? [];
+    for (const st of statements) belegte.add(st.line_start);
+
+    // Zeilen zaehlen: ein Durchlauf, kein Zwischenspeicher.
+    let zeilen = 1;
+    for (let i = 0; i < content.length; i++) {
+      if (content.charCodeAt(i) === 10) zeilen++;
+    }
+
+    await getPool().query(
+      `INSERT INTO parse_coverage (
+         project, file_path, file_type, parser, parser_version, datei_bytes,
+         zeilen_gesamt, belegte_zeilen, n_symbole, n_funktionen, n_klassen,
+         n_variablen, n_imports, n_text_symbole, n_statements, n_call_edges,
+         dauer_ms, gemessen_am)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,NOW())
+       ON CONFLICT (project, file_path) DO UPDATE SET
+         file_type = EXCLUDED.file_type, parser = EXCLUDED.parser,
+         parser_version = EXCLUDED.parser_version, datei_bytes = EXCLUDED.datei_bytes,
+         zeilen_gesamt = EXCLUDED.zeilen_gesamt, belegte_zeilen = EXCLUDED.belegte_zeilen,
+         n_symbole = EXCLUDED.n_symbole, n_funktionen = EXCLUDED.n_funktionen,
+         n_klassen = EXCLUDED.n_klassen, n_variablen = EXCLUDED.n_variablen,
+         n_imports = EXCLUDED.n_imports, n_text_symbole = EXCLUDED.n_text_symbole,
+         n_statements = EXCLUDED.n_statements, n_call_edges = EXCLUDED.n_call_edges,
+         dauer_ms = EXCLUDED.dauer_ms, gemessen_am = NOW()`,
+      [
+        project, filePath, fileType, parser.language, parser.version ?? 1,
+        Buffer.byteLength(content, 'utf8'), zeilen, belegte.size, gesamt,
+        funktionen, klassen, variablen, imports, text,
+        statements.length, (ergebnis.callEdges ?? []).length, dauerMs ?? null,
+      ]
+    );
+  } catch (err) {
+    console.error(
+      `[parser-health] Coverage nicht gespeichert (${project}/${filePath}):`,
+      (err as Error).message
+    );
+  }
 }
