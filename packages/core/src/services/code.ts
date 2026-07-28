@@ -81,7 +81,7 @@ import {
 import { embed, embedBatch, embedMedia, supportsMultimodal } from '../embeddings/index.js';
 import { chunkFile } from '../chunking/index.js';
 import { readFileWithMetadata, getFileType, isExtractableDocument } from '../watcher/index.js';
-import { isMultimodalFile, getMediaMimeType, getMediaCategory, isBinaryFile, MAX_MEDIA_SIZE_MB } from '../watcher/binary.js';
+import { isMultimodalFile, getMediaMimeType, getMediaCategory, isBinaryFile, MAX_MEDIA_SIZE_MB, klassifiziereDatei } from '../watcher/binary.js';
 import { loadGitignore, shouldIgnore } from '../watcher/ignore.js';
 import { getConfig } from '../config.js';
 import { indexDocument, removeDocument } from './documents.js';
@@ -1537,11 +1537,28 @@ export async function parseUnparsedFiles(projectName: string): Promise<number> {
  * Indexiert eine Datei — zweistufig: Stage 1 synchron, Stage 2 async debounced
  * filePath ist RELATIV, projectRoot ist der absolute Projekt-Pfad.
  */
+/**
+ * ⚠️ LETZTE VERTEIDIGUNGSLINIE GEGEN MEDIA IM CODE-INDEX.
+ *
+ * Die Aufrufer klassifizieren bereits (handleFileEvent, verifyProjectAgainstFilesystem,
+ * manager.ts:forwardEvent, fs-events.ts) — aber genau darauf war am 28.07.2026 kein
+ * Verlass: von vier Aufrufern hatten ZWEI die Pruefung nie, und ueber sie liefen 1426
+ * PNG-Dateien mit 149 MB als UTF-8-dekodierter Byte-Salat in den Code-Index, 2375
+ * Chunks davon bis in die Vektoren.
+ *
+ * Eine Pruefung in den Aufrufern schuetzt nur die Aufrufer, die man kennt. Diese hier
+ * schuetzt auch die naechste Aufrufstelle, die jemand in einem Jahr hinzufuegt, ohne
+ * diesen Kommentar gelesen zu haben. Sie ist bewusst redundant.
+ */
 export async function indexFile(
   filePath: string,
   projectName: string,
   projectRoot: string
 ): Promise<number> {
+  if (klassifiziereDatei(filePath) === 'media') {
+    console.error(`[Synapse] indexFile: Media gehoert nicht in den Code-Index, uebersprungen: ${filePath}`);
+    return 0;
+  }
   const changed = await storeFileContent(filePath, projectName, projectRoot);
   if (changed) {
     enqueueParseAndEmbed(projectName, filePath);
