@@ -395,6 +395,21 @@ export interface ParserGesundheitUebersicht {
 const MIN_ZEILEN_PARSER_BEFUND = 1000;
 
 /**
+ * Zweite, niedrigere Schwelle fuer den Fall TOTALE LEERE — dort zaehlt zusaetzlich
+ * die Zahl der Dateien.
+ *
+ * WARUM ES SIE BRAUCHT: der groovy-Parser stuerzte bei 8 von 10 echten Gradle-Dateien
+ * ab und lieferte projektweit NICHTS. health schwieg dazu, weil 358 Zeilen unter der
+ * 1000er-Schwelle lagen — ausgerechnet der flaechendeckende Ausfall, fuer den dieses
+ * Modul gebaut wurde, blieb unsichtbar. Ein Parser, der ueber MEHRERE Dateien hinweg
+ * gar nichts liefert, ist auch bei 358 Zeilen ein Befund.
+ * Die Dateizahl muss mit hinein, sonst meldet jede einzelne Zwei-Zeilen-Datei einen
+ * Ausfall (dlang: 14 Dateien mit zusammen rund 20 Zeilen, dort ist 0 korrekt).
+ */
+const MIN_ZEILEN_LEERE_BEFUND = 150;
+const MIN_DATEIEN_LEERE_BEFUND = 3;
+
+/**
  * Endung -> Sprache + heutige Version, abgeleitet aus der Parser-Registry.
  * Bewusst ueber getParserForFile statt ueber eine eigene Liste: so bleibt die
  * Registry die einzige Quelle der Wahrheit, inklusive ihrer Sonderfaelle.
@@ -616,7 +631,12 @@ function bewerteParser(zeilen: ParserZeile[]): ParserBefundGesamt[] {
     // DER FALL, DER RELATIV NIE AUFFAELLT: alles kaputt, also nichts auffaellig.
     // Gemessen wird "gar nichts erkannt", nicht "keine Funktionen" — sonst waeren
     // reine Markup- und Stylesheet-Parser dauerhaft falsch beschuldigt.
-    if (g.symbole_gesamt === 0 && g.statements_gesamt === 0 && g.zeilen_gesamt >= MIN_ZEILEN_PARSER_BEFUND) {
+    if (
+      g.symbole_gesamt === 0 &&
+      g.statements_gesamt === 0 &&
+      (g.zeilen_gesamt >= MIN_ZEILEN_PARSER_BEFUND ||
+        (g.dateien >= MIN_DATEIEN_LEERE_BEFUND && g.zeilen_gesamt >= MIN_ZEILEN_LEERE_BEFUND))
+    ) {
       g.befund.push(
         `FLAECHENDECKEND: ueber alle ${fmt(g.dateien)} Dateien (${fmt(g.zeilen_gesamt)} Zeilen) ` +
           `liefert dieser Parser ueberhaupt nichts — kein Symbol, kein Statement. ` +
@@ -627,7 +647,14 @@ function bewerteParser(zeilen: ParserZeile[]): ParserBefundGesamt[] {
     // Auch das ist ein flaechendeckender Ausfall, nur ein subtilerer: der Parser
     // liefert etwas, aber nur Woerter. Genau dieser Zustand hat monatelang
     // niemandem auffallen koennen.
-    if (g.symbole_gesamt > 0 && g.text_symbole_gesamt === g.symbole_gesamt && g.statements_gesamt === 0) {
+    // "FLAECHENDECKEND" behauptet Flaeche — dann muss auch welche da sein. Ohne die
+    // Mindestgroesse stand das Wort ueber EINER Datei mit 13 Zeilen (webserver-oauth/html).
+    if (
+      g.symbole_gesamt > 0 &&
+      g.text_symbole_gesamt === g.symbole_gesamt &&
+      g.statements_gesamt === 0 &&
+      (g.dateien >= MIN_DATEIEN_LEERE_BEFUND || g.zeilen_gesamt >= MIN_ZEILEN_LEERE_BEFUND)
+    ) {
       g.befund.push(
         `FLAECHENDECKEND: die gesamte Ausgabe ueber ${fmt(g.dateien)} Dateien besteht aus Text ` +
           `(${fmt(g.symbole_gesamt)} string/comment, kein einziges Code-Symbol, keine Statements) — ` +

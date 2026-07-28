@@ -434,12 +434,28 @@ export async function parseAndEmbed(
     const { getParserPool } = await import('../parser/worker-pool.js');
     const workerPool = getParserPool();
     let parseResult;
+
+    // ⚠️ EIN PARSER DARF ABSTUERZEN, ABER NICHT DEN LAUF MITNEHMEN.
+    // parser.parse() wird unten an DREI Stellen gerufen (Pool liefert null, Pool
+    // wirft, kein Pool). Der Wurf wird hier einmal eingefangen statt dreimal dort —
+    // sonst vergisst der naechste, der eine vierte Aufrufstelle ergaenzt, das catch.
+    // Der Fehler steht in einem Objekt und nicht in einer freien Variablen, damit
+    // TypeScript die Zuweisung aus der Closure nicht wegnarrowt.
+    const absturz: { fehler: Error | null } = { fehler: null };
+    const sicherParse = () => {
+      try {
+        return parser.parse(content, filePath);
+      } catch (err) {
+        absturz.fehler = err as Error;
+        return undefined;
+      }
+    };
     if (workerPool) {
       try {
         const poolResult = await workerPool.parse({ filePath, fileType, content });
         if (poolResult === null) {
           // Im Worker kein Parser fuer fileType gefunden — Fallback auf parsed_at-Skip-Pfad
-          parseResult = parser.parse(content, filePath);
+          parseResult = sicherParse();
         } else {
           parseResult = poolResult;
         }
@@ -479,10 +495,68 @@ export async function parseAndEmbed(
           return;
         }
         console.error(`[Synapse] Worker-Pool parse fehlgeschlagen fuer ${filePath}, fallback sync:`, (poolErr as Error).message);
-        parseResult = parser.parse(content, filePath);
+        parseResult = sicherParse();
       }
     } else {
-      parseResult = parser.parse(content, filePath);
+      parseResult = sicherParse();
+    }
+
+    // DER PARSER IST GESTUERZT. Bis zum 28.07.2026 flog der Wurf hier heraus: die
+    // Datei bekam NIE ein parsed_at und blieb fuer immer im Backlog. Solange der
+    // Nachziehmechanismus kaputt war, fiel das nicht auf — seit er wieder laeuft
+    // (29fbe29), wird daraus eine Endlosschleife: der Tick holt die Datei, sie
+    // kippt, der naechste Tick holt sie wieder. Genau dagegen wurde der Skip-Pfad
+    // fuer fehlende Parser einst gebaut; der Absturz-Fall fehlte.
+    //
+    // BELEGT AN groovy.ts:366 — sc.type auf einem leergelaufenen Scope-Stack bei
+    // unausgeglichenen Klammern. 8 von 10 echten Gradle-Dateien im Bestand stuerzten
+    // ab, alle mit parsed_at IS NULL. Mit Minimalbeispielen laeuft derselbe Parser
+    // sauber — deshalb ist es nie jemandem aufgefallen.
+    //
+    // BEHANDLUNG WIE BEIM TIMEOUT und aus denselben Gruenden: Eintrag in
+    // parse_failures, damit der Ausfall SICHTBAR wird (diese Tabelle war bis heute
+    // leer, weil vermerkeAusfall nur im Timeout-Zweig gerufen wurde — die Tabelle,
+    // die genau dafuer da ist, hat noch nie einen Eintrag gesehen). Und
+    // parser_version mitschreiben, damit kein zweiter Versuch mit DERSELBEN Version
+    // stattfindet: faellig wird die Datei erst wieder, wenn jemand den Parser
+    // anfasst und die Version erhoeht — genau dann besteht die Chance, dass der
+    // Fehler behoben ist.
+    if (absturz.fehler) {
+      console.error(
+        `[Synapse] PARSER-ABSTURZ ${project}/${filePath} (${parser.language} v${parser.version ?? 1}): ` +
+          `${absturz.fehler.message}. Datei uebersprungen, Lauf laeuft weiter.`
+      );
+      const { vermerkeAusfall } = await import('../db/parse-failures.js');
+      await vermerkeAusfall(pool, {
+        project,
+        filePath,
+        // Der Typ kennt nur 'timeout' und 'fehler'. Ein Absturz ist ein 'fehler';
+        // die Unterscheidung steht in details (Meldung + die ersten Stack-Zeilen).
+        grund: 'fehler',
+        details: `${absturz.fehler.message}\n${(absturz.fehler.stack ?? '').split('\n').slice(0, 5).join('\n')}`,
+        parser: parser.language,
+        dateiBytes: content.length,
+      }).catch(err => console.error('[Synapse] vermerkeAusfall fehlgeschlagen:', err));
+      await pool.query(
+        `UPDATE code_files SET parsed_at = NOW(), indexed_at = NOW(), parser_version = $3
+           WHERE project = $1 AND file_path = $2`,
+        [project, filePath, parser.version ?? 1]
+      );
+      return;
+    }
+
+    // Ohne Absturz hat jeder Zweig oben zugewiesen. TypeScript sieht das nicht, weil
+    // der Absturz in einem Objektfeld steht — dieser Guard macht es explizit und
+    // faengt zugleich einen kuenftigen Zweig ab, der die Zuweisung vergisst. Ohne ihn
+    // liefe so ein Zweig still mit undefined weiter.
+    if (!parseResult) {
+      console.error(`[Synapse] Kein Parse-Ergebnis fuer ${project}/${filePath} trotz Parser — uebersprungen.`);
+      await pool.query(
+        `UPDATE code_files SET parsed_at = NOW(), indexed_at = NOW(), parser_version = $3
+           WHERE project = $1 AND file_path = $2`,
+        [project, filePath, parser.version ?? 1]
+      );
+      return;
     }
 
     // RACE-FIX: dedizierter Client + advisory_xact_lock — vorher liefen BEGIN/DELETE/INSERT/COMMIT
