@@ -233,7 +233,7 @@ async function buildOverview() {
 async function buildProjectGraph(name: string, symbolTypes: string[]) {
   const [fileList, imports, fns] = await Promise.all([
     getFileList(name),
-    getSymbols(name, 'import'),
+    getSymbols(name, 'import', undefined, undefined, 0),
     getFunctions(name),
   ]);
 
@@ -288,7 +288,7 @@ async function buildProjectGraph(name: string, symbolTypes: string[]) {
   for (const t of symbolTypes) {
     if (!SYMBOL_TYPES.includes(t)) continue;
     try {
-      const syms = await getSymbols(name, t);
+      const syms = await getSymbols(name, t, undefined, undefined, 0);
       symbolTruncated[t] = Math.max(0, syms.length - SYMBOL_CAP);
       for (const s of syms.slice(0, SYMBOL_CAP)) {
         if (!s.file_path || !fileSet.has(s.file_path)) continue;

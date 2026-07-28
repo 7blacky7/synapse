@@ -223,7 +223,7 @@ export const codeIntelTool: ConsolidatedTool = {
         const symbolType = reqStr(args, 'symbol_type');
         const filePath = str(args, 'file_path');
         const name = str(args, 'name');
-        const symbols = await getSymbols(project, symbolType, filePath, name);
+        const symbols = await getSymbols(project, symbolType, filePath, name, num(args, 'limit') ?? 100);
         return { success: true, symbols, count: symbols.length, symbol_type: symbolType, project };
       }
 

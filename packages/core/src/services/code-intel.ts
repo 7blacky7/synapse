@@ -411,7 +411,15 @@ export async function getSymbols(
   project: string,
   symbolType: string,
   filePath?: string,
-  name?: string
+  name?: string,
+  /**
+   * Max. Treffer. 0 = ohne Limit (nur fuer interne Vollabfragen wie den Graphen).
+   * WARUM ES DAS BRAUCHT: ohne Limit lieferte ein einzelner symbols-Call auf eine
+   * grosse Datei alles — an einer 100k-Zeilen-HTML waren das 9120 Symbole bzw.
+   * 1,75 MB Antwort, obwohl limit:4 angefordert war. Fuer eine aufrufende KI ist
+   * das ein gesprengtes Kontextfenster ohne Vorwarnung.
+   */
+  limit: number = 100
 ): Promise<SymbolInfo[]> {
   const pool = getPool();
 
@@ -441,7 +449,8 @@ export async function getSymbols(
        cs.value
      FROM code_symbols cs
      WHERE ${where}
-     ORDER BY cs.file_path, cs.line_start`,
+     ORDER BY cs.file_path, cs.line_start
+     ${limit > 0 ? `LIMIT ${Math.min(Math.floor(limit), 1000)}` : ''}`,
     params
   );
 

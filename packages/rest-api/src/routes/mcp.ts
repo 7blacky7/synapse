@@ -3181,7 +3181,7 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
         }
         case 'symbols': {
           const symbolType = reqStr(args, 'symbol_type');
-          const symbols = await getSymbols(project, symbolType, str(args, 'file_path'), str(args, 'name'));
+          const symbols = await getSymbols(project, symbolType, str(args, 'file_path'), str(args, 'name'), num(args, 'limit') ?? 100);
           return { success: true, symbols, count: symbols.length, symbol_type: symbolType, project };
         }
         case 'references': {
