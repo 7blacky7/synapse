@@ -50,6 +50,14 @@ function deterministicChunkId(project: string, filePath: string, chunkIndex: num
   const contentHash = crypto.createHash('sha256').update(content).digest('hex').slice(0, 16);
   return uuidv5(`${project}:${filePath}:${chunkIndex}:${contentHash}`, SYNAPSE_QDRANT_NS);
 }
+
+/**
+ * Wieviele Chunks pro Runde embedded, in Qdrant eingefuegt und in PG quittiert
+ * werden. Kleiner heisst: ein Abbruch kostet weniger, dafuer mehr Roundtrips.
+ * Bei 100 und rund 870 ms je Chunk ist eine Runde nach gut anderthalb Minuten
+ * dauerhaft verbucht.
+ */
+const EMBED_SCHEIBE = Math.max(1, Number(process.env.EMBED_SCHEIBE) || 100);
 import {
   CodeChunkPayload,
   CodeSearchResult,
@@ -738,7 +746,38 @@ export async function parseAndEmbed(
   // Zulaessig, weil das Chunking inhaltsbasiert ist: ein Parser-Update aendert
   // den Dateiinhalt nicht, die vorhandenen Chunks bleiben also gueltig.
   const chunks = opts?.ohneEmbeddings ? [] : chunkFile(content, filePath, project);
-  const chunksClient = opts?.ohneEmbeddings ? null : await pool.connect();
+
+  // WIEDERAUFNAHME: Sind die gespeicherten Chunks identisch mit den eben
+  // berechneten, dann darf der Block unten sie NICHT neu schreiben. Das
+  // DELETE+INSERT wuerde embedded_at auf NULL zuruecksetzen und damit die
+  // Buchhaltung darueber vernichten, was laengst embedded ist — nach einem
+  // Abbruch finge der Lauf sonst jedes Mal wieder bei Chunk 0 an.
+  //
+  // Verglichen wird ueber md5(content) je chunk_index. Das rechnet PostgreSQL
+  // nebenbei, sodass die Chunk-Inhalte nicht uebertragen werden muessen — bei
+  // einer 7-MB-Datei waere das sonst 7 MB pro Durchlauf, nur um festzustellen,
+  // dass sich nichts geaendert hat.
+  let chunksUnveraendert = false;
+  if (!opts?.ohneEmbeddings && chunks.length > 0) {
+    try {
+      const alt = await pool.query(
+        `SELECT chunk_index, md5(content) AS h FROM code_chunks
+          WHERE project = $1 AND file_path = $2 ORDER BY chunk_index`,
+        [project, filePath]
+      );
+      chunksUnveraendert =
+        alt.rows.length === chunks.length &&
+        chunks.every((c, i) =>
+          alt.rows[i].chunk_index === c.chunkIndex &&
+          alt.rows[i].h === crypto.createHash('md5').update(c.content).digest('hex')
+        );
+    } catch {
+      chunksUnveraendert = false; // im Zweifel den bisherigen Weg gehen
+    }
+  }
+
+  const chunksClient =
+    opts?.ohneEmbeddings || chunksUnveraendert ? null : await pool.connect();
   if (chunksClient) try {
     await chunksClient.query('BEGIN');
     await chunksClient.query('SELECT pg_advisory_xact_lock(hashtext($1))', [
@@ -808,37 +847,90 @@ export async function parseAndEmbed(
   if (chunks.length > 0 && !skipEmbeddings) {
     const collectionName = await ensureProjectCollection(project);
 
-    // Alte Qdrant-Eintraege loeschen
-    await deleteByFilePath(collectionName, filePath, project);
+    // Was ist ueberhaupt noch zu tun?
+    // Sind die Chunk-Rows von vorhin unveraendert, dann liegt alles mit einem
+    // embedded_at bereits in Qdrant und wird uebersprungen. Genau das macht die
+    // Wiederaufnahme nach einem Abbruch billig: sie kostet die angefangene
+    // Scheibe, nicht den ganzen Lauf.
+    let offen = chunks;
+    if (chunksUnveraendert) {
+      const fertig = await pool.query(
+        `SELECT chunk_index FROM code_chunks
+          WHERE project = $1 AND file_path = $2 AND embedded_at IS NOT NULL`,
+        [project, filePath]
+      );
+      const erledigt = new Set<number>(
+        fertig.rows.map((r: { chunk_index: number }) => r.chunk_index)
+      );
+      offen = chunks.filter(c => !erledigt.has(c.chunkIndex));
+      if (offen.length < chunks.length) {
+        console.error(
+          `[Synapse] Wiederaufnahme ${path.basename(filePath)}: ${chunks.length - offen.length}/${chunks.length} Chunks schon embedded, ${offen.length} offen`
+        );
+      }
+    } else {
+      // Der Inhalt hat sich geaendert — die alten Vektoren der Datei sind damit
+      // ungueltig und muessen weg, bevor die neuen kommen.
+      await deleteByFilePath(collectionName, filePath, project);
+    }
 
-    const contents = chunks.map(c => c.content);
-    const embeddings = await embedBatch(contents);
+    // SCHEIBENWEISE embedden, einfuegen, quittieren.
+    //
+    // WARUM NICHT ALLES AUF EINMAL: hier sammelte ein einziges embedBatch
+    // saemtliche Vektoren, danach kam EIN insertVectors und EIN UPDATE. Bei 5950
+    // Chunks und rund 870 ms je Chunk (Ollama, gemessen) laeuft dieser eine Aufruf
+    // ueber 80 Minuten — und bis zur letzten Sekunde steht in Qdrant nichts und
+    // embedded_at ist ueberall NULL. Jeder Abbruch (Deploy, Neustart, Timeout) warf
+    // die komplette Arbeit weg, und von aussen war nicht einmal unterscheidbar, ob
+    // ueberhaupt noch etwas laeuft. Scheibenweise ist der Fortschritt nach jeder
+    // Runde dauerhaft gespeichert und sichtbar.
+    //
+    // ES KOSTET KEINEN DURCHSATZ: Ollama kennt kein echtes Batch-Embedding, seine
+    // embedBatch-Methode ist eine Schleife ueber die Texte. Es aendert sich also nur,
+    // WANN eingefuegt wird, nicht wie lange gerechnet wird.
+    //
+    // FAIRNESS ALS NEBENEFFEKT: die globale Embedding-Queue (EMBED_MAX_CONCURRENT)
+    // vergibt ihren Slot pro embedBatch-Aufruf. Vorher belegte eine einzige grosse
+    // Datei einen der beiden Slots stundenlang; jetzt gibt sie ihn nach jeder Scheibe
+    // frei, andere Dateien kommen dazwischen.
+    for (let von = 0; von < offen.length; von += EMBED_SCHEIBE) {
+      const teil = offen.slice(von, von + EMBED_SCHEIBE);
+      const embeddings = await embedBatch(teil.map(c => c.content));
 
-    const items = chunks.map((chunk, i) => ({
-      id: deterministicChunkId(chunk.project, chunk.filePath, chunk.chunkIndex, chunk.content),
-      vector: embeddings[i],
-      payload: {
-        file_path: chunk.filePath,
-        file_name: path.basename(chunk.filePath),
-        file_type: fileType,
-        line_start: chunk.lineStart,
-        line_end: chunk.lineEnd,
-        project: chunk.project,
-        chunk_index: chunk.chunkIndex,
-        total_chunks: chunk.totalChunks,
-        updated_at: new Date().toISOString(),
-        content: chunk.content,
-      } satisfies CodeChunkPayload,
-    }));
+      const items = teil.map((chunk, i) => ({
+        id: deterministicChunkId(chunk.project, chunk.filePath, chunk.chunkIndex, chunk.content),
+        vector: embeddings[i],
+        payload: {
+          file_path: chunk.filePath,
+          file_name: path.basename(chunk.filePath),
+          file_type: fileType,
+          line_start: chunk.lineStart,
+          line_end: chunk.lineEnd,
+          project: chunk.project,
+          chunk_index: chunk.chunkIndex,
+          total_chunks: chunk.totalChunks,
+          updated_at: new Date().toISOString(),
+          content: chunk.content,
+        } satisfies CodeChunkPayload,
+      }));
 
-    await insertVectors(collectionName, items);
+      await insertVectors(collectionName, items);
 
-    // code_chunks als embedded markieren
-    await pool.query(
-      `UPDATE code_chunks SET embedded_at = NOW()
-       WHERE project = $1 AND file_path = $2`,
-      [project, filePath]
-    );
+      // Erst quittieren, wenn die Vektoren wirklich drin sind. In dieser
+      // Reihenfolge, sonst gilt ein Chunk als fertig, dessen Vektor fehlt — und
+      // genau der wuerde bei der Wiederaufnahme dann uebersprungen.
+      await pool.query(
+        `UPDATE code_chunks SET embedded_at = NOW()
+          WHERE project = $1 AND file_path = $2 AND chunk_index = ANY($3::int[])`,
+        [project, filePath, teil.map(c => c.chunkIndex)]
+      );
+
+      if (offen.length > EMBED_SCHEIBE) {
+        console.error(
+          `[Synapse] Embedding ${Math.min(von + EMBED_SCHEIBE, offen.length)}/${offen.length}: ${path.basename(filePath)}`
+        );
+      }
+    }
   }
 
   // Embedding fertig (oder via SYNAPSE_SKIP_EMBEDDINGS uebersprungen) → indexed_at.
