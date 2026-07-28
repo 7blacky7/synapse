@@ -43,7 +43,13 @@ export interface ToolGuide {
 export const GUIDE_OVERVIEW = `
 # Synapse REST-API — Quick-Start fuer Web-KIs
 
-Du bist mit einem Synapse-Projekt verbunden. 21 Tools + dieses guide-Tool.
+Du bist mit einem Synapse-Projekt verbunden. Diese REST-Schnittstelle bietet 21 Tools,
+eines davon ist dieses guide-Tool.
+
+⚠️ Der lokale MCP-Server (stdio) bietet NICHT dieselbe Menge, sondern 18: ihm fehlen
+files_batch, skills und workspace. Wer eine Anleitung von der einen Oberflaeche auf die
+andere uebertraegt, sucht sonst ein Tool, das es dort nicht gibt. Umgekehrt ist nichts
+exklusiv lokal — die 18 sind eine echte Teilmenge der 21.
 
 ## Scope (wichtig fuer Web-KI-Connectors)
 
