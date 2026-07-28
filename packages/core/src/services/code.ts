@@ -1024,15 +1024,19 @@ export async function parseAndEmbed(
     [project, filePath, opts?.ohneEmbeddings ? null : chunks.length]
   );
 
-  console.error(`[Synapse] Geparst+Embedded: ${path.basename(filePath)} (${chunks.length} Chunks)`);
+  // Beim Nachzug (ohneEmbeddings) ist chunks bewusst leer, weil der Chunk-Block
+  // uebersprungen wird. Die alte Meldung schrieb dann "Geparst+Embedded ... (0
+  // Chunks)" und behauptete damit zweierlei Unwahres: dass embedded wurde, und
+  // dass die Datei keine Chunks hat. Beim Nachzug ueber tausende Dateien liest
+  // sich das wie ein flaechendeckender Ausfall.
+  console.error(
+    opts?.ohneEmbeddings
+      ? `[Synapse] Geparst, Embeddings unberuehrt: ${path.basename(filePath)}`
+      : `[Synapse] Geparst+Embedded: ${path.basename(filePath)} (${chunks.length} Chunks)`
+  );
   }
 }
 
-/**
- * Parst alle Dateien die Content haben aber noch nicht geparst wurden (parsed_at IS NULL).
- * Wird bei project init aufgerufen um Altdaten nachzuparsen.
- * Dynamisches Auto-Scaling: Worker-Count skaliert mit Queue-Groesse.
- */
 // In-Memory Lock pro Projekt: verhindert dass parser-worker im API
 // parallel mehrere Background-Crews fuer dasselbe Projekt startet
 // (setImmediate-Pattern returnt sofort, der naechste Tick wuerde sonst
