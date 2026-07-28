@@ -232,6 +232,42 @@ export function ladeSperrRegeln(_projectPath: string, project?: string): Ignore 
   return ig;
 }
 
+/**
+ * Zwischenspeicher fuer die Sperr-Instanz, gekoppelt an die Regelliste.
+ *
+ * WARUM ES DAS BRAUCHT: eine einmal gebaute Ignore-Instanz ist ein Schnappschuss.
+ * Wer sie beim Prozessstart erzeugt und in einer Variablen haelt, bekommt von
+ * einer spaeter angelegten Regel nichts mit — eine frisch gesetzte Sperre wirkte
+ * dadurch erst nach einem Daemon-Neustart. Am 28.07.2026 im Test aufgefallen:
+ * die Datei landete trotz Sperre in der Datenbank. Eine Sperre, die erst nach
+ * einem Neustart greift, ist keine Sperre.
+ *
+ * Verglichen wird die zusammengefuegte Regelliste. Die kommt aus
+ * gepufferteSperrRegeln und wird dort ohnehin alle 30 Sekunden im Hintergrund
+ * erneuert; hier entsteht also kein zusaetzlicher Datenbank-Zugriff.
+ */
+const sperrInstanzen = new Map<string, { schluessel: string; ig: Ignore }>();
+
+/**
+ * Prueft, ob ein Pfad GESPERRT ist — also weder in die Datenbank hinein noch aus
+ * ihr heraus auf die Platte darf. Nicht zu verwechseln mit dem Ausblenden, das
+ * ausschliesslich die Sichtbarkeit betrifft.
+ */
+export function istGesperrt(relativePath: string, projectPath: string, project?: string): boolean {
+  const regeln = gepufferteSperrRegeln(project) ?? [];
+  const schluessel = regeln.join('\n');
+  const merker = project ?? '';
+  const stand = sperrInstanzen.get(merker);
+  let ig: Ignore;
+  if (stand && stand.schluessel === schluessel) {
+    ig = stand.ig;
+  } else {
+    ig = ladeSperrRegeln(projectPath, project);
+    sperrInstanzen.set(merker, { schluessel, ig });
+  }
+  return shouldIgnore(ig, relativePath);
+}
+
 // ─── IGN-3: Regeln aus PostgreSQL ────────────────────────────────────────────
 //
 // Der Watcher prueft die Regeln bei jedem Datei-Ereignis — ein Datenbank-Zugriff
