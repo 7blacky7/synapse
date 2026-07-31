@@ -1485,6 +1485,34 @@ export async function reparseProject(
 }
 
 /**
+ * Endungen, deren Chunks NICHT nachtraeglich embedded werden.
+ *
+ * WARUM ES DIESE LISTE BRAUCHT: im Code-Index liegen 33.291 Chunks aus 1.192 PNG-
+ * Dateien (gemessen 31.07.2026) — Byte-Salat, den ein frueherer Import erzeugt hat.
+ * Sie bleiben auf ausdrueckliche Entscheidung des Users liegen und werden NICHT
+ * geloescht; der Nachzug muss sie also uebergehen, statt sie aufzuraeumen. Ohne
+ * diesen Riegel wuerde das Scharfschalten von embed_offen sie alle mitembedden.
+ *
+ * ALS LITERAL UND NICHT ALS PLATZHALTER: die Liste ist eine feste Konstante, keine
+ * Nutzereingabe. Als Parameter wuerde sie die Platzhalter-Arithmetik von
+ * baueFaelligkeitsBedingung um eine dritte Nummer verschieben — genau die Stelle,
+ * an der ein Dollarzeichen im Ersetzungstext schon einmal Schaden angerichtet hat
+ * (Memory regel-files-tool-dollar-falle).
+ */
+const BINAER_ENDUNGEN = [
+  'png', 'jpg', 'jpeg', 'gif', 'bmp', 'ico', 'webp', 'tiff', 'pdf',
+  'zip', 'gz', 'tar', '7z', 'rar', 'iso', 'img', 'dmg', 'deb', 'rpm',
+  'so', 'dll', 'dylib', 'exe', 'bin', 'wasm', 'class', 'jar', 'pyc', 'o', 'a', 'lib', 'pdb',
+  'ttf', 'otf', 'woff', 'woff2', 'eot',
+  'mp3', 'mp4', 'avi', 'mov', 'mkv', 'wav', 'flac', 'ogg', 'webm',
+  'sqlite',
+];
+const BINAER_ENDUNGEN_SQL = BINAER_ENDUNGEN.map(e => `'${e}'`).join(', ');
+
+/** Endung eines Pfades in SQL — ohne Regex, siehe Kommentar bei veraltet unten. */
+const SQL_ENDUNG = `lower(reverse(split_part(reverse(code_files.file_path), '.', 1)))`;
+
+/**
  * INDEX-3: die EINE Stelle, die beantwortet, wann eine Datei faellig ist.
  *
  * WARUM ALS FUNKTION UND NICHT ZWEIMAL ALS SQL: genau diese Doppelung war der
@@ -1519,7 +1547,10 @@ export async function reparseProject(
  * @param ersterParam Nummer des ERSTEN Platzhalters, den diese Bedingung belegt.
  *        Sie belegt zwei aufeinanderfolgende (Endungen, Versionen) oder keinen.
  */
-async function baueFaelligkeitsBedingung(ersterParam: number): Promise<{
+async function baueFaelligkeitsBedingung(
+  ersterParam: number,
+  opts?: { ohneChunkPruefung?: boolean }
+): Promise<{
   sql: string;
   params: unknown[];
   grundSql: string;
@@ -1544,16 +1575,48 @@ async function baueFaelligkeitsBedingung(ersterParam: number): Promise<{
                      AND (code_files.parser_version IS NULL OR code_files.parser_version < pv.ver))`;
   }
 
-  const sql = `code_files.content IS NOT NULL
+  // EMBED-2 (31.07.2026): embed_offen fragt jetzt code_chunks.embedded_at.
+  //
+  // HIER STAND `code_files.indexed_at IS NULL`. Das konnte NIE zutreffen:
+  // upsertCodeFile setzt indexed_at bereits im INSERT (VALUES ..., NOW(), NOW()),
+  // also ab der ersten Sekunde der Zeile — lange vor jedem Embedding. Der Zweig war
+  // damit konstruktiv tot, und mit ihm der gesamte Nachzug fuer Code-Chunks.
+  // GEMESSEN am 31.07.2026: von 487.734 offenen Chunks lagen 487.722 bei Dateien mit
+  // GESETZTEM indexed_at, null bei indexed_at IS NULL. Die Luecke wirkte zu 100 %;
+  // die aeltesten unembeddeten Chunks stammten vom 04.04.2026.
+  // Derselbe Fehlschluss war fuer den Idempotenz-Skip in parseAndEmbed schon am
+  // 25.07.2026 erkannt und dort auf min(embedded_at) umgestellt worden (siehe
+  // Kommentar dort) — an dieser Stelle blieb er stehen. Eine Regel an zwei Orten.
+  //
+  // DER 5-MINUTEN-GUARD BLEIBT und haengt weiterhin an updated_at: er haelt Dateien
+  // heraus, deren Embedding gerade LAEUFT. Ohne ihn zieht ein langsamer Ollama-Lauf
+  // dieselbe Datei in jedem Tick erneut in den Backlog.
+  const embedOffen = `(code_files.updated_at < NOW() - INTERVAL '5 minutes'
+               AND ${SQL_ENDUNG} NOT IN (${BINAER_ENDUNGEN_SQL})
+               AND EXISTS (SELECT 1 FROM code_chunks cc
+                            WHERE cc.project = code_files.project
+                              AND cc.file_path = code_files.file_path
+                              AND cc.embedded_at IS NULL))`;
+
+  // ohneChunkPruefung: NUR fuer die Projektauswahl in projekteMitBacklog. Der
+  // EXISTS auf code_chunks laeuft einmal je Datei und kostet dort 1.122 ms, die
+  // ueber den billigen UNION-Zweig (114 ms) ohnehin abgedeckt sind. Es ist KEINE
+  // zweite Formulierung der Regel — derselbe Ausdruck, ein Teil weggelassen, und
+  // die Auswahl bleibt eine ECHTE OBERMENGE: welche Dateien wirklich faellig sind,
+  // entscheidet danach parseUnparsedFiles mit der vollstaendigen Bedingung.
+  const sql = opts?.ohneChunkPruefung
+    ? `code_files.content IS NOT NULL
+        AND (code_files.parsed_at IS NULL${veraltet})`
+    : `code_files.content IS NOT NULL
         AND (code_files.parsed_at IS NULL
-             OR (code_files.indexed_at IS NULL AND code_files.updated_at < NOW() - INTERVAL '5 minutes')${veraltet})`;
+             OR ${embedOffen}${veraltet})`;
 
   // Reihenfolge identisch zur Bedingung oben. Weicht sie ab, bekommt eine Datei
   // einen Grund, der ihre Aufnahme nicht erklaert — und der Worker behandelt sie
   // falsch, weil er genau an diesem Grund entscheidet.
   const grundSql = `CASE
           WHEN code_files.parsed_at IS NULL THEN 'neu'
-          WHEN code_files.indexed_at IS NULL AND code_files.updated_at < NOW() - INTERVAL '5 minutes' THEN 'embed_offen'
+          WHEN ${embedOffen} THEN 'embed_offen'
           ELSE 'veraltet' END`;
 
   return { sql, params, grundSql };
@@ -1573,15 +1636,49 @@ export async function projekteMitBacklog(
   limit: number
 ): Promise<Array<{ project: string; faellig: number }>> {
   const pool = getPool();
-  const { sql: faellig, params } = await baueFaelligkeitsBedingung(1);
+  const { sql: faellig, params } = await baueFaelligkeitsBedingung(1, {
+    ohneChunkPruefung: true,
+  });
   params.push(limit);
   const pLimit = '$' + params.length;
+  // EMBED-2: der Chunk-Rueckstand wird hier NICHT ueber die Dateibedingung gesucht,
+  // sondern ueber einen eigenen Zweig auf code_chunks. Der Grund ist gemessen:
+  //   Dateibedingung mit EXISTS ueber alle Dateien   1.666 ms
+  //   dieser UNION-Zweig                             1.353 ms   (heute ohne: 923 ms)
+  // Der EXISTS laeuft einmal JE DATEI (78.716 Schleifendurchlaeufe im Plan); ein
+  // Index verbilligt den Einzelzugriff, nicht deren Anzahl. Ein eigens angelegter
+  // Index (project, file_path) WHERE embedded_at IS NULL brachte nur 1.666 -> 1.666
+  // und wurde wieder entfernt — die vorhandenen Indizes genuegen.
+  //
+  // OHNE count UND OHNE BINAER-FILTER, beides absichtlich:
+  // Ein count(DISTINCT file_path) kostet hier 3.628 ms, ein count(*) 1.964 ms, weil
+  // beide alle 487.507 Index-Eintraege lesen muessen. Der Binaer-Filter kostet
+  // zusaetzlich 391 ms (505 statt 114 ms), weil file_path NICHT im partiellen Index
+  // steht und jede Zeile aus dem Heap geholt werden muesste.
+  // Beides ist hier entbehrlich: diese Funktion waehlt nur KANDIDATEN-PROJEKTE aus.
+  // Welche DATEIEN faellig sind, entscheidet parseUnparsedFiles ueber
+  // baueFaelligkeitsBedingung — dort greift der Binaer-Filter, dort kostet er nichts
+  // (9 ms je Projekt). Ein Projekt, das nur PNG-Chunks offen hat, wird hier also
+  // gelistet und laeuft dort ins Leere. Das ist ein billiger Leerlauf alle 30 s
+  // gegenueber 391 ms in jedem Tick.
+  //
+  // faellig ist fuer den Chunk-Zweig 0 — eine UNTERGRENZE, kein Messwert. Die Zahl
+  // dient nur der Log-Ausgabe des Workers; die belastbare Zahl loggt spaeter
+  // parseUnparsedFiles selbst.
   const { rows } = await pool.query(
-    `SELECT code_files.project, count(*)::int AS faellig
-       FROM code_files
-      WHERE ${faellig}
-        AND EXISTS (SELECT 1 FROM projects p WHERE p.name = code_files.project AND p.enabled)
-      GROUP BY code_files.project
+    `SELECT q.project, max(q.faellig)::int AS faellig
+       FROM (
+         SELECT code_files.project, count(*)::int AS faellig
+           FROM code_files
+          WHERE ${faellig}
+          GROUP BY code_files.project
+         UNION ALL
+         SELECT DISTINCT cc.project, 0
+           FROM code_chunks cc
+          WHERE cc.embedded_at IS NULL
+       ) q
+      WHERE EXISTS (SELECT 1 FROM projects p WHERE p.name = q.project AND p.enabled)
+      GROUP BY q.project
       ORDER BY faellig DESC
       LIMIT ${pLimit}`,
     params
