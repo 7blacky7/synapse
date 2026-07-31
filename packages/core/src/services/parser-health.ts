@@ -589,7 +589,7 @@ export async function getParserGesundheitUebersicht(
     project,
     erfasste_dateien: standRes.rows[0].n,
     telemetrie_stand: standRes.rows[0].stand ? new Date(standRes.rows[0].stand).toISOString() : null,
-    parser_befunde: bewerteParser(parserRes.rows),
+    parser_befunde: bewerteParser(parserRes.rows, await ermittleMedianDichte()),
     dateien: dateiRes.rows.map(mappeUebersichtDatei),
   };
 }
@@ -606,10 +606,51 @@ interface ParserZeile {
 }
 
 /**
+ * Median der Statement-Dichte ueber ALLE Projekte, gebildet je Parser.
+ *
+ * WARUM PROJEKTUEBERGREIFEND: was eine normale Dichte ist, entscheidet die Sprache,
+ * nicht das Projekt. Im Arbeitszyklus "ein Repo rein, testen, wieder raus" enthaelt
+ * ein Projekt nur eine Handvoll Sprachen — an einem frisch angelegten Solidity-Projekt
+ * gemessen lieferten genau DREI Parser Statements (typescript, solidity, shell), also
+ * weniger als MIN_PARSER_FUER_DICHTEVERGLEICH. Aus dem Projekt allein gebildet waere
+ * der Massstab dort null gewesen, und der Befund haette ausgerechnet in dem Ablauf
+ * geschwiegen, fuer den er gebraucht wird.
+ *
+ * Parser mit sehr wenig Material bleiben draussen: ihre Dichte ist Zufall und wuerde
+ * den Median verziehen. Faellt die Abfrage aus, kommt null zurueck und es wird kein
+ * Befund erfunden.
+ */
+async function ermittleMedianDichte(): Promise<number | null> {
+  try {
+    const { rows } = await getPool().query<{ dichte: string }>(
+      `SELECT (1000.0 * SUM(n_statements) / SUM(zeilen_gesamt)) AS dichte
+         FROM parse_coverage
+        GROUP BY parser
+       HAVING SUM(n_statements) > 0 AND SUM(zeilen_gesamt) >= $1
+        ORDER BY dichte`,
+      [MIN_ZEILEN_PARSER_BEFUND]
+    );
+    const dichten = rows.map(z => Number(z.dichte)).filter(d => Number.isFinite(d) && d > 0);
+    return dichten.length >= MIN_PARSER_FUER_DICHTEVERGLEICH
+      ? dichten[Math.floor(dichten.length / 2)]
+      : null;
+  } catch (error) {
+    console.error(
+      '[Synapse] Dichte-Massstab nicht ermittelbar, Ablauf-Befund entfaellt:',
+      (error as Error).message
+    );
+    return null;
+  }
+}
+
+/**
  * Fasst die Zeilen je Parser zusammen und prueft ABSOLUTE Anker.
  * Kein Vergleich gegen einen Durchschnitt — siehe Modulkopf.
  */
-function bewerteParser(zeilen: ParserZeile[]): ParserBefundGesamt[] {
+function bewerteParser(
+  zeilen: ParserZeile[],
+  medianDichte: number | null
+): ParserBefundGesamt[] {
   const jeParser = new Map<
     string,
     { g: ParserBefundGesamt; typen: Map<string, { fn: number; dateien: number; zeilen: number }> }
@@ -643,19 +684,9 @@ function bewerteParser(zeilen: ParserZeile[]): ParserBefundGesamt[] {
   // sie liefern konstruktiv keine Statements und wuerden sonst dauerhaft falsch
   // beschuldigt. Genau daran waere ein einfaches "Funktionen da, Statements null"
   // gescheitert.
-  const dichten = [...jeParser.values()]
-    .map(({ g }) =>
-      g.zeilen_gesamt > 0 && g.statements_gesamt > 0
-        ? (1000 * g.statements_gesamt) / g.zeilen_gesamt
-        : null
-    )
-    .filter((d): d is number => d !== null)
-    .sort((a, b) => a - b);
-  const medianDichte =
-    dichten.length >= MIN_PARSER_FUER_DICHTEVERGLEICH
-      ? dichten[Math.floor(dichten.length / 2)]
-      : null;
-
+  // Der Massstab kommt von aussen (siehe ermittleMedianDichte): er wird PROJEKT-
+  // UEBERGREIFEND gebildet, weil eine normale Statement-Dichte an der SPRACHE haengt
+  // und nicht am Projekt.
   const raus: ParserBefundGesamt[] = [];
   for (const { g, typen } of jeParser.values()) {
     // DER FALL, DER RELATIV NIE AUFFAELLT: alles kaputt, also nichts auffaellig.
