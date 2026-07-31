@@ -95,3 +95,66 @@ export async function setSetupPhase(
     }
   }
 }
+
+/**
+ * Ermittelt den Projekt-Status. PG zuerst (Zeile in projects plus Setup-Phase),
+ * .synapse/status.json nur als NOTNAGEL — dasselbe Muster wie getSetupPhase.
+ *
+ * WARUM ES DIESE FUNKTION GIBT: drei Stellen im lokalen MCP-Server
+ * (checkAgentOnboarding, tryReactivateProject, getProjectStatusWithStats) haben
+ * allein an der EXISTENZ von status.json entschieden, ob ein Projekt eingerichtet
+ * ist. Fehlte die Datei, lieferte das Onboarding stillschweigend KEINE
+ * Projekt-Regeln, obwohl PostgreSQL das Projekt kannte — und das faellt niemandem
+ * auf, weil "keine Regeln geliefert" genauso aussieht wie "es gibt keine".
+ * SETUP-1 hat die setupPhase nach PG geholt, die Existenzpruefung blieb an der
+ * Datei haengen. Genau diese Haelfte zieht die Funktion nach.
+ *
+ * Rueckgabe null heisst: weder PG noch Datei kennen das Projekt.
+ */
+export async function ermittleProjektStatus(
+  projectPath: string,
+  project?: string
+): Promise<ProjectStatus | null> {
+  try {
+    const pool = getPool();
+    const { rows } = await pool.query<{
+      name: string;
+      path: string;
+      enabled: boolean;
+      created_at: Date | null;
+      last_access: Date | null;
+    }>(
+      `SELECT name, path, enabled, created_at, last_access
+         FROM projects
+        WHERE path = $1 OR ($2::text IS NOT NULL AND name = $2)
+        ORDER BY (path = $1) DESC, enabled DESC
+        LIMIT 1`,
+      [projectPath, project ?? null]
+    );
+
+    if (rows.length > 0) {
+      const zeile = rows[0];
+      // Die Datei liefert nur noch, was PG nicht fuehrt (id) bzw. was dort
+      // genauer steht (der lokale Pfad statt einer /virtual-Zeile).
+      const datei = getProjectStatus(projectPath);
+      return {
+        id: datei?.id ?? `pg:${zeile.name}`,
+        project: zeile.name,
+        path: datei?.path ?? zeile.path,
+        initialized: (zeile.created_at ?? new Date()).toISOString(),
+        lastAccess: (zeile.last_access ?? new Date()).toISOString(),
+        status: zeile.enabled ? 'active' : 'stopped',
+        setupPhase: await getSetupPhase(zeile.name, projectPath),
+      };
+    }
+  } catch (error) {
+    console.error(
+      `[Synapse] Projekt-Status fuer "${project ?? projectPath}" nicht aus PG lesbar, Fallback auf status.json:`,
+      (error as Error).message
+    );
+  }
+
+  // NOTNAGEL: status.json, solange PG das Projekt nicht kennt.
+  return getProjectStatus(projectPath);
+}
+

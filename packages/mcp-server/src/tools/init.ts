@@ -41,6 +41,7 @@ import {
   shouldIgnore,
   getPool,
   getProjectStatus,
+  ermittleProjektStatus,
   setProjectStatus,
   setSetupPhase,
   updateLastAccess,
@@ -101,8 +102,9 @@ async function tryReactivateProject(
   name: string,
   agentId?: string
 ): Promise<InitResult | null> {
-  // Persistenten Status pruefen (activeWatchers-Check passiert bereits in initProjekt)
-  const status = getProjectStatus(projectPath);
+  // Persistenten Status pruefen (activeWatchers-Check passiert bereits in initProjekt).
+  // PG ist die Quelle (SETUP-1), status.json nur noch Notnagel.
+  const status = await ermittleProjektStatus(projectPath, name);
   if (!status || status.status !== 'active') {
     return null; // Keine Reaktivierung moeglich
   }
@@ -758,8 +760,8 @@ export async function cleanupProjekt(
 }
 
 /**
- * Holt den persistenten Projekt-Status aus .synapse/status.json
- * Gibt zusaetzlich Vektor-Statistiken zurueck wenn verfuegbar
+ * Holt den persistenten Projekt-Status: PG zuerst, .synapse/status.json nur
+ * noch als Notnagel. Gibt zusaetzlich Vektor-Statistiken zurueck wenn verfuegbar.
  */
 export async function getProjectStatusWithStats(
   projectPath: string
@@ -776,7 +778,7 @@ export async function getProjectStatusWithStats(
   };
   message: string;
 }> {
-  const status = getProjectStatus(projectPath);
+  const status = await ermittleProjektStatus(projectPath);
 
   if (!status) {
     return {

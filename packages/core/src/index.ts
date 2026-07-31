@@ -463,7 +463,7 @@ export { getProjectStatus, setProjectStatus, isProjectInitialized, updateLastAcc
 
 // Setup-Phase (SETUP-1: PG Source-of-Truth, status.json nur noch Cache/Fallback)
 export type { SetupPhase } from './services/project-setup-status.js';
-export { getSetupPhase, setSetupPhase } from './services/project-setup-status.js';
+export { getSetupPhase, setSetupPhase, ermittleProjektStatus } from './services/project-setup-status.js';
 export { backfillSetupPhaseFromStatusFiles } from './migrations/backfill-setup-phase.js';
 /**
  * Ermittelt das Text-Feld fuer Re-Embedding anhand des Collection-Suffixes

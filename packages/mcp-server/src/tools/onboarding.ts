@@ -27,7 +27,7 @@ import * as os from 'os';
 import {
   registerAgent,
   getRulesForNewAgent,
-  getProjectStatus,
+  ermittleProjektStatus,
   getSetupPhase,
   writeMemory,
 } from '@synapse/core';
@@ -130,8 +130,10 @@ export async function checkAgentOnboarding(
     return null;
   }
 
-  // Pruefen ob Projekt-Status existiert
-  const status = getProjectStatus(path);
+  // Pruefen ob das Projekt eingerichtet ist. PG ist die Quelle (SETUP-1),
+  // status.json nur noch Notnagel. Vorher entschied allein die Datei: fehlte
+  // sie, bekam der Agent stillschweigend KEINE Projekt-Regeln.
+  const status = await ermittleProjektStatus(path, project);
   if (!status) {
     return null;
   }
