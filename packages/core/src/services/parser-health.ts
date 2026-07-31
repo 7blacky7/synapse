@@ -408,6 +408,17 @@ const MIN_ZEILEN_PARSER_BEFUND = 1000;
  */
 const MIN_ZEILEN_LEERE_BEFUND = 150;
 const MIN_DATEIEN_LEERE_BEFUND = 3;
+/**
+ * Ein Parser gilt auf der Ablauf-Ebene als verdaechtig, wenn seine Statement-Dichte
+ * um mehr als diesen Faktor unter dem Median der Parser liegt, die ueberhaupt
+ * Statements liefern. 20 ist bewusst konservativ: an echtem Material (49 Parser,
+ * 74.322 Dateien) trennt der Wert scala (Faktor 333 darunter) und html (46) von der
+ * Lisp-Familie, wo eine niedrige Dichte strukturell RICHTIG ist — clojure 15,3,
+ * julia 18,8, racket 19,5 je 1000 Zeilen gegen einen Median von 209,6.
+ */
+const MAX_FAKTOR_UNTER_MEDIAN = 20;
+/** Unter so wenigen vergleichenden Parsern ist ein Median keine Aussage. */
+const MIN_PARSER_FUER_DICHTEVERGLEICH = 5;
 
 /**
  * Endung -> Sprache + heutige Version, abgeleitet aus der Parser-Registry.
@@ -626,6 +637,25 @@ function bewerteParser(zeilen: ParserZeile[]): ParserBefundGesamt[] {
     eintrag.typen.set(z.file_type ?? '?', { fn, dateien: z.dateien, zeilen: Number(z.zeilen) });
   }
 
+  // Vergleichsmassstab fuer die Ablauf-Ebene: der Median der Statement-Dichte ueber
+  // alle Parser, die ueberhaupt Statements liefern. Datenformate (yaml, toml, css,
+  // markdown, cmake, makefile) fallen dadurch VON SELBST heraus, ohne Pflegeliste —
+  // sie liefern konstruktiv keine Statements und wuerden sonst dauerhaft falsch
+  // beschuldigt. Genau daran waere ein einfaches "Funktionen da, Statements null"
+  // gescheitert.
+  const dichten = [...jeParser.values()]
+    .map(({ g }) =>
+      g.zeilen_gesamt > 0 && g.statements_gesamt > 0
+        ? (1000 * g.statements_gesamt) / g.zeilen_gesamt
+        : null
+    )
+    .filter((d): d is number => d !== null)
+    .sort((a, b) => a - b);
+  const medianDichte =
+    dichten.length >= MIN_PARSER_FUER_DICHTEVERGLEICH
+      ? dichten[Math.floor(dichten.length / 2)]
+      : null;
+
   const raus: ParserBefundGesamt[] = [];
   for (const { g, typen } of jeParser.values()) {
     // DER FALL, DER RELATIV NIE AUFFAELLT: alles kaputt, also nichts auffaellig.
@@ -682,6 +712,37 @@ function bewerteParser(zeilen: ParserZeile[]): ParserBefundGesamt[] {
         g.befund.push(
           `Liefert bei ${voll.join(', ')} Funktionen, bei ${leer.join(', ')} dagegen keine einzige — ` +
             `Verdacht auf eine Luecke fuer diese Endung (Datenbasis ${basis}).`
+        );
+      }
+    }
+
+    // DER FALL, DEN KEINE DER PRUEFUNGEN OBEN SEHEN KANN: der Parser liefert Symbole,
+    // aber die Ablauf-Ebene ist praktisch tot. FLAECHENDECKEND verlangt, dass GAR
+    // nichts kommt; der Endungsvergleich braucht eine zweite Endung. Ein Parser mit
+    // nur einer Endung, der eine von zwei Dimensionen sauber liefert und die andere
+    // verliert, sah damit gesund aus — scala stand so mit 363 Statements auf 580.621
+    // Zeilen im Index, waehrend 61.394 gefundene Funktionen alles in Ordnung
+    // erscheinen liessen. Es gab dafuer sogar die umgekehrte Pruefung ("0 Symbole,
+    // aber N Statements"), nur nicht diese Richtung.
+    //
+    // BEWUSST OFFEN: ein Parser mit Symbolen und EXAKT null Statements bleibt
+    // unauffaellig. Ohne Sprachwissen ist er nicht von einem Datenformat zu
+    // unterscheiden, und ein Fehlalarm ueber yaml/css jede Woche waere teurer als
+    // die Luecke. Wer sie schliessen will, braucht eine Angabe am Parser selbst,
+    // ob er Statements ueberhaupt kennt.
+    if (
+      medianDichte !== null &&
+      g.statements_gesamt > 0 &&
+      g.zeilen_gesamt >= MIN_ZEILEN_PARSER_BEFUND
+    ) {
+      const dichte = (1000 * g.statements_gesamt) / g.zeilen_gesamt;
+      if (dichte * MAX_FAKTOR_UNTER_MEDIAN < medianDichte) {
+        g.befund.push(
+          `ABLAUF-EBENE FAST TOT: ${dichte.toFixed(1)} Statements je 1000 Zeilen, waehrend ` +
+            `der Median der liefernden Parser bei ${medianDichte.toFixed(1)} liegt ` +
+            `(Faktor ${Math.round(medianDichte / dichte)} darunter). Symbole kommen dagegen ` +
+            `an (${fmt(g.symbole_gesamt)}) — Verdacht, dass Statements nur in Sonderfaellen ` +
+            `erfasst werden. Datenbasis: ${fmt(g.dateien)} Dateien, ${fmt(g.zeilen_gesamt)} Zeilen.`
         );
       }
     }
