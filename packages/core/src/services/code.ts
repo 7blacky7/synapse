@@ -100,6 +100,24 @@ import { getParserForFile } from '../parser/index.js';
  */
 const projekteMitAbgeschlossenemScan = new Set<string>();
 
+/**
+ * Entfernt Null-Bytes aus einem Text, der nach PostgreSQL geht.
+ *
+ * WARUM: PG weist text mit 0x00 ab ("invalid byte sequence for encoding UTF8").
+ * Ein einziges solches Zeichen laesst die gesamte Symbol-Transaktion scheitern,
+ * und weil parser_version dann NULL bleibt, gilt die Datei in jedem Tick erneut
+ * als veraltet — eine Endlosschleife im parser-worker.
+ *
+ * ES REICHT NICHT, DEN DATEIINHALT ZU SAEUBERN (das geschieht laengst): eine
+ * Quelldatei kann voellig sauber sein und trotzdem die ESCAPE-SEQUENZ \x00 als
+ * Text enthalten, die der Parser beim Lesen eines String-Literals aufloest. Genau
+ * so entstand der Fall an ERC7739Utils.test.js:158.
+ */
+function ohneNullBytes(wert: string | null | undefined): string | null {
+  if (wert == null) return null;
+  return wert.includes('\0') ? wert.replace(/\0/g, '') : wert;
+}
+
 /** Meldet, dass der Erstscan eines Projekts durch ist (ruft der FileWatcher in 'ready'). */
 export function markiereScanAbgeschlossen(projectName: string): void {
   projekteMitAbgeschlossenemScan.add(projectName);
@@ -651,12 +669,24 @@ export async function parseAndEmbed(
           containerIds.set(sym.name, symId);
         }
 
+        // ⚠️ NULL-BYTES RAUS. PostgreSQL weist text mit 0x00 ab ("invalid byte
+        // sequence for encoding UTF8"), und der Fehler trifft die GANZE
+        // Symbol-Transaktion: sie rollt zurueck, parseSuccess bleibt false,
+        // parser_version bleibt NULL — womit die Datei in JEDEM Tick erneut als
+        // veraltet gilt. Das Ergebnis ist eine Endlosschleife im parser-worker,
+        // die sich als "1 geparst, 0 fehlgeschlagen" meldet.
+        // DIE QUELLDATEI IST DABEI SAUBER: sie enthaelt die Escape-Sequenz \x00
+        // als Text, und der Parser loest sie beim Lesen des String-Literals auf
+        // (gefunden an ERC7739Utils.test.js:158, const forbiddenChars = ', )\x00').
+        // Fuer den Dateiinhalt gibt es diese Bereinigung seit jeher (siehe oben,
+        // safeContent) — fuer die daraus gewonnenen Symbole fehlte sie.
         symbolTuples.push([
           symId, project, filePath,
-          sym.symbol_type, sym.name ?? null, sym.value ?? null,
+          sym.symbol_type, ohneNullBytes(sym.name), ohneNullBytes(sym.value),
           sym.line_start, sym.line_end ?? null,
           null, // parent_symbol wird in Phase 2 gesetzt
-          sym.params ?? null, sym.return_type ?? null,
+          sym.params?.map(p => ohneNullBytes(p) ?? '') ?? null,
+          ohneNullBytes(sym.return_type),
           sym.is_exported,
         ]);
 
@@ -738,6 +768,22 @@ export async function parseAndEmbed(
     } catch (txErr) {
       await symClient.query('ROLLBACK').catch(() => {});
       console.error(`[Synapse] Symbol-Insert Transaktion fehlgeschlagen:`, txErr);
+      // SICHTBAR MACHEN. Ohne diesen Eintrag bleibt der Fehlschlag eine Zeile im
+      // Log, waehrend der Worker "0 fehlgeschlagen" meldet und die Datei in jedem
+      // Tick erneut versucht wird. parse_failures ist genau dafuer da.
+      try {
+        const { vermerkeAusfall } = await import('../db/parse-failures.js');
+        await vermerkeAusfall(pool, {
+          project,
+          filePath,
+          grund: 'fehler',
+          details: `Symbol-Insert: ${(txErr as Error).message ?? String(txErr)}`.slice(0, 500),
+          parser: parser.language,
+          dateiBytes: content.length,
+        });
+      } catch (vermerkFehler) {
+        console.error(`[Synapse] Ausfall nicht vermerkbar fuer ${filePath}:`, vermerkFehler);
+      }
     } finally {
       symClient.release();
     }
