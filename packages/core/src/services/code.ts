@@ -89,6 +89,28 @@ import { getPool } from '../db/client.js';
 import { getParserForFile } from '../parser/index.js';
 
 /**
+ * Projekte, deren FileWatcher-Erstscan durch ist. NUR fuer diese wird eine neu
+ * auf der Platte aufgetauchte Datei als Ereignis protokolliert.
+ *
+ * WARUM HERUM: das Set fuehrt die FERTIGEN Projekte, nicht die laufenden. Ist ein
+ * Projekt (noch) nicht eingetragen, bleibt es beim bisherigen Verhalten — ein
+ * verspaetetes Markieren kostet damit hoechstens einen fehlenden Eintrag und kann
+ * niemals den Erstscan mit tausenden Eintraegen fluten. Die umgekehrte Fuehrung
+ * waere bei jedem Timing-Fehler sofort schaedlich.
+ */
+const projekteMitAbgeschlossenemScan = new Set<string>();
+
+/** Meldet, dass der Erstscan eines Projekts durch ist (ruft der FileWatcher in 'ready'). */
+export function markiereScanAbgeschlossen(projectName: string): void {
+  projekteMitAbgeschlossenemScan.add(projectName);
+}
+
+/** Nimmt die Markierung zurueck (Watcher gestoppt) — der naechste Start scannt neu. */
+export function markiereScanBegonnen(projectName: string): void {
+  projekteMitAbgeschlossenemScan.delete(projectName);
+}
+
+/**
  * Schreibt File-Metadaten nach PostgreSQL (UPSERT) — unterstuetzt content + content_hash
  */
 async function upsertCodeFile(
@@ -235,13 +257,35 @@ export async function storeFileContent(
     return true;
   }
 
-  // Unbekannte Datei = Erstindexierung. BEWUSST ohne Versions-Eintrag: ein
-  // Initial-Scan wuerde sonst tausende Eintraege erzeugen und die History fluten.
+  // Unbekannte Datei = Erstindexierung. Waehrend des Erstscans BEWUSST ohne
+  // Versions-Eintrag: sonst hinterlaesst ein einziger Import tausende Eintraege und
+  // die History ist unbrauchbar (74.322 Dateien in einem Fall).
+  // ⚠️ IM LAUFENDEN BETRIEB GILT DAS NICHT. Bis hierher wurde nicht unterschieden,
+  // und dadurch war jede neu angelegte Datei im Tray unsichtbar — der User hat es
+  // gemeldet: seine Aenderung an einer bekannten Datei erschien, seine neue Datei
+  // nicht. Bei 904 ADD-Ereignissen stand genau EIN Eintrag in file_versions.
   const fileSize = fs.statSync(absolutePath).size;
   await upsertCodeFile(
     projectName, filePath, path.basename(filePath), fileData.fileType,
     0, fileSize, fileData.content, contentHash
   );
+
+  if (projekteMitAbgeschlossenemScan.has(projectName)) {
+    // Nach upsertCodeFile, weil snapshotFileVersion den Inhalt aus code_files liest.
+    try {
+      const { snapshotFileVersion } = await import('./code-write.js');
+      await snapshotFileVersion(
+        projectName,
+        filePath,
+        'fs_add',
+        'Neue Datei direkt auf dem Dateisystem angelegt (nicht ueber das files-Tool)'
+      );
+    } catch (err) {
+      // Die Datei ist bereits indiziert — ein fehlender Protokolleintrag darf den
+      // Vorgang nicht kippen, aber er wird auch nicht verschwiegen.
+      console.error(`[Synapse] fs_add nicht protokollierbar fuer ${filePath}: ${err}`);
+    }
+  }
 
   console.error(`[Synapse] Gespeichert: ${filePath} (${fileData.content.length} Zeichen)`);
   return true;

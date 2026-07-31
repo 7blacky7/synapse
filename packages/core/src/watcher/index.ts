@@ -358,6 +358,12 @@ export function startFileWatcher(options: FileWatcherOptions): FileWatcherInstan
 
   watcher.on('ready', () => {
     console.error(`[Synapse] FileWatcher bereit fuer "${projectName}"`);
+    // Ab hier ist jedes 'add' ein Laufzeit-Ereignis und kein Erstscan mehr.
+    // Dynamischer Import, weil services/code.ts seinerseits watcher/binary.js
+    // laedt — statisch waere das ein Zyklus.
+    void import('../services/code.js')
+      .then(m => m.markiereScanAbgeschlossen(projectName))
+      .catch(err => console.error(`[Synapse] Erstscan-Markierung fehlgeschlagen:`, err));
     if (onReady) {
       Promise.resolve(onReady()).catch(error => {
         console.error(`[Synapse] Fehler in onReady:`, error);
