@@ -72,6 +72,11 @@ export interface ParserGesundheitDatei {
   veraltet: boolean;
   /** Gespeicherter Parse-Stand liegt UEBER der aktuellen Parser-Version (siehe Befund). */
   version_aus_der_zukunft: boolean;
+  /**
+   * Zeitpunkt des Soft-Deletes, sonst null. Ohne dieses Feld diagnostizierte health
+   * eine zum Loeschen vorgemerkte Datei wie eine lebende und sagte kein Wort dazu.
+   */
+  geloescht_am: string | null;
   datei_bytes: number | null;
   zeilen_gesamt: number;
   symbole: {
@@ -116,7 +121,7 @@ export async function getParserGesundheitDatei(
   // Zeilen werden in der Datenbank gezaehlt, damit der Inhalt nicht uebertragen
   // werden muss — bei einer 7-MB-Datei waere das sonst 7 MB fuer eine Zahl.
   const dateiRes = await pool.query(
-    `SELECT file_type, file_size, parser_version, parsed_at, indexed_at,
+    `SELECT file_type, file_size, parser_version, parsed_at, indexed_at, deleted_at,
             (length(content) - length(replace(content, E'\n', ''))) + 1 AS zeilen_gesamt,
             -- Nur der Anfang: die Inhaltserkennung sieht ohnehin bloss die ersten
             -- Hundert Zeichen an, die ganze Datei zu laden waere hier Verschwendung.
@@ -219,6 +224,7 @@ export async function getParserGesundheitDatei(
     parser_version_aktuell: versionAktuell,
     veraltet,
     version_aus_der_zukunft: versionAusDerZukunft,
+    geloescht_am: datei.deleted_at ? new Date(datei.deleted_at).toISOString() : null,
     datei_bytes: datei.file_size ?? null,
     zeilen_gesamt: zeilen,
     symbole: { gesamt, funktionen, klassen, variablen, imports, text },
@@ -283,6 +289,17 @@ async function ladeAusfall(
  */
 function erzeugeBefund(d: ParserGesundheitDatei): string[] {
   const befund: string[] = [];
+
+  // Steht VOR der Parser-Pruefung, sonst faellt der Hinweis ausgerechnet bei den
+  // Dateien weg, fuer die kein Parser zustaendig ist — die werden genauso geloescht.
+  if (d.geloescht_am !== null) {
+    befund.push(
+      `Zum Loeschen vorgemerkt seit ${d.geloescht_am.slice(0, 10)} (deleted_at gesetzt). ` +
+        `Alle Zahlen unten beschreiben einen Stand, den es bald nicht mehr gibt — der ` +
+        `Watcher raeumt die Datei nach. Bleibt sie in diesem Zustand stehen, laeuft fuer ` +
+        `dieses Projekt kein Watcher.`
+    );
+  }
 
   if (d.parser === null) {
     // Keine Beanstandung: fuer diese Endung ist gar kein Parser zustaendig.
@@ -419,7 +436,20 @@ export interface ParserBefundGesamt {
 
 export interface ParserGesundheitUebersicht {
   project: string;
+  /** Nur Dateien, die es noch gibt — siehe LEBENDE_DATEI. */
   erfasste_dateien: number;
+  /**
+   * Eintraege in diesem Projekt OHNE lebende Datei. Aus allen Zahlen oben
+   * herausgerechnet, hier aber ausgewiesen: wuerde man sie nur stillschweigend
+   * wegrechnen, waere ein Rueckfall wieder unsichtbar.
+   */
+  karteileichen: number;
+  /**
+   * Dasselbe ueber ALLE Projekte. Steht hier, weil der Dichte-Massstab
+   * projektuebergreifend gebildet wird: eine Leiche in einem FREMDEN Projekt
+   * verzieht den Massstab dieses Projekts mit.
+   */
+  karteileichen_gesamt: number;
   telemetrie_stand: string | null;
   /** Parser-weite Befunde — zuerst lesen, sie wiegen schwerer als Einzelfaelle. */
   parser_befunde: ParserBefundGesamt[];
@@ -427,6 +457,39 @@ export interface ParserGesundheitUebersicht {
   dateien: ParserUebersichtDatei[];
   hinweis?: string;
 }
+
+/**
+ * Bedingung fuer "zu diesem Eintrag gibt es eine LEBENDE Datei".
+ *
+ * WARUM ES DAS BRAUCHT: parse_coverage war die einzige datei-abgeleitete Tabelle
+ * ohne Fremdschluessel und wurde beim Loeschen nie mitgeraeumt — gemessen 3.944
+ * Karteileichen gegen 1.533 echte Dateien, waehrend health befund:[] meldete. Der
+ * Fremdschluessel in schema.ts verhindert den Zustand inzwischen, ABER: CASCADE
+ * feuert nur beim HARTEN Delete. deleteCodeFile macht einen SOFT-Delete
+ * (deleted_at = NOW()), der harte kommt erst spaeter ueber den Watcher — und laeuft
+ * der fuer ein Projekt nicht, bleibt der Eintrag stehen. Eine Bedingung, die
+ * deleted_at ignoriert, zaehlt diese toten Dateien weiter mit.
+ *
+ * GEMESSEN am 31.07.2026: werden 74.325 Dateien eines Projekts soft-geloescht, war
+ * die Antwort dieses Moduls davor ZEICHENGLEICH mit dem gesunden Stand — 41 Befunde
+ * vorher, 41 nachher, erfasste_dateien unveraendert. Der Rueckfall war fuer health
+ * also nicht sichtbar. Ein Riegel, dessen Bruch niemand sieht, ist nur ein halber.
+ *
+ * ⚠️ EINE REGEL, EIN ORT. Die Bedingung wird an vier Stellen gebraucht — dreimal
+ * LESEND mit dem Alias pc, einmal SCHREIBEND mit Parametern (schreibeParserCoverage).
+ * Deshalb steht hier eine Funktion und keine feste Zeichenkette: eine Regel, die an
+ * zwei Stellen ausgeschrieben wird, laeuft frueher oder spaeter auseinander — in
+ * diesem Projekt an einem einzigen Tag zweimal passiert.
+ */
+function lebendeDatei(projektAusdruck: string, pfadAusdruck: string): string {
+  return `EXISTS (SELECT 1 FROM code_files cf
+                    WHERE cf.project = ${projektAusdruck}
+                      AND cf.file_path = ${pfadAusdruck}
+                      AND cf.deleted_at IS NULL)`;
+}
+
+/** Lesende Form fuer Abfragen, die parse_coverage unter dem Alias pc fuehren. */
+const LEBENDE_DATEI = lebendeDatei('pc.project', 'pc.file_path');
 
 /** Ab dieser Gesamtzeilenzahl je Parser ist "nichts erkannt" ein Befund. */
 const MIN_ZEILEN_PARSER_BEFUND = 1000;
@@ -544,7 +607,12 @@ export async function backfillParserCoverage(
                      UNION
                      SELECT line_start FROM code_statements t2
                       WHERE t2.project = cf.project AND t2.file_path = cf.file_path) AS u) AS bel ON TRUE
-      WHERE cf.content IS NOT NULL ${projektFilter}
+      -- deleted_at MUSS mit: ohne diese Bedingung legt der Backfill fuer JEDE
+      -- soft-geloeschte Datei die Coverage-Zeile neu an und macht das explizite
+      -- DELETE aus dem Loesch-Pfad (services/code.ts) wieder zunichte. Der
+      -- Fremdschluessel faengt das nicht ab: die code_files-Zeile existiert ja
+      -- noch, sie ist nur zum Loeschen vorgemerkt.
+      WHERE cf.content IS NOT NULL AND cf.deleted_at IS NULL ${projektFilter}
      ON CONFLICT (project, file_path) DO UPDATE SET
        file_type = EXCLUDED.file_type, parser = EXCLUDED.parser,
        parser_version = EXCLUDED.parser_version, datei_bytes = EXCLUDED.datei_bytes,
@@ -576,8 +644,8 @@ export async function getParserGesundheitUebersicht(
   const da = await pool.query(`SELECT to_regclass('public.parse_coverage') AS t`);
   if (!da.rows[0]?.t) {
     return {
-      project, erfasste_dateien: 0, telemetrie_stand: null,
-      parser_befunde: [], dateien: [],
+      project, erfasste_dateien: 0, karteileichen: 0, karteileichen_gesamt: 0,
+      telemetrie_stand: null, parser_befunde: [], dateien: [],
       hinweis: 'Tabelle parse_coverage existiert noch nicht — ensureSchema ausfuehren.',
     };
   }
@@ -589,9 +657,19 @@ export async function getParserGesundheitUebersicht(
     parserFilter = `AND parser = $${params.length}`;
   }
 
-  const [standRes, parserRes, dateiRes] = await Promise.all([
+  const [standRes, parserRes, dateiRes, massstab] = await Promise.all([
+    // LEFT JOIN statt EXISTS: EIN Durchlauf liefert beides — die lebenden Eintraege
+    // und die Karteileichen. Zwei getrennte Abfragen waeren ein zweiter Scan fuer
+    // eine Zahl, die im Normalfall 0 ist.
     pool.query(
-      `SELECT count(*)::int AS n, max(gemessen_am) AS stand FROM parse_coverage WHERE project = $1`,
+      `SELECT count(*) FILTER (WHERE cf.file_path IS NOT NULL)::int AS n,
+              count(*) FILTER (WHERE cf.file_path IS NULL)::int AS tot,
+              max(pc.gemessen_am) FILTER (WHERE cf.file_path IS NOT NULL) AS stand
+         FROM parse_coverage pc
+         LEFT JOIN code_files cf
+                ON cf.project = pc.project AND cf.file_path = pc.file_path
+               AND cf.deleted_at IS NULL
+        WHERE pc.project = $1`,
       [project]
     ),
     pool.query(
@@ -601,16 +679,18 @@ export async function getParserGesundheitUebersicht(
               COALESCE(sum(n_statements), 0)::bigint AS stmt,
               COALESCE(sum(n_symbole), 0)::bigint AS sym,
               COALESCE(sum(n_text_symbole), 0)::bigint AS text
-         FROM parse_coverage
+         FROM parse_coverage pc
         WHERE project = $1 AND parser IS NOT NULL ${parserFilter}
+          AND ${LEBENDE_DATEI}
         GROUP BY parser, file_type`,
       params
     ),
     pool.query(
       `SELECT file_path, parser, zeilen_gesamt, belegte_zeilen, n_symbole,
               n_funktionen, n_text_symbole, n_statements
-         FROM parse_coverage
+         FROM parse_coverage pc
         WHERE project = $1 AND parser IS NOT NULL ${parserFilter}
+          AND ${LEBENDE_DATEI}
           AND ( (zeilen_gesamt >= ${MIN_ZEILEN_FUER_BEFUND} AND belegte_zeilen = 0)
              OR (n_symbole > 0 AND n_text_symbole = n_symbole AND zeilen_gesamt >= ${MIN_ZEILEN_FUER_BEFUND})
              OR (n_symbole = 0 AND n_statements > 0 AND zeilen_gesamt >= ${MIN_ZEILEN_FUER_BEFUND})
@@ -620,14 +700,40 @@ export async function getParserGesundheitUebersicht(
         LIMIT ${limit}`,
       params
     ),
+    // Gehoert in dieses Promise.all und nicht ans Ende: die Abfrage braucht von den
+    // drei anderen nichts. Vorher stand das await mitten im return und lief deshalb
+    // erst, wenn alles andere fertig war.
+    ermittleMedianDichte(),
   ]);
+
+  const karteileichen: number = standRes.rows[0].tot;
+  const hinweise: string[] = [];
+  if (karteileichen > 0) {
+    hinweise.push(
+      `${fmt(karteileichen)} Eintraege in parse_coverage haben in diesem Projekt keine lebende ` +
+        `Datei mehr — geloescht oder mit deleted_at vorgemerkt. Sie sind aus allen Zahlen ` +
+        `oben herausgerechnet. Der Fremdschluessel in schema.ts sollte das verhindern; ist ` +
+        `die Zahl groesser als 0, greift entweder der Loesch-Pfad nicht oder ein Backfill hat ` +
+        `die Zeilen neu angelegt.`
+    );
+  }
+  if (massstab.waisen_gesamt > 0) {
+    hinweise.push(
+      `Projektuebergreifend stehen ${fmt(massstab.waisen_gesamt)} solche Eintraege in der ` +
+        `Tabelle. Fuer den Dichte-Massstab zaehlen sie nicht mit, verfaelschen ihn also nicht — ` +
+        `sie zeigen aber, dass irgendwo Dateien verschwinden, ohne ihre Telemetrie mitzunehmen.`
+    );
+  }
 
   return {
     project,
     erfasste_dateien: standRes.rows[0].n,
+    karteileichen,
+    karteileichen_gesamt: massstab.waisen_gesamt,
     telemetrie_stand: standRes.rows[0].stand ? new Date(standRes.rows[0].stand).toISOString() : null,
-    parser_befunde: bewerteParser(parserRes.rows, await ermittleMedianDichte()),
+    parser_befunde: bewerteParser(parserRes.rows, massstab.median),
     dateien: dateiRes.rows.map(mappeUebersichtDatei),
+    ...(hinweise.length > 0 ? { hinweis: hinweise.join(' ') } : {}),
   };
 }
 
@@ -656,27 +762,58 @@ interface ParserZeile {
  * Parser mit sehr wenig Material bleiben draussen: ihre Dichte ist Zufall und wuerde
  * den Median verziehen. Faellt die Abfrage aus, kommt null zurueck und es wird kein
  * Befund erfunden.
+ *
+ * ⚠️ WAS SICH AM 31.07.2026 GEAENDERT HAT — und was ausdruecklich NICHT:
+ * Gefiltert wird NICHT nach Projekt (das wuerde den Massstab zerstoeren, siehe oben),
+ * sondern danach, ob es zu einem Eintrag noch eine lebende Datei gibt. Die Tabelle
+ * enthielt Eintraege geloeschter Dateien, und die verschoben nicht die Anzeige EINES
+ * Projekts, sondern den Massstab ALLER — also die Schwelle, ab der ueberhaupt ein
+ * Befund entsteht.
+ * GEMESSEN am realen Bestand: faellt das groesste Projekt weg (58.229 von 70.895
+ * Eintraegen, 82 Prozent) und bleiben seine Zeilen stehen, meldet der ungefilterte
+ * Median 209,6 statt 264,6 — die Ausloeseschwelle liegt damit bei 10,5 statt 13,2
+ * Statements je 1000 Zeilen, ein Unterschied von 26 Prozent.
+ * GEGENPROBE, weil ein Filter den Massstab auch aushungern kann: im selben Fall
+ * sinkt die Zahl der vergleichenden Parser von 37 auf 15, bleibt also klar ueber
+ * MIN_PARSER_FUER_DICHTEVERGLEICH. Der Befund verstummt nicht.
+ *
+ * Die Waisenzahl faellt bei dieser Abfrage ohnehin ab und wird mitgegeben, statt sie
+ * in einem zweiten Scan noch einmal zu holen.
  */
-async function ermittleMedianDichte(): Promise<number | null> {
+async function ermittleMedianDichte(): Promise<{ median: number | null; waisen_gesamt: number }> {
   try {
-    const { rows } = await getPool().query<{ dichte: string }>(
-      `SELECT (1000.0 * SUM(n_statements) / SUM(zeilen_gesamt)) AS dichte
-         FROM parse_coverage
-        GROUP BY parser
-       HAVING SUM(n_statements) > 0 AND SUM(zeilen_gesamt) >= $1
-        ORDER BY dichte`,
-      [MIN_ZEILEN_PARSER_BEFUND]
+    const { rows } = await getPool().query<{ st: string; z: string; tot: string }>(
+      `SELECT COALESCE(sum(pc.n_statements) FILTER (WHERE cf.file_path IS NOT NULL), 0) AS st,
+              COALESCE(sum(pc.zeilen_gesamt) FILTER (WHERE cf.file_path IS NOT NULL), 0) AS z,
+              count(*) FILTER (WHERE cf.file_path IS NULL) AS tot
+         FROM parse_coverage pc
+         LEFT JOIN code_files cf
+                ON cf.project = pc.project AND cf.file_path = pc.file_path
+               AND cf.deleted_at IS NULL
+        GROUP BY pc.parser`
     );
-    const dichten = rows.map(z => Number(z.dichte)).filter(d => Number.isFinite(d) && d > 0);
-    return dichten.length >= MIN_PARSER_FUER_DICHTEVERGLEICH
-      ? dichten[Math.floor(dichten.length / 2)]
-      : null;
+    // HAVING und ORDER BY stehen jetzt hier statt im SQL: die Abfrage muss ohnehin
+    // ALLE Gruppen liefern, damit die Waisen mitgezaehlt werden koennen. Die Auswahl
+    // ist Zeile fuer Zeile dieselbe wie vorher.
+    const waisenGesamt = rows.reduce((s, z) => s + Number(z.tot), 0);
+    const dichten = rows
+      .filter(z => Number(z.st) > 0 && Number(z.z) >= MIN_ZEILEN_PARSER_BEFUND)
+      .map(z => (1000 * Number(z.st)) / Number(z.z))
+      .filter(d => Number.isFinite(d) && d > 0)
+      .sort((a, b) => a - b);
+    return {
+      median:
+        dichten.length >= MIN_PARSER_FUER_DICHTEVERGLEICH
+          ? dichten[Math.floor(dichten.length / 2)]
+          : null,
+      waisen_gesamt: waisenGesamt,
+    };
   } catch (error) {
     console.error(
       '[Synapse] Dichte-Massstab nicht ermittelbar, Ablauf-Befund entfaellt:',
       (error as Error).message
     );
-    return null;
+    return { median: null, waisen_gesamt: 0 };
   }
 }
 
@@ -897,6 +1034,15 @@ function mappeUebersichtDatei(r: {
  * bereits — line_start ist gesetzt, es wird keine Position neu berechnet.
  *
  * Fehler werden geschluckt: Telemetrie darf einen Indexlauf niemals stoppen.
+ *
+ * ⚠️ SCHREIBT NUR FUER LEBENDE DATEIEN. Ohne diese Bedingung schreibt ein Parse, der
+ * sich mit einem Loeschen ueberholt, die gerade geraeumte Zeile wieder zurueck — und
+ * macht damit das explizite DELETE im Loesch-Pfad (services/code.ts) wirkungslos. Der
+ * Fremdschluessel faengt es nicht ab: beim SOFT-Delete existiert die code_files-Zeile
+ * ja noch, sie ist nur tot.
+ * Die Pruefung sitzt IM Statement (SELECT ... WHERE EXISTS) und nicht in einer eigenen
+ * Abfrage davor. Eine Abfrage davor haette zwischen Pruefung und Schreiben genau die
+ * Luecke gelassen, die hier geschlossen werden soll — und die Luecke ist der ganze Fall.
  */
 export async function schreibeParserCoverage(
   project: string,
@@ -936,13 +1082,14 @@ export async function schreibeParserCoverage(
       if (content.charCodeAt(i) === 10) zeilen++;
     }
 
-    await getPool().query(
+    const geschrieben = await getPool().query(
       `INSERT INTO parse_coverage (
          project, file_path, file_type, parser, parser_version, datei_bytes,
          zeilen_gesamt, belegte_zeilen, n_symbole, n_funktionen, n_klassen,
          n_variablen, n_imports, n_text_symbole, n_statements, n_call_edges,
          dauer_ms, gemessen_am)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,NOW())
+       SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,NOW()
+        WHERE ${lebendeDatei('$1', '$2')}
        ON CONFLICT (project, file_path) DO UPDATE SET
          file_type = EXCLUDED.file_type, parser = EXCLUDED.parser,
          parser_version = EXCLUDED.parser_version, datei_bytes = EXCLUDED.datei_bytes,
@@ -959,6 +1106,23 @@ export async function schreibeParserCoverage(
         statements.length, (ergebnis.callEdges ?? []).length, dauerMs ?? null,
       ]
     );
+
+    // WARUM HIER EINE LOGZEILE STEHT UND KEIN STILLES WEITER:
+    // Wird uebersprungen, bleibt NIRGENDWO eine Spur. Der Karteileichen-Zaehler der
+    // Uebersicht kann diesen Fall prinzipiell nicht zeigen — er zaehlt geschriebene
+    // Zeilen ohne lebende Datei, und hier wird ja gerade nichts geschrieben. Das ist
+    // die einzige Stelle des PTZ-11-Umbaus, deren Ergebnis sonst voellig unsichtbar
+    // waere, und ein stiller Verzicht ist schlimmer als ein lauter.
+    // ZUR MENGE, damit das Log nicht zulaeuft: es feuert nur, wenn sich ein Parse und
+    // ein Loeschen ueberholen — nicht einmal je Datei eines geloeschten Projekts, denn
+    // fuer tote Dateien wird gar kein Parse mehr angestossen. Wird es doch laut, ist
+    // genau das die Nachricht: dann parst etwas dauerhaft Dateien, die es nicht mehr gibt.
+    if (geschrieben.rowCount === 0) {
+      console.error(
+        `[parser-health] Coverage uebersprungen, Datei ist geloescht oder zum Loeschen ` +
+          `vorgemerkt: ${project}/${filePath}`
+      );
+    }
   } catch (err) {
     console.error(
       `[parser-health] Coverage nicht gespeichert (${project}/${filePath}):`,
