@@ -930,6 +930,41 @@ export async function parseAndEmbed(
               values
             );
           }
+
+          // ─── target_symbol_id aufloesen ─────────────────────────────────────
+          // Die Kanten sind gerade mit target_symbol_id = NULL eingefuegt worden
+          // (siehe das NULL im VALUES-Tupel oben — es ist der Ausgangswert, kein
+          // Versehen). Hier wird nachgetragen, WOHIN ein Aufruf zeigt.
+          //
+          // REGEL: nur wenn in DERSELBEN Datei GENAU EIN function-Symbol dieses
+          // Namens existiert. Sonst bleibt NULL.
+          // WARUM SO STRENG: ein falsch aufgeloester Aufruf ist schlimmer als ein
+          // nicht aufgeloester, weil ihn niemand hinterfragt. Gemessen am Bestand
+          // sind 0,2-2 % der Kanten schon innerhalb einer Datei mehrdeutig
+          // (gleichnamige Funktionen), projektweit 12-29 % — deshalb loest dieser
+          // Block AUSDRUECKLICH NICHT ueber Dateigrenzen hinweg auf. Cross-File
+          // haengt am selben Mechanismus wie die Referenz-Verknuepfung und wird
+          // dort gemeinsam entschieden, nicht hier nebenbei.
+          //
+          // Das HAVING count(*) = 1 setzt die Eindeutigkeit durch; min(id) ist bei
+          // genau einem Treffer dessen ID. Ein CTE statt einer Unterabfrage je
+          // Zeile, damit die Symbole der Datei nur einmal gelesen werden.
+          await flowClient.query(
+            `WITH eindeutig AS (
+               SELECT name, min(id) AS id
+                 FROM code_symbols
+                WHERE project = $1 AND file_path = $2
+                  AND symbol_type = 'function' AND name IS NOT NULL
+                GROUP BY name
+               HAVING count(*) = 1
+             )
+             UPDATE code_call_edges ce
+                SET target_symbol_id = e.id
+               FROM eindeutig e
+              WHERE ce.project = $1 AND ce.file_path = $2
+                AND ce.callee_name = e.name`,
+            [project, filePath]
+          );
         }
 
         await flowClient.query('COMMIT');
