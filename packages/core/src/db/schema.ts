@@ -1274,6 +1274,51 @@ CREATE TABLE IF NOT EXISTS parse_coverage (
 );
 CREATE INDEX IF NOT EXISTS idx_parse_coverage_parser ON parse_coverage(project, parser);
 
+-- Migration: parse_coverage an code_files binden (ON DELETE CASCADE).
+--
+-- WARUM: diese Tabelle wurde als einzige datei-abgeleitete Tabelle OHNE FK
+-- angelegt. code_symbols, code_chunks, code_references, code_statements und
+-- code_call_edges haengen alle per FK an code_files und verschwinden mit ihr --
+-- parse_coverage blieb stehen. Es gibt drei Stellen, die code_files hart
+-- loeschen (watcher/index.ts, mcp-server/tools/init.ts, migrate-to-relative-paths.ts),
+-- und keine davon hat parse_coverage mitgeraeumt. Gemessen waren es 3.944
+-- Karteileichen: 5.477 Eintraege gegen 1.533 code_files.
+--
+-- Der Riegel gehoert deshalb hierher und nicht in die Aufrufer. In
+-- tools/init.ts stand die Buchfuehrung darueber, welche Tabellen keinen FK
+-- haben, sogar als Kommentar im Code -- und war unvollstaendig. Eine Regel,
+-- die an drei Stellen gepflegt wird, laeuft auseinander; eine Constraint gilt
+-- auch fuer den vierten Loeschweg, den noch niemand geschrieben hat.
+--
+-- FOLGE FUER DIE ANZEIGE: Eintraege ohne Datei waren fuer parser-health nicht
+-- von echten zu unterscheiden (es fragt parse_coverage ohne Join ab) und haben
+-- ueber ermittleMedianDichte -- das projektuebergreifend aggregiert -- den
+-- Dichte-Massstab ALLER Projekte verzogen.
+--
+-- DEFERRABLE INITIALLY DEFERRED wie bei den Geschwistern: renameCodeFile
+-- schreibt Pfade innerhalb einer Transaktion um und braucht das.
+--
+-- Das DELETE davor ist Pflicht, nicht Kosmetik: ADD CONSTRAINT validiert die
+-- Tabelle und wirft bei jeder Waise -- ensureSchema laeuft bei JEDEM Start und
+-- wuerde daran haengenbleiben. Es trifft ausschliesslich Zeilen, zu denen es
+-- kein code_files-Gegenstueck mit gleichem project UND file_path gibt; ein
+-- Filter auf Projekt oder Parser allein waere hier zu breit.
+DO $$ BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+     WHERE conrelid = 'parse_coverage'::regclass AND conname = 'parse_coverage_project_file_path_fkey'
+  ) THEN
+    DELETE FROM parse_coverage pc
+     WHERE NOT EXISTS (
+       SELECT 1 FROM code_files cf
+        WHERE cf.project = pc.project AND cf.file_path = pc.file_path
+     );
+    ALTER TABLE parse_coverage ADD CONSTRAINT parse_coverage_project_file_path_fkey
+      FOREIGN KEY (project, file_path) REFERENCES code_files(project, file_path)
+      ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED;
+  END IF;
+END $$;
+
 
 
 `;

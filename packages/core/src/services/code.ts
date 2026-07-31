@@ -177,6 +177,24 @@ async function deleteCodeFile(project: string, filePath: string): Promise<void> 
     'UPDATE code_files SET deleted_at = NOW(), updated_at = NOW() WHERE project = $1 AND file_path = $2',
     [project, filePath]
   );
+
+  // parse_coverage haengt seit dem FK in schema.ts per CASCADE an code_files --
+  // aber CASCADE feuert erst beim HARTEN Delete, und das macht hier niemand:
+  // oben steht ein Soft-Delete. Bis der PG-Watcher nachzieht, zaehlt
+  // parser-health die Datei weiter mit, und laeuft der Watcher fuer dieses
+  // Projekt gar nicht, bleibt der Eintrag dauerhaft stehen. Genau so entstehen
+  // die Geisterparser: Parser mit Dateien, die es nicht mehr gibt.
+  //
+  // Deshalb hier explizit, zusaetzlich zum FK. Der Schluessel von
+  // parse_coverage ist (project, file_path) -- ein Datensatz je Datei, also
+  // trifft das exakt diese eine Datei und nichts sonst.
+  //
+  // Kein try/catch: die Zeile gehoert zum Loeschen dazu. Schlaegt sie fehl,
+  // soll der Aufrufer das sehen -- removeFile faengt bereits ab.
+  await pool.query('DELETE FROM parse_coverage WHERE project = $1 AND file_path = $2', [
+    project,
+    filePath,
+  ]);
 }
 
 /**
