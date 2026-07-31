@@ -1012,46 +1012,60 @@ export async function parseAndEmbed(
               [project, filePath, endung]
             );
 
-            // ─── Stufe 3: EINGEHENDE Verweise heilen ────────────────────────────
-            // ⚠️ OHNE DIESEN BLOCK VERFAELLT DIE CROSS-FILE-AUFLOESUNG SCHLEICHEND.
-            // Ein Reparse loescht die Symbole dieser Datei (Z666) und legt sie mit
-            // NEUEN UUIDs an (Z681). Der Fremdschluessel steht auf ON DELETE SET NULL,
-            // also verlieren ALLE Kanten FREMDER Dateien, die hierher zeigten, ihr
-            // Ziel — und niemand loest sie neu auf, weil jene Dateien unveraendert
-            // blieben. GEMESSEN am 31.07.2026 an naga/src/back/spv/mod.rs: ein
-            // einziger Reparse entwertete 227 bis 238 Verweise aus fremden Dateien.
-            // Ueber Wochen waere die Aufloesung damit halb leer, und das faellt
-            // niemandem auf, weil eine sinkende Zahl niemand nachzaehlt.
-            //
-            // Dieselbe Regel wie Stufe 2 — gleicher Sprachfilter, gleiche
-            // Eindeutigkeit. Zwei Wahrheiten im selben Code waeren schlimmer als
-            // der Verfall. Zielgerichtet ueber die Namen DIESER Datei, nicht
-            // projektweit: es geht nur um Verweise, die auf sie zeigen koennen.
-            await flowClient.query(
-              `WITH neue AS (
-                 SELECT DISTINCT name
-                   FROM code_symbols
-                  WHERE project = $1 AND file_path = $2
-                    AND symbol_type = 'function' AND name IS NOT NULL
-               ), ziel AS (
-                 SELECT s.name, min(s.id) AS id
-                   FROM code_symbols s
-                   JOIN neue n ON n.name = s.name
-                  WHERE s.project = $1 AND s.symbol_type = 'function'
-                    AND s.file_path LIKE '%' || $3
-                  GROUP BY s.name
-                 HAVING count(*) = 1
-               )
-               UPDATE code_call_edges ce
-                  SET target_symbol_id = z.id
-                 FROM ziel z
-                WHERE ce.project = $1
-                  AND ce.target_symbol_id IS NULL
-                  AND ce.callee_name = z.name
-                  AND ce.file_path LIKE '%' || $3`,
-              [project, filePath, endung]
-            );
           }
+        }
+
+        // ─── Stufe 3: EINGEHENDE Verweise heilen ──────────────────────────────
+        // ⚠️ STEHT BEWUSST AUSSERHALB DES callEdges-BLOCKS. Dieser Block haengt an
+        // den SYMBOLEN der Datei, nicht an ihren ausgehenden Aufrufen.
+        // WARUM DAS WICHTIG IST — der Fehler war schon gebaut und deployed:
+        // Stand die Heilung innerhalb von `if (callEdges.length > 0)`, lief sie bei
+        // Dateien mit NULL eigenen Aufrufen nie. Das trifft ausgerechnet den
+        // Hauptfall: Bibliotheken, Sammelmodule und reine Definitionsdateien
+        // DEFINIEREN Funktionen (sind also Ziel vieler Verweise) und rufen selbst
+        // nichts auf. Aufgefallen ist es erst in der Live-Probe am 31.07.2026 —
+        // eine Zieldatei mit 0 Call-Kanten, deren eingehende Kante nach dem Reparse
+        // auf NULL blieb. Der Transaktionstest davor hatte die Query direkt
+        // ausgefuehrt und die Einbettung uebersprungen; er war gruen und wertlos.
+        //
+        // WAS ER HEILT: Ein Reparse loescht die Symbole dieser Datei (Z666) und legt
+        // sie mit NEUEN UUIDs an (Z681). Der Fremdschluessel steht auf
+        // ON DELETE SET NULL, also verlieren ALLE Kanten FREMDER Dateien, die
+        // hierher zeigten, ihr Ziel — und niemand loest sie neu auf, weil jene
+        // Dateien unveraendert blieben. GEMESSEN an naga/src/back/spv/mod.rs: ein
+        // einziger Reparse entwertete 227 bis 238 Verweise. Ueber Wochen waere die
+        // Aufloesung halb leer, und das faellt niemandem auf, weil eine sinkende
+        // Zahl niemand nachzaehlt.
+        //
+        // Dieselbe Regel wie Stufe 2 — gleicher Sprachfilter, gleiche Eindeutigkeit.
+        // Zwei Wahrheiten im selben Code waeren schlimmer als der Verfall.
+        const punktHeilung = filePath.lastIndexOf('.');
+        const endungHeilung = punktHeilung > 0 ? filePath.slice(punktHeilung) : null;
+        if (endungHeilung !== null) {
+          await flowClient.query(
+            `WITH neue AS (
+               SELECT DISTINCT name
+                 FROM code_symbols
+                WHERE project = $1 AND file_path = $2
+                  AND symbol_type = 'function' AND name IS NOT NULL
+             ), ziel AS (
+               SELECT s.name, min(s.id) AS id
+                 FROM code_symbols s
+                 JOIN neue n ON n.name = s.name
+                WHERE s.project = $1 AND s.symbol_type = 'function'
+                  AND s.file_path LIKE '%' || $3
+                GROUP BY s.name
+               HAVING count(*) = 1
+             )
+             UPDATE code_call_edges ce
+                SET target_symbol_id = z.id
+               FROM ziel z
+              WHERE ce.project = $1
+                AND ce.target_symbol_id IS NULL
+                AND ce.callee_name = z.name
+                AND ce.file_path LIKE '%' || $3`,
+            [project, filePath, endungHeilung]
+          );
         }
 
         await flowClient.query('COMMIT');
