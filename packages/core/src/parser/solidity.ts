@@ -45,7 +45,14 @@ const reRet = /return\b/y;
 // Punkt- und Index-Zugriffe enthalten (guthaben[msg.sender], a.b[0].c).
 // =(?!=) schliesst Vergleiche aus; <= und >= treffen nicht zu, weil < und >
 // nicht in der Zeichenklasse stehen.
-const reAssign = /([A-Za-z_$][\w$]*(?:\s*\.\s*[\w$]+|\s*\[[^\];]*\])*)\s*(?:=(?!=)|[+\-*/%&|^]=|<<=|>>=)/y;
+// =(?![=>]) schliesst ZWEI Faelle aus: den Vergleich == und den Pfeil => eines
+// BENANNTEN Mapping-Parameters. Solidity erlaubt die seit 0.8.18:
+//   mapping(uint256 index => uint256) storage _x = _ownedTokens[from];
+// Ohne den Pfeil im Lookahead las der Scanner "index =>" als eigene Zuweisung und
+// machte aus einer Zeile zwei. Genau eine Fundstelle im ganzen OpenZeppelin-
+// Bestand (ERC721Enumerable.sol:115) — in keiner Summe zu sehen, nur beim
+// Durchsehen der mehrfachbelegten Stellen.
+const reAssign = /([A-Za-z_$][\w$]*(?:\s*\.\s*[\w$]+|\s*\[[^\];]*\])*)\s*(?:=(?![=>])|[+\-*/%&|^]=|<<=|>>=)/y;
 const reCall = /([a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)*)\s*\(/y;
 let zeilenCache = new Map<string, number[]>();
 function zeilenCacheLeeren(): void {
@@ -61,10 +68,100 @@ function lineAt(text: string, pos: number): number {
 }
 
 // ---------------------------------------------------------------------------
+// Kommentare und Zeichenketten vom Code trennen
+// ---------------------------------------------------------------------------
+//
+// WARUM DAS NOETIG IST, obwohl parseBlock Kommentare bereits ueberspringt:
+// dieser Schutz ist LOKAL und setzt voraus, dass der Block im Code beginnt.
+// funcBodyRe sucht Funktionskoepfe aber im ganzen Dateitext und findet sie auch
+// in NatSpec-Bloecken, die vollstaendige Vertraege als Beispiel zeigen. Ab da
+// liegt der Blockanfang bereits INNERHALB eines Kommentars: das oeffnende
+// Kommentarzeichen steht davor, und die Fortsetzungszeilen mit fuehrendem Stern
+// sehen fuer parseBlock aus wie Code. So kamen in OpenZeppelin 65 Anweisungen
+// (49 Aufrufe, 9 return, 7 Zuweisungen) und 156 Zeichenketten aus der
+// Dokumentation in den Index — Aufrufe von Funktionen, die es nie gab.
+//
+// DIE MASKIERUNG ERHAELT DIE LAENGE: jedes Zeichen wird durch ein Leerzeichen
+// ersetzt, Zeilenumbrueche bleiben stehen. Dadurch bleibt jede Position und
+// jede Zeilennummer gueltig, und der angezeigte Text wird anschliessend aus dem
+// ORIGINAL geschnitten — nicht aus der maskierten Fassung.
+//
+// Solidity-Blockkommentare sind NICHT schachtelbar (C-artig); ein zweites
+// oeffnendes Zeichenpaar im Inneren ist bedeutungslos. Zeichenketten muessen im
+// selben Durchlauf behandelt werden, sonst wuerde ein doppelter Schraegstrich
+// INNERHALB einer Zeichenkette (etwa in einer URL) faelschlich einen Kommentar
+// eroeffnen.
+function maskiereKommentareUndStrings(content: string): { ohneKommentare: string; maskiert: string } {
+  const ohne = content.split('');
+  const mask = content.split('');
+  const leeren = (arr: string[], von: number, bis: number): void => {
+    for (let i = von; i < bis && i < arr.length; i++) {
+      if (arr[i] !== '\n' && arr[i] !== '\r') arr[i] = ' ';
+    }
+  };
+
+  const n = content.length;
+  let i = 0;
+  while (i < n) {
+    const c = content[i];
+    const c2 = content[i + 1];
+
+    // Zeilenkommentar (deckt auch die NatSpec-Form mit drei Schraegstrichen ab)
+    if (c === '/' && c2 === '/') {
+      const start = i;
+      while (i < n && content[i] !== '\n') i++;
+      leeren(ohne, start, i);
+      leeren(mask, start, i);
+      continue;
+    }
+
+    // Blockkommentar, nicht schachtelbar (deckt auch die NatSpec-Form mit zwei
+    // Sternen ab)
+    if (c === '/' && c2 === '*') {
+      const start = i;
+      i += 2;
+      while (i < n && !(content[i] === '*' && content[i + 1] === '/')) i++;
+      i = Math.min(i + 2, n);
+      leeren(ohne, start, i);
+      leeren(mask, start, i);
+      continue;
+    }
+
+    // Zeichenkette in doppelten oder einfachen Anfuehrungszeichen. Solidity
+    // kennt beide Formen gleichwertig; die Praefixe hex und unicode stehen VOR
+    // dem Anfuehrungszeichen und stoeren hier nicht.
+    if (c === '"' || c === "'") {
+      const start = i;
+      const q = c;
+      i++;
+      while (i < n) {
+        if (content[i] === '\\') { i += 2; continue; }
+        if (content[i] === q) { i++; break; }
+        // Eine unbeendete Zeichenkette darf nicht den Rest der Datei fressen.
+        if (content[i] === '\n') break;
+        i++;
+      }
+      leeren(mask, start, i);
+      continue;
+    }
+
+    i++;
+  }
+
+  return { ohneKommentare: ohne.join(''), maskiert: mask.join('') };
+}
+
+// ---------------------------------------------------------------------------
 // Execution-Flow Extraktion fuer Solidity
 // Erfasst: function/modifier Bodies mit if/for/while/require/revert/emit/calls
 // ---------------------------------------------------------------------------
-function extractSolidityFlow(content: string): { statements: ParsedStatement[]; callEdges: ParsedCallEdge[] } {
+//
+// SUCHE auf dem MASKIERTEN Text, ANZEIGE aus dem ORIGINAL: beide sind exakt
+// gleich lang, jede Position gilt in beiden. original wird nur dort gebraucht,
+// wo Text in ein Feld wandert (condition_text) — sonst stuende dort bei einer
+// Bedingung mit Zeichenkette eine Reihe Leerzeichen.
+function extractSolidityFlow(original: string, maskiert: string): { statements: ParsedStatement[]; callEdges: ParsedCallEdge[] } {
+  const content = maskiert;
   const statements: ParsedStatement[] = [];
   const callEdges: ParsedCallEdge[] = [];
   let tempId = 0;
@@ -135,7 +232,10 @@ function extractSolidityFlow(content: string): { statements: ParsedStatement[]; 
   }
 
   function charToLine(pos: number): number {
-    return lineAt(content, pos);
+    // Bewusst auf dem ORIGINAL: gleiche Laenge, gleiche Zeilen, aber so teilt
+    // sich die Zeilenberechnung den Index mit dem Rest des Parsers, statt einen
+    // zweiten fuer den maskierten Text aufzubauen.
+    return lineAt(original, pos);
   }
 
   // Verarbeitet einen Block zwischen { und }. blockStart und blockEnd sind
@@ -184,7 +284,7 @@ function extractSolidityFlow(content: string): { statements: ParsedStatement[]; 
         // Start aus der Trefferlaenge, nicht aus einer festen Zahl: die oeffnende
         // Klammer ist das letzte Zeichen des Treffers. Die alte Rechnung pos + 3
         // stimmte nur bei 'if(' und nahm bei 'if (' die Klammer mit in den Text.
-        const condText = content.substring(pos + ifM[0].length, condEnd).trim().slice(0, 200);
+        const condText = original.substring(pos + ifM[0].length, condEnd).trim().slice(0, 200);
         let thenStart = condEnd + 1;
         while (thenStart < blockEnd && /\s/.test(content[thenStart])) thenStart++;
         let lineEnd = lineStart;
@@ -226,7 +326,7 @@ function extractSolidityFlow(content: string): { statements: ParsedStatement[]; 
           if (content[condEnd] === '(') pDepth++;
           else if (content[condEnd] === ')') pDepth--;
         }
-        const condText = content.substring(pos + forM[0].length, condEnd).trim().slice(0, 200);
+        const condText = original.substring(pos + forM[0].length, condEnd).trim().slice(0, 200);
         let bodyStart = condEnd + 1;
         while (bodyStart < blockEnd && /\s/.test(content[bodyStart])) bodyStart++;
         if (content[bodyStart] === '{') {
@@ -254,7 +354,7 @@ function extractSolidityFlow(content: string): { statements: ParsedStatement[]; 
           if (content[condEnd] === '(') pDepth++;
           else if (content[condEnd] === ')') pDepth--;
         }
-        const condText = content.substring(pos + whileM[0].length, condEnd).trim().slice(0, 200);
+        const condText = original.substring(pos + whileM[0].length, condEnd).trim().slice(0, 200);
         let bodyStart = condEnd + 1;
         while (bodyStart < blockEnd && /\s/.test(content[bodyStart])) bodyStart++;
         if (content[bodyStart] === '{') {
@@ -282,7 +382,7 @@ function extractSolidityFlow(content: string): { statements: ParsedStatement[]; 
           if (content[argEnd] === '(') pDepth++;
           else if (content[argEnd] === ')') pDepth--;
         }
-        const argText = content.substring(pos + reqM[0].length, argEnd).trim().slice(0, 200);
+        const argText = original.substring(pos + reqM[0].length, argEnd).trim().slice(0, 200);
         const stmtType = reqM[1] === 'require' ? 'call' : 'throw';
         const st = emitStmt(lineStart, lineStart, scopeType, scopeName, stmtType, depth, parentId, scopeCounter, {
           callee: reqM[1],
@@ -372,7 +472,30 @@ function extractSolidityFlow(content: string): { statements: ParsedStatement[]; 
   }
 
   // Extract function/modifier bodies and process them
-  const funcBodyRe = /\b(function|modifier|constructor|receive|fallback)\s*(\w*)?\s*(?:\([^)]*\))?\s*(?:[^{]*?)\{/g;
+  //
+  // DREI STELLEN, DIE HIER FRUEHER FALSCHE BLOECKE GEOEFFNET HABEN:
+  //
+  // 1. WORTENDE. Das \b am Anfang sichert nur den ANFANG des Schluesselworts.
+  //    Ohne das zweite \b matcht "receive" mitten in "receiver", und die
+  //    Namensgruppe nimmt das uebrige "r" als Funktionsnamen — in
+  //    ERC4626Fees.sol:49 (function _deposit(address caller, address receiver,
+  //    ...)) entstand so ein zweiter Scope namens "r", bei "receivers" einer
+  //    namens "rs". Dasselbe gilt fuer "function" am Anfang von functionCall
+  //    und functionDelegateCall (Address.sol), woher die Scopes "Call" und
+  //    "DelegateCall" stammten. Jeder dieser Pseudo-Bloecke ueberlappte einen
+  //    echten und erzeugte dessen Anweisungen ein zweites Mal.
+  //
+  // 2. DOLLARZEICHEN. In Solidity ist es ein gueltiges Bezeichnerzeichen, \w
+  //    deckt es nicht ab. Bei $_updateQuorumNumerator blieb die Namensgruppe
+  //    deshalb leer, und der Scope hiess "function".
+  //
+  // 3. SEMIKOLON. Eine rumpflose Deklaration (Interface-Methode, Funktionstyp
+  //    als Variable) endet mit einem Semikolon und hat gar keinen Block. Der
+  //    alte Ausdruck lief darueber hinweg bis zur NAECHSTEN oeffnenden Klammer
+  //    — und das war dann der Rumpf des naechsten Vertrags. Mit dem Semikolon
+  //    in der verbotenen Zeichenklasse bricht der Treffer dort ab, wo die
+  //    Deklaration endet.
+  const funcBodyRe = /\b(function|modifier|constructor|receive|fallback)\b\s*([A-Za-z_$][\w$]*)?\s*(?:\([^)]*\))?\s*(?:[^{;]*?)\{/g;
   let fm: RegExpExecArray | null;
   while ((fm = funcBodyRe.exec(content)) !== null) {
     const kind = fm[1];
@@ -406,13 +529,32 @@ class SolidityParser implements LanguageParser {
   //    der Statements bleiben unveraendert.
   // 5: Zuweisungen werden als Statement erfasst. Bis 4 fielen sie durch alle
   //    Muster und landeten beim pos++ — die Ablauf-Ebene kannte keine einzige.
-  version = 5;
+  // 6: Kommentare und Zeichenketten werden laengenerhaltend maskiert, bevor die
+  //    Ablauf-Ebene und die Literal-Suche laufen. Der Schutz in parseBlock war
+  //    lokal und griff nicht, wenn funcBodyRe einen Funktionskopf INNERHALB
+  //    eines NatSpec-Beispiels fand: ab da lag der Blockanfang im Kommentar.
+  //    Gemessen an OpenZeppelin fielen dadurch 65 Anweisungen (49 Aufrufe,
+  //    9 return, 7 Zuweisungen), 49 Aufruf-Kanten und 156 Zeichenketten weg,
+  //    die es im Code nie gab.
+  // 7: funcBodyRe bekommt ein Wortende, erkennt Bezeichner mit Dollarzeichen
+  //    und laeuft nicht mehr ueber ein Semikolon hinweg in den naechsten
+  //    Contract-Rumpf. Bis 6 oeffneten "receiver", "receivers", "functionCall"
+  //    und rumpflose Deklarationen Pseudo-Bloecke, die echte Bloecke
+  //    ueberlappten und deren Anweisungen ein zweites Mal erzeugten.
+  // 8: reAssign hielt den Pfeil => eines benannten Mapping-Parameters fuer eine
+  //    Zuweisung (seit Solidity 0.8.18 erlaubt).
+  version = 8;
 
   parse(content: string, filePath: string): ParseResult {
     zeilenCacheLeeren();
     const symbols: ParsedSymbol[] = [];
     const references: ParsedReference[] = [];
     let m: RegExpExecArray | null;
+
+    // Zwei Fassungen desselben Textes, beide exakt so lang wie das Original:
+    // ohneKommentare traegt die Zeichenketten weiter (fuer die Literal-Suche),
+    // maskiert traegt weder Kommentare noch Zeichenketten (fuer die Ablauf-Ebene).
+    const { ohneKommentare, maskiert } = maskiereKommentareUndStrings(content);
 
     // ══════════════════════════════════════════════
     // 1. Pragma
@@ -698,9 +840,13 @@ class SolidityParser implements LanguageParser {
       });
     }
 
-    symbols.push(...extractStringLiterals(content));
+    // Zeichenketten aus dem Text OHNE Kommentare: die Literale selbst bleiben
+    // stehen, nur die Dokumentation faellt weg. OpenZeppelin zeigt in NatSpec
+    // vollstaendige Codebeispiele, aus denen sonst 156 erfundene Literale in den
+    // Index kamen (etwa MY_ROLE aus keccak256("MY_ROLE") in AccessControl.sol).
+    symbols.push(...extractStringLiterals(ohneKommentare));
 
-    const { statements, callEdges } = extractSolidityFlow(content);
+    const { statements, callEdges } = extractSolidityFlow(content, maskiert);
     return { symbols, references, statements, callEdges };
   }
 
