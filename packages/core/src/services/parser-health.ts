@@ -70,6 +70,8 @@ export interface ParserGesundheitDatei {
   parser_version_aktuell: number | null;
   /** true, wenn der gespeicherte Stand aelter ist als der heutige Parser. */
   veraltet: boolean;
+  /** Gespeicherter Parse-Stand liegt UEBER der aktuellen Parser-Version (siehe Befund). */
+  version_aus_der_zukunft: boolean;
   datei_bytes: number | null;
   zeilen_gesamt: number;
   symbole: {
@@ -115,7 +117,10 @@ export async function getParserGesundheitDatei(
   // werden muss — bei einer 7-MB-Datei waere das sonst 7 MB fuer eine Zahl.
   const dateiRes = await pool.query(
     `SELECT file_type, file_size, parser_version, parsed_at, indexed_at,
-            (length(content) - length(replace(content, E'\n', ''))) + 1 AS zeilen_gesamt
+            (length(content) - length(replace(content, E'\n', ''))) + 1 AS zeilen_gesamt,
+            -- Nur der Anfang: die Inhaltserkennung sieht ohnehin bloss die ersten
+            -- Hundert Zeichen an, die ganze Datei zu laden waere hier Verschwendung.
+            left(content, 2000) AS anfang
        FROM code_files
       WHERE project = $1 AND file_path = $2`,
     [project, filePath]
@@ -135,11 +140,18 @@ export async function getParserGesundheitDatei(
     ),
     pool.query(
       `SELECT count(*)::int AS n FROM (
-         SELECT line_start FROM code_symbols    WHERE project = $1 AND file_path = $2
+         -- SPANNE statt Startzeile: ein Symbol von Zeile 1 bis 740 belegt 740
+         -- Zeilen, nicht eine. Vorher galt preludeB.dhall deshalb als zu 2,4
+         -- Prozent gedeckt. LEAST begrenzt auf die Datei, damit ein falsches
+         -- line_end die Deckung nicht ueber 100 Prozent treibt; COALESCE faengt
+         -- fehlendes line_end ab, dann zaehlt wie bisher die Startzeile.
+         SELECT generate_series(line_start, LEAST(COALESCE(line_end, line_start), $3)) FROM code_symbols WHERE project = $1 AND file_path = $2
          UNION
-         SELECT line_start FROM code_statements WHERE project = $1 AND file_path = $2
+         SELECT generate_series(line_start, LEAST(COALESCE(line_end, line_start), $3)) FROM code_statements WHERE project = $1 AND file_path = $2
        ) AS belegte`,
-      [project, filePath]
+      // $3 begrenzt die Spanne auf die Dateilaenge — ohne diesen dritten Parameter
+      // ist die Abfrage zur Laufzeit kaputt, und der Build sagt dazu nichts.
+      [project, filePath, Number(datei.zeilen_gesamt) || 0]
     ),
     pool.query(
       `SELECT count(*)::int AS n FROM code_call_edges WHERE project = $1 AND file_path = $2`,
@@ -174,13 +186,27 @@ export async function getParserGesundheitDatei(
   const belegte: number = belegtRes.rows[0].n;
   const zeilen: number = Number(datei.zeilen_gesamt) || 0;
 
-  const parser = getParserForFile(filePath);
+  // Der Inhalt MUSS mit: seit der Inhaltserkennung findet getParserForFile auch
+  // Dateien ohne Endung. Ohne ihn meldete health "Kein Parser fuer diese Endung
+  // zustaendig" und wies im selben Objekt drei Symbole aus (gefunden an
+  // dhall/Prelude/Bool/fold).
+  const parser = getParserForFile(filePath, datei.anfang ?? undefined);
   const versionAktuell = parser ? (parser.version ?? 1) : null;
   const versionGespeichert: number | null = datei.parser_version;
   const veraltet =
     parser !== null &&
     versionAktuell !== null &&
     (versionGespeichert === null || versionGespeichert < versionAktuell);
+  // Der umgekehrte Fall ist keine Kleinigkeit: ein GESPEICHERTER Stand ueber dem
+  // aktuellen kann durch normales Parsen gar nicht entstehen. Er heisst, dass zwei
+  // verschiedene Staende auf dieselbe Datenbank sehen — etwa ein lokal gebautes
+  // dist und ein aelteres Container-Image. Bisher ging das als "nicht veraltet"
+  // durch, und der Index sah aktuell aus.
+  const versionAusDerZukunft =
+    parser !== null &&
+    versionAktuell !== null &&
+    versionGespeichert !== null &&
+    versionGespeichert > versionAktuell;
 
   const ausfall = await ladeAusfall(pool, project, filePath);
 
@@ -192,6 +218,7 @@ export async function getParserGesundheitDatei(
     parser_version: versionGespeichert,
     parser_version_aktuell: versionAktuell,
     veraltet,
+    version_aus_der_zukunft: versionAusDerZukunft,
     datei_bytes: datei.file_size ?? null,
     zeilen_gesamt: zeilen,
     symbole: { gesamt, funktionen, klassen, variablen, imports, text },
@@ -319,6 +346,16 @@ function erzeugeBefund(d: ParserGesundheitDatei): string[] {
     befund.push(
       `Nur ${d.deckung_prozent} % der Zeilen sind belegt ` +
         `(${fmt(d.belegte_zeilen)} von ${fmt(d.zeilen_gesamt)}).`
+    );
+  }
+
+  if (d.version_aus_der_zukunft) {
+    befund.push(
+      `Parse-Stand ${d.parser_version} liegt UEBER der aktuellen Parser-Version ` +
+        `${d.parser_version_aktuell}. Durch normales Parsen kann das nicht entstehen — ` +
+        `vermutlich sehen zwei verschiedene Staende auf dieselbe Datenbank, etwa ein ` +
+        `lokal gebautes dist und ein aelteres Container-Image. Bis das geklaert ist, sagt ` +
+        `weder "veraltet" noch "aktuell" etwas ueber diese Datei.`
     );
   }
 
