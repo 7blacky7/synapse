@@ -25,6 +25,84 @@ function lineAt(text: string, pos: number): number {
   return zeileFuerPosition(zeilenCacheIndex, pos);
 }
 
+/**
+ * Macht Kommentare und Zeichenketten unkenntlich, OHNE die Laenge zu aendern:
+ * jede Position im Ergebnis entspricht derselben Position im Original, damit
+ * lineAt() und die Textausschnitte weiter stimmen.
+ *
+ * WARUM: die Ablauf-Regexes liefen bisher ueber den rohen Text. Solange nur
+ * Top-Level erfasst wurde, fiel das nicht auf — sobald eingerueckter Code
+ * dazukommt, treffen sie auch Scaladoc-Beispiele. Ueber den gesamten Bestand
+ * gemessen sind das 586 def- und 500 val-Treffer; XMLTesting.scala faellt von
+ * 12 auf 0, dort steckt alles in XML-Literalen und Zeichenketten.
+ *
+ * ZWEI SCALA-EIGENHEITEN, die eine naive Fassung falsch macht:
+ *   - Blockkommentare sind SCHACHTELBAR: ein geoeffneter Block darf einen
+ *     weiteren enthalten, deshalb wird die Tiefe gezaehlt statt das erste
+ *     schliessende Zeichenpaar zu suchen (das endet zu frueh).
+ *   - Dreifach gequotete Zeichenketten duerfen einfache Anfuehrungszeichen
+ *     enthalten und muessen deshalb vor dem Einzelfall geprueft werden.
+ */
+function maskiereKommentareUndStrings(text: string): string {
+  const zeichen = text.split('');
+  const leere = (von: number, bis: number) => {
+    for (let k = von; k < bis && k < zeichen.length; k++) {
+      if (zeichen[k] !== '\n') zeichen[k] = ' ';
+    }
+  };
+
+  let i = 0;
+  while (i < text.length) {
+    const c = text[i];
+    const c2 = text[i + 1];
+
+    if (c === '/' && c2 === '/') {
+      let j = text.indexOf('\n', i);
+      if (j < 0) j = text.length;
+      leere(i, j);
+      i = j;
+      continue;
+    }
+
+    if (c === '/' && c2 === '*') {
+      let tiefe = 1;
+      let j = i + 2;
+      while (j < text.length && tiefe > 0) {
+        if (text[j] === '/' && text[j + 1] === '*') { tiefe++; j += 2; continue; }
+        if (text[j] === '*' && text[j + 1] === '/') { tiefe--; j += 2; continue; }
+        j++;
+      }
+      leere(i, j);
+      i = j;
+      continue;
+    }
+
+    if (c === '"' && c2 === '"' && text[i + 2] === '"') {
+      const ende = text.indexOf('"""', i + 3);
+      const j = ende < 0 ? text.length : ende + 3;
+      leere(i, j);
+      i = j;
+      continue;
+    }
+
+    if (c === '"') {
+      let j = i + 1;
+      while (j < text.length && text[j] !== '"' && text[j] !== '\n') {
+        if (text[j] === '\\') j++;
+        j++;
+      }
+      leere(i, Math.min(j + 1, text.length));
+      i = j + 1;
+      continue;
+    }
+
+    i++;
+  }
+
+  return zeichen.join('');
+}
+
+
 class ScalaParser implements LanguageParser {
   language = 'scala';
   extensions = ['.scala', '.sc'];
@@ -34,7 +112,11 @@ class ScalaParser implements LanguageParser {
   // 4: Eltern-Typ ist jetzt die INNERSTE umschliessende Deklaration. Version 3
   //    bildete die alte match()-Semantik nach und verlor den Eltern-Typ, sobald
   //    vor der Fundstelle eine schliessende Klammer stand (siehe findParentType).
-  version = 4;
+  // 5: Ablauf-Ebene auf JEDER Ebene statt nur am Dateianfang, plus Maskierung
+  //    von Kommentaren und Zeichenketten. Bis 4 sprang die Flow-Schleife bei
+  //    jeder Einrueckung heraus; in Scala ist damit fast alles uebersprungen
+  //    worden (363 Statements und 34 Call-Kanten auf 580.621 Zeilen).
+  version = 5;
 
   parse(content: string, filePath: string): ParseResult {
     const symbols: ParsedSymbol[] = [];
@@ -393,31 +475,42 @@ class ScalaParser implements LanguageParser {
       return cur;
     };
 
-    // Top-level def statements
-    const defFlowRe = /^(\s*)((?:(?:private|protected|final|override|implicit|inline|lazy|transparent|infix)\s+(?:\[\w+\]\s*)?)*)?def\s+(\w+)(?:\[([^\]]*)\])?\s*(?:\(([^)]*)\))*(?:\s*:\s*([^\n={]+))?(?:\s*=\s*([^\n{]*))?/gm;
-    while ((m = defFlowRe.exec(content)) !== null) {
-      const indent = m[1].replace(/\n/g, '').length;
-      if (indent > 0) continue; // skip indented method bodies
+    // Die Ablauf-Regexes laufen ueber die maskierte Fassung, die Textausschnitte
+    // kommen aus dem Original — sonst stuenden Leerzeichen im Statement-Text.
+    const flowText = maskiereKommentareUndStrings(content);
+
+    // def auf JEDER Ebene. Bis Version 4 stand hier ein
+    //   if (indent > 0) continue; // skip indented method bodies
+    // und damit fiel praktisch der gesamte Scala-Code heraus.
+    // ^([ \t]*) statt ^(\s*): \s schliesst den Zeilenumbruch ein, dadurch begann
+    // der Treffer auf der LEERZEILE davor — Zeilennummer und Tiefe waren falsch.
+    const defFlowRe = /^([ \t]*)((?:(?:private|protected|final|override|implicit|inline|lazy|transparent|infix)\s+(?:\[\w+\]\s*)?)*)?def\s+(\w+)(?:\[([^\]]*)\])?\s*(?:\(([^)]*)\))*(?:\s*:\s*([^\n={]+))?(?:\s*=\s*([^\n{]*))?/gm;
+    while ((m = defFlowRe.exec(flowText)) !== null) {
+      const indent = m[1].length;
       const name = m[3];
       const lineStart = lineAt(content, m.index);
       const isTop = indent === 0;
+      // Der Eltern-Typ ist seit Version 4 die innerste umschliessende Deklaration.
+      const scopeName = isTop ? null : this.findParentType(content, m.index) ?? null;
       const tid = nextId();
       statements.push({
         temp_id: tid,
-        scope_type: 'module',
-        scope_name: null,
+        scope_type: isTop ? 'module' : 'class',
+        scope_name: scopeName,
         statement_type: 'function',
         node_kind: 'DefDef',
         line_start: lineStart,
-        order_index: nextOrder(undefined),
-        depth: 0,
+        order_index: nextOrder(scopeName ?? undefined),
+        // Scala rueckt konventionell in Zweierschritten ein; die Tiefe ist damit
+        // eine Naeherung und keine Zusicherung (Tabs zaehlen als ein Zeichen).
+        depth: Math.floor(indent / 2),
         is_top_level: isTop,
         is_awaited: false,
         callee: name,
-        text: m[0].trim().slice(0, 240),
+        text: content.slice(m.index, m.index + m[0].length).trim().slice(0, 240),
       });
 
-      // Extract calls from the method body (RHS after `=`)
+      // Aufrufe aus der rechten Seite (nach dem Gleichheitszeichen)
       const rhs = m[7] || '';
       const callRe2 = /\b([a-z_]\w*)\s*\(/g;
       let cm: RegExpExecArray | null;
@@ -435,29 +528,32 @@ class ScalaParser implements LanguageParser {
       }
     }
 
-    // Top-level val/var statements (indent 0)
-    const valFlowRe = /^(val|var)\s+(\w+)(?:\s*:\s*(\S[^\n=]*))?(?:\s*=\s*([^\n]+))?/gm;
-    while ((m = valFlowRe.exec(content)) !== null) {
-      const kind = m[1];
-      const name = m[2];
-      const rhs = m[4] || '';
+    // val/var auf JEDER Ebene (vorher nur Spalte 0)
+    const valFlowRe = /^([ \t]*)(?:(?:private|protected|final|override|implicit|lazy|inline|given)\s+(?:\[\w+\]\s*)?)*(val|var)\s+(\w+)(?:\s*:\s*(\S[^\n=]*))?(?:\s*=\s*([^\n]+))?/gm;
+    while ((m = valFlowRe.exec(flowText)) !== null) {
+      const indent = m[1].length;
+      const kind = m[2];
+      const name = m[3];
+      const rhs = m[5] || '';
       const lineStart = lineAt(content, m.index);
+      const isTop = indent === 0;
+      const scopeName = isTop ? null : this.findParentType(content, m.index) ?? null;
       const tid = nextId();
       statements.push({
         temp_id: tid,
-        scope_type: 'module',
-        scope_name: null,
+        scope_type: isTop ? 'module' : 'class',
+        scope_name: scopeName,
         statement_type: 'variable',
         node_kind: kind === 'val' ? 'ValDef' : 'VarDef',
         line_start: lineStart,
-        order_index: nextOrder(undefined),
-        depth: 0,
-        is_top_level: true,
+        order_index: nextOrder(scopeName ?? undefined),
+        depth: Math.floor(indent / 2),
+        is_top_level: isTop,
         is_awaited: false,
         assigned_to: name,
-        text: m[0].trim().slice(0, 240),
+        text: content.slice(m.index, m.index + m[0].length).trim().slice(0, 240),
       });
-      // Extract calls from RHS
+
       const callRe3 = /\b([a-z_]\w*)\s*\(/g;
       let cm2: RegExpExecArray | null;
       while ((cm2 = callRe3.exec(rhs)) !== null) {
@@ -465,7 +561,7 @@ class ScalaParser implements LanguageParser {
         if (['if', 'while', 'for', 'match', 'try', 'catch', 'new'].includes(callee)) continue;
         callEdges.push({
           statement_temp_id: tid,
-          caller_scope: null,
+          caller_scope: scopeName,
           callee_name: callee,
           line_number: lineStart,
           call_kind: 'function',
@@ -473,7 +569,6 @@ class ScalaParser implements LanguageParser {
         });
       }
     }
-
     return { symbols, references, statements, callEdges };
   }
 
