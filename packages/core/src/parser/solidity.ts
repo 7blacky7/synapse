@@ -41,6 +41,11 @@ const reWhile = /while\s*\(/y;
 const reReq = /(require|revert)\s*\(/y;
 const reEmit = /emit\s+(\w+)\s*\(/y;
 const reRet = /return\b/y;
+// Zuweisung: Ziel gefolgt von = oder einer Verbund-Zuweisung. Das Ziel darf
+// Punkt- und Index-Zugriffe enthalten (guthaben[msg.sender], a.b[0].c).
+// =(?!=) schliesst Vergleiche aus; <= und >= treffen nicht zu, weil < und >
+// nicht in der Zeichenklasse stehen.
+const reAssign = /([A-Za-z_$][\w$]*(?:\s*\.\s*[\w$]+|\s*\[[^\];]*\])*)\s*(?:=(?!=)|[+\-*/%&|^]=|<<=|>>=)/y;
 const reCall = /([a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)*)\s*\(/y;
 let zeilenCache = new Map<string, number[]>();
 function zeilenCacheLeeren(): void {
@@ -311,6 +316,26 @@ function extractSolidityFlow(content: string): { statements: ParsedStatement[]; 
         continue;
       }
 
+      // Zuweisung: ziel = ... / ziel += ...
+      // BIS VERSION 4 GAB ES DAS NICHT. Ueber den gesamten OpenZeppelin-Bestand
+      // kannte der Index nur call, return, if, for, throw und while — kein einziges
+      // assignment, obwohl allein die Formen mit Index-Zugriff 129-mal vorkommen.
+      // Aufgefallen an einer Datei mit bekanntem Sollwert: drei von vier Anweisungen
+      // einer Funktion waren erfasst, die Zuweisung fehlte.
+      reAssign.lastIndex = pos;
+      const asgM = reAssign.exec(content);
+      if (asgM) {
+        const lineStart = charToLine(pos);
+        emitStmt(lineStart, lineStart, scopeType, scopeName, 'assignment', depth, parentId, scopeCounter, {
+          assigned_to: asgM[1].replace(/\s+/g, ''),
+        });
+        // NUR bis hinter den Operator weiterruecken, nicht bis zum Semikolon: die
+        // rechte Seite wird dadurch weiter untersucht und ein Aufruf wie
+        // "x = foo();" behaelt seine Call-Kante.
+        pos += asgM[0].length;
+        continue;
+      }
+
       // Sonstiges Statement, endet auf ;
       if (content[pos] === ';') { pos++; continue; }
       if (content[pos] === '{') { pos = findClose(content, pos, blockEnd) + 1; continue; }
@@ -379,7 +404,9 @@ class SolidityParser implements LanguageParser {
   //    Ausserdem verliert condition_text die fuehrende Klammer, die eine feste
   //    Startposition bei 'if (' faelschlich mitgenommen hat. Struktur und Reihenfolge
   //    der Statements bleiben unveraendert.
-  version = 4;
+  // 5: Zuweisungen werden als Statement erfasst. Bis 4 fielen sie durch alle
+  //    Muster und landeten beim pos++ — die Ablauf-Ebene kannte keine einzige.
+  version = 5;
 
   parse(content: string, filePath: string): ParseResult {
     zeilenCacheLeeren();
