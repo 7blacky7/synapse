@@ -116,7 +116,10 @@ class ScalaParser implements LanguageParser {
   //    von Kommentaren und Zeichenketten. Bis 4 sprang die Flow-Schleife bei
   //    jeder Einrueckung heraus; in Scala ist damit fast alles uebersprungen
   //    worden (363 Statements und 34 Call-Kanten auf 580.621 Zeilen).
-  version = 5;
+  // 6: depth ist jetzt 0 (Tiefe IM Scope) statt der Einrueckungstiefe der Datei.
+  //    getExecutionFlow filtert auf depth = 0 — vorher lieferte flow(scope) fuer
+  //    scala nichts, obwohl die Statements im Index standen.
+  version = 6;
 
   parse(content: string, filePath: string): ParseResult {
     const symbols: ParsedSymbol[] = [];
@@ -503,7 +506,13 @@ class ScalaParser implements LanguageParser {
         order_index: nextOrder(scopeName ?? undefined),
         // Scala rueckt konventionell in Zweierschritten ein; die Tiefe ist damit
         // eine Naeherung und keine Zusicherung (Tabs zaehlen als ein Zeichen).
-        depth: Math.floor(indent / 2),
+        // 0 = direkt im Scope, so steht es im Interface. scope_name ist ueber
+        // findParentType bereits die INNERSTE umschliessende Deklaration, also
+        // liegt dieses Statement definitionsgemaess direkt darin.
+        // ⚠️ NICHT die Einrueckung der Datei: getExecutionFlow filtert hart auf
+        // depth = 0, und mit der Einrueckung passierte in List.scala 0 von 124
+        // Statements diesen Filter — flow(scope) lieferte leer, obwohl alles da war.
+        depth: 0,
         is_top_level: isTop,
         is_awaited: false,
         callee: name,
@@ -547,7 +556,8 @@ class ScalaParser implements LanguageParser {
         node_kind: kind === 'val' ? 'ValDef' : 'VarDef',
         line_start: lineStart,
         order_index: nextOrder(scopeName ?? undefined),
-        depth: Math.floor(indent / 2),
+        // 0 = direkt im Scope (siehe Begruendung beim def-Zweig oben).
+        depth: 0,
         is_top_level: isTop,
         is_awaited: false,
         assigned_to: name,
