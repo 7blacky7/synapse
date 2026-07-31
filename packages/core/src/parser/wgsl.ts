@@ -606,7 +606,9 @@ function analysiere(content: string, mask: Maskierung): Analyse {
           // WARUM DOPPELTE BUCHFUEHRUNG: code_intel(variables) fragt die SYMBOL-Ebene
           // ab. Ohne diesen Eintrag findet eine Suche nach einer lokalen Variablen
           // nichts, und das sieht aus wie ein Parser-Ausfall, obwohl die Information
-          // als Statement vorliegt. Am wgpu-Bestand sind es 662 solcher Deklarationen.
+          // als Statement vorliegt. Am wgpu-Bestand sind es 6.134 solcher Deklarationen
+          // (LetDeclaration 4.569, VarDeclaration 1.532, ConstDeclaration 33 — `let`
+          // ueberwiegt in naga-generiertem Code deutlich).
           // solidity, jsonnet, scala und typescript fuehren sie ebenfalls als Symbol
           // (gemessen 2026-07-31); rust, go, python, java und c nicht.
           symbols.push({
@@ -1086,10 +1088,12 @@ class WgslParser implements LanguageParser {
   //      extractStringLiterals ueber den Rohtext lief.
   // 4: lokale var/let/const im Funktionsrumpf wieder als variable-SYMBOL, zusaetzlich
   //    zum declaration-Statement der Ablauf-Ebene. In 3 waren sie NUR Statement, damit
-  //    fand code_intel(variables) sie nicht mehr — 662 Deklarationen im wgpu-Bestand,
-  //    mehr als die 479, die Version 2 hatte (die alte Regel verschluckte auch hier
-  //    jede zweite). User-Vorgabe: "es soll so funktionieren wie es geplant ist, KI
-  //    soll alles finden mit code_intel". parent_id traegt den Funktionsnamen.
+  //    fand code_intel(variables) sie nicht mehr — 6.134 Deklarationen im wgpu-Bestand.
+  //    ZUM VERGLEICH: Version 2 kannte davon nur 477, also 7,8 Prozent. Der Rueckbau
+  //    stellt damit nicht den Zustand von 2 wieder her, sondern einen deutlich
+  //    besseren; die alte Regel hat hier nicht "jede zweite" verschluckt, sondern
+  //    ueber neun Zehntel. User-Vorgabe: "es soll so funktionieren wie es geplant ist,
+  //    KI soll alles finden mit code_intel". parent_id traegt den Funktionsnamen.
   version = 4;
 
   parse(content: string, _filePath: string): ParseResult {
