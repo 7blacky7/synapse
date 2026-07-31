@@ -965,6 +965,93 @@ export async function parseAndEmbed(
                 AND ce.callee_name = e.name`,
             [project, filePath]
           );
+
+          // ─── Stufe 2: dateiuebergreifend, aber NUR innerhalb DERSELBEN SPRACHE ──
+          // Erst jetzt, damit eine Definition in der eigenen Datei immer Vorrang hat.
+          //
+          // ⚠️ DER SPRACHFILTER IST DIE EIGENTLICHE REGEL, nicht eine Feinheit.
+          // Ohne ihn zeigen eingebaute Funktionen auf zufaellig gleichnamige Symbole
+          // fremder Sprachen. Gemessen am wgpu-Bestand (2026-07-31): 350 Aufrufe von
+          // vec2 und 100 von vec3 haetten aus .wgsl-Dateien auf regular.rs gezeigt,
+          // normalize/min/max auf weitere .rs-Dateien — zusammen 616 Kanten, 7,4 %
+          // des Bestands, allesamt falsch. Mit Filter bleiben in wgsl 5 Kanten uebrig
+          // (die Praeprozessor-Includes aus common.wgsl), und das ist korrekt: WGSL
+          // hat kein Modulsystem, eine Datei kann keine Funktion einer anderen rufen.
+          //
+          // Bei TypeScript ERHOEHT der Filter die Ausbeute sogar — von 2.258 auf 3.742
+          // eindeutige Kanten, weil gleichnamige Symbole anderer Sprachen wegfallen und
+          // der Name innerhalb seiner Sprache dadurch eindeutig WIRD. Der Filter wirft
+          // nichts weg, er schaerft.
+          //
+          // Die Endung kommt als Parameter statt als SQL-Regex — das erspart doppeltes
+          // Maskieren im Template-String und ist an der Aufrufstelle nachlesbar.
+          const punkt = filePath.lastIndexOf('.');
+          const endung = punkt > 0 ? filePath.slice(punkt) : null;
+          if (endung !== null) {
+            await flowClient.query(
+              `WITH offen AS (
+                 SELECT DISTINCT callee_name
+                   FROM code_call_edges
+                  WHERE project = $1 AND file_path = $2
+                    AND target_symbol_id IS NULL AND callee_name IS NOT NULL
+               ), ziel AS (
+                 SELECT s.name, min(s.id) AS id
+                   FROM code_symbols s
+                   JOIN offen o ON o.callee_name = s.name
+                  WHERE s.project = $1 AND s.symbol_type = 'function'
+                    AND s.file_path LIKE '%' || $3
+                  GROUP BY s.name
+                 HAVING count(*) = 1
+               )
+               UPDATE code_call_edges ce
+                  SET target_symbol_id = z.id
+                 FROM ziel z
+                WHERE ce.project = $1 AND ce.file_path = $2
+                  AND ce.target_symbol_id IS NULL
+                  AND ce.callee_name = z.name`,
+              [project, filePath, endung]
+            );
+
+            // ─── Stufe 3: EINGEHENDE Verweise heilen ────────────────────────────
+            // ⚠️ OHNE DIESEN BLOCK VERFAELLT DIE CROSS-FILE-AUFLOESUNG SCHLEICHEND.
+            // Ein Reparse loescht die Symbole dieser Datei (Z666) und legt sie mit
+            // NEUEN UUIDs an (Z681). Der Fremdschluessel steht auf ON DELETE SET NULL,
+            // also verlieren ALLE Kanten FREMDER Dateien, die hierher zeigten, ihr
+            // Ziel — und niemand loest sie neu auf, weil jene Dateien unveraendert
+            // blieben. GEMESSEN am 31.07.2026 an naga/src/back/spv/mod.rs: ein
+            // einziger Reparse entwertete 227 bis 238 Verweise aus fremden Dateien.
+            // Ueber Wochen waere die Aufloesung damit halb leer, und das faellt
+            // niemandem auf, weil eine sinkende Zahl niemand nachzaehlt.
+            //
+            // Dieselbe Regel wie Stufe 2 — gleicher Sprachfilter, gleiche
+            // Eindeutigkeit. Zwei Wahrheiten im selben Code waeren schlimmer als
+            // der Verfall. Zielgerichtet ueber die Namen DIESER Datei, nicht
+            // projektweit: es geht nur um Verweise, die auf sie zeigen koennen.
+            await flowClient.query(
+              `WITH neue AS (
+                 SELECT DISTINCT name
+                   FROM code_symbols
+                  WHERE project = $1 AND file_path = $2
+                    AND symbol_type = 'function' AND name IS NOT NULL
+               ), ziel AS (
+                 SELECT s.name, min(s.id) AS id
+                   FROM code_symbols s
+                   JOIN neue n ON n.name = s.name
+                  WHERE s.project = $1 AND s.symbol_type = 'function'
+                    AND s.file_path LIKE '%' || $3
+                  GROUP BY s.name
+                 HAVING count(*) = 1
+               )
+               UPDATE code_call_edges ce
+                  SET target_symbol_id = z.id
+                 FROM ziel z
+                WHERE ce.project = $1
+                  AND ce.target_symbol_id IS NULL
+                  AND ce.callee_name = z.name
+                  AND ce.file_path LIKE '%' || $3`,
+              [project, filePath, endung]
+            );
+          }
         }
 
         await flowClient.query('COMMIT');
