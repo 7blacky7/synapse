@@ -426,7 +426,10 @@ export async function parseAndEmbed(
 
   // --- Symbole + Referenzen parsen (in Transaktion) ---
   let parseSuccess = false;
-  const parser = getParserForFile(filePath);
+  // Inhalt mitgeben: nur damit kann die Inhaltserkennung fuer Dateien OHNE
+  // Endung ueberhaupt greifen (siehe getParserForFile). Fuer alle anderen
+  // Dateien aendert der zweite Parameter nichts.
+  const parser = getParserForFile(filePath, content);
 
   // TEMP-Mitigation: Files >PARSER_MAX_BYTES blocken den Event-Loop (sync
   // parser.parse() ist CPU-gebunden). Bis Worker-Threads (WT-1..5) fertig

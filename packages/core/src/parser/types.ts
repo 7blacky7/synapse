@@ -130,6 +130,32 @@ export interface LanguageParser {
    */
   version?: number;
   /**
+   * OPTIONAL: Erkennt dieser Parser seine Sprache am INHALT?
+   *
+   * WOFUER: Manche Sprachen legen Dateien OHNE Endung ab. Im Dhall-Prelude sind
+   * das 143 Dateien (Prelude/Bool/fold, Prelude/List/index, ...), die echten
+   * Dhall-Code enthalten. Die Zuordnung ueber Endung und Dateiname findet sie
+   * nicht, und health meldet dazu voellig korrekt "kein Parser zustaendig" —
+   * formal richtig, inhaltlich falsch.
+   *
+   * WANN ES GEFRAGT WIRD: ausschliesslich dann, wenn die Datei GAR KEINE Endung
+   * hat UND weder Endung noch Dateiname einen Parser ergeben haben — also genau
+   * dort, wo getParserForFile heute null zurueckgibt. Damit kann diese Funktion
+   * keine bestehende Zuordnung verschlechtern; sie kann nur aus null etwas
+   * machen.
+   *
+   * WAS SIE BEKOMMT: nur den ANFANG der Datei (siehe ERKENNER_ZEICHEN in
+   * parser/index.ts), nicht den ganzen Inhalt. Sie laeuft potenziell fuer jede
+   * endungslose Datei des Index und muss deshalb billig sein: Zeichenketten-
+   * Vergleiche, keine Regexes mit Backtracking-Risiko.
+   *
+   * WIE STRENG: lieber ein Nein zu viel. Schlaegt sie bei einer LICENSE, einer
+   * README oder einem Shell-Skript an, ordnet sie eine fremde Datei einer
+   * falschen Sprache zu — das ist schlimmer als der heutige Zustand, in dem gar
+   * nichts passiert. Mehrere unabhaengige Merkmale verlangen, nicht eines.
+   */
+  erkenntInhalt?(anfang: string): boolean;
+  /**
    * Kennt diese Sprache ueberhaupt eine Ablauf-Ebene (Anweisungen, Aufrufe)?
    * Fehlt die Angabe, gilt true.
    *
