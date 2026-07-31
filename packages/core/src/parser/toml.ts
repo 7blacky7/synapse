@@ -15,6 +15,8 @@ class TomlParser implements LanguageParser {
   extensions = ['.toml'];
   /** Bei inhaltlichen Parser-Aenderungen erhoehen (siehe LanguageParser.version). */
   version = 1;
+  /** Reines Datenformat — kennt keine Anweisungen. */
+  hatAblaufEbene = false;
 
   parse(content: string, filePath: string): ParseResult {
     const symbols: ParsedSymbol[] = [];

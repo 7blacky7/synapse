@@ -32,6 +32,8 @@ class StarlarkParser implements LanguageParser {
   /** Bei inhaltlichen Parser-Aenderungen erhoehen (siehe LanguageParser.version). */
   // 2: Zeilenberechnung ueber Index statt Praefix-Kopie (siehe lineAt).
   version = 2;
+  /** Build-Deklarationen — der Parser erfasst Regeln, keine Anweisungen. */
+  hatAblaufEbene = false;
 
   parse(content: string, filePath: string): ParseResult {
     const symbols: ParsedSymbol[] = [];

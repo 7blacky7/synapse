@@ -32,6 +32,8 @@ class MakefileParser implements LanguageParser {
   // 2: Zeilenberechnung ueber Index statt Praefix-Kopie (siehe lineAt).
   // 3: Rezept-Ende und endef-Suche ohne Kopie des Dateirests (siehe dort).
   version = 3;
+  /** Ziele und Rezepte — der Parser erfasst sie als Deklaration, nicht als Ablauf. */
+  hatAblaufEbene = false;
 
   parse(content: string, filePath: string): ParseResult {
     const symbols: ParsedSymbol[] = [];

@@ -20,6 +20,8 @@ class CssParser implements LanguageParser {
   //    Falle, die bei zeileFuerPosition in types.ts beschrieben ist. Die
   //    gelieferten Zeilen sind unveraendert, nur die Laufzeit faellt.
   version = 2;
+  /** Stylesheet — Regeln und Deklarationen, aber keine Anweisungen. */
+  hatAblaufEbene = false;
 
   parse(content: string, filePath: string): ParseResult {
     const symbols: ParsedSymbol[] = [];

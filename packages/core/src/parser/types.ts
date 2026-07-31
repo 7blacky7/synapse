@@ -129,6 +129,24 @@ export interface LanguageParser {
    * liefe er. Deshalb steht dieser Hinweis auch in den Parser-Modulen selbst.
    */
   version?: number;
+  /**
+   * Kennt diese Sprache ueberhaupt eine Ablauf-Ebene (Anweisungen, Aufrufe)?
+   * Fehlt die Angabe, gilt true.
+   *
+   * WOFUER: health kann damit "Parser liefert null Statements" von "Sprache hat
+   * konstruktiv keine" unterscheiden. Ohne die Angabe war beides gleich und der
+   * Fall musste ungemeldet bleiben — ein kaputter Parser sah aus wie yaml.
+   * Belegt an drei Faellen: scala lieferte 363 Statements auf 580.621 Zeilen,
+   * jsonnet und dhall exakt null bei 343 bzw. 379 gefundenen Funktionen.
+   *
+   * FALSE SETZEN nur bei Daten- und Auszeichnungsformaten, die wirklich keine
+   * Anweisungen kennen (yaml, toml, css, markdown, make, cmake, dockerfile,
+   * starlark, nix). Im ZWEIFEL weglassen: dann meldet health lieber einmal zu
+   * viel, als einen Totalausfall zu verschweigen.
+   *
+   * NICHT VERWECHSELN mit "liefert gerade keine": genau das soll ja auffallen.
+   */
+  hatAblaufEbene?: boolean;
   parse(content: string, filePath: string): ParseResult;
 }
 

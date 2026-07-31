@@ -30,6 +30,8 @@ class DockerfileParser implements LanguageParser {
   /** Bei inhaltlichen Parser-Aenderungen erhoehen (siehe LanguageParser.version). */
   // 2: Zeilenberechnung ueber Index statt Praefix-Kopie (siehe lineAt).
   version = 2;
+  /** Folge von Direktiven — keine Ablauf-Ebene im hier gemeinten Sinn. */
+  hatAblaufEbene = false;
 
   parse(content: string, filePath: string): ParseResult {
     // Also handle files named "Dockerfile" (no extension)

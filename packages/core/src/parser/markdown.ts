@@ -14,6 +14,8 @@ class MarkdownParser implements LanguageParser {
   extensions = ['.md', '.mdx'];
   /** Bei inhaltlichen Parser-Aenderungen erhoehen (siehe LanguageParser.version). */
   version = 1;
+  /** Auszeichnungssprache — die "Funktionen" sind Ueberschriften, Anweisungen gibt es keine. */
+  hatAblaufEbene = false;
 
   parse(content: string, filePath: string): ParseResult {
     const symbols: ParsedSymbol[] = [];

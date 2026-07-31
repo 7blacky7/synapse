@@ -26,7 +26,7 @@
  */
 
 import { getPool } from '../db/client.js';
-import { getParserForFile, getSupportedExtensions } from '../parser/index.js';
+import { getParserForFile, getSupportedExtensions, kenntAblaufEbene } from '../parser/index.js';
 
 /** Symboltypen, die reinen Text darstellen und keinen erkannten Code. */
 const TEXT_TYPEN = new Set(['string', 'comment']);
@@ -776,6 +776,30 @@ function bewerteParser(
             `erfasst werden. Datenbasis: ${fmt(g.dateien)} Dateien, ${fmt(g.zeilen_gesamt)} Zeilen.`
         );
       }
+    }
+
+    // DER TOTALAUSFALL: gar keine Statements. Der Dichte-Befund oben kann ihn nicht
+    // sehen, weil er durch null teilen muesste — und lange blieb er ungemeldet, weil
+    // ein kaputter Parser ohne Sprachwissen nicht von yaml oder css zu unterscheiden
+    // war. Seit LanguageParser.hatAblaufEbene sagt der Parser selbst, ob seine
+    // Sprache Anweisungen kennt; Datenformate stehen ausdruecklich auf false.
+    //
+    // BELEGT AN DREI FAELLEN: scala lieferte 363 Statements auf 580.621 Zeilen,
+    // jsonnet und dhall exakt null bei 343 bzw. 379 gefundenen Funktionen. In allen
+    // drei Faellen meldete health vorher befund:[] — die Symbole kamen ja an.
+    if (
+      g.statements_gesamt === 0 &&
+      g.symbole_gesamt > 0 &&
+      g.zeilen_gesamt >= MIN_ZEILEN_PARSER_BEFUND &&
+      kenntAblaufEbene(g.parser)
+    ) {
+      g.befund.push(
+        `ABLAUF-EBENE FEHLT GANZ: kein einziges Statement ueber ${fmt(g.dateien)} Dateien ` +
+          `und ${fmt(g.zeilen_gesamt)} Zeilen. Symbole kommen dagegen an ` +
+          `(${fmt(g.symbole_gesamt)}, darunter ${fmt(g.funktionen_gesamt)} Funktionen) — der ` +
+          `Parser versteht die Dateien also, aber eine ganze Ebene fehlt. Diese Sprache kennt ` +
+          `Anweisungen; ist das ein Irrtum, gehoert hatAblaufEbene=false an den Parser.`
+      );
     }
 
     raus.push(g);

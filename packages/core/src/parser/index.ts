@@ -170,6 +170,19 @@ export function getParserForFile(filePath: string): LanguageParser | null {
   return filenameParsers[basename] ?? null;
 }
 
+/**
+ * Kennt die Sprache dieses Parsers eine Ablauf-Ebene (Anweisungen, Aufrufe)?
+ * Unbekannte Sprachen gelten als ja — lieber eine Meldung zu viel als ein
+ * uebersehener Totalausfall.
+ *
+ * Gefragt wird nach dem SPRACHNAMEN, weil die Auswertung in parser-health.ts
+ * ueber parse_coverage.parser aggregiert und dort kein Dateipfad mehr vorliegt.
+ */
+export function kenntAblaufEbene(language: string): boolean {
+  const p = parsers.find(x => x.language === language);
+  return p?.hatAblaufEbene !== false;
+}
+
 export function getSupportedExtensions(): string[] {
   return parsers.flatMap(p => p.extensions);
 }
