@@ -448,6 +448,7 @@ export {
   holeSprachSkillVorschlaege,
   waehleSprachSkills,
   holeChannelSkillVorschlaege,
+  holeOffeneSkillVorschlaege,
   bereiteChannelSkillVorschlaegeVor,
   baueChannelSkillSuchtext,
   waehleChannelSkillTreffer,

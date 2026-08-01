@@ -4374,7 +4374,19 @@ async function handleToolCall(
     }
 
     case 'skills': {
-      const { searchSkills, listSkills, getSkillSection, getSkillFull } = await import('@synapse/core');
+      const { searchSkills, listSkills, getSkillSection, getSkillFull, holeOffeneSkillVorschlaege } =
+        await import('@synapse/core');
+      // Wer einen vorgeschlagenen Skill tatsaechlich abruft, interessiert sich fuer das Thema.
+      // Genau dann ist der Rest des Vorrats nuetzlich: alles ab dem vierten Treffer bliebe
+      // sonst fuer immer verborgen, weil jeder Skill nur einmal gezeigt wird.
+      // Nur beim LESEN eines Skills, nicht bei search/list — dort waere es Rauschen.
+      const naechsteVorschlaege = async () => {
+        if (!explicitAgentId) return {};
+        const weitere = await holeOffeneSkillVorschlaege(explicitAgentId);
+        return weitere.suggestions.length > 0
+          ? { skill_suggestions: weitere.suggestions, skill_hook_metrics: weitere.metrics }
+          : {};
+      };
       switch (action) {
         case 'search': {
           const query = reqStr(args, 'query');
@@ -4391,12 +4403,18 @@ async function handleToolCall(
         case 'get_section': {
           const sec = await getSkillSection(reqStr(args, 'skill_name'), reqStr(args, 'section'));
           if (!sec) return { success: false, experimental: true, error: 'not_found', message: 'skill_name + section nicht gefunden' };
-          return { success: true, experimental: true, ...sec };
+          return { success: true, experimental: true, ...sec, ...(await naechsteVorschlaege()) };
         }
         case 'get_full': {
           const sections = await getSkillFull(reqStr(args, 'skill_name'));
           if (sections.length === 0) return { success: false, experimental: true, error: 'not_found', message: 'skill_name nicht gefunden' };
-          return { success: true, experimental: true, skill_name: sections[0].skill_name, section_count: sections.length, sections };
+          return {
+            success: true, experimental: true,
+            skill_name: sections[0].skill_name,
+            section_count: sections.length,
+            sections,
+            ...(await naechsteVorschlaege()),
+          };
         }
         default:
           return { success: false, error: `Unbekannte skills action: "${action}"` };

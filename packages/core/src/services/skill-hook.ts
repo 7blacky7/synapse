@@ -460,6 +460,78 @@ export async function bereiteChannelSkillVorschlaegeVor(
  * Liefert ausschliesslich bereits vorbereitete Vorschlaege aus PostgreSQL.
  * Kein Such-Callback, kein Qdrant und kein embed() gehoeren zu diesem Lesepfad.
  */
+/**
+ * Liefert die naechsten noch nicht gezeigten Kandidaten eines Agenten — ohne Bezug auf
+ * bestimmte Nachrichten.
+ *
+ * Gedacht fuer den Moment, in dem ein Agent einen vorgeschlagenen Skill tatsaechlich abruft:
+ * dann interessiert ihn das Thema, und was aus denselben Channel-Nachrichten noch im Vorrat
+ * liegt, ist genau jetzt nuetzlich. Ohne das bleibt alles ab dem vierten Treffer fuer immer
+ * verborgen, weil jeder Skill nur einmal gezeigt wird.
+ *
+ * Derselbe Lesepfad wie holeChannelSkillVorschlaege: nur PostgreSQL, kein Embedding.
+ */
+export async function holeOffeneSkillVorschlaege(
+  agentId: string | undefined | null,
+  pool: Pool = getPool(),
+  hoechstens = CHANNEL_SKILL_VORSCHLAEGE,
+): Promise<SkillHookErgebnis> {
+  if (!agentId) return { suggestions: [], metrics: null, skipped_due_to_load: false };
+  try {
+    const result = await queryMitHarterFrist<{
+      skill_name: string; score: number; reason: string; delivered: boolean;
+    }>(pool, `
+      WITH kandidat AS (
+        SELECT DISTINCT ON (p.skill_name) p.skill_name, p.score, p.reason
+          FROM channel_skill_preparations p
+         WHERE p.agent_id = $1
+           AND NOT EXISTS (
+             SELECT 1 FROM skill_hook_deliveries d
+              WHERE d.agent_id = p.agent_id AND d.skill_name = p.skill_name
+           )
+         ORDER BY p.skill_name, p.score DESC
+      ), rangfolge AS (
+        SELECT * FROM kandidat ORDER BY score DESC LIMIT $3
+      ), eingefuegt AS (
+        INSERT INTO skill_hook_deliveries (agent_id, skill_name, hook_name)
+        SELECT $1, skill_name, $2 FROM rangfolge
+        ON CONFLICT (agent_id, skill_name) DO NOTHING
+        RETURNING skill_name
+      )
+      SELECT r.skill_name, r.score, r.reason,
+             EXISTS (SELECT 1 FROM eingefuegt e WHERE e.skill_name = r.skill_name) AS delivered
+        FROM rangfolge r ORDER BY r.score DESC
+    `, [agentId, CHANNEL_HOOK_NAME, hoechstens]);
+
+    const frisch = result.rows.filter((row) => row.delivered);
+    if (frisch.length === 0) return { suggestions: [], metrics: null, skipped_due_to_load: false };
+    const kurz = frisch
+      .map((row) => `${row.skill_name}(${Number(row.score).toFixed(2)})`)
+      .join(', ');
+    return {
+      suggestions: [{
+        skill_name: frisch[0].skill_name,
+        score: Number(frisch[0].score),
+        reason: frisch[0].reason,
+        message: `Weitere Skills aus dem Channel: ${kurz}\nVolltext: skills(action:'get_full', skill_name:'<name>')`,
+        skills: frisch.map((row) => ({
+          skill_name: row.skill_name,
+          score: Number(Number(row.score).toFixed(4)),
+          reason: row.reason,
+        })),
+      }],
+      metrics: {
+        suggested_count: frisch.length,
+        dedup_suppressed_count: result.rows.length - frisch.length,
+        load_skipped_count: 0,
+      },
+      skipped_due_to_load: false,
+    };
+  } catch {
+    return { suggestions: [], metrics: null, skipped_due_to_load: false };
+  }
+}
+
 export async function holeChannelSkillVorschlaege(
   agentId: string | undefined | null,
   messages: ChannelSkillNachricht[],
