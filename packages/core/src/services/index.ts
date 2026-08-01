@@ -39,6 +39,7 @@ export { emitEvent, acknowledgeEvent, getPendingEvents, getUnackedCount } from '
 export type { AgentEvent, EventAck, EventType, EventPriority } from './events.js';
 export * from './error-patterns.js';
 export * from './channels.js';
+export * from './channel-unread.js';
 export * from './inbox.js';
 export {
   enqueueShellJob,

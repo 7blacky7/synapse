@@ -1,5 +1,6 @@
 import { getPool } from '../db/client.js'
 import type { ChannelMessage } from '../types/index.js'
+import { bereiteChannelSkillVorschlaegeVor } from './skill-hook.js'
 
 export async function createChannel(
   project: string,
@@ -29,19 +30,22 @@ export async function deleteChannel(project: string, name: string): Promise<bool
 
 export async function joinChannel(project: string, channelName: string, agentName: string): Promise<boolean> {
   const pool = getPool()
-  const { rows } = await pool.query<{ id: number }>(
-    `SELECT id FROM specialist_channels WHERE name = $1 AND project = $2`,
-    [channelName, project],
-  )
+  const { rows } = await pool.query<{ id: number; max_message_id: string | number }>(
+    `SELECT c.id, COALESCE(MAX(msg.id), 0)::bigint AS max_message_id
+       FROM specialist_channels c
+       LEFT JOIN specialist_channel_messages msg ON msg.channel_id = c.id
+      WHERE c.name = $1 AND c.project = $2
+      GROUP BY c.id`, [channelName, project])
   if (rows.length === 0) return false
 
   const channelId = rows[0].id
+  const baselineId = Number(rows[0].max_message_id)
   await pool.query(
-    `INSERT INTO specialist_channel_members (channel_id, agent_name)
-     VALUES ($1, $2)
-     ON CONFLICT DO NOTHING`,
-    [channelId, agentName],
-  )
+    `INSERT INTO specialist_channel_members (
+       channel_id, agent_name, last_read_message_id,
+       last_notified_message_id, read_initialized_at)
+     VALUES ($1, $2, $3, $3, NOW())
+     ON CONFLICT DO NOTHING`, [channelId, agentName, baselineId])
   return true
 }
 
@@ -92,7 +96,15 @@ export async function postChannelMessage(
     [channelName, project, sender, content, metadata ? JSON.stringify(metadata) : null],
   )
   if (rows.length === 0) return null
-  return { id: rows[0].id, createdAt: rows[0].created_at }
+  const result = { id: rows[0].id, createdAt: rows[0].created_at }
+  void bereiteChannelSkillVorschlaegeVor(
+    project,
+    channelName,
+    result.id,
+    content,
+    pool,
+  ).catch(() => undefined)
+  return result
 }
 
 export async function getChannelMessages(

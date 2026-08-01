@@ -117,6 +117,7 @@ import {
   cancelBatch,
   getBatchPlan,
   holeSprachSkillVorschlaege,
+  holeChannelSkillVorschlaege,
   // Project-Init-Queue (Self-Service Project-Bootstrap)
   isValidProjectName,
   enqueueProjectInitJob,
@@ -130,6 +131,8 @@ import {
   postChannelMessage,
   getChannelMessages,
   listChannels,
+  recordChannelRead,
+  claimUnreadChannelHints,
   // Inbox
   postToInbox,
   checkInbox,
@@ -1556,7 +1559,31 @@ async function attachRestOnboarding(
   }
 }
 
-async function handleToolCall(name: string, args: Record<string, unknown>): Promise<unknown> {
+async function attachRestChannelHints(
+  result: unknown,
+  explicitAgentId?: string,
+): Promise<unknown> {
+  if (!explicitAgentId || typeof result !== 'object' || result === null || Array.isArray(result)) {
+    return result;
+  }
+  const hints = await claimUnreadChannelHints(explicitAgentId);
+  if (hints.length === 0) return result;
+  return {
+    ...result,
+    unread_channels: hints.map((hint) => ({
+      project: hint.project,
+      channel: hint.channel,
+      count: hint.count,
+      newest_id: hint.newestId,
+    })),
+  };
+}
+
+async function handleToolCall(
+  name: string,
+  args: Record<string, unknown>,
+  explicitAgentId?: string,
+): Promise<unknown> {
   const action = str(args, 'action');
 
   switch (name) {
@@ -2645,7 +2672,22 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
           const sinceId = args.since_id !== undefined ? Number(args.since_id) : 0;
           const preview = args.preview === true;
           const msgs = await getChannelMessages(project, chName3, { limit: feedLimit, sinceId, preview });
-          return { success: true, channel: chName3, messages: msgs, count: msgs.length, action: 'feed' };
+          const feedAgentId = resolveAgentId(str(args, 'agent_id'));
+          const skillHook = await holeChannelSkillVorschlaege(feedAgentId, msgs);
+          if (explicitAgentId) {
+            await recordChannelRead(project, chName3, explicitAgentId, msgs.map((msg) => msg.id));
+          }
+          return {
+            success: true,
+            channel: chName3,
+            messages: msgs,
+            count: msgs.length,
+            action: 'feed',
+            ...(skillHook.suggestions.length > 0 ? {
+              skill_suggestions: skillHook.suggestions,
+              skill_hook_metrics: skillHook.metrics,
+            } : {}),
+          };
         }
         case 'list': {
           const chProject = (args.project as string | undefined);
@@ -4416,6 +4458,7 @@ export async function mcpRoutes(fastify: FastifyInstance): Promise<void> {
         case 'tools/call': {
           const toolName = params?.name as string;
           const toolArgs = (params?.arguments || {}) as Record<string, unknown>;
+          const explicitAgentId = typeof toolArgs.agent_id === 'string' ? toolArgs.agent_id : undefined;
           // Auto-Detect: Web-KIs ohne Wrapper-Kontext bekommen agent_id aus
           // dem User-Agent/Session-Header (siehe deriveAgentIdFromHeaders).
           // Setzt nur wenn der Caller nicht selbst eine ID mitschickt.
@@ -4427,7 +4470,13 @@ export async function mcpRoutes(fastify: FastifyInstance): Promise<void> {
           let _logErr: string | null = null;
           let _logResult: string | null = null;
           try {
-            const toolResult = await attachRestOnboarding(await handleToolCall(toolName, toolArgs), toolArgs);
+            const toolResult = await attachRestChannelHints(
+              await attachRestOnboarding(
+                await handleToolCall(toolName, toolArgs, explicitAgentId),
+                toolArgs,
+              ),
+              explicitAgentId,
+            );
             _logResult = JSON.stringify(toolResult);
             result = {
               content: [{ type: 'text', text: JSON.stringify(toolResult, null, 2) }],
@@ -4451,7 +4500,16 @@ export async function mcpRoutes(fastify: FastifyInstance): Promise<void> {
             console.error(`[MCP] Tool-Fehler (${toolName}): ${msg}`);
             _logOk = false;
             _logErr = msg;
-            result = { content: [{ type: 'text', text: `Fehler im Tool "${toolName}": ${msg}` }], isError: true };
+            const errorPayload = await attachRestChannelHints(
+              { success: false, error: `Fehler im Tool "${toolName}": ${msg}` },
+              explicitAgentId,
+            );
+            _logResult = JSON.stringify(errorPayload);
+            result = {
+              content: [{ type: 'text', text: JSON.stringify(errorPayload, null, 2) }],
+              structuredContent: errorPayload,
+              isError: true,
+            };
           }
           // Activity-Log (best-effort, non-blocking) — Cloud-Pfad.
           void logToolCall({
@@ -4532,6 +4590,7 @@ export async function mcpRoutes(fastify: FastifyInstance): Promise<void> {
         case 'tools/call': {
           const toolName = params?.name as string;
           const toolArgs = (params?.arguments || {}) as Record<string, unknown>;
+          const explicitAgentId = typeof toolArgs.agent_id === 'string' ? toolArgs.agent_id : undefined;
           // Auto-Detect: Web-KIs ohne Wrapper-Kontext bekommen agent_id aus
           // dem User-Agent/Session-Header (siehe deriveAgentIdFromHeaders).
           // Setzt nur wenn der Caller nicht selbst eine ID mitschickt.
@@ -4543,7 +4602,13 @@ export async function mcpRoutes(fastify: FastifyInstance): Promise<void> {
           let _logErr: string | null = null;
           let _logResult: string | null = null;
           try {
-            const toolResult = await attachRestOnboarding(await handleToolCall(toolName, toolArgs), toolArgs);
+            const toolResult = await attachRestChannelHints(
+              await attachRestOnboarding(
+                await handleToolCall(toolName, toolArgs, explicitAgentId),
+                toolArgs,
+              ),
+              explicitAgentId,
+            );
             _logResult = JSON.stringify(toolResult);
             result = {
               content: [{ type: 'text', text: JSON.stringify(toolResult, null, 2) }],
@@ -4567,7 +4632,16 @@ export async function mcpRoutes(fastify: FastifyInstance): Promise<void> {
             console.error(`[MCP] Tool-Fehler (${toolName}): ${msg}`);
             _logOk = false;
             _logErr = msg;
-            result = { content: [{ type: 'text', text: `Fehler im Tool "${toolName}": ${msg}` }], isError: true };
+            const errorPayload = await attachRestChannelHints(
+              { success: false, error: `Fehler im Tool "${toolName}": ${msg}` },
+              explicitAgentId,
+            );
+            _logResult = JSON.stringify(errorPayload);
+            result = {
+              content: [{ type: 'text', text: JSON.stringify(errorPayload, null, 2) }],
+              structuredContent: errorPayload,
+              isError: true,
+            };
           }
           // Activity-Log (best-effort, non-blocking) — Cloud-Pfad.
           void logToolCall({

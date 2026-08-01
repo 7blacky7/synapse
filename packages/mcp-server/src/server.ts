@@ -23,7 +23,14 @@ import {
   acknowledgeEventTool,
 } from './tools/index.js';
 
-import { getPendingEvents, TOOL_GUIDES, ensureSchema, logToolCall, resolveAgentId } from '@synapse/core';
+import {
+  claimUnreadChannelHints,
+  getPendingEvents,
+  TOOL_GUIDES,
+  ensureSchema,
+  logToolCall,
+  resolveAgentId,
+} from '@synapse/core';
 import { ensureAgentsSchema, detectClaudeCli, heartbeatController, readStatus, postToInbox, postMessage, checkInbox } from '@synapse/agents';
 
 import {
@@ -231,6 +238,31 @@ export function createServer(): Server {
         first.text = JSON.stringify(parsed, null, 2);
       } catch { /* nicht-JSON Response — kein Decorate moeglich, lassen */ }
       return resp;
+    };
+
+
+    const attachResponseHooks = async (
+      resp: { content: Array<{ type: string; text: string }>; isError?: boolean },
+    ) => {
+      const guided = attachToolGuide(resp);
+      if (!agentId) return guided;
+      const first = guided.content?.[0];
+      if (!first || first.type !== 'text' || typeof first.text !== 'string') return guided;
+      try {
+        const parsed = JSON.parse(first.text);
+        if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return guided;
+        const hints = await claimUnreadChannelHints(agentId);
+        if (hints.length > 0) {
+          parsed.unread_channels = hints.map((hint) => ({
+            project: hint.project,
+            channel: hint.channel,
+            count: hint.count,
+            newest_id: hint.newestId,
+          }));
+          first.text = JSON.stringify(parsed, null, 2);
+        }
+      } catch { /* Response-Hooks duerfen Toolantworten nie brechen */ }
+      return guided;
     };
 
     // Helper: Ergebnis mit Onboarding erweitern
@@ -671,7 +703,9 @@ export function createServer(): Server {
       durationMs: Date.now() - _t0,
       result: _text,
     });
-    return attachToolGuide(baseResp as { content: Array<{ type: string; text: string }>; isError?: boolean });
+    return await attachResponseHooks(
+      baseResp as { content: Array<{ type: string; text: string }>; isError?: boolean },
+    );
   });
 
   return server;

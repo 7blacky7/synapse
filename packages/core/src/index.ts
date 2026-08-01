@@ -345,6 +345,8 @@ export {
   listChannels,
   getNewMessagesForAgent,
   ensureGeneralChannel,
+  recordChannelRead,
+  claimUnreadChannelHints,
   // Inbox
   postToInbox,
   checkInbox,
@@ -439,9 +441,21 @@ export {
 } from './services/project-init-queue.js';
 export type { ProjectInitJobRow, ProjectInitStatus, ProjectInitCompletion } from './services/project-init-queue.js';
 
-// Serverseitige Skill-Hooks (HOOK-3)
-export { holeSprachSkillVorschlaege, waehleSprachSkills } from './services/skill-hook.js';
-export type { SkillVorschlag, SkillHookMetriken, SkillHookErgebnis } from './services/skill-hook.js';
+// Serverseitige Skill-Hooks (HOOK-3/HOOK-4)
+export {
+  holeSprachSkillVorschlaege,
+  waehleSprachSkills,
+  holeChannelSkillVorschlaege,
+  bereiteChannelSkillVorschlaegeVor,
+  baueChannelSkillSuchtext,
+  waehleChannelSkillTreffer,
+} from './services/skill-hook.js';
+export type {
+  SkillVorschlag,
+  SkillHookMetriken,
+  SkillHookErgebnis,
+  ChannelSkillNachricht,
+} from './services/skill-hook.js';
 
 // Multi-File Edit-Plans (Schritt 2)
 export {

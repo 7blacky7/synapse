@@ -13,7 +13,11 @@
 
 import type { ConsolidatedTool } from './types.js';
 import { reqStr, str, num, bool, strArray, objArray } from './types.js';
-import { resolveAgentId } from '@synapse/core';
+import {
+  holeChannelSkillVorschlaege,
+  recordChannelRead,
+  resolveAgentId,
+} from '@synapse/core';
 import {
   createChannel,
   joinChannel,
@@ -150,6 +154,12 @@ async function handleFeed(args: Record<string, unknown>) {
 
   try {
     const messages = await getMessages(project, channelName, { limit, sinceId, preview });
+    const agentId = resolveAgentId(str(args, 'agent_id'));
+    const skillHook = await holeChannelSkillVorschlaege(agentId, messages);
+    const explicitAgentId = str(args, 'agent_id');
+    if (explicitAgentId) {
+      await recordChannelRead(project, channelName, explicitAgentId, messages.map((m) => m.id));
+    }
     return jsonResult({
       success: true,
       channel: channelName,
@@ -160,6 +170,10 @@ async function handleFeed(args: Record<string, unknown>) {
         content: m.content,
         createdAt: m.createdAt.toISOString(),
       })),
+      ...(skillHook.suggestions.length > 0 ? {
+        skill_suggestions: skillHook.suggestions,
+        skill_hook_metrics: skillHook.metrics,
+      } : {}),
     });
   } catch (err) {
     return jsonResult({ success: false, message: `Fehler: ${err}` });
