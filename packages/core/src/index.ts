@@ -347,6 +347,8 @@ export {
   ensureGeneralChannel,
   recordChannelRead,
   claimUnreadChannelHints,
+  markChannelRead,
+  NAVIGATIONSSCHWELLE,
   // Inbox
   postToInbox,
   checkInbox,

@@ -132,6 +132,7 @@ import {
   getChannelMessages,
   listChannels,
   recordChannelRead,
+  markChannelRead,
   claimUnreadChannelHints,
   // Inbox
   postToInbox,
@@ -531,7 +532,7 @@ const MCP_TOOLS = [
       properties: {
         action: {
           type: 'string',
-          enum: ['create', 'join', 'leave', 'post', 'feed', 'list'],
+          enum: ['create', 'join', 'leave', 'post', 'feed', 'list', 'mark_read'],
           description: 'Die auszufuehrende Aktion',
         },
         name: { type: 'string', description: 'Channel-Name (fuer create)' },
@@ -2687,6 +2688,31 @@ async function handleToolCall(
               skill_suggestions: skillHook.suggestions,
               skill_hook_metrics: skillHook.metrics,
             } : {}),
+          };
+        }
+        // HOOK-6: Lesestand setzen, OHNE die Nachrichten zu liefern. Fuer den Fall, dass ein
+        // Agent die letzten Meldungen kennt und den Rest nicht mehr sehen will — bis dahin
+        // ging das nur, indem man die Merkdatei des Hooks von Hand ueberschrieb.
+        // Verlangt eine EXPLIZITE agent_id: ohne sie ist nicht bekannt, wessen Stand gesetzt
+        // wuerde, und der Cloud-Fallback waere hier die falsche Identitaet.
+        case 'mark_read': {
+          const chNameRead = reqStr(args, 'channel_name');
+          if (!explicitAgentId) {
+            return {
+              success: false,
+              error: 'agent_id_erforderlich',
+              message: 'mark_read braucht eine ausdrueckliche agent_id — sonst ist unklar, wessen Lesestand gesetzt wird.',
+            };
+          }
+          const markiert = await markChannelRead(project, chNameRead, explicitAgentId);
+          return {
+            success: true,
+            channel: chNameRead,
+            marked_read: markiert,
+            action: 'mark_read',
+            message: markiert > 0
+              ? `${markiert} Nachricht(en) als gelesen markiert, ohne sie auszuliefern.`
+              : 'Nichts offen — Lesestand war bereits aktuell.',
           };
         }
         case 'list': {

@@ -16,6 +16,7 @@ import { reqStr, str, num, bool, strArray, objArray } from './types.js';
 import {
   holeChannelSkillVorschlaege,
   recordChannelRead,
+  markChannelRead,
   resolveAgentId,
 } from '@synapse/core';
 import {
@@ -180,6 +181,44 @@ async function handleFeed(args: Record<string, unknown>) {
   }
 }
 
+/**
+ * HOOK-6: Lesestand setzen, ohne die Nachrichten zu liefern.
+ *
+ * Fuer den Agenten, der die letzten Meldungen kennt und den Rest nicht mehr sehen will.
+ * Bis dahin ging das nur, indem man die Merkdatei des Hooks von Hand ueberschrieb.
+ *
+ * ⚠️ Verlangt eine AUSDRUECKLICHE agent_id. Ohne sie ist nicht bekannt, wessen Lesestand
+ * gesetzt wuerde — und ein Lesestand, der auf die falsche Identitaet laeuft, verschluckt
+ * Meldungen, ohne dass irgendetwas fehlschlaegt.
+ */
+async function handleMarkRead(args: Record<string, unknown>) {
+  const project = reqStr(args, 'project');
+  const channelName = reqStr(args, 'channel_name');
+  const agentId = str(args, 'agent_id');
+
+  if (!agentId) {
+    return jsonResult({
+      success: false,
+      error: 'agent_id_erforderlich',
+      message: 'mark_read braucht eine ausdrueckliche agent_id — sonst ist unklar, wessen Lesestand gesetzt wird.',
+    });
+  }
+
+  try {
+    const markiert = await markChannelRead(project, channelName, agentId);
+    return jsonResult({
+      success: true,
+      channel: channelName,
+      marked_read: markiert,
+      message: markiert > 0
+        ? `${markiert} Nachricht(en) als gelesen markiert, ohne sie auszuliefern.`
+        : 'Nichts offen — Lesestand war bereits aktuell.',
+    });
+  } catch (err) {
+    return jsonResult({ success: false, message: `Fehler: ${err}` });
+  }
+}
+
 async function handleList(args: Record<string, unknown>) {
   const project = str(args, 'project');
 
@@ -208,7 +247,7 @@ export const channelTool: ConsolidatedTool = {
       properties: {
         action: {
           type: 'string',
-          enum: ['create', 'join', 'leave', 'post', 'feed', 'list'],
+          enum: ['create', 'join', 'leave', 'post', 'feed', 'list', 'mark_read'],
           description: 'Die auszufuehrende Aktion',
         },
         // create: name, project, description, created_by
@@ -351,6 +390,8 @@ export const channelTool: ConsolidatedTool = {
         return await handlePost(args);
       case 'feed':
         return await handleFeed(args);
+      case 'mark_read':
+        return await handleMarkRead(args);
       case 'list':
         return await handleList(args);
       default:
