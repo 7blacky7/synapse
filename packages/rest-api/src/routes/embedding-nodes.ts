@@ -315,7 +315,17 @@ export function createEmbeddingNodeRoutes(
       '/api/embedding-nodes/:nodeId/lock',
       async (request, reply) => {
         const auth = await principal(request, deps);
-        if (!auth || (auth.kind !== 'access' && auth.kind !== 'session')) {
+        // Sperren/Entsperren darf: eine Admin-Sitzung (access/session) ODER ein
+        // DAEMON-Service-Token (User-Vorgabe 01.08.2026 — der Tray soll dafuer
+        // keinen zweiten TOTP verlangen).
+        // ⚠️ AUSDRUECKLICH NICHT: ein compute-node-Token. Sonst koennte ein
+        // gesperrter oder kompromittierter Knoten seine eigene Sperre aufheben,
+        // und gesperrt_vom_user waere keine Entscheidung des Nutzers mehr,
+        // sondern ein Vorschlag. Genau davor hat der Review in 17766 gewarnt.
+        const istDaemonToken =
+          auth?.kind === 'service' &&
+          (auth.scope === 'daemon' || (auth.scope ?? '').startsWith('daemon:'));
+        if (!auth || (auth.kind !== 'access' && auth.kind !== 'session' && !istDaemonToken)) {
           return reply.code(403).send({ success: false, error: 'admin_token_required' });
         }
         const { nodeId } = request.params;

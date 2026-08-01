@@ -686,6 +686,20 @@ func apiSetEmbeddingLockAsAdmin(nodeID string, session apiVerifyResponse, locked
 	return apiPinnedRequest(http.MethodPatch, session.Issuer, "/api/embedding-nodes/"+urlSeg(nodeID)+"/lock", body, session.Token, nil)
 }
 
+// apiSetEmbeddingLockMitDaemonToken sperrt oder entsperrt einen Knoten mit dem
+// vorhandenen Daemon-Token statt mit einer frisch per TOTP erzeugten Sitzung.
+// Der Server laesst dafuer ausschliesslich Tokens mit scope 'daemon'/'daemon:*'
+// zu — ein compute-node-Token wird abgewiesen, damit ein Knoten seine eigene
+// Sperre nicht aufheben kann.
+func apiSetEmbeddingLockMitDaemonToken(nodeID string, locked bool) error {
+	tok := strings.TrimSpace(apiToken())
+	if tok == "" {
+		return fmt.Errorf("kein Synapse-Token vorhanden — bitte zuerst \"Mit Synapse verbinden\" ausführen")
+	}
+	body := map[string]interface{}{"locked": locked, "reason": "Vom lokalen Tray gesetzt"}
+	return apiPinnedRequest(http.MethodPatch, apiDefaultTunnel, "/api/embedding-nodes/"+urlSeg(nodeID)+"/lock", body, tok, nil)
+}
+
 // speichereApiToken schreibt das Token als synapse_api_token in die config.json
 // des FileWatcher-Daemons.
 //

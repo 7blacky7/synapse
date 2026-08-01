@@ -51,12 +51,34 @@ async function gpuInfo(): Promise<{ name: string | null; totalMb: number; freeMb
   }
 }
 
-export async function probeNodeCapabilities(): Promise<NodeCapabilities> {
+// pruefeEinstieg=true nur bei der ERSTEN Messung vor der Registrierung: dort ist
+// die Frage "passt das Modell in den freien Speicher?" richtig. Danach immer
+// false — sonst scheitert jede Folgemessung an dem Speicher, den das eigene
+// Modell belegt (siehe Kommentar unten bei requiredFreeMb).
+export async function probeNodeCapabilities(pruefeEinstieg = false): Promise<NodeCapabilities> {
   // GPU-3: fail-closed und zwingend VOR jedem Ollama-Netzaufruf.
   const gpu = await gpuInfo();
   const requiredFreeMb = envPositiveInt('SYNAPSE_GPU_REQUIRED_FREE_MB', 7300);
   const requiredTotalMb = envPositiveInt('SYNAPSE_GPU_REQUIRED_TOTAL_MB', 12000);
-  if (!gpu.name || gpu.totalMb < requiredTotalMb || gpu.freeMb < requiredFreeMb) {
+
+  // ⚠️ DIE FREI-SCHWELLE IST EINE EINSTIEGSBEDINGUNG, KEINE DAUERBEDINGUNG.
+  // Sie beantwortet die Frage "passt das Modell ueberhaupt hinein?". Sobald es
+  // GELADEN ist, belegt es genau diesen Speicher — die Bedingung kann dann nie
+  // wieder erfuellt sein.
+  //
+  // GEMESSEN 01.08.2026: der Heartbeat rief diese Pruefung alle 30 s auf und
+  // scheiterte mit "gemessen 12282 MB gesamt / 1925 MB frei". Der Heartbeat kam
+  // damit nie beim Server an (0 Anfragen im Container-Log), letzter_kontakt
+  // veraltete auf 167 s, der Knoten galt als 'failed' und bekam auf jeden Claim
+  // ein 403 node_not_usable. DER KNOTEN SPERRTE SICH DURCH SEINEN EIGENEN
+  // ERFOLG AUS: Modell laden -> VRAM belegt -> Heartbeat kaputt -> keine Arbeit.
+  //
+  // Deshalb: die harte Schwelle NUR beim Start (pruefeEinstieg=true). Im
+  // laufenden Betrieb wird der freie Speicher nur noch GEMELDET; der Server
+  // entscheidet anhand von Digest, Dimensionen und Lease, ob der Knoten taugt.
+  const gpuFehlt = !gpu.name || gpu.totalMb < requiredTotalMb;
+  const zuWenigFrei = gpu.freeMb < requiredFreeMb;
+  if (gpuFehlt || (pruefeEinstieg && zuWenigFrei)) {
     throw new Error(
       `Hardware passt nicht / nicht moeglich: mindestens ${requiredTotalMb} MB VRAM und ${requiredFreeMb} MB frei erforderlich; ` +
       `gemessen ${gpu.totalMb} MB gesamt / ${gpu.freeMb} MB frei`,

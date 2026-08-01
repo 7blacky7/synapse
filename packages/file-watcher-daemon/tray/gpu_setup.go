@@ -198,6 +198,54 @@ func gpuComparisonText(ref apiEmbeddingReferenceResponse, local *ollamaTag, hard
 	return fmt.Sprintf("API-Modell: %s\nAPI-Digest (voll): %s\nLokales Modell: %s\nLokaler Digest (voll): %s\nDigests gleich: %t\n\nAPI-Zieldimension: %d\nAPI-Native-Dimension: %d\nAPI-Quantisierung: %s\nLokal-Quantisierung: %s\nAPI-num_ctx: %d\nMindest-VRAM: %d MB gesamt / %d MB frei\n\nOllama-Download: %s\nModell-Download: %s\nDownloadgröße: %.1f GB\n\nHardware: %s", ref.Reference.Model, apiDigest, localModel, localDigest, gpuDigestsMatch(apiDigest, localDigest), ref.Reference.TargetDimension, ref.Reference.NativeDimension, ptrText(ref.Reference.Quantization), localQuant, ref.Reference.NumCtx, ref.Reference.RequiredTotalVramMb, ref.Reference.RequiredFreeVramMb, platformDownload(ref.Download), ref.Download.Model, ref.Download.ModelSizeGb, hw)
 }
 
+// ermittleModellVerzeichnis sucht den Ort, an dem die Ollama-Modelle wirklich
+// liegen, statt einen Pfad zu raten.
+//
+// WARUM: am 01.08.2026 zeigte die Vorgabe auf ~/.ollama/models, waehrend Ollama
+// auf diesem Rechner als SYSTEMDIENST laeuft und /usr/share/ollama/.ollama/models
+// benutzt. qwen3-embedding:8b lag dort, im Benutzerverzeichnis lagen nur zwei
+// alte Modelle. Das dedizierte Ollama startete damit auf ein Verzeichnis ohne
+// das gesuchte Modell — und haette es erneut geladen.
+//
+// Reihenfolge: OLLAMA_MODELS aus der Umgebung, dann die beiden ueblichen Orte.
+// Genommen wird der ERSTE, der lesbar ist UND das Modell enthaelt; gibt es keinen
+// solchen, der erste lesbare; sonst das Benutzerverzeichnis als letzte Vorgabe.
+func ermittleModellVerzeichnis(modell string) string {
+	home, _ := os.UserHomeDir()
+	kandidaten := []string{
+		os.Getenv("OLLAMA_MODELS"),
+		"/usr/share/ollama/.ollama/models",
+		filepath.Join(home, ".ollama", "models"),
+	}
+	// Modellname bis zum Doppelpunkt ist der Verzeichnisname im Manifestbaum.
+	kurz := modell
+	if i := strings.IndexByte(kurz, ':'); i > 0 {
+		kurz = kurz[:i]
+	}
+	ersterLesbare := ""
+	for _, k := range kandidaten {
+		if strings.TrimSpace(k) == "" {
+			continue
+		}
+		if _, err := os.Stat(k); err != nil {
+			continue
+		}
+		if ersterLesbare == "" {
+			ersterLesbare = k
+		}
+		if kurz != "" {
+			p := filepath.Join(k, "manifests", "registry.ollama.ai", "library", kurz)
+			if _, err := os.Stat(p); err == nil {
+				return k
+			}
+		}
+	}
+	if ersterLesbare != "" {
+		return ersterLesbare
+	}
+	return filepath.Join(home, ".ollama", "models")
+}
+
 func gpuConfigPath() string {
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, ".synapse", "file-watcher", "gpu-node.json")
@@ -366,17 +414,66 @@ func pullGPUModel(model, modelDir string, gpuIndex int) error {
 	return nil
 }
 
+// findComputeAgent sucht das gebaute Agent-Skript an mehreren Orten.
+//
+// ⚠️ WARUM SO VIELE KANDIDATEN: hier standen zwei RELATIVE Pfade, die vom
+// Arbeitsverzeichnis des Trays abhingen. Gemessen am 01.08.2026 lief der Tray
+// aus packages/file-watcher-daemon/tray — von dort zeigt "../compute-node-agent"
+// nach packages/file-watcher-daemon/compute-node-agent und damit ins Leere;
+// richtig waere "../../" gewesen. Der Agent-Start schlug still fehl, waehrend
+// die Oberflaeche "bereit" meldete. Ein Pfad, der vom Arbeitsverzeichnis
+// abhaengt, ist bei einem Tray immer ein Ratespiel: es startet mal aus dem
+// Repo, mal aus dem Autostart, mal aus dem Dateimanager.
 func findComputeAgent() (string, error) {
 	if p := os.Getenv("SYNAPSE_COMPUTE_AGENT"); p != "" {
 		return p, nil
 	}
-	for _, p := range []string{filepath.Join("packages", "compute-node-agent", "dist", "index.js"), filepath.Join("..", "compute-node-agent", "dist", "index.js")} {
+
+	const rel = "packages/compute-node-agent/dist/index.js"
+	kandidaten := []string{
+		filepath.Join("packages", "compute-node-agent", "dist", "index.js"),
+		filepath.Join("..", "compute-node-agent", "dist", "index.js"),
+		filepath.Join("..", "..", "compute-node-agent", "dist", "index.js"),
+	}
+
+	// Relativ zur eigenen Binary: liegt sie im Repo, findet sich der Agent auch
+	// dann, wenn das Arbeitsverzeichnis woanders liegt.
+	if exe, err := os.Executable(); err == nil {
+		dir := filepath.Dir(exe)
+		for i := 0; i < 4 && dir != "/" && dir != "."; i++ {
+			kandidaten = append(kandidaten, filepath.Join(dir, rel))
+			dir = filepath.Dir(dir)
+		}
+	}
+
+	// Aus der Tray-Konfiguration: dort steht der Pfad des Projekts "synapse".
+	// Das ist die verlaesslichste Quelle, weil sie nicht vom Startort abhaengt.
+	if cfgB, err := os.ReadFile(filepath.Join(filepath.Dir(gpuConfigPath()), "config.json")); err == nil {
+		var cfg struct {
+			Projekte []struct {
+				Name string `json:"name"`
+				Pfad string `json:"pfad"`
+			} `json:"projekte"`
+		}
+		if json.Unmarshal(cfgB, &cfg) == nil {
+			for _, p := range cfg.Projekte {
+				if p.Name == "synapse" && strings.TrimSpace(p.Pfad) != "" {
+					kandidaten = append(kandidaten, filepath.Join(p.Pfad, rel))
+				}
+			}
+		}
+	}
+
+	for _, p := range kandidaten {
 		if _, e := os.Stat(p); e == nil {
 			a, _ := filepath.Abs(p)
 			return a, nil
 		}
 	}
-	return "", errors.New("Compute-Agent nicht gefunden")
+	return "", fmt.Errorf("Compute-Agent nicht gefunden. Gesucht an %d Orten, zuletzt %q. "+
+		"Ist packages/compute-node-agent gebaut (pnpm --filter @synapse/compute-node-agent build)? "+
+		"Notfalls SYNAPSE_COMPUTE_AGENT auf den vollen Pfad zu dist/index.js setzen",
+		len(kandidaten), kandidaten[len(kandidaten)-1])
 }
 func startGPUComputeAgent(c gpuNodeConfig, ref apiEmbeddingReference) error {
 	agent, err := findComputeAgent()

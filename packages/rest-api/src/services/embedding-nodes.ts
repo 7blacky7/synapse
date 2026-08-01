@@ -236,9 +236,19 @@ export async function listEmbeddingNodes(
       row,
       nowMs ?? new Date(row.server_now ?? Date.now()).getTime(),
     );
-    if (row.vram_gesamt_mb < reference.requiredTotalVramMb ||
-        row.vram_frei_mb < reference.requiredFreeVramMb) {
-      problems.push('insufficient_free_vram');
+    // ⚠️ NUR DIE KAPAZITAET IST EINE DAUERBEDINGUNG.
+    // Hier stand zusaetzlich `row.vram_frei_mb < reference.requiredFreeVramMb`.
+    // Das ist eine EINSTIEGSbedingung ("passt das Modell ueberhaupt hinein?")
+    // und im Dauerbetrieb unerfuellbar: sobald der Knoten das Modell GELADEN hat,
+    // belegt es genau diesen Speicher.
+    // GEMESSEN 01.08.2026 an einer RTX 4070 Ti: 12.282 MB gesamt, nach dem Laden
+    // 1.925 MB frei bei geforderten 7.300. Folge: insufficient_free_vram ->
+    // usable=false -> 403 auf JEDEN Claim, dauerhaft. Der Knoten sperrte sich
+    // durch seinen eigenen Erfolg aus, und die Lastverteilung blieb wirkungslos.
+    // Die Frei-Schwelle gehoert an die Registrierung (dort prueft sie der Agent
+    // vor dem Start) — nicht in eine Bedingung, die bei jedem Claim neu gilt.
+    if (row.vram_gesamt_mb < reference.requiredTotalVramMb) {
+      problems.push('insufficient_total_vram');
     }
     return {
       ...row,

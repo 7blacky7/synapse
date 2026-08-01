@@ -109,7 +109,8 @@ process.on('SIGTERM', stop);
 
 while (!stopped) {
   try {
-    capabilities = await probeNodeCapabilities();
+    // Einzige Stelle mit harter Schwellenpruefung: vor der Registrierung.
+    capabilities = await probeNodeCapabilities(true);
     await api('/api/embedding-nodes/register', { ...capabilities, bootId, bootStartedAt });
     console.error(`[ComputeNode] registered ${capabilities.nodeId} (${capabilities.modelDigest})`);
     break;

@@ -1262,15 +1262,19 @@ func zeigeGPUFenster() {
 	details := widget.NewLabel("")
 	details.Wrapping = fyne.TextWrapWord
 	details.TextStyle = fyne.TextStyle{Monospace: true}
-	code := widget.NewPasswordEntry()
-	code.SetPlaceHolder("Aktueller 6-stelliger TOTP-Code")
-	home, _ := os.UserHomeDir()
+	// KEIN TOTP-Feld mehr (User-Vorgabe 01.08.2026): Einrichten UND Sperren
+	// laufen ueber das vorhandene Daemon-Token aus config.json. Der Server
+	// akzeptiert es fuer beides, laesst aber ein compute-node-Token nicht zu —
+	// ein Knoten kann seine eigene Sperre also weiterhin nicht aufheben.
 	modelDir := widget.NewEntry()
-	// Standard-Modellverzeichnis von Ollama als Vorgabe: liegt das Modell dort schon,
-	// findet die dedizierte Instanz die Blobs sofort und laedt nichts nach.
-	// Ein eigenes Verzeichnis unter .synapse haette am 01.08.2026 einen 4,7-GB-Pull
-	// ausgeloest, obwohl die Datei mit identischem Digest bereits vorhanden war.
-	modelDir.SetText(filepath.Join(home, ".ollama", "models"))
+	// Das Modellverzeichnis wird ERMITTELT, nicht geraten. Zwei Fallen an einem Tag:
+	// (1) Ein eigenes Verzeichnis unter .synapse haette einen 4,7-GB-Pull ausgeloest,
+	//     obwohl die Datei mit identischem Digest bereits auf der Platte lag.
+	// (2) Die feste Vorgabe ~/.ollama/models zeigte auf ein Verzeichnis mit zwei
+	//     alten Modellen — Ollama laeuft hier als SYSTEMDIENST und benutzt
+	//     /usr/share/ollama/.ollama/models. Das dedizierte Ollama startete damit ohne das
+	// gesuchte qwen3-embedding:8b und der Knoten kam nie zustande.
+	modelDir.SetText(ermittleModellVerzeichnis("qwen3-embedding:8b"))
 	gpuSelect := widget.NewSelect([]string{"GPU 0"}, nil)
 	gpuSelect.SetSelectedIndex(0)
 
@@ -1319,7 +1323,9 @@ func zeigeGPUFenster() {
 	startSetup := func(index int, h gpuHardware, mustPull bool) {
 		useButton.Disable()
 		status.SetText("Einrichtung läuft …")
-		codeValue := strings.TrimSpace(code.Text)
+		// Kein TOTP mehr im Fenster: der Server nimmt das Daemon-Token als Ausweis.
+		// Der leere String schaltet apiHoleComputeToken auf genau diesen Weg um.
+		codeValue := ""
 		modelDirValue := strings.TrimSpace(modelDir.Text)
 		go func() {
 			freshHardware, err := detectGPUHardware(index, ref.Reference.RequiredTotalVramMb, ref.Reference.RequiredFreeVramMb)
@@ -1412,12 +1418,10 @@ func zeigeGPUFenster() {
 			status.SetText("API-Einstellungen sind nicht belegbar; keine lokale Aktion.")
 			return
 		}
-		// Ein TOTP-Code ist nur noetig, wenn KEIN Daemon-Token vorliegt. Ist eines da,
-		// dient es als Ausweis und das Feld darf leer bleiben (User-Vorgabe 01.08.2026).
-		// Vorher ging die Anfrage auch ohne beides raus und kam als rohes HTTP 400
-		// mit JSON-Rumpf zurueck ("code fehlt") — unlesbar und ohne Hinweis.
-		if strings.TrimSpace(code.Text) == "" && strings.TrimSpace(apiToken()) == "" {
-			status.SetText("Es liegt kein Synapse-Token vor. Bitte zuerst über \"Mit Synapse verbinden\" ein Token holen — oder hier den aktuellen 6-stelligen Code aus der Authenticator-App eintragen.")
+		// Ausweis ist das Daemon-Token. Fehlt es, kann hier nichts eingerichtet
+		// werden — die Anfrage braucht dann gar nicht erst rauszugehen.
+		if strings.TrimSpace(apiToken()) == "" {
+			status.SetText("Es liegt kein Synapse-Token vor. Bitte zuerst über \"Mit Synapse verbinden\" ein Token holen.")
 			return
 		}
 		index := gpuSelect.SelectedIndex()
@@ -1451,10 +1455,8 @@ func zeigeGPUFenster() {
 			return
 		}
 		go func() {
-			session, err := apiVerifyTOTP(strings.TrimSpace(code.Text))
-			if err == nil {
-				err = apiSetEmbeddingLockAsAdmin(cfg.NodeID, session, true)
-			}
+			// Sperren mit dem Daemon-Token statt mit einer TOTP-Sitzung.
+			err := apiSetEmbeddingLockMitDaemonToken(cfg.NodeID, true)
 			fyne.Do(func() {
 				if err != nil {
 					status.SetText("Sperren fehlgeschlagen: " + err.Error())
@@ -1512,8 +1514,7 @@ func zeigeGPUFenster() {
 	fenster.SetContent(container.NewVBox(status, details,
 		widget.NewLabel("GPU-Auswahl"), gpuSelect, pruefButton,
 		widget.NewLabel("Modell-Zielpfad (vor Download prüfen)"), modelDir,
-		widget.NewLabel("TOTP-Code aus der Authenticator-App — einmalig für die Einrichtung, danach nur zum Sperren/Entsperren"),
-		code, container.NewHBox(useButton, lockButton)))
+		container.NewHBox(useButton, lockButton)))
 	fenster.Resize(fyne.NewSize(820, 760))
 	fenster.Show()
 }
