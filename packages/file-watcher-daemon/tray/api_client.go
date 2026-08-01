@@ -597,7 +597,15 @@ func apiFetchOwnEmbeddingNode(nodeID, issuer, computeToken string) (apiEmbedding
 func apiHoleComputeToken(code, nodeID string) (apiServiceTokenResponse, error) {
 	var r apiServiceTokenResponse
 	body := map[string]string{"code": code, "label": nodeID, "node_id": nodeID}
-	err := apiPinnedRequest(http.MethodPost, apiDefaultTunnel, "/api/auth/service-token", body, "", &r)
+	// Ohne TOTP-Code dient das vorhandene Daemon-Token als Ausweis (User-Vorgabe
+	// 01.08.2026: derselbe Rechner soll sich nicht zweimal authentifizieren).
+	// Der Server nimmt es nur an, wenn sein scope 'daemon' bzw. 'daemon:*' ist;
+	// ein compute-node-Token kann damit keine weiteren Knoten ausstellen.
+	ausweis := ""
+	if strings.TrimSpace(code) == "" {
+		ausweis = apiToken()
+	}
+	err := apiPinnedRequest(http.MethodPost, apiDefaultTunnel, "/api/auth/service-token", body, ausweis, &r)
 	if err != nil {
 		return r, err
 	}

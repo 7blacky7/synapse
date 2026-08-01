@@ -24,6 +24,9 @@ const (
 	gpuRequiredFreeMB  = 7300
 	gpuOllamaHost      = "127.0.0.1:11435"
 	gpuOllamaURL       = "http://" + gpuOllamaHost
+	// Standard-Ollama des Nutzers. Wird NUR gelesen, nie gesteuert: liegt das Modell
+	// dort bereits mit passendem Digest, waere ein erneuter 4,7-GB-Pull sinnlos.
+	standardOllamaURL = "http://127.0.0.1:11434"
 )
 
 type gpuHardware struct {
@@ -234,9 +237,11 @@ func defaultGPUNodeID() string {
 		hex.EncodeToString(raw[10:16]))
 }
 
-func localOllamaTag(model string) (*ollamaTag, error) {
+// ollamaTagVon fragt genau EINE Ollama-Instanz nach einem Modell.
+// Rueckgabe (nil, nil) heisst: Instanz antwortet, kennt das Modell aber nicht.
+func ollamaTagVon(baseURL, model string) (*ollamaTag, error) {
 	client := &http.Client{Timeout: 3 * time.Second}
-	resp, err := client.Get(gpuOllamaURL + "/api/tags")
+	resp, err := client.Get(baseURL + "/api/tags")
 	if err != nil {
 		return nil, err
 	}
@@ -250,6 +255,38 @@ func localOllamaTag(model string) (*ollamaTag, error) {
 	for i := range p.Models {
 		if p.Models[i].Name == model || p.Models[i].Model == model {
 			return &p.Models[i], nil
+		}
+	}
+	return nil, nil
+}
+
+// localOllamaTag sucht das Modell zuerst in der dedizierten Instanz (Port 11435,
+// an Modellverzeichnis und GPU gebunden) und danach im Standard-Ollama des
+// Nutzers (Port 11434).
+//
+// WARUM DER ZWEITE BLICK: gemessen am 01.08.2026 lag qwen3-embedding:8b mit dem
+// IDENTISCHEN Digest (64b93349...) auf 127.0.0.1:11434, waehrend auf 11435 nichts
+// lief. Der Tray meldete daraufhin "nicht vorhanden" und haette 4,7 GB erneut
+// geladen, die bereits auf der Platte lagen.
+// Der Fund im Standard-Ollama ist KEINE Freigabe: das Digest-Gate entscheidet
+// weiterhin allein ueber die Verwendbarkeit, und die Ownership bleibt an die
+// dedizierte Instanz gebunden. Es geht ausschliesslich darum, Vorhandenes nicht
+// als fehlend auszugeben.
+func localOllamaTag(model string) (*ollamaTag, error) {
+	tag, err := ollamaTagVon(gpuOllamaURL, model)
+	if err == nil && tag != nil {
+		return tag, nil
+	}
+	ersterFehler := err
+	if tag2, err2 := ollamaTagVon(standardOllamaURL, model); err2 == nil && tag2 != nil {
+		return tag2, nil
+	}
+	// Nichts gefunden. Ein Fehler der dedizierten Instanz wird nur dann gemeldet,
+	// wenn auch das Standard-Ollama nichts beitragen konnte — sonst waere "Port
+	// 11435 antwortet nicht" eine irrefuehrende Fehlermeldung fuer den Normalfall.
+	if ersterFehler != nil {
+		if _, err2 := ollamaTagVon(standardOllamaURL, model); err2 != nil {
+			return nil, ersterFehler
 		}
 	}
 	return nil, nil

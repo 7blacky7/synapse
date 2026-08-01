@@ -1254,14 +1254,23 @@ func zeigeGPUFenster() {
 	fenster := myApp.NewWindow("Lokale GPU / Ollama")
 	status := widget.NewLabel("API-Einstellungen werden geladen …")
 	status.Wrapping = fyne.TextWrapWord
-	details := widget.NewMultiLineEntry()
-	details.Disable()
+	// Vergleichstext als LABEL, nicht als deaktiviertes Eingabefeld: ein
+	// disabled Entry wird von Fyne ausgegraut und ist auf dunklem Grund kaum zu
+	// lesen — ausgerechnet fuer die beiden 64-stelligen Digests, um die es hier
+	// geht. Ein Label nimmt ausserdem die Hoehe, die der Inhalt braucht, statt
+	// drei Zeilen mit Rollbalken zu zeigen.
+	details := widget.NewLabel("")
 	details.Wrapping = fyne.TextWrapWord
+	details.TextStyle = fyne.TextStyle{Monospace: true}
 	code := widget.NewPasswordEntry()
 	code.SetPlaceHolder("Aktueller 6-stelliger TOTP-Code")
 	home, _ := os.UserHomeDir()
 	modelDir := widget.NewEntry()
-	modelDir.SetText(filepath.Join(home, ".synapse", "file-watcher", "ollama-models"))
+	// Standard-Modellverzeichnis von Ollama als Vorgabe: liegt das Modell dort schon,
+	// findet die dedizierte Instanz die Blobs sofort und laedt nichts nach.
+	// Ein eigenes Verzeichnis unter .synapse haette am 01.08.2026 einen 4,7-GB-Pull
+	// ausgeloest, obwohl die Datei mit identischem Digest bereits vorhanden war.
+	modelDir.SetText(filepath.Join(home, ".ollama", "models"))
 	gpuSelect := widget.NewSelect([]string{"GPU 0"}, nil)
 	gpuSelect.SetSelectedIndex(0)
 
@@ -1279,8 +1288,19 @@ func zeigeGPUFenster() {
 		for i, h := range all {
 			options = append(options, fmt.Sprintf("GPU %d: %s — %d MB gesamt / %d MB frei", i, h.Name, h.TotalMB, h.FreeMB))
 		}
+		// HIER STAND gpuComparisonText(ref, nil, nil): weder das lokal installierte
+		// Modell noch die Hardware wurden uebergeben, obwohl beides in dieser
+		// Funktion bereits vorliegt bzw. mit einem Aufruf zu haben ist. Die Anzeige
+		// meldete deshalb "Lokales Modell: (nicht vorhanden)" und "Hardware: noch
+		// nicht geprueft", waehrend qwen3-embedding:8b mit identischem Digest auf
+		// dem Standard-Ollama lag (gemessen 01.08.2026).
+		lokal, _ := localOllamaTag(ref.Reference.Model)
+		var erste *gpuHardware
+		if len(all) > 0 {
+			erste = &all[0]
+		}
 		fyne.Do(func() {
-			details.SetText(gpuComparisonText(ref, nil, nil))
+			details.SetText(gpuComparisonText(ref, lokal, erste))
 			if hardwareErr != nil || len(options) == 0 {
 				gpuSelect.Options = []string{"Keine messbare NVIDIA-GPU"}
 				gpuSelect.SetSelectedIndex(0)
@@ -1392,6 +1412,14 @@ func zeigeGPUFenster() {
 			status.SetText("API-Einstellungen sind nicht belegbar; keine lokale Aktion.")
 			return
 		}
+		// Ein TOTP-Code ist nur noetig, wenn KEIN Daemon-Token vorliegt. Ist eines da,
+		// dient es als Ausweis und das Feld darf leer bleiben (User-Vorgabe 01.08.2026).
+		// Vorher ging die Anfrage auch ohne beides raus und kam als rohes HTTP 400
+		// mit JSON-Rumpf zurueck ("code fehlt") — unlesbar und ohne Hinweis.
+		if strings.TrimSpace(code.Text) == "" && strings.TrimSpace(apiToken()) == "" {
+			status.SetText("Es liegt kein Synapse-Token vor. Bitte zuerst über \"Mit Synapse verbinden\" ein Token holen — oder hier den aktuellen 6-stelligen Code aus der Authenticator-App eintragen.")
+			return
+		}
 		index := gpuSelect.SelectedIndex()
 		h, err := detectGPUHardware(index, ref.Reference.RequiredTotalVramMb, ref.Reference.RequiredFreeVramMb)
 		if err != nil {
@@ -1436,11 +1464,57 @@ func zeigeGPUFenster() {
 			})
 		}()
 	})
+	// Nachmessen auf Knopfdruck: Hardware und lokales Modell koennen sich
+	// jederzeit aendern (anderes Modell geladen, Spiel belegt VRAM). Ohne diesen
+	// Knopf muesste man das Fenster schliessen und neu oeffnen, um einen
+	// aktuellen Stand zu sehen.
+	pruefButton := widget.NewButton("Hardware und Modell neu prüfen", func() {
+		status.SetText("Messe Hardware und lokales Modell …")
+		go func() {
+			all, hardwareErr := detectAllGPUHardware()
+			var lokal *ollamaTag
+			if refOK {
+				lokal, _ = localOllamaTag(ref.Reference.Model)
+			}
+			options := make([]string, 0, len(all))
+			for i, h := range all {
+				options = append(options, fmt.Sprintf("GPU %d: %s — %d MB gesamt / %d MB frei", i, h.Name, h.TotalMB, h.FreeMB))
+			}
+			gewaehlt := gpuSelect.SelectedIndex()
+			fyne.Do(func() {
+				if hardwareErr != nil || len(options) == 0 {
+					status.SetText("Hardware nicht messbar: " + fmt.Sprint(hardwareErr))
+					if refOK {
+						details.SetText(gpuComparisonText(ref, lokal, nil))
+					}
+					return
+				}
+				gpuSelect.Options = options
+				if gewaehlt >= 0 && gewaehlt < len(options) {
+					gpuSelect.SetSelectedIndex(gewaehlt)
+				} else {
+					gpuSelect.SetSelectedIndex(0)
+				}
+				gpuSelect.Enable()
+				idx := gpuSelect.SelectedIndex()
+				if idx < 0 || idx >= len(all) {
+					idx = 0
+				}
+				if refOK {
+					details.SetText(gpuComparisonText(ref, lokal, &all[idx]))
+				}
+				status.SetText(fmt.Sprintf("Neu gemessen: %d GPU(s), lokales Modell %s.", len(all),
+					map[bool]string{true: "gefunden", false: "nicht gefunden"}[lokal != nil]))
+			})
+		}()
+	})
+
 	fenster.SetContent(container.NewVBox(status, details,
-		widget.NewLabel("GPU-Auswahl"), gpuSelect,
+		widget.NewLabel("GPU-Auswahl"), gpuSelect, pruefButton,
 		widget.NewLabel("Modell-Zielpfad (vor Download prüfen)"), modelDir,
+		widget.NewLabel("TOTP-Code aus der Authenticator-App — einmalig für die Einrichtung, danach nur zum Sperren/Entsperren"),
 		code, container.NewHBox(useButton, lockButton)))
-	fenster.Resize(fyne.NewSize(720, 680))
+	fenster.Resize(fyne.NewSize(820, 760))
 	fenster.Show()
 }
 

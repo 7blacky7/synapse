@@ -254,19 +254,51 @@ export async function authRoutes(fastify: FastifyInstance): Promise<void> {
     '/api/auth/service-token',
     async (request, reply) => {
       const code = (request.body?.code ?? '').toString().trim();
+
+      // ZWEITER AUSWEIS NEBEN DEM TOTP (User-Vorgabe 01.08.2026):
+      // Ein bereits ausgestelltes, GUELTIGES Service-Token darf ein weiteres
+      // ausloesen. Sonst muesste derselbe Rechner ein zweites Mal
+      // authentifiziert werden, nur weil der neue scope anders heisst
+      // (daemon:<label> -> compute-node:<id>).
+      // BEGRUENDUNG DES USERS: das Token liegt ohnehin nur auf seinem Rechner;
+      // wer dort Zugriff hat, kommt an alles.
+      // ⚠️ GRENZE, bewusst gezogen: nur ein Token mit scope 'daemon' bzw.
+      // 'daemon:*' taugt als Ausweis. Ein compute-node-Token darf KEINE
+      // weiteren Tokens ausstellen — sonst koennte sich ein einzelner Knoten
+      // beliebig viele fremde Knoten-Identitaeten verschaffen, und die Bindung
+      // aus GPU-1 (Test crossNode=403) waere umgehbar.
+      let ausweisScope: string | null = null;
       if (!code) {
-        return reply.code(400).send({
-          success: false,
-          error: { code: 'invalid_request', message: 'code fehlt' },
-        });
+        const auth = request.headers['authorization'];
+        const m = typeof auth === 'string' ? /^Bearer\s+(.+)$/i.exec(auth.trim()) : null;
+        if (m) {
+          const row = await validateToken(m[1].trim());
+          const vorhandenerScope = (row?.scope ?? '').toString();
+          if (row && (vorhandenerScope === 'daemon' || vorhandenerScope.startsWith('daemon:'))) {
+            ausweisScope = vorhandenerScope;
+          }
+        }
+        if (!ausweisScope) {
+          return reply.code(400).send({
+            success: false,
+            error: {
+              code: 'invalid_request',
+              message:
+                'Weder ein TOTP-Code noch ein gueltiges Daemon-Token vorhanden. ' +
+                'Entweder code mitschicken oder mit dem bestehenden Service-Token als Bearer aufrufen.',
+            },
+          });
+        }
       }
 
-      const valid = await verifyTotp(code);
-      if (!valid) {
-        return reply.code(401).send({
-          success: false,
-          error: { code: 'invalid_code', message: 'TOTP-Code ungueltig' },
-        });
+      if (code) {
+        const valid = await verifyTotp(code);
+        if (!valid) {
+          return reply.code(401).send({
+            success: false,
+            error: { code: 'invalid_code', message: 'TOTP-Code ungueltig' },
+          });
+        }
       }
 
       // Label nur als Erkennungshilfe — auf harmlose Zeichen begrenzen, damit
