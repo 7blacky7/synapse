@@ -33,6 +33,20 @@ import {
 } from '@synapse/core';
 import { listEmbeddingNodes } from './embedding-nodes.js';
 
+/**
+ * Gibt einen selbst gehaltenen Claim frei. Wirkt nur auf die Claim-Spalten und
+ * nur solange der Chunk nicht fertig ist; das claim_token verhindert, dass ein
+ * Nachzuegler den Claim eines anderen Knotens aufhebt.
+ */
+async function gibClaimFrei(chunkId: string, claimToken: string): Promise<void> {
+  await getPool().query(
+    `UPDATE code_chunks
+        SET claimed_by = NULL, claim_token = NULL, lease_until = NULL
+      WHERE id = $1 AND claim_token = $2 AND embedded_at IS NULL`,
+    [chunkId, claimToken],
+  );
+}
+
 export interface ParserWorkerConfig {
   intervalMs?: number;       // default 30_000
   maxPerTick?: number;       // max Projekte pro Tick (Default 20, schuetzt vor Spitzenlast)
@@ -42,6 +56,23 @@ const DEFAULTS = {
   intervalMs: 30_000,
   maxPerTick: 20,
 };
+
+/**
+ * Wie viele Chunks der Server GLEICHZEITIG selbst einbettet.
+ *
+ * Zwei Werte, weil es zwei verschiedene Lagen sind: arbeitet ein externer
+ * GPU-Knoten mit, soll der Server nur mitschieben und den interaktiven
+ * Anfragen nicht beide Slots der Embedding-Queue wegnehmen. Ist er allein,
+ * darf er sich ausbreiten.
+ * 0 schaltet die Mitarbeit des Servers ganz ab.
+ */
+function envGanzzahl(name: string, ersatz: number): number {
+  const wert = Number(process.env[name]);
+  return Number.isInteger(wert) && wert >= 0 ? wert : ersatz;
+}
+
+const PARALLEL_GETEILT = envGanzzahl('SYNAPSE_SERVER_EMBED_PARALLEL_SHARED', 1);
+const PARALLEL_ALLEIN = envGanzzahl('SYNAPSE_SERVER_EMBED_PARALLEL_SOLO', 2);
 
 const sleep = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));
@@ -53,6 +84,8 @@ export class ParserWorker {
   private stopped = false;
   private ticksDone = 0;
   private filesDone = 0;
+  private chunksEmbedded = 0;
+  private leerlaufZyklen = 0;
 
   constructor(cfg: ParserWorkerConfig = {}) {
     this.cfg = { ...DEFAULTS, ...cfg } as Required<ParserWorkerConfig>;
@@ -67,7 +100,7 @@ export class ParserWorker {
     // Erster Tick gleich nach 2s (nicht beim Boot, damit Schema/Init durch sind).
     setTimeout(() => this.fire(), 2_000);
     this.timer = setInterval(() => this.fire(), this.cfg.intervalMs);
-    void this.embeddingFallbackLoop();
+    void this.embeddingLoop();
   }
 
   shutdown(): void {
@@ -75,8 +108,13 @@ export class ParserWorker {
     if (this.timer) { clearInterval(this.timer); this.timer = null; }
   }
 
-  getStats(): { ticksDone: number; filesDone: number; running: boolean } {
-    return { ticksDone: this.ticksDone, filesDone: this.filesDone, running: this.running };
+  getStats(): { ticksDone: number; filesDone: number; chunksEmbedded: number; running: boolean } {
+    return {
+      ticksDone: this.ticksDone,
+      filesDone: this.filesDone,
+      chunksEmbedded: this.chunksEmbedded,
+      running: this.running,
+    };
   }
 
   private fire(): void {
@@ -87,39 +125,76 @@ export class ParserWorker {
       .finally(() => { this.running = false; });
   }
 
-  private async embeddingFallbackLoop(): Promise<void> {
+  /**
+   * Der Server als MITARBEITER, nicht als Ersatzmann.
+   *
+   * ⚠️ BIS ZUM 01.08.2026 STAND HIER EIN AUSSTIEG: sobald irgendein externer
+   * Knoten usable war, hat der Server das Embedding KOMPLETT eingestellt und
+   * nur noch geschlafen. Das war keine Aufteilung, sondern eine Umschaltung —
+   * es rechnete dann immer genau eine GPU, waehrend das Ollama der anderen
+   * Seite unbenutzt danebenstand. Gemessen am 01.08.2026: bei totem lokalen
+   * Agenten arbeitete ausschliesslich der Server (5 Chunks/min), bei lebendem
+   * ausschliesslich der Agent.
+   *
+   * Jetzt claimt der Server dauerhaft mit, nur gedrosselt: mit fremder Hilfe
+   * PARALLEL_GETEILT, allein PARALLEL_ALLEIN. Die Drosselung ist noetig, weil
+   * EMBED_MAX_CONCURRENT im Server-Prozess auch die interaktiven Anfragen
+   * bedient — der Bulk darf ihm nicht beide Slots wegnehmen.
+   */
+  private async embeddingLoop(): Promise<void> {
     while (!this.stopped) {
       try {
-        const externalUsable = (await listEmbeddingNodes(getPool())).some((node) => node.usable);
-        if (externalUsable) {
-          await sleep(2_000);
+        const externeAktiv = (await listEmbeddingNodes(getPool())).some((node) => node.usable);
+        const parallel = externeAktiv ? PARALLEL_GETEILT : PARALLEL_ALLEIN;
+        if (parallel === 0) {
+          await sleep(5_000);
           continue;
         }
 
         const claims = await claimEmbeddingChunks('unraid-local', {
-          limit: 1,
-          maxConcurrent: 1,
+          limit: parallel,
+          maxConcurrent: parallel,
           leaseSeconds: 900,
         });
-        const claim = claims[0];
-        if (!claim) {
-          await sleep(1_000);
+
+        if (claims.length === 0) {
+          // Leerlauf ist der NORMALFALL, nicht die Ausnahme: sind alle Projekte
+          // fertig oder deaktiviert, gibt es dauerhaft nichts zu holen. Ohne
+          // Backoff fragt der Server dann jede Sekunde eine Transaktion mit
+          // advisory_lock an, rund um die Uhr. Zurueck auf 1 s, sobald wieder
+          // Arbeit da ist.
+          this.leerlaufZyklen = Math.min(this.leerlaufZyklen + 1, 30);
+          await sleep(1_000 * this.leerlaufZyklen);
           continue;
         }
+        this.leerlaufZyklen = 0;
 
-        const [vector] = await embedBatch([claim.content], {
-          priority: 'background',
-          strictOllama: true,
-        });
-        await completeEmbeddingClaim({
-          nodeId: 'unraid-local',
-          chunkId: claim.chunkId,
-          claimToken: claim.claimToken,
-          contentHash: claim.contentHash,
-          vector,
-        });
+        await Promise.all(claims.map(async (claim) => {
+          try {
+            const [vector] = await embedBatch([claim.content], {
+              priority: 'background',
+              strictOllama: true,
+            });
+            await completeEmbeddingClaim({
+              nodeId: 'unraid-local',
+              chunkId: claim.chunkId,
+              claimToken: claim.claimToken,
+              contentHash: claim.contentHash,
+              vector,
+            });
+            this.chunksEmbedded++;
+          } catch (err) {
+            // EIGENEN CLAIM SOFORT FREIGEBEN statt ihn 15 Minuten lang ablaufen
+            // zu lassen. Ein liegengebliebener Claim sieht im Betrieb aus wie
+            // ein haengender Knoten und blockiert den Chunk fuer alle anderen.
+            await gibClaimFrei(claim.chunkId, claim.claimToken).catch(() => undefined);
+            console.error(
+              `[parser-worker] Chunk ${claim.chunkId} fehlgeschlagen, Claim freigegeben: ${(err as Error).message}`
+            );
+          }
+        }));
       } catch (err) {
-        console.error(`[parser-worker] lokaler Embedding-Fallback fehlgeschlagen: ${(err as Error).message}`);
+        console.error(`[parser-worker] Embedding-Schleife fehlgeschlagen: ${(err as Error).message}`);
         await sleep(2_000);
       }
     }

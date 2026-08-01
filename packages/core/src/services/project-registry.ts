@@ -128,10 +128,31 @@ export async function isProjectEnabled(name: string): Promise<boolean> {
  * Der Parser-Worker (rest-api) verarbeitet nur Projekte mit enabled=true —
  * so wirkt der Tray/Daemon-Deaktiviert-Schalter auch server-seitig.
  */
-export async function setProjectEnabled(name: string, enabled: boolean): Promise<void> {
+export async function setProjectEnabled(name: string, enabled: boolean): Promise<number> {
   const pool = getPool();
   await pool.query(
     `UPDATE projects SET enabled = $2 WHERE name = $1`,
     [name, enabled]
   );
+  if (enabled) return 0;
+
+  // ⚠️ BEIM DEAKTIVIEREN DIE OFFENEN CLAIMS FREIGEBEN, NICHT EINFRIEREN.
+  // Ein Claim reserviert einen Chunk fuer genau einen Knoten. Wird das Projekt
+  // deaktiviert, hoert die Arbeit daran auf — aber die Reservierung blieb bisher
+  // stehen, und der Claim-SELECT ueberspringt deaktivierte Projekte. Der Chunk
+  // war damit fuer niemanden mehr erreichbar und sah im Betrieb aus wie ein
+  // haengender Knoten (gemessen am 01.08.2026: 152 Claims von unraid-local,
+  // 0 davon abgelaufen, ueber Stunden unveraendert).
+  // Die Freigabe kostet nichts: sie betrifft ausschliesslich die Claim-Spalten,
+  // keine Vektoren und keine Inhalte. Ein Knoten, der gerade an einem dieser
+  // Chunks rechnet, wird beim Abschluss abgewiesen (claim_token passt nicht mehr)
+  // und holt sich den naechsten — genau das gewuenschte Verhalten, denn seine
+  // Arbeit gilt einem Projekt, das der Nutzer eben angehalten hat.
+  const freigabe = await pool.query(
+    `UPDATE code_chunks
+        SET claimed_by = NULL, claim_token = NULL, lease_until = NULL
+      WHERE project = $1 AND embedded_at IS NULL AND claimed_by IS NOT NULL`,
+    [name]
+  );
+  return freigabe.rowCount ?? 0;
 }

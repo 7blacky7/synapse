@@ -1756,12 +1756,14 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
           const project = str(args, 'project') ?? str(args, 'name');
           if (!project) return { success: false, error: 'project erforderlich' };
           const enabled = action === 'enable';
-          await setProjectEnabled(project, enabled);
+          const freigegebeneClaims = await setProjectEnabled(project, enabled);
           return {
             success: true,
             project,
             enabled,
-            message: `Projekt "${project}" ${enabled ? 'aktiviert' : 'deaktiviert'} (PG = Source of Truth). Parser-Worker folgt sofort, FileWatcher-Daemon beim naechsten Sync.`,
+            freigegebene_claims: freigegebeneClaims,
+            message: `Projekt "${project}" ${enabled ? 'aktiviert' : 'deaktiviert'} (PG = Source of Truth). Parser-Worker folgt sofort, FileWatcher-Daemon beim naechsten Sync.`
+              + (freigegebeneClaims > 0 ? ` ${freigegebeneClaims} offene Claims freigegeben.` : ''),
           };
         }
         default:
