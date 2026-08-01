@@ -24,6 +24,7 @@
 
 import { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { getPool } from '@synapse/core';
+import { validateNodeId } from '../services/embedding-nodes.js';
 import {
   isTotpConfirmed,
   buildOtpauthUri,
@@ -31,6 +32,7 @@ import {
   confirmTotp,
   verifyTotp,
   issueSessionToken,
+  issueServiceToken,
   validateToken,
   revokeToken,
   listTokens,
@@ -248,7 +250,7 @@ export async function authRoutes(fastify: FastifyInstance): Promise<void> {
    * jederzeit einsehen und per DELETE /api/auth/sessions/:id widerrufen —
    * darum eine feste Laufzeit statt "unbegrenzt".
    */
-  fastify.post<{ Body: { code?: string; label?: string } }>(
+  fastify.post<{ Body: { code?: string; label?: string; node_id?: string } }>(
     '/api/auth/service-token',
     async (request, reply) => {
       const code = (request.body?.code ?? '').toString().trim();
@@ -271,9 +273,18 @@ export async function authRoutes(fastify: FastifyInstance): Promise<void> {
       // die Session-Liste lesbar bleibt.
       const rawLabel = (request.body?.label ?? '').toString().trim();
       const label = rawLabel.replace(/[^\w.-]/g, '').slice(0, 40);
-      const scope = label ? `daemon:${label}` : 'daemon';
+      const rawNodeId = (request.body?.node_id ?? '').toString().trim();
+      if (rawNodeId && !validateNodeId(rawNodeId)) {
+        return reply.code(400).send({
+          success: false,
+          error: { code: 'invalid_node_id', message: 'node_id ist ungueltig' },
+        });
+      }
+      const scope = rawNodeId
+        ? `compute-node:${rawNodeId}`
+        : (label ? `daemon:${label}` : 'daemon');
 
-      const issued = await issueSessionToken(scope, SERVICE_TOKEN_TTL_MS);
+      const issued = await issueServiceToken(scope, label || rawNodeId || null, SERVICE_TOKEN_TTL_MS);
 
       return reply.send({
         success: true,

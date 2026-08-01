@@ -1,0 +1,19 @@
+{
+  "name": "@synapse/compute-node-agent",
+  "version": "0.1.0",
+  "description": "HTTP-only Ollama compute-node registry agent",
+  "type": "module",
+  "main": "./dist/index.js",
+  "bin": { "synapse-compute-node": "./dist/index.js" },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "clean": "rimraf dist"
+  },
+  "dependencies": {
+    "@synapse/core": "workspace:*",
+    "dotenv": "^16.3.1"
+  },
+  "devDependencies": {},
+  "files": ["dist"]
+}

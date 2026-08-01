@@ -33,6 +33,7 @@ import {
   trayRoutes,
   authRoutes,
   graphRoutes,
+  embeddingNodeRoutes,
 } from './routes/index.js';
 
 /**
@@ -86,6 +87,8 @@ export async function createServer(): Promise<FastifyInstance> {
   // Tray-Routen (TRAY-1): read-only Endpunkte fuer den Go-Tray. Ersetzen dessen
   // eigene PG-Verbindung mit hartcodierter IP (tray.go:309). Hinter Auth-Hook (AUTH-4).
   await fastify.register(trayRoutes);
+  // GPU-1: Registry/Heartbeat externer Ollama-Compute-Knoten.
+  await fastify.register(embeddingNodeRoutes);
 
   // Graph-View (PLAN-003 / GRAPH-1): /api/graph/* — Aggregationen direkt aus
   // @synapse/core (PG + Qdrant), kein HTTP-Loopback. Hinter Auth-Hook (AUTH-4).

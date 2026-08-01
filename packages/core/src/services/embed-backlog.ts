@@ -98,7 +98,7 @@ export async function embeddeOffeneEintraege(
       ergebnis.geprueft++;
       uebrig--;
       try {
-        await tabelle.nachtrag(row.project, row.id);
+        await tabelle.nachtrag(row.project, row.id, { priority: 'background' });
         ergebnis.nachgetragen++;
       } catch (err) {
         // Nicht abbrechen: ein kaputter Eintrag darf den Rest des Rueckstands nicht blockieren.

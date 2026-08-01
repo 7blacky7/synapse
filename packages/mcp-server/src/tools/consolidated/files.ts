@@ -33,6 +33,7 @@ import {
   embeddingPendingHint,
   pruefeUndBereiteSchreibenVor,
   markiereEinzelneDateiIgnoriert,
+  holeSprachSkillVorschlaege,
 } from '@synapse/core';
 import type { BatchEdit, FileBatchOp } from '@synapse/core';
 
@@ -301,9 +302,19 @@ export const filesTool: ConsolidatedTool = {
         }
         return { ...c, plan: result, auto_committed: false, message: `Plan ${result.plan_id} angelegt, auto-commit fehlgeschlagen — Plan offen, kann manuell committet oder cancelt werden.` };
       }
+      const skillHook = args.auto_commit === true
+        ? null
+        : await holeSprachSkillVorschlaege(agentId, (opsRaw as FileBatchOp[]).map((op) => op.file_path));
       return {
         success: true,
         ...result,
+        ...(skillHook
+          ? {
+              skill_suggestions: skillHook.suggestions,
+              skill_hook_metrics: skillHook.metrics,
+              skill_hook_skipped_due_to_load: skillHook.skipped_due_to_load,
+            }
+          : {}),
         message: `Plan ${result.plan_id} angelegt: ${result.total_ops} Op(s) ueber ${result.files_touched.length} Datei(en). commit mit files(action: "commit", plan_id: "${result.plan_id}") oder cancel mit "cancel". Laeuft ab um ${result.expires_at}.`,
       };
     }

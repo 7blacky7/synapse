@@ -22,3 +22,4 @@ export { authRoutes } from './auth.js';
 export { workspaceRoutes } from './workspaces.js';
 export { trayRoutes } from './tray.js';
 export { graphRoutes } from './graph.js';
+export { embeddingNodeRoutes } from './embedding-nodes.js';

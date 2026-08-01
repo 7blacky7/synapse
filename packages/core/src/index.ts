@@ -51,6 +51,8 @@ export {
   getEmbeddingDimension,
   embed,
   embedBatch,
+  getEmbeddingQueueStats,
+  EmbeddingQueueFullError,
   embedMedia,
   supportsMultimodal,
   resetEmbeddingProvider,
@@ -60,7 +62,12 @@ export {
   GoogleEmbeddingProvider,
   CohereEmbeddingProvider,
 } from './embeddings/index.js';
-export type { EmbeddingProvider } from './embeddings/index.js';
+export type {
+  EmbeddingProvider,
+  EmbedOptions,
+  EmbedPriority,
+  EmbeddingQueueStats,
+} from './embeddings/index.js';
 
 // FileWatcher
 export {
@@ -95,6 +102,7 @@ export {
   toAbsolutePath,
   registerVirtualProject,
   setProjectEnabled,
+  isProjectEnabled,
   getProjectRegistryRows,
 } from './services/project-registry.js';
 export type { ProjectRegistryRow } from './services/project-registry.js';
@@ -140,6 +148,20 @@ export {
   EMBED_PENDING_HINT,
 } from './services/embed-backlog.js';
 export type { BacklogErgebnis } from './services/embed-backlog.js';
+
+// GPU-2: verteilte Code-Chunk Pull-Claims (API und lokaler Unraid-Fallback).
+export {
+  claimEmbeddingChunks,
+  completeEmbeddingClaim,
+  validateEmbeddingVector,
+} from './services/embedding-claims.js';
+export type {
+  EmbeddingChunkClaim,
+  CompleteEmbeddingClaimInput,
+  CompleteEmbeddingClaimResult,
+  ClaimOptions,
+} from './services/embedding-claims.js';
+export { deterministicChunkPointId, embeddingContentHash } from './services/embedding-chunk-id.js';
 
 export {
   // Code
@@ -417,6 +439,10 @@ export {
 } from './services/project-init-queue.js';
 export type { ProjectInitJobRow, ProjectInitStatus, ProjectInitCompletion } from './services/project-init-queue.js';
 
+// Serverseitige Skill-Hooks (HOOK-3)
+export { holeSprachSkillVorschlaege, waehleSprachSkills } from './services/skill-hook.js';
+export type { SkillVorschlag, SkillHookMetriken, SkillHookErgebnis } from './services/skill-hook.js';
+
 // Multi-File Edit-Plans (Schritt 2)
 export {
   planBatch,
@@ -537,7 +563,7 @@ async function migrateCollection(
     try {
       const text = getEmbeddingTextField(collectionName, point.payload);
       if (!text) { failed++; continue; }
-      const vector = await embed(text);
+      const vector = await embed(text, { priority: 'background' });
       await insertVector(collectionName, vector, point.payload, point.id);
       migrated++;
       if (migrated % 25 === 0) {

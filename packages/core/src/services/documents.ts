@@ -243,7 +243,7 @@ export async function indexDocument(
 
     // Embeddings erstellen
     const chunkTexts = chunks.map(c => c.content);
-    const embeddings = await embedBatch(chunkTexts);
+    const embeddings = await embedBatch(chunkTexts, { priority: 'background' });
 
     // Vektoren vorbereiten
     const vectors = chunks.map((chunk, index) => ({

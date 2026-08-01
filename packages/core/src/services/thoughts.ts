@@ -49,6 +49,7 @@ import {
   getVectors,
 } from '../qdrant/index.js';
 import { embed } from '../embeddings/index.js';
+import type { EmbedOptions } from '../embeddings/index.js';
 import { getPool } from '../db/client.js';
 import { updateTask } from './plans.js';
 import type { ProjectTask } from '../types/index.js';
@@ -485,7 +486,11 @@ export async function getThoughtsByIds(
  * Nachreichen kann der Gedanke aktualisiert worden sein; dann soll der NEUE Stand embedded
  * werden, nicht der alte.
  */
-export async function embeddeThoughtNach(project: string, id: string): Promise<void> {
+export async function embeddeThoughtNach(
+  project: string,
+  id: string,
+  embedOptions: EmbedOptions = {},
+): Promise<void> {
   const pool = getPool();
 
   // ⚠️ thoughts IST ANDERS GEBAUT als memories und proposals: es gibt KEIN created_at und
@@ -503,7 +508,7 @@ export async function embeddeThoughtNach(project: string, id: string): Promise<v
   const collectionName = COLLECTIONS.projectThoughts(project);
   await ensureCollection(collectionName);
 
-  const vector = await embed(row.content);
+  const vector = await embed(row.content, embedOptions);
   const payload: ThoughtPayload = {
     project,
     source: row.source,

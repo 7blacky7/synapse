@@ -162,9 +162,9 @@ export async function ensureProjectCollections(project: string): Promise<void> {
 /**
  * Erstellt eine projekt-spezifische Code-Collection
  */
-export async function ensureProjectCollection(projectName: string): Promise<string> {
+export async function ensureProjectCollection(projectName: string, vectorSize?: number): Promise<string> {
   const collectionName = COLLECTIONS.projectCode(projectName);
-  await ensureCollection(collectionName);
+  await ensureCollection(collectionName, vectorSize);
   return collectionName;
 }
 

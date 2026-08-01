@@ -109,13 +109,26 @@ function createProvider(name: string, config: SynapseConfig): EmbeddingProvider 
  * Gibt den konfigurierten Embedding Provider zurueck
  * Versucht Fallback auf OpenAI wenn Ollama nicht erreichbar
  */
-export async function getEmbeddingProvider(): Promise<EmbeddingProvider> {
+export interface GetEmbeddingProviderOptions {
+  /** Compute-Nodes duerfen niemals auf einen externen Provider ausweichen. */
+  strictOllama?: boolean;
+}
+
+export async function getEmbeddingProvider(
+  options: GetEmbeddingProviderOptions = {},
+): Promise<EmbeddingProvider> {
   if (_provider) {
+    if (options.strictOllama && _provider.name !== 'ollama') {
+      throw new Error('Strict Ollama required, cached provider is not Ollama');
+    }
     return _provider;
   }
 
   const config = getConfig();
   const providerName = config.embeddings.provider;
+  if (options.strictOllama && providerName !== 'ollama') {
+    throw new Error(`Strict Ollama required, configured provider is ${providerName}`);
+  }
 
   // Ollama mit Fallback-Logik
   if (providerName === 'ollama') {
@@ -123,6 +136,10 @@ export async function getEmbeddingProvider(): Promise<EmbeddingProvider> {
     if (await ollama.testConnection()) {
       _provider = ollama;
       return _provider;
+    }
+
+    if (options.strictOllama) {
+      throw new Error('Strict Ollama required, local Ollama is unavailable');
     }
 
     console.error('[Synapse] Ollama nicht erreichbar, versuche OpenAI Fallback...');
@@ -154,68 +171,259 @@ export async function getEmbeddingProvider(): Promise<EmbeddingProvider> {
 }
 
 // ───── Globale Embedding-Queue ────────────────────────────────────────────
-// Verhindert dass parallele parseAndEmbed-Workers Google mit zig gleichzeitigen
-// Batch-Requests bombardieren → 429-Sturm. Begrenzt die Concurrency cluster-weit
-// auf MAX_CONCURRENT (Default 2) + optionale Mindest-Pause zwischen Calls.
-const MAX_CONCURRENT_EMBED = Number(process.env.EMBED_MAX_CONCURRENT ?? 2);
-const MIN_GAP_MS = Number(process.env.EMBED_MIN_GAP_MS ?? 100);
+// Interaktive Aufrufe haben Vorrang vor Parser-/Backfill-Arbeit. Ein bereits
+// laufender Provider-Call wird nie abgebrochen; die Prioritaet wirkt nur beim
+// naechsten frei werdenden Slot.
+function positiveEnvInt(name: string, fallback: number): number {
+  const value = Number(process.env[name]);
+  return Number.isInteger(value) && value > 0 ? value : fallback;
+}
+
+function nonNegativeEnvInt(name: string, fallback: number): number {
+  const value = Number(process.env[name]);
+  return Number.isFinite(value) && value >= 0 ? Math.floor(value) : fallback;
+}
+
+const MAX_CONCURRENT_EMBED = positiveEnvInt(
+  process.env.SYNAPSE_COMPUTE_NODE === '1'
+    ? 'SYNAPSE_NODE_MAX_CONCURRENCY'
+    : 'EMBED_MAX_CONCURRENT',
+  2,
+);
+const MIN_GAP_MS = nonNegativeEnvInt('EMBED_MIN_GAP_MS', 100);
+const INTERACTIVE_QUEUE_LIMIT = positiveEnvInt('EMBED_INTERACTIVE_QUEUE_LIMIT', 100);
+const BACKGROUND_QUEUE_LIMIT = positiveEnvInt('EMBED_BACKGROUND_QUEUE_LIMIT', 10_000);
+const INTERACTIVE_MAX_WAIT_MS = nonNegativeEnvInt('EMBED_INTERACTIVE_MAX_WAIT_MS', 30_000);
+const INITIAL_ESTIMATED_CALL_MS = positiveEnvInt('EMBED_ESTIMATED_CALL_MS', 1_000);
+
+export type EmbedPriority = 'interactive' | 'background';
+
+export interface EmbedOptions {
+  /** Default: interactive. Bulk-/Backfill-Pfade muessen background explizit setzen. */
+  priority?: EmbedPriority;
+  /** 0 = nur sofortiger Slot, sonst typisierter Fehler statt stillem Timeout. */
+  maxQueueWaitMs?: number;
+  /** Compute-Node: lokales Ollama erzwingen, insbesondere bei gesetztem OpenAI-Key. */
+  strictOllama?: boolean;
+}
+
+export interface EmbeddingQueueStats {
+  maxConcurrent: number;
+  active: Record<EmbedPriority, number>;
+  queued: Record<EmbedPriority, number>;
+  submitted: Record<EmbedPriority, number>;
+  started: Record<EmbedPriority, number>;
+  completed: Record<EmbedPriority, number>;
+  rejected: Record<EmbedPriority, number>;
+  currentLongestWaitMs: Record<EmbedPriority, number>;
+  longestWaitMs: Record<EmbedPriority, number>;
+  averageCallMs: number;
+}
+
+interface EmbedLease {
+  priority: EmbedPriority;
+  startedAt: number;
+}
+
+interface QueueEntry {
+  priority: EmbedPriority;
+  queuedAt: number;
+  resolve: (lease: EmbedLease) => void;
+  reject: (error: Error) => void;
+  timer?: ReturnType<typeof setTimeout>;
+}
+
+const zeroCounts = (): Record<EmbedPriority, number> => ({ interactive: 0, background: 0 });
 
 let activeEmbedCalls = 0;
 let lastEmbedFinishMs = 0;
-const embedQueue: Array<() => void> = [];
+let averageCallMs = INITIAL_ESTIMATED_CALL_MS;
+const activeByPriority = zeroCounts();
+const submittedByPriority = zeroCounts();
+const startedByPriority = zeroCounts();
+const completedByPriority = zeroCounts();
+const rejectedByPriority = zeroCounts();
+const longestWaitByPriority = zeroCounts();
+const interactiveQueue: QueueEntry[] = [];
+const backgroundQueue: QueueEntry[] = [];
+
+export class EmbeddingQueueFullError extends Error {
+  readonly code = 'EMBEDDING_QUEUE_FULL';
+
+  constructor(
+    readonly priority: EmbedPriority,
+    readonly ahead: number,
+    readonly estimatedWaitMs: number,
+  ) {
+    super(
+      `Embedding-Warteschlange voll: ${ahead} Auftraege vor dir, ` +
+        `geschaetzte Wartezeit ${Math.ceil(estimatedWaitMs / 1000)} s.`,
+    );
+    this.name = 'EmbeddingQueueFullError';
+  }
+}
 
 function sleep(ms: number): Promise<void> {
-  return new Promise((r) => setTimeout(r, ms));
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function acquireEmbedSlot(): Promise<void> {
+function queueFor(priority: EmbedPriority): QueueEntry[] {
+  return priority === 'interactive' ? interactiveQueue : backgroundQueue;
+}
+
+function jobsAhead(priority: EmbedPriority): number {
+  return activeEmbedCalls + interactiveQueue.length +
+    (priority === 'background' ? backgroundQueue.length : 0);
+}
+
+function estimateWaitMs(ahead: number): number {
+  return Math.max(1, Math.ceil(ahead / MAX_CONCURRENT_EMBED)) *
+    Math.max(MIN_GAP_MS, averageCallMs);
+}
+
+function queueFullError(
+  priority: EmbedPriority,
+  ahead = jobsAhead(priority),
+): EmbeddingQueueFullError {
+  return new EmbeddingQueueFullError(priority, ahead, Math.round(estimateWaitMs(ahead)));
+}
+
+function startLease(priority: EmbedPriority, queuedAt: number): EmbedLease {
+  const now = Date.now();
+  const waitMs = now - queuedAt;
+  activeEmbedCalls++;
+  activeByPriority[priority]++;
+  startedByPriority[priority]++;
+  longestWaitByPriority[priority] = Math.max(longestWaitByPriority[priority], waitMs);
+  return { priority, startedAt: now };
+}
+
+function dispatchNext(): void {
+  if (activeEmbedCalls >= MAX_CONCURRENT_EMBED) return;
+  const entry = interactiveQueue.shift() ?? backgroundQueue.shift();
+  if (!entry) return;
+  if (entry.timer) clearTimeout(entry.timer);
+  entry.resolve(startLease(entry.priority, entry.queuedAt));
+}
+
+function acquireEmbedSlot(options: EmbedOptions = {}): Promise<EmbedLease> {
+  const priority = options.priority ?? 'interactive';
+  submittedByPriority[priority]++;
+  const now = Date.now();
+
   if (activeEmbedCalls < MAX_CONCURRENT_EMBED) {
-    activeEmbedCalls++;
-  } else {
-    // Wartender bekommt den Slot uebertragen (release zaehlt nicht runter).
-    // Daher hier KEIN ++ — sonst akkumuliert der Counter und alle queuen ewig.
-    await new Promise<void>((resolve) => embedQueue.push(resolve));
+    return Promise.resolve(startLease(priority, now));
   }
-  // Mindest-Abstand seit letztem Finish
-  const gap = Date.now() - lastEmbedFinishMs;
-  if (gap < MIN_GAP_MS) await sleep(MIN_GAP_MS - gap);
+
+  const queue = queueFor(priority);
+  const limit = priority === 'interactive' ? INTERACTIVE_QUEUE_LIMIT : BACKGROUND_QUEUE_LIMIT;
+  const maxWaitMs = options.maxQueueWaitMs ??
+    (priority === 'interactive' ? INTERACTIVE_MAX_WAIT_MS : Number.POSITIVE_INFINITY);
+
+  if (queue.length >= limit || maxWaitMs <= 0) {
+    rejectedByPriority[priority]++;
+    return Promise.reject(queueFullError(priority));
+  }
+
+  return new Promise<EmbedLease>((resolve, reject) => {
+    const entry: QueueEntry = { priority, queuedAt: now, resolve, reject };
+    queue.push(entry);
+
+    if (Number.isFinite(maxWaitMs)) {
+      entry.timer = setTimeout(() => {
+        const index = queue.indexOf(entry);
+        if (index === -1) return;
+        const ahead = activeEmbedCalls + index +
+          (priority === 'background' ? interactiveQueue.length : 0);
+        queue.splice(index, 1);
+        rejectedByPriority[priority]++;
+        reject(queueFullError(priority, ahead));
+      }, maxWaitMs);
+    }
+  });
 }
 
-function releaseEmbedSlot(): void {
+function releaseEmbedSlot(lease: EmbedLease): void {
+  const durationMs = Math.max(0, Date.now() - lease.startedAt);
+  averageCallMs = Math.round(averageCallMs * 0.8 + durationMs * 0.2);
+  completedByPriority[lease.priority]++;
+  activeByPriority[lease.priority]--;
+  activeEmbedCalls--;
   lastEmbedFinishMs = Date.now();
-  const next = embedQueue.shift();
-  if (next) {
-    // Slot bleibt belegt — uebergeben an den Wartenden.
-    next();
-  } else {
-    activeEmbedCalls--;
+  dispatchNext();
+}
+
+async function runQueued<T>(
+  operation: () => Promise<T>,
+  options: EmbedOptions = {},
+): Promise<T> {
+  const lease = await acquireEmbedSlot(options);
+  try {
+    const gap = Date.now() - lastEmbedFinishMs;
+    if (gap < MIN_GAP_MS) await sleep(MIN_GAP_MS - gap);
+    return await operation();
+  } finally {
+    releaseEmbedSlot(lease);
   }
 }
 
-/**
- * Generiert Embedding fuer einen Text — durchlaeuft die globale Queue.
- */
-export async function embed(text: string): Promise<number[]> {
-  const provider = await getEmbeddingProvider();
-  await acquireEmbedSlot();
-  try {
-    return await provider.embed(text);
-  } finally {
-    releaseEmbedSlot();
-  }
+/** Prozesslokale Scheduler-Metriken; Queue-Schutz ist ebenfalls pro Prozess. */
+export function getEmbeddingQueueStats(): EmbeddingQueueStats {
+  const now = Date.now();
+  const oldest = (queue: QueueEntry[]): number =>
+    queue.length === 0 ? 0 : now - queue[0].queuedAt;
+
+  return {
+    maxConcurrent: MAX_CONCURRENT_EMBED,
+    active: { ...activeByPriority },
+    queued: {
+      interactive: interactiveQueue.length,
+      background: backgroundQueue.length,
+    },
+    submitted: { ...submittedByPriority },
+    started: { ...startedByPriority },
+    completed: { ...completedByPriority },
+    rejected: { ...rejectedByPriority },
+    currentLongestWaitMs: {
+      interactive: oldest(interactiveQueue),
+      background: oldest(backgroundQueue),
+    },
+    longestWaitMs: { ...longestWaitByPriority },
+    averageCallMs,
+  };
+}
+
+/** Generiert ein Embedding. Ohne Optionen ist der Aufruf interaktiv. */
+export async function embed(
+  text: string,
+  options: EmbedOptions = {},
+): Promise<number[]> {
+  return runQueued(async () => {
+    const provider = await getEmbeddingProvider({ strictOllama: options.strictOllama });
+    return provider.embed(text);
+  }, options);
 }
 
 /**
- * Generiert Embeddings fuer mehrere Texte — durchlaeuft die globale Queue.
+ * Generiert mehrere Embeddings.
+ *
+ * Ollama besitzt kein natives Batch-Embedding. Jeder Text wird deshalb separat
+ * gescheduled: eine interaktive Anfrage kann nach dem gerade laufenden Text
+ * einspringen, statt auf die ganze Bulk-Scheibe zu warten. Promise.all behaelt
+ * die Ergebnisreihenfolge bei.
  */
-export async function embedBatch(texts: string[]): Promise<number[][]> {
-  const provider = await getEmbeddingProvider();
-  await acquireEmbedSlot();
-  try {
-    return await provider.embedBatch(texts);
-  } finally {
-    releaseEmbedSlot();
+export async function embedBatch(
+  texts: string[],
+  options: EmbedOptions = {},
+): Promise<number[][]> {
+  if (texts.length === 0) return [];
+  if (getConfig().embeddings.provider === 'ollama') {
+    return Promise.all(texts.map((text) => embed(text, options)));
   }
+  return runQueued(async () => {
+    const provider = await getEmbeddingProvider({ strictOllama: options.strictOllama });
+    return provider.embedBatch(texts);
+  }, options);
 }
 
 /**
@@ -248,8 +456,7 @@ export async function embedMedia(data: Buffer, mimeType: string): Promise<number
 export async function getEmbeddingDimension(): Promise<number> {
   if (_cachedDimension !== null) return _cachedDimension;
 
-  const provider = await getEmbeddingProvider();
-  const testVector = await provider.embed('synapse dimension detection');
+  const testVector = await embed('synapse dimension detection');
   _cachedDimension = testVector.length;
   console.error(`[Synapse] Erkannte Embedding-Dimension: ${_cachedDimension}`);
   return _cachedDimension;

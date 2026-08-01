@@ -29,7 +29,7 @@ export const specialistTool: ConsolidatedTool = {
   definition: {
     name: 'specialist',
     description:
-      'Konsolidiertes Tool für Spezialisten-Management. Unterstützt Spawning, Stopping, Status-Checks, Wake-Calls, Skill-Updates und Capabilities-Checks.',
+      'Konsolidiertes Tool für Spezialisten-Management. Unterstützt Spawning, Stopping, Status-Checks, Wake-Calls, Skill-Updates und Capabilities-Checks. Optionales agent_id ermoeglicht Attribution und serverseitige Hook-Deduplizierung.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -67,6 +67,10 @@ export const specialistTool: ConsolidatedTool = {
         project: {
           type: 'string',
           description: 'Projekt-Name (erforderlich für: spawn)',
+        },
+        agent_id: {
+          type: 'string',
+          description: 'Optionale Agent-ID fuer Attribution und serverseitige Hook-Deduplizierung',
         },
         project_path: {
           type: 'string',

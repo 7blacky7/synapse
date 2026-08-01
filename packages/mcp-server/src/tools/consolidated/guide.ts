@@ -14,7 +14,7 @@ export const guideTool: ConsolidatedTool = {
       'Tool-Dokumentation: Quick-Start + detaillierte Nutzungs-Anleitung fuer alle Synapse-Tools. ' +
       'Ohne Parameter: Uebersicht. Mit tool_name: Deep-Dive. Mit tool_name + action_name: Action-Details. ' +
       'Bei der ersten Nutzung jedes Tools in einer Session wird die Tool-Doku automatisch an die Response angehaengt — ' +
-      'rufe guide gezielt auf, wenn du Detail-Infos brauchst.',
+      'rufe guide gezielt auf, wenn du Detail-Infos brauchst. Optionales agent_id ermoeglicht Attribution und serverseitige Hook-Deduplizierung.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -27,6 +27,10 @@ export const guideTool: ConsolidatedTool = {
           type: 'string',
           description:
             'Optional: Spezifische Action innerhalb eines Multi-Action-Tools (z.B. "tree" bei code_intel).',
+        },
+        agent_id: {
+          type: 'string',
+          description: 'Optionale Agent-ID fuer Attribution und serverseitige Hook-Deduplizierung',
         },
       },
     },

@@ -34,6 +34,7 @@
 
 import { v4 as uuidv4 } from 'uuid';
 import { embed } from '../embeddings/index.js';
+import type { EmbedOptions } from '../embeddings/index.js';
 import { ensureCollection } from '../qdrant/collections.js';
 import {
   insertVector,
@@ -286,7 +287,11 @@ export async function writeMemory(
  * Schreiben und dem Nachreichen kann die Memory erneut geschrieben worden sein, und dann
  * soll der NEUE Inhalt embedded werden, nicht der alte.
  */
-export async function embeddeMemoryNach(project: string, id: string): Promise<void> {
+export async function embeddeMemoryNach(
+  project: string,
+  id: string,
+  embedOptions: EmbedOptions = {},
+): Promise<void> {
   const pool = getPool();
   const { rows } = await pool.query(
     `SELECT name, category, content, tags, created_at, updated_at
@@ -299,7 +304,7 @@ export async function embeddeMemoryNach(project: string, id: string): Promise<vo
   const collectionName = COLLECTIONS.projectMemories(project);
   await ensureCollection(collectionName);
 
-  const vector = await embed(row.content);
+  const vector = await embed(row.content, embedOptions);
   const payload: MemoryPayload = {
     project,
     name: row.name,

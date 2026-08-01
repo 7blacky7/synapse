@@ -156,7 +156,7 @@ export async function migrateEmbeddings(
           failedCount++;
           continue;
         }
-        const vector = await embed(text);
+        const vector = await embed(text, { priority: 'background' });
         await insertVector(collectionName, vector, point.payload, point.id);
         migratedCount++;
 
@@ -273,7 +273,7 @@ export async function restoreFromBackup(
           totalFailed++;
           continue;
         }
-        const vector = await embed(text);
+        const vector = await embed(text, { priority: 'background' });
         await insertVector(collectionName, vector, entry.payload, entry.id);
         totalRestored++;
 

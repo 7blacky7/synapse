@@ -185,7 +185,7 @@ async function processAndIndexDocs(docs: Context7Doc[]): Promise<number> {
 
       try {
         // Embedding erstellen
-        const vector = await embed(chunk.content);
+        const vector = await embed(chunk.content, { priority: 'background' });
 
         // In Qdrant speichern
         await client.upsert(COLLECTIONS.techDocs, {

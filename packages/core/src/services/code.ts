@@ -40,24 +40,12 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
-import { v4 as uuidv4, v5 as uuidv5 } from 'uuid';
+import { v4 as uuidv4 } from 'uuid';
+import { deterministicChunkPointId, embeddingContentHash } from './embedding-chunk-id.js';
 
-// Fixed namespace UUID fuer deterministische Qdrant-Point-IDs.
-// Race-Schutz ohne Lock: parallele insertVectors mit identischem (project, filePath, chunkIndex, content)
-// erzeugen identische ID → Qdrant-Upsert statt Duplikat.
-const SYNAPSE_QDRANT_NS = '6ba7b810-9dad-11d1-80b4-00c04fd430c8';
 function deterministicChunkId(project: string, filePath: string, chunkIndex: number, content: string): string {
-  const contentHash = crypto.createHash('sha256').update(content).digest('hex').slice(0, 16);
-  return uuidv5(`${project}:${filePath}:${chunkIndex}:${contentHash}`, SYNAPSE_QDRANT_NS);
+  return deterministicChunkPointId(project, filePath, chunkIndex, content);
 }
-
-/**
- * Wieviele Chunks pro Runde embedded, in Qdrant eingefuegt und in PG quittiert
- * werden. Kleiner heisst: ein Abbruch kostet weniger, dafuer mehr Roundtrips.
- * Bei 100 und rund 870 ms je Chunk ist eine Runde nach gut anderthalb Minuten
- * dauerhaft verbucht.
- */
-const EMBED_SCHEIBE = Math.max(1, Number(process.env.EMBED_SCHEIBE) || 100);
 import {
   CodeChunkPayload,
   CodeSearchResult,
@@ -87,6 +75,7 @@ import { getConfig } from '../config.js';
 import { indexDocument, removeDocument } from './documents.js';
 import { getPool } from '../db/client.js';
 import { getParserForFile } from '../parser/index.js';
+import { isProjectEnabled } from './project-registry.js';
 
 /**
  * Projekte, deren FileWatcher-Erstscan durch ist. NUR fuer diese wird eine neu
@@ -333,26 +322,52 @@ export async function storeFileContent(
 const parseQueue = new Map<string, NodeJS.Timeout>();
 const crossRefTimers = new Map<string, NodeJS.Timeout>();
 
+async function istProjektFuerIndexArbeitAktiv(project: string, kontext: string): Promise<boolean> {
+  try {
+    return await isProjectEnabled(project);
+  } catch (err) {
+    console.error(`[Synapse] Projektstatus nicht lesbar, ${kontext} verworfen: ${project}`, err);
+    return false;
+  }
+}
+
+function planeCrossFileReferences(project: string): void {
+  const vorhanden = crossRefTimers.get(project);
+  if (vorhanden) clearTimeout(vorhanden);
+
+  const timer = setTimeout(async () => {
+    if (crossRefTimers.get(project) !== timer) return;
+    try {
+      const enabled = await isProjectEnabled(project);
+      if (crossRefTimers.get(project) !== timer) return;
+      if (!enabled) {
+        planeCrossFileReferences(project);
+        return;
+      }
+      await linkCrossFileReferences(project);
+      if (crossRefTimers.get(project) === timer) crossRefTimers.delete(project);
+    } catch (err) {
+      console.error(`[Synapse] Cross-File-Linking/Projektstatus fehlgeschlagen:`, err);
+      if (crossRefTimers.get(project) === timer) planeCrossFileReferences(project);
+    }
+  }, 5000);
+  crossRefTimers.set(project, timer);
+}
+
 export function enqueueParseAndEmbed(project: string, filePath: string): void {
   const key = `${project}:${filePath}`;
   if (parseQueue.has(key)) clearTimeout(parseQueue.get(key)!);
   parseQueue.set(key, setTimeout(async () => {
     parseQueue.delete(key);
     try {
+      if (!(await isProjectEnabled(project))) return;
       await parseAndEmbed(project, filePath);
     } catch (err) {
       console.error(`[Synapse] Parse+Embed fehlgeschlagen fuer ${filePath}:`, err);
     }
-    // Cross-File References nach 5s Ruhe neu verknuepfen
-    if (crossRefTimers.has(project)) clearTimeout(crossRefTimers.get(project)!);
-    crossRefTimers.set(project, setTimeout(async () => {
-      crossRefTimers.delete(project);
-      try {
-        await linkCrossFileReferences(project);
-      } catch (err) {
-        console.error(`[Synapse] Cross-File-Linking fehlgeschlagen:`, err);
-      }
-    }, 5000));
+    // Cross-File References nach 5s Ruhe neu verknuepfen. Bei Disable
+    // bleibt die Arbeit pending und prueft den Status bis zum Re-enable erneut.
+    planeCrossFileReferences(project);
   }, 2000));
 }
 
@@ -1146,9 +1161,9 @@ export async function parseAndEmbed(
       const values: unknown[] = [];
       const placeholders: string[] = [];
       chunks.forEach((chunk, i) => {
-        const base = i * 7;
+        const base = i * 8;
         placeholders.push(
-          `($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5}, $${base + 6}, $${base + 7})`
+          `($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5}, $${base + 6}, $${base + 7}, $${base + 8})`
         );
         values.push(
           uuidv4(),
@@ -1156,12 +1171,13 @@ export async function parseAndEmbed(
           filePath,
           chunk.chunkIndex,
           chunk.content,
+          embeddingContentHash(chunk.content),
           chunk.lineStart,
           chunk.lineEnd
         );
       });
       await chunksClient.query(
-        `INSERT INTO code_chunks (id, project, file_path, chunk_index, content, line_start, line_end)
+        `INSERT INTO code_chunks (id, project, file_path, chunk_index, content, content_hash, line_start, line_end)
          VALUES ${placeholders.join(', ')}`,
         values
       );
@@ -1199,8 +1215,12 @@ export async function parseAndEmbed(
   // SKIP wenn env SYNAPSE_SKIP_EMBEDDINGS=1 gesetzt — Parser-Symbole bleiben in PG,
   // aber kein Qdrant-Vektor-Update. Spart Embedding-API-Kosten bei Reparse-Iterationen.
   const skipEmbeddings = opts?.ohneEmbeddings === true || process.env.SYNAPSE_SKIP_EMBEDDINGS === '1';
+  let offeneEmbeddings = 0;
   if (chunks.length > 0 && !skipEmbeddings) {
-    const collectionName = await ensureProjectCollection(project);
+    // GPU-2: Staging darf auf dem REST-Server keinen Provider-Probe-Embed
+    // ausloesen. Die verteilte Referenzdimension ist 3072; Compute-Nodes werden
+    // bereits bei Registrierung und Completion dagegen validiert.
+    const collectionName = await ensureProjectCollection(project, 3072);
 
     // Was ist ueberhaupt noch zu tun?
     // Sind die Chunk-Rows von vorhin unveraendert, dann liegt alles mit einem
@@ -1224,6 +1244,38 @@ export async function parseAndEmbed(
         );
       }
     } else {
+      // Qdrant-Reuse und Orphan-Cleanup gehoeren zur selben Dateiversion wie
+      // die eben geschriebenen Chunk-Rows. Der initiale Chunk-Lock ist bereits
+      // beendet; deshalb erneut locken, den kompletten Content-Snapshot pruefen
+      // und den Lock bis nach Cleanup+Reuse-Ack halten.
+      const reuseClient = await pool.connect();
+      try {
+        await reuseClient.query('BEGIN');
+        await reuseClient.query('SELECT pg_advisory_xact_lock(hashtext($1))', [
+          `chunks:${project}:${filePath}`,
+        ]);
+        const expectedFence = chunks.map((chunk) => ({
+          chunk_index: chunk.chunkIndex,
+          content_hash: embeddingContentHash(chunk.content),
+        }));
+        const snapshot = await reuseClient.query(
+          `SELECT COUNT(*)::int AS total,
+                  COUNT(*) FILTER (WHERE EXISTS (
+                    SELECT 1 FROM jsonb_to_recordset($3::jsonb)
+                           AS expected(chunk_index int, content_hash text)
+                     WHERE expected.chunk_index=cc.chunk_index
+                       AND expected.content_hash=cc.content_hash
+                  ))::int AS matching
+             FROM code_chunks cc
+            WHERE cc.project=$1 AND cc.file_path=$2`,
+          [project, filePath, JSON.stringify(expectedFence)]
+        );
+        if (snapshot.rows[0]?.total !== chunks.length || snapshot.rows[0]?.matching !== chunks.length) {
+          await reuseClient.query('ROLLBACK');
+          console.error(`[Synapse] Veralteten Qdrant-Reuse-Lauf verworfen: ${path.basename(filePath)}`);
+          return;
+        }
+
       // Der Inhalt hat sich geaendert. Hier wurde frueher pauschal alles
       // geloescht und alles neu gerechnet. Das ist fast immer zu viel: bei einer
       // punktuellen Aenderung bleiben Position UND Inhalt fast aller Chunks
@@ -1267,92 +1319,55 @@ export async function parseAndEmbed(
       // gaelten sie als offen und wuerden neu gerechnet, obwohl ihr Vektor da ist.
       const schonDa = chunks.filter((_c, i) => vorhanden.has(neueIds[i]));
       if (schonDa.length > 0) {
-        await pool.query(
-          `UPDATE code_chunks SET embedded_at = NOW()
-            WHERE project = $1 AND file_path = $2 AND chunk_index = ANY($3::int[])`,
-          [project, filePath, schonDa.map(c => c.chunkIndex)]
+        // Auch der Wiederverwendungs-Ack muss die Inhaltsversion fencen. Ein
+        // paralleler Reparse kann dieselben Indizes inzwischen mit neuem Inhalt
+        // belegt haben; project/path/index allein wuerde dann v2 mit dem alten
+        // v1-Qdrant-Treffer faelschlich als embedded markieren.
+        const reuseFence = schonDa.map((chunk) => ({
+          chunk_index: chunk.chunkIndex,
+          content_hash: embeddingContentHash(chunk.content),
+        }));
+        await reuseClient.query(
+          `UPDATE code_chunks cc SET embedded_at = NOW()
+             FROM jsonb_to_recordset($3::jsonb)
+                    AS reused(chunk_index int, content_hash text)
+            WHERE cc.project = $1 AND cc.file_path = $2
+              AND cc.chunk_index = reused.chunk_index
+              AND cc.content_hash = reused.content_hash`,
+          [project, filePath, JSON.stringify(reuseFence)]
         );
         console.error(
           `[Synapse] ${path.basename(filePath)}: ${schonDa.length}/${chunks.length} Chunks unveraendert wiederverwendet, ${offen.length} neu zu embedden, ${verwaist.length} verwaiste Punkte entfernt`
         );
       }
+        await reuseClient.query('COMMIT');
+      } catch (error) {
+        await reuseClient.query('ROLLBACK').catch(() => undefined);
+        throw error;
+      } finally {
+        reuseClient.release();
+      }
     }
 
     // SCHEIBENWEISE embedden, einfuegen, quittieren.
     //
-    // WARUM NICHT ALLES AUF EINMAL: hier sammelte ein einziges embedBatch
-    // saemtliche Vektoren, danach kam EIN insertVectors und EIN UPDATE. Bei 5950
-    // Chunks und rund 870 ms je Chunk (Ollama, gemessen) laeuft dieser eine Aufruf
-    // ueber 80 Minuten — und bis zur letzten Sekunde steht in Qdrant nichts und
-    // embedded_at ist ueberall NULL. Jeder Abbruch (Deploy, Neustart, Timeout) warf
-    // die komplette Arbeit weg, und von aussen war nicht einmal unterscheidbar, ob
-    // ueberhaupt noch etwas laeuft. Scheibenweise ist der Fortschritt nach jeder
-    // Runde dauerhaft gespeichert und sichtbar.
-    //
-    // ES KOSTET KEINEN DURCHSATZ: Ollama kennt kein echtes Batch-Embedding, seine
-    // embedBatch-Methode ist eine Schleife ueber die Texte. Es aendert sich also nur,
-    // WANN eingefuegt wird, nicht wie lange gerechnet wird.
-    //
-    // FAIRNESS ALS NEBENEFFEKT: die globale Embedding-Queue (EMBED_MAX_CONCURRENT)
-    // vergibt ihren Slot pro embedBatch-Aufruf. Vorher belegte eine einzige grosse
-    // Datei einen der beiden Slots stundenlang; jetzt gibt sie ihn nach jeder Scheibe
-    // frei, andere Dateien kommen dazwischen.
-    for (let von = 0; von < offen.length; von += EMBED_SCHEIBE) {
-      const teil = offen.slice(von, von + EMBED_SCHEIBE);
-      const embeddings = await embedBatch(teil.map(c => c.content));
-
-      const items = teil.map((chunk, i) => ({
-        id: deterministicChunkId(chunk.project, chunk.filePath, chunk.chunkIndex, chunk.content),
-        vector: embeddings[i],
-        payload: {
-          file_path: chunk.filePath,
-          file_name: path.basename(chunk.filePath),
-          file_type: fileType,
-          line_start: chunk.lineStart,
-          line_end: chunk.lineEnd,
-          project: chunk.project,
-          chunk_index: chunk.chunkIndex,
-          total_chunks: chunk.totalChunks,
-          updated_at: new Date().toISOString(),
-          content: chunk.content,
-        } satisfies CodeChunkPayload,
-      }));
-
-      await insertVectors(collectionName, items);
-
-      // Erst quittieren, wenn die Vektoren wirklich drin sind. In dieser
-      // Reihenfolge, sonst gilt ein Chunk als fertig, dessen Vektor fehlt — und
-      // genau der wuerde bei der Wiederaufnahme dann uebersprungen.
-      await pool.query(
-        `UPDATE code_chunks SET embedded_at = NOW()
-          WHERE project = $1 AND file_path = $2 AND chunk_index = ANY($3::int[])`,
-        [project, filePath, teil.map(c => c.chunkIndex)]
-      );
-
-      if (offen.length > EMBED_SCHEIBE) {
-        console.error(
-          `[Synapse] Embedding ${Math.min(von + EMBED_SCHEIBE, offen.length)}/${offen.length}: ${path.basename(filePath)}`
-        );
-      }
-    }
+    // GPU-2: Ab hier wird NICHT mehr direkt embedded. Alle Prozesspfade
+    // (File-Events, Reparse, Boot und REST-Worker) enden an denselben offenen
+    // code_chunks. Der lokale Unraid-Fallback und Zusatzknoten ziehen sie ueber
+    // claimEmbeddingChunks; nur completeEmbeddingClaim schreibt Qdrant+PG.
+    offeneEmbeddings = offen.length;
   }
 
-  // Embedding fertig (oder via SYNAPSE_SKIP_EMBEDDINGS uebersprungen) → indexed_at.
-  // parsed_at wurde bereits nach dem Chunk-Commit gesetzt (Entkopplung oben). Bei
-  // parseSuccess=false bleibt parsed_at NULL → Backlog-Query holt die Datei fuer
-  // einen Symbol-Retry.
-  // chunk_count NUR schreiben, wenn die Chunks in diesem Lauf auch berechnet wurden.
-  //
-  // ⚠️ HIER STAND chunks.length OHNE FALLUNTERSCHEIDUNG. Bei ohneEmbeddings ist
-  // chunks bewusst ein leeres Array (der Chunk-Block wird uebersprungen, weil der
-  // Inhalt unveraendert ist) — geschrieben wurde damit chunk_count = 0, obwohl die
-  // Chunks unveraendert in code_chunks liegen. Jeder Reparse hat so die Statistik
-  // einer Datei zerstoert: 2035 Dateien standen am 28.07.2026 auf chunk_count = 0
-  // bei vorhandenen Chunks, davon 1937 allein in moo nach einem reparseProject-Lauf.
-  // NULL laesst den bestehenden Wert stehen.
+  // indexed_at behaelt seine bestehende Bedeutung "geparst/indiziert". Der
+  // Embedding-Stand wird nicht doppelt in code_files gespiegelt, sondern kommt
+  // ausschliesslich aus code_chunks.embedded_at. Sonst waere der Zustand bei
+  // neu angelegten Dateien wirkungslos, weil upsertCodeFile indexed_at bereits
+  // beim INSERT setzt. chunk_count wird beim Reparse ohne Chunking nicht genullt.
   await pool.query(
-    `UPDATE code_files SET indexed_at = NOW(), chunk_count = COALESCE($3, chunk_count)
-     WHERE project = $1 AND file_path = $2`,
+    `UPDATE code_files
+        SET indexed_at = NOW(),
+            chunk_count = COALESCE($3, chunk_count)
+      WHERE project = $1 AND file_path = $2`,
     [project, filePath, opts?.ohneEmbeddings ? null : chunks.length]
   );
 
@@ -1362,9 +1377,11 @@ export async function parseAndEmbed(
   // dass die Datei keine Chunks hat. Beim Nachzug ueber tausende Dateien liest
   // sich das wie ein flaechendeckender Ausfall.
   console.error(
-    opts?.ohneEmbeddings
+    skipEmbeddings
       ? `[Synapse] Geparst, Embeddings unberuehrt: ${path.basename(filePath)}`
-      : `[Synapse] Geparst+Embedded: ${path.basename(filePath)} (${chunks.length} Chunks)`
+      : offeneEmbeddings > 0
+        ? `[Synapse] Geparst, ${offeneEmbeddings} Embeddings eingeplant: ${path.basename(filePath)}`
+        : `[Synapse] Geparst, Embeddings bereits vorhanden: ${path.basename(filePath)} (${chunks.length} Chunks)`
   );
   }
 }
@@ -1382,18 +1399,18 @@ export const EMBEDDING_PENDING_HINT =
   'oder mit etwas anderem weiterarbeiten; nicht extra danach suchen.';
 
 /**
- * Live-Status: hinken die Embeddings (Qdrant-Vektoren) dem aktuellen Datei-Inhalt
- * hinterher? true = Symbole/Struktur sind da, aber die semantische Suche spiegelt
- * diese Version noch nicht (parseAndEmbed laeuft/steht aus). Signal: indexed_at
- * fehlt ODER ist aelter als der letzte Content-Write (updated_at). Reiner Hinweis.
+ * Live-Status: hinken die Qdrant-Vektoren dem aktuellen Datei-Inhalt hinterher?
+ * code_files.indexed_at bedeutet historisch "geparst/indiziert" und ist deshalb
+ * kein Embedding-Signal. Die einzige Wahrheit ist ein offener code_chunk.
  */
 export async function getEmbeddingPending(project: string, filePath: string): Promise<boolean> {
   const pool = getPool();
   try {
     const r = await pool.query(
-      `SELECT (indexed_at IS NULL OR indexed_at < updated_at) AS pending
-         FROM code_files
-        WHERE project = $1 AND file_path = $2 AND content IS NOT NULL`,
+      `SELECT EXISTS (
+         SELECT 1 FROM code_chunks
+          WHERE project = $1 AND file_path = $2 AND embedded_at IS NULL
+       ) AS pending`,
       [project, filePath]
     );
     return r.rows[0]?.pending === true;
@@ -1848,6 +1865,7 @@ export async function projekteMitBacklog(
  * Tick macht dort weiter, wo dieser aufgehoert hat.
  */
 export async function parseUnparsedFiles(projectName: string): Promise<number> {
+  if (!(await isProjectEnabled(projectName))) return 0;
   if (activeParseProjects.has(projectName)) {
     return 0; // Background-Crew laeuft noch — neuer Tick uebersprungen.
   }
@@ -1910,12 +1928,20 @@ export async function parseUnparsedFiles(projectName: string): Promise<number> {
 
   activeParseProjects.add(projectName);
   setImmediate(async () => {
-    let nextIndex = 0;
+    try {
+      let nextIndex = 0;
     let parsed = 0;
     let failed = 0;
 
     async function worker(workerId: number): Promise<void> {
       while (nextIndex < eintraege.length) {
+        try {
+          if (!(await isProjectEnabled(projectName))) return;
+        } catch (err) {
+          console.error(`[Synapse] [W${workerId}] Projektstatus nicht lesbar, Worker pausiert:`, err);
+          return;
+        }
+        if (nextIndex >= eintraege.length) return;
         const idx = nextIndex++;
         const { file_path: filePath, grund } = eintraege[idx];
         const t0 = Date.now();
@@ -1949,14 +1975,23 @@ export async function parseUnparsedFiles(projectName: string): Promise<number> {
 
     console.error(`[Synapse] Nachparsing abgeschlossen: ${parsed} geparst, ${failed} fehlgeschlagen (${workerCount} Worker)`);
 
-    // Cross-File References am Ende verknuepfen
+    // Cross-File References fuer aktive Projekte sofort verknuepfen. Bei
+    // Disable oder Fehler bleibt die Arbeit bis zum Re-enable pending.
     try {
-      await linkCrossFileReferences(projectName);
+      if (await isProjectEnabled(projectName)) {
+        await linkCrossFileReferences(projectName);
+      } else {
+        planeCrossFileReferences(projectName);
+      }
     } catch (err) {
       console.error(`[Synapse] Cross-File-Linking nach Nachparsing fehlgeschlagen:`, err);
+      planeCrossFileReferences(projectName);
     }
-
-    activeParseProjects.delete(projectName);
+    } catch (err) {
+      console.error(`[Synapse] Nachparsing-Lauf fuer ${projectName} abgebrochen:`, err);
+    } finally {
+      activeParseProjects.delete(projectName);
+    }
   });
 
   return total;
@@ -2277,6 +2312,7 @@ export async function verifyProjectAgainstFilesystem(
 }> {
   const pool = getPool();
   const stats = { renamed: 0, added: 0, removed: 0, updated: 0, mediaUebersprungen: 0 };
+  if (!(await istProjektFuerIndexArbeitAktiv(project, 'Verify-Start'))) return stats;
 
   // 1. Rekursiver Walk + Hash fuer alle Disk-Dateien
   const absFiles = walkProjectFiles(projectRoot);
@@ -2292,6 +2328,8 @@ export async function verifyProjectAgainstFilesystem(
     }
   }
 
+  if (!(await istProjektFuerIndexArbeitAktiv(project, 'Verify nach Datei-Walk'))) return stats;
+
   // 2. PG-Abgleich
   const pgRows = await pool.query(
     `SELECT file_path, content_hash FROM code_files
@@ -2306,6 +2344,7 @@ export async function verifyProjectAgainstFilesystem(
   }
 
   for (const row of pgRows.rows) {
+    if (!(await istProjektFuerIndexArbeitAktiv(project, 'Verify-PG-Claim'))) return stats;
     const pgPath: string = row.file_path;
     const pgHash: string | null = row.content_hash;
     const diskEntry = diskMap.get(pgPath);
@@ -2382,6 +2421,7 @@ export async function verifyProjectAgainstFilesystem(
   // brauchen ein multimodales Modell, das der Text-Pfad gar nicht hat.
   const { isMultimodalFile } = await import('../watcher/binary.js');
   for (const [rel] of diskMap) {
+    if (!(await istProjektFuerIndexArbeitAktiv(project, 'Verify-Disk-Claim'))) return stats;
     try {
       const absPfad = path.join(projectRoot, rel);
       if (isExtractableDocument(absPfad)) {
@@ -2631,6 +2671,10 @@ async function detectRenameSource(
  * event.path ist RELATIV, projectRoot ist der absolute Projekt-Pfad.
  */
 export async function handleFileEvent(event: FileEvent, projectRoot: string): Promise<void> {
+  if (event.type !== 'unlink' && !(await istProjektFuerIndexArbeitAktiv(event.project, `Watcher-${event.type}`))) {
+    return;
+  }
+
   // Klassifikation: Dokument > Media > Code
   const isDocument = isExtractableDocument(event.path);
   const isMedia = !isDocument && isMultimodalFile(event.path);

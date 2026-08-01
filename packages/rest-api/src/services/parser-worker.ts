@@ -21,7 +21,17 @@
  *   Daemon existiert — Doppel-Arbeit, aber kein Schaden.
  */
 
-import { parseUnparsedFiles, projekteMitBacklog, expirePendingProjectInitJobs, embeddeOffeneEintraege } from '@synapse/core';
+import {
+  claimEmbeddingChunks,
+  completeEmbeddingClaim,
+  embedBatch,
+  embeddeOffeneEintraege,
+  expirePendingProjectInitJobs,
+  getPool,
+  parseUnparsedFiles,
+  projekteMitBacklog,
+} from '@synapse/core';
+import { listEmbeddingNodes } from './embedding-nodes.js';
 
 export interface ParserWorkerConfig {
   intervalMs?: number;       // default 30_000
@@ -33,10 +43,14 @@ const DEFAULTS = {
   maxPerTick: 20,
 };
 
+const sleep = (ms: number): Promise<void> =>
+  new Promise((resolve) => setTimeout(resolve, ms));
+
 export class ParserWorker {
   private cfg: Required<ParserWorkerConfig>;
   private timer: NodeJS.Timeout | null = null;
   private running = false;          // Re-Entrancy-Schutz
+  private stopped = false;
   private ticksDone = 0;
   private filesDone = 0;
 
@@ -46,15 +60,18 @@ export class ParserWorker {
 
   init(): void {
     if (this.timer) return;
+    this.stopped = false;
     console.error(
       `[parser-worker] aktiv (interval=${this.cfg.intervalMs}ms, maxPerTick=${this.cfg.maxPerTick})`
     );
     // Erster Tick gleich nach 2s (nicht beim Boot, damit Schema/Init durch sind).
     setTimeout(() => this.fire(), 2_000);
     this.timer = setInterval(() => this.fire(), this.cfg.intervalMs);
+    void this.embeddingFallbackLoop();
   }
 
   shutdown(): void {
+    this.stopped = true;
     if (this.timer) { clearInterval(this.timer); this.timer = null; }
   }
 
@@ -68,6 +85,44 @@ export class ParserWorker {
     this.tick()
       .catch(err => console.error(`[parser-worker] tick error: ${(err as Error).message}`))
       .finally(() => { this.running = false; });
+  }
+
+  private async embeddingFallbackLoop(): Promise<void> {
+    while (!this.stopped) {
+      try {
+        const externalUsable = (await listEmbeddingNodes(getPool())).some((node) => node.usable);
+        if (externalUsable) {
+          await sleep(2_000);
+          continue;
+        }
+
+        const claims = await claimEmbeddingChunks('unraid-local', {
+          limit: 1,
+          maxConcurrent: 1,
+          leaseSeconds: 900,
+        });
+        const claim = claims[0];
+        if (!claim) {
+          await sleep(1_000);
+          continue;
+        }
+
+        const [vector] = await embedBatch([claim.content], {
+          priority: 'background',
+          strictOllama: true,
+        });
+        await completeEmbeddingClaim({
+          nodeId: 'unraid-local',
+          chunkId: claim.chunkId,
+          claimToken: claim.claimToken,
+          contentHash: claim.contentHash,
+          vector,
+        });
+      } catch (err) {
+        console.error(`[parser-worker] lokaler Embedding-Fallback fehlgeschlagen: ${(err as Error).message}`);
+        await sleep(2_000);
+      }
+    }
   }
 
   private async tick(): Promise<void> {

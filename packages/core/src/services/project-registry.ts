@@ -109,6 +109,20 @@ export async function registerVirtualProject(name: string): Promise<void> {
 }
 
 /**
+ * Liest den wirksamen Projektstatus frisch aus PostgreSQL. bool_or entspricht
+ * dem Registry-Guard in projekteMitBacklog: eine aktive Host-Zeile aktiviert
+ * das Projekt; project(disable) setzt ohnehin alle Zeilen gemeinsam auf false.
+ */
+export async function isProjectEnabled(name: string): Promise<boolean> {
+  const pool = getPool();
+  const result = await pool.query<{ enabled: boolean }>(
+    `SELECT COALESCE(bool_or(enabled), false) AS enabled FROM projects WHERE name = $1`,
+    [name]
+  );
+  return result.rows[0]?.enabled === true;
+}
+
+/**
  * Setzt das enabled-Flag fuer ALLE Registry-Eintraege eines Projekts
  * (ueber alle Hostnames inkl. dem virtuellen rest-api-Eintrag).
  * Der Parser-Worker (rest-api) verarbeitet nur Projekte mit enabled=true —

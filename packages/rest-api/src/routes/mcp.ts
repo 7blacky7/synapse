@@ -20,6 +20,7 @@ import {
   getProjectStats,
   setProjectEnabled,
   getCollectionStats,
+  getEmbeddingQueueStats,
   // Plan
   getPlan,
   updatePlan,
@@ -115,6 +116,7 @@ import {
   commitBatch,
   cancelBatch,
   getBatchPlan,
+  holeSprachSkillVorschlaege,
   // Project-Init-Queue (Self-Service Project-Bootstrap)
   isValidProjectName,
   enqueueProjectInitJob,
@@ -520,7 +522,7 @@ const MCP_TOOLS = [
   // 8. channel
   {
     name: 'channel',
-    description: 'Channels (Gruppen-Notizboards) zwischen Sub-Hilfsagenten im eigenen Synapse-Projekt verwalten: anlegen, beitreten, verlassen, posten, lesen, listen. Lokale Datenbank, project-scoped. Keine externen Chat-Systeme.',
+    description: 'Channels (Gruppen-Notizboards) zwischen Sub-Hilfsagenten im eigenen Synapse-Projekt verwalten: anlegen, beitreten, verlassen, posten, lesen, listen. Lokale Datenbank, project-scoped. Optionales agent_id aktiviert Attribution und einmaliges Projekt-Onboarding ueber den gemeinsamen MCP-Pfad; sender ist nur der sichtbare Nachrichten-Absender und ersetzt agent_id nicht. Keine externen Chat-Systeme.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -531,6 +533,7 @@ const MCP_TOOLS = [
         },
         name: { type: 'string', description: 'Channel-Name (fuer create)' },
         project: { type: 'string', description: 'Projekt-Name (fuer create und list)' },
+        agent_id: { type: 'string', description: 'Optionale Agent-ID fuer Attribution und Projekt-Onboarding (zusammen mit project)' },
         description: { type: 'string', description: 'Beschreibung des Channels (fuer create)' },
         created_by: { type: 'string', description: 'Ersteller (Agent-Name, fuer create)' },
         channel_name: {
@@ -613,7 +616,7 @@ const MCP_TOOLS = [
   // 10. specialist
   {
     name: 'specialist',
-    description: 'Lifecycle persistenter Sub-Hilfsagenten (Spezialisten) im eigenen Projekt-Workspace: anlegen (spawn / spawn_batch), ansprechen (wake), Skill-Konfiguration aktualisieren, pausieren (stop) oder endgueltig deprovisionieren (purge). Spezialisten sind vom User explizit konfigurierte lokale Helfer-Instanzen, gestartet als Subprozess via Claude-CLI auf dem Projekt-PC. Wirkt ausschliesslich auf registrierte Spezialisten-Namen im angegebenen project_path. Keine freien Dateipfade, keine Wildcards, keine Shell-Kommandos, keine externen Systeme.',
+    description: 'Lifecycle persistenter Sub-Hilfsagenten (Spezialisten) im eigenen Projekt-Workspace: anlegen (spawn / spawn_batch), ansprechen (wake), Skill-Konfiguration aktualisieren, pausieren (stop) oder endgueltig deprovisionieren (purge). Spezialisten sind vom User explizit konfigurierte lokale Helfer-Instanzen, gestartet als Subprozess via Claude-CLI auf dem Projekt-PC. Wirkt ausschliesslich auf registrierte Spezialisten-Namen im angegebenen project_path. Keine freien Dateipfade, keine Wildcards, keine Shell-Kommandos, keine externen Systeme. Optionales agent_id ermoeglicht Attribution und serverseitige Hook-Deduplizierung.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -633,6 +636,7 @@ const MCP_TOOLS = [
         expertise: { type: 'string', description: 'Fachgebiet des Spezialisten (erforderlich fuer: spawn)' },
         task: { type: 'string', description: 'Aufgabe fuer den Spezialisten (erforderlich fuer: spawn)' },
         project: { type: 'string', description: 'Projekt-Name (erforderlich fuer: spawn)' },
+        agent_id: { type: 'string', description: 'Optionale Agent-ID fuer Attribution und serverseitige Hook-Deduplizierung' },
         project_path: { type: 'string', description: 'Absoluter Pfad zum Projekt-Ordner. Bei REST-API OPTIONAL — wird vom Daemon aus dem Projektkontext (projects-Tabelle) anhand von project ermittelt. Nur fuer lokale MCP-Direktnutzung erforderlich.' },
         cwd: { type: 'string', description: 'Arbeitsverzeichnis (optional fuer: spawn, Standard: Projekt-Pfad)' },
         channel: { type: 'string', description: 'Channel fuer Kommunikation (optional fuer: spawn, Standard: {project}-general)' },
@@ -1055,19 +1059,20 @@ const MCP_TOOLS = [
   // 18. guide — Web-KI-Onboarding + Tool-Dokumentation (nur REST-API)
   {
     name: 'guide',
-    description: 'Zeigt Quick-Start fuer Web-KIs + detaillierte Nutzungs-Anleitung fuer alle Tools. Ohne Parameter: Uebersicht. Mit tool_name: Deep-Dive. Mit tool_name + action_name: Action-Details. Dieses Tool ist nur via REST-API verfuegbar und verbraucht KEINEN Kontext auf lokalen MCP-Sessions.',
+    description: 'Zeigt Quick-Start fuer Web-KIs + detaillierte Nutzungs-Anleitung fuer alle Tools. Ohne Parameter: Uebersicht. Mit tool_name: Deep-Dive. Mit tool_name + action_name: Action-Details. Dieses Tool ist nur via REST-API verfuegbar und verbraucht KEINEN Kontext auf lokalen MCP-Sessions. Optionales agent_id ermoeglicht Attribution und serverseitige Hook-Deduplizierung.',
     inputSchema: {
       type: 'object',
       properties: {
         tool_name: { type: 'string', description: 'Name des Tools fuer Detail-Doku (z.B. "code_intel", "shell", "files"). Weglassen fuer Uebersicht.' },
         action_name: { type: 'string', description: 'Optional: Spezifische Action innerhalb eines Multi-Action-Tools (z.B. "tree" bei code_intel).' },
+        agent_id: { type: 'string', description: 'Optionale Agent-ID fuer Attribution und serverseitige Hook-Deduplizierung' },
       },
     },
   },
   // 20. workspace — pro-Projekt Docker-Container fuer Shell + File-Sync (server-seitig auf Unraid)
   {
     name: 'workspace',
-    description: 'Lifecycle-Management der pro-Projekt Docker-Sandbox-Container (synapse-workspace:latest) auf dem Synapse-Server. ⚠️ FUER SHELL-AUSFUEHRUNG: nutze IMMER das shell-Tool (Auto-Routing: lokaler Daemon vs Workspace; isolated:true fuer Container-Erzwingung). Dieses workspace-Tool ist nur fuer Lifecycle: list (Status aller Container), start/stop (manuell), pin/unpin (vor Idle-Eviction schuetzen), materialize (FULL sync PG→Container — selten noetig, Auto-Sync laeuft via PG-LISTEN/NOTIFY). exec-Action existiert noch, aber lieber shell({isolated:true}) verwenden — gleiche Engine, einheitliche Antwort, executed_via-Feld. WORKFLOW: Files via files-Tool in code_files → automatisch in Container synchronisiert. Source-Files im /workspace sind READ-ONLY (mode 0444); install/build schreiben in /workspace/node_modules bzw. /workspace/dist (writable). Lifecycle: Idle-Stop nach 10 Min, LRU-Eviction bei Cap. 🌐 NETZWERK: Jede Workspace-Response liefert dns_name (z.B. "synapse-ws-<project>"). Andere proxynet-Container (insbesondere ki-browser) erreichen den Workspace via http://<dns_name>:<port> — NIE die Container-IP nutzen, die wechselt bei Restart. Actions: list, start, stop, pin, unpin, materialize, exec (deprecated → shell), commit (deprecated → files-Tool), configure (cpu_limit/mem_limit_mb/pids_limit/tmpfs_mb/image pro Projekt setzen — greift beim naechsten Container-Start; fuer Build-/Test-Szenarien z.B. mem_limit_mb: 2048, tmpfs_mb: 1024), reset_home (HOME-Volume /home/synapse zuruecksetzen — Selbstheilung wenn npm/pip/cargo/rustup-Caches oder Configs im persistenten Home kaputt sind; stoppt den Container, /workspace bleibt unberuehrt), make_writable (Pfad unterhalb /workspace fuer Build-Artefakte freigeben — chown auf synapse via root-exec; noetig weil der PG-Sync Source-Files als root/0444 anlegt, das Volume selbst ist rw; z.B. path: compiler/target). 🔀 WS3 MULTI-WORKSPACE + WS4 ROLLEN: Benannte Workspaces pro Projekt (Cap ENV SYNAPSE_WS_PER_PROJECT_CAP, Default 6). Rolle = Template (role_set/role_list/role_delete; project weglassen = global), Workspace = Instanz: start/exec mit role:"db-postgres" + name:"db-1" instanziiert ein Template — beliebig oft (db-1, db-2, app, qa, ...), init_command faehrt Dienste nach jedem Start hoch. So entstehen Multi-Geraete-Setups (db ↔ app ↔ wine-qa) im selben proxynet (Param name, Default "main") — z.B. Backend in name:"server", App/Client in name:"app". Alle teilen /workspace (eine Quelle, ein Sync), haben aber EIGENES Home-Volume, eigene Caps und eigenes Image (configure mit name). Sie erreichen sich gegenseitig ueber proxynet-DNS: main = http://synapse-ws-<projekt>:<port> (unveraendert), benannte = http://synapse-ws-<projekt>-<name>:<port>. Use-Case: Backend in "server" starten (exec mit expose_ports), aus "app" oder main per curl dagegen testen — Netzwerk-Integrationstest wie im echten Einsatz, ohne die Sandbox zu verlassen. 🔐 WS5 CONTAINER-BUILDS: Rolle container-builder (Tier-2-Image synapse-workspace-podman:latest) baut/testet Dockerfiles + docker-compose der User-Projekte mit rootless Podman (docker = podman-Alias, daemonless, fuse-overlayfs, Storage im HOME-Volume). Privilegierte Rollen-Optionen (devices/security_opts via role_set) wirken NUR wenn die Rolle in ENV SYNAPSE_WS_PRIVILEGED_ROLES (Komma-Liste) allowlisted ist — sonst verweigert der Orchestrator den Container-Start hart. Kein --privileged, kein docker.sock-Mount — gibt es bewusst nicht.',
+    description: 'Lifecycle-Management der pro-Projekt Docker-Sandbox-Container (synapse-workspace:latest) auf dem Synapse-Server. ⚠️ FUER SHELL-AUSFUEHRUNG: nutze IMMER das shell-Tool (Auto-Routing: lokaler Daemon vs Workspace; isolated:true fuer Container-Erzwingung). Dieses workspace-Tool ist nur fuer Lifecycle: list (Status aller Container), start/stop (manuell), pin/unpin (vor Idle-Eviction schuetzen), materialize (FULL sync PG→Container — selten noetig, Auto-Sync laeuft via PG-LISTEN/NOTIFY). exec-Action existiert noch, aber lieber shell({isolated:true}) verwenden — gleiche Engine, einheitliche Antwort, executed_via-Feld. WORKFLOW: Files via files-Tool in code_files → automatisch in Container synchronisiert. Source-Files im /workspace sind READ-ONLY (mode 0444); install/build schreiben in /workspace/node_modules bzw. /workspace/dist (writable). Lifecycle: Idle-Stop nach 10 Min, LRU-Eviction bei Cap. 🌐 NETZWERK: Jede Workspace-Response liefert dns_name (z.B. "synapse-ws-<project>"). Andere proxynet-Container (insbesondere ki-browser) erreichen den Workspace via http://<dns_name>:<port> — NIE die Container-IP nutzen, die wechselt bei Restart. Actions: list, start, stop, pin, unpin, materialize, exec (deprecated → shell), commit (deprecated → files-Tool), configure (cpu_limit/mem_limit_mb/pids_limit/tmpfs_mb/image pro Projekt setzen — greift beim naechsten Container-Start; fuer Build-/Test-Szenarien z.B. mem_limit_mb: 2048, tmpfs_mb: 1024), reset_home (HOME-Volume /home/synapse zuruecksetzen — Selbstheilung wenn npm/pip/cargo/rustup-Caches oder Configs im persistenten Home kaputt sind; stoppt den Container, /workspace bleibt unberuehrt), make_writable (Pfad unterhalb /workspace fuer Build-Artefakte freigeben — chown auf synapse via root-exec; noetig weil der PG-Sync Source-Files als root/0444 anlegt, das Volume selbst ist rw; z.B. path: compiler/target). 🔀 WS3 MULTI-WORKSPACE + WS4 ROLLEN: Benannte Workspaces pro Projekt (Cap ENV SYNAPSE_WS_PER_PROJECT_CAP, Default 6). Rolle = Template (role_set/role_list/role_delete; project weglassen = global), Workspace = Instanz: start/exec mit role:"db-postgres" + name:"db-1" instanziiert ein Template — beliebig oft (db-1, db-2, app, qa, ...), init_command faehrt Dienste nach jedem Start hoch. So entstehen Multi-Geraete-Setups (db ↔ app ↔ wine-qa) im selben proxynet (Param name, Default "main") — z.B. Backend in name:"server", App/Client in name:"app". Alle teilen /workspace (eine Quelle, ein Sync), haben aber EIGENES Home-Volume, eigene Caps und eigenes Image (configure mit name). Sie erreichen sich gegenseitig ueber proxynet-DNS: main = http://synapse-ws-<projekt>:<port> (unveraendert), benannte = http://synapse-ws-<projekt>-<name>:<port>. Use-Case: Backend in "server" starten (exec mit expose_ports), aus "app" oder main per curl dagegen testen — Netzwerk-Integrationstest wie im echten Einsatz, ohne die Sandbox zu verlassen. 🔐 WS5 CONTAINER-BUILDS: Rolle container-builder (Tier-2-Image synapse-workspace-podman:latest) baut/testet Dockerfiles + docker-compose der User-Projekte mit rootless Podman (docker = podman-Alias, daemonless, fuse-overlayfs, Storage im HOME-Volume). Privilegierte Rollen-Optionen (devices/security_opts via role_set) wirken NUR wenn die Rolle in ENV SYNAPSE_WS_PRIVILEGED_ROLES (Komma-Liste) allowlisted ist — sonst verweigert der Orchestrator den Container-Start hart. Kein --privileged, kein docker.sock-Mount — gibt es bewusst nicht. Optionales agent_id ermoeglicht Attribution und serverseitige Hook-Deduplizierung.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1080,6 +1085,7 @@ const MCP_TOOLS = [
         name: { type: 'string', description: 'WS3: Benannter Workspace innerhalb des Projekts (Default "main"). Cap pro Projekt via ENV SYNAPSE_WS_PER_PROJECT_CAP (Default 6), Regex ^[a-z0-9][a-z0-9-]{0,19}$. Gilt fuer start/stop/pin/unpin/exec/configure/reset_home. DNS: main=synapse-ws-<projekt>, sonst synapse-ws-<projekt>-<name>.' },
         path: { type: 'string', description: 'make_writable: relativer Pfad unterhalb /workspace, der fuer User synapse schreibbar gemacht wird (chown -R + u+rwX, mkdir -p inklusive). Fuer BUILD-ARTEFAKTE gedacht (z.B. compiler/target, build, dist) — der PG-Sync legt Source-Files als root/0444 an, das /workspace-Volume selbst ist rw. Kein "..", nicht "." (Komplett-Freigabe verboten). Source-Edits weiterhin via files-Tool.' },
         project: { type: 'string', description: 'Projekt-Name (Pflicht ausser bei list)' },
+        agent_id: { type: 'string', description: 'Optionale Agent-ID fuer Attribution und serverseitige Hook-Deduplizierung' },
         command: { type: 'string', description: 'Shell-Kommando fuer exec (Pflicht bei exec)' },
         timeout_ms: { type: 'number', description: 'exec: Hard-Timeout in ms (Default 60000)' },
         working_dir: { type: 'string', description: 'exec: alternativer WorkingDir (Default /workspace)' },
@@ -1097,7 +1103,7 @@ const MCP_TOOLS = [
   // 21. skills (EXPERIMENTAL) — Zugriff auf User-eigene Skill-DB (Qdrant collection 'skills')
   {
     name: 'skills',
-    description: 'EXPERIMENTAL: Direkter Lese-Zugriff auf die User-Skill-Datenbank (Qdrant collection "skills" auf Unraid). Ersetzt das vorherige Pattern "via shell ein Node-Skript starten" — KI kann jetzt direkt search/list/get. ⚠️ EXPERIMENTAL weil die Skill-DB in einer kommenden Iteration umgebaut wird (Trennung private vs allgemeine Skills) — die Action-Signatur kann sich aendern. Actions: search (semantic, default 5 hits; optional skill_name-Filter → nur innerhalb eines Skills semantisch suchen), list (alle skill_names + section_counts, optional gefiltert auf 1 skill_name fuer dessen Sections), get_section (skill_name + section → content + tags), get_full (alle sections eines skills bulk, deterministisch, alphabetisch sortiert).',
+    description: 'EXPERIMENTAL: Direkter Lese-Zugriff auf die User-Skill-Datenbank (Qdrant collection "skills" auf Unraid). Ersetzt das vorherige Pattern "via shell ein Node-Skript starten" — KI kann jetzt direkt search/list/get. ⚠️ EXPERIMENTAL weil die Skill-DB in einer kommenden Iteration umgebaut wird (Trennung private vs allgemeine Skills) — die Action-Signatur kann sich aendern. Actions: search (semantic, default 5 hits; optional skill_name-Filter → nur innerhalb eines Skills semantisch suchen), list (alle skill_names + section_counts, optional gefiltert auf 1 skill_name fuer dessen Sections), get_section (skill_name + section → content + tags), get_full (alle sections eines skills bulk, deterministisch, alphabetisch sortiert). Optionales agent_id ermoeglicht Attribution und serverseitige Hook-Deduplizierung.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1106,6 +1112,7 @@ const MCP_TOOLS = [
         skill_name: { type: 'string', description: 'search (optional, filter): nur innerhalb 1 Skills semantisch suchen. list (optional, filter): nur Sections eines Skills. get_section/get_full: Pflicht.' },
         section: { type: 'string', description: 'get_section: Section-Name (Pflicht)' },
         limit: { type: 'number', description: 'search: max Hits (Default 5, Max 20)' },
+        agent_id: { type: 'string', description: 'Optionale Agent-ID fuer Attribution und serverseitige Hook-Deduplizierung' },
       },
       required: ['action'],
     },
@@ -3209,6 +3216,7 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
             code: { totalChunks, byFileType: codeByType },
             thoughts: { total: totalThoughts, bySource: thoughtsBySource },
             memories: { total: totalMemories, byCategory: memoriesByCategory },
+            embeddingQueue: getEmbeddingQueueStats(),
           };
         }
         default:
@@ -3514,9 +3522,19 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
           }
           return { ...c, plan: result, auto_committed: false, message: `Plan ${result.plan_id} angelegt, auto-commit fehlgeschlagen — Plan bleibt offen, kann manuell committet oder cancelt werden.` };
         }
+        const skillHook = args.auto_commit === true
+          ? null
+          : await holeSprachSkillVorschlaege(agentId, opsTyped.map((op) => op.file_path));
         return {
           success: true,
           ...result,
+          ...(skillHook
+            ? {
+                skill_suggestions: skillHook.suggestions,
+                skill_hook_metrics: skillHook.metrics,
+                skill_hook_skipped_due_to_load: skillHook.skipped_due_to_load,
+              }
+            : {}),
           message: `Plan ${result.plan_id} angelegt: ${result.total_ops} Op(s) ueber ${result.files_touched.length} Datei(en).`,
         };
       }

@@ -188,7 +188,7 @@ async function handleList(args: Record<string, unknown>) {
 export const channelTool: ConsolidatedTool = {
   definition: {
     name: 'channel',
-    description: 'Verwaltet Channels fuer Spezialisten-Kommunikation (create, join, leave, post, feed, list)',
+    description: 'Verwaltet Channels fuer Spezialisten-Kommunikation (create, join, leave, post, feed, list). Optionales agent_id aktiviert Attribution und einmaliges Projekt-Onboarding ueber den gemeinsamen MCP-Pfad; sender ist nur der sichtbare Nachrichten-Absender und ersetzt agent_id nicht.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -205,6 +205,10 @@ export const channelTool: ConsolidatedTool = {
         project: {
           type: 'string',
           description: 'Projekt-Name (fuer create und list)',
+        },
+        agent_id: {
+          type: 'string',
+          description: 'Optionale Agent-ID fuer Attribution und Projekt-Onboarding (zusammen mit project)',
         },
         description: {
           type: 'string',

@@ -13,6 +13,7 @@ import {
   indexDocument,
   removeFile,
   getProjectRoot,
+  isProjectEnabled,
   klassifiziereDatei,
 } from '@synapse/core';
 
@@ -75,6 +76,20 @@ export async function fsEventsRoutes(fastify: FastifyInstance): Promise<void> {
       if (typ === 'deleted') {
         await removeFile(relPath, projekt);
       } else {
+        let enabled: boolean;
+        try {
+          enabled = await isProjectEnabled(projekt);
+        } catch (err) {
+          fastify.log.error({ err, projekt, typ, pfad }, 'project status check failed');
+          return reply.status(503).send({
+            success: false,
+            error: { message: 'Projektstatus nicht lesbar' },
+          });
+        }
+        if (!enabled) {
+          return reply.status(200).send({ success: true, uebersprungen: 'project_disabled' });
+        }
+
         // KLASSIFIKATION PFLICHT — siehe klassifiziereDatei. Dieser Endpunkt hatte
         // bis zum 28.07.2026 ueberhaupt keine Pruefung, weder Extension noch
         // Magic Bytes, und schob jede gemeldete Datei durch den Text-Pfad.

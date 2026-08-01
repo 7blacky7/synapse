@@ -22,6 +22,7 @@ import {
   removeFile,
   getProjectRoot,
   setProjectEnabled,
+  isProjectEnabled,
   klassifiziereDatei,
 } from '@synapse/core';
 import {
@@ -78,6 +79,27 @@ function releaseIndexSlot(): void {
   const next = indexWaiters.shift();
   if (next) next();
   else activeIndexOps--;
+}
+
+/**
+ * Unlink bleibt auch nach Disable erlaubt, damit bereits entfernte Dateien
+ * sicher aus dem Index verschwinden. Add/Change brauchen dagegen nach dem
+ * Backpressure-Warten einen frischen enabled-Check.
+ */
+export async function darfWatcherEventNachSlot(
+  eventType: FileEvent['type'],
+  lokalEnabled: boolean,
+  project: string,
+  enabledPruefen: (name: string) => Promise<boolean> = isProjectEnabled
+): Promise<boolean> {
+  if (eventType === 'unlink') return true;
+  if (!lokalEnabled) return false;
+  try {
+    return await enabledPruefen(project);
+  } catch (err) {
+    console.error(`[manager] Projektstatus nicht lesbar, ${eventType} verworfen: ${project}`, err);
+    return false;
+  }
 }
 
 export class WatcherManager {
@@ -303,6 +325,10 @@ export class WatcherManager {
     await acquireIndexSlot();
     try {
       const projektCfg = this.config.projekte.find((p) => p.name === event.project);
+      if (!(await darfWatcherEventNachSlot(event.type, projektCfg?.enabled === true, event.project))) {
+        console.error(`[manager] ${event.type} nach Disable verworfen: ${event.project}/${event.path}`);
+        return;
+      }
       const projectRoot = (await getProjectRoot(event.project)) ?? projektCfg?.pfad;
       if (!projectRoot) {
         console.error(`[manager] indexieren skip: kein projectRoot fuer "${event.project}"`);

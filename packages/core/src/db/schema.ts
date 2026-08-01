@@ -343,6 +343,18 @@ CREATE TABLE IF NOT EXISTS code_chunks (
 CREATE INDEX IF NOT EXISTS idx_code_chunks_file ON code_chunks(project, file_path);
 CREATE INDEX IF NOT EXISTS idx_code_chunks_unembedded ON code_chunks(project) WHERE embedded_at IS NULL;
 
+-- GPU-2: verteilte Pull-Claims. Altbestand bleibt claimbar; content_hash wird beim
+-- ersten Claim serverseitig aus dem aktuellen Inhalt berechnet. Lease/Token sind
+-- reine Arbeitszustaende, embedded_at bleibt die fachliche Quelle der Wahrheit.
+ALTER TABLE code_chunks ADD COLUMN IF NOT EXISTS content_hash TEXT;
+ALTER TABLE code_chunks ADD COLUMN IF NOT EXISTS claim_token TEXT;
+ALTER TABLE code_chunks ADD COLUMN IF NOT EXISTS claimed_by TEXT;
+ALTER TABLE code_chunks ADD COLUMN IF NOT EXISTS lease_until TIMESTAMPTZ;
+ALTER TABLE code_chunks ADD COLUMN IF NOT EXISTS claim_attempt INTEGER NOT NULL DEFAULT 0;
+CREATE INDEX IF NOT EXISTS idx_code_chunks_claimable
+  ON code_chunks(lease_until, project, file_path, chunk_index)
+  WHERE embedded_at IS NULL;
+
 -- ============================================================================
 -- CodeIntel Ablauf-Ebene (Statement-/Execution-Flow)
 -- code_statements: pro Datei geordnete Statements (top-level + innerhalb Scopes)
@@ -793,6 +805,25 @@ CREATE TABLE IF NOT EXISTS file_batch_plans (
 CREATE INDEX IF NOT EXISTS idx_file_batch_plans_status ON file_batch_plans(project, status, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_file_batch_plans_open ON file_batch_plans(project, expires_at) WHERE status = 'open';
 ALTER TABLE file_batch_plans ADD COLUMN IF NOT EXISTS reason TEXT;
+
+-- Serverseitige Skill-Hooks: Dedup gilt bewusst global je Agent und Skill.
+-- Wechselnde Agent-IDs duerfen erneut vorgeschlagen bekommen.
+CREATE TABLE IF NOT EXISTS skill_hook_deliveries (
+  agent_id TEXT NOT NULL,
+  skill_name TEXT NOT NULL,
+  hook_name TEXT NOT NULL,
+  suggested_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (agent_id, skill_name)
+);
+
+CREATE TABLE IF NOT EXISTS skill_hook_metrics (
+  hook_name TEXT PRIMARY KEY,
+  suggested_count BIGINT NOT NULL DEFAULT 0,
+  dedup_suppressed_count BIGINT NOT NULL DEFAULT 0,
+  load_skipped_count BIGINT NOT NULL DEFAULT 0,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 
 -- File-Change-Notify: jeder INSERT in file_versions feuert pg_notify('synapse_file', ...)
 -- damit Wrapper bei File-Aenderungen sofort reagieren koennen (Heartbeat-Reset auf 10s
@@ -1365,6 +1396,40 @@ CREATE TABLE IF NOT EXISTS auth_tokens (
 );
 CREATE INDEX IF NOT EXISTS idx_auth_tokens_kind_expires ON auth_tokens(kind, expires_at);
 CREATE INDEX IF NOT EXISTS idx_auth_tokens_client ON auth_tokens(client_id);
+
+-- GPU-1: Registry externer Ollama-Compute-Knoten. ollama_url ist reine
+-- Information und wird serverseitig niemals abgerufen.
+CREATE TABLE IF NOT EXISTS embedding_knoten (
+  node_id TEXT PRIMARY KEY,
+  host TEXT NOT NULL,
+  ollama_url TEXT NOT NULL,
+  modell TEXT NOT NULL,
+  modell_digest TEXT NOT NULL CHECK (modell_digest ~ '^[0-9a-f]{64}$'),
+  quantisierung TEXT,
+  native_dimension INTEGER NOT NULL CHECK (native_dimension > 0),
+  ziel_dimension INTEGER NOT NULL CHECK (ziel_dimension > 0),
+  num_ctx INTEGER NOT NULL CHECK (num_ctx > 0),
+  vram_gesamt_mb INTEGER NOT NULL CHECK (vram_gesamt_mb >= 0),
+  vram_frei_mb INTEGER NOT NULL CHECK (vram_frei_mb >= 0),
+  system_memory_mb INTEGER,
+  cpu_cores INTEGER,
+  gpu_name TEXT,
+  max_concurrency INTEGER NOT NULL CHECK (max_concurrency > 0),
+  active_jobs INTEGER NOT NULL DEFAULT 0 CHECK (active_jobs >= 0),
+  status TEXT NOT NULL DEFAULT 'ready' CHECK (status IN ('ready','busy','locked','failed')),
+  gesperrt_vom_user BOOLEAN NOT NULL DEFAULT FALSE,
+  sperrgrund TEXT,
+  service_token_hash TEXT NOT NULL UNIQUE REFERENCES auth_tokens(token_hash) ON DELETE CASCADE,
+  agent_version TEXT,
+  boot_id TEXT NOT NULL,
+  last_sequence BIGINT NOT NULL DEFAULT 0 CHECK (last_sequence >= 0),
+  boot_started_at TIMESTAMPTZ NOT NULL,
+  registriert_am TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  letzter_kontakt TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  aktualisiert_am TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_embedding_knoten_letzter_kontakt
+  ON embedding_knoten(letzter_kontakt);
 `;
 
 export async function ensureSchema(): Promise<void> {

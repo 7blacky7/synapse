@@ -15,7 +15,7 @@
  *   - Kein Schreiben, reine Leseoperation
  */
 
-import { getProjectStats, COLLECTIONS } from '@synapse/core';
+import { getProjectStats, getEmbeddingQueueStats, COLLECTIONS } from '@synapse/core';
 
 interface IndexStats {
   project: string;
@@ -130,6 +130,7 @@ export async function getDetailedStats(
       total: number;
       byCategory: Record<string, number>;
     };
+    embeddingQueue: ReturnType<typeof getEmbeddingQueueStats>;
   } | null;
   message: string;
 }> {
@@ -222,6 +223,7 @@ export async function getDetailedStats(
           total: totalMemories,
           byCategory: memoriesByCategory,
         },
+        embeddingQueue: getEmbeddingQueueStats(),
       },
       message: 'Detaillierte Statistiken abgerufen',
     };

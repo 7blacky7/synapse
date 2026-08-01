@@ -37,6 +37,7 @@
 
 import { v4 as uuidv4 } from 'uuid';
 import { embed } from '../embeddings/index.js';
+import type { EmbedOptions } from '../embeddings/index.js';
 import { getPool } from '../db/client.js';
 import { ensureCollection } from '../qdrant/collections.js';
 import {
@@ -449,7 +450,11 @@ function payloadToProposal(id: string, payload: ProposalPayload): Proposal {
  * ist. embedded_at wird ERST nach erfolgreichem insertVector gesetzt; faellt das Embedding aus,
  * bleibt die Spalte NULL und der Backlog holt den Eintrag erneut.
  */
-export async function embeddeProposalNach(project: string, id: string): Promise<void> {
+export async function embeddeProposalNach(
+  project: string,
+  id: string,
+  embedOptions: EmbedOptions = {},
+): Promise<void> {
   const pool = getPool();
   const { rows } = await pool.query(
     `SELECT file_path, suggested_content, description, author, status, tags, created_at, updated_at
@@ -465,7 +470,7 @@ export async function embeddeProposalNach(project: string, id: string): Promise<
   // Derselbe Text wie im Schreibpfad: description + file_path. Wer das hier aendert, ohne es
   // dort zu aendern, bekommt zwei verschiedene Vektoren fuer denselben Eintrag — je nachdem,
   // ob er beim Schreiben oder ueber den Backlog entstanden ist.
-  const vector = await embed(`${row.description} ${row.file_path}`);
+  const vector = await embed(`${row.description} ${row.file_path}`, embedOptions);
   const payload: ProposalPayload = {
     project,
     file_path: row.file_path,

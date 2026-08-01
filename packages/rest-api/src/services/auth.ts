@@ -339,6 +339,20 @@ export async function issueSessionToken(
   });
 }
 
+/** Stellt ein echtes Service-Token aus; scope ist der serverseitige Principal-Kontext. */
+export async function issueServiceToken(
+  scope: string,
+  label: string | null = null,
+  ttlMs: number = SERVICE_TOKEN_TTL_MS,
+): Promise<IssuedToken> {
+  return insertToken({
+    kind: 'service',
+    scope,
+    label,
+    expiresAt: new Date(Date.now() + ttlMs),
+  });
+}
+
 /**
  * Validiert ein Klartext-Token: liefert die Zeile, wenn vorhanden UND nicht
  * abgelaufen, sonst null. Aktualisiert bei Erfolg last_used_at (touch).
