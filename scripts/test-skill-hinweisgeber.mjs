@@ -11,6 +11,7 @@ import assert from 'node:assert/strict';
 import {
   sammleSkillQuellen,
   verarbeiteSkillHinweisgeber,
+  istNamentlichGenannt,
 } from '../packages/core/dist/services/skill-hook.js';
 
 function fakePool(aktiveAgenten = ['agent-a', 'agent-b']) {
@@ -86,6 +87,36 @@ const viele = sammleSkillQuellen(
   { plan: { tasks: Array.from({ length: 10 }, (_, i) => ({ id: `T-${i}`, title: `fal-ai-image ${i}` })) } },
 );
 assert.equal(viele.length, 3, 'hoechstens drei Quellen je Aufruf');
+
+// === 1b. DIE VERPACKUNG IST KEIN HINWEISGEBER ===
+// Beim ERSTEN Aufruf einer neuen Agent-ID haengt agentOnboarding mit allen Projekt-Regeln in
+// der Antwort, und eine Regel hat die Form {name, content} — genau das gesuchte Muster.
+// GEMESSEN am 02.08.2026: ein GPT-Agent rief eine Task ab und bekam docker-containerization,
+// claude-session-start und claude-desktop-linux vorgeschlagen. Keiner stand in der Task.
+const mitVerpackung = sammleSkillQuellen(
+  'plan', 'get', { project: 'synapse' },
+  {
+    plan: { tasks: [{ id: 'T-1', title: 'Auftrag', description: 'mit fal-ai-image bauen' }] },
+    agentOnboarding: { isFirstVisit: true, rules: [
+      { name: 'deploy-regel', content: 'docker build und docker run ...' },
+      { name: 'session-regel', content: 'claude-session-start beachten ...' },
+    ] },
+    tool_guide: { name: 'plan', content: 'claude-desktop-linux ...' },
+    unread_channels: [{ project: 'synapse', channel: 'x', content: 'shadcn-ui' }],
+  },
+);
+assert.deepEqual(mitVerpackung.map((q) => q.id), ['T-1'],
+  'nur der Inhalt zaehlt, nicht Onboarding, Tool-Doku oder Channel-Hinweise');
+
+// === 1c. EIN FRAGMENT GILT NUR AN ECHTEN WORTGRENZEN — auch IM TEXT ===
+// "python" ist genau sechs Zeichen lang und steckt in jedem python-*-Namen. Im Text steht es
+// aber mitten in einem anderen Skillnamen. GEMESSEN: python-testing-patterns im Text zog
+// python-performance-optimization als angeblichen Namenstreffer mit Score 0,99.
+const textMitPython = 'fuer die Auswertung nehmen wir python-testing-patterns';
+assert.equal(istNamentlichGenannt('python-performance-optimization', textMitPython), false);
+assert.equal(istNamentlichGenannt('python-testing-patterns', textMitPython), true);
+// Der Fall, fuer den die Fragment-Regel gebaut wurde, muss weiter tragen:
+assert.equal(istNamentlichGenannt('ki-browser-standalone', 'siehe ki-browser hier'), true);
 
 // === 2. SCHREIBEN: Vorrat fuer alle angemeldeten Projekt-Agenten ===
 const schreibPool = fakePool(['agent-a', 'agent-b']);

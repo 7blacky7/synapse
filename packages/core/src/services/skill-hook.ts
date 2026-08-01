@@ -250,6 +250,18 @@ type ChannelSkillBatchSearch = typeof searchSkillsForAgents;
  */
 const NAMENSTREFFER_SCORE = 0.99;
 
+/**
+ * Score fuer einen Namen, den nur die UNSCHARFE Suche gefunden hat (Trigram, fuer Tippfehler
+ * und Leerzeichen statt Bindestrich).
+ *
+ * ⚠️ NICHT DERSELBE WERT WIE EIN WOERTLICHER TREFFER (gefunden 02.08.2026). Beide auf 0,99
+ * zu setzen macht sie ununterscheidbar — und weil je Abruf nur drei Vorschlaege gezeigt
+ * werden und eine Sortierung bei Gleichstand nichts zu entscheiden hat, verdraengt dann der
+ * unscharfe Fund den ausgeschriebenen Namen rein zufaellig. Wer einen Skill hinschreibt, muss
+ * vor dem stehen, den ein Trigramm fuer aehnlich haelt.
+ */
+const FUZZY_NAMENSTREFFER_SCORE = 0.95;
+
 /** Wie viele Treffer Qdrant je Agent liefern soll. */
 const CHANNEL_SKILL_SUCHBREITE = 30;
 /** Wie viele Kandidaten je Nachricht abgelegt werden — Vorrat zum Nachruecken. */
@@ -334,10 +346,27 @@ export function istNamentlichGenannt(skillName: string | undefined | null, query
   if (!name) return false;
   const lower = query.toLowerCase();
   if (lower.includes(name)) return true;
+
+  // ⚠️ DIE WORTGRENZE MUSS AUF BEIDEN SEITEN GELTEN — im Namen UND im Text.
+  // Hier stand sie nur fuer den Namen. GEMESSEN am 02.08.2026: ein Text, der
+  // python-testing-patterns nennt, zog python-performance-optimization als angeblichen
+  // Namenstreffer mit Score 0,99. Das Fragment "python" ist genau sechs Zeichen lang,
+  // besteht die Mindestlaenge und steckt in jedem python-*-Namen — im Text steht es aber
+  // mitten in einem anderen Wort. Ein Fragment innerhalb eines fremden Wortes bedeutet nichts.
+  // DER BINDESTRICH ZAEHLT NICHT ALS GRENZE, sonst trifft jedes Fragment, das in einem
+  // laengeren Skillnamen steckt, der wirklich im Text steht.
+  // DIESELBE REGEL STEHT IN skills.ts:findeSkillsNachName. Sie war dort vollstaendig und
+  // hier verkuerzt — zwei Kopien einer Bedingung, von denen eine nur die halbe Pruefung macht.
+  const grenze = (zeichen: string | undefined) =>
+    zeichen === undefined || !/[a-z0-9-]/.test(zeichen);
   for (let ende = name.length - 1; ende >= MINDESTLAENGE_FRAGMENT; ende--) {
     if (name[ende] !== '-' && name[ende] !== ':') continue;
-    const anfang = name.slice(0, ende);
-    if (lower.includes(anfang)) return true;
+    const fragment = name.slice(0, ende);
+    let ab = lower.indexOf(fragment);
+    while (ab !== -1) {
+      if (grenze(lower[ab - 1]) && grenze(lower[ab + fragment.length])) return true;
+      ab = lower.indexOf(fragment, ab + 1);
+    }
   }
   return false;
 }
@@ -500,14 +529,18 @@ export async function bereiteSkillVorschlaegeVor(
     // schwachen Score und landete hinter rein semantischen Treffern. Derselbe Skill, derselbe
     // Text, zwei verschiedene Raenge — je nachdem, was Qdrant zufaellig zurueckgab.
     for (const hit of eintrag.hits) {
-      if (istGenannt(hit.skill_name) && hit.score < NAMENSTREFFER_SCORE) {
-        hit.score = NAMENSTREFFER_SCORE;
-      }
+      const wunsch = istNamentlichGenannt(hit.skill_name, query)
+        ? NAMENSTREFFER_SCORE
+        : (istGenannt(hit.skill_name) ? FUZZY_NAMENSTREFFER_SCORE : 0);
+      if (wunsch > hit.score) hit.score = wunsch;
     }
     const vorhanden = new Set(eintrag.hits.map((hit) => hit.skill_name));
     for (const name of namensTreffer) {
       if (!vorhanden.has(name)) {
-        eintrag.hits.push({ skill_name: name, score: NAMENSTREFFER_SCORE } as SkillSearchHit);
+        eintrag.hits.push({
+          skill_name: name,
+          score: istNamentlichGenannt(name, query) ? NAMENSTREFFER_SCORE : FUZZY_NAMENSTREFFER_SCORE,
+        } as SkillSearchHit);
       }
     }
   }
@@ -711,13 +744,25 @@ export function sammleSkillQuellen(
     }
     const obj = wert as Record<string, unknown>;
     const payload = obj.payload as Record<string, unknown> | undefined;
+    // ⚠️ DIE VERPACKUNG IST KEIN HINWEISGEBER (gefunden im Live-Test 02.08.2026).
+    // Jede Antwort traegt Beipack: beim ERSTEN Aufruf einer neuen Agent-ID haengt
+    // agentOnboarding mit ALLEN Projekt-Regeln darin, und eine Regel hat die Form
+    // {name, content} — genau das Muster, nach dem hier gesucht wird. GEMESSEN: ein GPT-Agent
+    // rief eine Task ab und bekam docker-containerization, claude-session-start und
+    // claude-desktop-linux vorgeschlagen. Keiner davon stand in der Task; alle drei stammten
+    // aus den Regeltexten, die nur zufaellig mitgeliefert wurden.
+    // Diese Felder beschreiben den Rahmen, nicht den Inhalt — sie bleiben aussen vor.
+    const VERPACKUNG = new Set([
+      'agentOnboarding', 'tool_guide', 'unread_channels',
+      'skill_suggestions', 'skill_hook_metrics', 'embeddings_hint',
+    ]);
     const inhalt = obj.content ?? payload?.content;
     const titel = obj.title ?? payload?.title;
     const beschreibung = obj.description ?? payload?.description;
     const kennung = obj.id ?? obj.name ?? obj.task_id ?? payload?.id ?? payload?.name;
     if (inhalt || titel || beschreibung) merke(kennung, titel, beschreibung, inhalt);
     for (const [feld, unterwert] of Object.entries(obj)) {
-      if (feld === 'payload') continue;
+      if (feld === 'payload' || VERPACKUNG.has(feld)) continue;
       durchsuche(unterwert, tiefe + 1);
     }
   };
@@ -844,7 +889,7 @@ export async function holeOffeneSkillVorschlaege(
         skill_name: frisch[0].skill_name,
         score: Number(frisch[0].score),
         reason: frisch[0].reason,
-        message: `Weitere Skills aus dem Channel: ${kurz}\nVolltext: skills(action:'get_full', skill_name:'<name>')`,
+      message: `Weitere Skills: ${kurz}\nVolltext: skills(action:'get_full', skill_name:'<name>')`,
         skills: frisch.map((row) => ({
           skill_name: row.skill_name,
           score: Number(Number(row.score).toFixed(4)),
