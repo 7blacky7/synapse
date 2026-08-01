@@ -129,7 +129,7 @@ type DetailWindow struct {
 	// beim naechsten Oeffnen sofort wieder da ist. Ohne diese Marke lief die
 	// Auffrisch-Schleife trotzdem weiter darueber: vier Abfragen je Projekt,
 	// alle drei Sekunden, rund um die Uhr, fuer ein Fenster das niemand sieht.
-	sichtbar      atomic.Bool
+	sichtbar atomic.Bool
 }
 
 // ChatWindow represents the channel chat window
@@ -1336,9 +1336,12 @@ func zeigeGPUFenster() {
 		})
 	}()
 
-	var useButton *widget.Button
+	var toggleButton *widget.Button
+	// knopfBeschriften wird erst weiter unten belegt, aber schon hier von
+	// startSetup gebraucht — daher die Vorab-Deklaration.
+	var knopfBeschriften func()
 	startSetup := func(index int, h gpuHardware, mustPull bool) {
-		useButton.Disable()
+		toggleButton.Disable()
 		status.SetText("Einrichtung läuft …")
 		// Kein TOTP mehr im Fenster: der Server nimmt das Daemon-Token als Ausweis.
 		// Der leere String schaltet apiHoleComputeToken auf genau diesen Weg um.
@@ -1397,7 +1400,7 @@ func zeigeGPUFenster() {
 				err = saveGPUNodeConfig(cfg)
 			}
 			if err == nil {
-				err = startGPUComputeAgent(cfg, ref.Reference)
+				err = startLokalenGPUHelper(cfg, ref.Reference)
 			}
 			effectiveStatus := ""
 			if err == nil {
@@ -1406,39 +1409,93 @@ func zeigeGPUFenster() {
 					self, selfErr := apiFetchOwnEmbeddingNode(cfg.NodeID, cfg.Issuer, cfg.ComputeToken)
 					if selfErr == nil {
 						effectiveStatus = self.Node.EffectiveStatus
-						if effectiveStatus == "ready" || effectiveStatus == "locked" {
+						// ⚠️ busy GEHOERT DAZU. Hier stand bis zum 01.08.2026 nur ready und
+						// locked — ein Knoten, der sofort einen Chunk annimmt, steht aber auf
+						// busy und erreichte ready nie. Der Handshake scheiterte damit an
+						// seinem eigenen Erfolg: je schneller der Knoten arbeitete, desto
+						// sicherer meldete die Oberflaeche "nicht eingerichtet".
+						// GEMESSEN im selben Moment, in dem der Tray den Fehler zeigte:
+						// status=busy, active_jobs=1, gesperrt=false.
+						// Der Server wertet busy laengst als nutzbar (listEmbeddingNodes:
+						// usable = ready || busy) — der Tray war die einzige Stelle, die
+						// strenger urteilte als die Instanz, die entscheidet.
+						if effectiveStatus == "ready" || effectiveStatus == "busy" || effectiveStatus == "locked" {
 							break
 						}
 					}
 					time.Sleep(1500 * time.Millisecond)
 				}
-				if effectiveStatus != "ready" && effectiveStatus != "locked" {
-					err = errors.New("Registry-Handshake wurde nicht innerhalb von 45 Sekunden ready; Node ist nicht bereit")
+				if effectiveStatus != "ready" && effectiveStatus != "busy" && effectiveStatus != "locked" {
+					err = fmt.Errorf("Registry-Handshake wurde nicht innerhalb von 45 Sekunden bereit; zuletzt gemeldeter Zustand: %q", effectiveStatus)
 				}
 			}
 			fyne.Do(func() {
-				useButton.Enable()
+				toggleButton.Enable()
 				if err != nil {
 					status.SetText("Nicht eingerichtet: " + err.Error())
 				} else if effectiveStatus == "locked" {
 					status.SetText(fmt.Sprintf("Registry bestätigt: %s ist dauerhaft gesperrt_vom_user.", cfg.NodeID))
 					details.SetText(gpuComparisonText(ref, tag, &h))
 				} else {
-					status.SetText(fmt.Sprintf("Registry bestätigt READY: %s; %d MB gesamt / %d MB frei gemessen.", cfg.NodeID, h.TotalMB, h.FreeMB))
+					status.SetText(fmt.Sprintf("Registry bestätigt %s: %s; %d MB gesamt / %d MB frei gemessen.", strings.ToUpper(effectiveStatus), cfg.NodeID, h.TotalMB, h.FreeMB))
 					details.SetText(gpuComparisonText(ref, tag, &h))
 				}
 			})
+			knopfBeschriften()
 		}()
 	}
-	useButton = widget.NewButton("Meine GPU verwenden", func() {
+
+	// gpuZustandLesen beantwortet die einzige Frage, die der Knopf braucht: wird
+	// die lokale GPU gerade verwendet? Die Registry ist die Wahrheit ueber die
+	// Sperre, der laufende Helfer die Wahrheit ueber den Betrieb — erst beides
+	// zusammen ergibt den Zustand. Geht ueber das Netz, gehoert also nie auf den
+	// UI-Faden.
+	gpuZustandLesen := func() (eingerichtet, gesperrt, laeuft bool) {
+		cfg := loadGPUNodeConfig()
+		if strings.TrimSpace(cfg.NodeID) == "" {
+			return false, false, false
+		}
+		laeuft = laufenderLokalerGPUHelper() > 0
+		if self, err := apiFetchOwnEmbeddingNode(cfg.NodeID, cfg.Issuer, cfg.ComputeToken); err == nil {
+			gesperrt = self.Node.EffectiveStatus == "locked"
+		}
+		return true, gesperrt, laeuft
+	}
+
+	// knopfBeschriften macht den Knopf zur Zustandsanzeige: er sagt, was gerade
+	// gilt, und was ein Klick daraus macht. Vorher gab es zwei Knoepfe, von denen
+	// immer einer wirkungslos war — und nach dem Sperren fuehrte keiner zurueck.
+	knopfBeschriften = func() {
+		eingerichtet, gesperrt, laeuft := gpuZustandLesen()
+		fyne.Do(func() {
+			switch {
+			case !eingerichtet:
+				toggleButton.SetText("Meine GPU verwenden")
+			case gesperrt:
+				toggleButton.SetText("GPU ist gesperrt — klicken zum Verwenden")
+			case laeuft:
+				toggleButton.SetText("GPU wird verwendet — klicken zum Sperren")
+			default:
+				toggleButton.SetText("GPU eingerichtet, Helfer läuft nicht — klicken zum Starten")
+			}
+			toggleButton.Enable()
+		})
+	}
+	// verwendenStarten ist der bisherige Verwenden-Weg: Hardware messen, Digest
+	// pruefen, notfalls das Modell laden und einrichten. Laeuft auf dem UI-Faden,
+	// weil er einen Dialog zeigen kann. Jeder vorzeitige Ausstieg muss den Knopf
+	// wieder freigeben — sonst bleibt er nach einem Fehlversuch tot.
+	verwendenStarten := func() {
 		if !refOK {
 			status.SetText("API-Einstellungen sind nicht belegbar; keine lokale Aktion.")
+			toggleButton.Enable()
 			return
 		}
 		// Ausweis ist das Daemon-Token. Fehlt es, kann hier nichts eingerichtet
 		// werden — die Anfrage braucht dann gar nicht erst rauszugehen.
 		if strings.TrimSpace(apiToken()) == "" {
 			status.SetText("Es liegt kein Synapse-Token vor. Bitte zuerst über \"Mit Synapse verbinden\" ein Token holen.")
+			toggleButton.Enable()
 			return
 		}
 		index := gpuSelect.SelectedIndex()
@@ -1446,6 +1503,7 @@ func zeigeGPUFenster() {
 		if err != nil {
 			status.SetText(err.Error())
 			details.SetText(gpuComparisonText(ref, nil, &h))
+			toggleButton.Enable()
 			return
 		}
 		tag, tagErr := localOllamaTag(ref.Reference.Model)
@@ -1453,6 +1511,7 @@ func zeigeGPUFenster() {
 			if ref.Reference.ModelDigest == nil || !gpuDigestsMatch(*ref.Reference.ModelDigest, tag.Digest) {
 				status.SetText("Digest weicht ab oder ist nicht konfiguriert; Node wird nicht gebunden.")
 				details.SetText(gpuComparisonText(ref, tag, &h))
+				toggleButton.Enable()
 				return
 			}
 			startSetup(index, h, false)
@@ -1462,25 +1521,60 @@ func zeigeGPUFenster() {
 		dialog.NewConfirm("Download bestätigen", msg, func(ok bool) {
 			if ok {
 				startSetup(index, h, true)
+				return
 			}
+			// Abbruch ist kein Fehler, darf den Knopf aber nicht gesperrt lassen.
+			go knopfBeschriften()
 		}, fenster).Show()
-	})
-	lockButton := widget.NewButton("Meine GPU nicht verwenden", func() {
-		cfg := loadGPUNodeConfig()
-		if cfg.NodeID == "" {
-			status.SetText("Noch keine lokale GPU-Node eingerichtet.")
-			return
-		}
+	}
+
+	// sperrenAusfuehren setzt die Registry-Sperre UND beendet den lokalen Helfer.
+	// Das Beenden geschieht auch dann, wenn die Sperre fehlschlaegt: der Nutzer
+	// hat "sperren" gedrueckt, und ein weiterlaufender Helfer waere das Gegenteil.
+	// Vorher blieb er stehen und lief endlos in 403 node_not_usable.
+	sperrenAusfuehren := func(nodeID string) {
+		err := apiSetEmbeddingLockMitDaemonToken(nodeID, true)
+		stopErr := stopLokalenGPUHelper()
+		fyne.Do(func() {
+			switch {
+			case err != nil && stopErr != nil:
+				status.SetText("Sperren fehlgeschlagen: " + err.Error() + "; zusaetzlich " + stopErr.Error())
+			case err != nil:
+				status.SetText("Sperren fehlgeschlagen: " + err.Error() + "; der lokale GPU-Helfer wurde beendet.")
+			case stopErr != nil:
+				status.SetText("GPU ist als gesperrt_vom_user markiert, aber " + stopErr.Error())
+			default:
+				status.SetText("GPU ist gesperrt; der lokale GPU-Helfer wurde beendet.")
+			}
+		})
+		knopfBeschriften()
+	}
+
+	// EIN Knopf statt zwei: sein Text nennt den Zustand, sein Klick kehrt ihn um.
+	// Das Entsperren steckt bewusst im Verwenden-Zweig — ohne das kam der Nutzer
+	// aus der Sperre nicht mehr heraus, weil der Handshake in locked haengenblieb.
+	toggleButton = widget.NewButton("Meine GPU verwenden", func() {
+		toggleButton.Disable()
+		status.SetText("Zustand wird geprüft …")
 		go func() {
-			// Sperren mit dem Daemon-Token statt mit einer TOTP-Sitzung.
-			err := apiSetEmbeddingLockMitDaemonToken(cfg.NodeID, true)
-			fyne.Do(func() {
-				if err != nil {
-					status.SetText("Sperren fehlgeschlagen: " + err.Error())
-				} else {
-					status.SetText("GPU ist sofort und dauerhaft als gesperrt_vom_user markiert.")
+			eingerichtet, gesperrt, laeuft := gpuZustandLesen()
+			cfg := loadGPUNodeConfig()
+			switch {
+			case eingerichtet && !gesperrt && laeuft:
+				sperrenAusfuehren(cfg.NodeID)
+			case eingerichtet && gesperrt:
+				if err := apiSetEmbeddingLockMitDaemonToken(cfg.NodeID, false); err != nil {
+					fyne.Do(func() { status.SetText("Entsperren fehlgeschlagen: " + err.Error()) })
+					knopfBeschriften()
+					return
 				}
-			})
+				fyne.Do(func() {
+					status.SetText("Sperre aufgehoben; Einrichtung läuft …")
+					verwendenStarten()
+				})
+			default:
+				fyne.Do(verwendenStarten)
+			}
 		}()
 	})
 	// Nachmessen auf Knopfdruck: Hardware und lokales Modell koennen sich
@@ -1531,8 +1625,10 @@ func zeigeGPUFenster() {
 	fenster.SetContent(container.NewVBox(status, details,
 		widget.NewLabel("GPU-Auswahl"), gpuSelect, pruefButton,
 		widget.NewLabel("Modell-Zielpfad (vor Download prüfen)"), modelDir,
-		container.NewHBox(useButton, lockButton)))
+		container.NewHBox(toggleButton)))
 	fenster.Resize(fyne.NewSize(820, 760))
+	// Beim Oeffnen zeigt der Knopf sofort den echten Zustand statt einer Vorgabe.
+	go knopfBeschriften()
 	fenster.Show()
 }
 
