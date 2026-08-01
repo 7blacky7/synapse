@@ -853,10 +853,31 @@ CREATE TABLE IF NOT EXISTS channel_skill_preparations (
   score DOUBLE PRECISION NOT NULL,
   reason TEXT NOT NULL,
   prepared_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  PRIMARY KEY (message_id, agent_id)
+  -- MEHRERE KANDIDATEN JE NACHRICHT UND AGENT.
+  -- Bis zum 02.08.2026 lag der Schluessel auf (message_id, agent_id) — also genau EIN
+  -- Vorschlag. Da jeder Skill einem Agenten nur einmal gezeigt wird, war die Nachricht
+  -- danach verbraucht: der zweitbeste Treffer, der ebenfalls darin steckte, ging verloren.
+  -- Jetzt werden mehrere Kandidaten abgelegt und ruecken nach, sobald die vorderen
+  -- ausgeliefert sind.
+  PRIMARY KEY (message_id, agent_id, skill_name)
 );
 CREATE INDEX IF NOT EXISTS idx_channel_skill_preparations_agent_message
   ON channel_skill_preparations(agent_id, message_id);
+
+-- Migration fuer bestehende Installationen: der alte Primaerschluessel liess nur eine Zeile
+-- je (Nachricht, Agent) zu und wuerde jeden zweiten Kandidaten abweisen.
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM pg_constraint
+     WHERE conname = 'channel_skill_preparations_pkey'
+       AND (SELECT COUNT(*) FROM unnest(conkey)) = 2
+  ) THEN
+    ALTER TABLE channel_skill_preparations DROP CONSTRAINT channel_skill_preparations_pkey;
+    ALTER TABLE channel_skill_preparations
+      ADD PRIMARY KEY (message_id, agent_id, skill_name);
+  END IF;
+END $$;
 
 CREATE TABLE IF NOT EXISTS skill_hook_metrics (
   hook_name TEXT PRIMARY KEY,

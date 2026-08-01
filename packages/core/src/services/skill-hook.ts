@@ -10,7 +10,7 @@
 import * as path from 'path';
 import type { Pool, PoolClient, QueryResult, QueryResultRow } from 'pg';
 import { getPool } from '../db/client.js';
-import { searchSkillsForAgents, type SkillSearchHit } from './skills.js';
+import { listSkills, searchSkillsForAgents, type SkillSearchHit } from './skills.js';
 
 const HOOK_NAME = 'files_plan_language';
 const HOOK_QUERY_TIMEOUT_MS = 30;
@@ -46,6 +46,15 @@ export interface SkillVorschlag {
   message: string;
   score?: number;
   reason?: string;
+  /**
+   * Alle in diesem Abruf erstmals gezeigten Skills, bestsortiert.
+   *
+   * skill_name/score/reason oben beschreiben den ersten davon und bleiben erhalten, damit
+   * bestehende Auswertungen weiterlaufen. Die Zeile in message nennt alle drei kompakt —
+   * der Hinweis haengt an jeder Tool-Antwort und darf den Kontext nicht mit Fliesstext
+   * fuellen.
+   */
+  skills?: Array<{ skill_name: string; score: number; reason: string }>;
 }
 
 export interface SkillHookMetriken {
@@ -235,6 +244,19 @@ export async function holeSprachSkillVorschlaege(
 
 export interface ChannelSkillNachricht { id?: number; content: string }
 type ChannelSkillBatchSearch = typeof searchSkillsForAgents;
+/**
+ * Ersatzwert fuer einen Skill, der im Text beim Namen genannt wird, aber in der
+ * Vektorsuche fehlt. Bewusst hoch: wer den Namen schreibt, meint den Skill.
+ */
+const NAMENSTREFFER_SCORE = 0.99;
+
+/** Wie viele Treffer Qdrant je Agent liefern soll. */
+const CHANNEL_SKILL_SUCHBREITE = 30;
+/** Wie viele Kandidaten je Nachricht abgelegt werden — Vorrat zum Nachruecken. */
+const CHANNEL_SKILL_KANDIDATEN = 8;
+/** Wie viele davon ein einzelner Abruf hoechstens zeigt (Vorgabe des Users: drei). */
+const CHANNEL_SKILL_VORSCHLAEGE = 3;
+
 const CHANNEL_HOOK_NAME = 'channel_feed_semantic';
 const configuredChannelSkillScore = Number(process.env.CHANNEL_SKILL_MIN_SCORE);
 const CHANNEL_SKILL_MIN_SCORE =
@@ -307,12 +329,19 @@ export function waehleChannelSkillTreffer(
   // heraus, und der Nutzer bekam nichts — obwohl er den Namen woertlich geschrieben hatte.
   // Kurze Texte erzeugen schwache Embeddings; genau dort ist der ausgeschriebene Name das
   // staerkere Signal. Die Schwelle bleibt fuer alles andere unangetastet.
-  const namentlich = hits
+  // Namentlich genannte Skills stehen vorn, unabhaengig vom Score — danach die
+  // semantischen Treffer ueber der Schwelle. Zurueck kommen MEHRERE Kandidaten:
+  // welche davon ein Agent zu sehen bekommt, entscheidet erst der Abruf, denn dort
+  // ist bekannt, was ihm schon einmal vorgeschlagen wurde.
+  const namentliche = hits
     .filter(heisstSo)
-    .sort((a, b) => b.score - a.score)[0];
-  if (namentlich) return [namentlich];
+    .sort((a, b) => b.score - a.score);
 
   const beste = new Map<string, SkillSearchHit>();
+  for (const hit of namentliche) {
+    const alt = beste.get(hit.skill_name);
+    if (!alt || hit.score > alt.score) beste.set(hit.skill_name, hit);
+  }
   for (const hit of hits) {
     if (!hit.skill_name || hit.score < minScore) continue;
     const alt = beste.get(hit.skill_name);
@@ -320,6 +349,7 @@ export function waehleChannelSkillTreffer(
   }
   const sortiert = [...beste.values()].sort((a, b) => b.score - a.score);
   if (sortiert.length === 0) return [];
+  if (namentliche.length > 0) return sortiert;
   const [erster, zweiter] = sortiert;
   if (zweiter && erster.score - zweiter.score < CHANNEL_SKILL_AMBIGUITY_GAP) return [];
   return [erster];
@@ -330,6 +360,43 @@ export function waehleChannelSkillTreffer(
  * Diese Funktion wird vom Schreibpfad fire-and-forget aufgerufen. channel(feed)
  * ruft sie niemals auf und erzeugt daher unter keinen Umstaenden ein Embedding.
  */
+/**
+ * Sucht im Text nach Skills, die beim Namen genannt werden — ohne Embedding.
+ *
+ * Erkannt wird der volle Name und der Namensanfang an einer Segmentgrenze ab sechs
+ * Zeichen ("ki-browser" trifft ki-browser-standalone, "web" trifft nichts). Die Namensliste
+ * wird kurz zwischengespeichert, damit ein Channel mit vielen Nachrichten sie nicht bei
+ * jedem Post neu holt.
+ */
+let namensCache: { namen: string[]; stand: number } | null = null;
+const NAMENS_CACHE_MS = 60_000;
+
+async function findeGenannteSkills(text: string): Promise<string[]> {
+  const tiefe = text.toLowerCase();
+  try {
+    if (!namensCache || Date.now() - namensCache.stand > NAMENS_CACHE_MS) {
+      const liste = await listSkills();
+      namensCache = {
+        namen: liste.map((eintrag) => eintrag.skill_name).filter(Boolean),
+        stand: Date.now(),
+      };
+    }
+    return namensCache.namen.filter((name) => {
+      const klein = name.toLowerCase();
+      if (tiefe.includes(klein)) return true;
+      for (let ende = klein.length - 1; ende >= 6; ende--) {
+        if (klein[ende] !== '-' && klein[ende] !== ':') continue;
+        if (tiefe.includes(klein.slice(0, ende))) return true;
+      }
+      return false;
+    });
+  } catch {
+    // Faellt die Namensliste aus, bleibt die Vektorsuche — lieber weniger Vorschlaege
+    // als ein Fehlschlag im Schreibpfad.
+    return [];
+  }
+}
+
 export async function bereiteChannelSkillVorschlaegeVor(
   project: string,
   channelName: string,
@@ -350,31 +417,63 @@ export async function bereiteChannelSkillVorschlaegeVor(
   );
   const agents = [...new Set(rows.map((row) => row.agent_name).filter(Boolean))];
   if (agents.length === 0) return;
-  const results = await searchBatch(query, project, agents, 8, {
+  // ⚠️ BREIT SUCHEN, ENG AUSLIEFERN.
+  // Die Namenserkennung kann nur Skills finden, die in der Trefferliste stehen. Mit acht
+  // Treffern fiel ein Text, der DREI Skills namentlich nennt, auf einen einzigen zusammen:
+  // die beiden anderen lagen nicht unter den ersten acht, weil ein gemischter Text einen
+  // verwaschenen Vektor ergibt (gemessen 02.08.2026: Score 0,042 fuer den einzigen Treffer).
+  // Die Breite kostet nichts — es bleibt EIN Embedding, nur die Qdrant-Antwort ist laenger.
+  // Wie viele davon ein Agent zu sehen bekommt, entscheidet erst der Abruf.
+  const results = await searchBatch(query, project, agents, CHANNEL_SKILL_SUCHBREITE, {
     embedding: { priority: 'background' },
   });
+
+  // ⚠️ NAMENTLICH GENANNTE SKILLS DUERFEN NICHT VON DER VEKTORSUCHE ABHAENGEN.
+  // Bis hierher konnte ein Name nur erkannt werden, wenn Qdrant den Skill zufaellig
+  // mitlieferte. GEMESSEN am 02.08.2026: ein Text, der DREI Skills beim Namen nennt,
+  // ergab genau EINEN Kandidaten — der beste Vektortreffer lag bei Score 0,042, weil ein
+  // gemischter Text einen verwaschenen Vektor erzeugt. Auch dreissig Treffer haben daran
+  // nichts geaendert: die anderen beiden waren schlicht nicht darunter.
+  // Der ausgeschriebene Name ist aber das staerkste Signal, das es gibt. Er wird deshalb
+  // direkt gegen die Namensliste geprueft — ohne Embedding, ohne Qdrant-Abfrage.
+  const namensTreffer = await findeGenannteSkills(query);
+  if (namensTreffer.length > 0) {
+    for (const eintrag of results) {
+      const vorhanden = new Set(eintrag.hits.map((hit) => hit.skill_name));
+      for (const name of namensTreffer) {
+        if (!vorhanden.has(name)) {
+          eintrag.hits.push({ skill_name: name, score: NAMENSTREFFER_SCORE } as SkillSearchHit);
+        }
+      }
+    }
+  }
   await Promise.all(results.map(async ({ agent: agentId, hits }) => {
-    const hit = waehleChannelSkillTreffer(hits, query)[0];
-    if (!hit) return;
-    await pool.query(
-      `INSERT INTO channel_skill_preparations
-         (message_id, agent_id, skill_name, score, reason)
-       VALUES ($1, $2, $3, $4, $5)
-       ON CONFLICT (message_id, agent_id) DO UPDATE SET
-         skill_name = EXCLUDED.skill_name,
-         score = EXCLUDED.score,
-         reason = EXCLUDED.reason,
-         prepared_at = NOW()`,
-      [
-        messageId,
-        agentId,
-        hit.skill_name,
-        hit.score,
-        query.toLowerCase().includes(hit.skill_name.toLowerCase())
-          ? 'Skill-Name im gelesenen Channel-Inhalt genannt'
-          : 'Semantischer Treffer zum gelesenen Channel-Inhalt',
-      ],
-    );
+    // MEHRERE KANDIDATEN ABLEGEN, nicht nur den besten. Ein Agent sieht jeden Skill nur
+    // einmal; sind die vorderen verbraucht, ruecken beim naechsten Abruf die naechsten
+    // nach — aber nur, wenn sie hier auch gespeichert wurden.
+    const treffer = waehleChannelSkillTreffer(hits, query).slice(0, CHANNEL_SKILL_KANDIDATEN);
+    if (treffer.length === 0) return;
+    const tiefe = query.toLowerCase();
+    for (const hit of treffer) {
+      await pool.query(
+        `INSERT INTO channel_skill_preparations
+           (message_id, agent_id, skill_name, score, reason)
+         VALUES ($1, $2, $3, $4, $5)
+         ON CONFLICT (message_id, agent_id, skill_name) DO UPDATE SET
+           score = EXCLUDED.score,
+           reason = EXCLUDED.reason,
+           prepared_at = NOW()`,
+        [
+          messageId,
+          agentId,
+          hit.skill_name,
+          hit.score,
+          tiefe.includes(hit.skill_name.toLowerCase())
+            ? 'Skill-Name im gelesenen Channel-Inhalt genannt'
+            : 'Semantischer Treffer zum gelesenen Channel-Inhalt',
+        ],
+      );
+    }
   }));
 }
 
@@ -402,34 +501,61 @@ export async function holeChannelSkillVorschlaege(
       delivered: boolean;
     }>(pool, `
       WITH kandidat AS (
-        SELECT p.skill_name, p.score, p.reason
+        SELECT DISTINCT ON (p.skill_name) p.skill_name, p.score, p.reason
           FROM channel_skill_preparations p
          WHERE p.agent_id = $1
            AND p.message_id = ANY($2::bigint[])
-         ORDER BY p.score DESC, p.message_id DESC
-         LIMIT 1
+         ORDER BY p.skill_name, p.score DESC
+      ), rangfolge AS (
+        SELECT * FROM kandidat ORDER BY score DESC LIMIT $4
       ), eingefuegt AS (
         INSERT INTO skill_hook_deliveries (agent_id, skill_name, hook_name)
-        SELECT $1, skill_name, $3 FROM kandidat
+        SELECT $1, skill_name, $3 FROM rangfolge
         ON CONFLICT (agent_id, skill_name) DO NOTHING
         RETURNING skill_name
       )
-      SELECT k.skill_name, k.score, k.reason,
-             EXISTS (SELECT 1 FROM eingefuegt e WHERE e.skill_name = k.skill_name) AS delivered
-        FROM kandidat k
-    `, [agentId, messageIds, CHANNEL_HOOK_NAME]);
+      SELECT r.skill_name, r.score, r.reason,
+             EXISTS (SELECT 1 FROM eingefuegt e WHERE e.skill_name = r.skill_name) AS delivered
+        FROM rangfolge r
+       ORDER BY r.score DESC
+    `, [agentId, messageIds, CHANNEL_HOOK_NAME, CHANNEL_SKILL_VORSCHLAEGE]);
 
-    const row = result.rows[0];
-    if (!row) return { suggestions: [], metrics: null, skipped_due_to_load: false };
+    // Nur was in DIESEM Abruf erstmals ausgeliefert wurde, zaehlt als Vorschlag. Alles,
+    // was der Agent schon einmal gesehen hat, faellt hier heraus — beim naechsten Abruf
+    // ruecken dadurch die naechstbesten Kandidaten auf.
+    const frisch = result.rows.filter((row) => row.delivered);
+    const unterdrueckt = result.rows.length - frisch.length;
+    if (frisch.length === 0) {
+      return {
+        suggestions: [],
+        metrics: unterdrueckt > 0
+          ? { suggested_count: 0, dedup_suppressed_count: unterdrueckt, load_skipped_count: 0 }
+          : null,
+        skipped_due_to_load: false,
+      };
+    }
+
+    // EINE ZEILE STATT DREI ABSAETZE. Der Hinweis laeuft in jeder Tool-Antwort mit; er darf
+    // den Kontext nicht mit Fliesstext fuellen. Der Volltext-Befehl steht einmal am Ende,
+    // nicht je Skill.
+    const kurz = frisch
+      .map((row) => `${row.skill_name}(${Number(row.score).toFixed(2)})`)
+      .join(', ');
     return {
-      suggestions: row.delivered ? [{
-        ...baueVorschlag(row.skill_name),
-        score: Number(row.score),
-        reason: row.reason,
-      }] : [],
+      suggestions: [{
+        skill_name: frisch[0].skill_name,
+        score: Number(frisch[0].score),
+        reason: frisch[0].reason,
+        message: `Skill-Vorschlag: ${kurz}\nVolltext: skills(action:'get_full', skill_name:'<name>')`,
+        skills: frisch.map((row) => ({
+          skill_name: row.skill_name,
+          score: Number(Number(row.score).toFixed(4)),
+          reason: row.reason,
+        })),
+      }],
       metrics: {
-        suggested_count: row.delivered ? 1 : 0,
-        dedup_suppressed_count: row.delivered ? 0 : 1,
+        suggested_count: frisch.length,
+        dedup_suppressed_count: unterdrueckt,
         load_skipped_count: 0,
       },
       skipped_due_to_load: false,
