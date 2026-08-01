@@ -10,7 +10,7 @@
 import * as path from 'path';
 import type { Pool, PoolClient, QueryResult, QueryResultRow } from 'pg';
 import { getPool } from '../db/client.js';
-import { listSkills, searchSkillsForAgents, type SkillSearchHit } from './skills.js';
+import { findeSkillsNachName, searchSkillsForAgents, type SkillSearchHit } from './skills.js';
 
 const HOOK_NAME = 'files_plan_language';
 const HOOK_QUERY_TIMEOUT_MS = 30;
@@ -368,33 +368,12 @@ export function waehleChannelSkillTreffer(
  * wird kurz zwischengespeichert, damit ein Channel mit vielen Nachrichten sie nicht bei
  * jedem Post neu holt.
  */
-let namensCache: { namen: string[]; stand: number } | null = null;
-const NAMENS_CACHE_MS = 60_000;
-
 async function findeGenannteSkills(text: string): Promise<string[]> {
-  const tiefe = text.toLowerCase();
-  try {
-    if (!namensCache || Date.now() - namensCache.stand > NAMENS_CACHE_MS) {
-      const liste = await listSkills();
-      namensCache = {
-        namen: liste.map((eintrag) => eintrag.skill_name).filter(Boolean),
-        stand: Date.now(),
-      };
-    }
-    return namensCache.namen.filter((name) => {
-      const klein = name.toLowerCase();
-      if (tiefe.includes(klein)) return true;
-      for (let ende = klein.length - 1; ende >= 6; ende--) {
-        if (klein[ende] !== '-' && klein[ende] !== ':') continue;
-        if (tiefe.includes(klein.slice(0, ende))) return true;
-      }
-      return false;
-    });
-  } catch {
-    // Faellt die Namensliste aus, bleibt die Vektorsuche — lieber weniger Vorschlaege
-    // als ein Fehlschlag im Schreibpfad.
-    return [];
-  }
+  // Die Namenssuche laeuft gegen die PG-Tabelle skill_names (Trigram), nicht gegen die
+  // Vektordatenbank: ein Name ist reiner Text, und unscharf durchsuchen laesst er sich
+  // dort billiger und zuverlaessiger. Faellt sie aus, bleibt die Vektorsuche — lieber
+  // weniger Vorschlaege als ein Fehlschlag im Schreibpfad.
+  return findeSkillsNachName(text);
 }
 
 export async function bereiteChannelSkillVorschlaegeVor(

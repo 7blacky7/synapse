@@ -33,6 +33,7 @@
  */
 
 import { embed, type EmbedOptions } from '../embeddings/index.js';
+import { getPool } from '../db/client.js';
 
 const SKILL_QDRANT_URL =
   process.env.SKILL_QDRANT_URL || process.env.QDRANT_URL || 'http://localhost:6333';
@@ -230,6 +231,92 @@ export async function searchSkillsForAgents(
 }
 
 /** Liste aller Skills (skill_name + Section-Count). Optional skill_name → nur Sections eines Skills. */
+/**
+ * Haelt die Namenstabelle mit der Skill-Datenbank gleich.
+ *
+ * Wird nach listSkills() angestossen und bei jedem Anlegen/Aendern eines Skills. Der
+ * Abgleich ist billig (ein INSERT ... ON CONFLICT je Name) und darf niemals den Aufrufer
+ * aufhalten — faellt er aus, bleibt die Tabelle einfach auf dem letzten Stand.
+ */
+export async function synchronisiereSkillNamen(
+  eintraege: Array<{ skill_name: string; section_count?: number }>,
+): Promise<number> {
+  if (eintraege.length === 0) return 0;
+  const pool = getPool();
+  let geschrieben = 0;
+  for (const eintrag of eintraege) {
+    if (!eintrag.skill_name) continue;
+    try {
+      await pool.query(
+        `INSERT INTO skill_names (skill_name, section_count, aktualisiert_am)
+         VALUES ($1, $2, NOW())
+         ON CONFLICT (skill_name) DO UPDATE SET
+           section_count = EXCLUDED.section_count,
+           aktualisiert_am = NOW()`,
+        [eintrag.skill_name, eintrag.section_count ?? 0],
+      );
+      geschrieben++;
+    } catch {
+      // Ein einzelner Name darf den Abgleich nicht abbrechen.
+    }
+  }
+  return geschrieben;
+}
+
+/**
+ * Unscharfe Namenssuche — ohne Embedding, ohne Qdrant.
+ *
+ * Zwei Wege, absichtlich in dieser Reihenfolge:
+ * 1. Der Name (oder sein Anfang an einer Segmentgrenze) steht woertlich im Text.
+ * 2. Trigram-Aehnlichkeit ueber der Schwelle — faengt Tippfehler und Schreibvarianten.
+ *
+ * ⚠️ DIE SCHWELLE IST DER GANZE UNTERSCHIED zwischen Hilfe und Rauschen. Zu niedrig, und
+ * "test" zieht jeden Skill mit "testing" im Namen herbei. 0,45 ist bewusst streng: die
+ * unscharfe Suche soll Vertipper auffangen, nicht Themen erraten. Dafuer gibt es das
+ * Embedding.
+ */
+export async function findeSkillsNachName(
+  text: string,
+  mindestAehnlichkeit = 0.45,
+): Promise<string[]> {
+  const tiefe = text.toLowerCase().trim();
+  if (tiefe.length < 3) return [];
+  try {
+    const { rows } = await getPool().query<{ skill_name: string }>(
+      `SELECT skill_name FROM skill_names
+        WHERE position(lower(skill_name) in $1) > 0
+           OR similarity(lower(skill_name), $1) >= $2
+        ORDER BY similarity(lower(skill_name), $1) DESC
+        LIMIT 20`,
+      [tiefe, mindestAehnlichkeit],
+    );
+    const gefunden = new Set(rows.map((row) => row.skill_name));
+
+    // Namensanfaenge: "ki-browser" meint ki-browser-standalone. Ab sechs Zeichen und nur
+    // an einer Segmentgrenze, damit "web" nicht web-best-practices trifft.
+    const { rows: alle } = await getPool().query<{ skill_name: string }>(
+      'SELECT skill_name FROM skill_names',
+    );
+    for (const { skill_name: name } of alle as Array<{ skill_name: string }>) {
+      const klein = name.toLowerCase();
+      for (let ende = klein.length - 1; ende >= 6; ende--) {
+        if (klein[ende] !== '-' && klein[ende] !== ':') continue;
+        if (tiefe.includes(klein.slice(0, ende))) { gefunden.add(name); break; }
+      }
+    }
+    return [...gefunden];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Wie oft die Namenstabelle beim Auflisten hoechstens nachgezogen wird. Der Abgleich ist
+ * billig, aber er muss nicht bei jedem Aufruf laufen.
+ */
+let letzterNamensAbgleich = 0;
+const NAMENS_ABGLEICH_MS = 300_000;
+
 export async function listSkills(skillName?: string): Promise<SkillListEntry[]> {
   const filter = skillName
     ? { must: [{ key: 'skill_name', match: { value: skillName } }] }
@@ -244,13 +331,25 @@ export async function listSkills(skillName?: string): Promise<SkillListEntry[]> 
     arr.push(sec);
     map.set(name, arr);
   }
-  return Array.from(map.entries())
+  const liste = Array.from(map.entries())
     .sort((a, b) => a[0].localeCompare(b[0]))
     .map(([skill_name, sections]) => ({
       skill_name,
       section_count: sections.length,
       sections: sections.sort(),
     }));
+
+  // Namenstabelle nebenbei gleichhalten — fire-and-forget, damit das Auflisten nicht auf
+  // den Abgleich wartet. Ohne skillName-Filter, sonst wuerde eine Einzelabfrage die
+  // Tabelle auf einen Namen verengen wollen.
+  if (!skillName && Date.now() - letzterNamensAbgleich > NAMENS_ABGLEICH_MS) {
+    letzterNamensAbgleich = Date.now();
+    void synchronisiereSkillNamen(liste).catch((fehler) => {
+      console.error('[Skills] Namenstabelle konnte nicht abgeglichen werden:', fehler);
+    });
+  }
+
+  return liste;
 }
 
 /** Eine konkrete Section eines Skills lesen. */

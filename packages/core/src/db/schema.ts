@@ -846,6 +846,27 @@ CREATE TABLE IF NOT EXISTS skill_hook_deliveries (
 );
 
 -- Vorberechnete HOOK-4-Treffer. Feed liest nur diese Tabelle und startet nie Embeddings.
+-- SKILLNAMEN ALS EIGENE TABELLE (Idee des Users, 02.08.2026).
+--
+-- WARUM NICHT AUS DER VEKTORDATENBANK: ein Name ist reiner Text und braucht kein Embedding.
+-- Gemessen am selben Tag: ein Channel-Text, der drei Skills beim Namen nennt, ergab einen
+-- Vektor mit Score 0,042 zum besten Treffer — verwaschen, weil er von allem etwas enthaelt.
+-- Der ausgeschriebene Name ist das verlaesslichere Signal, und er gehoert dorthin, wo man
+-- ihn billig und unscharf durchsuchen kann.
+--
+-- Die Trigram-Suche faengt, was exaktes Vergleichen nie erwischt: "scarlet" statt
+-- "scarlett", "phaser gamedev" mit Leerzeichen, Tippfehler. Sie laeuft VOR dem Embedding;
+-- die semantische Suche bleibt daneben bestehen und findet weiterhin Themen, die niemand
+-- beim Namen nennt.
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+CREATE TABLE IF NOT EXISTS skill_names (
+  skill_name TEXT PRIMARY KEY,
+  section_count INTEGER NOT NULL DEFAULT 0,
+  aktualisiert_am TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_skill_names_trgm
+  ON skill_names USING gin (skill_name gin_trgm_ops);
+
 CREATE TABLE IF NOT EXISTS channel_skill_preparations (
   message_id BIGINT NOT NULL REFERENCES specialist_channel_messages(id) ON DELETE CASCADE,
   agent_id TEXT NOT NULL,
