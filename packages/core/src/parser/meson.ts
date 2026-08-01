@@ -28,7 +28,8 @@ class MesonParser implements LanguageParser {
   extensions = ['.wrap'];
   /** Bei inhaltlichen Parser-Aenderungen erhoehen (siehe LanguageParser.version). */
   // 2: Zeilenberechnung ueber Index statt Praefix-Kopie (siehe lineAt).
-  version = 2;
+  // 3: Duplikatpruefung je Zeile ueber Map statt linearem Scan des wachsenden Symbol-Arrays.
+  version = 3;
 
   parse(content: string, filePath: string): ParseResult {
     const symbols: ParsedSymbol[] = [];
@@ -79,10 +80,22 @@ class MesonParser implements LanguageParser {
 
     // 8. Variable assignments (generic)
     const varRe = /^(\w+)\s*=\s*(?!executable|library|shared_library|static_library|both_libraries|dependency|custom_target)(.+)/gm;
+    const symbolNamesByLine = new Map<number, Set<string>>();
+    for (const symbol of symbols) {
+      if (symbol.name === null) continue;
+      const namesAtLine = symbolNamesByLine.get(symbol.line_start);
+      if (namesAtLine) namesAtLine.add(symbol.name);
+      else symbolNamesByLine.set(symbol.line_start, new Set([symbol.name]));
+    }
     while ((m = varRe.exec(content)) !== null) {
-      if (symbols.some(s => s.name === m![1] && s.line_start === lineAt(content, m!.index))) continue;
-      if (['if', 'elif', 'else', 'endif', 'foreach', 'endforeach'].includes(m[1])) continue;
-      symbols.push({ symbol_type: 'variable', name: m[1], value: m[2].trim().slice(0, 100), line_start: lineAt(content, m.index), is_exported: true });
+      const name = m[1];
+      const lineStart = lineAt(content, m.index);
+      const namesAtLine = symbolNamesByLine.get(lineStart);
+      if (namesAtLine?.has(name)) continue;
+      if (['if', 'elif', 'else', 'endif', 'foreach', 'endforeach'].includes(name)) continue;
+      symbols.push({ symbol_type: 'variable', name, value: m[2].trim().slice(0, 100), line_start: lineStart, is_exported: true });
+      if (namesAtLine) namesAtLine.add(name);
+      else symbolNamesByLine.set(lineStart, new Set([name]));
     }
 
     // 9. Function calls (install_*, configure_file, etc.)

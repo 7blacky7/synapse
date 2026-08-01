@@ -29,7 +29,8 @@ class NixParser implements LanguageParser {
   extensions = ['.nix'];
   /** Bei inhaltlichen Parser-Aenderungen erhoehen (siehe LanguageParser.version). */
   // 2: Zeilenberechnung ueber Index statt Praefix-Kopie (siehe lineAt).
-  version = 2;
+  // 3: Duplikatpruefung je Zeile ueber Map statt linearem Scan des wachsenden Symbol-Arrays.
+  version = 3;
   /** Deklarative Ausdruckssprache — Attribute und Ableitungen, keine Anweisungen. */
   hatAblaufEbene = false;
 
@@ -90,6 +91,13 @@ class NixParser implements LanguageParser {
     // 3. Top-level attribute set bindings
     // ══════════════════════════════════════════════
     const topBindRe = /^(\s{2})(\w[\w'-]*)\s*=\s*(.+)/gm;
+    const symbolNamesByLine = new Map<number, Set<string>>();
+    for (const symbol of symbols) {
+      if (symbol.name === null) continue;
+      const namesAtLine = symbolNamesByLine.get(symbol.line_start);
+      if (namesAtLine) namesAtLine.add(symbol.name);
+      else symbolNamesByLine.set(symbol.line_start, new Set([symbol.name]));
+    }
     while ((m = topBindRe.exec(content)) !== null) {
       const indent = m[1].length;
       const name = m[2];
@@ -99,7 +107,8 @@ class NixParser implements LanguageParser {
       if (indent > 4) continue;
       if (['let', 'in', 'if', 'then', 'else', 'with', 'inherit', 'rec', 'type', 'description', 'default'].includes(name)) continue;
       // Skip if already captured
-      if (symbols.some(s => s.name === name && s.line_start === lineStart)) continue;
+      const namesAtLine = symbolNamesByLine.get(lineStart);
+      if (namesAtLine?.has(name)) continue;
 
       symbols.push({
         symbol_type: 'variable',
@@ -108,6 +117,8 @@ class NixParser implements LanguageParser {
         line_start: lineStart,
         is_exported: true,
       });
+      if (namesAtLine) namesAtLine.add(name);
+      else symbolNamesByLine.set(lineStart, new Set([name]));
     }
 
     // ══════════════════════════════════════════════
