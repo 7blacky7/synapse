@@ -125,6 +125,11 @@ type DetailWindow struct {
 	ActiveLabel   *widget.Label
 	ChunksLabel   *widget.Label
 	FilesLabel    *widget.Label
+	// Ein geschlossenes Fenster wird nur versteckt (SetCloseIntercept), damit es
+	// beim naechsten Oeffnen sofort wieder da ist. Ohne diese Marke lief die
+	// Auffrisch-Schleife trotzdem weiter darueber: vier Abfragen je Projekt,
+	// alle drei Sekunden, rund um die Uhr, fuer ein Fenster das niemand sieht.
+	sichtbar      atomic.Bool
 }
 
 // ChatWindow represents the channel chat window
@@ -140,6 +145,7 @@ type ChatWindow struct {
 	InputEntry    *widget.Entry
 	loadingMsgs   atomic.Bool
 	loadingAgs    atomic.Bool
+	sichtbar      atomic.Bool
 }
 
 func main() {
@@ -230,16 +236,23 @@ func runLiveRefreshLoop(stop chan struct{}) {
 		case <-stop:
 			return
 		case <-ticker.C:
-			// Refresh all open detail windows
+			// NUR SICHTBARE FENSTER. Geschlossene bleiben absichtlich in der Map
+			// (Hide statt Dispose, damit sie beim naechsten Oeffnen sofort stehen) —
+			// aber sie duerfen den Server nicht weiter abfragen.
 			windowLock.Lock()
 			for _, w := range openWindows {
+				if !w.sichtbar.Load() {
+					continue
+				}
 				go w.ReloadAll()
 			}
 			windowLock.Unlock()
 
-			// Refresh all open chat windows
 			chatLock.Lock()
 			for _, w := range openChats {
+				if !w.sichtbar.Load() {
+					continue
+				}
 				go w.ReloadAll()
 			}
 			chatLock.Unlock()
@@ -891,10 +904,12 @@ func openDetail(name string) {
 	windowLock.Lock()
 	if w, ok := openWindows[name]; ok {
 		windowLock.Unlock()
+		w.sichtbar.Store(true)
 		fyne.Do(func() {
 			w.Window.Show()
 			w.Window.RequestFocus()
 		})
+		go w.ReloadAll()
 		return
 	}
 
@@ -1238,8 +1253,10 @@ func openDetail(name string) {
 		w.Window = myApp.NewWindow("Projekt: " + name)
 		w.Window.Resize(fyne.NewSize(1200, 800))
 		w.Window.SetCloseIntercept(func() {
+			w.sichtbar.Store(false)
 			w.Window.Hide()
 		})
+		w.sichtbar.Store(true)
 		w.Window.SetContent(tabs)
 		w.Window.Show()
 	})
@@ -1990,8 +2007,10 @@ func openChat(projectName, channelName string) {
 		w.Window = myApp.NewWindow("Chat: #" + channelName + " (" + projectName + ")")
 		w.Window.Resize(fyne.NewSize(1000, 600))
 		w.Window.SetCloseIntercept(func() {
+			w.sichtbar.Store(false)
 			w.Window.Hide()
 		})
+		w.sichtbar.Store(true)
 		w.Window.SetContent(mainContent)
 		w.Window.Show()
 	})
