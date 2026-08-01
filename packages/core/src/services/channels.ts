@@ -1,6 +1,6 @@
 import { getPool } from '../db/client.js'
 import type { ChannelMessage } from '../types/index.js'
-import { bereiteChannelSkillVorschlaegeVor } from './skill-hook.js'
+import { bereiteChannelSkillVorschlaegeVor, holeChannelSkillsNachBeitritt } from './skill-hook.js'
 
 export async function createChannel(
   project: string,
@@ -46,6 +46,22 @@ export async function joinChannel(project: string, channelName: string, agentNam
        last_notified_message_id, read_initialized_at)
      VALUES ($1, $2, $3, $3, NOW())
      ON CONFLICT DO NOTHING`, [channelId, agentName, baselineId])
+
+  // ⚠️ VORRAT FUER DEN NEUEN AGENTEN NACHHOLEN — sonst bleibt sein Vorschlagsblock leer.
+  // Der Vorrat entsteht sonst nur beim Posten, und zwar fuer die Mitglieder von genau diesem
+  // Moment. Wer danach beitritt, kaeme nie an die Skills der bereits gepostenen Nachrichten.
+  // Bewusst AWAIT und nicht fire-and-forget: ein Agent ruft das Skill-Tool oft schon eine
+  // Sekunde nach dem Beitritt auf (gemessen), und ein Vorrat, der erst danach fertig wird,
+  // haette denselben leeren Block erzeugt wie gar keiner.
+  // Ein Fehlschlag darf den Beitritt selbst nicht kippen — aber er wird sichtbar.
+  try {
+    await holeChannelSkillsNachBeitritt(project, channelName, agentName, pool)
+  } catch (fehler) {
+    console.error(
+      `[SkillHook] Nachholen beim Beitritt von ${agentName} zu ${project}/${channelName} fehlgeschlagen:`,
+      fehler instanceof Error ? `${fehler.name}: ${fehler.message}` : fehler,
+    )
+  }
   return true
 }
 

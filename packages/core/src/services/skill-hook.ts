@@ -257,6 +257,14 @@ const CHANNEL_SKILL_KANDIDATEN = 8;
 /** Wie viele davon ein einzelner Abruf hoechstens zeigt (Vorgabe des Users: drei). */
 const CHANNEL_SKILL_VORSCHLAEGE = 3;
 
+/**
+ * Wie viele der juengsten Channel-Nachrichten beim BEITRITT nachberechnet werden.
+ * Drei, weil ein Vorrat aus drei Nachrichten fuer mehrere Abrufe reicht und der Beitritt
+ * dabei nicht spuerbar langsamer wird. Jede Nachricht kostet ein Embedding — aber nur
+ * einmal je Agent, nicht bei jedem Beitritt.
+ */
+const CHANNEL_SKILL_BEITRITT_NACHRICHTEN = 3;
+
 const CHANNEL_HOOK_NAME = 'channel_feed_semantic';
 const configuredChannelSkillScore = Number(process.env.CHANNEL_SKILL_MIN_SCORE);
 const CHANNEL_SKILL_MIN_SCORE =
@@ -398,18 +406,27 @@ export async function bereiteChannelSkillVorschlaegeVor(
   content: string,
   pool: Pool = getPool(),
   searchBatch: ChannelSkillBatchSearch = searchSkillsForAgents,
+  nurFuerAgenten?: string[],
 ): Promise<void> {
   const query = baueChannelSkillSuchtext([{ content }]);
   if (!query) return;
 
-  const { rows } = await pool.query<{ agent_name: string }>(
-    `SELECT mem.agent_name
-       FROM specialist_channel_members mem
-       JOIN specialist_channels c ON c.id = mem.channel_id
-      WHERE c.project = $1 AND c.name = $2`,
-    [project, channelName],
-  );
-  const agents = [...new Set(rows.map((row) => row.agent_name).filter(Boolean))];
+  // Normalfall: alle aktuellen Mitglieder. Mit nurFuerAgenten wird EINE Nachricht fuer einen
+  // einzelnen Agenten nachgeholt — der Weg, ueber den ein spaeter beigetretener Agent zu
+  // seinem Vorrat kommt, ohne dass die anderen neu berechnet werden.
+  let agents: string[];
+  if (nurFuerAgenten?.length) {
+    agents = [...new Set(nurFuerAgenten.filter(Boolean))];
+  } else {
+    const { rows } = await pool.query<{ agent_name: string }>(
+      `SELECT mem.agent_name
+         FROM specialist_channel_members mem
+         JOIN specialist_channels c ON c.id = mem.channel_id
+        WHERE c.project = $1 AND c.name = $2`,
+      [project, channelName],
+    );
+    agents = [...new Set(rows.map((row) => row.agent_name).filter(Boolean))];
+  }
   if (agents.length === 0) return;
   // ⚠️ BREIT SUCHEN, ENG AUSLIEFERN.
   // Die Namenserkennung kann nur Skills finden, die in der Trefferliste stehen. Mit acht
@@ -492,6 +509,53 @@ export async function bereiteChannelSkillVorschlaegeVor(
       );
     }
   }));
+}
+
+/**
+ * Holt die Vorberechnung fuer einen Agenten nach, dem sie fehlt — gedacht fuer den Beitritt.
+ *
+ * ⚠️ WER NACH DEM POSTEN BEITRITT, HATTE BIS ZUM 02.08.2026 NIE ETWAS ZU HOLEN.
+ * Der Vorrat entsteht im Schreibpfad fuer die Mitglieder, die in genau diesem Moment im
+ * Channel stehen. Ein Agent, der eine Minute spaeter dazukommt, findet fuer JEDE aeltere
+ * Nachricht nichts vor — und weil der Lesepfad bewusst kein Embedding anfasst, entsteht auch
+ * beim Abruf nichts. Der Vorschlagsblock blieb damit fuer neue Agenten dauerhaft leer, ohne
+ * dass irgendwo etwas fehlschlug. GEMESSEN: gpt56-skilltest-redeploy-20260802 trat um
+ * 01:17:53 bei, der letzte Post lag um 01:16:50 — null Vorbereitungen, null Vorschlaege.
+ * Das trifft ausgerechnet die Neuen, also die, die das Regelwerk am noetigsten haben.
+ *
+ * Berechnet werden nur die Nachrichten, fuer die dieser Agent NOCH KEINE Vorbereitung hat.
+ * Ein wiederholter Beitritt kostet daher genau eine Abfrage und kein Embedding.
+ */
+export async function holeChannelSkillsNachBeitritt(
+  project: string,
+  channelName: string,
+  agentName: string,
+  pool: Pool = getPool(),
+  searchBatch: ChannelSkillBatchSearch = searchSkillsForAgents,
+  hoechstens = CHANNEL_SKILL_BEITRITT_NACHRICHTEN,
+): Promise<number> {
+  if (!agentName) return 0;
+  const { rows } = await pool.query<{ id: number; content: string }>(
+    `SELECT msg.id, msg.content
+       FROM specialist_channel_messages msg
+       JOIN specialist_channels c ON c.id = msg.channel_id
+      WHERE c.project = $1 AND c.name = $2
+        AND NOT EXISTS (
+          SELECT 1 FROM channel_skill_preparations p
+           WHERE p.message_id = msg.id AND p.agent_id = $3
+        )
+      ORDER BY msg.id DESC
+      LIMIT $4`,
+    [project, channelName, agentName, hoechstens],
+  );
+  let nachgeholt = 0;
+  for (const row of rows) {
+    await bereiteChannelSkillVorschlaegeVor(
+      project, channelName, row.id, row.content, pool, searchBatch, [agentName],
+    );
+    nachgeholt++;
+  }
+  return nachgeholt;
 }
 
 /**

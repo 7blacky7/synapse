@@ -5,6 +5,7 @@ import {
   baueChannelSkillSuchtext,
   bereiteChannelSkillVorschlaegeVor,
   holeChannelSkillVorschlaege,
+  holeChannelSkillsNachBeitritt,
   waehleChannelSkillTreffer,
 } from '../packages/core/dist/services/skill-hook.js';
 import { baueSkillSichtbarkeitsFilter } from '../packages/core/dist/services/skills.js';
@@ -34,6 +35,15 @@ function fakePool() {
       const values = valuesArg ?? textOrConfig.values;
       if (sql.includes('FROM specialist_channel_members')) {
         return { rows: [{ agent_name: 'agent-a' }, { agent_name: 'agent-b' }] };
+      }
+      // Nachzuegler-Pfad: liefert die juengsten Nachrichten, fuer die dieser Agent noch
+      // KEINE Vorbereitung hat — wie das NOT EXISTS in der echten Abfrage.
+      if (sql.includes('FROM specialist_channel_messages msg')) {
+        const agent = values[2];
+        const schonVorbereitet = [...prepared.values()].some(
+          (r) => r.agent_id === agent && r.message_id === 77,
+        );
+        return { rows: schonVorbereitet ? [] : [{ id: 77, content: 'fal-ai-image Queue Workflow fuer Bildgenerierung.' }] };
       }
       if (sql.includes('INSERT INTO channel_skill_preparations')) {
         const [message_id, agent_id, skill_name, score, reason] = values;
@@ -90,6 +100,34 @@ assert.equal(duplicate.metrics.dedup_suppressed_count, 1);
 assert.equal((await holeChannelSkillVorschlaege('agent-b', [message], pool)).suggestions[0].skill_name, 'fal-ai-image');
 assert.deepEqual((await holeChannelSkillVorschlaege('agent-c', [message], pool)).suggestions, []);
 assert.deepEqual((await holeChannelSkillVorschlaege(undefined, [message], pool)).suggestions, []);
+
+// ⚠️ DER NACHZUEGLER. agent-c war beim Posten kein Mitglied und geht deshalb oben leer aus —
+// bis zum 02.08.2026 war das ein Dauerzustand: der Vorrat entsteht nur im Schreibpfad fuer die
+// Mitglieder von genau diesem Moment, und der Lesepfad fasst bewusst kein Embedding an. Ein
+// spaeter beigetretener Agent sah deshalb nie einen Vorschlag, ohne dass irgendwo etwas
+// fehlschlug. Beim Beitritt wird jetzt nachgeholt.
+let nachholSuchen = 0;
+const nachholSuche = async (_query, _project, agents) => {
+  nachholSuchen++;
+  return agents.map((agent) => ({ agent, hits: [synapse, fal] }));
+};
+assert.equal(
+  await holeChannelSkillsNachBeitritt('synapse', 'ptz-test', 'agent-c', pool, nachholSuche),
+  1,
+  'genau die eine fehlende Nachricht wird nachberechnet',
+);
+assert.equal(nachholSuchen, 1);
+assert.equal(
+  (await holeChannelSkillVorschlaege('agent-c', [message], pool)).suggestions[0].skill_name,
+  'fal-ai-image',
+  'der Nachzuegler bekommt seinen Vorschlag',
+);
+assert.equal(
+  await holeChannelSkillsNachBeitritt('synapse', 'ptz-test', 'agent-c', pool, nachholSuche),
+  0,
+  'ein zweiter Beitritt kostet kein Embedding mehr',
+);
+assert.equal(nachholSuchen, 1, 'und loest auch keine zweite Suche aus');
 
 const noMatchPool = fakePool();
 await bereiteChannelSkillVorschlaegeVor(
