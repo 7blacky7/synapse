@@ -108,6 +108,36 @@ export async function claimEmbeddingChunks(
       await client.query('COMMIT');
       return [];
     }
+    // ZWEISTUFIG: ERST DAS PROJEKT, DANN DESSEN CHUNKS.
+    //
+    // ⚠️ Hier stand bis zum 01.08.2026 EINE Abfrage ueber alle offenen Chunks mit
+    // `ORDER BY cf.updated_at`. Gemessen mit EXPLAIN ANALYZE: 7,9 SEKUNDEN je
+    // Runde. Sie materialisierte 436.590 Zeilen, verwarf 28,8 Mio Zeilenpaare im
+    // Join-Filter gegen projects und sortierte alles per top-N — um zwei Zeilen
+    // zurueckzugeben. Das war der Durchsatzengpass: bei 0,4 s je Embedding
+    // wartete die GPU rund zwanzigmal so lange auf die Auswahl wie aufs Rechnen.
+    // Der Sortierschluessel aus code_files zwang den Join und machte jeden
+    // partiellen Index auf code_chunks unbrauchbar.
+    //
+    // Die Projektauswahl kostet ueber idx_code_chunks_unembedded fast nichts, und
+    // die Chunk-Auswahl laeuft danach ueber idx_code_chunks_claim_ordnung mit
+    // frueher Abbruchmoeglichkeit. Nebeneffekt, fachlich erwuenscht: ein Knoten
+    // arbeitet eine Datei am Stueck ab statt quer durch den Bestand zu springen.
+    const projektWahl = await client.query<{ name: string }>(
+      `SELECT p.name
+         FROM (SELECT DISTINCT name, enabled FROM projects) p
+        WHERE p.enabled
+          AND EXISTS (SELECT 1 FROM code_chunks cc
+                       WHERE cc.project = p.name AND cc.embedded_at IS NULL)
+        ORDER BY random()
+        LIMIT 1`,
+    );
+    const projekt = projektWahl.rows[0]?.name;
+    if (!projekt) {
+      await client.query('COMMIT');
+      return [];
+    }
+
     const selected = await client.query<{
       id: string;
       project: string;
@@ -125,14 +155,13 @@ export async function claimEmbeddingChunks(
                 WHERE allc.project=cc.project AND allc.file_path=cc.file_path)::int AS total_chunks
          FROM code_chunks cc
          JOIN code_files cf ON cf.project=cc.project AND cf.file_path=cc.file_path
-        WHERE cc.embedded_at IS NULL
+        WHERE cc.project = $2
+          AND cc.embedded_at IS NULL
           AND (cc.lease_until IS NULL OR cc.lease_until < NOW())
-          AND EXISTS (SELECT 1 FROM projects p WHERE p.name=cc.project)
-          AND NOT EXISTS (SELECT 1 FROM projects p WHERE p.name=cc.project AND NOT p.enabled)
-        ORDER BY cf.updated_at, cc.project, cc.file_path, cc.chunk_index
+        ORDER BY cc.file_path, cc.chunk_index
         LIMIT $1
         FOR UPDATE OF cc SKIP LOCKED`,
-      [limit],
+      [limit, projekt],
     );
 
     const claims: EmbeddingChunkClaim[] = [];

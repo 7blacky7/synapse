@@ -355,6 +355,14 @@ CREATE INDEX IF NOT EXISTS idx_code_chunks_claimable
   ON code_chunks(lease_until, project, file_path, chunk_index)
   WHERE embedded_at IS NULL;
 
+-- Ordnung INNERHALB eines Projekts. Der Index oben beginnt mit lease_until und
+-- taugt deshalb nicht, wenn die Auswahl zuerst das Projekt festlegt und dann
+-- der Reihe nach dessen Chunks nimmt — genau das tut claimEmbeddingChunks seit
+-- dem 01.08.2026, weil die einstufige Auswahl 7,9 s je Runde brauchte.
+CREATE INDEX IF NOT EXISTS idx_code_chunks_claim_ordnung
+  ON code_chunks(project, file_path, chunk_index)
+  WHERE embedded_at IS NULL;
+
 -- ============================================================================
 -- CodeIntel Ablauf-Ebene (Statement-/Execution-Flow)
 -- code_statements: pro Datei geordnete Statements (top-level + innerhalb Scopes)
