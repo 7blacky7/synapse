@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	_ "embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"image"
 	"image/color"
@@ -760,6 +761,13 @@ func rebuildMenu(projs []Project) {
 		}
 	}()
 
+	mGPU := systray.AddMenuItem("Lokale GPU / Ollama …", "GPU-Modell vergleichen, einrichten oder sperren")
+	go func() {
+		for range mGPU.ClickedCh {
+			fyne.Do(zeigeGPUFenster)
+		}
+	}()
+
 	mReload := systray.AddMenuItem("Neu laden", "")
 	go func() {
 		for range mReload.ClickedCh {
@@ -1237,6 +1245,203 @@ func openDetail(name string) {
 	})
 
 	go w.ReloadAll()
+}
+
+// zeigeGPUFenster zeigt zuerst den serverseitigen Sollzustand. Erst der
+// Verwenden-Klick fuehrt die Hardwaremessung aus; vor diesem Gate wird Ollama
+// weder abgefragt noch gestartet.
+func zeigeGPUFenster() {
+	fenster := myApp.NewWindow("Lokale GPU / Ollama")
+	status := widget.NewLabel("API-Einstellungen werden geladen …")
+	status.Wrapping = fyne.TextWrapWord
+	details := widget.NewMultiLineEntry()
+	details.Disable()
+	details.Wrapping = fyne.TextWrapWord
+	code := widget.NewPasswordEntry()
+	code.SetPlaceHolder("Aktueller 6-stelliger TOTP-Code")
+	home, _ := os.UserHomeDir()
+	modelDir := widget.NewEntry()
+	modelDir.SetText(filepath.Join(home, ".synapse", "file-watcher", "ollama-models"))
+	gpuSelect := widget.NewSelect([]string{"GPU 0"}, nil)
+	gpuSelect.SetSelectedIndex(0)
+
+	var ref apiEmbeddingReferenceResponse
+	var refOK bool
+	go func() {
+		r, err := apiFetchEmbeddingReference()
+		if err != nil {
+			fyne.Do(func() { status.SetText("API-Einstellungen nicht belegbar: " + err.Error()) })
+			return
+		}
+		ref, refOK = r, true
+		all, hardwareErr := detectAllGPUHardware()
+		options := make([]string, 0, len(all))
+		for i, h := range all {
+			options = append(options, fmt.Sprintf("GPU %d: %s — %d MB gesamt / %d MB frei", i, h.Name, h.TotalMB, h.FreeMB))
+		}
+		fyne.Do(func() {
+			details.SetText(gpuComparisonText(ref, nil, nil))
+			if hardwareErr != nil || len(options) == 0 {
+				gpuSelect.Options = []string{"Keine messbare NVIDIA-GPU"}
+				gpuSelect.SetSelectedIndex(0)
+				gpuSelect.Disable()
+				status.SetText("API-Einstellungen geladen. " + hardwareErr.Error())
+				return
+			}
+			gpuSelect.Options = options
+			gpuSelect.SetSelectedIndex(0)
+			gpuSelect.Enable()
+			status.SetText("API-Einstellungen und GPU-Liste geladen. Vor Ollama wird die gewählte GPU erneut gemessen.")
+		})
+	}()
+
+	var useButton *widget.Button
+	startSetup := func(index int, h gpuHardware, mustPull bool) {
+		useButton.Disable()
+		status.SetText("Einrichtung läuft …")
+		codeValue := strings.TrimSpace(code.Text)
+		modelDirValue := strings.TrimSpace(modelDir.Text)
+		go func() {
+			freshHardware, err := detectGPUHardware(index, ref.Reference.RequiredTotalVramMb, ref.Reference.RequiredFreeVramMb)
+			h = freshHardware
+			cfg := loadGPUNodeConfig()
+			if cfg.NodeID == "" && err == nil {
+				cfg.NodeID = defaultGPUNodeID()
+				// Nur die stabile Identitaet darf einen fehlgeschlagenen ersten
+				// Versuch ueberleben. Credential und Setup-Felder folgen erst
+				// nach erfolgreichem Voll-Digest-Gate.
+				err = saveGPUNodeConfig(gpuNodeConfig{NodeID: cfg.NodeID})
+			}
+			cfg.ModelDir, cfg.GPUIndex = modelDirValue, index
+			if err == nil {
+				if e := os.MkdirAll(cfg.ModelDir, 0700); e != nil {
+					err = fmt.Errorf("Zielpfad nicht nutzbar: %w", e)
+				}
+			}
+			if err == nil && mustPull {
+				err = ensureGPUModelDiskSpace(cfg.ModelDir, ref.Download.ModelSizeGb)
+			}
+			// Der kurzlebige TOTP wird sofort gegen ein langlebiges, node-scoped
+			// Compute-Token getauscht. Bis Pull und Voll-Digest-Gate erfolgreich
+			// sind, bleibt es nur im Speicher; der TOTP selbst wird nie gespeichert
+			// oder geloggt und eine bestehende Konfiguration bleibt unveraendert.
+			if err == nil {
+				tok, tokenErr := apiHoleComputeToken(codeValue, cfg.NodeID)
+				err = tokenErr
+				if tokenErr == nil {
+					cfg.ComputeToken, cfg.Issuer = tok.Token, tok.Issuer
+				}
+			}
+			if err == nil {
+				err = startDedicatedOllama(cfg.ModelDir, index)
+			}
+			if err == nil && mustPull {
+				if pullErr := pullGPUModel(ref.Reference.Model, cfg.ModelDir, index); pullErr != nil {
+					err = fmt.Errorf("Modelldownload fehlgeschlagen; Node ist nicht gebunden. Der dedizierte Ollama-Prozess kann weiterlaufen und Partialdaten koennen in %s liegen: %w", cfg.ModelDir, pullErr)
+				}
+			}
+			var tag *ollamaTag
+			if err == nil {
+				tag, err = localOllamaTag(ref.Reference.Model)
+			}
+			if err == nil && (ref.Reference.ModelDigest == nil || tag == nil ||
+				!gpuDigestsMatch(*ref.Reference.ModelDigest, tag.Digest)) {
+				err = errors.New("Digest fehlt oder weicht ab; Node wird nicht gebunden")
+			}
+			if err == nil {
+				// Erst der belegte Voll-Digest macht das Credential zu einer
+				// gueltigen persistenten Node-Konfiguration (0600, atomar).
+				err = saveGPUNodeConfig(cfg)
+			}
+			if err == nil {
+				err = startGPUComputeAgent(cfg, ref.Reference)
+			}
+			effectiveStatus := ""
+			if err == nil {
+				deadline := time.Now().Add(45 * time.Second)
+				for time.Now().Before(deadline) {
+					self, selfErr := apiFetchOwnEmbeddingNode(cfg.NodeID, cfg.Issuer, cfg.ComputeToken)
+					if selfErr == nil {
+						effectiveStatus = self.Node.EffectiveStatus
+						if effectiveStatus == "ready" || effectiveStatus == "locked" {
+							break
+						}
+					}
+					time.Sleep(1500 * time.Millisecond)
+				}
+				if effectiveStatus != "ready" && effectiveStatus != "locked" {
+					err = errors.New("Registry-Handshake wurde nicht innerhalb von 45 Sekunden ready; Node ist nicht bereit")
+				}
+			}
+			fyne.Do(func() {
+				useButton.Enable()
+				if err != nil {
+					status.SetText("Nicht eingerichtet: " + err.Error())
+				} else if effectiveStatus == "locked" {
+					status.SetText(fmt.Sprintf("Registry bestätigt: %s ist dauerhaft gesperrt_vom_user.", cfg.NodeID))
+					details.SetText(gpuComparisonText(ref, tag, &h))
+				} else {
+					status.SetText(fmt.Sprintf("Registry bestätigt READY: %s; %d MB gesamt / %d MB frei gemessen.", cfg.NodeID, h.TotalMB, h.FreeMB))
+					details.SetText(gpuComparisonText(ref, tag, &h))
+				}
+			})
+		}()
+	}
+	useButton = widget.NewButton("Meine GPU verwenden", func() {
+		if !refOK {
+			status.SetText("API-Einstellungen sind nicht belegbar; keine lokale Aktion.")
+			return
+		}
+		index := gpuSelect.SelectedIndex()
+		h, err := detectGPUHardware(index, ref.Reference.RequiredTotalVramMb, ref.Reference.RequiredFreeVramMb)
+		if err != nil {
+			status.SetText(err.Error())
+			details.SetText(gpuComparisonText(ref, nil, &h))
+			return
+		}
+		tag, tagErr := localOllamaTag(ref.Reference.Model)
+		if tagErr == nil && tag != nil {
+			if ref.Reference.ModelDigest == nil || !gpuDigestsMatch(*ref.Reference.ModelDigest, tag.Digest) {
+				status.SetText("Digest weicht ab oder ist nicht konfiguriert; Node wird nicht gebunden.")
+				details.SetText(gpuComparisonText(ref, tag, &h))
+				return
+			}
+			startSetup(index, h, false)
+			return
+		}
+		msg := fmt.Sprintf("Modell fehlt. Vor dem Start werden %.1f GB nach %s geladen. Fortfahren?", ref.Download.ModelSizeGb, modelDir.Text)
+		dialog.NewConfirm("Download bestätigen", msg, func(ok bool) {
+			if ok {
+				startSetup(index, h, true)
+			}
+		}, fenster).Show()
+	})
+	lockButton := widget.NewButton("Meine GPU nicht verwenden", func() {
+		cfg := loadGPUNodeConfig()
+		if cfg.NodeID == "" {
+			status.SetText("Noch keine lokale GPU-Node eingerichtet.")
+			return
+		}
+		go func() {
+			session, err := apiVerifyTOTP(strings.TrimSpace(code.Text))
+			if err == nil {
+				err = apiSetEmbeddingLockAsAdmin(cfg.NodeID, session, true)
+			}
+			fyne.Do(func() {
+				if err != nil {
+					status.SetText("Sperren fehlgeschlagen: " + err.Error())
+				} else {
+					status.SetText("GPU ist sofort und dauerhaft als gesperrt_vom_user markiert.")
+				}
+			})
+		}()
+	})
+	fenster.SetContent(container.NewVBox(status, details,
+		widget.NewLabel("GPU-Auswahl"), gpuSelect,
+		widget.NewLabel("Modell-Zielpfad (vor Download prüfen)"), modelDir,
+		code, container.NewHBox(useButton, lockButton)))
+	fenster.Resize(fyne.NewSize(720, 680))
+	fenster.Show()
 }
 
 // zeigeVerbindungsFenster oeffnet die Verbindungs-Einrichtung (TRAY-3).

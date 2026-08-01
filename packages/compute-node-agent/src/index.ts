@@ -17,6 +17,25 @@ if (!apiUrl || !token) {
   process.exit(1);
 }
 
+let parsedApiUrl: URL;
+try {
+  parsedApiUrl = new URL(apiUrl);
+} catch {
+  console.error('SYNAPSE_API_URL must be a valid absolute URL');
+  process.exit(1);
+}
+const loopbackHost = parsedApiUrl.hostname === '127.0.0.1' ||
+  parsedApiUrl.hostname === 'localhost' ||
+  parsedApiUrl.hostname === '[::1]';
+if (parsedApiUrl.protocol !== 'https:' && !(parsedApiUrl.protocol === 'http:' && loopbackHost)) {
+  console.error('SYNAPSE_API_URL must use HTTPS (HTTP is allowed only on loopback)');
+  process.exit(1);
+}
+if (parsedApiUrl.username || parsedApiUrl.password || parsedApiUrl.search || parsedApiUrl.hash) {
+  console.error('SYNAPSE_API_URL must not contain credentials, query parameters, or fragments');
+  process.exit(1);
+}
+
 // Der Compute-Prozess ist strikt lokal: kein getEmbeddingProvider() und damit
 // kein stiller OpenAI-Fallback. Die Node-Parallelitaet ist eine eigene Workerzahl
 // und veraendert EMBED_MAX_CONCURRENT des Servers nicht.
@@ -66,6 +85,8 @@ async function api<T>(path: string, body: unknown): Promise<T> {
       'content-type': 'application/json',
     },
     body: JSON.stringify(body),
+    signal: AbortSignal.timeout(30_000),
+    redirect: 'error',
   });
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(`Synapse API ${response.status}: ${JSON.stringify(payload)}`);

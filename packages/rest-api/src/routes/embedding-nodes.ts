@@ -93,6 +93,41 @@ export function createEmbeddingNodeRoutes(
   };
 
   return async (fastify: FastifyInstance): Promise<void> => {
+    // GPU-3: Referenzdaten sind keine Geheimnisse. Der Tray zeigt Modell, VOLLEN
+    // Digest und Dimension, bevor der Nutzer irgendeinen Download startet.
+    fastify.get('/api/embedding-nodes/reference', async (_request, reply) => {
+      const reference = getEmbeddingReferenceContract();
+      return reply.send({
+        success: true,
+        reference,
+        download: {
+          linux: 'https://ollama.com/download',
+          windows: 'https://ollama.com/download/windows',
+          macos: 'https://ollama.com/download/mac',
+          model: `https://ollama.com/library/${encodeURIComponent(reference.model)}`,
+          modelSizeGb: 4.7,
+        },
+      });
+    });
+
+    // Ein Compute-Token darf ausschliesslich den eigenen Registry-Eintrag lesen.
+    fastify.get<{ Params: { nodeId: string } }>(
+      '/api/embedding-nodes/:nodeId/self',
+      async (request, reply) => {
+        const { nodeId } = request.params;
+        const auth = await principal(request, deps);
+        if (!validateNodeId(nodeId) || !tokenAllowsNode(auth, nodeId)) {
+          return reply.code(403).send({ success: false, error: 'node_token_mismatch' });
+        }
+        const node = (await listEmbeddingNodes(deps.db)).find((candidate) =>
+          candidate.node_id === nodeId && candidate.service_token_hash === auth!.token_hash
+        );
+        if (!node) return reply.code(404).send({ success: false, error: 'node_not_registered' });
+        const { service_token_hash: _secret, ...visible } = node;
+        return reply.send({ success: true, reference: getEmbeddingReferenceContract(), node: visible });
+      },
+    );
+
     fastify.post<{ Body: EmbeddingNodeRegistration }>(
       '/api/embedding-nodes/register',
       async (request, reply) => {
@@ -107,6 +142,18 @@ export function createEmbeddingNodeRoutes(
         if (!tokenAllowsNode(auth, input.nodeId)) {
           return reply.code(403).send({ success: false, error: 'node_token_mismatch' });
         }
+        const reference = getEmbeddingReferenceContract();
+        if (input.vramTotalMb < reference.requiredTotalVramMb ||
+            input.vramFreeMb < reference.requiredFreeVramMb) {
+          return reply.code(409).send({
+            success: false,
+            error: 'insufficient_free_vram',
+            requiredTotalVramMb: reference.requiredTotalVramMb,
+            requiredFreeVramMb: reference.requiredFreeVramMb,
+            measuredTotalVramMb: input.vramTotalMb,
+            measuredFreeVramMb: input.vramFreeMb,
+          });
+        }
         const problems = compatibilityProblems(input);
         if (problems.length > 0) {
           return reply.code(409).send({
@@ -118,7 +165,12 @@ export function createEmbeddingNodeRoutes(
         }
         const node = await registerEmbeddingNode(auth!.token_hash, input, deps.db);
         if (!node) return reply.code(409).send({ success: false, error: 'stale_registration' });
-        return reply.code(201).send({ success: true, nodeId: node.node_id, status: 'ready' });
+        return reply.code(201).send({
+          success: true,
+          nodeId: node.node_id,
+          status: node.gesperrt_vom_user ? 'locked' : 'ready',
+          locked: node.gesperrt_vom_user,
+        });
       },
     );
 

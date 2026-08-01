@@ -37,25 +37,39 @@ function envPositiveInt(name: string, fallback: number): number {
 
 async function gpuInfo(): Promise<{ name: string | null; totalMb: number; freeMb: number }> {
   try {
+    const gpuIndex = process.env.SYNAPSE_GPU_INDEX;
+    if (!gpuIndex || !/^\d+$/.test(gpuIndex)) throw new Error('SYNAPSE_GPU_INDEX must select exactly one GPU');
     const { stdout } = await execFileAsync('nvidia-smi', [
+      `--id=${gpuIndex}`,
       '--query-gpu=name,memory.total,memory.free',
       '--format=csv,noheader,nounits',
     ], { timeout: 5000 });
     const [name, total, free] = stdout.trim().split('\n')[0].split(',').map((v) => v.trim());
     return { name: name || null, totalMb: Number(total) || 0, freeMb: Number(free) || 0 };
   } catch {
-    return {
-      name: process.env.SYNAPSE_GPU_NAME || null,
-      totalMb: envPositiveInt('SYNAPSE_GPU_VRAM_TOTAL_MB', 0),
-      freeMb: envPositiveInt('SYNAPSE_GPU_VRAM_FREE_MB', 0),
-    };
+    return { name: null, totalMb: 0, freeMb: 0 };
   }
 }
 
 export async function probeNodeCapabilities(): Promise<NodeCapabilities> {
-  const ollamaUrl = (process.env.OLLAMA_URL || 'http://127.0.0.1:11434').replace(/\/$/, '');
+  // GPU-3: fail-closed und zwingend VOR jedem Ollama-Netzaufruf.
+  const gpu = await gpuInfo();
+  const requiredFreeMb = envPositiveInt('SYNAPSE_GPU_REQUIRED_FREE_MB', 7300);
+  const requiredTotalMb = envPositiveInt('SYNAPSE_GPU_REQUIRED_TOTAL_MB', 12000);
+  if (!gpu.name || gpu.totalMb < requiredTotalMb || gpu.freeMb < requiredFreeMb) {
+    throw new Error(
+      `Hardware passt nicht / nicht moeglich: mindestens ${requiredTotalMb} MB VRAM und ${requiredFreeMb} MB frei erforderlich; ` +
+      `gemessen ${gpu.totalMb} MB gesamt / ${gpu.freeMb} MB frei`,
+    );
+  }
+  const ollamaUrl = (process.env.OLLAMA_URL || '').replace(/\/$/, '');
+  let parsedOllama: URL;
+  try { parsedOllama = new URL(ollamaUrl); } catch { throw new Error('OLLAMA_URL must be a loopback URL'); }
+  if (parsedOllama.protocol !== 'http:' || !['127.0.0.1', 'localhost', '::1'].includes(parsedOllama.hostname)) {
+    throw new Error('OLLAMA_URL must be strict loopback HTTP');
+  }
   const model = process.env.OLLAMA_MODEL || 'qwen3-embedding:8b';
-  const tagsResponse = await fetch(`${ollamaUrl}/api/tags`);
+  const tagsResponse = await fetch(`${ollamaUrl}/api/tags`, { signal: AbortSignal.timeout(10_000) });
   if (!tagsResponse.ok) throw new Error(`Ollama tags failed: ${tagsResponse.status}`);
   const tags = await tagsResponse.json() as { models: OllamaTag[] };
   const tag = tags.models.find((item) =>
@@ -67,6 +81,7 @@ export async function probeNodeCapabilities(): Promise<NodeCapabilities> {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ model }),
+    signal: AbortSignal.timeout(10_000),
   });
   if (!showResponse.ok) throw new Error(`Ollama show failed: ${showResponse.status}`);
   const show = await showResponse.json() as {
@@ -79,7 +94,6 @@ export async function probeNodeCapabilities(): Promise<NodeCapabilities> {
     throw new Error('Ollama model_info has no embedding_length');
   }
 
-  const gpu = await gpuInfo();
   return {
     nodeId: process.env.SYNAPSE_NODE_ID || os.hostname().toLowerCase().replace(/[^a-z0-9._-]/g, '-'),
     host: os.hostname(),

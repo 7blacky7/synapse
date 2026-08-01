@@ -9,6 +9,8 @@ export interface EmbeddingReferenceContract {
   targetDimension: number;
   numCtx: number;
   quantization: string | null;
+  requiredTotalVramMb: number;
+  requiredFreeVramMb: number;
 }
 
 export interface EmbeddingNodeRegistration {
@@ -98,6 +100,8 @@ export function getEmbeddingReferenceContract(): EmbeddingReferenceContract {
     targetDimension: positiveInt(process.env.EMBEDDING_TARGET_DIM, 3072),
     numCtx: positiveInt(process.env.EMBEDDING_NUM_CTX, 8192),
     quantization: process.env.SYNAPSE_OLLAMA_QUANTIZATION?.trim() || null,
+    requiredTotalVramMb: positiveInt(process.env.SYNAPSE_GPU_REQUIRED_TOTAL_MB, 12000),
+    requiredFreeVramMb: positiveInt(process.env.SYNAPSE_GPU_REQUIRED_FREE_MB, 7300),
   };
 }
 
@@ -232,6 +236,10 @@ export async function listEmbeddingNodes(
       row,
       nowMs ?? new Date(row.server_now ?? Date.now()).getTime(),
     );
+    if (row.vram_gesamt_mb < reference.requiredTotalVramMb ||
+        row.vram_frei_mb < reference.requiredFreeVramMb) {
+      problems.push('insufficient_free_vram');
+    }
     return {
       ...row,
       effectiveStatus,

@@ -51,7 +51,12 @@ const (
 	apiFallbackLocalDefault = "http://192.168.50.65:3456"
 )
 
-var apiHttpClient = &http.Client{Timeout: 10 * time.Second}
+var apiHttpClient = &http.Client{
+	Timeout: 10 * time.Second,
+	CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+		return http.ErrUseLastResponse
+	},
+}
 
 // Merkt sich die zuletzt erfolgreiche Basis, damit nicht jeder Aufruf erneut
 // durch die ganze Kette laeuft. Wird bei Fehlschlag verworfen.
@@ -148,6 +153,10 @@ func apiRequest(method, path string, out interface{}) (base string, err error) {
 
 // apiRequestBody wie apiRequest, zusaetzlich mit JSON-Body (darf nil sein).
 func apiRequestBody(method, path string, body interface{}, out interface{}) (base string, err error) {
+	return apiRequestBodyWithToken(method, path, body, apiToken(), out)
+}
+
+func apiRequestBodyWithToken(method, path string, body interface{}, token string, out interface{}) (base string, err error) {
 	var payload []byte
 	if body != nil {
 		var mErr error
@@ -161,7 +170,6 @@ func apiRequestBody(method, path string, body interface{}, out interface{}) (bas
 	// sieht der Nutzer bloss das letzte Kettenglied und sucht an der falschen
 	// Stelle, obwohl alle Adressen probiert wurden.
 	var versuche []string
-	token := apiToken()
 
 	for _, b := range apiBases() {
 		var rdr io.Reader
@@ -191,6 +199,9 @@ func apiRequestBody(method, path string, body interface{}, out interface{}) (bas
 		body, readErr := io.ReadAll(resp.Body)
 		resp.Body.Close()
 
+		if resp.StatusCode >= 300 && resp.StatusCode < 400 {
+			return b, fmt.Errorf("HTTP-Redirect %d von %s abgelehnt", resp.StatusCode, b)
+		}
 		if resp.StatusCode >= 500 {
 			versuche = append(versuche, fmt.Sprintf("%s: HTTP %d", b, resp.StatusCode))
 			forgetBase(b)
@@ -503,6 +514,7 @@ type apiServiceTokenResponse struct {
 	Token     string `json:"token"`
 	ExpiresAt string `json:"expiresAt"`
 	Scope     string `json:"scope"`
+	Issuer    string `json:"-"`
 	Error     *struct {
 		Code    string `json:"code"`
 		Message string `json:"message"`
@@ -533,6 +545,137 @@ func apiHoleServiceToken(code, label string) (apiServiceTokenResponse, error) {
 		return r, fmt.Errorf("Antwort enthielt kein Token.")
 	}
 	return r, nil
+}
+
+type apiEmbeddingReference struct {
+	Model               string  `json:"model"`
+	ModelDigest         *string `json:"modelDigest"`
+	NativeDimension     int     `json:"nativeDimension"`
+	TargetDimension     int     `json:"targetDimension"`
+	NumCtx              int     `json:"numCtx"`
+	Quantization        *string `json:"quantization"`
+	RequiredTotalVramMb int     `json:"requiredTotalVramMb"`
+	RequiredFreeVramMb  int     `json:"requiredFreeVramMb"`
+}
+type apiEmbeddingDownload struct {
+	Linux       string  `json:"linux"`
+	Windows     string  `json:"windows"`
+	MacOS       string  `json:"macos"`
+	Model       string  `json:"model"`
+	ModelSizeGb float64 `json:"modelSizeGb"`
+}
+type apiEmbeddingReferenceResponse struct {
+	Success   bool                  `json:"success"`
+	Reference apiEmbeddingReference `json:"reference"`
+	Download  apiEmbeddingDownload  `json:"download"`
+}
+type apiEmbeddingNode struct {
+	NodeID          string  `json:"node_id"`
+	Model           string  `json:"modell"`
+	ModelDigest     string  `json:"modell_digest"`
+	TargetDimension int     `json:"ziel_dimension"`
+	Quantization    *string `json:"quantisierung"`
+	LockedByUser    bool    `json:"gesperrt_vom_user"`
+	EffectiveStatus string  `json:"effectiveStatus"`
+}
+type apiEmbeddingSelfResponse struct {
+	Success   bool                  `json:"success"`
+	Reference apiEmbeddingReference `json:"reference"`
+	Node      apiEmbeddingNode      `json:"node"`
+}
+
+func apiFetchEmbeddingReference() (apiEmbeddingReferenceResponse, error) {
+	var r apiEmbeddingReferenceResponse
+	err := apiPinnedRequest(http.MethodGet, apiDefaultTunnel, "/api/embedding-nodes/reference", nil, apiToken(), &r)
+	return r, err
+}
+func apiFetchOwnEmbeddingNode(nodeID, issuer, computeToken string) (apiEmbeddingSelfResponse, error) {
+	var r apiEmbeddingSelfResponse
+	err := apiPinnedRequest(http.MethodGet, issuer, "/api/embedding-nodes/"+urlSeg(nodeID)+"/self", nil, computeToken, &r)
+	return r, err
+}
+func apiHoleComputeToken(code, nodeID string) (apiServiceTokenResponse, error) {
+	var r apiServiceTokenResponse
+	body := map[string]string{"code": code, "label": nodeID, "node_id": nodeID}
+	err := apiPinnedRequest(http.MethodPost, apiDefaultTunnel, "/api/auth/service-token", body, "", &r)
+	if err != nil {
+		return r, err
+	}
+	r.Issuer = apiDefaultTunnel
+	if !r.Success || r.Token == "" || r.Scope != "compute-node:"+nodeID {
+		return r, fmt.Errorf("Server hat kein passendes Compute-Token ausgestellt")
+	}
+	return r, nil
+}
+
+type apiVerifyResponse struct {
+	Success   bool   `json:"success"`
+	Token     string `json:"token"`
+	ExpiresAt string `json:"expiresAt"`
+	Issuer    string `json:"-"`
+}
+
+func apiVerifyTOTP(code string) (apiVerifyResponse, error) {
+	var r apiVerifyResponse
+	err := apiPinnedRequest(http.MethodPost, apiDefaultTunnel, "/api/auth/verify", map[string]string{"code": code}, "", &r)
+	if err != nil {
+		return r, err
+	}
+	r.Issuer = apiDefaultTunnel
+	if !r.Success || r.Token == "" {
+		return r, fmt.Errorf("TOTP-Code wurde nicht akzeptiert")
+	}
+	return r, nil
+}
+
+func apiPinnedRequest(method, base, path string, body interface{}, token string, out interface{}) error {
+	var payload []byte
+	var err error
+	if body != nil {
+		payload, err = json.Marshal(body)
+		if err != nil {
+			return err
+		}
+	}
+	var reader io.Reader
+	if payload != nil {
+		reader = bytes.NewReader(payload)
+	}
+	req, err := http.NewRequest(method, strings.TrimRight(base, "/")+path, reader)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Accept", "application/json")
+	if payload != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := apiHttpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+	if resp.StatusCode >= 300 && resp.StatusCode < 400 {
+		return fmt.Errorf("HTTP-Redirect %d abgelehnt", resp.StatusCode)
+	}
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(data)))
+	}
+	if out != nil {
+		return json.Unmarshal(data, out)
+	}
+	return nil
+}
+
+func apiSetEmbeddingLockAsAdmin(nodeID string, session apiVerifyResponse, locked bool) error {
+	body := map[string]interface{}{"locked": locked, "reason": "Vom lokalen Tray gesetzt"}
+	return apiPinnedRequest(http.MethodPatch, session.Issuer, "/api/embedding-nodes/"+urlSeg(nodeID)+"/lock", body, session.Token, nil)
 }
 
 // speichereApiToken schreibt das Token als synapse_api_token in die config.json

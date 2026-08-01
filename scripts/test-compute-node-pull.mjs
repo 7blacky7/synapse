@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import http from 'node:http';
 import net from 'node:net';
+import os from 'node:os';
+import path from 'node:path';
 
 const listen = (server) => new Promise((resolve) =>
   server.listen(0, '127.0.0.1', () => resolve(server.address().port))
@@ -111,12 +114,20 @@ const trapB = net.createServer((socket) => {
 const [ollamaPort, apiPort, pgTrapPort, qdrantTrapPort] = await Promise.all([
   listen(ollama), listen(api), listen(trapA), listen(trapB),
 ]);
+const fakeBinDir = await mkdtemp(path.join(os.tmpdir(), 'synapse-fake-gpu-'));
+await writeFile(
+  path.join(fakeBinDir, 'nvidia-smi'),
+  '#!/bin/sh\nprintf "Test GPU, 12288, 10000\\n"\n',
+  { mode: 0o700 },
+);
 
 let stderr = '';
 const child = spawn(process.execPath, ['packages/compute-node-agent/dist/index.js'], {
   cwd: new URL('..', import.meta.url),
   env: {
     ...process.env,
+    PATH: `${fakeBinDir}:${process.env.PATH ?? ''}`,
+    SYNAPSE_GPU_INDEX: '0',
     SYNAPSE_API_URL: `http://127.0.0.1:${apiPort}`,
     SYNAPSE_API_TOKEN: 'test-service-token',
     SYNAPSE_NODE_ID: 'gpu2-test-node',
@@ -168,4 +179,5 @@ try {
 } finally {
   if (child.exitCode === null) child.kill('SIGKILL');
   await Promise.all([close(ollama), close(api), close(trapA), close(trapB)]);
+  await rm(fakeBinDir, { recursive: true, force: true });
 }

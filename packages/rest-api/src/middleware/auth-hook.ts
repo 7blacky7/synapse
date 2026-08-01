@@ -75,6 +75,10 @@ function isAllowlisted(method: string, pathname: string): boolean {
   // Web-UI-Auth-Endpunkte (AUTH-5) — MUESSEN offen sein (Weg zum ersten Token).
   if (pathname === '/api/auth' || pathname.startsWith('/api/auth/')) return true;
 
+  // GPU-3 Bootstrap: Modellvertrag und offizielle Downloadlinks sind oeffentliche
+  // Metadaten. Der Tray muss sie vor dem ersten lokalen GPU-/Token-Setup anzeigen.
+  if (method === 'GET' && pathname === '/api/embedding-nodes/reference') return true;
+
   // OAuth-Flow (AUTH-3) — Discovery + Authorize + Token + Dynamic Client Registration.
   if (pathname.startsWith('/.well-known/')) return true;
   if (pathname === '/authorize' || pathname.startsWith('/authorize')) return true;
