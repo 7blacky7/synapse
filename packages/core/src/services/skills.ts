@@ -292,16 +292,42 @@ export async function findeSkillsNachName(
     );
     const gefunden = new Set(rows.map((row) => row.skill_name));
 
-    // Namensanfaenge: "ki-browser" meint ki-browser-standalone. Ab sechs Zeichen und nur
-    // an einer Segmentgrenze, damit "web" nicht web-best-practices trifft.
+    // Namensanfaenge: "ki-browser" meint ki-browser-standalone. Ab sechs Zeichen, nur an
+    // einer Segmentgrenze — und nur, wenn das Fragment als EIGENES WORT dasteht.
+    //
+    // ⚠️ DIE WORTGRENZE IST NICHT OPTIONAL. Ohne sie traf ein realistischer Auftragstext
+    // am 02.08.2026 zwei Skills, die niemand genannt hatte:
+    //   "Testprompt"             enthaelt "prompt"      -> prompt-engineering-patterns
+    //   "playwright-e2e-testing" enthaelt "e2e-testing" -> e2e-testing-automation
+    // Beide sahen mit Score 0,99 aus wie sichere Treffer. Ein Fragment mitten in einem
+    // anderen Wort bedeutet nichts.
     const { rows: alle } = await getPool().query<{ skill_name: string }>(
       'SELECT skill_name FROM skill_names',
     );
+    // ⚠️ DER BINDESTRICH ZAEHLT NICHT ALS GRENZE. Sonst trifft jedes Fragment, das in einem
+    // LAENGEREN Skillnamen steckt, der wirklich im Text steht:
+    //   "playwright-e2e-testing" -> e2e-testing-automation
+    //   "frontend-design"        -> frontend-build-guardian
+    // Beide mit Score 0,99, beide nie genannt. Ein Fragment gilt nur, wenn links und rechts
+    // ein echtes Trennzeichen steht — Leerzeichen, Satzzeichen, Zeilenanfang oder -ende.
+    const grenze = (zeichen: string | undefined) =>
+      zeichen === undefined || !/[a-z0-9-]/.test(zeichen);
     for (const { skill_name: name } of alle as Array<{ skill_name: string }>) {
       const klein = name.toLowerCase();
+      if (gefunden.has(name)) continue;
       for (let ende = klein.length - 1; ende >= 6; ende--) {
         if (klein[ende] !== '-' && klein[ende] !== ':') continue;
-        if (tiefe.includes(klein.slice(0, ende))) { gefunden.add(name); break; }
+        const fragment = klein.slice(0, ende);
+        let ab = tiefe.indexOf(fragment);
+        let treffer = false;
+        while (ab !== -1) {
+          if (grenze(tiefe[ab - 1]) && grenze(tiefe[ab + fragment.length])) {
+            treffer = true;
+            break;
+          }
+          ab = tiefe.indexOf(fragment, ab + 1);
+        }
+        if (treffer) { gefunden.add(name); break; }
       }
     }
     return [...gefunden];
