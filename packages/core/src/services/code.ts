@@ -50,6 +50,14 @@ function deterministicChunkId(project: string, filePath: string, chunkIndex: num
   const contentHash = crypto.createHash('sha256').update(content).digest('hex').slice(0, 16);
   return uuidv5(`${project}:${filePath}:${chunkIndex}:${contentHash}`, SYNAPSE_QDRANT_NS);
 }
+
+/**
+ * Wieviele Chunks pro Runde embedded, in Qdrant eingefuegt und in PG quittiert
+ * werden. Kleiner heisst: ein Abbruch kostet weniger, dafuer mehr Roundtrips.
+ * Bei 100 und rund 870 ms je Chunk ist eine Runde nach gut anderthalb Minuten
+ * dauerhaft verbucht.
+ */
+const EMBED_SCHEIBE = Math.max(1, Number(process.env.EMBED_SCHEIBE) || 100);
 import {
   CodeChunkPayload,
   CodeSearchResult,
@@ -66,16 +74,59 @@ import {
   updatePayloadByFilePath,
   deleteCollection,
   getCollectionVectorSize,
+  getVectors,
+  deleteVectors,
+  scrollePunktIds,
 } from '../qdrant/index.js';
 import { embed, embedBatch, embedMedia, supportsMultimodal } from '../embeddings/index.js';
 import { chunkFile } from '../chunking/index.js';
 import { readFileWithMetadata, getFileType, isExtractableDocument } from '../watcher/index.js';
-import { isMultimodalFile, getMediaMimeType, getMediaCategory, isBinaryFile, MAX_MEDIA_SIZE_MB } from '../watcher/binary.js';
+import { isMultimodalFile, getMediaMimeType, getMediaCategory, isBinaryFile, MAX_MEDIA_SIZE_MB, klassifiziereDatei } from '../watcher/binary.js';
 import { loadGitignore, shouldIgnore } from '../watcher/ignore.js';
 import { getConfig } from '../config.js';
 import { indexDocument, removeDocument } from './documents.js';
 import { getPool } from '../db/client.js';
 import { getParserForFile } from '../parser/index.js';
+
+/**
+ * Projekte, deren FileWatcher-Erstscan durch ist. NUR fuer diese wird eine neu
+ * auf der Platte aufgetauchte Datei als Ereignis protokolliert.
+ *
+ * WARUM HERUM: das Set fuehrt die FERTIGEN Projekte, nicht die laufenden. Ist ein
+ * Projekt (noch) nicht eingetragen, bleibt es beim bisherigen Verhalten — ein
+ * verspaetetes Markieren kostet damit hoechstens einen fehlenden Eintrag und kann
+ * niemals den Erstscan mit tausenden Eintraegen fluten. Die umgekehrte Fuehrung
+ * waere bei jedem Timing-Fehler sofort schaedlich.
+ */
+const projekteMitAbgeschlossenemScan = new Set<string>();
+
+/**
+ * Entfernt Null-Bytes aus einem Text, der nach PostgreSQL geht.
+ *
+ * WARUM: PG weist text mit 0x00 ab ("invalid byte sequence for encoding UTF8").
+ * Ein einziges solches Zeichen laesst die gesamte Symbol-Transaktion scheitern,
+ * und weil parser_version dann NULL bleibt, gilt die Datei in jedem Tick erneut
+ * als veraltet — eine Endlosschleife im parser-worker.
+ *
+ * ES REICHT NICHT, DEN DATEIINHALT ZU SAEUBERN (das geschieht laengst): eine
+ * Quelldatei kann voellig sauber sein und trotzdem die ESCAPE-SEQUENZ \x00 als
+ * Text enthalten, die der Parser beim Lesen eines String-Literals aufloest. Genau
+ * so entstand der Fall an ERC7739Utils.test.js:158.
+ */
+function ohneNullBytes(wert: string | null | undefined): string | null {
+  if (wert == null) return null;
+  return wert.includes('\0') ? wert.replace(/\0/g, '') : wert;
+}
+
+/** Meldet, dass der Erstscan eines Projekts durch ist (ruft der FileWatcher in 'ready'). */
+export function markiereScanAbgeschlossen(projectName: string): void {
+  projekteMitAbgeschlossenemScan.add(projectName);
+}
+
+/** Nimmt die Markierung zurueck (Watcher gestoppt) — der naechste Start scannt neu. */
+export function markiereScanBegonnen(projectName: string): void {
+  projekteMitAbgeschlossenemScan.delete(projectName);
+}
 
 /**
  * Schreibt File-Metadaten nach PostgreSQL (UPSERT) — unterstuetzt content + content_hash
@@ -126,6 +177,24 @@ async function deleteCodeFile(project: string, filePath: string): Promise<void> 
     'UPDATE code_files SET deleted_at = NOW(), updated_at = NOW() WHERE project = $1 AND file_path = $2',
     [project, filePath]
   );
+
+  // parse_coverage haengt seit dem FK in schema.ts per CASCADE an code_files --
+  // aber CASCADE feuert erst beim HARTEN Delete, und das macht hier niemand:
+  // oben steht ein Soft-Delete. Bis der PG-Watcher nachzieht, zaehlt
+  // parser-health die Datei weiter mit, und laeuft der Watcher fuer dieses
+  // Projekt gar nicht, bleibt der Eintrag dauerhaft stehen. Genau so entstehen
+  // die Geisterparser: Parser mit Dateien, die es nicht mehr gibt.
+  //
+  // Deshalb hier explizit, zusaetzlich zum FK. Der Schluessel von
+  // parse_coverage ist (project, file_path) -- ein Datensatz je Datei, also
+  // trifft das exakt diese eine Datei und nichts sonst.
+  //
+  // Kein try/catch: die Zeile gehoert zum Loeschen dazu. Schlaegt sie fehl,
+  // soll der Aufrufer das sehen -- removeFile faengt bereits ab.
+  await pool.query('DELETE FROM parse_coverage WHERE project = $1 AND file_path = $2', [
+    project,
+    filePath,
+  ]);
 }
 
 /**
@@ -224,13 +293,35 @@ export async function storeFileContent(
     return true;
   }
 
-  // Unbekannte Datei = Erstindexierung. BEWUSST ohne Versions-Eintrag: ein
-  // Initial-Scan wuerde sonst tausende Eintraege erzeugen und die History fluten.
+  // Unbekannte Datei = Erstindexierung. Waehrend des Erstscans BEWUSST ohne
+  // Versions-Eintrag: sonst hinterlaesst ein einziger Import tausende Eintraege und
+  // die History ist unbrauchbar (74.322 Dateien in einem Fall).
+  // ⚠️ IM LAUFENDEN BETRIEB GILT DAS NICHT. Bis hierher wurde nicht unterschieden,
+  // und dadurch war jede neu angelegte Datei im Tray unsichtbar — der User hat es
+  // gemeldet: seine Aenderung an einer bekannten Datei erschien, seine neue Datei
+  // nicht. Bei 904 ADD-Ereignissen stand genau EIN Eintrag in file_versions.
   const fileSize = fs.statSync(absolutePath).size;
   await upsertCodeFile(
     projectName, filePath, path.basename(filePath), fileData.fileType,
     0, fileSize, fileData.content, contentHash
   );
+
+  if (projekteMitAbgeschlossenemScan.has(projectName)) {
+    // Nach upsertCodeFile, weil snapshotFileVersion den Inhalt aus code_files liest.
+    try {
+      const { snapshotFileVersion } = await import('./code-write.js');
+      await snapshotFileVersion(
+        projectName,
+        filePath,
+        'fs_add',
+        'Neue Datei direkt auf dem Dateisystem angelegt (nicht ueber das files-Tool)'
+      );
+    } catch (err) {
+      // Die Datei ist bereits indiziert — ein fehlender Protokolleintrag darf den
+      // Vorgang nicht kippen, aber er wird auch nicht verschwiegen.
+      console.error(`[Synapse] fs_add nicht protokollierbar fuer ${filePath}: ${err}`);
+    }
+  }
 
   console.error(`[Synapse] Gespeichert: ${filePath} (${fileData.content.length} Zeichen)`);
   return true;
@@ -352,17 +443,29 @@ export async function parseAndEmbed(
   // der parser-worker-Loop sie nicht ewig erneut versucht. Re-Trigger via content-Aenderung
   // (Hash-Diff in code-write setzt parsed_at zurueck auf NULL).
   if (content === '') {
+    // parser_version MITSCHREIBEN. Ohne das bleibt die Spalte NULL, und sobald der
+    // Backlog NULL als "nachzieh-faellig" behandelt, waere diese Datei eine
+    // Endlosschleife: sie wird geholt, kommt hier wieder heraus, bekommt nie eine
+    // Version und ist im naechsten Tick erneut faellig.
+    // COALESCE: gibt es fuer die Endung gar keinen Parser, bleibt die Spalte NULL —
+    // das ist dann die richtige Aussage und keine Luecke, denn ohne Parser wird die
+    // Datei ohnehin nie faellig.
+    const leerParser = getParserForFile(filePath);
     await pool.query(
-      `UPDATE code_files SET parsed_at = NOW(), indexed_at = NOW(), chunk_count = 0
+      `UPDATE code_files SET parsed_at = NOW(), indexed_at = NOW(), chunk_count = 0,
+              parser_version = COALESCE($3, parser_version)
          WHERE project = $1 AND file_path = $2`,
-      [project, filePath]
+      [project, filePath, leerParser ? (leerParser.version ?? 1) : null]
     );
     return;
   }
 
   // --- Symbole + Referenzen parsen (in Transaktion) ---
   let parseSuccess = false;
-  const parser = getParserForFile(filePath);
+  // Inhalt mitgeben: nur damit kann die Inhaltserkennung fuer Dateien OHNE
+  // Endung ueberhaupt greifen (siehe getParserForFile). Fuer alle anderen
+  // Dateien aendert der zweite Parameter nichts.
+  const parser = getParserForFile(filePath, content);
 
   // TEMP-Mitigation: Files >PARSER_MAX_BYTES blocken den Event-Loop (sync
   // parser.parse() ist CPU-gebunden). Bis Worker-Threads (WT-1..5) fertig
@@ -371,10 +474,13 @@ export async function parseAndEmbed(
   const skipBytes = Number(process.env.PARSER_MAX_BYTES || 0);
   if (parser && skipBytes > 0 && content.length > skipBytes) {
     console.error(`[Synapse] Parse SKIPPED (file ${content.length}b > ${skipBytes}b): ${filePath}`);
+    // parser_version mitschreiben — gleiche Begruendung wie beim leeren File: dieser
+    // Ausgang hat immer einen Parser (siehe Bedingung oben), und ohne Version bliebe
+    // die Datei dauerhaft faellig, ohne je zu einem Ergebnis zu kommen.
     await pool.query(
-      `UPDATE code_files SET parsed_at = NOW(), indexed_at = NOW()
+      `UPDATE code_files SET parsed_at = NOW(), indexed_at = NOW(), parser_version = $3
          WHERE project = $1 AND file_path = $2`,
-      [project, filePath]
+      [project, filePath, parser.version ?? 1]
     );
     return;
   }
@@ -411,12 +517,28 @@ export async function parseAndEmbed(
     const { getParserPool } = await import('../parser/worker-pool.js');
     const workerPool = getParserPool();
     let parseResult;
+
+    // ⚠️ EIN PARSER DARF ABSTUERZEN, ABER NICHT DEN LAUF MITNEHMEN.
+    // parser.parse() wird unten an DREI Stellen gerufen (Pool liefert null, Pool
+    // wirft, kein Pool). Der Wurf wird hier einmal eingefangen statt dreimal dort —
+    // sonst vergisst der naechste, der eine vierte Aufrufstelle ergaenzt, das catch.
+    // Der Fehler steht in einem Objekt und nicht in einer freien Variablen, damit
+    // TypeScript die Zuweisung aus der Closure nicht wegnarrowt.
+    const absturz: { fehler: Error | null } = { fehler: null };
+    const sicherParse = () => {
+      try {
+        return parser.parse(content, filePath);
+      } catch (err) {
+        absturz.fehler = err as Error;
+        return undefined;
+      }
+    };
     if (workerPool) {
       try {
         const poolResult = await workerPool.parse({ filePath, fileType, content });
         if (poolResult === null) {
           // Im Worker kein Parser fuer fileType gefunden — Fallback auf parsed_at-Skip-Pfad
-          parseResult = parser.parse(content, filePath);
+          parseResult = sicherParse();
         } else {
           parseResult = poolResult;
         }
@@ -456,10 +578,79 @@ export async function parseAndEmbed(
           return;
         }
         console.error(`[Synapse] Worker-Pool parse fehlgeschlagen fuer ${filePath}, fallback sync:`, (poolErr as Error).message);
-        parseResult = parser.parse(content, filePath);
+        parseResult = sicherParse();
       }
     } else {
-      parseResult = parser.parse(content, filePath);
+      parseResult = sicherParse();
+    }
+
+    // DER PARSER IST GESTUERZT. Bis zum 28.07.2026 flog der Wurf hier heraus: die
+    // Datei bekam NIE ein parsed_at und blieb fuer immer im Backlog. Solange der
+    // Nachziehmechanismus kaputt war, fiel das nicht auf — seit er wieder laeuft
+    // (29fbe29), wird daraus eine Endlosschleife: der Tick holt die Datei, sie
+    // kippt, der naechste Tick holt sie wieder. Genau dagegen wurde der Skip-Pfad
+    // fuer fehlende Parser einst gebaut; der Absturz-Fall fehlte.
+    //
+    // BELEGT AN groovy.ts:366 — sc.type auf einem leergelaufenen Scope-Stack. 8 von 22
+    // echten Gradle-Dateien im Bestand stuerzten ab. Ursache sind NICHT unausgeglichene
+    // Klammern, sondern ZWEI aufeinander folgende Bloecke auf Modulebene (in
+    // Gradle-Dateien der Normalfall: allprojects{} subprojects{} tasks.register{}):
+    // jeder traegt scopeIdx 0, jeder schliessende leerte per splice(0) den ganzen
+    // Stapel. Ein Block allein reicht nicht — deshalb laufen Minimalbeispiele sauber
+    // durch und es ist nie jemandem aufgefallen.
+    //
+    // ⚠️ parsed_at IST KEIN ZUVERLAESSIGER DETEKTOR fuer abstuerzende Dateien. Ich hatte
+    // hier zuerst "alle mit parsed_at IS NULL" stehen — das war eine Aussage ueber meine
+    // Stichprobe (LIMIT 10 nach Groesse), nicht ueber den Bestand. Ueber alle 22 gerechnet:
+    // die Richtung "parsed_at NULL -> stuerzt ab" haelt (6 von 6), die Gegenrichtung nicht
+    // (2 der 8 abstuerzenden Dateien haben parsed_at gesetzt, vermutlich aus einem Lauf vor
+    // der Aenderung). Wer abstuerzende Dateien ueber parsed_at sucht, findet 6 von 8.
+    // Der belastbare Nachweis ist der Laufzeittest, nicht die Korrelation.
+    //
+    // BEHANDLUNG WIE BEIM TIMEOUT und aus denselben Gruenden: Eintrag in
+    // parse_failures, damit der Ausfall SICHTBAR wird (diese Tabelle war bis heute
+    // leer, weil vermerkeAusfall nur im Timeout-Zweig gerufen wurde — die Tabelle,
+    // die genau dafuer da ist, hat noch nie einen Eintrag gesehen). Und
+    // parser_version mitschreiben, damit kein zweiter Versuch mit DERSELBEN Version
+    // stattfindet: faellig wird die Datei erst wieder, wenn jemand den Parser
+    // anfasst und die Version erhoeht — genau dann besteht die Chance, dass der
+    // Fehler behoben ist.
+    if (absturz.fehler) {
+      console.error(
+        `[Synapse] PARSER-ABSTURZ ${project}/${filePath} (${parser.language} v${parser.version ?? 1}): ` +
+          `${absturz.fehler.message}. Datei uebersprungen, Lauf laeuft weiter.`
+      );
+      const { vermerkeAusfall } = await import('../db/parse-failures.js');
+      await vermerkeAusfall(pool, {
+        project,
+        filePath,
+        // Der Typ kennt nur 'timeout' und 'fehler'. Ein Absturz ist ein 'fehler';
+        // die Unterscheidung steht in details (Meldung + die ersten Stack-Zeilen).
+        grund: 'fehler',
+        details: `${absturz.fehler.message}\n${(absturz.fehler.stack ?? '').split('\n').slice(0, 5).join('\n')}`,
+        parser: parser.language,
+        dateiBytes: content.length,
+      }).catch(err => console.error('[Synapse] vermerkeAusfall fehlgeschlagen:', err));
+      await pool.query(
+        `UPDATE code_files SET parsed_at = NOW(), indexed_at = NOW(), parser_version = $3
+           WHERE project = $1 AND file_path = $2`,
+        [project, filePath, parser.version ?? 1]
+      );
+      return;
+    }
+
+    // Ohne Absturz hat jeder Zweig oben zugewiesen. TypeScript sieht das nicht, weil
+    // der Absturz in einem Objektfeld steht — dieser Guard macht es explizit und
+    // faengt zugleich einen kuenftigen Zweig ab, der die Zuweisung vergisst. Ohne ihn
+    // liefe so ein Zweig still mit undefined weiter.
+    if (!parseResult) {
+      console.error(`[Synapse] Kein Parse-Ergebnis fuer ${project}/${filePath} trotz Parser — uebersprungen.`);
+      await pool.query(
+        `UPDATE code_files SET parsed_at = NOW(), indexed_at = NOW(), parser_version = $3
+           WHERE project = $1 AND file_path = $2`,
+        [project, filePath, parser.version ?? 1]
+      );
+      return;
     }
 
     // RACE-FIX: dedizierter Client + advisory_xact_lock — vorher liefen BEGIN/DELETE/INSERT/COMMIT
@@ -496,12 +687,24 @@ export async function parseAndEmbed(
           containerIds.set(sym.name, symId);
         }
 
+        // ⚠️ NULL-BYTES RAUS. PostgreSQL weist text mit 0x00 ab ("invalid byte
+        // sequence for encoding UTF8"), und der Fehler trifft die GANZE
+        // Symbol-Transaktion: sie rollt zurueck, parseSuccess bleibt false,
+        // parser_version bleibt NULL — womit die Datei in JEDEM Tick erneut als
+        // veraltet gilt. Das Ergebnis ist eine Endlosschleife im parser-worker,
+        // die sich als "1 geparst, 0 fehlgeschlagen" meldet.
+        // DIE QUELLDATEI IST DABEI SAUBER: sie enthaelt die Escape-Sequenz \x00
+        // als Text, und der Parser loest sie beim Lesen des String-Literals auf
+        // (gefunden an ERC7739Utils.test.js:158, const forbiddenChars = ', )\x00').
+        // Fuer den Dateiinhalt gibt es diese Bereinigung seit jeher (siehe oben,
+        // safeContent) — fuer die daraus gewonnenen Symbole fehlte sie.
         symbolTuples.push([
           symId, project, filePath,
-          sym.symbol_type, sym.name ?? null, sym.value ?? null,
+          sym.symbol_type, ohneNullBytes(sym.name), ohneNullBytes(sym.value),
           sym.line_start, sym.line_end ?? null,
           null, // parent_symbol wird in Phase 2 gesetzt
-          sym.params ?? null, sym.return_type ?? null,
+          sym.params?.map(p => ohneNullBytes(p) ?? '') ?? null,
+          ohneNullBytes(sym.return_type),
           sym.is_exported,
         ]);
 
@@ -583,6 +786,22 @@ export async function parseAndEmbed(
     } catch (txErr) {
       await symClient.query('ROLLBACK').catch(() => {});
       console.error(`[Synapse] Symbol-Insert Transaktion fehlgeschlagen:`, txErr);
+      // SICHTBAR MACHEN. Ohne diesen Eintrag bleibt der Fehlschlag eine Zeile im
+      // Log, waehrend der Worker "0 fehlgeschlagen" meldet und die Datei in jedem
+      // Tick erneut versucht wird. parse_failures ist genau dafuer da.
+      try {
+        const { vermerkeAusfall } = await import('../db/parse-failures.js');
+        await vermerkeAusfall(pool, {
+          project,
+          filePath,
+          grund: 'fehler',
+          details: `Symbol-Insert: ${(txErr as Error).message ?? String(txErr)}`.slice(0, 500),
+          parser: parser.language,
+          dateiBytes: content.length,
+        });
+      } catch (vermerkFehler) {
+        console.error(`[Synapse] Ausfall nicht vermerkbar fuer ${filePath}:`, vermerkFehler);
+      }
     } finally {
       symClient.release();
     }
@@ -711,6 +930,142 @@ export async function parseAndEmbed(
               values
             );
           }
+
+          // ─── target_symbol_id aufloesen ─────────────────────────────────────
+          // Die Kanten sind gerade mit target_symbol_id = NULL eingefuegt worden
+          // (siehe das NULL im VALUES-Tupel oben — es ist der Ausgangswert, kein
+          // Versehen). Hier wird nachgetragen, WOHIN ein Aufruf zeigt.
+          //
+          // REGEL: nur wenn in DERSELBEN Datei GENAU EIN function-Symbol dieses
+          // Namens existiert. Sonst bleibt NULL.
+          // WARUM SO STRENG: ein falsch aufgeloester Aufruf ist schlimmer als ein
+          // nicht aufgeloester, weil ihn niemand hinterfragt. Gemessen am Bestand
+          // sind 0,2-2 % der Kanten schon innerhalb einer Datei mehrdeutig
+          // (gleichnamige Funktionen), projektweit 12-29 % — deshalb loest dieser
+          // Block AUSDRUECKLICH NICHT ueber Dateigrenzen hinweg auf. Cross-File
+          // haengt am selben Mechanismus wie die Referenz-Verknuepfung und wird
+          // dort gemeinsam entschieden, nicht hier nebenbei.
+          //
+          // Das HAVING count(*) = 1 setzt die Eindeutigkeit durch; min(id) ist bei
+          // genau einem Treffer dessen ID. Ein CTE statt einer Unterabfrage je
+          // Zeile, damit die Symbole der Datei nur einmal gelesen werden.
+          await flowClient.query(
+            `WITH eindeutig AS (
+               SELECT name, min(id) AS id
+                 FROM code_symbols
+                WHERE project = $1 AND file_path = $2
+                  AND symbol_type = 'function' AND name IS NOT NULL
+                GROUP BY name
+               HAVING count(*) = 1
+             )
+             UPDATE code_call_edges ce
+                SET target_symbol_id = e.id
+               FROM eindeutig e
+              WHERE ce.project = $1 AND ce.file_path = $2
+                AND ce.callee_name = e.name`,
+            [project, filePath]
+          );
+
+          // ─── Stufe 2: dateiuebergreifend, aber NUR innerhalb DERSELBEN SPRACHE ──
+          // Erst jetzt, damit eine Definition in der eigenen Datei immer Vorrang hat.
+          //
+          // ⚠️ DER SPRACHFILTER IST DIE EIGENTLICHE REGEL, nicht eine Feinheit.
+          // Ohne ihn zeigen eingebaute Funktionen auf zufaellig gleichnamige Symbole
+          // fremder Sprachen. Gemessen am wgpu-Bestand (2026-07-31): 350 Aufrufe von
+          // vec2 und 100 von vec3 haetten aus .wgsl-Dateien auf regular.rs gezeigt,
+          // normalize/min/max auf weitere .rs-Dateien — zusammen 616 Kanten, 7,4 %
+          // des Bestands, allesamt falsch. Mit Filter bleiben in wgsl 5 Kanten uebrig
+          // (die Praeprozessor-Includes aus common.wgsl), und das ist korrekt: WGSL
+          // hat kein Modulsystem, eine Datei kann keine Funktion einer anderen rufen.
+          //
+          // Bei TypeScript ERHOEHT der Filter die Ausbeute sogar — von 2.258 auf 3.742
+          // eindeutige Kanten, weil gleichnamige Symbole anderer Sprachen wegfallen und
+          // der Name innerhalb seiner Sprache dadurch eindeutig WIRD. Der Filter wirft
+          // nichts weg, er schaerft.
+          //
+          // Die Endung kommt als Parameter statt als SQL-Regex — das erspart doppeltes
+          // Maskieren im Template-String und ist an der Aufrufstelle nachlesbar.
+          const punkt = filePath.lastIndexOf('.');
+          const endung = punkt > 0 ? filePath.slice(punkt) : null;
+          if (endung !== null) {
+            await flowClient.query(
+              `WITH offen AS (
+                 SELECT DISTINCT callee_name
+                   FROM code_call_edges
+                  WHERE project = $1 AND file_path = $2
+                    AND target_symbol_id IS NULL AND callee_name IS NOT NULL
+               ), ziel AS (
+                 SELECT s.name, min(s.id) AS id
+                   FROM code_symbols s
+                   JOIN offen o ON o.callee_name = s.name
+                  WHERE s.project = $1 AND s.symbol_type = 'function'
+                    AND s.file_path LIKE '%' || $3
+                  GROUP BY s.name
+                 HAVING count(*) = 1
+               )
+               UPDATE code_call_edges ce
+                  SET target_symbol_id = z.id
+                 FROM ziel z
+                WHERE ce.project = $1 AND ce.file_path = $2
+                  AND ce.target_symbol_id IS NULL
+                  AND ce.callee_name = z.name`,
+              [project, filePath, endung]
+            );
+
+          }
+        }
+
+        // ─── Stufe 3: EINGEHENDE Verweise heilen ──────────────────────────────
+        // ⚠️ STEHT BEWUSST AUSSERHALB DES callEdges-BLOCKS. Dieser Block haengt an
+        // den SYMBOLEN der Datei, nicht an ihren ausgehenden Aufrufen.
+        // WARUM DAS WICHTIG IST — der Fehler war schon gebaut und deployed:
+        // Stand die Heilung innerhalb von `if (callEdges.length > 0)`, lief sie bei
+        // Dateien mit NULL eigenen Aufrufen nie. Das trifft ausgerechnet den
+        // Hauptfall: Bibliotheken, Sammelmodule und reine Definitionsdateien
+        // DEFINIEREN Funktionen (sind also Ziel vieler Verweise) und rufen selbst
+        // nichts auf. Aufgefallen ist es erst in der Live-Probe am 31.07.2026 —
+        // eine Zieldatei mit 0 Call-Kanten, deren eingehende Kante nach dem Reparse
+        // auf NULL blieb. Der Transaktionstest davor hatte die Query direkt
+        // ausgefuehrt und die Einbettung uebersprungen; er war gruen und wertlos.
+        //
+        // WAS ER HEILT: Ein Reparse loescht die Symbole dieser Datei (Z666) und legt
+        // sie mit NEUEN UUIDs an (Z681). Der Fremdschluessel steht auf
+        // ON DELETE SET NULL, also verlieren ALLE Kanten FREMDER Dateien, die
+        // hierher zeigten, ihr Ziel — und niemand loest sie neu auf, weil jene
+        // Dateien unveraendert blieben. GEMESSEN an naga/src/back/spv/mod.rs: ein
+        // einziger Reparse entwertete 227 bis 238 Verweise. Ueber Wochen waere die
+        // Aufloesung halb leer, und das faellt niemandem auf, weil eine sinkende
+        // Zahl niemand nachzaehlt.
+        //
+        // Dieselbe Regel wie Stufe 2 — gleicher Sprachfilter, gleiche Eindeutigkeit.
+        // Zwei Wahrheiten im selben Code waeren schlimmer als der Verfall.
+        const punktHeilung = filePath.lastIndexOf('.');
+        const endungHeilung = punktHeilung > 0 ? filePath.slice(punktHeilung) : null;
+        if (endungHeilung !== null) {
+          await flowClient.query(
+            `WITH neue AS (
+               SELECT DISTINCT name
+                 FROM code_symbols
+                WHERE project = $1 AND file_path = $2
+                  AND symbol_type = 'function' AND name IS NOT NULL
+             ), ziel AS (
+               SELECT s.name, min(s.id) AS id
+                 FROM code_symbols s
+                 JOIN neue n ON n.name = s.name
+                WHERE s.project = $1 AND s.symbol_type = 'function'
+                  AND s.file_path LIKE '%' || $3
+                GROUP BY s.name
+               HAVING count(*) = 1
+             )
+             UPDATE code_call_edges ce
+                SET target_symbol_id = z.id
+               FROM ziel z
+              WHERE ce.project = $1
+                AND ce.target_symbol_id IS NULL
+                AND ce.callee_name = z.name
+                AND ce.file_path LIKE '%' || $3`,
+            [project, filePath, endungHeilung]
+          );
         }
 
         await flowClient.query('COMMIT');
@@ -722,6 +1077,14 @@ export async function parseAndEmbed(
         flowClient.release();
       }
     }
+
+    // TELEMETRIE: festhalten, was der Parser in dieser Datei tatsaechlich
+    // erkannt hat. Ohne diesen Datenpunkt ist "Datei enthaelt nichts" nicht von
+    // "Parser hat nichts erkannt" zu unterscheiden — genau daran stand
+    // index.html monatelang mit 0 Funktionen im Index.
+    // Additiv: kein Lock, keine Transaktion, Fehler werden drinnen geschluckt.
+    const { schreibeParserCoverage } = await import('./parser-health.js');
+    await schreibeParserCoverage(project, filePath, fileType, parser, parseResult, content);
   }
 
   // --- Chunks erstellen + in code_chunks speichern ---
@@ -738,7 +1101,38 @@ export async function parseAndEmbed(
   // Zulaessig, weil das Chunking inhaltsbasiert ist: ein Parser-Update aendert
   // den Dateiinhalt nicht, die vorhandenen Chunks bleiben also gueltig.
   const chunks = opts?.ohneEmbeddings ? [] : chunkFile(content, filePath, project);
-  const chunksClient = opts?.ohneEmbeddings ? null : await pool.connect();
+
+  // WIEDERAUFNAHME: Sind die gespeicherten Chunks identisch mit den eben
+  // berechneten, dann darf der Block unten sie NICHT neu schreiben. Das
+  // DELETE+INSERT wuerde embedded_at auf NULL zuruecksetzen und damit die
+  // Buchhaltung darueber vernichten, was laengst embedded ist — nach einem
+  // Abbruch finge der Lauf sonst jedes Mal wieder bei Chunk 0 an.
+  //
+  // Verglichen wird ueber md5(content) je chunk_index. Das rechnet PostgreSQL
+  // nebenbei, sodass die Chunk-Inhalte nicht uebertragen werden muessen — bei
+  // einer 7-MB-Datei waere das sonst 7 MB pro Durchlauf, nur um festzustellen,
+  // dass sich nichts geaendert hat.
+  let chunksUnveraendert = false;
+  if (!opts?.ohneEmbeddings && chunks.length > 0) {
+    try {
+      const alt = await pool.query(
+        `SELECT chunk_index, md5(content) AS h FROM code_chunks
+          WHERE project = $1 AND file_path = $2 ORDER BY chunk_index`,
+        [project, filePath]
+      );
+      chunksUnveraendert =
+        alt.rows.length === chunks.length &&
+        chunks.every((c, i) =>
+          alt.rows[i].chunk_index === c.chunkIndex &&
+          alt.rows[i].h === crypto.createHash('md5').update(c.content).digest('hex')
+        );
+    } catch {
+      chunksUnveraendert = false; // im Zweifel den bisherigen Weg gehen
+    }
+  }
+
+  const chunksClient =
+    opts?.ohneEmbeddings || chunksUnveraendert ? null : await pool.connect();
   if (chunksClient) try {
     await chunksClient.query('BEGIN');
     await chunksClient.query('SELECT pg_advisory_xact_lock(hashtext($1))', [
@@ -808,58 +1202,173 @@ export async function parseAndEmbed(
   if (chunks.length > 0 && !skipEmbeddings) {
     const collectionName = await ensureProjectCollection(project);
 
-    // Alte Qdrant-Eintraege loeschen
-    await deleteByFilePath(collectionName, filePath, project);
+    // Was ist ueberhaupt noch zu tun?
+    // Sind die Chunk-Rows von vorhin unveraendert, dann liegt alles mit einem
+    // embedded_at bereits in Qdrant und wird uebersprungen. Genau das macht die
+    // Wiederaufnahme nach einem Abbruch billig: sie kostet die angefangene
+    // Scheibe, nicht den ganzen Lauf.
+    let offen = chunks;
+    if (chunksUnveraendert) {
+      const fertig = await pool.query(
+        `SELECT chunk_index FROM code_chunks
+          WHERE project = $1 AND file_path = $2 AND embedded_at IS NOT NULL`,
+        [project, filePath]
+      );
+      const erledigt = new Set<number>(
+        fertig.rows.map((r: { chunk_index: number }) => r.chunk_index)
+      );
+      offen = chunks.filter(c => !erledigt.has(c.chunkIndex));
+      if (offen.length < chunks.length) {
+        console.error(
+          `[Synapse] Wiederaufnahme ${path.basename(filePath)}: ${chunks.length - offen.length}/${chunks.length} Chunks schon embedded, ${offen.length} offen`
+        );
+      }
+    } else {
+      // Der Inhalt hat sich geaendert. Hier wurde frueher pauschal alles
+      // geloescht und alles neu gerechnet. Das ist fast immer zu viel: bei einer
+      // punktuellen Aenderung bleiben Position UND Inhalt fast aller Chunks
+      // gleich — und weil die Punkt-ID aus genau diesen beiden Groessen gebildet
+      // wird, liegt ihr Vektor bereits richtig in Qdrant.
+      // Gemessen an der Benchmark-Datei: bei einer geaenderten Zeile betrifft das
+      // 5947 von 5950 Chunks. Statt 86 Minuten bleiben ein paar Sekunden.
+      //
+      // GRENZE, bewusst benannt: wird oben etwas EINGEFUEGT oder GELOESCHT,
+      // verschieben sich die chunk_index-Werte dahinter. Damit aendern sich deren
+      // IDs und dieser Weg greift nicht mehr, obwohl der Text derselbe ist
+      // (gemessen: dann sind rund 1250 Chunks betroffen). Das aufzuloesen hiesse,
+      // den Index aus der ID zu nehmen — das entwertet jede bestehende ID und
+      // verlangt eine Migration des Bestands. Bewusst nicht Teil dieser Aenderung.
+      const neueIds = chunks.map(c =>
+        deterministicChunkId(c.project, c.filePath, c.chunkIndex, c.content)
+      );
+      const vorhanden = new Set<string>();
+      for (let i = 0; i < neueIds.length; i += 500) {
+        const treffer = await getVectors<unknown>(collectionName, neueIds.slice(i, i + 500));
+        for (const t of treffer) vorhanden.add(t.id);
+      }
 
-    const contents = chunks.map(c => c.content);
-    const embeddings = await embedBatch(contents);
+      // Was nicht mehr zur Datei gehoert, muss weg — sonst liefert die Suche
+      // Treffer auf Text, den es nicht mehr gibt. Ermittelt ueber die Differenz
+      // zur neuen ID-Menge statt ueber ein pauschales Loeschen.
+      const gueltig = new Set(neueIds);
+      const alteIds = await scrollePunktIds(collectionName, {
+        must: [
+          { key: 'file_path', match: { value: filePath } },
+          { key: 'project', match: { value: project } },
+        ],
+      });
+      const verwaist = alteIds.filter(id => !gueltig.has(id));
+      if (verwaist.length > 0) await deleteVectors(collectionName, verwaist);
 
-    const items = chunks.map((chunk, i) => ({
-      id: deterministicChunkId(chunk.project, chunk.filePath, chunk.chunkIndex, chunk.content),
-      vector: embeddings[i],
-      payload: {
-        file_path: chunk.filePath,
-        file_name: path.basename(chunk.filePath),
-        file_type: fileType,
-        line_start: chunk.lineStart,
-        line_end: chunk.lineEnd,
-        project: chunk.project,
-        chunk_index: chunk.chunkIndex,
-        total_chunks: chunk.totalChunks,
-        updated_at: new Date().toISOString(),
-        content: chunk.content,
-      } satisfies CodeChunkPayload,
-    }));
+      offen = chunks.filter((_c, i) => !vorhanden.has(neueIds[i]));
 
-    await insertVectors(collectionName, items);
+      // Die bereits vorhandenen sofort quittieren: der Chunk-Block hat ihre Rows
+      // eben neu geschrieben, embedded_at steht dort auf NULL. Ohne diesen Schritt
+      // gaelten sie als offen und wuerden neu gerechnet, obwohl ihr Vektor da ist.
+      const schonDa = chunks.filter((_c, i) => vorhanden.has(neueIds[i]));
+      if (schonDa.length > 0) {
+        await pool.query(
+          `UPDATE code_chunks SET embedded_at = NOW()
+            WHERE project = $1 AND file_path = $2 AND chunk_index = ANY($3::int[])`,
+          [project, filePath, schonDa.map(c => c.chunkIndex)]
+        );
+        console.error(
+          `[Synapse] ${path.basename(filePath)}: ${schonDa.length}/${chunks.length} Chunks unveraendert wiederverwendet, ${offen.length} neu zu embedden, ${verwaist.length} verwaiste Punkte entfernt`
+        );
+      }
+    }
 
-    // code_chunks als embedded markieren
-    await pool.query(
-      `UPDATE code_chunks SET embedded_at = NOW()
-       WHERE project = $1 AND file_path = $2`,
-      [project, filePath]
-    );
+    // SCHEIBENWEISE embedden, einfuegen, quittieren.
+    //
+    // WARUM NICHT ALLES AUF EINMAL: hier sammelte ein einziges embedBatch
+    // saemtliche Vektoren, danach kam EIN insertVectors und EIN UPDATE. Bei 5950
+    // Chunks und rund 870 ms je Chunk (Ollama, gemessen) laeuft dieser eine Aufruf
+    // ueber 80 Minuten — und bis zur letzten Sekunde steht in Qdrant nichts und
+    // embedded_at ist ueberall NULL. Jeder Abbruch (Deploy, Neustart, Timeout) warf
+    // die komplette Arbeit weg, und von aussen war nicht einmal unterscheidbar, ob
+    // ueberhaupt noch etwas laeuft. Scheibenweise ist der Fortschritt nach jeder
+    // Runde dauerhaft gespeichert und sichtbar.
+    //
+    // ES KOSTET KEINEN DURCHSATZ: Ollama kennt kein echtes Batch-Embedding, seine
+    // embedBatch-Methode ist eine Schleife ueber die Texte. Es aendert sich also nur,
+    // WANN eingefuegt wird, nicht wie lange gerechnet wird.
+    //
+    // FAIRNESS ALS NEBENEFFEKT: die globale Embedding-Queue (EMBED_MAX_CONCURRENT)
+    // vergibt ihren Slot pro embedBatch-Aufruf. Vorher belegte eine einzige grosse
+    // Datei einen der beiden Slots stundenlang; jetzt gibt sie ihn nach jeder Scheibe
+    // frei, andere Dateien kommen dazwischen.
+    for (let von = 0; von < offen.length; von += EMBED_SCHEIBE) {
+      const teil = offen.slice(von, von + EMBED_SCHEIBE);
+      const embeddings = await embedBatch(teil.map(c => c.content));
+
+      const items = teil.map((chunk, i) => ({
+        id: deterministicChunkId(chunk.project, chunk.filePath, chunk.chunkIndex, chunk.content),
+        vector: embeddings[i],
+        payload: {
+          file_path: chunk.filePath,
+          file_name: path.basename(chunk.filePath),
+          file_type: fileType,
+          line_start: chunk.lineStart,
+          line_end: chunk.lineEnd,
+          project: chunk.project,
+          chunk_index: chunk.chunkIndex,
+          total_chunks: chunk.totalChunks,
+          updated_at: new Date().toISOString(),
+          content: chunk.content,
+        } satisfies CodeChunkPayload,
+      }));
+
+      await insertVectors(collectionName, items);
+
+      // Erst quittieren, wenn die Vektoren wirklich drin sind. In dieser
+      // Reihenfolge, sonst gilt ein Chunk als fertig, dessen Vektor fehlt — und
+      // genau der wuerde bei der Wiederaufnahme dann uebersprungen.
+      await pool.query(
+        `UPDATE code_chunks SET embedded_at = NOW()
+          WHERE project = $1 AND file_path = $2 AND chunk_index = ANY($3::int[])`,
+        [project, filePath, teil.map(c => c.chunkIndex)]
+      );
+
+      if (offen.length > EMBED_SCHEIBE) {
+        console.error(
+          `[Synapse] Embedding ${Math.min(von + EMBED_SCHEIBE, offen.length)}/${offen.length}: ${path.basename(filePath)}`
+        );
+      }
+    }
   }
 
   // Embedding fertig (oder via SYNAPSE_SKIP_EMBEDDINGS uebersprungen) → indexed_at.
   // parsed_at wurde bereits nach dem Chunk-Commit gesetzt (Entkopplung oben). Bei
   // parseSuccess=false bleibt parsed_at NULL → Backlog-Query holt die Datei fuer
   // einen Symbol-Retry.
+  // chunk_count NUR schreiben, wenn die Chunks in diesem Lauf auch berechnet wurden.
+  //
+  // ⚠️ HIER STAND chunks.length OHNE FALLUNTERSCHEIDUNG. Bei ohneEmbeddings ist
+  // chunks bewusst ein leeres Array (der Chunk-Block wird uebersprungen, weil der
+  // Inhalt unveraendert ist) — geschrieben wurde damit chunk_count = 0, obwohl die
+  // Chunks unveraendert in code_chunks liegen. Jeder Reparse hat so die Statistik
+  // einer Datei zerstoert: 2035 Dateien standen am 28.07.2026 auf chunk_count = 0
+  // bei vorhandenen Chunks, davon 1937 allein in moo nach einem reparseProject-Lauf.
+  // NULL laesst den bestehenden Wert stehen.
   await pool.query(
-    `UPDATE code_files SET indexed_at = NOW(), chunk_count = $3
+    `UPDATE code_files SET indexed_at = NOW(), chunk_count = COALESCE($3, chunk_count)
      WHERE project = $1 AND file_path = $2`,
-    [project, filePath, chunks.length]
+    [project, filePath, opts?.ohneEmbeddings ? null : chunks.length]
   );
 
-  console.error(`[Synapse] Geparst+Embedded: ${path.basename(filePath)} (${chunks.length} Chunks)`);
+  // Beim Nachzug (ohneEmbeddings) ist chunks bewusst leer, weil der Chunk-Block
+  // uebersprungen wird. Die alte Meldung schrieb dann "Geparst+Embedded ... (0
+  // Chunks)" und behauptete damit zweierlei Unwahres: dass embedded wurde, und
+  // dass die Datei keine Chunks hat. Beim Nachzug ueber tausende Dateien liest
+  // sich das wie ein flaechendeckender Ausfall.
+  console.error(
+    opts?.ohneEmbeddings
+      ? `[Synapse] Geparst, Embeddings unberuehrt: ${path.basename(filePath)}`
+      : `[Synapse] Geparst+Embedded: ${path.basename(filePath)} (${chunks.length} Chunks)`
+  );
   }
 }
 
-/**
- * Parst alle Dateien die Content haben aber noch nicht geparst wurden (parsed_at IS NULL).
- * Wird bei project init aufgerufen um Altdaten nachzuparsen.
- * Dynamisches Auto-Scaling: Worker-Count skaliert mit Queue-Groesse.
- */
 // In-Memory Lock pro Projekt: verhindert dass parser-worker im API
 // parallel mehrere Background-Crews fuer dasselbe Projekt startet
 // (setImmediate-Pattern returnt sofort, der naechste Tick wuerde sonst
@@ -1111,49 +1620,276 @@ export async function reparseProject(
   return { project: projectName, geplant: rows.length, erfolgreich, fehlgeschlagen, fehler };
 }
 
+/**
+ * Endungen, deren Chunks NICHT nachtraeglich embedded werden.
+ *
+ * WARUM ES DIESE LISTE BRAUCHT: im Code-Index liegen 33.291 Chunks aus 1.192 PNG-
+ * Dateien (gemessen 31.07.2026) — Byte-Salat, den ein frueherer Import erzeugt hat.
+ * Sie bleiben auf ausdrueckliche Entscheidung des Users liegen und werden NICHT
+ * geloescht; der Nachzug muss sie also uebergehen, statt sie aufzuraeumen. Ohne
+ * diesen Riegel wuerde das Scharfschalten von embed_offen sie alle mitembedden.
+ *
+ * ALS LITERAL UND NICHT ALS PLATZHALTER: die Liste ist eine feste Konstante, keine
+ * Nutzereingabe. Als Parameter wuerde sie die Platzhalter-Arithmetik von
+ * baueFaelligkeitsBedingung um eine dritte Nummer verschieben — genau die Stelle,
+ * an der ein Dollarzeichen im Ersetzungstext schon einmal Schaden angerichtet hat
+ * (Memory regel-files-tool-dollar-falle).
+ */
+const BINAER_ENDUNGEN = [
+  'png', 'jpg', 'jpeg', 'gif', 'bmp', 'ico', 'webp', 'tiff', 'pdf',
+  'zip', 'gz', 'tar', '7z', 'rar', 'iso', 'img', 'dmg', 'deb', 'rpm',
+  'so', 'dll', 'dylib', 'exe', 'bin', 'wasm', 'class', 'jar', 'pyc', 'o', 'a', 'lib', 'pdb',
+  'ttf', 'otf', 'woff', 'woff2', 'eot',
+  'mp3', 'mp4', 'avi', 'mov', 'mkv', 'wav', 'flac', 'ogg', 'webm',
+  'sqlite',
+];
+const BINAER_ENDUNGEN_SQL = BINAER_ENDUNGEN.map(e => `'${e}'`).join(', ');
+
+/** Endung eines Pfades in SQL — ohne Regex, siehe Kommentar bei veraltet unten. */
+const SQL_ENDUNG = `lower(reverse(split_part(reverse(code_files.file_path), '.', 1)))`;
+
+/**
+ * INDEX-3: die EINE Stelle, die beantwortet, wann eine Datei faellig ist.
+ *
+ * WARUM ALS FUNKTION UND NICHT ZWEIMAL ALS SQL: genau diese Doppelung war der
+ * Fehler. Die Backlog-Query hier kannte den Fall "Parser ist neuer als der
+ * gespeicherte Stand", die Projektauswahl im parser-worker der REST-API nicht.
+ * Ein Projekt, dessen Dateien AUSSCHLIESSLICH veraltet waren, tauchte deshalb in
+ * keinem Tick auf, parseUnparsedFiles wurde dafuer nie gerufen, und der gesamte
+ * Nachziehmechanismus lief ins Leere. Beleg vom 28.07.2026: moo hatte 361
+ * faellige Dateien, aber nur 2 mit parsed_at NULL. Alle Parser-Versions-
+ * erhoehungen jenes Tages waren dadurch folgenlos.
+ *
+ * DREI GRUENDE, in dieser Reihenfolge ausgewertet:
+ *   neu         — parsed_at IS NULL, noch nie angefasst.
+ *   embed_offen — geparst, aber das Embedding blieb liegen. Der 5-Minuten-Guard
+ *                 haelt laufende Embed-Vorgaenge heraus: langsames Ollama ist
+ *                 kein Abbruch, und ein zweiter Anlauf blaeht nur den Backlog auf.
+ *   veraltet    — der gespeicherte Stand stammt von einer aelteren Parser-Version.
+ *                 Die Datei auf der Platte aendert sich nicht, wenn der PARSER
+ *                 besser wird; ohne diesen Zweig behaelt sie ihre schlechteren
+ *                 Symbole fuer immer (so standen 33 Dateien monatelang leer im
+ *                 Index, INDEX-2).
+ *
+ * parser_version IS NULL ZAEHLT MIT, anders als bis zum 28.07.2026. Der damalige
+ * Einwand ("NULL heisst UNBEKANNT, nicht veraltet — sonst reparst allein die
+ * Einfuehrung der Spalte den gesamten Bestand") galt einer Liste, die auch
+ * Version-1-Parser enthalten haette. getVersionierteExtensions() liefert
+ * ausschliesslich Endungen mit Version > 1: wer dort NULL stehen hat, wurde
+ * nachweislich vor der betreffenden Parser-Aenderung geparst und ist zu Recht
+ * faellig. Dateien ohne Parser und Parser auf Version 1 bleiben konstruktiv
+ * aussen vor, weil ihre Endung gar nicht erst in der Liste steht.
+ *
+ * @param ersterParam Nummer des ERSTEN Platzhalters, den diese Bedingung belegt.
+ *        Sie belegt zwei aufeinanderfolgende (Endungen, Versionen) oder keinen.
+ */
+async function baueFaelligkeitsBedingung(
+  ersterParam: number,
+  opts?: { ohneChunkPruefung?: boolean }
+): Promise<{
+  sql: string;
+  params: unknown[];
+  grundSql: string;
+}> {
+  const { getVersionierteExtensions } = await import('../parser/index.js');
+  const versioniert = getVersionierteExtensions();
+  const params: unknown[] = [];
+  let veraltet = '';
+  if (versioniert.length > 0) {
+    params.push(versioniert.map(v => v.extension), versioniert.map(v => v.version));
+    // Die Platzhalter-Nummern werden zusammengesetzt statt interpoliert: zwei
+    // Dollarzeichen hintereinander sind im Ersetzungstext eines files-Edits ein
+    // Sonderzeichen und fielen dort zu einem einzigen zusammen (siehe Memory
+    // regel-files-tool-dollar-falle). Aus demselben Grund wird die Endung ohne
+    // Regex ermittelt, ueber reverse/split_part.
+    const pExt = '$' + ersterParam;
+    const pVer = '$' + (ersterParam + 1);
+    veraltet = `
+             OR EXISTS (
+                  SELECT 1 FROM unnest(${pExt}::text[], ${pVer}::int[]) AS pv(ext, ver)
+                   WHERE pv.ext = lower(reverse(split_part(reverse(code_files.file_path), '.', 1)))
+                     AND (code_files.parser_version IS NULL OR code_files.parser_version < pv.ver))`;
+  }
+
+  // EMBED-2 (31.07.2026): embed_offen fragt jetzt code_chunks.embedded_at.
+  //
+  // HIER STAND `code_files.indexed_at IS NULL`. Das konnte NIE zutreffen:
+  // upsertCodeFile setzt indexed_at bereits im INSERT (VALUES ..., NOW(), NOW()),
+  // also ab der ersten Sekunde der Zeile — lange vor jedem Embedding. Der Zweig war
+  // damit konstruktiv tot, und mit ihm der gesamte Nachzug fuer Code-Chunks.
+  // GEMESSEN am 31.07.2026: von 487.734 offenen Chunks lagen 487.722 bei Dateien mit
+  // GESETZTEM indexed_at, null bei indexed_at IS NULL. Die Luecke wirkte zu 100 %;
+  // die aeltesten unembeddeten Chunks stammten vom 04.04.2026.
+  // Derselbe Fehlschluss war fuer den Idempotenz-Skip in parseAndEmbed schon am
+  // 25.07.2026 erkannt und dort auf min(embedded_at) umgestellt worden (siehe
+  // Kommentar dort) — an dieser Stelle blieb er stehen. Eine Regel an zwei Orten.
+  //
+  // DER 5-MINUTEN-GUARD BLEIBT und haengt weiterhin an updated_at: er haelt Dateien
+  // heraus, deren Embedding gerade LAEUFT. Ohne ihn zieht ein langsamer Ollama-Lauf
+  // dieselbe Datei in jedem Tick erneut in den Backlog.
+  const embedOffen = `(code_files.updated_at < NOW() - INTERVAL '5 minutes'
+               AND ${SQL_ENDUNG} NOT IN (${BINAER_ENDUNGEN_SQL})
+               AND EXISTS (SELECT 1 FROM code_chunks cc
+                            WHERE cc.project = code_files.project
+                              AND cc.file_path = code_files.file_path
+                              AND cc.embedded_at IS NULL))`;
+
+  // ohneChunkPruefung: NUR fuer die Projektauswahl in projekteMitBacklog. Der
+  // EXISTS auf code_chunks laeuft einmal je Datei und kostet dort 1.122 ms, die
+  // ueber den billigen UNION-Zweig (114 ms) ohnehin abgedeckt sind. Es ist KEINE
+  // zweite Formulierung der Regel — derselbe Ausdruck, ein Teil weggelassen, und
+  // die Auswahl bleibt eine ECHTE OBERMENGE: welche Dateien wirklich faellig sind,
+  // entscheidet danach parseUnparsedFiles mit der vollstaendigen Bedingung.
+  const sql = opts?.ohneChunkPruefung
+    ? `code_files.content IS NOT NULL
+        AND (code_files.parsed_at IS NULL${veraltet})`
+    : `code_files.content IS NOT NULL
+        AND (code_files.parsed_at IS NULL
+             OR ${embedOffen}${veraltet})`;
+
+  // Reihenfolge identisch zur Bedingung oben. Weicht sie ab, bekommt eine Datei
+  // einen Grund, der ihre Aufnahme nicht erklaert — und der Worker behandelt sie
+  // falsch, weil er genau an diesem Grund entscheidet.
+  const grundSql = `CASE
+          WHEN code_files.parsed_at IS NULL THEN 'neu'
+          WHEN ${embedOffen} THEN 'embed_offen'
+          ELSE 'veraltet' END`;
+
+  return { sql, params, grundSql };
+}
+
+/**
+ * Projekte mit offenem Parse-Backlog, das groesste zuerst.
+ *
+ * Der parser-worker der REST-API ruft ausschliesslich diese Funktion und
+ * formuliert die Faelligkeit NICHT selbst — siehe baueFaelligkeitsBedingung.
+ *
+ * GUARD: nur Projekte aus der projects-Registry, die enabled sind. Sonst wuerden
+ * verwaiste code_files-Leichen (etwa ein versehentlich indiziertes Home-
+ * Verzeichnis) oder im Tray abgeschaltete Projekte weiter geparst und embedded.
+ */
+export async function projekteMitBacklog(
+  limit: number
+): Promise<Array<{ project: string; faellig: number }>> {
+  const pool = getPool();
+  const { sql: faellig, params } = await baueFaelligkeitsBedingung(1, {
+    ohneChunkPruefung: true,
+  });
+  params.push(limit);
+  const pLimit = '$' + params.length;
+  // EMBED-2: der Chunk-Rueckstand wird hier NICHT ueber die Dateibedingung gesucht,
+  // sondern ueber einen eigenen Zweig auf code_chunks. Der Grund ist gemessen:
+  //   Dateibedingung mit EXISTS ueber alle Dateien   1.666 ms
+  //   dieser UNION-Zweig                             1.353 ms   (heute ohne: 923 ms)
+  // Der EXISTS laeuft einmal JE DATEI (78.716 Schleifendurchlaeufe im Plan); ein
+  // Index verbilligt den Einzelzugriff, nicht deren Anzahl. Ein eigens angelegter
+  // Index (project, file_path) WHERE embedded_at IS NULL brachte nur 1.666 -> 1.666
+  // und wurde wieder entfernt — die vorhandenen Indizes genuegen.
+  //
+  // OHNE count UND OHNE BINAER-FILTER, beides absichtlich:
+  // Ein count(DISTINCT file_path) kostet hier 3.628 ms, ein count(*) 1.964 ms, weil
+  // beide alle 487.507 Index-Eintraege lesen muessen. Der Binaer-Filter kostet
+  // zusaetzlich 391 ms (505 statt 114 ms), weil file_path NICHT im partiellen Index
+  // steht und jede Zeile aus dem Heap geholt werden muesste.
+  // Beides ist hier entbehrlich: diese Funktion waehlt nur KANDIDATEN-PROJEKTE aus.
+  // Welche DATEIEN faellig sind, entscheidet parseUnparsedFiles ueber
+  // baueFaelligkeitsBedingung — dort greift der Binaer-Filter, dort kostet er nichts
+  // (9 ms je Projekt). Ein Projekt, das nur PNG-Chunks offen hat, wird hier also
+  // gelistet und laeuft dort ins Leere. Das ist ein billiger Leerlauf alle 30 s
+  // gegenueber 391 ms in jedem Tick.
+  //
+  // faellig ist fuer den Chunk-Zweig 0 — eine UNTERGRENZE, kein Messwert. Die Zahl
+  // dient nur der Log-Ausgabe des Workers; die belastbare Zahl loggt spaeter
+  // parseUnparsedFiles selbst.
+  const { rows } = await pool.query(
+    `SELECT q.project, max(q.faellig)::int AS faellig
+       FROM (
+         SELECT code_files.project, count(*)::int AS faellig
+           FROM code_files
+          WHERE ${faellig}
+          GROUP BY code_files.project
+         UNION ALL
+         SELECT DISTINCT cc.project, 0
+           FROM code_chunks cc
+          WHERE cc.embedded_at IS NULL
+       ) q
+      WHERE EXISTS (SELECT 1 FROM projects p WHERE p.name = q.project AND p.enabled)
+      GROUP BY q.project
+      ORDER BY faellig DESC
+      LIMIT ${pLimit}`,
+    params
+  );
+  return rows.map((r: { project: string; faellig: number }) => ({
+    project: r.project,
+    faellig: r.faellig,
+  }));
+}
+
+/**
+ * Arbeitet den Parse-Backlog eines Projekts ab. Welche Datei faellig ist und aus
+ * welchem Grund, steht in baueFaelligkeitsBedingung — hier wird nur gehandelt.
+ * Dynamisches Auto-Scaling: Worker-Count skaliert mit Queue-Groesse.
+ *
+ * VERALTETE DATEIEN LAUFEN ANDERS, beides zwingend:
+ *   erzwingeParse   — ohne das greift der Idempotenz-Skip in parseAndEmbed. Die
+ *                     Funktion kehrt sofort zurueck, parser_version bleibt alt,
+ *                     und die Datei ist im naechsten Tick wieder faellig: eine
+ *                     Endlosschleife, die dabei nichts tut. Betraf am 28.07.2026
+ *                     1486 von 2170 faelligen Dateien.
+ *   ohneEmbeddings  — nur der Parser ist neuer, der Inhalt ist unveraendert. Die
+ *                     Chunks und ihre Vektoren bleiben gueltig; sie neu zu rechnen
+ *                     kostet bei ~870 ms je Chunk Tage und aendert nichts.
+ *
+ * DROSSEL: pro Lauf werden hoechstens SYNAPSE_REPARSE_MAX_PRO_LAUF veraltete
+ * Dateien angefasst (Default 200, 0 = unbegrenzt). NEUE und EMBED_OFFENE Dateien
+ * sind ausgenommen — sie sind die eigentliche Aufgabe des Backlogs und duerfen
+ * nicht warten. Die Drossel verhindert, dass eine einzelne Parser-Versions-
+ * erhoehung tausende Dateien auf einen Schlag durch die CPU zieht; der naechste
+ * Tick macht dort weiter, wo dieser aufgehoert hat.
+ */
 export async function parseUnparsedFiles(projectName: string): Promise<number> {
   if (activeParseProjects.has(projectName)) {
     return 0; // Background-Crew laeuft noch — neuer Tick uebersprungen.
   }
 
   const pool = getPool();
-  // Backlog = (a) nie geparste Dateien (parsed_at NULL) ODER (b) geparst, aber
-  // Embedding blieb offen (indexed_at NULL) und seit >5min unveraendert = ein
-  // abgebrochener/verlorener Embed-Lauf (kein noch laufender). Der 5min-Guard
-  // verhindert, dass der Worker in-flight-Embeddings (z.B. langsames Ollama)
-  // doppelt antriggert und den Backlog weiter aufblaeht.
-  // (c) INDEX-3: der gespeicherte Parse stammt von einer aelteren Parser-Version.
-  // Die Datei auf der Platte aendert sich nicht, wenn der PARSER besser wird —
-  // ohne diesen Zweig behaelt sie ihre schlechteren Symbole fuer immer. Genau
-  // daran standen 33 Dateien monatelang leer im Index (INDEX-2).
-  // parser_version IS NULL bleibt bewusst aussen vor: NULL heisst UNBEKANNT, nicht
-  // veraltet. Wuerde NULL zaehlen, reparste allein die Einfuehrung dieser Spalte
-  // den gesamten Bestand auf einen Schlag.
-  // Die Endung wird ohne Regex ermittelt (reverse/split_part), weil ein
-  // Regex-Anker im Ersetzungstext dieses Edits selbst zum Problem wird.
-  const { getVersionierteExtensions } = await import('../parser/index.js');
-  const versioniert = getVersionierteExtensions();
-  const params: unknown[] = [projectName];
-  let veraltetBedingung = '';
-  if (versioniert.length > 0) {
-    params.push(versioniert.map(v => v.extension), versioniert.map(v => v.version));
-    veraltetBedingung = `OR (parser_version IS NOT NULL AND EXISTS (
-               SELECT 1 FROM unnest($2::text[], $3::int[]) AS pv(ext, ver)
-                WHERE pv.ext = lower(reverse(split_part(reverse(code_files.file_path), '.', 1)))
-                  AND code_files.parser_version < pv.ver))`;
-  }
+  const { sql: faellig, params, grundSql } = await baueFaelligkeitsBedingung(2);
+  // ORDER BY grund sortiert alphabetisch: embed_offen, neu, veraltet. Genau die
+  // gewuenschte Reihenfolge — liegengebliebene Arbeit vor Nachzug.
   const result = await pool.query(
-    `SELECT file_path FROM code_files
-      WHERE project = $1 AND content IS NOT NULL
-        AND (parsed_at IS NULL
-             OR (indexed_at IS NULL AND updated_at < NOW() - INTERVAL '5 minutes')
-             ${veraltetBedingung})`,
-    params
+    `SELECT code_files.file_path, ${grundSql} AS grund
+       FROM code_files
+      WHERE code_files.project = $1 AND ${faellig}
+      ORDER BY grund, code_files.file_path`,
+    [projectName, ...params]
   );
 
-  if (result.rows.length === 0) return 0;
+  // Nur eine gueltige, nicht-negative Zahl zaehlt. Number('') ist 0 und
+  // Number('abc') ist NaN — beides wuerde als "unbegrenzt" durchgehen und die
+  // Drossel bei einem Tippfehler in der Umgebung still abschalten.
+  const drosselText = process.env.SYNAPSE_REPARSE_MAX_PRO_LAUF;
+  const drosselZahl = Number(drosselText);
+  const maxVeraltet =
+    drosselText !== undefined &&
+    drosselText.trim() !== '' &&
+    Number.isInteger(drosselZahl) &&
+    drosselZahl >= 0
+      ? drosselZahl
+      : 200;
+  const eintraege: Array<{ file_path: string; grund: string }> = [];
+  let veraltetGesehen = 0;
+  for (const row of result.rows as Array<{ file_path: string; grund: string }>) {
+    if (row.grund === 'veraltet') {
+      veraltetGesehen++;
+      if (maxVeraltet > 0 && veraltetGesehen > maxVeraltet) continue;
+    }
+    eintraege.push(row);
+  }
+  const veraltetVertagt = maxVeraltet > 0 ? Math.max(0, veraltetGesehen - maxVeraltet) : 0;
 
-  const total = result.rows.length;
+  if (eintraege.length === 0) return 0;
+
+  const total = eintraege.length;
 
   // Worker-Count basierend auf Queue-Groesse bestimmen
   function getWorkerCount(remaining: number): number {
@@ -1164,9 +1900,13 @@ export async function parseUnparsedFiles(projectName: string): Promise<number> {
   }
 
   const initialWorkers = getWorkerCount(total);
-  console.error(`[Synapse] ${total} ungeparste Dateien — starte mit ${initialWorkers} Worker(n)...`);
-
-  const filePaths = result.rows.map((r: { file_path: string }) => r.file_path);
+  const zaehle = (g: string) => eintraege.filter(e => e.grund === g).length;
+  console.error(
+    `[Synapse] ${projectName}: ${total} faellige Dateien (${zaehle('neu')} neu, ` +
+      `${zaehle('embed_offen')} embed offen, ${zaehle('veraltet')} veraltet) — ` +
+      `starte mit ${initialWorkers} Worker(n)...` +
+      (veraltetVertagt > 0 ? ` ${veraltetVertagt} veraltete auf den naechsten Lauf vertagt.` : '')
+  );
 
   activeParseProjects.add(projectName);
   setImmediate(async () => {
@@ -1175,13 +1915,18 @@ export async function parseUnparsedFiles(projectName: string): Promise<number> {
     let failed = 0;
 
     async function worker(workerId: number): Promise<void> {
-      while (nextIndex < filePaths.length) {
+      while (nextIndex < eintraege.length) {
         const idx = nextIndex++;
-        const filePath = filePaths[idx];
+        const { file_path: filePath, grund } = eintraege[idx];
         const t0 = Date.now();
-        console.error(`[Synapse] [W${workerId}] Parse-Start: ${projectName}/${filePath}`);
+        console.error(`[Synapse] [W${workerId}] Parse-Start (${grund}): ${projectName}/${filePath}`);
         try {
-          await parseAndEmbed(projectName, filePath);
+          // Begruendung der beiden Optionen steht im Docblock der Funktion.
+          await parseAndEmbed(
+            projectName,
+            filePath,
+            grund === 'veraltet' ? { erzwingeParse: true, ohneEmbeddings: true } : undefined
+          );
           const dt = Date.now() - t0;
           if (dt > 3000) console.error(`[Synapse] [W${workerId}] Parse-Done (langsam): ${filePath} in ${dt}ms`);
           parsed++;
@@ -1221,11 +1966,28 @@ export async function parseUnparsedFiles(projectName: string): Promise<number> {
  * Indexiert eine Datei — zweistufig: Stage 1 synchron, Stage 2 async debounced
  * filePath ist RELATIV, projectRoot ist der absolute Projekt-Pfad.
  */
+/**
+ * ⚠️ LETZTE VERTEIDIGUNGSLINIE GEGEN MEDIA IM CODE-INDEX.
+ *
+ * Die Aufrufer klassifizieren bereits (handleFileEvent, verifyProjectAgainstFilesystem,
+ * manager.ts:forwardEvent, fs-events.ts) — aber genau darauf war am 28.07.2026 kein
+ * Verlass: von vier Aufrufern hatten ZWEI die Pruefung nie, und ueber sie liefen 1426
+ * PNG-Dateien mit 149 MB als UTF-8-dekodierter Byte-Salat in den Code-Index, 2375
+ * Chunks davon bis in die Vektoren.
+ *
+ * Eine Pruefung in den Aufrufern schuetzt nur die Aufrufer, die man kennt. Diese hier
+ * schuetzt auch die naechste Aufrufstelle, die jemand in einem Jahr hinzufuegt, ohne
+ * diesen Kommentar gelesen zu haben. Sie ist bewusst redundant.
+ */
 export async function indexFile(
   filePath: string,
   projectName: string,
   projectRoot: string
 ): Promise<number> {
+  if (klassifiziereDatei(filePath) === 'media') {
+    console.error(`[Synapse] indexFile: Media gehoert nicht in den Code-Index, uebersprungen: ${filePath}`);
+    return 0;
+  }
   const changed = await storeFileContent(filePath, projectName, projectRoot);
   if (changed) {
     enqueueParseAndEmbed(projectName, filePath);
@@ -1310,12 +2072,32 @@ export async function renameCodeFile(
     console.error(`[Synapse] Snapshot vor Verschieben fehlgeschlagen fuer ${oldPath}: ${snapErr}`);
   }
 
+  // DEDIZIERTER CLIENT, NICHT pool.query. Hier stand bis zum 28.07.2026
+  // pool.query('BEGIN') gefolgt von pool.query(UPDATE ...) und pool.query('COMMIT').
+  // Der Pool darf jede dieser Anweisungen auf einer ANDEREN Verbindung ausfuehren:
+  // dann oeffnet das BEGIN eine Transaktion, die kein UPDATE enthaelt, die UPDATEs
+  // laufen im Autocommit, und das COMMIT beendet eine leere Transaktion. Die
+  // Transaktion ist eine Luege, und im Fehlerfall rollt das ROLLBACK nichts zurueck.
+  // Hier kam erschwerend hinzu, dass SET CONSTRAINTS ALL DEFERRED nur fuer die
+  // Transaktion DERSELBEN Verbindung gilt — auf einer fremden Verbindung ist es
+  // wirkungslos, und genau darauf verlaesst sich dieser Block.
+  //
+  // WAS DIESES MUSTER ANGERICHTET HAT: am 27./28.03.2026 verlor ki-browser-standalone
+  // auf diese Weise die Symbole von 132 Dateien. code_files.chunk_count stand dort auf
+  // 1..30, code_chunks war leer — die INSERTs liefen nachweislich und wurden von
+  // fremden ROLLBACKs auf derselben Verbindung verworfen. In parseAndEmbed ist das
+  // seit dem Race-Fix vom 10.05. behoben (Invariante 3 in der Memory
+  // regel-keine-vfs-drift); renameCodeFile war die letzte verbliebene Stelle.
+  // Sie ist bislang schadensfrei geblieben (0 verwaiste Symbole projektuebergreifend
+  // gemessen) — das war Glueck, kein Schutz: Renames kommen einzeln, der Maerz-Schaden
+  // brauchte 35 parallele Dateien pro Sekunde.
   let affected = false;
+  const renameClient = await pool.connect();
   try {
-    await pool.query('BEGIN');
-    await pool.query('SET CONSTRAINTS ALL DEFERRED');
+    await renameClient.query('BEGIN');
+    await renameClient.query('SET CONSTRAINTS ALL DEFERRED');
 
-    const fileUpd = await pool.query(
+    const fileUpd = await renameClient.query(
       `UPDATE code_files SET file_path = $1, file_name = $2, updated_at = NOW()
        WHERE project = $3 AND file_path = $4`,
       [newPath, path.basename(newPath), project, oldPath]
@@ -1323,25 +2105,27 @@ export async function renameCodeFile(
     affected = (fileUpd.rowCount ?? 0) > 0;
 
     if (affected) {
-      await pool.query(
+      await renameClient.query(
         `UPDATE code_symbols SET file_path = $1 WHERE project = $2 AND file_path = $3`,
         [newPath, project, oldPath]
       );
-      await pool.query(
+      await renameClient.query(
         `UPDATE code_references SET file_path = $1 WHERE project = $2 AND file_path = $3`,
         [newPath, project, oldPath]
       );
-      await pool.query(
+      await renameClient.query(
         `UPDATE code_chunks SET file_path = $1 WHERE project = $2 AND file_path = $3`,
         [newPath, project, oldPath]
       );
     }
 
-    await pool.query('COMMIT');
+    await renameClient.query('COMMIT');
   } catch (err) {
-    await pool.query('ROLLBACK').catch(() => {});
+    await renameClient.query('ROLLBACK').catch(() => {});
     console.error(`[Synapse] renameCodeFile fehlgeschlagen ${oldPath} → ${newPath}:`, err);
     throw err;
+  } finally {
+    renameClient.release();
   }
 
   if (!affected) return false;
@@ -1451,7 +2235,10 @@ function walkProjectFiles(projectRoot: string): string[] {
           const stat = fs.statSync(abs);
           const sizeMB = stat.size / (1024 * 1024);
           const maxSize = isDocument ? 50 : isMedia ? MAX_MEDIA_SIZE_MB : config.files.maxSizeMB;
-          if (sizeMB > maxSize) continue;
+          // maxSize <= 0 bedeutet "unbegrenzt" (gleiche Semantik wie im Watcher).
+          // Ohne diese Ausnahme liefert der Walk bei maxSizeMB=0 eine LEERE Liste,
+          // und verifyProjectAgainstFilesystem loescht daraufhin jede PG-Zeile.
+          if (maxSize > 0 && sizeMB > maxSize) continue;
           // Binaer-Ausschluss (ausser Dokumente/Media)
           if (!isDocument && !isMedia) {
             const buffer = fs.readFileSync(abs).subarray(0, 512);
@@ -1480,9 +2267,16 @@ function walkProjectFiles(projectRoot: string): string[] {
 export async function verifyProjectAgainstFilesystem(
   project: string,
   projectRoot: string
-): Promise<{ renamed: number; added: number; removed: number; updated: number }> {
+): Promise<{
+  renamed: number;
+  added: number;
+  removed: number;
+  updated: number;
+  /** Bilder/Videos, die hier bewusst NICHT in den Code-Index wandern. */
+  mediaUebersprungen: number;
+}> {
   const pool = getPool();
-  const stats = { renamed: 0, added: 0, removed: 0, updated: 0 };
+  const stats = { renamed: 0, added: 0, removed: 0, updated: 0, mediaUebersprungen: 0 };
 
   // 1. Rekursiver Walk + Hash fuer alle Disk-Dateien
   const absFiles = walkProjectFiles(projectRoot);
@@ -1568,8 +2362,37 @@ export async function verifyProjectAgainstFilesystem(
   }
 
   // 3. Neue Dateien (Rest in diskMap) → indexieren
+  //
+  // KLASSIFIKATION WIE IN handleFileEvent: Dokument > Media > Code. Hier stand bis
+  // zum 28.07.2026 ein blankes indexFile() fuer ALLES, was auf der Platte lag.
+  //
+  // WAS DAS ANGERICHTET HAT: walkProjectFiles laesst Media und Dokumente bewusst am
+  // Binaer-Check vorbei (Zeile ~1797, 'if (!isDocument && !isMedia)') — sie sollen
+  // ueber ihren eigenen Weg laufen. Der Watcher sortiert sie danach korrekt aus, der
+  // Verify-Pfad hier tat es nicht. Eine PNG wurde damit als Textdatei gelesen, ihre
+  // Bytes verlustbehaftet als UTF-8 dekodiert und in Chunks zerlegt.
+  // GEMESSEN AM 28.07.2026, projektuebergreifend: 1426 PNG-Dateien mit 149 MB Inhalt
+  // und 35.666 Chunks im Code-Index (browsergame 50 Dateien/30.265 Chunks, moo 1178/5375).
+  // 2375 dieser Chunks waren bereits EMBEDDED — es liegen echte Vektoren aus Byte-Salat
+  // in Qdrant, gerechnet ueber den normalen Text-Pfad. Eine Stichprobe hatte 36 Prozent
+  // druckbare Zeichen, der Rest waren Ersatzzeichen.
+  //
+  // Bilder gehoeren AUSSCHLIESSLICH ueber indexMediaFile in die Media-Collection, und
+  // das auch nur, wenn der User es ausdruecklich anfordert (admin(index_media)) — sie
+  // brauchen ein multimodales Modell, das der Text-Pfad gar nicht hat.
+  const { isMultimodalFile } = await import('../watcher/binary.js');
   for (const [rel] of diskMap) {
     try {
+      const absPfad = path.join(projectRoot, rel);
+      if (isExtractableDocument(absPfad)) {
+        await indexDocument(absPfad, project);
+        stats.added++;
+        continue;
+      }
+      if (isMultimodalFile(absPfad)) {
+        stats.mediaUebersprungen++;
+        continue;
+      }
       const n = await indexFile(rel, project, projectRoot);
       if (n > 0) stats.added++;
     } catch {
@@ -1578,7 +2401,9 @@ export async function verifyProjectAgainstFilesystem(
   }
 
   console.error(
-    `[Synapse] Verify "${project}": ${stats.renamed} umbenannt, ${stats.added} neu, ${stats.updated} aktualisiert, ${stats.removed} entfernt`
+    `[Synapse] Verify "${project}": ${stats.renamed} umbenannt, ${stats.added} neu, ` +
+      `${stats.updated} aktualisiert, ${stats.removed} entfernt` +
+      (stats.mediaUebersprungen > 0 ? `, ${stats.mediaUebersprungen} Media uebersprungen` : '')
   );
   return stats;
 }

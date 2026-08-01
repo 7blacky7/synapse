@@ -34,7 +34,7 @@ const port = parentPort;
 async function handle(msg: WorkerRequest): Promise<WorkerResponse> {
   try {
     const { getParserForFile } = await import('./index.js');
-    const parser = getParserForFile(msg.filePath);
+    const parser = getParserForFile(msg.filePath, msg.content);
     if (!parser) {
       return { ok: true, result: null };
     }

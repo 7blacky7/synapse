@@ -8,15 +8,78 @@
  */
 
 import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser, ParsedStatement, ParsedCallEdge } from './types.js';
-import { extractStringLiterals } from './types.js';
+import { extractStringLiterals, erstelleZeilenIndex, zeileFuerPosition } from './types.js';
 import { parseEmbeddedSql, looksLikeSql } from './patterns/sql.js';
 
+// Zeilenindex je Datei zwischenspeichern — siehe zeileFuerPosition in types.ts.
+// Vorher wurde pro Treffer ein Praefix der Datei kopiert und zerlegt: das ist
+// O(Treffer x Dateigroesse) und laesst grosse Dateien praktisch nie fertig werden.
+let zeilenCacheText: string | null = null;
+let zeilenCacheIndex: number[] = [];
 function lineAt(text: string, pos: number): number {
-  return text.substring(0, pos).split('\n').length;
+  if (text !== zeilenCacheText) {
+    zeilenCacheText = text;
+    zeilenCacheIndex = erstelleZeilenIndex(text);
+  }
+  return zeileFuerPosition(zeilenCacheIndex, pos);
 }
 
 function endLineAt(text: string, pos: number, matchLength: number): number {
-  return text.substring(0, pos + matchLength).split('\n').length;
+  return lineAt(text, pos + matchLength);
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// Variablen-Deklarationen auf Modulebene — EINE Definition fuer BEIDE Stellen
+// ══════════════════════════════════════════════════════════════════════════
+// BIS ZUM 31.07.2026 STAND DIESELBE REGEL ZWEIMAL IM CODE, und sie lief
+// auseinander: die Symbol-Stelle kannte static/extern/const/volatile, die
+// Statement-Stelle zusaetzlich unsigned/signed/long/short/struct/enum. BEIDE
+// verlangten aber MINDESTENS EIN Schluesselwort (Quantor + statt *), weshalb
+// `int globalWert = 1;` durchfiel — obwohl der Modul-Header oben globale
+// Variablen ausdruecklich zusagt. Zusaetzlich kannte keine der beiden Stellen
+// Zeiger oder Arrays: `(\w+)` matcht das `*` in `static treap_t *chunks;`
+// nicht, und `[...]` kam im Muster gar nicht vor.
+//
+// WARUM ES NIEMAND GEMERKT HAT: code_symbols zeigte fuer c/h 28.009
+// variable-Eintraege und wirkte gesund. Die stammen aber aus zwei ANDEREN
+// Stellen (#define-Makros und typedef), nicht aus echten Deklarationen. Eine
+// Zaehlung auf die Summe konnte den Defekt daher nicht sehen.
+//
+// DER ANKER `^` OHNE `\s*` IST ABSICHT und der einzige Schutz gegen lokale
+// Deklarationen: die stehen in Funktionsruempfen und sind eingerueckt. Wer hier
+// `\s*` ergaenzt, zieht schlagartig zehntausende lokale Variablen herein.
+const C_SPEICHERKLASSEN = 'static|extern|const|volatile|register|unsigned|signed|long|short';
+
+// Woerter, die syntaktisch wie ein Typ aussehen, aber keiner sind. Ohne diesen
+// Riegel liest `return x;` als Deklaration einer Variablen `x` vom Typ `return`.
+const C_KEIN_TYP = new Set([
+  'return', 'if', 'else', 'for', 'while', 'do', 'switch', 'case', 'default',
+  'break', 'continue', 'goto', 'sizeof', 'typedef', 'struct', 'union', 'enum',
+]);
+
+/**
+ * Regex fuer eine Variablen-Deklaration am Zeilenanfang.
+ * Gruppen: 1 Qualifier (optional!), 2 Typ, 3 Name, 4 Array-Klammern, 5 Wert.
+ * Jeder Aufruf liefert eine FRISCHE Instanz — ein geteilter Regex mit /g wuerde
+ * seinen lastIndex ueber Aufrufe hinweg mitschleppen und Treffer verschlucken.
+ */
+function baueCVarRegex(): RegExp {
+  return new RegExp(
+    '^((?:' + C_SPEICHERKLASSEN + ')\\s+)*' +   // Qualifier: beliebig viele, auch keiner
+      '(?:(?:struct|union|enum)\\s+)?' +        // optionales struct/union/enum vor dem Typ
+      '([A-Za-z_]\\w*)' +                       // Typ
+      '(?:\\s*\\*+\\s*|\\s+)' +                 // Zeiger ODER mindestens ein Leerzeichen
+      // NACH dem Stern koennen weitere Qualifier stehen: `char *const name` ist ein
+      // konstanter Zeiger, kein Name namens "const". Ohne diese Gruppe las der
+      // Regex das zweite const als Bezeichner und der echte Name fiel heraus —
+      // gefunden am 31.07.2026 an ssl_tls.c:2792,
+      // `static const char *const ssl_hostname_skip_cn_verification = "";`
+      '(?:(?:const|volatile|restrict)\\s+)*' +
+      '([A-Za-z_]\\w*)' +                       // Name
+      '\\s*((?:\\[[^\\]]*\\])*)' +              // optionale Array-Klammern, auch mehrdimensional
+      '\\s*(?:=\\s*([^;]+))?\\s*;',             // optionale Initialisierung
+    'gm'
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -347,15 +410,17 @@ function extractFlowC(content: string): { statements: ParsedStatement[]; callEdg
 
   const topScopeCounter = { v: 0 };
   const stripped = stripComments(content);
-  // Top-level variable declarations with init
-  const topVarRe = /^(?:(?:static|extern|const|volatile|unsigned|signed|long|short|struct|enum)\s+)+\w[\w*\s]*?\s+(\w+)\s*(?:=\s*([^;]+))?\s*;/gm;
+  // Top-level variable declarations with init.
+  // Gemeinsame Definition mit der Symbol-Ebene, siehe baueCVarRegex oben.
+  const topVarRe = baueCVarRegex();
   let mv: RegExpExecArray | null;
   while ((mv = topVarRe.exec(stripped)) !== null) {
     if (isInsideBody(mv.index)) continue;
+    if (C_KEIN_TYP.has(mv[2])) continue;
     const fileLine = lineAt(content, mv.index);
     const stId = nextId();
-    statements.push({ temp_id: stId, parent_temp_id: undefined, scope_type: 'module', scope_name: null, statement_type: 'variable', node_kind: 'VariableDeclaration', line_start: fileLine, order_index: nextOrder(undefined, topScopeCounter), depth: 0, is_top_level: true, is_awaited: false, assigned_to: mv[1], text: mv[0].trim().slice(0, 240) });
-    if (mv[2]) extractCallsFromExpr(mv[2], stId, null, fileLine);
+    statements.push({ temp_id: stId, parent_temp_id: undefined, scope_type: 'module', scope_name: null, statement_type: 'variable', node_kind: 'VariableDeclaration', line_start: fileLine, order_index: nextOrder(undefined, topScopeCounter), depth: 0, is_top_level: true, is_awaited: false, assigned_to: mv[3], text: mv[0].trim().slice(0, 240) });
+    if (mv[5]) extractCallsFromExpr(mv[5], stId, null, fileLine);
   }
 
   return { statements, callEdges };
@@ -371,8 +436,17 @@ class CParser implements LanguageParser {
    * 2 = Klammer-Scanner statt \([^)]*\), condition_text balanciert, ++/--,
    *     mehrere Statements pro Zeile, Rumpf hinter einzeiligem Kontrollfluss-Kopf.
    * 3 = static wird auch erkannt, wenn es im Rueckgabetyp steht (is_exported).
+   * 4 = Zeilenberechnung ueber Index statt Praefix-Kopie (siehe lineAt).
+   * 5 = eingerueckte Funktions-Prototypen in Headern werden erkannt (siehe protoRe).
+   *     Am echten Bestand: 10675 -> 14953 Prototypen ueber 1238 .h-Dateien. Die 18
+   *     entfallenen Eintraege sind Funktionszeiger-Typedefs, also eine Korrektur.
+   * 6 = globale Variablen ohne Speicherklassen-Schluesselwort sowie Zeiger und
+   *     Arrays werden erkannt. Der Quantor war + statt *, deshalb fiel
+   *     `int globalWert = 1;` durch; `(\w+)` matchte das `*` in
+   *     `static treap_t *chunks;` nicht, und `[...]` fehlte im Muster ganz.
+   *     Symbol-Ebene und Ablauf-Ebene teilen sich jetzt baueCVarRegex().
    */
-  version = 3;
+  version = 6;
 
   parse(content: string, filePath: string): ParseResult {
     const symbols: ParsedSymbol[] = [];
@@ -405,7 +479,14 @@ class CParser implements LanguageParser {
     // 2. #define (Makros und Konstanten)
     // ══════════════════════════════════════════════
     // Objekt-artige Makros: #define NAME value
-    const defineConstRe = /^#define\s+(\w+)\s+(.+)/gm;
+    // [ \t] STATT \s, BEIDE MALE: `\s` schliesst den Zeilenumbruch ein. Bei einem
+    // #define OHNE Wert (Feature-Schalter wie `#define COBJMACROS`, Include-Guards)
+    // frass der zweite Quantor das Zeilenende und `(.+)` nahm die FOLGEZEILE als
+    // Wert. Gemessen am 31.07.2026: 891 Symbole trugen so einen falschen Wert,
+    // z.B. WIN32_LEAN_AND_MEAN = "#ifndef NOMINMAX" und
+    // GGML_COMMON_IMPL_C = "#include \"ggml-common.h\"".
+    // Ein wertloses #define faellt hier durch und wird von defineFlagRe unten gefangen.
+    const defineConstRe = /^#define[ \t]+(\w+)[ \t]+(.+)/gm;
     while ((m = defineConstRe.exec(content)) !== null) {
       const name = m[1];
       const value = m[2].trim().replace(/\\\n/g, ' ').slice(0, 200);
@@ -416,6 +497,33 @@ class CParser implements LanguageParser {
         symbol_type: 'variable',
         name,
         value,
+        line_start: lineAt(content, m.index),
+        is_exported: isHeader,
+      });
+    }
+
+    // Wertlose #defines: Feature-Schalter wie `#define COBJMACROS`.
+    //
+    // WARUM SIE EIN EIGENES SYMBOL BEKOMMEN (User-Entscheidung 31.07.2026): die
+    // Vorgabe lautet "KI soll alles finden mit code_intel". Wer wissen will, ob ein
+    // Schalter gesetzt ist und wo, muss ihn finden koennen — dass er keinen Wert
+    // hat, IST die Information. Vor dem Fix oben standen sie mit dem Inhalt der
+    // FOLGEZEILE im Index (891 Faelle); ohne diesen Block waeren sie ersatzlos
+    // verschwunden, also von falsch auf gar nicht.
+    //
+    // Die Klammer-Pruefung trennt sie von Funktionsmakros: `#define FOO(x)` endet
+    // nicht auf einen blossen Bezeichner und faellt hier durch — es gehoert zu
+    // defineFuncRe darunter und wird dort als 'function' gefuehrt.
+    const defineFlagRe = /^#define[ \t]+(\w+)[ \t]*$/gm;
+    while ((m = defineFlagRe.exec(content)) !== null) {
+      const name = m[1];
+      // Dieselbe Guard-Regel wie oben, damit Include-Guards nicht doch hereinkommen.
+      if (name.endsWith('_H') || name.endsWith('_H_') || name.startsWith('_')) continue;
+
+      symbols.push({
+        symbol_type: 'variable',
+        name,
+        value: '',
         line_start: lineAt(content, m.index),
         is_exported: isHeader,
       });
@@ -553,7 +661,20 @@ class CParser implements LanguageParser {
     // ══════════════════════════════════════════════
     // 7. Funktionen
     // ══════════════════════════════════════════════
-    const funcRe = /^((?:static|inline|extern|__attribute__\([^)]*\)\s*)*\s*)((?:const\s+)?(?:unsigned\s+|signed\s+|long\s+|short\s+)?(?:struct\s+)?\w[\w*\s]*?)\s+(\*?\w+)\s*\(([^)]*)\)\s*\{/gm;
+    // ⚠️ DAS `[ \t]*` AM ENDE VON GRUPPE 1 IST DER ZEILENVERSATZ-FIX (31.07.2026).
+    // Dort stand `\s*`. Steht vor einer Funktion eine LEERZEILE — der Normalfall in
+    // C —, dann griff `^` bereits auf dieser Leerzeile, `\s*` frass den
+    // Zeilenumbruch, und der Rest des Musters passte auf die Zeile darunter.
+    // m.index zeigte damit auf die Leerzeile: line_start war um genau 1 zu klein.
+    // GEMESSEN vor dem Fix: 1.617 von 6.078 Funktionen in 300 Dateien standen auf
+    // einer leeren Zeile (26,6 %; ueber eine Zufallsstichprobe 35,1 %). Wer eine
+    // Funktion ueber code_intel nachschlug und zur Fundstelle sprang, landete im
+    // Nichts — schlimmer als ein fehlendes Symbol, weil es wie eine Antwort aussieht.
+    // Das `\s*` NACH __attribute__(...) bleibt absichtlich stehen: ein Attribut auf
+    // eigener Zeile gehoert zur Deklaration, dort ist der Zeilenumbruch gewollt.
+    // Dieselbe Falle wie bei wgsl am selben Tag; protoRe darunter wurde bereits am
+    // 28.07. auf `^[ \t]*` umgestellt und war deshalb nie betroffen.
+    const funcRe = /^((?:static|inline|extern|__attribute__\([^)]*\)\s*)*[ \t]*)((?:const\s+)?(?:unsigned\s+|signed\s+|long\s+|short\s+)?(?:struct\s+)?\w[\w*\s]*?)\s+(\*?\w+)\s*\(([^)]*)\)\s*\{/gm;
     while ((m = funcRe.exec(content)) !== null) {
       const qualifiers = m[1].trim();
       const returnType = m[2].trim();
@@ -593,13 +714,28 @@ class CParser implements LanguageParser {
 
     // Funktions-Prototypen (in .h)
     if (isHeader) {
-      const protoRe = /^((?:extern\s+)?)((?:const\s+)?(?:unsigned\s+|signed\s+|long\s+|short\s+)?(?:struct\s+)?\w[\w*\s]*?)\s+(\*?\w+)\s*\(([^)]*)\)\s*;/gm;
+      // [ \t]* NACH dem ^: eine Deklaration steht selten am Zeilenanfang. In einem
+      // extern "C" {-Block ist praktisch JEDE eingerueckt, und ohne diese Erlaubnis
+      // fand das Muster dort gar nichts — ggml.h verlor auf diese Weise alle 354
+      // Deklarationen und meldete stattdessen 10 #define-Makros als "Funktionen".
+      // Ueber 1238 echte .h-Dateien fehlten dadurch 4944 Prototypen in 287 Dateien.
+      // Gegenprobe: das Makro-Praefix (GGML_API) war NICHT die Ursache — wird nur es
+      // entfernt, findet das alte Muster weiterhin null.
+      const protoRe = /^[ \t]*((?:extern\s+)?)((?:const\s+)?(?:unsigned\s+|signed\s+|long\s+|short\s+)?(?:struct\s+)?\w[\w*\s]*?)\s+(\*?\w+)\s*\(([^)]*)\)\s*;/gm;
       while ((m = protoRe.exec(content)) !== null) {
         const returnType = m[2].trim();
         const funcName = m[3].replace(/^\*/, '');
         const paramsRaw = m[4];
 
-        if (['if', 'for', 'while', 'switch', 'return', 'typedef'].includes(returnType)) continue;
+        // Wortgrenze statt exakter Gleichheit, aus zwei Gruenden:
+        // 1. Mit erlaubter Einrueckung wuerde "else return foo(...);" aus einer
+        //    Single-Header-Bibliothek als Deklaration durchgehen (Rueckgabetyp waere
+        //    "else return"). Gemessen: 7 solche Faelle in stb_image.h und VHACD.h.
+        // 2. "typedef int mbedtls_ssl_send_t(...)" ist ein Funktionszeiger-TYPEDEF,
+        //    keine Funktion. Die alte Pruefung auf exakt "typedef" liess es durch,
+        //    weil der Rueckgabetyp "typedef int" lautet — 18 solche Eintraege standen
+        //    faelschlich als Funktion im Index.
+        if (/\b(?:if|for|while|switch|return|typedef|else|do|case|goto)\b/.test(returnType)) continue;
 
         const params = paramsRaw === 'void' ? [] : paramsRaw
           .split(',')
@@ -620,21 +756,26 @@ class CParser implements LanguageParser {
     // ══════════════════════════════════════════════
     // 8. Globale Variablen
     // ══════════════════════════════════════════════
-    const globalVarRe = /^((?:static|extern|const|volatile)\s+)+(\w[\w*\s]*?)\s+(\w+)\s*(?:=\s*([^;]+))?\s*;/gm;
+    // Gemeinsame Definition mit der Ablauf-Ebene, siehe baueCVarRegex oben.
+    const globalVarRe = baueCVarRegex();
     while ((m = globalVarRe.exec(content)) !== null) {
-      const qualifiers = m[1];
+      // Ohne Qualifier ist Gruppe 1 undefined — seit der Quantor optional ist,
+      // muss das abgefangen werden, sonst wirft .includes() auf undefined.
+      const qualifiers = m[1] ?? '';
       const varType = m[2].trim();
       const varName = m[3];
-      const value = m[4] ? m[4].trim().slice(0, 200) : undefined;
+      const arrays = m[4] ?? '';
+      const value = m[5] ? m[5].trim().slice(0, 200) : undefined;
 
-      if (['struct', 'enum', 'union', 'typedef'].includes(varType)) continue;
+      if (C_KEIN_TYP.has(varType)) continue;
 
       symbols.push({
         symbol_type: 'variable',
         name: varName,
-        value: value || varType,
-        return_type: varType,
+        value: value || varType + arrays,
+        return_type: varType + arrays,
         line_start: lineAt(content, m.index),
+        // Ohne static ist das Symbol ueber Uebersetzungseinheiten hinweg sichtbar.
         is_exported: !qualifiers.includes('static'),
       });
     }

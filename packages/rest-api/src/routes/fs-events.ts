@@ -8,7 +8,13 @@
 
 import { FastifyInstance } from 'fastify';
 import path from 'node:path';
-import { indexFile, removeFile, getProjectRoot } from '@synapse/core';
+import {
+  indexFile,
+  indexDocument,
+  removeFile,
+  getProjectRoot,
+  klassifiziereDatei,
+} from '@synapse/core';
 
 // Akzeptiert beide Konventionen:
 //   Legacy REST-Form:  added / modified / deleted
@@ -69,7 +75,18 @@ export async function fsEventsRoutes(fastify: FastifyInstance): Promise<void> {
       if (typ === 'deleted') {
         await removeFile(relPath, projekt);
       } else {
-        await indexFile(relPath, projekt, projectRoot);
+        // KLASSIFIKATION PFLICHT — siehe klassifiziereDatei. Dieser Endpunkt hatte
+        // bis zum 28.07.2026 ueberhaupt keine Pruefung, weder Extension noch
+        // Magic Bytes, und schob jede gemeldete Datei durch den Text-Pfad.
+        const art = klassifiziereDatei(relPath);
+        if (art === 'media') {
+          return reply.status(200).send({ success: true, uebersprungen: 'media' });
+        }
+        if (art === 'dokument') {
+          await indexDocument(relPath, projekt);
+        } else {
+          await indexFile(relPath, projekt, projectRoot);
+        }
       }
       return reply.status(200).send({ success: true });
     } catch (err) {

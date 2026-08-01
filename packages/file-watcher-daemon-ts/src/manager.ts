@@ -18,9 +18,11 @@ import {
   FileWatcherInstance,
   FileEvent,
   indexFile,
+  indexDocument,
   removeFile,
   getProjectRoot,
   setProjectEnabled,
+  klassifiziereDatei,
 } from '@synapse/core';
 import {
   DaemonConfig,
@@ -116,6 +118,44 @@ export class WatcherManager {
   /** Gibt aktuelle Config (read-only verwenden). */
   getConfig(): DaemonConfig {
     return this.config;
+  }
+
+  /**
+   * Nimmt eine Projekt-Liste aus der PG-Registry (projects-Tabelle, gefiltert
+   * auf den eigenen Hostname) entgegen und ergaenzt lokal unbekannte Projekte.
+   * PG ist die Quelle fuer NEUE Projekte (z.B. per REST/MCP project(init)
+   * angelegt, ohne dass dieser Daemon je eine config.json-Zeile dafuer
+   * geschrieben hat). Bereits bekannte Projekte werden hier NICHT angefasst —
+   * Pfad-Aenderungen laufen ueber register(), das enabled-Flag ueber
+   * enable()/disable() bzw. den enabled-sync-Tick, der diese Methode aufruft.
+   * config.json wird bei jedem Fund sofort mitgeschrieben und bleibt so der
+   * lokale Cache/Notnagel, falls PG beim naechsten Start nicht erreichbar ist
+   * (Vorbild: loadGitignore() in packages/core/src/watcher/ignore.ts).
+   */
+  discoverFromRegistry(rows: Array<{ name: string; pfad: string; enabled: boolean }>): void {
+    let changed = false;
+    for (const row of rows) {
+      if (findProjekt(this.config, row.name)) continue;
+      if (!fs.existsSync(row.pfad) || !fs.statSync(row.pfad).isDirectory()) {
+        console.error(`[manager] PG-Projekt "${row.name}" uebersprungen: Pfad "${row.pfad}" existiert nicht auf diesem Host.`);
+        continue;
+      }
+      const projekt: ProjektConfig = { name: row.name, pfad: row.pfad, enabled: row.enabled };
+      upsertProjekt(this.config, projekt);
+      changed = true;
+      console.error(`[manager] Projekt "${row.name}" aus PG uebernommen (fehlte in config.json).`);
+      if (row.enabled && !this.instances.has(row.name)) {
+        try {
+          this.spawnWatcher(projekt);
+        } catch (err) {
+          console.error(`[manager] Fehler beim Start von "${row.name}" (aus PG uebernommen):`, (err as Error).message);
+        }
+      }
+    }
+    if (changed) {
+      saveConfig(this.config);
+      this.emitChange('discoverFromRegistry');
+    }
   }
 
   /** Startet alle Projekte mit enabled=true aus der Config. */
@@ -273,7 +313,21 @@ export class WatcherManager {
       if (event.type === 'unlink') {
         await removeFile(relPath, event.project);
       } else {
-        await indexFile(relPath, event.project, projectRoot);
+        // KLASSIFIKATION PFLICHT. Hier stand bis zum 28.07.2026 ein blankes
+        // indexFile() — dieser Pfad umging damit die Aussortierung, die
+        // handleFileEvent im core laengst hatte. Eine PNG, die in ein ueberwachtes
+        // Projekt gelegt wurde, landete als UTF-8-dekodierter Byte-Salat im
+        // Code-Index. Belegt an den Zeitmustern: 28 PNGs in einem Projekt verteilt
+        // ueber 21 verschiedene Minuten und 8,2 Stunden — das kann kein Scan sein.
+        const art = klassifiziereDatei(relPath);
+        if (art === 'media') {
+          // Nur ueber admin(index_media), nur auf Anweisung des Users.
+          console.error(`[manager] Media uebersprungen: ${relPath}`);
+        } else if (art === 'dokument') {
+          await indexDocument(relPath, event.project);
+        } else {
+          await indexFile(relPath, event.project, projectRoot);
+        }
       }
     } catch (err) {
       console.error(

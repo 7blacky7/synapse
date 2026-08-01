@@ -9,17 +9,159 @@
  */
 
 import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser, ParsedStatement, ParsedCallEdge } from './types.js';
-import { extractStringLiterals } from './types.js';
+import { extractStringLiterals, erstelleZeilenIndex, zeileFuerPosition } from './types.js';
 
+// Zeilenindex je Text zwischenspeichern — siehe zeileFuerPosition in types.ts.
+// Vorher wurde pro Treffer ein Praefix der Datei kopiert und zerlegt: das ist
+// O(Treffer x Dateigroesse) und laesst grosse Dateien praktisch nie fertig werden.
+//
+// WARUM EIN CACHE UEBER MEHRERE TEXTE, obwohl es jetzt nur noch einen gibt:
+// parseBlock hat frueher bei der Rekursion den AUSGESCHNITTENEN Rumpf als neuen
+// Text weitergereicht, waehrend die oberste Ebene je Funktion wieder mit dem vollen
+// Dateiinhalt arbeitete. Mit einem Slot wurde der Index des ganzen Textes deshalb je
+// Funktion neu gebaut — gemessen an 587 KB: 3601 Indexbauten ueber 238 Mio. Zeichen,
+// das 406-fache der Dateigroesse. Bei 40-fach verschachteltem Material war der Parser
+// dadurch LANGSAMER als vor der Umstellung auf den Index (923 ms gegen 540 ms),
+// derselbe Rueckschlag wie in cpp.ts. Ein Ring mit 2, 4 oder 8 Slots half messbar
+// NICHT (unveraendert 3601 Bauten) — je Funktion waren mehr Texte im Spiel als Slots.
+// Seit parseBlock mit Grenzen auf content arbeitet, gibt es nur noch EINEN Text und
+// der Index wird genau einmal je Datei gebaut. Der Cache bleibt trotzdem textbasiert:
+// er kostet dann einen Eintrag, faengt aber sofort ab, wenn hier wieder jemand einen
+// Teiltext hineinreicht. Geleert wird er zu Beginn jeder parse-Fassung, damit nichts
+// ueber Dateien hinweg liegen bleibt.
+//
+// Klebrige Regexe (Flag y): sie ersetzen die frueheren ^-verankerten Muster auf
+// body.slice(pos). Ohne ausgeschnittenen Rumpf gibt es keinen Textanfang mehr, an dem
+// ^ greifen koennte; lastIndex leistet dasselbe ohne Teilstring. Vor jedem exec wird
+// lastIndex gesetzt, es gibt also keinen Zustand ueber Aufrufe hinweg.
+const reIf = /if\s*\(/y;
+const reElse = /\s*else\s*\{/y;
+const reFor = /for\s*\(/y;
+const reWhile = /while\s*\(/y;
+const reReq = /(require|revert)\s*\(/y;
+const reEmit = /emit\s+(\w+)\s*\(/y;
+const reRet = /return\b/y;
+// Zuweisung: Ziel gefolgt von = oder einer Verbund-Zuweisung. Das Ziel darf
+// Punkt- und Index-Zugriffe enthalten (guthaben[msg.sender], a.b[0].c).
+// =(?!=) schliesst Vergleiche aus; <= und >= treffen nicht zu, weil < und >
+// nicht in der Zeichenklasse stehen.
+// =(?![=>]) schliesst ZWEI Faelle aus: den Vergleich == und den Pfeil => eines
+// BENANNTEN Mapping-Parameters. Solidity erlaubt die seit 0.8.18:
+//   mapping(uint256 index => uint256) storage _x = _ownedTokens[from];
+// Ohne den Pfeil im Lookahead las der Scanner "index =>" als eigene Zuweisung und
+// machte aus einer Zeile zwei. Genau eine Fundstelle im ganzen OpenZeppelin-
+// Bestand (ERC721Enumerable.sol:115) — in keiner Summe zu sehen, nur beim
+// Durchsehen der mehrfachbelegten Stellen.
+const reAssign = /([A-Za-z_$][\w$]*(?:\s*\.\s*[\w$]+|\s*\[[^\];]*\])*)\s*(?:=(?![=>])|[+\-*/%&|^]=|<<=|>>=)/y;
+const reCall = /([a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)*)\s*\(/y;
+let zeilenCache = new Map<string, number[]>();
+function zeilenCacheLeeren(): void {
+  zeilenCache = new Map();
+}
 function lineAt(text: string, pos: number): number {
-  return text.substring(0, pos).split('\n').length;
+  let index = zeilenCache.get(text);
+  if (index === undefined) {
+    index = erstelleZeilenIndex(text);
+    zeilenCache.set(text, index);
+  }
+  return zeileFuerPosition(index, pos);
+}
+
+// ---------------------------------------------------------------------------
+// Kommentare und Zeichenketten vom Code trennen
+// ---------------------------------------------------------------------------
+//
+// WARUM DAS NOETIG IST, obwohl parseBlock Kommentare bereits ueberspringt:
+// dieser Schutz ist LOKAL und setzt voraus, dass der Block im Code beginnt.
+// funcBodyRe sucht Funktionskoepfe aber im ganzen Dateitext und findet sie auch
+// in NatSpec-Bloecken, die vollstaendige Vertraege als Beispiel zeigen. Ab da
+// liegt der Blockanfang bereits INNERHALB eines Kommentars: das oeffnende
+// Kommentarzeichen steht davor, und die Fortsetzungszeilen mit fuehrendem Stern
+// sehen fuer parseBlock aus wie Code. So kamen in OpenZeppelin 65 Anweisungen
+// (49 Aufrufe, 9 return, 7 Zuweisungen) und 156 Zeichenketten aus der
+// Dokumentation in den Index — Aufrufe von Funktionen, die es nie gab.
+//
+// DIE MASKIERUNG ERHAELT DIE LAENGE: jedes Zeichen wird durch ein Leerzeichen
+// ersetzt, Zeilenumbrueche bleiben stehen. Dadurch bleibt jede Position und
+// jede Zeilennummer gueltig, und der angezeigte Text wird anschliessend aus dem
+// ORIGINAL geschnitten — nicht aus der maskierten Fassung.
+//
+// Solidity-Blockkommentare sind NICHT schachtelbar (C-artig); ein zweites
+// oeffnendes Zeichenpaar im Inneren ist bedeutungslos. Zeichenketten muessen im
+// selben Durchlauf behandelt werden, sonst wuerde ein doppelter Schraegstrich
+// INNERHALB einer Zeichenkette (etwa in einer URL) faelschlich einen Kommentar
+// eroeffnen.
+function maskiereKommentareUndStrings(content: string): { ohneKommentare: string; maskiert: string } {
+  const ohne = content.split('');
+  const mask = content.split('');
+  const leeren = (arr: string[], von: number, bis: number): void => {
+    for (let i = von; i < bis && i < arr.length; i++) {
+      if (arr[i] !== '\n' && arr[i] !== '\r') arr[i] = ' ';
+    }
+  };
+
+  const n = content.length;
+  let i = 0;
+  while (i < n) {
+    const c = content[i];
+    const c2 = content[i + 1];
+
+    // Zeilenkommentar (deckt auch die NatSpec-Form mit drei Schraegstrichen ab)
+    if (c === '/' && c2 === '/') {
+      const start = i;
+      while (i < n && content[i] !== '\n') i++;
+      leeren(ohne, start, i);
+      leeren(mask, start, i);
+      continue;
+    }
+
+    // Blockkommentar, nicht schachtelbar (deckt auch die NatSpec-Form mit zwei
+    // Sternen ab)
+    if (c === '/' && c2 === '*') {
+      const start = i;
+      i += 2;
+      while (i < n && !(content[i] === '*' && content[i + 1] === '/')) i++;
+      i = Math.min(i + 2, n);
+      leeren(ohne, start, i);
+      leeren(mask, start, i);
+      continue;
+    }
+
+    // Zeichenkette in doppelten oder einfachen Anfuehrungszeichen. Solidity
+    // kennt beide Formen gleichwertig; die Praefixe hex und unicode stehen VOR
+    // dem Anfuehrungszeichen und stoeren hier nicht.
+    if (c === '"' || c === "'") {
+      const start = i;
+      const q = c;
+      i++;
+      while (i < n) {
+        if (content[i] === '\\') { i += 2; continue; }
+        if (content[i] === q) { i++; break; }
+        // Eine unbeendete Zeichenkette darf nicht den Rest der Datei fressen.
+        if (content[i] === '\n') break;
+        i++;
+      }
+      leeren(mask, start, i);
+      continue;
+    }
+
+    i++;
+  }
+
+  return { ohneKommentare: ohne.join(''), maskiert: mask.join('') };
 }
 
 // ---------------------------------------------------------------------------
 // Execution-Flow Extraktion fuer Solidity
 // Erfasst: function/modifier Bodies mit if/for/while/require/revert/emit/calls
 // ---------------------------------------------------------------------------
-function extractSolidityFlow(content: string): { statements: ParsedStatement[]; callEdges: ParsedCallEdge[] } {
+//
+// SUCHE auf dem MASKIERTEN Text, ANZEIGE aus dem ORIGINAL: beide sind exakt
+// gleich lang, jede Position gilt in beiden. original wird nur dort gebraucht,
+// wo Text in ein Feld wandert (condition_text) — sonst stuende dort bei einer
+// Bedingung mit Zeichenkette eine Reihe Leerzeichen.
+function extractSolidityFlow(original: string, maskiert: string): { statements: ParsedStatement[]; callEdges: ParsedCallEdge[] } {
+  const content = maskiert;
   const statements: ParsedStatement[] = [];
   const callEdges: ParsedCallEdge[] = [];
   let tempId = 0;
@@ -69,91 +211,103 @@ function extractSolidityFlow(content: string): { statements: ParsedStatement[]; 
   }
 
   // Find matching closing brace position (char index)
-  function findClose(src: string, openIdx: number): number {
+  // Findet die zur oeffnenden Klammer bei openIdx passende schliessende Klammer.
+  // ende begrenzt die Suche auf den umgebenden Block; ohne Angabe gilt der ganze Text.
+  // Frueher ergab sich diese Grenze von selbst, weil auf einem ausgeschnittenen
+  // Rumpf gesucht wurde — die Begrenzung ersetzt das Ausschneiden.
+  function findClose(src: string, openIdx: number, ende: number = src.length): number {
     let depth = 1;
-    for (let i = openIdx + 1; i < src.length; i++) {
+    for (let i = openIdx + 1; i < ende; i++) {
       if (src[i] === '{') depth++;
       else if (src[i] === '}') { depth--; if (depth === 0) return i; }
     }
-    return src.length - 1;
+    return ende - 1;
   }
 
-  function charToLine(src: string, pos: number): number {
-    return src.substring(0, pos).split('\n').length;
+  // Naechstes Semikolon, aber nur bis zum Blockende. Ersetzt body.indexOf(';'),
+  // das am ausgeschnittenen Rumpf von selbst an der Blockgrenze endete.
+  function semikolonBis(von: number, ende: number): number {
+    const i = content.indexOf(';', von);
+    return i >= 0 && i < ende ? i : -1;
   }
 
-  // Parse a block body (between { }) recursively
+  function charToLine(pos: number): number {
+    // Bewusst auf dem ORIGINAL: gleiche Laenge, gleiche Zeilen, aber so teilt
+    // sich die Zeilenberechnung den Index mit dem Rest des Parsers, statt einen
+    // zweiten fuer den maskierten Text aufzubauen.
+    return lineAt(original, pos);
+  }
+
+  // Verarbeitet einen Block zwischen { und }. blockStart und blockEnd sind
+  // Positionen in content — es wird NICHTS mehr ausgeschnitten (siehe Modulkopf).
   function parseBlock(
-    src: string,           // full content
-    blockStart: number,    // position of '{'
-    blockEnd: number,      // position of '}'
+    blockStart: number,    // Position von '{' in content
+    blockEnd: number,      // Position von '}' in content
     scopeType: string,
     scopeName: string | null,
     depth: number,
     parentId: string | undefined,
     scopeCounter: { n: number },
   ): void {
-    const body = src.substring(blockStart + 1, blockEnd);
-    const baseOffset = blockStart + 1;
-
-    // Strip comments for matching (but keep positions via offset)
-    let pos = 0;
-    while (pos < body.length) {
-      // Skip strings
-      if (body[pos] === '"' || body[pos] === "'") {
-        const q = body[pos]; pos++;
-        while (pos < body.length && body[pos] !== q) { if (body[pos] === '\\') pos++; pos++; }
+    let pos = blockStart + 1;
+    while (pos < blockEnd) {
+      // Zeichenketten ueberspringen
+      if (content[pos] === '"' || content[pos] === "'") {
+        const q = content[pos]; pos++;
+        while (pos < blockEnd && content[pos] !== q) { if (content[pos] === '\\') pos++; pos++; }
         pos++; continue;
       }
-      // Skip line comment
-      if (body[pos] === '/' && body[pos+1] === '/') {
-        while (pos < body.length && body[pos] !== '\n') pos++;
+      // Zeilenkommentar
+      if (content[pos] === '/' && content[pos + 1] === '/') {
+        while (pos < blockEnd && content[pos] !== '\n') pos++;
         continue;
       }
-      // Skip block comment
-      if (body[pos] === '/' && body[pos+1] === '*') {
+      // Blockkommentar
+      if (content[pos] === '/' && content[pos + 1] === '*') {
         pos += 2;
-        while (pos < body.length - 1 && !(body[pos] === '*' && body[pos+1] === '/')) pos++;
+        while (pos < blockEnd - 1 && !(content[pos] === '*' && content[pos + 1] === '/')) pos++;
         pos += 2; continue;
       }
 
       // if(...) { ... } [else { ... }]
-      const ifM = /^if\s*\(/.exec(body.slice(pos));
+      reIf.lastIndex = pos;
+      const ifM = reIf.exec(content);
       if (ifM) {
-        const absPos = baseOffset + pos;
-        const lineStart = charToLine(src, absPos);
-        // find condition end
+        const lineStart = charToLine(pos);
         let condEnd = pos + ifM[0].length - 1;
         let pDepth = 1;
-        while (condEnd < body.length && pDepth > 0) {
+        while (condEnd < blockEnd && pDepth > 0) {
           condEnd++;
-          if (body[condEnd] === '(') pDepth++;
-          else if (body[condEnd] === ')') pDepth--;
+          if (content[condEnd] === '(') pDepth++;
+          else if (content[condEnd] === ')') pDepth--;
         }
-        const condText = body.substring(pos + 3, condEnd).trim().slice(0, 200);
-        // find then-block
+        // Start aus der Trefferlaenge, nicht aus einer festen Zahl: die oeffnende
+        // Klammer ist das letzte Zeichen des Treffers. Die alte Rechnung pos + 3
+        // stimmte nur bei 'if(' und nahm bei 'if (' die Klammer mit in den Text.
+        const condText = original.substring(pos + ifM[0].length, condEnd).trim().slice(0, 200);
         let thenStart = condEnd + 1;
-        while (thenStart < body.length && /\s/.test(body[thenStart])) thenStart++;
+        while (thenStart < blockEnd && /\s/.test(content[thenStart])) thenStart++;
         let lineEnd = lineStart;
-        if (body[thenStart] === '{') {
-          const thenClose = findClose(body, thenStart);
-          lineEnd = charToLine(src, baseOffset + thenClose);
+        if (content[thenStart] === '{') {
+          const thenClose = findClose(content, thenStart, blockEnd);
+          lineEnd = charToLine(thenClose);
           const st = emitStmt(lineStart, lineEnd, scopeType, scopeName, 'if', depth, parentId, scopeCounter, { condition_text: condText });
-          parseBlock(body, thenStart, thenClose, scopeType, scopeName, depth + 1, st.temp_id, { n: 0 });
+          parseBlock(thenStart, thenClose, scopeType, scopeName, depth + 1, st.temp_id, { n: 0 });
           pos = thenClose + 1;
           // else?
-          const elseM = /^\s*else\s*\{/.exec(body.slice(pos));
+          reElse.lastIndex = pos;
+          const elseM = reElse.exec(content);
           if (elseM) {
             const elseStart = pos + elseM[0].lastIndexOf('{');
-            const elseClose = findClose(body, elseStart);
-            parseBlock(body, elseStart, elseClose, scopeType, scopeName, depth + 1, st.temp_id, { n: orderCounters.get(`p:${st.temp_id}`) ?? 0 });
+            const elseClose = findClose(content, elseStart, blockEnd);
+            parseBlock(elseStart, elseClose, scopeType, scopeName, depth + 1, st.temp_id, { n: orderCounters.get(`p:${st.temp_id}`) ?? 0 });
             pos = elseClose + 1;
           }
         } else {
-          // single-line then
-          const stmtEnd = body.indexOf(';', thenStart);
-          lineEnd = stmtEnd >= 0 ? charToLine(src, baseOffset + stmtEnd) : lineStart;
-          const st = emitStmt(lineStart, lineEnd, scopeType, scopeName, 'if', depth, parentId, scopeCounter, { condition_text: condText });
+          // einzeiliger then-Zweig
+          const stmtEnd = semikolonBis(thenStart, blockEnd);
+          lineEnd = stmtEnd >= 0 ? charToLine(stmtEnd) : lineStart;
+          emitStmt(lineStart, lineEnd, scopeType, scopeName, 'if', depth, parentId, scopeCounter, { condition_text: condText });
           if (stmtEnd >= 0) pos = stmtEnd + 1;
           else pos = thenStart + 1;
         }
@@ -161,25 +315,25 @@ function extractSolidityFlow(content: string): { statements: ParsedStatement[]; 
       }
 
       // for(...) { ... }
-      const forM = /^for\s*\(/.exec(body.slice(pos));
+      reFor.lastIndex = pos;
+      const forM = reFor.exec(content);
       if (forM) {
-        const absPos = baseOffset + pos;
-        const lineStart = charToLine(src, absPos);
+        const lineStart = charToLine(pos);
         let condEnd = pos + forM[0].length - 1;
         let pDepth = 1;
-        while (condEnd < body.length && pDepth > 0) {
+        while (condEnd < blockEnd && pDepth > 0) {
           condEnd++;
-          if (body[condEnd] === '(') pDepth++;
-          else if (body[condEnd] === ')') pDepth--;
+          if (content[condEnd] === '(') pDepth++;
+          else if (content[condEnd] === ')') pDepth--;
         }
-        const condText = body.substring(pos + 4, condEnd).trim().slice(0, 200);
+        const condText = original.substring(pos + forM[0].length, condEnd).trim().slice(0, 200);
         let bodyStart = condEnd + 1;
-        while (bodyStart < body.length && /\s/.test(body[bodyStart])) bodyStart++;
-        if (body[bodyStart] === '{') {
-          const bodyClose = findClose(body, bodyStart);
-          const lineEnd = charToLine(src, baseOffset + bodyClose);
+        while (bodyStart < blockEnd && /\s/.test(content[bodyStart])) bodyStart++;
+        if (content[bodyStart] === '{') {
+          const bodyClose = findClose(content, bodyStart, blockEnd);
+          const lineEnd = charToLine(bodyClose);
           const st = emitStmt(lineStart, lineEnd, scopeType, scopeName, 'for', depth, parentId, scopeCounter, { condition_text: condText });
-          parseBlock(body, bodyStart, bodyClose, scopeType, scopeName, depth + 1, st.temp_id, { n: 0 });
+          parseBlock(bodyStart, bodyClose, scopeType, scopeName, depth + 1, st.temp_id, { n: 0 });
           pos = bodyClose + 1;
         } else {
           emitStmt(lineStart, lineStart, scopeType, scopeName, 'for', depth, parentId, scopeCounter, { condition_text: condText });
@@ -189,25 +343,25 @@ function extractSolidityFlow(content: string): { statements: ParsedStatement[]; 
       }
 
       // while(...) { ... }
-      const whileM = /^while\s*\(/.exec(body.slice(pos));
+      reWhile.lastIndex = pos;
+      const whileM = reWhile.exec(content);
       if (whileM) {
-        const absPos = baseOffset + pos;
-        const lineStart = charToLine(src, absPos);
+        const lineStart = charToLine(pos);
         let condEnd = pos + whileM[0].length - 1;
         let pDepth = 1;
-        while (condEnd < body.length && pDepth > 0) {
+        while (condEnd < blockEnd && pDepth > 0) {
           condEnd++;
-          if (body[condEnd] === '(') pDepth++;
-          else if (body[condEnd] === ')') pDepth--;
+          if (content[condEnd] === '(') pDepth++;
+          else if (content[condEnd] === ')') pDepth--;
         }
-        const condText = body.substring(pos + 6, condEnd).trim().slice(0, 200);
+        const condText = original.substring(pos + whileM[0].length, condEnd).trim().slice(0, 200);
         let bodyStart = condEnd + 1;
-        while (bodyStart < body.length && /\s/.test(body[bodyStart])) bodyStart++;
-        if (body[bodyStart] === '{') {
-          const bodyClose = findClose(body, bodyStart);
-          const lineEnd = charToLine(src, baseOffset + bodyClose);
+        while (bodyStart < blockEnd && /\s/.test(content[bodyStart])) bodyStart++;
+        if (content[bodyStart] === '{') {
+          const bodyClose = findClose(content, bodyStart, blockEnd);
+          const lineEnd = charToLine(bodyClose);
           const st = emitStmt(lineStart, lineEnd, scopeType, scopeName, 'while', depth, parentId, scopeCounter, { condition_text: condText });
-          parseBlock(body, bodyStart, bodyClose, scopeType, scopeName, depth + 1, st.temp_id, { n: 0 });
+          parseBlock(bodyStart, bodyClose, scopeType, scopeName, depth + 1, st.temp_id, { n: 0 });
           pos = bodyClose + 1;
         } else {
           emitStmt(lineStart, lineStart, scopeType, scopeName, 'while', depth, parentId, scopeCounter, { condition_text: condText });
@@ -216,75 +370,95 @@ function extractSolidityFlow(content: string): { statements: ParsedStatement[]; 
         continue;
       }
 
-      // require(...); or revert(...);
-      const reqM = /^(require|revert)\s*\(/.exec(body.slice(pos));
+      // require(...); oder revert(...);
+      reReq.lastIndex = pos;
+      const reqM = reReq.exec(content);
       if (reqM) {
-        const absPos = baseOffset + pos;
-        const lineStart = charToLine(src, absPos);
+        const lineStart = charToLine(pos);
         let argEnd = pos + reqM[0].length - 1;
         let pDepth = 1;
-        while (argEnd < body.length && pDepth > 0) {
+        while (argEnd < blockEnd && pDepth > 0) {
           argEnd++;
-          if (body[argEnd] === '(') pDepth++;
-          else if (body[argEnd] === ')') pDepth--;
+          if (content[argEnd] === '(') pDepth++;
+          else if (content[argEnd] === ')') pDepth--;
         }
-        const argText = body.substring(pos + reqM[1].length + 1, argEnd).trim().slice(0, 200);
+        const argText = original.substring(pos + reqM[0].length, argEnd).trim().slice(0, 200);
         const stmtType = reqM[1] === 'require' ? 'call' : 'throw';
         const st = emitStmt(lineStart, lineStart, scopeType, scopeName, stmtType, depth, parentId, scopeCounter, {
           callee: reqM[1],
           condition_text: argText,
         });
         callEdges.push({ statement_temp_id: st.temp_id, caller_scope: scopeName, callee_name: reqM[1], line_number: lineStart, call_kind: 'function' });
-        pos = argEnd + 2; // skip ');'
+        pos = argEnd + 2; // ');' ueberspringen
         continue;
       }
 
       // emit EventName(...);
-      const emitM = /^emit\s+(\w+)\s*\(/.exec(body.slice(pos));
+      reEmit.lastIndex = pos;
+      const emitM = reEmit.exec(content);
       if (emitM) {
-        const absPos = baseOffset + pos;
-        const lineStart = charToLine(src, absPos);
+        const lineStart = charToLine(pos);
         const st = emitStmt(lineStart, lineStart, scopeType, scopeName, 'call', depth, parentId, scopeCounter, { callee: emitM[1] });
         callEdges.push({ statement_temp_id: st.temp_id, caller_scope: scopeName, callee_name: emitM[1], line_number: lineStart, call_kind: 'function' });
-        const semi = body.indexOf(';', pos);
+        const semi = semikolonBis(pos, blockEnd);
         pos = semi >= 0 ? semi + 1 : pos + emitM[0].length;
         continue;
       }
 
       // return ...;
-      const retM = /^return\b/.exec(body.slice(pos));
+      reRet.lastIndex = pos;
+      const retM = reRet.exec(content);
       if (retM) {
-        const absPos = baseOffset + pos;
-        const lineStart = charToLine(src, absPos);
-        const semi = body.indexOf(';', pos);
+        const lineStart = charToLine(pos);
+        const semi = semikolonBis(pos, blockEnd);
         emitStmt(lineStart, lineStart, scopeType, scopeName, 'return', depth, parentId, scopeCounter);
         pos = semi >= 0 ? semi + 1 : pos + 6;
         continue;
       }
 
-      // Generic statement ending in ;
-      if (body[pos] === ';') { pos++; continue; }
-      if (body[pos] === '{') { pos = findClose(body, pos) + 1; continue; }
-      if (body[pos] === '}') { pos++; continue; }
+      // Zuweisung: ziel = ... / ziel += ...
+      // BIS VERSION 4 GAB ES DAS NICHT. Ueber den gesamten OpenZeppelin-Bestand
+      // kannte der Index nur call, return, if, for, throw und while — kein einziges
+      // assignment, obwohl allein die Formen mit Index-Zugriff 129-mal vorkommen.
+      // Aufgefallen an einer Datei mit bekanntem Sollwert: drei von vier Anweisungen
+      // einer Funktion waren erfasst, die Zuweisung fehlte.
+      reAssign.lastIndex = pos;
+      const asgM = reAssign.exec(content);
+      if (asgM) {
+        const lineStart = charToLine(pos);
+        emitStmt(lineStart, lineStart, scopeType, scopeName, 'assignment', depth, parentId, scopeCounter, {
+          assigned_to: asgM[1].replace(/\s+/g, ''),
+        });
+        // NUR bis hinter den Operator weiterruecken, nicht bis zum Semikolon: die
+        // rechte Seite wird dadurch weiter untersucht und ein Aufruf wie
+        // "x = foo();" behaelt seine Call-Kante.
+        pos += asgM[0].length;
+        continue;
+      }
 
-      // Check for a generic function call: identifier(
-      const callM = /^([a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)*)\s*\(/.exec(body.slice(pos));
+      // Sonstiges Statement, endet auf ;
+      if (content[pos] === ';') { pos++; continue; }
+      if (content[pos] === '{') { pos = findClose(content, pos, blockEnd) + 1; continue; }
+      if (content[pos] === '}') { pos++; continue; }
+
+      // Allgemeiner Funktionsaufruf: bezeichner(
+      reCall.lastIndex = pos;
+      const callM = reCall.exec(content);
       if (callM) {
-        const absPos = baseOffset + pos;
-        const lineStart = charToLine(src, absPos);
+        const lineStart = charToLine(pos);
         const parts = callM[1].split('.');
         const callee = parts[parts.length - 1];
         const receiver = parts.length > 1 ? parts.slice(0, -1).join('.') : undefined;
-        // find end of statement
+        // Ende des Statements suchen
         let argEnd = pos + callM[0].length - 1;
         let pDepth = 1;
-        while (argEnd < body.length && pDepth > 0) {
+        while (argEnd < blockEnd && pDepth > 0) {
           argEnd++;
-          if (body[argEnd] === '(') pDepth++;
-          else if (body[argEnd] === ')') pDepth--;
+          if (content[argEnd] === '(') pDepth++;
+          else if (content[argEnd] === ')') pDepth--;
         }
-        const semi = body.indexOf(';', argEnd);
-        // Only emit as call if followed by ; (statement level)
+        const semi = semikolonBis(argEnd, blockEnd);
+        // Nur als Aufruf erfassen, wenn ein ; folgt (Statement-Ebene)
         if (semi >= 0 && semi - argEnd < 5) {
           const st = emitStmt(lineStart, lineStart, scopeType, scopeName, 'call', depth, parentId, scopeCounter, { callee, receiver });
           callEdges.push({ statement_temp_id: st.temp_id, caller_scope: scopeName, callee_name: callee, callee_receiver: receiver, line_number: lineStart, call_kind: receiver ? 'method' : 'function' });
@@ -298,7 +472,30 @@ function extractSolidityFlow(content: string): { statements: ParsedStatement[]; 
   }
 
   // Extract function/modifier bodies and process them
-  const funcBodyRe = /\b(function|modifier|constructor|receive|fallback)\s*(\w*)?\s*(?:\([^)]*\))?\s*(?:[^{]*?)\{/g;
+  //
+  // DREI STELLEN, DIE HIER FRUEHER FALSCHE BLOECKE GEOEFFNET HABEN:
+  //
+  // 1. WORTENDE. Das \b am Anfang sichert nur den ANFANG des Schluesselworts.
+  //    Ohne das zweite \b matcht "receive" mitten in "receiver", und die
+  //    Namensgruppe nimmt das uebrige "r" als Funktionsnamen — in
+  //    ERC4626Fees.sol:49 (function _deposit(address caller, address receiver,
+  //    ...)) entstand so ein zweiter Scope namens "r", bei "receivers" einer
+  //    namens "rs". Dasselbe gilt fuer "function" am Anfang von functionCall
+  //    und functionDelegateCall (Address.sol), woher die Scopes "Call" und
+  //    "DelegateCall" stammten. Jeder dieser Pseudo-Bloecke ueberlappte einen
+  //    echten und erzeugte dessen Anweisungen ein zweites Mal.
+  //
+  // 2. DOLLARZEICHEN. In Solidity ist es ein gueltiges Bezeichnerzeichen, \w
+  //    deckt es nicht ab. Bei $_updateQuorumNumerator blieb die Namensgruppe
+  //    deshalb leer, und der Scope hiess "function".
+  //
+  // 3. SEMIKOLON. Eine rumpflose Deklaration (Interface-Methode, Funktionstyp
+  //    als Variable) endet mit einem Semikolon und hat gar keinen Block. Der
+  //    alte Ausdruck lief darueber hinweg bis zur NAECHSTEN oeffnenden Klammer
+  //    — und das war dann der Rumpf des naechsten Vertrags. Mit dem Semikolon
+  //    in der verbotenen Zeichenklasse bricht der Treffer dort ab, wo die
+  //    Deklaration endet.
+  const funcBodyRe = /\b(function|modifier|constructor|receive|fallback)\b\s*([A-Za-z_$][\w$]*)?\s*(?:\([^)]*\))?\s*(?:[^{;]*?)\{/g;
   let fm: RegExpExecArray | null;
   while ((fm = funcBodyRe.exec(content)) !== null) {
     const kind = fm[1];
@@ -307,7 +504,7 @@ function extractSolidityFlow(content: string): { statements: ParsedStatement[]; 
     if (openBrace < 0) continue;
     const closeBrace = findClose(content, openBrace);
     const scopeCounter = { n: 0 };
-    parseBlock(content, openBrace, closeBrace, 'function', name, 0, undefined, scopeCounter);
+    parseBlock(openBrace, closeBrace, 'function', name, 0, undefined, scopeCounter);
   }
 
   return { statements, callEdges };
@@ -317,12 +514,47 @@ class SolidityParser implements LanguageParser {
   language = 'solidity';
   extensions = ['.sol'];
   /** Bei inhaltlichen Parser-Aenderungen erhoehen (siehe LanguageParser.version). */
-  version = 1;
+  // 2: Zeilenberechnung ueber Index statt Praefix-Kopie (siehe lineAt).
+  // 3: Zeilenindex je Text statt je Slot (siehe lineAt). Die AUSGABE ist unveraendert
+  //    (13837 Eintraege ueber 10 Faelle gegen den Stand vor 496f003, 0 Abweichungen);
+  //    erhoeht wird trotzdem, weil .sol-Dateien, die vorher in den Parse-Timeout
+  //    gelaufen sind, mit 0 Symbolen als "aktuell geparst" im Index stehen und nur
+  //    ueber eine hoehere Version wieder nachgezogen werden.
+  // 4: parseBlock arbeitet mit Grenzen auf content statt auf ausgeschnittenen Ruempfen.
+  //    AENDERT DIE AUSGABE, und zwar absichtlich: die Zeilennummern verschachtelter
+  //    Statements und ihrer Call-Kanten waren blockrelativ statt dateirelativ (ein if
+  //    aus Quellzeile 6 wurde als 3 gemeldet, ab Ebene 1 war jede Sprungmarke falsch).
+  //    Ausserdem verliert condition_text die fuehrende Klammer, die eine feste
+  //    Startposition bei 'if (' faelschlich mitgenommen hat. Struktur und Reihenfolge
+  //    der Statements bleiben unveraendert.
+  // 5: Zuweisungen werden als Statement erfasst. Bis 4 fielen sie durch alle
+  //    Muster und landeten beim pos++ — die Ablauf-Ebene kannte keine einzige.
+  // 6: Kommentare und Zeichenketten werden laengenerhaltend maskiert, bevor die
+  //    Ablauf-Ebene und die Literal-Suche laufen. Der Schutz in parseBlock war
+  //    lokal und griff nicht, wenn funcBodyRe einen Funktionskopf INNERHALB
+  //    eines NatSpec-Beispiels fand: ab da lag der Blockanfang im Kommentar.
+  //    Gemessen an OpenZeppelin fielen dadurch 65 Anweisungen (49 Aufrufe,
+  //    9 return, 7 Zuweisungen), 49 Aufruf-Kanten und 156 Zeichenketten weg,
+  //    die es im Code nie gab.
+  // 7: funcBodyRe bekommt ein Wortende, erkennt Bezeichner mit Dollarzeichen
+  //    und laeuft nicht mehr ueber ein Semikolon hinweg in den naechsten
+  //    Contract-Rumpf. Bis 6 oeffneten "receiver", "receivers", "functionCall"
+  //    und rumpflose Deklarationen Pseudo-Bloecke, die echte Bloecke
+  //    ueberlappten und deren Anweisungen ein zweites Mal erzeugten.
+  // 8: reAssign hielt den Pfeil => eines benannten Mapping-Parameters fuer eine
+  //    Zuweisung (seit Solidity 0.8.18 erlaubt).
+  version = 8;
 
   parse(content: string, filePath: string): ParseResult {
+    zeilenCacheLeeren();
     const symbols: ParsedSymbol[] = [];
     const references: ParsedReference[] = [];
     let m: RegExpExecArray | null;
+
+    // Zwei Fassungen desselben Textes, beide exakt so lang wie das Original:
+    // ohneKommentare traegt die Zeichenketten weiter (fuer die Literal-Suche),
+    // maskiert traegt weder Kommentare noch Zeichenketten (fuer die Ablauf-Ebene).
+    const { ohneKommentare, maskiert } = maskiereKommentareUndStrings(content);
 
     // ══════════════════════════════════════════════
     // 1. Pragma
@@ -608,9 +840,13 @@ class SolidityParser implements LanguageParser {
       });
     }
 
-    symbols.push(...extractStringLiterals(content));
+    // Zeichenketten aus dem Text OHNE Kommentare: die Literale selbst bleiben
+    // stehen, nur die Dokumentation faellt weg. OpenZeppelin zeigt in NatSpec
+    // vollstaendige Codebeispiele, aus denen sonst 156 erfundene Literale in den
+    // Index kamen (etwa MY_ROLE aus keccak256("MY_ROLE") in AccessControl.sol).
+    symbols.push(...extractStringLiterals(ohneKommentare));
 
-    const { statements, callEdges } = extractSolidityFlow(content);
+    const { statements, callEdges } = extractSolidityFlow(content, maskiert);
     return { symbols, references, statements, callEdges };
   }
 

@@ -9,17 +9,30 @@
  */
 
 import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
-import { extractStringLiterals } from './types.js';
+import { extractStringLiterals, erstelleZeilenIndex, zeileFuerPosition } from './types.js';
 
+// Zeilenindex je Datei zwischenspeichern — siehe zeileFuerPosition in types.ts.
+// Vorher wurde pro Treffer ein Praefix der Datei kopiert und zerlegt: das ist
+// O(Treffer x Dateigroesse) und laesst grosse Dateien praktisch nie fertig werden.
+let zeilenCacheText: string | null = null;
+let zeilenCacheIndex: number[] = [];
 function lineAt(text: string, pos: number): number {
-  return text.substring(0, pos).split('\n').length;
+  if (text !== zeilenCacheText) {
+    zeilenCacheText = text;
+    zeilenCacheIndex = erstelleZeilenIndex(text);
+  }
+  return zeileFuerPosition(zeilenCacheIndex, pos);
 }
 
 class NixParser implements LanguageParser {
   language = 'nix';
   extensions = ['.nix'];
   /** Bei inhaltlichen Parser-Aenderungen erhoehen (siehe LanguageParser.version). */
-  version = 1;
+  // 2: Zeilenberechnung ueber Index statt Praefix-Kopie (siehe lineAt).
+  // 3: Duplikatpruefung je Zeile ueber Map statt linearem Scan des wachsenden Symbol-Arrays.
+  version = 3;
+  /** Deklarative Ausdruckssprache — Attribute und Ableitungen, keine Anweisungen. */
+  hatAblaufEbene = false;
 
   parse(content: string, filePath: string): ParseResult {
     const symbols: ParsedSymbol[] = [];
@@ -78,6 +91,13 @@ class NixParser implements LanguageParser {
     // 3. Top-level attribute set bindings
     // ══════════════════════════════════════════════
     const topBindRe = /^(\s{2})(\w[\w'-]*)\s*=\s*(.+)/gm;
+    const symbolNamesByLine = new Map<number, Set<string>>();
+    for (const symbol of symbols) {
+      if (symbol.name === null) continue;
+      const namesAtLine = symbolNamesByLine.get(symbol.line_start);
+      if (namesAtLine) namesAtLine.add(symbol.name);
+      else symbolNamesByLine.set(symbol.line_start, new Set([symbol.name]));
+    }
     while ((m = topBindRe.exec(content)) !== null) {
       const indent = m[1].length;
       const name = m[2];
@@ -87,7 +107,8 @@ class NixParser implements LanguageParser {
       if (indent > 4) continue;
       if (['let', 'in', 'if', 'then', 'else', 'with', 'inherit', 'rec', 'type', 'description', 'default'].includes(name)) continue;
       // Skip if already captured
-      if (symbols.some(s => s.name === name && s.line_start === lineStart)) continue;
+      const namesAtLine = symbolNamesByLine.get(lineStart);
+      if (namesAtLine?.has(name)) continue;
 
       symbols.push({
         symbol_type: 'variable',
@@ -96,6 +117,8 @@ class NixParser implements LanguageParser {
         line_start: lineStart,
         is_exported: true,
       });
+      if (namesAtLine) namesAtLine.add(name);
+      else symbolNamesByLine.set(lineStart, new Set([name]));
     }
 
     // ══════════════════════════════════════════════

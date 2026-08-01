@@ -43,7 +43,13 @@ export interface ToolGuide {
 export const GUIDE_OVERVIEW = `
 # Synapse REST-API — Quick-Start fuer Web-KIs
 
-Du bist mit einem Synapse-Projekt verbunden. 21 Tools + dieses guide-Tool.
+Du bist mit einem Synapse-Projekt verbunden. Diese REST-Schnittstelle bietet 21 Tools,
+eines davon ist dieses guide-Tool.
+
+⚠️ Der lokale MCP-Server (stdio) bietet NICHT dieselbe Menge, sondern 18: ihm fehlen
+files_batch, skills und workspace. Wer eine Anleitung von der einen Oberflaeche auf die
+andere uebertraegt, sucht sonst ein Tool, das es dort nicht gibt. Umgekehrt ist nichts
+exklusiv lokal — die 18 sind eine echte Teilmenge der 21.
 
 ## Scope (wichtig fuer Web-KI-Connectors)
 
@@ -230,6 +236,7 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
       'Datei-Content lesen: file (mit Zeilenbereich bei grossen Files!).',
       'Code durchsuchen: search (lexikalisch ODER semantic: true) / search_batch (mehrere semantische Queries in einem Call).',
       'Ablauf verstehen: flow (Funktion Schritt fuer Schritt), statements (top_level_only fuer Modul-Seiteneffekte), calls (wer ruft X).',
+      'Verdacht auf ein Parser-Problem ("0 functions?!"): health mit file_path — sagt dir, ob der Parser versagt hat oder die Datei wirklich nichts enthaelt.',
     ].join(' '),
     when_not_to_use: [
       'Konzeptuelle Fragen ("wie funktioniert X?") — bleib im Tool: search mit semantic: true, oder search_batch fuer mehrere Fragen in einem Call.',
@@ -253,6 +260,7 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
       'functions() ohne file_path-Filter im ganzen Projekt — Hunderte Ergebnisse.',
       'search mit limit nicht gesetzt — bekommst 20 Ergebnisse, meist zu viel.',
       'tree mit depth: 5+ — riesige Ausgabe, die meiste Info irrelevant.',
+      'Bei unerwartet 0 Treffern sofort den Parser-Quelltext lesen — erst health(file_path) fragen, das beantwortet in einem Call, ob ueberhaupt ein Parser zustaendig war.',
     ],
     actions: {
       tree: {
@@ -331,6 +339,12 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
         params: 'file_path (LIKE-Filter, empfohlen auf grossen Projekten), limit (Default 200), include_declarations (bool, Default false — true liefert auch export interface/type/Re-Exports und SQL)',
         example: 'code_intel({ action: "entrypoints", project: "synapse", file_path: "%runtime%", limit: 20 })',
         tips: 'Fuer die Seiteneffekte EINER bestimmten Datei ist statements(top_level_only: true, file_path) die praezisere Alternative (zeigt auch Imports + Modul-Variablen).',
+      },
+      health: {
+        description: 'Parser-Diagnose auf zwei Zoomstufen. MIT file_path: zustaendiger Parser, Parser-Version (gespeichert gegen aktuell), Symbolzahlen je Typ, Statements, Zeilenabdeckung, letzter Ausfall aus parse_failures. OHNE file_path: Projekt-Uebersicht mit parser_befunde[] (Befunde ueber ALLE Dateien eines Parsers) und dateien[] (auffaellige Einzelfaelle, groesste zuerst). Beide liefern "befund": Klartextsaetze, WARUM etwas auffaellt.',
+        params: 'file_path (OPTIONAL — mit: Diagnose dieser Datei; ohne: Projekt-Uebersicht), limit (nur Uebersicht, Default 20, hart gedeckelt auf 100)',
+        example: 'code_intel({ action: "health", project: "synapse", file_path: "packages/core/src/services/code.ts" })  //  ohne file_path: Projekt-Uebersicht',
+        tips: 'DER erste Aufruf, wenn functions/symbols/statements unerwartet 0 liefern — er unterscheidet "in der Datei ist nichts" von "der Parser hat nichts erkannt", und genau diese Unterscheidung konnte der Index vorher nicht treffen. Liefert nur Kennzahlen und Befundsaetze, nie Symbol-Listen: die Antwort bleibt bei wenigen hundert Byte. WICHTIG ZUM VERSTAENDNIS: die Befunde sind bewusst ABSOLUT formuliert ("1.000 Zeilen, aber 0 functions") und nicht als Abweichung vom Durchschnitt. Ein Vergleich gegen den eigenen Mittelwert findet Ausreisser, aber NIEMALS einen flaechendeckenden Ausfall — als der HTML-Parser bei JEDER html-Datei 0 functions lieferte, war der Median selbst 0, die Abweichung 0, und nichts fiel auf. Ein leeres befund-Array heisst: nach den absoluten Regeln unauffaellig. IN DER UEBERSICHT ZUERST parser_befunde LESEN, nicht dateien: ein Eintrag mit "FLAECHENDECKEND" wiegt schwerer als jede Einzeldatei, weil dann der Parser selbst nicht greift und die Einzelfaelle nur seine Symptome sind. Genau diese Ebene existiert, weil ein flaechendeckender Ausfall den eigenen Durchschnitt mitverschiebt und datei-weise nie auffaellt.',
       },
     },
     workflow_examples: [

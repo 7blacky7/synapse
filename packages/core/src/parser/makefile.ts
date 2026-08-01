@@ -10,17 +10,30 @@
  */
 
 import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
-import { extractStringLiterals } from './types.js';
+import { extractStringLiterals, erstelleZeilenIndex, zeileFuerPosition } from './types.js';
 
+// Zeilenindex je Datei zwischenspeichern — siehe zeileFuerPosition in types.ts.
+// Vorher wurde pro Treffer ein Praefix der Datei kopiert und zerlegt: das ist
+// O(Treffer x Dateigroesse) und laesst grosse Dateien praktisch nie fertig werden.
+let zeilenCacheText: string | null = null;
+let zeilenCacheIndex: number[] = [];
 function lineAt(text: string, pos: number): number {
-  return text.substring(0, pos).split('\n').length;
+  if (text !== zeilenCacheText) {
+    zeilenCacheText = text;
+    zeilenCacheIndex = erstelleZeilenIndex(text);
+  }
+  return zeileFuerPosition(zeilenCacheIndex, pos);
 }
 
 class MakefileParser implements LanguageParser {
   language = 'makefile';
   extensions = ['.mk'];
   /** Bei inhaltlichen Parser-Aenderungen erhoehen (siehe LanguageParser.version). */
-  version = 1;
+  // 2: Zeilenberechnung ueber Index statt Praefix-Kopie (siehe lineAt).
+  // 3: Rezept-Ende und endef-Suche ohne Kopie des Dateirests (siehe dort).
+  version = 3;
+  /** Ziele und Rezepte — der Parser erfasst sie als Deklaration, nicht als Ablauf. */
+  hatAblaufEbene = false;
 
   parse(content: string, filePath: string): ParseResult {
     const symbols: ParsedSymbol[] = [];
@@ -92,15 +105,26 @@ class MakefileParser implements LanguageParser {
       const lineStart = lineAt(content, m.index);
 
       // Find end of recipe (next non-tab-indented line or next target)
-      const afterTarget = content.substring(m.index + m[0].length);
-      const recipeLines = afterTarget.split('\n');
+      // Zeilen direkt aus content lesen statt content.substring(...).split('\n'):
+      // die Kopie samt Zerlegung des gesamten Dateirests fiel pro Target an,
+      // obwohl die Schleife schon an der ersten nicht eingerueckten Zeile
+      // abbricht — das war O(Targets x Dateigroesse). Die Zerlegung ist
+      // zeichengleich nachgebildet (erste Zeile = Rest der Zeile ab der
+      // Fundstelle, danach ganze Zeilen).
       let recipeEnd = lineStart;
-      for (const line of recipeLines) {
+      let zeilenStart = m.index + m[0].length;
+      for (;;) {
+        let zeilenEnde = content.indexOf('\n', zeilenStart);
+        const letzteZeile = zeilenEnde === -1;
+        if (letzteZeile) zeilenEnde = content.length;
+        const line = content.slice(zeilenStart, zeilenEnde);
         if (line === '' || line.startsWith('\t') || line.startsWith('  ')) {
           recipeEnd++;
         } else {
           break;
         }
+        if (letzteZeile) break;
+        zeilenStart = zeilenEnde + 1;
       }
 
       const deps = depsRaw
@@ -162,17 +186,32 @@ class MakefileParser implements LanguageParser {
     // ══════════════════════════════════════════════
     // 5. define / endef blocks
     // ══════════════════════════════════════════════
+    // Positionen aller endef-Zeilen EINMAL sammeln. Vorher suchte jeder
+    // define-Block das zugehoerige endef in einer frischen Kopie des gesamten
+    // Dateirests (content.substring(m.index)) — O(define-Bloecke x Dateigroesse).
+    // Das Muster traegt keinen ^-Anker, deshalb ist der globale Scan hier exakt
+    // dieselbe Trefferfolge wie die Einzelsuche.
+    const endefPositionen: number[] = [];
+    const endefRe = /\nendef\b/g;
+    let em: RegExpExecArray | null;
+    while ((em = endefRe.exec(content)) !== null) endefPositionen.push(em.index);
+
     const defineRe = /^(export\s+)?define\s+(\w+)/gm;
     while ((m = defineRe.exec(content)) !== null) {
       const isExport = !!m[1];
       const name = m[2];
       const lineStart = lineAt(content, m.index);
 
-      // Find endef
-      const rest = content.substring(m.index);
-      const endefMatch = rest.match(/\nendef\b/);
-      const lineEnd = endefMatch
-        ? lineAt(content, m.index + (endefMatch.index || 0) + 1)
+      // Find endef — erste endef-Position ab m.index per Binaersuche.
+      let lo = 0;
+      let hi = endefPositionen.length;
+      while (lo < hi) {
+        const mitte = (lo + hi) >> 1;
+        if (endefPositionen[mitte] < m.index) lo = mitte + 1;
+        else hi = mitte;
+      }
+      const lineEnd = lo < endefPositionen.length
+        ? lineAt(content, endefPositionen[lo] + 1)
         : lineStart;
 
       symbols.push({

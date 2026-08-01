@@ -34,20 +34,110 @@ import { getFileContentFromPg, contentHash } from './code-write.js';
 import { planBatch } from './file-batch.js';
 import type { FileBatchOp, PlanBatchResult } from './file-batch.js';
 
+/**
+ * Was eine Regel bewirkt. Zwei verschiedene Dinge, die bis zum 28.07.2026
+ * faelschlich eines waren:
+ *
+ *   'ausgeblendet'  Nur die Sichtbarkeit in code_intel — lexikalisch UND
+ *                   semantisch. Zweck: Rauschen aus dem KI-Kontext halten.
+ *                   Die Datei laeuft voellig normal zwischen Platte und
+ *                   Datenbank hin und her.
+ *   'gesperrt'      Der Inhalt darf gar nicht erst in die Datenbank. Der
+ *                   lokale Daemon fragt vor dem Senden und schickt nichts los.
+ *                   Fuer Secrets und fuer alles, was ein kuenftiges Framework
+ *                   mitbringt und wofuer es noch keine Code-Regel gibt.
+ */
+export type IgnoreModus = 'ausgeblendet' | 'gesperrt';
+
 export interface IgnoreRegel {
   id: string;
   pattern: string;
   scope: string | null;
   enabled: boolean;
   locked: boolean;
+  modus: IgnoreModus;
   kommentar: string | null;
   sort_order: number;
+}
+
+/**
+ * Wandelt eine Dauerangabe in Sekunden. Erlaubt sind '30s', '5m', '2h', '1d'
+ * und eine nackte Zahl (dann Sekunden). Alles andere ergibt null.
+ */
+export function loeseDauerInSekunden(dauer: string | number | undefined): number | null {
+  if (dauer === undefined || dauer === null) return null;
+  if (typeof dauer === 'number') return Number.isFinite(dauer) && dauer > 0 ? Math.floor(dauer) : null;
+  const text = String(dauer).trim().toLowerCase();
+  const treffer = /^(\d+)\s*([smhd]?)$/.exec(text);
+  if (!treffer) return null;
+  const zahl = parseInt(treffer[1], 10);
+  if (!Number.isFinite(zahl) || zahl <= 0) return null;
+  const faktor = { s: 1, m: 60, h: 3600, d: 86400, '': 1 }[treffer[2]] ?? 1;
+  return zahl * faktor;
+}
+
+/**
+ * Blendet eine ausgeblendete Regel VORUEBERGEHEND ein.
+ *
+ * WOFUER: eine KI braucht gelegentlich genau die Datei, die jemand bewusst
+ * ausgeblendet hat — weil sie den Kontext zumuellt, aber eben doch die Antwort
+ * enthaelt. Statt die Regel dauerhaft abzuschalten und das Zurueckstellen zu
+ * vergessen, setzt sie eine Frist: danach greift die Regel von selbst wieder.
+ *
+ * WARUM DIE FRIST KEIN KOMFORT IST, sondern der Kern der Sache: die Einblendung
+ * wirkt PROJEKTWEIT, nicht nur fuer den Agenten, der sie gesetzt hat. Wer sie
+ * dauerhaft abschaltet und es vergisst, hinterlaesst jedem nachfolgenden Agenten
+ * einen verschmutzten Kontext — und der weiss nicht einmal, warum die Suche
+ * ploetzlich Rauschen liefert. Ein vergessenes Zuruecksetzen ist hier also kein
+ * Schoenheitsfehler, sondern trifft alle. Die Frist macht daraus einen Zugriff,
+ * der sich selbst begrenzt.
+ * Deshalb im Zweifel die KURZE Dauer waehlen: eine Stunde reicht fuer eine
+ * Recherche, ein Tag verschmutzt eine ganze Schicht.
+ *
+ * Auf eine SPERRE ist das ausdruecklich nicht anwendbar. Eine Sperre haelt
+ * Inhalte aus der Datenbank heraus; was einmal drin ist, ist drin, und eine
+ * Frist waere dort eine Zusage, die niemand einhalten kann.
+ */
+export async function blendeVoruebergehendEin(
+  project: string,
+  pattern: string,
+  dauer: string | number,
+): Promise<{ ok: boolean; bis?: string; sekunden?: number; grund?: string }> {
+  const sekunden = loeseDauerInSekunden(dauer);
+  if (sekunden === null) {
+    return { ok: false, grund: "Dauer nicht verstanden. Erlaubt: '30s', '5m', '2h', '1d' oder eine Zahl (Sekunden)." };
+  }
+  const pool = getPool();
+  const vorhanden = await pool.query<{ modus: string }>(
+    'SELECT modus FROM project_ignore_rules WHERE project = $1 AND pattern = $2',
+    [project, pattern],
+  );
+  if (!vorhanden.rowCount) return { ok: false, grund: `Regel "${pattern}" gibt es in diesem Projekt nicht.` };
+  if (vorhanden.rows[0].modus === 'gesperrt') {
+    return {
+      ok: false,
+      grund:
+        `Regel "${pattern}" ist GESPERRT, nicht ausgeblendet. Eine Sperre laesst sich nicht auf Zeit aufheben — ` +
+        'sie haelt Inhalte aus der Datenbank heraus, und was einmal drin ist, bleibt drin. ' +
+        'Wenn der Inhalt wirklich hinein soll: die Regel dauerhaft auf "ausgeblendet" umstellen oder entfernen.',
+    };
+  }
+  const gesetzt = await pool.query<{ bis: string }>(
+    `UPDATE project_ignore_rules
+        SET eingeblendet_bis = NOW() + ($3 || ' seconds')::interval, updated_at = NOW()
+      WHERE project = $1 AND pattern = $2
+      RETURNING to_char(eingeblendet_bis, 'YYYY-MM-DD HH24:MI:SS') AS bis`,
+    [project, pattern, String(sekunden)],
+  );
+  verwirfIgnoreRegeln(project);
+  await aktualisiereIgnoreRegeln(project);
+  return { ok: true, bis: gesetzt.rows[0]?.bis, sekunden };
 }
 
 /** Alle Regeln eines Projekts, in Wirkreihenfolge (spaetere gewinnt). */
 export async function listeIgnoreRegeln(project: string): Promise<IgnoreRegel[]> {
   const ergebnis = await getPool().query<IgnoreRegel>(
-    `SELECT id::text AS id, pattern, scope, enabled, locked, kommentar, sort_order
+    `SELECT id::text AS id, pattern, scope, enabled, locked, modus, kommentar, sort_order
        FROM project_ignore_rules
       WHERE project = $1
       ORDER BY sort_order, id`,
@@ -64,7 +154,13 @@ export async function listeIgnoreRegeln(project: string): Promise<IgnoreRegel[]>
  */
 export async function fuegeIgnoreRegelnHinzu(
   project: string,
-  regeln: Array<{ pattern: string; scope?: string; kommentar?: string; sort_order?: number }>,
+  regeln: Array<{
+    pattern: string;
+    scope?: string;
+    kommentar?: string;
+    sort_order?: number;
+    modus?: IgnoreModus;
+  }>,
   agentId?: string | null,
 ): Promise<{ hinzugefuegt: string[]; uebersprungen: string[] } & Auswirkung> {
   const pool = getPool();
@@ -81,11 +177,21 @@ export async function fuegeIgnoreRegelnHinzu(
     const muster = regel.pattern.trim();
     if (!muster) continue;
     const eingefuegt = await pool.query(
-      `INSERT INTO project_ignore_rules (project, pattern, scope, kommentar, sort_order, created_by)
-       VALUES ($1, $2, $3, $4, $5, $6)
+      `INSERT INTO project_ignore_rules (project, pattern, scope, kommentar, sort_order, created_by, modus)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
        ON CONFLICT DO NOTHING
        RETURNING id`,
-      [project, muster, regel.scope ?? null, regel.kommentar ?? null, regel.sort_order ?? naechste, agentId ?? null],
+      [
+        project,
+        muster,
+        regel.scope ?? null,
+        regel.kommentar ?? null,
+        regel.sort_order ?? naechste,
+        agentId ?? null,
+        // Standard ist ausblenden: die haeufigere und die harmlosere Wahl.
+        // Sperren ist der Eingriff, der ausdruecklich verlangt werden muss.
+        regel.modus === 'gesperrt' ? 'gesperrt' : 'ausgeblendet',
+      ],
     );
     if (eingefuegt.rowCount) {
       hinzugefuegt.push(muster);

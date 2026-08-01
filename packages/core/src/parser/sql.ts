@@ -7,16 +7,25 @@
  */
 
 import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser, ParsedStatement, ParsedCallEdge } from './types.js';
-import { extractStringLiterals } from './types.js';
+import { extractStringLiterals, erstelleZeilenIndex, zeileFuerPosition } from './types.js';
 
 /** Zeilennummer fuer eine Position im Text (1-basiert) */
+// Zeilenindex je Datei zwischenspeichern — siehe zeileFuerPosition in types.ts.
+// Vorher wurde pro Treffer ein Praefix der Datei kopiert und zerlegt: das ist
+// O(Treffer x Dateigroesse) und laesst grosse Dateien praktisch nie fertig werden.
+let zeilenCacheText: string | null = null;
+let zeilenCacheIndex: number[] = [];
 function lineAt(text: string, pos: number): number {
-  return text.substring(0, pos).split('\n').length;
+  if (text !== zeilenCacheText) {
+    zeilenCacheText = text;
+    zeilenCacheIndex = erstelleZeilenIndex(text);
+  }
+  return zeileFuerPosition(zeilenCacheIndex, pos);
 }
 
 /** Endzeile eines Matches */
 function endLineAt(text: string, pos: number, matchLength: number): number {
-  return text.substring(0, pos + matchLength).split('\n').length;
+  return lineAt(text, pos + matchLength);
 }
 
 /** Entfernt fuehrende/schliesende Whitespace + ueberfluessige Leerzeichen */
@@ -35,7 +44,8 @@ class SqlParser implements LanguageParser {
   language = 'sql';
   extensions = ['.sql', '.pgsql', '.psql', '.plsql', '.ddl', '.dml'];
   /** Bei inhaltlichen Parser-Aenderungen erhoehen (siehe LanguageParser.version). */
-  version = 1;
+  // 2: Zeilenberechnung ueber Index statt Praefix-Kopie (siehe lineAt).
+  version = 2;
 
   parse(content: string, filePath: string): ParseResult {
     const symbols: ParsedSymbol[] = [];
@@ -499,8 +509,11 @@ function extractSqlFlow(content: string): { statements: ParsedStatement[]; callE
   const nextId = (): string => `s${tempId++}`;
   let orderCounter = 0;
 
+  // Eigener Index: diese innere Funktion heisst wie die auf Modulebene und wuerde
+  // sich beim Umleiten selbst aufrufen. Der Index wird hier einmal gebaut.
+  const zeilenIndexLokal = erstelleZeilenIndex(content);
   function lineAt(pos: number): number {
-    return content.substring(0, pos).split('\n').length;
+    return zeileFuerPosition(zeilenIndexLokal, pos);
   }
 
   // Strip comments for scanning but keep positions

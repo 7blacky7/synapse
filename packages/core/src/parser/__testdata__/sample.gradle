@@ -1,0 +1,64 @@
+// SOLLWERTE fuer packages/core/tests/fixture-zeilennummern.test.mjs.
+// Eckige Klammern, KEINE Anfuehrungszeichen: der Kopfkommentar wird vom Parser
+// mitgelesen, und Namen in Quotes wuerden zu String-Symbolen desselben Namens.
+// Die Zahlen sind absolut — wer diese Datei bearbeitet, zieht sie nach.
+// Abgedeckt: die Klasse mit ihren Methoden UND zwei Symbole aus Bloecken auf
+// Modulebene (clean aus tasks.register, annotationProcessor aus configurations)
+// — genau die Blockart, die den Scope-Stapel leerlaufen liess.
+//   [Helfer] -> Zeile 52
+//   [name] -> Zeile 53
+//   [beschreibe] -> Zeile 54
+//   [beschreibeZweimal] -> Zeile 56
+//   [clean] -> Zeile 44
+//   [annotationProcessor] -> Zeile 62
+
+// Probe fuer den Scope-Stack-Absturz in groovy.ts (behoben, Parser-Version 4).
+// Struktur aus einer echten Flutter-Plugin-Datei uebernommen:
+// .plugin_symlinks/jni/example/android/build.gradle
+//
+// WORAUF ES ANKOMMT: MEHRERE aufeinander folgende Bloecke auf Modulebene.
+// Solche Bloecke legen keinen eigenen Scope an und trugen deshalb scopeIdx 0;
+// beim Schliessen leerte ss.splice(0) den kompletten Scope-Stapel samt
+// Modul-Scope, und der naechste Zugriff auf cs().type warf einen TypeError.
+// Mit nur EINEM Block am Dateiende faellt das nicht auf, weil danach kein
+// Statement mehr folgt — genau daran ist der Fehler lange vorbeigelaufen.
+// Diese Datei muss sich fehlerfrei parsen lassen.
+
+allprojects {
+    repositories {
+        google()
+        mavenCentral()
+    }
+}
+
+rootProject.buildDir = '../build'
+
+subprojects {
+    project.buildDir = "${rootProject.buildDir}/${project.name}"
+}
+
+subprojects {
+    project.evaluationDependsOn(':app')
+}
+
+tasks.register("clean", Delete) {
+    delete rootProject.buildDir
+}
+
+// Zweiter Teil: dieselbe Falle mit einer Klasse dazwischen. Hier zeigt sich der
+// noch offene Restbefund — ein Block, der keinen eigenen Scope anlegt, schnitt
+// den VORGEFUNDENEN Scope ab. Bei scopeIdx 0 war das der Absturz, bei scopeIdx 1
+// ist es still: danachStehendeMethode verliert ihren Klassen-Scope.
+class Helfer {
+    String name
+
+    String beschreibe() { name }
+
+    String beschreibeZweimal() { name + name }
+}
+
+configurations {
+    compileOnly {
+        extendsFrom annotationProcessor
+    }
+}

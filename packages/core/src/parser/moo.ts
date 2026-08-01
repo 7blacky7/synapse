@@ -12,7 +12,7 @@
  */
 
 import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser, ParsedStatement, ParsedCallEdge } from './types.js';
-import { extractStringLiterals } from './types.js';
+import { extractStringLiterals, erstelleZeilenIndex, zeileFuerPosition } from './types.js';
 import { formatRouteName, isLikelyHttpPath, HTTP_VERBS } from './patterns/http.js';
 import { parseEmbeddedSql, looksLikeSql } from './patterns/sql.js';
 
@@ -55,10 +55,17 @@ const KW_UNSAFE = 'unsicher|unsafe|un';
 const KW_TEST = 'teste|test';
 const KW_INHERITS = 'implementiert|implements';
 
+// Zeilenindex je Datei zwischenspeichern. lineAt wird pro Treffer gerufen; eine
+// Zaehlschleife ab Position 0 waere O(Treffer x Dateigroesse) und laesst grosse
+// Dateien praktisch nie fertig werden. Ergebnis bleibt identisch.
+let zeilenCacheText: string | null = null;
+let zeilenCacheIndex: number[] = [];
 function lineAt(text: string, pos: number): number {
-  let n = 1;
-  for (let i = 0; i < pos; i++) if (text.charCodeAt(i) === 10) n++;
-  return n;
+  if (text !== zeilenCacheText) {
+    zeilenCacheText = text;
+    zeilenCacheIndex = erstelleZeilenIndex(text);
+  }
+  return zeileFuerPosition(zeilenCacheIndex, pos);
 }
 
 function isPublic(name: string): boolean {
@@ -72,7 +79,8 @@ class MooParser implements LanguageParser {
    * Bei inhaltlichen Parser-Aenderungen erhoehen (siehe LanguageParser.version).
    * 2 = Ausgabe-Anweisungen (zeige/show/ze) ergeben Statement und Call-Kante.
    */
-  version = 2;
+  // 3: Zeilenberechnung ueber Index statt Zaehlschleife (siehe lineAt).
+  version = 3;
 
   parse(content: string, _filePath: string): ParseResult {
     const symbols: ParsedSymbol[] = [];

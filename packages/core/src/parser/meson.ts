@@ -8,17 +8,28 @@
  */
 
 import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
-import { extractStringLiterals } from './types.js';
+import { extractStringLiterals, erstelleZeilenIndex, zeileFuerPosition } from './types.js';
 
+// Zeilenindex je Datei zwischenspeichern — siehe zeileFuerPosition in types.ts.
+// Vorher wurde pro Treffer ein Praefix der Datei kopiert und zerlegt: das ist
+// O(Treffer x Dateigroesse) und laesst grosse Dateien praktisch nie fertig werden.
+let zeilenCacheText: string | null = null;
+let zeilenCacheIndex: number[] = [];
 function lineAt(text: string, pos: number): number {
-  return text.substring(0, pos).split('\n').length;
+  if (text !== zeilenCacheText) {
+    zeilenCacheText = text;
+    zeilenCacheIndex = erstelleZeilenIndex(text);
+  }
+  return zeileFuerPosition(zeilenCacheIndex, pos);
 }
 
 class MesonParser implements LanguageParser {
   language = 'meson';
   extensions = ['.wrap'];
   /** Bei inhaltlichen Parser-Aenderungen erhoehen (siehe LanguageParser.version). */
-  version = 1;
+  // 2: Zeilenberechnung ueber Index statt Praefix-Kopie (siehe lineAt).
+  // 3: Duplikatpruefung je Zeile ueber Map statt linearem Scan des wachsenden Symbol-Arrays.
+  version = 3;
 
   parse(content: string, filePath: string): ParseResult {
     const symbols: ParsedSymbol[] = [];
@@ -69,10 +80,22 @@ class MesonParser implements LanguageParser {
 
     // 8. Variable assignments (generic)
     const varRe = /^(\w+)\s*=\s*(?!executable|library|shared_library|static_library|both_libraries|dependency|custom_target)(.+)/gm;
+    const symbolNamesByLine = new Map<number, Set<string>>();
+    for (const symbol of symbols) {
+      if (symbol.name === null) continue;
+      const namesAtLine = symbolNamesByLine.get(symbol.line_start);
+      if (namesAtLine) namesAtLine.add(symbol.name);
+      else symbolNamesByLine.set(symbol.line_start, new Set([symbol.name]));
+    }
     while ((m = varRe.exec(content)) !== null) {
-      if (symbols.some(s => s.name === m![1] && s.line_start === lineAt(content, m!.index))) continue;
-      if (['if', 'elif', 'else', 'endif', 'foreach', 'endforeach'].includes(m[1])) continue;
-      symbols.push({ symbol_type: 'variable', name: m[1], value: m[2].trim().slice(0, 100), line_start: lineAt(content, m.index), is_exported: true });
+      const name = m[1];
+      const lineStart = lineAt(content, m.index);
+      const namesAtLine = symbolNamesByLine.get(lineStart);
+      if (namesAtLine?.has(name)) continue;
+      if (['if', 'elif', 'else', 'endif', 'foreach', 'endforeach'].includes(name)) continue;
+      symbols.push({ symbol_type: 'variable', name, value: m[2].trim().slice(0, 100), line_start: lineStart, is_exported: true });
+      if (namesAtLine) namesAtLine.add(name);
+      else symbolNamesByLine.set(lineStart, new Set([name]));
     }
 
     // 9. Function calls (install_*, configure_file, etc.)

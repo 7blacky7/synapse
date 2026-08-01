@@ -338,16 +338,19 @@ export async function updatePayloadByFilePath(
   const client = getQdrantClient();
   const fileName = newFilePath.split('/').pop() || newFilePath;
 
-  // Alle Punkte mit dem alten Pfad finden
-  const points = await scrollVectors<{ file_path: string }>(
-    collection,
-    { must: [{ key: 'file_path', match: { value: oldFilePath } }] },
-    1000
-  );
+  // Alle Punkte mit dem alten Pfad finden — ueber die paginierende Variante.
+  // Hier stand scrollVectors mit limit 1000. Das liefert nur die erste Seite:
+  // bei einer Datei mit mehr als 1000 Chunks wurden nur die ersten 1000 Punkte
+  // umbenannt, der Rest behielt den ALTEN file_path. Solche Punkte werden zur
+  // Karteileiche — die Suche liefert Treffer auf einen Pfad, den es nicht mehr
+  // gibt, und nichts schlaegt dabei fehl, es faellt also niemandem auf.
+  // index.html mit 5950 Chunks ist genau dieser Fall.
+  // Payload und Vektoren werden nicht gebraucht, nur die IDs.
+  const ids = await scrollePunktIds(collection, {
+    must: [{ key: 'file_path', match: { value: oldFilePath } }],
+  });
 
-  if (points.length === 0) return 0;
-
-  const ids = points.map(p => p.id);
+  if (ids.length === 0) return 0;
   try {
     await client.setPayload(collection, {
       wait: true,
@@ -367,7 +370,16 @@ export async function updatePayloadByFilePath(
 }
 
 /**
- * Holt alle Vektoren mit einem bestimmten Filter
+ * Holt EINE SEITE Punkte zu einem Filter — hoechstens limit Stueck.
+ *
+ * NICHT "alle": next_page_offset wird nicht ausgewertet, alles jenseits der
+ * ersten Seite fehlt stillschweigend. Wer wirklich jeden Treffer braucht, nimmt
+ * scrollePunktIds (paginiert, liefert die IDs).
+ *
+ * Diese Beschreibung lautete frueher "Holt alle Vektoren mit einem bestimmten
+ * Filter". Das war die eigentliche Fehlerquelle: updatePayloadByFilePath verliess
+ * sich darauf und benannte bei grossen Dateien nur die ersten 1000 Punkte um.
+ * Wer eine Hilfsfunktion falsch beschreibt, verteilt den Fehler auf alle Aufrufer.
  */
 export async function scrollVectors<T>(
   collection: string,
@@ -386,4 +398,82 @@ export async function scrollVectors<T>(
     id: point.id as string,
     payload: point.payload as T,
   }));
+}
+
+/**
+ * Liefert die IDs ALLER Punkte, die dem Filter entsprechen — mit Paginierung.
+ *
+ * ABGRENZUNG ZU scrollVectors: das dortige client.scroll liefert nur die erste
+ * Seite (limit, Standard 100) und wertet next_page_offset nicht aus. Bei einer
+ * Datei mit mehreren tausend Chunks ist die Antwort damit unvollstaendig — wer
+ * darauf ein Aufraeumen stuetzt, laesst Punkte stehen, die es nicht mehr geben
+ * duerfte. Hier wird bis zum Ende durchgeblaettert.
+ *
+ * Payload und Vektoren werden bewusst NICHT mitgeladen: fuer einen Abgleich
+ * gegen eine ID-Menge braucht es sie nicht, und bei 3072 Dimensionen je Punkt
+ * waere das ein Vielfaches an Uebertragung.
+ */
+export async function scrollePunktIds(
+  collection: string,
+  filter: Record<string, unknown>,
+  seitenGroesse: number = 1000
+): Promise<string[]> {
+  const client = getQdrantClient();
+  const ids: string[] = [];
+  let offset: unknown = undefined;
+
+  for (;;) {
+    const seite = await client.scroll(collection, {
+      filter: filter as any,
+      limit: seitenGroesse,
+      with_payload: false,
+      with_vector: false,
+      offset: offset as any,
+    });
+    for (const punkt of seite.points) ids.push(punkt.id as string);
+    if (!seite.next_page_offset) break;
+    offset = seite.next_page_offset;
+  }
+
+  return ids;
+}
+
+/**
+ * Liefert ALLE Punkte zu einem Filter samt Payload — mit Paginierung.
+ *
+ * Gegenstueck zu scrollePunktIds fuer Aufrufer, die den Payload brauchen. Das
+ * Backup ist der wichtigste davon: dort entscheidet Vollstaendigkeit darueber,
+ * ob eine Sicherung ihren Zweck erfuellt.
+ *
+ * Vektoren bleiben bewusst aussen vor — das Backup schreibt ohnehin nur id und
+ * payload, und bei 3072 Dimensionen je Punkt waere das ein Vielfaches an
+ * Uebertragung fuer Daten, die niemand liest.
+ */
+export async function scrollePunkteMitPayload<T>(
+  collection: string,
+  filter: Record<string, unknown>,
+  seitenGroesse: number = 1000
+): Promise<Array<{ id: string; payload: T }>> {
+  const client = getQdrantClient();
+  const raus: Array<{ id: string; payload: T }> = [];
+  let offset: unknown = undefined;
+  // Ein leeres Filter-Objekt ist kein Filter: Qdrant erwartet dann gar keinen.
+  const wirklicherFilter = Object.keys(filter ?? {}).length > 0 ? filter : undefined;
+
+  for (;;) {
+    const seite = await client.scroll(collection, {
+      filter: wirklicherFilter as any,
+      limit: seitenGroesse,
+      with_payload: true,
+      with_vector: false,
+      offset: offset as any,
+    });
+    for (const punkt of seite.points) {
+      raus.push({ id: punkt.id as string, payload: punkt.payload as T });
+    }
+    if (!seite.next_page_offset) break;
+    offset = seite.next_page_offset;
+  }
+
+  return raus;
 }

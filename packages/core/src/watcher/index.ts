@@ -30,7 +30,7 @@ import chokidar, { FSWatcher } from 'chokidar';
 import { Ignore } from 'ignore';
 import { FileEvent } from '../types/index.js';
 import { getConfig } from '../config.js';
-import { loadGitignore, shouldIgnore, aktualisiereIgnoreRegeln } from './ignore.js';
+import { loadGitignore, istGesperrt, shouldIgnore, aktualisiereIgnoreRegeln } from './ignore.js';
 import { isBinaryFile, isExtractableDocument, isMultimodalFile, getFileType, MAX_MEDIA_SIZE_MB } from './binary.js';
 
 export * from './binary.js';
@@ -71,6 +71,17 @@ export function startFileWatcher(options: FileWatcherOptions): FileWatcherInstan
 
   // Gitignore laden (mutable - wird bei .synapseignore Aenderung neu geladen)
   let ig: Ignore = loadGitignore(projectPath, projectName);
+  // Zwei getrennte Mengen, und das ist der Kern der Sache:
+  //   ig          entscheidet ueber die SICHTBARKEIT (Suche, Baum, Embeddings)
+  //   istGesperrt(...)  entscheidet ueber die EXISTENZ (Weg zwischen Platte und DB)
+  // Beides in einer Instanz zu fuehren war der Fehler, der ausgeblendete Dateien
+  // nie auf der Platte ankommen liess.
+  //
+  // Die Sperre wird BEI JEDEM EREIGNIS frisch erfragt statt in einer Variablen
+  // gehalten: eine gehaltene Ignore-Instanz ist ein Schnappschuss vom Start, und
+  // eine danach angelegte Sperre wirkte dadurch erst nach einem Neustart. Genau
+  // das ist am 28.07. im Test aufgefallen — die Datei landete trotz Sperre in
+  // der Datenbank.
 
   // IGN-3: Die Regeln aus der Datenbank stehen erst nach einer Abfrage bereit.
   // Bis dahin gilt der Notnagel (.synapseignore vom Dateisystem); sobald die
@@ -79,6 +90,7 @@ export function startFileWatcher(options: FileWatcherOptions): FileWatcherInstan
   void aktualisiereIgnoreRegeln(projectName).then((anzahl) => {
     if (anzahl > 0) {
       ig = loadGitignore(projectPath, projectName);
+
       console.error(`[Synapse] ${anzahl} Ignore-Regeln aus der Datenbank uebernommen ("${projectName}")`);
     }
   });
@@ -120,6 +132,8 @@ export function startFileWatcher(options: FileWatcherOptions): FileWatcherInstan
 
       // Ignore-Patterns neu laden
       ig = loadGitignore(projectPath, projectName);
+      // Die Sperre braucht hier nichts: istGesperrt() erneuert sich selbst,
+      // sobald sich die Regelliste aendert.
 
       // Callback aufrufen mit neuen Patterns
       if (onIgnoreChange) {
@@ -132,7 +146,11 @@ export function startFileWatcher(options: FileWatcherOptions): FileWatcherInstan
     }
 
     // Ignorierte Dateien ueberspringen
-    if (shouldIgnore(ig, relativePath)) {
+    // NUR gesperrte Pfade ueberspringen. Ausgeblendete Dateien werden ganz normal
+    // eingelesen und landen in der Datenbank — sie sind lediglich in der Suche
+    // unsichtbar. Wer hier auf ig statt auf die Sperre prueft, macht aus "nicht
+    // anzeigen" ein "nicht speichern", und das faellt niemandem auf.
+    if (istGesperrt(relativePath, projectPath, projectName)) {
       return;
     }
 
@@ -155,8 +173,10 @@ export function startFileWatcher(options: FileWatcherOptions): FileWatcherInstan
         const stats = fs.statSync(filePath);
         const sizeMB = stats.size / (1024 * 1024);
         const maxSize = isDocument ? 50 : isMedia ? MAX_MEDIA_SIZE_MB : config.files.maxSizeMB;
-        if (sizeMB > maxSize) {
-          console.error(`[Synapse] Datei zu gross (${sizeMB.toFixed(2)}MB): ${relativePath}`);
+        // Fuer reine Text-/Code-Dateien bedeutet maxSize <= 0: unbegrenzt.
+        // Dokumente und Medien liefern weiterhin positive feste Limits.
+        if (maxSize > 0 && sizeMB > maxSize) {
+          console.error(`[Synapse] Datei zu gross (${sizeMB.toFixed(2)}MB > ${maxSize}MB): ${relativePath}`);
           return;
         }
       } catch {
@@ -338,6 +358,12 @@ export function startFileWatcher(options: FileWatcherOptions): FileWatcherInstan
 
   watcher.on('ready', () => {
     console.error(`[Synapse] FileWatcher bereit fuer "${projectName}"`);
+    // Ab hier ist jedes 'add' ein Laufzeit-Ereignis und kein Erstscan mehr.
+    // Dynamischer Import, weil services/code.ts seinerseits watcher/binary.js
+    // laedt — statisch waere das ein Zyklus.
+    void import('../services/code.js')
+      .then(m => m.markiereScanAbgeschlossen(projectName))
+      .catch(err => console.error(`[Synapse] Erstscan-Markierung fehlgeschlagen:`, err));
     if (onReady) {
       Promise.resolve(onReady()).catch(error => {
         console.error(`[Synapse] Fehler in onReady:`, error);
@@ -388,7 +414,13 @@ export function startFileWatcher(options: FileWatcherOptions): FileWatcherInstan
             // Ignore-Regeln auch auf PG→FS anwenden — sonst synct/loopt der Poller
             // .gitignore/.synapseignore-Dateien (war Ursache der README.md-
             // Endlosschleife bei Rows, die vor dem Ignore-Eintrag ingestiert wurden).
-            if (shouldIgnore(ig, relativePath)) continue;
+            // NUR gesperrte Pfade zurueckhalten. Die urspruengliche Endlosschleife
+            // (Poller schrieb .gitignore/.synapseignore gegen sich selbst) bleibt
+            // verhindert, weil beide ueber DEFAULT_IGNORES gesperrt sind.
+            // AUSGEBLENDETE PFADE MUESSEN HIER DURCH: sonst entsteht ein Eintrag in
+            // der Datenbank, den es auf der Platte nie gibt — genau der Fall, der
+            // am 28.07. die Parser-Fixtures verschluckt hat.
+            if (istGesperrt(relativePath, projectPath, projectName)) continue;
             // BUGFIX 2026-05-07 (unlink-bootstrap-race): wenn fuer dieses File
             // ein chokidar-unlink-Event pending ist (User hat gerade rm/mv
             // gemacht, Debounce 1500ms laeuft noch), darf der PG-Watcher es

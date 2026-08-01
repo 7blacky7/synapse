@@ -68,4 +68,21 @@ object SynapseAgent {
   def apply(name: String): SynapseAgent = new SynapseAgent(name)
 }
 
+// Verschachtelung fuer den findParentType-Fall: Entry steht DIREKT am Anfang von
+// Registry, ohne schliessende Klammer dazwischen. Bis Parser-Version 3 lieferte der
+// Eltern-Typ hier die AEUSSERE Deklaration (Registry) statt Entry. describe und
+// describeTwice sowie lookup und count decken zusaetzlich den haeufigeren Fall ab:
+// ab der ZWEITEN Methode einer Klasse ging der Eltern-Typ ganz verloren.
+class Registry {
+  class Entry(val key: String) {
+    def describe(): String = key
+
+    def describeTwice(): String = key + key
+  }
+
+  def lookup(key: String): Option[Entry] = None
+
+  def count(): Int = 0
+}
+
 // FIXME: add proper error handling

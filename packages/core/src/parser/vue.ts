@@ -10,70 +10,74 @@
  */
 
 import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
-import { extractStringLiterals } from './types.js';
+import { extractStringLiterals, erstelleZeilenIndex, zeileFuerPosition } from './types.js';
 
+// Zeilenindex je Datei zwischenspeichern — siehe zeileFuerPosition in types.ts.
+// Vorher wurde pro Treffer ein Praefix der Datei kopiert und zerlegt: das ist
+// O(Treffer x Dateigroesse) und laesst grosse Dateien praktisch nie fertig werden.
+let zeilenCacheText: string | null = null;
+let zeilenCacheIndex: number[] = [];
 function lineAt(text: string, pos: number): number {
-  return text.substring(0, pos).split('\n').length;
+  if (text !== zeilenCacheText) {
+    zeilenCacheText = text;
+    zeilenCacheIndex = erstelleZeilenIndex(text);
+  }
+  return zeileFuerPosition(zeilenCacheIndex, pos);
 }
 
 class VueParser implements LanguageParser {
   language = 'vue';
   extensions = ['.vue'];
   /** Bei inhaltlichen Parser-Aenderungen erhoehen (siehe LanguageParser.version). */
-  version = 1;
+  // 2: Zeilenberechnung ueber Index statt Praefix-Kopie (siehe lineAt).
+  // 3: Alle <script>-Bloecke statt nur einem (siehe parse).
+  // 4: Zeilennummern zeigten eine Zeile zu weit nach oben — ^\s* verschluckte den
+  //    Zeilenumbruch der Leerzeile davor (siehe parseImports); zusaetzlich rechneten
+  //    methods und computed der Options-API mit einem Offset relativ zum
+  //    Gruppeninhalt statt zum Gesamttreffer.
+  version = 4;
 
   parse(content: string, filePath: string): ParseResult {
     const symbols: ParsedSymbol[] = [];
     const references: ParsedReference[] = [];
     let m: RegExpExecArray | null;
 
-    // Detect script setup vs options API
-    const setupMatch = content.match(/<script\s+setup(?:\s+[^>]*)?>[\s\S]*?<\/script>/i);
-    const scriptMatch = content.match(/<script(?:\s+[^>]*)?>[\s\S]*?<\/script>/i);
-    const isSetup = !!setupMatch;
-    const scriptBlock = (setupMatch || scriptMatch)?.[0] || '';
-    const scriptContent = scriptBlock.replace(/<\/?script[^>]*>/gi, '');
-    const scriptOffset = content.indexOf(scriptContent);
-
     // ══════════════════════════════════════════════
-    // 1. Imports
+    // 1. Script-Bloecke — jeder einzeln
     // ══════════════════════════════════════════════
-    const importRe = /^\s*import\s+(?:\{([^}]+)\}\s+from\s+)?(?:(\w+)\s+from\s+)?['"]([^'"]+)['"]/gm;
-    while ((m = importRe.exec(scriptContent)) !== null) {
-      const named = m[1] ? m[1].split(',').map(n => n.trim().split(' as ').pop()!.trim()).filter(Boolean) : [];
-      const defaultImport = m[2];
-      const source = m[3];
-      const lineStart = lineAt(content, scriptOffset + m.index);
+    // Eine SFC hat regelmaessig BEIDE Bloecke nebeneinander: <script setup> fuer
+    // die Composition API und <script> fuer alles, was ausserhalb des
+    // setup-Scopes stehen muss (benannte Exporte, defineComponent-Optionen).
+    // Frueher waehlte (setupMatch || scriptMatch) genau EINEN aus — alles im
+    // anderen fehlte still im Index. Jeder Block wird jetzt mit dem Zweig
+    // ausgewertet, der zu seinen Attributen passt. matchAll liefert die Bloecke
+    // in Dateireihenfolge; die Ergebnisse werden in derselben Reihenfolge
+    // angehaengt, damit die Zeilennummern ueber die Blockgrenze hinweg nicht
+    // rueckwaerts springen.
+    const scriptRe = /<script(\s+[^>]*)?>([\s\S]*?)<\/script>/gi;
+    for (const block of content.matchAll(scriptRe)) {
+      // Je Block eigene Listen: die Dedup-Pruefung in parseSetupScript (arrowRe)
+      // vergleicht nur den Namen und wuerde sonst ein gleichnamiges Symbol des
+      // zweiten Blocks verschlucken.
+      const blockSymbols: ParsedSymbol[] = [];
+      const blockReferences: ParsedReference[] = [];
+      const attribute = block[1] || '';
+      const scriptContent = block[2] || '';
+      // Offset des Inhalts = Blockanfang + Laenge des oeffnenden Tags. Frueher
+      // stand hier content.indexOf(inhalt): das findet bei mehreren Bloecken
+      // immer den ersten und faellt bei leerem Inhalt auf 0 zurueck.
+      const scriptOffset = (block.index ?? 0) + block[0].indexOf('>') + 1;
+      const isSetup = /(?:^|\s)setup(?:[\s=]|$)/i.test(attribute);
 
-      if (defaultImport) {
-        symbols.push({
-          symbol_type: 'import',
-          name: defaultImport,
-          value: source,
-          line_start: lineStart,
-          is_exported: false,
-        });
+      this.parseImports(scriptContent, scriptOffset, content, blockSymbols, blockReferences);
+      if (isSetup) {
+        this.parseSetupScript(scriptContent, scriptOffset, content, blockSymbols, blockReferences);
+      } else {
+        this.parseOptionsAPI(scriptContent, scriptOffset, content, blockSymbols, blockReferences);
       }
-      for (const name of named) {
-        symbols.push({
-          symbol_type: 'import',
-          name,
-          value: source,
-          line_start: lineStart,
-          is_exported: false,
-        });
-      }
-      references.push({
-        symbol_name: source.split('/').pop()?.replace(/\.\w+$/, '') || source,
-        line_number: lineStart,
-        context: m[0].trim().slice(0, 80),
-      });
-    }
 
-    if (isSetup) {
-      this.parseSetupScript(scriptContent, scriptOffset, content, symbols, references);
-    } else {
-      this.parseOptionsAPI(scriptContent, scriptOffset, content, symbols, references);
+      symbols.push(...blockSymbols);
+      references.push(...blockReferences);
     }
 
     // ══════════════════════════════════════════════
@@ -126,6 +130,57 @@ class VueParser implements LanguageParser {
 
 
     return { symbols, references, statements: [], callEdges: [] };
+  }
+
+  /**
+   * Imports EINES <script>-Blocks. offset ist die Position des Blockinhalts in
+   * der Gesamtdatei, damit die Zeilennummern Datei-Zeilen sind, nicht Block-Zeilen.
+   */
+  private parseImports(
+    script: string, offset: number, content: string,
+    symbols: ParsedSymbol[], references: ParsedReference[]
+  ): void {
+    let m: RegExpExecArray | null;
+
+    // [^\S\r\n]* statt \s*: \s schliesst den Zeilenumbruch ein. Bei /^\s*import/gm
+    // greift ^ schon am Anfang der LEERzeile davor, \s* frisst den Umbruch, und der
+    // Treffer beginnt damit eine Zeile vor dem Symbol, das er beschreibt — die
+    // Sprungmarke landete im Editor eine Zeile daneben. Die Klasse bedeutet
+    // "Whitespace ausser Zeilenumbruch", sodass ^ nur noch an der Zeile des Symbols
+    // selbst greifen kann. Die Treffermenge bleibt gleich, nur die Startposition
+    // aendert sich; steht das Symbol schon in der Ankerzeile, bleibt alles wie
+    // bisher. Gleiche Korrektur an allen ^-Mustern dieser Datei.
+    const importRe = /^[^\S\r\n]*import\s+(?:\{([^}]+)\}\s+from\s+)?(?:(\w+)\s+from\s+)?['"]([^'"]+)['"]/gm;
+    while ((m = importRe.exec(script)) !== null) {
+      const named = m[1] ? m[1].split(',').map(n => n.trim().split(' as ').pop()!.trim()).filter(Boolean) : [];
+      const defaultImport = m[2];
+      const source = m[3];
+      const lineStart = lineAt(content, offset + m.index);
+
+      if (defaultImport) {
+        symbols.push({
+          symbol_type: 'import',
+          name: defaultImport,
+          value: source,
+          line_start: lineStart,
+          is_exported: false,
+        });
+      }
+      for (const name of named) {
+        symbols.push({
+          symbol_type: 'import',
+          name,
+          value: source,
+          line_start: lineStart,
+          is_exported: false,
+        });
+      }
+      references.push({
+        symbol_name: source.split('/').pop()?.replace(/\.\w+$/, '') || source,
+        line_number: lineStart,
+        context: m[0].trim().slice(0, 80),
+      });
+    }
   }
 
   private parseSetupScript(
@@ -200,7 +255,7 @@ class VueParser implements LanguageParser {
     }
 
     // Functions
-    const funcRe = /^\s*(?:async\s+)?function\s+(\w+)\s*\(([^)]*)\)/gm;
+    const funcRe = /^[^\S\r\n]*(?:async\s+)?function\s+(\w+)\s*\(([^)]*)\)/gm;
     while ((m = funcRe.exec(script)) !== null) {
       const params = m[2].split(',').map(p => p.trim().split(':')[0].split('=')[0].trim()).filter(Boolean);
       symbols.push({
@@ -269,14 +324,18 @@ class VueParser implements LanguageParser {
     const methodsRe = /methods\s*:\s*\{([\s\S]*?)\n\s*\}/;
     m = methodsRe.exec(script);
     if (m) {
-      const methodRe = /^\s*(?:async\s+)?(\w+)\s*\(/gm;
+      const methodRe = /^[^\S\r\n]*(?:async\s+)?(\w+)\s*\(/gm;
+      // mm.index zaehlt ab dem Anfang von m[1], nicht ab dem Anfang des Treffers:
+      // die Laenge von "methods: {" fehlte in der Rechnung, sodass die Zeile
+      // zusaetzlich zum ^\s*-Fehler zu weit oben lag.
+      const blockOffset = offset + m.index + m[0].indexOf(m[1]);
       let mm: RegExpExecArray | null;
       while ((mm = methodRe.exec(m[1])) !== null) {
         symbols.push({
           symbol_type: 'function',
           name: mm[1],
           value: 'method',
-          line_start: lineAt(content, offset + (m?.index || 0) + mm.index),
+          line_start: lineAt(content, blockOffset + mm.index),
           is_exported: false,
         });
       }
@@ -286,7 +345,9 @@ class VueParser implements LanguageParser {
     const computedRe = /computed\s*:\s*\{([\s\S]*?)\n\s*\}/;
     m = computedRe.exec(script);
     if (m) {
-      const compRe = /^\s*(\w+)\s*(?:\(|:)/gm;
+      const compRe = /^[^\S\r\n]*(\w+)\s*(?:\(|:)/gm;
+      // cm.index ist relativ zum Gruppeninhalt m[1] — siehe methods.
+      const blockOffset = offset + m.index + m[0].indexOf(m[1]);
       let cm: RegExpExecArray | null;
       while ((cm = compRe.exec(m[1])) !== null) {
         if (['get', 'set'].includes(cm[1])) continue;
@@ -294,7 +355,7 @@ class VueParser implements LanguageParser {
           symbol_type: 'variable',
           name: cm[1],
           value: 'computed',
-          line_start: lineAt(content, offset + (m?.index || 0) + cm.index),
+          line_start: lineAt(content, blockOffset + cm.index),
           is_exported: false,
         });
       }

@@ -8,11 +8,20 @@
  */
 
 import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser, ParsedStatement, ParsedCallEdge } from './types.js';
-import { extractStringLiterals } from './types.js';
+import { extractStringLiterals, erstelleZeilenIndex, zeileFuerPosition } from './types.js';
 import { formatRouteName, isLikelyHttpPath, HTTP_VERBS } from './patterns/http.js';
 
+// Zeilenindex je Datei zwischenspeichern — siehe zeileFuerPosition in types.ts.
+// Vorher wurde pro Treffer ein Praefix der Datei kopiert und zerlegt: das ist
+// O(Treffer x Dateigroesse) und laesst grosse Dateien praktisch nie fertig werden.
+let zeilenCacheText: string | null = null;
+let zeilenCacheIndex: number[] = [];
 function lineAt(text: string, pos: number): number {
-  return text.substring(0, pos).split('\n').length;
+  if (text !== zeilenCacheText) {
+    zeilenCacheText = text;
+    zeilenCacheIndex = erstelleZeilenIndex(text);
+  }
+  return zeileFuerPosition(zeilenCacheIndex, pos);
 }
 
 // ---------------------------------------------------------------------------
@@ -219,7 +228,12 @@ class DartParser implements LanguageParser {
   language = 'dart';
   extensions = ['.dart'];
   /** Bei inhaltlichen Parser-Aenderungen erhoehen (siehe LanguageParser.version). */
-  version = 1;
+  // 2: Zeilenberechnung ueber Index statt Praefix-Kopie (siehe lineAt).
+  // 3: Eltern-Typ ueber vorberechnete Grenzen statt Rueckwaertssuche je Treffer.
+  // 4: Eltern-Typ ist jetzt die INNERSTE umschliessende Deklaration. Version 3
+  //    bildete die alte match()-Semantik nach und verlor den Eltern-Typ, sobald
+  //    vor der Fundstelle eine schliessende Klammer stand (siehe findParentType).
+  version = 4;
 
   parse(content: string, filePath: string): ParseResult {
     const symbols: ParsedSymbol[] = [];
@@ -354,6 +368,9 @@ class DartParser implements LanguageParser {
 
       const parentType = this.findParentType(content, m.index);
       if (parentType !== name) continue;
+      // Position des Namens, nicht des Treffers: das fuehrende \s* der ctorRe kann
+      // den Zeilenumbruch mitgefressen haben und laege dann in der Vorzeile.
+      if (!this.istKonstruktorDeklaration(content, m.index + m[1].length)) continue;
 
       const params = paramsRaw
         .split(',')
@@ -516,10 +533,122 @@ class DartParser implements LanguageParser {
     return lineAt(content, content.length);
   }
 
+  // Typ-Grenzen EINMAL vorwaerts sammeln statt pro Treffer rueckwaerts zu suchen.
+  // Vorher kopierte findParentType je Treffer den gesamten Datei-Praefix und liess
+  // eine $-verankerte Regex darueber laufen — O(Treffer x Dateigroesse).
+  private grenzenText: string | null = null;
+  private typBereiche: Array<{ name: string; start: number; end: number; eltern: number }> = [];
+
+  private bereiteTypGrenzenVor(content: string): void {
+    if (content === this.grenzenText) return;
+    this.grenzenText = content;
+    const nameAnKlammer = new Map<number, string>();
+    const deklRe = /(?:class|mixin|enum|extension)\s+(\w+)[^{]*\{/g;
+    let d: RegExpExecArray | null;
+    while ((d = deklRe.exec(content)) !== null) {
+      nameAnKlammer.set(d.index + d[0].length - 1, d[1]);
+    }
+    // Ein einziger Durchlauf mit Klammer-Stapel paart jede oeffnende Klammer mit
+    // ihrer schliessenden. Das ergibt echte Bereiche und bleibt linear in der
+    // Dateigroesse — die Vorberechnung aus Version 3 wird dadurch nicht teurer.
+    const bereiche: Array<{ name: string; start: number; end: number; eltern: number }> = [];
+    const offen: number[] = [];
+    for (let i = 0; i < content.length; i++) {
+      const zeichen = content.charCodeAt(i);
+      if (zeichen === 123) offen.push(i);
+      else if (zeichen === 125) {
+        const auf = offen.pop();
+        if (auf === undefined) continue;
+        const name = nameAnKlammer.get(auf);
+        if (name !== undefined) bereiche.push({ name, start: auf, end: i, eltern: -1 });
+      }
+    }
+    bereiche.sort((x, y) => x.start - y.start);
+    // Elternkette: Typ-Bereiche sind ineinander geschachtelt und ueberlappen nie,
+    // deshalb genuegt ein Stapel ueber die nach start sortierte Liste.
+    const stapel: number[] = [];
+    for (let i = 0; i < bereiche.length; i++) {
+      while (stapel.length > 0 && bereiche[stapel[stapel.length - 1]].end < bereiche[i].start) stapel.pop();
+      bereiche[i].eltern = stapel.length > 0 ? stapel[stapel.length - 1] : -1;
+      stapel.push(i);
+    }
+    this.typBereiche = bereiche;
+  }
+
+  /**
+   * In welcher Typ-Deklaration liegt pos? Geliefert wird die INNERSTE
+   * umschliessende: der Scope eines Symbols ist die naechstgelegene Deklaration,
+   * die es enthaelt — nur sie ergibt einen richtigen qualifizierten Namen.
+   *
+   * Bis Version 3 wurde hier die Eigenheit von String.match ohne g nachgebildet
+   * ("erste Deklaration hinter der letzten schliessenden Klammer vor pos"). Das
+   * war in zwei Faellen falsch: bei direkt verschachtelten Deklarationen lieferte
+   * es die AEUSSERE, und — weit haeufiger — sobald vor pos ueberhaupt eine
+   * schliessende Klammer stand und danach keine neue Deklaration folgte, lieferte
+   * es gar nichts. Schon die zweite Methode einer gewoehnlichen Klasse verlor so
+   * ihren Eltern-Typ.
+   *
+   * ABWEICHUNG VON cpp.ts, bewusst und nicht zu "vereinheitlichen": cpp liefert den
+   * vollen Pfad ("Aussen::Innen"), die uebrigen acht Parser nur den innersten Namen.
+   * Grund: java.ts und dart.ts erkennen Konstruktoren daran, dass der Eltern-Typ
+   * GLEICH dem Symbolnamen ist. Ein Pfad waere nie gleich dem Namen — saemtliche
+   * Konstruktoren fielen aus dem Index. Wer das angleichen will, muss zuerst diesen
+   * Vergleich umbauen.
+   */
   private findParentType(content: string, pos: number): string | undefined {
-    const before = content.substring(0, pos);
-    const match = before.match(/(?:class|mixin|enum|extension)\s+(\w+)[^{]*\{[^}]*$/);
-    return match ? match[1] : undefined;
+    const i = this.findParentIndex(content, pos);
+    return i >= 0 ? this.typBereiche[i].name : undefined;
+  }
+
+  /** Index der innersten Typ-Deklaration, die pos umschliesst; -1 wenn keine. */
+  private findParentIndex(content: string, pos: number): number {
+    this.bereiteTypGrenzenVor(content);
+    const bereiche = this.typBereiche;
+    let lo = 0;
+    let hi = bereiche.length;
+    while (lo < hi) {
+      const mitte = (lo + hi) >> 1;
+      if (bereiche[mitte].start < pos) lo = mitte + 1;
+      else hi = mitte;
+    }
+    // Letzter Bereich, der vor pos beginnt. Endet er schon vor pos, ist er ein
+    // abgeschlossener Nachbar — dann ueber die Elternkette nach aussen weiter.
+    let i = lo - 1;
+    while (i >= 0 && bereiche[i].end <= pos) i = bereiche[i].eltern;
+    return i;
+  }
+
+  /**
+   * Trennt Konstruktor-DEKLARATION von Konstruktor-AUFRUF. Die ctorRe kann das
+   * nicht: "Foo(a: 1);" sieht in beiden Faellen gleich aus. Bis Version 3 hat der
+   * Vergleich parentType === name das nebenbei miterledigt — aber nur, weil
+   * findParentType meist ueberhaupt keinen Eltern-Typ lieferte. Dieser Schutz war
+   * ein Zufall, kein Entwurf; er fiel mit der Korrektur von findParentType weg und
+   * muss hier echt nachgeliefert werden, sonst landen copyWith-Rumpfe als
+   * Konstruktoren im Index.
+   *
+   * Zwei Bedingungen, die erst ZUSAMMEN alle geprueften Aufruf-Formen ausschliessen:
+   *  1. Die Deklaration steht DIREKT im Rumpf ihres Typs. Ein Aufruf innerhalb
+   *     einer Methode liegt eine Klammerebene tiefer.
+   *  2. Unmittelbar davor steht kein Ausdruckskontext. Das faengt die Aufrufe ohne
+   *     eigene Klammerebene ab — vor allem "=> Foo(...)" bei copyWith und Gettern.
+   * Jede Bedingung allein laesst Faelle durch: 1. nicht die Pfeil-Rumpfe, 2. nicht
+   * ein alleinstehendes "Foo(a: 1);" als Statement.
+   */
+  private istKonstruktorDeklaration(content: string, start: number): boolean {
+    const i = this.findParentIndex(content, start);
+    if (i < 0) return false;
+    let tiefe = 0;
+    for (let k = this.typBereiche[i].start + 1; k < start; k++) {
+      const zeichen = content.charCodeAt(k);
+      if (zeichen === 123) tiefe++;
+      else if (zeichen === 125) tiefe--;
+    }
+    if (tiefe !== 0) return false;
+    const davor = content.slice(0, start).trimEnd();
+    if (davor === '') return true;
+    if (/(?:=>|[=(\[,:?])$/.test(davor)) return false;
+    return !/\b(?:return|await|yield|throw|new|const|final|var)$/.test(davor);
   }
 }
 

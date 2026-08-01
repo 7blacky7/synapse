@@ -159,7 +159,38 @@ const filenameParsers: Record<string, LanguageParser> = {
   'meson_options': mesonParser,
 };
 
-export function getParserForFile(filePath: string): LanguageParser | null {
+/** Parser mit Inhaltserkennung — einmal vorberechnet, siehe getParserForFile. */
+const inhaltsErkenner = parsers.filter(p => typeof p.erkenntInhalt === 'function');
+
+/**
+ * Wie viel vom Dateianfang die Inhaltserkennung zu sehen bekommt.
+ * Klein genug, dass die Pruefung auch bei zehntausenden Dateien nicht auffaellt,
+ * gross genug fuer den Kopf einer Datei (Kommentar, Importe, erste Bindung).
+ */
+const ERKENNER_ZEICHEN = 600;
+
+/**
+ * Zustaendigen Parser bestimmen: erst ueber die Endung, dann ueber den Dateinamen,
+ * zuletzt — nur bei Dateien OHNE Endung und nur wenn der Inhalt mitgegeben wurde —
+ * ueber die Inhaltserkennung der Parser.
+ *
+ * REIHENFOLGE IST ABSICHT: die Inhaltserkennung ist der LETZTE Schritt und wird
+ * ausschliesslich in dem Zweig gefragt, der sonst null liefert. Eine Datei, die
+ * heute einem Parser zugeordnet wird, kann dadurch nicht umgehaengt werden.
+ *
+ * MEHRDEUTIGKEIT LOEST ZU NULL AUF: Schlagen zwei Erkenner an, gewinnt KEINER.
+ * Naheliegend waere, den ersten Treffer in parsers[] zu nehmen — aber diese
+ * Reihenfolge ist historisch gewachsen und nirgends als Rangfolge dokumentiert.
+ * Eine Zuordnung, die daran haengt, koennte niemand nachvollziehen, und ein
+ * Umsortieren der Liste wuerde sie still veraendern. "Nicht entscheidbar" faellt
+ * auf den bisherigen Zustand zurueck und wird protokolliert, statt sich als
+ * scheinbar sichere Zuordnung zu tarnen.
+ *
+ * @param inhalt optional. Ohne ihn verhaelt sich die Funktion exakt wie vorher —
+ *        deshalb muessen Aufrufer, die keinen Inhalt zur Hand haben
+ *        (getLanguagesForFile, getParserVersionForFile), nichts aendern.
+ */
+export function getParserForFile(filePath: string, inhalt?: string): LanguageParser | null {
   const ext = path.extname(filePath).toLowerCase();
   if (ext) {
     const byExt = parsers.find(p => p.extensions.includes(ext));
@@ -167,7 +198,49 @@ export function getParserForFile(filePath: string): LanguageParser | null {
   }
   // Fallback: Dateiname-basiertes Matching (Makefile, Dockerfile, BUILD, WORKSPACE etc.)
   const basename = path.basename(filePath).toLowerCase().split('.')[0];
-  return filenameParsers[basename] ?? null;
+  const byName = filenameParsers[basename];
+  if (byName) return byName;
+
+  // Letzter Schritt: Inhaltserkennung, nur fuer Dateien ganz ohne Endung.
+  // Eine unbekannte Endung (.dhallb, .diag) bleibt bewusst aussen vor — sie ist
+  // eine Aussage ueber die Datei, und diese Aussage zu uebergehen waere ein
+  // zweiter, viel breiterer Eingriff.
+  if (ext || !inhalt || inhaltsErkenner.length === 0) return null;
+
+  const anfang = inhalt.slice(0, ERKENNER_ZEICHEN);
+  let treffer: LanguageParser | null = null;
+  for (const kandidat of inhaltsErkenner) {
+    let erkannt = false;
+    try {
+      erkannt = kandidat.erkenntInhalt!(anfang);
+    } catch {
+      // Ein kaputter Erkenner darf die Zuordnung nicht kippen — dann eben nicht.
+      erkannt = false;
+    }
+    if (!erkannt) continue;
+    if (treffer) {
+      console.error(
+        `[Synapse] Inhaltserkennung mehrdeutig fuer "${filePath}": ` +
+          `${treffer.language} und ${kandidat.language} beanspruchen die Datei. Kein Parser zugeordnet.`
+      );
+      return null;
+    }
+    treffer = kandidat;
+  }
+  return treffer;
+}
+
+/**
+ * Kennt die Sprache dieses Parsers eine Ablauf-Ebene (Anweisungen, Aufrufe)?
+ * Unbekannte Sprachen gelten als ja — lieber eine Meldung zu viel als ein
+ * uebersehener Totalausfall.
+ *
+ * Gefragt wird nach dem SPRACHNAMEN, weil die Auswertung in parser-health.ts
+ * ueber parse_coverage.parser aggregiert und dort kein Dateipfad mehr vorliegt.
+ */
+export function kenntAblaufEbene(language: string): boolean {
+  const p = parsers.find(x => x.language === language);
+  return p?.hatAblaufEbene !== false;
 }
 
 export function getSupportedExtensions(): string[] {

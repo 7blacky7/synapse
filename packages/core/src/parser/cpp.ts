@@ -8,16 +8,62 @@
  */
 
 import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser, ParsedStatement, ParsedCallEdge } from './types.js';
-import { extractStringLiterals } from './types.js';
+import { extractStringLiterals, erstelleZeilenIndex, zeileFuerPosition } from './types.js';
 import { formatRouteName, isLikelyHttpPath, HTTP_VERBS } from './patterns/http.js';
 import { parseEmbeddedSql, looksLikeSql } from './patterns/sql.js';
 
+// Zeilenindex je Datei zwischenspeichern — siehe zeileFuerPosition in types.ts.
+// Vorher wurde pro Treffer ein Praefix der Datei kopiert und zerlegt: das ist
+// O(Treffer x Dateigroesse) und laesst grosse Dateien praktisch nie fertig werden.
+//
+// ZWEI SLOTS, mit Absicht: dieser Parser arbeitet abwechselnd auf dem Originaltext
+// und auf einer maskierten Fassung (siehe maskiereLiterale). Mit nur EINEM Slot wurde
+// der Index bei praktisch jedem Aufruf verworfen und neu aufgebaut — gemessen war das
+// LANGSAMER als die alte Praefix-Kopie (200KB: 694ms vorher, 1464ms mit einem Slot).
+let cacheTextA: string | null = null;
+let cacheIndexA: number[] = [];
+let cacheTextB: string | null = null;
+let cacheIndexB: number[] = [];
 function lineAt(text: string, pos: number): number {
-  return text.substring(0, pos).split('\n').length;
+  // BEI EINEM TREFFER WIRD DER SLOT AUF DIESES OBJEKT GESETZT, und das ist kein
+  // ueberfluessiges Zuweisen: text === cacheTextA ist nur dann ein Zeigervergleich,
+  // wenn es DASSELBE Objekt ist. Bei zwei verschiedenen Objekten mit GLEICHEM
+  // Inhalt muss V8 bis zum letzten Zeichen vergleichen, um Gleichheit festzustellen
+  // — das ist O(Dateigroesse) PRO AUFRUF. Ohne die Zuweisung bleibt das alte Objekt
+  // stehen und jeder weitere Treffer zahlt erneut (gemessen an 2,2 MB: 74 us je
+  // Aufruf, 357 ms von 855 ms Gesamtlaufzeit). Danach ist es ein Zeigervergleich.
+  if (text === cacheTextA) { cacheTextA = text; return zeileFuerPosition(cacheIndexA, pos); }
+  if (text === cacheTextB) { cacheTextB = text; return zeileFuerPosition(cacheIndexB, pos); }
+  // Unbekannter Text: aeltesten Slot verdraengen, neuen nach vorne.
+  cacheTextB = cacheTextA;
+  cacheIndexB = cacheIndexA;
+  cacheTextA = text;
+  cacheIndexA = erstelleZeilenIndex(text);
+  return zeileFuerPosition(cacheIndexA, pos);
+}
+
+// Die maskierte Fassung (Kommentare und Literalinhalte durch Leerzeichen ersetzt,
+// Laenge unveraendert) wird je Rohtext EINMAL gebaut und geteilt. Vorher bauten
+// parse() und findBodies() sie unabhaengig voneinander — zwei Strings mit exakt
+// gleichem Inhalt, aber verschiedene Objekte. Das kostete doppelt: einmal den
+// zweiten vollstaendigen Durchlauf, und dann dauerhaft den Inhaltsvergleich im
+// Zeilenindex-Cache oben, weil dieser die beiden Objekte nicht unterscheiden kann,
+// ohne sie ganz zu vergleichen.
+// Der Vergleich hier ist unkritisch: Aufrufer reichen immer DASSELBE content-Objekt
+// herein, es ist also ein Zeigervergleich. Beim Wechsel auf eine andere Datei
+// unterscheiden sich die Laengen praktisch immer, dann bricht V8 sofort ab.
+let maskeRohtext: string | null = null;
+let maskeErgebnis = '';
+function maskierteFassung(src: string): string {
+  if (src !== maskeRohtext) {
+    maskeRohtext = src;
+    maskeErgebnis = maskiereLiterale(stripComments(src));
+  }
+  return maskeErgebnis;
 }
 
 function endLineAt(text: string, pos: number, matchLength: number): number {
-  return text.substring(0, pos + matchLength).split('\n').length;
+  return lineAt(text, pos + matchLength);
 }
 
 // ---------------------------------------------------------------------------
@@ -25,7 +71,7 @@ function endLineAt(text: string, pos: number, matchLength: number): number {
 // ---------------------------------------------------------------------------
 
 function lineAtCpp(text: string, pos: number): number {
-  return text.substring(0, pos).split('\n').length;
+  return lineAt(text, pos);
 }
 
 // Ersetzt Kommentare durch Leerzeichen, bei gleichbleibender Laenge. Steht auf
@@ -236,7 +282,8 @@ function extractFlowCpp(content: string): { statements: ParsedStatement[]; callE
   function findBodies(src: string): FuncBody[] {
     // Literale mitmaskieren: eine Klammer in einer Zeichenkette darf die
     // Rumpf-Grenzen nicht verschieben (CPARSER-15 B1).
-    const stripped = maskiereLiterale(stripComments(src));
+    // Geteilte Fassung, siehe maskierteFassung im Modulkopf.
+    const stripped = maskierteFassung(src);
 
     // class/struct-Bloecke, um Methoden ihren Typ zuzuordnen (scope_name).
     const typBloecke: { name: string; start: number; end: number }[] = [];
@@ -342,11 +389,16 @@ function extractFlowCpp(content: string): { statements: ParsedStatement[]; callE
     const sc = { v: 0 };
     const lines = body.split('\n');
     let i = 0;
+    // Laufender Zeichen-Offset statt lines.slice(0, i).reduce(...) je Zeile: die
+    // alte Fassung summierte fuer JEDE Zeile die Laengen aller vorherigen Zeilen
+    // neu auf und legte dafuer zusaetzlich ein Teil-Array an — O(Zeilen^2) pro
+    // Funktionsrumpf. Gemessen faellt das ab etwa 4000 Zeilen Rumpflaenge ins
+    // Gewicht (8000 Zeilen: Faktor 2.76 statt 2.0 bei Verdopplung).
+    let charOffset = 0;
     while (i < lines.length) {
       const line = lines[i];
       const trimmed = line.trim();
-      if (!trimmed || /^\/[/*]/.test(trimmed) || /^\*/.test(trimmed)) { i++; continue; }
-      const charOffset = lines.slice(0, i).reduce((a, l) => a + l.length + 1, 0);
+      if (!trimmed || /^\/[/*]/.test(trimmed) || /^\*/.test(trimmed)) { charOffset += line.length + 1; i++; continue; }
       const fileLine = lineAtCpp(content, bodyOffset + charOffset);
       const isTop = false; // inside function body, never top-level
 
@@ -482,6 +534,7 @@ function extractFlowCpp(content: string): { statements: ParsedStatement[]; callE
           extractCalls(trimmed, st.temp_id, scopeName, fileLine);
         }
       }
+      charOffset += line.length + 1;
       i++;
     }
   }
@@ -535,8 +588,23 @@ class CppParser implements LanguageParser {
    *     Statements erfasst (CPARSER-15 B7 und B8).
    * 9 = Deklarationen mit benutzerdefiniertem Typ werden erfasst; die feste
    *     Liste von Typwoertern kannte eigene Klassennamen nicht (CPARSER-15 B9).
+   * 10 = C++20-Attribute, verschachtelte class/struct/union-Typen, qualifizierte
+   *      Enum-Basistypen, mehrteilige Klasse::Unterklasse::Methode-Namen sowie
+   *      Konstruktoren, Destruktoren und Operatoren in und ausserhalb von Klassen
+   *      werden als einheitliche Funktionssymbole erfasst (Deep-Fixture 2026-07-27).
+   * 11 = Zeilenberechnung ueber Index statt Praefix-Kopie (siehe lineAt).
+   * 12 = processBody fuehrt den Zeichen-Offset mit, statt ihn je Zeile aus allen
+   *      vorherigen Zeilen neu aufzusummieren (O(Zeilen^2) je Funktionsrumpf),
+   *      und die Dubletten-Pruefungen schlagen in einem Index nach, statt je
+   *      Treffer die gesamte bisherige Symbolliste zu durchsuchen. findParentType
+   *      nutzt Binaersuche und Elternkette statt filter+sort ueber alle Typen.
    */
-  version = 9;
+  // 13: maskierte Fassung nur noch einmal je Datei bauen und teilen (siehe
+  //     maskierteFassung). Rein innerlich, die AUSGABE ist unveraendert — die
+  //     Erhoehung dient nur dem Nachziehen. Der Grund war nicht der doppelte
+  //     Durchlauf an sich, sondern dass zwei inhaltsgleiche String-Objekte den
+  //     Vergleich im Zeilenindex-Cache auf O(Dateigroesse) je Aufruf hoben.
+  version = 13;
   extensions = ['.cpp', '.hpp', '.cc', '.cxx', '.hxx', '.hh'];
 
   parse(content: string, filePath: string): ParseResult {
@@ -547,7 +615,33 @@ class CppParser implements LanguageParser {
     // Einmal je Datei: Kommentare und Literal-Inhalte maskiert, Laenge und damit
     // alle Positionen unveraendert. Grundlage fuer das Klammerzaehlen in
     // findClosingBrace (CPARSER-15 B1).
-    const maskiert = maskiereLiterale(stripComments(content));
+    const maskiert = maskierteFassung(content);
+    const typeRanges = this.collectTypeRanges(maskiert);
+    const typEltern = this.baueTypEltern(typeRanges);
+    const parentTypeAt = (pos: number): string | undefined => this.findParentType(typeRanges, typEltern, pos);
+
+    // Nachschlag fuer die Dubletten-Pruefungen weiter unten. Die suchten bisher
+    // je Treffer mit symbols.some/find die KOMPLETTE bisherige Ausgabe ab, also
+    // O(Treffer x Symbole) — laut CPU-Profil der groesste verbliebene Posten in
+    // dieser Datei (44 % Eigenzeit in parse, weitere 9 % im Praedikat).
+    // Der Index wird absichtlich erst beim Nachschlagen nachgezogen: so muss
+    // keine der elf push-Stellen angefasst werden, und der Nachzieh-Lauf kostet
+    // ueber den gesamten Parse zusammen nur einen Durchlauf durch symbols.
+    // find und some lieferten stets den ERSTEN passenden Eintrag — deshalb wird
+    // ein bereits belegter Schluessel hier nie ueberschrieben.
+    const funktionsIndex = new Map<string, ParsedSymbol>();
+    let indexBis = 0;
+    const holeFunktion = (name: string, zeile: number): ParsedSymbol | undefined => {
+      for (; indexBis < symbols.length; indexBis++) {
+        const s = symbols[indexBis];
+        if (s.symbol_type !== 'function' || !s.name) continue;
+        // Zeile vor Name: so bleibt der Schluessel eindeutig, egal welche Zeichen
+        // der Name traegt (Operatoren, Destruktoren, qualifizierte Namen).
+        const schluessel = `${s.line_start}#${s.name}`;
+        if (!funktionsIndex.has(schluessel)) funktionsIndex.set(schluessel, s);
+      }
+      return funktionsIndex.get(`${zeile}#${name}`);
+    };
 
     // ══════════════════════════════════════════════
     // 1. #include
@@ -598,7 +692,7 @@ class CppParser implements LanguageParser {
     // ══════════════════════════════════════════════
     // 3. Namespaces
     // ══════════════════════════════════════════════
-    const nsRe = /^namespace\s+(\w+)\s*\{/gm;
+    const nsRe = /^[ \t]*namespace\s+([\w:]+)\s*\{/gm;
     while ((m = nsRe.exec(content)) !== null) {
       symbols.push({
         // Der Namensraum wird unter SEINEM Namen abgelegt, nicht unter dem Wort
@@ -616,7 +710,7 @@ class CppParser implements LanguageParser {
     // ══════════════════════════════════════════════
     // 4. Classes & Structs
     // ══════════════════════════════════════════════
-    const classRe = /^(?:template\s*<[^>]+>\s*\n\s*)?(class|struct)\s+(?:\[\[[\w:]+\]\]\s+)?(\w+)(?:\s+final)?(?:\s*:\s*(?:public|protected|private)\s+([\w:<>,\s]+))?\s*\{/gm;
+    const classRe = /^[ \t]*(?:template\s*<[^>]+>\s*\n\s*)?(class|struct|union)\s+(?:\[\[[^\]\n]+\]\]\s+)?(\w+)(?:\s*<[^>{;]+>)?(?:\s+final)?(?:\s*:\s*((?:(?:public|protected|private|virtual)\s+)?[\w:<>,\s]+))?\s*\{/gm;
     while ((m = classRe.exec(content)) !== null) {
       const kind = m[1];
       const name = m[2];
@@ -639,6 +733,7 @@ class CppParser implements LanguageParser {
         line_start: lineStart,
         line_end: lineEnd,
         is_exported: isHeader,
+        parent_id: parentTypeAt(m.index),
       });
 
       for (const base of bases) {
@@ -653,7 +748,7 @@ class CppParser implements LanguageParser {
     // ══════════════════════════════════════════════
     // 5. Enums (enum class / enum)
     // ══════════════════════════════════════════════
-    const enumRe = /^enum\s+(?:class\s+)?(\w+)(?:\s*:\s*\w+)?\s*\{([\s\S]*?)\}\s*;/gm;
+    const enumRe = /^[ \t]*enum\s+(?:class\s+)?(\w+)(?:\s*:\s*[\w:<>]+)?\s*\{([\s\S]*?)\}\s*;/gm;
     while ((m = enumRe.exec(content)) !== null) {
       const name = m[1];
       const body = m[2];
@@ -686,7 +781,7 @@ class CppParser implements LanguageParser {
     // Jetzt ist Whitespace an jeder Stelle nur auf EINEM Weg konsumierbar:
     // zwischen Typ-Tokens als expliziter Trenner, und vor einem Qualifier, der
     // dann auch wirklich folgen muss.
-    const methodRe = /^([ \t]+)(?:(?:virtual|static|explicit|inline|constexpr|override|final|noexcept)\s+)*((?:const\s+)?\w[\w:<>*&]*(?:\s+[\w:<>*&]+)*?)\s+(\w+)\s*\(((?:[^()]|\([^()]*\))*)\)(?:\s*(?:const|noexcept|override|final))*\s*\{/gm;
+    const methodRe = /^([ \t]+)(?:\[\[[^\]\n]+\]\]\s*)*(?:(?:virtual|static|explicit|inline|constexpr|consteval|constinit|override|final|noexcept)\s+)*((?:const\s+)?\w[\w:<>*&]*(?:\s+[\w:<>*&]+)*?)\s+(\w+)\s*\(((?:[^()]|\([^()]*\))*)\)(?:\s*(?:const|noexcept|override|final|&|&&))*\s*\{/gm;
     while ((m = methodRe.exec(content)) !== null) {
       const returnType = m[2].trim();
       const funcName = m[3];
@@ -697,7 +792,7 @@ class CppParser implements LanguageParser {
       if (['class', 'struct', 'namespace', 'enum'].includes(returnType)) continue;
 
       const params = this.parseParams(paramsRaw);
-      const parentType = this.findParentType(content, m.index);
+      const parentType = parentTypeAt(m.index);
 
       symbols.push({
         symbol_type: 'function',
@@ -712,7 +807,7 @@ class CppParser implements LanguageParser {
     }
 
     // Destruktoren — erkennbar an der fuehrenden Tilde, kein Rueckgabetyp (CPARSER-12)
-    const dtorRe = /^([ \t]+)(?:virtual\s+)?~(\w+)\s*\(\s*\)\s*(?:override\s*)?(?:noexcept\s*)?\{/gm;
+    const dtorRe = /^([ \t]+)(?:\[\[[^\]\n]+\]\]\s*)*(?:(?:virtual|inline|constexpr)\s+)*~(\w+)\s*\(\s*\)\s*(?:override\s*)?(?:noexcept\s*)?\{/gm;
     while ((m = dtorRe.exec(content)) !== null) {
       symbols.push({
         symbol_type: 'function',
@@ -722,32 +817,46 @@ class CppParser implements LanguageParser {
         line_start: lineAt(content, m.index),
         line_end: this.findClosingBrace(maskiert, m.index + m[0].length - 1),
         is_exported: isHeader,
-        parent_id: this.findParentType(content, m.index),
+        parent_id: parentTypeAt(m.index),
       });
     }
 
-    // operator-Ueberladungen — erkennbar am Schluesselwort operator (CPARSER-12)
-    const operatorRe = /^([ \t]+)(?:([\w:<>*&,\s]+?)\s+)?operator\s*([^\s(]{1,3}|\(\))\s*\(((?:[^()]|\([^()]*\))*)\)\s*(?:const\s*)?(?:noexcept\s*)?\{/gm;
+    // Operatoren: inline, frei und qualifiziert (Class::operator). Neben
+    // Satzzeichen-Operatoren werden auch Konversionsoperatoren wie operator bool
+    // erfasst. Attribute und C++20-Qualifier duerfen davor stehen.
+    const operatorRe = /^([ \t]*)(?:\[\[[^\]\n]+\]\]\s*)*(?:(?:virtual|static|inline|constexpr|consteval|explicit)\s+)*(?:((?:const\s+)?[\w:<>*&,]+(?:\s+[\w:<>*&,]+)*)\s+)?(?:(\w+(?:::\w+)*)::)?operator\s*(\(\)|\[\]|[A-Za-z_]\w*(?:::\w+)*(?:<[^()\n]+>)?|[^\s(]+)\s*\(((?:[^()]|\([^()]*\))*)\)(?:\s*(?:const|noexcept|override|final|&|&&))*\s*\{/gm;
     while ((m = operatorRe.exec(content)) !== null) {
+      const lineStart = lineAt(content, m.index);
+      const operatorToken = m[4];
+      const operatorName = /^[A-Za-z_]/.test(operatorToken) ? `operator ${operatorToken}` : 'operator' + operatorToken;
+      const parentType = m[3] || parentTypeAt(m.index);
+      const existing = holeFunktion(operatorName, lineStart);
+      if (existing) {
+        existing.params = this.parseParams(m[5]);
+        existing.return_type = (m[2] || '').trim();
+        existing.parent_id = parentType;
+        continue;
+      }
       symbols.push({
         symbol_type: 'function',
-        name: 'operator' + m[3],
-        params: this.parseParams(m[4]),
+        name: operatorName,
+        params: this.parseParams(m[5]),
         return_type: (m[2] || '').trim(),
-        line_start: lineAt(content, m.index),
+        line_start: lineStart,
         line_end: this.findClosingBrace(maskiert, m.index + m[0].length - 1),
-        is_exported: isHeader,
-        parent_id: this.findParentType(content, m.index),
+        is_exported: isHeader || !m[1],
+        parent_id: parentType,
       });
     }
 
     // Konstruktoren mit Initialisierungsliste — Klammerpaar, Doppelpunkt, Initialisierer.
     // Der Rumpf beginnt erst nach der Liste, deshalb wird bis zur oeffnenden Klammer gematcht.
     // Aufrufe koennen hier nicht hineinrutschen: ein Aufruf hat keine Initialisierungsliste. (CPARSER-12)
-    const ctorInitRe = /^([ \t]+)(?:explicit\s+)?(\w+)\s*\(((?:[^()]|\([^()]*\))*)\)\s*:\s*[^;{]*\{/gm;
+    const ctorInitRe = /^([ \t]+)(?:\[\[[^\]\n]+\]\]\s*)*(?:(?:explicit|constexpr|consteval|inline)\s+)*(\w+)\s*\(((?:[^()]|\([^()]*\))*)\)\s*(?:noexcept\s*)?:\s*[^;{]*\{/gm;
     while ((m = ctorInitRe.exec(content)) !== null) {
       const ctorName = m[2];
-      if (['if', 'for', 'while', 'switch', 'catch', 'return', 'do', 'else'].includes(ctorName)) continue;
+      const parentType = parentTypeAt(m.index);
+      if (!parentType || parentType.split('::').pop() !== ctorName) continue;
       symbols.push({
         symbol_type: 'function',
         name: ctorName,
@@ -756,7 +865,45 @@ class CppParser implements LanguageParser {
         line_start: lineAt(content, m.index),
         line_end: this.findClosingBrace(maskiert, m.index + m[0].length - 1),
         is_exported: isHeader,
-        parent_id: this.findParentType(content, m.index),
+        parent_id: parentType,
+      });
+    }
+
+    // Inline-Konstruktor ohne Initialisierungsliste, aber mit echtem Rumpf.
+    const ctorBodyRe = /^([ \t]+)(?:\[\[[^\]\n]+\]\]\s*)*(?:(?:explicit|constexpr|consteval|inline)\s+)*(\w+)\s*\(((?:[^()]|\([^()]*\))*)\)\s*(?:noexcept\s*)?\{/gm;
+    while ((m = ctorBodyRe.exec(content)) !== null) {
+      const ctorName = m[2];
+      const parentType = parentTypeAt(m.index);
+      if (!parentType || parentType.split('::').pop() !== ctorName) continue;
+      const lineStart = lineAt(content, m.index);
+      if (holeFunktion(ctorName, lineStart)) continue;
+      symbols.push({
+        symbol_type: 'function',
+        name: ctorName,
+        params: this.parseParams(m[3]),
+        return_type: '',
+        line_start: lineStart,
+        line_end: this.findClosingBrace(maskiert, m.index + m[0].length - 1),
+        is_exported: isHeader,
+        parent_id: parentType,
+      });
+    }
+
+    // Explizit defaultete oder geloeschte Inline-Special-Member sind Definitionen,
+    // obwohl sie keinen Rumpf besitzen.
+    const inlineDefaultSpecialRe = /^([ \t]+)(?:\[\[[^\]\n]+\]\]\s*)*(?:(?:explicit|constexpr|consteval|inline|virtual)\s+)*(~?\w+)\s*\(((?:[^()]|\([^()]*\))*)\)\s*(?:noexcept\s*)?=\s*(?:default|delete)\s*;/gm;
+    while ((m = inlineDefaultSpecialRe.exec(content)) !== null) {
+      const rawName = m[2];
+      const parentType = parentTypeAt(m.index);
+      if (!parentType || parentType.split('::').pop() !== rawName.replace(/^~/, '')) continue;
+      symbols.push({
+        symbol_type: 'function',
+        name: rawName,
+        params: this.parseParams(m[3]),
+        return_type: '',
+        line_start: lineAt(content, m.index),
+        is_exported: isHeader,
+        parent_id: parentType,
       });
     }
 
@@ -766,7 +913,7 @@ class CppParser implements LanguageParser {
     // Funktion GAR NICHT als Symbol erkannt. Klammern sind in der Klasse nicht
     // enthalten, deshalb kann eine Parameterliste nicht als Typ gelesen werden.
     // (CPARSER-15 B2)
-    const freeFuncRe = /^(?:(?:inline|static|extern|constexpr|template\s*<[^>]+>\s*\n\s*)*)((?:const\s+)?(?:\w[\w:<>*&,\s]*?))\s+(\w+)\s*\(((?:[^()]|\([^()]*\))*)\)(?:\s*(?:const|noexcept))*\s*\{/gm;
+    const freeFuncRe = /^(?:[ \t]*\[\[[^\]\n]+\]\]\s*)*(?:(?:inline|static|extern|constexpr|consteval|explicit|virtual|template\s*<[^>]+>\s*\n\s*)*)((?:const\s+)?(?:\w[\w:<>*&,\s]*?))\s+(\w+)\s*\(((?:[^()]|\([^()]*\))*)\)(?:\s*(?:const|noexcept|&|&&))*\s*\{/gm;
     while ((m = freeFuncRe.exec(content)) !== null) {
       const returnType = m[1].trim();
       const funcName = m[2];
@@ -774,10 +921,11 @@ class CppParser implements LanguageParser {
       const lineStart = lineAt(content, m.index);
 
       if (['if', 'for', 'while', 'switch', 'catch', 'return', 'do', 'class', 'struct', 'namespace', 'enum'].includes(funcName)) continue;
-      if (['class', 'struct', 'namespace', 'enum'].includes(returnType)) continue;
+      if (['class', 'struct', 'namespace', 'enum', 'explicit', 'virtual'].includes(returnType)) continue;
+      if (returnType.includes('operator') || /\b(?:public|protected|private)\s*:/.test(returnType)) continue;
 
       // Skip if already found as method
-      if (symbols.some(s => s.symbol_type === 'function' && s.name === funcName && s.line_start === lineStart)) continue;
+      if (holeFunktion(funcName, lineStart)) continue;
 
       const params = this.parseParams(paramsRaw);
 
@@ -794,32 +942,80 @@ class CppParser implements LanguageParser {
 
     // Scope-resolved methods: RetType ClassName::method(...)
     // Komma im Rueckgabetyp, siehe freeFuncRe (CPARSER-15 B2).
-    const scopeMethodRe = /^((?:const\s+)?(?:\w[\w:<>*&,\s]*?))\s+(\w+)::(\w+)\s*\(((?:[^()]|\([^()]*\))*)\)(?:\s*(?:const|noexcept))*\s*\{/gm;
+    const scopeMethodRe = /^(?:[ \t]*\[\[[^\]\n]+\]\]\s*)*((?:const\s+)?(?:\w[\w:<>*&,\s]*?))\s+((?:\w+::)+)(\w+)\s*\(((?:[^()]|\([^()]*\))*)\)(?:\s*(?:const|noexcept|&|&&))*\s*\{/gm;
     while ((m = scopeMethodRe.exec(content)) !== null) {
       const returnType = m[1].trim();
-      const className = m[2];
+      const className = m[2].replace(/::$/, '');
       const methodName = m[3];
       const paramsRaw = m[4];
       const lineStart = lineAt(content, m.index);
-
       const params = this.parseParams(paramsRaw);
+      const existing = holeFunktion(methodName, lineStart);
 
-      symbols.push({
-        symbol_type: 'function',
-        name: methodName,
-        params,
-        return_type: returnType,
-        line_start: lineStart,
-        line_end: this.findClosingBrace(maskiert, m.index + m[0].length - 1),
-        is_exported: true,
-        parent_id: className,
-      });
+      if (existing) {
+        existing.params = params;
+        existing.return_type = returnType;
+        existing.parent_id = className;
+      } else {
+        symbols.push({
+          symbol_type: 'function',
+          name: methodName,
+          params,
+          return_type: returnType,
+          line_start: lineStart,
+          line_end: this.findClosingBrace(maskiert, m.index + m[0].length - 1),
+          is_exported: true,
+          parent_id: className,
+        });
+      }
 
       references.push({
         symbol_name: className,
         line_number: lineStart,
         context: `${className}::${methodName}(...)`.slice(0, 80),
       });
+    }
+
+    // Qualifizierte Konstruktoren und Destruktoren, auch ueber mehrere Ebenen
+    // wie Entity::Builder::Builder. Rueckgabetyp existiert hier absichtlich nicht.
+    const scopeSpecialRe = /^[ \t]*(?:\[\[[^\]\n]+\]\]\s*)*(?:(?:explicit|constexpr|consteval|inline|virtual)\s+)*((?:\w+::)+)(~?\w+)\s*\(((?:[^()]|\([^()]*\))*)\)\s*(?:noexcept\s*)?(?::\s*[^;{]*)?\{/gm;
+    while ((m = scopeSpecialRe.exec(content)) !== null) {
+      const className = m[1].replace(/::$/, '');
+      const specialName = m[2];
+      if (className.split('::').pop() !== specialName.replace(/^~/, '')) continue;
+      const lineStart = lineAt(content, m.index);
+      if (holeFunktion(specialName, lineStart)) continue;
+      symbols.push({
+        symbol_type: 'function',
+        name: specialName,
+        params: this.parseParams(m[3]),
+        return_type: '',
+        line_start: lineStart,
+        line_end: this.findClosingBrace(maskiert, m.index + m[0].length - 1),
+        is_exported: true,
+        parent_id: className,
+      });
+      references.push({ symbol_name: className, line_number: lineStart, context: `${className}::${specialName}(...)`.slice(0, 80) });
+    }
+
+    // Qualifizierte default/delete-Definitionen ohne Rumpf.
+    const scopeDefaultSpecialRe = /^[ \t]*((?:\w+::)+)(~?\w+)\s*\(((?:[^()]|\([^()]*\))*)\)\s*(?:noexcept\s*)?=\s*(?:default|delete)\s*;/gm;
+    while ((m = scopeDefaultSpecialRe.exec(content)) !== null) {
+      const className = m[1].replace(/::$/, '');
+      const specialName = m[2];
+      if (className.split('::').pop() !== specialName.replace(/^~/, '')) continue;
+      const lineStart = lineAt(content, m.index);
+      if (holeFunktion(specialName, lineStart)) continue;
+      symbols.push({
+        symbol_type: 'function',
+        name: specialName,
+        params: this.parseParams(m[3]),
+        return_type: '',
+        line_start: lineStart,
+        is_exported: true,
+        parent_id: className,
+      });
+      references.push({ symbol_name: className, line_number: lineStart, context: `${className}::${specialName} = default/delete`.slice(0, 80) });
     }
 
     // ══════════════════════════════════════════════
@@ -965,13 +1161,48 @@ class CppParser implements LanguageParser {
 
   private parseParams(raw: string): string[] {
     if (!raw.trim() || raw.trim() === 'void') return [];
-    return raw
-      .split(',')
-      .map(p => {
-        const parts = p.trim().split(/\s+/);
-        return parts[parts.length - 1]?.replace(/[*&]/g, '') || '';
+
+    const teile: string[] = [];
+    let start = 0;
+    let rund = 0;
+    let eckig = 0;
+    let spitz = 0;
+    let geschweift = 0;
+    let quote = '';
+    for (let i = 0; i < raw.length; i++) {
+      const ch = raw[i];
+      if (quote) {
+        if (ch === '\\') { i++; continue; }
+        if (ch === quote) quote = '';
+        continue;
+      }
+      if (ch === '"' || ch === "'") { quote = ch; continue; }
+      if (ch === '(') rund++;
+      else if (ch === ')') rund--;
+      else if (ch === '[') eckig++;
+      else if (ch === ']') eckig--;
+      else if (ch === '<') spitz++;
+      else if (ch === '>') spitz = Math.max(0, spitz - 1);
+      else if (ch === '{') geschweift++;
+      else if (ch === '}') geschweift--;
+      else if (ch === ',' && rund === 0 && eckig === 0 && spitz === 0 && geschweift === 0) {
+        teile.push(raw.slice(start, i));
+        start = i + 1;
+      }
+    }
+    teile.push(raw.slice(start));
+
+    return teile
+      .map(param => {
+        const ohneDefault = param.replace(/\s*=\s*[\s\S]*$/, '').trim();
+        const funktionszeiger = ohneDefault.match(/\(\s*[*&]\s*([A-Za-z_]\w*)\s*\)/);
+        if (funktionszeiger) return funktionszeiger[1];
+        const arrayName = ohneDefault.match(/([A-Za-z_]\w*)\s*\[[^\]]*\]\s*$/);
+        if (arrayName) return arrayName[1];
+        const namen = ohneDefault.match(/([A-Za-z_]\w*)\s*(?:\.\.\.)?\s*$/);
+        return namen ? namen[1] : '';
       })
-      .filter(p => p && p !== '...');
+      .filter(p => p && p !== 'void');
   }
 
   private findClosingBrace(content: string, openPos: number): number {
@@ -984,10 +1215,73 @@ class CppParser implements LanguageParser {
     return lineAt(content, content.length);
   }
 
-  private findParentType(content: string, pos: number): string | undefined {
-    const before = content.substring(0, pos);
-    const classMatch = before.match(/(?:class|struct)\s+(\w+)[^{]*\{[^}]*$/);
-    return classMatch ? classMatch[1] : undefined;
+  private collectTypeRanges(content: string): Array<{ name: string; start: number; end: number }> {
+    const ranges: Array<{ name: string; start: number; end: number }> = [];
+    const typeRe = /^[ \t]*(?:class|struct|union)\s+(?:\[\[[^\]\n]+\]\]\s+)?(\w+)(?:\s*<[^>{;\n]+>)?(?:\s+final)?(?:\s*:[^{;]+)?\s*\{/gm;
+    let match: RegExpExecArray | null;
+    while ((match = typeRe.exec(content)) !== null) {
+      const open = match.index + match[0].lastIndexOf('{');
+      const end = this.findClosingBraceOffset(content, open);
+      if (end > open) ranges.push({ name: match[1], start: open, end });
+    }
+    return ranges;
+  }
+
+  /**
+   * Zu jedem Typbereich der unmittelbar umschliessende Bereich, einmal ueber
+   * einen Stapel bestimmt. collectTypeRanges liefert die Bereiche nach start
+   * aufsteigend, weil die Regex die Datei von vorn durchlaeuft.
+   */
+  private baueTypEltern(ranges: Array<{ name: string; start: number; end: number }>): Int32Array {
+    const eltern = new Int32Array(ranges.length).fill(-1);
+    const stapel: number[] = [];
+    for (let i = 0; i < ranges.length; i++) {
+      while (stapel.length > 0 && ranges[stapel[stapel.length - 1]].end <= ranges[i].start) stapel.pop();
+      eltern[i] = stapel.length > 0 ? stapel[stapel.length - 1] : -1;
+      stapel.push(i);
+    }
+    return eltern;
+  }
+
+  private findParentType(
+    ranges: Array<{ name: string; start: number; end: number }>,
+    eltern: Int32Array,
+    pos: number,
+  ): string | undefined {
+    // Vorher lief hier je Treffer ein filter ueber ALLE Typbereiche plus ein
+    // sort — O(Typen x Treffer). Gemessen war das der Treiber: bei Material aus
+    // vielen Klassen stieg der Faktor je Verdopplung auf 3.16, bei gleich viel
+    // Material aus freien Funktionen blieb er bei 2.50.
+    // Jetzt: Binaersuche auf den innersten Bereich, dann entlang der Elternkette
+    // nach aussen. Die Kette wird dabei Ebene fuer Ebene GEPRUEFT und nicht
+    // blind uebernommen, damit bei unbalancierten Klammern genau die Bereiche
+    // zusammenkommen, die pos wirklich enthalten — wie beim alten filter.
+    let lo = 0;
+    let hi = ranges.length;
+    while (lo < hi) {
+      const mitte = (lo + hi) >> 1;
+      if (ranges[mitte].start < pos) lo = mitte + 1;
+      else hi = mitte;
+    }
+    let k = lo - 1;
+    while (k >= 0 && !(pos > ranges[k].start && pos < ranges[k].end)) k = eltern[k];
+    if (k < 0) return undefined;
+    const namen: string[] = [];
+    for (let i = k; i >= 0; i = eltern[i]) {
+      if (pos > ranges[i].start && pos < ranges[i].end) namen.push(ranges[i].name);
+    }
+    namen.reverse();
+    return namen.join('::');
+  }
+
+  private findClosingBraceOffset(content: string, openPos: number): number {
+    let depth = 1;
+    for (let i = openPos + 1; i < content.length; i++) {
+      if (content[i] === '{') depth++;
+      else if (content[i] === '}') depth--;
+      if (depth === 0) return i;
+    }
+    return content.length;
   }
 }
 

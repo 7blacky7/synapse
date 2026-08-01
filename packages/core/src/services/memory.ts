@@ -252,38 +252,73 @@ export async function writeMemory(
     `INSERT INTO memories (id, project, name, category, content, tags, created_at, updated_at)
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
      ON CONFLICT (id) DO UPDATE SET
-       content = $5, category = $4, tags = $6, updated_at = $8`,
+       content = $5, category = $4, tags = $6, updated_at = $8, embedded_at = NULL`,
     [id, project, name, category, content, tags, memory.createdAt, memory.updatedAt]
   );
 
-  // 2. Qdrant (Vektor-Index) — Warning bei Fehler, PG-Daten bleiben erhalten
+  // 2. Qdrant (Vektor-Index) — NEBENLAEUFIG seit EMBED-1.
+  // Der Aufruf kehrt zurueck, sobald die Zeile in PostgreSQL steht; der Vektor wird
+  // nachgereicht. Bis dahin ist embedded_at NULL — und genau daran erkennt der Backlog den
+  // Eintrag, falls das Nachreichen scheitert. Ohne diese Spalte waere ein fehlgeschlagenes
+  // Embedding still verloren: abrufbar ueber PG, aber fuer die semantische Suche unsichtbar.
+  // WARUM KEIN await: die Embedding-Queue hat zwei Slots (EMBED_MAX_CONCURRENT). Laeuft im
+  // Hintergrund ein grosser Code-Lauf, wartete hier frueher JEDER interaktive Schreibvorgang
+  // mit und lief in ein Timeout — obwohl die Daten laengst in PG standen.
   let warning: string | undefined;
-  try {
-    const vector = await embed(content);
-    const payload: MemoryPayload = {
-      project: memory.project,
-      name: memory.name,
-      content: memory.content,
-      category: memory.category,
-      tags: memory.tags,
-      linkedPaths: memory.linkedPaths,
-      createdAt: memory.createdAt,
-      updatedAt: memory.updatedAt,
-    };
-
-    if (existing) {
-      await deleteVector(collectionName, existing.id);
-    }
-    await insertVector(collectionName, vector, payload, memory.id);
-  } catch (error) {
-    console.error('[Synapse] Qdrant Memory-Write fehlgeschlagen:', error);
-    warning = `Qdrant-Write fehlgeschlagen: ${error}`;
-  }
+  void embeddeMemoryNach(project, id).catch(err => {
+    console.error(`[Synapse] Memory-Embedding fuer "${name}" fehlgeschlagen, Backlog holt es nach:`, err);
+  });
 
   const codeRefInfo = linkedPaths.length > 0 ? ` (${linkedPaths.length} Code-Referenzen)` : '';
   console.error(`[Synapse] Memory "${name}" gespeichert für Projekt "${project}"${codeRefInfo}`);
   return { ...memory, warning };
 }
+
+/**
+ * EMBED-1: traegt den Vektor einer Memory nach.
+ *
+ * Gerufen von writeMemory OHNE await und vom Backlog fuer alles, was dabei liegengeblieben
+ * ist. embedded_at wird ERST nach erfolgreichem insertVector gesetzt — die Spalte ist damit
+ * die einzige Quelle der Wahrheit darueber, ob die semantische Suche diesen Eintrag kennt.
+ * Faellt das Embedding aus, bleibt sie NULL und der Backlog holt den Eintrag erneut.
+ *
+ * Liest den Inhalt bewusst frisch aus PG statt ihn als Parameter zu nehmen: zwischen dem
+ * Schreiben und dem Nachreichen kann die Memory erneut geschrieben worden sein, und dann
+ * soll der NEUE Inhalt embedded werden, nicht der alte.
+ */
+export async function embeddeMemoryNach(project: string, id: string): Promise<void> {
+  const pool = getPool();
+  const { rows } = await pool.query(
+    `SELECT name, category, content, tags, created_at, updated_at
+       FROM memories WHERE id = $1 AND project = $2`,
+    [id, project]
+  );
+  if (rows.length === 0) return; // zwischenzeitlich geloescht — nichts nachzutragen
+  const row = rows[0];
+
+  const collectionName = COLLECTIONS.projectMemories(project);
+  await ensureCollection(collectionName);
+
+  const vector = await embed(row.content);
+  const payload: MemoryPayload = {
+    project,
+    name: row.name,
+    content: row.content,
+    category: row.category,
+    tags: row.tags ?? [],
+    linkedPaths: extractFilePaths(row.content),
+    createdAt: new Date(row.created_at).toISOString(),
+    updatedAt: new Date(row.updated_at).toISOString(),
+  };
+
+  // Gleiche id wie die PG-Zeile: delete + insert wirkt als upsert. Das delete darf fehlen
+  // (neuer Eintrag), deshalb wird sein Fehler geschluckt und nicht der ganze Nachtrag.
+  await deleteVector(collectionName, id).catch(() => { /* existierte noch nicht */ });
+  await insertVector(collectionName, vector, payload, id);
+
+  await pool.query('UPDATE memories SET embedded_at = NOW() WHERE id = $1', [id]);
+}
+
 
 /**
  * Liest ein Memory nach Name
@@ -418,32 +453,21 @@ export async function updateMemory(
 
   // 3. PostgreSQL UPDATE (Write-Primary) — fail-fast: wirft bei Fehler
   await pool.query(
-    `UPDATE memories SET content = $1, category = $2, tags = $3, updated_at = $4 WHERE id = $5`,
+    `UPDATE memories SET content = $1, category = $2, tags = $3, updated_at = $4, embedded_at = NULL WHERE id = $5`,
     [mergedContent, mergedCategory, mergedTags, now, row.id]
   );
 
-  // 4. Qdrant Vektor upserten — Warning bei Fehler, PG-Daten bleiben erhalten
-  let warning: string | undefined;
-  try {
-    const collectionName = COLLECTIONS.projectMemories(project);
-    await ensureCollection(collectionName);
-    const vector = await embed(mergedContent);
-    const payload: MemoryPayload = {
-      project,
-      name,
-      content: mergedContent,
-      category: mergedCategory,
-      tags: mergedTags,
-      linkedPaths,
-      createdAt: row.created_at instanceof Date ? row.created_at.toISOString() : row.created_at,
-      updatedAt: now,
-    };
-    await deleteVector(collectionName, row.id);
-    await insertVector(collectionName, vector, payload, row.id);
-  } catch (error) {
-    console.error('[Synapse] Qdrant Memory-Update fehlgeschlagen:', error);
-    warning = `Qdrant-Write fehlgeschlagen: ${error}`;
-  }
+  // 4. Qdrant — NEBENLAEUFIG seit EMBED-1.
+  // Das UPDATE oben hat embedded_at bereits auf NULL gesetzt: der alte Vektor beschreibt den
+  // alten Inhalt und ist ab sofort falsch. Damit ist die Zeile fuer den Backlog sichtbar, und
+  // der Nachtrag hier ist nur die schnelle Variante desselben Wegs — faellt er aus, holt der
+  // Worker sie beim naechsten Tick.
+  // Ein Update ist bei Memories der Normalfall, nicht die Ausnahme; genau deshalb darf auch
+  // dieser Pfad nicht an der Embedding-Queue haengen.
+  const warning: string | undefined = undefined;
+  void embeddeMemoryNach(project, row.id).catch(err => {
+    console.error(`[Synapse] Memory-Update-Embedding fuer "${name}" fehlgeschlagen, Backlog holt es nach:`, err);
+  });
 
   // 5. Aktualisierte Memory zurueckgeben
   const updatedMemory: Memory = {

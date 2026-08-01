@@ -27,7 +27,8 @@ import * as os from 'os';
 import {
   registerAgent,
   getRulesForNewAgent,
-  getProjectStatus,
+  ermittleProjektStatus,
+  getSetupPhase,
   writeMemory,
 } from '@synapse/core';
 import { SERVER_INSTANCE_ID } from '../server.js';
@@ -129,8 +130,10 @@ export async function checkAgentOnboarding(
     return null;
   }
 
-  // Pruefen ob Projekt-Status existiert
-  const status = getProjectStatus(path);
+  // Pruefen ob das Projekt eingerichtet ist. PG ist die Quelle (SETUP-1),
+  // status.json nur noch Notnagel. Vorher entschied allein die Datei: fehlte
+  // sie, bekam der Agent stillschweigend KEINE Projekt-Regeln.
+  const status = await ermittleProjektStatus(path, project);
   if (!status) {
     return null;
   }
@@ -186,7 +189,7 @@ export async function checkAgentOnboarding(
     let rulesMessage = `\n\n📋 PROJEKT-REGELN (bitte beachten!):\n${rules.map(r => `### ${r.name}\n${r.content}`).join('\n\n')}`;
 
     // Setup-Pending Hinweis fuer Koordinatoren
-    if (isCoordinator && status.setupPhase === 'initial-pending') {
+    if (isCoordinator && (await getSetupPhase(project, path)) === 'initial-pending') {
       rulesMessage += '\n\n⚠️ Projekt-Setup unvollstaendig. Starte /projekt-setup oder frage den User.';
     }
 

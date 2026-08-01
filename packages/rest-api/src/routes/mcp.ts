@@ -26,6 +26,7 @@ import {
   addTask,
   // Thought
   addThought,
+  EMBED_PENDING_HINT,
   getThoughts,
   getThoughtsByIds,
   searchThoughts,
@@ -84,6 +85,8 @@ import {
   getCallEdges,
   getExecutionFlow,
   getEntrypoints,
+  getParserGesundheitDatei,
+  getParserGesundheitUebersicht,
   // Media
   indexMediaDirectory,
   searchMedia,
@@ -137,17 +140,21 @@ import {
   searchShellJobLog,
   // Daemon-Heartbeat (Auto-Routing shell ↔ workspace)
   isDaemonAliveForProject,
+  getProjectRegistryRows,
   // Error Patterns (code_check)
   addErrorPattern,
   listErrorPatterns,
   deleteErrorPattern,
   resolveAgentId,
+  getSetupPhase,
+  setSetupPhase,
 } from '@synapse/core';
 import { minimatch } from 'minimatch';
 import { GUIDE_OVERVIEW, TOOL_GUIDES, logToolCall, queryToolCalls } from '@synapse/core';
 import {
   listeIgnoreRegeln,
   fuegeIgnoreRegelnHinzu,
+  blendeVoruebergehendEin,
   entferneIgnoreRegel,
   schalteIgnoreRegel,
   pruefeIgnorePfad,
@@ -743,14 +750,14 @@ const MCP_TOOLS = [
   // 14. code_intel
   {
     name: 'code_intel',
-    description: 'Strukturierte Lese-Abfragen ueber den eigenen Code-Index des Projekts: Dateibaum, Funktionen, Variablen, Symbole, Querverweise, Suche, Dateiinhalt sowie die Ablauf-Ebene (Statements, Call-Kanten, Execution-Flow, Entrypoints). Read-Only auf eigene indexierte Projekt-Daten. SUCHE: action="search" hat ZWEI Modi: Default = PG-Volltext (lexikalisch); semantic:true = Qdrant-Embedding (konzeptuell). Antwort enthaelt mode-Feld. BATCH-SUCHE: action="search_batch" + queries[] (1..10) macht alle Queries semantisch in EINEM Call — Embeddings gebatched zu Google, parallel gegen Qdrant. Ideal wenn KI mehrere Discovery-Aspekte gleichzeitig abklopfen will. Damit deckt code_intel sowohl exakte als auch konzeptuelle Suche ab — das alte separate search(action:"code") wird nicht mehr gebraucht.',
+    description: 'Strukturierte Lese-Abfragen ueber den eigenen Code-Index des Projekts: Dateibaum, Funktionen, Variablen, Symbole, Querverweise, Suche, Dateiinhalt sowie die Ablauf-Ebene (Statements, Call-Kanten, Execution-Flow, Entrypoints). DIAGNOSE: action="health" beantwortet "was ist mit dieser Datei los" (mit file_path) bzw. "wo klemmt es ueberhaupt" (ohne file_path, je Parser) — zustaendiger Parser, Parser-Version gespeichert gegen aktuell, Symbolzahlen je Typ, Zeilenabdeckung, letzter Ausfall und Klartext-Befunde statt Flags. Read-Only auf eigene indexierte Projekt-Daten. SUCHE: action="search" hat ZWEI Modi: Default = PG-Volltext (lexikalisch); semantic:true = Qdrant-Embedding (konzeptuell). Antwort enthaelt mode-Feld. BATCH-SUCHE: action="search_batch" + queries[] (1..10) macht alle Queries semantisch in EINEM Call — Embeddings gebatched zu Google, parallel gegen Qdrant. Ideal wenn KI mehrere Discovery-Aspekte gleichzeitig abklopfen will. Damit deckt code_intel sowohl exakte als auch konzeptuelle Suche ab — das alte separate search(action:"code") wird nicht mehr gebraucht.',
     inputSchema: {
       type: 'object',
       properties: {
         action: {
           type: 'string',
-          enum: ['tree', 'functions', 'variables', 'symbols', 'references', 'search', 'search_batch', 'file', 'statements', 'calls', 'flow', 'entrypoints'],
-          description: 'Aktion: tree|functions|variables|symbols|references|search|search_batch|file|statements|calls|flow|entrypoints',
+          enum: ['tree', 'functions', 'variables', 'symbols', 'references', 'search', 'search_batch', 'file', 'statements', 'calls', 'flow', 'entrypoints', 'health'],
+          description: 'Aktion: tree|functions|variables|symbols|references|search|search_batch|file|statements|calls|flow|entrypoints|health',
         },
         project: { type: 'string', description: 'Projekt-Name (erforderlich)' },
         agent_id: { type: 'string', description: 'Agent-ID fuer Onboarding' },
@@ -759,11 +766,16 @@ const MCP_TOOLS = [
         depth: { type: 'number', description: 'Max. Verzeichnis-Tiefe relativ zum path (0 = nur das Verzeichnis, 1 = +1 Ebene, fuer tree)' },
         show_lines: { type: 'boolean', description: 'Zeilenzahl pro Datei anzeigen (Standard: true, fuer tree)' },
         show_counts: { type: 'boolean', description: 'Funktions-/Variablen-Counts anzeigen (Standard: true, fuer tree)' },
-        show_comments: { type: 'boolean', description: 'Kommentare unter Dateien anzeigen (Standard: false, fuer tree)' },
+        show_comments: { type: ['boolean', 'integer', 'string'], description: "Kommentare unter Dateien anzeigen (Standard: false, fuer tree). true = einer je Datei, Zahl = so viele, '*' = alle bis 50. Gezeigt werden Zeilennummer und Inhalt; wird gekappt, steht das in der Ausgabe." },
         show_functions: { type: 'boolean', description: 'Funktionsnamen auflisten (Standard: false, fuer tree)' },
         show_imports: { type: 'boolean', description: 'Import-Statements auflisten (Standard: false, fuer tree)' },
         file_path: { type: 'string', description: 'Datei-Pfad-Filter (LIKE-Pattern, fuer functions/variables/symbols/file/statements/calls/entrypoints)' },
         name: { type: 'string', description: 'Symbol-Name-Filter (fuer functions/variables/symbols/references)' },
+        value_contains: { type: 'string', description: "Sucht im INHALT des Symbols statt im Namen (fuer symbols). PFLICHT fuer Kommentare, Strings und TODOs: die tragen name=NULL, ein name-Filter findet dort nie etwas. Beispiel: symbol_type='comment' + value_contains='@SYN-'." },
+        comment_contains: { type: 'string', description: "Nur Kommentare zeigen, die diesen Text enthalten (fuer tree, zusammen mit show_comments). Macht den Baum zur Suche: show_comments=50 + comment_contains='@SYN-' listet alle Marken mit Datei und Zeile." },
+        comment_chars: { type: 'integer', description: 'Anzeigelaenge je Kommentarzeile in Zeichen (fuer tree, Standard 100).' },
+        comment_from: { type: 'integer', description: 'Startpunkt im Kommentartext (fuer tree, Standard 0). Mit comment_chars ein Fenster: comment_from=5 + comment_chars=20 zeigt Zeichen 5 bis 24. Ein Ausschnitt bekommt eine Ellipse.' },
+        comment_skip: { type: 'integer', description: 'Die ersten N Kommentare je Datei ueberspringen (fuer tree, Standard 0). Blaetterfunktion: comment_skip=9 + show_comments=6 liefert Kommentar 10 bis 15.' },
         exported_only: { type: 'boolean', description: 'Nur exportierte Funktionen zurueckgeben (fuer functions)' },
         with_values: { type: 'boolean', description: 'Wert-Spalte einschliessen (fuer variables)' },
         symbol_type: {
@@ -1026,12 +1038,14 @@ const MCP_TOOLS = [
     inputSchema: {
       type: 'object',
       properties: {
-        action: { type: 'string', enum: ['list', 'add', 'remove', 'enable', 'disable', 'test'], description: 'Aktion' },
+        action: { type: 'string', enum: ['list', 'add', 'remove', 'enable', 'disable', 'test', 'einblenden'], description: 'Aktion' },
         project: { type: 'string', description: 'Projekt-Name (Pflicht)' },
-        pattern: { type: 'string', description: 'Muster wie "*.txt" oder "docs/" — Pflicht fuer add, remove, enable, disable' },
+        pattern: { type: 'string', description: 'Muster wie "*.txt" oder "docs/" — Pflicht fuer add, remove, enable, disable, einblenden' },
+        dauer: { type: 'string', description: "Pflicht fuer einblenden: wie lange die Regel ausgesetzt wird. '30s', '5m', '2h', '1d' oder eine Zahl (Sekunden). Danach greift sie VON SELBST wieder — gedacht fuer den Fall, dass du genau die ausgeblendete Datei brauchst, sie aber nicht dauerhaft im Kontext haben willst." },
         patterns: { type: 'array', items: { type: 'string' }, description: 'Mehrere Muster auf einmal (nur fuer add)' },
         scope: { type: 'string', description: 'Optional fuer add: Muster nur unterhalb dieses Teilbaums anwenden' },
         kommentar: { type: 'string', description: 'Optional fuer add: wofuer die Regel da ist' },
+        modus: { type: 'string', enum: ['ausgeblendet', 'gesperrt'], description: "Optional fuer add (Standard 'ausgeblendet'). 'ausgeblendet' betrifft NUR die Sichtbarkeit in code_intel, lexikalisch wie semantisch — die Datei laeuft weiterhin voellig normal zwischen Platte und Datenbank. 'gesperrt' haelt den Inhalt aus der Datenbank heraus: der lokale Daemon fragt vor dem Senden und schickt nichts los. Sperren ist der Eingriff, Ausblenden das Aufraeumen." },
         file_path: { type: 'string', description: 'Pflicht fuer test: der zu pruefende Pfad, relativ zum Projekt' },
         agent_id: { type: 'string', description: 'Agent-ID' },
       },
@@ -1626,24 +1640,41 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
             };
           }
 
-          // Bestehender Pfad-Modus (Doku-Indexierung ohne Anlegen).
+          // Bestehender Pfad-Modus (Doku-Indexierung ohne Anlegen). Dieser Zweig
+          // kann NICHT vollstaendig einrichten: registerProject() stempelt den
+          // Hostnamen intern per os.hostname() — von hier aus waere das der
+          // Hostname des API-Containers, nicht der des Ziel-PCs, und der
+          // Eintrag waere fuer den dortigen FileWatcher-Daemon unsichtbar.
+          // Einen lokalen FileWatcher kann die REST-API ohnehin nicht starten.
+          // Frueher meldete dieser Zweig trotzdem success:true — nur der
+          // message-Text verriet die Luecke ("FileWatcher nicht verfuegbar ueber
+          // HTTP"). Jetzt ehrlich: success:false, solange PG-Registrierung und
+          // Watcher fehlen. Volle Einrichtung: Self-Service-Zweig oben (kein
+          // "path", nur "name") oder lokaler MCP-Server (stdio).
           const projectName = requestedName || explicitPath.split(/[/\\]/).pop() || 'unknown';
           let techs: Awaited<ReturnType<typeof detectTechnologies>> = [];
           let docsIndexed = 0;
 
           if (indexDocs) {
-            techs = await detectTechnologies(explicitPath);
-            const result = await indexProjectTechnologies(techs);
-            docsIndexed = result.indexed;
+            try {
+              techs = await detectTechnologies(explicitPath);
+              const result = await indexProjectTechnologies(techs);
+              docsIndexed = result.indexed;
+            } catch {
+              // Docs-Indexierung kann ohne FS-Zugriff auf explicitPath scheitern — kein Fail des Gesamtaufrufs.
+            }
           }
 
           return {
-            success: true,
+            success: false,
+            error: 'watcher_not_registered',
             project: projectName,
             path: explicitPath,
             technologies: techs,
             docsIndexed,
-            message: `Projekt "${projectName}" - Docs indexiert (FileWatcher nicht verfuegbar ueber HTTP)`,
+            registered_in_db: false,
+            watcher_active: false,
+            message: `Projekt "${projectName}": Docs indexiert (${docsIndexed}), aber NICHT in PostgreSQL registriert und KEIN FileWatcher gestartet — dieser REST-Aufruf kann das fuer einen expliziten Pfad nicht leisten (Hostname-Problem, siehe Code-Kommentar). Fuer vollstaendige Einrichtung project(action:"init", name:"${projectName}") OHNE path aufrufen (Self-Service ueber den lokalen Daemon) oder lokal ueber den MCP-Server (stdio) initialisieren.`,
           };
         }
         case 'init_status': {
@@ -1659,8 +1690,23 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
             message: job.message,
           };
         }
-        case 'complete_setup':
-          return { success: false, error: 'Action "complete_setup" ist nur ueber MCP Server (stdio) verfuegbar' };
+        case 'complete_setup': {
+          const project = reqStr(args, 'project');
+          const phase = str(args, 'phase') as 'initial' | 'post-indexing' | undefined;
+          if (!phase) {
+            return { success: false, message: 'Parameter "phase" ist erforderlich' };
+          }
+          const nextPhase = phase === 'initial' ? 'initial-done' : 'complete';
+          const requestedBy = resolveAgentId(str(args, 'agent_id')) ?? undefined;
+          await setSetupPhase(project, nextPhase, { updatedBy: requestedBy ?? 'rest-api' });
+          return {
+            success: true,
+            message: phase === 'initial'
+              ? 'Initial-Setup abgeschlossen. Nach der Code-Indexierung kann das Post-Indexing-Setup gestartet werden.'
+              : 'Projekt-Setup vollstaendig abgeschlossen. Alle Regeln sind gespeichert.',
+            nextPhase,
+          };
+        }
         case 'detect_tech': {
           const techs = await detectTechnologies(reqStr(args, 'path'));
           return { technologies: techs };
@@ -1675,7 +1721,21 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
           if (!raw) return { success: false, error: 'project oder path erforderlich' };
           const projectName = raw.split(/[/\\]/).pop() || raw;
           const codeStats = await getProjectStats(projectName);
-          return { success: true, stats: codeStats };
+          // Ehrlicher Status statt nur Code-Stats: registriert? Watcher aktiv?
+          // setupPhase kommt seit SETUP-1 aus PostgreSQL (project_setup_status) —
+          // dieselbe Quelle wie der lokale MCP-Server (stdio), ueber REST also
+          // ebenso einsehbar. status.json ist nur noch Cache/Fallback.
+          const registry = await getProjectRegistryRows(projectName);
+          const watcherActive = await isDaemonAliveForProject(projectName);
+          const setupPhase = await getSetupPhase(projectName);
+          return {
+            success: true,
+            stats: codeStats,
+            registered_in_db: registry.length > 0,
+            registry,
+            watcher_active: watcherActive,
+            setup_phase: setupPhase,
+          };
         }
         case 'list': {
           const collections = await listCollections();
@@ -1911,6 +1971,10 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
             memory: { name: memory.name, category: memory.category, sizeChars: memory.content.length },
             isUpdate: !!existing,
             message: existing ? `Memory "${memory.name}" aktualisiert` : `Memory "${memory.name}" erstellt`,
+            // EMBED-1: steht in PostgreSQL und ist ueber memory(read) sofort da; der Vektor
+            // wird nebenlaeufig nachgereicht.
+            embeddings_pending: true,
+            embeddings_hint: EMBED_PENDING_HINT,
           };
         }
         case 'read': {
@@ -2038,6 +2102,12 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
             content_length: t.content.length,
             content_preview: t.content.length > 120 ? `${t.content.slice(0, 120)}…` : t.content,
             message: `Gedanke gespeichert von "${source}"`,
+            // EMBED-1: der Gedanke steht in PostgreSQL und ist ueber thought(get)/search sofort
+            // auffindbar; der Vektor wird nebenlaeufig nachgereicht. Ohne diesen Hinweis sucht
+            // eine KI direkt nach dem Schreiben semantisch danach, findet nichts und haelt das
+            // Speichern fuer fehlgeschlagen.
+            embeddings_pending: true,
+            embeddings_hint: EMBED_PENDING_HINT,
           };
           if (args.trigger_respawn === true) {
             const { maybeTriggerRespawn } = await import('@synapse/core');
@@ -2312,8 +2382,9 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
           const author = resolveAgentId(rawAuthor);
           if (!author) throw new Error('Parameter "author" ist erforderlich (oder SYNAPSE_AGENT_NAME setzen)');
           const tags = strArray(args, 'tags') ?? [];
+          // EMBED-1: der Vektor wird nebenlaeufig nachgereicht, siehe embeddings_hint unten.
           const proposal = await createProposal(project, filePath, suggested, desc, author, tags);
-          return { success: true, proposal };
+          return { success: true, proposal, embeddings_pending: true, embeddings_hint: EMBED_PENDING_HINT };
         }
         case 'list': {
           const proposals = await listProposals(project, str(args, 'status') as 'pending' | 'reviewed' | 'accepted' | 'rejected' | undefined);
@@ -3164,7 +3235,11 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
             depth: num(args, 'depth'),
             show_lines: bool(args, 'show_lines'),
             show_counts: bool(args, 'show_counts'),
-            show_comments: bool(args, 'show_comments'),
+            show_comments: args.show_comments as boolean | number | string | undefined,
+            comment_contains: str(args, 'comment_contains'),
+            comment_chars: num(args, 'comment_chars'),
+            comment_from: num(args, 'comment_from'),
+            comment_skip: num(args, 'comment_skip'),
             show_functions: bool(args, 'show_functions'),
             show_imports: bool(args, 'show_imports'),
             file_type: str(args, 'file_type'),
@@ -3181,7 +3256,7 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
         }
         case 'symbols': {
           const symbolType = reqStr(args, 'symbol_type');
-          const symbols = await getSymbols(project, symbolType, str(args, 'file_path'), str(args, 'name'));
+          const symbols = await getSymbols(project, symbolType, str(args, 'file_path'), str(args, 'name'), num(args, 'limit') ?? 100, str(args, 'value_contains'));
           return { success: true, symbols, count: symbols.length, symbol_type: symbolType, project };
         }
         case 'references': {
@@ -3263,6 +3338,22 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
         case 'entrypoints': {
           const entrypoints = await getEntrypoints(project, str(args, 'file_path'), num(args, 'limit'), args.include_declarations === true);
           return { success: true, entrypoints, count: entrypoints.length, project };
+        }
+        case 'health': {
+          // Siehe MCP-Server: Diagnose einer Datei, wenn Symbolzahlen unerwartet
+          // niedrig sind. Antwort ist bewusst klein (nur Kennzahlen + Befundsaetze).
+          const filePath = str(args, 'file_path');
+          if (!filePath) {
+            const uebersicht = await getParserGesundheitUebersicht(project, {
+              limit: num(args, 'limit'),
+            });
+            return { success: true, uebersicht, project };
+          }
+          const health = await getParserGesundheitDatei(project, filePath);
+          if (!health) {
+            return { success: false, error: `Datei nicht im Index: ${filePath}`, project };
+          }
+          return { success: true, health, project };
         }
         default:
           return { success: false, error: `Unbekannte code_intel action: "${action}"` };
@@ -3945,6 +4036,23 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
               'sie halten Paket- und Build-Verzeichnisse aus dem Index.',
           };
         }
+        case 'einblenden': {
+          const muster = reqStr(args, 'pattern');
+          const dauer = str(args, 'dauer');
+          if (!dauer) throw new Error("dauer erforderlich, z.B. '5m', '2h', '1d'");
+          const ergebnis = await blendeVoruebergehendEin(igProjekt, muster, dauer);
+          if (!ergebnis.ok) return { success: false, error: ergebnis.grund, pattern: muster };
+          return {
+            success: true,
+            pattern: muster,
+            eingeblendet_bis: ergebnis.bis,
+            sekunden: ergebnis.sekunden,
+            message:
+              `"${muster}" ist fuer ${ergebnis.sekunden} Sekunden eingeblendet (bis ${ergebnis.bis}). ` +
+              'Danach greift die Regel von selbst wieder — du musst nichts zuruecksetzen.',
+          };
+        }
+
         case 'add': {
           const einzeln = str(args, 'pattern');
           const mehrere = Array.isArray(args.patterns) ? (args.patterns as string[]) : [];
@@ -3952,7 +4060,12 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
           if (!liste.length) throw new Error('pattern oder patterns[] erforderlich');
           const ergebnis = await fuegeIgnoreRegelnHinzu(
             igProjekt,
-            liste.map((muster) => ({ pattern: muster, scope: str(args, 'scope'), kommentar: str(args, 'kommentar') })),
+            liste.map((muster) => ({
+              pattern: muster,
+              scope: str(args, 'scope'),
+              kommentar: str(args, 'kommentar'),
+              modus: str(args, 'modus') === 'gesperrt' ? ('gesperrt' as const) : ('ausgeblendet' as const),
+            })),
             resolveAgentId(str(args, 'agent_id')) ?? undefined,
           );
           return {

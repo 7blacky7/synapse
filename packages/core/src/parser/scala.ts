@@ -9,18 +9,117 @@
  */
 
 import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser, ParsedStatement, ParsedCallEdge } from './types.js';
-import { extractStringLiterals } from './types.js';
+import { extractStringLiterals, erstelleZeilenIndex, zeileFuerPosition } from './types.js';
 import { formatRouteName, isLikelyHttpPath, HTTP_VERBS } from './patterns/http.js';
 
+// Zeilenindex je Datei zwischenspeichern — siehe zeileFuerPosition in types.ts.
+// Vorher wurde pro Treffer ein Praefix der Datei kopiert und zerlegt: das ist
+// O(Treffer x Dateigroesse) und laesst grosse Dateien praktisch nie fertig werden.
+let zeilenCacheText: string | null = null;
+let zeilenCacheIndex: number[] = [];
 function lineAt(text: string, pos: number): number {
-  return text.substring(0, pos).split('\n').length;
+  if (text !== zeilenCacheText) {
+    zeilenCacheText = text;
+    zeilenCacheIndex = erstelleZeilenIndex(text);
+  }
+  return zeileFuerPosition(zeilenCacheIndex, pos);
 }
+
+/**
+ * Macht Kommentare und Zeichenketten unkenntlich, OHNE die Laenge zu aendern:
+ * jede Position im Ergebnis entspricht derselben Position im Original, damit
+ * lineAt() und die Textausschnitte weiter stimmen.
+ *
+ * WARUM: die Ablauf-Regexes liefen bisher ueber den rohen Text. Solange nur
+ * Top-Level erfasst wurde, fiel das nicht auf — sobald eingerueckter Code
+ * dazukommt, treffen sie auch Scaladoc-Beispiele. Ueber den gesamten Bestand
+ * gemessen sind das 586 def- und 500 val-Treffer; XMLTesting.scala faellt von
+ * 12 auf 0, dort steckt alles in XML-Literalen und Zeichenketten.
+ *
+ * ZWEI SCALA-EIGENHEITEN, die eine naive Fassung falsch macht:
+ *   - Blockkommentare sind SCHACHTELBAR: ein geoeffneter Block darf einen
+ *     weiteren enthalten, deshalb wird die Tiefe gezaehlt statt das erste
+ *     schliessende Zeichenpaar zu suchen (das endet zu frueh).
+ *   - Dreifach gequotete Zeichenketten duerfen einfache Anfuehrungszeichen
+ *     enthalten und muessen deshalb vor dem Einzelfall geprueft werden.
+ */
+function maskiereKommentareUndStrings(text: string): string {
+  const zeichen = text.split('');
+  const leere = (von: number, bis: number) => {
+    for (let k = von; k < bis && k < zeichen.length; k++) {
+      if (zeichen[k] !== '\n') zeichen[k] = ' ';
+    }
+  };
+
+  let i = 0;
+  while (i < text.length) {
+    const c = text[i];
+    const c2 = text[i + 1];
+
+    if (c === '/' && c2 === '/') {
+      let j = text.indexOf('\n', i);
+      if (j < 0) j = text.length;
+      leere(i, j);
+      i = j;
+      continue;
+    }
+
+    if (c === '/' && c2 === '*') {
+      let tiefe = 1;
+      let j = i + 2;
+      while (j < text.length && tiefe > 0) {
+        if (text[j] === '/' && text[j + 1] === '*') { tiefe++; j += 2; continue; }
+        if (text[j] === '*' && text[j + 1] === '/') { tiefe--; j += 2; continue; }
+        j++;
+      }
+      leere(i, j);
+      i = j;
+      continue;
+    }
+
+    if (c === '"' && c2 === '"' && text[i + 2] === '"') {
+      const ende = text.indexOf('"""', i + 3);
+      const j = ende < 0 ? text.length : ende + 3;
+      leere(i, j);
+      i = j;
+      continue;
+    }
+
+    if (c === '"') {
+      let j = i + 1;
+      while (j < text.length && text[j] !== '"' && text[j] !== '\n') {
+        if (text[j] === '\\') j++;
+        j++;
+      }
+      leere(i, Math.min(j + 1, text.length));
+      i = j + 1;
+      continue;
+    }
+
+    i++;
+  }
+
+  return zeichen.join('');
+}
+
 
 class ScalaParser implements LanguageParser {
   language = 'scala';
   extensions = ['.scala', '.sc'];
   /** Bei inhaltlichen Parser-Aenderungen erhoehen (siehe LanguageParser.version). */
-  version = 1;
+  // 2: Zeilenberechnung ueber Index statt Praefix-Kopie (siehe lineAt).
+  // 3: Eltern-Typ ueber vorberechnete Grenzen statt Rueckwaertssuche je Treffer.
+  // 4: Eltern-Typ ist jetzt die INNERSTE umschliessende Deklaration. Version 3
+  //    bildete die alte match()-Semantik nach und verlor den Eltern-Typ, sobald
+  //    vor der Fundstelle eine schliessende Klammer stand (siehe findParentType).
+  // 5: Ablauf-Ebene auf JEDER Ebene statt nur am Dateianfang, plus Maskierung
+  //    von Kommentaren und Zeichenketten. Bis 4 sprang die Flow-Schleife bei
+  //    jeder Einrueckung heraus; in Scala ist damit fast alles uebersprungen
+  //    worden (363 Statements und 34 Call-Kanten auf 580.621 Zeilen).
+  // 6: depth ist jetzt 0 (Tiefe IM Scope) statt der Einrueckungstiefe der Datei.
+  //    getExecutionFlow filtert auf depth = 0 — vorher lieferte flow(scope) fuer
+  //    scala nichts, obwohl die Statements im Index standen.
+  version = 6;
 
   parse(content: string, filePath: string): ParseResult {
     const symbols: ParsedSymbol[] = [];
@@ -305,6 +404,9 @@ class ScalaParser implements LanguageParser {
       if (!isLikelyHttpPath(path)) continue;
       const block = m[2];
       const baseLine = lineAt(content, m.index);
+      // Eigener Index fuer den Block: lineAt haelt nur EINEN Text im Cache. Ein
+      // Wechsel zwischen content und block wuerde ihn bei jedem Treffer verwerfen.
+      const blockZeilenIndex = erstelleZeilenIndex(block);
       const verbRe = /\b(get|post|put|patch|delete|head|options)\s*[{(]/g;
       let v: RegExpExecArray | null;
       let foundVerb = false;
@@ -317,7 +419,7 @@ class ScalaParser implements LanguageParser {
           name: formatRouteName(verb, path),
           value: path,
           params: [verb.toUpperCase()],
-          line_start: baseLine + block.substring(0, v.index).split('\n').length - 1,
+          line_start: baseLine + zeileFuerPosition(blockZeilenIndex, v.index) - 1,
           is_exported: false,
         });
       }
@@ -376,31 +478,48 @@ class ScalaParser implements LanguageParser {
       return cur;
     };
 
-    // Top-level def statements
-    const defFlowRe = /^(\s*)((?:(?:private|protected|final|override|implicit|inline|lazy|transparent|infix)\s+(?:\[\w+\]\s*)?)*)?def\s+(\w+)(?:\[([^\]]*)\])?\s*(?:\(([^)]*)\))*(?:\s*:\s*([^\n={]+))?(?:\s*=\s*([^\n{]*))?/gm;
-    while ((m = defFlowRe.exec(content)) !== null) {
-      const indent = m[1].replace(/\n/g, '').length;
-      if (indent > 0) continue; // skip indented method bodies
+    // Die Ablauf-Regexes laufen ueber die maskierte Fassung, die Textausschnitte
+    // kommen aus dem Original — sonst stuenden Leerzeichen im Statement-Text.
+    const flowText = maskiereKommentareUndStrings(content);
+
+    // def auf JEDER Ebene. Bis Version 4 stand hier ein
+    //   if (indent > 0) continue; // skip indented method bodies
+    // und damit fiel praktisch der gesamte Scala-Code heraus.
+    // ^([ \t]*) statt ^(\s*): \s schliesst den Zeilenumbruch ein, dadurch begann
+    // der Treffer auf der LEERZEILE davor — Zeilennummer und Tiefe waren falsch.
+    const defFlowRe = /^([ \t]*)((?:(?:private|protected|final|override|implicit|inline|lazy|transparent|infix)\s+(?:\[\w+\]\s*)?)*)?def\s+(\w+)(?:\[([^\]]*)\])?\s*(?:\(([^)]*)\))*(?:\s*:\s*([^\n={]+))?(?:\s*=\s*([^\n{]*))?/gm;
+    while ((m = defFlowRe.exec(flowText)) !== null) {
+      const indent = m[1].length;
       const name = m[3];
       const lineStart = lineAt(content, m.index);
       const isTop = indent === 0;
+      // Der Eltern-Typ ist seit Version 4 die innerste umschliessende Deklaration.
+      const scopeName = isTop ? null : this.findParentType(content, m.index) ?? null;
       const tid = nextId();
       statements.push({
         temp_id: tid,
-        scope_type: 'module',
-        scope_name: null,
+        scope_type: isTop ? 'module' : 'class',
+        scope_name: scopeName,
         statement_type: 'function',
         node_kind: 'DefDef',
         line_start: lineStart,
-        order_index: nextOrder(undefined),
+        order_index: nextOrder(scopeName ?? undefined),
+        // Scala rueckt konventionell in Zweierschritten ein; die Tiefe ist damit
+        // eine Naeherung und keine Zusicherung (Tabs zaehlen als ein Zeichen).
+        // 0 = direkt im Scope, so steht es im Interface. scope_name ist ueber
+        // findParentType bereits die INNERSTE umschliessende Deklaration, also
+        // liegt dieses Statement definitionsgemaess direkt darin.
+        // ⚠️ NICHT die Einrueckung der Datei: getExecutionFlow filtert hart auf
+        // depth = 0, und mit der Einrueckung passierte in List.scala 0 von 124
+        // Statements diesen Filter — flow(scope) lieferte leer, obwohl alles da war.
         depth: 0,
         is_top_level: isTop,
         is_awaited: false,
         callee: name,
-        text: m[0].trim().slice(0, 240),
+        text: content.slice(m.index, m.index + m[0].length).trim().slice(0, 240),
       });
 
-      // Extract calls from the method body (RHS after `=`)
+      // Aufrufe aus der rechten Seite (nach dem Gleichheitszeichen)
       const rhs = m[7] || '';
       const callRe2 = /\b([a-z_]\w*)\s*\(/g;
       let cm: RegExpExecArray | null;
@@ -418,29 +537,33 @@ class ScalaParser implements LanguageParser {
       }
     }
 
-    // Top-level val/var statements (indent 0)
-    const valFlowRe = /^(val|var)\s+(\w+)(?:\s*:\s*(\S[^\n=]*))?(?:\s*=\s*([^\n]+))?/gm;
-    while ((m = valFlowRe.exec(content)) !== null) {
-      const kind = m[1];
-      const name = m[2];
-      const rhs = m[4] || '';
+    // val/var auf JEDER Ebene (vorher nur Spalte 0)
+    const valFlowRe = /^([ \t]*)(?:(?:private|protected|final|override|implicit|lazy|inline|given)\s+(?:\[\w+\]\s*)?)*(val|var)\s+(\w+)(?:\s*:\s*(\S[^\n=]*))?(?:\s*=\s*([^\n]+))?/gm;
+    while ((m = valFlowRe.exec(flowText)) !== null) {
+      const indent = m[1].length;
+      const kind = m[2];
+      const name = m[3];
+      const rhs = m[5] || '';
       const lineStart = lineAt(content, m.index);
+      const isTop = indent === 0;
+      const scopeName = isTop ? null : this.findParentType(content, m.index) ?? null;
       const tid = nextId();
       statements.push({
         temp_id: tid,
-        scope_type: 'module',
-        scope_name: null,
+        scope_type: isTop ? 'module' : 'class',
+        scope_name: scopeName,
         statement_type: 'variable',
         node_kind: kind === 'val' ? 'ValDef' : 'VarDef',
         line_start: lineStart,
-        order_index: nextOrder(undefined),
+        order_index: nextOrder(scopeName ?? undefined),
+        // 0 = direkt im Scope (siehe Begruendung beim def-Zweig oben).
         depth: 0,
-        is_top_level: true,
+        is_top_level: isTop,
         is_awaited: false,
         assigned_to: name,
-        text: m[0].trim().slice(0, 240),
+        text: content.slice(m.index, m.index + m[0].length).trim().slice(0, 240),
       });
-      // Extract calls from RHS
+
       const callRe3 = /\b([a-z_]\w*)\s*\(/g;
       let cm2: RegExpExecArray | null;
       while ((cm2 = callRe3.exec(rhs)) !== null) {
@@ -448,7 +571,7 @@ class ScalaParser implements LanguageParser {
         if (['if', 'while', 'for', 'match', 'try', 'catch', 'new'].includes(callee)) continue;
         callEdges.push({
           statement_temp_id: tid,
-          caller_scope: null,
+          caller_scope: scopeName,
           callee_name: callee,
           line_number: lineStart,
           call_kind: 'function',
@@ -456,7 +579,6 @@ class ScalaParser implements LanguageParser {
         });
       }
     }
-
     return { symbols, references, statements, callEdges };
   }
 
@@ -470,10 +592,80 @@ class ScalaParser implements LanguageParser {
     return lineAt(content, content.length);
   }
 
+  // Typ-Grenzen EINMAL vorwaerts sammeln statt pro Treffer rueckwaerts zu suchen.
+  private grenzenText: string | null = null;
+  private typBereiche: Array<{ name: string; start: number; end: number; eltern: number }> = [];
+
+  private bereiteTypGrenzenVor(content: string): void {
+    if (content === this.grenzenText) return;
+    this.grenzenText = content;
+    const nameAnKlammer = new Map<number, string>();
+    const deklRe = /(?:class|object|trait|enum)\s+(\w+)[^{]*\{/g;
+    let d: RegExpExecArray | null;
+    while ((d = deklRe.exec(content)) !== null) {
+      nameAnKlammer.set(d.index + d[0].length - 1, d[1]);
+    }
+    // Ein einziger Durchlauf mit Klammer-Stapel paart jede oeffnende Klammer mit
+    // ihrer schliessenden. Das ergibt echte Bereiche und bleibt linear in der
+    // Dateigroesse — die Vorberechnung aus Version 3 wird dadurch nicht teurer.
+    const bereiche: Array<{ name: string; start: number; end: number; eltern: number }> = [];
+    const offen: number[] = [];
+    for (let i = 0; i < content.length; i++) {
+      const zeichen = content.charCodeAt(i);
+      if (zeichen === 123) offen.push(i);
+      else if (zeichen === 125) {
+        const auf = offen.pop();
+        if (auf === undefined) continue;
+        const name = nameAnKlammer.get(auf);
+        if (name !== undefined) bereiche.push({ name, start: auf, end: i, eltern: -1 });
+      }
+    }
+    bereiche.sort((x, y) => x.start - y.start);
+    // Elternkette: Typ-Bereiche sind ineinander geschachtelt und ueberlappen nie,
+    // deshalb genuegt ein Stapel ueber die nach start sortierte Liste.
+    const stapel: number[] = [];
+    for (let i = 0; i < bereiche.length; i++) {
+      while (stapel.length > 0 && bereiche[stapel[stapel.length - 1]].end < bereiche[i].start) stapel.pop();
+      bereiche[i].eltern = stapel.length > 0 ? stapel[stapel.length - 1] : -1;
+      stapel.push(i);
+    }
+    this.typBereiche = bereiche;
+  }
+
+  /**
+   * In welcher Typ-Deklaration liegt pos? Geliefert wird die INNERSTE
+   * umschliessende: der Scope eines Symbols ist die naechstgelegene Deklaration,
+   * die es enthaelt — nur sie ergibt einen richtigen qualifizierten Namen.
+   *
+   * Bis Version 3 wurde hier die Eigenheit von String.match ohne g nachgebildet
+   * ("erste Deklaration hinter der letzten schliessenden Klammer vor pos"). Das
+   * war in zwei Faellen falsch: bei direkt verschachtelten Deklarationen lieferte
+   * es die AEUSSERE — in Scala trifft das jedes companion object am Anfang einer
+   * Klasse — und, weit haeufiger, sobald vor pos ueberhaupt eine schliessende
+   * Klammer stand und danach keine neue Deklaration folgte, lieferte es gar nichts.
+   *
+   * ABWEICHUNG VON cpp.ts, bewusst und nicht zu "vereinheitlichen": cpp liefert den
+   * vollen Pfad ("Aussen::Innen"), die uebrigen acht Parser nur den innersten Namen.
+   * Grund: java.ts und dart.ts erkennen Konstruktoren daran, dass der Eltern-Typ
+   * GLEICH dem Symbolnamen ist. Ein Pfad waere nie gleich dem Namen — saemtliche
+   * Konstruktoren fielen aus dem Index. Wer das angleichen will, muss zuerst diesen
+   * Vergleich umbauen.
+   */
   private findParentType(content: string, pos: number): string | undefined {
-    const before = content.substring(0, pos);
-    const classMatch = before.match(/(?:class|object|trait|enum)\s+(\w+)[^{]*\{[^}]*$/);
-    return classMatch ? classMatch[1] : undefined;
+    this.bereiteTypGrenzenVor(content);
+    const bereiche = this.typBereiche;
+    let lo = 0;
+    let hi = bereiche.length;
+    while (lo < hi) {
+      const mitte = (lo + hi) >> 1;
+      if (bereiche[mitte].start < pos) lo = mitte + 1;
+      else hi = mitte;
+    }
+    // Letzter Bereich, der vor pos beginnt. Endet er schon vor pos, ist er ein
+    // abgeschlossener Nachbar — dann ueber die Elternkette nach aussen weiter.
+    let i = lo - 1;
+    while (i >= 0 && bereiche[i].end <= pos) i = bereiche[i].eltern;
+    return i >= 0 ? bereiche[i].name : undefined;
   }
 }
 

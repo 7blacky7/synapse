@@ -70,6 +70,7 @@ export {
   isBinaryExtension,
   isExtractableDocument,
   isMultimodalFile,
+  klassifiziereDatei,
   getMediaMimeType,
   getMediaCategory,
   getFileType,
@@ -78,11 +79,6 @@ export {
   shouldIgnore,
   createDefaultIgnore,
   getDefaultIgnores,
-  // IGN-3: Regeln aus project_ignore_rules
-  aktualisiereIgnoreRegeln,
-  gepufferteIgnoreRegeln,
-  verwirfIgnoreRegeln,
-  erklaereIgnore,
 } from './watcher/index.js';
 export type { FileWatcherOptions, FileWatcherInstance } from './watcher/index.js';
 
@@ -99,7 +95,9 @@ export {
   toAbsolutePath,
   registerVirtualProject,
   setProjectEnabled,
+  getProjectRegistryRows,
 } from './services/project-registry.js';
+export type { ProjectRegistryRow } from './services/project-registry.js';
 
 // Specialist Respawn Trigger (geteilt zwischen stdio MCP + REST API)
 export { maybeTriggerRespawn } from './services/specialist-respawn.js';
@@ -110,8 +108,6 @@ export { resolveAgentId } from './services/agent-id-resolver.js';
 
 // Tool-Call Activity-Log (zentraler Audit-Store fuer shell(action:"activity"))
 export { logToolCall, isMutationAction, queryToolCalls, expireOldToolCalls } from './services/tool-call-log.js';
-export { erlaubteRollen, regelSichtbarFuer, tagVerdacht } from './services/agent-rollen.js';
-export type { AgentRolle } from './services/agent-rollen.js';
 export type { ToolCallLogEntry, ToolCallRow, ActivityFilters, ActivityDetail } from './services/tool-call-log.js';
 
 // Model-Registry Service (DB-Loader fuer Spezialisten-Modelle)
@@ -137,6 +133,14 @@ export type { ShellExecArgs, ShellGetStreamArgs } from './services/shell-exec.js
 // Migrations
 export { migrateToRelativePaths } from './migrations/migrate-to-relative-paths.js';
 
+// Embedding-Backlog (EMBED-1): Nachzug fuer nebenlaeufig angestossene Embeddings
+export {
+  embeddeOffeneEintraege,
+  zaehleOffeneEmbeddings,
+  EMBED_PENDING_HINT,
+} from './services/embed-backlog.js';
+export type { BacklogErgebnis } from './services/embed-backlog.js';
+
 export {
   // Code
   indexFile,
@@ -152,13 +156,14 @@ export {
   searchFilesByPath,
   backfillCodeFiles,
   parseUnparsedFiles,
+  projekteMitBacklog,
   linkCrossFileReferences,
   getEmbeddingPending,
   embeddingPendingHint,
+  EMBEDDING_PENDING_HINT,
   resetProjectEmbeddings,
   resetProjectParse,
   reparseProject,
-  EMBEDDING_PENDING_HINT,
   // Media
   indexMediaFile,
   indexMediaDirectory,
@@ -269,16 +274,31 @@ export {
   getBackupDir,
   getBackupStats,
   backupProject,
+  // Ignore-Regeln
+  listeIgnoreRegeln,
+  fuegeIgnoreRegelnHinzu,
+  blendeVoruebergehendEin,
+  loeseDauerInSekunden,
+  entferneIgnoreRegel,
+  schalteIgnoreRegel,
+  pruefeIgnorePfad,
+  markiereIgnorierteDateien,
+  markiereEinzelneDateiIgnoriert,
+  pruefeUndBereiteSchreibenVor,
   // Chat
   registerAgent as registerChatAgent,
   registerAgentsBatch,
   unregisterAgent as unregisterChatAgent,
   unregisterAgentsBatch,
-  expireIdleAgentSessions,
   getAgentSession,
   listActiveAgents,
+  expireIdleAgentSessions,
   sendMessage as sendChatMessage,
   getMessages as getChatMessages,
+  // Agent-Rollen (Regel-Sichtbarkeit — geteilt von MCP-Server und REST-API)
+  erlaubteRollen,
+  regelSichtbarFuer,
+  tagVerdacht,
   // Tech-Docs
   addTechDoc,
   searchTechDocs,
@@ -349,6 +369,8 @@ export type {
 
 export type { FunctionInfo, VariableInfo, SymbolInfo, ReferenceInfo, ReferencesResult, FullTextSearchResult, FileContentResult, FileContentOptions, TreeOptions, StatementInfo, CallEdgeInfo, ExecutionFlowResult, EntrypointInfo } from './services/code-intel.js';
 export type { BatchEdit, BatchResult } from './services/code-write.js';
+export { getParserGesundheitDatei, getParserGesundheitUebersicht, backfillParserCoverage, schreibeParserCoverage } from './services/parser-health.js';
+export type { ParserGesundheitDatei, ParserGesundheitUebersicht, ParserBefundGesamt, ParserUebersichtDatei } from './services/parser-health.js';
 
 // File-Versionierung (Schritt 1)
 export {
@@ -433,11 +455,16 @@ export type {
   SearchType,
 } from './services/global-search.js';
 // Parser Worker-Threads Pool
-export { getParserPool, resetParserPool, ParserWorkerPool } from './parser/worker-pool.js';
-export type { ParseArgs } from './parser/worker-pool.js';
+export { getParserPool, resetParserPool, ParserWorkerPool, getParserActivity } from './parser/worker-pool.js';
+export type { ParseArgs, ParserAktivitaet } from './parser/worker-pool.js';
 
 export type { ProjectStatus } from './services/project-status.js';
 export { getProjectStatus, setProjectStatus, isProjectInitialized, updateLastAccess, clearProjectStatus, isAgentKnown, registerAgent } from './services/project-status.js';
+
+// Setup-Phase (SETUP-1: PG Source-of-Truth, status.json nur noch Cache/Fallback)
+export type { SetupPhase } from './services/project-setup-status.js';
+export { getSetupPhase, setSetupPhase, ermittleProjektStatus } from './services/project-setup-status.js';
+export { backfillSetupPhaseFromStatusFiles } from './migrations/backfill-setup-phase.js';
 /**
  * Ermittelt das Text-Feld fuer Re-Embedding anhand des Collection-Suffixes
  */
@@ -654,16 +681,3 @@ export async function initSynapse(projectName: string): Promise<boolean> {
   console.error(`[Synapse] Projekt "${projectName}" bereit`);
   return true;
 }
-
-// IGN-2: Pflege der Ignore-Regeln (anlegen, entfernen, schalten, Pfad pruefen)
-export {
-  listeIgnoreRegeln,
-  fuegeIgnoreRegelnHinzu,
-  entferneIgnoreRegel,
-  schalteIgnoreRegel,
-  pruefeIgnorePfad,
-  pruefeUndBereiteSchreibenVor,
-  markiereEinzelneDateiIgnoriert,
-} from './services/ignore-rules.js';
-export type { IgnoreRegel, SchreibVorbereitung, IgnorierterSchreibHinweis } from './services/ignore-rules.js';
-

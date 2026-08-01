@@ -9,19 +9,160 @@
  */
 
 import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser, ParsedStatement, ParsedCallEdge } from './types.js';
-import { extractStringLiterals } from './types.js';
+import { extractStringLiterals, erstelleZeilenIndex, zeileFuerPosition } from './types.js';
 import { formatRouteName, isLikelyHttpPath, HTTP_VERBS } from './patterns/http.js';
 import { parseEmbeddedSql, looksLikeSql } from './patterns/sql.js';
 
+// Zeilenindex je Datei zwischenspeichern — siehe zeileFuerPosition in types.ts.
+// Vorher wurde pro Treffer ein Praefix der Datei kopiert und zerlegt: das ist
+// O(Treffer x Dateigroesse) und laesst grosse Dateien praktisch nie fertig werden.
+let zeilenCacheText: string | null = null;
+let zeilenCacheIndex: number[] = [];
 function lineAt(text: string, pos: number): number {
-  return text.substring(0, pos).split('\n').length;
+  if (text !== zeilenCacheText) {
+    zeilenCacheText = text;
+    zeilenCacheIndex = erstelleZeilenIndex(text);
+  }
+  return zeileFuerPosition(zeilenCacheIndex, pos);
+}
+
+// Sucht ein an ^ verankertes Muster ab startPos, OHNE den Dateirest zu kopieren.
+// Bildet content.substring(startPos) + Regex mit m-Flag EXAKT nach: in der Kopie
+// gilt Position 0 als Zeilenanfang, auch wenn startPos mitten in einer Zeile
+// liegt. Deshalb wird zuerst genau an startPos geprueft (sticky, ohne ^), erst
+// danach an den echten Zeilenanfaengen (global, mit ^ und m-Flag).
+// Diese Sonderprobe ist kein Schoenheitsfehler: das erste Feld eines struct traf
+// frueher bei Kopie-Position 0 zu und bekam dadurch die Zeilennummer der
+// struct-Kopfzeile. Wer sie weglaesst, verschiebt still genau diese Nummer.
+// stickyRe und globalRe muessen dasselbe Muster tragen, einmal mit y-, einmal
+// mit gm-Flag; ihr lastIndex wird hier gesetzt.
+// Der zweite Teil laeuft ueber eine vorbereitete Liste statt ueber einen neuen
+// Scan: eine Suche, die NICHTS findet, liefe sonst je Block bis zum Dateiende
+// — etwa die Feldsuche bei einem struct ohne Felder. Die Annahme dabei: ein
+// global gesammelter Treffer verschluckt keinen spaeteren Kandidaten. startPos
+// liegt hier immer hinter einem struct-Kopf, davor steht also kein reiner
+// Whitespace-Lauf, ueber den ein frueherer Treffer hinweggreifen koennte.
+const trefferCache = new Map<RegExp, { text: string; treffer: RegExpExecArray[] }>();
+function trefferListe(text: string, globalRe: RegExp): RegExpExecArray[] {
+  const alt = trefferCache.get(globalRe);
+  if (alt && alt.text === text) return alt.treffer;
+  const treffer: RegExpExecArray[] = [];
+  globalRe.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = globalRe.exec(text)) !== null) {
+    treffer.push(m);
+    if (globalRe.lastIndex === m.index) globalRe.lastIndex++;
+  }
+  trefferCache.set(globalRe, { text, treffer });
+  return treffer;
+}
+
+function* trefferAb(text: string, startPos: number, stickyRe: RegExp, globalRe: RegExp): Generator<RegExpExecArray> {
+  stickyRe.lastIndex = startPos;
+  const erster = stickyRe.exec(text);
+  let weiterAb = startPos;
+  if (erster) {
+    yield erster;
+    weiterAb = stickyRe.lastIndex > startPos ? stickyRe.lastIndex : startPos + 1;
+  }
+  const liste = trefferListe(text, globalRe);
+  let lo = 0;
+  let hi = liste.length;
+  while (lo < hi) {
+    const mitte = (lo + hi) >> 1;
+    if (liste[mitte].index < weiterAb) lo = mitte + 1;
+    else hi = mitte;
+  }
+  for (let i = lo; i < liste.length; i++) yield liste[i];
+}
+
+// Zeilennummer eines Treffers, gerechnet ab dem ersten NICHT-Leerzeichen des
+// Treffers statt ab seinem Anfang.
+// Die Muster hier beginnen mit \s+, und das greift ueber Zeilenumbrueche hinweg:
+// der Treffer beginnt dann unmittelbar hinter dem struct-Kopf oder auf einer
+// Leerzeile, waehrend das Feld selbst erst auf der naechsten Zeile steht. Das
+// erste Feld eines struct trug dadurch die Zeilennummer der Kopfzeile.
+// Gemessen gegen die Quelle waren 27 % der struct-Feld-Zeilen um genau eine
+// Zeile zu klein.
+function trefferZeile(text: string, m: RegExpExecArray, basis = 0): number {
+  const versatz = m[0].search(/\S/);
+  return lineAt(text, basis + m.index + (versatz > 0 ? versatz : 0));
+}
+
+// Muster als Modul-Konstanten, weil trefferListe ueber die Regex-IDENTITAET
+// zwischenspeichert.
+const ENDE_S = /\s*end\b/y;
+const ENDE_G = /^\s*end\b/gm;
+const FELD_S = /\s+(\w+)\s*::\s*(\S+)/y;
+const FELD_G = /^\s+(\w+)\s*::\s*(\S+)/gm;
+
+// Erster Treffer ab startPos, sonst null — gleiche Semantik wie trefferAb.
+function ersterTreffer(text: string, startPos: number, stickyRe: RegExp, globalRe: RegExp): RegExpExecArray | null {
+  for (const t of trefferAb(text, startPos, stickyRe, globalRe)) return t;
+  return null;
+}
+
+// Ergebnis von findEnd fuer JEDE Zeile, einmal je Datei berechnet.
+//
+// WARUM DAS NOETIG IST — per CPU-Profil belegt, nicht vermutet: nach dem Wegfall
+// der Praefix-Kopie entfielen immer noch 88,8 % der Laufzeit auf findEnd. Die
+// Kopie war also gar nicht die Hauptursache. Der Grund steckt in der
+// Abbruchbedingung: depth beginnt bei 0, ein ausgeglichener Block bringt es
+// zurueck auf 0 — und geprueft wird auf depth < 0. In wohlgeformtem Julia faellt
+// depth deshalb NIE unter 0, und jeder einzelne Aufruf laeuft bis zum Dateiende.
+// Bei einem Aufruf je struct UND je function ist das O(Treffer x Dateigroesse).
+//
+// Gesucht ist damit fuer jede Startzeile s die erste Zeile, ab der die Bilanz
+// unter den Stand VOR s faellt — das 'next smaller element' auf der Praefixsumme,
+// das ein Stapel fuer alle Startzeilen gemeinsam in einem Durchlauf loest.
+// Der Rueckgabewert ist unveraendert (in der Regel die letzte Zeile der Datei);
+// er wird nur nicht mehr je Treffer neu erlaufen.
+let endeCacheText: string | null = null;
+let endeJeZeile: Int32Array = new Int32Array(0);
+function baueEndeIndex(text: string): void {
+  if (text === endeCacheText) return;
+  endeCacheText = text;
+  const oeffnerRe = /^(function|struct|mutable\s+struct|module|baremodule|begin|if|for|while|try|let|do|quote|macro)\b/;
+  const deltas: number[] = [];
+  let start = 0;
+  for (;;) {
+    let ende = text.indexOf('\n', start);
+    const letzteZeile = ende === -1;
+    if (letzteZeile) ende = text.length;
+    const trimmed = text.slice(start, ende).trim();
+    let d = 0;
+    if (oeffnerRe.test(trimmed)) d += 1;
+    if (trimmed === 'end' || trimmed.startsWith('end ') || trimmed.startsWith('end#') || trimmed.startsWith('end;')) d -= 1;
+    deltas.push(d);
+    if (letzteZeile) break;
+    start = ende + 1;
+  }
+  const n = deltas.length;
+  const bilanz = new Int32Array(n + 1);
+  for (let i = 0; i < n; i++) bilanz[i + 1] = bilanz[i] + deltas[i];
+  const ergebnis = new Int32Array(n);
+  const stapel: number[] = [];
+  for (let j = 0; j <= n; j++) {
+    while (stapel.length > 0 && bilanz[stapel[stapel.length - 1]] > bilanz[j]) {
+      ergebnis[stapel.pop() as number] = j;
+    }
+    if (j < n) stapel.push(j);
+  }
+  // Startzeilen ohne solche Stelle liefen frueher bis ans Dateiende durch.
+  for (const s of stapel) ergebnis[s] = n + 1;
+  endeJeZeile = ergebnis;
 }
 
 class JuliaParser implements LanguageParser {
   language = 'julia';
   extensions = ['.jl'];
   /** Bei inhaltlichen Parser-Aenderungen erhoehen (siehe LanguageParser.version). */
-  version = 1;
+  // 2: Zeilenberechnung ueber Index statt Praefix-Kopie (siehe lineAt).
+  // 3: Feldsuche und findEnd arbeiten direkt auf content statt auf einer Kopie
+  //    des Dateirests (siehe trefferAb und findEnd).
+  // 4: findEnd schlaegt das Blockende nach, statt es je Treffer bis zum
+  //    Dateiende neu zu erlaufen (siehe baueEndeIndex).
+  version = 4;
 
   parse(content: string, filePath: string): ParseResult {
     const symbols: ParsedSymbol[] = [];
@@ -137,13 +278,18 @@ class JuliaParser implements LanguageParser {
       }
 
       // Parse fields (only until 'end')
-      const afterStruct = content.substring(m.index + m[0].length);
-      const endIdx = afterStruct.search(/^\s*end\b/m);
-      const fieldBlock = endIdx > 0 ? afterStruct.substring(0, endIdx) : afterStruct;
-      const fieldRe = /^\s+(\w+)\s*::\s*(\S+)/gm;
-      let fm: RegExpExecArray | null;
-      while ((fm = fieldRe.exec(fieldBlock)) !== null) {
-        const fieldLine = lineAt(content, m.index + m[0].length + fm.index);
+      // Ohne Kopie: vorher entstanden pro struct ZWEI Kopien (afterStruct und
+      // fieldBlock) und der gesamte Dateirest wurde durchsucht — O(structs x
+      // Dateigroesse). Die alte Fassung kuerzte nur bei endIdx > 0; ein 'end'
+      // unmittelbar an Position 0 liess den Block ungekuerzt. Das wird bewusst
+      // genauso nachgebildet.
+      const feldStart = m.index + m[0].length;
+      const endTreffer = ersterTreffer(content, feldStart, ENDE_S, ENDE_G);
+      const endIdx = endTreffer ? endTreffer.index - feldStart : -1;
+      const feldGrenze = endIdx > 0 ? feldStart + endIdx : content.length;
+      for (const fm of trefferAb(content, feldStart, FELD_S, FELD_G)) {
+        if (fm.index >= feldGrenze) break;
+        const fieldLine = trefferZeile(content, fm);
         if (fieldLine > lineEnd) break;
 
         symbols.push({
@@ -501,17 +647,35 @@ class JuliaParser implements LanguageParser {
   }
 
   private findEnd(content: string, startPos: number): number {
-    const lines = content.substring(startPos).split('\n');
     let currentLine = lineAt(content, startPos);
-    let depth = 0;
 
-    for (const line of lines) {
-      const trimmed = line.trim();
+    // Regelfall: startPos steht am Zeilenanfang (beide Aufrufer verwenden die
+    // Fundstelle einer an ^ verankerten Regex). Dann liefert der vorbereitete
+    // Index das Ergebnis direkt — siehe baueEndeIndex, warum das noetig ist.
+    if (startPos === 0 || content.charCodeAt(startPos - 1) === 10) {
+      baueEndeIndex(content);
+      const zeile = currentLine - 1;
+      if (zeile >= 0 && zeile < endeJeZeile.length) return endeJeZeile[zeile];
+    }
+
+    // Rueckfallweg fuer eine Startposition mitten in einer Zeile: dort ist die
+    // erste betrachtete Zeile nur der REST der Zeile, was der zeilenweise Index
+    // nicht abbildet. Faktisch wird dieser Weg von keinem Aufrufer erreicht, er
+    // steht hier, damit die Funktion fuer sich genommen korrekt bleibt.
+    let depth = 0;
+    let zeilenStart = startPos;
+    for (;;) {
+      let zeilenEnde = content.indexOf('\n', zeilenStart);
+      const letzteZeile = zeilenEnde === -1;
+      if (letzteZeile) zeilenEnde = content.length;
+      const trimmed = content.slice(zeilenStart, zeilenEnde).trim();
       // Track block depth
       if (/^(function|struct|mutable\s+struct|module|baremodule|begin|if|for|while|try|let|do|quote|macro)\b/.test(trimmed)) depth++;
       if (trimmed === 'end' || trimmed.startsWith('end ') || trimmed.startsWith('end#') || trimmed.startsWith('end;')) depth--;
       if (depth < 0) return currentLine;
       currentLine++;
+      if (letzteZeile) break;
+      zeilenStart = zeilenEnde + 1;
     }
     return currentLine;
   }

@@ -9,11 +9,20 @@
  */
 
 import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser, ParsedStatement, ParsedCallEdge } from './types.js';
-import { extractStringLiterals } from './types.js';
+import { extractStringLiterals, erstelleZeilenIndex, zeileFuerPosition } from './types.js';
 import { formatRouteName, isLikelyHttpPath, HTTP_VERBS } from './patterns/http.js';
 
+// Zeilenindex je Datei zwischenspeichern — siehe zeileFuerPosition in types.ts.
+// Vorher wurde pro Treffer ein Praefix der Datei kopiert und zerlegt: das ist
+// O(Treffer x Dateigroesse) und laesst grosse Dateien praktisch nie fertig werden.
+let zeilenCacheText: string | null = null;
+let zeilenCacheIndex: number[] = [];
 function lineAt(text: string, pos: number): number {
-  return text.substring(0, pos).split('\n').length;
+  if (text !== zeilenCacheText) {
+    zeilenCacheText = text;
+    zeilenCacheIndex = erstelleZeilenIndex(text);
+  }
+  return zeileFuerPosition(zeilenCacheIndex, pos);
 }
 
 // ---------------------------------------------------------------------------
@@ -21,7 +30,7 @@ function lineAt(text: string, pos: number): number {
 // ---------------------------------------------------------------------------
 
 function lineAtNim(text: string, pos: number): number {
-  return text.substring(0, pos).split('\n').length;
+  return lineAt(text, pos);
 }
 
 function extractFlowNim(content: string): { statements: ParsedStatement[]; callEdges: ParsedCallEdge[] } {
@@ -158,7 +167,10 @@ class NimParser implements LanguageParser {
   language = 'nim';
   extensions = ['.nim', '.nims'];
   /** Bei inhaltlichen Parser-Aenderungen erhoehen (siehe LanguageParser.version). */
-  version = 1;
+  // 2: Zeilenberechnung ueber Index statt Praefix-Kopie (siehe lineAt).
+  // 3: type-Abschnitt endet an der ersten nicht eingerueckten Zeile — vorher sammelte
+  //    jeder Abschnitt auch alle nachfolgenden Typen ein (massenhaft Duplikate).
+  version = 3;
 
   parse(content: string, filePath: string): ParseResult {
     const symbols: ParsedSymbol[] = [];
@@ -226,11 +238,24 @@ class NimParser implements LanguageParser {
     // ══════════════════════════════════════════════
     const typeBlockRe = /^type\b/gm;
     while ((m = typeBlockRe.exec(content)) !== null) {
-      const afterType = content.substring(m.index + m[0].length);
+      // Der type-Abschnitt endet bei der ersten NICHT eingerueckten Zeile — Nim ist
+      // einrueckungsbasiert. Vorher wurde ab hier der gesamte REST DER DATEI durchsucht,
+      // wodurch jeder type-Abschnitt zusaetzlich alle nachfolgenden Typen einsammelte:
+      // bei N Abschnitten N + (N-1) + ... Eintraege. Das erzeugte nicht nur Last, sondern
+      // zehntausende exakte Duplikate im Index (bei 50KB: 12364 Symbole, davon 880 eindeutig).
+      const blockStart = m.index + m[0].length;
+      const endeRe = /\n(?=\S)/g;
+      endeRe.lastIndex = blockStart;
+      const endeTreffer = endeRe.exec(content);
+      const blockEnde = endeTreffer ? endeTreffer.index : content.length;
       const typeDefRe = /^\s{2}(\w+)\*?\s*(?:\[([^\]]*)\])?\s*=\s*(ref\s+)?(?:object(?:\s+of\s+(\w+))?|enum|tuple|distinct\s+\w+|concept)/gm;
+      // Direkt auf dem Original suchen statt eine Kopie zu bilden; dadurch ist die
+      // Trefferposition bereits absolut und die Zeilennummer braucht keinen Offset.
+      typeDefRe.lastIndex = blockStart;
       let tm: RegExpExecArray | null;
 
-      while ((tm = typeDefRe.exec(afterType)) !== null) {
+      while ((tm = typeDefRe.exec(content)) !== null) {
+        if (tm.index >= blockEnde) break;
         const name = tm[1];
         const typeParams = tm[2];
         const isRef = !!tm[3];
@@ -239,7 +264,7 @@ class NimParser implements LanguageParser {
           : tm[0].includes('object') ? 'class'
           : tm[0].includes('concept') ? 'interface'
           : 'interface';
-        const lineStart = lineAt(content, m.index + m[0].length + tm.index);
+        const lineStart = lineAt(content, tm.index);
         const isExported = tm[0].includes('*');
 
         symbols.push({

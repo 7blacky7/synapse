@@ -70,6 +70,34 @@ CREATE TABLE IF NOT EXISTS proposals (
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- Nachzug fuer nebenlaeufiges Embedding (EMBED-1, 2026-07-28).
+-- Der Schreibvorgang kehrt zurueck, sobald die Zeile in PostgreSQL steht; der Vektor wird
+-- nachgereicht. embedded_at IS NULL ist die Backlog-Bedingung — ohne diese Spalte waere ein
+-- fehlgeschlagenes Embedding STILL VERLOREN: der Eintrag ist ueber PG abrufbar, hat aber nie
+-- einen Vektor, und niemand merkt es.
+--
+-- WARUM DEFAULT NOW() UND DIREKT DANACH DROP DEFAULT, in genau dieser Reihenfolge:
+-- ADD COLUMN mit DEFAULT fuellt die BESTEHENDEN Zeilen mit diesem Wert. Der Altbestand gilt
+-- damit als erledigt — er hat seine Vektoren ja bereits. Ohne das waere jede vorhandene Memory
+-- und jeder Gedanke ab sofort faellig, und die Einfuehrung dieser Spalte wuerde genau die
+-- Massen-Embedding-Welle ausloesen, gegen die sie gebaut ist.
+-- Das anschliessende DROP DEFAULT sorgt dafuer, dass NEUE Zeilen NULL bekommen und damit vom
+-- Backlog gesehen werden. Beides zusammen ist idempotent: beim zweiten Lauf greift
+-- IF NOT EXISTS, das DROP DEFAULT ist dann ein No-op.
+ALTER TABLE memories  ADD COLUMN IF NOT EXISTS embedded_at TIMESTAMPTZ DEFAULT NOW();
+ALTER TABLE memories  ALTER COLUMN embedded_at DROP DEFAULT;
+ALTER TABLE thoughts  ADD COLUMN IF NOT EXISTS embedded_at TIMESTAMPTZ DEFAULT NOW();
+ALTER TABLE thoughts  ALTER COLUMN embedded_at DROP DEFAULT;
+ALTER TABLE proposals ADD COLUMN IF NOT EXISTS embedded_at TIMESTAMPTZ DEFAULT NOW();
+ALTER TABLE proposals ALTER COLUMN embedded_at DROP DEFAULT;
+
+-- Teil-Indizes: der Backlog fragt ausschliesslich nach den offenen Zeilen, und das sind im
+-- Normalbetrieb sehr wenige. Ein Teil-Index bleibt dadurch winzig, auch wenn die Tabellen wachsen.
+CREATE INDEX IF NOT EXISTS idx_memories_embed_backlog  ON memories(project)  WHERE embedded_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_thoughts_embed_backlog  ON thoughts(project)  WHERE embedded_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_proposals_embed_backlog ON proposals(project) WHERE embedded_at IS NULL;
+
+
 CREATE TABLE IF NOT EXISTS agent_sessions (
   id TEXT PRIMARY KEY,
   project TEXT NOT NULL,
@@ -145,6 +173,21 @@ CREATE TABLE IF NOT EXISTS projects (
 -- Migration: enabled-Flag fuer bestehende Tabellen (deaktivierte Projekte
 -- werden vom Parser-Worker uebersprungen — siehe parser-worker.ts).
 ALTER TABLE projects ADD COLUMN IF NOT EXISTS enabled BOOLEAN NOT NULL DEFAULT TRUE;
+
+-- SETUP-1: Setup-Phase-Tracking (projektweiter Einrichtungsfortschritt).
+-- Eigene Tabelle statt Spalte in projects, weil projects PK (name, hostname)
+-- hat — pro Projekt eine Zeile JE HOSTNAME (inkl. virtuellem 'rest-api'-Eintrag,
+-- siehe registerVirtualProject). setupPhase ist aber projektweit: ein Setup wird
+-- oft lokal begonnen und soll ueber die REST-API (virtueller Host) abgeschlossen
+-- werden koennen. Als Spalte in projects gaebe es N Kopien desselben Werts ohne
+-- eindeutige Quelle. Ersetzt .synapse/status.json als primaere Datenquelle, analog
+-- zu wrapper_status fuer Spezialisten. status.json bleibt optionaler Cache/Fallback.
+CREATE TABLE IF NOT EXISTS project_setup_status (
+  project TEXT PRIMARY KEY,
+  setup_phase TEXT NOT NULL DEFAULT 'none',  -- none|initial-pending|initial-done|post-indexing-pending|complete
+  updated_by TEXT,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
 
 CREATE TABLE IF NOT EXISTS agent_events (
   id SERIAL PRIMARY KEY,
@@ -1105,6 +1148,72 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_project_ignore_rules_eindeutig
 CREATE INDEX IF NOT EXISTS idx_project_ignore_rules_aktiv
   ON project_ignore_rules(project, sort_order) WHERE enabled;
 
+-- IGN-9 (28.07.2026): modus trennt zwei Dinge, die vorher eines waren.
+--
+--   'gesperrt'      Der Inhalt darf NIE in die Datenbank. Der lokale Daemon
+--                   fragt vor dem Senden und schickt gar nicht erst los.
+--                   Gilt in BEIDEN Richtungen, also auch fuer PG->FS.
+--                   Dafuer da: Secrets, Paketordner, Build-Ausgaben und alles,
+--                   was ein kuenftiges Framework mitbringt und wofuer es noch
+--                   keine fest einprogrammierte Regel gibt.
+--
+--   'ausgeblendet'  Nur die SICHTBARKEIT in code_intel ist betroffen, sowohl
+--                   die lexikalische als auch die semantische Suche (Embeddings
+--                   und Inhalte ueber PG). Zweck ist es, Rauschen aus dem
+--                   KI-Kontext zu halten.
+--                   ⚠️ Die Datei laeuft trotzdem voellig normal zwischen
+--                   Dateisystem und Datenbank hin und her. Ausblenden heisst
+--                   NICHT, dass sie verschwindet.
+--
+-- WARUM DIE TRENNUNG: bis zum 28.07. galt beides als dasselbe. Eine Datei unter
+-- einer Ausblend-Regel wurde in PG angelegt, aber nie auf die Platte
+-- geschrieben — der Daemon versuchte es nicht einmal. Wer eine Fixture unter
+-- __testdata__/ anlegte, bekam ein erfolgreiches ok:true und eine Datei, die es
+-- auf der Platte nie gab. Der Hinweistext sprach von "wird aus Suche/Baum
+-- ausgeblendet" und liess damit genau den Teil weg, der wehtut.
+--
+-- MIGRATION: die bisherigen locked-Regeln (node_modules, .git, dist, .env,
+-- .mcp.json) werden 'gesperrt', alle uebrigen 'ausgeblendet'. Damit aendert
+-- sich fuer den Schutz nichts, waehrend ausgeblendete Pfade ihren Weg auf die
+-- Platte zurueckbekommen.
+ALTER TABLE project_ignore_rules
+  ADD COLUMN IF NOT EXISTS modus TEXT NOT NULL DEFAULT 'ausgeblendet';
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.constraint_column_usage
+    WHERE table_name = 'project_ignore_rules' AND constraint_name = 'project_ignore_rules_modus_check'
+  ) THEN
+    ALTER TABLE project_ignore_rules
+      ADD CONSTRAINT project_ignore_rules_modus_check
+      CHECK (modus IN ('gesperrt', 'ausgeblendet'));
+  END IF;
+END $$;
+
+-- Einmalige Migration des Altbestands: locked war bisher der einzige Hinweis
+-- darauf, dass eine Regel schuetzen und nicht nur aufraeumen soll.
+UPDATE project_ignore_rules SET modus = 'gesperrt' WHERE locked AND modus = 'ausgeblendet';
+
+CREATE INDEX IF NOT EXISTS idx_project_ignore_rules_modus
+  ON project_ignore_rules(project, modus) WHERE enabled;
+
+-- IGN-10 (28.07.2026): befristete Einblendung.
+--
+-- WOFUER: eine KI braucht gelegentlich genau die Datei, die jemand bewusst
+-- ausgeblendet hat — weil sie den Kontext zumuellt, aber eben doch die Antwort
+-- enthaelt. Sie soll sie sich holen koennen, OHNE die Regel dauerhaft zu
+-- kippen und ohne daran denken zu muessen, sie wieder einzuschalten.
+-- eingeblendet_bis hebt die Regel bis zu diesem Zeitpunkt auf; danach greift
+-- sie von selbst wieder. Ein vergessenes Zuruecksetzen kann es damit nicht
+-- geben.
+--
+-- NULL = keine Befristung, die Regel wirkt normal.
+-- Wirkt NUR fuer modus='ausgeblendet'. Eine Sperre laesst sich nicht auf Zeit
+-- aufheben: sie haelt Inhalte aus der Datenbank heraus, und was einmal drin
+-- ist, ist drin — eine Frist waere dort eine Zusage, die niemand einhalten kann.
+ALTER TABLE project_ignore_rules
+  ADD COLUMN IF NOT EXISTS eingeblendet_bis TIMESTAMPTZ;
 -- Regel-Aenderung sofort an alle Prozesse melden (Daemon, API, Parser-Worker).
 -- Ohne diese Benachrichtigung haelt jeder Prozess seinen alten Stand und die
 -- Zusage "innerhalb einer Minute sichtbar bzw. unsichtbar" waere nicht haltbar.
@@ -1126,6 +1235,90 @@ DROP TRIGGER IF EXISTS trg_notify_ignore_rules ON project_ignore_rules;
 CREATE TRIGGER trg_notify_ignore_rules
   AFTER INSERT OR UPDATE OR DELETE ON project_ignore_rules
   FOR EACH ROW EXECUTE FUNCTION notify_ignore_rules_change();
+
+-- ===========================================================================
+-- PARSE-COVERAGE: wieviel hat der Parser in einer Datei tatsaechlich erkannt?
+--
+-- WARUM: Der Index konnte bisher nicht zwischen "in der Datei ist nichts" und
+-- "der Parser hat nichts erkannt" unterscheiden. index.html stand mit 100.001
+-- Zeilen und 0 Funktionen im Index, ohne dass irgendetwas darauf hinwies.
+-- parse_failures erfasst nur Totalausfaelle (Timeout); diese Tabelle erfasst,
+-- was INNERHALB erfolgreich geparster Dateien herauskam.
+--
+-- EIN DATENSATZ JE DATEI, per Upsert bei jedem Parse. Kein Eintrag pro Zeile --
+-- bei einer 100.001-Zeilen-Datei waere das die falsche Groessenordnung.
+--
+-- BEWUSST OHNE SPALTE "auffaellig": ein gespeicherter Schwellwert veraltet
+-- still, und genau diese Sorte Fehler soll die Tabelle aufdecken. Die Bewertung
+-- entsteht bei jeder Abfrage neu (siehe services/parser-health.ts).
+CREATE TABLE IF NOT EXISTS parse_coverage (
+  project         TEXT NOT NULL,
+  file_path       TEXT NOT NULL,
+  file_type       TEXT,
+  parser          TEXT,
+  parser_version  INTEGER,
+  datei_bytes     INTEGER,
+  zeilen_gesamt   INTEGER NOT NULL DEFAULT 0,
+  belegte_zeilen  INTEGER NOT NULL DEFAULT 0,
+  n_symbole       INTEGER NOT NULL DEFAULT 0,
+  n_funktionen    INTEGER NOT NULL DEFAULT 0,
+  n_klassen       INTEGER NOT NULL DEFAULT 0,
+  n_variablen     INTEGER NOT NULL DEFAULT 0,
+  n_imports       INTEGER NOT NULL DEFAULT 0,
+  n_text_symbole  INTEGER NOT NULL DEFAULT 0,
+  n_statements    INTEGER NOT NULL DEFAULT 0,
+  n_call_edges    INTEGER NOT NULL DEFAULT 0,
+  dauer_ms        INTEGER,
+  gemessen_am     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (project, file_path)
+);
+CREATE INDEX IF NOT EXISTS idx_parse_coverage_parser ON parse_coverage(project, parser);
+
+-- Migration: parse_coverage an code_files binden (ON DELETE CASCADE).
+--
+-- WARUM: diese Tabelle wurde als einzige datei-abgeleitete Tabelle OHNE FK
+-- angelegt. code_symbols, code_chunks, code_references, code_statements und
+-- code_call_edges haengen alle per FK an code_files und verschwinden mit ihr --
+-- parse_coverage blieb stehen. Es gibt drei Stellen, die code_files hart
+-- loeschen (watcher/index.ts, mcp-server/tools/init.ts, migrate-to-relative-paths.ts),
+-- und keine davon hat parse_coverage mitgeraeumt. Gemessen waren es 3.944
+-- Karteileichen: 5.477 Eintraege gegen 1.533 code_files.
+--
+-- Der Riegel gehoert deshalb hierher und nicht in die Aufrufer. In
+-- tools/init.ts stand die Buchfuehrung darueber, welche Tabellen keinen FK
+-- haben, sogar als Kommentar im Code -- und war unvollstaendig. Eine Regel,
+-- die an drei Stellen gepflegt wird, laeuft auseinander; eine Constraint gilt
+-- auch fuer den vierten Loeschweg, den noch niemand geschrieben hat.
+--
+-- FOLGE FUER DIE ANZEIGE: Eintraege ohne Datei waren fuer parser-health nicht
+-- von echten zu unterscheiden (es fragt parse_coverage ohne Join ab) und haben
+-- ueber ermittleMedianDichte -- das projektuebergreifend aggregiert -- den
+-- Dichte-Massstab ALLER Projekte verzogen.
+--
+-- DEFERRABLE INITIALLY DEFERRED wie bei den Geschwistern: renameCodeFile
+-- schreibt Pfade innerhalb einer Transaktion um und braucht das.
+--
+-- Das DELETE davor ist Pflicht, nicht Kosmetik: ADD CONSTRAINT validiert die
+-- Tabelle und wirft bei jeder Waise -- ensureSchema laeuft bei JEDEM Start und
+-- wuerde daran haengenbleiben. Es trifft ausschliesslich Zeilen, zu denen es
+-- kein code_files-Gegenstueck mit gleichem project UND file_path gibt; ein
+-- Filter auf Projekt oder Parser allein waere hier zu breit.
+DO $$ BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+     WHERE conrelid = 'parse_coverage'::regclass AND conname = 'parse_coverage_project_file_path_fkey'
+  ) THEN
+    DELETE FROM parse_coverage pc
+     WHERE NOT EXISTS (
+       SELECT 1 FROM code_files cf
+        WHERE cf.project = pc.project AND cf.file_path = pc.file_path
+     );
+    ALTER TABLE parse_coverage ADD CONSTRAINT parse_coverage_project_file_path_fkey
+      FOREIGN KEY (project, file_path) REFERENCES code_files(project, file_path)
+      ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED;
+  END IF;
+END $$;
+
 
 
 `;

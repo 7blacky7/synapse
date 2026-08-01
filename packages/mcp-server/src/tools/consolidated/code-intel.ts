@@ -29,6 +29,8 @@ import {
   fullTextSearchCode,
   getFileContent,
   searchCode,
+  getParserGesundheitDatei,
+  getParserGesundheitUebersicht,
 } from '@synapse/core';
 
 import { ConsolidatedTool, str, reqStr, num, bool } from './types.js';
@@ -43,7 +45,7 @@ export const codeIntelTool: ConsolidatedTool = {
       properties: {
         action: {
           type: 'string',
-          enum: ['tree', 'functions', 'variables', 'symbols', 'references', 'search', 'file', 'statements', 'calls', 'flow', 'entrypoints'],
+          enum: ['tree', 'functions', 'variables', 'symbols', 'references', 'search', 'file', 'statements', 'calls', 'flow', 'entrypoints', 'health'],
           description:
             'Aktion: tree|functions|variables|symbols|references|search|file|statements|calls|flow|entrypoints',
         },
@@ -78,8 +80,9 @@ export const codeIntelTool: ConsolidatedTool = {
           description: 'Funktions-/Variablen-Counts anzeigen (Standard: true, fuer tree)',
         },
         show_comments: {
-          type: 'boolean',
-          description: 'Kommentare unter Dateien anzeigen (Standard: false, fuer tree)',
+          type: ['boolean', 'integer', 'string'],
+          description:
+            "Kommentare unter Dateien anzeigen (Standard: false, fuer tree). true = einer je Datei, Zahl = so viele, '*' = alle bis 50. Gezeigt werden Zeilennummer und Inhalt; wird gekappt, steht das in der Ausgabe.",
         },
         show_functions: {
           type: 'boolean',
@@ -98,6 +101,30 @@ export const codeIntelTool: ConsolidatedTool = {
         name: {
           type: 'string',
           description: 'Symbol-Name-Filter (fuer functions/variables/symbols/references)',
+        },
+        value_contains: {
+          type: 'string',
+          description:
+            "Sucht im INHALT des Symbols statt im Namen (fuer symbols). PFLICHT fuer Kommentare, Strings und TODOs: die tragen name=NULL, ein name-Filter findet dort nie etwas. Beispiel: symbol_type='comment' + value_contains='@SYN-'.",
+        },
+        comment_chars: {
+          type: 'integer',
+          description: 'Anzeigelaenge je Kommentarzeile in Zeichen (fuer tree, Standard 100).',
+        },
+        comment_from: {
+          type: 'integer',
+          description:
+            'Startpunkt im Kommentartext (fuer tree, Standard 0). Mit comment_chars ein Fenster: comment_from=5 + comment_chars=20 zeigt Zeichen 5 bis 24.',
+        },
+        comment_skip: {
+          type: 'integer',
+          description:
+            'Die ersten N Kommentare je Datei ueberspringen (fuer tree, Standard 0). Blaetterfunktion: comment_skip=9 + show_comments=6 liefert Kommentar 10 bis 15.',
+        },
+        comment_contains: {
+          type: 'string',
+          description:
+            "Nur Kommentare zeigen, die diesen Text enthalten (fuer tree, zusammen mit show_comments). Macht den Baum zur Suche: show_comments='*' + comment_contains='@SYN-' listet alle Marken mit Datei und Zeile.",
         },
         exported_only: {
           type: 'boolean',
@@ -195,7 +222,11 @@ export const codeIntelTool: ConsolidatedTool = {
           depth: num(args, 'depth'),
           show_lines: bool(args, 'show_lines'),
           show_counts: bool(args, 'show_counts'),
-          show_comments: bool(args, 'show_comments'),
+          show_comments: args.show_comments as boolean | number | string | undefined,
+          comment_contains: str(args, 'comment_contains'),
+          comment_chars: num(args, 'comment_chars'),
+          comment_from: num(args, 'comment_from'),
+          comment_skip: num(args, 'comment_skip'),
           show_functions: bool(args, 'show_functions'),
           show_imports: bool(args, 'show_imports'),
           file_type: str(args, 'file_type'),
@@ -223,7 +254,7 @@ export const codeIntelTool: ConsolidatedTool = {
         const symbolType = reqStr(args, 'symbol_type');
         const filePath = str(args, 'file_path');
         const name = str(args, 'name');
-        const symbols = await getSymbols(project, symbolType, filePath, name);
+        const symbols = await getSymbols(project, symbolType, filePath, name, num(args, 'limit') ?? 100, str(args, 'value_contains'));
         return { success: true, symbols, count: symbols.length, symbol_type: symbolType, project };
       }
 
@@ -311,9 +342,29 @@ export const codeIntelTool: ConsolidatedTool = {
         return { success: true, entrypoints, count: entrypoints.length, project };
       }
 
+      case 'health': {
+        // Diagnose statt Raten: unterscheidet "Datei ist leer" von "Parser hat
+        // nichts erkannt". Genau diese Unterscheidung fehlte, als index.html mit
+        // 100.001 Zeilen functions=0 meldete.
+        const filePath = str(args, 'file_path');
+        if (!filePath) {
+          // Ohne file_path: Projekt-Uebersicht. Zuerst die parser-weiten Befunde,
+          // dann die auffaelligen Einzeldateien.
+          const uebersicht = await getParserGesundheitUebersicht(project, {
+            limit: num(args, 'limit'),
+          });
+          return { success: true, uebersicht, project };
+        }
+        const health = await getParserGesundheitDatei(project, filePath);
+        if (!health) {
+          return { success: false, error: `Datei nicht im Index: ${filePath}`, project };
+        }
+        return { success: true, health, project };
+      }
+
       default:
         throw new Error(
-          `Unbekannte action: "${action}". Erlaubte Werte: tree, functions, variables, symbols, references, search, file, statements, calls, flow, entrypoints`
+          `Unbekannte action: "${action}". Erlaubte Werte: tree, functions, variables, symbols, references, search, file, statements, calls, flow, entrypoints, health`
         );
     }
   },

@@ -70,6 +70,28 @@ export function toAbsolutePath(projectRoot: string, relativePath: string): strin
   return root + relativePath;
 }
 
+export interface ProjectRegistryRow {
+  hostname: string;
+  path: string;
+  enabled: boolean;
+  last_access: Date;
+}
+
+/**
+ * Liefert alle Registry-Zeilen eines Projekts ueber ALLE Hostnames (inkl. dem
+ * virtuellen 'rest-api'-Eintrag). Fuer project(action:"status") — damit die
+ * REST-API ehrlich sagen kann, ob ein Projekt ueberhaupt in PG registriert ist,
+ * statt das stillschweigend vorauszusetzen.
+ */
+export async function getProjectRegistryRows(name: string): Promise<ProjectRegistryRow[]> {
+  const pool = getPool();
+  const r = await pool.query<ProjectRegistryRow>(
+    `SELECT hostname, path, enabled, last_access FROM projects WHERE name = $1 ORDER BY last_access DESC`,
+    [name]
+  );
+  return r.rows;
+}
+
 /**
  * Registriert ein virtuelles Projekt fuer REST-API Clients (Web-KIs).
  * Hostname: 'rest-api', Pfad: '/virtual/rest-api'
