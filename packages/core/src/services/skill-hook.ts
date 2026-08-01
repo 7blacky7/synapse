@@ -286,39 +286,47 @@ export function baueChannelSkillSuchtext(messages: ChannelSkillNachricht[]): str
   return auszuege.join(trennzeichen).slice(0, CHANNEL_SKILL_MAX_TEXT_CHARS);
 }
 
-/** Waehlt genau einen belastbaren Treffer und unterdrueckt Mehrdeutigkeit. */
+/**
+ * Ist der Skill im Text NAMENTLICH genannt?
+ *
+ * Zwei Richtungen, beide kommen im Alltag vor:
+ * 1. Der volle Name steht im Text ("... siehe scarlett-audio-setup ...").
+ * 2. Der Text nennt nur den ANFANG des Namens — genau so schreiben Menschen:
+ *    "ki-browser" statt "ki-browser-standalone". Gemessen am 01.08.2026: dieser Fall
+ *    lieferte gar nichts, weil die Pruefung nur Richtung 1 kannte.
+ *
+ * Damit daraus kein Rauschen wird, gilt Richtung 2 nur, wenn das Genannte mindestens
+ * MINDESTLAENGE_FRAGMENT Zeichen hat UND an einer Segmentgrenze endet: "ki-browser" trifft
+ * ki-browser-standalone, "web" trifft NICHT web-best-practices. Ein zu kurzes Fragment
+ * waere sonst ein Freifahrtschein fuer jeden Skill, der zufaellig so anfaengt.
+ *
+ * ⚠️ EINE Regel, EINE Funktion. Sie wird an zwei Stellen gebraucht — bei der Auswahl der
+ * Treffer und beim Deckeln des Vorrats. Zwei Kopien derselben Bedingung waren in dieser
+ * Codebasis schon dreimal die Ursache dafuer, dass ein Fix an einer Stelle sass und an der
+ * naechsten fehlte.
+ */
+const MINDESTLAENGE_FRAGMENT = 6;
+export function istNamentlichGenannt(skillName: string | undefined | null, query: string): boolean {
+  const name = skillName?.toLowerCase();
+  if (!name) return false;
+  const lower = query.toLowerCase();
+  if (lower.includes(name)) return true;
+  for (let ende = name.length - 1; ende >= MINDESTLAENGE_FRAGMENT; ende--) {
+    if (name[ende] !== '-' && name[ende] !== ':') continue;
+    const anfang = name.slice(0, ende);
+    if (lower.includes(anfang)) return true;
+  }
+  return false;
+}
+
+/** Waehlt die belastbaren Treffer und unterdrueckt Mehrdeutigkeit. */
 export function waehleChannelSkillTreffer(
   hits: SkillSearchHit[],
   query: string,
   minScore = CHANNEL_SKILL_MIN_SCORE,
 ): SkillSearchHit[] {
-  const lower = query.toLowerCase();
-  /**
-   * Ist der Skill im Text NAMENTLICH genannt?
-   *
-   * Zwei Richtungen, beide kommen im Alltag vor:
-   * 1. Der volle Name steht im Text ("... siehe scarlett-audio-setup ...").
-   * 2. Der Text nennt nur den ANFANG des Namens — genau so schreiben Menschen:
-   *    "ki-browser" statt "ki-browser-standalone". Gemessen am 01.08.2026: dieser Fall
-   *    lieferte gar nichts, weil die Pruefung nur Richtung 1 kannte.
-   *
-   * Damit daraus kein Rauschen wird, gilt Richtung 2 nur, wenn das Genannte mindestens
-   * SEGMENT-LAENGE Zeichen hat UND an einer Segmentgrenze endet: "ki-browser" trifft
-   * ki-browser-standalone, "web" trifft NICHT web-best-practices. Ein zu kurzes Fragment
-   * waere sonst ein Freifahrtschein fuer jeden Skill, der zufaellig so anfaengt.
-   */
-  const MINDESTLAENGE_FRAGMENT = 6;
-  const heisstSo = (hit: SkillSearchHit) => {
-    const name = hit.skill_name?.toLowerCase();
-    if (!name) return false;
-    if (lower.includes(name)) return true;
-    for (let ende = name.length - 1; ende >= MINDESTLAENGE_FRAGMENT; ende--) {
-      if (name[ende] !== '-' && name[ende] !== ':') continue;
-      const anfang = name.slice(0, ende);
-      if (lower.includes(anfang)) return true;
-    }
-    return false;
-  };
+  // Namenserkennung: siehe istNamentlichGenannt weiter oben — eine Regel, eine Funktion.
+  const heisstSo = (hit: SkillSearchHit) => istNamentlichGenannt(hit.skill_name, query);
 
   // ⚠️ DER NAMENSTREFFER MUSS VOR DIE SCHWELLE, NICHT DAHINTER.
   // Bis zum 01.08.2026 lief die Ausnahme fuer woertlich genannte Skills ERST auf der Liste,
@@ -347,7 +355,14 @@ export function waehleChannelSkillTreffer(
     const alt = beste.get(hit.skill_name);
     if (!alt || hit.score > alt.score) beste.set(hit.skill_name, hit);
   }
-  const sortiert = [...beste.values()].sort((a, b) => b.score - a.score);
+  // ⚠️ GENANNTE ZUERST — nicht nur VOR der Schwelle, sondern auch in der REIHENFOLGE.
+  // Die Schwellen-Ausnahme allein genuegt nicht: ein bloss semantischer Treffer mit hoeherem
+  // Score ueberholt den woertlich genannten Skill trotzdem. Gemessen im Test vom 02.08.2026:
+  // synapse-agent-regeln (0,86) stand vor fal-ai-image (0,78), obwohl nur letzteres im Text
+  // steht. Weil ein Abruf nur drei Vorschlaege zeigt, verschiebt das den genannten Skill in
+  // eine spaetere Runde — oder ganz unter den Tisch.
+  const rang = (hit: SkillSearchHit) => (heisstSo(hit) ? 0 : 1);
+  const sortiert = [...beste.values()].sort((a, b) => rang(a) - rang(b) || b.score - a.score);
   if (sortiert.length === 0) return [];
   if (namentliche.length > 0) return sortiert;
   const [erster, zweiter] = sortiert;
@@ -416,13 +431,24 @@ export async function bereiteChannelSkillVorschlaegeVor(
   // Der ausgeschriebene Name ist aber das staerkste Signal, das es gibt. Er wird deshalb
   // direkt gegen die Namensliste geprueft — ohne Embedding, ohne Qdrant-Abfrage.
   const namensTreffer = await findeGenannteSkills(query);
-  if (namensTreffer.length > 0) {
-    for (const eintrag of results) {
-      const vorhanden = new Set(eintrag.hits.map((hit) => hit.skill_name));
-      for (const name of namensTreffer) {
-        if (!vorhanden.has(name)) {
-          eintrag.hits.push({ skill_name: name, score: NAMENSTREFFER_SCORE } as SkillSearchHit);
-        }
+  const genannt = new Set(namensTreffer.map((name) => name.toLowerCase()));
+  const istGenannt = (name: string | undefined | null) =>
+    (!!name && genannt.has(name.toLowerCase())) || istNamentlichGenannt(name, query);
+  for (const eintrag of results) {
+    // ⚠️ EIN GENANNTER SKILL BEKOMMT DEN NAMENSTREFFER-SCORE IMMER — auch dann, wenn Qdrant
+    // ihn ohnehin geliefert hat (Korrektur 02.08.2026). Vorher entschied der Zufall: fehlte er
+    // in der Vektorantwort, wurde er mit 0,99 ergaenzt; war er drin, behielt er seinen
+    // schwachen Score und landete hinter rein semantischen Treffern. Derselbe Skill, derselbe
+    // Text, zwei verschiedene Raenge — je nachdem, was Qdrant zufaellig zurueckgab.
+    for (const hit of eintrag.hits) {
+      if (istGenannt(hit.skill_name) && hit.score < NAMENSTREFFER_SCORE) {
+        hit.score = NAMENSTREFFER_SCORE;
+      }
+    }
+    const vorhanden = new Set(eintrag.hits.map((hit) => hit.skill_name));
+    for (const name of namensTreffer) {
+      if (!vorhanden.has(name)) {
+        eintrag.hits.push({ skill_name: name, score: NAMENSTREFFER_SCORE } as SkillSearchHit);
       }
     }
   }
@@ -430,7 +456,19 @@ export async function bereiteChannelSkillVorschlaegeVor(
     // MEHRERE KANDIDATEN ABLEGEN, nicht nur den besten. Ein Agent sieht jeden Skill nur
     // einmal; sind die vorderen verbraucht, ruecken beim naechsten Abruf die naechsten
     // nach — aber nur, wenn sie hier auch gespeichert wurden.
-    const treffer = waehleChannelSkillTreffer(hits, query).slice(0, CHANNEL_SKILL_KANDIDATEN);
+    // ⚠️ NAMENTLICH GENANNTE SKILLS WERDEN NICHT GEDECKELT (Korrektur 02.08.2026).
+    // GEMESSEN an Nachricht 18288: ein Text mit ZWOELF ausgeschriebenen Skillnamen legte nur
+    // ACHT in den Vorrat. Die vier Verlorenen fielen willkuerlich heraus — alle Namenstreffer
+    // tragen denselben Score 0,99, und eine Sortierung hat bei Gleichstand nichts zu
+    // entscheiden. Wer einen Skill beim Namen nennt, bekommt ihn auch; der Deckel bleibt fuer
+    // die semantischen Treffer, die sonst beliebig lang wuerden.
+    const gewaehlt = waehleChannelSkillTreffer(hits, query);
+    const namentlich = gewaehlt.filter((hit) => istNamentlichGenannt(hit.skill_name, query));
+    const semantisch = gewaehlt.filter((hit) => !istNamentlichGenannt(hit.skill_name, query));
+    const treffer = [
+      ...namentlich,
+      ...semantisch.slice(0, Math.max(0, CHANNEL_SKILL_KANDIDATEN - namentlich.length)),
+    ];
     if (treffer.length === 0) return;
     const tiefe = query.toLowerCase();
     for (const hit of treffer) {

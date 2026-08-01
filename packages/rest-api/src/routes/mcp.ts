@@ -4376,10 +4376,15 @@ async function handleToolCall(
     case 'skills': {
       const { searchSkills, listSkills, getSkillSection, getSkillFull, holeOffeneSkillVorschlaege } =
         await import('@synapse/core');
-      // Wer einen vorgeschlagenen Skill tatsaechlich abruft, interessiert sich fuer das Thema.
-      // Genau dann ist der Rest des Vorrats nuetzlich: alles ab dem vierten Treffer bliebe
-      // sonst fuer immer verborgen, weil jeder Skill nur einmal gezeigt wird.
-      // Nur beim LESEN eines Skills, nicht bei search/list — dort waere es Rauschen.
+      // Wer das Skill-Tool ueberhaupt anfasst, interessiert sich fuer Skills. Genau dann ist
+      // der Rest des Vorrats nuetzlich: alles ab dem vierten Treffer bliebe sonst fuer immer
+      // verborgen, weil jeder Skill einem Agenten nur EINMAL gezeigt wird.
+      // ⚠️ AN JEDER skills-ACTION, nicht nur beim Lesen (Korrektur 02.08.2026). Vorher hing es
+      // nur an get_full/get_section mit der Begruendung, bei search/list waere es Rauschen.
+      // Gemessen im Betrieb: zwei GPT-Agenten riefen AUSSCHLIESSLICH skills.search auf, bekamen
+      // nie einen Nachschlag, und fuer einen von ihnen lagen fuenf vorberechnete Kandidaten
+      // unangetastet im Vorrat. Ein Vorschlag, den der Aufrufer nie zu sehen bekommt, ist
+      // teurer als jedes Rauschen — die Auswahl trifft ohnehin die KI, der Score steht dabei.
       const naechsteVorschlaege = async () => {
         if (!explicitAgentId) return {};
         const weitere = await holeOffeneSkillVorschlaege(explicitAgentId);
@@ -4393,12 +4398,12 @@ async function handleToolCall(
           const limit = Math.min(num(args, 'limit') ?? 5, 20);
           const skillNameFilter = str(args, 'skill_name'); // optional: nur innerhalb 1 Skill
           const hits = await searchSkills(query, limit, skillNameFilter);
-          return { success: true, experimental: true, count: hits.length, scope: skillNameFilter ? `skill:${skillNameFilter}` : 'all', hits };
+          return { success: true, experimental: true, count: hits.length, scope: skillNameFilter ? `skill:${skillNameFilter}` : 'all', hits, ...(await naechsteVorschlaege()) };
         }
         case 'list': {
           const skillName = str(args, 'skill_name');
           const skills = await listSkills(skillName);
-          return { success: true, experimental: true, count: skills.length, skills };
+          return { success: true, experimental: true, count: skills.length, skills, ...(await naechsteVorschlaege()) };
         }
         case 'get_section': {
           const sec = await getSkillSection(reqStr(args, 'skill_name'), reqStr(args, 'section'));

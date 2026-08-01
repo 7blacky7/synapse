@@ -37,7 +37,7 @@ function fakePool() {
       }
       if (sql.includes('INSERT INTO channel_skill_preparations')) {
         const [message_id, agent_id, skill_name, score, reason] = values;
-        prepared.set(message_id + '\\0' + agent_id, { message_id, agent_id, skill_name, score, reason });
+        prepared.set(message_id + '\\0' + agent_id + skill_name, { message_id, agent_id, skill_name, score, reason });
       }
       return { rows: [] };
     },
