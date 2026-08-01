@@ -151,6 +151,15 @@ async function heartbeatLoop(): Promise<void> {
 }
 
 async function claimLoop(worker: number): Promise<void> {
+  // Wartezeit waechst, solange es nichts zu holen gibt, und faellt beim ersten
+  // Treffer sofort zurueck. Grund (User-Vorgabe 01.08.2026): ein Knoten ohne
+  // Arbeit soll pausieren statt anzuklopfen — gemessen wurden 16 ergebnislose
+  // Anfragen in 20 Sekunden, die nur das Serverlog fuellten.
+  // ⚠️ Der Backoff verschweigt KEINEN Fehler: er greift nur bei einer leeren
+  // Antwort ("nichts frei"), nicht bei einer abgelehnten. Wer ihn benutzt, um
+  // 403-Ketten leiser zu machen, verdeckt den eigentlichen Befund.
+  const wartezeitMax = Number(process.env.SYNAPSE_NODE_IDLE_MAX_MS) || 60_000;
+  let wartezeit = retryMs;
   while (!stopped) {
     try {
       const response = await api<ClaimResponse>(
@@ -159,9 +168,11 @@ async function claimLoop(worker: number): Promise<void> {
       );
       const claim = response.claims?.[0];
       if (!claim) {
-        await sleep(retryMs);
+        await sleep(wartezeit);
+        wartezeit = Math.min(wartezeit * 2, wartezeitMax);
         continue;
       }
+      wartezeit = retryMs;
       if (!response.reference) throw new Error('claim response has no embedding reference');
       const before = await probeNodeCapabilities();
       if (!sameFingerprint(before, response.reference)) {
