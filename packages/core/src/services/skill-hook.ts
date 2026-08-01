@@ -270,6 +270,48 @@ export function waehleChannelSkillTreffer(
   query: string,
   minScore = CHANNEL_SKILL_MIN_SCORE,
 ): SkillSearchHit[] {
+  const lower = query.toLowerCase();
+  /**
+   * Ist der Skill im Text NAMENTLICH genannt?
+   *
+   * Zwei Richtungen, beide kommen im Alltag vor:
+   * 1. Der volle Name steht im Text ("... siehe scarlett-audio-setup ...").
+   * 2. Der Text nennt nur den ANFANG des Namens — genau so schreiben Menschen:
+   *    "ki-browser" statt "ki-browser-standalone". Gemessen am 01.08.2026: dieser Fall
+   *    lieferte gar nichts, weil die Pruefung nur Richtung 1 kannte.
+   *
+   * Damit daraus kein Rauschen wird, gilt Richtung 2 nur, wenn das Genannte mindestens
+   * SEGMENT-LAENGE Zeichen hat UND an einer Segmentgrenze endet: "ki-browser" trifft
+   * ki-browser-standalone, "web" trifft NICHT web-best-practices. Ein zu kurzes Fragment
+   * waere sonst ein Freifahrtschein fuer jeden Skill, der zufaellig so anfaengt.
+   */
+  const MINDESTLAENGE_FRAGMENT = 6;
+  const heisstSo = (hit: SkillSearchHit) => {
+    const name = hit.skill_name?.toLowerCase();
+    if (!name) return false;
+    if (lower.includes(name)) return true;
+    for (let ende = name.length - 1; ende >= MINDESTLAENGE_FRAGMENT; ende--) {
+      if (name[ende] !== '-' && name[ende] !== ':') continue;
+      const anfang = name.slice(0, ende);
+      if (lower.includes(anfang)) return true;
+    }
+    return false;
+  };
+
+  // ⚠️ DER NAMENSTREFFER MUSS VOR DIE SCHWELLE, NICHT DAHINTER.
+  // Bis zum 01.08.2026 lief die Ausnahme fuer woertlich genannte Skills ERST auf der Liste,
+  // die der Score-Filter schon durchgesiebt hatte — sie konnte den Fall also nie erreichen,
+  // fuer den sie gedacht war.
+  // GEMESSEN: der Text "ki-browser" ergab fuer ki-browser-standalone Score 0,6955 bei einer
+  // Mindestschwelle von 0,75. Der richtige Skill wurde gefunden, fiel eine Zeile zu frueh
+  // heraus, und der Nutzer bekam nichts — obwohl er den Namen woertlich geschrieben hatte.
+  // Kurze Texte erzeugen schwache Embeddings; genau dort ist der ausgeschriebene Name das
+  // staerkere Signal. Die Schwelle bleibt fuer alles andere unangetastet.
+  const namentlich = hits
+    .filter(heisstSo)
+    .sort((a, b) => b.score - a.score)[0];
+  if (namentlich) return [namentlich];
+
   const beste = new Map<string, SkillSearchHit>();
   for (const hit of hits) {
     if (!hit.skill_name || hit.score < minScore) continue;
@@ -278,9 +320,6 @@ export function waehleChannelSkillTreffer(
   }
   const sortiert = [...beste.values()].sort((a, b) => b.score - a.score);
   if (sortiert.length === 0) return [];
-  const lower = query.toLowerCase();
-  const explizit = sortiert.find((hit) => lower.includes(hit.skill_name.toLowerCase()));
-  if (explizit) return [explizit];
   const [erster, zweiter] = sortiert;
   if (zweiter && erster.score - zweiter.score < CHANNEL_SKILL_AMBIGUITY_GAP) return [];
   return [erster];
