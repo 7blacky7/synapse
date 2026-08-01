@@ -56,6 +56,51 @@ func gpuHardwareSuitable(h gpuHardware, requiredTotal, requiredFree int) bool {
 	return h.TotalMB >= requiredTotal && h.FreeMB >= requiredFree
 }
 
+// belegtVomEigenenModell liefert den VRAM in MB, den das eigene Modell bereits
+// belegt.
+//
+// ⚠️ OHNE DIESE ZAHL SPERRT SICH DER KNOPF SELBST AUS. Die Pruefung fragt
+// "sind N MB frei?", aber sobald qwen geladen ist, belegt es genau diese N MB.
+// Wer den Agenten beendet und gleich wieder starten will, bekommt dann
+// "gemessen 12282 MB gesamt / 2045 MB frei" — bis Ollama nach fuenf Minuten
+// Leerlauf entlaedt. Gemessen am 01.08.2026, derselbe Fall wie im Agenten
+// (probe.ts) und dieselbe Bauart wie die fuenf Fehler vom Vortag: eine
+// Bedingung, die im Betrieb etwas anderes bedeutet als im Test.
+//
+// Gezaehlt wird, was in UNSERER EIGENEN Ollama-Instanz liegt (der dedizierten
+// auf gpuOllamaHost). Modelle im System-Ollama oder in fremden Prozessen sind
+// fremder Speicher und duerfen weiter blockieren. Faellt die Abfrage aus, gilt
+// 0 — lieber einmal zu viel ablehnen als zu viel zulassen.
+func belegtVomEigenenModell(ollamaURL string) int {
+	if ollamaURL == "" {
+		return 0
+	}
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Get(strings.TrimSuffix(ollamaURL, "/") + "/api/ps")
+	if err != nil {
+		return 0
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return 0
+	}
+	var daten struct {
+		Models []struct {
+			Name     string `json:"name"`
+			Model    string `json:"model"`
+			SizeVRAM int64  `json:"size_vram"`
+		} `json:"models"`
+	}
+	if json.NewDecoder(resp.Body).Decode(&daten) != nil {
+		return 0
+	}
+	summe := int64(0)
+	for _, eintrag := range daten.Models {
+		summe += eintrag.SizeVRAM
+	}
+	return int(summe / (1024 * 1024))
+}
+
 func detectAllGPUHardware() ([]gpuHardware, error) {
 	out, err := exec.Command("nvidia-smi", "--query-gpu=name,memory.total,memory.free", "--format=csv,noheader,nounits").Output()
 	if err != nil {
@@ -89,8 +134,18 @@ func detectGPUHardware(index, requiredTotal, requiredFree int) (gpuHardware, err
 		return gpuHardware{}, errors.New("Hardware passt nicht / nicht möglich: gewählte GPU existiert nicht")
 	}
 	h := all[index]
-	if !gpuHardwareSuitable(h, requiredTotal, requiredFree) {
-		return h, fmt.Errorf("Hardware passt nicht / nicht möglich: mindestens %d MB gesamt und %d MB frei erforderlich; gemessen %d MB gesamt / %d MB frei", requiredTotal, requiredFree, h.TotalMB, h.FreeMB)
+	// Der Speicher des eigenen, bereits geladenen Modells zaehlt als verfuegbar
+	// (siehe belegtVomEigenenModell). Gemeldet wird weiter der echte Messwert,
+	// damit die Anzeige nicht luegt — nur die Entscheidung rechnet ihn hinzu.
+	eigen := belegtVomEigenenModell(gpuOllamaURL)
+	geprueft := h
+	geprueft.FreeMB += eigen
+	if !gpuHardwareSuitable(geprueft, requiredTotal, requiredFree) {
+		hinweis := ""
+		if eigen > 0 {
+			hinweis = fmt.Sprintf(" (+%d MB bereits vom eigenen Modell belegt)", eigen)
+		}
+		return h, fmt.Errorf("Hardware passt nicht / nicht möglich: mindestens %d MB gesamt und %d MB frei erforderlich; gemessen %d MB gesamt / %d MB frei%s", requiredTotal, requiredFree, h.TotalMB, h.FreeMB, hinweis)
 	}
 	return h, nil
 }
