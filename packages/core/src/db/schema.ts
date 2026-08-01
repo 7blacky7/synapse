@@ -867,38 +867,57 @@ CREATE TABLE IF NOT EXISTS skill_names (
 CREATE INDEX IF NOT EXISTS idx_skill_names_trgm
   ON skill_names USING gin (skill_name gin_trgm_ops);
 
-CREATE TABLE IF NOT EXISTS channel_skill_preparations (
-  message_id BIGINT NOT NULL REFERENCES specialist_channel_messages(id) ON DELETE CASCADE,
+-- VORBERECHNETE SKILL-KANDIDATEN, QUELLENNEUTRAL (umgebaut 02.08.2026).
+--
+-- ⚠️ DER CHANNEL IST NUR EINER VON MEHREREN HINWEISGEBERN (Vorgabe des Users).
+-- Ein Skillname steht genauso in einer Memory, einem Gedanken oder einer Task. Solange der
+-- Vorrat an specialist_channel_messages haengt, bekommt ein Agent, der nie in einen Channel
+-- geht, auch nie einen Vorschlag — obwohl er die ganze Zeit mit Texten arbeitet, die Skills
+-- beim Namen nennen. Deshalb steht hier jetzt (source_type, source_id) statt message_id.
+--
+-- source_type: 'channel' | 'memory' | 'thought' | 'task'
+-- source_id:   die ID der Quelle als Text (Channel-Nachricht, Memory-Name, Thought-UUID,
+--              Task-ID). Text, weil die Quellen verschiedene Schluesseltypen haben.
+--
+-- MEHRERE KANDIDATEN JE QUELLE UND AGENT: bis zum 02.08.2026 lag der Schluessel auf
+-- (message_id, agent_id) — also genau EIN Vorschlag. Da jeder Skill einem Agenten nur einmal
+-- gezeigt wird, war die Quelle danach verbraucht und der zweitbeste Treffer verloren.
+--
+-- ⚠️ KEIN FREMDSCHLUESSEL MEHR, und das ist Absicht: eine Spalte kann nicht auf vier
+-- verschiedene Tabellen zeigen. Der Preis ist, dass Kandidaten einer geloeschten Quelle
+-- stehen bleiben. Sie schaden nicht (ausgeliefert wird jeder Skill je Agent ohnehin nur
+-- einmal, siehe skill_hook_deliveries) und sind ein paar Zeilen gross.
+CREATE TABLE IF NOT EXISTS skill_hook_preparations (
+  source_type TEXT NOT NULL DEFAULT 'channel',
+  source_id TEXT NOT NULL,
   agent_id TEXT NOT NULL,
   skill_name TEXT NOT NULL,
   score DOUBLE PRECISION NOT NULL,
   reason TEXT NOT NULL,
   prepared_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  -- MEHRERE KANDIDATEN JE NACHRICHT UND AGENT.
-  -- Bis zum 02.08.2026 lag der Schluessel auf (message_id, agent_id) — also genau EIN
-  -- Vorschlag. Da jeder Skill einem Agenten nur einmal gezeigt wird, war die Nachricht
-  -- danach verbraucht: der zweitbeste Treffer, der ebenfalls darin steckte, ging verloren.
-  -- Jetzt werden mehrere Kandidaten abgelegt und ruecken nach, sobald die vorderen
-  -- ausgeliefert sind.
-  PRIMARY KEY (message_id, agent_id, skill_name)
+  PRIMARY KEY (source_type, source_id, agent_id, skill_name)
 );
-CREATE INDEX IF NOT EXISTS idx_channel_skill_preparations_agent_message
-  ON channel_skill_preparations(agent_id, message_id);
 
--- Migration fuer bestehende Installationen: der alte Primaerschluessel liess nur eine Zeile
--- je (Nachricht, Agent) zu und wuerde jeden zweiten Kandidaten abweisen.
+-- Migration bestehender Installationen: aus channel_skill_preparations wird die
+-- quellenneutrale Tabelle. Der Bestand ist per Definition vom Typ 'channel'.
 DO $$
 BEGIN
-  IF EXISTS (
-    SELECT 1 FROM pg_constraint
-     WHERE conname = 'channel_skill_preparations_pkey'
-       AND (SELECT COUNT(*) FROM unnest(conkey)) = 2
-  ) THEN
-    ALTER TABLE channel_skill_preparations DROP CONSTRAINT channel_skill_preparations_pkey;
-    ALTER TABLE channel_skill_preparations
-      ADD PRIMARY KEY (message_id, agent_id, skill_name);
+  IF EXISTS (SELECT 1 FROM information_schema.tables
+              WHERE table_name = 'channel_skill_preparations')
+  THEN
+    INSERT INTO skill_hook_preparations
+      (source_type, source_id, agent_id, skill_name, score, reason, prepared_at)
+    SELECT 'channel', message_id::text, agent_id, skill_name, score, reason, prepared_at
+      FROM channel_skill_preparations
+    ON CONFLICT DO NOTHING;
+    DROP TABLE channel_skill_preparations;
   END IF;
 END $$;
+
+CREATE INDEX IF NOT EXISTS idx_skill_hook_preparations_agent
+  ON skill_hook_preparations(agent_id, prepared_at DESC);
+CREATE INDEX IF NOT EXISTS idx_skill_hook_preparations_quelle
+  ON skill_hook_preparations(source_type, source_id);
 
 CREATE TABLE IF NOT EXISTS skill_hook_metrics (
   hook_name TEXT PRIMARY KEY,

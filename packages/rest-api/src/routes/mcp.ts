@@ -1580,6 +1580,53 @@ async function attachRestChannelHints(
   };
 }
 
+/**
+ * Behandelt memory, thought und plan als Hinweisgeber: aus dem Aufruf werden Skill-Kandidaten
+ * vorberechnet, und das Ergebnis bekommt die naechsten Vorschlaege angehaengt.
+ *
+ * ⚠️ DER CHANNEL WAR NUR DER ERSTE HINWEISGEBER (Vorgabe des Users, 02.08.2026).
+ * Ein Skillname steht genauso in einer Memory, einem Gedanken oder einer Task. Wer nie einen
+ * Channel betritt, bekam bis hierher nie einen Vorschlag — obwohl er die ganze Zeit mit
+ * Texten arbeitet, die Skills beim Namen nennen.
+ *
+ * Die Dedup bleibt global je Agent (skill_hook_deliveries): wer einen Skill ueber eine Task
+ * gesehen hat, bekommt ihn spaeter im Channel NICHT ein zweites Mal.
+ *
+ * Bewusst mit await: der Agent soll die Vorschlaege im selben oder unmittelbar naechsten
+ * Ergebnis sehen. Ein Vorrat, der erst danach fertig wird, waere so gut wie keiner.
+ */
+async function attachSkillHinweisgeber(
+  result: unknown,
+  toolName: string,
+  args: Record<string, unknown>,
+  explicitAgentId?: string,
+): Promise<unknown> {
+  if (!explicitAgentId || typeof result !== 'object' || result === null || Array.isArray(result)) {
+    return result;
+  }
+  if (toolName !== 'memory' && toolName !== 'thought' && toolName !== 'plan') return result;
+  try {
+    const { verarbeiteSkillHinweisgeber, holeOffeneSkillVorschlaege } = await import('@synapse/core');
+    await verarbeiteSkillHinweisgeber(
+      toolName, str(args, 'action'), args, result, explicitAgentId,
+    );
+    const weitere = await holeOffeneSkillVorschlaege(explicitAgentId);
+    if (weitere.suggestions.length === 0) return result;
+    return {
+      ...result,
+      skill_suggestions: weitere.suggestions,
+      skill_hook_metrics: weitere.metrics,
+    };
+  } catch (fehler) {
+    // Ein Hinweis ist eine Zugabe und darf den Tool-Aufruf nie kippen — aber er wird sichtbar.
+    console.error(
+      `[SkillHook] Hinweisgeber ${toolName} fuer ${explicitAgentId} fehlgeschlagen:`,
+      fehler instanceof Error ? `${fehler.name}: ${fehler.message}` : fehler,
+    );
+    return result;
+  }
+}
+
 async function handleToolCall(
   name: string,
   args: Record<string, unknown>,
@@ -4520,9 +4567,14 @@ export async function mcpRoutes(fastify: FastifyInstance): Promise<void> {
           let _logResult: string | null = null;
           try {
             const toolResult = await attachRestChannelHints(
-              await attachRestOnboarding(
-                await handleToolCall(toolName, toolArgs, explicitAgentId),
+              await attachSkillHinweisgeber(
+                await attachRestOnboarding(
+                  await handleToolCall(toolName, toolArgs, explicitAgentId),
+                  toolArgs,
+                ),
+                toolName,
                 toolArgs,
+                explicitAgentId,
               ),
               explicitAgentId,
             );
@@ -4652,9 +4704,14 @@ export async function mcpRoutes(fastify: FastifyInstance): Promise<void> {
           let _logResult: string | null = null;
           try {
             const toolResult = await attachRestChannelHints(
-              await attachRestOnboarding(
-                await handleToolCall(toolName, toolArgs, explicitAgentId),
+              await attachSkillHinweisgeber(
+                await attachRestOnboarding(
+                  await handleToolCall(toolName, toolArgs, explicitAgentId),
+                  toolArgs,
+                ),
+                toolName,
                 toolArgs,
+                explicitAgentId,
               ),
               explicitAgentId,
             );

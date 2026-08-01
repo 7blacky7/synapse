@@ -261,6 +261,29 @@ export function createServer(): Server {
           }));
           first.text = JSON.stringify(parsed, null, 2);
         }
+
+        // ⚠️ MEMORY, GEDANKE UND TASK SIND EBENFALLS HINWEISGEBER (Vorgabe des Users,
+        // 02.08.2026). Ein Skillname steht genauso in einer Memory oder einer Task wie in
+        // einer Channel-Nachricht. Wer nie einen Channel betritt, bekam vorher nie einen
+        // Vorschlag. Gilt schreibend UND lesend: der haeufige Fall ist, dass einer die Task
+        // anlegt und ein anderer den Auftrag bekommt, genau sie abzurufen.
+        // Die Dedup bleibt global je Agent — kein Skill wird zweimal gezeigt, egal woher.
+        if (name === 'memory' || name === 'thought' || name === 'plan') {
+          const { verarbeiteSkillHinweisgeber, holeOffeneSkillVorschlaege } = await import('@synapse/core');
+          await verarbeiteSkillHinweisgeber(
+            name,
+            args?.action as string | undefined,
+            (args ?? {}) as Record<string, unknown>,
+            parsed,
+            agentId,
+          );
+          const weitere = await holeOffeneSkillVorschlaege(agentId);
+          if (weitere.suggestions.length > 0) {
+            parsed.skill_suggestions = weitere.suggestions;
+            parsed.skill_hook_metrics = weitere.metrics;
+            first.text = JSON.stringify(parsed, null, 2);
+          }
+        }
       } catch { /* Response-Hooks duerfen Toolantworten nie brechen */ }
       return guided;
     };

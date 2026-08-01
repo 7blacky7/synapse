@@ -450,6 +450,12 @@ export {
   holeChannelSkillVorschlaege,
   holeOffeneSkillVorschlaege,
   bereiteChannelSkillVorschlaegeVor,
+  bereiteSkillVorschlaegeVor,
+  holeChannelSkillsNachBeitritt,
+  holeSkillsFuerQuellen,
+  aktiveProjektAgenten,
+  verarbeiteSkillHinweisgeber,
+  sammleSkillQuellen,
   baueChannelSkillSuchtext,
   waehleChannelSkillTreffer,
 } from './services/skill-hook.js';

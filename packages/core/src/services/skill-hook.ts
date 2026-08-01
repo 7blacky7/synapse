@@ -258,6 +258,21 @@ const CHANNEL_SKILL_KANDIDATEN = 8;
 const CHANNEL_SKILL_VORSCHLAEGE = 3;
 
 /**
+ * Woher ein vorbereiteter Kandidat stammt. Der Channel war die erste Quelle, nicht die
+ * einzige — jeder Text, den ein Agent schreibt oder liest, kann einen Skill beim Namen
+ * nennen.
+ */
+export type SkillQuellenTyp = 'channel' | 'memory' | 'thought' | 'task';
+
+/** Klartext fuer die Begruendung — die KI soll sehen, WOHER ein Vorschlag kommt. */
+const QUELLE_KLARTEXT: Record<SkillQuellenTyp, string> = {
+  channel: 'Channel-Nachricht',
+  memory: 'Memory',
+  thought: 'Gedanke',
+  task: 'Task',
+};
+
+/**
  * Wie viele der juengsten Channel-Nachrichten beim BEITRITT nachberechnet werden.
  * Drei, weil ein Vorrat aus drei Nachrichten fuer mehrere Abrufe reicht und der Beitritt
  * dabei nicht spuerbar langsamer wird. Jede Nachricht kostet ein Embedding — aber nur
@@ -408,9 +423,6 @@ export async function bereiteChannelSkillVorschlaegeVor(
   searchBatch: ChannelSkillBatchSearch = searchSkillsForAgents,
   nurFuerAgenten?: string[],
 ): Promise<void> {
-  const query = baueChannelSkillSuchtext([{ content }]);
-  if (!query) return;
-
   // Normalfall: alle aktuellen Mitglieder. Mit nurFuerAgenten wird EINE Nachricht fuer einen
   // einzelnen Agenten nachgeholt — der Weg, ueber den ein spaeter beigetretener Agent zu
   // seinem Vorrat kommt, ohne dass die anderen neu berechnet werden.
@@ -427,7 +439,37 @@ export async function bereiteChannelSkillVorschlaegeVor(
     );
     agents = [...new Set(rows.map((row) => row.agent_name).filter(Boolean))];
   }
-  if (agents.length === 0) return;
+  await bereiteSkillVorschlaegeVor(
+    project, 'channel', String(messageId), content, agents, pool, searchBatch,
+  );
+}
+
+/**
+ * Berechnet Skill-Kandidaten fuer EINEN Text aus EINER Quelle und legt sie fuer die
+ * angegebenen Agenten in den Vorrat.
+ *
+ * ⚠️ DER CHANNEL IST NUR EINER VON MEHREREN HINWEISGEBERN (Vorgabe des Users, 02.08.2026).
+ * Ein Skillname steht genauso in einer Memory, einem Gedanken oder einer Task. Wer nie in
+ * einen Channel geht, bekam vorher nie einen Vorschlag — obwohl er die ganze Zeit mit Texten
+ * arbeitet, die Skills beim Namen nennen. Deshalb kennt diese Funktion nur noch "Quelle" und
+ * "Text"; woher der Text stammt, entscheidet der Aufrufer.
+ *
+ * Die Dedup bleibt dabei GLOBAL je Agent (skill_hook_deliveries): wer einen Skill ueber eine
+ * Task bekommen hat, sieht ihn spaeter im Channel nicht noch einmal.
+ */
+export async function bereiteSkillVorschlaegeVor(
+  project: string,
+  sourceType: SkillQuellenTyp,
+  sourceId: string,
+  content: string,
+  agents: string[],
+  pool: Pool = getPool(),
+  searchBatch: ChannelSkillBatchSearch = searchSkillsForAgents,
+): Promise<void> {
+  const query = baueChannelSkillSuchtext([{ content }]);
+  if (!query) return;
+  agents = [...new Set(agents.filter(Boolean))];
+  if (agents.length === 0 || !sourceId) return;
   // ⚠️ BREIT SUCHEN, ENG AUSLIEFERN.
   // Die Namenserkennung kann nur Skills finden, die in der Trefferliste stehen. Mit acht
   // Treffern fiel ein Text, der DREI Skills namentlich nennt, auf einen einzigen zusammen:
@@ -490,21 +532,22 @@ export async function bereiteChannelSkillVorschlaegeVor(
     const tiefe = query.toLowerCase();
     for (const hit of treffer) {
       await pool.query(
-        `INSERT INTO channel_skill_preparations
-           (message_id, agent_id, skill_name, score, reason)
-         VALUES ($1, $2, $3, $4, $5)
-         ON CONFLICT (message_id, agent_id, skill_name) DO UPDATE SET
+        `INSERT INTO skill_hook_preparations
+           (source_type, source_id, agent_id, skill_name, score, reason)
+         VALUES ($1, $2, $3, $4, $5, $6)
+         ON CONFLICT (source_type, source_id, agent_id, skill_name) DO UPDATE SET
            score = EXCLUDED.score,
            reason = EXCLUDED.reason,
            prepared_at = NOW()`,
         [
-          messageId,
+          sourceType,
+          sourceId,
           agentId,
           hit.skill_name,
           hit.score,
           tiefe.includes(hit.skill_name.toLowerCase())
-            ? 'Skill-Name im gelesenen Channel-Inhalt genannt'
-            : 'Semantischer Treffer zum gelesenen Channel-Inhalt',
+            ? `Skill-Name genannt (${QUELLE_KLARTEXT[sourceType]})`
+            : `Semantischer Treffer (${QUELLE_KLARTEXT[sourceType]})`,
         ],
       );
     }
@@ -541,8 +584,9 @@ export async function holeChannelSkillsNachBeitritt(
        JOIN specialist_channels c ON c.id = msg.channel_id
       WHERE c.project = $1 AND c.name = $2
         AND NOT EXISTS (
-          SELECT 1 FROM channel_skill_preparations p
-           WHERE p.message_id = msg.id AND p.agent_id = $3
+          SELECT 1 FROM skill_hook_preparations p
+           WHERE p.source_type = 'channel' AND p.source_id = msg.id::text
+             AND p.agent_id = $3
         )
       ORDER BY msg.id DESC
       LIMIT $4`,
@@ -556,6 +600,191 @@ export async function holeChannelSkillsNachBeitritt(
     nachgeholt++;
   }
   return nachgeholt;
+}
+
+/**
+ * Holt die Vorberechnung fuer beliebige Quellen nach — Memory, Gedanke, Task.
+ * Das Gegenstueck zu holeChannelSkillsNachBeitritt, nur ohne Channel.
+ *
+ * ⚠️ WIRD SOWOHL BEIM SCHREIBEN ALS AUCH BEIM LESEN GEBRAUCHT (Vorgabe des Users, 02.08.2026).
+ * Beim Schreiben ist der Autor im Thema. Beim LESEN aber ebenso — und das ist der haeufigere
+ * Fall in diesem Projekt: der Koordinator legt eine Task an, ein ANDERER Agent bekommt den
+ * Auftrag, genau diese Task abzurufen. Haengt die Vorberechnung nur am Schreiben, sieht der
+ * Ausfuehrende die genannten Skills nie — also genau der, fuer den sie gedacht waren.
+ *
+ * Berechnet werden nur Quellen, fuer die der Empfaenger noch keinen Vorrat hat. Ein zweiter
+ * Abruf derselben Task kostet daher eine Abfrage und kein Embedding.
+ */
+export async function holeSkillsFuerQuellen(
+  project: string,
+  sourceType: SkillQuellenTyp,
+  quellen: Array<{ id: string | number; content: string }>,
+  agentId: string | undefined | null,
+  agentenFuerVorrat?: string[],
+  pool: Pool = getPool(),
+  searchBatch: ChannelSkillBatchSearch = searchSkillsForAgents,
+  hoechstens = CHANNEL_SKILL_BEITRITT_NACHRICHTEN,
+): Promise<number> {
+  const empfaenger = [...new Set(
+    (agentenFuerVorrat?.length ? agentenFuerVorrat : [agentId]).filter(Boolean) as string[],
+  )];
+  if (empfaenger.length === 0) return 0;
+  const brauchbar = quellen
+    .filter((q) => q.id !== undefined && q.id !== null && !!q.content)
+    .map((q) => ({ id: String(q.id), content: q.content }))
+    .slice(0, hoechstens);
+  if (brauchbar.length === 0) return 0;
+
+  // Nur was fehlt. Geprueft wird je Empfaenger einzeln: eine Quelle gilt nur fuer den Agenten
+  // als erledigt, der sie schon hat — sonst wuerde ein neu hinzugekommener uebersprungen.
+  const { rows } = await pool.query<{ source_id: string; agent_id: string }>(
+    `SELECT DISTINCT source_id, agent_id
+       FROM skill_hook_preparations
+      WHERE source_type = $1 AND source_id = ANY($2::text[]) AND agent_id = ANY($3::text[])`,
+    [sourceType, brauchbar.map((q) => q.id), empfaenger],
+  );
+  const vorhanden = new Set(rows.map((row) => `${row.source_id}>>${row.agent_id}`));
+
+  let nachgeholt = 0;
+  for (const quelle of brauchbar) {
+    const fehlende = empfaenger.filter((agent) => !vorhanden.has(`${quelle.id}>>${agent}`));
+    if (fehlende.length === 0) continue;
+    await bereiteSkillVorschlaegeVor(
+      project, sourceType, quelle.id, quelle.content, fehlende, pool, searchBatch,
+    );
+    nachgeholt++;
+  }
+  return nachgeholt;
+}
+
+/**
+ * Die Agenten, fuer die beim SCHREIBEN einer Memory, eines Gedankens oder einer Task
+ * vorberechnet wird: alle, die im Projekt angemeldet sind.
+ *
+ * Beim Channel ist die Empfaengerliste die Mitgliederliste. Das Gegenstueck fuer projektweite
+ * Objekte ist, wer im Projekt arbeitet. Es bleibt EIN Embedding, egal wie viele Agenten es
+ * sind — searchSkillsForAgents batcht sie zusammen.
+ */
+/** Actions, die eine Quelle ANLEGEN oder AENDERN. Alles andere gilt als Lesen. */
+const SCHREIBENDE_ACTIONS = new Set([
+  'write', 'update', 'add', 'add_batch', 'add_task', 'add_tasks_batch', 'update_task',
+]);
+
+/** Welches Tool welche Quelle liefert. Alles andere ist kein Hinweisgeber. */
+const TOOL_QUELLE: Record<string, SkillQuellenTyp> = {
+  memory: 'memory',
+  thought: 'thought',
+  plan: 'task',
+};
+
+/**
+ * Sammelt aus Argumenten UND Ergebnis eines Tool-Aufrufs die Texte, die ein Hinweisgeber
+ * sein koennen.
+ *
+ * Bewusst nach Feldern statt nach festen Antwortformaten: die Tools liefern Memories,
+ * Gedanken und Tasks in mehreren Verpackungen (einzeln, in Listen, als Suchtreffer mit
+ * payload). Eine Extraktion, die jedes dieser Formate einzeln kennt, veraltet beim ersten
+ * neuen Feld — und faellt dann still aus, weil ein fehlender Vorschlag wie "kein passender
+ * Skill" aussieht.
+ */
+export function sammleSkillQuellen(
+  tool: string,
+  action: string | undefined,
+  args: Record<string, unknown>,
+  result: unknown,
+  hoechstens = CHANNEL_SKILL_BEITRITT_NACHRICHTEN,
+): Array<{ id: string; content: string }> {
+  const gefunden = new Map<string, string>();
+  const merke = (id: unknown, ...texte: Array<unknown>) => {
+    if (gefunden.size >= hoechstens) return;
+    const text = texte.filter((t) => typeof t === 'string' && t.trim()).join('\n');
+    if (!text) return;
+    const schluessel = id === undefined || id === null || id === '' ? text.slice(0, 80) : String(id);
+    if (!gefunden.has(schluessel)) gefunden.set(schluessel, text);
+  };
+
+  const durchsuche = (wert: unknown, tiefe = 0): void => {
+    if (tiefe > 4 || gefunden.size >= hoechstens || wert === null || typeof wert !== 'object') return;
+    if (Array.isArray(wert)) {
+      for (const eintrag of wert) durchsuche(eintrag, tiefe + 1);
+      return;
+    }
+    const obj = wert as Record<string, unknown>;
+    const payload = obj.payload as Record<string, unknown> | undefined;
+    const inhalt = obj.content ?? payload?.content;
+    const titel = obj.title ?? payload?.title;
+    const beschreibung = obj.description ?? payload?.description;
+    const kennung = obj.id ?? obj.name ?? obj.task_id ?? payload?.id ?? payload?.name;
+    if (inhalt || titel || beschreibung) merke(kennung, titel, beschreibung, inhalt);
+    for (const [feld, unterwert] of Object.entries(obj)) {
+      if (feld === 'payload') continue;
+      durchsuche(unterwert, tiefe + 1);
+    }
+  };
+
+  // Die Argumente zuerst: beim Schreiben steht der Text dort vollstaendig, waehrend die
+  // Antwort oft nur eine ID zurueckgibt.
+  if (SCHREIBENDE_ACTIONS.has(action ?? '')) {
+    merke(args.name ?? args.task_id ?? args.id, args.title, args.description, args.content);
+    durchsuche(args.items);
+    durchsuche(args.tasks);
+  }
+  durchsuche(result);
+  return [...gefunden.entries()].map(([id, content]) => ({ id, content }));
+}
+
+/**
+ * Haengt einen Tool-Aufruf als Hinweisgeber an: Quellen sammeln, Vorrat fuellen.
+ *
+ * ⚠️ SCHREIBEN UND LESEN, BEIDES (Vorgabe des Users, 02.08.2026).
+ * Beim Schreiben ist der Autor im Thema, und die Quelle ist neu — vorbereitet wird fuer alle
+ * angemeldeten Projekt-Agenten, wie beim Channel fuer alle Mitglieder. Beim LESEN wird nur
+ * fuer den Lesenden vorbereitet: der haeufige Fall ist, dass ein Koordinator eine Task anlegt
+ * und ein ANDERER Agent den Auftrag bekommt, genau diese Task abzurufen. Ohne den Lesepfad
+ * saehe der Ausfuehrende die genannten Skills nie — also genau der, fuer den sie gedacht sind.
+ *
+ * Fehler bleiben hier: ein Hinweis ist eine Zugabe und darf den Tool-Aufruf nie kippen.
+ */
+export async function verarbeiteSkillHinweisgeber(
+  tool: string,
+  action: string | undefined,
+  args: Record<string, unknown>,
+  result: unknown,
+  agentId: string | undefined | null,
+  pool: Pool = getPool(),
+  searchBatch: ChannelSkillBatchSearch = searchSkillsForAgents,
+): Promise<number> {
+  const sourceType = TOOL_QUELLE[tool];
+  const project = typeof args.project === 'string' ? args.project : '';
+  if (!sourceType || !project || !agentId) return 0;
+  try {
+    const quellen = sammleSkillQuellen(tool, action, args, result);
+    if (quellen.length === 0) return 0;
+    const schreibend = SCHREIBENDE_ACTIONS.has(action ?? '');
+    const empfaenger = schreibend
+      ? [...new Set([agentId, ...(await aktiveProjektAgenten(project, pool))])]
+      : [agentId];
+    return await holeSkillsFuerQuellen(
+      project, sourceType, quellen, agentId, empfaenger, pool, searchBatch,
+    );
+  } catch (fehler) {
+    console.error(
+      `[SkillHook] Hinweisgeber ${tool}.${action ?? '?'} fuer ${agentId} fehlgeschlagen:`,
+      fehler instanceof Error ? `${fehler.name}: ${fehler.message}` : fehler,
+    );
+    return 0;
+  }
+}
+
+export async function aktiveProjektAgenten(
+  project: string,
+  pool: Pool = getPool(),
+): Promise<string[]> {
+  const { rows } = await pool.query<{ id: string }>(
+    `SELECT id FROM agent_sessions WHERE project = $1 AND status = 'active'`,
+    [project],
+  );
+  return rows.map((row) => row.id).filter(Boolean);
 }
 
 /**
@@ -585,7 +814,7 @@ export async function holeOffeneSkillVorschlaege(
     }>(pool, `
       WITH kandidat AS (
         SELECT DISTINCT ON (p.skill_name) p.skill_name, p.score, p.reason
-          FROM channel_skill_preparations p
+          FROM skill_hook_preparations p
          WHERE p.agent_id = $1
            AND NOT EXISTS (
              SELECT 1 FROM skill_hook_deliveries d
@@ -655,9 +884,10 @@ export async function holeChannelSkillVorschlaege(
     }>(pool, `
       WITH kandidat AS (
         SELECT DISTINCT ON (p.skill_name) p.skill_name, p.score, p.reason
-          FROM channel_skill_preparations p
+          FROM skill_hook_preparations p
          WHERE p.agent_id = $1
-           AND p.message_id = ANY($2::bigint[])
+           AND p.source_type = 'channel'
+           AND p.source_id = ANY($2::text[])
          ORDER BY p.skill_name, p.score DESC
       ), rangfolge AS (
         SELECT * FROM kandidat ORDER BY score DESC LIMIT $4

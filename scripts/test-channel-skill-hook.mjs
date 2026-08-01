@@ -19,8 +19,8 @@ function fakePool() {
       query: async ({ values }) => {
         const [agent, ids] = values;
         const rows = [...prepared.values()]
-          .filter((r) => r.agent_id === agent && ids.includes(r.message_id))
-          .sort((a, b) => b.score - a.score || b.message_id - a.message_id);
+          .filter((r) => r.agent_id === agent && ids.map(String).includes(String(r.source_id)))
+          .sort((a, b) => b.score - a.score || Number(b.source_id) - Number(a.source_id));
         const row = rows[0];
         if (!row) return { rows: [] };
         const key = agent + '\\0' + row.skill_name;
@@ -41,13 +41,24 @@ function fakePool() {
       if (sql.includes('FROM specialist_channel_messages msg')) {
         const agent = values[2];
         const schonVorbereitet = [...prepared.values()].some(
-          (r) => r.agent_id === agent && r.message_id === 77,
+          (r) => r.agent_id === agent && String(r.source_id) === '77',
         );
         return { rows: schonVorbereitet ? [] : [{ id: 77, content: 'fal-ai-image Queue Workflow fuer Bildgenerierung.' }] };
       }
-      if (sql.includes('INSERT INTO channel_skill_preparations')) {
-        const [message_id, agent_id, skill_name, score, reason] = values;
-        prepared.set(message_id + '\\0' + agent_id + skill_name, { message_id, agent_id, skill_name, score, reason });
+      // Fehlt-mir-noch-Abfrage aus holeSkillsFuerQuellen.
+      if (sql.includes('SELECT DISTINCT source_id, agent_id')) {
+        const [quellenTyp, ids, agenten] = values;
+        return { rows: [...prepared.values()]
+          .filter((r) => r.source_type === quellenTyp
+            && ids.map(String).includes(String(r.source_id))
+            && agenten.includes(r.agent_id))
+          .map((r) => ({ source_id: String(r.source_id), agent_id: r.agent_id })) };
+      }
+      // Quellenneutraler Vorrat: Schluessel wie der echte Primaerschluessel
+      // (source_type, source_id, agent_id, skill_name).
+      if (sql.includes('INSERT INTO skill_hook_preparations')) {
+        const [source_type, source_id, agent_id, skill_name, score, reason] = values;
+        prepared.set(source_type + source_id + '\\0' + agent_id + skill_name, { source_type, source_id, agent_id, skill_name, score, reason });
       }
       return { rows: [] };
     },
