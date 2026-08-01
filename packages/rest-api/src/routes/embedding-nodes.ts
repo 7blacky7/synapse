@@ -143,15 +143,33 @@ export function createEmbeddingNodeRoutes(
           return reply.code(403).send({ success: false, error: 'node_token_mismatch' });
         }
         const reference = getEmbeddingReferenceContract();
-        if (input.vramTotalMb < reference.requiredTotalVramMb ||
-            input.vramFreeMb < reference.requiredFreeVramMb) {
+        // ⚠⚠ HIER STAND BIS ZUM 01.08.2026 AUCH EINE FREI-SCHWELLE, UND SIE WAR DIE
+        // VIERTE UND LETZTE STELLE DERSELBEN FALLE.
+        //
+        // Der Server kann nicht wissen, WOVON der Speicher belegt ist. Ist es das
+        // Modell des Knotens selbst — der Normalfall, sobald er einmal gearbeitet
+        // hat — dann lehnt diese Bedingung genau den Knoten ab, der bereit ist.
+        //
+        // BEWIESEN am 01.08.2026 ueber die ganze Kette: register -> 409
+        // insufficient_free_vram (7300 gefordert, 2165 gemessen, qwen belegte den
+        // Rest) -> der neue Compute-Token wurde nie in service_token_hash
+        // eingetragen -> GET /self fand den Knoten nicht (404) -> der Tray wartete
+        // 45 s auf einen Handshake, der nicht kommen konnte, und meldete "nicht
+        // eingerichtet". Drei Schichten Fehlermeldung, und die oberste nannte den
+        // Grund nicht. GEGENPROBE: Modell entladen (keep_alive 0), 9250 MB frei,
+        // Registrierung sofort erfolgreich, /self 200.
+        //
+        // DIE EINSTIEGSFRAGE GEHOERT AN DEN KNOTEN, NICHT HIERHER: der Agent prueft
+        // sie lokal (probe.ts, Commit feb1709) und rechnet dabei den Speicher mit,
+        // den sein eigenes Modell belegt — dieselbe Rechnung im Tray (8b3170e).
+        // Nur er kann zwischen eigenem und fremdem Speicher unterscheiden.
+        // Serverseitig bleibt die KAPAZITAET: passt die Karte ueberhaupt?
+        if (input.vramTotalMb < reference.requiredTotalVramMb) {
           return reply.code(409).send({
             success: false,
-            error: 'insufficient_free_vram',
+            error: 'insufficient_total_vram',
             requiredTotalVramMb: reference.requiredTotalVramMb,
-            requiredFreeVramMb: reference.requiredFreeVramMb,
             measuredTotalVramMb: input.vramTotalMb,
-            measuredFreeVramMb: input.vramFreeMb,
           });
         }
         const problems = compatibilityProblems(input);
