@@ -35,6 +35,32 @@ function envPositiveInt(name: string, fallback: number): number {
   return Number.isInteger(value) && value > 0 ? value : fallback;
 }
 
+/**
+ * Wie viel VRAM das EIGENE Modell bereits belegt, in MB.
+ *
+ * Ollama meldet ueber /api/ps die geladenen Modelle samt size_vram. Nur der
+ * Eintrag mit dem eigenen Modellnamen zaehlt — fremde Modelle auf derselben
+ * Karte sind fremder Speicher und duerfen den Einstieg sehr wohl blockieren.
+ * Faellt die Abfrage aus, wird 0 angenommen: lieber eine Registrierung zu viel
+ * ablehnen als eine zu viel zulassen.
+ */
+async function eigenesModellImVram(): Promise<number> {
+  try {
+    const ollamaUrl = (process.env.OLLAMA_URL || '').replace(/\/$/, '');
+    if (!ollamaUrl) return 0;
+    const model = process.env.OLLAMA_MODEL || 'qwen3-embedding:8b';
+    const antwort = await fetch(`${ollamaUrl}/api/ps`, { signal: AbortSignal.timeout(5_000) });
+    if (!antwort.ok) return 0;
+    const daten = await antwort.json() as { models?: Array<{ name?: string; model?: string; size_vram?: number }> };
+    const treffer = (daten.models ?? []).find((eintrag) =>
+      eintrag.name === model || eintrag.model === model || (eintrag.name ?? '').startsWith(`${model}:`),
+    );
+    return treffer?.size_vram ? Math.floor(treffer.size_vram / (1024 * 1024)) : 0;
+  } catch {
+    return 0;
+  }
+}
+
 async function gpuInfo(): Promise<{ name: string | null; totalMb: number; freeMb: number }> {
   try {
     const gpuIndex = process.env.SYNAPSE_GPU_INDEX;
@@ -76,12 +102,22 @@ export async function probeNodeCapabilities(pruefeEinstieg = false): Promise<Nod
   // Deshalb: die harte Schwelle NUR beim Start (pruefeEinstieg=true). Im
   // laufenden Betrieb wird der freie Speicher nur noch GEMELDET; der Server
   // entscheidet anhand von Digest, Dimensionen und Lease, ob der Knoten taugt.
+  // ⚠️ AUCH BEIM EINSTIEG ZAEHLT DER SPEICHER MIT, DEN DAS EIGENE MODELL SCHON
+  // BELEGT. Sonst scheitert genau der Neustart, der am haeufigsten vorkommt:
+  // Agent beendet -> sofort wieder gestartet -> das Modell liegt noch im VRAM
+  // (Ollama entlaedt erst nach 5 min Leerlauf) -> "nur 2045 MB frei" -> keine
+  // Registrierung. Gemessen am 01.08.2026 nach einem Neustart des Agenten.
+  // Die Frage der Einstiegspruefung ist "passt das Modell hinein?", und wenn es
+  // bereits DRIN ist, lautet die Antwort offensichtlich ja.
+  const belegtVomEigenenModell = pruefeEinstieg ? await eigenesModellImVram() : 0;
+  const verfuegbarMb = gpu.freeMb + belegtVomEigenenModell;
   const gpuFehlt = !gpu.name || gpu.totalMb < requiredTotalMb;
-  const zuWenigFrei = gpu.freeMb < requiredFreeMb;
+  const zuWenigFrei = verfuegbarMb < requiredFreeMb;
   if (gpuFehlt || (pruefeEinstieg && zuWenigFrei)) {
     throw new Error(
       `Hardware passt nicht / nicht moeglich: mindestens ${requiredTotalMb} MB VRAM und ${requiredFreeMb} MB frei erforderlich; ` +
-      `gemessen ${gpu.totalMb} MB gesamt / ${gpu.freeMb} MB frei`,
+      `gemessen ${gpu.totalMb} MB gesamt / ${gpu.freeMb} MB frei` +
+      (belegtVomEigenenModell > 0 ? ` (+${belegtVomEigenenModell} MB bereits vom eigenen Modell belegt)` : ''),
     );
   }
   const ollamaUrl = (process.env.OLLAMA_URL || '').replace(/\/$/, '');
