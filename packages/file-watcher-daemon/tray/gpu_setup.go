@@ -177,11 +177,12 @@ func platformDownload(d apiEmbeddingDownload) string {
 const gpuDiskReserveBytes uint64 = 1 << 30
 
 var (
-	runtimeGOOS      = func() string { return runtime.GOOS }
-	gpuOllamaMu      sync.Mutex
-	gpuOllamaOwned   bool
-	gpuOwnedModelDir string
-	gpuOwnedGPUIndex int
+	runtimeGOOS        = func() string { return runtime.GOOS }
+	gpuOllamaMu        sync.Mutex
+	lokalerGPUHelperMu sync.Mutex
+	gpuOllamaOwned     bool
+	gpuOwnedModelDir   string
+	gpuOwnedGPUIndex   int
 )
 
 func normalizeGPUModelDir(modelDir string) (string, error) {
@@ -408,13 +409,30 @@ func startDedicatedOllama(modelDir string, gpuIndex int) error {
 		}
 		return fmt.Errorf("Dedizierter Ollama läuft bereits mit Ziel %s auf GPU %d; Wechsel auf Ziel %s / GPU %d wird nicht still wiederverwendet", gpuOwnedModelDir, gpuOwnedGPUIndex, normalizedModelDir, gpuIndex)
 	}
-	// Fail closed: Ein antwortender Prozess ist nicht als unser Prozess beweisbar.
-	// Darum wird er nie uebernommen; insbesondere wird OLLAMA_MODELS nicht nur
-	// behauptet, wenn ein fremder Daemon bereits auf dem dedizierten Port laeuft.
+	// Fail closed bleibt die Regel: ein FREMDER Prozess wird nie uebernommen.
+	//
+	// ⚠️ DER EIGENE IST ABER BELEGBAR — und ohne diese Pruefung sperrt sich der
+	// Knopf nach jedem Tray-Neustart selbst aus. Der dedizierte Ollama ueberlebt
+	// den Tray (Process.Release), waehrend gpuOllamaOwned im neuen Prozess wieder
+	// false ist. Gemessen am 01.08.2026: Ollama PID 1449435 lief seit 20:01 auf
+	// 11435, der Tray war ab 20:23 neu — jeder Verwenden-Klick brach mit "Port
+	// belegt" ab, noch bevor der GPU-Helfer starten konnte, und die Oberflaeche
+	// meldete unveraendert "Helfer laeuft nicht".
+	//
+	// Die Datei gpu-ollama.pid wurde bis dahin nur GESCHRIEBEN und nie gelesen,
+	// obwohl sie genau diesen Nachweis fuehrt. Zusammen mit /proc/<pid>/environ
+	// (OLLAMA_HOST am dedizierten Port, OLLAMA_MODELS am angeforderten Ziel) sind
+	// Eigentuemerschaft UND Zielpfad nachgewiesen statt behauptet.
 	pidPath := filepath.Join(filepath.Dir(gpuConfigPath()), "gpu-ollama.pid")
 	if resp, e := (&http.Client{Timeout: time.Second}).Get(gpuOllamaURL + "/api/tags"); e == nil {
 		resp.Body.Close()
-		return errors.New("Dedizierter Ollama-Port 11435 ist bereits belegt; Prozess-Eigentuemerschaft und Zielpfad sind nicht belegbar")
+		if istEigenerOllama(pidPath, normalizedModelDir) {
+			gpuOllamaOwned = true
+			gpuOwnedModelDir = normalizedModelDir
+			gpuOwnedGPUIndex = gpuIndex
+			return nil
+		}
+		return errors.New("Dedizierter Ollama-Port 11435 ist bereits belegt und gehoert nicht zu dieser Einrichtung; Prozess-Eigentuemerschaft oder Zielpfad sind nicht belegbar")
 	}
 	bin, err := exec.LookPath("ollama")
 	if err != nil {
@@ -530,7 +548,64 @@ func findComputeAgent() (string, error) {
 		"Notfalls SYNAPSE_COMPUTE_AGENT auf den vollen Pfad zu dist/index.js setzen",
 		len(kandidaten), kandidaten[len(kandidaten)-1])
 }
-func startGPUComputeAgent(c gpuNodeConfig, ref apiEmbeddingReference) error {
+func lokalerGPUHelperPidPath() string {
+	return filepath.Join(filepath.Dir(gpuConfigPath()), "local-gpu-helper.pid")
+}
+
+// laufenderLokalerGPUHelper liefert die PID eines bereits laufenden GPU-Helfers, sonst 0.
+//
+// ⚠️ WARUM ES DAS BRAUCHT: der Start war bedingungslos. Gemessen am 01.08.2026
+// liefen nach drei Klicks auf "Meine GPU verwenden" drei Helfer gleichzeitig
+// (20:01:39, 20:02:18, 20:03:23), die sich gegenseitig die Jobs streitig machten.
+// Fuer den dedizierten Ollama gab es diesen Schutz laengst (gpuOllamaOwned und
+// gpu-ollama.pid), fuer den Helfer nicht.
+func laufenderLokalerGPUHelper() int {
+	roh, err := os.ReadFile(lokalerGPUHelperPidPath())
+	if err != nil {
+		return 0
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(roh)))
+	if err != nil || pid <= 0 {
+		return 0
+	}
+	if !istLokalerGPUHelperProzess(pid) {
+		// Verwaiste Datei eines abgestuerzten Helfers oder fremde PID.
+		_ = os.Remove(lokalerGPUHelperPidPath())
+		return 0
+	}
+	return pid
+}
+
+// stopLokalenGPUHelper beendet den lokalen GPU-Helfer und raeumt die PID-Datei weg.
+//
+// ⚠️ OHNE DIESEN AUFRUF LAEUFT DER HELFER NACH DEM SPERREN WEITER. "Meine GPU
+// nicht verwenden" setzte nur die Sperre in der Registry; der lokale Prozess
+// pollte weiter und bekam bei jedem Versuch 403 node_not_usable — am 01.08.2026
+// zehntausende Zeilen in compute-node.log, waehrend die Oberflaeche "gesperrt"
+// meldete. Ein Nichtstun ist kein Stopp.
+func stopLokalenGPUHelper() error {
+	lokalerGPUHelperMu.Lock()
+	defer lokalerGPUHelperMu.Unlock()
+	pid := laufenderLokalerGPUHelper()
+	if pid == 0 {
+		_ = os.Remove(lokalerGPUHelperPidPath())
+		return nil
+	}
+	if err := prozessBeenden(pid); err != nil {
+		return fmt.Errorf("GPU-Helfer (PID %d) konnte nicht beendet werden: %w", pid, err)
+	}
+	_ = os.Remove(lokalerGPUHelperPidPath())
+	return nil
+}
+
+func startLokalenGPUHelper(c gpuNodeConfig, ref apiEmbeddingReference) error {
+	lokalerGPUHelperMu.Lock()
+	defer lokalerGPUHelperMu.Unlock()
+	// Laeuft schon einer, bleibt es bei dem. Ein zweiter brachte keinen Durchsatz,
+	// sondern nur Konkurrenz um dieselben Jobs.
+	if pid := laufenderLokalerGPUHelper(); pid > 0 {
+		return nil
+	}
 	agent, err := findComputeAgent()
 	if err != nil {
 		return err
@@ -549,5 +624,8 @@ func startGPUComputeAgent(c gpuNodeConfig, ref apiEmbeddingReference) error {
 	if err = cmd.Start(); err != nil {
 		return err
 	}
+	// Ohne diese Datei liest laufenderLokalerGPUHelper() beim naechsten Klick ins Leere
+	// und der Singleton greift nie — genau der Fehler, der hier behoben werden soll.
+	_ = os.WriteFile(lokalerGPUHelperPidPath(), []byte(strconv.Itoa(cmd.Process.Pid)), 0600)
 	return cmd.Process.Release()
 }
