@@ -97,13 +97,25 @@ export async function postChannelMessage(
   )
   if (rows.length === 0) return null
   const result = { id: rows[0].id, createdAt: rows[0].created_at }
+  // ⚠️ DER FEHLSCHLAG MUSS SICHTBAR SEIN. Hier stand .catch(() => undefined) — jede Ursache
+  // wurde kommentarlos verschluckt. GEMESSEN am 01.08.2026: im Container entstand fuer keine
+  // ueber die API gepostete Nachricht eine Vorbereitung, waehrend derselbe Aufruf per
+  // docker exec im selben Container 20 Eintraege schrieb. Im Log stand dazu NICHTS, und im
+  // Feed sieht ein stiller Ausfall exakt aus wie "kein passender Skill".
+  // Der Post selbst darf davon unberuehrt bleiben — deshalb weiterhin fire-and-forget, aber
+  // mit Spur.
   void bereiteChannelSkillVorschlaegeVor(
     project,
     channelName,
     result.id,
     content,
     pool,
-  ).catch(() => undefined)
+  ).catch((fehler) => {
+    console.error(
+      `[SkillHook] Vorberechnung fuer Nachricht ${result.id} in ${project}/${channelName} fehlgeschlagen:`,
+      fehler instanceof Error ? `${fehler.name}: ${fehler.message}` : fehler,
+    )
+  })
   return result
 }
 
