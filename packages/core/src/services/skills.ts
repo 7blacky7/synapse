@@ -1,30 +1,68 @@
 /**
- * MODUL: skills (EXPERIMENTAL)
- * ZWECK: Zugriff auf die User-eigene Skill-Datenbank (Qdrant Collection 'skills'
- *        auf 192.168.50.65:6334). Skills sind aus dem skill-db-manager
- *        ($HOME/.claude/skills/skill-db-manager) gefuettert.
+ * MODUL: skills
+ * ZWECK: Zugriff auf die Skill-Datenbank in der Synapse-Qdrant (Collection 'skills').
+ *        Gefuettert aus dem skill-db-manager ($HOME/.claude/skills/skill-db-manager).
  *
- * STATUS: EXPERIMENTAL — wird in einer kommenden Iteration umgebaut wenn
- *         private vs general Skills getrennt werden sollen.
+ * EMBEDDING: laeuft ueber den zentralen Synapse-Provider (embed() aus ../embeddings).
+ *   Damit gilt automatisch EMBEDDING_PROVIDER/OLLAMA_MODEL/EMBEDDING_TARGET_DIM wie
+ *   fuer alle anderen Collections auch.
+ *   ⚠️ FRUEHER stand hier ein EIGENER Google-Aufruf (gemini-embedding-2-preview) samt
+ *   fest verdrahteter Fremd-Qdrant auf Port 6334. Der Bestand war mit Google
+ *   eingebettet, die Anfrage kam mit demselben Modell — technisch stimmig, aber ein
+ *   Sonderweg neben dem Rest des Systems, mit eigenem Schluessel und eigener Datenbank.
+ *   Seit 01.08.2026 liegt die Collection in der Synapse-Qdrant und nutzt denselben
+ *   Embedding-Weg wie Memories, Thoughts und Code.
+ *
+ * SCOPE: jeder Punkt traegt ein Feld 'scope':
+ *   'global'  — gilt ueberall (aktuell ALLE Eintraege)
+ *   'project' — nur fuer ein Projekt, Feld 'project' gesetzt
+ *   'agent'   — nur fuer einen Agenten in einem Projekt, Felder 'project' + 'agent'
+ *   Ohne scope-Angabe wird NICHT gefiltert, es kommt also alles. Das ist Absicht,
+ *   solange nur globale Skills existieren.
  *
  * Datenformat (pro Qdrant-Point):
  *   {
  *     skill_name: string,
  *     section: string,
  *     content: string,
- *     tags: string[]
+ *     tags: string[],
+ *     scope: 'global' | 'project' | 'agent',
+ *     project?: string | null,
+ *     agent?: string | null
  *   }
  */
 
-const SKILL_QDRANT_URL = process.env.SKILL_QDRANT_URL || 'http://192.168.50.65:6334';
+import { embed } from '../embeddings/index.js';
+
+const SKILL_QDRANT_URL =
+  process.env.SKILL_QDRANT_URL || process.env.QDRANT_URL || 'http://localhost:6333';
 const SKILL_COLLECTION = process.env.SKILL_COLLECTION || 'skills';
-const SKILL_EMBED_MODEL = process.env.SKILL_EMBED_MODEL || 'gemini-embedding-2-preview';
+
+export type SkillScope = 'global' | 'project' | 'agent';
+
+/** Baut den Qdrant-Filter aus skill_name und Scope. Undefined = kein Filter. */
+function baueFilter(opts: {
+  skillName?: string;
+  scope?: SkillScope;
+  project?: string;
+  agent?: string;
+}): Record<string, unknown> | undefined {
+  const must: Record<string, unknown>[] = [];
+  if (opts.skillName) must.push({ key: 'skill_name', match: { value: opts.skillName } });
+  if (opts.scope) must.push({ key: 'scope', match: { value: opts.scope } });
+  if (opts.project) must.push({ key: 'project', match: { value: opts.project } });
+  if (opts.agent) must.push({ key: 'agent', match: { value: opts.agent } });
+  return must.length ? { must } : undefined;
+}
 
 interface SkillPoint {
   skill_name: string;
   section: string;
   content: string;
   tags?: string[];
+  scope?: SkillScope;
+  project?: string | null;
+  agent?: string | null;
 }
 
 interface QdrantPoint {
@@ -33,25 +71,8 @@ interface QdrantPoint {
   payload?: SkillPoint;
 }
 
-async function getQueryEmbedding(text: string): Promise<number[]> {
-  const apiKey = process.env.GOOGLE_API_KEY;
-  if (!apiKey) throw new Error('GOOGLE_API_KEY env not set — required for skill-search embedding');
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${SKILL_EMBED_MODEL}:embedContent?key=${apiKey}`;
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      model: `models/${SKILL_EMBED_MODEL}`,
-      content: { parts: [{ text }] },
-    }),
-  });
-  if (!res.ok) {
-    const err = await res.text();
-    throw new Error(`Skill-Embed (${SKILL_EMBED_MODEL}) ${res.status}: ${err.slice(0, 200)}`);
-  }
-  const data = (await res.json()) as { embedding: { values: number[] } };
-  return data.embedding.values;
-}
+// getQueryEmbedding entfaellt — die Anfrage wird ueber embed() aus dem zentralen
+// Provider eingebettet, genau wie der Bestand beim Schreiben.
 
 async function qdrantScroll(filter?: Record<string, unknown>, limit = 1000): Promise<QdrantPoint[]> {
   const body: Record<string, unknown> = { limit, with_payload: true, with_vector: false };
@@ -85,6 +106,8 @@ export interface SkillSearchHit {
   score: number;
   content: string;
   tags: string[];
+  scope?: SkillScope;
+  project?: string | null;
 }
 
 export interface SkillListEntry {
@@ -100,12 +123,18 @@ export interface SkillSection {
   tags: string[];
 }
 
-/** Semantische Suche ueber alle Skills + Sections. Optional skill_name → nur innerhalb dieses Skills suchen. */
-export async function searchSkills(query: string, limit = 5, skillName?: string): Promise<SkillSearchHit[]> {
-  const vec = await getQueryEmbedding(query);
-  const filter = skillName
-    ? { must: [{ key: 'skill_name', match: { value: skillName } }] }
-    : undefined;
+/**
+ * Semantische Suche ueber Skills + Sections.
+ * Optional skill_name (nur innerhalb eines Skills) und scope/project/agent.
+ */
+export async function searchSkills(
+  query: string,
+  limit = 5,
+  skillName?: string,
+  opts: { scope?: SkillScope; project?: string; agent?: string } = {},
+): Promise<SkillSearchHit[]> {
+  const vec = await embed(query);
+  const filter = baueFilter({ skillName, ...opts });
   const hits = await qdrantSearch(vec, limit, filter);
   return hits.map((h) => ({
     skill_name: h.payload?.skill_name ?? '',
@@ -113,6 +142,8 @@ export async function searchSkills(query: string, limit = 5, skillName?: string)
     score: h.score ?? 0,
     content: h.payload?.content ?? '',
     tags: h.payload?.tags ?? [],
+    scope: h.payload?.scope,
+    project: h.payload?.project ?? null,
   }));
 }
 
