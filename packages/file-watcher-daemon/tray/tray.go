@@ -2120,18 +2120,49 @@ func (w *ChatWindow) SendMessage() {
 		return
 	}
 
-	u := fmt.Sprintf("http://127.0.0.1:%d/projects/%s/channels/%s/post", port, url.QueryEscape(w.ProjectName), url.QueryEscape(w.ChannelName))
-
+	// ⚠️ UEBER DIE REST-API, NICHT UEBER DEN LOKALEN DAEMON.
+	//
+	// Bis zum 02.08.2026 ging dieser Post an 127.0.0.1:<port>, also an den
+	// FileWatcher-Daemon. Der schreibt die Nachricht zwar korrekt in PostgreSQL, aber
+	// seinem Prozess fehlt die Embedding-Umgebung (weder QDRANT_URL noch OLLAMA_URL
+	// noch EMBEDDING_PROVIDER). Die Skill-Vorberechnung lief deshalb ins Leere: keine
+	// Treffer, kein Fehler, kein Logeintrag — im Feed sah es aus wie "kein passender
+	// Skill".
+	// GEMESSEN: derselbe Text über die REST-API ergab 20 Vorbereitungen, über den
+	// Daemon null. Der Nutzer hat es daran erkannt, dass BEIDE Ollama-Protokolle
+	// stumm blieben — es wurde nie ein Embedding angefordert.
+	//
+	// Die REST-API ist der Weg, auf dem alles zusammenläuft; ob sie das Embedding
+	// danach auf der lokalen GPU oder auf unraid rechnet, entscheidet die
+	// Lastverteilung und ist hier gleichgültig.
 	payload := map[string]string{
 		"sender":  "synapse-tray",
 		"content": content,
 	}
+
+	pfad := fmt.Sprintf("/api/projects/%s/channels/%s/post",
+		url.PathEscape(w.ProjectName), url.PathEscape(w.ChannelName))
+	var antwort map[string]any
+	if _, err := apiRequestBody("POST", pfad, payload, &antwort); err == nil {
+		fyne.Do(func() {
+			w.InputEntry.SetText("")
+		})
+		go w.ReloadMessages()
+		return
+	} else {
+		log.Printf("[chat] Senden über die API fehlgeschlagen, weiche auf den Daemon aus: %v", err)
+	}
+
+	// AUSWEICHWEG: lieber eine Nachricht ohne Skill-Vorschlag als eine verlorene.
+	// Dass dieser Weg genommen wurde, steht im Log — sonst wäre die fehlende
+	// Vorberechnung wieder unsichtbar.
+	u := fmt.Sprintf("http://127.0.0.1:%d/projects/%s/channels/%s/post", port,
+		url.QueryEscape(w.ProjectName), url.QueryEscape(w.ChannelName))
 	payloadBytes, err := json.Marshal(payload)
 	if err != nil {
 		return
 	}
-
-	client := &http.Client{Timeout: 1 * time.Second}
+	client := &http.Client{Timeout: 2 * time.Second}
 	resp, err := client.Post(u, "application/json", bytes.NewReader(payloadBytes))
 	if err == nil {
 		resp.Body.Close()
