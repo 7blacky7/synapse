@@ -504,7 +504,28 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
         description: 'Phase A eines Multi-File-Edits: dry-runt ops[], erfasst Hashes/Previews und trennt nur Pfade mit fremder primaerer aktiver Reservierung als persistente, nach primary_agent gruppierte coedit_waits ab. move/copy prueft auch new_path; abgelaufene Reservierungen werden ignoriert. auto_commit schreibt ausschliesslich den konfliktfreien Teilplan. Ohne Ueberlappung bleibt die Antwort unveraendert.',
         params: 'project (req), ops (req, Array von { file_path, action, new_path?, content?, search?, replace?, edits?, line_start?, line_end?, after_line?, shift_mode?, reason? }), agent_id, open_for_coedit, reason (Top-Level)',
         example: 'files({ action: "plan", project: "synapse", reason: "Refactor Modul X", ops: [{ file_path: "src/x.ts", action: "replace_lines", line_start: 10, line_end: 15, content: "neu" }, { file_path: "src/x.ts", action: "insert_after", after_line: 50, content: "// log" }, { file_path: "src/x.ts", action: "delete_lines", line_start: 80, line_end: 85 }] })',
-        tips: 'Plan laeuft nach 5 Minuten ab. Op-Actions: create (neue Datei), update, search_replace, search_replace_batch, replace_lines, insert_after, delete_lines (Edit-Ops); delete (ganze Datei loeschen), move (file_path → new_path), copy (file_path → new_path) (Lifecycle-Ops). Mehrere Ops auf gleicher Datei moeglich; create nur als erste Op. AUTO-LINE-SHIFT: Bei mehreren line-basierten Ops auf derselben Datei werden die Ops intern in absteigender line_start-Reihenfolge appliziert — gib daher Zeilen-Nummern immer aus dem Snapshot VOR plan() an, kein manuelles Shift-Tracking noetig. Ueberlappende Ranges (z.B. replace_lines 10-20 + replace_lines 15-25) werfen "overlapping ranges in batch" VOR jeder Mutation. Pro Op optional shift_mode: "auto" (Default, Reverse-Order) oder "absolute" (sequentielle Anwendung auf den geshifteten Buffer-Stand). Single-Op-Plaene verhalten sich identisch in beiden Modi. ANCHOR-VERIFIKATION (optional pro Op): anchor_text (exakter Match auf der Ziel-Zeile, .trim()) oder anchor_contains (Substring-Match). Pre-flight Check vor jeder Mutation; Mismatch wirft "anchor mismatch at line X" und blockiert die gesamte Batch — schuetzt vor Drift wenn Datei zwischen plan() und commit() extern geaendert wurde, und ist nuetzlich fuer Subagent-Plan-Vorbereitung mit spaeterem Koordinator-Commit. Lifecycle-Ops mit move/copy laden auch dst-Buffer fuer Hash-Check. restore_batch macht delete/move/copy rueckgaengig. auto_commit:true an plan() spart den separaten commit-Call (planen + sofort committen). agent_note (Top-Level) speichert KI-Beobachtungen pro Batch — zusaetzlich zum User-reason. Top-Level Enrichment: feature_tag (Feature-Group-Tag, history-Filter), parent_version_id (Korrektur-Chain-Pointer), git_commit_sha — additive Felder, alle nullable, durch jeden write in file_versions propagiert.',
+        tips: 'Plan laeuft nach 5 Minuten ab. open_for_coedit=false sperrt coedit_add. Op-Actions: create, update, search_replace, search_replace_batch, replace_lines, insert_after, delete_lines, delete, move, copy. Mehrere Ops auf gleicher Datei sind moeglich; line-Ops nutzen standardmaessig shift_mode="auto". Shared Ops werden ueber wait_token und CE-3-Actions direkt in genau einen gemeinsamen Primaerplan integriert.',
+      },
+      coedit_add: {
+        description: 'Haengt die noch offene deferred Operation des konkreten waiting_agent genau einmal an den offenen Primaerplan. Die Herkunft agent_id wird serverseitig gesetzt; Input-Herkunft ist nicht vertrauenswuerdig.',
+        params: 'project, plan_id, agent_id, ops',
+        example: 'files({ action: "coedit_add", project: "synapse", plan_id: "42", agent_id: "agent-b", ops: [{ file_path: "src/x.ts", action: "search_replace", search: "alt", replace: "neu" }] })',
+        tips: 'Nur der waiting_agent des konkreten Waits ist berechtigt. Cross-Wait-Dedup nutzt source_plan_id + deferred_op_index. open_for_coedit=false lehnt ohne Mutation ab.',
+      },
+      coedit_no_changes: {
+        description: 'Markiert konkrete gemeinsame Dateien als erledigt, ohne Ops an den Plan anzufuegen.',
+        params: 'project, plan_id, agent_id, files (Array)',
+        example: 'files({ action: "coedit_no_changes", project: "synapse", plan_id: "42", agent_id: "agent-b", files: ["src/x.ts"] })',
+      },
+      coedit_ready: {
+        description: 'Markiert den eigenen Beitrag als fertig. Bleiben gemeinsame Dateien ohne Beitrag oder no_changes, wird der Abschluss abgelehnt und remaining_files geliefert.',
+        params: 'project, plan_id, agent_id',
+        example: 'files({ action: "coedit_ready", project: "synapse", plan_id: "42", agent_id: "agent-b" })',
+      },
+      shared_plan_status: {
+        description: 'Liest nur den einen konkreten Wartezustand des opaken wait_token, nicht den ganzen Planbestand.',
+        params: 'project, wait_token, agent_id',
+        example: 'files({ action: "shared_plan_status", project: "synapse", wait_token: "uuid", agent_id: "agent-b" })',
       },
       commit: {
         description: 'Phase B: wendet alle Ops eines Plans atomar an (PG-TX). Pruefung gegen expected_hashes — wenn eine Datei seit dem Plan extern geaendert wurde, kommt status="stale" mit Konflikt-Details. Bei Erfolg tragen alle file_versions-Snapshots die batch_id=plan_id (-> restore_batch). agent_note speichert KI-Beobachtungen pro Batch — zusaetzlich zum User-reason aus plan().',

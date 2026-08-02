@@ -116,6 +116,10 @@ import {
   commitBatch,
   cancelBatch,
   getBatchPlan,
+  addCoeditContribution,
+  markCoeditReady,
+  markCoeditNoChanges,
+  getSharedPlanStatus,
   addFileReservations,
   releaseFileReservations,
   updateFileReservations,
@@ -826,7 +830,7 @@ const MCP_TOOLS = [
       properties: {
         action: {
           type: 'string',
-          enum: ['create', 'update', 'delete', 'move', 'copy', 'read', 'replace_lines', 'insert_after', 'delete_lines', 'search_replace', 'search_replace_batch', 'versions', 'get_version', 'restore', 'restore_batch', 'plan', 'commit', 'cancel', 'plan_status', 'history', 'reservation_add', 'reservation_release', 'reservation_update', 'reservation_list'],
+          enum: ['create', 'update', 'delete', 'move', 'copy', 'read', 'replace_lines', 'insert_after', 'delete_lines', 'search_replace', 'search_replace_batch', 'versions', 'get_version', 'restore', 'restore_batch', 'plan', 'commit', 'cancel', 'plan_status', 'history', 'reservation_add', 'reservation_release', 'reservation_update', 'reservation_list', 'coedit_add', 'coedit_ready', 'coedit_no_changes', 'shared_plan_status'],
           description: 'Datei-Aktion. versions/get_version/restore/restore_batch arbeiten auf der Versionshistorie. plan/commit/cancel/plan_status implementieren atomare Multi-File-Edits ueber mehrere Dateien. history listet Aenderungen mit Begruendung (Crash-Recovery) — agent_id wirkt dort als EXAKTER Filter, fuer die volle Projekt-History weglassen.',
         },
         project: { type: 'string', description: 'Projekt-Name' },
@@ -907,7 +911,9 @@ const MCP_TOOLS = [
             required: ['file_path', 'action'],
           },
         },
-        open_for_coedit: { type: 'boolean', description: 'Optional fuer plan: ob andere Agenten Co-Edits vorschlagen duerfen (default true). Aktuell informational; Co-Edit-Mechanik kommt in Schritt 3.' },
+        open_for_coedit: { type: 'boolean', description: 'Optional fuer plan: ob der konkrete waiting_agent per coedit_add beitragen darf (default true). false lehnt coedit_add mutationsfrei ab.' },
+        wait_token: { type: 'string', description: 'Opaquer CE-2-Wait-Token fuer shared_plan_status.' },
+        files: { type: 'array', items: { type: 'string' }, description: 'coedit_no_changes: konkrete gemeinsame Dateien ohne eigenen Beitrag.' },
         auto_commit: { type: 'boolean', description: '(optional fuer plan): wenn true, wird direkt nach plan() automatisch commit() aufgerufen — spart einen Tool-Call wenn kein User-Review vor commit gewuenscht. Versionierung bleibt aktiv (file_versions + batch_id), Rollback via restore_batch jederzeit moeglich.' },
         agent_note: { type: 'string', description: '(optional fuer plan/commit): KI-eigene Beobachtungen/Analyse zum Batch (zusaetzlich zum reason des Users). Wird in alle file_versions dieser Batch geschrieben. Empfohlen ab ≥3 Ops oder Multi-File Batches.' },
         reason: { type: 'string', description: 'Optionale Begruendung — landet in file_versions.reason und ist via "history"-Action abrufbar. Fuer Crash-Recovery nuetzlich.' },
@@ -929,7 +935,7 @@ const MCP_TOOLS = [
       properties: {
         action: {
           type: 'string',
-          enum: ['plan', 'commit', 'cancel', 'plan_status', 'history', 'restore', 'restore_batch', 'reservation_add', 'reservation_release', 'reservation_update', 'reservation_list'],
+          enum: ['plan', 'commit', 'cancel', 'plan_status', 'history', 'restore', 'restore_batch', 'reservation_add', 'reservation_release', 'reservation_update', 'reservation_list', 'coedit_add', 'coedit_ready', 'coedit_no_changes', 'shared_plan_status'],
           description: 'plan: Trockenlauf, gibt plan_id zurueck. commit: alle Ops atomar ausfuehren. cancel: Plan verwerfen. plan_status: Plan-Details. history: Aenderungs-Log. restore/restore_batch: Versionierungs-Rollback.',
         },
         project: { type: 'string', description: 'Projekt-Name' },
@@ -983,7 +989,9 @@ const MCP_TOOLS = [
         expires_at: { type: 'string', description: 'reservation_add/update: optionaler ISO-Ablaufzeitpunkt; Default jetzt + 5 Minuten.' },
         reservation_agent_id: { type: 'string', description: 'reservation_list: optionaler Besitzer-Filter. agent_id bleibt Attribution des aufrufenden Agenten.' },
         include_released: { type: 'boolean', description: 'reservation_list: auch bereits freigegebene Zeilen anzeigen (Default false).' },
-        open_for_coedit: { type: 'boolean', description: 'plan: ob Co-Edits erlaubt sind (default true)' },
+        open_for_coedit: { type: 'boolean', description: 'plan: ob der konkrete waiting_agent Co-Edit-Ops beitragen darf (default true)' },
+        wait_token: { type: 'string', description: 'Opaquer CE-2-Wait-Token fuer shared_plan_status.' },
+        files: { type: 'array', items: { type: 'string' }, description: 'coedit_no_changes: konkrete gemeinsame Dateien ohne eigenen Beitrag.' },
         auto_commit: { type: 'boolean', description: 'plan + commit in einem Call (default false). Versionierung bleibt aktiv.' },
         agent_note: { type: 'string', description: '(optional): KI-eigene Beobachtungen pro Batch (zusaetzlich zum User-reason).' },
         reason: { type: 'string', description: 'Optional fuer Audit-Trail (file_versions.reason)' },
@@ -1177,6 +1185,7 @@ const OUTPUT_EXTRAS: Record<string, { props?: Record<string, unknown>; example?:
   files: {
     props: {
       file_path: { type: 'string' },
+      status: { type: 'string' },
       size: { type: 'number', description: 'Groesse in Bytes/Zeichen' },
       content: { type: 'string' },
       total_lines: { type: 'number' },
@@ -1185,6 +1194,16 @@ const OUTPUT_EXTRAS: Record<string, { props?: Record<string, unknown>; example?:
       requested_total_ops: { type: 'number' },
       deferred_ops: { type: 'number' },
       coedit_waits: COEDIT_WAIT_OUTPUT_SCHEMA,
+      wait_token: { type: 'string' },
+      primary_plan_id: { type: 'string' },
+      shared_files: { type: 'array', items: { type: 'string' } },
+      completed_files: { type: 'array', items: { type: 'string' } },
+      remaining_files: { type: 'array', items: { type: 'string' } },
+      contributed_files: { type: 'array', items: { type: 'string' } },
+      no_change_files: { type: 'array', items: { type: 'string' } },
+      contributions: { type: 'array', items: { type: 'object' } },
+      appended_ops: { type: 'number' },
+      already_consumed_ops: { type: 'number' },
     },
     example: { success: true, file_path: 'src/index.ts', size: 1234, content: '...', total_lines: 42, returned_range: { from: 1, to: 42, eof: true } },
   },
@@ -1264,6 +1283,16 @@ const OUTPUT_EXTRAS: Record<string, { props?: Record<string, unknown>; example?:
       requested_total_ops: { type: 'number' },
       deferred_ops: { type: 'number' },
       coedit_waits: COEDIT_WAIT_OUTPUT_SCHEMA,
+      wait_token: { type: 'string' },
+      primary_plan_id: { type: 'string' },
+      shared_files: { type: 'array', items: { type: 'string' } },
+      completed_files: { type: 'array', items: { type: 'string' } },
+      remaining_files: { type: 'array', items: { type: 'string' } },
+      contributed_files: { type: 'array', items: { type: 'string' } },
+      no_change_files: { type: 'array', items: { type: 'string' } },
+      contributions: { type: 'array', items: { type: 'object' } },
+      appended_ops: { type: 'number' },
+      already_consumed_ops: { type: 'number' },
     },
     example: { success: true, project: 'synapse', count: 1, entries: [{ id: '6595', file_path: 'x.html', edit_action: 'create', agent_id: null, reason: '...', created_at: '2026-07-17T07:19:36Z' }] },
   },
@@ -3669,6 +3698,25 @@ async function handleToolCall(
         return normalizeReservationFilePaths(raw);
       };
 
+
+      if (action === "coedit_add") {
+        if (!agentId) throw new Error("agent_id ist fuer coedit_add erforderlich");
+        const coeditOps = (args as Record<string, unknown>).ops;
+        if (!Array.isArray(coeditOps) || coeditOps.length === 0) throw new Error("ops[] muss mindestens eine Operation enthalten");
+        return addCoeditContribution({ project, plan_id: reqStr(args, "plan_id"), agent_id: agentId, ops: coeditOps as import("@synapse/core").FileBatchOp[] });
+      }
+      if (action === "coedit_ready") {
+        if (!agentId) throw new Error("agent_id ist fuer coedit_ready erforderlich");
+        return markCoeditReady({ project, plan_id: reqStr(args, "plan_id"), agent_id: agentId });
+      }
+      if (action === "coedit_no_changes") {
+        if (!agentId) throw new Error("agent_id ist fuer coedit_no_changes erforderlich");
+        return markCoeditNoChanges({ project, plan_id: reqStr(args, "plan_id"), agent_id: agentId, files: reservationPaths("files", true) });
+      }
+      if (action === "shared_plan_status") {
+        if (!agentId) throw new Error("agent_id ist fuer shared_plan_status erforderlich");
+        return getSharedPlanStatus({ project, wait_token: reqStr(args, "wait_token"), agent_id: agentId });
+      }
       if (action === 'reservation_add') {
         if (!agentId) throw new Error('agent_id ist fuer reservation_add erforderlich');
         const reservations = await addFileReservations({

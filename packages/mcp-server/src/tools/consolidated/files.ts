@@ -29,6 +29,10 @@ import {
   commitBatch,
   cancelBatch,
   getBatchPlan,
+  addCoeditContribution,
+  markCoeditReady,
+  markCoeditNoChanges,
+  getSharedPlanStatus,
   resolveAgentId,
   embeddingPendingHint,
   pruefeUndBereiteSchreibenVor,
@@ -68,8 +72,8 @@ export const filesTool: ConsolidatedTool = {
       properties: {
         action: {
           type: 'string',
-          enum: ['create', 'update', 'read', 'delete', 'move', 'copy', 'replace_lines', 'insert_after', 'delete_lines', 'search_replace', 'search_replace_batch', 'versions', 'get_version', 'restore', 'restore_batch', 'plan', 'commit', 'cancel', 'plan_status', 'history', 'reservation_add', 'reservation_release', 'reservation_update', 'reservation_list'],
-          description: 'Action: create | update | read | delete | move | copy | replace_lines | insert_after | delete_lines | search_replace | search_replace_batch | versions | get_version | restore | restore_batch | plan | commit | cancel | plan_status | history',
+          enum: ['create', 'update', 'read', 'delete', 'move', 'copy', 'replace_lines', 'insert_after', 'delete_lines', 'search_replace', 'search_replace_batch', 'versions', 'get_version', 'restore', 'restore_batch', 'plan', 'commit', 'cancel', 'plan_status', 'history', 'reservation_add', 'reservation_release', 'reservation_update', 'reservation_list', 'coedit_add', 'coedit_ready', 'coedit_no_changes', 'shared_plan_status'],
+          description: 'Action inkl. Multi-File, Reservierungen und CE-3: coedit_add | coedit_ready | coedit_no_changes | shared_plan_status',
         },
         project: {
           type: 'string',
@@ -211,7 +215,16 @@ export const filesTool: ConsolidatedTool = {
         },
         open_for_coedit: {
           type: 'boolean',
-          description: 'Optional fuer plan: ob andere Agenten Co-Edits vorschlagen duerfen (default true). Aktuell informational; Co-Edit-Mechanik kommt in Schritt 3.',
+          description: 'Optional fuer plan: ob der konkrete waiting_agent per coedit_add beitragen darf (default true). false lehnt coedit_add mutationsfrei ab.',
+        },
+        wait_token: {
+          type: 'string',
+          description: 'Opaquer CE-2-Wait-Token fuer shared_plan_status.',
+        },
+        files: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'coedit_no_changes: konkrete gemeinsame Dateien ohne eigenen Beitrag.',
         },
         auto_commit: {
           type: 'boolean',
@@ -274,6 +287,25 @@ export const filesTool: ConsolidatedTool = {
       return normalizeReservationFilePaths(relative);
     };
 
+
+    if (action === "coedit_add") {
+      if (!agentId) throw new Error("agent_id ist fuer coedit_add erforderlich");
+      const opsRaw = (args as Record<string, unknown>).ops;
+      if (!Array.isArray(opsRaw) || opsRaw.length === 0) throw new Error("ops[] muss mindestens eine Operation enthalten");
+      return addCoeditContribution({ project, plan_id: reqStr(args, "plan_id"), agent_id: agentId, ops: opsRaw as FileBatchOp[] });
+    }
+    if (action === "coedit_ready") {
+      if (!agentId) throw new Error("agent_id ist fuer coedit_ready erforderlich");
+      return markCoeditReady({ project, plan_id: reqStr(args, "plan_id"), agent_id: agentId });
+    }
+    if (action === "coedit_no_changes") {
+      if (!agentId) throw new Error("agent_id ist fuer coedit_no_changes erforderlich");
+      return markCoeditNoChanges({ project, plan_id: reqStr(args, "plan_id"), agent_id: agentId, files: await reservationPaths("files", true) });
+    }
+    if (action === "shared_plan_status") {
+      if (!agentId) throw new Error("agent_id ist fuer shared_plan_status erforderlich");
+      return getSharedPlanStatus({ project, wait_token: reqStr(args, "wait_token"), agent_id: agentId });
+    }
     if (action === 'reservation_add') {
       if (!agentId) throw new Error('agent_id ist fuer reservation_add erforderlich');
       const filePaths = await reservationPaths('file_path', true);

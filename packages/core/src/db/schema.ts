@@ -895,8 +895,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_file_reservations_active_agent_file
 
 
 -- ============================================================================
--- CE-2: Persistente Waits fuer den reservationsbasierten Server-Split.
--- CE-3-Lifecycle/Events sind bewusst nicht Teil dieser Tabelle/Implementierung.
+-- CE-2/CE-3: Persistente Waits und Lifecycle fuer gemeinsame Primaerplaene.
+-- Kommentare in SCHEMA_SQL sind immer SQL-Kommentare mit --.
 -- ============================================================================
 CREATE TABLE IF NOT EXISTS file_batch_waits (
   wait_token UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -907,13 +907,29 @@ CREATE TABLE IF NOT EXISTS file_batch_waits (
   shared_files TEXT[] NOT NULL CHECK (cardinality(shared_files) > 0),
   deferred_ops JSONB NOT NULL CHECK (jsonb_typeof(deferred_ops) = 'array'),
   deferred_op_indexes INTEGER[] NOT NULL,
+  primary_plan_id BIGINT,
+  status TEXT NOT NULL DEFAULT 'waiting',
+  contributed_files TEXT[] NOT NULL DEFAULT '{}',
+  no_change_files TEXT[] NOT NULL DEFAULT '{}',
+  consumed_deferred_op_indexes INTEGER[] NOT NULL DEFAULT '{}',
   expires_at TIMESTAMPTZ NOT NULL,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  ready_at TIMESTAMPTZ,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+ALTER TABLE file_batch_waits ADD COLUMN IF NOT EXISTS primary_plan_id BIGINT;
+ALTER TABLE file_batch_waits ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'waiting';
+ALTER TABLE file_batch_waits ADD COLUMN IF NOT EXISTS contributed_files TEXT[] NOT NULL DEFAULT '{}';
+ALTER TABLE file_batch_waits ADD COLUMN IF NOT EXISTS no_change_files TEXT[] NOT NULL DEFAULT '{}';
+ALTER TABLE file_batch_waits ADD COLUMN IF NOT EXISTS consumed_deferred_op_indexes INTEGER[] NOT NULL DEFAULT '{}';
+ALTER TABLE file_batch_waits ADD COLUMN IF NOT EXISTS ready_at TIMESTAMPTZ;
+ALTER TABLE file_batch_waits ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
 CREATE INDEX IF NOT EXISTS idx_file_batch_waits_source_plan
   ON file_batch_waits(source_plan_id);
 CREATE INDEX IF NOT EXISTS idx_file_batch_waits_active
   ON file_batch_waits(project, expires_at);
+CREATE INDEX IF NOT EXISTS idx_file_batch_waits_primary_plan
+  ON file_batch_waits(project, primary_plan_id, waiting_agent);
 
 -- Serverseitige Skill-Hooks: Dedup gilt bewusst global je Agent und Skill.
 -- Wechselnde Agent-IDs duerfen erneut vorgeschlagen bekommen.

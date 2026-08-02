@@ -508,6 +508,10 @@ export {
   commitBatch,
   cancelBatch,
   getBatchPlan,
+  addCoeditContribution,
+  markCoeditReady,
+  markCoeditNoChanges,
+  getSharedPlanStatus,
 } from './services/file-batch.js';
 export type {
   FileBatchOp,
@@ -517,6 +521,10 @@ export type {
   FileBatchStatus,
   PlanBatchResult,
   CoeditWaitGroup,
+  CoeditWaitStatus,
+  CoeditAddResult,
+  CoeditLifecycleResult,
+  SharedPlanStatusResult,
   CommitBatchResult,
   CommitConflictDetail,
 } from './services/file-batch.js';

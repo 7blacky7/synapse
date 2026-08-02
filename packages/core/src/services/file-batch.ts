@@ -54,6 +54,11 @@ export type FileBatchOpAction =
 export interface FileBatchOp {
   file_path: string;
   action: FileBatchOpAction;
+  /** Serverseitig gesetzte Herkunft im gemeinsamen Plan; Input-Werte werden nie vertraut. */
+  agent_id?: string;
+  /** Stabile CE-2-Quellidentitaet fuer Cross-Wait-Dedup (nur intern gespeichert). */
+  coedit_source_plan_id?: string;
+  coedit_source_op_index?: number;
   /** Optionale Per-Op-Begruendung; ueberschreibt Plan-Top-Level-reason fuer diese Datei. */
   reason?: string;
   /** update */
@@ -286,6 +291,49 @@ export interface PlanBatchResult {
   coedit_waits?: CoeditWaitGroup[];
 }
 
+export type CoeditWaitStatus = 'waiting' | 'linked' | 'ready' | 'no_changes' | 'conflict';
+
+export interface CoeditAddResult extends Record<string, unknown> {
+  success: boolean;
+  plan_id: string;
+  appended_ops: number;
+  already_consumed_ops: number;
+  total_plan_ops?: number;
+  contributions?: FileBatchOp[];
+  error?: string;
+  conflict_files?: string[];
+  message: string;
+}
+
+export interface CoeditLifecycleResult extends Record<string, unknown> {
+  success: boolean;
+  plan_id: string;
+  status: CoeditWaitStatus;
+  completed_files: string[];
+  remaining_files: string[];
+  no_change_files?: string[];
+  error?: string;
+  message: string;
+}
+
+export interface SharedPlanStatusResult extends Record<string, unknown> {
+  success: true;
+  wait_token: string;
+  source_plan_id: string;
+  primary_plan_id: string | null;
+  waiting_agent: string | null;
+  primary_agent: string;
+  status: CoeditWaitStatus | 'expired';
+  shared_files: string[];
+  completed_files: string[];
+  remaining_files: string[];
+  contributed_files: string[];
+  no_change_files: string[];
+  contributions: FileBatchOp[];
+  expires_at: string;
+  ready_at: string | null;
+}
+
 export interface CommitConflictDetail {
   file_path: string;
   expected_hash: string;
@@ -306,7 +354,7 @@ export type CommitBatchResult =
   | {
       success: false;
       plan_id: string;
-      status: 'stale' | 'cancelled' | 'expired' | 'committed';
+      status: 'open' | 'stale' | 'cancelled' | 'expired' | 'committed';
       error: string;
       conflicts?: CommitConflictDetail[];
       message: string;
@@ -701,6 +749,10 @@ export async function planBatch(args: {
     const planExpectedHashes = sharedPaths.size === 0 ? expectedHashes : immediateExpectedHashes;
     const planFiles = sharedPaths.size === 0 ? plannedPaths : [...immediateFiles];
 
+    const storedPlanOps = planOps.map((op) => ({
+      ...withoutCoeditMetadata(op),
+      ...(ownerAgentId ? { agent_id: ownerAgentId } : {}),
+    }));
     const planRes = await client.query<{ id: string; expires_at: string }>(
       `INSERT INTO file_batch_plans (project, owner_agent_id, ops, expected_hashes, previews, open_for_coedit, reason)
        VALUES ($1, $2, $3::jsonb, $4::jsonb, $5::jsonb, $6, $7)
@@ -708,7 +760,7 @@ export async function planBatch(args: {
       [
         args.project,
         ownerAgentId,
-        JSON.stringify(planOps),
+        JSON.stringify(storedPlanOps),
         JSON.stringify(planExpectedHashes),
         JSON.stringify(planPreviews),
         args.open_for_coedit ?? true,
@@ -799,6 +851,444 @@ export async function planBatch(args: {
   }
 }
 
+interface CoeditWaitRow {
+  wait_token: string;
+  source_plan_id: string;
+  project: string;
+  waiting_agent: string | null;
+  primary_agent: string;
+  shared_files: string[];
+  deferred_ops: FileBatchOp[];
+  deferred_op_indexes: number[];
+  primary_plan_id: string | null;
+  status: CoeditWaitStatus;
+  contributed_files: string[];
+  no_change_files: string[];
+  consumed_deferred_op_indexes: number[];
+  expires_at: string;
+  ready_at: string | null;
+  updated_at: string;
+}
+
+function uniqueStrings(values: string[]): string[] {
+  return [...new Set(values)];
+}
+
+function withoutCoeditMetadata(op: FileBatchOp): FileBatchOp {
+  const { agent_id: _agentId, coedit_source_plan_id: _sourcePlan, coedit_source_op_index: _sourceIndex, ...clean } = op;
+  return clean;
+}
+
+function coeditOpKey(op: FileBatchOp): string {
+  const normalize = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(normalize);
+    if (value && typeof value === "object") {
+      return Object.fromEntries(
+        Object.entries(value as Record<string, unknown>)
+          .filter(([, entry]) => entry !== undefined)
+          .sort(([left], [right]) => left.localeCompare(right))
+          .map(([key, entry]) => [key, normalize(entry)]),
+      );
+    }
+    return value;
+  };
+  return JSON.stringify(normalize(withoutCoeditMetadata(op)));
+}
+
+function completedWaitFiles(wait: CoeditWaitRow): string[] {
+  const completed = new Set([...wait.contributed_files, ...wait.no_change_files]);
+  return wait.shared_files.filter((filePath) => completed.has(filePath));
+}
+
+function remainingWaitFiles(wait: CoeditWaitRow): string[] {
+  const completed = new Set(completedWaitFiles(wait));
+  return wait.shared_files.filter((filePath) => !completed.has(filePath));
+}
+
+const COEDIT_WAIT_SELECT = `
+  SELECT wait_token::text AS wait_token, source_plan_id::text AS source_plan_id, project,
+         waiting_agent, primary_agent, shared_files, deferred_ops, deferred_op_indexes,
+         primary_plan_id::text AS primary_plan_id, status, contributed_files, no_change_files,
+         consumed_deferred_op_indexes, expires_at::text AS expires_at,
+         ready_at::text AS ready_at, updated_at::text AS updated_at
+    FROM file_batch_waits`;
+
+export async function addCoeditContribution(args: {
+  project: string;
+  plan_id: string;
+  agent_id?: string;
+  ops: FileBatchOp[];
+}): Promise<CoeditAddResult> {
+  const caller = resolveAgentId(args.agent_id);
+  if (!caller) throw new Error("agent_id ist fuer coedit_add erforderlich");
+  if (!Array.isArray(args.ops) || args.ops.length === 0) throw new Error("ops[] darf nicht leer sein");
+  if (args.ops.length > 100) throw new Error("ops[] maximal 100 Eintraege");
+
+  const pool = getPool();
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const planRes = await client.query<FileBatchPlanRow>(
+      `SELECT id::text AS id, project, owner_agent_id, ops, expected_hashes, previews,
+              status, open_for_coedit, notify_channel, reason,
+              expires_at::text AS expires_at, created_at::text AS created_at,
+              committed_at::text AS committed_at
+         FROM file_batch_plans
+        WHERE id = $1::bigint AND project = $2
+        FOR UPDATE`,
+      [args.plan_id, args.project],
+    );
+    const plan = planRes.rows[0];
+    if (!plan) throw new Error(`Plan ${args.plan_id} nicht gefunden`);
+    if (plan.status !== "open") throw new Error(`Plan ${args.plan_id} ist nicht offen (Status: ${plan.status})`);
+    if (new Date(plan.expires_at).getTime() <= Date.now()) throw new Error(`Plan ${args.plan_id} ist abgelaufen`);
+    if (!plan.open_for_coedit) throw new Error(`Plan ${args.plan_id} ist nicht fuer Co-Edit geoeffnet`);
+    if (!plan.owner_agent_id) throw new Error(`Plan ${args.plan_id} hat keinen primaeren owner_agent_id`);
+
+    const directWaits = await client.query<CoeditWaitRow>(
+      `${COEDIT_WAIT_SELECT}
+        WHERE project = $1 AND waiting_agent = $2 AND primary_agent = $3
+          AND expires_at > NOW()
+          AND (primary_plan_id IS NULL OR primary_plan_id = $4::bigint)
+        ORDER BY source_plan_id, wait_token
+        FOR UPDATE`,
+      [args.project, caller, plan.owner_agent_id, args.plan_id],
+    );
+    if (directWaits.rows.length === 0) {
+      throw new Error(`Kein aktiver Wait von ${caller} fuer Primaeragent ${plan.owner_agent_id}`);
+    }
+
+    const sourcePlanIds = uniqueStrings(directWaits.rows.map((wait) => wait.source_plan_id));
+    const siblingWaits = await client.query<CoeditWaitRow>(
+      `${COEDIT_WAIT_SELECT}
+        WHERE project = $1 AND waiting_agent = $2
+          AND source_plan_id = ANY($3::bigint[])
+          AND expires_at > NOW()
+        ORDER BY source_plan_id, wait_token
+        FOR UPDATE`,
+      [args.project, caller, sourcePlanIds],
+    );
+    for (const wait of siblingWaits.rows) {
+      if (wait.primary_plan_id && wait.primary_plan_id !== args.plan_id) {
+        throw new Error(`Wait ${wait.wait_token} ist bereits mit Plan ${wait.primary_plan_id} verbunden`);
+      }
+    }
+
+    type SourceOp = {
+      key: string;
+      sourcePlanId: string;
+      sourceIndex: number;
+      op: FileBatchOp;
+      waits: CoeditWaitRow[];
+      consumed: boolean;
+    };
+    const sourceOps = new Map<string, SourceOp>();
+    for (const wait of siblingWaits.rows) {
+      wait.deferred_op_indexes.forEach((sourceIndex, position) => {
+        const key = `${wait.source_plan_id}:${sourceIndex}`;
+        const existing = sourceOps.get(key);
+        if (existing) {
+          existing.waits.push(wait);
+          existing.consumed ||= wait.consumed_deferred_op_indexes.includes(sourceIndex);
+          return;
+        }
+        const op = wait.deferred_ops[position];
+        if (!op) throw new Error(`Wait ${wait.wait_token}: deferred_op_indexes und deferred_ops sind inkonsistent`);
+        sourceOps.set(key, {
+          key, sourcePlanId: wait.source_plan_id, sourceIndex, op, waits: [wait],
+          consumed: wait.consumed_deferred_op_indexes.includes(sourceIndex),
+        });
+      });
+    }
+
+    const selected = new Set<string>();
+    const additions: FileBatchOp[] = [];
+    const planExpectedHashes = { ...plan.expected_hashes };
+    let alreadyConsumedOps = 0;
+    const allSources = [...sourceOps.values()];
+
+    for (const rawOp of args.ops) {
+      const cleanOp = withoutCoeditMetadata(rawOp);
+      const wantedKey = coeditOpKey(cleanOp);
+      const source = allSources.find((entry) => !entry.consumed && !selected.has(entry.key) && coeditOpKey(entry.op) === wantedKey);
+      if (!source) {
+        const consumed = allSources.find((entry) => entry.consumed && coeditOpKey(entry.op) === wantedKey);
+        if (consumed) {
+          alreadyConsumedOps++;
+          continue;
+        }
+        throw new Error(`coedit_add Op ${cleanOp.action} auf ${cleanOp.file_path} gehoert zu keinem offenen deferred source-op`);
+      }
+      if (!source.waits.some((wait) => wait.primary_agent === plan.owner_agent_id)) {
+        throw new Error(`Deferred Op ${source.key} gehoert nicht zum Owner ${plan.owner_agent_id}`);
+      }
+
+      const paths = touchedPaths(cleanOp);
+      const sharedPaths = uniqueStrings(source.waits.flatMap((wait) => wait.shared_files));
+      const missingSharedPaths = paths.filter((filePath) => sharedPaths.includes(filePath) && !(filePath in planExpectedHashes));
+      if (missingSharedPaths.length > 0) {
+        await client.query("ROLLBACK");
+        return {
+          success: false,
+          plan_id: args.plan_id,
+          appended_ops: 0,
+          already_consumed_ops: alreadyConsumedOps,
+          error: "multi_primary_plan_scope",
+          conflict_files: missingSharedPaths,
+          message: `Die deduplizierte Op ${source.key} beruehrt Shared-Pfade ausserhalb des Zielplans. Keine Mutation.`,
+        };
+      }
+      for (const filePath of paths) {
+        if (filePath in planExpectedHashes) continue;
+        const content = (await getFileContentFromPg(args.project, filePath)) ?? "";
+        planExpectedHashes[filePath] = contentHash(content);
+      }
+
+      selected.add(source.key);
+      additions.push({
+        ...cleanOp,
+        agent_id: caller,
+        coedit_source_plan_id: source.sourcePlanId,
+        coedit_source_op_index: source.sourceIndex,
+      });
+    }
+
+    if (additions.length > 0) {
+      await client.query(
+        `UPDATE file_batch_plans
+            SET ops = $2::jsonb, expected_hashes = $3::jsonb
+          WHERE id = $1::bigint`,
+        [args.plan_id, JSON.stringify([...plan.ops, ...additions]), JSON.stringify(planExpectedHashes)],
+      );
+    }
+
+    for (const sourceKey of selected) {
+      const source = sourceOps.get(sourceKey)!;
+      const paths = touchedPaths(source.op);
+      for (const wait of source.waits) {
+        const contributionFiles = paths.filter((filePath) => wait.shared_files.includes(filePath));
+        await client.query(
+          `UPDATE file_batch_waits
+              SET primary_plan_id = $2::bigint,
+                  status = CASE WHEN status IN ('waiting', 'conflict') THEN 'linked' ELSE status END,
+                  contributed_files = ARRAY(
+                    SELECT DISTINCT value FROM unnest(contributed_files || $3::text[]) AS valueset(value)
+                  ),
+                  consumed_deferred_op_indexes = ARRAY(
+                    SELECT DISTINCT value FROM unnest(consumed_deferred_op_indexes || $4::integer[]) AS valueset(value)
+                  ),
+                  updated_at = NOW()
+            WHERE wait_token = $1::uuid`,
+          [wait.wait_token, args.plan_id, contributionFiles, [source.sourceIndex]],
+        );
+      }
+    }
+
+    await client.query("COMMIT");
+    return {
+      success: true,
+      plan_id: args.plan_id,
+      appended_ops: additions.length,
+      already_consumed_ops: alreadyConsumedOps,
+      total_plan_ops: plan.ops.length + additions.length,
+      contributions: additions,
+      message: `${additions.length} Co-Edit-Op(s) genau einmal an Plan ${args.plan_id} angehaengt.`,
+    };
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export async function markCoeditNoChanges(args: {
+  project: string;
+  plan_id: string;
+  agent_id?: string;
+  files: string[];
+}): Promise<CoeditLifecycleResult> {
+  const caller = resolveAgentId(args.agent_id);
+  if (!caller) throw new Error("agent_id ist fuer coedit_no_changes erforderlich");
+  const requestedFiles = uniqueStrings(args.files);
+  if (requestedFiles.length === 0) throw new Error("files[] darf nicht leer sein");
+
+  const pool = getPool();
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const planRes = await client.query<FileBatchPlanRow>(
+      `SELECT id::text AS id, project, owner_agent_id, ops, expected_hashes, previews,
+              status, open_for_coedit, notify_channel, reason,
+              expires_at::text AS expires_at, created_at::text AS created_at,
+              committed_at::text AS committed_at
+         FROM file_batch_plans
+        WHERE id = $1::bigint AND project = $2
+        FOR UPDATE`,
+      [args.plan_id, args.project],
+    );
+    const plan = planRes.rows[0];
+    if (!plan || plan.status !== "open" || !plan.owner_agent_id) throw new Error(`Plan ${args.plan_id} ist nicht offen`);
+
+    const waitsRes = await client.query<CoeditWaitRow>(
+      `${COEDIT_WAIT_SELECT}
+        WHERE project = $1 AND waiting_agent = $2 AND expires_at > NOW()
+          AND (primary_plan_id = $3::bigint OR (primary_plan_id IS NULL AND primary_agent = $4))
+        ORDER BY source_plan_id, wait_token
+        FOR UPDATE`,
+      [args.project, caller, args.plan_id, plan.owner_agent_id],
+    );
+    if (waitsRes.rows.length === 0) throw new Error(`Kein aktiver Wait von ${caller} fuer Plan ${args.plan_id}`);
+
+    const allShared = new Set(waitsRes.rows.flatMap((wait) => wait.shared_files));
+    const invalid = requestedFiles.filter((filePath) => !allShared.has(filePath) || !(filePath in plan.expected_hashes));
+    if (invalid.length > 0) throw new Error(`Dateien ausserhalb des konkreten Shared-Plan-Scope: ${invalid.join(", ")}`);
+
+    const requested = new Set(requestedFiles);
+    const seenSourceOps = new Set<string>();
+    for (const wait of waitsRes.rows) {
+      wait.deferred_op_indexes.forEach((sourceIndex, position) => {
+        const sourceKey = `${wait.source_plan_id}:${sourceIndex}`;
+        if (seenSourceOps.has(sourceKey)) return;
+        seenSourceOps.add(sourceKey);
+        const op = wait.deferred_ops[position];
+        if (!op) return;
+        const sharedTouched = touchedPaths(op).filter((filePath) => allShared.has(filePath));
+        if (sharedTouched.some((filePath) => requested.has(filePath)) && !sharedTouched.every((filePath) => requested.has(filePath))) {
+          throw new Error(`Unteilbare ${op.action}-Op ${sourceKey}: alle Shared-Pfade gemeinsam als no_changes markieren (${sharedTouched.join(", ")})`);
+        }
+      });
+    }
+
+    for (const wait of waitsRes.rows) {
+      const rowFiles = requestedFiles.filter((filePath) => wait.shared_files.includes(filePath));
+      if (rowFiles.length === 0) continue;
+      const nextNoChanges = uniqueStrings([...wait.no_change_files, ...rowFiles]);
+      const completed = new Set([...wait.contributed_files, ...nextNoChanges]);
+      const allComplete = wait.shared_files.every((filePath) => completed.has(filePath));
+      const nextStatus = allComplete && wait.contributed_files.length === 0 ? "no_changes" : "linked";
+      await client.query(
+        `UPDATE file_batch_waits
+            SET primary_plan_id = $2::bigint, no_change_files = $3::text[],
+                status = $4, updated_at = NOW()
+          WHERE wait_token = $1::uuid`,
+        [wait.wait_token, args.plan_id, nextNoChanges, nextStatus],
+      );
+      wait.primary_plan_id = args.plan_id;
+      wait.no_change_files = nextNoChanges;
+      wait.status = nextStatus;
+    }
+
+    await client.query("COMMIT");
+    const completedFiles = uniqueStrings(waitsRes.rows.flatMap(completedWaitFiles));
+    const remainingFiles = uniqueStrings(waitsRes.rows.flatMap(remainingWaitFiles));
+    return {
+      success: true, plan_id: args.plan_id, status: remainingFiles.length === 0 ? "no_changes" : "linked",
+      completed_files: completedFiles, remaining_files: remainingFiles, no_change_files: requestedFiles,
+      message: `${requestedFiles.length} Datei(en) ohne eigenen Beitrag abgeschlossen.`,
+    };
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export async function markCoeditReady(args: {
+  project: string;
+  plan_id: string;
+  agent_id?: string;
+}): Promise<CoeditLifecycleResult> {
+  const caller = resolveAgentId(args.agent_id);
+  if (!caller) throw new Error("agent_id ist fuer coedit_ready erforderlich");
+  const pool = getPool();
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const waitsRes = await client.query<CoeditWaitRow>(
+      `${COEDIT_WAIT_SELECT}
+        WHERE project = $1 AND waiting_agent = $2 AND primary_plan_id = $3::bigint
+          AND expires_at > NOW()
+        ORDER BY source_plan_id, wait_token
+        FOR UPDATE`,
+      [args.project, caller, args.plan_id],
+    );
+    if (waitsRes.rows.length === 0) throw new Error(`Kein verbundener aktiver Wait von ${caller} fuer Plan ${args.plan_id}`);
+    const remainingFiles = uniqueStrings(waitsRes.rows.flatMap(remainingWaitFiles));
+    if (remainingFiles.length > 0) {
+      await client.query("ROLLBACK");
+      return {
+        success: false, plan_id: args.plan_id, status: "linked",
+        completed_files: uniqueStrings(waitsRes.rows.flatMap(completedWaitFiles)),
+        remaining_files: remainingFiles,
+        error: "coedit_incomplete",
+        message: `Noch nicht aufgeloeste Shared-Dateien: ${remainingFiles.join(", ")}`,
+      };
+    }
+    for (const wait of waitsRes.rows) {
+      const status: CoeditWaitStatus = wait.contributed_files.length === 0 ? "no_changes" : "ready";
+      await client.query(
+        `UPDATE file_batch_waits SET status = $2, ready_at = NOW(), updated_at = NOW()
+          WHERE wait_token = $1::uuid`,
+        [wait.wait_token, status],
+      );
+      wait.status = status;
+    }
+    await client.query("COMMIT");
+    return {
+      success: true, plan_id: args.plan_id, status: "ready",
+      completed_files: uniqueStrings(waitsRes.rows.flatMap(completedWaitFiles)), remaining_files: [],
+      message: `Co-Edit-Beitrag von ${caller} fuer Plan ${args.plan_id} ist fertig.`,
+    };
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export async function getSharedPlanStatus(args: {
+  project: string;
+  wait_token: string;
+  agent_id?: string;
+}): Promise<SharedPlanStatusResult> {
+  const caller = resolveAgentId(args.agent_id);
+  if (!caller) throw new Error("agent_id ist fuer shared_plan_status erforderlich");
+  const pool = getPool();
+  const waitRes = await pool.query<CoeditWaitRow>(
+    `${COEDIT_WAIT_SELECT} WHERE project = $1 AND wait_token = $2::uuid`,
+    [args.project, args.wait_token],
+  );
+  const wait = waitRes.rows[0];
+  if (!wait) throw new Error(`Wait ${args.wait_token} nicht gefunden`);
+  if (caller !== wait.waiting_agent && caller !== wait.primary_agent) {
+    throw new Error(`Agent ${caller} ist an Wait ${args.wait_token} nicht beteiligt`);
+  }
+  let contributions: FileBatchOp[] = [];
+  if (wait.primary_plan_id) {
+    const planRes = await pool.query<{ ops: FileBatchOp[] }>(
+      `SELECT ops FROM file_batch_plans WHERE id = $1::bigint AND project = $2`,
+      [wait.primary_plan_id, args.project],
+    );
+    contributions = (planRes.rows[0]?.ops ?? []).filter((op) =>
+      op.agent_id === wait.waiting_agent && op.coedit_source_plan_id === wait.source_plan_id,
+    );
+  }
+  const expired = new Date(wait.expires_at).getTime() <= Date.now();
+  const completedFiles = completedWaitFiles(wait);
+  return {
+    success: true, wait_token: wait.wait_token, source_plan_id: wait.source_plan_id,
+    primary_plan_id: wait.primary_plan_id, waiting_agent: wait.waiting_agent,
+    primary_agent: wait.primary_agent, status: expired && ["waiting", "linked"].includes(wait.status) ? "expired" : wait.status,
+    shared_files: wait.shared_files, completed_files: completedFiles,
+    remaining_files: wait.shared_files.filter((filePath) => !completedFiles.includes(filePath)),
+    contributed_files: wait.contributed_files, no_change_files: wait.no_change_files,
+    contributions, expires_at: wait.expires_at, ready_at: wait.ready_at,
+  };
+}
+
 /**
  * Phase B — Commit: laedt Plan, prueft Hashes gegen aktuellen Stand,
  * wendet bei Match alle Ops innerhalb einer PG-Transaktion an. updateFileInPg
@@ -862,6 +1352,25 @@ export async function commitBatch(args: {
       status: 'stale',
       error: 'stale',
       message: `Plan ${args.plan_id} war bereits stale (Datei wurde aussen aendert seit dem Plan).`,
+    };
+  }
+
+  // CE-3 legt Beitraege nur ab. Gemeinsame Plaene werden erst in CE-4
+  // validiert und committed; bis dahin darf der alte Commit-Pfad sie nicht umgehen.
+  const linkedWaits = await pool.query<{ count: string }>(
+    `SELECT COUNT(*)::text AS count
+       FROM file_batch_waits
+      WHERE primary_plan_id = $1::bigint
+        AND expires_at > NOW()`,
+    [args.plan_id],
+  );
+  if (Number(linkedWaits.rows[0]?.count ?? 0) > 0) {
+    return {
+      success: false,
+      plan_id: args.plan_id,
+      status: 'open',
+      error: 'coedit_commit_requires_ce4',
+      message: `Plan ${args.plan_id} enthaelt CE-3-Beitraege und wartet auf die gemeinsame CE-4-Validierung.`,
     };
   }
 
