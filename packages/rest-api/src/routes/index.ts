@@ -24,3 +24,4 @@ export { trayRoutes } from './tray.js';
 export { graphRoutes } from './graph.js';
 export { embeddingNodeRoutes } from './embedding-nodes.js';
 export { wrapperBridgeRoutes } from './wrapper-bridge.js';
+export { agentWissenRoutes } from './agent-wissen.js';

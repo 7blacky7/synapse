@@ -35,6 +35,7 @@ import {
   graphRoutes,
   embeddingNodeRoutes,
   wrapperBridgeRoutes,
+  agentWissenRoutes,
 } from './routes/index.js';
 
 /**
@@ -96,6 +97,13 @@ export async function createServer(): Promise<FastifyInstance> {
   // Aufrufweg aendert sich, laufende Wrapper merken davon nichts.
   // Sichtbarkeit: GET /api/projects/:name/wrapper-bridge/health.
   await fastify.register(wrapperBridgeRoutes);
+
+  // API-Bruecke Schritt 4: das Wissen eines Spezialisten (meta, Regeln, Fehler,
+  // Muster, Kontext) und sein System-Prompt aus der Datenbank statt von der Platte.
+  // Rein additiv — der Dateiweg unter .synapse/agents/<name>/ bleibt unveraendert
+  // und wird von niemandem abgeschaltet.
+  // Sichtbarkeit: GET /api/projects/:name/agent-wissen/health.
+  await fastify.register(agentWissenRoutes);
 
   // Graph-View (PLAN-003 / GRAPH-1): /api/graph/* — Aggregationen direkt aus
   // @synapse/core (PG + Qdrant), kein HTTP-Loopback. Hinter Auth-Hook (AUTH-4).

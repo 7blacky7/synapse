@@ -426,6 +426,32 @@ export {
   removeWrapperStatus,
 } from './services/wrapper-status.js';
 export { setzeHeartbeatKonfiguration, steuereHeartbeat } from './services/wrapper-status.js';
+
+// Agenten-Wissen in der Datenbank (API-Bruecke Schritt 4). Additiv — der
+// Dateiweg in packages/agents/src/skills.ts bleibt unveraendert bestehen.
+export {
+  leseAgentWissen,
+  leseWissensArt,
+  agentIstBekannt,
+  setzeWissen,
+  haengeWissenAn,
+  entferneWissenZeilen,
+  legeAgentWissenAn,
+  loescheAgentWissen,
+  listeWissensAgenten,
+  normalisiereArt,
+  erlaubteArten,
+  PROMPT_ARTEN,
+  ALLE_ARTEN,
+} from './services/agent-wissen.js';
+export type {
+  WissensArt,
+  WissensForm,
+  WissensEintrag,
+  ArtSicht,
+  AgentMetaDaten,
+  AgentWissen,
+} from './services/agent-wissen.js';
 export type { WrapperStatusRow, HeartbeatKonfiguration, HeartbeatUebersicht } from './services/wrapper-status.js';
 
 // Skills (EXPERIMENTAL — Qdrant Skill-DB access)
