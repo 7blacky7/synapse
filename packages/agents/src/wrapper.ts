@@ -185,9 +185,56 @@ function consumeFileChangesText(): string | null {
 }
 
 /**
- * Trigger sofortigen Heartbeat (z.B. nach LISTEN-Notification).
+ * Plant den naechsten Heartbeat. DIE EINZIGE STELLE, die das tut.
+ *
+ * Drei Faelle, in dieser Reihenfolge:
+ *   abgeschaltet → nur der Waechter-Takt, damit ein Wiedereinschalten ankommt.
+ *                  heartbeatPoll steigt dann sofort wieder aus, es wird also nur
+ *                  die Konfigurationszeile gelesen, nichts geweckt.
+ *   fester Takt  → genau dieser Wert, ohne Backoff und ohne Phasenversatz.
+ *                  Wer einen Takt vorgibt, will ihn genau so haben.
+ *   sonst        → adaptive Ladder, mit Phasenversatz gegen gleichzeitiges Pollen
+ *                  mehrerer Wrapper.
+ *
+ * ⚠️ WARUM DIESE FUNKTION HIER STEHT UND NICHT MEHR IN main() (Fix 02.08.2026):
+ * Sie stand bis heute INNERHALB der Closure von main() und war von aussen nicht
+ * erreichbar. triggerImmediateHeartbeat baute deshalb einen eigenen Ersatz nach —
+ * und dessen letzter Timer plante nichts mehr nach. Der Takt des Wrappers endete
+ * damit beim ERSTEN LISTEN-Trigger, den er je bekam; danach pollte er nur noch
+ * zweimal je eingehendem NOTIFY.
+ * Der Fehler war seit dem adaptiven Heartbeat (138e8ab) da, konnte aber nicht
+ * zuschlagen: LISTEN scheiterte bei jedem Namen mit Bindestrich an einem
+ * Syntaxfehler, es kam also nie ein NOTIFY an und der Trigger lief nie. Erst die
+ * Reparatur von LISTEN (6ac1d26) hat den schlafenden Fehler geweckt.
+ * GEMESSEN am 02.08.2026: nach einem Weckruf kam bei Ladder-Stand 10s ueber drei
+ * Minuten kein einziger Poll mehr; eine Konfigurationsaenderung wurde erst gelesen,
+ * als ein zweiter Weckruf einen Poll erzwang. Der Prozess lebte, last_activity blieb
+ * frisch (das schreibt der unabhaengige 90-Sekunden-Timer) — nicht kaputt, nur taub.
+ * Aufgefallen ist es nie, weil synapse_file und synapse_channel bei jeder
+ * Dateiaenderung im Projekt feuern: in einer belebten Session wird jeder Wrapper
+ * dauernd von aussen angestossen. Er verstummt genau dann, wenn es ruhig ist.
+ */
+function scheduleNextHeartbeat(): void {
+  if (shuttingDown || !processAlive) return
+  const delay = !heartbeatAktiv
+    ? WAECHTER_TAKT_MS
+    : festerTaktMs !== null
+      ? festerTaktMs
+      : heartbeatState ? nextHeartbeatDelay(heartbeatState, AGENT_NAME) : 30_000
+  heartbeatTimeoutId = setTimeout(async () => {
+    try {
+      await heartbeatPoll()
+    } catch (err) {
+      log('Heartbeat poll uncaught error: %s', err)
+    }
+    scheduleNextHeartbeat()
+  }, delay)
+}
+
+/**
+ * Trigger sofortigen Heartbeat (z.B. nach einem Ereignis des Live-Kanals).
  * level='hot': Reset auf 10s (file-change, echte Aktivitaet)
- * level='warm': Reset auf max 30s (Default; nur ein NOTIFY-Tick, evtl. nichts Konkretes)
+ * level='warm': Reset auf max 30s (Default; nur ein Tick, evtl. nichts Konkretes)
  */
 function triggerImmediateHeartbeat(reason: string, level: 'hot' | 'warm' = 'hot'): void {
   if (!heartbeatState || shuttingDown || !processAlive) return
@@ -198,16 +245,14 @@ function triggerImmediateHeartbeat(reason: string, level: 'hot' | 'warm' = 'hot'
     clearTimeout(heartbeatTimeoutId)
     heartbeatTimeoutId = null
   }
-  // Schedule sofortigen Poll (0ms timeout) — der Pollen-Loop schedult sich selbst neu danach
+  // Sofortiger Poll (0ms), danach ZURUECK IN DIE EINE wiederkehrende Planung.
+  // Hier stand frueher ein nachgebauter Ersatz-Timer, der nach einem einzigen
+  // weiteren Durchgang endete — und damit den Takt des Wrappers dauerhaft beendete.
+  // Der Kommentar an dieser Stelle behauptete, der Poll-Loop plane sich selbst neu.
+  // Er tat das Gegenteil, und genau deshalb hat jahrelang niemand hingesehen.
   heartbeatTimeoutId = setTimeout(async () => {
     try { await heartbeatPoll() } catch (err) { log('Trigger-Heartbeat error: %s', err) }
-    // re-schedule via normal Loop (im Boot-Code)
-    if (heartbeatState && !shuttingDown && processAlive) {
-      const delay = nextHeartbeatDelay(heartbeatState, AGENT_NAME)
-      heartbeatTimeoutId = setTimeout(async () => {
-        try { await heartbeatPoll() } catch (err) { log('Heartbeat after trigger error: %s', err) }
-      }, delay)
-    }
+    scheduleNextHeartbeat()
   }, 0)
 }
 
@@ -1452,30 +1497,9 @@ async function main() {
   setTimeout(() => {
     // Initialize adaptive heartbeat state
     heartbeatState = createHeartbeatState({ agentName: AGENT_NAME })
-    const scheduleNextHeartbeat = () => {
-      if (shuttingDown || !processAlive) return
-      // Drei Faelle, in dieser Reihenfolge:
-      //   abgeschaltet → nur der Waechter-Takt, damit ein Wiedereinschalten ankommt.
-      //                  heartbeatPoll steigt dann sofort wieder aus, es wird also
-              //          nur die Konfigurationszeile gelesen, nichts geweckt.
-      //   fester Takt  → genau dieser Wert, ohne Backoff und ohne Phasenversatz.
-      //                  Wer einen Takt vorgibt, will ihn genau so haben.
-      //   sonst        → adaptive Ladder wie bisher, mit Phasenversatz gegen
-      //                  gleichzeitiges Pollen mehrerer Wrapper.
-      const delay = !heartbeatAktiv
-        ? WAECHTER_TAKT_MS
-        : festerTaktMs !== null
-          ? festerTaktMs
-          : heartbeatState ? nextHeartbeatDelay(heartbeatState, AGENT_NAME) : 30_000
-      heartbeatTimeoutId = setTimeout(async () => {
-        try {
-          await heartbeatPoll()
-        } catch (err) {
-          log('Heartbeat poll uncaught error: %s', err)
-        }
-        scheduleNextHeartbeat()
-      }, delay)
-    }
+    // Die Planung selbst steht auf Modul-Ebene (siehe scheduleNextHeartbeat).
+    // Sie MUSS von aussen erreichbar sein, sonst baut sich jeder Ausloeser seinen
+    // eigenen Ersatz — genau daran ist der Takt bis heute gestorben.
     scheduleNextHeartbeat()
     log('Heartbeat gestartet (adaptive, start: %s)', describeInterval(heartbeatState.currentIntervalMs))
     // Live-Kanal parallel: triggert sofortigen Heartbeat bei einem Ereignis.
