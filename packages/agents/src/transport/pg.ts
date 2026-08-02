@@ -311,6 +311,6 @@ export class PgTransport implements WrapperTransport {
       /* ignore */
     }
     this.listenClient = null
-    this.buch.liveVerbindungWeg(null)
+    this.buch.liveVerbindungWeg(null, true)
   }
 }

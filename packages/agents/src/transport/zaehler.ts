@@ -33,6 +33,9 @@ export class Buchhaltung {
   private liveLebenszeichen: number | null = null
   private liveEreignis: number | null = null
   private liveFehler: string | null = null
+  private liveGetrenntSeit: number | null = null
+  private serverLuecken = 0
+  private eigeneAbrisse = 0
 
   constructor(
     private readonly art: TransportArt,
@@ -85,6 +88,7 @@ export class Buchhaltung {
 
   liveVerbindungSteht(): void {
     this.liveVerbunden = true
+    this.liveGetrenntSeit = null
     this.liveLebenszeichen = Date.now()
   }
 
@@ -98,9 +102,23 @@ export class Buchhaltung {
     this.liveEreignis = jetzt
   }
 
-  liveVerbindungWeg(grund: string | null): void {
+  /**
+   * geplant=true ist das saubere Herunterfahren. Nur ein UNgeplanter Abriss zaehlt
+   * als Stoerung — sonst meldete jeder normale Stopp einen Zwischenfall, und die
+   * Zahl waere wertlos.
+   */
+  liveVerbindungWeg(grund: string | null, geplant = false): void {
+    if (this.liveVerbunden && !geplant) {
+      this.eigeneAbrisse++
+      this.liveGetrenntSeit = Date.now()
+    }
     this.liveVerbunden = false
     if (grund) this.liveFehler = grund
+  }
+
+  /** Loecher, die der Server gemeldet hat (sein LISTEN-Client hat neu verbunden). */
+  zaehleServerLuecken(anzahl: number): void {
+    this.serverLuecken += anzahl
   }
 
   lies(): TransportBilanz {
@@ -116,6 +134,9 @@ export class Buchhaltung {
       liveLetztesLebenszeichenTs: this.liveLebenszeichen,
       liveLetztesEreignisTs: this.liveEreignis,
       liveLetzterFehler: this.liveFehler,
+      liveGetrenntSeitTs: this.liveGetrenntSeit,
+      liveServerLuecken: this.serverLuecken,
+      liveEigeneAbrisse: this.eigeneAbrisse,
       liveErwartetLebenszeichen: this.erwartetLebenszeichen,
     }
   }
@@ -133,6 +154,8 @@ const STILLE_MS = 5 * 60_000
 const STILLE_WIEDERHOLUNG_MS = 60_000
 /** Der api-Weg schickt alle 15s ein Takt-Signal. 90s ohne eines ist ein toter Strom. */
 const LIVE_STILL_MS = 90_000
+/** So lange darf der Live-Kanal weg sein, bevor es sich von selbst meldet. */
+const LIVE_GETRENNT_MS = 60_000
 
 function vorWieLange(ts: number | null, jetzt: number): string {
   if (ts === null) return 'nie'
@@ -153,6 +176,7 @@ export class BilanzWaechter {
   private letzteLiveStilleTs = 0
   private gemeldeteFehler = 0
   private gemeldeteAblehnungen = 0
+  private gemeldeteServerLuecken = 0
   private readonly startTs = Date.now()
 
   pruefe(bilanz: TransportBilanz, jetzt: number = Date.now()): string | null {
@@ -207,6 +231,37 @@ export class BilanzWaechter {
       }
     }
 
+    // 4b. Der Kanal ist weg und kommt nicht zurueck. Das ist der zweite Teil der
+    //     Antwort auf "woran WUERDE ich merken, dass MEINE Verbindung abgerissen
+    //     ist": der Abriss selbst steht sofort im Log und loest einen Poll aus,
+    //     und bleibt er bestehen, meldet er sich hier immer wieder von selbst.
+    if (bilanz.liveErwartetLebenszeichen && !bilanz.liveVerbunden && bilanz.liveGetrenntSeitTs !== null) {
+      if (
+        jetzt - bilanz.liveGetrenntSeitTs > LIVE_GETRENNT_MS &&
+        jetzt - this.letzteLiveStilleTs >= STILLE_WIEDERHOLUNG_MS
+      ) {
+        this.letzteLiveStilleTs = jetzt
+        this.letzteRoutineTs = jetzt
+        return (
+          `TRANSPORT-LIVE-GETRENNT: der Live-Kanal ist seit ${vorWieLange(bilanz.liveGetrenntSeitTs, jetzt)} weg ` +
+          `(${bilanz.liveVerbindungsversuche} Verbindungsversuche, zuletzt: ${bilanz.liveLetzterFehler ?? 'ohne Text'}). ` +
+          `Weckrufe kommen bis zur Rueckkehr nur noch ueber den Poll-Takt an. ${kopf}`
+        )
+      }
+    }
+
+    // 4c. Loecher, die NUR der Server kennt. Sie sind einzeln schon protokolliert;
+    //     hier steht die Summe, damit sie auch dem auffaellt, der die Zeilen ueberliest.
+    if (bilanz.liveServerLuecken > this.gemeldeteServerLuecken) {
+      const neu = bilanz.liveServerLuecken - this.gemeldeteServerLuecken
+      this.gemeldeteServerLuecken = bilanz.liveServerLuecken
+      this.letzteRoutineTs = jetzt
+      return (
+        `TRANSPORT-LIVE-LUECKE: der LISTEN-Client der API hat ${neu}mal neu verbunden. In dieser Zeit war ` +
+        `der Live-Kanal blind, ohne dass die eigene Verbindung etwas gemerkt haette. ${kopf}`
+      )
+    }
+
     // 5. Routine, damit die Zahlen auch im Normalbetrieb belegt sind.
     if (jetzt - this.letzteRoutineTs >= ROUTINE_MS) {
       this.letzteRoutineTs = jetzt
@@ -242,6 +297,8 @@ export class BilanzWaechter {
     const live = bilanz.liveErwartetLebenszeichen || bilanz.liveVerbindungsversuche > 0
       ? ` live=${bilanz.liveVerbunden ? 'verbunden' : 'getrennt'}` +
         ` (Versuche=${bilanz.liveVerbindungsversuche},` +
+        ` eigeneAbrisse=${bilanz.liveEigeneAbrisse},` +
+        ` Serverluecken=${bilanz.liveServerLuecken},` +
         ` Lebenszeichen=${vorWieLange(bilanz.liveLetztesLebenszeichenTs, jetzt)},` +
         ` Ereignis=${vorWieLange(bilanz.liveLetztesEreignisTs, jetzt)})`
       : ''

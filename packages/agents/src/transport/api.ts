@@ -64,6 +64,16 @@ export class ApiTransport implements WrapperTransport {
   private streamAbbruch: AbortController | null = null
   private beendet = false
   private angemeldet = false
+  /** Gerade verbunden? Steuert die Uebergangsmeldungen. */
+  private warVerbunden = false
+  /**
+   * Schon einmal verbunden gewesen? Braucht ein EIGENES Feld: waere es dasselbe wie
+   * warVerbunden, saehe jede Rueckkehr aus wie ein Erstverbinden — die Wiederkehr
+   * bliebe stumm und loeste keinen Poll aus. Genau das ist im Test passiert.
+   */
+  private jeVerbunden = false
+  private letzteServerReconnects: number | null = null
+  private taktAbgeschaltet = false
 
   constructor(private readonly umgebung: TransportUmgebung) {
     const url = (process.env.SYNAPSE_API_URL ?? '').trim().replace(/\/+$/, '')
@@ -170,7 +180,9 @@ export class ApiTransport implements WrapperTransport {
   }
 
   private async holeConfig(): Promise<Record<string, unknown> | null> {
-    return this.ruf<Record<string, unknown>>('konfiguration', '/config', { leerBei404: true })
+    const daten = await this.ruf<Record<string, unknown>>('konfiguration', '/config', { leerBei404: true })
+    this.pruefeStrom(daten)
+    return daten
   }
 
   async leseHeartbeatKonfiguration(): Promise<HeartbeatKonfiguration | null> {
@@ -196,6 +208,9 @@ export class ApiTransport implements WrapperTransport {
       throw new Error('Feld heartbeat_interval_ms ist weder Zahl noch null — Takt waere nicht mehr steuerbar')
     }
 
+    // Gemerkt, weil es die Bewertung einer Luecke aendert: ein abgeschalteter
+    // Wrapper pollt nicht und holt sie deshalb NICHT von selbst auf.
+    this.taktAbgeschaltet = !aktiv
     return {
       heartbeatEnabled: aktiv,
       heartbeatIntervalMs: typeof takt === 'number' ? takt : null,
@@ -358,7 +373,56 @@ export class ApiTransport implements WrapperTransport {
   }
 
   async schreibeStatus(status: StatusNutzlast): Promise<void> {
-    await this.rufPflicht('status', '/status', { methode: 'POST', koerper: status })
+    const daten = await this.rufPflicht<Record<string, unknown>>('status', '/status', {
+      methode: 'POST',
+      koerper: status,
+    })
+    this.pruefeStrom(daten)
+  }
+
+  /**
+   * Die API meldet in jeder config/status/poll-Antwort, wie oft ihr LISTEN-Client
+   * seit dem Start neu verbinden musste. Steigt die Zahl zwischen zwei Takten,
+   * hatte der Live-Kanal ein Loch.
+   *
+   * ⚠️ WARUM DAS NOETIG IST: die eigene SSE-Verbindung merkt davon NICHTS. Sie
+   * haengt am HTTP-Socket, nicht an der Datenbank. Gemessen auf der Serverseite:
+   * die Datenbanksitzung wurde beendet, der Server war rund eine Sekunde blind und
+   * kam von selbst zurueck — der Strom blieb die ganze Zeit offen. Fuer den Wrapper
+   * sah diese Sekunde aus wie ein ruhiger Moment.
+   * Eine Luecke, die niemand zaehlt, ist eine Luecke, die niemand findet.
+   */
+  private pruefeStrom(daten: Record<string, unknown> | null): void {
+    if (!daten) return
+    const strom = daten.stream as Record<string, unknown> | undefined
+    if (!strom) return
+    const zahl = strom.listener_reconnects
+    if (typeof zahl !== 'number') return
+
+    const vorher = this.letzteServerReconnects
+    this.letzteServerReconnects = zahl
+    if (vorher === null || zahl <= vorher) return
+
+    const neue = zahl - vorher
+    this.buch.zaehleServerLuecken(neue)
+    this.umgebung.log(
+      'LUECKE im Live-Kanal: der LISTEN-Client der API hat seit dem letzten Takt %dmal neu verbunden ' +
+        '(letzte Luecke %sms, %s). Meine SSE-Verbindung hat davon nichts gemerkt — sie haengt am ' +
+        'HTTP-Socket, nicht an der Datenbank.',
+      neue,
+      String(strom.listener_last_gap_ms ?? 'unbekannt'),
+      String(strom.listener_last_reconnect_at ?? 'ohne Zeitangabe'),
+    )
+
+    // Im Regelfall schliesst sich die Luecke von selbst: diese Pruefung laeuft am
+    // ANFANG eines Takts, und derselbe Takt pollt danach ohnehin alles nach.
+    // Es gibt aber genau eine Ausnahme, und die darf nicht unausgesprochen bleiben:
+    if (this.taktAbgeschaltet) {
+      this.umgebung.log(
+        '⚠️ Dieser Wrapper hat den Heartbeat abgeschaltet — er pollt NICHT und holt die Luecke also nicht ' +
+          'von selbst auf. Ein Weckruf, der in die Luecke fiel, ist verloren und muss wiederholt werden.',
+      )
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -381,7 +445,8 @@ export class ApiTransport implements WrapperTransport {
       }
       this.streamAbbruch = null
     }
-    this.buch.liveVerbindungWeg(null)
+    this.warVerbunden = false
+    this.buch.liveVerbindungWeg(null, true)
   }
 
   /**
@@ -415,9 +480,19 @@ export class ApiTransport implements WrapperTransport {
           throw new Error(`HTTP ${antwort.status} am Live-Kanal`)
         }
 
+        const wiederAufgebaut = this.jeVerbunden
+        this.jeVerbunden = true
+        this.warVerbunden = true
         this.buch.liveVerbindungSteht()
-        this.umgebung.log('Live-Kanal verbunden (SSE)')
         stufe = 0
+        if (wiederAufgebaut) {
+          // Wir waren weg. Was in der Zwischenzeit passiert ist, hebt niemand fuer
+          // uns auf — also sofort pollen statt auf den naechsten Takt zu warten.
+          this.umgebung.log('Live-Kanal WIEDER verbunden — es wird sofort gepollt, um die Luecke zu schliessen.')
+          this.empfaenger?.({ art: 'hinweis', kanal: 'stream-wiederverbunden', stufe: 'hot' })
+        } else {
+          this.umgebung.log('Live-Kanal verbunden (SSE)')
+        }
         await this.leseStrom(antwort.body)
         this.buch.liveVerbindungWeg('vom Server beendet')
         if (!this.beendet) this.umgebung.log('Live-Kanal beendet — neuer Versuch folgt')
@@ -425,6 +500,21 @@ export class ApiTransport implements WrapperTransport {
         const grund = err instanceof Error ? err.message : String(err)
         this.buch.liveVerbindungWeg(grund)
         if (!this.beendet) this.umgebung.log('Live-Kanal-Fehler: %s', grund)
+      }
+
+      // DER EIGENE ABRISS — der Fall, den nur diese Seite pruefen kann.
+      // "Woran WUERDE ich es merken?" hat hier drei Antworten, absichtlich drei:
+      //   1. diese Logzeile, sofort und beim Uebergang (nicht bei jedem Fehlversuch,
+      //      sonst waere sie bei einer laengeren Stoerung nur noch Rauschen),
+      //   2. ein sofortiger Poll — sonst bliebe die Luecke bis zum naechsten Takt offen,
+      //   3. die Bilanz: liveVerbunden=false, eigeneAbrisse und Versuche steigen. Bleibt
+      //      der Kanal laenger als eine Minute weg, meldet der Waechter es von selbst.
+      if (this.warVerbunden && !this.beendet) {
+        this.warVerbunden = false
+        this.umgebung.log(
+          'Live-Kanal ABGERISSEN — Weckrufe kommen bis zur Rueckkehr nur noch ueber den Poll-Takt. Es wird sofort gepollt.',
+        )
+        this.empfaenger?.({ art: 'hinweis', kanal: 'stream-getrennt', stufe: 'hot' })
       }
 
       if (this.beendet) return

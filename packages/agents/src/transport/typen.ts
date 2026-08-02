@@ -161,6 +161,19 @@ export interface TransportBilanz {
   /** Letztes ECHTES Ereignis (wake/datei/hinweis). */
   liveLetztesEreignisTs: number | null
   liveLetzterFehler: string | null
+  /** Seit wann getrennt. null = verbunden, oder nie verbunden gewesen. */
+  liveGetrenntSeitTs: number | null
+  /**
+   * Loecher, die der SERVER gemeldet hat (sein LISTEN-Client musste neu verbinden).
+   * ⚠️ Diese Loecher sieht die eigene Verbindung NICHT: sie haengt am HTTP-Socket,
+   * nicht an der Datenbank. Gemessen von bruecke-api — der Server war rund eine
+   * Sekunde blind und kam von selbst zurueck, der Strom blieb dabei offen. Ein
+   * Reconnect, den nur der Server kennt, ist kein Reconnect fuer den, der die
+   * Daten braucht.
+   */
+  liveServerLuecken: number
+  /** Abrisse der EIGENEN Verbindung — der Fall, der auf dieser Seite liegt. */
+  liveEigeneAbrisse: number
   /**
    * true = dieser Weg sendet ein regelmaessiges Lebenszeichen, Stille ist also ein
    * Befund. false (pg) = LISTEN schweigt stundenlang voellig zu Recht; wer dort
