@@ -1353,6 +1353,18 @@ function num(a: Record<string, unknown>, k: string): number | undefined {
   }
   return undefined;
 }
+/**
+ * Liest einen Wahrheitswert aus den Argumenten — auch dann, wenn er als Zeichenkette ankommt.
+ *
+ * ⚠️ DIESE FUNKTION MUSS BENUTZT WERDEN, ein `args.x === true` ist ein Fehler.
+ * Auf dem Cloud-Weg (claude.ai, ChatGPT) kommen Wahrheitswerte als 'true'/'false' an. Ein
+ * strikter Vergleich ist dort IMMER falsch, und zwar still: die Aktion laeuft weiter, nur ohne
+ * die angeforderte Eigenschaft, und die Antwort meldet Erfolg.
+ * GEFUNDEN am 02.08.2026 an trigger_respawn (Auto-Handoff seit dem 25.05. wirkungslos, 14 von 14
+ * Cloud-Aufrufen verpufft) und daraufhin an ELF weiteren Stellen derselben Datei — darunter
+ * auto_commit (es wurde nicht committed, obwohl angefordert) und isolated (der Aufruf lief nicht
+ * im Container, obwohl Isolation verlangt war).
+ */
 function bool(a: Record<string, unknown>, k: string): boolean | undefined {
   const v = a[k];
   if (typeof v === 'boolean') return v;
@@ -2150,7 +2162,7 @@ async function handleToolCall(
           // DX-Befund 3: ohne Limit war list bei 200+ Memories ein Context-Killer.
           const listLimit = Math.max(1, num(args, 'limit') ?? 100);
           const sliced = all.slice(0, listLimit);
-          const namesOnly = args.names_only === true;
+          const namesOnly = bool(args, 'names_only') === true;
           return {
             memories: namesOnly
               ? sliced.map(m => m.name)
@@ -2257,7 +2269,16 @@ async function handleToolCall(
             embeddings_pending: true,
             embeddings_hint: EMBED_PENDING_HINT,
           };
-          if (args.trigger_respawn === true) {
+          // ⚠️ NICHT ===true VERGLEICHEN (Fix 02.08.2026, gefunden von rollen-ist).
+          // Auf dem Cloud-Weg kommt der Wert als ZEICHENKETTE 'true' an — der strikte Vergleich
+          // war damit immer falsch, und der Auto-Handoff jedes Spezialisten, der ueber die API
+          // arbeitet, ist seit dem 25.05.2026 wirkungslos gewesen. GEMESSEN: 14 von 14
+          // Cloud-Aufrufen verpufft, still, und mit success:true in der Antwort — die Meldung
+          // bestaetigte das Speichern des Gedankens, nicht das Ausloesen des Respawns.
+          // Wer am Kontextlimit stirbt, hat seine Uebergabe also nicht ausgeloest bekommen.
+          // bool() gibt es in dieser Datei seit jeher (Zeile 1356) und behandelt genau diesen
+          // Fall; sie wurde hier nur nicht benutzt. Die Vorkehrung war da, sie griff nur nicht.
+          if (bool(args, 'trigger_respawn') === true) {
             const { maybeTriggerRespawn } = await import('@synapse/core');
             const decision = await maybeTriggerRespawn(project, source);
             return {
@@ -2386,7 +2407,7 @@ async function handleToolCall(
           const filtered = statusFilter ? allTasks.filter(t => t.status === statusFilter) : allTasks;
           const taskLimit = num(args, 'limit');
           const limited = taskLimit && taskLimit > 0 ? filtered.slice(0, taskLimit) : filtered;
-          const compact = args.compact === true;
+          const compact = bool(args, 'compact') === true;
           const tasks = compact
             ? limited.map(t => ({ id: t.id, title: t.title, status: t.status, priority: t.priority }))
             : limited;
@@ -2782,7 +2803,7 @@ async function handleToolCall(
           const chName3 = reqStr(args, 'channel_name');
           const feedLimit = args.limit !== undefined ? Number(args.limit) : 20;
           const sinceId = args.since_id !== undefined ? Number(args.since_id) : 0;
-          const preview = args.preview === true;
+          const preview = bool(args, 'preview') === true;
           const msgs = await getChannelMessages(project, chName3, { limit: feedLimit, sinceId, preview });
           const feedAgentId = resolveAgentId(str(args, 'agent_id'));
           const skillHook = await holeChannelSkillVorschlaege(feedAgentId, msgs);
@@ -3484,7 +3505,7 @@ async function handleToolCall(
           const fileType = str(args, 'file_type');
           const limit = num(args, 'limit') ?? 20;
           // semantic:true → Qdrant Embedding-Suche (konzeptuell). Default = PG-Volltext (lexikalisch).
-          if (args.semantic === true) {
+          if (bool(args, 'semantic') === true) {
             const sem = await searchCode(query, project, fileType, limit);
             const results = sem.map(r => ({
               file_path: r.payload.file_path,
@@ -3525,7 +3546,7 @@ async function handleToolCall(
           return { success: true, ...flow, project };
         }
         case 'entrypoints': {
-          const entrypoints = await getEntrypoints(project, str(args, 'file_path'), num(args, 'limit'), args.include_declarations === true);
+          const entrypoints = await getEntrypoints(project, str(args, 'file_path'), num(args, 'limit'), bool(args, 'include_declarations') === true);
           return { success: true, entrypoints, count: entrypoints.length, project };
         }
         case 'health': {
@@ -3604,7 +3625,7 @@ async function handleToolCall(
         // und committen jede Datei isoliert — ein Fehler auf File X bricht nicht
         // die Ops auf File Y ab.
         const filePaths = new Set(opsTyped.map((o) => o.file_path));
-        if (args.auto_commit === true && filePaths.size > 1) {
+        if (bool(args, 'auto_commit') === true && filePaths.size > 1) {
           const byFile = new Map<string, import('@synapse/core').FileBatchOp[]>();
           for (const op of opsTyped) {
             const list = byFile.get(op.file_path) ?? [];
@@ -3696,14 +3717,14 @@ async function handleToolCall(
         }
         // auto_commit:true -> direkt commit, ABER nur wenn alle Previews ok sind.
         const allPreviewsOk = result.previews?.every(p => p.ok) ?? true;
-        if (args.auto_commit === true && allPreviewsOk) {
+        if (bool(args, 'auto_commit') === true && allPreviewsOk) {
           const c = await commitBatch({ plan_id: result.plan_id, agent_id: agentId, agent_note: str(args, 'agent_note') });
           if (c.success) {
             return { ...c, plan: result, auto_committed: true, message: `Plan ${result.plan_id} angelegt + sofort committed (auto_commit) — ${c.committed} Datei(en) geaendert. batch_id=${c.batch_id}.` };
           }
           return { ...c, plan: result, auto_committed: false, message: `Plan ${result.plan_id} angelegt, auto-commit fehlgeschlagen — Plan bleibt offen, kann manuell committet oder cancelt werden.` };
         }
-        const skillHook = args.auto_commit === true
+        const skillHook = bool(args, 'auto_commit') === true
           ? null
           : await holeSprachSkillVorschlaege(agentId, opsTyped.map((op) => op.file_path));
         return {
@@ -4065,8 +4086,8 @@ async function handleToolCall(
         const query = str(args, 'query');
         if (query) {
           const result = await searchShellJobLog(id, query, {
-            regex: args.regex === true,
-            case_sensitive: args.case_sensitive === true,
+            regex: bool(args, 'regex') === true,
+            case_sensitive: bool(args, 'case_sensitive') === true,
             max_matches: num(args, 'max_matches'),
           });
           if (!result) return { success: false, error: 'unknown_job', message: `Job ${id} nicht gefunden` };
@@ -4106,7 +4127,7 @@ async function handleToolCall(
       // Kurzform fuer target=workspace. Auto entscheidet anhand daemon_heartbeats:
       // frischer Heartbeat (<30s) → local (shell-queue), sonst → workspace (Docker).
       const targetArg = (str(args, 'target') ?? 'auto').toLowerCase();
-      const isolated = args.isolated === true;
+      const isolated = bool(args, 'isolated') === true;
       let target: 'local' | 'workspace';
       if (isolated || targetArg === 'workspace') {
         target = 'workspace';

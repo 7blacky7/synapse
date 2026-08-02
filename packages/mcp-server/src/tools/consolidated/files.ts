@@ -38,7 +38,7 @@ import {
 import type { BatchEdit, FileBatchOp } from '@synapse/core';
 
 import * as path from 'path';
-import { ConsolidatedTool, str, reqStr, num } from './types.js';
+import { ConsolidatedTool, str, reqStr, num, bool } from './types.js';
 import { getProjectPath } from '../index.js';
 
 export const filesTool: ConsolidatedTool = {
@@ -295,14 +295,14 @@ export const filesTool: ConsolidatedTool = {
       // Wenn Plan einzelne ok:false hatte, lassen wir den Plan offen damit User
       // entscheiden kann. (planBatch throws sowieso bei harten Fehlern wie anchor mismatch.)
       const allPreviewsOk = result.previews?.every(p => p.ok) ?? true;
-      if (args.auto_commit === true && allPreviewsOk) {
+      if (bool(args, 'auto_commit') === true && allPreviewsOk) {
         const c = await commitBatch({ plan_id: result.plan_id, agent_id: agentId, agent_note: typeof args.agent_note === 'string' ? args.agent_note : undefined });
         if (c.success) {
           return { ...c, plan: result, auto_committed: true, message: `Plan ${result.plan_id} angelegt + sofort committed (auto_commit) — ${c.committed} Datei(en) geaendert. batch_id=${c.batch_id}.` };
         }
         return { ...c, plan: result, auto_committed: false, message: `Plan ${result.plan_id} angelegt, auto-commit fehlgeschlagen — Plan offen, kann manuell committet oder cancelt werden.` };
       }
-      const skillHook = args.auto_commit === true
+      const skillHook = bool(args, 'auto_commit') === true
         ? null
         : await holeSprachSkillVorschlaege(agentId, (opsRaw as FileBatchOp[]).map((op) => op.file_path));
       return {

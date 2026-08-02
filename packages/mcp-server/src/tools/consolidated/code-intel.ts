@@ -338,7 +338,7 @@ export const codeIntelTool: ConsolidatedTool = {
       case 'entrypoints': {
         const filePath = str(args, 'file_path');
         const limit = num(args, 'limit') ?? 200;
-        const entrypoints = await getEntrypoints(project, filePath, limit, args.include_declarations === true);
+        const entrypoints = await getEntrypoints(project, filePath, limit, bool(args, 'include_declarations') === true);
         return { success: true, entrypoints, count: entrypoints.length, project };
       }
 

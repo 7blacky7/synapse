@@ -12,7 +12,7 @@
  */
 
 import type { ConsolidatedTool } from './types.js';
-import { str, num, reqStr, strArray } from './types.js';
+import { str, num, reqStr, strArray, bool } from './types.js';
 import os from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -228,8 +228,8 @@ export const shellTool: ConsolidatedTool = {
       // Mit query → Such-Modus; ohne query → Range-Modus.
       if (query) {
         const result = await searchShellJobLog(id, query, {
-          regex: args.regex === true,
-          case_sensitive: args.case_sensitive === true,
+          regex: bool(args, 'regex') === true,
+          case_sensitive: bool(args, 'case_sensitive') === true,
           max_matches: num(args, 'max_matches'),
         });
         if (!result) {
@@ -253,8 +253,11 @@ export const shellTool: ConsolidatedTool = {
         project: str(args, 'project'),
         agentId: strArray(args, 'agent_ids'),
         tool: strArray(args, 'tools'),
-        status: (args.errors_only === true || args.errors_only === 'true') ? 'error' : undefined,
-        mutationsOnly: args.mutations_only === true || args.mutations_only === 'true',
+        // Hier stand der Sonderfall ausgeschrieben (=== true || === 'true') — jemand hatte den
+        // Connector-Quirk hier bemerkt und lokal geflickt, statt den bool-Helfer zu nehmen, der
+        // genau dafuer daneben liegt. An sieben weiteren Stellen fehlte der Flicken dann.
+        status: bool(args, 'errors_only') === true ? 'error' : undefined,
+        mutationsOnly: bool(args, 'mutations_only') === true,
         since: str(args, 'since'),
         limit: num(args, 'limit'),
         detail: (str(args, 'detail') as 'meta' | 'summary' | 'full' | undefined) ?? 'meta',
@@ -276,7 +279,7 @@ export const shellTool: ConsolidatedTool = {
 
     // Auto-Routing local ↔ workspace (siehe Tool-Description)
     const targetArg = (str(args, 'target') ?? 'auto').toLowerCase();
-    const isolated = args.isolated === true;
+    const isolated = bool(args, 'isolated') === true;
     let target: 'local' | 'workspace';
     if (isolated || targetArg === 'workspace') target = 'workspace';
     else if (targetArg === 'local') target = 'local';
