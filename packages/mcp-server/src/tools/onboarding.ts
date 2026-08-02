@@ -36,7 +36,12 @@ import { SERVER_INSTANCE_ID } from '../server.js';
 /** Regel-Memory fuer Onboarding-Response */
 export interface OnboardingRule {
   name: string;
-  content: string;
+  /** Volltext — nur bei Regeln mit dem Tag "pflicht". */
+  content?: string;
+  /** Anfang der Regel — bei allen anderen; der Volltext ist einen memory(read) entfernt. */
+  auszug?: string;
+  /** true, wenn der Volltext mitgeliefert wurde. */
+  vollstaendig: boolean;
 }
 
 /** Onboarding-Ergebnis das in Tool-Responses eingebunden wird */
@@ -168,7 +173,8 @@ export async function checkAgentOnboarding(
     // (agent-rollen.ts), damit dieser Weg und die REST-API nicht auseinanderlaufen.
     // Der exakte Vergleich von vorher liess z.B. "koordinator-only" (deutsch)
     // stillschweigend durchfallen: die Regel ging dann an alle Rollen.
-    const { regelSichtbarFuer, tagVerdacht } = await import('@synapse/core');
+    const { regelSichtbarFuer, tagVerdacht, baueOnboardingRegeln, baueRegelAbrufHinweis } =
+      await import('@synapse/core');
     for (const m of allRules) {
       for (const hinweis of tagVerdacht(m.tags)) {
         console.error(`[Onboarding] Regel "${m.name}" (${project}): ${hinweis}`);
@@ -181,12 +187,19 @@ export async function checkAgentOnboarding(
       return { isFirstVisit: true };
     }
 
-    const rules: OnboardingRule[] = finalRules.map(m => ({
-      name: m.name,
-      content: m.content,
-    }));
+    // ⚠️ NICHT MEHR ALLES IM VOLLTEXT (Messung 02.08.2026): 34 Regeln, 65.000 Zeichen, und
+    // das bei JEDEM Wechsel der Server-Kennung erneut. Volltext behalten die Regeln mit dem
+    // Tag "pflicht"; alle anderen kommen als Auszug, der Volltext ist einen Aufruf entfernt.
+    // Dieselbe Funktion wie im REST-Weg — zwei Kopien derselben Aufbereitung waeren genau der
+    // Fehler, den diese Codebasis an anderer Stelle teuer bezahlt hat.
+    const rules: OnboardingRule[] = baueOnboardingRegeln(finalRules);
+    const gekuerzt = rules.filter((r) => !r.vollstaendig).length;
+    const abrufHinweis = baueRegelAbrufHinweis(project, gekuerzt);
 
-    let rulesMessage = `\n\n📋 PROJEKT-REGELN (bitte beachten!):\n${rules.map(r => `### ${r.name}\n${r.content}`).join('\n\n')}`;
+    let rulesMessage = `\n\n📋 PROJEKT-REGELN (bitte beachten!):\n${rules
+      .map((r) => `### ${r.name}\n${r.vollstaendig ? r.content : r.auszug}`)
+      .join('\n\n')}`;
+    if (abrufHinweis) rulesMessage += `\n\nℹ️ ${abrufHinweis}`;
 
     // Setup-Pending Hinweis fuer Koordinatoren
     if (isCoordinator && (await getSetupPhase(project, path)) === 'initial-pending') {

@@ -117,3 +117,70 @@ export function tagVerdacht(tags: string[] | undefined): string[] {
 function hinweiseHinzu(hinweise: string[], text: string): void {
   if (!hinweise.includes(text)) hinweise.push(text);
 }
+
+/** Wie viele Zeichen eine gekuerzte Regel behaelt. */
+const REGEL_KURZFASSUNG_ZEICHEN = 220;
+
+/** Tag, mit dem eine Regel den Volltext im Onboarding behaelt. */
+const PFLICHT_TAG = 'pflicht';
+
+export interface OnboardingRegel {
+  name: string;
+  /** Volltext — nur bei Pflicht-Regeln gesetzt. */
+  content?: string;
+  /** Anfang der Regel — bei allen anderen gesetzt. */
+  auszug?: string;
+  /** true, wenn der Volltext mitgeliefert wurde. */
+  vollstaendig: boolean;
+}
+
+/**
+ * Bereitet Projekt-Regeln fuer das Onboarding auf: Volltext nur dort, wo er noetig ist.
+ *
+ * ⚠️ WARUM GEKUERZT WIRD (Messung 02.08.2026).
+ * Das Onboarding lieferte JEDE Regel im Volltext. Im Hauptprojekt sind das 34 Regeln mit
+ * zusammen rund 65.000 Zeichen — und ein Agent bekommt sie nicht einmal, sondern bei jedem
+ * Wechsel der Server-Kennung erneut. In der Nacht auf den 02.08. waren das fuenf Deploys in
+ * neunzig Minuten, also fuenfmal das komplette Regelwerk an jeden Agenten.
+ * Der groesste Teil davon ist Wissen, das dieser Agent nie braucht: die Deploy-Prozedur mit
+ * SSH und Docker geht auch an einen, der weder das eine noch das andere hat.
+ *
+ * WAS BLEIBT: Regeln mit dem Tag "pflicht" kommen weiterhin vollstaendig — im Hauptprojekt
+ * sechs Stueck mit knapp 15.000 Zeichen, darunter die Warnung, dass context-handoff.sh
+ * niemals ueber die Synapse-Shell laufen darf (sie reisst sonst die Desktop-Sitzung mit).
+ * Alle anderen kommen als Name plus Anfang; der Volltext ist einen Aufruf entfernt.
+ *
+ * ⚠️ BEWUSST KEIN NEUES ETIKETT. "pflicht" ist ein Tag, den es im Bestand schon gibt und der
+ * schon benutzt wird. Ein neu erfundenes Merkmal muesste jemand an 34 Regeln nachtragen, und
+ * genau das Vergessen solcher Nachtraege ist der Fehler, den diese Codebasis an anderer
+ * Stelle teuer bezahlt hat.
+ */
+export function baueOnboardingRegeln(
+  memories: Array<{ name: string; content: string; tags?: string[] }>,
+): OnboardingRegel[] {
+  return memories.map((m) => {
+    const pflicht = (m.tags ?? []).some((t) => t?.toLowerCase().trim() === PFLICHT_TAG);
+    if (pflicht) return { name: m.name, content: m.content, vollstaendig: true };
+    return { name: m.name, auszug: kuerzeRegel(m.content), vollstaendig: false };
+  });
+}
+
+/** Anfang einer Regel, an einer Wortgrenze abgeschnitten. */
+function kuerzeRegel(content: string): string {
+  const text = (content ?? '').replace(/\s+/g, ' ').trim();
+  if (text.length <= REGEL_KURZFASSUNG_ZEICHEN) return text;
+  const roh = text.slice(0, REGEL_KURZFASSUNG_ZEICHEN);
+  const letzteLuecke = roh.lastIndexOf(' ');
+  return `${letzteLuecke > REGEL_KURZFASSUNG_ZEICHEN * 0.6 ? roh.slice(0, letzteLuecke) : roh} …`;
+}
+
+/**
+ * Der Hinweis, wie ein Agent an den Volltext einer gekuerzten Regel kommt.
+ * Ohne diesen Satz ist die Kuerzung eine Unterschlagung.
+ */
+export function baueRegelAbrufHinweis(project: string, gekuerzt: number): string | undefined {
+  if (gekuerzt <= 0) return undefined;
+  return `${gekuerzt} Regel(n) sind gekuerzt. Volltext einzeln abrufen mit `
+    + `memory(action:"read", project:"${project}", name:"<regel-name>"). `
+    + `Regeln mit dem Tag "pflicht" stehen vollstaendig oben.`;
+}

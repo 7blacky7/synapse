@@ -1532,15 +1532,22 @@ async function attachRestOnboarding(
     const allRules = await getRulesForNewAgent(project);
     // Rollenbindung ueber die gemeinsame Erkennung in core (agent-rollen.ts) —
     // tolerant gegenueber Schreibweisen, und dieselbe Logik wie im lokalen Weg.
-    const { regelSichtbarFuer, tagVerdacht } = await import('@synapse/core');
+    const { regelSichtbarFuer, tagVerdacht, baueOnboardingRegeln, baueRegelAbrufHinweis } =
+      await import('@synapse/core');
     for (const m of allRules) {
       for (const hinweis of tagVerdacht(m.tags)) {
         console.warn(`[Onboarding] Regel "${m.name}" (${project}): ${hinweis}`);
       }
     }
-    const rules = allRules
-      .filter((m) => regelSichtbarFuer(m.tags, role))
-      .map((m) => ({ name: m.name, content: m.content }));
+    // ⚠️ NICHT MEHR ALLES IM VOLLTEXT (Messung 02.08.2026): 34 Regeln, 65.000 Zeichen, und
+    // das bei JEDEM Wechsel der Server-Kennung erneut — in einer Deploy-Nacht fuenfmal.
+    // Volltext behalten die Regeln mit dem Tag "pflicht", der Rest kommt als Auszug mit
+    // Abrufhinweis. Dieselbe Funktion wie im lokalen Weg, damit beide nicht auseinanderlaufen.
+    const rules = baueOnboardingRegeln(allRules.filter((m) => regelSichtbarFuer(m.tags, role)));
+    const abrufHinweis = baueRegelAbrufHinweis(
+      project,
+      rules.filter((r: { vollstaendig: boolean }) => !r.vollstaendig).length,
+    );
 
     if (rules.length === 0) {
       return { ...result, agentOnboarding: { isFirstVisit: true } };
@@ -1551,6 +1558,7 @@ async function attachRestOnboarding(
       agentOnboarding: {
         isFirstVisit: true,
         message: '📋 WILLKOMMEN! Als neuer Agent beachte bitte folgende Projekt-Regeln:',
+        ...(abrufHinweis ? { volltext_hinweis: abrufHinweis } : {}),
         rules,
       },
     };

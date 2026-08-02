@@ -320,6 +320,8 @@ export {
   // Agent-Rollen (Regel-Sichtbarkeit — geteilt von MCP-Server und REST-API)
   erlaubteRollen,
   regelSichtbarFuer,
+  baueOnboardingRegeln,
+  baueRegelAbrufHinweis,
   tagVerdacht,
   // Tech-Docs
   addTechDoc,

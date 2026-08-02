@@ -31,8 +31,11 @@ export {
   getMessages,
 } from './chat.js';
 export type { ChatMessage, AgentSession } from './chat.js';
-export { erlaubteRollen, regelSichtbarFuer, tagVerdacht } from './agent-rollen.js';
-export type { AgentRolle } from './agent-rollen.js';
+export {
+  erlaubteRollen, regelSichtbarFuer, tagVerdacht,
+  baueOnboardingRegeln, baueRegelAbrufHinweis,
+} from './agent-rollen.js';
+export type { AgentRolle, OnboardingRegel } from './agent-rollen.js';
 export { addTechDoc, searchTechDocs, getDocsForFile, deleteTechDoc, updateTechDoc } from './tech-docs.js';
 export type { TechDoc, TechDocType, TechDocResult } from './tech-docs.js';
 export { emitEvent, acknowledgeEvent, getPendingEvents, getUnackedCount } from './events.js';
