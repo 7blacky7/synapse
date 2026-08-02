@@ -117,6 +117,19 @@ class ProcessManager extends EventEmitter {
         }
       }
 
+      // Werkzeuge des INNEREN Claude ueber eine eigene MCP-Konfiguration
+      // (Schritt 3b, auf Bitte von mcp-http). Ohne die Variable aendert sich
+      // NICHTS — der heutige stdio-Weg bleibt Zeichen fuer Zeichen gleich.
+      // Gesetzt wird sie allein vom Spawner und nur bei
+      // SYNAPSE_AGENT_MCP_TRANSPORT=http. Fehlt sie, laeuft der innere Agent
+      // weiter ueber die stdio-Konfiguration des Projekts.
+      // ⚠️ Nur hier, nicht im node-Zweig: die Gemini-Runtime kennt --mcp-config
+      // nicht und wuerde am unbekannten Schalter scheitern.
+      if (process.env.SYNAPSE_MCP_CONFIG_FILE) {
+        args.push('--mcp-config', process.env.SYNAPSE_MCP_CONFIG_FILE)
+        if (process.env.SYNAPSE_MCP_STRICT === '1') args.push('--strict-mcp-config')
+      }
+
       proc = spawn(
         'claude',
         args,
