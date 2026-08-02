@@ -91,6 +91,13 @@ let cachedChannels: string[] = []
 /** Wake-Nachrichten aus NOTIFY synapse_specialist_wake_<name> — naechster Heartbeat verarbeitet sie */
 const pendingNotifyWakes: string[] = []
 
+/**
+ * Stand der vom Server gemeldeten Loecher im Live-Kanal beim letzten Takt.
+ * Steigt die Zahl, war der Kanal zwischendurch blind — dann darf auch ein
+ * abgeschalteter Wrapper einmal nachsehen (siehe nachholPoll).
+ */
+let zuletztGesehenLuecken = 0
+
 // ---------------------------------------------------------------------------
 // Instances
 // ---------------------------------------------------------------------------
@@ -639,13 +646,62 @@ const RESPAWN_MARKER_PATH = `/tmp/.specialist-rotate-pending-${AGENT_NAME}`
 // Agent in den Korridor-Bereich kommt. Verhindert Spam bei jedem Heartbeat.
 let handoffWarningSent = false
 
+/**
+ * EIN einzelner Poll fuer den abgeschalteten Wrapper — nur nach einer
+ * NACHGEWIESENEN Luecke im Live-Kanal. Freigabe des Koordinators, 02.08.2026.
+ *
+ * ABGESCHALTET HEISST STILL, NICHT TAUB.
+ * Der Sinn der Abschaltung ist, keine Tokens fuers Nachsehen zu verbrennen, wenn
+ * nichts anliegt — nicht, unerreichbar zu sein. Findet dieser Poll nichts, weckt er
+ * auch niemanden; er kostet eine Abfrage. Findet er einen Weckruf, war genau das
+ * sein Zweck. Ein verlorener Weckruf ist der Fehler, gegen den diese ganze Bruecke
+ * abgesichert wird; ihn durch die Hintertuer wieder einzubauen waere absurd.
+ *
+ * BEWUSST NICHT enthalten: der keepAlive-Wake (der weckt OHNE Anlass und kostet
+ * Tokens), Rotation und Stuck-Erkennung. Der Takt wird NICHT wieder eingeschaltet —
+ * es bleibt bei diesem einen Durchgang, bis die naechste Luecke gemeldet wird.
+ */
+async function nachholPoll(): Promise<void> {
+  if (agentBusy) return
+  try {
+    // Ein wartender Weckruf hat Vorrang — er ist der Grund, warum es diesen
+    // Durchgang ueberhaupt gibt.
+    if (pendingNotifyWakes.length > 0) {
+      const wakeMsg = pendingNotifyWakes.shift()!
+      log('Nachhol-Poll: verarbeite wartenden Weckruf: %s', wakeMsg.slice(0, 80))
+      await wakeAgent(wakeMsg)
+      return
+    }
+    await pollChannelMessages()
+    await pollInboxMessages()
+    await pollSynapseItems()
+  } catch (err) {
+    log('Nachhol-Poll fehlgeschlagen: %s', err)
+  }
+}
+
 async function heartbeatPoll() {
   if (shuttingDown || !processAlive) return
 
   // Konfiguration zuerst: ein abgeschalteter Wrapper darf ab hier nichts mehr tun,
   // was den Agenten weckt oder Tokens kostet.
   await ladeHeartbeatKonfiguration()
-  if (!heartbeatAktiv) return
+
+  // EINZIGE Ausnahme davon, ausdruecklich freigegeben: hatte der Live-Kanal
+  // nachweislich ein Loch (der Server meldet, dass sein LISTEN-Client neu verbinden
+  // musste), dann darf auch ein abgeschalteter Wrapper GENAU EINMAL nachsehen.
+  // Sonst haengt er vollstaendig am Live-Kanal und ein Weckruf, der in die Luecke
+  // fiel, waere fuer ihn endgueltig verloren.
+  const luecken = transport.bilanz().liveServerLuecken
+  const luecheSeitLetztemTakt = luecken > zuletztGesehenLuecken
+  zuletztGesehenLuecken = luecken
+
+  if (!heartbeatAktiv) {
+    if (!luecheSeitLetztemTakt) return
+    log('Nachhol-Poll: der Live-Kanal hatte eine nachgewiesene Luecke, obwohl der Heartbeat abgeschaltet ist. Genau EIN Durchgang, der Takt bleibt aus.')
+    await nachholPoll()
+    return
+  }
 
   try {
     // Token-Sync: Echte Werte aus der Claude CLI Session-JSONL lesen
