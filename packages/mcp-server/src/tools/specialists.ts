@@ -4,7 +4,7 @@
  */
 
 import { spawn } from 'node:child_process';
-import { writeFile, mkdir } from 'node:fs/promises';
+import { writeFile, mkdir, rm } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
@@ -301,6 +301,33 @@ export async function stopSpecialistTool(
 // purge_specialist — stop + komplette Entfernung (FS + DB + Channels)
 // ---------------------------------------------------------------------------
 
+/**
+ * Lebt der Prozess noch?
+ *
+ * process.kill(pid, 0) wirft bei totem Prozess (ESRCH) — aber AUCH bei einem
+ * fremden, sehr lebendigen Prozess (EPERM). Wer nur auf "wirft" prueft, haelt
+ * einen laufenden Fremdprozess faelschlich fuer tot. Deshalb wird der Fehlercode
+ * unterschieden.
+ */
+function prozessLebt(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException)?.code === 'EPERM';
+  }
+}
+
+/** Wartet bis zur Frist auf den Tod des Prozesses. Rueckgabe: ist er tot? */
+async function warteAufProzessTod(pid: number, fristMs: number): Promise<boolean> {
+  const ende = Date.now() + fristMs;
+  while (Date.now() < ende) {
+    if (!prozessLebt(pid)) return true;
+    await new Promise(r => setTimeout(r, 100));
+  }
+  return !prozessLebt(pid);
+}
+
 export async function purgeSpecialistTool(
   name: string,
   projectPath: string,
@@ -329,19 +356,61 @@ export async function purgeSpecialistTool(
   // 2b. Auf Wrapper-Prozess-Tod warten — Wrapper schreibt waehrend Shutdown
   // updateSpecialist({ status: 'stopped' }) und wuerde unseren removeSpecialist
   // ueberschreiben. Polling: max 5s warten bis PID tot ist.
+  //
+  // ⚠️ GEMESSEN AM 02.08.2026 an rollen-pruefer: sendStop lief in einen Timeout UND
+  // der Wrapper ignorierte SIGTERM (er brauchte SIGKILL). Vorher wurde danach trotzdem
+  // abgeraeumt: Channels, Chat, Verzeichnis, status.json und PG-Eintrag waren weg,
+  // waehrend Wrapper und Claude-Prozess weiterliefen. Der ueberlebende Wrapper legte
+  // sein Verzeichnis in derselben Sekunde neu an (jeder Schreibvorgang geht durch
+  // ensureAgentDir). Uebrig blieb ein Agent, den kein Werkzeug mehr findet — status
+  // meldete "nicht gefunden", stop und wake brauchen einen Registry-Eintrag — der aber
+  // weiterlief, Kontext belegte und in ein Verzeichnis schrieb, das es offiziell nicht
+  // mehr gab. Deshalb wird jetzt eskaliert (TERM, dann KILL) und im Zweifel ABGEBROCHEN,
+  // statt einen unerreichbaren Geist zu hinterlassen.
   if (wrapperPid && wrapperPid > 0) {
-    const deadlineMs = Date.now() + 5000;
-    while (Date.now() < deadlineMs) {
+    let tot = await warteAufProzessTod(wrapperPid, 5000);
+
+    if (!tot) {
       try {
-        process.kill(wrapperPid, 0); // throws if dead
-        await new Promise(r => setTimeout(r, 100));
-      } catch {
-        break; // process is dead
+        process.kill(wrapperPid, 'SIGTERM');
+        steps.signal_term = 'gesendet';
+      } catch (err) {
+        steps.signal_term = `Fehler: ${err}`;
       }
+      tot = await warteAufProzessTod(wrapperPid, 3000);
     }
+
+    if (!tot) {
+      try {
+        process.kill(wrapperPid, 'SIGKILL');
+        steps.signal_kill = 'gesendet';
+      } catch (err) {
+        steps.signal_kill = `Fehler: ${err}`;
+      }
+      tot = await warteAufProzessTod(wrapperPid, 2000);
+    }
+
+    steps.prozess_beendet = tot;
+
+    // ABBRUCH statt Geist: solange der Prozess lebt, wird NICHTS entfernt. Ein
+    // adressierbarer Spezialist mit falschem Status ist reparierbar — ein laufender
+    // ohne Registry-Eintrag ist es nicht.
+    if (!tot) {
+      return jsonResult({
+        success: false,
+        message: `Spezialist "${name}" NICHT entfernt: Wrapper-Prozess ${wrapperPid} lebt noch, `
+          + `SIGTERM und SIGKILL blieben wirkungslos. Es wurde nichts geloescht — Registry, `
+          + `Verzeichnis, Channels und PG-Eintrag bleiben erhalten, damit der Agent `
+          + `adressierbar bleibt. Prozess von Hand pruefen, dann erneut purgen.`,
+        wrapper_pid: wrapperPid,
+        steps,
+      });
+    }
+
     // Sicherheitspuffer fuer letzten async write
     await new Promise(r => setTimeout(r, 200));
   } else {
+    steps.prozess_beendet = 'keine Wrapper-PID bekannt — Prozesstod UNGEPRUEFT';
     await new Promise(r => setTimeout(r, 500));
   }
 
@@ -370,6 +439,15 @@ export async function purgeSpecialistTool(
     steps.fs_purged = `Fehler: ${err}`;
   }
 
+  // 4b. Socket entfernen — blieb bisher liegen und liess einen entfernten
+  // Spezialisten im Dateisystem wie einen laufenden aussehen.
+  try {
+    await rm(join(projectPath, '.synapse', 'sockets', `${name}.sock`), { force: true });
+    steps.socket_removed = 'ok';
+  } catch (err) {
+    steps.socket_removed = `Fehler: ${err}`;
+  }
+
   // 5. Specialist aus status.json entfernen (zuletzt — nachdem Wrapper sicher tot)
   try {
     await removeSpecialist(projectPath, name);
@@ -389,9 +467,26 @@ export async function purgeSpecialistTool(
     }
   }
 
+  // Erfolg wird aus den Schritten ABGELEITET, nicht behauptet. Vorher stand hier ein
+  // fest verdrahtetes success:true samt "Auto-Respawn unmoeglich" — auch dann, wenn
+  // in steps ein Fehler protokolliert war. Genau daran war der Ausfall vom 02.08.2026
+  // von aussen nicht zu erkennen.
+  //
+  // Nicht gewertet werden:
+  //   stop — ein Timeout ist hier folgenlos, weil der Prozesstod oben verbindlich
+  //          geprueft (und notfalls erzwungen) wurde.
+  //   pg_status_removed — ausdruecklich als "Fehler (non-fatal)" markiert; alte
+  //          Spezialisten haben gar keine PG-Zeile. Der Filter trifft nur "Fehler:".
+  const fehlgeschlagen = Object.entries(steps)
+    .filter(([schritt, wert]) => schritt !== 'stop' && typeof wert === 'string' && wert.startsWith('Fehler:'))
+    .map(([schritt]) => schritt);
+
   return jsonResult({
-    success: true,
-    message: `Spezialist "${name}" komplett entfernt (Stop + Channels + Chat + Status + FS${project ? ' + PG' : ''}). Auto-Respawn unmoeglich.`,
+    success: fehlgeschlagen.length === 0,
+    message: fehlgeschlagen.length === 0
+      ? `Spezialist "${name}" komplett entfernt (Stop + Channels + Chat + Status + FS + Socket${project ? ' + PG' : ''}). Prozess nachweislich beendet, Auto-Respawn unmoeglich.`
+      : `Spezialist "${name}" nur TEILWEISE entfernt. Fehlgeschlagen: ${fehlgeschlagen.join(', ')}. `
+        + `Der Prozess ist beendet, aber Reste bleiben liegen — steps pruefen und von Hand nachraeumen.`,
     steps,
   });
 }
