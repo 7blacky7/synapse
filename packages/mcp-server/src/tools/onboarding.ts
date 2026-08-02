@@ -143,16 +143,8 @@ export async function checkAgentOnboarding(
     return null;
   }
 
-  // Agent bekannt in dieser Server-Instanz? (prueft PG agent_sessions + server_instance_id)
-  const isFirstVisit = await registerAgent(project, agentId, SERVER_INSTANCE_ID);
-
-  if (!isFirstVisit) {
-    // Agent bereits bekannt - keine Regeln
-    return { isFirstVisit: false };
-  }
-
-  // Neuer Agent - Regeln laden
-  // ⚠️ EINE Rollenbestimmung fuer beide Wege (Punkt 2.5, 02.08.2026). Hier stand das Original,
+  // Rolle VOR der Registrierung bestimmen — sie gehoert ins Protokoll (Punkt 3a, 02.08.2026).
+  // ⚠️ EINE Rollenbestimmung fuer beide Wege (Punkt 2.5). Hier stand das Original,
   // in mcp.ts eine leicht abweichende Kopie. GEMESSEN: 179 von 181 Identitaeten landen im
   // Standard 'subagent', der spezialist-Zweig hat seit dem 03.05.2026 null Treffer. Die
   // Erkennung bleibt vorerst wie sie ist — sie ist jetzt nur an EINER Stelle und sagt dazu,
@@ -160,6 +152,23 @@ export async function checkAgentOnboarding(
   const { rolleFuerAgent } = await import('@synapse/core');
   const { rolle: effectiveRole, quelle: rollenQuelle } = rolleFuerAgent(agentId, role ?? null);
   const isCoordinator = effectiveRole === 'koordinator';
+
+  // Agent bekannt in dieser Server-Instanz? Rolle + Quelle wandern mit ins Protokoll —
+  // erst dadurch wird "derselbe Agent, zwei verschiedene Rollen" ein GROUP BY statt eines
+  // Zufallsfundes. Das Protokoll sagt, was das System ENTSCHIEDEN hat, nicht ob es stimmte.
+  const isFirstVisit = await registerAgent(
+    project,
+    agentId,
+    SERVER_INSTANCE_ID,
+    effectiveRole,
+    rollenQuelle,
+  );
+
+  if (!isFirstVisit) {
+    // Agent bereits bekannt - keine Regeln
+    return { isFirstVisit: false };
+  }
+
   console.error(
     `[Synapse MCP] Neuer Agent "${agentId}" erkannt (Rolle: ${effectiveRole}, Quelle: ${rollenQuelle}) - lade Regeln...`,
   );

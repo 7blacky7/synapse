@@ -123,8 +123,26 @@ CREATE TABLE IF NOT EXISTS agent_onboardings (
   project TEXT NOT NULL,
   server_instance_id TEXT NOT NULL,
   onboarded_at TIMESTAMPTZ DEFAULT NOW(),
+  rolle TEXT,
+  rolle_quelle TEXT,
   PRIMARY KEY (agent_id, project, server_instance_id)
 );
+
+-- ROLLEN-PROTOKOLL (2026-08-02): haelt fest, WELCHE Rolle beim Onboarding verwendet
+-- wurde und WOHER sie kam.
+-- Es ist ein PROTOKOLL, keine Wahrheit: es sagt, was das System entschieden hat —
+-- nicht, ob die Entscheidung richtig war. Einen richtigen Default kann man von einem
+-- falschen nicht unterscheiden, beide sehen identisch aus.
+-- WAS ES TROTZDEM BEWEISBAR MACHT: hat derselbe Agent in kurzer Zeit ZWEI verschiedene
+-- Rollen bekommen? Das ist ein Widerspruch, den man ohne Aussenwissen zeigen kann —
+-- ein GROUP BY (agent_id, project) statt eines Zufallsfundes. Genau dieser Fall ist am
+-- 02.08.2026 drei Agenten gleichzeitig passiert und fiel nur auf, weil sie zufaellig
+-- die gelieferten Regelnamen ausgezaehlt haben.
+-- Bewusst NULLABLE und ohne Backfill: die Tabelle hat 7-Tage-Retention
+-- (project-status.ts), der Altbestand laeuft von selbst aus. Kein Umstellungstag,
+-- kein Zustand, in dem eine Regel niemanden erreicht.
+ALTER TABLE agent_onboardings ADD COLUMN IF NOT EXISTS rolle TEXT;
+ALTER TABLE agent_onboardings ADD COLUMN IF NOT EXISTS rolle_quelle TEXT;
 
 CREATE TABLE IF NOT EXISTS chat_messages (
   id SERIAL PRIMARY KEY,

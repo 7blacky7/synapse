@@ -153,12 +153,19 @@ let onboardingCleanupDone = false;
  *     mit UNIQUE(id) → Onboarding-Spam bei jedem Tool-Call, siehe schema.ts)
  *   - Zusaetzlich In-Memory-Set als Schnellpfad (einmal pro Prozess reicht dem Modell)
  *
+ * @param rolle - Optional: die beim Onboarding verwendete Rolle. PROTOKOLL, keine Wahrheit.
+ * @param rolleQuelle - Optional: woher sie stammt. Werte siehe RollenQuelle in agent-rollen.ts:
+ *   'angegeben' | 'namensmuster' | 'standard'.
+ *   Erst mit der QUELLE wird der Eintrag auswertbar: 'standard' heisst, dass gar nichts
+ *   gegriffen hat. Ohne sie sieht eine geratene Rolle aus wie eine erklaerte.
  * @returns true wenn Agent NEU ist (Onboarding zeigen), false wenn bereits bekannt
  */
 export async function registerAgent(
   project: string,
   agentId: string,
-  serverInstanceId: string
+  serverInstanceId: string,
+  rolle?: string,
+  rolleQuelle?: string
 ): Promise<boolean> {
   const key = `${serverInstanceId}:${agentId}:${project}`;
   if (onboardedKeys.has(key)) {
@@ -178,10 +185,10 @@ export async function registerAgent(
     }
 
     const result = await pool.query(
-      `INSERT INTO agent_onboardings (agent_id, project, server_instance_id)
-       VALUES ($1, $2, $3)
+      `INSERT INTO agent_onboardings (agent_id, project, server_instance_id, rolle, rolle_quelle)
+       VALUES ($1, $2, $3, $4, $5)
        ON CONFLICT (agent_id, project, server_instance_id) DO NOTHING`,
-      [agentId, project, serverInstanceId]
+      [agentId, project, serverInstanceId, rolle ?? null, rolleQuelle ?? null]
     );
     onboardedKeys.add(key);
 

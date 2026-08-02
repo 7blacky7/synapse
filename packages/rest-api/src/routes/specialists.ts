@@ -13,6 +13,7 @@ import {
   getChannelMessages,
   postChannelMessage,
   queryToolCalls,
+  logToolCall,
 } from '@synapse/core';
 
 export async function specialistRoutes(fastify: FastifyInstance): Promise<void> {
@@ -149,6 +150,21 @@ export async function specialistRoutes(fastify: FastifyInstance): Promise<void> 
       });
 
       const result = await waitForSpecialistJob(id, 60_000);
+      // Audit: dieser Weg lief bisher an tool_calls VORBEI. GEMESSEN 02.08.2026 —
+      // references(logToolCall) hatte genau zwei Aufrufer (stdio + MCP-ueber-REST),
+      // diese Route keinen. Jeder Klick im Dashboard war damit unsichtbar, und die
+      // Frage "purge ohne vorangehendes stop" systematisch zu niedrig beantwortet,
+      // weil ein ganzer Aufrufweg fehlte.
+      void logToolCall({
+        project,
+        agentId: null,
+        source: 'web-ui',
+        tool: 'specialist',
+        action: 'stop',
+        argsPreview: JSON.stringify({ name: specName }),
+        ok: result.status === 'done',
+        error: result.error ?? null,
+      });
       if (result.status === 'done') {
         return result.result ?? { success: true, message: `Spezialist "${specName}" gestoppt` };
       }
@@ -185,6 +201,19 @@ export async function specialistRoutes(fastify: FastifyInstance): Promise<void> 
       });
 
       const result = await waitForSpecialistJob(id, 60_000);
+      // Siehe stop-Route: bis 02.08.2026 war dieser Aufrufweg in keiner Statistik.
+      // purge ist die zerstoerendste Aktion des Systems (danach sind die Skill-Dateien
+      // weg, siehe koordinator-lesson-purge-vs-stop) — ausgerechnet sie war ungezaehlt.
+      void logToolCall({
+        project,
+        agentId: null,
+        source: 'web-ui',
+        tool: 'specialist',
+        action: 'purge',
+        argsPreview: JSON.stringify({ name: specName }),
+        ok: result.status === 'done',
+        error: result.error ?? null,
+      });
       if (result.status === 'done') {
         return result.result ?? { success: true, message: `Spezialist "${specName}" bereinigt` };
       }
