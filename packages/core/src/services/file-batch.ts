@@ -37,6 +37,7 @@ import type { BatchEdit } from './code-write.js';
 import { enqueueParseAndEmbed } from './code.js';
 import {
   findForeignActiveReservationPrimaries,
+  refreshReservationTtlsForFiles,
   type ForeignActiveReservationPrimary,
 } from './file-reservations.js';
 
@@ -1106,6 +1107,19 @@ async function commitCoeditBatch(args: {
         WHERE id = $1::bigint`,
       [args.plan_id, JSON.stringify(combined.previews)],
     );
+    const involvedAgents = [...new Set([
+      plan.owner_agent_id,
+      ...plan.ops.map((op) => op.agent_id),
+      ...linkedWaits.rows.flatMap((wait) => [wait.primary_agent, wait.waiting_agent]),
+    ].filter((agentId): agentId is string => Boolean(agentId)))];
+    if (planPaths.length > 0 && involvedAgents.length > 0) {
+      await client.query(
+        `UPDATE file_reservations SET released_at = NOW()
+          WHERE project = $1 AND file_path = ANY($2::text[])
+            AND agent_id = ANY($3::text[]) AND released_at IS NULL`,
+        [plan.project, planPaths, involvedAgents],
+      );
+    }
     await client.query('COMMIT');
 
     for (const file of writtenFiles) {
@@ -1316,7 +1330,23 @@ export async function planBatch(args: {
             waitExpiresAt,
           ],
         );
-        const waitRow = waitRes.rows[0];
+        await refreshReservationTtlsForFiles(
+          { project: args.project, filePaths: groupPaths },
+          client,
+        );
+        const synchronizedWait = await client.query<{ wait_token: string; expires_at: string }>(
+          `UPDATE file_batch_waits
+              SET expires_at = COALESCE((
+                    SELECT MIN(r.expires_at) FROM file_reservations r
+                     WHERE r.project = $2 AND r.agent_id = $3
+                       AND r.file_path = ANY($4::text[]) AND r.released_at IS NULL
+                  ), expires_at),
+                  updated_at = NOW()
+            WHERE wait_token = $1::uuid
+            RETURNING wait_token::text AS wait_token, expires_at::text AS expires_at`,
+          [waitRes.rows[0].wait_token, args.project, primaryAgent, groupPaths],
+        );
+        const waitRow = synchronizedWait.rows[0] ?? waitRes.rows[0];
         await emitPlanReadyForExactlyOneExistingPlan(client, {
           wait_token: waitRow.wait_token,
           project: args.project,
@@ -2124,6 +2154,19 @@ export async function commitBatch(args: {
     `UPDATE file_batch_plans SET status = 'committed', committed_at = NOW() WHERE id = $1`,
     [args.plan_id],
   );
+  const legacyParticipants = [...new Set([
+    plan.owner_agent_id,
+    ...plan.ops.map((op) => op.agent_id),
+  ].filter((agentId): agentId is string => Boolean(agentId)))];
+  const legacyPaths = Object.keys(plan.expected_hashes);
+  if (legacyPaths.length > 0 && legacyParticipants.length > 0) {
+    await pool.query(
+      `UPDATE file_reservations SET released_at = NOW()
+        WHERE project = $1 AND file_path = ANY($2::text[])
+          AND agent_id = ANY($3::text[]) AND released_at IS NULL`,
+      [plan.project, legacyPaths, legacyParticipants],
+    );
+  }
 
   return {
     success: true,

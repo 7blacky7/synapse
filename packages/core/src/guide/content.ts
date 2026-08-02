@@ -455,10 +455,10 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
         params: 'new_path',
       },
       reservation_add: {
-        description: 'Eine oder mehrere Dateien kooperativ reservieren. Mehrere verschiedene Agenten duerfen denselben Pfad gleichzeitig reservieren; CE-1 blockiert dadurch noch nichts.',
+        description: 'Eine oder mehrere Dateien kooperativ reservieren. Die TTL skaliert standardmaessig mit 20 Minuten je unterschiedlichem Beteiligtem bis maximal 120 Minuten; BASE=0 schaltet explizit auf Legacy 5 Minuten.',
         params: 'project, agent_id, file_path (String oder Array), expires_at?, plan_id?',
         example: 'files({ action: "reservation_add", project: "synapse", agent_id: "agent-x", file_path: ["src/a.ts", "src/b.ts"] })',
-        tips: 'Retry desselben Agenten/Pfads ist idempotent. Der erste reserved_at entscheidet spaeter in CE-2 ueber den Planungsvorrang.',
+        tips: 'Retry desselben Agenten/Pfads bleibt auch nach einem Restart dieselbe Identitaet: reserved_at und Content-Baseline bleiben erhalten. Activity und offene dateibezogene Plaene erneuern; Takeover folgt erst nach Grace und vier atomaren Sicherheitspruefungen.',
       },
       reservation_release: {
         description: 'Eigene aktive Reservierungen fuer einzelne Pfade freigeben.',
@@ -472,7 +472,7 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
         tips: 'release_paths, keep_paths und add_paths muessen disjunkt sein. Nicht genannte Reservierungen bleiben unangetastet.',
       },
       reservation_list: {
-        description: 'Reservierungsstand listen; standardmaessig nur nicht freigegebene Zeilen. Ablauf wird in CE-1 nur als is_expired angezeigt und blockiert noch nichts.',
+        description: 'Reservierungsstand listen; standardmaessig nur nicht freigegebene Zeilen. Ablauf allein gibt den Planungsvorrang nicht frei; Takeover-Audit steht in taken_over_at/taken_over_by.',
         params: 'project; optional file_path (String oder Array), reservation_agent_id/agent_filter, include_released',
         example: 'files({ action: "reservation_list", project: "synapse", agent_id: "pruefer", file_path: "src/a.ts" })',
         tips: 'agent_id ist Attribution. Fuer den Besitzer-Filter reservation_agent_id oder agent_filter nutzen, damit ein Pruefer mehrere Agenten sehen kann.',
@@ -502,10 +502,10 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
         tips: 'Greift bei Multi-File-Plans (Schritt 2): commit setzt batch_id=plan_id in jedem file_versions-Snapshot. Auch fuer manuelle Bulk-Rollbacks nutzbar wenn batch_id manuell vergeben wurde.',
       },
       plan: {
-        description: 'Phase A eines Multi-File-Edits: dry-runt ops[], erfasst Hashes/Previews und trennt nur Pfade mit fremder primaerer aktiver Reservierung als persistente, nach primary_agent gruppierte coedit_waits ab. move/copy prueft auch new_path; abgelaufene Reservierungen werden ignoriert. auto_commit schreibt ausschliesslich den konfliktfreien Teilplan. Ohne Ueberlappung bleibt die Antwort unveraendert.',
+        description: 'Phase A eines Multi-File-Edits: dry-runt ops[], erfasst Hashes/Previews und trennt Pfade mit fremder primaerer nicht freigegebener Reservierung als persistente, nach primary_agent gruppierte coedit_waits ab. move/copy prueft auch new_path; Ablauf allein gibt den Vorrang nicht frei. auto_commit schreibt ausschliesslich den konfliktfreien Teilplan. Ohne Ueberlappung bleibt die Antwort unveraendert.',
         params: 'project (req), ops (req, Array von { file_path, action, new_path?, content?, search?, replace?, edits?, line_start?, line_end?, after_line?, shift_mode?, reason? }), agent_id, open_for_coedit, reason (Top-Level)',
         example: 'files({ action: "plan", project: "synapse", reason: "Refactor Modul X", ops: [{ file_path: "src/x.ts", action: "replace_lines", line_start: 10, line_end: 15, content: "neu" }, { file_path: "src/x.ts", action: "insert_after", after_line: 50, content: "// log" }, { file_path: "src/x.ts", action: "delete_lines", line_start: 80, line_end: 85 }] })',
-        tips: 'Plan laeuft nach 5 Minuten ab. open_for_coedit=false sperrt coedit_add. Op-Actions: create, update, search_replace, search_replace_batch, replace_lines, insert_after, delete_lines, delete, move, copy. Mehrere Ops auf gleicher Datei sind moeglich; line-Ops nutzen standardmaessig shift_mode="auto". Shared Ops werden ueber wait_token und CE-3-Actions direkt in genau einen gemeinsamen Primaerplan integriert.',
+        tips: 'Der Wait folgt der skalierten Primaerreservierungs-TTL. Polling hoechstens einmal pro Minute und nur mit konkretem wait_token; Activity ist Lebenssignal, aber kein Takeover-Beweis. open_for_coedit=false sperrt coedit_add. Op-Actions: create, update, search_replace, search_replace_batch, replace_lines, insert_after, delete_lines, delete, move, copy. Mehrere Ops auf gleicher Datei sind moeglich; line-Ops nutzen standardmaessig shift_mode="auto". Shared Ops werden ueber wait_token und CE-3-Actions direkt in genau einen gemeinsamen Primaerplan integriert.',
       },
       coedit_add: {
         description: 'Haengt die noch offene deferred Operation des konkreten waiting_agent genau einmal an den offenen Primaerplan. Die Herkunft agent_id wird serverseitig gesetzt; Input-Herkunft ist nicht vertrauenswuerdig.',

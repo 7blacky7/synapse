@@ -245,9 +245,13 @@ CREATE TABLE public.file_reservations (
     agent_id text NOT NULL,
     file_path text NOT NULL,
     reserved_at timestamp with time zone DEFAULT now() NOT NULL,
-    expires_at timestamp with time zone DEFAULT (now() + '00:05:00'::interval) NOT NULL,
+    expires_at timestamp with time zone DEFAULT (now() + '00:20:00'::interval) NOT NULL,
     released_at timestamp with time zone,
-    plan_id bigint
+    plan_id bigint,
+    content_hash_at_reservation text NOT NULL,
+    last_extended_at timestamp with time zone DEFAULT now() NOT NULL,
+    taken_over_at timestamp with time zone,
+    taken_over_by text
 );
 
 CREATE SEQUENCE public.file_reservations_id_seq
@@ -270,6 +274,10 @@ CREATE INDEX idx_file_reservations_path
 
 CREATE INDEX idx_file_reservations_agent
     ON public.file_reservations USING btree (project, agent_id);
+
+CREATE INDEX idx_file_reservations_due
+    ON public.file_reservations USING btree (project, expires_at)
+    WHERE (released_at IS NULL);
 
 -- Absichtlich partiell UND dreispaltig: Retry desselben Agenten ist idempotent,
 -- verschiedene Agenten duerfen denselben Pfad gleichzeitig reservieren.

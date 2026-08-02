@@ -285,6 +285,26 @@ export async function startServer(): Promise<void> {
     console.log('[Synapse API] Session-Reaper per SESSION_REAPER_DISABLED=1 ausgeschaltet');
   }
 
+  // CE-6: skalierbare Reservierungs-TTLs im 24/7-REST-Prozess (Default an).
+  if (process.env.SYNAPSE_RESERVATION_TTL_WORKER_DISABLED !== '1') {
+    const { getReservationTtlConfig, renewFileReservationTtls } = await import('@synapse/core');
+    const reservationTtl = getReservationTtlConfig();
+    if (reservationTtl.enabled) {
+      const runReservationRenewal = (): void => {
+        void renewFileReservationTtls().catch((error: unknown) => {
+          console.error('[Synapse API] Reservation-TTL-Worker fehlgeschlagen:', error);
+        });
+      };
+      runReservationRenewal();
+      setInterval(runReservationRenewal, reservationTtl.workerIntervalMs).unref();
+      console.log(`[Synapse API] Reservation-TTL-Worker aktiv (Basis ${reservationTtl.baseMinutes}m, Cap ${reservationTtl.maxMinutes}m)`);
+    } else {
+      console.log('[Synapse API] Reservation-TTL Legacy-Modus aktiv (BASE=0, 5 Minuten)');
+    }
+  } else {
+    console.log('[Synapse API] Reservation-TTL-Worker explizit ausgeschaltet');
+  }
+
   // Server erstellen und starten
   const server = await createServer();
 

@@ -538,6 +538,9 @@ export {
   normalizeReservationFilePaths,
   findForeignActiveReservationPrimaries,
   getDirectWriteReservationHint,
+  getReservationTtlConfig,
+  refreshReservationTtlsForFiles,
+  renewFileReservationTtls,
 } from './services/file-reservations.js';
 export type {
   FileReservation,
@@ -545,6 +548,7 @@ export type {
   ReservationUpdateResult,
   ForeignActiveReservationPrimary,
   DirectWriteReservationHint,
+  ReservationTtlConfig,
 } from './services/file-reservations.js';
 export type { BackupEntry } from './services/backup.js';
 export type { ChatMessage, AgentSession } from './services/chat.js';

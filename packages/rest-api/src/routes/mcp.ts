@@ -839,7 +839,7 @@ const MCP_TOOLS = [
         release_paths: { type: 'array', items: { type: 'string' }, description: 'reservation_update: explizit freizugebende Pfade.' },
         keep_paths: { type: 'array', items: { type: 'string' }, description: 'reservation_update: explizit beizubehaltende Pfade.' },
         add_paths: { type: 'array', items: { type: 'string' }, description: 'reservation_update: neu hinzuzunehmende Pfade.' },
-        expires_at: { type: 'string', description: 'reservation_add/update: optionaler ISO-Ablaufzeitpunkt; Default jetzt + 5 Minuten.' },
+        expires_at: { type: 'string', description: 'reservation_add/update: optionaler ISO-Ablaufzeitpunkt; Default skaliert mit 20 Minuten je Beteiligtem (max. 120); BASE=0 aktiviert Legacy 5 Minuten.' },
         reservation_agent_id: { type: 'string', description: 'reservation_list: optionaler Besitzer-Filter. agent_id bleibt Attribution des aufrufenden Agenten.' },
         include_released: { type: 'boolean', description: 'reservation_list: auch bereits freigegebene Zeilen anzeigen (Default false).' },
 
@@ -987,7 +987,7 @@ const MCP_TOOLS = [
         release_paths: { type: 'array', items: { type: 'string' }, description: 'reservation_update: explizit freizugebende Pfade.' },
         keep_paths: { type: 'array', items: { type: 'string' }, description: 'reservation_update: explizit beizubehaltende Pfade.' },
         add_paths: { type: 'array', items: { type: 'string' }, description: 'reservation_update: neu hinzuzunehmende Pfade.' },
-        expires_at: { type: 'string', description: 'reservation_add/update: optionaler ISO-Ablaufzeitpunkt; Default jetzt + 5 Minuten.' },
+        expires_at: { type: 'string', description: 'reservation_add/update: optionaler ISO-Ablaufzeitpunkt; Default skaliert mit 20 Minuten je Beteiligtem (max. 120); BASE=0 aktiviert Legacy 5 Minuten.' },
         reservation_agent_id: { type: 'string', description: 'reservation_list: optionaler Besitzer-Filter. agent_id bleibt Attribution des aufrufenden Agenten.' },
         include_released: { type: 'boolean', description: 'reservation_list: auch bereits freigegebene Zeilen anzeigen (Default false).' },
         open_for_coedit: { type: 'boolean', description: 'plan: ob der konkrete waiting_agent Co-Edit-Ops beitragen darf (default true)' },

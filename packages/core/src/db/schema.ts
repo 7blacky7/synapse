@@ -884,14 +884,34 @@ CREATE TABLE IF NOT EXISTS file_reservations (
   agent_id TEXT NOT NULL,
   file_path TEXT NOT NULL,
   reserved_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  expires_at TIMESTAMPTZ NOT NULL DEFAULT NOW() + INTERVAL '5 minutes',
+  expires_at TIMESTAMPTZ NOT NULL DEFAULT NOW() + INTERVAL '20 minutes',
   released_at TIMESTAMPTZ,
-  plan_id BIGINT
+  plan_id BIGINT,
+  content_hash_at_reservation TEXT NOT NULL,
+  last_extended_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  taken_over_at TIMESTAMPTZ,
+  taken_over_by TEXT
 );
+ALTER TABLE file_reservations ADD COLUMN IF NOT EXISTS content_hash_at_reservation TEXT;
+ALTER TABLE file_reservations ADD COLUMN IF NOT EXISTS last_extended_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+ALTER TABLE file_reservations ADD COLUMN IF NOT EXISTS taken_over_at TIMESTAMPTZ;
+ALTER TABLE file_reservations ADD COLUMN IF NOT EXISTS taken_over_by TEXT;
+UPDATE file_reservations r
+   SET content_hash_at_reservation = COALESCE(
+         (SELECT cf.content_hash FROM code_files cf
+           WHERE cf.project = r.project AND cf.file_path = r.file_path
+             AND cf.deleted_at IS NULL LIMIT 1),
+         'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'
+       )
+ WHERE r.content_hash_at_reservation IS NULL;
+ALTER TABLE file_reservations ALTER COLUMN content_hash_at_reservation SET NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_file_reservations_path
   ON file_reservations(project, file_path);
 CREATE INDEX IF NOT EXISTS idx_file_reservations_agent
   ON file_reservations(project, agent_id);
+CREATE INDEX IF NOT EXISTS idx_file_reservations_due
+  ON file_reservations(project, expires_at)
+  WHERE released_at IS NULL;
 -- Absichtlich partiell UND dreispaltig: Retry desselben Agenten ist idempotent,
 -- verschiedene Agenten duerfen denselben Pfad gleichzeitig reservieren.
 -- NIEMALS zu UNIQUE(project, file_path) "vereinfachen" — das zerstoert Co-Edit.
