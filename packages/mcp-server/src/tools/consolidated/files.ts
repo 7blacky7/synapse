@@ -43,6 +43,7 @@ import {
   updateFileReservations,
   listFileReservations,
   normalizeReservationFilePaths,
+  getDirectWriteReservationHint,
 } from '@synapse/core';
 import type { BatchEdit, FileBatchOp } from '@synapse/core';
 
@@ -533,6 +534,19 @@ export const filesTool: ConsolidatedTool = {
       return { content, wasFixed: false };
     }
 
+    async function attachDirectWriteReservationHint(
+      response: Record<string, unknown>,
+      filePaths: string[],
+    ): Promise<Record<string, unknown>> {
+      const reservationHint = await getDirectWriteReservationHint({
+        project,
+        agentId,
+        filePaths,
+      });
+      if (reservationHint) response.reservation_hint = reservationHint;
+      return response;
+    }
+
     async function attachWarnings(response: Record<string, unknown>, result: { warnings?: Array<{ id: string; severity: string; description: string; fix: string }> }) {
       if (result.warnings?.length) {
         response.errorPatterns = {
@@ -560,7 +574,7 @@ export const filesTool: ConsolidatedTool = {
       try {
         Object.assign(response, await embeddingPendingHint(project, filePath));
       } catch { /* Hinweis darf Write nicht blockieren */ }
-      return response;
+      return attachDirectWriteReservationHint(response, [filePath]);
     }
 
     switch (action) {
@@ -651,7 +665,10 @@ export const filesTool: ConsolidatedTool = {
 
       case 'delete': {
         await softDeleteFile(project, filePath);
-        return { success: true, message: `Datei "${filePath}" geloescht` };
+        return attachDirectWriteReservationHint(
+          { success: true, message: `Datei "${filePath}" geloescht` },
+          [filePath],
+        );
       }
 
       case 'move': {
@@ -660,7 +677,10 @@ export const filesTool: ConsolidatedTool = {
           newPath = toRelativePath(projectRootPath, newPath);
         }
         await moveFileInPg(project, filePath, newPath);
-        return { success: true, message: `Datei verschoben: "${filePath}" → "${newPath}"`, ...(await embeddingPendingHint(project, newPath)) };
+        return attachDirectWriteReservationHint(
+          { success: true, message: `Datei verschoben: "${filePath}" → "${newPath}"`, ...(await embeddingPendingHint(project, newPath)) },
+          [filePath, newPath],
+        );
       }
 
       case 'copy': {
@@ -669,7 +689,10 @@ export const filesTool: ConsolidatedTool = {
           newPath = toRelativePath(projectRootPath, newPath);
         }
         await copyFileInPg(project, filePath, newPath);
-        return { success: true, message: `Datei kopiert: "${filePath}" → "${newPath}"`, ...(await embeddingPendingHint(project, newPath)) };
+        return attachDirectWriteReservationHint(
+          { success: true, message: `Datei kopiert: "${filePath}" → "${newPath}"`, ...(await embeddingPendingHint(project, newPath)) },
+          [filePath, newPath],
+        );
       }
 
       case 'replace_lines': {

@@ -335,3 +335,102 @@ export async function listFileReservations(args: {
   );
   return rows.map(mapReservation);
 }
+
+
+export interface ForeignActiveReservationPrimary {
+  file_path: string;
+  reserved_by: string;
+  reserved_since: string;
+  expires_at: string;
+}
+
+export interface DirectWriteReservationHint {
+  files: ForeignActiveReservationPrimary[];
+  message: string;
+}
+
+type ReservationQueryClient = PoolClient | ReturnType<typeof getPool>;
+
+/**
+ * Liefert pro Pfad die aelteste aktive Reservierung, sofern sie nicht dem
+ * aufrufenden Agenten gehoert. Ranking und Caller-Filter entsprechen exakt
+ * der CE-2-Logik in planBatch.
+ */
+export async function findForeignActiveReservationPrimaries(
+  args: {
+    project: string;
+    callerAgentId?: string | null;
+    filePaths: readonly string[];
+  },
+  client: ReservationQueryClient = getPool(),
+): Promise<ForeignActiveReservationPrimary[]> {
+  const filePaths = [...new Set(args.filePaths.filter((filePath) => filePath.length > 0))];
+  if (filePaths.length === 0) return [];
+
+  const { rows } = await client.query<{
+    file_path: string;
+    reserved_by: string;
+    reserved_since: Date | string;
+    expires_at: Date | string;
+  }>(
+    `WITH ranked AS (
+       SELECT file_path, agent_id, reserved_at, expires_at,
+              ROW_NUMBER() OVER (
+                PARTITION BY file_path ORDER BY reserved_at ASC, id ASC
+              ) AS reservation_rank
+         FROM file_reservations
+        WHERE project = $1
+          AND file_path = ANY($2::text[])
+          AND released_at IS NULL
+          AND expires_at > NOW()
+     )
+     SELECT file_path, agent_id AS reserved_by, reserved_at AS reserved_since, expires_at
+       FROM ranked
+      WHERE reservation_rank = 1
+        AND ($3::text IS NULL OR agent_id <> $3)`,
+    [args.project, filePaths, args.callerAgentId ?? null],
+  );
+
+  const byPath = new Map(rows.map((row) => [row.file_path, row] as const));
+  return filePaths.flatMap((filePath) => {
+    const row = byPath.get(filePath);
+    return row
+      ? [{
+          file_path: row.file_path,
+          reserved_by: row.reserved_by,
+          reserved_since: iso(row.reserved_since),
+          expires_at: iso(row.expires_at),
+        }]
+      : [];
+  });
+}
+
+/**
+ * Best-effort-Decorator fuer erfolgreiche direkte Writes. Ein Fehler beim
+ * Hinweis-Check darf den bereits gelungenen Write niemals kippen.
+ */
+export async function getDirectWriteReservationHint(args: {
+  project: string;
+  agentId?: string;
+  filePaths: readonly string[];
+}): Promise<DirectWriteReservationHint | undefined> {
+  if (!args.agentId) return undefined;
+  try {
+    const files = await findForeignActiveReservationPrimaries({
+      project: args.project,
+      callerAgentId: args.agentId,
+      filePaths: args.filePaths,
+    });
+    if (files.length === 0) return undefined;
+    return {
+      files,
+      message: 'Schreiben wurde nicht blockiert. Reserviere die Datei und nutze files(action: "plan"), um dich in die Koordination einzuklinken.',
+    };
+  } catch (error) {
+    console.error(
+      '[Synapse] Reservierungs-Hinweis fuer direkten Write fehlgeschlagen (best-effort):',
+      error instanceof Error ? error.message : error,
+    );
+    return undefined;
+  }
+}

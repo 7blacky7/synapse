@@ -536,11 +536,15 @@ export {
   updateFileReservations,
   listFileReservations,
   normalizeReservationFilePaths,
+  findForeignActiveReservationPrimaries,
+  getDirectWriteReservationHint,
 } from './services/file-reservations.js';
 export type {
   FileReservation,
   ReservationMutationResult,
   ReservationUpdateResult,
+  ForeignActiveReservationPrimary,
+  DirectWriteReservationHint,
 } from './services/file-reservations.js';
 export type { BackupEntry } from './services/backup.js';
 export type { ChatMessage, AgentSession } from './services/chat.js';

@@ -125,6 +125,7 @@ import {
   updateFileReservations,
   listFileReservations,
   normalizeReservationFilePaths,
+  getDirectWriteReservationHint,
   holeSprachSkillVorschlaege,
   holeChannelSkillVorschlaege,
   // Project-Init-Queue (Self-Service Project-Bootstrap)
@@ -1181,6 +1182,29 @@ const COEDIT_WAIT_OUTPUT_SCHEMA: Record<string, unknown> = {
   },
 };
 
+const DIRECT_WRITE_RESERVATION_HINT_OUTPUT_SCHEMA: Record<string, unknown> = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['files', 'message'],
+  properties: {
+    files: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['file_path', 'reserved_by', 'reserved_since', 'expires_at'],
+        properties: {
+          file_path: { type: 'string' },
+          reserved_by: { type: 'string' },
+          reserved_since: { type: 'string' },
+          expires_at: { type: 'string' },
+        },
+      },
+    },
+    message: { type: 'string' },
+  },
+};
+
 const OUTPUT_EXTRAS: Record<string, { props?: Record<string, unknown>; example?: unknown }> = {
   files: {
     props: {
@@ -1194,6 +1218,7 @@ const OUTPUT_EXTRAS: Record<string, { props?: Record<string, unknown>; example?:
       requested_total_ops: { type: 'number' },
       deferred_ops: { type: 'number' },
       coedit_waits: COEDIT_WAIT_OUTPUT_SCHEMA,
+      reservation_hint: DIRECT_WRITE_RESERVATION_HINT_OUTPUT_SCHEMA,
       wait_token: { type: 'string' },
       primary_plan_id: { type: 'string' },
       shared_files: { type: 'array', items: { type: 'string' } },
@@ -1283,6 +1308,7 @@ const OUTPUT_EXTRAS: Record<string, { props?: Record<string, unknown>; example?:
       requested_total_ops: { type: 'number' },
       deferred_ops: { type: 'number' },
       coedit_waits: COEDIT_WAIT_OUTPUT_SCHEMA,
+      reservation_hint: DIRECT_WRITE_RESERVATION_HINT_OUTPUT_SCHEMA,
       wait_token: { type: 'string' },
       primary_plan_id: { type: 'string' },
       shared_files: { type: 'array', items: { type: 'string' } },
@@ -1692,6 +1718,48 @@ async function attachRestChannelHints(
       newest_id: hint.newestId,
     })),
   };
+}
+
+/**
+ * CE-2b — additiver Hinweis nach erfolgreichen direkten Datei-Writes.
+ *
+ * Fehlgeschlagene, nicht angewendete und planbasierte Aktionen bleiben unveraendert.
+ * Der gemeinsame Core-Helper ist best-effort; Reservierungen blockieren den Write nie.
+ */
+async function attachDirectWriteReservationHint(
+  result: unknown,
+  toolName: string,
+  args: Record<string, unknown>,
+): Promise<unknown> {
+  if ((toolName !== 'files' && toolName !== 'files_batch')
+    || typeof result !== 'object' || result === null || Array.isArray(result)) {
+    return result;
+  }
+
+  const action = str(args, 'action');
+  const directWriteActions = new Set([
+    'create', 'update', 'delete', 'move', 'copy',
+    'replace_lines', 'insert_after', 'delete_lines',
+    'search_replace', 'search_replace_batch',
+  ]);
+  if (!action || !directWriteActions.has(action)) return result;
+
+  const response = result as Record<string, unknown>;
+  if (response.success !== true) return result;
+  if ((action === 'create' || action === 'update') && response.applied === false) return result;
+  if (action === 'search_replace' && (typeof response.count !== 'number' || response.count <= 0)) return result;
+  if (action === 'search_replace_batch' && (typeof response.applied !== 'number' || response.applied <= 0)) return result;
+
+  const filePath = str(args, 'file_path');
+  if (!filePath) return result;
+  const newPath = action === 'move' || action === 'copy' ? str(args, 'new_path') : undefined;
+  const reservationHint = await getDirectWriteReservationHint({
+    project: reqStr(args, 'project'),
+    agentId: resolveAgentId(str(args, 'agent_id')) ?? undefined,
+    filePaths: newPath ? [filePath, newPath] : [filePath],
+  });
+  if (!reservationHint) return result;
+  return { ...response, reservation_hint: reservationHint };
 }
 
 /**
@@ -4877,7 +4945,11 @@ export async function mcpRoutes(fastify: FastifyInstance): Promise<void> {
               await attachRestChannelHints(
                 await attachSkillHinweisgeber(
                   await attachRestOnboarding(
-                    await handleToolCall(toolName, toolArgs, explicitAgentId),
+                    await attachDirectWriteReservationHint(
+                      await handleToolCall(toolName, toolArgs, explicitAgentId),
+                      toolName,
+                      toolArgs,
+                    ),
                     toolArgs,
                   ),
                   toolName,
@@ -5017,7 +5089,11 @@ export async function mcpRoutes(fastify: FastifyInstance): Promise<void> {
             const toolResult = await attachRestChannelHints(
               await attachSkillHinweisgeber(
                 await attachRestOnboarding(
-                  await handleToolCall(toolName, toolArgs, explicitAgentId),
+                    await attachDirectWriteReservationHint(
+                      await handleToolCall(toolName, toolArgs, explicitAgentId),
+                      toolName,
+                      toolArgs,
+                    ),
                   toolArgs,
                 ),
                 toolName,

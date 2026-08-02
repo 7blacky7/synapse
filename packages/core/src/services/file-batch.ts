@@ -32,6 +32,10 @@ import {
   getFileContentFromPg,
 } from './code-write.js';
 import type { BatchEdit } from './code-write.js';
+import {
+  findForeignActiveReservationPrimaries,
+  type ForeignActiveReservationPrimary,
+} from './file-reservations.js';
 
 /** Hash eines leeren Strings — Marker fuer "Datei existiert (noch) nicht". */
 const EMPTY_CONTENT_HASH = contentHash('');
@@ -609,11 +613,6 @@ async function ensureBuffer(
   return buf;
 }
 
-interface ActiveReservationPrimaryRow {
-  file_path: string;
-  agent_id: string;
-  expires_at: Date | string;
-}
 
 function touchedPaths(op: FileBatchOp): string[] {
   return (op.action === 'move' || op.action === 'copy') && op.new_path
@@ -708,27 +707,14 @@ export async function planBatch(args: {
     await client.query('BEGIN');
     const ownerAgentId = resolveAgentId(args.agent_id);
     const plannedPaths = [...fileBuffers.keys()];
-    const reservationRes = await client.query<ActiveReservationPrimaryRow>(
-      `WITH ranked AS (
-         SELECT file_path, agent_id, expires_at,
-                ROW_NUMBER() OVER (
-                  PARTITION BY file_path ORDER BY reserved_at ASC, id ASC
-                ) AS reservation_rank
-           FROM file_reservations
-          WHERE project = $1
-            AND file_path = ANY($2::text[])
-            AND released_at IS NULL
-            AND expires_at > NOW()
-       )
-       SELECT file_path, agent_id, expires_at
-         FROM ranked
-        WHERE reservation_rank = 1
-          AND ($3::text IS NULL OR agent_id <> $3)`,
-      [args.project, plannedPaths, ownerAgentId],
-    );
+    const reservationRows = await findForeignActiveReservationPrimaries({
+      project: args.project,
+      callerAgentId: ownerAgentId,
+      filePaths: plannedPaths,
+    }, client);
 
     const primaryByPath = new Map(
-      reservationRes.rows.map((row) => [row.file_path, row] as const),
+      reservationRows.map((row) => [row.file_path, row] as const),
     );
     const sharedPaths = new Set(primaryByPath.keys());
     const immediateEntries = args.ops
@@ -771,14 +757,14 @@ export async function planBatch(args: {
 
     const coeditWaits: CoeditWaitGroup[] = [];
     if (sharedPaths.size > 0) {
-      const groups = new Map<string, ActiveReservationPrimaryRow[]>();
+      const groups = new Map<string, ForeignActiveReservationPrimary[]>();
       // Reihenfolge folgt den geplanten Pfaden, nicht der zufaelligen Query-Reihenfolge.
       for (const filePath of plannedPaths) {
         const reservation = primaryByPath.get(filePath);
         if (!reservation) continue;
-        const entries = groups.get(reservation.agent_id) ?? [];
+        const entries = groups.get(reservation.reserved_by) ?? [];
         entries.push(reservation);
-        groups.set(reservation.agent_id, entries);
+        groups.set(reservation.reserved_by, entries);
       }
 
       for (const [primaryAgent, reservations] of groups) {

@@ -358,7 +358,7 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
   // files — Datei-Manipulation
   // -------------------------------------------------------------------------
   files: {
-    summary: 'Dateien erstellen/bearbeiten/lesen und kooperativ reservieren (reservation_add/release/update/list). FileWatcher synct auf Dateisystem. Auto-Versionierung (versions/restore). Multi-File Plan/Commit fuer atomare Aenderungen ueber mehrere Dateien (plan/commit/cancel). CE-1-Reservierungen sind reine Buchfuehrung und blockieren noch nichts.',
+    summary: 'Dateien erstellen/bearbeiten/lesen und kooperativ reservieren (reservation_add/release/update/list). FileWatcher synct auf Dateisystem. Auto-Versionierung (versions/restore). Multi-File Plan/Commit fuer atomare Aenderungen ueber mehrere Dateien (plan/commit/cancel). Reservierungen blockieren direkte Writes nicht; bei einer aktiven fremden Primaerreservierung enthaelt die erfolgreiche Antwort additiv reservation_hint.',
     when_to_use: [
       'Neue Datei anlegen: create.',
       'Gezielte Aenderung in bestehender Datei: search_replace oder replace_lines.',
@@ -376,7 +376,8 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
       'search_replace: search muss EXAKT matchen (inkl. Whitespace). Bei mehrfach Vorkommen: nimm laengeren context.',
       'replace_lines: line_start/line_end sind 1-basiert, inklusive.',
       'insert_after: after_line=0 fuegt am Dateianfang ein.',
-      'agent_id angeben bei writes — aktiviert Error-Pattern-Check (warnt vor bekannten Fehlern).',
+      'agent_id angeben bei writes — aktiviert Error-Pattern-Check und den optionalen reservation_hint bei fremder aktiver Primaerreservierung.',
+      'reservation_hint blockiert den Write nie. Reserviere den Pfad selbst und nutze files(plan), um dich in die gemeinsame Koordination einzuklinken.',
     ].join('\\n'),
     examples: [
       'files({ action: "create", project: "synapse", file_path: "docs/new.md", content: "# Hallo" })',
