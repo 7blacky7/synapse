@@ -1578,6 +1578,42 @@ CREATE TABLE IF NOT EXISTS embedding_knoten (
 );
 CREATE INDEX IF NOT EXISTS idx_embedding_knoten_letzter_kontakt
   ON embedding_knoten(letzter_kontakt);
+
+-- API-Bruecke Schritt 4: das Wissen eines Spezialisten in der Datenbank statt als
+-- Datei unter .synapse/agents/<name>/. Bildet packages/agents/src/skills.ts ab:
+--   meta.yaml -> art='meta' (Inhalt JSON), rules/errors/patterns/context.md ->
+--   art='regeln'/'fehler'/'muster'/'kontext', system-prompt.txt -> art='system_prompt'.
+-- ZWEI FORMEN, weil der Dateiweg zwei Zugriffsarten kennt und sonst eine davon
+-- gefaelscht werden muesste:
+--   form='block'   = Ergebnis von writeSkillFile (ein ganzer Text)
+--   form='eintrag' = Ergebnis von appendToSkillFile (ein Bullet mit Datum)
+-- Die Spalte tag ersetzt die Datums-Kopfzeile "## JJJJ-MM-TT", die im Dateiweg
+-- Fliesstext ist und per includes() gesucht wird; als Spalte kann sie nicht mehr
+-- versehentlich im Fliesstext getroffen werden.
+-- ⚠️ KEIN FREMDSCHLUESSEL, und das ist Absicht: das Wissen eines Agenten muss auch
+-- dann existieren koennen, wenn gerade kein Wrapper laeuft. Ein FK auf
+-- wrapper_status wuerde das Wissen an die Laufzeit koppeln. Nicht "vergessen".
+CREATE TABLE IF NOT EXISTS agent_wissen (
+  id              BIGSERIAL PRIMARY KEY,
+  project         TEXT NOT NULL,
+  agent_name      TEXT NOT NULL,
+  art             TEXT NOT NULL CHECK (art IN ('regeln','fehler','muster','kontext','meta','system_prompt')),
+  form            TEXT NOT NULL DEFAULT 'eintrag' CHECK (form IN ('block','eintrag')),
+  inhalt          TEXT NOT NULL,
+  tag             DATE NOT NULL DEFAULT CURRENT_DATE,
+  quelle          TEXT,
+  erstellt_am     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  aktualisiert_am TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_agent_wissen_agent
+  ON agent_wissen(project, agent_name, art, tag, id);
+-- Einmaligkeit gilt NUR fuer den Block, nicht fuer die Eintraege. Dieser Teilindex
+-- ist zugleich die Bedingung, die legeAgentWissenAn race-sicher macht
+-- (INSERT ... ON CONFLICT (project, agent_name, art) WHERE form='block' DO NOTHING):
+-- zwei gleichzeitige Spawns desselben Namens koennen einander das gelernte Wissen
+-- damit nicht mehr wegraeumen.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_wissen_block
+  ON agent_wissen(project, agent_name, art) WHERE form = 'block';
 `;
 
 export async function ensureSchema(): Promise<void> {

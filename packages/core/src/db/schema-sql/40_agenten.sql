@@ -480,3 +480,72 @@ CREATE INDEX idx_wrapper_status_project ON public.wrapper_status USING btree (pr
 --
 
 CREATE INDEX idx_wrapper_status_status ON public.wrapper_status USING btree (status, last_activity);
+
+--
+-- Name: agent_wissen; Type: TABLE; Schema: public
+--
+-- Wissen eines Spezialisten (API-Bruecke Schritt 4). Spiegel zu schema.ts.
+-- Kein Fremdschluessel: das Wissen muss auch ohne laufenden Wrapper existieren.
+-- Dieser Block steht am Dateiende statt in der pg_dump-Sortierung; er ist in sich
+-- geschlossen (Tabelle, Sequence, DEFAULT, Primaerschluessel, Indizes) und die
+-- Reihenfolge der Sachgebiets-Bloecke ist laut README dieses Ordners beliebig.
+--
+
+CREATE TABLE public.agent_wissen (
+    id bigint NOT NULL,
+    project text NOT NULL,
+    agent_name text NOT NULL,
+    art text NOT NULL,
+    form text DEFAULT 'eintrag'::text NOT NULL,
+    inhalt text NOT NULL,
+    tag date DEFAULT CURRENT_DATE NOT NULL,
+    quelle text,
+    erstellt_am timestamp with time zone DEFAULT now() NOT NULL,
+    aktualisiert_am timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT agent_wissen_art_check CHECK ((art = ANY (ARRAY['regeln'::text, 'fehler'::text, 'muster'::text, 'kontext'::text, 'meta'::text, 'system_prompt'::text]))),
+    CONSTRAINT agent_wissen_form_check CHECK ((form = ANY (ARRAY['block'::text, 'eintrag'::text])))
+);
+
+--
+-- Name: agent_wissen_id_seq; Type: SEQUENCE; Schema: public
+--
+
+CREATE SEQUENCE public.agent_wissen_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+--
+-- Name: agent_wissen_id_seq; Type: SEQUENCE OWNED BY; Schema: public
+--
+
+ALTER SEQUENCE public.agent_wissen_id_seq OWNED BY public.agent_wissen.id;
+
+--
+-- Name: agent_wissen id; Type: DEFAULT; Schema: public
+--
+
+ALTER TABLE ONLY public.agent_wissen ALTER COLUMN id SET DEFAULT nextval('public.agent_wissen_id_seq'::regclass);
+
+--
+-- Name: agent_wissen agent_wissen_pkey; Type: CONSTRAINT; Schema: public
+--
+
+ALTER TABLE ONLY public.agent_wissen
+    ADD CONSTRAINT agent_wissen_pkey PRIMARY KEY (id);
+
+--
+-- Name: idx_agent_wissen_agent; Type: INDEX; Schema: public
+--
+
+CREATE INDEX idx_agent_wissen_agent ON public.agent_wissen USING btree (project, agent_name, art, tag, id);
+
+--
+-- Name: idx_agent_wissen_block; Type: INDEX; Schema: public
+--
+-- Einmaligkeit nur fuer den Block, nicht fuer die Eintraege.
+--
+
+CREATE UNIQUE INDEX idx_agent_wissen_block ON public.agent_wissen USING btree (project, agent_name, art) WHERE (form = 'block'::text);
