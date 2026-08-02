@@ -1157,6 +1157,22 @@ const OUTPUT_ENVELOPE_PROPS: Record<string, unknown> = {
   error: { type: 'string', description: 'Fehlermeldung wenn success=false' },
 };
 
+const COEDIT_WAIT_OUTPUT_SCHEMA: Record<string, unknown> = {
+  type: 'array',
+  items: {
+    type: 'object',
+    additionalProperties: false,
+    required: ['primary_agent', 'shared_files', 'wait_token', 'retry_after_seconds', 'expires_at'],
+    properties: {
+      primary_agent: { type: 'string' },
+      shared_files: { type: 'array', items: { type: 'string' } },
+      wait_token: { type: 'string', description: 'Opaquer CE-2-Wait-Token' },
+      retry_after_seconds: { type: 'number' },
+      expires_at: { type: 'string' },
+    },
+  },
+};
+
 const OUTPUT_EXTRAS: Record<string, { props?: Record<string, unknown>; example?: unknown }> = {
   files: {
     props: {
@@ -1166,6 +1182,9 @@ const OUTPUT_EXTRAS: Record<string, { props?: Record<string, unknown>; example?:
       total_lines: { type: 'number' },
       version_id: { type: 'string', description: 'BIGSERIAL-Versions-ID (fuer get_version/restore)' },
       returned_range: { type: 'object', properties: { from: { type: 'number' }, to: { type: 'number' }, eof: { type: 'boolean' } } },
+      requested_total_ops: { type: 'number' },
+      deferred_ops: { type: 'number' },
+      coedit_waits: COEDIT_WAIT_OUTPUT_SCHEMA,
     },
     example: { success: true, file_path: 'src/index.ts', size: 1234, content: '...', total_lines: 42, returned_range: { from: 1, to: 42, eof: true } },
   },
@@ -1236,7 +1255,16 @@ const OUTPUT_EXTRAS: Record<string, { props?: Record<string, unknown>; example?:
     example: { success: true, scope: 'tool', tool: 'files', guide: { summary: '...', when_to_use: '...', examples: ['files({ action: "create", ... })'], actions: {} } },
   },
   files_batch: {
-    props: { project: { type: 'string' }, count: { type: 'number' }, entries: { type: 'array', items: { type: 'object' } }, plan_id: { type: 'string' }, status: { type: 'string' } },
+    props: {
+      project: { type: 'string' },
+      count: { type: 'number' },
+      entries: { type: 'array', items: { type: 'object' } },
+      plan_id: { type: 'string' },
+      status: { type: 'string' },
+      requested_total_ops: { type: 'number' },
+      deferred_ops: { type: 'number' },
+      coedit_waits: COEDIT_WAIT_OUTPUT_SCHEMA,
+    },
     example: { success: true, project: 'synapse', count: 1, entries: [{ id: '6595', file_path: 'x.html', edit_action: 'create', agent_id: null, reason: '...', created_at: '2026-07-17T07:19:36Z' }] },
   },
   shell: {
@@ -3748,21 +3776,19 @@ async function handleToolCall(
           }
           const committed: Array<{ file_path: string; batch_id: string; ops: number }> = [];
           const failed: Array<{ file_path: string; error: string; message: string }> = [];
+          const coeditWaits: import('@synapse/core').CoeditWaitGroup[] = [];
+          const seenWaitTokens = new Set<string>();
+          let deferredOps = 0;
 
-          // Die Dateien sind voneinander unabhaengig: jede bekommt ihren eigenen Plan,
-          // ihren eigenen Commit und ihre eigene Sperre. Hintereinander abgearbeitet
-          // summierte sich hier jede Einzel-Latenz auf. Am 2026-07-25 brauchte EIN
-          // Aufruf ueber 60 Parser-Dateien so von 21:19 bis 21:52 — im Event-Log als
-          // 60 Batches im Abstand von 10-25 s sichtbar. Dass 50 Agenten mit
-          // gleichzeitigen Batch-Auftraegen in wenigen Sekunden durchliefen, zeigt:
-          // die Arbeit vertraegt Parallelitaet, sie wurde hier nur verhindert.
-          //
           // Gedeckelt, weil der PG-Pool 20 Verbindungen hat und ein Commit mehrere
-          // davon braucht — ohne Deckel wuerden 100 Ops den Pool leerraeumen und
-          // andere Arbeit im selben Prozess ausbremsen.
+          // davon braucht. Jeder konfliktfreie Teilplan bleibt per Datei atomar.
+          type WaitMeta = {
+            waits: import('@synapse/core').CoeditWaitGroup[];
+            deferred: number;
+          };
           type Ergebnis =
-            | { art: 'ok'; wert: { file_path: string; batch_id: string; ops: number } }
-            | { art: 'fehler'; wert: { file_path: string; error: string; message: string } };
+            | ({ art: 'ok'; wert: { file_path: string; batch_id: string; ops: number } | null } & WaitMeta)
+            | ({ art: 'fehler'; wert: { file_path: string; error: string; message: string } } & WaitMeta);
           const eintraege = [...byFile.entries()];
           const ergebnisse: Array<Ergebnis | undefined> = new Array(eintraege.length);
           const GLEICHZEITIG = 8;
@@ -3780,14 +3806,35 @@ async function handleToolCall(
                   open_for_coedit: typeof args.open_for_coedit === 'boolean' ? args.open_for_coedit as boolean : undefined,
                   reason: str(args, 'reason'),
                 });
+                const waits = plan.coedit_waits ?? [];
+                const deferred = plan.deferred_ops ?? 0;
+                if (plan.total_ops === 0) {
+                  ergebnisse[index] = { art: 'ok', wert: null, waits, deferred };
+                  continue;
+                }
                 const c = await commitBatch({ plan_id: plan.plan_id, agent_id: agentId, agent_note: str(args, 'agent_note') });
                 if (c.success) {
-                  ergebnisse[index] = { art: 'ok', wert: { file_path: filePath, batch_id: String(c.batch_id ?? plan.plan_id), ops: fileOps.length } };
+                  ergebnisse[index] = {
+                    art: 'ok',
+                    wert: { file_path: filePath, batch_id: String(c.batch_id ?? plan.plan_id), ops: plan.total_ops },
+                    waits,
+                    deferred,
+                  };
                 } else {
-                  ergebnisse[index] = { art: 'fehler', wert: { file_path: filePath, error: c.error ?? 'commit_failed', message: c.message ?? 'commit failed' } };
+                  ergebnisse[index] = {
+                    art: 'fehler',
+                    wert: { file_path: filePath, error: c.error ?? 'commit_failed', message: c.message ?? 'commit failed' },
+                    waits,
+                    deferred,
+                  };
                 }
               } catch (err) {
-                ergebnisse[index] = { art: 'fehler', wert: { file_path: filePath, error: 'plan_failed', message: (err as Error).message } };
+                ergebnisse[index] = {
+                  art: 'fehler',
+                  wert: { file_path: filePath, error: 'plan_failed', message: (err as Error).message },
+                  waits: [],
+                  deferred: 0,
+                };
               }
             }
           };
@@ -3796,13 +3843,21 @@ async function handleToolCall(
             Array.from({ length: Math.min(GLEICHZEITIG, eintraege.length) }, () => arbeite())
           );
 
-          // Eingabe-Reihenfolge wiederherstellen, damit committed[] und failed[]
-          // dieselbe Ordnung haben wie vorher.
+          // Eingabe-Reihenfolge wiederherstellen; Waits werden tokenbasiert dedupliziert.
           for (const e of ergebnisse) {
             if (!e) continue;
-            if (e.art === 'ok') committed.push(e.wert);
-            else failed.push(e.wert);
+            if (e.art === 'ok' && e.wert) committed.push(e.wert);
+            if (e.art === 'fehler') failed.push(e.wert);
+            deferredOps += e.deferred;
+            for (const wait of e.waits) {
+              if (seenWaitTokens.has(wait.wait_token)) continue;
+              seenWaitTokens.add(wait.wait_token);
+              coeditWaits.push(wait);
+            }
           }
+          const waitExtras = coeditWaits.length > 0
+            ? { coedit_waits: coeditWaits, deferred_ops: deferredOps }
+            : {};
           return {
             success: failed.length === 0,
             mode: 'per_file_atomic',
@@ -3810,9 +3865,12 @@ async function handleToolCall(
             failed,
             committed_count: committed.length,
             failed_count: failed.length,
-            message: failed.length === 0
-              ? `${committed.length}/${byFile.size} Datei(en) committed.`
-              : `${committed.length}/${byFile.size} committed, ${failed.length} fehlgeschlagen — Details in "failed[]".`,
+            ...waitExtras,
+            message: coeditWaits.length > 0
+              ? `${committed.length}/${byFile.size} Datei(en) committed; ${deferredOps} Op(s) warten reservationsbasiert und wurden nicht geschrieben.${failed.length > 0 ? ` ${failed.length} fehlgeschlagen.` : ''}`
+              : failed.length === 0
+                ? `${committed.length}/${byFile.size} Datei(en) committed.`
+                : `${committed.length}/${byFile.size} committed, ${failed.length} fehlgeschlagen — Details in "failed[]".`,
           };
         }
 
@@ -3831,7 +3889,7 @@ async function handleToolCall(
         }
         // auto_commit:true -> direkt commit, ABER nur wenn alle Previews ok sind.
         const allPreviewsOk = result.previews?.every(p => p.ok) ?? true;
-        if (bool(args, 'auto_commit') === true && allPreviewsOk) {
+        if (bool(args, 'auto_commit') === true && allPreviewsOk && result.total_ops > 0) {
           const c = await commitBatch({ plan_id: result.plan_id, agent_id: agentId, agent_note: str(args, 'agent_note') });
           if (c.success) {
             return { ...c, plan: result, auto_committed: true, message: `Plan ${result.plan_id} angelegt + sofort committed (auto_commit) — ${c.committed} Datei(en) geaendert. batch_id=${c.batch_id}.` };
@@ -3851,7 +3909,9 @@ async function handleToolCall(
                 skill_hook_skipped_due_to_load: skillHook.skipped_due_to_load,
               }
             : {}),
-          message: `Plan ${result.plan_id} angelegt: ${result.total_ops} Op(s) ueber ${result.files_touched.length} Datei(en).`,
+          message: result.coedit_waits?.length
+            ? `Plan ${result.plan_id}: ${result.total_ops} sofortige Op(s), ${result.deferred_ops ?? 0} Op(s) warten reservationsbasiert. Shared Ops wurden nicht geschrieben.`
+            : `Plan ${result.plan_id} angelegt: ${result.total_ops} Op(s) ueber ${result.files_touched.length} Datei(en).`,
         };
       }
       if (action === 'commit') {

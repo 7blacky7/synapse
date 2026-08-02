@@ -373,12 +373,10 @@ export const filesTool: ConsolidatedTool = {
         open_for_coedit: typeof args.open_for_coedit === 'boolean' ? args.open_for_coedit : undefined,
         reason,
       });
-      // auto_commit:true -> direkt commit, ein Call statt zwei
-      // auto_commit:true -> direkt commit, ABER nur wenn alle Previews ok sind.
-      // Wenn Plan einzelne ok:false hatte, lassen wir den Plan offen damit User
-      // entscheiden kann. (planBatch throws sowieso bei harten Fehlern wie anchor mismatch.)
+      // Shared Ops bleiben persistent im Wait; auto_commit schreibt nur den
+      // konfliktfreien Teilplan und niemals einen leeren Plan.
       const allPreviewsOk = result.previews?.every(p => p.ok) ?? true;
-      if (bool(args, 'auto_commit') === true && allPreviewsOk) {
+      if (bool(args, 'auto_commit') === true && allPreviewsOk && result.total_ops > 0) {
         const c = await commitBatch({ plan_id: result.plan_id, agent_id: agentId, agent_note: typeof args.agent_note === 'string' ? args.agent_note : undefined });
         if (c.success) {
           return { ...c, plan: result, auto_committed: true, message: `Plan ${result.plan_id} angelegt + sofort committed (auto_commit) — ${c.committed} Datei(en) geaendert. batch_id=${c.batch_id}.` };
@@ -398,7 +396,9 @@ export const filesTool: ConsolidatedTool = {
               skill_hook_skipped_due_to_load: skillHook.skipped_due_to_load,
             }
           : {}),
-        message: `Plan ${result.plan_id} angelegt: ${result.total_ops} Op(s) ueber ${result.files_touched.length} Datei(en). commit mit files(action: "commit", plan_id: "${result.plan_id}") oder cancel mit "cancel". Laeuft ab um ${result.expires_at}.`,
+        message: result.coedit_waits?.length
+          ? `Plan ${result.plan_id}: ${result.total_ops} sofortige Op(s), ${result.deferred_ops ?? 0} Op(s) warten reservationsbasiert. Shared Ops wurden nicht geschrieben.`
+          : `Plan ${result.plan_id} angelegt: ${result.total_ops} Op(s) ueber ${result.files_touched.length} Datei(en). commit mit files(action: "commit", plan_id: "${result.plan_id}") oder cancel mit "cancel". Laeuft ab um ${result.expires_at}.`,
       };
     }
     if (action === 'commit') {

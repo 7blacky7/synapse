@@ -13,9 +13,8 @@
  *        dieselbe `batch_id` und koennen via `restoreBatch` gemeinsam
  *        zurueckgerollt werden.
  *
- * SCOPE (V1): Hash-basierter Konflikt-Check, klare STALE-Antwort. KEIN
- *        Auto-Rebase, KEINE Konflikt-Vorhersage zwischen offenen Plaenen,
- *        KEIN Co-Edit-Channel-Routing — folgt in Schritt 0a/3.
+ * SCOPE: Hash-basierter Konflikt-Check plus CE-2-Reservations-Split in planBatch.
+ *        KEIN Auto-Rebase und bewusst noch KEIN CE-3-Lifecycle/Event-Routing.
  */
 
 import { getPool } from '../db/client.js';
@@ -266,6 +265,14 @@ export interface FileBatchPlanRow {
   reason: string | null;
 }
 
+export interface CoeditWaitGroup {
+  primary_agent: string;
+  shared_files: string[];
+  wait_token: string;
+  retry_after_seconds: number;
+  expires_at: string;
+}
+
 export interface PlanBatchResult {
   plan_id: string;
   total_ops: number;
@@ -273,6 +280,10 @@ export interface PlanBatchResult {
   expected_hashes: Record<string, string>;
   previews: OpPreview[];
   expires_at: string;
+  /** Nur bei Reservations-Ueberlappung vorhanden; ohne Overlap bleibt der Response unveraendert. */
+  requested_total_ops?: number;
+  deferred_ops?: number;
+  coedit_waits?: CoeditWaitGroup[];
 }
 
 export interface CommitConflictDetail {
@@ -550,6 +561,22 @@ async function ensureBuffer(
   return buf;
 }
 
+interface ActiveReservationPrimaryRow {
+  file_path: string;
+  agent_id: string;
+  expires_at: Date | string;
+}
+
+function touchedPaths(op: FileBatchOp): string[] {
+  return (op.action === 'move' || op.action === 'copy') && op.new_path
+    ? [op.file_path, op.new_path]
+    : [op.file_path];
+}
+
+function asIso(value: Date | string): string {
+  return value instanceof Date ? value.toISOString() : new Date(value).toISOString();
+}
+
 /**
  * Phase A — Plan: liest betroffene Dateien, wendet alle Ops im Speicher an,
  * erfasst expected_hashes (Stand VOR der ersten Op pro Datei) + Previews,
@@ -591,13 +618,10 @@ export async function planBatch(args: {
   const seenFileInApplyOrder = new Set<string>();
 
   for (const { op, originalIndex } of applyPlan) {
-    // src-Buffer laden falls noch nicht da. "isFirstOpOnFile" bezieht sich
-    // auf die APPLY-Reihenfolge — nur dort ist die create-Validierung sinnvoll.
     const wasUnknown = !seenFileInApplyOrder.has(op.file_path);
     seenFileInApplyOrder.add(op.file_path);
     await ensureBuffer(fileBuffers, expectedHashes, args.project, op.file_path);
 
-    // Lifecycle-Ops mit zweitem Pfad (move/copy): dst auch laden.
     if ((op.action === 'move' || op.action === 'copy') && op.new_path) {
       await ensureBuffer(fileBuffers, expectedHashes, args.project, op.new_path);
     }
@@ -621,39 +645,158 @@ export async function planBatch(args: {
         ok: false,
         error: (err as Error).message,
       };
-      // Abbrechen — Plan haengt sich nicht an einem fehlerhaften Op auf.
       throw new Error(
         `Op ${originalIndex} (${op.action} auf "${op.file_path}") fehlgeschlagen: ${(err as Error).message}`,
       );
     }
   }
 
-  // 2. INSERT in file_batch_plans
+  // 2. Reservierungen und Plan/Wait-Datensaetze werden in einer PG-TX ermittelt.
+  //    Die Window-Funktion bestimmt die primaere (aelteste) aktive Reservierung
+  //    pro Datei. Eine eigene primaere Reservierung erzeugt keinen Wait.
   const pool = getPool();
-  const res = await pool.query<{ id: string; expires_at: string }>(
-    `INSERT INTO file_batch_plans (project, owner_agent_id, ops, expected_hashes, previews, open_for_coedit, reason)
-     VALUES ($1, $2, $3::jsonb, $4::jsonb, $5::jsonb, $6, $7)
-     RETURNING id::text AS id, expires_at::text AS expires_at`,
-    [
-      args.project,
-      resolveAgentId(args.agent_id),
-      JSON.stringify(args.ops),
-      JSON.stringify(expectedHashes),
-      JSON.stringify(previews),
-      args.open_for_coedit ?? true,
-      args.reason ?? null,
-    ],
-  );
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const ownerAgentId = resolveAgentId(args.agent_id);
+    const plannedPaths = [...fileBuffers.keys()];
+    const reservationRes = await client.query<ActiveReservationPrimaryRow>(
+      `WITH ranked AS (
+         SELECT file_path, agent_id, expires_at,
+                ROW_NUMBER() OVER (
+                  PARTITION BY file_path ORDER BY reserved_at ASC, id ASC
+                ) AS reservation_rank
+           FROM file_reservations
+          WHERE project = $1
+            AND file_path = ANY($2::text[])
+            AND released_at IS NULL
+            AND expires_at > NOW()
+       )
+       SELECT file_path, agent_id, expires_at
+         FROM ranked
+        WHERE reservation_rank = 1
+          AND ($3::text IS NULL OR agent_id <> $3)`,
+      [args.project, plannedPaths, ownerAgentId],
+    );
 
-  const row = res.rows[0];
-  return {
-    plan_id: row.id,
-    total_ops: args.ops.length,
-    files_touched: [...fileBuffers.keys()],
-    expected_hashes: expectedHashes,
-    previews,
-    expires_at: row.expires_at,
-  };
+    const primaryByPath = new Map(
+      reservationRes.rows.map((row) => [row.file_path, row] as const),
+    );
+    const sharedPaths = new Set(primaryByPath.keys());
+    const immediateEntries = args.ops
+      .map((op, originalIndex) => ({ op, originalIndex }))
+      .filter(({ op }) => touchedPaths(op).every((filePath) => !sharedPaths.has(filePath)));
+    const immediateOps = immediateEntries.map(({ op }) => op);
+    const immediatePreviews = immediateEntries.map(({ originalIndex }, index) => ({
+      ...previews[originalIndex],
+      index,
+    }));
+    const immediateFiles = new Set(immediateOps.flatMap(touchedPaths));
+    const immediateExpectedHashes = Object.fromEntries(
+      [...immediateFiles].map((filePath) => [filePath, expectedHashes[filePath]]),
+    );
+
+    const planOps = sharedPaths.size === 0 ? args.ops : immediateOps;
+    const planPreviews = sharedPaths.size === 0 ? previews : immediatePreviews;
+    const planExpectedHashes = sharedPaths.size === 0 ? expectedHashes : immediateExpectedHashes;
+    const planFiles = sharedPaths.size === 0 ? plannedPaths : [...immediateFiles];
+
+    const planRes = await client.query<{ id: string; expires_at: string }>(
+      `INSERT INTO file_batch_plans (project, owner_agent_id, ops, expected_hashes, previews, open_for_coedit, reason)
+       VALUES ($1, $2, $3::jsonb, $4::jsonb, $5::jsonb, $6, $7)
+       RETURNING id::text AS id, expires_at::text AS expires_at`,
+      [
+        args.project,
+        ownerAgentId,
+        JSON.stringify(planOps),
+        JSON.stringify(planExpectedHashes),
+        JSON.stringify(planPreviews),
+        args.open_for_coedit ?? true,
+        args.reason ?? null,
+      ],
+    );
+    const planRow = planRes.rows[0];
+
+    const coeditWaits: CoeditWaitGroup[] = [];
+    if (sharedPaths.size > 0) {
+      const groups = new Map<string, ActiveReservationPrimaryRow[]>();
+      // Reihenfolge folgt den geplanten Pfaden, nicht der zufaelligen Query-Reihenfolge.
+      for (const filePath of plannedPaths) {
+        const reservation = primaryByPath.get(filePath);
+        if (!reservation) continue;
+        const entries = groups.get(reservation.agent_id) ?? [];
+        entries.push(reservation);
+        groups.set(reservation.agent_id, entries);
+      }
+
+      for (const [primaryAgent, reservations] of groups) {
+        const groupPaths = reservations.map((entry) => entry.file_path);
+        const groupPathSet = new Set(groupPaths);
+        const deferredIndexes = args.ops
+          .map((op, index) => ({ op, index }))
+          .filter(({ op }) => touchedPaths(op).some((filePath) => groupPathSet.has(filePath)))
+          .map(({ index }) => index);
+        const deferredOps = deferredIndexes.map((index) => args.ops[index]);
+        const waitExpiresAt = reservations
+          .map((entry) => asIso(entry.expires_at))
+          .sort()[0];
+
+        const waitRes = await client.query<{ wait_token: string; expires_at: string }>(
+          `INSERT INTO file_batch_waits (
+             source_plan_id, project, waiting_agent, primary_agent, shared_files,
+             deferred_ops, deferred_op_indexes, expires_at
+           )
+           VALUES ($1::bigint, $2, $3, $4, $5::text[], $6::jsonb, $7::integer[], $8::timestamptz)
+           RETURNING wait_token::text AS wait_token, expires_at::text AS expires_at`,
+          [
+            planRow.id,
+            args.project,
+            ownerAgentId,
+            primaryAgent,
+            groupPaths,
+            JSON.stringify(deferredOps),
+            deferredIndexes,
+            waitExpiresAt,
+          ],
+        );
+        const waitRow = waitRes.rows[0];
+        const retryAfterSeconds = Math.max(
+          1,
+          Math.min(60, Math.ceil((new Date(waitRow.expires_at).getTime() - Date.now()) / 1000)),
+        );
+        coeditWaits.push({
+          primary_agent: primaryAgent,
+          shared_files: groupPaths,
+          wait_token: waitRow.wait_token,
+          retry_after_seconds: retryAfterSeconds,
+          expires_at: asIso(waitRow.expires_at),
+        });
+      }
+    }
+
+    await client.query('COMMIT');
+    const result: PlanBatchResult = {
+      plan_id: planRow.id,
+      total_ops: planOps.length,
+      files_touched: planFiles,
+      expected_hashes: planExpectedHashes,
+      previews: planPreviews,
+      expires_at: planRow.expires_at,
+    };
+    // Abnahmekriterium: Ohne Overlap exakt die bisherige Response-Form.
+    if (sharedPaths.size === 0) return result;
+    return {
+      ...result,
+      requested_total_ops: args.ops.length,
+      deferred_ops: args.ops.length - immediateOps.length,
+      coedit_waits: coeditWaits,
+    };
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 /**

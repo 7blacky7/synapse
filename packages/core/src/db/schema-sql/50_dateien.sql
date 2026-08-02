@@ -278,3 +278,30 @@ CREATE UNIQUE INDEX idx_file_reservations_active_agent_file
     ON public.file_reservations USING btree (project, agent_id, file_path)
     WHERE (released_at IS NULL);
 
+
+
+-- CE-2: Persistente Waits fuer den reservationsbasierten Server-Split.
+-- CE-3-Lifecycle/Events sind bewusst nicht Bestandteil.
+CREATE TABLE public.file_batch_waits (
+    wait_token uuid DEFAULT gen_random_uuid() NOT NULL,
+    source_plan_id bigint NOT NULL,
+    project text NOT NULL,
+    waiting_agent text,
+    primary_agent text NOT NULL,
+    shared_files text[] NOT NULL,
+    deferred_ops jsonb NOT NULL,
+    deferred_op_indexes integer[] NOT NULL,
+    expires_at timestamp with time zone NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT file_batch_waits_shared_files_nonempty CHECK ((cardinality(shared_files) > 0)),
+    CONSTRAINT file_batch_waits_deferred_ops_array CHECK ((jsonb_typeof(deferred_ops) = 'array'::text))
+);
+
+ALTER TABLE ONLY public.file_batch_waits
+    ADD CONSTRAINT file_batch_waits_pkey PRIMARY KEY (wait_token);
+
+CREATE INDEX idx_file_batch_waits_source_plan
+    ON public.file_batch_waits USING btree (source_plan_id);
+
+CREATE INDEX idx_file_batch_waits_active
+    ON public.file_batch_waits USING btree (project, expires_at);

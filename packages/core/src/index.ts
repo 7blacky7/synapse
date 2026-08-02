@@ -516,6 +516,7 @@ export type {
   FileBatchPlanRow,
   FileBatchStatus,
   PlanBatchResult,
+  CoeditWaitGroup,
   CommitBatchResult,
   CommitConflictDetail,
 } from './services/file-batch.js';

@@ -894,6 +894,27 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_file_reservations_active_agent_file
   WHERE released_at IS NULL;
 
 
+// ============================================================================
+// CE-2: Persistente Waits fuer den reservationsbasierten Server-Split.
+// CE-3-Lifecycle/Events sind bewusst nicht Teil dieser Tabelle/Implementierung.
+// ============================================================================
+CREATE TABLE IF NOT EXISTS file_batch_waits (
+  wait_token UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  source_plan_id BIGINT NOT NULL,
+  project TEXT NOT NULL,
+  waiting_agent TEXT,
+  primary_agent TEXT NOT NULL,
+  shared_files TEXT[] NOT NULL CHECK (cardinality(shared_files) > 0),
+  deferred_ops JSONB NOT NULL CHECK (jsonb_typeof(deferred_ops) = 'array'),
+  deferred_op_indexes INTEGER[] NOT NULL,
+  expires_at TIMESTAMPTZ NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_file_batch_waits_source_plan
+  ON file_batch_waits(source_plan_id);
+CREATE INDEX IF NOT EXISTS idx_file_batch_waits_active
+  ON file_batch_waits(project, expires_at);
+
 -- Serverseitige Skill-Hooks: Dedup gilt bewusst global je Agent und Skill.
 -- Wechselnde Agent-IDs duerfen erneut vorgeschlagen bekommen.
 CREATE TABLE IF NOT EXISTS skill_hook_deliveries (
