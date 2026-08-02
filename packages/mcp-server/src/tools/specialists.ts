@@ -11,7 +11,12 @@ import { createRequire } from 'node:module';
 
 import { removeInboxForAgent, removeWrapperStatus, upsertWrapperStatus } from '@synapse/core';
 
-import { bereiteMcpBrueckeVor, selbsttestHinweis, McpBrueckeFehler } from './mcp-bruecke.js';
+import {
+  bereiteMcpBrueckeVor,
+  selbsttestHinweis,
+  widerrufeWrapperTokens,
+  McpBrueckeFehler,
+} from './mcp-bruecke.js';
 
 import {
   detectClaudeCli,
@@ -510,6 +515,22 @@ export async function purgeSpecialistTool(
     steps.inbox_removed = await removeInboxForAgent(name);
   } catch (err) {
     steps.inbox_removed = `Fehler: ${err}`;
+  }
+
+  // 8. Token dieses Agenten widerrufen (Scope wrapper:<name>).
+  // Ohne diesen Schritt bleibt pro Spawn ein Token mit 180 Tagen Laufzeit liegen —
+  // fuer einen Agenten, den es nicht mehr gibt. Es geht dabei nichts kaputt, es
+  // waechst nur still die Zahl gueltiger Schluessel; genau die Sorte Rest, die bei
+  // einer Erfolgsmeldung niemand nachzaehlt. Deshalb steht hier die ANZAHL.
+  // Nur sinnvoll, wenn ueberhaupt ueber HTTP gearbeitet wird.
+  const mcpUrl = (process.env.SYNAPSE_AGENT_MCP_URL ?? process.env.SYNAPSE_API_URL ?? '').trim();
+  const mcpAusweis = (process.env.SYNAPSE_API_TOKEN ?? '').trim();
+  if ((process.env.SYNAPSE_AGENT_MCP_TRANSPORT ?? '').trim().toLowerCase() === 'http' && mcpUrl && mcpAusweis) {
+    try {
+      steps.wrapper_token_revoked = await widerrufeWrapperTokens(mcpUrl, mcpAusweis, name);
+    } catch (err) {
+      steps.wrapper_token_revoked = `Fehler: ${err}`;
+    }
   }
 
   // Erfolg wird aus den Schritten ABGELEITET, nicht behauptet. Vorher stand hier ein

@@ -50,6 +50,10 @@ export interface McpBrueckeErgebnis {
   werkzeuge?: number;
   /** Angesprochener Endpunkt (nur wenn aktiv, ohne Token). */
   url?: string;
+  /** Scope des benutzten Tokens, z.B. "wrapper:pruefer" (nur wenn aktiv). */
+  scope?: string;
+  /** Woher das Token kam: frisch fuer diesen Agenten ausgestellt oder vorgegeben. */
+  tokenHerkunft?: 'eigenes' | 'vorgegeben';
 }
 
 /** Fehler dieser Klasse brechen den Spawn ab — bewusst laut. */
@@ -130,6 +134,112 @@ async function zaehleWerkzeuge(url: string, token: string): Promise<number> {
   return daten.result?.tools?.length ?? 0;
 }
 
+/** Basisadresse ohne abschliessenden Schraegstrich. */
+function basis(url: string): string {
+  return url.endsWith('/') ? url.slice(0, -1) : url;
+}
+
+/**
+ * Stellt fuer GENAU DIESEN Spezialisten ein eigenes Token mit Scope
+ * "wrapper:<name>" aus (POST /api/auth/service-token).
+ *
+ * WARUM EIN EIGENES statt eines geteilten: ein ungefiltertes Token darf ueber
+ * den MCP-Weg auch specialist(purge) — und purge beendet Prozesse und loescht
+ * Verzeichnisse. Solange der Auth-Hook den Scope nicht auswertet, aendert der
+ * eigene Scope daran nichts; er macht die spaetere Einschraenkung aber zu einer
+ * Datenfrage statt zu einem Umbau, und er macht JETZT SCHON jeden Zugriff einem
+ * Agenten zuordenbar und einzeln widerrufbar.
+ *
+ * AUSWEIS: Die Route nimmt entweder einen TOTP-Code ODER ein bestehendes
+ * daemon-Token als Ausweis (auth.ts: 'daemon', 'daemon:*' und 'wrapper:*'
+ * gelten). Ein daemon-Token darf einen NEUEN Scope ausstellen; ein
+ * wrapper-Token darf nur sich selbst erneuern — sonst 403 scope_forbidden.
+ * Deshalb taugt das Tray-Token (scope 'daemon:tray') hier als Ausweis, obwohl
+ * es fuer den MCP-Weg selbst NICHT taugt (dort zaehlt kind, und es ist
+ * 'session' statt 'service').
+ */
+export async function holeWrapperToken(
+  url: string,
+  ausweis: string,
+  agentName: string,
+  totpCode?: string,
+): Promise<{ token: string; scope: string }> {
+  const ziel = `${basis(url)}/api/auth/service-token`;
+  const kopf: Record<string, string> = { 'Content-Type': 'application/json' };
+  // Mit Code braucht es keinen Ausweis-Header; ohne Code ist der Header der Ausweis.
+  if (!totpCode) kopf.Authorization = `Bearer ${ausweis}`;
+
+  let antwort: Response;
+  try {
+    antwort = await fetch(ziel, {
+      method: 'POST',
+      headers: kopf,
+      body: JSON.stringify({
+        wrapper_agent: agentName,
+        label: `wrapper-${agentName}`.slice(0, 40),
+        ...(totpCode ? { code: totpCode } : {}),
+      }),
+      signal: AbortSignal.timeout(20_000),
+    });
+  } catch (err) {
+    const ursache = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+    throw new McpBrueckeFehler(`Token-Ausstellung unter ${ziel} nicht erreichbar (${ursache}).`);
+  }
+
+  const text = await antwort.text();
+  if (antwort.status !== 200) {
+    throw new McpBrueckeFehler(
+      `Token-Ausstellung fuer "wrapper:${agentName}" abgelehnt (HTTP ${antwort.status}): ${text.slice(0, 250)}`,
+    );
+  }
+  const daten = JSON.parse(text) as { success?: boolean; token?: string; scope?: string };
+  if (!daten.success || !daten.token) {
+    throw new McpBrueckeFehler(
+      `Token-Ausstellung fuer "wrapper:${agentName}" lieferte kein Token: ${text.slice(0, 250)}`,
+    );
+  }
+  return { token: daten.token, scope: daten.scope ?? `wrapper:${agentName}` };
+}
+
+/**
+ * Widerruft alle Tokens mit Scope "wrapper:<name>" (beim purge).
+ *
+ * OHNE DIESEN SCHRITT bleibt pro Spawn ein Token mit 180 Tagen Laufzeit liegen —
+ * fuer einen Agenten, den es nicht mehr gibt. Das faellt niemandem auf, weil
+ * nichts kaputt geht; es waechst nur still die Zahl gueltiger Schluessel.
+ * Liefert die Anzahl der widerrufenen Tokens zurueck, damit im purge eine ZAHL
+ * steht und keine Behauptung.
+ */
+export async function widerrufeWrapperTokens(
+  url: string,
+  ausweis: string,
+  agentName: string,
+): Promise<number> {
+  const kopf = { Authorization: `Bearer ${ausweis}`, 'Content-Type': 'application/json' };
+  const gesucht = `wrapper:${agentName}`;
+
+  const liste = await fetch(`${basis(url)}/api/auth/sessions`, {
+    headers: kopf,
+    signal: AbortSignal.timeout(20_000),
+  });
+  if (liste.status !== 200) {
+    throw new Error(`Sitzungsliste nicht lesbar (HTTP ${liste.status})`);
+  }
+  const daten = (await liste.json()) as { sessions?: Array<{ id?: string; scope?: string }> };
+  const treffer = (daten.sessions ?? []).filter(s => s.scope === gesucht && s.id);
+
+  let widerrufen = 0;
+  for (const s of treffer) {
+    const weg = await fetch(`${basis(url)}/api/auth/sessions/${s.id}`, {
+      method: 'DELETE',
+      headers: kopf,
+      signal: AbortSignal.timeout(20_000),
+    });
+    if (weg.status === 200) widerrufen++;
+  }
+  return widerrufen;
+}
+
 /**
  * Bereitet die MCP-Konfiguration fuer den inneren Claude vor.
  *
@@ -159,28 +269,73 @@ export async function bereiteMcpBrueckeVor(
   }
 
   const url = (process.env.SYNAPSE_AGENT_MCP_URL ?? process.env.SYNAPSE_API_URL ?? '').trim();
-  const token = (process.env.SYNAPSE_AGENT_MCP_TOKEN ?? process.env.SYNAPSE_API_TOKEN ?? '').trim();
-  if (!url || !token) {
+  const vorgegeben = (process.env.SYNAPSE_AGENT_MCP_TOKEN ?? '').trim();
+  const ausweis = (process.env.SYNAPSE_API_TOKEN ?? '').trim();
+  const totpCode = (process.env.SYNAPSE_AGENT_MCP_TOTP ?? '').trim();
+
+  if (!url || (!vorgegeben && !ausweis && !totpCode)) {
     throw new McpBrueckeFehler(
-      'SYNAPSE_AGENT_MCP_TRANSPORT=http verlangt eine Adresse und ein Token: ' +
-        `SYNAPSE_AGENT_MCP_URL/SYNAPSE_API_URL ${url ? 'ist gesetzt' : 'FEHLT'}, ` +
-        `SYNAPSE_AGENT_MCP_TOKEN/SYNAPSE_API_TOKEN ${token ? 'ist gesetzt' : 'FEHLT'}. ` +
+      'SYNAPSE_AGENT_MCP_TRANSPORT=http verlangt eine Adresse und einen Ausweis: ' +
+        `SYNAPSE_AGENT_MCP_URL/SYNAPSE_API_URL ${url ? 'ist gesetzt' : 'FEHLT'}; ` +
+        'dazu entweder SYNAPSE_API_TOKEN (daemon-Token als Ausweis), SYNAPSE_AGENT_MCP_TOTP ' +
+        '(einmaliger Code) oder SYNAPSE_AGENT_MCP_TOKEN (fertiges Token) — alle drei FEHLEN. ' +
         'Kein Rueckfall auf stdio — ein Spezialist, der unbemerkt wieder lokal laeuft, ' +
         'braucht weiterhin eine Datenbankverbindung und der Zweck der Bruecke waere verfehlt.',
     );
   }
 
+  // NORMALFALL: ein EIGENES Token fuer genau diesen Agenten, Scope wrapper:<name>.
+  // Das vorgegebene Token ist der Notausgang (z.B. wenn die Ausstellung nicht
+  // erreichbar ist) und bewusst nicht die Vorgabe: ein geteiltes Token laesst sich
+  // weder einem Agenten zuordnen noch einzeln widerrufen.
+  let token: string;
+  let scope: string;
+  let tokenHerkunft: 'eigenes' | 'vorgegeben';
+  if (vorgegeben) {
+    token = vorgegeben;
+    scope = '(vorgegeben, unbekannt)';
+    tokenHerkunft = 'vorgegeben';
+  } else {
+    const frisch = await holeWrapperToken(url, ausweis, agentName, totpCode || undefined);
+    token = frisch.token;
+    scope = frisch.scope;
+    tokenHerkunft = 'eigenes';
+  }
+
   // Der MCP-Endpunkt liegt auf der Wurzel, nicht auf /mcp (gemessen).
   const endpunkt = url.endsWith('/') ? url : `${url}/`;
+
+  // Scheitert nach der Ausstellung noch irgendetwas, muss das frische Token wieder
+  // weg. Sonst bleibt bei JEDEM missglueckten Spawn ein gueltiger Schluessel mit 180
+  // Tagen Laufzeit zurueck — und weil der Spawn sichtbar fehlschlaegt, sucht niemand
+  // nach dem Rest. GEMESSEN: genau so entstand beim Bauen eine Waise; der Widerruf
+  // fand danach 2 Tokens statt 1.
+  const aufraeumenBeiFehler = async (fehler: Error): Promise<never> => {
+    if (tokenHerkunft === 'eigenes') {
+      try {
+        await widerrufeWrapperTokens(url, ausweis || token, agentName);
+      } catch {
+        // Der urspruengliche Fehler ist der wichtigere — er darf nicht verdeckt werden.
+      }
+    }
+    throw fehler;
+  };
 
   // SELBSTTEST VOR DEM SPAWN. Ein Agent ohne Werkzeuge faellt sonst niemandem auf:
   // er antwortet fachlich statt zu scheitern. Deshalb wird hier gezaehlt, bevor
   // ueberhaupt ein Prozess startet.
-  const werkzeuge = await zaehleWerkzeuge(endpunkt, token);
+  let werkzeuge: number;
+  try {
+    werkzeuge = await zaehleWerkzeuge(endpunkt, token);
+  } catch (err) {
+    return aufraeumenBeiFehler(err instanceof Error ? err : new Error(String(err)));
+  }
   if (werkzeuge === 0) {
-    throw new McpBrueckeFehler(
-      `MCP-Endpunkt ${endpunkt} ist erreichbar, liefert aber 0 Werkzeuge. Der Spawn bricht ab — ` +
-        'ein Agent ohne Werkzeuge arbeitet scheinbar normal weiter und der Ausfall bliebe unsichtbar.',
+    return aufraeumenBeiFehler(
+      new McpBrueckeFehler(
+        `MCP-Endpunkt ${endpunkt} ist erreichbar, liefert aber 0 Werkzeuge. Der Spawn bricht ab — ` +
+          'ein Agent ohne Werkzeuge arbeitet scheinbar normal weiter und der Ausfall bliebe unsichtbar.',
+      ),
     );
   }
 
@@ -194,16 +349,28 @@ export async function bereiteMcpBrueckeVor(
       },
     },
   };
-  await writeFile(configPfad, JSON.stringify(inhalt, null, 2), 'utf-8');
-  // Die Datei traegt ein Token — nur der Eigentuemer darf sie lesen.
-  await chmod(configPfad, 0o600);
+  try {
+    await writeFile(configPfad, JSON.stringify(inhalt, null, 2), 'utf-8');
+    // Die Datei traegt ein Token — nur der Eigentuemer darf sie lesen.
+    await chmod(configPfad, 0o600);
+  } catch (err) {
+    return aufraeumenBeiFehler(
+      new McpBrueckeFehler(
+        `MCP-Konfiguration ${configPfad} konnte nicht geschrieben werden: ${err instanceof Error ? err.message : String(err)}`,
+      ),
+    );
+  }
 
   return {
     aktiv: true,
-    grund: `http (SYNAPSE_AGENT_MCP_TRANSPORT=http, ${werkzeuge} Werkzeuge im Selbsttest gezaehlt)`,
+    grund:
+      `http (SYNAPSE_AGENT_MCP_TRANSPORT=http, ${werkzeuge} Werkzeuge im Selbsttest gezaehlt, ` +
+      `Token: ${tokenHerkunft} ${scope})`,
     configPfad,
     werkzeuge,
     url: endpunkt,
+    scope,
+    tokenHerkunft,
   };
 }
 
