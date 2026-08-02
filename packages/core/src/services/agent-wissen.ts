@@ -489,7 +489,8 @@ export async function legeAgentWissenAn(
   const metaText = JSON.stringify(meta);
   const { rows } = await getPool().query<{ id: string }>(
     `INSERT INTO agent_wissen (project, agent_name, art, form, inhalt, quelle)
-     SELECT $1, $2, art, 'block', CASE WHEN art = 'meta' THEN $3 ELSE '' END, $4
+     SELECT $1::text, $2::text, art, 'block',
+            CASE WHEN art = 'meta' THEN $3::text ELSE '' END, $4::text
        FROM unnest(ARRAY['meta','regeln','fehler','muster','kontext']) AS art
      ON CONFLICT (project, agent_name, art) WHERE form = 'block'
      DO NOTHING

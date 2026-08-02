@@ -35,7 +35,7 @@
  *   - GET /api/projects/:name/agent-wissen/health zeigt die Zaehler.
  */
 
-import { FastifyInstance } from 'fastify';
+import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import {
   leseAgentWissen,
   leseWissensArt,
@@ -182,9 +182,10 @@ export async function agentWissenRoutes(fastify: FastifyInstance): Promise<void>
    * Eigene Route, weil der Wrapper beim Start und nach jeder Rotation NUR den
    * Prompt braucht und nicht das ganze Wissen ziehen soll.
    */
-  fastify.get<{ Params: { name: string; specName: string } }>(
-    `${BASIS}/system_prompt`,
-    async (request, reply) => {
+  const promptLesen = async (
+    request: FastifyRequest<{ Params: { name: string; specName: string } }>,
+    reply: FastifyReply,
+  ) => {
       const { name: project, specName: agent } = request.params;
       zaehler.promptLesen += 1;
       try {
@@ -215,14 +216,16 @@ export async function agentWissenRoutes(fastify: FastifyInstance): Promise<void>
         zaehler.fehler += 1;
         return reply.status(500).send({ success: false, error: { message: String(error) } });
       }
-    },
-  );
+  };
 
   /** PUT .../wissen/system_prompt — der Spawner legt den Prompt ab, statt ihn zu schreiben. */
-  fastify.put<{
-    Params: { name: string; specName: string };
-    Body: Record<string, unknown>;
-  }>(`${BASIS}/system_prompt`, async (request, reply) => {
+  const promptSetzen = async (
+    request: FastifyRequest<{
+      Params: { name: string; specName: string };
+      Body: Record<string, unknown>;
+    }>,
+    reply: FastifyReply,
+  ) => {
     const { name: project, specName: agent } = request.params;
     const inhalt = alsText(feld(request.body, 'inhalt', 'content', 'prompt'));
     zaehler.promptSetzen += 1;
@@ -246,7 +249,26 @@ export async function agentWissenRoutes(fastify: FastifyInstance): Promise<void>
       zaehler.fehler += 1;
       return reply.status(500).send({ success: false, error: { message: String(error) } });
     }
-  });
+  };
+
+  /**
+   * ⚠️ ZWEI SCHREIBWEISEN, ABSICHTLICH: system_prompt UND system-prompt.
+   * Die Aufruferseite (packages/agents) nennt die Route mit BINDESTRICH. Ohne
+   * diesen Alias liefe ihr Aufruf in die Platzhalter-Route .../wissen/:art — die
+   * kennt "system-prompt" als Aliasnamen und haette mit 200 geantwortet, aber mit
+   * dem GERENDERTEN Wissens-Zweig: ohne Feld "inhalt", ohne "laenge", und bei
+   * leerem Prompt mit 200 statt 404. Ein Aufrufer, der auf 404 baut, um
+   * abzubrechen, haette stattdessen einen scheinbar gueltigen Prompt bekommen.
+   * Beide Pfade zeigen auf DENSELBEN Handler; als statische Routen gehen sie der
+   * Platzhalter-Route vor (ueber findRoute nachgemessen).
+   */
+  for (const pfad of [`${BASIS}/system_prompt`, `${BASIS}/system-prompt`]) {
+    fastify.get<{ Params: { name: string; specName: string } }>(pfad, promptLesen);
+    fastify.put<{
+      Params: { name: string; specName: string };
+      Body: Record<string, unknown>;
+    }>(pfad, promptSetzen);
+  }
 
   /**
    * POST .../wissen/anlegen — createInitialAgent: meta + vier leere Arten.
