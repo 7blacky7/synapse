@@ -33,6 +33,7 @@ CREATE TABLE public.agent_events (
     source_id text NOT NULL,
     payload text,
     requires_ack boolean DEFAULT true,
+    dedupe_key text,
     created_at timestamp with time zone DEFAULT now()
 );
 
@@ -384,6 +385,12 @@ ALTER TABLE ONLY public.wrapper_status
 --
 
 CREATE INDEX idx_agent_event_acks_agent ON public.agent_event_acks USING btree (agent_id);
+
+--
+-- Name: uq_agent_events_dedupe; Type: INDEX; Schema: public
+--
+
+CREATE UNIQUE INDEX uq_agent_events_dedupe ON public.agent_events USING btree (project, event_type, scope, dedupe_key) WHERE (dedupe_key IS NOT NULL);
 
 --
 -- Name: idx_agent_events_project; Type: INDEX; Schema: public

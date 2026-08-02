@@ -592,7 +592,7 @@ const MCP_TOOLS = [
           description: 'Action: "emit", "ack", oder "pending"',
         },
         project: { type: 'string', description: 'Projekt-Name (erforderlich fuer emit und pending)' },
-        event_type: { type: 'string', description: 'Event-Typ fuer emit: WORK_STOP, CRITICAL_REVIEW, ARCH_DECISION, TEAM_DISCUSSION, ANNOUNCEMENT' },
+        event_type: { type: 'string', description: 'Event-Typ fuer emit: WORK_STOP, CRITICAL_REVIEW, ARCH_DECISION, TEAM_DISCUSSION, ANNOUNCEMENT, NEW_TASK, CHECK_CHANNEL, PLAN_READY' },
         priority: { type: 'string', description: 'Prioritaet fuer emit: critical, high, normal' },
         scope: { type: 'string', description: 'Empfaenger fuer emit: "all" oder "agent:<id>" (Standard: "all")' },
         source_id: { type: 'string', description: 'Absender Agent-ID (erforderlich fuer emit)' },

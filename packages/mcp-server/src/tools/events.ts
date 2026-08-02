@@ -92,6 +92,7 @@ export async function getPendingEventsTool(
     scope: string;
     sourceId: string;
     payload: string | null;
+    requiresAck: boolean;
     createdAt: string;
   }>;
   message: string;
@@ -107,6 +108,7 @@ export async function getPendingEventsTool(
         scope: e.scope,
         sourceId: e.sourceId,
         payload: e.payload,
+        requiresAck: e.requiresAck,
         createdAt: e.createdAt,
       })),
       message: `${events.length} ausstehende Events fuer "${agentId}"`,

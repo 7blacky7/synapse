@@ -22,6 +22,7 @@
  *   - Kein Qdrant (Events sind chronologisch, nicht semantisch)
  */
 
+import type { PoolClient } from 'pg';
 import { getPool } from '../db/client.js';
 
 export type EventType =
@@ -29,7 +30,8 @@ export type EventType =
   | 'CRITICAL_REVIEW'
   | 'ARCH_DECISION'
   | 'TEAM_DISCUSSION'
-  | 'ANNOUNCEMENT';
+  | 'ANNOUNCEMENT'
+  | 'PLAN_READY';
 
 export type EventPriority = 'critical' | 'high' | 'normal';
 
@@ -100,6 +102,60 @@ export async function emitEvent(
   return event;
 }
 
+export interface EmitEventOnceArgs {
+  project: string;
+  eventType: EventType;
+  priority: EventPriority;
+  scope: string;
+  sourceId: string;
+  payload?: string;
+  requiresAck?: boolean;
+  dedupeKey: string;
+}
+
+/**
+ * Erzeugt ein Event innerhalb einer bestehenden Transaktion hoechstens einmal.
+ * Die partielle Unique-Constraint macht Retries pro fachlichem Dedupe-Key sicher.
+ */
+export async function emitEventOnce(
+  args: EmitEventOnceArgs,
+  client: PoolClient,
+): Promise<AgentEvent | null> {
+  const result = await client.query(
+    `INSERT INTO agent_events (
+       project, event_type, priority, scope, source_id, payload, requires_ack, dedupe_key, created_at
+     )
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
+     ON CONFLICT (project, event_type, scope, dedupe_key)
+       WHERE dedupe_key IS NOT NULL
+       DO NOTHING
+     RETURNING id, project, event_type, priority, scope, source_id, payload, requires_ack, created_at`,
+    [
+      args.project,
+      args.eventType,
+      args.priority,
+      args.scope,
+      args.sourceId,
+      args.payload ?? null,
+      args.requiresAck ?? true,
+      args.dedupeKey,
+    ],
+  );
+  const row = result.rows[0];
+  if (!row) return null;
+  return {
+    id: row.id,
+    project: row.project,
+    eventType: row.event_type,
+    priority: row.priority,
+    scope: row.scope,
+    sourceId: row.source_id,
+    payload: row.payload,
+    requiresAck: row.requires_ack,
+    createdAt: row.created_at,
+  };
+}
+
 /**
  * Quittiert ein Event durch einen Agenten
  */
@@ -163,6 +219,16 @@ export async function getPendingEvents(
            NOW() - INTERVAL '1 hour'
          )
        )
+       AND (
+         e.event_type <> 'PLAN_READY'
+         OR EXISTS (
+           SELECT 1 FROM file_batch_waits w
+           WHERE w.project = e.project
+             AND e.dedupe_key = 'plan-ready:' || w.wait_token::text
+             AND w.status IN ('waiting', 'linked')
+             AND w.expires_at > NOW()
+         )
+       )
      ORDER BY
        CASE e.priority
          WHEN 'critical' THEN 0
@@ -197,13 +263,23 @@ export async function getUnackedCount(
 
   const result = await pool.query(
     `SELECT COUNT(*)::int AS count
-     FROM agent_events
-     WHERE project = $1
-       AND (scope = 'all' OR scope = $2)
+     FROM agent_events e
+     WHERE e.project = $1
+       AND (e.scope = 'all' OR e.scope = $2)
        AND NOT EXISTS (
          SELECT 1 FROM agent_event_acks
-         WHERE agent_event_acks.event_id = agent_events.id
+         WHERE agent_event_acks.event_id = e.id
            AND agent_event_acks.agent_id = $3
+       )
+       AND (
+         e.event_type <> 'PLAN_READY'
+         OR EXISTS (
+           SELECT 1 FROM file_batch_waits w
+           WHERE w.project = e.project
+             AND e.dedupe_key = 'plan-ready:' || w.wait_token::text
+             AND w.status IN ('waiting', 'linked')
+             AND w.expires_at > NOW()
+         )
        )`,
     [project, `agent:${agentId}`, agentId]
   );

@@ -37,7 +37,7 @@ export const eventTool: ConsolidatedTool = {
         event_type: {
           type: 'string',
           description:
-            'Event-Typ für emit: WORK_STOP, CRITICAL_REVIEW, ARCH_DECISION, TEAM_DISCUSSION, ANNOUNCEMENT, NEW_TASK, CHECK_CHANNEL',
+            'Event-Typ für emit: WORK_STOP, CRITICAL_REVIEW, ARCH_DECISION, TEAM_DISCUSSION, ANNOUNCEMENT, NEW_TASK, CHECK_CHANNEL, PLAN_READY',
         },
         priority: {
           type: 'string',

@@ -1309,13 +1309,13 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
   },
 
   event: {
-    summary: 'Steuersignale fuer Agenten (WORK_STOP, NEW_TASK, ANNOUNCEMENT, …). Verfuegbar lokal UND via REST (PostgreSQL). Pflicht-Reaktion: ack innerhalb weniger Tool-Calls, sonst Eskalation an Koordinator. emit akzeptiert optional events[] (1..50) fuer Bulk-Emit; ack akzeptiert event_id als Array (Batch-Ack).',
-    when_to_use: 'Koordinator emittiert Event an Agent(en): emit (mit scope: "all" oder "agent:<id>"). Agent quittiert empfangenes Event: ack. Agent prueft offene Events: pending.',
+    summary: 'Persistente Steuersignale fuer Agenten (WORK_STOP, NEW_TASK, PLAN_READY, ANNOUNCEMENT, …). Verfuegbar lokal UND via REST (PostgreSQL). PLAN_READY ist ein zielgerichtetes Inbox-Event fuer einen wartenden Co-Editor und bleibt bis ack oder terminalem Wait-Status erhalten; Push ist keine Voraussetzung. emit akzeptiert optional events[] (1..50) fuer Bulk-Emit; ack akzeptiert event_id als Array (Batch-Ack).',
+    when_to_use: 'Koordinator emittiert Event an Agent(en): emit (mit scope: "all" oder "agent:<id>"). PLAN_READY signalisiert dem waiting_agent einen eindeutig passenden offenen Primaerplan; Payload: plan_id, wait_token, shared_files, primary_agent. Agent quittiert empfangenes Event: ack. Agent prueft offene Events: pending.',
     when_not_to_use: 'Lockere Updates ohne Pflicht → thought oder channel. Direkte 1:1 Frage → chat DM. Langlebige Anweisung → memory.',
     actions: {
       emit: { description: 'Event senden (event_type, priority: critical|high|normal, scope, source_id, payload).' },
       ack: { description: 'Event quittieren (event_id einzeln oder als Array fuer Batch-Ack).' },
-      pending: { description: 'Eigene unacked Events abrufen (project + agent_id Pflicht).' },
+      pending: { description: 'Eigene unacked Events abrufen (project + agent_id Pflicht). Terminale oder abgelaufene PLAN_READY-Waits werden aus der Inbox ausgeblendet, die Event-Zeile bleibt fuer Audit erhalten.' },
     },
     anti_patterns: [
       'critical-Event 3+ Tool-Calls ignorieren — Eskalation an Koordinator.',

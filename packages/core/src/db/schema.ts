@@ -230,8 +230,11 @@ CREATE TABLE IF NOT EXISTS agent_events (
   source_id TEXT NOT NULL,
   payload TEXT,
   requires_ack BOOLEAN DEFAULT true,
+  dedupe_key TEXT,
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
+
+ALTER TABLE agent_events ADD COLUMN IF NOT EXISTS dedupe_key TEXT;
 
 CREATE TABLE IF NOT EXISTS agent_event_acks (
   event_id INTEGER REFERENCES agent_events(id) ON DELETE CASCADE,
@@ -286,6 +289,8 @@ CREATE INDEX IF NOT EXISTS idx_code_files_type ON code_files(project, file_type)
 
 CREATE INDEX IF NOT EXISTS idx_agent_events_project ON agent_events(project, created_at);
 CREATE INDEX IF NOT EXISTS idx_agent_events_type ON agent_events(event_type);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_agent_events_dedupe
+  ON agent_events(project, event_type, scope, dedupe_key) WHERE dedupe_key IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_agent_event_acks_agent ON agent_event_acks(agent_id);
 
 CREATE INDEX IF NOT EXISTS idx_file_versions_lookup ON file_versions(project, file_path, created_at DESC);

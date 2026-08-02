@@ -13,12 +13,14 @@
  *        dieselbe `batch_id` und koennen via `restoreBatch` gemeinsam
  *        zurueckgerollt werden.
  *
- * SCOPE: Hash-basierter Konflikt-Check plus CE-2-Reservations-Split in planBatch.
- *        KEIN Auto-Rebase und bewusst noch KEIN CE-3-Lifecycle/Event-Routing.
+ * SCOPE: Hash-basierter Konflikt-Check, CE-2-Reservations-Split und
+ *        persistentes CE-5-PLAN_READY-Inbox-Event. Kein Auto-Rebase.
  */
 
+import type { PoolClient } from 'pg';
 import { getPool } from '../db/client.js';
 import { resolveAgentId } from './agent-id-resolver.js';
+import { emitEventOnce } from './events.js';
 import {
   contentHash,
   searchReplace,
@@ -1264,6 +1266,14 @@ export async function planBatch(args: {
     );
     const planRow = planRes.rows[0];
 
+    await emitPlanReadyForExistingWaits(client, {
+      id: planRow.id,
+      project: args.project,
+      owner_agent_id: ownerAgentId,
+      expected_hashes: planExpectedHashes,
+      open_for_coedit: args.open_for_coedit ?? true,
+    });
+
     const coeditWaits: CoeditWaitGroup[] = [];
     if (sharedPaths.size > 0) {
       const groups = new Map<string, ForeignActiveReservationPrimary[]>();
@@ -1307,6 +1317,14 @@ export async function planBatch(args: {
           ],
         );
         const waitRow = waitRes.rows[0];
+        await emitPlanReadyForExactlyOneExistingPlan(client, {
+          wait_token: waitRow.wait_token,
+          project: args.project,
+          waiting_agent: ownerAgentId,
+          primary_agent: primaryAgent,
+          shared_files: groupPaths,
+          deferred_ops: deferredOps,
+        });
         const retryAfterSeconds = Math.max(
           1,
           Math.min(60, Math.ceil((new Date(waitRow.expires_at).getTime() - Date.now()) / 1000)),
@@ -1407,6 +1425,91 @@ const COEDIT_WAIT_SELECT = `
          consumed_deferred_op_indexes, expires_at::text AS expires_at,
          ready_at::text AS ready_at, updated_at::text AS updated_at
     FROM file_batch_waits`;
+
+interface PlanReadyPlan {
+  id: string;
+  project: string;
+  owner_agent_id: string | null;
+  expected_hashes: Record<string, string>;
+  open_for_coedit: boolean;
+}
+
+interface PlanReadyWait {
+  wait_token: string;
+  project: string;
+  waiting_agent: string | null;
+  primary_agent: string;
+  shared_files: string[];
+  deferred_ops: FileBatchOp[];
+}
+
+function planFullyCoversWait(plan: PlanReadyPlan, wait: PlanReadyWait): boolean {
+  const planPaths = new Set(Object.keys(plan.expected_hashes));
+  const requiredPaths = uniqueStrings(wait.deferred_ops.flatMap(touchedPaths));
+  return requiredPaths.length > 0 && requiredPaths.every((filePath) => planPaths.has(filePath));
+}
+
+async function emitPlanReady(
+  client: PoolClient,
+  plan: PlanReadyPlan,
+  wait: PlanReadyWait,
+): Promise<void> {
+  if (!wait.waiting_agent || !plan.owner_agent_id) return;
+  await emitEventOnce({
+    project: wait.project,
+    eventType: 'PLAN_READY',
+    priority: 'normal',
+    scope: `agent:${wait.waiting_agent}`,
+    sourceId: wait.primary_agent,
+    payload: JSON.stringify({
+      plan_id: plan.id,
+      wait_token: wait.wait_token,
+      shared_files: wait.shared_files,
+      primary_agent: wait.primary_agent,
+    }),
+    requiresAck: true,
+    dedupeKey: `plan-ready:${wait.wait_token}`,
+  }, client);
+}
+
+async function emitPlanReadyForExistingWaits(
+  client: PoolClient,
+  plan: PlanReadyPlan,
+): Promise<void> {
+  if (!plan.owner_agent_id || !plan.open_for_coedit || Object.keys(plan.expected_hashes).length === 0) return;
+  const waits = await client.query<CoeditWaitRow>(
+    `${COEDIT_WAIT_SELECT}
+      WHERE project = $1 AND primary_agent = $2
+        AND waiting_agent IS NOT NULL
+        AND primary_plan_id IS NULL
+        AND status = 'waiting'
+        AND expires_at > NOW()
+      ORDER BY source_plan_id, wait_token
+      FOR UPDATE`,
+    [plan.project, plan.owner_agent_id],
+  );
+  for (const wait of waits.rows) {
+    if (planFullyCoversWait(plan, wait)) await emitPlanReady(client, plan, wait);
+  }
+}
+
+async function emitPlanReadyForExactlyOneExistingPlan(
+  client: PoolClient,
+  wait: PlanReadyWait,
+): Promise<void> {
+  if (!wait.waiting_agent) return;
+  const candidates = await client.query<PlanReadyPlan>(
+    `SELECT id::text AS id, project, owner_agent_id, expected_hashes, open_for_coedit
+       FROM file_batch_plans
+      WHERE project = $1 AND owner_agent_id = $2
+        AND status = 'open' AND open_for_coedit = true AND expires_at > NOW()
+      ORDER BY created_at, id
+      FOR UPDATE`,
+    [wait.project, wait.primary_agent],
+  );
+  const coveringPlans = candidates.rows.filter((plan) => planFullyCoversWait(plan, wait));
+  if (coveringPlans.length === 1) await emitPlanReady(client, coveringPlans[0], wait);
+}
 
 export async function addCoeditContribution(args: {
   project: string;
