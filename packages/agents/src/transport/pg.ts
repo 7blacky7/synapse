@@ -30,6 +30,8 @@ import type {
   HeartbeatKonfiguration,
   InboxNachricht,
   LiveEmpfaenger,
+  SammelAnfrage,
+  SammelErgebnis,
   StatusNutzlast,
   SynapseItems,
   TransportBilanz,
@@ -91,6 +93,54 @@ export class PgTransport implements WrapperTransport {
         heartbeatIntervalMs: zeile.heartbeatIntervalMs,
       }
     })
+  }
+
+  /**
+   * Sammelabruf ueber den pg-Weg: dieselben Abfragen wie bisher, nur gemeinsam
+   * abgeschickt statt nacheinander. Es entsteht KEINE neue Abfrage und keine neue
+   * Filterregel — waere das anders, waere der Massstab verstellt, an dem sich der
+   * api-Weg messen lassen muss.
+   *
+   * Gebucht wird weiterhin je Einzelabfrage und NICHT als ein Sammelaufruf. Der
+   * pg-Weg macht wirklich mehrere Runden zur Datenbank; sie als eine zu zaehlen
+   * wuerde genau den Vergleich schoenrechnen, um den es hier geht.
+   *
+   * Nie gekuerzt: getNewMessagesForAgent und getNewInboxMessages kennen kein
+   * limit, sie liefern alles ab dem Wasserstand. nochMehr ist hier also immer false.
+   */
+  async holeAlles(anfrage: SammelAnfrage): Promise<SammelErgebnis> {
+    if (!anfrage.mitInhalt) {
+      return {
+        config: await this.leseHeartbeatKonfiguration(),
+        channels: null,
+        channelNachrichten: [],
+        inbox: [],
+        items: null,
+        unquittiert: null,
+        nochMehr: false,
+      }
+    }
+
+    const [config, channels, channelNachrichten, inbox, items] = await Promise.all([
+      this.leseHeartbeatKonfiguration(),
+      this.leseChannels(),
+      this.leseNeueChannelNachrichten(anfrage.channelSeitId),
+      this.leseNeueInboxNachrichten(anfrage.inboxSeitId),
+      anfrage.mitItems ? this.leseSynapseItems() : Promise.resolve(null),
+    ])
+
+    return {
+      config,
+      channels,
+      channelNachrichten,
+      inbox,
+      items,
+      // Siehe SammelErgebnis.unquittiert: die Zahl belegt einen Verlust, den es
+      // nur zwischen zwei HTTP-Aufrufen geben kann. Hier waere sie eine eigene
+      // Abfrage je Takt ohne Aussage.
+      unquittiert: null,
+      nochMehr: false,
+    }
   }
 
   async leseWasserstaende(): Promise<Wasserstaende> {

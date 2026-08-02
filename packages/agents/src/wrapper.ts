@@ -28,7 +28,15 @@ import { ProcessManager } from './process.js'
 import { readStatus, updateSpecialist } from './status.js'
 import { erzeugeTransport } from './transport/index.js'
 import { BilanzWaechter } from './transport/zaehler.js'
-import type { LiveEreignis, WrapperTransport } from './transport/typen.js'
+import type {
+  ChannelNachricht,
+  HeartbeatKonfiguration,
+  InboxNachricht,
+  LiveEreignis,
+  SammelErgebnis,
+  SynapseItems,
+  WrapperTransport,
+} from './transport/typen.js'
 import {
   CONTEXT_CEILINGS,
   WARN_THRESHOLDS,
@@ -138,29 +146,29 @@ let festerTaktMs: number | null = null
 const WAECHTER_TAKT_MS = 60_000
 
 /**
- * Liest die eigene Heartbeat-Konfiguration aus wrapper_status.
+ * Uebernimmt die eigene Heartbeat-Konfiguration aus dem Sammelabruf.
  *
- * Faellt der Aufruf aus (DB weg, Zeile noch nicht da), bleibt die letzte bekannte
- * Einstellung stehen. Das ist Absicht: ein DB-Ausfall darf einen arbeitenden
- * Spezialisten nicht verstummen lassen, und einen abgeschalteten nicht aufwecken.
+ * GEHOLT wird sie nicht mehr hier, sondern zusammen mit allem anderen in EINER
+ * Anfrage (Schritt 3, 02.08.2026). Uebrig bleibt genau das, was diese Funktion
+ * immer schon war: die Auswertung.
+ *
+ * null heisst "keine Auskunft" — Ausfall, oder noch keine wrapper_status-Zeile.
+ * Dann bleibt die letzte bekannte Einstellung stehen. Das ist Absicht: ein
+ * Ausfall darf einen arbeitenden Spezialisten nicht verstummen lassen, und einen
+ * abgeschalteten nicht aufwecken.
  */
-async function ladeHeartbeatKonfiguration(): Promise<void> {
+function uebernehmeHeartbeatKonfiguration(zeile: HeartbeatKonfiguration | null): void {
   if (!PROJECT_NAME) return
-  try {
-    const zeile = await transport.leseHeartbeatKonfiguration()
-    if (!zeile) return
-    const vorherAktiv = heartbeatAktiv
-    const vorherTakt = festerTaktMs
-    heartbeatAktiv = zeile.heartbeatEnabled
-    festerTaktMs = zeile.heartbeatIntervalMs
-    if (vorherAktiv !== heartbeatAktiv) {
-      log('Heartbeat %s (durch Konfiguration)', heartbeatAktiv ? 'EINGESCHALTET' : 'ABGESCHALTET')
-    }
-    if (vorherTakt !== festerTaktMs) {
-      log('Heartbeat-Takt: %s', festerTaktMs === null ? 'adaptiv' : describeInterval(festerTaktMs))
-    }
-  } catch (err) {
-    log('Heartbeat-Konfiguration nicht lesbar, bleibe bei der letzten: %s', err)
+  if (!zeile) return
+  const vorherAktiv = heartbeatAktiv
+  const vorherTakt = festerTaktMs
+  heartbeatAktiv = zeile.heartbeatEnabled
+  festerTaktMs = zeile.heartbeatIntervalMs
+  if (vorherAktiv !== heartbeatAktiv) {
+    log('Heartbeat %s (durch Konfiguration)', heartbeatAktiv ? 'EINGESCHALTET' : 'ABGESCHALTET')
+  }
+  if (vorherTakt !== festerTaktMs) {
+    log('Heartbeat-Takt: %s', festerTaktMs === null ? 'adaptiv' : describeInterval(festerTaktMs))
   }
 }
 
@@ -717,9 +725,17 @@ async function nachholPoll(): Promise<void> {
       await wakeAgent(wakeMsg)
       return
     }
-    await pollChannelMessages()
-    await pollInboxMessages()
-    await pollSynapseItems()
+    // Auch hier EIN Abruf statt dreier — derselbe Weg wie im normalen Takt.
+    const sammel = await transport.holeAlles({
+      channelSeitId: lastChannelMsgId,
+      inboxSeitId: lastInboxMsgId,
+      mitInhalt: true,
+      mitItems: PROJECT_NAME !== '',
+    })
+    if (sammel.channels) cachedChannels = sammel.channels
+    await pollChannelMessages(sammel.channelNachrichten)
+    await pollInboxMessages(sammel.inbox)
+    await pollSynapseItems(sammel.items)
   } catch (err) {
     log('Nachhol-Poll fehlgeschlagen: %s', err)
   }
@@ -728,9 +744,52 @@ async function nachholPoll(): Promise<void> {
 async function heartbeatPoll() {
   if (shuttingDown || !processAlive) return
 
-  // Konfiguration zuerst: ein abgeschalteter Wrapper darf ab hier nichts mehr tun,
-  // was den Agenten weckt oder Tokens kostet.
-  await ladeHeartbeatKonfiguration()
+  // EIN Sammelabruf fuer den ganzen Tick (Schritt 3, 02.08.2026).
+  // Vorher fragte der Tick nacheinander: Konfiguration, Channel-Nachrichten,
+  // Inbox, Items. Ueber PG war das eine Runde ueber eine offene Verbindung, ueber
+  // HTTP waren es vier Aufrufe — womit der api-Weg LANGSAMER war als der Weg, den
+  // er ersetzen soll. Wie der Abruf erfuellt wird, entscheidet jetzt die
+  // Zugriffsschicht; hier steht nur noch EINE Frage.
+  //
+  // Die Konfiguration kommt IMMER, alles andere nur, wenn der Wrapper damit auch
+  // etwas anfangen darf: ein abgeschalteter weckt niemanden, ein beschaeftigter
+  // verwirft die Nachrichten ohnehin. Der Wasserstand rueckt dann nicht vor, es
+  // geht also nichts verloren — der naechste Takt holt dieselben Nachrichten.
+  const wollteInhalt = heartbeatAktiv && !agentBusy
+  let sammel: SammelErgebnis | null = null
+  try {
+    sammel = await transport.holeAlles({
+      channelSeitId: lastChannelMsgId,
+      inboxSeitId: lastInboxMsgId,
+      mitInhalt: wollteInhalt,
+      mitItems: wollteInhalt && PROJECT_NAME !== '',
+    })
+    uebernehmeHeartbeatKonfiguration(sammel.config)
+    // Frisch aus derselben Antwort — kostet keinen eigenen Aufruf.
+    if (sammel.channels) cachedChannels = sammel.channels
+  } catch (err) {
+    // Wie bisher bei einem Ausfall: letzte bekannte Einstellung behalten und
+    // ohne Daten weitermachen.
+    log('Sammelabruf fehlgeschlagen, bleibe bei der letzten Konfiguration: %s', err)
+  }
+
+  // Der Wrapper war zu Beginn des Takts abgeschaltet und ist es jetzt nicht mehr:
+  // im SELBEN Takt nachholen, damit das Einschalten sofort greift und nicht erst
+  // eine Waechter-Runde spaeter. Genau so verhielt es sich vor dem Umbau auch,
+  // weil die Konfiguration damals VOR den Abfragen gelesen wurde.
+  if (sammel && !wollteInhalt && heartbeatAktiv && !agentBusy) {
+    try {
+      sammel = await transport.holeAlles({
+        channelSeitId: lastChannelMsgId,
+        inboxSeitId: lastInboxMsgId,
+        mitInhalt: true,
+        mitItems: PROJECT_NAME !== '',
+      })
+      if (sammel.channels) cachedChannels = sammel.channels
+    } catch (err) {
+      log('Nachziehender Sammelabruf nach dem Einschalten fehlgeschlagen: %s', err)
+    }
+  }
 
   // EINZIGE Ausnahme davon, ausdruecklich freigegeben: hatte der Live-Kanal
   // nachweislich ein Loch (der Server meldet, dass sein LISTEN-Client neu verbinden
@@ -853,9 +912,11 @@ Wenn du weiterarbeitest ohne den trigger_respawn Flag, rotiert der Wrapper dich 
       return
     }
 
-    const hadChannelMessages = await pollChannelMessages()
-    const hadInboxMessages = await pollInboxMessages()
-    const hadSynapseItems = await pollSynapseItems()
+    // Die Daten stehen schon da — hier wird nur noch verarbeitet. Der Wortlaut
+    // der Wake-Prompts ist unveraendert, es faellt allein das Abfragen weg.
+    const hadChannelMessages = await pollChannelMessages(sammel?.channelNachrichten ?? [])
+    const hadInboxMessages = await pollInboxMessages(sammel?.inbox ?? [])
+    const hadSynapseItems = await pollSynapseItems(sammel?.items ?? null)
     await updateStatusFile()
 
     // Adaptive Heartbeat-State: bei Aktivitaet auf 10s reset, sonst eskalieren.
@@ -925,10 +986,12 @@ async function recoverStuckAgent(): Promise<void> {
   })
 }
 
-async function pollChannelMessages(): Promise<boolean> {
+/**
+ * Verarbeitet die Channel-Nachrichten, die der Sammelabruf schon geholt hat.
+ * Das Abfragen ist hier herausgewandert (Schritt 3) — der Prompt-Bau nicht.
+ */
+async function pollChannelMessages(newMsgs: ChannelNachricht[]): Promise<boolean> {
   if (agentBusy) return false
-
-  const newMsgs = await transport.leseNeueChannelNachrichten(lastChannelMsgId)
   if (newMsgs.length === 0) return false
 
   // Update watermark
@@ -982,10 +1045,9 @@ Wenn du weiterarbeitest und keine Pause machst, kann der Wrapper dich nicht rech
   return true
 }
 
-async function pollInboxMessages(): Promise<boolean> {
+/** Wie pollChannelMessages: geholt wurde schon, hier wird nur verarbeitet und quittiert. */
+async function pollInboxMessages(newMsgs: InboxNachricht[]): Promise<boolean> {
   if (agentBusy) return false
-
-  const newMsgs = await transport.leseNeueInboxNachrichten(lastInboxMsgId)
   if (newMsgs.length === 0) return false
 
   // Update watermark
@@ -1009,17 +1071,17 @@ async function pollInboxMessages(): Promise<boolean> {
   return true
 }
 
-async function pollSynapseItems(): Promise<boolean> {
+async function pollSynapseItems(geholt: SynapseItems | null): Promise<boolean> {
   if (agentBusy || !PROJECT_NAME) return false
+  // null = in diesem Takt nicht abgefragt (abgeschaltet oder beschaeftigt).
+  if (!geholt) return false
 
   const items: string[] = []
 
   try {
-    // Die vier Item-Arten kommen jetzt aus der Zugriffsschicht, bereits auf diesen
-    // Agenten gefiltert. Der WORTLAUT bleibt hier — er gehoert nicht in eine API,
-    // sonst laesst er sich nicht mehr aendern, ohne zu deployen.
-    const geholt = await transport.leseSynapseItems()
-
+    // Die vier Item-Arten kommen aus dem Sammelabruf, bereits auf diesen Agenten
+    // gefiltert. Der WORTLAUT bleibt hier — er gehoert nicht in eine API, sonst
+    // laesst er sich nicht mehr aendern, ohne zu deployen.
     for (const m of geholt.memories) {
       const truncated = m.content.length > 800 ? m.content.slice(0, 800) + '...' : m.content
       items.push(`[MEMORY:${m.name}] ${truncated}`)

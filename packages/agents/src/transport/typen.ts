@@ -123,6 +123,7 @@ export interface TransportUmgebung {
  */
 export const FAEHIGKEITEN = [
   'start',
+  'sammel',
   'konfiguration',
   'wasserstaende',
   'channels',
@@ -182,6 +183,60 @@ export interface TransportBilanz {
   liveErwartetLebenszeichen: boolean
 }
 
+/**
+ * Was ein Heartbeat-Tick an Daten braucht — als EINE Anfrage.
+ *
+ * WARUM ES DAS GIBT: ueber PG ist ein Tick eine Runde ueber eine offene
+ * Verbindung, ueber HTTP waren es vier Aufrufe. Damit war der api-Weg LANGSAMER
+ * als der Weg, den er ersetzen soll. Die API haelt dafuer den Sammelendpunkt
+ * GET /poll bereit; hier haengt er an der Schnittstelle, damit der Tick nicht
+ * wissen muss, welcher Weg gerade laeuft.
+ */
+export interface SammelAnfrage {
+  channelSeitId: number
+  inboxSeitId: number
+  /**
+   * false = NUR die Konfiguration holen. Der Fall des abgeschalteten oder gerade
+   * beschaeftigten Wrappers: er darf die Nachrichten in diesem Takt ohnehin nicht
+   * verarbeiten, also soll er sie auch nicht holen.
+   */
+  mitInhalt: boolean
+  /** items sind der teuerste Teil (Memories, Thoughts, Plan, Events). */
+  mitItems: boolean
+}
+
+export interface SammelErgebnis {
+  /**
+   * null = keine wrapper_status-Zeile. GENAU so zu behandeln wie ein 404 bei
+   * /config: letzte bekannte Einstellung behalten. Der Sammelendpunkt liefert in
+   * diesem Fall bewusst KEIN 404, sondern config:null UND trotzdem Nachrichten —
+   * ein fehlender Statuseintrag darf einen Agenten nicht von seiner Post abschneiden.
+   */
+  config: HeartbeatKonfiguration | null
+  /** null = nicht abgefragt (mitInhalt=false). Nicht zu verwechseln mit "keine Kanaele". */
+  channels: string[] | null
+  channelNachrichten: ChannelNachricht[]
+  inbox: InboxNachricht[]
+  /** null = nicht abgefragt. Leere Listen heissen "nichts da". */
+  items: SynapseItems | null
+  /**
+   * Unquittierte Inbox-Nachrichten laut Server. NUR der api-Weg erhebt die Zahl:
+   * dort sind Lesen und Quittieren zwei Aufrufe, und eine Zahl, die nicht faellt,
+   * ist der einzige Beleg dafuer, dass dazwischen etwas verlorengegangen ist. Im
+   * pg-Weg laeuft beides ueber dieselbe Verbindung; dort waere es eine eigene
+   * Abfrage je Takt fuer eine Aussage, die niemand braucht. Deshalb pg: null.
+   * Das ist der EINZIGE Punkt, in dem sich die beiden Ergebnisse unterscheiden.
+   */
+  unquittiert: number | null
+  /**
+   * true = es lag MEHR an, als geliefert werden konnte, und auch das Nachfassen
+   * hat es nicht aufgeholt. Der Rest kommt im naechsten Takt — der Wasserstand ist
+   * vorgerueckt, verloren geht nichts. Ein Aufrufer, der nach der ersten Lieferung
+   * stillschweigend aufhoert, waere genau die Fehlerform dieses Projekts.
+   */
+  nochMehr: boolean
+}
+
 export interface WrapperTransport {
   readonly art: TransportArt
 
@@ -193,6 +248,18 @@ export interface WrapperTransport {
 
   /** null = keine Zeile vorhanden. Fehler werden GEWORFEN, nicht verschluckt. */
   leseHeartbeatKonfiguration(): Promise<HeartbeatKonfiguration | null>
+
+  /**
+   * EIN Abruf fuer den ganzen Tick: Konfiguration, Kanaele, Channel-Nachrichten,
+   * Inbox und Items. Additiv — die Einzelmethoden bleiben und werden beim Start,
+   * beim Statusschreiben und in Sonderfaellen weiter gebraucht.
+   *
+   * BEIDE WEGE MUESSEN DASSELBE LIEFERN. Der api-Weg ruft den Sammelendpunkt, der
+   * pg-Weg buendelt seine vorhandenen Abfragen. Waeren die Ergebnisse verschieden,
+   * bekaeme derselbe Agent je nach Weg andere Arbeit — genau das soll diese
+   * Schicht verhindern.
+   */
+  holeAlles(anfrage: SammelAnfrage): Promise<SammelErgebnis>
 
   leseWasserstaende(): Promise<Wasserstaende>
   leseChannels(): Promise<string[]>

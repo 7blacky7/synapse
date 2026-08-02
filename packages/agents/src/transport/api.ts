@@ -35,6 +35,8 @@ import type {
   HeartbeatKonfiguration,
   InboxNachricht,
   LiveEmpfaenger,
+  SammelAnfrage,
+  SammelErgebnis,
   StatusNutzlast,
   SynapseItems,
   TransportBilanz,
@@ -45,6 +47,10 @@ import type {
 
 const ZEITLIMIT_MS = 15_000
 const RUECKZUG_MS = [1_000, 2_000, 5_000, 10_000, 30_000]
+/** Hoechstwert der Route (ihre Vorgabe waere 200). Wer alles will, fragt gross. */
+const SAMMEL_LIMIT = 500
+/** So oft wird bei gekuerzter Antwort im SELBEN Takt nachgefasst. */
+const MAX_NACHFASS_RUNDEN = 10
 
 interface RufOptionen {
   methode?: string
@@ -189,11 +195,32 @@ export class ApiTransport implements WrapperTransport {
     const daten = await this.holeConfig()
     if (daten === null) return null
     if (daten.exists === false) return null
+    return this.deuteConfig(daten.config, '/config', false)
+  }
 
-    const config = daten.config as Record<string, unknown> | undefined
-    if (!config) {
-      throw new Error('Antwort von /config enthaelt kein Feld "config" — Vertrag verletzt')
+  /**
+   * Wertet den config-Block aus — fuer /config UND fuer /poll, damit beide Wege
+   * denselben Takt lesen und nicht zwei Auslegungen desselben Feldes entstehen.
+   *
+   * fehlenErlaubt unterscheidet die beiden Sonderfaelle, die gleich AUSSEHEN und
+   * verschieden GEMEINT sind:
+   *   /config ohne wrapper_status-Zeile antwortet mit 404 (oben abgefangen); ein
+   *   fehlendes config-Feld in einer 200er-Antwort ist dort ein Vertragsbruch und
+   *   muss laut sein — sonst laeuft der Wrapper ohne gelesenen Takt adaptiv weiter
+   *   und sieht dabei voellig normal aus.
+   *   /poll liefert ohne Zeile bewusst config:null UND trotzdem Nachrichten. Das
+   *   ist kein Fehler, sondern heisst: letzte bekannte Einstellung behalten.
+   */
+  private deuteConfig(
+    roh: unknown,
+    quelle: string,
+    fehlenErlaubt: boolean,
+  ): HeartbeatKonfiguration | null {
+    if (roh === null || roh === undefined) {
+      if (fehlenErlaubt) return null
+      throw new Error(`Antwort von ${quelle} enthaelt kein Feld "config" — Vertrag verletzt`)
     }
+    const config = roh as Record<string, unknown>
 
     const aktiv = config.heartbeat_enabled ?? config.heartbeatEnabled
     const takt = config.heartbeat_interval_ms ?? config.heartbeatIntervalMs
@@ -202,10 +229,14 @@ export class ApiTransport implements WrapperTransport {
       // Bewusst hart: waere das hier tolerant, verloere der api-Weg die
       // Abschaltbarkeit, und zwar unbemerkt — ein Wrapper ohne gelesene
       // Konfiguration laeuft einfach adaptiv weiter und sieht normal aus.
-      throw new Error('Feld heartbeat_enabled fehlt oder ist kein Wahrheitswert — Takt waere nicht mehr steuerbar')
+      throw new Error(
+        `Feld heartbeat_enabled fehlt in der Antwort von ${quelle} oder ist kein Wahrheitswert — Takt waere nicht mehr steuerbar`,
+      )
     }
     if (takt !== null && takt !== undefined && typeof takt !== 'number') {
-      throw new Error('Feld heartbeat_interval_ms ist weder Zahl noch null — Takt waere nicht mehr steuerbar')
+      throw new Error(
+        `Feld heartbeat_interval_ms aus ${quelle} ist weder Zahl noch null — Takt waere nicht mehr steuerbar`,
+      )
     }
 
     // Gemerkt, weil es die Bewertung einer Luecke aendert: ein abgeschalteter
@@ -273,6 +304,11 @@ export class ApiTransport implements WrapperTransport {
         roh.length,
       )
     }
+    return ApiTransport.alsChannelNachrichten(roh)
+  }
+
+  /** EINE Stelle fuer die Abbildung — /channel-messages und /poll liefern dieselbe Form. */
+  private static alsChannelNachrichten(roh: unknown[]): ChannelNachricht[] {
     return roh.map((eintrag) => {
       const m = eintrag as Record<string, unknown>
       return {
@@ -299,6 +335,11 @@ export class ApiTransport implements WrapperTransport {
         roh.length,
       )
     }
+    return ApiTransport.alsInboxNachrichten(roh)
+  }
+
+  /** EINE Stelle fuer die Abbildung — /inbox und /poll liefern dieselbe Form. */
+  private static alsInboxNachrichten(roh: unknown[]): InboxNachricht[] {
     return roh.map((eintrag) => {
       const m = eintrag as Record<string, unknown>
       return {
@@ -334,15 +375,22 @@ export class ApiTransport implements WrapperTransport {
 
   async leseSynapseItems(): Promise<SynapseItems> {
     const daten = await this.rufPflicht<Record<string, unknown>>('items', '/items')
-    // Der Vertrag legt die vier Listen auf die oberste Ebene; ein Unterobjekt
-    // "items" wird ebenfalls akzeptiert. Fehlt eine Liste ganz, ist das ein
-    // Fehler und KEINE leere Liste — sonst verschwaende Arbeit lautlos.
+    return ApiTransport.alsItems(daten, '/items')
+  }
+
+  /**
+   * Der Vertrag legt die vier Listen auf die oberste Ebene; ein Unterobjekt
+   * "items" wird ebenfalls akzeptiert — so liefert es /poll. Fehlt eine Liste
+   * ganz, ist das ein Fehler und KEINE leere Liste: sonst verschwaende ein
+   * Vertragsbruch lautlos die Arbeit des Agenten.
+   */
+  private static alsItems(daten: Record<string, unknown>, pfad: string): SynapseItems {
     const quelle = (daten.items as Record<string, unknown> | undefined) ?? daten
 
     const liste = (name: string): Record<string, unknown>[] => {
       const wert = quelle[name]
       if (!Array.isArray(wert)) {
-        throw new Error(`Antwort von /items enthaelt kein Feld "${name}" — Vertrag verletzt`)
+        throw new Error(`Antwort von ${pfad} enthaelt kein Feld "${name}" — Vertrag verletzt`)
       }
       return wert as Record<string, unknown>[]
     }
@@ -370,6 +418,124 @@ export class ApiTransport implements WrapperTransport {
         payload: e.payload === null || e.payload === undefined ? null : String(e.payload),
       })),
     }
+  }
+
+  /**
+   * DER SAMMELABRUF. Ein Aufruf statt vier — das ist die Stelle, an der der
+   * api-Weg aufhoert, langsamer zu sein als der pg-Weg, den er ersetzen soll.
+   *
+   * ZWEI SONDERFAELLE, an denen man hier scheitert, ohne dass es auffaellt:
+   * a) config:null. /poll antwortet OHNE wrapper_status-Zeile bewusst nicht mit
+   *    404, sondern mit config:null UND trotzdem Nachrichten — ein fehlender
+   *    Statuseintrag darf einen Agenten nicht von seiner Post abschneiden. Genau
+   *    wie ein 404 bei /config heisst das: letzte bekannte Einstellung behalten.
+   * b) truncated. Die Route kappt bei limit. Wer dann nicht nachfasst, laesst Post
+   *    liegen und merkt es nie — ein Wrapper, der nach 200 Nachrichten still
+   *    aufhoert, ist genau die Fehlerform dieses Projekts. Also wird im SELBEN
+   *    Takt mit dem neuen Wasserstand nachgefasst, bis nichts mehr gekappt ist.
+   *    Reicht auch das nicht, steht es im Log und in nochMehr, statt still zu enden.
+   */
+  async holeAlles(anfrage: SammelAnfrage): Promise<SammelErgebnis> {
+    if (!anfrage.mitInhalt) {
+      // Abgeschalteter oder beschaeftigter Wrapper: nur nachsehen, ob er wieder
+      // anfangen darf. Ein Aufruf, so wie frueher auch.
+      return {
+        config: await this.leseHeartbeatKonfiguration(),
+        channels: null,
+        channelNachrichten: [],
+        inbox: [],
+        items: null,
+        unquittiert: null,
+        nochMehr: false,
+      }
+    }
+
+    const pfad = (chSeit: number, ibSeit: number, mitItems: boolean): string =>
+      `/poll?channel_since_id=${chSeit}&inbox_since_id=${ibSeit}` +
+      `&items=${mitItems ? '1' : '0'}&limit=${SAMMEL_LIMIT}`
+
+    let daten = await this.rufPflicht<Record<string, unknown>>(
+      'sammel',
+      pfad(anfrage.channelSeitId, anfrage.inboxSeitId, anfrage.mitItems),
+    )
+    this.pruefeStrom(daten)
+
+    const config = this.deuteConfig(daten.config, '/poll', true)
+    const channels = Array.isArray(daten.channels) ? daten.channels.map((c) => String(c)) : null
+    const items = anfrage.mitItems ? ApiTransport.alsItems(daten, '/poll') : null
+    const unquittiert = typeof daten.unacked_count === 'number' ? daten.unacked_count : null
+
+    const channelNachrichten = ApiTransport.alsChannelNachrichten(this.liste(daten, 'channel_messages'))
+    const inbox = ApiTransport.alsInboxNachrichten(this.liste(daten, 'inbox'))
+
+    let gekappt = ApiTransport.gekappt(daten)
+    let runde = 0
+    while (gekappt && runde < MAX_NACHFASS_RUNDEN) {
+      runde++
+      const chSeit =
+        channelNachrichten.length > 0
+          ? channelNachrichten[channelNachrichten.length - 1].id
+          : anfrage.channelSeitId
+      const ibSeit = inbox.length > 0 ? inbox[inbox.length - 1].id : anfrage.inboxSeitId
+      this.umgebung.log(
+        'Sammelabruf war gekuerzt (bisher %d Channel-, %d Inbox-Nachrichten) — es wird SOFORT nachgefasst ' +
+          '(Runde %d, ab channel>%d inbox>%d). Wer hier aufhoert, laesst Post liegen und merkt es nie.',
+        channelNachrichten.length,
+        inbox.length,
+        runde,
+        chSeit,
+        ibSeit,
+      )
+      // items nur im ersten Aufruf: sie haengen nicht am Wasserstand und waeren
+      // beim Nachfassen dieselben.
+      daten = await this.rufPflicht<Record<string, unknown>>('sammel', pfad(chSeit, ibSeit, false))
+      this.pruefeStrom(daten)
+      const mehrChannel = ApiTransport.alsChannelNachrichten(this.liste(daten, 'channel_messages'))
+      const mehrInbox = ApiTransport.alsInboxNachrichten(this.liste(daten, 'inbox'))
+      channelNachrichten.push(...mehrChannel)
+      inbox.push(...mehrInbox)
+      gekappt = ApiTransport.gekappt(daten)
+      if (mehrChannel.length === 0 && mehrInbox.length === 0) {
+        // Nichts mehr gekommen, obwohl gekuerzt gemeldet wurde. Weiterdrehen
+        // waere eine Endlosschleife — also abbrechen und es sagen.
+        if (gekappt) {
+          this.umgebung.log(
+            'Nachfassen liefert nichts mehr, obwohl die Antwort als gekuerzt gilt — Abbruch, damit hier keine Schleife entsteht.',
+          )
+        }
+        break
+      }
+    }
+
+    if (gekappt) {
+      this.umgebung.log(
+        '⚠️ Nach %d Nachfass-Runden ist immer noch etwas offen. Der Rest kommt im naechsten Takt ' +
+          '(der Wasserstand ist vorgerueckt, verloren geht nichts) — aber hier staut sich Post.',
+        runde,
+      )
+    }
+
+    return { config, channels, channelNachrichten, inbox, items, unquittiert, nochMehr: gekappt }
+  }
+
+  /** Pflichtliste aus der Sammelantwort. Fehlt sie, ist das ein Vertragsbruch und keine Leere. */
+  private liste(daten: Record<string, unknown>, name: string): unknown[] {
+    const wert = daten[name]
+    if (!Array.isArray(wert)) {
+      throw new Error(`Antwort von /poll enthaelt kein Feld "${name}" — Vertrag verletzt`)
+    }
+    return wert
+  }
+
+  /** truncated ist ein Objekt {channel_messages, inbox}; ein blosses true gilt auch. */
+  private static gekappt(daten: Record<string, unknown>): boolean {
+    const t = daten.truncated
+    if (t === true) return true
+    if (t && typeof t === 'object') {
+      const o = t as Record<string, unknown>
+      return o.channel_messages === true || o.inbox === true
+    }
+    return false
   }
 
   async schreibeStatus(status: StatusNutzlast): Promise<void> {
