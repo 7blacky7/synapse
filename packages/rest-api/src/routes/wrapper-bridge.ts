@@ -327,7 +327,9 @@ export async function wrapperBridgeRoutes(fastify: FastifyInstance): Promise<voi
     const limit = grenze(request.query.limit, 200, 500);
     zaehler.channelMessages += 1;
     try {
-      const alle = await getNewMessagesForAgent(agent, since);
+      // limit + 1 abfragen: nur so ist "genau limit Zeilen" von "limit Zeilen und da
+      // kommt noch was" zu unterscheiden. Ohne das eine Zeile mehr meldet truncated nie.
+      const alle = await getNewMessagesForAgent(agent, since, limit + 1);
       const messages = alle.slice(0, limit);
       return {
         success: true,
@@ -651,7 +653,7 @@ export async function wrapperBridgeRoutes(fastify: FastifyInstance): Promise<voi
     try {
       const [zeile, channelAlle, inboxAlle, channels, unacked, items] = await Promise.all([
         getWrapperStatus(agent, project),
-        getNewMessagesForAgent(agent, channelSeit),
+        getNewMessagesForAgent(agent, channelSeit, limit + 1),
         getNewInboxMessages(agent, inboxSeit),
         leseMitgliedschaften(agent),
         zaehleUnquittiert(agent),

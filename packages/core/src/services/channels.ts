@@ -215,9 +215,26 @@ export async function listChannels(
   return rows
 }
 
+/**
+ * Neue Channel-Nachrichten fuer einen Agenten, ab sinceId.
+ *
+ * ⚠️ Das Limit war bis zum 02.08.2026 fest auf 10 verdrahtet. Das war unauffaellig,
+ * solange nur der Wrapper es benutzte (er holt im naechsten Takt nach), wurde aber
+ * zum stillen Fehler, als die Bruecken-Route dazukam: die kappt auf ihr eigenes
+ * Limit (Vorgabe 200) und meldet truncated nur, wenn MEHR Zeilen vorhanden waeren
+ * als sie ausliefert. Bekam sie nie mehr als 10, konnte truncated nie true werden —
+ * der Aufrufer hielt zehn Nachrichten fuer den vollstaendigen Stand und fasste nicht
+ * nach. Gefunden bei der Abnahme von Schritt 3 (poll-verdrahtung).
+ *
+ * Die Vorgabe bleibt 10, damit sich fuer bestehende Aufrufer nichts aendert; wer
+ * mehr braucht, sagt es. Ein Aufrufer, der truncated auswerten will, fragt EINE Zeile
+ * mehr ab als er ausliefert — sonst ist "genau limit Zeilen" nicht von "limit Zeilen
+ * und da kommt noch was" zu unterscheiden.
+ */
 export async function getNewMessagesForAgent(
   agentName: string,
   sinceId: number,
+  limit = 10,
 ): Promise<ChannelMessage[]> {
   const pool = getPool()
   const { rows } = await pool.query<{
@@ -236,8 +253,8 @@ export async function getNewMessagesForAgent(
        AND cm.sender != $1
        AND cm.id > $2
      ORDER BY cm.id
-     LIMIT 10`,
-    [agentName, sinceId],
+     LIMIT $3`,
+    [agentName, sinceId, Math.max(1, Math.floor(limit))],
   )
   return rows.map((r) => ({
     id: r.id,
