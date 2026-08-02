@@ -523,8 +523,13 @@ export async function purgeSpecialistTool(
         log: (msg, ...args) => console.error(`[Synapse][wissen] ${msg}`, ...args),
       });
       if (wissen.art !== 'datei') {
-        await wissen.loescheAlles(name);
-        steps.wissen_geloescht = wissen.art;
+        // ⚠️ ZAHL UND WEG, nicht nur der Weg. Vorher stand hier allein wissen.art
+        // ('api') — das sagt WO geloescht wurde, aber nicht OB etwas da war. Ein
+        // purge, der ins Leere greift, sah damit aus wie einer, der aufgeraeumt
+        // hat, und ein still wachsender Bestand zu entfernten Agenten waere
+        // niemandem aufgefallen. Die Einheit steht dabei, weil sie am Weg haengt.
+        const anzahl = await wissen.loescheAlles(name);
+        steps.wissen_geloescht = { weg: wissen.art, anzahl, einheit: 'zeilen' };
       }
     } catch (err) {
       steps.wissen_geloescht = `Fehler: ${err}`;

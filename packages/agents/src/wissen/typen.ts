@@ -109,8 +109,17 @@ export interface WissensZugriff {
    */
   entferneEintraege(agent: string, art: SkillFile, enthaelt: string): Promise<number>
 
-  /** Alles zu diesem Agenten loeschen. Idempotent. */
-  loescheAlles(agent: string): Promise<void>
+  /**
+   * Alles zu diesem Agenten loeschen. Idempotent.
+   * @returns Anzahl entfernter Einheiten. ⚠️ DIE EINHEIT HAENGT AM WEG: im
+   *          api-Weg sind es TABELLENZEILEN, im datei-Weg DATEIEN. 0 heisst in
+   *          beiden Faellen "es war nichts da".
+   *          Warum ueberhaupt eine Zahl: ohne sie sieht ein purge, der ins Leere
+   *          greift, genauso aus wie einer, der wirklich aufgeraeumt hat — und
+   *          das ist der Fall, in dem still ein Bestand zu Agenten waechst, die
+   *          es nicht mehr gibt.
+   */
+  loescheAlles(agent: string): Promise<number>
 
   /** Den fertigen System-Prompt ablegen (Spawner). */
   legeSystemPromptAb(agent: string, inhalt: string): Promise<void>

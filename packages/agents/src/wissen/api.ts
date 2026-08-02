@@ -193,17 +193,25 @@ export class ApiWissen implements WissensZugriff {
     return typeof daten.entfernte_zeilen === 'number' ? daten.entfernte_zeilen : 0
   }
 
-  async loescheAlles(agent: string): Promise<void> {
+  async loescheAlles(agent: string): Promise<number> {
     // Idempotent: ein unbekannter Agent ist kein Fehler beim Loeschen.
     const daten = await this.ruf<{ geloeschte_zeilen?: number }>(this.basis(agent), {
       methode: 'DELETE',
       nullBei404: true,
     })
-    this.umgebung.log(
-      'WISSEN: Ablage von "%s" geloescht (%s Zeilen).',
-      agent,
-      daten?.geloeschte_zeilen ?? 'unbekannt viele',
-    )
+    const zahl = daten?.geloeschte_zeilen
+    if (typeof zahl !== 'number') {
+      // ⚠️ Die Antwort trug die Zahl nicht. Das als 0 zu melden waere eine
+      // Behauptung ("es war nichts da"), die hier niemand belegen kann — deshalb
+      // eine sichtbare Warnung, nicht nur eine stille 0.
+      this.umgebung.log(
+        'WISSEN: WARNUNG — Loeschen von "%s" lieferte keine Anzahl. Melde 0, WEISS es aber nicht.',
+        agent,
+      )
+      return 0
+    }
+    this.umgebung.log('WISSEN: Ablage von "%s" geloescht (%d Zeilen).', agent, zahl)
+    return zahl
   }
 
   async legeSystemPromptAb(agent: string, inhalt: string): Promise<void> {

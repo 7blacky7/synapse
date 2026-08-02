@@ -9,7 +9,7 @@
  * wird, wuerde ein Fehler hier BEIDE Wege gleichzeitig verfaelschen.
  */
 
-import { readFile } from 'node:fs/promises'
+import { readFile, readdir } from 'node:fs/promises'
 import { join } from 'node:path'
 
 import {
@@ -110,8 +110,21 @@ export class DateiWissen implements WissensZugriff {
     return entfernt
   }
 
-  async loescheAlles(agent: string): Promise<void> {
+  async loescheAlles(agent: string): Promise<number> {
+    // Der Dateiweg kann keine Tabellenzeilen zaehlen — er zaehlt die DATEIEN, die
+    // es vor dem Loeschen gab. Andere Einheit als im api-Weg, aber dieselbe Frage:
+    // war ueberhaupt etwas da? Gezaehlt wird VOR purgeAgentDir, danach ist nichts
+    // mehr zu zaehlen.
+    const verzeichnis = join(this.umgebung.projektPfad, '.synapse', 'agents', agent)
+    let vorher = 0
+    try {
+      const eintraege = await readdir(verzeichnis, { recursive: true, withFileTypes: true })
+      vorher = eintraege.filter((e) => e.isFile()).length
+    } catch {
+      // Kein Verzeichnis = nichts da. Die 0 ist hier eine Aussage, kein Fehler.
+    }
     await purgeAgentDir(this.umgebung.projektPfad, agent)
+    return vorher
   }
 
   async legeSystemPromptAb(agent: string, inhalt: string): Promise<void> {
