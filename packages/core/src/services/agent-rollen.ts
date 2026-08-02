@@ -118,6 +118,64 @@ function hinweiseHinzu(hinweise: string[], text: string): void {
   if (!hinweise.includes(text)) hinweise.push(text);
 }
 
+/**
+ * Woher die Rolle eines Agenten stammt. Der Wert gehoert in die Antwort, nicht nur in eine
+ * interne Variable — sonst kann niemand sehen, dass geraten wurde.
+ */
+export type RollenQuelle = 'angegeben' | 'namensmuster' | 'standard';
+
+/**
+ * Bestimmt die Rolle eines Agenten und sagt dazu, WOHER sie kommt.
+ *
+ * ⚠️ DIESE LOGIK STAND ZWEIMAL IM REPO (onboarding.ts und mcp.ts, leicht verschieden
+ * geschrieben). Die zweite Kopie entstand am 05.06.2026 mit dem Commit-Text "geteilt mit
+ * MCP-Server" — der Instinkt war richtig, nur wurde kopiert statt geteilt.
+ *
+ * ⚠️ WAS DAS RATEN KOSTET, GEMESSEN AM 02.08.2026: von 181 Identitaeten landen 179 im
+ * Standard 'subagent'. Der spezialist-Zweig hat seit seiner Einfuehrung am 03.05.2026 NULL
+ * Treffer, weil niemand seine Spezialisten "spezialist-*" nennt. Die Koordinator-Erkennung
+ * trifft 2 von 5 — verfehlt werden Namen wie "gpt-koordinator", bei denen ein Praefix davor
+ * steht. Ein Mechanismus, der in 179 von 181 Faellen denselben Wert liefert, ist keiner.
+ *
+ * ⚠️ BEWUSST NICHT VERBREITERT: eine Teilstring-Suche statt startsWith wuerde sofort
+ * Fehltreffer erzeugen — "hook4-inspect-reader" enthaelt in "inSPECt" die Folge "spec" und
+ * waere damit ein Spezialist. Geprueft am Bestand, nicht vermutet.
+ *
+ * Erkannt werden die Schreibweisen, die im Bestand vorkommen, als geschlossene MENGE statt
+ * ueber einen kanonischen Namen: 47 der 53 Bindungen nutzen die englische Form.
+ */
+// Die Praefix-Tabelle wird GETEILT, nicht kopiert — sie steht weiter oben und gilt fuer Tags
+// wie fuer Agentennamen. Eine zweite haette genau den Zustand erzeugt, den dieser Commit
+// beseitigt (und beim Schreiben tatsaechlich kurz erzeugt: der Compiler hat es gemeldet).
+export function rolleFuerAgent(
+  agentId: string | undefined | null,
+  angegeben?: string | null,
+): { rolle: AgentRolle; quelle: RollenQuelle } {
+  if (angegeben === 'koordinator' || angegeben === 'spezialist' || angegeben === 'subagent') {
+    return { rolle: angegeben, quelle: 'angegeben' };
+  }
+  const name = agentId?.toLowerCase().trim();
+  if (name) {
+    for (const { rolle, praefixe } of ROLLEN_PRAEFIXE) {
+      for (const praefix of praefixe) {
+        // Genau der Name, oder der Name gefolgt von einem Trennzeichen — nicht irgendwo drin.
+        if (name === praefix || name.startsWith(`${praefix}-`) || name.startsWith(`${praefix}_`)) {
+          return { rolle, quelle: 'namensmuster' };
+        }
+      }
+    }
+  }
+  return { rolle: 'subagent', quelle: 'standard' };
+}
+
+/** Klartext fuer die Antwort — die KI soll lesen koennen, wie sie eingestuft wurde. */
+export function rollenQuelleKlartext(rolle: AgentRolle, quelle: RollenQuelle): string {
+  if (quelle === 'angegeben') return `Rolle "${rolle}" (von dir angegeben).`;
+  if (quelle === 'namensmuster') return `Rolle "${rolle}" — aus deinem Namen abgeleitet, nicht angegeben.`;
+  return `Rolle "${rolle}" — Standard, weil weder role-Parameter noch ein passender Name. `
+    + `Wenn du eine andere Rolle hast, gib role bei deinem naechsten Aufruf mit.`;
+}
+
 /** Wie viele Zeichen eine gekuerzte Regel behaelt. */
 const REGEL_KURZFASSUNG_ZEICHEN = 220;
 

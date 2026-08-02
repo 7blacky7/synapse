@@ -322,6 +322,8 @@ export {
   regelSichtbarFuer,
   baueOnboardingRegeln,
   baueRegelAbrufHinweis,
+  rolleFuerAgent,
+  rollenQuelleKlartext,
   tagVerdacht,
   // Tech-Docs
   addTechDoc,

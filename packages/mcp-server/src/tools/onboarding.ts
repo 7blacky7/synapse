@@ -152,14 +152,17 @@ export async function checkAgentOnboarding(
   }
 
   // Neuer Agent - Regeln laden
-  const effectiveRole: AgentRole = role
-    ?? (agentId === 'koordinator' || agentId?.startsWith('koordinator-')
-      ? 'koordinator'
-      : (agentId?.startsWith('spezialist-') || agentId?.startsWith('specialist-')
-        ? 'spezialist'
-        : 'subagent'));
+  // ⚠️ EINE Rollenbestimmung fuer beide Wege (Punkt 2.5, 02.08.2026). Hier stand das Original,
+  // in mcp.ts eine leicht abweichende Kopie. GEMESSEN: 179 von 181 Identitaeten landen im
+  // Standard 'subagent', der spezialist-Zweig hat seit dem 03.05.2026 null Treffer. Die
+  // Erkennung bleibt vorerst wie sie ist — sie ist jetzt nur an EINER Stelle und sagt dazu,
+  // ob sie geraten hat.
+  const { rolleFuerAgent } = await import('@synapse/core');
+  const { rolle: effectiveRole, quelle: rollenQuelle } = rolleFuerAgent(agentId, role ?? null);
   const isCoordinator = effectiveRole === 'koordinator';
-  console.error(`[Synapse MCP] Neuer Agent "${agentId}" erkannt (Rolle: ${effectiveRole}) - lade Regeln...`);
+  console.error(
+    `[Synapse MCP] Neuer Agent "${agentId}" erkannt (Rolle: ${effectiveRole}, Quelle: ${rollenQuelle}) - lade Regeln...`,
+  );
 
   try {
     const ruleMemories = await getRulesForNewAgent(project);

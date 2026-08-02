@@ -220,9 +220,16 @@ export async function writeMemory(
   // Nur ein Hinweis, kein Eingriff — die Memory wird unveraendert geschrieben.
   // Ohne das faellt ein vergessenes oder falsch geschriebenes "-only" niemandem
   // auf, weil nichts fehlschlaegt: die Regel geht dann still an alle Rollen.
+  // ⚠️ DER HINWEIS GEHOERT IN DIE ANTWORT, NICHT NUR INS LOG (Punkt 2.1, 02.08.2026).
+  // Er stand hier ausschliesslich in console.error — in einem Containerlog, das der
+  // schreibende Agent nie zu Gesicht bekommt. Damit war die Pruefung zwar vorhanden, aber
+  // wirkungslos: wer ein "-only" vergisst, erfaehrt es nicht. Das warning-Feld gibt es an
+  // dieser Funktion laengst, es wurde nur nie gefuellt.
+  const regelHinweise: string[] = [];
   if (category === 'rules') {
     const { tagVerdacht } = await import('./agent-rollen.js');
     for (const hinweis of tagVerdacht(tags)) {
+      regelHinweise.push(hinweis);
       console.error(`[Memory] Regel "${name}" (${project}): ${hinweis}`);
     }
   }
@@ -265,7 +272,8 @@ export async function writeMemory(
   // WARUM KEIN await: die Embedding-Queue hat zwei Slots (EMBED_MAX_CONCURRENT). Laeuft im
   // Hintergrund ein grosser Code-Lauf, wartete hier frueher JEDER interaktive Schreibvorgang
   // mit und lief in ein Timeout — obwohl die Daten laengst in PG standen.
-  let warning: string | undefined;
+  let warning: string | undefined =
+    regelHinweise.length > 0 ? regelHinweise.join(' | ') : undefined;
   void embeddeMemoryNach(project, id).catch(err => {
     console.error(`[Synapse] Memory-Embedding fuer "${name}" fehlgeschlagen, Backlog holt es nach:`, err);
   });
@@ -469,7 +477,17 @@ export async function updateMemory(
   // Worker sie beim naechsten Tick.
   // Ein Update ist bei Memories der Normalfall, nicht die Ausnahme; genau deshalb darf auch
   // dieser Pfad nicht an der Embedding-Queue haengen.
-  const warning: string | undefined = undefined;
+  // ⚠️ DIESELBE PRUEFUNG WIE BEIM SCHREIBEN — hier fehlte sie GANZ (Punkt 2.1, 02.08.2026).
+  // writeMemory warnt bei einer Regel ohne wirksame Rollenbindung; updateMemory tat es nicht.
+  // Wer eine Regel nachtraeglich umtaggt — der haeufigste Weg, ein "-only" zu verlieren — bekam
+  // also nicht einmal einen Logeintrag.
+  const { tagVerdacht } = await import('./agent-rollen.js');
+  const regelHinweise = mergedCategory === 'rules' ? tagVerdacht(mergedTags) : [];
+  for (const hinweis of regelHinweise) {
+    console.error(`[Memory] Regel "${name}" (${project}): ${hinweis}`);
+  }
+  const warning: string | undefined =
+    regelHinweise.length > 0 ? regelHinweise.join(' | ') : undefined;
   void embeddeMemoryNach(project, row.id).catch(err => {
     console.error(`[Synapse] Memory-Update-Embedding fuer "${name}" fehlgeschlagen, Backlog holt es nach:`, err);
   });

@@ -1511,6 +1511,19 @@ async function attachRestOnboarding(
 ): Promise<unknown> {
   const agentId = typeof args.agent_id === 'string' ? args.agent_id : undefined;
   const project = typeof args.project === 'string' ? args.project : undefined;
+  // ⚠️ OHNE agent_id GAB ES BISHER WORTLOS NICHTS (Punkt 2.4, 02.08.2026).
+  // GEMESSEN: 25 Prozent aller Tool-Aufrufe im Projekt tragen keine agent_id. Sie bekamen
+  // keine einzige Projektregel und keinen Hinweis darauf — die Antwort sah vollstaendig aus.
+  // Betroffen sind vor allem Web-KIs, die sich nicht anmelden koennen: die Anweisung, eine
+  // agent_id mitzuschicken, steht in genau den Regeln, die sie ohne sie nicht bekommen.
+  if (!agentId && project && typeof result === 'object' && result !== null && !Array.isArray(result)) {
+    return {
+      ...result,
+      hinweis_agent_id:
+        'Ohne agent_id bekommst du KEINE Projekt-Regeln und keine Skill-Vorschlaege. '
+        + 'Schick bei jedem Aufruf agent_id mit (ein selbst gewaehlter, gleichbleibender Name).',
+    };
+  }
   if (!agentId || !project) return result;
   // Nur plain Objects erweiterbar — Arrays/Primitives unveraendert durchreichen
   if (typeof result !== 'object' || result === null || Array.isArray(result)) return result;
@@ -1519,15 +1532,12 @@ async function attachRestOnboarding(
     const isFirstVisit = await registerAgent(project, agentId, REST_INSTANCE_ID);
     if (!isFirstVisit) return result;
 
-    // Rollenerkennung identisch zum MCP-Server (tools/onboarding.ts)
-    const role: RestAgentRole =
-      args.role === 'koordinator' || args.role === 'spezialist' || args.role === 'subagent'
-        ? args.role
-        : agentId === 'koordinator' || agentId.startsWith('koordinator-')
-          ? 'koordinator'
-          : agentId.startsWith('spezialist-') || agentId.startsWith('specialist-')
-            ? 'spezialist'
-            : 'subagent';
+    // ⚠️ EINE Rollenbestimmung fuer beide Wege (Punkt 2.5). Hier stand eine zweite Kopie der
+    // Logik aus onboarding.ts — entstanden am 05.06.2026 mit dem Commit-Text "geteilt mit
+    // MCP-Server". Der Instinkt war richtig, nur wurde kopiert statt geteilt.
+    const { rolleFuerAgent, rollenQuelleKlartext } = await import('@synapse/core');
+    const { rolle: role, quelle: rollenQuelle } =
+      rolleFuerAgent(agentId, typeof args.role === 'string' ? args.role : null);
 
     const allRules = await getRulesForNewAgent(project);
     // Rollenbindung ueber die gemeinsame Erkennung in core (agent-rollen.ts) —
@@ -1557,6 +1567,12 @@ async function attachRestOnboarding(
       ...result,
       agentOnboarding: {
         isFirstVisit: true,
+        // ⚠️ DIE ROLLE GEHOERT IN DIE ANTWORT (Punkt 2.3). Sie entschied darueber, welche Regeln
+        // ein Agent sieht, war aber nirgends ablesbar — auch nicht fuer den Agenten selbst.
+        // Steht sie da, faellt eine Fehleinstufung beim Lesen auf statt gar nicht.
+        rolle: role,
+        rolle_quelle: rollenQuelle,
+        rolle_hinweis: rollenQuelleKlartext(role, rollenQuelle),
         message: '📋 WILLKOMMEN! Als neuer Agent beachte bitte folgende Projekt-Regeln:',
         ...(abrufHinweis ? { volltext_hinweis: abrufHinweis } : {}),
         rules,
