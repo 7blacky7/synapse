@@ -22,7 +22,7 @@ import {
   updateSpecialistSkillTool,
   getAgentCapabilitiesTool,
 } from '../index.js';
-import { getWrapperStatus, listWrapperStatus } from '@synapse/core';
+import { getWrapperStatus, listWrapperStatus, steuereHeartbeat } from '@synapse/core';
 import type { WrapperStatusRow } from '@synapse/core';
 
 export const specialistTool: ConsolidatedTool = {
@@ -35,7 +35,7 @@ export const specialistTool: ConsolidatedTool = {
       properties: {
         action: {
           type: 'string',
-          enum: ['spawn', 'spawn_batch', 'stop', 'purge', 'status', 'wake', 'update_skill', 'capabilities'],
+          enum: ['spawn', 'spawn_batch', 'stop', 'purge', 'status', 'wake', 'update_skill', 'capabilities', 'heartbeat'],
           description: 'Die auszuführende Aktion. spawn_batch = mehrere Spezialisten in einem Call starten (specialists-Array). purge = Stop + komplette Entfernung (FS-Verzeichnis, status.json, Channel-Memberships, Chat-Session). Auto-Respawn unmoeglich danach.',
         },
 
@@ -123,6 +123,16 @@ export const specialistTool: ConsolidatedTool = {
         content: {
           type: 'string',
           description: 'Inhalt des Eintrags (erforderlich für: update_skill)',
+        },
+
+        // heartbeat parameters
+        heartbeat_enabled: {
+          type: 'boolean',
+          description: 'fuer heartbeat: false = der Spezialist schlaegt nicht mehr von selbst (bleibt aber per wake erreichbar), true = wieder an. Weglassen = unveraendert.',
+        },
+        heartbeat_interval_ms: {
+          type: ['number', 'null'],
+          description: 'fuer heartbeat: fester Takt in Millisekunden (min. 5000), oder null fuer die adaptive Ladder (10s..60min). Weglassen = unveraendert. WEGLASSEN und NULL sind NICHT dasselbe.',
         },
         specialists: {
           type: 'array',
@@ -416,6 +426,25 @@ export const specialistTool: ConsolidatedTool = {
 
       case 'capabilities': {
         return getAgentCapabilitiesTool();
+      }
+
+      case 'heartbeat': {
+        const project = reqStr(args, 'project');
+        const namen = strArray(args, 'name');
+        const enabled = bool(args, 'heartbeat_enabled');
+        const hatTakt = 'heartbeat_interval_ms' in (args as Record<string, unknown>);
+        const taktRoh = (args as Record<string, unknown>).heartbeat_interval_ms;
+        const uebersicht = await steuereHeartbeat(
+          project,
+          namen ?? null,
+          enabled === undefined && !hatTakt
+            ? undefined
+            : {
+                ...(enabled !== undefined ? { enabled } : {}),
+                ...(hatTakt ? { intervalMs: taktRoh === null ? null : Number(taktRoh) } : {}),
+              },
+        );
+        return { success: true, ...uebersicht };
       }
 
       default: {

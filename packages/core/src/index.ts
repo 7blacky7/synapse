@@ -424,7 +424,8 @@ export {
   listWrapperStatus,
   removeWrapperStatus,
 } from './services/wrapper-status.js';
-export type { WrapperStatusRow } from './services/wrapper-status.js';
+export { setzeHeartbeatKonfiguration, steuereHeartbeat } from './services/wrapper-status.js';
+export type { WrapperStatusRow, HeartbeatKonfiguration, HeartbeatUebersicht } from './services/wrapper-status.js';
 
 // Skills (EXPERIMENTAL — Qdrant Skill-DB access)
 export { searchSkills, listSkills, getSkillSection, getSkillFull } from './services/skills.js';

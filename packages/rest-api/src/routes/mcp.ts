@@ -123,6 +123,7 @@ import {
   enqueueProjectInitJob,
   waitForProjectInitJob,
   expirePendingProjectInitJobs,
+  steuereHeartbeat,
   getProjectInitJob,
   // Channels
   createChannel,
@@ -626,7 +627,7 @@ const MCP_TOOLS = [
       properties: {
         action: {
           type: 'string',
-          enum: ['spawn', 'spawn_batch', 'stop', 'purge', 'status', 'wake', 'update_skill', 'capabilities'],
+          enum: ['spawn', 'spawn_batch', 'stop', 'purge', 'status', 'wake', 'update_skill', 'capabilities', 'heartbeat'],
           description: 'Die auszufuehrende Aktion',
         },
         name: {
@@ -650,6 +651,8 @@ const MCP_TOOLS = [
         section: { type: 'string', enum: ['regeln', 'fehler', 'patterns'], description: 'Abschnitt der SKILL.md (legacy, optional fuer: update_skill). Alternative: file' },
         file: { type: 'string', enum: ['rules', 'errors', 'patterns', 'context'], description: 'Ziel-Datei (neu, optional fuer: update_skill). Alternative zu section (legacy).' },
         skill_action: { type: 'string', enum: ['add', 'remove'], description: 'Hinzufuegen oder entfernen (erforderlich fuer: update_skill)' },
+        heartbeat_enabled: { type: 'boolean', description: 'fuer heartbeat: false = der Spezialist schlaegt nicht mehr von selbst (bleibt aber per wake erreichbar), true = wieder an. Weglassen = unveraendert.' },
+        heartbeat_interval_ms: { type: ['number', 'null'], description: 'fuer heartbeat: fester Takt in Millisekunden (min. 5000), oder null fuer die adaptive Ladder (10s..60min). Weglassen = unveraendert. WEGLASSEN und NULL sind NICHT dasselbe.' },
         content: { type: 'string', description: 'Inhalt des Eintrags (erforderlich fuer: update_skill)' },
       },
       required: ['action'],
@@ -3128,6 +3131,32 @@ async function handleToolCall(
             ? `Wake gesendet an "${name}" (notify=${notifyOk}, inbox=${inboxId != null})`
             : `Wake-Fehler fuer "${name}": ${wakeErrors.join(', ')}`,
         };
+      }
+
+      // heartbeat ist ein reiner Datenbank-Vorgang: der Koordinator schreibt die
+      // Einstellung nach wrapper_status, jeder Wrapper liest sie bei seinem naechsten
+      // eigenen Tick. Es braucht dafuer weder den lokalen Daemon noch die Job-Queue —
+      // deshalb steht die Action bewusst NICHT in queueableActions.
+      if (action === 'heartbeat') {
+        const namen = strArray(args, 'name');
+        const enabled = bool(args, 'heartbeat_enabled');
+        const hatTakt = 'heartbeat_interval_ms' in (args as Record<string, unknown>);
+        const taktRoh = (args as Record<string, unknown>).heartbeat_interval_ms;
+        try {
+          const uebersicht = await steuereHeartbeat(
+            project,
+            namen ?? null,
+            enabled === undefined && !hatTakt
+              ? undefined
+              : {
+                  ...(enabled !== undefined ? { enabled } : {}),
+                  ...(hatTakt ? { intervalMs: taktRoh === null ? null : Number(taktRoh) } : {}),
+                },
+          );
+          return { success: true, ...uebersicht };
+        } catch (err) {
+          return { success: false, error: 'heartbeat_failure', message: String(err) };
+        }
       }
 
       const actionStr = String(action ?? '');

@@ -17,6 +17,20 @@
  *   - Idempotent: CREATE TABLE IF NOT EXISTS / CREATE INDEX IF NOT EXISTS
  */
 
+/**
+ * ⚠️ ZWEITER ORT FUER DASSELBE SCHEMA: packages/core/src/db/schema-sql/
+ *
+ * Dort liegt das vollstaendige Schema als .sql-Dateien (nur Struktur, keine Daten),
+ * damit die Datenbank aus dem geklonten Repo von null aufgebaut werden kann.
+ * Erzeugt per pg_dump aus der laufenden Datenbank, aufgeteilt nach Sachgebiet.
+ *
+ * DIESE Datei ist der ausgefuehrte Weg — der Ordner ist nur ihre Spiegelung und
+ * wird NICHT automatisch mitgezogen. Wer hier eine Tabelle oder Spalte aendert,
+ * macht den Export veraltet, ohne dass irgendetwas fehlschlaegt. Danach also neu
+ * exportieren; das Kommando steht in schema-sql/README.md.
+ */
+
+
 import { getPool } from './client.js';
 
 const SCHEMA_SQL = `
@@ -1055,6 +1069,19 @@ CREATE INDEX IF NOT EXISTS idx_wrapper_status_project ON wrapper_status(project)
 CREATE INDEX IF NOT EXISTS idx_wrapper_status_last_activity ON wrapper_status(last_activity);
 -- Reaper-Query-Index: WHERE status='running' AND last_activity < NOW() - INTERVAL '3 min'
 CREATE INDEX IF NOT EXISTS idx_wrapper_status_status ON wrapper_status(status, last_activity);
+
+-- Heartbeat-Steuerung je Spezialist (02.08.2026).
+-- Vorher war der Takt fest in packages/agents/src/heartbeat-state.ts verdrahtet und
+-- von aussen nicht zu beeinflussen: ein Spezialist, der nur auf Zuruf arbeiten soll,
+-- pollte trotzdem im selben Rhythmus wie einer, der eine Aufgabe abarbeitet.
+--   heartbeat_enabled     = false → der Wrapper schlaegt gar nicht mehr von selbst.
+--                           Er bleibt erreichbar: wake und LISTEN/NOTIFY wirken weiter.
+--   heartbeat_interval_ms = NULL  → adaptive Ladder wie bisher (10s bis 60min).
+--                           Zahl → genau dieser Takt, ohne Backoff.
+-- Zugestellt wird ohne neuen Weg: trg_notify_wrapper_status_change feuert schon heute
+-- bei jedem UPDATE dieser Tabelle.
+ALTER TABLE wrapper_status ADD COLUMN IF NOT EXISTS heartbeat_enabled BOOLEAN NOT NULL DEFAULT TRUE;
+ALTER TABLE wrapper_status ADD COLUMN IF NOT EXISTS heartbeat_interval_ms INTEGER;
 
 -- NOTIFY-Trigger fuer wrapper_status Aenderungen
 CREATE OR REPLACE FUNCTION notify_wrapper_status_change() RETURNS trigger AS $$

@@ -35,6 +35,7 @@ import {
   getPlan,
   getPendingEvents,
   upsertWrapperStatus,
+  getWrapperStatus,
   removeWrapperStatus,
   ensureSchema,
 } from '@synapse/core'
@@ -113,6 +114,49 @@ let heartbeatTimeoutId: ReturnType<typeof setTimeout> | null = null
 let heartbeatState: HeartbeatState | null = null
 let listenClient: pg.Client | null = null
 
+// --- Heartbeat-Konfiguration aus wrapper_status (seit 02.08.2026) --------------
+// Vorher war der Takt fest verdrahtet: ein Spezialist, der nur auf Zuruf arbeiten
+// soll, pollte im selben Rhythmus wie einer mitten in der Arbeit.
+//   heartbeatAktiv = false  → keine eigenen Polls mehr. wake und LISTEN wirken weiter,
+//                             der Agent ist also weiterhin erreichbar, nur still.
+//   festerTaktMs   = null   → adaptive Ladder wie bisher. Zahl → genau dieser Takt.
+// Gelesen wird bei jedem eigenen Tick — bewusst KEIN LISTEN auf
+// synapse_specialist_status_change: dieser Kanal feuert bei JEDEM wrapper_status-
+// UPDATE, also bei jedem Heartbeat jedes Wrappers im Projekt. Daraus wuerde ein
+// Sturm, der genau das Gegenteil dessen bewirkt, was die Abschaltung erreichen soll.
+let heartbeatAktiv = true
+let festerTaktMs: number | null = null
+
+/** Takt, in dem ein abgeschalteter Wrapper nachsieht, ob er wieder anfangen darf. */
+const WAECHTER_TAKT_MS = 60_000
+
+/**
+ * Liest die eigene Heartbeat-Konfiguration aus wrapper_status.
+ *
+ * Faellt der Aufruf aus (DB weg, Zeile noch nicht da), bleibt die letzte bekannte
+ * Einstellung stehen. Das ist Absicht: ein DB-Ausfall darf einen arbeitenden
+ * Spezialisten nicht verstummen lassen, und einen abgeschalteten nicht aufwecken.
+ */
+async function ladeHeartbeatKonfiguration(): Promise<void> {
+  if (!PROJECT_NAME) return
+  try {
+    const zeile = await getWrapperStatus(AGENT_NAME, PROJECT_NAME)
+    if (!zeile) return
+    const vorherAktiv = heartbeatAktiv
+    const vorherTakt = festerTaktMs
+    heartbeatAktiv = zeile.heartbeatEnabled
+    festerTaktMs = zeile.heartbeatIntervalMs
+    if (vorherAktiv !== heartbeatAktiv) {
+      log('Heartbeat %s (durch Konfiguration)', heartbeatAktiv ? 'EINGESCHALTET' : 'ABGESCHALTET')
+    }
+    if (vorherTakt !== festerTaktMs) {
+      log('Heartbeat-Takt: %s', festerTaktMs === null ? 'adaptiv' : describeInterval(festerTaktMs))
+    }
+  } catch (err) {
+    log('Heartbeat-Konfiguration nicht lesbar, bleibe bei der letzten: %s', err)
+  }
+}
+
 /** Buffered file-change events fuer naechsten Wake-Prompt. Cap 20 + 5min Alter. */
 interface FileChangeEvent { path: string; action: string; agent: string; ts: number }
 let recentFileChanges: FileChangeEvent[] = []
@@ -160,6 +204,27 @@ function triggerImmediateHeartbeat(reason: string, level: 'hot' | 'warm' = 'hot'
   }, 0)
 }
 
+/**
+ * Kanalname fuer LISTEN, als PostgreSQL-Bezeichner in Anfuehrungszeichen.
+ *
+ * ⚠️ GEMESSEN AM 02.08.2026: LISTEN synapse_specialist_wake_takt-probe ist fuer
+ * PostgreSQL ein Syntaxfehler — ein Bindestrich beendet den Bezeichner. Da Namen wie
+ * rollen-ist, agy-claude-opus oder takt-probe die Regel sind, traf das praktisch jeden
+ * Spezialisten (12 Wrapper-Logs mit "syntax error at or near").
+ * Der Schaden war groesser als der eine fehlende Kanal: der Wurf passierte VOR
+ * listenClient.on('notification', ...), also wurde der Handler nie registriert und die
+ * vier zuvor gelungenen LISTEN auf chat/channel/event/file liefen ins Leere. Der Wrapper
+ * bekam ueberhaupt keine Benachrichtigungen mehr und haing allein an seinem Poll-Takt.
+ * Auffaellig war das nie, weil der Heartbeat weiterlief — nur eben traege.
+ *
+ * pg_notify() auf der Sendeseite nimmt den Namen als Zeichenkette und war deshalb immer
+ * korrekt; nur der LISTEN-Befehl braucht die Anfuehrungszeichen. Sie machen den Namen
+ * zugleich gross-/kleinschreibungsgenau — was zur Sendeseite passt, die exakt vergleicht.
+ */
+function listenKanal(name: string): string {
+  return `"${name.replace(/"/g, '""')}"`
+}
+
 async function setupPgListeners(): Promise<void> {
   try {
     // Dedicated Client weil LISTEN den Connection blockt — nicht aus dem Pool.
@@ -170,7 +235,7 @@ async function setupPgListeners(): Promise<void> {
     await listenClient.query('LISTEN synapse_event')
     await listenClient.query('LISTEN synapse_file')
     // Spezialist-Wake via NOTIFY (Fast-Path; Inbox bleibt Fallback)
-    await listenClient.query(`LISTEN synapse_specialist_wake_${AGENT_NAME}`)
+    await listenClient.query(`LISTEN ${listenKanal(`synapse_specialist_wake_${AGENT_NAME}`)}`)
     listenClient.on('notification', (msg) => {
       const channel = msg.channel ?? '<unknown>'
       // Spezialist-Wake: Nachricht direkt in Queue, naechster Heartbeat verarbeitet sie.
@@ -616,6 +681,11 @@ let handoffWarningSent = false
 async function heartbeatPoll() {
   if (shuttingDown || !processAlive) return
 
+  // Konfiguration zuerst: ein abgeschalteter Wrapper darf ab hier nichts mehr tun,
+  // was den Agenten weckt oder Tokens kostet.
+  await ladeHeartbeatKonfiguration()
+  if (!heartbeatAktiv) return
+
   try {
     // Token-Sync: Echte Werte aus der Claude CLI Session-JSONL lesen
     await syncTokensFromHistory()
@@ -726,8 +796,12 @@ Wenn du weiterarbeitest ohne den trigger_respawn Flag, rotiert der Wrapper dich 
     const hadSynapseItems = await pollSynapseItems()
     await updateStatusFile()
 
-    // Adaptive Heartbeat-State: bei Aktivitaet auf 10s reset, sonst eskalieren
-    if (heartbeatState) {
+    // Adaptive Heartbeat-State: bei Aktivitaet auf 10s reset, sonst eskalieren.
+    // Bei festem Takt bleibt die Ladder unberuehrt: sie bestimmt den Takt dann nicht,
+    // und wuerde man sie trotzdem weiterlaufen lassen, staende sie beim Zurueckstellen
+    // auf adaptiv irgendwo weit oben statt beim Default. Im Test am 02.08.2026 lief sie
+    // bei festem 8s-Takt bis auf 5min hoch — der Takt stimmte, der Zustand nicht.
+    if (heartbeatState && festerTaktMs === null) {
       const hadActivity = hadChannelMessages || hadInboxMessages || hadSynapseItems
       if (hadActivity) {
         onHeartbeatEvent(heartbeatState)
@@ -1397,7 +1471,19 @@ async function main() {
     heartbeatState = createHeartbeatState({ agentName: AGENT_NAME })
     const scheduleNextHeartbeat = () => {
       if (shuttingDown || !processAlive) return
-      const delay = heartbeatState ? nextHeartbeatDelay(heartbeatState, AGENT_NAME) : 30_000
+      // Drei Faelle, in dieser Reihenfolge:
+      //   abgeschaltet → nur der Waechter-Takt, damit ein Wiedereinschalten ankommt.
+      //                  heartbeatPoll steigt dann sofort wieder aus, es wird also
+              //          nur die Konfigurationszeile gelesen, nichts geweckt.
+      //   fester Takt  → genau dieser Wert, ohne Backoff und ohne Phasenversatz.
+      //                  Wer einen Takt vorgibt, will ihn genau so haben.
+      //   sonst        → adaptive Ladder wie bisher, mit Phasenversatz gegen
+      //                  gleichzeitiges Pollen mehrerer Wrapper.
+      const delay = !heartbeatAktiv
+        ? WAECHTER_TAKT_MS
+        : festerTaktMs !== null
+          ? festerTaktMs
+          : heartbeatState ? nextHeartbeatDelay(heartbeatState, AGENT_NAME) : 30_000
       heartbeatTimeoutId = setTimeout(async () => {
         try {
           await heartbeatPoll()

@@ -33,6 +33,10 @@ export interface WrapperStatusRow {
   channels: string[]
   connectedMcp: boolean
   lastActivity: Date
+  /** false = der Wrapper schlaegt nicht mehr von selbst. wake/NOTIFY wirken weiter. */
+  heartbeatEnabled: boolean
+  /** null = adaptive Ladder (10s..60min). Zahl = fester Takt in Millisekunden. */
+  heartbeatIntervalMs: number | null
 }
 
 /** Datenbank-Row (snake_case) → WrapperStatusRow (camelCase) */
@@ -56,6 +60,8 @@ function mapRow(row: Record<string, unknown>): WrapperStatusRow {
     channels: (row.channels as string[]) ?? [],
     connectedMcp: row.connected_mcp as boolean,
     lastActivity: new Date(row.last_activity as string),
+    heartbeatEnabled: (row.heartbeat_enabled as boolean) ?? true,
+    heartbeatIntervalMs: row.heartbeat_interval_ms != null ? Number(row.heartbeat_interval_ms) : null,
   }
 }
 
@@ -163,6 +169,140 @@ export async function listWrapperStatus(project: string): Promise<WrapperStatusR
     [project],
   )
   return rows.map(mapRow)
+}
+
+/** Was an der Heartbeat-Konfiguration geaendert werden soll. */
+export interface HeartbeatKonfiguration {
+  /** false = schlaegt nicht mehr von selbst. Weglassen = unveraendert. */
+  enabled?: boolean
+  /**
+   * Fester Takt in Millisekunden, oder null fuer die adaptive Ladder.
+   * WEGLASSEN und NULL sind hier NICHT dasselbe: weglassen heisst "nicht anfassen",
+   * null heisst ausdruecklich "zurueck auf adaptiv".
+   */
+  intervalMs?: number | null
+}
+
+/**
+ * Setzt die Heartbeat-Konfiguration fuer einen, mehrere oder alle Spezialisten
+ * eines Projekts. Rueckgabe: die betroffenen Zeilen NACH der Aenderung.
+ *
+ * BEWUSST NICHT ueber upsertWrapperStatus: dessen Partial-Semantik arbeitet mit
+ * COALESCE($n, alter_wert). Damit laesst sich ein Feld nie auf NULL zuruecksetzen —
+ * ein uebergebenes null waere von "nicht uebergeben" nicht zu unterscheiden. Genau das
+ * braucht heartbeat_interval_ms aber, denn NULL ist hier ein echter Wert (= adaptiv).
+ * Deshalb wird das UPDATE aus den tatsaechlich uebergebenen Feldern gebaut.
+ *
+ * agentNames = null oder leer → alle Spezialisten des Projekts.
+ *
+ * Die Zustellung passiert von selbst: trg_notify_wrapper_status_change feuert bei
+ * jedem UPDATE, der Wrapper hoert darauf und uebernimmt den neuen Takt sofort.
+ */
+export async function setzeHeartbeatKonfiguration(
+  project: string,
+  agentNames: string[] | null,
+  konfiguration: HeartbeatKonfiguration,
+): Promise<WrapperStatusRow[]> {
+  const setzt: string[] = []
+  const werte: unknown[] = [project]
+
+  if (konfiguration.enabled !== undefined) {
+    werte.push(konfiguration.enabled)
+    setzt.push(`heartbeat_enabled = $${werte.length}::BOOLEAN`)
+  }
+  // 'in' statt !== undefined: ein ausdruecklich uebergebenes null muss durchkommen.
+  if ('intervalMs' in konfiguration) {
+    werte.push(konfiguration.intervalMs ?? null)
+    setzt.push(`heartbeat_interval_ms = $${werte.length}::INTEGER`)
+  }
+
+  if (setzt.length === 0) {
+    throw new Error('setzeHeartbeatKonfiguration: weder enabled noch intervalMs uebergeben — nichts zu tun')
+  }
+
+  let namensFilter = ''
+  if (agentNames && agentNames.length > 0) {
+    werte.push(agentNames)
+    namensFilter = ` AND agent_name = ANY($${werte.length}::TEXT[])`
+  }
+
+  const pool = getPool()
+  const { rows } = await pool.query(
+    `UPDATE wrapper_status SET ${setzt.join(', ')}
+      WHERE project = $1${namensFilter}
+      RETURNING *`,
+    werte,
+  )
+  return rows.map(mapRow)
+}
+
+/** Ergebnis von steuereHeartbeat — fuer Anzeige wie fuer Aenderung dieselbe Form. */
+export interface HeartbeatUebersicht {
+  project: string
+  geaendert: boolean
+  agenten: Array<{
+    name: string
+    status: string
+    heartbeat: 'an' | 'aus'
+    takt: string
+    taktMs: number | null
+    letzteAktivitaet: Date
+  }>
+}
+
+/** Millisekunden menschenlesbar. Gleiche Sprache wie describeInterval im Wrapper. */
+function beschreibeTakt(ms: number | null): string {
+  if (ms === null) return 'adaptiv (10s..60min)'
+  if (ms < 60_000) return `${Math.round(ms / 1000)}s`
+  if (ms < 60 * 60_000) return `${Math.round(ms / 60_000)}min`
+  return `${Math.round(ms / 3_600_000)}h`
+}
+
+/**
+ * Heartbeat eines Projekts anzeigen oder umstellen — der EINE Weg fuer stdio und REST.
+ *
+ * Ohne konfiguration: reine Anzeige aller Spezialisten des Projekts.
+ * Mit konfiguration: setzt und zeigt anschliessend den neuen Stand.
+ * agentNames = null → alle Spezialisten des Projekts.
+ *
+ * Untergrenze 5000 ms: darunter weckt der Takt den Agenten schneller, als ein Turn
+ * typischerweise dauert — das erzeugt Ueberlappung und kostet Tokens ohne Nutzen.
+ */
+export async function steuereHeartbeat(
+  project: string,
+  agentNames: string[] | null,
+  konfiguration?: HeartbeatKonfiguration,
+): Promise<HeartbeatUebersicht> {
+  const aendert = konfiguration !== undefined
+    && (konfiguration.enabled !== undefined || 'intervalMs' in konfiguration)
+
+  if (aendert && konfiguration) {
+    const takt = konfiguration.intervalMs
+    if (takt !== undefined && takt !== null) {
+      if (!Number.isFinite(takt) || takt < 5_000) {
+        throw new Error(`Heartbeat-Takt muss mindestens 5000 ms betragen (bekommen: ${takt}). Darunter ueberholt der Takt den Agenten.`)
+      }
+    }
+  }
+
+  const zeilen = aendert && konfiguration
+    ? await setzeHeartbeatKonfiguration(project, agentNames, konfiguration)
+    : (await listWrapperStatus(project)).filter(
+        z => !agentNames || agentNames.length === 0 || agentNames.includes(z.agentName),
+      )
+
+  return {
+    project,
+    geaendert: aendert,
+    agenten: zeilen.map(z => ({
+      name: z.agentName,
+      status: z.status,
+      heartbeat: z.heartbeatEnabled ? 'an' : 'aus',
+      takt: beschreibeTakt(z.heartbeatIntervalMs),
+      taktMs: z.heartbeatIntervalMs,
+      letzteAktivitaet: z.lastActivity,
+    })),
+  }
 }
 
 /**
