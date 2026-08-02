@@ -358,13 +358,14 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
   // files — Datei-Manipulation
   // -------------------------------------------------------------------------
   files: {
-    summary: 'Dateien erstellen/bearbeiten/lesen. FileWatcher synct auf Dateisystem. Auto-Versionierung (versions/restore). Multi-File Plan/Commit fuer atomare Aenderungen ueber mehrere Dateien (plan/commit/cancel). Audit-Log mit Begruendungen via "history" — fuer Crash-Recovery.',
+    summary: 'Dateien erstellen/bearbeiten/lesen und kooperativ reservieren (reservation_add/release/update/list). FileWatcher synct auf Dateisystem. Auto-Versionierung (versions/restore). Multi-File Plan/Commit fuer atomare Aenderungen ueber mehrere Dateien (plan/commit/cancel). CE-1-Reservierungen sind reine Buchfuehrung und blockieren noch nichts.',
     when_to_use: [
       'Neue Datei anlegen: create.',
       'Gezielte Aenderung in bestehender Datei: search_replace oder replace_lines.',
       'Einzelne Zeilen einfuegen: insert_after.',
       'Datei lesen (kleine): read — fuer grosse nutze code_intel(file) mit Zeilenbereich.',
       'Datei verschieben/kopieren: move/copy.',
+      'Arbeitsabsicht fuer Co-Edit sichtbar machen: reservation_add/release/update/list.',
     ].join(' '),
     when_not_to_use: [
       'Code analysieren — nutze code_intel.',
@@ -451,6 +452,29 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
       copy: {
         description: 'Datei kopieren.',
         params: 'new_path',
+      },
+      reservation_add: {
+        description: 'Eine oder mehrere Dateien kooperativ reservieren. Mehrere verschiedene Agenten duerfen denselben Pfad gleichzeitig reservieren; CE-1 blockiert dadurch noch nichts.',
+        params: 'project, agent_id, file_path (String oder Array), expires_at?, plan_id?',
+        example: 'files({ action: "reservation_add", project: "synapse", agent_id: "agent-x", file_path: ["src/a.ts", "src/b.ts"] })',
+        tips: 'Retry desselben Agenten/Pfads ist idempotent. Der erste reserved_at entscheidet spaeter in CE-2 ueber den Planungsvorrang.',
+      },
+      reservation_release: {
+        description: 'Eigene aktive Reservierungen fuer einzelne Pfade freigeben.',
+        params: 'project, agent_id, file_path (String oder Array)',
+        example: 'files({ action: "reservation_release", project: "synapse", agent_id: "agent-x", file_path: "src/a.ts" })',
+      },
+      reservation_update: {
+        description: 'Reservierungen in EINER PostgreSQL-Transaktion freigeben, behalten und hinzunehmen.',
+        params: 'project, agent_id, release_paths?, keep_paths?, add_paths?, expires_at?, plan_id?',
+        example: 'files({ action: "reservation_update", project: "synapse", agent_id: "agent-x", release_paths: ["B.ts"], keep_paths: ["F.ts"], add_paths: ["G.ts"] })',
+        tips: 'release_paths, keep_paths und add_paths muessen disjunkt sein. Nicht genannte Reservierungen bleiben unangetastet.',
+      },
+      reservation_list: {
+        description: 'Reservierungsstand listen; standardmaessig nur nicht freigegebene Zeilen. Ablauf wird in CE-1 nur als is_expired angezeigt und blockiert noch nichts.',
+        params: 'project; optional file_path (String oder Array), reservation_agent_id/agent_filter, include_released',
+        example: 'files({ action: "reservation_list", project: "synapse", agent_id: "pruefer", file_path: "src/a.ts" })',
+        tips: 'agent_id ist Attribution. Fuer den Besitzer-Filter reservation_agent_id oder agent_filter nutzen, damit ein Pruefer mehrere Agenten sehen kann.',
       },
       versions: {
         description: 'Versionshistorie einer Datei (neueste zuerst). Liefert Metadata ohne Inhalt — voller Inhalt via get_version.',
@@ -1386,8 +1410,8 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
   // files_batch — Alias fuer files(plan/commit/...) gegen Client-Schema-Caching
   // -------------------------------------------------------------------------
   files_batch: {
-    summary: 'Identische Implementierung wie files fuer Multi-File-Edits (plan/commit/cancel/plan_status/history/restore/restore_batch) — als eigenes Tool exponiert, weil manche MCP-Clients die action-Enum von files cachen und neue Werte nicht erkennen. Funktional gilt ALLES aus guide({ tool_name: "files" }).',
-    when_to_use: 'Wenn files(action: "plan") vom Client abgelehnt wird (Schema-Cache). Atomare Edits ueber mehrere Dateien: plan (Trockenlauf mit Hash-Erfassung) → commit. auto_commit: true spart den zweiten Call wenn kein Review noetig.',
+    summary: 'Identische Implementierung wie files fuer Multi-File-Edits und reservation_add/release/update/list — als eigenes Tool exponiert, weil manche MCP-Clients die action-Enum von files cachen. Funktional gilt ALLES aus guide({ tool_name: "files" }).',
+    when_to_use: 'Wenn files(action: "plan") oder eine reservation_*-Action vom Client wegen Schema-Cache abgelehnt wird. Atomare Edits: plan → commit; Reservierungen sind in CE-1 reine Buchfuehrung.',
     when_not_to_use: 'Einzeldatei-Edits — direkt files(update/search_replace). Reines Lesen — files(read) oder code_intel.',
     param_tips: 'ops[]: 1..100 Operationen, jede mit eigenem file_path + action. anchor_text/anchor_contains pro Op = Drift-Schutz. ACHTUNG: history hier hat dieselbe agent_id-FILTER-Falle wie files(history) — fuer volle Projekt-History agent_id weglassen.',
     examples: [

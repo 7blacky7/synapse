@@ -34,11 +34,16 @@ import {
   pruefeUndBereiteSchreibenVor,
   markiereEinzelneDateiIgnoriert,
   holeSprachSkillVorschlaege,
+  addFileReservations,
+  releaseFileReservations,
+  updateFileReservations,
+  listFileReservations,
+  normalizeReservationFilePaths,
 } from '@synapse/core';
 import type { BatchEdit, FileBatchOp } from '@synapse/core';
 
 import * as path from 'path';
-import { ConsolidatedTool, str, reqStr, num, bool } from './types.js';
+import { ConsolidatedTool, str, reqStr, num, bool, strArray } from './types.js';
 import { getProjectPath } from '../index.js';
 
 export const filesTool: ConsolidatedTool = {
@@ -63,7 +68,7 @@ export const filesTool: ConsolidatedTool = {
       properties: {
         action: {
           type: 'string',
-          enum: ['create', 'update', 'read', 'delete', 'move', 'copy', 'replace_lines', 'insert_after', 'delete_lines', 'search_replace', 'search_replace_batch', 'versions', 'get_version', 'restore', 'restore_batch', 'plan', 'commit', 'cancel', 'plan_status', 'history'],
+          enum: ['create', 'update', 'read', 'delete', 'move', 'copy', 'replace_lines', 'insert_after', 'delete_lines', 'search_replace', 'search_replace_batch', 'versions', 'get_version', 'restore', 'restore_batch', 'plan', 'commit', 'cancel', 'plan_status', 'history', 'reservation_add', 'reservation_release', 'reservation_update', 'reservation_list'],
           description: 'Action: create | update | read | delete | move | copy | replace_lines | insert_after | delete_lines | search_replace | search_replace_batch | versions | get_version | restore | restore_batch | plan | commit | cancel | plan_status | history',
         },
         project: {
@@ -71,9 +76,16 @@ export const filesTool: ConsolidatedTool = {
           description: 'Projekt-Name',
         },
         file_path: {
-          type: 'string',
-          description: 'Dateipfad relativ zum Projekt-Root. PFLICHT fuer create/update/delete/move/copy/read/replace_lines/insert_after/delete_lines/search_replace/search_replace_batch/versions/get_version/restore — OHNE file_path schlagen diese Aktionen fehl (niemals weglassen!). Nur plan/commit/cancel/plan_status/history/restore_batch brauchen es nicht (Pfade stehen dort in ops[]/batch_id).',
+          oneOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' }, minItems: 1 }],
+          description: 'Projekt-relativer Pfad. Array nur fuer reservation_add/release/list; bestehende Datei-Actions erwarten weiter einen String.',
         },
+        release_paths: { type: 'array', items: { type: 'string' }, description: 'reservation_update: explizit freizugebende Pfade.' },
+        keep_paths: { type: 'array', items: { type: 'string' }, description: 'reservation_update: explizit beizubehaltende Pfade.' },
+        add_paths: { type: 'array', items: { type: 'string' }, description: 'reservation_update: neu hinzuzunehmende Pfade.' },
+        expires_at: { type: 'string', description: 'reservation_add/update: optionaler ISO-Ablaufzeitpunkt; Default jetzt + 5 Minuten.' },
+        reservation_agent_id: { type: 'string', description: 'reservation_list: optionaler Besitzer-Filter. agent_id bleibt Attribution des aufrufenden Agenten.' },
+        include_released: { type: 'boolean', description: 'reservation_list: auch bereits freigegebene Zeilen anzeigen (Default false).' },
+
         content: {
           type: 'string',
           description: 'Dateiinhalt (fuer create, update, replace_lines, insert_after)',
@@ -246,6 +258,77 @@ export const filesTool: ConsolidatedTool = {
     const enrichment = (featureTag || parentVersionId || gitCommitSha)
       ? { feature_tag: featureTag ?? null, parent_version_id: parentVersionId ?? null, git_commit_sha: gitCommitSha ?? null }
       : undefined;
+
+
+    const reservationPaths = async (key: string, required = false): Promise<string[]> => {
+      const raw = strArray(args, key);
+      if (!raw || raw.length === 0) {
+        if (required) throw new Error(`Parameter "${key}" ist erforderlich`);
+        return [];
+      }
+      const projectRootPath = await getProjectRoot(project);
+      const relative = raw.map((filePath) =>
+        projectRootPath && path.isAbsolute(filePath)
+          ? toRelativePath(projectRootPath, filePath)
+          : filePath);
+      return normalizeReservationFilePaths(relative);
+    };
+
+    if (action === 'reservation_add') {
+      if (!agentId) throw new Error('agent_id ist fuer reservation_add erforderlich');
+      const filePaths = await reservationPaths('file_path', true);
+      const reservations = await addFileReservations({
+        project,
+        agentId,
+        filePaths,
+        expiresAt: str(args, 'expires_at'),
+        planId: str(args, 'plan_id'),
+      });
+      return {
+        success: true,
+        count: reservations.length,
+        reservations,
+        message: `${reservations.length} Datei(en) fuer ${agentId} reserviert. Mehrfachreservierungen durch andere Agenten bleiben erlaubt.`,
+      };
+    }
+    if (action === 'reservation_release') {
+      if (!agentId) throw new Error('agent_id ist fuer reservation_release erforderlich');
+      const filePaths = await reservationPaths('file_path', true);
+      const result = await releaseFileReservations({ project, agentId, filePaths });
+      return {
+        success: true,
+        released_count: result.released.length,
+        ...result,
+        message: `${result.released.length} Reservierung(en) freigegeben.`,
+      };
+    }
+    if (action === 'reservation_update') {
+      if (!agentId) throw new Error('agent_id ist fuer reservation_update erforderlich');
+      const result = await updateFileReservations({
+        project,
+        agentId,
+        releasePaths: await reservationPaths('release_paths'),
+        keepPaths: await reservationPaths('keep_paths'),
+        addPaths: await reservationPaths('add_paths'),
+        expiresAt: str(args, 'expires_at'),
+        planId: str(args, 'plan_id'),
+      });
+      return {
+        success: true,
+        ...result,
+        message: `Reservierungen atomar aktualisiert: ${result.released.length} freigegeben, ${result.kept.length} behalten, ${result.added.length} hinzugefuegt.`,
+      };
+    }
+    if (action === 'reservation_list') {
+      const filePaths = await reservationPaths('file_path');
+      const reservations = await listFileReservations({
+        project,
+        agentId: str(args, 'reservation_agent_id') ?? str(args, 'agent_filter'),
+        filePaths,
+        includeReleased: bool(args, 'include_released') === true,
+      });
+      return { success: true, count: reservations.length, reservations };
+    }
 
     // Versionierungs-Actions brauchen kein file_path (versions: ja, get_version/restore: version_id,
     // restore_batch: batch_id). Werden hier vor der file_path-Pflicht abgefangen.

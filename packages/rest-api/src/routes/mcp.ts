@@ -116,6 +116,11 @@ import {
   commitBatch,
   cancelBatch,
   getBatchPlan,
+  addFileReservations,
+  releaseFileReservations,
+  updateFileReservations,
+  listFileReservations,
+  normalizeReservationFilePaths,
   holeSprachSkillVorschlaege,
   holeChannelSkillVorschlaege,
   // Project-Init-Queue (Self-Service Project-Bootstrap)
@@ -821,11 +826,18 @@ const MCP_TOOLS = [
       properties: {
         action: {
           type: 'string',
-          enum: ['create', 'update', 'delete', 'move', 'copy', 'read', 'replace_lines', 'insert_after', 'delete_lines', 'search_replace', 'search_replace_batch', 'versions', 'get_version', 'restore', 'restore_batch', 'plan', 'commit', 'cancel', 'plan_status', 'history'],
+          enum: ['create', 'update', 'delete', 'move', 'copy', 'read', 'replace_lines', 'insert_after', 'delete_lines', 'search_replace', 'search_replace_batch', 'versions', 'get_version', 'restore', 'restore_batch', 'plan', 'commit', 'cancel', 'plan_status', 'history', 'reservation_add', 'reservation_release', 'reservation_update', 'reservation_list'],
           description: 'Datei-Aktion. versions/get_version/restore/restore_batch arbeiten auf der Versionshistorie. plan/commit/cancel/plan_status implementieren atomare Multi-File-Edits ueber mehrere Dateien. history listet Aenderungen mit Begruendung (Crash-Recovery) — agent_id wirkt dort als EXAKTER Filter, fuer die volle Projekt-History weglassen.',
         },
         project: { type: 'string', description: 'Projekt-Name' },
-        file_path: { type: 'string', description: 'Dateipfad relativ zum Projekt-Root. PFLICHT fuer create/update/delete/move/copy/read/replace_lines/insert_after/delete_lines/search_replace/search_replace_batch/versions/get_version/restore — OHNE file_path schlagen diese Aktionen fehl (niemals weglassen!). Nur plan/commit/cancel/plan_status/history/restore_batch brauchen es nicht (Pfade stehen dort in ops[]/batch_id).' },
+        file_path: { oneOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' }, minItems: 1 }], description: 'Projekt-relativer Pfad. Array nur fuer reservation_add/release/list; bestehende Datei-Actions erwarten weiter einen String.' },
+        release_paths: { type: 'array', items: { type: 'string' }, description: 'reservation_update: explizit freizugebende Pfade.' },
+        keep_paths: { type: 'array', items: { type: 'string' }, description: 'reservation_update: explizit beizubehaltende Pfade.' },
+        add_paths: { type: 'array', items: { type: 'string' }, description: 'reservation_update: neu hinzuzunehmende Pfade.' },
+        expires_at: { type: 'string', description: 'reservation_add/update: optionaler ISO-Ablaufzeitpunkt; Default jetzt + 5 Minuten.' },
+        reservation_agent_id: { type: 'string', description: 'reservation_list: optionaler Besitzer-Filter. agent_id bleibt Attribution des aufrufenden Agenten.' },
+        include_released: { type: 'boolean', description: 'reservation_list: auch bereits freigegebene Zeilen anzeigen (Default false).' },
+
         content: { type: 'string', description: 'Dateiinhalt. PFLICHT fuer create/update/replace_lines/insert_after.' },
         new_path: { type: 'string', description: 'Neuer Pfad (fuer move, copy)' },
         line_start: { type: 'number', description: 'Start-Zeile (fuer replace_lines, delete_lines)' },
@@ -917,7 +929,7 @@ const MCP_TOOLS = [
       properties: {
         action: {
           type: 'string',
-          enum: ['plan', 'commit', 'cancel', 'plan_status', 'history', 'restore', 'restore_batch'],
+          enum: ['plan', 'commit', 'cancel', 'plan_status', 'history', 'restore', 'restore_batch', 'reservation_add', 'reservation_release', 'reservation_update', 'reservation_list'],
           description: 'plan: Trockenlauf, gibt plan_id zurueck. commit: alle Ops atomar ausfuehren. cancel: Plan verwerfen. plan_status: Plan-Details. history: Aenderungs-Log. restore/restore_batch: Versionierungs-Rollback.',
         },
         project: { type: 'string', description: 'Projekt-Name' },
@@ -964,13 +976,19 @@ const MCP_TOOLS = [
         version_id: { type: 'string', description: 'Pflicht fuer restore' },
         batch_id: { type: 'string', description: 'Pflicht fuer restore_batch' },
         agent_id: { type: 'string', description: 'Optionale Agent-ID (Audit-Trail). AUSNAHME action=history: wirkt als exakter Read-Filter — fuer volle Projekt-History weglassen.' },
-        agent_filter: { type: 'string', description: 'Nur fuer history: expliziter exakter Agent-Filter (bevorzugt gegenueber agent_id-als-Filter)' },
+        agent_filter: { type: 'string', description: 'Expliziter Agent-Filter fuer history oder reservation_list.' },
+        release_paths: { type: 'array', items: { type: 'string' }, description: 'reservation_update: explizit freizugebende Pfade.' },
+        keep_paths: { type: 'array', items: { type: 'string' }, description: 'reservation_update: explizit beizubehaltende Pfade.' },
+        add_paths: { type: 'array', items: { type: 'string' }, description: 'reservation_update: neu hinzuzunehmende Pfade.' },
+        expires_at: { type: 'string', description: 'reservation_add/update: optionaler ISO-Ablaufzeitpunkt; Default jetzt + 5 Minuten.' },
+        reservation_agent_id: { type: 'string', description: 'reservation_list: optionaler Besitzer-Filter. agent_id bleibt Attribution des aufrufenden Agenten.' },
+        include_released: { type: 'boolean', description: 'reservation_list: auch bereits freigegebene Zeilen anzeigen (Default false).' },
         open_for_coedit: { type: 'boolean', description: 'plan: ob Co-Edits erlaubt sind (default true)' },
         auto_commit: { type: 'boolean', description: 'plan + commit in einem Call (default false). Versionierung bleibt aktiv.' },
         agent_note: { type: 'string', description: '(optional): KI-eigene Beobachtungen pro Batch (zusaetzlich zum User-reason).' },
         reason: { type: 'string', description: 'Optional fuer Audit-Trail (file_versions.reason)' },
         since: { type: 'string', description: 'history: ISO-Timestamp ab dem Eintraege gelistet werden' },
-        file_path: { type: 'string', description: 'history: Filter auf einen Pfad (optional)' },
+        file_path: { oneOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' }, minItems: 1 }], description: 'history: String-Filter; reservation_add/release/list: String oder Array.' },
         limit: { type: 'number', description: 'history: Max Eintraege (Standard 50)' },
         feature_tag: { type: 'string', description: 'Logischer Feature-Group-Tag (z.B. "idea-thought-task-link"). history(feature_tag=...) filtert danach.' },
         parent_version_id: { type: 'string', description: 'Referenziert vorherige Version. BIGINT als String.' },
@@ -3612,6 +3630,73 @@ async function handleToolCall(
       const enrichment = (featureTag || parentVersionId || gitCommitSha || agentNote)
         ? { feature_tag: featureTag ?? null, parent_version_id: parentVersionId ?? null, git_commit_sha: gitCommitSha ?? null, agent_note: agentNote ?? null }
         : undefined;
+
+
+      const reservationPaths = (key: string, required = false): string[] => {
+        const raw = strArray(args, key);
+        if (!raw || raw.length === 0) {
+          if (required) throw new Error(`Parameter "${key}" ist erforderlich`);
+          return [];
+        }
+        return normalizeReservationFilePaths(raw);
+      };
+
+      if (action === 'reservation_add') {
+        if (!agentId) throw new Error('agent_id ist fuer reservation_add erforderlich');
+        const reservations = await addFileReservations({
+          project,
+          agentId,
+          filePaths: reservationPaths('file_path', true),
+          expiresAt: str(args, 'expires_at'),
+          planId: str(args, 'plan_id'),
+        });
+        return {
+          success: true,
+          count: reservations.length,
+          reservations,
+          message: `${reservations.length} Datei(en) fuer ${agentId} reserviert. Mehrfachreservierungen durch andere Agenten bleiben erlaubt.`,
+        };
+      }
+      if (action === 'reservation_release') {
+        if (!agentId) throw new Error('agent_id ist fuer reservation_release erforderlich');
+        const result = await releaseFileReservations({
+          project,
+          agentId,
+          filePaths: reservationPaths('file_path', true),
+        });
+        return {
+          success: true,
+          released_count: result.released.length,
+          ...result,
+          message: `${result.released.length} Reservierung(en) freigegeben.`,
+        };
+      }
+      if (action === 'reservation_update') {
+        if (!agentId) throw new Error('agent_id ist fuer reservation_update erforderlich');
+        const result = await updateFileReservations({
+          project,
+          agentId,
+          releasePaths: reservationPaths('release_paths'),
+          keepPaths: reservationPaths('keep_paths'),
+          addPaths: reservationPaths('add_paths'),
+          expiresAt: str(args, 'expires_at'),
+          planId: str(args, 'plan_id'),
+        });
+        return {
+          success: true,
+          ...result,
+          message: `Reservierungen atomar aktualisiert: ${result.released.length} freigegeben, ${result.kept.length} behalten, ${result.added.length} hinzugefuegt.`,
+        };
+      }
+      if (action === 'reservation_list') {
+        const reservations = await listFileReservations({
+          project,
+          agentId: str(args, 'reservation_agent_id') ?? str(args, 'agent_filter'),
+          filePaths: reservationPaths('file_path'),
+          includeReleased: bool(args, 'include_released') === true,
+        });
+        return { success: true, count: reservations.length, reservations };
+      }
 
       // Versionierungs-Actions arbeiten ohne file_path (oder mit anderen IDs).
       // Vor der file_path-Pflicht abfangen.

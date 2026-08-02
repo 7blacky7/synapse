@@ -867,6 +867,33 @@ CREATE INDEX IF NOT EXISTS idx_file_batch_plans_status ON file_batch_plans(proje
 CREATE INDEX IF NOT EXISTS idx_file_batch_plans_open ON file_batch_plans(project, expires_at) WHERE status = 'open';
 ALTER TABLE file_batch_plans ADD COLUMN IF NOT EXISTS reason TEXT;
 
+-- ==========================================================================
+-- Kooperative Dateireservierungen (Co-Edit CE-1).
+-- Reine Buchfuehrung: diese Tabelle blockiert plan/commit noch nicht.
+-- Mehrere Agenten duerfen denselben (project, file_path) reservieren.
+-- ==========================================================================
+CREATE TABLE IF NOT EXISTS file_reservations (
+  id BIGSERIAL PRIMARY KEY,
+  project TEXT NOT NULL,
+  agent_id TEXT NOT NULL,
+  file_path TEXT NOT NULL,
+  reserved_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  expires_at TIMESTAMPTZ NOT NULL DEFAULT NOW() + INTERVAL '5 minutes',
+  released_at TIMESTAMPTZ,
+  plan_id BIGINT
+);
+CREATE INDEX IF NOT EXISTS idx_file_reservations_path
+  ON file_reservations(project, file_path);
+CREATE INDEX IF NOT EXISTS idx_file_reservations_agent
+  ON file_reservations(project, agent_id);
+-- Absichtlich partiell UND dreispaltig: Retry desselben Agenten ist idempotent,
+-- verschiedene Agenten duerfen denselben Pfad gleichzeitig reservieren.
+-- NIEMALS zu UNIQUE(project, file_path) "vereinfachen" — das zerstoert Co-Edit.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_file_reservations_active_agent_file
+  ON file_reservations(project, agent_id, file_path)
+  WHERE released_at IS NULL;
+
+
 -- Serverseitige Skill-Hooks: Dedup gilt bewusst global je Agent und Skill.
 -- Wechselnde Agent-IDs duerfen erneut vorgeschlagen bekommen.
 CREATE TABLE IF NOT EXISTS skill_hook_deliveries (

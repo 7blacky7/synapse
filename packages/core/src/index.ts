@@ -519,6 +519,20 @@ export type {
   CommitBatchResult,
   CommitConflictDetail,
 } from './services/file-batch.js';
+
+// Kooperative Dateireservierungen (Co-Edit CE-1)
+export {
+  addFileReservations,
+  releaseFileReservations,
+  updateFileReservations,
+  listFileReservations,
+  normalizeReservationFilePaths,
+} from './services/file-reservations.js';
+export type {
+  FileReservation,
+  ReservationMutationResult,
+  ReservationUpdateResult,
+} from './services/file-reservations.js';
 export type { BackupEntry } from './services/backup.js';
 export type { ChatMessage, AgentSession } from './services/chat.js';
 export type { AgentEvent, EventAck, EventType, EventPriority } from './services/events.js';

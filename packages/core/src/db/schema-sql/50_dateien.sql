@@ -231,3 +231,50 @@ CREATE INDEX idx_watcher_events_path ON public.watcher_events USING btree (proje
 --
 
 CREATE INDEX idx_watcher_events_project_time ON public.watcher_events USING btree (project, created_at DESC);
+
+
+-- ============================================================
+-- Kooperative Dateireservierungen (Co-Edit CE-1)
+-- ============================================================
+-- Mehrere Agenten duerfen denselben (project, file_path) reservieren.
+-- Diese Tabelle ist in CE-1 reine Buchfuehrung und blockiert keine Datei.
+
+CREATE TABLE public.file_reservations (
+    id bigint NOT NULL,
+    project text NOT NULL,
+    agent_id text NOT NULL,
+    file_path text NOT NULL,
+    reserved_at timestamp with time zone DEFAULT now() NOT NULL,
+    expires_at timestamp with time zone DEFAULT (now() + '00:05:00'::interval) NOT NULL,
+    released_at timestamp with time zone,
+    plan_id bigint
+);
+
+CREATE SEQUENCE public.file_reservations_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+ALTER SEQUENCE public.file_reservations_id_seq OWNED BY public.file_reservations.id;
+
+ALTER TABLE ONLY public.file_reservations
+    ALTER COLUMN id SET DEFAULT nextval('public.file_reservations_id_seq'::regclass);
+
+ALTER TABLE ONLY public.file_reservations
+    ADD CONSTRAINT file_reservations_pkey PRIMARY KEY (id);
+
+CREATE INDEX idx_file_reservations_path
+    ON public.file_reservations USING btree (project, file_path);
+
+CREATE INDEX idx_file_reservations_agent
+    ON public.file_reservations USING btree (project, agent_id);
+
+-- Absichtlich partiell UND dreispaltig: Retry desselben Agenten ist idempotent,
+-- verschiedene Agenten duerfen denselben Pfad gleichzeitig reservieren.
+-- NIEMALS zu UNIQUE(project, file_path) "vereinfachen" — das zerstoert Co-Edit.
+CREATE UNIQUE INDEX idx_file_reservations_active_agent_file
+    ON public.file_reservations USING btree (project, agent_id, file_path)
+    WHERE (released_at IS NULL);
+
