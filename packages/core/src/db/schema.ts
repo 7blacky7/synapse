@@ -894,10 +894,10 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_file_reservations_active_agent_file
   WHERE released_at IS NULL;
 
 
-// ============================================================================
-// CE-2: Persistente Waits fuer den reservationsbasierten Server-Split.
-// CE-3-Lifecycle/Events sind bewusst nicht Teil dieser Tabelle/Implementierung.
-// ============================================================================
+-- ============================================================================
+-- CE-2: Persistente Waits fuer den reservationsbasierten Server-Split.
+-- CE-3-Lifecycle/Events sind bewusst nicht Teil dieser Tabelle/Implementierung.
+-- ============================================================================
 CREATE TABLE IF NOT EXISTS file_batch_waits (
   wait_token UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   source_plan_id BIGINT NOT NULL,
