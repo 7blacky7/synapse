@@ -62,6 +62,8 @@ const wakeZaehler = new Map<string, number>();
 
 let client: PoolClient | null = null;
 let verbindetGerade = false;
+/** Wann ging die Verbindung verloren? null = es gab noch keinen Abriss. */
+let abrissSeit: number | null = null;
 let neuversuchTimer: NodeJS.Timeout | null = null;
 let neuversuchVerzoegerungMs = 1_000;
 
@@ -69,6 +71,8 @@ const mess = {
   listenerVerbunden: false,
   listenerLetztesEreignisAm: null as Date | null,
   neuverbindungen: 0,
+  letzteNeuverbindungAm: null as Date | null,
+  letzteLueckeMs: null as number | null,
   letzterFehler: null as string | null,
   letzterFehlerAm: null as Date | null,
   ereignisseGesamt: 0,
@@ -202,6 +206,7 @@ async function stelleListenerSicher(): Promise<void> {
       mess.letzterFehler = err.message;
       mess.letzterFehlerAm = new Date();
       log('LISTEN-Client-Fehler: %s', err.message);
+      if (abrissSeit === null) abrissSeit = Date.now();
       gibClientFrei('Fehler');
       mess.neuverbindungen += 1;
       planeNeuverbindung();
@@ -219,6 +224,37 @@ async function stelleListenerSicher(): Promise<void> {
     neuversuchVerzoegerungMs = 1_000;
     log('LISTEN aktiv (%d Basis-Kanaele, %d Wake-Kanaele, %d Abonnenten)',
       BASIS_KANAELE.length, wakeZaehler.size, abonnenten.size);
+
+    // WIEDERAUFBAU NACH EINEM ABRISS — das hier ist der Unterschied zwischen
+    // "kommt zurueck" und "faellt auf".
+    // GEMESSEN am 02.08.2026: wird die LISTEN-Sitzung serverseitig beendet
+    // (pg_terminate_backend), ist der Client nach rund 1,2 Sekunden zurueck und
+    // liefert wieder aus. Die SSE-Verbindung des Wrappers reisst dabei aber NICHT
+    // ab — sie haengt am HTTP-Socket, nicht an der Datenbank. Der Wrapper sieht
+    // also weder einen Abbruch noch einen Wiederaufbau und haelt die Sekunden ohne
+    // LISTEN fuer einen ruhigen Moment. Alles, was in dieser Luecke passiert ist,
+    // waere ihm lautlos entgangen.
+    // Deshalb: nach jedem Wiederaufbau ein hint mit dem Kanal 'resync'. Der
+    // Aufrufer soll darauf SOFORT pollen (nicht warm abwarten) — der Poll ist das
+    // Fundament, der Stream nur der Beschleuniger, und genau hier zahlt sich das aus.
+    if (abrissSeit !== null) {
+      const lueckeMs = Date.now() - abrissSeit;
+      abrissSeit = null;
+      mess.letzteNeuverbindungAm = new Date();
+      mess.letzteLueckeMs = lueckeMs;
+      log('Wiederaufbau nach %dms ohne LISTEN — resync an %d Abonnenten', lueckeMs, abonnenten.size);
+      for (const abo of abonnenten.values()) {
+        try {
+          abo.sende({
+            event: 'hint',
+            data: { channel: 'resync', reason: 'listener_reconnected', gap_ms: lueckeMs },
+          });
+          abo.letztesEreignisAm = new Date();
+        } catch {
+          // eine kaputte Verbindung darf die anderen nicht mitnehmen
+        }
+      }
+    }
   } catch (err) {
     mess.letzterFehler = err instanceof Error ? err.message : String(err);
     mess.letzterFehlerAm = new Date();
@@ -292,6 +328,9 @@ export function stromSicht(project: string, agent: string): {
   subscribers: number;
   listener_connected: boolean;
   listener_last_event_at: string | null;
+  listener_reconnects: number;
+  listener_last_reconnect_at: string | null;
+  listener_last_gap_ms: number | null;
 } {
   let anzahl = 0;
   let letztes: Date | null = null;
@@ -310,6 +349,13 @@ export function stromSicht(project: string, agent: string): {
     listener_last_event_at: mess.listenerLetztesEreignisAm
       ? mess.listenerLetztesEreignisAm.toISOString()
       : null,
+    // Sichtbar auch fuer den, der NUR pollt und gar keinen Stream offen hat:
+    // eine steigende Zahl heisst, dass der Live-Kanal Loecher hatte.
+    listener_reconnects: mess.neuverbindungen,
+    listener_last_reconnect_at: mess.letzteNeuverbindungAm
+      ? mess.letzteNeuverbindungAm.toISOString()
+      : null,
+    listener_last_gap_ms: mess.letzteLueckeMs,
   };
 }
 
@@ -332,6 +378,8 @@ export function stromGesundheit(project?: string): Record<string, unknown> {
         ? mess.listenerLetztesEreignisAm.toISOString()
         : null,
       reconnects: mess.neuverbindungen,
+      last_reconnect_at: mess.letzteNeuverbindungAm ? mess.letzteNeuverbindungAm.toISOString() : null,
+      last_gap_ms: mess.letzteLueckeMs,
       listen_errors: mess.listenFehler,
       last_error: mess.letzterFehler,
       last_error_at: mess.letzterFehlerAm ? mess.letzterFehlerAm.toISOString() : null,
