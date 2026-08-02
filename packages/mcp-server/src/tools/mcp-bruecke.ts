@@ -1,18 +1,34 @@
 /**
  * MODUL: MCP-Bruecke fuer den INNEREN Claude eines Spezialisten (Schritt 3b)
  * ZWECK: Ein Spezialist besteht aus zwei Programmen. Der Wrapper spricht seit
- *        Schritt 2 ueber die Zugriffsschicht mit der API. Der innere Claude aber
- *        bekommt seine Synapse-Werkzeuge bisher ueber einen LOKALEN stdio-Prozess
- *        mit direkter Datenbankverbindung — er erbt schlicht die .mcp.json der
- *        Maschine (der Spawner startet den Wrapper mit env: {...process.env} und
- *        cwd im Projektpfad). Solange das so ist, braucht ein Spezialist im
- *        Container weiterhin eine Datenbank, nur eben fuer seine Werkzeuge statt
- *        fuer seinen Wrapper. Dieses Modul gibt dem Agenten stattdessen eine
- *        EIGENE MCP-Konfiguration mit, die den Synapse-Server ueber HTTP
- *        anspricht (deployte API, Bearer-Token).
+ *        Schritt 2 ueber die Zugriffsschicht mit der API. Der innere Claude
+ *        bekommt seine Synapse-Werkzeuge ueber einen LOKALEN stdio-Prozess: er
+ *        erbt die .mcp.json der Maschine (der Spawner startet den Wrapper mit
+ *        env: {...process.env} und cwd im Projektpfad). Dieses Modul kann ihm
+ *        stattdessen eine EIGENE MCP-Konfiguration mitgeben, die den Synapse-
+ *        Server ueber HTTP anspricht (deployte API, Bearer-Token). Damit braucht
+ *        er fuer seine Werkzeuge keine Datenbankverbindung mehr.
  *
- * ADDITIV: Der neue Weg haengt hinter SYNAPSE_AGENT_MCP_TRANSPORT. VORGABE ist
- *          'stdio' — also der heutige Weg. Nichts wird stillschweigend umgestellt.
+ * ⚠️ WOFUER DIESER WEG GEDACHT IST — bitte VOR jeder Aenderung lesen:
+ *        Er ist das richtige Mittel fuer Agenten mit API-KEY-ANBINDUNG.
+ *        Im ABO-BETRIEB der Claude-CLI ist er es NICHT, und das ist keine Luecke:
+ *        dort bezieht der Agent seine Werkzeuge ueber die vorhandene .mcp.json,
+ *        genau so ist die CLI entworfen. Der stdio-Weg ist dort der RICHTIGE Weg
+ *        und kein Rueckstand, den jemand noch wegraeumen muesste.
+ *
+ * ⚠️ MESSUNG DES KOORDINATORS vom 02.08.2026 (abends) — hier NICHT selbst
+ *        erhoben, uebernommen damit niemand denselben Weg noch einmal "repariert".
+ *        Drei Laeufe, jeweils frischer Wegwerf-Spezialist im Abo-Betrieb:
+ *          Wrapper=api + MCP=http     -> Agent sieht 0 Werkzeuge, 0 tool_calls
+ *          Wrapper=pg  + MCP=http     -> Agent sieht 0 Werkzeuge, 0 tool_calls
+ *          Wrapper=api + MCP=Standard -> traegt (Anmeldung + Channel-Post)
+ *        Das ist das ERWARTETE Verhalten des Abo-Weges, kein Defekt dieses
+ *        Moduls. Wer den HTTP-Weg beurteilen will, braucht eine API-Key-
+ *        Anbindung; im Abo laesst sich darueber nichts feststellen.
+ *
+ * ADDITIV: Der HTTP-Weg haengt hinter SYNAPSE_AGENT_MCP_TRANSPORT. VORGABE ist
+ *          'stdio' — also der Weg, der im Abo-Betrieb der richtige ist. Nichts
+ *          wird stillschweigend umgestellt.
  *
  * KEIN STILLER RUECKFALL: Ist 'http' verlangt, aber URL oder Token fehlen, oder
  *          antwortet der Endpunkt nicht mit Werkzeugen, wird der Spawn ABGEBROCHEN.
@@ -34,8 +50,10 @@ import { join } from 'node:path';
  * allowedTools-Filter). Heisst der Server anders, brechen sie ALLE — ohne
  * Fehlermeldung; der Agent ruft dann einfach nichts mehr auf. Deshalb ist dieser
  * Name eine Konstante und kein Konfigurationswert.
- * GEMESSEN 2026-08-02: claude --mcp-config mit diesem Namen meldet
- * mcp__synapse__* — 21 Werkzeuge, identisch zum stdio-Weg.
+ * GEZAEHLT 2026-08-02 gegen den HTTP-Endpunkt: tools/list liefert unter diesem
+ * Namen 21 Werkzeuge mit Praefix mcp__synapse__*, dieselbe Menge wie der
+ * stdio-Weg. Die Zahl beschreibt das ANGEBOT der API — nicht, wieviele davon in
+ * einem gestarteten Agenten ankommen (siehe Modulkopf).
  */
 const SERVER_NAME = 'synapse';
 
@@ -46,7 +64,7 @@ export interface McpBrueckeErgebnis {
   grund: string;
   /** Pfad der erzeugten Konfigurationsdatei (nur wenn aktiv). */
   configPfad?: string;
-  /** Beim Selbsttest gezaehlte Werkzeuge (nur wenn aktiv). */
+  /** Werkzeuge, die der Endpunkt dem SPAWNER-Prozess anbietet (nur wenn aktiv). */
   werkzeuge?: number;
   /** Angesprochener Endpunkt (nur wenn aktiv, ohne Token). */
   url?: string;
@@ -60,8 +78,11 @@ export interface McpBrueckeErgebnis {
 export class McpBrueckeFehler extends Error {}
 
 /**
- * Zaehlt die Werkzeuge, die der HTTP-Endpunkt wirklich anbietet.
- * Zwei Aufrufe nach MCP "Streamable HTTP": initialize, dann tools/list.
+ * Zaehlt die Werkzeuge, die der HTTP-Endpunkt DIESEM PROZESS (dem Spawner)
+ * anbietet. Zwei Aufrufe nach MCP "Streamable HTTP": initialize, dann tools/list.
+ *
+ * ⚠️ Das ist eine Aussage ueber den ENDPUNKT, nicht ueber den spaeter gestarteten
+ * Agenten. Was in dessen Prozess ankommt, kann nur er selbst melden.
  *
  * ⚠️ Der MCP-Endpunkt der Synapse-API liegt auf POST / (Root), NICHT auf /mcp —
  * /mcp antwortet mit 404 (gemessen 2026-08-02). Der Auth-Hook gated beide.
@@ -321,9 +342,14 @@ export async function bereiteMcpBrueckeVor(
     throw fehler;
   };
 
-  // SELBSTTEST VOR DEM SPAWN. Ein Agent ohne Werkzeuge faellt sonst niemandem auf:
-  // er antwortet fachlich statt zu scheitern. Deshalb wird hier gezaehlt, bevor
-  // ueberhaupt ein Prozess startet.
+  // ERREICHBARKEITSPRUEFUNG DES ENDPUNKTS — AUS DEM SPAWNER-PROZESS, vor dem Spawn.
+  // Sie stellt fest: Adresse erreichbar, Token gueltig, Werkzeuge werden angeboten.
+  // ⚠️ SIE SAGT NICHTS DARUEBER, WAS BEIM AGENTEN ANKOMMT — sie laeuft in einem
+  // anderen Prozess mit anderer Anbindung. Genau so gelesen hat sie den Koordinator
+  // am 02.08.2026 zweimal in die Irre gefuehrt: sie meldete 21 Werkzeuge, waehrend
+  // der Agent im Abo-Betrieb keine sah. Sie bleibt, weil sie eine falsche Adresse
+  // und ein untaugliches Token VOR dem Spawn abfaengt; als Beleg fuer die Werkzeuge
+  // des Agenten taugt sie nicht. Dafuer gibt es allein selbsttestHinweis().
   let werkzeuge: number;
   try {
     werkzeuge = await zaehleWerkzeuge(endpunkt, token);
@@ -364,8 +390,9 @@ export async function bereiteMcpBrueckeVor(
   return {
     aktiv: true,
     grund:
-      `http (SYNAPSE_AGENT_MCP_TRANSPORT=http, ${werkzeuge} Werkzeuge im Selbsttest gezaehlt, ` +
-      `Token: ${tokenHerkunft} ${scope})`,
+      `http (SYNAPSE_AGENT_MCP_TRANSPORT=http, Endpunkt vom Spawner aus erreichbar, ` +
+      `tools/list bietet dort ${werkzeuge} Werkzeuge an — was beim Agenten ankommt, ` +
+      `meldet nur er selbst, Token: ${tokenHerkunft} ${scope})`,
     configPfad,
     werkzeuge,
     url: endpunkt,
@@ -376,9 +403,11 @@ export async function bereiteMcpBrueckeVor(
 
 /**
  * Der Satz, der dem System-Prompt des Agenten angehaengt wird, wenn die Bruecke
- * aktiv ist. Zweite Sicherung gegen die Merkbarkeitsluecke: der Vorabtest oben
- * misst die API, dieser Satz laesst den AGENTEN selbst nachzaehlen — nur er
- * sieht, was in seinem Prozess wirklich ankommt.
+ * aktiv ist. Er ist die EINZIGE Stelle, die etwas ueber die Werkzeuge des Agenten
+ * aussagen kann: die Pruefung oben misst den Endpunkt aus dem Spawner-Prozess,
+ * dieser Satz laesst den AGENTEN selbst nachzaehlen — nur er sieht, was in seinem
+ * Prozess wirklich ankommt. Meldet er 0, ist das im Abo-Betrieb kein Defekt,
+ * sondern der erwartete Fall (siehe Modulkopf).
  */
 export function selbsttestHinweis(erwartet: number): string {
   return [
