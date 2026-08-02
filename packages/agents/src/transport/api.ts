@@ -1,0 +1,548 @@
+/**
+ * MODUL: api-Umsetzung der Wrapper-Zugriffsschicht
+ * ZWECK: Dieselben Faehigkeiten wie der pg-Weg, aber ueber HTTP gegen die
+ *        synapse-api mit Bearer-Token. Ziel ist ein Wrapper, der keine
+ *        Datenbankverbindung mehr braucht und deshalb auch woanders laufen kann.
+ *
+ * STAND: gebaut gegen den im Channel api-bruecke vereinbarten Vertrag (v1).
+ *        Die Routen entstehen parallel in packages/rest-api. Solange sie fehlen,
+ *        scheitert dieser Weg — LAUT, nicht still (siehe unten).
+ *
+ * SICHTBARKEIT — der eigentliche Punkt dieser Datei:
+ *   Ein HTTP-Weg kann auf eine Art kaputtgehen, die der pg-Weg nicht kennt: das
+ *   Token laeuft ab. Dann scheitert ALLES gleichzeitig mit 401, der Wrapper
+ *   bekommt keine Nachrichten mehr, weckt niemanden mehr, schreibt keinen Status
+ *   mehr — und sieht dabei aus wie ein Agent, an den gerade niemand schreibt.
+ *   Deshalb: 401/403 wird bei JEDEM Vorkommen protokolliert und getrennt gezaehlt,
+ *   und der Bilanz-Waechter meldet zusaetzlich laengere Stille von selbst.
+ *
+ * WAS DIESER WEG NICHT KANN:
+ *   ensureSchema. DDL gehoert nicht in einen entfernten Wrapper; starte() meldet
+ *   sich stattdessen an. Das ist kein Verlust, sondern der Sinn der Sache.
+ *
+ * BEKANNTE KOSTEN (gemessen wird das erst in Schritt 3):
+ *   Ein Heartbeat-Tick loest hier mehrere HTTP-Aufrufe aus, wo der pg-Weg mehrere
+ *   Abfragen im LAN macht. Der Vertrag sieht mit GET /poll einen Sammelabruf vor,
+ *   der alles in EINEN Aufruf legt. Er ist hier bewusst noch NICHT verdrahtet:
+ *   dafuer muss der Tick in wrapper.ts umgebaut werden, und das gehoert zu
+ *   Schritt 3, nicht in einen Umbau, der pg unveraendert lassen soll.
+ */
+
+import { Buchhaltung } from './zaehler.js'
+import type {
+  ChannelNachricht,
+  Faehigkeit,
+  HeartbeatKonfiguration,
+  InboxNachricht,
+  LiveEmpfaenger,
+  StatusNutzlast,
+  SynapseItems,
+  TransportBilanz,
+  TransportUmgebung,
+  Wasserstaende,
+  WrapperTransport,
+} from './typen.js'
+
+const ZEITLIMIT_MS = 15_000
+const RUECKZUG_MS = [1_000, 2_000, 5_000, 10_000, 30_000]
+
+interface RufOptionen {
+  methode?: string
+  koerper?: unknown
+  /** 404 ist bei /config eine gueltige Antwort ("noch keine Zeile"), kein Fehler. */
+  leerBei404?: boolean
+}
+
+export class ApiTransport implements WrapperTransport {
+  readonly art = 'api' as const
+
+  private readonly basis: string
+  private readonly token: string
+  private readonly buch: Buchhaltung
+
+  private empfaenger: LiveEmpfaenger | null = null
+  private streamAbbruch: AbortController | null = null
+  private beendet = false
+  private angemeldet = false
+
+  constructor(private readonly umgebung: TransportUmgebung) {
+    const url = (process.env.SYNAPSE_API_URL ?? '').trim().replace(/\/+$/, '')
+    const token = (process.env.SYNAPSE_API_TOKEN ?? '').trim()
+
+    if (!url || !token || !umgebung.projekt) {
+      // Kein stiller Rueckfall auf den pg-Weg: ein Wrapper, der anders arbeitet
+      // als angefordert, ist genau der Fehler, den diese Schicht verhindern soll.
+      throw new Error(
+        'SYNAPSE_WRAPPER_TRANSPORT=api verlangt SYNAPSE_API_URL, SYNAPSE_API_TOKEN und ein Projekt ' +
+          `(url=${url ? 'gesetzt' : 'FEHLT'}, token=${token ? 'gesetzt' : 'FEHLT'}, ` +
+          `projekt=${umgebung.projekt ? umgebung.projekt : 'FEHLT'}). ` +
+          'Ich falle bewusst NICHT auf den pg-Weg zurueck, sonst laeuft der Wrapper unbemerkt anders als bestellt.',
+      )
+    }
+
+    this.basis =
+      `${url}/api/projects/${encodeURIComponent(umgebung.projekt)}` +
+      `/specialists/${encodeURIComponent(umgebung.agentName)}`
+    this.token = token
+    // true: dieser Weg schickt ein regelmaessiges Takt-Signal, Stille ist hier ein Befund.
+    this.buch = new Buchhaltung('api', true)
+  }
+
+  bilanz(): TransportBilanz {
+    return this.buch.lies()
+  }
+
+  // -------------------------------------------------------------------------
+  // HTTP-Grundlage
+  // -------------------------------------------------------------------------
+
+  private async ruf<T>(
+    faehigkeit: Faehigkeit,
+    pfad: string,
+    optionen: RufOptionen = {},
+  ): Promise<T | null> {
+    return this.buch.messe(faehigkeit, async () => {
+      const kopf: Record<string, string> = {
+        Authorization: `Bearer ${this.token}`,
+        Accept: 'application/json',
+      }
+      if (optionen.koerper !== undefined) kopf['Content-Type'] = 'application/json'
+
+      const antwort = await fetch(`${this.basis}${pfad}`, {
+        method: optionen.methode ?? 'GET',
+        headers: kopf,
+        body: optionen.koerper !== undefined ? JSON.stringify(optionen.koerper) : undefined,
+        signal: AbortSignal.timeout(ZEITLIMIT_MS),
+      })
+
+      if (antwort.status === 401 || antwort.status === 403) {
+        this.buch.zaehleAblehnung()
+        this.umgebung.log(
+          'TOKEN ABGELEHNT (%d) bei %s — ab jetzt scheitert JEDER Aufruf. Der Wrapper bekommt keine ' +
+            'Nachrichten mehr; das sieht im Log sonst aus wie Ruhe.',
+          antwort.status,
+          pfad,
+        )
+        throw new Error(`HTTP ${antwort.status} bei ${pfad} (Token abgelehnt)`)
+      }
+
+      if (antwort.status === 404 && optionen.leerBei404) return null
+
+      if (!antwort.ok) {
+        throw new Error(`HTTP ${antwort.status} bei ${pfad}`)
+      }
+
+      const daten = (await antwort.json()) as Record<string, unknown>
+      if (daten && daten.success === false) {
+        const fehler = daten.error as { message?: string } | undefined
+        throw new Error(`API meldet Fehler bei ${pfad}: ${fehler?.message ?? 'ohne Begruendung'}`)
+      }
+      return daten as T
+    })
+  }
+
+  /** Wie ruf(), aber eine leere Antwort ist hier ein Vertragsbruch und kein Zustand. */
+  private async rufPflicht<T>(
+    faehigkeit: Faehigkeit,
+    pfad: string,
+    optionen: RufOptionen = {},
+  ): Promise<T> {
+    const daten = await this.ruf<T>(faehigkeit, pfad, optionen)
+    if (daten === null) throw new Error(`Leere Antwort von ${pfad}`)
+    return daten
+  }
+
+  // -------------------------------------------------------------------------
+  // Faehigkeiten
+  // -------------------------------------------------------------------------
+
+  async starte(): Promise<void> {
+    await this.melde()
+  }
+
+  private async melde(): Promise<void> {
+    await this.rufPflicht('start', '/register', {
+      methode: 'POST',
+      koerper: { transport: 'api', wrapper_pid: process.pid, status: 'running' },
+    })
+    this.angemeldet = true
+    this.umgebung.log('Bei der synapse-api angemeldet (%s)', this.basis)
+  }
+
+  private async holeConfig(): Promise<Record<string, unknown> | null> {
+    return this.ruf<Record<string, unknown>>('konfiguration', '/config', { leerBei404: true })
+  }
+
+  async leseHeartbeatKonfiguration(): Promise<HeartbeatKonfiguration | null> {
+    const daten = await this.holeConfig()
+    if (daten === null) return null
+    if (daten.exists === false) return null
+
+    const config = daten.config as Record<string, unknown> | undefined
+    if (!config) {
+      throw new Error('Antwort von /config enthaelt kein Feld "config" — Vertrag verletzt')
+    }
+
+    const aktiv = config.heartbeat_enabled ?? config.heartbeatEnabled
+    const takt = config.heartbeat_interval_ms ?? config.heartbeatIntervalMs
+
+    if (typeof aktiv !== 'boolean') {
+      // Bewusst hart: waere das hier tolerant, verloere der api-Weg die
+      // Abschaltbarkeit, und zwar unbemerkt — ein Wrapper ohne gelesene
+      // Konfiguration laeuft einfach adaptiv weiter und sieht normal aus.
+      throw new Error('Feld heartbeat_enabled fehlt oder ist kein Wahrheitswert — Takt waere nicht mehr steuerbar')
+    }
+    if (takt !== null && takt !== undefined && typeof takt !== 'number') {
+      throw new Error('Feld heartbeat_interval_ms ist weder Zahl noch null — Takt waere nicht mehr steuerbar')
+    }
+
+    return {
+      heartbeatEnabled: aktiv,
+      heartbeatIntervalMs: typeof takt === 'number' ? takt : null,
+    }
+  }
+
+  async leseWasserstaende(): Promise<Wasserstaende> {
+    type Antwort = { watermarks?: Record<string, unknown> }
+    let daten = await this.ruf<Antwort>('wasserstaende', '/watermarks', { leerBei404: true })
+
+    // Beim allerersten Start gibt es die wrapper_status-Zeile noch nicht. Dann
+    // erst anmelden und ein zweites Mal fragen — sonst startet der Wrapper bei 0
+    // und flutet seinen Agenten mit der gesamten Historie.
+    if (daten === null && !this.angemeldet) {
+      await this.melde()
+      daten = await this.ruf<Antwort>('wasserstaende', '/watermarks', { leerBei404: true })
+    }
+    if (daten === null) {
+      throw new Error('Wasserstaende nicht abrufbar: /watermarks liefert keine Zeile')
+    }
+
+    const stand = daten.watermarks
+    if (!stand) throw new Error('Antwort von /watermarks enthaelt kein Feld "watermarks" — Vertrag verletzt')
+
+    const kanal = stand.channel ?? stand.channel_msg_id
+    const inbox = stand.inbox ?? stand.inbox_msg_id
+    if (typeof kanal !== 'number' || typeof inbox !== 'number') {
+      throw new Error('watermarks enthaelt keine Zahlen — ein falscher Startwert flutet den Agenten')
+    }
+    // ⚠️ Von bruecke-api gemessen: /watermarks kann um eins ueber dem watermark der
+    // Nachrichtenroute liegen, weil MAX(id) auch die EIGENEN Nachrichten des Agenten
+    // zaehlt, die er nie zugestellt bekommt. Genau so ist es im pg-Weg auch.
+    return { channel: kanal, inbox }
+  }
+
+  async leseChannels(): Promise<string[]> {
+    const daten = await this.ruf<{ channels?: unknown }>('channels', '/channels', { leerBei404: true })
+    if (daten === null) return []
+    if (!Array.isArray(daten.channels)) {
+      throw new Error('Antwort von /channels enthaelt kein Feld "channels" — Vertrag verletzt')
+    }
+    return daten.channels.map((c) => String(c))
+  }
+
+  async leseNeueChannelNachrichten(seitId: number): Promise<ChannelNachricht[]> {
+    const daten = await this.rufPflicht<{ messages?: unknown; truncated?: unknown }>(
+      'channel-nachrichten',
+      `/channel-messages?since_id=${seitId}`,
+    )
+    const roh = daten.messages
+    if (!Array.isArray(roh)) {
+      throw new Error('Antwort von /channel-messages enthaelt kein Feld "messages" — Vertrag verletzt')
+    }
+    if (daten.truncated === true) {
+      // Bewusst NICHT im selben Takt nachfassen: der Wrapper baut aus diesen
+      // Nachrichten EINEN Wake-Prompt, und ein Nachladen wuerde ihn sprengen.
+      // Der naechste Takt holt den Rest ab dem neuen Wasserstand.
+      this.umgebung.log(
+        'Channel-Abruf gekuerzt (Hoechstzahl erreicht) — %d Nachrichten geliefert, der Rest folgt im naechsten Takt.',
+        roh.length,
+      )
+    }
+    return roh.map((eintrag) => {
+      const m = eintrag as Record<string, unknown>
+      return {
+        id: Number(m.id),
+        channelName: String(m.channelName ?? m.channel_name ?? ''),
+        sender: String(m.sender ?? ''),
+        content: String(m.content ?? ''),
+      }
+    })
+  }
+
+  async leseNeueInboxNachrichten(seitId: number): Promise<InboxNachricht[]> {
+    const daten = await this.rufPflicht<{ messages?: unknown; truncated?: unknown }>(
+      'inbox',
+      `/inbox?since_id=${seitId}`,
+    )
+    const roh = daten.messages
+    if (!Array.isArray(roh)) {
+      throw new Error('Antwort von /inbox enthaelt kein Feld "messages" — Vertrag verletzt')
+    }
+    if (daten.truncated === true) {
+      this.umgebung.log(
+        'Inbox-Abruf gekuerzt (Hoechstzahl erreicht) — %d Nachrichten geliefert, der Rest folgt im naechsten Takt.',
+        roh.length,
+      )
+    }
+    return roh.map((eintrag) => {
+      const m = eintrag as Record<string, unknown>
+      return {
+        id: Number(m.id),
+        fromAgent: String(m.fromAgent ?? m.from_agent ?? ''),
+        content: String(m.content ?? ''),
+      }
+    })
+  }
+
+  async quittiereInbox(ids: number[]): Promise<void> {
+    if (ids.length === 0) return
+    const daten = await this.rufPflicht<{ updated?: unknown; acked?: unknown; unacked_count?: unknown }>(
+      'inbox-quittung',
+      '/inbox/ack',
+      { methode: 'POST', koerper: { ids } },
+    )
+    // Lesen und Quittieren sind ueber HTTP zwei Aufrufe. Reisst die Verbindung
+    // dazwischen, bleibt die Nachricht unquittiert liegen — und das sieht man
+    // sonst nirgends. Also hier sagen. ("updated" ist der Name der Route,
+    // "acked" derselbe Wert als Zweitname.)
+    const rohZahl = daten.updated ?? daten.acked
+    const quittiert = typeof rohZahl === 'number' ? rohZahl : null
+    if (quittiert !== null && quittiert < ids.length) {
+      this.umgebung.log(
+        'Inbox-Quittung unvollstaendig: %d von %d bestaetigt (unacked_count=%s). Die Nachrichten bleiben liegen.',
+        quittiert,
+        ids.length,
+        String(daten.unacked_count ?? 'unbekannt'),
+      )
+    }
+  }
+
+  async leseSynapseItems(): Promise<SynapseItems> {
+    const daten = await this.rufPflicht<Record<string, unknown>>('items', '/items')
+    // Der Vertrag legt die vier Listen auf die oberste Ebene; ein Unterobjekt
+    // "items" wird ebenfalls akzeptiert. Fehlt eine Liste ganz, ist das ein
+    // Fehler und KEINE leere Liste — sonst verschwaende Arbeit lautlos.
+    const quelle = (daten.items as Record<string, unknown> | undefined) ?? daten
+
+    const liste = (name: string): Record<string, unknown>[] => {
+      const wert = quelle[name]
+      if (!Array.isArray(wert)) {
+        throw new Error(`Antwort von /items enthaelt kein Feld "${name}" — Vertrag verletzt`)
+      }
+      return wert as Record<string, unknown>[]
+    }
+
+    return {
+      memories: liste('memories').map((m) => ({
+        name: String(m.name ?? ''),
+        content: String(m.content ?? ''),
+      })),
+      thoughts: liste('thoughts').map((t) => ({
+        id: String(t.id ?? ''),
+        content: String(t.content ?? ''),
+      })),
+      tasks: liste('tasks').map((t) => ({
+        id: String(t.id ?? ''),
+        title: String(t.title ?? ''),
+        status: String(t.status ?? ''),
+        priority: String(t.priority ?? ''),
+        description: String(t.description ?? ''),
+      })),
+      events: liste('events').map((e) => ({
+        id: Number(e.id),
+        eventType: String(e.eventType ?? e.event_type ?? ''),
+        priority: String(e.priority ?? ''),
+        payload: e.payload === null || e.payload === undefined ? null : String(e.payload),
+      })),
+    }
+  }
+
+  async schreibeStatus(status: StatusNutzlast): Promise<void> {
+    await this.rufPflicht('status', '/status', { methode: 'POST', koerper: status })
+  }
+
+  // -------------------------------------------------------------------------
+  // Live-Kanal (SSE)
+  // -------------------------------------------------------------------------
+
+  async starteLiveKanal(empfaenger: LiveEmpfaenger): Promise<void> {
+    this.empfaenger = empfaenger
+    this.beendet = false
+    void this.streamSchleife()
+  }
+
+  async beendeLiveKanal(): Promise<void> {
+    this.beendet = true
+    if (this.streamAbbruch) {
+      try {
+        this.streamAbbruch.abort()
+      } catch {
+        /* ignore */
+      }
+      this.streamAbbruch = null
+    }
+    this.buch.liveVerbindungWeg(null)
+  }
+
+  /**
+   * Verbinden, lesen, bei Abbruch mit wachsender Pause neu versuchen.
+   * Node hat keine EventSource mit eingebautem Wiederverbinden — das steht hier.
+   */
+  private async streamSchleife(): Promise<void> {
+    let stufe = 0
+    while (!this.beendet) {
+      this.buch.liveVerbindungsversuch()
+      const abbruch = new AbortController()
+      this.streamAbbruch = abbruch
+      try {
+        const antwort = await fetch(`${this.basis}/stream`, {
+          headers: {
+            Authorization: `Bearer ${this.token}`,
+            Accept: 'text/event-stream',
+          },
+          signal: abbruch.signal,
+        })
+
+        if (antwort.status === 401 || antwort.status === 403) {
+          this.buch.zaehleAblehnung()
+          this.umgebung.log(
+            'Live-Kanal ABGELEHNT (%d) — Weckrufe kommen nur noch ueber den Poll-Takt an.',
+            antwort.status,
+          )
+          throw new Error(`HTTP ${antwort.status} am Live-Kanal`)
+        }
+        if (!antwort.ok || !antwort.body) {
+          throw new Error(`HTTP ${antwort.status} am Live-Kanal`)
+        }
+
+        this.buch.liveVerbindungSteht()
+        this.umgebung.log('Live-Kanal verbunden (SSE)')
+        stufe = 0
+        await this.leseStrom(antwort.body)
+        this.buch.liveVerbindungWeg('vom Server beendet')
+        if (!this.beendet) this.umgebung.log('Live-Kanal beendet — neuer Versuch folgt')
+      } catch (err) {
+        const grund = err instanceof Error ? err.message : String(err)
+        this.buch.liveVerbindungWeg(grund)
+        if (!this.beendet) this.umgebung.log('Live-Kanal-Fehler: %s', grund)
+      }
+
+      if (this.beendet) return
+      const warte = RUECKZUG_MS[Math.min(stufe, RUECKZUG_MS.length - 1)]
+      stufe++
+      await new Promise<void>((fertig) => {
+        setTimeout(fertig, warte)
+      })
+    }
+  }
+
+  private async leseStrom(koerper: ReadableStream<Uint8Array>): Promise<void> {
+    const leser = koerper.getReader()
+    const dekoder = new TextDecoder()
+    let puffer = ''
+    for (;;) {
+      const { done, value } = await leser.read()
+      if (done) return
+      puffer += dekoder.decode(value, { stream: true }).replace(/\r\n/g, '\n')
+      let grenze = puffer.indexOf('\n\n')
+      while (grenze >= 0) {
+        this.verarbeiteBlock(puffer.slice(0, grenze))
+        puffer = puffer.slice(grenze + 2)
+        grenze = puffer.indexOf('\n\n')
+      }
+      if (puffer.length > 1_000_000) {
+        this.umgebung.log('Live-Kanal: unvollstaendiger Block groesser als 1 MB — verworfen')
+        puffer = ''
+      }
+    }
+  }
+
+  /**
+   * Ein SSE-Rahmen. Die Route sendet BENANNTE Ereignisse (event: wake | file | hint)
+   * und dazwischen einen Kommentar-Herzschlag alle 15s.
+   *
+   * Der Herzschlag ist hier kein Beiwerk: er ist der einzige Unterschied zwischen
+   * "der Kanal ist ruhig" und "der Kanal ist tot". Ohne ihn saehen beide gleich aus.
+   */
+  private verarbeiteBlock(block: string): void {
+    if (block.trim() === '') return
+    const zeilen = block.split('\n')
+    const daten: string[] = []
+    let name = ''
+    let nurKommentar = true
+    for (const zeile of zeilen) {
+      if (zeile.startsWith(':')) continue
+      nurKommentar = false
+      if (zeile.startsWith('event:')) name = zeile.slice(6).trim()
+      else if (zeile.startsWith('data:')) daten.push(zeile.slice(5).trimStart())
+    }
+
+    // Jeder vollstaendige Rahmen beweist, dass die Leitung lebt — auch ein
+    // blosser Kommentar und auch die "retry"-Zeile.
+    this.buch.liveLebenszeichenGesehen()
+    if (nurKommentar) return
+
+    let nutz: Record<string, unknown> = {}
+    if (daten.length > 0) {
+      try {
+        nutz = JSON.parse(daten.join('\n')) as Record<string, unknown>
+      } catch {
+        this.umgebung.log('Live-Kanal: Ereignis "%s" nicht lesbar (kein JSON) — verworfen', name)
+        return
+      }
+    }
+
+    // Der Ereignisname ist massgeblich; ein type-Feld in den Daten gilt ersatzweise.
+    const art = name !== '' ? name : String(nutz.type ?? '')
+    if (art === '' || art === 'connected' || art === 'heartbeat') return
+
+    this.buch.liveEreignisGesehen()
+    const empfaenger = this.empfaenger
+    if (!empfaenger) return
+
+    if (art === 'wake') {
+      const nachricht = typeof nutz.message === 'string' ? nutz.message : ''
+      if (nachricht) empfaenger({ art: 'wake', nachricht })
+      return
+    }
+
+    if (art === 'file') {
+      // Dieselben Filter wie beim pg-Weg: nur dieses Projekt, keine eigenen Aenderungen.
+      const pfad = nutz.file_path
+      const wer = nutz.agent_id
+      if (nutz.project === this.umgebung.projekt && wer !== this.umgebung.agentName && typeof pfad === 'string') {
+        empfaenger({
+          art: 'datei',
+          pfad,
+          aktion: typeof nutz.edit_action === 'string' ? nutz.edit_action : 'change',
+          agent: typeof wer === 'string' ? wer : '',
+        })
+      }
+      // Der Hinweis kommt auch bei weggefilterter Nutzlast — genau wie beim pg-Weg.
+      empfaenger({ art: 'hinweis', kanal: 'synapse_file', stufe: 'hot' })
+      return
+    }
+
+    if (art === 'hint') {
+      const kanal = String(nutz.channel ?? '')
+      if (!kanal) return
+      // 'resync' meldet, dass der LISTEN-Client der API kurz weg war. In dieser
+      // Luecke koennen Ereignisse verlorengegangen sein — deshalb 'hot' und nicht
+      // 'warm': es ist kein Lebenszeichen, sondern die Aufforderung, sofort
+      // nachzusehen. Ohne diese Behandlung waere die Luecke genau das, wogegen
+      // die ganze Bruecke abgesichert wird: unauffaellige Stille.
+      if (kanal === 'resync') {
+        this.umgebung.log(
+          'Live-Kanal meldet eine Luecke (resync, %sms) — es wird sofort gepollt.',
+          String(nutz.gap_ms ?? 'unbekannt'),
+        )
+        empfaenger({ art: 'hinweis', kanal, stufe: 'hot' })
+        return
+      }
+      empfaenger({ art: 'hinweis', kanal, stufe: 'warm' })
+      return
+    }
+
+    this.umgebung.log('Live-Kanal: unbekannte Ereignisart "%s" — ignoriert', art)
+  }
+}

@@ -25,22 +25,10 @@ import { readFile, unlink } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { ProcessManager } from './process.js'
-import { getNewMessagesForAgent } from './channels.js'
-import { getNewMessages as getNewInboxMessages } from './inbox.js'
 import { readStatus, updateSpecialist } from './status.js'
-import {
-  getPool,
-  listMemories,
-  getThoughtsByTag,
-  getPlan,
-  getPendingEvents,
-  upsertWrapperStatus,
-  getWrapperStatus,
-  removeWrapperStatus,
-  ensureSchema,
-} from '@synapse/core'
-import pg from 'pg'
-import type { Memory, Thought, ProjectTask, AgentEvent } from '@synapse/core'
+import { erzeugeTransport } from './transport/index.js'
+import { BilanzWaechter } from './transport/zaehler.js'
+import type { LiveEreignis, WrapperTransport } from './transport/typen.js'
 import {
   CONTEXT_CEILINGS,
   WARN_THRESHOLDS,
@@ -112,7 +100,19 @@ const connectedClients: Set<Socket> = new Set()
 let heartbeatIntervalId: ReturnType<typeof setInterval> | null = null
 let heartbeatTimeoutId: ReturnType<typeof setTimeout> | null = null
 let heartbeatState: HeartbeatState | null = null
-let listenClient: pg.Client | null = null
+
+// --- Zugriffsschicht (seit 02.08.2026) ---------------------------------------
+// Alles, was frueher unmittelbar an der Datenbank hing, laeuft ab hier ueber EINE
+// Schnittstelle mit zwei Umsetzungen. Welche es ist, entscheidet
+// SYNAPSE_WRAPPER_TRANSPORT — Vorgabe 'pg', also das bisherige Verhalten.
+// Unterhalb dieser Zeile weiss der Wrapper nicht mehr, welcher Weg benutzt wird.
+const transport: WrapperTransport = erzeugeTransport({
+  agentName: AGENT_NAME,
+  projekt: PROJECT_NAME,
+  log: (msg, ...args) => log(msg, ...args),
+})
+// Macht stille Fehlschlaege der Zugriffsschicht sichtbar (transport/zaehler.ts).
+const bilanzWaechter = new BilanzWaechter()
 
 // --- Heartbeat-Konfiguration aus wrapper_status (seit 02.08.2026) --------------
 // Vorher war der Takt fest verdrahtet: ein Spezialist, der nur auf Zuruf arbeiten
@@ -140,7 +140,7 @@ const WAECHTER_TAKT_MS = 60_000
 async function ladeHeartbeatKonfiguration(): Promise<void> {
   if (!PROJECT_NAME) return
   try {
-    const zeile = await getWrapperStatus(AGENT_NAME, PROJECT_NAME)
+    const zeile = await transport.leseHeartbeatKonfiguration()
     if (!zeile) return
     const vorherAktiv = heartbeatAktiv
     const vorherTakt = festerTaktMs
@@ -205,79 +205,40 @@ function triggerImmediateHeartbeat(reason: string, level: 'hot' | 'warm' = 'hot'
 }
 
 /**
- * Kanalname fuer LISTEN, als PostgreSQL-Bezeichner in Anfuehrungszeichen.
+ * Verbindet den Live-Kanal und uebersetzt seine Ereignisse in das, was der
+ * Wrapper bisher bei einem NOTIFY getan hat.
  *
- * ⚠️ GEMESSEN AM 02.08.2026: LISTEN synapse_specialist_wake_takt-probe ist fuer
- * PostgreSQL ein Syntaxfehler — ein Bindestrich beendet den Bezeichner. Da Namen wie
- * rollen-ist, agy-claude-opus oder takt-probe die Regel sind, traf das praktisch jeden
- * Spezialisten (12 Wrapper-Logs mit "syntax error at or near").
- * Der Schaden war groesser als der eine fehlende Kanal: der Wurf passierte VOR
- * listenClient.on('notification', ...), also wurde der Handler nie registriert und die
- * vier zuvor gelungenen LISTEN auf chat/channel/event/file liefen ins Leere. Der Wrapper
- * bekam ueberhaupt keine Benachrichtigungen mehr und haing allein an seinem Poll-Takt.
- * Auffaellig war das nie, weil der Heartbeat weiterlief — nur eben traege.
+ * Der Kanal ist ein BESCHLEUNIGER, kein Fundament: faellt er aus, arbeitet der
+ * Wrapper mit seinem Poll-Takt weiter. Genau diese Rolle hatte LISTEN schon immer.
+ * WOHER die Ereignisse kommen — LISTEN/NOTIFY oder ein SSE-Strom — entscheidet die
+ * Zugriffsschicht. Hier unten ist es nicht mehr zu erkennen, und das ist der Sinn.
  *
- * pg_notify() auf der Sendeseite nimmt den Namen als Zeichenkette und war deshalb immer
- * korrekt; nur der LISTEN-Befehl braucht die Anfuehrungszeichen. Sie machen den Namen
- * zugleich gross-/kleinschreibungsgenau — was zur Sendeseite passt, die exakt vergleicht.
+ * Die Sonderfaelle (Anfuehrungszeichen um den LISTEN-Bezeichner, Echo-Schutz bei
+ * Dateiaenderungen, Projekt-Filter beim Wake) stehen jetzt in transport/pg.ts —
+ * unveraendert, nur verschoben.
  */
-function listenKanal(name: string): string {
-  return `"${name.replace(/"/g, '""')}"`
-}
+async function verbindeLiveKanal(): Promise<void> {
+  await transport.starteLiveKanal((ereignis: LiveEreignis) => {
+    if (ereignis.art === 'wake') {
+      log('Wake ueber Live-Kanal empfangen: %s', ereignis.nachricht.slice(0, 100))
+      pendingNotifyWakes.push(ereignis.nachricht)
+      triggerImmediateHeartbeat(`wake_${AGENT_NAME}`, 'hot')
+      return
+    }
 
-async function setupPgListeners(): Promise<void> {
-  try {
-    // Dedicated Client weil LISTEN den Connection blockt — nicht aus dem Pool.
-    listenClient = new pg.Client({ connectionString: process.env.DATABASE_URL })
-    await listenClient.connect()
-    await listenClient.query('LISTEN synapse_chat')
-    await listenClient.query('LISTEN synapse_channel')
-    await listenClient.query('LISTEN synapse_event')
-    await listenClient.query('LISTEN synapse_file')
-    // Spezialist-Wake via NOTIFY (Fast-Path; Inbox bleibt Fallback)
-    await listenClient.query(`LISTEN ${listenKanal(`synapse_specialist_wake_${AGENT_NAME}`)}`)
-    listenClient.on('notification', (msg) => {
-      const channel = msg.channel ?? '<unknown>'
-      // Spezialist-Wake: Nachricht direkt in Queue, naechster Heartbeat verarbeitet sie.
-      // NOTIFY ist Fast-Path — Inbox-Fallback laeuft sowieso via pollInboxMessages().
-      if (channel === `synapse_specialist_wake_${AGENT_NAME}` && msg.payload) {
-        try {
-          const p = JSON.parse(msg.payload) as { message?: string; project?: string }
-          if (p.message && (!p.project || p.project === PROJECT_NAME)) {
-            log('NOTIFY-Wake empfangen: %s', p.message.slice(0, 100))
-            pendingNotifyWakes.push(p.message)
-            triggerImmediateHeartbeat(`wake_${AGENT_NAME}`, 'hot')
-          }
-        } catch { /* ignore parse errors */ }
-        return // Kein weiterer triggerImmediateHeartbeat unten
-      }
-      // Spezial-Behandlung fuer file-changes: Payload puffern fuer naechsten Wake-Prompt.
-      if (channel === 'synapse_file' && msg.payload) {
-        try {
-          const p = JSON.parse(msg.payload) as { project?: string; file_path?: string; edit_action?: string; agent_id?: string }
-          // Filter: nicht eigene Aenderungen (Echo-Schutz), nur wenn aus diesem Projekt
-          if (p.project === PROJECT_NAME && p.agent_id !== AGENT_NAME && p.file_path) {
-            recentFileChanges.push({
-              path: p.file_path,
-              action: p.edit_action ?? 'change',
-              agent: p.agent_id ?? '',
-              ts: Date.now(),
-            })
-            pruneFileChanges()
-          }
-        } catch { /* ignore parse errors */ }
-      }
-      // File-Changes sind 'hot' (Real-Time), andere Events nur 'warm' (Default 30s).
-      const level = channel === 'synapse_file' ? 'hot' : 'warm'
-      triggerImmediateHeartbeat(channel, level)
-    })
-    listenClient.on('error', (err) => {
-      log('PG-LISTEN error: %s — neu verbinden bei naechstem Heartbeat', err.message)
-    })
-    log('PG-LISTEN aktiv: synapse_chat, synapse_channel, synapse_event, synapse_file, synapse_specialist_wake_%s', AGENT_NAME)
-  } catch (err) {
-    log('PG-LISTEN-Setup fehlgeschlagen (Heartbeat laeuft trotzdem): %s', err instanceof Error ? err.message : String(err))
-  }
+    if (ereignis.art === 'datei') {
+      recentFileChanges.push({
+        path: ereignis.pfad,
+        action: ereignis.aktion,
+        agent: ereignis.agent,
+        ts: Date.now(),
+      })
+      pruneFileChanges()
+      return
+    }
+
+    triggerImmediateHeartbeat(ereignis.kanal, ereignis.stufe)
+  })
 }
 
 // ---------------------------------------------------------------------------
@@ -866,7 +827,7 @@ async function recoverStuckAgent(): Promise<void> {
 async function pollChannelMessages(): Promise<boolean> {
   if (agentBusy) return false
 
-  const newMsgs = await getNewMessagesForAgent(AGENT_NAME, lastChannelMsgId)
+  const newMsgs = await transport.leseNeueChannelNachrichten(lastChannelMsgId)
   if (newMsgs.length === 0) return false
 
   // Update watermark
@@ -923,19 +884,14 @@ Wenn du weiterarbeitest und keine Pause machst, kann der Wrapper dich nicht rech
 async function pollInboxMessages(): Promise<boolean> {
   if (agentBusy) return false
 
-  const newMsgs = await getNewInboxMessages(AGENT_NAME, lastInboxMsgId)
+  const newMsgs = await transport.leseNeueInboxNachrichten(lastInboxMsgId)
   if (newMsgs.length === 0) return false
 
   // Update watermark
   lastInboxMsgId = newMsgs[newMsgs.length - 1].id
 
-  // Mark messages as processed
-  const pool = getPool()
-  const ids = newMsgs.map((m) => m.id)
-  await pool.query(
-    `UPDATE specialist_inbox SET processed = true WHERE id = ANY($1::int[])`,
-    [ids],
-  )
+  // Quittieren ueber die Zugriffsschicht statt per rohem UPDATE.
+  await transport.quittiereInbox(newMsgs.map((m) => m.id))
 
   const summary = newMsgs
     .map((m) => `[DM von ${m.fromAgent}]: ${m.content}`)
@@ -958,37 +914,26 @@ async function pollSynapseItems(): Promise<boolean> {
   const items: string[] = []
 
   try {
-    // 1. Memories mit Agent-Tag
-    const memories = await listMemories(PROJECT_NAME)
-    const myMemories = memories.filter(m => m.tags?.includes(AGENT_NAME))
-    for (const m of myMemories) {
+    // Die vier Item-Arten kommen jetzt aus der Zugriffsschicht, bereits auf diesen
+    // Agenten gefiltert. Der WORTLAUT bleibt hier — er gehoert nicht in eine API,
+    // sonst laesst er sich nicht mehr aendern, ohne zu deployen.
+    const geholt = await transport.leseSynapseItems()
+
+    for (const m of geholt.memories) {
       const truncated = m.content.length > 800 ? m.content.slice(0, 800) + '...' : m.content
       items.push(`[MEMORY:${m.name}] ${truncated}`)
     }
 
-    // 2. Thoughts mit Agent-Tag
-    const thoughts = await getThoughtsByTag(PROJECT_NAME, AGENT_NAME, 10)
-    for (const t of thoughts) {
+    for (const t of geholt.thoughts) {
       const truncated = t.content.length > 800 ? t.content.slice(0, 800) + '...' : t.content
       items.push(`[THOUGHT:${t.id}] ${truncated}`)
     }
 
-    // 3. Plan Tasks mit Agent-Name im Titel
-    const plan = await getPlan(PROJECT_NAME)
-    if (plan?.tasks) {
-      const nameLower = AGENT_NAME.toLowerCase()
-      const myTasks = plan.tasks.filter(t =>
-        t.title.toLowerCase().includes(nameLower) &&
-        (t.status === 'todo' || t.status === 'in_progress')
-      )
-      for (const t of myTasks) {
-        items.push(`[TASK:${t.id}] "${t.title}" (${t.status}, ${t.priority}): ${t.description}`)
-      }
+    for (const t of geholt.tasks) {
+      items.push(`[TASK:${t.id}] "${t.title}" (${t.status}, ${t.priority}): ${t.description}`)
     }
 
-    // 4. Pending Events
-    const events = await getPendingEvents(PROJECT_NAME, AGENT_NAME)
-    for (const e of events) {
+    for (const e of geholt.events) {
       items.push(`[EVENT:${e.id}:${e.eventType}] (${e.priority}) ${e.payload || ''}`)
     }
   } catch (err) {
@@ -1031,18 +976,12 @@ Arbeite diese Items jetzt ab.`
 async function fetchCurrentChannels(): Promise<string[]> {
   if (!PROJECT_NAME) return []
   try {
-    const pool = getPool()
-    const { rows } = await pool.query<{ channel_name: string }>(
-      `SELECT c.name AS channel_name
-       FROM specialist_channels c
-       JOIN specialist_channel_members m ON m.channel_id = c.id
-       WHERE m.agent_name = $1
-       ORDER BY c.name`,
-      [AGENT_NAME],
-    )
-    return rows.map(r => r.channel_name)
-  } catch {
-    return cachedChannels // Fallback: letzter bekannter Wert
+    return await transport.leseChannels()
+  } catch (err) {
+    // Wie bisher: letzter bekannter Wert. Neu ist, dass der Fehlschlag gezaehlt
+    // wird und im Log steht — vorher war das ein voellig stilles catch.
+    log('Channel-Liste nicht lesbar, nehme die letzte bekannte: %s', err instanceof Error ? err.message : String(err))
+    return cachedChannels
   }
 }
 
@@ -1111,7 +1050,7 @@ async function updateStatusPg(statusOverride?: 'running' | 'idle' | 'crashed' | 
   if (!isForced && now - lastPgWriteTs < WRAPPER_STATUS_PG_WRITE_INTERVAL_MS) return
   // Fix skeptiker-pg #4: lastPgWriteTs erst nach erfolgreichem Write setzen (nur fuer nicht-forced)
   try {
-    await upsertWrapperStatus(await buildFullPgStatus(statusOverride))
+    await transport.schreibeStatus(await buildFullPgStatus(statusOverride))
     if (!isForced) lastPgWriteTs = now
   } catch (err) {
     log('PG-Status-Schreiben fehlgeschlagen (non-fatal): %s', err)
@@ -1137,8 +1076,14 @@ async function updateStatusFile() {
   } catch (err) {
     log('Failed to update status file: %s', err)
   }
-  // Parallel: PG-Status aktualisieren (gedrosselt auf 90s, non-fatal)
+  // Parallel: Status aktualisieren (gedrosselt auf 90s, non-fatal)
   void updateStatusPg()
+
+  // Sichtbarkeit: die Zugriffsschicht meldet sich von selbst, wenn etwas nicht
+  // stimmt. Ohne das sieht ein Wrapper, dessen Aufrufe alle scheitern, genauso
+  // aus wie einer, an den gerade niemand schreibt.
+  const meldung = bilanzWaechter.pruefe(transport.bilanz())
+  if (meldung) log('%s', meldung)
 }
 
 // ---------------------------------------------------------------------------
@@ -1289,11 +1234,8 @@ async function cleanup() {
     clearTimeout(heartbeatTimeoutId)
     heartbeatTimeoutId = null
   }
-  // Close PG-LISTEN client
-  if (listenClient) {
-    try { await listenClient.end() } catch { /* ignore */ }
-    listenClient = null
-  }
+  // Live-Kanal schliessen (LISTEN-Verbindung bzw. SSE-Strom)
+  try { await transport.beendeLiveKanal() } catch { /* ignore */ }
   if (heartbeatIntervalId) {
     clearInterval(heartbeatIntervalId)
     heartbeatIntervalId = null
@@ -1385,26 +1327,10 @@ function setupSignalHandlers() {
 // ---------------------------------------------------------------------------
 
 async function initializeWatermarks() {
-  const pool = getPool()
-
   try {
-    const channelResult = await pool.query<{ max_id: number }>(
-      `SELECT COALESCE(MAX(cm.id), 0)::int AS max_id
-       FROM specialist_channel_messages cm
-       JOIN specialist_channels c ON c.id = cm.channel_id
-       JOIN specialist_channel_members mem ON mem.channel_id = c.id
-       WHERE mem.agent_name = $1`,
-      [AGENT_NAME],
-    )
-    lastChannelMsgId = channelResult.rows[0]?.max_id ?? 0
-
-    const inboxResult = await pool.query<{ max_id: number }>(
-      `SELECT COALESCE(MAX(id), 0)::int AS max_id
-       FROM specialist_inbox
-       WHERE to_agent = $1`,
-      [AGENT_NAME],
-    )
-    lastInboxMsgId = inboxResult.rows[0]?.max_id ?? 0
+    const stand = await transport.leseWasserstaende()
+    lastChannelMsgId = stand.channel
+    lastInboxMsgId = stand.inbox
 
     log('Watermarks initialized (channel: %d, inbox: %d)', lastChannelMsgId, lastInboxMsgId)
   } catch (err) {
@@ -1441,6 +1367,7 @@ async function main() {
   log('  Socket: %s', SOCKET_PATH)
   log('  Poll interval: %dms', POLL_INTERVAL)
   log('  Keep alive: %s', KEEP_ALIVE)
+  log('  Transport: %s (SYNAPSE_WRAPPER_TRANSPORT=%s)', transport.art, process.env.SYNAPSE_WRAPPER_TRANSPORT ?? '<nicht gesetzt, Vorgabe pg>')
   log('  PID: %d', process.pid)
 
   // 1. Setup signal handlers early
@@ -1495,8 +1422,9 @@ async function main() {
     }
     scheduleNextHeartbeat()
     log('Heartbeat gestartet (adaptive, start: %s)', describeInterval(heartbeatState.currentIntervalMs))
-    // PG-LISTEN parallel: triggert sofortigen Heartbeat bei DB-Notification (Channel/Chat/Event)
-    void setupPgListeners()
+    // Live-Kanal parallel: triggert sofortigen Heartbeat bei einem Ereignis.
+    // Faellt er aus, bleibt der Poll-Takt das Fundament.
+    void verbindeLiveKanal()
 
     // Initial Wake: Agent mit seiner Aufgabe starten (Task steht im System-Prompt)
     log('Initial Wake: Starte Agent mit Aufgabe')
@@ -1515,13 +1443,13 @@ async function main() {
     lastActivity: lastActivityTs,
   } as Partial<SpecialistStatus>)
 
-  // 9. PG-Schema sicherstellen (idempotent, CREATE IF NOT EXISTS)
+  // 9. Zugriffsschicht anmelden (pg: Schema sicherstellen, api: registrieren)
   if (PROJECT_NAME) {
     try {
-      await ensureSchema()
-      log('PG-Schema sichergestellt')
+      await transport.starte()
+      log('Zugriffsschicht bereit (%s)', transport.art)
     } catch (err) {
-      log('ensureSchema fehlgeschlagen (non-fatal, PG evtl. nicht erreichbar): %s', err)
+      log('Zugriffsschicht-Start fehlgeschlagen (non-fatal, Datenquelle evtl. nicht erreichbar): %s', err)
     }
   }
 
@@ -1532,7 +1460,7 @@ async function main() {
   if (PROJECT_NAME) {
     try {
       const spawnModelEntry = resolveModel(AGENT_MODEL)
-      await upsertWrapperStatus({
+      await transport.schreibeStatus({
         agentName: AGENT_NAME,
         project: PROJECT_NAME,
         wrapperPid: process.pid,
