@@ -27,6 +27,8 @@ import { join } from 'node:path'
 import { ProcessManager } from './process.js'
 import { readStatus, updateSpecialist } from './status.js'
 import { erzeugeTransport } from './transport/index.js'
+import { erzeugeWissen, gewaehlteWissensQuelle } from './wissen/index.js'
+import type { WissensZugriff } from './wissen/typen.js'
 import { BilanzWaechter } from './transport/zaehler.js'
 import type {
   ChannelNachricht,
@@ -64,7 +66,9 @@ const AGENT_MODEL = process.env.SYNAPSE_AGENT_MODEL!
 const PROJECT_NAME = process.env.SYNAPSE_PROJECT_NAME || ''
 const PROJECT_PATH = process.env.SYNAPSE_PROJECT_PATH!
 const SOCKET_PATH = process.env.SYNAPSE_SOCKET_PATH!
-const SYSTEM_PROMPT_FILE = process.env.SYNAPSE_SYSTEM_PROMPT_FILE!
+// Nur noch im Vorgabe-Weg ('datei') gebraucht. Im api-Weg holt der Wrapper den
+// Prompt ueber die Wissensschicht; die Variable darf dann fehlen (siehe validateEnv).
+const SYSTEM_PROMPT_FILE = process.env.SYNAPSE_SYSTEM_PROMPT_FILE ?? ''
 const POLL_INTERVAL = parseInt(process.env.SYNAPSE_POLL_INTERVAL || '15000', 10)
 const KEEP_ALIVE = process.env.SYNAPSE_KEEP_ALIVE === '1'
 
@@ -128,6 +132,51 @@ const transport: WrapperTransport = erzeugeTransport({
 })
 // Macht stille Fehlschlaege der Zugriffsschicht sichtbar (transport/zaehler.ts).
 const bilanzWaechter = new BilanzWaechter()
+
+// --- Wissensschicht (seit 02.08.2026) ----------------------------------------
+// Woher kommt der System-Prompt? SYNAPSE_WISSEN_QUELLE entscheidet es, Vorgabe
+// 'datei' — dann wird genau die Datei aus SYNAPSE_SYSTEM_PROMPT_FILE gelesen wie
+// bisher. 'api' holt ihn ueber HTTP, damit ein Wrapper nicht mehr an die Platte
+// des Daemons gebunden ist.
+const wissen: WissensZugriff = erzeugeWissen({
+  projekt: PROJECT_NAME,
+  projektPfad: PROJECT_PATH,
+  promptPfad: SYSTEM_PROMPT_FILE || undefined,
+  log: (msg, ...args) => log(msg, ...args),
+})
+
+/**
+ * Der zuletzt erfolgreich geholte System-Prompt.
+ *
+ * Er ist die Rueckfallebene fuer die Context-Rotation und NUR dafuer: schlaegt
+ * das Holen dort fehl, wird der alte Text erneut benutzt statt mit leerem Prompt
+ * neu zu starten. Das verliert nichts, es friert nur den Stand ein — waehrend
+ * ein leerer Prompt einen Agenten erzeugt, der nicht mehr weiss wer er ist, und
+ * das im Log wie ein normaler Neustart aussieht.
+ * Fuer den ERSTEN Start gibt es diesen Rueckfall bewusst nicht: dort ist ein
+ * Fehlschlag ein Abbruch.
+ */
+let letzterSystemPrompt: string | null = null
+
+/**
+ * Holt den System-Prompt und prueft, dass ueberhaupt etwas Brauchbares ankam.
+ *
+ * WORAN MAN ES MERKEN WUERDE, WENN ES KAPUTT WAERE: an der Zeichenzahl und der
+ * Quelle in dieser einen Logzeile. Ohne sie ist ein leerer Prompt von einem
+ * vollen nicht zu unterscheiden — beide starten fehlerfrei.
+ */
+async function holeSystemPromptGeprueft(): Promise<string> {
+  const text = await wissen.holeSystemPrompt(AGENT_NAME)
+  if (text.trim().length === 0) {
+    throw new Error(
+      `System-Prompt ist leer (Quelle=${wissen.art}). Ich starte den Agenten NICHT — ein leerer ` +
+        'Prompt wirft keinen Fehler, er erzeugt nur einen Agenten ohne Auftrag und ohne Regeln.',
+    )
+  }
+  log('System prompt loaded (%d chars, Quelle=%s)', text.length, wissen.art)
+  letzterSystemPrompt = text
+  return text
+}
 
 // --- Heartbeat-Konfiguration aus wrapper_status (seit 02.08.2026) --------------
 // Vorher war der Takt fest verdrahtet: ein Spezialist, der nur auf Zuruf arbeiten
@@ -1288,8 +1337,23 @@ Alles was du NICHT speicherst geht verloren.`,
     totalInputTokens = 0
     totalOutputTokens = 0
 
-    // Re-read system prompt and restart
-    const systemPrompt = await readFile(SYSTEM_PROMPT_FILE, 'utf-8')
+    // System-Prompt erneut holen. Schlaegt das fehl, wird der zuletzt benutzte
+    // Text wiederverwendet — siehe letzterSystemPrompt. Ohne diesen Rueckfall
+    // wuerde eine kurze Stoerung der Datenquelle einen laufenden Spezialisten
+    // beim naechsten Context-Reset in einen Agenten ohne Wissen verwandeln.
+    let systemPrompt: string
+    try {
+      systemPrompt = await holeSystemPromptGeprueft()
+    } catch (err) {
+      if (!letzterSystemPrompt) throw err
+      log(
+        'ROTATION: System-Prompt konnte nicht geholt werden (%s) — ich nehme den zuletzt benutzten ' +
+          '(%d Zeichen). Der Agent friert damit auf dem alten Stand ein, statt ohne Prompt zu starten.',
+        err instanceof Error ? err.message : String(err),
+        letzterSystemPrompt.length,
+      )
+      systemPrompt = letzterSystemPrompt
+    }
     await startAgentProcess(systemPrompt)
 
     // Onboarding: tell agent to load its memory
@@ -1512,8 +1576,11 @@ function validateEnv() {
     'SYNAPSE_AGENT_MODEL',
     'SYNAPSE_PROJECT_PATH',
     'SYNAPSE_SOCKET_PATH',
-    'SYNAPSE_SYSTEM_PROMPT_FILE',
   ]
+  // Der Pfad zur Prompt-Datei ist nur im Vorgabe-Weg Pflicht. Im api-Weg gibt es
+  // die Datei nicht mehr — sie zu verlangen wuerde genau den Fall verbieten, um
+  // den es geht: einen Wrapper ohne das Verzeichnis des Daemons.
+  if (gewaehlteWissensQuelle() === 'datei') required.push('SYNAPSE_SYSTEM_PROMPT_FILE')
   const missing = required.filter((key) => !process.env[key])
   if (missing.length > 0) {
     throw new Error(`Missing required environment variables: ${missing.join(', ')}`)
@@ -1531,14 +1598,14 @@ async function main() {
   log('  Poll interval: %dms', POLL_INTERVAL)
   log('  Keep alive: %s', KEEP_ALIVE)
   log('  Transport: %s (SYNAPSE_WRAPPER_TRANSPORT=%s)', transport.art, process.env.SYNAPSE_WRAPPER_TRANSPORT ?? '<nicht gesetzt, Vorgabe pg>')
+  log('  Wissensquelle: %s (SYNAPSE_WISSEN_QUELLE=%s)', wissen.art, process.env.SYNAPSE_WISSEN_QUELLE ?? '<nicht gesetzt, Vorgabe datei>')
   log('  PID: %d', process.pid)
 
   // 1. Setup signal handlers early
   setupSignalHandlers()
 
-  // 2. Read system prompt from file
-  const systemPrompt = await readFile(SYSTEM_PROMPT_FILE, 'utf-8')
-  log('System prompt loaded (%d chars)', systemPrompt.length)
+  // 2. System-Prompt holen (Datei oder API — siehe Wissensschicht)
+  const systemPrompt = await holeSystemPromptGeprueft()
 
   // 3. Setup ProcessManager event handlers
   setupProcessManagerEvents()

@@ -22,6 +22,7 @@ import {
   detectClaudeCli,
   canSpawn,
   ensureAgentDir,
+  erzeugeWissen,
   readSkill,
   readStatus,
   updateSpecialist,
@@ -133,14 +134,39 @@ export async function spawnSpecialistTool(
   }
 
   // 3. Agent-Verzeichnis erstellen
+  // Bleibt auch im api-Modus: hier liegen die Wrapper-Logs (Schritt 9), und die
+  // schreibt dieser Prozess, nicht der Wrapper. Das Verzeichnis ist damit kein
+  // Wissensspeicher mehr, sondern nur noch ein Logordner.
   await ensureAgentDir(projectPath, name);
 
-  // 4. Skill-Dateien lesen oder erstellen (Multi-File)
-  let skill = await readSkill(projectPath, name);
-  if (!skill) {
-    await createInitialAgent(projectPath, name, model, expertise);
-    skill = await readAllSkillFiles(projectPath, name);
+  // 3b. Wissensschicht: woher kommt das Wissen dieses Spezialisten?
+  //     Vorgabe 'datei' — dann passiert unten Zeichen fuer Zeichen dasselbe wie
+  //     bisher (dieselben Funktionen aus @synapse/agents, kein Nachbau).
+  const wissen = erzeugeWissen({
+    projekt: project,
+    projektPfad: projectPath,
+    promptPfad: join(projectPath, '.synapse', 'agents', name, 'system-prompt.txt'),
+    log: (msg, ...args) => console.error(`[Synapse][wissen] ${msg}`, ...args),
+  });
+
+  // 4. Wissen anlegen (nur falls neu) und lesen.
+  //    ⚠️ Das Anlegen entscheidet die Schicht selbst und ruehrt vorhandenes
+  //    Wissen NICHT an. Vorher stand hier eine Fallunterscheidung beim Aufrufer
+  //    ('nichts gelesen? dann anlegen') — die ist ueber zwei Aufrufe ein
+  //    Wettlauf, den zwei gleichzeitige Spawns desselben Namens verlieren
+  //    koennen, und der Verlierer waere das gelernte Wissen.
+  const angelegt = await wissen.legeAn(name, model, expertise);
+  const gelesen = await wissen.liesAlles(name);
+  if (!gelesen) {
+    return jsonResult({
+      success: false,
+      message:
+        `Spawn abgebrochen — Wissen fuer "${name}" ist auch nach dem Anlegen nicht lesbar ` +
+        `(Quelle: ${wissen.art}, anlegen: ${angelegt.grund}). Ohne Wissen bekaeme der Agent einen ` +
+        `leeren Kopf, und das faellt spaeter niemandem auf.`,
+    });
   }
+  const skill = gelesen.text;
 
   // 5. System-Prompt bauen (memory entfaellt — context.md ist Teil der Skills)
   // model wird widened auf string fuer Provider-Erweiterung; SpecialistConfig
@@ -177,9 +203,11 @@ export async function spawnSpecialistTool(
     systemPrompt += selbsttestHinweis(mcpBruecke.werkzeuge);
   }
 
-  // 7. System-Prompt in Datei schreiben (zu gross fuer Env-Var)
+  // 7. System-Prompt ablegen (zu gross fuer eine Umgebungsvariable).
+  //    'datei': dieselbe Datei wie bisher. 'api': ueber die Wissens-Routen — dann
+  //    liegt auf der Platte nichts mehr, was der Wrapper zum Starten braucht.
   const promptFile = join(projectPath, '.synapse', 'agents', name, 'system-prompt.txt');
-  await writeFile(promptFile, systemPrompt, 'utf-8');
+  await wissen.legeSystemPromptAb(name, systemPrompt);
 
   // 8. General-Channel sicherstellen und Agent joinen
   await ensureGeneralChannel(project, name, name);
@@ -208,7 +236,12 @@ export async function spawnSpecialistTool(
       SYNAPSE_PROJECT_NAME: project,
       SYNAPSE_PROJECT_PATH: projectPath,
       SYNAPSE_SOCKET_PATH: socketPath,
-      SYNAPSE_SYSTEM_PROMPT_FILE: promptFile,
+      // ⚠️ Den Pfad gibt es nur im Vorgabe-Weg. Im api-Modus wird er BEWUSST nicht
+      // gesetzt: ein alter Wrapper (eigener Prozess, laedt seinen Code beim Start —
+      // die laufen nach einer Aenderung tagelang weiter) scheitert dann sofort und
+      // sichtbar an validateEnv, statt still die Platte zu lesen und dabei wie eine
+      // gelungene Umstellung auszusehen.
+      ...(wissen.art === 'datei' ? { SYNAPSE_SYSTEM_PROMPT_FILE: promptFile } : {}),
       SYNAPSE_AGENT_CWD: cwd ?? projectPath,
       ...(allowedTools?.length ? { SYNAPSE_ALLOWED_TOOLS: allowedTools.join(',') } : {}),
       ...(keepAlive ? { SYNAPSE_KEEP_ALIVE: '1' } : {}),
@@ -476,6 +509,28 @@ export async function purgeSpecialistTool(
     steps.fs_purged = `Fehler: ${err}`;
   }
 
+  // 4c. Wissens-Ablage entfernen, wenn sie nicht auf der Platte liegt.
+  // Im Vorgabe-Weg ist das mit Schritt 4 bereits erledigt — dort waere ein
+  // zweiter Aufruf nur ein zweites rm auf dasselbe Verzeichnis. Im api-Weg
+  // bliebe das Wissen sonst in der Datenbank stehen: der Spezialist ist weg,
+  // sein Wissen nicht, und beim naechsten Spawn desselben Namens erbt ein
+  // fremder Agent die alten Regeln. Das waere kein Fehler, den man sieht.
+  if (project) {
+    try {
+      const wissen = erzeugeWissen({
+        projekt: project,
+        projektPfad: projectPath,
+        log: (msg, ...args) => console.error(`[Synapse][wissen] ${msg}`, ...args),
+      });
+      if (wissen.art !== 'datei') {
+        await wissen.loescheAlles(name);
+        steps.wissen_geloescht = wissen.art;
+      }
+    } catch (err) {
+      steps.wissen_geloescht = `Fehler: ${err}`;
+    }
+  }
+
   // 4b. Socket entfernen — blieb bisher liegen und liess einen entfernten
   // Spezialisten im Dateisystem wie einen laufenden aussehen.
   try {
@@ -672,8 +727,16 @@ export async function updateSpecialistSkillTool(
   content: string,
   file?: SkillFile,
 ) {
-  // Auto-Migration: falls meta.yaml nicht existiert, migrieren
-  await migrateSkillMd(projectPath, name);
+  // Auto-Migration: falls meta.yaml nicht existiert, migrieren.
+  // Nur der Dateiweg kennt eine SKILL.md — in der Ablage gibt es sie nie.
+  const wissen = erzeugeWissen({
+    projekt: '',
+    projektPfad: projectPath,
+    log: (msg, ...args) => console.error(`[Synapse][wissen] ${msg}`, ...args),
+  });
+  if (wissen.art === 'datei') {
+    await migrateSkillMd(projectPath, name);
+  }
 
   // Legacy-Mapping: section → file
   const fileMap: Record<string, SkillFile> = {
@@ -684,38 +747,35 @@ export async function updateSpecialistSkillTool(
   const targetFile: SkillFile = file ?? (section ? fileMap[section] : undefined) ?? 'rules';
 
   if (action === 'add') {
-    await appendToSkillFile(projectPath, name, targetFile, content);
+    await wissen.haengeAn(name, targetFile, content);
     return jsonResult({
       success: true,
       message: `Eintrag zu "${targetFile}" hinzugefuegt fuer "${name}".`,
       file: targetFile,
+      quelle: wissen.art,
     });
   }
 
   if (action === 'remove') {
-    const existing = await readSkillFile(projectPath, name, targetFile);
-    if (!existing) {
+    // Die ZAHL statt eines blossen Erfolgs: 'nichts passte' und 'eine Zeile
+    // entfernt' sahen vorher am Aufrufer gleich aus, sobald man nicht genau
+    // hinsah — und das Filtern selbst liegt jetzt dort, wo die Daten liegen.
+    const entfernt = await wissen.entferneEintraege(name, targetFile, content);
+
+    if (entfernt === 0) {
       return jsonResult({
         success: false,
-        message: `Datei "${targetFile}.md" nicht gefunden fuer "${name}".`,
+        message: `Eintrag "${content}" nicht gefunden in "${targetFile}" von "${name}" (oder "${targetFile}" existiert nicht).`,
+        quelle: wissen.art,
       });
     }
 
-    const lines = existing.split('\n');
-    const filtered = lines.filter(l => !l.includes(content));
-
-    if (filtered.length === lines.length) {
-      return jsonResult({
-        success: false,
-        message: `Eintrag "${content}" nicht gefunden in "${targetFile}.md" von "${name}".`,
-      });
-    }
-
-    await writeSkillFile(projectPath, name, targetFile, filtered.join('\n'));
     return jsonResult({
       success: true,
-      message: `Eintrag aus "${targetFile}" entfernt fuer "${name}".`,
+      message: `Eintrag aus "${targetFile}" entfernt fuer "${name}" (${entfernt} Zeile(n)).`,
       file: targetFile,
+      entfernte_zeilen: entfernt,
+      quelle: wissen.art,
     });
   }
 
