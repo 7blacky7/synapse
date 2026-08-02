@@ -1605,6 +1605,41 @@ async function attachRestChannelHints(
 }
 
 /**
+ * PUNKT 2.2 — REGELN AN DIE HANDLUNG HAENGEN, NICHT AN DIE ROLLE.
+ *
+ * Haengt die Regeln an, die ueber eine "bei:"-Marke an genau diesen Werkzeug-Aufruf gebunden
+ * sind (siehe core/services/werkzeug-regeln.ts fuer die Begruendung und die Messungen).
+ *
+ * ⚠️ BEWUSST OHNE agent_id-BEDINGUNG. Alle anderen Anreicherungen in dieser Datei steigen bei
+ * fehlender Identitaet aus. Genau das waere hier der Fehler: von 23 gemessenen
+ * specialist(purge)-Aufrufen hatten 18 keine agent_id. Eine Warnung, die nur Identifizierte
+ * erreicht, verfehlt drei Viertel der Faelle — und zwar still.
+ *
+ * ⚠️ ARRAYS BLEIBEN UNVERAENDERT. Ein Array anzureichern hiesse, es in ein Objekt zu verwandeln;
+ * das waere eine stille Schnittstellenaenderung fuer jeden bestehenden Aufrufer. Betroffen sind
+ * nur lesende Such-Aktionen, keine zerstoerende — fuer 2.2 also folgenlos.
+ */
+async function attachWerkzeugRegeln(
+  result: unknown,
+  toolName: string,
+  args: Record<string, unknown>,
+): Promise<unknown> {
+  if (typeof result !== 'object' || result === null || Array.isArray(result)) return result;
+  try {
+    const { holeWerkzeugRegeln, WERKZEUG_REGEL_FELD } = await import('@synapse/core');
+    if (WERKZEUG_REGEL_FELD in (result as Record<string, unknown>)) return result;
+    const project = typeof args.project === 'string' ? args.project : undefined;
+    const action = typeof args.action === 'string' ? args.action : undefined;
+    const regeln = await holeWerkzeugRegeln(project, toolName, action);
+    if (regeln.length === 0) return result;
+    return { ...result, [WERKZEUG_REGEL_FELD]: regeln };
+  } catch {
+    // Eine Anreicherung darf einen Tool-Aufruf niemals brechen.
+    return result;
+  }
+}
+
+/**
  * Behandelt memory, thought und plan als Hinweisgeber: aus dem Aufruf werden Skill-Kandidaten
  * vorberechnet, und das Ergebnis bekommt die naechsten Vorschlaege angehaengt.
  *
@@ -2079,6 +2114,11 @@ async function handleToolCall(
             memory: { name: memory.name, category: memory.category, sizeChars: memory.content.length },
             isUpdate: !!existing,
             message: existing ? `Memory "${memory.name}" aktualisiert` : `Memory "${memory.name}" erstellt`,
+            // 2.1: die Regel-Hinweise aus writeMemory duerfen nicht verlorengehen. Diese Antwort
+            // wird von Hand gebaut — memory(update) gibt das Ergebnis roh zurueck und trug das Feld
+            // deshalb laengst, memory(write) verschluckte es. Nur setzen wenn vorhanden, sonst
+            // erschiene bei jeder sauberen Regel ein leeres warning und die Warnung waere wertlos.
+            ...(memory.warning ? { warning: memory.warning } : {}),
             // EMBED-1: steht in PostgreSQL und ist ueber memory(read) sofort da; der Vektor
             // wird nebenlaeufig nachgereicht.
             embeddings_pending: true,
@@ -4590,17 +4630,21 @@ export async function mcpRoutes(fastify: FastifyInstance): Promise<void> {
           let _logErr: string | null = null;
           let _logResult: string | null = null;
           try {
-            const toolResult = await attachRestChannelHints(
-              await attachSkillHinweisgeber(
-                await attachRestOnboarding(
-                  await handleToolCall(toolName, toolArgs, explicitAgentId),
+            const toolResult = await attachWerkzeugRegeln(
+              await attachRestChannelHints(
+                await attachSkillHinweisgeber(
+                  await attachRestOnboarding(
+                    await handleToolCall(toolName, toolArgs, explicitAgentId),
+                    toolArgs,
+                  ),
+                  toolName,
                   toolArgs,
+                  explicitAgentId,
                 ),
-                toolName,
-                toolArgs,
                 explicitAgentId,
               ),
-              explicitAgentId,
+              toolName,
+              toolArgs,
             );
             _logResult = JSON.stringify(toolResult);
             result = {

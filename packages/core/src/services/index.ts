@@ -37,6 +37,8 @@ export {
   rolleFuerAgent, rollenQuelleKlartext,
 } from './agent-rollen.js';
 export type { AgentRolle, OnboardingRegel, RollenQuelle } from './agent-rollen.js';
+export { holeWerkzeugRegeln, baueWerkzeugMarken, WERKZEUG_MARKE_PRAEFIX, WERKZEUG_REGEL_FELD } from './werkzeug-regeln.js';
+export type { WerkzeugRegel } from './werkzeug-regeln.js';
 export { addTechDoc, searchTechDocs, getDocsForFile, deleteTechDoc, updateTechDoc } from './tech-docs.js';
 export type { TechDoc, TechDocType, TechDocResult } from './tech-docs.js';
 export { emitEvent, acknowledgeEvent, getPendingEvents, getUnackedCount } from './events.js';

@@ -382,6 +382,10 @@ export {
   completeSpecialistJob,
   waitForSpecialistJob,
   expirePendingSpecialistJobs,
+  // Werkzeug-gebundene Regeln (2.2) — Regel haengt an der Handlung, nicht an der Rolle
+  holeWerkzeugRegeln,
+  baueWerkzeugMarken,
+  WERKZEUG_REGEL_FELD,
 
 } from './services/index.js';
 export type {

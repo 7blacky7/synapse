@@ -240,11 +240,48 @@ export function createServer(): Server {
       return resp;
     };
 
+    /**
+     * PUNKT 2.2 — Regeln, die ueber eine "bei:"-Marke an diesen Aufruf gebunden sind, an das
+     * Ergebnis haengen. Die Auswahl-Logik steht EINMAL in core (services/werkzeug-regeln.ts);
+     * hier steht nur das Auspacken des JSON-Strings, das sich zwischen den Oberflaechen
+     * unterscheidet. Kein zweiter Mechanismus neben dem REST-Weg.
+     *
+     * ⚠️ OHNE agent_id-BEDINGUNG, und deshalb wird es vor der Schranke in attachResponseHooks
+     * aufgerufen. Vorbild ist attachToolGuide, das ebenfalls ohne Identitaet arbeitet.
+     * ⚠️ KEINE PRAEVENTION: die Warnung erscheint MIT dem Ergebnis, nicht davor. Es gibt in
+     * diesem System keinen Haken vor der Ausfuehrung.
+     * Aendert die Antwortform nicht: Arrays werden uebersprungen, sonst wird ein Feld ergaenzt.
+     */
+    const haengeWerkzeugRegelnAn = async (
+      resp: { content: Array<{ type: string; text: string }>; isError?: boolean },
+    ): Promise<void> => {
+      const first = resp.content?.[0];
+      if (!first || first.type !== 'text' || typeof first.text !== 'string') return;
+      try {
+        const parsed = JSON.parse(first.text);
+        if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return;
+        const { holeWerkzeugRegeln, WERKZEUG_REGEL_FELD } = await import('@synapse/core');
+        if (WERKZEUG_REGEL_FELD in parsed) return;
+        const regeln = await holeWerkzeugRegeln(
+          projectName,
+          name,
+          typeof args?.action === 'string' ? args.action : undefined,
+        );
+        if (regeln.length === 0) return;
+        parsed[WERKZEUG_REGEL_FELD] = regeln;
+        first.text = JSON.stringify(parsed, null, 2);
+      } catch { /* Eine Anreicherung darf einen Tool-Aufruf niemals brechen. */ }
+    };
+
 
     const attachResponseHooks = async (
       resp: { content: Array<{ type: string; text: string }>; isError?: boolean },
     ) => {
       const guided = attachToolGuide(resp);
+      // ⚠️ MUSS VOR DER agent_id-SCHRANKE STEHEN (naechste Zeile). Werkzeug-gebundene Regeln
+      // haengen an der HANDLUNG, nicht an einer Identitaet — von 23 gemessenen
+      // specialist(purge)-Aufrufen hatten 18 keine agent_id.
+      await haengeWerkzeugRegelnAn(guided);
       if (!agentId) return guided;
       const first = guided.content?.[0];
       if (!first || first.type !== 'text' || typeof first.text !== 'string') return guided;
