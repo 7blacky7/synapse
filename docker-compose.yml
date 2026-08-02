@@ -1,5 +1,25 @@
 version: '3.8'
 
+# ============================================================================
+# ZWEI BETRIEBSARTEN
+# ============================================================================
+# (1) OHNE PROFIL — unveraendert wie bisher:
+#       docker compose up -d
+#     Startet NUR synapse-api. Datenbank und Qdrant liegen ausserhalb, ihre
+#     Adressen stehen in DATABASE_URL und QDRANT_URL. Das ist der Betrieb
+#     bestehender Installationen; an ihm aendert sich durch diese Datei nichts.
+#
+# (2) MIT PROFIL — fuer einen frischen Klon, der noch gar nichts hat:
+#       docker compose --profile bundled up -d
+#     Startet zusaetzlich Postgres und Qdrant. Postgres legt Datenbank und
+#     Rolle beim ersten Start SELBST an, aus POSTGRES_* in der .env.
+#
+# WARUM DAS NOETIG WAR (gemessen am 02.08.2026): das Repo hatte genau einen
+# Dienst und nirgends eine Anleitung, wie Datenbank und Rolle "synapse"
+# entstehen. Wer klonte, scheiterte VOR dem Schema — nicht daran.
+# Das Schema selbst liegt in packages/core/src/db/schema-sql/.
+# ============================================================================
+
 services:
   synapse-api:
     build: .
@@ -31,3 +51,47 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
     # Falls Qdrant/Ollama im gleichen Docker-Netzwerk:
     # network_mode: host
+
+  # --------------------------------------------------------------------------
+  # Nur mit --profile bundled. Bestehende Installationen starten das NICHT.
+  # --------------------------------------------------------------------------
+  db:
+    image: postgres:16-alpine
+    container_name: synapse-db
+    profiles: [bundled]
+    restart: unless-stopped
+    ports:
+      # Nach aussen absichtlich 5432; wer schon einen Postgres auf 5432 hat,
+      # setzt SYNAPSE_DB_PORT in der .env auf etwas anderes.
+      - "${SYNAPSE_DB_PORT:-5432}:5432"
+    environment:
+      # Postgres legt Rolle und Datenbank beim ERSTEN Start selbst an, genau
+      # aus diesen drei Werten. Sie muessen zu DATABASE_URL passen.
+      - POSTGRES_USER=${POSTGRES_USER:-synapse}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?POSTGRES_PASSWORD fehlt in der .env}
+      - POSTGRES_DB=${POSTGRES_DB:-synapse}
+    volumes:
+      - synapse_db_data:/var/lib/postgresql/data
+      # Alles hier wird EINMALIG beim Anlegen des leeren Datenverzeichnisses
+      # ausgefuehrt, alphabetisch. Danach nie wieder — auch nicht bei Aenderungen.
+      # Wer das Schema spaeter erneuern will, faehrt die Dateien von Hand ein.
+      - ./packages/core/src/db/schema-sql:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-synapse} -d ${POSTGRES_DB:-synapse}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: synapse-qdrant
+    profiles: [bundled]
+    restart: unless-stopped
+    ports:
+      - "${SYNAPSE_QDRANT_PORT:-6333}:6333"
+    volumes:
+      - synapse_qdrant_data:/qdrant/storage
+
+volumes:
+  synapse_db_data:
+  synapse_qdrant_data:

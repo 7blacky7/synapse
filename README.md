@@ -947,6 +947,68 @@ pnpm run lint
 pnpm run clean
 ```
 
+### Datenbank-Schema aufbauen
+
+Das vollstaendige Schema liegt als SQL in **`packages/core/src/db/schema-sql/`** —
+nur Struktur, keine Daten. Die Zahlen im Dateinamen sind die Aufbaureihenfolge
+(Extensions und Typen zuerst, Fremdschluessel zuletzt), alphabetisch sortiert also
+einfach der Reihe nach einspielen.
+
+**Der einfachste Weg — Datenbank mitstarten lassen:**
+
+```bash
+cp .env.example .env        # POSTGRES_PASSWORD setzen, passend zu DATABASE_URL
+docker compose --profile bundled up -d
+```
+
+Das Profil `bundled` startet zusaetzlich Postgres und Qdrant. Postgres legt Rolle
+und Datenbank beim ersten Start selbst an (aus `POSTGRES_USER`, `POSTGRES_PASSWORD`,
+`POSTGRES_DB`) und spielt anschliessend die Dateien aus `schema-sql/` ein — die
+liegen dazu als Init-Verzeichnis eingehaengt. Es ist also nichts von Hand anzulegen.
+
+Zwei Dinge, an denen es sonst still schiefgeht:
+
+- Die `POSTGRES_*`-Werte muessen zu `DATABASE_URL` passen. Weichen sie ab, startet
+  die Datenbank mit anderen Zugangsdaten, als die API benutzt — und das faellt erst
+  beim ersten Zugriff auf, nicht beim Start.
+- Das Init-Verzeichnis wird **nur einmal** ausgefuehrt: beim Anlegen des leeren
+  Datenverzeichnisses. Spaetere Aenderungen an `schema-sql/` erreichen eine bereits
+  bestehende Datenbank nicht mehr, die muss man von Hand nachziehen.
+
+**Ohne Profil** (`docker compose up -d`) startet nur `synapse-api` und erwartet
+Datenbank und Qdrant ausserhalb — das ist der Betrieb bestehender Installationen,
+an dem sich nichts aendert.
+
+**Von Hand**, wenn Postgres schon laeuft:
+
+```bash
+createdb synapse
+for f in packages/core/src/db/schema-sql/*.sql; do psql -v ON_ERROR_STOP=1 -d synapse -f "$f"; done
+```
+
+Details, Fallstricke und was der Export bewusst nicht enthaelt (keine Stammdaten,
+keine Rollen/Rechte, keine Qdrant-Collections): `packages/core/src/db/schema-sql/README.md`.
+Im laufenden Betrieb legt `ensureSchema()` in `packages/core/src/db/schema.ts` das
+Schema selbst an; die SQL-Dateien sind dessen Spiegelung fuer den Kaltstart.
+
+Zwei Dinge, die man dazu wissen muss, bevor man sich darauf verlaesst:
+
+- Der Export wurde aus der laufenden Datenbank per `pg_dump` erzeugt und danach um
+  Fremdobjekte gekuerzt, die nicht zu Synapse gehoeren. **Beide Staende sind gegen
+  eine leere Datenbank aufgebaut worden:** der Vollabzug am 02.08.2026 mit einem
+  Nulldiff gegen die Produktion (`pg_dump` gegen `pg_dump`, 2221 zu 2221 Zeilen),
+  der gekuerzte Stand am selben Tag ueber das `bundled`-Profil in einem Wegwerf-
+  Container — fehlerfrei durchgelaufen, danach 49 Tabellen, 495 Spalten, 145 Indizes
+  (91 eigene plus 49 Primaerschluessel und 5 UNIQUE), 19 Fremdschluessel, 11 Trigger,
+  4 Aufzaehlungstypen. Die Fremdobjekte sind nachweislich draussen: `agent_profiles`,
+  `agents`, `cli_agents`, `swarm_events`, Schema `drizzle` und Extension `citext`
+  ergeben in der frisch aufgebauten Datenbank jeweils 0 Treffer.
+  Die Ordner-README sagt im Einzelnen, was womit geprueft wurde.
+- Wie die Datenbank `synapse` und die gleichnamige Rolle ueberhaupt entstehen, sagt
+  das Repo an keiner Stelle. Das muss man vorher selbst einrichten; die SQL-Dateien
+  setzen eine leere, bereits existierende Datenbank voraus.
+
+
 ### Google API Key: Embeddings und Gemini-Spezialisten
 
 Synapse kann denselben `GOOGLE_API_KEY` an zwei Stellen nutzen:
