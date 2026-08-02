@@ -115,8 +115,27 @@ assert.deepEqual(mitVerpackung.map((q) => q.id), ['T-1'],
 const textMitPython = 'fuer die Auswertung nehmen wir python-testing-patterns';
 assert.equal(istNamentlichGenannt('python-performance-optimization', textMitPython), false);
 assert.equal(istNamentlichGenannt('python-testing-patterns', textMitPython), true);
-// Der Fall, fuer den die Fragment-Regel gebaut wurde, muss weiter tragen:
+// ⚠️ EIN EINTEILIGES FRAGMENT IST EIN THEMA, KEIN NAME.
+// GEMESSEN an einer einzigen Task: "unraid" riss unraid-base UND unraid-projektdb mit,
+// "claude" claude-session-start UND claude-desktop-linux, dazu "docker" und "monorepo" —
+// sechs vermeintlich woertliche Treffer, von denen keiner beim Namen genannt war.
+for (const [skill, text] of [
+  ['unraid-base', 'Deploy auf unraid vorbereiten'],
+  ['unraid-projektdb', 'Deploy auf unraid vorbereiten'],
+  ['claude-session-start', 'die claude Session neu starten'],
+  ['claude-desktop-linux', 'die claude Session neu starten'],
+  ['docker-containerization', 'im docker Container bauen'],
+  ['monorepo-build-management', 'das monorepo bauen'],
+]) {
+  assert.equal(istNamentlichGenannt(skill, text), false, `${skill} darf nicht auf ein Themenwort anspringen`);
+}
+
+// Der Fall, fuer den die Fragment-Regel gebaut wurde, muss weiter tragen — das Fragment ist
+// dort MEHRTEILIG und damit erkennbar der Anfang eines Namens:
 assert.equal(istNamentlichGenannt('ki-browser-standalone', 'siehe ki-browser hier'), true);
+assert.equal(istNamentlichGenannt('scarlett-audio-setup', 'siehe scarlett-audio hier'), true);
+// Und der ausgeschriebene Name natuerlich immer:
+assert.equal(istNamentlichGenannt('kubernetes-specialist', 'wir nutzen kubernetes-specialist'), true);
 
 // === 2. SCHREIBEN: Vorrat fuer alle angemeldeten Projekt-Agenten ===
 const schreibPool = fakePool(['agent-a', 'agent-b']);

@@ -362,6 +362,16 @@ export function istNamentlichGenannt(skillName: string | undefined | null, query
   for (let ende = name.length - 1; ende >= MINDESTLAENGE_FRAGMENT; ende--) {
     if (name[ende] !== '-' && name[ende] !== ':') continue;
     const fragment = name.slice(0, ende);
+    // ⚠️ EIN EINTEILIGES FRAGMENT IST EIN THEMA, KEIN NAME (gemessen 02.08.2026).
+    // Wer "unraid" schreibt, nennt keinen Skill — er nennt ein Thema, und es gibt zwei
+    // unraid-Skills. Genau so ist es passiert: ein Task-Text riss unraid-base UND
+    // unraid-projektdb mit, "claude" holte claude-session-start UND claude-desktop-linux,
+    // "docker" docker-containerization, "monorepo" monorepo-build-management — sechs
+    // vermeintlich woertliche Treffer in EINER Task, von denen keiner beim Namen genannt war.
+    // Der Fall, fuer den die Fragment-Regel gebaut wurde, sieht anders aus: "ki-browser" statt
+    // ki-browser-standalone. Dieses Fragment ist MEHRTEILIG — es traegt selbst ein
+    // Trennzeichen und ist damit erkennbar der Anfang eines Namens, nicht ein Allerweltswort.
+    if (!fragment.includes('-') && !fragment.includes(':')) continue;
     let ab = lower.indexOf(fragment);
     while (ab !== -1) {
       if (grenze(lower[ab - 1]) && grenze(lower[ab + fragment.length])) return true;
@@ -562,7 +572,11 @@ export async function bereiteSkillVorschlaegeVor(
       ...semantisch.slice(0, Math.max(0, CHANNEL_SKILL_KANDIDATEN - namentlich.length)),
     ];
     if (treffer.length === 0) return;
-    const tiefe = query.toLowerCase();
+    // ⚠️ BEGRUENDUNG UND SCORE AUS DERSELBEN PRUEFUNG (Korrektur 02.08.2026).
+    // Vorher entschied ueber den Score istNamentlichGenannt (kennt auch Fragmente), ueber den
+    // Text aber ein blosses includes(name). Ein Fragment-Treffer erschien deshalb als
+    // "Semantischer Treffer" mit Score 0,99 — eine Anzeige, die sich selbst widerspricht und
+    // beim Lesen wie ein Ausrutscher des Modells aussieht, statt auf die echte Ursache zu zeigen.
     for (const hit of treffer) {
       await pool.query(
         `INSERT INTO skill_hook_preparations
@@ -578,9 +592,11 @@ export async function bereiteSkillVorschlaegeVor(
           agentId,
           hit.skill_name,
           hit.score,
-          tiefe.includes(hit.skill_name.toLowerCase())
+          istNamentlichGenannt(hit.skill_name, query)
             ? `Skill-Name genannt (${QUELLE_KLARTEXT[sourceType]})`
-            : `Semantischer Treffer (${QUELLE_KLARTEXT[sourceType]})`,
+            : (istGenannt(hit.skill_name)
+              ? `Name unscharf erkannt (${QUELLE_KLARTEXT[sourceType]})`
+              : `Semantischer Treffer (${QUELLE_KLARTEXT[sourceType]})`),
         ],
       );
     }
