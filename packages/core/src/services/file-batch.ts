@@ -32,6 +32,7 @@ import {
   getFileContentFromPg,
 } from './code-write.js';
 import type { BatchEdit } from './code-write.js';
+import { enqueueParseAndEmbed } from './code.js';
 import {
   findForeignActiveReservationPrimaries,
   type ForeignActiveReservationPrimary,
@@ -40,7 +41,7 @@ import {
 /** Hash eines leeren Strings — Marker fuer "Datei existiert (noch) nicht". */
 const EMPTY_CONTENT_HASH = contentHash('');
 
-export type FileBatchStatus = 'open' | 'committed' | 'cancelled' | 'expired' | 'stale';
+export type FileBatchStatus = 'open' | 'committed' | 'cancelled' | 'expired' | 'stale' | 'conflict';
 
 export type FileBatchOpAction =
   | 'create'
@@ -345,6 +346,16 @@ export interface CommitConflictDetail {
   reason: 'modified_outside_plan' | 'file_missing';
 }
 
+export interface CoeditConflictDetail {
+  file_path: string;
+  left_op_index: number;
+  right_op_index: number;
+  left_agent_id: string;
+  right_agent_id: string;
+  reason: 'same_anchor' | 'overlapping_range' | 'file_level_overlap' | 'composite_reapply_failed';
+  message: string;
+}
+
 export type CommitBatchResult =
   | {
       success: true;
@@ -358,9 +369,9 @@ export type CommitBatchResult =
   | {
       success: false;
       plan_id: string;
-      status: 'open' | 'stale' | 'cancelled' | 'expired' | 'committed';
+      status: 'open' | 'stale' | 'cancelled' | 'expired' | 'committed' | 'conflict';
       error: string;
-      conflicts?: CommitConflictDetail[];
+      conflicts?: CommitConflictDetail[] | CoeditConflictDetail[];
       message: string;
     };
 
@@ -623,6 +634,504 @@ function touchedPaths(op: FileBatchOp): string[] {
 function asIso(value: Date | string): string {
   return value instanceof Date ? value.toISOString() : new Date(value).toISOString();
 }
+
+type CoeditRegion =
+  | { file_path: string; kind: 'file'; anchor: string }
+  | { file_path: string; kind: 'span'; start: number; end: number; anchor: string };
+
+function baselineLineOffsets(content: string): number[] {
+  const lines = content.split('\n');
+  const offsets = [0];
+  for (let i = 0; i < lines.length - 1; i++) {
+    offsets.push(offsets[i] + lines[i].length + 1);
+  }
+  return offsets;
+}
+
+function fullFileRegion(filePath: string, anchor: string): CoeditRegion {
+  return { file_path: filePath, kind: 'file', anchor };
+}
+
+function regionsForCoeditOp(op: FileBatchOp, baselines: Map<string, string>): CoeditRegion[] {
+  const filePath = op.file_path;
+  const content = baselines.get(filePath) ?? '';
+
+  if ((op.action === 'move' || op.action === 'copy') && op.new_path) {
+    return [
+      fullFileRegion(filePath, `${op.action}:source`),
+      fullFileRegion(op.new_path, `${op.action}:target`),
+    ];
+  }
+  if (['create', 'update', 'delete'].includes(op.action)) {
+    return [fullFileRegion(filePath, `${op.action}:file`)];
+  }
+  if (op.action === 'search_replace_batch' || op.shift_mode === 'absolute') {
+    return [fullFileRegion(filePath, `${op.action}:non_baseline`)];
+  }
+  if (op.action === 'search_replace') {
+    if (!op.search) return [fullFileRegion(filePath, 'search_replace:unresolvable')];
+    const regions: CoeditRegion[] = [];
+    let from = 0;
+    while (from <= content.length) {
+      const start = content.indexOf(op.search, from);
+      if (start < 0) break;
+      regions.push({
+        file_path: filePath,
+        kind: 'span',
+        start,
+        end: start + op.search.length,
+        anchor: `search:${start}:${start + op.search.length}`,
+      });
+      from = start + Math.max(1, op.search.length);
+      if (!op.replace_all) break;
+    }
+    return regions.length > 0
+      ? regions
+      : [fullFileRegion(filePath, 'search_replace:unresolvable')];
+  }
+
+  const offsets = baselineLineOffsets(content);
+  const lineCount = content.split('\n').length;
+  if (op.action === 'insert_after') {
+    const line = op.after_line;
+    if (line === undefined || line < 0 || line > lineCount) {
+      return [fullFileRegion(filePath, 'insert_after:unresolvable')];
+    }
+    const point = line === 0 ? 0 : line < lineCount ? offsets[line] : content.length;
+    return [{
+      file_path: filePath,
+      kind: 'span',
+      start: point,
+      end: point,
+      anchor: `after:${line}:${point}`,
+    }];
+  }
+  if (op.action === 'replace_lines' || op.action === 'delete_lines') {
+    const startLine = op.line_start;
+    const endLine = op.line_end;
+    if (
+      startLine === undefined || endLine === undefined ||
+      startLine < 1 || endLine < startLine || endLine > lineCount
+    ) {
+      return [fullFileRegion(filePath, `${op.action}:unresolvable`)];
+    }
+    const start = offsets[startLine - 1];
+    const end = endLine < lineCount ? offsets[endLine] : content.length;
+    return [{
+      file_path: filePath,
+      kind: 'span',
+      start,
+      end,
+      anchor: `lines:${startLine}:${endLine}`,
+    }];
+  }
+  return [fullFileRegion(filePath, `${op.action}:unresolvable`)];
+}
+
+function coeditRegionsOverlap(left: CoeditRegion, right: CoeditRegion): boolean {
+  if (left.kind === 'file' || right.kind === 'file') return true;
+  const leftPoint = left.start === left.end;
+  const rightPoint = right.start === right.end;
+  if (leftPoint && rightPoint) return left.start === right.start;
+  if (leftPoint) return left.start >= right.start && left.start <= right.end;
+  if (rightPoint) return right.start >= left.start && right.start <= left.end;
+  return left.start < right.end && right.start < left.end;
+}
+
+function detectCrossAgentConflicts(
+  ops: FileBatchOp[],
+  baselines: Map<string, string>,
+): CoeditConflictDetail[] {
+  const regions = ops.map((op) => regionsForCoeditOp(op, baselines));
+  const conflicts: CoeditConflictDetail[] = [];
+  for (let leftIndex = 0; leftIndex < ops.length; leftIndex++) {
+    const leftAgent = ops[leftIndex].agent_id ?? 'unknown';
+    for (let rightIndex = leftIndex + 1; rightIndex < ops.length; rightIndex++) {
+      const rightAgent = ops[rightIndex].agent_id ?? 'unknown';
+      if (leftAgent === rightAgent) continue;
+      for (const left of regions[leftIndex]) {
+        for (const right of regions[rightIndex]) {
+          if (left.file_path !== right.file_path || !coeditRegionsOverlap(left, right)) continue;
+          conflicts.push({
+            file_path: left.file_path,
+            left_op_index: leftIndex,
+            right_op_index: rightIndex,
+            left_agent_id: leftAgent,
+            right_agent_id: rightAgent,
+            reason:
+              left.kind === 'span' && right.kind === 'span' && left.anchor === right.anchor
+                ? 'same_anchor'
+                : left.kind === 'file' || right.kind === 'file'
+                  ? 'file_level_overlap'
+                  : 'overlapping_range',
+            message: `Cross-Agent-Konflikt auf ${left.file_path}: Op ${leftIndex} (${leftAgent}) und Op ${rightIndex} (${rightAgent}).`,
+          });
+        }
+      }
+    }
+  }
+  return conflicts;
+}
+
+function conflictPreviews(
+  ops: FileBatchOp[],
+  conflicts: CoeditConflictDetail[],
+): OpPreview[] {
+  return ops.map((op, index) => {
+    const related = conflicts.filter(
+      (conflict) => conflict.left_op_index === index || conflict.right_op_index === index,
+    );
+    return {
+      index,
+      file_path: op.file_path,
+      action: op.action,
+      ok: related.length === 0,
+      ...(related.length > 0
+        ? { error: related.map((conflict) => conflict.message).join(' | ') }
+        : { context: `coedit: Op von ${op.agent_id ?? 'unknown'} konfliktfrei integriert` }),
+    };
+  });
+}
+
+function buildCombinedCoeditPreview(
+  plan: FileBatchPlanRow,
+  baselines: Map<string, string>,
+):
+  | { ok: true; buffers: Map<string, PreparedFile>; previews: OpPreview[] }
+  | { ok: false; conflict: CoeditConflictDetail; previews: OpPreview[] } {
+  const buffers = new Map<string, PreparedFile>();
+  for (const [filePath, expectedHash] of Object.entries(plan.expected_hashes)) {
+    const content = baselines.get(filePath) ?? '';
+    buffers.set(filePath, { finalContent: content, finalHash: expectedHash });
+  }
+  const previews: OpPreview[] = new Array(plan.ops.length);
+  const seenFiles = new Set<string>();
+  let applyPlan: Array<{ op: FileBatchOp; originalIndex: number }>;
+  try {
+    applyPlan = prepareOpsForApply(plan.ops);
+  } catch (error) {
+    const message = (error as Error).message;
+    const conflict: CoeditConflictDetail = {
+      file_path: plan.ops[0]?.file_path ?? '',
+      left_op_index: 0,
+      right_op_index: 0,
+      left_agent_id: plan.ops[0]?.agent_id ?? 'unknown',
+      right_agent_id: plan.ops[0]?.agent_id ?? 'unknown',
+      reason: 'composite_reapply_failed',
+      message,
+    };
+    return { ok: false, conflict, previews: conflictPreviews(plan.ops, [conflict]) };
+  }
+
+  for (const { op, originalIndex } of applyPlan) {
+    const first = !seenFiles.has(op.file_path);
+    seenFiles.add(op.file_path);
+    try {
+      const result = applyOpInMemory(buffers, op, first);
+      previews[originalIndex] = {
+        index: originalIndex,
+        file_path: op.file_path,
+        action: op.action,
+        ok: true,
+        size_before: result.sizeBefore,
+        size_after: result.sizeAfter,
+        context: result.context.slice(0, 200),
+      };
+    } catch (error) {
+      const message = `Gemeinsamer Re-Apply von Op ${originalIndex} fehlgeschlagen: ${(error as Error).message}`;
+      const conflict: CoeditConflictDetail = {
+        file_path: op.file_path,
+        left_op_index: originalIndex,
+        right_op_index: originalIndex,
+        left_agent_id: op.agent_id ?? 'unknown',
+        right_agent_id: op.agent_id ?? 'unknown',
+        reason: 'composite_reapply_failed',
+        message,
+      };
+      return { ok: false, conflict, previews: conflictPreviews(plan.ops, [conflict]) };
+    }
+  }
+  return { ok: true, buffers, previews };
+}
+
+async function commitCoeditBatch(args: {
+  plan_id: string;
+  agent_id?: string;
+  agent_note?: string;
+}): Promise<CommitBatchResult> {
+  const pool = getPool();
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const planRes = await client.query<FileBatchPlanRow>(
+      `SELECT id::text AS id, project, owner_agent_id, ops, expected_hashes, previews,
+              status, open_for_coedit, notify_channel, reason,
+              expires_at::text AS expires_at, created_at::text AS created_at,
+              committed_at::text AS committed_at
+         FROM file_batch_plans
+        WHERE id = $1::bigint
+        FOR UPDATE`,
+      [args.plan_id],
+    );
+    const plan = planRes.rows[0];
+    if (!plan) {
+      await client.query('ROLLBACK');
+      return {
+        success: false, plan_id: args.plan_id, status: 'cancelled',
+        error: 'plan_not_found', message: `Plan ${args.plan_id} nicht gefunden.`,
+      };
+    }
+    if (plan.status !== 'open') {
+      await client.query('ROLLBACK');
+      return {
+        success: false, plan_id: args.plan_id, status: plan.status,
+        error: plan.status, message: `Plan ${args.plan_id} ist nicht offen (Status: ${plan.status}).`,
+      };
+    }
+
+    // Einheitliche Lock-Reihenfolge mit coedit_add: zuerst Primaerplan, dann Waits.
+    // FOR UPDATE sperrt bestehende Zeilen; der Wait-Tabellenlock verhindert
+    // Phantom-INSERTs zwischen Gate und COMMIT. code_files bleibt bis COMMIT gesperrt.
+    await client.query('LOCK TABLE file_batch_waits IN SHARE ROW EXCLUSIVE MODE');
+    await client.query('LOCK TABLE code_files IN SHARE ROW EXCLUSIVE MODE');
+
+    const planPaths = Object.keys(plan.expected_hashes);
+    const linkedWaits = await client.query<CoeditWaitRow>(
+      `${COEDIT_WAIT_SELECT}
+        WHERE primary_plan_id = $1::bigint
+        ORDER BY source_plan_id, wait_token
+        FOR UPDATE`,
+      [args.plan_id],
+    );
+    const unlinkedWaits = plan.owner_agent_id && planPaths.length > 0
+      ? await client.query<CoeditWaitRow>(
+          `${COEDIT_WAIT_SELECT}
+            WHERE project = $1 AND primary_agent = $2
+              AND primary_plan_id IS NULL AND expires_at > NOW()
+              AND shared_files && $3::text[]
+            ORDER BY source_plan_id, wait_token
+            FOR UPDATE`,
+          [plan.project, plan.owner_agent_id, planPaths],
+        )
+      : { rows: [] as CoeditWaitRow[] };
+
+    const unfinished = linkedWaits.rows.filter(
+      (wait) => wait.status !== 'ready' && wait.status !== 'no_changes',
+    );
+    if (unlinkedWaits.rows.length > 0 || unfinished.length > 0 || linkedWaits.rows.length === 0) {
+      await client.query('ROLLBACK');
+      const blockers = [
+        ...unlinkedWaits.rows.map((wait) => `${wait.wait_token}:unlinked`),
+        ...unfinished.map((wait) => `${wait.wait_token}:${wait.status}`),
+      ];
+      return {
+        success: false,
+        plan_id: args.plan_id,
+        status: 'open',
+        error: 'coedit_incomplete',
+        message: `Co-Edit-Gate blockiert Plan ${args.plan_id}; offene Waits: ${blockers.join(', ') || 'keine verlinkten Waits'}.`,
+      };
+    }
+
+    const rows = planPaths.length > 0
+      ? await client.query<{ file_path: string; content: string }>(
+          `SELECT file_path, content
+             FROM code_files
+            WHERE project = $1 AND file_path = ANY($2::text[]) AND deleted_at IS NULL
+            FOR UPDATE`,
+          [plan.project, planPaths],
+        )
+      : { rows: [] as Array<{ file_path: string; content: string }> };
+    const currentRows = new Map(rows.rows.map((row) => [row.file_path, row.content] as const));
+    const baselines = new Map<string, string>();
+    const hashConflicts: CommitConflictDetail[] = [];
+    for (const [filePath, expectedHash] of Object.entries(plan.expected_hashes)) {
+      const exists = currentRows.has(filePath);
+      const content = currentRows.get(filePath) ?? '';
+      baselines.set(filePath, content);
+      const actualHash = contentHash(content);
+      if (actualHash !== expectedHash) {
+        hashConflicts.push({
+          file_path: filePath,
+          expected_hash: expectedHash,
+          actual_hash: actualHash,
+          reason: exists ? 'modified_outside_plan' : 'file_missing',
+        });
+      }
+    }
+    if (hashConflicts.length > 0) {
+      await client.query(
+        `UPDATE file_batch_plans SET status = 'stale', committed_at = NOW() WHERE id = $1::bigint`,
+        [args.plan_id],
+      );
+      await client.query('COMMIT');
+      return {
+        success: false, plan_id: args.plan_id, status: 'stale', error: 'stale',
+        conflicts: hashConflicts,
+        message: `${hashConflicts.length} Datei(en) wurden seit dem Plan extern geaendert. Plan ist stale — neu plannen.`,
+      };
+    }
+
+    const regionConflicts = detectCrossAgentConflicts(plan.ops, baselines);
+    if (regionConflicts.length > 0) {
+      const previews = conflictPreviews(plan.ops, regionConflicts);
+      await client.query(
+        `UPDATE file_batch_plans SET status = 'conflict', previews = $2::jsonb WHERE id = $1::bigint`,
+        [args.plan_id, JSON.stringify(previews)],
+      );
+      await client.query(
+        `UPDATE file_batch_waits SET status = 'conflict', updated_at = NOW()
+          WHERE primary_plan_id = $1::bigint`,
+        [args.plan_id],
+      );
+      await client.query('COMMIT');
+      return {
+        success: false, plan_id: args.plan_id, status: 'conflict',
+        error: 'coedit_conflict', conflicts: regionConflicts,
+        message: `${regionConflicts.length} ueberlappende Cross-Agent-Bereiche; Plan ist terminal conflict, nichts geschrieben.`,
+      };
+    }
+
+    const combined = buildCombinedCoeditPreview(plan, baselines);
+    if (!combined.ok) {
+      await client.query(
+        `UPDATE file_batch_plans SET status = 'conflict', previews = $2::jsonb WHERE id = $1::bigint`,
+        [args.plan_id, JSON.stringify(combined.previews)],
+      );
+      await client.query(
+        `UPDATE file_batch_waits SET status = 'conflict', updated_at = NOW()
+          WHERE primary_plan_id = $1::bigint`,
+        [args.plan_id],
+      );
+      await client.query('COMMIT');
+      return {
+        success: false, plan_id: args.plan_id, status: 'conflict',
+        error: 'coedit_conflict', conflicts: [combined.conflict],
+        message: 'Gemeinsame Vorschau fehlgeschlagen; Plan ist terminal conflict, nichts geschrieben.',
+      };
+    }
+
+    for (const op of plan.ops) {
+      for (const filePath of touchedPaths(op)) {
+        const before = baselines.get(filePath) ?? '';
+        await client.query(
+          `INSERT INTO file_versions
+             (project, file_path, content, content_hash, edit_action, agent_id, batch_id,
+              size_bytes, reason, agent_note)
+           VALUES ($1, $2, $3, $4, $5, $6, $7::bigint, $8, $9, $10)`,
+          [
+            plan.project,
+            filePath,
+            before,
+            contentHash(before),
+            `batch:${args.plan_id}:${op.action}`,
+            op.agent_id ?? plan.owner_agent_id ?? resolveAgentId(args.agent_id),
+            args.plan_id,
+            Buffer.byteLength(before, 'utf8'),
+            op.reason ?? plan.reason,
+            args.agent_note ?? null,
+          ],
+        );
+      }
+    }
+
+    const writtenFiles: Array<{
+      file_path: string;
+      size: number;
+      hash: string;
+      created: boolean;
+      deleted?: boolean;
+    }> = [];
+    for (const [filePath, buffer] of combined.buffers) {
+      const expectedHash = plan.expected_hashes[filePath];
+      const existedBefore = expectedHash !== EMPTY_CONTENT_HASH;
+      if (buffer.deleted) {
+        if (!existedBefore) continue;
+        await client.query(
+          `UPDATE code_files SET deleted_at = NOW(), updated_at = NOW()
+            WHERE project = $1 AND file_path = $2`,
+          [plan.project, filePath],
+        );
+        writtenFiles.push({
+          file_path: filePath, size: 0, hash: EMPTY_CONTENT_HASH,
+          created: false, deleted: true,
+        });
+      } else if (!existedBefore) {
+        const fileName = filePath.split('/').pop() ?? filePath;
+        const fileType = fileName.includes('.') ? fileName.split('.').pop() ?? '' : '';
+        await client.query(
+          `INSERT INTO code_files
+             (id, project, file_path, file_name, file_type, content, content_hash,
+              file_size, chunk_count, deleted_at, updated_at)
+           VALUES (gen_random_uuid()::text, $1, $2, $3, $4, $5, $6, $7, 0, NULL, NOW())
+           ON CONFLICT (project, file_path) DO UPDATE
+             SET content = EXCLUDED.content, content_hash = EXCLUDED.content_hash,
+                 file_size = EXCLUDED.file_size, deleted_at = NULL, updated_at = NOW()`,
+          [
+            plan.project, filePath, fileName, fileType, buffer.finalContent,
+            buffer.finalHash, Buffer.byteLength(buffer.finalContent, 'utf8'),
+          ],
+        );
+        writtenFiles.push({
+          file_path: filePath,
+          size: Buffer.byteLength(buffer.finalContent, 'utf8'),
+          hash: buffer.finalHash,
+          created: true,
+        });
+      } else if (buffer.finalHash !== expectedHash) {
+        await client.query(
+          `UPDATE code_files
+              SET content = $3, content_hash = $4, file_size = $5,
+                  deleted_at = NULL, updated_at = NOW()
+            WHERE project = $1 AND file_path = $2`,
+          [
+            plan.project, filePath, buffer.finalContent, buffer.finalHash,
+            Buffer.byteLength(buffer.finalContent, 'utf8'),
+          ],
+        );
+        writtenFiles.push({
+          file_path: filePath,
+          size: Buffer.byteLength(buffer.finalContent, 'utf8'),
+          hash: buffer.finalHash,
+          created: false,
+        });
+      }
+    }
+
+    await client.query(
+      `UPDATE file_batch_plans
+          SET status = 'committed', committed_at = NOW(), previews = $2::jsonb
+        WHERE id = $1::bigint`,
+      [args.plan_id, JSON.stringify(combined.previews)],
+    );
+    await client.query('COMMIT');
+
+    for (const file of writtenFiles) {
+      if (!file.deleted) enqueueParseAndEmbed(plan.project, file.file_path);
+    }
+    return {
+      success: true,
+      plan_id: args.plan_id,
+      batch_id: args.plan_id,
+      committed: writtenFiles.length,
+      files: writtenFiles,
+      ...(writtenFiles.some((file) => !file.deleted)
+        ? {
+            embeddings_pending: true,
+            embeddings_hint:
+              'Struktur/Symbole (code_intel) sind sofort nutzbar. Die semantische Suche (Embeddings) ' +
+              'spiegelt diese Aenderung noch nicht — laeuft im Hintergrund nach.',
+          }
+        : {}),
+    };
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 
 /**
  * Phase A — Plan: liest betroffene Dateien, wendet alle Ops im Speicher an,
@@ -1340,24 +1849,34 @@ export async function commitBatch(args: {
       message: `Plan ${args.plan_id} war bereits stale (Datei wurde aussen aendert seit dem Plan).`,
     };
   }
-
-  // CE-3 legt Beitraege nur ab. Gemeinsame Plaene werden erst in CE-4
-  // validiert und committed; bis dahin darf der alte Commit-Pfad sie nicht umgehen.
-  const linkedWaits = await pool.query<{ count: string }>(
-    `SELECT COUNT(*)::text AS count
-       FROM file_batch_waits
-      WHERE primary_plan_id = $1::bigint
-        AND expires_at > NOW()`,
-    [args.plan_id],
-  );
-  if (Number(linkedWaits.rows[0]?.count ?? 0) > 0) {
+  if (plan.status === 'conflict') {
     return {
       success: false,
       plan_id: args.plan_id,
-      status: 'open',
-      error: 'coedit_commit_requires_ce4',
-      message: `Plan ${args.plan_id} enthaelt CE-3-Beitraege und wartet auf die gemeinsame CE-4-Validierung.`,
+      status: 'conflict',
+      error: 'conflict',
+      message: `Plan ${args.plan_id} hat einen terminalen Co-Edit-Konflikt; cancel + replan erforderlich.`,
     };
+  }
+
+  // Nur echte gemeinsame Plaene wechseln in den dedizierten CE-4-TX-Pfad.
+  // Verlinkte Waits (auch abgelaufene) und aktive, noch unlinked Waits fuer Owner+Pfade
+  // werden erkannt. Dadurch kann coedit_add nicht zwischen Gate-Check und Commit
+  // unbemerkt einen vorhandenen Wait an diesen Plan haengen.
+  const planPaths = Object.keys(plan.expected_hashes);
+  const coeditWaitCount = await pool.query<{ count: string }>(
+    `SELECT COUNT(*)::text AS count
+       FROM file_batch_waits
+      WHERE primary_plan_id = $1::bigint
+         OR ($2::text IS NOT NULL
+             AND project = $3 AND primary_agent = $2
+             AND primary_plan_id IS NULL AND expires_at > NOW()
+             AND shared_files && $4::text[])`,
+    [args.plan_id, plan.owner_agent_id, plan.project, planPaths],
+  );
+  const distinctOpAgents = new Set(plan.ops.map((op) => op.agent_id).filter(Boolean));
+  if (Number(coeditWaitCount.rows[0]?.count ?? 0) > 0 || distinctOpAgents.size > 1) {
+    return commitCoeditBatch(args);
   }
 
   // Konsistenz-Check: Hash der Datei jetzt = expected_hash zum Plan-Zeitpunkt?
@@ -1528,7 +2047,7 @@ export async function cancelBatch(plan_id: string): Promise<{ ok: boolean; statu
   const res = await pool.query<{ status: FileBatchStatus }>(
     `UPDATE file_batch_plans
      SET status = 'cancelled', committed_at = NOW()
-     WHERE id = $1 AND status = 'open'
+     WHERE id = $1 AND status IN ('open', 'conflict')
      RETURNING status`,
     [plan_id],
   );

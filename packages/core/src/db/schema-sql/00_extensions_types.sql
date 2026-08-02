@@ -54,7 +54,8 @@ CREATE TYPE public.file_batch_status AS ENUM (
     'committed',
     'cancelled',
     'expired',
-    'stale'
+    'stale',
+    'conflict'
 );
 
 --

@@ -529,13 +529,13 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
         example: 'files({ action: "shared_plan_status", project: "synapse", wait_token: "uuid", agent_id: "agent-b" })',
       },
       commit: {
-        description: 'Phase B: wendet alle Ops eines Plans atomar an (PG-TX). Pruefung gegen expected_hashes — wenn eine Datei seit dem Plan extern geaendert wurde, kommt status="stale" mit Konflikt-Details. Bei Erfolg tragen alle file_versions-Snapshots die batch_id=plan_id (-> restore_batch). agent_note speichert KI-Beobachtungen pro Batch — zusaetzlich zum User-reason aus plan().',
+        description: 'Phase B: Legacy-Plaene behalten ihren bisherigen Pfad. Co-Edit-Plaene werden in genau einer Server-TX gegated (alle Waits ready/no_changes), per FOR UPDATE plus Wait-Tabellenlock gegen Gate/Commit-Races geschuetzt, gegen expected_hashes, Anchors und Cross-Agent-Ranges validiert und gemeinsam committed. Ueberlappung setzt terminal status="conflict" ohne Datei-/Versionswrites. Jede Op erzeugt einen Snapshot mit ihrer serverseitigen agent_id und derselben batch_id.',
         params: 'plan_id (req), agent_id, agent_note (optional: KI-Notiz fuer Audit/Crash-Recovery)',
         example: 'files({ action: "commit", project: "synapse", plan_id: "42", agent_id: "ich" })',
-        tips: 'Bei stale: neu plannen mit aktuellem Stand. Bei Erfolg: batch_id merken fuer evtl. Rollback via files(action: "restore_batch", batch_id).',
+        tips: 'Bei stale: neu planen. Bei conflict: cancel + replan; der Konfliktstatus ist terminal. Bei Erfolg: batch_id fuer restore_batch merken.',
       },
       cancel: {
-        description: 'Plan abbrechen (Soft-Delete: status="cancelled"). Nur moeglich solange status=open.',
+        description: 'Plan abbrechen (Soft-Delete: status="cancelled"). Moeglich bei status=open oder terminal conflict; danach neu planen.',
         params: 'plan_id (req)',
         example: 'files({ action: "cancel", project: "synapse", plan_id: "42" })',
       },

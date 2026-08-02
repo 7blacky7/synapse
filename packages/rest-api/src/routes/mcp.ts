@@ -937,7 +937,7 @@ const MCP_TOOLS = [
         action: {
           type: 'string',
           enum: ['plan', 'commit', 'cancel', 'plan_status', 'history', 'restore', 'restore_batch', 'reservation_add', 'reservation_release', 'reservation_update', 'reservation_list', 'coedit_add', 'coedit_ready', 'coedit_no_changes', 'shared_plan_status'],
-          description: 'plan: Trockenlauf, gibt plan_id zurueck. commit: alle Ops atomar ausfuehren. cancel: Plan verwerfen. plan_status: Plan-Details. history: Aenderungs-Log. restore/restore_batch: Versionierungs-Rollback.',
+          description: 'plan: Trockenlauf, gibt plan_id zurueck. commit: Legacy-Plan unveraendert; Co-Edit-Plan atomar gaten, validieren und gemeinsam committen oder terminal conflict. cancel: open/conflict verwerfen. plan_status: Plan-Details. history: Aenderungs-Log. restore/restore_batch: Versionierungs-Rollback.',
         },
         project: { type: 'string', description: 'Projekt-Name' },
         ops: {
@@ -1229,6 +1229,8 @@ const OUTPUT_EXTRAS: Record<string, { props?: Record<string, unknown>; example?:
       contributions: { type: 'array', items: { type: 'object' } },
       appended_ops: { type: 'number' },
       already_consumed_ops: { type: 'number' },
+      previews: { type: 'array', items: { type: 'object' } },
+      conflicts: { type: 'array', items: { type: 'object' } },
     },
     example: { success: true, file_path: 'src/index.ts', size: 1234, content: '...', total_lines: 42, returned_range: { from: 1, to: 42, eof: true } },
   },
@@ -1319,6 +1321,8 @@ const OUTPUT_EXTRAS: Record<string, { props?: Record<string, unknown>; example?:
       contributions: { type: 'array', items: { type: 'object' } },
       appended_ops: { type: 'number' },
       already_consumed_ops: { type: 'number' },
+      previews: { type: 'array', items: { type: 'object' } },
+      conflicts: { type: 'array', items: { type: 'object' } },
     },
     example: { success: true, project: 'synapse', count: 1, entries: [{ id: '6595', file_path: 'x.html', edit_action: 'create', agent_id: null, reason: '...', created_at: '2026-07-17T07:19:36Z' }] },
   },

@@ -62,7 +62,7 @@ export const filesTool: ConsolidatedTool = {
       'action="versions", einzelne Version lesen mit "get_version", zurueckrollen mit "restore" ' +
       'oder ganze Multi-File-Batches mit "restore_batch". ' +
       'Multi-File Plan/Commit: action="plan" mit ops[] (mehrere Dateien) → erhaelt plan_id + previews. ' +
-      'action="commit" wendet alle Ops atomar an (Hash-basierte Konflikt-Erkennung; bei Mismatch: stale). ' +
+      'action="commit" wendet Legacy-Plaene unveraendert an; Co-Edit-Plaene werden in genau einer Server-TX gegated, auf Hash-/Anchor-/Range-Konflikte geprueft und entweder gemeinsam committed oder terminal conflict. ' +
       'Snapshots tragen die batch_id → restore_batch rollt das ganze Plan-Set zurueck. ' +
       'auto_commit:true bei plan() spart den separaten commit-Call. ' +
       'agent_note speichert KI-Beobachtungen pro Batch (zusaetzlich zum User-reason). ' +

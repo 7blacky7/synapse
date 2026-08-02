@@ -843,10 +843,11 @@ CREATE TRIGGER trg_project_init_jobs_notify
 -- ==========================================================================
 
 DO $$ BEGIN
-  CREATE TYPE file_batch_status AS ENUM ('open', 'committed', 'cancelled', 'expired', 'stale');
+  CREATE TYPE file_batch_status AS ENUM ('open', 'committed', 'cancelled', 'expired', 'stale', 'conflict');
 EXCEPTION
   WHEN duplicate_object THEN NULL;
 END $$;
+ALTER TYPE file_batch_status ADD VALUE IF NOT EXISTS 'conflict';
 
 CREATE TABLE IF NOT EXISTS file_batch_plans (
   id BIGSERIAL PRIMARY KEY,
