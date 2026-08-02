@@ -23,3 +23,4 @@ export { workspaceRoutes } from './workspaces.js';
 export { trayRoutes } from './tray.js';
 export { graphRoutes } from './graph.js';
 export { embeddingNodeRoutes } from './embedding-nodes.js';
+export { wrapperBridgeRoutes } from './wrapper-bridge.js';

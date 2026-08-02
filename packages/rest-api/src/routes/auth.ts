@@ -250,7 +250,7 @@ export async function authRoutes(fastify: FastifyInstance): Promise<void> {
    * jederzeit einsehen und per DELETE /api/auth/sessions/:id widerrufen —
    * darum eine feste Laufzeit statt "unbegrenzt".
    */
-  fastify.post<{ Body: { code?: string; label?: string; node_id?: string } }>(
+  fastify.post<{ Body: { code?: string; label?: string; node_id?: string; wrapper_agent?: string } }>(
     '/api/auth/service-token',
     async (request, reply) => {
       const code = (request.body?.code ?? '').toString().trim();
@@ -274,7 +274,17 @@ export async function authRoutes(fastify: FastifyInstance): Promise<void> {
         if (m) {
           const row = await validateToken(m[1].trim());
           const vorhandenerScope = (row?.scope ?? '').toString();
-          if (row && (vorhandenerScope === 'daemon' || vorhandenerScope.startsWith('daemon:'))) {
+          // Zusaetzlich zum daemon-Ausweis: ein Wrapper-Token darf SICH SELBST
+          // erneuern (API-Bruecke). Ohne das ist ein Wrapper nach Ablauf der
+          // Laufzeit tot, und der Totalausfall sieht aus wie Ruhe — 401 auf alles,
+          // keine Meldung. Die Grenze steht weiter unten: ein Wrapper-Ausweis
+          // taugt NUR fuer exakt denselben Scope, nicht fuer einen fremden.
+          if (
+            row &&
+            (vorhandenerScope === 'daemon' ||
+              vorhandenerScope.startsWith('daemon:') ||
+              vorhandenerScope.startsWith('wrapper:'))
+          ) {
             ausweisScope = vorhandenerScope;
           }
         }
@@ -312,9 +322,45 @@ export async function authRoutes(fastify: FastifyInstance): Promise<void> {
           error: { code: 'invalid_node_id', message: 'node_id ist ungueltig' },
         });
       }
-      const scope = rawNodeId
-        ? `compute-node:${rawNodeId}`
-        : (label ? `daemon:${label}` : 'daemon');
+      // API-BRUECKE: eigener Scope fuer Spezialisten-Wrapper.
+      // Der Auth-Hook wertet scope bis heute NICHT aus (siehe Absatz oben) — daran
+      // aendert dieses Feld NICHTS. Es sorgt nur dafuer, dass ein Wrapper-Token von
+      // Anfang an anders heisst als ein Tray-Token. Wenn die Scope-Pruefung spaeter
+      // kommt, ist die Einschraenkung damit eine Datenfrage und kein Umbau; sonst
+      // muesste jedes bereits ausgestellte Token neu verteilt werden.
+      // Warum das nicht kosmetisch ist: ein ungefiltertes Token darf ueber /mcp auch
+      // specialist(purge) — und purge beendet Prozesse und loescht Verzeichnisse.
+      const rawWrapper = (request.body?.wrapper_agent ?? '').toString().trim();
+      const wrapperAgent = rawWrapper.replace(/[^\w.-]/g, '').slice(0, 60);
+      if (rawWrapper && !wrapperAgent) {
+        return reply.code(400).send({
+          success: false,
+          error: {
+            code: 'invalid_wrapper_agent',
+            message: 'wrapper_agent enthaelt keine verwertbaren Zeichen',
+          },
+        });
+      }
+
+      const scope = wrapperAgent
+        ? `wrapper:${wrapperAgent}`
+        : rawNodeId
+          ? `compute-node:${rawNodeId}`
+          : (label ? `daemon:${label}` : 'daemon');
+
+      // GRENZE, bewusst gezogen (analog zur compute-node-Regel oben): ein
+      // Wrapper-Token erneuert sich selbst und sonst nichts. Duerfte es beliebige
+      // Scopes ausstellen, waere jedes Wrapper-Token ein Generalschluessel fuer
+      // fremde Identitaeten — und der eigene Scope waere seinen Zweck los.
+      if (ausweisScope && ausweisScope.startsWith('wrapper:') && scope !== ausweisScope) {
+        return reply.code(403).send({
+          success: false,
+          error: {
+            code: 'scope_forbidden',
+            message: `Ein Token mit Scope "${ausweisScope}" darf nur denselben Scope erneuern, nicht "${scope}" ausstellen. Mit TOTP-Code aufrufen.`,
+          },
+        });
+      }
 
       const issued = await issueServiceToken(scope, label || rawNodeId || null, SERVICE_TOKEN_TTL_MS);
 

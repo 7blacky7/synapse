@@ -34,6 +34,7 @@ import {
   authRoutes,
   graphRoutes,
   embeddingNodeRoutes,
+  wrapperBridgeRoutes,
 } from './routes/index.js';
 
 /**
@@ -89,6 +90,12 @@ export async function createServer(): Promise<FastifyInstance> {
   await fastify.register(trayRoutes);
   // GPU-1: Registry/Heartbeat externer Ollama-Compute-Knoten.
   await fastify.register(embeddingNodeRoutes);
+
+  // API-Bruecke Schritt 1: alles, was der Spezialisten-Wrapper heute per direkter
+  // PostgreSQL-Verbindung macht, als HTTP-Routen. Rein additiv — kein bestehender
+  // Aufrufweg aendert sich, laufende Wrapper merken davon nichts.
+  // Sichtbarkeit: GET /api/projects/:name/wrapper-bridge/health.
+  await fastify.register(wrapperBridgeRoutes);
 
   // Graph-View (PLAN-003 / GRAPH-1): /api/graph/* — Aggregationen direkt aus
   // @synapse/core (PG + Qdrant), kein HTTP-Loopback. Hinter Auth-Hook (AUTH-4).
