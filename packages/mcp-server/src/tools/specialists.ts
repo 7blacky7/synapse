@@ -11,6 +11,8 @@ import { createRequire } from 'node:module';
 
 import { removeInboxForAgent, removeWrapperStatus, upsertWrapperStatus } from '@synapse/core';
 
+import { bereiteMcpBrueckeVor, selbsttestHinweis, McpBrueckeFehler } from './mcp-bruecke.js';
+
 import {
   detectClaudeCli,
   canSpawn,
@@ -148,7 +150,27 @@ export async function spawnSpecialistTool(
     channel,
     allowedTools,
   };
-  const systemPrompt = buildSpecialistPrompt(config, skill);
+  let systemPrompt = buildSpecialistPrompt(config, skill);
+
+  // 6b. MCP-Bruecke (Schritt 3b): bekommt der INNERE Claude seine Werkzeuge ueber
+  //     HTTP statt ueber einen lokalen stdio-Prozess mit Datenbankverbindung?
+  //     Vorgabe bleibt stdio. Schlaegt der verlangte HTTP-Weg fehl, bricht der
+  //     Spawn hier ab — ein tauber Agent waere nicht als Defekt erkennbar.
+  let mcpBruecke;
+  try {
+    mcpBruecke = await bereiteMcpBrueckeVor(projectPath, name);
+  } catch (err) {
+    if (err instanceof McpBrueckeFehler) {
+      return jsonResult({
+        success: false,
+        message: `Spawn abgebrochen — MCP-Bruecke nicht benutzbar: ${err.message}`,
+      });
+    }
+    throw err;
+  }
+  if (mcpBruecke.aktiv && mcpBruecke.werkzeuge) {
+    systemPrompt += selbsttestHinweis(mcpBruecke.werkzeuge);
+  }
 
   // 7. System-Prompt in Datei schreiben (zu gross fuer Env-Var)
   const promptFile = join(projectPath, '.synapse', 'agents', name, 'system-prompt.txt');
@@ -185,6 +207,13 @@ export async function spawnSpecialistTool(
       SYNAPSE_AGENT_CWD: cwd ?? projectPath,
       ...(allowedTools?.length ? { SYNAPSE_ALLOWED_TOOLS: allowedTools.join(',') } : {}),
       ...(keepAlive ? { SYNAPSE_KEEP_ALIVE: '1' } : {}),
+      // Schritt 3b: eigene MCP-Konfiguration fuer den inneren Claude. Der Wrapper
+      // reicht sie als --mcp-config <datei> --strict-mcp-config an die CLI weiter
+      // (packages/agents/src/process.ts). Ist die Variable nicht gesetzt, gilt der
+      // heutige Weg: die CLI erbt die .mcp.json der Maschine.
+      ...(mcpBruecke.aktiv && mcpBruecke.configPfad
+        ? { SYNAPSE_MCP_CONFIG_FILE: mcpBruecke.configPfad, SYNAPSE_MCP_STRICT: '1' }
+        : {}),
     },
     detached: true,
     stdio: ['ignore', 'ignore', logFd],
@@ -259,8 +288,11 @@ export async function spawnSpecialistTool(
       wrapperPid,
       socket: socketPath,
       channel: channel ?? `${project}-general`,
+      mcpBruecke,
     },
-    message: `Spezialist "${name}" (${model} → ${modelEntry.fullId}, provider: ${modelEntry.provider}) gestartet. PID: ${wrapperPid}`,
+    message:
+      `Spezialist "${name}" (${model} → ${modelEntry.fullId}, provider: ${modelEntry.provider}) gestartet. ` +
+      `PID: ${wrapperPid}. Werkzeuge des inneren Agenten: ${mcpBruecke.grund}`,
   });
 }
 
