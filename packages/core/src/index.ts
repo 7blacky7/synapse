@@ -358,6 +358,7 @@ export {
   checkInbox,
   getNewInboxMessages,
   getInboxHistory,
+  removeInboxForAgent,
   // Error Patterns
   addErrorPattern,
   listErrorPatterns,

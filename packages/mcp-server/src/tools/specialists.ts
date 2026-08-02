@@ -9,7 +9,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 
-import { removeWrapperStatus, upsertWrapperStatus } from '@synapse/core';
+import { removeInboxForAgent, removeWrapperStatus, upsertWrapperStatus } from '@synapse/core';
 
 import {
   detectClaudeCli,
@@ -467,6 +467,19 @@ export async function purgeSpecialistTool(
     }
   }
 
+  // 7. Inbox-Zeilen dieses Agenten entfernen.
+  // Sie blieben bisher liegen, obwohl die Erfolgsmeldung "PG" in ihrer Aufzaehlung
+  // fuehrte — wieder eine Meldung, die mehr sagt als sie haelt. Gefunden am
+  // 02.08.2026 beim Nachpruefen eines purge, das "komplett entfernt" meldete:
+  // zwei Waisen blieben stehen, darunter eine unverarbeitete Wake-Nachricht.
+  // Die ANZAHL steht ausdruecklich in steps, damit man sieht was passiert ist,
+  // statt es glauben zu muessen.
+  try {
+    steps.inbox_removed = await removeInboxForAgent(name);
+  } catch (err) {
+    steps.inbox_removed = `Fehler: ${err}`;
+  }
+
   // Erfolg wird aus den Schritten ABGELEITET, nicht behauptet. Vorher stand hier ein
   // fest verdrahtetes success:true samt "Auto-Respawn unmoeglich" — auch dann, wenn
   // in steps ein Fehler protokolliert war. Genau daran war der Ausfall vom 02.08.2026
@@ -484,7 +497,7 @@ export async function purgeSpecialistTool(
   return jsonResult({
     success: fehlgeschlagen.length === 0,
     message: fehlgeschlagen.length === 0
-      ? `Spezialist "${name}" komplett entfernt (Stop + Channels + Chat + Status + FS + Socket${project ? ' + PG' : ''}). Prozess nachweislich beendet, Auto-Respawn unmoeglich.`
+      ? `Spezialist "${name}" komplett entfernt (Stop + Channels + Chat + Status + FS + Socket + Inbox${project ? ' + PG' : ''}). Prozess nachweislich beendet, Auto-Respawn unmoeglich.`
       : `Spezialist "${name}" nur TEILWEISE entfernt. Fehlgeschlagen: ${fehlgeschlagen.join(', ')}. `
         + `Der Prozess ist beendet, aber Reste bleiben liegen — steps pruefen und von Hand nachraeumen.`,
     steps,

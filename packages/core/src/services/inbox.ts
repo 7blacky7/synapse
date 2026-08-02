@@ -68,3 +68,19 @@ export async function getInboxHistory(agentName: string, limit = 50): Promise<In
   )
   return result.rows.map(mapRow)
 }
+
+/**
+ * Loescht ALLE Inbox-Zeilen eines Agenten und liefert die Anzahl.
+ *
+ * Gebraucht von purge: dort blieben die Zeilen bisher stehen, obwohl die
+ * Erfolgsmeldung "PG" in ihrer Aufzaehlung fuehrte. Eine Meldung, die mehr sagt
+ * als sie haelt, ist genau die Fehlerform, die hier schon zweimal Zeit gekostet hat.
+ */
+export async function removeInboxForAgent(agentName: string): Promise<number> {
+  const pool = getPool()
+  const result = await pool.query(
+    `DELETE FROM specialist_inbox WHERE to_agent = $1 RETURNING id`,
+    [agentName],
+  )
+  return result.rowCount ?? result.rows.length
+}
