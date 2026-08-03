@@ -25,7 +25,7 @@ import {
 
 import {
   claimUnreadChannelHints,
-  getPendingEvents,
+  getPendingEventHints,
   TOOL_GUIDES,
   ensureSchema,
   logToolCall,
@@ -129,37 +129,6 @@ async function getUnreadChatCount(
 }
 
 /** Prüft ausstehende Events für einen Agenten und baut Hint-Text */
-async function getUnackedEventHint(
-  agentId: string,
-  project: string
-): Promise<{ events: Array<{id: number, eventType: string, priority: string, payload: string | null}>, hint: string } | null> {
-  try {
-    const pending = await getPendingEvents(project, agentId);
-    if (!pending || pending.length === 0) return null;
-
-    const events = pending.map(e => ({
-      id: e.id,
-      eventType: e.eventType,
-      priority: e.priority,
-      payload: e.payload,
-    }));
-
-    const hintParts: string[] = [];
-    for (const e of pending) {
-      if (e.priority === 'critical') {
-        hintParts.push(`⛔ PFLICHT-EVENT: ${e.eventType} von ${e.sourceId}: ${e.payload}. Reagiere SOFORT mit event(action: "ack", event_id: ${e.id}, agent_id: "${agentId}")`);
-      } else if (e.priority === 'high') {
-        hintParts.push(`⚠️ EVENT: ${e.eventType} von ${e.sourceId}: ${e.payload}. Bitte mit event(action: "ack", event_id: ${e.id}, agent_id: "${agentId}") bestaetigen.`);
-      } else {
-        hintParts.push(`📋 EVENT: ${e.eventType}: ${e.payload}. event(action: "ack", event_id: ${e.id}, agent_id: "${agentId}")`);
-      }
-    }
-
-    return { events, hint: hintParts.join('\n') };
-  } catch {
-    return null;
-  }
-}
 
 /**
  * Erstellt und konfiguriert den MCP Server
@@ -288,6 +257,44 @@ export function createServer(): Server {
       try {
         const parsed = JSON.parse(first.text);
         if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return guided;
+
+        // CE-7: Jede erweiterbare Objektantwort wird zur Inbox-Gelegenheit.
+        // event ist die Vollansicht und guide bleibt bewusst kontextfrei.
+        if (projectName && name !== 'event' && name !== 'guide') {
+          try {
+            const pendingEvents = await getPendingEventHints(projectName, agentId, 3);
+            if (pendingEvents.hints.length > 0) {
+              parsed.pending_events = pendingEvents.hints;
+              first.text = JSON.stringify(parsed, null, 2);
+            }
+
+            if (pendingEvents.urgent.length > 0) {
+              const now = Date.now();
+              const existing = eventIgnoreCount.get(agentId);
+              if (!existing) {
+                eventIgnoreCount.set(agentId, { firstSeen: now, count: 1 });
+              } else {
+                existing.count++;
+                const elapsed = now - existing.firstSeen;
+                if (elapsed > 30000 && existing.count >= 3) {
+                  try {
+                    const eventList = pendingEvents.urgent
+                      .map(event => `${event.event_type}(${event.priority})`)
+                      .join(', ');
+                    await sendChatMessage(
+                      projectName,
+                      'system',
+                      `⚠️ ESKALATION: Agent "${agentId}" ignoriert Events seit ${existing.count} Tool-Calls: ${eventList}`,
+                      'koordinator'
+                    );
+                    console.error(`[Synapse] Eskalation: ${agentId} ignoriert Events seit ${existing.count} Calls`);
+                  } catch { /* Eskalation darf nicht crashen */ }
+                }
+              }
+            }
+          } catch { /* Pending-Events duerfen Toolantworten nie brechen */ }
+        }
+
         const hints = await claimUnreadChannelHints(agentId);
         if (hints.length > 0) {
           parsed.unread_channels = hints.map((hint) => ({
@@ -346,16 +353,6 @@ export function createServer(): Server {
         };
       }
 
-      // Pending Events anzeigen (VOR Chat)
-      const pendingEvents = await getUnackedEventHint(agentId, projectName);
-      if (pendingEvents) {
-        enhanced.pendingEvents = {
-          count: pendingEvents.events.length,
-          events: pendingEvents.events,
-          hint: pendingEvents.hint,
-        };
-      }
-
       // Ungelesene Chat-Nachrichten anzeigen
       const unread = await getUnreadChatCount(agentId, projectName);
       if (unread) {
@@ -386,40 +383,6 @@ export function createServer(): Server {
           }
         }
       } catch { /* Agenten-Liste darf nicht crashen */ }
-
-      // Eskalation: Agent ignoriert kritische Events
-      if (pendingEvents) {
-        const hasCritical = pendingEvents.events.some(e => e.priority === 'critical');
-        const hasHigh = pendingEvents.events.some(e => e.priority === 'high');
-
-        if (hasCritical || hasHigh) {
-          const key = agentId;
-          const now = Date.now();
-          const existing = eventIgnoreCount.get(key);
-
-          if (!existing) {
-            // Erstes Mal gesehen — Grace Period starten
-            eventIgnoreCount.set(key, { firstSeen: now, count: 1 });
-          } else {
-            existing.count++;
-            // Grace Period: 30 Sekunden nach erstem Sehen
-            const elapsed = now - existing.firstSeen;
-            if (elapsed > 30000 && existing.count >= 3) {
-              // Eskalation an Koordinator
-              try {
-                const eventList = pendingEvents.events.map(e => `${e.eventType}(${e.priority})`).join(', ');
-                await sendChatMessage(
-                  projectName,
-                  'system',
-                  `⚠️ ESKALATION: Agent "${agentId}" ignoriert ${pendingEvents.events.length} Event(s) seit ${existing.count} Tool-Calls: ${eventList}`,
-                  'koordinator'
-                );
-                console.error(`[Synapse] Eskalation: ${agentId} ignoriert Events seit ${existing.count} Calls`);
-              } catch { /* Eskalation darf nicht crashen */ }
-            }
-          }
-        }
-      }
 
       return { content: [{ type: 'text', text: JSON.stringify(enhanced, null, 2) }] };
     };

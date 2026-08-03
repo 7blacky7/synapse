@@ -42,7 +42,7 @@ export { holeWerkzeugRegeln, baueWerkzeugMarken, WERKZEUG_MARKE_PRAEFIX, WERKZEU
 export type { WerkzeugRegel } from './werkzeug-regeln.js';
 export { addTechDoc, searchTechDocs, getDocsForFile, deleteTechDoc, updateTechDoc } from './tech-docs.js';
 export type { TechDoc, TechDocType, TechDocResult } from './tech-docs.js';
-export { emitEvent, acknowledgeEvent, getPendingEvents, getUnackedCount } from './events.js';
+export { emitEvent, acknowledgeEvent, getPendingEvents, getPendingEventHints, getUnackedCount } from './events.js';
 export type { AgentEvent, EventAck, EventType, EventPriority } from './events.js';
 export * from './error-patterns.js';
 export * from './channels.js';

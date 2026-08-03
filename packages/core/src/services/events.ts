@@ -194,9 +194,13 @@ export async function acknowledgeEvent(
  */
 export async function getPendingEvents(
   project: string,
-  agentId: string
+  agentId: string,
+  limit?: number,
 ): Promise<AgentEvent[]> {
   const pool = getPool();
+  const boundedLimit = limit === undefined
+    ? null
+    : Math.max(1, Math.min(100, Math.trunc(limit)));
 
   // Nur Events liefern die NACH der Registrierung des Agenten erstellt wurden.
   // Alte scope:'all' Events wurden bereits von damals aktiven Agenten bearbeitet —
@@ -235,8 +239,9 @@ export async function getPendingEvents(
          WHEN 'high' THEN 1
          ELSE 2
        END ASC,
-       e.created_at ASC`,
-    [project, `agent:${agentId}`, agentId]
+       e.created_at ASC
+     LIMIT $4`,
+    [project, `agent:${agentId}`, agentId, boundedLimit]
   );
 
   return result.rows.map(row => ({
@@ -250,6 +255,68 @@ export async function getPendingEvents(
     requiresAck: row.requires_ack,
     createdAt: row.created_at,
   }));
+}
+
+function truncateEventSummary(value: string, maxLength = 80): string {
+  const normalized = value.replace(/\s+/g, ' ').trim();
+  const chars = Array.from(normalized);
+  if (chars.length <= maxLength) return normalized;
+  return `${chars.slice(0, maxLength - 1).join('')}…`;
+}
+
+function summarizePendingEvent(event: AgentEvent): string {
+  if (event.eventType === 'PLAN_READY' && event.payload) {
+    try {
+      const payload = JSON.parse(event.payload) as Record<string, unknown>;
+      const planId = typeof payload.plan_id === 'string' || typeof payload.plan_id === 'number'
+        ? String(payload.plan_id)
+        : null;
+      const sharedFiles = Array.isArray(payload.shared_files)
+        ? payload.shared_files.filter((value): value is string => typeof value === 'string')
+        : [];
+      const fileHint = sharedFiles.length === 1
+        ? sharedFiles[0]
+        : sharedFiles.length > 1
+          ? `${sharedFiles.length} gemeinsame Dateien`
+          : 'gemeinsame Dateien';
+      if (planId) {
+        return truncateEventSummary(`Gemeinsamer Plan ${planId} fuer ${fileHint} ist bereit`);
+      }
+    } catch {
+      // Kaputtes Payload darf den Antwort-Hook nicht brechen.
+    }
+  }
+
+  const ackHint = event.requiresAck ? ' — Ack erforderlich' : '';
+  return truncateEventSummary(
+    `${event.eventType} von ${event.sourceId} wartet${ackHint}`
+  );
+}
+
+/**
+ * CE-7 — Kompakter, hart begrenzter Inbox-Hinweis fuer normale Tool-Antworten.
+ * Der Vollinhalt bleibt ausschliesslich event(pending) vorbehalten.
+ */
+export async function getPendingEventHints(
+  project: string,
+  agentId: string,
+  limit = 3,
+): Promise<{
+  hints: Array<{ event_id: number; event_type: string; summary: string }>;
+  urgent: Array<{ event_type: string; priority: EventPriority }>;
+}> {
+  const boundedLimit = Math.max(1, Math.min(3, Math.trunc(limit)));
+  const events = await getPendingEvents(project, agentId, boundedLimit);
+  return {
+    hints: events.map(event => ({
+      event_id: event.id,
+      event_type: event.eventType,
+      summary: summarizePendingEvent(event),
+    })),
+    urgent: events
+      .filter(event => event.priority === 'critical' || event.priority === 'high')
+      .map(event => ({ event_type: event.eventType, priority: event.priority })),
+  };
 }
 
 /**

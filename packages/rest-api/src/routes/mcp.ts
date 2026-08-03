@@ -68,6 +68,7 @@ import {
   emitEvent,
   acknowledgeEvent,
   getPendingEvents,
+  getPendingEventHints,
   // Tech-Docs
   addTechDoc,
   searchTechDocs,
@@ -1164,6 +1165,21 @@ const MCP_TOOLS = [
 const OUTPUT_ENVELOPE_PROPS: Record<string, unknown> = {
   success: { type: 'boolean', description: 'true bei Erfolg, false bei Fehler' },
   error: { type: 'string', description: 'Fehlermeldung wenn success=false' },
+  pending_events: {
+    type: 'array',
+    maxItems: 3,
+    description: 'Bis zu 3 offene Inbox-Events; nur bei agent_id+project und nur wenn nicht leer.',
+    items: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['event_id', 'event_type', 'summary'],
+      properties: {
+        event_id: { type: 'number' },
+        event_type: { type: 'string' },
+        summary: { type: 'string', maxLength: 80 },
+      },
+    },
+  },
 };
 
 const COEDIT_WAIT_OUTPUT_SCHEMA: Record<string, unknown> = {
@@ -1181,7 +1197,6 @@ const COEDIT_WAIT_OUTPUT_SCHEMA: Record<string, unknown> = {
     },
   },
 };
-
 const DIRECT_WRITE_RESERVATION_HINT_OUTPUT_SCHEMA: Record<string, unknown> = {
   type: 'object',
   additionalProperties: false,
@@ -1706,12 +1721,12 @@ async function attachRestOnboarding(
 
 async function attachRestChannelHints(
   result: unknown,
-  explicitAgentId?: string,
+  effectiveAgentId?: string,
 ): Promise<unknown> {
-  if (!explicitAgentId || typeof result !== 'object' || result === null || Array.isArray(result)) {
+  if (!effectiveAgentId || typeof result !== 'object' || result === null || Array.isArray(result)) {
     return result;
   }
-  const hints = await claimUnreadChannelHints(explicitAgentId);
+  const hints = await claimUnreadChannelHints(effectiveAgentId);
   if (hints.length === 0) return result;
   return {
     ...result,
@@ -1722,6 +1737,32 @@ async function attachRestChannelHints(
       newest_id: hint.newestId,
     })),
   };
+}
+async function attachRestPendingEventHints(
+  result: unknown,
+  toolName: string,
+  args: Record<string, unknown>,
+  effectiveAgentId?: string,
+): Promise<unknown> {
+  if (!effectiveAgentId
+    || toolName === 'event'
+    || toolName === 'guide'
+    || typeof result !== 'object'
+    || result === null
+    || Array.isArray(result)) {
+    return result;
+  }
+  const project = str(args, 'project');
+  if (!project) return result;
+
+  try {
+    const pendingEvents = await getPendingEventHints(project, effectiveAgentId, 3);
+    if (pendingEvents.hints.length === 0) return result;
+    return { ...result, pending_events: pendingEvents.hints };
+  } catch {
+    // Eine Inbox-Zugabe darf den eigentlichen Tool-Aufruf nie brechen.
+    return result;
+  }
 }
 
 /**
@@ -1820,18 +1861,18 @@ async function attachSkillHinweisgeber(
   result: unknown,
   toolName: string,
   args: Record<string, unknown>,
-  explicitAgentId?: string,
+  effectiveAgentId?: string,
 ): Promise<unknown> {
-  if (!explicitAgentId || typeof result !== 'object' || result === null || Array.isArray(result)) {
+  if (!effectiveAgentId || typeof result !== 'object' || result === null || Array.isArray(result)) {
     return result;
   }
   if (toolName !== 'memory' && toolName !== 'thought' && toolName !== 'plan') return result;
   try {
     const { verarbeiteSkillHinweisgeber, holeOffeneSkillVorschlaege } = await import('@synapse/core');
     await verarbeiteSkillHinweisgeber(
-      toolName, str(args, 'action'), args, result, explicitAgentId,
+      toolName, str(args, 'action'), args, result, effectiveAgentId,
     );
-    const weitere = await holeOffeneSkillVorschlaege(explicitAgentId);
+    const weitere = await holeOffeneSkillVorschlaege(effectiveAgentId);
     if (weitere.suggestions.length === 0) return result;
     return {
       ...result,
@@ -1841,7 +1882,7 @@ async function attachSkillHinweisgeber(
   } catch (fehler) {
     // Ein Hinweis ist eine Zugabe und darf den Tool-Aufruf nie kippen — aber er wird sichtbar.
     console.error(
-      `[SkillHook] Hinweisgeber ${toolName} fuer ${explicitAgentId} fehlgeschlagen:`,
+      `[SkillHook] Hinweisgeber ${toolName} fuer ${effectiveAgentId} fehlgeschlagen:`,
       fehler instanceof Error ? `${fehler.name}: ${fehler.message}` : fehler,
     );
     return result;
@@ -1851,7 +1892,7 @@ async function attachSkillHinweisgeber(
 async function handleToolCall(
   name: string,
   args: Record<string, unknown>,
-  explicitAgentId?: string,
+  effectiveAgentId?: string,
 ): Promise<unknown> {
   const action = str(args, 'action');
 
@@ -2957,8 +2998,8 @@ async function handleToolCall(
           const msgs = await getChannelMessages(project, chName3, { limit: feedLimit, sinceId, preview });
           const feedAgentId = resolveAgentId(str(args, 'agent_id'));
           const skillHook = await holeChannelSkillVorschlaege(feedAgentId, msgs);
-          if (explicitAgentId) {
-            await recordChannelRead(project, chName3, explicitAgentId, msgs.map((msg) => msg.id));
+          if (effectiveAgentId) {
+            await recordChannelRead(project, chName3, effectiveAgentId, msgs.map((msg) => msg.id));
           }
           return {
             success: true,
@@ -2979,14 +3020,14 @@ async function handleToolCall(
         // wuerde, und der Cloud-Fallback waere hier die falsche Identitaet.
         case 'mark_read': {
           const chNameRead = reqStr(args, 'channel_name');
-          if (!explicitAgentId) {
+          if (!effectiveAgentId) {
             return {
               success: false,
               error: 'agent_id_erforderlich',
               message: 'mark_read braucht eine ausdrueckliche agent_id — sonst ist unklar, wessen Lesestand gesetzt wird.',
             };
           }
-          const markiert = await markChannelRead(project, chNameRead, explicitAgentId);
+          const markiert = await markChannelRead(project, chNameRead, effectiveAgentId);
           return {
             success: true,
             channel: chNameRead,
@@ -4812,8 +4853,8 @@ async function handleToolCall(
       // unangetastet im Vorrat. Ein Vorschlag, den der Aufrufer nie zu sehen bekommt, ist
       // teurer als jedes Rauschen — die Auswahl trifft ohnehin die KI, der Score steht dabei.
       const naechsteVorschlaege = async () => {
-        if (!explicitAgentId) return {};
-        const weitere = await holeOffeneSkillVorschlaege(explicitAgentId);
+        if (!effectiveAgentId) return {};
+        const weitere = await holeOffeneSkillVorschlaege(effectiveAgentId);
         return weitere.suggestions.length > 0
           ? { skill_suggestions: weitere.suggestions, skill_hook_metrics: weitere.metrics }
           : {};
@@ -4933,37 +4974,44 @@ export async function mcpRoutes(fastify: FastifyInstance): Promise<void> {
         case 'tools/call': {
           const toolName = params?.name as string;
           const toolArgs = (params?.arguments || {}) as Record<string, unknown>;
-          const explicitAgentId = typeof toolArgs.agent_id === 'string' ? toolArgs.agent_id : undefined;
           // Auto-Detect: Web-KIs ohne Wrapper-Kontext bekommen agent_id aus
           // dem User-Agent/Session-Header (siehe deriveAgentIdFromHeaders).
           // Setzt nur wenn der Caller nicht selbst eine ID mitschickt.
           if (derivedAgentId && !toolArgs.agent_id) {
             toolArgs.agent_id = derivedAgentId;
           }
+          const effectiveAgentId = typeof toolArgs.agent_id === 'string'
+            ? toolArgs.agent_id
+            : derivedAgentId;
           const _t0 = Date.now();
           let _logOk = true;
           let _logErr: string | null = null;
           let _logResult: string | null = null;
           try {
-            const toolResult = await attachWerkzeugRegeln(
-              await attachRestChannelHints(
-                await attachSkillHinweisgeber(
-                  await attachRestOnboarding(
-                    await attachDirectWriteReservationHint(
-                      await handleToolCall(toolName, toolArgs, explicitAgentId),
-                      toolName,
+            const toolResult = await attachRestPendingEventHints(
+              await attachWerkzeugRegeln(
+                await attachRestChannelHints(
+                  await attachSkillHinweisgeber(
+                    await attachRestOnboarding(
+                      await attachDirectWriteReservationHint(
+                        await handleToolCall(toolName, toolArgs, effectiveAgentId),
+                        toolName,
+                        toolArgs,
+                      ),
                       toolArgs,
                     ),
+                    toolName,
                     toolArgs,
+                    effectiveAgentId,
                   ),
-                  toolName,
-                  toolArgs,
-                  explicitAgentId,
+                  effectiveAgentId,
                 ),
-                explicitAgentId,
+                toolName,
+                toolArgs,
               ),
               toolName,
               toolArgs,
+              effectiveAgentId,
             );
             _logResult = JSON.stringify(toolResult);
             result = {
@@ -4988,9 +5036,14 @@ export async function mcpRoutes(fastify: FastifyInstance): Promise<void> {
             console.error(`[MCP] Tool-Fehler (${toolName}): ${msg}`);
             _logOk = false;
             _logErr = msg;
-            const errorPayload = await attachRestChannelHints(
-              { success: false, error: `Fehler im Tool "${toolName}": ${msg}` },
-              explicitAgentId,
+            const errorPayload = await attachRestPendingEventHints(
+              await attachRestChannelHints(
+                { success: false, error: `Fehler im Tool "${toolName}": ${msg}` },
+                effectiveAgentId,
+              ),
+              toolName,
+              toolArgs,
+              effectiveAgentId,
             );
             _logResult = JSON.stringify(errorPayload);
             result = {
@@ -5078,33 +5131,40 @@ export async function mcpRoutes(fastify: FastifyInstance): Promise<void> {
         case 'tools/call': {
           const toolName = params?.name as string;
           const toolArgs = (params?.arguments || {}) as Record<string, unknown>;
-          const explicitAgentId = typeof toolArgs.agent_id === 'string' ? toolArgs.agent_id : undefined;
           // Auto-Detect: Web-KIs ohne Wrapper-Kontext bekommen agent_id aus
           // dem User-Agent/Session-Header (siehe deriveAgentIdFromHeaders).
           // Setzt nur wenn der Caller nicht selbst eine ID mitschickt.
           if (derivedAgentId && !toolArgs.agent_id) {
             toolArgs.agent_id = derivedAgentId;
           }
+          const effectiveAgentId = typeof toolArgs.agent_id === 'string'
+            ? toolArgs.agent_id
+            : derivedAgentId;
           const _t0 = Date.now();
           let _logOk = true;
           let _logErr: string | null = null;
           let _logResult: string | null = null;
           try {
-            const toolResult = await attachRestChannelHints(
-              await attachSkillHinweisgeber(
-                await attachRestOnboarding(
-                    await attachDirectWriteReservationHint(
-                      await handleToolCall(toolName, toolArgs, explicitAgentId),
-                      toolName,
-                      toolArgs,
-                    ),
+            const toolResult = await attachRestPendingEventHints(
+              await attachRestChannelHints(
+                await attachSkillHinweisgeber(
+                  await attachRestOnboarding(
+                      await attachDirectWriteReservationHint(
+                        await handleToolCall(toolName, toolArgs, effectiveAgentId),
+                        toolName,
+                        toolArgs,
+                      ),
+                    toolArgs,
+                  ),
+                  toolName,
                   toolArgs,
+                  effectiveAgentId,
                 ),
-                toolName,
-                toolArgs,
-                explicitAgentId,
+                effectiveAgentId,
               ),
-              explicitAgentId,
+              toolName,
+              toolArgs,
+              effectiveAgentId,
             );
             _logResult = JSON.stringify(toolResult);
             result = {
@@ -5129,9 +5189,14 @@ export async function mcpRoutes(fastify: FastifyInstance): Promise<void> {
             console.error(`[MCP] Tool-Fehler (${toolName}): ${msg}`);
             _logOk = false;
             _logErr = msg;
-            const errorPayload = await attachRestChannelHints(
-              { success: false, error: `Fehler im Tool "${toolName}": ${msg}` },
-              explicitAgentId,
+            const errorPayload = await attachRestPendingEventHints(
+              await attachRestChannelHints(
+                { success: false, error: `Fehler im Tool "${toolName}": ${msg}` },
+                effectiveAgentId,
+              ),
+              toolName,
+              toolArgs,
+              effectiveAgentId,
             );
             _logResult = JSON.stringify(errorPayload);
             result = {

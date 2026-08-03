@@ -335,6 +335,7 @@ export {
   emitEvent,
   acknowledgeEvent,
   getPendingEvents,
+  getPendingEventHints,
   getUnackedCount,
   // Channels
   createChannel,
