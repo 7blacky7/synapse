@@ -33,6 +33,15 @@ const BEFEHL_MAX = 60;
  */
 const FERTIG_FENSTER_MIN = 8;
 
+/**
+ * Ab welchem Alter ein 'running'-Job nicht mehr als laufend gemeldet wird.
+ * Entspricht der harten Obergrenze eines Jobs (3 h) plus etwas Luft: laenger
+ * KANN kein Job laufen, also ist alles Aeltere eine Leiche aus einem
+ * Daemon-Neustart. Der Worker raeumt solche Jobs beim Start auf; bis dahin
+ * duerfen sie niemanden in die Irre fuehren.
+ */
+const LAUFEND_PLAUSIBEL_MIN = 3 * 60 + 5;
+
 /** Mehr als das haengen wir nie an eine einzelne Antwort. */
 const MAX_HINWEISE = 3;
 
@@ -86,9 +95,22 @@ export async function claimShellJobHints(
          WHERE j.project = $1
            AND (
              -- Laeuft gerade: melden, ausser dem Absender selbst.
-             (j.status = 'running' AND j.agent_id IS DISTINCT FROM $2)
+             -- Die Altersgrenze ist wichtig: ein Job kann als 'running' haengen
+             -- bleiben, wenn der Daemon neu startet, waehrend er laeuft. Solche
+             -- Leichen wurden sonst als "laeuft gerade" gemeldet — eine FALSCHE
+             -- Auskunft ist schlimmer als gar keine, weil ein Agent daraufhin auf
+             -- ein Ergebnis wartet, das nie kommt. Kein Job kann laenger laufen
+             -- als die harte Obergrenze; was aelter ist, laeuft nicht mehr.
+             (j.status = 'running' AND j.agent_id IS DISTINCT FROM $2
+              AND COALESCE(j.claimed_at, j.created_at) > NOW() - ($5::integer * interval '1 minute'))
              -- Frisch fertig: an alle, auch an den Absender.
+             -- AUSSER Jobs, die nur durch einen Daemon-Neustart terminal wurden:
+             -- die haben nie ein Ergebnis produziert, ueber das zu berichten waere.
+             -- Real beobachtet: ein einziger Aufraeumlauf schloss 20 Altlasten
+             -- gleichzeitig ab und haette jedem Agenten drei Fertigmeldungen ueber
+             -- fremde, laengst vergessene Jobs zugestellt.
              OR (j.status NOT IN ('running', 'pending')
+                 AND j.error IS DISTINCT FROM 'daemon_restart'
                  AND j.completed_at > NOW() - ($4::integer * interval '1 minute'))
            )
            AND NOT EXISTS (
@@ -109,7 +131,7 @@ export async function claimShellJobHints(
        FROM kandidaten k
        JOIN beansprucht b ON b.job_id = k.job_id AND b.kind = k.kind
        ORDER BY k.sortzeit DESC`,
-      [project, agentId, limit, FERTIG_FENSTER_MIN],
+      [project, agentId, limit, FERTIG_FENSTER_MIN, LAUFEND_PLAUSIBEL_MIN],
     );
 
     return rows.map((r) => {
