@@ -141,6 +141,21 @@ export function clearProjectStatus(projectPath: string): void {
  *  ongeboardet hat — spart den PG-Roundtrip bei JEDEM weiteren Tool-Call. */
 const onboardedKeys = new Set<string>();
 
+/** Zeitpunkt des Prozessstarts — Bezugspunkt fuer das Ruhefenster nach einem Deploy. */
+const PROZESS_START = Date.now();
+
+/**
+ * Ruhefenster nach dem Prozessstart in Minuten (Env SYNAPSE_ONBOARDING_RUHE_MIN, Default 60).
+ * 0 oder ein unlesbarer Wert schaltet es ab — dann gilt wieder das alte Verhalten, und das
+ * ist die sichere Richtung: im Zweifel kommt das Onboarding, statt still zu verschwinden.
+ * Bewusst bei JEDEM Aufruf gelesen und nicht in einer Konstanten eingefroren, damit ein Test
+ * (und ein Betreiber per docker exec) den Wert umstellen kann, ohne den Prozess neu zu starten.
+ */
+function ruhefensterMinuten(): number {
+  const roh = Number(process.env.SYNAPSE_ONBOARDING_RUHE_MIN ?? 60);
+  return Number.isFinite(roh) && roh > 0 ? roh : 0;
+}
+
 /** Einmal pro Prozess: tote Instance-Rows aus agent_onboardings raeumen */
 let onboardingCleanupDone = false;
 
@@ -192,7 +207,35 @@ export async function registerAgent(
     );
     onboardedKeys.add(key);
 
-    const isFirstVisit = (result.rowCount ?? 0) > 0;
+    let isFirstVisit = (result.rowCount ?? 0) > 0;
+
+    // ⚠️ RUHEFENSTER NACH EINEM DEPLOY (ON-1). Die Server-Kennung ist prozessgebunden und bei
+    // jedem Containerstart neu — formal ist danach JEDER Agent "zum ersten Mal" da, obwohl sich
+    // an den Regeln nichts geaendert hat. In einer Deploy-Nacht kam das volle Onboarding so
+    // siebenmal an denselben Agenten, an jedem Tool-Aufruf haengend.
+    // Unterdrueckt wird deshalb NUR die Wiederholung: der Agent muss unter einer ANDEREN
+    // Server-Kennung schon einen Eintrag haben. Wer noch nie da war — ein frisch gespawnter
+    // Subagent — bekommt seine Regeln unveraendert, denn genau dafuer gibt es das Onboarding.
+    // Der INSERT oben laeuft in beiden Faellen: dadurch bleibt der Agent auch NACH Ablauf des
+    // Fensters ruhig, statt verspaetet doch noch begruesst zu werden.
+    if (isFirstVisit) {
+      const ruheMs = ruhefensterMinuten() * 60_000;
+      if (ruheMs > 0 && Date.now() - PROZESS_START < ruheMs) {
+        const frueher = await pool.query(
+          `SELECT 1 FROM agent_onboardings
+            WHERE agent_id = $1 AND project = $2 AND server_instance_id <> $3
+            LIMIT 1`,
+          [agentId, project, serverInstanceId]
+        );
+        if (frueher.rows.length > 0) {
+          console.info(
+            `[Onboarding] Ruhefenster aktiv: "${agentId}" (${project}) war schon vor dem Neustart da `
+            + `— kein erneutes Onboarding. Abschalten mit SYNAPSE_ONBOARDING_RUHE_MIN=0.`
+          );
+          isFirstVisit = false;
+        }
+      }
+    }
 
     if (isFirstVisit) {
       // Session-Tracking beibehalten (isAgentKnown, events) — ohne Instance-Ueberschreiben.
