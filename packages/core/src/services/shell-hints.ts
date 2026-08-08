@@ -15,6 +15,11 @@
  *   - Der Fertig-Hinweis geht an ALLE, auch an den Starter: der will sein
  *     Ergebnis, und genau dafuer wurde der blockierende Aufruf abgeschafft.
  *
+ * VERWANDT: shell-teilbar.ts entscheidet, ob zwei Aufrufe derselbe Lauf sind
+ * (exec_key) und ob geteilt werden darf. Ein Hinweis meldet, was laeuft; die
+ * Gueltigkeitspruefung in enqueueShellJob entscheidet, ob ueberhaupt gelaufen
+ * werden muss. Beide stuetzen sich auf denselben Schluessel.
+ *
  * DER HINWEIS TRAEGT NIE AUSGABE. Nur Job-ID, Befehl (gekuerzt), Status und
  * Exit-Code. Wer den Output braucht, holt ihn gezielt mit shell(get|log) — sonst
  * zieht sich ein Agent den Build-Log eines fremden Jobs in den Kontext.
