@@ -126,7 +126,7 @@ export async function shellRoutes(fastify: FastifyInstance): Promise<void> {
         // verhalten wie der MCP-Pfad in routes/mcp.ts — zwei Aufrufer, ein System.
         const hardLimitMs = Math.min(body.timeout_ms ?? HARD_LIMIT_MS, HARD_LIMIT_MS);
         // SH-4: identisch zum MCP-Pfad — zwei Aufrufer, ein Verhalten.
-        const { id, stream_id, attached, attached_to, message: anhaengMeldung } = await enqueueShellJob({
+        const { id, stream_id, attached, attached_to, reused, message: anhaengMeldung } = await enqueueShellJob({
           project: body.project,
           command: body.command,
           cwd_relative: body.cwd_relative,
@@ -145,8 +145,9 @@ export async function shellRoutes(fastify: FastifyInstance): Promise<void> {
           exit_code: result.exit_code,
           tail: result.tail,
           error: result.error,
-          message: attached ? anhaengMeldung : result.message,
+          message: (attached || reused) ? anhaengMeldung : result.message,
           ...(attached ? { attached: true, attached_to } : {}),
+          ...(reused ? { reused: true } : {}),
         });
       }
 

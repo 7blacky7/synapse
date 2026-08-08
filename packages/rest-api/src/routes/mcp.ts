@@ -4593,7 +4593,7 @@ async function handleToolCall(
       }
 
       // target === 'local' — bestehender Queue-Pfad
-      const { id, stream_id, attached, attached_to, message: anhaengMeldung } = await enqueueShellJob({
+      const { id, stream_id, attached, attached_to, reused, message: anhaengMeldung } = await enqueueShellJob({
         project,
         command,
         cwd_relative: cwdRel,
@@ -4626,8 +4626,11 @@ async function handleToolCall(
         error: result.error,
         // Beim Anhaengen erklaert die Meldung aus enqueue, WARUM kein eigener
         // Lauf gestartet wurde — die haette das Job-Ergebnis sonst ueberschrieben.
-        message: attached ? anhaengMeldung : result.message,
+        // Bei attached/reused erklaert die Meldung aus enqueue, WARUM kein
+        // eigener Lauf stattfand — sonst haelt der Agent das Ergebnis fuer seines.
+        message: (attached || reused) ? anhaengMeldung : result.message,
         ...(attached ? { attached: true, attached_to } : {}),
+        ...(reused ? { reused: true } : {}),
       };
     }
 

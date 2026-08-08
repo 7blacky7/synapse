@@ -380,6 +380,7 @@ export {
   insertCompletedShellJob,
   cancelShellJob,
   reapOrphanedRunningJobs,
+  aktuellerDateistand,
   claimShellJobHints,
   pruneShellJobNotices,
   CANCEL_PROTECTED_MS,

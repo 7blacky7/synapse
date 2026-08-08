@@ -63,6 +63,7 @@ export {
   insertCompletedShellJob,
   cancelShellJob,
   reapOrphanedRunningJobs,
+  aktuellerDateistand,
   DETACH_AFTER_MS,
   HARD_LIMIT_MS,
   CANCEL_PROTECTED_MS,

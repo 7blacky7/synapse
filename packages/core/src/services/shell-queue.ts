@@ -125,12 +125,40 @@ function formatResult(row: ShellJobRow): ShellJobResult {
 const TERMINAL_STATUSES: ShellJobRow['status'][] = ['done', 'failed', 'rejected', 'timeout'];
 
 /**
+ * SH-5: Wie lange ein gruenes Ergebnis hoechstens wiederverwendet wird.
+ *
+ * Die Aenderungspruefung allein wuerde reichen — aber der indexierte Dateistand
+ * hinkt dem Dateisystem um Sekunden hinterher, und je aelter ein Ergebnis ist,
+ * desto mehr Gelegenheit gab es fuer etwas, das der Index nicht sieht
+ * (Netzlaufwerk, Nebenprozess, externes Werkzeug). Die Frist deckelt den Schaden.
+ */
+const WIEDERVERWENDUNG_MAX_MIN = 30;
+
+/**
+ * Stand des zuletzt indexierten Dateiinhalts eines Projekts.
+ *
+ * BEWUSST code_files UND NICHT tool_calls: Der Aktivitaets-Store sieht nur
+ * Synapse-Tools. Speichert der User im Editor, oder schreibt ein Agent per shell
+ * (sed -i, git checkout), steht davon nichts drin — ein Ergebnis waere dann
+ * faelschlich "noch gueltig", waehrend der Build laengst veraltet ist. Der
+ * FileWatcher dagegen sieht jede Schreiboperation im Projektbaum.
+ */
+export async function aktuellerDateistand(project: string): Promise<Date | null> {
+  const { rows } = await getPool().query<{ stand: Date | null }>(
+    `SELECT MAX(updated_at) AS stand FROM code_files
+     WHERE project = $1 AND deleted_at IS NULL`,
+    [project],
+  );
+  return rows[0]?.stand ?? null;
+}
+
+/**
  * Reiht einen Shell-Job ein. Der NOTIFY auf `shell_job_created` passiert
  * automatisch via Trigger `trg_shell_jobs_notify`.
  */
 export async function enqueueShellJob(
   args: EnqueueArgs,
-): Promise<{ id: string; stream_id: string; attached?: boolean; attached_to?: string | null; message?: string }> {
+): Promise<{ id: string; stream_id: string; attached?: boolean; attached_to?: string | null; reused?: boolean; message?: string }> {
   const pool = getPool();
   const streamId = randomUUID().replace(/-/g, '').slice(0, 16);
 
@@ -153,13 +181,53 @@ export async function enqueueShellJob(
       })
     : null;
 
+  // SH-5: Bevor wir ueberhaupt etwas starten — gibt es ein GRUENES Ergebnis
+  // desselben Laufs, und hat sich seitdem nichts geaendert? Dann ist ein neuer
+  // Lauf reine Zeitverschwendung.
+  //
+  // NUR GRUEN. Ein roter Lauf darf NIE ersetzen: nach einem Fehlschlag aendert
+  // praktisch immer gerade jemand etwas (deshalb war er ja rot), und der
+  // indexierte Stand hinkt Sekunden hinterher. Der Reparierende bekaeme seinen
+  // eigenen alten Fehler zurueck, hielte die Reparatur fuer wirkungslos und
+  // drehte im Kreis. Rot wird gemeldet (SH-3) und laeuft trotzdem neu.
+  const dateistand = execKey ? await aktuellerDateistand(args.project) : null;
+  if (execKey && dateistand) {
+    const frueher = await pool.query<{
+      id: string; stream_id: string | null; exit_code: number | null; completed_at: Date;
+    }>(
+      `SELECT id, stream_id, exit_code, completed_at
+       FROM shell_jobs
+       WHERE exec_key = $1
+         AND status = 'done'
+         AND project_state_at IS NOT NULL
+         AND project_state_at >= $2
+         AND completed_at > NOW() - ($3::integer * interval '1 minute')
+       ORDER BY completed_at DESC
+       LIMIT 1`,
+      [execKey, dateistand, WIEDERVERWENDUNG_MAX_MIN],
+    );
+    if (frueher.rows.length > 0) {
+      const alt = frueher.rows[0];
+      return {
+        id: alt.id,
+        stream_id: alt.stream_id ?? streamId,
+        reused: true,
+        message:
+          `Nicht erneut ausgefuehrt: derselbe Befehl lief bereits erfolgreich ` +
+          `(Job ${alt.id}, exit ${alt.exit_code ?? 0}), und am Projekt hat sich seitdem ` +
+          `nichts geaendert. Das Ergebnis steht unveraendert bereit — bei Bedarf ` +
+          `shell(get, id). Einen frischen Lauf erzwingst du mit force:true.`,
+      };
+    }
+  }
+
   if (execKey) {
     // ON CONFLICT statt vorheriger Abfrage: zwei gleichzeitige Aufrufe wuerden
     // sonst beide "laeuft noch nicht" sehen und beide starten. Der UNIQUE-Teil-
     // index entscheidet das Rennen; der Verlierer haengt sich unten an.
     const eingereiht = await pool.query<{ id: string }>(
-      `INSERT INTO shell_jobs (project, command, cwd_relative, timeout_ms, tail_lines, stream_id, agent_id, exec_key)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      `INSERT INTO shell_jobs (project, command, cwd_relative, timeout_ms, tail_lines, stream_id, agent_id, exec_key, project_state_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
        ON CONFLICT DO NOTHING
        RETURNING id`,
       [
@@ -171,6 +239,7 @@ export async function enqueueShellJob(
         streamId,
         args.agent_id ?? null,
         execKey,
+        dateistand,
       ],
     );
     if (eingereiht.rows.length > 0) {

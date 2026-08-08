@@ -707,6 +707,13 @@ ALTER TABLE shell_jobs ADD COLUMN IF NOT EXISTS cancelled_at TIMESTAMPTZ;
 --   Meldung, die nie kommt.
 ALTER TABLE shell_jobs ADD COLUMN IF NOT EXISTS exec_key TEXT;
 ALTER TABLE shell_jobs ADD COLUMN IF NOT EXISTS attached_agents TEXT[];
+-- SH-5: Auf welchem Dateistand beruht dieses Ergebnis. Quelle ist der INDEXIERTE
+--   Stand (MAX(code_files.updated_at)), NICHT die Tool-Historie: tool_calls sieht
+--   nur Synapse-Tools. Speichert der User im Editor oder schreibt ein Agent per
+--   shell (sed -i, git checkout), taucht das dort nie auf — das Ergebnis waere
+--   dann faelschlich "noch gueltig", waehrend der Build laengst veraltet ist.
+--   Der FileWatcher sieht diese Schreibvorgaenge.
+ALTER TABLE shell_jobs ADD COLUMN IF NOT EXISTS project_state_at TIMESTAMPTZ;
 -- Teil-Index nur auf laufende Jobs: die Suche nach "laeuft dieser Befehl schon?"
 -- interessiert sich ausschliesslich dafuer, und der Index bleibt dadurch winzig.
 --   UNIQUE ist Absicht und der Kern der Race-Freiheit: zwei Agenten, die
