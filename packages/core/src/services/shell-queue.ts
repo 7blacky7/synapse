@@ -453,6 +453,14 @@ export interface HideResult {
   job_id: string;
   /** Wer den Hinweis danach noch bekommt (leer = niemand). */
   hint_agents: string[];
+  /**
+   * Projekt des Jobs — damit der Aufruf im Activity-Store auffindbar bleibt.
+   * hide arbeitet auf einer Job-ID und bekommt kein project mitgeliefert; ohne
+   * diese Rueckgabe landete der Eintrag mit project=NULL und tauchte in
+   * activity(project:"...") nicht auf. Ausgerechnet die Aktion, die Hinweise
+   * fuer andere unterdrueckt, waere dann die am schlechtesten auffindbare.
+   */
+  project?: string | null;
 }
 
 /**
@@ -524,6 +532,7 @@ export async function hideShellJobHints(
       + (!istStarter && job.agent_id ? ` "${job.agent_id}" bleibt als Starter dabei.` : ''),
     job_id: id,
     hint_agents: empfaenger,
+    project: job.project,
   };
 }
 
@@ -534,6 +543,8 @@ export interface CancelResult {
   message: string;
   job_id: string;
   status?: ShellJobRow['status'];
+  /** Projekt des Jobs — siehe HideResult.project, gleicher Grund. */
+  project?: string | null;
 }
 
 /**
@@ -610,6 +621,7 @@ export async function cancelShellJob(
       : `Job ${id} abgebrochen (Schutzfrist von ${Math.round(CANCEL_PROTECTED_MS / 60000)} min war abgelaufen).`,
     job_id: id,
     status: job.status,
+    project: job.project,
   };
 }
 

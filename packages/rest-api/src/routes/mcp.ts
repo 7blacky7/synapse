@@ -4510,19 +4510,32 @@ async function handleToolCall(
         // gespeicherte agent_id des Jobs. resolveAgentId leitet die eigene ID aus
         // dem Header ab — ein Agent kann sich hier nicht als jemand anderes ausgeben.
         const res = await cancelShellJob(reqStr(args, 'id'), resolveAgentId(str(args, 'agent_id')));
+        // Siehe hide: ohne das steht der Abbruch mit project=NULL im Activity-Store.
+        if (res.project && !args.project) args.project = res.project;
         return { success: res.ok, ...res };
       }
 
       if (shellAction === 'hide') {
         // Berechtigung serverseitig, wie bei cancel: die eigene ID kommt aus dem
         // Header, ein Agent kann sich hier nicht als jemand anderes ausgeben.
-        const rohe = args.for_agents;
-        const fuer = Array.isArray(rohe) ? rohe.filter((a): a is string => typeof a === 'string') : null;
+        // ⚠️ strArray STATT Array.isArray. Der Connector schickt Arrays als JSON-STRING:
+        // gemessen kam for_agents als "[\"a\", \"b\"]" an, nicht als Array. Array.isArray war
+        // damit false, der Handler fiel auf null zurueck und blendete fuer ALLE aus —
+        // unter einer Erfolgsmeldung, die das Gegenteil dessen tat, was verlangt war.
+        // strArray kennt alle drei Formen und wird aus demselben Grund schon bei
+        // agent_ids/tools benutzt. Wer hier einen neuen Listen-Parameter ergaenzt,
+        // nimmt strArray — nicht die eigene Pruefung.
         const res = await hideShellJobHints(
           reqStr(args, 'id'),
           resolveAgentId(str(args, 'agent_id')),
-          fuer,
+          strArray(args, 'for_agents') ?? null,
         );
+        // Projekt nachtragen, damit der Eintrag im Activity-Store auffindbar ist:
+        // die Log-Zeile am Ende liest toolArgs.project, und hide kennt nur eine
+        // Job-ID. Dasselbe Muster, mit dem weiter oben schon agent_id nachgetragen
+        // wird. Ohne das ist ausgerechnet die Aktion, die Hinweise fuer andere
+        // unterdrueckt, ueber activity(project:"...") nicht auffindbar.
+        if (res.project && !args.project) args.project = res.project;
         return { success: res.ok, ...res };
       }
 
