@@ -143,6 +143,9 @@ const WIEDERVERWENDUNG_MAX_MIN = 30;
  * faelschlich "noch gueltig", waehrend der Build laengst veraltet ist. Der
  * FileWatcher dagegen sieht jede Schreiboperation im Projektbaum.
  */
+// ⚠️ NUR ZUM PRUEFEN, OB ES UEBERHAUPT EINEN STAND GIBT — der Rueckgabewert taugt
+// NICHT zum Speichern oder Vergleichen: ein JS-Date verliert die Mikrosekunden der
+// Spalte. Wer den Stand braucht, vergleicht ihn in SQL gegen code_files.
 export async function aktuellerDateistand(project: string): Promise<Date | null> {
   const { rows } = await getPool().query<{ stand: Date | null }>(
     `SELECT MAX(updated_at) AS stand FROM code_files
@@ -200,11 +203,12 @@ export async function enqueueShellJob(
        WHERE exec_key = $1
          AND status = 'done'
          AND project_state_at IS NOT NULL
-         AND project_state_at >= $2
+         AND project_state_at >= (SELECT MAX(updated_at) FROM code_files
+                                   WHERE project = $2 AND deleted_at IS NULL)
          AND completed_at > NOW() - ($3::integer * interval '1 minute')
        ORDER BY completed_at DESC
        LIMIT 1`,
-      [execKey, dateistand, WIEDERVERWENDUNG_MAX_MIN],
+      [execKey, args.project, WIEDERVERWENDUNG_MAX_MIN],
     );
     if (frueher.rows.length > 0) {
       const alt = frueher.rows[0];
@@ -227,7 +231,17 @@ export async function enqueueShellJob(
     // index entscheidet das Rennen; der Verlierer haengt sich unten an.
     const eingereiht = await pool.query<{ id: string }>(
       `INSERT INTO shell_jobs (project, command, cwd_relative, timeout_ms, tail_lines, stream_id, agent_id, exec_key, project_state_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8,
+               -- ⚠️ DEN STAND IN SQL SETZEN, NICHT ALS JS-DATE DURCHREICHEN. Ein Date
+               -- kann nur Millisekunden, PostgreSQL speichert Mikrosekunden: der Wert
+               -- kam um bis zu 999 Mikrosekunden ZU KLEIN zurueck und war damit immer
+               -- "aelter" als der Stand, aus dem er stammte. GEMESSEN am 08.08.2026:
+               -- .944000 gespeichert gegen .944031 im Index, 31 Mikrosekunden Abstand.
+               -- Oben im SELECT kuerzte sich das weg, weil BEIDE Seiten durch dieselbe
+               -- Rundung liefen — ein Fehler, der sich selbst versteckte, solange ihn
+               -- niemand von aussen gegen den echten Wert hielt.
+               (SELECT MAX(updated_at) FROM code_files
+                WHERE project = $1 AND deleted_at IS NULL))
        ON CONFLICT DO NOTHING
        RETURNING id`,
       [
@@ -239,7 +253,6 @@ export async function enqueueShellJob(
         streamId,
         args.agent_id ?? null,
         execKey,
-        dateistand,
       ],
     );
     if (eingereiht.rows.length > 0) {
