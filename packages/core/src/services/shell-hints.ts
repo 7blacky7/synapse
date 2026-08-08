@@ -70,6 +70,42 @@ export interface ShellJobHint {
   hinweis?: string;
 }
 
+/**
+ * Was seit dem Lauf passiert ist — in der Form, in der es eine Entscheidung traegt.
+ *
+ * NICHT "seit 14 Minuten": die Zeit ist der Anker, nicht die Auskunft. Wer den Hinweis
+ * liest, will wissen, OB und WORAN sich etwas geaendert hat, und braucht dafuer weder
+ * Zeitstempel noch Nachrechnen. Der Zeitpunkt bleibt intern der Bezugspunkt.
+ */
+function gueltigkeitsText(r: {
+  pruefbar: boolean;
+  dateien_anzahl: string;
+  dateien_namen: string[] | null;
+  schreibzugriffe: string;
+}): string {
+  const ERGEBNIS_HOLEN = 'Ergebnis nur abrufen wenn du es brauchst: shell(get, id).';
+  if (!r.pruefbar) return `Erfolgreich. ${ERGEBNIS_HOLEN}`;
+
+  const dateien = Number(r.dateien_anzahl ?? 0);
+  if (dateien === 0) {
+    return 'Gueltig — seit dem Lauf nichts geaendert. NICHT neu starten, '
+      + 'Ergebnis holen: shell(get, id).';
+  }
+
+  const gezeigt = r.dateien_namen ?? [];
+  const rest = dateien - gezeigt.length;
+  const liste = gezeigt.join(', ') + (rest > 0 ? `, +${rest}` : '');
+  const schreibzugriffe = Number(r.schreibzugriffe ?? 0);
+  // Der Index sieht auch, was an Synapse vorbei geschrieben wurde. Steht dort eine
+  // Aenderung, zu der es keinen Tool-Aufruf gibt, ist die Zahl der Schreibzugriffe
+  // irrefuehrend niedrig — dann lieber weglassen als eine falsche Zahl nennen.
+  const wieOft = schreibzugriffe > 0
+    ? `, ${schreibzugriffe} ${schreibzugriffe === 1 ? 'Schreibzugriff' : 'Schreibzugriffe'}`
+    : '';
+  return `Ueberholt — seitdem ${dateien} ${dateien === 1 ? 'Datei' : 'Dateien'} `
+    + `geaendert (${liste})${wieOft}. Neu ausfuehren wenn du das Ergebnis brauchst.`;
+}
+
 function kuerze(befehl: string): string {
   const einzeilig = befehl.replace(/\s+/g, ' ').trim();
   return einzeilig.length > BEFEHL_MAX ? `${einzeilig.slice(0, BEFEHL_MAX - 1)}…` : einzeilig;
@@ -98,7 +134,10 @@ export async function claimShellJobHints(
       status: string;
       exit_code: number | null;
       error: string | null;
-      gueltigkeit: 'gueltig' | 'veraltet' | null;
+      pruefbar: boolean;
+      dateien_anzahl: string;
+      dateien_namen: string[] | null;
+      schreibzugriffe: string;
     }>(
       `WITH kandidaten AS (
          SELECT j.id AS job_id,
@@ -136,13 +175,6 @@ export async function claimShellJobHints(
          ORDER BY sortzeit DESC
          LIMIT $3
        ),
-       -- Derselbe Stand, den die Gueltigkeitspruefung in enqueueShellJob benutzt.
-       -- Bewusst code_files und nicht tool_calls: ein Editor-Write oder ein sed -i
-       -- steht im Aktivitaets-Store nicht, im Dateiindex sehr wohl.
-       stand AS (
-         SELECT MAX(updated_at) AS s FROM code_files
-         WHERE project = $1 AND deleted_at IS NULL
-       ),
        beansprucht AS (
          INSERT INTO shell_job_notices (job_id, agent_id, kind)
          SELECT k.job_id, $2, k.kind FROM kandidaten k
@@ -150,18 +182,32 @@ export async function claimShellJobHints(
          RETURNING job_id, kind
        )
        SELECT k.job_id, k.kind, k.agent_id, k.command, k.status, k.exit_code, k.error,
-              CASE
-                -- Nicht teilbar (git commit, rm, alles mit &&): ein zweiter Lauf ist
-                -- ohnehin ein ANDERER Vorgang. Eine Gueltigkeitsaussage waere sinnlos.
-                WHEN k.exec_key IS NULL THEN NULL
-                -- Kein Bezugspunkt: lieber schweigen als raten.
-                WHEN k.project_state_at IS NULL OR s.s IS NULL THEN NULL
-                WHEN k.project_state_at >= s.s THEN 'gueltig'
-                ELSE 'veraltet'
-              END AS gueltigkeit
+              -- Pruefbar nur, wenn der Befehl teilbar ist (ein zweiter 'git commit' waere
+              -- ein anderer Vorgang, keine Wiederholung) UND es einen Bezugspunkt gibt.
+              (k.exec_key IS NOT NULL AND k.project_state_at IS NOT NULL) AS pruefbar,
+              COALESCE(d.anzahl, 0)   AS dateien_anzahl,
+              d.namen                 AS dateien_namen,
+              COALESCE(m.anzahl, 0)   AS schreibzugriffe
        FROM kandidaten k
        JOIN beansprucht b ON b.job_id = k.job_id AND b.kind = k.kind
-       CROSS JOIN stand s
+       -- WELCHE Dateien: aus dem Index, denn der sieht auch, was an Synapse vorbei
+       -- geschrieben wurde (Editor, sed -i, git checkout).
+       LEFT JOIN LATERAL (
+         SELECT count(*) AS anzahl,
+                (array_agg(regexp_replace(cf.file_path, '^.*/', '')
+                           ORDER BY cf.updated_at DESC))[1:3] AS namen
+         FROM code_files cf
+         WHERE cf.project = $1 AND cf.deleted_at IS NULL
+           AND cf.updated_at > k.project_state_at
+       ) d ON k.exec_key IS NOT NULL AND k.project_state_at IS NOT NULL
+       -- WIE OFT geschrieben wurde: aus dem Activity-Store. Der Index sagt nur, dass
+       -- eine Datei jetzt anders aussieht — nicht, in wie vielen Schritten das geschah.
+       LEFT JOIN LATERAL (
+         SELECT count(*) AS anzahl
+         FROM tool_calls tc
+         WHERE tc.project = $1 AND tc.is_mutation AND tc.ok
+           AND tc.ts > k.project_state_at
+       ) m ON k.exec_key IS NOT NULL AND k.project_state_at IS NOT NULL
        ORDER BY k.sortzeit DESC`,
       [project, agentId, limit, FERTIG_FENSTER_MIN, LAUFEND_PLAUSIBEL_MIN],
     );
@@ -185,13 +231,7 @@ export async function claimShellJobHints(
               // sie und antwortet mit reused. Wer den Hinweis las, wusste nur DASS etwas
               // fertig ist — nicht, ob es noch etwas taugt. Genau daran entscheidet sich
               // aber, ob er den Befehl nochmal schickt.
-              ? r.gueltigkeit === 'gueltig'
-                ? 'Erfolgreich und noch gueltig: seit dem Lauf wurde am Projekt nichts '
-                  + 'geaendert. NICHT neu ausfuehren — Ergebnis holen mit shell(get, id).'
-                : r.gueltigkeit === 'veraltet'
-                  ? 'Erfolgreich, aber ueberholt: seit dem Lauf wurde am Projekt etwas '
-                    + 'geaendert. Wenn du das Ergebnis brauchst, fuehre den Befehl neu aus.'
-                  : 'Erfolgreich. Ergebnis nur abrufen wenn du es brauchst: shell(get, id).'
+              ? gueltigkeitsText(r)
               : 'Fehlgeschlagen. Wenn es dich betrifft: shell(log, id) mit query.';
       }
       return basis;
