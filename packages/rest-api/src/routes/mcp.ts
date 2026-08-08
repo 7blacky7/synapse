@@ -1057,6 +1057,7 @@ const MCP_TOOLS = [
         agent_id: { type: 'string', description: 'exec: Attribution — welcher Agent den Job absetzt. Taucht in shell(history) + shell(activity) auf. Optional: Cloud leitet es aus dem Header ab, Spezialisten aus SYNAPSE_AGENT_NAME.' },
         target: { type: 'string', enum: ['auto', 'local', 'workspace'], description: 'exec: "auto" (Default, Heartbeat-basiert) | "local" (Daemon erzwingen) | "workspace" (Docker-Container erzwingen)' },
         isolated: { type: 'boolean', description: 'exec: Kurzform fuer target="workspace" — fuer isolierte Tests im Docker-Container (Default false)' },
+        force: { type: 'boolean', description: 'exec: erzwingt einen EIGENEN Lauf, auch wenn derselbe Befehl gerade schon laeuft. Normalerweise haengst du dich automatisch an den laufenden Job an (Antwort: attached:true) — zwei gleiche Builds wuerden sich sonst im selben dist/ ins Gehege kommen. Nur setzen wenn du wirklich einen unabhaengigen zweiten Lauf brauchst.' },
         workspace: { type: 'string', description: 'exec: WS3 — benannter Ziel-Workspace im Container-Modus (Default "main"). Mit workspace:"server" laeuft das Kommando im server-Container des Projekts (DNS synapse-ws-<projekt>-server). Wirkt nur bei target=workspace/isolated.' },
       },
       required: ['action'],
@@ -4592,12 +4593,17 @@ async function handleToolCall(
       }
 
       // target === 'local' — bestehender Queue-Pfad
-      const { id, stream_id } = await enqueueShellJob({
+      const { id, stream_id, attached, attached_to, message: anhaengMeldung } = await enqueueShellJob({
         project,
         command,
         cwd_relative: cwdRel,
         timeout_ms: timeoutMs,
         tail_lines: tailLines,
+        // SH-4: gehoert in den Schluessel — derselbe Build im Container und auf
+        // dem Daemon sind zwei Ergebnisse, nicht eines.
+        target,
+        workspace: str(args, 'workspace'),
+        force: bool(args, 'force') === true,
         // Attribution: args.agent_id ist im Cloud-Pfad bereits aus dem Header
         // befuellt (deriveAgentIdFromHeaders) bzw. vom Caller gesetzt; Spezialist
         // faellt ueber resolveAgentId auf SYNAPSE_AGENT_NAME zurueck.
@@ -4618,7 +4624,10 @@ async function handleToolCall(
         exit_code: result.exit_code,
         tail: result.tail,
         error: result.error,
-        message: result.message,
+        // Beim Anhaengen erklaert die Meldung aus enqueue, WARUM kein eigener
+        // Lauf gestartet wurde — die haette das Job-Ergebnis sonst ueberschrieben.
+        message: attached ? anhaengMeldung : result.message,
+        ...(attached ? { attached: true, attached_to } : {}),
       };
     }
 

@@ -41,6 +41,8 @@ interface ShellBody {
   case_sensitive?: boolean;
   max_matches?: number;
   timeout_ms?: number;
+  /** SH-4: eigenen Lauf erzwingen statt sich anzuhaengen. */
+  force?: boolean;
   tail_lines?: number;
   cwd_relative?: string;
   since_last_read?: boolean;
@@ -123,12 +125,14 @@ export async function shellRoutes(fastify: FastifyInstance): Promise<void> {
         // zurueck und der Job laeuft zu Ende. Dieser Endpoint muss sich exakt so
         // verhalten wie der MCP-Pfad in routes/mcp.ts — zwei Aufrufer, ein System.
         const hardLimitMs = Math.min(body.timeout_ms ?? HARD_LIMIT_MS, HARD_LIMIT_MS);
-        const { id, stream_id } = await enqueueShellJob({
+        // SH-4: identisch zum MCP-Pfad — zwei Aufrufer, ein Verhalten.
+        const { id, stream_id, attached, attached_to, message: anhaengMeldung } = await enqueueShellJob({
           project: body.project,
           command: body.command,
           cwd_relative: body.cwd_relative,
           timeout_ms: hardLimitMs,
           tail_lines: body.tail_lines,
+          force: body.force === true,
         });
 
         const result = await waitForShellJob(id, DETACH_AFTER_MS);
@@ -141,7 +145,8 @@ export async function shellRoutes(fastify: FastifyInstance): Promise<void> {
           exit_code: result.exit_code,
           tail: result.tail,
           error: result.error,
-          message: result.message,
+          message: attached ? anhaengMeldung : result.message,
+          ...(attached ? { attached: true, attached_to } : {}),
         });
       }
 

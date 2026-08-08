@@ -699,6 +699,26 @@ ALTER TABLE shell_jobs ADD COLUMN IF NOT EXISTS agent_id TEXT;
 --   Unterscheidung zu einem echten Fehlschlag traegt error='cancelled'.
 ALTER TABLE shell_jobs ADD COLUMN IF NOT EXISTS cancelled_by TEXT;
 ALTER TABLE shell_jobs ADD COLUMN IF NOT EXISTS cancelled_at TIMESTAMPTZ;
+-- SH-4: exec_key identifiziert "derselbe Lauf" — Hash aus Projekt, Kommando,
+--   cwd und Ziel (local/workspace). NICHT nur das Kommando: derselbe Build im
+--   Container und auf dem Daemon sind ZWEI Ergebnisse, nicht eines.
+--   attached_agents haelt fest, wer sich an einen laufenden Job gehaengt hat —
+--   die muessen beim Abbruch benachrichtigt werden, sonst warten sie auf eine
+--   Meldung, die nie kommt.
+ALTER TABLE shell_jobs ADD COLUMN IF NOT EXISTS exec_key TEXT;
+ALTER TABLE shell_jobs ADD COLUMN IF NOT EXISTS attached_agents TEXT[];
+-- Teil-Index nur auf laufende Jobs: die Suche nach "laeuft dieser Befehl schon?"
+-- interessiert sich ausschliesslich dafuer, und der Index bleibt dadurch winzig.
+--   UNIQUE ist Absicht und der Kern der Race-Freiheit: zwei Agenten, die
+--   gleichzeitig denselben Befehl absetzen, wuerden bei einer blossen Abfrage
+--   beide "laeuft noch nicht" sehen und beide starten — genau die doppelte
+--   Ausfuehrung, die verhindert werden soll. Mit dem Index gewinnt einer den
+--   INSERT, der andere laeuft in den Konflikt und haengt sich an.
+--   NULL-Werte schliesst ein UNIQUE-Index nicht ein: nicht teilbare Befehle
+--   (git commit, rm, alles mit &&) bekommen exec_key = NULL und duerfen
+--   deshalb beliebig oft gleichzeitig laufen.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_shell_jobs_exec_key_aktiv
+  ON shell_jobs(exec_key) WHERE status IN ('pending', 'running');
 
 -- SH-3: Wer hat welchen Shell-Hinweis schon bekommen.
 -- Vorbild ist der Lesestand bei Channels (specialist_channel_members.

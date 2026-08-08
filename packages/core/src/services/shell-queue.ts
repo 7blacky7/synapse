@@ -19,6 +19,7 @@
 
 import { randomUUID } from 'node:crypto';
 import { getPool } from '../db/index.js';
+import { istTeilbar, execKeyFuer } from './shell-teilbar.js';
 
 export interface EnqueueArgs {
   project: string;
@@ -28,6 +29,11 @@ export interface EnqueueArgs {
   tail_lines?: number;
   /** Echte Attribution: welcher Agent den Job abgesetzt hat (NULL = unbekannt). */
   agent_id?: string | null;
+  /** SH-4: Ziel des Laufs — gehoert in den Schluessel, Container != Daemon. */
+  target?: string | null;
+  workspace?: string | null;
+  /** SH-4: erzwingt einen eigenen Lauf, auch wenn derselbe Befehl schon laeuft. */
+  force?: boolean;
 }
 
 export interface ShellJobRow {
@@ -124,9 +130,85 @@ const TERMINAL_STATUSES: ShellJobRow['status'][] = ['done', 'failed', 'rejected'
  */
 export async function enqueueShellJob(
   args: EnqueueArgs,
-): Promise<{ id: string; stream_id: string }> {
+): Promise<{ id: string; stream_id: string; attached?: boolean; attached_to?: string | null; message?: string }> {
   const pool = getPool();
   const streamId = randomUUID().replace(/-/g, '').slice(0, 16);
+
+  // SH-4: Laeuft derselbe Befehl schon, haengen wir uns an statt ihn ein zweites
+  // Mal zu starten. Der Grund ist NICHT Sparsamkeit, sondern Selbstzerstoerung:
+  // zwei parallele `pnpm -r build` schreiben in dasselbe dist/ und denselben
+  // pnpm-Store, zwei git-Befehle kollidieren auf .git/index.lock.
+  //
+  // exec_key wird NUR bei nebenwirkungsfreien Befehlen gesetzt (Positivliste in
+  // shell-teilbar.ts). Alles andere bekommt NULL und laeuft ungehindert doppelt —
+  // ein zweites `git commit` MUSS ein zweites Mal laufen.
+  const teilbar = args.force !== true && istTeilbar(args.command);
+  const execKey = teilbar
+    ? execKeyFuer({
+        project: args.project,
+        command: args.command,
+        cwd_relative: args.cwd_relative ?? null,
+        target: args.target ?? null,
+        workspace: args.workspace ?? null,
+      })
+    : null;
+
+  if (execKey) {
+    // ON CONFLICT statt vorheriger Abfrage: zwei gleichzeitige Aufrufe wuerden
+    // sonst beide "laeuft noch nicht" sehen und beide starten. Der UNIQUE-Teil-
+    // index entscheidet das Rennen; der Verlierer haengt sich unten an.
+    const eingereiht = await pool.query<{ id: string }>(
+      `INSERT INTO shell_jobs (project, command, cwd_relative, timeout_ms, tail_lines, stream_id, agent_id, exec_key)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+       ON CONFLICT DO NOTHING
+       RETURNING id`,
+      [
+        args.project,
+        args.command,
+        args.cwd_relative ?? null,
+        args.timeout_ms ?? HARD_LIMIT_MS,
+        args.tail_lines ?? 5,
+        streamId,
+        args.agent_id ?? null,
+        execKey,
+      ],
+    );
+    if (eingereiht.rows.length > 0) {
+      return { id: eingereiht.rows[0].id, stream_id: streamId };
+    }
+
+    // Konflikt: derselbe Lauf ist schon unterwegs. Anhaengen und dessen ID melden.
+    const laufend = await pool.query<{ id: string; stream_id: string | null; agent_id: string | null }>(
+      `UPDATE shell_jobs
+       SET attached_agents = CASE
+             WHEN $2::text IS NULL THEN attached_agents
+             WHEN attached_agents IS NULL THEN ARRAY[$2::text]
+             WHEN $2::text = ANY(attached_agents) THEN attached_agents
+             ELSE array_append(attached_agents, $2::text)
+           END,
+           updated_at = NOW()
+       WHERE exec_key = $1 AND status IN ('pending', 'running')
+       RETURNING id, stream_id, agent_id`,
+      [execKey, args.agent_id ?? null],
+    );
+    if (laufend.rows.length > 0) {
+      const job = laufend.rows[0];
+      return {
+        id: job.id,
+        stream_id: job.stream_id ?? streamId,
+        attached: true,
+        attached_to: job.agent_id,
+        message:
+          `Derselbe Befehl laeuft bereits als Job ${job.id}` +
+          (job.agent_id ? ` (gestartet von "${job.agent_id}")` : '') +
+          '. Du bist angehaengt und bekommst dasselbe Ergebnis — ein zweiter Lauf wuerde ' +
+          'sich mit dem ersten ins Gehege kommen. Einen eigenen Lauf erzwingst du mit force:true.',
+      };
+    }
+    // Der laufende Job ist zwischen Konflikt und Nachschlagen fertig geworden.
+    // Dann gibt es nichts mehr anzuhaengen: normal einreihen (unten, ohne Key).
+  }
+
   const res = await pool.query<{ id: string }>(
     `INSERT INTO shell_jobs (project, command, cwd_relative, timeout_ms, tail_lines, stream_id, agent_id)
      VALUES ($1, $2, $3, $4, $5, $6, $7)
