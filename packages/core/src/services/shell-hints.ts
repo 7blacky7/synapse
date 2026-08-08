@@ -20,6 +20,10 @@
  * Gueltigkeitspruefung in enqueueShellJob entscheidet, ob ueberhaupt gelaufen
  * werden muss. Beide stuetzen sich auf denselben Schluessel.
  *
+ * DIE FERTIGMELDUNG SAGT AUCH, WAS SICH SEITDEM GEAENDERT HAT — mit Dateinamen und
+ * der Zahl der Schreibzugriffe, nicht als blosses Urteil "ueberholt". Wer den Hinweis
+ * liest, entscheidet daran, ob der neue Lauf lohnt; dafuer braucht er die Namen.
+ *
  * DIE FERTIGMELDUNG SAGT AUCH, OB DAS ERGEBNIS NOCH GILT. Ein gruener Lauf nuetzt
  * nur, solange sich am Code seitdem nichts geaendert hat — sonst beschreibt er
  * einen Stand, den es nicht mehr gibt. Dieselbe Pruefung wie in enqueueShellJob
@@ -83,14 +87,10 @@ function gueltigkeitsText(r: {
   dateien_namen: string[] | null;
   schreibzugriffe: string;
 }): string {
-  const ERGEBNIS_HOLEN = 'Ergebnis nur abrufen wenn du es brauchst: shell(get, id).';
-  if (!r.pruefbar) return `Erfolgreich. ${ERGEBNIS_HOLEN}`;
+  if (!r.pruefbar) return 'Erfolgreich. Ergebnis: shell(get, id).';
 
   const dateien = Number(r.dateien_anzahl ?? 0);
-  if (dateien === 0) {
-    return 'Gueltig — seit dem Lauf nichts geaendert. NICHT neu starten, '
-      + 'Ergebnis holen: shell(get, id).';
-  }
+  if (dateien === 0) return 'Gueltig — nichts geaendert. Ergebnis: shell(get, id).';
 
   const gezeigt = r.dateien_namen ?? [];
   const rest = dateien - gezeigt.length;
@@ -99,11 +99,9 @@ function gueltigkeitsText(r: {
   // Der Index sieht auch, was an Synapse vorbei geschrieben wurde. Steht dort eine
   // Aenderung, zu der es keinen Tool-Aufruf gibt, ist die Zahl der Schreibzugriffe
   // irrefuehrend niedrig — dann lieber weglassen als eine falsche Zahl nennen.
-  const wieOft = schreibzugriffe > 0
-    ? `, ${schreibzugriffe} ${schreibzugriffe === 1 ? 'Schreibzugriff' : 'Schreibzugriffe'}`
-    : '';
-  return `Ueberholt — seitdem ${dateien} ${dateien === 1 ? 'Datei' : 'Dateien'} `
-    + `geaendert (${liste})${wieOft}. Neu ausfuehren wenn du das Ergebnis brauchst.`;
+  const wieOft = schreibzugriffe > 0 ? `, ${schreibzugriffe}× geschrieben` : '';
+  return `Ueberholt — ${dateien} ${dateien === 1 ? 'Datei' : 'Dateien'} geaendert `
+    + `(${liste})${wieOft}. Neu ausfuehren.`;
 }
 
 function kuerze(befehl: string): string {
@@ -167,6 +165,8 @@ export async function claimShellJobHints(
                  AND j.error IS DISTINCT FROM 'daemon_restart'
                  AND j.completed_at > NOW() - ($4::integer * interval '1 minute'))
            )
+           -- SH-7: ausgeblendet? NULL = alle sehen ihn (Normalfall).
+           AND (j.hint_agents IS NULL OR $2 = ANY(j.hint_agents))
            AND NOT EXISTS (
              SELECT 1 FROM shell_job_notices n
              WHERE n.job_id = j.id AND n.agent_id = $2
@@ -224,7 +224,7 @@ export async function claimShellJobHints(
       if (r.kind === 'done') {
         basis.hinweis =
           r.error === 'cancelled'
-            ? 'Abgebrochen — kein verwertbares Ergebnis.'
+            ? 'Abgebrochen — kein Ergebnis.'
             : r.status === 'done'
               // ⚠️ DIE GUELTIGKEIT GEHOERT IN DEN HINWEIS SELBST. Bis hierher stand sie nur
               // dem zur Verfuegung, der den Befehl ERNEUT absetzte: enqueueShellJob prueft
@@ -232,7 +232,7 @@ export async function claimShellJobHints(
               // fertig ist — nicht, ob es noch etwas taugt. Genau daran entscheidet sich
               // aber, ob er den Befehl nochmal schickt.
               ? gueltigkeitsText(r)
-              : 'Fehlgeschlagen. Wenn es dich betrifft: shell(log, id) mit query.';
+              : 'Fehlgeschlagen. Details: shell(log, id).';
       }
       return basis;
     });

@@ -714,6 +714,14 @@ ALTER TABLE shell_jobs ADD COLUMN IF NOT EXISTS attached_agents TEXT[];
 --   dann faelschlich "noch gueltig", waehrend der Build laengst veraltet ist.
 --   Der FileWatcher sieht diese Schreibvorgaenge.
 ALTER TABLE shell_jobs ADD COLUMN IF NOT EXISTS project_state_at TIMESTAMPTZ;
+-- SH-7: Wer diesen Job noch als Hinweis zugestellt bekommt.
+--   NULL = alle (Normalfall), Liste = nur diese Agenten, leeres Array = niemand.
+--   Gesetzt wird das NACHTRAEGLICH ueber shell(hide) — nicht beim Absetzen, denn
+--   ob ein Hinweis stoert, zeigt sich erst hinterher. Die Berechtigung ist wie
+--   beim Abbruch gestaffelt (siehe HINWEIS_SCHUTZ_MS), mit einem Unterschied:
+--   der Starter bleibt IMMER Empfaenger. Ein Fremder soll ihm die Meldung ueber
+--   seinen eigenen fehlgeschlagenen Build nicht wegnehmen koennen.
+ALTER TABLE shell_jobs ADD COLUMN IF NOT EXISTS hint_agents TEXT[];
 -- Teil-Index nur auf laufende Jobs: die Suche nach "laeuft dieser Befehl schon?"
 -- interessiert sich ausschliesslich dafuer, und der Index bleibt dadurch winzig.
 --   UNIQUE ist Absicht und der Kern der Race-Freiheit: zwei Agenten, die

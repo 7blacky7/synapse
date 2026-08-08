@@ -379,6 +379,8 @@ export {
   searchShellJobLog,
   insertCompletedShellJob,
   cancelShellJob,
+  hideShellJobHints,
+  HINWEIS_SCHUTZ_MS,
   reapOrphanedRunningJobs,
   aktuellerDateistand,
   claimShellJobHints,

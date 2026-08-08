@@ -436,6 +436,97 @@ export async function completeShellJob(
  */
 export const CANCEL_PROTECTED_MS = 10 * 60 * 1000;
 
+/**
+ * Wie lange nach dem ABSCHLUSS eines Jobs nur sein Starter die Hinweise dazu
+ * ausblenden lassen darf. Danach darf es jeder.
+ *
+ * Ab dem Abschluss und nicht ab dem Start: vorher gibt es nichts auszublenden,
+ * was jemanden stoeren koennte — die Fertigmeldung ist ja der Punkt.
+ */
+export const HINWEIS_SCHUTZ_MS = 3 * 60 * 1000;
+
+export interface HideResult {
+  ok: boolean;
+  /** Maschinen-Code: unknown_job | not_finished | not_allowed_yet */
+  error?: string;
+  message: string;
+  job_id: string;
+  /** Wer den Hinweis danach noch bekommt (leer = niemand). */
+  hint_agents: string[];
+}
+
+/**
+ * Blendet die Hinweise zu einem Job aus — ganz oder fuer alle ausser einigen.
+ *
+ * forAgents leer/weggelassen: niemand bekommt ihn mehr.
+ * forAgents mit Namen: nur diese bekommen ihn noch.
+ *
+ * DER STARTER BLEIBT IMMER DABEI, wenn jemand ANDERES ausblendet. Sonst koennte
+ * ein Dritter dafuer sorgen, dass der Verursacher nie erfaehrt, dass sein Build
+ * fehlgeschlagen ist. Nur der Starter selbst darf sich herausnehmen.
+ */
+export async function hideShellJobHints(
+  id: string,
+  agentId: string | null,
+  forAgents?: string[] | null,
+): Promise<HideResult> {
+  const pool = getPool();
+  const r = await pool.query<ShellJobRow>(`SELECT * FROM shell_jobs WHERE id = $1`, [id]);
+  if (r.rows.length === 0) {
+    return { ok: false, error: 'unknown_job', message: `Job ${id} nicht gefunden.`, job_id: id, hint_agents: [] };
+  }
+  const job = r.rows[0];
+  const istStarter = agentId !== null && agentId === job.agent_id;
+
+  const fertigSeit = job.completed_at ? Date.now() - new Date(job.completed_at).getTime() : null;
+  if (!istStarter) {
+    if (fertigSeit === null) {
+      return {
+        ok: false,
+        error: 'not_finished',
+        message:
+          `Job ${id} laeuft noch. Solange darf nur "${job.agent_id ?? 'unbekannt'}" seine Hinweise ausblenden.`,
+        job_id: id,
+        hint_agents: [],
+      };
+    }
+    if (fertigSeit <= HINWEIS_SCHUTZ_MS) {
+      const restSek = Math.ceil((HINWEIS_SCHUTZ_MS - fertigSeit) / 1000);
+      return {
+        ok: false,
+        error: 'not_allowed_yet',
+        message:
+          `Nur "${job.agent_id ?? 'unbekannt'}" darf diesen Hinweis gerade ausblenden. ` +
+          `Fuer alle anderen ist er in ${restSek} s frei.`,
+        job_id: id,
+        hint_agents: [],
+      };
+    }
+  }
+
+  const gewuenscht = (forAgents ?? []).filter((a) => typeof a === 'string' && a.length > 0);
+  // Der Starter wird nur dann NICHT ergaenzt, wenn er selbst ausblendet.
+  const empfaenger = istStarter || !job.agent_id
+    ? gewuenscht
+    : Array.from(new Set([...gewuenscht, job.agent_id]));
+
+  await pool.query(
+    `UPDATE shell_jobs SET hint_agents = $2, updated_at = NOW() WHERE id = $1`,
+    [id, empfaenger],
+  );
+
+  const wer = empfaenger.length === 0
+    ? 'niemand bekommt ihn mehr'
+    : `nur noch ${empfaenger.map((a) => `"${a}"`).join(', ')}`;
+  return {
+    ok: true,
+    message: `Hinweise zu Job ${id} ausgeblendet — ${wer}.`
+      + (!istStarter && job.agent_id ? ` "${job.agent_id}" bleibt als Starter dabei.` : ''),
+    job_id: id,
+    hint_agents: empfaenger,
+  };
+}
+
 export interface CancelResult {
   ok: boolean;
   /** Maschinen-Code: unknown_job | already_finished | not_allowed_yet */

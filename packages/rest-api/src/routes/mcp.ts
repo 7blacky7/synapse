@@ -154,6 +154,7 @@ import {
   enqueueShellJob,
   waitForShellJob,
   cancelShellJob,
+  hideShellJobHints,
   DETACH_AFTER_MS,
   HARD_LIMIT_MS,
   getShellJobs,
@@ -1027,7 +1028,7 @@ const MCP_TOOLS = [
     inputSchema: {
       type: 'object',
       properties: {
-        action: { type: 'string', enum: ['exec', 'get_stream', 'history', 'get', 'log', 'activity', 'cancel'], description: 'Default: exec. log + id liefert Zeilenrange (1-100); log + id + query liefert Such-Treffer mit Zeilennummern. cancel + id bricht einen laufenden Job ab — in den ersten 10 Minuten nur durch den Agenten, der ihn gestartet hat, danach durch jeden.' },
+        action: { type: 'string', enum: ['exec', 'get_stream', 'history', 'get', 'log', 'activity', 'cancel', 'hide'], description: 'Default: exec. log + id liefert Zeilenrange (1-100); log + id + query liefert Such-Treffer mit Zeilennummern. cancel + id bricht einen laufenden Job ab — in den ersten 10 Minuten nur durch den Agenten, der ihn gestartet hat, danach durch jeden. hide + id blendet die shell_activity-Hinweise zu einem Job aus — in den ersten 3 Minuten NACH DEM ABSCHLUSS nur durch den Starter, danach durch jeden; der Starter bleibt dabei immer Empfaenger.' },
         id: { type: 'string', description: 'Job-UUID (Pflicht fuer get/log). NICHT die stream_id aus der exec-Antwort — die Job-UUID liefert shell(history).' },
         limit: { type: 'number', description: 'history: max Jobs (Default 20, Max 200)' },
         offset: { type: 'number', description: 'history: Skip N (Default 0)' },
@@ -1059,6 +1060,7 @@ const MCP_TOOLS = [
         isolated: { type: 'boolean', description: 'exec: Kurzform fuer target="workspace" — fuer isolierte Tests im Docker-Container (Default false)' },
         force: { type: 'boolean', description: 'exec: erzwingt einen EIGENEN Lauf, auch wenn derselbe Befehl gerade schon laeuft. Normalerweise haengst du dich automatisch an den laufenden Job an (Antwort: attached:true) — zwei gleiche Builds wuerden sich sonst im selben dist/ ins Gehege kommen. Nur setzen wenn du wirklich einen unabhaengigen zweiten Lauf brauchst.' },
         workspace: { type: 'string', description: 'exec: WS3 — benannter Ziel-Workspace im Container-Modus (Default "main"). Mit workspace:"server" laeuft das Kommando im server-Container des Projekts (DNS synapse-ws-<projekt>-server). Wirkt nur bei target=workspace/isolated.' },
+        for_agents: { type: 'array', items: { type: 'string' }, description: 'hide: wer den Hinweis DANACH NOCH bekommt. Weglassen oder leer = niemand mehr. Mit Namen = nur diese. Wer nicht selbst der Starter ist, kann den Starter nicht entfernen — der bleibt immer Empfaenger.' },
       },
       required: ['action'],
     },
@@ -4508,6 +4510,19 @@ async function handleToolCall(
         // gespeicherte agent_id des Jobs. resolveAgentId leitet die eigene ID aus
         // dem Header ab — ein Agent kann sich hier nicht als jemand anderes ausgeben.
         const res = await cancelShellJob(reqStr(args, 'id'), resolveAgentId(str(args, 'agent_id')));
+        return { success: res.ok, ...res };
+      }
+
+      if (shellAction === 'hide') {
+        // Berechtigung serverseitig, wie bei cancel: die eigene ID kommt aus dem
+        // Header, ein Agent kann sich hier nicht als jemand anderes ausgeben.
+        const rohe = args.for_agents;
+        const fuer = Array.isArray(rohe) ? rohe.filter((a): a is string => typeof a === 'string') : null;
+        const res = await hideShellJobHints(
+          reqStr(args, 'id'),
+          resolveAgentId(str(args, 'agent_id')),
+          fuer,
+        );
         return { success: res.ok, ...res };
       }
 
