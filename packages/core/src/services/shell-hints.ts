@@ -20,6 +20,14 @@
  * Gueltigkeitspruefung in enqueueShellJob entscheidet, ob ueberhaupt gelaufen
  * werden muss. Beide stuetzen sich auf denselben Schluessel.
  *
+ * DIE FERTIGMELDUNG SAGT AUCH, OB DAS ERGEBNIS NOCH GILT. Ein gruener Lauf nuetzt
+ * nur, solange sich am Code seitdem nichts geaendert hat — sonst beschreibt er
+ * einen Stand, den es nicht mehr gibt. Dieselbe Pruefung wie in enqueueShellJob
+ * (project_state_at gegen den indexierten Dateistand), nur an der anderen Stelle:
+ * dort entscheidet sie ueber das Wiederverwenden, hier sagt sie dem Agenten, ob
+ * er abholen oder neu starten soll. Nur bei teilbaren Befehlen — bei einem
+ * 'git commit' ist der zweite Lauf ein anderer Vorgang, nicht derselbe nochmal.
+ *
  * DER HINWEIS TRAEGT NIE AUSGABE. Nur Job-ID, Befehl (gekuerzt), Status und
  * Exit-Code. Wer den Output braucht, holt ihn gezielt mit shell(get|log) — sonst
  * zieht sich ein Agent den Build-Log eines fremden Jobs in den Kontext.
@@ -90,11 +98,13 @@ export async function claimShellJobHints(
       status: string;
       exit_code: number | null;
       error: string | null;
+      gueltigkeit: 'gueltig' | 'veraltet' | null;
     }>(
       `WITH kandidaten AS (
          SELECT j.id AS job_id,
                 CASE WHEN j.status = 'running' THEN 'start' ELSE 'done' END AS kind,
                 j.agent_id, j.command, j.status::text AS status, j.exit_code, j.error,
+                j.exec_key, j.project_state_at,
                 COALESCE(j.completed_at, j.claimed_at, j.created_at) AS sortzeit
          FROM shell_jobs j
          WHERE j.project = $1
@@ -126,15 +136,32 @@ export async function claimShellJobHints(
          ORDER BY sortzeit DESC
          LIMIT $3
        ),
+       -- Derselbe Stand, den die Gueltigkeitspruefung in enqueueShellJob benutzt.
+       -- Bewusst code_files und nicht tool_calls: ein Editor-Write oder ein sed -i
+       -- steht im Aktivitaets-Store nicht, im Dateiindex sehr wohl.
+       stand AS (
+         SELECT MAX(updated_at) AS s FROM code_files
+         WHERE project = $1 AND deleted_at IS NULL
+       ),
        beansprucht AS (
          INSERT INTO shell_job_notices (job_id, agent_id, kind)
          SELECT k.job_id, $2, k.kind FROM kandidaten k
          ON CONFLICT DO NOTHING
          RETURNING job_id, kind
        )
-       SELECT k.job_id, k.kind, k.agent_id, k.command, k.status, k.exit_code, k.error
+       SELECT k.job_id, k.kind, k.agent_id, k.command, k.status, k.exit_code, k.error,
+              CASE
+                -- Nicht teilbar (git commit, rm, alles mit &&): ein zweiter Lauf ist
+                -- ohnehin ein ANDERER Vorgang. Eine Gueltigkeitsaussage waere sinnlos.
+                WHEN k.exec_key IS NULL THEN NULL
+                -- Kein Bezugspunkt: lieber schweigen als raten.
+                WHEN k.project_state_at IS NULL OR s.s IS NULL THEN NULL
+                WHEN k.project_state_at >= s.s THEN 'gueltig'
+                ELSE 'veraltet'
+              END AS gueltigkeit
        FROM kandidaten k
        JOIN beansprucht b ON b.job_id = k.job_id AND b.kind = k.kind
+       CROSS JOIN stand s
        ORDER BY k.sortzeit DESC`,
       [project, agentId, limit, FERTIG_FENSTER_MIN, LAUFEND_PLAUSIBEL_MIN],
     );
@@ -153,7 +180,18 @@ export async function claimShellJobHints(
           r.error === 'cancelled'
             ? 'Abgebrochen — kein verwertbares Ergebnis.'
             : r.status === 'done'
-              ? 'Erfolgreich. Ergebnis nur abrufen wenn du es brauchst: shell(get, id).'
+              // ⚠️ DIE GUELTIGKEIT GEHOERT IN DEN HINWEIS SELBST. Bis hierher stand sie nur
+              // dem zur Verfuegung, der den Befehl ERNEUT absetzte: enqueueShellJob prueft
+              // sie und antwortet mit reused. Wer den Hinweis las, wusste nur DASS etwas
+              // fertig ist — nicht, ob es noch etwas taugt. Genau daran entscheidet sich
+              // aber, ob er den Befehl nochmal schickt.
+              ? r.gueltigkeit === 'gueltig'
+                ? 'Erfolgreich und noch gueltig: seit dem Lauf wurde am Projekt nichts '
+                  + 'geaendert. NICHT neu ausfuehren — Ergebnis holen mit shell(get, id).'
+                : r.gueltigkeit === 'veraltet'
+                  ? 'Erfolgreich, aber ueberholt: seit dem Lauf wurde am Projekt etwas '
+                    + 'geaendert. Wenn du das Ergebnis brauchst, fuehre den Befehl neu aus.'
+                  : 'Erfolgreich. Ergebnis nur abrufen wenn du es brauchst: shell(get, id).'
               : 'Fehlgeschlagen. Wenn es dich betrifft: shell(log, id) mit query.';
       }
       return basis;
