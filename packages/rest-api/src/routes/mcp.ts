@@ -805,7 +805,7 @@ const MCP_TOOLS = [
         show_comments: { type: ['boolean', 'integer', 'string'], description: "Kommentare unter Dateien anzeigen (Standard: false, fuer tree). true = einer je Datei, Zahl = so viele, '*' = alle bis 50. Gezeigt werden Zeilennummer und Inhalt; wird gekappt, steht das in der Ausgabe." },
         show_functions: { type: 'boolean', description: 'Funktionsnamen auflisten (Standard: false, fuer tree)' },
         show_imports: { type: 'boolean', description: 'Import-Statements auflisten (Standard: false, fuer tree)' },
-        file_path: { type: 'string', description: 'Datei-Pfad-Filter (LIKE-Pattern, fuer functions/variables/symbols/file/statements/calls/entrypoints)' },
+        file_path: { type: 'string', description: 'Datei-Pfad-Filter (LIKE-Pattern) fuer functions/variables/symbols/file/statements/calls/entrypoints — UND seit 08.08.2026 auch fuer search: dort im Volltext-Modus als LIKE-Teilpfad, mit semantic:true dagegen als VOLLSTAENDIGER Pfad, weil Qdrant keinen Teilstring-Vergleich kennt. Vorher wurde der Parameter bei search still verworfen und die Suche lieferte Treffer aus dem ganzen Projekt.' },
         name: { type: 'string', description: 'Symbol-Name-Filter (fuer functions/variables/symbols/references)' },
         value_contains: { type: 'string', description: "Sucht im INHALT des Symbols statt im Namen (fuer symbols). PFLICHT fuer Kommentare, Strings und TODOs: die tragen name=NULL, ein name-Filter findet dort nie etwas. Beispiel: symbol_type='comment' + value_contains='@SYN-'." },
         comment_contains: { type: 'string', description: "Nur Kommentare zeigen, die diesen Text enthalten (fuer tree, zusammen mit show_comments). Macht den Baum zur Suche: show_comments=50 + comment_contains='@SYN-' listet alle Marken mit Datei und Zeile." },
@@ -3780,7 +3780,7 @@ async function handleToolCall(
           const limit = num(args, 'limit') ?? 20;
           // semantic:true → Qdrant Embedding-Suche (konzeptuell). Default = PG-Volltext (lexikalisch).
           if (bool(args, 'semantic') === true) {
-            const sem = await searchCode(query, project, fileType, limit);
+            const sem = await searchCode(query, project, fileType, limit, str(args, 'file_path'));
             const results = sem.map(r => ({
               file_path: r.payload.file_path,
               file_type: r.payload.file_type,
@@ -3791,7 +3791,7 @@ async function handleToolCall(
             }));
             return { success: true, results, count: results.length, mode: 'semantic', project };
           }
-          const results = await fullTextSearchCode(project, query, fileType, limit);
+          const results = await fullTextSearchCode(project, query, fileType, limit, str(args, 'file_path'));
           return { success: true, results, count: results.length, mode: 'fulltext', project };
         }
         case 'file': {

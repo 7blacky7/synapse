@@ -598,6 +598,12 @@ export async function getSymbols(
 // ─── getReferences ────────────────────────────────────────────────────────────
 
 export interface ReferenceInfo {
+  /**
+   * Woher die Fundstelle stammt: 'reference' = Verwendung, die der Parser in
+   * code_references eingetragen hat; 'call' = Aufrufkante aus code_call_edges.
+   * Beides beantwortet "wo wird das benutzt", steht aber in getrennten Tabellen.
+   */
+  kind?: 'reference' | 'call';
   symbol_id: string;
   file_path: string;
   line_number: number;
@@ -670,7 +676,48 @@ export async function getReferences(
     file_path: row.file_path,
     line_number: row.line_number,
     context: row.context ?? null,
+    kind: 'reference' as const,
   }));
+
+  // ⚠️ AUCH DIE AUFRUFKANTEN. code_references enthaelt Verwendungsstellen, die der
+  // Parser dort eintraegt — ein METHODENAUFRUF landet dagegen in code_call_edges.
+  // Wer "wo wird das benutzt" fragt, meint beides.
+  // GEMESSEN (unraid-cloud, 08.08.2026, Befund von codex-sol): der Aufruf
+  // scanner.itemsAddedAfter(cursor) stand mit confidence 1 UND aufgeloestem
+  // target_symbol_id in code_call_edges — references lieferte trotzdem 0 Treffer
+  // und damit die Auskunft "wird nirgends verwendet". Das ist die teuerste Sorte
+  // Fehler: eine leere Liste sieht aus wie eine Antwort.
+  // Betrifft JEDE Sprache, deren Parser Call-Kanten schreibt, nicht nur Kotlin.
+  const callRows = await pool.query(
+    `SELECT ce.file_path, ce.line_number, ce.caller_scope, ce.callee_receiver,
+            ce.call_kind, ce.target_symbol_id
+     FROM code_call_edges ce
+     WHERE ce.project = $1 AND ce.callee_name = $2
+     ORDER BY ce.file_path, ce.line_number`,
+    [project, name]
+  );
+
+  // Dieselbe Stelle kann in beiden Tabellen stehen — dann gewinnt der bereits
+  // vorhandene Eintrag, damit niemand eine Fundstelle doppelt gezaehlt bekommt.
+  const bekannt = new Set(references.map(r => `${r.file_path}:${r.line_number}`));
+  for (const row of callRows.rows) {
+    const schluessel = `${row.file_path}:${row.line_number}`;
+    if (bekannt.has(schluessel)) continue;
+    bekannt.add(schluessel);
+    const empfaenger = row.callee_receiver ? `${row.callee_receiver}.` : '';
+    references.push({
+      symbol_id: row.target_symbol_id ?? null,
+      file_path: row.file_path,
+      line_number: row.line_number,
+      context: `${row.call_kind ?? 'call'}: ${empfaenger}${name}()`
+        + (row.caller_scope ? ` in ${row.caller_scope}` : ''),
+      kind: 'call' as const,
+    });
+  }
+  references.sort((a, b) =>
+    a.file_path === b.file_path
+      ? a.line_number - b.line_number
+      : a.file_path.localeCompare(b.file_path));
 
   // String-Literale: separate Liste aller Vorkommen (Parser speichert jedes String-Literal
   // als eigenes code_symbol mit symbol_type='string').
@@ -719,7 +766,8 @@ export async function fullTextSearchCode(
   project: string,
   query: string,
   fileType?: string,
-  limit: number = 20
+  limit: number = 20,
+  filePath?: string
 ): Promise<FullTextSearchResult[]> {
   const pool = getPool();
 
@@ -731,6 +779,16 @@ export async function fullTextSearchCode(
   if (fileType) {
     params.push(fileType);
     typeFilter = `AND file_type = $${params.length}`;
+  }
+  // ⚠️ file_path wurde bis 08.08.2026 STILL VERWORFEN: der Parameter stand im
+  // Tool-Schema, die Funktion kannte ihn nicht, und die Suche lieferte munter
+  // Treffer aus dem ganzen Projekt. Eine Antwort, die nach einer Antwort aussieht.
+  // LIKE statt Gleichheit, damit ein Verzeichnis-Praefix genauso funktioniert wie
+  // ein vollstaendiger Pfad — dieselbe Semantik wie bei functions/symbols/calls.
+  let pfadFilter = '';
+  if (filePath) {
+    params.push(`%${filePath}%`);
+    pfadFilter = `AND file_path LIKE $${params.length}`;
   }
   params.push(limit);
 
@@ -747,6 +805,7 @@ export async function fullTextSearchCode(
        AND NOT ignored
        AND tsv @@ plainto_tsquery('english', $2)
        ${typeFilter}
+       ${pfadFilter}
      ORDER BY rank DESC
      LIMIT $${params.length}`,
     params

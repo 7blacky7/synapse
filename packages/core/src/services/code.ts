@@ -2726,7 +2726,8 @@ export async function searchCode(
   query: string,
   projectName?: string,
   fileType?: string,
-  limit: number = 10
+  limit: number = 10,
+  filePath?: string
 ): Promise<CodeSearchResult[]> {
   // Query embedden
   const queryVector = await embed(query);
@@ -2746,6 +2747,16 @@ export async function searchCode(
     must.push({
       key: 'file_type',
       match: { value: fileType },
+    });
+  }
+
+  // Sonst wirkte file_path nur im Volltext-Modus und verschwand im semantischen
+  // stillschweigend — derselbe Aufruf haette je nach Schalter etwas anderes bedeutet.
+  // Qdrant kann keinen LIKE-Vergleich: hier gilt der vollstaendige Pfad.
+  if (filePath) {
+    must.push({
+      key: 'file_path',
+      match: { value: filePath },
     });
   }
 
