@@ -190,9 +190,35 @@ export async function execShellInProject(
     }
 
     const log = fs.openSync(logPath(streamId), 'w');
+    // detached:true gibt dem Kind eine EIGENE Prozessgruppe, und das ist die
+    // Voraussetzung dafuer, dass sich ein Lauf ueberhaupt beenden laesst:
+    //
+    // Wir starten `sh -c "<kommando>"`. child.kill() trifft nur diese sh — das
+    // eigentliche Kommando ist deren Kind und laeuft munter als Waise weiter.
+    // Live gemessen am 08.08.2026: nach dem Abbruch war die sh weg, das
+    // `sleep` lief weiter. Betraf gleichermassen die harte Obergrenze; ein
+    // 3-Stunden-Limit haette also nur die Huelle beendet.
+    //
+    // Ohne detached liegt das Kind in der Prozessgruppe des DAEMONS (gemessen:
+    // PGID des Waisen == Daemon-PID). Ein Gruppen-Kill haette damit den Daemon
+    // selbst erschlagen. Deshalb: eigene Gruppe, dann gezielt -pgid beenden.
     const child = spawn('sh', ['-c', args.command], {
       cwd, env: process.env, stdio: ['ignore', log, log],
+      detached: true,
     });
+
+    /**
+     * Beendet die gesamte Prozessgruppe des Laufs. Faellt auf den direkten
+     * Kindprozess zurueck, falls die Gruppe nicht (mehr) existiert.
+     */
+    const beendeGruppe = (signal: NodeJS.Signals): void => {
+      try {
+        if (child.pid) process.kill(-child.pid, signal);
+        else child.kill(signal);
+      } catch {
+        try { child.kill(signal); } catch { /* schon tot */ }
+      }
+    };
 
     const meta: StreamMeta = {
       stream_id: streamId,
@@ -220,9 +246,9 @@ export async function execShellInProject(
         kill: () => {
           if (cancelled) return;
           cancelled = true;
-          try { child.kill('SIGTERM'); } catch { /* schon tot */ }
+          beendeGruppe('SIGTERM');
           cancelKillTimer = setTimeout(() => {
-            try { child.kill('SIGKILL'); } catch { /* schon tot */ }
+            beendeGruppe('SIGKILL');
           }, KILL_GRACE_MS);
           cancelKillTimer.unref?.();
         },
@@ -255,9 +281,9 @@ export async function execShellInProject(
     let hardLimitHit = false;
     const hardTimer = setTimeout(() => {
       hardLimitHit = true;
-      try { child.kill('SIGTERM'); } catch { /* schon tot */ }
+      beendeGruppe('SIGTERM');
       killTimer = setTimeout(() => {
-        try { child.kill('SIGKILL'); } catch { /* schon tot */ }
+        beendeGruppe('SIGKILL');
       }, KILL_GRACE_MS);
       killTimer.unref?.();
     }, hardLimitMs);
