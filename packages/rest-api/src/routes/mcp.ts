@@ -146,6 +146,7 @@ import {
   recordChannelRead,
   markChannelRead,
   claimUnreadChannelHints,
+  claimShellJobHints,
   // Inbox
   postToInbox,
   checkInbox,
@@ -1754,6 +1755,43 @@ async function attachRestChannelHints(
     })),
   };
 }
+/**
+ * SH-3 — laufende und frisch beendete Shell-Jobs des Projekts anhaengen.
+ *
+ * Zweck ist Koordination, nicht Information: Agent B soll sehen, dass A gerade
+ * baut, und es nicht ein zweites Mal tun. Der Hinweis traegt nie Ausgabe, nur
+ * Job-ID, Befehl und Status — den Output holt sich wer ihn braucht gezielt.
+ *
+ * shell selbst ist ausgenommen: dessen Antworten sprechen ohnehin ueber Jobs,
+ * ein zusaetzlicher Hinweisblock waere dort nur Rauschen.
+ */
+async function attachShellJobHints(
+  result: unknown,
+  toolName: string,
+  args: Record<string, unknown>,
+  effectiveAgentId?: string,
+): Promise<unknown> {
+  if (!effectiveAgentId
+    || toolName === 'shell'
+    || toolName === 'guide'
+    || typeof result !== 'object'
+    || result === null
+    || Array.isArray(result)) {
+    return result;
+  }
+  const project = str(args, 'project');
+  if (!project) return result;
+
+  try {
+    const hints = await claimShellJobHints(project, effectiveAgentId, 3);
+    if (hints.length === 0) return result;
+    return { ...result, shell_activity: hints };
+  } catch {
+    // Ein Hinweis darf den eigentlichen Tool-Aufruf nie brechen.
+    return result;
+  }
+}
+
 async function attachRestPendingEventHints(
   result: unknown,
   toolName: string,
@@ -5032,7 +5070,8 @@ export async function mcpRoutes(fastify: FastifyInstance): Promise<void> {
           let _logErr: string | null = null;
           let _logResult: string | null = null;
           try {
-            const toolResult = await attachRestPendingEventHints(
+            const toolResult = await attachShellJobHints(
+              await attachRestPendingEventHints(
               await attachWerkzeugRegeln(
                 await attachRestChannelHints(
                   await attachSkillHinweisgeber(
@@ -5053,6 +5092,10 @@ export async function mcpRoutes(fastify: FastifyInstance): Promise<void> {
                 toolName,
                 toolArgs,
               ),
+              toolName,
+              toolArgs,
+              effectiveAgentId,
+            ),
               toolName,
               toolArgs,
               effectiveAgentId,
@@ -5189,7 +5232,8 @@ export async function mcpRoutes(fastify: FastifyInstance): Promise<void> {
           let _logErr: string | null = null;
           let _logResult: string | null = null;
           try {
-            const toolResult = await attachRestPendingEventHints(
+            const toolResult = await attachShellJobHints(
+              await attachRestPendingEventHints(
               await attachRestChannelHints(
                 await attachSkillHinweisgeber(
                   await attachRestOnboarding(
@@ -5206,6 +5250,10 @@ export async function mcpRoutes(fastify: FastifyInstance): Promise<void> {
                 ),
                 effectiveAgentId,
               ),
+              toolName,
+              toolArgs,
+              effectiveAgentId,
+            ),
               toolName,
               toolArgs,
               effectiveAgentId,

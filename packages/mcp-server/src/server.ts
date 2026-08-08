@@ -25,6 +25,7 @@ import {
 
 import {
   claimUnreadChannelHints,
+  claimShellJobHints,
   getPendingEventHints,
   TOOL_GUIDES,
   ensureSchema,
@@ -304,6 +305,20 @@ export function createServer(): Server {
             newest_id: hint.newestId,
           }));
           first.text = JSON.stringify(parsed, null, 2);
+        }
+
+        // SH-3: laufende und frisch beendete Shell-Jobs des Projekts. Zweck ist
+        // Koordination — wer sieht, dass ein anderer gerade baut, baut nicht
+        // nochmal. shell selbst ist ausgenommen: dessen Antworten sprechen
+        // ohnehin ueber Jobs. Best-effort, darf die Antwort nie brechen.
+        if (name !== 'shell' && typeof args?.project === 'string' && args.project) {
+          try {
+            const shellHints = await claimShellJobHints(args.project, agentId, 3);
+            if (shellHints.length > 0) {
+              parsed.shell_activity = shellHints;
+              first.text = JSON.stringify(parsed, null, 2);
+            }
+          } catch { /* Hinweise duerfen Toolantworten nie brechen */ }
         }
 
         // ⚠️ MEMORY, GEDANKE UND TASK SIND EBENFALLS HINWEISGEBER (Vorgabe des Users,

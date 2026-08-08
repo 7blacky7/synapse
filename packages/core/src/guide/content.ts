@@ -163,6 +163,7 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
       'cwd_relative: Pfad RELATIV zum Projekt-Root (z.B. "packages/core"), kein absoluter Pfad.',
       'tail_lines: Default 5. Auf 20-50 erhoehen wenn du im exec-Result direkt mehr sehen willst — fuer den vollen Output ist aber action:"get" oder "log" besser.',
       'response: success(true|false) + status + tail; bei history zusaetzlich output_line_count + source ("mcp_local" | "daemon-<host>-<pid>"); bei error: actionable message.',
+      'shell_activity (SH-3): Normale Tool-Antworten ANDERER Tools tragen bei project + agent_id bis zu 3 Eintraege dieses Feldes — laufende und frisch beendete Shell-Jobs DES GANZEN PROJEKTS, nicht nur deine eigenen. Jeder Eintrag kommt GENAU EINMAL und danach nie wieder. ZWECK IST KOORDINATION: bei kind="start" eines anderen Agenten fuehrst du denselben Befehl NICHT nochmal aus, sondern wartest auf sein Ergebnis. Bei kind="done" liegt ein Ergebnis bereit — abholen NUR wenn du es brauchst: shell(get, id) bzw. shell(log, id). Der Hinweis traegt NIE Ausgabe, nur Job-ID, Befehl, Status, Exit-Code. Fertigmeldungen laufen 8 Minuten nach; das Ergebnis selbst bleibt dauerhaft abrufbar.',
     ].join('\\n'),
     examples: [
       'shell({ action: "exec", project: "synapse", command: "git status --short" })',

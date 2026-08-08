@@ -700,6 +700,21 @@ ALTER TABLE shell_jobs ADD COLUMN IF NOT EXISTS agent_id TEXT;
 ALTER TABLE shell_jobs ADD COLUMN IF NOT EXISTS cancelled_by TEXT;
 ALTER TABLE shell_jobs ADD COLUMN IF NOT EXISTS cancelled_at TIMESTAMPTZ;
 
+-- SH-3: Wer hat welchen Shell-Hinweis schon bekommen.
+-- Vorbild ist der Lesestand bei Channels (specialist_channel_members.
+-- last_notified_message_id): ein Hinweis wird atomisch EINMAL beansprucht und
+-- danach nie wieder zugestellt. Ohne diese Zeile wuerde derselbe Job bei jedem
+-- Tool-Aufruf erneut gemeldet und den Kontext jedes Agenten volllaufen lassen.
+-- kind trennt Start- und Fertigmeldung: beide sollen genau einmal kommen.
+CREATE TABLE IF NOT EXISTS shell_job_notices (
+  job_id UUID NOT NULL REFERENCES shell_jobs(id) ON DELETE CASCADE,
+  agent_id TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  notified_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (job_id, agent_id, kind)
+);
+CREATE INDEX IF NOT EXISTS idx_shell_job_notices_agent ON shell_job_notices(agent_id, notified_at DESC);
+
 CREATE INDEX IF NOT EXISTS idx_shell_jobs_project_status ON shell_jobs(project, status);
 CREATE INDEX IF NOT EXISTS idx_shell_jobs_created ON shell_jobs(created_at) WHERE status = 'pending';
 CREATE INDEX IF NOT EXISTS idx_shell_jobs_history ON shell_jobs(project, created_at DESC);

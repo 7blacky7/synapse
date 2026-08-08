@@ -48,6 +48,8 @@ export * from './error-patterns.js';
 export * from './channels.js';
 export * from './channel-unread.js';
 export * from './inbox.js';
+export { claimShellJobHints, pruneShellJobNotices } from './shell-hints.js';
+export type { ShellJobHint } from './shell-hints.js';
 export {
   enqueueShellJob,
   claimPendingShellJob,
