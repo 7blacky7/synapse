@@ -379,6 +379,7 @@ export {
   searchShellJobLog,
   insertCompletedShellJob,
   cancelShellJob,
+  reapOrphanedRunningJobs,
   CANCEL_PROTECTED_MS,
   EXPIRE_PENDING_AFTER_SEC,
   DETACH_AFTER_MS,

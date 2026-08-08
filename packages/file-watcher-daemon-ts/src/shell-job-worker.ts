@@ -22,6 +22,7 @@ import {
   execShellInProject,
   expirePendingShellJobs,
   EXPIRE_PENDING_AFTER_SEC,
+  reapOrphanedRunningJobs,
 } from '@synapse/core';
 import type { ShellJobRow } from '@synapse/core';
 
@@ -137,6 +138,17 @@ export async function startShellJobWorker(
       });
     }
   }, 10_000);
+
+  // Verwaiste Jobs des vorherigen Daemon-Laufs ehrlich machen. Ohne das steht
+  // jeder Job, der beim letzten Neustart lief, fuer immer auf 'running'.
+  try {
+    const verwaist = await reapOrphanedRunningJobs(os.hostname());
+    if (verwaist > 0) {
+      console.error(`[shell-worker] ${verwaist} verwaiste(r) Job(s) aus dem letzten Lauf abgeschlossen`);
+    }
+  } catch (err) {
+    console.error('[shell-worker] Aufraeumen verwaister Jobs fehlgeschlagen:', (err as Error).message);
+  }
 
   // Startup-Catchup: ggf. liegen Jobs aus vor dem Start rum
   for (const project of getActiveProjects()) {

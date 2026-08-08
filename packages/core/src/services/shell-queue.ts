@@ -610,6 +610,46 @@ export interface ShellJobDetail extends ShellJobRow {
  * Holt einen einzelnen Job inklusive vollem Output (falls vorhanden).
  * Fuer das Detail-Lookup einer KI nach `history`.
  */
+/**
+ * Raeumt Jobs auf, die beim letzten Daemon-Lauf dieses Hosts noch 'running' waren.
+ *
+ * WARUM: Der Kindprozess haengt am Daemon. Startet der Daemon neu, verliert der
+ * Job seinen exit-Handler — niemand schreibt je ein Ergebnis, und er steht bis in
+ * alle Ewigkeit auf 'running'. Real beobachtet am 08.08.2026: ein Testjob blieb
+ * nach einem Tray-Neustart dauerhaft haengen, waehrend sein Prozess als Waise
+ * weiterlief. JEDER Daemon-Neustart erzeugt solche Leichen.
+ *
+ * Der Filter geht ueber den HOSTNAMEN, nicht die volle Daemon-ID: die enthaelt
+ * die PID und ist nach dem Neustart eine andere. Zwei Daemons auf demselben Host
+ * gibt es nicht — main.ts erzwingt Single-Instance ueber daemon.pid.
+ *
+ * Der Prozess selbst wird NICHT angefasst: er ist verwaist, seine Prozessgruppe
+ * kennen wir nach dem Neustart nicht mehr. Hier wird nur der Datenbankstand
+ * ehrlich gemacht.
+ */
+export async function reapOrphanedRunningJobs(hostname: string): Promise<number> {
+  const pool = getPool();
+  const res = await pool.query<{ id: string }>(
+    `UPDATE shell_jobs
+     SET status = 'failed',
+         error = COALESCE(error, 'daemon_restart'),
+         message = COALESCE(message,
+           'Der Daemon wurde neu gestartet, waehrend dieser Job lief. Sein Ergebnis ist verloren — '
+           || 'der Prozess kann als Waise weitergelaufen sein. Bitte das Kommando erneut schicken.'),
+         completed_at = NOW(),
+         updated_at = NOW()
+     WHERE status = 'running'
+       AND claimed_by LIKE $1
+     RETURNING id`,
+    [`daemon-${hostname}-%`],
+  );
+  for (const row of res.rows) {
+    // Wartende aufwecken, sonst haengen sie an einem Job der nie fertig wird.
+    await pool.query(`SELECT pg_notify($1, $2)`, [doneChannelForJob(row.id), 'failed']);
+  }
+  return res.rowCount ?? 0;
+}
+
 export async function getShellJobById(id: string): Promise<ShellJobDetail | null> {
   const pool = getPool();
   const { rows } = await pool.query<ShellJobRow>(
