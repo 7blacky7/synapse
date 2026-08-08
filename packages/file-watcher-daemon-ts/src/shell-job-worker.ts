@@ -21,7 +21,9 @@ import {
   completeShellJob,
   execShellInProject,
   expirePendingShellJobs,
+  EXPIRE_PENDING_AFTER_SEC,
 } from '@synapse/core';
+import type { ShellJobRow } from '@synapse/core';
 
 const STREAMS_DIR = path.join(os.homedir(), '.synapse', 'shell-streams');
 
@@ -36,6 +38,27 @@ function readStreamLog(streamId: string | undefined | null): string | undefined 
 }
 
 const DAEMON_ID = `daemon-${os.hostname()}-${process.pid}`;
+
+/**
+ * SH-2: Obergrenze gleichzeitig laufender Shell-Jobs.
+ *
+ * Bis SH-1 gab es hier GAR KEINE Grenze, und das war nie ein Problem: ein Job
+ * gab nach 30 s auf. Seit Jobs bis zu 3 h laufen duerfen, koennen sie sich
+ * stapeln — die Grenze ist also eine Notbremse fuer den neuen Zustand, keine
+ * Bewirtschaftung.
+ *
+ * 32 ist bewusst hoch: der KI-Browser faehrt bis zu 15 Agenten gleichzeitig, und
+ * eine Grenze, die im Normalbetrieb greift, waere eine Bremse statt einer
+ * Sicherung. Ueberzaehlige Jobs WARTEN (bleiben 'pending'), sie werden nicht
+ * abgelehnt.
+ */
+const MAX_CONCURRENT_JOBS = Math.max(
+  1,
+  Number(process.env.SYNAPSE_SHELL_MAX_CONCURRENT ?? 32),
+);
+
+/** Laufende Jobs dieses Daemons: Job-ID -> Kill-Handhabe (fuer die kill-Action). */
+const laufendeJobs = new Map<string, () => void>();
 
 /** Rueckgabe von startShellJobWorker — stop() fuer Graceful Shutdown. */
 export interface ShellJobWorkerHandle {
@@ -62,8 +85,21 @@ export async function startShellJobWorker(
   // Dedizierter Dedicated-Client fuer LISTEN (darf nicht zurueck in den Pool)
   listenClient = await pool.connect();
   await listenClient.query('LISTEN shell_job_created');
+  // SH-2: Abbruch-Signale. Der Kindprozess lebt nur hier im Daemon — die
+  // REST-Seite kann ihn nicht beenden, sie kann den Wunsch nur zustellen.
+  await listenClient.query('LISTEN shell_job_cancel');
 
   listenClient.on('notification', (msg: { channel: string; payload?: string }) => {
+    if (msg.channel === 'shell_job_cancel' && msg.payload) {
+      const kill = laufendeJobs.get(msg.payload);
+      if (kill) {
+        console.error(`[shell-worker] Job ${msg.payload} wird abgebrochen`);
+        kill();
+      }
+      // Kein Treffer: der Job laeuft auf einem anderen Daemon — dessen LISTEN
+      // greift dann. Kein Fehler, nichts zu tun.
+      return;
+    }
     if (msg.channel !== 'shell_job_created' || !msg.payload) return;
     const colonIdx = msg.payload.indexOf(':');
     if (colonIdx === -1) return;
@@ -87,10 +123,12 @@ export async function startShellJobWorker(
   });
 
   // Safety-Net: alle 10s pending Jobs aufarbeiten (fuer Race-Conditions / Daemon-Restart)
-  // + expire alter Jobs (>30s) damit deaktivierte Projekte nicht spaeter ausgefuehrt werden
+  // + verfallene Jobs wegraeumen. Die Frist ist mit SH-2 von 30 s auf 4 h gestiegen:
+  // seit Jobs auf einen freien Slot warten duerfen, haette die alte Frist genau die
+  // wartenden Auftraege stillschweigend verworfen.
   safetyInterval = setInterval(() => {
     if (stopped) return;
-    void expirePendingShellJobs(30).catch((err: unknown) => {
+    void expirePendingShellJobs(EXPIRE_PENDING_AFTER_SEC).catch((err: unknown) => {
       console.error(`[shell-worker] expirePendingShellJobs Fehler:`, (err as Error).message);
     });
     for (const project of getActiveProjects()) {
@@ -142,9 +180,32 @@ export async function startShellJobWorker(
  * und auszufuehren. Kein Job vorhanden → sofort zurueck (kein Fehler).
  */
 async function processJob(project: string): Promise<void> {
+  // SH-2: Erst pruefen, ob ueberhaupt ein Slot frei ist. Wir claimen NICHT auf
+  // Vorrat — ein geclaimter Job steht als 'running' in der DB, und dann saehe
+  // ein Wartender aus wie ein Laufender. Der Job bleibt lieber 'pending' und
+  // wird geholt, sobald ein Slot frei wird (Freigabe unten + Safety-Net alle 10 s).
+  if (laufendeJobs.size >= MAX_CONCURRENT_JOBS) return;
+
   const job = await claimPendingShellJob(project, DAEMON_ID);
   if (!job) return; // Kein Job vorhanden oder von anderem Daemon geclaimed
 
+  try {
+    await runClaimedJob(project, job);
+  } finally {
+    // PFLICHT und deshalb in finally: wird der Slot nicht freigegeben, waechst
+    // die Map bei jedem Fehlerpfad um einen Eintrag, bis der Worker gar keine
+    // Jobs mehr annimmt — ohne dass irgendwo ein Fehler sichtbar waere.
+    laufendeJobs.delete(job.id);
+    // Slot ist frei: sofort den naechsten Wartenden holen, statt bis zum
+    // Safety-Net (10 s) zu warten.
+    void processJob(project).catch((err: unknown) => {
+      console.error(`[shell-worker] Nachruecken(${project}) Fehler:`, (err as Error).message);
+    });
+  }
+}
+
+/** Fuehrt einen bereits geclaimten Job aus und schreibt sein Ergebnis. */
+async function runClaimedJob(project: string, job: ShellJobRow): Promise<void> {
   console.error(`[shell-worker] Job ${job.id} (${project}) gestartet: ${job.command}`);
 
   let result: Record<string, unknown>;
@@ -161,6 +222,9 @@ async function processJob(project: string): Promise<void> {
       // processJob laeuft ohnehin fire-and-forget, der lange await blockiert nichts.
       hard_limit_ms: job.timeout_ms ?? undefined,
       tail_lines: job.tail_lines ?? 5,
+      onStarted: (ctl) => {
+        laufendeJobs.set(job.id, ctl.kill);
+      },
       onDetached: (info) => {
         console.error(
           `[shell-worker] Job ${job.id} laeuft im Hintergrund weiter (pid ${info.pid ?? '?'})`,
@@ -207,9 +271,14 @@ async function processJob(project: string): Promise<void> {
   // aelterer core-Build (Version-Drift zwischen Daemon und core) nicht still
   // 'failed' schreibt, wo frueher 'timeout' stand.
   const rawStatus = result['status'] as string | undefined;
+  // Abbruch wird als 'failed' gespeichert, aber mit error='cancelled' — so bleibt
+  // er von einem echten Fehlschlag des Kommandos unterscheidbar, ohne dass die
+  // Statusspalte einen neuen ENUM-Wert braucht (siehe schema.ts).
+  const abgebrochen = rawStatus === 'cancelled';
   const status =
     rawStatus === 'done' ? 'done' :
     rawStatus === 'failed' ? 'failed' :
+    abgebrochen ? 'failed' :
     rawStatus === 'hard_limit' ? 'timeout' :
     rawStatus === 'running' ? 'timeout' :
     'failed';
@@ -223,6 +292,19 @@ async function processJob(project: string): Promise<void> {
   const streamId = (result['stream_id'] as string | undefined) ?? job.stream_id ?? undefined;
   const output = readStreamLog(streamId);
 
-  await completeShellJob(job.id, { status, exit_code: exitCode, tail, output });
+  await completeShellJob(job.id, {
+    status,
+    exit_code: exitCode,
+    tail,
+    output,
+    ...(abgebrochen
+      ? {
+          error: 'cancelled',
+          message:
+            (result['message'] as string | undefined) ??
+            'Job wurde abgebrochen. Angehaengte Wartende muessen neu starten.',
+        }
+      : {}),
+  });
   console.error(`[shell-worker] Job ${job.id} abgeschlossen mit status=${status} (output ${output ? output.length + ' bytes' : 'kein file'})`);
 }

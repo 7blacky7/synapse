@@ -187,6 +187,12 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
         example: 'shell({ action: "exec", project: "synapse", command: "echo hallo" })',
         tips: 'Default action — wenn du kein action angibst, ist es "exec". Bei project_inactive bekommst du klare message statt stillem Hangen. Die exec-Antwort enthaelt id (= Job-UUID fuer get/log) UND stream_id. Falsche/verwechselte ID liefert jetzt einen klaren invalid_job_id-Fehler statt einer rohen PG-Meldung. tail_lines Default ist 5 — bei mehrzeiligem Output direkt hoeher setzen, sonst kostet dich das einen zweiten Call.',
       },
+      cancel: {
+        description: 'Bricht einen laufenden oder wartenden Job ab (SIGTERM, nach 10 s SIGKILL).',
+        params: 'id (req), agent_id (wird serverseitig aus dem Header abgeleitet)',
+        example: 'shell({ action: "cancel", id: "<uuid>" })',
+        tips: 'ZEITGESTAFFELTE BERECHTIGUNG: in den ersten 10 Minuten (ab Ausfuehrungsbeginn) darf NUR der Agent abbrechen, der den Job gestartet hat — er arbeitet in dieser Phase am Ergebnis. Danach darf jeder Agent im Projekt. Diese Oeffnung ist Absicht: Subagenten enden mit ihrer Task, ihr Job liefe sonst bis zu 3 h weiter, ohne dass ihn jemand stoppen darf. Jeder Abbruch wird mit Verursacher festgehalten (cancelled_by).',
+      },
       get_stream: {
         description: 'Live-Tail eines laufenden Jobs (nur via lokalem MCP, REST gibt 501).',
         tips: 'Fuer lange Commands ueber REST braucht es das nicht: exec loest sich nach 20 s selbst ab, und das Endergebnis holst du spaeter via "get" oder "log".',

@@ -59,14 +59,18 @@ export {
   getShellJobLogLines,
   searchShellJobLog,
   insertCompletedShellJob,
+  cancelShellJob,
   DETACH_AFTER_MS,
   HARD_LIMIT_MS,
+  CANCEL_PROTECTED_MS,
+  EXPIRE_PENDING_AFTER_SEC,
 } from './shell-queue.js';
 export type {
   EnqueueArgs,
   ShellJobRow,
   ShellJobCompletion,
   ShellJobResult,
+  CancelResult,
 } from './shell-queue.js';
 export {
   enqueueSpecialistJob,

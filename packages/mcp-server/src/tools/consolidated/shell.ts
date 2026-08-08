@@ -27,6 +27,7 @@ import {
   isDaemonAliveForProject,
   queryToolCalls,
   resolveAgentId,
+  cancelShellJob,
   DETACH_AFTER_MS,
 } from '@synapse/core';
 
@@ -133,7 +134,7 @@ export const shellTool: ConsolidatedTool = {
       properties: {
         action: {
           type: 'string',
-          enum: ['exec', 'get_stream', 'history', 'get', 'log', 'activity'],
+          enum: ['exec', 'get_stream', 'history', 'get', 'log', 'activity', 'cancel'],
           description: 'Default: exec. history/get/log = Shell-Jobs (Detail-Lupe, voller Output). activity = Multi-Agenten-Aufsicht ueber ALLE Tool-Aufrufe (Shell + jedes andere Tool), interleaved nach Zeit.',
         },
         project: { type: 'string', description: 'Projekt-Name (Pflicht fuer exec; optional fuer history Filter)' },
@@ -274,6 +275,13 @@ export const shellTool: ConsolidatedTool = {
         detail: (str(args, 'detail') as 'meta' | 'summary' | 'full' | undefined) ?? 'meta',
       });
       return { content: [{ type: 'text', text: JSON.stringify({ success: true, count: rows.length, detail: str(args, 'detail') ?? 'meta', activity: rows }, null, 2) }] };
+    }
+
+    if (action === 'cancel') {
+      // SH-2/E6: gleiche Regel wie im REST-Pfad — 10 min nur der startende Agent,
+      // danach frei. Die Pruefung liegt in cancelShellJob, nicht hier.
+      const res = await cancelShellJob(reqStr(args, 'id'), resolveAgentId(str(args, 'agent_id')));
+      return { content: [{ type: 'text', text: JSON.stringify({ success: res.ok, ...res }, null, 2) }] };
     }
 
     if (action !== 'exec') {

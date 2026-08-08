@@ -152,6 +152,7 @@ import {
   // Shell-Queue
   enqueueShellJob,
   waitForShellJob,
+  cancelShellJob,
   DETACH_AFTER_MS,
   HARD_LIMIT_MS,
   getShellJobs,
@@ -1025,7 +1026,7 @@ const MCP_TOOLS = [
     inputSchema: {
       type: 'object',
       properties: {
-        action: { type: 'string', enum: ['exec', 'get_stream', 'history', 'get', 'log', 'activity'], description: 'Default: exec. log + id liefert Zeilenrange (1-100); log + id + query liefert Such-Treffer mit Zeilennummern.' },
+        action: { type: 'string', enum: ['exec', 'get_stream', 'history', 'get', 'log', 'activity', 'cancel'], description: 'Default: exec. log + id liefert Zeilenrange (1-100); log + id + query liefert Such-Treffer mit Zeilennummern. cancel + id bricht einen laufenden Job ab — in den ersten 10 Minuten nur durch den Agenten, der ihn gestartet hat, danach durch jeden.' },
         id: { type: 'string', description: 'Job-UUID (Pflicht fuer get/log). NICHT die stream_id aus der exec-Antwort — die Job-UUID liefert shell(history).' },
         limit: { type: 'number', description: 'history: max Jobs (Default 20, Max 200)' },
         offset: { type: 'number', description: 'history: Skip N (Default 0)' },
@@ -4461,6 +4462,14 @@ async function handleToolCall(
           detail: (str(args, 'detail') as 'meta' | 'summary' | 'full' | undefined) ?? 'meta',
         });
         return { success: true, count: rows.length, detail: str(args, 'detail') ?? 'meta', activity: rows };
+      }
+
+      if (shellAction === 'cancel') {
+        // SH-2/E6: Die Berechtigung prueft cancelShellJob serverseitig gegen die
+        // gespeicherte agent_id des Jobs. resolveAgentId leitet die eigene ID aus
+        // dem Header ab — ein Agent kann sich hier nicht als jemand anderes ausgeben.
+        const res = await cancelShellJob(reqStr(args, 'id'), resolveAgentId(str(args, 'agent_id')));
+        return { success: res.ok, ...res };
       }
 
       if (shellAction !== 'exec') {

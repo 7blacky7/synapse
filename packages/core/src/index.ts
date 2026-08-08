@@ -378,6 +378,9 @@ export {
   getShellJobLogLines,
   searchShellJobLog,
   insertCompletedShellJob,
+  cancelShellJob,
+  CANCEL_PROTECTED_MS,
+  EXPIRE_PENDING_AFTER_SEC,
   DETACH_AFTER_MS,
   HARD_LIMIT_MS,
   // Specialist-Queue

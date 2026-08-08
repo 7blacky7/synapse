@@ -691,6 +691,14 @@ ALTER TABLE shell_jobs ADD COLUMN IF NOT EXISTS output_truncated BOOLEAN DEFAULT
 --   Cloud: aus Header abgeleitet (deriveAgentIdFromHeaders); Spezialist: SYNAPSE_AGENT_NAME;
 --   sonst explizit. shell(history) + shell(activity) zeigen damit WER den Job absetzte.
 ALTER TABLE shell_jobs ADD COLUMN IF NOT EXISTS agent_id TEXT;
+-- SH-2: Abbruch eines laufenden Jobs. Wer abgebrochen hat und wann.
+--   Ein abgebrochener Job bekommt status 'failed' mit error='cancelled' —
+--   BEWUSST kein neuer ENUM-Wert: ALTER TYPE ADD VALUE laesst sich innerhalb
+--   einer Transaktion nicht im selben Zug verwenden, was ausgerechnet den
+--   Schema-Probelauf (BEGIN/ROLLBACK) unzuverlaessig machen wuerde. Die
+--   Unterscheidung zu einem echten Fehlschlag traegt error='cancelled'.
+ALTER TABLE shell_jobs ADD COLUMN IF NOT EXISTS cancelled_by TEXT;
+ALTER TABLE shell_jobs ADD COLUMN IF NOT EXISTS cancelled_at TIMESTAMPTZ;
 
 CREATE INDEX IF NOT EXISTS idx_shell_jobs_project_status ON shell_jobs(project, status);
 CREATE INDEX IF NOT EXISTS idx_shell_jobs_created ON shell_jobs(created_at) WHERE status = 'pending';

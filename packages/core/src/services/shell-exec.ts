@@ -70,6 +70,12 @@ export type ShellExecArgs = {
    * Ende weiter und liefert dann das vollstaendige Ergebnis.
    */
   onDetached?: (info: { stream_id: string; pid?: number; tail: string[] }) => void;
+  /**
+   * Wird EINMAL gefeuert, sobald der Prozess gestartet ist. Liefert eine
+   * Handhabe zum Beenden (SH-2, kill-Action). Ohne das haette der Aufrufer
+   * keinen Zugriff auf den Kindprozess — er ist in dieser Funktion gekapselt.
+   */
+  onStarted?: (ctl: { pid?: number; stream_id: string; kill: () => void }) => void;
 };
 
 export type ShellGetStreamArgs = {
@@ -201,6 +207,28 @@ export async function execShellInProject(
     };
     writeMeta(meta);
 
+    // ── Abbruch von aussen (SH-2) ──
+    // Der Aufrufer bekommt eine Handhabe auf den Kindprozess. Ohne sie koennte
+    // niemand einen Job beenden, der stundenlang laeuft — der Prozess ist in
+    // dieser Funktion gekapselt.
+    let cancelled = false;
+    let cancelKillTimer: NodeJS.Timeout | null = null;
+    try {
+      args.onStarted?.({
+        pid: child.pid,
+        stream_id: streamId,
+        kill: () => {
+          if (cancelled) return;
+          cancelled = true;
+          try { child.kill('SIGTERM'); } catch { /* schon tot */ }
+          cancelKillTimer = setTimeout(() => {
+            try { child.kill('SIGKILL'); } catch { /* schon tot */ }
+          }, KILL_GRACE_MS);
+          cancelKillTimer.unref?.();
+        },
+      });
+    } catch { /* Callback-Fehler duerfen den Lauf nicht kippen */ }
+
     // ── Abloesung (SH-1) ──────────────────────────────────────────────────
     // WICHTIG: Der Detach-Timer loest das Promise NICHT auf. Genau das war der
     // alte Fehler: resolve() beim Timeout machte den spaeteren exit-Handler
@@ -239,23 +267,29 @@ export async function execShellInProject(
       clearTimeout(detachTimer);
       clearTimeout(hardTimer);
       if (killTimer) clearTimeout(killTimer);
+      if (cancelKillTimer) clearTimeout(cancelKillTimer);
     };
 
     child.on('exit', (code) => {
       clearTimers();
       try { fs.closeSync(log); } catch { /* already closed */ }
-      meta.status = hardLimitHit ? 'failed' : (code === 0 ? 'done' : 'failed');
+      meta.status = (hardLimitHit || cancelled) ? 'failed' : (code === 0 ? 'done' : 'failed');
       meta.exit_code = code ?? -1;
       writeMeta(meta);
+      // Reihenfolge der Faelle ist wichtig: ein abgebrochener Job ist kein
+      // Fehlschlag des Kommandos, und die harte Obergrenze ist kein Abbruch
+      // durch einen Agenten. Beides muss unterscheidbar bleiben.
       resolve({
-        status: hardLimitHit ? 'hard_limit' : meta.status,
+        status: cancelled ? 'cancelled' : (hardLimitHit ? 'hard_limit' : meta.status),
         stream_id: streamId,
         exit_code: meta.exit_code,
         detached,
         tail: tailLines(logPath(streamId), tailN),
-        ...(hardLimitHit
-          ? { message: `Harte Obergrenze von ${formatDauer(hardLimitMs)} erreicht — Prozess wurde beendet.` }
-          : {}),
+        ...(cancelled
+          ? { message: 'Job wurde abgebrochen.' }
+          : hardLimitHit
+            ? { message: `Harte Obergrenze von ${formatDauer(hardLimitMs)} erreicht — Prozess wurde beendet.` }
+            : {}),
       });
     });
 

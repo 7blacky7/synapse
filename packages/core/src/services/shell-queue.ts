@@ -49,6 +49,9 @@ export interface ShellJobRow {
   claimed_by: string | null;
   claimed_at: Date | null;
   completed_at: Date | null;
+  /** SH-2: wer den Job abgebrochen hat (NULL = nicht abgebrochen). */
+  cancelled_by: string | null;
+  cancelled_at: Date | null;
   created_at: Date;
   updated_at: Date;
 }
@@ -157,11 +160,18 @@ export async function claimPendingShellJob(
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    // SH-2: Die frueher hier stehende Bedingung
+    //   AND created_at > NOW() - interval '30 seconds'
+    // ist ERSATZLOS entfallen. Sie war doppelt gemoppelt — expirePendingShellJobs
+    // raeumt alte pending Jobs ohnehin weg — und sie wurde zur Falle, sobald Jobs
+    // wegen belegter Slots in der Warteschlange stehen duerfen: ein Job, der laenger
+    // als 30 s auf einen freien Slot wartet, waere hier nie wieder geclaimt worden
+    // und stillschweigend verschwunden. Die Altersgrenze gehoert an genau eine
+    // Stelle, und das ist expirePendingShellJobs.
     const res = await client.query<ShellJobRow>(
       `SELECT * FROM shell_jobs
        WHERE project = $1
          AND status = 'pending'
-         AND created_at > NOW() - interval '30 seconds'
        ORDER BY created_at ASC
        LIMIT 1
        FOR UPDATE SKIP LOCKED`,
@@ -238,6 +248,104 @@ export async function completeShellJob(
   const channel = doneChannelForJob(id);
   // pg_notify akzeptiert beliebige Strings als Channel — sicherer Weg via Parameter.
   await pool.query(`SELECT pg_notify($1, $2)`, [channel, result.status]);
+}
+
+/**
+ * SCHUTZFRIST FUER DEN ABBRUCH (E6, User-Entscheidung 08.08.2026).
+ * In den ersten 10 Minuten darf nur der startende Agent abbrechen — er arbeitet
+ * in dieser Phase am Ergebnis, ein Fremdabbruch waere reiner Schaden. Danach ist
+ * der Job eine Gemeinschaftsressource und jeder darf ihn beenden.
+ *
+ * Ohne diese Oeffnung waere ein Job unantastbar, dessen Starter nicht mehr
+ * existiert: Subagenten enden mit ihrer Task und haben keinen Wrapper. Sein Job
+ * liefe dann bis zu 3 h weiter, ohne dass irgendjemand ihn stoppen darf.
+ */
+export const CANCEL_PROTECTED_MS = 10 * 60 * 1000;
+
+export interface CancelResult {
+  ok: boolean;
+  /** Maschinen-Code: unknown_job | already_finished | not_allowed_yet */
+  error?: string;
+  message: string;
+  job_id: string;
+  status?: ShellJobRow['status'];
+}
+
+/**
+ * Bricht einen laufenden oder wartenden Job ab. Die Berechtigung ist zeitgestaffelt
+ * (siehe CANCEL_PROTECTED_MS). Der eigentliche Prozess-Kill passiert im Daemon —
+ * hier wird der Wunsch vermerkt und per NOTIFY zugestellt; nur der Daemon kennt
+ * den Kindprozess.
+ *
+ * Die Frist laeuft ab claimed_at, NICHT ab created_at: sonst liefe die Schutzfrist
+ * bereits, waehrend der Job noch in der Warteschlange steht und gar nichts tut.
+ */
+export async function cancelShellJob(
+  id: string,
+  agentId: string | null,
+): Promise<CancelResult> {
+  const pool = getPool();
+  const r = await pool.query<ShellJobRow>(`SELECT * FROM shell_jobs WHERE id = $1`, [id]);
+  if (r.rows.length === 0) {
+    return { ok: false, error: 'unknown_job', message: `Job ${id} nicht gefunden.`, job_id: id };
+  }
+  const job = r.rows[0];
+  if (TERMINAL_STATUSES.includes(job.status)) {
+    return {
+      ok: false,
+      error: 'already_finished',
+      message: `Job ist bereits beendet (status ${job.status}) — nichts abzubrechen.`,
+      job_id: id,
+      status: job.status,
+    };
+  }
+
+  const startedAt = job.claimed_at ? new Date(job.claimed_at).getTime() : null;
+  const laeuftSeit = startedAt === null ? 0 : Date.now() - startedAt;
+  const istStarter = agentId !== null && agentId === job.agent_id;
+  const schutzVorbei = startedAt !== null && laeuftSeit > CANCEL_PROTECTED_MS;
+
+  if (!istStarter && !schutzVorbei) {
+    const restSek = Math.ceil((CANCEL_PROTECTED_MS - laeuftSeit) / 1000);
+    return {
+      ok: false,
+      error: 'not_allowed_yet',
+      message:
+        `Nur "${job.agent_id ?? 'unbekannt'}" darf diesen Job gerade abbrechen. ` +
+        `Fuer alle anderen ist er in ${restSek} s frei.`,
+      job_id: id,
+      status: job.status,
+    };
+  }
+
+  await pool.query(
+    `UPDATE shell_jobs
+     SET cancelled_by = $2, cancelled_at = NOW(), updated_at = NOW()
+     WHERE id = $1`,
+    [id, agentId],
+  );
+
+  // Der Daemon lauscht auf diesen Kanal und beendet den Kindprozess. Ist der Job
+  // noch 'pending' (kein Prozess), wird er hier direkt terminal geschrieben —
+  // sonst bliebe er ewig in der Warteschlange stehen.
+  if (job.status === 'pending') {
+    await completeShellJob(id, {
+      status: 'failed',
+      error: 'cancelled',
+      message: `Job wurde von "${agentId ?? 'unbekannt'}" abgebrochen, bevor er startete.`,
+    });
+  } else {
+    await pool.query(`SELECT pg_notify('shell_job_cancel', $1)`, [id]);
+  }
+
+  return {
+    ok: true,
+    message: istStarter
+      ? `Job ${id} abgebrochen.`
+      : `Job ${id} abgebrochen (Schutzfrist von ${Math.round(CANCEL_PROTECTED_MS / 60000)} min war abgelaufen).`,
+    job_id: id,
+    status: job.status,
+  };
 }
 
 /**
@@ -585,13 +693,30 @@ export async function searchShellJobLog(
   };
 }
 
-export async function expirePendingShellJobs(maxAgeSec: number = 30): Promise<number> {
+/**
+ * SH-2: Die Frist lag frueher bei 30 Sekunden. Das passte, solange ein Job
+ * entweder sofort geclaimt wurde oder gar nicht. Seit es eine Slot-Warteschlange
+ * gibt, darf ein Job legitim warten — und 30 s haetten genau diese wartenden
+ * Auftraege stillschweigend als 'rejected' weggeraeumt.
+ *
+ * Die Frist liegt jetzt ueber der harten Obergrenze eines Jobs (3 h), damit auch
+ * der ungluecklichste Wartefall durchkommt: alle Slots belegt, jeder Vorlaeufer
+ * laeuft bis zum Anschlag.
+ *
+ * Der urspruengliche Zweck bleibt erhalten — Jobs, die fuer ein inaktives Projekt
+ * eingereiht wurden, sollen nicht Stunden spaeter losfahren. Die eigentliche
+ * Absicherung dafuer ist aber ohnehin das Aktivitaets-Gate in execShellInProject,
+ * das beim Ausfuehren prueft und den Job sonst als 'rejected' beendet.
+ */
+export const EXPIRE_PENDING_AFTER_SEC = 4 * 60 * 60;
+
+export async function expirePendingShellJobs(maxAgeSec: number = EXPIRE_PENDING_AFTER_SEC): Promise<number> {
   const pool = getPool();
   const res = await pool.query<{ id: string }>(
     `UPDATE shell_jobs
      SET status = 'rejected',
          error = 'expired',
-         message = 'Job wurde verworfen weil das Projekt laenger als ' || $1::text || 's nicht aktiv war. Aktiviere das Projekt im Tray und schicke das Kommando erneut.',
+         message = 'Job wurde nie ausgefuehrt und ist nach ' || ROUND($1::numeric / 3600, 1)::text || ' h verfallen. Haeufigste Ursache: das Projekt war auf dem Ziel-PC nicht aktiv (im Tray aktivieren). Kommando danach erneut schicken.',
          completed_at = NOW(),
          updated_at = NOW()
      WHERE status = 'pending'
