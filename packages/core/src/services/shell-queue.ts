@@ -222,13 +222,23 @@ export async function completeShellJob(
       `\n\n[... output truncated at ${MAX_OUTPUT_BYTES} bytes — full log via stream_id ...]`;
     truncated = true;
   }
+  // SH-2: Ein abgebrochener Job darf NIE als 'done' enden. Der Kill kann daneben
+  // gehen — ein Prozess, der SIGTERM ignoriert und vor dem SIGKILL fertig wird,
+  // oder ein Daemon mit aelterem Build, der das Abbruch-Signal gar nicht kennt.
+  // Dann meldete der Worker brav 'done', waehrend cancelled_by gesetzt ist: zwei
+  // Angaben in derselben Zeile, die sich widersprechen. Die Entscheidung faellt
+  // deshalb hier in der Datenbank, wo beide Angaben vorliegen, und nicht im
+  // Worker, der vom Abbruch nichts mitbekommen haben muss.
   await pool.query(
     `UPDATE shell_jobs
-     SET status = $2,
+     SET status = CASE WHEN cancelled_at IS NOT NULL
+                       THEN 'failed'::shell_job_status ELSE $2::shell_job_status END,
          exit_code = $3,
          tail = $4::jsonb,
-         error = $5,
-         message = $6,
+         error = CASE WHEN cancelled_at IS NOT NULL
+                      THEN COALESCE($5, 'cancelled') ELSE $5 END,
+         message = CASE WHEN cancelled_at IS NOT NULL
+                        THEN COALESCE($6, 'Job wurde abgebrochen.') ELSE $6 END,
          output = $7,
          output_truncated = $8,
          completed_at = NOW(),
