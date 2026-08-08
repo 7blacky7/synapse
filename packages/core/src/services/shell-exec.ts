@@ -17,16 +17,59 @@ import crypto from 'node:crypto';
 import { getProjectRoot } from './project-registry.js';
 
 const STREAMS_DIR = path.join(os.homedir(), '.synapse', 'shell-streams');
-const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_TAIL_LINES = 5;
 const STREAM_TTL_MS = 60 * 60 * 1000;
+
+/**
+ * ABLOESEGRENZE (SH-1): nach dieser Zeit gilt der Job als "laeuft im Hintergrund".
+ * Das bricht NICHTS ab — es meldet nur dem Aufrufer, dass er weiterarbeiten soll.
+ * Frueher hiess dieser Wert timeout_ms und war auf 30 s: der Aufrufer bekam status
+ * 'timeout', was jede KI als Fehlschlag las und mit immer hoeheren timeout_ms
+ * beantwortete. Genau das Verhalten sollte weg.
+ */
+export const DEFAULT_DETACH_MS = 20_000;
+
+/**
+ * HARTE OBERGRENZE (SH-1, User-Entscheidung 08.08.2026: 3 h).
+ * Erst hier wird wirklich abgebrochen — SIGTERM, nach der Gnadenfrist SIGKILL.
+ * Eine Grenze ist noetig, weil Prozesse, die auf stdin warten (git commit ohne -m,
+ * apt mit Rueckfrage), sonst unbegrenzt haengen und einen Slot belegen.
+ */
+export const DEFAULT_HARD_LIMIT_MS = 3 * 60 * 60 * 1000;
+
+/** Zeit zwischen SIGTERM und SIGKILL beim Erreichen der harten Obergrenze. */
+const KILL_GRACE_MS = 10_000;
+
+/**
+ * Dauer fuer Meldungen. Eine reine Minuten-Rundung schrieb bei kurzen Grenzen
+ * "0 min" — die Meldung landet im Job-Ergebnis und wird gelesen, also lohnt
+ * sich die Fallunterscheidung.
+ */
+function formatDauer(ms: number): string {
+  if (ms < 60_000) return `${Math.round(ms / 1000)} s`;
+  if (ms < 3_600_000) return `${Math.round(ms / 60_000)} min`;
+  const h = ms / 3_600_000;
+  return `${Number.isInteger(h) ? h : h.toFixed(1)} h`;
+}
 
 export type ShellExecArgs = {
   project: string;
   command: string;
   cwd_relative?: string;
+  /** @deprecated Altname der Abloesegrenze. Wirkt als detach_after_ms. */
   timeout_ms?: number;
+  /** Abloesegrenze in ms (Default DEFAULT_DETACH_MS). Bricht nichts ab. */
+  detach_after_ms?: number;
+  /** Harte Obergrenze in ms (Default DEFAULT_HARD_LIMIT_MS). Hier wird gekillt. */
+  hard_limit_ms?: number;
   tail_lines?: number;
+  /**
+   * Wird EINMAL gefeuert, wenn die Abloesegrenze erreicht ist und der Prozess
+   * weiterlaeuft. Der Aufrufer kann daraufhin seinem eigenen Aufrufer antworten;
+   * das Promise von execShellInProject laeuft unabhaengig davon bis zum echten
+   * Ende weiter und liefert dann das vollstaendige Ergebnis.
+   */
+  onDetached?: (info: { stream_id: string; pid?: number; tail: string[] }) => void;
 };
 
 export type ShellGetStreamArgs = {
@@ -158,32 +201,66 @@ export async function execShellInProject(
     };
     writeMeta(meta);
 
-    const timeoutMs = args.timeout_ms ?? DEFAULT_TIMEOUT_MS;
-    const timeout = setTimeout(() => {
-      resolve({
-        status: 'running',
-        stream_id: streamId,
-        tail: tailLines(logPath(streamId), tailN),
-        message: 'command still running — use action:"get_stream" with stream_id',
-      });
-    }, timeoutMs);
+    // ── Abloesung (SH-1) ──────────────────────────────────────────────────
+    // WICHTIG: Der Detach-Timer loest das Promise NICHT auf. Genau das war der
+    // alte Fehler: resolve() beim Timeout machte den spaeteren exit-Handler
+    // wirkungslos (ein Promise loest nur einmal auf), der Aufrufer schrieb den
+    // Job terminal als 'timeout' — und exit-Code sowie voller Output des noch
+    // laufenden Prozesses gingen ERSATZLOS VERLOREN. Jetzt meldet der Timer nur
+    // per Callback, dass abgeloest wurde; das Promise wartet auf das echte Ende.
+    const detachMs = args.detach_after_ms ?? args.timeout_ms ?? DEFAULT_DETACH_MS;
+    let detached = false;
+    const detachTimer = setTimeout(() => {
+      detached = true;
+      try {
+        args.onDetached?.({
+          stream_id: streamId,
+          pid: child.pid,
+          tail: tailLines(logPath(streamId), tailN),
+        });
+      } catch { /* Callback-Fehler duerfen den Lauf nicht kippen */ }
+    }, detachMs);
+
+    // ── Harte Obergrenze ──────────────────────────────────────────────────
+    const hardLimitMs = args.hard_limit_ms ?? DEFAULT_HARD_LIMIT_MS;
+    let killTimer: NodeJS.Timeout | null = null;
+    let hardLimitHit = false;
+    const hardTimer = setTimeout(() => {
+      hardLimitHit = true;
+      try { child.kill('SIGTERM'); } catch { /* schon tot */ }
+      killTimer = setTimeout(() => {
+        try { child.kill('SIGKILL'); } catch { /* schon tot */ }
+      }, KILL_GRACE_MS);
+      killTimer.unref?.();
+    }, hardLimitMs);
+    hardTimer.unref?.();
+
+    const clearTimers = (): void => {
+      clearTimeout(detachTimer);
+      clearTimeout(hardTimer);
+      if (killTimer) clearTimeout(killTimer);
+    };
 
     child.on('exit', (code) => {
-      clearTimeout(timeout);
+      clearTimers();
       try { fs.closeSync(log); } catch { /* already closed */ }
-      meta.status = code === 0 ? 'done' : 'failed';
+      meta.status = hardLimitHit ? 'failed' : (code === 0 ? 'done' : 'failed');
       meta.exit_code = code ?? -1;
       writeMeta(meta);
       resolve({
-        status: meta.status,
+        status: hardLimitHit ? 'hard_limit' : meta.status,
         stream_id: streamId,
         exit_code: meta.exit_code,
+        detached,
         tail: tailLines(logPath(streamId), tailN),
+        ...(hardLimitHit
+          ? { message: `Harte Obergrenze von ${formatDauer(hardLimitMs)} erreicht — Prozess wurde beendet.` }
+          : {}),
       });
     });
 
     child.on('error', (err) => {
-      clearTimeout(timeout);
+      clearTimers();
       try { fs.closeSync(log); } catch { /* ignore */ }
       meta.status = 'failed';
       meta.exit_code = -1;
@@ -192,6 +269,7 @@ export async function execShellInProject(
         status: 'failed',
         stream_id: streamId,
         error: err.message,
+        detached,
         tail: tailLines(logPath(streamId), tailN),
       });
     });

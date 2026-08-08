@@ -378,6 +378,8 @@ export {
   getShellJobLogLines,
   searchShellJobLog,
   insertCompletedShellJob,
+  DETACH_AFTER_MS,
+  HARD_LIMIT_MS,
   // Specialist-Queue
   enqueueSpecialistJob,
   claimPendingSpecialistJob,

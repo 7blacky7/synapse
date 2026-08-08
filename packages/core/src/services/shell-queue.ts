@@ -67,13 +67,28 @@ export interface ShellJobCompletion {
 
 export interface ShellJobResult {
   id: string;
-  status: ShellJobRow['status'];
+  /**
+   * 'running_background' ist KEIN gespeicherter Job-Status, sondern eine reine
+   * Antwort an den Aufrufer: der Job laeuft weiter, in der DB steht 'running'.
+   * Bewusst kein DB-Enum-Wert — das spart eine Migration und haelt den
+   * Lebenszyklus in der Tabelle unveraendert.
+   */
+  status: ShellJobRow['status'] | 'running_background';
   exit_code?: number;
   tail?: string[];
   error?: string;
   message?: string;
   stream_id?: string;
 }
+
+/**
+ * Wartefrist der REST-Seite = Abloesegrenze. Laeuft der Job laenger, kehrt der
+ * Tool-Call mit 'running_background' zurueck; der Prozess laeuft unbeirrt weiter.
+ */
+export const DETACH_AFTER_MS = 20_000;
+
+/** Harte Obergrenze je Job (User-Entscheidung 08.08.2026). */
+export const HARD_LIMIT_MS = 3 * 60 * 60 * 1000;
 
 /** Max bytes die wir in shell_jobs.output speichern. Groesseres wird truncated. */
 export const MAX_OUTPUT_BYTES = 1_000_000;
@@ -117,7 +132,9 @@ export async function enqueueShellJob(
       args.project,
       args.command,
       args.cwd_relative ?? null,
-      args.timeout_ms ?? 30_000,
+      // timeout_ms ist seit SH-1 die HARTE OBERGRENZE des Jobs, nicht mehr die
+      // Frist bis zur Antwort. Der Default steigt deshalb von 30 s auf 3 h.
+      args.timeout_ms ?? HARD_LIMIT_MS,
       args.tail_lines ?? 5,
       streamId,
       args.agent_id ?? null,
@@ -230,7 +247,7 @@ export async function completeShellJob(
  */
 export async function waitForShellJob(
   id: string,
-  timeoutMs: number = 35_000,
+  timeoutMs: number = DETACH_AFTER_MS,
 ): Promise<ShellJobResult> {
   const pool = getPool();
   const client = await pool.connect();
@@ -270,8 +287,25 @@ export async function waitForShellJob(
           client.removeListener('notification', notificationHandler);
           notificationHandler = null;
         }
-        // Timeout ueberschritten — aktuellen Stand aus DB zurueckgeben.
-        fetchFinal().then(resolve).catch(reject);
+        // Abloesegrenze erreicht (SH-1). Der Job laeuft weiter — wir hoeren nur
+        // auf zu warten. Frueher kam hier der DB-Stand mit status 'timeout'
+        // zurueck; das las jede KI als Fehlschlag und fuehrte dazu, dass sie
+        // beim naechsten Mal ein hoeheres timeout_ms setzte.
+        fetchFinal()
+          .then((r) => {
+            if (TERMINAL_STATUSES.includes(r.status as ShellJobRow['status'])) {
+              resolve(r);
+              return;
+            }
+            resolve({
+              ...r,
+              status: 'running_background',
+              message:
+                `Laeuft im Hintergrund weiter (Job ${r.id}). Arbeite weiter — das Ergebnis ` +
+                `kommt von selbst. Nur bei Bedarf gezielt abrufen: shell(get, id) oder shell(log, id).`,
+            });
+          })
+          .catch(reject);
       }, timeoutMs);
 
       notificationHandler = (msg) => {

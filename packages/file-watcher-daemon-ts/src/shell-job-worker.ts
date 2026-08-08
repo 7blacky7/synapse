@@ -153,8 +153,19 @@ async function processJob(project: string): Promise<void> {
       project: job.project,
       command: job.command,
       cwd_relative: job.cwd_relative ?? undefined,
-      timeout_ms: job.timeout_ms ?? 30_000,
+      // job.timeout_ms ist seit SH-1 die HARTE Obergrenze, nicht die Antwortfrist.
+      // Der Worker wartet hier bis zum ECHTEN Ende des Prozesses — auch Stunden.
+      // Abgeloest wird nur der wartende Aufrufer auf der REST-Seite. Nur so landet
+      // das vollstaendige Ergebnis in PG; vorher ging es bei langen Laeufen verloren,
+      // weil der Job schon beim Timeout terminal geschrieben wurde.
+      // processJob laeuft ohnehin fire-and-forget, der lange await blockiert nichts.
+      hard_limit_ms: job.timeout_ms ?? undefined,
       tail_lines: job.tail_lines ?? 5,
+      onDetached: (info) => {
+        console.error(
+          `[shell-worker] Job ${job.id} laeuft im Hintergrund weiter (pid ${info.pid ?? '?'})`,
+        );
+      },
     })) as Record<string, unknown>;
   } catch (err: unknown) {
     // Unerwarteter Fehler in execShellInProject selbst
@@ -190,11 +201,16 @@ async function processJob(project: string): Promise<void> {
     return;
   }
 
-  // Normaler Exit oder Timeout
+  // Normaler Exit oder harte Obergrenze.
+  // 'running' kann seit SH-1 nicht mehr auftreten — execShellInProject loest erst
+  // beim echten Prozessende auf. Der Zweig bleibt als Sicherung stehen, damit ein
+  // aelterer core-Build (Version-Drift zwischen Daemon und core) nicht still
+  // 'failed' schreibt, wo frueher 'timeout' stand.
   const rawStatus = result['status'] as string | undefined;
   const status =
     rawStatus === 'done' ? 'done' :
     rawStatus === 'failed' ? 'failed' :
+    rawStatus === 'hard_limit' ? 'timeout' :
     rawStatus === 'running' ? 'timeout' :
     'failed';
 

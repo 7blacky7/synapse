@@ -17,6 +17,8 @@ import { FastifyInstance } from 'fastify';
 import {
   enqueueShellJob,
   waitForShellJob,
+  DETACH_AFTER_MS,
+  HARD_LIMIT_MS,
   getShellJobs,
   getShellJobById,
   getShellJobLogLines,
@@ -115,16 +117,21 @@ export async function shellRoutes(fastify: FastifyInstance): Promise<void> {
             message: 'project und command sind erforderlich',
           });
         }
-        const timeoutMs = body.timeout_ms ?? 30000;
+        // SH-1: body.timeout_ms wirkt jetzt als HARTE Obergrenze des Jobs
+        // (nicht mehr als Antwortfrist) und ist nach oben gedeckelt. Gewartet
+        // wird immer nur bis zur Abloesegrenze; danach kommt 'running_background'
+        // zurueck und der Job laeuft zu Ende. Dieser Endpoint muss sich exakt so
+        // verhalten wie der MCP-Pfad in routes/mcp.ts — zwei Aufrufer, ein System.
+        const hardLimitMs = Math.min(body.timeout_ms ?? HARD_LIMIT_MS, HARD_LIMIT_MS);
         const { id, stream_id } = await enqueueShellJob({
           project: body.project,
           command: body.command,
           cwd_relative: body.cwd_relative,
-          timeout_ms: timeoutMs,
+          timeout_ms: hardLimitMs,
           tail_lines: body.tail_lines,
         });
 
-        const result = await waitForShellJob(id, timeoutMs + 5000);
+        const result = await waitForShellJob(id, DETACH_AFTER_MS);
         // success-Flag + message sind Pflicht: Web-KI-Connectors brauchen
         // ein klares Fehlersignal, sonst hangt der Call stillschweigend.
         return reply.status(statusFor(result as unknown as Record<string, unknown>)).send({

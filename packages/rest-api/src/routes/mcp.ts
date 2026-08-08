@@ -152,6 +152,8 @@ import {
   // Shell-Queue
   enqueueShellJob,
   waitForShellJob,
+  DETACH_AFTER_MS,
+  HARD_LIMIT_MS,
   getShellJobs,
   getShellJobById,
   getShellJobLogLines,
@@ -205,6 +207,15 @@ function getBaseUrl(request: FastifyRequest): string {
 // MCP Tool Definitionen — 14 konsolidierte Action-basierte Tools
 // Schemas identisch zum MCP-Server (packages/mcp-server/src/tools/consolidated/)
 // =====================================================================
+/**
+ * Abbruchgrenze fuer den Workspace-/Container-Pfad (SH-1).
+ * Anders als der lokale Queue-Pfad kann der Container-Exec NICHT abgeloest werden:
+ * er laeuft synchron ueber den Orchestrator und hinterlaesst keinen Job, an den man
+ * sich spaeter wieder anhaengen koennte. Deshalb bleibt hier eine echte Grenze —
+ * grosszuegiger als die frueheren 30 s, aber endlich. Fuer lange Laeufe: target:"local".
+ */
+const WORKSPACE_EXEC_TIMEOUT_MS = 10 * 60 * 1000;
+
 const MCP_TOOLS = [
   // 1. project
   {
@@ -1028,7 +1039,11 @@ const MCP_TOOLS = [
         project: { type: 'string', description: 'Projekt-Name (Pflicht fuer exec)' },
         command: { type: 'string', description: 'Shell-Kommando (Pflicht fuer exec)' },
         stream_id: { type: 'string', description: 'Pflicht fuer get_stream (noch nicht implementiert via REST)' },
-        timeout_ms: { type: 'number', description: 'Default 30000' },
+        // timeout_ms wurde mit SH-1 ENTFERNT. Es existierte nur, damit Agenten
+        // laengere Laeufe erlauben konnten — und genau das taten sie reflexhaft,
+        // weil der Rueckgabestatus 'timeout' wie ein Fehlschlag aussah. Jetzt
+        // kehrt exec nach 20 s mit 'running_background' zurueck und der Job
+        // laeuft bis zu 3 h weiter; das Ergebnis kommt via shell(get)/shell(log).
         tail_lines: { type: 'number', description: 'Default 5' },
         agent_ids: { type: 'array', items: { type: 'string' }, description: 'activity: Filter auf Agenten (Namen ODER IDs, z.B. ["sub-r0"]). Ohne = alle.' },
         tools: { type: 'array', items: { type: 'string' }, description: 'activity: Filter auf Tools (z.B. ["files","memory"]). Ohne = alle Tools interleaved.' },
@@ -4455,8 +4470,12 @@ async function handleToolCall(
       const project = reqStr(args, 'project');
       const command = reqStr(args, 'command');
       const cwdRel = str(args, 'cwd_relative');
-      const timeoutMs = num(args, 'timeout_ms') ?? 30000;
       const tailLines = num(args, 'tail_lines');
+      // SH-1: timeout_ms ist kein Tool-Parameter mehr. Es wurde von Agenten
+      // routinemaessig hochgesetzt, weil der Rueckgabestatus 'timeout' wie ein
+      // Fehlschlag aussah. Stattdessen feste Werte: nach DETACH_AFTER_MS kehrt
+      // der Call zurueck, der Job laeuft bis HARD_LIMIT_MS weiter.
+      const timeoutMs = HARD_LIMIT_MS;
 
       // Auto-Routing: target=auto|local|workspace (Default auto). isolated=true ist
       // Kurzform fuer target=workspace. Auto entscheidet anhand daemon_heartbeats:
@@ -4485,8 +4504,13 @@ async function handleToolCall(
           };
         }
         try {
+          // BEKANNTE LUECKE (SH-1): der Workspace-Pfad fuehrt synchron aus und
+          // kennt keine Job-Queue — es gibt hier nichts, woran man sich spaeter
+          // wieder anhaengen koennte. Er kann daher NICHT abgeloest werden und
+          // behaelt eine echte Abbruchgrenze. Fuer lange Laeufe target:"local".
+          // Die Ablaufmeldung sagt das ausdruecklich, statt nur 'timeout' zu melden.
           const r = await orch.exec(project, command, {
-            timeoutMs,
+            timeoutMs: WORKSPACE_EXEC_TIMEOUT_MS,
             workingDir: cwdRel ? `/workspace/${cwdRel.replace(/^\/+/, '')}` : undefined,
             workspace: str(args, 'workspace'),
           });
@@ -4501,6 +4525,14 @@ async function handleToolCall(
             tail,
             stderr_tail: r.stderr ? r.stderr.split('\n').slice(-20) : undefined,
             duration_ms: r.durationMs,
+            ...(r.timedOut
+              ? {
+                  message:
+                    `Abgebrochen nach ${Math.round(WORKSPACE_EXEC_TIMEOUT_MS / 1000)} s. Der Workspace-Container ` +
+                    `fuehrt synchron aus und kann NICHT im Hintergrund weiterlaufen. Fuer lange Laeufe ` +
+                    `target:"local" verwenden — dort loest sich der Aufruf ab und der Job laeuft zu Ende.`,
+                }
+              : {}),
           };
         } catch (err) {
           return {
@@ -4525,7 +4557,10 @@ async function handleToolCall(
         agent_id: resolveAgentId(str(args, 'agent_id')),
       });
 
-      const result = await waitForShellJob(id, timeoutMs + 5000);
+      // SH-1: Wir warten nur bis zur Abloesegrenze. Danach kehrt der Call mit
+      // status 'running_background' zurueck — der Job laeuft weiter und das
+      // Ergebnis wird vollstaendig nach PG geschrieben (shell(get)/shell(log)).
+      const result = await waitForShellJob(id, DETACH_AFTER_MS);
 
       return {
         success: !result.error,

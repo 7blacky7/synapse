@@ -59,6 +59,8 @@ export {
   getShellJobLogLines,
   searchShellJobLog,
   insertCompletedShellJob,
+  DETACH_AFTER_MS,
+  HARD_LIMIT_MS,
 } from './shell-queue.js';
 export type {
   EnqueueArgs,

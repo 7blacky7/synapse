@@ -27,9 +27,18 @@ import {
   isDaemonAliveForProject,
   queryToolCalls,
   resolveAgentId,
+  DETACH_AFTER_MS,
 } from '@synapse/core';
 
 const STREAMS_DIR = path.join(os.homedir(), '.synapse', 'shell-streams');
+
+/**
+ * Abbruchgrenze fuer den Workspace-/Container-Pfad (SH-1). Der Container-Exec
+ * laeuft synchron ueber die REST-API und hinterlaesst keinen Job, an den man sich
+ * spaeter anhaengen koennte — er kann deshalb nicht abgeloest werden und behaelt
+ * eine echte Grenze. Fuer lange Laeufe: target:"local".
+ */
+const WORKSPACE_EXEC_TIMEOUT_MS = 10 * 60 * 1000;
 
 function getSynapseApiUrl(): string {
   if (process.env.SYNAPSE_API_URL) return process.env.SYNAPSE_API_URL.replace(/\/+$/, '');
@@ -144,7 +153,9 @@ export const shellTool: ConsolidatedTool = {
         regex: { type: 'boolean', description: 'log: query als Regex interpretieren (Default false = Substring)' },
         case_sensitive: { type: 'boolean', description: 'log: case-sensitive Suche (Default false)' },
         max_matches: { type: 'number', description: 'log: max Treffer (Default 200, Max 2000)' },
-        timeout_ms: { type: 'number', description: 'Default 30000' },
+        // timeout_ms wurde mit SH-1 aus dem Schema ENTFERNT (siehe routes/mcp.ts).
+        // exec kehrt nach 20 s mit 'running_background' zurueck; der Job laeuft
+        // bis zu 3 h weiter, das Ergebnis kommt via shell(history)/shell(get).
         tail_lines: { type: 'number', description: 'Default 5' },
         cwd_relative: { type: 'string', description: 'Unterpfad innerhalb des Projekt-Roots' },
         agent_id: { type: 'string', description: 'exec: Attribution — welcher Agent den Job absetzt. Taucht in shell(history) + shell(activity) auf. Optional; Spezialisten via SYNAPSE_AGENT_NAME automatisch.' },
@@ -289,53 +300,95 @@ export const shellTool: ConsolidatedTool = {
     }
 
     let result: Record<string, unknown>;
+    // Wird gesetzt, wenn der Lauf abgeloest wurde: dann laeuft der Prozess noch,
+    // und die History wird erst spaeter aus dem Hintergrund nachgetragen.
+    let detachedRun: Promise<Record<string, unknown>> | null = null;
+
     if (target === 'workspace') {
-      result = await execViaWorkspace(project, command, cwdRel, timeoutMs ?? 30000, tailLines, str(args, 'workspace'));
+      result = await execViaWorkspace(project, command, cwdRel, timeoutMs ?? WORKSPACE_EXEC_TIMEOUT_MS, tailLines, str(args, 'workspace'));
     } else {
-      result = (await execShellInProject({
+      // SH-1: Nach der Abloesegrenze antworten wir dem Aufrufer, lassen den
+      // Prozess aber weiterlaufen. Ohne dieses Rennen wuerde der stdio-Server
+      // bis zur harten Obergrenze (3 h) blockieren, weil execShellInProject
+      // seit SH-1 erst beim echten Prozessende aufloest.
+      const running = execShellInProject({
         project,
         command,
         cwd_relative: cwdRel,
-        timeout_ms: timeoutMs,
+        hard_limit_ms: timeoutMs,
         tail_lines: tailLines,
-      })) as Record<string, unknown>;
-      result['executed_via'] = 'local';
+      }) as Promise<Record<string, unknown>>;
+
+      const detached = new Promise<Record<string, unknown>>((resolve) => {
+        setTimeout(() => {
+          resolve({ status: 'running_background', __detached: true });
+        }, DETACH_AFTER_MS);
+      });
+
+      const first = await Promise.race([running, detached]);
+      if (first['__detached'] === true) {
+        detachedRun = running;
+        result = {
+          status: 'running_background',
+          executed_via: 'local',
+          message:
+            'Laeuft im Hintergrund weiter. Arbeite weiter — das Ergebnis wird nachgetragen ' +
+            'und ist dann via shell(history) bzw. shell(get, id) abrufbar. Nur bei Bedarf abrufen.',
+        };
+      } else {
+        result = first;
+        result['executed_via'] = 'local';
+      }
     }
 
     // History persistieren — damit eigene MCP-Aufrufe in shell history /
     // shell get / shell log auftauchen (gleiche Tabelle wie REST-Queue).
     // Best-effort: bei DB-Fehler nicht den exec-Aufruf scheitern lassen.
-    try {
-      const errCode = result['error'] as string | undefined;
-      const isInactive = errCode === 'project_inactive';
-      const status: 'done' | 'failed' | 'rejected' | 'timeout' = errCode
-        ? (isInactive ? 'rejected' : 'failed')
-        : (result['status'] === 'done'
-            ? 'done'
-            : result['status'] === 'running'
-              ? 'timeout'
-              : 'failed');
-      const streamId = (result['stream_id'] as string | undefined) ?? undefined;
-      const persistedId = await insertCompletedShellJob({
-        project,
-        command,
-        cwd_relative: cwdRel,
-        timeout_ms: timeoutMs,
-        tail_lines: tailLines,
-        status,
-        exit_code: result['exit_code'] as number | undefined,
-        tail: result['tail'] as string[] | undefined,
-        error: errCode,
-        message: result['message'] as string | undefined,
-        output: readStreamLog(streamId),
-        stream_id: streamId,
-        source: 'mcp_local',
-        agent_id: resolveAgentId(str(args, 'agent_id')),
-      });
+    const persist = async (final: Record<string, unknown>): Promise<string | undefined> => {
+      try {
+        const errCode = final['error'] as string | undefined;
+        const isInactive = errCode === 'project_inactive';
+        const status: 'done' | 'failed' | 'rejected' | 'timeout' = errCode
+          ? (isInactive ? 'rejected' : 'failed')
+          : (final['status'] === 'done'
+              ? 'done'
+              : final['status'] === 'hard_limit'
+                ? 'timeout'
+                : final['status'] === 'running'
+                  ? 'timeout'
+                  : 'failed');
+        const streamId = (final['stream_id'] as string | undefined) ?? undefined;
+        const persistedId = await insertCompletedShellJob({
+          project,
+          command,
+          cwd_relative: cwdRel,
+          timeout_ms: timeoutMs,
+          tail_lines: tailLines,
+          status,
+          exit_code: final['exit_code'] as number | undefined,
+          tail: final['tail'] as string[] | undefined,
+          error: errCode,
+          message: final['message'] as string | undefined,
+          output: readStreamLog(streamId),
+          stream_id: streamId,
+          source: 'mcp_local',
+          agent_id: resolveAgentId(str(args, 'agent_id')),
+        });
+        return persistedId.id;
+      } catch {
+        // Kein DB-Zugriff (z.B. Tests ohne PG) → exec-Result bleibt valide
+        return undefined;
+      }
+    };
+
+    if (detachedRun) {
+      // Abgeloest: der Eintrag entsteht erst, wenn der Prozess wirklich fertig ist.
+      // Sonst stuende in der History ein Ergebnis, das es noch gar nicht gibt.
+      void detachedRun.then((final) => persist(final));
+    } else {
+      const id = await persist(result);
       // History-ID anhaengen damit der User sie via "shell get" abholen kann
-      (result as Record<string, unknown>)['id'] = persistedId.id;
-    } catch {
-      // Kein DB-Zugriff (z.B. Tests ohne PG) → exec-Result bleibt valide
+      if (id) (result as Record<string, unknown>)['id'] = id;
     }
 
     return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };

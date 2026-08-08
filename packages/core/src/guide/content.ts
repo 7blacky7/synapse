@@ -155,12 +155,11 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
     when_not_to_use: [
       'Datei lesen/schreiben — nutze files.',
       'Code suchen — nutze code_intel oder search.',
-      'Langlaufende Prozesse (>60s) — timeout kommt dir in die Quere.',
       'Shell-Pipelines mit Interaktion (stdin) — nicht unterstuetzt.',
     ].join(' '),
     param_tips: [
       'project: Pflicht fuer exec, muss auf dem Daemon aktiv sein. Bei nicht-aktivem Projekt: status=rejected, error=project_inactive, message="Projekt ist inaktiv. Bitte im Tray aktivieren."',
-      'timeout_ms: Default 30000. Bei langen Commands hoeher, aber max 90s sinnvoll.',
+      'timeout_ms GIBT ES NICHT MEHR (SH-1). Lange Laeufe sind der Normalfall: nach 20 s kehrt exec mit status="running_background" zurueck, der Job laeuft bis zu 3 h weiter und das vollstaendige Ergebnis landet in PG. Arbeite nach dem Rueckkehren einfach weiter — NICHT pollen. Das Ergebnis nur abrufen wenn du es wirklich brauchst: shell(get, id) bzw. shell(log, id).',
       'cwd_relative: Pfad RELATIV zum Projekt-Root (z.B. "packages/core"), kein absoluter Pfad.',
       'tail_lines: Default 5. Auf 20-50 erhoehen wenn du im exec-Result direkt mehr sehen willst — fuer den vollen Output ist aber action:"get" oder "log" besser.',
       'response: success(true|false) + status + tail; bei history zusaetzlich output_line_count + source ("mcp_local" | "daemon-<host>-<pid>"); bei error: actionable message.',
@@ -183,14 +182,14 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
     ],
     actions: {
       exec: {
-        description: 'Kommando synchron ausfuehren, Ergebnis in Response. Voller Output wird automatisch in PG gespeichert (gecappt 1MB).',
-        params: 'project (req), command (req), timeout_ms, tail_lines, cwd_relative, target (auto|local|workspace, Default auto), isolated (bool = Kurzform target:workspace), workspace (Ziel-Container bei Multi-Workspace, Default main), agent_id (Attribution fuer history/activity)',
+        description: 'Kommando ausfuehren. Kurze Laeufe liefern das Ergebnis direkt. Dauert es laenger als 20 s, kehrt der Call mit status="running_background" zurueck — der Prozess laeuft ungestoert weiter (bis 3 h) und das vollstaendige Ergebnis inkl. exit_code landet in PG. Voller Output gecappt auf 1MB.',
+        params: 'project (req), command (req), tail_lines, cwd_relative, target (auto|local|workspace, Default auto), isolated (bool = Kurzform target:workspace), workspace (Ziel-Container bei Multi-Workspace, Default main), agent_id (Attribution fuer history/activity)',
         example: 'shell({ action: "exec", project: "synapse", command: "echo hallo" })',
         tips: 'Default action — wenn du kein action angibst, ist es "exec". Bei project_inactive bekommst du klare message statt stillem Hangen. Die exec-Antwort enthaelt id (= Job-UUID fuer get/log) UND stream_id. Falsche/verwechselte ID liefert jetzt einen klaren invalid_job_id-Fehler statt einer rohen PG-Meldung. tail_lines Default ist 5 — bei mehrzeiligem Output direkt hoeher setzen, sonst kostet dich das einen zweiten Call.',
       },
       get_stream: {
         description: 'Live-Tail eines laufenden Jobs (nur via lokalem MCP, REST gibt 501).',
-        tips: 'Fuer long-running Commands ueber REST: timeout_ms hoch + spaeter via "get" oder "log" abholen.',
+        tips: 'Fuer lange Commands ueber REST braucht es das nicht: exec loest sich nach 20 s selbst ab, und das Endergebnis holst du spaeter via "get" oder "log".',
       },
       history: {
         description: 'Liste vergangener Jobs eines Projekts (oder global). Sortiert nach created_at DESC. Liefert Metadata mit output_line_count + source — KEIN voller Output (zu gross fuer Liste).',
@@ -218,7 +217,7 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
       },
     },
     workflow_examples: [
-      'Workflow: Long-running Build im Hintergrund starten + spaeter Status pruefen.\\n  1) shell({ action: "exec", project: "synapse", command: "pnpm -r build", timeout_ms: 5000 }) → status=timeout, stream_id zurueck\\n  2) ... beliebig spaeter ...\\n  3) shell({ action: "history", project: "synapse", limit: 5 }) → letzten Job finden\\n  4) shell({ action: "get", id: "<uuid>" }) → status=done/failed, voller output',
+      'Workflow: Langer Build. Es braucht KEINEN Trick mehr — das passiert von selbst.\\n  1) shell({ action: "exec", project: "synapse", command: "pnpm -r build" })\\n     → dauert es laenger als 20 s: status="running_background" + id zurueck\\n  2) WEITERARBEITEN. Nicht pollen, nicht warten, nicht nochmal starten.\\n  3) Erst wenn du das Ergebnis wirklich brauchst: shell({ action: "get", id: "<uuid>" })\\n     → status=done/failed, exit_code, voller output',
       'Workflow: Nach Fehler-Pattern in altem Build suchen.\\n  1) shell({ action: "history", project: "synapse", status: "failed", limit: 5 })\\n  2) shell({ action: "log", id: "<uuid>", query: "Error|FAIL|✗", regex: true })\\n  → Zeilennummern mit Fehlern, dann shell({ action: "log", id, from_line: <treffer-1>, to_line: <treffer+10> }) fuer Kontext',
     ],
   },
