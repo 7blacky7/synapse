@@ -3108,6 +3108,47 @@ async function handleToolCall(
           const channels = await listChannels(chProject || undefined);
           return { success: true, channels, count: channels.length, action: 'list' };
         }
+        // CH-3 — gleiche Aktionen wie im lokalen Weg, damit die Strecken nicht auseinanderlaufen.
+        case 'sichtung_status': {
+          const { holeSichtungsstand } = await import('@synapse/core');
+          const eintraege = await holeSichtungsstand(String(args.project), String(args.channel_name));
+          const offen = eintraege.filter((e) => e.status === 'offen' || e.status === 'veraltet').length;
+          return {
+            success: true,
+            action: 'sichtung_status',
+            channel: args.channel_name,
+            count: eintraege.length,
+            offen,
+            eintraege,
+            ...(offen === 0 && eintraege.length > 0
+              ? { hinweis: 'Alle Absender ausgewertet — der Channel kann geschlossen werden.' }
+              : {}),
+          };
+        }
+        case 'sichtung_setzen': {
+          const { setzeSichtung } = await import('@synapse/core');
+          const status = String(args.status);
+          if (status !== 'gesichert' && status !== 'nichts_verwertbares') {
+            return { success: false, error: 'status muss "gesichert" oder "nichts_verwertbares" sein.' };
+          }
+          const r = await setzeSichtung({
+            project: String(args.project),
+            channel: String(args.channel_name),
+            agent: String(args.agent_name),
+            status: status as 'gesichert' | 'nichts_verwertbares',
+            memoryName: args.memory_name ? String(args.memory_name) : undefined,
+            notiz: args.content ? String(args.content) : undefined,
+            gesichtetVon: String(args.agent_id ?? args.sender ?? 'unbekannt'),
+          });
+          return {
+            success: true,
+            action: 'sichtung_setzen',
+            ...r,
+            ...(status === 'gesichert' && !r.memory_markiert
+              ? { hinweis: 'Vermerk gesetzt, aber das Memory wurde NICHT gefunden — Name pruefen, sonst fehlt die Herkunfts-Markierung.' }
+              : {}),
+          };
+        }
         default:
           return { success: false, error: `Unbekannte channel action: "${action}"` };
       }

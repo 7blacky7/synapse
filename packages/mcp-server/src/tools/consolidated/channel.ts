@@ -247,8 +247,8 @@ export const channelTool: ConsolidatedTool = {
       properties: {
         action: {
           type: 'string',
-          enum: ['create', 'join', 'leave', 'post', 'feed', 'list', 'mark_read'],
-          description: 'Die auszufuehrende Aktion',
+          enum: ['create', 'join', 'leave', 'post', 'feed', 'list', 'mark_read', 'sichtung_status', 'sichtung_setzen'],
+          description: 'Die auszufuehrende Aktion. sichtung_status/sichtung_setzen (CH-3) halten fest, welche Beitraege beim Aufraeumen schon ausgewertet sind.',
         },
         // create: name, project, description, created_by
         name: {
@@ -394,6 +394,52 @@ export const channelTool: ConsolidatedTool = {
         return await handleMarkRead(args);
       case 'list':
         return await handleList(args);
+
+      // CH-3: Aufraeum-Fortschritt. status zeigt je Absender, was offen, gesichtet oder
+      // wieder VERALTET ist (der Agent hat nach der Sichtung weitergeschrieben).
+      case 'sichtung_status': {
+        const { holeSichtungsstand } = await import('@synapse/core');
+        const eintraege = await holeSichtungsstand(reqStr(args, 'project'), reqStr(args, 'channel_name'));
+        const offen = eintraege.filter((e) => e.status === 'offen' || e.status === 'veraltet').length;
+        return jsonResult({
+          success: true,
+          channel: str(args, 'channel_name'),
+          count: eintraege.length,
+          offen,
+          eintraege,
+          hinweis: offen === 0 && eintraege.length > 0
+            ? 'Alle Absender ausgewertet — der Channel kann geschlossen werden.'
+            : undefined,
+        });
+      }
+
+      // CH-3: abhaken. Setzt zugleich Herkunfts-Tags am genannten Memory (aus-channel,
+      // channel:<name>, stand:<datum>) — ein Channel-Memory ist eine Momentaufnahme und
+      // muss das spaeter selbst sagen koennen.
+      case 'sichtung_setzen': {
+        const { setzeSichtung } = await import('@synapse/core');
+        const status = reqStr(args, 'status') as 'gesichert' | 'nichts_verwertbares';
+        if (status !== 'gesichert' && status !== 'nichts_verwertbares') {
+          return jsonResult({ success: false, message: 'status muss "gesichert" oder "nichts_verwertbares" sein.' });
+        }
+        const r = await setzeSichtung({
+          project: reqStr(args, 'project'),
+          channel: reqStr(args, 'channel_name'),
+          agent: reqStr(args, 'agent_name'),
+          status,
+          memoryName: str(args, 'memory_name'),
+          notiz: str(args, 'content'),
+          gesichtetVon: str(args, 'agent_id') ?? str(args, 'sender') ?? 'unbekannt',
+        });
+        return jsonResult({
+          success: true,
+          ...r,
+          hinweis: status === 'gesichert' && !r.memory_markiert
+            ? 'Vermerk gesetzt, aber das Memory wurde NICHT gefunden — Name pruefen, sonst fehlt die Herkunfts-Markierung.'
+            : undefined,
+        });
+      }
+
       default:
         return jsonResult({ success: false, message: `Unbekannte Action: ${action}` });
     }

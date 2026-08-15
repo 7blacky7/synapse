@@ -168,6 +168,29 @@ ALTER TABLE agent_onboardings ADD COLUMN IF NOT EXISTS rolle_quelle TEXT;
 -- das die Server-Kennungen tatsaechlich entwertet). Jeder Prozess FRAGT nur noch ab.
 -- Fehlt die Zeile, ist sie abgelaufen oder schlaegt die Abfrage fehl, gilt keine Ruhe —
 -- im Zweifel kommt das Onboarding, statt still zu verschwinden.
+-- CHANNEL-SICHTUNG (CH-3, 15.08.2026) — der Fortschritt beim Aufraeumen der Channels.
+-- ANLASS: 41 Channels, 3.043 Nachrichten, 240 verschiedene Absender. Ohne Vermerk faengt
+-- jeder Durchgang von vorne an, und niemand traut sich zu loeschen.
+-- EINHEIT IST (CHANNEL, AGENT), nicht die einzelne Nachricht: man liest und bewertet die
+-- Beitraege EINES Agenten in EINEM Channel am Stueck. 260 Paare statt 3.043 Haekchen.
+-- bis_nachricht_id haelt fest, BIS WOHIN gesichtet wurde. Schreibt derselbe Agent spaeter
+-- weiter, ist das Paar wieder offen — ein Vermerk, der das verschweigt, waere eine Luege.
+-- Geloescht wird hier NICHTS: die Nachrichten bleiben, der Vermerk sagt nur, was verarbeitet ist.
+CREATE TABLE IF NOT EXISTS channel_sichtung (
+  project TEXT NOT NULL,
+  channel TEXT NOT NULL,
+  agent TEXT NOT NULL,
+  -- 'gesichert' = es wurde ein Memory geschrieben; 'nichts_verwertbares' = bewusst verworfen.
+  status TEXT NOT NULL,
+  memory_name TEXT,
+  bis_nachricht_id BIGINT,
+  notiz TEXT,
+  gesichtet_von TEXT NOT NULL,
+  gesichtet_am TIMESTAMPTZ DEFAULT NOW(),
+  PRIMARY KEY (project, channel, agent)
+);
+CREATE INDEX IF NOT EXISTS idx_channel_sichtung_channel ON channel_sichtung(project, channel);
+
 CREATE TABLE IF NOT EXISTS onboarding_ruhe (
   id SMALLINT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
   ruhe_bis TIMESTAMPTZ NOT NULL,

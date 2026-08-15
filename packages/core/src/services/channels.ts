@@ -189,6 +189,116 @@ export async function getChannelMembers(project: string, channelName: string): P
   return rows.map((r) => r.agent_name)
 }
 
+/** Ein Sichtungs-Eintrag: die Beitraege EINES Agenten in EINEM Channel. */
+export interface SichtungsEintrag {
+  agent: string;
+  nachrichten: number;
+  letzte_id: number;
+  status: 'offen' | 'gesichert' | 'nichts_verwertbares' | 'veraltet';
+  memory_name?: string;
+  gesichtet_von?: string;
+  gesichtet_am?: string;
+}
+
+/**
+ * CH-3: Wer in diesem Channel geschrieben hat und was davon schon ausgewertet ist.
+ *
+ * Der Status wird NICHT einfach aus der Tabelle uebernommen, sondern gegen die letzte
+ * Nachricht gehalten: steht im Vermerk eine aeltere ID als die neueste Nachricht dieses
+ * Agenten, ist er 'veraltet' — es kam etwas dazu, das noch niemand gelesen hat. Genau das
+ * ist der Fall, den ein simples Haekchen verschweigen wuerde.
+ */
+export async function holeSichtungsstand(
+  project: string,
+  channelName: string,
+): Promise<SichtungsEintrag[]> {
+  const { rows } = await getPool().query<SichtungsEintrag & { vermerk_bis: string | null }>(
+    `SELECT m.sender AS agent,
+            count(*)::int AS nachrichten,
+            max(m.id)::int AS letzte_id,
+            s.memory_name,
+            s.gesichtet_von,
+            to_char(s.gesichtet_am, 'YYYY-MM-DD HH24:MI') AS gesichtet_am,
+            s.bis_nachricht_id AS vermerk_bis,
+            CASE
+              WHEN s.agent IS NULL THEN 'offen'
+              WHEN s.bis_nachricht_id IS NOT NULL AND s.bis_nachricht_id < max(m.id) THEN 'veraltet'
+              ELSE s.status
+            END AS status
+       FROM specialist_channel_messages m
+       JOIN specialist_channels c ON c.id = m.channel_id
+       LEFT JOIN channel_sichtung s
+              ON s.project = c.project AND s.channel = c.name AND s.agent = m.sender
+      WHERE c.project = $1 AND c.name = $2
+      GROUP BY m.sender, s.agent, s.status, s.memory_name, s.gesichtet_von, s.gesichtet_am, s.bis_nachricht_id
+      ORDER BY count(*) DESC`,
+    [project, channelName],
+  );
+  return rows.map(({ vermerk_bis: _weg, ...rest }) => rest);
+}
+
+/**
+ * CH-3: Die Beitraege eines Agenten in einem Channel als ausgewertet vermerken.
+ *
+ * ⚠️ MARKIERT DAS MEMORY GLEICH MIT (ausdrueckliche Vorgabe des Users, 15.08.2026).
+ * Ein Memory aus einem Channel ist eine MOMENTAUFNAHME — es haelt fest, was Agenten damals
+ * dachten, nicht was heute im Code steht. Ohne Herkunft und Datum liest es sich spaeter wie
+ * eine gueltige Auskunft. Die Tags landen deshalb hier automatisch am Memory, nicht per
+ * Erinnerung an den, der abhakt: was man von Hand nachtragen muss, wird irgendwann vergessen.
+ */
+export async function setzeSichtung(opts: {
+  project: string;
+  channel: string;
+  agent: string;
+  status: 'gesichert' | 'nichts_verwertbares';
+  memoryName?: string;
+  notiz?: string;
+  gesichtetVon: string;
+}): Promise<{ ok: boolean; bis_nachricht_id: number | null; memory_markiert: boolean }> {
+  const pool = getPool();
+
+  const { rows: maxRows } = await pool.query<{ letzte: string | null }>(
+    `SELECT max(m.id) AS letzte
+       FROM specialist_channel_messages m
+       JOIN specialist_channels c ON c.id = m.channel_id
+      WHERE c.project = $1 AND c.name = $2 AND m.sender = $3`,
+    [opts.project, opts.channel, opts.agent],
+  );
+  const bis = maxRows[0]?.letzte ? Number(maxRows[0].letzte) : null;
+
+  await pool.query(
+    `INSERT INTO channel_sichtung
+            (project, channel, agent, status, memory_name, bis_nachricht_id, notiz, gesichtet_von, gesichtet_am)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8, NOW())
+     ON CONFLICT (project, channel, agent) DO UPDATE
+        SET status = EXCLUDED.status,
+            memory_name = EXCLUDED.memory_name,
+            bis_nachricht_id = EXCLUDED.bis_nachricht_id,
+            notiz = EXCLUDED.notiz,
+            gesichtet_von = EXCLUDED.gesichtet_von,
+            gesichtet_am = NOW()`,
+    [opts.project, opts.channel, opts.agent, opts.status, opts.memoryName ?? null, bis, opts.notiz ?? null, opts.gesichtetVon],
+  );
+
+  // Herkunft ans Memory haengen — Tags, damit man spaeter ALLE Channel-Memories findet
+  // (memory list nach Tag) und nicht erst beim Lesen merkt, woher der Inhalt stammt.
+  let markiert = false;
+  if (opts.memoryName) {
+    const res = await pool.query(
+      `UPDATE memories
+          SET tags = (
+                SELECT ARRAY(SELECT DISTINCT unnest(COALESCE(tags, '{}')
+                       || ARRAY['aus-channel', 'channel:' || $3, 'stand:' || to_char(NOW(), 'YYYY-MM-DD')]))
+              )
+        WHERE project = $1 AND name = $2`,
+      [opts.project, opts.memoryName, opts.channel],
+    );
+    markiert = (res.rowCount ?? 0) > 0;
+  }
+
+  return { ok: true, bis_nachricht_id: bis, memory_markiert: markiert };
+}
+
 export async function listChannels(
   project?: string,
 ): Promise<Array<{ name: string; project: string; description: string | null }>> {
