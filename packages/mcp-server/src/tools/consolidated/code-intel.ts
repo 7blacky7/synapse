@@ -268,13 +268,23 @@ export const codeIntelTool: ConsolidatedTool = {
         const query = reqStr(args, 'query');
         const fileType = str(args, 'file_type');
         const limit = num(args, 'limit') ?? 20;
+        // ⚠️ file_path wurde hier bis 15.08.2026 STILL VERWORFEN — der Parameter stand im
+        // Schema, wurde aber nie ausgelesen, und die Suche lieferte Treffer aus dem ganzen
+        // Projekt. Das ist derselbe Fehler wie CI-1 (08.08.), der damals nur in core und in
+        // der REST-API behoben wurde: rest-api/src/routes/mcp.ts:3783/3794 reicht file_path
+        // seitdem an beide Suchen durch, dieser stdio-Handler nicht. Ergebnis waren zwei
+        // Strecken mit gleichem Schema und verschiedenem Verhalten — die lokale antwortete
+        // ungefiltert, ohne das zu sagen.
+        // Semantik wie in der API: Volltext als LIKE-Teilpfad, semantic als VOLLSTAENDIGER
+        // Pfad (Qdrant kennt keinen Teilstring-Vergleich).
+        const filePath = str(args, 'file_path');
 
         // .md-Dateien nur bei explizitem file_type:'md' — sonst aus Code-Suche ausschliessen
         const effectiveFileType = fileType;
         const excludeMd = !fileType;
 
         // PG-Volltext zuerst (schnell, exakt)
-        let pgResults = await fullTextSearchCode(project, query, effectiveFileType, limit);
+        let pgResults = await fullTextSearchCode(project, query, effectiveFileType, limit, filePath);
         if (excludeMd) {
           pgResults = pgResults.filter(r => r.file_type !== 'md');
         }
@@ -284,7 +294,7 @@ export const codeIntelTool: ConsolidatedTool = {
         }
 
         // Auto-Fallback auf Qdrant-Semantik bei 0 PG-Treffern
-        const semanticResults = await searchCode(query, project, effectiveFileType, limit);
+        const semanticResults = await searchCode(query, project, effectiveFileType, limit, filePath);
         const mappedResults = semanticResults
           .filter(r => r.score >= 0.65) // Score-Cutoff: keine False Positives
           .filter(r => !excludeMd || r.payload.file_type !== 'md') // .md ausschliessen wenn kein Filter
