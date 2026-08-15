@@ -573,7 +573,21 @@ const MCP_TOOLS = [
           ],
           description: 'Channel-Name (fuer join, leave, post, feed). Array erlaubt fuer: join, leave',
         },
-        agent_name: { type: 'string', description: 'Agent-Name (fuer join, leave)' },
+        agent_name: {
+          type: 'string',
+          description: 'Agent-Name. Bei join/leave: wer beitritt/verlaesst. '
+            + 'Bei sichtung_setzen: WESSEN Beitraege du als ausgewertet vermerkst.',
+        },
+        status: {
+          type: 'string',
+          enum: ['gesichert', 'nichts_verwertbares'],
+          description: 'sichtung_setzen: "gesichert" (dann memory_name angeben) oder "nichts_verwertbares".',
+        },
+        memory_name: {
+          type: 'string',
+          description: 'sichtung_setzen: Name des Memories mit dem gesicherten Wissen. Bekommt automatisch '
+            + 'Herkunfts-Tags (aus-channel, channel:<name>, stand:<datum>). Fehlt der Name, sagt die Antwort das.',
+        },
         sender: { type: 'string', description: 'Absender (Agent-Name, fuer post)' },
         content: { type: 'string', description: 'Nachrichteninhalt (fuer post)' },
         limit: { type: 'number', description: 'Max. Nachrichten (Standard: 20, fuer feed)' },
@@ -1741,7 +1755,11 @@ async function attachRestOnboarding(
         // Steht sie da, faellt eine Fehleinstufung beim Lesen auf statt gar nicht.
         rolle: role,
         rolle_quelle: rollenQuelle,
-        rolle_hinweis: rollenQuelleKlartext(role, rollenQuelle),
+        rolle_hinweis: rollenQuelleKlartext(
+          role,
+          rollenQuelle,
+          typeof args.role === 'string' ? args.role : null,
+        ),
         message: '📋 WILLKOMMEN! Als neuer Agent beachte bitte folgende Projekt-Regeln:',
         ...(abrufHinweis ? { volltext_hinweis: abrufHinweis } : {}),
         rules,

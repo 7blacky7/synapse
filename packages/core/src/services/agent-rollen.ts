@@ -126,7 +126,7 @@ function hinweiseHinzu(hinweise: string[], text: string): void {
  * Woher die Rolle eines Agenten stammt. Der Wert gehoert in die Antwort, nicht nur in eine
  * interne Variable — sonst kann niemand sehen, dass geraten wurde.
  */
-export type RollenQuelle = 'angegeben' | 'namensmuster' | 'standard';
+export type RollenQuelle = 'angegeben' | 'namensmuster' | 'standard' | 'unbekannt';
 
 /**
  * Bestimmt die Rolle eines Agenten und sagt dazu, WOHER sie kommt.
@@ -166,6 +166,12 @@ export function rolleFuerAgent(
     const roh = angegeben.trim().toLowerCase();
     const treffer = ROLLEN_PRAEFIXE.find((r) => r.rolle === roh);
     if (treffer) return { rolle: treffer.rolle, quelle: 'angegeben' };
+    // ⚠️ EIN UNBEKANNTER WERT DARF NICHT SCHWEIGEN (Befund des Agenten chv-eins, 15.08.2026).
+    // Vorher fiel er in den Standard-Zweig, und die Antwort meldete "weder role-Parameter noch
+    // ein passender Name" — obwohl sehr wohl einer angegeben war. Der Agent arbeitet dann mit
+    // fremden Regeln weiter und haelt die Auskunft fuer richtig, weil sie plausibel klingt.
+    // Eigene Quelle, damit der Klartext den abgelehnten Wert NENNEN kann.
+    return { rolle: 'subagent', quelle: 'unbekannt' };
   }
   const name = agentId?.toLowerCase().trim();
   if (name) {
@@ -182,12 +188,24 @@ export function rolleFuerAgent(
 }
 
 /** Klartext fuer die Antwort — die KI soll lesen koennen, wie sie eingestuft wurde. */
-export function rollenQuelleKlartext(rolle: AgentRolle, quelle: RollenQuelle): string {
+export function rollenQuelleKlartext(
+  rolle: AgentRolle,
+  quelle: RollenQuelle,
+  abgelehnt?: string | null,
+): string {
   if (quelle === 'angegeben') return `Rolle "${rolle}" (von dir angegeben).`;
   if (quelle === 'namensmuster') return `Rolle "${rolle}" — aus deinem Namen abgeleitet, nicht angegeben.`;
+  if (quelle === 'unbekannt') {
+    return `⚠️ Rolle "${abgelehnt ?? '?'}" ist UNBEKANNT — du wurdest auf "${rolle}" gesetzt und `
+      + `bekommst damit die Regeln dieser Rolle, nicht die erwarteten. `
+      + `Gueltig sind: ${ALLE_ROLLEN.join(', ')}.`;
+  }
   return `Rolle "${rolle}" — Standard, weil weder role-Parameter noch ein passender Name. `
     + `Wenn du eine andere Rolle hast, gib role bei deinem naechsten Aufruf mit.`;
 }
+
+/** Alle gueltigen Rollen — eine Quelle, damit Fehlermeldungen nicht veralten. */
+export const ALLE_ROLLEN: AgentRolle[] = ROLLEN_PRAEFIXE.map((r) => r.rolle);
 
 /** Wie viele Zeichen eine gekuerzte Regel behaelt. */
 const REGEL_KURZFASSUNG_ZEICHEN = 220;

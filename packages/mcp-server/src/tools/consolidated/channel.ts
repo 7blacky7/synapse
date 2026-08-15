@@ -279,10 +279,25 @@ export const channelTool: ConsolidatedTool = {
           ],
           description: 'Channel-Name (fuer join, leave, post, feed). Array erlaubt fuer: join, leave',
         },
-        // join/leave: agent_name
+        // join/leave: agent_name — und bei den Sichtungs-Actions der BEWERTETE Agent
         agent_name: {
           type: 'string',
-          description: 'Agent-Name (fuer join, leave)',
+          description: 'Agent-Name. Bei join/leave: wer beitritt/verlaesst. '
+            + 'Bei sichtung_setzen: WESSEN Beitraege du als ausgewertet vermerkst.',
+        },
+        // sichtung_setzen (CH-3)
+        status: {
+          type: 'string',
+          enum: ['gesichert', 'nichts_verwertbares'],
+          description: 'sichtung_setzen: "gesichert" wenn du ein Memory geschrieben hast '
+            + '(dann memory_name angeben), "nichts_verwertbares" wenn du bewusst nichts sicherst.',
+        },
+        memory_name: {
+          type: 'string',
+          description: 'sichtung_setzen: Name des Memories, in dem das Wissen gelandet ist. '
+            + 'Wird automatisch mit Herkunfts-Tags versehen (aus-channel, channel:<name>, stand:<datum>) '
+            + '— ein Channel-Memory ist eine Momentaufnahme und muss das spaeter selbst sagen koennen. '
+            + 'Existiert der Name nicht, sagt die Antwort das ausdruecklich.',
         },
         // post: sender, content
         sender: {
