@@ -608,6 +608,14 @@ CREATE TABLE IF NOT EXISTS specialist_channel_members (
 -- jeden Nebensatz — und Speicher kostet hier nichts.
 ALTER TABLE specialist_channels ADD COLUMN IF NOT EXISTS archiviert_am TIMESTAMPTZ;
 
+-- CH-8 (15.08.2026): Nachrichten archivieren, ohne den Channel zu schliessen.
+-- Fuer den Standardchannel <projekt>-general, der NIE geschlossen wird (CH-7) und deshalb
+-- ewig weiter anwaechst: alles bis einschliesslich dieser ID gilt als ausgewertet und wird
+-- im Feed per Vorgabe uebersprungen. Ein SCHNITT statt einer Spalte je Nachricht — eine Zahl
+-- pro Channel, kein Massen-UPDATE, und durch Setzen auf NULL jederzeit zurueckgenommen.
+-- Geloescht wird auch hier nichts: mit archiv=true liefert der Feed alles.
+ALTER TABLE specialist_channels ADD COLUMN IF NOT EXISTS archiv_bis_nachricht_id BIGINT;
+
 CREATE TABLE IF NOT EXISTS specialist_channel_messages (
   id SERIAL PRIMARY KEY,
   channel_id INTEGER REFERENCES specialist_channels(id) ON DELETE CASCADE,

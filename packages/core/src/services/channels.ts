@@ -144,6 +144,8 @@ export async function getChannelMessages(
     beforeId?: number
     preview?: boolean
     order?: 'asc' | 'desc'
+    /** CH-8: true holt auch die archivierten Nachrichten dazu. Vorgabe: sie bleiben draussen. */
+    mitArchiv?: boolean
   },
 ): Promise<ChannelMessage[]> {
   const pool = getPool()
@@ -173,9 +175,11 @@ export async function getChannelMessages(
      WHERE c.name = $1 AND c.project = $2
        AND cm.id > $3
        AND ($4::bigint IS NULL OR cm.id < $4::bigint)
+       AND ($6::boolean OR c.archiv_bis_nachricht_id IS NULL
+            OR cm.id > c.archiv_bis_nachricht_id)
      ORDER BY cm.id ${aufsteigend ? 'ASC' : 'DESC'}
      LIMIT $5`,
-    [channelName, project, sinceId, beforeId, limit],
+    [channelName, project, sinceId, beforeId, limit, opts?.mitArchiv === true],
   )
 
   // Sortiert wird ueber cm.id statt created_at: geblaettert wird ueber IDs, und bei gleichem
@@ -364,12 +368,30 @@ export async function listChannels(
  *
  * GELOESCHT WIRD NICHTS. Nachrichten, Mitglieder und Sichtungsvermerke bleiben; der Channel
  * ist unter seinem Archivnamen vollstaendig abrufbar.
+ *
+ * AUSGENOMMEN IST DER STANDARDCHANNEL <projekt>-general (CH-7). Er ist keine Mission, die
+ * einmal endet, sondern die Anlaufstelle des Projekts: ensureGeneralChannel legt ihn beim
+ * Onboarding an, wenn er fehlt. Archivieren gibt den Namen frei — der naechste Agent wuerde
+ * also still einen ZWEITEN Channel gleichen Namens erzeugen, und die Geschichte des Projekts
+ * laege danach auf zwei Kanaelen, von denen einer unsichtbar ist. Sein Inhalt darf ausgewertet
+ * und abgehakt werden; geschlossen wird er nie.
  */
 export async function archiviereChannel(
   project: string,
   channelName: string,
 ): Promise<{ ok: boolean; archivname?: string; grund?: string }> {
   const pool = getPool()
+
+  if (channelName === `${project}-general`) {
+    return {
+      ok: false,
+      grund:
+        `"${channelName}" ist der Standardchannel des Projekts und wird nicht archiviert. ` +
+        'Archivieren gibt den Namen frei, und das Onboarding legt ihn danach neu an — es gaebe ' +
+        'zwei Channels gleichen Namens. Auswerten und abhaken ja, schliessen nein.',
+    }
+  }
+
   const tag = new Date().toISOString().slice(0, 10).replace(/-/g, '')
   const archivname = `${channelName}~archiv-${tag}`
 
@@ -390,6 +412,67 @@ export async function archiviereChannel(
     [project, channelName, archivname],
   )
   return { ok: true, archivname }
+}
+
+/**
+ * CH-8: Die Nachrichten eines Channels bis zu einer ID ins Archiv legen, OHNE den Channel
+ * zu schliessen.
+ *
+ * GEDACHT FUER DEN STANDARDCHANNEL <projekt>-general. Der wird nie archiviert (CH-7, sonst
+ * legt das Onboarding einen zweiten gleichen Namens an), waechst aber immer weiter. Wer ihn
+ * ausgewertet hat, setzt hier den Schnitt: alles bis einschliesslich bisNachrichtId ist damit
+ * aus dem Feed draussen, der Channel selbst bleibt offen und benutzbar.
+ *
+ * GELOESCHT WIRD NICHTS. channel(feed) mit archiv=true liefert weiterhin alles, und ein
+ * Aufruf mit bisNachrichtId=null nimmt den Schnitt vollstaendig zurueck.
+ */
+export async function archiviereNachrichten(
+  project: string,
+  channelName: string,
+  bisNachrichtId: number | null,
+): Promise<{ ok: boolean; archiviert?: number; verbleibend?: number; grund?: string }> {
+  const pool = getPool()
+
+  const { rows } = await pool.query<{ id: number }>(
+    'SELECT id FROM specialist_channels WHERE project = $1 AND name = $2',
+    [project, channelName],
+  )
+  if (rows.length === 0) return { ok: false, grund: 'Channel nicht gefunden.' }
+  const channelId = rows[0].id
+
+  if (bisNachrichtId !== null) {
+    // Eine ID, die es im Channel gar nicht gibt, waere ein stiller Fehlgriff: der Schnitt
+    // stuende dann irgendwo und niemand merkte es. Lieber ablehnen.
+    const { rows: treffer } = await pool.query(
+      'SELECT 1 FROM specialist_channel_messages WHERE channel_id = $1 AND id = $2',
+      [channelId, bisNachrichtId],
+    )
+    if (treffer.length === 0) {
+      return {
+        ok: false,
+        grund: `Nachricht ${bisNachrichtId} gehoert nicht zu "${channelName}". ` +
+          'Nimm eine ID aus dem Feed dieses Channels.',
+      }
+    }
+  }
+
+  await pool.query(
+    'UPDATE specialist_channels SET archiv_bis_nachricht_id = $3 WHERE project = $1 AND name = $2',
+    [project, channelName, bisNachrichtId],
+  )
+
+  const { rows: zaehler } = await pool.query<{ archiviert: string; verbleibend: string }>(
+    `SELECT COUNT(*) FILTER (WHERE $2::bigint IS NOT NULL AND id <= $2::bigint) AS archiviert,
+            COUNT(*) FILTER (WHERE $2::bigint IS NULL OR id > $2::bigint)      AS verbleibend
+       FROM specialist_channel_messages WHERE channel_id = $1`,
+    [channelId, bisNachrichtId],
+  )
+
+  return {
+    ok: true,
+    archiviert: Number(zaehler[0].archiviert),
+    verbleibend: Number(zaehler[0].verbleibend),
+  }
 }
 
 /**

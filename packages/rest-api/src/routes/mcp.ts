@@ -3087,7 +3087,8 @@ async function handleToolCall(
           const beforeId = args.before_id !== undefined ? Number(args.before_id) : undefined;
           const feedOrder = str(args, 'order') === 'asc' ? 'asc' as const : undefined;
           const preview = bool(args, 'preview') === true;
-          const msgs = await getChannelMessages(project, chName3, { limit: feedLimit, sinceId, beforeId, order: feedOrder, preview });
+          const mitArchiv = bool(args, 'archiv') === true;
+          const msgs = await getChannelMessages(project, chName3, { limit: feedLimit, sinceId, beforeId, order: feedOrder, preview, mitArchiv });
           const feedAgentId = resolveAgentId(str(args, 'agent_id'));
           const skillHook = await holeChannelSkillVorschlaege(feedAgentId, msgs);
           if (effectiveAgentId) {
@@ -3136,9 +3137,27 @@ async function handleToolCall(
           return { success: true, channels, count: channels.length, action: 'list' };
         }
         // CH-5: archivieren statt loeschen — gleiche Aktion wie im lokalen Weg.
+        // CH-8: mit bis_nachricht_id wird nur der INHALT bis dorthin archiviert, der Channel
+        // bleibt offen — der Weg fuer den Standardchannel, der nie geschlossen wird.
         case 'archivieren': {
+          const projekt = String(args.project);
+          const kanal = String(args.channel_name);
+          const bisId = args.bis_nachricht_id !== undefined && args.bis_nachricht_id !== null
+            ? Number(args.bis_nachricht_id) : undefined;
+
+          if (bisId !== undefined || args.bis_nachricht_id === null) {
+            const { archiviereNachrichten } = await import('@synapse/core');
+            const r = await archiviereNachrichten(projekt, kanal, bisId ?? null);
+            if (!r.ok) return { success: false, error: r.grund };
+            return bisId === undefined
+              ? { success: true, action: 'archivieren', archiviert: 0, verbleibend: r.verbleibend,
+                  hinweis: `Der Schnitt in "${kanal}" ist aufgehoben — alle ${r.verbleibend} Nachrichten sind wieder im Feed.` }
+              : { success: true, action: 'archivieren', archiviert: r.archiviert, verbleibend: r.verbleibend,
+                  hinweis: `${r.archiviert} Nachrichten aus "${kanal}" sind archiviert, ${r.verbleibend} bleiben im Feed. Der Channel ist offen. Geloescht wurde nichts: channel(feed, archiv:true) zeigt weiter alles, bis_nachricht_id:null nimmt es zurueck.` };
+          }
+
           const { archiviereChannel } = await import('@synapse/core');
-          const r = await archiviereChannel(String(args.project), String(args.channel_name));
+          const r = await archiviereChannel(projekt, kanal);
           return r.ok
             ? { success: true, action: 'archivieren', archivname: r.archivname,
                 hinweis: `Archiviert. Nachrichten und Mitglieder bleiben erhalten und sind unter "${r.archivname}" abrufbar; der alte Name ist wieder frei.` }

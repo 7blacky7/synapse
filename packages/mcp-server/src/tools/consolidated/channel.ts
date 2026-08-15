@@ -154,9 +154,10 @@ async function handleFeed(args: Record<string, unknown>) {
   const beforeId = num(args, 'before_id');
   const order = str(args, 'order') === 'asc' ? 'asc' as const : undefined;
   const preview = bool(args, 'preview');
+  const mitArchiv = bool(args, 'archiv') === true;
 
   try {
-    const messages = await getMessages(project, channelName, { limit, sinceId, beforeId, order, preview });
+    const messages = await getMessages(project, channelName, { limit, sinceId, beforeId, order, preview, mitArchiv });
     const agentId = resolveAgentId(str(args, 'agent_id'));
     const skillHook = await holeChannelSkillVorschlaege(agentId, messages);
     const explicitAgentId = str(args, 'agent_id');
@@ -332,6 +333,14 @@ export const channelTool: ConsolidatedTool = {
           type: 'boolean',
           description: 'Inhalte auf 200 Zeichen kuerzen (fuer feed)',
         },
+        archiv: {
+          type: 'boolean',
+          description: 'feed: auch die archivierten Nachrichten mitliefern (CH-8). Vorgabe false — was einmal abgeschnitten wurde, bleibt im Feed unsichtbar, ist aber nie geloescht.',
+        },
+        bis_nachricht_id: {
+          type: 'number',
+          description: 'archivieren: nur die Nachrichten BIS zu dieser ID archivieren, statt den ganzen Channel. Der Channel bleibt offen und benutzbar — gedacht fuer den Standardchannel <projekt>-general, der nie geschlossen wird. null hebt den Schnitt wieder auf.',
+        },
         messages: {
           type: 'array',
           description: 'Bulk-Mode fuer post: 1..20 Nachrichten in einem Channel in einem Call. Jedes Item: { content }. project + channel_name + sender gelten fuer alle. Best-effort.',
@@ -425,9 +434,26 @@ export const channelTool: ConsolidatedTool = {
       // wieder VERALTET ist (der Agent hat nach der Sichtung weitergeschrieben).
       // CH-5: ausgewerteten Channel ins Archiv legen. Loescht NICHTS — der Name wird frei,
       // der Inhalt bleibt unter <name>~archiv-<datum> vollstaendig abrufbar.
+      // CH-8: mit bis_nachricht_id wird stattdessen nur der INHALT bis dorthin archiviert und
+      // der Channel bleibt offen — der Weg fuer den Standardchannel, der nie geschlossen wird.
       case 'archivieren': {
+        const projekt = reqStr(args, 'project');
+        const kanal = reqStr(args, 'channel_name');
+        const bisId = num(args, 'bis_nachricht_id');
+
+        if (bisId !== undefined || args.bis_nachricht_id === null) {
+          const { archiviereNachrichten } = await import('@synapse/core');
+          const r = await archiviereNachrichten(projekt, kanal, bisId ?? null);
+          if (!r.ok) return jsonResult({ success: false, message: r.grund });
+          return jsonResult(bisId === undefined
+            ? { success: true, action: 'archivieren', archiviert: 0, verbleibend: r.verbleibend,
+                hinweis: `Der Schnitt in "${kanal}" ist aufgehoben — alle ${r.verbleibend} Nachrichten sind wieder im Feed.` }
+            : { success: true, action: 'archivieren', archiviert: r.archiviert, verbleibend: r.verbleibend,
+                hinweis: `${r.archiviert} Nachrichten aus "${kanal}" sind archiviert, ${r.verbleibend} bleiben im Feed. Der Channel ist offen. Geloescht wurde nichts: channel(feed, archiv:true) zeigt weiter alles, bis_nachricht_id:null nimmt es zurueck.` });
+        }
+
         const { archiviereChannel } = await import('@synapse/core');
-        const r = await archiviereChannel(reqStr(args, 'project'), reqStr(args, 'channel_name'));
+        const r = await archiviereChannel(projekt, kanal);
         return jsonResult(r.ok
           ? { success: true, action: 'archivieren', archivname: r.archivname,
               hinweis: `Archiviert. Nachrichten und Mitglieder bleiben erhalten und sind unter "${r.archivname}" abrufbar; der alte Name ist wieder frei.` }

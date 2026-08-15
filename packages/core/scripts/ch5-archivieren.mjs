@@ -10,6 +10,9 @@
  *
  * Aufruf: node packages/core/scripts/ch5-archivieren.mjs <channel> [<channel> ...]
  * Ohne Argumente passiert nichts (kein Rundumschlag ueber alle Channels).
+ *
+ * DER STANDARDCHANNEL <projekt>-general WIRD NIE ARCHIVIERT (CH-7). archiviereChannel lehnt
+ * ihn selbst ab; hier steht es zusaetzlich, damit der Grund schon vor dem Aufruf sichtbar ist.
  */
 import { holeSichtungsstand, archiviereChannel } from '../dist/index.js';
 
@@ -25,6 +28,12 @@ let archiviert = 0;
 let uebersprungen = 0;
 
 for (const name of channels) {
+  if (name === `${PROJEKT}-general`) {
+    console.log(`${name.padEnd(32)} UEBERSPRUNGEN — Standardchannel, wird nie archiviert.`);
+    uebersprungen++;
+    continue;
+  }
+
   const stand = await holeSichtungsstand(PROJEKT, name);
   const offen = stand.filter((e) => e.status === 'offen' || e.status === 'veraltet');
 

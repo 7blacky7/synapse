@@ -169,7 +169,13 @@ CREATE TABLE public.specialist_channels (
     project text NOT NULL,
     description text,
     created_by text NOT NULL,
-    created_at timestamp with time zone DEFAULT now()
+    created_at timestamp with time zone DEFAULT now(),
+    -- CH-5 (15.08.2026): gesetzt = Channel ist archiviert, Name traegt dann ~archiv-<datum>.
+    archiviert_am timestamp with time zone,
+    -- CH-8 (15.08.2026): Schnitt fuer das Nachrichten-Archiv. Alles bis einschliesslich dieser
+    -- ID gilt als ausgewertet und wird im Feed per Vorgabe uebersprungen. Fuer Channels, die
+    -- nie geschlossen werden (der Standardchannel <projekt>-general).
+    archiv_bis_nachricht_id bigint
 );
 
 --
