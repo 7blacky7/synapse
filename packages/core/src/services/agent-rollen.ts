@@ -155,8 +155,17 @@ export function rolleFuerAgent(
   agentId: string | undefined | null,
   angegeben?: string | null,
 ): { rolle: AgentRolle; quelle: RollenQuelle } {
-  if (angegeben === 'koordinator' || angegeben === 'spezialist' || angegeben === 'subagent') {
-    return { rolle: angegeben, quelle: 'angegeben' };
+  // ⚠️ HIER STAND EINE HARTE AUFZAEHLUNG der drei damaligen Rollen. Als am 15.08.2026 die
+  // vierte (channelverwalter) dazukam, fiel sie durch diese Pruefung und landete still im
+  // Standard 'subagent' — mit zwei Folgen, die wie zwei getrennte Fehler aussahen: die
+  // rollenspezifische Regel wurde nie angelegt, und die per subagent-only gebundenen Regeln
+  // kamen trotzdem an. Kein Fehler, keine Meldung, nur eine falsche Einstufung.
+  // JETZT gegen die Praefix-Tabelle geprueft, die ohnehin die Wahrheit ueber alle Rollen haelt:
+  // eine neue Rolle dort einzutragen genuegt, diese Stelle muss niemand mehr nachziehen.
+  if (angegeben) {
+    const roh = angegeben.trim().toLowerCase();
+    const treffer = ROLLEN_PRAEFIXE.find((r) => r.rolle === roh);
+    if (treffer) return { rolle: treffer.rolle, quelle: 'angegeben' };
   }
   const name = agentId?.toLowerCase().trim();
   if (name) {
