@@ -792,6 +792,15 @@ export async function fullTextSearchCode(
   }
   params.push(limit);
 
+  // CI-2 (15.08.2026): ZWEI Spalten, ODER-verknuepft.
+  //   tsv         'english' — mit Stemming, findet zu "Request" auch requests/requesting.
+  //   tsv_zerlegt 'simple'  — an Bezeichnergrenzen zerlegt, findet this./Log./System.out.
+  // Beide sind noetig: die Zerlegung ALLEIN waere bei gestemmten Woertern schlechter als
+  // vorher (Request: 2.399 verpasste Dateien statt 1.386), 'english' allein findet keinen
+  // einzigen punktgetrennten Bezeichner. Gemessen ueber 87.942 Dateien.
+  // Die Anfrage wird fuer die zweite Spalte GENAUSO zerlegt wie der Text — sonst sucht man
+  // 'system.out' in einem Index, der nur 'system' und 'out' kennt.
+  const ZERLEGEN = `regexp_replace($2, '[^A-Za-z0-9]+', ' ', 'g')`;
   const result = await pool.query(
     `SELECT
        file_path,
@@ -799,11 +808,17 @@ export async function fullTextSearchCode(
        ts_headline('english', content, plainto_tsquery('english', $2),
          'MaxWords=20, MinWords=5, ShortWord=3, HighlightAll=false,
           MaxFragments=2, FragmentDelimiter='' ... ''') AS headline,
-       ts_rank(tsv, plainto_tsquery('english', $2)) AS rank
+       GREATEST(
+         ts_rank(tsv, plainto_tsquery('english', $2)),
+         ts_rank(tsv_zerlegt, plainto_tsquery('simple', ${ZERLEGEN}))
+       ) AS rank
      FROM code_files
      WHERE project = $1
        AND NOT ignored
-       AND tsv @@ plainto_tsquery('english', $2)
+       AND (
+         tsv @@ plainto_tsquery('english', $2)
+         OR tsv_zerlegt @@ plainto_tsquery('simple', ${ZERLEGEN})
+       )
        ${typeFilter}
        ${pfadFilter}
      ORDER BY rank DESC

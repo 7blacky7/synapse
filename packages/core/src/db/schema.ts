@@ -349,11 +349,39 @@ ALTER TABLE code_files ADD COLUMN IF NOT EXISTS tsv TSVECTOR;
 ALTER TABLE code_files ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;
 
 CREATE INDEX IF NOT EXISTS idx_code_files_tsv ON code_files USING GIN(tsv);
+
+-- CI-2 (15.08.2026): ZWEITE Spalte, an Bezeichnergrenzen zerlegt.
+--
+-- WARUM: tsv nutzt 'english' und behandelt punktgetrennte Bezeichner als EIN Token
+-- (ts_debug: this.foo -> host, Log.d -> file, System.out.println -> host). Die Anfrage
+-- sucht 'log' und trifft 'log.d' nie; 'this' ist zusaetzlich ein englisches Stoppwort und
+-- faellt ganz aus der Anfrage. GEMESSEN ueber 87.942 Dateien: "this." steht in 2.746
+-- Dateien und wurde in KEINER gefunden; System.out 87 % Ausfall, self. 46 %, Log. 38 %.
+--
+-- WARUM ZUSAETZLICH UND NICHT STATT: 'simple' kennt kein Stemming. Bei "Request" faende
+-- die Zerlegung allein 2.399 Dateien NICHT, die 'english' ueber requests/requesting sehr
+-- wohl findet (heute: 1.386 verpasst). Erst die ODER-Verknuepfung gewinnt ueberall:
+-- Request 759 statt 1.386, await 98 statt 203, this. 12 statt 2.749.
+--
+-- ⚠️ KAPPUNG BEI 750.000 ZEICHEN, GEMESSEN, NICHT GESCHAETZT: to_tsvector bricht ab
+-- 1.048.575 Bytes ERGEBNIS-Groesse ab (nicht Eingabe). 'simple' erzeugt aus demselben Text
+-- mehr Lexeme als 'english', weil nichts wegfaellt. Ungekappt reisst genau eine Datei die
+-- Grenze (php/jscripts/maintenance/zxcvbn.js, 821 KB), bei 750.000 Zeichen keine einzige.
+-- Der Trigger wuerde sonst werfen — und ein fehlgeschlagener Trigger laesst das SPEICHERN
+-- der Datei scheitern, nicht nur die Indizierung.
+ALTER TABLE code_files ADD COLUMN IF NOT EXISTS tsv_zerlegt TSVECTOR;
+CREATE INDEX IF NOT EXISTS idx_code_files_tsv_zerlegt ON code_files USING GIN(tsv_zerlegt);
 CREATE INDEX IF NOT EXISTS idx_code_files_hash ON code_files(project, content_hash);
 
 CREATE OR REPLACE FUNCTION code_files_tsv_trigger() RETURNS trigger AS $$
 BEGIN
   NEW.tsv := to_tsvector('english', COALESCE(NEW.content, ''));
+  -- CI-2: zusaetzlich an Nicht-Alphanumerik zerlegt, damit this.foo als 'this' und 'foo'
+  -- auffindbar wird. left(...) ist PFLICHT, siehe Begruendung oben bei der Spalte.
+  NEW.tsv_zerlegt := to_tsvector(
+    'simple',
+    regexp_replace(left(COALESCE(NEW.content, ''), 750000), '[^A-Za-z0-9]+', ' ', 'g')
+  );
   RETURN NEW;
 END
 $$ LANGUAGE plpgsql;
