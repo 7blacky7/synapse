@@ -61,7 +61,9 @@ noch gearbeitet, und ein Abschluss waere verfrueht.
 
 == DEIN WERKZEUG: das channel-Tool, vollstaendig ==
   list              alle Channels des Projekts
-  feed              Nachrichten lesen (preview:true kuerzt auf 200 Zeichen; since_id blaettert)
+  feed              Nachrichten lesen (preview:true kuerzt auf 200 Zeichen). Geblaettert wird mit
+                    order:'asc' + since_id VON VORNE (die aeltesten zuerst), mit before_id
+                    rueckwaerts. Ohne order bekommst du nur die neuesten limit Nachrichten.
   sichtung_status   je Absender: nachrichten, letzte_id, status (offen/gesichert/
                     nichts_verwertbares/VERALTET), memory_name, wer wann gesichtet hat
   sichtung_setzen   abhaken: channel_name, agent_name, status, optional memory_name + content
@@ -73,7 +75,10 @@ du nur das Neue (feed mit since_id) und hakst erneut ab — nicht alles noch ein
 
 == ABLAUF JE CHANNEL (die Reihenfolge ist die Auflage, nicht ein Vorschlag) ==
 1. LESEN: channel(action:'feed', channel_name:'<channel>', preview:true) — verschaff dir den Bogen.
-   Bei langen Channels seitenweise mit since_id.
+   Bei langen Channels seitenweise VON VORNE: channel(feed, order:'asc', since_id:0, limit:20),
+   dann since_id auf die letzte gelesene ID setzen und wiederholen, bis nichts mehr kommt.
+   Ein voller Abruf sprengt ab etwa 155 Nachrichten die Ausgabegrenze — das ist keine
+   Ausrede, den Anfang zu ueberspringen, sondern der Grund fuer order:'asc'.
 2. PRUEFEN: jede Annahme, die du sichern willst, gegen den heutigen Code halten (siehe unten).
 3. SICHERN: was noch gilt, als memory(action:'write', category:'documentation'|'architecture').
    Was nur damals galt, gehoert NICHT ins Memory — oder ausdruecklich als historisch markiert.

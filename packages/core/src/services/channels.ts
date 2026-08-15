@@ -138,11 +138,26 @@ export async function postChannelMessage(
 export async function getChannelMessages(
   project: string,
   channelName: string,
-  opts?: { limit?: number; sinceId?: number; preview?: boolean },
+  opts?: {
+    limit?: number
+    sinceId?: number
+    beforeId?: number
+    preview?: boolean
+    order?: 'asc' | 'desc'
+  },
 ): Promise<ChannelMessage[]> {
   const pool = getPool()
   const limit = opts?.limit ?? 20
   const sinceId = opts?.sinceId ?? 0
+  const beforeId = opts?.beforeId ?? null
+  // order='desc' (Vorgabe) liefert die NEUESTEN limit Nachrichten — das bisherige Verhalten.
+  // order='asc' liefert die AELTESTEN ab sinceId. Erst damit ist der ANFANG eines langen
+  // Channels erreichbar: feed lieferte immer nur das Ende, und sinceId verschob allein die
+  // Untergrenze — es gab keine Blaetterrichtung nach vorne. Ab etwa 155 Nachrichten sprengt
+  // ein voller Abruf die Ausgabegrenze, der Anfang blieb also unlesbar (belegt an
+  // ptz-codex, wrapper-status-pg, synapse-general, rollen-trennung, api-bruecke).
+  // beforeId setzt die Obergrenze und blaettert mit order='desc' rueckwaerts.
+  const aufsteigend = opts?.order === 'asc'
 
   const { rows } = await pool.query<{
     id: number
@@ -157,13 +172,16 @@ export async function getChannelMessages(
      JOIN specialist_channels c ON c.id = cm.channel_id
      WHERE c.name = $1 AND c.project = $2
        AND cm.id > $3
-     ORDER BY cm.created_at DESC
-     LIMIT $4`,
-    [channelName, project, sinceId, limit],
+       AND ($4::bigint IS NULL OR cm.id < $4::bigint)
+     ORDER BY cm.id ${aufsteigend ? 'ASC' : 'DESC'}
+     LIMIT $5`,
+    [channelName, project, sinceId, beforeId, limit],
   )
 
-  // Reverse to chronological order (oldest first)
-  rows.reverse()
+  // Sortiert wird ueber cm.id statt created_at: geblaettert wird ueber IDs, und bei gleichem
+  // Zeitstempel war die alte Reihenfolge unbestimmt.
+  // Bei 'desc' holt die Abfrage das ENDE — zurueckgegeben wird trotzdem chronologisch.
+  if (!aufsteigend) rows.reverse()
 
   return rows.map((r) => ({
     id: r.id,

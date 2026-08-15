@@ -3084,8 +3084,10 @@ async function handleToolCall(
           const chName3 = reqStr(args, 'channel_name');
           const feedLimit = args.limit !== undefined ? Number(args.limit) : 20;
           const sinceId = args.since_id !== undefined ? Number(args.since_id) : 0;
+          const beforeId = args.before_id !== undefined ? Number(args.before_id) : undefined;
+          const feedOrder = str(args, 'order') === 'asc' ? 'asc' as const : undefined;
           const preview = bool(args, 'preview') === true;
-          const msgs = await getChannelMessages(project, chName3, { limit: feedLimit, sinceId, preview });
+          const msgs = await getChannelMessages(project, chName3, { limit: feedLimit, sinceId, beforeId, order: feedOrder, preview });
           const feedAgentId = resolveAgentId(str(args, 'agent_id'));
           const skillHook = await holeChannelSkillVorschlaege(feedAgentId, msgs);
           if (effectiveAgentId) {

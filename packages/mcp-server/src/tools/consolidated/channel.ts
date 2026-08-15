@@ -151,10 +151,12 @@ async function handleFeed(args: Record<string, unknown>) {
   const channelName = reqStr(args, 'channel_name');
   const limit = num(args, 'limit');
   const sinceId = num(args, 'since_id');
+  const beforeId = num(args, 'before_id');
+  const order = str(args, 'order') === 'asc' ? 'asc' as const : undefined;
   const preview = bool(args, 'preview');
 
   try {
-    const messages = await getMessages(project, channelName, { limit, sinceId, preview });
+    const messages = await getMessages(project, channelName, { limit, sinceId, beforeId, order, preview });
     const agentId = resolveAgentId(str(args, 'agent_id'));
     const skillHook = await holeChannelSkillVorschlaege(agentId, messages);
     const explicitAgentId = str(args, 'agent_id');
@@ -315,7 +317,16 @@ export const channelTool: ConsolidatedTool = {
         },
         since_id: {
           type: 'number',
-          description: 'Nur Nachrichten nach dieser ID (fuer feed)',
+          description: 'Nur Nachrichten nach dieser ID (fuer feed) — setzt die Untergrenze.',
+        },
+        before_id: {
+          type: 'number',
+          description: 'Nur Nachrichten VOR dieser ID (fuer feed) — setzt die Obergrenze. Mit der Vorgabe order=desc blaetterst du damit rueckwaerts: before_id auf die kleinste ID der letzten Seite setzen.',
+        },
+        order: {
+          type: 'string',
+          enum: ['asc', 'desc'],
+          description: 'feed-Leserichtung. desc (Vorgabe) = die NEUESTEN limit Nachrichten. asc = die AELTESTEN ab since_id — nur so kommst du an den ANFANG eines langen Channels. Von vorne durchblaettern: order=asc, dann since_id auf die letzte gelesene ID setzen und wiederholen.',
         },
         preview: {
           type: 'boolean',
