@@ -158,6 +158,23 @@ CREATE TABLE IF NOT EXISTS agent_onboardings (
 ALTER TABLE agent_onboardings ADD COLUMN IF NOT EXISTS rolle TEXT;
 ALTER TABLE agent_onboardings ADD COLUMN IF NOT EXISTS rolle_quelle TEXT;
 
+-- RUHEFENSTER NACH EINEM DEPLOY (ON-2, 15.08.2026) — die Zeitbasis liegt in der DATENBANK.
+-- VORGESCHICHTE: ON-1 mass die Ruhe ab dem PROZESSSTART des Servers, der die Anfrage
+-- bearbeitet. Fuer den Container stimmt das (Prozessstart = Deploy), fuer den lokalen
+-- stdio-Server NICHT: der startet bei jeder Session und jedem Reconnect neu, und mit ihm
+-- begann das Fenster von vorn. Ergebnis war ein dauerhaft stiller lokaler Server, der
+-- Agenten ihre Projektregeln vorenthielt — ohne dass es jemandem auffiel.
+-- JETZT: genau EINE Zeile, gesetzt ausschliesslich beim Start der REST-API (dem Ereignis,
+-- das die Server-Kennungen tatsaechlich entwertet). Jeder Prozess FRAGT nur noch ab.
+-- Fehlt die Zeile, ist sie abgelaufen oder schlaegt die Abfrage fehl, gilt keine Ruhe —
+-- im Zweifel kommt das Onboarding, statt still zu verschwinden.
+CREATE TABLE IF NOT EXISTS onboarding_ruhe (
+  id SMALLINT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+  ruhe_bis TIMESTAMPTZ NOT NULL,
+  gesetzt_von TEXT,
+  gesetzt_am TIMESTAMPTZ DEFAULT NOW()
+);
+
 CREATE TABLE IF NOT EXISTS chat_messages (
   id SERIAL PRIMARY KEY,
   project TEXT NOT NULL,

@@ -9,7 +9,7 @@ import fastifyStatic from '@fastify/static';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { existsSync } from 'node:fs';
-import { getConfig, initSynapse, getPool, registerVirtualProject } from '@synapse/core';
+import { getConfig, initSynapse, getPool, registerVirtualProject, setzeOnboardingRuhe } from '@synapse/core';
 import { errorHandler } from './middleware/error.js';
 import { registerAuthHook } from './middleware/auth-hook.js';
 import {
@@ -173,6 +173,11 @@ export async function startServer(): Promise<void> {
     console.error('[Synapse API] Core-Initialisierung fehlgeschlagen');
     process.exit(1);
   }
+
+  // ON-2: Ruhefenster starten. NUR hier — der Start der REST-API ist der Deploy, und nur er
+  // entwertet die Server-Kennungen aller Agenten. Der lokale MCP-Server fragt den Zeitpunkt
+  // bloss ab; wuerde er ihn selbst setzen, begaenne die Ruhe bei jeder Session von vorn.
+  await setzeOnboardingRuhe('synapse-api');
 
   // Virtuelle Projekte fuer REST-API registrieren
   try {

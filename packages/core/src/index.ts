@@ -587,7 +587,7 @@ export { getParserPool, resetParserPool, ParserWorkerPool, getParserActivity } f
 export type { ParseArgs, ParserAktivitaet } from './parser/worker-pool.js';
 
 export type { ProjectStatus } from './services/project-status.js';
-export { getProjectStatus, setProjectStatus, isProjectInitialized, updateLastAccess, clearProjectStatus, isAgentKnown, registerAgent } from './services/project-status.js';
+export { getProjectStatus, setProjectStatus, isProjectInitialized, updateLastAccess, clearProjectStatus, isAgentKnown, registerAgent, setzeOnboardingRuhe } from './services/project-status.js';
 
 // Setup-Phase (SETUP-1: PG Source-of-Truth, status.json nur noch Cache/Fallback)
 export type { SetupPhase } from './services/project-setup-status.js';

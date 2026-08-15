@@ -141,8 +141,15 @@ export function clearProjectStatus(projectPath: string): void {
  *  ongeboardet hat — spart den PG-Roundtrip bei JEDEM weiteren Tool-Call. */
 const onboardedKeys = new Set<string>();
 
-/** Zeitpunkt des Prozessstarts — Bezugspunkt fuer das Ruhefenster nach einem Deploy. */
-const PROZESS_START = Date.now();
+/**
+ * ON-2 (15.08.2026): Der Bezugspunkt des Ruhefensters liegt in der DATENBANK, nicht mehr
+ * im Prozess. Vorher stand hier ein PROZESS_START = Date.now(), und genau daran ist es
+ * gescheitert: fuer den Container ist der Prozessstart der Deploy, fuer den lokalen
+ * stdio-Server aber JEDE Session und JEDER Reconnect. Der lokale Server hat das Onboarding
+ * deshalb nicht einmalig unterdrueckt, sondern dauerhaft.
+ * Gesetzt wird der Zeitpunkt nur von der REST-API beim Start (setzeOnboardingRuhe),
+ * gelesen wird er von jedem — beide Strecken bekommen damit dieselbe Antwort.
+ */
 
 /**
  * Ruhefenster nach dem Prozessstart in Minuten (Env SYNAPSE_ONBOARDING_RUHE_MIN, Default 60).
@@ -154,6 +161,51 @@ const PROZESS_START = Date.now();
 function ruhefensterMinuten(): number {
   const roh = Number(process.env.SYNAPSE_ONBOARDING_RUHE_MIN ?? 60);
   return Number.isFinite(roh) && roh > 0 ? roh : 0;
+}
+
+/**
+ * Startet das Ruhefenster. AUSSCHLIESSLICH vom Start der REST-API aufzurufen — sie ist das,
+ * was deployt wird, und ihr Neustart ist das Ereignis, das alle Server-Kennungen entwertet.
+ * Der lokale stdio-Server ruft das NICHT auf, sonst begaenne das Fenster bei jeder Session neu.
+ *
+ * Minuten <= 0 (SYNAPSE_ONBOARDING_RUHE_MIN=0) loescht die Zeile und schaltet die Ruhe ab.
+ */
+export async function setzeOnboardingRuhe(quelle: string, minuten = ruhefensterMinuten()): Promise<void> {
+  try {
+    const pool = getPool();
+    if (minuten <= 0) {
+      await pool.query('DELETE FROM onboarding_ruhe WHERE id = 1');
+      console.info('[Onboarding] Ruhefenster abgeschaltet (SYNAPSE_ONBOARDING_RUHE_MIN=0).');
+      return;
+    }
+    await pool.query(
+      `INSERT INTO onboarding_ruhe (id, ruhe_bis, gesetzt_von, gesetzt_am)
+       VALUES (1, NOW() + ($1 || ' minutes')::interval, $2, NOW())
+       ON CONFLICT (id) DO UPDATE
+          SET ruhe_bis = EXCLUDED.ruhe_bis, gesetzt_von = EXCLUDED.gesetzt_von, gesetzt_am = NOW()`,
+      [String(minuten), quelle]
+    );
+    console.info(`[Onboarding] Ruhefenster laeuft ${minuten} Minuten (gesetzt von "${quelle}").`);
+  } catch (err) {
+    // Kein Abbruch: ohne Ruhefenster kommt das Onboarding oefter — laestig, aber harmlos.
+    console.warn('[Onboarding] Ruhefenster konnte nicht gesetzt werden:', err);
+  }
+}
+
+/**
+ * Laeuft das Ruhefenster gerade? Die Frage geht an die DB, damit lokaler Server und API
+ * dieselbe Antwort bekommen. Bei jedem Fehler und bei fehlender Zeile: false — dann kommt
+ * das Onboarding, und das ist die sichere Richtung.
+ */
+async function ruheLaeuftNoch(): Promise<boolean> {
+  try {
+    const { rows } = await getPool().query<{ aktiv: boolean }>(
+      'SELECT ruhe_bis > NOW() AS aktiv FROM onboarding_ruhe WHERE id = 1'
+    );
+    return rows[0]?.aktiv === true;
+  } catch {
+    return false;
+  }
 }
 
 /** Einmal pro Prozess: tote Instance-Rows aus agent_onboardings raeumen */
@@ -219,8 +271,8 @@ export async function registerAgent(
     // Der INSERT oben laeuft in beiden Faellen: dadurch bleibt der Agent auch NACH Ablauf des
     // Fensters ruhig, statt verspaetet doch noch begruesst zu werden.
     if (isFirstVisit) {
-      const ruheMs = ruhefensterMinuten() * 60_000;
-      if (ruheMs > 0 && Date.now() - PROZESS_START < ruheMs) {
+      // ON-2: nicht mehr "wie lange laeuft MEIN Prozess", sondern "laeuft das Fenster laut DB".
+      if (await ruheLaeuftNoch()) {
         const frueher = await pool.query(
           `SELECT 1 FROM agent_onboardings
             WHERE agent_id = $1 AND project = $2 AND server_instance_id <> $3
