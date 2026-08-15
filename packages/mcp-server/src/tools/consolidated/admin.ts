@@ -94,7 +94,7 @@ export const adminTool: ConsolidatedTool = {
         },
         role: {
           type: 'string',
-          enum: ['koordinator', 'spezialist', 'subagent'],
+          enum: ['koordinator', 'spezialist', 'subagent', 'channelverwalter'],
           description: 'Agenten-Rolle fuer rollenspezifisches Onboarding (optional, Fallback: Erkennung ueber agent_id)',
         },
       },

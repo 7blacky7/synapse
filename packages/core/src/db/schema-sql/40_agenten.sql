@@ -556,3 +556,49 @@ CREATE INDEX idx_agent_wissen_agent ON public.agent_wissen USING btree (project,
 --
 
 CREATE UNIQUE INDEX idx_agent_wissen_block ON public.agent_wissen USING btree (project, agent_name, art) WHERE (form = 'block'::text);
+
+--
+-- Name: onboarding_ruhe; Type: TABLE; Schema: public  (ON-2, 15.08.2026)
+--
+-- Genau EINE Zeile. Haelt fest, bis wann nach einem Deploy kein wiederholtes
+-- Onboarding ausgeliefert wird. Gesetzt ausschliesslich beim Start der REST-API,
+-- gelesen von beiden Strecken — damit haengt die Frist nicht mehr am Prozessstart
+-- des jeweiligen Servers (beim lokalen MCP war das jede Sitzung neu).
+--
+
+CREATE TABLE public.onboarding_ruhe (
+    id smallint DEFAULT 1 NOT NULL,
+    ruhe_bis timestamp with time zone NOT NULL,
+    gesetzt_von text,
+    gesetzt_am timestamp with time zone DEFAULT now(),
+    CONSTRAINT onboarding_ruhe_id_check CHECK ((id = 1))
+);
+
+ALTER TABLE ONLY public.onboarding_ruhe
+    ADD CONSTRAINT onboarding_ruhe_pkey PRIMARY KEY (id);
+
+--
+-- Name: channel_sichtung; Type: TABLE; Schema: public  (CH-3, 15.08.2026)
+--
+-- Aufraeum-Fortschritt je (Channel, Agent): was ist gesichtet, was wurde als
+-- Memory gesichert, was war nichts wert. bis_nachricht_id haelt fest, BIS WOHIN
+-- gelesen wurde — schreibt derselbe Agent spaeter weiter, gilt der Vermerk als
+-- veraltet statt weiter als erledigt.
+--
+
+CREATE TABLE public.channel_sichtung (
+    project text NOT NULL,
+    channel text NOT NULL,
+    agent text NOT NULL,
+    status text NOT NULL,
+    memory_name text,
+    bis_nachricht_id bigint,
+    notiz text,
+    gesichtet_von text NOT NULL,
+    gesichtet_am timestamp with time zone DEFAULT now()
+);
+
+ALTER TABLE ONLY public.channel_sichtung
+    ADD CONSTRAINT channel_sichtung_pkey PRIMARY KEY (project, channel, agent);
+
+CREATE INDEX idx_channel_sichtung_channel ON public.channel_sichtung USING btree (project, channel);

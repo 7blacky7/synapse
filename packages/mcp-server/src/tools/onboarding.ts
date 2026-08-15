@@ -52,7 +52,7 @@ export interface OnboardingResult {
 }
 
 /** Agenten-Rollen fuer rollenspezifisches Onboarding */
-export type AgentRole = 'koordinator' | 'spezialist' | 'subagent';
+export type AgentRole = 'koordinator' | 'spezialist' | 'subagent' | 'channelverwalter';
 
 /** Pfad zur persistenten Registry-Datei */
 const REGISTRY_PATH = path.join(os.homedir(), '.synapse', 'project-registry.json');
@@ -178,6 +178,13 @@ export async function checkAgentOnboarding(
 
     // Auto-Inject: Handoff-Regeln hinzufuegen wenn nicht vorhanden (PROTOTYP)
     await ensureHandoffRules(project, ruleMemories);
+    // CH-4: Meldet sich ein Channelverwalter zum ersten Mal, entsteht seine Pflichtregel
+    // im Projekt — damit der Koordinator die Auflagen nicht in jeden Spawn-Prompt schreiben
+    // muss. Idempotent: existiert sie, passiert nichts.
+    if (effectiveRole === 'channelverwalter') {
+      const { ensureChannelverwalterRegel } = await import('@synapse/core');
+      await ensureChannelverwalterRegel(project);
+    }
     // Regeln neu laden falls Handoff-Regeln gerade erstellt wurden
     const allRules = await getRulesForNewAgent(project);
 

@@ -28,7 +28,7 @@
  */
 
 /** Rollen, fuer die Regeln reserviert werden koennen. */
-export type AgentRolle = 'koordinator' | 'spezialist' | 'subagent';
+export type AgentRolle = 'koordinator' | 'spezialist' | 'subagent' | 'channelverwalter';
 
 /**
  * Schreibweisen je Rolle. Absichtlich als Praefixe: damit greifen sowohl die
@@ -38,6 +38,10 @@ const ROLLEN_PRAEFIXE: Array<{ rolle: AgentRolle; praefixe: string[] }> = [
   { rolle: 'koordinator', praefixe: ['koordinator', 'coordinator', 'koord', 'coord'] },
   { rolle: 'spezialist', praefixe: ['spezialist', 'specialist', 'spez', 'spec'] },
   { rolle: 'subagent', praefixe: ['subagent', 'subagenten', 'sub'] },
+  // CH-4 (15.08.2026): raeumt Channels auf — liest, prueft, sichert, schliesst.
+  // Eigene Rolle, damit die Aufraeum-Auflagen ihn erreichen und der Koordinator sie
+  // nicht in jeden Spawn-Prompt schreiben muss.
+  { rolle: 'channelverwalter', praefixe: ['channelverwalter', 'channel-verwalter', 'channelverwaltung', 'chanverw'] },
 ];
 
 /** Vereinheitlicht einen Tag: Kleinschreibung, Trennzeichen zu Bindestrich. */

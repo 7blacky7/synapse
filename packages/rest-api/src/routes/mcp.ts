@@ -772,7 +772,7 @@ const MCP_TOOLS = [
         agent_id: { type: 'string', description: 'Optional fuer index_media/index_stats/detailed_stats: Agent-ID fuer Onboarding' },
         role: {
           type: 'string',
-          enum: ['koordinator', 'spezialist', 'subagent'],
+          enum: ['koordinator', 'spezialist', 'subagent', 'channelverwalter'],
           description: 'Agenten-Rolle fuer rollenspezifisches Onboarding (optional, Fallback: Erkennung ueber agent_id)',
         },
       },
@@ -1693,6 +1693,13 @@ async function attachRestOnboarding(
     const { rolleFuerAgent, rollenQuelleKlartext } = await import('@synapse/core');
     const { rolle: role, quelle: rollenQuelle } =
       rolleFuerAgent(agentId, typeof args.role === 'string' ? args.role : null);
+
+    // CH-4: Pflichtregel des Channelverwalters sicherstellen, BEVOR die Regeln gelesen werden —
+    // sonst bekaeme er sie erst beim zweiten Onboarding, also praktisch nie.
+    if (role === 'channelverwalter') {
+      const { ensureChannelverwalterRegel } = await import('@synapse/core');
+      await ensureChannelverwalterRegel(project);
+    }
 
     const allRules = await getRulesForNewAgent(project);
     // Rollenbindung ueber die gemeinsame Erkennung in core (agent-rollen.ts) —
