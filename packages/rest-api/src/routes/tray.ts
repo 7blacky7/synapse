@@ -141,6 +141,29 @@ export async function trayRoutes(fastify: FastifyInstance): Promise<void> {
   );
 
   /**
+   * GET /api/projects/:name/channels?archiv=1  (CH-5, 15.08.2026)
+   *
+   * Die Channel-Liste fuers Tray-Menue. Ohne Parameter kommen NUR die aktiven — sonst waere
+   * das Aufraeumen wirkungslos, weil die Liste gleich lang bliebe. Mit archiv=1 kommen die
+   * archivierten DAZU; sie tragen archiviert_am und heissen <name>~archiv-<datum>.
+   */
+  fastify.get<{ Params: { name: string }; Querystring: { archiv?: string } }>(
+    '/api/projects/:name/channels-liste',
+    async (request) => {
+      const { listChannels } = await import('@synapse/core');
+      const mitArchiv = request.query.archiv === '1' || request.query.archiv === 'true';
+      const channels = await listChannels(request.params.name, { mitArchiv });
+      return {
+        success: true,
+        project: request.params.name,
+        mit_archiv: mitArchiv,
+        count: channels.length,
+        channels,
+      };
+    }
+  );
+
+  /**
    * GET /api/projects/:name/channels/:channel/members  (CH-2, 15.08.2026)
    *
    * Die Teilnehmer EINES Channels — fuer die Liste neben dem Chat-Fenster im Tray.

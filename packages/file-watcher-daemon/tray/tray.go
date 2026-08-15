@@ -584,11 +584,27 @@ func getProjectSignature(projs []Project) string {
 // eine Signatur. Aendert sie sich (neuer/geloeschter Channel), loest refresh()
 // einen Menue-Rebuild aus — sonst erschienen neue Channels erst nach manuellem
 // "Neu laden".
+// CH-5 (15.08.2026): Zeigt das Menue archivierte Channels mit an?
+// Ein GLOBALER Schalter, nicht pro Projekt: er beantwortet die Frage "raeume ich gerade auf
+// oder arbeite ich", und die stellt sich nicht je Projekt getrennt.
+var archivAnzeigen atomic.Bool
+
+// channelsUrlFuer baut die Abfrage-URL und haengt den Archiv-Parameter an, wenn der
+// Schalter steht. Eine Stelle fuer beide Aufrufer (Signatur-Poll und Menue-Aufbau) —
+// zwei getrennte Stellen waeren sofort auseinandergelaufen.
+func channelsUrlFuer(port int, projekt string) string {
+	u := fmt.Sprintf("http://127.0.0.1:%d/projects/%s/channels", port, url.QueryEscape(projekt))
+	if archivAnzeigen.Load() {
+		u += "?archiv=1"
+	}
+	return u
+}
+
 func getChannelSignature(projs []Project, p int) string {
 	client := &http.Client{Timeout: 1 * time.Second}
 	parts := make([]string, 0, len(projs))
 	for _, proj := range projs {
-		channelsUrl := fmt.Sprintf("http://127.0.0.1:%d/projects/%s/channels", p, url.QueryEscape(proj.Name))
+		channelsUrl := channelsUrlFuer(p, proj.Name)
 		var names []string
 		if chResp, err := client.Get(channelsUrl); err == nil {
 			var chData ChannelsResponse
@@ -649,7 +665,7 @@ func rebuildMenu(projs []Project) {
 			}(name)
 
 			// Fetch channels
-			channelsUrl := fmt.Sprintf("http://127.0.0.1:%d/projects/%s/channels", port, url.QueryEscape(name))
+			channelsUrl := channelsUrlFuer(port, name)
 			var channels []string
 			if chResp, err := client.Get(channelsUrl); err == nil {
 				var chData ChannelsResponse
@@ -660,6 +676,21 @@ func rebuildMenu(projs []Project) {
 				}
 				chResp.Body.Close()
 			}
+
+			// CH-5: Umschalter direkt ueber den Channels — dort, wo man ihn braucht.
+			// Der Haken zeigt den AKTUELLEN Zustand; ein Klick kehrt ihn um und baut das
+			// Menue neu auf, damit die Wirkung sofort sichtbar ist.
+			archivLabel := "Archiv anzeigen"
+			if archivAnzeigen.Load() {
+				archivLabel = "✓ Archiv wird angezeigt"
+			}
+			mArchiv := sm.AddSubMenuItem(archivLabel, "Archivierte Channels ein-/ausblenden (Inhalte bleiben erhalten)")
+			go func(item *systray.MenuItem) {
+				for range item.ClickedCh {
+					archivAnzeigen.Store(!archivAnzeigen.Load())
+					triggerRefresh()
+				}
+			}(mArchiv)
 
 			if len(channels) > 0 {
 				sm.AddSeparator()

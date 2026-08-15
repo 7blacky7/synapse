@@ -247,7 +247,7 @@ export const channelTool: ConsolidatedTool = {
       properties: {
         action: {
           type: 'string',
-          enum: ['create', 'join', 'leave', 'post', 'feed', 'list', 'mark_read', 'sichtung_status', 'sichtung_setzen'],
+          enum: ['create', 'join', 'leave', 'post', 'feed', 'list', 'mark_read', 'sichtung_status', 'sichtung_setzen', 'archivieren'],
           description: 'Die auszufuehrende Aktion. sichtung_status/sichtung_setzen (CH-3) halten fest, welche Beitraege beim Aufraeumen schon ausgewertet sind.',
         },
         // create: name, project, description, created_by
@@ -412,6 +412,17 @@ export const channelTool: ConsolidatedTool = {
 
       // CH-3: Aufraeum-Fortschritt. status zeigt je Absender, was offen, gesichtet oder
       // wieder VERALTET ist (der Agent hat nach der Sichtung weitergeschrieben).
+      // CH-5: ausgewerteten Channel ins Archiv legen. Loescht NICHTS — der Name wird frei,
+      // der Inhalt bleibt unter <name>~archiv-<datum> vollstaendig abrufbar.
+      case 'archivieren': {
+        const { archiviereChannel } = await import('@synapse/core');
+        const r = await archiviereChannel(reqStr(args, 'project'), reqStr(args, 'channel_name'));
+        return jsonResult(r.ok
+          ? { success: true, action: 'archivieren', archivname: r.archivname,
+              hinweis: `Archiviert. Nachrichten und Mitglieder bleiben erhalten und sind unter "${r.archivname}" abrufbar; der alte Name ist wieder frei.` }
+          : { success: false, message: r.grund });
+      }
+
       case 'sichtung_status': {
         const { holeSichtungsstand } = await import('@synapse/core');
         const eintraege = await holeSichtungsstand(reqStr(args, 'project'), reqStr(args, 'channel_name'));

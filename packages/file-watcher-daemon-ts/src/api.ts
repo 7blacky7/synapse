@@ -460,14 +460,17 @@ export function buildApi(opts: BuildApiOptions): FastifyInstance {
     },
   );
 
-  // ---- GET /projects/:name/channels --------------------------------------
-  // Liefert alle Channels eines Projekts (fuer Tray-Submenu).
-  app.get<{ Params: { name: string } }>(
+  // ---- GET /projects/:name/channels?archiv=1 ------------------------------
+  // Liefert die Channels eines Projekts (fuer Tray-Submenu).
+  // CH-5: OHNE Parameter nur die aktiven — archivierte sind bewusst draussen, sonst waere
+  // das Aufraeumen wirkungslos. Mit archiv=1 kommen sie dazu (Name traegt dann ~archiv-<datum>).
+  app.get<{ Params: { name: string }; Querystring: { archiv?: string } }>(
     '/projects/:name/channels',
     async (req, reply) => {
       try {
-        const channels = await listChannels(req.params.name);
-        return { project: req.params.name, channels };
+        const mitArchiv = req.query.archiv === '1' || req.query.archiv === 'true';
+        const channels = await listChannels(req.params.name, { mitArchiv });
+        return { project: req.params.name, mit_archiv: mitArchiv, channels };
       } catch (err) {
         reply.code(500);
         return { error: (err as Error).message };

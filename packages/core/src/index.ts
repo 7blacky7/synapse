@@ -589,7 +589,7 @@ export type { ParseArgs, ParserAktivitaet } from './parser/worker-pool.js';
 export type { ProjectStatus } from './services/project-status.js';
 export { getProjectStatus, setProjectStatus, isProjectInitialized, updateLastAccess, clearProjectStatus, isAgentKnown, registerAgent, setzeOnboardingRuhe, baueChannelUebersicht } from './services/project-status.js';
 export { holeChannelTeilnehmer } from './services/project-status.js';
-export { holeSichtungsstand, setzeSichtung } from './services/channels.js';
+export { holeSichtungsstand, setzeSichtung, archiviereChannel } from './services/channels.js';
 export { ensureChannelverwalterRegel, CHANNELVERWALTER_REGEL_NAME } from './services/channelverwalter-regel.js';
 export type { SichtungsEintrag } from './services/channels.js';
 export type { ChannelUebersicht, ChannelUebersichtEintrag, ChannelTeilnehmer } from './services/project-status.js';

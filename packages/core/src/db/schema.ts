@@ -573,6 +573,13 @@ CREATE TABLE IF NOT EXISTS specialist_channel_members (
   PRIMARY KEY (channel_id, agent_name)
 );
 
+-- CH-5 (15.08.2026): archivieren statt loeschen.
+-- Ein ausgewerteter Channel verschwindet aus den Listen, seine Nachrichten bleiben aber
+-- vollstaendig erhalten. Loeschen waere unumkehrbar: an specialist_channel_messages haengt
+-- ON DELETE CASCADE, der Wortlaut waere weg. Das Memory haelt das AUSGEWERTETE Wissen, nicht
+-- jeden Nebensatz — und Speicher kostet hier nichts.
+ALTER TABLE specialist_channels ADD COLUMN IF NOT EXISTS archiviert_am TIMESTAMPTZ;
+
 CREATE TABLE IF NOT EXISTS specialist_channel_messages (
   id SERIAL PRIMARY KEY,
   channel_id INTEGER REFERENCES specialist_channels(id) ON DELETE CASCADE,

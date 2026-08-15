@@ -299,30 +299,79 @@ export async function setzeSichtung(opts: {
   return { ok: true, bis_nachricht_id: bis, memory_markiert: markiert };
 }
 
+/**
+ * CH-5: Archivierte Channels sind per Vorgabe NICHT dabei. Wer sie sehen will, sagt es
+ * ausdruecklich (mitArchiv) — sonst waere das Aufraeumen wirkungslos, weil die Liste gleich
+ * lang bliebe. Die Daten sind unveraendert da, nur aus dem Weg.
+ */
 export async function listChannels(
   project?: string,
-): Promise<Array<{ name: string; project: string; description: string | null }>> {
+  opts: { mitArchiv?: boolean } = {},
+): Promise<Array<{ name: string; project: string; description: string | null; archiviert_am?: string | null }>> {
   const pool = getPool()
+  const archivFilter = opts.mitArchiv ? '' : 'AND archiviert_am IS NULL'
   if (project) {
     const { rows } = await pool.query<{
       name: string
       project: string
       description: string | null
+      archiviert_am: string | null
     }>(
-      `SELECT name, project, description
+      `SELECT name, project, description, archiviert_am
        FROM specialist_channels
-       WHERE project = $1
+       WHERE project = $1 ${archivFilter}
        ORDER BY name`,
       [project],
     )
     return rows
   }
-  const { rows } = await pool.query<{ name: string; project: string; description: string | null }>(
-    `SELECT name, project, description
+  const { rows } = await pool.query<{
+    name: string; project: string; description: string | null; archiviert_am: string | null
+  }>(
+    `SELECT name, project, description, archiviert_am
      FROM specialist_channels
+     ${opts.mitArchiv ? '' : 'WHERE archiviert_am IS NULL'}
      ORDER BY project, name`,
   )
   return rows
+}
+
+/**
+ * CH-5: Einen ausgewerteten Channel ins Archiv legen.
+ *
+ * ⚠️ DER NAME WIRD DABEI FREIGEGEBEN, indem der alte Channel umbenannt wird
+ * ("readme-update" -> "readme-update~archiv-20260815"). Ohne das bliebe er wegen
+ * UNIQUE(name, project) belegt, und ein neuer Channel gleichen Namens waere unmoeglich.
+ * Das Datum im Archivnamen erlaubt, denselben Namen spaeter erneut zu archivieren.
+ *
+ * GELOESCHT WIRD NICHTS. Nachrichten, Mitglieder und Sichtungsvermerke bleiben; der Channel
+ * ist unter seinem Archivnamen vollstaendig abrufbar.
+ */
+export async function archiviereChannel(
+  project: string,
+  channelName: string,
+): Promise<{ ok: boolean; archivname?: string; grund?: string }> {
+  const pool = getPool()
+  const tag = new Date().toISOString().slice(0, 10).replace(/-/g, '')
+  const archivname = `${channelName}~archiv-${tag}`
+
+  const { rows } = await pool.query<{ archiviert_am: string | null }>(
+    'SELECT archiviert_am FROM specialist_channels WHERE project = $1 AND name = $2',
+    [project, channelName],
+  )
+  if (rows.length === 0) return { ok: false, grund: 'Channel nicht gefunden.' }
+  if (rows[0].archiviert_am) return { ok: false, grund: 'Channel ist bereits archiviert.' }
+
+  await pool.query(
+    'UPDATE specialist_channels SET name = $3, archiviert_am = NOW() WHERE project = $1 AND name = $2',
+    [project, channelName, archivname],
+  )
+  // Der Sichtungsvermerk zeigt auf den Namen — er wandert mit, sonst steht er ins Leere.
+  await pool.query(
+    'UPDATE channel_sichtung SET channel = $3 WHERE project = $1 AND channel = $2',
+    [project, channelName, archivname],
+  )
+  return { ok: true, archivname }
 }
 
 /**

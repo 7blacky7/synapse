@@ -3133,6 +3133,15 @@ async function handleToolCall(
           const channels = await listChannels(chProject || undefined);
           return { success: true, channels, count: channels.length, action: 'list' };
         }
+        // CH-5: archivieren statt loeschen — gleiche Aktion wie im lokalen Weg.
+        case 'archivieren': {
+          const { archiviereChannel } = await import('@synapse/core');
+          const r = await archiviereChannel(String(args.project), String(args.channel_name));
+          return r.ok
+            ? { success: true, action: 'archivieren', archivname: r.archivname,
+                hinweis: `Archiviert. Nachrichten und Mitglieder bleiben erhalten und sind unter "${r.archivname}" abrufbar; der alte Name ist wieder frei.` }
+            : { success: false, error: r.grund };
+        }
         // CH-3 — gleiche Aktionen wie im lokalen Weg, damit die Strecken nicht auseinanderlaufen.
         case 'sichtung_status': {
           const { holeSichtungsstand } = await import('@synapse/core');
