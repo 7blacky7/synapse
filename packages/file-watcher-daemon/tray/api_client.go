@@ -489,11 +489,18 @@ func apiFetchSessions(project string) ([]apiSession, error) {
 // apiFetchChannelMessages liefert die Nachrichten IMMER aufsteigend sortiert —
 // die Antwort meldet ihre Reihenfolge im Feld order, hier wird sie vereinheitlicht,
 // damit die Aufrufer sich darum nicht kuemmern muessen.
+//
+// CH-8 (15.08.2026): archivierte Nachrichten kommen nur mit, wenn der Archiv-Schalter steht —
+// derselbe, der auch die archivierten Channels einblendet. Ein zweiter Schalter nur fuer
+// Nachrichten waere eine Unterscheidung, die niemand treffen will.
 func apiFetchChannelMessages(project, channel string, sinceId int64, limit int) ([]apiChannelMessage, error) {
 	path := fmt.Sprintf("/api/projects/%s/channels/%s/messages?limit=%d",
 		urlSeg(project), urlSeg(channel), limit)
 	if sinceId > 0 {
 		path += fmt.Sprintf("&since_id=%d", sinceId)
+	}
+	if archivAnzeigen.Load() {
+		path += "&archiv=1"
 	}
 	var r apiChannelMessagesResponse
 	if err := apiGet(path, &r); err != nil {

@@ -84,10 +84,17 @@ export async function trayRoutes(fastify: FastifyInstance): Promise<void> {
    * OHNE since_id: die letzten N Nachrichten, absteigend (Erst-Laden).
    * MIT  since_id: alles NEUERE aufsteigend (Polling) — identisch zur alten
    * Abfrage, damit der Tray seine Reihenfolge-Logik unveraendert behalten kann.
+   *
+   * CH-8 (15.08.2026): archivierte Nachrichten bleiben per Vorgabe draussen, ?archiv=1 holt
+   * sie dazu — derselbe Schalter, der im Tray schon die archivierten Channels ein- und
+   * ausblendet. Die Route baut ihr SQL selbst, statt getChannelMessages zu benutzen (anderes
+   * Datumsformat, eigene Reihenfolge-Semantik beim Erst-Laden), und lief deshalb zunaechst an
+   * CH-8 vorbei: der Tray zeigte weiter, was ueberall sonst schon ausgeblendet war. Wer hier
+   * etwas an der Sichtbarkeit aendert, muss es in channels.ts mitaendern — und umgekehrt.
    */
   fastify.get<{
     Params: { name: string; channel: string };
-    Querystring: { since_id?: string; limit?: string };
+    Querystring: { since_id?: string; limit?: string; archiv?: string };
   }>(
     '/api/projects/:name/channels/:channel/messages',
     async (request) => {
@@ -100,6 +107,13 @@ export async function trayRoutes(fastify: FastifyInstance): Promise<void> {
         return { success: false, error: 'invalid_since_id', message: 'since_id muss numerisch sein.' };
       }
 
+      // CH-8: derselbe Ausdruck in beiden Abfragen — sonst hinge die Sichtbarkeit davon ab,
+      // ob der Tray gerade erstmalig laedt oder pollt.
+      const mitArchiv = request.query.archiv === '1';
+      const archivFilter = mitArchiv
+        ? ''
+        : 'AND (c.archiv_bis_nachricht_id IS NULL OR m.id > c.archiv_bis_nachricht_id)';
+
       const { rows } =
         sinceId === null
           ? await getPool().query(
@@ -109,7 +123,7 @@ export async function trayRoutes(fastify: FastifyInstance): Promise<void> {
                       to_char(m.created_at, 'DD.MM. HH24:MI:SS') AS created_at
                  FROM specialist_channel_messages m
                  JOIN specialist_channels c ON c.id = m.channel_id
-                WHERE c.project = $1 AND c.name = $2
+                WHERE c.project = $1 AND c.name = $2 ${archivFilter}
                 ORDER BY m.id DESC
                 LIMIT $3`,
               [name, channel, limit]
@@ -121,7 +135,7 @@ export async function trayRoutes(fastify: FastifyInstance): Promise<void> {
                       to_char(m.created_at, 'DD.MM. HH24:MI:SS') AS created_at
                  FROM specialist_channel_messages m
                  JOIN specialist_channels c ON c.id = m.channel_id
-                WHERE c.project = $1 AND c.name = $2 AND m.id > $3
+                WHERE c.project = $1 AND c.name = $2 AND m.id > $3 ${archivFilter}
                 ORDER BY m.id
                 LIMIT $4`,
               [name, channel, sinceId, limit]

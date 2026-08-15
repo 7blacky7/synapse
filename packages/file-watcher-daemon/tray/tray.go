@@ -587,6 +587,8 @@ func getProjectSignature(projs []Project) string {
 // CH-5 (15.08.2026): Zeigt das Menue archivierte Channels mit an?
 // Ein GLOBALER Schalter, nicht pro Projekt: er beantwortet die Frage "raeume ich gerade auf
 // oder arbeite ich", und die stellt sich nicht je Projekt getrennt.
+// CH-8 (15.08.2026): derselbe Schalter entscheidet auch, ob archivierte NACHRICHTEN in einem
+// offenen Channel mitkommen (apiFetchChannelMessages). Beides ist dieselbe Frage.
 var archivAnzeigen atomic.Bool
 
 // channelsUrlFuer baut die Abfrage-URL und haengt den Archiv-Parameter an, wenn der
@@ -684,7 +686,7 @@ func rebuildMenu(projs []Project) {
 			if archivAnzeigen.Load() {
 				archivLabel = "✓ Archiv wird angezeigt"
 			}
-			mArchiv := sm.AddSubMenuItem(archivLabel, "Archivierte Channels ein-/ausblenden (Inhalte bleiben erhalten)")
+			mArchiv := sm.AddSubMenuItem(archivLabel, "Archivierte Channels und Nachrichten ein-/ausblenden (Inhalte bleiben erhalten)")
 			go func(item *systray.MenuItem) {
 				for range item.ClickedCh {
 					archivAnzeigen.Store(!archivAnzeigen.Load())

@@ -482,13 +482,16 @@ export function buildApi(opts: BuildApiOptions): FastifyInstance {
   // Letzte N Nachrichten eines Channels. Default 50.
   app.get<{
     Params: { name: string; channel: string };
-    Querystring: { limit?: string };
+    Querystring: { limit?: string; archiv?: string };
   }>(
     '/projects/:name/channels/:channel/feed',
     async (req, reply) => {
       const limit = req.query.limit ? Number(req.query.limit) : 50;
+      // CH-8: archivierte Nachrichten bleiben per Vorgabe draussen (das erledigt
+      // getChannelMessages selbst); ?archiv=1 holt sie dazu — gleicher Schalter wie ueberall.
+      const mitArchiv = req.query.archiv === '1';
       try {
-        const messages = await getChannelMessages(req.params.name, req.params.channel, { limit });
+        const messages = await getChannelMessages(req.params.name, req.params.channel, { limit, mitArchiv });
         return { project: req.params.name, channel: req.params.channel, messages };
       } catch (err) {
         reply.code(500);
