@@ -220,6 +220,68 @@ export interface ChannelUebersicht {
 /** Wie viele Channels der Block hoechstens zeigt. Der Rest wird nur gezaehlt. */
 const CHANNEL_BLOCK_MAX = 5;
 
+/** Wer haengt in einem Channel — und woher wissen wir das. */
+export interface ChannelTeilnehmer {
+  agent: string;
+  /** Steht in specialist_channel_members, ist also per join beigetreten. */
+  mitglied: boolean;
+  /** Hat mindestens eine Nachricht geschrieben. */
+  hat_gepostet: boolean;
+  /** Session steht auf 'active' (heisst: angemeldet, NICHT "arbeitet gerade"). */
+  aktiv: boolean;
+  nachrichten: number;
+}
+
+/**
+ * CH-2 (15.08.2026): die TATSAECHLICHEN Teilnehmer eines Channels.
+ *
+ * ⚠️ WARUM NICHT EINFACH DIE MITGLIEDERTABELLE. channel(post) verlangt KEIN vorheriges join —
+ * am 15.08. im Versuch belegt: ein Agent kann in einem Channel schreiben, ohne je Mitglied zu
+ * werden, und taucht dann in keiner Mitgliederliste auf. Genau das war dem Koordinator selbst
+ * in "ci2-messung" passiert: zwei eigene Nachrichten, kein Eintrag. Und "rollen-trennung" hat
+ * Nachrichten bei NULL Mitgliedern.
+ * Wer fragt "wer haengt hier drin", meint beide Sorten. Sie bleiben aber unterscheidbar:
+ * ein Nur-Poster bekommt keine Hinweise auf neue Nachrichten (auch das ist gemessen), ihn
+ * anzuschreiben erreicht ihn also nicht ueber den Channel.
+ */
+export async function holeChannelTeilnehmer(
+  project: string,
+  channel: string,
+): Promise<ChannelTeilnehmer[]> {
+  const { rows } = await getPool().query<{
+    agent: string;
+    mitglied: boolean;
+    hat_gepostet: boolean;
+    aktiv: boolean;
+    nachrichten: number;
+  }>(
+    `WITH ch AS (
+           SELECT id FROM specialist_channels WHERE project = $1 AND name = $2
+         ),
+         mitglieder AS (
+           SELECT agent_name AS agent FROM specialist_channel_members
+            WHERE channel_id = (SELECT id FROM ch)
+         ),
+         absender AS (
+           SELECT sender AS agent, count(*)::int AS n FROM specialist_channel_messages
+            WHERE channel_id = (SELECT id FROM ch)
+            GROUP BY sender
+         )
+     SELECT COALESCE(m.agent, a.agent) AS agent,
+            (m.agent IS NOT NULL) AS mitglied,
+            (a.agent IS NOT NULL) AS hat_gepostet,
+            COALESCE(a.n, 0) AS nachrichten,
+            EXISTS (SELECT 1 FROM agent_sessions s
+                     WHERE s.id = COALESCE(m.agent, a.agent)
+                       AND s.project = $1 AND s.status = 'active') AS aktiv
+       FROM mitglieder m
+       FULL OUTER JOIN absender a ON a.agent = m.agent
+      ORDER BY 1`,
+    [project, channel],
+  );
+  return rows;
+}
+
 /**
  * CH-1 (15.08.2026): Die fuenf aktuellsten Channels eines Projekts fuers Onboarding.
  *

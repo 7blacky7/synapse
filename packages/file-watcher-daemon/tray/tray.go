@@ -2081,7 +2081,7 @@ func openChat(projectName, channelName string) {
 	})
 
 	leftSide := container.NewBorder(widget.NewLabel("Nachrichten:"), nil, nil, nil, w.MessageScroll)
-	rightSide := container.NewBorder(widget.NewLabel("Agenten im Projekt:"), nil, nil, nil, w.AgentTable)
+	rightSide := container.NewBorder(widget.NewLabel("Teilnehmer in #"+w.ChannelName+":"), nil, nil, nil, w.AgentTable)
 
 	split := container.NewHSplit(leftSide, rightSide)
 	split.Offset = 0.7
@@ -2265,8 +2265,33 @@ func (w *ChatWindow) ReloadAgents() {
 	}
 	defer w.loadingAgs.Store(false)
 
-	// TRAY-6: API zuerst, PostgreSQL nur noch als Rueckfallebene.
+	// CH-2 (15.08.2026): TEILNEHMER DIESES CHANNELS, nicht Agenten des Projekts.
+	// Vorher stand hier in JEDEM Channel dieselbe Liste — beide Zweige (API wie DB-Rueckfall)
+	// fragten nur nach ProjectName, der Channel kam gar nicht vor. Im Screenshot vom 15.08.
+	// standen neben #hint-probe neun Projekt-Agenten, von denen genau einer je dort war.
+	// Zweite Spalte sagt, WIE jemand drinhaengt: ein Nur-Poster ist nicht Mitglied und bekommt
+	// keine Hinweise auf neue Nachrichten — ihn hier anzuschreiben erreicht ihn nicht.
 	var newRows [][]string
+	if members, err := apiFetchChannelMembers(w.ProjectName, w.ChannelName); err == nil {
+		for _, m := range members {
+			rolle := "nur gepostet"
+			if m.Mitglied {
+				rolle = "Mitglied"
+			}
+			if m.Aktiv {
+				rolle += " · aktiv"
+			}
+			newRows = append(newRows, []string{m.Agent, rolle})
+		}
+		fyne.Do(func() {
+			w.AgentRows = newRows
+			w.AgentTable.Refresh()
+		})
+		return
+	}
+
+	// RUECKFALL: Endpunkt nicht erreichbar (alte API) -> Projekt-Sessions wie bisher.
+	// Die Ueberschrift weist das aus, damit der Rueckfall nicht wie das Ergebnis aussieht.
 	if sessions, err := apiFetchSessions(w.ProjectName); err == nil {
 		for _, s := range sessions {
 			newRows = append(newRows, []string{s.Id, s.Model})

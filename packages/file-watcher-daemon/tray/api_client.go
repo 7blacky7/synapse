@@ -331,6 +331,22 @@ type apiSessionsResponse struct {
 	Sessions []apiSession `json:"sessions"`
 }
 
+// CH-2 (15.08.2026): Teilnehmer EINES Channels.
+// Mitglied und HatGepostet sind getrennt, weil channel(post) kein join verlangt:
+// wer nur schreibt, ist kein Mitglied und bekommt keine Hinweise auf neue Nachrichten.
+type apiChannelMember struct {
+	Agent       string `json:"agent"`
+	Mitglied    bool   `json:"mitglied"`
+	HatGepostet bool   `json:"hat_gepostet"`
+	Aktiv       bool   `json:"aktiv"`
+	Nachrichten int    `json:"nachrichten"`
+}
+
+type apiChannelMembersResponse struct {
+	Success bool               `json:"success"`
+	Members []apiChannelMember `json:"members"`
+}
+
 type apiChannelMessage struct {
 	Id        int64  `json:"id"`
 	Sender    string `json:"sender"`
@@ -489,6 +505,18 @@ func apiFetchChannelMessages(project, channel string, sinceId int64, limit int) 
 		}
 	}
 	return r.Messages, nil
+}
+
+// apiFetchChannelMembers liefert, WER in diesem Channel haengt — Mitglieder und Nur-Poster.
+// Bis 15.08.2026 gab es dafuer keinen Endpunkt; das Chat-Fenster zeigte deshalb die aktiven
+// Agenten des Projekts, also in jedem Channel dieselbe Liste.
+func apiFetchChannelMembers(project, channel string) ([]apiChannelMember, error) {
+	var r apiChannelMembersResponse
+	path := "/api/projects/" + urlSeg(project) + "/channels/" + urlSeg(channel) + "/members"
+	if err := apiGet(path, &r); err != nil {
+		return nil, err
+	}
+	return r.Members, nil
 }
 
 // apiReembedProject stoesst den Embedding-Reset nach einem Modellwechsel an.

@@ -141,6 +141,35 @@ export async function trayRoutes(fastify: FastifyInstance): Promise<void> {
   );
 
   /**
+   * GET /api/projects/:name/channels/:channel/members  (CH-2, 15.08.2026)
+   *
+   * Die Teilnehmer EINES Channels — fuer die Liste neben dem Chat-Fenster im Tray.
+   * Bis hierher zeigte der Tray dort die aktiven Agenten des PROJEKTS: inhaltlich korrekt
+   * (die Ueberschrift sagt es auch), aber die falsche Antwort auf die Frage, die der Ort
+   * stellt — neben #channel will man wissen, wer HIER mitredet. Einen Endpunkt dafuer gab es
+   * nicht, deshalb dieser.
+   *
+   * Geliefert werden Mitglieder UND Nur-Poster, getrennt ausgewiesen: channel(post) verlangt
+   * kein join, ein Schreiber ist also nicht zwingend Mitglied. Wer nur gepostet hat, bekommt
+   * KEINE Hinweise auf neue Nachrichten — deshalb ist die Unterscheidung mehr als Kosmetik.
+   */
+  fastify.get<{ Params: { name: string; channel: string } }>(
+    '/api/projects/:name/channels/:channel/members',
+    async (request) => {
+      const { name, channel } = request.params;
+      const { holeChannelTeilnehmer } = await import('@synapse/core');
+      const teilnehmer = await holeChannelTeilnehmer(name, channel);
+      return {
+        success: true,
+        project: name,
+        channel,
+        count: teilnehmer.length,
+        members: teilnehmer,
+      };
+    }
+  );
+
+  /**
    * POST /api/projects/:name/reparse  (REPARSE-2)
    *
    * Erzeugt Symbole, Statements und Call-Kanten neu — OHNE die Embeddings
