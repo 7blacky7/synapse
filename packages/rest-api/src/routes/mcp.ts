@@ -1714,8 +1714,15 @@ async function attachRestOnboarding(
       rules.filter((r: { vollstaendig: boolean }) => !r.vollstaendig).length,
     );
 
+    // CH-1: Channel-Uebersicht — dieselbe Quelle wie im lokalen Weg.
+    const { baueChannelUebersicht } = await import('@synapse/core');
+    const channelBlock = await baueChannelUebersicht(project, role === 'koordinator');
+
     if (rules.length === 0) {
-      return { ...result, agentOnboarding: { isFirstVisit: true } };
+      return {
+        ...result,
+        agentOnboarding: { isFirstVisit: true, ...(channelBlock ? { channels: channelBlock } : {}) },
+      };
     }
 
     return {
@@ -1731,6 +1738,7 @@ async function attachRestOnboarding(
         message: '📋 WILLKOMMEN! Als neuer Agent beachte bitte folgende Projekt-Regeln:',
         ...(abrufHinweis ? { volltext_hinweis: abrufHinweis } : {}),
         rules,
+        ...(channelBlock ? { channels: channelBlock } : {}),
       },
     };
   } catch {

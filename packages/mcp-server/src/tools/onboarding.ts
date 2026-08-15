@@ -218,12 +218,29 @@ export async function checkAgentOnboarding(
       rulesMessage += '\n\n⚠️ Projekt-Setup unvollstaendig. Starte /projekt-setup oder frage den User.';
     }
 
+    // CH-1 (15.08.2026): Welche Channels laufen noch, wer haengt drin, was war zuletzt los.
+    // Dieselbe core-Funktion wie im REST-Weg — der Block soll auf beiden Strecken gleich sein.
+    const { baueChannelUebersicht } = await import('@synapse/core');
+    const channelBlock = await baueChannelUebersicht(project, isCoordinator);
+    if (channelBlock) {
+      rulesMessage += `\n\n💬 OFFENE CHANNELS (die ${channelBlock.channels.length} aktuellsten):\n`
+        + channelBlock.channels
+            .map((c) => {
+              const wer = c.agenten.length ? c.agenten.join(', ') : 'keine Mitglieder';
+              const aktiv = c.noch_aktiv.length ? ` | noch aktiv: ${c.noch_aktiv.join(', ')}` : '';
+              return `- ${c.channel} (${c.wann ?? 'keine Nachrichten'})\n  Mitglieder: ${wer}${aktiv}`;
+            })
+            .join('\n');
+      if (channelBlock.hinweis) rulesMessage += `\n\nℹ️ ${channelBlock.hinweis}`;
+    }
+
     console.error(`[Synapse MCP] ${rules.length} Regeln fuer Agent "${agentId}" geladen`);
 
     return {
       isFirstVisit: true,
       rules,
       rulesMessage,
+      ...(channelBlock ? { channels: channelBlock } : {}),
     };
   } catch (error) {
     console.error(`[Synapse MCP] Fehler beim Laden der Regeln:`, error);

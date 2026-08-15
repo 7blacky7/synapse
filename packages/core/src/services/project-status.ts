@@ -197,6 +197,116 @@ export async function setzeOnboardingRuhe(quelle: string, minuten = ruhefensterM
  * dieselbe Antwort bekommen. Bei jedem Fehler und bei fehlender Zeile: false — dann kommt
  * das Onboarding, und das ist die sichere Richtung.
  */
+/** Ein Channel-Block fuer das Onboarding: wer ist noch da, was war zuletzt los. */
+export interface ChannelUebersichtEintrag {
+  channel: string;
+  /** ALLE Mitglieder des Channels — auch laengst inaktive. Genau die sind die Kandidaten,
+   *  wenn es um "kann der weg" geht. */
+  agenten: string[];
+  /** Teilmenge davon, deren Session noch auf 'active' steht (der Reaper raeumt nach 4 h). */
+  noch_aktiv: string[];
+  /** Zeitpunkt der letzten Nachricht — Sortierkriterium und Alters-Anzeige.
+   *  BEWUSST OHNE INHALT: den holt sich der Koordinator mit channel(action:"feed"),
+   *  wenn er ihn braucht. Ein Auszug im Onboarding waere Ballast bei jedem Start. */
+  wann?: string;
+}
+
+export interface ChannelUebersicht {
+  channels: ChannelUebersichtEintrag[];
+  weitere: number;
+  hinweis?: string;
+}
+
+/** Wie viele Channels der Block hoechstens zeigt. Der Rest wird nur gezaehlt. */
+const CHANNEL_BLOCK_MAX = 5;
+
+/**
+ * CH-1 (15.08.2026): Die fuenf aktuellsten Channels eines Projekts fuers Onboarding.
+ *
+ * ANLASS: "momentan ertrinken wir in Channels" (User). Channels werden angelegt und nie
+ * geschlossen; niemand sieht beim Start, was ueberhaupt noch laeuft, und niemand raeumt auf.
+ * TOP heisst deshalb AKTUALITAET, nicht Groesse: sortiert wird nach der letzten Nachricht.
+ * Ein Channel ohne jede Nachricht steht hinten, nicht vorn.
+ *
+ * "Aktive Agenten" sind Mitglieder, deren Session noch auf 'active' steht. Das ist bewusst
+ * eine WEICHE Auskunft: 'active' heisst "angemeldet", nicht "arbeitet gerade", und der
+ * Session-Reaper setzt erst nach vier Stunden ohne Lebenszeichen auf 'inactive'. Die Liste
+ * sagt also "koennte noch jemand drinhaengen", nicht "hier arbeitet jemand".
+ *
+ * Faellt die Abfrage aus, gibt es KEINEN Block statt eines halben — ein Aufraeum-Hinweis darf
+ * das Onboarding nicht gefaehrden.
+ */
+export async function baueChannelUebersicht(
+  project: string,
+  istKoordinator: boolean,
+): Promise<ChannelUebersicht | undefined> {
+  try {
+    const { rows } = await getPool().query<{
+      name: string;
+      agenten: string[] | null;
+      aktive: string[] | null;
+      created_at: Date | null;
+    }>(
+      `SELECT c.name,
+              letzte.created_at,
+              (SELECT array_agg(DISTINCT mem.agent_name)
+                 FROM specialist_channel_members mem
+                WHERE mem.channel_id = c.id) AS agenten,
+              (SELECT array_agg(DISTINCT mem.agent_name)
+                 FROM specialist_channel_members mem
+                 JOIN agent_sessions s
+                   ON s.id = mem.agent_name AND s.project = c.project AND s.status = 'active'
+                WHERE mem.channel_id = c.id) AS aktive
+         FROM specialist_channels c
+         LEFT JOIN LATERAL (
+              SELECT created_at
+                FROM specialist_channel_messages m
+               WHERE m.channel_id = c.id
+               ORDER BY m.id DESC
+               LIMIT 1
+         ) letzte ON TRUE
+        WHERE c.project = $1
+        ORDER BY letzte.created_at DESC NULLS LAST, c.id DESC`,
+      [project],
+    );
+
+    if (rows.length === 0) return undefined;
+
+    const channels = rows.slice(0, CHANNEL_BLOCK_MAX).map((r) => ({
+      channel: r.name,
+      agenten: r.agenten ?? [],
+      noch_aktiv: r.aktive ?? [],
+      ...(r.created_at ? { wann: new Date(r.created_at).toISOString() } : {}),
+    }));
+    const weitere = Math.max(0, rows.length - channels.length);
+
+    return { channels, weitere, hinweis: channelHinweis(weitere, istKoordinator) };
+  } catch (err) {
+    console.warn('[Onboarding] Channel-Uebersicht nicht ermittelbar:', err);
+    return undefined;
+  }
+}
+
+/**
+ * Der Satz unter dem Block. Fuer den Koordinator ist es ein AUFTRAG, fuer alle anderen nur
+ * eine Zahl — aufraeumen darf nicht jeder, und wer es darf, soll wissen WIE.
+ * Die Reihenfolge im Auftrag ist die wichtige Stelle: erst lesen, dann PRUEFEN, dann sichern,
+ * erst danach loeschen. Ein Channel, der ungelesen verschwindet, nimmt sein Wissen mit.
+ */
+function channelHinweis(weitere: number, istKoordinator: boolean): string | undefined {
+  if (!istKoordinator) {
+    return weitere > 0 ? `Es gibt noch ${weitere} weitere Channel(s).` : undefined;
+  }
+  const kopf = weitere > 0
+    ? `Es gibt noch ${weitere} weitere Channel(s) — schau sie dir an.`
+    : 'Sieh die Channels durch.';
+  return `${kopf} Hol dir je Channel den letzten Kontext (channel(action:"feed")) und entscheide, `
+    + 'ob er geschlossen werden kann. REIHENFOLGE, nicht abkuerzen: (1) lesen, (2) die wichtigsten '
+    + 'Annahmen mit code_intel gegen den heutigen Code pruefen — erst dann weisst du, ob sie '
+    + 'veraltet sind, (3) was noch wertvoll ist als memory sichern, (4) danach den Channel loeschen. '
+    + 'Ohne Schritt 2 loeschst du entweder Gueltiges weg oder schleppst Ueberholtes mit.';
+}
+
 async function ruheLaeuftNoch(): Promise<boolean> {
   try {
     const { rows } = await getPool().query<{ aktiv: boolean }>(

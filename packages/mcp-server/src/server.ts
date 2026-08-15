@@ -361,10 +361,20 @@ export function createServer(): Server {
 
       // Onboarding-Regeln bei erstem Besuch
       if (onboarding?.isFirstVisit && onboarding.rules && onboarding.rules.length > 0) {
+        // ⚠️ HIER WURDEN BIS ZUM 15.08.2026 DREI FELDER VON HAND KOPIERT und alles andere
+        // stillschweigend verworfen. Was checkAgentOnboarding zusaetzlich liefert, kam damit
+        // NIE beim Agenten an: rolle/rolle_quelle/rolle_hinweis (das Rollen-Protokoll, das
+        // eine Fehleinstufung ueberhaupt erst sichtbar macht), volltext_hinweis (WIE man an
+        // eine gekuerzte Regel kommt — ohne ihn ist die Kuerzung eine Unterschlagung) und
+        // seit CH-1 die Channel-Uebersicht. Ueber die REST-API kamen sie an, hier nicht:
+        // eine stille Abweichung zwischen zwei Strecken, die beide plausibel antworten.
+        // JETZT: alles durchreichen, was das Onboarding erzeugt hat, und nur die Anzeige-
+        // Nachricht ergaenzen. Ein neues Feld im Onboarding ist damit sofort auf beiden Wegen
+        // da, statt auf sein Nachtragen an dieser Stelle zu warten.
         enhanced.agentOnboarding = {
+          ...onboarding,
           isFirstVisit: true,
           message: '📋 WILLKOMMEN! Als neuer Agent beachte bitte folgende Projekt-Regeln:',
-          rules: onboarding.rules,
         };
       }
 
@@ -386,13 +396,14 @@ export function createServer(): Server {
         if (agentList.success && agentList.agents.length > 0) {
           const others = agentList.agents.filter(a => a.id !== agentId);
           if (others.length > 0) {
+            // ⚠️ KEINE OBJEKTLISTE MEHR (15.08.2026, User-Vorgabe). Hier stand zusaetzlich ein
+            // agents[] mit {id, model, isYou} je Agent — an JEDER Tool-Antwort, bei acht
+            // Agenten rund vierzig Zeilen JSON. Der hint darunter sagt dasselbe in einer Zeile,
+            // inklusive der Markierung, welcher Eintrag der eigene ist. Das model war dabei
+            // fast durchweg null, weil es nur beim Registrieren gesetzt wird.
+            // Wer die Liste strukturiert braucht: chat(action:"list").
             enhanced.activeAgents = {
               count: others.length + 1,
-              agents: agentList.agents.map(a => ({
-                id: a.id,
-                model: a.model,
-                isYou: a.id === agentId,
-              })),
               hint: `👥 Aktive Agenten: ${agentList.agents.map(a => a.id === agentId ? `${a.id} (du)` : a.id).join(', ')}`,
             };
           }
