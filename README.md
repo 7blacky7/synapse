@@ -820,7 +820,31 @@ Workspaces sind lazy gestartet, werden nach Idle-Zeit gestoppt und können per `
 
 ## Datenmodell: wichtigste PostgreSQL-Tabellen
 
-Synapse verwendet PostgreSQL als Source of Truth.
+### Grundregel: PostgreSQL ist die Wahrheit, Qdrant ist ein abgeleiteter Index
+
+**Alles landet zuerst in PostgreSQL, bevor es ueberhaupt nach Qdrant geht.** Das gilt fuer
+jeden Datentyp — Memories, Thoughts, Proposals, Code-Chunks und alles, was noch dazukommt.
+Daraus folgt in beide Richtungen:
+
+**Schreiben — erst PG, dann der Index.** Ein Schreibvorgang gilt als erfolgreich, sobald die
+Zeile in PostgreSQL steht. Das Embedding wird *nachgereicht* und darf das Schreiben nicht
+aufhalten; ein fehlgeschlagenes Embedding ist deshalb kein Datenverlust, sondern ein Nachtrag.
+Erkennbar bleibt er an einer Spalte, die genau das festhaelt (`embedded_at IS NULL`), und ein
+Backlog-Worker holt ihn nach. Vorbild ist `writeMemory` in
+`packages/core/src/services/memory.ts`: PostgreSQL fail-fast, danach `embeddeMemoryNach` ohne
+`await`.
+
+**Lesen — was *existiert*, beantwortet PG. Was *aehnlich* ist, beantwortet Qdrant.** Eine
+Existenz-, Vollstaendigkeits- oder Regelfrage darf nie gegen den Index gestellt werden: der
+kann hinterherhinken, Eintraege verloren haben oder geloeschte noch fuehren — und er sagt es
+nicht. Semantische Aehnlichkeit ist das Einzige, wofuer Qdrant zustaendig ist.
+
+> **Bekannte Verstoesse auf der Leseseite** (Stand 15.08.2026, offen): `listMemories`,
+> `getRulesForNewAgent`, `getMemoryByName` und `getMemoriesByNames` in
+> `packages/core/src/services/memory.ts` lesen aus Qdrant statt aus PostgreSQL — die
+> Projekt-Regeln werden also aus dem Index ausgeliefert. Belegte Folgen: eine Regel kann in
+> PG stehen und niemanden erreichen, eine geloeschte kann weiter zugestellt werden, und ein
+> Eintrag, den nur PG kennt, meldet über die Werkzeuge "nicht gefunden".
 
 Wichtige Tabellen/Subsysteme:
 

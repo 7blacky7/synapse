@@ -54,6 +54,11 @@ import {
   shellTool,
   guideTool,
 } from './tools/consolidated/index.js';
+// PA-1: unbekannte Parameter melden statt still verwerfen.
+import {
+  pruefeUnbekannteParameter,
+  baueErlaubteParameter,
+} from './tools/consolidated/utils/unbekannte-parameter.js';
 
 /** Eindeutige ID dieser Server-Instanz — bei Neustart neu generiert.
  *  Wird fuer Session-basiertes Onboarding verwendet: neue Instance = neues Onboarding. */
@@ -148,27 +153,36 @@ export function createServer(): Server {
   );
 
   // Tool-Liste registrieren (14 konsolidierte Tools)
+  const ALLE_DEFINITIONEN = [
+    projectTool.definition,
+    searchTool.definition,
+    memoryTool.definition,
+    thoughtTool.definition,
+    proposalTool.definition,
+    planTool.definition,
+    chatTool.definition,
+    channelTool.definition,
+    eventTool.definition,
+    specialistTool.definition,
+    docsTool.definition,
+    adminTool.definition,
+    codeIntelTool.definition,
+    codeCheckTool.definition,
+    ignoreTool.definition,
+    filesTool.definition,
+    shellTool.definition,
+    guideTool.definition,
+  ];
+
+  // PA-1: Nachschlagetabelle fuer die Parameter-Pruefung — aus DENSELBEN Definitionen, die
+  // unten an ListTools gehen. Eine zweite, von Hand gepflegte Liste liefe sofort auseinander.
+  const ERLAUBTE_PARAMETER = baueErlaubteParameter(
+    ALLE_DEFINITIONEN as Array<{ name: string; inputSchema?: { properties?: Record<string, unknown> } }>,
+  );
+
+  // EINE Quelle fuer beides: was hier ausgeliefert wird, ist genau das, wogegen PA-1 prueft.
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: [
-      projectTool.definition,
-      searchTool.definition,
-      memoryTool.definition,
-      thoughtTool.definition,
-      proposalTool.definition,
-      planTool.definition,
-      chatTool.definition,
-      channelTool.definition,
-      eventTool.definition,
-      specialistTool.definition,
-      docsTool.definition,
-      adminTool.definition,
-      codeIntelTool.definition,
-      codeCheckTool.definition,
-      ignoreTool.definition,
-      filesTool.definition,
-      shellTool.definition,
-      guideTool.definition,
-    ],
+    tools: ALLE_DEFINITIONEN,
   }));
 
   // Tool-Aufrufe verarbeiten
@@ -412,6 +426,53 @@ export function createServer(): Server {
 
       return { content: [{ type: 'text', text: JSON.stringify(enhanced, null, 2) }] };
     };
+
+    // ═══════════════════════════════════════════════════════════════════════════════════
+    // PA-1 (15.08.2026, User-Vorgabe): UNBEKANNTER PARAMETER IST EIN FEHLER.
+    //
+    // Vorher wurde ein Feld, das im Schema nicht steht, stillschweigend verworfen — und die
+    // Aktion lief trotzdem, mit der Bedeutung, die sie OHNE das Feld hat. So archivierte der
+    // Koordinator am 15.08. den Standardchannel, statt nur dessen Nachrichten auszublenden:
+    // der Server kannte bis_nachricht_id noch nicht und meldete Erfolg.
+    //
+    // Die Pruefung steht VOR dem switch und vor jedem Seiteneffekt. Sie soll den Aufruf
+    // verhindern, nicht ihn hinterher kommentieren.
+    // ═══════════════════════════════════════════════════════════════════════════════════
+    const parameterBefund = pruefeUnbekannteParameter(
+      name,
+      ERLAUBTE_PARAMETER.get(name) ?? new Set<string>(),
+      args as Record<string, unknown> | undefined,
+    );
+    if (parameterBefund) {
+      // Auch der abgelehnte Aufruf gehoert ins Protokoll — sonst sieht niemand, wie oft die
+      // Regel greift und welche Parameter die Agenten wirklich schicken.
+      void logToolCall({
+        project: typeof projectName === 'string' ? projectName : null,
+        agentId: resolveAgentId(typeof agentId === 'string' ? agentId : null),
+        source: 'stdio',
+        tool: name,
+        action: typeof args?.action === 'string' ? (args.action as string) : null,
+        argsPreview: JSON.stringify(args ?? {}).slice(0, 500),
+        ok: false,
+        error: `unbekannter_parameter: ${parameterBefund.unbekannt.join(', ')}`,
+        durationMs: Date.now() - _t0,
+        result: null,
+      });
+
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            success: false,
+            error: 'unbekannter_parameter',
+            tool: name,
+            unbekannte_parameter: parameterBefund.unbekannt,
+            message: parameterBefund.meldung,
+          }, null, 2),
+        }],
+        isError: true,
+      };
+    }
 
     const baseResp = await (async () => {
     try {
