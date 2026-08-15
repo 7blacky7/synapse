@@ -54,11 +54,9 @@ import {
   shellTool,
   guideTool,
 } from './tools/consolidated/index.js';
-// PA-1: unbekannte Parameter melden statt still verwerfen.
-import {
-  pruefeUnbekannteParameter,
-  baueErlaubteParameter,
-} from './tools/consolidated/utils/unbekannte-parameter.js';
+// PA-1: unbekannte Parameter melden statt still verwerfen. Aus core — dieselbe Funktion
+// benutzt die REST-Strecke, damit die beiden Wege nicht auseinanderlaufen.
+import { pruefeUnbekannteParameter, baueErlaubteParameter } from '@synapse/core';
 
 /** Eindeutige ID dieser Server-Instanz — bei Neustart neu generiert.
  *  Wird fuer Session-basiertes Onboarding verwendet: neue Instance = neues Onboarding. */

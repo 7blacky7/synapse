@@ -114,6 +114,12 @@ export type { RespawnDecision } from './services/specialist-respawn.js';
 // Agent-ID Resolver (zentrale Fallback-Logik fuer audit-relevante Schreib-Ops)
 export { resolveAgentId } from './services/agent-id-resolver.js';
 
+// PA-1: unbekannte Tool-Parameter melden statt still verwerfen.
+// Liegt in core, weil BEIDE Strecken (stdio-MCP und REST) dieselbe Pruefung brauchen —
+// zwei Kopien waeren genau die Doppelpflege, gegen die der Fix gebaut wurde.
+export { pruefeUnbekannteParameter, baueErlaubteParameter } from './services/unbekannte-parameter.js';
+export type { ParameterBefund } from './services/unbekannte-parameter.js';
+
 // Tool-Call Activity-Log (zentraler Audit-Store fuer shell(action:"activity"))
 export { logToolCall, isMutationAction, queryToolCalls, expireOldToolCalls } from './services/tool-call-log.js';
 export type { ToolCallLogEntry, ToolCallRow, ActivityFilters, ActivityDetail } from './services/tool-call-log.js';

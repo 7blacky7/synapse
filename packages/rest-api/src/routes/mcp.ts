@@ -174,6 +174,9 @@ import {
 } from '@synapse/core';
 import { minimatch } from 'minimatch';
 import { GUIDE_OVERVIEW, TOOL_GUIDES, logToolCall, queryToolCalls } from '@synapse/core';
+// PA-1: unbekannte Parameter melden statt still verwerfen — dieselbe Funktion wie im
+// lokalen MCP-Server, damit die beiden Strecken nicht auseinanderlaufen.
+import { pruefeUnbekannteParameter, baueErlaubteParameter } from '@synapse/core';
 import {
   listeIgnoreRegeln,
   fuegeIgnoreRegelnHinzu,
@@ -1979,11 +1982,41 @@ async function attachSkillHinweisgeber(
   }
 }
 
+/**
+ * PA-1: erlaubte Parameternamen je Tool, abgeleitet aus MCP_TOOLS — also aus genau dem, was
+ * diese Strecke auch ausliefert. Die Pruef-FUNKTION teilen sich beide Strecken
+ * (core/services/unbekannte-parameter.ts); die LISTEN bleiben getrennt, weil die Strecken
+ * unterschiedliche Tools anbieten.
+ */
+const ERLAUBTE_PARAMETER = baueErlaubteParameter(
+  MCP_TOOLS as Array<{ name: string; inputSchema?: { properties?: Record<string, unknown> } }>,
+);
+
 async function handleToolCall(
   name: string,
   args: Record<string, unknown>,
   effectiveAgentId?: string,
 ): Promise<unknown> {
+  // ══════════════════════════════════════════════════════════════════════════════
+  // PA-1: unbekannter Parameter ist ein Fehler — VOR jedem Seiteneffekt.
+  // Gleiche Regel wie im lokalen MCP-Server, gleiche Funktion aus core. Ohne das haette die
+  // eine Strecke streng geprueft und die andere weiter still verworfen.
+  // ══════════════════════════════════════════════════════════════════════════════
+  const parameterBefund = pruefeUnbekannteParameter(
+    name,
+    ERLAUBTE_PARAMETER.get(name) ?? new Set<string>(),
+    args,
+  );
+  if (parameterBefund) {
+    return {
+      success: false,
+      error: 'unbekannter_parameter',
+      tool: name,
+      unbekannte_parameter: parameterBefund.unbekannt,
+      message: parameterBefund.meldung,
+    };
+  }
+
   const action = str(args, 'action');
 
   switch (name) {
