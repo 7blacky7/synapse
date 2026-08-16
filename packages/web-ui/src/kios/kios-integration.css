@@ -1,0 +1,68 @@
+/* KIOS-Rendering-Schicht innerhalb des neuen Hauptagenten-Chats. */
+.agent-rendering-surface {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+}
+
+.agent-rendering-shadow {
+  width: 100%;
+  min-height: 100%;
+  height: 100%;
+}
+
+.agent-rendering-state {
+  position: absolute;
+  top: 7px;
+  right: 8px;
+  z-index: 3;
+  display: flex;
+  gap: 6px;
+  pointer-events: none;
+}
+
+.agent-rendering-state span {
+  border: 1px solid color-mix(in srgb, var(--accent) 42%, var(--border));
+  background: color-mix(in srgb, var(--panel) 88%, transparent);
+  color: var(--muted);
+  padding: 3px 7px;
+  font: 700 8px/1.2 "IBM Plex Mono", monospace;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  backdrop-filter: blur(8px);
+}
+
+.agent-rendering-state .is-live {
+  color: var(--accent);
+}
+
+.agent-rendering-state .is-live i {
+  animation: kios-cursor .7s steps(1) infinite;
+}
+
+.agent-new-content {
+  position: absolute;
+  z-index: 12;
+  left: 50%;
+  bottom: 102px;
+  transform: translateX(-50%);
+  border: 1px solid var(--accent);
+  background: var(--panel);
+  color: var(--text);
+  padding: 8px 12px;
+  font: 700 10px "IBM Plex Mono", monospace;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, .28);
+  cursor: pointer;
+}
+
+.agent-new-content:hover {
+  background: var(--strong);
+}
+
+@keyframes kios-cursor {
+  50% { opacity: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-rendering-state .is-live i { animation: none; }
+}

@@ -1,0 +1,170 @@
+/*
+ * Synapse baseline at 100% browser zoom.
+ * Real design dimensions only; no zoom or transform scaling.
+ */
+.synapse-control{grid-template-columns:286px minmax(0,1fr);font-size:14px;line-height:1.45}
+.synapse-control.sidebar-collapsed{grid-template-columns:64px minmax(0,1fr)}
+.synapse-control .brand,.synapse-control .control-topbar{height:76px}
+.synapse-control .control-content{height:calc(100vh - 76px)}
+.synapse-control .brand{gap:13px;padding-inline:18px 12px}
+.synapse-control .brand>span{width:36px;height:36px;font-size:19px}
+.synapse-control .brand strong{font-size:17px}.synapse-control .brand small{font-size:11px}
+.synapse-control .sidebar-project{padding:16px 13px 10px}
+.synapse-control .sidebar-project>label,.synapse-control .control-sidebar nav section>label{margin-bottom:8px;font-size:10px}
+.synapse-control .sidebar-project>button{gap:11px;padding:12px}
+.synapse-control .sidebar-project strong{font-size:14px}.synapse-control .sidebar-project small{font-size:10px}
+.synapse-control .control-sidebar nav{padding:5px 11px 17px}.synapse-control .control-sidebar nav section{margin-top:14px}
+.synapse-control .control-sidebar nav button,.synapse-control .control-sidebar footer>button{min-height:44px;grid-template-columns:25px minmax(0,1fr) auto;padding-inline:10px;font-size:14px}
+.synapse-control .control-sidebar nav button>span,.synapse-control .control-sidebar footer>button>span{font-size:17px}
+.synapse-control .control-sidebar nav button>b,.synapse-control .control-sidebar nav button>em{min-height:18px;font-size:10px}
+.synapse-control .theme-row strong{font-size:12px}.synapse-control .theme-row small{font-size:10px}
+.synapse-control .control-sidebar footer>button.logout{height:34px;font-size:11px}
+.synapse-control .sidebar-toggle{width:28px;height:32px;font-size:19px}
+.synapse-control.sidebar-collapsed .brand{height:76px}
+.synapse-control.sidebar-collapsed .brand>span{width:32px;height:32px;font-size:17px}
+.synapse-control.sidebar-collapsed .sidebar-project>button,.synapse-control.sidebar-collapsed .control-sidebar nav button,.synapse-control.sidebar-collapsed .control-sidebar footer>button{width:46px;min-height:46px}
+.synapse-control.sidebar-collapsed .control-sidebar nav button>span,.synapse-control.sidebar-collapsed .control-sidebar footer>button>span{font-size:19px}
+.synapse-control .control-topbar{padding-inline:24px}.synapse-control .control-topbar>div:first-child{gap:10px;font-size:12px}
+.synapse-control .topbar-actions select,.synapse-control .topbar-actions button{height:36px;font-size:12px}
+.synapse-control .connection,.synapse-control .api-failure{font-size:10px}
+
+/* Shared page, rows and controls */
+.synapse-control .standard-page,.synapse-control .agent-workspace,.synapse-control .graph-page{padding:25px}
+.synapse-control .page-header{margin-bottom:21px}
+.synapse-control .page-header>div>span,.synapse-control .eyebrow{font-size:11px}
+.synapse-control .page-header h1{margin-top:7px;font-size:28px}
+.synapse-control .page-header p{font-size:13px;line-height:1.55}
+.synapse-control .mock-chip,.synapse-control .api-chip{padding:6px 9px;font-size:10px}
+.synapse-control .primary-action,.synapse-control .secondary-action,.synapse-control .detail-actions button{min-height:38px;height:auto;padding-inline:15px;font-size:12px}
+.synapse-control button,.synapse-control input,.synapse-control select,.synapse-control textarea{line-height:1.4}
+.synapse-control input,.synapse-control select{min-height:36px}.synapse-control textarea{font-size:12px}
+.synapse-control .overview-strip>div{padding:16px}.synapse-control .overview-strip span{font-size:10px}
+.synapse-control .overview-strip strong{font-size:27px}.synapse-control .overview-strip small{font-size:10px}
+.synapse-control .entity-list>header{height:55px;padding-inline:16px}
+.synapse-control .entity-list>header h2{font-size:14px}.synapse-control .entity-list>header span{font-size:10px}
+.synapse-control .entity-row{gap:11px;padding:14px 15px}
+.synapse-control .entity-row strong{font-size:13px}.synapse-control .entity-row small,.synapse-control .entity-row>span{font-size:10px}
+.synapse-control .entity-detail,.synapse-control .overview-detail{padding:27px}
+.synapse-control .entity-detail h2,.synapse-control .overview-detail h2{font-size:24px}
+.synapse-control .entity-detail>p,.synapse-control .overview-detail>p{font-size:13px}
+.synapse-control .entity-detail dl>div,.synapse-control .overview-detail dl>div{padding:14px}
+.synapse-control .entity-detail dt,.synapse-control .overview-detail dt{font-size:10px}
+.synapse-control .entity-detail dd,.synapse-control .overview-detail dd{font-size:13px}
+.synapse-control .detail-status span,.synapse-control .detail-tabs button{font-size:11px}
+.synapse-control .detail-status b{font-size:10px}.synapse-control .detail-tabs button{height:40px}
+.synapse-control .prepared-panel{padding:16px;font-size:12px}
+
+/* Main agent, tool strand and channels */
+.synapse-control .conversation-head{height:62px;padding-inline:17px}
+.synapse-control .agent-identity{gap:12px}.synapse-control .agent-identity>span{width:36px;height:36px;font-size:11px}
+.synapse-control .agent-identity strong{font-size:13px}.synapse-control .agent-identity small,.synapse-control .agent-live{font-size:10px}
+.synapse-control .message-feed{padding-block:21px}.synapse-control .message{margin-bottom:21px}
+.synapse-control .message.text{padding:15px 17px}.synapse-control .message>header,.synapse-control .html-message-actions{font-size:10px}
+.synapse-control .message>p{font-size:13px;line-height:1.6}
+.synapse-control .html-message-actions button{width:32px;height:30px;font-size:12px}
+.synapse-control .tool-stream{margin-bottom:25px;padding-left:18px}
+.synapse-control .tool-stream>header strong,.synapse-control .tool-call summary strong{font-size:11px}
+.synapse-control .tool-stream>header span,.synapse-control .tool-stream>header small,.synapse-control .tool-call summary,.synapse-control .tool-call summary b{font-size:10px}
+.synapse-control .tool-call summary{min-height:37px;grid-template-columns:9px 96px 104px minmax(120px,1fr) 74px 62px;gap:9px}
+.synapse-control .tool-call-detail label{font-size:10px}.synapse-control .tool-call-detail pre{padding:10px;font-size:10px;line-height:1.55}
+.synapse-control .tool-stream-error,.synapse-control .tool-stream-empty,.synapse-control .thinking span{font-size:11px}
+.synapse-control .agent-composer{padding:14px}.synapse-control .agent-composer textarea{font-size:13px;line-height:1.55}
+.synapse-control .agent-composer footer{margin-top:10px;font-size:10px}
+.synapse-control .channel-rail>header{min-height:53px;padding-inline:15px}
+.synapse-control .channel-rail>header h2,.synapse-control .channel-thread>header h2{font-size:14px}
+.synapse-control .channel-rail>header span,.synapse-control .channel-thread>header p,.synapse-control .channel-thread>header span{font-size:10px}
+.synapse-control .channel-rail>button{padding:13px 15px}
+.synapse-control .channel-rail>button strong{font-size:13px}.synapse-control .channel-rail>button small{font-size:10px}
+.synapse-control .channel-thread>header{min-height:54px;padding-inline:16px}
+.synapse-control .channel-messages{padding:15px 18px}.synapse-control .channel-messages article{gap:12px;padding-block:12px}
+.synapse-control .channel-messages article header strong{font-size:13px}.synapse-control .channel-messages article time{font-size:10px}
+.synapse-control .channel-message-text p{font-size:13px;line-height:1.65}
+.synapse-control .channel-message-text>button,.synapse-control .channel-attach,.synapse-control .channel-send{font-size:11px}
+.synapse-control .channel-composer{padding:12px}.synapse-control .channel-compose-row{grid-template-columns:84px minmax(0,1fr) 96px;gap:10px}
+.synapse-control .channel-image-grid span,.synapse-control .channel-image-missing span,.synapse-control .channel-image-missing small{font-size:10px}
+.synapse-control .channel-image-draft strong{font-size:11px}.synapse-control .channel-image-draft small{font-size:10px}
+
+/* Dashboard and project scoped surfaces */
+.synapse-control .agent-dashboard-head p,.synapse-control .dream-board>header p{font-size:13px}
+.synapse-control .orbit-core span,.synapse-control .activity-metrics span,.synapse-control .activity-metrics small,.synapse-control .artifact-ranking article div span{font-size:11px}
+.synapse-control .dream-list p,.synapse-control .event-stream strong{font-size:12px}.synapse-control .event-stream small{font-size:10px}
+.synapse-control .channel-project-surface>header p,.synapse-control .channel-project-surface>nav button,.synapse-control .channel-project-route p,.synapse-control .project-detail-head p,.synapse-control .project-detail-tabs button,.synapse-control .project-knowledge-panel>header p{font-size:10px}
+.synapse-control .channel-project-surface>nav button,.synapse-control .project-detail-tabs button{min-height:38px;padding-inline:12px}
+.synapse-control .channel-project-overview small,.synapse-control .channel-project-settings footer small,.synapse-control .project-knowledge-content>aside small,.synapse-control .project-knowledge-content dt,.synapse-control .project-knowledge-content footer small,.synapse-control .project-suggestions small,.synapse-control .project-suggestions kbd{font-size:10px}
+.synapse-control .project-overview>p,.synapse-control .project-route-panel p,.synapse-control .project-knowledge-content textarea,.synapse-control .project-search-box>input,.synapse-control .project-suggestions strong,.synapse-control .project-no-results{font-size:11px}
+.synapse-control .project-knowledge-content dd{font-size:10px}
+
+/* Personal memories and artifact control */
+.synapse-control .knowledge-page-header p{font-size:12px}
+.synapse-control .knowledge-scope-banner>div:first-child strong,.synapse-control .memory-list strong,.synapse-control .artifact-preview>p{font-size:12px}
+.synapse-control .knowledge-scope-banner>small,.synapse-control .memory-list p,.synapse-control .memory-editor label,.synapse-control .memory-suggestion label,.synapse-control .delete-confirm span,.synapse-control .artifact-drop span,.synapse-control .artifact-detail>header p,.synapse-control .separated-knowledge>header p{font-size:10px}
+.synapse-control .knowledge-rail>header small,.synapse-control .knowledge-rail>button small,.synapse-control .knowledge-rail>footer p,.synapse-control .category-filter button,.synapse-control .memory-list small,.synapse-control .memory-metadata dt,.synapse-control .artifact-detail dt,.synapse-control .separated-knowledge dt,.synapse-control .knowledge-tags span,.synapse-control .linked-artifacts small,.synapse-control .linked-artifacts>p,.synapse-control .memory-editor fieldset legend,.synapse-control .image-placeholder small,.synapse-control .memory-suggestion dt{font-size:10px}
+.synapse-control .knowledge-rail>button{padding:12px}
+.synapse-control .knowledge-rail>button strong,.synapse-control .memory-editor input,.synapse-control .memory-editor select,.synapse-control .memory-editor textarea,.synapse-control .memory-suggestion select,.synapse-control .memory-suggestion textarea,.synapse-control .memory-suggestion label>strong,.synapse-control .memory-suggestion label>p{font-size:11px}
+.synapse-control .memory-content{font-size:13px;line-height:1.65}
+.synapse-control .memory-metadata dd,.synapse-control .artifact-detail dd,.synapse-control .separated-knowledge dd,.synapse-control .memory-suggestion dd{font-size:10px}
+.synapse-control .memory-editor>footer,.synapse-control .artifact-import>footer{font-size:10px}
+.synapse-control .artifact-control-header p,.synapse-control .artifact-privacy-strip span,.synapse-control .artifact-control-tools input,.synapse-control .artifact-control-tools select,.synapse-control .artifact-list-scroll>button>b,.synapse-control .artifact-notice,.synapse-control .artifact-insight-grid li,.synapse-control .artifact-insight-grid article>p,.synapse-control .artifact-memory-link strong,.synapse-control .artifact-delete-options button span,.synapse-control .artifact-delete-check,.synapse-control .artifact-delete-phrase{font-size:10px}
+.synapse-control .artifact-control-tools label>span,.synapse-control .artifact-filter-shortcuts button,.synapse-control .artifact-file-list>header,.synapse-control .artifact-file-name small,.synapse-control .artifact-list-scroll time,.synapse-control .artifact-detail-title p,.synapse-control .artifact-image-preview small,.synapse-control .artifact-technical-data dt,.synapse-control .artifact-memory-link small,.synapse-control .artifact-usage-history>div,.synapse-control .artifact-viewer>footer{font-size:10px}
+.synapse-control .artifact-filter-shortcuts button{min-height:32px;padding-inline:10px}
+.synapse-control .artifact-file-name strong,.synapse-control .artifact-preview-control>p,.synapse-control .artifact-viewer pre,.synapse-control .artifact-delete-options button strong{font-size:11px}
+.synapse-control .artifact-technical-data dd,.synapse-control .artifact-empty{font-size:10px}
+
+/* Settings */
+.synapse-control .cp-settings-head p,.synapse-control .cp-settings-workbench>aside small,.synapse-control .cp-setting-field>span small,.synapse-control .main-agent-chain article small,.synapse-control .scope-warning span,.synapse-control .settings-host-table small,.synapse-control .runtime-settings-list small,.synapse-control .test-matrix>header span,.synapse-control .accent-color-presets span{font-size:10px}
+.synapse-control .cp-settings-workbench>aside strong,.synapse-control .cp-setting-field>span b,.synapse-control .handoff-preview p,.synapse-control .scope-warning b,.synapse-control .auth-profile p,.synapse-control .accent-color-custom span b{font-size:12px}
+.synapse-control .cp-settings-workbench>aside button{min-height:48px;padding:10px 12px}
+.synapse-control .cp-settings-workbench>main>header>b{font-size:10px}
+.synapse-control .cp-setting-field input,.synapse-control .cp-setting-field select,.synapse-control .cp-setting-field textarea,.synapse-control .settings-search input{font-size:12px}
+.synapse-control .settings-no-results,.synapse-control .settings-fleet>header p,.synapse-control .settings-fleet-table small{font-size:12px}
+
+/* Hosts, runtimes and terminal */
+.synapse-control .infra-page-header p,.synapse-control .infra-rail small,.synapse-control .infra-detail-head p,.synapse-control .host-summary-strip small,.synapse-control .infra-metric header,.synapse-control .infra-metric small,.synapse-control .infra-inspector dt,.synapse-control .infra-toggle span small,.synapse-control .infra-form>footer,.synapse-control .runtime-install-list small,.synapse-control .runtime-install-list>article>span,.synapse-control .infra-history time,.synapse-control .runtime-terminal>header small,.synapse-control .auth-workbench label,.synapse-control .assignment-list small,.synapse-control .scope-contract small{font-size:10px}
+.synapse-control .infra-rail strong,.synapse-control .infra-tabs button,.synapse-control .infra-inspector dd,.synapse-control .resource-processes p,.synapse-control .infra-toggle span b,.synapse-control .host-agent-table>article,.synapse-control .infra-history strong,.synapse-control .infra-history p,.synapse-control .auth-workbench p,.synapse-control .auth-workbench small,.synapse-control .scope-detail-grid strong{font-size:11px}
+.synapse-control .infra-inspector h3,.synapse-control .resource-processes h3{font-size:13px}
+.synapse-control .infra-rail>button{min-height:52px;padding:11px 13px}.synapse-control .infra-tabs button{min-height:40px;padding-inline:13px}
+.synapse-control .terminal-toolbar label{font-size:10px}
+.synapse-control .runtime-terminal pre,.synapse-control .runtime-terminal form input{font-size:12px;line-height:1.6}
+.synapse-control .runtime-terminal form{min-height:44px}
+
+/* Agent chat windows, docks, inspector and attachments */
+.synapse-control .channel-agent-card{min-height:46px}.synapse-control .channel-agent-card strong{font-size:11px}
+.synapse-control .channel-agent-card small,.synapse-control .agent-window-titlebar small,.synapse-control .agent-terminal-stream article header,.synapse-control .channel-agent-window>footer{font-size:10px}
+.synapse-control .agent-window-titlebar{min-height:48px}
+.synapse-control .agent-terminal-stream pre,.synapse-control .agent-terminal-stream>p{font-size:11px;line-height:1.6}
+.synapse-control .agent-terminal-command textarea{font-size:12px}
+.synapse-control .coordinator-dock-tab,.synapse-control .main-assistant-tab{min-width:50px;min-height:48px}
+.synapse-control .coordinator-dock-tab strong,.synapse-control .main-assistant-tab strong{font-size:11px}
+.synapse-control .main-assistant-tab small{font-size:10px}
+.synapse-control .coordinator-window-titlebar,.synapse-control .main-assistant-window>header{min-height:52px}
+.synapse-control .coordinator-window-titlebar strong,.synapse-control .main-assistant-window>header strong{font-size:13px}
+.synapse-control .coordinator-window-titlebar small,.synapse-control .main-assistant-window>header small{font-size:10px}
+.synapse-control .coordinator-window-titlebar button,.synapse-control .main-assistant-window>header button{font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:11px;font-weight:700;line-height:1.2;text-transform:none}
+.synapse-control .coordinator-message-stream p,.synapse-control .coordinator-window-composer textarea,.synapse-control .main-assistant-stream p,.synapse-control .main-assistant-composer textarea{font-size:12px;line-height:1.6}
+.synapse-control .coordinator-team-view small,.synapse-control .coordinator-team-view b,.synapse-control .coordinator-task-view small,.synapse-control .coordinator-window>footer,.synapse-control .coordinator-html-artifact>header b,.synapse-control .coordinator-artifact-metrics small,.synapse-control .coordinator-artifact-flow span,.synapse-control .coordinator-html-artifact>footer div small,.synapse-control .main-assistant-context small,.synapse-control .main-assistant-window>footer{font-size:10px}
+.synapse-control .coordinator-team-view p,.synapse-control .coordinator-artifact-heading p,.synapse-control .main-assistant-context strong{font-size:11px}
+.synapse-control .coordinator-inspector>header p,.synapse-control .coordinator-segmented button,.synapse-control .coordinator-task-table>div>span strong,.synapse-control .coordinator-thought-table p,.synapse-control .coordinator-memory-table>div>span strong{font-size:11px}
+.synapse-control .coordinator-property-grid strong{font-size:12px}
+.synapse-control .coordinator-agent-list small,.synapse-control .coordinator-agent-list span,.synapse-control .coordinator-agent-list b,.synapse-control .coordinator-table>div>span b,.synapse-control .coordinator-plan-list small,.synapse-control .coordinator-task-table select,.synapse-control .coordinator-thought-table time,.synapse-control .coordinator-memory-table time{font-size:10px}
+.synapse-control .chat-attachment-picker,.synapse-control .chat-attachment-drafts strong,.synapse-control .channel-file-grid strong{font-size:10px}
+.synapse-control .chat-attachment-picker{min-height:34px;padding-inline:10px}.synapse-control .chat-attachment-message strong{font-size:12px}
+.synapse-control .chat-attachment-message span,.synapse-control .chat-attachment-message code,.synapse-control .chat-attachment-message small,.synapse-control .channel-file-grid small{font-size:10px}
+
+/* Existing real graph: controls and labels only; graph behavior is untouched. */
+.synapse-control .sg-host{grid-template-rows:60px 1fr 34px;grid-template-columns:310px 1fr}
+.synapse-control .sg-header{gap:16px;padding-inline:19px}.synapse-control .sg-title{font-size:19px}
+.synapse-control .sg-breadcrumb,.synapse-control .sg-layers,.synapse-control .sg-back,.synapse-control .sg-tab{font-size:14px}
+.synapse-control .sg-back,.synapse-control .sg-tab,.synapse-control .sg-layers summary{min-height:34px;padding:7px 14px}
+.synapse-control .sg-menu h5,.synapse-control .sg-sidebar h2,.synapse-control .sg-tl-day,.synapse-control .sg-tl-pre{font-size:13px}
+.synapse-control .sg-menu label,.synapse-control .sg-proj,.synapse-control .sg-tl-row{font-size:15px}
+.synapse-control .sg-sidebar{padding:12px}.synapse-control .sg-proj{gap:10px;padding:10px}
+.synapse-control .sg-proj .sg-meta,.synapse-control .sg-tl-time,.synapse-control .sg-tl-kind,.synapse-control .sg-footer,.synapse-control .sg-legend{font-size:13px}
+.synapse-control .sg-timeline{top:60px;left:310px;bottom:34px;padding:21px 28px}
+.synapse-control .sg-legend{left:324px;bottom:42px}
+/* Collapsed sidebar intentionally hides labels while retaining icons and the project code. */
+.synapse-control.sidebar-collapsed .control-sidebar nav button,
+.synapse-control.sidebar-collapsed .control-sidebar footer>button:not(.logout){font-size:0;overflow:hidden}
+.synapse-control.sidebar-collapsed .control-sidebar nav button>span,
+.synapse-control.sidebar-collapsed .control-sidebar footer>button>span{font-size:19px}
+.synapse-control.sidebar-collapsed .control-sidebar footer>button.logout{font-size:15px}
+@media(max-width:900px){.synapse-control .channel-compose-row{grid-template-columns:72px minmax(0,1fr) 82px}}
