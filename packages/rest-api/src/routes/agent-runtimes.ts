@@ -80,7 +80,7 @@ export async function agentRuntimeRoutes(fastify: FastifyInstance): Promise<void
 
   fastify.put<{
     Params: { runtime: string };
-    Body: { rootPath?: string; image?: string };
+    Body: { rootPath?: string; image?: string; model?: string };
   }>('/api/agent-runtimes/:runtime/config', async (request, reply) => {
     if (!request.body?.rootPath || typeof request.body.rootPath !== 'string') {
       return sendError(reply, new Error('rootPath ist erforderlich'), 400);
@@ -89,6 +89,7 @@ export async function agentRuntimeRoutes(fastify: FastifyInstance): Promise<void
       const status = await manager.driver(request.params.runtime).configure({
         rootPath: request.body.rootPath,
         image: request.body.image,
+        model: request.body.model,
       });
       return { success: true, status };
     } catch (error) {
@@ -212,7 +213,9 @@ export async function agentRuntimeRoutes(fastify: FastifyInstance): Promise<void
     Body: { runtime?: RuntimeName | null };
   }>('/api/main-agent/runtime', async (request, reply) => {
     const runtime = request.body?.runtime ?? null;
-    if (runtime !== null && runtime !== 'codex') return sendError(reply, new Error('Unbekannte Runtime'), 400);
+    if (runtime !== null && runtime !== 'codex' && runtime !== 'claude') {
+      return sendError(reply, new Error('Unbekannte Runtime'), 400);
+    }
     try {
       return { success: true, ...(await manager.assignMain(runtime)) };
     } catch (error) {
@@ -235,13 +238,13 @@ export async function agentRuntimeRoutes(fastify: FastifyInstance): Promise<void
     Params: { sessionId: string };
     Body: { message?: string };
   }>('/api/main-agent/sessions/:sessionId/messages', async (request, reply) => {
-    if (!request.body?.message || typeof request.body.message !== 'string') {
+    if (typeof request.body?.message !== 'string' || !request.body.message.trim()) {
       return sendError(reply, new Error('message ist erforderlich'), 400);
     }
     let session;
     try {
       session = await manager.getMainSession(request.params.sessionId);
-      if (session.runtime !== 'codex') throw new Error('Nicht unterstuetzte Main-Agent-Runtime');
+      manager.driver(session.runtime);
       await manager.assertMainRuntimeReady(session.runtime);
       await manager.markSessionRunning(session.id);
     } catch (error) {

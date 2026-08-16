@@ -624,6 +624,7 @@ CREATE TABLE public.agent_runtime_instances (
     role text NOT NULL,
     root_path text NOT NULL,
     image text NOT NULL,
+    model text,
     container_name text NOT NULL,
     container_id text,
     status text DEFAULT 'not_created'::text NOT NULL,

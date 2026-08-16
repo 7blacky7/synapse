@@ -1,4 +1,4 @@
-export type RuntimeName = 'codex';
+export type RuntimeName = 'codex' | 'claude';
 export type AgentRole = 'main' | 'specialist';
 export type RuntimeContainerState = 'not_created' | 'created' | 'running' | 'stopped' | 'error';
 export type RuntimeAuthState = 'authenticated' | 'not_authenticated' | 'unknown';
@@ -9,6 +9,7 @@ export interface RuntimeConfiguration {
   rootPath: string;
   image: string;
   containerName: string;
+  model: string | null;
   assignedToMain: boolean;
 }
 
@@ -19,6 +20,7 @@ export interface RuntimeStatus {
   installed: boolean;
   rootPath: string;
   image: string;
+  model: string | null;
   container: {
     name: string;
     id: string | null;
@@ -66,7 +68,7 @@ export interface TerminalSession {
 export interface AgentRuntimeDriver {
   readonly runtime: RuntimeName;
   readonly label: string;
-  configure(input: { rootPath: string; image?: string }): Promise<RuntimeStatus>;
+  configure(input: { rootPath: string; image?: string; model?: string }): Promise<RuntimeStatus>;
   setup(): Promise<RuntimeStatus>;
   start(): Promise<RuntimeStatus>;
   stop(): Promise<RuntimeStatus>;

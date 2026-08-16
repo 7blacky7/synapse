@@ -8,6 +8,14 @@ import {
   validateRuntimeImage,
   validateRuntimeRoot,
 } from '../dist/services/agent-runtime/codex-driver.js';
+import {
+  appendClaudeJsonlChunk,
+  buildClaudeAbortCommand,
+  buildClaudeCommand,
+  buildClaudeRunnerCommand,
+  parseClaudeJsonLine,
+  validateClaudeModel,
+} from '../dist/services/agent-runtime/claude-driver.js';
 
 test('Runtime-Root bleibt innerhalb der konfigurierten Allowlist', () => {
   const previous = process.env.AGENT_RUNTIME_ALLOWED_ROOTS;
@@ -78,4 +86,70 @@ test('Neue und fortgesetzte Codex-Session verwenden JSONL und stdin', () => {
   const resumed = buildCodexCommand('thread-1');
   assert.deepEqual(resumed.slice(-3), ['resume', 'thread-1', '-']);
   assert.ok(resumed.includes('read-only'));
+});
+
+test('Claude verwendet stream-json, deaktivierte Tools und echte Resume-Semantik', () => {
+  const fresh = buildClaudeCommand(null, 'sonnet');
+  assert.deepEqual(fresh.slice(0, 4), ['claude', '--print', '--verbose', '--output-format']);
+  assert.ok(fresh.includes('stream-json'));
+  assert.ok(fresh.includes('--include-partial-messages'));
+  assert.equal(fresh[fresh.indexOf('--tools') + 1], '');
+  assert.equal(fresh.includes('--resume'), false);
+
+  const resumed = buildClaudeCommand('session-1', 'opus');
+  assert.deepEqual(resumed.slice(-2), ['--resume', 'session-1']);
+  assert.equal(resumed[resumed.indexOf('--model') + 1], 'opus');
+});
+
+test('Claude Modell-ID und gezielter Abort werden validiert', () => {
+  assert.equal(validateClaudeModel('claude-sonnet-4-5'), 'claude-sonnet-4-5');
+  assert.throws(() => validateClaudeModel(''), /Modell-ID/);
+  assert.throws(() => validateClaudeModel('sonnet; rm -rf'), /Modell-ID/);
+  const abort = buildClaudeAbortCommand('/tmp/session.pid');
+  assert.ok(abort.join(' ').includes('kill -TERM'));
+  assert.ok(abort.join(' ').includes('kill -KILL'));
+  assert.equal(abort.join(' ').includes('pkill'), false);
+  assert.ok(buildClaudeRunnerCommand().includes('"$@" <&0 & child=$!'));
+});
+
+test('Claude JSONL puffert fachlich Session, Delta und Usage', () => {
+  assert.deepEqual(
+    parseClaudeJsonLine('{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"session-1\",\"model\":\"sonnet\"}'),
+    { runtimeSessionId: 'session-1', context: { model: 'sonnet', apiKeySource: undefined } },
+  );
+  assert.deepEqual(
+    parseClaudeJsonLine('{\"type\":\"stream_event\",\"event\":{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"Hallo\"}}}'),
+    { runtimeSessionId: undefined, delta: 'Hallo' },
+  );
+  const result = parseClaudeJsonLine('{\"type\":\"result\",\"subtype\":\"success\",\"session_id\":\"session-1\",\"result\":\"Hallo\",\"usage\":{\"input_tokens\":2,\"output_tokens\":1}}');
+  assert.equal(result.runtimeSessionId, 'session-1');
+  assert.equal(result.resultText, 'Hallo');
+  assert.deepEqual(result.usage, {
+    inputTokens: 2,
+    outputTokens: 1,
+    cacheCreationInputTokens: undefined,
+    cacheReadInputTokens: undefined,
+  });
+});
+
+test('Claude result is_error wird als Runtimefehler erkannt', () => {
+  const parsed = parseClaudeJsonLine('{"type":"result","subtype":"error","is_error":true,"result":"Login fehlt"}');
+  assert.equal(parsed.runtimeError, 'Login fehlt');
+});
+
+test('Claude JSONL Framing behaelt beliebige Chunks und den letzten Tail', () => {
+  let framed = appendClaudeJsonlChunk('', '{"type":"stream_');
+  assert.deepEqual(framed.lines, []);
+  framed = appendClaudeJsonlChunk(framed.pending, 'event"}\n{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"Tail"}}}');
+  assert.deepEqual(framed.lines, ['{"type":"stream_event"}']);
+  assert.ok(framed.pending.startsWith('{"type":"stream_event"'));
+  assert.equal(parseClaudeJsonLine(framed.pending).delta, 'Tail');
+});
+
+test('Unbekannte oder defekte Claude-Zeilen werden als Debug-Ereignis geliefert', () => {
+  assert.deepEqual(parseClaudeJsonLine('kein-json'), { debug: { type: 'raw', content: 'kein-json' } });
+  assert.deepEqual(parseClaudeJsonLine('{\"type\":\"future_event\",\"value\":1}'), {
+    runtimeSessionId: undefined,
+    debug: { type: 'future_event', value: 1 },
+  });
 });

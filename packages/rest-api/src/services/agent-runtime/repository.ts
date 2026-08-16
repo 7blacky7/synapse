@@ -2,8 +2,15 @@ import { randomUUID } from 'node:crypto';
 import { getPool } from '@synapse/core';
 import type { MainAgentSession, RuntimeConfiguration, RuntimeName } from './types.js';
 
-const DEFAULT_CODEX_ROOT = '/mnt/user/synapse-agent-runtime/codex';
-const DEFAULT_CODEX_IMAGE = 'node:22-bookworm-slim';
+const DEFAULT_RUNTIME_IMAGE = 'node:22-bookworm-slim';
+const DEFAULT_RUNTIME_ROOTS: Record<RuntimeName, string> = {
+  codex: '/mnt/user/synapse-agent-runtime/codex',
+  claude: '/mnt/user/synapse-agent-runtime/claude',
+};
+const DEFAULT_RUNTIME_MODELS: Record<RuntimeName, string | null> = {
+  codex: null,
+  claude: 'sonnet',
+};
 
 interface RuntimeRow {
   runtime: RuntimeName;
@@ -11,13 +18,14 @@ interface RuntimeRow {
   root_path: string;
   image: string;
   container_name: string;
+  model: string | null;
   assigned_to_main: boolean;
 }
 
 export class AgentRuntimeRepository {
   async get(runtime: RuntimeName): Promise<RuntimeConfiguration | null> {
     const result = await getPool().query(
-      'SELECT runtime, role, root_path, image, container_name, assigned_to_main FROM agent_runtime_instances WHERE runtime=$1',
+      'SELECT runtime, role, root_path, image, container_name, model, assigned_to_main FROM agent_runtime_instances WHERE runtime=$1',
       [runtime],
     );
     const row = result.rows[0] as RuntimeRow | undefined;
@@ -28,24 +36,33 @@ export class AgentRuntimeRepository {
       rootPath: row.root_path,
       image: row.image,
       containerName: row.container_name,
+      model: row.model,
       assignedToMain: row.assigned_to_main,
     };
   }
 
   async ensureCodex(): Promise<RuntimeConfiguration> {
+    return this.ensureRuntime('codex');
+  }
+
+  async ensureClaude(): Promise<RuntimeConfiguration> {
+    return this.ensureRuntime('claude');
+  }
+
+  private async ensureRuntime(runtime: RuntimeName): Promise<RuntimeConfiguration> {
     await getPool().query(
-      'INSERT INTO agent_runtime_instances (runtime, driver, role, root_path, image, container_name) VALUES ($1,$1,\'main\',$2,$3,\'synapse-runtime-codex\') ON CONFLICT (runtime) DO NOTHING',
-      ['codex', DEFAULT_CODEX_ROOT, DEFAULT_CODEX_IMAGE],
+      'INSERT INTO agent_runtime_instances (runtime, driver, role, root_path, image, container_name, model) VALUES ($1,$1,\'main\',$2,$3,$4,$5) ON CONFLICT (runtime) DO NOTHING',
+      [runtime, DEFAULT_RUNTIME_ROOTS[runtime], DEFAULT_RUNTIME_IMAGE, 'synapse-runtime-' + runtime, DEFAULT_RUNTIME_MODELS[runtime]],
     );
-    const config = await this.get('codex');
-    if (!config) throw new Error('Codex-Runtime-Konfiguration konnte nicht angelegt werden');
+    const config = await this.get(runtime);
+    if (!config) throw new Error('Runtime-Konfiguration konnte nicht angelegt werden: ' + runtime);
     return config;
   }
 
-  async configure(runtime: RuntimeName, rootPath: string, image: string): Promise<RuntimeConfiguration> {
+  async configure(runtime: RuntimeName, rootPath: string, image: string, model?: string | null): Promise<RuntimeConfiguration> {
     await getPool().query(
-      'INSERT INTO agent_runtime_instances (runtime,driver,role,root_path,image,container_name,updated_at) VALUES ($1,$1,\'main\',$2,$3,$4,NOW()) ON CONFLICT (runtime) DO UPDATE SET root_path=EXCLUDED.root_path,image=EXCLUDED.image,last_error=NULL,updated_at=NOW()',
-      [runtime, rootPath, image, 'synapse-runtime-' + runtime],
+      'INSERT INTO agent_runtime_instances (runtime,driver,role,root_path,image,container_name,model,updated_at) VALUES ($1,$1,\'main\',$2,$3,$4,$5,NOW()) ON CONFLICT (runtime) DO UPDATE SET root_path=EXCLUDED.root_path,image=EXCLUDED.image,model=COALESCE(EXCLUDED.model,agent_runtime_instances.model),last_error=NULL,updated_at=NOW()',
+      [runtime, rootPath, image, 'synapse-runtime-' + runtime, model ?? null],
     );
     const config = await this.get(runtime);
     if (!config) throw new Error('Runtime-Konfiguration konnte nicht gespeichert werden');

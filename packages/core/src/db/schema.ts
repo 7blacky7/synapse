@@ -1856,6 +1856,7 @@ CREATE TABLE IF NOT EXISTS agent_runtime_instances (
   role                TEXT NOT NULL CHECK (role IN ('main','specialist')),
   root_path           TEXT NOT NULL,
   image               TEXT NOT NULL,
+  model               TEXT,
   container_name      TEXT NOT NULL UNIQUE,
   container_id        TEXT,
   status              TEXT NOT NULL DEFAULT 'not_created'
@@ -1870,6 +1871,7 @@ CREATE TABLE IF NOT EXISTS agent_runtime_instances (
   created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+ALTER TABLE agent_runtime_instances ADD COLUMN IF NOT EXISTS model TEXT;
 CREATE UNIQUE INDEX IF NOT EXISTS uq_agent_runtime_main_assignment
   ON agent_runtime_instances (assigned_to_main) WHERE assigned_to_main = TRUE;
 

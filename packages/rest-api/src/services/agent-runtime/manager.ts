@@ -1,5 +1,6 @@
 import { AgentRuntimeRepository } from './repository.js';
 import { CodexRuntimeDriver } from './codex-driver.js';
+import { ClaudeRuntimeDriver } from './claude-driver.js';
 import { TerminalSessionRegistry } from './terminal-sessions.js';
 import type { AgentRuntimeDriver, MainAgentSession, RuntimeName, RuntimeStatus } from './types.js';
 
@@ -10,7 +11,9 @@ export class AgentRuntimeManager {
 
   constructor() {
     const codex = new CodexRuntimeDriver(this.repository);
+    const claude = new ClaudeRuntimeDriver(this.repository);
     this.drivers.set(codex.runtime, codex);
+    this.drivers.set(claude.runtime, claude);
   }
 
   driver(runtime: string): AgentRuntimeDriver {
