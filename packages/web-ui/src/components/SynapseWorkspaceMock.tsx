@@ -21,6 +21,7 @@ import {
 } from '../api/control-plane-adapter';
 import { defaultSettings, entityData, navigation } from '../mock/ui-control-plane';
 import { agentHosts } from '../mock/infrastructure-control-plane';
+import { createMainAgentSession, getMainAgentRuntime, streamMainAgentMessage, type AgentRuntimeStatus } from '../api/agent-runtime';
 import type {
   Area,
   ChannelMessageViewModel,
@@ -432,6 +433,12 @@ function MainAgentView({ theme, project, showDashboard }: { theme: Theme; projec
   const [thinking, setThinking] = useState(false);
   const [toolCalls, setToolCalls] = useState<ToolCallViewModel[]>([]);
   const [toolError, setToolError] = useState('');
+  const [runtimeMode, setRuntimeMode] = useState<'mock' | 'codex'>('mock');
+  const [mainRuntime, setMainRuntime] = useState<AgentRuntimeStatus | null>(null);
+  const [runtimeSessionId, setRuntimeSessionId] = useState('');
+  const [runtimeError, setRuntimeError] = useState('');
+  const [runtimeUsage, setRuntimeUsage] = useState('');
+  const [runtimeContext, setRuntimeContext] = useState('');
   const [chatMode, setChatMode] = useState<'auto' | 'fixed'>('auto');
   const [chatCollapsed, setChatCollapsed] = useState(false);
   const [chatPeeking, setChatPeeking] = useState(false);
@@ -509,6 +516,27 @@ function MainAgentView({ theme, project, showDashboard }: { theme: Theme; projec
     return () => { active = false; window.clearInterval(timer); };
   }, [project]);
 
+  useEffect(() => {
+    let active = true;
+    const refreshRuntime = async () => {
+      try {
+        const result = await getMainAgentRuntime();
+        if (active) {
+          setMainRuntime(result.status);
+          setRuntimeError('');
+        }
+      } catch (reason) {
+        if (active) setRuntimeError(reason instanceof Error ? reason.message : String(reason));
+      }
+    };
+    void refreshRuntime();
+    const timer = window.setInterval(() => void refreshRuntime(), 3000);
+    return () => { active = false; window.clearInterval(timer); };
+  }, []);
+
+  const mainRuntimeReady = mainRuntime?.assignedToMain === true
+    && mainRuntime.container.status === 'running'
+    && mainRuntime.authentication.status === 'authenticated';
   const registerInteraction = () => setLastInteraction(Date.now());
   const queueMainFiles = async (files: FileList | File[]) => {
     const prepared = await prepareMockChatAttachments(files, { scope: 'main-agent' });
@@ -546,12 +574,52 @@ function MainAgentView({ theme, project, showDashboard }: { theme: Theme; projec
     setUnseenMessages(0);
     feedRef.current?.scrollTo({ top: feedRef.current.scrollHeight, behavior: 'smooth' });
   };
-  const submit = (event: FormEvent) => {
+  const submit = async (event: FormEvent) => {
     event.preventDefault();
     const value = input.trim();
     if ((!value && !pendingFiles.length) || thinking) return;
     registerInteraction();
     setChatCollapsed(false);
+
+    if (runtimeMode === 'codex') {
+      if (!mainRuntimeReady) {
+        setRuntimeError('Codex ist noch nicht vollständig eingerichtet, angemeldet und dem Main-Agenten zugewiesen.');
+        return;
+      }
+      if (pendingFiles.length) {
+        setRuntimeError('Dateien werden in dieser ersten produktiven Runtime-Stufe noch nicht an Codex übertragen. Bitte ohne Anhang senden.');
+        return;
+      }
+      const userId = Date.now();
+      const answerId = userId + 1;
+      setMessages((items) => [...items, { id: userId, role: 'user', kind: 'text', text: value }, { id: answerId, role: 'agent', kind: 'text', text: '' }]);
+      setThinking(true);
+      setInput('');
+      setRuntimeError('');
+      setRuntimeContext('');
+      try {
+        let activeSessionId = runtimeSessionId;
+        if (!activeSessionId) {
+          const session = await createMainAgentSession('codex');
+          activeSessionId = session.id;
+          setRuntimeSessionId(session.id);
+        }
+        await streamMainAgentMessage(activeSessionId, value, {
+          onDelta: ({ content }) => setMessages((items) => items.map((message) => message.id === answerId ? { ...message, text: message.text + content } : message)),
+          onUsage: (usage) => setRuntimeUsage([usage.inputTokens ? 'in ' + usage.inputTokens : '', usage.outputTokens ? 'out ' + usage.outputTokens : '', usage.cachedInputTokens ? 'cache ' + usage.cachedInputTokens : ''].filter(Boolean).join(' · ')),
+          onDone: ({ context }) => setRuntimeContext(context ? (typeof context === 'string' ? context : JSON.stringify(context)) : 'Session fortsetzbar'),
+          onError: ({ message }) => setRuntimeError(message),
+        });
+      } catch (reason) {
+        const message = reason instanceof Error ? reason.message : String(reason);
+        setRuntimeError(message);
+        setMessages((items) => items.map((item) => item.id === answerId && !item.text ? { ...item, text: 'Runtime-Fehler: ' + message } : item));
+      } finally {
+        setThinking(false);
+      }
+      return;
+    }
+
     const baseId = Date.now();
     const outgoing: AgentMessage[] = [];
     if (value) outgoing.push({ id: baseId, role: 'user', kind: 'text', text: value });
@@ -619,10 +687,11 @@ function MainAgentView({ theme, project, showDashboard }: { theme: Theme; projec
           <div className="agent-identity"><span>HA</span><div><strong>Hauptagent</strong><small>{chatMode === 'fixed' ? 'fixiert' : 'Auto · ' + collapseDelay + ' ' + collapseUnit}</small></div></div>
           <div className="chat-display-controls">
             {chatHasUnread && <i className="chat-unread-dot" title="Neue Nachricht" />}
+            <button type="button" className={'main-runtime-switch ' + runtimeMode + (mainRuntimeReady ? ' ready' : '')} onClick={() => { setRuntimeError(''); setRuntimeMode((current) => current === 'codex' ? 'mock' : mainRuntimeReady ? 'codex' : 'mock'); }} title={mainRuntimeReady ? 'Zwischen Mock und echter Codex-Runtime wechseln' : 'Codex zuerst einrichten, anmelden und zuweisen'}>{runtimeMode === 'codex' ? '◆ Codex · echt' : '◇ Mock'}</button>
             <label>Höhe <input type="range" min="35" max="100" step="5" value={chatHeight} onChange={(event) => setChatHeight(Number(event.target.value))} /></label>
             {chatMode === 'auto' && <label className="chat-auto-time">nach <input type="number" min="1" step={collapseUnit === 'ms' ? 100 : 1} value={collapseDelay} onChange={(event) => setCollapseDelay(Math.max(1, Number(event.target.value)))} /><select value={collapseUnit} onChange={(event) => setCollapseUnit(event.target.value as 'ms' | 'sec' | 'min')}><option value="ms">ms</option><option value="sec">Sek.</option><option value="min">Min.</option></select></label>}
             <button type="button" className="chat-mode-cycle active" onClick={cycleChatMode} title="Auto → Fixiert → Minimiert">{chatCollapsed ? '□ Öffnen' : chatMode === 'auto' ? '◌ Auto · weiter' : '● Fixiert · weiter'}</button>
-            <div className="agent-live"><i /> bereit</div>
+            <div className={'agent-live' + (runtimeMode === 'codex' ? ' real' : '')}><i /> {runtimeMode === 'codex' ? (thinking ? 'streaming' : 'Codex bereit') : 'Mock bereit'}</div>
           </div>
         </div>
         <div className="message-feed" ref={feedRef} onScroll={handleFeedScroll}>
@@ -635,7 +704,8 @@ function MainAgentView({ theme, project, showDashboard }: { theme: Theme; projec
               {message.kind === 'attachment' && message.attachment && <AttachmentMessage attachment={message.attachment} />}
             </article>
           </Fragment>)}
-          {thinking && <article className="message agent thinking"><header>Hauptagent</header><div><i /><i /><i /><span>Antwort wird aufgebaut</span></div></article>}
+          {thinking && <article className="message agent thinking"><header>Hauptagent</header><div><i /><i /><i /><span>{runtimeMode === 'codex' ? 'Codex antwortet im Stream' : 'Antwort wird aufgebaut'}</span></div></article>}
+          {runtimeMode === 'codex' && (runtimeUsage || runtimeContext || runtimeError) && <div className={'main-runtime-meta' + (runtimeError ? ' error' : '')}><span>{runtimeError || runtimeContext}</span>{runtimeUsage && <b>{runtimeUsage}</b>}</div>}
         </div>
         {unseenMessages > 0 && <button className="agent-new-content" type="button" onClick={jumpToNewestMessage}>↓ {unseenMessages} neue {unseenMessages === 1 ? 'Antwort' : 'Antworten'}</button>}
         <form className={'agent-composer' + (dropActive ? ' chat-drop-active' : '')} onSubmit={submit} onDragEnter={(event) => { event.preventDefault(); setDropActive(true); }} onDragOver={(event) => { event.preventDefault(); setDropActive(true); }} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setDropActive(false); }} onDrop={(event) => { setDropActive(false); handleAttachmentDrop(event, (files) => void queueMainFiles(files)); }}>
@@ -643,7 +713,7 @@ function MainAgentView({ theme, project, showDashboard }: { theme: Theme; projec
           <textarea ref={mainComposerRef} rows={chatCollapsed ? 1 : 3} value={input} onChange={(event) => { setInput(event.target.value); registerInteraction(); }} placeholder="Nachricht oder Auftrag an den Hauptagenten …" />
           <footer>
             <AttachmentPicker onFiles={(files) => void queueMainFiles(files)} label="＋ Datei / Bild" />
-            <span className="composer-hint">{chatCollapsed ? 'Chat eingeklappt · Datei ablegen oder Nachricht senden.' : 'Dateien hierher ziehen · später privates Main-Agent-Volume.'}</span>
+            <span className="composer-hint">{runtimeMode === 'codex' ? 'Echte Codex-Session · Chat-Text aktiv, Dateien folgen in einer späteren Stufe.' : chatCollapsed ? 'Chat eingeklappt · Datei ablegen oder Nachricht senden.' : 'Dateien hierher ziehen · später privates Main-Agent-Volume.'}</span>
             {chatCollapsed && <button type="button" className="chat-open-action" onClick={openChat}>Verlauf öffnen{chatHasUnread ? ' · neu' : ''}</button>}
             <button className="primary-action" type="submit" disabled={thinking || (!input.trim() && !pendingFiles.length)}>Senden</button>
           </footer>

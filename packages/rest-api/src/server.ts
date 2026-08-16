@@ -36,6 +36,7 @@ import {
   embeddingNodeRoutes,
   wrapperBridgeRoutes,
   agentWissenRoutes,
+  agentRuntimeRoutes,
 } from './routes/index.js';
 
 /**
@@ -104,6 +105,9 @@ export async function createServer(): Promise<FastifyInstance> {
   // und wird von niemandem abgeschaltet.
   // Sichtbarkeit: GET /api/projects/:name/agent-wissen/health.
   await fastify.register(agentWissenRoutes);
+
+  // AR-1: generische Agent-Runtimes; Codex ist nur der erste Driver.
+  await fastify.register(agentRuntimeRoutes);
 
   // Graph-View (PLAN-003 / GRAPH-1): /api/graph/* — Aggregationen direkt aus
   // @synapse/core (PG + Qdrant), kein HTTP-Loopback. Hinter Auth-Hook (AUTH-4).

@@ -608,3 +608,71 @@ ALTER TABLE ONLY public.channel_sichtung
     ADD CONSTRAINT channel_sichtung_pkey PRIMARY KEY (project, channel, agent);
 
 CREATE INDEX idx_channel_sichtung_channel ON public.channel_sichtung USING btree (project, channel);
+
+
+
+--
+-- Name: agent_runtime_instances; Type: TABLE; Schema: public  (AR-1)
+--
+-- Generische produktive Agent-Runtimes. Rolle und Runtime bleiben getrennt;
+-- Root/Image/Assignment liegen in PostgreSQL als Source of Truth.
+--
+
+CREATE TABLE public.agent_runtime_instances (
+    runtime text NOT NULL,
+    driver text NOT NULL,
+    role text NOT NULL,
+    root_path text NOT NULL,
+    image text NOT NULL,
+    container_name text NOT NULL,
+    container_id text,
+    status text DEFAULT 'not_created'::text NOT NULL,
+    installed boolean DEFAULT false NOT NULL,
+    auth_status text DEFAULT 'unknown'::text NOT NULL,
+    auth_method text,
+    version text,
+    last_error text,
+    assigned_to_main boolean DEFAULT false NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT agent_runtime_instances_role_check CHECK ((role = ANY (ARRAY['main'::text, 'specialist'::text]))),
+    CONSTRAINT agent_runtime_instances_status_check CHECK ((status = ANY (ARRAY['not_created'::text, 'created'::text, 'running'::text, 'stopped'::text, 'error'::text]))),
+    CONSTRAINT agent_runtime_instances_auth_status_check CHECK ((auth_status = ANY (ARRAY['authenticated'::text, 'not_authenticated'::text, 'unknown'::text])))
+);
+
+ALTER TABLE ONLY public.agent_runtime_instances
+    ADD CONSTRAINT agent_runtime_instances_pkey PRIMARY KEY (runtime);
+
+ALTER TABLE ONLY public.agent_runtime_instances
+    ADD CONSTRAINT agent_runtime_instances_container_name_key UNIQUE (container_name);
+
+CREATE UNIQUE INDEX uq_agent_runtime_main_assignment ON public.agent_runtime_instances USING btree (assigned_to_main) WHERE (assigned_to_main = true);
+
+--
+-- Name: agent_runtime_sessions; Type: TABLE; Schema: public  (AR-1)
+--
+-- Main-Agent-Chat-Sessions speichern nur CLI-Thread-ID und Context-Metadaten.
+-- Nachrichten, Files, Memories und Tools sind bewusst nicht Teil dieser Stufe.
+--
+
+CREATE TABLE public.agent_runtime_sessions (
+    id uuid NOT NULL,
+    agent_role text NOT NULL,
+    runtime text NOT NULL,
+    runtime_session_id text,
+    status text DEFAULT 'ready'::text NOT NULL,
+    context jsonb,
+    last_error text,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT agent_runtime_sessions_agent_role_check CHECK ((agent_role = 'main'::text)),
+    CONSTRAINT agent_runtime_sessions_status_check CHECK ((status = ANY (ARRAY['ready'::text, 'running'::text, 'completed'::text, 'error'::text])))
+);
+
+ALTER TABLE ONLY public.agent_runtime_sessions
+    ADD CONSTRAINT agent_runtime_sessions_pkey PRIMARY KEY (id);
+
+ALTER TABLE ONLY public.agent_runtime_sessions
+    ADD CONSTRAINT agent_runtime_sessions_runtime_fkey FOREIGN KEY (runtime) REFERENCES public.agent_runtime_instances(runtime);
+
+CREATE INDEX idx_agent_runtime_sessions_runtime ON public.agent_runtime_sessions USING btree (runtime, updated_at DESC);

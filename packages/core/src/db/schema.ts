@@ -1845,6 +1845,51 @@ CREATE INDEX IF NOT EXISTS idx_agent_wissen_agent
 -- damit nicht mehr wegraeumen.
 CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_wissen_block
   ON agent_wissen(project, agent_name, art) WHERE form = 'block';
+
+-- AR-1: Generische produktive Agent-Runtimes. Rolle und Runtime sind getrennt:
+-- role='main' ist der erste produktive Agent; driver='codex' ist austauschbar.
+-- Root/Image/Assignment leben in PG als Source of Truth. Container-IDs und
+-- beobachtete Login-/Installationswerte sind nur Runtime-Zustand.
+CREATE TABLE IF NOT EXISTS agent_runtime_instances (
+  runtime             TEXT PRIMARY KEY,
+  driver              TEXT NOT NULL,
+  role                TEXT NOT NULL CHECK (role IN ('main','specialist')),
+  root_path           TEXT NOT NULL,
+  image               TEXT NOT NULL,
+  container_name      TEXT NOT NULL UNIQUE,
+  container_id        TEXT,
+  status              TEXT NOT NULL DEFAULT 'not_created'
+                      CHECK (status IN ('not_created','created','running','stopped','error')),
+  installed           BOOLEAN NOT NULL DEFAULT FALSE,
+  auth_status         TEXT NOT NULL DEFAULT 'unknown'
+                      CHECK (auth_status IN ('authenticated','not_authenticated','unknown')),
+  auth_method         TEXT,
+  version             TEXT,
+  last_error          TEXT,
+  assigned_to_main    BOOLEAN NOT NULL DEFAULT FALSE,
+  created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_agent_runtime_main_assignment
+  ON agent_runtime_instances (assigned_to_main) WHERE assigned_to_main = TRUE;
+
+-- Chat-Sessions speichern nur die CLI-Thread-ID und Context-Metadaten.
+-- Nachrichteninhalte/Files/Memories/Tools sind in AR-1 ausdruecklich nicht Teil
+-- dieser Tabelle und werden nicht an andere Synapse-Dienste gekoppelt.
+CREATE TABLE IF NOT EXISTS agent_runtime_sessions (
+  id                  UUID PRIMARY KEY,
+  agent_role          TEXT NOT NULL CHECK (agent_role = 'main'),
+  runtime             TEXT NOT NULL REFERENCES agent_runtime_instances(runtime),
+  runtime_session_id  TEXT,
+  status              TEXT NOT NULL DEFAULT 'ready'
+                      CHECK (status IN ('ready','running','completed','error')),
+  context             JSONB,
+  last_error          TEXT,
+  created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_agent_runtime_sessions_runtime
+  ON agent_runtime_sessions(runtime, updated_at DESC);
 `;
 
 export async function ensureSchema(): Promise<void> {

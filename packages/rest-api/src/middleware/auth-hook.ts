@@ -101,8 +101,12 @@ function isAllowlisted(method: string, pathname: string): boolean {
 
 /** Ist das die SSE-EventSource-Route (Cookie/Query statt Bearer)? */
 function isSseRoute(method: string, pathname: string): boolean {
-  // GET /api/projects/:name/events  (der einzige echte SSE-Stream mit PG LISTEN)
-  return method === 'GET' && /^\/api\/projects\/[^/]+\/events\/?$/.test(pathname);
+  if (method !== 'GET') return false;
+  // Projekt-Events sowie interaktive Runtime-Terminals nutzen EventSource. Beide
+  // werden ueber das httpOnly-Session-Cookie oder einen kurzlebigen SSE-Token
+  // authentifiziert; Chat-POST-Streams tragen normal den Bearer-Header.
+  return /^\/api\/projects\/[^/]+\/events\/?$/.test(pathname)
+    || /^\/api\/agent-runtimes\/[^/]+\/terminal\/sessions\/[^/]+\/events\/?$/.test(pathname);
 }
 
 /** Pfad faellt unter den Bearer-Zwang (/api/* , /mcp/* oder MCP-Root POST /)? */

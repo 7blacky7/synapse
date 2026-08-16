@@ -1,5 +1,7 @@
 import { useMemo, useState, type FormEvent } from 'react';
 import { agentHosts, runtimeProfiles, testSystems, workspaceProfiles, type AgentHostProfile, type RuntimeProfile } from '../mock/infrastructure-control-plane';
+import { CodexRuntimeControl } from './CodexRuntimeControl';
+import { CodexTerminal } from './CodexTerminal';
 import '../infrastructure-control-plane.css';
 
 type InfrastructureArea = 'hosts' | 'runtimes' | 'workspaces' | 'testsystems';
@@ -89,6 +91,15 @@ function TerminalMock({ initialHost }: { initialHost: string }) {
 
   const connectionTone = terminalError ? 'error' : connected ? 'connected' : 'offline';
   const connectionLabel = terminalError ? 'fehler' : streaming ? 'streaming' : connected ? 'verbunden' : 'offline';
+
+  if (runtime === 'Codex CLI') return <section className={'runtime-terminal real-runtime-terminal' + (fullscreen ? ' fullscreen' : '')}>
+    <div className="terminal-toolbar">
+      <label>Host<select value={host} onChange={(event) => setHost(event.target.value)}>{agentHosts.map((item) => <option key={item.id}>{item.name}</option>)}</select></label>
+      <label>Runtime<select value={runtime} onChange={(event) => changeRuntime(event.target.value)}>{runtimeProfiles.map((item) => <option key={item.id}>{item.name}</option>)}</select></label>
+      <span className="auth-required">● Produktive Codex-Verbindung</span>
+    </div>
+    <CodexTerminal />
+  </section>;
 
   return <section className={'runtime-terminal' + (fullscreen ? ' fullscreen' : '')}>
     <header>
@@ -208,11 +219,11 @@ export function RuntimesView() {
       <main className="infra-detail">
         <header className="infra-detail-head"><div><StatusDot tone={runtime.status} /><span><h2>{runtime.name}</h2><p>{runtime.kind.toUpperCase()} · {runtime.provider} · {runtime.host}</p></span></div><b>{runtime.accountStatus}</b></header>
         <nav className="infra-tabs">{[['overview','Übersicht'],['configuration','Konfiguration'],['auth','Authentifizierung'],['assignment','Agentenzuweisung'],['history','Historie']].map(([id,label]) => <button type="button" key={id} className={tab === id ? 'active' : ''} onClick={() => setTab(id)}>{label}</button>)}</nav>
-        {tab === 'overview' && <div className="infra-tab-content"><section className="host-summary-strip runtime-summary"><article><span>Modell</span><b>{runtime.model}</b><small>jederzeit auswählbar</small></article><article><span>Authentifizierung</span><b>{runtime.authentication}</b><small>{runtime.accountStatus}</small></article><article><span>Main-Agent</span><b>{runtime.mainAgentCompatible ? 'kompatibel' : 'gesperrt'}</b><small>Rolle nicht fest verdrahtet</small></article><article><span>Status</span><b>{runtime.enabled ? 'aktiv' : 'deaktiviert'}</b><small>UI-Mock</small></article></section><div className="runtime-route"><span>Agentenidentität</span><i>→</i><span>{runtime.name}</span><i>→</i><span>{runtime.model}</span><i>→</i><span>{runtime.authentication}</span></div></div>}
+        {runtime.id === 'codex-cli' ? <CodexRuntimeControl tab={tab} /> : <>{tab === 'overview' && <div className="infra-tab-content"><section className="host-summary-strip runtime-summary"><article><span>Modell</span><b>{runtime.model}</b><small>jederzeit auswählbar</small></article><article><span>Authentifizierung</span><b>{runtime.authentication}</b><small>{runtime.accountStatus}</small></article><article><span>Main-Agent</span><b>{runtime.mainAgentCompatible ? 'kompatibel' : 'gesperrt'}</b><small>Rolle nicht fest verdrahtet</small></article><article><span>Status</span><b>{runtime.enabled ? 'aktiv' : 'deaktiviert'}</b><small>UI-Mock</small></article></section><div className="runtime-route"><span>Agentenidentität</span><i>→</i><span>{runtime.name}</span><i>→</i><span>{runtime.model}</span><i>→</i><span>{runtime.authentication}</span></div></div>}
         {tab === 'configuration' && <RuntimeConfiguration runtime={runtime} onChange={update} />}
         {tab === 'auth' && <div className="auth-workbench"><section><span>STATUS</span><h3>{runtime.accountStatus}</h3><p>{runtime.authentication} · persistentes Profil auf {runtime.host}</p><button type="button">{runtime.kind === 'cli' ? 'Login-Terminal öffnen' : 'API-Key-Profil auswählen'}</button></section><section><label>Profil<select><option>server-default</option><option>account-primary</option><option>Projektprofil</option></select></label><label>Secret-Status<input value="••••••••••••••••" readOnly /></label><small>Keine echten Credentials werden in UI1–UI3 übertragen.</small></section></div>}
         {tab === 'assignment' && <div className="assignment-list">{['synapse-main · main','ui-koordinator · project-coordinator','parser-pruefer · specialist'].map((item,index) => <article key={item}><span><strong>{item}</strong><small>{index ? 'synapse' : 'global'}</small></span><select defaultValue={index === 2 ? 'Fallback' : 'Primär'}><option>Primär</option><option>Fallback</option><option>Nicht verwenden</option></select></article>)}</div>}
-        {tab === 'history' && <div className="infra-history"><article className="ok"><time>12:21</time><div><strong>Profil geladen</strong><p>{runtime.name} auf {runtime.host}</p></div></article><article className="info"><time>11:58</time><div><strong>Modellauswahl geprüft</strong><p>{runtime.model} · UI-Mock</p></div></article></div>}
+        {tab === 'history' && <div className="infra-history"><article className="ok"><time>12:21</time><div><strong>Profil geladen</strong><p>{runtime.name} auf {runtime.host}</p></div></article><article className="info"><time>11:58</time><div><strong>Modellauswahl geprüft</strong><p>{runtime.model} · UI-Mock</p></div></article></div>}</>}
       </main>
     </section>
   </div>;
