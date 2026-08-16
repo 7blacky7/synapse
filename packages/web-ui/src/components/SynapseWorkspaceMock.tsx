@@ -21,7 +21,7 @@ import {
 } from '../api/control-plane-adapter';
 import { defaultSettings, entityData, navigation } from '../mock/ui-control-plane';
 import { agentHosts } from '../mock/infrastructure-control-plane';
-import { createMainAgentSession, getMainAgentRuntime, streamMainAgentMessage, type AgentRuntimeStatus } from '../api/agent-runtime';
+import { createMainAgentSession, getMainAgentRuntime, streamMainAgentMessage, type AgentRuntimeName, type AgentRuntimeStatus } from '../api/agent-runtime';
 import type {
   Area,
   ChannelMessageViewModel,
@@ -433,9 +433,10 @@ function MainAgentView({ theme, project, showDashboard }: { theme: Theme; projec
   const [thinking, setThinking] = useState(false);
   const [toolCalls, setToolCalls] = useState<ToolCallViewModel[]>([]);
   const [toolError, setToolError] = useState('');
-  const [runtimeMode, setRuntimeMode] = useState<'mock' | 'codex'>('mock');
+  const [runtimeMode, setRuntimeMode] = useState<'mock' | AgentRuntimeName>('mock');
   const [mainRuntime, setMainRuntime] = useState<AgentRuntimeStatus | null>(null);
   const [runtimeSessionId, setRuntimeSessionId] = useState('');
+  const runtimeAbortRef = useRef<AbortController | null>(null);
   const [runtimeError, setRuntimeError] = useState('');
   const [runtimeUsage, setRuntimeUsage] = useState('');
   const [runtimeContext, setRuntimeContext] = useState('');
@@ -534,9 +535,16 @@ function MainAgentView({ theme, project, showDashboard }: { theme: Theme; projec
     return () => { active = false; window.clearInterval(timer); };
   }, []);
 
+  useEffect(() => {
+    runtimeAbortRef.current?.abort();
+    setRuntimeSessionId('');
+    setRuntimeMode((current) => current === 'mock' ? current : mainRuntime?.runtime ?? 'mock');
+  }, [mainRuntime?.runtime]);
+
   const mainRuntimeReady = mainRuntime?.assignedToMain === true
     && mainRuntime.container.status === 'running'
     && mainRuntime.authentication.status === 'authenticated';
+  const assignedRuntime = mainRuntime?.runtime ?? null;
   const registerInteraction = () => setLastInteraction(Date.now());
   const queueMainFiles = async (files: FileList | File[]) => {
     const prepared = await prepareMockChatAttachments(files, { scope: 'main-agent' });
@@ -581,13 +589,14 @@ function MainAgentView({ theme, project, showDashboard }: { theme: Theme; projec
     registerInteraction();
     setChatCollapsed(false);
 
-    if (runtimeMode === 'codex') {
-      if (!mainRuntimeReady) {
-        setRuntimeError('Codex ist noch nicht vollständig eingerichtet, angemeldet und dem Main-Agenten zugewiesen.');
+    if (runtimeMode !== 'mock') {
+      const runtimeLabel = runtimeMode === 'claude' ? 'Claude Code' : 'Codex';
+      if (!mainRuntimeReady || assignedRuntime !== runtimeMode) {
+        setRuntimeError(runtimeLabel + ' ist noch nicht vollständig eingerichtet, angemeldet und dem Main-Agenten zugewiesen.');
         return;
       }
       if (pendingFiles.length) {
-        setRuntimeError('Dateien werden in dieser ersten produktiven Runtime-Stufe noch nicht an Codex übertragen. Bitte ohne Anhang senden.');
+        setRuntimeError('Dateien werden in dieser ersten produktiven Runtime-Stufe noch nicht an ' + runtimeLabel + ' übertragen. Bitte ohne Anhang senden.');
         return;
       }
       const userId = Date.now();
@@ -600,21 +609,28 @@ function MainAgentView({ theme, project, showDashboard }: { theme: Theme; projec
       try {
         let activeSessionId = runtimeSessionId;
         if (!activeSessionId) {
-          const session = await createMainAgentSession('codex');
+          const session = await createMainAgentSession(runtimeMode);
           activeSessionId = session.id;
           setRuntimeSessionId(session.id);
         }
+        const controller = new AbortController();
+        runtimeAbortRef.current = controller;
         await streamMainAgentMessage(activeSessionId, value, {
           onDelta: ({ content }) => setMessages((items) => items.map((message) => message.id === answerId ? { ...message, text: message.text + content } : message)),
           onUsage: (usage) => setRuntimeUsage([usage.inputTokens ? 'in ' + usage.inputTokens : '', usage.outputTokens ? 'out ' + usage.outputTokens : '', usage.cachedInputTokens ? 'cache ' + usage.cachedInputTokens : ''].filter(Boolean).join(' · ')),
           onDone: ({ context }) => setRuntimeContext(context ? (typeof context === 'string' ? context : JSON.stringify(context)) : 'Session fortsetzbar'),
           onError: ({ message }) => setRuntimeError(message),
-        });
+        }, controller.signal);
       } catch (reason) {
-        const message = reason instanceof Error ? reason.message : String(reason);
-        setRuntimeError(message);
-        setMessages((items) => items.map((item) => item.id === answerId && !item.text ? { ...item, text: 'Runtime-Fehler: ' + message } : item));
+        if (reason instanceof Error && reason.name === 'AbortError') {
+          setRuntimeContext('Ausgabe abgebrochen');
+        } else {
+          const message = reason instanceof Error ? reason.message : String(reason);
+          setRuntimeError(message);
+          setMessages((items) => items.map((item) => item.id === answerId && !item.text ? { ...item, text: 'Runtime-Fehler: ' + message } : item));
+        }
       } finally {
+        runtimeAbortRef.current = null;
         setThinking(false);
       }
       return;
@@ -687,11 +703,12 @@ function MainAgentView({ theme, project, showDashboard }: { theme: Theme; projec
           <div className="agent-identity"><span>HA</span><div><strong>Hauptagent</strong><small>{chatMode === 'fixed' ? 'fixiert' : 'Auto · ' + collapseDelay + ' ' + collapseUnit}</small></div></div>
           <div className="chat-display-controls">
             {chatHasUnread && <i className="chat-unread-dot" title="Neue Nachricht" />}
-            <button type="button" className={'main-runtime-switch ' + runtimeMode + (mainRuntimeReady ? ' ready' : '')} onClick={() => { setRuntimeError(''); setRuntimeMode((current) => current === 'codex' ? 'mock' : mainRuntimeReady ? 'codex' : 'mock'); }} title={mainRuntimeReady ? 'Zwischen Mock und echter Codex-Runtime wechseln' : 'Codex zuerst einrichten, anmelden und zuweisen'}>{runtimeMode === 'codex' ? '◆ Codex · echt' : '◇ Mock'}</button>
+            <button type="button" className={'main-runtime-switch ' + runtimeMode + (mainRuntimeReady ? ' ready' : '')} onClick={() => { setRuntimeError(''); setRuntimeMode((current) => current === 'mock' && mainRuntimeReady && assignedRuntime ? assignedRuntime : 'mock'); }} title={mainRuntimeReady && assignedRuntime ? 'Zwischen Mock und echter ' + (assignedRuntime === 'claude' ? 'Claude-Code-' : 'Codex-') + 'Runtime wechseln' : 'Runtime zuerst einrichten, anmelden und dem Main-Agenten zuweisen'}>{runtimeMode === 'mock' ? '◇ Mock' : runtimeMode === 'claude' ? '◆ Claude · echt' : '◆ Codex · echt'}</button>
+            {thinking && runtimeMode !== 'mock' && <button type="button" className="main-runtime-stop" onClick={() => runtimeAbortRef.current?.abort()}>■ Abbrechen</button>}
             <label>Höhe <input type="range" min="35" max="100" step="5" value={chatHeight} onChange={(event) => setChatHeight(Number(event.target.value))} /></label>
             {chatMode === 'auto' && <label className="chat-auto-time">nach <input type="number" min="1" step={collapseUnit === 'ms' ? 100 : 1} value={collapseDelay} onChange={(event) => setCollapseDelay(Math.max(1, Number(event.target.value)))} /><select value={collapseUnit} onChange={(event) => setCollapseUnit(event.target.value as 'ms' | 'sec' | 'min')}><option value="ms">ms</option><option value="sec">Sek.</option><option value="min">Min.</option></select></label>}
             <button type="button" className="chat-mode-cycle active" onClick={cycleChatMode} title="Auto → Fixiert → Minimiert">{chatCollapsed ? '□ Öffnen' : chatMode === 'auto' ? '◌ Auto · weiter' : '● Fixiert · weiter'}</button>
-            <div className={'agent-live' + (runtimeMode === 'codex' ? ' real' : '')}><i /> {runtimeMode === 'codex' ? (thinking ? 'streaming' : 'Codex bereit') : 'Mock bereit'}</div>
+            <div className={'agent-live' + (runtimeMode !== 'mock' ? ' real' : '')}><i /> {runtimeMode === 'mock' ? 'Mock bereit' : thinking ? 'streaming' : runtimeMode === 'claude' ? 'Claude bereit' : 'Codex bereit'}</div>
           </div>
         </div>
         <div className="message-feed" ref={feedRef} onScroll={handleFeedScroll}>

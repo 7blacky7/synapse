@@ -1,6 +1,7 @@
-import { useMemo, useState, type FormEvent } from 'react';
+import { useCallback, useMemo, useState, type FormEvent } from 'react';
 import { agentHosts, runtimeProfiles, testSystems, workspaceProfiles, type AgentHostProfile, type RuntimeProfile } from '../mock/infrastructure-control-plane';
-import { CodexRuntimeControl } from './CodexRuntimeControl';
+import { AgentRuntimeControl } from './CodexRuntimeControl';
+import type { AgentRuntimeStatus } from '../api/agent-runtime';
 import { CodexTerminal } from './CodexTerminal';
 import '../infrastructure-control-plane.css';
 
@@ -212,6 +213,13 @@ export function RuntimesView() {
   const [tab, setTab] = useState('overview');
   const runtime = profiles.find((item) => item.id === selected) ?? profiles[0];
   const update = (patch: Partial<RuntimeProfile>) => setProfiles((items) => items.map((item) => item.id === runtime.id ? { ...item, ...patch } : item));
+  const applyLiveStatus = useCallback((status: AgentRuntimeStatus) => {
+    const profileId = status.runtime === 'claude' ? 'claude-code' : 'codex-cli';
+    const accountStatus = status.authentication.status === 'authenticated' ? 'Angemeldet' : status.authentication.status === 'not_authenticated' ? 'Login erforderlich' : 'Status unbekannt';
+    const runtimeStatus: RuntimeProfile['status'] = status.container.status === 'running' && status.authentication.status === 'authenticated' ? 'ready' : status.installed ? 'warning' : 'offline';
+    setProfiles((items) => items.map((item) => item.id === profileId ? { ...item, accountStatus, enabled: status.installed, status: runtimeStatus } : item));
+  }, []);
+  const liveRuntime = runtime.id === 'codex-cli' ? 'codex' : runtime.id === 'claude-code' ? 'claude' : null;
   return <div className="standard-page infrastructure-page">
     <header className="infra-page-header"><div><span>RUNTIME-ABSTRAKTION · UI1–UI3 MOCK</span><h1>Runtimes</h1><p>Agent, Runtime, Modell und Authentifizierung bleiben getrennt austauschbar.</p></div><button type="button">＋ Runtime-Profil</button></header>
     <section className="infra-workbench">
@@ -219,7 +227,7 @@ export function RuntimesView() {
       <main className="infra-detail">
         <header className="infra-detail-head"><div><StatusDot tone={runtime.status} /><span><h2>{runtime.name}</h2><p>{runtime.kind.toUpperCase()} · {runtime.provider} · {runtime.host}</p></span></div><b>{runtime.accountStatus}</b></header>
         <nav className="infra-tabs">{[['overview','Übersicht'],['configuration','Konfiguration'],['auth','Authentifizierung'],['assignment','Agentenzuweisung'],['history','Historie']].map(([id,label]) => <button type="button" key={id} className={tab === id ? 'active' : ''} onClick={() => setTab(id)}>{label}</button>)}</nav>
-        {runtime.id === 'codex-cli' ? <CodexRuntimeControl tab={tab} /> : <>{tab === 'overview' && <div className="infra-tab-content"><section className="host-summary-strip runtime-summary"><article><span>Modell</span><b>{runtime.model}</b><small>jederzeit auswählbar</small></article><article><span>Authentifizierung</span><b>{runtime.authentication}</b><small>{runtime.accountStatus}</small></article><article><span>Main-Agent</span><b>{runtime.mainAgentCompatible ? 'kompatibel' : 'gesperrt'}</b><small>Rolle nicht fest verdrahtet</small></article><article><span>Status</span><b>{runtime.enabled ? 'aktiv' : 'deaktiviert'}</b><small>UI-Mock</small></article></section><div className="runtime-route"><span>Agentenidentität</span><i>→</i><span>{runtime.name}</span><i>→</i><span>{runtime.model}</span><i>→</i><span>{runtime.authentication}</span></div></div>}
+        {liveRuntime ? <AgentRuntimeControl runtime={liveRuntime} tab={tab} onStatus={applyLiveStatus} /> : <>{tab === 'overview' && <div className="infra-tab-content"><section className="host-summary-strip runtime-summary"><article><span>Modell</span><b>{runtime.model}</b><small>jederzeit auswählbar</small></article><article><span>Authentifizierung</span><b>{runtime.authentication}</b><small>{runtime.accountStatus}</small></article><article><span>Main-Agent</span><b>{runtime.mainAgentCompatible ? 'kompatibel' : 'gesperrt'}</b><small>Rolle nicht fest verdrahtet</small></article><article><span>Status</span><b>{runtime.enabled ? 'aktiv' : 'deaktiviert'}</b><small>UI-Mock</small></article></section><div className="runtime-route"><span>Agentenidentität</span><i>→</i><span>{runtime.name}</span><i>→</i><span>{runtime.model}</span><i>→</i><span>{runtime.authentication}</span></div></div>}
         {tab === 'configuration' && <RuntimeConfiguration runtime={runtime} onChange={update} />}
         {tab === 'auth' && <div className="auth-workbench"><section><span>STATUS</span><h3>{runtime.accountStatus}</h3><p>{runtime.authentication} · persistentes Profil auf {runtime.host}</p><button type="button">{runtime.kind === 'cli' ? 'Login-Terminal öffnen' : 'API-Key-Profil auswählen'}</button></section><section><label>Profil<select><option>server-default</option><option>account-primary</option><option>Projektprofil</option></select></label><label>Secret-Status<input value="••••••••••••••••" readOnly /></label><small>Keine echten Credentials werden in UI1–UI3 übertragen.</small></section></div>}
         {tab === 'assignment' && <div className="assignment-list">{['synapse-main · main','ui-koordinator · project-coordinator','parser-pruefer · specialist'].map((item,index) => <article key={item}><span><strong>{item}</strong><small>{index ? 'synapse' : 'global'}</small></span><select defaultValue={index === 2 ? 'Fallback' : 'Primär'}><option>Primär</option><option>Fallback</option><option>Nicht verwenden</option></select></article>)}</div>}

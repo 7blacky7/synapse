@@ -1,6 +1,6 @@
 import { apiFetch } from './auth';
 
-export type AgentRuntimeName = 'codex';
+export type AgentRuntimeName = 'codex' | 'claude';
 export type RuntimeContainerStatus = 'not_created' | 'created' | 'running' | 'stopped' | 'error';
 export type RuntimeAuthenticationStatus = 'authenticated' | 'not_authenticated' | 'unknown';
 
@@ -11,6 +11,7 @@ export interface AgentRuntimeStatus {
   installed: boolean;
   rootPath: string;
   image: string;
+  model?: string;
   container: {
     name: string;
     id: string | null;
@@ -133,7 +134,7 @@ export async function getAgentRuntimeStatus(runtime: AgentRuntimeName = 'codex')
 
 export async function configureAgentRuntime(
   runtime: AgentRuntimeName,
-  config: { rootPath: string; image?: string },
+  config: { rootPath: string; image?: string; model?: string },
 ): Promise<AgentRuntimeStatus> {
   const payload = await jsonRequest<{ success: true; status: AgentRuntimeStatus }>('/api/agent-runtimes/' + runtime + '/config', {
     method: 'PUT',
