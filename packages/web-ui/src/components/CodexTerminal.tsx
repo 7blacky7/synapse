@@ -8,6 +8,12 @@ import {
 } from '../api/agent-runtime';
 import '../codex-runtime.css';
 
+function cleanTerminalOutput(data: string): string {
+  return data
+    .replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, '')
+    .replace(/\r(?!\n)/g, '');
+}
+
 export function CodexTerminal() {
   const [sessionId, setSessionId] = useState('');
   const [state, setState] = useState<'closed' | 'connecting' | 'connected' | 'offline' | 'error'>('closed');
@@ -55,7 +61,7 @@ export function CodexTerminal() {
           setState('connected');
           setOutput((current) => current + '[verbunden] Persistentes Codex-HOME ist eingebunden.\n');
         },
-        onOutput: (data) => setOutput((current) => current + data),
+        onOutput: (data) => setOutput((current) => current + cleanTerminalOutput(data)),
         onExit: () => {
           setState('offline');
           setOutput((current) => current + '\n[beendet] Terminalprozess wurde geschlossen.\n');

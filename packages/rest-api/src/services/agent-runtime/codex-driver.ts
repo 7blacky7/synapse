@@ -265,7 +265,9 @@ export class CodexRuntimeDriver implements AgentRuntimeDriver {
     await this.ensureRunning(container);
     const command = input.command?.trim() || 'exec /bin/sh';
     const exec = await container.exec({
-      Cmd: ['/bin/sh', '-lc', command],
+      // Kein Login-Shell-Flag: -l würde den expliziten Runtime-PATH überschreiben
+      // und /root/.local/bin/codex im interaktiven Terminal unsichtbar machen.
+      Cmd: ['/bin/sh', '-c', command],
       AttachStdin: true,
       AttachStdout: true,
       AttachStderr: true,
