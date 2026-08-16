@@ -11,12 +11,13 @@ import '../codex-runtime.css';
 export function CodexTerminal() {
   const [sessionId, setSessionId] = useState('');
   const [state, setState] = useState<'closed' | 'connecting' | 'connected' | 'offline' | 'error'>('closed');
-  const [output, setOutput] = useState('Codex Runtime Terminal\nNoch keine Verbindung.\n');
+  const [output, setOutput] = useState('Echtes Codex PTY-Terminal · Ausgabe über SSE\nVerbindung wird automatisch aufgebaut.\n');
   const [input, setInput] = useState('');
   const [fullscreen, setFullscreen] = useState(false);
   const sessionRef = useRef<TerminalSessionHandle | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const outputRef = useRef<HTMLPreElement>(null);
+  const connectInFlightRef = useRef(false);
 
   useEffect(() => {
     outputRef.current?.scrollTo({ top: outputRef.current.scrollHeight });
@@ -37,9 +38,11 @@ export function CodexTerminal() {
   };
 
   const connect = async () => {
+    if (connectInFlightRef.current) return;
+    connectInFlightRef.current = true;
     await disconnect();
     setState('connecting');
-    setOutput((current) => current + '\n[verbinden] PTY-Session wird geöffnet …\n');
+    setOutput((current) => current + '\n[verbinden] Echte PTY-Session wird geöffnet …\n');
     try {
       const nextSession = await createTerminalSession('codex', { cols: 120, rows: 34, command: '/bin/bash' });
       const controller = new AbortController();
@@ -68,8 +71,14 @@ export function CodexTerminal() {
     } catch (error) {
       setState('error');
       setOutput((current) => current + '[fehler] ' + (error instanceof Error ? error.message : String(error)) + '\n');
+    } finally {
+      connectInFlightRef.current = false;
     }
   };
+
+  useEffect(() => {
+    void connect();
+  }, []);
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
@@ -91,7 +100,7 @@ export function CodexTerminal() {
       <div><i className={state} /><span><strong>Codex CLI</strong><small>{state === 'connected' ? 'PTY verbunden · Login bleibt persistent' : state}</small></span></div>
       <nav>
         <button type="button" onClick={() => setOutput('')}>Clear</button>
-        <button type="button" onClick={() => void connect()}>{sessionId ? 'Reconnect' : 'Verbinden'}</button>
+        <button type="button" disabled={state === 'connecting'} onClick={() => void connect()}>{state === 'connecting' ? 'Verbindet …' : sessionId ? 'Reconnect' : 'Erneut verbinden'}</button>
         <button type="button" onClick={() => setFullscreen((value) => !value)}>{fullscreen ? 'Fenster' : 'Vollbild'}</button>
         <button type="button" onClick={() => void disconnect()}>×</button>
       </nav>
@@ -104,7 +113,7 @@ export function CodexTerminal() {
     <pre ref={outputRef}>{output}<span className="codex-terminal-cursor">█</span></pre>
     <form onSubmit={submit}>
       <span>$</span>
-      <input value={input} onChange={(event) => setInput(event.target.value)} disabled={state !== 'connected'} placeholder={state === 'connected' ? 'Befehl eingeben, z. B. codex login --device-auth' : 'Zuerst Terminal verbinden'} autoComplete="off" spellCheck={false} />
+      <input value={input} onChange={(event) => setInput(event.target.value)} disabled={state !== 'connected'} placeholder={state === 'connected' ? 'Befehl eingeben, z. B. codex login --device-auth' : state === 'connecting' ? 'Echte PTY-/SSE-Verbindung wird aufgebaut …' : 'Verbindung fehlgeschlagen – erneut verbinden'} autoComplete="off" spellCheck={false} />
       <button type="submit" disabled={state !== 'connected' || !input.trim()}>Senden</button>
     </form>
   </section>;
