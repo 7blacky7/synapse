@@ -2,6 +2,7 @@ import Docker from 'dockerode';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import { randomUUID } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
 import { AgentRuntimeRepository } from './repository.js';
 import type {
   AgentRuntimeDriver,
@@ -142,6 +143,7 @@ export class CodexRuntimeDriver implements AgentRuntimeDriver {
       await this.ensureImage(config.image);
       const container = await this.ensureContainer(config);
       await this.ensureRunning(container);
+      await this.ensureTrustStore(container);
       const installed = await this.execCapture(container, ['/bin/sh', '-lc', 'command -v codex >/dev/null 2>&1']);
       if (installed.exitCode !== 0) {
         const install = await this.execCapture(container, ['/bin/sh', '-lc', INSTALL_COMMAND], 300_000);
@@ -263,6 +265,7 @@ export class CodexRuntimeDriver implements AgentRuntimeDriver {
     const config = await this.ensureConfig();
     const container = await this.ensureContainer(config);
     await this.ensureRunning(container);
+    await this.ensureTrustStore(container);
     const command = input.command?.trim() || 'exec /bin/sh';
     const exec = await container.exec({
       // Kein Login-Shell-Flag: -l würde den expliziten Runtime-PATH überschreiben
@@ -303,6 +306,7 @@ export class CodexRuntimeDriver implements AgentRuntimeDriver {
     const config = await this.ensureConfig();
     const container = await this.ensureContainer(config);
     await this.ensureRunning(container);
+    await this.ensureTrustStore(container);
 
     const exec = await container.exec({
       Cmd: buildCodexCommand(session.runtimeSessionId),
@@ -382,6 +386,7 @@ export class CodexRuntimeDriver implements AgentRuntimeDriver {
     return [
       'HOME=/root',
       'CODEX_HOME=/root/.codex',
+      'SSL_CERT_FILE=/root/.local/share/ca-certificates.crt',
       'PATH=/root/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
     ];
   }
@@ -468,6 +473,34 @@ export class CodexRuntimeDriver implements AgentRuntimeDriver {
       if (!/no such container/i.test((error as Error).message)) throw error;
     }
     await this.repository.clearContainer('codex');
+  }
+
+  private async ensureTrustStore(container: Docker.Container): Promise<void> {
+    const sourcePath = process.env.AGENT_RUNTIME_CA_BUNDLE || '/etc/ssl/certs/ca-certificates.crt';
+    const certificateBundle = await readFile(sourcePath);
+    if (certificateBundle.length === 0) {
+      throw new Error('CA-Zertifikatsspeicher ist leer: ' + sourcePath);
+    }
+
+    const exec = await container.exec({
+      Cmd: ['/bin/sh', '-c', 'mkdir -p /root/.local/share && cat > /root/.local/share/ca-certificates.crt'],
+      AttachStdin: true,
+      AttachStdout: true,
+      AttachStderr: true,
+      Tty: false,
+      Env: this.runtimeEnv(),
+      WorkingDir: '/projects',
+    });
+    const stream = await exec.start({ hijack: true, stdin: true }) as unknown as NodeJS.ReadWriteStream;
+    stream.end(certificateBundle);
+    await new Promise<void>((resolve, reject) => {
+      stream.once('end', resolve);
+      stream.once('error', reject);
+    });
+    const info = await exec.inspect();
+    if (info.ExitCode !== 0) {
+      throw new Error('CA-Zertifikatsspeicher konnte nicht in das persistente Runtime-HOME geschrieben werden');
+    }
   }
 
   private async execCapture(
