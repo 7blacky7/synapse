@@ -32,7 +32,7 @@ const runtimeMeta: Record<AgentRuntimeName, {
     provider: 'ANTHROPIC-ACCOUNT',
     defaultRoot: '/mnt/user/synapse-agent-runtime/claude',
     defaultModel: 'sonnet',
-    loginCommand: 'claude',
+    loginCommand: 'claude auth login',
   },
 };
 
@@ -148,17 +148,20 @@ export function AgentRuntimeControl({
         {runtime === 'claude' && <datalist id="claude-runtime-models"><option value="sonnet" /><option value="opus" /><option value="haiku" /></datalist>}
         <span><b>{authLabel(status)}</b><small>{status?.version || 'Version wird nach Einrichtung erkannt'}{status?.model ? ' · ' + status.model : ''}</small></span>
         <div className="codex-compact-actions">
-          {status?.container.status === 'running'
-            ? <button type="button" disabled>Container erkannt · läuft</button>
-            : status?.container.status === 'created' || status?.container.status === 'stopped'
-              ? <button type="button" disabled={!!busy} onClick={() => void run('Start', () => controlAgentRuntime(runtime, 'start'))}>{busy === 'Start' ? 'Wird gestartet …' : 'Vorhandenen Container starten'}</button>
-              : <button type="button" disabled={!!busy || !rootPath.trim()} onClick={() => void setup()}>{busy === 'Einrichtung' ? 'Wird eingerichtet …' : 'Einrichten'}</button>}
-          <button type="button" className="primary-action" disabled={status?.container.status !== 'running'} onClick={() => setCompactTerminalOpen((open) => !open)}>{compactTerminalOpen ? 'Login-Terminal schließen' : 'Login-Terminal öffnen'}</button>
+          {status?.container.status === 'running' && status.installed
+            ? <button type="button" disabled>Container und CLI erkannt</button>
+            : status?.container.status === 'running'
+              ? <button type="button" disabled={!!busy || !rootPath.trim()} onClick={() => void setup()}>{busy === 'Einrichtung' ? 'Installation läuft …' : 'Installation abschließen'}</button>
+              : status?.container.status === 'created' || status?.container.status === 'stopped'
+                ? <button type="button" disabled={!!busy} onClick={() => void run('Start', () => controlAgentRuntime(runtime, 'start'))}>{busy === 'Start' ? 'Wird gestartet …' : 'Vorhandenen Container starten'}</button>
+                : <button type="button" disabled={!!busy || !rootPath.trim()} onClick={() => void setup()}>{busy === 'Einrichtung' ? 'Wird eingerichtet …' : 'Einrichten'}</button>}
+          <button type="button" className="primary-action" disabled={status?.container.status !== 'running' || !status.installed || !!busy} onClick={() => setCompactTerminalOpen((open) => !open)}>{compactTerminalOpen ? 'Login-Terminal schließen' : 'Login-Terminal öffnen'}</button>
         </div>
       </div>
-      {status?.container.status === 'running' && <p className="runtime-feedback">Vorhandener Container <b>{status.container.name}</b> erkannt und wiederverwendet{status.container.id ? ' · ' + status.container.id.slice(0, 12) : ''}. Es wird kein zweiter Container gestartet.</p>}
+      {status?.container.status === 'running' && status.installed && <p className="runtime-feedback">Vorhandener Container <b>{status.container.name}</b> und CLI erkannt{status.container.id ? ' · ' + status.container.id.slice(0, 12) : ''}. Es wird kein zweiter Container gestartet.</p>}
+      {status?.container.status === 'running' && !status.installed && <p className="runtime-feedback warning">Der Container läuft, aber die CLI-Installation ist noch nicht vollständig. Erst „Installation abschließen“, danach das Login-Terminal öffnen.</p>}
       {status?.configured && status.container.status !== 'running' && <p className="runtime-feedback warning">Der vorhandene Runtime-Eintrag ist nicht aktiv. Container starten, bevor das Login-Terminal verwendet wird.</p>}
-      {compactTerminalOpen && status?.container.status === 'running' && <div className="codex-compact-terminal"><AgentRuntimeTerminal runtime={runtime} /></div>}
+      {compactTerminalOpen && status?.container.status === 'running' && status.installed && <div className="codex-compact-terminal"><AgentRuntimeTerminal runtime={runtime} /></div>}
       {(error || notice) && <p className={error ? 'runtime-feedback error' : 'runtime-feedback'}>{error || notice}</p>}
     </article>;
   }
@@ -182,7 +185,10 @@ export function AgentRuntimeControl({
 
   if (tab === 'auth') return <div className="codex-auth-workbench">
     <header><div><span>{meta.provider}</span><h3>{authLabel(status)}</h3><p>Der Login wird interaktiv im echten Container-Terminal ausgeführt.</p></div><b className={tone(status)}>● {status?.authentication.status || 'unknown'}</b></header>
-    <AgentRuntimeTerminal runtime={runtime} />
+    {status?.container.status === 'running' && status.installed
+      ? <AgentRuntimeTerminal runtime={runtime} />
+      : <div className="runtime-feedback warning">Die CLI ist noch nicht vollständig installiert und ausführbar.<br /><button type="button" disabled={!!busy || !rootPath.trim()} onClick={() => void setup()}>{busy === 'Einrichtung' ? 'Installation läuft …' : 'Installation abschließen'}</button></div>}
+    {(error || notice) && <p className={error ? 'runtime-feedback error' : 'runtime-feedback'}>{error || notice}</p>}
   </div>;
 
   if (tab === 'assignment') return <div className="codex-assignment">
