@@ -99,11 +99,16 @@ export function CodexRuntimeControl({
         <label><span>Persistenter Runtime-Pfad</span><input value={rootPath} onChange={(event) => setRootPath(event.target.value)} /></label>
         <span><b>{authLabel(status)}</b><small>{status?.version || 'Version wird nach Einrichtung erkannt'}</small></span>
         <div className="codex-compact-actions">
-          <button type="button" disabled={!!busy || !rootPath.trim()} onClick={() => void setup()}>{busy === 'Einrichtung' ? 'Wird eingerichtet …' : status?.installed ? 'Neu einrichten' : 'Einrichten'}</button>
+          {status?.container.status === 'running'
+            ? <button type="button" disabled>Container erkannt · läuft</button>
+            : status?.container.status === 'created' || status?.container.status === 'stopped'
+              ? <button type="button" disabled={!!busy} onClick={() => void run('Start', () => controlAgentRuntime('codex', 'start'))}>{busy === 'Start' ? 'Wird gestartet …' : 'Vorhandenen Container starten'}</button>
+              : <button type="button" disabled={!!busy || !rootPath.trim()} onClick={() => void setup()}>{busy === 'Einrichtung' ? 'Wird eingerichtet …' : 'Einrichten'}</button>}
           <button type="button" className="primary-action" disabled={status?.container.status !== 'running'} onClick={() => setCompactTerminalOpen((open) => !open)}>{compactTerminalOpen ? 'Login-Terminal schließen' : 'Login-Terminal öffnen'}</button>
         </div>
       </div>
-      {status?.installed && status.container.status !== 'running' && <p className="runtime-feedback warning">Für den Login zuerst den Codex-Container starten.</p>}
+      {status?.container.status === 'running' && <p className="runtime-feedback">Vorhandener Container <b>{status.container.name}</b> erkannt und wiederverwendet{status.container.id ? ' · ' + status.container.id.slice(0, 12) : ''}. Es wird kein zweiter Container gestartet.</p>}
+      {status?.configured && status.container.status !== 'running' && <p className="runtime-feedback warning">Der vorhandene Runtime-Eintrag ist nicht aktiv. Container starten, bevor das Login-Terminal verwendet wird.</p>}
       {compactTerminalOpen && status?.container.status === 'running' && <div className="codex-compact-terminal"><CodexTerminal /></div>}
       {(error || notice) && <p className={error ? 'runtime-feedback error' : 'runtime-feedback'}>{error || notice}</p>}
     </article>;
