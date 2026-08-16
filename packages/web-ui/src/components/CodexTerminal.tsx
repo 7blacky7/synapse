@@ -12,11 +12,12 @@ export function CodexTerminal() {
   const [sessionId, setSessionId] = useState('');
   const [state, setState] = useState<'closed' | 'connecting' | 'connected' | 'offline' | 'error'>('closed');
   const [output, setOutput] = useState('Echtes Codex PTY-Terminal · Ausgabe über SSE\nVerbindung wird automatisch aufgebaut.\n');
-  const [input, setInput] = useState('');
+  const [input, setInput] = useState('codex login --device-auth');
   const [fullscreen, setFullscreen] = useState(false);
   const sessionRef = useRef<TerminalSessionHandle | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const outputRef = useRef<HTMLPreElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
   const connectInFlightRef = useRef(false);
 
   useEffect(() => {
@@ -95,6 +96,16 @@ export function CodexTerminal() {
     }
   };
 
+  const pasteClipboard = async () => {
+    inputRef.current?.focus();
+    try {
+      const text = await navigator.clipboard.readText();
+      if (text) setInput((current) => current + text);
+    } catch {
+      setOutput((current) => current + '\n[zwischenablage] Browserzugriff blockiert – Eingabefeld ist fokussiert, jetzt Strg+V drücken.\n');
+    }
+  };
+
   return <section className={'codex-terminal' + (fullscreen ? ' fullscreen' : '')}>
     <header>
       <div><i className={state} /><span><strong>Codex CLI</strong><small>{state === 'connected' ? 'PTY verbunden · Login bleibt persistent' : state}</small></span></div>
@@ -113,7 +124,8 @@ export function CodexTerminal() {
     <pre ref={outputRef}>{output}<span className="codex-terminal-cursor">█</span></pre>
     <form onSubmit={submit}>
       <span>$</span>
-      <input value={input} onChange={(event) => setInput(event.target.value)} disabled={state !== 'connected'} placeholder={state === 'connected' ? 'Befehl eingeben, z. B. codex login --device-auth' : state === 'connecting' ? 'Echte PTY-/SSE-Verbindung wird aufgebaut …' : 'Verbindung fehlgeschlagen – erneut verbinden'} autoComplete="off" spellCheck={false} />
+      <input ref={inputRef} value={input} onChange={(event) => setInput(event.target.value)} placeholder={state === 'connected' ? 'Befehl eingeben oder einfügen' : 'Eingabe möglich – Senden nach erfolgreicher Verbindung'} autoComplete="off" spellCheck={false} />
+      <button type="button" onClick={() => void pasteClipboard()}>Einfügen</button>
       <button type="submit" disabled={state !== 'connected' || !input.trim()}>Senden</button>
     </form>
   </section>;
