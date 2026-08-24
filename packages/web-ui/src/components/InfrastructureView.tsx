@@ -3,6 +3,7 @@ import { agentHosts, runtimeProfiles, testSystems, workspaceProfiles, type Agent
 import { AgentRuntimeControl } from './CodexRuntimeControl';
 import type { AgentRuntimeStatus } from '../api/agent-runtime';
 import { CodexTerminal } from './CodexTerminal';
+import { PlanungsHinweis, StatusChip } from './StatusKennzeichnung';
 import '../infrastructure-control-plane.css';
 
 type InfrastructureArea = 'hosts' | 'runtimes' | 'workspaces' | 'testsystems';
@@ -176,7 +177,12 @@ export function AgentHostsView() {
   const tabs = ['overview', 'configuration', 'runtimes', 'agents', 'resources', 'history', 'terminal'];
   const labels: Record<string, string> = { overview: 'Übersicht', configuration: 'Konfiguration', runtimes: 'Runtimes', agents: 'Agenten', resources: 'Ressourcen', history: 'Historie', terminal: 'Terminal' };
   return <div className="standard-page infrastructure-page">
-    <header className="infra-page-header"><div><span>INFRASTRUKTUR · UI1–UI3 MOCK</span><h1>Agent Hosts</h1><p>Hosts tragen austauschbare Runtimes und Agenten aus mehreren Projekten.</p></div><button type="button">＋ Host vorbereiten</button></header>
+    <header className="infra-page-header"><div><span>INFRASTRUKTUR</span><h1>Agent Hosts</h1><p>Hosts tragen austauschbare Runtimes und Agenten aus mehreren Projekten.</p></div><div className="infra-head-status"><StatusChip stand="demo" /><button type="button">＋ Host vorbereiten</button></div></header>
+    <PlanungsHinweis
+      aufgabe="Hosts, ihre Agenten und alle Ressourcenbalken sind erfunden. Als echte Quelle gibt es bisher nur die Rechenknoten der Einbettung."
+      endpunkte={['GET /api/embedding-nodes']}
+      fehlt="Ein Host, auf dem Agenten laufen, ist noch kein eigener Begriff im System. Dafuer braucht es erst ein Datenmodell."
+    />
     <section className="infra-workbench">
       <aside className="infra-rail"><header><b>HOSTS</b><span>{agentHosts.length}</span></header>{agentHosts.map((item) => <button type="button" key={item.id} className={item.id === selected ? 'active' : ''} onClick={() => { setSelected(item.id); setTab('overview'); }}><StatusDot tone={item.status} /><span><strong>{item.name}</strong><small>{item.kind}</small></span><em>{item.agents.length}</em></button>)}</aside>
       <main className="infra-detail">
@@ -221,7 +227,11 @@ export function RuntimesView() {
   }, []);
   const liveRuntime = runtime.id === 'codex-cli' ? 'codex' : runtime.id === 'claude-code' ? 'claude' : null;
   return <div className="standard-page infrastructure-page">
-    <header className="infra-page-header"><div><span>RUNTIME-ABSTRAKTION · UI1–UI3 MOCK</span><h1>Runtimes</h1><p>Agent, Runtime, Modell und Authentifizierung bleiben getrennt austauschbar.</p></div><button type="button">＋ Runtime-Profil</button></header>
+    <header className="infra-page-header"><div><span>RUNTIME-ABSTRAKTION</span><h1>Runtimes</h1><p>Agent, Runtime, Modell und Authentifizierung bleiben getrennt austauschbar.</p></div><div className="infra-head-status"><StatusChip stand="teilweise" /><button type="button">＋ Runtime-Profil</button></div></header>
+    <PlanungsHinweis
+      aufgabe="Echt sind Anmeldezustand, Steuerung und Terminal von Codex und Claude Code — sie sprechen die laufende Runtime an. Erfunden ist die Profilliste selbst samt Modell- und Kontingentangaben."
+      endpunkte={['GET /api/agent-runtimes', 'GET /api/agent-runtimes/:runtime/status']}
+    />
     <section className="infra-workbench">
       <aside className="infra-rail"><header><b>PROFILE</b><span>{profiles.length}</span></header>{profiles.map((item) => <button type="button" key={item.id} className={item.id === selected ? 'active' : ''} onClick={() => { setSelected(item.id); setTab('overview'); }}><StatusDot tone={item.status} /><span><strong>{item.name}</strong><small>{item.kind.toUpperCase()} · {item.provider}</small></span><em>{item.enabled ? 'ON' : 'OFF'}</em></button>)}</aside>
       <main className="infra-detail">
@@ -254,7 +264,16 @@ function ScopeResourceView({ area, project }: { area: 'workspaces' | 'testsystem
   const tabs = area === 'testsystems' ? ['overview','configuration','token','history'] : ['overview','configuration','history'];
   const tabLabel: Record<string, string> = { overview: 'Übersicht', configuration: 'Konfiguration', token: 'Token & Freigabe', history: 'Historie' };
   return <div className="standard-page infrastructure-page">
-    <header className="infra-page-header"><div><span>SCOPES & TESTUMGEBUNGEN · UI1–UI3 MOCK</span><h1>{area === 'workspaces' ? 'Workspaces' : 'Testsysteme'}</h1><p>{area === 'workspaces' ? 'Benannte Arbeitsumgebungen, Modi, Limits und Scope sichtbar verwalten.' : 'Reale Hardware, VMs und Workspaces mit vollständigem Testvertrag.'}</p></div><button type="button" onClick={() => setNotice('Neuer Eintrag als lokaler UI-Entwurf vorbereitet.')}>＋ {area === 'workspaces' ? 'Workspace' : 'Testsystem'} vorbereiten</button></header>
+    <header className="infra-page-header"><div><span>SCOPES & TESTUMGEBUNGEN</span><h1>{area === 'workspaces' ? 'Workspaces' : 'Testsysteme'}</h1><p>{area === 'workspaces' ? 'Benannte Arbeitsumgebungen, Modi, Limits und Scope sichtbar verwalten.' : 'Reale Hardware, VMs und Workspaces mit vollständigem Testvertrag.'}</p></div><div className="infra-head-status"><StatusChip stand="demo" /><button type="button" onClick={() => setNotice('Neuer Eintrag als lokaler UI-Entwurf vorbereitet.')}>＋ {area === 'workspaces' ? 'Workspace' : 'Testsystem'} vorbereiten</button></div></header>
+    {area === 'workspaces'
+      ? <PlanungsHinweis
+          aufgabe="Die Workspace-Verwaltung gibt es bereits vollstaendig — starten, stoppen, pinnen und materialisieren laufen ueber die API. Hier fehlt nur der Anschluss; alle Zeilen sind erfunden."
+          endpunkte={['GET /api/workspaces', 'GET /api/projects/:name/workspace/config', 'POST /api/projects/:name/workspace/start', 'POST /api/projects/:name/workspace/pin']}
+        />
+      : <PlanungsHinweis
+          aufgabe="Vollstaendig offen — hier ist bisher nur die Oberflaeche entworfen."
+          fehlt="Fuer Testsysteme gibt es weder Tabelle noch Route. Reservieren, Freigeben und die Light-only-Sperre sind Klickattrappen ohne Wirkung."
+        />}
     <section className="infra-workbench">
       <aside className="infra-rail"><header><b>{area === 'workspaces' ? project.toUpperCase() : 'SYSTEME'}</b><span>{rows.length}</span></header>{rows.map((item) => <button type="button" key={item.id} className={item.id === selected ? 'active' : ''} onClick={() => { setSelected(item.id); setTab('overview'); setTokenVisible(false); }}><StatusDot tone={(item as any).status} /><span><strong>{item.name}</strong><small>{area === 'workspaces' ? (item as any).mode : (item as any).kind}</small></span></button>)}</aside>
       <main className="infra-detail">

@@ -1,0 +1,110 @@
+/* Kennzeichnung des Ausbaustands.
+   Bleibt bewusst im vorhandenen System: dieselbe Mono-Schrift, dieselbe
+   Chip-Groesse und dieselben Farbtoken wie .api-chip / .mock-chip in
+   workspace-mock.css. Neue Farben kommen keine dazu — der Unterschied
+   entsteht ueber --success, --accent und --danger, die es alle schon gibt,
+   und traegt deshalb in beiden Themes. */
+
+.status-chip {
+  align-self: flex-start;
+  padding: 5px 7px;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  font: 700 8px ui-monospace, monospace;
+  letter-spacing: 0.08em;
+  white-space: nowrap;
+  cursor: help;
+}
+
+.status-chip--live {
+  border-color: color-mix(in srgb, var(--success) 50%, var(--border));
+  color: var(--success);
+}
+
+.status-chip--teilweise {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+  color: var(--accent);
+}
+
+/* Die Streifen sind der Punkt: ein Demo-Schild soll auch dann auffallen,
+   wenn jemand die Farben nicht unterscheiden kann. */
+.status-chip--demo {
+  border-color: color-mix(in srgb, var(--danger) 55%, var(--border));
+  color: var(--danger);
+  background: repeating-linear-gradient(
+    135deg,
+    transparent,
+    transparent 4px,
+    color-mix(in srgb, var(--danger) 9%, transparent) 4px,
+    color-mix(in srgb, var(--danger) 9%, transparent) 8px
+  );
+}
+
+.planungs-hinweis {
+  margin-top: 14px;
+  padding: 12px 14px;
+  border-left: 2px solid var(--accent);
+  background: var(--soft);
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.55;
+}
+
+.planungs-hinweis > header {
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+}
+
+.planungs-hinweis > header > span {
+  flex: 0 0 auto;
+  color: var(--accent);
+  font: 800 7px "IBM Plex Mono", ui-monospace, monospace;
+  letter-spacing: 0.1em;
+}
+
+.planungs-hinweis > header > p {
+  margin: 0;
+  color: var(--text);
+}
+
+.planungs-hinweis__endpunkte {
+  margin-top: 9px;
+}
+
+.planungs-hinweis__endpunkte > b,
+.planungs-hinweis__fehlt > b {
+  color: var(--faint);
+  font-weight: 700;
+}
+
+.planungs-hinweis__endpunkte > ul {
+  margin: 5px 0 0;
+  padding-left: 15px;
+}
+
+.planungs-hinweis__endpunkte code {
+  font: 600 9px "IBM Plex Mono", ui-monospace, monospace;
+  color: var(--text);
+}
+
+.planungs-hinweis__fehlt {
+  margin: 9px 0 0;
+}
+
+/* Der Rahmen um eine reine Demo-Ansicht. Zurueckhaltend genug, um die
+   Ansicht lesbar zu lassen, deutlich genug, um sie nicht mit einer echten
+   zu verwechseln. */
+.demo-flaeche {
+  position: relative;
+  border: 1px dashed color-mix(in srgb, var(--danger) 40%, var(--border));
+  background: color-mix(in srgb, var(--danger) 3%, transparent);
+}
+
+/* Kopfzeilen, die neben dem Schild noch eine Schaltflaeche tragen. */
+.infra-head-status,
+.settings-head-status {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}

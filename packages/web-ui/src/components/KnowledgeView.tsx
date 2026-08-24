@@ -10,6 +10,7 @@ import {
 } from '../mock/personal-knowledge';
 import '../personal-knowledge.css';
 import { PersonalArtifactsControl } from './PersonalArtifactsControl';
+import { PlanungsHinweis, StatusChip } from './StatusKennzeichnung';
 
 interface Props {
   section: KnowledgeSection;
@@ -123,7 +124,12 @@ export function KnowledgeView({ section, onNavigate }: Props) {
   const [memories, setMemories] = useState(initialPersonalMemories);
   const [artifacts, setArtifacts] = useState(initialPersonalArtifacts);
   return <div className="standard-page knowledge-page">
-    <header className="knowledge-page-header"><div><span>GLOBAL / PERSÖNLICH · UI1–UI3</span><h1>Persönlicher Bereich</h1><p>Projektübergreifende Memories und bewusst bereitgestellte Artefakte für den Main-Agenten.</p></div><b>BACKEND SIMULIERT</b></header>
+    <header className="knowledge-page-header"><div><span>GLOBAL / PERSÖNLICH · UI1–UI3</span><h1>Persönlicher Bereich</h1><p>Projektübergreifende Memories und bewusst bereitgestellte Artefakte für den Main-Agenten.</p></div><StatusChip stand="demo" /></header>
+    <PlanungsHinweis
+      aufgabe="Memories und Artefakte auf dieser Seite sind erfunden und ueberleben kein Neuladen. Memories gibt es in Synapse bereits — aber nur projektbezogen, nicht als persoenlicher Bestand."
+      endpunkte={['GET /api/projects/:name/memories', 'POST /api/projects/:name/memories']}
+      fehlt="Ein nutzerbezogener Geltungsbereich fuer Memories und ein Speicher fuer persoenliche Artefakte. Beides braucht zuerst eine Entscheidung im Datenmodell."
+    />
     <ScopeBanner />
     <section className="knowledge-workbench"><KnowledgeNavigation section={section} onNavigate={onNavigate} /><main>{section === 'user-memories' ? <UserMemories memories={memories} setMemories={setMemories} artifacts={artifacts} /> : <PersonalArtifactsControl artifacts={artifacts} setArtifacts={setArtifacts} memories={memories} setMemories={setMemories} />}</main></section>
   </div>;

@@ -11,6 +11,7 @@ import { ProjectCoordinatorDock } from './ProjectCoordinatorDock';
 import { MainAgentAssistantDock } from './MainAgentAssistantDock';
 import { ChannelAgentChatWindow, type ChannelAgentWindowState } from './ChannelAgentChatWindow';
 import { AttachmentDrafts, AttachmentMessage, AttachmentPicker, handleAttachmentDrop, prepareMockChatAttachments, type MockChatAttachment } from './ChatAttachments';
+import { PlanungsHinweis, StatusChip } from './StatusKennzeichnung';
 import {
   loadChannelMessageViewModels,
   loadChannelViewModels,
@@ -839,6 +840,7 @@ function OverviewView({
         eyebrow="Control Plane"
         title="Übersicht"
         description="Jedes echte Projekt erscheint genau einmal; Unterdaten bleiben am ausgewählten Projekt."
+        action={<StatusChip stand="live" />}
       />
       <section className="overview-strip">
         <div><span>Projekte</span><strong>{projects.length}</strong><small>API</small></div>
@@ -899,7 +901,11 @@ function ProjectsView({
         eyebrow="Echte Projektidentitäten · Unteransichten getrennt"
         title="Projekte"
         description="Ein Projekt bleibt genau ein UI-Objekt; Wissen erscheint ausschließlich im gewählten Projektdetail."
-        action={<span className="api-chip">REST API + UI-MOCK</span>}
+        action={<StatusChip stand="teilweise" />}
+      />
+      <PlanungsHinweis
+        aufgabe="Die Projektliste selbst ist echt. Die Kennzahlen und Unterbereiche im Projektdetail sind noch erfunden und muessen angeschlossen werden."
+        endpunkte={['GET /api/projects', 'GET /api/projects/:name/stats', 'GET /api/projects/:name/memories']}
       />
       <section className="project-detail-surface">
         <div className="entity-detail project-detail">
@@ -1104,7 +1110,7 @@ function ChannelsView({
         eyebrow="GoTray-Funktion · echte API"
         title="Channels"
         description="Projektbezogene Channels lesen, live aktualisieren und direkt über den GoTray-Datenweg schreiben."
-        action={<button type="button" className="secondary-action" onClick={onReload}>Aktualisieren</button>}
+        action={<><StatusChip stand="live" /><button type="button" className="secondary-action" onClick={onReload}>Aktualisieren</button></>}
       />
       <section className="channel-layout">
         <aside className="channel-rail">
@@ -1226,7 +1232,11 @@ function ProjectAgentTeamView({ project }: { project: string }) {
   const current = agents.find((agent) => agent.name === selected) ?? agents[0];
   useEffect(() => setSelected(agents[0]?.name || ''), [project]);
   return <div className="standard-page">
-    <PageHeader eyebrow="PROJEKTGEBUNDENES TEAM · UI1–UI3" title={'Agententeam · ' + project} description="Hier erscheinen ausschließlich Agenten dieses Projekts. Der globale Hauptagent bleibt in seinem eigenen Chatfenster." action={<span className="mock-chip">PROJEKT-SCOPE</span>} />
+    <PageHeader eyebrow="PROJEKTGEBUNDENES TEAM · UI1–UI3" title={'Agententeam · ' + project} description="Hier erscheinen ausschließlich Agenten dieses Projekts. Der globale Hauptagent bleibt in seinem eigenen Chatfenster." action={<StatusChip stand="demo" />} />
+    <PlanungsHinweis
+      aufgabe="Die Agentenliste ist erfunden. Sie muss an die echten Projekt-Agenten angeschlossen werden — Spezialisten samt Laufzustand liefert die API bereits vollstaendig, es fehlt nur der Aufruf."
+      endpunkte={['GET /api/projects/:name/specialists', 'GET /api/projects/:name/agents']}
+    />
     <section className="split-surface project-agent-team">
       <div className="entity-list"><header><h2>Projekt-Agenten</h2><span>{agents.length}</span></header>{agents.map((agent) => <button type="button" className={current?.name === agent.name ? 'entity-row active' : 'entity-row'} key={agent.name} onClick={() => setSelected(agent.name)}><i className={agent.state === 'running' ? 'ready' : agent.state === 'idle' ? 'warning' : 'offline'} /><div><strong>{agent.name}</strong><small>{agent.role} · {agent.state}</small></div><span>{agent.host}</span></button>)}</div>
       {current && <div className="entity-detail"><div className="detail-status"><i className={current.state === 'running' ? 'ready' : current.state === 'idle' ? 'warning' : 'offline'} /><span>{current.state}</span><b>PROJEKT</b></div><h2>{current.name}</h2><p>{current.role} im Projekt {project}. Kein Hauptagent und keine Agenten anderer Projekte werden hier vermischt.</p><dl><div><dt>Runtime</dt><dd>{current.runtime}</dd></div><div><dt>Host</dt><dd>{current.host}</dd></div><div><dt>Speicher</dt><dd>{current.memory}</dd></div><div><dt>Heartbeat</dt><dd>{current.heartbeat}</dd></div></dl><div className="prepared-panel">Der vollständige projektbezogene Agentenverlauf wird später über Heartbeat und Channel-Daten verdrahtet.</div></div>}
@@ -1254,14 +1264,54 @@ function EntityView({ area }: { area: Area }) {
     system: 'Systemstatus',
   };
 
+  // Was an dieser Stelle noch zu tun ist. Bewusst je Bereich verschieden: bei
+  // den einen fehlt nur der Aufruf, bei den anderen der Dienst dahinter.
+  const planungByArea: Partial<Record<Area, { aufgabe: string; endpunkte?: string[]; fehlt?: string }>> = {
+    agents: {
+      aufgabe: 'An die echten Projekt-Agenten anschliessen.',
+      endpunkte: ['GET /api/projects/:name/specialists', 'GET /api/projects/:name/agents'],
+    },
+    hosts: {
+      aufgabe: 'An die echten Rechenknoten anschliessen.',
+      endpunkte: ['GET /api/embedding-nodes'],
+      fehlt: 'Ein Host ist heute nur ein Embedding-Knoten. Wer darauf Agenten laufen lassen will, braucht dafuer erst ein Datenmodell.',
+    },
+    runtimes: {
+      aufgabe: 'Die Profilliste aus der Runtime-Verwaltung ziehen statt sie fest einzutragen.',
+      endpunkte: ['GET /api/agent-runtimes', 'GET /api/agent-runtimes/:runtime/status'],
+    },
+    workspaces: {
+      aufgabe: 'An die echte Workspace-Verwaltung anschliessen.',
+      endpunkte: ['GET /api/workspaces', 'GET /api/projects/:name/workspace/config'],
+    },
+    testsystems: {
+      aufgabe: 'Vollstaendig offen — hier ist bisher nur die Oberflaeche entworfen.',
+      fehlt: 'Es gibt weder eine Tabelle noch eine Route fuer Testsysteme. Reservieren, Freigeben und Zuruecksetzen sind reine Klickattrappen.',
+    },
+    dreamer: {
+      aufgabe: 'Vollstaendig offen — der Dienst existiert noch nicht.',
+      fehlt: 'Kein Dreamer-Dienst, keine Tabelle, keine Route. Nur der Entwurf der Ansicht.',
+    },
+    verwalter: {
+      aufgabe: 'Vollstaendig offen — der Dienst existiert noch nicht.',
+      fehlt: 'Kein Verwalter-Dienst, keine Tabelle, keine Route. Nur der Entwurf der Ansicht.',
+    },
+    system: {
+      aufgabe: 'An die vorhandenen Statuswerte anschliessen.',
+      endpunkte: ['GET /api/status', 'GET /health', 'GET /api/projects/:name/stats'],
+    },
+  };
+  const planung = planungByArea[area];
+
   return (
     <div className="standard-page">
       <PageHeader
         eyebrow="UI-2 · Modellansicht"
         title={titleByArea[area] || 'Bereich'}
         description="Fachliche Oberfläche vor dem produktiven Runtime-API-Vertrag."
-        action={<span className="mock-chip">MOCK ADAPTER</span>}
+        action={<StatusChip stand="demo" />}
       />
+      {planung && <PlanungsHinweis {...planung} />}
       <section className="split-surface">
         <div className="entity-list">
           <header><h2>{titleByArea[area]}</h2><span>{rows.length}</span></header>
@@ -1556,7 +1606,7 @@ function SynapseWorkspaceMock({ project: initialProject, onLogout }: Props) {
             eyebrow="Bestehendes Modul"
             title="Projektgraph"
             description="Der vorhandene Synapse-Graph bleibt unverändert und nutzt reale Daten."
-            action={<span className="api-chip">REALE DATEN</span>}
+            action={<StatusChip stand="live" />}
           />
           <div className="graph-host"><GraphView project={selectedProject} /></div>
         </section>

@@ -3,6 +3,7 @@ import type { SettingsViewModel } from '../control-plane/view-model';
 import { agentHosts, runtimeProfiles, workspaceProfiles } from '../mock/infrastructure-control-plane';
 import { AgentRuntimeControl } from './CodexRuntimeControl';
 import { ModelPoolTable } from './ModelPoolTable';
+import { PlanungsHinweis, StatusChip, type Ausbaustand } from './StatusKennzeichnung';
 import '../control-plane-settings.css';
 
 type Theme = 'dark' | 'light';
@@ -65,6 +66,52 @@ export function ControlPlaneSettingsView({ settings, onChange, theme, onTheme, p
   const normalizedSettingsQuery = settingsQuery.trim().toLowerCase();
   const visibleCategories = categories.filter((item) => !normalizedSettingsQuery || (item.label + ' ' + item.detail + ' ' + item.group).toLowerCase().includes(normalizedSettingsQuery));
   const categoryGroups = ['Agentensteuerung', 'Infrastruktur', 'Zugänge & Grenzen', 'Oberfläche'];
+  // Ausbaustand je Einstellungsbereich. Ohne diese Zuordnung sieht ein
+  // Bereich, der nur ein Entwurf ist, genauso aus wie einer, der wirkt.
+  const standByCategory: Record<string, { stand: Ausbaustand; aufgabe?: string; endpunkte?: string[]; fehlt?: string }> = {
+    'model-pool': { stand: 'live' },
+    appearance: { stand: 'live' },
+    runtimes: {
+      stand: 'teilweise',
+      aufgabe: 'Anmeldung und Steuerung der Runtimes wirken wirklich; die Profilliste daneben ist erfunden.',
+      endpunkte: ['GET /api/agent-runtimes', 'PUT /api/agent-runtimes/:runtime/config'],
+    },
+    main: {
+      stand: 'demo',
+      aufgabe: 'Kein Feld dieser Seite wird gespeichert. Der Hauptagent laesst sich bereits ueber die API lesen und wechseln.',
+      endpunkte: ['GET /api/main-agent', 'GET /api/main-agent/runtime'],
+    },
+    heartbeat: { stand: 'demo', aufgabe: 'Reiner Entwurf.', fehlt: 'Die Herzschlag-Steuerung hat keine Route und keine Tabelle.' },
+    'all-agents': {
+      stand: 'demo',
+      aufgabe: 'Die Liste ist erfunden. Je Projekt gibt es die echten Agenten schon; eine projektuebergreifende Abfrage fehlt.',
+      endpunkte: ['GET /api/projects/:name/specialists'],
+    },
+    'all-workspaces': {
+      stand: 'demo',
+      aufgabe: 'Die Liste ist erfunden, obwohl es die echte Uebersicht bereits gibt.',
+      endpunkte: ['GET /api/workspaces'],
+    },
+    hosts: {
+      stand: 'demo',
+      aufgabe: 'Erfunden. Als echte Quelle gibt es bisher nur die Rechenknoten der Einbettung.',
+      endpunkte: ['GET /api/embedding-nodes'],
+    },
+    testsystems: { stand: 'demo', aufgabe: 'Vollstaendig offen.', fehlt: 'Weder Tabelle noch Route fuer Testsysteme.' },
+    auth: {
+      stand: 'demo',
+      aufgabe: 'Die Felder sind ein Entwurf. Anmeldung, Einmalkennwort und Dienst-Token gibt es in echt bereits.',
+      endpunkte: ['GET /api/auth/status', 'GET /api/auth/sessions', 'POST /api/auth/service-token'],
+    },
+    workspace: {
+      stand: 'demo',
+      aufgabe: 'Die Vorgabewerte werden nirgends gespeichert. Die Workspace-Einstellung je Projekt gibt es schon.',
+      endpunkte: ['GET /api/projects/:name/workspace/config'],
+    },
+    resources: { stand: 'demo', aufgabe: 'Reiner Entwurf.', fehlt: 'Ressourcengrenzen werden nirgends gespeichert und wirken auf nichts.' },
+  };
+  const aktuellerStand = standByCategory[category] ?? { stand: 'demo' as Ausbaustand };
+
   const allAgents = agentHosts.flatMap((host) => host.agents.map((agent) => ({ ...agent, host: host.name }))).filter((agent) => agent.role !== 'main');
 
   return <div className="standard-page cp-settings-page">
@@ -72,8 +119,9 @@ export function ControlPlaneSettingsView({ settings, onChange, theme, onTheme, p
     <section className="cp-settings-workbench">
       <aside className="settings-navigation"><div className="settings-search"><span>⌕</span><input value={settingsQuery} onChange={(event) => setSettingsQuery(event.target.value)} placeholder="Einstellungen suchen …" />{settingsQuery && <button type="button" onClick={() => setSettingsQuery('')}>×</button>}</div>{categoryGroups.map((group) => { const items = visibleCategories.filter((item) => item.group === group); return items.length ? <section key={group}><label>{group}</label>{items.map((item) => <button type="button" key={item.id} className={category === item.id ? 'active' : ''} onClick={() => setCategory(item.id)}><span>{item.id === 'all-agents' || item.id === 'all-workspaces' ? '●' : '›'}</span><div><strong>{item.label}</strong><small>{item.detail}</small></div></button>)}</section> : null; })}{!visibleCategories.length && <p className="settings-no-results">Keine passende Einstellung gefunden.</p>}</aside>
       <main>
-        <header><div><span>{scope === 'global' ? 'GLOBALER ENTWURF' : 'PROJEKT-ÜBERSCHREIBUNG'}</span><h2>{categories.find((item) => item.id === category)?.label}</h2></div>{scope === 'project' && <b>Projektwerte überschreiben globale Defaults</b>}</header>
+        <header><div><span>{scope === 'global' ? 'GLOBALER ENTWURF' : 'PROJEKT-ÜBERSCHREIBUNG'}</span><h2>{categories.find((item) => item.id === category)?.label}</h2></div><div className="settings-head-status"><StatusChip stand={aktuellerStand.stand} />{scope === 'project' && <b>Projektwerte überschreiben globale Defaults</b>}</div></header>
         <div className="cp-settings-content">
+          {aktuellerStand.aufgabe && <PlanungsHinweis aufgabe={aktuellerStand.aufgabe} endpunkte={aktuellerStand.endpunkte} fehlt={aktuellerStand.fehlt} />}
           {category === 'all-agents' && <div className="settings-fleet"><header><div><span>GLOBALER ÜBERBLICK</span><h3>Agenten aller Projekte</h3><p>Projektteams bleiben im Arbeitsbereich getrennt. Hier werden nur Laufzustände projektübergreifend überwacht.</p></div><b>{allAgents.length} Agenten</b></header><div className="settings-fleet-table">{allAgents.map((agent) => <article key={agent.project + ':' + agent.name}><i className={agent.state} /><span><strong>{agent.name}</strong><small>{agent.role} · {agent.runtime}</small></span><b>{agent.project}</b><em>{agent.host}</em><mark>{agent.state}</mark></article>)}</div></div>}
           {category === 'all-workspaces' && <div className="settings-fleet"><header><div><span>GLOBALER ÜBERBLICK</span><h3>Workspaces aller Projekte</h3><p>Laufende, wartende und eingefrorene Arbeitsstände unabhängig vom aktuell gewählten Projekt.</p></div><b>{workspaceProfiles.length} Workspaces</b></header><div className="settings-fleet-table workspace-fleet">{workspaceProfiles.map((item) => <article key={item.id}><i className={item.status} /><span><strong>{item.name}</strong><small>{item.mode} · {item.role}</small></span><b>{item.project}</b><em>{item.image}</em><mark>{item.status}</mark></article>)}</div></div>}
           {category === 'model-pool' && <ModelPoolTable />}
