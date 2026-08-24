@@ -2,10 +2,11 @@ import { useState } from 'react';
 import type { SettingsViewModel } from '../control-plane/view-model';
 import { agentHosts, runtimeProfiles, workspaceProfiles } from '../mock/infrastructure-control-plane';
 import { AgentRuntimeControl } from './CodexRuntimeControl';
+import { ModelPoolTable } from './ModelPoolTable';
 import '../control-plane-settings.css';
 
 type Theme = 'dark' | 'light';
-type SettingsCategory = 'main' | 'heartbeat' | 'all-agents' | 'all-workspaces' | 'hosts' | 'runtimes' | 'auth' | 'workspace' | 'resources' | 'testsystems' | 'appearance';
+type SettingsCategory = 'main' | 'heartbeat' | 'all-agents' | 'all-workspaces' | 'hosts' | 'runtimes' | 'model-pool' | 'auth' | 'workspace' | 'resources' | 'testsystems' | 'appearance';
 
 const ACCENT_PRESETS = [
   { name: 'Orange', color: '#f97316' },
@@ -54,6 +55,7 @@ export function ControlPlaneSettingsView({ settings, onChange, theme, onTheme, p
     { id: 'all-workspaces', label: 'Alle Workspaces', detail: 'Laufend, idle und eingefroren · alle Projekte', group: 'Infrastruktur' },
     { id: 'hosts', label: 'Agent Hosts', detail: 'Routing, Ressourcen und Terminal', group: 'Infrastruktur' },
     { id: 'runtimes', label: 'Runtimes', detail: 'Provider, Modelle und Aktivierung', group: 'Infrastruktur' },
+    { id: 'model-pool', label: 'Modell-Pool', detail: 'Verfügbare Modelle und Freigaben', group: 'Infrastruktur' },
     { id: 'testsystems', label: 'Testsysteme', detail: 'Ziele, Reset und Matrix', group: 'Infrastruktur' },
     { id: 'auth', label: 'Authentifizierung', detail: 'Accounts und API-Key-Profile', group: 'Zugänge & Grenzen' },
     { id: 'workspace', label: 'Workspace-Defaults', detail: 'Modus, Image und Lifecycle', group: 'Zugänge & Grenzen' },
@@ -74,6 +76,7 @@ export function ControlPlaneSettingsView({ settings, onChange, theme, onTheme, p
         <div className="cp-settings-content">
           {category === 'all-agents' && <div className="settings-fleet"><header><div><span>GLOBALER ÜBERBLICK</span><h3>Agenten aller Projekte</h3><p>Projektteams bleiben im Arbeitsbereich getrennt. Hier werden nur Laufzustände projektübergreifend überwacht.</p></div><b>{allAgents.length} Agenten</b></header><div className="settings-fleet-table">{allAgents.map((agent) => <article key={agent.project + ':' + agent.name}><i className={agent.state} /><span><strong>{agent.name}</strong><small>{agent.role} · {agent.runtime}</small></span><b>{agent.project}</b><em>{agent.host}</em><mark>{agent.state}</mark></article>)}</div></div>}
           {category === 'all-workspaces' && <div className="settings-fleet"><header><div><span>GLOBALER ÜBERBLICK</span><h3>Workspaces aller Projekte</h3><p>Laufende, wartende und eingefrorene Arbeitsstände unabhängig vom aktuell gewählten Projekt.</p></div><b>{workspaceProfiles.length} Workspaces</b></header><div className="settings-fleet-table workspace-fleet">{workspaceProfiles.map((item) => <article key={item.id}><i className={item.status} /><span><strong>{item.name}</strong><small>{item.mode} · {item.role}</small></span><b>{item.project}</b><em>{item.image}</em><mark>{item.status}</mark></article>)}</div></div>}
+          {category === 'model-pool' && <ModelPoolTable />}
           {category === 'main' && <>
             <section className="main-agent-chain"><article><span>STABILE IDENTITÄT</span><b>{mainAgent.id}</b><small>Rolle: main · bleibt beim Runtime-Wechsel erhalten</small></article><i>→</i><article><span>RUNTIME</span><b>{mainAgent.runtime}</b><small>{mainAgent.provider}</small></article><i>→</i><article><span>MODELL</span><b>{mainAgent.model}</b><small>{mainAgent.auth}</small></article></section>
             <div className="cp-fields">

@@ -1892,6 +1892,127 @@ CREATE TABLE IF NOT EXISTS agent_runtime_sessions (
 );
 CREATE INDEX IF NOT EXISTS idx_agent_runtime_sessions_runtime
   ON agent_runtime_sessions(runtime, updated_at DESC);
+
+-- FP-1: Modell-Pool. Synapse pflegt hier KEINE Modelllisten — die kommen live
+-- aus den Katalogen der Anbieter. Gespeichert wird nur, was Synapse selbst
+-- entscheidet oder beobachtet: Freigaben, Zugangsdaten, Sperren, Verlauf.
+
+-- Beobachteter Zustand je Anbieter. Ohne diese Tabelle beginnt jeder Neustart
+-- bei null und ein nachweislich gesperrter Anbieter wird erneut angeboten.
+CREATE TABLE IF NOT EXISTS free_pool_providers (
+  id                  TEXT PRIMARY KEY,
+  enabled             BOOLEAN NOT NULL DEFAULT TRUE,
+  reachability        TEXT NOT NULL DEFAULT 'unverified'
+                      CHECK (reachability IN ('ready','unverified','blocked','no_credential')),
+  reachability_note   TEXT,
+  probed_at           TIMESTAMPTZ,
+  created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Mehrere Zugaenge je Anbieter: drei Konten verdreifachen das kostenlose
+-- Kontingent. provider_credentials taugt dafuer nicht, dort ist provider der
+-- Primaerschluessel.
+-- secret_ref speichert, WOHER der Schluessel kommt (Name einer Umgebungsvariablen).
+-- api_key haelt ihn im Klartext und ist nur fuer den Fall gedacht, dass es keine
+-- andere Quelle gibt — Datenbank-Sicherungen enthalten ihn dann.
+CREATE TABLE IF NOT EXISTS free_pool_credentials (
+  id                  UUID PRIMARY KEY,
+  provider            TEXT NOT NULL,
+  label               TEXT NOT NULL,
+  source              TEXT NOT NULL DEFAULT 'env'
+                      CHECK (source IN ('env','database','manual')),
+  secret_ref          TEXT,
+  api_key             TEXT,
+  -- Sicherer Standard: solange niemand ausdruecklich das Gegenteil sagt, gilt
+  -- ein Zugang als abrechenbar. Ein zu vorsichtiges Ja kostet nichts, ein zu
+  -- optimistisches Nein kostet Geld.
+  has_payment_method  BOOLEAN NOT NULL DEFAULT TRUE,
+  priority            INT NOT NULL DEFAULT 0,
+  enabled             BOOLEAN NOT NULL DEFAULT TRUE,
+  request_count       BIGINT NOT NULL DEFAULT 0,
+  monthly_budget_usd  NUMERIC(10,2),
+  spent_usd           NUMERIC(12,6) NOT NULL DEFAULT 0,
+  last_status         TEXT,
+  last_error_code     INT,
+  last_error_reason   TEXT,
+  last_error_message  TEXT,
+  -- Zeitpunkt, zu dem der Anbieter SELBST wieder Kapazitaet zugesagt hat.
+  last_error_reset_at TIMESTAMPTZ,
+  created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT uq_free_pool_credentials_label UNIQUE (provider, label)
+);
+CREATE INDEX IF NOT EXISTS idx_free_pool_credentials_provider
+  ON free_pool_credentials(provider, priority, id);
+
+-- Erkannte Modelle: ein Spiegel des Anbieterkatalogs plus unsere Entscheidungen.
+-- Der Spiegel ist jederzeit neu befuellbar; verloren gehen darf nur, was Synapse
+-- selbst gesetzt hat (allowed, data_use).
+CREATE TABLE IF NOT EXISTS free_pool_models (
+  ref                 TEXT PRIMARY KEY,
+  provider            TEXT NOT NULL,
+  model_id            TEXT NOT NULL,
+  display_name        TEXT,
+  family              TEXT,
+  cost_class          TEXT NOT NULL DEFAULT 'unknown'
+                      CHECK (cost_class IN ('free','paid','unknown')),
+  price_in_per_mtok   NUMERIC(16,6),
+  price_out_per_mtok  NUMERIC(16,6),
+  context_length      INT,
+  max_output_tokens   INT,
+  capabilities        TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[],
+  -- Was der Anbieter mit den Daten macht. 'unknown' wird wie 'retained'
+  -- behandelt: keine Angabe ist keine Zusage.
+  data_use            TEXT NOT NULL DEFAULT 'unknown'
+                      CHECK (data_use IN ('private','retained','training','unknown')),
+  -- Dreiwertig mit Absicht: NULL heisst "nicht entschieden", dann gilt die
+  -- Standardregel (kostenlos ja, alles andere nein). TRUE/FALSE ist eine
+  -- ausdrueckliche Entscheidung und ueberstimmt sie — so laesst sich auch ein
+  -- kostenloses Modell gezielt sperren.
+  allowed             BOOLEAN,
+  deprecated          BOOLEAN NOT NULL DEFAULT FALSE,
+  metadata_source     TEXT,
+  -- Aus dem Katalog verschwunden. Nicht loeschen: sonst geht die Freigabe
+  -- verloren, wenn das Modell zurueckkommt.
+  stale               BOOLEAN NOT NULL DEFAULT FALSE,
+  cooldown_until      TIMESTAMPTZ,
+  cooldown_reason     TEXT,
+  failure_count       INT NOT NULL DEFAULT 0,
+  first_seen_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  last_seen_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  last_ok_at          TIMESTAMPTZ,
+  updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+-- Bestandsspalten nachziehen: NUMERIC(12,6) lief bei einem Katalog ueber, der
+-- Preise in einer anderen Einheit liefert als angenommen.
+ALTER TABLE free_pool_models ALTER COLUMN price_in_per_mtok TYPE NUMERIC(16,6);
+ALTER TABLE free_pool_models ALTER COLUMN price_out_per_mtok TYPE NUMERIC(16,6);
+CREATE INDEX IF NOT EXISTS idx_free_pool_models_auswahl
+  ON free_pool_models(cost_class, provider, stale, deprecated);
+CREATE INDEX IF NOT EXISTS idx_free_pool_models_freigabe
+  ON free_pool_models(allowed) WHERE allowed IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_free_pool_models_sperre
+  ON free_pool_models(cooldown_until) WHERE cooldown_until IS NOT NULL;
+
+-- Aenderungsprotokoll: was kam dazu, was verschwand, was wurde teurer, wer hat
+-- was freigegeben. Ohne das ist eine Katalogaenderung im Nachhinein nicht
+-- nachvollziehbar.
+CREATE TABLE IF NOT EXISTS free_pool_events (
+  id                  BIGSERIAL PRIMARY KEY,
+  at                  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  kind                TEXT NOT NULL
+                      CHECK (kind IN ('model_added','model_gone','model_back','price_changed',
+                                      'cost_class_changed','allowed_changed','cooldown','probe',
+                                      'credential_changed')),
+  provider            TEXT,
+  ref                 TEXT,
+  detail              JSONB
+);
+CREATE INDEX IF NOT EXISTS idx_free_pool_events_zeit
+  ON free_pool_events(at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_free_pool_events_ref
+  ON free_pool_events(ref, at DESC) WHERE ref IS NOT NULL;
 `;
 
 export async function ensureSchema(): Promise<void> {

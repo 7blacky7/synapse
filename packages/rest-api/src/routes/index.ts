@@ -25,4 +25,5 @@ export { graphRoutes } from './graph.js';
 export { embeddingNodeRoutes } from './embedding-nodes.js';
 export { wrapperBridgeRoutes } from './wrapper-bridge.js';
 export { agentWissenRoutes } from './agent-wissen.js';
+export { modelPoolRoutes } from './model-pool.js';
 export { agentRuntimeRoutes } from './agent-runtimes.js';

@@ -474,6 +474,60 @@ export type { WrapperStatusRow, HeartbeatKonfiguration, HeartbeatUebersicht } fr
 
 // Skills (EXPERIMENTAL — Qdrant Skill-DB access)
 export { searchSkills, listSkills, getSkillSection, getSkillFull } from './services/skills.js';
+
+// Free-Model-Pool: Katalog externer API-Modelle (vor allem kostenloser).
+// Die Modelllisten kommen live von den Anbietern; gepflegt wird nur die Endpunkt-Registry.
+export {
+  PROVIDER_REGISTRY,
+  getPoolSnapshot,
+  getPoolProviders,
+  getPoolModel,
+  loeseAliasAuf,
+  listeAliase,
+  getAufrufZiel,
+  searchPool,
+  probeProvider,
+  markiereFehlschlag,
+  markiereErfolg,
+  markiereAnbieterZugang,
+  uebernimmFreigabe,
+  setzeModellFreigabe,
+  listeSperren,
+  loescheSperren,
+  invalidiereCredentialCache,
+} from './services/free-model-pool.js';
+export {
+  classifyFailure,
+  lohntWeiterenVersuch,
+  istVermittlerFehler,
+  leseWartezeit,
+} from './services/free-model-pool-errors.js';
+export type { FailureReason, ClassifiedFailure, FailureInput } from './services/free-model-pool-errors.js';
+export {
+  setzeFreigabe,
+  setzeDatenverwendung,
+  leseProtokoll,
+  listeCredentials,
+  speichereCredential,
+  leseCredentialGeheimnis,
+} from './services/free-model-pool-store.js';
+export type { CredentialZeile } from './services/free-model-pool-store.js';
+export { getModelsDev, findeModel, listeProviderIds } from './services/models-dev.js';
+export type { ModelsDevModel, ModelsDevProvider, ModelsDevRegistry } from './services/models-dev.js';
+export type {
+  AufrufZiel,
+  PoolModel,
+  PoolSnapshot,
+  PoolFilter,
+  PoolSuchergebnis,
+  ProviderEntry,
+  ProviderStatus,
+  CostClass,
+  Reachability,
+  FreeType,
+  WireFormat,
+  AuthScheme,
+} from './services/free-model-pool.js';
 export type { SkillSearchHit, SkillListEntry, SkillSection } from './services/skills.js';
 
 // Daemon-Heartbeat (Auto-Routing shell ↔ workspace)

@@ -38,3 +38,7 @@ docs/superpowers/
 # Agent-Artefakte (nicht versionieren)
 MEMORY.md
 build/
+# Test-Zugangsdaten des Modell-Pools (enthaelt echte Schluessel)
+providatest.env
+.env.bak-*
+.mcp.json.bak-*

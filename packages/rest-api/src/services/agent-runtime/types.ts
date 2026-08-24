@@ -1,4 +1,4 @@
-export type RuntimeName = 'codex' | 'claude';
+export type RuntimeName = 'codex' | 'claude' | 'free-pool';
 export type AgentRole = 'main' | 'specialist';
 export type RuntimeContainerState = 'not_created' | 'created' | 'running' | 'stopped' | 'error';
 export type RuntimeAuthState = 'authenticated' | 'not_authenticated' | 'unknown';
@@ -68,6 +68,11 @@ export interface TerminalSession {
 export interface AgentRuntimeDriver {
   readonly runtime: RuntimeName;
   readonly label: string;
+  /**
+   * Ob `openTerminal` sinnvoll ist. Der Modell-Pool fuehrt kein Programm aus,
+   * dort gibt es nichts, woran ein Terminal haengen koennte.
+   */
+  readonly supportsTerminal?: boolean;
   configure(input: { rootPath: string; image?: string; model?: string }): Promise<RuntimeStatus>;
   setup(): Promise<RuntimeStatus>;
   start(): Promise<RuntimeStatus>;

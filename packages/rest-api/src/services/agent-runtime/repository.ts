@@ -6,10 +6,16 @@ const DEFAULT_RUNTIME_IMAGE = 'node:22-bookworm-slim';
 const DEFAULT_RUNTIME_ROOTS: Record<RuntimeName, string> = {
   codex: '/mnt/user/synapse-agent-runtime/codex',
   claude: '/mnt/user/synapse-agent-runtime/claude',
+  // Der Modell-Pool hat kein Wurzelverzeichnis — es laeuft kein Container.
+  // Der Wert erfuellt nur die NOT-NULL-Spalte der gemeinsamen Tabelle.
+  'free-pool': 'n/a',
 };
 const DEFAULT_RUNTIME_MODELS: Record<RuntimeName, string | null> = {
   codex: null,
   claude: 'sonnet',
+  // Kein festes Vorgabemodell: der Pool waehlt aus dem, was gerade kostenlos
+  // und erreichbar ist. Eine Vorgabe waere schon morgen veraltet.
+  'free-pool': null,
 };
 
 interface RuntimeRow {

@@ -35,6 +35,7 @@ sich genau die richtige Abfolge:
 | `30_code_intelligence.sql` | Code-Index: Dateien, Symbole, Referenzen, Chunks, Statements, Call-Kanten, Parser-Status |
 | `40_agenten.sql` | Agenten-Sessions, Events, Onboardings, Spezialisten-Channels, Wrapper-Status |
 | `45_modelle_embedding.sql` | Modell-Registry, Embedding-Knoten (Ollama/GPU-Lastverteilung) |
+| `47_modell_pool.sql` | Modell-Pool: Anbieter-Zustand, Zugaenge, Modell-Spiegel, Aenderungsprotokoll |
 | `50_dateien.sql` | Datei-Versionierung, Batch-Plaene, Watcher, Daemon-Heartbeats |
 | `60_shell.sql` | Shell-Job-Queue |
 | `70_auth.sql` | Tokens, TOTP, OAuth-Clients, Provider-Credentials |
@@ -54,9 +55,9 @@ Triggern, Fremdschluessel zuletzt. Genau dafuer stehen die Nummern 00/05 und 90/
 Ausgezaehlt aus den Dateien dieses Ordners:
 
 ```text
-49 Tabellen          49 Primaerschluessel      19 Fremdschluessel
-91 CREATE INDEX       5 UNIQUE-Constraints     12 CHECK-Constraints
-15 Sequences          4 ENUM-Typen              2 Extensions
+60 Tabellen          60 Primaerschluessel      19 Fremdschluessel
+110 CREATE INDEX      7 UNIQUE-Constraints     27 CHECK-Constraints
+18 Sequences          4 ENUM-Typen              2 Extensions
 11 Funktionen        11 Trigger                 0 Views
 ```
 

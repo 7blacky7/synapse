@@ -37,6 +37,7 @@ import {
   wrapperBridgeRoutes,
   agentWissenRoutes,
   agentRuntimeRoutes,
+  modelPoolRoutes,
 } from './routes/index.js';
 
 /**
@@ -108,6 +109,10 @@ export async function createServer(): Promise<FastifyInstance> {
 
   // AR-1: generische Agent-Runtimes; Codex ist nur der erste Driver.
   await fastify.register(agentRuntimeRoutes);
+
+  // FP-1: Modell-Pool — Ansicht und Freigabe. Die Freigabe liegt bewusst hier
+  // und nicht im MCP-Werkzeug: sie ist eine Entscheidung des Nutzers ueber Geld.
+  await fastify.register(modelPoolRoutes);
 
   // Graph-View (PLAN-003 / GRAPH-1): /api/graph/* — Aggregationen direkt aus
   // @synapse/core (PG + Qdrant), kein HTTP-Loopback. Hinter Auth-Hook (AUTH-4).

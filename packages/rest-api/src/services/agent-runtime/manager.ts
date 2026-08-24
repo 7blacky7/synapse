@@ -1,6 +1,7 @@
 import { AgentRuntimeRepository } from './repository.js';
 import { CodexRuntimeDriver } from './codex-driver.js';
 import { ClaudeRuntimeDriver } from './claude-driver.js';
+import { FreeModelPoolDriver } from './free-pool-driver.js';
 import { TerminalSessionRegistry } from './terminal-sessions.js';
 import type { AgentRuntimeDriver, MainAgentSession, RuntimeName, RuntimeStatus } from './types.js';
 
@@ -12,8 +13,11 @@ export class AgentRuntimeManager {
   constructor() {
     const codex = new CodexRuntimeDriver(this.repository);
     const claude = new ClaudeRuntimeDriver(this.repository);
+    // Dritte Runtime ohne Container: reine HTTP-Aufrufe gegen den Modell-Pool.
+    const freePool = new FreeModelPoolDriver(this.repository);
     this.drivers.set(codex.runtime, codex);
     this.drivers.set(claude.runtime, claude);
+    this.drivers.set(freePool.runtime, freePool);
   }
 
   driver(runtime: string): AgentRuntimeDriver {

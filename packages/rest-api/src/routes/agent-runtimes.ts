@@ -213,7 +213,7 @@ export async function agentRuntimeRoutes(fastify: FastifyInstance): Promise<void
     Body: { runtime?: RuntimeName | null };
   }>('/api/main-agent/runtime', async (request, reply) => {
     const runtime = request.body?.runtime ?? null;
-    if (runtime !== null && runtime !== 'codex' && runtime !== 'claude') {
+    if (runtime !== null && runtime !== 'codex' && runtime !== 'claude' && runtime !== 'free-pool') {
       return sendError(reply, new Error('Unbekannte Runtime'), 400);
     }
     try {

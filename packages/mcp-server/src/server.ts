@@ -50,6 +50,7 @@ import {
   codeIntelTool,
   codeCheckTool,
   ignoreTool,
+  freeModelsTool,
   filesTool,
   shellTool,
   guideTool,
@@ -167,6 +168,7 @@ export function createServer(): Server {
     codeIntelTool.definition,
     codeCheckTool.definition,
     ignoreTool.definition,
+    freeModelsTool.definition,
     filesTool.definition,
     shellTool.definition,
     guideTool.definition,
@@ -768,6 +770,9 @@ export function createServer(): Server {
 
         case 'ignore':
           return withOnboarding(await ignoreTool.handler(args as Record<string, unknown>));
+
+        case 'free_models':
+          return withOnboarding(await freeModelsTool.handler(args as Record<string, unknown>));
 
         case 'files':
           return withOnboarding(await filesTool.handler(args as Record<string, unknown>));
