@@ -98,6 +98,7 @@ export {
   // Project Registry
   registerProject,
   getProjectRoot,
+  listeProjekte,
   toRelativePath,
   toAbsolutePath,
   registerVirtualProject,
@@ -105,7 +106,7 @@ export {
   isProjectEnabled,
   getProjectRegistryRows,
 } from './services/project-registry.js';
-export type { ProjectRegistryRow } from './services/project-registry.js';
+export type { ProjectRegistryRow, ProjektEintrag } from './services/project-registry.js';
 
 // Specialist Respawn Trigger (geteilt zwischen stdio MCP + REST API)
 export { maybeTriggerRespawn } from './services/specialist-respawn.js';

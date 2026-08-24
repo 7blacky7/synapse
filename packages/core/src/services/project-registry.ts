@@ -50,6 +50,51 @@ export async function getProjectRoot(name: string): Promise<string | null> {
   return any.rows.length > 0 ? any.rows[0].path : null;
 }
 
+export interface ProjektEintrag {
+  name: string;
+  path: string | null;
+  enabled: boolean;
+  lastAccess: string | null;
+}
+
+/**
+ * Alle bekannten Projekte aus der Registry.
+ *
+ * Die Registry in PostgreSQL ist die Wahrheit. Wer die Projektliste statt
+ * dessen aus den Qdrant-Collections ableitet, bekommt die Ableitung einer
+ * Ableitung: dort liegt je Projekt eine Collection pro Datenart (_code,
+ * _memories, _docs ...), dazu Reste geloeschter Projekte und Eintraege wie
+ * "undefined". Genau das stand bis zum 24.08.2026 hinter GET /api/projects —
+ * 476 Namen, unter denen echte Projekte fehlten.
+ *
+ * Ein Projekt kann auf mehreren Rechnern stehen, darum wird je Name
+ * zusammengefasst. Als Pfad gewinnt ein echter gegen den Platzhalter
+ * '/virtual/rest-api', den die REST-API fuer sich selbst eintraegt.
+ */
+export async function listeProjekte(): Promise<ProjektEintrag[]> {
+  const pool = getPool();
+  const { rows } = await pool.query<{
+    name: string;
+    path: string | null;
+    enabled: boolean;
+    last_access: Date | null;
+  }>(
+    `SELECT name,
+            bool_or(enabled) AS enabled,
+            MAX(last_access) AS last_access,
+            (array_agg(path ORDER BY (path NOT LIKE '/virtual/%') DESC, last_access DESC NULLS LAST))[1] AS path
+       FROM projects
+      GROUP BY name
+      ORDER BY bool_or(enabled) DESC, MAX(last_access) DESC NULLS LAST, name`
+  );
+  return rows.map((zeile) => ({
+    name: zeile.name,
+    path: zeile.path,
+    enabled: zeile.enabled,
+    lastAccess: zeile.last_access ? new Date(zeile.last_access).toISOString() : null,
+  }));
+}
+
 /**
  * Konvertiert einen absoluten Pfad zu einem relativen (zum Projekt-Root).
  * Gibt den Pfad unveraendert zurueck wenn er bereits relativ ist.

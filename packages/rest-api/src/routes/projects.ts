@@ -4,7 +4,7 @@
 
 import { FastifyInstance } from 'fastify';
 import {
-  listCollections,
+  listeProjekte,
   ensureProjectCollection,
   startFileWatcher,
   handleFileEvent,
@@ -25,17 +25,23 @@ export async function projectRoutes(fastify: FastifyInstance): Promise<void> {
    * Alle Projekte auflisten
    */
   fastify.get('/api/projects', async (request, reply) => {
-    const collections = await listCollections();
-
-    // Projekt-Collections filtern (project_*)
-    const projects = collections
-      .filter(c => c.startsWith('project_'))
-      .map(c => c.replace('project_', ''));
+    // Quelle ist die Registry in PostgreSQL. Hier stand frueher
+    // listCollections() aus Qdrant: das lieferte 476 Collection-Namen mit
+    // Suffixen wie _code und _docs sowie Eintraege wie "undefined", waehrend
+    // echte Projekte fehlten — in der Web-UI liess sich dadurch kein Projekt
+    // waehlen, und ohne aktives Projekt blieb alles Projektbezogene leer.
+    const eintraege = await listeProjekte();
 
     return {
       success: true,
-      projects,
-      activeWatchers: Array.from(activeWatchers.keys()),
+      projects: eintraege.map((eintrag) => eintrag.name),
+      // "Aktiv" heisst freigegeben (Tray-Schalter, projektweit in PG).
+      // Frueher stand hier die prozesslokale Watcher-Liste — die ist im
+      // Container immer leer, weshalb in der Oberflaeche nie ein Projekt als
+      // aktiv erschien. Der prozesslokale Stand steht jetzt daneben.
+      activeWatchers: eintraege.filter((eintrag) => eintrag.enabled).map((eintrag) => eintrag.name),
+      localWatchers: Array.from(activeWatchers.keys()),
+      projectDetails: eintraege,
     };
   });
 

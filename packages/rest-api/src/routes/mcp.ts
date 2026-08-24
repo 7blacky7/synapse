@@ -12,6 +12,7 @@ import {
   searchCodeBatch,
   searchDocsWithFallback,
   listCollections,
+  listeProjekte,
   scrollVectors,
   COLLECTIONS,
   // Projekt
@@ -2205,11 +2206,14 @@ async function handleToolCall(
           };
         }
         case 'list': {
-          const collections = await listCollections();
-          const projects = collections
-            .filter(c => c.startsWith('project_'))
-            .map(c => c.replace('project_', ''));
-          return { success: true, count: projects.length, projects };
+          // Registry statt Qdrant-Collections — siehe listeProjekte().
+          const eintraege = await listeProjekte();
+          return {
+            success: true,
+            count: eintraege.length,
+            projects: eintraege.map((eintrag) => eintrag.name),
+            details: eintraege,
+          };
         }
         case 'enable':
         case 'disable': {
