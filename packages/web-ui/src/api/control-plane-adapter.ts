@@ -63,6 +63,26 @@ async function watcherRequest<T>(path: string, init?: RequestInit): Promise<T> {
     cache: 'no-store',
     ...init,
   });
+
+  // Den GoTray-Daemon gibt es nur dort, wo die Oberflaeche neben ihm laeuft;
+  // im Entwicklungsserver reicht ein Proxy den Pfad an ihn weiter. Auf dem
+  // Server ohne Daemon kennt niemand /watcher-api — beantwortet wird er
+  // trotzdem, naemlich mit der index.html der Oberflaeche: Status 200,
+  // Inhalt HTML.
+  //
+  // Genau daran ist der Rueckfall auf die REST-API gescheitert: 200 gilt als
+  // Erfolg, das HTML scheitert still am JSON-Parsen und wird zum leeren
+  // Objekt, und die Aufrufer lesen daraus eine leere Liste. Die Oberflaeche
+  // zeigte dann weder Projekte noch Channels, ohne dass irgendwo ein Fehler
+  // sichtbar wurde. Ein fehlender Dienst muss als Fehler ankommen, sonst
+  // sieht "nicht erreichbar" aus wie "nichts vorhanden".
+  const inhaltstyp = response.headers.get('content-type') || '';
+  if (!inhaltstyp.toLowerCase().includes('application/json')) {
+    throw new Error(
+      'GoTray-API nicht verfuegbar — Antwort war ' + (inhaltstyp || 'ohne Typangabe'),
+    );
+  }
+
   const data = await response.json().catch(() => ({})) as T & { error?: string };
   if (!response.ok) {
     throw new Error(data.error || 'GoTray-API HTTP ' + response.status);
