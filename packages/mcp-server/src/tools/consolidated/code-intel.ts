@@ -22,6 +22,7 @@ import {
   getVariables,
   getSymbols,
   getReferences,
+  planeUmbenennung,
   getStatements,
   getCallEdges,
   getExecutionFlow,
@@ -45,9 +46,9 @@ export const codeIntelTool: ConsolidatedTool = {
       properties: {
         action: {
           type: 'string',
-          enum: ['tree', 'functions', 'variables', 'symbols', 'references', 'search', 'file', 'statements', 'calls', 'flow', 'entrypoints', 'health'],
+          enum: ['tree', 'functions', 'variables', 'symbols', 'references', 'rename_preview', 'search', 'file', 'statements', 'calls', 'flow', 'entrypoints', 'health'],
           description:
-            'Aktion: tree|functions|variables|symbols|references|search|file|statements|calls|flow|entrypoints',
+            'Aktion: tree|functions|variables|symbols|references|rename_preview|search|file|statements|calls|flow|entrypoints. rename_preview plant ein Umbenennen auf Basis der aufgeloesten Referenzen und schreibt NICHTS — es liefert ops fuer files(action:"plan").',
         },
         project: {
           type: 'string',
@@ -106,6 +107,11 @@ export const codeIntelTool: ConsolidatedTool = {
           type: 'string',
           description:
             "Sucht im INHALT des Symbols statt im Namen (fuer symbols). PFLICHT fuer Kommentare, Strings und TODOs: die tragen name=NULL, ein name-Filter findet dort nie etwas. Beispiel: symbol_type='comment' + value_contains='@SYN-'.",
+        },
+        new_name: {
+          type: 'string',
+          description:
+            "Nur fuer rename_preview: der neue Name. Liefert eine Vorschau samt fertiger ops fuer files(action:'plan') — geschrieben wird hier NICHTS.",
         },
         include_name_matches: {
           type: 'boolean',
@@ -261,6 +267,13 @@ export const codeIntelTool: ConsolidatedTool = {
         const name = str(args, 'name');
         const symbols = await getSymbols(project, symbolType, filePath, name, num(args, 'limit') ?? 100, str(args, 'value_contains'));
         return { success: true, symbols, count: symbols.length, symbol_type: symbolType, project };
+      }
+
+      case 'rename_preview': {
+        const name = reqStr(args, 'name');
+        const neuerName = reqStr(args, 'new_name');
+        const plan = await planeUmbenennung(project, name, neuerName);
+        return { success: true, ...plan, project };
       }
 
       case 'references': {

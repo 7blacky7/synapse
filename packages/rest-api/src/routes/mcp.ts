@@ -82,6 +82,7 @@ import {
   getVariables,
   getSymbols,
   getReferences,
+  planeUmbenennung,
   fullTextSearchCode,
   getFileContent,
   getStatements,
@@ -810,8 +811,8 @@ const MCP_TOOLS = [
       properties: {
         action: {
           type: 'string',
-          enum: ['tree', 'functions', 'variables', 'symbols', 'references', 'search', 'search_batch', 'file', 'statements', 'calls', 'flow', 'entrypoints', 'health'],
-          description: 'Aktion: tree|functions|variables|symbols|references|search|search_batch|file|statements|calls|flow|entrypoints|health',
+          enum: ['tree', 'functions', 'variables', 'symbols', 'references', 'rename_preview', 'search', 'search_batch', 'file', 'statements', 'calls', 'flow', 'entrypoints', 'health'],
+          description: 'Aktion: tree|functions|variables|symbols|references|rename_preview|search|search_batch|file|statements|calls|flow|entrypoints|health. rename_preview plant ein Umbenennen auf Basis der aufgeloesten Referenzen und schreibt NICHTS — es liefert ops fuer files(action:"plan").',
         },
         project: { type: 'string', description: 'Projekt-Name (erforderlich)' },
         agent_id: { type: 'string', description: 'Agent-ID fuer Onboarding' },
@@ -826,6 +827,7 @@ const MCP_TOOLS = [
         file_path: { type: 'string', description: 'Datei-Pfad-Filter (LIKE-Pattern) fuer functions/variables/symbols/file/statements/calls/entrypoints — UND seit 08.08.2026 auch fuer search: dort im Volltext-Modus als LIKE-Teilpfad, mit semantic:true dagegen als VOLLSTAENDIGER Pfad, weil Qdrant keinen Teilstring-Vergleich kennt. Vorher wurde der Parameter bei search still verworfen und die Suche lieferte Treffer aus dem ganzen Projekt.' },
         name: { type: 'string', description: 'Symbol-Name-Filter (fuer functions/variables/symbols/references)' },
         value_contains: { type: 'string', description: "Sucht im INHALT des Symbols statt im Namen (fuer symbols). PFLICHT fuer Kommentare, Strings und TODOs: die tragen name=NULL, ein name-Filter findet dort nie etwas. Beispiel: symbol_type='comment' + value_contains='@SYN-'." },
+        new_name: { type: 'string', description: "Nur fuer rename_preview: der neue Name. Liefert eine Vorschau samt fertiger ops fuer files(action:'plan') — geschrieben wird hier NICHTS." },
         include_name_matches: { type: 'boolean', description: 'Nur fuer references: mischt die aussortierten Namensgleichen zurueck in references (Standard false). Sie stehen ohnehin immer unter name_matches.' },
         comment_contains: { type: 'string', description: "Nur Kommentare zeigen, die diesen Text enthalten (fuer tree, zusammen mit show_comments). Macht den Baum zur Suche: show_comments=50 + comment_contains='@SYN-' listet alle Marken mit Datei und Zeile." },
         comment_chars: { type: 'integer', description: 'Anzeigelaenge je Kommentarzeile in Zeichen (fuer tree, Standard 100).' },
@@ -3884,6 +3886,10 @@ async function handleToolCall(
           const symbolType = reqStr(args, 'symbol_type');
           const symbols = await getSymbols(project, symbolType, str(args, 'file_path'), str(args, 'name'), num(args, 'limit') ?? 100, str(args, 'value_contains'));
           return { success: true, symbols, count: symbols.length, symbol_type: symbolType, project };
+        }
+        case 'rename_preview': {
+          const plan = await planeUmbenennung(project, reqStr(args, 'name'), reqStr(args, 'new_name'));
+          return { success: true, ...plan, project };
         }
         case 'references': {
           // Muss mit mcp-server/src/tools/consolidated/code-intel.ts uebereinstimmen.

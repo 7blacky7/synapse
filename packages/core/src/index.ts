@@ -108,6 +108,15 @@ export {
 } from './services/project-registry.js';
 export type { ProjectRegistryRow, ProjektEintrag } from './services/project-registry.js';
 
+// Symbol umbenennen auf Basis der aufgeloesten Referenzen (Vorschau; die
+// Ausfuehrung laeuft ueber den normalen Mehrfach-Schreibweg).
+export { planeUmbenennung } from './services/code-rename.js';
+export type {
+  UmbenennungsPlan,
+  UmbenennungsStelle,
+  UebersprungeneStelle,
+} from './services/code-rename.js';
+
 // Specialist Respawn Trigger (geteilt zwischen stdio MCP + REST API)
 export { maybeTriggerRespawn } from './services/specialist-respawn.js';
 export type { RespawnDecision } from './services/specialist-respawn.js';
