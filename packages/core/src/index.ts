@@ -430,7 +430,7 @@ export type {
   SpecialistJobResult,
 } from './services/specialist-queue.js';
 
-export type { FunctionInfo, VariableInfo, SymbolInfo, ReferenceInfo, ReferencesResult, FullTextSearchResult, FileContentResult, FileContentOptions, TreeOptions, StatementInfo, CallEdgeInfo, ExecutionFlowResult, EntrypointInfo } from './services/code-intel.js';
+export type { FunctionInfo, VariableInfo, SymbolInfo, ReferenceInfo, ReferencesResult, FullTextSearchResult, FileContentResult, FileContentOptions, TreeOptions, StatementInfo, CallEdgeInfo, CallEdgesResult, ExecutionFlowResult, EntrypointInfo } from './services/code-intel.js';
 export type { BatchEdit, BatchResult } from './services/code-write.js';
 export { getParserGesundheitDatei, getParserGesundheitUebersicht, backfillParserCoverage, schreibeParserCoverage } from './services/parser-health.js';
 export type { ParserGesundheitDatei, ParserGesundheitUebersicht, ParserBefundGesamt, ParserUebersichtDatei } from './services/parser-health.js';

@@ -640,6 +640,12 @@ export interface ReferencesResult {
    */
   name_matches: ReferenceInfo[];
   total_name_matches: number;
+  /**
+   * true, wenn references auf das Limit gekuerzt wurde. total_references und
+   * total_files zaehlen IMMER den vollen Bestand — eine gekappte Liste gibt
+   * sich damit zu erkennen, statt vollstaendig auszusehen.
+   */
+  gekappt: boolean;
 }
 
 /**
@@ -666,11 +672,15 @@ export interface ReferencesResult {
  * @param includeNameMatches Nur fuer den Rohbestand: liefert die aussortierten
  *   Namensgleichen zusaetzlich unter references. Standard ist aus — wer nichts
  *   angibt, soll das Richtige bekommen, nicht das Vollstaendige.
+ * @param limit Max. Eintraege unter references (Standard 200, <= 0 = unbegrenzt).
+ *   Gekappt wird nie still: total_references zaehlt weiterhin alle, gekappt
+ *   markiert die Kuerzung. Wer wirklich alles braucht (Umbenennen!), gibt 0 an.
  */
 export async function getReferences(
   project: string,
   name: string,
-  includeNameMatches = false
+  includeNameMatches = false,
+  limit = 200
 ): Promise<ReferencesResult> {
   const pool = getPool();
 
@@ -820,15 +830,21 @@ export async function getReferences(
   // verarbeiten kann. Wer alle braucht, setzt include_name_matches.
   const NAME_MATCH_PROBE = 10;
 
+  // Kappen erst NACH dem Zaehlen: total_references und total_files beschreiben
+  // den vollen Bestand; nur die ausgelieferte Liste wird begrenzt.
+  const wirksamesLimit = limit > 0 ? limit : Number.POSITIVE_INFINITY;
+  const gekappt = references.length > wirksamesLimit;
+
   return {
     definition,
-    references,
+    references: gekappt ? references.slice(0, limit) : references,
     total_files: uniqueFiles.size,
     total_references: references.length,
     string_occurrences: stringOccurrences,
     total_string_occurrences: stringOccurrences.length,
     name_matches: includeNameMatches ? nameMatches : nameMatches.slice(0, NAME_MATCH_PROBE),
     total_name_matches: nameMatches.length,
+    gekappt,
   };
 }
 
@@ -1150,15 +1166,28 @@ export async function getStatements(
   }));
 }
 
+export interface CallEdgesResult {
+  calls: CallEdgeInfo[];
+  /** Gesamtzahl passender Kanten — unabhaengig vom Limit. */
+  total: number;
+  /** true, wenn calls auf das Limit gekuerzt wurde. */
+  gekappt: boolean;
+}
+
 /**
  * Liefert Call-Edges der Ablauf-Ebene. Filterbar nach Datei und/oder
  * aufgerufenem Namen (callee_name). Sortiert nach Datei und Zeile.
+ *
+ * @param limit Max. Kanten (Standard 200, <= 0 = unbegrenzt). Ohne Grenze
+ *   sprengte ein haeufiger callee die Antwort (~88k Zeichen); total zaehlt
+ *   immer alle, gekappt macht die Kuerzung sichtbar — nie still abschneiden.
  */
 export async function getCallEdges(
   project: string,
   filePath?: string,
-  calleeName?: string
-): Promise<CallEdgeInfo[]> {
+  calleeName?: string,
+  limit = 200
+): Promise<CallEdgesResult> {
   const pool = getPool();
   const params: unknown[] = [project];
   const conditions: string[] = ['project = $1'];
@@ -1172,16 +1201,26 @@ export async function getCallEdges(
     conditions.push(`callee_name = $${params.length}`);
   }
 
+  // COUNT(*) OVER() liefert die Gesamtzahl im selben Roundtrip, auch wenn
+  // LIMIT die ausgelieferten Zeilen begrenzt.
+  let limitKlausel = '';
+  if (limit > 0) {
+    params.push(limit);
+    limitKlausel = ` LIMIT $${params.length}`;
+  }
+
   const result = await pool.query(
     `SELECT id, file_path, caller_scope, statement_id, callee_name,
-            callee_receiver, target_symbol_id, line_number, call_kind, confidence
+            callee_receiver, target_symbol_id, line_number, call_kind, confidence,
+            COUNT(*) OVER() AS gesamt
        FROM code_call_edges
       WHERE ${conditions.join(' AND ')}
-      ORDER BY file_path, line_number`,
+      ORDER BY file_path, line_number${limitKlausel}`,
     params
   );
 
-  return result.rows.map(row => ({
+  const total = result.rows.length > 0 ? Number(result.rows[0].gesamt) : 0;
+  const calls = result.rows.map(row => ({
     id: String(row.id),
     file_path: row.file_path,
     caller_scope: row.caller_scope,
@@ -1193,6 +1232,8 @@ export async function getCallEdges(
     call_kind: row.call_kind,
     confidence: row.confidence != null ? Number(row.confidence) : null,
   }));
+
+  return { calls, total, gekappt: calls.length < total };
 }
 
 export interface ExecutionFlowResult {

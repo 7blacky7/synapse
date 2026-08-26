@@ -111,7 +111,9 @@ export async function planeUmbenennung(
     );
   }
 
-  const refs = await getReferences(project, name);
+  // limit 0: Umbenennen braucht ALLE Fundstellen — eine gekappte Liste wuerde
+  // nur einen Teil der Stellen umbenennen und nichts davon sagen.
+  const refs = await getReferences(project, name, false, 0);
   if (!refs.definition) {
     return {
       name, neuer_name: neuerName, mehrdeutig: false, kandidaten: [],

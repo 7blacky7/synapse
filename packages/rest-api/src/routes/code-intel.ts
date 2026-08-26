@@ -206,10 +206,11 @@ export async function codeIntelRoutes(fastify: FastifyInstance): Promise<void> {
     Querystring: {
       name: string;
       include_name_matches?: string;
+      limit?: string;
     };
   }>('/api/projects/:name/code-intel/references', async (request, reply) => {
     const { name } = request.params;
-    const { name: refName, include_name_matches: includeNameMatches } = request.query;
+    const { name: refName, include_name_matches: includeNameMatches, limit } = request.query;
 
     if (!refName) {
       return reply.status(400).send({
@@ -219,7 +220,7 @@ export async function codeIntelRoutes(fastify: FastifyInstance): Promise<void> {
     }
 
     try {
-      const result = await getReferences(name, refName, includeNameMatches === 'true');
+      const result = await getReferences(name, refName, includeNameMatches === 'true', limit !== undefined ? parseInt(limit, 10) : 200);
 
       // Das GANZE Ergebnis weitergeben. Vorher wurden hier vier Felder einzeln
       // abgeschrieben — string_occurrences und total_string_occurrences fielen
@@ -359,18 +360,21 @@ export async function codeIntelRoutes(fastify: FastifyInstance): Promise<void> {
     Querystring: {
       file_path?: string;
       callee?: string;
+      limit?: string;
     };
   }>('/api/projects/:name/code-intel/calls', async (request, reply) => {
     const { name } = request.params;
-    const { file_path, callee } = request.query;
+    const { file_path, callee, limit } = request.query;
 
     try {
-      const result = await getCallEdges(name, file_path, callee);
+      const result = await getCallEdges(name, file_path, callee, limit !== undefined ? parseInt(limit, 10) : 200);
 
       return {
         success: true,
-        call_edges: result,
-        count: result.length,
+        call_edges: result.calls,
+        count: result.calls.length,
+        total: result.total,
+        gekappt: result.gekappt,
       };
     } catch (error) {
       return reply.status(500).send({

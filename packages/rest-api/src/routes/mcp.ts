@@ -845,7 +845,7 @@ const MCP_TOOLS = [
         queries: { type: 'array', items: { type: 'string' }, description: 'search_batch: 1..10 semantische Queries in EINEM Call. Embeddings werden gebatched an Google → spart N-1 API-Roundtrips. Antwort enthaelt results[] mit {query, count, hits}.' },
         limit_per_query: { type: 'number', description: 'search_batch: Max Hits pro Query (Default 5)' },
         file_type: { type: 'string', description: 'Dateityp-Filter fuer search-Action (z.B. "ts", "js")' },
-        limit: { type: 'number', description: 'Max. Ergebnisse (search: Standard 20; entrypoints: Standard 200)' },
+        limit: { type: 'number', description: 'Max. Ergebnisse (search: Standard 20; entrypoints: Standard 200; calls/references: Standard 200, 0 = unbegrenzt — Antwort traegt total und gekappt)' },
         include_declarations: { type: 'boolean', description: 'entrypoints: auch reine Deklarations-/Re-Export-Statements und SQL-Dateien liefern (Standard: false = nur echte Seiteneffekte)' },
         from_line: { type: 'number', description: 'file: Start-Zeile (1-basiert, Standard: 1)' },
         to_line: { type: 'number', description: 'file: End-Zeile inklusiv (Standard: letzte Zeile). Auto-Reduce bei > 80k Zeichen.' },
@@ -3893,7 +3893,7 @@ async function handleToolCall(
         }
         case 'references': {
           // Muss mit mcp-server/src/tools/consolidated/code-intel.ts uebereinstimmen.
-          const result = await getReferences(project, reqStr(args, 'name'), bool(args, 'include_name_matches') ?? false);
+          const result = await getReferences(project, reqStr(args, 'name'), bool(args, 'include_name_matches') ?? false, num(args, 'limit') ?? 200);
           return { success: true, ...result, project };
         }
         case 'search_batch': {
@@ -3959,8 +3959,8 @@ async function handleToolCall(
           return { success: true, statements, count: statements.length, project };
         }
         case 'calls': {
-          const callEdges = await getCallEdges(project, str(args, 'file_path'), str(args, 'callee'));
-          return { success: true, call_edges: callEdges, count: callEdges.length, project };
+          const ergebnis = await getCallEdges(project, str(args, 'file_path'), str(args, 'callee'), num(args, 'limit') ?? 200);
+          return { success: true, call_edges: ergebnis.calls, count: ergebnis.calls.length, total: ergebnis.total, gekappt: ergebnis.gekappt, project };
         }
         case 'flow': {
           const filePath = str(args, 'file_path') ?? str(args, 'path');

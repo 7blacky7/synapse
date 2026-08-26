@@ -186,7 +186,7 @@ export const codeIntelTool: ConsolidatedTool = {
         },
         limit: {
           type: 'number',
-          description: 'Max. Ergebnisse (search: Standard 20; entrypoints: Standard 200)',
+          description: 'Max. Ergebnisse (search: Standard 20; entrypoints: Standard 200; calls/references: Standard 200, 0 = unbegrenzt — Antwort traegt total und gekappt)',
         },
 
         // --- file (range + truncation) ---
@@ -281,7 +281,7 @@ export const codeIntelTool: ConsolidatedTool = {
         // Muss mit rest-api/src/routes/mcp.ts uebereinstimmen — gleiches Schema,
         // gleiches Verhalten. Ein hier nicht ausgelesener Parameter waere genau
         // der Fehler, der bei 'search' und file_path schon einmal passiert ist.
-        const result = await getReferences(project, name, bool(args, 'include_name_matches') ?? false);
+        const result = await getReferences(project, name, bool(args, 'include_name_matches') ?? false, num(args, 'limit') ?? 200);
         return { success: true, ...result, project };
       }
 
@@ -354,8 +354,10 @@ export const codeIntelTool: ConsolidatedTool = {
       case 'calls': {
         const filePath = str(args, 'file_path');
         const callee = str(args, 'callee') ?? str(args, 'name');
-        const calls = await getCallEdges(project, filePath, callee);
-        return { success: true, calls, count: calls.length, project };
+        // Muss mit rest-api/src/routes/mcp.ts uebereinstimmen — ein hier nicht
+        // ausgelesenes limit waere der naechste still verworfene Parameter.
+        const ergebnis = await getCallEdges(project, filePath, callee, num(args, 'limit') ?? 200);
+        return { success: true, calls: ergebnis.calls, count: ergebnis.calls.length, total: ergebnis.total, gekappt: ergebnis.gekappt, project };
       }
 
       case 'flow': {
