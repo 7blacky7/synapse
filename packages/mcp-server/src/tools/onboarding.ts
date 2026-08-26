@@ -10,7 +10,7 @@
  *   - projectPath?: string - Pfad (optional, wird aus Cache/Registry geholt)
  *
  * OUTPUT:
- *   - checkAgentOnboarding: OnboardingResult mit isFirstVisit, rules[], rulesMessage
+ *   - checkAgentOnboarding: OnboardingResult mit isFirstVisit, rolle*, volltext_hinweis, rules[]
  *   - cacheProjectPath: void - Registriert Pfad im In-Memory-Cache + Registry
  *   - getCachedProjectPath: string | null - Bekannter Pfad fuer Projekt-Name
  *   - addOnboardingToResult: T & { agentOnboarding? } - Erweitert Tool-Ergebnisse
@@ -47,8 +47,17 @@ export interface OnboardingRule {
 /** Onboarding-Ergebnis das in Tool-Responses eingebunden wird */
 export interface OnboardingResult {
   isFirstVisit: boolean;
+  /** Rolle, mit der die Regeln gefiltert wurden. */
+  rolle?: string;
+  /** Woher die Rolle stammt: angegeben | namensmuster | standard | unbekannt. */
+  rolle_quelle?: string;
+  /** Klartext dazu — macht eine Fehleinstufung beim Lesen sichtbar statt gar nicht. */
+  rolle_hinweis?: string;
+  /** Wie man den Volltext einer gekuerzten Regel bekommt. Fehlt, wenn nichts gekuerzt wurde. */
+  volltext_hinweis?: string;
+  /** Nur fuer Koordinatoren und nur bei unvollstaendigem Projekt-Setup. */
+  setup_hinweis?: string;
   rules?: OnboardingRule[];
-  rulesMessage?: string;
 }
 
 /** Agenten-Rollen fuer rollenspezifisches Onboarding */
@@ -149,7 +158,7 @@ export async function checkAgentOnboarding(
   // Standard 'subagent', der spezialist-Zweig hat seit dem 03.05.2026 null Treffer. Die
   // Erkennung bleibt vorerst wie sie ist — sie ist jetzt nur an EINER Stelle und sagt dazu,
   // ob sie geraten hat.
-  const { rolleFuerAgent } = await import('@synapse/core');
+  const { rolleFuerAgent, rollenQuelleKlartext } = await import('@synapse/core');
   const { rolle: effectiveRole, quelle: rollenQuelle } = rolleFuerAgent(agentId, role ?? null);
   const isCoordinator = effectiveRole === 'koordinator';
 
@@ -215,38 +224,42 @@ export async function checkAgentOnboarding(
     const gekuerzt = rules.filter((r) => !r.vollstaendig).length;
     const abrufHinweis = baueRegelAbrufHinweis(project, gekuerzt);
 
-    let rulesMessage = `\n\n📋 PROJEKT-REGELN (bitte beachten!):\n${rules
-      .map((r) => `### ${r.name}\n${r.vollstaendig ? r.content : r.auszug}`)
-      .join('\n\n')}`;
-    if (abrufHinweis) rulesMessage += `\n\nℹ️ ${abrufHinweis}`;
-
-    // Setup-Pending Hinweis fuer Koordinatoren
-    if (isCoordinator && (await getSetupPhase(project, path)) === 'initial-pending') {
-      rulesMessage += '\n\n⚠️ Projekt-Setup unvollstaendig. Starte /projekt-setup oder frage den User.';
-    }
+    // ⚠️ KEIN VOLLTEXT-BLOCK MEHR (G-b, gemessen 26.08.2026). Hier stand bis heute ein
+    // rulesMessage, das JEDE Regel ein ZWEITES Mal im Volltext trug — gebaut aus demselben
+    // rules-Array, das direkt darunter ohnehin ausgeliefert wird. GEMESSEN auf dieser
+    // Strecke, Rolle subagent, 25 Regeln: rules 31.924 Zeichen, rulesMessage 33.238 Zeichen.
+    // Derselbe Text, doppelt, bei jedem Erstkontakt. Die REST-Strecke (routes/mcp.ts) hat
+    // diesen Block nie gehabt und wurde trotzdem verstanden.
+    // Was NUR in rulesMessage stand, steht jetzt als eigenes Feld daneben: der Abrufhinweis
+    // als volltext_hinweis (Feldname wie im REST-Weg) und der Setup-Hinweis als setup_hinweis.
+    // Die Channel-Uebersicht ging ohnehin schon strukturiert als channels hinaus — ihre
+    // Textfassung war Teil derselben Dopplung.
+    const setupHinweis =
+      isCoordinator && (await getSetupPhase(project, path)) === 'initial-pending'
+        ? '⚠️ Projekt-Setup unvollstaendig. Starte /projekt-setup oder frage den User.'
+        : undefined;
 
     // CH-1 (15.08.2026): Welche Channels laufen noch, wer haengt drin, was war zuletzt los.
     // Dieselbe core-Funktion wie im REST-Weg — der Block soll auf beiden Strecken gleich sein.
     const { baueChannelUebersicht } = await import('@synapse/core');
     const channelBlock = await baueChannelUebersicht(project, isCoordinator);
-    if (channelBlock) {
-      rulesMessage += `\n\n💬 OFFENE CHANNELS (die ${channelBlock.channels.length} aktuellsten):\n`
-        + channelBlock.channels
-            .map((c) => {
-              const wer = c.agenten.length ? c.agenten.join(', ') : 'keine Mitglieder';
-              const aktiv = c.noch_aktiv.length ? ` | noch aktiv: ${c.noch_aktiv.join(', ')}` : '';
-              return `- ${c.channel} (${c.wann ?? 'keine Nachrichten'})\n  Mitglieder: ${wer}${aktiv}`;
-            })
-            .join('\n');
-      if (channelBlock.hinweis) rulesMessage += `\n\nℹ️ ${channelBlock.hinweis}`;
-    }
 
     console.error(`[Synapse MCP] ${rules.length} Regeln fuer Agent "${agentId}" geladen`);
 
+    // ⚠️ FELDSCHNITT WIE IM REST-WEG (routes/mcp.ts, agentOnboarding). rolle/rolle_quelle/
+    // rolle_hinweis und volltext_hinweis entstanden auf DIESER Strecke bisher gar nicht. Der
+    // Kommentar in server.ts sagt seit dem 15.08., es werde alles durchgereicht — das stimmt
+    // auch, nur erzeugt hat sie hier niemand. Durchreichen ersetzt kein Erzeugen.
+    // Wer hier ein Feld ergaenzt, ergaenzt es auch in routes/mcp.ts — sonst laufen die beiden
+    // Strecken wieder auseinander, und genau das faellt niemandem auf.
     return {
       isFirstVisit: true,
+      rolle: effectiveRole,
+      rolle_quelle: rollenQuelle,
+      rolle_hinweis: rollenQuelleKlartext(effectiveRole, rollenQuelle, role ?? null),
+      ...(abrufHinweis ? { volltext_hinweis: abrufHinweis } : {}),
+      ...(setupHinweis ? { setup_hinweis: setupHinweis } : {}),
       rules,
-      rulesMessage,
       ...(channelBlock ? { channels: channelBlock } : {}),
     };
   } catch (error) {
