@@ -22,7 +22,7 @@ import {
 } from '../api/control-plane-adapter';
 import { defaultSettings, entityData, navigation } from '../mock/ui-control-plane';
 import { agentHosts } from '../mock/infrastructure-control-plane';
-import { createMainAgentSession, getMainAgentRuntime, streamMainAgentMessage, type AgentRuntimeName, type AgentRuntimeStatus } from '../api/agent-runtime';
+import { createMainAgentSession, getMainAgentRuntime, streamMainAgentMessage, type AgentArtifactEvent, type AgentRuntimeName, type AgentRuntimeStatus } from '../api/agent-runtime';
 import type {
   Area,
   ChannelMessageViewModel,
@@ -616,10 +616,49 @@ function MainAgentView({ theme, project, showDashboard }: { theme: Theme; projec
         }
         const controller = new AbortController();
         runtimeAbortRef.current = controller;
+        // ⚠️ DAS ARTEFAKT KOMMT NEBEN DIE TEXTANTWORT, NICHT AN IHRE STELLE.
+        // NativeHtmlMessage (:278ff) stellt `text` nicht dar, es rendert nur `blocks`.
+        // Wuerde die Textnachricht umgebaut, verschwaende die Prosa des Agenten
+        // stillschweigend — genau die Fehlerklasse aus `muster-stille-teilantwort`.
+        const artefaktId = answerId + 1;
+        const artefaktBloecke: AgentHtmlBlock[] = [];
         await streamMainAgentMessage(activeSessionId, value, {
           onDelta: ({ content }) => setMessages((items) => items.map((message) => message.id === answerId ? { ...message, text: message.text + content } : message)),
+          onArtifact: (block: AgentArtifactEvent) => {
+            // Pflicht sind nur id und html. Alles andere bekommt hier eine Vorgabe,
+            // damit der Agent im ersten Schritt nur HTML schicken muss.
+            const nummer = artefaktBloecke.length + 1;
+            artefaktBloecke.push({
+              id: block.id || 'block-' + nummer,
+              html: block.html,
+              column: block.column ?? 1,
+              columnSpan: block.columnSpan ?? 12,
+              row: block.row ?? nummer,
+              rowSpan: block.rowSpan ?? 1,
+              minHeight: block.minHeight ?? 220,
+              ...(block.revision === undefined ? {} : { revision: block.revision }),
+              ...(block.interactive === undefined ? {} : { interactive: block.interactive }),
+            });
+            const bloecke = artefaktBloecke.slice();
+            const titel = block.title || 'HTML-Antwort des Hauptagenten';
+            setMessages((items) => items.some((message) => message.id === artefaktId)
+              ? items.map((message) => message.id === artefaktId ? { ...message, title: titel, blocks: bloecke } : message)
+              : [...items, { id: artefaktId, role: 'agent', kind: 'artifact', title: titel, text: value, blocks: bloecke, layout: { columns: 12, rowHeight: 72, gap: 12 }, saved: false }]);
+          },
           onUsage: (usage) => setRuntimeUsage([usage.inputTokens ? 'in ' + usage.inputTokens : '', usage.outputTokens ? 'out ' + usage.outputTokens : '', usage.cachedInputTokens ? 'cache ' + usage.cachedInputTokens : ''].filter(Boolean).join(' · ')),
-          onDone: ({ context }) => setRuntimeContext(context ? (typeof context === 'string' ? context : JSON.stringify(context)) : 'Session fortsetzbar'),
+          onDone: ({ context, artifacts, artefakteEmpfangen, unbekannteEreignisse }) => {
+            setRuntimeContext(context ? (typeof context === 'string' ? context : JSON.stringify(context)) : 'Session fortsetzbar');
+            // ⚠️ WAS FEHLT, WIRD GESAGT. Ein stiller Verlust waere hier besonders teuer:
+            // der Nutzer wuerde schliessen, der Hauptagent koenne kein HTML.
+            const hinweise: string[] = [];
+            if (typeof artifacts === 'number' && artifacts !== artefakteEmpfangen) {
+              hinweise.push('Der Hauptagent hat ' + artifacts + ' Artefakt(e) geschickt, angekommen sind ' + artefakteEmpfangen + '.');
+            }
+            if (unbekannteEreignisse.length) {
+              hinweise.push('Unbekannte Ereignisse im Strom: ' + unbekannteEreignisse.join(', ') + '.');
+            }
+            if (hinweise.length) setRuntimeError(hinweise.join(' ') + ' Die Anzeige ist unvollstaendig.');
+          },
           onError: ({ message }) => setRuntimeError(message),
         }, controller.signal);
       } catch (reason) {
@@ -723,7 +762,9 @@ function MainAgentView({ theme, project, showDashboard }: { theme: Theme; projec
             </article>
           </Fragment>)}
           {thinking && <article className="message agent thinking"><header>Hauptagent</header><div><i /><i /><i /><span>{runtimeMode === 'codex' ? 'Codex antwortet im Stream' : 'Antwort wird aufgebaut'}</span></div></article>}
-          {runtimeMode === 'codex' && (runtimeUsage || runtimeContext || runtimeError) && <div className={'main-runtime-meta' + (runtimeError ? ' error' : '')}><span>{runtimeError || runtimeContext}</span>{runtimeUsage && <b>{runtimeUsage}</b>}</div>}
+          {/* Vorher nur bei codex. Damit waere jeder Fehler UND jeder Fehl-Hinweis bei der
+              Claude-Runtime unsichtbar gewesen — ausgerechnet bei der, die gerade laeuft. */}
+          {runtimeMode !== 'mock' && (runtimeUsage || runtimeContext || runtimeError) && <div className={'main-runtime-meta' + (runtimeError ? ' error' : '')}><span>{runtimeError || runtimeContext}</span>{runtimeUsage && <b>{runtimeUsage}</b>}</div>}
         </div>
         {unseenMessages > 0 && <button className="agent-new-content" type="button" onClick={jumpToNewestMessage}>↓ {unseenMessages} neue {unseenMessages === 1 ? 'Antwort' : 'Antworten'}</button>}
         <form className={'agent-composer' + (dropActive ? ' chat-drop-active' : '')} onSubmit={submit} onDragEnter={(event) => { event.preventDefault(); setDropActive(true); }} onDragOver={(event) => { event.preventDefault(); setDropActive(true); }} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setDropActive(false); }} onDrop={(event) => { setDropActive(false); handleAttachmentDrop(event, (files) => void queueMainFiles(files)); }}>

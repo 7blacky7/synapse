@@ -39,12 +39,54 @@ export interface MainAgentSession {
   createdAt: string;
 }
 
+/**
+ * Ein HTML-Block, den der Hauptagent ueber sein Artefakt-Werkzeug schickt.
+ *
+ * Die Feldnamen sind ABSICHTLICH identisch mit AgentHtmlBlock in
+ * SynapseWorkspaceMock.tsx:92-102 — so muss auf dem ganzen Weg niemand
+ * uebersetzen, und eine Umbenennung faellt sofort beim Uebersetzen auf.
+ * Pflicht sind nur id und html; alles Weitere setzt die Empfangsseite als
+ * Vorgabe, damit der Agent im ersten Schritt nur HTML schicken muss.
+ * preview_path ist der Pfad des gerenderten PNG (Livebild). Er wird heute noch
+ * NICHT angezeigt, steht aber von Anfang an im Format — sonst muesste es ein
+ * zweites Mal geaendert werden, sobald das Livebild steht.
+ */
+export interface AgentArtifactEvent {
+  id: string;
+  html: string;
+  title?: string;
+  column?: number;
+  columnSpan?: number;
+  row?: number;
+  rowSpan?: number;
+  minHeight?: number;
+  revision?: string | number;
+  interactive?: boolean;
+  preview_path?: string;
+}
+
 export interface RuntimeStreamHandlers {
   onReady?: (data: { sessionId: string; runtime: AgentRuntimeName }) => void;
   onRuntime?: (data: { event: unknown }) => void;
   onDelta?: (data: { content: string }) => void;
+  /** Ein Artefakt-Block. EIN Ereignis je Block, nicht ein Ereignis je Antwort. */
+  onArtifact?: (data: AgentArtifactEvent) => void;
   onUsage?: (data: { inputTokens?: number; outputTokens?: number; cachedInputTokens?: number }) => void;
-  onDone?: (data: { sessionId: string; runtimeSessionId: string | null; context?: unknown }) => void;
+  /**
+   * artifacts  = wie viele Bloecke der SERVER geschickt hat (er zaehlt sie beim
+   *              Bauen des Stroms).
+   * artefakteEmpfangen = wie viele hier ANGEKOMMEN sind.
+   * Weichen die beiden ab, ist unterwegs etwas verloren gegangen. Das gehoert
+   * sichtbar gemacht, nicht verschwiegen.
+   */
+  onDone?: (data: {
+    sessionId?: string;
+    runtimeSessionId?: string | null;
+    context?: unknown;
+    artifacts?: number;
+    artefakteEmpfangen: number;
+    unbekannteEreignisse: string[];
+  }) => void;
   onError?: (data: { message: string }) => void;
 }
 
@@ -185,18 +227,40 @@ export async function streamMainAgentMessage(
     signal,
   });
   let streamError = '';
+  // ⚠️ MITZAEHLEN, WAS ANKOMMT — UND WAS NIEMAND KENNT.
+  // Bis zum 26.08.2026 hatte diese Kette KEINEN else-Zweig: ein unbekanntes
+  // Ereignis fiel spurlos heraus. Fuer Artefakte waere das die teuerste Form
+  // gewesen — der Agent SCHICKT ein Artefakt, der Nutzer sieht Fliesstext, und
+  // nichts sagt, dass etwas verloren ging. Der Nutzer haette geschlossen "der
+  // Hauptagent kann kein HTML", obwohl er es konnte.
+  // Beide Zaehler sind beim `done` vollstaendig, weil der Server es zuletzt
+  // schickt; kommt es frueher, ist die Zahl zu klein und meldet lieber einmal
+  // zu viel als einmal zu wenig.
+  let artefakteEmpfangen = 0;
+  const unbekannteEreignisse: string[] = [];
   await consumeSse(response, (event, data) => {
     const value = data as any;
     if (event === 'ready') handlers.onReady?.(value);
     else if (event === 'runtime') handlers.onRuntime?.(value);
     else if (event === 'delta') handlers.onDelta?.(value);
+    else if (event === 'artifact') {
+      artefakteEmpfangen += 1;
+      handlers.onArtifact?.(value);
+    }
     else if (event === 'usage') handlers.onUsage?.(value);
-    else if (event === 'done') handlers.onDone?.(value);
+    else if (event === 'done') {
+      handlers.onDone?.({
+        ...(value && typeof value === 'object' ? value : {}),
+        artefakteEmpfangen,
+        unbekannteEreignisse,
+      });
+    }
     else if (event === 'error') {
       const failure = typeof value === 'string' ? { message: value } : value;
       streamError = failure?.message || 'Unbekannter Runtime-Fehler';
       handlers.onError?.({ message: streamError });
     }
+    else if (!unbekannteEreignisse.includes(event)) unbekannteEreignisse.push(event);
   });
   if (streamError) throw new Error(streamError);
 }
