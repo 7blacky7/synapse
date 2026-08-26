@@ -103,7 +103,20 @@ const KONTEXT_MUSTER = [
 
 const INHALTS_MUSTER = ['content policy', 'safety', 'content_filter', 'blocked by'];
 
-const MODELL_MUSTER = ['model not found', 'unknown model', 'does not exist', 'no endpoints found'];
+// 'is not a valid model id': echter OpenRouter-Wortlaut (gemessen 26.08.2026).
+// Fiel vorher in den generischen 4xx-Topf: format_error brach als Folge die
+// komplette Fallback-Kette ab, obwohl nur der Katalogeintrag veraltet war
+// (Befund M). Die letzten beiden sind der Gemini- bzw. Mistral-Wortlaut fuer
+// dieselbe Sache (dokumentiert, nicht gemessen — Schluessel liegen nicht vor).
+const MODELL_MUSTER = [
+  'model not found',
+  'unknown model',
+  'does not exist',
+  'no endpoints found',
+  'is not a valid model id',
+  'is not found for api version',
+  'invalid model:',
+];
 
 function enthaelt(text: string, muster: string[]): boolean {
   return muster.some((m) => text.includes(m));
