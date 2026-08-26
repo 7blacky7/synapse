@@ -1,5 +1,6 @@
 import { useMemo, useRef, useState, type FormEvent, type PointerEvent as ReactPointerEvent } from 'react';
 import type { ProjectViewModel } from '../control-plane/view-model';
+import { StatusChip } from './StatusKennzeichnung';
 import './project-coordinator-dock.css';
 import { CoordinatorInspector } from './CoordinatorInspector';
 import { AttachmentDrafts, AttachmentMessage, AttachmentPicker, handleAttachmentDrop, prepareMockChatAttachments, type MockChatAttachment } from './ChatAttachments';
@@ -151,7 +152,11 @@ export function ProjectCoordinatorDock({ projects, selectedProject }: Props) {
               <div><i className={coordinator.status} /><span><strong>{coordinator.name}</strong><small>{coordinator.project} · {coordinator.role}</small></span></div>
               <button type="button" onClick={() => setOpenIds((ids) => ids.filter((item) => item !== id))}>An Seite</button>
             </header>
-            <div className="coordinator-window-status"><span>Projekt: <b>{coordinator.project}</b></span><span>Rolle: <b>{coordinator.role}</b></span><em>{coordinator.status === 'working' ? 'arbeitet' : coordinator.status}</em></div>
+            {/* Kopf und Projekt sind echt, die Inhalte der Reiter (CoordinatorInspector:
+                PLAN_ITEMS, MEMORY_ITEMS u.a.) sind erfunden — daher "teilweise".
+                Hier gesetzt und nicht im Inspector: der Marker deckt so alle sieben
+                Reiter auf einmal ab. */}
+            <div className="coordinator-window-status"><StatusChip stand="teilweise" /><span>Projekt: <b>{coordinator.project}</b></span><span>Rolle: <b>{coordinator.role}</b></span><em>{coordinator.status === 'working' ? 'arbeitet' : coordinator.status}</em></div>
             <nav className="coordinator-window-tabs">{([
               ['verlauf', 'Verlauf'],
               ['eigenschaften', 'Eigenschaften'],

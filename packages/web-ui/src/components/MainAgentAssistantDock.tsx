@@ -1,5 +1,6 @@
 import { useRef, useState, type FormEvent, type PointerEvent as ReactPointerEvent } from 'react';
 import { AttachmentDrafts, AttachmentMessage, AttachmentPicker, handleAttachmentDrop, prepareMockChatAttachments, type MockChatAttachment } from './ChatAttachments';
+import { StatusChip } from './StatusKennzeichnung';
 import './main-agent-assistant-dock.css';
 
 interface MainAssistant {
@@ -121,6 +122,8 @@ export function MainAgentAssistantDock() {
       >
         <header onPointerDown={(event) => startWindowDrag(id, event)} onPointerMove={moveWindow} onPointerUp={stopWindowDrag} onPointerCancel={stopWindowDrag}>
           <div><i className={assistant.status} /><span><strong>{assistant.name}</strong><small>Assistent des Hauptagenten · {assistant.id}</small></span></div>
+          {/* Die Assistentenliste (const assistants) ist fest verdrahtet. Der Marker sagt es. */}
+          <StatusChip stand="demo" />
           <button type="button" onClick={() => setOpenIds((ids) => ids.filter((item) => item !== id))}>An Seite</button>
         </header>
         <section className="main-assistant-context"><span>Aktueller Auftrag</span><strong>{assistant.task}</strong><small>Spawn, Aufgabe und Rückgabe sind in UI1–UI3 simuliert.</small></section>
