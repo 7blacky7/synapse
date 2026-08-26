@@ -39,9 +39,26 @@ export interface UebersprungeneStelle {
   zeile: string;
 }
 
+/** Eine von mehreren gleichnamigen Definitionen. */
+export interface Kandidat {
+  file_path: string;
+  line_start: number;
+  symbol_type: string;
+  parent_symbol: string | null;
+}
+
 export interface UmbenennungsPlan {
   name: string;
   neuer_name: string;
+  /**
+   * Wahr, wenn es mehrere gleichnamige Definitionen gibt — etwa Methoden
+   * verschiedener Klassen oder Ueberladungen. Dann trifft die Vorschau eine
+   * Auswahl, die sie nicht begruenden kann, und darf NICHT ungeprueft
+   * angewendet werden.
+   */
+  mehrdeutig: boolean;
+  /** Alle gefundenen Definitionen des Namens, wenn es mehr als eine gibt. */
+  kandidaten: Kandidat[];
   stellen: UmbenennungsStelle[];
   uebersprungen: UebersprungeneStelle[];
   /** Fertige Operationen fuer files(action:"plan"). Leer, wenn nichts zu tun ist. */
@@ -81,7 +98,8 @@ export async function planeUmbenennung(
 
   if (name === neuerName) {
     return {
-      name, neuer_name: neuerName, stellen: [], uebersprungen: [], ops: [],
+      name, neuer_name: neuerName, mehrdeutig: false, kandidaten: [],
+      stellen: [], uebersprungen: [], ops: [],
       warnungen: ['Alter und neuer Name sind gleich — nichts zu tun.'],
       namensgleiche_ignoriert: 0,
     };
@@ -96,10 +114,47 @@ export async function planeUmbenennung(
   const refs = await getReferences(project, name);
   if (!refs.definition) {
     return {
-      name, neuer_name: neuerName, stellen: [], uebersprungen: [], ops: [],
+      name, neuer_name: neuerName, mehrdeutig: false, kandidaten: [],
+      stellen: [], uebersprungen: [], ops: [],
       warnungen: [`Kein Symbol "${name}" im Projekt gefunden.`],
       namensgleiche_ignoriert: 0,
     };
+  }
+
+  // ⚠️ MEHRERE DEFINITIONEN DESSELBEN NAMENS. getReferences waehlt genau eine
+  // aus (LIMIT 1) — und zwar ohne Begruendung, es ist schlicht die erste.
+  // Gemessen am 26.08.2026: 'erstelle' ist in pg_client.moo FUENFMAL definiert,
+  // auf fuenf verschiedenen Objekten. Die Vorschau meldete daraufhin eine
+  // einzige Fundstelle und keine Warnung — wer sie angewendet haette, haette
+  // eine von fuenf Methoden umbenannt und nichts davon gemerkt.
+  // Auswaehlen kann diese Funktion hier nicht, dazu braeuchte es Typen. Sagen
+  // kann sie es.
+  const kandidatenRows = await getPool().query<{
+    file_path: string; line_start: number; symbol_type: string; parent_symbol: string | null;
+  }>(
+    `SELECT file_path, line_start, symbol_type, parent_symbol
+       FROM code_symbols
+      WHERE project = $1 AND name = $2 AND symbol_type <> 'string'
+        AND symbol_type NOT IN ('import', 'export')
+      ORDER BY file_path, line_start`,
+    [project, name]
+  );
+  const kandidaten: Kandidat[] = kandidatenRows.rows.map((z) => ({
+    file_path: z.file_path,
+    line_start: z.line_start,
+    symbol_type: z.symbol_type,
+    parent_symbol: z.parent_symbol ?? null,
+  }));
+  const mehrdeutig = kandidaten.length > 1;
+  if (mehrdeutig) {
+    warnungen.push(
+      `⚠️ "${name}" ist ${kandidaten.length} mal definiert `
+      + `(${[...new Set(kandidaten.map((k) => k.file_path))].length} Datei(en)). `
+      + 'Diese Vorschau bezieht sich auf EINE davon und kann nicht entscheiden, '
+      + 'welche gemeint ist — dafuer muessten Typen aufgeloest werden. '
+      + 'NICHT ungeprueft anwenden: die Fundstellen unter kandidaten vergleichen '
+      + 'und im Zweifel Datei fuer Datei von Hand vorgehen.'
+    );
   }
 
   // Die Definition gehoert dazu — sonst zeigen die umbenannten Verwendungen
@@ -209,6 +264,8 @@ export async function planeUmbenennung(
   return {
     name,
     neuer_name: neuerName,
+    mehrdeutig,
+    kandidaten: mehrdeutig ? kandidaten : [],
     stellen,
     uebersprungen,
     // anchor_text laesst den Schreibweg selbst pruefen, dass die Zeile noch so
