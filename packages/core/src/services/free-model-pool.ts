@@ -478,8 +478,11 @@ function faehigkeiten(roh: RohModell, inputModalities: string[]): string[] {
  *
  * "unbekannt" wird bewusst nicht zu "kostenlos" verkuerzt: ein Anbieter, der
  * keine Preise nennt, ist keine Zusage.
+ *
+ * Exportiert fuer den Fixture-Test (F-Kern, 26.08.2026) — im Betrieb wird die
+ * Funktion weiterhin nur intern von normalisiere() benutzt.
  */
-function einordnen(
+export function einordnen(
   provider: ProviderEntry,
   modelId: string,
   preisEin: number | null,
