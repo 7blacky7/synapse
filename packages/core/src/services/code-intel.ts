@@ -813,6 +813,13 @@ export async function getReferences(
       ? a.line_number - b.line_number
       : a.file_path.localeCompare(b.file_path));
 
+  // Nur eine Kostprobe ausliefern. name_matches ist eine Begruendung dafuer,
+  // dass etwas AUSSORTIERT wurde — dafuer genuegen ein paar Beispiele und die
+  // Gesamtzahl. Vollstaendig ausgegeben trieb allein diese Liste die Antwort
+  // bei einem haeufigen Namen ueber die Grenze dessen, was ein Aufrufer noch
+  // verarbeiten kann. Wer alle braucht, setzt include_name_matches.
+  const NAME_MATCH_PROBE = 10;
+
   return {
     definition,
     references,
@@ -820,7 +827,7 @@ export async function getReferences(
     total_references: references.length,
     string_occurrences: stringOccurrences,
     total_string_occurrences: stringOccurrences.length,
-    name_matches: nameMatches,
+    name_matches: includeNameMatches ? nameMatches : nameMatches.slice(0, NAME_MATCH_PROBE),
     total_name_matches: nameMatches.length,
   };
 }
