@@ -353,6 +353,12 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
         example: 'code_intel({ action: "entrypoints", project: "synapse", file_path: "%runtime%", limit: 20 })',
         tips: 'Fuer die Seiteneffekte EINER bestimmten Datei ist statements(top_level_only: true, file_path) die praezisere Alternative (zeigt auch Imports + Modul-Variablen).',
       },
+      rename_preview: {
+        description: 'Plant das Umbenennen eines Symbols und schreibt NICHTS. Grundlage sind die Fundstellen, die references nach dem Aussortieren uebrig laesst, plus die Definition selbst — nicht alle Namensvorkommen.',
+        params: 'name (req, der heutige Name), new_name (req)',
+        example: 'code_intel({ action: "rename_preview", project: "synapse", name: "watcherRequest", new_name: "gotrayAnfrage" })',
+        tips: 'ZURUECK KOMMEN FERTIGE ops FUER files(action:"plan") — erst dieser Aufruf schreibt, und dann mit Versionierung, Hash-Pruefung und restore_batch. WARUM NICHT EINFACH search_replace(replace_all): derselbe Name steht oft an unbeteiligten Stellen. Gemessen am 26.08.2026 stand "update" 14 mal im Projekt, 13 davon als crypto.createHash("sha256").update() — ein Ersetzen haette die Hashes zerlegt; rename_preview aendert dort genau 2 Zeilen. Uebersprungen wird bewusst statt geraten: steht der Name mehrfach in EINER Zeile, ist nicht entscheidbar, welches Vorkommen gemeint ist. Zeichenketten bleiben unangetastet und werden gezaehlt gemeldet. GRENZE: Es loest keine Typen auf — zwei gleichnamige Methoden auf verschiedenen Klassen sind nicht unterscheidbar. Immer erst die Vorschau lesen, besonders warnungen und uebersprungen.',
+      },
       health: {
         description: 'Parser-Diagnose auf zwei Zoomstufen. MIT file_path: zustaendiger Parser, Parser-Version (gespeichert gegen aktuell), Symbolzahlen je Typ, Statements, Zeilenabdeckung, letzter Ausfall aus parse_failures. OHNE file_path: Projekt-Uebersicht mit parser_befunde[] (Befunde ueber ALLE Dateien eines Parsers) und dateien[] (auffaellige Einzelfaelle, groesste zuerst). Beide liefern "befund": Klartextsaetze, WARUM etwas auffaellt.',
         params: 'file_path (OPTIONAL — mit: Diagnose dieser Datei; ohne: Projekt-Uebersicht), limit (nur Uebersicht, Default 20, hart gedeckelt auf 100)',
