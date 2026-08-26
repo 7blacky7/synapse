@@ -109,7 +109,10 @@ test('Claude Modell-ID und gezielter Abort werden validiert', () => {
   assert.ok(abort.join(' ').includes('kill -TERM'));
   assert.ok(abort.join(' ').includes('kill -KILL'));
   assert.equal(abort.join(' ').includes('pkill'), false);
-  assert.ok(buildClaudeRunnerCommand().includes('"$@" <&0 & child=$!'));
+  assert.ok(buildClaudeRunnerCommand().includes('exec 3<&0'));
+  assert.ok(buildClaudeRunnerCommand().includes('"$@" <&3 & child=$!'));
+  // Rueckfall-Wache: das alte Konstrukt verlor stdin unter dash (Channel 19192)
+  assert.equal(buildClaudeRunnerCommand().includes('<&0 &'), false);
 });
 
 test('Claude JSONL puffert fachlich Session, Delta und Usage', () => {

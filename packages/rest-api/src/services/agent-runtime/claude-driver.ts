@@ -150,7 +150,13 @@ export function buildClaudeRunnerCommand(): string {
     'cleanup() { rm -f "$SYNAPSE_CLAUDE_PID_FILE"; }',
     "trap 'terminate' TERM INT",
     "trap 'cleanup' EXIT",
-    '"$@" <&0 & child=$!',
+    // stdin VOR dem Backgrounding auf fd3 sichern: POSIX gibt einem '&'-Hintergrundjob
+    // stdin=/dev/null, und dash (/bin/sh im Container) tut das AUCH bei '<&0' — die Umleitung
+    // greift erst NACH der /dev/null-Zuweisung und dupliziert dann nur /dev/null. bash dagegen
+    // laesst stdin bei expliziter Umleitung durch; deshalb fiel es lokal nie auf.
+    // NICHT auf '<&0' zurueckvereinfachen (gemessen 26.08.2026, Channel 19192/19194).
+    'exec 3<&0',
+    '"$@" <&3 & child=$!',
     'printf "%s %s\\n" "$$" "$child" > "$SYNAPSE_CLAUDE_PID_FILE"',
     'wait "$child"',
   ].join('; ');
