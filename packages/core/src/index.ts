@@ -514,6 +514,13 @@ export {
 } from './services/free-model-pool-errors.js';
 export type { FailureReason, ClassifiedFailure, FailureInput } from './services/free-model-pool-errors.js';
 export {
+  speichereArtefakt,
+  aktualisiereArtefaktPfade,
+  pruefeArtefaktEingabe,
+  ARTEFAKT_HTML_MAX,
+} from './services/artefakt.js';
+export type { ArtefaktEingabe, ArtefaktZeile } from './services/artefakt.js';
+export {
   setzeFreigabe,
   setzeDatenverwendung,
   leseProtokoll,

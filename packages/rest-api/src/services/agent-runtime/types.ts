@@ -45,7 +45,9 @@ export interface MainAgentSession {
 }
 
 export interface RuntimeStreamEvent {
-  event: 'runtime' | 'delta' | 'usage' | 'error';
+  // 'artifact': Zustellung eines Hauptagenten-Artefakts in den offenen Strom
+  // (artifact-stream.ts); die Empfangsseite kennt den Typ seit d7a39c1.
+  event: 'runtime' | 'delta' | 'usage' | 'error' | 'artifact';
   data: Record<string, unknown>;
 }
 

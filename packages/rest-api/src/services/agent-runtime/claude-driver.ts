@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { StringDecoder } from 'node:string_decoder';
 import { AgentRuntimeRepository } from './repository.js';
+import { issueServiceToken } from '../auth.js';
 import {
   persistentRuntimeBinds,
   validateRuntimeImage,
@@ -43,7 +44,7 @@ export function validateClaudeModel(model: string): string {
   return value;
 }
 
-export function buildClaudeCommand(runtimeSessionId: string | null, model = DEFAULT_MODEL): string[] {
+export function buildClaudeCommand(runtimeSessionId: string | null, model = DEFAULT_MODEL, mcpConfig: string | null = null): string[] {
   const validatedModel = validateClaudeModel(model);
   const command = [
     'claude',
@@ -59,11 +60,37 @@ export function buildClaudeCommand(runtimeSessionId: string | null, model = DEFA
     'dontAsk',
     '--strict-mcp-config',
     '--mcp-config',
-    EMPTY_MCP_CONFIG,
-    '--model',
-    validatedModel,
+    mcpConfig ?? EMPTY_MCP_CONFIG,
   ];
+  if (mcpConfig) {
+    // Auflage (26.08.2026): der Hauptagent bekommt GENAU EIN Werkzeug
+    // freigeschaltet — nicht den ganzen Synapse-Werkzeugkasten. Die Server-
+    // Seite erzwingt dasselbe zusaetzlich (tools/list-Filter + Ablehnung).
+    command.push('--allowedTools', 'mcp__synapse__artefakt');
+  }
+  command.push('--model', validatedModel);
   return runtimeSessionId ? [...command, '--resume', runtimeSessionId] : command;
+}
+
+/**
+ * Minimal-MCP-Config fuer den Hauptagenten-Container: GENAU EIN Server (die
+ * Synapse-REST-Strecke) mit Session-Bindung per Header. Der Container erreicht
+ * die API im proxynet unter http://synapse-api:3456 (GEMESSEN 26.08.2026:
+ * getent hosts synapse-api -> 172.19.0.2, /health -> {"status":"ok"}).
+ */
+export function buildHauptagentMcpConfig(url: string, token: string, sessionId: string): string {
+  return JSON.stringify({
+    mcpServers: {
+      synapse: {
+        type: 'http',
+        url,
+        headers: {
+          Authorization: 'Bearer ' + token,
+          'X-Synapse-Hauptagent-Session': sessionId,
+        },
+      },
+    },
+  });
 }
 
 export function parseClaudeJsonLine(line: string): ParsedClaudeEvent {
@@ -363,11 +390,12 @@ export class ClaudeRuntimeDriver implements AgentRuntimeDriver {
     await this.ensureTrustStore(container);
 
     const pidPath = '/tmp/synapse-claude-' + randomUUID() + '.pid';
+    const mcpConfig = await this.hauptagentMcpConfig(session.id, emit);
     const command = [
       '/usr/bin/env',
       '-u',
       'ANTHROPIC_API_KEY',
-      ...buildClaudeCommand(session.runtimeSessionId, config.model ?? DEFAULT_MODEL),
+      ...buildClaudeCommand(session.runtimeSessionId, config.model ?? DEFAULT_MODEL, mcpConfig),
     ];
     const runner = buildClaudeRunnerCommand();
     const exec = await container.exec({
@@ -455,6 +483,40 @@ export class ClaudeRuntimeDriver implements AgentRuntimeDriver {
     if (runtimeFailure) throw new Error(runtimeFailure);
     if (info.ExitCode !== 0) throw new Error('Claude exec endete mit Exit-Code ' + String(info.ExitCode));
     return { runtimeSessionId, context };
+  }
+
+  // Ein Service-Token je Prozesslauf reicht: es lebt nur in der exec-Env des
+  // Containers und wird beim naechsten API-Start neu gepraegt (auth_tokens).
+  private hauptagentTokenPromise: Promise<string> | null = null;
+
+  private async hauptagentMcpConfig(
+    sessionId: string,
+    emit: (event: RuntimeStreamEvent) => void,
+  ): Promise<string | null> {
+    try {
+      if (!this.hauptagentTokenPromise) {
+        this.hauptagentTokenPromise = issueServiceToken(
+          'hauptagent:claude',
+          'hauptagent-claude',
+          180 * 24 * 60 * 60 * 1000,
+        ).then((issued) => issued.token);
+      }
+      const token = await this.hauptagentTokenPromise;
+      const url = process.env.SYNAPSE_HAUPTAGENT_MCP_URL || 'http://synapse-api:3456/';
+      return buildHauptagentMcpConfig(url, token, sessionId);
+    } catch (error) {
+      // Laut statt still (Muster stille Teilantwort): der Chat laeuft ohne das
+      // Artefakt-Tool weiter, aber der Grund steht sichtbar im Strom.
+      this.hauptagentTokenPromise = null;
+      emit({
+        event: 'runtime',
+        data: {
+          stream: 'stderr',
+          content: 'Artefakt-Tool nicht verfuegbar (Service-Token fehlgeschlagen): ' + (error instanceof Error ? error.message : String(error)) + '\n',
+        },
+      });
+      return null;
+    }
   }
 
   private async ensureConfig(): Promise<RuntimeConfiguration> {

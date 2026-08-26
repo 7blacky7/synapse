@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { validateToken, type TokenKind } from '../services/auth.js';
 import { getAgentRuntimeManager, shutdownAgentRuntimeManager } from '../services/agent-runtime/manager.js';
 import type { RuntimeName, RuntimeStreamEvent } from '../services/agent-runtime/types.js';
+import { countArtifacts, registerArtifactStream, unregisterArtifactStream } from '../services/agent-runtime/artifact-stream.js';
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -260,6 +261,10 @@ export async function agentRuntimeRoutes(fastify: FastifyInstance): Promise<void
     });
     sse(reply, 'ready', { sessionId: session.id, runtime: session.runtime });
 
+    // Artefakt-Zustellung: solange dieser Strom offen ist, kann das artefakt-Tool
+    // Events in GENAU diese Session einspeisen (kein Broadcast, artifact-stream.ts).
+    registerArtifactStream(session.id, (item: RuntimeStreamEvent) => sse(reply, item.event, item.data));
+
     const controller = new AbortController();
     const onClose = (): void => controller.abort();
     reply.raw.once('close', onClose);
@@ -276,6 +281,9 @@ export async function agentRuntimeRoutes(fastify: FastifyInstance): Promise<void
           sessionId: session.id,
           runtimeSessionId: result.runtimeSessionId,
           context: result.context,
+          // Zaehlung fuer die Empfangsseite (Format 19189/3): weicht sie von den
+          // tatsaechlich angekommenen Events ab, macht die UI das sichtbar.
+          artifacts: countArtifacts(session.id),
         });
         reply.raw.end();
       }
@@ -286,6 +294,7 @@ export async function agentRuntimeRoutes(fastify: FastifyInstance): Promise<void
         reply.raw.end();
       }
     } finally {
+      unregisterArtifactStream(session.id);
       reply.raw.off('close', onClose);
     }
   });

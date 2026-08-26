@@ -6,6 +6,7 @@
  */
 
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
+import { zeigeArtefakt } from '../services/agent-runtime/artefakt-tool.js';
 import {
   // Code-Suche
   searchCode,
@@ -1191,6 +1192,28 @@ const MCP_TOOLS = [
         agent_id: { type: 'string', description: 'Optionale Agent-ID fuer Attribution und serverseitige Hook-Deduplizierung' },
       },
       required: ['action'],
+    },
+  },
+  // 22. artefakt — Hauptagenten-Werkzeug: HTML-Block als Artefakt in die Web-UI
+  {
+    name: 'artefakt',
+    description: 'Werkzeug des HAUPTAGENTEN: legt einen HTML-Block als Artefakt ab und stellt ihn in den laufenden Antwort-Strom der Web-UI zu (SSE-Event "artifact", AgentHtmlBlock-kompatibel). Die PG-Zeile (agent_artifacts) ist die Wahrheit; HTML-Datei und PNG-Livebild im Runtime-Container (/attachments/artefakte, spaeter eigener Share) sind Abbilder. Erster Schritt: EIN Block je Aufruf (action "zeigen"); mit artefakt_id wird ein bestehender Block derselben Session ersetzt (revision steigt). KEIN Broadcast beim Ablegen. Nur aus einer Hauptagenten-Session aufrufbar — die Session-Bindung setzt der SERVER aus dem Header X-Synapse-Hauptagent-Session, andere Aufrufer erhalten eine klare Ablehnung.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', enum: ['zeigen'], description: 'zeigen = Block ablegen und in den offenen Strom zustellen' },
+        html: { type: 'string', description: 'HTML-Inhalt des Blocks (Pflicht, max 2 MB). Wird empfangsseitig sanitisiert und im Shadow DOM gerendert.' },
+        titel: { type: 'string', description: 'Optionaler Titel des Blocks' },
+        artefakt_id: { type: 'string', description: 'Optional: ID eines bestehenden Artefakts derselben Session — ersetzt dessen Inhalt (revision + 1) statt einen neuen Block anzulegen' },
+        column: { type: 'number', description: 'Optional: Raster-Spalte (Vorgaben setzt die Empfangsseite)' },
+        columnSpan: { type: 'number', description: 'Optional: Spaltenbreite' },
+        row: { type: 'number', description: 'Optional: Raster-Zeile' },
+        rowSpan: { type: 'number', description: 'Optional: Zeilenhoehe' },
+        minHeight: { type: 'number', description: 'Optional: Mindesthoehe in px' },
+        session_id: { type: 'string', description: 'Wird serverseitig aus dem Hauptagenten-Header gesetzt — NICHT manuell mitschicken' },
+        agent_id: { type: 'string', description: 'Optionale Agent-ID fuer Attribution' },
+      },
+      required: ['action', 'html'],
     },
   },
 ];
@@ -4923,6 +4946,13 @@ async function handleToolCall(
     // =================================================================
     // 18. GUIDE — Web-KI-Onboarding + Tool-Dokumentation
     // =================================================================
+    // =================================================================
+    // ARTEFAKT (Hauptagent) — Orchestrierung in services/agent-runtime/artefakt-tool.ts
+    // =================================================================
+    case 'artefakt': {
+      return zeigeArtefakt(args, effectiveAgentId);
+    }
+
     case 'guide': {
       const toolName = str(args, 'tool_name');
       const actionName = str(args, 'action_name');
@@ -5225,6 +5255,10 @@ export async function mcpRoutes(fastify: FastifyInstance): Promise<void> {
     }
 
     const derivedAgentId = deriveAgentIdFromHeaders(request.headers as Record<string, unknown>);
+    // Hauptagenten-Kontext — identisch zum POST-/-Handler (die Doppelung der
+    // beiden Handler ist Bestand; Aenderungen hier IMMER in beiden pflegen).
+    const hauptagentSessionHeader = request.headers['x-synapse-hauptagent-session'];
+    const hauptagentSession = typeof hauptagentSessionHeader === 'string' && hauptagentSessionHeader.trim() !== '' ? hauptagentSessionHeader.trim() : null;
 
     try {
       let result: unknown;
@@ -5239,12 +5273,31 @@ export async function mcpRoutes(fastify: FastifyInstance): Promise<void> {
           break;
 
         case 'tools/list':
-          result = { tools: MCP_TOOLS };
+          // Hauptagenten-Aufrufer sehen GENAU EIN Werkzeug (Auflage 26.08.2026).
+          result = { tools: hauptagentSession ? MCP_TOOLS.filter((t) => t.name === 'artefakt') : MCP_TOOLS };
           break;
 
         case 'tools/call': {
           const toolName = params?.name as string;
           const toolArgs = (params?.arguments || {}) as Record<string, unknown>;
+          if (hauptagentSession) {
+            // Auflage (26.08.2026): die Hauptagenten-Verbindung ist auf artefakt
+            // beschraenkt — jedes andere Werkzeug wird klar abgelehnt.
+            if (toolName !== 'artefakt') {
+              const ablehnung = {
+                success: false,
+                error: 'hauptagent_nur_artefakt',
+                message: 'Diese Verbindung gehoert einer Hauptagenten-Session und ist auf das Tool "artefakt" beschraenkt.',
+              };
+              result = { content: [{ type: 'text', text: JSON.stringify(ablehnung, null, 2) }], structuredContent: ablehnung, isError: true };
+              break;
+            }
+            toolArgs.session_id = hauptagentSession;
+          } else if (toolName === 'artefakt') {
+            // Ohne Hauptagenten-Header gibt es keine Session-Bindung: ein selbst
+            // mitgeschicktes session_id waere eine Identitaets-Behauptung.
+            delete toolArgs.session_id;
+          }
           // Auto-Detect: Web-KIs ohne Wrapper-Kontext bekommen agent_id aus
           // dem User-Agent/Session-Header (siehe deriveAgentIdFromHeaders).
           // Setzt nur wenn der Caller nicht selbst eine ID mitschickt.
@@ -5385,6 +5438,11 @@ export async function mcpRoutes(fastify: FastifyInstance): Promise<void> {
     }
 
     const derivedAgentId = deriveAgentIdFromHeaders(request.headers as Record<string, unknown>);
+    // Hauptagenten-Kontext: der Runtime-Container schickt seine Session-ID im
+    // Header mit (buildHauptagentMcpConfig im claude-driver). Nur der SERVER
+    // setzt daraus session_id — eine von aussen behauptete session_id zaehlt nicht.
+    const hauptagentSessionHeader = request.headers['x-synapse-hauptagent-session'];
+    const hauptagentSession = typeof hauptagentSessionHeader === 'string' && hauptagentSessionHeader.trim() !== '' ? hauptagentSessionHeader.trim() : null;
 
     console.log(`[MCP] Request: ${method}`);
 
@@ -5401,12 +5459,31 @@ export async function mcpRoutes(fastify: FastifyInstance): Promise<void> {
           break;
 
         case 'tools/list':
-          result = { tools: MCP_TOOLS };
+          // Hauptagenten-Aufrufer sehen GENAU EIN Werkzeug (Auflage 26.08.2026).
+          result = { tools: hauptagentSession ? MCP_TOOLS.filter((t) => t.name === 'artefakt') : MCP_TOOLS };
           break;
 
         case 'tools/call': {
           const toolName = params?.name as string;
           const toolArgs = (params?.arguments || {}) as Record<string, unknown>;
+          if (hauptagentSession) {
+            // Auflage (26.08.2026): die Hauptagenten-Verbindung ist auf artefakt
+            // beschraenkt — jedes andere Werkzeug wird klar abgelehnt.
+            if (toolName !== 'artefakt') {
+              const ablehnung = {
+                success: false,
+                error: 'hauptagent_nur_artefakt',
+                message: 'Diese Verbindung gehoert einer Hauptagenten-Session und ist auf das Tool "artefakt" beschraenkt.',
+              };
+              result = { content: [{ type: 'text', text: JSON.stringify(ablehnung, null, 2) }], structuredContent: ablehnung, isError: true };
+              break;
+            }
+            toolArgs.session_id = hauptagentSession;
+          } else if (toolName === 'artefakt') {
+            // Ohne Hauptagenten-Header gibt es keine Session-Bindung: ein selbst
+            // mitgeschicktes session_id waere eine Identitaets-Behauptung.
+            delete toolArgs.session_id;
+          }
           // Auto-Detect: Web-KIs ohne Wrapper-Kontext bekommen agent_id aus
           // dem User-Agent/Session-Header (siehe deriveAgentIdFromHeaders).
           // Setzt nur wenn der Caller nicht selbst eine ID mitschickt.

@@ -1893,6 +1893,29 @@ CREATE TABLE IF NOT EXISTS agent_runtime_sessions (
 CREATE INDEX IF NOT EXISTS idx_agent_runtime_sessions_runtime
   ON agent_runtime_sessions(runtime, updated_at DESC);
 
+-- ART-1: Artefakte des Hauptagenten (Tool "artefakt"). DIE PG-ZEILE IST DIE
+-- WAHRHEIT; HTML-/PNG-Datei im Runtime-Container sind nur das Abbild fuers
+-- Rendern. Laufen Zeile und Datei auseinander, gewinnt PG (Auflage 26.08.2026).
+CREATE TABLE IF NOT EXISTS agent_artifacts (
+  id            UUID PRIMARY KEY,
+  session_id    UUID NOT NULL REFERENCES agent_runtime_sessions(id),
+  title         TEXT,
+  html          TEXT NOT NULL,
+  column_pos    INTEGER,
+  column_span   INTEGER,
+  row_pos       INTEGER,
+  row_span      INTEGER,
+  min_height    INTEGER,
+  revision      INTEGER NOT NULL DEFAULT 1,
+  html_path     TEXT,
+  image_path    TEXT,
+  created_by    TEXT,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_agent_artifacts_session
+  ON agent_artifacts(session_id, created_at DESC);
+
 -- FP-1: Modell-Pool. Synapse pflegt hier KEINE Modelllisten — die kommen live
 -- aus den Katalogen der Anbieter. Gespeichert wird nur, was Synapse selbst
 -- entscheidet oder beobachtet: Freigaben, Zugangsdaten, Sperren, Verlauf.
