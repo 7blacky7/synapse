@@ -1,11 +1,14 @@
 import { randomUUID } from 'node:crypto';
 import { getPool } from '@synapse/core';
+import { agentRuntimeBasisRoot } from './runtime-root.js';
 import type { MainAgentSession, RuntimeConfiguration, RuntimeName } from './types.js';
 
 const DEFAULT_RUNTIME_IMAGE = 'node:22-bookworm-slim';
 const DEFAULT_RUNTIME_ROOTS: Record<RuntimeName, string> = {
-  codex: '/mnt/user/synapse-agent-runtime/codex',
-  claude: '/mnt/user/synapse-agent-runtime/claude',
+  // EINE Quelle (runtime-root.ts, ENV SYNAPSE_AGENT_RUNTIME_ROOT) — /mnt/user
+  // war auf diesem Host rootfs=RAM (gemessen 26.08.2026, Channel 19208).
+  codex: agentRuntimeBasisRoot() + '/codex',
+  claude: agentRuntimeBasisRoot() + '/claude',
   // Der Modell-Pool hat kein Wurzelverzeichnis — es laeuft kein Container.
   // Der Wert erfuellt nur die NOT-NULL-Spalte der gemeinsamen Tabelle.
   'free-pool': 'n/a',

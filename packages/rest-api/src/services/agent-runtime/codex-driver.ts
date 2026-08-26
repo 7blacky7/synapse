@@ -14,8 +14,11 @@ import type {
   TerminalSession,
 } from './types.js';
 
+import { agentRuntimeBasisRoot, pruefeRuntimeRootPersistenz } from './runtime-root.js';
+
 const DEFAULT_IMAGE = 'node:22-bookworm-slim';
-const DEFAULT_ROOT = '/mnt/user/synapse-agent-runtime/codex';
+// EINE Quelle (runtime-root.ts) — /mnt/user war rootfs=RAM (Channel 19208).
+const DEFAULT_ROOT = agentRuntimeBasisRoot() + '/codex';
 const INSTALL_COMMAND = 'mkdir -p /root/.local && npm install --global --prefix /root/.local @openai/codex@latest';
 
 export function validateRuntimeImage(image: string): string {
@@ -53,7 +56,11 @@ export function validateRuntimeRoot(rootPath: string): string {
   if (!value.startsWith('/') || value.includes('\0') || value.split('/').includes('..')) {
     throw new Error('rootPath muss ein absoluter Pfad ohne Traversal sein');
   }
-  const allowed = (process.env.AGENT_RUNTIME_ALLOWED_ROOTS || '/mnt/user')
+  // /mnt/y und /mnt/z sind die echten ZFS-Pools. /mnt/user bleibt erlaubt,
+  // damit BESTEHENDE root_path-Zeilen bis zur Migration starten koennen — vor
+  // dem RAM-Fall schuetzt dort die Persistenz-Wache (runtime-root.ts), nicht
+  // diese Positivliste.
+  const allowed = (process.env.AGENT_RUNTIME_ALLOWED_ROOTS || '/mnt/user,/mnt/y,/mnt/z')
     .split(',')
     .map((item) => item.trim().replace(/\/+$/, ''))
     .filter(Boolean);
@@ -414,6 +421,8 @@ export class CodexRuntimeDriver implements AgentRuntimeDriver {
     } catch (error) {
       if (!/no such container/i.test((error as Error).message)) throw error;
       const root = validateRuntimeRoot(config.rootPath);
+      // ⭐ Persistenz-Wache: NIE wieder still eine Runtime ins RAM legen (19208).
+      await pruefeRuntimeRootPersistenz(this.docker, config.image, root);
       return this.docker.createContainer({
         name: config.containerName,
         Image: config.image,

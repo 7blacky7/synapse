@@ -21,7 +21,10 @@ import type {
 } from './types.js';
 
 const DEFAULT_IMAGE = 'node:22-bookworm-slim';
-const DEFAULT_ROOT = '/mnt/user/synapse-agent-runtime/claude';
+import { agentRuntimeBasisRoot, pruefeRuntimeRootPersistenz } from './runtime-root.js';
+
+// EINE Quelle (runtime-root.ts) — /mnt/user war rootfs=RAM (Channel 19208).
+const DEFAULT_ROOT = agentRuntimeBasisRoot() + '/claude';
 const DEFAULT_MODEL = 'sonnet';
 const INSTALL_COMMAND = 'mkdir -p /root/.local && npm install --global --prefix /root/.local @anthropic-ai/claude-code@latest';
 const EMPTY_MCP_CONFIG = '{"mcpServers":{}}';
@@ -606,6 +609,8 @@ export class ClaudeRuntimeDriver implements AgentRuntimeDriver {
     } catch (error) {
       if (!/no such container/i.test((error as Error).message)) throw error;
       const root = validateRuntimeRoot(config.rootPath);
+      // ⭐ Persistenz-Wache: NIE wieder still eine Runtime ins RAM legen (19208).
+      await pruefeRuntimeRootPersistenz(this.docker, config.image, root);
       return this.docker.createContainer({
         name: config.containerName,
         Image: config.image,

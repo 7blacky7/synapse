@@ -46,11 +46,13 @@ test('Runtime-Image bleibt innerhalb der konfigurierten Allowlist', () => {
 });
 
 test('Persistente Runtime-Binds enthalten nur die vier vorgesehenen Bereiche', () => {
-  assert.deepEqual(persistentRuntimeBinds('/mnt/user/runtime/codex'), [
-    '/mnt/user/runtime/codex/home:/root',
-    '/mnt/user/runtime/codex/projects:/projects',
-    '/mnt/user/runtime/codex/state:/state',
-    '/mnt/user/runtime/codex/attachments:/attachments',
+  // Beispielpfad = der echte Ablageort seit dem Umzug 26.08.2026 (Channel 19211)
+  // — nicht mehr /mnt/user, das auf diesem Host RAM war.
+  assert.deepEqual(persistentRuntimeBinds('/mnt/z/dockdata/synapse-agent-runtime/codex'), [
+    '/mnt/z/dockdata/synapse-agent-runtime/codex/home:/root',
+    '/mnt/z/dockdata/synapse-agent-runtime/codex/projects:/projects',
+    '/mnt/z/dockdata/synapse-agent-runtime/codex/state:/state',
+    '/mnt/z/dockdata/synapse-agent-runtime/codex/attachments:/attachments',
   ]);
 });
 
