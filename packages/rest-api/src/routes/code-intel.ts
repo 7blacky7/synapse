@@ -205,10 +205,11 @@ export async function codeIntelRoutes(fastify: FastifyInstance): Promise<void> {
     Params: { name: string };
     Querystring: {
       name: string;
+      include_name_matches?: string;
     };
   }>('/api/projects/:name/code-intel/references', async (request, reply) => {
     const { name } = request.params;
-    const { name: refName } = request.query;
+    const { name: refName, include_name_matches: includeNameMatches } = request.query;
 
     if (!refName) {
       return reply.status(400).send({
@@ -218,15 +219,13 @@ export async function codeIntelRoutes(fastify: FastifyInstance): Promise<void> {
     }
 
     try {
-      const result = await getReferences(name, refName);
+      const result = await getReferences(name, refName, includeNameMatches === 'true');
 
-      return {
-        success: true,
-        definition: result.definition,
-        references: result.references,
-        total_files: result.total_files,
-        total_references: result.total_references,
-      };
+      // Das GANZE Ergebnis weitergeben. Vorher wurden hier vier Felder einzeln
+      // abgeschrieben — string_occurrences und total_string_occurrences fielen
+      // dabei heraus, ohne dass es auffiel, waehrend beide MCP-Strecken sie
+      // lieferten. Wer Felder abschreibt, vergisst die naechsten wieder.
+      return { success: true, ...result };
     } catch (error) {
       return reply.status(500).send({
         success: false,

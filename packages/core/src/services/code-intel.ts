@@ -623,26 +623,60 @@ export interface ReferencesResult {
     name: string;
     line_start: number;
     is_exported: boolean;
+    /** Eltern-Symbol (Klasse/Objekt), zu dem das Symbol gehoert. NULL = freistehend. */
+    parent_symbol: string | null;
   } | null;
   references: ReferenceInfo[];
   total_files: number;
   total_references: number;
   string_occurrences: StringOccurrenceInfo[];
   total_string_occurrences: number;
+  /**
+   * Aufrufe, die nur DENSELBEN NAMEN tragen, aber erkennbar etwas anderes
+   * meinen — Methodenaufrufe auf einem fremden Empfaenger, waehrend die
+   * gesuchte Definition freisteht. Sie stehen hier und nicht unter
+   * references, werden aber bewusst mitgeliefert: still verschwundene
+   * Treffer waeren genauso irrefuehrend wie falsche.
+   */
+  name_matches: ReferenceInfo[];
+  total_name_matches: number;
 }
 
 /**
  * Findet die Definition und alle Referenzen eines Symbols per Name.
+ *
+ * ⚠️ WAS DIESE FUNKTION IST UND WAS NICHT (gemessen am 26.08.2026):
+ * Sie loest Symbole NICHT auf wie ein Sprachserver, sie sucht ueber den Namen.
+ * Bei einem haeufigen Namen war das Ergebnis dadurch unbrauchbar: `update`
+ * lieferte 14 Treffer, von denen 13 `crypto.createHash('sha256').update()`
+ * waren — die Hash-Methode von Node, die mit der gesuchten Funktion nichts zu
+ * tun hat. Eine Liste, die zu 93 Prozent falsch ist, ist schlimmer als keine:
+ * sie sieht aus wie eine Antwort.
+ *
+ * Die Angabe zum Aussortieren lag laengst in code_call_edges und wurde nur
+ * nicht gelesen: Ein Aufruf mit `call_kind='method'` und gefuelltem
+ * `callee_receiver` richtet sich an ein Objekt. Steht die gesuchte Definition
+ * frei (kein parent_name), kann er sie nicht meinen. Ist `target_symbol_id`
+ * aufgeloest und zeigt anderswohin, erst recht nicht.
+ *
+ * Was dadurch NICHT besser wird: zwei gleichnamige Methoden auf verschiedenen
+ * Klassen bleiben ununterscheidbar, solange niemand Typen aufloest. Dafuer
+ * bleibt ein Sprachserver zustaendig.
+ *
+ * @param includeNameMatches Nur fuer den Rohbestand: liefert die aussortierten
+ *   Namensgleichen zusaetzlich unter references. Standard ist aus — wer nichts
+ *   angibt, soll das Richtige bekommen, nicht das Vollstaendige.
  */
 export async function getReferences(
   project: string,
-  name: string
+  name: string,
+  includeNameMatches = false
 ): Promise<ReferencesResult> {
   const pool = getPool();
 
   // Definition laden — non-string bevorzugen (echte Deklaration vor String-Literal)
   const defResult = await pool.query(
-    `SELECT id, file_path, symbol_type, name, line_start, is_exported
+    `SELECT id, file_path, symbol_type, name, line_start, is_exported, parent_symbol
      FROM code_symbols
      WHERE project = $1 AND name = $2
      ORDER BY CASE WHEN symbol_type = 'string' THEN 1 ELSE 0 END, line_start
@@ -658,8 +692,28 @@ export async function getReferences(
         name: defResult.rows[0].name,
         line_start: defResult.rows[0].line_start,
         is_exported: defResult.rows[0].is_exported,
+        parent_symbol: defResult.rows[0].parent_symbol ?? null,
       }
     : null;
+
+  // ALLE gleichnamigen Symbole, nicht nur das oben gewaehlte. Ein Name traegt
+  // haeufig mehrere Eintraege — etwa die Funktion selbst und ihren export.
+  // Ein aufgeloester Aufruf zeigt dann auf irgendeinen davon, und ein Vergleich
+  // gegen nur einen erklaert die echten Treffer faelschlich fuer fremd (bei
+  // getReferences selbst gemessen: beide Aufrufer fielen heraus).
+  const eigeneSymbolIds = new Set<string>();
+  const idRows = await pool.query<{ id: string }>(
+    `SELECT id FROM code_symbols
+     WHERE project = $1 AND name = $2 AND symbol_type <> 'string'`,
+    [project, name]
+  );
+  for (const zeile of idRows.rows) eigeneSymbolIds.add(zeile.id);
+
+  // Gehoert die Definition selbst zu einem Objekt? Dann sind Methodenaufrufe
+  // plausibel und duerfen nicht aussortiert werden.
+  const definitionIstMethode = Boolean(definition?.parent_symbol)
+    || definition?.symbol_type === 'class'
+    || definition?.symbol_type === 'interface';
 
   // Alle Referenzen laden (ueber code_references JOIN code_symbols)
   const refsResult = await pool.query(
@@ -700,19 +754,37 @@ export async function getReferences(
   // Dieselbe Stelle kann in beiden Tabellen stehen — dann gewinnt der bereits
   // vorhandene Eintrag, damit niemand eine Fundstelle doppelt gezaehlt bekommt.
   const bekannt = new Set(references.map(r => `${r.file_path}:${r.line_number}`));
+  const nameMatches: ReferenceInfo[] = [];
   for (const row of callRows.rows) {
     const schluessel = `${row.file_path}:${row.line_number}`;
     if (bekannt.has(schluessel)) continue;
     bekannt.add(schluessel);
     const empfaenger = row.callee_receiver ? `${row.callee_receiver}.` : '';
-    references.push({
+    const eintrag: ReferenceInfo = {
       symbol_id: row.target_symbol_id ?? null,
       file_path: row.file_path,
       line_number: row.line_number,
       context: `${row.call_kind ?? 'call'}: ${empfaenger}${name}()`
         + (row.caller_scope ? ` in ${row.caller_scope}` : ''),
       kind: 'call' as const,
-    });
+    };
+
+    // Aufgeloest und zeigt auf KEINES der gleichnamigen Symbole: gehoert nicht hierher.
+    const zeigtWoandersHin = Boolean(
+      row.target_symbol_id && !eigeneSymbolIds.has(row.target_symbol_id)
+    );
+    // Methodenaufruf auf einem Objekt, waehrend die Definition freisteht:
+    // dann ist die Namensgleichheit Zufall (crypto.createHash().update()).
+    const fremderEmpfaenger = Boolean(
+      row.call_kind === 'method' && row.callee_receiver && !definitionIstMethode
+    );
+
+    if (definition && (zeigtWoandersHin || fremderEmpfaenger)) {
+      nameMatches.push(eintrag);
+      if (includeNameMatches) references.push(eintrag);
+      continue;
+    }
+    references.push(eintrag);
   }
   references.sort((a, b) =>
     a.file_path === b.file_path
@@ -736,6 +808,11 @@ export async function getReferences(
   // Eindeutige Dateien zaehlen
   const uniqueFiles = new Set(references.map(r => r.file_path));
 
+  nameMatches.sort((a, b) =>
+    a.file_path === b.file_path
+      ? a.line_number - b.line_number
+      : a.file_path.localeCompare(b.file_path));
+
   return {
     definition,
     references,
@@ -743,6 +820,8 @@ export async function getReferences(
     total_references: references.length,
     string_occurrences: stringOccurrences,
     total_string_occurrences: stringOccurrences.length,
+    name_matches: nameMatches,
+    total_name_matches: nameMatches.length,
   };
 }
 

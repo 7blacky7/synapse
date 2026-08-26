@@ -826,6 +826,7 @@ const MCP_TOOLS = [
         file_path: { type: 'string', description: 'Datei-Pfad-Filter (LIKE-Pattern) fuer functions/variables/symbols/file/statements/calls/entrypoints — UND seit 08.08.2026 auch fuer search: dort im Volltext-Modus als LIKE-Teilpfad, mit semantic:true dagegen als VOLLSTAENDIGER Pfad, weil Qdrant keinen Teilstring-Vergleich kennt. Vorher wurde der Parameter bei search still verworfen und die Suche lieferte Treffer aus dem ganzen Projekt.' },
         name: { type: 'string', description: 'Symbol-Name-Filter (fuer functions/variables/symbols/references)' },
         value_contains: { type: 'string', description: "Sucht im INHALT des Symbols statt im Namen (fuer symbols). PFLICHT fuer Kommentare, Strings und TODOs: die tragen name=NULL, ein name-Filter findet dort nie etwas. Beispiel: symbol_type='comment' + value_contains='@SYN-'." },
+        include_name_matches: { type: 'boolean', description: 'Nur fuer references: mischt die aussortierten Namensgleichen zurueck in references (Standard false). Sie stehen ohnehin immer unter name_matches.' },
         comment_contains: { type: 'string', description: "Nur Kommentare zeigen, die diesen Text enthalten (fuer tree, zusammen mit show_comments). Macht den Baum zur Suche: show_comments=50 + comment_contains='@SYN-' listet alle Marken mit Datei und Zeile." },
         comment_chars: { type: 'integer', description: 'Anzeigelaenge je Kommentarzeile in Zeichen (fuer tree, Standard 100).' },
         comment_from: { type: 'integer', description: 'Startpunkt im Kommentartext (fuer tree, Standard 0). Mit comment_chars ein Fenster: comment_from=5 + comment_chars=20 zeigt Zeichen 5 bis 24. Ein Ausschnitt bekommt eine Ellipse.' },
@@ -3885,7 +3886,8 @@ async function handleToolCall(
           return { success: true, symbols, count: symbols.length, symbol_type: symbolType, project };
         }
         case 'references': {
-          const result = await getReferences(project, reqStr(args, 'name'));
+          // Muss mit mcp-server/src/tools/consolidated/code-intel.ts uebereinstimmen.
+          const result = await getReferences(project, reqStr(args, 'name'), bool(args, 'include_name_matches') ?? false);
           return { success: true, ...result, project };
         }
         case 'search_batch': {

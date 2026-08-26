@@ -107,6 +107,11 @@ export const codeIntelTool: ConsolidatedTool = {
           description:
             "Sucht im INHALT des Symbols statt im Namen (fuer symbols). PFLICHT fuer Kommentare, Strings und TODOs: die tragen name=NULL, ein name-Filter findet dort nie etwas. Beispiel: symbol_type='comment' + value_contains='@SYN-'.",
         },
+        include_name_matches: {
+          type: 'boolean',
+          description:
+            'Nur fuer references: mischt die aussortierten Namensgleichen zurueck in references (Standard false). Sie stehen ohnehin immer unter name_matches.',
+        },
         comment_chars: {
           type: 'integer',
           description: 'Anzeigelaenge je Kommentarzeile in Zeichen (fuer tree, Standard 100).',
@@ -260,7 +265,10 @@ export const codeIntelTool: ConsolidatedTool = {
 
       case 'references': {
         const name = reqStr(args, 'name');
-        const result = await getReferences(project, name);
+        // Muss mit rest-api/src/routes/mcp.ts uebereinstimmen — gleiches Schema,
+        // gleiches Verhalten. Ein hier nicht ausgelesener Parameter waere genau
+        // der Fehler, der bei 'search' und file_path schon einmal passiert ist.
+        const result = await getReferences(project, name, bool(args, 'include_name_matches') ?? false);
         return { success: true, ...result, project };
       }
 
