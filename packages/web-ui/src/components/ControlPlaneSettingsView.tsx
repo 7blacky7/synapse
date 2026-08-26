@@ -79,7 +79,7 @@ export function ControlPlaneSettingsView({ settings, onChange, theme, onTheme, p
     main: {
       stand: 'demo',
       aufgabe: 'Kein Feld dieser Seite wird gespeichert. Der Hauptagent laesst sich bereits ueber die API lesen und wechseln.',
-      endpunkte: ['GET /api/main-agent', 'GET /api/main-agent/runtime'],
+      endpunkte: ['GET /api/main-agent/runtime', 'PUT /api/main-agent/runtime'],
     },
     heartbeat: { stand: 'demo', aufgabe: 'Reiner Entwurf.', fehlt: 'Die Herzschlag-Steuerung hat keine Route und keine Tabelle.' },
     'all-agents': {
@@ -106,7 +106,7 @@ export function ControlPlaneSettingsView({ settings, onChange, theme, onTheme, p
     workspace: {
       stand: 'demo',
       aufgabe: 'Die Vorgabewerte werden nirgends gespeichert. Die Workspace-Einstellung je Projekt gibt es schon.',
-      endpunkte: ['GET /api/projects/:name/workspace/config'],
+      endpunkte: ['PATCH /api/projects/:name/workspace/config'],
     },
     resources: { stand: 'demo', aufgabe: 'Reiner Entwurf.', fehlt: 'Ressourcengrenzen werden nirgends gespeichert und wirken auf nichts.' },
   };

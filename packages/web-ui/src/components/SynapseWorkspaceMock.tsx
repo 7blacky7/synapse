@@ -1282,7 +1282,7 @@ function EntityView({ area }: { area: Area }) {
     },
     workspaces: {
       aufgabe: 'An die echte Workspace-Verwaltung anschliessen.',
-      endpunkte: ['GET /api/workspaces', 'GET /api/projects/:name/workspace/config'],
+      endpunkte: ['GET /api/workspaces', 'PATCH /api/projects/:name/workspace/config'],
     },
     testsystems: {
       aufgabe: 'Vollstaendig offen — hier ist bisher nur die Oberflaeche entworfen.',

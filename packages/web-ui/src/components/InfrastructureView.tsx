@@ -268,7 +268,7 @@ function ScopeResourceView({ area, project }: { area: 'workspaces' | 'testsystem
     {area === 'workspaces'
       ? <PlanungsHinweis
           aufgabe="Die Workspace-Verwaltung gibt es bereits vollstaendig — starten, stoppen, pinnen und materialisieren laufen ueber die API. Hier fehlt nur der Anschluss; alle Zeilen sind erfunden."
-          endpunkte={['GET /api/workspaces', 'GET /api/projects/:name/workspace/config', 'POST /api/projects/:name/workspace/start', 'POST /api/projects/:name/workspace/pin']}
+          endpunkte={['GET /api/workspaces', 'PATCH /api/projects/:name/workspace/config', 'POST /api/projects/:name/workspace/start', 'POST /api/projects/:name/workspace/pin']}
         />
       : <PlanungsHinweis
           aufgabe="Vollstaendig offen — hier ist bisher nur die Oberflaeche entworfen."
