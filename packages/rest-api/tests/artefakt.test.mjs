@@ -31,10 +31,14 @@ test('buildClaudeCommand: ohne Config wie bisher, mit Config genau ein freigesch
   const ohne = buildClaudeCommand(null, 'sonnet');
   assert.equal(ohne[ohne.indexOf('--mcp-config') + 1], '{"mcpServers":{}}');
   assert.equal(ohne.includes('--allowedTools'), false);
+  assert.equal(ohne.includes('--safe-mode'), true, 'ohne MCP-Config bleibt --safe-mode wie bisher');
 
   const config = buildHauptagentMcpConfig('http://synapse-api:3456/', 'tok', 'sess');
   const mit = buildClaudeCommand(null, 'sonnet', config);
   assert.equal(mit[mit.indexOf('--mcp-config') + 1], config);
+  // Rueckfall-Wache: --safe-mode schaltet ALLE MCP-Server still ab (gemessen
+  // 26.08.2026, Probe V4/V5) — mit Config darf es NIE gesetzt sein.
+  assert.equal(mit.includes('--safe-mode'), false, 'mit MCP-Config darf --safe-mode nicht gesetzt sein');
   assert.equal(mit.filter((teil) => teil === '--allowedTools').length, 1);
   assert.equal(mit[mit.indexOf('--allowedTools') + 1], 'mcp__synapse__artefakt');
 

@@ -132,7 +132,10 @@ async function renderLivebild(html: string): Promise<Buffer> {
   const basis = kiBrowserUrl();
   const dataUrl = 'data:text/html;base64,' + Buffer.from(html, 'utf8').toString('base64');
   const neuerTab = await fetchJson(basis + '/tabs/new', { method: 'POST', body: JSON.stringify({ url: dataUrl, active: false }) });
-  const tabId = typeof neuerTab.tab_id === 'string' ? neuerTab.tab_id : typeof neuerTab.id === 'string' ? neuerTab.id : '';
+  // GEMESSEN 26.08.2026 (E2E-Probe): die Antwort ist {success:true, data:{tab_id:...}}
+  // — tab_id steckt UNTER data, nicht auf oberster Ebene.
+  const tabDaten = (neuerTab.data ?? neuerTab) as Record<string, unknown>;
+  const tabId = typeof tabDaten.tab_id === 'string' ? tabDaten.tab_id : typeof tabDaten.id === 'string' ? tabDaten.id : '';
   if (!tabId) throw new Error('/tabs/new lieferte keine tab_id: ' + JSON.stringify(neuerTab).slice(0, 200));
   try {
     let letzterFehler: Error | null = null;
@@ -143,8 +146,22 @@ async function renderLivebild(html: string): Promise<Buffer> {
         { signal: AbortSignal.timeout(15_000) },
       );
       const puffer = Buffer.from(await antwort.arrayBuffer());
-      if (antwort.ok && puffer.length > 100) return puffer;
-      letzterFehler = new Error('/screenshot Versuch ' + String(versuch) + ': HTTP ' + String(antwort.status) + ', ' + String(puffer.length) + ' Bytes');
+      // raw=true SOLL binaer liefern; falls doch JSON kommt ({success,data:{data:base64}}),
+      // Base64 auspacken statt still ein JSON als "PNG" zu speichern.
+      let png = puffer;
+      if (puffer.length > 0 && puffer[0] === 0x7b) {
+        try {
+          const json = JSON.parse(puffer.toString('utf8')) as Record<string, unknown>;
+          const inner = (json.data ?? json) as Record<string, unknown>;
+          const b64 = typeof inner.data === 'string' ? inner.data : '';
+          if (b64) png = Buffer.from(b64.replace(/^data:image\/[a-z]+;base64,/, ''), 'base64');
+        } catch {
+          // bleibt beim Rohpuffer — der PNG-Magic-Check unten faengt es
+        }
+      }
+      // 0x89 = PNG-Magic; ein Mini-PNG (~69 Bytes, 1x1) heisst "noch nicht bereit".
+      if (antwort.ok && png.length > 100 && png[0] === 0x89) return png;
+      letzterFehler = new Error('/screenshot Versuch ' + String(versuch) + ': HTTP ' + String(antwort.status) + ', ' + String(puffer.length) + ' Bytes' + (png !== puffer ? ' (JSON-Antwort ohne brauchbares Base64)' : ''));
     }
     throw letzterFehler ?? new Error('Livebild scheiterte ohne Fehlermeldung');
   } finally {

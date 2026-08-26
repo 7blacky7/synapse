@@ -53,7 +53,15 @@ export function buildClaudeCommand(runtimeSessionId: string | null, model = DEFA
     '--output-format',
     'stream-json',
     '--include-partial-messages',
-    '--safe-mode',
+  ];
+  // GEMESSEN 26.08.2026 (Probe V1-V5 im echten Runtime-Container): --safe-mode
+  // schaltet ALLE MCP-Server still ab (mcp_servers: []), waehrend --tools ''
+  // nur die eingebauten Werkzeuge entfernt. Mit MCP-Config muss --safe-mode
+  // deshalb WEG — uebrig bleibt genau ein Werkzeug: mcp__synapse__artefakt.
+  // NICHT wieder unbedingt setzen: der Fehler ist unsichtbar (kein Fehlertext,
+  // der Agent beschreibt Werkzeugaufrufe nur noch als Text).
+  if (!mcpConfig) command.push('--safe-mode');
+  command.push(
     '--tools',
     '',
     '--permission-mode',
@@ -61,7 +69,7 @@ export function buildClaudeCommand(runtimeSessionId: string | null, model = DEFA
     '--strict-mcp-config',
     '--mcp-config',
     mcpConfig ?? EMPTY_MCP_CONFIG,
-  ];
+  );
   if (mcpConfig) {
     // Auflage (26.08.2026): der Hauptagent bekommt GENAU EIN Werkzeug
     // freigeschaltet — nicht den ganzen Synapse-Werkzeugkasten. Die Server-

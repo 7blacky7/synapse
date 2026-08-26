@@ -119,6 +119,44 @@ interface AgentMessage {
   saved?: boolean;
 }
 
+/**
+ * Der Laufkontext des Runtimes ist TELEMETRIE, keine Nachricht an den Nutzer.
+ * Bis zum 26.08.2026 landete er per JSON.stringify roh in der Meta-Zeile — im Chat
+ * stand dann woertlich {"model":"claude-sonnet-5","apiKeySource":"none",…}.
+ * Hier wird daraus ein Satz.
+ *
+ * ⚠️ NICHTS GEHT VERLOREN: der vollstaendige Rohtext haengt als title an derselben
+ * Zeile und ist einen Mauszeiger entfernt. Zusammenfassen heisst KUERZEN, nicht
+ * unterschlagen — sonst waere es dieselbe stille Teilantwort, nur andersherum.
+ * Ein FEHLERSIGNAL im Kontext ist keine Telemetrie und wird nach vorn gezogen.
+ * Die Token-Zahlen stehen bewusst NICHT hier: die kommen ueber onUsage und wuerden
+ * sich sonst doppeln.
+ */
+function fasseLaufkontextZusammen(context: unknown): { text: string; roh: string } {
+  if (context === null || context === undefined) return { text: 'Session fortsetzbar', roh: '' };
+  if (typeof context === 'string') return { text: context, roh: context };
+  if (typeof context !== 'object') return { text: String(context), roh: String(context) };
+
+  let roh = '';
+  try {
+    roh = JSON.stringify(context) ?? '';
+  } catch {
+    // Ein unlesbarer Kontext darf die Antwort nicht kippen — dann eben ohne Rohtext.
+    roh = '';
+  }
+
+  const werte = context as Record<string, unknown>;
+  const teile: string[] = [];
+  if (werte.isError === true) {
+    teile.push('Runtime meldete einen Fehler' + (typeof werte.subtype === 'string' ? ' (' + werte.subtype + ')' : ''));
+  }
+  if (typeof werte.model === 'string') teile.push(werte.model);
+  if (typeof werte.numTurns === 'number') teile.push(werte.numTurns + (werte.numTurns === 1 ? ' Zug' : ' Züge'));
+  if (typeof werte.durationMs === 'number') teile.push(Math.round(werte.durationMs / 100) / 10 + ' s');
+  if (typeof werte.totalCostUsd === 'number' && werte.totalCostUsd > 0) teile.push(werte.totalCostUsd.toFixed(4) + ' USD');
+  return { text: teile.length ? teile.join(' · ') : 'Session fortsetzbar', roh };
+}
+
 function escapeHtml(value: string) {
   return value
     .split('&').join('&amp;')
@@ -441,6 +479,8 @@ function MainAgentView({ theme, project, showDashboard }: { theme: Theme; projec
   const [runtimeError, setRuntimeError] = useState('');
   const [runtimeUsage, setRuntimeUsage] = useState('');
   const [runtimeContext, setRuntimeContext] = useState('');
+  /** Der ungekuerzte Laufkontext. Wird nicht angezeigt, haengt aber als title an der Meta-Zeile. */
+  const [runtimeContextRoh, setRuntimeContextRoh] = useState('');
   const [chatMode, setChatMode] = useState<'auto' | 'fixed'>('auto');
   const [chatCollapsed, setChatCollapsed] = useState(false);
   const [chatPeeking, setChatPeeking] = useState(false);
@@ -607,6 +647,7 @@ function MainAgentView({ theme, project, showDashboard }: { theme: Theme; projec
       setInput('');
       setRuntimeError('');
       setRuntimeContext('');
+      setRuntimeContextRoh('');
       try {
         let activeSessionId = runtimeSessionId;
         if (!activeSessionId) {
@@ -647,7 +688,9 @@ function MainAgentView({ theme, project, showDashboard }: { theme: Theme; projec
           },
           onUsage: (usage) => setRuntimeUsage([usage.inputTokens ? 'in ' + usage.inputTokens : '', usage.outputTokens ? 'out ' + usage.outputTokens : '', usage.cachedInputTokens ? 'cache ' + usage.cachedInputTokens : ''].filter(Boolean).join(' · ')),
           onDone: ({ context, artifacts, artefakteEmpfangen, unbekannteEreignisse }) => {
-            setRuntimeContext(context ? (typeof context === 'string' ? context : JSON.stringify(context)) : 'Session fortsetzbar');
+            const laufkontext = fasseLaufkontextZusammen(context);
+            setRuntimeContext(laufkontext.text);
+            setRuntimeContextRoh(laufkontext.roh);
             // ⚠️ WAS FEHLT, WIRD GESAGT. Ein stiller Verlust waere hier besonders teuer:
             // der Nutzer wuerde schliessen, der Hauptagent koenne kein HTML.
             const hinweise: string[] = [];
@@ -764,7 +807,7 @@ function MainAgentView({ theme, project, showDashboard }: { theme: Theme; projec
           {thinking && <article className="message agent thinking"><header>Hauptagent</header><div><i /><i /><i /><span>{runtimeMode === 'codex' ? 'Codex antwortet im Stream' : 'Antwort wird aufgebaut'}</span></div></article>}
           {/* Vorher nur bei codex. Damit waere jeder Fehler UND jeder Fehl-Hinweis bei der
               Claude-Runtime unsichtbar gewesen — ausgerechnet bei der, die gerade laeuft. */}
-          {runtimeMode !== 'mock' && (runtimeUsage || runtimeContext || runtimeError) && <div className={'main-runtime-meta' + (runtimeError ? ' error' : '')}><span>{runtimeError || runtimeContext}</span>{runtimeUsage && <b>{runtimeUsage}</b>}</div>}
+          {runtimeMode !== 'mock' && (runtimeUsage || runtimeContext || runtimeError) && <div className={'main-runtime-meta' + (runtimeError ? ' error' : '')}><span title={runtimeError ? undefined : (runtimeContextRoh || undefined)}>{runtimeError || runtimeContext}</span>{runtimeUsage && <b>{runtimeUsage}</b>}</div>}
         </div>
         {unseenMessages > 0 && <button className="agent-new-content" type="button" onClick={jumpToNewestMessage}>↓ {unseenMessages} neue {unseenMessages === 1 ? 'Antwort' : 'Antworten'}</button>}
         <form className={'agent-composer' + (dropActive ? ' chat-drop-active' : '')} onSubmit={submit} onDragEnter={(event) => { event.preventDefault(); setDropActive(true); }} onDragOver={(event) => { event.preventDefault(); setDropActive(true); }} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setDropActive(false); }} onDrop={(event) => { setDropActive(false); handleAttachmentDrop(event, (files) => void queueMainFiles(files)); }}>
