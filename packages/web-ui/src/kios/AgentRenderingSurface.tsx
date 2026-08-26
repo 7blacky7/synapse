@@ -15,10 +15,13 @@ interface AgentRenderingSurfaceProps {
 const SHADOW_BASE = `
   :host { all: initial; display: block; width: 100%; min-height: 100%; }
   * { box-sizing: border-box; }
+  /* ACHTUNG: KEIN min-height hier. Die Hoehe des Kastens richtet sich nach
+     diesem Inhalt - haette der Inhalt zugleich die Hoehe des Kastens als
+     Untergrenze, wuerde der ResizeObserver seine eigene Wirkung messen und
+     sich aufschaukeln. Die Mindesthoehe eines kurzen Artefakts regelt :host. */
   .synapse-html-root {
     color: inherit;
     display: block;
-    min-height: 100%;
     width: 100%;
   }
 `;
@@ -36,6 +39,9 @@ export default function AgentRenderingSurface({
   const streamRef = useRef<HtmlStreamHandle | null>(null);
   const actionRef = useRef(onAction);
   const previousRevisionRef = useRef<string | number | null>(null);
+  const beobachterRef = useRef<ResizeObserver | null>(null);
+  /** Die GEMESSENE Hoehe des Inhalts in Pixeln. 0 = noch nicht gemessen. */
+  const [inhaltsHoehe, setInhaltsHoehe] = useState(0);
   const [streaming, setStreaming] = useState(true);
   const [updated, setUpdated] = useState(false);
   actionRef.current = onAction;
@@ -54,6 +60,23 @@ export default function AgentRenderingSurface({
     shadowRoot.appendChild(content);
     contentRef.current = content;
 
+    // ACHTUNG: DIE HOEHE WIRD GEMESSEN, NICHT GERATEN (Befund 26.08.2026).
+    // Vorher bestimmte --block-min-height (Vorgabe 220 px) die Hoehe, und
+    // overflow:hidden schnitt alles darueber ab - ohne jeden Hinweis. Ein
+    // Schaubild des Nutzers endete mitten im Text. Der Agent KANN die Hoehe
+    // nicht kennen: er schickt HTML, wie hoch das im Browser wird, entscheidet
+    // der Browser. Also fragen wir den Browser.
+    // Die 2-Pixel-Schwelle ist kein Schoenheitsmass, sondern der Schutz gegen
+    // eine Endlosschleife aus Messen und Wachsen.
+    if (typeof ResizeObserver !== 'undefined') {
+      const beobachter = new ResizeObserver(() => {
+        const gemessen = Math.ceil(content.scrollHeight);
+        setInhaltsHoehe((bisher) => (Math.abs(gemessen - bisher) > 2 ? gemessen : bisher));
+      });
+      beobachter.observe(content);
+      beobachterRef.current = beobachter;
+    }
+
     content.addEventListener('click', (event) => {
       const target = event.target as Element | null;
       const actionElement = target?.closest?.('[data-synapse-action],[data-kios-action]');
@@ -64,6 +87,11 @@ export default function AgentRenderingSurface({
         ?? '';
       actionRef.current?.(action, input?.value?.trim() || undefined);
     });
+
+    return () => {
+      beobachterRef.current?.disconnect();
+      beobachterRef.current = null;
+    };
   }, []);
 
   useEffect(() => {
@@ -83,10 +111,19 @@ export default function AgentRenderingSurface({
     return () => streamRef.current?.cancel();
   }, [html, revision]);
 
+  // Gemessen: Hoehe = das Groessere aus Agenten-Vorgabe und tatsaechlichem Inhalt.
+  //   Die Vorgabe des Agenten bleibt damit UNTERGRENZE, nie Deckel.
+  // Nicht gemessen (kein ResizeObserver, Messung noch nicht gelaufen): overflow
+  //   auto statt hidden. Scrollen ist unschoen, aber es ist SICHTBAR, dass da
+  //   mehr ist. Stilles Abschneiden waere die schlechtere Haelfte.
+  const flaechenStil: CSSProperties = inhaltsHoehe > 0
+    ? { ...style, height: 'max(var(--block-min-height, 0px), ' + inhaltsHoehe + 'px)', overflow: 'hidden' }
+    : { ...style, overflow: 'auto' };
+
   return (
     <div
       className={'agent-rendering-surface ' + className + (streaming ? ' is-streaming' : '')}
-      style={style}
+      style={flaechenStil}
       aria-busy={streaming}
     >
       <div ref={hostRef} className="agent-rendering-shadow" />
