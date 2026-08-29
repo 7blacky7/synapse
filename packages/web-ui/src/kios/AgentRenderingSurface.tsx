@@ -21,7 +21,7 @@ const SHADOW_BASE = `
      sich aufschaukeln. Die Mindesthoehe eines kurzen Artefakts regelt :host. */
   .synapse-html-root {
     color: inherit;
-    display: block;
+    display: flow-root;
     width: 100%;
   }
 `;

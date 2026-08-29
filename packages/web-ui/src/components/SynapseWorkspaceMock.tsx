@@ -540,7 +540,7 @@ function MainAgentView({ theme, project, showDashboard }: { theme: Theme; projec
   }, [showDashboard]);
 
   useEffect(() => {
-    setMessages((items) => items.map((message) => message.kind === 'artifact' ? { ...message, blocks: buildArtifactBlocks(message.text, theme) } : message));
+    setMessages((items) => items.map((message) => message.kind === 'artifact' && message.mock ? { ...message, blocks: buildArtifactBlocks(message.text, theme) } : message));
   }, [theme]);
 
   useEffect(() => {
@@ -789,12 +789,11 @@ function MainAgentView({ theme, project, showDashboard }: { theme: Theme; projec
           <div className="agent-identity"><span>HA</span><div><strong>Hauptagent</strong><small>{chatMode === 'fixed' ? 'fixiert' : 'Auto · ' + collapseDelay + ' ' + collapseUnit}</small></div></div>
           <div className="chat-display-controls">
             {chatHasUnread && <i className="chat-unread-dot" title="Neue Nachricht" />}
-            <button type="button" className={'main-runtime-switch ' + runtimeMode + (mainRuntimeReady ? ' ready' : '')} onClick={() => { setRuntimeError(''); setRuntimeMode((current) => current === 'mock' && mainRuntimeReady && assignedRuntime ? assignedRuntime : 'mock'); }} title={mainRuntimeReady && assignedRuntime ? 'Zwischen Mock und echter ' + (assignedRuntime === 'claude' ? 'Claude-Code-' : 'Codex-') + 'Runtime wechseln' : 'Runtime zuerst einrichten, anmelden und dem Main-Agenten zuweisen'}>{runtimeMode === 'mock' ? '◇ Mock' : runtimeMode === 'claude' ? '◆ Claude · echt' : '◆ Codex · echt'}</button>
             {thinking && runtimeMode !== 'mock' && <button type="button" className="main-runtime-stop" onClick={() => runtimeAbortRef.current?.abort()}>■ Abbrechen</button>}
             <label>Höhe <input type="range" min="35" max="100" step="5" value={chatHeight} onChange={(event) => setChatHeight(Number(event.target.value))} /></label>
             {chatMode === 'auto' && <label className="chat-auto-time">nach <input type="number" min="1" step={collapseUnit === 'ms' ? 100 : 1} value={collapseDelay} onChange={(event) => setCollapseDelay(Math.max(1, Number(event.target.value)))} /><select value={collapseUnit} onChange={(event) => setCollapseUnit(event.target.value as 'ms' | 'sec' | 'min')}><option value="ms">ms</option><option value="sec">Sek.</option><option value="min">Min.</option></select></label>}
             <button type="button" className="chat-mode-cycle active" onClick={cycleChatMode} title="Auto → Fixiert → Minimiert">{chatCollapsed ? '□ Öffnen' : chatMode === 'auto' ? '◌ Auto · weiter' : '● Fixiert · weiter'}</button>
-            <div className={'agent-live' + (runtimeMode !== 'mock' ? ' real' : '')}><i /> {runtimeMode === 'mock' ? 'Mock bereit' : thinking ? 'streaming' : runtimeMode === 'claude' ? 'Claude bereit' : 'Codex bereit'}</div>
+            <div className={'agent-live' + (runtimeMode !== 'mock' ? ' real' : '')}><i /> {runtimeMode === 'mock' ? 'Kein Agent' : thinking ? 'streaming' : runtimeMode === 'claude' ? 'Claude bereit' : 'Codex bereit'}</div>
           </div>
         </div>
         <div className="message-feed" ref={feedRef} onScroll={handleFeedScroll}>
