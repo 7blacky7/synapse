@@ -725,24 +725,6 @@ function MainAgentView({ theme, project, showDashboard }: { theme: Theme; projec
       }
       return;
     }
-
-    const baseId = Date.now();
-    const outgoing: AgentMessage[] = [];
-    if (value) outgoing.push({ id: baseId, role: 'user', kind: 'text', text: value });
-    pendingFiles.forEach((attachment, index) => outgoing.push({ id: baseId + index + 1, role: 'user', kind: 'attachment', text: attachment.name, attachment }));
-    setMessages((items) => [...items, ...outgoing]);
-    setThinking(true);
-    setInput('');
-    setPendingFiles([]);
-    window.setTimeout(() => {
-      const requestText = value || 'Die angehängten Dateien prüfen.';
-      const wantsHtml = /html|schaubild|diagramm|animation|visual|grafik|chart|dashboard|karte|webseite|scrap/i.test(requestText);
-      const response: AgentMessage = wantsHtml
-        ? { id: Date.now() + 1, role: 'agent', kind: 'artifact', title: 'Visuelle Antwort', text: requestText, blocks: buildArtifactBlocks(requestText, theme), layout: { columns: 12, rowHeight: 72, gap: 12 }, saved: false }
-        : { id: Date.now() + 1, role: 'agent', kind: 'text', text: 'Ich habe den Auftrag aufgenommen. Der Hauptagent kann normal antworten oder den Verlauf direkt mit einer HTML-Darstellung fortsetzen.' };
-      setMessages((items) => [...items, response]);
-      setThinking(false);
-    }, 850);
   };
   const saveArtifact = (id: number) => {
     registerInteraction();
@@ -820,9 +802,9 @@ function MainAgentView({ theme, project, showDashboard }: { theme: Theme; projec
           <textarea ref={mainComposerRef} rows={chatCollapsed ? 1 : 3} value={input} onChange={(event) => { setInput(event.target.value); registerInteraction(); }} placeholder="Nachricht oder Auftrag an den Hauptagenten …" />
           <footer>
             <AttachmentPicker onFiles={(files) => void queueMainFiles(files)} label="＋ Datei / Bild" />
-            <span className="composer-hint">{runtimeMode === 'codex' ? 'Echte Codex-Session · Chat-Text aktiv, Dateien folgen in einer späteren Stufe.' : chatCollapsed ? 'Chat eingeklappt · Datei ablegen oder Nachricht senden.' : 'Dateien hierher ziehen · später privates Main-Agent-Volume.'}</span>
+            <span className="composer-hint">{runtimeMode === 'unknown' ? 'Runtime wird geprüft …' : runtimeMode === 'mock' ? 'Kein Agent verbunden — Runtime zuweisen und anmelden.' : runtimeMode === 'codex' ? 'Echte Codex-Session · Chat-Text aktiv, Dateien folgen in einer späteren Stufe.' : chatCollapsed ? 'Chat eingeklappt · Datei ablegen oder Nachricht senden.' : 'Dateien hierher ziehen · später privates Main-Agent-Volume.'}</span>
             {chatCollapsed && <button type="button" className="chat-open-action" onClick={openChat}>Verlauf öffnen{chatHasUnread ? ' · neu' : ''}</button>}
-            <button className="primary-action" type="submit" disabled={runtimeMode === 'unknown' || thinking || (!input.trim() && !pendingFiles.length)}>Senden</button>
+            <button className="primary-action" type="submit" disabled={runtimeMode === 'unknown' || runtimeMode === 'mock' || thinking || (!input.trim() && !pendingFiles.length)}>Senden</button>
           </footer>
         </form>
       </section>
