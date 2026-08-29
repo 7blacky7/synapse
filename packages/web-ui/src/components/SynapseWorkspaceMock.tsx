@@ -576,16 +576,16 @@ function MainAgentView({ theme, project, showDashboard }: { theme: Theme; projec
     return () => { active = false; window.clearInterval(timer); };
   }, []);
 
-  useEffect(() => {
-    runtimeAbortRef.current?.abort();
-    setRuntimeSessionId('');
-    setRuntimeMode((current) => current === 'mock' ? current : mainRuntime?.runtime ?? 'mock');
-  }, [mainRuntime?.runtime]);
-
   const mainRuntimeReady = mainRuntime?.assignedToMain === true
     && mainRuntime.container.status === 'running'
     && mainRuntime.authentication.status === 'authenticated';
   const assignedRuntime = mainRuntime?.runtime ?? null;
+
+  useEffect(() => {
+    runtimeAbortRef.current?.abort();
+    setRuntimeSessionId('');
+    setRuntimeMode(() => mainRuntime?.runtime && mainRuntimeReady ? mainRuntime.runtime : 'mock');
+  }, [mainRuntime?.runtime, mainRuntimeReady]);
   const registerInteraction = () => setLastInteraction(Date.now());
   const queueMainFiles = async (files: FileList | File[]) => {
     const prepared = await prepareMockChatAttachments(files, { scope: 'main-agent' });
