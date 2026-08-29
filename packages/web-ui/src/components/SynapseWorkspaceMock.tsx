@@ -117,6 +117,7 @@ interface AgentMessage {
   blocks?: AgentHtmlBlock[];
   layout?: AgentHtmlLayout;
   saved?: boolean;
+  mock?: boolean;
 }
 
 /**
@@ -494,10 +495,10 @@ function MainAgentView({ theme, project, showDashboard }: { theme: Theme; projec
   const mainComposerRef = useRef<HTMLTextAreaElement>(null);
   const peekTimerRef = useRef<number | null>(null);
   const [messages, setMessages] = useState<AgentMessage[]>(() => [
-    { id: 1, role: 'user', kind: 'text', text: 'Wie weit sind wir mit der Oberfläche?' },
-    { id: 2, role: 'agent', kind: 'text', text: 'Projekte, Channels und der Projektgraph sind verbunden. Die übrigen Control-Plane-Bereiche werden zuerst als vollständige Oberfläche abgestimmt und danach an ihre Runtime-Verträge angeschlossen.' },
-    { id: 3, role: 'user', kind: 'text', text: 'Zeig mir den Ablauf bitte als animiertes Schaubild.' },
-    { id: 4, role: 'agent', kind: 'artifact', title: 'Projektaktivität und Arbeitsfluss', text: 'Projektstatus und Arbeitsfluss visualisieren.', blocks: buildArtifactBlocks('Projektstatus und Arbeitsfluss visualisieren.', theme), layout: { columns: 12, rowHeight: 72, gap: 12 }, saved: false },
+    { id: 1, role: 'user', kind: 'text', text: 'Wie weit sind wir mit der Oberfläche?', mock: true },
+    { id: 2, role: 'agent', kind: 'text', text: 'Projekte, Channels und der Projektgraph sind verbunden. Die übrigen Control-Plane-Bereiche werden zuerst als vollständige Oberfläche abgestimmt und danach an ihre Runtime-Verträge angeschlossen.', mock: true },
+    { id: 3, role: 'user', kind: 'text', text: 'Zeig mir den Ablauf bitte als animiertes Schaubild.', mock: true },
+    { id: 4, role: 'agent', kind: 'artifact', title: 'Projektaktivität und Arbeitsfluss', text: 'Projektstatus und Arbeitsfluss visualisieren.', blocks: buildArtifactBlocks('Projektstatus und Arbeitsfluss visualisieren.', theme), layout: { columns: 12, rowHeight: 72, gap: 12 }, saved: false, mock: true },
   ]);
   const feedRef = useRef<HTMLDivElement | null>(null);
   const atBottomRef = useRef(true);
@@ -584,7 +585,9 @@ function MainAgentView({ theme, project, showDashboard }: { theme: Theme; projec
   useEffect(() => {
     runtimeAbortRef.current?.abort();
     setRuntimeSessionId('');
-    setRuntimeMode(() => mainRuntime?.runtime && mainRuntimeReady ? mainRuntime.runtime : 'mock');
+    const nextRuntimeMode = mainRuntime?.runtime && mainRuntimeReady ? mainRuntime.runtime : 'mock';
+    setRuntimeMode(nextRuntimeMode);
+    if (nextRuntimeMode !== 'mock') setMessages((items) => items.filter((message) => !message.mock));
   }, [mainRuntime?.runtime, mainRuntimeReady]);
   const registerInteraction = () => setLastInteraction(Date.now());
   const queueMainFiles = async (files: FileList | File[]) => {
