@@ -784,7 +784,7 @@ function MainAgentView({ theme, project, showDashboard }: { theme: Theme; projec
     <div className={'agent-stage ' + (showDashboard ? 'is-dashboard' : 'is-overlay')}>
       {showDashboard && <MainAgentDashboard project={project} toolCalls={toolCalls} agentBusy={thinking} savedArtifacts={savedArtifacts} />}
       <section className={shellClass + ' floating-agent-window'} tabIndex={-1} style={chatStyle} onPointerDown={(event) => { if (!(event.target as HTMLElement).closest('button,input,textarea,select,a')) event.currentTarget.focus({ preventScroll: true }); if (chatPeeking) openChat(); else registerInteraction(); }}>
-        {chatCollapsed && <button type="button" className="agent-side-launcher" onClick={openChat}><span>HA</span><strong>Hauptagent</strong>{chatHasUnread && <i />}</button>}
+        {chatCollapsed && !chatPeeking && <button type="button" className="agent-side-launcher" onClick={openChat}><span>HA</span><strong>Hauptagent</strong>{chatHasUnread && <i />}</button>}
         <div className="conversation-head" onPointerDown={startMainWindowDrag} onPointerMove={moveMainWindow} onPointerUp={stopMainWindowDrag} onPointerCancel={stopMainWindowDrag}>
           <div className="agent-identity"><span>HA</span><div><strong>Hauptagent</strong><small>{chatMode === 'fixed' ? 'fixiert' : 'Auto · ' + collapseDelay + ' ' + collapseUnit}</small></div></div>
           <div className="chat-display-controls">
