@@ -5,15 +5,13 @@
 .agent-stage .agent-chat-shell.external-collapsed.has-new{animation:side-agent-alert 1.1s ease-in-out infinite}
 .agent-stage .agent-chat-shell.external-collapsed>*{display:none}
 .agent-stage .agent-chat-shell.external-collapsed .agent-side-launcher{display:flex}
-.agent-side-launcher{position:absolute;inset:0;border:0;background:linear-gradient(180deg,var(--accent),color-mix(in srgb,var(--accent) 72%,#000));color:var(--accent-contrast);cursor:pointer;align-items:center;justify-content:center;gap:9px;writing-mode:vertical-rl;transform:rotate(180deg);font:800 10px "IBM Plex Mono",monospace;letter-spacing:.08em;text-transform:uppercase}
+.agent-side-launcher{position:absolute;right:0;bottom:0;width:44px;height:172px;max-width:100%;max-height:100%;box-sizing:border-box;border:0;background:linear-gradient(180deg,var(--accent),color-mix(in srgb,var(--accent) 72%,#000));color:var(--accent-contrast);cursor:pointer;align-items:center;justify-content:center;gap:9px;writing-mode:vertical-rl;transform:rotate(180deg);font:800 10px "IBM Plex Mono",monospace;letter-spacing:.08em;text-transform:uppercase}
 .agent-side-launcher span{display:grid;place-items:center;width:25px;height:25px;background:#111;color:var(--accent);writing-mode:horizontal-tb;transform:rotate(180deg)}.agent-side-launcher i{width:7px;height:7px;border-radius:50%;background:#fff;box-shadow:0 0 0 4px rgba(255,255,255,.25)}
 @keyframes side-agent-alert{0%,100%{transform:translateX(0)}45%{transform:translateX(-8px)}70%{transform:translateX(2px)}}
 .agent-stage.is-dashboard{position:absolute;inset:0;z-index:1}
 .agent-chat-shell{height:min(var(--agent-chat-height),calc(100% - 32px))}
 .agent-chat-shell:not(.is-collapsed):not(.is-full):not(.is-peeking){left:0;right:auto;top:0;bottom:auto;width:min(1180px,calc(100% - 140px));transform:translate(var(--main-window-x),var(--main-window-y));resize:both;overflow:hidden}
 .agent-chat-shell:not(.is-collapsed):not(.is-full):not(.is-peeking) .conversation-head{cursor:move;touch-action:none;user-select:none}
-.agent-chat-shell.is-full{transform:none!important;resize:none!important}
-.agent-chat-shell.is-full{inset:0;height:100%;max-height:none;border-color:var(--accent)}
 .agent-chat-shell.is-peeking{height:50%;transition:height .22s ease-out}
 .agent-chat-shell.is-collapsed.has-new{animation:collapsed-chat-alert 1.1s ease-in-out infinite;border-color:var(--accent);box-shadow:0 0 0 1px color-mix(in srgb,var(--accent) 35%,transparent),0 12px 35px rgba(0,0,0,.38)}
 .chat-auto-time{display:flex;align-items:center;gap:4px;color:var(--muted);font:600 8px "IBM Plex Mono",monospace;text-transform:uppercase}

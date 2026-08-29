@@ -473,8 +473,9 @@ function MainAgentView({ theme, project, showDashboard }: { theme: Theme; projec
   const [thinking, setThinking] = useState(false);
   const [toolCalls, setToolCalls] = useState<ToolCallViewModel[]>([]);
   const [toolError, setToolError] = useState('');
-  const [runtimeMode, setRuntimeMode] = useState<'mock' | AgentRuntimeName>('mock');
+  const [runtimeMode, setRuntimeMode] = useState<'unknown' | 'mock' | AgentRuntimeName>('unknown');
   const [mainRuntime, setMainRuntime] = useState<AgentRuntimeStatus | null>(null);
+  const [mainRuntimeResolved, setMainRuntimeResolved] = useState(false);
   const [runtimeSessionId, setRuntimeSessionId] = useState('');
   const runtimeAbortRef = useRef<AbortController | null>(null);
   const [runtimeError, setRuntimeError] = useState('');
@@ -486,7 +487,6 @@ function MainAgentView({ theme, project, showDashboard }: { theme: Theme; projec
   const [chatCollapsed, setChatCollapsed] = useState(false);
   const [chatPeeking, setChatPeeking] = useState(false);
   const [chatHasUnread, setChatHasUnread] = useState(false);
-  const [chatHeight, setChatHeight] = useState(72);
   const [collapseDelay, setCollapseDelay] = useState(5);
   const [collapseUnit, setCollapseUnit] = useState<'ms' | 'sec' | 'min'>('min');
   const [lastInteraction, setLastInteraction] = useState(() => Date.now());
@@ -566,6 +566,7 @@ function MainAgentView({ theme, project, showDashboard }: { theme: Theme; projec
         const result = await getMainAgentRuntime();
         if (active) {
           setMainRuntime(result.status);
+          setMainRuntimeResolved(true);
           setRuntimeError('');
         }
       } catch (reason) {
@@ -583,12 +584,13 @@ function MainAgentView({ theme, project, showDashboard }: { theme: Theme; projec
   const assignedRuntime = mainRuntime?.runtime ?? null;
 
   useEffect(() => {
+    if (!mainRuntimeResolved) return;
     runtimeAbortRef.current?.abort();
     setRuntimeSessionId('');
     const nextRuntimeMode = mainRuntime?.runtime && mainRuntimeReady ? mainRuntime.runtime : 'mock';
     setRuntimeMode(nextRuntimeMode);
     if (nextRuntimeMode !== 'mock') setMessages((items) => items.filter((message) => !message.mock));
-  }, [mainRuntime?.runtime, mainRuntimeReady]);
+  }, [mainRuntime?.runtime, mainRuntimeReady, mainRuntimeResolved]);
   const registerInteraction = () => setLastInteraction(Date.now());
   const queueMainFiles = async (files: FileList | File[]) => {
     const prepared = await prepareMockChatAttachments(files, { scope: 'main-agent' });
@@ -597,7 +599,7 @@ function MainAgentView({ theme, project, showDashboard }: { theme: Theme; projec
     registerInteraction();
   };
   const startMainWindowDrag = (event: ReactPointerEvent<HTMLDivElement>) => {
-    if (chatPeeking || chatHeight === 100 || (event.target as HTMLElement).closest('button,input,select,textarea')) return;
+    if (chatPeeking || (event.target as HTMLElement).closest('button,input,select,textarea')) return;
     mainWindowDragRef.current = { pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, originX: mainWindowPosition.x, originY: mainWindowPosition.y };
     event.currentTarget.setPointerCapture(event.pointerId);
   };
@@ -632,6 +634,8 @@ function MainAgentView({ theme, project, showDashboard }: { theme: Theme; projec
     if ((!value && !pendingFiles.length) || thinking) return;
     registerInteraction();
     setChatCollapsed(false);
+
+    if (runtimeMode === 'unknown') return;
 
     if (runtimeMode !== 'mock') {
       const runtimeLabel = runtimeMode === 'claude' ? 'Claude Code' : 'Codex';
@@ -758,18 +762,19 @@ function MainAgentView({ theme, project, showDashboard }: { theme: Theme; projec
   const cycleChatMode = () => {
     registerInteraction();
     if (chatCollapsed) {
-      setChatMode('auto');
       openChat();
     } else if (chatMode === 'auto') {
       setChatMode('fixed');
     } else {
+      setChatMode('auto');
       collapseChat();
     }
   };
 
+  const visibleMessages = runtimeMode === 'mock' ? messages : messages.filter((message) => !message.mock);
   const savedArtifacts = messages.filter((message) => message.kind === 'artifact' && message.saved).length;
   const chatStyle = {
-    '--agent-chat-height': chatHeight + '%',
+    '--agent-chat-height': '72%',
     '--main-window-x': mainWindowPosition.x + 'px',
     '--main-window-y': mainWindowPosition.y + 'px',
   } as CSSProperties;
@@ -777,8 +782,7 @@ function MainAgentView({ theme, project, showDashboard }: { theme: Theme; projec
     + (chatCollapsed && !chatPeeking ? ' is-collapsed' : '')
     + (chatPeeking ? ' is-peeking' : '')
     + (chatHasUnread ? ' has-new' : '')
-    + (chatCollapsed && !chatPeeking ? ' external-collapsed' : '')
-    + (chatHeight === 100 && !chatCollapsed && !chatPeeking ? ' is-full' : '');
+    + (chatCollapsed && !chatPeeking ? ' external-collapsed' : '');
 
   return (
     <div className={'agent-stage ' + (showDashboard ? 'is-dashboard' : 'is-overlay')}>
@@ -790,14 +794,13 @@ function MainAgentView({ theme, project, showDashboard }: { theme: Theme; projec
           <div className="chat-display-controls">
             {chatHasUnread && <i className="chat-unread-dot" title="Neue Nachricht" />}
             {thinking && runtimeMode !== 'mock' && <button type="button" className="main-runtime-stop" onClick={() => runtimeAbortRef.current?.abort()}>■ Abbrechen</button>}
-            <label>Höhe <input type="range" min="35" max="100" step="5" value={chatHeight} onChange={(event) => setChatHeight(Number(event.target.value))} /></label>
             {chatMode === 'auto' && <label className="chat-auto-time">nach <input type="number" min="1" step={collapseUnit === 'ms' ? 100 : 1} value={collapseDelay} onChange={(event) => setCollapseDelay(Math.max(1, Number(event.target.value)))} /><select value={collapseUnit} onChange={(event) => setCollapseUnit(event.target.value as 'ms' | 'sec' | 'min')}><option value="ms">ms</option><option value="sec">Sek.</option><option value="min">Min.</option></select></label>}
             <button type="button" className="chat-mode-cycle active" onClick={cycleChatMode} title="Auto → Fixiert → Minimiert">{chatCollapsed ? '□ Öffnen' : chatMode === 'auto' ? '◌ Auto · weiter' : '● Fixiert · weiter'}</button>
-            <div className={'agent-live' + (runtimeMode !== 'mock' ? ' real' : '')}><i /> {runtimeMode === 'mock' ? 'Kein Agent' : thinking ? 'streaming' : runtimeMode === 'claude' ? 'Claude bereit' : 'Codex bereit'}</div>
+            <div className={'agent-live' + (runtimeMode === 'claude' || runtimeMode === 'codex' ? ' real' : '')}><i /> {runtimeMode === 'unknown' ? 'Runtime wird geprüft' : runtimeMode === 'mock' ? 'Kein Agent' : thinking ? 'streaming' : runtimeMode === 'claude' ? 'Claude bereit' : 'Codex bereit'}</div>
           </div>
         </div>
         <div className="message-feed" ref={feedRef} onScroll={handleFeedScroll}>
-          {messages.map((message) => <Fragment key={message.id}>
+          {visibleMessages.map((message) => <Fragment key={message.id}>
             {message.id === 4 && <ToolActivity calls={toolCalls} error={toolError} project={project} summary="Projektstatus wird geprüft und als HTML-Antwort aufgebaut." phases={['Auftrag einordnen', 'Darstellung zusammensetzen']} />}
             <article className={'message ' + message.role + ' ' + message.kind}>
               <header>{message.role === 'user' ? 'Du' : 'Hauptagent'}</header>
@@ -819,7 +822,7 @@ function MainAgentView({ theme, project, showDashboard }: { theme: Theme; projec
             <AttachmentPicker onFiles={(files) => void queueMainFiles(files)} label="＋ Datei / Bild" />
             <span className="composer-hint">{runtimeMode === 'codex' ? 'Echte Codex-Session · Chat-Text aktiv, Dateien folgen in einer späteren Stufe.' : chatCollapsed ? 'Chat eingeklappt · Datei ablegen oder Nachricht senden.' : 'Dateien hierher ziehen · später privates Main-Agent-Volume.'}</span>
             {chatCollapsed && <button type="button" className="chat-open-action" onClick={openChat}>Verlauf öffnen{chatHasUnread ? ' · neu' : ''}</button>}
-            <button className="primary-action" type="submit" disabled={thinking || (!input.trim() && !pendingFiles.length)}>Senden</button>
+            <button className="primary-action" type="submit" disabled={runtimeMode === 'unknown' || thinking || (!input.trim() && !pendingFiles.length)}>Senden</button>
           </footer>
         </form>
       </section>
