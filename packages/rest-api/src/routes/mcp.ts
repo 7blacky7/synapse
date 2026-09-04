@@ -5401,6 +5401,14 @@ export async function mcpRoutes(fastify: FastifyInstance): Promise<void> {
           return reply.status(202).send();
 
         default:
+          // JSON-RPC 2.0: eine Notification (kein id-Feld) darf NIE eine Antwort
+          // bekommen — unbekannte Notifications sind still zu verwerfen. Vorher
+          // ging hier ein 400 zurueck; Clients die per MCP-Spec 'roots' anmelden
+          // (Antigravity/Gemini-CLI, Go-SDK) schicken direkt nach initialize ein
+          // 'notifications/roots/list_changed' und werteten den 400 als
+          // Verbindungsabbruch — die Tool-Liste kam nie an (04.09.2026).
+          // Unbekannte REQUESTS (mit id) bleiben unveraendert bei -32601.
+          if (id === undefined || id === null) return reply.status(202).send();
           return reply.status(400).send({ jsonrpc: '2.0', id, error: { code: -32601, message: `Method not found: ${method}` } });
       }
 
@@ -5587,6 +5595,14 @@ export async function mcpRoutes(fastify: FastifyInstance): Promise<void> {
           break;
 
         default:
+          // JSON-RPC 2.0: eine Notification (kein id-Feld) darf NIE eine Antwort
+          // bekommen — unbekannte Notifications sind still zu verwerfen. Vorher
+          // ging hier ein 400 zurueck; Clients die per MCP-Spec 'roots' anmelden
+          // (Antigravity/Gemini-CLI, Go-SDK) schicken direkt nach initialize ein
+          // 'notifications/roots/list_changed' und werteten den 400 als
+          // Verbindungsabbruch — die Tool-Liste kam nie an (04.09.2026).
+          // Unbekannte REQUESTS (mit id) bleiben unveraendert bei -32601.
+          if (id === undefined || id === null) return reply.status(202).send();
           return reply.status(400).send({ jsonrpc: '2.0', id, error: { code: -32601, message: `Method not found: ${method}` } });
       }
 
