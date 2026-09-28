@@ -26,6 +26,7 @@ import {
 import {
   claimUnreadChannelHints,
   claimShellJobHints,
+  claimOpenPlanHints,
   getPendingEventHints,
   TOOL_GUIDES,
   ensureSchema,
@@ -330,6 +331,18 @@ export function createServer(): Server {
             const shellHints = await claimShellJobHints(args.project, agentId, 3);
             if (shellHints.length > 0) {
               parsed.shell_activity = shellHints;
+              first.text = JSON.stringify(parsed, null, 2);
+            }
+          } catch { /* Hinweise duerfen Toolantworten nie brechen */ }
+        }
+
+        // Offene Multi-File-Plaene (laufen seit 28.09.2026 nicht mehr ab). Gedrosselt je
+        // Agent in claimOpenPlanHints: nur bei geaendertem Bestand oder alle 15 Minuten.
+        if (typeof args?.project === 'string' && args.project) {
+          try {
+            const planHints = await claimOpenPlanHints(args.project, agentId);
+            if (planHints) {
+              parsed.open_plans = planHints;
               first.text = JSON.stringify(parsed, null, 2);
             }
           } catch { /* Hinweise duerfen Toolantworten nie brechen */ }

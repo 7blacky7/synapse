@@ -117,9 +117,13 @@ import {
   listFileHistory,
   // Multi-File Plan/Commit (Schritt 2)
   planBatch,
+  replanBatch,
+  planFailureResponse,
+  buildCancelResponse,
   commitBatch,
   cancelBatch,
   getBatchPlan,
+  buildPlanStatusResponse,
   addCoeditContribution,
   markCoeditReady,
   markCoeditNoChanges,
@@ -150,6 +154,7 @@ import {
   markChannelRead,
   claimUnreadChannelHints,
   claimShellJobHints,
+  claimOpenPlanHints,
   // Inbox
   postToInbox,
   checkInbox,
@@ -827,10 +832,10 @@ const MCP_TOOLS = [
         show_imports: { type: 'boolean', description: 'Import-Statements auflisten (Standard: false, fuer tree)' },
         file_path: { type: 'string', description: 'Datei-Pfad-Filter (LIKE-Pattern) fuer functions/variables/symbols/file/statements/calls/entrypoints — UND seit 08.08.2026 auch fuer search: dort im Volltext-Modus als LIKE-Teilpfad, mit semantic:true dagegen als VOLLSTAENDIGER Pfad, weil Qdrant keinen Teilstring-Vergleich kennt. Vorher wurde der Parameter bei search still verworfen und die Suche lieferte Treffer aus dem ganzen Projekt.' },
         name: { type: 'string', description: 'Symbol-Name-Filter (fuer functions/variables/symbols/references)' },
-        value_contains: { type: 'string', description: "Sucht im INHALT des Symbols statt im Namen (fuer symbols). PFLICHT fuer Kommentare, Strings und TODOs: die tragen name=NULL, ein name-Filter findet dort nie etwas. Beispiel: symbol_type='comment' + value_contains='@SYN-'." },
+        value_contains: { type: 'string', description: "Sucht im INHALT des Symbols statt im Namen (fuer symbols). PFLICHT fuer Kommentare, Strings und TODOs: die tragen name=NULL, ein name-Filter findet dort nie etwas. Beispiel: symbol_type='comment' + value_contains='@SYN-'. Jeder Treffer traegt match_line (echte Zeile des Treffers; bei mehrzeiligen Kommentarbloecken NICHT line_start) und match_lines." },
         new_name: { type: 'string', description: "Nur fuer rename_preview: der neue Name. Liefert eine Vorschau samt fertiger ops fuer files(action:'plan') — geschrieben wird hier NICHTS." },
         include_name_matches: { type: 'boolean', description: 'Nur fuer references: mischt die aussortierten Namensgleichen zurueck in references (Standard false). Sie stehen ohnehin immer unter name_matches.' },
-        comment_contains: { type: 'string', description: "Nur Kommentare zeigen, die diesen Text enthalten (fuer tree, zusammen mit show_comments). Macht den Baum zur Suche: show_comments=50 + comment_contains='@SYN-' listet alle Marken mit Datei und Zeile." },
+        comment_contains: { type: 'string', description: "Macht den Baum zur Suche (fuer tree): gelistet werden NUR Dateien mit Treffer, je Treffer die echte Zeilennummer und der Inhalt dieser Zeile, in der Fusszeile Datei- und Trefferzahl. Ohne show_comments gilt '*' (bis 50 je Datei). Beispiel: comment_contains='@SYN-' listet alle Marken mit Datei und Zeile." },
         comment_chars: { type: 'integer', description: 'Anzeigelaenge je Kommentarzeile in Zeichen (fuer tree, Standard 100).' },
         comment_from: { type: 'integer', description: 'Startpunkt im Kommentartext (fuer tree, Standard 0). Mit comment_chars ein Fenster: comment_from=5 + comment_chars=20 zeigt Zeichen 5 bis 24. Ein Ausschnitt bekommt eine Ellipse.' },
         comment_skip: { type: 'integer', description: 'Die ersten N Kommentare je Datei ueberspringen (fuer tree, Standard 0). Blaetterfunktion: comment_skip=9 + show_comments=6 liefert Kommentar 10 bis 15.' },
@@ -868,8 +873,8 @@ const MCP_TOOLS = [
       properties: {
         action: {
           type: 'string',
-          enum: ['create', 'update', 'delete', 'move', 'copy', 'read', 'replace_lines', 'insert_after', 'delete_lines', 'search_replace', 'search_replace_batch', 'versions', 'get_version', 'restore', 'restore_batch', 'plan', 'commit', 'cancel', 'plan_status', 'history', 'reservation_add', 'reservation_release', 'reservation_update', 'reservation_list', 'coedit_add', 'coedit_ready', 'coedit_no_changes', 'shared_plan_status'],
-          description: 'Datei-Aktion. versions/get_version/restore/restore_batch arbeiten auf der Versionshistorie. plan/commit/cancel/plan_status implementieren atomare Multi-File-Edits ueber mehrere Dateien. history listet Aenderungen mit Begruendung (Crash-Recovery) — agent_id wirkt dort als EXAKTER Filter, fuer die volle Projekt-History weglassen.',
+          enum: ['create', 'update', 'delete', 'move', 'copy', 'read', 'replace_lines', 'insert_after', 'delete_lines', 'search_replace', 'search_replace_batch', 'versions', 'get_version', 'restore', 'restore_batch', 'plan', 'commit', 'cancel', 'plan_status', 'history', 'reservation_add', 'reservation_release', 'reservation_update', 'reservation_list', 'coedit_add', 'coedit_ready', 'coedit_no_changes', 'shared_plan_status', 'plan_update'],
+          description: 'Datei-Aktion. versions/get_version/restore/restore_batch arbeiten auf der Versionshistorie. plan/commit/cancel/plan_status/plan_update implementieren atomare Multi-File-Edits ueber mehrere Dateien. history listet Aenderungen mit Begruendung (Crash-Recovery) — agent_id wirkt dort als EXAKTER Filter, fuer die volle Projekt-History weglassen.',
         },
         project: { type: 'string', description: 'Projekt-Name' },
         file_path: { oneOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' }, minItems: 1 }], description: 'Projekt-relativer Pfad. Array nur fuer reservation_add/release/list; bestehende Datei-Actions erwarten weiter einen String.' },
@@ -907,7 +912,8 @@ const MCP_TOOLS = [
         truncate_long_lines: { type: 'number', description: 'read: Zeilen laenger als N Zeichen kuerzen + Marker. 0 = aus (Standard).' },
         version_id: { type: 'string', description: 'Versions-ID (BIGSERIAL als String). Pflicht fuer get_version/restore. Bei history (): zeigt Korrektur-Chain ab dieser Version (rekursiv via parent_version_id).' },
         batch_id: { type: 'string', description: 'Batch-ID (fuer restore_batch — rollt alle Files einer Multi-File-Batch zurueck).' },
-        plan_id: { type: 'string', description: 'Plan-ID (fuer commit, cancel, plan_status). String wegen BIGSERIAL.' },
+        plan_id: { type: 'string', description: 'Plan-ID (fuer commit, cancel, plan_status, plan_update). String wegen BIGSERIAL.' },
+        op_index: { type: 'number', description: 'plan_update: Index der zu ersetzenden Op (0-basiert); ops[] ersetzt genau diese. Ohne op_index ersetzt ops[] alle Ops.' },
         agent_id: { type: 'string', description: 'Optional: Audit-Agent fuer file_versions. Bei Web-KI-Calls ohne Wrapper wird agent_id aus User-Agent/X-Openai-Session abgeleitet (z.B. "gpt-<8charsessionid>"). DARF weggelassen oder leer sein — Server ergaenzt automatisch. AUSNAHME action=history: dort wirkt agent_id als EXAKTER Read-Filter — fuer die volle Projekt-History weglassen!' },
         agent_filter: { type: 'string', description: 'Nur fuer history: expliziter exakter Agent-Filter (bevorzugt gegenueber agent_id-als-Filter)' },
         ops: {
@@ -973,8 +979,8 @@ const MCP_TOOLS = [
       properties: {
         action: {
           type: 'string',
-          enum: ['plan', 'commit', 'cancel', 'plan_status', 'history', 'restore', 'restore_batch', 'reservation_add', 'reservation_release', 'reservation_update', 'reservation_list', 'coedit_add', 'coedit_ready', 'coedit_no_changes', 'shared_plan_status'],
-          description: 'plan: Trockenlauf, gibt plan_id zurueck. commit: Legacy-Plan unveraendert; Co-Edit-Plan atomar gaten, validieren und gemeinsam committen oder terminal conflict. cancel: open/conflict verwerfen. plan_status: Plan-Details. history: Aenderungs-Log. restore/restore_batch: Versionierungs-Rollback.',
+          enum: ['plan', 'commit', 'cancel', 'plan_status', 'history', 'restore', 'restore_batch', 'reservation_add', 'reservation_release', 'reservation_update', 'reservation_list', 'coedit_add', 'coedit_ready', 'coedit_no_changes', 'shared_plan_status', 'plan_update'],
+          description: 'plan: Trockenlauf, gibt plan_id zurueck; scheitert eine Op, entsteht trotzdem ein neuer offener Plan (plan_id + failed_ops), korrigierbar per plan_update (ersetzt op_index bzw. alle Ops, neue plan_id, alter Plan verworfen). Plaene laufen nicht ab. commit: Legacy-Plan unveraendert; Co-Edit-Plan atomar gaten, validieren und gemeinsam committen oder terminal conflict. cancel: open/conflict verwerfen. plan_status: Plan-Details. history: Aenderungs-Log. restore/restore_batch: Versionierungs-Rollback.',
         },
         project: { type: 'string', description: 'Projekt-Name' },
         ops: {
@@ -1016,7 +1022,8 @@ const MCP_TOOLS = [
             required: ['file_path', 'action'],
           },
         },
-        plan_id: { type: 'string', description: 'Pflicht fuer commit, cancel, plan_status' },
+        plan_id: { type: 'string', description: 'Pflicht fuer commit, cancel, plan_status, plan_update' },
+        op_index: { type: 'number', description: 'plan_update: Index der zu ersetzenden Op (0-basiert); ohne op_index ersetzt ops[] alle Ops.' },
         version_id: { type: 'string', description: 'Pflicht fuer restore' },
         batch_id: { type: 'string', description: 'Pflicht fuer restore_batch' },
         agent_id: { type: 'string', description: 'Optionale Agent-ID (Audit-Trail). AUSNAHME action=history: wirkt als exakter Read-Filter — fuer volle Projekt-History weglassen.' },
@@ -1258,6 +1265,7 @@ const COEDIT_WAIT_OUTPUT_SCHEMA: Record<string, unknown> = {
       wait_token: { type: 'string', description: 'Opaquer CE-2-Wait-Token' },
       retry_after_seconds: { type: 'number' },
       expires_at: { type: 'string' },
+      target_plan_id: { type: 'string', description: 'Offener gemeinsamer Plan, in den der Wait fuehrt (Ziel fuer coedit_add)' },
     },
   },
 };
@@ -1830,6 +1838,10 @@ async function attachRestChannelHints(
  *
  * shell selbst ist ausgenommen: dessen Antworten sprechen ohnehin ueber Jobs,
  * ein zusaetzlicher Hinweisblock waere dort nur Rauschen.
+ *
+ * Zusaetzlich open_plans (28.09.2026): offene Multi-File-Plaene des Projekts. Sie
+ * laufen nicht mehr ab; wer sie sieht, committet oder verwirft sie. Gedrosselt je
+ * Agent in claimOpenPlanHints (nur bei geaendertem Bestand oder alle 15 Minuten).
  */
 async function attachShellJobHints(
   result: unknown,
@@ -1838,7 +1850,6 @@ async function attachShellJobHints(
   effectiveAgentId?: string,
 ): Promise<unknown> {
   if (!effectiveAgentId
-    || toolName === 'shell'
     || toolName === 'guide'
     || typeof result !== 'object'
     || result === null
@@ -1848,14 +1859,19 @@ async function attachShellJobHints(
   const project = str(args, 'project');
   if (!project) return result;
 
-  try {
-    const hints = await claimShellJobHints(project, effectiveAgentId, 3);
-    if (hints.length === 0) return result;
-    return { ...result, shell_activity: hints };
-  } catch {
-    // Ein Hinweis darf den eigentlichen Tool-Aufruf nie brechen.
-    return result;
+  // Ein Hinweis darf den eigentlichen Tool-Aufruf nie brechen.
+  const extras: Record<string, unknown> = {};
+  if (toolName !== 'shell') {
+    try {
+      const hints = await claimShellJobHints(project, effectiveAgentId, 3);
+      if (hints.length > 0) extras.shell_activity = hints;
+    } catch { /* best effort */ }
   }
+  try {
+    const plans = await claimOpenPlanHints(project, effectiveAgentId);
+    if (plans) extras.open_plans = plans;
+  } catch { /* best effort */ }
+  return Object.keys(extras).length > 0 ? { ...result, ...extras } : result;
 }
 
 async function attachRestPendingEventHints(
@@ -4086,7 +4102,11 @@ async function handleToolCall(
           success: true,
           released_count: result.released.length,
           ...result,
-          message: `${result.released.length} Reservierung(en) freigegeben.`,
+          message: `${result.released.length} Reservierung(en) freigegeben.` +
+            (result.already_released.length > 0
+              ? ` ${result.already_released.length} Pfad(e) waren bereits freigegeben (already_released: ${[...new Set(result.already_released.map((entry) => entry.reason))].join(', ')}) — kein Fehler; commit gibt Reservierungen selbst frei.`
+              : '') +
+            (result.missing_paths.length > 0 ? ` ${result.missing_paths.length} Pfad(e) waren von diesem Agenten nie reserviert (missing_paths).` : ''),
         };
       }
       if (action === 'reservation_update') {
@@ -4103,7 +4123,8 @@ async function handleToolCall(
         return {
           success: true,
           ...result,
-          message: `Reservierungen atomar aktualisiert: ${result.released.length} freigegeben, ${result.kept.length} behalten, ${result.added.length} hinzugefuegt.`,
+          message: `Reservierungen atomar aktualisiert: ${result.released.length} freigegeben, ${result.kept.length} behalten, ${result.added.length} hinzugefuegt.` +
+            (result.already_released.length > 0 ? ` ${result.already_released.length} release_path(s) waren bereits freigegeben (already_released, z.B. durch commit) — kein Fehler.` : ''),
         };
       }
       if (action === 'reservation_list') {
@@ -4193,6 +4214,7 @@ async function handleToolCall(
                   project,
                   agent_id: agentId,
                   ops: fileOps,
+                  persist_failed: false,
                   open_for_coedit: typeof args.open_for_coedit === 'boolean' ? args.open_for_coedit as boolean : undefined,
                   reason: str(args, 'reason'),
                 });
@@ -4248,6 +4270,42 @@ async function handleToolCall(
           const waitExtras = coeditWaits.length > 0
             ? { coedit_waits: coeditWaits, deferred_ops: deferredOps }
             : {};
+          // Teilerfolg (28.09.2026): erfolgreiche Dateien sind committed. Dateien, deren
+          // Trockenlauf scheiterte, landen GEMEINSAM als EIN neuer offener Plan mit eigener
+          // ID (nicht committed) — korrigierbar per plan_update, verwerfbar per cancel.
+          // Commit-Fehler (stale/conflict) bleiben wie bisher nur in failed[].
+          const planFehlerDateien = new Set(failed.filter((f) => f.error === 'plan_failed').map((f) => f.file_path));
+          let offenerPlan: { plan_id: string; status: 'open'; files_touched: unknown; failed_ops: unknown; hinweis: string } | null = null;
+          if (planFehlerDateien.size > 0) {
+            const restOps = opsTyped.filter((op) => planFehlerDateien.has(op.file_path));
+            try {
+              const offen = await planBatch({
+                project,
+                agent_id: agentId,
+                ops: restOps,
+                open_for_coedit: typeof args.open_for_coedit === 'boolean' ? args.open_for_coedit as boolean : undefined,
+                reason: str(args, 'reason'),
+              });
+              offenerPlan = {
+                plan_id: offen.plan_id,
+                status: 'open',
+                files_touched: offen.files_touched,
+                failed_ops: [],
+                hinweis: `Die gescheiterten Datei(en) liessen sich beim zweiten Trockenlauf planen: offener Plan ${offen.plan_id} (nicht committed) — pruefen, dann commit oder cancel.`,
+              };
+            } catch (err) {
+              const antwort = planFailureResponse(err);
+              if (typeof antwort.plan_id === 'string') {
+                offenerPlan = {
+                  plan_id: antwort.plan_id,
+                  status: 'open',
+                  files_touched: antwort.files_touched,
+                  failed_ops: antwort.failed_ops,
+                  hinweis: `Gescheiterte Datei(en) liegen als offener Plan ${antwort.plan_id} bereit (nicht committed) — korrigieren mit files(action:"plan_update", plan_id:"${antwort.plan_id}", op_index, ops), verwerfen mit cancel.`,
+                };
+              }
+            }
+          }
           return {
             success: failed.length === 0,
             mode: 'per_file_atomic',
@@ -4256,11 +4314,12 @@ async function handleToolCall(
             committed_count: committed.length,
             failed_count: failed.length,
             ...waitExtras,
-            message: coeditWaits.length > 0
+            ...(offenerPlan ? { open_plan: offenerPlan } : {}),
+            message: (offenerPlan ? `${offenerPlan.hinweis} ` : '') + (coeditWaits.length > 0
               ? `${committed.length}/${byFile.size} Datei(en) committed; ${deferredOps} Op(s) warten reservationsbasiert und wurden nicht geschrieben.${failed.length > 0 ? ` ${failed.length} fehlgeschlagen.` : ''}`
               : failed.length === 0
                 ? `${committed.length}/${byFile.size} Datei(en) committed.`
-                : `${committed.length}/${byFile.size} committed, ${failed.length} fehlgeschlagen — Details in "failed[]".`,
+                : `${committed.length}/${byFile.size} committed, ${failed.length} fehlgeschlagen — Details in "failed[]".`),
           };
         }
 
@@ -4275,7 +4334,8 @@ async function handleToolCall(
             reason: str(args, 'reason'),
           });
         } catch (err) {
-          return { success: false, error: 'plan_failed', message: (err as Error).message };
+          // Scheitert eine Op, liegt der Batch als neuer offener Plan vor (plan_id + failed_ops).
+          return planFailureResponse(err);
         }
         // auto_commit:true -> direkt commit, ABER nur wenn alle Previews ok sind.
         const allPreviewsOk = result.previews?.every(p => p.ok) ?? true;
@@ -4304,6 +4364,48 @@ async function handleToolCall(
             : `Plan ${result.plan_id} angelegt: ${result.total_ops} Op(s) ueber ${result.files_touched.length} Datei(en).`,
         };
       }
+      if (action === 'plan_update') {
+        const planId = reqStr(args, 'plan_id');
+        const opsRaw = (args as Record<string, unknown>).ops;
+        if (!Array.isArray(opsRaw) || opsRaw.length === 0) {
+          return { success: false, error: 'invalid_ops', message: 'ops[] muss mindestens 1 Element enthalten (ersetzt op_index bzw. ohne op_index alle Ops).' };
+        }
+        let result;
+        try {
+          result = await replanBatch({
+            project,
+            plan_id: planId,
+            agent_id: agentId,
+            ops: opsRaw as import('@synapse/core').FileBatchOp[],
+            op_index: num(args, 'op_index'),
+            open_for_coedit: typeof args.open_for_coedit === 'boolean' ? args.open_for_coedit as boolean : undefined,
+            reason: str(args, 'reason'),
+          });
+        } catch (err) {
+          return planFailureResponse(err, 'plan_update_failed');
+        }
+        const allPreviewsOk = result.previews?.every((p) => p.ok) ?? true;
+        const wie = result.in_place
+          ? `Plan ${planId} im selben Plan aktualisiert (Waits und Beitraege bleiben gebunden)`
+          : `Plan ${result.plan_id} ersetzt Plan ${planId} (verworfen)`;
+        if (bool(args, 'auto_commit') === true && allPreviewsOk && result.total_ops > 0) {
+          const c = await commitBatch({ plan_id: result.plan_id, agent_id: agentId, agent_note: str(args, 'agent_note') });
+          return {
+            ...c,
+            plan: result,
+            ...(result.in_place ? {} : { superseded_plan_id: planId }),
+            auto_committed: c.success,
+            message: c.success
+              ? `${wie} und ist committed — ${c.committed} Datei(en) geaendert. batch_id=${c.batch_id}.`
+              : `${wie}, auto-commit fehlgeschlagen — Plan bleibt offen.`,
+          };
+        }
+        return {
+          success: true,
+          ...result,
+          message: `${wie}: ${result.total_ops} Op(s), Trockenlauf ok. commit mit files(action:"commit", plan_id:"${result.plan_id}").`,
+        };
+      }
       if (action === 'commit') {
         const planId = reqStr(args, 'plan_id');
         try {
@@ -4318,31 +4420,14 @@ async function handleToolCall(
       }
       if (action === 'cancel') {
         const planId = reqStr(args, 'plan_id');
-        const result = await cancelBatch(planId);
-        return {
-          success: result.ok,
-          plan_id: planId,
-          status: result.status,
-          message: result.ok ? `Plan ${planId} abgebrochen.` : `Plan ${planId} nicht abbrechbar (Status: ${result.status}).`,
-        };
+        // Mit agent_id: fremde Beitraege bleiben, nur die eigenen Ops werden zurueckgezogen.
+        return buildCancelResponse(planId, await cancelBatch(planId, agentId, str(args, 'reason')));
       }
       if (action === 'plan_status') {
         const planId = reqStr(args, 'plan_id');
         const plan = await getBatchPlan(planId);
         if (!plan) return { success: false, error: 'plan_not_found', message: `Plan ${planId} nicht gefunden.` };
-        return {
-          success: true,
-          plan_id: plan.id,
-          project: plan.project,
-          status: plan.status,
-          owner_agent_id: plan.owner_agent_id,
-          ops_count: Array.isArray(plan.ops) ? plan.ops.length : 0,
-          files_touched: Object.keys(plan.expected_hashes ?? {}),
-          previews: plan.previews,
-          reason: plan.reason,
-          expires_at: plan.expires_at,
-          committed_at: plan.committed_at,
-        };
+        return buildPlanStatusResponse(plan);
       }
       if (action === 'history') {
         const limit = num(args, 'limit') ?? 50;

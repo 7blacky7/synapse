@@ -601,7 +601,15 @@ export {
   markCoeditReady,
   markCoeditNoChanges,
   getSharedPlanStatus,
+  buildPlanStatusResponse,
+  replanBatch,
+  failedOpsOf,
+  PlanBatchOpsFailedError,
+  planFailureResponse,
+  buildCancelResponse,
 } from './services/file-batch.js';
+export { claimOpenPlanHints } from './services/plan-hints.js';
+export type { OpenPlanHints, OpenPlanHintEntry } from './services/plan-hints.js';
 export type {
   FileBatchOp,
   FileBatchOpAction,
@@ -616,6 +624,11 @@ export type {
   SharedPlanStatusResult,
   CommitBatchResult,
   CommitConflictDetail,
+  CoeditConflictDetail,
+  FailedPlanOp,
+  SharedPlanRef,
+  CancelBatchResult,
+  WithdrawalRecord,
 } from './services/file-batch.js';
 
 // Kooperative Dateireservierungen (Co-Edit CE-1)
@@ -635,6 +648,7 @@ export type {
   FileReservation,
   ReservationMutationResult,
   ReservationUpdateResult,
+  AlreadyReleasedReservation,
   ForeignActiveReservationPrimary,
   DirectWriteReservationHint,
   ReservationTtlConfig,

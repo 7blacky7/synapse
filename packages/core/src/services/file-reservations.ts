@@ -78,8 +78,21 @@ export function getReservationTtlConfig(): ReservationTtlConfig {
   };
 }
 
+/** Pfad, dessen Reservierung schon vor dem release-Aufruf freigegeben war. */
+export interface AlreadyReleasedReservation {
+  file_path: string;
+  released_at: string;
+  /** commit = durch files commit freigegeben; takeover = uebernommen; release = frueheres release/update. */
+  reason: 'commit' | 'takeover' | 'release';
+  plan_id: string | null;
+  taken_over_by?: string;
+}
+
 export interface ReservationMutationResult {
   released: FileReservation[];
+  /** Schon freigegeben (z.B. durch commit) — kein Fehler. */
+  already_released: AlreadyReleasedReservation[];
+  /** Nur Pfade, die dieser Agent nie reserviert hat. */
   missing_paths: string[];
 }
 
@@ -87,6 +100,7 @@ export interface ReservationUpdateResult {
   added: FileReservation[];
   kept: FileReservation[];
   released: FileReservation[];
+  already_released: AlreadyReleasedReservation[];
   missing_keep_paths: string[];
   missing_release_paths: string[];
 }
@@ -303,20 +317,15 @@ async function renewDueWithClient(
     `SELECT r.id::text AS id, r.project, r.agent_id, r.file_path
        FROM file_reservations r
       WHERE ${filters.join(' AND ')}
-        AND (
-          EXISTS (
-            SELECT 1 FROM tool_calls t
-             WHERE t.agent_id = r.agent_id
-               AND (t.project = r.project OR t.project IS NULL)
-               AND t.ts > COALESCE(r.last_extended_at, r.reserved_at)
-          )
-          OR EXISTS (
-            SELECT 1 FROM file_batch_plans p
-             WHERE p.project = r.project
-               AND p.status = 'open' AND p.expires_at > NOW()
-               AND (p.owner_agent_id = r.agent_id OR p.id = r.plan_id)
-               AND p.expected_hashes ? r.file_path
-          )
+        -- Nur echte Tool-Aktivitaet verlaengert (28.09.2026). Ein offener Plan ist KEIN
+        -- Lebenszeichen mehr: Plaene laufen nicht ab, ein abgestuerzter Agent mit
+        -- offenem Plan wuerde seine Dateien sonst fuer immer sperren. Gegen veraltete
+        -- Plaene schuetzt der Hash-Check beim commit (expected_hashes).
+        AND EXISTS (
+          SELECT 1 FROM tool_calls t
+           WHERE t.agent_id = r.agent_id
+             AND (t.project = r.project OR t.project IS NULL)
+             AND t.ts > COALESCE(r.last_extended_at, r.reserved_at)
         )
       ORDER BY r.expires_at, r.id
       FOR UPDATE SKIP LOCKED`,
@@ -410,10 +419,11 @@ async function addWithClient(
           (row) => row.agent_id !== primary.agent_id
             && new Date(row.expires_at).getTime() > Date.now(),
         );
+        // Ein offener Plan blockiert die Uebernahme nicht mehr (28.09.2026): Plaene
+        // laufen nicht ab, sonst haelte ein abgestuerzter Owner die Datei ewig.
         const { rows: checks } = await client.query<{
           within_grace: boolean;
           has_activity: boolean;
-          has_open_file_plan: boolean;
           hash_drifted: boolean;
         }>(
           `SELECT
@@ -424,21 +434,14 @@ async function addWithClient(
                   AND (t.project = $1 OR t.project IS NULL)
                   AND t.ts > $3::timestamptz
              ) AS has_activity,
-             EXISTS (
-               SELECT 1 FROM file_batch_plans p
-                WHERE p.project = $1
-                  AND p.status = 'open' AND p.expires_at > NOW()
-                  AND (p.owner_agent_id = $2 OR p.id = $5::bigint)
-                  AND p.expected_hashes ? $6
-             ) AS has_open_file_plan,
              COALESCE((
                SELECT cf.content_hash FROM code_files cf
-                WHERE cf.project = $1 AND cf.file_path = $6
+                WHERE cf.project = $1 AND cf.file_path = $5
                   AND cf.deleted_at IS NULL LIMIT 1
-             ), $7) <> COALESCE($8, $7) AS hash_drifted`,
+             ), $6) <> COALESCE($7, $6) AS hash_drifted`,
           [
             args.project, primary.agent_id, primary.expires_at,
-            config.takeoverGraceMinutes, primary.plan_id, filePath,
+            config.takeoverGraceMinutes, filePath,
             EMPTY_CONTENT_HASH, primary.content_hash_at_reservation,
           ],
         );
@@ -446,7 +449,6 @@ async function addWithClient(
         const blockers = [
           check.within_grace ? 'Grace-Phase' : null,
           check.has_activity ? 'Activity seit Ablauf' : null,
-          check.has_open_file_plan ? 'offener dateibezogener Plan' : null,
           check.hash_drifted ? 'Content-Hash geaendert' : null,
         ].filter((value): value is string => value !== null);
 
@@ -462,7 +464,15 @@ async function addWithClient(
                 SET status = 'conflict', updated_at = NOW()
               WHERE project = $1 AND primary_agent = $2
                 AND $3 = ANY(shared_files)
-                AND status IN ('waiting', 'linked')`,
+                AND status IN ('waiting', 'linked')
+                -- Gemeinsamer Plan (28.09.2026): Waits, deren Ziel ein offener Co-Edit-Plan
+                -- ist, bleiben — der Plan ueberlebt den Owner, samt allen Beitraegen.
+                AND NOT EXISTS (
+                  SELECT 1 FROM file_batch_plans p
+                   WHERE p.project = $1 AND p.status = 'open' AND p.open_for_coedit = true
+                     AND (p.id = file_batch_waits.primary_plan_id
+                          OR (p.owner_agent_id = $2 AND p.expected_hashes ? $3))
+                )`,
             [args.project, primary.agent_id, filePath],
           );
           coordinationHint = contender.agent_id === args.agentId
@@ -529,6 +539,52 @@ async function releaseWithClient(
   return rows.map(mapReservation);
 }
 
+/**
+ * Liefert fuer Pfade ohne aktive Reservierung des Agenten die juengste bereits
+ * freigegebene Zeile mit Grund: 'commit' (released_at deckt sich mit committed_at
+ * eines committeten Plans auf diesem Pfad), 'takeover' oder 'release'.
+ * Pfade ohne jede Reservierungszeile fehlen im Ergebnis (= missing_paths).
+ */
+async function findAlreadyReleased(
+  client: ReservationQueryClient,
+  project: string,
+  agentId: string,
+  filePaths: readonly string[],
+): Promise<AlreadyReleasedReservation[]> {
+  if (filePaths.length === 0) return [];
+  const { rows } = await client.query<{
+    file_path: string;
+    released_at: Date | string;
+    plan_id: string | null;
+    taken_over_by: string | null;
+    commit_plan_id: string | null;
+  }>(
+    `SELECT DISTINCT ON (r.file_path)
+            r.file_path, r.released_at, r.plan_id::text AS plan_id, r.taken_over_by,
+            (SELECT p.id::text FROM file_batch_plans p
+              WHERE p.project = r.project AND p.status = 'committed'
+                AND p.expected_hashes ? r.file_path
+                AND p.committed_at BETWEEN r.released_at - INTERVAL '2 seconds'
+                                       AND r.released_at + INTERVAL '2 seconds'
+              ORDER BY (p.id = r.plan_id) DESC NULLS LAST,
+                       ABS(EXTRACT(EPOCH FROM (p.committed_at - r.released_at)))
+              LIMIT 1) AS commit_plan_id
+       FROM file_reservations r
+      WHERE r.project = $1 AND r.agent_id = $2
+        AND r.file_path = ANY($3::text[])
+        AND r.released_at IS NOT NULL
+      ORDER BY r.file_path, r.released_at DESC, r.id DESC`,
+    [project, agentId, [...filePaths]],
+  );
+  return rows.map((row) => ({
+    file_path: row.file_path,
+    released_at: iso(row.released_at),
+    reason: row.taken_over_by ? 'takeover' : row.commit_plan_id ? 'commit' : 'release',
+    plan_id: row.commit_plan_id ?? row.plan_id ?? null,
+    ...(row.taken_over_by ? { taken_over_by: row.taken_over_by } : {}),
+  }));
+}
+
 export async function addFileReservations(args: {
   project: string;
   agentId: string;
@@ -554,13 +610,20 @@ export async function releaseFileReservations(args: {
   filePaths: readonly string[];
 }): Promise<ReservationMutationResult> {
   const filePaths = normalizeReservationFilePaths(args.filePaths);
-  const released = await inTransaction((client) =>
-    releaseWithClient(client, args.project, args.agentId, filePaths));
-  const releasedPaths = new Set(released.map((entry) => entry.file_path));
-  return {
-    released,
-    missing_paths: filePaths.filter((filePath) => !releasedPaths.has(filePath)),
-  };
+  return inTransaction(async (client) => {
+    const released = await releaseWithClient(client, args.project, args.agentId, filePaths);
+    const releasedPaths = new Set(released.map((entry) => entry.file_path));
+    const notReleased = filePaths.filter((filePath) => !releasedPaths.has(filePath));
+    // Befund 3: commit gibt Reservierungen still frei. Solche Pfade sind kein
+    // Fehler, sondern already_released (mit released_at und Grund).
+    const alreadyReleased = await findAlreadyReleased(client, args.project, args.agentId, notReleased);
+    const alreadySet = new Set(alreadyReleased.map((entry) => entry.file_path));
+    return {
+      released,
+      already_released: alreadyReleased,
+      missing_paths: notReleased.filter((filePath) => !alreadySet.has(filePath)),
+    };
+  });
 }
 
 function assertDisjoint(groups: Array<{ name: string; paths: readonly string[] }>): void {
@@ -628,12 +691,16 @@ export async function updateFileReservations(args: {
 
     const keptSet = new Set(kept.map((entry) => entry.file_path));
     const releasedSet = new Set(released.map((entry) => entry.file_path));
+    const notReleased = releasePaths.filter((filePath) => !releasedSet.has(filePath));
+    const alreadyReleased = await findAlreadyReleased(client, args.project, args.agentId, notReleased);
+    const alreadySet = new Set(alreadyReleased.map((entry) => entry.file_path));
     return {
       added,
       kept,
       released,
+      already_released: alreadyReleased,
       missing_keep_paths: keepPaths.filter((filePath) => !keptSet.has(filePath)),
-      missing_release_paths: releasePaths.filter((filePath) => !releasedSet.has(filePath)),
+      missing_release_paths: notReleased.filter((filePath) => !alreadySet.has(filePath)),
     };
   });
 }

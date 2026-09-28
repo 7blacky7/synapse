@@ -26,9 +26,13 @@ import {
   restoreFileVersion,
   restoreBatch,
   planBatch,
+  replanBatch,
+  planFailureResponse,
+  buildCancelResponse,
   commitBatch,
   cancelBatch,
   getBatchPlan,
+  buildPlanStatusResponse,
   addCoeditContribution,
   markCoeditReady,
   markCoeditNoChanges,
@@ -73,8 +77,8 @@ export const filesTool: ConsolidatedTool = {
       properties: {
         action: {
           type: 'string',
-          enum: ['create', 'update', 'read', 'delete', 'move', 'copy', 'replace_lines', 'insert_after', 'delete_lines', 'search_replace', 'search_replace_batch', 'versions', 'get_version', 'restore', 'restore_batch', 'plan', 'commit', 'cancel', 'plan_status', 'history', 'reservation_add', 'reservation_release', 'reservation_update', 'reservation_list', 'coedit_add', 'coedit_ready', 'coedit_no_changes', 'shared_plan_status'],
-          description: 'Action inkl. Multi-File, Reservierungen und CE-3: coedit_add | coedit_ready | coedit_no_changes | shared_plan_status',
+          enum: ['create', 'update', 'read', 'delete', 'move', 'copy', 'replace_lines', 'insert_after', 'delete_lines', 'search_replace', 'search_replace_batch', 'versions', 'get_version', 'restore', 'restore_batch', 'plan', 'commit', 'cancel', 'plan_status', 'history', 'reservation_add', 'reservation_release', 'reservation_update', 'reservation_list', 'coedit_add', 'coedit_ready', 'coedit_no_changes', 'shared_plan_status', 'plan_update'],
+          description: 'Action inkl. Multi-File, Reservierungen und CE-3: coedit_add | coedit_ready | coedit_no_changes | shared_plan_status. plan_update korrigiert einen offenen Plan (op_index + ops) als Folgeplan mit eigener ID.',
         },
         project: {
           type: 'string',
@@ -164,7 +168,11 @@ export const filesTool: ConsolidatedTool = {
         },
         plan_id: {
           type: 'string',
-          description: 'Plan-ID (fuer commit, cancel, plan_status). String wegen BIGSERIAL.',
+          description: 'Plan-ID (fuer commit, cancel, plan_status, plan_update). String wegen BIGSERIAL.',
+        },
+        op_index: {
+          type: 'number',
+          description: 'plan_update: Index der zu ersetzenden Op (0-basiert); ops[] ersetzt genau diese. Ohne op_index ersetzt ops[] alle Ops.',
         },
         ops: {
           type: 'array',
@@ -332,7 +340,11 @@ export const filesTool: ConsolidatedTool = {
         success: true,
         released_count: result.released.length,
         ...result,
-        message: `${result.released.length} Reservierung(en) freigegeben.`,
+        message: `${result.released.length} Reservierung(en) freigegeben.` +
+          (result.already_released.length > 0
+            ? ` ${result.already_released.length} Pfad(e) waren bereits freigegeben (already_released: ${[...new Set(result.already_released.map((entry) => entry.reason))].join(', ')}) — kein Fehler; commit gibt Reservierungen selbst frei.`
+            : '') +
+          (result.missing_paths.length > 0 ? ` ${result.missing_paths.length} Pfad(e) waren von diesem Agenten nie reserviert (missing_paths).` : ''),
       };
     }
     if (action === 'reservation_update') {
@@ -349,7 +361,8 @@ export const filesTool: ConsolidatedTool = {
       return {
         success: true,
         ...result,
-        message: `Reservierungen atomar aktualisiert: ${result.released.length} freigegeben, ${result.kept.length} behalten, ${result.added.length} hinzugefuegt.`,
+        message: `Reservierungen atomar aktualisiert: ${result.released.length} freigegeben, ${result.kept.length} behalten, ${result.added.length} hinzugefuegt.` +
+          (result.already_released.length > 0 ? ` ${result.already_released.length} release_path(s) waren bereits freigegeben (already_released, z.B. durch commit) — kein Fehler.` : ''),
       };
     }
     if (action === 'reservation_list') {
@@ -399,13 +412,19 @@ export const filesTool: ConsolidatedTool = {
       if (!Array.isArray(opsRaw) || opsRaw.length === 0) {
         return { success: false, error: 'invalid_ops', message: 'ops[] muss ein Array mit mindestens 1 Element sein.' };
       }
-      const result = await planBatch({
-        project,
-        agent_id: agentId,
-        ops: opsRaw as FileBatchOp[],
-        open_for_coedit: typeof args.open_for_coedit === 'boolean' ? args.open_for_coedit : undefined,
-        reason,
-      });
+      let result: Awaited<ReturnType<typeof planBatch>>;
+      try {
+        result = await planBatch({
+          project,
+          agent_id: agentId,
+          ops: opsRaw as FileBatchOp[],
+          open_for_coedit: typeof args.open_for_coedit === 'boolean' ? args.open_for_coedit : undefined,
+          reason,
+        });
+      } catch (err) {
+        // Scheitert eine Op, liegt der Batch als neuer offener Plan vor (plan_id + failed_ops).
+        return planFailureResponse(err);
+      }
       // Shared Ops bleiben persistent im Wait; auto_commit schreibt nur den
       // konfliktfreien Teilplan und niemals einen leeren Plan.
       const allPreviewsOk = result.previews?.every(p => p.ok) ?? true;
@@ -431,7 +450,49 @@ export const filesTool: ConsolidatedTool = {
           : {}),
         message: result.coedit_waits?.length
           ? `Plan ${result.plan_id}: ${result.total_ops} sofortige Op(s), ${result.deferred_ops ?? 0} Op(s) warten reservationsbasiert. Shared Ops wurden nicht geschrieben.`
-          : `Plan ${result.plan_id} angelegt: ${result.total_ops} Op(s) ueber ${result.files_touched.length} Datei(en). commit mit files(action: "commit", plan_id: "${result.plan_id}") oder cancel mit "cancel". Laeuft ab um ${result.expires_at}.`,
+          : `Plan ${result.plan_id} angelegt: ${result.total_ops} Op(s) ueber ${result.files_touched.length} Datei(en). commit mit files(action: "commit", plan_id: "${result.plan_id}") oder cancel mit "cancel". Plaene laufen nicht ab — offen bis commit oder cancel.`,
+      };
+    }
+    if (action === 'plan_update') {
+      const planId = reqStr(args, 'plan_id');
+      const opsRaw = (args as Record<string, unknown>).ops;
+      if (!Array.isArray(opsRaw) || opsRaw.length === 0) {
+        return { success: false, error: 'invalid_ops', message: 'ops[] muss mindestens 1 Element enthalten (ersetzt op_index bzw. ohne op_index alle Ops).' };
+      }
+      let result: Awaited<ReturnType<typeof replanBatch>>;
+      try {
+        result = await replanBatch({
+          project,
+          plan_id: planId,
+          agent_id: agentId,
+          ops: opsRaw as FileBatchOp[],
+          op_index: num(args, 'op_index'),
+          open_for_coedit: typeof args.open_for_coedit === 'boolean' ? args.open_for_coedit : undefined,
+          reason,
+        });
+      } catch (err) {
+        return planFailureResponse(err, 'plan_update_failed');
+      }
+      const allPreviewsOk = result.previews?.every((p) => p.ok) ?? true;
+      const wie = result.in_place
+        ? `Plan ${planId} im selben Plan aktualisiert (Waits und Beitraege bleiben gebunden)`
+        : `Plan ${result.plan_id} ersetzt Plan ${planId} (verworfen)`;
+      if (bool(args, 'auto_commit') === true && allPreviewsOk && result.total_ops > 0) {
+        const c = await commitBatch({ plan_id: result.plan_id, agent_id: agentId, agent_note: typeof args.agent_note === 'string' ? args.agent_note : undefined });
+        return {
+          ...c,
+          plan: result,
+          ...(result.in_place ? {} : { superseded_plan_id: planId }),
+          auto_committed: c.success,
+          message: c.success
+            ? `${wie} und ist committed — ${c.committed} Datei(en) geaendert. batch_id=${c.batch_id}.`
+            : `${wie}, auto-commit fehlgeschlagen — Plan bleibt offen.`,
+        };
+      }
+      return {
+        success: true,
+        ...result,
+        message: `${wie}: ${result.total_ops} Op(s), Trockenlauf ok. commit mit files(action: "commit", plan_id: "${result.plan_id}").`,
       };
     }
     if (action === 'commit') {
@@ -447,31 +508,14 @@ export const filesTool: ConsolidatedTool = {
     }
     if (action === 'cancel') {
       const planId = reqStr(args, 'plan_id');
-      const result = await cancelBatch(planId);
-      return {
-        success: result.ok,
-        plan_id: planId,
-        status: result.status,
-        message: result.ok ? `Plan ${planId} abgebrochen.` : `Plan ${planId} nicht abbrechbar (Status: ${result.status}).`,
-      };
+      // Mit agent_id: fremde Beitraege bleiben, nur die eigenen Ops werden zurueckgezogen.
+      return buildCancelResponse(planId, await cancelBatch(planId, agentId, reason));
     }
     if (action === 'plan_status') {
       const planId = reqStr(args, 'plan_id');
       const plan = await getBatchPlan(planId);
       if (!plan) return { success: false, error: 'plan_not_found', message: `Plan ${planId} nicht gefunden.` };
-      return {
-        success: true,
-        plan_id: plan.id,
-        project: plan.project,
-        status: plan.status,
-        owner_agent_id: plan.owner_agent_id,
-        ops_count: Array.isArray(plan.ops) ? plan.ops.length : 0,
-        files_touched: Object.keys(plan.expected_hashes ?? {}),
-        previews: plan.previews,
-        reason: plan.reason,
-        expires_at: plan.expires_at,
-        committed_at: plan.committed_at,
-      };
+      return buildPlanStatusResponse(plan);
     }
     if (action === 'history') {
       const project = reqStr(args, 'project');
