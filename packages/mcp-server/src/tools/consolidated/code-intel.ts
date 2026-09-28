@@ -106,7 +106,7 @@ export const codeIntelTool: ConsolidatedTool = {
         value_contains: {
           type: 'string',
           description:
-            "Sucht im INHALT des Symbols statt im Namen (fuer symbols). PFLICHT fuer Kommentare, Strings und TODOs: die tragen name=NULL, ein name-Filter findet dort nie etwas. Beispiel: symbol_type='comment' + value_contains='@SYN-'.",
+            "Sucht im INHALT des Symbols statt im Namen (fuer symbols). PFLICHT fuer Kommentare, Strings und TODOs: die tragen name=NULL, ein name-Filter findet dort nie etwas. Beispiel: symbol_type='comment' + value_contains='@SYN-'. Jeder Treffer traegt match_line (echte Zeile des Treffers; bei mehrzeiligen Kommentarbloecken NICHT line_start) und match_lines.",
         },
         new_name: {
           type: 'string',
@@ -135,7 +135,7 @@ export const codeIntelTool: ConsolidatedTool = {
         comment_contains: {
           type: 'string',
           description:
-            "Nur Kommentare zeigen, die diesen Text enthalten (fuer tree, zusammen mit show_comments). Macht den Baum zur Suche: show_comments='*' + comment_contains='@SYN-' listet alle Marken mit Datei und Zeile.",
+            "Macht den Baum zur Suche (fuer tree): gelistet werden NUR Dateien mit Treffer, je Treffer die echte Zeilennummer und der Inhalt dieser Zeile, in der Fusszeile Datei- und Trefferzahl. Ohne show_comments gilt '*' (bis 50 je Datei). Beispiel: comment_contains='@SYN-' listet alle Marken mit Datei und Zeile.",
         },
         exported_only: {
           type: 'boolean',

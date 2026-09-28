@@ -130,6 +130,79 @@ function ersteZeileMitInhalt(wert: string | null | undefined, treffer?: string):
   return abIndex(0);
 }
 
+/** Maskiert %, _ und Backslash fuer ein LIKE/ILIKE mit ESCAPE '\'. */
+function alsLikeLiteral(text: string): string {
+  return text.replace(/[\\%_]/g, (zeichen) => '\\' + zeichen);
+}
+
+/** Eine Trefferzeile innerhalb eines (evtl. mehrzeiligen) Symbolwerts. */
+export interface TrefferZeile {
+  /** Echte Zeilennummer in der Datei. */
+  line: number;
+  /** Inhalt DIESER Zeile, ohne fuehrende Kommentar-Sternchen, Leerraum verdichtet. */
+  text: string;
+}
+
+/**
+ * Findet die Zeilen eines Symbolwerts, die den Suchtext enthalten (Gross-/
+ * Kleinschreibung egal), und rechnet ihre ECHTE Zeilennummer aus.
+ *
+ * WARUM: Parser verschmelzen benachbarte //-Zeilen zu EINEM comment-Symbol,
+ * Text mit \n getrennt, line_start = erste Zeile. Wer line_start meldet, zeigt
+ * auf den Blockkopf statt auf den Treffer (Befund 28.09.2026, softcleanToeva:
+ * seed.mjs meldete Z38 statt Z39, seed.ts Z1 statt Z10). Die i-te Zeile des
+ * Werts steht an line_start + i — nachgemessen an allen 7 Faellen dort.
+ * Schreibt ein Parser ein Symbol pro Zeile, ist i schlicht 0: dieselbe
+ * Rechnung stimmt dann weiter.
+ *
+ * dateiZeilen (optional) ist der Dateiinhalt zur GEGENPROBE: steht der Treffer
+ * nicht in der errechneten Zeile (etwa weil ein Parser Leerzeilen weglaesst),
+ * wird im Bereich line_start..line_end die naechste passende Zeile genommen.
+ */
+export function findeTrefferZeilen(
+  wert: string | null | undefined,
+  lineStart: number,
+  lineEnd: number | null | undefined,
+  gesucht: string,
+  dateiZeilen?: string[]
+): TrefferZeile[] {
+  const nadel = gesucht.toLowerCase();
+  if (!wert || !nadel) return [];
+  const teile = wert.split('\n');
+  const obergrenze = lineEnd && lineEnd >= lineStart ? lineEnd : lineStart + teile.length - 1;
+  const enthaelt = (zeile: string | undefined) => (zeile ?? '').toLowerCase().includes(nadel);
+  const ergebnis: TrefferZeile[] = [];
+  const vergeben = new Set<number>();
+  for (let i = 0; i < teile.length; i++) {
+    if (!enthaelt(teile[i])) continue;
+    let zeile = Math.min(lineStart + i, obergrenze);
+    if (dateiZeilen && (vergeben.has(zeile) || !enthaelt(dateiZeilen[zeile - 1]))) {
+      for (let z = lineStart; z <= obergrenze; z++) {
+        if (!vergeben.has(z) && enthaelt(dateiZeilen[z - 1])) { zeile = z; break; }
+      }
+    }
+    vergeben.add(zeile);
+    ergebnis.push({
+      line: zeile,
+      text: teile[i].replace(/^\s*\*+\s?/, '').trim().replace(/\s+/g, ' '),
+    });
+  }
+  return ergebnis;
+}
+
+/** Trefferfelder fuer symbols(value_contains): erste Trefferzeile plus alle. */
+function trefferFelder(
+  wert: string | null | undefined,
+  lineStart: number,
+  lineEnd: number | null | undefined,
+  gesucht: string
+): { match_line: number; match_lines: TrefferZeile[] } {
+  const zeilen = findeTrefferZeilen(wert, lineStart, lineEnd, gesucht);
+  // Kein zeilenweiser Treffer (Suchtext ueber einen Umbruch hinweg): dann ist
+  // der Block selbst die Fundstelle.
+  return { match_line: zeilen[0]?.line ?? lineStart, match_lines: zeilen };
+}
+
 /**
  * Gibt einen formatierten Projekt-Baum zurueck.
  * Dateien werden nach Verzeichnis gruppiert, Pfade relativ zum Projekt-Root.
@@ -222,7 +295,61 @@ export async function getProjectTree(
     baseDirDepth = dirPath.split('/').filter(Boolean).length;
   }
 
+  // ⚠️ comment_contains FILTERT DIE DATEIEN, nicht nur die Kommentarzeilen.
+  // Gemessen 28.09.2026 (softcleanToeva): tree(path:"apps/backend",
+  // show_comments:50, comment_contains:"VOR AUSLIEFERUNG") listete alle 147
+  // Dateien, obwohl nur 2 einen Treffer trugen — die Suche ging im Baum unter.
+  // Zweiter Befund desselben Tages: angezeigt wurde line_start des Symbols und
+  // dessen Anfang. Benachbarte //-Zeilen stehen aber als EIN Symbol in der DB
+  // (Text mit \n getrennt, line_start = erste Zeile) — die gesuchte Zeile liegt
+  // oft weiter unten. Deshalb wird hier je Treffer die ECHTE Zeile bestimmt.
+  // Das funktioniert unveraendert, wenn ein Parser ein Symbol pro Zeile schreibt.
+  const filterText = comment_contains?.trim() ? comment_contains.trim() : undefined;
+  // comment_contains allein ist eine Suche. Ohne show_comments zeigte sie
+  // frueher schlicht nichts an; jetzt gilt dann die Obergrenze je Datei.
+  const kommentarAnzahl = loeseKommentarAnzahl(show_comments)
+    || (filterText ? KOMMENTAR_OBERGRENZE : 0);
+  const trefferJeDatei = new Map<string, TrefferZeile[]>();
+  if (filterText && kommentarAnzahl > 0) {
+    const pfade = filesResult.rows.map((r) => r.file_path as string);
+    const trefferRows = await pool.query<{
+      file_path: string; value: string | null; line_start: number; line_end: number | null;
+    }>(
+      `SELECT file_path, value, line_start, line_end FROM code_symbols
+       WHERE project = $1 AND symbol_type = 'comment' AND file_path = ANY($2::text[])
+         AND value ILIKE $3 ESCAPE '\\'
+       ORDER BY file_path, line_start`,
+      [project, pfade, `%${alsLikeLiteral(filterText)}%`]
+    );
+    // Dateiinhalt nur fuer die Trefferdateien — zur Gegenprobe der Zeilennummer.
+    const trefferPfade = [...new Set(trefferRows.rows.map((r) => r.file_path))];
+    const inhalte = new Map<string, string[]>();
+    if (trefferPfade.length > 0) {
+      const inhaltRows = await pool.query<{ file_path: string; content: string | null }>(
+        `SELECT file_path, content FROM code_files WHERE project = $1 AND file_path = ANY($2::text[])`,
+        [project, trefferPfade]
+      );
+      for (const r of inhaltRows.rows) {
+        if (r.content != null) inhalte.set(r.file_path, r.content.split('\n'));
+      }
+    }
+    for (const r of trefferRows.rows) {
+      let zeilen = findeTrefferZeilen(r.value, r.line_start, r.line_end, filterText, inhalte.get(r.file_path));
+      // Treffer ueber einen Zeilenumbruch hinweg: dann gibt es keine einzelne
+      // Trefferzeile — der Block selbst ist die Fundstelle.
+      if (zeilen.length === 0) {
+        zeilen = [{ line: r.line_start, text: ersteZeileMitInhalt(r.value, filterText) }];
+      }
+      const liste = trefferJeDatei.get(r.file_path) ?? [];
+      for (const z of zeilen) if (!liste.some((v) => v.line === z.line)) liste.push(z);
+      trefferJeDatei.set(r.file_path, liste);
+    }
+    for (const liste of trefferJeDatei.values()) liste.sort((a, b) => a.line - b.line);
+  }
+
   for (const row of filesResult.rows) {
+    // comment_contains: Dateien ohne Treffer gehoeren nicht in das Suchergebnis.
+    if (filterText && !trefferJeDatei.has(row.file_path)) continue;
     const relPath = row.file_path;  // bereits relativ
     row._relPath = relPath;
     const dir = relPath.substring(0, relPath.lastIndexOf('/') + 1) || '/';
@@ -268,33 +395,47 @@ export async function getProjectTree(
       lines.push(`  ${f.file_name}${metaStr}`);
 
       // Kommentare
-      const kommentarAnzahl = loeseKommentarAnzahl(show_comments);
-      if (kommentarAnzahl > 0) {
+      if (kommentarAnzahl > 0 && filterText) {
+        // Gefiltert: die vorab gesammelten TREFFERZEILEN dieser Datei, jede mit
+        // ihrer echten Zeilennummer und dem Inhalt genau dieser Zeile.
+        const alle = trefferJeDatei.get(f.file_path) ?? [];
+        const uebersprungen = Math.min(Math.max(0, Math.floor(comment_skip ?? 0)), alle.length);
+        const gezeigt = alle.slice(uebersprungen, uebersprungen + kommentarAnzahl);
+        const ab = Math.max(0, Math.floor(comment_from ?? 0));
+        const laenge = Math.max(1, Math.floor(comment_chars ?? 100));
+        for (const treffer of gezeigt) {
+          const rest = treffer.text.slice(ab);
+          const fenster = rest.slice(0, laenge);
+          if (!fenster) continue;
+          const comment = (ab > 0 ? '…' : '') + fenster + (rest.length > laenge ? '…' : '');
+          lines.push(`    /** Z${treffer.line}: ${comment} */`);
+        }
+        const nichtGezeigt = alle.length - gezeigt.length - uebersprungen;
+        if (alle.length > 0 && (uebersprungen > 0 || nichtGezeigt > 0)) {
+          const teile: string[] = [];
+          if (uebersprungen > 0) teile.push(`${uebersprungen} uebersprungen`);
+          if (nichtGezeigt > 0) teile.push(`${nichtGezeigt} weitere nicht gezeigt`);
+          lines.push(`    /** ... ${teile.join(', ')} (von ${alle.length} Treffern) */`);
+        }
+      } else if (kommentarAnzahl > 0) {
         // COUNT(*) OVER() zaehlt VOR dem LIMIT und liefert damit die echte Gesamtzahl
         // in derselben Abfrage — ohne zweiten Roundtrip je Datei.
-        // Reihenfolge zaehlt: der OFFSET muss VOR dem optionalen Filter stehen,
-        // damit dessen $-Nummer (ueber kommentarParams.length) weiter stimmt.
         const kommentarParams: unknown[] = [
           project,
           f.file_path,
           kommentarAnzahl,
           Math.max(0, Math.floor(comment_skip ?? 0)),
         ];
-        let kommentarFilter = '';
-        if (comment_contains) {
-          kommentarParams.push(`%${comment_contains}%`);
-          kommentarFilter = ` AND value ILIKE $${kommentarParams.length}`;
-        }
         const commentResult = await pool.query(
           `SELECT value, line_start, COUNT(*) OVER() AS gesamt FROM code_symbols
-           WHERE project = $1 AND file_path = $2 AND symbol_type = 'comment'${kommentarFilter}
+           WHERE project = $1 AND file_path = $2 AND symbol_type = 'comment'
            ORDER BY line_start LIMIT $3 OFFSET $4`,
           kommentarParams
         );
         const ab = Math.max(0, Math.floor(comment_from ?? 0));
         const laenge = Math.max(1, Math.floor(comment_chars ?? 100));
         for (const zeileDb of commentResult.rows) {
-          const voll = ersteZeileMitInhalt(zeileDb.value, comment_contains);
+          const voll = ersteZeileMitInhalt(zeileDb.value);
           // Fenster ueber den Text. Ein Ausschnitt, der nicht am Anfang beginnt oder
           // vor dem Ende aufhoert, bekommt eine Ellipse — sonst sieht ein Schnitt aus
           // wie der echte Text, und genau das ist der Fehler, den wir hier bekaempfen.
@@ -352,7 +493,19 @@ export async function getProjectTree(
   }
 
   lines.push(`---`);
-  lines.push(`${filesResult.rows.length} Dateien | Projekt: ${project}`);
+  if (filterText) {
+    // Die Trefferzahl gehoert in die Fusszeile: sie ist die Antwort auf die Suche,
+    // die Dateizahl des Verzeichnisses dagegen nur der Suchraum.
+    const gezeigteDateien = [...dirMap.values()].flat();
+    const trefferGesamt = gezeigteDateien.reduce(
+      (summe, datei) => summe + (trefferJeDatei.get(datei.file_path)?.length ?? 0), 0);
+    lines.push(
+      `${gezeigteDateien.length} Dateien mit Treffer (von ${filesResult.rows.length} durchsucht) | `
+      + `${trefferGesamt} Trefferzeilen fuer "${filterText}" | Projekt: ${project}`
+    );
+  } else {
+    lines.push(`${filesResult.rows.length} Dateien | Projekt: ${project}`);
+  }
 
   return lines.join('\n');
 }
@@ -520,6 +673,13 @@ export interface SymbolInfo {
   line_end: number | null;
   is_exported: boolean;
   value: string | null;
+  /**
+   * Nur bei value_contains: die erste Dateizeile, in der der Suchtext steht.
+   * Bei mehrzeiligen Symbolen ist das NICHT line_start — dort beginnt der Block.
+   */
+  match_line?: number;
+  /** Nur bei value_contains: alle Trefferzeilen mit Nummer und Inhalt DIESER Zeile. */
+  match_lines?: TrefferZeile[];
 }
 
 /**
@@ -592,6 +752,10 @@ export async function getSymbols(
     line_end: row.line_end,
     is_exported: row.is_exported,
     value: row.value ?? null,
+    // Bei value_contains die ZEILE, die trifft — nicht line_start des Symbols.
+    // Ein mehrzeiliges Symbol (verschmolzene //-Zeilen, Blockkommentar) beginnt
+    // oft etliche Zeilen vor der gesuchten Stelle (Befund 28.09.2026).
+    ...(valueContains ? trefferFelder(row.value, row.line_start, row.line_end, valueContains) : {}),
   }));
 }
 
@@ -604,10 +768,22 @@ export interface ReferenceInfo {
    * Beides beantwortet "wo wird das benutzt", steht aber in getrennten Tabellen.
    */
   kind?: 'reference' | 'call';
-  symbol_id: string;
+  symbol_id: string | null;
   file_path: string;
   line_number: number;
   context: string | null;
+  /**
+   * Gesetzt, wenn die Fundstelle ueber einen Import-Alias zustande kommt
+   * (import { X as Y }, from m import X as Y, import a.X as Y): der Name Y.
+   */
+  via_alias?: string;
+  /**
+   * import_specifier/export_specifier = die Zeile "X as Y" selbst; sie enthaelt
+   * X und wird beim Umbenennen mit umbenannt. alias_usage = Verwendung von Y;
+   * sie enthaelt X NICHT und bleibt beim Umbenennen gueltig, weil der Alias
+   * bestehen bleibt.
+   */
+  alias_role?: 'import_specifier' | 'export_specifier' | 'alias_usage';
 }
 
 export interface StringOccurrenceInfo {
@@ -646,6 +822,268 @@ export interface ReferencesResult {
    * sich damit zu erkennen, statt vollstaendig auszusehen.
    */
   gekappt: boolean;
+}
+
+// ─── Importe mit Alias ────────────────────────────────────────────────────────
+
+/** Ein Import-/Export-Specifier "X as Y", gefunden im Dateitext. */
+export interface AliasSpecifier {
+  art: 'import' | 'export';
+  sprache: 'ts' | 'python' | 'kotlin';
+  /** Der lokale bzw. neue Name Y. */
+  alias: string;
+  /** Zeile des Specifiers selbst — bei mehrzeiligen Importen NICHT die Anfangszeile. */
+  zeile: number;
+  /** Erste und letzte Zeile des ganzen Statements. */
+  statementStart: number;
+  statementEnde: number;
+  /** Modulquelle ('./dispatch.service.js', 'app.mod', 'com.x.y'); fehlt bei lokalem export { X as Y }. */
+  quelle?: string;
+}
+
+const TS_ENDUNGEN = /\.(?:[cm]?[jt]sx?|vue|svelte|astro)$/i;
+const PY_ENDUNGEN = /\.pyi?$/i;
+const KT_ENDUNGEN = /\.kts?$/i;
+
+function sprachwahl(dateiPfad: string): AliasSpecifier['sprache'] | null {
+  if (TS_ENDUNGEN.test(dateiPfad)) return 'ts';
+  if (PY_ENDUNGEN.test(dateiPfad)) return 'python';
+  if (KT_ENDUNGEN.test(dateiPfad)) return 'kotlin';
+  return null;
+}
+
+function regexLiteral(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, (zeichen) => '\\' + zeichen);
+}
+
+function zeileAnPosition(inhalt: string, pos: number): number {
+  let zeile = 1;
+  for (let i = 0; i < pos && i < inhalt.length; i++) if (inhalt.charCodeAt(i) === 10) zeile++;
+  return zeile;
+}
+
+function verzeichnisVon(pfad: string): string {
+  const i = pfad.lastIndexOf('/');
+  return i >= 0 ? pfad.slice(0, i) : '';
+}
+
+function normalisierePfad(pfad: string): string {
+  const teile: string[] = [];
+  for (const teil of pfad.split('/')) {
+    if (!teil || teil === '.') continue;
+    if (teil === '..') teile.pop();
+    else teile.push(teil);
+  }
+  return teile.join('/');
+}
+
+function ohneEndung(pfad: string): string {
+  return pfad.replace(TS_ENDUNGEN, '').replace(PY_ENDUNGEN, '').replace(KT_ENDUNGEN, '');
+}
+
+/**
+ * Sucht im Dateitext alle Specifier "name as alias". Bewusst eng gefasst: nur
+ * INNERHALB von Import-/Export-Statements, damit ein TypeScript-Cast wie
+ * "wert as Typ" nie als Alias gilt.
+ * TS/JS: import { X as Y } from '…', export { X as Y } [from '…'] (auch mehrzeilig).
+ * Python: from mod import X as Y (auch geklammert und mehrzeilig).
+ * Kotlin: import a.b.X as Y.
+ */
+export function findeAliasSpecifier(inhalt: string, dateiPfad: string, name: string): AliasSpecifier[] {
+  const sprache = sprachwahl(dateiPfad);
+  if (!sprache || !name || !inhalt.includes(name)) return [];
+  const n = regexLiteral(name);
+  const funde: AliasSpecifier[] = [];
+
+  if (sprache === 'kotlin') {
+    const muster = new RegExp(`^[ \\t]*import[ \\t]+((?:\\w+\\.)*)${n}[ \\t]+as[ \\t]+([A-Za-z_]\\w*)`, 'gm');
+    let m: RegExpExecArray | null;
+    while ((m = muster.exec(inhalt)) !== null) {
+      if (m[2] === name) continue;
+      const zeile = zeileAnPosition(inhalt, m.index);
+      funde.push({
+        art: 'import', sprache, alias: m[2], zeile, statementStart: zeile, statementEnde: zeile,
+        quelle: m[1].replace(/\.$/, '') || undefined,
+      });
+    }
+    return funde;
+  }
+
+  // Statement finden, dann in seinem Specifier-Teil nach "name as alias" suchen.
+  const statement = sprache === 'ts'
+    ? /\b(import|export)\s+(?:type\s+)?(?:[A-Za-z_$][\w$]*\s*,\s*)?\{([^}]*)\}\s*(?:from\s*(['"])([^'"]+)\3)?/g
+    : /^[ \t]*(from)[ \t]+([\w.]+)[ \t]+import[ \t]+(\([^)]*\)|[^\n]*)/gm;
+  const specifier = sprache === 'ts'
+    ? new RegExp(`(?:^|[\\s,{])(?:type\\s+)?(${n})\\s+as\\s+([A-Za-z_$][\\w$]*)`, 'g')
+    : new RegExp(`(?:^|[\\s,(])(${n})\\s+as\\s+([A-Za-z_]\\w*)`, 'g');
+  let m: RegExpExecArray | null;
+  while ((m = statement.exec(inhalt)) !== null) {
+    const art: 'import' | 'export' = m[1] === 'export' ? 'export' : 'import';
+    const teil = sprache === 'ts' ? m[2] : m[3];
+    const quelle = sprache === 'ts' ? m[4] : m[2];
+    // "import { … }" ohne from gibt es nicht — dann war es kein Import.
+    if (sprache === 'ts' && art === 'import' && !quelle) continue;
+    const teilStart = sprache === 'ts'
+      ? m.index + m[0].indexOf('{') + 1
+      : m.index + m[0].length - teil.length;
+    const statementStart = zeileAnPosition(inhalt, m.index);
+    const statementEnde = zeileAnPosition(inhalt, m.index + m[0].length);
+    specifier.lastIndex = 0;
+    let s: RegExpExecArray | null;
+    while ((s = specifier.exec(teil)) !== null) {
+      const alias = s[2];
+      if (alias === name) continue;
+      const pos = teilStart + s.index + s[0].indexOf(s[1]);
+      funde.push({ art, sprache, alias, zeile: zeileAnPosition(inhalt, pos), statementStart, statementEnde, quelle });
+    }
+  }
+  return funde;
+}
+
+/**
+ * Passt die Import-Quelle zu einer der Dateien, in denen der Name definiert ist?
+ * true = ja ODER nicht entscheidbar; false = erkennbar ein anderes Modul (dann
+ * ist die Namensgleichheit Zufall, etwa derselbe Name aus einem npm-Paket).
+ */
+export function aliasQuellePasst(
+  spec: AliasSpecifier,
+  importDatei: string,
+  definitionsDateien: Iterable<string>
+): boolean {
+  const defs = [...definitionsDateien].map(ohneEndung);
+  if (defs.length === 0 || !spec.quelle) return true;
+
+  if (spec.sprache === 'ts') {
+    const q = spec.quelle;
+    if (q.startsWith('.')) {
+      const ziel = ohneEndung(normalisierePfad(`${verzeichnisVon(importDatei)}/${q}`));
+      return defs.some((d) => d === ziel || d === `${ziel}/index`);
+    }
+    // Paket oder Pfad-Alias (@/…): nur der letzte Pfadteil ist vergleichbar.
+    const letzter = ohneEndung(q.split('/').pop() ?? q);
+    return defs.some((d) => {
+      const teile = d.split('/');
+      const ende = teile[teile.length - 1];
+      return ende === letzter || (ende === 'index' && teile[teile.length - 2] === letzter);
+    });
+  }
+
+  if (spec.sprache === 'python') {
+    const punkte = (spec.quelle.match(/^\.*/)?.[0] ?? '').length;
+    const rest = spec.quelle.slice(punkte).replace(/\./g, '/');
+    if (punkte > 0) {
+      let basis = verzeichnisVon(importDatei);
+      for (let i = 1; i < punkte; i++) basis = verzeichnisVon(basis);
+      const ziel = normalisierePfad(rest ? `${basis}/${rest}` : basis);
+      return defs.some((d) => d === ziel || d === `${ziel}/__init__`);
+    }
+    return defs.some((d) => d === rest || d.endsWith(`/${rest}`)
+      || d === `${rest}/__init__` || d.endsWith(`/${rest}/__init__`));
+  }
+
+  // Kotlin: Paket und Verzeichnis stimmen per Konvention ueberein, muessen es
+  // aber nicht. Nur ein klarer Widerspruch im Standard-Layout schliesst aus.
+  const paketPfad = spec.quelle.replace(/\./g, '/');
+  if (defs.some((d) => d.includes(`/${paketPfad}/`) || d.startsWith(`${paketPfad}/`))) return true;
+  return !defs.some((d) => /\/(?:kotlin|java)\//.test(d));
+}
+
+/** Eine Alias-Fundstelle samt Einordnung fuer getReferences. */
+interface AliasFund {
+  eintrag: ReferenceInfo;
+  /** false = Import aus einem erkennbar anderen Modul -> name_matches. */
+  passt: boolean;
+  /** Nur beim Specifier: Anfangszeile des Statements (dort traegt der Linker ein). */
+  statementStart?: number;
+}
+
+/**
+ * Verwendungen des lokalen Alias in der importierenden Datei: Aufrufkanten
+ * (callee_name = Alias) plus jede weitere Zeile, in der der Alias als eigenes
+ * Wort steht — etwa als Callback uebergeben. Kommentarzeilen und das
+ * Import-Statement selbst zaehlen nicht.
+ */
+async function findeAliasVerwendungen(
+  project: string,
+  dateiPfad: string,
+  spec: AliasSpecifier,
+  zeilen: string[],
+  symbolId: string | null
+): Promise<ReferenceInfo[]> {
+  const kanten = await getPool().query<{ line_number: number; call_kind: string | null; caller_scope: string | null }>(
+    `SELECT line_number, call_kind, caller_scope FROM code_call_edges
+     WHERE project = $1 AND file_path = $2 AND callee_name = $3 AND callee_receiver IS NULL`,
+    [project, dateiPfad, spec.alias]
+  );
+  const aufrufJeZeile = new Map(kanten.rows.map((k) => [k.line_number, k]));
+  const muster = new RegExp(`(?<![\\w$.])${regexLiteral(spec.alias)}(?![\\w$])`);
+  const kommentar = spec.sprache === 'python' ? /^\s*#/ : /^\s*(?:\/\/|\/?\*)/;
+  const ergebnis: ReferenceInfo[] = [];
+  for (let i = 0; i < zeilen.length; i++) {
+    const nr = i + 1;
+    if (nr >= spec.statementStart && nr <= spec.statementEnde) continue;
+    const aufruf = aufrufJeZeile.get(nr);
+    if (!aufruf && (kommentar.test(zeilen[i]) || !muster.test(zeilen[i]))) continue;
+    ergebnis.push({
+      kind: aufruf ? 'call' : 'reference',
+      symbol_id: symbolId,
+      file_path: dateiPfad,
+      line_number: nr,
+      context: aufruf
+        ? `${aufruf.call_kind ?? 'call'}: ${spec.alias}()` + (aufruf.caller_scope ? ` in ${aufruf.caller_scope}` : '')
+        : zeilen[i].trim().slice(0, 200),
+      via_alias: spec.alias,
+      alias_role: 'alias_usage',
+    });
+  }
+  return ergebnis;
+}
+
+/**
+ * Alle Fundstellen von "name", die ueber einen Import-Alias laufen: die
+ * Specifier-Zeilen selbst und die Verwendungen des Alias. Siehe getReferences.
+ */
+async function findeAliasReferenzen(
+  project: string,
+  name: string,
+  definitionsDateien: Set<string>,
+  symbolId: string | null
+): Promise<AliasFund[]> {
+  if (!/^[A-Za-z_$][\w$]*$/.test(name)) return [];
+  // Vorfilter in PG: nur Dateien, in denen "name as" ueberhaupt vorkommt.
+  const dateien = await getPool().query<{ file_path: string; content: string }>(
+    `SELECT file_path, content FROM code_files
+     WHERE project = $1 AND NOT ignored AND strpos(content, $2) > 0 AND content ~ $3`,
+    [project, name, `${regexLiteral(name)}\\s+as\\s`]
+  );
+  const funde: AliasFund[] = [];
+  for (const datei of dateien.rows) {
+    const specs = findeAliasSpecifier(datei.content, datei.file_path, name);
+    if (specs.length === 0) continue;
+    const zeilen = datei.content.split('\n');
+    for (const spec of specs) {
+      const passt = aliasQuellePasst(spec, datei.file_path, definitionsDateien);
+      funde.push({
+        passt,
+        statementStart: spec.statementStart,
+        eintrag: {
+          kind: 'reference',
+          symbol_id: symbolId,
+          file_path: datei.file_path,
+          line_number: spec.zeile,
+          context: (zeilen[spec.zeile - 1] ?? '').trim().slice(0, 200) || null,
+          via_alias: spec.alias,
+          alias_role: spec.art === 'import' ? 'import_specifier' : 'export_specifier',
+        },
+      });
+      // Nur ein IMPORT bindet den Alias lokal; export { X as Y } benennt nach aussen um.
+      if (spec.art !== 'import') continue;
+      for (const v of await findeAliasVerwendungen(project, datei.file_path, spec, zeilen, symbolId)) {
+        funde.push({ passt, eintrag: v });
+      }
+    }
+  }
+  return funde;
 }
 
 /**
@@ -712,12 +1150,18 @@ export async function getReferences(
   // gegen nur einen erklaert die echten Treffer faelschlich fuer fremd (bei
   // getReferences selbst gemessen: beide Aufrufer fielen heraus).
   const eigeneSymbolIds = new Set<string>();
-  const idRows = await pool.query<{ id: string }>(
-    `SELECT id FROM code_symbols
+  const idRows = await pool.query<{ id: string; file_path: string; symbol_type: string }>(
+    `SELECT id, file_path, symbol_type FROM code_symbols
      WHERE project = $1 AND name = $2 AND symbol_type <> 'string'`,
     [project, name]
   );
-  for (const zeile of idRows.rows) eigeneSymbolIds.add(zeile.id);
+  // Dateien, in denen der Name DEFINIERT oder re-exportiert wird. Import-Symbole
+  // tragen bei Python/Kotlin denselben Namen und zaehlen hier nicht mit.
+  const definitionsDateien = new Set<string>();
+  for (const zeile of idRows.rows) {
+    eigeneSymbolIds.add(zeile.id);
+    if (zeile.symbol_type !== 'import') definitionsDateien.add(zeile.file_path);
+  }
 
   // Gehoert die Definition selbst zu einem Objekt? Dann sind Methodenaufrufe
   // plausibel und duerfen nicht aussortiert werden.
@@ -795,6 +1239,59 @@ export async function getReferences(
       continue;
     }
     references.push(eintrag);
+  }
+
+  // ⚠️ IMPORTE MIT ALIAS. Befund 28.09.2026 (softcleanToeva, alarm.service.ts:28-29):
+  //   import { handleAccept as dispatchHandleAccept, handleReject as dispatchHandleReject } from './dispatch.service.js'
+  // references(handleReject) lieferte 0 Treffer, keine name_matches — die
+  // Funktion sah aus wie toter Code, obwohl sie aufgerufen wird.
+  // URSACHE IM INDEX: der TS-Parser speichert je Import-Specifier nur den
+  // LOKALEN Namen (el.name), der Originalname (el.propertyName) faellt weg. Der
+  // Linker verknuepft deshalb den Alias statt des Originals, und jede
+  // Aufrufkante traegt callee_name = Alias. Python und Kotlin behalten am
+  // Import den Originalnamen, ihre Aufrufe laufen aber ebenso unter dem Alias.
+  // LOESUNG OHNE NEUINDEXIERUNG: der Specifier "X as Y" wird im Dateitext
+  // gesucht. Seine Zeile zaehlt als Referenz auf X, die Verwendungen von Y in
+  // derselben Datei ebenfalls — beide mit via_alias gekennzeichnet.
+  const aliasFunde = await findeAliasReferenzen(project, name, definitionsDateien, definition?.id ?? null);
+  const gleicheStelle = (r: ReferenceInfo, datei: string, zeile: number) =>
+    r.file_path === datei && r.line_number === zeile;
+  for (const fund of aliasFunde) {
+    const e = fund.eintrag;
+    // Python/Kotlin: der Linker hat die Import-Zeile schon eingetragen — unter
+    // der ANFANGSZEILE des Statements. Dann wird dieser Eintrag uebernommen
+    // statt eine zweite Fundstelle fuer denselben Import zu erzeugen.
+    if (fund.statementStart !== undefined) {
+      const alt = references.find((r) => !r.via_alias && r.kind !== 'call'
+        && gleicheStelle(r, e.file_path, fund.statementStart!));
+      if (alt) {
+        bekannt.delete(`${alt.file_path}:${alt.line_number}`);
+        alt.line_number = e.line_number;
+        alt.context = e.context;
+        alt.via_alias = e.via_alias;
+        alt.alias_role = e.alias_role;
+        bekannt.add(`${e.file_path}:${e.line_number}`);
+        continue;
+      }
+    }
+    const schluessel = `${e.file_path}:${e.line_number}`;
+    if (bekannt.has(schluessel)) {
+      const vorhanden = references.find((r) => gleicheStelle(r, e.file_path, e.line_number));
+      if (vorhanden && !vorhanden.via_alias) {
+        vorhanden.via_alias = e.via_alias;
+        vorhanden.alias_role = e.alias_role;
+      }
+      continue;
+    }
+    bekannt.add(schluessel);
+    if (fund.passt) {
+      references.push(e);
+    } else {
+      // Import aus einem erkennbar ANDEREN Modul: gleicher Name, anderes Ding.
+      e.context = `${e.context ?? ''} [Import-Quelle passt nicht zur Definition]`;
+      nameMatches.push(e);
+      if (includeNameMatches) references.push(e);
+    }
   }
   references.sort((a, b) =>
     a.file_path === b.file_path

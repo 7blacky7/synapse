@@ -168,7 +168,12 @@ export async function planeUmbenennung(
     line_number: refs.definition.line_start,
     herkunft: 'definition',
   });
+  // Verwendungen ueber einen Import-Alias (import { X as Y }; Y() ...) enthalten
+  // den alten Namen gar nicht und bleiben nach dem Umbenennen gueltig — nur der
+  // Specifier "X as Y" selbst wird umbenannt. Befund 28.09.2026.
+  let aliasVerwendungen = 0;
   for (const referenz of refs.references) {
+    if (referenz.alias_role === 'alias_usage') { aliasVerwendungen++; continue; }
     const k = schluessel(referenz.file_path, referenz.line_number);
     if (zuAendern.has(k)) continue;
     zuAendern.set(k, {
@@ -176,6 +181,14 @@ export async function planeUmbenennung(
       line_number: referenz.line_number,
       herkunft: 'referenz',
     });
+  }
+
+  if (aliasVerwendungen > 0) {
+    warnungen.push(
+      `${aliasVerwendungen} Verwendung(en) ueber einen Import-Alias bleiben unveraendert — `
+      + 'korrekt so: umbenannt wird nur der Originalname im Specifier ("X as Y"), '
+      + 'der Alias Y und seine Aufrufe bleiben gueltig.'
+    );
   }
 
   if (refs.total_name_matches > 0) {
@@ -218,6 +231,28 @@ export async function planeUmbenennung(
         grund: 'Dateiinhalt nicht im Index', zeile: '',
       });
       continue;
+    }
+    // ⚠️ DIE DEFINITION: line_start kann auf fuehrende Kommentarzeilen zeigen.
+    // Gemessen 28.09.2026 (softcleanToeva): handleReject hat line_start 720, dort
+    // steht ein //-Kommentar, der den Namen zufaellig auch enthaelt — die
+    // Deklaration steht in 722. Die Vorschau haette den Kommentar umbenannt und
+    // die Funktion stehen lassen. Deshalb: erste Nicht-Kommentarzeile ab
+    // line_start, die den Namen traegt.
+    if (stelle.herkunft === 'definition') {
+      const kommentarZeile = /^\s*(?:\/\/|\/\*|\*|#|--)/;
+      const nameEinzeln = new RegExp(`\\b${alsRegexLiteral(name)}\\b`);
+      const bis = Math.min(zeilen.length, stelle.line_number + 50);
+      for (let z = stelle.line_number; z <= bis; z++) {
+        const text = zeilen[z - 1];
+        if (!kommentarZeile.test(text) && nameEinzeln.test(text)) {
+          stelle.line_number = z;
+          break;
+        }
+      }
+      // Steht dieselbe Zeile schon als Referenz in der Liste, genuegt eine Aenderung.
+      const doppelt = [...zuAendern.values()].some((s) => s !== stelle
+        && s.file_path === stelle.file_path && s.line_number === stelle.line_number);
+      if (doppelt) continue;
     }
     const zeile = zeilen[stelle.line_number - 1];
     if (zeile == null) {
