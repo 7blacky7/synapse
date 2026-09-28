@@ -1,0 +1,14 @@
+# OFFEN [BETRIEB]: traefik Einstiegspunkt
+# zweite Zeile
+entryPoints:
+  web:
+    address: ":80" # nachgestellt
+  url: http://a#b
+  farbe: "#ff0000"
+  einfach: 'kein # Kommentar'
+  gemischt: 'it''s # drin' # echt danach
+  script: |
+    echo "a" # kein Kommentar im Block-Skalar
+    # ganzzeilig im Block-Skalar
+  weiter: wert # nach dem Block
+# TODO: aufraeumen

@@ -8,13 +8,16 @@
  */
 
 import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
-import { extractStringLiterals } from './types.js';
+import { extractStringLiterals, ganzzeiligeKommentare } from './types.js';
 
 class TomlParser implements LanguageParser {
   language = 'toml';
   extensions = ['.toml'];
   /** Bei inhaltlichen Parser-Aenderungen erhoehen (siehe LanguageParser.version). */
-  version = 1;
+  // 2: JEDE #-Zeile ein eigenes comment-Symbol (vorher Bloecke ab 2 Zeilen,
+  //    mit Leerzeichen verbunden; Einzelzeilen und der letzte Block am
+  //    Dateiende fehlten). Vertrag: types.ts.
+  version = 2;
   /** Reines Datenformat — kennt keine Anweisungen. */
   hatAblaufEbene = false;
 
@@ -107,28 +110,8 @@ class TomlParser implements LanguageParser {
       }
     }
 
-    // Block comments
-    let commentBlock: string[] = [];
-    let commentStart = 0;
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i].trim();
-      if (line.startsWith('#') && !line.match(/^#\s*(TODO|FIXME|HACK)/i)) {
-        if (commentBlock.length === 0) commentStart = i + 1;
-        commentBlock.push(line.replace(/^#\s?/, ''));
-      } else {
-        if (commentBlock.length >= 2) {
-          symbols.push({
-            symbol_type: 'comment',
-            name: null,
-            value: commentBlock.join(' ').trim().slice(0, 500),
-            line_start: commentStart,
-            line_end: commentStart + commentBlock.length - 1,
-            is_exported: false,
-          });
-        }
-        commentBlock = [];
-      }
-    }
+    // Zeilenkommentare — JEDE #-Zeile ein eigenes Symbol (Vertrag: types.ts)
+    symbols.push(...ganzzeiligeKommentare(lines, /^#+/));
 
     symbols.push(...extractStringLiterals(content, { includeSingleQuotes: true }));
 

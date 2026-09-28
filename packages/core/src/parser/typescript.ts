@@ -13,7 +13,7 @@ import type {
   ParsedStatement,
   ParsedCallEdge,
 } from './types.js';
-import { extractStringLiterals, erstelleZeilenIndex, zeileFuerPosition } from './types.js';
+import { extractStringLiterals, erstelleZeilenIndex, zeileFuerPosition, zeilenKommentarSymbol, kommentarBlockSymbol } from './types.js';
 import { HTTP_VERBS, NEST_DECORATORS, formatRouteName, isLikelyHttpPath } from './patterns/http.js';
 import { SQL_DB_METHODS, SQL_TAGS, parseEmbeddedSql, looksLikeSql } from './patterns/sql.js';
 
@@ -571,10 +571,11 @@ function extractSymbols(
   // ---- Comments (lexikalischer Scanner auf dem vorhandenen Quelltext) -----
   // Der Scanner kennt String-, Template- und RegExp-Kontext. Dadurch werden
   // https:// in Strings und Escapes in RegExp-Literalen nicht als Kommentare
-  // missverstanden. Benachbarte normale //-Zeilen werden zusammengefasst;
-  // das gilt absichtlich auch fuer einen nachgestellten //-Kommentar und die
-  // direkt folgende eigenstaendige //-Zeile, solange keine Codezeile dazwischen
-  // liegt. TODO/FIXME/HACK bleibt ausschliesslich ein todo-Symbol.
+  // missverstanden. JEDE //-Zeile wird ein eigenes comment-Symbol — auch
+  // direkt benachbarte. Frueher wurden sie zu EINEM Symbol verschmolzen; dann
+  // zeigte line_start auf den ersten (oft alten Banner-)Kommentar statt auf die
+  // spaeter darunter gesetzte Marke. Vertrag: siehe kommentarBlockSymbol in
+  // types.ts. TODO/FIXME/HACK bleibt ausschliesslich ein todo-Symbol.
   const zeilenIndexVoll = erstelleZeilenIndex(fullText);
   const scanner = ts.createScanner(
     ts.ScriptTarget.Latest,
@@ -582,27 +583,6 @@ function extractSymbols(
     ts.LanguageVariant.Standard,
     fullText,
   );
-  let zeilenKommentarGruppe: {
-    line_start: number;
-    line_end: number;
-    values: string[];
-  } | null = null;
-
-  const flushZeilenKommentarGruppe = (): void => {
-    if (!zeilenKommentarGruppe) return;
-    const content = zeilenKommentarGruppe.values.join('\n').trim();
-    if (content) {
-      symbols.push({
-        symbol_type: 'comment',
-        name: null,
-        value: content.slice(0, 500),
-        line_start: zeilenKommentarGruppe.line_start,
-        line_end: zeilenKommentarGruppe.line_end,
-        is_exported: false,
-      });
-    }
-    zeilenKommentarGruppe = null;
-  };
 
   // Die Scanner-API verlangt nach dem Ende einer Template-Interpolation einen
   // expliziten reScanTemplateToken(). Die Tiefenliste verhindert, dass ein
@@ -640,20 +620,10 @@ function extractSymbols(
     }
 
     if (token === ts.SyntaxKind.MultiLineCommentTrivia) {
-      flushZeilenKommentarGruppe();
       const tokenText = scanner.getTokenText();
-      const content = tokenText.slice(2, -2).trim();
-      if (!content) continue;
       const line_start = zeileFuerPosition(zeilenIndexVoll, scanner.getTokenPos());
-      const linesInComment = tokenText.split('\n').length;
-      symbols.push({
-        symbol_type: 'comment',
-        name: null,
-        value: content.slice(0, 500),
-        line_start,
-        line_end: line_start + linesInComment - 1,
-        is_exported: false,
-      });
+      const sym = kommentarBlockSymbol(tokenText.slice(2, -2).split('\n'), line_start);
+      if (sym) symbols.push(sym);
       continue;
     }
 
@@ -662,7 +632,6 @@ function extractSymbols(
     const commentText = scanner.getTokenText().slice(2).trim();
     const todo = /^(TODO|FIXME|HACK)[:\s]+(.*)/.exec(commentText);
     if (todo) {
-      flushZeilenKommentarGruppe();
       symbols.push({
         symbol_type: 'todo',
         name: null,
@@ -672,16 +641,9 @@ function extractSymbols(
       });
       continue;
     }
-
-    if (zeilenKommentarGruppe && line_start === zeilenKommentarGruppe.line_end + 1) {
-      zeilenKommentarGruppe.line_end = line_start;
-      zeilenKommentarGruppe.values.push(commentText);
-    } else {
-      flushZeilenKommentarGruppe();
-      zeilenKommentarGruppe = { line_start, line_end: line_start, values: [commentText] };
-    }
+    const sym = zeilenKommentarSymbol(commentText, line_start);
+    if (sym) symbols.push(sym);
   }
-  flushZeilenKommentarGruppe();
 
 
   return { symbols, definedNames };
@@ -1269,6 +1231,10 @@ export const typescriptParser: LanguageParser = {
   /** Bei inhaltlichen Parser-Aenderungen erhoehen (siehe LanguageParser.version). */
   // 2: Zeilenberechnung ueber Index statt Praefix-Kopie (Kommentar-Durchlauf).
   // 3: Lexikalischer Kommentar-Scanner statt Volltext-Regex; Strings bleiben kommentar-frei.
-  version: 3,
+  // 4: Jede //-Zeile ist ein EIGENES comment-Symbol (vorher zu einem Block
+  //    verschmolzen: line_start zeigte auf den ersten, oft alten Banner-Kommentar
+  //    statt auf die gesuchte Marke darunter). /* */ mit fuehrender Leerzeile
+  //    verschiebt line_start auf die erste Textzeile (kommentarBlockSymbol).
+  version: 4,
   parse,
 };

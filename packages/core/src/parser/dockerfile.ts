@@ -9,7 +9,7 @@
  */
 
 import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser } from './types.js';
-import { extractStringLiterals, erstelleZeilenIndex, zeileFuerPosition } from './types.js';
+import { extractStringLiterals, erstelleZeilenIndex, zeileFuerPosition, ganzzeiligeKommentare } from './types.js';
 
 // Zeilenindex je Datei zwischenspeichern — siehe zeileFuerPosition in types.ts.
 // Vorher wurde pro Treffer ein Praefix der Datei kopiert und zerlegt: das ist
@@ -29,7 +29,10 @@ class DockerfileParser implements LanguageParser {
   extensions = ['.dockerfile'];
   /** Bei inhaltlichen Parser-Aenderungen erhoehen (siehe LanguageParser.version). */
   // 2: Zeilenberechnung ueber Index statt Praefix-Kopie (siehe lineAt).
-  version = 2;
+  // 3: JEDE #-Zeile ein eigenes comment-Symbol (vorher Bloecke ab 2 Zeilen,
+  //    mit Leerzeichen verbunden; Einzelzeilen und der letzte Block am
+  //    Dateiende fehlten). Vertrag: types.ts.
+  version = 3;
   /** Folge von Direktiven — keine Ablauf-Ebene im hier gemeinten Sinn. */
   hatAblaufEbene = false;
 
@@ -217,30 +220,10 @@ class DockerfileParser implements LanguageParser {
     }
 
     // ══════════════════════════════════════════════
-    // 12. Block-Kommentare
+    // 12. Zeilenkommentare — JEDE #-Zeile ein eigenes Symbol (Vertrag: types.ts)
     // ══════════════════════════════════════════════
     const lines = content.split('\n');
-    let commentBlock: string[] = [];
-    let commentStart = 0;
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i].trim();
-      if (line.startsWith('#') && !line.match(/^#\s*(TODO|FIXME|HACK)/i) && !line.startsWith('#!')) {
-        if (commentBlock.length === 0) commentStart = i + 1;
-        commentBlock.push(line.replace(/^#\s?/, ''));
-      } else {
-        if (commentBlock.length >= 2) {
-          symbols.push({
-            symbol_type: 'comment',
-            name: null,
-            value: commentBlock.join(' ').trim().slice(0, 500),
-            line_start: commentStart,
-            line_end: commentStart + commentBlock.length - 1,
-            is_exported: false,
-          });
-        }
-        commentBlock = [];
-      }
-    }
+    symbols.push(...ganzzeiligeKommentare(lines, /^#+/, { ausnahme: (t) => t.startsWith('#!') }));
 
     symbols.push(...extractStringLiterals(content, { includeSingleQuotes: true }));
 

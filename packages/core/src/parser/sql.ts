@@ -7,7 +7,7 @@
  */
 
 import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser, ParsedStatement, ParsedCallEdge } from './types.js';
-import { extractStringLiterals, erstelleZeilenIndex, zeileFuerPosition } from './types.js';
+import { extractStringLiterals, erstelleZeilenIndex, zeileFuerPosition, ganzzeiligeKommentare } from './types.js';
 
 /** Zeilennummer fuer eine Position im Text (1-basiert) */
 // Zeilenindex je Datei zwischenspeichern — siehe zeileFuerPosition in types.ts.
@@ -45,7 +45,9 @@ class SqlParser implements LanguageParser {
   extensions = ['.sql', '.pgsql', '.psql', '.plsql', '.ddl', '.dml'];
   /** Bei inhaltlichen Parser-Aenderungen erhoehen (siehe LanguageParser.version). */
   // 2: Zeilenberechnung ueber Index statt Praefix-Kopie (siehe lineAt).
-  version = 2;
+  // 3: JEDE --Zeile ein eigenes comment-Symbol (vorher Bloecke ab 2 Zeilen,
+  //    mit Leerzeichen verbunden; Einzelzeilen fehlten). Vertrag: types.ts.
+  version = 3;
 
   parse(content: string, filePath: string): ParseResult {
     const symbols: ParsedSymbol[] = [];
@@ -384,40 +386,11 @@ class SqlParser implements LanguageParser {
     //    Nur am Zeilenanfang, nicht TODO/FIXME
     // ══════════════════════════════════════════════
     const lineCommentRe = /^--\s+(?!TODO|FIXME|HACK)(.+)/gim;
-    // Zusammenhaengende Kommentarbloeecke gruppieren
+    // JEDE --Zeile ein eigenes Symbol (Vertrag: types.ts). Frueher wurden
+    // benachbarte Zeilen mit Leerzeichen zu einem Block verbunden — die Zeile
+    // eines Treffers war daraus nicht mehr bestimmbar.
     const lines = content.split('\n');
-    let commentBlock: string[] = [];
-    let commentStart = 0;
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i].trim();
-      if (line.startsWith('--') && !line.match(/^--\s*(TODO|FIXME|HACK)/i)) {
-        if (commentBlock.length === 0) commentStart = i + 1;
-        commentBlock.push(line.replace(/^--\s?/, ''));
-      } else {
-        if (commentBlock.length >= 2) { // Nur Bloecke mit 2+ Zeilen
-          symbols.push({
-            symbol_type: 'comment',
-            name: null,
-            value: commentBlock.join(' ').trim().slice(0, 500),
-            line_start: commentStart,
-            line_end: commentStart + commentBlock.length - 1,
-            is_exported: false,
-          });
-        }
-        commentBlock = [];
-      }
-    }
-    // Letzten Block nicht vergessen
-    if (commentBlock.length >= 2) {
-      symbols.push({
-        symbol_type: 'comment',
-        name: null,
-        value: commentBlock.join(' ').trim().slice(0, 500),
-        line_start: commentStart,
-        line_end: commentStart + commentBlock.length - 1,
-        is_exported: false,
-      });
-    }
+    symbols.push(...ganzzeiligeKommentare(lines, /^--/));
 
     // ══════════════════════════════════════════════
     // 10. Referenzen: Tabellennamen in DML (SELECT, INSERT, UPDATE, DELETE)

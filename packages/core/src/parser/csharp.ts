@@ -8,7 +8,7 @@
  */
 
 import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser, ParsedStatement, ParsedCallEdge } from './types.js';
-import { extractStringLiterals, erstelleZeilenIndex, zeileFuerPosition } from './types.js';
+import { extractStringLiterals, erstelleZeilenIndex, zeileFuerPosition, kommentarBlockSymbol } from './types.js';
 import { ASPNET_ATTRIBUTES, formatRouteName } from './patterns/http.js';
 import { looksLikeSql, parseEmbeddedSql } from './patterns/sql.js';
 
@@ -303,7 +303,9 @@ class CSharpParser implements LanguageParser {
   // 4: Eltern-Typ ist jetzt die INNERSTE umschliessende Deklaration. Version 3
   //    bildete die alte match()-Semantik nach und verlor den Eltern-Typ, sobald
   //    vor der Fundstelle eine schliessende Klammer stand (siehe findParentType).
-  version = 4;
+  // 5: ///-Doc-Bloecke zeilentreu mit \n statt Leerzeichen verbunden (Vertrag:
+  //    kommentarBlockSymbol in types.ts); line_start = erste Zeile mit Text.
+  version = 5;
 
   parse(content: string, filePath: string): ParseResult {
     const symbols: ParsedSymbol[] = [];
@@ -572,43 +574,26 @@ class CSharpParser implements LanguageParser {
     // 10. XML-Doc-Comments (/// <summary>)
     // ══════════════════════════════════════════════
     const lines = content.split('\n');
+    // Ein ///-Block bleibt EIN Symbol, aber zeilentreu mit \n verbunden —
+    // Vertrag siehe kommentarBlockSymbol (types.ts).
     let docBlock: string[] = [];
     let docStart = 0;
+    const flushDoc = (): void => {
+      if (docBlock.length === 0) return;
+      const sym = kommentarBlockSymbol(docBlock, docStart);
+      if (sym && (sym.value ?? '').length > 3) symbols.push(sym);
+      docBlock = [];
+    };
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i].trim();
       if (line.startsWith('///')) {
         if (docBlock.length === 0) docStart = i + 1;
         docBlock.push(line.replace(/^\/\/\/\s?/, '').replace(/<[^>]+>/g, '').trim());
       } else {
-        if (docBlock.length >= 1) {
-          const text = docBlock.join(' ').trim();
-          if (text.length > 3) {
-            symbols.push({
-              symbol_type: 'comment',
-              name: null,
-              value: text.slice(0, 500),
-              line_start: docStart,
-              line_end: docStart + docBlock.length - 1,
-              is_exported: false,
-            });
-          }
-        }
-        docBlock = [];
+        flushDoc();
       }
     }
-    if (docBlock.length >= 1) {
-      const text = docBlock.join(' ').trim();
-      if (text.length > 3) {
-        symbols.push({
-          symbol_type: 'comment',
-          name: null,
-          value: text.slice(0, 500),
-          line_start: docStart,
-          line_end: docStart + docBlock.length - 1,
-          is_exported: false,
-        });
-      }
-    }
+    flushDoc();
 
     symbols.push(...extractStringLiterals(content));
 

@@ -12,7 +12,7 @@
  */
 
 import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser, ParsedStatement, ParsedCallEdge } from './types.js';
-import { extractStringLiterals, erstelleZeilenIndex, zeileFuerPosition } from './types.js';
+import { extractStringLiterals, erstelleZeilenIndex, zeileFuerPosition, ganzzeiligeKommentare } from './types.js';
 import { formatRouteName, isLikelyHttpPath, HTTP_VERBS } from './patterns/http.js';
 import { parseEmbeddedSql, looksLikeSql } from './patterns/sql.js';
 
@@ -80,7 +80,9 @@ class MooParser implements LanguageParser {
    * 2 = Ausgabe-Anweisungen (zeige/show/ze) ergeben Statement und Call-Kante.
    */
   // 3: Zeilenberechnung ueber Index statt Zaehlschleife (siehe lineAt).
-  version = 3;
+  // 4: JEDE #-Zeile ein eigenes comment-Symbol (vorher Bloecke ab 2 Zeilen,
+  //    mit Leerzeichen verbunden; Einzelzeilen fehlten). Vertrag: types.ts.
+  version = 4;
 
   parse(content: string, _filePath: string): ParseResult {
     const symbols: ParsedSymbol[] = [];
@@ -424,40 +426,11 @@ class MooParser implements LanguageParser {
     }
 
     // ══════════════════════════════════════════════
-    // 9. Kommentar-Bloecke (zusammenhaengende #-Zeilen, >= 2)
+    // 9. Zeilenkommentare — JEDE #-Zeile ein eigenes Symbol (Vertrag: types.ts).
+    //    TODO-Ausschluss wie todoRe unten: case-sensitive mit Wortgrenze, damit
+    //    eine Zeile weder doppelt (todo UND comment) noch gar nicht erfasst wird.
     // ══════════════════════════════════════════════
-    let commentBlock: string[] = [];
-    let commentStart = 0;
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i];
-      const trimmed = line.trim();
-      if (trimmed.startsWith('#') && !/^#\s*(TODO|FIXME|HACK)\b/i.test(trimmed)) {
-        if (commentBlock.length === 0) commentStart = i + 1;
-        commentBlock.push(trimmed.replace(/^#+\s?/, ''));
-      } else {
-        if (commentBlock.length >= 2) {
-          symbols.push({
-            symbol_type: 'comment',
-            name: null,
-            value: commentBlock.join(' ').trim().slice(0, 500),
-            line_start: commentStart,
-            line_end: commentStart + commentBlock.length - 1,
-            is_exported: false,
-          });
-        }
-        commentBlock = [];
-      }
-    }
-    if (commentBlock.length >= 2) {
-      symbols.push({
-        symbol_type: 'comment',
-        name: null,
-        value: commentBlock.join(' ').trim().slice(0, 500),
-        line_start: commentStart,
-        line_end: commentStart + commentBlock.length - 1,
-        is_exported: false,
-      });
-    }
+    symbols.push(...ganzzeiligeKommentare(lines, /^#+/, { todoRe: /^(TODO|FIXME|HACK)\b/ }));
 
     // ══════════════════════════════════════════════
     // 10. TODO/FIXME/HACK — case-sensitive mit Wortgrenze,

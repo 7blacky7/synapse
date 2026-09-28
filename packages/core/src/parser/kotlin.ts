@@ -8,7 +8,7 @@
  */
 
 import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser, ParsedStatement, ParsedCallEdge } from './types.js';
-import { extractStringLiterals, erstelleZeilenIndex, zeileFuerPosition } from './types.js';
+import { extractStringLiterals, erstelleZeilenIndex, zeileFuerPosition, zeilenKommentarSymbol, kommentarBlockSymbol } from './types.js';
 import { formatRouteName, isLikelyHttpPath, SPRING_DECORATORS, HTTP_VERBS } from './patterns/http.js';
 import { parseEmbeddedSql, looksLikeSql } from './patterns/sql.js';
 
@@ -23,6 +23,113 @@ function lineAt(text: string, pos: number): number {
     zeilenCacheIndex = erstelleZeilenIndex(text);
   }
   return zeileFuerPosition(zeilenCacheIndex, pos);
+}
+
+// ---------------------------------------------------------------------------
+// Kommentare lexikalisch finden
+// ---------------------------------------------------------------------------
+//
+// WARUM KEIN REGEX: Ein Volltext-Regex auf // trifft auch "http://host" in
+// einem String. Dieser Durchlauf kennt die Kotlin-Kontexte, in denen // und /*
+// KEIN Kommentar sind: "..."-Strings (mit Escapes), """raw"""-Strings,
+// ${...}-Templates in beiden (darin wieder Code mit Strings und Kommentaren),
+// Char-Literale ('"' oeffnet keinen String) und `Backtick-Namen`.
+// Blockkommentare sind in Kotlin SCHACHTELBAR: /* a /* b */ c */ ist EIN
+// Kommentar — die Tiefe wird mitgezaehlt.
+
+interface KtKommentar {
+  art: 'zeile' | 'block';
+  /** Position des einleitenden // bzw. /* */
+  start: number;
+  /** Position hinter dem Kommentar (exklusiv, ohne Zeilenumbruch) */
+  ende: number;
+}
+
+type KtModus = { art: 'str' } | { art: 'raw' } | { art: 'tpl'; tiefe: number };
+
+export function scanneKotlinKommentare(src: string): KtKommentar[] {
+  const out: KtKommentar[] = [];
+  const stapel: KtModus[] = [];
+  const n = src.length;
+  let i = 0;
+  while (i < n) {
+    const oben = stapel[stapel.length - 1];
+    const c = src[i];
+
+    // --- innerhalb eines Strings ---
+    if (oben && (oben.art === 'str' || oben.art === 'raw')) {
+      if (oben.art === 'str') {
+        if (c === '\\') { i += 2; continue; }
+        // Ein "..."-String endet spaetestens am Zeilenende (unterminiert =
+        // Syntaxfehler; nicht den Rest der Datei verschlucken).
+        if (c === '"' || c === '\n') { stapel.pop(); i++; continue; }
+      } else if (c === '"' && src.startsWith('"""', i)) {
+        // """"" am Ende: die LETZTEN drei schliessen, davor ist Inhalt.
+        let j = i;
+        while (src[j] === '"') j++;
+        stapel.pop();
+        i = j;
+        continue;
+      }
+      if (c === '$' && src[i + 1] === '{') { stapel.push({ art: 'tpl', tiefe: 0 }); i += 2; continue; }
+      i++;
+      continue;
+    }
+
+    // --- Code (Dateiebene oder innerhalb von ${...}) ---
+    if (c === '/' && src[i + 1] === '/') {
+      let ende = src.indexOf('\n', i);
+      if (ende < 0) ende = n;
+      out.push({ art: 'zeile', start: i, ende });
+      i = ende;
+      continue;
+    }
+    if (c === '/' && src[i + 1] === '*') {
+      let tiefe = 0;
+      let j = i;
+      while (j < n) {
+        if (src[j] === '/' && src[j + 1] === '*') { tiefe++; j += 2; continue; }
+        if (src[j] === '*' && src[j + 1] === '/') { tiefe--; j += 2; if (tiefe === 0) break; continue; }
+        j++;
+      }
+      out.push({ art: 'block', start: i, ende: Math.min(j, n) });
+      i = j;
+      continue;
+    }
+    if (c === '"') {
+      if (src.startsWith('"""', i)) { stapel.push({ art: 'raw' }); i += 3; }
+      else { stapel.push({ art: 'str' }); i++; }
+      continue;
+    }
+    if (c === "'") {
+      // Char-Literal: 'x', '\n', '\'', 'A'. Sonst (sollte in gueltigem
+      // Kotlin nicht vorkommen) nur das Zeichen ueberspringen.
+      if (src[i + 1] === '\\') {
+        const zu = src.indexOf("'", i + 3);
+        i = zu > 0 && zu - i <= 8 ? zu + 1 : i + 1;
+      } else if (src[i + 2] === "'") {
+        i += 3;
+      } else {
+        i++;
+      }
+      continue;
+    }
+    if (c === '`') {
+      const zu = src.indexOf('`', i + 1);
+      const nl = src.indexOf('\n', i + 1);
+      i = zu > 0 && (nl < 0 || zu < nl) ? zu + 1 : i + 1;
+      continue;
+    }
+    if (oben && oben.art === 'tpl') {
+      if (c === '{') oben.tiefe++;
+      else if (c === '}') {
+        if (oben.tiefe === 0) { stapel.pop(); i++; continue; }
+        oben.tiefe--;
+      }
+    }
+    i++;
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -206,7 +313,12 @@ class KotlinParser implements LanguageParser {
   // 4: Eltern-Typ ist jetzt die INNERSTE umschliessende Deklaration. Version 3
   //    bildete die alte match()-Semantik nach und verlor den Eltern-Typ, sobald
   //    vor der Fundstelle eine schliessende Klammer stand (siehe findParentType).
-  version = 4;
+  // 5: Kommentare lexikalisch (scanneKotlinKommentare): jede //-Zeile wird ein
+  //    eigenes comment-Symbol (vorher nur KDoc /** */ — gewoehnliche //-Zeilen
+  //    fehlten ganz), /* */ ebenfalls, schachtelbar. // in Strings/URLs ist
+  //    kein Kommentar mehr, auch kein TODO. KDoc-line_start zeigt auf die erste
+  //    Textzeile (Vertrag siehe kommentarBlockSymbol in types.ts).
+  version = 5;
 
   parse(content: string, filePath: string): ParseResult {
     const symbols: ParsedSymbol[] = [];
@@ -386,35 +498,33 @@ class KotlinParser implements LanguageParser {
     }
 
     // ══════════════════════════════════════════════
-    // 8. TODO / FIXME / HACK
+    // 8./9. Kommentare: // (je Zeile ein Symbol), TODO/FIXME/HACK, /* */ + KDoc
+    //       Lexikalisch — siehe scanneKotlinKommentare.
     // ══════════════════════════════════════════════
-    const todoRe = /\/\/\s*(TODO|FIXME|HACK):?\s*(.*)/gi;
-    while ((m = todoRe.exec(content)) !== null) {
-      symbols.push({
-        symbol_type: 'todo',
-        name: null,
-        value: m[0].trim(),
-        line_start: lineAt(content, m.index),
-        is_exported: false,
-      });
+    for (const k of scanneKotlinKommentare(content)) {
+      const zeile = lineAt(content, k.start);
+      if (k.art === 'zeile') {
+        const koerper = content.slice(k.start + 2, k.ende).replace(/^\/+/, '').replace(/\r$/, '');
+        if (/^\s*(TODO|FIXME|HACK)\b/i.test(koerper)) {
+          symbols.push({
+            symbol_type: 'todo',
+            name: null,
+            value: ('//' + koerper).trim(),
+            line_start: zeile,
+            is_exported: false,
+          });
+          continue;
+        }
+        const sym = zeilenKommentarSymbol(koerper, zeile);
+        if (sym) symbols.push(sym);
+        continue;
+      }
+      // Blockkommentar: /* und */ abziehen, fuehrende *-Dekoration je Zeile weg.
+      const innen = content.slice(k.start + 2, content.startsWith('*/', k.ende - 2) ? k.ende - 2 : k.ende);
+      const zeilen = innen.split('\n').map((z) => z.replace(/\r$/, '').replace(/^\s*\*+\s?/, ''));
+      const sym = kommentarBlockSymbol(zeilen, zeile);
+      if (sym && (sym.value ?? '').length >= 3) symbols.push(sym);
     }
-
-    // ══════════════════════════════════════════════
-    // 9. KDoc-Kommentare (/** ... */)
-    // ══════════════════════════════════════════════
-    const docRe = /\/\*\*([\s\S]*?)\*\//g;
-    while ((m = docRe.exec(content)) !== null) {
-      const text = m[1].replace(/^\s*\*\s?/gm, '').trim();
-      if (text.length < 3) continue;
-      symbols.push({
-        symbol_type: 'comment',
-        name: null,
-        value: text.slice(0, 500),
-        line_start: lineAt(content, m.index),
-        is_exported: false,
-      });
-    }
-
     symbols.push(...extractStringLiterals(content));
 
     // ══════════════════════════════════════════════

@@ -322,3 +322,103 @@ export function extractStringLiterals(
   }
   return out;
 }
+
+// ---------------------------------------------------------------------------
+// Kommentar-Symbole — gemeinsamer Vertrag aller Parser
+// ---------------------------------------------------------------------------
+//
+// VERTRAG (seit 28.09.2026): Ein comment-Symbol traegt in value den Text
+// ZEILENTREU — mehrere Zeilen mit \n verbunden, nie mit Leerzeichen — und
+// line_start ist die Zeile, auf der die ERSTE Zeile von value steht. Nur so
+// kann die Anzeige (tree comment_contains, symbols value_contains) aus einem
+// Treffer im Text die Trefferzeile ausrechnen: line_start + Anzahl \n davor.
+//
+// ZEILENKOMMENTARE (//, #, --) werden NICHT mehr zu Bloecken verschmolzen:
+// JEDE Zeile ist ein eigenes Symbol. Frueher entstand aus einem alten
+// Banner-Block plus einer spaeter darunter gesetzten Marke (etwa
+// "// VOR AUSLIEFERUNG: ...") EIN Symbol, dessen line_start auf den Banner
+// zeigte; bei den Regex-Parsern wurden die Zeilen zusaetzlich mit Leerzeichen
+// verbunden, Einzelzeilen fielen ganz weg (Schwelle >= 2 Zeilen), und was
+// hinter Zeichen 500 des Blocks stand, war gar nicht mehr auffindbar.
+//
+// BLOCKKOMMENTARE (/* */, KDoc, ///-Doc-Bloecke) bleiben ein Symbol — sie sind
+// syntaktisch eine Einheit — gehen aber durch kommentarBlockSymbol, damit
+// fuehrende Leerzeilen line_start verschieben statt still verloren zu gehen.
+
+/** Zeilen ohne Buchstabe/Ziffer (Trennlinien wie "# -----") tragen nichts. */
+const HAT_INHALT = /[\p{L}\p{N}]/u;
+
+/**
+ * Ein comment-Symbol fuer EINEN Zeilenkommentar. text ist der Kommentartext
+ * OHNE Marker. Liefert null fuer reine Trennlinien und leere Kommentare.
+ */
+export function zeilenKommentarSymbol(text: string, zeile: number): ParsedSymbol | null {
+  const inhalt = text.trim();
+  if (!inhalt || !HAT_INHALT.test(inhalt)) return null;
+  return {
+    symbol_type: 'comment',
+    name: null,
+    value: inhalt.slice(0, 500),
+    line_start: zeile,
+    line_end: zeile,
+    is_exported: false,
+  };
+}
+
+/**
+ * Ein comment-Symbol fuer einen mehrzeiligen Kommentar-Block.
+ * zeilen = Inhalt je Quellzeile (Marker bereits entfernt), ersteZeile = Zeile
+ * von zeilen[0]. Fuehrende und abschliessende Leerzeilen werden abgeschnitten
+ * UND line_start/line_end entsprechend verschoben — so bleibt der Vertrag
+ * "line_start ist die Zeile der ersten value-Zeile" erhalten.
+ */
+export function kommentarBlockSymbol(zeilen: string[], ersteZeile: number): ParsedSymbol | null {
+  let von = 0;
+  let bis = zeilen.length - 1;
+  while (von <= bis && !zeilen[von].trim()) von++;
+  while (bis >= von && !zeilen[bis].trim()) bis--;
+  if (von > bis) return null;
+  const teile = zeilen.slice(von, bis + 1).map((z) => z.trimEnd());
+  teile[0] = teile[0].trimStart();
+  const value = teile.join('\n');
+  if (!HAT_INHALT.test(value)) return null;
+  return {
+    symbol_type: 'comment',
+    name: null,
+    value: value.slice(0, 500),
+    line_start: ersteZeile + von,
+    line_end: ersteZeile + bis,
+    is_exported: false,
+  };
+}
+
+/**
+ * Ganzzeilige Zeilenkommentare der Regex-Parser (#, //, --): jede Zeile, deren
+ * erstes Nicht-Leerzeichen der Marker ist, wird ein eigenes comment-Symbol.
+ * TODO/FIXME/HACK-Zeilen werden uebersprungen — die liefert jeder Parser
+ * bereits als todo-Symbol.
+ *
+ * @param markerRe   Marker am Zeilenanfang (nach trim), z.B. /^#+/ oder /^--/
+ * @param ausnahme   trimmed-Zeilen, die trotz Marker KEIN Kommentar sind
+ *                   (Shebang, Lua --[[ ...)
+ * @param todoRe     auf den Text nach dem Marker angewendet
+ */
+export function ganzzeiligeKommentare(
+  lines: string[],
+  markerRe: RegExp,
+  optionen: { ausnahme?: (trimmed: string, index: number) => boolean; todoRe?: RegExp } = {},
+): ParsedSymbol[] {
+  const todoRe = optionen.todoRe ?? /^(TODO|FIXME|HACK)/i;
+  const out: ParsedSymbol[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const trimmed = lines[i].trim();
+    const marker = markerRe.exec(trimmed);
+    if (!marker || marker.index !== 0) continue;
+    if (optionen.ausnahme?.(trimmed, i)) continue;
+    const text = trimmed.slice(marker[0].length).trim();
+    if (todoRe.test(text)) continue;
+    const sym = zeilenKommentarSymbol(text, i + 1);
+    if (sym) out.push(sym);
+  }
+  return out;
+}

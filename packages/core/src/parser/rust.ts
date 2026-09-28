@@ -8,7 +8,7 @@
  */
 
 import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser, ParsedStatement, ParsedCallEdge } from './types.js';
-import { extractStringLiterals, erstelleZeilenIndex, zeileFuerPosition } from './types.js';
+import { extractStringLiterals, erstelleZeilenIndex, zeileFuerPosition, kommentarBlockSymbol } from './types.js';
 import { parseEmbeddedSql, looksLikeSql } from './patterns/sql.js';
 
 // Zeilenindex je Datei zwischenspeichern — siehe zeileFuerPosition in types.ts.
@@ -372,7 +372,9 @@ class RustParser implements LanguageParser {
   extensions = ['.rs'];
   /** Bei inhaltlichen Parser-Aenderungen erhoehen (siehe LanguageParser.version). */
   // 2: Zeilenberechnung ueber Index statt Praefix-Kopie (siehe lineAt).
-  version = 2;
+  // 3: ///-Doc-Bloecke zeilentreu mit \n statt Leerzeichen verbunden (Vertrag:
+  //    kommentarBlockSymbol in types.ts), damit die Trefferzeile bestimmbar ist.
+  version = 3;
 
   parse(content: string, filePath: string): ParseResult {
     const symbols: ParsedSymbol[] = [];
@@ -731,37 +733,26 @@ class RustParser implements LanguageParser {
     // 11. Doc-Comments (/// und //!)
     // ══════════════════════════════════════════════
     const lines = content.split('\n');
+    // Ein ///-Block bleibt EIN Symbol (er dokumentiert genau ein Item), aber
+    // zeilentreu mit \n verbunden — Vertrag siehe kommentarBlockSymbol (types.ts).
     let docBlock: string[] = [];
     let docStart = 0;
+    const flushDoc = (): void => {
+      if (docBlock.length === 0) return;
+      const sym = kommentarBlockSymbol(docBlock, docStart);
+      if (sym) symbols.push(sym);
+      docBlock = [];
+    };
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i].trim();
       if (line.startsWith('///') || line.startsWith('//!')) {
         if (docBlock.length === 0) docStart = i + 1;
         docBlock.push(line.replace(/^\/\/[\/!]\s?/, ''));
       } else {
-        if (docBlock.length >= 1) {
-          symbols.push({
-            symbol_type: 'comment',
-            name: null,
-            value: docBlock.join(' ').trim().slice(0, 500),
-            line_start: docStart,
-            line_end: docStart + docBlock.length - 1,
-            is_exported: false,
-          });
-        }
-        docBlock = [];
+        flushDoc();
       }
     }
-    if (docBlock.length >= 1) {
-      symbols.push({
-        symbol_type: 'comment',
-        name: null,
-        value: docBlock.join(' ').trim().slice(0, 500),
-        line_start: docStart,
-        line_end: docStart + docBlock.length - 1,
-        is_exported: false,
-      });
-    }
+    flushDoc();
 
     // ══════════════════════════════════════════════
     // 12. Routes — axum: .route("/path", get(handler))

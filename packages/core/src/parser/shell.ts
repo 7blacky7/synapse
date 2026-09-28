@@ -8,7 +8,7 @@
  */
 
 import type { ParsedSymbol, ParsedReference, ParseResult, LanguageParser, ParsedStatement, ParsedCallEdge } from './types.js';
-import { extractStringLiterals, erstelleZeilenIndex, zeileFuerPosition } from './types.js';
+import { extractStringLiterals, erstelleZeilenIndex, zeileFuerPosition, ganzzeiligeKommentare } from './types.js';
 import { parseEmbeddedSql, looksLikeSql } from './patterns/sql.js';
 
 // Zeilenindex je Datei zwischenspeichern — siehe zeileFuerPosition in types.ts.
@@ -29,7 +29,9 @@ class ShellParser implements LanguageParser {
   extensions = ['.sh', '.bash', '.zsh', '.fish'];
   /** Bei inhaltlichen Parser-Aenderungen erhoehen (siehe LanguageParser.version). */
   // 2: Zeilenberechnung ueber Index statt Praefix-Kopie (siehe lineAt).
-  version = 2;
+  // 3: JEDE #-Zeile ein eigenes comment-Symbol (vorher Bloecke ab 2 Zeilen,
+  //    mit Leerzeichen verbunden; Einzelzeilen fehlten). Vertrag: types.ts.
+  version = 3;
 
   parse(content: string, filePath: string): ParseResult {
     const symbols: ParsedSymbol[] = [];
@@ -207,39 +209,9 @@ class ShellParser implements LanguageParser {
     }
 
     // ══════════════════════════════════════════════
-    // 7. Block-Kommentare (zusammenhaengende #-Zeilen)
+    // 7. Zeilenkommentare — JEDE #-Zeile ein eigenes Symbol (Vertrag: types.ts)
     // ══════════════════════════════════════════════
-    let commentBlock: string[] = [];
-    let commentStart = 0;
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i].trim();
-      if (line.startsWith('#') && !line.startsWith('#!') && !line.match(/^#\s*(TODO|FIXME|HACK)/i)) {
-        if (commentBlock.length === 0) commentStart = i + 1;
-        commentBlock.push(line.replace(/^#\s?/, ''));
-      } else {
-        if (commentBlock.length >= 2) {
-          symbols.push({
-            symbol_type: 'comment',
-            name: null,
-            value: commentBlock.join(' ').trim().slice(0, 500),
-            line_start: commentStart,
-            line_end: commentStart + commentBlock.length - 1,
-            is_exported: false,
-          });
-        }
-        commentBlock = [];
-      }
-    }
-    if (commentBlock.length >= 2) {
-      symbols.push({
-        symbol_type: 'comment',
-        name: null,
-        value: commentBlock.join(' ').trim().slice(0, 500),
-        line_start: commentStart,
-        line_end: commentStart + commentBlock.length - 1,
-        is_exported: false,
-      });
-    }
+    symbols.push(...ganzzeiligeKommentare(lines, /^#+/, { ausnahme: (t) => t.startsWith('#!') }));
 
     symbols.push(...extractStringLiterals(content, { includeSingleQuotes: true }));
 
