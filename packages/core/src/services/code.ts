@@ -76,6 +76,7 @@ import { indexDocument, removeDocument } from './documents.js';
 import { getPool } from '../db/client.js';
 import { getParserForFile } from '../parser/index.js';
 import { isProjectEnabled } from './project-registry.js';
+import { inTransaktionMitRetry, istTransienterPgFehler, wartezeitMs } from '../db/transient-retry.js';
 
 /**
  * Projekte, deren FileWatcher-Erstscan durch ist. NUR fuer diese wird eine neu
@@ -372,23 +373,114 @@ export function enqueueParseAndEmbed(project: string, filePath: string): void {
 }
 
 /**
+ * CODEGRAPH-SPERRE eines Projekts: Schluessel fuer pg_advisory_xact_lock(hashtext(..)).
+ *
+ * WARUM ES SIE GIBT (Befund 28.09.2026, softcleanToeva: "Symbol-Insert: deadlock detected",
+ * danach kein Neuversuch, Symbolbestand veraltet). Die Sperren je Datei (symbols:/
+ * statements:/chunks:) serialisieren nur Laeufe auf DERSELBEN Datei. Die Schreibschritte
+ * greifen aber ueber Dateigrenzen hinweg:
+ *   - DELETE code_symbols der Datei A loest per FK ON DELETE SET NULL ein UPDATE auf
+ *     code_call_edges FREMDER Dateien aus (target_symbol_id zeigt auf A) und per CASCADE
+ *     ein DELETE auf code_references fremder Dateien (Cross-File-Links auf A).
+ *   - Die Ablauf-Transaktion von B haelt ihre eigenen (geloeschten) Kanten gesperrt und
+ *     setzt target_symbol_id auf Symbole von A (FK-Pruefung = KEY SHARE auf A-Zeilen) und
+ *     "heilt" in Stufe 3 Kanten FREMDER Dateien.
+ *   - linkCrossFileReferences loescht in einem Statement alle Cross-File-Referenzen des
+ *     Projekts, in Scan-Reihenfolge.
+ * Damit entstehen Zyklen Symbol-Tx A <-> Ablauf-Tx B, Ablauf-Tx A <-> Ablauf-Tx B und
+ * Symbol-Tx A <-> linkCross. REPRODUZIERT gegen die echte DB (Wegwerfprojekt, 16 Dateien,
+ * 4 parallele Laeufe + 2 linkCross, 6 Runden): 22 Symbol-Insert- und 230 Ablauf-Deadlocks.
+ *
+ * DIE REGEL: Symbol-Transaktionen nehmen die Sperre GETEILT — untereinander beruehren sie
+ * disjunkte Zeilen (jede Kante/Referenz zeigt auf genau EIN Symbol, also genau eine
+ * Datei) und duerfen parallel laufen. Ablauf-Transaktion und das Loeschen in
+ * linkCrossFileReferences nehmen sie EXKLUSIV. Jede Transaktion holt die Sperre direkt
+ * nach ihrer Datei-Sperre und VOR der ersten Zeilensperre; wer sie haelt, wartet danach
+ * auf keine Advisory-Sperre mehr. Damit kann kein Zyklus mehr ueber diese Pfade entstehen.
+ */
+function codegraphSperre(project: string): string {
+  return `codegraph:${project}`;
+}
+
+/**
+ * Ein transienter PG-Fehler (siehe db/transient-retry.ts) in einer Schreib-Transaktion
+ * von parseAndEmbedLauf. Wird nur geworfen, solange noch ein Versuch uebrig ist;
+ * parseAndEmbed faengt ihn und startet den ganzen Lauf nach Backoff neu.
+ */
+class TransienterSchreibfehler extends Error {
+  constructor(
+    readonly schritt: string,
+    readonly ursache: unknown
+  ) {
+    super(`${schritt}: ${(ursache as Error)?.message ?? String(ursache)}`);
+    this.name = 'TransienterSchreibfehler';
+  }
+}
+
+/** Versuche je parseAndEmbed-Aufruf, inklusive des ersten. */
+const SCHREIB_VERSUCHE = 3;
+
+interface ParseAndEmbedOptionen {
+  /**
+   * Umgeht den Idempotenz-Skip. NOETIG fuer jeden gewollten Reparse: der Skip
+   * kehrt zurueck, sobald die Datei embedded ist — und heilt dabei parsed_at
+   * auf NOW(). Ohne diese Option meldet ein Reparse Erfolg, ohne je geparst
+   * zu haben, und die Datei behaelt ihre alten Symbole.
+   */
+  erzwingeParse?: boolean;
+  /** Wie SYNAPSE_SKIP_EMBEDDINGS=1, aber als Parameter statt als Umgebung. */
+  ohneEmbeddings?: boolean;
+}
+
+/**
  * Stage 2: Symbole parsen, Chunks erstellen, Embeddings generieren.
  * Liest Inhalt aus PostgreSQL (nicht Filesystem).
+ *
+ * NEUVERSUCH: Scheitert die Symbol- oder die Ablauf-Transaktion an einem transienten
+ * Fehler (Deadlock, Serialisierung, Lock-Timeout), wird der GANZE Lauf wiederholt —
+ * Inhalt frisch aus PG, neu geparst, beide Transaktionen komplett neu. Hoechstens
+ * SCHREIB_VERSUCHE Laeufe, dazwischen Backoff mit Jitter. Alle Einstiegspfade
+ * (Watcher/Daemon ueber enqueueParseAndEmbed, files-Commit, parser-worker ueber
+ * parseUnparsedFiles, reparseProject) laufen hier durch.
  */
 export async function parseAndEmbed(
   project: string,
   filePath: string,
-  opts?: {
-    /**
-     * Umgeht den Idempotenz-Skip. NOETIG fuer jeden gewollten Reparse: der Skip
-     * kehrt zurueck, sobald die Datei embedded ist — und heilt dabei parsed_at
-     * auf NOW(). Ohne diese Option meldet ein Reparse Erfolg, ohne je geparst
-     * zu haben, und die Datei behaelt ihre alten Symbole.
-     */
-    erzwingeParse?: boolean;
-    /** Wie SYNAPSE_SKIP_EMBEDDINGS=1, aber als Parameter statt als Umgebung. */
-    ohneEmbeddings?: boolean;
+  opts?: ParseAndEmbedOptionen
+): Promise<void> {
+  for (let versuch = 1; ; versuch++) {
+    try {
+      // Ab dem zweiten Lauf den Idempotenz-Skip umgehen: der erste Lauf kann die
+      // Datei bereits als "fertig" markiert haben, obwohl ihr Symbolbestand nicht steht.
+      await parseAndEmbedLauf(
+        project,
+        filePath,
+        versuch > 1 ? { ...opts, erzwingeParse: true } : opts,
+        versuch < SCHREIB_VERSUCHE
+      );
+      return;
+    } catch (err) {
+      if (!(err instanceof TransienterSchreibfehler)) throw err;
+      const ms = wartezeitMs(versuch);
+      console.error(
+        `[Synapse] ${project}/${filePath}: ${err.message} — transient ` +
+          `(Versuch ${versuch}/${SCHREIB_VERSUCHE}), Neuversuch des ganzen Laufs in ${ms} ms`
+      );
+      await new Promise(resolve => setTimeout(resolve, ms));
+    }
   }
+}
+
+/**
+ * Ein einzelner Durchlauf von parseAndEmbed.
+ * neuversuchErlaubt: true, solange parseAndEmbed noch einen Versuch uebrig hat — dann
+ * wirft ein transienter Schreibfehler TransienterSchreibfehler, statt vermerkt zu werden.
+ */
+async function parseAndEmbedLauf(
+  project: string,
+  filePath: string,
+  opts: ParseAndEmbedOptionen | undefined,
+  neuversuchErlaubt: boolean
 ): Promise<void> {
   const pool = getPool();
 
@@ -477,6 +569,10 @@ export async function parseAndEmbed(
 
   // --- Symbole + Referenzen parsen (in Transaktion) ---
   let parseSuccess = false;
+  // Transienter Fehler (Deadlock o. ae.) in der Ablauf-Transaktion, der auch den letzten
+  // Versuch ueberlebt hat. Dann darf parser_version unten NICHT hochgeschrieben werden,
+  // sonst gaelte die Datei als aktuell, obwohl Statements/Call-Kanten veraltet sind.
+  let ablaufTransientGescheitert: unknown = null;
   // Inhalt mitgeben: nur damit kann die Inhaltserkennung fuer Dateien OHNE
   // Endung ueberhaupt greifen (siehe getParserForFile). Fuer alle anderen
   // Dateien aendert der zweite Parameter nichts.
@@ -676,6 +772,12 @@ export async function parseAndEmbed(
       await symClient.query('SELECT pg_advisory_xact_lock(hashtext($1))', [
         `symbols:${project}:${filePath}`,
       ]);
+      // CODEGRAPH-SPERRE, GETEILT — Begruendung bei codegraphSperre(). Symbol-Transaktionen
+      // verschiedener Dateien laufen weiter parallel, warten aber auf eine laufende
+      // Ablauf-Transaktion bzw. auf linkCrossFileReferences.
+      await symClient.query('SELECT pg_advisory_xact_lock_shared(hashtext($1))', [
+        codegraphSperre(project),
+      ]);
       // Alte Symbole loeschen (CASCADE loescht auch References) — innerhalb der Transaktion
       await symClient.query(
         'DELETE FROM code_symbols WHERE project = $1 AND file_path = $2',
@@ -800,6 +902,11 @@ export async function parseAndEmbed(
       parseSuccess = true;
     } catch (txErr) {
       await symClient.query('ROLLBACK').catch(() => {});
+      // Transient (Deadlock, Serialisierung, Lock-Timeout) und noch ein Versuch frei:
+      // den ganzen Lauf neu starten statt den Fehler festzuschreiben.
+      if (neuversuchErlaubt && istTransienterPgFehler(txErr)) {
+        throw new TransienterSchreibfehler('Symbol-Insert', txErr);
+      }
       console.error(`[Synapse] Symbol-Insert Transaktion fehlgeschlagen:`, txErr);
       // SICHTBAR MACHEN. Ohne diesen Eintrag bleibt der Fehlschlag eine Zeile im
       // Log, waehrend der Worker "0 fehlgeschlagen" meldet und die Datei in jedem
@@ -816,6 +923,20 @@ export async function parseAndEmbed(
         });
       } catch (vermerkFehler) {
         console.error(`[Synapse] Ausfall nicht vermerkbar fuer ${filePath}:`, vermerkFehler);
+      }
+      // ERNEUT FAELLIG MACHEN, nur bei transienten Fehlern. Bisher blieb parser_version
+      // auf dem Stand des letzten Erfolgs und parsed_at unveraendert — die Datei galt als
+      // aktuell und wurde nie wieder angefasst (Befund 28.09.2026: geparst_am blieb 08:00,
+      // der Inhalt war laengst neuer). parser_version NULL macht sie fuer den Backlog
+      // 'veraltet' -> parser-worker parst sie mit erzwingeParse erneut. Dauerhafte Fehler
+      // (Encoding, FK) bekommen das bewusst NICHT, sonst liefe jeder Tick in denselben Fehler.
+      if (istTransienterPgFehler(txErr)) {
+        await pool
+          .query(`UPDATE code_files SET parser_version = NULL WHERE project = $1 AND file_path = $2`, [
+            project,
+            filePath,
+          ])
+          .catch(err => console.error(`[Synapse] Neuversuch nicht vormerkbar fuer ${filePath}:`, err));
       }
     } finally {
       symClient.release();
@@ -834,6 +955,12 @@ export async function parseAndEmbed(
         await flowClient.query('BEGIN');
         await flowClient.query('SELECT pg_advisory_xact_lock(hashtext($1))', [
           `statements:${project}:${filePath}`,
+        ]);
+        // CODEGRAPH-SPERRE, EXKLUSIV — diese Transaktion setzt target_symbol_id auf Symbole
+        // FREMDER Dateien und heilt in Stufe 3 Kanten fremder Dateien. Begruendung bei
+        // codegraphSperre().
+        await flowClient.query('SELECT pg_advisory_xact_lock(hashtext($1))', [
+          codegraphSperre(project),
         ]);
         // DELETE+INSERT: alte Ablauf-Eintraege fuer dieses File raeumen.
         // code_call_edges.statement_id ist ON DELETE CASCADE → mit-geloescht; die
@@ -1086,8 +1213,12 @@ export async function parseAndEmbed(
         await flowClient.query('COMMIT');
       } catch (flowErr) {
         await flowClient.query('ROLLBACK').catch(() => {});
+        if (neuversuchErlaubt && istTransienterPgFehler(flowErr)) {
+          throw new TransienterSchreibfehler('Statement/Call-Edge', flowErr);
+        }
         // Fehler hier sollen die restliche Indexierung NICHT stoppen.
         console.error(`[Synapse] Statement/Call-Edge Transaktion fehlgeschlagen:`, flowErr);
+        if (istTransienterPgFehler(flowErr)) ablaufTransientGescheitert = flowErr;
       } finally {
         flowClient.release();
       }
@@ -1200,15 +1331,29 @@ export async function parseAndEmbed(
     // parser_version mitschreiben: damit ist erkennbar, ob dieser Stand von einem
     // aelteren Parser stammt. Bliebe die Spalte NULL, wuerde die Datei nie
     // nachgezogen — NULL heisst bewusst 'unbekannt', nicht 'veraltet'.
+    // Blieb ein transienter Fehler in der Ablauf-Transaktion stehen, bleibt die Version
+    // NULL: die Symbole sind frisch, Statements/Call-Kanten nicht, und die Datei muss ueber
+    // den Backlog (grund 'veraltet') erneut laufen.
     await pool.query(
       `UPDATE code_files SET parsed_at = NOW(), parser_version = $3 WHERE project = $1 AND file_path = $2`,
-      [project, filePath, parser.version ?? 1]
+      [project, filePath, ablaufTransientGescheitert ? null : parser.version ?? 1]
     );
-    // Die Datei laeuft wieder durch: einen etwaigen Ausfall-Eintrag aufloesen.
-    // Ohne das fuellt sich parse_failures mit laengst reparierten Faellen und
-    // wird wertlos, weil ihr niemand mehr traut.
-    const { loeseAusfallAuf } = await import('../db/parse-failures.js');
-    await loeseAusfallAuf(pool, project, filePath);
+    const { loeseAusfallAuf, vermerkeAusfall } = await import('../db/parse-failures.js');
+    if (ablaufTransientGescheitert) {
+      await vermerkeAusfall(pool, {
+        project,
+        filePath,
+        grund: 'fehler',
+        details: `Statement/Call-Edge: ${(ablaufTransientGescheitert as Error).message ?? String(ablaufTransientGescheitert)}`.slice(0, 500),
+        parser: parser.language,
+        dateiBytes: content.length,
+      });
+    } else {
+      // Die Datei laeuft wieder durch: einen etwaigen Ausfall-Eintrag aufloesen.
+      // Ohne das fuellt sich parse_failures mit laengst reparierten Faellen und
+      // wird wertlos, weil ihr niemand mehr traut.
+      await loeseAusfallAuf(pool, project, filePath);
+    }
   }
 
   // --- Embeddings generieren + in Qdrant einfuegen ---
@@ -3111,14 +3256,20 @@ export async function linkCrossFileReferences(project: string): Promise<number> 
   let linkedCount = 0;
 
   // Alte Cross-File-References loeschen (file_path der Reference != file_path des Symbols)
-  await pool.query(
-    `DELETE FROM code_references cr
-     USING code_symbols cs
-     WHERE cr.symbol_id = cs.id
-       AND cr.project = $1
-       AND cr.file_path != cs.file_path`,
-    [project]
-  );
+  // Unter EXKLUSIVER Codegraph-Sperre: dieses DELETE sperrt Referenzen aller Dateien in
+  // Scan-Reihenfolge und lief sonst gegen die CASCADE-Loeschung einer Symbol-Transaktion
+  // in einen Deadlock (Begruendung bei codegraphSperre()).
+  await inTransaktionMitRetry(pool, `Cross-File-References ${project}`, async client => {
+    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [codegraphSperre(project)]);
+    await client.query(
+      `DELETE FROM code_references cr
+       USING code_symbols cs
+       WHERE cr.symbol_id = cs.id
+         AND cr.project = $1
+         AND cr.file_path != cs.file_path`,
+      [project]
+    );
+  });
 
   // Alle Import-Symbole laden.
   // Parser-Konventionen unterscheiden sich:
