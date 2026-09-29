@@ -44,6 +44,8 @@ interface PlanKurz {
   kurz_id?: string | null;
   name: string;
   description?: string;
+  /** Aktiver Plan des Projekts (getPlan/getAllePlaene liefern das Feld) */
+  aktiv?: boolean;
   tasks: Array<Record<string, unknown>>;
 }
 
@@ -176,6 +178,7 @@ export async function ordneTasksEin(
     const quelle = await lesePlan(project, planRef);
     if (!quelle) return fehlschlag(`Kein Plan gefunden fuer Projekt: ${project}`);
     const alle = await leseAlle(project);
+    const aktivDerQuelle = quelle.aktiv ?? alle.find((p) => p.id === quelle.id)?.aktiv ?? false;
 
     // --- Zielplaene ---------------------------------------------------------
     let ziele: PlanKurz[];
@@ -329,7 +332,7 @@ export async function ordneTasksEin(
       message:
         `${zeilen.length} Task(s) eingeordnet in ${aufrufe} Jev-Aufruf(en), ${unsicher} unsicher (Tor ${tor}), ${bleibt} bleiben. ` +
         (verschieben ? `${verschoben} verschoben.` : 'Nur Vorschlag (verschieben:true verschiebt die sicheren).'),
-      plan_ref: { id: quelle.id, kurz_id: quelle.kurz_id ?? null, name: quelle.name, aktiv: false },
+      plan_ref: { id: quelle.id, kurz_id: quelle.kurz_id ?? null, name: quelle.name, aktiv: aktivDerQuelle },
       confidence_tor: tor,
       verschieben,
       ergebnisse: zeilen,

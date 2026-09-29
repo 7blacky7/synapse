@@ -1303,14 +1303,15 @@ ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS model_full_id TEXT;
 -- Claude: Output-Limit, Preise ($ je 1M: input/output/cache_read) und Cutoff JE VERSION
 -- (full_id), Quelle models.dev 29.09.2026 — dieselben Werte wie STATIC_FALLBACK in
 -- packages/agents/src/models.ts (scripts/test-kontext-korridor.mjs vergleicht beide).
--- Kontext = Abo-Kontext der CLI (200k, [1m] = 1M, fable immer 1M).
+-- Kontext = Abo-Kontext der CLI (200k, [1m] = 1M, fable und der CLI-Alias sonnet (Sonnet 5.5) nativ 1M,
+-- gemessen 29.09.2026: 229-236k Kontext ohne [1m] ohne API-Fehler; opus ohne [1m] noch ungemessen = 200k).
 -- Korridore je Groessenklasse (Token-Budget: services/kontext-korridor.ts):
 --   200k = 73/88 (Handoff 146k, Rotation 176k, 24k Rest), 1M = 80/97 (800k/950k/970k).
 INSERT INTO model_registry
   (alias, full_id, provider, context_window, env_required, runtime_binary, runtime_path, corridor_min, corridor_max, pricing_input_usd_per_mtok, pricing_output_usd_per_mtok, pricing_cache_usd_per_mtok, cutoff_date, output_limit)
 VALUES
   ('opus',              'claude-opus-5-5',                'anthropic',  200000, ARRAY[]::TEXT[],          'claude', NULL,                                73, 88,  4.00, 20.00, 0.20, '2026-06-01', 128000),
-  ('sonnet',            'claude-sonnet-5-5',              'anthropic',  200000, ARRAY[]::TEXT[],          'claude', NULL,                                73, 88,  2.00, 10.00, 0.20, '2026-06-01', 128000),
+  ('sonnet',            'claude-sonnet-5-5',              'anthropic', 1000000, ARRAY[]::TEXT[],          'claude', NULL,                                80, 97,  2.00, 10.00, 0.20, '2026-06-01', 128000),
   ('haiku',             'claude-haiku-4-5-20251001',      'anthropic',  200000, ARRAY[]::TEXT[],          'claude', NULL,                                73, 88,  1.00,  5.00, 0.10, '2025-02-28',  64000),
   ('opus[1m]',          'claude-opus-5-5',                'anthropic', 1000000, ARRAY[]::TEXT[],          'claude', NULL,                                80, 97,  4.00, 20.00, 0.20, '2026-06-01', 128000),
   ('sonnet[1m]',        'claude-sonnet-5-5',              'anthropic', 1000000, ARRAY[]::TEXT[],          'claude', NULL,                                80, 97,  2.00, 10.00, 0.20, '2026-06-01', 128000),

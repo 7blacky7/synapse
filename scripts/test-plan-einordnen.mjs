@@ -198,6 +198,19 @@ await pruefe('verschieben:false (Standard) verschiebt nichts', async () => {
   assert.ok(r.ergebnisse.every((z) => z.verschoben === undefined));
 });
 
+await pruefe('plan_ref.aktiv spiegelt den echten Wert des Quellplans (aktiv und nicht aktiv)', async () => {
+  reset();
+  let r = await einordnen({});
+  assert.equal(r.plan_ref.aktiv, true, 'P1 ist aktiv');
+  const p = plaene();
+  p[1].tasks = [task(1, { id: 'x1', kurz_id: 'P2-T1' })];
+  r = await ordneTasksEin('testprojekt', { plan_id: 'P2', task_ids: ['x1'] }, deps(p));
+  assert.equal(r.success, true);
+  assert.equal(r.plan_ref.kurz_id, 'P2');
+  assert.equal(r.plan_ref.aktiv, false, 'P2 ist nicht aktiv');
+});
+
+
 await pruefe('verschieben:true: gruppiert je Ziel, ueberspringt "bleibt" und unsichere', async () => {
   reset();
   // t1,t3 -> P2; t2 -> P3; t4 bleibt (P1); t5 -> P2 aber unsicher

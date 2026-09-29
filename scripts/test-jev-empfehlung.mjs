@@ -593,6 +593,15 @@ await pruefe('Kontext: P(langer Kontext) >= 0.5 -> 1m mit spawn_alias opus[1m], 
   assert.equal(e1.spawn_alias, 'opus');
 });
 
+await pruefe('Kontext: sonnet ist nativ 1M (Spawn-Alias sonnet), opus braucht opus[1m]', () => {
+  const je = (alias) => core.JEV_KATALOG.find((k) => k.alias === alias);
+  assert.equal(je('sonnet').einsMAlias, 'sonnet', 'sonnet: nativ 1M, kein [1m] noetig');
+  assert.equal(je('opus').einsMAlias, 'opus[1m]');
+  assert.equal(je('fable').einsMAlias, 'fable');
+  assert.equal(je('haiku').einsMAlias, undefined);
+});
+
+
 // ---------------------------------------------------------------------------
 // 7. wiederverwenden
 // ---------------------------------------------------------------------------

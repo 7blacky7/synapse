@@ -55,6 +55,7 @@ import {
   describeInterval,
   type HeartbeatState,
 } from './heartbeat-state.js'
+import { entscheideAbgeschaltet } from './heartbeat-entscheidung.js'
 
 // ---------------------------------------------------------------------------
 // Configuration from environment
@@ -862,8 +863,21 @@ async function heartbeatPoll() {
   zuletztGesehenLuecken = luecken
 
   if (!heartbeatAktiv) {
-    if (!luecheSeitLetztemTakt) return
-    log('Nachhol-Poll: der Live-Kanal hatte eine nachgewiesene Luecke, obwohl der Heartbeat abgeschaltet ist. Genau EIN Durchgang, der Takt bleibt aus.')
+    // P7-T19 (29.09.2026): abgeschaltet heisst still, nicht taub. Ein wartender Weckruf
+    // (wake / LISTEN hot) wird auch jetzt zugestellt — vorher blieb er hier liegen.
+    // Ist der Agent busy, bleibt der Weckruf in der Queue (naechster Waechter-Takt).
+    // Der Takt wird NICHT wieder eingeschaltet.
+    const entscheidung = entscheideAbgeschaltet({
+      luecke: luecheSeitLetztemTakt,
+      wartendeWakes: pendingNotifyWakes.length,
+      busy: agentBusy,
+    })
+    if (entscheidung.aktion === 'nichts') return
+    if (entscheidung.grund === 'wake') {
+      log('Nachhol-Poll: wartender Weckruf trotz abgeschaltetem Heartbeat. Genau EIN Durchgang, der Takt bleibt aus.')
+    } else {
+      log('Nachhol-Poll: der Live-Kanal hatte eine nachgewiesene Luecke, obwohl der Heartbeat abgeschaltet ist. Genau EIN Durchgang, der Takt bleibt aus.')
+    }
     await nachholPoll()
     return
   }

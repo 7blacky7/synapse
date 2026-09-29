@@ -71,7 +71,7 @@ const ALLE = ['low', 'medium', 'high', 'xhigh', 'max'];
 const WRAPPER = { agent_name: 'sonnet-medium', project: 'p', model: 'sonnet', model_full_id: null, provider: 'anthropic', status: 'idle', busy: false,
   current_task: null, context_ceiling: null, tokens_input: 0, tokens_output: 0, tokens_percent: 0, channels: [], connected_mcp: true,
   last_activity: '2026-09-29T19:00:00.000Z', heartbeat_enabled: true, heartbeat_interval_ms: null, effort: 'medium' };
-const REG = { alias: 'sonnet', full_id: 'claude-sonnet-5-5', provider: 'anthropic', context_window: 200000, output_limit: 128000, env_required: [],
+const REG = { alias: 'sonnet', full_id: 'claude-sonnet-5-5', provider: 'anthropic', context_window: 1000000, output_limit: 128000, env_required: [],
   runtime_binary: 'claude', runtime_path: null, corridor_min: 73, corridor_max: 88, pricing_input_usd_per_mtok: null,
   pricing_output_usd_per_mtok: null, pricing_cache_usd_per_mtok: null, cutoff_date: null, enabled: true, default_effort: 'medium', effort_stufen: ALLE };
 

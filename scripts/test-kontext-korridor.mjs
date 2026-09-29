@@ -169,10 +169,10 @@ await pruefe('Seed im SCHEMA_SQL: Claude-Zeilen der model_registry == STATIC_FAL
   assert.deepEqual(imSeed, imCode);
 });
 
-await pruefe('Registry: 200k ohne [1m], 1M fuer alle [1m]-Aliase und fable/fable-5', () => {
+await pruefe('Registry: 200k ohne [1m], 1M fuer alle [1m]-Aliase, fable/fable-5 und sonnet (nativ)', () => {
   for (const [alias, e] of Object.entries(models.STATIC_FALLBACK)) {
     if (e.provider !== 'anthropic') continue;
-    const soll = alias.endsWith('[1m]') || alias.startsWith('fable') ? 1_000_000 : 200_000;
+    const soll = alias.endsWith('[1m]') || alias.startsWith('fable') || alias === 'sonnet' ? 1_000_000 : 200_000;
     assert.equal(e.contextWindow, soll, alias);
   }
 });

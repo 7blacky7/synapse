@@ -138,6 +138,23 @@ await pruefe('Registry: sonnet-4.6 nur 200k, sonnet-4.6[1m] gibt es nicht (nicht
   assert.equal(models.resolveModel('sonnet-4.6[1m]'), null);
 });
 
+await pruefe('Registry: sonnet (CLI-Alias) ist nativ 1M mit Korridor 80/97, sonnet[1m] gleichwertig, sonnet-5 bleibt 200k', () => {
+  for (const a of ['sonnet', 'sonnet[1m]']) {
+    const e = models.resolveModel(a);
+    assert.equal(e.contextWindow, 1_000_000, `${a}: Kontext`);
+    assert.equal(e.corridorMin, 80, `${a}: corridorMin`);
+    assert.equal(e.corridorMax, 97, `${a}: corridorMax`);
+  }
+  assert.equal(cli('sonnet'), 'sonnet', 'CLI bekommt weiter den reinen Alias');
+  assert.equal(models.resolveModel('sonnet-5').contextWindow, 200_000);
+  assert.equal(models.resolveModel('opus').contextWindow, 200_000, 'opus bleibt 200k bis zur Messung');
+});
+await pruefe('Seed: sonnet im model_registry-Seed mit 1000000 Kontext und 80/97', async () => {
+  const schema = await readFile(new URL('../packages/core/dist/db/schema.js', import.meta.url), 'utf8');
+  assert.match(schema, /\('sonnet',\s+'claude-sonnet-5-5',\s+'anthropic',\s+1000000,[^\n]*\s80, 97,/);
+});
+
+
 // ---------------------------------------------------------------------------
 // TEIL B — resolveCutoff
 // ---------------------------------------------------------------------------

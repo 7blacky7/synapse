@@ -108,12 +108,14 @@ const STANDARD_EFFORT: EffortStufe = 'medium';
 
 /**
  * Claude-Eintrag fuer einen Alias. Kontext = Abo-Kontext der CLI (200k, [1m] = 1M,
- * fable immer 1M), Korridor je Groessenklasse (core services/kontext-korridor.ts),
+ * fable und der Alias sonnet immer 1M), Korridor je Groessenklasse (core services/kontext-korridor.ts),
  * alles andere je Version aus CLAUDE_VERSIONEN.
  */
 function claude(alias: string, fullId: string): ModelEntry {
   const version = CLAUDE_VERSIONEN[fullId];
-  const einsM = alias.endsWith('[1m]') || alias.startsWith('fable');
+  // sonnet (CLI-Alias, Sonnet 5.5) ist nativ 1M (gemessen 29.09.2026: 229-236k ohne [1m], kein
+  // API-Fehler). Versionierte Aliase (sonnet-5, sonnet-4.6) und opus ohne [1m] bleiben 200k.
+  const einsM = alias.endsWith('[1m]') || alias.startsWith('fable') || alias === 'sonnet';
   const korridor = einsM ? KORRIDOR_1M : KORRIDOR_200K;
   return {
     alias, fullId, provider: 'anthropic',

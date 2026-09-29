@@ -65,7 +65,7 @@ const FAMILIE_JE_GRUPPE: Record<KatalogGruppe, JevFamilie> = {
 /** Volle ID -> Synapse-Alias. Nicht genannte IDs behalten ihre ID als Alias (Codex, Gemini). */
 const ZUORDNUNG: Record<string, { alias: string; registryAlias: string; einsMAlias?: string; effortStufen: EffortStufe[] }> = {
   'claude-opus-5-5': { alias: 'opus', registryAlias: 'opus', einsMAlias: 'opus[1m]', effortStufen: ALLE_STUFEN },
-  'claude-sonnet-5-5': { alias: 'sonnet', registryAlias: 'sonnet', einsMAlias: 'sonnet[1m]', effortStufen: ALLE_STUFEN },
+  'claude-sonnet-5-5': { alias: 'sonnet', registryAlias: 'sonnet', einsMAlias: 'sonnet', effortStufen: ALLE_STUFEN }, // sonnet ist nativ 1M (29.09.2026 gemessen)
   // fable: 1M nativ
   'claude-fable-5-1': { alias: 'fable', registryAlias: 'fable', einsMAlias: 'fable', effortStufen: ALLE_STUFEN },
   // haiku: 200k, kein Effort

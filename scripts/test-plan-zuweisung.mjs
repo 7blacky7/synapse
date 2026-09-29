@@ -48,7 +48,7 @@ const reg = (alias, full_id, context_window, effort_stufen) => ({
 });
 const REGISTRY = [
   reg('opus', 'claude-opus-5-5', 200_000, ALLE), reg('opus[1m]', 'claude-opus-5-5', 1_000_000, ALLE),
-  reg('sonnet', 'claude-sonnet-5-5', 200_000, ALLE), reg('sonnet[1m]', 'claude-sonnet-5-5', 1_000_000, ALLE),
+  reg('sonnet', 'claude-sonnet-5-5', 1_000_000, ALLE), reg('sonnet[1m]', 'claude-sonnet-5-5', 1_000_000, ALLE),
   reg('haiku', 'claude-haiku-4-5-20251001', 200_000, []), reg('fable', 'claude-fable-5-1', 1_000_000, ALLE),
 ];
 const ws = (agent_name, model, effort) => ({
@@ -232,7 +232,7 @@ await pruefe('uebernehmen: Profil passt nicht -> Fehler mit Grund, nichts geschr
   reset();
   const r = await core.uebernehmeTask('p', 'P2', 'P2-T1', 'sonnet-medium');
   assert.equal(r.success, false);
-  assert.match(r.message, /empfohlen: opus@high \(1m\), du bist sonnet@medium \(200k\)/);
+  assert.match(r.message, /empfohlen: opus@high \(1m\), du bist sonnet@medium \(1m\)/);
   assert.equal(task_('plan-2', 'b1').zugewiesen_an, undefined);
   const k = await core.uebernehmeTask('p', 'P2', 'P2-T1', 'opus-200k-high');
   assert.equal(k.success, false);
