@@ -234,7 +234,7 @@ export const filesTool: ConsolidatedTool = {
         },
         wait_seconds: {
           type: 'number',
-          description: 'plan_status/shared_plan_status: Long-Poll bis max. 50 s — der Server wartet, bis sich Status/Zielplan/Wait-Stand aendern (Antwort: changed, waited_seconds).',
+          description: 'plan_status/shared_plan_status: Long-Poll bis max. 50 s — der Server wartet, bis sich Status/Zielplan/Wait-Stand aendern (Antwort: changed, waited_seconds). commit: wartet der gemeinsame Plan auf aktive, noch nicht bereite Beitragende (status waiting_for_contributors, kein Fehler), haelt der Server bis max. 50 s und schreibt, sobald alle ready/no_changes sind oder inaktiv werden.',
         },
         files: {
           type: 'array',
@@ -457,7 +457,9 @@ export const filesTool: ConsolidatedTool = {
           : {}),
         message: result.coedit_waits?.length
           ? `Plan ${result.plan_id}: ${result.total_ops} sofortige Op(s), ${result.deferred_ops ?? 0} Op(s) warten reservationsbasiert. Shared Ops wurden nicht geschrieben.`
-          : `Plan ${result.plan_id} angelegt: ${result.total_ops} Op(s) ueber ${result.files_touched.length} Datei(en). commit mit files(action: "commit", plan_id: "${result.plan_id}") oder cancel mit "cancel". Plaene laufen nicht ab — offen bis commit oder cancel.`,
+          : result.merged_into?.length
+            ? `${result.merged_into.map((m) => `${m.ops} Op(s) an deinen offenen Plan ${m.plan_id} angehaengt (ein Plan je Datei)`).join('; ')}. Plan ${result.plan_id}: ${result.total_ops} Op(s) — commit mit files(action: "commit", plan_id: "${result.plan_id}").`
+            : `Plan ${result.plan_id} angelegt: ${result.total_ops} Op(s) ueber ${result.files_touched.length} Datei(en). commit mit files(action: "commit", plan_id: "${result.plan_id}") oder cancel mit "cancel". Plaene laufen nicht ab — offen bis commit oder cancel.`,
       };
     }
     if (action === 'plan_update') {
@@ -504,7 +506,7 @@ export const filesTool: ConsolidatedTool = {
     }
     if (action === 'commit') {
       const planId = reqStr(args, 'plan_id');
-      const result = await commitBatch({ plan_id: planId, agent_id: agentId, agent_note: typeof args.agent_note === 'string' ? args.agent_note : undefined });
+      const result = await commitBatch({ plan_id: planId, agent_id: agentId, agent_note: typeof args.agent_note === 'string' ? args.agent_note : undefined, wait_seconds: num(args, 'wait_seconds') });
       if (result.success) {
         return {
           ...result,

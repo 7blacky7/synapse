@@ -31,7 +31,12 @@ export type EventType =
   | 'ARCH_DECISION'
   | 'TEAM_DISCUSSION'
   | 'ANNOUNCEMENT'
-  | 'PLAN_READY';
+  | 'PLAN_READY'
+  // V1 (29.09.2026): Nachfolge-Events eines gemeinsamen Plans, persistent bis ack.
+  | 'PLAN_COMMITTED'
+  | 'PLAN_CANCELLED'
+  | 'PLAN_CHANGED'
+  | 'PLAN_FOLLOWUP';
 
 export type EventPriority = 'critical' | 'high' | 'normal';
 
@@ -230,7 +235,7 @@ export async function getPendingEvents(
            WHERE w.project = e.project
              AND e.dedupe_key = 'plan-ready:' || w.wait_token::text
              AND w.status IN ('waiting', 'linked')
-             AND w.expires_at > NOW()
+             AND (w.expires_at > NOW() OR EXISTS (SELECT 1 FROM file_batch_plans p WHERE p.id = w.primary_plan_id AND p.status = 'open'))
          )
        )
      ORDER BY
@@ -282,6 +287,25 @@ function summarizePendingEvent(event: AgentEvent): string {
       if (planId) {
         return truncateEventSummary(`Gemeinsamer Plan ${planId} fuer ${fileHint} ist bereit`);
       }
+    } catch {
+      // Kaputtes Payload darf den Antwort-Hook nicht brechen.
+    }
+  }
+
+  // V1: Nachfolge-Events eines gemeinsamen Plans kurz und handlungsleitend.
+  if (event.eventType !== 'PLAN_READY' && event.eventType.startsWith('PLAN_') && event.payload) {
+    try {
+      const payload = JSON.parse(event.payload) as Record<string, unknown>;
+      const planId = String(payload.plan_id ?? '?');
+      const fehlt = Array.isArray(payload.offene_dateien) && payload.offene_dateien.length > 0;
+      const text = event.eventType === 'PLAN_COMMITTED'
+        ? `Plan ${planId} committed${fehlt ? ' — dein Beitrag fehlt: coedit_add' : ''}`
+        : event.eventType === 'PLAN_CANCELLED'
+          ? `Plan ${planId} verworfen — nichts geschrieben, ggf. neu planen`
+          : event.eventType === 'PLAN_CHANGED'
+            ? `Plan ${planId} geaendert: ${String(payload.withdrawn_by ?? '?')} hat zurueckgezogen`
+            : `Plan ${planId} committed, Folgeplan ${String(payload.folgeplan_id ?? '?')} — dort beitragen`;
+      return truncateEventSummary(text);
     } catch {
       // Kaputtes Payload darf den Antwort-Hook nicht brechen.
     }
@@ -345,7 +369,7 @@ export async function getUnackedCount(
            WHERE w.project = e.project
              AND e.dedupe_key = 'plan-ready:' || w.wait_token::text
              AND w.status IN ('waiting', 'linked')
-             AND w.expires_at > NOW()
+             AND (w.expires_at > NOW() OR EXISTS (SELECT 1 FROM file_batch_plans p WHERE p.id = w.primary_plan_id AND p.status = 'open'))
          )
        )`,
     [project, `agent:${agentId}`, agentId]

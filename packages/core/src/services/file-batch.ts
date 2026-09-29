@@ -309,6 +309,8 @@ export interface FileBatchPlanRow {
   }>;
   /** Nur von getBatchPlan gefuellt: aktuelle Cross-Agent-Ueberlappungen (nicht blockierend). */
   overlap_warnings?: CoeditConflictDetail[];
+  /** Nur von getBatchPlan gefuellt (E1): auf wen ein commit gerade warten wuerde. */
+  commit_wartet_auf?: CommitWaitingFor[];
 }
 
 export interface CoeditWaitGroup {
@@ -331,6 +333,10 @@ export interface PlanBatchResult {
   requested_total_ops?: number;
   deferred_ops?: number;
   coedit_waits?: CoeditWaitGroup[];
+  /** V4: Ops, die in einen schon offenen eigenen Plan auf denselben Dateien angehaengt wurden. */
+  merged_into?: Array<{ plan_id: string; ops: number; files: string[] }>;
+  /** V4: Ueberlappung angehaengter Ops mit Ops anderer Agenten (nicht blockierend). */
+  overlap_warnings?: CoeditConflictDetail[];
 }
 
 /** Eine im Trockenlauf gescheiterte Op eines Plans. */
@@ -512,12 +518,28 @@ export type CommitBatchResult =
   | {
       success: false;
       plan_id: string;
-      status: 'open' | 'stale' | 'cancelled' | 'expired' | 'committed' | 'conflict';
+      status: 'open' | 'stale' | 'cancelled' | 'expired' | 'committed' | 'conflict' | 'waiting_for_contributors';
       error: string;
       conflicts?: CommitConflictDetail[] | CoeditConflictDetail[];
       failed_ops?: FailedPlanOp[];
+      /** E1: aktive Beitragende/Wartende, die noch nicht ready sind (der Plan bleibt offen). */
+      waiting_for?: CommitWaitingFor[];
+      /** commit mit wait_seconds: so lange hat der Server gewartet. */
+      waited_seconds?: number;
       message: string;
     };
+
+/** E1: ein aktiver, noch nicht bereiter Beitragender/Wartender, auf den ein commit wartet. */
+export interface CommitWaitingFor {
+  agent_id: string;
+  wait_status: string;
+  /** Letzte echte Tool-Aktivitaet (tool_calls), ISO-UTC. */
+  letzte_aktivitaet: string;
+  /** Ab dann gilt er ohne neue Aktivitaet als inaktiv und blockiert nicht mehr. */
+  inaktiv_ab: string;
+  /** Gemeinsame Dateien, fuer die sein Beitrag bzw. no_changes noch fehlt (sonst seine beigetragenen). */
+  dateien: string[];
+}
 
 /**
  * Datei-Puffer fuer Trockenlauf und commit (28.09.2026, Lasttest-Befund): Zeilen-Ops
@@ -1114,6 +1136,186 @@ function buildCombinedCoeditPreview(
   return { ok: true, buffers, previews };
 }
 
+/**
+ * E1 READY-GATE (Entscheidung 29.09.2026, Variante b): wie viele Minuten echte Tool-Aktivitaet
+ * (tool_calls) einen noch nicht bereiten Beitragenden/Wartenden "aktiv" halten. Env
+ * SYNAPSE_COEDIT_AKTIV_MIN, Default 5, je Aufruf gelesen.
+ */
+function coeditAktivMinuten(): number {
+  const wert = Number(process.env.SYNAPSE_COEDIT_AKTIV_MIN);
+  return Number.isFinite(wert) && wert > 0 ? wert : 5;
+}
+
+/**
+ * E1: Auf wen wartet ein commit dieses Plans? Nur auf Wartende/Beitragende mit an diesen Plan
+ * GEBUNDENEM Wait, die noch nicht ready/no_changes sind UND in den letzten coeditAktivMinuten()
+ * echte Tool-Aktivitaet hatten. Inaktive blockieren nie (ihre schon beigetragenen Ops werden
+ * mitgeschrieben), Owner und Aufrufer selbst auch nicht. Harnesse sind unterschiedlich schnell:
+ * ein langsamer, aber aktiver Agent verliert so seinen Beitrag nicht; ein verschwundener haelt
+ * niemanden auf (Grundidee: keine blinde Barriere).
+ */
+async function readyGateBlockers(
+  queryable: { query: PoolClient['query'] },
+  plan: { id: string; project: string; owner_agent_id: string | null },
+  caller: string | null,
+): Promise<CommitWaitingFor[]> {
+  const offen = await queryable.query<{
+    waiting_agent: string; status: string; shared_files: string[]; contributed_files: string[]; no_change_files: string[];
+  }>(
+    `SELECT waiting_agent, status::text AS status, shared_files, contributed_files, no_change_files
+       FROM file_batch_waits
+      WHERE primary_plan_id = $1::bigint AND waiting_agent IS NOT NULL
+        AND status NOT IN ('ready', 'no_changes', 'closed')
+        AND waiting_agent IS DISTINCT FROM $2 AND waiting_agent IS DISTINCT FROM $3
+      ORDER BY waiting_agent`,
+    [plan.id, plan.owner_agent_id, caller],
+  );
+  if (offen.rows.length === 0) return [];
+  const minuten = coeditAktivMinuten();
+  const aktiv = await queryable.query<{ agent_id: string; ts: Date | string }>(
+    `SELECT agent_id, MAX(ts) AS ts
+       FROM tool_calls
+      WHERE agent_id = ANY($1::text[]) AND (project = $2 OR project IS NULL)
+        AND ts > NOW() - make_interval(secs => $3::double precision)
+      GROUP BY agent_id`,
+    [uniqueStrings(offen.rows.map((wait) => wait.waiting_agent)), plan.project, minuten * 60],
+  );
+  const letzte = new Map(aktiv.rows.map((row) => [row.agent_id, new Date(row.ts)] as const));
+  const proAgent = new Map<string, CommitWaitingFor>();
+  for (const wait of offen.rows) {
+    const ts = letzte.get(wait.waiting_agent);
+    if (!ts) continue;
+    const erledigt = new Set([...wait.contributed_files, ...wait.no_change_files]);
+    const fehlend = wait.shared_files.filter((filePath) => !erledigt.has(filePath));
+    const eintrag = proAgent.get(wait.waiting_agent) ?? {
+      agent_id: wait.waiting_agent,
+      wait_status: wait.status,
+      letzte_aktivitaet: ts.toISOString(),
+      inaktiv_ab: new Date(ts.getTime() + minuten * 60000).toISOString(),
+      dateien: [],
+    };
+    if (wait.status === 'waiting') eintrag.wait_status = 'waiting';
+    eintrag.dateien = uniqueStrings([...eintrag.dateien, ...(fehlend.length > 0 ? fehlend : wait.contributed_files)]);
+    proAgent.set(wait.waiting_agent, eintrag);
+  }
+  return [...proAgent.values()];
+}
+
+function waitingForContributorsResult(planId: string, blockers: CommitWaitingFor[]): CommitBatchResult {
+  const wer = blockers.map((b) => `${b.agent_id} (${b.wait_status}: ${b.dateien.join(', ')})`).join('; ');
+  return {
+    success: false,
+    plan_id: planId,
+    status: 'waiting_for_contributors',
+    error: 'waiting_for_contributors',
+    waiting_for: blockers,
+    message:
+      `Kein Fehler, nichts geschrieben, Plan ${planId} bleibt offen: ${blockers.length} aktive(r) Beitragende(r) noch nicht ready — ${wer}. ` +
+      'Laut Tool-Aktivitaet arbeiten sie noch daran; ihr Beitrag soll nicht verloren gehen. ' +
+      `Warten ohne Schleife: files(action:"commit", plan_id:"${planId}", wait_seconds:50) schreibt, sobald alle ready/no_changes ` +
+      `melden oder ${coeditAktivMinuten()} Min ohne Tool-Aktivitaet sind (inaktiv_ab). Inzwischen an anderen Dateien weiterarbeiten.`,
+  };
+}
+
+type PlanFolgeEventTyp = 'PLAN_COMMITTED' | 'PLAN_CANCELLED' | 'PLAN_CHANGED' | 'PLAN_FOLLOWUP';
+
+/**
+ * V1 (Entscheidung 29.09.2026): Bei commit, cancel, Rueckzug und Folgeplan bekommt JEDER
+ * betroffene Beitragende/Wartende ein persistentes Event, das in pending_events steht, bis er es
+ * quittiert — statt PLAN_READY still zu quittieren (vorher erfuhr ein Wartender vom commit erst,
+ * wenn er selbst nachfragte). Erledigte PLAN_READY werden nur fuer quittiereFuer quittiert: die,
+ * die im selben Zug ihr Nachfolge-Event bekommen, und den Ausloeser selbst.
+ */
+async function emitPlanFolgeEvents(
+  client: PoolClient,
+  args: {
+    project: string;
+    planId: string;
+    typ: PlanFolgeEventTyp;
+    actor: string | null;
+    empfaenger: Array<{ agent: string; payload: Record<string, unknown> }>;
+    dedupe?: string;
+    grund: string;
+    quittiereFuer: string[];
+  },
+): Promise<void> {
+  const gesehen = new Set<string>();
+  for (const { agent, payload } of args.empfaenger) {
+    if (!agent || agent === args.actor || gesehen.has(agent)) continue;
+    gesehen.add(agent);
+    await emitEventOnce({
+      project: args.project,
+      eventType: args.typ,
+      priority: 'normal',
+      scope: `agent:${agent}`,
+      sourceId: args.actor ?? 'synapse',
+      payload: JSON.stringify({ plan_id: args.planId, ...payload }),
+      requiresAck: true,
+      dedupeKey: `${args.typ.toLowerCase()}:${args.planId}${args.dedupe ? `:${args.dedupe}` : ''}`,
+    }, client);
+  }
+  const quittieren = uniqueStrings(args.quittiereFuer.filter(Boolean));
+  if (quittieren.length > 0) await resolvePlanReadyEvents(client, args.project, args.planId, args.grund, quittieren);
+}
+
+/**
+ * V1: Wer ist von einem Plan betroffen? Gebundene Waits (nicht closed), ungebundene wartende
+ * Waits auf den Owner fuer diese Dateien (sie haetten ihn als Ziel), Op-Autoren und der Owner.
+ */
+async function planBeteiligte(
+  client: PoolClient,
+  plan: { id: string; project: string; owner_agent_id: string | null; ops: FileBatchOp[]; expected_hashes: Record<string, string> },
+): Promise<{ waits: CoeditWaitRow[]; autoren: string[] }> {
+  const waits = await client.query<CoeditWaitRow>(
+    `${COEDIT_WAIT_SELECT}
+      WHERE project = $1 AND waiting_agent IS NOT NULL AND status <> 'closed'
+        AND (primary_plan_id = $2::bigint
+          OR ($3::text IS NOT NULL AND primary_plan_id IS NULL AND primary_agent = $3
+              AND status = 'waiting' AND shared_files && $4::text[]))
+      ORDER BY waiting_agent, wait_token`,
+    [plan.project, plan.id, plan.owner_agent_id, Object.keys(plan.expected_hashes ?? {})],
+  );
+  const autoren = uniqueStrings([
+    plan.owner_agent_id ?? '',
+    ...(Array.isArray(plan.ops) ? plan.ops : []).map((op) => op.agent_id ?? plan.owner_agent_id ?? ''),
+  ].filter(Boolean));
+  return { waits: waits.rows, autoren };
+}
+
+/** V1: PLAN_COMMITTED an alle Betroffenen ausser dem Committer, mit ihrem fehlenden Anteil. */
+async function notifyPlanCommitted(
+  client: PoolClient,
+  plan: { id: string; project: string; owner_agent_id: string | null; ops: FileBatchOp[]; expected_hashes: Record<string, string> },
+  caller: string | null,
+): Promise<void> {
+  const { waits, autoren } = await planBeteiligte(client, plan);
+  const fehlt = new Map<string, string[]>(autoren.map((agent) => [agent, []] as const));
+  for (const wait of waits) {
+    const agent = wait.waiting_agent as string;
+    const offen = wait.status === 'ready' || wait.status === 'no_changes' ? [] : remainingWaitFiles(wait);
+    fehlt.set(agent, uniqueStrings([...(fehlt.get(agent) ?? []), ...offen]));
+  }
+  const dateien = Object.keys(plan.expected_hashes ?? {});
+  const empfaenger = [...fehlt].filter(([agent]) => agent !== caller).map(([agent, offen]) => ({
+    agent,
+    payload: {
+      batch_id: plan.id,
+      committed_by: caller,
+      dateien,
+      ...(offen.length > 0
+        ? {
+            offene_dateien: offen,
+            hinweis: `Dein Beitrag zu ${offen.join(', ')} ist NICHT in diesem commit. coedit_add mit plan_id ${plan.id} legt ihn in einen Folgeplan auf den aktuellen Stand (Zeilen werden umgerechnet) — oder neu planen.`,
+          }
+        : { hinweis: `Plan ${plan.id} ist geschrieben; restore_batch mit batch_id ${plan.id} rollt ihn zurueck.` }),
+    },
+  }));
+  await emitPlanFolgeEvents(client, {
+    project: plan.project, planId: plan.id, typ: 'PLAN_COMMITTED', actor: caller, empfaenger,
+    grund: `Plan ${plan.id} committed`, quittiereFuer: [...empfaenger.map((eintrag) => eintrag.agent), caller ?? ''],
+  });
+}
+
 async function commitCoeditBatch(args: {
   plan_id: string;
   agent_id?: string;
@@ -1169,12 +1371,34 @@ async function commitCoeditBatch(args: {
         FOR UPDATE`,
       [args.plan_id],
     );
-    // KEIN READY-GATE (28.09.2026): commit schreibt, was JETZT im Plan steht. Waits, die
-    // noch nicht ready/no_changes sind oder noch gar nicht beigetreten sind, blockieren
-    // nicht; ihre schon beigetragenen Ops werden mitgeschrieben. Wer spaeter beitraegt,
-    // landet per coedit_add automatisch in einem Folgeplan (addCoeditContribution).
-    // Die Plan-Zeile ist bis COMMIT gesperrt: ein gleichzeitiges coedit_add wartet und
-    // sieht danach 'committed' — nichts geht verloren, nichts wird doppelt geschrieben.
+    // E1 READY-GATE (Entscheidung 29.09.2026, Variante b — sichtbar, ohne tote Blocker): commit
+    // wartet nur auf gebundene Wartende/Beitragende, die noch nicht ready/no_changes sind UND in
+    // den letzten SYNAPSE_COEDIT_AKTIV_MIN Minuten echte Tool-Aktivitaet hatten (readyGateBlockers).
+    // Inaktive blockieren nie, ihre schon beigetragenen Ops werden mitgeschrieben. Blockiert ist
+    // kein Endzustand: Antwort waiting_for_contributors, Plan bleibt offen (commit mit wait_seconds
+    // wartet serverseitig). Wer committet, ist mit seinem eigenen Beitrag fertig: seine Waits gelten
+    // als ready — sonst blockierten sich zwei aktive Beitragende, die beide committen, gegenseitig.
+    // Spaetere Beitraege landen wie bisher per coedit_add in einem Folgeplan. Die Plan-Zeile ist bis
+    // COMMIT gesperrt: ein gleichzeitiges coedit_add wartet und sieht danach den neuen Stand.
+    const commitCaller = resolveAgentId(args.agent_id);
+    let eigeneFertig = false;
+    for (const wait of linkedWaits.rows) {
+      if (!commitCaller || wait.waiting_agent !== commitCaller) continue;
+      if (wait.status === 'ready' || wait.status === 'no_changes' || wait.status === 'closed') continue;
+      const status: CoeditWaitStatus = wait.contributed_files.length === 0 ? 'no_changes' : 'ready';
+      await client.query(
+        `UPDATE file_batch_waits SET status = $2, ready_at = NOW(), updated_at = NOW() WHERE wait_token = $1::uuid`,
+        [wait.wait_token, status],
+      );
+      wait.status = status;
+      eigeneFertig = true;
+    }
+    const blockers = await readyGateBlockers(client, plan, commitCaller);
+    if (blockers.length > 0) {
+      await client.query('COMMIT');
+      if (eigeneFertig) notifyPlanChange();
+      return waitingForContributorsResult(args.plan_id, blockers);
+    }
     const unfinishedWaits = linkedWaits.rows.filter(
       (wait) => wait.status !== 'ready' && wait.status !== 'no_changes' && wait.status !== 'closed'
         && wait.waiting_agent !== plan.owner_agent_id,
@@ -1392,7 +1616,7 @@ async function commitCoeditBatch(args: {
     // aber NICHT den Traeger eines Agenten, der noch in einem anderen offenen Plan wartet
     // (Befund 875d6a8c: ein Traeger kann Waits auf mehrere Plaene haben).
     await closeOrphanCarriers(client, plan.project, `commit von Plan ${args.plan_id}`);
-    await resolvePlanReadyEvents(client, plan.project, args.plan_id, `Plan ${args.plan_id} committed`);
+    await notifyPlanCommitted(client, plan, commitCaller);
     await client.query('COMMIT'); notifyPlanChange();
 
     for (const file of writtenFiles) {
@@ -1408,7 +1632,7 @@ async function commitCoeditBatch(args: {
       ...(releasedReservations.length > 0 ? { released_reservations: releasedReservations } : {}),
       ...(unfinishedWaits > 0
         ? {
-            coedit_note: `${unfinishedWaits} Wait(s) waren noch nicht ready — kein Blocker: ihre schon beigetragenen Ops sind mitgeschrieben. ` +
+            coedit_note: `${unfinishedWaits} Wait(s) waren noch nicht ready, aber seit ueber ${coeditAktivMinuten()} Min ohne Tool-Aktivitaet — kein Blocker: ihre schon beigetragenen Ops sind mitgeschrieben, sie sind per PLAN_COMMITTED informiert. ` +
               'Spaetere Beitraege landen per coedit_add automatisch in einem Folgeplan.',
           }
         : {}),
@@ -1463,6 +1687,8 @@ async function findJoinableSharedPlans(
   project: string,
   callerAgentId: string | null | undefined,
   filePaths: string[],
+  /** V4: auch offene Plaene des Aufrufers selbst (dort wird angehaengt statt ein Zweitplan gebaut). */
+  mitEigenen = false,
 ): Promise<JoinableSharedPlanRow[]> {
   if (filePaths.length === 0) return [];
   const { rows } = await queryable.query<JoinableSharedPlanRow>(
@@ -1470,8 +1696,9 @@ async function findJoinableSharedPlans(
             f.file_path, p.id::text AS plan_id, p.owner_agent_id, p.created_at
        FROM unnest($3::text[]) AS f(file_path)
        JOIN file_batch_plans p
-         ON p.project = $1 AND p.status = 'open' AND p.open_for_coedit = true
-        AND p.owner_agent_id IS NOT NULL AND p.owner_agent_id IS DISTINCT FROM $2
+         ON p.project = $1 AND p.status = 'open' AND p.owner_agent_id IS NOT NULL
+        AND ((p.open_for_coedit = true AND p.owner_agent_id IS DISTINCT FROM $2)
+          OR ($5::boolean AND p.owner_agent_id = $2))
         AND p.expected_hashes ? f.file_path
         AND jsonb_array_length(p.ops) > 0
         AND NOT (p.previews @> '[{"ok": false}]'::jsonb)
@@ -1484,7 +1711,7 @@ async function findJoinableSharedPlans(
            ), $4)
         )
       ORDER BY f.file_path, p.created_at, p.id`,
-    [project, callerAgentId ?? null, filePaths, EMPTY_CONTENT_HASH],
+    [project, callerAgentId ?? null, filePaths, EMPTY_CONTENT_HASH, mitEigenen],
   );
   return rows;
 }
@@ -1542,6 +1769,8 @@ export async function planBatch(args: {
   persist_failed?: boolean;
   /** Intern: Zaehler fuer das Neu-Planen nach Drift unter der Datei-Sperre. */
   _replan_attempt?: number;
+  /** Intern (V4): Zaehler fuer das Neu-Planen, wenn der Ziel-Plan zum Anhaengen gerade gesperrt ist. */
+  _merge_attempt?: number;
 }): Promise<PlanBatchResult> {
   if (!args.ops || args.ops.length === 0) {
     throw new Error('ops[] darf nicht leer sein');
@@ -1672,26 +1901,26 @@ export async function planBatch(args: {
       clientReleased = true;
       return planBatch({ ...args, _replan_attempt: (args._replan_attempt ?? 0) + 1 });
     }
-    const reservationRows = await findForeignActiveReservationPrimaries({
+    // V4 (29.09.2026): Ein offener Plan auf einer Datei ist ihr EINZIGES Ziel — auch wenn ein
+    // anderer die Datei reserviert hat (ohne dort zu planen), und auch fuer den Owner selbst. Pro
+    // Pfad der aelteste offene Plan (eigener oder fremder); nur Pfade ohne offenen Plan laufen
+    // ueber die Reservierungs-Waits wie bisher. Vorher ging die fremde Reservierung vor: der
+    // Wartende bekam kein Ziel, solange der Reservierende nicht plante, obwohl schon ein Plan offen war.
+    const joinableRows = await findJoinableSharedPlans(client, args.project, ownerAgentId, plannedPaths, true);
+    const eigeneRows = joinableRows.filter((row) => ownerAgentId && row.owner_agent_id === ownerAgentId);
+    const fremdeRows = joinableRows.filter((row) => !ownerAgentId || row.owner_agent_id !== ownerAgentId);
+    const offenePlanPfade = new Set(joinableRows.map((row) => row.file_path));
+    const reservationRows = (await findForeignActiveReservationPrimaries({
       project: args.project,
       callerAgentId: ownerAgentId,
       filePaths: plannedPaths,
-    }, client);
+    }, client)).filter((row) => !offenePlanPfade.has(row.file_path));
 
-    // Gemeinsamer Plan (28.09.2026): Liegt auf einem Pfad OHNE fremde aktive
-    // Reservierung ein offener, co-edit-offener Plan eines anderen Agenten, wird der
-    // Aufrufer per Wait + PLAN_READY in diesen Plan gefuehrt (coedit_add) statt einen
-    // Parallelplan zu bekommen. So bleibt der gemeinsame Plan samt Beitraegen auch dann
-    // erreichbar, wenn sein Owner verschwunden und die Reservierung abgelaufen ist.
-    const reservedPaths = new Set(reservationRows.map((row) => row.file_path));
-    const joinableRows = await findJoinableSharedPlans(
-      client,
-      args.project,
-      ownerAgentId,
-      plannedPaths.filter((filePath) => !reservedPaths.has(filePath)),
-    );
-    const sharedPlanByPath = new Map(joinableRows.map((row) => [row.file_path, row.plan_id] as const));
-    const planPrimaryRows: ForeignActiveReservationPrimary[] = joinableRows.map((row) => ({
+    // Gemeinsamer Plan (28.09.2026): Liegt auf einem Pfad ein offener, co-edit-offener Plan eines
+    // anderen Agenten, wird der Aufrufer per Wait + PLAN_READY in diesen Plan gefuehrt (coedit_add)
+    // statt einen Parallelplan zu bekommen — auch wenn dessen Owner verschwunden ist.
+    const sharedPlanByPath = new Map(fremdeRows.map((row) => [row.file_path, row.plan_id] as const));
+    const planPrimaryRows: ForeignActiveReservationPrimary[] = fremdeRows.map((row) => ({
       file_path: row.file_path,
       reserved_by: row.owner_agent_id,
       reserved_since: asIso(row.created_at),
@@ -1701,9 +1930,27 @@ export async function planBatch(args: {
       [...reservationRows, ...planPrimaryRows].map((row) => [row.file_path, row] as const),
     );
     const sharedPaths = new Set(primaryByPath.keys());
+    // V4: Ops auf Dateien eines offenen EIGENEN Plans werden dort angehaengt, statt einen zweiten
+    // Plan auf denselben Dateien zu bauen (transitiv ueber move/copy). Ops, die auch eine fremd
+    // koordinierte Datei beruehren, bleiben im Wait (fremder Vorrang wie bisher).
+    const mergeZiel = new Map<number, string>();
+    const zielByPath = new Map(eigeneRows.map((row) => [row.file_path, row.plan_id] as const));
+    for (let gewachsen = zielByPath.size > 0; gewachsen;) {
+      gewachsen = false;
+      args.ops.forEach((op, index) => {
+        if (mergeZiel.has(index)) return;
+        const pfade = touchedPaths(op);
+        if (pfade.some((filePath) => sharedPaths.has(filePath))) return;
+        const ziel = pfade.map((filePath) => zielByPath.get(filePath)).find((id): id is string => Boolean(id));
+        if (!ziel) return;
+        mergeZiel.set(index, ziel);
+        gewachsen = true;
+        for (const filePath of pfade) if (!zielByPath.has(filePath)) zielByPath.set(filePath, ziel);
+      });
+    }
     const immediateEntries = args.ops
       .map((op, originalIndex) => ({ op, originalIndex }))
-      .filter(({ op }) => touchedPaths(op).every((filePath) => !sharedPaths.has(filePath)));
+      .filter(({ op, originalIndex }) => !mergeZiel.has(originalIndex) && touchedPaths(op).every((filePath) => !sharedPaths.has(filePath)));
     const immediateOps = immediateEntries.map(({ op }) => op);
     const immediatePreviews = immediateEntries.map(({ originalIndex }, index) => ({
       ...previews[originalIndex],
@@ -1714,10 +1961,110 @@ export async function planBatch(args: {
       [...immediateFiles].map((filePath) => [filePath, expectedHashes[filePath]]),
     );
 
-    const planOps = sharedPaths.size === 0 ? args.ops : immediateOps;
-    const planPreviews = sharedPaths.size === 0 ? previews : immediatePreviews;
-    const planExpectedHashes = sharedPaths.size === 0 ? expectedHashes : immediateExpectedHashes;
-    const planFiles = sharedPaths.size === 0 ? plannedPaths : [...immediateFiles];
+    const geteilt = sharedPaths.size > 0 || mergeZiel.size > 0;
+    const planOps = geteilt ? immediateOps : args.ops;
+    const planPreviews = geteilt ? immediatePreviews : previews;
+    const planExpectedHashes = geteilt ? immediateExpectedHashes : expectedHashes;
+    const planFiles = geteilt ? [...immediateFiles] : plannedPaths;
+
+    // V4: Anhaengen an den eigenen offenen Plan nach RAM-Probe (gemeinsamer Trockenlauf mit dessen
+    // Ops auf den beruehrten Dateien). Die Plan-Zeile wird mit NOWAIT gesperrt: commit sperrt erst
+    // die Plan-Zeile, dann die Dateien — hier ist es umgekehrt, also nicht warten, sondern nach
+    // kurzer Pause neu planen (danach ist der Plan committed und kein Ziel mehr, oder wieder frei).
+    const zusammengefuehrt: Array<{
+      plan_id: string; ops: number; files: string[]; total_ops: number; expected: Record<string, string>; previews: OpPreview[];
+    }> = [];
+    const mergeOverlaps: CoeditConflictDetail[] = [];
+    const nachZiel = new Map<string, FileBatchOp[]>();
+    for (const index of [...mergeZiel.keys()].sort((left, right) => left - right)) {
+      const ziel = mergeZiel.get(index) as string;
+      nachZiel.set(ziel, [...(nachZiel.get(ziel) ?? []), args.ops[index]]);
+    }
+    const nochmalPlanen = async (zielId: string): Promise<PlanBatchResult> => {
+      await client.query('ROLLBACK');
+      client.release();
+      clientReleased = true;
+      const versuch = (args._merge_attempt ?? 0) + 1;
+      if (versuch > 50) throw new Error(`Plan ${zielId} ist dauerhaft gesperrt (commit laeuft?) — bitte erneut planen.`);
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      return planBatch({ ...args, _merge_attempt: versuch });
+    };
+    for (const [zielId, zielOps] of nachZiel) {
+      let gesperrt;
+      try {
+        gesperrt = await client.query<FileBatchPlanRow>(
+          `SELECT id::text AS id, project, owner_agent_id, ops, expected_hashes, previews, status, open_for_coedit,
+                  notify_channel, reason, expires_at::text AS expires_at, created_at::text AS created_at,
+                  committed_at::text AS committed_at
+             FROM file_batch_plans WHERE id = $1::bigint FOR UPDATE NOWAIT`,
+          [zielId],
+        );
+      } catch (error) {
+        if ((error as { code?: string }).code !== '55P03') throw error;
+        return nochmalPlanen(zielId);
+      }
+      const ziel = gesperrt.rows[0];
+      if (!ziel || ziel.status !== 'open') return nochmalPlanen(zielId);
+      const neueOps = zielOps.map((op) => ({ ...withoutCoeditMetadata(op), ...(ownerAgentId ? { agent_id: ownerAgentId } : {}) }));
+      const zielHashes = { ...ziel.expected_hashes };
+      const pruefDateien = verbundeneDateien(neueOps.flatMap(touchedPaths), [...ziel.ops, ...neueOps]);
+      const baselines = new Map<string, string>();
+      for (const filePath of pruefDateien) {
+        const content = (await getFileContentFromPg(args.project, filePath)) ?? '';
+        baselines.set(filePath, content);
+        if (!(filePath in zielHashes)) zielHashes[filePath] = contentHash(content);
+      }
+      const pruefIdx = ziel.ops
+        .map((op, index) => ({ op, index }))
+        .filter(({ op }) => touchedPaths(op).some((filePath) => pruefDateien.has(filePath)))
+        .map(({ index }) => index);
+      const teilOps = [...pruefIdx.map((index) => ziel.ops[index]), ...neueOps];
+      const probe = buildCombinedCoeditPreview(
+        { ...ziel, ops: teilOps, expected_hashes: Object.fromEntries([...pruefDateien].map((filePath) => [filePath, zielHashes[filePath]])) },
+        baselines,
+      );
+      if (!probe.ok) {
+        throw new Error(
+          `Deine Ops liegen auf Dateien deines offenen Plans ${ziel.id} und werden dort angehaengt (ein Plan je Datei), ` +
+          `sind aber zusammen mit ihm nicht anwendbar: ${probe.conflict.message} — nichts geplant, nichts geaendert. ` +
+          `Ops anpassen oder den Plan selbst aendern: files(action:"plan_update", plan_id:"${ziel.id}", op_index, ops).`,
+        );
+      }
+      mergeOverlaps.push(...detectCrossAgentConflicts(teilOps, baselines)
+        .filter((conflict) => conflict.left_op_index >= pruefIdx.length || conflict.right_op_index >= pruefIdx.length));
+      const alleOps = [...ziel.ops, ...neueOps];
+      const vorschau = [
+        ...(Array.isArray(ziel.previews) ? ziel.previews : []),
+        ...probe.previews.slice(pruefIdx.length).map((preview, index) => ({ ...preview, index: ziel.ops.length + index })),
+      ];
+      await client.query(
+        `UPDATE file_batch_plans SET ops = $2::jsonb, expected_hashes = $3::jsonb, previews = $4::jsonb WHERE id = $1::bigint`,
+        [ziel.id, JSON.stringify(alleOps), JSON.stringify(zielHashes), JSON.stringify(vorschau)],
+      );
+      await emitPlanReadyForExistingWaits(client, {
+        id: ziel.id, project: args.project, owner_agent_id: ziel.owner_agent_id,
+        expected_hashes: zielHashes, open_for_coedit: ziel.open_for_coedit,
+      });
+      zusammengefuehrt.push({
+        plan_id: ziel.id, ops: neueOps.length, files: uniqueStrings(neueOps.flatMap(touchedPaths)),
+        total_ops: alleOps.length, expected: zielHashes, previews: vorschau,
+      });
+    }
+    const mergedInto = zusammengefuehrt.map(({ plan_id, ops, files }) => ({ plan_id, ops, files }));
+    if (zusammengefuehrt.length > 0 && immediateOps.length === 0 && sharedPaths.size === 0) {
+      // Alles angehaengt: kein neuer Plan, die Antwort nennt den (ersten) Ziel-Plan.
+      await client.query('COMMIT'); notifyPlanChange();
+      const erster = zusammengefuehrt[0];
+      return {
+        plan_id: erster.plan_id,
+        total_ops: erster.total_ops,
+        files_touched: Object.keys(erster.expected),
+        expected_hashes: erster.expected,
+        previews: erster.previews,
+        merged_into: mergedInto,
+        ...(mergeOverlaps.length > 0 ? { overlap_warnings: mergeOverlaps } : {}),
+      };
+    }
 
     const storedPlanOps = planOps.map((op) => ({
       ...withoutCoeditMetadata(op),
@@ -1844,6 +2191,8 @@ export async function planBatch(args: {
       files_touched: planFiles,
       expected_hashes: planExpectedHashes,
       previews: planPreviews,
+      ...(mergedInto.length > 0 ? { merged_into: mergedInto } : {}),
+      ...(mergeOverlaps.length > 0 ? { overlap_warnings: mergeOverlaps } : {}),
     };
     // Abnahmekriterium: Ohne Overlap exakt die bisherige Response-Form.
     if (sharedPaths.size === 0) return result;
@@ -2010,7 +2359,8 @@ function planFullyCoversWait(plan: PlanReadyPlan, wait: PlanReadyWait): boolean 
  */
 function zielPlanFuerWait<T extends PlanReadyPlan>(plans: T[], wait: PlanReadyWait): T | null {
   const covering = plans.filter((plan) => planFullyCoversWait(plan, wait));
-  if (covering.length > 0) return covering.length === 1 ? covering[0] : null;
+  // V4: decken mehrere ab, der aelteste (Eingabe nach created_at sortiert) — immer genau ein Ziel.
+  if (covering.length > 0) return covering[0];
   const mitOps = plans.filter((plan) => (plan.op_count ?? 0) > 0);
   return mitOps.length === 1 ? mitOps[0] : null;
 }
@@ -2093,18 +2443,245 @@ async function emitPlanReadyForExactlyOneExistingPlan(
 }
 
 /**
+ * Zeilen-Zuordnung alt -> neu per Myers-Diff (V2, 29.09.2026). Ergebnis[i] (1-basiert) ist die
+ * Zeile im neuen Stand, die unveraendert der alten Zeile i entspricht, 0 = geaendert/entfernt.
+ * null, wenn mehr als maxD Zeilen-Aenderungen zwischen beiden Staenden liegen (dann rechnet
+ * niemand um, der Aufrufer lehnt ab — lieber ablehnen als eine falsche Zeile treffen).
+ */
+function zeilenZuordnung(alt: string[], neu: string[], maxD = 2000): Int32Array | null {
+  const n = alt.length;
+  const m = neu.length;
+  const map = new Int32Array(n + 1);
+  let pre = 0;
+  while (pre < n && pre < m && alt[pre] === neu[pre]) { map[pre + 1] = pre + 1; pre++; }
+  let suf = 0;
+  while (suf < n - pre && suf < m - pre && alt[n - 1 - suf] === neu[m - 1 - suf]) { map[n - suf] = m - suf; suf++; }
+  const a = alt.slice(pre, n - suf);
+  const b = neu.slice(pre, m - suf);
+  const N = a.length;
+  const M = b.length;
+  if (N === 0 || M === 0) return map;
+  const lim = Math.min(N + M, maxD);
+  const off = lim + 1;
+  const v = new Int32Array(2 * lim + 3);
+  const trace: Int32Array[] = [];
+  let gefunden = -1;
+  suche: for (let d = 0; d <= lim; d++) {
+    // Stand VOR Schritt d, k in [-d-1, d+1] -> Index k + d + 1
+    trace.push(v.slice(off - d - 1, off + d + 2));
+    for (let k = -d; k <= d; k += 2) {
+      let x = k === -d || (k !== d && v[k - 1 + off] < v[k + 1 + off]) ? v[k + 1 + off] : v[k - 1 + off] + 1;
+      let y = x - k;
+      while (x < N && y < M && a[x] === b[y]) { x++; y++; }
+      v[k + off] = x;
+      if (x >= N && y >= M) { gefunden = d; break suche; }
+    }
+  }
+  if (gefunden < 0) return null;
+  let x = N;
+  let y = M;
+  for (let d = gefunden; d > 0; d--) {
+    const vd = trace[d];
+    const get = (k: number) => vd[k + d + 1];
+    const k = x - y;
+    const runter = k === -d || (k !== d && get(k - 1) < get(k + 1));
+    const prevK = runter ? k + 1 : k - 1;
+    const prevX = get(prevK);
+    const startX = runter ? prevX : prevX + 1;
+    const startY = startX - k;
+    while (x > startX && y > startY) { map[pre + x] = pre + y; x--; y--; }
+    x = prevX;
+    y = prevX - prevK;
+  }
+  while (x > 0 && y > 0) { map[pre + x] = pre + y; x--; y--; }
+  return map;
+}
+
+/** Ungefaehre Position einer (evtl. geaenderten) alten Zeile im neuen Stand — fuer den Ausschnitt. */
+function ungefaehreZeile(map: Int32Array | null, zeile: number): number {
+  if (!map) return zeile;
+  for (let i = Math.min(zeile, map.length - 1); i >= 1; i--) if (map[i]) return map[i] + (zeile - i);
+  return zeile;
+}
+
+interface AbgelehnteSpaeteOp {
+  index: number;
+  file_path: string;
+  action: FileBatchOpAction;
+  zeilen: string;
+  grund: string;
+  aktueller_stand: { file_path: string; ab_zeile: number; zeilen: string[] };
+}
+
+/**
+ * V2: Zeilen-Ops eines spaeten Beitrags beziehen sich auf die Basis des committeten Plans
+ * (expected_hashes, Inhalt aus file_versions dieses Batches). Umgerechnet wird per Zeilendiff
+ * Basis -> aktueller Stand; jede Zielzeile muss unveraendert wiederzufinden sein, sonst wird
+ * die Op abgelehnt (mit Ausschnitt des aktuellen Stands). Dateien, die der Plan nicht enthielt
+ * oder deren Stand gleich der Basis ist, bleiben unberuehrt.
+ */
+async function spaeteZeilenOpsUmrechnen(
+  project: string,
+  planId: string,
+  ops: FileBatchOp[],
+): Promise<{ ok: true; ops: FileBatchOp[]; verschoben: number } | { ok: false; abgelehnt: AbgelehnteSpaeteOp[] }> {
+  const zeilenAktionen = new Set<FileBatchOpAction>(['replace_lines', 'insert_after', 'delete_lines']);
+  const dateien = uniqueStrings(ops.filter((op) => zeilenAktionen.has(op.action)).map((op) => op.file_path));
+  if (dateien.length === 0) return { ok: true, ops, verschoben: 0 };
+  const pool = getPool();
+  const basisHashes = (await pool.query<{ expected_hashes: Record<string, string> }>(
+    `SELECT expected_hashes FROM file_batch_plans WHERE id = $1::bigint AND project = $2`,
+    [planId, project],
+  )).rows[0]?.expected_hashes ?? {};
+  const zuordnung = new Map<string, { map: Int32Array | null; aktuell: string[]; grund?: string }>();
+  for (const filePath of dateien) {
+    const basisHash = basisHashes[filePath];
+    if (!basisHash) continue;
+    const aktuellText = (await getFileContentFromPg(project, filePath)) ?? '';
+    if (contentHash(aktuellText) === basisHash) continue;
+    const aktuell = aktuellText.split('\n');
+    let basisText: string | null = basisHash === EMPTY_CONTENT_HASH ? '' : null;
+    if (basisText === null) {
+      basisText = (await pool.query<{ content: string }>(
+        `SELECT content FROM file_versions
+          WHERE project = $1 AND batch_id = $2::bigint AND file_path = $3 AND content_hash = $4
+          LIMIT 1`,
+        [project, planId, filePath, basisHash],
+      )).rows[0]?.content ?? null;
+    }
+    if (basisText === null) {
+      zuordnung.set(filePath, { map: null, aktuell, grund: 'der Stand vor dem commit ist nicht mehr lesbar (file_versions)' });
+      continue;
+    }
+    const map = zeilenZuordnung(basisText.split('\n'), aktuell);
+    zuordnung.set(filePath, map
+      ? { map, aktuell }
+      : { map: null, aktuell, grund: 'seit dem Stand vor dem commit hat sich zu viel geaendert, um Zeilen sicher umzurechnen' });
+  }
+
+  const abgelehnt: AbgelehnteSpaeteOp[] = [];
+  let verschoben = 0;
+  const neu = ops.map((op, index) => {
+    if (!zeilenAktionen.has(op.action)) return op;
+    const z = zuordnung.get(op.file_path);
+    if (!z) return op;
+    const lehneAb = (grund: string, basisZeile: number): FileBatchOp => {
+      const ab = Math.max(1, ungefaehreZeile(z.map, basisZeile) - 3);
+      abgelehnt.push({
+        index,
+        file_path: op.file_path,
+        action: op.action,
+        zeilen: op.action === 'insert_after' ? `nach ${op.after_line}` : `${op.line_start}-${op.line_end}`,
+        grund,
+        aktueller_stand: { file_path: op.file_path, ab_zeile: ab, zeilen: z.aktuell.slice(ab - 1, ab + 9) },
+      });
+      return op;
+    };
+    const erste = op.action === 'insert_after' ? (op.after_line ?? 0) : (op.line_start ?? 0);
+    if (!z.map) return lehneAb(z.grund ?? 'nicht umrechenbar', erste);
+    if (op.shift_mode === 'absolute' && ops.filter((o) => o.file_path === op.file_path && zeilenAktionen.has(o.action)).length > 1) {
+      return lehneAb('shift_mode "absolute" mit mehreren Zeilen-Ops auf der Datei laesst sich nicht sicher umrechnen', erste);
+    }
+    if (op.action === 'insert_after') {
+      const nach = op.after_line ?? 0;
+      if (nach <= 0 || nach >= z.map.length) return op; // 0 = Dateianfang; ausserhalb meldet der Trockenlauf
+      const ziel = z.map[nach];
+      if (!ziel) return lehneAb(`Zeile ${nach} (nach der eingefuegt werden soll) wurde seit dem Stand vor dem commit geaendert oder entfernt`, nach);
+      if (ziel !== nach) verschoben++;
+      return { ...op, after_line: ziel };
+    }
+    const start = op.line_start ?? 0;
+    const ende = op.line_end ?? 0;
+    if (start < 1 || ende < start || ende >= z.map.length) return op;
+    for (let i = start; i <= ende; i++) {
+      if (!z.map[i] || z.map[i] - z.map[start] !== i - start) {
+        return lehneAb(`Zeile ${i} wurde seit dem Stand vor dem commit geaendert oder entfernt`, start);
+      }
+    }
+    if (z.map[start] !== start) verschoben++;
+    return { ...op, line_start: z.map[start], line_end: z.map[ende] };
+  });
+  return abgelehnt.length > 0 ? { ok: false, abgelehnt } : { ok: true, ops: neu, verschoben };
+}
+
+/**
+ * V1: Ein Nachzuegler hat nach dem commit einen Folgeplan eroeffnet (oder ist einem offenen
+ * gemeinsamen Plan beigetreten). Die anderen Wartenden des committeten Plans, deren Beitrag
+ * noch fehlt, erfahren das per PLAN_FOLLOWUP — sonst wuesste keiner vom neuen Ziel. Best effort:
+ * der Beitrag selbst ist schon gespeichert.
+ */
+async function notifyFollowUp(project: string, committedPlanId: string, caller: string, folgeplanId: string): Promise<void> {
+  const client = await getPool().connect();
+  try {
+    await client.query('BEGIN');
+    const waits = await client.query<CoeditWaitRow>(
+      `${COEDIT_WAIT_SELECT}
+        WHERE project = $1 AND primary_plan_id = $2::bigint AND waiting_agent IS NOT NULL
+          AND waiting_agent <> $3 AND status IN ('waiting', 'linked')
+        ORDER BY waiting_agent, wait_token`,
+      [project, committedPlanId, caller],
+    );
+    const empfaenger = waits.rows
+      .map((wait) => ({ agent: wait.waiting_agent as string, fehlend: remainingWaitFiles(wait) }))
+      .filter((eintrag) => eintrag.fehlend.length > 0)
+      .map((eintrag) => ({
+        agent: eintrag.agent,
+        payload: {
+          folgeplan_id: folgeplanId,
+          folgeplan_von: caller,
+          offene_dateien: eintrag.fehlend,
+          hinweis: `Plan ${committedPlanId} ist committed; ${caller} macht in Plan ${folgeplanId} weiter. Dein fehlender Beitrag: coedit_add mit plan_id ${committedPlanId} fuehrt automatisch dorthin (Zeilen werden umgerechnet).`,
+        },
+      }));
+    await emitPlanFolgeEvents(client, {
+      project, planId: committedPlanId, typ: 'PLAN_FOLLOWUP', actor: caller, empfaenger,
+      dedupe: folgeplanId, grund: `Folgeplan ${folgeplanId} zu Plan ${committedPlanId}`, quittiereFuer: [],
+    });
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    console.error('[Synapse] PLAN_FOLLOWUP fehlgeschlagen (best effort):', error instanceof Error ? error.message : error);
+  } finally {
+    client.release();
+  }
+}
+
+/**
  * Spaeter Beitrag zu einem schon committeten gemeinsamen Plan: die Ops werden als
  * Folgeplan des Beitragenden auf den AKTUELLEN Dateistand geplant (planBatch). Liegt
- * auf den Pfaden schon ein anderer offener gemeinsamer Plan, fuehrt planBatch dorthin
- * (coedit_waits[].target_plan_id). Zeilen-Ops sollten Anker tragen: ohne Anker werden
- * sie auf den neuen Stand angewendet, ohne dass Zeilenverschiebungen korrigiert werden.
+ * auf den Pfaden schon ein anderer offener gemeinsamer Plan, fuehrt planBatch dorthin, und
+ * der Beitrag wird dort gleich angehaengt (coedit_add mit denselben Ops) — ein Ziel, kein
+ * zweiter Plan, kein zweiter Aufruf noetig.
+ *
+ * V2 (29.09.2026): Zeilen-Ops eines coedit_add beziehen sich auf den Stand VOR dem commit
+ * (Basis des Plans). Sie werden vorher umgerechnet (spaeteZeilenOpsUmrechnen); trifft eine Op
+ * Zeilen, die sich seitdem geaendert haben, wird der Beitrag klar abgelehnt — nichts geaendert,
+ * mit dem aktuellen Stand der Stelle. Anker prueft danach der Trockenlauf gegen den aktuellen
+ * Stand. Vorher lief die Op unveraendert auf den neuen Stand: ohne Anker traf sie falsche Zeilen.
  */
 async function followUpForLateContribution(
   args: { project: string; plan_id: string; ops: FileBatchOp[] },
   caller: string,
   committedOwner: string | null,
 ): Promise<CoeditAddResult> {
-  const ops = args.ops.map(withoutCoeditMetadata);
+  const umgerechnet = await spaeteZeilenOpsUmrechnen(args.project, args.plan_id, args.ops.map(withoutCoeditMetadata));
+  if (!umgerechnet.ok) {
+    return {
+      success: false,
+      error: 'late_line_ops_unmappable',
+      follow_up: false,
+      committed_plan_id: args.plan_id,
+      plan_id: args.plan_id,
+      appended_ops: 0,
+      already_consumed_ops: 0,
+      abgelehnte_ops: umgerechnet.abgelehnt,
+      aktueller_stand: umgerechnet.abgelehnt.map((eintrag) => eintrag.aktueller_stand),
+      message: `Plan ${args.plan_id} ist schon committed; ${umgerechnet.abgelehnt.length} Zeilen-Op(s) deines Beitrags beziehen sich auf Zeilen, `
+        + `die sich seitdem geaendert haben: ${umgerechnet.abgelehnt.map((eintrag) => `Op ${eintrag.index} (${eintrag.action} ${eintrag.file_path} ${eintrag.zeilen}): ${eintrag.grund}`).join('; ')}. `
+        + 'Nichts geaendert, keine falsche Zeile getroffen. aktueller_stand zeigt die Stelle jetzt — neu lesen und neu planen.',
+    };
+  }
+  const ops = umgerechnet.ops;
   // Leere Traegerplaene des Nachzueglers (alles lag im Wait auf den jetzt committeten
   // Plan) schliessen — die Ops wandern in den Folgeplan, sonst blieben sie ewig offen.
   await getPool().query(
@@ -2119,19 +2696,43 @@ async function followUpForLateContribution(
   );
   try {
     const result = await planBatch({ project: args.project, agent_id: caller, ops });
-    const joined = (result.coedit_waits ?? []).length > 0;
+    const waits = result.coedit_waits ?? [];
+    // Ziel steht fest -> gleich beitragen (dieselben Ops, die planBatch im Wait abgelegt hat).
+    const beigetragen: Array<{ plan_id: string; appended_ops: number; success: boolean; message?: string }> = [];
+    for (const wait of waits) {
+      if (!wait.target_plan_id) continue;
+      const geteilt = new Set(wait.shared_files);
+      const waitOps = ops.filter((op) => touchedPaths(op).some((filePath) => geteilt.has(filePath)));
+      if (waitOps.length === 0) continue;
+      const beitrag = await addCoeditContribution({
+        project: args.project, plan_id: wait.target_plan_id, agent_id: caller, ops: waitOps, wait_token: wait.wait_token,
+      }).catch((error: unknown) => ({ success: false, plan_id: wait.target_plan_id as string, appended_ops: 0, message: error instanceof Error ? error.message : String(error) }));
+      beigetragen.push({
+        plan_id: String(beitrag.plan_id), appended_ops: beitrag.appended_ops, success: beitrag.success,
+        ...(beitrag.success ? {} : { message: String(beitrag.message) }),
+      });
+    }
+    const folgeplanId = result.total_ops > 0
+      ? result.plan_id
+      : (beigetragen.find((eintrag) => eintrag.success)?.plan_id ?? waits.find((wait) => wait.target_plan_id)?.target_plan_id ?? result.plan_id);
+    await notifyFollowUp(args.project, args.plan_id, caller, folgeplanId);
+    const alleBeigetragen = waits.length > 0 && waits.every((wait) => beigetragen.some((eintrag) => eintrag.success && eintrag.plan_id === wait.target_plan_id));
     return {
       success: true,
       follow_up: true,
       committed_plan_id: args.plan_id,
-      plan_id: result.plan_id,
+      plan_id: folgeplanId,
       appended_ops: 0,
       already_consumed_ops: 0,
       total_plan_ops: result.total_ops,
-      ...(joined ? { coedit_waits: result.coedit_waits } : {}),
-      message: joined
-        ? `Plan ${args.plan_id} ist schon committed. Deine Ops sind neu geplant; auf den Pfaden liegt ein offener gemeinsamer Plan — coedit_add dort (coedit_waits[].target_plan_id).`
-        : `Plan ${args.plan_id} ist schon committed. Deine Ops liegen im Folgeplan ${result.plan_id} (neue ID, aktueller Dateistand) — commit oder weitere Beitraege dort.`,
+      ...(umgerechnet.verschoben > 0 ? { umgerechnete_zeilen_ops: umgerechnet.verschoben } : {}),
+      ...(waits.length > 0 ? { coedit_waits: waits } : {}),
+      ...(beigetragen.length > 0 ? { beigetragen_in: beigetragen } : {}),
+      message: waits.length === 0
+        ? `Plan ${args.plan_id} ist schon committed. Deine Ops liegen im Folgeplan ${result.plan_id} (neue ID, aktueller Dateistand${umgerechnet.verschoben > 0 ? `, ${umgerechnet.verschoben} Zeilen-Op(s) umgerechnet` : ''}) — commit oder weitere Beitraege dort.`
+        : alleBeigetragen
+          ? `Plan ${args.plan_id} ist schon committed. Auf den Pfaden lag schon ein offener gemeinsamer Plan: dein Beitrag ist dort angehaengt (beigetragen_in)${result.total_ops > 0 ? `, der Rest liegt im Folgeplan ${result.plan_id}` : ''}.`
+          : `Plan ${args.plan_id} ist schon committed. Deine Ops sind neu geplant; auf den Pfaden liegt ein gemeinsamer Plan — coedit_add dort (coedit_waits[].target_plan_id).`,
     };
   } catch (error) {
     const failed = planFailureResponse(error);
@@ -2754,7 +3355,14 @@ export async function pollPlanStatus(args: { plan_id: string; wait_seconds?: num
   if (first.status === 'committed' || first.status === 'cancelled' || first.status === 'stale') {
     return { ...first, changed: false, waited_seconds: 0, endzustand: true };
   }
-  return longPoll(first, (value) => JSON.stringify(value), cheap, load, seconds, base);
+  // commit_wartet_auf ohne Zeitstempel: Tool-Aktivitaet eines Beitragenden ist keine Aenderung am Plan.
+  const fp = (value: Record<string, unknown>) => JSON.stringify({
+    ...value,
+    commit_wartet_auf: Array.isArray(value.commit_wartet_auf)
+      ? (value.commit_wartet_auf as CommitWaitingFor[]).map((blocker) => blocker.agent_id)
+      : undefined,
+  });
+  return longPoll(first, fp, cheap, load, seconds, base);
 }
 
 async function sharedPlanStatusOnce(args: {
@@ -2792,7 +3400,8 @@ async function sharedPlanStatusOnce(args: {
               jsonb_array_length(ops)::int AS op_count
          FROM file_batch_plans
         WHERE project = $1 AND owner_agent_id = $2 AND status = 'open' AND open_for_coedit = true
-          AND NOT (previews @> '[{"ok": false}]'::jsonb)`,
+          AND NOT (previews @> '[{"ok": false}]'::jsonb)
+        ORDER BY created_at, id`,
       [args.project, wait.primary_agent],
     );
     targetPlanId = zielPlanFuerWait(candidates.rows, wait)?.id ?? null;
@@ -2847,6 +3456,44 @@ export async function commitBatch(args: {
   plan_id: string;
   agent_id?: string;
   /** IDEA-6: optionale KI-Beobachtungen — wird in alle file_versions dieser Batch geschrieben. */
+  agent_note?: string;
+  /** E1: so lange (Sekunden, max. 50) warten, solange aktive Beitragende noch nicht ready sind. */
+  wait_seconds?: number;
+}): Promise<CommitBatchResult> {
+  // E1 (29.09.2026): wartet ein gemeinsamer Plan noch auf aktive Beitragende
+  // (waiting_for_contributors), haelt wait_seconds die Anfrage serverseitig, bis alle
+  // ready/no_changes melden oder inaktiv werden, und schreibt dann — echtes Warten ohne Schleife
+  // beim Agenten. Dazwischen wird OHNE Sperren nachgesehen; geweckt wird per notifyPlanChange
+  // (ready, no_changes, coedit_add, cancel) oder zum Zeitpunkt inaktiv_ab des naechsten Blockers.
+  const seconds = Math.max(0, Math.min(LONG_POLL_MAX_SECONDS, Number(args.wait_seconds ?? 0) || 0));
+  const start = Date.now();
+  const deadline = start + seconds * 1000;
+  const caller = resolveAgentId(args.agent_id);
+  for (;;) {
+    const result = await commitBatchOnce(args);
+    if (result.success || result.status !== 'waiting_for_contributors') return result;
+    let blockers = result.waiting_for ?? [];
+    for (;;) {
+      const rest = deadline - Date.now();
+      if (rest <= 0) {
+        return seconds > 0 ? { ...result, waited_seconds: Math.round((Date.now() - start) / 100) / 10 } : result;
+      }
+      const bisInaktiv = Math.min(...blockers.map((b) => new Date(b.inaktiv_ab).getTime() - Date.now()));
+      await sleepOrWake(Math.max(100, Math.min(LONG_POLL_INTERVAL_MS, rest, bisInaktiv + 50)));
+      const plan = (await getPool().query<{ project: string; owner_agent_id: string | null; status: string }>(
+        `SELECT project, owner_agent_id, status::text AS status FROM file_batch_plans WHERE id = $1::bigint`,
+        [args.plan_id],
+      )).rows[0];
+      if (!plan || plan.status !== 'open') break;
+      blockers = await readyGateBlockers(getPool(), { id: args.plan_id, project: plan.project, owner_agent_id: plan.owner_agent_id }, caller);
+      if (blockers.length === 0) break;
+    }
+  }
+}
+
+async function commitBatchOnce(args: {
+  plan_id: string;
+  agent_id?: string;
   agent_note?: string;
 }): Promise<CommitBatchResult> {
   const pool = getPool();
@@ -2966,7 +3613,7 @@ async function commitLegacyLocked(
     if (!row || row.status !== 'open' || Number(row.ops_count) !== plan.ops.length) {
       await lockClient.query('ROLLBACK');
       lockClient.release();
-      return commitBatch(args);
+      return commitBatchOnce(args);
     }
     await lockFilesForPlanning(lockClient, plan.project, Object.keys(plan.expected_hashes));
     const result = await commitLegacyBody(args, plan, lockClient);
@@ -3129,7 +3776,7 @@ async function commitLegacyBody(
             reason = CONCAT_WS(' ', reason, $2::text) WHERE id = $1`,
     [args.plan_id, `[committed von ${resolveAgentId(args.agent_id) ?? 'unbekannt'}]`],
   );
-  await resolvePlanReadyEvents(lockClient, plan.project, args.plan_id, `Plan ${args.plan_id} committed`);
+  await notifyPlanCommitted(lockClient, plan, resolveAgentId(args.agent_id));
   await lockClient.query('COMMIT'); notifyPlanChange();
   const legacyParticipants = [...new Set([
     plan.owner_agent_id,
@@ -3182,7 +3829,8 @@ export interface CancelBatchResult {
   ok: boolean;
   status: FileBatchStatus;
   /** cancelled = Plan verworfen; withdrawn = nur eigene Ops zurueckgezogen, Plan bleibt; none = nichts Eigenes drin. */
-  mode?: 'cancelled' | 'withdrawn' | 'none';
+  /** refused (V3) = ohne agent_id und mit fremden Ops: nichts verworfen. */
+  mode?: 'cancelled' | 'withdrawn' | 'none' | 'refused';
   withdrawn_ops?: number;
   remaining_ops?: number;
   remaining_agents?: string[];
@@ -3216,6 +3864,24 @@ export async function cancelBatch(plan_id: string, agent_id?: string, grund?: st
       return { ok: false, status: plan?.status ?? 'cancelled' };
     }
     const authorOf = (op: FileBatchOp) => op.agent_id ?? plan.owner_agent_id ?? null;
+    // V3 (29.09.2026): ohne bekannten Aufrufer (keine agent_id) weiss niemand, wessen Arbeit
+    // verworfen wuerde — dann nur, wenn KEINE fremden Ops drin sind (alles vom Owner). Vorher
+    // verwarf cancel ohne agent_id den ganzen Plan samt Beitraegen anderer.
+    if (!caller) {
+      const fremdeAutoren = uniqueStrings(plan.ops.map((op) => authorOf(op) ?? '').filter((agent) => agent && agent !== plan.owner_agent_id));
+      if (fremdeAutoren.length > 0) {
+        await client.query('ROLLBACK');
+        return {
+          ok: false, status: plan.status, mode: 'refused', withdrawn_ops: 0,
+          remaining_ops: plan.ops.length,
+          remaining_agents: uniqueStrings(plan.ops.map((op) => authorOf(op) ?? '').filter(Boolean)),
+        };
+      }
+    }
+    // V1: wer betroffen ist, VOR den Aenderungen ermitteln (danach sind Waits geschlossen).
+    const beteiligte = await planBeteiligte(client, {
+      id: String(plan_id), project: plan.project, owner_agent_id: plan.owner_agent_id, ops: plan.ops, expected_hashes: plan.expected_hashes,
+    });
     const foreignIdx = plan.ops.map((op, index) => ({ op, index })).filter(({ op }) => !caller || authorOf(op) !== caller);
     if (caller && foreignIdx.length > 0) {
       const ownCount = plan.ops.length - foreignIdx.length;
@@ -3296,7 +3962,25 @@ export async function cancelBatch(plan_id: string, agent_id?: string, grund?: st
         ],
       );
       await closeOrphanCarriers(client, plan.project, `Rueckzug von ${caller} aus Plan ${plan_id}`);
-      await resolvePlanReadyEvents(client, plan.project, plan_id, `Rueckzug aus Plan ${plan_id}`, caller);
+      // V1: die Verbleibenden erfahren vom Rueckzug (PLAN_CHANGED); nur das eigene PLAN_READY des
+      // Zurueckziehenden wird quittiert — fuer die anderen bleibt der Plan ein gueltiges Ziel.
+      const verbleibende = uniqueStrings([
+        newOwner ?? '',
+        ...remainingOps.map((op) => authorOf(op) ?? ''),
+        ...beteiligte.waits.filter((wait) => wait.primary_plan_id === String(plan_id)).map((wait) => wait.waiting_agent ?? ''),
+      ].filter((agent) => agent && agent !== caller));
+      await emitPlanFolgeEvents(client, {
+        project: plan.project, planId: String(plan_id), typ: 'PLAN_CHANGED', actor: caller,
+        empfaenger: verbleibende.map((agent) => ({
+          agent,
+          payload: {
+            withdrawn_by: caller, withdrawn_ops: ownCount, remaining_ops: remainingOps.length, owner: newOwner,
+            record_plan_id: record.rows[0].id,
+            hinweis: `${caller} hat ${ownCount} eigene Op(s) zurueckgezogen; der gemeinsame Plan bleibt offen (Owner ${newOwner}). plan_status zeigt Ops und withdrawn.`,
+          },
+        })),
+        dedupe: record.rows[0].id, grund: `Rueckzug aus Plan ${plan_id}`, quittiereFuer: [caller],
+      });
       await client.query('COMMIT'); notifyPlanChange();
       return {
         record_plan_id: record.rows[0].id,
@@ -3317,7 +4001,21 @@ export async function cancelBatch(plan_id: string, agent_id?: string, grund?: st
       [plan_id],
     );
     await closeOrphanCarriers(client, plan.project, `cancel von Plan ${plan_id}`);
-    await resolvePlanReadyEvents(client, plan.project, plan_id, `Plan ${plan_id} verworfen`);
+    const betroffene = uniqueStrings([
+      ...beteiligte.autoren,
+      ...beteiligte.waits.map((wait) => wait.waiting_agent ?? ''),
+    ].filter((agent) => agent && agent !== caller));
+    await emitPlanFolgeEvents(client, {
+      project: plan.project, planId: String(plan_id), typ: 'PLAN_CANCELLED', actor: caller ?? null,
+      empfaenger: betroffene.map((agent) => ({
+        agent,
+        payload: {
+          cancelled_by: caller ?? null, grund: grund ?? null, dateien: Object.keys(plan.expected_hashes ?? {}),
+          hinweis: `Plan ${plan_id} ist verworfen, nichts davon geschrieben. Wer seine Ops noch braucht: neu planen (files plan) — dieser Plan ist kein Ziel mehr.`,
+        },
+      })),
+      grund: `Plan ${plan_id} verworfen`, quittiereFuer: [...betroffene, caller ?? ''],
+    });
     await client.query('COMMIT'); notifyPlanChange();
     return { ok: true, status: 'cancelled', mode: 'cancelled', withdrawn_ops: plan.ops.length, remaining_ops: 0 };
   } catch (error) {
@@ -3385,15 +4083,16 @@ async function closeOrphanCarriers(client: PoolClient, project: string, anlass: 
 }
 
 /**
- * Befund 875d6a8c (c): PLAN_READY-Events zu einem committeten/verworfenen Plan (bzw. fuer
- * einen Zurueckgezogenen) als erledigt quittieren — sonst blieben sie in pending_events.
+ * Befund 875d6a8c (c): PLAN_READY-Events zu einem committeten/verworfenen Plan als erledigt
+ * quittieren — V1 (29.09.2026): nur fuer die uebergebenen Agenten, und die bekommen im selben Zug
+ * ein Nachfolge-Event (emitPlanFolgeEvents). Nie mehr still fuer alle.
  */
 async function resolvePlanReadyEvents(
   client: PoolClient,
   project: string,
   planId: string,
   grund: string,
-  nurAgent?: string | null,
+  agenten: string[],
 ): Promise<void> {
   await client.query(
     `INSERT INTO agent_event_acks (event_id, agent_id, reaction)
@@ -3401,9 +4100,9 @@ async function resolvePlanReadyEvents(
        FROM agent_events e
       WHERE e.project = $1 AND e.event_type = 'PLAN_READY' AND e.scope LIKE 'agent:%'
         AND e.payload LIKE '{%' AND (e.payload::jsonb ->> 'plan_id') = $2
-        AND ($4::text IS NULL OR e.scope = 'agent:' || $4)
+        AND substring(e.scope from 7) = ANY($4::text[])
      ON CONFLICT (event_id, agent_id) DO NOTHING`,
-    [project, String(planId), `erledigt: ${grund}`, nurAgent ?? null],
+    [project, String(planId), `erledigt: ${grund}`, agenten],
   );
 }
 
@@ -3412,6 +4111,8 @@ export function buildCancelResponse(planId: string, result: CancelBatchResult): 
   const andere = (result.remaining_agents ?? []).join(', ');
   const message = result.mode === 'withdrawn'
     ? `Nur deine ${result.withdrawn_ops} Op(s) aus Plan ${planId} zurueckgezogen — der gemeinsame Plan bleibt offen mit ${result.remaining_ops} Op(s) von ${andere}. Deine Waits auf diesen Plan sind geschlossen — erneut beitreten = einfach neu planen. Die zurueckgezogenen Ops bleiben samt Begruendung erhalten (Rueckzugsprotokoll ${result.record_plan_id}, sichtbar in plan_status.withdrawn).`
+    : result.mode === 'refused'
+      ? `Plan ${planId} enthaelt Beitraege anderer Agenten (${andere}) — cancel OHNE agent_id wuerde fremde Arbeit verwerfen und ist abgelehnt, nichts geaendert. Mit agent_id zieht jeder nur seine eigenen Ops zurueck; ganz verworfen wird ein Plan erst, wenn keine fremden Ops mehr drin sind.`
     : result.mode === 'none'
       ? `Plan ${planId} enthaelt keine Ops von dir — nichts zurueckgezogen, fremde Arbeit (${andere}) bleibt unangetastet.`
       : result.ok
@@ -3679,6 +4380,10 @@ export async function getBatchPlan(plan_id: string): Promise<FileBatchPlanRow | 
     entry.waits++;
   }
   const contributions = [...proAgent.values()];
+  // E1: auf wen ein commit gerade warten wuerde (aktive, noch nicht bereite Beitragende).
+  const commitWartetAuf = row.status === 'open' && waitRows.rows.length > 0
+    ? await readyGateBlockers(pool, { id: String(plan_id), project: row.project, owner_agent_id: row.owner_agent_id }, null)
+    : [];
   let overlapWarnings: CoeditConflictDetail[] = [];
   const planOps = Array.isArray(row.ops) ? row.ops : [];
   if (row.status === 'open' && new Set(planOps.map((op) => op.agent_id ?? row.owner_agent_id)).size > 1) {
@@ -3693,6 +4398,7 @@ export async function getBatchPlan(plan_id: string): Promise<FileBatchPlanRow | 
     ...(withdrawn.length > 0 ? { withdrawn } : {}),
     ...(contributions.length > 0 ? { contributions } : {}),
     ...(overlapWarnings.length > 0 ? { overlap_warnings: overlapWarnings } : {}),
+    ...(commitWartetAuf.length > 0 ? { commit_wartet_auf: commitWartetAuf } : {}),
   };
 }
 
@@ -3734,6 +4440,12 @@ export function buildPlanStatusResponse(plan: FileBatchPlanRow): Record<string, 
     ...(plan.withdrawn && plan.withdrawn.length > 0 ? { withdrawn: plan.withdrawn } : {}),
     ...(plan.contributions && plan.contributions.length > 0 ? { contributions: plan.contributions } : {}),
     ...(plan.overlap_warnings && plan.overlap_warnings.length > 0 ? { overlap_warnings: plan.overlap_warnings } : {}),
+    ...(plan.commit_wartet_auf && plan.commit_wartet_auf.length > 0
+      ? {
+          commit_wartet_auf: plan.commit_wartet_auf,
+          commit_hinweis: `commit wartet auf ${plan.commit_wartet_auf.length} aktive(n), noch nicht bereite(n) Beitragende(n) — sie arbeiten laut Tool-Aktivitaet noch daran. commit mit wait_seconds schreibt, sobald alle ready/no_changes melden oder inaktiv werden (inaktiv_ab).`,
+        }
+      : {}),
     ...(previews.length < opsCount
       ? {
           previews_hint:

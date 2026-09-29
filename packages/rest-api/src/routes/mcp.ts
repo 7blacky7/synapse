@@ -959,7 +959,7 @@ const MCP_TOOLS = [
         },
         open_for_coedit: { type: 'boolean', description: 'Optional fuer plan: ob der konkrete waiting_agent per coedit_add beitragen darf (default true). false lehnt coedit_add mutationsfrei ab.' },
         wait_token: { type: 'string', description: 'Opaquer CE-2-Wait-Token fuer shared_plan_status; optional fuer coedit_add (genau diesen Wait verwenden).' },
-        wait_seconds: { type: 'number', description: 'plan_status/shared_plan_status: Long-Poll bis max. 50 s — der Server wartet, bis sich Status/Zielplan/Wait-Stand aendern (Antwort: changed, waited_seconds).' },
+        wait_seconds: { type: 'number', description: 'plan_status/shared_plan_status: Long-Poll bis max. 50 s — der Server wartet, bis sich Status/Zielplan/Wait-Stand aendern (Antwort: changed, waited_seconds). commit: wartet der gemeinsame Plan auf aktive, noch nicht bereite Beitragende (status waiting_for_contributors, kein Fehler), haelt der Server bis max. 50 s und schreibt, sobald alle ready/no_changes sind oder inaktiv werden.' },
         files: { type: 'array', items: { type: 'string' }, description: 'coedit_no_changes: konkrete gemeinsame Dateien ohne eigenen Beitrag.' },
         auto_commit: { type: 'boolean', description: '(optional fuer plan): wenn true, wird direkt nach plan() automatisch commit() aufgerufen — spart einen Tool-Call wenn kein User-Review vor commit gewuenscht. Versionierung bleibt aktiv (file_versions + batch_id), Rollback via restore_batch jederzeit moeglich.' },
         agent_note: { type: 'string', description: '(optional fuer plan/commit): KI-eigene Beobachtungen/Analyse zum Batch (zusaetzlich zum reason des Users). Wird in alle file_versions dieser Batch geschrieben. Empfohlen ab ≥3 Ops oder Multi-File Batches.' },
@@ -1039,7 +1039,7 @@ const MCP_TOOLS = [
         include_released: { type: 'boolean', description: 'reservation_list: auch bereits freigegebene Zeilen anzeigen (Default false).' },
         open_for_coedit: { type: 'boolean', description: 'plan: ob der konkrete waiting_agent Co-Edit-Ops beitragen darf (default true)' },
         wait_token: { type: 'string', description: 'Opaquer CE-2-Wait-Token fuer shared_plan_status; optional fuer coedit_add (genau diesen Wait verwenden).' },
-        wait_seconds: { type: 'number', description: 'plan_status/shared_plan_status: Long-Poll bis max. 50 s — der Server wartet, bis sich Status/Zielplan/Wait-Stand aendern (Antwort: changed, waited_seconds).' },
+        wait_seconds: { type: 'number', description: 'plan_status/shared_plan_status: Long-Poll bis max. 50 s — der Server wartet, bis sich Status/Zielplan/Wait-Stand aendern (Antwort: changed, waited_seconds). commit: wartet der gemeinsame Plan auf aktive, noch nicht bereite Beitragende (status waiting_for_contributors, kein Fehler), haelt der Server bis max. 50 s und schreibt, sobald alle ready/no_changes sind oder inaktiv werden.' },
         files: { type: 'array', items: { type: 'string' }, description: 'coedit_no_changes: konkrete gemeinsame Dateien ohne eigenen Beitrag.' },
         auto_commit: { type: 'boolean', description: 'plan + commit in einem Call (default false). Versionierung bleibt aktiv.' },
         agent_note: { type: 'string', description: '(optional): KI-eigene Beobachtungen pro Batch (zusaetzlich zum User-reason).' },
@@ -4366,7 +4366,9 @@ async function handleToolCall(
             : {}),
           message: result.coedit_waits?.length
             ? `Plan ${result.plan_id}: ${result.total_ops} sofortige Op(s), ${result.deferred_ops ?? 0} Op(s) warten reservationsbasiert. Shared Ops wurden nicht geschrieben.`
-            : `Plan ${result.plan_id} angelegt: ${result.total_ops} Op(s) ueber ${result.files_touched.length} Datei(en).`,
+            : result.merged_into?.length
+              ? `${result.merged_into.map((m) => `${m.ops} Op(s) an deinen offenen Plan ${m.plan_id} angehaengt (ein Plan je Datei)`).join('; ')}. Plan ${result.plan_id}: ${result.total_ops} Op(s) — commit mit files(action:"commit", plan_id:"${result.plan_id}").`
+              : `Plan ${result.plan_id} angelegt: ${result.total_ops} Op(s) ueber ${result.files_touched.length} Datei(en).`,
         };
       }
       if (action === 'plan_update') {
@@ -4414,7 +4416,7 @@ async function handleToolCall(
       if (action === 'commit') {
         const planId = reqStr(args, 'plan_id');
         try {
-          const result = await commitBatch({ plan_id: planId, agent_id: agentId, agent_note: str(args, 'agent_note') });
+          const result = await commitBatch({ plan_id: planId, agent_id: agentId, agent_note: str(args, 'agent_note'), wait_seconds: num(args, 'wait_seconds') });
           if (result.success) {
             return { ...result, message: `Plan ${result.plan_id} committed — ${result.committed} Datei(en), ${result.committed_ops ?? '?'} Op(s) geaendert. batch_id=${result.batch_id}.` };
           }

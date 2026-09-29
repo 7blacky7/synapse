@@ -115,8 +115,14 @@ try {
 
   const c1 = await batch.commitBatch({ plan_id: p1.plan_id, agent_id: A });
   pruefe(c1.success === false && c1.error === 'coedit_conflict', 'Konflikt bleibt gewollt: coedit_conflict', c1);
-  const cancel = await batch.cancelBatch(p1.plan_id);
-  pruefe(cancel.ok === true, 'cancel nach Konflikt', cancel);
+  // V3 (29.09.2026): cancel OHNE agent_id darf B's Beitrag nicht mitverwerfen -> abgelehnt.
+  // Aufloesen wie vorgesehen: B zieht seine Op zurueck, danach verwirft A seinen Plan.
+  const ohneId = await batch.cancelBatch(p1.plan_id);
+  pruefe(ohneId.ok === false && ohneId.mode === 'refused', 'V3: cancel ohne agent_id verwirft fremde Ops nicht', ohneId);
+  const rueckzug = await batch.cancelBatch(p1.plan_id, B, 'Konflikt aufloesen');
+  pruefe(rueckzug.ok === true && rueckzug.mode === 'withdrawn', 'Rueckzug von B nach Konflikt', rueckzug);
+  const cancel = await batch.cancelBatch(p1.plan_id, A, 'verwerfen');
+  pruefe(cancel.ok === true && cancel.mode === 'cancelled', 'cancel nach Konflikt', cancel);
   const s1 = await batch.getBatchPlan(p1.plan_id);
   pruefe(s1.status === 'cancelled' && s1.committed_at === null, 'Befund 1: cancelled Plan ohne committed_at (API)', s1);
   const roh = await pool.query('SELECT committed_at FROM file_batch_plans WHERE id = $1', [p1.plan_id]);
