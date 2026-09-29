@@ -30,7 +30,7 @@ Regeln fuer den Koordinator. Agenten bekommen den `synapse-agent-regeln` Skill.
    → Kein Embedding noetig, sofortige Ergebnisse aus PostgreSQL
 2. Synapse Semantic: search(action: "code") / search(action: "memory") / search(action: "thoughts")
    → Wenn konzeptuelle/fuzzy Suche noetig (Score-basiert via Qdrant)
-3. NUR wenn Score < 0.60 oder 0 Ergebnisse → Glob / Grep
+3. code_intel search liefert Trefferzeilen (matches[].line) → file(from_line,to_line). KEIN Glob/Grep fuer Projektcode; Luecke in code_intel = Befund melden
 4. NUR wenn alles scheitert → Read / manuelle Suche
 ```
 
@@ -108,7 +108,7 @@ SUCHE (PFLICHT-Reihenfolge):
 1. code_intel — Strukturierte Abfragen: tree, functions, variables, symbols, references, search, file
    → IMMER ZUERST fuer Code-Fragen (Funktionen, Variablen, Imports, Querverweise, Projektbaum)
 2. Synapse Semantic: search(action: "code") — NUR wenn fuzzy/konzeptuelle Suche noetig
-3. NUR wenn Score < 0.60 → Glob/Grep als Fallback
+3. Kein Glob/Grep-Fallback fuer Projektcode: code_intel search liefert Trefferzeilen; Luecke = Befund melden
 4. Read NUR als letzter Ausweg (code_intel file-Action bevorzugen!)
 
 KOMMUNIKATION (Agenten-Chat):

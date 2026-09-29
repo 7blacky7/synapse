@@ -37,11 +37,12 @@ add_thought(project: "...", source: "<deine-id>", content: "...", agent_id: "<de
    → Kein Embedding noetig, sofortige Ergebnisse aus PostgreSQL
 2. Synapse Semantic: search(action: "code") / search(action: "memory")
    → Nur wenn fuzzy/konzeptuelle Suche noetig (Score-basiert via Qdrant)
-3. NUR wenn Score < 0.60 oder 0 Ergebnisse → Glob / Grep
-4. NUR wenn alles scheitert → Read / manuelle Suche / Bash als Notfall
+3. code_intel search liefert je Datei die Trefferzeilen (matches[].line)
+   → direkt file mit from_line/to_line lesen
 ```
 
-**VERBOTEN:** Read/Glob/Grep/Bash-Suchbefehle BEVOR code_intel UND Synapse Semantic versucht wurden.
+**VERBOTEN:** Read/Glob/Grep/Bash-Suchbefehle fuer Projektcode. Liefert code_intel etwas
+nicht, ist das ein Befund fuer den Koordinator — nicht auf grep ausweichen.
 
 ## 4. Kommunikation (ueber Agenten-Chat)
 
@@ -83,6 +84,54 @@ get_docs_for_file(file_path: "<datei>", agent_id: "<deine-id>", project: "<proje
 - Wenn Warnings kommen: **LIES SIE** und beruecksichtige sie in deinen Aenderungen
 - Warnt dich vor Dingen die du wegen deines Cutoffs nicht wissen kannst
 - Ignoriere diese Warnungen NICHT — sie verhindern Fehler
+
+## 5b. Gemeinsame Dateien: Co-Edit (PFLICHT statt Handoff)
+
+Stand 29.09.2026 (Deploy runde3-0d2c563). Volltext: Skill-DB `synapse-agent-regeln`,
+Section `coedit-reservierungen` (`skills(action:"get_section", ...)`), Onboarding-Regel
+`regel-coedit-reservierung-und-ablauf`.
+
+**Grundidee:** Mehrere Agenten/Harnesse arbeiten GLEICHZEITIG und unterschiedlich schnell
+an denselben Dateien. Fuer ueberlappende Dateien gibt es EINEN gemeinsamen Plan;
+Teilbeitraege werden zusammengefuehrt. Niemand wartet blind, ein verschwundener Agent
+blockiert nie, niemand zerstoert fremde Arbeit. Bei jedem Aufruf dieselbe `agent_id`.
+
+1. `files(action: "reservation_add")` auf die Zieldateien — Koordination und Vorrang,
+   kein Schreib-Lock; lebt nur von deiner echten Tool-Aktivitaet.
+2. `files(action: "plan")`. Liegt schon ein offener Co-Edit-Plan eines anderen auf den
+   Pfaden, wirst du hineingefuehrt (Traegerplan + Wait, `target_plan_id`), auch wenn
+   dessen Owner weg ist. Eigene Ops auf Dateien deines eigenen offenen Plans werden dort
+   angehaengt (`merged_into`); ein vorhandener leerer Traeger wird wiederverwendet
+   (`reused_carrier`). Der Trockenlauf laeuft gegen den Stand des Zielplans.
+3. Vor dem Beitragen `files(action: "plan_status", plan_id)` lesen (`ops_overview`,
+   `contributors`) — nicht doppelt schreiben. Fremde Op vollstaendig ansehen:
+   `plan_status` mit `op_index` bzw. `op_indices: [0,1]`.
+   Warten auf einen Plan: `plan_status`/`shared_plan_status` mit `wait_seconds: 50`
+   (Long-Poll, kein sleep-Loop).
+4. Beitragen: `coedit_add`, `coedit_no_changes`, danach SOFORT `coedit_ready`.
+   `overlap_warnings` sofort abstimmen; jede Warnung nennt `plan_id` + `op_index` +
+   `agent_id` der fremden Op. Reine Einfuegungen am selben Punkt sind KEIN Konflikt
+   (Beitragsreihenfolge, INFO `insert_notes`); ueberlappende Ersetzungen bleiben Konflikt.
+   `contribution_failed` -> `coedit_add` mit `op_index` (= `coedit_source_op_index`) und
+   der korrigierten Op in `ops[0]`.
+5. Committen darf jeder Beteiligte. Ready-Gate: der commit wartet nur auf Beteiligte, die
+   noch nicht ready sind UND in den letzten 5 Minuten aktiv waren (`waiting_for_contributors`,
+   kein Fehler). Inaktive blockieren nie. Wer fertig ist und nicht ready meldet, haelt als
+   aktiver Agent die anderen auf.
+6. Events in `pending_events` quittieren: `PLAN_READY`, `PLAN_COMMITTED`,
+   `PLAN_CANCELLED`, `PLAN_CHANGED`, `PLAN_FOLLOWUP`.
+7. Spaete Beitraege nach einem commit landen im Folgeplan; Zeilen-Ops werden exakt
+   umgerechnet, Zielzeile im geaenderten Bereich -> `late_line_ops_unmappable`, neu planen.
+   Anker (`anchor_contains`) sind robuster als Zeilennummern.
+8. Plaene laufen NICHT ab. Eigene, nicht mehr gebrauchte Plaene selbst verwerfen
+   (`cancel` mit `agent_id`; ein leerer Traeger schliesst dabei seine Waits). `cancel` auf
+   einem gemeinsamen Plan zieht nur DEINE Ops zurueck. Fremde alte Plaene NICHT verwerfen.
+9. `plan_failed` kommt mit `plan_id` + `failed_ops` -> `plan_update` statt neu schicken.
+10. Der commit gibt Reservierungen selbst frei (`released_reservations`); ein
+    `reservation_release` danach ist unnoetig, `already_released` ist kein Fehler.
+    `stale` = Datei wurde ausserhalb des Plans geaendert, nichts geschrieben, neu planen.
+11. Keine Groessengrenzen: bis 10.000 Ops/edits je Aufruf, Anfragen bis 64 MB.
+    `search_replace` mit `\n` trifft auch CRLF-Dateien.
 
 ## 6. Events (Pflicht-Reaktion)
 
