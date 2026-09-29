@@ -539,6 +539,9 @@ export { setzeHeartbeatKonfiguration, setzeHeartbeatBeimSpawn, steuereHeartbeat 
 export { holeThoughtsMitProblemen, aendereThoughtPerId, loescheThoughtsPerId } from './services/thoughts.js';
 export type { ThoughtIdProblem, LoeschErgebnis } from './services/thoughts.js';
 export { loeseThoughtIdsAuf, pruefeIdEingabe } from './services/thought-ids.js';
+// Spawn-Eingaben in Worker-Form (P7-T9)
+export { normalisiereSpawnEintrag, normalisiereSpawnBatch, baueSpawnJobArgs, pruefeSpawnEffort, SPAWN_BATCH_MAX } from './services/specialist-spawn-args.js';
+export type { SpawnArgs, SpawnOptionen } from './services/specialist-spawn-args.js';
 // Proposals: PG als Quelle der Wahrheit + Praefix-IDs (P10-T29)
 export { holeProposalsMitProblemen, aendereProposalPerId, setzeProposalStatusPerId, loescheProposalsPerId } from './services/proposals.js';
 export type { ProposalLoeschErgebnis } from './services/proposals.js';

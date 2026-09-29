@@ -7,6 +7,8 @@ import {
   listWrapperStatus,
   waehleSpezialisten,
   kennzeichnung,
+  baueSpawnJobArgs,
+  pruefeSpawnEffort,
   enqueueSpecialistJob,
   waitForSpecialistJob,
   postToInbox,
@@ -84,22 +86,40 @@ export async function specialistRoutes(fastify: FastifyInstance): Promise<void> 
    */
   fastify.post<{
     Params: { name: string };
-    Body: { name: string; model: string; cwd?: string; allowedTools?: string[]; effort?: string };
+    // snake_case wie das specialist-Tool; camelCase (allowedTools, keepAlive) als Alias
+    Body: {
+      name: string; model: string; expertise?: string; task?: string; channel?: string;
+      cwd?: string; allowed_tools?: string[]; allowedTools?: string[];
+      keep_alive?: boolean; keepAlive?: boolean; effort?: string;
+    };
   }>('/api/projects/:name/specialists/spawn', async (request, reply) => {
     const project = request.params.name;
-    const { name: specName, model, cwd, allowedTools, effort } = request.body ?? {};
+    const body = (request.body ?? {}) as Record<string, unknown>;
+    const specName = body.name;
+    const cwd = typeof body.cwd === 'string' && body.cwd.trim() ? body.cwd.trim() : undefined;
 
-    if (!specName || !model) {
+    if (!specName || !body.model) {
       return reply.status(400).send({
         success: false,
-        error: { message: 'name und model sind erforderlich' },
+        error: { message: 'name und model sind erforderlich (dazu expertise und task)' },
       });
     }
 
     try {
-      // Auflösung des Pfads aus der DB falls nicht übergeben
-      let projectPath = cwd;
-      if (!projectPath) {
+      // effort frueh pruefen (Tippfehler sofort mit den erlaubten Werten, nicht nach der Queue)
+      try {
+        await pruefeSpawnEffort(body.model, body.effort);
+      } catch (err) {
+        return reply.status(400).send({
+          success: false,
+          error: 'invalid_effort',
+          message: err instanceof Error ? err.message : String(err),
+        });
+      }
+
+      // Projektpfad IMMER aus der DB (daemon-bekannter Host-Pfad); cwd ist nur das Arbeitsverzeichnis.
+      let projectPath: string | undefined;
+      {
         const pgRes = await getPool().query<{ path: string }>(
           `SELECT path FROM projects
            WHERE name = $1 AND path NOT LIKE '/virtual/%'
@@ -112,16 +132,26 @@ export async function specialistRoutes(fastify: FastifyInstance): Promise<void> 
         }
       }
 
+      // Gemeinsame Funktion (core specialist-spawn-args.ts, dieselbe wie im specialist-Tool ueber REST):
+      // Worker-Form mit expertise/task/project/project_path/allowed_tools/channel/keep_alive, nie "undefined".
+      // keep_alive-Standard auf dem REST/Web-Weg: false (stdio: true) — Vereinheitlichung ist User-Entscheidung.
+      const gebaut = baueSpawnJobArgs('spawn', { ...body, cwd }, {
+        project,
+        projectPath: projectPath ?? '',
+        keepAliveStandard: false,
+      });
+      if (!gebaut.ok) {
+        return reply.status(400).send({
+          success: false,
+          error: 'invalid_spawn_args',
+          message: gebaut.fehler,
+        });
+      }
+
       const { id } = await enqueueSpecialistJob({
         project,
         action: 'spawn',
-        args: {
-          name: specName,
-          model,
-          cwd: projectPath,
-          allowedTools,
-          effort,
-        },
+        args: gebaut.args,
       });
 
       const result = await waitForSpecialistJob(id, 60_000);

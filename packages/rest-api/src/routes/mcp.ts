@@ -778,6 +778,27 @@ const MCP_TOOLS = [
           description: 'Name des Spezialisten (erforderlich fuer: spawn, stop, status, wake, update_skill). Array erlaubt fuer: status',
         },
         alle: { type: 'boolean', description: 'status ohne name: auch inaktive Eintraege (Leichen, last_activity aelter als 24 h) zeigen. Standard: ausgeblendet, Antwort nennt Anzahl/Namen. Genannte Namen werden immer gezeigt.' },
+        specialists: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              name: { type: 'string' },
+              model: { type: 'string', description: 'Modell-Alias aus der Registry, siehe model' },
+              expertise: { type: 'string' },
+              task: { type: 'string' },
+              channel: { type: 'string' },
+              allowed_tools: { type: 'array', items: { type: 'string' } },
+              keep_alive: { type: 'boolean' },
+              cwd: { type: 'string' },
+              effort: { type: 'string', enum: ['low', 'medium', 'high', 'xhigh', 'max'], description: 'Effort-Stufe, siehe effort' },
+            },
+            required: ['name', 'model', 'expertise', 'task'],
+          },
+          minItems: 1,
+          maxItems: 10,
+          description: 'Liste der Spezialisten fuer spawn_batch (1..10 Items). project (+ project_path, bei REST aus der Datenbank) gelten fuer alle. Fehlende Pflichtfelder werden mit Index gemeldet, nichts wird halb gestartet.',
+        },
         model: { type: 'string', description: 'Modell-Alias (erforderlich fuer: spawn). Gueltige Aliase stehen in der Modell-Registry (capabilities → supportedModels; unbekannter Alias → Fehler mit Liste, geprueft beim Spawn im Daemon). CLAUDE, immer neueste Version: opus/haiku = 200k, sonnet = 1M nativ (sonnet[1m] gleichwertig), opus[1m] = 1M, fable = 1M nativ. Aeltere Versionen ueber versionierte Aliase: opus-5, opus-4.8, opus-4.7, opus-4.6 (je auch [1m]), sonnet-5(/[1m]), sonnet-4.6 (nur 200k), fable-5. ANTIGRAVITY: antigravity (agy-CLI, Pro-Abo). Mehrere 1M-Modelle gleichzeitig sind im Max-Abo moeglich (getestet 29.09.2026). GOOGLE: gemini-flash-lite/gemini-flash/gemini-pro = 1M Context, ~3-75x billiger als Claude (braucht GOOGLE_API_KEY).' },
         expertise: { type: 'string', description: 'Fachgebiet des Spezialisten (erforderlich fuer: spawn)' },
         task: { type: 'string', description: 'Aufgabe fuer den Spezialisten (erforderlich fuer: spawn)' },
@@ -787,7 +808,7 @@ const MCP_TOOLS = [
         cwd: { type: 'string', description: 'Arbeitsverzeichnis (optional fuer: spawn, Standard: Projekt-Pfad)' },
         channel: { type: 'string', description: 'Channel fuer Kommunikation (optional fuer: spawn, Standard: {project}-general)' },
         allowed_tools: { type: 'array', items: { type: 'string' }, description: 'Erlaubte Tools fuer den Spezialisten (optional fuer: spawn)' },
-        keep_alive: { type: 'boolean', description: '⚠️ WICHTIG: keep_alive: true setzen fuer langlaufende Spezialisten. Aktiviert (a) periodisches Wecken im Idle UND (b) Auto-Respawn bei Crash (Context-Limit, OOM). Ohne keep_alive stirbt der Wrapper mit dem Agenten — kein Comeback, manueller Spawn noetig. Standard: false (nur fuer kurze One-Shot-Tasks).' },
+        keep_alive: { type: 'boolean', description: '⚠️ WICHTIG: keep_alive: true setzen fuer langlaufende Spezialisten. Aktiviert (a) periodisches Wecken im Idle UND (b) Auto-Respawn bei Crash (Context-Limit, OOM). Ohne keep_alive stirbt der Wrapper mit dem Agenten — kein Comeback, manueller Spawn noetig. Standard ueber REST/Web-KI: false (nur fuer kurze One-Shot-Tasks); ueber den lokalen stdio-MCP-Server: true.' },
         effort: { type: 'string', enum: ['low', 'medium', 'high', 'xhigh', 'max'], description: 'Effort-Stufe fuer claude --effort (optional fuer: spawn; bei spawn_batch je Item im specialists-Array). Weglassen = default_effort des Modells (capabilities -> supportedModels, Claude-Standard medium) — NICHT mehr die User-Einstellung. Bleibt bei Kontext-Rotation und keep_alive-Neustart gleich. Stufen je Modell: capabilities -> supportedModels[].effort_stufen. Eine Stufe, die das Modell nicht kann, wird abgelehnt (die CLI wiche sonst STILL aus: xhigh -> high bei opus-4.6/sonnet-4.6); haiku kennt keinen Effort (Fehler). Gemini/antigravity: kein Flag.' },
         message: { type: 'string', description: 'Nachricht an den Spezialisten (erforderlich fuer: wake)' },
         section: { type: 'string', enum: ['regeln', 'fehler', 'patterns'], description: 'Abschnitt der SKILL.md (legacy, optional fuer: update_skill). Alternative: file' },
@@ -3760,7 +3781,7 @@ async function handleToolCall(
       // Specialist-Calls werden via PG-Queue an den lokalen FileWatcher-Daemon
       // delegiert (wo Claude-CLI + Projekt-FS verfuegbar sind).
       // status + capabilities lesen direkt aus PG ohne Queue.
-      const { enqueueSpecialistJob, waitForSpecialistJob, getPool, getWrapperStatus, listWrapperStatus, postToInbox, EFFORT_STUFEN, pruefeEffort, waehleEffort, getModel, parseNamen: parseSpezNamen, waehleSpezialisten, kennzeichnung: spezKennzeichnung, ausblendHinweis, beschrifteZeile: beschrifteSpezZeile, veraltetSchwelleMs } = await import('@synapse/core');
+      const { enqueueSpecialistJob, waitForSpecialistJob, getPool, getWrapperStatus, listWrapperStatus, postToInbox, EFFORT_STUFEN, pruefeEffort, waehleEffort, getModel, baueSpawnJobArgs, pruefeSpawnEffort, parseNamen: parseSpezNamen, waehleSpezialisten, kennzeichnung: spezKennzeichnung, ausblendHinweis, beschrifteZeile: beschrifteSpezZeile, veraltetSchwelleMs } = await import('@synapse/core');
 
       // capabilities ist projekt-agnostisch — direkt aus PG ableiten.
       // projects-Tabelle = registrierte Daemons je hostname.
@@ -3986,14 +4007,8 @@ async function handleToolCall(
       // zurueckkommen, nicht erst nach dem Umweg ueber Queue und Daemon. Verbindlich
       // bleibt die Pruefung im Daemon (spawnSpecialistTool).
       // Kennt die Registry das Modell, wird die Stufe auch gegen SEINE effort_stufen geprueft.
-      const pruefeEffortFuer = async (model: unknown, effort: unknown): Promise<void> => {
-        const stufe = pruefeEffort(effort);
-        if (!stufe || typeof model !== 'string') return;
-        const eintrag = await getModel(model).catch(() => null);
-        if (eintrag && eintrag.binary === 'claude') {
-          waehleEffort(eintrag.alias, eintrag.effortStufen ?? [], eintrag.defaultEffort, stufe);
-        }
-      };
+      // Gemeinsame Funktion (core specialist-spawn-args.ts), dieselbe wie in der Route POST /specialists/spawn.
+      const pruefeEffortFuer = (model: unknown, effort: unknown): Promise<void> => pruefeSpawnEffort(model, effort);
       try {
         const a = args as Record<string, unknown>;
         if (actionStr === 'spawn') await pruefeEffortFuer(a.model, a.effort);
@@ -4009,11 +4024,24 @@ async function handleToolCall(
         return { success: false, error: `Unbekannte specialist action: "${actionStr}"` };
       }
 
+      // spawn/spawn_batch: Eingabe VOR dem Enqueue validieren und in die Form bringen, die der Daemon-Worker
+      // liest (snake_case, nie "undefined"). Wirkt ohne Daemon-Neustart. keep_alive-Standard auf dem
+      // REST/Web-KI-Weg: false (stdio: true) — heutiges Verhalten je Weg, Vereinheitlichung = User-Entscheidung.
+      let jobArgs = args as Record<string, unknown>;
+      if (actionStr === 'spawn' || actionStr === 'spawn_batch') {
+        const gebaut = baueSpawnJobArgs(actionStr, jobArgs, {
+          project,
+          projectPath: String(jobArgs.project_path ?? ''),
+          keepAliveStandard: false,
+        });
+        if (!gebaut.ok) return { success: false, error: 'invalid_spawn_args', message: gebaut.fehler };
+        jobArgs = gebaut.args;
+      }
       try {
         const { id } = await enqueueSpecialistJob({
           project,
           action: actionStr as 'spawn' | 'spawn_batch' | 'stop' | 'purge' | 'update_skill',
-          args: args as Record<string, unknown>,
+          args: jobArgs,
         });
         const result = await waitForSpecialistJob(id, 60_000);
         if (result.status === 'done') {
