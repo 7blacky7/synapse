@@ -521,6 +521,26 @@ export interface CoeditConflictDetail {
   right_agent_id: string;
   reason: 'same_anchor' | 'overlapping_range' | 'file_level_overlap' | 'composite_reapply_failed';
   message: string;
+  /** Plan, in dem die beiden Ops liegen (gesetzt, wo der Plan bekannt ist). */
+  plan_id?: string;
+  /** Fertige Aufrufe, die beide Ops VOLLSTAENDIG liefern (op_index-Abruf von plan_status). */
+  ansehen?: string[];
+}
+
+/**
+ * Fremde Op vollstaendig sehen (User-Vorgabe 29.09.2026): jede Warnung/Ablehnung, die auf eine Op
+ * verweist, nennt den fertigen Aufruf, der sie ungekuerzt liefert (getPlanOpsVollstaendig).
+ */
+function opAnsehen(planId: string, opIndex: number): string {
+  return `files(action:'plan_status', plan_id:'${planId}', op_index:${opIndex})`;
+}
+
+function mitVerweis(conflicts: CoeditConflictDetail[], planId: string): CoeditConflictDetail[] {
+  return conflicts.map((conflict) => ({
+    ...conflict,
+    plan_id: planId,
+    ansehen: uniqueStrings([opAnsehen(planId, conflict.left_op_index), opAnsehen(planId, conflict.right_op_index)]),
+  }));
 }
 
 export type CommitBatchResult =
@@ -1530,7 +1550,7 @@ async function commitCoeditBatch(args: {
       await client.query('COMMIT'); notifyPlanChange();
       return {
         success: false, plan_id: args.plan_id, status: 'conflict',
-        error: 'coedit_conflict', conflicts: regionConflicts,
+        error: 'coedit_conflict', conflicts: mitVerweis(regionConflicts, args.plan_id),
         message: `${regionConflicts.length} ueberlappende Cross-Agent-Bereiche; Plan ist terminal conflict, nichts geschrieben.`,
       };
     }
@@ -1549,7 +1569,7 @@ async function commitCoeditBatch(args: {
       await client.query('COMMIT'); notifyPlanChange();
       return {
         success: false, plan_id: args.plan_id, status: 'conflict',
-        error: 'coedit_conflict', conflicts: [combined.conflict],
+        error: 'coedit_conflict', conflicts: mitVerweis([combined.conflict], args.plan_id),
         message: 'Gemeinsame Vorschau fehlgeschlagen; Plan ist terminal conflict, nichts geschrieben.',
       };
     }
@@ -2102,8 +2122,10 @@ export async function planBatch(args: {
           `Ops anpassen oder den Plan selbst aendern: files(action:"plan_update", plan_id:"${ziel.id}", op_index, ops).`,
         );
       }
-      mergeOverlaps.push(...detectCrossAgentConflicts(teilOps, baselines)
-        .filter((conflict) => conflict.left_op_index >= pruefIdx.length || conflict.right_op_index >= pruefIdx.length));
+      const imZiel = (index: number) => (index < pruefIdx.length ? pruefIdx[index] : ziel.ops.length + (index - pruefIdx.length));
+      mergeOverlaps.push(...mitVerweis(detectCrossAgentConflicts(teilOps, baselines)
+        .filter((conflict) => conflict.left_op_index >= pruefIdx.length || conflict.right_op_index >= pruefIdx.length)
+        .map((conflict) => ({ ...conflict, left_op_index: imZiel(conflict.left_op_index), right_op_index: imZiel(conflict.right_op_index) })), ziel.id));
       const alleOps = [...ziel.ops, ...neueOps];
       const vorschau = [
         ...(Array.isArray(ziel.previews) ? ziel.previews : []),
@@ -2687,6 +2709,8 @@ interface AbgelehnteSpaeteOp {
   zeilen: string;
   grund: string;
   aktueller_stand: { file_path: string; ab_zeile: number; zeilen: string[] };
+  /** Ops des committeten Plans auf dieser Datei (plan_id, op_index, agent_id, Aufruf zum Ansehen). */
+  aendernde_ops?: Array<{ plan_id: string; op_index: number; agent_id: string | null; action: FileBatchOpAction; ansehen: string }>;
 }
 
 /**
@@ -2709,10 +2733,16 @@ async function spaeteZeilenOpsUmrechnen(
   const dateien = uniqueStrings(ops.filter((op) => zeilenAktionen.has(op.action)).map((op) => op.file_path));
   if (dateien.length === 0) return { ok: true, ops, verschoben: 0, messung: [] };
   const pool = getPool();
-  const basisHashes = (await pool.query<{ expected_hashes: Record<string, string> }>(
-    `SELECT expected_hashes FROM file_batch_plans WHERE id = $1::bigint AND project = $2`,
+  const planZeile = (await pool.query<{ expected_hashes: Record<string, string>; ops: FileBatchOp[] }>(
+    `SELECT expected_hashes, ops FROM file_batch_plans WHERE id = $1::bigint AND project = $2`,
     [planId, project],
-  )).rows[0]?.expected_hashes ?? {};
+  )).rows[0];
+  const basisHashes = planZeile?.expected_hashes ?? {};
+  // Welche Ops des committeten Plans die Datei geaendert haben — je mit Aufruf zum vollstaendigen Ansehen.
+  const aendernde = (filePath: string) => (Array.isArray(planZeile?.ops) ? planZeile.ops : [])
+    .map((op, opIndex) => ({ op, opIndex }))
+    .filter(({ op }) => op.file_path === filePath || op.new_path === filePath)
+    .map(({ op, opIndex }) => ({ plan_id: planId, op_index: opIndex, agent_id: op.agent_id ?? null, action: op.action, ansehen: opAnsehen(planId, opIndex) }));
   const zuordnung = new Map<string, { map: Zuordnung | null; aktuell: string[]; grund?: string }>();
   const messung: Array<{ file_path: string; ms: number; tabellen: number; fallback: boolean }> = [];
   for (const filePath of dateien) {
@@ -2745,6 +2775,7 @@ async function spaeteZeilenOpsUmrechnen(
         zeilen: op.action === 'insert_after' ? `nach ${op.after_line}` : `${op.line_start}-${op.line_end}`,
         grund,
         aktueller_stand: { file_path: op.file_path, ab_zeile: ab, zeilen: z.aktuell.slice(ab - 1, ab + 9) },
+        aendernde_ops: aendernde(op.file_path),
       });
       return op;
     };
@@ -3174,6 +3205,11 @@ export async function addCoeditContribution(args: {
             already_consumed_ops: alreadyConsumedOps,
             error: "contribution_failed",
             failed_ops: [{ index, file_path: bad?.file_path, action: bad?.action, error: combined.conflict.message }],
+            // Die Ops des Plans auf dieser Datei — je mit Aufruf, der sie vollstaendig liefert.
+            ops_auf_datei: plan.ops
+              .map((op, opIndex) => ({ op, opIndex }))
+              .filter(({ op }) => op.file_path === bad?.file_path || op.new_path === bad?.file_path)
+              .map(({ op, opIndex }) => ({ op_index: opIndex, agent_id: op.agent_id ?? plan.owner_agent_id, action: op.action, ansehen: opAnsehen(args.plan_id, opIndex) })),
             message: `Beitrag abgelehnt, nichts geaendert: ${combined.conflict.message}. Der gemeinsame Plan bleibt unberuehrt — Op anpassen und erneut coedit_add.`,
           };
         }
@@ -3244,7 +3280,7 @@ export async function addCoeditContribution(args: {
       already_consumed_ops: alreadyConsumedOps,
       total_plan_ops: plan.ops.length + additions.length,
       contributions: additions,
-      ...(overlapWarnings.length > 0 ? { overlap_warnings: overlapWarnings } : {}),
+      ...(overlapWarnings.length > 0 ? { overlap_warnings: mitVerweis(overlapWarnings, args.plan_id) } : {}),
       message: overlapWarnings.length > 0
         ? `${additions.length} Co-Edit-Op(s) an Plan ${args.plan_id} angehaengt. ACHTUNG: ${overlapWarnings.length} Ueberlappung(en) mit Ops eines anderen Agenten (overlap_warnings) — commit endet voraussichtlich in coedit_conflict. Jetzt abstimmen oder nach dem Konflikt cancel + replan.`
         : `${additions.length} Co-Edit-Op(s) genau einmal an Plan ${args.plan_id} angehaengt.`,
@@ -4385,7 +4421,8 @@ async function updatePlanInPlace(
     const overlaps = detectCrossAgentConflicts(nextOps, baselines)
       .filter((conflict) => isReplaced(conflict.left_op_index) || isReplaced(conflict.right_op_index));
     if (overlaps.length > 0) {
-      throw new Error(`plan_update ueberlappt mit Ops anderer Agenten — nichts geaendert: ${overlaps.map((c) => c.message).join(' | ')}`);
+      throw new Error(`plan_update ueberlappt mit Ops anderer Agenten — nichts geaendert: ${overlaps.map((c) => c.message).join(' | ')}. `
+        + `Vollstaendig ansehen: files(action:'plan_status', plan_id:'${args.plan_id}', op_indices:[${uniqueStrings(overlaps.flatMap((c) => [String(c.left_op_index), String(c.right_op_index)])).join(',')}])`);
     }
     const combined = buildCombinedCoeditPreview({ ...plan, ops: nextOps, expected_hashes: expected }, baselines);
     if (!combined.ok) throw new Error(`${combined.conflict.message} — nichts geaendert`);
@@ -4584,7 +4621,7 @@ export async function getBatchPlan(plan_id: string): Promise<FileBatchPlanRow | 
     for (const filePath of uniqueStrings(planOps.flatMap(touchedPaths))) {
       baselines.set(filePath, (await getFileContentFromPg(row.project, filePath)) ?? '');
     }
-    overlapWarnings = detectCrossAgentConflicts(planOps, baselines);
+    overlapWarnings = mitVerweis(detectCrossAgentConflicts(planOps, baselines), String(plan_id));
   }
   return {
     ...normalizePlanRow(row),
@@ -4592,6 +4629,121 @@ export async function getBatchPlan(plan_id: string): Promise<FileBatchPlanRow | 
     ...(contributions.length > 0 ? { contributions } : {}),
     ...(overlapWarnings.length > 0 ? { overlap_warnings: overlapWarnings } : {}),
     ...(commitWartetAuf.length > 0 ? { commit_wartet_auf: commitWartetAuf } : {}),
+  };
+}
+
+/**
+ * Fremde Op vollstaendig sehen (User-Vorgabe 29.09.2026): plan_status mit op_index / op_indices
+ * liefert jede gewuenschte Op KOMPLETT — agent_id, action, alle Felder (content, search/replace,
+ * edits, anchor_*, Zeilen), reason, Status (aktiv/committed/zurueckgezogen/verworfen) und die
+ * betroffenen Zeilen vorher/nachher (Op allein gegen die Basis des Plans angewendet, 3 Zeilen
+ * Kontext). Nichts gekuerzt; from_line/to_line schneiden nur auf Wunsch ein Fenster aus content.
+ * Basis: offener Plan = aktueller Dateistand, committeter Plan = Stand vor dem commit (file_versions).
+ */
+export async function getPlanOpsVollstaendig(args: {
+  plan_id: string;
+  op_index?: number;
+  op_indices?: number[];
+  from_line?: number;
+  to_line?: number;
+}): Promise<Record<string, unknown>> {
+  const pool = getPool();
+  const plan = (await pool.query<{
+    id: string; project: string; owner_agent_id: string | null; ops: FileBatchOp[]; expected_hashes: Record<string, string>;
+    previews: OpPreview[]; status: FileBatchStatus; reason: string | null;
+  }>(
+    `SELECT id::text AS id, project, owner_agent_id, ops, expected_hashes, previews, status, reason
+       FROM file_batch_plans WHERE id = $1::bigint`,
+    [args.plan_id],
+  )).rows[0];
+  if (!plan) return { success: false, error: 'plan_not_found', message: `Plan ${args.plan_id} nicht gefunden.` };
+  const ops = Array.isArray(plan.ops) ? plan.ops : [];
+  const previews = Array.isArray(plan.previews) ? plan.previews : [];
+  const indices = uniqueStrings([...(args.op_indices ?? []), ...(args.op_index !== undefined && args.op_index !== null ? [args.op_index] : [])]
+    .map((index) => String(Number(index)))).map(Number);
+  if (indices.length === 0) return { success: false, error: 'op_index_fehlt', message: 'op_index oder op_indices angeben.' };
+  const rueckzug = previews.find((preview) => preview?.withdrawn_from);
+  const opStatus = rueckzug ? 'zurueckgezogen'
+    : plan.status === 'open' || plan.status === 'conflict' ? 'aktiv'
+      : plan.status === 'committed' ? 'committed'
+        : plan.status === 'cancelled' ? 'verworfen' : plan.status;
+  const basisCache = new Map<string, string | null>();
+  const basis = async (filePath: string): Promise<string | null> => {
+    if (basisCache.has(filePath)) return basisCache.get(filePath) ?? null;
+    const hash = plan.expected_hashes?.[filePath];
+    let text: string | null;
+    if (plan.status === 'committed' && hash) {
+      text = hash === EMPTY_CONTENT_HASH ? '' : (await pool.query<{ content: string }>(
+        `SELECT content FROM file_versions WHERE project = $1 AND file_path = $2 AND content_hash = $3
+          ORDER BY (batch_id = $4::bigint) DESC NULLS LAST, id DESC LIMIT 1`,
+        [plan.project, filePath, hash, plan.id],
+      )).rows[0]?.content ?? null;
+    } else {
+      text = (await getFileContentFromPg(plan.project, filePath)) ?? '';
+    }
+    basisCache.set(filePath, text);
+    return text;
+  };
+  const kontext = 3;
+  const ergebnis: Array<Record<string, unknown>> = [];
+  for (const index of indices) {
+    const op = ops[index];
+    if (!Number.isInteger(index) || !op) {
+      ergebnis.push({ op_index: index, fehler: `op_index ${index} ausserhalb 0..${ops.length - 1}` });
+      continue;
+    }
+    const volleOp: Record<string, unknown> = { ...op };
+    let contentFenster: Record<string, number> | undefined;
+    if (typeof op.content === 'string' && (args.from_line !== undefined || args.to_line !== undefined)) {
+      const zeilen = op.content.split('\n');
+      const von = Math.max(1, Number(args.from_line ?? 1));
+      const bis = Math.min(zeilen.length, Number(args.to_line ?? zeilen.length));
+      volleOp.content = zeilen.slice(von - 1, bis).join('\n');
+      contentFenster = { from_line: von, to_line: bis, gesamt_zeilen: zeilen.length };
+    }
+    const eintrag: Record<string, unknown> = {
+      op_index: index,
+      agent_id: op.agent_id ?? plan.owner_agent_id,
+      status: opStatus,
+      op: volleOp,
+      ...(contentFenster ? { content_fenster: contentFenster } : {}),
+      ...(previews.find((preview) => preview?.index === index) ? { preview: previews.find((preview) => preview?.index === index) } : {}),
+    };
+    const text = await basis(op.file_path);
+    if (text === null) {
+      eintrag.vorher_nachher_fehlt = 'Stand vor dem commit ist nicht mehr lesbar (file_versions) — die Op selbst ist vollstaendig oben.';
+    } else {
+      const buffers = new Map<string, PreparedFile>([[op.file_path, new PreparedFile(text)]]);
+      if (op.new_path) buffers.set(op.new_path, new PreparedFile((await getFileContentFromPg(plan.project, op.new_path)) ?? ''));
+      try {
+        const angewendet = applyOpMitZeilen(buffers, op, true, 0);
+        const z = angewendet.zeilen;
+        if (z) {
+          const alt = text.split('\n');
+          const buf = buffers.get(op.file_path) as PreparedFile;
+          const neu = buf.deleted ? [] : buf.getLines();
+          const ab = Math.max(0, z.start - kontext);
+          eintrag.bereich = { ab_zeile: z.start + 1, alte_zeilen: z.weg, neue_zeilen: z.neu };
+          eintrag.vorher = { ab_zeile: ab + 1, zeilen: alt.slice(ab, z.start + z.weg + kontext) };
+          eintrag.nachher = { ab_zeile: ab + 1, zeilen: neu.slice(ab, z.start + z.neu + kontext) };
+        } else {
+          eintrag.bereich = { hinweis: `${op.action} aendert ${op.file_path} nicht (Ziel: ${op.new_path ?? '-'})` };
+        }
+      } catch (error) {
+        eintrag.anwendung = `allein gegen die Basis nicht anwendbar: ${(error as Error).message}`;
+      }
+    }
+    ergebnis.push(eintrag);
+  }
+  return {
+    success: true,
+    plan_id: plan.id,
+    plan_status: plan.status,
+    owner_agent_id: plan.owner_agent_id,
+    ops_count: ops.length,
+    basis: plan.status === 'committed' ? 'Stand vor dem commit (file_versions)' : 'aktueller Dateistand',
+    ops: ergebnis,
+    message: `${ergebnis.length} Op(s) von Plan ${plan.id} vollstaendig (ungekuerzt). vorher/nachher: die Op allein gegen die Basis angewendet, ${kontext} Zeilen Kontext.`,
   };
 }
 
@@ -4633,6 +4785,8 @@ export function buildPlanStatusResponse(plan: FileBatchPlanRow): Record<string, 
     ...(plan.withdrawn && plan.withdrawn.length > 0 ? { withdrawn: plan.withdrawn } : {}),
     ...(plan.contributions && plan.contributions.length > 0 ? { contributions: plan.contributions } : {}),
     ...(plan.overlap_warnings && plan.overlap_warnings.length > 0 ? { overlap_warnings: plan.overlap_warnings } : {}),
+    // Anzeige hier ist gekuerzt (previews[].context, ops_overview ohne Inhalt) — der Weg zur vollen Op:
+    op_vollstaendig: `Jede Op ungekuerzt (alle Felder, content, Anker, reason, Status, betroffene Zeilen vorher/nachher): files(action:'plan_status', plan_id:'${plan.id}', op_index:N) oder op_indices:[...]; from_line/to_line schneiden ein Fenster aus sehr grossem content.`,
     ...(plan.commit_wartet_auf && plan.commit_wartet_auf.length > 0
       ? {
           commit_wartet_auf: plan.commit_wartet_auf,

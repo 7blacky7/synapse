@@ -182,6 +182,7 @@ export async function claimOpenPlanHints(
         : {}),
       ...(traeger > 0 ? { wartende_traeger: traeger } : {}),
       hinweis: 'Offene Plaene laufen nicht ab. Committen: files(action:"commit", plan_id). '
+        + 'Einzelne Op ungekuerzt ansehen: files(action:"plan_status", plan_id, op_index). '
         + 'Verwerfen: files(action:"cancel", plan_id). '
         + 'Plan mit fehler_ops korrigieren: files(action:"plan_update", plan_id, op_index, ops).'
         + (traeger > 0 ? ' wartende_traeger = offene leere Traegerplaene von Wartenden; sie schliessen sich, sobald ihr Ziel-Plan committed oder verworfen ist.' : ''),

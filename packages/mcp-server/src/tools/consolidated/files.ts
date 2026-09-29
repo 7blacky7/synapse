@@ -30,6 +30,7 @@ import {
   planFailureResponse,
   buildCancelResponse,
   pollPlanStatus,
+  getPlanOpsVollstaendig,
   reservationTtlHint,
   commitBatch,
   cancelBatch,
@@ -172,9 +173,14 @@ export const filesTool: ConsolidatedTool = {
           type: 'string',
           description: 'Plan-ID (fuer commit, cancel, plan_status, plan_update). String wegen BIGSERIAL.',
         },
+        op_indices: {
+          type: 'array',
+          items: { type: 'number' },
+          description: 'plan_status: mehrere Ops VOLLSTAENDIG liefern (alle Felder ungekuerzt, agent_id, Status, vorher/nachher). from_line/to_line schneiden ein Fenster aus content.',
+        },
         op_index: {
           type: 'number',
-          description: 'plan_update: Index der zu ersetzenden Op (0-basiert); ops[] ersetzt genau diese. Ohne op_index ersetzt ops[] alle Ops.',
+          description: 'plan_status: Index einer Op, die VOLLSTAENDIG geliefert wird (alle Felder ungekuerzt, agent_id, Status, betroffene Zeilen vorher/nachher). plan_update: Index der zu ersetzenden Op (0-basiert); ops[] ersetzt genau diese. Ohne op_index ersetzt ops[] alle Ops.',
         },
         ops: {
           type: 'array',
@@ -522,6 +528,12 @@ export const filesTool: ConsolidatedTool = {
     }
     if (action === 'plan_status') {
       const planId = reqStr(args, 'plan_id');
+      // Fremde Op vollstaendig sehen: op_index / op_indices liefern die Op(s) ungekuerzt.
+      const opIndex = num(args, 'op_index');
+      const opIndices = Array.isArray(args.op_indices) ? (args.op_indices as unknown[]).map(Number) : undefined;
+      if (opIndex !== undefined || opIndices) {
+        return getPlanOpsVollstaendig({ plan_id: planId, op_index: opIndex, op_indices: opIndices, from_line: num(args, 'from_line'), to_line: num(args, 'to_line') });
+      }
       const waitSeconds = num(args, 'wait_seconds');
       if (waitSeconds) return pollPlanStatus({ plan_id: planId, wait_seconds: waitSeconds });
       const plan = await getBatchPlan(planId);
