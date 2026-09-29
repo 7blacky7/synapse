@@ -43,16 +43,18 @@ export function getModelTier(model: string | null): string {
   if (lower.includes('haiku')) return 'haiku';
   if (lower.includes('sonnet')) return 'sonnet';
   if (lower.includes('opus')) return 'opus';
+  if (lower.includes('fable')) return 'fable';
   return 'unknown';
 }
 
 /**
  * Leitet den model_scope aus dem Modell ab, das den Fehler machte.
- * haiku-Fehler → scope "haiku", opus-Fehler → scope "all"
+ * haiku-Fehler → scope "haiku", opus-/fable-Fehler → scope "all"
+ * (fable ist Spitzenmodell wie opus: was es falsch macht, betrifft alle)
  */
 export function deriveModelScope(foundInModel: string): string {
   const tier = getModelTier(foundInModel);
-  if (tier === 'opus') return 'all';
+  if (tier === 'opus' || tier === 'fable') return 'all';
   if (tier === 'sonnet') return 'sonnet';
   if (tier === 'haiku') return 'haiku';
   return 'all';

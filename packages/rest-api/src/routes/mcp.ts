@@ -709,7 +709,7 @@ const MCP_TOOLS = [
           ],
           description: 'Name des Spezialisten (erforderlich fuer: spawn, stop, status, wake, update_skill). Array erlaubt fuer: status',
         },
-        model: { type: 'string', enum: ['opus', 'sonnet', 'haiku', 'opus[1m]', 'sonnet[1m]', 'gemini-flash-lite', 'gemini-flash', 'gemini-pro'], description: 'Modell-Alias (erforderlich fuer: spawn). Aliases werden via model_registry-Tabelle aufgeloest. CLAUDE: opus/sonnet/haiku = 200k, opus[1m]/sonnet[1m] = 1M Context. ⚠️ ABO-LIMIT: Nur EIN Modell-Typ darf gleichzeitig auf 1M laufen (sonst rate-limit-Block). GOOGLE: gemini-flash-lite/gemini-flash/gemini-pro = 1M Context, ~3-75x billiger als Claude (braucht GOOGLE_API_KEY).' },
+        model: { type: 'string', description: 'Modell-Alias (erforderlich fuer: spawn). Gueltige Aliase stehen in der Modell-Registry (capabilities → supportedModels; unbekannter Alias → Fehler mit Liste, geprueft beim Spawn im Daemon). CLAUDE, immer neueste Version: opus/sonnet/haiku = 200k, opus[1m]/sonnet[1m] = 1M, fable = 1M nativ. Aeltere Versionen ueber versionierte Aliase: opus-5, opus-4.8, opus-4.7, opus-4.6 (je auch [1m]), sonnet-5(/[1m]), sonnet-4.6 (nur 200k), fable-5. ANTIGRAVITY: antigravity (agy-CLI, Pro-Abo). ⚠️ ABO-LIMIT: Nur EIN Modell-Typ darf gleichzeitig auf 1M laufen (sonst rate-limit-Block). GOOGLE: gemini-flash-lite/gemini-flash/gemini-pro = 1M Context, ~3-75x billiger als Claude (braucht GOOGLE_API_KEY).' },
         expertise: { type: 'string', description: 'Fachgebiet des Spezialisten (erforderlich fuer: spawn)' },
         task: { type: 'string', description: 'Aufgabe fuer den Spezialisten (erforderlich fuer: spawn)' },
         project: { type: 'string', description: 'Projekt-Name (erforderlich fuer: spawn)' },
@@ -2709,7 +2709,9 @@ async function handleToolCall(
           // Fall; sie wurde hier nur nicht benutzt. Die Vorkehrung war da, sie griff nur nicht.
           if (bool(args, 'trigger_respawn') === true) {
             const { maybeTriggerRespawn } = await import('@synapse/core');
-            const decision = await maybeTriggerRespawn(project, source);
+            // ueberDaemon: die REST-API laeuft im Container — ein Marker in dessen /tmp
+            // erreicht den Wrapper auf dem User-PC nie. Der Daemon schreibt ihn dort.
+            const decision = await maybeTriggerRespawn(project, source, { ueberDaemon: true });
             return {
               ...trimmed,
               respawn: { triggered: decision.triggered, message: decision.message },

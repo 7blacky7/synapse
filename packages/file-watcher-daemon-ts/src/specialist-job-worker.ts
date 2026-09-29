@@ -12,6 +12,8 @@
  */
 
 import os from 'node:os'
+import { writeFileSync } from 'node:fs'
+import { join } from 'node:path'
 import {
   getPool,
   claimPendingSpecialistJob,
@@ -21,6 +23,21 @@ import {
 } from '@synapse/core'
 
 const DAEMON_ID = `daemon-${os.hostname()}-${process.pid}`
+
+/**
+ * Schreibt den Rotations-Marker, den der Wrapper im Heartbeat prueft
+ * (agents/src/wrapper.ts RESPAWN_MARKER_PATH). Gebraucht fuer den REST-Weg von
+ * trigger_respawn: dort laeuft core im API-Container, und nur der Daemon sitzt
+ * auf dem Rechner des Wrappers. Liefert den geschriebenen Pfad.
+ */
+export function schreibeRotationsMarker(name: string, verzeichnis = '/tmp'): string {
+  if (!/^[A-Za-z0-9_][A-Za-z0-9_.-]*$/.test(name) || name.includes('..')) {
+    throw new Error(`Ungueltiger Spezialisten-Name fuer den Rotations-Marker: "${name}"`)
+  }
+  const pfad = join(verzeichnis, `.specialist-rotate-pending-${name}`)
+  writeFileSync(pfad, `${new Date().toISOString()}\n`, 'utf8')
+  return pfad
+}
 
 export interface SpecialistJobWorkerHandle {
   stop: () => Promise<void>
@@ -135,7 +152,7 @@ async function dispatchSpecialistAction(job: SpecialistJobRow): Promise<Record<s
     case 'spawn': {
       return (await tools.spawnSpecialistTool(
         String(args.name),
-        args.model as 'opus' | 'sonnet' | 'haiku' | 'opus[1m]' | 'sonnet[1m]',
+        String(args.model),
         String(args.expertise),
         String(args.task),
         String(args.project),
@@ -157,7 +174,7 @@ async function dispatchSpecialistAction(job: SpecialistJobRow): Promise<Record<s
         try {
           const r = await tools.spawnSpecialistTool(
             String(s.name),
-            s.model as 'opus' | 'sonnet' | 'haiku' | 'opus[1m]' | 'sonnet[1m]',
+            String(s.model),
             String(s.expertise),
             String(s.task),
             project,
@@ -253,6 +270,14 @@ async function dispatchSpecialistAction(job: SpecialistJobRow): Promise<Record<s
         results.push((await tools.specialistStatusTool(String(args.project_path), n)) as Record<string, unknown>)
       }
       return { results, count: results.length }
+    }
+
+    case 'rotate': {
+      // Neustart-Aufforderung aus maybeTriggerRespawn (REST-Weg). Der Korridor-
+      // Check ist dort schon bestanden; hier nur noch der Marker.
+      const name = String(args.name)
+      const marker = schreibeRotationsMarker(name)
+      return { success: true, name, marker, message: `Rotations-Marker fuer "${name}" geschrieben` }
     }
 
     default:

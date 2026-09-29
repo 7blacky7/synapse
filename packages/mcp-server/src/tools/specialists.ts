@@ -84,7 +84,11 @@ export async function spawnSpecialistTool(
   keepAlive?: boolean,
 ) {
   // 1. Modell aufloesen + provider-spezifische Checks
-  const { resolveModel, listAliases } = await import('@synapse/agents');
+  const { resolveModel, listAliases, loadFromDb } = await import('@synapse/agents');
+  // DB-Registry einmal laden (danach No-op). Ohne das kennt der Spawn nur
+  // STATIC_FALLBACK, und ein Alias, der nur in model_registry steht, ist
+  // "unbekannt". DB-Fehler: STATIC_FALLBACK mit Log.
+  await loadFromDb();
   const modelEntry = resolveModel(model);
   if (!modelEntry) {
     return jsonResult({

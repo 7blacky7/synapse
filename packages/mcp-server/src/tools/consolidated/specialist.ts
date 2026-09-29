@@ -49,12 +49,10 @@ export const specialistTool: ConsolidatedTool = {
         },
         model: {
           type: 'string',
-          // enum dynamisch aus model_registry beim Server-Start ueberschrieben.
-          // Aktuell statischer Fallback fuer Bootstrap-Tests + JSONSchema-Validierung
-          // bei DB-Down. Neue Modelle in DB → MCP-Server-Restart noetig.
-          enum: ['opus', 'sonnet', 'haiku', 'opus[1m]', 'sonnet[1m]', 'gemini-flash-lite', 'gemini-flash', 'gemini-pro', 'antigravity'],
+          // Kein festes enum mehr: gueltig ist, was die Modell-Registry kennt.
+          // Validierung beim Spawn (spawnSpecialistTool: resolveModel + Fehler mit listAliases).
           description:
-            'Modell-Alias (erforderlich für: spawn). Aliases werden via model_registry-Tabelle aufgeloest. CLAUDE: opus/sonnet/haiku = 200k, opus[1m]/sonnet[1m] = 1M Context. ⚠️ ABO-LIMIT: Nur EIN Modell-Typ darf gleichzeitig auf 1M laufen (sonst rate-limit-Block). GOOGLE (API-Key, Pay-per-Token): gemini-flash-lite/gemini-flash/gemini-pro = 1M Context, ~3-75x billiger als Claude (braucht GOOGLE_API_KEY). ANTIGRAVITY (Pro-Abo via Keyring, KEIN API-Key): antigravity = offizieller agy-CLI als Single-Agent-Worker; laeuft auf Pro-Quota/Credits, strikt getrennt vom GOOGLE-Provider.',
+            'Modell-Alias (erforderlich für: spawn). Gueltige Aliase stehen in der Modell-Registry (capabilities → supportedModels; unbekannter Alias → Fehler mit Liste). CLAUDE, immer neueste Version: opus/sonnet/haiku = 200k, opus[1m]/sonnet[1m] = 1M, fable = 1M nativ. Aeltere Versionen gezielt ueber versionierte Aliase: opus-5, opus-4.8, opus-4.7, opus-4.6 (je auch [1m]), sonnet-5(/[1m]), sonnet-4.6 (nur 200k), fable-5. ⚠️ ABO-LIMIT: Nur EIN Modell-Typ darf gleichzeitig auf 1M laufen (sonst rate-limit-Block). GOOGLE (API-Key, Pay-per-Token): gemini-flash-lite/gemini-flash/gemini-pro = 1M Context, ~3-75x billiger als Claude (braucht GOOGLE_API_KEY). ANTIGRAVITY (Pro-Abo via Keyring, KEIN API-Key): antigravity = offizieller agy-CLI als Single-Agent-Worker; laeuft auf Pro-Quota/Credits, strikt getrennt vom GOOGLE-Provider.',
         },
         expertise: {
           type: 'string',
@@ -140,7 +138,7 @@ export const specialistTool: ConsolidatedTool = {
             type: 'object',
             properties: {
               name: { type: 'string' },
-              model: { type: 'string', enum: ['opus', 'sonnet', 'haiku', 'opus[1m]', 'sonnet[1m]'] },
+              model: { type: 'string', description: 'Modell-Alias aus der Registry, siehe model' },
               expertise: { type: 'string' },
               task: { type: 'string' },
               channel: { type: 'string' },
@@ -216,7 +214,7 @@ export const specialistTool: ConsolidatedTool = {
           try {
             const r = await spawnSpecialistTool(
               String(s.name),
-              s.model as 'opus' | 'sonnet' | 'haiku' | 'opus[1m]' | 'sonnet[1m]',
+              String(s.model),
               String(s.expertise),
               String(s.task),
               project,

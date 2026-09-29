@@ -80,6 +80,17 @@ CREATE TABLE public.model_registry (
 );
 
 --
+-- Name: model_cutoffs; Type: TABLE; Schema: public
+--
+
+CREATE TABLE public.model_cutoffs (
+    model_id text NOT NULL,
+    cutoff_date date NOT NULL,
+    quelle text,
+    aktualisiert_am timestamp with time zone DEFAULT now()
+);
+
+--
 -- Name: embedding_knoten embedding_knoten_pkey; Type: CONSTRAINT; Schema: public
 --
 
@@ -99,6 +110,13 @@ ALTER TABLE ONLY public.embedding_knoten
 
 ALTER TABLE ONLY public.model_registry
     ADD CONSTRAINT model_registry_pkey PRIMARY KEY (alias);
+
+--
+-- Name: model_cutoffs model_cutoffs_pkey; Type: CONSTRAINT; Schema: public
+--
+
+ALTER TABLE ONLY public.model_cutoffs
+    ADD CONSTRAINT model_cutoffs_pkey PRIMARY KEY (model_id);
 
 --
 -- Name: idx_embedding_knoten_letzter_kontakt; Type: INDEX; Schema: public

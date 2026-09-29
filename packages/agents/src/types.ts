@@ -1,6 +1,7 @@
 export interface SpecialistConfig {
   name: string
-  model: 'opus' | 'sonnet' | 'haiku' | 'opus[1m]' | 'sonnet[1m]'
+  /** Alias aus der Modell-Registry (opus, fable, opus-4.7[1m], gemini-flash ...), siehe models.ts */
+  model: string
   expertise: string
   task: string
   project: string
@@ -76,6 +77,9 @@ export interface HeartbeatConfig {
   autoRotation: boolean
 }
 
+// Nicht mehr von der Context-Kette benutzt (Export bleibt fuer Backward-Compat).
+// Quelle ist die Registry (models.ts), der Rueckfall fuer unbekannte Modelle steht
+// an EINER Stelle: core services/kontext-korridor.ts fallbackKorridor.
 export const CONTEXT_CEILINGS: Record<string, number> = {
   haiku: 200_000,
   sonnet: 200_000,

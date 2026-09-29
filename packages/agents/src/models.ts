@@ -7,12 +7,14 @@
  * dient als Last-Resort-Fallback.
  */
 
+import { berechneKontextSchwellen, KORRIDOR_1M, KORRIDOR_200K, type KontextSchwellen } from '@synapse/core';
+
 export type Provider = 'anthropic' | 'google' | 'antigravity';
 
 export interface ModelEntry {
   /** User-facing Alias z.B. "opus", "gemini-flash-lite" */
   alias: string;
-  /** API-Modell-String z.B. "claude-opus-4-7", "gemini-3.1-flash-lite-preview" */
+  /** API-Modell-String z.B. "claude-opus-5-5", "gemini-3.1-flash-lite-preview" */
   fullId: string;
   provider: Provider;
   /** Token-Kapazitaet (input + output kombiniert) */
@@ -33,6 +35,8 @@ export interface ModelEntry {
   pricingInputUsdPerMtok?: number;
   pricingOutputUsdPerMtok?: number;
   pricingCacheUsdPerMtok?: number;
+  /** Wissensstand (YYYY-MM-DD); massgeblich fuer Agenten ist core model_cutoffs */
+  cutoffDate?: string;
 }
 
 /**
@@ -40,37 +44,78 @@ export interface ModelEntry {
  * Iter 2.5 ueberschreibt das mit DB-Werten via model-registry-Service.
  * Bei DB-Unavailable wird diese Fallback-Liste genutzt (mit Warning-Log).
  */
+// Claude-Versionen: Output-Limit, Preise ($ je 1M Tokens: input / output / cache_read)
+// und Cutoff gelten JE VERSION (full_id), nicht je Familie — Quelle models.dev,
+// Stand 29.09.2026. Jeder Alias einer Version (rein, [1m], versioniert) bekommt
+// dieselben Werte; gleiche Werte stehen im Seed (core db/schema.ts).
+interface ClaudeVersion {
+  outputLimit: number;
+  preis: [input: number, output: number, cache: number];
+  cutoffDate: string;
+}
+const CLAUDE_VERSIONEN: Record<string, ClaudeVersion> = {
+  'claude-fable-5-1': { outputLimit: 128_000, preis: [10, 50, 0.25], cutoffDate: '2026-06-01' },
+  // fable-5: Anthropic nennt keinen Cutoff, models.dev ueber Vertex
+  'claude-fable-5': { outputLimit: 128_000, preis: [10, 50, 1], cutoffDate: '2026-01-31' },
+  'claude-opus-5-5': { outputLimit: 128_000, preis: [4, 20, 0.2], cutoffDate: '2026-06-01' },
+  'claude-opus-5': { outputLimit: 128_000, preis: [5, 25, 0.5], cutoffDate: '2026-05-01' },
+  'claude-opus-4-8': { outputLimit: 128_000, preis: [5, 25, 0.5], cutoffDate: '2026-01-01' },
+  'claude-opus-4-7': { outputLimit: 128_000, preis: [5, 25, 0.5], cutoffDate: '2026-01-31' },
+  'claude-opus-4-6': { outputLimit: 128_000, preis: [5, 25, 0.5], cutoffDate: '2025-05-31' },
+  'claude-sonnet-5-5': { outputLimit: 128_000, preis: [2, 10, 0.2], cutoffDate: '2026-06-01' },
+  'claude-sonnet-5': { outputLimit: 128_000, preis: [2, 10, 0.2], cutoffDate: '2026-01-31' },
+  'claude-sonnet-4-6': { outputLimit: 128_000, preis: [3, 15, 0.3], cutoffDate: '2025-08-31' },
+  'claude-haiku-4-5-20251001': { outputLimit: 64_000, preis: [1, 5, 0.1], cutoffDate: '2025-02-28' },
+};
+
+/**
+ * Claude-Eintrag fuer einen Alias. Kontext = Abo-Kontext der CLI (200k, [1m] = 1M,
+ * fable immer 1M), Korridor je Groessenklasse (core services/kontext-korridor.ts),
+ * alles andere je Version aus CLAUDE_VERSIONEN.
+ */
+function claude(alias: string, fullId: string): ModelEntry {
+  const version = CLAUDE_VERSIONEN[fullId];
+  const einsM = alias.endsWith('[1m]') || alias.startsWith('fable');
+  const korridor = einsM ? KORRIDOR_1M : KORRIDOR_200K;
+  return {
+    alias, fullId, provider: 'anthropic',
+    contextWindow: einsM ? 1_000_000 : 200_000,
+    outputLimit: version.outputLimit,
+    envRequired: [], binary: 'claude',
+    corridorMin: korridor.corridorMin, corridorMax: korridor.corridorMax,
+    pricingInputUsdPerMtok: version.preis[0],
+    pricingOutputUsdPerMtok: version.preis[1],
+    pricingCacheUsdPerMtok: version.preis[2],
+    cutoffDate: version.cutoffDate,
+  };
+}
+
+// Claude-Korridore je Groessenklasse: 200k = 73/88, 1M = 80/97 (Token-Budget und
+// Begruendung: core services/kontext-korridor.ts, gleiche Werte im Seed schema.ts).
 export const STATIC_FALLBACK: Record<string, ModelEntry> = {
-  opus: {
-    alias: 'opus', fullId: 'claude-opus-4-7', provider: 'anthropic',
-    contextWindow: 200_000, envRequired: [], binary: 'claude',
-    corridorMin: 90, corridorMax: 99,
-    pricingInputUsdPerMtok: 15, pricingOutputUsdPerMtok: 75, pricingCacheUsdPerMtok: 1.5,
-  },
-  sonnet: {
-    alias: 'sonnet', fullId: 'claude-sonnet-4-6', provider: 'anthropic',
-    contextWindow: 200_000, envRequired: [], binary: 'claude',
-    corridorMin: 80, corridorMax: 88,
-    pricingInputUsdPerMtok: 3, pricingOutputUsdPerMtok: 15, pricingCacheUsdPerMtok: 0.3,
-  },
-  haiku: {
-    alias: 'haiku', fullId: 'claude-haiku-4-5', provider: 'anthropic',
-    contextWindow: 200_000, envRequired: [], binary: 'claude',
-    corridorMin: 80, corridorMax: 88,
-    pricingInputUsdPerMtok: 1, pricingOutputUsdPerMtok: 5, pricingCacheUsdPerMtok: 0.1,
-  },
-  'opus[1m]': {
-    alias: 'opus[1m]', fullId: 'claude-opus-4-7', provider: 'anthropic',
-    contextWindow: 1_000_000, envRequired: [], binary: 'claude',
-    corridorMin: 80, corridorMax: 99,
-    pricingInputUsdPerMtok: 15, pricingOutputUsdPerMtok: 75, pricingCacheUsdPerMtok: 1.5,
-  },
-  'sonnet[1m]': {
-    alias: 'sonnet[1m]', fullId: 'claude-sonnet-4-6', provider: 'anthropic',
-    contextWindow: 1_000_000, envRequired: [], binary: 'claude',
-    corridorMin: 70, corridorMax: 88,
-    pricingInputUsdPerMtok: 3, pricingOutputUsdPerMtok: 15, pricingCacheUsdPerMtok: 0.3,
-  },
+  // Reine Aliase: immer die neueste Version (die CLI loest sie selbst auf)
+  opus: claude('opus', 'claude-opus-5-5'),
+  sonnet: claude('sonnet', 'claude-sonnet-5-5'),
+  haiku: claude('haiku', 'claude-haiku-4-5-20251001'),
+  'opus[1m]': claude('opus[1m]', 'claude-opus-5-5'),
+  'sonnet[1m]': claude('sonnet[1m]', 'claude-sonnet-5-5'),
+  // fable: 1M nativ ([1m] nimmt die CLI an, ignoriert es aber)
+  fable: claude('fable', 'claude-fable-5-1'),
+  // Versionierte Aliase: aeltere Claude-Versionen gezielt waehlbar. Die CLI kennt
+  // diese Aliase nicht — process.ts gibt ihr fullId (plus [1m]), siehe cliModelArg.
+  // sonnet-4.6[1m] fehlt bewusst: 1M fuer Sonnet 4.6 ist nicht im Abo (API-Credits noetig).
+  'opus-5': claude('opus-5', 'claude-opus-5'),
+  'opus-5[1m]': claude('opus-5[1m]', 'claude-opus-5'),
+  'sonnet-5': claude('sonnet-5', 'claude-sonnet-5'),
+  'sonnet-5[1m]': claude('sonnet-5[1m]', 'claude-sonnet-5'),
+  'fable-5': claude('fable-5', 'claude-fable-5'),
+  'opus-4.8': claude('opus-4.8', 'claude-opus-4-8'),
+  'opus-4.8[1m]': claude('opus-4.8[1m]', 'claude-opus-4-8'),
+  'opus-4.7': claude('opus-4.7', 'claude-opus-4-7'),
+  'opus-4.7[1m]': claude('opus-4.7[1m]', 'claude-opus-4-7'),
+  'opus-4.6': claude('opus-4.6', 'claude-opus-4-6'),
+  'opus-4.6[1m]': claude('opus-4.6[1m]', 'claude-opus-4-6'),
+  'sonnet-4.6': claude('sonnet-4.6', 'claude-sonnet-4-6'),
   'gemini-flash-lite': {
     alias: 'gemini-flash-lite', fullId: 'gemini-3.1-flash-lite-preview', provider: 'google',
     contextWindow: 1_000_000, envRequired: ['GOOGLE_API_KEY'], binary: 'node',
@@ -105,9 +150,15 @@ export const STATIC_FALLBACK: Record<string, ModelEntry> = {
 
 /**
  * In-Memory-Cache fuer DB-Modelle (DB-1: 1x Lookup beim ersten Zugriff).
- * Wird bei Erstaufruf von resolveModel populiert. Lebt fuer Prozess-Lebensdauer.
+ * Wird von loadFromDb() gefuellt — aufgerufen im Spawn-Pfad (mcp-server
+ * spawnSpecialistTool), beim Wrapper-Start und in der Gemini-Runtime.
+ * Lebt fuer Prozess-Lebensdauer.
  */
 let dbCache: Map<string, ModelEntry> | null = null;
+/** Laufender Ladevorgang — gleichzeitige Aufrufer teilen sich eine DB-Abfrage. */
+let dbLaden: Promise<void> | null = null;
+/** Laenger wartet niemand auf die Registry: ein Wrapper ohne erreichbare DB startet mit STATIC_FALLBACK. */
+const DB_LADE_TIMEOUT_MS = 5_000;
 
 /**
  * Synchroner Resolver fuer hot-paths (wrapper.ts heartbeat alle 15s).
@@ -132,14 +183,32 @@ export function resolveModel(aliasOrId: string): ModelEntry | null {
 
 /**
  * Asynchroner Loader: holt aktuelle Modell-Liste aus der DB und cached sie.
- * Sollte einmal beim Start des Prozesses (MCP-Server, Wrapper) gerufen werden.
- * Bei DB-Fehler bleibt der Cache leer und resolveModel faellt auf STATIC_FALLBACK.
+ * Laedt EINMAL je Prozess; weitere Aufrufe nach Erfolg sind ein No-op, darum
+ * darf ihn jeder Pfad vor resolveModel aufrufen.
+ * Bei DB-Fehler oder Timeout bleibt der Cache leer (Log) und resolveModel faellt
+ * auf STATIC_FALLBACK; der naechste Aufruf versucht es erneut.
+ *
+ * Befund 29.09.2026: diese Funktion wurde nirgends aufgerufen — der Spawn sah
+ * nur STATIC_FALLBACK, ein Modell, das nur in model_registry stand, war
+ * "unbekannt", und Wrapper und core-Respawn rechneten mit verschiedenen Quellen.
  */
 export async function loadFromDb(): Promise<void> {
+  if (dbCache) return;
+  if (dbLaden) return dbLaden;
+  dbLaden = ladeAusDb().finally(() => { dbLaden = null; });
+  return dbLaden;
+}
+
+async function ladeAusDb(): Promise<void> {
   try {
     // Dynamic import um circular dep zu vermeiden (core importiert agents nicht)
     const { listModels: dbListModels } = await import('@synapse/core');
-    const dbModels = await dbListModels();
+    const dbModels = await Promise.race([
+      dbListModels(),
+      new Promise<never>((_, reject) => {
+        setTimeout(() => reject(new Error(`keine Antwort nach ${DB_LADE_TIMEOUT_MS} ms`)), DB_LADE_TIMEOUT_MS).unref();
+      }),
+    ]);
     const map = new Map<string, ModelEntry>();
     for (const m of dbModels) {
       map.set(m.alias, {
@@ -156,6 +225,7 @@ export async function loadFromDb(): Promise<void> {
         pricingInputUsdPerMtok: m.pricingInputUsdPerMtok ?? undefined,
         pricingOutputUsdPerMtok: m.pricingOutputUsdPerMtok ?? undefined,
         pricingCacheUsdPerMtok: m.pricingCacheUsdPerMtok ?? undefined,
+        cutoffDate: m.cutoffDate ?? undefined,
       });
     }
     dbCache = map;
@@ -166,7 +236,38 @@ export async function loadFromDb(): Promise<void> {
   }
 }
 
+/** Reine CLI-Aliase ohne Versionsnummer — die claude-CLI loest sie selbst auf die neueste Version auf. */
+const CLI_ALIAS_OHNE_VERSION = /^(opus|sonnet|haiku|fable)(\[1m\])?$/;
+
+/**
+ * Wert fuer `claude --model`.
+ * Reine Aliase (opus, sonnet[1m], fable ...) gehen unveraendert durch: sie
+ * bedeuten "immer die neueste Version". Versionierte Aliase (opus-4.7,
+ * sonnet-5[1m] ...) gibt es nur in der Registry; die CLI bekommt dafuer die
+ * volle ID, bei [1m]-Aliasen mit angehaengtem [1m] (claude-opus-4-7[1m]).
+ * SYNAPSE_AGENT_MODEL und Registry-Lookups bleiben beim Alias.
+ */
+export function cliModelArg(entry: ModelEntry): string {
+  if (CLI_ALIAS_OHNE_VERSION.test(entry.alias)) return entry.alias;
+  return entry.alias.endsWith('[1m]') ? `${entry.fullId}[1m]` : entry.fullId;
+}
+
+/**
+ * Context-Schwellen (absolute Tokens) fuer einen Alias — dieselbe Rechnung wie
+ * der Respawn-Check in core (berechneKontextSchwellen). Unbekannter Alias:
+ * Rueckfall aus core fallbackKorridor.
+ */
+export function kontextSchwellen(alias: string): KontextSchwellen {
+  return berechneKontextSchwellen(resolveModel(alias), alias);
+}
+
+/**
+ * Alle Aliase, die resolveModel aufloest: DB-Registry UND STATIC_FALLBACK.
+ * (Vorher nur die DB, sobald geladen — dann fehlten in Fehlermeldungen Aliase,
+ * die resolveModel sehr wohl kannte, z.B. neue vor dem Registry-Update.)
+ */
 export function listAliases(): string[] {
-  if (dbCache) return Array.from(dbCache.keys());
-  return Object.keys(STATIC_FALLBACK);
+  const aliase = new Set(Object.keys(STATIC_FALLBACK));
+  if (dbCache) for (const alias of dbCache.keys()) aliase.add(alias);
+  return Array.from(aliase);
 }

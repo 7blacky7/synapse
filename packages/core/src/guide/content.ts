@@ -117,7 +117,7 @@ Notizbuch + Code-Editor + Sub-Hilfsagenten.
 
 **Agenten-Koordination** (PostgreSQL-basiert, ueberall verfuegbar):
   chat, channel, event — REST und lokaler MCP gleichermassen.
-  specialist — REST UND lokal: spawn / wake / stop / purge / update_skill / status / capabilities funktionieren ueberall, solange auf dem Ziel-PC der Watcher laeuft (status + capabilities lesen jetzt aus PG, kein lokaler-MCP-Bonus mehr). Modelle: Claude (opus/sonnet/haiku/[1m]) ODER Google (gemini-flash-lite/gemini-flash/gemini-pro), je nachdem welche Provider-Runtime auf dem Ziel-PC installiert ist.
+  specialist — REST UND lokal: spawn / wake / stop / purge / update_skill / status / capabilities funktionieren ueberall, solange auf dem Ziel-PC der Watcher laeuft (status + capabilities lesen jetzt aus PG, kein lokaler-MCP-Bonus mehr). Modelle: Claude (opus/sonnet/haiku/fable, [1m]-Varianten, versionierte Aliase wie opus-4.7 — Liste aus model_registry) ODER Google (gemini-flash-lite/gemini-flash/gemini-pro), je nachdem welche Provider-Runtime auf dem Ziel-PC installiert ist.
   watcher — nur lokal (REST kann den Daemon nicht erreichen, weist Calls ab).
 
 ## Tiefere Doku pro Tool
@@ -1376,7 +1376,7 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
   },
 
   specialist: {
-    summary: 'Persistente Spezialisten (Claude-CLI ODER Gemini) auf dem Ziel-PC spawnen, stoppen, ansprechen. Funktioniert sowohl lokal als auch ueber REST/Web-KI — Voraussetzung in beiden Faellen: auf dem Ziel-PC laeuft der FileWatcher-Daemon (er hostet PG-Queue → Provider-Runtime). Modell-Alias-Aufloesung via PG model_registry-Tabelle. Fehlerinterpretation: spawn timeoutet ohne PID/Socket in der Antwort → Watcher down ODER Provider-Runtime fehlt auf dem Ziel-PC (Claude-CLI bei opus/sonnet/haiku, GOOGLE_API_KEY bei gemini-*). Spezifischer Fehler wie "name contains illegal characters" / "project not found" → Eingabe pruefen. wake antwortet nie / Inbox-Fallback → Spezialist gestorben oder Watcher-Heartbeat haengt.',
+    summary: 'Persistente Spezialisten (Claude-CLI ODER Gemini) auf dem Ziel-PC spawnen, stoppen, ansprechen. Funktioniert sowohl lokal als auch ueber REST/Web-KI — Voraussetzung in beiden Faellen: auf dem Ziel-PC laeuft der FileWatcher-Daemon (er hostet PG-Queue → Provider-Runtime). Modell-Alias-Aufloesung via PG model_registry-Tabelle. Fehlerinterpretation: spawn timeoutet ohne PID/Socket in der Antwort → Watcher down ODER Provider-Runtime fehlt auf dem Ziel-PC (Claude-CLI bei opus/sonnet/haiku/fable, GOOGLE_API_KEY bei gemini-*). Spezifischer Fehler wie "name contains illegal characters" / "project not found" → Eingabe pruefen. wake antwortet nie / Inbox-Fallback → Spezialist gestorben oder Watcher-Heartbeat haengt.',
     when_to_use: [
       'Langlaufende Aufgabe an Sub-Agent delegieren: spawn (1) oder spawn_batch (mehrere atomar).',
       'Sub-Agent eine Nachricht / neuen Auftrag schicken: wake.',
@@ -1391,9 +1391,9 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
     param_tips: [
       'project: Pflicht fuer alle Aktionen ausser capabilities. project_path: optional via REST — wird automatisch aus dem daemon-registrierten Projekt-Pfad ermittelt (projects-Tabelle, last_access). Nur bei lokaler MCP-Direktnutzung weiterhin erforderlich.',
       'name: eindeutige ID — KEINE Sonderzeichen / / .. / Leerzeichen, sonst Sicherheits-Reject.',
-      'model: CLAUDE: opus / sonnet / haiku (200k Context). opus[1m] / sonnet[1m] = 1M Context (ABO-LIMIT: nur EIN Modell-Typ gleichzeitig auf 1M). GOOGLE: gemini-flash-lite / gemini-flash / gemini-pro = 1M Context, ~3-75x guenstiger (braucht GOOGLE_API_KEY auf dem Ziel-PC).',
+      'model: Alias aus der model_registry (unbekannter Alias → Fehlermeldung mit allen gueltigen). CLAUDE, immer neueste Version: opus / sonnet / haiku (200k Context), opus[1m] / sonnet[1m] = 1M Context (ABO-LIMIT: nur EIN Modell-Typ gleichzeitig auf 1M), fable = 1M nativ. Aeltere Versionen gezielt: opus-5, opus-4.8, opus-4.7, opus-4.6 (je auch mit [1m]), sonnet-5 / sonnet-5[1m], sonnet-4.6 (nur 200k), fable-5. GOOGLE: gemini-flash-lite / gemini-flash / gemini-pro = 1M Context, ~3-75x guenstiger (braucht GOOGLE_API_KEY auf dem Ziel-PC).',
       'keep_alive: true fuer langlaufende Spezialisten (Auto-Respawn bei Crash). Default false fuer One-Shot.',
-      'Voraussetzung: FileWatcher-Daemon laeuft auf dem User-PC + Provider-Runtime installiert (Claude-CLI fuer opus/sonnet/haiku, GOOGLE_API_KEY fuer gemini-*) + Projekt im Tray aktiv.',
+      'Voraussetzung: FileWatcher-Daemon laeuft auf dem User-PC + Provider-Runtime installiert (Claude-CLI fuer opus/sonnet/haiku/fable, GOOGLE_API_KEY fuer gemini-*) + Projekt im Tray aktiv.',
     ].join('\\n'),
     examples: [
       'specialist({ action: "spawn", project: "synapse", name: "review-bot", model: "haiku", expertise: "Code-Review", task: "Reviewe Branch X" })',
@@ -1409,7 +1409,7 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
     ],
     actions: {
       spawn: {
-        description: 'Einen neuen Spezialisten starten (Subprozess auf dem User-PC: Claude-CLI fuer opus/sonnet/haiku-Modelle, Gemini-Runtime fuer gemini-*-Modelle).',
+        description: 'Einen neuen Spezialisten starten (Subprozess auf dem User-PC: Claude-CLI fuer opus/sonnet/haiku/fable-Modelle, Gemini-Runtime fuer gemini-*-Modelle).',
         params: 'project (req), name (req), model (req), expertise (req), task (req), project_path?, channel?, keep_alive?, allowed_tools?, cwd? — project_path wird via REST automatisch aus dem Daemon-Kontext ermittelt',
         example: 'specialist({ action: "spawn", project: "synapse", name: "doc-bot", model: "haiku", expertise: "Doku", task: "Schreibe README" })',
         tips: 'Web-KI: Job laeuft via Queue, Antwort innerhalb 60s. Bei Timeout pruefe ob Daemon laeuft.',

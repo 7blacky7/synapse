@@ -1300,20 +1300,108 @@ ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS provider TEXT;
 ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS model_full_id TEXT;
 
 -- Initial-Seed (idempotent via ON CONFLICT)
+-- Claude: Output-Limit, Preise ($ je 1M: input/output/cache_read) und Cutoff JE VERSION
+-- (full_id), Quelle models.dev 29.09.2026 — dieselben Werte wie STATIC_FALLBACK in
+-- packages/agents/src/models.ts (scripts/test-kontext-korridor.mjs vergleicht beide).
+-- Kontext = Abo-Kontext der CLI (200k, [1m] = 1M, fable immer 1M).
+-- Korridore je Groessenklasse (Token-Budget: services/kontext-korridor.ts):
+--   200k = 73/88 (Handoff 146k, Rotation 176k, 24k Rest), 1M = 80/97 (800k/950k/970k).
 INSERT INTO model_registry
-  (alias, full_id, provider, context_window, env_required, runtime_binary, runtime_path, corridor_min, corridor_max, pricing_input_usd_per_mtok, pricing_output_usd_per_mtok, pricing_cache_usd_per_mtok, cutoff_date)
+  (alias, full_id, provider, context_window, env_required, runtime_binary, runtime_path, corridor_min, corridor_max, pricing_input_usd_per_mtok, pricing_output_usd_per_mtok, pricing_cache_usd_per_mtok, cutoff_date, output_limit)
 VALUES
-  ('opus',              'claude-opus-4-7',                'anthropic',  200000, ARRAY[]::TEXT[],          'claude', NULL,                                90, 99, 15.00, 75.00, 1.50, '2025-01-01'),
-  ('sonnet',            'claude-sonnet-4-6',              'anthropic',  200000, ARRAY[]::TEXT[],          'claude', NULL,                                80, 88,  3.00, 15.00, 0.30, '2025-01-01'),
-  ('haiku',             'claude-haiku-4-5',               'anthropic',  200000, ARRAY[]::TEXT[],          'claude', NULL,                                80, 88,  1.00,  5.00, 0.10, '2025-01-01'),
-  ('opus[1m]',          'claude-opus-4-7',                'anthropic', 1000000, ARRAY[]::TEXT[],          'claude', NULL,                                80, 99, 15.00, 75.00, 1.50, '2025-01-01'),
-  ('sonnet[1m]',        'claude-sonnet-4-6',              'anthropic', 1000000, ARRAY[]::TEXT[],          'claude', NULL,                                70, 88,  3.00, 15.00, 0.30, '2025-01-01'),
-  ('gemini-flash-lite', 'gemini-3.1-flash-lite-preview',  'google',    1000000, ARRAY['GOOGLE_API_KEY'],  'node',   '@synapse/agents-gemini/runtime',    80, 88,  0.25,  1.50, 0.025, '2025-01-01'),
-  ('gemini-flash',      'gemini-3-flash-preview',         'google',    1000000, ARRAY['GOOGLE_API_KEY'],  'node',   '@synapse/agents-gemini/runtime',    80, 88,  0.50,  3.00, 0.05,  '2025-01-01'),
-  ('gemini-pro',        'gemini-2.5-pro',                 'google',    1000000, ARRAY['GOOGLE_API_KEY'],  'node',   '@synapse/agents-gemini/runtime',    80, 88,  1.25, 10.00, 0.13,  '2025-01-01'),
+  ('opus',              'claude-opus-5-5',                'anthropic',  200000, ARRAY[]::TEXT[],          'claude', NULL,                                73, 88,  4.00, 20.00, 0.20, '2026-06-01', 128000),
+  ('sonnet',            'claude-sonnet-5-5',              'anthropic',  200000, ARRAY[]::TEXT[],          'claude', NULL,                                73, 88,  2.00, 10.00, 0.20, '2026-06-01', 128000),
+  ('haiku',             'claude-haiku-4-5-20251001',      'anthropic',  200000, ARRAY[]::TEXT[],          'claude', NULL,                                73, 88,  1.00,  5.00, 0.10, '2025-02-28',  64000),
+  ('opus[1m]',          'claude-opus-5-5',                'anthropic', 1000000, ARRAY[]::TEXT[],          'claude', NULL,                                80, 97,  4.00, 20.00, 0.20, '2026-06-01', 128000),
+  ('sonnet[1m]',        'claude-sonnet-5-5',              'anthropic', 1000000, ARRAY[]::TEXT[],          'claude', NULL,                                80, 97,  2.00, 10.00, 0.20, '2026-06-01', 128000),
+  -- fable: 1M nativ ([1m] nimmt die CLI an, ignoriert es aber)
+  ('fable',             'claude-fable-5-1',               'anthropic', 1000000, ARRAY[]::TEXT[],          'claude', NULL,                                80, 97, 10.00, 50.00, 0.25, '2026-06-01', 128000),
+  -- Versionierte Aliase: aeltere Claude-Versionen gezielt waehlbar. Die CLI kennt diese
+  -- Aliase nicht; process.ts gibt ihr full_id (plus [1m]) statt des Alias (cliModelArg).
+  -- sonnet-4.6[1m] fehlt bewusst: 1M-Kontext fuer Sonnet 4.6 ist nicht im Abo (API-Credits noetig).
+  -- fable-5: Anthropic nennt keinen Cutoff, 2026-01-31 aus models.dev (vertex).
+  ('opus-5',            'claude-opus-5',                  'anthropic',  200000, ARRAY[]::TEXT[],          'claude', NULL,                                73, 88,  5.00, 25.00, 0.50, '2026-05-01', 128000),
+  ('opus-5[1m]',        'claude-opus-5',                  'anthropic', 1000000, ARRAY[]::TEXT[],          'claude', NULL,                                80, 97,  5.00, 25.00, 0.50, '2026-05-01', 128000),
+  ('sonnet-5',          'claude-sonnet-5',                'anthropic',  200000, ARRAY[]::TEXT[],          'claude', NULL,                                73, 88,  2.00, 10.00, 0.20, '2026-01-31', 128000),
+  ('sonnet-5[1m]',      'claude-sonnet-5',                'anthropic', 1000000, ARRAY[]::TEXT[],          'claude', NULL,                                80, 97,  2.00, 10.00, 0.20, '2026-01-31', 128000),
+  ('fable-5',           'claude-fable-5',                 'anthropic', 1000000, ARRAY[]::TEXT[],          'claude', NULL,                                80, 97, 10.00, 50.00, 1.00, '2026-01-31', 128000),
+  ('opus-4.8',          'claude-opus-4-8',                'anthropic',  200000, ARRAY[]::TEXT[],          'claude', NULL,                                73, 88,  5.00, 25.00, 0.50, '2026-01-01', 128000),
+  ('opus-4.8[1m]',      'claude-opus-4-8',                'anthropic', 1000000, ARRAY[]::TEXT[],          'claude', NULL,                                80, 97,  5.00, 25.00, 0.50, '2026-01-01', 128000),
+  ('opus-4.7',          'claude-opus-4-7',                'anthropic',  200000, ARRAY[]::TEXT[],          'claude', NULL,                                73, 88,  5.00, 25.00, 0.50, '2026-01-31', 128000),
+  ('opus-4.7[1m]',      'claude-opus-4-7',                'anthropic', 1000000, ARRAY[]::TEXT[],          'claude', NULL,                                80, 97,  5.00, 25.00, 0.50, '2026-01-31', 128000),
+  ('opus-4.6',          'claude-opus-4-6',                'anthropic',  200000, ARRAY[]::TEXT[],          'claude', NULL,                                73, 88,  5.00, 25.00, 0.50, '2025-05-31', 128000),
+  ('opus-4.6[1m]',      'claude-opus-4-6',                'anthropic', 1000000, ARRAY[]::TEXT[],          'claude', NULL,                                80, 97,  5.00, 25.00, 0.50, '2025-05-31', 128000),
+  ('sonnet-4.6',        'claude-sonnet-4-6',              'anthropic',  200000, ARRAY[]::TEXT[],          'claude', NULL,                                73, 88,  3.00, 15.00, 0.30, '2025-08-31', 128000),
+  ('gemini-flash-lite', 'gemini-3.1-flash-lite-preview',  'google',    1000000, ARRAY['GOOGLE_API_KEY'],  'node',   '@synapse/agents-gemini/runtime',    80, 88,  0.25,  1.50, 0.025, '2025-01-01', NULL),
+  ('gemini-flash',      'gemini-3-flash-preview',         'google',    1000000, ARRAY['GOOGLE_API_KEY'],  'node',   '@synapse/agents-gemini/runtime',    80, 88,  0.50,  3.00, 0.05,  '2025-01-01', NULL),
+  ('gemini-pro',        'gemini-2.5-pro',                 'google',    1000000, ARRAY['GOOGLE_API_KEY'],  'node',   '@synapse/agents-gemini/runtime',    80, 88,  1.25, 10.00, 0.13,  '2025-01-01', NULL),
+  -- agy-CLI: Pro-Abo via Keyring, KEIN API-Key (env_required leer), provider 'antigravity' (getrennt von 'google')
+  ('antigravity',       'agy-1.0.2',                      'antigravity', 1000000, ARRAY[]::TEXT[],         'node',   '@synapse/agents-antigravity/runtime', 95, 99, NULL,  NULL,  NULL,  NULL, NULL)
+ON CONFLICT (alias) DO NOTHING;
   -- agy-CLI: Pro-Abo via Keyring, KEIN API-Key (env_required leer), provider 'antigravity' (getrennt von 'google')
   ('antigravity',       'agy-1.0.2',                      'antigravity', 1000000, ARRAY[]::TEXT[],         'node',   '@synapse/agents-antigravity/runtime', 95, 99, NULL,  NULL,  NULL,  NULL)
 ON CONFLICT (alias) DO NOTHING;
+
+-- ==========================================================================
+-- model_cutoffs: Wissensstand (knowledge cutoff) je Modell-ID, datengetrieben.
+-- Ersetzt die frueher hart codierte Liste in services/chat.ts. Aufloesung und
+-- Politik (bekannter Cutoff schlaegt Selbstauskunft): services/model-cutoffs.ts.
+-- Derselbe Stand steht als MODEL_CUTOFF_SEED im Code; scripts/test-modelle-cutoffs.mjs
+-- vergleicht beide. ON CONFLICT DO NOTHING: bestehende Zeilen aendert nur
+-- scripts/modelle-2026-09-aktualisieren.mjs (UPSERT).
+-- ==========================================================================
+CREATE TABLE IF NOT EXISTS model_cutoffs (
+  model_id TEXT PRIMARY KEY,
+  cutoff_date DATE NOT NULL,
+  quelle TEXT,
+  aktualisiert_am TIMESTAMPTZ DEFAULT NOW()
+);
+
+INSERT INTO model_cutoffs (model_id, cutoff_date, quelle) VALUES
+  ('claude-fable-5-1',       '2026-06-01', 'platform.claude.com'),
+  ('claude-opus-5-5',        '2026-06-01', 'platform.claude.com'),
+  ('claude-sonnet-5-5',      '2026-06-01', 'platform.claude.com'),
+  ('claude-haiku-4-5',       '2025-02-28', 'platform.claude.com'),
+  ('claude-opus-5',          '2026-05-01', 'models.dev'),
+  ('claude-sonnet-5',        '2026-01-31', 'models.dev'),
+  ('claude-opus-4-8',        '2026-01-01', 'models.dev'),
+  ('claude-opus-4-7',        '2026-01-31', 'models.dev'),
+  ('claude-sonnet-4-6',      '2025-08-31', 'models.dev'),
+  ('claude-opus-4-6',        '2025-05-31', 'models.dev'),
+  ('claude-sonnet-4-5',      '2025-07-31', 'models.dev'),
+  ('claude-opus-4-5',        '2025-05-01', 'models.dev'),
+  ('claude-fable-5',         '2026-01-31', 'models.dev (vertex)'),
+  ('gpt-6-astra',            '2026-04-30', 'models.dev'),
+  ('gpt-6-sol',              '2026-04-20', 'models.dev'),
+  ('gpt-6-luna',             '2026-05-18', 'models.dev'),
+  ('gpt-5.6',                '2026-02-16', 'models.dev'),
+  ('gpt-5.6-sol',            '2026-02-16', 'models.dev'),
+  ('gpt-5.6-terra',          '2026-02-16', 'models.dev'),
+  ('gpt-5.6-luna',           '2026-02-16', 'models.dev'),
+  ('gpt-5.5',                '2025-12-01', 'models.dev'),
+  ('gpt-5.4',                '2025-08-31', 'models.dev'),
+  ('gpt-5.3-codex',          '2025-08-31', 'models.dev'),
+  ('gpt-5.2',                '2025-08-31', 'models.dev'),
+  ('gpt-5.1',                '2024-09-30', 'models.dev'),
+  ('gpt-5',                  '2024-09-30', 'models.dev'),
+  ('gpt-5-mini',             '2024-05-30', 'models.dev'),
+  ('gpt-5-nano',             '2024-05-30', 'models.dev'),
+  ('gpt-4o',                 '2023-09-01', 'models.dev'),
+  ('gpt-4o-mini',            '2023-09-01', 'models.dev'),
+  ('gpt-4-turbo',            '2023-12-01', 'models.dev'),
+  ('gemini-3.8-flash',       '2026-03-01', 'ai.google.dev'),
+  ('gemini-3.7-flash',       '2026-03-01', 'deepmind-model-card'),
+  ('gemini-3.6-flash',       '2026-03-01', 'models.dev'),
+  ('gemini-3.5-flash-lite',  '2026-03-01', 'models.dev'),
+  ('gemini-3.5-flash',       '2025-01-01', 'models.dev'),
+  ('gemini-3.1-flash-lite',  '2025-01-01', 'models.dev'),
+  ('gemini-3.1-pro-preview', '2025-01-01', 'models.dev'),
+  ('gemini-3-flash-preview', '2025-01-01', 'models.dev'),
+  ('gemini-2.5-pro',         '2025-01-01', 'models.dev'),
+  ('gemini-2.5-flash',       '2025-01-01', 'models.dev'),
+  ('grok-4.7',               '2026-05-01', 'models.dev'),
+  ('grok-4.6',               '2026-02-01', 'models.dev')
+ON CONFLICT (model_id) DO NOTHING;
 
 -- ==========================================================================
 -- wrapper_status: Source-of-Truth fuer laufende Wrapper/Spezialisten.

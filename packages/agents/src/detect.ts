@@ -1,5 +1,6 @@
 // packages/agents/src/detect.ts
 import { execSync } from 'node:child_process'
+import { listAliases, resolveModel } from './models.js'
 
 export interface ClaudeCliInfo {
   available: boolean
@@ -29,7 +30,7 @@ export function detectClaudeCli(): ClaudeCliInfo {
       available: true,
       path,
       version,
-      models: ['opus', 'sonnet', 'haiku', 'opus[1m]', 'sonnet[1m]'],
+      models: listAliases().filter(alias => resolveModel(alias)?.provider === 'anthropic'),
     }
   } catch {
     return { available: false, path: null, version: null, models: [] }

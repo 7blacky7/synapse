@@ -51,7 +51,8 @@ interface DbRow {
   pricing_input_usd_per_mtok: string | null;
   pricing_output_usd_per_mtok: string | null;
   pricing_cache_usd_per_mtok: string | null;
-  cutoff_date: Date | null;
+  /** als ::text gelesen — ein DATE-Objekt waere lokale Mitternacht, toISOString() gaebe oestlich von UTC den Vortag */
+  cutoff_date: string | null;
   enabled: boolean;
 }
 
@@ -70,7 +71,7 @@ function rowToEntry(row: DbRow): ModelEntry {
     pricingInputUsdPerMtok: row.pricing_input_usd_per_mtok ? Number(row.pricing_input_usd_per_mtok) : null,
     pricingOutputUsdPerMtok: row.pricing_output_usd_per_mtok ? Number(row.pricing_output_usd_per_mtok) : null,
     pricingCacheUsdPerMtok: row.pricing_cache_usd_per_mtok ? Number(row.pricing_cache_usd_per_mtok) : null,
-    cutoffDate: row.cutoff_date ? row.cutoff_date.toISOString().slice(0, 10) : null,
+    cutoffDate: row.cutoff_date ? String(row.cutoff_date).slice(0, 10) : null,
     enabled: row.enabled,
   };
 }
@@ -81,7 +82,7 @@ async function loadCache(): Promise<Map<string, ModelEntry>> {
   const result = await pool.query<DbRow>(
     `SELECT alias, full_id, provider, context_window, output_limit, env_required, runtime_binary, runtime_path,
             corridor_min, corridor_max, pricing_input_usd_per_mtok, pricing_output_usd_per_mtok,
-            pricing_cache_usd_per_mtok, cutoff_date, enabled
+            pricing_cache_usd_per_mtok, cutoff_date::text AS cutoff_date, enabled
      FROM model_registry WHERE enabled = true`,
   );
   cache = new Map(result.rows.map(r => [r.alias, rowToEntry(r)]));

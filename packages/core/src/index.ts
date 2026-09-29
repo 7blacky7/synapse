@@ -146,6 +146,27 @@ export {
 } from './services/model-registry.js';
 export type { ModelEntry as DbModelEntry, Provider as ModelProvider } from './services/model-registry.js';
 
+// Kontext-Korridor (Schwellen fuer Warnung/Handoff/Rotation, alle Stufen der Kette)
+export {
+  berechneKontextSchwellen,
+  fallbackKorridor,
+  KORRIDOR_200K,
+  KORRIDOR_1M,
+  ROTATION_PROZENT,
+  HANDOFF_VORLAUF_TOKENS,
+} from './services/kontext-korridor.js';
+export type { KorridorWerte, KontextSchwellen } from './services/kontext-korridor.js';
+export { pruefeRespawnKorridor } from './services/specialist-respawn.js';
+export type { KorridorPruefung } from './services/specialist-respawn.js';
+
+// Model-Cutoffs (Wissensstand je Modell, Tabelle model_cutoffs)
+export {
+  resolveCutoff,
+  normalisiereModell,
+  invalidateCutoffCache,
+  MODEL_CUTOFF_SEED,
+} from './services/model-cutoffs.js';
+
 // Shell-Exec (gemeinsam fuer MCP-Tool + REST /api/shell)
 export {
   execShellInProject,

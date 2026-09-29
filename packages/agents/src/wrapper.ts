@@ -40,14 +40,12 @@ import type {
   WrapperTransport,
 } from './transport/typen.js'
 import {
-  CONTEXT_CEILINGS,
-  WARN_THRESHOLDS,
   type WrapperMessage,
   type WrapperResponse,
   type SendMessageResult,
   type SpecialistStatus,
 } from './types.js'
-import { resolveModel } from './models.js'
+import { resolveModel, kontextSchwellen, loadFromDb } from './models.js'
 import {
   createState as createHeartbeatState,
   onEvent as onHeartbeatEvent,
@@ -360,23 +358,20 @@ function log(msg: string, ...args: unknown[]) {
 
 /**
  * Liefert das Context-Ceiling fuer das aktuelle Modell.
- * Iter 2: zuerst Registry-Lookup (provider-agnostisch), Fallback auf legacy
- * CONTEXT_CEILINGS (claude-spezifisch). Iter 2.5: Registry kommt aus DB.
+ * Alle Schwellen des Wrappers kommen aus kontextSchwellen (models.ts) — dieselbe
+ * Rechnung wie der Respawn-Check in core (services/kontext-korridor.ts).
+ * Unbekanntes Modell: Rueckfall aus core fallbackKorridor.
  */
 function getContextCeiling(): number {
-  const entry = resolveModel(AGENT_MODEL)
-  if (entry) return entry.contextWindow
-  return CONTEXT_CEILINGS[AGENT_MODEL] ?? 200_000
+  return kontextSchwellen(AGENT_MODEL).ceiling
 }
 
 /**
- * Liefert die Warn-Schwelle in absoluten Tokens.
- * Iter 2: aus Registry (corridorMin% * contextWindow). Fallback: legacy WARN_THRESHOLDS.
+ * Liefert die Warn-Schwelle in absoluten Tokens (= Handoff-Schwelle:
+ * corridorMin, aber mindestens 30k Tokens vor der Rotation).
  */
 function getWarnThreshold(): number {
-  const entry = resolveModel(AGENT_MODEL)
-  if (entry) return Math.floor((entry.corridorMin / 100) * entry.contextWindow)
-  return WARN_THRESHOLDS[AGENT_MODEL] ?? 160_000
+  return kontextSchwellen(AGENT_MODEL).handoffTokens
 }
 
 function getContextPercent(): number {
@@ -876,19 +871,26 @@ async function heartbeatPoll() {
     }
 
     // Pre-Rotation Auto-Handoff-Hinweis: sobald Agent in den Korridor-Bereich
-    // kommt (Opus 90%, Sonnet/Haiku 80%), einmalig wakeAgent mit der Bitte
+    // kommt (corridorMin aus der Modell-Registry), einmalig wakeAgent mit der Bitte
     // den Handoff selbst zu machen. So bekommt der Agent die Chance MEMORY
-    // sauber zu sichern bevor die Hard-Rotation bei 95% greift.
+    // sauber zu sichern bevor die Rotation greift.
     if (!agentBusy && !handoffWarningSent) {
       const ctxPct = getContextPercent()
-      // Schwelle bewusst niedrig: 70% gibt 25% Headroom fuer einen einzelnen
+      const korridor = kontextSchwellen(AGENT_MODEL)
+      const rotationProzent = Math.round((korridor.rotationTokens / korridor.ceiling) * 100)
+      // Schwelle in ABSOLUTEN Tokens: corridorMin der Registry, aber immer
+      // mindestens 30k Tokens vor der Rotation — Platz fuer einen einzelnen
       // grossen Tool-Call (z.B. code_intel tree ueber ein riesiges Projekt),
-      // damit nicht ein Turn den Context von <Schwelle direkt auf >95%
-      // springt und die kontrollierte Rotation umgeht.
-      const handoffMin = /opus/i.test(AGENT_MODEL) ? 80 : 70
-      if (ctxPct >= handoffMin) {
+      // damit nicht ein Turn den Context direkt ueber die Rotationsschwelle
+      // schiebt. Der Respawn-Check in core rechnet mit derselben Funktion.
+      if (totalInputTokens + totalOutputTokens >= korridor.handoffTokens) {
         handoffWarningSent = true
         log('AUTO-HANDOFF-HINWEIS: Context %d%% — sende Wake an Agent', ctxPct)
+        // Frischen Token-Stand sofort nach PG: der Korridor-Check von
+        // trigger_respawn liest wrapper_status, und der wird sonst nur alle
+        // 90 s geschrieben — er saehe einen alten Stand und lehnte ab.
+        lastPgWriteTs = 0
+        await updateStatusPg()
         const handoffMessage = `CONTEXT-WARNUNG: Dein Kontext ist fast voll (${ctxPct}%). Mache JETZT deinen Auto-Handoff. Stoppe laufende Tool-Calls SOFORT.
 
 PFLICHT-SCHRITTE — exakt in dieser Reihenfolge:
@@ -914,7 +916,7 @@ mcp__synapse__thought({
 
 4. Falls Respawn akzeptiert: kurzer Channel-Post "Handoff in Arbeit", dann IDLE.
 
-Wenn du weiterarbeitest ohne den trigger_respawn Flag, rotiert der Wrapper dich erst bei 95% — und ein einzelner grosser Tool-Call kann den Context vorher in einem Turn ueber 95% schieben → Crash, kein sauberes MEMORY-Save.`
+Wenn du weiterarbeitest ohne den trigger_respawn Flag, rotiert der Wrapper dich erst bei ${rotationProzent}% — und ein einzelner grosser Tool-Call kann den Context vorher in einem Turn ueber ${rotationProzent}% schieben → Crash, kein sauberes MEMORY-Save.`
         try {
           await wakeAgent(handoffMessage)
         } catch (err) {
@@ -927,14 +929,15 @@ Wenn du weiterarbeitest ohne den trigger_respawn Flag, rotiert der Wrapper dich 
     // Auto-Rotation: Context fast voll → Agent speichern + neustarten
     const contextTotal = totalInputTokens + totalOutputTokens
     const ceiling = getContextCeiling()
-    if (!agentBusy && contextTotal >= ceiling * 0.95) {
+    const rotation = kontextSchwellen(AGENT_MODEL)
+    if (!agentBusy && contextTotal >= rotation.rotationTokens) {
       log('CONTEXT-ROTATION: %dk/%dk (%d%%) — starte Rotation', Math.round(contextTotal / 1000), Math.round(ceiling / 1000), getContextPercent())
       await rotateAgent()
       return
     }
-    // Hard-Rotation: Bei 99% IMMER rotieren, auch wenn busy. Sonst rennt
+    // Hard-Rotation: ab corridorMax IMMER rotieren, auch wenn busy. Sonst rennt
     // ein Agent in Dauer-Tool-Calls am Limit vorbei und crashed (kein Idle = kein Trigger).
-    if (contextTotal >= ceiling * 0.99) {
+    if (contextTotal >= rotation.hardRotationTokens) {
       log('HARD-ROTATION: %dk/%dk (%d%%) — busy-skip ueberbrueckt', Math.round(contextTotal / 1000), Math.round(ceiling / 1000), getContextPercent())
       await rotateAgent()
       return
@@ -1008,8 +1011,8 @@ Wenn du weiterarbeitest ohne den trigger_respawn Flag, rotiert der Wrapper dich 
     if (!agentBusy && processAlive) {
       const postTotal = totalInputTokens + totalOutputTokens
       const postCeiling = getContextCeiling()
-      if (postTotal >= postCeiling * 0.95) {
-        log('POST-TURN ROTATION: %dk/%dk (%d%%) — Agent-Turn hat Context ueber 95%% geschoben', Math.round(postTotal / 1000), Math.round(postCeiling / 1000), getContextPercent())
+      if (postTotal >= kontextSchwellen(AGENT_MODEL).rotationTokens) {
+        log('POST-TURN ROTATION: %dk/%dk (%d%%) — Agent-Turn hat Context ueber die Rotationsschwelle geschoben', Math.round(postTotal / 1000), Math.round(postCeiling / 1000), getContextPercent())
         await rotateAgent()
         return
       }
@@ -1603,6 +1606,12 @@ async function main() {
 
   // 1. Setup signal handlers early
   setupSignalHandlers()
+
+  // 1b. Modell-Registry aus der DB laden (einmal; bei Fehler/Timeout bleibt
+  //     STATIC_FALLBACK mit Log). Danach rechnen Ceiling und Korridor mit
+  //     denselben Werten wie der Respawn-Check in core.
+  await loadFromDb()
+  log('  Korridor: %j', kontextSchwellen(AGENT_MODEL))
 
   // 2. System-Prompt holen (Datei oder API — siehe Wissensschicht)
   const systemPrompt = await holeSystemPromptGeprueft()

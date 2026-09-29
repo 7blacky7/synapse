@@ -21,6 +21,7 @@
  */
 
 import { getPool } from '../db/client.js';
+import { resolveCutoff } from './model-cutoffs.js';
 
 export interface ChatMessage {
   id: number;
@@ -39,20 +40,6 @@ export interface AgentSession {
   status: string;
   registeredAt: string;
 }
-
-/** Bekannte Modell-Cutoffs (hardcoded) */
-const MODEL_CUTOFFS: Record<string, string> = {
-  'claude-opus-4-6': '2025-05-01',
-  'claude-sonnet-4-6': '2025-05-01',
-  'claude-haiku-4-5': '2025-03-01',
-  'claude-opus-4-20250514': '2025-03-01',
-  'claude-sonnet-4-20250514': '2025-03-01',
-  'gpt-4o': '2024-10-01',
-  'gpt-4o-mini': '2024-10-01',
-  'gpt-4-turbo': '2024-04-01',
-  'gemini-2.0-flash': '2025-01-01',
-  'gemini-2.0-pro': '2025-01-01',
-};
 
 /**
  * Registriert einen Agenten fuer ein Projekt
@@ -74,21 +61,42 @@ export async function registerAgent(
 ): Promise<AgentSession> {
   const pool = getPool();
 
-  // Cutoff automatisch ermitteln wenn nicht angegeben
-  // Prefix-Match: "claude-haiku-4-5-20251001" → "claude-haiku-4-5"
-  const matchedCutoff = model
-    ? MODEL_CUTOFFS[model] || Object.entries(MODEL_CUTOFFS).find(([key]) => model.startsWith(key))?.[1] || null
-    : null;
-  const rawCutoff = cutoffDate || matchedCutoff;
-  // Web-KIs schicken oft "YYYY-MM" oder "YYYY" — pad zu "YYYY-MM-DD" damit
-  // Postgres DATE nicht mit DateTimeParseError 500'd (war Repro: GPT-5 Web).
-  const resolvedCutoff = normalizeCutoffDate(rawCutoff);
+  // Cutoff datengetrieben (model_cutoffs + model_registry, siehe model-cutoffs.ts).
+  // POLITIK: Ist das Modell bekannt, gewinnt der bekannte Cutoff — die
+  // Selbstauskunft der Agenten ist nachweislich oft falsch. Die Selbstauskunft
+  // zaehlt nur, wenn das Modell unbekannt ist.
+  const bekannterCutoff = model ? await resolveCutoff(model) : null;
+  let resolvedCutoff: string | null;
+  if (bekannterCutoff) {
+    resolvedCutoff = bekannterCutoff;
+    if (cutoffDate) {
+      let selbstauskunft: string;
+      try {
+        selbstauskunft = normalizeCutoffDate(cutoffDate) ?? cutoffDate;
+      } catch {
+        selbstauskunft = cutoffDate;
+      }
+      if (selbstauskunft !== bekannterCutoff) {
+        console.error(
+          `[Synapse Chat] Cutoff-Selbstauskunft von "${id}" (${model}) weicht ab: gemeldet ${selbstauskunft}, bekannt ${bekannterCutoff} — bekannter Wert gilt`
+        );
+      }
+    }
+  } else {
+    // Web-KIs schicken oft "YYYY-MM" oder "YYYY" — pad zu "YYYY-MM-DD" damit
+    // Postgres DATE nicht mit DateTimeParseError 500'd (war Repro: GPT-5 Web).
+    resolvedCutoff = normalizeCutoffDate(cutoffDate);
+  }
+  const cutoffBekannt = bekannterCutoff !== null;
 
+  // Bekannter Cutoff ueberschreibt einen alten gespeicherten Wert; eine
+  // Selbstauskunft fuellt nur, was noch fehlt oder ersetzt eine fruehere.
   await pool.query(
     `INSERT INTO agent_sessions (id, project, model, cutoff_date, status, registered_at)
      VALUES ($1, $2, $3, $4, 'active', NOW())
-     ON CONFLICT (id) DO UPDATE SET status = 'active', model = COALESCE($3, agent_sessions.model), cutoff_date = COALESCE($4, agent_sessions.cutoff_date)`,
-    [id, project, model || null, resolvedCutoff]
+     ON CONFLICT (id) DO UPDATE SET status = 'active', model = COALESCE($3, agent_sessions.model),
+       cutoff_date = CASE WHEN $5::boolean THEN $4::date ELSE COALESCE($4::date, agent_sessions.cutoff_date) END`,
+    [id, project, model || null, resolvedCutoff, cutoffBekannt]
   );
 
   console.error(`[Synapse Chat] Agent "${id}" registriert fuer Projekt "${project}"${model ? ` (${model})` : ''}`);

@@ -25,7 +25,10 @@ export type SpecialistAction =
   | 'purge'
   | 'wake'
   | 'update_skill'
-  | 'status';
+  | 'status'
+  // Neustart-Aufforderung aus maybeTriggerRespawn (REST-Weg): der Daemon schreibt
+  // den Rotations-Marker auf dem Rechner, auf dem der Wrapper laeuft.
+  | 'rotate';
 
 export interface SpecialistJobRow {
   id: string;

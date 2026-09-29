@@ -6,7 +6,7 @@ import { writeFile, mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import type { StreamEvent, SendMessageResult } from './types.js'
-import { resolveModel } from './models.js'
+import { resolveModel, cliModelArg } from './models.js'
 
 interface AgentProcess {
   agentName: string
@@ -100,12 +100,15 @@ class ProcessManager extends EventEmitter {
       )
     } else {
       // Default: Claude CLI
+      // --model: reine Aliase (opus, fable ...) unveraendert = neueste Version;
+      // versionierte Registry-Aliase (opus-4.7[1m]) als volle ID, sonst waeren
+      // aeltere Versionen nicht waehlbar. Unbekanntes Modell: wie uebergeben.
       const args = [
         '--print',
         '--verbose',
         '--output-format', 'stream-json',
         '--input-format', 'stream-json',
-        '--model', model,
+        '--model', modelEntry ? cliModelArg(modelEntry) : model,
         '--system-prompt', systemPrompt,
         '--session-id', sessionId,
         '--permission-mode', 'bypassPermissions',

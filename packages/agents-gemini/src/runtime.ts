@@ -26,7 +26,10 @@ import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { createInterface } from 'node:readline';
-import { resolveModel, STATIC_FALLBACK, readAllSkillFiles, buildSpecialistPrompt } from '@synapse/agents';
+import { resolveModel, STATIC_FALLBACK, readAllSkillFiles, buildSpecialistPrompt, loadFromDb } from '@synapse/agents';
+// Aus core, nicht aus agents: agents und agents-gemini haengen gegenseitig voneinander
+// ab und werden parallel gebaut — ein neuer agents-Export ist hier beim Build nicht sicher da.
+import { berechneKontextSchwellen } from '@synapse/core';
 import type { ModelEntry } from '@synapse/agents';
 import { buildToolBridge } from './tool-bridge.js';
 import { MonitorServer } from './monitor-server.js';
@@ -193,6 +196,8 @@ function emitStdout(event: Record<string, unknown>): void {
 
 async function runWrapperMode(apiKey: string): Promise<void> {
   const env = readWrapperEnv();
+  // DB-Registry laden (bei Fehler STATIC_FALLBACK mit Log) — wie Wrapper und Spawn.
+  await loadFromDb();
   const model = resolveModel(env.modelAlias);
   if (!model) {
     console.error(`FEHLER: Unbekannter Modell-Alias "${env.modelAlias}". Verfuegbar: ${Object.keys(STATIC_FALLBACK).join(', ')}`);
@@ -247,7 +252,8 @@ async function runWrapperMode(apiKey: string): Promise<void> {
   // Wrapper sendet stream-json: jede Zeile ein {type:"user", message:{content:[{type:"text",text:"..."}]}}
   const stdinReader = createInterface({ input: process.stdin });
 
-  const handoffMin = model.corridorMin;
+  // Dieselbe Schwelle (absolute Tokens) wie Wrapper und Respawn-Check in core.
+  const handoffTokens = berechneKontextSchwellen(model, env.modelAlias).handoffTokens;
   let totalInput = 0;
   let totalOutput = 0;
   let handoffWarned = false;
@@ -321,14 +327,14 @@ async function runWrapperMode(apiKey: string): Promise<void> {
     // Auto-Handoff-Check: bei Korridor → mcp__synapse__thought trigger_respawn aufrufen
     // (P14 — KEIN direkter Marker-Write mehr im WRAPPER_MODE)
     const ctxPct = ((totalInput + totalOutput) / model.contextWindow) * 100;
-    if (!handoffWarned && ctxPct >= handoffMin) {
+    if (!handoffWarned && totalInput + totalOutput >= handoffTokens) {
       handoffWarned = true;
       try {
         await bridge.dispatch('thought', {
           action: 'add',
           project: env.projectName,
           source: env.agentName,
-          content: `AUTO-HANDOFF: Context ${Math.round(ctxPct)}% erreicht (Korridor ${handoffMin}%)`,
+          content: `AUTO-HANDOFF: Context ${Math.round(ctxPct)}% erreicht (Korridor ab ${handoffTokens} Tokens)`,
           tags: ['auto-handoff'],
           trigger_respawn: true,
         });
