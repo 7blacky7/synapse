@@ -1480,6 +1480,14 @@ ALTER TABLE wrapper_status ADD COLUMN IF NOT EXISTS heartbeat_interval_ms INTEGE
 -- derselbe Weg wie das Modell (SYNAPSE_AGENT_MODEL). Kleine Tabelle, kein Index.
 ALTER TABLE wrapper_status ADD COLUMN IF NOT EXISTS effort TEXT;
 
+-- Mehrere Plaene je Projekt + Kurz-IDs (Task 137fabaf, 29.09.2026): kurz_id "P<n>", genau ein
+-- aktiver Plan je Projekt, Zaehler fuer Task-Kurz-IDs "P<n>-T<m>" (nie wiederverwendet).
+-- Kleine Tabelle (68 Zeilen). Das Befuellen des Bestands und die Unique-Indizes macht
+-- scripts/plaene-kurz-ids.mjs (Trockenlauf, --apply) - bewusst NICHT hier.
+ALTER TABLE plans ADD COLUMN IF NOT EXISTS kurz_id TEXT;
+ALTER TABLE plans ADD COLUMN IF NOT EXISTS aktiv BOOLEAN;
+ALTER TABLE plans ADD COLUMN IF NOT EXISTS naechste_task_nr INTEGER;
+
 -- NOTIFY-Trigger fuer wrapper_status Aenderungen
 CREATE OR REPLACE FUNCTION notify_wrapper_status_change() RETURNS trigger AS $$
 DECLARE

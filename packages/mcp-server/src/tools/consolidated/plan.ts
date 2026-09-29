@@ -12,21 +12,24 @@ import {
   addPlanTasksBatch,
   updatePlanTask,
   deletePlanTasks,
+  listProjectPlans,
+  createProjectPlan,
+  activateProjectPlan,
 } from '../plans.js';
-import { empfehleFuerPlan } from '@synapse/core';
+import { empfehleFuerPlan, passendeTasks, uebernehmeTask } from '@synapse/core';
 
 export const planTool: ConsolidatedTool = {
   definition: {
     name: 'plan',
-    description: 'Verwaltet Projekt-Plaene: Abrufen, Aktualisieren, Tasks hinzufuegen. empfehlen (EXPERIMENTELL): Modell + Effort + Kontext je Task per Jev vorschlagen — nur Empfehlung, kein Muss.',
+    description: 'Verwaltet Projekt-Plaene: Abrufen, Aktualisieren, Tasks hinzufuegen. Mehrere Plaene je Projekt: plan_id (UUID oder Kurz-ID P<n>) optional bei allen Aktionen, ohne plan_id wirkt der AKTIVE Plan; Tasks auch per Kurz-ID P<n>-T<m>; list/create/aktivieren. empfehlen (EXPERIMENTELL): Modell + Effort + Kontext je Task per Jev vorschlagen — nur Empfehlung, kein Muss.',
     inputSchema: {
       type: 'object',
       properties: {
         action: {
           type: 'string',
-          enum: ['get', 'update', 'add_task', 'add_tasks_batch', 'update_task', 'delete_task', 'empfehlen'],
+          enum: ['get', 'update', 'add_task', 'add_tasks_batch', 'update_task', 'delete_task', 'empfehlen', 'list', 'create', 'aktivieren', 'passende_tasks', 'uebernehmen'],
           description:
-            'Aktion: "get" zum Abrufen, "update" zum Aktualisieren, "add_task" um eine Task hinzuzufuegen, "add_tasks_batch" um mehrere Tasks atomar hinzuzufuegen, "update_task" um eine Task zu aendern (status/priority/title/description), "delete_task" um eine oder mehrere Tasks zu loeschen (id als String oder Array), "empfehlen" (EXPERIMENTELL) bewertet die per task_id (PFLICHT) genannten Tasks in EINEM Jev-Aufruf und schreibt je Task das Feld empfehlung {modell, effort, kontext 200k|1m, confidence, ...} — nur Empfehlung, kein Muss; unter dem Confidence-Tor unsicher statt Empfehlung',
+            'Aktion: "passende_tasks" (agent_id Pflicht, plan_id optional) offene Tasks, deren Empfehlung zu deinem Profil passt (Familie gleich, Kontext >= empfohlen, Effort gleich oder eine Stufe hoeher); ohne/unsichere Empfehlung -> offen_fuer_koordinator, "uebernehmen" (plan_id + task_id + agent_id Pflicht) nimmt eine passende Task atomar (zugewiesen_an, in_progress), "list" alle Plaene des Projekts (Kurz-ID, Name, Ziel, aktiv, offen/erledigt), "create" neuer Plan (name, description, goals, architecture, aktiv?), "aktivieren" plan_id zum aktiven Plan machen, "get" zum Abrufen, "update" zum Aktualisieren, "add_task" um eine Task hinzuzufuegen, "add_tasks_batch" um mehrere Tasks atomar hinzuzufuegen, "update_task" um eine Task zu aendern (status/priority/title/description), "delete_task" um eine oder mehrere Tasks zu loeschen (id als String oder Array), "empfehlen" (EXPERIMENTELL) bewertet die per plan_id + task_id (beide PFLICHT, UUID oder Kurz-ID) genannten Tasks in EINEM Jev-Aufruf und schreibt je Task das Feld empfehlung {modell, effort, kontext 200k|1m, confidence, ...} — nur Empfehlung, kein Muss; unter dem Confidence-Tor unsicher statt Empfehlung',
         },
         project: {
           type: 'string',
@@ -36,6 +39,14 @@ export const planTool: ConsolidatedTool = {
           type: 'string',
           description:
             'Agent-ID fuer Onboarding. Neue Agenten sehen automatisch Projekt-Regeln.',
+        },
+        plan_id: {
+          type: 'string',
+          description: 'Optional bei allen Aktionen: Plan-UUID oder Kurz-ID "P<n>" (siehe list). Ohne plan_id wirkt der AKTIVE Plan des Projekts (bisheriges Verhalten). Pflicht fuer aktivieren.',
+        },
+        aktiv: {
+          type: 'boolean',
+          description: 'Nur fuer create: neuen Plan gleich aktiv schalten (Standard false; der erste Plan eines Projekts ist immer aktiv).',
         },
         // fuer "update"
         name: {
@@ -134,19 +145,19 @@ export const planTool: ConsolidatedTool = {
 
     switch (action) {
       case 'get': {
-        const result = await getProjectPlan(project);
+        const result = await getProjectPlan(project, str(args, 'plan_id'));
         if (!result) return result;
         // DX-Befund 5: status-Filter, compact, limit gegen Vollabwurf.
         const a = args as Record<string, unknown>;
-        const p = result as unknown as Record<string, unknown> & { tasks?: Array<Record<string, unknown>> };
-        const allTasks = Array.isArray(p.tasks) ? p.tasks : [];
+        const p = result as unknown as Record<string, unknown> & { plan?: { tasks?: Array<Record<string, unknown>> } | null };
+        const allTasks = Array.isArray(p.plan?.tasks) ? p.plan!.tasks! : [];
         const statusFilter = typeof a.status === 'string' ? a.status : undefined;
         const filtered = statusFilter ? allTasks.filter((t) => t.status === statusFilter) : allTasks;
         const taskLimit = typeof a.limit === 'number' && a.limit > 0 ? a.limit : undefined;
         const limited = taskLimit ? filtered.slice(0, taskLimit) : filtered;
         const compact = a.compact === true;
         const tasks = compact
-          ? limited.map((t) => ({ id: t.id, title: t.title, status: t.status, priority: t.priority }))
+          ? limited.map((t) => ({ id: t.id, kurz_id: t.kurz_id, title: t.title, status: t.status, priority: t.priority }))
           : limited;
         return {
           ...p,
@@ -163,7 +174,7 @@ export const planTool: ConsolidatedTool = {
           description: str(args, 'description'),
           goals: strArray(args, 'goals'),
           architecture: str(args, 'architecture'),
-        });
+        }, str(args, 'plan_id'));
         return result;
       }
 
@@ -175,7 +186,7 @@ export const planTool: ConsolidatedTool = {
           | 'medium'
           | 'high';
 
-        const result = await addPlanTask(project, title, description, priority);
+        const result = await addPlanTask(project, title, description, priority, str(args, 'plan_id'));
         return result;
       }
 
@@ -189,7 +200,7 @@ export const planTool: ConsolidatedTool = {
           description: String(t.description ?? ''),
           priority: (t.priority as 'low' | 'medium' | 'high' | undefined) ?? undefined,
         }));
-        const result = await addPlanTasksBatch(project, normalized);
+        const result = await addPlanTasksBatch(project, normalized, str(args, 'plan_id'));
         return result;
       }
 
@@ -200,7 +211,7 @@ export const planTool: ConsolidatedTool = {
         const d = str(args, 'description'); if (d !== undefined) updates.description = d;
         const s = str(args, 'status'); if (s !== undefined) updates.status = s as 'todo' | 'in_progress' | 'done' | 'blocked';
         const p = str(args, 'priority'); if (p !== undefined) updates.priority = p as 'low' | 'medium' | 'high';
-        const result = await updatePlanTask(project, taskId, updates);
+        const result = await updatePlanTask(project, taskId, updates, str(args, 'plan_id'));
         return result;
       }
 
@@ -209,14 +220,41 @@ export const planTool: ConsolidatedTool = {
         if (!ids || ids.length === 0) {
           return { success: false, deleted: 0, message: 'task_id (String oder Array) ist erforderlich' };
         }
-        const result = await deletePlanTasks(project, ids);
+        const result = await deletePlanTasks(project, ids, str(args, 'plan_id'));
         return result;
+      }
+
+      case 'list': {
+        return await listProjectPlans(project);
+      }
+
+      case 'passende_tasks': {
+        return await passendeTasks(project, str(args, 'agent_id') ?? '', str(args, 'plan_id'));
+      }
+
+      case 'uebernehmen': {
+        return await uebernehmeTask(project, str(args, 'plan_id') ?? '', str(args, 'task_id') ?? '', str(args, 'agent_id') ?? '');
+      }
+
+      case 'create': {
+        return await createProjectPlan(project, {
+          name: reqStr(args, 'name'),
+          description: str(args, 'description'),
+          goals: strArray(args, 'goals'),
+          architecture: str(args, 'architecture'),
+          aktiv: args.aktiv === true,
+        });
+      }
+
+      case 'aktivieren': {
+        return await activateProjectPlan(project, reqStr(args, 'plan_id'));
       }
 
       case 'empfehlen': {
         const ids = strArray(args, 'task_id');
         const tor = args.confidence_tor;
         return await empfehleFuerPlan(project, {
+          plan_id: str(args, 'plan_id'),
           kandidaten: args.kandidaten,
           task_ids: ids && ids.length > 0 ? ids : undefined,
           schreiben: args.schreiben !== false,

@@ -166,6 +166,17 @@ export {
 } from './services/shell-channel-unterbrechung.js';
 export type { ChannelUnterbrechung } from './services/shell-channel-unterbrechung.js';
 
+// Kurz-IDs fuer Plaene und Tasks (P<n>, P<n>-T<m>) + Befuellungs-Logik fuer scripts/plaene-kurz-ids.mjs
+export {
+  planNummer, taskNummer, planKurzId, taskKurzId, waehleAktiven, ergaenzeTaskKurzIds, planeKurzIds,
+} from './services/plan-kurz-ids.js';
+export type { KurzIdZeile, KurzIdAenderung } from './services/plan-kurz-ids.js';
+export type { PlanRef, PlanListenEintrag } from './services/plans.js';
+
+// Selbstzuweisung: plan(passende_tasks) / plan(uebernehmen) (Aufgabe C)
+export { passendeTasks, uebernehmeTask, passtZuProfil, ladeAgentProfil } from './services/plan-zuweisung.js';
+export type { AgentProfil } from './services/plan-zuweisung.js';
+
 // Selbstauskunft fuer Spezialisten: specialist(action:'selbst')
 export { selbstAuskunft } from './services/specialist-selbst.js';
 export { listWrapperStatusFuerAgent } from './services/wrapper-status.js';
@@ -274,6 +285,16 @@ export {
   updatePlan,
   addTasksBatch,
   deleteTasks,
+  listPlans,
+  aktivierePlan,
+  aendereTasks,
+  getAllePlaene,
+  findeTaskInPlan,
+  planUebersicht,
+  planKontext,
+  planRefVon,
+  hinweisPlaene,
+  planIndex,
 
   addTask,
   updateTask,

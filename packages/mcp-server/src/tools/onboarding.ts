@@ -244,6 +244,11 @@ export async function checkAgentOnboarding(
     const { baueChannelUebersicht } = await import('@synapse/core');
     const channelBlock = await baueChannelUebersicht(project, isCoordinator);
 
+    // Plan-Uebersicht (Task 137fabaf): nur aktive/offene Plaene mit Kurz-ID, keine Tasks.
+    // Gleiches Feld wie im REST-Weg (routes/mcp.ts).
+    const { planUebersicht } = await import('@synapse/core');
+    const plaene = await planUebersicht(project).catch(() => []);
+
     console.error(`[Synapse MCP] ${rules.length} Regeln fuer Agent "${agentId}" geladen`);
 
     // ⚠️ FELDSCHNITT WIE IM REST-WEG (routes/mcp.ts, agentOnboarding). rolle/rolle_quelle/
@@ -261,6 +266,7 @@ export async function checkAgentOnboarding(
       ...(setupHinweis ? { setup_hinweis: setupHinweis } : {}),
       rules,
       ...(channelBlock ? { channels: channelBlock } : {}),
+      ...(plaene.length > 0 ? { plaene } : {}),
     };
   } catch (error) {
     console.error(`[Synapse MCP] Fehler beim Laden der Regeln:`, error);

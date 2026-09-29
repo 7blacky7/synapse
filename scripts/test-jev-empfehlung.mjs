@@ -58,11 +58,13 @@ function frischerPlan() {
   planZeile = {
     id: 'plan-1', project: 'testprojekt', name: 'Testplan', description: 'Ein Plan zum Testen der Modellwahl.',
     goals: ['Ziel A'], architecture: 'Monorepo, TypeScript',
+    created_at: '2026-01-01T00:00:00.000Z', updated_at: '2026-01-02T00:00:00.000Z',
+    kurz_id: 'P1', aktiv: true, naechste_task_nr: 5,
     tasks: [
-      { id: 't1', title: 'Variable umbenennen', description: 'foo -> bar in einer Datei', status: 'todo', priority: 'low', createdAt: 'x', updatedAt: 'x', eigenesFeld: { a: 1 } },
-      { id: 't2', title: 'Feature bauen', description: 'Neuer Endpunkt mit Tests', status: 'in_progress', priority: 'medium', createdAt: 'x', updatedAt: 'x', stakes: 'critical', previous_attempt: 'failed with a smaller model' },
-      { id: 't3', title: 'Grosser Umbau', description: 'Schichtwechsel ueber 40 Module', status: 'todo', priority: 'high', createdAt: 'x', updatedAt: 'x', empfehlung: { alt: true }, stakes: 'hoch' },
-      { id: 't4', title: 'Erledigt', description: 'schon fertig', status: 'done', priority: 'low', createdAt: 'x', updatedAt: 'x' },
+      { id: 't1', kurz_id: 'P1-T1', title: 'Variable umbenennen', description: 'foo -> bar in einer Datei', status: 'todo', priority: 'low', createdAt: 'x', updatedAt: 'x', eigenesFeld: { a: 1 } },
+      { id: 't2', kurz_id: 'P1-T2', title: 'Feature bauen', description: 'Neuer Endpunkt mit Tests', status: 'in_progress', priority: 'medium', createdAt: 'x', updatedAt: 'x', stakes: 'critical', previous_attempt: 'failed with a smaller model' },
+      { id: 't3', kurz_id: 'P1-T3', title: 'Grosser Umbau', description: 'Schichtwechsel ueber 40 Module', status: 'todo', priority: 'high', createdAt: 'x', updatedAt: 'x', empfehlung: { alt: true }, stakes: 'hoch' },
+      { id: 't4', kurz_id: 'P1-T4', title: 'Erledigt', description: 'schon fertig', status: 'done', priority: 'low', createdAt: 'x', updatedAt: 'x' },
     ],
   };
   updates = [];
@@ -76,7 +78,10 @@ pg.Pool.prototype.query = async function (sql, params = []) {
     return { rows: [structuredClone(planZeile)], rowCount: 1 };
   }
   if (/^\s*UPDATE plans/i.test(text)) {
-    const [neu, , id, alt] = params;
+    // Plan-Service (core plans.ts schreibePlan): tasks = $5, id = $8, alter Stand = $9
+    const neu = params[4];
+    const id = params[7];
+    const alt = params[8];
     updates.push({ text, params });
     if (id !== planZeile.id) return { rows: [], rowCount: 0 };
     if (JSON.stringify(JSON.parse(alt)) !== JSON.stringify(planZeile.tasks)) return { rows: [], rowCount: 0 };
@@ -171,12 +176,14 @@ const keys = (frage) => Object.keys(frage.criteria).sort();
 
 const jev = await import('../packages/core/dist/services/jev-empfehlung.js');
 const core = await import('../packages/core/dist/index.js');
+// Qdrant-Index des Plan-Service gestubbt (Schreiben geht jetzt ueber core plans.ts)
+core.planIndex.sync = async (plan) => { qdrantAufrufe.push(plan); };
 const katalog = await import('../packages/core/dist/services/jev-criteria-katalog.js');
 const QUELLE = '/home/blacky/dev/JEV-Test/daten/modellwahl_criteria.json';
 const M = katalog.MODELLWAHL_CRITERIA.modelle;
 /** task_id ist Pflicht (Channel 23092): die Tests nennen die offenen Tasks ausdruecklich. */
 const OFFEN = ['t1', 't2', 't3'];
-const empf = (projekt, opt = {}, d) => jev.empfehleFuerPlan(projekt, { task_ids: OFFEN, ...opt }, d);
+const empf = (projekt, opt = {}, d) => jev.empfehleFuerPlan(projekt, { task_ids: OFFEN, plan_id: 'P1', ...opt }, d);
 
 const ABOS = ['fable', 'gpt-5.6-luna', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-6-astra', 'haiku', 'opus', 'sonnet'];
 const CLAUDE = ['fable', 'haiku', 'opus', 'sonnet'];
@@ -372,6 +379,38 @@ await pruefe('Request: ohne task_id -> klarer Fehler, kein fetch, nichts geschri
     assert.equal(fetchAufrufe.length, 0);
     assert.equal(updates.length, 0);
   }
+});
+
+await pruefe('Plan: ohne plan_id -> klarer Fehler, kein fetch (task_id allein reicht nicht)', async () => {
+  reset();
+  const r = await jev.empfehleFuerPlan('testprojekt', { task_ids: ['t1'] }, deps());
+  assert.equal(r.success, false);
+  assert.match(r.message, /plan_id/);
+  assert.match(r.message, /Pflicht/);
+  assert.equal(fetchAufrufe.length, 0);
+});
+
+await pruefe('Plan: plan_id als Kurz-ID und UUID gleichwertig, Ergebnis nennt plan_ref und kurz_id je Task', async () => {
+  reset();
+  let r = await empf('testprojekt', { task_ids: ['P1-T3', 't1'], schreiben: false }, deps());
+  assert.equal(r.success, true, r.message);
+  assert.deepEqual(r.empfehlungen.map((e) => [e.task_id, e.kurz_id]), [['t3', 'P1-T3'], ['t1', 'P1-T1']]);
+  assert.equal(r.plan_ref.kurz_id, 'P1');
+  reset();
+  r = await empf('testprojekt', { plan_id: 'plan-1', task_ids: ['t2'], schreiben: false }, deps());
+  assert.equal(r.success, true, r.message);
+  assert.equal(r.plan_ref.id, 'plan-1');
+});
+
+await pruefe('Plan: Task aus anderem Plan bzw. unbekannter Plan -> klarer Fehler, kein fetch', async () => {
+  reset();
+  let r = await empf('testprojekt', { task_ids: ['P2-T1'] }, deps());
+  assert.equal(r.success, false);
+  assert.match(r.message, /P2-T1/);
+  r = await empf('testprojekt', { plan_id: 'P9', task_ids: ['t1'] }, deps());
+  assert.equal(r.success, false);
+  assert.match(r.message, /P9/);
+  assert.equal(fetchAufrufe.length, 0);
 });
 
 await pruefe('Request: ausdruecklich genannte erledigte Task wird bewertet', async () => {
@@ -610,7 +649,7 @@ await pruefe('Kein Plan: saubere Meldung, kein fetch', async () => {
   reset();
   const r = await empf('anderes-projekt', {}, deps());
   assert.equal(r.success, false);
-  assert.match(r.message, /Kein Plan/);
+  assert.match(r.message, /Kein Plan|nicht gefunden/);
   assert.equal(fetchAufrufe.length, 0);
 });
 
@@ -625,7 +664,7 @@ await pruefe('Schreiben: nur empfehlung je bewerteter Task, alle anderen Felder 
   assert.equal(r.success, true, r.message);
   assert.equal(r.geschrieben, 3);
   assert.equal(updates.length, 1);
-  assert.match(updates[0].text, /WHERE id = \$3 AND tasks = \$4::jsonb/);
+  assert.match(updates[0].text, /WHERE id = \$8 AND tasks = \$9::jsonb/);
   const nachher = planZeile.tasks;
   assert.equal(nachher.length, vorher.length);
   for (let i = 0; i < vorher.length; i++) {
@@ -638,7 +677,7 @@ await pruefe('Schreiben: nur empfehlung je bewerteter Task, alle anderen Felder 
   assert.equal(nachher[2].empfehlung.modell, 'opus');
   assert.equal(nachher[2].empfehlung.alt, undefined, 'alte Empfehlung wird ersetzt, nicht gemischt');
   assert.equal(qdrantAufrufe.length, 1);
-  assert.deepEqual(qdrantAufrufe[0][2], nachher);
+  assert.deepEqual(qdrantAufrufe[0].tasks, nachher);
 });
 
 await pruefe('Schreiben: schreiben:false aendert nichts', async () => {

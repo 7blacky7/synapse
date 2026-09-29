@@ -29,10 +29,9 @@
  * Der Key (JEV_OPENROUTER_API_KEY) wird nie ausgegeben oder geloggt.
  */
 
-import { getPool } from '../db/client.js';
-import { COLLECTIONS } from '../types/index.js';
-import { getQdrantClient } from '../qdrant/client.js';
 import { listModels as registryModelle } from './model-registry.js';
+import { getPlan, aendereTasks, planKontext, type PlanRef } from './plans.js';
+import { planNummer, taskNummer } from './plan-kurz-ids.js';
 import { listWrapperStatus as wrapperListe } from './wrapper-status.js';
 import { istEffortStufe, type EffortStufe } from './effort.js';
 import {
@@ -110,6 +109,8 @@ export interface EmpfehlenOptionen {
   kandidaten?: unknown;
   /** PFLICHT (User-Vorgabe 29.09.2026): genau diese Tasks, hoechstens 50. Jev bewertet nur, was ausdruecklich genannt ist. */
   task_ids?: string[];
+  /** PFLICHT: Plan-UUID oder Kurz-ID P<n> (ein Projekt kann mehrere Plaene haben) */
+  plan_id?: string;
   /** Standard true. false = nur anzeigen. */
   schreiben?: boolean;
   /** Standard JEV_CONFIDENCE_TOR bzw. 0.5 */
@@ -144,7 +145,9 @@ export interface EmpfehlenErgebnis {
   confidence_tor?: number;
   lage?: JevLage;
   katalog?: { quelle: string; stand: string };
-  empfehlungen?: Array<{ task_id: string; titel: string; empfehlung: JevEmpfehlung }>;
+  empfehlungen?: Array<{ task_id: string; kurz_id: string | null; titel: string; empfehlung: JevEmpfehlung }>;
+  /** Der bewertete Plan (Kurz-ID, Name) */
+  plan_ref?: PlanRef;
   geschrieben?: number;
   jev?: { modell: string; fragen: number; dauer_ms: number; input_tokens: number | null; cost: number | null };
   hinweise?: string[];
@@ -324,69 +327,46 @@ function ohneKey(text: string, key: string): string {
   return key ? text.split(key).join('***') : text;
 }
 
-interface PlanZeile {
-  id: string;
-  name: string;
-  description: string | null;
-  goals: string[] | null;
-  architecture: string | null;
-  tasks: Array<Record<string, unknown>> | null;
-}
-
-async function lesePlan(project: string): Promise<PlanZeile | null> {
-  const { rows } = await getPool().query<PlanZeile>(
-    `SELECT id, name, description, goals, architecture, tasks FROM plans WHERE project = $1
-     ORDER BY updated_at DESC NULLS LAST LIMIT 1`,
-    [project],
-  );
-  return rows[0] ?? null;
-}
-
-async function qdrantSyncStandard(project: string, planId: string, tasks: unknown[], updatedAt: string): Promise<void> {
-  await getQdrantClient().setPayload(COLLECTIONS.projectPlans(project), {
-    wait: true,
-    points: [planId],
-    payload: { tasks, updated_at: updatedAt },
-  });
-}
-
 /**
- * Schreibt empfehlung je Task-ID. Nur wenn tasks seit dem Lesen unveraendert ist
- * (Vergleich im UPDATE), sonst neu lesen und nochmal — hoechstens drei Versuche.
+ * Schreibt empfehlung je Task-ID in DIESEN Plan — ueber den Plan-Service (optimistisch: nur
+ * wenn tasks seit dem Lesen unveraendert ist, sonst neu lesen; Qdrant danach best effort).
  */
 async function schreibeEmpfehlungen(
   project: string,
+  planId: string,
   empfehlungen: Map<string, JevEmpfehlung>,
-  qdrantSync: NonNullable<JevDeps['qdrantSync']>,
 ): Promise<{ geschrieben: number; warning?: string }> {
-  for (let versuch = 0; versuch < 3; versuch++) {
-    const plan = await lesePlan(project);
-    if (!plan) throw new Error(`Plan fuer Projekt ${project} ist verschwunden, nichts geschrieben.`);
-    const alt = Array.isArray(plan.tasks) ? plan.tasks : [];
+  const r = await aendereTasks(project, planId, (tasks) => {
     let geschrieben = 0;
-    const neu = alt.map((t) => {
+    const neu = tasks.map((t) => {
       const e = typeof t.id === 'string' ? empfehlungen.get(t.id) : undefined;
       if (!e) return t;
       geschrieben++;
       return { ...t, empfehlung: e };
     });
-    const jetzt = new Date().toISOString();
-    const res = await getPool().query(
-      'UPDATE plans SET tasks = $1::jsonb, updated_at = $2 WHERE id = $3 AND tasks = $4::jsonb',
-      [JSON.stringify(neu), jetzt, plan.id, JSON.stringify(alt)],
-    );
-    if (res.rowCount === 1) {
-      let warning: string | undefined;
-      try {
-        await qdrantSync(project, plan.id, neu, jetzt);
-      } catch (err) {
-        warning = `Qdrant-Payload nicht nachgezogen (PG ist geschrieben): ${err instanceof Error ? err.message : String(err)}`;
-        console.error(`[Synapse] jev-empfehlung: ${warning}`);
-      }
-      return { geschrieben, warning };
+    return { tasks: neu, ergebnis: geschrieben };
+  });
+  if (!r) throw new Error(`Plan ${planId} fuer Projekt ${project} ist verschwunden, nichts geschrieben.`);
+  return { geschrieben: r.ergebnis, ...(r.warning ? { warning: r.warning } : {}) };
+}
+
+/**
+ * task_id -> Task DIESES Plans: UUID oder Kurz-ID P<n>-T<m>. Gehoert die Kurz-ID zu einem
+ * anderen Plan oder gibt es die Task nicht: Fehlertext, sonst die Task.
+ */
+function findeTaskImPlan(
+  plan: { id: string; kurz_id?: string | null; name: string; tasks: Array<Record<string, unknown>> },
+  ref: string,
+): Record<string, unknown> | string {
+  const kurz = taskNummer(ref);
+  if (kurz) {
+    if (planNummer(plan.kurz_id) !== kurz.plan) {
+      return `Task ${ref} gehoert nicht zu Plan ${plan.kurz_id ?? plan.id} "${plan.name}"`;
     }
+    const t = plan.tasks.find((x) => typeof x.kurz_id === 'string' && x.kurz_id.toUpperCase() === ref.toUpperCase());
+    return t ?? `Task ${ref} nicht gefunden in Plan ${plan.kurz_id ?? plan.id}`;
   }
-  throw new Error('Plan-Tasks wurden waehrenddessen mehrfach geaendert, Empfehlungen nicht geschrieben.');
+  return plan.tasks.find((x) => x.id === ref) ?? `Task ${ref} nicht gefunden in Plan ${plan.kurz_id ?? plan.id} "${plan.name}"`;
 }
 
 // ---------------------------------------------------------------------------
@@ -425,6 +405,11 @@ export async function empfehleFuerPlan(
   if (taskIds.length > MAX_TASKS) {
     return fehlschlag(`hoechstens ${MAX_TASKS} task_id je Aufruf (angegeben: ${taskIds.length}). Bitte aufteilen.`);
   }
+  // plan_id ist Pflicht (Channel 23096): ein Projekt kann mehrere Plaene haben.
+  const planRef = typeof optionen.plan_id === 'string' ? optionen.plan_id.trim() : '';
+  if (!planRef) {
+    return fehlschlag('plan_id ist Pflicht: den Plan ausdruecklich angeben (UUID oder Kurz-ID P<n>, siehe plan(list)). Jev bewertet genau die genannten Tasks dieses Plans.');
+  }
 
   let kandidaten: JevKandidat[];
   let lage: JevLage;
@@ -444,12 +429,13 @@ export async function empfehleFuerPlan(
 
   try {
     // --- Plan und Tasks -----------------------------------------------------
-    const plan = await lesePlan(project);
+    const plan = await getPlan(project, planRef);
     if (!plan) return fehlschlag(`Kein Plan gefunden fuer Projekt: ${project}`);
-    const alleTasks = Array.isArray(plan.tasks) ? plan.tasks : [];
-    const fehlend = taskIds.filter((id) => !alleTasks.some((t) => t.id === id));
-    if (fehlend.length > 0) return fehlschlag(`Task nicht gefunden: ${fehlend.join(', ')}`);
-    const tasks = taskIds.map((id) => alleTasks.find((t) => t.id === id)!);
+    const planMin = { id: plan.id, kurz_id: plan.kurz_id, name: plan.name, tasks: plan.tasks as Array<Record<string, unknown>> };
+    const aufgeloest = taskIds.map((ref) => findeTaskImPlan(planMin, ref));
+    const fehler = aufgeloest.filter((x): x is string => typeof x === 'string');
+    if (fehler.length > 0) return fehlschlag(fehler.join('; '));
+    const tasks = aufgeloest as Array<Record<string, unknown>>;
 
     // --- Registry (Effort-Stufen, spawnbar) --------------------------------
     const stufenJeAlias = new Map<string, EffortStufe[]>();
@@ -572,7 +558,7 @@ export async function empfehleFuerPlan(
       hinweise.push(`wrapper_status nicht lesbar, wiederverwenden bleibt leer: ${err instanceof Error ? err.message : String(err)}`);
     }
     const stand = new Date().toISOString();
-    const ergebnisse: Array<{ task_id: string; titel: string; empfehlung: JevEmpfehlung }> = [];
+    const ergebnisse: Array<{ task_id: string; kurz_id: string | null; titel: string; empfehlung: JevEmpfehlung }> = [];
 
     tasks.forEach((t, i) => {
       const pRoh = answers[`langer_kontext_${i}`]?.noul;
@@ -594,7 +580,7 @@ export async function empfehleFuerPlan(
         confidence = zahl(a?.confidence);
       }
       if (!m) {
-        ergebnisse.push({ task_id: String(t.id), titel: String(t.title ?? ''), empfehlung: { ...basis, unsicher: true, bester_vorschlag: null, confidence: 0, hinweis: 'Jev lieferte keine gueltige Modellwahl.' } });
+        ergebnisse.push({ task_id: String(t.id), kurz_id: typeof t.kurz_id === 'string' ? t.kurz_id : null, titel: String(t.title ?? ''), empfehlung: { ...basis, unsicher: true, bester_vorschlag: null, confidence: 0, hinweis: 'Jev lieferte keine gueltige Modellwahl.' } });
         return;
       }
 
@@ -613,7 +599,7 @@ export async function empfehleFuerPlan(
       }
       const k = m.kandidat;
       if (!s) {
-        ergebnisse.push({ task_id: String(t.id), titel: String(t.title ?? ''), empfehlung: { ...basis, unsicher: true, bester_vorschlag: { modell: k.alias, effort: null, kontext }, confidence, hinweis: 'Jev lieferte keine gueltige Stufe.' } });
+        ergebnisse.push({ task_id: String(t.id), kurz_id: typeof t.kurz_id === 'string' ? t.kurz_id : null, titel: String(t.title ?? ''), empfehlung: { ...basis, unsicher: true, bester_vorschlag: { modell: k.alias, effort: null, kontext }, confidence, hinweis: 'Jev lieferte keine gueltige Stufe.' } });
         return;
       }
 
@@ -642,14 +628,14 @@ export async function empfehleFuerPlan(
         };
         if (kontext === '1m' && !k.einsMAlias) empfehlung.hinweis = `Fuer ${k.alias} ist kein 1M-Alias bekannt.`;
       }
-      ergebnisse.push({ task_id: String(t.id), titel: String(t.title ?? ''), empfehlung });
+      ergebnisse.push({ task_id: String(t.id), kurz_id: typeof t.kurz_id === 'string' ? t.kurz_id : null, titel: String(t.title ?? ''), empfehlung });
     });
 
     let geschrieben = 0;
     let warning: string | undefined;
     if (schreiben) {
       const map = new Map(ergebnisse.map((e) => [e.task_id, e.empfehlung]));
-      ({ geschrieben, warning } = await schreibeEmpfehlungen(project, map, deps.qdrantSync ?? qdrantSyncStandard));
+      ({ geschrieben, warning } = await schreibeEmpfehlungen(project, plan.id, map));
     }
 
     const unsicher = ergebnisse.filter((e) => e.empfehlung.unsicher).length;
@@ -669,6 +655,7 @@ export async function empfehleFuerPlan(
       lage,
       katalog: { quelle: KATALOG_QUELLE, stand: KATALOG_STAND },
       empfehlungen: ergebnisse,
+      plan_ref: planKontext(plan).plan_ref,
       geschrieben,
       jev: {
         modell,

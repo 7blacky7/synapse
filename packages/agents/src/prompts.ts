@@ -16,7 +16,10 @@ Projekt: ${config.project}
 ${config.task}
 
 ## Deine Modelldaten
-Deine Modelldaten (Modell, Effort, Kontext, Cutoff) NICHT schaetzen, sondern mit specialist(action:'selbst', agent_id:'${config.name}') abrufen.`)
+Deine Modelldaten (Modell, Effort, Kontext, Cutoff) NICHT schaetzen, sondern mit specialist(action:'selbst', agent_id:'${config.name}') abrufen.
+
+## Neue Arbeit
+Neue Arbeit: plan(action:'passende_tasks', project:'${config.project}', agent_id:'${config.name}') -> plan(action:'uebernehmen', project:'${config.project}', plan_id, task_id, agent_id:'${config.name}'). Nimm nur Tasks, die dir der Server als passend gibt. Gib keine Tasks an andere Agenten weiter. Passt nichts, melde dich im Channel und warte.`)
 
   // 2. Skills + Kontext (multi-file: rules.md, errors.md, patterns.md, context.md)
   if (skillContent) {

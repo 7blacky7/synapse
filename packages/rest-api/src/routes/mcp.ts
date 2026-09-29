@@ -430,11 +430,13 @@ const MCP_TOOLS = [
       properties: {
         action: {
           type: 'string',
-          enum: ['get', 'update', 'add_task', 'add_tasks_batch', 'update_task', 'delete_task', 'empfehlen'],
-          description: 'Aktion: "get" zum Abrufen, "update" zum Aktualisieren, "add_task" um eine Task hinzuzufuegen, "add_tasks_batch" um mehrere Tasks atomar hinzuzufuegen, "update_task" um eine Task zu aendern, "delete_task" um eine oder mehrere Tasks zu loeschen (id als String oder Array), "empfehlen" (EXPERIMENTELL) bewertet die per task_id (PFLICHT) genannten Tasks in EINEM Jev-Aufruf und schreibt je Task das Feld empfehlung {modell, effort, kontext 200k|1m, confidence, ...} — nur Empfehlung, kein Muss; unter dem Confidence-Tor unsicher statt Empfehlung',
+          enum: ['get', 'update', 'add_task', 'add_tasks_batch', 'update_task', 'delete_task', 'empfehlen', 'list', 'create', 'aktivieren', 'passende_tasks', 'uebernehmen'],
+          description: 'Aktion: "passende_tasks" (agent_id Pflicht, plan_id optional) offene Tasks, deren Empfehlung zu deinem Profil passt (Familie gleich, Kontext >= empfohlen, Effort gleich oder eine Stufe hoeher); ohne/unsichere Empfehlung -> offen_fuer_koordinator, "uebernehmen" (plan_id + task_id + agent_id Pflicht) nimmt eine passende Task atomar (zugewiesen_an, in_progress), "list" alle Plaene des Projekts (Kurz-ID, Name, Ziel, aktiv, offen/erledigt), "create" neuer Plan (name, description, goals, architecture, aktiv?), "aktivieren" plan_id zum aktiven Plan machen, "get" zum Abrufen, "update" zum Aktualisieren, "add_task" um eine Task hinzuzufuegen, "add_tasks_batch" um mehrere Tasks atomar hinzuzufuegen, "update_task" um eine Task zu aendern, "delete_task" um eine oder mehrere Tasks zu loeschen (id als String oder Array), "empfehlen" (EXPERIMENTELL) bewertet die per plan_id + task_id (beide PFLICHT, UUID oder Kurz-ID) genannten Tasks in EINEM Jev-Aufruf und schreibt je Task das Feld empfehlung {modell, effort, kontext 200k|1m, confidence, ...} — nur Empfehlung, kein Muss; unter dem Confidence-Tor unsicher statt Empfehlung',
         },
         project: { type: 'string', description: 'Projekt-Name' },
         agent_id: { type: 'string', description: 'Agent-ID fuer Onboarding. Neue Agenten sehen automatisch Projekt-Regeln.' },
+        plan_id: { type: 'string', description: 'Optional bei allen Aktionen: Plan-UUID oder Kurz-ID "P<n>" (siehe list). Ohne plan_id wirkt der AKTIVE Plan des Projekts (bisheriges Verhalten). Pflicht fuer aktivieren. Tasks akzeptieren task_id als UUID oder Kurz-ID "P<n>-T<m>".' },
+        aktiv: { type: 'boolean', description: 'Nur fuer create: neuen Plan gleich aktiv schalten (Standard false; der erste Plan eines Projekts ist immer aktiv).' },
         name: { type: 'string', description: 'Neuer Plan-Name' },
         description: { type: 'string', description: 'Neue Beschreibung' },
         goals: { type: 'array', items: { type: 'string' }, description: 'Neue Ziele' },
@@ -1825,10 +1827,15 @@ async function attachRestOnboarding(
     const { baueChannelUebersicht } = await import('@synapse/core');
     const channelBlock = await baueChannelUebersicht(project, role === 'koordinator');
 
+    // Plan-Uebersicht (Task 137fabaf): nur aktive/offene Plaene mit Kurz-ID, keine Tasks.
+    const { planUebersicht } = await import('@synapse/core');
+    const plaene = await planUebersicht(project).catch(() => []);
+    const planBlock = plaene.length > 0 ? { plaene } : {};
+
     if (rules.length === 0) {
       return {
         ...result,
-        agentOnboarding: { isFirstVisit: true, ...(channelBlock ? { channels: channelBlock } : {}) },
+        agentOnboarding: { isFirstVisit: true, ...(channelBlock ? { channels: channelBlock } : {}), ...planBlock },
       };
     }
 
@@ -1850,6 +1857,7 @@ async function attachRestOnboarding(
         ...(abrufHinweis ? { volltext_hinweis: abrufHinweis } : {}),
         rules,
         ...(channelBlock ? { channels: channelBlock } : {}),
+        ...planBlock,
       },
     };
   } catch {
@@ -2849,8 +2857,9 @@ async function handleToolCall(
       const project = reqStr(args, 'project');
       switch (action) {
         case 'get': {
-          const plan = await getPlan(project);
+          const plan = await getPlan(project, str(args, 'plan_id'));
           if (!plan) return { message: 'Kein Plan gefunden' };
+          const { planKontext } = await import('@synapse/core');
           // DX-Befund 5: Vollabwurf vermeiden — status-Filter, compact, limit.
           const p = plan as unknown as Record<string, unknown> & { tasks?: Array<Record<string, unknown>> };
           const allTasks = Array.isArray(p.tasks) ? p.tasks : [];
@@ -2860,7 +2869,7 @@ async function handleToolCall(
           const limited = taskLimit && taskLimit > 0 ? filtered.slice(0, taskLimit) : filtered;
           const compact = bool(args, 'compact') === true;
           const tasks = compact
-            ? limited.map(t => ({ id: t.id, title: t.title, status: t.status, priority: t.priority }))
+            ? limited.map(t => ({ id: t.id, kurz_id: t.kurz_id, title: t.title, status: t.status, priority: t.priority }))
             : limited;
           return {
             ...p,
@@ -2871,19 +2880,24 @@ async function handleToolCall(
             ...(compact || tasks.length < allTasks.length
               ? { tip: 'Task-Liste gefiltert/kompakt — volle Descriptions via plan(get) ohne compact/status/limit.' }
               : {}),
+            ...planKontext(plan),
           };
         }
-        case 'update':
-          return await updatePlan(project, {
+        case 'update': {
+          const { planKontext } = await import('@synapse/core');
+          const aktualisiert = await updatePlan(project, {
             name: str(args, 'name'),
             description: str(args, 'description'),
             goals: strArray(args, 'goals'),
             architecture: str(args, 'architecture'),
-          });
+          }, str(args, 'plan_id'));
+          return aktualisiert ? { ...aktualisiert, ...planKontext(aktualisiert) } : aktualisiert;
+        }
         case 'add_task':
           return await addTask(
             project, reqStr(args, 'title'), reqStr(args, 'description'),
-            (str(args, 'priority') || 'medium') as 'low' | 'medium' | 'high'
+            (str(args, 'priority') || 'medium') as 'low' | 'medium' | 'high',
+            str(args, 'plan_id'),
           );
         case 'update_task': {
           const taskId = reqStr(args, 'task_id');
@@ -2893,7 +2907,7 @@ async function handleToolCall(
           const d = str(args, 'description'); if (d !== undefined) updates.description = d;
           const s = str(args, 'status'); if (s !== undefined) updates.status = s as 'todo' | 'in_progress' | 'done' | 'blocked';
           const p = str(args, 'priority'); if (p !== undefined) updates.priority = p as 'low' | 'medium' | 'high';
-          const task = await updateTask(project, taskId, updates);
+          const task = await updateTask(project, taskId, updates, str(args, 'plan_id'));
           if (!task) return { success: false, task: null, message: `Task nicht gefunden: ${taskId}` };
           return { success: true, task, message: 'Task aktualisiert' };
         }
@@ -2906,11 +2920,11 @@ async function handleToolCall(
             return { success: false, deleted: 0, message: `Batch-Limit: Max 50 Task-IDs, ${ids.length} angegeben` };
           }
           const { deleteTasks } = await import('@synapse/core');
-          const result = await deleteTasks(project, ids);
+          const result = await deleteTasks(project, ids, str(args, 'plan_id'));
           if (result.deleted === 0) {
             return { success: false, deleted: 0, message: `Keine passende Task gefunden in Projekt: ${project}` };
           }
-          return { success: true, deleted: result.deleted, warning: result.warning, message: `${result.deleted} Tasks geloescht` };
+          return { success: true, deleted: result.deleted, warning: result.warning, message: `${result.deleted} Tasks geloescht`, ...(result.plan_refs ? { plan_refs: result.plan_refs } : {}) };
         }
         case 'add_tasks_batch': {
           const tasks = objArray<{ title: string; description: string; priority?: string }>(args, 'tasks');
@@ -2931,7 +2945,7 @@ async function handleToolCall(
             return { success: false, count: 0, tasks: [], message: 'Keine gueltigen Tasks (title/description fehlt oder leer)' };
           }
           const { addTasksBatch } = await import('@synapse/core');
-          const result = await addTasksBatch(project, normalized);
+          const result = await addTasksBatch(project, normalized, str(args, 'plan_id'));
           if (result.tasks.length === 0) {
             return { success: false, count: 0, tasks: [], message: `Kein Plan gefunden fuer Projekt: ${project}` };
           }
@@ -2941,12 +2955,58 @@ async function handleToolCall(
             tasks: result.tasks,
             warning: result.warning,
             message: `${result.tasks.length} Tasks hinzugefuegt`,
+            ...(result.plan_ref ? { plan_ref: result.plan_ref } : {}),
+            ...(result.hinweis_plaene ? { hinweis_plaene: result.hinweis_plaene } : {}),
+          };
+        }
+        case 'passende_tasks': {
+          const { passendeTasks } = await import('@synapse/core');
+          return await passendeTasks(project, str(args, 'agent_id') ?? '', str(args, 'plan_id'));
+        }
+        case 'uebernehmen': {
+          const { uebernehmeTask } = await import('@synapse/core');
+          return await uebernehmeTask(project, str(args, 'plan_id') ?? '', str(args, 'task_id') ?? '', str(args, 'agent_id') ?? '');
+        }
+        case 'list': {
+          const { listPlans } = await import('@synapse/core');
+          const plaene = await listPlans(project);
+          const aktiv = plaene.find((p) => p.aktiv);
+          return {
+            success: true,
+            plaene,
+            aktiver_plan: aktiv ? (aktiv.kurz_id ?? aktiv.id) : null,
+            message: plaene.length === 0
+              ? `Keine Plaene im Projekt ${project}`
+              : `${plaene.length} Plan/Plaene; ohne plan_id wirkt der aktive (${aktiv?.kurz_id ?? aktiv?.id ?? '-'})`,
+          };
+        }
+        case 'create': {
+          const { createPlan, planKontext } = await import('@synapse/core');
+          const neu = await createPlan(project, reqStr(args, 'name'), str(args, 'description') ?? '', strArray(args, 'goals') ?? [], {
+            aktiv: bool(args, 'aktiv') === true,
+            architecture: str(args, 'architecture'),
+          });
+          return {
+            success: true,
+            plan: neu,
+            message: `Plan ${neu.kurz_id ?? neu.id} "${neu.name}" angelegt${neu.aktiv ? ' und aktiv' : ' (nicht aktiv — plan(aktivieren) schaltet um)'}`,
+            ...planKontext(neu),
+          };
+        }
+        case 'aktivieren': {
+          const { aktivierePlan, planKontext } = await import('@synapse/core');
+          const plan = await aktivierePlan(project, reqStr(args, 'plan_id'));
+          return {
+            success: true,
+            plan_ref: planKontext(plan).plan_ref,
+            message: `Plan ${plan.kurz_id ?? plan.id} "${plan.name}" ist jetzt aktiv (gilt fuer Aufrufe ohne plan_id)`,
           };
         }
         case 'empfehlen': {
           const { empfehleFuerPlan } = await import('@synapse/core');
           const ids = strArray(args, 'task_id');
           return await empfehleFuerPlan(project, {
+            plan_id: str(args, 'plan_id'),
             kandidaten: args.kandidaten,
             task_ids: ids && ids.length > 0 ? ids : undefined,
             schreiben: bool(args, 'schreiben') !== false,

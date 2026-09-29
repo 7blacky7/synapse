@@ -113,6 +113,12 @@ export interface ProjectPlan {
   createdAt: string;
   updatedAt: string;
   warning?: string;
+  /** Kurz-ID "P<n>" (Task 137fabaf). null im Bestand vor scripts/plaene-kurz-ids.mjs */
+  kurz_id?: string | null;
+  /** Genau ein Plan je Projekt ist aktiv; ohne plan_id wirkt der aktive */
+  aktiv?: boolean;
+  /** Anzahl Plaene des Projekts (fuer den Hinweis "weitere Plaene: plan(list)") */
+  plaene_im_projekt?: number;
 }
 
 export interface ProjectTask {
@@ -124,6 +130,10 @@ export interface ProjectTask {
   createdAt: string;
   updatedAt: string;
   warning?: string;
+  /** Kurz-ID "P<n>-T<m>" (Task 137fabaf), stabil und nie wiederverwendet */
+  kurz_id?: string;
+  /** Weitere Felder (z. B. empfehlung) bleiben beim Schreiben erhalten */
+  [key: string]: unknown;
 }
 
 export interface ProjectPlanPayload {

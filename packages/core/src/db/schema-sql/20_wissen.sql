@@ -38,7 +38,10 @@ CREATE TABLE public.plans (
     architecture text,
     tasks jsonb DEFAULT '[]'::jsonb,
     created_at timestamp with time zone DEFAULT now(),
-    updated_at timestamp with time zone DEFAULT now()
+    updated_at timestamp with time zone DEFAULT now(),
+    kurz_id text,
+    aktiv boolean,
+    naechste_task_nr integer
 );
 
 --
