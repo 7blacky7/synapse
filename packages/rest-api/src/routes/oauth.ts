@@ -15,7 +15,7 @@
  *    application/x-www-form-urlencoded (Plugin-lokaler Body-Parser).
  *  - Discovery vervollstaendigt: code_challenge_methods_supported:["S256"],
  *    offline_access, registration_endpoint, token_endpoint_auth_methods_supported.
- *  - protected-resource: resource == exakte MCP-Server-URL (${baseUrl}/mcp),
+ *  - protected-resource: resource == Wurzel ${baseUrl}/ (MCP-Endpunkt ist POST /; deckt / und /mcp ab),
  *    authorization_servers:[issuer].
  *  - resource-Parameter (RFC 8707) wird authorize+token durchgereicht/geechoet.
  *  - Redirect-Allowlist: claude.ai / chatgpt.com (+legacy) / loopback
