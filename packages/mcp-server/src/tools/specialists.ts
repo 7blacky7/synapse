@@ -9,7 +9,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 
-import { removeInboxForAgent, removeWrapperStatus, upsertWrapperStatus, EFFORT_STUFEN } from '@synapse/core';
+import { removeInboxForAgent, removeWrapperStatus, upsertWrapperStatus, setzeHeartbeatBeimSpawn, EFFORT_STUFEN } from '@synapse/core';
 
 import {
   bereiteMcpBrueckeVor,
@@ -335,6 +335,9 @@ export async function spawnSpecialistTool(
       channels: [channel ?? `${project}-general`],
       connectedMcp: false,
     });
+    // P7-T25: ein Neu-Spawn erbt die Heartbeat-Einstellung der alten Zeile NICHT mehr
+    // (abgeschalteter Heartbeat machte den Agenten still) — zurueck auf an + adaptiv.
+    await setzeHeartbeatBeimSpawn(project, name);
   } catch (err) {
     console.error(`[Synapse] PG-Status-Init fuer "${name}" fehlgeschlagen (non-fatal): ${err}`);
   }

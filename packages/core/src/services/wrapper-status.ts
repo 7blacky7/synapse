@@ -259,6 +259,17 @@ export async function setzeHeartbeatKonfiguration(
   return rows.map(mapRow)
 }
 
+/**
+ * Neu-Spawn: Heartbeat wieder auf Standard (an, adaptive Ladder) — P7-T25, 29.09.2026.
+ * Die wrapper_status-Zeile ueberlebt einen Neustart, und upsertWrapperStatus fasst die
+ * heartbeat_*-Spalten nicht an. Ein vorher abgeschalteter Heartbeat wurde so beim
+ * Neu-Spawn geerbt. Wer den Heartbeat bewusst aus haben will, schaltet ihn nach dem
+ * Spawn mit specialist(heartbeat) ab. Nur fuer EINEN Spezialisten dieses Projekts.
+ */
+export async function setzeHeartbeatBeimSpawn(project: string, agentName: string): Promise<void> {
+  await setzeHeartbeatKonfiguration(project, [agentName], { enabled: true, intervalMs: null })
+}
+
 /** Ergebnis von steuereHeartbeat — fuer Anzeige wie fuer Aenderung dieselbe Form. */
 export interface HeartbeatUebersicht {
   project: string

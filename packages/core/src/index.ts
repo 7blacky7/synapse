@@ -533,7 +533,7 @@ export {
   listWrapperStatus,
   removeWrapperStatus,
 } from './services/wrapper-status.js';
-export { setzeHeartbeatKonfiguration, steuereHeartbeat } from './services/wrapper-status.js';
+export { setzeHeartbeatKonfiguration, setzeHeartbeatBeimSpawn, steuereHeartbeat } from './services/wrapper-status.js';
 
 // Agenten-Wissen in der Datenbank (API-Bruecke Schritt 4). Additiv — der
 // Dateiweg in packages/agents/src/skills.ts bleibt unveraendert bestehen.
