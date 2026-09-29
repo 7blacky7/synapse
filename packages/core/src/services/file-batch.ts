@@ -1908,6 +1908,27 @@ function coeditOpKey(op: FileBatchOp): string {
   return JSON.stringify(normalize(content));
 }
 
+/**
+ * Dateien, deren Inhalt fuer die Pruefung eines Beitrags zaehlt: die vom Beitrag beruehrten plus
+ * alle, die per move/copy (auch in Plan-Ops) damit verbunden sind — transitiv. Ops auf anderen
+ * Dateien veraendern das Ergebnis nicht.
+ */
+function verbundeneDateien(start: string[], ops: FileBatchOp[]): Set<string> {
+  const dateien = new Set(start);
+  let gewachsen = true;
+  while (gewachsen) {
+    gewachsen = false;
+    for (const op of ops) {
+      const pfade = touchedPaths(op);
+      if (pfade.length < 2 || !pfade.some((filePath) => dateien.has(filePath))) continue;
+      for (const filePath of pfade) {
+        if (!dateien.has(filePath)) { dateien.add(filePath); gewachsen = true; }
+      }
+    }
+  }
+  return dateien;
+}
+
 /** Befund 875d6a8c (g): nennt bei abgelehntem coedit_add das abweichende Feld. */
 function describeOpMismatch(wanted: FileBatchOp, open: FileBatchOp[]): string {
   const strip = (op: FileBatchOp): Record<string, unknown> => {
@@ -2124,6 +2145,22 @@ export async function addCoeditContribution(args: {
   if (!Array.isArray(args.ops) || args.ops.length === 0) throw new Error("ops[] darf nicht leer sein");
   if (args.ops.length > 100) throw new Error("ops[] maximal 100 Eintraege");
 
+  // Perf (User-Auftrag 29.09.2026): Die Dateien, die der Beitrag beruehrt, werden VOR der
+  // Transaktion geladen und gehasht — ohne Plan-/Wait-Sperren. Unter der Sperre wird nur noch
+  // billig per content_hash geprueft, ob sie inzwischen anders sind (dann Nachladen). Dieselben
+  // Texte dienen danach der Overlap-Warnung; nichts wird zweimal aus PG geladen.
+  const dateiCache = new Map<string, { content: string; hash: string }>();
+  const ladeDatei = async (filePath: string) => {
+    let entry = dateiCache.get(filePath);
+    if (!entry) {
+      const content = (await getFileContentFromPg(args.project, filePath)) ?? "";
+      entry = { content, hash: contentHash(content) };
+      dateiCache.set(filePath, entry);
+    }
+    return entry;
+  };
+  for (const filePath of uniqueStrings(args.ops.flatMap(touchedPaths))) await ladeDatei(filePath);
+
   const pool = getPool();
   const client = await pool.connect();
   try {
@@ -2271,8 +2308,7 @@ export async function addCoeditContribution(args: {
       }
       for (const filePath of paths) {
         if (filePath in planExpectedHashes) continue;
-        const content = (await getFileContentFromPg(args.project, filePath)) ?? "";
-        planExpectedHashes[filePath] = contentHash(content);
+        planExpectedHashes[filePath] = (await ladeDatei(filePath)).hash;
       }
 
       selected.add(source.key);
@@ -2288,22 +2324,53 @@ export async function addCoeditContribution(args: {
     // search_replace, dessen Suchtext durch eine Op des Plans mehrdeutig wird), wird hier
     // abgelehnt — nichts geaendert. Vorher wurde er angenommen und machte den gemeinsamen Plan
     // beim commit terminal conflict, fuer alle, bis sein Autor ihn zurueckzog.
+    //
+    // Perf: geprueft werden NUR die Dateien, die der Beitrag beruehrt (plus per move/copy damit
+    // verbundene) und nur die Plan-Ops auf diesen Dateien — Ops anderer Dateien beeinflussen das
+    // Ergebnis nicht. Was UNTER der Sperre bleiben muss: der gemeinsame Trockenlauf gegen die
+    // endgueltige Op-Liste des Plans. Ausserhalb koennten zwei gleichzeitige Beitraege je fuer
+    // sich passen und zusammen scheitern (die Plan-Zeile ist gesperrt, coedit_adds laufen nach-
+    // einander). Nur das Laden der Texte liegt davor; hier wird es per content_hash abgesichert.
+    let pruefDateien = new Set<string>();
+    let pruefPlanIdx: number[] = [];
     if (additions.length > 0) {
+      pruefDateien = verbundeneDateien(additions.flatMap(touchedPaths), [...plan.ops, ...additions]);
+      pruefPlanIdx = plan.ops
+        .map((op, index) => ({ op, index }))
+        .filter(({ op }) => touchedPaths(op).some((filePath) => pruefDateien.has(filePath)))
+        .map(({ index }) => index);
+      const aktuell = await client.query<{ file_path: string; content_hash: string }>(
+        `SELECT file_path, content_hash FROM code_files
+          WHERE project = $1 AND file_path = ANY($2::text[]) AND deleted_at IS NULL`,
+        [args.project, [...pruefDateien]],
+      );
+      const aktuellerHash = new Map(aktuell.rows.map((row) => [row.file_path, row.content_hash] as const));
+      for (const filePath of pruefDateien) {
+        if (dateiCache.get(filePath)?.hash !== (aktuellerHash.get(filePath) ?? EMPTY_CONTENT_HASH)) {
+          dateiCache.delete(filePath);
+        }
+        const entry = await ladeDatei(filePath);
+        // Von DIESEM Beitrag neu aufgenommene Datei: Basis ist der jetzt gueltige Stand.
+        if (filePath in planExpectedHashes && !(filePath in plan.expected_hashes)) planExpectedHashes[filePath] = entry.hash;
+      }
       const baselines = new Map<string, string>();
       let basisStimmt = true;
-      for (const [filePath, expectedHash] of Object.entries(planExpectedHashes)) {
-        const content = (await getFileContentFromPg(args.project, filePath)) ?? "";
-        if (contentHash(content) !== expectedHash) { basisStimmt = false; break; }
-        baselines.set(filePath, content);
+      for (const filePath of pruefDateien) {
+        const entry = dateiCache.get(filePath)!;
+        if (filePath in planExpectedHashes && entry.hash !== planExpectedHashes[filePath]) { basisStimmt = false; break; }
+        baselines.set(filePath, entry.content);
       }
       if (basisStimmt) {
+        const subsetHashes = Object.fromEntries(
+          [...pruefDateien].map((filePath) => [filePath, planExpectedHashes[filePath] ?? dateiCache.get(filePath)!.hash]),
+        );
         const combined = buildCombinedCoeditPreview(
-          { ...plan, ops: [...plan.ops, ...additions], expected_hashes: planExpectedHashes },
+          { ...plan, ops: [...pruefPlanIdx.map((index) => plan.ops[index]), ...additions], expected_hashes: subsetHashes },
           baselines,
         );
-        if (!combined.ok && combined.conflict.left_op_index >= plan.ops.length) {
+        if (!combined.ok && combined.conflict.left_op_index >= pruefPlanIdx.length) {
           await client.query("ROLLBACK");
-          const index = combined.conflict.left_op_index - plan.ops.length;
+          const index = combined.conflict.left_op_index - pruefPlanIdx.length;
           const bad = additions[index];
           return {
             success: false,
@@ -2355,14 +2422,22 @@ export async function addCoeditContribution(args: {
     let overlapWarnings: CoeditConflictDetail[] = [];
     if (additions.length > 0) {
       try {
-        const combinedOps = [...plan.ops, ...additions];
-        const baselines = new Map<string, string>();
-        for (const filePath of uniqueStrings(combinedOps.flatMap(touchedPaths))) {
-          baselines.set(filePath, (await getFileContentFromPg(args.project, filePath)) ?? "");
-        }
-        overlapWarnings = detectCrossAgentConflicts(combinedOps, baselines).filter(
-          (conflict) => conflict.left_op_index >= plan.ops.length || conflict.right_op_index >= plan.ops.length,
-        );
+        // Perf: dieselben Texte und nur die Ops der betroffenen Dateien — keine zweite PG-Ladung.
+        const subsetOps = [...pruefPlanIdx.map((index) => plan.ops[index]), ...additions];
+        const baselines = new Map([...pruefDateien].map((filePath) => [filePath, dateiCache.get(filePath)?.content ?? ""] as const));
+        const vollIndex = (index: number) => (index < pruefPlanIdx.length ? pruefPlanIdx[index] : plan.ops.length + (index - pruefPlanIdx.length));
+        overlapWarnings = detectCrossAgentConflicts(subsetOps, baselines)
+          .filter((conflict) => conflict.left_op_index >= pruefPlanIdx.length || conflict.right_op_index >= pruefPlanIdx.length)
+          .map((conflict) => {
+            const left = vollIndex(conflict.left_op_index);
+            const right = vollIndex(conflict.right_op_index);
+            return {
+              ...conflict,
+              left_op_index: left,
+              right_op_index: right,
+              message: `Cross-Agent-Konflikt auf ${conflict.file_path}: Op ${left} (${conflict.left_agent_id}) und Op ${right} (${conflict.right_agent_id}).`,
+            };
+          });
       } catch (error) {
         console.error("[Synapse] coedit_add Overlap-Hinweis fehlgeschlagen (best-effort):", error instanceof Error ? error.message : error);
       }

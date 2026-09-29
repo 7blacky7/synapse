@@ -165,6 +165,59 @@ try {
   pruefe(c9.success === true && await inhalt('src/n2.ts') === 'n2-1\nn2-2\nW9B\nn2-4\nn2-5\nn2-6\n' && (c9.released_reservations ?? []).some((r) => r.file_path === 'src/n2.ts'),
     'T9: commit schreibt beide Dateien und gibt auch die n2-Reservierung frei', { c9: c9.success, n2: await inhalt('src/n2.ts'), rel: c9.released_reservations });
 
+  // ===== T10 Beitragspruefung mit move-Verbindung (Perf-Umbau: nur beruehrte Dateien pruefen) =====
+  await anlegen('src/q1.ts', sechs('q1-'));
+  await anlegen('src/q9.ts', sechs('q9-'));
+  await res.addFileReservations({ project: PROJECT, agentId: 'fa-o10', filePaths: ['src/q1.ts', 'src/q9.ts'] });
+  const p10 = await batch.planBatch({ project: PROJECT, agent_id: 'fa-o10', ops: [
+    { file_path: 'src/q9.ts', action: 'replace_lines', line_start: 1, line_end: 1, content: 'Q9', anchor_text: 'q9-1' },
+    { file_path: 'src/q1.ts', action: 'move', new_path: 'src/q1-neu.ts' },
+  ] });
+  const q1op = rl('src/q1.ts', 3, 'q1-3', 'Q1-BEITRAG');
+  await batch.planBatch({ project: PROJECT, agent_id: 'fa-w10', ops: [q1op] });
+  const a10 = await versuch(() => batch.addCoeditContribution({ project: PROJECT, plan_id: p10.plan_id, agent_id: 'fa-w10', ops: [q1op] }));
+  pruefe(a10.success === false && a10.error === 'contribution_failed', 'T10: Beitrag auf eine Datei, die der Plan per move entfernt, wird erkannt und abgelehnt', a10);
+  const c10 = await batch.commitBatch({ plan_id: p10.plan_id, agent_id: 'fa-o10' });
+  pruefe(c10.success === true && await inhalt('src/q1-neu.ts') === sechs('q1-') && await inhalt('src/q1.ts') === null, 'T10: der Plan bleibt committbar (move ausgefuehrt)', { c10: c10.success, neu: await inhalt('src/q1-neu.ts'), alt: await inhalt('src/q1.ts') });
+
+  // ===== T11 Datei aendert sich ZWISCHEN Vorab-Laden und Plan-Sperre (Perf-Umbau) =====
+  // coedit_add laedt die Texte vor der Transaktion. Eine fremde Sperre auf der Plan-Zeile haelt
+  // den Aufruf genau in diesem Fenster fest; waehrenddessen aendert sich die Datei. Unter der
+  // Sperre muss der content_hash-Abgleich das merken und gegen den NEUEN Stand pruefen.
+  const { contentHash: sha } = await import(join(dist, 'services', 'code-write.js'));
+  await anlegen('src/r1.ts', sechs('r1-'));
+  await anlegen('src/r2.ts', sechs('r2-'));
+  await anlegen('src/r3.ts', sechs('r3-'));
+  await res.addFileReservations({ project: PROJECT, agentId: 'fa-o11', filePaths: ['src/r1.ts', 'src/r2.ts', 'src/r3.ts'] });
+  const p11 = await batch.planBatch({ project: PROJECT, agent_id: 'fa-o11', ops: [rl('src/r1.ts', 1, 'r1-1', 'R1')] });
+  const fremdAendern = async (planId, pfad, text, beitrag, agent) => {
+    const sperre = await pool.connect();
+    try {
+      await sperre.query('BEGIN');
+      await sperre.query('SELECT id FROM file_batch_plans WHERE id = $1::bigint FOR UPDATE', [planId]);
+      const lauf = versuch(() => batch.addCoeditContribution({ project: PROJECT, plan_id: planId, agent_id: agent, ops: [beitrag] }));
+      await new Promise((r) => setTimeout(r, 700));
+      await pool.query('UPDATE code_files SET content = $3, content_hash = $4 WHERE project = $1 AND file_path = $2', [PROJECT, pfad, text, sha(text)]);
+      await sperre.query('COMMIT');
+      return await lauf;
+    } finally { sperre.release(); }
+  };
+  // (a) Anker-Zeile wird fremd geaendert -> Beitrag passt nicht mehr -> abgelehnt
+  const r2op = rl('src/r2.ts', 3, 'r2-3', 'R2-BEITRAG');
+  await batch.planBatch({ project: PROJECT, agent_id: 'fa-w11', ops: [r2op] });
+  const r2neu = 'r2-1\nr2-2\nFREMD\nr2-4\nr2-5\nr2-6\n';
+  const a11 = await fremdAendern(p11.plan_id, 'src/r2.ts', r2neu, r2op, 'fa-w11');
+  pruefe(a11.success === false && a11.error === 'contribution_failed', 'T11: Aenderung zwischen Vorab-Laden und Sperre wird erkannt (Beitrag gegen den NEUEN Stand geprueft)', a11);
+  // (b) andere Zeile fremd geaendert -> Beitrag passt, Basis-Hash ist der NEUE Stand
+  const r3op = rl('src/r3.ts', 3, 'r3-3', 'R3-BEITRAG');
+  await batch.planBatch({ project: PROJECT, agent_id: 'fa-v11', ops: [r3op] });
+  const r3neu = 'r3-1\nr3-2\nr3-3\nr3-4\nFREMD\nr3-6\n';
+  const b11 = await fremdAendern(p11.plan_id, 'src/r3.ts', r3neu, r3op, 'fa-v11');
+  const h11 = (await pool.query('SELECT expected_hashes FROM file_batch_plans WHERE id = $1::bigint', [p11.plan_id])).rows[0]?.expected_hashes ?? {};
+  pruefe(b11.success === true && h11['src/r3.ts'] === sha(r3neu), 'T11: neu aufgenommene Datei bekommt den Hash des Stands UNTER der Sperre', { b11: b11.success, err: b11.error, hash_ok: h11['src/r3.ts'] === sha(r3neu), alt: h11['src/r3.ts'] === sha(sechs('r3-')) });
+  const c11 = await batch.commitBatch({ plan_id: p11.plan_id, agent_id: 'fa-o11' });
+  pruefe(c11.success === true && await inhalt('src/r3.ts') === 'r3-1\nr3-2\nR3-BEITRAG\nr3-4\nFREMD\nr3-6\n', 'T11: commit schreibt den Beitrag auf den fremd geaenderten Stand', { c11: c11.success, r3: await inhalt('src/r3.ts') });
+
   // ===== T5 Schemas =====
   const mcpFiles = await import(join(hier, '..', '..', 'mcp-server', 'dist', 'tools', 'consolidated', 'files.js')).catch((e) => ({ fehler: e.message }));
   const sch = mcpFiles.filesTool?.definition?.inputSchema ?? mcpFiles.filesTool?.inputSchema ?? null;
