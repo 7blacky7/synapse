@@ -268,6 +268,18 @@ async function syncWaitExpiries(
   );
 }
 
+/**
+ * Befund 875d6a8c (f): erklaert, warum expires_at je Datei unterschiedlich ausfallen kann —
+ * die TTL skaliert mit der Zahl der Beteiligten JE DATEI. null, wenn alle gleich sind.
+ */
+export function reservationTtlHint(reservations: ReadonlyArray<{ file_path: string; expires_at: string | Date }>): string | null {
+  const distinct = new Set(reservations.map((r) => new Date(r.expires_at).toISOString()));
+  if (distinct.size <= 1) return null;
+  const config = getReservationTtlConfig();
+  return `expires_at unterscheidet sich je Datei: die TTL skaliert mit der Zahl der Beteiligten je Datei `
+    + `(mehr reservierende/wartende Agenten = laenger, hoechstens ${config.maxMinutes} Minuten). Verlaengert wird nur durch eigene Aktivitaet.`;
+}
+
 export async function refreshReservationTtlsForFiles(
   /** agentId: nur die Reservierung DIESES Agenten verlaengern (Befund 693bbf48 d). */
   args: { project: string; filePaths: readonly string[]; agentId?: string },

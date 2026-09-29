@@ -29,6 +29,8 @@ import {
   replanBatch,
   planFailureResponse,
   buildCancelResponse,
+  pollPlanStatus,
+  reservationTtlHint,
   commitBatch,
   cancelBatch,
   getBatchPlan,
@@ -228,7 +230,11 @@ export const filesTool: ConsolidatedTool = {
         },
         wait_token: {
           type: 'string',
-          description: 'Opaquer CE-2-Wait-Token fuer shared_plan_status.',
+          description: 'Opaquer CE-2-Wait-Token fuer shared_plan_status; optional fuer coedit_add (genau diesen Wait verwenden).',
+        },
+        wait_seconds: {
+          type: 'number',
+          description: 'plan_status/shared_plan_status: Long-Poll bis max. 50 s — der Server wartet, bis sich Status/Zielplan/Wait-Stand aendern (Antwort: changed, waited_seconds).',
         },
         files: {
           type: 'array',
@@ -301,7 +307,7 @@ export const filesTool: ConsolidatedTool = {
       if (!agentId) throw new Error("agent_id ist fuer coedit_add erforderlich");
       const opsRaw = (args as Record<string, unknown>).ops;
       if (!Array.isArray(opsRaw) || opsRaw.length === 0) throw new Error("ops[] muss mindestens eine Operation enthalten");
-      return addCoeditContribution({ project, plan_id: reqStr(args, "plan_id"), agent_id: agentId, ops: opsRaw as FileBatchOp[] });
+      return addCoeditContribution({ project, plan_id: reqStr(args, "plan_id"), agent_id: agentId, ops: opsRaw as FileBatchOp[], wait_token: str(args, "wait_token") });
     }
     if (action === "coedit_ready") {
       if (!agentId) throw new Error("agent_id ist fuer coedit_ready erforderlich");
@@ -313,7 +319,7 @@ export const filesTool: ConsolidatedTool = {
     }
     if (action === "shared_plan_status") {
       if (!agentId) throw new Error("agent_id ist fuer shared_plan_status erforderlich");
-      return getSharedPlanStatus({ project, wait_token: reqStr(args, "wait_token"), agent_id: agentId });
+      return getSharedPlanStatus({ project, wait_token: reqStr(args, "wait_token"), agent_id: agentId, wait_seconds: num(args, "wait_seconds") });
     }
     if (action === 'reservation_add') {
       if (!agentId) throw new Error('agent_id ist fuer reservation_add erforderlich');
@@ -329,6 +335,7 @@ export const filesTool: ConsolidatedTool = {
         success: true,
         count: reservations.length,
         reservations,
+        ...(reservationTtlHint(reservations) ? { ttl_hint: reservationTtlHint(reservations) } : {}),
         message: `${reservations.length} Datei(en) fuer ${agentId} reserviert. Mehrfachreservierungen durch andere Agenten bleiben erlaubt.`,
       };
     }
@@ -513,6 +520,8 @@ export const filesTool: ConsolidatedTool = {
     }
     if (action === 'plan_status') {
       const planId = reqStr(args, 'plan_id');
+      const waitSeconds = num(args, 'wait_seconds');
+      if (waitSeconds) return pollPlanStatus({ plan_id: planId, wait_seconds: waitSeconds });
       const plan = await getBatchPlan(planId);
       if (!plan) return { success: false, error: 'plan_not_found', message: `Plan ${planId} nicht gefunden.` };
       return buildPlanStatusResponse(plan);

@@ -120,6 +120,8 @@ import {
   replanBatch,
   planFailureResponse,
   buildCancelResponse,
+  pollPlanStatus,
+  reservationTtlHint,
   commitBatch,
   cancelBatch,
   getBatchPlan,
@@ -956,7 +958,8 @@ const MCP_TOOLS = [
           },
         },
         open_for_coedit: { type: 'boolean', description: 'Optional fuer plan: ob der konkrete waiting_agent per coedit_add beitragen darf (default true). false lehnt coedit_add mutationsfrei ab.' },
-        wait_token: { type: 'string', description: 'Opaquer CE-2-Wait-Token fuer shared_plan_status.' },
+        wait_token: { type: 'string', description: 'Opaquer CE-2-Wait-Token fuer shared_plan_status; optional fuer coedit_add (genau diesen Wait verwenden).' },
+        wait_seconds: { type: 'number', description: 'plan_status/shared_plan_status: Long-Poll bis max. 50 s — der Server wartet, bis sich Status/Zielplan/Wait-Stand aendern (Antwort: changed, waited_seconds).' },
         files: { type: 'array', items: { type: 'string' }, description: 'coedit_no_changes: konkrete gemeinsame Dateien ohne eigenen Beitrag.' },
         auto_commit: { type: 'boolean', description: '(optional fuer plan): wenn true, wird direkt nach plan() automatisch commit() aufgerufen — spart einen Tool-Call wenn kein User-Review vor commit gewuenscht. Versionierung bleibt aktiv (file_versions + batch_id), Rollback via restore_batch jederzeit moeglich.' },
         agent_note: { type: 'string', description: '(optional fuer plan/commit): KI-eigene Beobachtungen/Analyse zum Batch (zusaetzlich zum reason des Users). Wird in alle file_versions dieser Batch geschrieben. Empfohlen ab ≥3 Ops oder Multi-File Batches.' },
@@ -1035,7 +1038,8 @@ const MCP_TOOLS = [
         reservation_agent_id: { type: 'string', description: 'reservation_list: optionaler Besitzer-Filter. agent_id bleibt Attribution des aufrufenden Agenten.' },
         include_released: { type: 'boolean', description: 'reservation_list: auch bereits freigegebene Zeilen anzeigen (Default false).' },
         open_for_coedit: { type: 'boolean', description: 'plan: ob der konkrete waiting_agent Co-Edit-Ops beitragen darf (default true)' },
-        wait_token: { type: 'string', description: 'Opaquer CE-2-Wait-Token fuer shared_plan_status.' },
+        wait_token: { type: 'string', description: 'Opaquer CE-2-Wait-Token fuer shared_plan_status; optional fuer coedit_add (genau diesen Wait verwenden).' },
+        wait_seconds: { type: 'number', description: 'plan_status/shared_plan_status: Long-Poll bis max. 50 s — der Server wartet, bis sich Status/Zielplan/Wait-Stand aendern (Antwort: changed, waited_seconds).' },
         files: { type: 'array', items: { type: 'string' }, description: 'coedit_no_changes: konkrete gemeinsame Dateien ohne eigenen Beitrag.' },
         auto_commit: { type: 'boolean', description: 'plan + commit in einem Call (default false). Versionierung bleibt aktiv.' },
         agent_note: { type: 'string', description: '(optional): KI-eigene Beobachtungen pro Batch (zusaetzlich zum User-reason).' },
@@ -4061,7 +4065,7 @@ async function handleToolCall(
         if (!agentId) throw new Error("agent_id ist fuer coedit_add erforderlich");
         const coeditOps = (args as Record<string, unknown>).ops;
         if (!Array.isArray(coeditOps) || coeditOps.length === 0) throw new Error("ops[] muss mindestens eine Operation enthalten");
-        return addCoeditContribution({ project, plan_id: reqStr(args, "plan_id"), agent_id: agentId, ops: coeditOps as import("@synapse/core").FileBatchOp[] });
+        return addCoeditContribution({ project, plan_id: reqStr(args, "plan_id"), agent_id: agentId, ops: coeditOps as import("@synapse/core").FileBatchOp[], wait_token: str(args, "wait_token") });
       }
       if (action === "coedit_ready") {
         if (!agentId) throw new Error("agent_id ist fuer coedit_ready erforderlich");
@@ -4073,7 +4077,7 @@ async function handleToolCall(
       }
       if (action === "shared_plan_status") {
         if (!agentId) throw new Error("agent_id ist fuer shared_plan_status erforderlich");
-        return getSharedPlanStatus({ project, wait_token: reqStr(args, "wait_token"), agent_id: agentId });
+        return getSharedPlanStatus({ project, wait_token: reqStr(args, "wait_token"), agent_id: agentId, wait_seconds: num(args, "wait_seconds") });
       }
       if (action === 'reservation_add') {
         if (!agentId) throw new Error('agent_id ist fuer reservation_add erforderlich');
@@ -4088,6 +4092,7 @@ async function handleToolCall(
           success: true,
           count: reservations.length,
           reservations,
+          ...(reservationTtlHint(reservations) ? { ttl_hint: reservationTtlHint(reservations) } : {}),
           message: `${reservations.length} Datei(en) fuer ${agentId} reserviert. Mehrfachreservierungen durch andere Agenten bleiben erlaubt.`,
         };
       }
@@ -4425,6 +4430,8 @@ async function handleToolCall(
       }
       if (action === 'plan_status') {
         const planId = reqStr(args, 'plan_id');
+        const waitSeconds = num(args, 'wait_seconds');
+        if (waitSeconds) return pollPlanStatus({ plan_id: planId, wait_seconds: waitSeconds });
         const plan = await getBatchPlan(planId);
         if (!plan) return { success: false, error: 'plan_not_found', message: `Plan ${planId} nicht gefunden.` };
         return buildPlanStatusResponse(plan);

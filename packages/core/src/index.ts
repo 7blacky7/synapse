@@ -607,6 +607,7 @@ export {
   PlanBatchOpsFailedError,
   planFailureResponse,
   buildCancelResponse,
+  pollPlanStatus,
 } from './services/file-batch.js';
 export { claimOpenPlanHints } from './services/plan-hints.js';
 export type { OpenPlanHints, OpenPlanHintEntry } from './services/plan-hints.js';
@@ -643,6 +644,7 @@ export {
   getReservationTtlConfig,
   refreshReservationTtlsForFiles,
   renewFileReservationTtls,
+  reservationTtlHint,
 } from './services/file-reservations.js';
 export type {
   FileReservation,
