@@ -394,6 +394,9 @@ try {
   );
   const hRecord = hW.record_plan_id ? await planZeile(hW.record_plan_id) : null;
   pruefe(hRecord?.status === 'cancelled' && hRecord?.ops?.length === 2, '8: das Rueckzugsprotokoll ist ein verworfener Eintrag (nie committbar/beitretbar) mit beiden Ops', hRecord?.status);
+  // Nach dem Rueckzug ist Cs alter Wait geschlossen (Befund 693bbf48): erneut beitreten = neu planen.
+  const hReplan = await batch.planBatch({ project: PROJECT, agent_id: HC, ops: [opHC1] });
+  pruefe(hReplan.total_ops === 0 && hReplan.coedit_waits?.[0]?.target_plan_id === hp.plan_id, '8: C plant neu und wird wieder in den gemeinsamen Plan gefuehrt', hReplan.coedit_waits);
   let hReAdd = null;
   try { hReAdd = await batch.addCoeditContribution({ project: PROJECT, plan_id: hp.plan_id, agent_id: HC, ops: [opHC1] }); } catch (err) { hReAdd = { success: false, error: err?.message }; }
   pruefe(hReAdd?.success === true && hReAdd?.appended_ops === 1, '8: C tritt nach dem Rueckzug mit einer Op wieder bei', hReAdd);

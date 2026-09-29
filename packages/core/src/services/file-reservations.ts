@@ -269,7 +269,8 @@ async function syncWaitExpiries(
 }
 
 export async function refreshReservationTtlsForFiles(
-  args: { project: string; filePaths: readonly string[] },
+  /** agentId: nur die Reservierung DIESES Agenten verlaengern (Befund 693bbf48 d). */
+  args: { project: string; filePaths: readonly string[]; agentId?: string },
   queryClient: ReservationQueryClient = getPool(),
 ): Promise<number> {
   const filePaths = [...new Set(args.filePaths.filter(Boolean))];
@@ -282,8 +283,9 @@ export async function refreshReservationTtlsForFiles(
       `UPDATE file_reservations
           SET expires_at = GREATEST(expires_at, NOW() + ($3 * INTERVAL '1 second'))
         WHERE project = $1 AND file_path = $2
-          AND released_at IS NULL AND expires_at > NOW()`,
-      [args.project, filePath, scaledTtlSeconds(config, participants)],
+          AND released_at IS NULL AND expires_at > NOW()
+          AND ($4::text IS NULL OR agent_id = $4)`,
+      [args.project, filePath, scaledTtlSeconds(config, participants), args.agentId ?? null],
     );
     updated += result.rowCount ?? 0;
   }
@@ -487,8 +489,10 @@ async function addWithClient(
     }
 
     if (!args.expiresAt) {
+      // Befund 693bbf48 (d): nur die EIGENE Reservierung — wer reserviert, verlaengert
+      // nicht mehr die eines anderen (ausgefallenen) Agenten auf derselben Datei.
       await refreshReservationTtlsForFiles(
-        { project: args.project, filePaths: [filePath] },
+        { project: args.project, filePaths: [filePath], agentId: args.agentId },
         client,
       );
     } else {
