@@ -52,6 +52,7 @@ import {
   codeCheckTool,
   ignoreTool,
   freeModelsTool,
+  jevTool,
   filesTool,
   shellTool,
   guideTool,
@@ -170,6 +171,7 @@ export function createServer(): Server {
     codeCheckTool.definition,
     ignoreTool.definition,
     freeModelsTool.definition,
+    jevTool.definition,
     filesTool.definition,
     shellTool.definition,
     guideTool.definition,
@@ -786,6 +788,9 @@ export function createServer(): Server {
 
         case 'free_models':
           return withOnboarding(await freeModelsTool.handler(args as Record<string, unknown>));
+
+        case 'jev':
+          return withOnboarding(await jevTool.handler(args as Record<string, unknown>));
 
         case 'files':
           return withOnboarding(await filesTool.handler(args as Record<string, unknown>));

@@ -66,6 +66,11 @@ import {
   listActiveAgents,
   sendChatMessage,
   getChatMessages,
+  // JEV-10: Jev entscheidet Rueckfragen (P7-T28)
+  entscheideRueckfrage,
+  setzeAbwesenheit,
+  holeEntscheidungsProtokoll,
+  ueberstimmeEntscheidung,
   // Events
   emitEvent,
   acknowledgeEvent,
@@ -665,6 +670,37 @@ const MCP_TOOLS = [
         },
       },
       required: ['action'],
+    },
+  },
+  // 8b. jev (JEV-10, P7-T28)
+  {
+    name: 'jev',
+    description: 'Jev entscheidet Rueckfragen, wenn der User nicht da ist. Actions: entscheiden (erlaubte Rueckfrage per Jev beantworten: frage, typ noul|choice|score, kategorie variante|reihenfolge|umsetzungsweg|formulierung, optionen {key: Beschreibung}, agent_id — wirkt NUR bei aktivem Schalter, sonst Antwort "User/Koordinator fragen"; unter Confidence 0.7 keine Entscheidung; Antwort ist mit "entschieden von Jev, nicht vom User" gekennzeichnet), abwesend (modus an|aus|status; an/aus nur agent_id koordinator, auf Zuruf des Users; aus liefert das Protokoll), protokoll (Entscheidungen seit Schalter-Beginn), ueberstimmen (nur Koordinator). Verboten fuer Jev: loeschen, deploy, git, secrets, aussenwirkung, kosten, regeln.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', enum: ['entscheiden', 'abwesend', 'protokoll', 'ueberstimmen'], description: 'Aktion' },
+        project: { type: 'string', description: 'Projekt-Name' },
+        agent_id: { type: 'string', description: 'Wer fragt/setzt (Pflicht fuer entscheiden, abwesend an/aus, ueberstimmen)' },
+        frage: { type: 'string', description: 'Nur entscheiden: die Rueckfrage (max. 500 Zeichen)' },
+        typ: { type: 'string', enum: ['noul', 'choice', 'score'], description: 'Nur entscheiden: noul = ja/nein, choice = Auswahl, score = Skala (Standard 1..5)' },
+        kategorie: { type: 'string', description: 'Nur entscheiden (Pflicht): variante | reihenfolge | umsetzungsweg | formulierung. Verbotene und unbekannte lehnt der Server ab.' },
+        optionen: { type: 'object', description: 'Nur entscheiden: choice {key: Beschreibung} (2..10); score optional {"1": Anker, ...}', additionalProperties: { type: 'string' } },
+        kontext: { type: 'string', description: 'Nur entscheiden: Task/Plan/bisherige Diskussion (max. 1500 Zeichen, wird gekuerzt)' },
+        task_id: { type: 'string', description: 'Nur entscheiden: zugehoerige Task (fuer das Protokoll)' },
+        hinweise: { type: 'string', description: 'Nur entscheiden: eigene Prioritaeten fuer Jev (max. 500 Zeichen)' },
+        confidence_tor: { type: 'number', description: 'Nur entscheiden: Tor (0..1), Standard 0.7 (Env JEV_ENTSCHEIDUNG_TOR)' },
+        modus: { type: 'string', enum: ['an', 'aus', 'status'], description: 'Nur abwesend: Schalter an/aus/status' },
+        bis: { type: 'string', description: 'Nur abwesend an (freiwillig): ISO-Zeitpunkt in der Zukunft, danach gilt der Schalter als aus. Standard: kein Ablauf.' },
+        stunden: { type: 'number', description: 'Nur abwesend an (freiwillig): Alternative zu bis, in N Stunden' },
+        seit: { type: 'string', description: 'Nur protokoll: ISO-Zeitpunkt; Standard = Beginn des Schalters' },
+        nur_entschieden: { type: 'boolean', description: 'Nur protokoll: nur tatsaechlich entschiedene Eintraege' },
+        limit: { type: 'number', description: 'Nur protokoll: Hoechstzahl (Standard 50, max 200)' },
+        id: { type: 'number', description: 'Nur ueberstimmen: Protokoll-Nummer' },
+        wahl: { type: 'string', description: 'Nur ueberstimmen: die richtige Entscheidung (Option, ja/nein oder Zahl)' },
+        notiz: { type: 'string', description: 'Nur ueberstimmen: Begruendung' },
+      },
+      required: ['action', 'project'],
     },
   },
   // 9. event
@@ -1832,6 +1868,11 @@ async function attachRestOnboarding(
     const { baueChannelUebersicht } = await import('@synapse/core');
     const channelBlock = await baueChannelUebersicht(project, role === 'koordinator');
 
+    // JEV-10 (P7-T28): bei aktivem Abwesenheits-Schalter ein Satz, sonst nichts. Wie im lokalen Weg.
+    const { baueAbwesenheitsHinweis } = await import('@synapse/core');
+    const jevHinweis = await baueAbwesenheitsHinweis(project);
+    const jevBlock = jevHinweis ? { jev_hinweis: jevHinweis } : {};
+
     // Plan-Uebersicht (Task 137fabaf): nur aktive/offene Plaene mit Kurz-ID, keine Tasks.
     const { planUebersicht } = await import('@synapse/core');
     const plaene = await planUebersicht(project).catch(() => []);
@@ -1840,7 +1881,7 @@ async function attachRestOnboarding(
     if (rules.length === 0) {
       return {
         ...result,
-        agentOnboarding: { isFirstVisit: true, ...(channelBlock ? { channels: channelBlock } : {}), ...planBlock },
+        agentOnboarding: { isFirstVisit: true, ...jevBlock, ...(channelBlock ? { channels: channelBlock } : {}), ...planBlock },
       };
     }
 
@@ -1860,6 +1901,7 @@ async function attachRestOnboarding(
         ),
         message: '📋 WILLKOMMEN! Als neuer Agent beachte bitte folgende Projekt-Regeln:',
         ...(abrufHinweis ? { volltext_hinweis: abrufHinweis } : {}),
+        ...jevBlock,
         rules,
         ...(channelBlock ? { channels: channelBlock } : {}),
         ...planBlock,
@@ -3002,10 +3044,19 @@ async function handleToolCall(
           const hinweis = ausgeblendet > 0
             ? `; ${ausgeblendet} zurueckgestellte Plaene ausgeblendet (plan(list, alle: true) zeigt sie)`
             : '';
+          // JEV-10 (P7-T28): bei aktivem Schalter sichtbar machen, dass Jev Rueckfragen entscheidet (best effort)
+          let jevEntscheidet: Record<string, unknown> | undefined;
+          try {
+            const { leseAbwesenheit, jevEntscheidetHinweis } = await import('@synapse/core');
+            const stand = await leseAbwesenheit(project);
+            const text = jevEntscheidetHinweis(stand);
+            if (text) jevEntscheidet = { aktiv: true, seit: stand.seit, gesetzt_von: stand.gesetzt_von, hinweis: text };
+          } catch { /* Tabelle fehlt/DB-Fehler: kein Hinweis, plan(list) bleibt wie bisher */ }
           return {
             success: true,
             plaene,
             aktiver_plan: aktiv ? (aktiv.kurz_id ?? aktiv.id) : null,
+            ...(jevEntscheidet ? { jev_entscheidet: jevEntscheidet } : {}),
             ...(ausgeblendet > 0 ? { zurueckgestellt_ausgeblendet: ausgeblendet } : {}),
             message: plaene.length === 0
               ? `Keine Plaene im Projekt ${project}${hinweis}`
@@ -3499,6 +3550,56 @@ async function handleToolCall(
         }
         default:
           return { success: false, error: `Unbekannte channel action: "${action}"` };
+      }
+    }
+
+    // =================================================================
+    // 8b. JEV (JEV-10, P7-T28): Jev entscheidet Rueckfragen, wenn der User weg ist
+    // =================================================================
+    case 'jev': {
+      const project = reqStr(args, 'project');
+      switch (action) {
+        case 'entscheiden': {
+          let optionen: Record<string, string> | undefined;
+          const rohOpt = args.optionen;
+          if (rohOpt && typeof rohOpt === 'object' && !Array.isArray(rohOpt)) optionen = rohOpt as Record<string, string>;
+          else if (typeof rohOpt === 'string' && rohOpt.trim().startsWith('{')) {
+            try { optionen = JSON.parse(rohOpt) as Record<string, string>; } catch { /* der Service meldet fehlende optionen */ }
+          }
+          return await entscheideRueckfrage(project, {
+            agent_id: str(args, 'agent_id'),
+            frage: str(args, 'frage'),
+            typ: str(args, 'typ'),
+            kategorie: str(args, 'kategorie'),
+            optionen,
+            kontext: str(args, 'kontext'),
+            task_id: str(args, 'task_id'),
+            hinweise: str(args, 'hinweise'),
+            confidence_tor: num(args, 'confidence_tor'),
+          });
+        }
+        case 'abwesend':
+          return await setzeAbwesenheit(project, {
+            modus: str(args, 'modus'),
+            agent_id: str(args, 'agent_id'),
+            bis: str(args, 'bis'),
+            stunden: num(args, 'stunden'),
+          });
+        case 'protokoll':
+          return await holeEntscheidungsProtokoll(project, {
+            seit: str(args, 'seit'),
+            nur_entschieden: bool(args, 'nur_entschieden'),
+            limit: num(args, 'limit'),
+          });
+        case 'ueberstimmen':
+          return await ueberstimmeEntscheidung(project, {
+            id: num(args, 'id'),
+            wahl: args.wahl,
+            notiz: str(args, 'notiz'),
+            agent_id: str(args, 'agent_id'),
+          });
+        default:
+          return { success: false, error: `Unbekannte jev action: "${action}"` };
       }
     }
 

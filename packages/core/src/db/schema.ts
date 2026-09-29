@@ -191,6 +191,39 @@ CREATE TABLE IF NOT EXISTS channel_sichtung (
 );
 CREATE INDEX IF NOT EXISTS idx_channel_sichtung_channel ON channel_sichtung(project, channel);
 
+-- JEV-10 (P7-T28, 29.09.2026): Jev entscheidet Rueckfragen, wenn der User weg ist.
+-- Schalter je Projekt (nur der Koordinator setzt ihn) + Protokoll jeder Entscheidung. Nur CREATE ... IF NOT
+-- EXISTS: keine Aenderung an bestehenden Tabellen, keine Sperren.
+CREATE TABLE IF NOT EXISTS jev_entscheidet (
+  project TEXT PRIMARY KEY,
+  aktiv BOOLEAN NOT NULL DEFAULT false,
+  seit TIMESTAMPTZ,
+  bis TIMESTAMPTZ,
+  gesetzt_von TEXT,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE TABLE IF NOT EXISTS jev_entscheidungen (
+  id BIGSERIAL PRIMARY KEY,
+  project TEXT NOT NULL,
+  zeit TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  agent TEXT,
+  task_id TEXT,
+  kategorie TEXT,
+  frage TEXT NOT NULL,
+  typ TEXT NOT NULL,
+  optionen JSONB,
+  wahl JSONB,
+  confidence DOUBLE PRECISION,
+  entschieden BOOLEAN NOT NULL,
+  grund TEXT,
+  jev_aufruf BOOLEAN NOT NULL DEFAULT false,
+  ueberstimmt_von TEXT,
+  ueberstimmt_wahl JSONB,
+  ueberstimmt_notiz TEXT,
+  ueberstimmt_am TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_jev_entscheidungen_project_zeit ON jev_entscheidungen(project, zeit);
+
 CREATE TABLE IF NOT EXISTS onboarding_ruhe (
   id SMALLINT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
   ruhe_bis TIMESTAMPTZ NOT NULL,

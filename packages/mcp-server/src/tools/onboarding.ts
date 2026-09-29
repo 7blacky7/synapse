@@ -244,6 +244,10 @@ export async function checkAgentOnboarding(
     const { baueChannelUebersicht } = await import('@synapse/core');
     const channelBlock = await baueChannelUebersicht(project, isCoordinator);
 
+    // JEV-10 (P7-T28): bei aktivem Abwesenheits-Schalter ein Satz, sonst nichts. Wie im REST-Weg.
+    const { baueAbwesenheitsHinweis } = await import('@synapse/core');
+    const jevHinweis = await baueAbwesenheitsHinweis(project);
+
     // Plan-Uebersicht (Task 137fabaf): nur aktive/offene Plaene mit Kurz-ID, keine Tasks.
     // Gleiches Feld wie im REST-Weg (routes/mcp.ts).
     const { planUebersicht } = await import('@synapse/core');
@@ -264,6 +268,7 @@ export async function checkAgentOnboarding(
       rolle_hinweis: rollenQuelleKlartext(effectiveRole, rollenQuelle, role ?? null),
       ...(abrufHinweis ? { volltext_hinweis: abrufHinweis } : {}),
       ...(setupHinweis ? { setup_hinweis: setupHinweis } : {}),
+      ...(jevHinweis ? { jev_hinweis: jevHinweis } : {}),
       rules,
       ...(channelBlock ? { channels: channelBlock } : {}),
       ...(plaene.length > 0 ? { plaene } : {}),

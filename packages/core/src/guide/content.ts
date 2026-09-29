@@ -1564,4 +1564,61 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
     when_not_to_use: 'Aus REST/Web-KI — wird mit Fehler abgewiesen. Fuer normale Datei-Edits → files (Watcher synct automatisch wenn er laeuft).',
   },
 
+  // -------------------------------------------------------------------------
+  // jev — Jev entscheidet Rueckfragen, wenn der User nicht da ist (P7-T28 / JEV-10)
+  // -------------------------------------------------------------------------
+  jev: {
+    summary: 'Jev beantwortet ERLAUBTE Rueckfragen (ja/nein, Auswahl, Skala), wenn der User nicht da ist. Ein Schalter je Projekt (nur der Koordinator setzt ihn, auf Zuruf des Users: "ich bin weg" = an, "bin wieder da" = aus). Die Kette bleibt Agent → Koordinator → User; bei aktivem Schalter springt Jev fuer den User ein, jede Entscheidung wird protokolliert und ist mit "entschieden von Jev (Confidence x), nicht vom User" gekennzeichnet.',
+    when_to_use: [
+      'Du (Agent) willst den User etwas fragen — Variante A oder B, Reihenfolge, Umsetzungsweg, Formulierung — und er ist nicht da (Nacht, Loop).',
+      'Erst abwesend(modus:"status") pruefen oder auf den Hinweis "User abwesend — Jev entscheidet ..." im Onboarding/plan(list) achten.',
+      'Koordinator: Schalter setzen (abwesend an/aus), Protokoll zeigen (protokoll), Fehlentscheidungen markieren (ueberstimmen).',
+    ].join(' '),
+    when_not_to_use: [
+      'Schalter aus = User ist da: dann gar nicht aufrufen (entscheiden macht keinen Jev-Aufruf, antwortet nur "User/Koordinator fragen" und schreibt keine Protokollzeile).',
+      'Verbotene Kategorien: loeschen, deploy, git, secrets, aussenwirkung, kosten, regeln — die entscheidet nie Jev, der Server lehnt sie ab; unbekannte Kategorien ebenso.',
+      'Nicht umkehrbare oder folgenreiche Entscheidungen — dort auf den User warten.',
+    ].join(' '),
+    param_tips: [
+      'entscheiden: kategorie ist PFLICHT (erlaubt: variante, reihenfolge, umsetzungsweg, formulierung). typ noul = ja/nein, choice = Auswahl (optionen {key: Beschreibung}, 2..10), score = Skala (Standard 1..5).',
+      'Unter Confidence 0.7 (Env JEV_ENTSCHEIDUNG_TOR, oder confidence_tor) gibt es KEINE Entscheidung — warte dann auf User/Koordinator.',
+      'Ratenbremse: 30 Jev-Aufrufe je Stunde und Projekt (Env JEV_ENTSCHEIDUNG_RATE), danach Ablehnung.',
+      'abwesend an/aus: nur agent_id koordinator (Namenstreue, keine Identitaetspruefung). bis oder stunden sind freiwillig; ohne beides laeuft der Schalter bis "aus". aus liefert das Protokoll seit dem Einschalten mit.',
+    ].join('\n'),
+    examples: [
+      'jev({ action: "abwesend", project: "synapse", modus: "status" })',
+      'jev({ action: "entscheiden", project: "synapse", agent_id: "plan-specht", kategorie: "variante", typ: "choice", frage: "Variante A oder B?", optionen: { a: "kleiner Umbau", b: "neuer Service" } })',
+    ],
+    anti_patterns: [
+      'entscheiden fuer loeschen/deploy/git/secrets/kosten/regeln — wird abgelehnt und protokolliert.',
+      'Bei Confidence unter 0.7 trotzdem weitermachen — dann auf den User warten.',
+      'Den Schalter als Nicht-Koordinator setzen — abgelehnt.',
+      'Eine Jev-Entscheidung als Wunsch des Users ausgeben — sie ist immer als "entschieden von Jev" zu kennzeichnen.',
+    ],
+    actions: {
+      entscheiden: {
+        description: 'Beantwortet eine erlaubte Rueckfrage per Jev — nur bei aktivem Schalter. Antwort enthaelt wahl, confidence, entschieden (true/false), Kennzeichnung "entschieden von Jev (Confidence x), nicht vom User" und protokoll_id.',
+        params: 'project (req), agent_id (req), frage (req, max 500 Zeichen), kategorie (req), typ (noul|choice|score), optionen ({key: Beschreibung}), kontext (max 1500 Zeichen), task_id, hinweise (max 500 Zeichen), confidence_tor (0..1, Standard 0.7)',
+        example: 'jev({ action: "entscheiden", project: "synapse", agent_id: "plan-specht", kategorie: "umsetzungsweg", typ: "noul", frage: "Test zuerst schreiben?" })',
+        tips: 'Schalter aus → kein Jev-Aufruf, keine Protokollzeile, Antwort "User/Koordinator fragen". Verbotene/unbekannte Kategorie, Ratenbremse, fehlender Key und Confidence unter 0.7 werden mit entschieden:false protokolliert (bei aktivem Schalter).',
+      },
+      abwesend: {
+        description: 'Schalter "User abwesend" je Projekt anzeigen (status, jeder) oder setzen (an/aus, nur Koordinator).',
+        params: 'project (req), modus (req: an|aus|status), agent_id (req fuer an/aus: koordinator), bis (ISO-Zeitpunkt in der Zukunft, freiwillig), stunden (Alternative zu bis)',
+        example: 'jev({ action: "abwesend", project: "synapse", modus: "an", agent_id: "koordinator" })',
+        tips: 'Ein abgelaufenes bis gilt als aus. Bei aktivem Schalter tragen plan(list) und das Onboarding (Feld jev_hinweis) den Hinweis "User abwesend — Jev entscheidet erlaubte Rueckfragen". aus liefert das Protokoll seit dem Einschalten.',
+      },
+      protokoll: {
+        description: 'Jev-Entscheidungen seit Schalter-Beginn (auch abgelehnte/unsichere Versuche).',
+        params: 'project (req), seit (ISO, Standard = Beginn des Schalters), nur_entschieden (bool), limit (Standard 50, max 200)',
+        example: 'jev({ action: "protokoll", project: "synapse", nur_entschieden: true })',
+      },
+      ueberstimmen: {
+        description: 'Koordinator markiert eine Jev-Entscheidung als ueberstimmt (Korrektur des Users). Daraus koennen jev-erkenntnis-Memories werden.',
+        params: 'project (req), id (req, Protokoll-Nummer), wahl (req, die richtige Entscheidung), agent_id (req: koordinator), notiz',
+        example: 'jev({ action: "ueberstimmen", project: "synapse", id: 3, wahl: "b", notiz: "User wollte B", agent_id: "koordinator" })',
+      },
+    },
+  },
+
 };

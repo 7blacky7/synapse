@@ -535,6 +535,21 @@ export {
 } from './services/wrapper-status.js';
 export { setzeHeartbeatKonfiguration, setzeHeartbeatBeimSpawn, steuereHeartbeat } from './services/wrapper-status.js';
 
+// JEV-10: Jev entscheidet Rueckfragen, wenn der User weg ist (P7-T28)
+export {
+  entscheideRueckfrage,
+  setzeAbwesenheit,
+  leseAbwesenheit,
+  holeEntscheidungsProtokoll,
+  ueberstimmeEntscheidung,
+  hinweisText as jevEntscheidetHinweis,
+  baueAbwesenheitsHinweis,
+  ERLAUBTE_KATEGORIEN,
+  VERBOTENE_KATEGORIEN,
+  STANDARD_ENTSCHEIDUNG_TOR,
+  STANDARD_RATE_PRO_STUNDE,
+} from './services/jev-entscheidung.js';
+
 // Agenten-Wissen in der Datenbank (API-Bruecke Schritt 4). Additiv — der
 // Dateiweg in packages/agents/src/skills.ts bleibt unveraendert bestehen.
 export {

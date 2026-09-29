@@ -17,7 +17,7 @@ import {
   activateProjectPlan,
   zurueckstellenPlan,
 } from '../plans.js';
-import { empfehleFuerPlan, ordneTasksEin, passendeTasks, uebernehmeTask, verschiebeTasks, zurueckstelleTask, filtereWiedervorlageTasks } from '@synapse/core';
+import { empfehleFuerPlan, ordneTasksEin, passendeTasks, uebernehmeTask, verschiebeTasks, zurueckstelleTask, filtereWiedervorlageTasks, leseAbwesenheit, jevEntscheidetHinweis } from '@synapse/core';
 import type { ProjectTask } from '@synapse/core';
 
 export const planTool: ConsolidatedTool = {
@@ -269,7 +269,16 @@ export const planTool: ConsolidatedTool = {
       }
 
       case 'list': {
-        return await listProjectPlans(project, args.alle === true);
+        const liste = await listProjectPlans(project, args.alle === true);
+        // JEV-10 (P7-T28): bei aktivem Schalter sichtbar machen, dass Jev Rueckfragen entscheidet (best effort)
+        try {
+          const stand = await leseAbwesenheit(project);
+          const text = jevEntscheidetHinweis(stand);
+          if (text) {
+            return { ...liste, jev_entscheidet: { aktiv: true, seit: stand.seit, gesetzt_von: stand.gesetzt_von, hinweis: text } };
+          }
+        } catch { /* Tabelle fehlt/DB-Fehler: kein Hinweis, plan(list) bleibt wie bisher */ }
+        return liste;
       }
 
       case 'passende_tasks': {
