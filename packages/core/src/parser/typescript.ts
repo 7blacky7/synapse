@@ -130,9 +130,11 @@ function resolveStringExpression(
 function extractSymbols(
   sourceFile: ts.SourceFile,
   fullText: string,
-): { symbols: ParsedSymbol[]; definedNames: Set<string> } {
+): { symbols: ParsedSymbol[]; definedNames: Set<string>; feldNamen: Set<string> } {
   const symbols: ParsedSymbol[] = [];
   const definedNames = new Set<string>();
+  // Namen aller field-Symbole dieser Datei — fuer extractFeldReferenzen.
+  const feldNamen = new Set<string>();
   // Pre-Pass: sammle alle String-Konstanten fuer Identifier-Resolution
   // (z.B. const SCHEMA_SQL = `CREATE...` ; pool.query(SCHEMA_SQL))
   const stringConsts = collectStringConsts(sourceFile);
@@ -149,6 +151,26 @@ function extractSymbols(
     return functionStack.length > 0
       ? functionStack[functionStack.length - 1]
       : undefined;
+  }
+
+  // Felder (Interface, Type-Alias-Objekttyp, Klasse) als symbol_type 'field',
+  // parent_id = Container. BEWUSST NICHT addSymbol: definedNames bleibt
+  // unveraendert, damit keine bisherige Referenz hinzukommt oder wegfaellt.
+  // Die Zugriffe auf Felder sammelt extractFeldReferenzen (nur_feld).
+  function feldSymbol(m: ts.Node, container: string | null): void {
+    if (!ts.isPropertySignature(m) && !ts.isPropertyDeclaration(m)) return;
+    const n = m.name;
+    if (!ts.isIdentifier(n) && !ts.isStringLiteral(n) && !ts.isPrivateIdentifier(n)) return;
+    feldNamen.add(n.text);
+    symbols.push({
+      symbol_type: 'field',
+      name: n.text,
+      value: m.type ? m.type.getText() : undefined,
+      line_start: getLineNumber(sourceFile, m.getStart()),
+      line_end: getLineEnd(sourceFile, m),
+      parent_id: container ?? undefined,
+      is_exported: false,
+    });
   }
 
   function visitFunctionLike(
@@ -214,6 +236,7 @@ function extractSymbols(
         params: allParents.length > 0 ? allParents : undefined,
         is_exported: isExported(node),
       });
+      for (const m of node.members) feldSymbol(m, name);
       ts.forEachChild(node, visitNode);
       return;
     }
@@ -238,8 +261,15 @@ function extractSymbols(
         params: fields,
         is_exported: isExported(node),
       });
+      for (const m of node.members) feldSymbol(m, name);
       // No need to recurse into interface body for deeper symbols
       return;
+    }
+
+    // Type-Alias mit Objekttyp (type X = { a: string }): nur die Felder. Der
+    // Alias selbst bleibt wie bisher ohne Symbol, danach geht es normal weiter.
+    if (ts.isTypeAliasDeclaration(node) && ts.isTypeLiteralNode(node.type)) {
+      for (const m of node.type.members) feldSymbol(m, node.name.getText());
     }
 
     // Enum declarations
@@ -646,7 +676,7 @@ function extractSymbols(
   }
 
 
-  return { symbols, definedNames };
+  return { symbols, definedNames, feldNamen };
 }
 
 // ---------------------------------------------------------------------------
@@ -712,6 +742,109 @@ function extractReferences(
 
   ts.forEachChild(sourceFile, visit);
   return references;
+}
+
+// ---------------------------------------------------------------------------
+// Feld-Referenzen (Zugriffe auf field-Symbole derselben Datei)
+// ---------------------------------------------------------------------------
+//
+// Nur echte Feld-Zugriffsstellen: obj.x, { x }, { x: .. }, const { x } = / { x: y }.
+// Ein blosser Bezeichner gleichen Namens (Parameter, lokale Variable) zaehlt
+// NICHT. Datei-uebergreifend gibt es bewusst nichts: ohne Typinformation waere
+// das reine Namensgleichheit (gemessen synapse: 36.907 Kandidaten fuer 1.145
+// Feldnamen wie id/name/type).
+
+function extractFeldReferenzen(
+  sourceFile: ts.SourceFile,
+  fullText: string,
+  feldNamen: Set<string>,
+): ParsedReference[] {
+  const refs: ParsedReference[] = [];
+  if (feldNamen.size === 0) return refs;
+
+  function merke(n: ts.Identifier | ts.PrivateIdentifier | ts.StringLiteral): void {
+    if (!feldNamen.has(n.text)) return;
+    refs.push({
+      symbol_name: n.text,
+      line_number: getLineNumber(sourceFile, n.getStart()),
+      context: getContextSnippet(fullText, n.getStart()),
+      nur_feld: true,
+    });
+  }
+
+  function visit(node: ts.Node): void {
+    if (ts.isPropertyAccessExpression(node)) {
+      merke(node.name);
+    } else if (ts.isShorthandPropertyAssignment(node)) {
+      merke(node.name);
+    } else if (
+      ts.isPropertyAssignment(node) &&
+      (ts.isIdentifier(node.name) || ts.isStringLiteral(node.name))
+    ) {
+      merke(node.name);
+    } else if (ts.isBindingElement(node) && ts.isObjectBindingPattern(node.parent)) {
+      const n = node.propertyName ?? node.name;
+      if (ts.isIdentifier(n)) merke(n);
+    }
+    ts.forEachChild(node, visit);
+  }
+
+  ts.forEachChild(sourceFile, visit);
+  return refs;
+}
+
+// ---------------------------------------------------------------------------
+// Lange String-Literale (> 64 Zeichen)
+// ---------------------------------------------------------------------------
+//
+// extractStringLiterals erfasst nur 2..64 Zeichen ohne Leerzeichen und ohne
+// Backslash — Beschreibungen, Meldungen und Tool-Texte fehlten deshalb ganz
+// (files-Beschreibung in rest-api/src/routes/mcp.ts, 1.117 Zeichen). Ueber den
+// AST statt per Regex: Escapes sind aufgeloest, Apostrophe in Kommentaren
+// erzeugen keine Scheintreffer. name bleibt NULL: der Text ist kein Bezeichner,
+// references/string_occurrences (Suche ueber name) bleiben unberuehrt; gefunden
+// wird er ueber symbols(value_contains). params traegt die Laenge.
+// KEINE Kappung von value (Vorgabe). Gemessen synapse: 2.079 Literale, max.
+// 3.604 Zeichen; value hat keinen Index, der Bestand traegt schon 86.870.
+// Initialisierer von const/let/var tragen bereits ein string-Symbol unter dem
+// Variablennamen (extractSymbols) und bekommen kein zweites.
+
+const LANGER_STRING_AB = 65;
+
+function extractLangeStrings(sourceFile: ts.SourceFile): ParsedSymbol[] {
+  const out: ParsedSymbol[] = [];
+
+  function istVariablenString(node: ts.Node): boolean {
+    const p = node.parent;
+    return (
+      ts.isVariableDeclaration(p) &&
+      p.initializer === node &&
+      ts.isVariableDeclarationList(p.parent) &&
+      ts.isVariableStatement(p.parent.parent)
+    );
+  }
+
+  function visit(node: ts.Node): void {
+    if (
+      (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) &&
+      node.text.length >= LANGER_STRING_AB &&
+      !istVariablenString(node)
+    ) {
+      out.push({
+        symbol_type: 'string',
+        name: null,
+        value: node.text,
+        line_start: getLineNumber(sourceFile, node.getStart()),
+        line_end: getLineEnd(sourceFile, node),
+        params: [`laenge=${node.text.length}`],
+        is_exported: false,
+      });
+    }
+    ts.forEachChild(node, visit);
+  }
+
+  ts.forEachChild(sourceFile, visit);
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -1211,10 +1344,12 @@ function parse(content: string, filePath: string): ParseResult {
     ts.ScriptKind.TSX, // handles .ts / .tsx / .js / .jsx
   );
 
-  const { symbols, definedNames } = extractSymbols(sourceFile, content);
+  const { symbols, definedNames, feldNamen } = extractSymbols(sourceFile, content);
   const references = extractReferences(sourceFile, content, definedNames);
+  references.push(...extractFeldReferenzen(sourceFile, content, feldNamen));
 
   symbols.push(...extractStringLiterals(content, { includeSingleQuotes: true }));
+  symbols.push(...extractLangeStrings(sourceFile));
 
   const { statements, callEdges } = extractFlow(sourceFile);
 
@@ -1235,6 +1370,9 @@ export const typescriptParser: LanguageParser = {
   //    verschmolzen: line_start zeigte auf den ersten, oft alten Banner-Kommentar
   //    statt auf die gesuchte Marke darunter). /* */ mit fuehrender Leerzeile
   //    verschiebt line_start auf die erste Textzeile (kommentarBlockSymbol).
-  version: 4,
+  // 5: Felder (Interface, Type-Alias-Objekttyp, Klasse) als 'field'-Symbole mit
+  //    eigenen Referenzen (nur_feld, nur dieselbe Datei); String-Literale
+  //    ueber 64 Zeichen als string-Symbol mit name NULL (extractLangeStrings).
+  version: 5,
   parse,
 };

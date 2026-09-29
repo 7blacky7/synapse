@@ -29,6 +29,12 @@ export interface ParsedReference {
   line_number: number;
   /** Kontext (umgebender Code, ~80 Zeichen) */
   context?: string;
+  /**
+   * true = Zugriff auf ein FELD (symbol_type 'field'): obj.x, { x }, const { x } =.
+   * Solche Referenzen haengt code.ts NUR an field-Symbole, unmarkierte NIE an
+   * field-Symbole — so bleiben die Referenzen aller anderen Symbole unveraendert.
+   */
+  nur_feld?: boolean;
 }
 
 /**

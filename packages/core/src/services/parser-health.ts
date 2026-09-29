@@ -87,6 +87,11 @@ export interface ParserGesundheitDatei {
     imports: number;
     /** strings + comments — reiner Text, kein erkannter Code. */
     text: number;
+    /**
+     * field-Symbole (TS-Parser v5: Interface-/Klassen-Felder). Bewusst NICHT in
+     * gesamt, belegte_zeilen und referenzen enthalten — die bleiben wie vorher.
+     */
+    felder: number;
   };
   statements: number;
   call_edges: number;
@@ -150,7 +155,7 @@ export async function getParserGesundheitDatei(
          -- Prozent gedeckt. LEAST begrenzt auf die Datei, damit ein falsches
          -- line_end die Deckung nicht ueber 100 Prozent treibt; COALESCE faengt
          -- fehlendes line_end ab, dann zaehlt wie bisher die Startzeile.
-         SELECT generate_series(line_start, LEAST(COALESCE(line_end, line_start), $3)) FROM code_symbols WHERE project = $1 AND file_path = $2
+         SELECT generate_series(line_start, LEAST(COALESCE(line_end, line_start), $3)) FROM code_symbols WHERE project = $1 AND file_path = $2 AND symbol_type <> 'field'
          UNION
          SELECT generate_series(line_start, LEAST(COALESCE(line_end, line_start), $3)) FROM code_statements WHERE project = $1 AND file_path = $2
        ) AS belegte`,
@@ -163,7 +168,8 @@ export async function getParserGesundheitDatei(
       [project, filePath]
     ),
     pool.query(
-      `SELECT count(*)::int AS n FROM code_references WHERE project = $1 AND file_path = $2`,
+      `SELECT count(*)::int AS n FROM code_references cr WHERE cr.project = $1 AND cr.file_path = $2
+         AND NOT EXISTS (SELECT 1 FROM code_symbols cs WHERE cs.id = cr.symbol_id AND cs.symbol_type = 'field')`,
       [project, filePath]
     ),
     // Chunks ohne Vektor. Braucht es fuer das embedded-Feld: indexed_at allein
@@ -176,9 +182,10 @@ export async function getParserGesundheitDatei(
   ]);
   const offeneChunks: number = chunkRes.rows[0].n;
 
-  let gesamt = 0, funktionen = 0, klassen = 0, variablen = 0, imports = 0, text = 0;
+  let gesamt = 0, funktionen = 0, klassen = 0, variablen = 0, imports = 0, text = 0, felder = 0;
   for (const r of symRes.rows) {
     const n: number = r.n;
+    if (r.symbol_type === 'field') { felder += n; continue; }
     gesamt += n;
     if (r.symbol_type === 'function') funktionen += n;
     else if (r.symbol_type === 'class' || r.symbol_type === 'interface' || r.symbol_type === 'struct') klassen += n;
@@ -227,7 +234,7 @@ export async function getParserGesundheitDatei(
     geloescht_am: datei.deleted_at ? new Date(datei.deleted_at).toISOString() : null,
     datei_bytes: datei.file_size ?? null,
     zeilen_gesamt: zeilen,
-    symbole: { gesamt, funktionen, klassen, variablen, imports, text },
+    symbole: { gesamt, funktionen, klassen, variablen, imports, text, felder },
     statements,
     call_edges: kantenRes.rows[0].n,
     referenzen: refRes.rows[0].n,
@@ -586,7 +593,7 @@ export async function backfillParserCoverage(
        LEFT JOIN unnest($1::text[], $2::text[]) AS pm(ext, language)
               ON pm.ext = lower(reverse(split_part(reverse(cf.file_path), '.', 1)))
        LEFT JOIN LATERAL (
-              SELECT count(*)::int AS gesamt,
+              SELECT count(*) FILTER (WHERE s.symbol_type <> 'field')::int AS gesamt,
                      count(*) FILTER (WHERE s.symbol_type = 'function')::int AS fn,
                      count(*) FILTER (WHERE s.symbol_type IN ('class','interface','struct'))::int AS klassen,
                      count(*) FILTER (WHERE s.symbol_type IN ('variable','const_object'))::int AS variablen,
@@ -604,6 +611,7 @@ export async function backfillParserCoverage(
               SELECT count(*)::int AS n FROM (
                      SELECT line_start FROM code_symbols s2
                       WHERE s2.project = cf.project AND s2.file_path = cf.file_path
+                        AND s2.symbol_type <> 'field'
                      UNION
                      SELECT line_start FROM code_statements t2
                       WHERE t2.project = cf.project AND t2.file_path = cf.file_path) AS u) AS bel ON TRUE
@@ -1062,6 +1070,8 @@ export async function schreibeParserCoverage(
     let gesamt = 0, funktionen = 0, klassen = 0, variablen = 0, imports = 0, text = 0;
 
     for (const s of ergebnis.symbols) {
+      // field-Symbole (TS-Parser v5) veraendern die Coverage-Zahlen nicht.
+      if (s.symbol_type === 'field') continue;
       gesamt++;
       belegte.add(s.line_start);
       switch (s.symbol_type) {

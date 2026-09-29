@@ -171,8 +171,10 @@ export const codeIntelTool: ConsolidatedTool = {
             'view',
             'trigger',
             'constraint',
+            'field',
           ],
-          description: 'Symbol-Typ fuer symbols-Action',
+          description:
+            "Symbol-Typ fuer symbols-Action. 'field' = Interface-/Type-Alias-/Klassen-Feld (TypeScript/JavaScript), parent_symbol = Container; references auf ein Feld liefert nur Zugriffe in DERSELBEN Datei (obj.x, { x }, const { x } =). 'string' enthaelt auch Literale ueber 64 Zeichen (name NULL, Laenge in params) — suchen mit value_contains.",
         },
 
         // --- search ---

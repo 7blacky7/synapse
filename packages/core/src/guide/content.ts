@@ -299,13 +299,13 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
         description: 'Klassen, Interfaces, Enums, Types, Tables (fuer SQL).',
         params: 'symbol_type (req!), file_path, name',
         example: 'code_intel({ action: "symbols", project: "synapse", symbol_type: "interface" })',
-        tips: 'symbol_type muss gesetzt sein. Werte: function, variable, interface, class, enum, const_object, table, ...',
+        tips: 'symbol_type muss gesetzt sein. Werte: function, variable, interface, class, enum, const_object, field, table, ... field = Feld eines Interface, Type-Alias-Objekttyps oder einer Klasse (TypeScript/JavaScript), parent_symbol = Container. string enthaelt auch Literale ueber 64 Zeichen (Beschreibungen, Meldungen): name ist dort NULL, die Laenge steht in params — finden mit value_contains.',
       },
       references: {
         description: 'Wo wird ein Symbol referenziert (cross-file imports + calls).',
         params: 'name (req)',
         example: 'code_intel({ action: "references", project: "synapse", name: "enqueueShellJob" })',
-        tips: 'Perfekt fuer Impact-Analyse: "wenn ich das aendere, was muss ich nachziehen?"',
+        tips: 'Perfekt fuer Impact-Analyse: "wenn ich das aendere, was muss ich nachziehen?" FELDER (symbol_type field): nur Zugriffe in DERSELBEN Datei (obj.x, { x }, { x: .. }, const { x } =) — datei-uebergreifende Zugriffe fehlen, dafuer braeuchte es Typinformation; dort mit search nachsehen. Hat ein Name ausser dem Feld noch eine andere Definition (Funktion, Variable ...), liefert references wie bisher nur diese.',
       },
       search: {
         description: 'Code-Suche mit ZWEI Modi: Default = PG-Volltext (lexikalisch, exakte Identifier, <b>-Headlines), semantic: true = Qdrant-Embeddings (konzeptuell/fuzzy, ~30-Zeilen-Chunks). Antwort enthaelt mode ("fulltext"|"semantic") zur Selbstkontrolle. ZEILEN: jeder Volltext-Treffer traegt matches: [{ line, text }] (1-basiert, die Zeilen mit dem Suchwort, Standard 20 je Datei), total_matches und matches_gekappt; Semantik-Treffer tragen line_start/line_end.',

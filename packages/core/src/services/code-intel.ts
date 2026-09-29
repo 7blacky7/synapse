@@ -1122,12 +1122,14 @@ export async function getReferences(
 ): Promise<ReferencesResult> {
   const pool = getPool();
 
-  // Definition laden — non-string bevorzugen (echte Deklaration vor String-Literal)
+  // Definition laden — non-string bevorzugen (echte Deklaration vor String-Literal).
+  // field (Interface-/Klassen-Feld, TS-Parser v5) nur, wenn es sonst keine
+  // Deklaration gibt — so bleibt jede bisherige Antwort unveraendert.
   const defResult = await pool.query(
     `SELECT id, file_path, symbol_type, name, line_start, is_exported, parent_symbol
      FROM code_symbols
      WHERE project = $1 AND name = $2
-     ORDER BY CASE WHEN symbol_type = 'string' THEN 1 ELSE 0 END, line_start
+     ORDER BY CASE WHEN symbol_type = 'string' THEN 2 WHEN symbol_type = 'field' THEN 1 ELSE 0 END, line_start
      LIMIT 1`,
     [project, name]
   );
@@ -1144,6 +1146,10 @@ export async function getReferences(
       }
     : null;
 
+  // Felder und ihre Zugriffe zaehlen nur, wenn der Name NUR als Feld definiert
+  // ist. Hat er daneben eine echte Deklaration, bleibt die Antwort wie vor v5.
+  const mitFeldern = definition?.symbol_type === 'field';
+
   // ALLE gleichnamigen Symbole, nicht nur das oben gewaehlte. Ein Name traegt
   // haeufig mehrere Eintraege — etwa die Funktion selbst und ihren export.
   // Ein aufgeloester Aufruf zeigt dann auf irgendeinen davon, und ein Vergleich
@@ -1152,8 +1158,9 @@ export async function getReferences(
   const eigeneSymbolIds = new Set<string>();
   const idRows = await pool.query<{ id: string; file_path: string; symbol_type: string }>(
     `SELECT id, file_path, symbol_type FROM code_symbols
-     WHERE project = $1 AND name = $2 AND symbol_type <> 'string'`,
-    [project, name]
+     WHERE project = $1 AND name = $2 AND symbol_type <> 'string'
+       AND (symbol_type <> 'field' OR $3)`,
+    [project, name, mitFeldern]
   );
   // Dateien, in denen der Name DEFINIERT oder re-exportiert wird. Import-Symbole
   // tragen bei Python/Kotlin denselben Namen und zaehlen hier nicht mit.
@@ -1175,8 +1182,9 @@ export async function getReferences(
      FROM code_references cr
      JOIN code_symbols cs ON cs.id = cr.symbol_id
      WHERE cr.project = $1 AND cs.name = $2
+       AND (cs.symbol_type <> 'field' OR $3)
      ORDER BY cr.file_path, cr.line_number`,
-    [project, name]
+    [project, name, mitFeldern]
   );
 
   const references: ReferenceInfo[] = refsResult.rows.map(row => ({

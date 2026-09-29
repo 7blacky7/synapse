@@ -846,8 +846,8 @@ const MCP_TOOLS = [
         with_values: { type: 'boolean', description: 'Wert-Spalte einschliessen (fuer variables)' },
         symbol_type: {
           type: 'string',
-          enum: ['function', 'variable', 'string', 'comment', 'import', 'export', 'class', 'interface', 'enum', 'const_object', 'todo', 'route', 'sql_query', 'table', 'column', 'index', 'view', 'trigger', 'constraint'],
-          description: 'Symbol-Typ fuer symbols-Action',
+          enum: ['function', 'variable', 'string', 'comment', 'import', 'export', 'class', 'interface', 'enum', 'const_object', 'todo', 'route', 'sql_query', 'table', 'column', 'index', 'view', 'trigger', 'constraint', 'field'],
+          description: "Symbol-Typ fuer symbols-Action. 'field' = Interface-/Type-Alias-/Klassen-Feld (TypeScript/JavaScript), parent_symbol = Container; references auf ein Feld liefert nur Zugriffe in DERSELBEN Datei (obj.x, { x }, const { x } =). 'string' enthaelt auch Literale ueber 64 Zeichen (name NULL, Laenge in params) — suchen mit value_contains.",
         },
         query: { type: 'string', description: 'Suchbegriff fuer search-Action' },
         match_limit: { type: 'number', description: 'search (Volltext): max. Trefferzeilen je Datei in matches (Standard 20, max 1000, 0 = nur total_matches zaehlen). Case-insensitive; bei mehreren Woertern stehen Zeilen mit ALLEN Woertern zuerst, jede Zeile nennt ihre words.' },

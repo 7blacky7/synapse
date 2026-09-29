@@ -112,7 +112,9 @@ class HtmlParser implements LanguageParser {
   // 4: Eingebettete JS-Kommentare profitieren vom Scanner des TypeScript-Parsers.
   // 5: Der TypeScript-Parser (fuer <script>) liefert jede //-Zeile als eigenes
   //    comment-Symbol statt verschmolzener Bloecke — Reparse noetig.
-  version = 5;
+  // 6: Der TypeScript-Parser (fuer <script>) liefert zusaetzlich field-Symbole
+  //    mit Feld-Referenzen und String-Literale ueber 64 Zeichen — Reparse noetig.
+  version = 6;
 
   parse(content: string, filePath: string): ParseResult {
     const symbols: ParsedSymbol[] = [];

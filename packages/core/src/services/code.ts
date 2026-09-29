@@ -831,7 +831,12 @@ async function parseAndEmbedLauf(
           const nameSet = sym.symbol_type === 'import' && sym.params
             ? new Set(sym.params)
             : new Set([sym.name]);
-          const symRefs = parseResult.references.filter(r => nameSet.has(r.symbol_name));
+          // Feld-Referenzen (nur_feld) gehoeren NUR zu field-Symbolen, alle anderen
+          // NIE zu field-Symbolen — sonst aendern sich die Referenzen gleichnamiger
+          // Bestandssymbole (gemessen synapse: 1.688 Zeilen waeren dazugekommen).
+          const istFeld = sym.symbol_type === 'field';
+          const symRefs = parseResult.references.filter(r =>
+            nameSet.has(r.symbol_name) && (r.nur_feld === true) === istFeld);
           for (const ref of symRefs) {
             refTuples.push([uuidv4(), project, symId, filePath, ref.line_number, ref.context ?? null]);
           }
