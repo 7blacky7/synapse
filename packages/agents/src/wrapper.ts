@@ -46,6 +46,7 @@ import {
   type SpecialistStatus,
 } from './types.js'
 import { resolveModel, kontextSchwellen, loadFromDb } from './models.js'
+import { berechneTokenStand } from './token-stand.js'
 import {
   createState as createHeartbeatState,
   onEvent as onHeartbeatEvent,
@@ -83,7 +84,13 @@ let lastChannelMsgId = 0
 let crashTimestamps: number[] = []
 let lastInboxMsgId = 0
 let totalInputTokens = 0
+// P7-T29: output_tokens NUR des letzten Turns (gehoert zur Kontextgroesse). Der Output frueherer
+// Turns steckt schon im Eingabe-Kontext des naechsten Turns; kumuliert gerechnet wurde er doppelt
+// gezaehlt und loeste die Rotation bei ~55 % statt 97 % des echten Fensters aus.
 let totalOutputTokens = 0
+
+// Nur Statistik (Log), NIE fuer Schwellen
+let cumulativeOutputTokens = 0
 let lastActivityTs = new Date().toISOString()
 let lastEventTs = 0 // Timestamp des letzten ProcessManager-Events (fuer Stuck-Detection)
 let lastEventCount = 0 // Anzahl Events seit letztem wakeAgent
@@ -425,30 +432,14 @@ async function syncTokensFromHistory(): Promise<void> {
     const content = await readFile(jsonlPath, 'utf-8')
     const lines = content.trimEnd().split('\n')
 
-    let lastContextInput = 0
-    let cumulativeOutput = 0
-    let usageTurns = 0
+    const stand = berechneTokenStand(lines)
 
-    for (const line of lines) {
-      if (!line.trim()) continue
-      try {
-        const obj = JSON.parse(line)
-        const usage = obj?.message?.usage
-        if (usage) {
-          // Letzter Turn Input = aktuelle Context-Groesse
-          lastContextInput = (usage.input_tokens || 0)
-            + (usage.cache_read_input_tokens || 0)
-            + (usage.cache_creation_input_tokens || 0)
-          cumulativeOutput += (usage.output_tokens || 0)
-          usageTurns++
-        }
-      } catch { /* skip non-JSON lines */ }
-    }
-
-    if (lastContextInput > 0 || cumulativeOutput > 0) {
-      totalInputTokens = lastContextInput
-      totalOutputTokens = cumulativeOutput
-      log('syncTokens: %d turns, context=%dk (%d%%), output=%dk', usageTurns, Math.round(lastContextInput / 1000), getContextPercent(), Math.round(cumulativeOutput / 1000))
+    if (stand.kontextInput > 0 || stand.kumulierterOutput > 0) {
+      // Kontext = Eingabe des letzten Turns + NUR dessen Output (siehe token-stand.ts, P7-T29)
+      totalInputTokens = stand.kontextInput
+      totalOutputTokens = stand.letzterOutput
+      cumulativeOutputTokens = stand.kumulierterOutput
+      log('syncTokens: %d turns, context=%dk (%d%%), output letzter Turn=%dk, output kumuliert=%dk (nur Statistik)', stand.turns, Math.round((stand.kontextInput + stand.letzterOutput) / 1000), getContextPercent(), Math.round(stand.letzterOutput / 1000), Math.round(stand.kumulierterOutput / 1000))
     }
   } catch (err) {
     log('syncTokens: Fehler beim Lesen von %s: %s', jsonlPath, err instanceof Error ? err.message : String(err))
@@ -1407,6 +1398,7 @@ Alles was du NICHT speicherst geht verloren.`,
     // Reset token counters (keep message watermarks!)
     totalInputTokens = 0
     totalOutputTokens = 0
+    cumulativeOutputTokens = 0
 
     // System-Prompt erneut holen. Schlaegt das fehl, wird der zuletzt benutzte
     // Text wiederverwendet — siehe letzterSystemPrompt. Ohne diesen Rueckfall
