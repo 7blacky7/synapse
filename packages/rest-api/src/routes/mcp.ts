@@ -982,7 +982,7 @@ const MCP_TOOLS = [
   // 15. files
   {
     name: 'files',
-    description: 'Datei-CRUD im eigenen Projekt-Verzeichnis. Pfade sind relativ zum Projekt-Root und werden gegen Path-Traversal validiert. FileWatcher synchronisiert die Aenderungen automatisch. ENTSCHEIDUNGS-MATRIX (Write-Ops): (1) Datei darf NICHT existieren → action="create" (ohne upsert). (2) Datei wurde gelesen, gezielt modifizieren → action="update" mit anchor_text/anchor_contains aus dem gelesenen Snapshot (PFLICHT — Drift-Schutz; ohne Anker = Error). (3) Datei generieren/regenerieren ohne Pre-Read (Templates, Migrations, Codegen) → action="create" mit upsert:true (akzeptierst Drift-Risiko bewusst). (4) Punktuelle Aenderung statt Komplett-Rewrite → search_replace / replace_lines / insert_after / delete_lines. Multi-File Plan/Commit (action="plan"+"commit") fuer atomare Edits ueber mehrere Dateien mit Hash-Konflikt-Erkennung; auto_commit:true wechselt bei Multi-File auf per-File-Atomicity. restore_batch rollt komplette Plan-Sets zurueck. Erweiterte Optionen: agent_note, feature_tag/parent_version_id/git_commit_sha (Versions-Anreicherung). Keine freien absoluten Pfade, keine externen Systeme.',
+    description: 'Datei-CRUD im eigenen Projekt-Verzeichnis. Pfade sind relativ zum Projekt-Root und werden gegen Path-Traversal validiert. FileWatcher synchronisiert die Aenderungen automatisch. ENTSCHEIDUNGS-MATRIX (Write-Ops): (1) Datei darf NICHT existieren → action="create" (ohne upsert). (2) Datei wurde gelesen, gezielt modifizieren → action="update" mit anchor_text/anchor_contains und optional anchor_text/anchor_contains aus dem gelesenen Snapshot (Drift-Schutz: Anker ist optional, ohne Anker wird direkt geschrieben; Mismatch = Fehler ohne Schreiben; PFLICHT ist der Anker nur bei update-Ops in plan/files_batch). (3) Datei generieren/regenerieren ohne Pre-Read (Templates, Migrations, Codegen) → action="create" mit upsert:true (akzeptierst Drift-Risiko bewusst). (4) Punktuelle Aenderung statt Komplett-Rewrite → search_replace / replace_lines / insert_after / delete_lines. Multi-File Plan/Commit (action="plan"+"commit") fuer atomare Edits ueber mehrere Dateien mit Hash-Konflikt-Erkennung; auto_commit:true wechselt bei Multi-File auf per-File-Atomicity. restore_batch rollt komplette Plan-Sets zurueck. Erweiterte Optionen: agent_note, feature_tag/parent_version_id/git_commit_sha (Versions-Anreicherung). Keine freien absoluten Pfade, keine externen Systeme.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1022,6 +1022,8 @@ const MCP_TOOLS = [
             required: ['search', 'replace'],
           },
         },
+        anchor_text: { type: 'string', description: 'update (oberste Ebene): OPTIONALER Drift-Schutz — Text, der im AKTUELLEN Dateiinhalt vorkommen muss (getrimmter Substring). Mismatch -> Fehler anchor_mismatch, es wird nichts geschrieben. Ohne Anker wird wie bisher direkt geschrieben. PFLICHT ist der Anker nur bei update-Ops in plan/files_batch (ops[].anchor_text).' },
+        anchor_contains: { type: 'string', description: 'update (oberste Ebene): OPTIONAL, wie anchor_text, aber Substring exakt wie angegeben. Mismatch -> Fehler anchor_mismatch, kein Schreiben.' },
         from_line: { type: 'number', description: 'read: Start-Zeile (1-basiert, Standard: 1)' },
         to_line: { type: 'number', description: 'read: End-Zeile inklusiv (Standard: letzte Zeile). Auto-Reduce bei > 80k Zeichen.' },
         truncate_long_lines: { type: 'number', description: 'read: Zeilen laenger als N Zeichen kuerzen + Marker. 0 = aus (Standard).' },
@@ -1142,6 +1144,8 @@ const MCP_TOOLS = [
         plan_id: { type: 'string', description: 'Pflicht fuer commit, cancel, plan_status, plan_update' },
         op_indices: { type: 'array', items: { type: 'number' }, description: 'plan_status: mehrere Ops VOLLSTAENDIG liefern (auch als JSON-String "[0,1]" oder "0,1") (alle Felder ungekuerzt, agent_id, Status, vorher/nachher). from_line/to_line schneiden ein Fenster aus content.' },
         op_index: { type: 'number', description: 'coedit_add: coedit_source_op_index der zurueckgestellten Op, die ops[0] ersetzt und beitraegt (z. B. nach contribution_failed). plan_status: Index einer Op, die VOLLSTAENDIG geliefert wird (alle Felder ungekuerzt, agent_id, Status, betroffene Zeilen vorher/nachher). plan_update: Index der zu ersetzenden Op (0-basiert); ohne op_index ersetzt ops[] alle Ops.' },
+        from_line: { type: 'number', description: 'plan_status (mit op_index/op_indices): erste Zeile (1-basiert) des ungekuerzten content-Fensters. Ohne Angabe: ab Zeile 1.' },
+        to_line: { type: 'number', description: 'plan_status (mit op_index/op_indices): letzte Zeile (inklusiv) des ungekuerzten content-Fensters. Ohne Angabe: bis zum Ende.' },
         version_id: { type: 'string', description: 'Pflicht fuer restore' },
         batch_id: { type: 'string', description: 'Pflicht fuer restore_batch' },
         agent_id: { type: 'string', description: 'Optionale Agent-ID (Audit-Trail). AUSNAHME action=history: wirkt als exakter Read-Filter — fuer volle Projekt-History weglassen.' },
@@ -2967,8 +2971,12 @@ async function handleToolCall(
           const { filtereWiedervorlageTasks } = await import('@synapse/core');
           const wv = filtereWiedervorlageTasks(rohTasks as never, { alle: args.alle === true, taskIds: strArray(args, 'task_id') });
           const allTasks = wv.tasks as unknown as Array<Record<string, unknown>>;
+          // Bug 2faebaf8: task_id filtert die Liste (UUID, Kurz-ID, Alias-Kurz-ID); tasks_total bleibt die Gesamtzahl.
+          const { filtereNachTaskIds } = await import('@synapse/core');
+          const nachId = filtereNachTaskIds(allTasks as never, strArray(args, 'task_id'));
+          const idTasks = nachId.tasks as unknown as Array<Record<string, unknown>>;
           const statusFilter = str(args, 'status');
-          const filtered = statusFilter ? allTasks.filter(t => t.status === statusFilter) : allTasks;
+          const filtered = statusFilter ? idTasks.filter(t => t.status === statusFilter) : idTasks;
           const taskLimit = num(args, 'limit');
           const limited = taskLimit && taskLimit > 0 ? filtered.slice(0, taskLimit) : filtered;
           const compact = bool(args, 'compact') === true;
@@ -2982,6 +2990,8 @@ async function handleToolCall(
             tasks_returned: tasks.length,
             ...(wv.ausgeblendet > 0 ? { zurueckgestellt_ausgeblendet: wv.ausgeblendet, zurueckgestellt_hinweis: 'plan(get, alle: true) oder task_id zeigt zurueckgestellte Tasks.' } : {}),
             ...(statusFilter ? { tasks_status_filter: statusFilter } : {}),
+            ...(nachId.gefiltert ? { tasks_task_id_filter: true } : {}),
+            ...(nachId.nichtGefunden.length > 0 ? { tasks_nicht_gefunden: nachId.nichtGefunden } : {}),
             ...(compact || tasks.length < allTasks.length
               ? { tip: 'Task-Liste gefiltert/kompakt — volle Descriptions via plan(get) ohne compact/status/limit.' }
               : {}),
@@ -4975,6 +4985,20 @@ async function handleToolCall(
         }
         case 'update': {
           const content = reqStr(args, 'content');
+          // P7-T11 (a): optionaler Drift-Schutz (geteilt mit file-batch). Ohne Anker unveraendert; Mismatch = Fehler, kein Schreiben.
+          const { leseUpdateAnker, hatUpdateAnker, pruefeUpdateAnker } = await import('@synapse/core');
+          const anker = leseUpdateAnker(args);
+          if (hatUpdateAnker(anker)) {
+            const aktuell = await getFileContentFromPg(project, filePath);
+            if (aktuell === null) {
+              return { success: false, error: 'anchor_mismatch', message: `update: Datei "${filePath}" nicht gefunden — mit Anker kann nur eine bestehende Datei aktualisiert werden (neu anlegen: action="create").` };
+            }
+            try {
+              pruefeUpdateAnker(aktuell, anker, filePath);
+            } catch (err) {
+              return { success: false, error: 'anchor_mismatch', message: err instanceof Error ? err.message : String(err) };
+            }
+          }
           const vorbereitung = await pruefeUndBereiteSchreibenVor({ project, filePath, content, aktion: 'update', agentId, reason: str(args, 'reason') });
           if (vorbereitung.modus === 'plan') {
             return {

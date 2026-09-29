@@ -103,6 +103,14 @@ export const filesTool: ConsolidatedTool = {
           type: 'string',
           description: 'Dateiinhalt (fuer create, update, replace_lines, insert_after)',
         },
+        anchor_text: {
+          type: 'string',
+          description: 'update (oberste Ebene): OPTIONALER Drift-Schutz — Text, der im AKTUELLEN Dateiinhalt vorkommen muss (getrimmter Substring). Mismatch -> Fehler anchor_mismatch, es wird nichts geschrieben. Ohne Anker wird wie bisher direkt geschrieben. PFLICHT ist der Anker nur bei update-Ops in plan/files_batch (ops[].anchor_text).',
+        },
+        anchor_contains: {
+          type: 'string',
+          description: 'update (oberste Ebene): OPTIONAL, wie anchor_text, aber Substring exakt wie angegeben. Mismatch -> Fehler anchor_mismatch, kein Schreiben.',
+        },
         new_path: {
           type: 'string',
           description: 'Neuer Pfad (fuer move, copy)',
@@ -685,6 +693,20 @@ export const filesTool: ConsolidatedTool = {
       case 'update': {
         const raw = reqStr(args, 'content');
         const { content, wasFixed } = unescapeIfNeeded(raw);
+        // P7-T11 (a): optionaler Drift-Schutz (geteilt mit file-batch). Ohne Anker unveraendert; Mismatch = Fehler, kein Schreiben.
+        const { leseUpdateAnker, hatUpdateAnker, pruefeUpdateAnker } = await import('@synapse/core');
+        const anker = leseUpdateAnker(args);
+        if (hatUpdateAnker(anker)) {
+          const aktuell = await getFileContentFromPg(project, filePath);
+          if (aktuell === null) {
+            return { success: false, error: 'anchor_mismatch', message: `update: Datei "${filePath}" nicht gefunden — mit Anker kann nur eine bestehende Datei aktualisiert werden (neu anlegen: action="create").` };
+          }
+          try {
+            pruefeUpdateAnker(aktuell, anker, filePath);
+          } catch (err) {
+            return { success: false, error: 'anchor_mismatch', message: err instanceof Error ? err.message : String(err) };
+          }
+        }
         const vorbereitung = await pruefeUndBereiteSchreibenVor({ project, filePath, content, aktion: 'update', agentId, reason });
         if (vorbereitung.modus === 'plan') {
           return {

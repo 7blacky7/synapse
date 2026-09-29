@@ -270,6 +270,8 @@ CREATE TABLE public.wrapper_status (
     channels text[] DEFAULT '{}'::text[] NOT NULL,
     connected_mcp boolean DEFAULT false NOT NULL,
     last_activity timestamp with time zone DEFAULT now() NOT NULL,
+    heartbeat_enabled boolean DEFAULT true NOT NULL,
+    heartbeat_interval_ms integer,
     effort text
 );
 

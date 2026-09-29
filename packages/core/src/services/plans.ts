@@ -441,6 +441,31 @@ export function filtereWiedervorlageTasks(
   return { tasks: aus, ausgeblendet };
 }
 
+/**
+ * Bug 2faebaf8: plan(get, task_id) ignorierte task_id und lieferte alle Tasks. Diese Funktion
+ * begrenzt die Liste auf die genannten Tasks (UUID, Kurz-ID P<n>-T<m>, Alias-Kurz-ID nach einem
+ * Verschieben; gross/klein egal). Reihenfolge = Plan-Reihenfolge, jede Task hoechstens einmal.
+ * Unbekannte IDs kommen unter nichtGefunden zurueck. Ohne (verwertbare) IDs: unveraendert.
+ */
+export function filtereNachTaskIds(
+  tasks: ProjectTask[],
+  taskIds: unknown,
+): { tasks: ProjectTask[]; nichtGefunden: string[]; gefiltert: boolean } {
+  const refsRoh = Array.isArray(taskIds) ? taskIds : [];
+  const refs = refsRoh
+    .filter((r): r is string => typeof r === 'string')
+    .map((r) => r.trim())
+    .filter((r) => r.length > 0);
+  if (refs.length === 0) return { tasks, nichtGefunden: [], gefiltert: false };
+  const treffer = (t: ProjectTask, refGross: string): boolean =>
+    t.id.toUpperCase() === refGross
+    || (typeof t.kurz_id === 'string' && t.kurz_id.toUpperCase() === refGross)
+    || hatAlias(t, refGross);
+  const gewaehlt = tasks.filter((t) => refs.some((r) => treffer(t, r.toUpperCase())));
+  const nichtGefunden = refs.filter((r) => !tasks.some((t) => treffer(t, r.toUpperCase())));
+  return { tasks: gewaehlt, nichtGefunden, gefiltert: true };
+}
+
 export type ZurueckstellenTaskErgebnis =
   | { success: true; plan_ref: PlanRef; task: ProjectTask; zurueckgestellt_bis: string | null; message: string; warning?: string }
   | { success: false; message: string };

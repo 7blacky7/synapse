@@ -17,7 +17,7 @@ import {
   activateProjectPlan,
   zurueckstellenPlan,
 } from '../plans.js';
-import { empfehleFuerPlan, ordneTasksEin, passendeTasks, uebernehmeTask, verschiebeTasks, zurueckstelleTask, filtereWiedervorlageTasks, leseAbwesenheit, jevEntscheidetHinweis } from '@synapse/core';
+import { empfehleFuerPlan, ordneTasksEin, passendeTasks, uebernehmeTask, verschiebeTasks, zurueckstelleTask, filtereWiedervorlageTasks, filtereNachTaskIds, leseAbwesenheit, jevEntscheidetHinweis } from '@synapse/core';
 import type { ProjectTask } from '@synapse/core';
 
 export const planTool: ConsolidatedTool = {
@@ -193,8 +193,11 @@ export const planTool: ConsolidatedTool = {
           taskIds: strArray(args, 'task_id'),
         });
         const allTasks = wv.tasks as unknown as Array<Record<string, unknown>>;
+        // Bug 2faebaf8: task_id filtert die Liste (UUID, Kurz-ID, Alias-Kurz-ID); tasks_total bleibt die Gesamtzahl.
+        const nachId = filtereNachTaskIds(allTasks as unknown as ProjectTask[], strArray(args, 'task_id'));
+        const idTasks = nachId.tasks as unknown as Array<Record<string, unknown>>;
         const statusFilter = typeof a.status === 'string' ? a.status : undefined;
-        const filtered = statusFilter ? allTasks.filter((t) => t.status === statusFilter) : allTasks;
+        const filtered = statusFilter ? idTasks.filter((t) => t.status === statusFilter) : idTasks;
         const taskLimit = typeof a.limit === 'number' && a.limit > 0 ? a.limit : undefined;
         const limited = taskLimit ? filtered.slice(0, taskLimit) : filtered;
         const compact = a.compact === true;
@@ -208,6 +211,8 @@ export const planTool: ConsolidatedTool = {
           tasks_returned: tasks.length,
           ...(wv.ausgeblendet > 0 ? { zurueckgestellt_ausgeblendet: wv.ausgeblendet, zurueckgestellt_hinweis: 'plan(get, alle: true) oder task_id zeigt zurueckgestellte Tasks.' } : {}),
           ...(statusFilter ? { tasks_status_filter: statusFilter } : {}),
+          ...(nachId.gefiltert ? { tasks_task_id_filter: true } : {}),
+          ...(nachId.nichtGefunden.length > 0 ? { tasks_nicht_gefunden: nachId.nichtGefunden } : {}),
         };
       }
 

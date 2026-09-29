@@ -21,6 +21,7 @@ import type { PoolClient } from 'pg';
 import { EventEmitter } from 'node:events';
 import { getPool } from '../db/client.js';
 import { resolveAgentId } from './agent-id-resolver.js';
+import { pruefeUpdateAnker } from './update-anker.js';
 import { emitEventOnce } from './events.js';
 import {
   contentHash,
@@ -801,18 +802,8 @@ function applyOpInMemory(
         );
       }
       const cur = src.finalContent;
-      if (op.anchor_text !== undefined && !cur.includes(op.anchor_text.trim())) {
-        throw new Error(
-          `update: anchor_text in "${op.file_path}" nicht gefunden — Datei wurde eventuell ` +
-          `extern geaendert. Aktualisiere deinen Lese-Snapshot und versuche es erneut.`,
-        );
-      }
-      if (op.anchor_contains !== undefined && !cur.includes(op.anchor_contains)) {
-        throw new Error(
-          `update: anchor_contains "${op.anchor_contains.slice(0, 80)}" in "${op.file_path}" ` +
-          `nicht gefunden — Drift erkannt, keine Mutation.`,
-        );
-      }
+      // Geteilte Pruefung (update-anker.ts): dieselbe wie beim obersten files(update), gleiche Fehlertexte.
+      pruefeUpdateAnker(cur, op, op.file_path);
       src.finalContent = op.content;
       src.finalHash = contentHash(op.content);
       return { context: `update: ${utf8Bytes(op.content)} bytes`, sizeBefore, sizeAfter: utf8Bytes(op.content) };

@@ -300,6 +300,7 @@ export {
   zurueckstellePlan,
   zurueckstelleTask,
   filtereWiedervorlageTasks,
+  filtereNachTaskIds,
   taskSchlaeft,
   taskBis,
   planKontext,
@@ -539,6 +540,9 @@ export { setzeHeartbeatKonfiguration, setzeHeartbeatBeimSpawn, steuereHeartbeat 
 export { holeThoughtsMitProblemen, aendereThoughtPerId, loescheThoughtsPerId } from './services/thoughts.js';
 export type { ThoughtIdProblem, LoeschErgebnis } from './services/thoughts.js';
 export { loeseThoughtIdsAuf, pruefeIdEingabe } from './services/thought-ids.js';
+// Drift-Schutz fuer update: Anker pruefen (P7-T11 a), geteilt mit file-batch
+export { leseUpdateAnker, hatUpdateAnker, pruefeUpdateAnker } from './services/update-anker.js';
+export type { UpdateAnker } from './services/update-anker.js';
 // Spawn-Eingaben in Worker-Form (P7-T9)
 export { normalisiereSpawnEintrag, normalisiereSpawnBatch, baueSpawnJobArgs, pruefeSpawnEffort, SPAWN_BATCH_MAX } from './services/specialist-spawn-args.js';
 export type { SpawnArgs, SpawnOptionen } from './services/specialist-spawn-args.js';
