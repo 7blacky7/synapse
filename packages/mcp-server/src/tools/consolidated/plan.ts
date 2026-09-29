@@ -17,7 +17,7 @@ import {
   activateProjectPlan,
   zurueckstellenPlan,
 } from '../plans.js';
-import { empfehleFuerPlan, passendeTasks, uebernehmeTask, verschiebeTasks, zurueckstelleTask, filtereWiedervorlageTasks } from '@synapse/core';
+import { empfehleFuerPlan, ordneTasksEin, passendeTasks, uebernehmeTask, verschiebeTasks, zurueckstelleTask, filtereWiedervorlageTasks } from '@synapse/core';
 import type { ProjectTask } from '@synapse/core';
 
 export const planTool: ConsolidatedTool = {
@@ -29,9 +29,9 @@ export const planTool: ConsolidatedTool = {
       properties: {
         action: {
           type: 'string',
-          enum: ['get', 'update', 'add_task', 'add_tasks_batch', 'update_task', 'delete_task', 'empfehlen', 'list', 'create', 'aktivieren', 'passende_tasks', 'uebernehmen', 'verschieben', 'zurueckstellen'],
+          enum: ['get', 'update', 'add_task', 'add_tasks_batch', 'update_task', 'delete_task', 'empfehlen', 'list', 'create', 'aktivieren', 'passende_tasks', 'uebernehmen', 'verschieben', 'zurueckstellen', 'einordnen'],
           description:
-            'Aktion: "verschieben" (task_id String oder Array + ziel = Plan-UUID oder Kurz-ID) verschiebt Tasks atomar in einen anderen Plan; UUID und Felder bleiben, im Zielplan gibt es eine neue Kurz-ID, die alte bleibt als Alias gueltig, "passende_tasks" (agent_id Pflicht, plan_id optional) offene Tasks, deren Empfehlung zu deinem Profil passt (Familie gleich, Kontext >= empfohlen, Effort gleich oder eine Stufe hoeher); ohne/unsichere Empfehlung -> offen_fuer_koordinator, "uebernehmen" (plan_id + task_id + agent_id Pflicht) nimmt eine passende Task atomar (zugewiesen_an, in_progress), "list" alle Plaene des Projekts (Kurz-ID, Name, Ziel, aktiv, offen/erledigt), "create" neuer Plan (name, description, goals, architecture, aktiv?), "aktivieren" plan_id zum aktiven Plan machen, "get" zum Abrufen, "update" zum Aktualisieren, "add_task" um eine Task hinzuzufuegen, "add_tasks_batch" um mehrere Tasks atomar hinzuzufuegen, "update_task" um eine Task zu aendern (status/priority/title/description), "delete_task" um eine oder mehrere Tasks zu loeschen (id als String oder Array), "empfehlen" (EXPERIMENTELL) bewertet die per plan_id + task_id (beide PFLICHT, UUID oder Kurz-ID) genannten Tasks in EINEM Jev-Aufruf und schreibt je Task das Feld empfehlung {modell, effort, kontext 200k|1m, confidence, ...} — nur Empfehlung, kein Muss; unter dem Confidence-Tor unsicher statt Empfehlung',
+            'Aktion: "einordnen" (plan_id = Quellplan + task_id String/Array, max 200; optional ziele, verschieben, confidence_tor) laesst Jev je Task den passenden Plan waehlen — Standard nur Vorschlag, verschieben:true verschiebt die sicheren (confidence >= Tor, anderer Plan), "verschieben" (task_id String oder Array + ziel = Plan-UUID oder Kurz-ID) verschiebt Tasks atomar in einen anderen Plan; UUID und Felder bleiben, im Zielplan gibt es eine neue Kurz-ID, die alte bleibt als Alias gueltig, "passende_tasks" (agent_id Pflicht, plan_id optional) offene Tasks, deren Empfehlung zu deinem Profil passt (Familie gleich, Kontext >= empfohlen, Effort gleich oder eine Stufe hoeher); ohne/unsichere Empfehlung -> offen_fuer_koordinator, "uebernehmen" (plan_id + task_id + agent_id Pflicht) nimmt eine passende Task atomar (zugewiesen_an, in_progress), "list" alle Plaene des Projekts (Kurz-ID, Name, Ziel, aktiv, offen/erledigt), "create" neuer Plan (name, description, goals, architecture, aktiv?), "aktivieren" plan_id zum aktiven Plan machen, "get" zum Abrufen, "update" zum Aktualisieren, "add_task" um eine Task hinzuzufuegen, "add_tasks_batch" um mehrere Tasks atomar hinzuzufuegen, "update_task" um eine Task zu aendern (status/priority/title/description), "delete_task" um eine oder mehrere Tasks zu loeschen (id als String oder Array), "empfehlen" (EXPERIMENTELL) bewertet die per plan_id + task_id (beide PFLICHT, UUID oder Kurz-ID) genannten Tasks in EINEM Jev-Aufruf und schreibt je Task das Feld empfehlung {modell, effort, kontext 200k|1m, confidence, ...} — nur Empfehlung, kein Muss; unter dem Confidence-Tor unsicher statt Empfehlung',
         },
         project: {
           type: 'string',
@@ -87,13 +87,22 @@ export const planTool: ConsolidatedTool = {
         task_id: {
           oneOf: [
             { type: 'string' },
-            { type: 'array', items: { type: 'string' }, minItems: 1, maxItems: 50 },
+            { type: 'array', items: { type: 'string' }, minItems: 1, maxItems: 200 },
           ],
           description: 'Task-ID (String fuer update_task/delete_task, Array fuer Batch-delete_task; bei empfehlen: PFLICHT, genau diese Task(s), hoechstens 50 — ohne task_id gibt es einen Fehler)',
         },
         ziel: {
           type: 'string',
           description: 'Nur fuer verschieben: Zielplan (UUID oder Kurz-ID P<n>).',
+        },
+        ziele: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Nur fuer einordnen: Kandidaten-Plaene (UUID oder Kurz-ID). Standard: alle Plaene des Projekts inkl. Quellplan (damit "bleibt" moeglich ist).',
+        },
+        verschieben: {
+          type: 'boolean',
+          description: 'Nur fuer einordnen: true verschiebt Tasks mit confidence >= Tor und anderem Plan (Standard false = nur Vorschlag). Unsichere bleiben.',
         },
         tage: {
           type: 'number',
@@ -294,6 +303,18 @@ export const planTool: ConsolidatedTool = {
 
       case 'aktivieren': {
         return await activateProjectPlan(project, reqStr(args, 'plan_id'));
+      }
+
+      case 'einordnen': {
+        const eIds = strArray(args, 'task_id');
+        const eTor = args.confidence_tor;
+        return await ordneTasksEin(project, {
+          plan_id: str(args, 'plan_id'),
+          task_ids: eIds && eIds.length > 0 ? eIds : undefined,
+          ziele: strArray(args, 'ziele'),
+          verschieben: args.verschieben === true,
+          confidence_tor: typeof eTor === 'number' ? eTor : undefined,
+        }) as unknown as Record<string, unknown>;
       }
 
       case 'empfehlen': {

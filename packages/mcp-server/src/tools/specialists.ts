@@ -366,39 +366,6 @@ export async function spawnSpecialistTool(
 // stop_specialist
 // ---------------------------------------------------------------------------
 
-export async function stopSpecialistTool(
-  name: string,
-  projectPath: string,
-) {
-  try {
-    // Stop-Kommando senden
-    if (heartbeatController.isConnected(name)) {
-      await heartbeatController.sendStop(name);
-    }
-  } catch (err) {
-    console.error(`[Synapse] Fehler beim Stoppen von "${name}": ${err}`);
-  }
-
-  // Verbindung trennen
-  await heartbeatController.disconnectFromWrapper(name);
-
-  // Status aktualisieren
-  await updateSpecialist(projectPath, name, {
-    status: 'stopped',
-    lastActivity: new Date().toISOString(),
-    currentTask: null,
-  } as any);
-
-  return jsonResult({
-    success: true,
-    message: `Spezialist "${name}" gestoppt.`,
-  });
-}
-
-// ---------------------------------------------------------------------------
-// purge_specialist — stop + komplette Entfernung (FS + DB + Channels)
-// ---------------------------------------------------------------------------
-
 /**
  * Lebt der Prozess noch?
  *
@@ -425,6 +392,106 @@ async function warteAufProzessTod(pid: number, fristMs: number): Promise<boolean
   }
   return !prozessLebt(pid);
 }
+
+/**
+ * Beendet den Wrapper-Prozess verbindlich: erst warten (ein vorheriger sendStop
+ * soll wirken), dann SIGTERM, dann SIGKILL. Protokolliert in steps und liefert,
+ * ob der Prozess nachweislich tot ist — geraten wird nicht.
+ */
+async function beendeWrapperProzess(pid: number, steps: Record<string, unknown>): Promise<boolean> {
+  let tot = await warteAufProzessTod(pid, 5000);
+
+  if (!tot) {
+    try {
+      process.kill(pid, 'SIGTERM');
+      steps.signal_term = 'gesendet';
+    } catch (err) {
+      steps.signal_term = `Fehler: ${err}`;
+    }
+    tot = await warteAufProzessTod(pid, 3000);
+  }
+
+  if (!tot) {
+    try {
+      process.kill(pid, 'SIGKILL');
+      steps.signal_kill = 'gesendet';
+    } catch (err) {
+      steps.signal_kill = `Fehler: ${err}`;
+    }
+    tot = await warteAufProzessTod(pid, 2000);
+  }
+
+  steps.prozess_beendet = tot;
+  return tot;
+}
+
+/** Einheitlicher Satz zum Prozesstod fuer stop UND purge (P2-T387). */
+export function prozessTodMeldung(steps: Record<string, unknown>): string {
+  return steps.prozess_beendet === true
+    ? 'Prozess nachweislich beendet, Auto-Respawn unmoeglich.'
+    : 'Prozesstod UNGEPRUEFT (keine Wrapper-PID bekannt) — Prozess von Hand pruefen.';
+}
+
+export async function stopSpecialistTool(
+  name: string,
+  projectPath: string,
+) {
+  const steps: Record<string, unknown> = {};
+
+  // Wrapper-PID merken VOR dem Stop
+  let wrapperPid: number | null = null;
+  try {
+    const status = await readStatus(projectPath);
+    wrapperPid = status.specialists[name]?.wrapperPid ?? null;
+  } catch { /* ignore */ }
+
+  try {
+    // Stop-Kommando senden
+    if (heartbeatController.isConnected(name)) {
+      await heartbeatController.sendStop(name);
+    }
+  } catch (err) {
+    console.error(`[Synapse] Fehler beim Stoppen von "${name}": ${err}`);
+  }
+
+  // Verbindung trennen
+  await heartbeatController.disconnectFromWrapper(name);
+
+  // Erfolg nur melden, wenn der Prozess weg ist (P2-T386): frueher wurde der Stop nur
+  // gesendet, wenn eine Heartbeat-Verbindung bestand — sonst lief der Wrapper weiter,
+  // obwohl "gestoppt" gemeldet und der Status auf stopped gesetzt wurde.
+  if (wrapperPid && wrapperPid > 0) {
+    const tot = await beendeWrapperProzess(wrapperPid, steps);
+    if (!tot) {
+      return jsonResult({
+        success: false,
+        message: `Spezialist "${name}" NICHT gestoppt: Wrapper-Prozess ${wrapperPid} lebt noch, `
+          + `SIGTERM und SIGKILL blieben wirkungslos. Status unveraendert — Prozess von Hand pruefen.`,
+        wrapper_pid: wrapperPid,
+        steps,
+      });
+    }
+  } else {
+    steps.prozess_beendet = 'keine Wrapper-PID bekannt — Prozesstod UNGEPRUEFT';
+  }
+
+  // Status aktualisieren
+  await updateSpecialist(projectPath, name, {
+    status: 'stopped',
+    lastActivity: new Date().toISOString(),
+    currentTask: null,
+  } as any);
+
+  return jsonResult({
+    success: true,
+    message: `Spezialist "${name}" gestoppt. ${prozessTodMeldung(steps)}`,
+    steps,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// purge_specialist — stop + komplette Entfernung (FS + DB + Channels)
+// ---------------------------------------------------------------------------
 
 export async function purgeSpecialistTool(
   name: string,
@@ -466,29 +533,7 @@ export async function purgeSpecialistTool(
   // mehr gab. Deshalb wird jetzt eskaliert (TERM, dann KILL) und im Zweifel ABGEBROCHEN,
   // statt einen unerreichbaren Geist zu hinterlassen.
   if (wrapperPid && wrapperPid > 0) {
-    let tot = await warteAufProzessTod(wrapperPid, 5000);
-
-    if (!tot) {
-      try {
-        process.kill(wrapperPid, 'SIGTERM');
-        steps.signal_term = 'gesendet';
-      } catch (err) {
-        steps.signal_term = `Fehler: ${err}`;
-      }
-      tot = await warteAufProzessTod(wrapperPid, 3000);
-    }
-
-    if (!tot) {
-      try {
-        process.kill(wrapperPid, 'SIGKILL');
-        steps.signal_kill = 'gesendet';
-      } catch (err) {
-        steps.signal_kill = `Fehler: ${err}`;
-      }
-      tot = await warteAufProzessTod(wrapperPid, 2000);
-    }
-
-    steps.prozess_beendet = tot;
+    const tot = await beendeWrapperProzess(wrapperPid, steps);
 
     // ABBRUCH statt Geist: solange der Prozess lebt, wird NICHTS entfernt. Ein
     // adressierbarer Spezialist mit falschem Status ist reparierbar — ein laufender
@@ -638,9 +683,9 @@ export async function purgeSpecialistTool(
   return jsonResult({
     success: fehlgeschlagen.length === 0,
     message: fehlgeschlagen.length === 0
-      ? `Spezialist "${name}" komplett entfernt (Stop + Channels + Chat + Status + FS + Socket + Inbox${project ? ' + PG' : ''}). Prozess nachweislich beendet, Auto-Respawn unmoeglich.`
+      ? `Spezialist "${name}" komplett entfernt (Stop + Channels + Chat + Status + FS + Socket + Inbox${project ? ' + PG' : ''}). ${prozessTodMeldung(steps)}`
       : `Spezialist "${name}" nur TEILWEISE entfernt. Fehlgeschlagen: ${fehlgeschlagen.join(', ')}. `
-        + `Der Prozess ist beendet, aber Reste bleiben liegen — steps pruefen und von Hand nachraeumen.`,
+        + `${steps.prozess_beendet === true ? 'Der Prozess ist nachweislich beendet' : 'Prozesstod UNGEPRUEFT'}, aber Reste bleiben liegen — steps pruefen und von Hand nachraeumen.`,
     steps,
   });
 }

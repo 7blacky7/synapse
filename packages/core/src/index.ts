@@ -188,6 +188,9 @@ export type { EffortStufe } from './services/effort.js';
 // Modell-Empfehlung je Plan-Task per Jev (plan action 'empfehlen', EXPERIMENTELL)
 export { empfehleFuerPlan, loeseKandidatenAuf, baueAuswahl, pruefeLage, filtereNachLage, frageTeil, JEV_STANDARD_URL, JEV_STANDARD_MODELL, EINZIGE_OPTION } from './services/jev-empfehlung.js';
 export type { EmpfehlenOptionen, EmpfehlenErgebnis, JevEmpfehlung, JevDeps, JevKontext, JevLage, ModellAuswahl } from './services/jev-empfehlung.js';
+// Tasks per Jev dem passenden Plan zuordnen (plan action 'einordnen')
+export { ordneTasksEin, EINORDNEN_MAX_TASKS, EINORDNEN_BLOCK } from './services/plan-einordnen.js';
+export type { EinordnenOptionen, EinordnenDeps, EinordnenZeile, EinordnenErgebnis } from './services/plan-einordnen.js';
 export { JEV_KATALOG, JEV_GRUPPEN, JEV_STANDARD_KANDIDATEN } from './services/jev-criteria.js';
 export { MODELLWAHL_CRITERIA, KATALOG_QUELLE as JEV_KATALOG_QUELLE, KATALOG_STAND as JEV_KATALOG_STAND } from './services/jev-criteria-katalog.js';
 export type { JevKandidat, JevOption, JevFamilie } from './services/jev-criteria.js';

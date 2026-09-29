@@ -995,6 +995,13 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
         example: 'plan({ action: "create", project: "synapse", name: "Runde 2", description: "...", aktiv: true })',
         tips: 'update (Metadaten) wirkt nur auf den aktiven Plan — ein inaktiver Plan gilt als abgeschlossen. Task-Status bleibt auch dort aenderbar.',
       },
+      einordnen: {
+        description: 'Jev ordnet Tasks dem passenden Plan zu (je Task eine choice ueber die Plaene, criteria = Name + Beschreibung). Standard nur VORSCHLAG; mit verschieben:true werden die sicheren verschoben (confidence >= Tor UND anderer Plan als der aktuelle), gruppiert je Zielplan ueber plan(verschieben) (Alias-Kurz-IDs bleiben).',
+        params: 'project (req), plan_id (req, Quellplan), task_id (req, String oder Array, max 200, intern Bloecke a 50 je Jev-Aufruf), ziele? (Array Plan-IDs; Standard alle Plaene inkl. Quellplan, damit "bleibt" moeglich ist), verschieben? (Standard false), confidence_tor? (Standard 0.5)',
+        example: 'plan({ action: "einordnen", project: "synapse", plan_id: "P2", task_id: ["P2-T1", "P2-T2"], verschieben: false })',
+        tips: 'Ergebnis je Task: aktueller_plan, vorschlag (Kurz-ID), vorschlag_name, confidence, unsicher (unter Tor), verschoben?; dazu zusammenfassung (je Zielplan, unsicher, bleibt, verschoben, Dauer, Kosten). Eine Jev-Antwort, die kein Plan ist, gilt als unsicher (nicht geraten). Erst ohne verschieben pruefen, dann mit verschieben:true ausfuehren. Braucht JEV_OPENROUTER_API_KEY in der Umgebung, sonst success:false; der Key wird nie ausgegeben.',
+      },
+
       passende_tasks: {
         description: 'Offene Tasks (status todo, nicht zugewiesen), deren empfehlung zum Profil des Aufrufers passt — Profil aus wrapper_status + model_registry wie specialist(selbst). Tasks ohne Empfehlung oder "unsicher" stehen getrennt unter offen_fuer_koordinator. Ohne plan_id ueber alle Plaene, je Treffer plan_id/plan_kurz_id.',
         params: 'project (req), agent_id (req, eigener Spezialisten-Name), plan_id?',
