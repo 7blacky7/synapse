@@ -814,7 +814,7 @@ const MCP_TOOLS = [
   // 14. code_intel
   {
     name: 'code_intel',
-    description: 'Strukturierte Lese-Abfragen ueber den eigenen Code-Index des Projekts: Dateibaum, Funktionen, Variablen, Symbole, Querverweise, Suche, Dateiinhalt sowie die Ablauf-Ebene (Statements, Call-Kanten, Execution-Flow, Entrypoints). DIAGNOSE: action="health" beantwortet "was ist mit dieser Datei los" (mit file_path) bzw. "wo klemmt es ueberhaupt" (ohne file_path, je Parser) — zustaendiger Parser, Parser-Version gespeichert gegen aktuell, Symbolzahlen je Typ, Zeilenabdeckung, letzter Ausfall und Klartext-Befunde statt Flags. Read-Only auf eigene indexierte Projekt-Daten. SUCHE: action="search" hat ZWEI Modi: Default = PG-Volltext (lexikalisch); semantic:true = Qdrant-Embedding (konzeptuell). Antwort enthaelt mode-Feld. BATCH-SUCHE: action="search_batch" + queries[] (1..10) macht alle Queries semantisch in EINEM Call — Embeddings gebatched zu Google, parallel gegen Qdrant. Ideal wenn KI mehrere Discovery-Aspekte gleichzeitig abklopfen will. Damit deckt code_intel sowohl exakte als auch konzeptuelle Suche ab — das alte separate search(action:"code") wird nicht mehr gebraucht.',
+    description: 'Strukturierte Lese-Abfragen ueber den eigenen Code-Index des Projekts: Dateibaum, Funktionen, Variablen, Symbole, Querverweise, Suche, Dateiinhalt sowie die Ablauf-Ebene (Statements, Call-Kanten, Execution-Flow, Entrypoints). DIAGNOSE: action="health" beantwortet "was ist mit dieser Datei los" (mit file_path) bzw. "wo klemmt es ueberhaupt" (ohne file_path, je Parser) — zustaendiger Parser, Parser-Version gespeichert gegen aktuell, Symbolzahlen je Typ, Zeilenabdeckung, letzter Ausfall und Klartext-Befunde statt Flags. Read-Only auf eigene indexierte Projekt-Daten. SUCHE: action="search" hat ZWEI Modi: Default = PG-Volltext (lexikalisch); semantic:true = Qdrant-Embedding (konzeptuell). Antwort enthaelt mode-Feld. ZEILENNUMMERN: jeder Volltext-Treffer traegt matches:[{line, text}] (1-basiert, die Zeilen mit dem Suchwort, Standard 20 je Datei) plus total_matches und matches_gekappt; semantische Treffer tragen line_start/line_end. Standardweg: search -> file(file_path, from_line, to_line) um die Stelle herum — kein grep noetig. BATCH-SUCHE: action="search_batch" + queries[] (1..10) macht alle Queries semantisch in EINEM Call — Embeddings gebatched zu Google, parallel gegen Qdrant. Ideal wenn KI mehrere Discovery-Aspekte gleichzeitig abklopfen will. Damit deckt code_intel sowohl exakte als auch konzeptuelle Suche ab — das alte separate search(action:"code") wird nicht mehr gebraucht.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -850,6 +850,8 @@ const MCP_TOOLS = [
           description: 'Symbol-Typ fuer symbols-Action',
         },
         query: { type: 'string', description: 'Suchbegriff fuer search-Action' },
+        match_limit: { type: 'number', description: 'search (Volltext): max. Trefferzeilen je Datei in matches (Standard 20, max 1000, 0 = nur total_matches zaehlen). Case-insensitive; bei mehreren Woertern stehen Zeilen mit ALLEN Woertern zuerst, jede Zeile nennt ihre words.' },
+        match_skip: { type: 'number', description: 'search (Volltext): die ersten N Trefferzeilen je Datei ueberspringen (Standard 0). Blaettern: matches_gekappt:true -> match_skip um match_limit erhoehen.' },
         semantic: { type: 'boolean', description: 'search: true = Qdrant-Embedding-Suche (konzeptuell/fuzzy). Default false = PG-Volltext (lexikalisch/exakt).' },
         queries: { type: 'array', items: { type: 'string' }, description: 'search_batch: 1..10 semantische Queries in EINEM Call. Embeddings werden gebatched an Google → spart N-1 API-Roundtrips. Antwort enthaelt results[] mit {query, count, hits}.' },
         limit_per_query: { type: 'number', description: 'search_batch: Max Hits pro Query (Default 5)' },
@@ -3986,7 +3988,10 @@ async function handleToolCall(
             }));
             return { success: true, results, count: results.length, mode: 'semantic', project };
           }
-          const results = await fullTextSearchCode(project, query, fileType, limit, str(args, 'file_path'));
+          const results = await fullTextSearchCode(project, query, fileType, limit, str(args, 'file_path'), {
+            match_limit: num(args, 'match_limit'),
+            match_skip: num(args, 'match_skip'),
+          });
           return { success: true, results, count: results.length, mode: 'fulltext', project };
         }
         case 'file': {

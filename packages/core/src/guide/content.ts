@@ -261,6 +261,7 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
       'tree: depth: 1-2 reicht meist, show_functions: true wenn du Funktionen sehen willst.',
       'file: line_start + line_end setzen bei Dateien > 500 Zeilen, sonst sprengst du Context.',
       'search: limit: 5-10 sinnvoll, nicht 100.',
+      'search: jeder Volltext-Treffer nennt die Zeilen (matches[].line/text) — danach file mit from_line/to_line um diese Zeile lesen. Kein grep -n noetig.',
     ].join('\\n'),
     examples: [
       'code_intel({ action: "tree", project: "synapse", path: "packages", depth: 1 })',
@@ -307,13 +308,13 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
         tips: 'Perfekt fuer Impact-Analyse: "wenn ich das aendere, was muss ich nachziehen?"',
       },
       search: {
-        description: 'Code-Suche mit ZWEI Modi: Default = PG-Volltext (lexikalisch, exakte Identifier, <b>-Headlines), semantic: true = Qdrant-Embeddings (konzeptuell/fuzzy, ~30-Zeilen-Chunks). Antwort enthaelt mode ("fulltext"|"semantic") zur Selbstkontrolle.',
-        params: 'query (req), semantic (bool, Default false), file_type (Extension ohne Punkt), limit',
-        example: 'code_intel({ action: "search", project: "synapse", query: "DNS-Name fuer Container generieren", semantic: true, limit: 3 })',
-        tips: 'Faustregel: Identifier/exakter String → Default (fulltext). Konzept/"wo passiert X" → semantic: true. Semantic-Treffer sind grosse Chunks — limit 3-5 setzen, mehr sprengt Context.',
+        description: 'Code-Suche mit ZWEI Modi: Default = PG-Volltext (lexikalisch, exakte Identifier, <b>-Headlines), semantic: true = Qdrant-Embeddings (konzeptuell/fuzzy, ~30-Zeilen-Chunks). Antwort enthaelt mode ("fulltext"|"semantic") zur Selbstkontrolle. ZEILEN: jeder Volltext-Treffer traegt matches: [{ line, text }] (1-basiert, die Zeilen mit dem Suchwort, Standard 20 je Datei), total_matches und matches_gekappt; Semantik-Treffer tragen line_start/line_end.',
+        params: 'query (req), semantic (bool, Default false), file_type (Extension ohne Punkt), file_path, limit; Volltext zusaetzlich match_limit (Trefferzeilen je Datei, Standard 20, max 1000, 0 = nur zaehlen) und match_skip (blaettern)',
+        example: 'code_intel({ action: "search", project: "synapse", query: "registerAgent", limit: 5 }) → results[0].matches[0].line = 42 → code_intel({ action: "file", project: "synapse", file_path: results[0].file_path, from_line: 30, to_line: 60 })',
+        tips: 'STANDARDWEG: search → matches[].line → file(file_path, from_line, to_line) um die Zeile. Kein grep -n. Case-insensitive; bei mehreren Woertern stehen Zeilen mit ALLEN Woertern zuerst, jede Zeile nennt ihre words. Lange Zeilen (>200 Zeichen) kommen als Ausschnitt um den Treffer mit text_gekuerzt, line_length, column. matches_gekappt: true → match_skip um match_limit erhoehen. Faustregel: Identifier/exakter String → Default (fulltext). Konzept/"wo passiert X" → semantic: true. Semantic-Treffer sind grosse Chunks — limit 3-5 setzen, mehr sprengt Context.',
       },
       search_batch: {
-        description: 'Mehrere SEMANTISCHE Queries in EINEM Call — Embeddings gebatched (1 API-Roundtrip statt N), parallel gegen Qdrant. Antwort: results[] mit { query, count, hits } pro Query.',
+        description: 'Mehrere SEMANTISCHE Queries in EINEM Call — Embeddings gebatched (1 API-Roundtrip statt N), parallel gegen Qdrant. Antwort: results[] mit { query, count, hits } pro Query; jeder Hit traegt file_path, line_start und line_end — weiter mit file(from_line, to_line).',
         params: 'queries (req, Array 1..10), limit_per_query (Default 5)',
         example: 'code_intel({ action: "search_batch", project: "synapse", queries: ["wo wird der plan gespeichert", "wie laeuft das embedding"], limit_per_query: 3 })',
         tips: 'DER Discovery-Einstieg: beim Erkunden eines unbekannten Bereichs 3-5 Aspekte gleichzeitig abklopfen statt 5 einzelne search-Calls. limit_per_query: 3 reicht fast immer.',

@@ -237,7 +237,8 @@ export async function codeIntelRoutes(fastify: FastifyInstance): Promise<void> {
 
   /**
    * GET /api/projects/:name/code-intel/search
-   * Volltext-Suche im Code
+   * Volltext-Suche im Code. Jeder Treffer traegt matches:[{line, text}] (1-basiert),
+   * total_matches und matches_gekappt; blaettern mit match_limit/match_skip.
    */
   fastify.get<{
     Params: { name: string };
@@ -245,10 +246,13 @@ export async function codeIntelRoutes(fastify: FastifyInstance): Promise<void> {
       query: string;
       file_type?: string;
       limit?: string;
+      file_path?: string;
+      match_limit?: string;
+      match_skip?: string;
     };
   }>('/api/projects/:name/code-intel/search', async (request, reply) => {
     const { name } = request.params;
-    const { query, file_type, limit } = request.query;
+    const { query, file_type, limit, file_path, match_limit, match_skip } = request.query;
 
     if (!query) {
       return reply.status(400).send({
@@ -262,7 +266,12 @@ export async function codeIntelRoutes(fastify: FastifyInstance): Promise<void> {
         name,
         query,
         file_type,
-        limit !== undefined ? parseInt(limit, 10) : undefined
+        limit !== undefined ? parseInt(limit, 10) : undefined,
+        file_path,
+        {
+          match_limit: match_limit !== undefined ? parseInt(match_limit, 10) : undefined,
+          match_skip: match_skip !== undefined ? parseInt(match_skip, 10) : undefined,
+        }
       );
 
       return {

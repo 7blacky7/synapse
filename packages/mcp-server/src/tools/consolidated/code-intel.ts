@@ -8,7 +8,7 @@
  *   variables   — Variablen, optional mit Wert
  *   symbols     — Generische Symbol-Abfrage nach symbol_type
  *   references  — Definition + alle Referenzen eines Symbols
- *   search      — PostgreSQL-Volltext-Suche (tsv / ts_rank)
+ *   search      — PostgreSQL-Volltext-Suche (tsv / ts_rank), je Treffer die Zeilen (matches)
  *   file        — Dateiinhalt aus PG laden
  *   statements  — Ablauf-Ebene: Statements einer Datei/Scope
  *   calls       — Ablauf-Ebene: Call-Edges (Aufrufe)
@@ -40,7 +40,7 @@ export const codeIntelTool: ConsolidatedTool = {
   definition: {
     name: 'code_intel',
     description:
-      'Strukturierte Code-Abfragen aus PostgreSQL: Dateibaum, Funktionen, Variablen, Symbole, Referenzen, Volltext-Suche und Dateiinhalt.',
+      'Strukturierte Code-Abfragen aus PostgreSQL: Dateibaum, Funktionen, Variablen, Symbole, Referenzen, Volltext-Suche und Dateiinhalt. ZEILENNUMMERN: jeder search-Treffer traegt matches:[{line, text}] (1-basiert, Zeilen mit dem Suchwort, Standard 20 je Datei) plus total_matches und matches_gekappt; Treffer aus dem Semantik-Fallback tragen line_start/line_end. Standardweg: search -> file(file_path, from_line, to_line) um die Stelle herum — kein grep noetig.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -180,6 +180,16 @@ export const codeIntelTool: ConsolidatedTool = {
           type: 'string',
           description: 'Suchbegriff fuer search-Action (Volltext)',
         },
+        match_limit: {
+          type: 'number',
+          description:
+            'search: max. Trefferzeilen je Datei in matches (Standard 20, max 1000, 0 = nur total_matches zaehlen). Case-insensitive; bei mehreren Woertern stehen Zeilen mit ALLEN Woertern zuerst, jede Zeile nennt ihre words.',
+        },
+        match_skip: {
+          type: 'number',
+          description:
+            'search: die ersten N Trefferzeilen je Datei ueberspringen (Standard 0). Blaettern: matches_gekappt:true -> match_skip um match_limit erhoehen.',
+        },
         file_type: {
           type: 'string',
           description: 'Dateityp-Filter fuer search-Action (z.B. "ts", "js")',
@@ -305,7 +315,10 @@ export const codeIntelTool: ConsolidatedTool = {
         const excludeMd = !fileType;
 
         // PG-Volltext zuerst (schnell, exakt)
-        let pgResults = await fullTextSearchCode(project, query, effectiveFileType, limit, filePath);
+        let pgResults = await fullTextSearchCode(project, query, effectiveFileType, limit, filePath, {
+          match_limit: num(args, 'match_limit'),
+          match_skip: num(args, 'match_skip'),
+        });
         if (excludeMd) {
           pgResults = pgResults.filter(r => r.file_type !== 'md');
         }
@@ -324,6 +337,8 @@ export const codeIntelTool: ConsolidatedTool = {
             file_type: r.payload.file_type,
             headline: (r.payload.content || '').substring(0, 200),
             rank: r.score,
+            line_start: r.payload.line_start,
+            line_end: r.payload.line_end,
           }));
 
         return { success: true, results: mappedResults, count: mappedResults.length, source: 'semantic-fallback', project };

@@ -1347,17 +1347,152 @@ export async function getReferences(
 
 // ─── fullTextSearchCode ───────────────────────────────────────────────────────
 
+/** Eine Zeile, in der ein Suchwort steht (1-basiert, gezaehlt wie code_intel(file)). */
+export interface SuchTrefferZeile {
+  line: number;
+  /** Zeileninhalt ohne \r; bei langen Zeilen ein Ausschnitt um den ersten Treffer. */
+  text: string;
+  /** Nur bei mehreren Suchwoertern: welche davon in dieser Zeile stehen. */
+  words?: string[];
+  /** Nur bei Zeilen ueber SUCH_ZEILE_MAX_ZEICHEN: text ist ein Ausschnitt. */
+  text_gekuerzt?: true;
+  /** Nur bei gekuerzter Zeile: volle Laenge in Zeichen. */
+  line_length?: number;
+  /** Nur bei gekuerzter Zeile: 1-basierte Spalte des ersten Treffers. */
+  column?: number;
+}
+
 export interface FullTextSearchResult {
   file_path: string;
   file_type: string;
   headline: string;
   rank: number;
+  /** Trefferzeilen (Fenster aus match_skip/match_limit). */
+  matches: SuchTrefferZeile[];
+  /** Alle Zeilen mit mindestens einem Suchwort — unabhaengig vom Fenster. */
+  total_matches: number;
+  /** Nur bei mehreren Suchwoertern: Zeilen, in denen ALLE stehen. */
+  total_matches_all_words?: number;
+  /** true, wenn hinter dem Fenster noch Trefferzeilen liegen. */
+  matches_gekappt: boolean;
+}
+
+/** Ein Suchwort der Anfrage und die Begriffe, die es in einer Zeile vertreten (Wort, Stamm). */
+export interface SuchWort {
+  wort: string;
+  begriffe: string[];
+}
+
+export interface SuchZeilenOptionen {
+  /** Max. Trefferzeilen je Datei (Standard 20, 0 = nur zaehlen). */
+  limit?: number;
+  /** Die ersten N Trefferzeilen je Datei ueberspringen (Standard 0). */
+  skip?: number;
+}
+
+const SUCH_ZEILEN_STANDARD = 20;
+const SUCH_ZEILEN_MAX = 1000;
+const SUCH_ZEILE_MAX_ZEICHEN = 200;
+
+/**
+ * Findet die Zeilen, in denen die Suchwoerter stehen.
+ *
+ * Warum: die Volltextsuche nannte nur die Datei und einen ts_headline-Ausschnitt.
+ * Wer wissen wollte, WO das Wort steht, griff zu grep -n (gemessen bis zu 90 Aufrufe
+ * je Agent). Jetzt traegt jeder Treffer die Zeilen fuer code_intel(file, from_line).
+ *
+ * Regeln:
+ *  - case-insensitive Teilstring je Begriff; ein Wort gilt als gefunden, wenn einer
+ *    seiner Begriffe (das Wort selbst oder sein englischer Stamm) in der Zeile steht.
+ *  - Eine Zeile zaehlt einmal, egal wie oft das Wort darin steht.
+ *  - Ein Suchwort: Zeilen in Dateireihenfolge. Mehrere: Zeilen mit MEHR Woertern zuerst
+ *    (alle Woerter ganz oben), innerhalb gleicher Anzahl in Dateireihenfolge.
+ *  - Zeilen werden an \n getrennt wie in code_intel(file); ein \r am Ende faellt weg.
+ *
+ * Laufzeit: kein split der ganzen Datei. Die Zeilenanfaenge werden einmal per indexOf
+ * bestimmt, die Treffer per RegExp gesucht, nach einem Treffer springt die Suche an
+ * das Zeilenende. Text wird nur fuer die ausgelieferten Zeilen herausgeschnitten.
+ */
+export function findeSuchZeilen(
+  content: string,
+  woerter: SuchWort[],
+  optionen: SuchZeilenOptionen = {}
+): Pick<FullTextSearchResult, 'matches' | 'total_matches' | 'total_matches_all_words' | 'matches_gekappt'> {
+  // NaN (z. B. parseInt aus der REST-Query) zaehlt wie "nicht gesetzt".
+  const ganz = (v: number | undefined, standard: number): number =>
+    v !== undefined && Number.isFinite(v) ? Math.floor(v) : standard;
+  const limit = Math.min(Math.max(0, ganz(optionen.limit, SUCH_ZEILEN_STANDARD)), SUCH_ZEILEN_MAX);
+  const skip = Math.max(0, ganz(optionen.skip, 0));
+
+  const anfaenge: number[] = [0];
+  for (let i = content.indexOf('\n'); i !== -1; i = content.indexOf('\n', i + 1)) anfaenge.push(i + 1);
+  const zeileVon = (pos: number): number => {
+    let lo = 0;
+    let hi = anfaenge.length - 1;
+    while (lo < hi) {
+      const mitte = (lo + hi + 1) >> 1;
+      if (anfaenge[mitte] <= pos) lo = mitte; else hi = mitte - 1;
+    }
+    return lo;
+  };
+  const zeilenEnde = (idx: number): number =>
+    idx + 1 < anfaenge.length ? anfaenge[idx + 1] - 1 : content.length;
+
+  const funde = new Map<number, { woerter: Set<number>; spalte: number }>();
+  woerter.forEach((w, wi) => {
+    // Laengere Begriffe zuerst, damit die Alternation den genaueren trifft.
+    const begriffe = [...new Set(w.begriffe.filter(b => b.length > 0))].sort((a, b) => b.length - a.length);
+    if (begriffe.length === 0) return;
+    const re = new RegExp(begriffe.map(b => b.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|'), 'gi');
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(content)) !== null) {
+      const idx = zeileVon(m.index);
+      const spalte = m.index - anfaenge[idx];
+      const fund = funde.get(idx);
+      if (fund) {
+        fund.woerter.add(wi);
+        if (spalte < fund.spalte) fund.spalte = spalte;
+      } else {
+        funde.set(idx, { woerter: new Set([wi]), spalte });
+      }
+      re.lastIndex = zeilenEnde(idx) + 1;
+    }
+  });
+
+  const mehrere = woerter.length > 1;
+  const sortiert = [...funde.entries()].sort((a, b) =>
+    mehrere ? (b[1].woerter.size - a[1].woerter.size) || (a[0] - b[0]) : a[0] - b[0]
+  );
+  const fenster = sortiert.slice(skip, skip + limit);
+
+  const matches = fenster.map(([idx, fund]): SuchTrefferZeile => {
+    const roh = content.slice(anfaenge[idx], zeilenEnde(idx)).replace(/\r$/, '');
+    const zeile: SuchTrefferZeile = { line: idx + 1, text: roh };
+    if (roh.length > SUCH_ZEILE_MAX_ZEICHEN) {
+      // Ausschnitt so legen, dass der erste Treffer mit etwas Vorlauf sichtbar ist.
+      const von = Math.max(0, Math.min(fund.spalte - 60, roh.length - SUCH_ZEILE_MAX_ZEICHEN));
+      const bis = von + SUCH_ZEILE_MAX_ZEICHEN;
+      zeile.text = (von > 0 ? '…' : '') + roh.slice(von, bis) + (bis < roh.length ? '…' : '');
+      zeile.text_gekuerzt = true;
+      zeile.line_length = roh.length;
+      zeile.column = fund.spalte + 1;
+    }
+    if (mehrere) zeile.words = [...fund.woerter].sort((a, b) => a - b).map(i => woerter[i].wort);
+    return zeile;
+  });
+
+  return {
+    matches,
+    total_matches: sortiert.length,
+    ...(mehrere ? { total_matches_all_words: sortiert.filter(([, f]) => f.woerter.size === woerter.length).length } : {}),
+    matches_gekappt: skip + fenster.length < sortiert.length,
+  };
 }
 
 /**
  * Volltext-Suche in code_files via PostgreSQL tsvector.
  * Trennt Query-Woerter mit ' & ' fuer AND-Suche.
- * Gibt file_path, ts_headline und ts_rank zurueck.
+ * Gibt file_path, ts_headline, ts_rank und die Trefferzeilen (matches) zurueck.
  *
  * HINWEIS: Bewusst nicht "searchCode" (belegt durch code.ts — semantische Qdrant-Suche)
  */
@@ -1366,7 +1501,8 @@ export async function fullTextSearchCode(
   query: string,
   fileType?: string,
   limit: number = 20,
-  filePath?: string
+  filePath?: string,
+  zeilen: { match_limit?: number; match_skip?: number } = {}
 ): Promise<FullTextSearchResult[]> {
   const pool = getPool();
 
@@ -1400,10 +1536,24 @@ export async function fullTextSearchCode(
   // Die Anfrage wird fuer die zweite Spalte GENAUSO zerlegt wie der Text — sonst sucht man
   // 'system.out' in einem Index, der nur 'system' und 'out' kennt.
   const ZERLEGEN = `regexp_replace($2, '[^A-Za-z0-9]+', ' ', 'g')`;
+
+  // Suchwoerter fuer die Trefferzeilen: an allem ausser Buchstaben, Ziffern, _ und $
+  // getrennt (registerAgent bleibt ein Wort, @SYN- wird zu syn). Dazu je Wort der
+  // englische Stamm, damit "requesting" auch die Zeile mit "requests" nennt — dieselbe
+  // Datei hat die Volltextsuche ja genau darueber gefunden.
+  const woerterRoh = [...new Set(cleanQuery.toLowerCase().split(/[^\p{L}\p{N}_$]+/u).filter(w => w.length > 0))];
+  const staemme = pool.query<{ w: string; q: string }>(
+    `SELECT w, plainto_tsquery('english', w)::text AS q FROM unnest($1::text[]) AS w`,
+    [woerterRoh]
+  );
+  // Scheitert die Hauptabfrage, darf diese hier nicht als unbehandelte Ablehnung enden.
+  staemme.catch(() => {});
+
   const result = await pool.query(
     `SELECT
        file_path,
        file_type,
+       content,
        ts_headline('english', content, plainto_tsquery('english', $2),
          'MaxWords=20, MinWords=5, ShortWord=3, HighlightAll=false,
           MaxFragments=2, FragmentDelimiter='' ... ''') AS headline,
@@ -1425,11 +1575,18 @@ export async function fullTextSearchCode(
     params
   );
 
+  const stammVon = new Map((await staemme).rows.map(r => [r.w, r.q]));
+  const woerter: SuchWort[] = woerterRoh.map(w => ({
+    wort: w,
+    begriffe: [w, ...[...(stammVon.get(w) ?? '').matchAll(/'([^']+)'/g)].map(m => m[1]).filter(s => s.length >= 3)],
+  }));
+
   return result.rows.map(row => ({
     file_path: row.file_path,
     file_type: row.file_type,
     headline: row.headline ?? '',
     rank: parseFloat(row.rank),
+    ...findeSuchZeilen(row.content ?? '', woerter, { limit: zeilen.match_limit, skip: zeilen.match_skip }),
   }));
 }
 
