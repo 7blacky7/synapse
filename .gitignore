@@ -42,3 +42,6 @@ build/
 providatest.env
 .env.bak-*
 .mcp.json.bak-*
+
+# Konfig der Projekt-Spielwiese-DB (liegt auf Unraid neben .env, wird in den API-Container gemountet)
+projektdb.env
