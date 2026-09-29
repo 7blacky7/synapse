@@ -424,14 +424,14 @@ const MCP_TOOLS = [
   // 5. plan
   {
     name: 'plan',
-    description: 'Eigenen Projekt-Plan + Tasks im lokalen Synapse-Workspace verwalten: abrufen, aktualisieren, Tasks anlegen (einzeln oder Batch), Tasks aendern, Tasks entfernen. Project-scoped, eigene User-Datenbank. Keine externen Systeme, keine freien Pfade.',
+    description: 'Eigenen Projekt-Plan + Tasks im lokalen Synapse-Workspace verwalten: abrufen, aktualisieren, Tasks anlegen (einzeln oder Batch), Tasks aendern, Tasks entfernen. Project-scoped, eigene User-Datenbank. Keine freien Pfade. empfehlen (EXPERIMENTELL): schlaegt je Task Modell + Effort + Kontext vor (ein Aufruf an das Entscheidungsmodell Jev ueber OpenRouter) — nur Empfehlung, kein Muss.',
     inputSchema: {
       type: 'object',
       properties: {
         action: {
           type: 'string',
-          enum: ['get', 'update', 'add_task', 'add_tasks_batch', 'update_task', 'delete_task'],
-          description: 'Aktion: "get" zum Abrufen, "update" zum Aktualisieren, "add_task" um eine Task hinzuzufuegen, "add_tasks_batch" um mehrere Tasks atomar hinzuzufuegen, "update_task" um eine Task zu aendern, "delete_task" um eine oder mehrere Tasks zu loeschen (id als String oder Array)',
+          enum: ['get', 'update', 'add_task', 'add_tasks_batch', 'update_task', 'delete_task', 'empfehlen'],
+          description: 'Aktion: "get" zum Abrufen, "update" zum Aktualisieren, "add_task" um eine Task hinzuzufuegen, "add_tasks_batch" um mehrere Tasks atomar hinzuzufuegen, "update_task" um eine Task zu aendern, "delete_task" um eine oder mehrere Tasks zu loeschen (id als String oder Array), "empfehlen" (EXPERIMENTELL) bewertet die offenen Tasks in EINEM Jev-Aufruf und schreibt je Task das Feld empfehlung {modell, effort, kontext 200k|1m, confidence, ...} — nur Empfehlung, kein Muss; unter dem Confidence-Tor unsicher statt Empfehlung',
         },
         project: { type: 'string', description: 'Projekt-Name' },
         agent_id: { type: 'string', description: 'Agent-ID fuer Onboarding. Neue Agenten sehen automatisch Projekt-Regeln.' },
@@ -461,13 +461,32 @@ const MCP_TOOLS = [
             { type: 'string' },
             { type: 'array', items: { type: 'string' }, minItems: 1, maxItems: 50 },
           ],
-          description: 'Task-ID (String fuer update_task/delete_task, Array fuer Batch-delete_task)',
+          description: 'Task-ID (String fuer update_task/delete_task, Array fuer Batch-delete_task; bei empfehlen: nur diese Task(s), sonst alle nicht erledigten)',
         },
         status: {
           type: 'string',
           enum: ['todo', 'in_progress', 'done', 'blocked'],
           description: 'Neuer Task-Status (fuer update_task); bei action=get: optionaler Task-Filter',
         },
+        kandidaten: {
+          oneOf: [
+            { type: 'string' },
+            { type: 'array', items: { type: 'string' }, minItems: 1 },
+          ],
+          description: 'Nur fuer empfehlen: Modelle zur Auswahl — Aliase (opus, sonnet, haiku, fable, gpt-6-astra, ...) und/oder Gruppen (abos = Claude-CLI + Codex-CLI, alle, anthropic|claude-abo, codex|codex-abo, google|gemini-api, legacy). Standard: nur Claude-CLI-Modelle (anthropic); Codex/Gemini nachziehen, sobald deren Runtime steht — bis dahin nur ausdruecklich waehlbar (spawnbar:false).',
+        },
+        lage: {
+          type: 'object',
+          properties: {
+            claude_quota: { type: 'string', enum: ['plenty', 'low', 'exhausted'] },
+            codex_quota: { type: 'string', enum: ['plenty', 'low', 'exhausted'] },
+            paid_api: { type: 'string', enum: ['allowed', 'not allowed'] },
+          },
+          description: 'Nur fuer empfehlen: Kontingent-Lage als Kategorien (Standard plenty/plenty/not allowed). exhausted entfernt die Gruppe, paid_api "not allowed" entfernt Gemini.',
+        },
+        max_optionen: { type: 'number', description: 'Nur fuer empfehlen: Hoechstzahl der Modelle in der Modell-Choice (Standard unbegrenzt; jedes angefragte Modell kommt vor). Die Stufen fragt Jev je Modell getrennt.' },
+        schreiben: { type: 'boolean', description: 'Nur fuer empfehlen: Empfehlung in plans.tasks schreiben (Standard true). false = nur anzeigen.' },
+        confidence_tor: { type: 'number', description: 'Nur fuer empfehlen: unter dieser Confidence (0..1) gibt es keine Empfehlung, sondern unsicher + bester_vorschlag. Standard JEV_CONFIDENCE_TOR bzw. 0.5.' },
         compact: { type: 'boolean', description: 'Nur fuer get: Tasks ohne description liefern (id/title/status/priority) — Context-sparend' },
         limit: { type: 'number', description: 'Nur fuer get: max. Anzahl Tasks in der Antwort' },
       },
@@ -2923,6 +2942,18 @@ async function handleToolCall(
             warning: result.warning,
             message: `${result.tasks.length} Tasks hinzugefuegt`,
           };
+        }
+        case 'empfehlen': {
+          const { empfehleFuerPlan } = await import('@synapse/core');
+          const ids = strArray(args, 'task_id');
+          return await empfehleFuerPlan(project, {
+            kandidaten: args.kandidaten,
+            task_ids: ids && ids.length > 0 ? ids : undefined,
+            schreiben: bool(args, 'schreiben') !== false,
+            confidence_tor: num(args, 'confidence_tor'),
+            lage: args.lage as Record<string, unknown> | undefined,
+            max_optionen: num(args, 'max_optionen'),
+          });
         }
         default:
           return { success: false, error: `Unbekannte plan action: "${action}"` };

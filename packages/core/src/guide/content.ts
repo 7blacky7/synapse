@@ -921,6 +921,7 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
       'Plan-Metadaten aktualisieren (Ziele, Architektur): update.',
       'Neue Task zum Plan hinzufuegen: add_task.',
       'Task-Status tracken fuer langfristige Projekte.',
+      'EXPERIMENTELL: Modell/Effort/Kontext je Task vorschlagen lassen: empfehlen.',
     ].join(' '),
     when_not_to_use: [
       'Ad-hoc Notizen/To-Dos → thought mit Tag "task".',
@@ -932,6 +933,7 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
       'add_task: title + description beide Pflicht. priority: low|medium|high (Standard: medium).',
       'update: Felder die nicht gesetzt werden, bleiben unveraendert.',
       'goals: Array von Strings — Ziele des Projekts.',
+      'empfehlen: kandidaten = Aliase und/oder Gruppen (anthropic|abos|alle|codex|google|legacy, auch claude-abo|codex-abo|gemini-api; Standard: nur Claude-CLI-Modelle = anthropic; Codex/Gemini nachziehen, sobald deren Runtime steht), task_id optional, schreiben (Standard true), confidence_tor (Standard 0.5), lage {claude_quota, codex_quota: plenty|low|exhausted, paid_api: allowed|not allowed}, max_optionen (nur Modell-Choice, Standard unbegrenzt). Optionale Task-Felder stakes (normal|critical) und previous_attempt (none|failed with a smaller model) gehen in den Zustand. Braucht JEV_OPENROUTER_API_KEY in der Server-Umgebung.',
     ].join('\\n'),
     examples: [
       'plan({ action: "get", project: "synapse" })',
@@ -978,6 +980,12 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
         params: 'project (req), task_id (req, String oder Array von Strings, max 50)',
         example: 'plan({ action: "delete_task", project: "synapse", task_id: ["abc-123", "def-456"] })',
         tips: 'Bevorzuge update_task mit status: "done" wenn die Task fuer Historie/Audit erhalten bleiben soll.',
+      },
+      empfehlen: {
+        description: 'EXPERIMENTELL: bewertet die nicht erledigten Tasks (oder task_id) in EINEM Aufruf an das Entscheidungsmodell Jev (OpenRouter /api/v1/systemone) und schreibt je Task das Feld empfehlung: {modell, effort, kontext 200k|1m, spawn_alias, confidence, quelle cloud, kandidaten, wiederverwenden, spawnbar, stand}. Unter dem Confidence-Tor: {unsicher: true, bester_vorschlag, confidence} statt Empfehlung. Andere Task-Felder bleiben unberuehrt.',
+        params: 'project (req), kandidaten? (Alias/Gruppe oder Liste; Standard: nur Claude-CLI-Modelle = anthropic; abos = Claude + Codex, codex, google, alle ausdruecklich waehlbar), task_id? (String oder Array), schreiben? (Standard true; false = nur anzeigen), confidence_tor? (0..1, Standard 0.5), lage? ({claude_quota, codex_quota: plenty|low|exhausted, paid_api: allowed|not allowed}; Standard plenty/plenty/not allowed), max_optionen? (nur Modell-Choice, Standard unbegrenzt)',
+        example: 'plan({ action: "empfehlen", project: "synapse", lage: { claude_quota: "low" }, schreiben: false })',
+        tips: 'NUR EMPFEHLUNG, KEIN MUSS: der Spawner darf abweichen, "unsicher" ist ein zulaessiges Ergebnis, es wird nichts gespawnt. Zweistufig in EINEM Aufruf: je Task model_<i> ueber die Modelle (eine Option je Kandidat, keine Kappung) und je Modell mit mehr als einer Stufe effort_<i>_<modell>; gewertet wird die Stufe des gewaehlten Modells. Nur eine Option: keine Frage, Confidence 1.0, vermerk/effort_vermerk "einzige_option". Claude nur mit Stufen aus criteria UND model_registry.effort_stufen (haiku = ohne Effort). Das Tor wirkt auf die Modellwahl; eine unsichere Stufe traegt effort_unsicher. Ergebnis meldet jev.fragen und jev.input_tokens. Criteria = versionierte Kopie von JEV-Test daten/modellwahl_criteria.json (core services/jev-criteria-katalog.ts, Quelle + Stand im Ergebnis unter katalog). Kontingent kennt Synapse nicht: lage als Kategorien angeben; exhausted/paid_api entfernen Gruppen (vorfilter der Quelle). Standard: nur Claude-CLI-Modelle; Codex/Gemini nachziehen, sobald deren Runtime steht (bis dahin spawnbar false, nur auf ausdrueckliche Nennung). Der Zustand nennt nur das Kontingent der angefragten Familien. wiederverwenden nennt einen idle Spezialisten derselben Familie mit 1M. Env: JEV_OPENROUTER_API_KEY (Pflicht), JEV_API_URL, JEV_MODELL, JEV_TIMEOUT_MS (10000), JEV_CONFIDENCE_TOR (0.5). Fehlt der Key: success false "Jev nicht konfiguriert", nichts geschrieben.',
       },
     },
   },

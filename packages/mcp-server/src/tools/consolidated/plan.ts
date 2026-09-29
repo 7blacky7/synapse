@@ -13,19 +13,20 @@ import {
   updatePlanTask,
   deletePlanTasks,
 } from '../plans.js';
+import { empfehleFuerPlan } from '@synapse/core';
 
 export const planTool: ConsolidatedTool = {
   definition: {
     name: 'plan',
-    description: 'Verwaltet Projekt-Plaene: Abrufen, Aktualisieren, Tasks hinzufuegen',
+    description: 'Verwaltet Projekt-Plaene: Abrufen, Aktualisieren, Tasks hinzufuegen. empfehlen (EXPERIMENTELL): Modell + Effort + Kontext je Task per Jev vorschlagen — nur Empfehlung, kein Muss.',
     inputSchema: {
       type: 'object',
       properties: {
         action: {
           type: 'string',
-          enum: ['get', 'update', 'add_task', 'add_tasks_batch', 'update_task', 'delete_task'],
+          enum: ['get', 'update', 'add_task', 'add_tasks_batch', 'update_task', 'delete_task', 'empfehlen'],
           description:
-            'Aktion: "get" zum Abrufen, "update" zum Aktualisieren, "add_task" um eine Task hinzuzufuegen, "add_tasks_batch" um mehrere Tasks atomar hinzuzufuegen, "update_task" um eine Task zu aendern (status/priority/title/description), "delete_task" um eine oder mehrere Tasks zu loeschen (id als String oder Array)',
+            'Aktion: "get" zum Abrufen, "update" zum Aktualisieren, "add_task" um eine Task hinzuzufuegen, "add_tasks_batch" um mehrere Tasks atomar hinzuzufuegen, "update_task" um eine Task zu aendern (status/priority/title/description), "delete_task" um eine oder mehrere Tasks zu loeschen (id als String oder Array), "empfehlen" (EXPERIMENTELL) bewertet die offenen Tasks in EINEM Jev-Aufruf und schreibt je Task das Feld empfehlung {modell, effort, kontext 200k|1m, confidence, ...} — nur Empfehlung, kein Muss; unter dem Confidence-Tor unsicher statt Empfehlung',
         },
         project: {
           type: 'string',
@@ -70,7 +71,7 @@ export const planTool: ConsolidatedTool = {
             { type: 'string' },
             { type: 'array', items: { type: 'string' }, minItems: 1, maxItems: 50 },
           ],
-          description: 'Task-ID (String fuer update_task/delete_task, Array fuer Batch-delete_task)',
+          description: 'Task-ID (String fuer update_task/delete_task, Array fuer Batch-delete_task; bei empfehlen: nur diese Task(s), sonst alle nicht erledigten)',
         },
         status: {
           type: 'string',
@@ -92,6 +93,35 @@ export const planTool: ConsolidatedTool = {
           minItems: 1,
           maxItems: 50,
           description: 'Tasks fuer Batch-Add (1..50 Items mit title, description, optional priority)',
+        },
+        // fuer "empfehlen"
+        kandidaten: {
+          oneOf: [
+            { type: 'string' },
+            { type: 'array', items: { type: 'string' }, minItems: 1 },
+          ],
+          description: 'Nur fuer empfehlen: Modelle zur Auswahl — Aliase (opus, sonnet, haiku, fable, gpt-6-astra, ...) und/oder Gruppen (abos = Claude-CLI + Codex-CLI, alle, anthropic|claude-abo, codex|codex-abo, google|gemini-api, legacy). Standard: nur Claude-CLI-Modelle (anthropic); Codex/Gemini nachziehen, sobald deren Runtime steht — bis dahin nur ausdruecklich waehlbar (spawnbar:false).',
+        },
+        lage: {
+          type: 'object',
+          properties: {
+            claude_quota: { type: 'string', enum: ['plenty', 'low', 'exhausted'] },
+            codex_quota: { type: 'string', enum: ['plenty', 'low', 'exhausted'] },
+            paid_api: { type: 'string', enum: ['allowed', 'not allowed'] },
+          },
+          description: 'Nur fuer empfehlen: Kontingent-Lage als Kategorien (Standard plenty/plenty/not allowed). exhausted entfernt die Gruppe, paid_api "not allowed" entfernt Gemini.',
+        },
+        max_optionen: {
+          type: 'number',
+          description: 'Nur fuer empfehlen: Hoechstzahl der Modelle in der Modell-Choice (Standard unbegrenzt; jedes angefragte Modell kommt vor). Die Stufen fragt Jev je Modell getrennt.',
+        },
+        schreiben: {
+          type: 'boolean',
+          description: 'Nur fuer empfehlen: Empfehlung in plans.tasks schreiben (Standard true). false = nur anzeigen.',
+        },
+        confidence_tor: {
+          type: 'number',
+          description: 'Nur fuer empfehlen: unter dieser Confidence (0..1) gibt es keine Empfehlung, sondern unsicher + bester_vorschlag. Standard JEV_CONFIDENCE_TOR bzw. 0.5.',
         },
       },
       required: ['action', 'project'],
@@ -181,6 +211,19 @@ export const planTool: ConsolidatedTool = {
         }
         const result = await deletePlanTasks(project, ids);
         return result;
+      }
+
+      case 'empfehlen': {
+        const ids = strArray(args, 'task_id');
+        const tor = args.confidence_tor;
+        return await empfehleFuerPlan(project, {
+          kandidaten: args.kandidaten,
+          task_ids: ids && ids.length > 0 ? ids : undefined,
+          schreiben: args.schreiben !== false,
+          confidence_tor: typeof tor === 'number' ? tor : undefined,
+          lage: args.lage as Record<string, unknown> | undefined,
+          max_optionen: typeof args.max_optionen === 'number' ? args.max_optionen : undefined,
+        }) as unknown as Record<string, unknown>;
       }
 
       default:
