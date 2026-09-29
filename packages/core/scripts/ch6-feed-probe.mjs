@@ -9,7 +9,10 @@
  * Von packages/core aus starten: node scripts/ch6-feed-probe.mjs [channel]
  * (Node loest Module relativ zum SKRIPTPFAD auf, nicht zum cwd.)
  */
-process.env.DATABASE_URL ??= 'postgresql://synapse:synapse2026@192.168.50.65:5432/synapse';
+if (!process.env.DATABASE_URL) {
+  console.error('DATABASE_URL fehlt — Probe bricht ab (keine Standard-Verbindung mehr im Quelltext).');
+  process.exit(2);
+}
 
 const { getChannelMessages, closePool } = await import('../dist/index.js');
 

@@ -13,7 +13,10 @@
  *
  * Von packages/core aus starten: node scripts/ch8-nachrichten-archiv-probe.mjs [channel]
  */
-process.env.DATABASE_URL ??= 'postgresql://synapse:synapse2026@192.168.50.65:5432/synapse';
+if (!process.env.DATABASE_URL) {
+  console.error('DATABASE_URL fehlt — Probe bricht ab (keine Standard-Verbindung mehr im Quelltext).');
+  process.exit(2);
+}
 
 const { getChannelMessages, archiviereNachrichten, closePool } = await import('../dist/index.js');
 

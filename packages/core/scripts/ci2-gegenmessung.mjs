@@ -23,8 +23,12 @@ const BEGRIFFE = [
 // in einem Index, der nur 'system' und 'out' kennt.
 const ZERLEGT = `regexp_replace($1, '[^A-Za-z0-9]+', ' ', 'g')`;
 
+if (!process.env.DATABASE_URL) {
+  console.error('DATABASE_URL fehlt — Messung bricht ab (keine Standard-Verbindung mehr im Quelltext).');
+  process.exit(2);
+}
 const client = new pg.Client({
-  connectionString: 'postgresql://synapse:synapse2026@192.168.50.65:5432/synapse',
+  connectionString: process.env.DATABASE_URL,
 });
 await client.connect();
 await client.query("SET statement_timeout='900s'");

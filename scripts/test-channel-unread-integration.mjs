@@ -1,11 +1,13 @@
+import './lib/test-db-schutz-aktiv.mjs' // P10-T27: MUSS der erste Import sein (nur TEST_DATABASE_URL, nie Live-DB)
 import assert from 'node:assert/strict'
 import Fastify from '../packages/rest-api/node_modules/fastify/fastify.js'
 import { Client } from '../packages/mcp-server/node_modules/@modelcontextprotocol/sdk/dist/esm/client/index.js'
 import { StdioClientTransport } from '../packages/mcp-server/node_modules/@modelcontextprotocol/sdk/dist/esm/client/stdio.js'
 import {
-  claimUnreadChannelHints, closePool, createChannel, deleteChannel,
+  claimUnreadChannelHints, closePool, createChannel, deleteChannel, ensureSchema,
   joinChannel, postChannelMessage,
 } from '../packages/core/dist/index.js'
+import { kindEnv } from './lib/test-db-schutz.mjs'
 import { mcpRoutes } from '../packages/rest-api/dist/routes/mcp.js'
 
 const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`
@@ -52,6 +54,7 @@ async function callRest(app, agentId) {
   return parseToolText(response.json().result)
 }
 
+await ensureSchema()
 await createChannel(project, channel, 'HOOK-5 Transporttest', sender)
 const app = Fastify({ logger: false })
 await app.register(mcpRoutes)
@@ -77,6 +80,7 @@ try {
     command: 'node',
     args: ['packages/mcp-server/dist/index.js'],
     cwd: process.cwd(),
+    env: kindEnv(), // DATABASE_URL = Test-DB (Schutzklausel hat sie gesetzt)
     stderr: 'inherit',
   })
   client = new Client({ name: 'hook5-integration', version: '1.0.0' })

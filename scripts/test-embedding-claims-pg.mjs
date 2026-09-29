@@ -1,3 +1,4 @@
+import './lib/test-db-schutz-aktiv.mjs'; // P10-T27: MUSS der erste Import sein (nur TEST_DATABASE_URL, nie Live-DB)
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 
