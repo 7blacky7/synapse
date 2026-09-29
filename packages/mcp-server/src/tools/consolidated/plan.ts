@@ -154,6 +154,10 @@ export const planTool: ConsolidatedTool = {
           },
           description: 'Nur fuer empfehlen: Kontingent-Lage als Kategorien (Standard plenty/plenty/not allowed). exhausted entfernt die Gruppe, paid_api "not allowed" entfernt Gemini.',
         },
+        hinweise: {
+          type: 'string',
+          description: 'Nur fuer empfehlen: eigene Prioritaeten fuer Jev (max. 500 Zeichen, laengere werden gekuerzt), z. B. "Abo-Kontingent schonen, Opus nur wenn noetig". Geht als state.hinweise an Jev und wird in den Anweisungen erwaehnt; die Antwort nennt sie als hinweise_verwendet. Zusaetzlich bekommt Jev immer die Projektfakten aus dem Index (Dateien, tokens_ca, Sprachen); die Antwort nennt sie als projekt_fakten.',
+        },
         max_optionen: {
           type: 'number',
           description: 'Nur fuer empfehlen: Hoechstzahl der Modelle in der Modell-Choice (Standard unbegrenzt; jedes angefragte Modell kommt vor). Die Stufen fragt Jev je Modell getrennt.',
@@ -328,6 +332,7 @@ export const planTool: ConsolidatedTool = {
           confidence_tor: typeof tor === 'number' ? tor : undefined,
           lage: args.lage as Record<string, unknown> | undefined,
           max_optionen: typeof args.max_optionen === 'number' ? args.max_optionen : undefined,
+          hinweise: typeof args.hinweise === 'string' ? args.hinweise : undefined,
         }) as unknown as Record<string, unknown>;
       }
 

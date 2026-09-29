@@ -54,6 +54,9 @@ async function pruefe(name, fn) {
 const TEST_KEY = 'sk-or-test-GEHEIM-0123456789';
 let planZeile;
 let updates = [];
+let codeDateien = [];
+let codeFilesAufrufe = [];
+let codeFilesFehler = false;
 function frischerPlan() {
   planZeile = {
     id: 'plan-1', project: 'testprojekt', name: 'Testplan', description: 'Ein Plan zum Testen der Modellwahl.',
@@ -87,6 +90,12 @@ pg.Pool.prototype.query = async function (sql, params = []) {
     if (JSON.stringify(JSON.parse(alt)) !== JSON.stringify(planZeile.tasks)) return { rows: [], rowCount: 0 };
     planZeile.tasks = JSON.parse(neu);
     return { rows: [], rowCount: 1 };
+  }
+  if (/FROM code_files/i.test(text)) {
+    // JEV-8: Projektfakten. Standard = leerer Index (dann gibt es keine Projektfakten).
+    codeFilesAufrufe.push({ text, params });
+    if (codeFilesFehler) throw new Error('code_files kaputt');
+    return { rows: structuredClone(codeDateien), rowCount: codeDateien.length };
   }
   throw new Error(`Unerwartete SQL im Test: ${text.slice(0, 80)}`);
 };
@@ -169,6 +178,10 @@ function reset() {
   process.env.JEV_OPENROUTER_API_KEY = TEST_KEY;
   delete process.env.JEV_TIMEOUT_MS;
   delete process.env.JEV_CONFIDENCE_TOR;
+  delete process.env.JEV_KONTEXT_PROJEKT_TOKENS;
+  codeDateien = [];
+  codeFilesAufrufe = [];
+  codeFilesFehler = false;
 }
 
 const q = () => fetchAufrufe[0].body.questions;
@@ -721,6 +734,158 @@ await pruefe('Schreiben: gleichzeitige Aenderung der Tasks -> neu gelesen, fremd
   } finally {
     pg.Pool.prototype.query = origQuery;
   }
+});
+
+await pruefe('wiederverwenden: idle sonnet (nativ 1M, ohne [1m]) gilt als 1M-Spezialist', async () => {
+  reset();
+  wrapper = [{ agentName: 'sonnet-kollege', model: 'sonnet', status: 'idle', busy: false }];
+  antwortFuer = antworten({ 0: { modell: 'sonnet', effort: 'medium', p: 0.9 } });
+  const r = await empf('testprojekt', { kandidaten: ['sonnet'], task_ids: ['t1'] }, deps());
+  const e = r.empfehlungen[0].empfehlung;
+  assert.equal(e.kontext, '1m');
+  assert.equal(e.spawn_alias, 'sonnet');
+  assert.equal(e.wiederverwenden, 'sonnet-kollege');
+});
+
+// ---------------------------------------------------------------------------
+// JEV-8: Projektfakten + hinweise im Zustand
+// ---------------------------------------------------------------------------
+const datei = (file_path, file_type, file_size) => ({ file_path, file_type, file_size });
+// Endgueltige User-Definition von 'direkt' (Channel 23214): die Task beschreibt detailliert, WIE etwas
+// gemacht wird, mit wenig Spielraum; indirekt = 'behebe Problem B', verschachtelt, Ursache unklar.
+const ZUSATZ_GROSS = 'At this size 200k is enough only if the task is direct: it describes in detail how something is to be done, leaving little room for deviation (for example a single call or a precisely specified change at a known spot). An indirect task — "fix problem B" where the problem is entangled with many other code changes and its cause is unclear — needs more than 200k.';
+
+await pruefe('Projektfakten: nur lebende Code-Dateien; png/Archive/Lockfiles zaehlen nicht mit', async () => {
+  reset();
+  codeDateien = [
+    datei('src/a.ts', 'ts', 300_000), datei('src/b.ts', 'ts', 100_000), datei('README.md', 'md', 40_000),
+    datei('logo.png', 'png', 5_000_000), datei('dist.zip', 'zip', 9_000_000), datei('Cargo.lock', 'lock', 700_000),
+    datei('package-lock.json', 'json', 900_000), datei('pnpm-lock.yaml', 'yaml', 800_000),
+  ];
+  const r = await empf('testprojekt', {}, deps());
+  assert.equal(r.success, true, r.message);
+  assert.match(codeFilesAufrufe[0].text, /deleted_at IS NULL/, 'gelöschte Dateien nicht ausgeschlossen');
+  assert.equal(codeFilesAufrufe[0].params[0], 'testprojekt');
+  const p = fetchAufrufe[0].body.state.project;
+  assert.equal(p.name, 'testprojekt');
+  assert.equal(p.dateien, 3);
+  assert.equal(p.zeichen, 440_000);
+  assert.equal(p.tokens_ca, 110_000);
+  assert.equal(p.sprachen[0].typ, 'ts');
+  assert.equal(p.sprachen[0].dateien, 2);
+  assert.equal(p.sprachen[0].anteil_prozent, 91);
+  assert.equal(p.gross_fuer_200k, false);
+});
+
+await pruefe('Sprachen: hoechstens 5, nach Zeichen sortiert', async () => {
+  reset();
+  codeDateien = ['a', 'b', 'c', 'd', 'e', 'f', 'g'].map((t, i) => datei(`x.${t}x`, `${t}x`, (i + 1) * 1000));
+  await empf('testprojekt', {}, deps());
+  const s = fetchAufrufe[0].body.state.project.sprachen;
+  assert.equal(s.length, 5);
+  assert.equal(s[0].typ, 'gx');
+});
+
+await pruefe('direkt/indirekt: Unterscheidung steht in model_ und effort_ (auch ohne Projektfakten), nicht in langer_kontext', async () => {
+  reset();
+  await empf('testprojekt', {}, deps());
+  for (const name of ['model_0', 'effort_0_opus']) {
+    const text = q()[name].instructions;
+    assert.match(text, /A direct task \(it describes in detail how something is to be done, leaving little room for deviation\)/, name);
+    assert.match(text, /indirect task/, name);
+    assert.match(text, /Reason: with a direct task the agent reads the task, sees the next step, does it and is done\./, name);
+    assert.match(text, /small models \(haiku\) search poorly/, name);
+  }
+});
+
+await pruefe('gross (> Schwelle 150000 tokens_ca): Regel mit Beispiel in langer_kontext, Fakt gross_fuer_200k', async () => {
+  reset();
+  codeDateien = [datei('src/a.ts', 'ts', 800_000)];
+  const r = await empf('testprojekt', {}, deps());
+  assert.equal(fetchAufrufe[0].body.state.project.gross_fuer_200k, true);
+  const text = q().langer_kontext_0.instructions;
+  assert.ok(text.includes(ZUSATZ_GROSS), text);
+  assert.match(text, /more than 200k/);
+  assert.match(text, /Reason: with a direct task the agent reads the task/);
+  assert.match(text, /should not go to haiku\./);
+  assert.equal(r.projekt_fakten.gross_fuer_200k, true);
+  assert.equal(r.projekt_fakten.schwelle_tokens, 150_000);
+});
+
+await pruefe('klein: Zusatz "project is small", keine Grossprojekt-Regel', async () => {
+  reset();
+  codeDateien = [datei('src/a.ts', 'ts', 40_000)];
+  await empf('testprojekt', {}, deps());
+  const text = q().langer_kontext_0.instructions;
+  assert.match(text, /project in the state is small/);
+  assert.ok(!text.includes(ZUSATZ_GROSS));
+});
+
+await pruefe('Schwelle per Env JEV_KONTEXT_PROJEKT_TOKENS', async () => {
+  reset();
+  codeDateien = [datei('src/a.ts', 'ts', 40_000)];
+  process.env.JEV_KONTEXT_PROJEKT_TOKENS = '5000';
+  const r = await empf('testprojekt', {}, deps());
+  delete process.env.JEV_KONTEXT_PROJEKT_TOKENS;
+  assert.equal(fetchAufrufe[0].body.state.project.gross_fuer_200k, true);
+  assert.equal(r.projekt_fakten.schwelle_tokens, 5000);
+});
+
+await pruefe('deps.projektFakten ersetzt die SQL', async () => {
+  reset();
+  const d = { ...deps(), projektFakten: async () => ({ dateien: 7, zeichen: 28_000, sprachen: [{ typ: 'py', dateien: 7, anteil_prozent: 100 }] }) };
+  await empf('testprojekt', {}, d);
+  assert.equal(codeFilesAufrufe.length, 0);
+  assert.equal(fetchAufrufe[0].body.state.project.dateien, 7);
+  assert.equal(fetchAufrufe[0].body.state.project.tokens_ca, 7000);
+});
+
+await pruefe('Fakten nicht lesbar: Empfehlung laeuft weiter wie bisher, Hinweis, kein state.project', async () => {
+  reset();
+  codeFilesFehler = true;
+  const r = await empf('testprojekt', {}, deps());
+  assert.equal(r.success, true, r.message);
+  assert.equal(fetchAufrufe[0].body.state.project, undefined);
+  assert.ok(r.hinweise.some((h) => /Projektfakten/.test(h)), JSON.stringify(r.hinweise));
+  assert.equal(r.projekt_fakten, undefined);
+  assert.ok(!q().langer_kontext_0.instructions.includes('project in the state'));
+});
+
+await pruefe('leerer Index: keine Projektfakten, kein Hinweis-Laerm', async () => {
+  reset();
+  const r = await empf('testprojekt', {}, deps());
+  assert.equal(fetchAufrufe[0].body.state.project, undefined);
+  assert.equal(r.projekt_fakten, undefined);
+  assert.ok(!(r.hinweise ?? []).some((h) => /Projektfakten/.test(h)));
+});
+
+await pruefe('hinweise: als state.hinweise gesendet und in model_/effort_/langer_kontext_ erwaehnt', async () => {
+  reset();
+  const r = await empf('testprojekt', { hinweise: '  Abo-Kontingent schonen, Opus nur wenn noetig  ' }, deps());
+  assert.equal(r.success, true, r.message);
+  assert.equal(fetchAufrufe[0].body.state.hinweise, 'Abo-Kontingent schonen, Opus nur wenn noetig');
+  for (const name of ['model_0', 'effort_0_opus', 'langer_kontext_0']) {
+    assert.match(q()[name].instructions, /notes in state\.hinweise/, name);
+  }
+  assert.equal(r.hinweise_verwendet, 'Abo-Kontingent schonen, Opus nur wenn noetig');
+});
+
+await pruefe('ohne hinweise: kein state.hinweise, keine Erwaehnung, hinweise_verwendet fehlt', async () => {
+  reset();
+  const r = await empf('testprojekt', {}, deps());
+  assert.ok(!('hinweise' in fetchAufrufe[0].body.state));
+  assert.ok(!JSON.stringify(q()).includes('state.hinweise'));
+  assert.equal(r.hinweise_verwendet, undefined);
+});
+
+await pruefe('hinweise ueber 500 Zeichen: gekuerzt, mit Hinweis; leerer String zaehlt als keiner', async () => {
+  reset();
+  const r = await empf('testprojekt', { hinweise: 'x'.repeat(600) }, deps());
+  assert.equal(fetchAufrufe[0].body.state.hinweise.length, 500);
+  assert.ok(r.hinweise.some((h) => /500/.test(h)));
+  reset();
+  await empf('testprojekt', { hinweise: '   ' }, deps());
+  assert.ok(!('hinweise' in fetchAufrufe[0].body.state));
 });
 
 console.log(`\n${ok} OK, ${fehler} FEHLER`);

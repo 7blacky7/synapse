@@ -29,6 +29,8 @@
  * Der Key (JEV_OPENROUTER_API_KEY) wird nie ausgegeben oder geloggt.
  */
 
+import { getPool } from '../db/client.js';
+import { isBinaryExtension } from '../watcher/binary.js';
 import { listModels as registryModelle } from './model-registry.js';
 import { getPlan, aendereTasks, planKontext, type PlanRef } from './plans.js';
 import { planNummer, taskNummer } from './plan-kurz-ids.js';
@@ -119,6 +121,8 @@ export interface EmpfehlenOptionen {
   lage?: Partial<Record<keyof JevLage, unknown>>;
   /** Hoechstzahl der Modelle in der Modell-Choice. Standard unbegrenzt. */
   max_optionen?: number;
+  /** Eigene Prioritaeten fuer Jev (String, max 500 Zeichen), als state.hinweise mitgeschickt */
+  hinweise?: unknown;
 }
 
 interface WrapperZeile { agentName: string; model: string | null; status: string; busy: boolean }
@@ -128,6 +132,8 @@ export interface JevDeps {
   listModels?: () => Promise<Array<{ alias: string; effortStufen?: string[] | null }>>;
   listWrapperStatus?: (project: string) => Promise<WrapperZeile[]>;
   qdrantSync?: (project: string, planId: string, tasks: unknown[], updatedAt: string) => Promise<void>;
+  /** Projektfakten aus dem Index; Standard holeProjektFakten (SQL auf code_files) */
+  projektFakten?: (project: string) => Promise<ProjektFakten | null>;
 }
 
 export interface EmpfehlenErgebnis {
@@ -150,6 +156,10 @@ export interface EmpfehlenErgebnis {
   plan_ref?: PlanRef;
   geschrieben?: number;
   jev?: { modell: string; fragen: number; dauer_ms: number; input_tokens: number | null; cost: number | null };
+  /** Projektfakten, die Jev im Zustand bekam (fehlt: keine lesbar oder leerer Index) */
+  projekt_fakten?: ProjektFakten & { tokens_ca: number; schwelle_tokens: number; gross_fuer_200k: boolean };
+  /** Der als state.hinweise gesendete Text (getrimmt, auf 500 Zeichen gekuerzt); fehlt ohne Parameter */
+  hinweise_verwendet?: string;
   hinweise?: string[];
   warning?: string;
 }
@@ -319,8 +329,104 @@ function zahlAusEnv(name: string): number | undefined {
 }
 
 function ist1M(model: string): boolean {
-  return model.endsWith('[1m]') || model.startsWith('fable');
+  // sonnet (CLI-Alias) ist nativ 1M (P7-T23, gemessen 29.09.2026)
+  return model.endsWith('[1m]') || model.startsWith('fable') || model === 'sonnet';
 }
+
+// ---------------------------------------------------------------------------
+// Projektfakten (JEV-8) und hinweise
+// ---------------------------------------------------------------------------
+
+/**
+ * Ab dieser Groesse des indexierten Codes (Tokens, grob Zeichen/4) gilt das Projekt als
+ * "zu gross fuer ein 200k-Fenster": dann reichen 200k nur fuer eine sehr kleine, direkte Task.
+ * Standard 150000: ein 200k-Fenster hat nach System-Prompt, Tool-Schemas (~40k) und
+ * Antwortreserve nur etwa 130-150k fuer Projektinhalt. Ist der ganze Index groesser, kann eine
+ * Task, die mehrere Stellen lesen muss, ihn nicht im Blick halten. Ueberschreibbar per Env
+ * JEV_KONTEXT_PROJEKT_TOKENS.
+ */
+export const STANDARD_SCHWELLE_PROJEKT_TOKENS = 150_000;
+/** Laenge des optionalen Parameters hinweise (Zustand klein halten) */
+export const MAX_HINWEISE_ZEICHEN = 500;
+
+export interface ProjektFakten {
+  dateien: number;
+  zeichen: number;
+  sprachen: Array<{ typ: string; dateien: number; anteil_prozent: number }>;
+}
+
+/** Lockfiles ohne .lock-Endung, die die Binaerliste nicht kennt */
+const LOCKFILE_NAMEN = /(^|\/)(package-lock\.json|npm-shrinkwrap\.json|pnpm-lock\.yaml)$/i;
+
+/**
+ * Projektfakten aus dem Code-Index: nur LEBENDE Dateien (deleted_at IS NULL), ohne
+ * Binaerdateien (Bilder, Archive, ... laut watcher/binary.ts) und ohne Lockfiles — ein grosses
+ * PNG oder package-lock.json wuerde die Tokenzahl sonst aufblasen. Ein Aufruf, ohne Embedding.
+ * Leerer Index -> null.
+ */
+export async function holeProjektFakten(project: string): Promise<ProjektFakten | null> {
+  const { rows } = await getPool().query(
+    `SELECT file_path, file_type, file_size FROM code_files WHERE project = $1 AND deleted_at IS NULL`,
+    [project],
+  );
+  let dateien = 0;
+  let zeichen = 0;
+  const jeTyp = new Map<string, { dateien: number; zeichen: number }>();
+  for (const r of rows as Array<{ file_path: string; file_type: string | null; file_size: number | string | null }>) {
+    if (isBinaryExtension(r.file_path) || LOCKFILE_NAMEN.test(r.file_path)) continue;
+    const groesse = Number(r.file_size ?? 0);
+    const g = Number.isFinite(groesse) && groesse > 0 ? groesse : 0;
+    dateien += 1;
+    zeichen += g;
+    const typ = (r.file_type ?? '').toLowerCase().replace(/^\./, '') || 'sonstige';
+    const e = jeTyp.get(typ) ?? { dateien: 0, zeichen: 0 };
+    e.dateien += 1;
+    e.zeichen += g;
+    jeTyp.set(typ, e);
+  }
+  if (dateien === 0) return null;
+  const sprachen = Array.from(jeTyp.entries())
+    .sort((a, b) => b[1].zeichen - a[1].zeichen || a[0].localeCompare(b[0]))
+    .slice(0, 5)
+    .map(([typ, e]) => ({
+      typ,
+      dateien: e.dateien,
+      anteil_prozent: zeichen > 0 ? Math.round((e.zeichen / zeichen) * 100) : 0,
+    }));
+  return { dateien, zeichen, sprachen };
+}
+
+/**
+ * Zusatz an der langer_kontext-Anweisung je nach Projektgroesse. 'Direkt' ist die User-Definition
+ * vom 29.09.2026 (Channel 23214): die Task beschreibt detailliert, WIE etwas gemacht wird, mit wenig
+ * Spielraum; indirekt = 'behebe Problem B', verschachtelt, Ursache unklar.
+ */
+/** Begruendung des Users (Channel 23215), in langer_kontext (grosses Projekt) und model_/effort_ */
+const DIREKT_BEGRUENDUNG =
+  ' Reason: with a direct task the agent reads the task, sees the next step, does it and is done. ' +
+  'With an indirect task it must search first; in a large project the search results alone fill 200k, ' +
+  'and small models (haiku) search poorly even with economical tools. So indirect tasks in large projects ' +
+  'need more than 200k and should not go to haiku.';
+
+function projektZusatz(grossFuer200k: boolean): string {
+  return grossFuer200k
+    ? ' The project in the state is large (project.tokens_ca tokens of code, more than fits in 200k). ' +
+      'At this size 200k is enough only if the task is direct: it describes in detail how something is to be done, ' +
+      'leaving little room for deviation (for example a single call or a precisely specified change at a known spot). ' +
+      'An indirect task — "fix problem B" where the problem is entangled with many other code changes and its cause ' +
+      'is unclear — needs more than 200k.' +
+      DIREKT_BEGRUENDUNG
+    : ' The project in the state is small (project.tokens_ca tokens of code); 200k is normally enough unless the task itself spans very long material.';
+}
+
+/** Gleiche Unterscheidung fuer model_ und effort_: direkt genuegt kleiner/niedriger, indirekt braucht mehr */
+const DIREKT_ZUSATZ =
+  ' A direct task (it describes in detail how something is to be done, leaving little room for deviation) ' +
+  'usually needs only a smaller model and a lower effort level; an indirect task (for example "fix problem B" ' +
+  'where the problem is entangled with many other code changes and its cause is unclear) needs a stronger one.' +
+  DIREKT_BEGRUENDUNG;
+
+const HINWEIS_ZUSATZ = ' Take the notes in state.hinweise into account.';
 
 /** Fehlertext ohne Key (falls ein Upstream ihn je zurueckspiegelt) */
 function ohneKey(text: string, key: string): string {
@@ -477,6 +583,29 @@ export async function empfehleFuerPlan(
     if (familien.has('anthropic')) situation.claude_quota = lage.claude_quota;
     if (familien.has('codex')) situation.codex_quota = lage.codex_quota;
     if (familien.has('google')) situation.paid_api = lage.paid_api;
+    // --- Projektfakten und hinweise (JEV-8) -----------------------------------
+    const schwelleTokens = zahlAusEnv('JEV_KONTEXT_PROJEKT_TOKENS') ?? STANDARD_SCHWELLE_PROJEKT_TOKENS;
+    let fakten: ProjektFakten & { tokens_ca: number; schwelle_tokens: number; gross_fuer_200k: boolean } | undefined;
+    try {
+      const roh = await (deps.projektFakten ?? holeProjektFakten)(project);
+      if (roh && roh.dateien > 0) {
+        const tokensCa = Math.round(roh.zeichen / 4);
+        fakten = { ...roh, tokens_ca: tokensCa, schwelle_tokens: schwelleTokens, gross_fuer_200k: tokensCa > schwelleTokens };
+      }
+    } catch (err) {
+      hinweise.push(`Projektfakten nicht lesbar, Empfehlung laeuft ohne sie: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    let hinweiseText: string | undefined;
+    if (typeof optionen.hinweise === 'string' && optionen.hinweise.trim() !== '') {
+      const roh = optionen.hinweise.trim();
+      if (roh.length > MAX_HINWEISE_ZEICHEN) {
+        hinweise.push(`hinweise auf ${MAX_HINWEISE_ZEICHEN} Zeichen gekuerzt (angegeben: ${roh.length}).`);
+        hinweiseText = roh.slice(0, MAX_HINWEISE_ZEICHEN);
+      } else {
+        hinweiseText = roh;
+      }
+    }
+    const hinweisSuffix = hinweiseText ? HINWEIS_ZUSATZ : '';
     const state = {
       plan: {
         name: kurz(plan.name, 200),
@@ -484,6 +613,19 @@ export async function empfehleFuerPlan(
         architecture: kurz(plan.architecture, 300),
         goals: (plan.goals ?? []).slice(0, 5).map((g) => kurz(g, 150)),
       },
+      ...(fakten
+        ? {
+            project: {
+              name: project,
+              dateien: fakten.dateien,
+              zeichen: fakten.zeichen,
+              tokens_ca: fakten.tokens_ca,
+              sprachen: fakten.sprachen,
+              gross_fuer_200k: fakten.gross_fuer_200k,
+            },
+          }
+        : {}),
+      ...(hinweiseText ? { hinweise: hinweiseText } : {}),
       situation,
       tasks: stateTasks,
     };
@@ -497,7 +639,9 @@ export async function empfehleFuerPlan(
           instructions:
             `Choose the model that should run task ${i} of the plan in the state. ` +
             'Prefer the least expensive model whose condition is fully met, and choose a stronger model only when the task clearly needs it. ' +
-            'For hard tasks a larger model at a moderate effort level usually costs less per solved task than a smaller model at its highest level.',
+            'For hard tasks a larger model at a moderate effort level usually costs less per solved task than a smaller model at its highest level.' +
+            DIREKT_ZUSATZ +
+            hinweisSuffix,
           criteria: modellCriteria,
         };
       }
@@ -507,7 +651,9 @@ export async function empfehleFuerPlan(
           type: 'choice',
           instructions:
             `Assume task ${i} of the plan in the state runs on the model ${m.kandidat.alias}, and choose its effort level. ` +
-            'Prefer the lowest level whose condition is fully met; the highest levels rarely pay off.',
+            'Prefer the lowest level whose condition is fully met; the highest levels rarely pay off.' +
+            DIREKT_ZUSATZ +
+            hinweisSuffix,
           criteria: Object.fromEntries(m.stufen.map((s) => [s.stufe, s.criterion])),
         };
       }
@@ -515,7 +661,9 @@ export async function empfehleFuerPlan(
         type: 'noul',
         instructions:
           `Task ${i} of the plan in the state needs more than 200k tokens of context at once: ` +
-          'it must read or keep a large codebase, many long files, or a very long working session in view.',
+          'it must read or keep a large codebase, many long files, or a very long working session in view.' +
+          (fakten ? projektZusatz(fakten.gross_fuer_200k) : '') +
+          hinweisSuffix,
       };
     });
     const fragen = Object.keys(questions).length;
@@ -664,6 +812,8 @@ export async function empfehleFuerPlan(
         input_tokens: typeof daten.usage?.input_tokens === 'number' ? daten.usage.input_tokens : null,
         cost: typeof daten.usage?.cost === 'number' ? daten.usage.cost : null,
       },
+      ...(fakten ? { projekt_fakten: fakten } : {}),
+      ...(hinweiseText ? { hinweise_verwendet: hinweiseText } : {}),
       ...(hinweise.length > 0 ? { hinweise } : {}),
       ...(warning ? { warning } : {}),
     };

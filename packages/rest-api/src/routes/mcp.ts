@@ -490,6 +490,7 @@ const MCP_TOOLS = [
           },
           description: 'Nur fuer empfehlen: Kontingent-Lage als Kategorien (Standard plenty/plenty/not allowed). exhausted entfernt die Gruppe, paid_api "not allowed" entfernt Gemini.',
         },
+        hinweise: { type: 'string', description: 'Nur fuer empfehlen: eigene Prioritaeten fuer Jev (max. 500 Zeichen, laengere werden gekuerzt), z. B. "Abo-Kontingent schonen, Opus nur wenn noetig". Geht als state.hinweise an Jev; die Antwort nennt sie als hinweise_verwendet. Jev bekommt immer auch die Projektfakten aus dem Index (projekt_fakten in der Antwort).' },
         max_optionen: { type: 'number', description: 'Nur fuer empfehlen: Hoechstzahl der Modelle in der Modell-Choice (Standard unbegrenzt; jedes angefragte Modell kommt vor). Die Stufen fragt Jev je Modell getrennt.' },
         schreiben: { type: 'boolean', description: 'Nur fuer empfehlen: Empfehlung in plans.tasks schreiben (Standard true). false = nur anzeigen.' },
         confidence_tor: { type: 'number', description: 'Nur fuer empfehlen: unter dieser Confidence (0..1) gibt es keine Empfehlung, sondern unsicher + bester_vorschlag. Standard JEV_CONFIDENCE_TOR bzw. 0.5.' },
@@ -3062,6 +3063,7 @@ async function handleToolCall(
             confidence_tor: num(args, 'confidence_tor'),
             lage: args.lage as Record<string, unknown> | undefined,
             max_optionen: num(args, 'max_optionen'),
+            hinweise: str(args, 'hinweise'),
           });
         }
         default:
