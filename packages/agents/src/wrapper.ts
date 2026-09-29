@@ -67,6 +67,7 @@ import {
   pauseNochNichtGemeldet,
   beiEchtemAnlass,
 } from './leerlauf-entscheidung.js'
+import { rotationsMarkerAktion, MARKER_PRUEF_MS } from './rotations-marker.js'
 
 // ---------------------------------------------------------------------------
 // Configuration from environment
@@ -767,6 +768,10 @@ async function wakeAgent(message: string, optionen: { leerlaufWake?: boolean } =
     throw err
   } finally {
     agentBusy = false
+    // P7-T13: ein waehrend des Turns angekommener Marker greift sofort danach, nicht erst beim naechsten Heartbeat.
+    void pruefeRotationsMarker('turn-ende').catch(err => {
+      log('Marker-Pruefung am Turn-Ende fehlgeschlagen: %s', err)
+    })
   }
 }
 
@@ -791,6 +796,33 @@ let stoppeFuerRotation = false
 // Ein Crash kam, waehrend die Rotation lief (z. B. der NEUE Prozess starb) —
 // nach deren Ende einmal nachholen, sonst bliebe der Agent trotz KEEP_ALIVE tot.
 let rotationNachholen = false
+// P7-T13: leichter Timer, der den Rotations-Marker zwischen den Heartbeats prueft (nur existsSync).
+let markerTimerId: ReturnType<typeof setInterval> | null = null
+
+/**
+ * Prueft den Rotations-Marker und rotiert, wenn er da ist und der Agent frei ist (P7-T13).
+ * Aufrufer: heartbeatPoll, der 10-s-Timer und das Turn-Ende (wakeAgent finally) — so kommt eine
+ * angeforderte Rotation nicht mehr erst beim naechsten Heartbeat (Takt bis 60 min). Die Sperre
+ * rotationLaeuft verhindert Doppelstarts; busy laesst den Marker liegen, das Turn-Ende holt ihn ab.
+ * Liefert true, wenn rotiert wurde.
+ */
+async function pruefeRotationsMarker(quelle: 'heartbeat' | 'timer' | 'turn-ende'): Promise<boolean> {
+  const aktion = rotationsMarkerAktion({
+    vorhanden: existsSync(RESPAWN_MARKER_PATH),
+    busy: agentBusy,
+    rotationLaeuft,
+    beendet: shuttingDown || !processAlive,
+  })
+  if (aktion !== 'rotieren') return false
+  log('RESPAWN-MARKER erkannt (%s) → Rotation', quelle)
+  try {
+    await unlink(RESPAWN_MARKER_PATH)
+  } catch {
+    // Marker schon weg → ok
+  }
+  await rotateAgent()
+  return true
+}
 
 /**
  * EIN einzelner Poll fuer den abgeschalteten Wrapper — nur nach einer
@@ -921,16 +953,7 @@ async function heartbeatPoll() {
     // sein Auto-Handoff signalisiert UND der MCP-Server hat den Korridor-Check
     // bereits bestanden (sonst waere kein Marker geschrieben worden). Hier nur
     // noch Marker konsumieren + Rotation triggern.
-    if (!agentBusy && existsSync(RESPAWN_MARKER_PATH)) {
-      log('RESPAWN-MARKER erkannt → Rotation')
-      try {
-        await unlink(RESPAWN_MARKER_PATH)
-      } catch {
-        // Marker schon weg → ok
-      }
-      await rotateAgent()
-      return
-    }
+    if (await pruefeRotationsMarker('heartbeat')) return
 
     // Pre-Rotation Auto-Handoff-Hinweis: sobald Agent in den Korridor-Bereich
     // kommt (corridorMin aus der Modell-Registry), einmalig wakeAgent mit der Bitte
@@ -1565,6 +1588,10 @@ function setupProcessManagerEvents() {
 async function cleanup() {
   log('Cleaning up...')
 
+  if (markerTimerId) {
+    clearInterval(markerTimerId)
+    markerTimerId = null
+  }
   // Stop heartbeat (legacy interval und neuer adaptive timeout)
   if (heartbeatTimeoutId) {
     clearTimeout(heartbeatTimeoutId)
@@ -1737,6 +1764,14 @@ async function main() {
 
   // 7. Start adaptive heartbeat polling (mit Startup-Delay damit Claude's MCP-Server bereit sind)
   // Iter Heartbeat-Refactor: rekursives setTimeout mit Backoff-Ladder statt fixem setInterval.
+  // P7-T13: Marker-Timer sofort (nur existsSync, keine DB/Tokens); unref = haelt den Prozess nicht am Leben.
+  markerTimerId = setInterval(() => {
+    void pruefeRotationsMarker('timer').catch(err => {
+      log('Marker-Timer: Pruefung fehlgeschlagen: %s', err)
+    })
+  }, MARKER_PRUEF_MS)
+  markerTimerId.unref()
+
   const STARTUP_DELAY_MS = 30_000
   log('Heartbeat startet in %ds (MCP-Server Startup-Delay)', STARTUP_DELAY_MS / 1000)
   setTimeout(() => {

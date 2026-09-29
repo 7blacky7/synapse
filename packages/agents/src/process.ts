@@ -3,8 +3,11 @@ import { createInterface, type Interface } from 'node:readline'
 import { EventEmitter } from 'node:events'
 import { randomUUID } from 'node:crypto'
 import { writeFile, mkdir } from 'node:fs/promises'
-import { join } from 'node:path'
+import { join, dirname } from 'node:path'
+import { existsSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import { tmpdir } from 'node:os'
+import { loeseRuntimePfad } from './runtime-pfad.js'
 import type { StreamEvent, SendMessageResult } from './types.js'
 import { resolveModel, cliModelArg, effortFuerCli } from './models.js'
 
@@ -70,14 +73,17 @@ class ProcessManager extends EventEmitter {
       // Resolve runtime path via require.resolve (robust gegen Workspace-Layout)
       const { createRequire } = await import('node:module')
       const requireFn = createRequire(import.meta.url)
+      // P7-T13: agents hat KEINE package.json-Kante mehr zu den Runtimes (Abhaengigkeitskreis).
+      // Erst require.resolve, sonst Workspace-Pfad relativ zu dieser gebauten dist-Datei.
       let runtimePath: string
       try {
-        runtimePath = requireFn.resolve(modelEntry.runtimePath ?? '@synapse/agents-gemini/runtime')
-      } catch (err) {
-        throw new Error(
-          `Runtime-Pfad nicht aufloesbar fuer Provider "${modelEntry.provider}" (${modelEntry.runtimePath}): ${err instanceof Error ? err.message : String(err)}. ` +
-          `Stelle sicher dass das Runtime-Package gebaut ist (pnpm --filter @synapse/agents-gemini build).`,
+        runtimePath = loeseRuntimePfad(
+          modelEntry.runtimePath ?? '@synapse/agents-gemini/runtime',
+          dirname(fileURLToPath(import.meta.url)),
+          { resolve: (s) => requireFn.resolve(s), existsSync },
         )
+      } catch (err) {
+        throw new Error(`Provider "${modelEntry.provider}": ${err instanceof Error ? err.message : String(err)}`)
       }
 
       // opts.effort bewusst nicht: die node-Runtimes (Gemini, agy) kennen kein --effort.
