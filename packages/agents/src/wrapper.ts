@@ -58,6 +58,15 @@ import {
 } from './heartbeat-state.js'
 import { entscheideAbgeschaltet } from './heartbeat-entscheidung.js'
 import { baueChannelPush, MAX_VORSCHAUEN } from './channel-push.js'
+import {
+  neuerLeerlaufZustand,
+  leseLeerlaufSchwelle,
+  istInPause,
+  nachLeerlaufWake,
+  merkeDateiAenderungen,
+  pauseNochNichtGemeldet,
+  beiEchtemAnlass,
+} from './leerlauf-entscheidung.js'
 
 // ---------------------------------------------------------------------------
 // Configuration from environment
@@ -76,6 +85,10 @@ const SOCKET_PATH = process.env.SYNAPSE_SOCKET_PATH!
 const SYSTEM_PROMPT_FILE = process.env.SYNAPSE_SYSTEM_PROMPT_FILE ?? ''
 const POLL_INTERVAL = parseInt(process.env.SYNAPSE_POLL_INTERVAL || '15000', 10)
 const KEEP_ALIVE = process.env.SYNAPSE_KEEP_ALIVE === '1'
+// P7-T18: nach so vielen Leer-Antworten (HEARTBEAT_OK) auf Leer-Weckrufe hintereinander
+// gibt es keinen Leer-Weckruf mehr, bis ein echter Anlass kommt. 0 = wie bisher (nie Pause).
+const LEERLAUF_SCHWELLE = leseLeerlaufSchwelle()
+const leerlauf = neuerLeerlaufZustand()
 
 // ---------------------------------------------------------------------------
 // State tracking
@@ -715,7 +728,15 @@ async function startAgentProcess(systemPrompt: string): Promise<void> {
   log('Claude CLI subprocess started')
 }
 
-async function wakeAgent(message: string): Promise<SendMessageResult> {
+async function wakeAgent(message: string, optionen: { leerlaufWake?: boolean } = {}): Promise<SendMessageResult> {
+  const leerlaufWake = optionen.leerlaufWake === true
+  if (!leerlaufWake) {
+    // Echter Anlass (Nachricht, Inbox, Items, wake/NOTIFY, Rotation, Handoff ...): Leerlauf-Pause
+    // beenden. Waehrend der Pause angefallene Datei-Aenderungen kommen als EINE Zeile dazu.
+    const anlass = beiEchtemAnlass(leerlauf, LEERLAUF_SCHWELLE)
+    if (anlass.warPause) log('Leerlauf-Pause beendet (echter Anlass)')
+    if (anlass.hinweis) message += `\n\n${anlass.hinweis}`
+  }
   agentBusy = true
   agentBusySince = Date.now()
   lastEventTs = Date.now() // Reset fuer Stuck-Detection
@@ -729,6 +750,7 @@ async function wakeAgent(message: string): Promise<SendMessageResult> {
     // Token-Sync nach Turn-Ende: JSONL hat die echten Werte
     await syncTokensFromHistory()
     lastActivityTs = new Date().toISOString()
+    if (leerlaufWake) nachLeerlaufWake(leerlauf, result.content)
 
     // Broadcast output to all connected socket clients
     broadcastNotification('agent_output', {
@@ -1032,14 +1054,22 @@ Wenn du weiterarbeitest ohne den trigger_respawn Flag, rotiert der Wrapper dich 
 
     // keepAlive: Wake agent even when no new messages arrived (oder wenn nur File-Changes da sind).
     const fileChangeText = consumeFileChangesText()
-    if ((KEEP_ALIVE || fileChangeText) && !hadChannelMessages && !hadInboxMessages && !hadSynapseItems && !agentBusy) {
+    if ((KEEP_ALIVE || fileChangeText) && !hadChannelMessages && !hadInboxMessages && !hadSynapseItems && !agentBusy
+        && istInPause(leerlauf, LEERLAUF_SCHWELLE)) {
+      // P7-T18: Leerlauf-Pause — kein Leer-Weckruf. Datei-Aenderungen wecken nicht einzeln;
+      // ihre Anzahl haengt am naechsten echten Wake (eine Zeile).
+      if (fileChangeText) merkeDateiAenderungen(leerlauf, fileChangeText.split('\n').length - 1, LEERLAUF_SCHWELLE)
+      if (pauseNochNichtGemeldet(leerlauf)) {
+        log('Leerlauf-Pause: %d Leer-Antworten in Folge — keine Leer-Weckrufe mehr, bis ein echter Anlass kommt', leerlauf.leerAntworten)
+      }
+    } else if ((KEEP_ALIVE || fileChangeText) && !hadChannelMessages && !hadInboxMessages && !hadSynapseItems && !agentBusy) {
       const percent = getContextPercent()
       const total = totalInputTokens + totalOutputTokens
       const tokenInfo = `[Context: ${Math.round(total / 1000)}k tokens, ${percent}%]`
       let prompt = `${tokenInfo} HEARTBEAT — Keine neuen Nachrichten. Fuehre deinen laufenden Task fort oder poste einen Status-Update in deinen Channel.`
       if (fileChangeText) prompt += `\n\n${fileChangeText}`
       try {
-        await wakeAgent(prompt)
+        await wakeAgent(prompt, { leerlaufWake: true })
       } catch (err) {
         log('keepAlive wake failed: %s', err)
       }
