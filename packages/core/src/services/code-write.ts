@@ -299,6 +299,33 @@ export function searchReplace(
   search: string,
   replace: string
 ): { content: string; count: number; fuzzyMatches?: FuzzyMatch[] } {
+  const erst = searchReplaceRoh(content, search, replace);
+  if (erst.count > 0) return erst;
+  // CRLF-Datei, Suchtext mit blossem \n (Befund 29.09.2026): dieselbe Zeichenfolge mit \r\n
+  // versuchen; der Ersatz uebernimmt dann die Zeilenenden der Datei (kein LF/CRLF-Gemisch).
+  const crlfSuche = crlfVariante(content, search);
+  if (!crlfSuche) return erst;
+  const zweit = searchReplaceRoh(content, crlfSuche, alsCrlf(replace));
+  return zweit.count > 0 ? zweit : erst;
+}
+
+/** Zeilenumbrueche eines Textes als \r\n (bestehende \r\n bleiben). */
+function alsCrlf(text: string): string {
+  return text.replace(/\r?\n/g, '\r\n');
+}
+
+/** CRLF-Variante eines Suchtexts — nur wenn die Datei \r\n nutzt und der Text blosse \n enthaelt. */
+function crlfVariante(content: string, text: string): string | null {
+  if (!text.includes('\n') || !content.includes('\r\n')) return null;
+  const umgewandelt = alsCrlf(text);
+  return umgewandelt === text ? null : umgewandelt;
+}
+
+function searchReplaceRoh(
+  content: string,
+  search: string,
+  replace: string
+): { content: string; count: number; fuzzyMatches?: FuzzyMatch[] } {
   if (!search) return { content, count: 0 };
 
   // Strategie 1: Whitespace-tolerantes Regex (Spaces/Tabs flexibel, Substring-basiert)
@@ -393,7 +420,19 @@ export function searchReplaceBatch(
   for (let i = 0; i < edits.length; i++) {
     const edit = edits[i];
     const search_preview = edit.search.slice(0, 80);
-    const count = countOccurrences(current, edit.search);
+    let suche = edit.search;
+    let ersatz = edit.replace;
+    let count = countOccurrences(current, suche);
+    if (count === 0) {
+      // CRLF-Datei, Suchtext mit blossem \n: wie searchReplace die CRLF-Form versuchen.
+      const crlfSuche = crlfVariante(current, suche);
+      const crlfAnzahl = crlfSuche ? countOccurrences(current, crlfSuche) : 0;
+      if (crlfSuche && crlfAnzahl > 0) {
+        suche = crlfSuche;
+        ersatz = alsCrlf(ersatz);
+        count = crlfAnzahl;
+      }
+    }
 
     if (count === 0) {
       skipped++;
@@ -408,7 +447,7 @@ export function searchReplaceBatch(
     }
 
     // Genau 1 Match oder replace_all gesetzt → anwenden
-    const { content: newContent } = searchReplace(current, edit.search, edit.replace);
+    const { content: newContent } = searchReplace(current, suche, ersatz);
     current = newContent;
     applied++;
   }
