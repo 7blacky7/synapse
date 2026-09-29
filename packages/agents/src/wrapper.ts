@@ -56,6 +56,7 @@ import {
   type HeartbeatState,
 } from './heartbeat-state.js'
 import { entscheideAbgeschaltet } from './heartbeat-entscheidung.js'
+import { baueChannelPush, MAX_VORSCHAUEN } from './channel-push.js'
 
 // ---------------------------------------------------------------------------
 // Configuration from environment
@@ -102,6 +103,23 @@ let pgWriteTimerId: ReturnType<typeof setInterval> | null = null
 
 /** Gecachte Channel-Liste des Agenten (einmalig beim Start aus DB geladen) */
 let cachedChannels: string[] = []
+
+/** Vorschauen fremder Channel-Nachrichten, die keinen Wake ausgeloest haben (P7-T17) */
+let stilleVorschauen: string[] = []
+
+/** Namen bekannter Agenten des Projekts (aus status.json), hoechstens einmal je Minute erneuert */
+let bekannteAgenten = new Set<string>()
+let bekannteAgentenStand = 0
+async function aktualisiereBekannteAgenten(): Promise<void> {
+  if (Date.now() - bekannteAgentenStand < 60_000) return
+  bekannteAgentenStand = Date.now()
+  try {
+    const status = await readStatus(PROJECT_PATH)
+    bekannteAgenten = new Set(Object.keys(status.specialists ?? {}))
+  } catch {
+    // best effort: ohne Liste gilt nur die Koordinator-/agent--Erkennung
+  }
+}
 
 /** Wake-Nachrichten aus NOTIFY synapse_specialist_wake_<name> — naechster Heartbeat verarbeitet sie */
 const pendingNotifyWakes: string[] = []
@@ -1080,19 +1098,27 @@ async function pollChannelMessages(newMsgs: ChannelNachricht[]): Promise<boolean
   // Update watermark
   lastChannelMsgId = newMsgs[newMsgs.length - 1].id
 
-  // Detect human messages (not from known agents/coordinator)
-  const hasHumanMsg = newMsgs.some(
-    (m) => m.sender !== 'coordinator' && !m.sender.startsWith('agent-'),
-  )
-
-  const summary = newMsgs
-    .map((m) => {
-      const isHuman = m.sender !== 'coordinator' && !m.sender.startsWith('agent-')
-      const tag = isHuman ? '[PRAXIS-FEEDBACK] ' : ''
-      const truncated = m.content.length > 500 ? m.content.slice(0, 500) + '...' : m.content
-      return `${tag}[#${m.channelName}] ${m.sender}: ${truncated}`
-    })
-    .join('\n\n')
+  // P7-T17 (29.09.2026): adressierte Nachrichten im Volltext, fremde nur als Vorschau,
+  // und ein Push nur, wenn etwas an DIESEN Agenten adressiert ist (channel-push.ts).
+  // Sind alle fremd, rueckt nur der Wasserstand vor; die Vorschauen (hoechstens die
+  // letzten 10 Bloecke) werden an den naechsten Push angehaengt.
+  await aktualisiereBekannteAgenten()
+  const push = baueChannelPush(newMsgs, {
+    agentName: AGENT_NAME,
+    istBekannterAgent: (name) => bekannteAgenten.has(name),
+  })
+  if (!push.wecken) {
+    if (push.text) {
+      stilleVorschauen.push(push.text)
+      if (stilleVorschauen.length > MAX_VORSCHAUEN) stilleVorschauen = stilleVorschauen.slice(-MAX_VORSCHAUEN)
+    }
+    return false
+  }
+  const hasHumanMsg = push.hatMensch
+  const summary = (stilleVorschauen.length > 0
+    ? `Fruehere Nachrichten anderer (nur Vorschau):\n${stilleVorschauen.join('\n\n')}\n\nNeu:\n\n`
+    : '') + push.text
+  stilleVorschauen = []
 
   // Context status
   const total = totalInputTokens + totalOutputTokens
@@ -1408,7 +1434,7 @@ ERSTE AKTION: Lies deine gesicherten Daten:
 1. SKILL.md — dein Praxis-Wissen
 2. MEMORY.md — dein letzter Wissensstand vor dem Reset
 
-Danach: Check Channels und Inbox fuer neue Nachrichten.`
+Danach: Check Channels und Inbox fuer neue Nachrichten — channel(action: "feed", preview: true, limit: 5), Volltext nur der Nachricht, die dich betrifft (channel(feed, since_id: <id-1>, limit: 1)).`
 
     await wakeAgent(onboardingPrompt)
     log('Context rotation completed successfully')

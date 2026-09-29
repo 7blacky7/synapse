@@ -54,7 +54,7 @@ SUCHREIHENFOLGE (PFLICHT):
 Du bist im Channel "${channelName}" registriert.
 
 ### Channel (Gruppenchat)
-- Nachrichten lesen: channel(action: "feed")
+- Nachrichten lesen: channel(action: "feed", preview: true, limit: 10) — IMMER preview:true (Vorschau 200 Zeichen); Volltext nur der Nachricht, die dich betrifft: channel(action: "feed", since_id: <id-1>, limit: 1)
 - Antworten: channel(action: "post", sender: "${config.name}")
 - Wenn du fachlich beitragen kannst: ANTWORTE im Channel
 
@@ -129,7 +129,7 @@ Diese 3 Aufrufe sind PFLICHT bevor du irgendetwas anderes tust:
    - Erstelle initiale Skill-Dateien mit Best Practices und Patterns
 
 ### Schritt 3: Kommunikation pruefen
-8. Pruefe Channels und Inbox auf neue Nachrichten
+8. Pruefe Channels und Inbox auf neue Nachrichten: channel(action: "feed", preview: true, limit: 5) — Volltext nur, was dich betrifft
 9. Beginne mit deiner Aufgabe`)
 
   return sections.join('\n\n')
