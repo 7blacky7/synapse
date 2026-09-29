@@ -223,6 +223,12 @@ CREATE TABLE IF NOT EXISTS jev_entscheidungen (
   ueberstimmt_am TIMESTAMPTZ
 );
 CREATE INDEX IF NOT EXISTS idx_jev_entscheidungen_project_zeit ON jev_entscheidungen(project, zeit);
+-- JEV-12 (P7-T31): Runden-Kette (choice mit 5 Optionen, die fuenfte 'weitere'), offene Fragen fuer den User,
+-- Blocker. Nur neue Spalten mit Default/NULL (kein Tabellen-Rewrite).
+ALTER TABLE jev_entscheidungen ADD COLUMN IF NOT EXISTS runde INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE jev_entscheidungen ADD COLUMN IF NOT EXISTS erste_id BIGINT;
+ALTER TABLE jev_entscheidungen ADD COLUMN IF NOT EXISTS offen_fuer_user BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE jev_entscheidungen ADD COLUMN IF NOT EXISTS blocker BOOLEAN NOT NULL DEFAULT false;
 
 CREATE TABLE IF NOT EXISTS onboarding_ruhe (
   id SMALLINT PRIMARY KEY DEFAULT 1 CHECK (id = 1),

@@ -52,6 +52,7 @@ function reset() {
   delete process.env.JEV_TIMEOUT_MS;
   delete process.env.JEV_ENTSCHEIDUNG_TOR;
   delete process.env.JEV_ENTSCHEIDUNG_RATE;
+  delete process.env.JEV_MAX_RUNDEN;
 }
 
 pg.Pool.prototype.query = async function (sql, params = []) {
@@ -79,16 +80,25 @@ pg.Pool.prototype.query = async function (sql, params = []) {
     return { rows: [{ n }], rowCount: 1 };
   }
   if (/^INSERT INTO jev_entscheidungen/i.test(text)) {
-    const [project, agent, task_id, kategorie, frage, typ, optionen, wahl, confidence, entschieden, grund, jev_aufruf] = params;
+    const [project, agent, task_id, kategorie, frage, typ, optionen, wahl, confidence, entschieden, grund, jev_aufruf, runde, erste_id, offen_fuer_user, blocker] = params;
     const zeile = {
       id: naechsteId++, zeit: new Date(), project, agent, task_id, kategorie, frage, typ,
       optionen: optionen ? JSON.parse(optionen) : null, wahl: wahl ? JSON.parse(wahl) : null,
-      confidence, entschieden, grund, jev_aufruf, ueberstimmt_von: null, ueberstimmt_wahl: null, ueberstimmt_notiz: null,
+      confidence, entschieden, grund, jev_aufruf, runde, erste_id, offen_fuer_user, blocker, ueberstimmt_von: null, ueberstimmt_wahl: null, ueberstimmt_notiz: null,
     };
     zeilen.push(zeile);
     return { rows: [{ id: zeile.id, zeit: zeile.zeit }], rowCount: 1 };
   }
-  if (/^SELECT id, zeit, agent, task_id, kategorie, frage, typ, optionen, wahl, confidence, entschieden, grund, ueberstimmt_von, ueberstimmt_wahl, ueberstimmt_notiz FROM jev_entscheidungen WHERE project = \$1/i.test(text)) {
+  if (/^UPDATE jev_entscheidungen SET erste_id = id WHERE id = \$1/i.test(text)) {
+    const z = zeilen.find((x) => x.id === Number(params[0]));
+    if (z && (z.erste_id === null || z.erste_id === undefined)) z.erste_id = z.id;
+    return { rows: [], rowCount: z ? 1 : 0 };
+  }
+  if (/^SELECT id FROM jev_entscheidungen WHERE project = \$1 AND id = \$2/i.test(text)) {
+    const z = zeilen.find((x) => x.project === params[0] && x.id === Number(params[1]));
+    return { rows: z ? [{ id: z.id }] : [], rowCount: z ? 1 : 0 };
+  }
+  if (/^SELECT id, zeit, agent, task_id, kategorie, frage, typ, optionen, wahl, confidence, entschieden, grund, runde, erste_id, offen_fuer_user, blocker, ueberstimmt_von, ueberstimmt_wahl, ueberstimmt_notiz FROM jev_entscheidungen WHERE project = \$1/i.test(text)) {
     const [project, seit, limit] = params;
     let r = zeilen.filter((z) => z.project === project && new Date(z.zeit) >= new Date(seit));
     if (/AND entschieden = true/i.test(text)) r = r.filter((z) => z.entschieden);
@@ -128,7 +138,14 @@ const core = await import('../packages/core/dist/index.js');
 const P = 'testprojekt';
 const frage = (extra = {}) => ({
   agent_id: 'plan-specht', frage: 'Variante A oder B fuer den Endpunkt?', typ: 'choice', kategorie: 'variante',
-  optionen: { a: 'Variante A: kleiner Umbau', b: 'Variante B: neuer Service' }, ...extra,
+  optionen: {
+    a: 'Variante A: kleiner Umbau, richtig wenn wenig Aufrufer betroffen sind',
+    b: 'Variante B: neuer Service, richtig wenn viele Aufrufer die Logik teilen',
+    c: 'Variante C: Flag im bestehenden Code, richtig wenn es nur ein Uebergang ist',
+    d: 'Variante D: Nachbau ausserhalb, richtig wenn der Kern unangetastet bleiben muss',
+    weitere: 'egal, der Server ersetzt das',
+  },
+  ...extra,
 });
 const einschalten = () => mod.setzeAbwesenheit(P, { modus: 'an', agent_id: 'koordinator' });
 
@@ -260,7 +277,7 @@ await pruefe('choice ueber dem Tor: entschieden, Kennzeichnung, Protokollzeile, 
   assert.equal(body.state.hinweise, 'Abo schonen');
   assert.deepEqual(Object.keys(body.questions), ['entscheidung']);
   assert.equal(body.questions.entscheidung.type, 'choice');
-  assert.deepEqual(Object.keys(body.questions.entscheidung.criteria).sort(), ['a', 'b']);
+  assert.deepEqual(Object.keys(body.questions.entscheidung.criteria).sort(), ['a', 'b', 'c', 'd', 'weitere']);
   const z = zeilen[0];
   assert.equal(z.entschieden, true);
   assert.equal(z.agent, 'plan-specht');
@@ -435,12 +452,330 @@ await pruefe('SCHEMA_SQL: nur CREATE TABLE/INDEX IF NOT EXISTS fuer die neuen Ta
   assert.match(schema, /CREATE TABLE IF NOT EXISTS jev_entscheidet \(/);
   assert.match(schema, /CREATE TABLE IF NOT EXISTS jev_entscheidungen \(/);
   assert.match(schema, /CREATE INDEX IF NOT EXISTS idx_jev_entscheidungen_project_zeit/);
-  assert.ok(!/ALTER TABLE jev_entscheid/i.test(schema), 'kein ALTER an den neuen Tabellen');
+  // JEV-12: nur ADD COLUMN IF NOT EXISTS (nullable/Default), sonst keine ALTER-Statements an den neuen Tabellen
+  const alters = schema.match(/ALTER TABLE jev_entscheid[^;]*;/gi) ?? [];
+  assert.ok(alters.every((a) => /ADD COLUMN IF NOT EXISTS/i.test(a) && !/DROP|TYPE|SET NOT NULL/i.test(a)), 'nur ADD COLUMN IF NOT EXISTS an den neuen Tabellen');
 });
 
 
-// 6b. Hilfreiche Fehler statt nacktem 'geht nicht' (P7-T30 Ergaenzung) -------------------------
+// 6a. JEV-12: 5 Optionen, die fuenfte immer 'weitere'; Runden; offene Fragen (P7-T31) -------------
 const ANLEITUNG = /guide\(tool_name:jev\).*Vorgehen/s;
+const ohne = (o, ...keys) => Object.fromEntries(Object.entries(o).filter(([k]) => !keys.includes(k)));
+const OPT5 = frage().optionen;
+const WEITERE_WAEHLEN = () => ({ entscheidung: { type: 'choice', choice: 'weitere', confidence: 0.9 } });
+const nurKeys = (...keys) => Object.fromEntries(keys.map((k) => [k, OPT5[k]]));
+
+await pruefe('choice: genau 5 Optionen inkl. Schluessel weitere Pflicht; sonst Fehler mit Fix und Anleitung, kein Jev-Aufruf', async () => {
+  reset();
+  await einschalten();
+  const sechs = { ...OPT5, f: 'Variante F: noch etwas, richtig wenn alles andere ausscheidet' };
+  for (const [name, optionen] of [
+    ['4 ohne weitere', ohne(OPT5, 'weitere')],
+    ['5 aber ohne weitere', { ...ohne(OPT5, 'weitere'), e: 'Variante E: fuenfte echte Option, richtig wenn Zeit knapp ist' }],
+    ['6 Optionen', sechs],
+    ['3 inkl. weitere', nurKeys('a', 'b', 'weitere')],
+  ]) {
+    const r = await mod.entscheideRueckfrage(P, frage({ optionen }), deps);
+    assert.equal(r.success, false, name);
+    assert.match(r.message, /weitere/, name);
+    assert.match(r.message, /5/, name);
+    assert.match(r.message, ANLEITUNG, name);
+  }
+  assert.equal(fetchAufrufe.length, 0);
+  assert.equal(zeilen.length, 0);
+});
+
+await pruefe('weitere: Beschreibung setzt IMMER der Server (vereinheitlicht), egal was der Agent schickt', async () => {
+  reset();
+  await einschalten();
+  for (const beschr of ['egal', '', undefined]) {
+    fetchAufrufe = [];
+    const o = { ...OPT5, weitere: beschr };
+    const r = await mod.entscheideRueckfrage(P, frage({ optionen: o }), deps);
+    assert.equal(r.success, true, r.message);
+    const crit = fetchAufrufe[0].body.questions.entscheidung.criteria;
+    assert.match(crit.weitere, /none of the four fits well enough/);
+    assert.match(crit.weitere, /better options exist/);
+  }
+});
+
+await pruefe('Jev waehlt weitere: entschieden:false, weiter:true, naechster_schritt, Protokollzeile Runde 1 mit erste_id = eigene id', async () => {
+  reset();
+  await einschalten();
+  antwortFuer = WEITERE_WAEHLEN;
+  const r = await mod.entscheideRueckfrage(P, frage({ task_id: 'P7-T31' }), deps);
+  assert.equal(r.success, true, r.message);
+  assert.equal(r.entschieden, false);
+  assert.equal(r.weiter, true);
+  assert.equal(r.runde, 1);
+  assert.equal(r.gewaehlt, 'weitere');
+  assert.equal(r.confidence, 0.9);
+  assert.equal(r.kennzeichnung, undefined, 'nichts entschieden -> keine Jev-Kennzeichnung');
+  assert.match(r.naechster_schritt, /4 neue Optionen/);
+  assert.match(r.naechster_schritt, /verworfen/);
+  assert.match(r.naechster_schritt, /runde 2/);
+  assert.match(r.naechster_schritt, /erste_id/);
+  assert.match(r.naechster_schritt, /letzte_runde/);
+  assert.ok(r.protokoll_id > 0);
+  assert.equal(r.erste_id, r.protokoll_id);
+  const z = zeilen[0];
+  assert.equal(z.grund, 'weitere');
+  assert.equal(z.wahl, 'weitere');
+  assert.equal(z.entschieden, false);
+  assert.equal(z.runde, 1);
+  assert.equal(z.erste_id, z.id);
+  assert.equal(z.offen_fuer_user, false);
+  assert.equal(z.jev_aufruf, true);
+});
+
+await pruefe('weitere unter dem Tor: normale unsicher-Antwort mit tipp, kein weiter', async () => {
+  reset();
+  await einschalten();
+  antwortFuer = () => ({ entscheidung: { type: 'choice', choice: 'weitere', confidence: 0.5 } });
+  const r = await mod.entscheideRueckfrage(P, frage(), deps);
+  assert.equal(r.grund, 'unsicher');
+  assert.equal(r.weiter, undefined);
+  assert.match(r.tipp, /trennschaerfer/);
+});
+
+await pruefe('Runde 2: verworfen + runde im state und in den Anweisungen; Zeile traegt runde und erste_id der Kette', async () => {
+  reset();
+  await einschalten();
+  antwortFuer = WEITERE_WAEHLEN;
+  const r1 = await mod.entscheideRueckfrage(P, frage(), deps);
+  const verworfen = ['a', 'b', 'c', 'd'].map((k) => ({ key: k, beschreibung: OPT5[k] }));
+  const neu = {
+    n1: 'Neue Variante 1: Adapter davor, richtig wenn die Schnittstelle stabil bleiben muss',
+    n2: 'Neue Variante 2: Feature-Toggle pro Projekt, richtig wenn nur ein Projekt betroffen ist',
+    n3: 'Neue Variante 3: Migration in zwei Schritten, richtig wenn Ausfallzeit nicht erlaubt ist',
+    n4: 'Neue Variante 4: nichts aendern und dokumentieren, richtig wenn der Nutzen klein ist',
+    weitere: 'x',
+  };
+  fetchAufrufe = [];
+  antwortFuer = () => ({ entscheidung: { type: 'choice', choice: 'n3', confidence: 0.85 } });
+  const r2 = await mod.entscheideRueckfrage(P, frage({ optionen: neu, runde: 2, verworfen, erste_id: r1.erste_id }), deps);
+  assert.equal(r2.success, true, r2.message);
+  assert.equal(r2.entschieden, true);
+  assert.equal(r2.wahl, 'n3');
+  const { body } = fetchAufrufe[0];
+  assert.equal(body.state.runde, 2);
+  assert.deepEqual(body.state.verworfen.map((v) => v.key), ['a', 'b', 'c', 'd']);
+  assert.match(body.questions.entscheidung.instructions, /state\.verworfen/);
+  const z = zeilen[1];
+  assert.equal(z.runde, 2);
+  assert.equal(z.erste_id, r1.erste_id);
+  assert.equal(z.entschieden, true);
+});
+
+await pruefe('verworfene Optionen duerfen nicht wiederkommen (Key oder Beschreibung) -> Fehler, kein Jev-Aufruf', async () => {
+  reset();
+  await einschalten();
+  antwortFuer = WEITERE_WAEHLEN;
+  const r1 = await mod.entscheideRueckfrage(P, frage(), deps);
+  fetchAufrufe = [];
+  const verworfen = [{ key: 'a', beschreibung: OPT5.a }];
+  const basisNeu = {
+    n1: 'Neue Variante 1: Adapter davor, richtig wenn die Schnittstelle stabil bleiben muss',
+    n2: 'Neue Variante 2: Feature-Toggle pro Projekt, richtig wenn nur ein Projekt betroffen ist',
+    n3: 'Neue Variante 3: Migration in zwei Schritten, richtig wenn Ausfallzeit nicht erlaubt ist',
+    n4: 'Neue Variante 4: nichts aendern und dokumentieren, richtig wenn der Nutzen klein ist',
+    weitere: 'x',
+  };
+  let r = await mod.entscheideRueckfrage(P, frage({ optionen: { ...ohne(basisNeu, 'n4'), a: 'Ganz anderer Text fuer alten Key, richtig wenn Zeit knapp ist' }, runde: 2, verworfen, erste_id: r1.erste_id }), deps);
+  assert.equal(r.success, false);
+  assert.match(r.message, /verworfen/);
+  assert.match(r.message, /"a"/);
+  r = await mod.entscheideRueckfrage(P, frage({ optionen: { ...ohne(basisNeu, 'n4'), n4: OPT5.a }, runde: 2, verworfen, erste_id: r1.erste_id }), deps);
+  assert.equal(r.success, false);
+  assert.match(r.message, /verworfen/);
+  assert.match(r.message, ANLEITUNG);
+  assert.equal(fetchAufrufe.length, 0);
+});
+
+await pruefe('Kette: ab Runde 2 ist erste_id Pflicht und muss im Projekt existieren; runde muss ganze Zahl >= 1 sein', async () => {
+  reset();
+  await einschalten();
+  let r = await mod.entscheideRueckfrage(P, frage({ runde: 2 }), deps);
+  assert.equal(r.success, false);
+  assert.match(r.message, /erste_id/);
+  r = await mod.entscheideRueckfrage(P, frage({ runde: 2, erste_id: 999 }), deps);
+  assert.equal(r.success, false);
+  assert.match(r.message, /999/);
+  for (const runde of [0, -1, 1.5, 'x']) {
+    r = await mod.entscheideRueckfrage(P, frage({ runde }), deps);
+    assert.equal(r.success, false, String(runde));
+    assert.match(r.message, /runde/);
+  }
+  assert.equal(fetchAufrufe.length, 0);
+});
+
+await pruefe('letzte_runde: weitere verboten, 2-5 echte Optionen erlaubt, kein weitere im Jev-Aufruf', async () => {
+  reset();
+  await einschalten();
+  let r = await mod.entscheideRueckfrage(P, frage({ letzte_runde: true }), deps);
+  assert.equal(r.success, false, 'weitere in der letzten Runde');
+  assert.match(r.message, /weitere/);
+  assert.match(r.message, /letzte_runde/);
+  for (const optionen of [nurKeys('a', 'b'), nurKeys('a', 'b', 'c', 'd'), { ...nurKeys('a', 'b', 'c', 'd'), e: 'Variante E: fuenfte echte Option, richtig wenn Zeit knapp ist' }]) {
+    fetchAufrufe = [];
+    antwortFuer = () => ({ entscheidung: { type: 'choice', choice: 'a', confidence: 0.8 } });
+    r = await mod.entscheideRueckfrage(P, frage({ optionen, letzte_runde: true }), deps);
+    assert.equal(r.success, true, r.message);
+    assert.equal(r.entschieden, true);
+    assert.ok(!('weitere' in fetchAufrufe[0].body.questions.entscheidung.criteria));
+  }
+  r = await mod.entscheideRueckfrage(P, frage({ optionen: nurKeys('a'), letzte_runde: true }), deps);
+  assert.equal(r.success, false, 'mindestens 2');
+});
+
+await pruefe('letzte_runde unsicher: KEIN Blocker — offen_fuer_user in der Zeile, naechster_schritt (Fall a) mit Task-auf-todo und anderer Task', async () => {
+  reset();
+  await einschalten();
+  antwortFuer = () => ({ entscheidung: { type: 'choice', choice: 'a', confidence: 0.5 } });
+  const r = await mod.entscheideRueckfrage(P, frage({ optionen: nurKeys('a', 'b', 'c', 'd'), letzte_runde: true, task_id: 'P7-T31' }), deps);
+  assert.equal(r.entschieden, false);
+  assert.equal(r.offen_fuer_user, true);
+  assert.equal(r.blocker, false);
+  assert.match(r.naechster_schritt, /Notiz an den User ist im Protokoll/);
+  assert.match(r.naechster_schritt, /todo/);
+  assert.match(r.naechster_schritt, /update_task/);
+  assert.match(r.naechster_schritt, /passende_tasks/);
+  assert.match(r.naechster_schritt, /Nicht warten/);
+  assert.equal(zeilen[0].offen_fuer_user, true);
+  assert.equal(zeilen[0].blocker, false);
+});
+
+await pruefe('blocker:true (Fall b): Einsprung Koordinator — Channel-Frage + cc-send, Zeile blocker:true, kein Warten auf User', async () => {
+  reset();
+  await einschalten();
+  antwortFuer = () => ({ entscheidung: { type: 'choice', choice: 'a', confidence: 0.5 } });
+  const r = await mod.entscheideRueckfrage(P, frage({ optionen: nurKeys('a', 'b'), letzte_runde: true, blocker: true }), deps);
+  assert.equal(r.offen_fuer_user, true);
+  assert.equal(r.blocker, true);
+  assert.match(r.naechster_schritt, /KOORDINATOR/);
+  assert.match(r.naechster_schritt, /Channel/);
+  assert.match(r.naechster_schritt, /cc-send/);
+  assert.ok(!/passende_tasks/.test(r.naechster_schritt), 'im Blocker-Fall keine andere Task');
+  assert.equal(zeilen[0].blocker, true);
+  assert.equal(zeilen[0].offen_fuer_user, true);
+});
+
+await pruefe('keine_plausible_option:true: ohne Jev-Aufruf und ohne optionen offen_fuer_user protokolliert (Fall a/b je nach blocker)', async () => {
+  reset();
+  await einschalten();
+  const basis = { agent_id: 'plan-specht', frage: 'Wie binden wir das ein?', typ: 'choice', kategorie: 'umsetzungsweg', keine_plausible_option: true, task_id: 'P7-T31' };
+  let r = await mod.entscheideRueckfrage(P, basis, deps);
+  assert.equal(r.success, true, r.message);
+  assert.equal(r.entschieden, false);
+  assert.equal(r.grund, 'keine_plausible_option');
+  assert.equal(r.offen_fuer_user, true);
+  assert.equal(r.blocker, false);
+  assert.match(r.naechster_schritt, /Notiz an den User ist im Protokoll/);
+  assert.equal(fetchAufrufe.length, 0);
+  r = await mod.entscheideRueckfrage(P, { ...basis, blocker: true }, deps);
+  assert.equal(r.blocker, true);
+  assert.match(r.naechster_schritt, /KOORDINATOR/);
+  assert.equal(zeilen.length, 2);
+  assert.ok(zeilen.every((z) => z.offen_fuer_user === true && z.jev_aufruf === false));
+  assert.equal(zeilen[1].blocker, true);
+  // Schalter aus -> wie immer nichts protokollieren
+  reset();
+  r = await mod.entscheideRueckfrage(P, basis, deps);
+  assert.equal(r.grund, 'schalter_aus');
+  assert.equal(zeilen.length, 0);
+});
+
+await pruefe('Rundengrenze: Standard 4 (Env JEV_MAX_RUNDEN); Grenzrunde nur mit letzte_runde; darueber max_runden ohne Jev-Aufruf', async () => {
+  reset();
+  await einschalten();
+  const kette = await mod.entscheideRueckfrage(P, frage(), deps);
+  const erste = kette.protokoll_id;
+  fetchAufrufe = [];
+  let r = await mod.entscheideRueckfrage(P, frage({ runde: 4, erste_id: erste }), deps);
+  assert.equal(r.success, false, 'Runde == Grenze braucht letzte_runde');
+  assert.match(r.message, /letzte_runde/);
+  assert.equal(fetchAufrufe.length, 0);
+  antwortFuer = () => ({ entscheidung: { type: 'choice', choice: 'a', confidence: 0.9 } });
+  r = await mod.entscheideRueckfrage(P, frage({ optionen: nurKeys('a', 'b'), runde: 4, erste_id: erste, letzte_runde: true }), deps);
+  assert.equal(r.entschieden, true, r.message);
+  fetchAufrufe = [];
+  r = await mod.entscheideRueckfrage(P, frage({ runde: 5, erste_id: erste }), deps);
+  assert.equal(r.success, true);
+  assert.equal(r.entschieden, false);
+  assert.equal(r.grund, 'max_runden');
+  assert.equal(r.offen_fuer_user, true);
+  assert.match(r.message, /Rundengrenze/);
+  assert.match(r.message, /OFFENE FRAGE/);
+  assert.equal(fetchAufrufe.length, 0);
+  assert.equal(zeilen.at(-1).grund, 'max_runden');
+  assert.equal(zeilen.at(-1).offen_fuer_user, true);
+  process.env.JEV_MAX_RUNDEN = '2';
+  r = await mod.entscheideRueckfrage(P, frage({ runde: 2, erste_id: erste }), deps);
+  assert.equal(r.success, false, 'Env: Grenzrunde 2 braucht letzte_runde');
+  r = await mod.entscheideRueckfrage(P, frage({ runde: 3, erste_id: erste }), deps);
+  assert.equal(r.grund, 'max_runden');
+  assert.equal(mod.STANDARD_MAX_RUNDEN, 4);
+});
+
+await pruefe('Protokoll: Runde/erste_id/offen_fuer_user je Eintrag, Ketten zusammenhaengend, offene_fragen gesondert oben', async () => {
+  reset();
+  await einschalten();
+  antwortFuer = WEITERE_WAEHLEN;
+  const r1 = await mod.entscheideRueckfrage(P, frage({ task_id: 'P7-T31' }), deps);
+  antwortFuer = () => ({ entscheidung: { type: 'choice', choice: 'a', confidence: 0.4 } });
+  await mod.entscheideRueckfrage(P, frage({ optionen: nurKeys('a', 'b'), letzte_runde: true, runde: 2, erste_id: r1.erste_id, task_id: 'P7-T31' }), deps);
+  antwortFuer = () => ({ entscheidung: { type: 'choice', choice: 'b', confidence: 0.95 } });
+  await mod.entscheideRueckfrage(P, frage({ task_id: 'P7-T99' }), deps);
+  const p = await mod.holeEntscheidungsProtokoll(P, {});
+  assert.equal(p.success, true);
+  assert.equal(p.anzahl, 3);
+  for (const e of p.eintraege) {
+    assert.ok(Number.isInteger(e.runde));
+    assert.ok(e.erste_id !== undefined);
+    assert.equal(typeof e.offen_fuer_user, 'boolean');
+  }
+  assert.equal(p.offene_fragen.length, 1);
+  assert.equal(p.offene_fragen[0].erste_id, r1.erste_id);
+  assert.equal(p.offene_fragen[0].runden, 2);
+  assert.equal(p.offene_fragen[0].task_id, 'P7-T31');
+  assert.equal(p.ketten.length, 2);
+  const k = p.ketten.find((x) => x.erste_id === r1.erste_id);
+  assert.deepEqual(k.eintraege.map((e) => e.runde), [1, 2], 'Runden aufsteigend in der Kette');
+  assert.equal(p.ketten[0].erste_id, r1.erste_id, 'Ketten nach erster Frage sortiert');
+  const aus = await mod.setzeAbwesenheit(P, { modus: 'aus', agent_id: 'koordinator' });
+  assert.equal(aus.offene_fragen.length, 1, 'bin wieder da: offene Fragen stehen oben');
+  assert.equal(aus.protokoll.length, 3);
+});
+
+await pruefe('SCHEMA_SQL: runde, erste_id, offen_fuer_user, blocker als ADD COLUMN IF NOT EXISTS (und in CREATE TABLE)', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const schema = await readFile(new URL('../packages/core/dist/db/schema.js', import.meta.url), 'utf8');
+  for (const spalte of ['runde', 'erste_id', 'offen_fuer_user', 'blocker']) {
+    assert.match(schema, new RegExp(`ALTER TABLE jev_entscheidungen ADD COLUMN IF NOT EXISTS ${spalte} `), spalte);
+  }
+});
+
+await pruefe('Tool-Schemas (REST + stdio) kennen runde, verworfen, letzte_runde, erste_id, keine_plausible_option, blocker', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const rest = await readFile(new URL('../packages/rest-api/dist/routes/mcp.js', import.meta.url), 'utf8');
+  const stdio = await readFile(new URL('../packages/mcp-server/dist/tools/consolidated/jev.js', import.meta.url), 'utf8');
+  for (const [name, src] of [['REST', rest], ['stdio', stdio]]) {
+    for (const p of ['runde:', 'verworfen:', 'letzte_runde:', 'erste_id:', 'keine_plausible_option:', 'blocker:']) {
+      assert.ok(src.includes(p), `${name}: ${p}`);
+    }
+  }
+});
+
+await pruefe('Guide jev: Vorgehen mit 5 Optionen/weitere/Runden, Vorlage "Was Jev bekommt", Schluss (a) kein Blocker und (b) Blocker', async () => {
+  const { TOOL_GUIDES } = await import('../packages/core/dist/guide/content.js');
+  const t = (TOOL_GUIDES.jev.workflow_examples ?? []).join('\n');
+  for (const wort of ['weitere', 'verworfen', 'letzte_runde', 'erste_id', 'runde', 'Was Jev bekommt', 'Tech-Stack', 'geplant', 'Randbedingungen', 'offen_fuer_user', 'blocker', 'todo', 'passende_tasks', 'cc-send', 'KOORDINATOR', 'keine_plausible_option']) {
+    assert.ok(t.includes(wort), `Abschnitt nennt ${wort}`);
+  }
+  assert.match(t, /kein Code/i);
+});
+
+// 6b. Hilfreiche Fehler statt nacktem 'geht nicht' (P7-T30 Ergaenzung) -------------------------
 
 await pruefe('choice: Ein-Wort-/leere/nur-Key-Beschreibungen -> success:false mit Key-Nennung und Verweis auf guide(jev) Vorgehen', async () => {
   reset();

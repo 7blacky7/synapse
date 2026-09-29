@@ -685,7 +685,13 @@ const MCP_TOOLS = [
         frage: { type: 'string', description: 'Nur entscheiden: die Rueckfrage (max. 500 Zeichen)' },
         typ: { type: 'string', enum: ['noul', 'choice', 'score'], description: 'Nur entscheiden: noul = ja/nein, choice = Auswahl, score = Skala (Standard 1..5)' },
         kategorie: { type: 'string', description: 'Nur entscheiden (Pflicht): variante | reihenfolge | umsetzungsweg | formulierung. Verbotene und unbekannte lehnt der Server ab.' },
-        optionen: { type: 'object', description: 'Nur entscheiden: choice {key: Beschreibung} (2..10); score optional {"1": Anker, ...}', additionalProperties: { type: 'string' } },
+        optionen: { type: 'object', description: 'Nur entscheiden: choice IMMER genau 5 {key: Beschreibung}: 4 echte (je mit WANN sie richtig ist) + Schluessel "weitere" (Beschreibung setzt der Server); mit letzte_runde:true 2..5 echte OHNE weitere. score optional {"1": Anker, ...}', additionalProperties: { type: 'string' } },
+        runde: { type: 'number', description: 'Nur entscheiden (choice): Runde der Kette, Start 1. Waehlt Jev "weitere", ruft der Agent mit runde+1 erneut auf.' },
+        verworfen: { type: 'array', description: 'Nur entscheiden (choice): in frueheren Runden verworfene Optionen [{key, beschreibung}] (max 20); sie duerfen nicht wiederkommen und gehen als state.verworfen an Jev', items: { type: 'object', properties: { key: { type: 'string' }, beschreibung: { type: 'string' } }, required: ['key'] } },
+        letzte_runde: { type: 'boolean', description: 'Nur entscheiden (choice): Abschluss — "weitere" nicht erlaubt, 2..5 echte Optionen (die besten bisherigen). Pflicht in der Grenzrunde (Standard 4, Env JEV_MAX_RUNDEN).' },
+        erste_id: { type: 'number', description: 'Nur entscheiden: ab Runde 2 Pflicht — protokoll_id/erste_id der Antwort auf die erste Frage der Kette (haengt die Runden im Protokoll zusammen)' },
+        keine_plausible_option: { type: 'boolean', description: 'Nur entscheiden: dem Agenten faellt keine plausible Option mehr ein — kein Jev-Aufruf, die Frage wird als OFFENE FRAGE fuer den User protokolliert (offen_fuer_user)' },
+        blocker: { type: 'boolean', description: 'Nur entscheiden (am Ende der Kette): true = KOMPLETTER Blocker (keine andere passende Task) -> Einsprung Koordinator statt "Task auf todo, andere Task". Standard false.' },
         kontext: { type: 'string', description: 'Nur entscheiden: Task/Plan/bisherige Diskussion (max. 1500 Zeichen, wird gekuerzt)' },
         task_id: { type: 'string', description: 'Nur entscheiden: zugehoerige Task (fuer das Protokoll)' },
         hinweise: { type: 'string', description: 'Nur entscheiden: eigene Prioritaeten fuer Jev (max. 500 Zeichen)' },
@@ -3585,6 +3591,12 @@ async function handleToolCall(
             task_id: str(args, 'task_id'),
             hinweise: str(args, 'hinweise'),
             confidence_tor: num(args, 'confidence_tor'),
+            runde: num(args, 'runde'),
+            verworfen: args.verworfen,
+            letzte_runde: bool(args, 'letzte_runde'),
+            erste_id: num(args, 'erste_id'),
+            blocker: bool(args, 'blocker'),
+            keine_plausible_option: bool(args, 'keine_plausible_option'),
           });
         }
         case 'abwesend':
