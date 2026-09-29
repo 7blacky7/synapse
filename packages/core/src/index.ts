@@ -535,6 +535,8 @@ export {
   removeWrapperStatus,
 } from './services/wrapper-status.js';
 export { setzeHeartbeatKonfiguration, setzeHeartbeatBeimSpawn, steuereHeartbeat } from './services/wrapper-status.js';
+// specialist(status): Namensfilter + Leichen kenntlich machen (P7-T10)
+export { waehleSpezialisten, parseNamen, veraltetSchwelleMs, beschrifteZeile, kennzeichnung, ausblendHinweis } from './services/spezialisten-status-filter.js';
 
 // JEV-10: Jev entscheidet Rueckfragen, wenn der User weg ist (P7-T28)
 export { holeJevModusHinweis, leereJevModusCache, JEV_MODUS_ZEILE } from './services/jev-modus-hinweis.js';

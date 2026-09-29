@@ -1497,8 +1497,8 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
       },
       status: {
         description: 'Live-Wrapper-Status (PID, Socket-Health, busy/idle, currentTask) — der Watcher pflegt das in status.json auf dem Ziel-PC, REST hat darauf aktuell keinen Zugriff. Lokal: voll verfuegbar. Web-KI: Stub-Antwort; Workaround = Spawn-Response (PID+Socket) merken oder Status via Channel-Post abfragen.',
-        params: 'project (req), name (req, String oder Array fuer Batch-Status)',
-        example: 'specialist({ action: "status", project: "synapse", name: "doc-bot" })',
+        params: 'project (req), name (optional; String, Array oder "a,b" — genannte Namen werden immer gezeigt), alle (optional; ohne name: auch Leichen). Ohne name sind Eintraege mit last_activity > 24 h (Env SYNAPSE_STATUS_VERALTET_H) ausgeblendet; die Antwort nennt ausgeblendet/ausgeblendet_namen. verwaist:true + inaktiv_seit kennzeichnet Leichen. Kein purge ohne Rueckfrage des Users.',
+        example: 'specialist({ action: "status", project: "synapse", name: ["doc-bot", "review-bot"] })',
       },
       capabilities: {
         description: 'Aggregat-Sicht der registrierten Daemons + aktiven Wrapper aus PG (projects + wrapper_status). REST-Antwort: { daemons, wrappers: { total, active, byProviderModel }, features.providers }. Lokaler MCP zeigt zusaetzlich die installierte Claude-CLI-Version vom Filesystem. Wenn spawn fehlschlaegt: error_code interpretieren (siehe summary).',

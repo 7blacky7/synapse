@@ -5,6 +5,8 @@
 import { FastifyInstance } from 'fastify';
 import {
   listWrapperStatus,
+  waehleSpezialisten,
+  kennzeichnung,
   enqueueSpecialistJob,
   waitForSpecialistJob,
   postToInbox,
@@ -23,15 +25,22 @@ export async function specialistRoutes(fastify: FastifyInstance): Promise<void> 
    */
   fastify.get<{
     Params: { name: string };
+    Querystring: { ausblenden?: string };
   }>('/api/projects/:name/specialists', async (request, reply) => {
     const { name } = request.params;
 
     try {
-      const rows = await listWrapperStatus(name);
+      const alleRows = await listWrapperStatus(name);
+      // Web-UI braucht die Leichen (Stop/Purge): Standard = alle mit Kennzeichnung (verwaist, inaktiv_seit);
+      // ausblenden=true blendet Leichen aus (P7-T10).
+      const auswahl = waehleSpezialisten(alleRows, { alle: request.query?.ausblenden !== 'true' });
+      const rows = auswahl.sichtbar.map(z => z.row);
+      const kennz = new Map(auswahl.sichtbar.map(z => [z.row.agentName, kennzeichnung(z)]));
       const specialists: Record<string, any> = {};
 
       for (const row of rows) {
         specialists[row.agentName] = {
+          ...kennz.get(row.agentName),
           name: row.agentName,
           model: row.model ?? '',
           status: row.status,
@@ -58,6 +67,7 @@ export async function specialistRoutes(fastify: FastifyInstance): Promise<void> 
         project: name,
         specialists,
         runningCount: rows.filter(r => r.status === 'running').length,
+        ausgeblendet: auswahl.ausgeblendetAnzahl,
         lastUpdate: rows[0]?.lastActivity?.toISOString() ?? new Date().toISOString(),
       };
     } catch (error) {

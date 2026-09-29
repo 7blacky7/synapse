@@ -22,7 +22,7 @@ import {
   updateSpecialistSkillTool,
   getAgentCapabilitiesTool,
 } from '../index.js';
-import { getWrapperStatus, listWrapperStatus, steuereHeartbeat, EFFORT_STUFEN, selbstAuskunft } from '@synapse/core';
+import { getWrapperStatus, listWrapperStatus, steuereHeartbeat, EFFORT_STUFEN, selbstAuskunft, waehleSpezialisten, kennzeichnung, ausblendHinweis, beschrifteZeile, veraltetSchwelleMs } from '@synapse/core';
 import type { WrapperStatusRow } from '@synapse/core';
 
 export const specialistTool: ConsolidatedTool = {
@@ -101,6 +101,10 @@ export const specialistTool: ConsolidatedTool = {
 
         // status parameters
         // name, project_path: siehe oben
+        alle: {
+          type: 'boolean',
+          description: 'status ohne name: auch inaktive Eintraege (Leichen, last_activity aelter als 24 h) zeigen. Standard: ausgeblendet, Antwort nennt Anzahl/Namen. Genannte Namen werden immer gezeigt.',
+        },
 
         // wake parameters
         message: {
@@ -299,7 +303,7 @@ export const specialistTool: ConsolidatedTool = {
         const project = str(args, 'project');
         const projectPath = str(args, 'project_path');
         const names = strArray(args, 'name');
-        const name = str(args, 'name');
+        const name = names && names.length === 1 ? names[0] : str(args, 'name');
         const THREE_MIN_MS = 3 * 60 * 1000;
 
         // Helper: PG-Row → Specialist-Record (Response-Struktur unveraendert)
@@ -323,6 +327,7 @@ export const specialistTool: ConsolidatedTool = {
           ...(row.provider != null && { provider: row.provider }),
           ...(row.modelFullId != null && { modelFullId: row.modelFullId }),
           ...(row.effort != null && { effort: row.effort }),
+          ...kennzeichnung(beschrifteZeile(row, Date.now(), veraltetSchwelleMs())),
         });
 
         // Array-Support: Mehrere Spezialisten-Status in einem Call
@@ -380,13 +385,15 @@ export const specialistTool: ConsolidatedTool = {
           // Alle Spezialisten des Projekts aus PG
           const rows = await listWrapperStatus(project).catch(() => [] as WrapperStatusRow[]);
           if (rows.length > 0) {
+            const auswahl = waehleSpezialisten(rows, { alle: args.alle === true || args.alle === 'true' });
             const specialists: Record<string, unknown> = {};
-            for (const row of rows) specialists[row.agentName] = pgRowToSpec(row);
+            for (const z of auswahl.sichtbar) specialists[z.row.agentName] = pgRowToSpec(z.row);
             return {
               success: true,
               specialists,
-              runningCount: rows.filter(r => r.status === 'running').length,
+              runningCount: auswahl.sichtbar.filter(z => z.row.status === 'running' && !z.verwaist).length,
               lastUpdate: rows[0].lastActivity.toISOString(),
+              ...ausblendHinweis(auswahl),
             };
           }
           // PG leer → Fallback

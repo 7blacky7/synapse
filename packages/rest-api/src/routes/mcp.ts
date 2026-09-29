@@ -777,6 +777,7 @@ const MCP_TOOLS = [
           ],
           description: 'Name des Spezialisten (erforderlich fuer: spawn, stop, status, wake, update_skill). Array erlaubt fuer: status',
         },
+        alle: { type: 'boolean', description: 'status ohne name: auch inaktive Eintraege (Leichen, last_activity aelter als 24 h) zeigen. Standard: ausgeblendet, Antwort nennt Anzahl/Namen. Genannte Namen werden immer gezeigt.' },
         model: { type: 'string', description: 'Modell-Alias (erforderlich fuer: spawn). Gueltige Aliase stehen in der Modell-Registry (capabilities → supportedModels; unbekannter Alias → Fehler mit Liste, geprueft beim Spawn im Daemon). CLAUDE, immer neueste Version: opus/haiku = 200k, sonnet = 1M nativ (sonnet[1m] gleichwertig), opus[1m] = 1M, fable = 1M nativ. Aeltere Versionen ueber versionierte Aliase: opus-5, opus-4.8, opus-4.7, opus-4.6 (je auch [1m]), sonnet-5(/[1m]), sonnet-4.6 (nur 200k), fable-5. ANTIGRAVITY: antigravity (agy-CLI, Pro-Abo). Mehrere 1M-Modelle gleichzeitig sind im Max-Abo moeglich (getestet 29.09.2026). GOOGLE: gemini-flash-lite/gemini-flash/gemini-pro = 1M Context, ~3-75x billiger als Claude (braucht GOOGLE_API_KEY).' },
         expertise: { type: 'string', description: 'Fachgebiet des Spezialisten (erforderlich fuer: spawn)' },
         task: { type: 'string', description: 'Aufgabe fuer den Spezialisten (erforderlich fuer: spawn)' },
@@ -3721,7 +3722,7 @@ async function handleToolCall(
       // Specialist-Calls werden via PG-Queue an den lokalen FileWatcher-Daemon
       // delegiert (wo Claude-CLI + Projekt-FS verfuegbar sind).
       // status + capabilities lesen direkt aus PG ohne Queue.
-      const { enqueueSpecialistJob, waitForSpecialistJob, getPool, getWrapperStatus, listWrapperStatus, postToInbox, EFFORT_STUFEN, pruefeEffort, waehleEffort, getModel } = await import('@synapse/core');
+      const { enqueueSpecialistJob, waitForSpecialistJob, getPool, getWrapperStatus, listWrapperStatus, postToInbox, EFFORT_STUFEN, pruefeEffort, waehleEffort, getModel, parseNamen: parseSpezNamen, waehleSpezialisten, kennzeichnung: spezKennzeichnung, ausblendHinweis, beschrifteZeile: beschrifteSpezZeile, veraltetSchwelleMs } = await import('@synapse/core');
 
       // capabilities ist projekt-agnostisch — direkt aus PG ableiten.
       // projects-Tabelle = registrierte Daemons je hostname.
@@ -3805,7 +3806,9 @@ async function handleToolCall(
 
       // status: direkt aus PG wrapper_status lesen — kein Daemon-Roundtrip noetig
       if (action === 'status') {
-        const name = str(args, 'name');
+        // name: Array, JSON-String oder Komma-String (P7-T10) — leere Eintraege verworfen
+        const namenListe = parseSpezNamen(args.name);
+        const name = namenListe.length === 1 ? namenListe[0] : undefined;
         const THREE_MIN_MS = 3 * 60 * 1000;
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const toSpecialist = (row: any) => ({
@@ -3830,6 +3833,7 @@ async function handleToolCall(
           ...(row.provider != null && { provider: row.provider }),
           ...(row.modelFullId != null && { modelFullId: row.modelFullId }),
           ...(row.effort != null && { effort: row.effort }),
+          ...spezKennzeichnung(beschrifteSpezZeile(row, Date.now(), veraltetSchwelleMs())),
         });
 
         if (name) {
@@ -3852,18 +3856,23 @@ async function handleToolCall(
         // Alle Spezialisten des Projekts
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const rows = await listWrapperStatus(project).catch(() => [] as any[]);
+        // mehrere Namen: nur diese (auch veraltet); ohne Namen: Leichen ausblenden, ausser alle:true
+        const auswahl = waehleSpezialisten(rows, {
+          namen: namenListe,
+          alle: args.alle === true || args.alle === 'true',
+        });
         const specialists: Record<string, unknown> = {};
-        for (const row of rows) {
-          specialists[row.agentName] = toSpecialist(row);
+        for (const z of auswahl.sichtbar) {
+          specialists[z.row.agentName] = toSpecialist(z.row);
         }
         return {
           success: true,
           specialists,
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          runningCount: rows.filter((r: any) => r.status === 'running').length,
+          runningCount: auswahl.sichtbar.filter((z: { row: { status: string }; verwaist: boolean }) => z.row.status === 'running' && !z.verwaist).length,
           lastUpdate: rows[0]?.lastActivity instanceof Date
             ? rows[0].lastActivity.toISOString()
             : new Date().toISOString(),
+          ...ausblendHinweis(auswahl),
         };
       }
 
