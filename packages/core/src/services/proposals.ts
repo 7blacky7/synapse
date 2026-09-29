@@ -43,12 +43,20 @@ import { ensureCollection } from '../qdrant/collections.js';
 import {
   insertVector,
   searchVectors,
-  scrollVectors,
   deleteVector,
   deleteVectors,
-  getVector,
-  getVectors,
 } from '../qdrant/operations.js';
+import {
+  listeProposalsAusPg,
+  leseProposalsNachIdsAusPg,
+  holeProposalsPerEingabe,
+  loeseProposalIdsAuf,
+  mischeProposalTreffer,
+  zuIdProblem,
+  type ProposalIdProblem,
+  type ProposalMitAufloesung,
+} from './proposal-ids.js';
+import type { Aufloesung } from './thought-ids.js';
 import {
   Proposal,
   ProposalPayload,
@@ -124,40 +132,35 @@ export async function getProposal(
   id: string
 ): Promise<Proposal | null> {
   try {
-    const collName = getCollectionName(project);
-    const result = await getVector<ProposalPayload>(collName, id);
-
-    if (!result) {
-      return null;
-    }
-
-    // Projekt-Zugehoerigkeit pruefen
-    if (result.payload.project !== project) {
-      return null;
-    }
-
-    return payloadToProposal(result.id, result.payload);
+    // PostgreSQL ist die Quelle der Wahrheit (nicht Qdrant); id: volle UUID oder eindeutiger Praefix
+    const r = await holeProposalsPerEingabe(project, [id]);
+    return (r.proposals[0] as Proposal | undefined) ?? null;
   } catch {
     return null;
   }
 }
 
 /**
- * Holt mehrere Proposals anhand ihrer IDs (Batch)
- * Nutzt Qdrant client.retrieve() fuer einen einzelnen Call statt N Einzel-Abfragen
+ * Holt mehrere Proposals anhand ihrer IDs (Batch) — aus PostgreSQL.
+ * ids: volle UUIDs oder eindeutige Praefixe (mind. 8 Zeichen); nicht aufloesbare fehlen im Ergebnis
+ * (Details: holeProposalsMitProblemen).
  */
 export async function getProposalsByIds(
   project: string,
   ids: string[]
 ): Promise<Proposal[]> {
   if (ids.length === 0) return [];
+  const r = await holeProposalsPerEingabe(project, ids);
+  return r.proposals as Proposal[];
+}
 
-  const collName = getCollectionName(project);
-  const results = await getVectors<ProposalPayload>(collName, ids);
-
-  return results
-    .filter(r => r.payload.project === project)
-    .map(r => payloadToProposal(r.id, r.payload));
+/** Wie getProposalsByIds, meldet aber auch mehrdeutige/ungueltige/unbekannte Eingaben. */
+export async function holeProposalsMitProblemen(
+  project: string,
+  ids: string[]
+): Promise<{ proposals: ProposalMitAufloesung[]; probleme: Aufloesung[] }> {
+  if (ids.length === 0) return { proposals: [], probleme: [] };
+  return holeProposalsPerEingabe(project, ids);
 }
 
 /**
@@ -170,26 +173,9 @@ export async function listProposals(
   project: string,
   status?: Proposal['status']
 ): Promise<Proposal[]> {
-  const must: Array<Record<string, unknown>> = [
-    { key: 'project', match: { value: project } },
-  ];
-
-  if (status) {
-    must.push({ key: 'status', match: { value: status } });
-  }
-
-  const collName = getCollectionName(project);
-  const results = await scrollVectors<ProposalPayload>(
-    collName,
-    { must },
-    1000
-  );
-
+  // PostgreSQL (Quelle der Wahrheit), neueste zuerst, Status-Filter in SQL.
   // Lightweight: suggestedContent wird NICHT mitgeliefert
-  return results.map((point) => ({
-    ...payloadToProposal(point.id, point.payload),
-    suggestedContent: '',
-  }));
+  return (await listeProposalsAusPg(project, status)) as Proposal[];
 }
 
 /**
@@ -203,34 +189,19 @@ export async function updateProposalStatus(
   id: string,
   status: Proposal['status']
 ): Promise<Proposal | null> {
-  const collName = getCollectionName(project);
-
-  // Bestehenden Proposal laden (mit Vektor)
-  const existing = await getVector<ProposalPayload>(collName, id);
-
-  if (!existing) {
-    return null;
-  }
-
-  // Projekt-Zugehoerigkeit pruefen
-  if (existing.payload.project !== project) {
+  // Bestehenden Proposal aus PostgreSQL laden (Quelle der Wahrheit, auch ohne Vektor)
+  const [bestehend] = await leseProposalsNachIdsAusPg(project, [id]);
+  if (!bestehend) {
     return null;
   }
 
   const now = new Date().toISOString();
 
-  // Payload aktualisieren
-  const updatedPayload: ProposalPayload = {
-    ...existing.payload,
-    status,
-    updated_at: now,
-  };
-
   // Der Vektor entsteht nicht mehr hier, sondern nebenlaeufig (siehe unten).
 
-  // 1. PostgreSQL (Write-Primary) — fail-fast: wirft bei Fehler
+  // 1. PostgreSQL (Write-Primary) — fail-fast: wirft bei Fehler. Nur im eigenen Projekt.
   const pool = getPool();
-  await pool.query('UPDATE proposals SET status = $1, updated_at = $2, embedded_at = NULL WHERE id = $3', [status, now, id]);
+  await pool.query('UPDATE proposals SET status = $1, updated_at = $2, embedded_at = NULL WHERE id = $3 AND project = $4', [status, now, id, project]);
 
   // 2. Qdrant — NEBENLAEUFIG seit EMBED-1.
   // Das UPDATE oben hat embedded_at genullt, die Zeile ist also fuer den Backlog sichtbar.
@@ -246,7 +217,7 @@ export async function updateProposalStatus(
   });
 
   console.error(`[Synapse] Proposal "${id}" Status geaendert zu "${status}"`);
-  return { ...payloadToProposal(id, updatedPayload), warning };
+  return { ...bestehend, status, updatedAt: now, warning };
 }
 
 /**
@@ -281,8 +252,8 @@ export async function updateProposal(
 
   // 3. PostgreSQL UPDATE (Write-Primary) — fail-fast: wirft bei Fehler
   await pool.query(
-    `UPDATE proposals SET description = $1, suggested_content = $2, status = $3, updated_at = $4, embedded_at = NULL WHERE id = $5`,
-    [mergedDescription, mergedSuggestedContent, mergedStatus, now, id]
+    `UPDATE proposals SET description = $1, suggested_content = $2, status = $3, updated_at = $4, embedded_at = NULL WHERE id = $5 AND project = $6`,
+    [mergedDescription, mergedSuggestedContent, mergedStatus, now, id, project]
   );
 
   // 4. Qdrant — NEBENLAEUFIG seit EMBED-1.
@@ -322,16 +293,16 @@ export async function deleteProposal(
 ): Promise<{ success: boolean; warning?: string }> {
   const collName = getCollectionName(project);
 
-  // Existenz und Projekt-Zugehoerigkeit pruefen
-  const existing = await getVector<ProposalPayload>(collName, id);
+  // Existenz und Projekt-Zugehoerigkeit pruefen — in PostgreSQL (Quelle der Wahrheit)
+  const [existing] = await leseProposalsNachIdsAusPg(project, [id]);
 
-  if (!existing || existing.payload.project !== project) {
+  if (!existing) {
     return { success: false };
   }
 
-  // 1. PostgreSQL (Write-Primary) — fail-fast: wirft bei Fehler
+  // 1. PostgreSQL (Write-Primary) — fail-fast: wirft bei Fehler. Nur im eigenen Projekt.
   const pool = getPool();
-  await pool.query('DELETE FROM proposals WHERE id = $1', [id]);
+  await pool.query('DELETE FROM proposals WHERE id = $1 AND project = $2', [id, project]);
 
   // 2. Qdrant — Warning bei Fehler, PG-Daten bereits geloescht
   let warning: string | undefined;
@@ -359,19 +330,17 @@ export async function deleteProposals(
 
   const collName = getCollectionName(project);
 
-  // Existenz + Projekt-Zugehörigkeit prüfen via getVectors
-  const existing = await getVectors<ProposalPayload>(collName, ids);
-  const validIds = existing
-    .filter(r => r.payload.project === project)
-    .map(r => r.id);
+  // Existenz + Projekt-Zugehörigkeit prüfen — in PostgreSQL (Quelle der Wahrheit)
+  const existing = await leseProposalsNachIdsAusPg(project, ids);
+  const validIds = existing.map(r => r.id);
 
   if (validIds.length === 0) return { deleted: 0 };
 
-  // 1. PostgreSQL (Write-Primary) — atomar, fail-fast
+  // 1. PostgreSQL (Write-Primary) — atomar, fail-fast. Nur im eigenen Projekt.
   const pool = getPool();
   const pgResult = await pool.query(
-    'DELETE FROM proposals WHERE id = ANY($1::text[]) RETURNING id',
-    [validIds]
+    'DELETE FROM proposals WHERE id = ANY($1::text[]) AND project = $2 RETURNING id',
+    [validIds, project]
   );
   const deletedCount = pgResult.rowCount ?? 0;
 
@@ -414,14 +383,79 @@ export async function searchProposals(
     filter
   );
 
-  // suggestedContent aus den Ergebnissen entfernen (Lightweight)
-  return results.map((result) => ({
-    ...result,
-    payload: {
-      ...result.payload,
-      suggested_content: '',
-    },
-  }));
+  // Qdrant liefert Treffer + score; alle Felder kommen aus PostgreSQL (Quelle der Wahrheit).
+  // suggestedContent bleibt leer (Lightweight). Treffer ohne PG-Zeile werden verworfen und gezaehlt.
+  const zeilen = await leseProposalsNachIdsAusPg(project, results.map(r => String(r.id)));
+  const gemischt = mischeProposalTreffer(results, zeilen);
+  if (gemischt.verworfen > 0) {
+    console.error(`[Synapse] searchProposals: ${gemischt.verworfen} Qdrant-Treffer ohne PG-Zeile verworfen (Projekt "${project}")`);
+  }
+  const ergebnis: SearchResult<ProposalPayload>[] = gemischt.treffer;
+  if (gemischt.verworfen > 0) {
+    (ergebnis as SearchResult<ProposalPayload>[] & { verworfen_ohne_pg?: number }).verworfen_ohne_pg = gemischt.verworfen;
+  }
+  return ergebnis;
+}
+
+// ───────────────────────── Praefix-IDs (P10-T29) ─────────────────────────
+
+/** update per volle UUID ODER Praefix. Nicht aufloesbar/mehrdeutig -> nichts wird geaendert. */
+export async function aendereProposalPerId(
+  project: string,
+  idEingabe: string,
+  changes: { content?: string; suggestedContent?: string; status?: string }
+): Promise<(Proposal & { aufgeloeste_id?: string }) | ProposalIdProblem> {
+  const [a] = await loeseProposalIdsAuf(project, [idEingabe]);
+  if (a.status !== 'ok' || !a.id) return zuIdProblem(a);
+  const p = await updateProposal(project, a.id, changes);
+  if (!p) return zuIdProblem({ eingabe: idEingabe, status: 'nicht_gefunden' });
+  return a.gekuerzt ? { ...p, aufgeloeste_id: a.id } : p;
+}
+
+/** Status setzen per volle UUID ODER Praefix. Nicht aufloesbar/mehrdeutig -> nichts wird geaendert. */
+export async function setzeProposalStatusPerId(
+  project: string,
+  idEingabe: string,
+  status: Proposal['status']
+): Promise<(Proposal & { aufgeloeste_id?: string }) | ProposalIdProblem> {
+  const [a] = await loeseProposalIdsAuf(project, [idEingabe]);
+  if (a.status !== 'ok' || !a.id) return zuIdProblem(a);
+  const p = await updateProposalStatus(project, a.id, status);
+  if (!p) return zuIdProblem({ eingabe: idEingabe, status: 'nicht_gefunden' });
+  return a.gekuerzt ? { ...p, aufgeloeste_id: a.id } : p;
+}
+
+export interface ProposalLoeschErgebnis {
+  success: boolean;
+  deleted: number;
+  /** volle IDs, die geloescht wurden (bzw. geloescht wuerden bei dryRun) */
+  ids: string[];
+  /** Eingaben, die nicht ok waren (mehrdeutig/ungueltig/unbekannt) — dafuer geschah nichts */
+  probleme: ProposalIdProblem[];
+  aufgeloest?: Array<{ eingabe: string; id: string }>;
+  dry_run?: boolean;
+  warning?: string;
+}
+
+/** delete per volle UUID(s) ODER Praefixe; mehrdeutige/ungueltige/unbekannte werden NICHT geloescht. */
+export async function loescheProposalsPerId(
+  project: string,
+  eingaben: string[],
+  optionen: { dryRun?: boolean } = {}
+): Promise<ProposalLoeschErgebnis> {
+  const aufl = await loeseProposalIdsAuf(project, eingaben);
+  const probleme = aufl.filter(a => a.status !== 'ok').map(zuIdProblem);
+  const ids = [...new Set(aufl.filter(a => a.status === 'ok' && a.id).map(a => a.id as string))];
+  const aufgeloest = aufl
+    .filter(a => a.status === 'ok' && a.gekuerzt && a.id)
+    .map(a => ({ eingabe: a.eingabe, id: a.id as string }));
+  const extra = aufgeloest.length > 0 ? { aufgeloest } : {};
+  if (optionen.dryRun) {
+    return { success: ids.length > 0, deleted: 0, ids, probleme, dry_run: true, ...extra };
+  }
+  if (ids.length === 0) return { success: false, deleted: 0, ids: [], probleme, ...extra };
+  const r = await deleteProposals(project, ids);
+  return { success: r.deleted > 0, deleted: r.deleted, ids, probleme, warning: r.warning, ...extra };
 }
 
 /**

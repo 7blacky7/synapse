@@ -84,12 +84,28 @@ function kuerze(text: unknown): string {
   return t.length > INHALT_VORSCHAU ? `${t.slice(0, INHALT_VORSCHAU)}…` : t
 }
 
-/** Loest jede Eingabe einzeln auf. Reihenfolge und Anzahl bleiben erhalten. */
-export async function loeseThoughtIdsAuf(
+/** Tabellen mit Praefix-Aufloesung (Whitelist — der Name landet im SQL, nie aus Eingaben). */
+export type IdTabelle = 'thoughts' | 'proposals'
+const VORSCHAU_SPALTE: Record<IdTabelle, string> = { thoughts: 'content', proposals: 'description' }
+
+/** Thought-Huelle: Rueckgabeform unveraendert. */
+export function loeseThoughtIdsAuf(
   project: string,
   eingaben: unknown[],
   deps: ThoughtIdDeps = {},
 ): Promise<Aufloesung[]> {
+  return loeseIdsAuf('thoughts', project, eingaben, deps)
+}
+
+/** Loest jede Eingabe einzeln auf. Reihenfolge und Anzahl bleiben erhalten. */
+export async function loeseIdsAuf(
+  tabelle: IdTabelle,
+  project: string,
+  eingaben: unknown[],
+  deps: ThoughtIdDeps = {},
+): Promise<Aufloesung[]> {
+  const spalte = VORSCHAU_SPALTE[tabelle]
+  if (!spalte) throw new Error(`Tabelle nicht erlaubt: ${String(tabelle)}`)
   const query = deps.query ?? standardQuery
   const out: Aufloesung[] = []
   for (const roh of eingaben) {
@@ -104,14 +120,14 @@ export async function loeseThoughtIdsAuf(
       continue
     }
     if (e.art === 'fremd') {
-      const r = await query('SELECT id, content FROM thoughts WHERE project = $1 AND id = $2', [project, e.id])
+      const r = await query(`SELECT id, ${spalte} AS content FROM ${tabelle} WHERE project = $1 AND id = $2`, [project, e.id])
       out.push(r.rows.length > 0
         ? { eingabe, status: 'ok', id: String(r.rows[0].id), gekuerzt: false }
         : { eingabe, status: 'nicht_gefunden' })
       continue
     }
     const r = await query(
-      'SELECT id, content FROM thoughts WHERE project = $1 AND id LIKE $2 ORDER BY id LIMIT ' + KANDIDATEN_MAX,
+      `SELECT id, ${spalte} AS content FROM ${tabelle} WHERE project = $1 AND id LIKE $2 ORDER BY id LIMIT ` + KANDIDATEN_MAX,
       [project, `${e.id}%`],
     )
     if (r.rows.length === 0) {

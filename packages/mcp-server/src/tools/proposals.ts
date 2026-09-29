@@ -6,8 +6,10 @@
 import {
   listProposals as coreListProposals,
   getProposal as coreGetProposal,
-  updateProposalStatus as coreUpdateProposalStatus,
-  deleteProposal as coreDeleteProposal,
+  holeProposalsMitProblemen,
+  setzeProposalStatusPerId,
+  aendereProposalPerId,
+  loescheProposalsPerId,
   searchProposals as coreSearchProposals,
   Proposal,
   ProposalPayload,
@@ -58,10 +60,12 @@ export async function getProposalWrapper(
   id: string
 ): Promise<string> {
   try {
-    const proposal = await coreGetProposal(project, id);
+    // id: volle UUID oder eindeutiger Praefix (>= 8 Zeichen); Quelle PostgreSQL
+    const { proposals: gefunden, probleme } = await holeProposalsMitProblemen(project, [id]);
+    const proposal = gefunden[0];
 
     if (!proposal) {
-      return `Vorschlag "${id}" nicht gefunden in Projekt "${project}".`;
+      return probleme[0]?.fehler ?? `Vorschlag "${id}" nicht gefunden in Projekt "${project}".`;
     }
 
     const tags = proposal.tags.length > 0 ? `Tags: ${proposal.tags.join(', ')}` : 'Tags: keine';
@@ -91,17 +95,15 @@ export async function updateProposalStatusWrapper(
   status: string
 ): Promise<string> {
   try {
-    const updated = await coreUpdateProposalStatus(
-      project,
-      id,
-      status as Proposal['status']
-    );
+    // id: volle UUID oder eindeutiger Praefix; mehrdeutig/unbekannt -> nichts geaendert
+    const updated = await setzeProposalStatusPerId(project, id, status as Proposal['status']);
 
-    if (!updated) {
-      return `Vorschlag "${id}" nicht gefunden in Projekt "${project}".`;
+    if ('success' in updated && updated.success === false) {
+      return updated.message;
     }
+    const ok = updated as Proposal;
 
-    return `Status von Vorschlag "${id}" geaendert zu "${status}".\nDatei: ${updated.filePath}\nBeschreibung: ${updated.description}`;
+    return `Status von Vorschlag "${ok.id}" geaendert zu "${status}".\nDatei: ${ok.filePath}\nBeschreibung: ${ok.description}`;
   } catch (error) {
     return `Fehler beim Aktualisieren des Status: ${error}`;
   }
@@ -120,16 +122,18 @@ export async function updateProposalTool(
   message: string;
 }> {
   try {
-    const { updateProposal } = await import('@synapse/core');
-    const proposal = await updateProposal(project, id, changes);
+    // id: volle UUID oder eindeutiger Praefix; mehrdeutig/unbekannt -> nichts geaendert
+    const ergebnis = await aendereProposalPerId(project, id, changes);
 
-    if (!proposal) {
+    if ('success' in ergebnis && ergebnis.success === false) {
       return {
         success: false,
         proposal: null,
-        message: `Vorschlag "${id}" nicht gefunden in Projekt "${project}"`,
-      };
+        message: ergebnis.message,
+        ...(ergebnis.kandidaten ? { kandidaten: ergebnis.kandidaten } : {}),
+      } as { success: boolean; proposal: Proposal | null; message: string };
     }
+    const proposal = ergebnis as Proposal;
 
     const changedFields = Object.keys(changes).filter(k => changes[k as keyof typeof changes] !== undefined);
     return {
@@ -154,14 +158,15 @@ export async function deleteProposalWrapper(
   id: string
 ): Promise<string> {
   try {
-    const deleted = await coreDeleteProposal(project, id);
+    // id: volle UUID oder eindeutiger Praefix; mehrdeutig/unbekannt -> nichts geloescht
+    const deleted = await loescheProposalsPerId(project, [id]);
 
-    if (!deleted.success) {
-      return `Vorschlag "${id}" nicht gefunden in Projekt "${project}".`;
+    if (deleted.deleted === 0) {
+      return deleted.probleme[0]?.message ?? `Vorschlag "${id}" nicht gefunden in Projekt "${project}".`;
     }
 
     const warningInfo = deleted.warning ? ` (Warning: ${deleted.warning})` : '';
-    return `Vorschlag "${id}" erfolgreich geloescht aus Projekt "${project}".${warningInfo}`;
+    return `Vorschlag "${deleted.ids[0]}" erfolgreich geloescht aus Projekt "${project}".${warningInfo}`;
   } catch (error) {
     return `Fehler beim Loeschen des Vorschlags: ${error}`;
   }
@@ -179,18 +184,18 @@ export async function getProposalsByIdsWrapper(
   message: string;
 }> {
   try {
-    const { getProposalsByIds } = await import('@synapse/core');
-    const proposals = await getProposalsByIds(project, ids);
+    // ids: volle UUIDs oder eindeutige Praefixe; Quelle PostgreSQL
+    const { proposals, probleme } = await holeProposalsMitProblemen(project, ids);
 
     const found = proposals.length;
-    const notFoundIds = ids.filter(id => !proposals.some(p => p.id === id));
-    const notFoundHint = notFoundIds.length > 0 ? ` | Nicht gefunden: ${notFoundIds.join(', ')}` : '';
+    const notFoundHint = probleme.length > 0 ? ` | Nicht aufloesbar: ${probleme.map(p => `${p.eingabe} (${p.status})`).join(', ')}` : '';
 
     return {
       success: true,
       proposals,
+      ...(probleme.length > 0 ? { probleme } : {}),
       message: `${found} von ${ids.length} Proposals geladen${notFoundHint}`,
-    };
+    } as { success: boolean; proposals: Proposal[]; message: string };
   } catch (error) {
     return {
       success: false,
@@ -219,24 +224,26 @@ export async function deleteProposalsBatch(
   console.error(`[BATCH-DELETE] tool=proposal action=delete count=${ids.length} dry_run=${dryRun} items=${JSON.stringify(ids)}`);
 
   if (dryRun) {
-    const { getProposalsByIds } = await import('@synapse/core');
-    const proposals = await getProposalsByIds(project, ids);
+    const { proposals, probleme } = await holeProposalsMitProblemen(project, ids);
     return {
       success: true,
       dry_run: true,
       would_delete: proposals.map(p => ({ id: p.id, description: p.description, status: p.status })),
       count: proposals.length,
+      ...(probleme.length > 0 ? { probleme } : {}),
       message: `dry_run: ${proposals.length} Proposals wuerden geloescht`,
     };
   }
 
   try {
-    const { deleteProposals } = await import('@synapse/core');
-    const result = await deleteProposals(project, ids);
+    // ids: volle UUIDs oder Praefixe; mehrdeutige/unbekannte werden NICHT geloescht und gemeldet
+    const result = await loescheProposalsPerId(project, ids);
     return {
-      success: true,
+      success: result.success,
       deleted: result.deleted,
       warning: result.warning,
+      ...(result.probleme.length > 0 ? { probleme: result.probleme } : {}),
+      ...(result.aufgeloest ? { aufgeloest: result.aufgeloest } : {}),
       message: `${result.deleted} Proposals geloescht`,
     };
   } catch (error) {

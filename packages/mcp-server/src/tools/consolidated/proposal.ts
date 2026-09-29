@@ -47,7 +47,7 @@ export const proposalTool: ConsolidatedTool = {
             { type: 'string' },
             { type: 'array', items: { type: 'string' }, minItems: 1 },
           ],
-          description: 'Proposal-ID (für get, update_status, delete, update). Array erlaubt fuer: get',
+          description: 'Proposal-ID (für get, update_status, delete, update). Volle UUID oder eindeutiger Praefix (mind. 8 Zeichen); mehrdeutig/unbekannt -> Fehler mit Kandidaten, nichts wird geaendert. Array erlaubt fuer: get',
         },
         status: {
           type: 'string',

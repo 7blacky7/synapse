@@ -539,6 +539,10 @@ export { setzeHeartbeatKonfiguration, setzeHeartbeatBeimSpawn, steuereHeartbeat 
 export { holeThoughtsMitProblemen, aendereThoughtPerId, loescheThoughtsPerId } from './services/thoughts.js';
 export type { ThoughtIdProblem, LoeschErgebnis } from './services/thoughts.js';
 export { loeseThoughtIdsAuf, pruefeIdEingabe } from './services/thought-ids.js';
+// Proposals: PG als Quelle der Wahrheit + Praefix-IDs (P10-T29)
+export { holeProposalsMitProblemen, aendereProposalPerId, setzeProposalStatusPerId, loescheProposalsPerId } from './services/proposals.js';
+export type { ProposalLoeschErgebnis } from './services/proposals.js';
+export type { ProposalIdProblem } from './services/proposal-ids.js';
 // specialist(status): Namensfilter + Leichen kenntlich machen (P7-T10)
 export { waehleSpezialisten, parseNamen, veraltetSchwelleMs, beschrifteZeile, kennzeichnung, ausblendHinweis } from './services/spezialisten-status-filter.js';
 

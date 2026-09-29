@@ -1071,7 +1071,7 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
         description: 'Proposal abrufen (einzeln oder mehrere).',
         params: 'project (req), id (req, String oder Array)',
         example: 'proposal({ action: "get", project: "synapse", id: ["abc123", "def456"] })',
-        tips: 'Array erlaubt fuer Batch-Abruf.',
+        tips: 'Array erlaubt fuer Batch-Abruf. id (auch bei update_status/update/delete): volle UUID oder eindeutiger Praefix, mind. 8 Zeichen; mehrdeutig/unbekannt -> Fehler mit Kandidaten, nichts wird geaendert. Quelle: PostgreSQL.',
       },
       update_status: {
         description: 'Status eines Proposals aendern.',

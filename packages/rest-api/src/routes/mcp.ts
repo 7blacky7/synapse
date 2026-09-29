@@ -524,7 +524,7 @@ const MCP_TOOLS = [
             { type: 'string' },
             { type: 'array', items: { type: 'string' }, minItems: 1 },
           ],
-          description: 'Proposal-ID (fuer get, update_status, delete, update). Array erlaubt fuer: get',
+          description: 'Proposal-ID (fuer get, update_status, delete, update). Array erlaubt fuer: get. Volle UUID oder eindeutiger Praefix (mind. 8 Zeichen); mehrdeutig/unbekannt -> Fehler mit Kandidaten, nichts wird geaendert.',
         },
         status: {
           type: 'string',
@@ -3226,21 +3226,28 @@ async function handleToolCall(
           };
         }
         case 'get': {
+          // ids: volle UUID oder eindeutiger Praefix (>= 8 Zeichen); Quelle PostgreSQL
+          const { holeProposalsMitProblemen } = await import('@synapse/core');
           const ids = strArray(args, 'id');
           if (ids && ids.length > 1) {
-            const results = await getProposalsByIds(project, ids);
-            return { success: true, proposals: results, count: results.length };
+            const { proposals: results, probleme } = await holeProposalsMitProblemen(project, ids);
+            return { success: true, proposals: results, count: results.length, ...(probleme.length > 0 ? { probleme } : {}) };
           }
-          const proposal = await getProposal(project, reqStr(args, 'id'));
-          if (!proposal) return { success: false, message: `Proposal "${args.id}" nicht gefunden` };
+          const eine = await holeProposalsMitProblemen(project, [ids?.[0] ?? reqStr(args, 'id')]);
+          const proposal = eine.proposals[0];
+          if (!proposal) {
+            const p = eine.probleme[0];
+            return { success: false, message: p?.fehler ?? `Proposal "${args.id}" nicht gefunden`, ...(p ? { status: p.status } : {}), ...(p?.kandidaten ? { kandidaten: p.kandidaten } : {}) };
+          }
           return { success: true, proposal };
         }
         case 'update_status': {
           const ids = strArray(args, 'id');
           if (ids && ids.length > 1) {
             const status = reqStr(args, 'status');
+            const { setzeProposalStatusPerId } = await import('@synapse/core');
             const settled = await Promise.allSettled(
-              ids.map(id => updateProposalStatus(project, id, status as 'pending' | 'reviewed' | 'accepted' | 'rejected'))
+              ids.map(id => setzeProposalStatusPerId(project, id, status as 'pending' | 'reviewed' | 'accepted' | 'rejected'))
             );
             const results: unknown[] = [];
             const errors: string[] = [];
@@ -3250,11 +3257,16 @@ async function handleToolCall(
             }
             return { results, count: results.length, errors };
           }
-          const proposal = await updateProposalStatus(
-            project, reqStr(args, 'id'),
+          // id: volle UUID oder eindeutiger Praefix; mehrdeutig/unbekannt -> nichts geaendert
+          const { setzeProposalStatusPerId: setzeStatusEins } = await import('@synapse/core');
+          const geaendert = await setzeStatusEins(
+            project, ids && ids.length === 1 ? ids[0] : reqStr(args, 'id'),
             reqStr(args, 'status') as 'pending' | 'reviewed' | 'accepted' | 'rejected'
           );
-          if (!proposal) return { success: false, message: `Proposal "${args.id}" nicht gefunden` };
+          if ('success' in geaendert && geaendert.success === false) {
+            return { success: false, message: geaendert.message, status: geaendert.status, ...(geaendert.kandidaten ? { kandidaten: geaendert.kandidaten } : {}) };
+          }
+          const proposal = geaendert as Exclude<typeof geaendert, { success: false }>;
           return { success: true, proposal, message: `Proposal "${proposal.id}" Status geaendert zu "${proposal.status}"` };
         }
         case 'delete': {
@@ -3265,18 +3277,26 @@ async function handleToolCall(
             if (ids.length > maxItems) {
               return { success: false, message: `Batch-Delete: Max ${maxItems} Items erlaubt, ${ids.length} angegeben` };
             }
+            // ids: volle UUIDs oder Praefixe; mehrdeutig/unbekannt -> nicht geloescht, einzeln gemeldet
+            const { loescheProposalsPerId } = await import('@synapse/core');
+            const r = await loescheProposalsPerId(project, ids, { dryRun });
             if (dryRun) {
-              return { success: true, dry_run: true, would_delete: ids, count: ids.length };
+              return { success: true, dry_run: true, would_delete: r.ids, count: r.ids.length, ...(r.probleme.length > 0 ? { probleme: r.probleme } : {}), ...(r.aufgeloest ? { aufgeloest: r.aufgeloest } : {}) };
             }
-            const settled = await Promise.allSettled(ids.map(id => deleteProposal(project, id)));
-            const deleted = settled.filter(r => r.status === 'fulfilled').length;
-            return { success: true, deleted, total: ids.length };
+            return { success: r.deleted > 0, deleted: r.deleted, total: ids.length, warning: r.warning, ...(r.probleme.length > 0 ? { probleme: r.probleme } : {}), ...(r.aufgeloest ? { aufgeloest: r.aufgeloest } : {}) };
           }
-          const deleted = await deleteProposal(project, reqStr(args, 'id'));
+          const { loescheProposalsPerId: loescheEins } = await import('@synapse/core');
+          const eingabeId = ids && ids.length === 1 ? ids[0] : reqStr(args, 'id');
+          const einzel = await loescheEins(project, [eingabeId]);
+          if (einzel.deleted === 0) {
+            const p = einzel.probleme[0];
+            return { success: false, message: p?.message ?? `Proposal "${eingabeId}" nicht gefunden`, ...(p?.status ? { status: p.status } : {}), ...(p?.kandidaten ? { kandidaten: p.kandidaten } : {}) };
+          }
           return {
-            success: deleted.success,
-            message: deleted.success ? `Proposal "${args.id}" geloescht` : `Proposal "${args.id}" nicht gefunden`,
-            ...(deleted.warning ? { warning: deleted.warning } : {}),
+            success: true,
+            message: `Proposal "${einzel.ids[0]}" geloescht`,
+            ...(einzel.aufgeloest ? { aufgeloeste_id: einzel.ids[0] } : {}),
+            ...(einzel.warning ? { warning: einzel.warning } : {}),
           };
         }
         case 'update': {
@@ -3285,7 +3305,9 @@ async function handleToolCall(
           if (args.content) changes.content = str(args, 'content');
           if (args.suggested_content) changes.suggestedContent = str(args, 'suggested_content');
           if (args.status) changes.status = str(args, 'status');
-          const result = await updateProposal(project, id, changes);
+          // id: volle UUID oder eindeutiger Praefix; mehrdeutig/unbekannt -> nichts geaendert
+          const { aendereProposalPerId } = await import('@synapse/core');
+          const result = await aendereProposalPerId(project, id, changes);
           return result;
         }
         default:
