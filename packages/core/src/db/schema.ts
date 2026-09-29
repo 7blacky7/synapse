@@ -373,14 +373,50 @@ ALTER TABLE code_files ADD COLUMN IF NOT EXISTS tsv_zerlegt TSVECTOR;
 CREATE INDEX IF NOT EXISTS idx_code_files_tsv_zerlegt ON code_files USING GIN(tsv_zerlegt);
 CREATE INDEX IF NOT EXISTS idx_code_files_hash ON code_files(project, content_hash);
 
+-- KEINE BESCHRAENKUNG BEIM AENDERN (29.09.2026): to_tsvector bricht bei mehr als 1.048.575
+-- Bytes ERGEBNIS ab, und ein werfender Trigger liess das SPEICHERN scheitern — gemessen:
+-- 150.000 kurze Zeilen (1,1 MB) ergaben 1,6 MB tsvector, commit brach ab. Jetzt wird der
+-- Inhalt immer vollstaendig gespeichert. Passt der Index nicht, wird er stueckweise (200.000
+-- Zeichen je Stueck) OHNE Positionen (strip) zusammengesetzt, so weit er in die Grenze passt.
+-- Wortsuche bleibt, nur Phrasen-/Abstandssuche entfaellt fuer solche Riesendateien. Kleine
+-- Inhalte gehen ohne Ausnahmeblock (keine Subtransaktion je Schreibvorgang).
+CREATE OR REPLACE FUNCTION code_files_tsv_sicher(cfg regconfig, inhalt text) RETURNS tsvector AS $$
+DECLARE
+  ergebnis tsvector := ''::tsvector;
+  stueck constant integer := 200000;
+  pos integer := 1;
+BEGIN
+  IF length(inhalt) <= 100000 THEN
+    RETURN to_tsvector(cfg, inhalt);
+  END IF;
+  IF length(inhalt) <= 1000000 THEN
+    BEGIN
+      RETURN to_tsvector(cfg, inhalt);
+    EXCEPTION WHEN program_limit_exceeded THEN
+      NULL;
+    END;
+  END IF;
+  WHILE pos <= length(inhalt) LOOP
+    BEGIN
+      ergebnis := ergebnis || strip(to_tsvector(cfg, substr(inhalt, pos, stueck)));
+    EXCEPTION WHEN program_limit_exceeded THEN
+      RETURN ergebnis;
+    END;
+    pos := pos + stueck;
+  END LOOP;
+  RETURN ergebnis;
+END
+$$ LANGUAGE plpgsql IMMUTABLE;
+
 CREATE OR REPLACE FUNCTION code_files_tsv_trigger() RETURNS trigger AS $$
 BEGIN
-  NEW.tsv := to_tsvector('english', COALESCE(NEW.content, ''));
+  NEW.tsv := code_files_tsv_sicher('english', COALESCE(NEW.content, ''));
   -- CI-2: zusaetzlich an Nicht-Alphanumerik zerlegt, damit this.foo als 'this' und 'foo'
-  -- auffindbar wird. left(...) ist PFLICHT, siehe Begruendung oben bei der Spalte.
-  NEW.tsv_zerlegt := to_tsvector(
+  -- auffindbar wird. Die Groessengrenze faengt jetzt code_files_tsv_sicher ab (vorher
+  -- left(..., 750000), siehe Begruendung oben bei der Spalte) — die ganze Datei wird indiziert.
+  NEW.tsv_zerlegt := code_files_tsv_sicher(
     'simple',
-    regexp_replace(left(COALESCE(NEW.content, ''), 750000), '[^A-Za-z0-9]+', ' ', 'g')
+    regexp_replace(COALESCE(NEW.content, ''), '[^A-Za-z0-9]+', ' ', 'g')
   );
   RETURN NEW;
 END

@@ -44,10 +44,17 @@ import {
  * Erstellt und konfiguriert den Fastify Server
  */
 export async function createServer(): Promise<FastifyInstance> {
+  // Keine Beschraenkung beim Aendern (29.09.2026): Fastify nimmt ohne Angabe nur 1 MiB Body an.
+  // Grosse Plaene (viele Ops, Dateien mit Megabytes) scheiterten daran mit 413, bevor Synapse sie
+  // sah. 64 MB, per SYNAPSE_BODY_LIMIT_MB ueberschreibbar. Gilt fuer ALLE Routen, auch die
+  // MCP-Endpunkte (POST /, /mcp/messages) — sie laufen ueber denselben JSON-Parser.
+  // Davor liegt der Cloudflare-Tunnel: Cloudflare Free/Pro nimmt bis 100 MB je Request an.
+  const bodyLimitMb = Number(process.env.SYNAPSE_BODY_LIMIT_MB);
   const fastify = Fastify({
     logger: {
       level: 'info',
     },
+    bodyLimit: Math.round((Number.isFinite(bodyLimitMb) && bodyLimitMb > 0 ? bodyLimitMb : 64) * 1024 * 1024),
   });
 
   // CORS aktivieren (fuer Browser-Zugriff)

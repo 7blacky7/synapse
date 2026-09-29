@@ -127,9 +127,9 @@ export const filesTool: ConsolidatedTool = {
         },
         edits: {
           type: 'array',
-          description: 'Edits fuer search_replace_batch (1..50 Elemente)',
+          description: 'Edits fuer search_replace_batch (1..10.000 Elemente — praktisch unbegrenzt)',
           minItems: 1,
-          maxItems: 50,
+          maxItems: 10000,
           items: {
             type: 'object',
             properties: {
@@ -178,9 +178,9 @@ export const filesTool: ConsolidatedTool = {
         },
         ops: {
           type: 'array',
-          description: 'Multi-File Edit-Plan: 1..100 Operationen ueber mehrere Dateien (fuer action="plan"). Jede Op: { file_path, action, ...op-spezifische Felder }. Aktionen: create (neue Datei), update, search_replace, search_replace_batch, replace_lines (line_start/line_end/content), insert_after (after_line/content), delete_lines (line_start/line_end), delete (ganze Datei loeschen), move (file_path → new_path), copy (file_path → new_path). MULTI-OP AUF GLEICHER DATEI: line-basierte Ops werden per Default (shift_mode="auto") intern in absteigender line_start-Reihenfolge appliziert — du gibst absolute Zeilen aus dem Snapshot VOR plan() an, kein manuelles Shift-Tracking. Ueberlappende Line-Ranges → harter Error vor jeder Mutation. Setze shift_mode="absolute" pro Op wenn du Zeilen explizit auf den Stand NACH vorausgehenden Ops beziehst. Plan-Phase macht Trockenlauf, erfasst Hash + Preview pro Op. Commit per files(action: "commit", plan_id).',
+          description: 'Multi-File Edit-Plan: 1..10.000 Operationen (praktisch unbegrenzt) ueber mehrere Dateien (fuer action="plan"). Jede Op: { file_path, action, ...op-spezifische Felder }. Aktionen: create (neue Datei), update, search_replace, search_replace_batch, replace_lines (line_start/line_end/content), insert_after (after_line/content), delete_lines (line_start/line_end), delete (ganze Datei loeschen), move (file_path → new_path), copy (file_path → new_path). MULTI-OP AUF GLEICHER DATEI: line-basierte Ops werden per Default (shift_mode="auto") intern in absteigender line_start-Reihenfolge appliziert — du gibst absolute Zeilen aus dem Snapshot VOR plan() an, kein manuelles Shift-Tracking. Ueberlappende Line-Ranges → harter Error vor jeder Mutation. Setze shift_mode="absolute" pro Op wenn du Zeilen explizit auf den Stand NACH vorausgehenden Ops beziehst. Plan-Phase macht Trockenlauf, erfasst Hash + Preview pro Op. Commit per files(action: "commit", plan_id).',
           minItems: 1,
-          maxItems: 100,
+          maxItems: 10000,
           items: {
             type: 'object',
             properties: {

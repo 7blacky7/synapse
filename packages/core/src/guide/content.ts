@@ -440,7 +440,7 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
       },
       search_replace_batch: {
         description: 'Mehrere Search-Replace-Edits in einem Aufruf. Datei wird 1× gelesen und 1× geschrieben. Continue-with-warnings: 0-match und multi-match (ohne replace_all) werden uebersprungen, Rest wird angewendet.',
-        params: 'edits (Array, 1..50 Elemente: { search, replace, replace_all? })',
+        params: 'edits (Array, 1..10.000 Elemente — praktisch unbegrenzt: { search, replace, replace_all? })',
         example: 'files({ action: "search_replace_batch", project: "synapse", file_path: "src/x.ts", edits: [{ search: "const x = 1", replace: "const x = 2" }, { search: "foo", replace: "bar", replace_all: true }] })',
         tips: [
           'Jedes Edit wird sequenziell auf dem aktuellen Content angewendet — spaetere Edits sehen Aenderungen frueherer.',
@@ -1465,7 +1465,7 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
     summary: 'Identische Implementierung wie files fuer Multi-File-Edits und reservation_add/release/update/list — als eigenes Tool exponiert, weil manche MCP-Clients die action-Enum von files cachen. Funktional gilt ALLES aus guide({ tool_name: "files" }).',
     when_to_use: 'Wenn files(action: "plan") oder eine reservation_*-Action vom Client wegen Schema-Cache abgelehnt wird. Atomare Edits: plan → commit; Reservierungen sind in CE-1 reine Buchfuehrung.',
     when_not_to_use: 'Einzeldatei-Edits — direkt files(update/search_replace). Reines Lesen — files(read) oder code_intel.',
-    param_tips: 'ops[]: 1..100 Operationen, jede mit eigenem file_path + action. anchor_text/anchor_contains pro Op = Drift-Schutz. ACHTUNG: history hier hat dieselbe agent_id-FILTER-Falle wie files(history) — fuer volle Projekt-History agent_id weglassen.',
+    param_tips: 'ops[]: 1..10.000 Operationen (praktisch unbegrenzt), jede mit eigenem file_path + action. anchor_text/anchor_contains pro Op = Drift-Schutz. ACHTUNG: history hier hat dieselbe agent_id-FILTER-Falle wie files(history) — fuer volle Projekt-History agent_id weglassen.',
     examples: [
       'files_batch({ action: "plan", project: "synapse", auto_commit: true, reason: "Refactor X", ops: [{ file_path: "a.ts", action: "search_replace", search: "alt", replace: "neu" }] })',
     ],

@@ -42,6 +42,13 @@ import {
   type ForeignActiveReservationPrimary,
 } from './file-reservations.js';
 
+/**
+ * Keine Beschraenkung beim Aendern (User-Vorgabe 29.09.2026): so viele Ops je plan/coedit_add,
+ * dass die Grenze praktisch nie greift (vorher 100). Sie faengt nur noch versehentliche
+ * Endlos-Erzeugung ab. Gemessen: 2.000 Ops in einem Plan (siehe file-batch-grenzen.test.mjs).
+ */
+export const MAX_OPS_JE_AUFRUF = 10_000;
+
 /** Hash eines leeren Strings — Marker fuer "Datei existiert (noch) nicht". */
 const EMPTY_CONTENT_HASH = contentHash('');
 
@@ -1840,8 +1847,8 @@ export async function planBatch(args: {
   if (!args.ops || args.ops.length === 0) {
     throw new Error('ops[] darf nicht leer sein');
   }
-  if (args.ops.length > 100) {
-    throw new Error(`ops[] maximal 100 Eintraege (got ${args.ops.length})`);
+  if (args.ops.length > MAX_OPS_JE_AUFRUF) {
+    throw new Error(`ops[] maximal ${MAX_OPS_JE_AUFRUF} Eintraege (got ${args.ops.length})`);
   }
 
   // 0. Pre-Flight: file_path-Pflichtcheck + Overlap-Check + Auto-Shift Reorder.
@@ -2931,7 +2938,7 @@ export async function addCoeditContribution(args: {
   const caller = resolveAgentId(args.agent_id);
   if (!caller) throw new Error("agent_id ist fuer coedit_add erforderlich");
   if (!Array.isArray(args.ops) || args.ops.length === 0) throw new Error("ops[] darf nicht leer sein");
-  if (args.ops.length > 100) throw new Error("ops[] maximal 100 Eintraege");
+  if (args.ops.length > MAX_OPS_JE_AUFRUF) throw new Error(`ops[] maximal ${MAX_OPS_JE_AUFRUF} Eintraege`);
 
   // Perf (User-Auftrag 29.09.2026): Die Dateien, die der Beitrag beruehrt, werden VOR der
   // Transaktion geladen und gehasht — ohne Plan-/Wait-Sperren. Unter der Sperre wird nur noch

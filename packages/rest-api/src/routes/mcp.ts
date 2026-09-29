@@ -896,9 +896,9 @@ const MCP_TOOLS = [
         replace: { type: 'string', description: 'Ersetzungstext (fuer search_replace)' },
         edits: {
           type: 'array',
-          description: 'Edits fuer search_replace_batch (1..50 Elemente)',
+          description: 'Edits fuer search_replace_batch (1..10.000 Elemente — praktisch unbegrenzt)',
           minItems: 1,
-          maxItems: 50,
+          maxItems: 10000,
           items: {
             type: 'object',
             properties: {
@@ -920,9 +920,9 @@ const MCP_TOOLS = [
         agent_filter: { type: 'string', description: 'Nur fuer history: expliziter exakter Agent-Filter (bevorzugt gegenueber agent_id-als-Filter)' },
         ops: {
           type: 'array',
-          description: 'Multi-File Edit-Plan: 1..100 Operationen ueber mehrere Dateien. Aktionen: create, update, search_replace, search_replace_batch, replace_lines, insert_after, delete_lines, delete (ganze Datei), move (-> new_path), copy (-> new_path).',
+          description: 'Multi-File Edit-Plan: 1..10.000 Operationen (praktisch unbegrenzt) ueber mehrere Dateien. Aktionen: create, update, search_replace, search_replace_batch, replace_lines, insert_after, delete_lines, delete (ganze Datei), move (-> new_path), copy (-> new_path).',
           minItems: 1,
-          maxItems: 100,
+          maxItems: 10000,
           items: {
             type: 'object',
             properties: {
@@ -987,10 +987,10 @@ const MCP_TOOLS = [
         },
         project: { type: 'string', description: 'Projekt-Name' },
         ops: {
-          description: 'Multi-File Edit-Plan (1..100 Operationen). Jede Op: { file_path, action, ...op-spezifische Felder }. Aktionen: create, update, search_replace, search_replace_batch, replace_lines (line_start/line_end/content), insert_after (after_line/content), delete_lines (line_start/line_end), delete (ganze Datei), move (file_path -> new_path), copy (file_path -> new_path). Multi-Op-auf-gleicher-Datei: per Default shift_mode="auto" → line-Ops werden reverse-order appliziert; ueberlappende Ranges sind ein harter Error vor jeder Mutation.',
+          description: 'Multi-File Edit-Plan (1..10.000 Operationen, praktisch unbegrenzt). Jede Op: { file_path, action, ...op-spezifische Felder }. Aktionen: create, update, search_replace, search_replace_batch, replace_lines (line_start/line_end/content), insert_after (after_line/content), delete_lines (line_start/line_end), delete (ganze Datei), move (file_path -> new_path), copy (file_path -> new_path). Multi-Op-auf-gleicher-Datei: per Default shift_mode="auto" → line-Ops werden reverse-order appliziert; ueberlappende Ranges sind ein harter Error vor jeder Mutation.',
           type: 'array',
           minItems: 1,
-          maxItems: 100,
+          maxItems: 10000,
           items: {
             type: 'object',
             properties: {
