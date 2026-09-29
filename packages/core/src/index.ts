@@ -171,7 +171,7 @@ export {
   planNummer, taskNummer, planKurzId, taskKurzId, waehleAktiven, ergaenzeTaskKurzIds, planeKurzIds,
 } from './services/plan-kurz-ids.js';
 export type { KurzIdZeile, KurzIdAenderung } from './services/plan-kurz-ids.js';
-export type { PlanRef, PlanListenEintrag } from './services/plans.js';
+export type { PlanRef, PlanListenEintrag, VerschiebeErgebnis } from './services/plans.js';
 
 // Selbstzuweisung: plan(passende_tasks) / plan(uebernehmen) (Aufgabe C)
 export { passendeTasks, uebernehmeTask, passtZuProfil, ladeAgentProfil } from './services/plan-zuweisung.js';
@@ -290,7 +290,14 @@ export {
   aendereTasks,
   getAllePlaene,
   findeTaskInPlan,
+  verschiebeTasks,
   planUebersicht,
+  listPlansDetail,
+  zurueckstellePlan,
+  zurueckstelleTask,
+  filtereWiedervorlageTasks,
+  taskSchlaeft,
+  taskBis,
   planKontext,
   planRefVon,
   hinweisPlaene,

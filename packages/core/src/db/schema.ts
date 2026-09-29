@@ -1487,6 +1487,10 @@ ALTER TABLE wrapper_status ADD COLUMN IF NOT EXISTS effort TEXT;
 ALTER TABLE plans ADD COLUMN IF NOT EXISTS kurz_id TEXT;
 ALTER TABLE plans ADD COLUMN IF NOT EXISTS aktiv BOOLEAN;
 ALTER TABLE plans ADD COLUMN IF NOT EXISTS naechste_task_nr INTEGER;
+-- Plan-Prioritaet (P3-T2, 29.09.2026): hoch|mittel|niedrig, NULL = mittel. Nur ADD COLUMN, keine Sperre.
+ALTER TABLE plans ADD COLUMN IF NOT EXISTS prioritaet TEXT;
+-- Wiedervorlage (P3-T3, 29.09.2026): Plan bis zu diesem Zeitpunkt aus list/Onboarding ausgeblendet. Nur ADD COLUMN, keine Sperre.
+ALTER TABLE plans ADD COLUMN IF NOT EXISTS zurueckgestellt_bis TIMESTAMPTZ;
 
 -- NOTIFY-Trigger fuer wrapper_status Aenderungen
 CREATE OR REPLACE FUNCTION notify_wrapper_status_change() RETURNS trigger AS $$

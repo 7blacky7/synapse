@@ -12,7 +12,8 @@ import {
   addTasksBatch,
   updateTask,
   deleteTasks,
-  listPlans,
+  listPlansDetail,
+  zurueckstellePlan,
   createPlan,
   aktivierePlan,
   planKontext,
@@ -66,6 +67,7 @@ export async function updateProjectPlan(
     description?: string;
     goals?: string[];
     architecture?: string;
+    prioritaet?: string;
   },
   planRef?: string,
 ): Promise<{
@@ -285,22 +287,27 @@ export async function deletePlanTasks(
 /**
  * Alle Plaene des Projekts mit Kurz-ID, Name, Ziel, aktiv, offen/erledigt (ohne Tasks)
  */
-export async function listProjectPlans(project: string): Promise<{
+export async function listProjectPlans(project: string, alle?: boolean): Promise<{
   success: boolean;
   plaene: PlanListenEintrag[];
   aktiver_plan?: string | null;
+  zurueckgestellt_ausgeblendet?: number;
   message: string;
 }> {
   try {
-    const plaene = await listPlans(project);
+    const { plaene, ausgeblendet } = await listPlansDetail(project, { alle: alle === true });
     const aktiv = plaene.find((p) => p.aktiv);
+    const hinweis = ausgeblendet > 0
+      ? `; ${ausgeblendet} zurueckgestellte Plaene ausgeblendet (plan(list, alle: true) zeigt sie)`
+      : '';
     return {
       success: true,
       plaene,
       aktiver_plan: aktiv ? (aktiv.kurz_id ?? aktiv.id) : null,
+      ...(ausgeblendet > 0 ? { zurueckgestellt_ausgeblendet: ausgeblendet } : {}),
       message: plaene.length === 0
-        ? `Keine Plaene im Projekt ${project}`
-        : `${plaene.length} Plan/Plaene; ohne plan_id wirkt der aktive (${aktiv?.kurz_id ?? aktiv?.id ?? '-'})`,
+        ? `Keine Plaene im Projekt ${project}${hinweis}`
+        : `${plaene.length} Plan/Plaene; ohne plan_id wirkt der aktive (${aktiv?.kurz_id ?? aktiv?.id ?? '-'})${hinweis}`,
     };
   } catch (error) {
     return { success: false, plaene: [], message: `Fehler beim Auflisten der Plaene: ${error}` };
@@ -312,12 +319,13 @@ export async function listProjectPlans(project: string): Promise<{
  */
 export async function createProjectPlan(
   project: string,
-  eingabe: { name: string; description?: string; goals?: string[]; architecture?: string; aktiv?: boolean },
+  eingabe: { name: string; description?: string; goals?: string[]; architecture?: string; aktiv?: boolean; prioritaet?: string },
 ): Promise<{ success: boolean; plan: ProjectPlan | null; message: string; plan_ref?: PlanRef; hinweis_plaene?: string }> {
   try {
     const plan = await createPlan(project, eingabe.name, eingabe.description ?? '', eingabe.goals ?? [], {
       aktiv: eingabe.aktiv === true,
       architecture: eingabe.architecture,
+      ...(eingabe.prioritaet !== undefined ? { prioritaet: eingabe.prioritaet } : {}),
     });
     return {
       success: true,
@@ -327,6 +335,21 @@ export async function createProjectPlan(
     };
   } catch (error) {
     return { success: false, plan: null, message: `Fehler beim Anlegen des Plans: ${error}` };
+  }
+}
+
+/**
+ * Wiedervorlage fuer einen Plan (P3-T3): tage | bis, tage:0 hebt auf
+ */
+export async function zurueckstellenPlan(
+  project: string,
+  planRef: string | undefined,
+  eingabe: { tage?: unknown; bis?: unknown },
+): Promise<Record<string, unknown>> {
+  try {
+    return await zurueckstellePlan(project, planRef, eingabe) as unknown as Record<string, unknown>;
+  } catch (error) {
+    return { success: false, message: `Fehler beim Zurueckstellen: ${error}` };
   }
 }
 

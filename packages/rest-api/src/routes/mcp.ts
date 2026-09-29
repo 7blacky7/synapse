@@ -430,16 +430,21 @@ const MCP_TOOLS = [
       properties: {
         action: {
           type: 'string',
-          enum: ['get', 'update', 'add_task', 'add_tasks_batch', 'update_task', 'delete_task', 'empfehlen', 'list', 'create', 'aktivieren', 'passende_tasks', 'uebernehmen'],
-          description: 'Aktion: "passende_tasks" (agent_id Pflicht, plan_id optional) offene Tasks, deren Empfehlung zu deinem Profil passt (Familie gleich, Kontext >= empfohlen, Effort gleich oder eine Stufe hoeher); ohne/unsichere Empfehlung -> offen_fuer_koordinator, "uebernehmen" (plan_id + task_id + agent_id Pflicht) nimmt eine passende Task atomar (zugewiesen_an, in_progress), "list" alle Plaene des Projekts (Kurz-ID, Name, Ziel, aktiv, offen/erledigt), "create" neuer Plan (name, description, goals, architecture, aktiv?), "aktivieren" plan_id zum aktiven Plan machen, "get" zum Abrufen, "update" zum Aktualisieren, "add_task" um eine Task hinzuzufuegen, "add_tasks_batch" um mehrere Tasks atomar hinzuzufuegen, "update_task" um eine Task zu aendern, "delete_task" um eine oder mehrere Tasks zu loeschen (id als String oder Array), "empfehlen" (EXPERIMENTELL) bewertet die per plan_id + task_id (beide PFLICHT, UUID oder Kurz-ID) genannten Tasks in EINEM Jev-Aufruf und schreibt je Task das Feld empfehlung {modell, effort, kontext 200k|1m, confidence, ...} — nur Empfehlung, kein Muss; unter dem Confidence-Tor unsicher statt Empfehlung',
+          enum: ['get', 'update', 'add_task', 'add_tasks_batch', 'update_task', 'delete_task', 'empfehlen', 'list', 'create', 'aktivieren', 'passende_tasks', 'uebernehmen', 'verschieben', 'zurueckstellen'],
+          description: 'Aktion: "verschieben" (task_id String oder Array + ziel = Plan-UUID oder Kurz-ID) verschiebt Tasks atomar in einen anderen Plan; UUID und Felder bleiben, im Zielplan gibt es eine neue Kurz-ID, die alte bleibt als Alias gueltig, "passende_tasks" (agent_id Pflicht, plan_id optional) offene Tasks, deren Empfehlung zu deinem Profil passt (Familie gleich, Kontext >= empfohlen, Effort gleich oder eine Stufe hoeher); ohne/unsichere Empfehlung -> offen_fuer_koordinator, "uebernehmen" (plan_id + task_id + agent_id Pflicht) nimmt eine passende Task atomar (zugewiesen_an, in_progress), "list" alle Plaene des Projekts (Kurz-ID, Name, Ziel, aktiv, offen/erledigt), "create" neuer Plan (name, description, goals, architecture, aktiv?), "aktivieren" plan_id zum aktiven Plan machen, "get" zum Abrufen, "update" zum Aktualisieren, "add_task" um eine Task hinzuzufuegen, "add_tasks_batch" um mehrere Tasks atomar hinzuzufuegen, "update_task" um eine Task zu aendern, "delete_task" um eine oder mehrere Tasks zu loeschen (id als String oder Array), "empfehlen" (EXPERIMENTELL) bewertet die per plan_id + task_id (beide PFLICHT, UUID oder Kurz-ID) genannten Tasks in EINEM Jev-Aufruf und schreibt je Task das Feld empfehlung {modell, effort, kontext 200k|1m, confidence, ...} — nur Empfehlung, kein Muss; unter dem Confidence-Tor unsicher statt Empfehlung',
         },
         project: { type: 'string', description: 'Projekt-Name' },
         agent_id: { type: 'string', description: 'Agent-ID fuer Onboarding. Neue Agenten sehen automatisch Projekt-Regeln.' },
         plan_id: { type: 'string', description: 'Optional bei allen Aktionen: Plan-UUID oder Kurz-ID "P<n>" (siehe list). Ohne plan_id wirkt der AKTIVE Plan des Projekts (bisheriges Verhalten). Pflicht fuer aktivieren. Tasks akzeptieren task_id als UUID oder Kurz-ID "P<n>-T<m>".' },
+        ziel: { type: 'string', description: 'Nur fuer verschieben: Zielplan (UUID oder Kurz-ID P<n>).' },
+        tage: { type: 'number', description: 'Nur fuer zurueckstellen: Wiedervorlage in N Tagen (0 = aufheben). Entweder tage ODER bis. Mit task_id wird die TASK zurueckgestellt, ohne task_id der Plan. Der AKTIVE Plan kann nicht zurueckgestellt werden. Der Plan verschwindet bis dahin aus plan(list) und dem Onboarding; plan(get) mit plan_id geht immer.' },
+        bis: { type: 'string', description: 'Nur fuer zurueckstellen: Wiedervorlage-Datum (2026-10-15 oder ISO-Zeitpunkt, in der Zukunft).' },
+        alle: { type: 'boolean', description: 'Nur fuer list und get: true zeigt auch zurueckgestellte Plaene bzw. Tasks (mit Vermerk).' },
         aktiv: { type: 'boolean', description: 'Nur fuer create: neuen Plan gleich aktiv schalten (Standard false; der erste Plan eines Projekts ist immer aktiv).' },
         name: { type: 'string', description: 'Neuer Plan-Name' },
         description: { type: 'string', description: 'Neue Beschreibung' },
         goals: { type: 'array', items: { type: 'string' }, description: 'Neue Ziele' },
+        plan_prioritaet: { type: 'string', enum: ['hoch', 'mittel', 'niedrig'], description: 'Plan-Prioritaet fuer create/update (Standard mittel). plan(list) und Onboarding sortieren: aktiver Plan zuerst, dann hoch > mittel > niedrig, dann zuletzt geaendert. Nicht zu verwechseln mit priority (Task).' },
         architecture: { type: 'string', description: 'Architektur-Beschreibung' },
         title: { type: 'string', description: 'Task-Titel' },
         priority: { type: 'string', enum: ['low', 'medium', 'high'], description: 'Prioritaet (Standard: medium)' },
@@ -2862,7 +2867,11 @@ async function handleToolCall(
           const { planKontext } = await import('@synapse/core');
           // DX-Befund 5: Vollabwurf vermeiden — status-Filter, compact, limit.
           const p = plan as unknown as Record<string, unknown> & { tasks?: Array<Record<string, unknown>> };
-          const allTasks = Array.isArray(p.tasks) ? p.tasks : [];
+          const rohTasks = Array.isArray(p.tasks) ? p.tasks : [];
+          // P3-T4: zurueckgestellte Tasks ausblenden (alle:true / ausdrueckliche task_id zeigt sie)
+          const { filtereWiedervorlageTasks } = await import('@synapse/core');
+          const wv = filtereWiedervorlageTasks(rohTasks as never, { alle: args.alle === true, taskIds: strArray(args, 'task_id') });
+          const allTasks = wv.tasks as unknown as Array<Record<string, unknown>>;
           const statusFilter = str(args, 'status');
           const filtered = statusFilter ? allTasks.filter(t => t.status === statusFilter) : allTasks;
           const taskLimit = num(args, 'limit');
@@ -2876,6 +2885,7 @@ async function handleToolCall(
             tasks,
             tasks_total: allTasks.length,
             tasks_returned: tasks.length,
+            ...(wv.ausgeblendet > 0 ? { zurueckgestellt_ausgeblendet: wv.ausgeblendet, zurueckgestellt_hinweis: 'plan(get, alle: true) oder task_id zeigt zurueckgestellte Tasks.' } : {}),
             ...(statusFilter ? { tasks_status_filter: statusFilter } : {}),
             ...(compact || tasks.length < allTasks.length
               ? { tip: 'Task-Liste gefiltert/kompakt — volle Descriptions via plan(get) ohne compact/status/limit.' }
@@ -2885,12 +2895,20 @@ async function handleToolCall(
         }
         case 'update': {
           const { planKontext } = await import('@synapse/core');
-          const aktualisiert = await updatePlan(project, {
-            name: str(args, 'name'),
-            description: str(args, 'description'),
-            goals: strArray(args, 'goals'),
-            architecture: str(args, 'architecture'),
-          }, str(args, 'plan_id'));
+          let aktualisiert;
+          try {
+            aktualisiert = await updatePlan(project, {
+              name: str(args, 'name'),
+              description: str(args, 'description'),
+              goals: strArray(args, 'goals'),
+              architecture: str(args, 'architecture'),
+              prioritaet: str(args, 'plan_prioritaet'),
+            }, str(args, 'plan_id'));
+          } catch (e) {
+            // Ungueltige plan_prioritaet -> klare Meldung wie im MCP-Tool
+            if (/Prioritaet/i.test(String((e as Error)?.message))) return { success: false, message: (e as Error).message };
+            throw e;
+          }
           return aktualisiert ? { ...aktualisiert, ...planKontext(aktualisiert) } : aktualisiert;
         }
         case 'add_task':
@@ -2967,25 +2985,46 @@ async function handleToolCall(
           const { uebernehmeTask } = await import('@synapse/core');
           return await uebernehmeTask(project, str(args, 'plan_id') ?? '', str(args, 'task_id') ?? '', str(args, 'agent_id') ?? '');
         }
+        case 'verschieben': {
+          const { verschiebeTasks } = await import('@synapse/core');
+          return await verschiebeTasks(project, strArray(args, 'task_id') ?? [], str(args, 'ziel')) as unknown as Record<string, unknown>;
+        }
+        case 'zurueckstellen': {
+          const { zurueckstellePlan, zurueckstelleTask } = await import('@synapse/core');
+          const zTask = str(args, 'task_id');
+          if (zTask) return await zurueckstelleTask(project, str(args, 'plan_id'), zTask, { tage: args.tage, bis: args.bis }) as unknown as Record<string, unknown>;
+          return await zurueckstellePlan(project, str(args, 'plan_id'), { tage: args.tage, bis: args.bis }) as unknown as Record<string, unknown>;
+        }
         case 'list': {
-          const { listPlans } = await import('@synapse/core');
-          const plaene = await listPlans(project);
+          const { listPlansDetail } = await import('@synapse/core');
+          const { plaene, ausgeblendet } = await listPlansDetail(project, { alle: args.alle === true });
           const aktiv = plaene.find((p) => p.aktiv);
+          const hinweis = ausgeblendet > 0
+            ? `; ${ausgeblendet} zurueckgestellte Plaene ausgeblendet (plan(list, alle: true) zeigt sie)`
+            : '';
           return {
             success: true,
             plaene,
             aktiver_plan: aktiv ? (aktiv.kurz_id ?? aktiv.id) : null,
+            ...(ausgeblendet > 0 ? { zurueckgestellt_ausgeblendet: ausgeblendet } : {}),
             message: plaene.length === 0
-              ? `Keine Plaene im Projekt ${project}`
-              : `${plaene.length} Plan/Plaene; ohne plan_id wirkt der aktive (${aktiv?.kurz_id ?? aktiv?.id ?? '-'})`,
+              ? `Keine Plaene im Projekt ${project}${hinweis}`
+              : `${plaene.length} Plan/Plaene; ohne plan_id wirkt der aktive (${aktiv?.kurz_id ?? aktiv?.id ?? '-'})${hinweis}`,
           };
         }
         case 'create': {
           const { createPlan, planKontext } = await import('@synapse/core');
-          const neu = await createPlan(project, reqStr(args, 'name'), str(args, 'description') ?? '', strArray(args, 'goals') ?? [], {
-            aktiv: bool(args, 'aktiv') === true,
-            architecture: str(args, 'architecture'),
-          });
+          let neu;
+          try {
+            neu = await createPlan(project, reqStr(args, 'name'), str(args, 'description') ?? '', strArray(args, 'goals') ?? [], {
+              aktiv: bool(args, 'aktiv') === true,
+              architecture: str(args, 'architecture'),
+              prioritaet: str(args, 'plan_prioritaet'),
+            });
+          } catch (e) {
+            if (/Prioritaet/i.test(String((e as Error)?.message))) return { success: false, message: (e as Error).message };
+            throw e;
+          }
           return {
             success: true,
             plan: neu,

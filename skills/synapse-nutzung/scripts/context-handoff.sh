@@ -1,6 +1,21 @@
 #!/usr/bin/env bash
 # context-handoff.sh — Beendet aktuelle Claude-Session und startet neue mit Synapse-Kontext
 #
+# ##############################################################################
+# ##  ⚠️  NUR MIT DEM EIGENEN BASH-TOOL AUSFUEHREN  ⚠️                        ##
+# ##                                                                          ##
+# ##  NIEMALS ueber shell(action:"exec") der Synapse-API oder des lokalen     ##
+# ##  MCP-Servers starten. DER DESKTOP DES USERS STUERZT DABEI AB.            ##
+# ##                                                                          ##
+# ##  Grund: Das Skript sucht den Claude-Prozess ueber die Prozesskette und   ##
+# ##  beendet ihn. Ueber die Synapse-Shell ausgefuehrt haengt es an einer     ##
+# ##  anderen Elternkette (Daemon bzw. Container) — der Kill trifft dann      ##
+# ##  nicht die Claude-Session, sondern reisst die Desktop-Sitzung mit.       ##
+# ##                                                                          ##
+# ##  RICHTIG:  Bash-Tool -> bash ~/.claude/skills/.../context-handoff.sh ... ##
+# ##  FALSCH:   shell(exec, command: "bash .../context-handoff.sh ...")       ##
+# ##############################################################################
+#
 # Verwendung (vom Koordinator aufgerufen NACHDEM Synapse gespeichert wurde):
 #   bash ~/.claude/skills/synapse-nutzung/scripts/context-handoff.sh \
 #     <projekt-verzeichnis> <projekt-name> <aufgabe>
@@ -179,23 +194,38 @@ PFLICHT — Fuehre diese Schritte in DIESER Reihenfolge aus:
 
 1. Lade den synapse-nutzung Skill (er enthaelt deine Arbeitsregeln)
 
-2. Projekt starten (FileWatcher + Spezialisten-Reconnect):
-   project(action: 'init', path: '${PROJECT_DIR}', name: '${PROJEKT_NAME}', agent_id: '${AGENT_ID}')
+2. Projekt pruefen — NICHT blind init aufrufen:
+   project(action: 'status', path: '${PROJECT_DIR}')
+   Nur WENN nicht initialisiert oder status='stopped':
+     project(action: 'init', path: '${PROJECT_DIR}', name: '${PROJEKT_NAME}', agent_id: '${AGENT_ID}')
+   (init ist einmalig und stoesst den Setup-Flow an; ein laufendes Projekt braucht es nicht.)
 
 3. Registrieren:
-   chat(action: 'register', id: '${AGENT_ID}', project: '${PROJEKT_NAME}')
+   chat(action: 'register', id: '${AGENT_ID}', project: '${PROJEKT_NAME}', model: '<dein Modell>')
 
-4. Handoff-Kontext laden:
-   thought(action: 'get', query: 'session-uebergabe', project: '${PROJEKT_NAME}')
-   → Lies den Thought und loesche ihn danach
+4. Projekt-Regeln laden — NICHT ueberspringen, sonst arbeitest du ohne die Regeln:
+   admin(action: 'index_stats', project: '${PROJEKT_NAME}', agent_id: '${AGENT_ID}', role: 'koordinator')
+   Die Antwort enthaelt die rollenspezifischen Projekt-Regeln. Lies sie vollstaendig.
 
-5. Handoff-Thought loeschen nach dem Lesen
+5. Letzte Team-Nachrichten:
+   chat(action: 'get', project: '${PROJEKT_NAME}', limit: 10)
 
-6. Aufgabe: ${AUFGABE}
+6. Handoff-Kontext laden (action ist SEARCH, nicht get — get erwartet eine id):
+   thought(action: 'search', project: '${PROJEKT_NAME}', query: 'session-uebergabe')
+   → Lies den/die Handoff-Thought(s) vollstaendig.
+   → Erst NACH dem Lesen und nur den bereits verarbeiteten loeschen:
+     thought(action: 'delete', project: '${PROJEKT_NAME}', id: '<id>')
+   Es koennen mehrere Handoffs existieren, die sich ergaenzen statt ersetzen — pruefe das Datum.
+
+7. Aufgabe: ${AUFGABE}
 
 WICHTIG:
-- ZUERST Kontext lesen, DANN arbeiten
-- Synapse-Regeln befolgen"
+- ZUERST Kontext lesen, DANN arbeiten.
+- Suchreihenfolge: code_intel zuerst (tree/functions/symbols/references/search), dann Glob/Grep, Read zuletzt.
+- Mehrere Dateien aendern: IMMER files(action:'plan') + commit in EINEM atomaren Aufruf.
+- BUILD-PRUEFUNG: niemals durch eine Pipe. 'pnpm build 2>&1 | tail' liefert den Exit-Code von tail,
+  also immer 0 — und tsc schreibt das dist auch bei Fehlern. Immer EXIT=\$? pruefen plus grep auf 'error TS'.
+- Bei Unsicherheit zu einem Tool: guide(tool_name) fragen, das kostet keinen MCP-Kontext."
 
 # --- Handoff-Daten schreiben (wird vom Wrapper gelesen) ---
 

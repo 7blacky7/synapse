@@ -26,7 +26,7 @@ import { getWrapperStatus } from './wrapper-status.js';
 import { getModel } from './model-registry.js';
 import { EFFORT_STUFEN } from './effort.js';
 import {
-  getPlan, getAllePlaene, findeTaskInPlan, aendereTasks, planKontext,
+  getPlan, getAllePlaene, findeTaskInPlan, aendereTasks, planKontext, taskBis, taskSchlaeft,
 } from './plans.js';
 import type { ProjectPlan, ProjectTask } from '../types/index.js';
 
@@ -102,6 +102,7 @@ function hinderungsgrund(t: ProjectTask, profil: AgentProfil): string | null {
   if (typeof t.zugewiesen_an === 'string' && t.zugewiesen_an) return `Task ${t.kurz_id ?? t.id} ist bereits zugewiesen an ${t.zugewiesen_an}.`;
   if (t.status === 'done') return `Task ${t.kurz_id ?? t.id} ist erledigt (done).`;
   if (t.status !== 'todo') return `Task ${t.kurz_id ?? t.id} ist nicht offen (status ${t.status}).`;
+  if (taskSchlaeft(t)) return `Task ${t.kurz_id ?? t.id} ist zurueckgestellt bis ${taskBis(t)?.toISOString()} (Wiedervorlage) — aufheben mit plan(zurueckstellen, task_id, tage:0).`;
   const e = t.empfehlung as EmpfehlungMin | undefined;
   if (!e || typeof e !== 'object') return `Task ${t.kurz_id ?? t.id} hat keine Empfehlung — sie gehoert dem Koordinator (plan empfehlen oder direkte Zuweisung).`;
   if (e.unsicher) return `Die Empfehlung fuer Task ${t.kurz_id ?? t.id} ist unsicher — sie gehoert dem Koordinator.`;
@@ -116,7 +117,7 @@ const kurzEmpfehlung = (e: EmpfehlungMin) => ({
 });
 
 /** Offene Tasks, deren Empfehlung zum Profil passt; ohne plan_id ueber alle Plaene. */
-export async function passendeTasks(project: string, agentId: string, planRef?: string | null): Promise<Record<string, unknown>> {
+export async function passendeTasks(project: string, agentId: string, planRef?: string | null, jetzt: Date = new Date()): Promise<Record<string, unknown>> {
   try {
     const profil = await ladeAgentProfil(project, agentId);
     if (typeof profil === 'string') return { success: false, message: profil };
@@ -126,10 +127,12 @@ export async function passendeTasks(project: string, agentId: string, planRef?: 
     const passend: Array<Record<string, unknown>> = [];
     const offenFuerKoordinator: Array<Record<string, unknown>> = [];
     let nichtPassend = 0;
+    let zurueckgestellt = 0;
     for (const plan of plaene) {
       const kopf = { plan_id: plan.id, plan_kurz_id: plan.kurz_id ?? null, plan_name: plan.name };
       for (const t of plan.tasks) {
         if (t.status !== 'todo' || (typeof t.zugewiesen_an === 'string' && t.zugewiesen_an)) continue;
+        if (taskSchlaeft(t, jetzt)) { zurueckgestellt++; continue; }
         const zeile = { ...kopf, task_id: t.id, kurz_id: t.kurz_id ?? null, titel: t.title };
         const e = t.empfehlung as EmpfehlungMin | undefined;
         if (!e || typeof e !== 'object') {
@@ -149,6 +152,7 @@ export async function passendeTasks(project: string, agentId: string, planRef?: 
       passend,
       offen_fuer_koordinator: offenFuerKoordinator,
       nicht_passend: nichtPassend,
+      ...(zurueckgestellt > 0 ? { zurueckgestellt_ausgeblendet: zurueckgestellt } : {}),
       message: passend.length > 0
         ? `${passend.length} passende Task(s). Uebernehmen mit plan(action:'uebernehmen', plan_id, task_id, agent_id).`
         : 'Nichts passt zu deinem Profil. Melde dich im Channel und warte — Tasks nicht an andere weitergeben.',

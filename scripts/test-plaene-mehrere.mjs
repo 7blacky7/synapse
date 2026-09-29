@@ -272,10 +272,11 @@ await pruefe('Mehrplan: listPlans mit Kurz-ID, Name, aktiv, offen/gesamt', async
   reset();
   const l = await core.listPlans('multi');
   assert.deepEqual(l.map((x) => [x.kurz_id, x.name, x.aktiv, x.tasks_offen, x.tasks_gesamt]), [
-    ['P1', 'Grundplan', false, 1, 1],
+    // P3-T2: aktiver Plan zuerst (danach Prioritaet, zuletzt geaendert)
     ['P2', 'PLAN-004', true, 2, 2],
+    ['P1', 'Grundplan', false, 1, 1],
   ]);
-  assert.equal(l[0].tasks, undefined, 'list liefert keine Tasks');
+  assert.equal(l[1].tasks, undefined, 'list liefert keine Tasks');
 });
 
 await pruefe('Mehrplan: createPlan (aktiv) -> P3 aktiv, P2 inaktiv; aktivierePlan P2 schaltet zurueck', async () => {
@@ -384,7 +385,7 @@ await pruefe('Onboarding: planUebersicht nur aktive/offene Plaene, ohne Tasks', 
   reset();
   zeilen('multi')[0].tasks[0].status = 'done'; // P1 hat nichts offen und ist inaktiv
   const u = await core.planUebersicht('multi');
-  assert.deepEqual(u, [{ kurz_id: 'P2', name: 'PLAN-004', aktiv: true, offen: 2, gesamt: 2 }]);
+  assert.deepEqual(u, [{ kurz_id: 'P2', name: 'PLAN-004', aktiv: true, prioritaet: 'mittel', offen: 2, gesamt: 2 }]);
 });
 
 await pruefe('MCP plan-Tool: list/create/aktivieren im Schema; get mit plan_id; update_task mit Kurz-ID; alte Aufrufe ohne plan_id', async () => {

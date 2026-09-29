@@ -748,6 +748,18 @@ const RESPAWN_MARKER_PATH = `/tmp/.specialist-rotate-pending-${AGENT_NAME}`
 // Agent in den Korridor-Bereich kommt. Verhindert Spam bei jedem Heartbeat.
 let handoffWarningSent = false
 
+// Laeuft gerade eine Rotation? Sperrt zweite Aufrufe (Heartbeat feuert die
+// Hard-Rotation sonst mehrfach) und sagt dem Exit-Handler, dass das Prozessende
+// von der Rotation selbst kommt (SIGTERM, code 143) und KEIN Crash ist. Ohne
+// die Sperre startete der Exit-Handler eine zweite Rotation, zaehlte jede
+// Rotation als Crash und beendete bei 3 davon in 60 s den ganzen Wrapper.
+let rotationLaeuft = false
+// Nur waehrend processManager.stop() in der Rotation: dieses Prozessende ist gewollt.
+let stoppeFuerRotation = false
+// Ein Crash kam, waehrend die Rotation lief (z. B. der NEUE Prozess starb) —
+// nach deren Ende einmal nachholen, sonst bliebe der Agent trotz KEEP_ALIVE tot.
+let rotationNachholen = false
+
 /**
  * EIN einzelner Poll fuer den abgeschalteten Wrapper — nur nach einer
  * NACHGEWIESENEN Luecke im Live-Kanal. Freigabe des Koordinators, 02.08.2026.
@@ -1311,6 +1323,12 @@ async function updateStatusFile() {
 // ---------------------------------------------------------------------------
 
 async function rotateAgent(fromCrash = false) {
+  if (rotationLaeuft) {
+    log('CONTEXT-ROTATION uebersprungen — es laeuft bereits eine (fromCrash=%s)', fromCrash)
+    if (fromCrash) rotationNachholen = true
+    return
+  }
+  rotationLaeuft = true
   log('CONTEXT-ROTATION — saving memory and restarting (fromCrash=%s)', fromCrash)
   // Reset Auto-Handoff-Hinweis-Flag, damit er nach Respawn wieder feuert
   handoffWarningSent = false
@@ -1337,7 +1355,12 @@ Alles was du NICHT speicherst geht verloren.`,
 
     // Stop current process (no-op if already dead)
     if (processAlive) {
-      await processManager.stop(AGENT_NAME)
+      stoppeFuerRotation = true
+      try {
+        await processManager.stop(AGENT_NAME)
+      } finally {
+        stoppeFuerRotation = false
+      }
     }
     processAlive = false
 
@@ -1377,6 +1400,15 @@ Danach: Check Channels und Inbox fuer neue Nachrichten.`
     log('Context rotation completed successfully')
   } catch (err) {
     log('Context rotation failed: %s', err)
+  } finally {
+    rotationLaeuft = false
+    if (rotationNachholen) {
+      rotationNachholen = false
+      if (!processAlive && KEEP_ALIVE && !shuttingDown) {
+        log('Crash waehrend der Rotation — hole die Rotation jetzt nach')
+        void rotateAgent(true)
+      }
+    }
   }
 }
 
@@ -1390,6 +1422,13 @@ function setupProcessManagerEvents() {
     log('Claude CLI process exited (code: %s, signal: %s)', code, signal)
     processAlive = false
     agentBusy = false
+
+    // Von der Rotation selbst beendet: kein Crash, kein Status 'crashed',
+    // keine zweite Rotation und kein Eintrag in die Crash-Rate.
+    if (stoppeFuerRotation) {
+      log('Prozessende durch laufende Rotation — kein Crash')
+      return
+    }
 
     broadcastNotification('agent_error', {
       error: `Agent process exited (code: ${code}, signal: ${signal})`,

@@ -119,6 +119,10 @@ export interface ProjectPlan {
   aktiv?: boolean;
   /** Anzahl Plaene des Projekts (fuer den Hinweis "weitere Plaene: plan(list)") */
   plaene_im_projekt?: number;
+  /** Plan-Prioritaet (P3-T2): hoch | mittel | niedrig, Standard mittel (nicht die Task-priority) */
+  prioritaet?: 'hoch' | 'mittel' | 'niedrig';
+  /** Wiedervorlage (P3-T3): ISO-Zeitpunkt, bis dahin aus list/Onboarding ausgeblendet */
+  zurueckgestellt_bis?: string;
 }
 
 export interface ProjectTask {

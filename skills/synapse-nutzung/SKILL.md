@@ -6,359 +6,195 @@ description: >
   "projekt wissen speichern", "memory anlegen", "context handoff", "session wechsel".
 ---
 
-# Synapse-Nutzung (Koordinator)
-
-Regeln fuer den Koordinator. Agenten bekommen den `synapse-agent-regeln` Skill.
-
-## 1. Session-Start (PFLICHT)
-
-```
-1. get_project_status → FileWatcher aktiv?
-2. Falls "stopped" → init_projekt ausfuehren
-3. register_chat_agent(id: "koordinator", project: "<projekt>", model: "claude-opus-4-6")
-4. get_index_stats → Genuegend Chunks vorhanden?
-5. get_chat_messages(project: "<projekt>", agent_id: "koordinator", limit: 10)
-   → Letzte Nachrichten lesen (Kontext von vorheriger Session)
-6. search_thoughts mit Tag "session-uebergabe" → Gibt es eine Uebergabe?
-```
-
-## 2. Suchreihenfolge (PFLICHT)
-
-```
-1. code_intel — Strukturierte Abfragen (tree, functions, variables, symbols, references)
-   → Projektbaum, Funktionsliste, Variablen-Suche, Querverweise, Full-Text-Search
-   → Kein Embedding noetig, sofortige Ergebnisse aus PostgreSQL
-2. Synapse Semantic: search(action: "code") / search(action: "memory") / search(action: "thoughts")
-   → Wenn konzeptuelle/fuzzy Suche noetig (Score-basiert via Qdrant)
-3. code_intel search liefert Trefferzeilen (matches[].line) → file(from_line,to_line). KEIN Glob/Grep fuer Projektcode; Luecke in code_intel = Befund melden
-4. NUR wenn alles scheitert → Read / manuelle Suche
-```
-
-**code_intel IMMER ZUERST** fuer:
-- "Welche Funktionen gibt es?" → `code_intel(action: "functions")`
-- "Wo wird X verwendet?" → `code_intel(action: "references", name: "X")`
-- "Projektstruktur zeigen" → `code_intel(action: "tree")`
-- "Alle Interfaces/Klassen" → `code_intel(action: "symbols", symbol_type: "interface")`
-- "Datei-Inhalt lesen" → `code_intel(action: "file")` (statt Read-Tool!)
-
-Der Koordinator sucht NICHT selbst, er delegiert an Agenten.
-
-## 3. Chat-Pflicht (WENN Agenten aktiv)
-
-Der PostToolUse-Hook zeigt ungelesene Nachrichten nach jedem Tool-Call:
-```
-📨 Chat: 3 Broadcasts, 2 DMs von agent-1, agent-2 ungelesen
-```
-
-**WENN diese Notification erscheint → SOFORT reagieren:**
-1. `get_chat_messages(project, agent_id: "koordinator")` — Nachrichten lesen
-2. Auf JEDE DM antworten per `send_chat_message(recipient_id: "<sender>")`
-3. Bei "Wissensluecke:" → Docs-Kurator dispatchen (siehe §4)
-4. Bei Problemen → Hilfestellung oder neuen Task dispatchen
-
-**Solange Agenten registriert sind, bleibt der Koordinator im Chat aktiv.**
-Nicht ignorieren, nicht aufschieben — Agenten warten auf Antworten.
-
-## 4. Agenten dispatchen
-
-### Worktree-Isolation — VERBOTEN
-
-> ⛔ `isolation: "worktree"` NIEMALS verwenden wenn Synapse aktiv ist!
-> Agenten arbeiten direkt im Haupt-Repo auf eigenen Branches.
-
-### Agent spawnen (PFLICHT-Ablauf)
-
-Beim Dispatchen von Hintergrund-Agenten IMMER als parallele Calls:
-
-```
-// PARALLEL (ein Tool-Call-Block):
-1. register_chat_agents_batch(agents: [{id, model}, ...], project: "<PROJEKT>")
-2. Bash(run_in_background, timeout: 300000):
-     bash ~/dev/synapse/scripts/coordinator-watch.sh "<PROJEKT>" "koordinator" 10
-3. Agent(s) spawnen mit IDs im Prompt
-```
-
-Der Watcher ist der EINZIGE Weg den Koordinator im Idle zu wecken.
-Hooks (PostToolUse, server.ts) funktionieren nur bei aktiver Arbeit.
-
-**WENN der Watcher aufwacht (task-notification "KOORDINATOR AUFWACHEN"):**
-1. Nachrichten lesen: get_chat_messages + get_pending_events
-2. Reagieren (DMs beantworten, Events acknowledgen)
-3. Watcher NEU starten (gleicher Bash-Befehl, run_in_background)
-Solange Agenten im Hintergrund laufen → Watcher muss laufen.
-
-**Der Agent muss sich NICHT selbst registrieren** — der Koordinator hat das bereits gemacht.
-Der Agent muss sich am Ende nur abmelden: `unregister_chat_agent(id: "<AGENT_ID>")`
-
-### Prompt-Baustein (PFLICHT in jedem Agent-Prompt)
-
-```
-=== SYNAPSE AGENT-REGELN ===
-Du arbeitest mit Synapse MCP-Tools. Deine agent_id ist: {AGENT_ID}
-Projekt: {PROJEKT}
-Du bist bereits im Chat registriert (vom Koordinator).
-
-SCHRITT 1 (ALLERERSTE Aktion):
-  get_index_stats(project: "{PROJEKT}", agent_id: "{AGENT_ID}")
-  → Onboarding + Projekt-Regeln laden
-  get_chat_messages(project: "{PROJEKT}", agent_id: "{AGENT_ID}", limit: 10)
-  → Letzte Nachrichten lesen
-
-SUCHE (PFLICHT-Reihenfolge):
-1. code_intel — Strukturierte Abfragen: tree, functions, variables, symbols, references, search, file
-   → IMMER ZUERST fuer Code-Fragen (Funktionen, Variablen, Imports, Querverweise, Projektbaum)
-2. Synapse Semantic: search(action: "code") — NUR wenn fuzzy/konzeptuelle Suche noetig
-3. Kein Glob/Grep-Fallback fuer Projektcode: code_intel search liefert Trefferzeilen; Luecke = Befund melden
-4. Read NUR als letzter Ausweg (code_intel file-Action bevorzugen!)
-
-KOMMUNIKATION (Agenten-Chat):
-- send_chat_message(project: "{PROJEKT}", sender_id: "{AGENT_ID}", content: "...")
-- Bei Problemen: DM an Koordinator (recipient_id: "koordinator")
-- Polling: get_chat_messages(since: "<timestamp>")
-
-REGELN:
-- agent_id: "{AGENT_ID}" an JEDEN Synapse-Aufruf
-- source: "{AGENT_ID}" bei add_thought (NIEMALS "claude-code")
-- Erfolg: Chat "Task erledigt." + Task completed
-- Problem: Chat-DM + add_thought mit Tag "problem"
-
-VOR JEDER DATEI-BEARBEITUNG (PFLICHT):
-- BEVOR du eine Datei mit Edit/Write aenderst:
-  get_docs_for_file(file_path: "<datei>", agent_id: "{AGENT_ID}", project: "{PROJEKT}")
-  → Zeigt Breaking Changes, Migration-Warnungen und Gotchas fuer relevante Frameworks
-  → Wenn Warnings kommen: LIES SIE und beruecksichtige sie in deinen Aenderungen
-  → Ignoriere diese Warnungen NICHT — sie verhindern Fehler die du nicht kennst
-
-WISSENSLUECKEN (Cutoff-Handling):
-- Wenn Technologie/Version jenseits deines Cutoffs liegt:
-  1. search_tech_docs(query: "[Frage]", framework: "[tech]", project: "{PROJEKT}")
-     → Hat Context7 Auto-Fetch, liefert Basis-Docs automatisch
-  2. Bei Treffern (Score > 0.60): Docs nutzen, weiterarbeiten
-  3. Wenn kuratiertes Wissen fehlt (Breaking Changes, Migration, Gotchas):
-     Chat-DM an Koordinator: "Wissensluecke: [Tech] v[Version]. Brauche: [was genau fehlt]"
-  4. NICHT selbst recherchieren (kein Context7, keine Web-Suche, keine externen Skills)
-  5. NICHT blockieren — mit bestem Wissen weiterarbeiten, TODO-Kommentar setzen
-  6. Arbeite weiter — unreadChat im naechsten Tool-Response zeigt dir wenn Antwort da ist
-  7. Koordinator dispatcht Docs-Kurator, indexiert kuratierte Docs
-  8. Danach: search_tech_docs(source: "research") fuer Breaking Changes etc.
-
-EVENTS (Pflicht-Reaktion):
-- Tool-Responses zeigen pending Events an (wie unreadChat)
-- Bei ⛔ PFLICHT-EVENT: SOFORT mit acknowledge_event(event_id: <id>, agent_id: "{AGENT_ID}") reagieren
-- WORK_STOP: Arbeit anhalten, Status posten, auf Koordinator warten
-- Ignorieren fuehrt zu Eskalation nach 3 Calls
-
-ABMELDUNG (PFLICHT am Ende): unregister_chat_agent(id: "{AGENT_ID}")
-=== ENDE AGENT-REGELN ===
-```
-
-## 5. Wissensluecke-Reaktion (AUTOMATISCH)
-
-Wenn ein Agent eine DM mit "Wissensluecke:" schickt → SOFORT reagieren:
-
-### Schritt 1: Agent informieren
-```
-send_chat_message(recipient_id: "<agent-id>",
-  content: "Docs werden recherchiert und indexiert, ~5min. Arbeite weiter.")
-```
-
-### Schritt 2: Docs-Kurator dispatchen (Opus)
-```
-register_chat_agent(id: "docs-kurator", model: "claude-opus-4-6")
-```
-
-Prompt-Kern fuer den Docs-Kurator:
-```
-DEINE AUFGABE — DOCS-KURATOR fuer {FRAMEWORK} {VERSION}:
-Agent "{AGENT_ID}" braucht kuratiertes Wissen.
-
-1. CONTEXT7 PRUEFEN:
-   search_tech_docs(framework: "{FRAMEWORK}", project: "{PROJEKT}")
-   → Bewerten: Deckt das Breaking Changes ab? Meist nur Code-Beispiele.
-
-2. UMFASSEND RECHERCHIEREN — alle verfuegbaren Quellen:
-   - WebSearch: "{FRAMEWORK} {VERSION} breaking changes migration guide"
-   - WebSearch: "{FRAMEWORK} {VERSION} release notes changelog"
-   - WebSearch: "{FRAMEWORK} {VERSION} known issues gotchas"
-   - GitHub: Releases, MIGRATION.md, Issues mit "breaking" Label
-   - Offizielle Docs: Migration Guides, Upgrade Guides
-   - Community: Stack Overflow, Reddit, Blog-Posts
-   - WebFetch auf die besten Treffer fuer den vollen Content
-   DU entscheidest was wichtig ist und was nicht.
-
-3. KURATIEREN + INDEXIEREN — fuer jedes relevante Thema:
-   add_tech_doc(
-     framework: "{FRAMEWORK}", version: "{VERSION}",
-     section: "<Aussagekraeftiger Titel>",
-     content: "<Max 2000 Zeichen. Code Vorher/Nachher. Quelle angeben.>",
-     type: "<breaking-change|migration|gotcha|known-issue>",
-     source: "research", project: "{PROJEKT}"
-   )
-
-4. QUALITAET:
-   - Mindestens 5 Docs, alle konkret und actionable
-   - Undokumentierte Gotchas (aus GitHub Issues) besonders wertvoll
-   - Lieber 2 kleine Docs als 1 riesiger
-   - search_tech_docs am Ende → genuegend research-Docs?
-
-5. ABSCHLUSS:
-   Chat-Broadcast: "{FRAMEWORK} {VERSION} Docs kuratiert: X Breaking Changes,
-   Y Migration-Guides, Z Gotchas. search_tech_docs(framework: '{FRAMEWORK}',
-   source: 'research') fuer Details."
-```
-
-### Warum Opus?
-Opus entscheidet selbst welche Quellen relevant sind, bewertet Qualitaet,
-erkennt undokumentierte Probleme in GitHub Issues und filtert Rauschen raus.
-Haiku/Sonnet koennen das nicht zuverlaessig.
-
-## 6. Event-System (Agenten-Steuerung)
-
-Events sind KEINE Chat-Nachrichten. Events sind **verbindliche Steuersignale**.
-
-### Event senden (nur Koordinator)
-
-```
-emit_event(project: "<projekt>", event_type: "WORK_STOP", priority: "critical",
-  scope: "all", source_id: "koordinator", payload: "Grund fuer den Stopp")
-```
-
-### Event-Typen
-
-| Event-Typ | Priority | Pflicht-Reaktion |
-|-----------|----------|-----------------|
-| `WORK_STOP` | critical | Arbeit sofort anhalten, Status posten |
-| `CRITICAL_REVIEW` | critical | Betroffene Arbeit nicht abschliessen |
-| `ARCH_DECISION` | high | Plan neu pruefen, Ack mit Bewertung |
-| `TEAM_DISCUSSION` | high | Status posten, auf Koordinator warten |
-| `ANNOUNCEMENT` | normal | Lesen, Ack, weiterarbeiten |
-
-### Scope
-
-- `all` → alle aktiven Agenten sehen das Event
-- `agent:<id>` → nur ein bestimmter Agent
-
-### Delivery
-
-Events werden automatisch an Tool-Responses angehaengt (wie unreadChat).
-Der PostToolUse-Hook zeigt Events VOR Chat-Nachrichten.
-Agenten MUESSEN mit `acknowledge_event(event_id, agent_id)` reagieren.
-
-### Eskalation
-
-Nach 3 Tool-Calls ohne Ack bei critical/high Events:
-→ Automatische DM an Koordinator: "Agent X ignoriert Event Y seit Z Calls"
-
-### Prompt-Baustein Erweiterung
-
-Fuege im Agent-Prompt-Baustein hinzu:
-```
-EVENTS (Pflicht-Reaktion):
-- Tool-Responses zeigen pending Events an
-- Bei ⛔ PFLICHT-EVENT: SOFORT mit acknowledge_event(event_id, agent_id) reagieren
-- Bei WORK_STOP: Arbeit anhalten, Status posten, auf Koordinator warten
-- Ignorieren fuehrt zu Eskalation nach 3 Calls
-```
-
-## 7. Richtige Tool-Wahl
-
-### code_intel (ERSTE WAHL fuer Code-Fragen)
-
-| Situation | Tool |
-|-----------|------|
-| Projektstruktur verstehen | `code_intel(action: "tree", path: "...", depth: N)` |
-| Funktionen finden/auflisten | `code_intel(action: "functions", name: "...", exported_only: true)` |
-| Variablen + Werte | `code_intel(action: "variables", name: "...", with_values: true)` |
-| Interfaces/Klassen/Enums | `code_intel(action: "symbols", symbol_type: "interface")` |
-| Wo wird X verwendet? | `code_intel(action: "references", name: "X")` |
-| Imports einer Datei | `code_intel(action: "tree", path: "...", show_imports: true)` |
-| Datei lesen (aus PG) | `code_intel(action: "file", file_path: "...")` |
-| Volltext-Suche (ohne Qdrant) | `code_intel(action: "search", query: "...")` |
-| SQL-Tabellen/Spalten | `code_intel(action: "symbols", symbol_type: "table")` |
-
-### Synapse Semantic (ZWEITE WAHL — fuzzy/konzeptuelle Suche)
-
-| Situation | Tool |
-|-----------|------|
-| Konzeptuelle Code-Frage | `search(action: "code", query: "...")` |
-| Pfad-Pattern-Suche | `search(action: "path", path_pattern: "...")` |
-| Architektur / Regeln | `search(action: "memory", query: "...")` |
-| Memory + Code | `memory(action: "read_with_code", name: "...")` |
-| Framework-Doku | `docs(action: "search", query: "...")` |
-| Frueherer Kontext | `search(action: "thoughts", query: "...")` |
-| Datei-spezifische Docs | `docs(action: "get_for_file")` (Wissens-Airbag) |
-
-### Events + Steuerung
-
-| Situation | Tool |
-|-----------|------|
-| Steuer-Signal senden | `event(action: "emit")` |
-| Event bestaetigen | `event(action: "ack")` |
-| Offene Events pruefen | `event(action: "pending")` |
-| FileWatcher steuern | `watcher(action: "status\|start\|stop")` |
-
-## 8. Filter-Regeln
-
-- `file_type` IMMER setzen wenn Zielsprache bekannt (typescript, rust, python, css)
-- `path_pattern` nutzen wenn Bereich bekannt (src/**/*.ts)
-- `limit`: gezielt 3-5, standard 10, breit 15-20
-
-## 9. Ergebnis-Bewertung
-
-| Score | Bedeutung |
-|-------|-----------|
-| > 0.75 | Sehr relevant |
-| 0.60 - 0.75 | Vermutlich relevant |
-| < 0.60 | Rauschen → Query umformulieren |
-
-## 10. Projekt-Wissen speichern
-
-| Was | Kategorie | Name |
-|-----|-----------|------|
-| Coding-Standards | `rules` | `"projekt-regeln"` |
-| Architektur | `architecture` | `"projekt-vision"` |
-| Entscheidungen | `decision` | `"multi-tab-architektur"` |
-| Plaene | `note` | `"plan-001-feature-name"` |
-
-- Memories kurz und praegnant
-- `category: "rules"` wird Agenten beim Onboarding gezeigt
-- KEINE .md-Dateien — alles in Synapse Memories
-
-## 11. Context-Handoff
-
-Der Context-Verbrauch wird per PostToolUse-Hook ueberwacht (95% gelb, 98% rot).
-
-### Handoff-Protokoll (2 Schritte)
-
-**Schritt 1: Handoff-Thought (nur das Noetigste)**
-
-```
-add_thought(
-  project: "<projekt>", source: "koordinator",
-  content: "SESSION-HANDOFF: <Auftrag> | OFFEN: <was fehlt> | NEXT: <naechster Schritt> | BRANCH: <branch> | CHAT-SEIT: <timestamp>",
-  tags: ["session-uebergabe"], agent_id: "koordinator"
-)
-```
-
-CHAT-SEIT = Timestamp ab dem Chat-Nachrichten relevant sind.
-
-**Schritt 2: Neue Session starten**
-
-```bash
-bash ~/.claude/skills/synapse-nutzung/scripts/context-handoff.sh \
-  "<projekt-verzeichnis>" "<projekt-name>" "<aufgabe>"
-```
-
-### Neue Session liest:
-
-1. `register_chat_agent(id: "koordinator", project: "<projekt>")`
-2. `search_thoughts(query: "session-uebergabe")` → Handoff-Thought
-3. `get_chat_messages(since: "<CHAT-SEIT>", limit: 20)` → nur relevante Nachrichten
-4. Handoff-Thought loeschen
-5. Arbeit fortsetzen
-
-## 12. .synapseignore Hygiene
-
-Gehoert NICHT in den Index:
-- `docs/` (Scores hoeher als Code)
-- Build-Artefakte, Lock-Files, Binaerdateien
+# synapse-nutzung
+
+> Synchronisiert aus Qdrant Skill-DB am 2026-06-15. Quelle der Wahrheit: skill-db.mjs (QDRANT_URL).
+
+## session-start
+
+<!-- tags: koordinator, onboarding, session -->
+Koordinator Session-Start (PFLICHT):
+1. project(action: 'status', project) → FileWatcher aktiv? Chunk-Count ok?
+2. Falls nicht initialisiert → project(action: 'init', name, agent_id: 'koordinator'). OHNE path = Self-Service: Daemon legt unter ~/dev/<name> an (SYNAPSE_WORKSPACE_ROOT). Status via project(init_status, job_id).
+3. chat(action: 'register', id: 'koordinator', project, model: 'claude-opus-4-8')
+4. admin(action: 'index_stats', project, agent_id: 'koordinator', role: 'koordinator') → rollenspezifische Regeln + Chunk-Check
+5. chat(action: 'get', limit: 10) → letzte Nachrichten
+6. thought(action: 'search', query: 'session-uebergabe') → Handoff vorhanden?
+
+WISSENS-AIRBAG: guide(tool_name) liefert Deep-Dive-Doku zu jedem Tool (nur via REST-API, kostet KEINEN MCP-Kontext). Bei Unsicherheit zu einem Tool: erst guide() fragen.
+
+## suchreihenfolge-tools
+
+<!-- tags: suche, code-intel, pflicht -->
+Suchreihenfolge (PFLICHT):
+1. code_intel — IMMER ZUERST fuer Code-Fragen:
+   - tree: Projektstruktur + Datei-/Funktions-/Variablen-Counts
+   - functions (exported_only!), variables (with_values), symbols (symbol_type-Filter)
+   - references: Cross-File — wo wird ein Symbol importiert/benutzt
+   - statements/calls/flow/entrypoints: Ablauf-Ebene (Execution-Flow, Call-Kanten, Einstiegspunkte)
+   - search: action='search' hat ZWEI Modi — default=PG-Volltext (exakt/lexikalisch), semantic:true=Qdrant-Embedding (konzeptuell). Antwort zeigt mode-Feld.
+   - search_batch + queries[] (1..10): mehrere semantische Queries in EINEM Call (Embeddings gebatcht). Ideal fuer breite Discovery.
+   - file: Dateiinhalt aus PG (statt Read-Tool)
+2. code_intel search liefert Trefferzeilen (matches[].line) → file(from_line,to_line). KEIN Glob/Grep/Read fuer Projektcode; Luecke in code_intel = Befund melden
+3. NUR wenn alles scheitert → Read
+
+WICHTIG: code_intel deckt exakte UND konzeptuelle Suche selbst ab — das alte search(action:'code') wird NICHT mehr gebraucht. file_type nutzt Extensions (ts, js, py, rs), NICHT Langnamen. Wildcard im file_path geht nicht — exakte Pfade oder via tree navigieren.
+
+## tool-uebersicht
+
+<!-- tags: tools, workspace, shell, files, uebersicht -->
+Synapse Tool-Landschaft (aktuell):
+
+CODE LESEN: code_intel (tree/functions/symbols/references/flow/search/file), search (semantische Eigen-Daten: memory/thoughts/proposals/tech_docs).
+
+CODE SCHREIBEN: files (single + plan/commit Multi-File, Versionierung). files_batch = identisch, eigenes Tool fuer Clients die action-Enum cachen (atomare Multi-File-Edits, auto_commit, anchor_text Drift-Schutz). NIE direkt im Container schreiben — files schreibt nach PG, Auto-Sync schiebt in den Workspace.
+
+SHELL/AUSFUEHRUNG: shell-Tool — Auto-Routing (lokaler Daemon vs Workspace-Container). isolated:true erzwingt Container. NICHT mehr workspace(exec).
+
+WORKSPACES: workspace-Tool nur fuer Lifecycle — list/start/stop/pin/unpin/materialize. Container = synapse-workspace:latest, Source read-only (0444), node_modules/dist writable. Idle-Stop 10min, LRU-Eviction. Jede Response liefert dns_name (synapse-ws-<project>) fuer proxynet-Cross-Container. exec/commit DEPRECATED → shell bzw. files.
+
+WEITERE: guide (Tool-Doku, REST-only, kontextfrei), code_check (Fehler-Pattern-Bibliothek add/list), admin (index_stats/detailed_stats/index_media/save_idea), skills (Skill-DB lesen: search/list/get_section/get_full).
+
+## projekt-regeln-pitfalls
+
+<!-- tags: pitfalls, init, home, dev, regeln -->
+Projekt-Regeln & harte Pitfalls:
+
+(1) NIEMALS das Home-Verzeichnis ($HOME) oder System-/Tool-Ordner (.local, .cargo, .config, .claude, .cache, ...) als Projekt-Root initialisieren! Sonst landen globale Caches (pnpm-store, uv-tools, .claude/.credentials.json) im Index und gehen an die Embedding-API. init lehnt das seit dem koordinator-Incident (2026-05-29) ab und verweist auf ~/dev/<name>.
+
+(2) Projekte gehoeren nach ~/dev/<name>. Self-Service: project(init, name) OHNE path → Daemon legt dort an.
+
+(3) Parser-Worker (rest-api) verarbeitet NUR Projekte, die in der projects-Registry stehen. Verwaiste code_files-Leichen (entferntes Projekt) werden nie wieder geparst/embedded. Aus der Registry entfernen != Daten geloescht — DB-Leichen separat raeumen.
+
+(4) Synapse-DB (postgresql16, Port 5432) ist NUR fuer Synapse. Projekt-DBs gehoeren auf Port 5433. Nie mischen.
+
+## agent-typen-kommunikation
+
+<!-- tags: agenten, kommunikation, channel -->
+Zwei Agent-Typen — unterschiedliche Erreichbarkeit:
+
+SPEZIALISTEN (specialist-Tool): Persistent (Wrapper-Prozess), Channel wird automatisch gepollt. Channel-Post REICHT — Wrapper liefert die Nachricht. Events optional fuer Dringendes.
+
+SUBAGENTEN (Agent-Tool): Nicht persistent, endet nach Task. Channel-Posts nur per PostToolUse-Hook sichtbar. Event als TRIGGER NOETIG (CHECK_CHANNEL, NEW_TASK), damit der Agent den Channel liest.
+
+KOORDINATOR sieht Channel-Nachrichten per PostToolUse-Hook ('📢 Channel: team-test:3') — kein manuelles Pollen, einfach irgendein Tool benutzen.
+
+FLOW: 1) Channel erstellen, 2) Aufgabe posten, 3) Agent spawnen mit {CHANNEL} im Prompt, 4) Steuerung per Events, 5) Channel-Feed fuer Ergebnisse, 6) 'Du darfst dich abmelden' im Channel.
+
+## event-system
+
+<!-- tags: events, steuerung -->
+Event-System (Agenten-Steuerung):
+
+Events sind verbindliche Steuersignale. PAYLOAD-REGEL: Bei scope='all' immer Agenten-Namen voranstellen ('test-spezialist: Loesche X', 'ALLE: Arbeit anhalten'). Bei scope='agent:<id>' Anweisung direkt.
+
+Event-Typen:
+- WORK_STOP (critical): sofort stoppen
+- CRITICAL_REVIEW (critical): nicht abschliessen
+- ARCH_DECISION (high): Plan pruefen, Ack mit Bewertung
+- TEAM_DISCUSSION (high): alle stoppen, Status posten, gemeinsam evaluieren, auf Entscheidung warten
+- ANNOUNCEMENT (normal): Ack, befolgen, weiterarbeiten
+- NEW_TASK (normal): Channel + Aufgabe im Payload
+- CHECK_CHANNEL (normal): Channel-Feed lesen
+
+Scope: 'all' = alle Agents, 'agent:<id>' = nur einer.
+
+## prompt-baustein
+
+<!-- tags: spawn, prompt, agenten -->
+Agent-Prompt-Baustein (PFLICHT in jedem Spawn-Prompt):
+
+Variablen: {AGENT_ID}, {PROJEKT}, {CHANNEL}
+
+Kern-Elemente:
+- Onboarding: admin(index_stats, project, agent_id, role) + channel(join) + channel(feed)
+- AGENT_ID an JEDEN Synapse-Call. NIEMALS source:'claude-code'.
+- Suchen/Lesen NUR mit code_intel (search liefert Trefferzeilen → file mit from_line/to_line). Kein grep/sed/cat per shell; Luecke = Befund melden
+- Code schreiben: files-Tool (nie direkt im Container). Ausfuehren: shell-Tool (isolated:true fuer Container).
+- Events: alle Typen, sofort ack(), Payload befolgen
+- Warten: kein sleep-Loop (gemessen: kehrt sofort zurueck). Angemeldet bleiben und stillstehen; auf Plaene per files(plan_status|shared_plan_status, wait_seconds:50) warten
+- Abmeldung: NUR wenn Koordinator 'Du darfst dich abmelden' sagt
+- Wissensluecken: guide(tool_name) fuer Tool-Doku, docs(search) fuer Framework-Wissen → wenn fehlt: im Channel melden
+- Vor Datei-Edit: docs(get_for_file) — Wissens-Airbag
+
+## context-handoff
+
+<!-- tags: handoff, session, uebergabe, compact, cc-send -->
+Context-Handoff Protokoll (Stand 2026-09-29):
+
+SCHWELLEN (berechneKontextSchwellen, core/services/kontext-korridor.ts): 200k-Fenster -> Handoff 73% (146k), Rotation 88% (176k). 1M-Fenster -> Handoff 80%, Rotation 95%. Der PostToolUse-Hook warnt entsprechend.
+
+1. IMMER ZUERST Thought speichern: thought(add, source: 'koordinator', tags: ['session-uebergabe'], content: 'SESSION-HANDOFF: <Auftrag> | OFFEN: <was fehlt> | NEXT: <Schritt> | BRANCH: <branch> | CHAT-SEIT: <timestamp>') im RICHTIGEN Projekt. Volle UUID notieren — thought(get) findet KEINE Kurz-ID (8 Zeichen); sonst thought(search, query:'session-uebergabe').
+
+2. Neue Session: bash ~/.claude/skills/synapse-nutzung/scripts/context-handoff.sh '<pfad>' '<projekt>' '<aufgabe>'
+   NUR diese Kopie unter ~/.claude verwenden (Repo-Kopien koennen veraltet sein).
+
+ALTERNATIVE (nur wenn der User es so will): Selbst-Compact per cc-send an die EIGENE PID (steht im SessionStart-Hook '[cc-wrap] ... cc-send <PID>'). Dann ZWEI Nachrichten, sonst bleibt die Session nach dem Compact idle (compact startet keine neue Runde):
+   cc-send <PID> '/compact Fokus: <Rolle/Projekt>. Uebergabe in Thought <UUID>. <Kernregeln>'
+   cc-send <PID> 'weiter: Thought <UUID> lesen, dann Channel <name> ab Nachricht <ID>'
+
+⚠️ BEIDES (context-handoff.sh und cc-send) NUR MIT DEM EIGENEN BASH-TOOL, NIEMALS ueber shell(action:'exec') der Synapse-API bzw. des Daemons. context-handoff.sh beendet den Claude-Prozess ueber die Prozesskette — ueber die Synapse-Shell haengt es an der Daemon-Kette und reisst die Desktop-Sitzung des Users mit (PC-Absturz, passiert).
+
+Nach dem Wiedereinstieg: Thought per search/UUID lesen -> SOFORT die neue cc-send-PID (SessionStart-Hook '[cc-wrap] ... cc-send <PID>') in jedem Channel mit laufenden Spezialisten posten, damit sie den Koordinator wecken koennen (cc-send <PID> '<id>: bitte Channel <name> lesen (Nachricht <N>)', nur bei Fertig/Rueckfrage/Blocker) -> chat(get)/channel(feed) seit Uebergabe -> verarbeiteten Thought loeschen -> weiterarbeiten.
+
+## multi-agenten-aufsicht
+
+<!-- tags: aufsicht, activity, tool_calls, agenten, monitoring -->
+Multi-Agenten-Aufsicht via shell(action:'activity'):
+
+Der zentrale Activity-Store (tool_calls) protokolliert ALLE Tool-Aufrufe aller Agenten. shell(action:'activity') liest ihn interleaved nach Zeit (neueste zuerst) — Shell-Jobs als tool='shell'-Metazeile zwischen allen anderen Tools. So siehst du den Gesamtverlauf eines Agenten in EINEM Call (vs. shell(history) = nur Shell-Jobs).
+
+FILTER (alle kombinierbar, AND): agent_ids[] (Namen ODER IDs), tools[] (z.B. ['files','memory'], ohne = alle interleaved), detail (meta=Default|summary|full), mutations_only, errors_only, since (ISO), limit (Default 50, Max 500). agent_ids/tools werden robust geparst (Array ODER JSON-String ODER Komma-String — claude.ai-Connector-Quirk).
+
+DETAIL-STUFEN (Context-Schutz): meta = Tool+Action+Args+Status+Dauer OHNE result (Default, kein Overflow); summary = +result-Vorschau (~200 Zeichen); full = gespeichertes result bis Cap (32KB).
+
+AGENT_ID PFLICHT: Ein Eintrag wird nur mit agent_id attribuiert, wenn der Agent agent_id bei JEDEM Call mitschickt. Fehlt es (z.B. claude.ai-Connector ohne Anmeldung), ist agent_id=null und der Eintrag nicht zuordenbar. Wer Agenten beaufsichtigen will, muss agent_id konsequent durchreichen — im Spawn-Prompt-Baustein verankert.
+
+RETENTION: tool_calls altert automatisch aus (Env SYNAPSE_TOOLCALL_RETENTION_DAYS, Default 90 Tage; Worker laeuft in der REST-API, 24/7).
+
+BEISPIELE:
+- Was hat ein Subagent geschrieben? shell(activity, agent_ids:['sub-r0'], mutations_only:true, detail:'summary')
+- Fehler eines Agenten? shell(activity, agent_ids:['flow-lead'], errors_only:true)
+- Gesamtverlauf zuletzt? shell(activity, project:'synapse', limit:30)
+
+## regeln-rollenbindung
+
+<!-- tags: regeln, rollen, tags, memory, onboarding -->
+Projekt-Regeln: wem gehoert welche Regel (Stand 2026-07-26)
+
+Regeln kommen beim Onboarding als memory mit category 'rules'. Standard: eine Regel geht an ALLE Rollen (koordinator, spezialist, subagent).
+
+BESCHRAENKEN geht NUR ueber einen Tag mit der Endung "-only":
+  koordinator-only / coordinator-only / coord-only
+  spezialist-only / specialist-only
+  subagent-only / sub-only
+Die Erkennung ist seit 2026-07-26 tolerant: deutsche und englische Schreibweise sowie Kuerzel greifen gleichermassen. Vorher war es ein exakter Vergleich gegen die englische Form — wer "koordinator-only" schrieb, erzeugte eine Regel, die still an alle ging.
+
+EIN ROLLENNAME OHNE "-only" BINDET NICHT, und das ist Absicht: Tags tragen meist ein THEMA. Die Regel "regel-subagenten-statt-spezialisten" traegt den Tag "subagenten", ist aber eine Anweisung AN DEN KOORDINATOR. Wer auf den Rollennamen filtert, nimmt sie genau dem weg, fuer den sie gilt.
+
+WENN DU EINE REGEL SCHREIBST (memory write, category 'rules'):
+- Gilt sie fuer alle? Dann keinen -only-Tag setzen.
+- Gilt sie nur fuer eine Rolle? Dann "<rolle>-only" ergaenzen.
+- Verdachtsfaelle (Rollenname ohne Bindung, oder -only mit unbekannter Rolle) werden beim Schreiben und beim Onboarding ins Log gemeldet — es ist ein Hinweis, kein Fehler.
+
+WARUM DAS WICHTIG IST: Ein falscher Filter versteckt Wissen, und das merkt niemand. Deshalb bindet nur eine ausdrueckliche Erklaerung, alles andere wird nur gemeldet.
+
+## agenten-sessions-lebenszeichen
+
+<!-- tags: sessions, reaper, agenten, koordinator -->
+Agenten-Sessions: Lebenszeichen und automatische Abmeldung (Stand 2026-07-26)
+
+chat(register) legt eine Session an, die frueher NUR durch ausdrueckliches Abmelden wieder auf 'inactive' ging. Gepurgte, abgestuerzte und verschwundene Agenten blieben dadurch ewig 'active': am 2026-07-26 standen 274 solcher Karteileichen in der Tabelle, die aelteste vom 15. Maerz.
+
+SEIT 2026-07-26 laeuft ein Reaper in der REST-API (alle 30 min). Er setzt Sessions auf 'inactive', die seit vier Stunden kein Lebenszeichen zeigen. Als Lebenszeichen gilt:
+- der letzte Tool-Aufruf des Agenten (tool_calls.ts)
+- der Heartbeat seines Wrappers (wrapper_status.last_activity) — dadurch bleibt ein Spezialist verschont, der lebt und nur wartet
+- die Anmeldung selbst, fuer Agenten die noch nichts getan haben
+
+Es wird NICHTS geloescht, nur der Status gesetzt: eine neue Anmeldung holt die Session sofort zurueck, mit dem urspruenglichen registered_at.
+ENV: SYNAPSE_SESSION_IDLE_HOURS (Default 4), SESSION_REAPER_INTERVAL_MS (Default 30 min), SESSION_REAPER_DISABLED=1.
+
+WAS DAS FUER DICH HEISST:
+- chat(list) zeigt jetzt weitgehend echte Agenten statt Altbestand.
+- ACHTUNG bei Subagenten: sie haben keinen Wrapper und damit keinen Heartbeat. Wer ueber vier Stunden keinen einzigen Tool-Aufruf macht, verschwindet aus der Liste, obwohl er lebt — arbeiten kann er weiter, er ist nur nicht mehr gelistet.
+- 'active' heisst weiterhin "angemeldet", NICHT "arbeitet gerade". Der echte Zustand (running/idle/crashed/stopped) steht in wrapper_status.

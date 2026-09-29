@@ -15,8 +15,10 @@ import {
   listProjectPlans,
   createProjectPlan,
   activateProjectPlan,
+  zurueckstellenPlan,
 } from '../plans.js';
-import { empfehleFuerPlan, passendeTasks, uebernehmeTask } from '@synapse/core';
+import { empfehleFuerPlan, passendeTasks, uebernehmeTask, verschiebeTasks, zurueckstelleTask, filtereWiedervorlageTasks } from '@synapse/core';
+import type { ProjectTask } from '@synapse/core';
 
 export const planTool: ConsolidatedTool = {
   definition: {
@@ -27,9 +29,9 @@ export const planTool: ConsolidatedTool = {
       properties: {
         action: {
           type: 'string',
-          enum: ['get', 'update', 'add_task', 'add_tasks_batch', 'update_task', 'delete_task', 'empfehlen', 'list', 'create', 'aktivieren', 'passende_tasks', 'uebernehmen'],
+          enum: ['get', 'update', 'add_task', 'add_tasks_batch', 'update_task', 'delete_task', 'empfehlen', 'list', 'create', 'aktivieren', 'passende_tasks', 'uebernehmen', 'verschieben', 'zurueckstellen'],
           description:
-            'Aktion: "passende_tasks" (agent_id Pflicht, plan_id optional) offene Tasks, deren Empfehlung zu deinem Profil passt (Familie gleich, Kontext >= empfohlen, Effort gleich oder eine Stufe hoeher); ohne/unsichere Empfehlung -> offen_fuer_koordinator, "uebernehmen" (plan_id + task_id + agent_id Pflicht) nimmt eine passende Task atomar (zugewiesen_an, in_progress), "list" alle Plaene des Projekts (Kurz-ID, Name, Ziel, aktiv, offen/erledigt), "create" neuer Plan (name, description, goals, architecture, aktiv?), "aktivieren" plan_id zum aktiven Plan machen, "get" zum Abrufen, "update" zum Aktualisieren, "add_task" um eine Task hinzuzufuegen, "add_tasks_batch" um mehrere Tasks atomar hinzuzufuegen, "update_task" um eine Task zu aendern (status/priority/title/description), "delete_task" um eine oder mehrere Tasks zu loeschen (id als String oder Array), "empfehlen" (EXPERIMENTELL) bewertet die per plan_id + task_id (beide PFLICHT, UUID oder Kurz-ID) genannten Tasks in EINEM Jev-Aufruf und schreibt je Task das Feld empfehlung {modell, effort, kontext 200k|1m, confidence, ...} — nur Empfehlung, kein Muss; unter dem Confidence-Tor unsicher statt Empfehlung',
+            'Aktion: "verschieben" (task_id String oder Array + ziel = Plan-UUID oder Kurz-ID) verschiebt Tasks atomar in einen anderen Plan; UUID und Felder bleiben, im Zielplan gibt es eine neue Kurz-ID, die alte bleibt als Alias gueltig, "passende_tasks" (agent_id Pflicht, plan_id optional) offene Tasks, deren Empfehlung zu deinem Profil passt (Familie gleich, Kontext >= empfohlen, Effort gleich oder eine Stufe hoeher); ohne/unsichere Empfehlung -> offen_fuer_koordinator, "uebernehmen" (plan_id + task_id + agent_id Pflicht) nimmt eine passende Task atomar (zugewiesen_an, in_progress), "list" alle Plaene des Projekts (Kurz-ID, Name, Ziel, aktiv, offen/erledigt), "create" neuer Plan (name, description, goals, architecture, aktiv?), "aktivieren" plan_id zum aktiven Plan machen, "get" zum Abrufen, "update" zum Aktualisieren, "add_task" um eine Task hinzuzufuegen, "add_tasks_batch" um mehrere Tasks atomar hinzuzufuegen, "update_task" um eine Task zu aendern (status/priority/title/description), "delete_task" um eine oder mehrere Tasks zu loeschen (id als String oder Array), "empfehlen" (EXPERIMENTELL) bewertet die per plan_id + task_id (beide PFLICHT, UUID oder Kurz-ID) genannten Tasks in EINEM Jev-Aufruf und schreibt je Task das Feld empfehlung {modell, effort, kontext 200k|1m, confidence, ...} — nur Empfehlung, kein Muss; unter dem Confidence-Tor unsicher statt Empfehlung',
         },
         project: {
           type: 'string',
@@ -43,6 +45,11 @@ export const planTool: ConsolidatedTool = {
         plan_id: {
           type: 'string',
           description: 'Optional bei allen Aktionen: Plan-UUID oder Kurz-ID "P<n>" (siehe list). Ohne plan_id wirkt der AKTIVE Plan des Projekts (bisheriges Verhalten). Pflicht fuer aktivieren.',
+        },
+        plan_prioritaet: {
+          type: 'string',
+          enum: ['hoch', 'mittel', 'niedrig'],
+          description: 'Plan-Prioritaet fuer create/update (Standard mittel). plan(list) und das Onboarding sortieren: aktiver Plan zuerst, dann hoch > mittel > niedrig, dann zuletzt geaendert. Nicht zu verwechseln mit priority (Task). Bei update an einem inaktiven Plan ist NUR die Prioritaet aenderbar.',
         },
         aktiv: {
           type: 'boolean',
@@ -83,6 +90,22 @@ export const planTool: ConsolidatedTool = {
             { type: 'array', items: { type: 'string' }, minItems: 1, maxItems: 50 },
           ],
           description: 'Task-ID (String fuer update_task/delete_task, Array fuer Batch-delete_task; bei empfehlen: PFLICHT, genau diese Task(s), hoechstens 50 — ohne task_id gibt es einen Fehler)',
+        },
+        ziel: {
+          type: 'string',
+          description: 'Nur fuer verschieben: Zielplan (UUID oder Kurz-ID P<n>).',
+        },
+        tage: {
+          type: 'number',
+          description: 'Nur fuer zurueckstellen: Wiedervorlage in N Tagen (0 = Zurueckstellung aufheben). Entweder tage ODER bis. Mit task_id wird die TASK zurueckgestellt (blendet sie aus plan(get), passende_tasks aus; plan(get, alle:true) oder task_id zeigt sie), ohne task_id der Plan. Der AKTIVE Plan kann nicht zurueckgestellt werden. Der Plan verschwindet bis dahin aus plan(list) und dem Onboarding; plan(get) mit plan_id geht immer.',
+        },
+        bis: {
+          type: 'string',
+          description: 'Nur fuer zurueckstellen: Wiedervorlage-Datum (2026-10-15 oder ISO-Zeitpunkt, muss in der Zukunft liegen).',
+        },
+        alle: {
+          type: 'boolean',
+          description: 'Nur fuer list und get: true zeigt auch zurueckgestellte Plaene bzw. Tasks (mit Vermerk zurueckgestellt/zurueckgestellt_bis).',
         },
         status: {
           type: 'string',
@@ -150,7 +173,13 @@ export const planTool: ConsolidatedTool = {
         // DX-Befund 5: status-Filter, compact, limit gegen Vollabwurf.
         const a = args as Record<string, unknown>;
         const p = result as unknown as Record<string, unknown> & { plan?: { tasks?: Array<Record<string, unknown>> } | null };
-        const allTasks = Array.isArray(p.plan?.tasks) ? p.plan!.tasks! : [];
+        const rohTasks = Array.isArray(p.plan?.tasks) ? p.plan!.tasks! : [];
+        // P3-T4: zurueckgestellte Tasks ausblenden (alle:true / ausdrueckliche task_id zeigt sie). Ohne Wiedervorlage unveraendert.
+        const wv = filtereWiedervorlageTasks(rohTasks as unknown as ProjectTask[], {
+          alle: a.alle === true,
+          taskIds: strArray(args, 'task_id'),
+        });
+        const allTasks = wv.tasks as unknown as Array<Record<string, unknown>>;
         const statusFilter = typeof a.status === 'string' ? a.status : undefined;
         const filtered = statusFilter ? allTasks.filter((t) => t.status === statusFilter) : allTasks;
         const taskLimit = typeof a.limit === 'number' && a.limit > 0 ? a.limit : undefined;
@@ -164,6 +193,7 @@ export const planTool: ConsolidatedTool = {
           tasks,
           tasks_total: allTasks.length,
           tasks_returned: tasks.length,
+          ...(wv.ausgeblendet > 0 ? { zurueckgestellt_ausgeblendet: wv.ausgeblendet, zurueckgestellt_hinweis: 'plan(get, alle: true) oder task_id zeigt zurueckgestellte Tasks.' } : {}),
           ...(statusFilter ? { tasks_status_filter: statusFilter } : {}),
         };
       }
@@ -174,6 +204,7 @@ export const planTool: ConsolidatedTool = {
           description: str(args, 'description'),
           goals: strArray(args, 'goals'),
           architecture: str(args, 'architecture'),
+          prioritaet: str(args, 'plan_prioritaet'),
         }, str(args, 'plan_id'));
         return result;
       }
@@ -225,7 +256,7 @@ export const planTool: ConsolidatedTool = {
       }
 
       case 'list': {
-        return await listProjectPlans(project);
+        return await listProjectPlans(project, args.alle === true);
       }
 
       case 'passende_tasks': {
@@ -236,6 +267,20 @@ export const planTool: ConsolidatedTool = {
         return await uebernehmeTask(project, str(args, 'plan_id') ?? '', str(args, 'task_id') ?? '', str(args, 'agent_id') ?? '');
       }
 
+      case 'verschieben': {
+        const ids = strArray(args, 'task_id');
+        return await verschiebeTasks(project, ids ?? [], str(args, 'ziel')) as unknown as Record<string, unknown>;
+      }
+
+      case 'zurueckstellen': {
+        const zTask = str(args, 'task_id');
+        if (zTask) {
+          // P3-T4: task_id => Wiedervorlage fuer die Task (plan_id optional, Alias/Kurz-ID plan-uebergreifend)
+          return await zurueckstelleTask(project, str(args, 'plan_id'), zTask, { tage: args.tage, bis: args.bis }) as unknown as Record<string, unknown>;
+        }
+        return await zurueckstellenPlan(project, str(args, 'plan_id'), { tage: args.tage, bis: args.bis });
+      }
+
       case 'create': {
         return await createProjectPlan(project, {
           name: reqStr(args, 'name'),
@@ -243,6 +288,7 @@ export const planTool: ConsolidatedTool = {
           goals: strArray(args, 'goals'),
           architecture: str(args, 'architecture'),
           aktiv: args.aktiv === true,
+          prioritaet: str(args, 'plan_prioritaet'),
         });
       }
 
