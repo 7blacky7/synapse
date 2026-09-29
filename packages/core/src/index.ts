@@ -609,6 +609,7 @@ export {
   buildCancelResponse,
   pollPlanStatus,
   getPlanOpsVollstaendig,
+  opIndicesLesen,
 } from './services/file-batch.js';
 export { claimOpenPlanHints } from './services/plan-hints.js';
 export type { OpenPlanHints, OpenPlanHintEntry } from './services/plan-hints.js';

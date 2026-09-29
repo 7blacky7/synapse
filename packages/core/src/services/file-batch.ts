@@ -335,6 +335,19 @@ export interface FileBatchPlanRow {
   overlap_warnings?: CoeditConflictDetail[];
   /** Nur von getBatchPlan gefuellt (E1): auf wen ein commit gerade warten wuerde. */
   commit_wartet_auf?: CommitWaitingFor[];
+  /** Nur von getBatchPlan gefuellt (Runde 3): reine Einfuegungen an derselben Stelle (INFO, kein Konflikt). */
+  insert_notes?: CoeditInsertNote[];
+  /** Nur von getBatchPlan gefuellt (Runde 3): die eigenen Waits dieses Plans (Traeger) mit Ziel. */
+  coedit_waits?: Array<{
+    wait_token: string;
+    primary_agent: string;
+    target_plan_id: string | null;
+    wait_status: string;
+    shared_files: string[];
+    contributed_files: string[];
+    no_change_files: string[];
+    coedit_source_op_indexes: number[];
+  }>;
 }
 
 export interface CoeditWaitGroup {
@@ -361,6 +374,8 @@ export interface PlanBatchResult {
   merged_into?: Array<{ plan_id: string; ops: number; files: string[] }>;
   /** V4: Ueberlappung angehaengter Ops mit Ops anderer Agenten (nicht blockierend). */
   overlap_warnings?: CoeditConflictDetail[];
+  /** Runde 3: statt eines zweiten leeren Traegers wurde der vorhandene wiederverwendet. */
+  reused_carrier?: { plan_id: string; hinweis: string };
 }
 
 /** Eine im Trockenlauf gescheiterte Op eines Plans. */
@@ -535,7 +550,7 @@ function opAnsehen(planId: string, opIndex: number): string {
   return `files(action:'plan_status', plan_id:'${planId}', op_index:${opIndex})`;
 }
 
-function mitVerweis(conflicts: CoeditConflictDetail[], planId: string): CoeditConflictDetail[] {
+function mitVerweis<T extends { left_op_index: number; right_op_index: number }>(conflicts: T[], planId: string): Array<T & { plan_id: string; ansehen: string[] }> {
   return conflicts.map((conflict) => ({
     ...conflict,
     plan_id: planId,
@@ -989,9 +1004,54 @@ function normalizePlanRow(row: FileBatchPlanRow): FileBatchPlanRow {
   };
 }
 
+/**
+ * insertAt (Runde 3, Nachtrag dc2d7eac a): gesetzt bei REINEN Einfuegungen (0 alte Zeilen ersetzt:
+ * insert_after, search_replace mit replace = search + X bzw. X + search) — die Einfuegestelle in der
+ * Basis, auf Zeilenanfang normalisiert. Zwei reine Einfuegungen an derselben Stelle sind kein Konflikt.
+ */
 type CoeditRegion =
   | { file_path: string; kind: 'file'; anchor: string }
-  | { file_path: string; kind: 'span'; start: number; end: number; anchor: string };
+  | { file_path: string; kind: 'span'; start: number; end: number; anchor: string; insertAt?: number };
+
+/** Reine Einfuegung per search_replace: der Suchtext bleibt unveraendert davor bzw. dahinter stehen. */
+function istReineEinfuegung(op: FileBatchOp): 'nach' | 'vor' | null {
+  if (op.action === 'insert_after') return 'nach';
+  if (op.action !== 'search_replace' || op.replace_all || !op.search || op.replace === undefined) return null;
+  if (op.replace.length <= op.search.length) return null;
+  if (op.replace.startsWith(op.search)) return 'nach';
+  if (op.replace.endsWith(op.search)) return 'vor';
+  return null;
+}
+
+/** Text, den eine Op neu in die Datei bringt (fuer: Anker erst durch eine andere Op erzeugt). */
+function neuerTextVon(op: FileBatchOp): string {
+  if (op.action === 'search_replace') return op.replace ?? '';
+  if (op.action === 'search_replace_batch') return (op.edits ?? []).map((edit) => edit.replace).join('\n');
+  return op.content ?? '';
+}
+
+/** Hinweis (kein Fehler): zwei Agenten fuegen an derselben Stelle ein bzw. einer setzt auf den Text des anderen auf. */
+export interface CoeditInsertNote {
+  file_path: string;
+  left_op_index: number;
+  right_op_index: number;
+  left_agent_id: string;
+  right_agent_id: string;
+  reason: 'same_insert_point' | 'builds_on';
+  message: string;
+  plan_id?: string;
+  ansehen?: string[];
+}
+
+function insertNoteText(note: Omit<CoeditInsertNote, 'message'>): string {
+  const links = `Op ${note.left_op_index} (${note.left_agent_id})`;
+  const rechts = `Op ${note.right_op_index} (${note.right_agent_id})`;
+  return note.reason === 'builds_on'
+    ? `INFO, kein Fehler: auf ${note.file_path} setzt eine Einfuegung auf Text auf, den die andere Op erst einfuegt (${links} / ${rechts}). Angewendet wird in Beitragsreihenfolge.`
+    : `INFO, kein Fehler: ${links} und ${rechts} fuegen auf ${note.file_path} an DERSELBEN Stelle ein. Beide bleiben erhalten und werden in Beitragsreihenfolge `
+      + `angewendet (erst Op ${note.left_op_index}, dann Op ${note.right_op_index}); die spaeter angewendete steht direkt an der Einfuegestelle `
+      + `(bei insert_after / Einfuegen hinter demselben Anker also Op ${note.right_op_index} vor Op ${note.left_op_index}). Reihenfolge anders gewollt: abstimmen.`;
+}
 
 function baselineLineOffsets(content: string): number[] {
   const lines = content.split('\n');
@@ -1045,6 +1105,14 @@ function regionsForCoeditOp(
       from = start + Math.max(1, op.search.length);
       if (!op.replace_all) break;
     }
+    const art = istReineEinfuegung(op);
+    const einzige = regions.length === 1 ? regions[0] : null;
+    if (art && einzige && einzige.kind === 'span') {
+      let punkt = art === 'nach' ? einzige.end : einzige.start;
+      // "Anker" + "\nX" am Zeilenende ergibt dasselbe wie "X\n" am naechsten Zeilenanfang (= insert_after).
+      if (art === 'nach' && (op.replace ?? '').slice(op.search.length).startsWith('\n') && content[punkt] === '\n') punkt++;
+      regions[0] = { ...einzige, insertAt: punkt };
+    }
     return regions.length > 0
       ? regions
       : [fullFileRegion(filePath, 'search_replace:unresolvable')];
@@ -1071,6 +1139,7 @@ function regionsForCoeditOp(
       start: point,
       end: point,
       anchor: `after:${line}:${point}`,
+      insertAt: point,
     }];
   }
   if (op.action === 'replace_lines' || op.action === 'delete_lines') {
@@ -1108,9 +1177,28 @@ function coeditRegionsOverlap(left: CoeditRegion, right: CoeditRegion): boolean 
 function detectCrossAgentConflicts(
   ops: FileBatchOp[],
   baselines: Map<string, string>,
+  /** Runde 3: sammelt Einfuege-Hinweise (gleiche Einfuegestelle / setzt auf fremden Text auf) — kein Konflikt. */
+  hinweise?: CoeditInsertNote[],
 ): CoeditConflictDetail[] {
   const lineCache: LineIndexCache = new Map();
   const regions = ops.map((op) => regionsForCoeditOp(op, baselines, lineCache));
+  // Runde 3 (Nachtrag dc2d7eac b): eine reine Einfuegung, deren Anker es in der Basis noch nicht gibt,
+  // weil erst eine andere Op ihn einfuegt, liegt an deren Einfuegestelle — statt als Datei-Konflikt mit
+  // allen Ops der Datei zu gelten. Wer auf fremden Text aufsetzt, laesst ihn unveraendert (reine Einfuegung).
+  const bautAuf = new Map<number, number>();
+  ops.forEach((op, index) => {
+    const eigene = regions[index];
+    if (eigene.length !== 1 || eigene[0].anchor !== 'search_replace:unresolvable' || !istReineEinfuegung(op)) return;
+    const quelle = ops.findIndex((other, otherIndex) => otherIndex !== index && other.file_path === op.file_path
+      && neuerTextVon(other).includes(op.search as string));
+    if (quelle < 0) return;
+    bautAuf.set(index, quelle);
+    regions[index] = regions[quelle].map((region) => {
+      if (region.kind !== 'span') return region;
+      const punkt = region.insertAt ?? region.end;
+      return { ...region, start: punkt, end: punkt, insertAt: punkt, anchor: `nach-op:${quelle}` };
+    });
+  });
   const conflicts: CoeditConflictDetail[] = [];
   for (let leftIndex = 0; leftIndex < ops.length; leftIndex++) {
     const leftAgent = ops[leftIndex].agent_id ?? 'unknown';
@@ -1119,7 +1207,22 @@ function detectCrossAgentConflicts(
       if (leftAgent === rightAgent) continue;
       for (const left of regions[leftIndex]) {
         for (const right of regions[rightIndex]) {
-          if (left.file_path !== right.file_path || !coeditRegionsOverlap(left, right)) continue;
+          if (left.file_path !== right.file_path) continue;
+          // Runde 3 (Nachtrag dc2d7eac a): zwei REINE Einfuegungen an derselben Stelle sind kein Konflikt —
+          // beide werden in Beitragsreihenfolge angewendet (prepareOpsForApply: gleiche Zeile -> Plan-Reihenfolge),
+          // jede genau einmal. Ersetzungen/Loeschungen, die sich ueberlappen, bleiben Konflikt.
+          const gleicherPunkt = left.kind === 'span' && right.kind === 'span'
+            && left.insertAt !== undefined && left.insertAt === right.insertAt;
+          const aufbauend = bautAuf.get(rightIndex) === leftIndex || bautAuf.get(leftIndex) === rightIndex;
+          if (gleicherPunkt || aufbauend) {
+            const note: Omit<CoeditInsertNote, 'message'> = {
+              file_path: left.file_path, left_op_index: leftIndex, right_op_index: rightIndex,
+              left_agent_id: leftAgent, right_agent_id: rightAgent, reason: aufbauend ? 'builds_on' : 'same_insert_point',
+            };
+            hinweise?.push({ ...note, message: insertNoteText(note) });
+            continue;
+          }
+          if (!coeditRegionsOverlap(left, right)) continue;
           conflicts.push({
             file_path: left.file_path,
             left_op_index: leftIndex,
@@ -1239,6 +1342,18 @@ function coeditAktivMinuten(): number {
 }
 
 /**
+ * Runde 3 (Befund 46ccab5b-6): EIN Status je Agent ueber mehrere Waits, gleich in contributions und
+ * commit_wartet_auf: der am wenigsten fortgeschrittene OFFENE (waiting < conflict < linked); sind alle
+ * fertig, ready vor no_changes.
+ */
+const WAIT_RANG: Record<string, number> = { waiting: 0, conflict: 1, linked: 2, no_changes: 3, ready: 4 };
+function gesamtWaitStatus(stati: string[]): string {
+  const offen = stati.filter((status) => status !== 'ready' && status !== 'no_changes');
+  if (offen.length > 0) return offen.reduce((best, status) => ((WAIT_RANG[status] ?? 0) < (WAIT_RANG[best] ?? 0) ? status : best));
+  return stati.reduce((best, status) => ((WAIT_RANG[status] ?? 0) > (WAIT_RANG[best] ?? 0) ? status : best));
+}
+
+/**
  * E1: Auf wen wartet ein commit dieses Plans? Nur auf Wartende/Beitragende mit an diesen Plan
  * GEBUNDENEM Wait, die noch nicht ready/no_changes sind UND in den letzten coeditAktivMinuten()
  * echte Tool-Aktivitaet hatten. Inaktive blockieren nie (ihre schon beigetragenen Ops werden
@@ -1286,7 +1401,7 @@ async function readyGateBlockers(
       inaktiv_ab: new Date(ts.getTime() + minuten * 60000).toISOString(),
       dateien: [],
     };
-    if (wait.status === 'waiting') eintrag.wait_status = 'waiting';
+    eintrag.wait_status = gesamtWaitStatus([eintrag.wait_status, wait.status]);
     eintrag.dateien = uniqueStrings([...eintrag.dateien, ...(fehlend.length > 0 ? fehlend : wait.contributed_files)]);
     proAgent.set(wait.waiting_agent, eintrag);
   }
@@ -1923,6 +2038,47 @@ export async function planBatch(args: {
     }
   }
 
+  // Runde 3 (Nachtrag dc2d7eac b): Pfade, die als Wait in einen offenen fremden Plan gehen, werden spaeter
+  // auf den Stand DES ZIELPLANS angewendet (Platte + dessen Ops). Eine gegen die Platte gescheiterte Op
+  // wird darum noch einmal gemeinsam mit den Ops des Zielplans geprueft — z. B. ein Anker, den erst eine Op
+  // im Zielplan erzeugt. Passt sie dort, ist sie kein plan_failed; verbindlich prueft coedit_add.
+  const zielGeprueft = new Map<number, string>();
+  const vorabGescheitert = failedOpsOf(previews);
+  if (vorabGescheitert.length > 0 && args.persist_failed !== false) {
+    const pfade = uniqueStrings(vorabGescheitert.flatMap((failed) => touchedPaths(args.ops[failed.index])));
+    const ziele = groupSharedPlans(await findJoinableSharedPlans(getPool(), args.project, resolveAgentId(args.agent_id), pfade));
+    for (const ziel of ziele) {
+      const zielOps = (await getPool().query<{ ops: FileBatchOp[] }>(
+        `SELECT ops FROM file_batch_plans WHERE id = $1::bigint`, [ziel.plan_id],
+      )).rows[0]?.ops ?? [];
+      const zielPfade = new Set(ziel.files);
+      const eigene = args.ops.map((op, index) => ({ op, index })).filter(({ op }) => touchedPaths(op).some((filePath) => zielPfade.has(filePath)));
+      if (!eigene.some(({ index }) => previews[index]?.ok === false)) continue;
+      const dateien = verbundeneDateien(eigene.flatMap(({ op }) => touchedPaths(op)), [...zielOps, ...eigene.map(({ op }) => op)]);
+      const teil = [...zielOps.filter((op) => touchedPaths(op).some((filePath) => dateien.has(filePath))), ...eigene.map(({ op }) => op)];
+      const baselines = new Map<string, string>();
+      const hashes: Record<string, string> = {};
+      for (const filePath of dateien) {
+        const content = (await getFileContentFromPg(args.project, filePath)) ?? '';
+        baselines.set(filePath, content);
+        hashes[filePath] = contentHash(content);
+      }
+      const probe = buildCombinedCoeditPreview({ ops: teil, expected_hashes: hashes } as unknown as FileBatchPlanRow, baselines);
+      if (!probe.ok) continue;
+      const versatz = teil.length - eigene.length;
+      eigene.forEach(({ index }, position) => {
+        if (previews[index]?.ok !== false) return;
+        const geprueft = probe.previews[versatz + position];
+        previews[index] = {
+          ...geprueft,
+          index,
+          context: `gegen den Stand von Plan ${ziel.plan_id} (Ziel dieser Datei) geprueft: ${geprueft?.context ?? ''}`.slice(0, 200),
+        };
+        zielGeprueft.set(index, ziel.plan_id);
+      });
+    }
+  }
+
   const failedOps = failedOpsOf(previews);
   if (failedOps.length > 0) {
     const first = failedOps[0];
@@ -2022,6 +2178,16 @@ export async function planBatch(args: {
       [...reservationRows, ...planPrimaryRows].map((row) => [row.file_path, row] as const),
     );
     const sharedPaths = new Set(primaryByPath.keys());
+    // Runde 3: eine nur gegen den Zielplan gepruefte Op muss auch wirklich dorthin gehen. Ist das Ziel
+    // inzwischen weg (committed/verworfen), neu planen — dann scheitert sie sauber als plan_failed.
+    const zielWeg = [...zielGeprueft].some(([index, zielId]) => !touchedPaths(args.ops[index]).every((filePath) => sharedPlanByPath.get(filePath) === zielId));
+    if (zielWeg) {
+      await client.query('ROLLBACK');
+      client.release();
+      clientReleased = true;
+      if ((args._replan_attempt ?? 0) >= 3) throw new Error('Der Ziel-Plan, gegen den geprueft wurde, ist nicht mehr offen — bitte neu planen.');
+      return planBatch({ ...args, _replan_attempt: (args._replan_attempt ?? 0) + 1 });
+    }
     // V4: Ops auf Dateien eines offenen EIGENEN Plans werden dort angehaengt, statt einen zweiten
     // Plan auf denselben Dateien zu bauen (transitiv ueber move/copy). Ops, die auch eine fremd
     // koordinierte Datei beruehren, bleiben im Wait (fremder Vorrang wie bisher).
@@ -2160,11 +2326,33 @@ export async function planBatch(args: {
       };
     }
 
+    // Runde 3 (Befund 46ccab5b-5): bliebe der neue Plan ein leerer Traeger und hat der Aufrufer schon
+    // einen offenen leeren Traeger mit offenem Wait auf dieselben Ziele (Primaeragenten), wird dieser
+    // wiederverwendet (analog merged_into) — kein zweiter Traeger, keine doppelten PLAN_READY. Die
+    // neuen deferred-Indizes werden hinter die vorhandenen gesetzt (Schluessel source_plan:index).
+    let traeger: { id: string; indexOffset: number } | null = null;
+    if (planOps.length === 0 && sharedPaths.size > 0 && ownerAgentId) {
+      const primaere = uniqueStrings([...primaryByPath.values()].map((row) => row.reserved_by));
+      const vorhanden = await client.query<{ id: string; max_index: number }>(
+        `SELECT c.id::text AS id,
+                COALESCE((SELECT MAX(i) FROM file_batch_waits w2, unnest(w2.deferred_op_indexes) AS i
+                           WHERE w2.source_plan_id = c.id), -1)::int AS max_index
+           FROM file_batch_plans c
+          WHERE c.project = $1 AND c.owner_agent_id = $2 AND c.status = 'open' AND jsonb_array_length(c.ops) = 0
+            AND EXISTS (SELECT 1 FROM file_batch_waits w
+                         WHERE w.source_plan_id = c.id AND w.status <> 'closed' AND w.primary_agent = ANY($3::text[]))
+          ORDER BY c.created_at, c.id
+          LIMIT 1`,
+        [args.project, ownerAgentId, primaere],
+      );
+      if (vorhanden.rows[0]) traeger = { id: vorhanden.rows[0].id, indexOffset: vorhanden.rows[0].max_index + 1 };
+    }
+
     const storedPlanOps = planOps.map((op) => ({
       ...withoutCoeditMetadata(op),
       ...(ownerAgentId ? { agent_id: ownerAgentId } : {}),
     }));
-    const planRes = await client.query<{ id: string; expires_at: string }>(
+    const planRes = traeger ? null : await client.query<{ id: string; expires_at: string }>(
       `INSERT INTO file_batch_plans (project, owner_agent_id, ops, expected_hashes, previews, open_for_coedit, reason)
        VALUES ($1, $2, $3::jsonb, $4::jsonb, $5::jsonb, $6, $7)
        RETURNING id::text AS id, expires_at::text AS expires_at`,
@@ -2178,7 +2366,7 @@ export async function planBatch(args: {
         args.reason ?? null,
       ],
     );
-    const planRow = planRes.rows[0];
+    const planRow = traeger ? { id: traeger.id } : (planRes as { rows: Array<{ id: string; expires_at: string }> }).rows[0];
 
     await emitPlanReadyForExistingWaits(client, {
       id: planRow.id,
@@ -2212,7 +2400,31 @@ export async function planBatch(args: {
           .map((entry) => asIso(entry.expires_at))
           .sort()[0];
 
-        const waitRes = await client.query<{ wait_token: string; expires_at: string }>(
+        const gespeicherteIndexes = deferredIndexes.map((index) => index + (traeger?.indexOffset ?? 0));
+        // Runde 3: im wiederverwendeten Traeger den offenen Wait auf dasselbe Ziel erweitern, statt einen
+        // zweiten anzulegen (sonst zwei PLAN_READY fuer denselben Plan).
+        const zielVorab = uniqueStrings(groupPaths.map((filePath) => sharedPlanByPath.get(filePath) ?? ''));
+        const erweitert = traeger
+          ? await client.query<{ wait_token: string; expires_at: string }>(
+              `UPDATE file_batch_waits
+                  SET deferred_ops = deferred_ops || $4::jsonb,
+                      deferred_op_indexes = deferred_op_indexes || $5::integer[],
+                      shared_files = ARRAY(SELECT DISTINCT value FROM unnest(shared_files || $6::text[]) AS valueset(value)),
+                      status = CASE WHEN status IN ('ready', 'no_changes') THEN 'linked' ELSE status END,
+                      ready_at = CASE WHEN status IN ('ready', 'no_changes') THEN NULL ELSE ready_at END,
+                      updated_at = NOW()
+                WHERE wait_token = (
+                  SELECT wait_token FROM file_batch_waits
+                   WHERE source_plan_id = $1::bigint AND primary_agent = $2 AND status <> 'closed'
+                     AND primary_plan_id IS NOT DISTINCT FROM $3::bigint
+                   ORDER BY wait_token
+                   LIMIT 1)
+                RETURNING wait_token::text AS wait_token, expires_at::text AS expires_at`,
+              [traeger.id, primaryAgent, zielVorab.length === 1 && zielVorab[0] ? zielVorab[0] : null,
+                JSON.stringify(deferredOps), gespeicherteIndexes, groupPaths],
+            )
+          : null;
+        const waitRes = erweitert && erweitert.rows.length > 0 ? erweitert : await client.query<{ wait_token: string; expires_at: string }>(
           `INSERT INTO file_batch_waits (
              source_plan_id, project, waiting_agent, primary_agent, shared_files,
              deferred_ops, deferred_op_indexes, expires_at
@@ -2226,7 +2438,7 @@ export async function planBatch(args: {
             primaryAgent,
             groupPaths,
             JSON.stringify(deferredOps),
-            deferredIndexes,
+            gespeicherteIndexes,
             waitExpiresAt,
           ],
         );
@@ -2287,6 +2499,14 @@ export async function planBatch(args: {
       previews: planPreviews,
       ...(mergedInto.length > 0 ? { merged_into: mergedInto } : {}),
       ...(mergeOverlaps.length > 0 ? { overlap_warnings: mergeOverlaps } : {}),
+      ...(traeger
+        ? {
+            reused_carrier: {
+              plan_id: traeger.id,
+              hinweis: `Kein zweiter Traeger: deine Ops liegen im vorhandenen leeren Traeger ${traeger.id} (Wait auf dasselbe Ziel erweitert). Beitragen wie gewohnt per coedit_add.`,
+            },
+          }
+        : {}),
     };
     // Abnahmekriterium: Ohne Overlap exakt die bisherige Response-Form.
     if (sharedPaths.size === 0) return result;
@@ -2958,6 +3178,40 @@ async function followUpForLateContribution(
   }
 }
 
+/**
+ * Runde 3 (Befund 46ccab5b-3): WELCHE Op macht einen Beitrag unanwendbar? Die Ops laufen in
+ * Anwende-Reihenfolge; nach jeder, die dieselbe Datei beruehrt, wird geprobt, ob die gescheiterte Op
+ * noch passt — die erste, nach der sie scheitert, ist der Verursacher (Index in ops). -1: sie
+ * scheitert schon allein gegen die Basis; null: nicht bestimmbar. Nur im Fehlerfall.
+ */
+function findeVerursacher(ops: FileBatchOp[], fehlIndex: number, baselines: Map<string, string>): number | null {
+  const fehlOp = ops[fehlIndex];
+  if (!fehlOp) return null;
+  let reihenfolge: Array<{ op: FileBatchOp; originalIndex: number }>;
+  try { reihenfolge = prepareOpsForApply(ops); } catch { return null; }
+  const buffers = new Map<string, PreparedFile>();
+  for (const [filePath, content] of baselines) buffers.set(filePath, new PreparedFile(content));
+  const fehlPfade = touchedPaths(fehlOp);
+  const passt = (): boolean => {
+    const probe = new Map<string, PreparedFile>();
+    for (const filePath of fehlPfade) {
+      const buf = buffers.get(filePath);
+      probe.set(filePath, new PreparedFile(buf && !buf.deleted ? buf.finalContent : ''));
+    }
+    try { applyOpInMemory(probe, fehlOp, true); return true; } catch { return false; }
+  };
+  if (!passt()) return -1;
+  const gesehen = new Set<string>();
+  for (const { op, originalIndex } of reihenfolge) {
+    if (originalIndex === fehlIndex) break;
+    const first = !gesehen.has(op.file_path);
+    gesehen.add(op.file_path);
+    try { applyOpInMemory(buffers, op, first); } catch { continue; }
+    if (touchedPaths(op).some((filePath) => fehlPfade.includes(filePath)) && !passt()) return originalIndex;
+  }
+  return null;
+}
+
 export async function addCoeditContribution(args: {
   project: string;
   plan_id: string;
@@ -2965,6 +3219,11 @@ export async function addCoeditContribution(args: {
   ops: FileBatchOp[];
   /** Optional: genau diesen Wait verwenden (Befund 875d6a8c). */
   wait_token?: string;
+  /**
+   * Runde 3 (Befund 46ccab5b-4): die zurueckgestellte Op mit diesem coedit_source_op_index durch
+   * ops[0] ERSETZEN und beitragen (z. B. nach contribution_failed). Nur eine Op, dieselben Dateien.
+   */
+  op_index?: number;
 }): Promise<CoeditAddResult> {
   const caller = resolveAgentId(args.agent_id);
   if (!caller) throw new Error("agent_id ist fuer coedit_add erforderlich");
@@ -3090,6 +3349,27 @@ export async function addCoeditContribution(args: {
     let alreadyConsumedOps = 0;
     const allSources = [...sourceOps.values()];
 
+    // Runde 3 (Befund 46ccab5b-4): op_index = coedit_source_op_index ersetzt genau diese zurueckgestellte
+    // Op durch ops[0] (z. B. nach contribution_failed). Sonst bleibt es beim exakten Abgleich.
+    const ersetzt = new Map<string, FileBatchOp>();
+    if (args.op_index !== undefined && args.op_index !== null) {
+      if (args.ops.length !== 1) throw new Error('coedit_add mit op_index ersetzt genau EINE zurueckgestellte Op — ops[] muss genau 1 Op enthalten');
+      const kandidaten = allSources.filter((entry) => entry.sourceIndex === Number(args.op_index));
+      const offen = kandidaten.filter((entry) => !entry.consumed);
+      if (offen.length === 0) {
+        throw new Error(kandidaten.length > 0
+          ? `Zurueckgestellte Op ${args.op_index} ist schon beigetragen — die Op im Plan aendert plan_update (op_index der Plan-Op).`
+          : `Keine zurueckgestellte Op mit coedit_source_op_index ${args.op_index} in deinen Waits fuer Plan ${args.plan_id}.`);
+      }
+      if (offen.length > 1) throw new Error(`coedit_source_op_index ${args.op_index} ist mehrdeutig (${offen.map((entry) => entry.key).join(', ')}) — wait_token mitgeben.`);
+      const neu = withoutCoeditMetadata(args.ops[0]);
+      if (uniqueStrings(touchedPaths(neu)).sort().join('\n') !== uniqueStrings(touchedPaths(offen[0].op)).sort().join('\n')) {
+        throw new Error(`Die Ersatz-Op muss dieselben Dateien beruehren wie die zurueckgestellte (${touchedPaths(offen[0].op).join(', ')}) — sonst neu planen.`);
+      }
+      ersetzt.set(offen[0].key, neu);
+      offen[0].op = neu;
+    }
+
     for (const rawOp of args.ops) {
       const cleanOp = withoutCoeditMetadata(rawOp);
       const wantedKey = coeditOpKey(cleanOp);
@@ -3198,19 +3478,49 @@ export async function addCoeditContribution(args: {
           await client.query("ROLLBACK");
           const index = combined.conflict.left_op_index - pruefPlanIdx.length;
           const bad = additions[index];
+          // Runde 3 (Befund 46ccab5b-3/4): combined zaehlt nur die geprueften Ops (Teilmenge) — die Meldung
+          // nennt jetzt die GLOBALE op_index und den Autor der Op, nach der der Beitrag scheitert, samt
+          // Abruf-Aufruf, und den fertigen Aufruf, mit dem der Beitragende seine Op anpasst.
+          const teilOps = [...pruefPlanIdx.map((planIndex) => plan.ops[planIndex]), ...additions];
+          const ursache = findeVerursacher(teilOps, combined.conflict.left_op_index, baselines);
+          const ursacheOp = ursache !== null && ursache >= 0 ? teilOps[ursache] : null;
+          const grund = combined.conflict.message.replace(/^Gemeinsamer Re-Apply von Op \d+ fehlgeschlagen: /, "");
+          const verursacher = ursacheOp && ursache !== null && ursache < pruefPlanIdx.length
+            ? {
+                plan_id: args.plan_id, op_index: pruefPlanIdx[ursache], agent_id: ursacheOp.agent_id ?? plan.owner_agent_id,
+                action: ursacheOp.action, file_path: ursacheOp.file_path, ansehen: opAnsehen(args.plan_id, pruefPlanIdx[ursache]),
+              }
+            : ursacheOp && ursache !== null
+              ? { eigene_op: ursache - pruefPlanIdx.length, agent_id: caller, action: ursacheOp.action, file_path: ursacheOp.file_path }
+              : null;
+          const wer = verursacher && "op_index" in verursacher
+            ? `Sie scheitert erst nach Op ${verursacher.op_index} von ${verursacher.agent_id} (${verursacher.action} auf ${verursacher.file_path}) — vollstaendig: ${verursacher.ansehen}.`
+            : verursacher
+              ? `Sie scheitert nach deiner eigenen Op ${verursacher.eigene_op} dieses Aufrufs.`
+              : ursache === -1 ? "Sie scheitert schon allein gegen den aktuellen Dateistand." : "Die verursachende Op liess sich nicht eindeutig bestimmen (ops_auf_datei).";
+          const quelle = bad ? sourceOps.get(`${bad.coedit_source_plan_id}:${bad.coedit_source_op_index}`) : undefined;
+          const anpassen = bad && bad.coedit_source_op_index !== undefined
+            ? `files(action:'coedit_add', plan_id:'${args.plan_id}', agent_id:'${caller}', op_index:${bad.coedit_source_op_index}${quelle?.waits[0] ? `, wait_token:'${quelle.waits[0].wait_token}'` : ""}, ops:[<geaenderte Op>])`
+            : undefined;
           return {
             success: false,
             plan_id: args.plan_id,
             appended_ops: 0,
             already_consumed_ops: alreadyConsumedOps,
             error: "contribution_failed",
-            failed_ops: [{ index, file_path: bad?.file_path, action: bad?.action, error: combined.conflict.message }],
+            failed_ops: [{
+              index, file_path: bad?.file_path, action: bad?.action, error: grund,
+              ...(bad?.coedit_source_op_index !== undefined ? { coedit_source_plan_id: bad.coedit_source_plan_id, coedit_source_op_index: bad.coedit_source_op_index } : {}),
+            }],
+            ...(verursacher ? { verursacher } : {}),
+            ...(anpassen ? { anpassen } : {}),
             // Die Ops des Plans auf dieser Datei — je mit Aufruf, der sie vollstaendig liefert.
             ops_auf_datei: plan.ops
               .map((op, opIndex) => ({ op, opIndex }))
               .filter(({ op }) => op.file_path === bad?.file_path || op.new_path === bad?.file_path)
               .map(({ op, opIndex }) => ({ op_index: opIndex, agent_id: op.agent_id ?? plan.owner_agent_id, action: op.action, ansehen: opAnsehen(args.plan_id, opIndex) })),
-            message: `Beitrag abgelehnt, nichts geaendert: ${combined.conflict.message}. Der gemeinsame Plan bleibt unberuehrt — Op anpassen und erneut coedit_add.`,
+            message: `Beitrag abgelehnt, nichts geaendert: deine Op ${bad?.action ?? "?"} auf ${bad?.file_path ?? "?"} ist zusammen mit Plan ${args.plan_id} nicht anwendbar (${grund}). ${wer} `
+              + `Der gemeinsame Plan bleibt unberuehrt — Op anpassen und mit op_index (= coedit_source_op_index) erneut beitragen${anpassen ? `: ${anpassen}` : ""}.`,
           };
         }
       }
@@ -3227,6 +3537,17 @@ export async function addCoeditContribution(args: {
     for (const sourceKey of selected) {
       const source = sourceOps.get(sourceKey)!;
       const paths = touchedPaths(source.op);
+      // Runde 3: eine per op_index ersetzte Op steht danach auch im Wait (Nachvollziehbarkeit, Dedup).
+      const neueOp = ersetzt.get(sourceKey);
+      for (const wait of neueOp ? source.waits : []) {
+        const position = wait.deferred_op_indexes.indexOf(source.sourceIndex);
+        if (position < 0) continue;
+        await client.query(
+          `UPDATE file_batch_waits SET deferred_ops = jsonb_set(deferred_ops, ARRAY[$2::text], $3::jsonb), updated_at = NOW()
+            WHERE wait_token = $1::uuid`,
+          [wait.wait_token, String(position), JSON.stringify(neueOp)],
+        );
+      }
       for (const wait of source.waits) {
         const contributionFiles = paths.filter((filePath) => wait.shared_files.includes(filePath));
         await client.query(
@@ -3251,13 +3572,15 @@ export async function addCoeditContribution(args: {
     // wie commit (detectCrossAgentConflicts). Best effort gegen den aktuellen Stand;
     // verbindlich bleibt die Pruefung im commit.
     let overlapWarnings: CoeditConflictDetail[] = [];
+    let insertNotes: CoeditInsertNote[] = [];
     if (additions.length > 0) {
       try {
         // Perf: dieselben Texte und nur die Ops der betroffenen Dateien — keine zweite PG-Ladung.
         const subsetOps = [...pruefPlanIdx.map((index) => plan.ops[index]), ...additions];
         const baselines = new Map([...pruefDateien].map((filePath) => [filePath, dateiCache.get(filePath)?.content ?? ""] as const));
         const vollIndex = (index: number) => (index < pruefPlanIdx.length ? pruefPlanIdx[index] : plan.ops.length + (index - pruefPlanIdx.length));
-        overlapWarnings = detectCrossAgentConflicts(subsetOps, baselines)
+        const notes: CoeditInsertNote[] = [];
+        overlapWarnings = detectCrossAgentConflicts(subsetOps, baselines, notes)
           .filter((conflict) => conflict.left_op_index >= pruefPlanIdx.length || conflict.right_op_index >= pruefPlanIdx.length)
           .map((conflict) => {
             const left = vollIndex(conflict.left_op_index);
@@ -3268,6 +3591,14 @@ export async function addCoeditContribution(args: {
               right_op_index: right,
               message: `Cross-Agent-Konflikt auf ${conflict.file_path}: Op ${left} (${conflict.left_agent_id}) und Op ${right} (${conflict.right_agent_id}).`,
             };
+          });
+        // Runde 3 (Nachtrag dc2d7eac a): gleiche Einfuegestelle -> INFO an den Beitragenden (der andere sieht
+        // es in plan_status.insert_notes). Globale Op-Indizes wie bei overlap_warnings.
+        insertNotes = notes
+          .filter((note) => note.left_op_index >= pruefPlanIdx.length || note.right_op_index >= pruefPlanIdx.length)
+          .map((note) => {
+            const umgerechnet = { ...note, left_op_index: vollIndex(note.left_op_index), right_op_index: vollIndex(note.right_op_index) };
+            return { ...umgerechnet, message: insertNoteText(umgerechnet) };
           });
       } catch (error) {
         console.error("[Synapse] coedit_add Overlap-Hinweis fehlgeschlagen (best-effort):", error instanceof Error ? error.message : error);
@@ -3281,9 +3612,11 @@ export async function addCoeditContribution(args: {
       total_plan_ops: plan.ops.length + additions.length,
       contributions: additions,
       ...(overlapWarnings.length > 0 ? { overlap_warnings: mitVerweis(overlapWarnings, args.plan_id) } : {}),
-      message: overlapWarnings.length > 0
+      ...(insertNotes.length > 0 ? { insert_notes: mitVerweis(insertNotes, args.plan_id) } : {}),
+      message: (overlapWarnings.length > 0
         ? `${additions.length} Co-Edit-Op(s) an Plan ${args.plan_id} angehaengt. ACHTUNG: ${overlapWarnings.length} Ueberlappung(en) mit Ops eines anderen Agenten (overlap_warnings) — commit endet voraussichtlich in coedit_conflict. Jetzt abstimmen oder nach dem Konflikt cancel + replan.`
-        : `${additions.length} Co-Edit-Op(s) genau einmal an Plan ${args.plan_id} angehaengt.`,
+        : `${additions.length} Co-Edit-Op(s) genau einmal an Plan ${args.plan_id} angehaengt.`)
+        + (insertNotes.length > 0 ? ` INFO: ${insertNotes.length} Einfuegung(en) an derselben Stelle wie die eines anderen Agenten (insert_notes) — kein Konflikt, beide bleiben, Reihenfolge = Beitragsreihenfolge.` : ""),
     };
   } catch (error) {
     await client.query("ROLLBACK");
@@ -4065,6 +4398,8 @@ export interface CancelBatchResult {
   remaining_agents?: string[];
   /** withdrawn: Eintrag, der die zurueckgezogenen Ops samt Begruendung haelt. */
   record_plan_id?: string;
+  /** cancelled (Runde 3): so viele eigene Waits des Plans (Traeger) wurden mit geschlossen. */
+  closed_waits?: number;
 }
 
 /**
@@ -4229,6 +4564,30 @@ export async function cancelBatch(plan_id: string, agent_id?: string, grund?: st
         WHERE primary_plan_id = $1::bigint AND status <> 'closed'`,
       [plan_id],
     );
+    // Runde 3 (Befund 46ccab5b-2): auch die EIGENEN Waits dieses Plans (source_plan_id — typisch der
+    // leere Traeger eines Wartenden) haben keinen Zweck mehr. Vorher blieben sie offen und hielten
+    // den commit des Ziel-Plans auf (coedit_incomplete / waiting_for_contributors). Schon
+    // beigetragene Ops bleiben im Ziel-Plan; dessen Owner erfaehrt es wie beim Rueckzug (PLAN_CHANGED).
+    const eigeneWaits = await client.query<{ primary_plan_id: string | null; primary_agent: string; shared_files: string[] }>(
+      `UPDATE file_batch_waits SET status = 'closed', updated_at = NOW()
+        WHERE source_plan_id = $1::bigint AND status IN ('waiting', 'linked', 'conflict')
+        RETURNING primary_plan_id::text AS primary_plan_id, primary_agent, shared_files`,
+      [plan_id],
+    );
+    for (const wait of eigeneWaits.rows) {
+      if (!wait.primary_plan_id) continue;
+      await emitPlanFolgeEvents(client, {
+        project: plan.project, planId: wait.primary_plan_id, typ: 'PLAN_CHANGED', actor: caller ?? null,
+        empfaenger: [{
+          agent: wait.primary_agent,
+          payload: {
+            withdrawn_by: caller ?? null, withdrawn_ops: 0, wait_geschlossen: true, traeger_plan_id: String(plan_id), dateien: wait.shared_files,
+            hinweis: `${caller ?? 'Ein Wartender'} hat seinen Plan ${plan_id} verworfen: sein Wait auf Plan ${wait.primary_plan_id} ist geschlossen und haelt den commit nicht mehr auf. Schon beigetragene Ops bleiben im Plan.`,
+          },
+        }],
+        dedupe: `traeger-${plan_id}`, grund: `Traeger ${plan_id} verworfen`, quittiereFuer: caller ? [caller] : [],
+      });
+    }
     await closeOrphanCarriers(client, plan.project, `cancel von Plan ${plan_id}`);
     const betroffene = uniqueStrings([
       ...beteiligte.autoren,
@@ -4246,7 +4605,10 @@ export async function cancelBatch(plan_id: string, agent_id?: string, grund?: st
       grund: `Plan ${plan_id} verworfen`, quittiereFuer: [...betroffene, caller ?? ''],
     });
     await client.query('COMMIT'); notifyPlanChange();
-    return { ok: true, status: 'cancelled', mode: 'cancelled', withdrawn_ops: plan.ops.length, remaining_ops: 0 };
+    return {
+      ok: true, status: 'cancelled', mode: 'cancelled', withdrawn_ops: plan.ops.length, remaining_ops: 0,
+      ...(eigeneWaits.rows.length > 0 ? { closed_waits: eigeneWaits.rows.length } : {}),
+    };
   } catch (error) {
     await client.query('ROLLBACK').catch(() => {});
     throw error;
@@ -4346,6 +4708,7 @@ export function buildCancelResponse(planId: string, result: CancelBatchResult): 
       ? `Plan ${planId} enthaelt keine Ops von dir — nichts zurueckgezogen, fremde Arbeit (${andere}) bleibt unangetastet.`
       : result.ok
         ? `Plan ${planId} verworfen (${result.withdrawn_ops ?? 0} Op(s), keine fremden Beitraege). Ops und Begruendung bleiben lesbar (plan_status), mit Vermerk wer/wann/warum.`
+          + (result.closed_waits ? ` ${result.closed_waits} eigene(r) Wait(s) dieses Plans geschlossen — sie halten keinen commit mehr auf; schon beigetragene Ops bleiben im Ziel-Plan (dort per cancel mit agent_id zurueckziehen).` : '')
         : `Plan ${planId} nicht abbrechbar (Status: ${result.status}).`;
   return { success: result.ok, plan_id: planId, ...result, message };
 }
@@ -4586,8 +4949,8 @@ export async function getBatchPlan(plan_id: string): Promise<FileBatchPlanRow | 
     [plan_id, row.owner_agent_id],
   );
   // Befund acc82f49 (3): EIN Eintrag je Agent (mehrere Waits desselben Agenten, z. B. nach
-  // Rueckzug + Neuplan, werden zusammengefasst; Status = der am weitesten fortgeschrittene).
-  const rang: Record<string, number> = { ready: 4, no_changes: 3, linked: 2, waiting: 1 };
+  // Rueckzug + Neuplan, werden zusammengefasst). Runde 3 (46ccab5b-6): Status wie commit_wartet_auf
+  // (gesamtWaitStatus) — vorher zeigte contributions den weitesten, das Ready-Gate den offenen Stand.
   const proAgent = new Map<string, {
     agent_id: string | null; wait_status: string; contributed_files: string[];
     no_change_files: string[]; ready_at: string | null; waits: number;
@@ -4603,33 +4966,77 @@ export async function getBatchPlan(plan_id: string): Promise<FileBatchPlanRow | 
       });
       continue;
     }
-    if ((rang[wait.status] ?? 0) > (rang[entry.wait_status] ?? 0)) entry.wait_status = wait.status;
+    entry.wait_status = gesamtWaitStatus([entry.wait_status, wait.status]);
     entry.contributed_files = uniqueStrings([...entry.contributed_files, ...wait.contributed_files]);
     entry.no_change_files = uniqueStrings([...entry.no_change_files, ...wait.no_change_files]);
     if (readyAt && (!entry.ready_at || readyAt > entry.ready_at)) entry.ready_at = readyAt;
     entry.waits++;
   }
   const contributions = [...proAgent.values()];
+  // Runde 3 (46ccab5b-6): die EIGENEN Waits dieses Plans (typisch: leerer Traeger) mit ihrem Ziel —
+  // auch wenn das Ziel erst nach dem plan entstanden ist (Bindung in emitPlanReadyForExistingWaits).
+  const eigeneWaits = await pool.query<NonNullable<FileBatchPlanRow['coedit_waits']>[number]>(
+    `SELECT wait_token::text AS wait_token, primary_agent, primary_plan_id::text AS target_plan_id, status::text AS wait_status,
+            shared_files, contributed_files, no_change_files, deferred_op_indexes AS coedit_source_op_indexes
+       FROM file_batch_waits
+      WHERE source_plan_id = $1::bigint AND status <> 'closed'
+      ORDER BY wait_token`,
+    [plan_id],
+  );
   // E1: auf wen ein commit gerade warten wuerde (aktive, noch nicht bereite Beitragende).
   const commitWartetAuf = row.status === 'open' && waitRows.rows.length > 0
     ? await readyGateBlockers(pool, { id: String(plan_id), project: row.project, owner_agent_id: row.owner_agent_id }, null)
     : [];
   let overlapWarnings: CoeditConflictDetail[] = [];
+  let insertNotes: CoeditInsertNote[] = [];
   const planOps = Array.isArray(row.ops) ? row.ops : [];
   if (row.status === 'open' && new Set(planOps.map((op) => op.agent_id ?? row.owner_agent_id)).size > 1) {
     const baselines = new Map<string, string>();
     for (const filePath of uniqueStrings(planOps.flatMap(touchedPaths))) {
       baselines.set(filePath, (await getFileContentFromPg(row.project, filePath)) ?? '');
     }
-    overlapWarnings = mitVerweis(detectCrossAgentConflicts(planOps, baselines), String(plan_id));
+    const notes: CoeditInsertNote[] = [];
+    overlapWarnings = mitVerweis(detectCrossAgentConflicts(planOps, baselines, notes), String(plan_id));
+    // Runde 3: gleiche Einfuegestelle — fuer ALLE Beteiligten sichtbar (INFO, kein Konflikt).
+    insertNotes = mitVerweis(notes, String(plan_id));
   }
   return {
     ...normalizePlanRow(row),
     ...(withdrawn.length > 0 ? { withdrawn } : {}),
     ...(contributions.length > 0 ? { contributions } : {}),
     ...(overlapWarnings.length > 0 ? { overlap_warnings: overlapWarnings } : {}),
+    ...(insertNotes.length > 0 ? { insert_notes: insertNotes } : {}),
     ...(commitWartetAuf.length > 0 ? { commit_wartet_auf: commitWartetAuf } : {}),
+    ...(eigeneWaits.rows.length > 0 ? { coedit_waits: eigeneWaits.rows } : {}),
   };
+}
+
+/**
+ * Runde 3 (Befund 46ccab5b-1): op_indices so lesen, wie es ankommt. Der Cloud-Connector schickt
+ * Arrays teils als JSON-String ("[0,1]") — die Handler prueften nur Array.isArray und liessen den
+ * Parameter still fallen (normale Uebersicht statt der Ops). Versteht Array, JSON-String,
+ * Komma-Liste ("0, 1") und Einzelwert; undefined, wenn nichts Lesbares drin ist.
+ */
+export function opIndicesLesen(value: unknown): number[] | undefined {
+  if (value === undefined || value === null) return undefined;
+  let roh: unknown[];
+  if (Array.isArray(value)) roh = value;
+  else if (typeof value === 'number') roh = [value];
+  else if (typeof value === 'string') {
+    const text = value.trim();
+    if (text === '') return undefined;
+    let geparst: unknown = null;
+    if (text.startsWith('[')) {
+      try { geparst = JSON.parse(text); } catch { geparst = null; }
+    }
+    roh = Array.isArray(geparst) ? geparst : text.replace(/^\[|\]$/g, '').split(',');
+  } else return undefined;
+  const zahlen = roh
+    .map((eintrag) => (typeof eintrag === 'string' ? eintrag.trim() : eintrag))
+    .filter((eintrag) => eintrag !== '')
+    .map(Number)
+    .filter((zahl) => Number.isFinite(zahl));
+  return zahlen.length > 0 ? zahlen : undefined;
 }
 
 /**
@@ -4643,7 +5050,7 @@ export async function getBatchPlan(plan_id: string): Promise<FileBatchPlanRow | 
 export async function getPlanOpsVollstaendig(args: {
   plan_id: string;
   op_index?: number;
-  op_indices?: number[];
+  op_indices?: number[] | string;
   from_line?: number;
   to_line?: number;
 }): Promise<Record<string, unknown>> {
@@ -4659,7 +5066,7 @@ export async function getPlanOpsVollstaendig(args: {
   if (!plan) return { success: false, error: 'plan_not_found', message: `Plan ${args.plan_id} nicht gefunden.` };
   const ops = Array.isArray(plan.ops) ? plan.ops : [];
   const previews = Array.isArray(plan.previews) ? plan.previews : [];
-  const indices = uniqueStrings([...(args.op_indices ?? []), ...(args.op_index !== undefined && args.op_index !== null ? [args.op_index] : [])]
+  const indices = uniqueStrings([...(opIndicesLesen(args.op_indices) ?? []), ...(args.op_index !== undefined && args.op_index !== null ? [args.op_index] : [])]
     .map((index) => String(Number(index)))).map(Number);
   if (indices.length === 0) return { success: false, error: 'op_index_fehlt', message: 'op_index oder op_indices angeben.' };
   const rueckzug = previews.find((preview) => preview?.withdrawn_from);
@@ -4785,6 +5192,15 @@ export function buildPlanStatusResponse(plan: FileBatchPlanRow): Record<string, 
     ...(plan.withdrawn && plan.withdrawn.length > 0 ? { withdrawn: plan.withdrawn } : {}),
     ...(plan.contributions && plan.contributions.length > 0 ? { contributions: plan.contributions } : {}),
     ...(plan.overlap_warnings && plan.overlap_warnings.length > 0 ? { overlap_warnings: plan.overlap_warnings } : {}),
+    ...(plan.insert_notes && plan.insert_notes.length > 0 ? { insert_notes: plan.insert_notes } : {}),
+    // Runde 3: Traeger/Quellplan — wohin seine zurueckgestellten Ops gehoeren (target_plan_id, auch spaet gebunden).
+    ...(plan.coedit_waits && plan.coedit_waits.length > 0
+      ? {
+          coedit_waits: plan.coedit_waits,
+          coedit_waits_hinweis: 'Eigene Waits dieses Plans: target_plan_id = Plan, in den coedit_add gehoert (null = Ziel entsteht noch). '
+            + 'coedit_source_op_indexes = Nummern der zurueckgestellten Ops (fuer coedit_add mit op_index).',
+        }
+      : {}),
     // Anzeige hier ist gekuerzt (previews[].context, ops_overview ohne Inhalt) — der Weg zur vollen Op:
     op_vollstaendig: `Jede Op ungekuerzt (alle Felder, content, Anker, reason, Status, betroffene Zeilen vorher/nachher): files(action:'plan_status', plan_id:'${plan.id}', op_index:N) oder op_indices:[...]; from_line/to_line schneiden ein Fenster aus sehr grossem content.`,
     ...(plan.commit_wartet_auf && plan.commit_wartet_auf.length > 0

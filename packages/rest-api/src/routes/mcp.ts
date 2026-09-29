@@ -122,6 +122,7 @@ import {
   buildCancelResponse,
   pollPlanStatus,
   getPlanOpsVollstaendig,
+  opIndicesLesen,
   reservationTtlHint,
   commitBatch,
   cancelBatch,
@@ -918,8 +919,8 @@ const MCP_TOOLS = [
         version_id: { type: 'string', description: 'Versions-ID (BIGSERIAL als String). Pflicht fuer get_version/restore. Bei history (): zeigt Korrektur-Chain ab dieser Version (rekursiv via parent_version_id).' },
         batch_id: { type: 'string', description: 'Batch-ID (fuer restore_batch — rollt alle Files einer Multi-File-Batch zurueck).' },
         plan_id: { type: 'string', description: 'Plan-ID (fuer commit, cancel, plan_status, plan_update). String wegen BIGSERIAL.' },
-        op_indices: { type: 'array', items: { type: 'number' }, description: 'plan_status: mehrere Ops VOLLSTAENDIG liefern (alle Felder ungekuerzt, agent_id, Status, vorher/nachher). from_line/to_line schneiden ein Fenster aus content.' },
-        op_index: { type: 'number', description: 'plan_status: Index einer Op, die VOLLSTAENDIG geliefert wird (alle Felder ungekuerzt, agent_id, Status, betroffene Zeilen vorher/nachher). plan_update: Index der zu ersetzenden Op (0-basiert); ops[] ersetzt genau diese. Ohne op_index ersetzt ops[] alle Ops.' },
+        op_indices: { type: 'array', items: { type: 'number' }, description: 'plan_status: mehrere Ops VOLLSTAENDIG liefern (auch als JSON-String "[0,1]" oder "0,1") (alle Felder ungekuerzt, agent_id, Status, vorher/nachher). from_line/to_line schneiden ein Fenster aus content.' },
+        op_index: { type: 'number', description: 'coedit_add: coedit_source_op_index der zurueckgestellten Op, die ops[0] ersetzt und beitraegt (z. B. nach contribution_failed). plan_status: Index einer Op, die VOLLSTAENDIG geliefert wird (alle Felder ungekuerzt, agent_id, Status, betroffene Zeilen vorher/nachher). plan_update: Index der zu ersetzenden Op (0-basiert); ops[] ersetzt genau diese. Ohne op_index ersetzt ops[] alle Ops.' },
         agent_id: { type: 'string', description: 'Optional: Audit-Agent fuer file_versions. Bei Web-KI-Calls ohne Wrapper wird agent_id aus User-Agent/X-Openai-Session abgeleitet (z.B. "gpt-<8charsessionid>"). DARF weggelassen oder leer sein — Server ergaenzt automatisch. AUSNAHME action=history: dort wirkt agent_id als EXAKTER Read-Filter — fuer die volle Projekt-History weglassen!' },
         agent_filter: { type: 'string', description: 'Nur fuer history: expliziter exakter Agent-Filter (bevorzugt gegenueber agent_id-als-Filter)' },
         ops: {
@@ -1030,8 +1031,8 @@ const MCP_TOOLS = [
           },
         },
         plan_id: { type: 'string', description: 'Pflicht fuer commit, cancel, plan_status, plan_update' },
-        op_indices: { type: 'array', items: { type: 'number' }, description: 'plan_status: mehrere Ops VOLLSTAENDIG liefern (alle Felder ungekuerzt, agent_id, Status, vorher/nachher). from_line/to_line schneiden ein Fenster aus content.' },
-        op_index: { type: 'number', description: 'plan_status: Index einer Op, die VOLLSTAENDIG geliefert wird (alle Felder ungekuerzt, agent_id, Status, betroffene Zeilen vorher/nachher). plan_update: Index der zu ersetzenden Op (0-basiert); ohne op_index ersetzt ops[] alle Ops.' },
+        op_indices: { type: 'array', items: { type: 'number' }, description: 'plan_status: mehrere Ops VOLLSTAENDIG liefern (auch als JSON-String "[0,1]" oder "0,1") (alle Felder ungekuerzt, agent_id, Status, vorher/nachher). from_line/to_line schneiden ein Fenster aus content.' },
+        op_index: { type: 'number', description: 'coedit_add: coedit_source_op_index der zurueckgestellten Op, die ops[0] ersetzt und beitraegt (z. B. nach contribution_failed). plan_status: Index einer Op, die VOLLSTAENDIG geliefert wird (alle Felder ungekuerzt, agent_id, Status, betroffene Zeilen vorher/nachher). plan_update: Index der zu ersetzenden Op (0-basiert); ohne op_index ersetzt ops[] alle Ops.' },
         version_id: { type: 'string', description: 'Pflicht fuer restore' },
         batch_id: { type: 'string', description: 'Pflicht fuer restore_batch' },
         agent_id: { type: 'string', description: 'Optionale Agent-ID (Audit-Trail). AUSNAHME action=history: wirkt als exakter Read-Filter — fuer volle Projekt-History weglassen.' },
@@ -4073,7 +4074,7 @@ async function handleToolCall(
         if (!agentId) throw new Error("agent_id ist fuer coedit_add erforderlich");
         const coeditOps = (args as Record<string, unknown>).ops;
         if (!Array.isArray(coeditOps) || coeditOps.length === 0) throw new Error("ops[] muss mindestens eine Operation enthalten");
-        return addCoeditContribution({ project, plan_id: reqStr(args, "plan_id"), agent_id: agentId, ops: coeditOps as import("@synapse/core").FileBatchOp[], wait_token: str(args, "wait_token") });
+        return addCoeditContribution({ project, plan_id: reqStr(args, "plan_id"), agent_id: agentId, ops: coeditOps as import("@synapse/core").FileBatchOp[], wait_token: str(args, "wait_token"), op_index: num(args, "op_index") });
       }
       if (action === "coedit_ready") {
         if (!agentId) throw new Error("agent_id ist fuer coedit_ready erforderlich");
@@ -4442,8 +4443,8 @@ async function handleToolCall(
         const planId = reqStr(args, 'plan_id');
         // Fremde Op vollstaendig sehen: op_index / op_indices liefern die Op(s) ungekuerzt.
         const opIndex = num(args, 'op_index');
-        const opIndicesRoh = (args as Record<string, unknown>).op_indices;
-        const opIndices = Array.isArray(opIndicesRoh) ? opIndicesRoh.map(Number) : undefined;
+        // Runde 3: der Connector schickt Arrays teils als JSON-String — opIndicesLesen versteht beides.
+        const opIndices = opIndicesLesen((args as Record<string, unknown>).op_indices);
         if (opIndex !== undefined || opIndices) {
           return getPlanOpsVollstaendig({ plan_id: planId, op_index: opIndex, op_indices: opIndices, from_line: num(args, 'from_line'), to_line: num(args, 'to_line') });
         }

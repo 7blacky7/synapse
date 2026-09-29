@@ -237,6 +237,15 @@ export async function getPendingEvents(
              AND w.status IN ('waiting', 'linked')
              AND (w.expires_at > NOW() OR EXISTS (SELECT 1 FROM file_batch_plans p WHERE p.id = w.primary_plan_id AND p.status = 'open'))
          )
+         -- Runde 3 (Befund 46ccab5b-6): hat der Agent schon ein PLAN_READY fuer DENSELBEN Plan quittiert
+         -- (mehrere Waits -> mehrere Events), kommt kein weiteres fuer diesen Plan mehr in pending_events.
+         AND NOT EXISTS (
+           SELECT 1 FROM agent_events e2
+             JOIN agent_event_acks a2 ON a2.event_id = e2.id AND a2.agent_id = $3
+            WHERE e2.project = e.project AND e2.event_type = 'PLAN_READY' AND e2.scope = e.scope AND e2.id <> e.id
+              AND (CASE WHEN e2.payload LIKE '{%' THEN e2.payload::jsonb ->> 'plan_id' END)
+                = (CASE WHEN e.payload LIKE '{%' THEN e.payload::jsonb ->> 'plan_id' END)
+         )
        )
      ORDER BY
        CASE e.priority

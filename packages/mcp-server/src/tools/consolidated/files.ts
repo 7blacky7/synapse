@@ -31,6 +31,7 @@ import {
   buildCancelResponse,
   pollPlanStatus,
   getPlanOpsVollstaendig,
+  opIndicesLesen,
   reservationTtlHint,
   commitBatch,
   cancelBatch,
@@ -176,11 +177,11 @@ export const filesTool: ConsolidatedTool = {
         op_indices: {
           type: 'array',
           items: { type: 'number' },
-          description: 'plan_status: mehrere Ops VOLLSTAENDIG liefern (alle Felder ungekuerzt, agent_id, Status, vorher/nachher). from_line/to_line schneiden ein Fenster aus content.',
+          description: 'plan_status: mehrere Ops VOLLSTAENDIG liefern (auch als JSON-String "[0,1]" oder "0,1"; alle Felder ungekuerzt, agent_id, Status, vorher/nachher). from_line/to_line schneiden ein Fenster aus content.',
         },
         op_index: {
           type: 'number',
-          description: 'plan_status: Index einer Op, die VOLLSTAENDIG geliefert wird (alle Felder ungekuerzt, agent_id, Status, betroffene Zeilen vorher/nachher). plan_update: Index der zu ersetzenden Op (0-basiert); ops[] ersetzt genau diese. Ohne op_index ersetzt ops[] alle Ops.',
+          description: 'coedit_add: coedit_source_op_index der zurueckgestellten Op, die ops[0] ersetzt und beitraegt (z. B. nach contribution_failed). plan_status: Index einer Op, die VOLLSTAENDIG geliefert wird (alle Felder ungekuerzt, agent_id, Status, betroffene Zeilen vorher/nachher). plan_update: Index der zu ersetzenden Op (0-basiert); ops[] ersetzt genau diese. Ohne op_index ersetzt ops[] alle Ops.',
         },
         ops: {
           type: 'array',
@@ -313,7 +314,7 @@ export const filesTool: ConsolidatedTool = {
       if (!agentId) throw new Error("agent_id ist fuer coedit_add erforderlich");
       const opsRaw = (args as Record<string, unknown>).ops;
       if (!Array.isArray(opsRaw) || opsRaw.length === 0) throw new Error("ops[] muss mindestens eine Operation enthalten");
-      return addCoeditContribution({ project, plan_id: reqStr(args, "plan_id"), agent_id: agentId, ops: opsRaw as FileBatchOp[], wait_token: str(args, "wait_token") });
+      return addCoeditContribution({ project, plan_id: reqStr(args, "plan_id"), agent_id: agentId, ops: opsRaw as FileBatchOp[], wait_token: str(args, "wait_token"), op_index: num(args, "op_index") });
     }
     if (action === "coedit_ready") {
       if (!agentId) throw new Error("agent_id ist fuer coedit_ready erforderlich");
@@ -530,7 +531,8 @@ export const filesTool: ConsolidatedTool = {
       const planId = reqStr(args, 'plan_id');
       // Fremde Op vollstaendig sehen: op_index / op_indices liefern die Op(s) ungekuerzt.
       const opIndex = num(args, 'op_index');
-      const opIndices = Array.isArray(args.op_indices) ? (args.op_indices as unknown[]).map(Number) : undefined;
+      // Runde 3: Arrays kommen teils als JSON-String — opIndicesLesen versteht beides.
+      const opIndices = opIndicesLesen(args.op_indices);
       if (opIndex !== undefined || opIndices) {
         return getPlanOpsVollstaendig({ plan_id: planId, op_index: opIndex, op_indices: opIndices, from_line: num(args, 'from_line'), to_line: num(args, 'to_line') });
       }
