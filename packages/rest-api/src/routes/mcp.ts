@@ -4347,7 +4347,7 @@ async function handleToolCall(
         if (bool(args, 'auto_commit') === true && allPreviewsOk && result.total_ops > 0) {
           const c = await commitBatch({ plan_id: result.plan_id, agent_id: agentId, agent_note: str(args, 'agent_note') });
           if (c.success) {
-            return { ...c, plan: result, auto_committed: true, message: `Plan ${result.plan_id} angelegt + sofort committed (auto_commit) — ${c.committed} Datei(en) geaendert. batch_id=${c.batch_id}.` };
+            return { ...c, plan: result, auto_committed: true, message: `Plan ${result.plan_id} angelegt + sofort committed (auto_commit) — ${c.committed} Datei(en), ${c.committed_ops ?? '?'} Op(s) geaendert. batch_id=${c.batch_id}.` };
           }
           return { ...c, plan: result, auto_committed: false, message: `Plan ${result.plan_id} angelegt, auto-commit fehlgeschlagen — Plan bleibt offen, kann manuell committet oder cancelt werden.` };
         }
@@ -4401,7 +4401,7 @@ async function handleToolCall(
             ...(result.in_place ? {} : { superseded_plan_id: planId }),
             auto_committed: c.success,
             message: c.success
-              ? `${wie} und ist committed — ${c.committed} Datei(en) geaendert. batch_id=${c.batch_id}.`
+              ? `${wie} und ist committed — ${c.committed} Datei(en), ${c.committed_ops ?? '?'} Op(s) geaendert. batch_id=${c.batch_id}.`
               : `${wie}, auto-commit fehlgeschlagen — Plan bleibt offen.`,
           };
         }
@@ -4416,7 +4416,7 @@ async function handleToolCall(
         try {
           const result = await commitBatch({ plan_id: planId, agent_id: agentId, agent_note: str(args, 'agent_note') });
           if (result.success) {
-            return { ...result, message: `Plan ${result.plan_id} committed — ${result.committed} Datei(en) geaendert. batch_id=${result.batch_id}.` };
+            return { ...result, message: `Plan ${result.plan_id} committed — ${result.committed} Datei(en), ${result.committed_ops ?? '?'} Op(s) geaendert. batch_id=${result.batch_id}.` };
           }
           return result;
         } catch (err) {

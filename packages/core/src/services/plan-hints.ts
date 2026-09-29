@@ -107,7 +107,7 @@ export async function claimOpenPlanHints(
               ARRAY(SELECT jsonb_object_keys(p.expected_hashes)) AS dateien,
               p.created_at, p.open_for_coedit,
               ARRAY(SELECT DISTINCT o->>'agent_id' FROM jsonb_array_elements(p.ops) o
-                     WHERE o->>'agent_id' IS NOT NULL) AS agenten,
+                     WHERE o->>'agent_id' IS NOT NULL ORDER BY 1) AS agenten,
               (SELECT COUNT(*) FROM jsonb_array_elements(p.previews) e
                 WHERE e->>'ok' = 'false')::int AS fehler_ops,
               -- letzte Aktivitaet: Anlage oder letzte Bewegung eines an den Plan gebundenen Waits

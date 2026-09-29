@@ -438,7 +438,7 @@ export const filesTool: ConsolidatedTool = {
       if (bool(args, 'auto_commit') === true && allPreviewsOk && result.total_ops > 0) {
         const c = await commitBatch({ plan_id: result.plan_id, agent_id: agentId, agent_note: typeof args.agent_note === 'string' ? args.agent_note : undefined });
         if (c.success) {
-          return { ...c, plan: result, auto_committed: true, message: `Plan ${result.plan_id} angelegt + sofort committed (auto_commit) — ${c.committed} Datei(en) geaendert. batch_id=${c.batch_id}.` };
+          return { ...c, plan: result, auto_committed: true, message: `Plan ${result.plan_id} angelegt + sofort committed (auto_commit) — ${c.committed} Datei(en), ${c.committed_ops ?? '?'} Op(s) geaendert. batch_id=${c.batch_id}.` };
         }
         return { ...c, plan: result, auto_committed: false, message: `Plan ${result.plan_id} angelegt, auto-commit fehlgeschlagen — Plan offen, kann manuell committet oder cancelt werden.` };
       }
@@ -492,7 +492,7 @@ export const filesTool: ConsolidatedTool = {
           ...(result.in_place ? {} : { superseded_plan_id: planId }),
           auto_committed: c.success,
           message: c.success
-            ? `${wie} und ist committed — ${c.committed} Datei(en) geaendert. batch_id=${c.batch_id}.`
+            ? `${wie} und ist committed — ${c.committed} Datei(en), ${c.committed_ops ?? '?'} Op(s) geaendert. batch_id=${c.batch_id}.`
             : `${wie}, auto-commit fehlgeschlagen — Plan bleibt offen.`,
         };
       }
@@ -508,7 +508,7 @@ export const filesTool: ConsolidatedTool = {
       if (result.success) {
         return {
           ...result,
-          message: `Plan ${result.plan_id} committed — ${result.committed} Datei(en) geaendert. batch_id=${result.batch_id} (fuer restore_batch).`,
+          message: `Plan ${result.plan_id} committed — ${result.committed} Datei(en), ${result.committed_ops ?? '?'} Op(s) geaendert. batch_id=${result.batch_id} (fuer restore_batch).`,
         };
       }
       return result;
