@@ -31,6 +31,7 @@
  */
 
 
+import { createHash } from 'node:crypto';
 import { getPool } from './client.js';
 
 const SCHEMA_SQL = `
@@ -223,6 +224,14 @@ CREATE TABLE IF NOT EXISTS jev_entscheidungen (
   ueberstimmt_am TIMESTAMPTZ
 );
 CREATE INDEX IF NOT EXISTS idx_jev_entscheidungen_project_zeit ON jev_entscheidungen(project, zeit);
+-- P7-T14 (29.09.2026): Schema-Kennung. ensureSchema schreibt den Hash von SCHEMA_SQL+AUTH_SCHEMA_SQL nach
+-- erfolgreichem DDL; Wrapper, MCP-stdio und project(init) LESEN sie nur (pruefeSchema) statt selbst alle
+-- Tabellen zu sperren. Nur CREATE TABLE IF NOT EXISTS, keine Sperren.
+CREATE TABLE IF NOT EXISTS schema_stand (
+  id SMALLINT PRIMARY KEY CHECK (id = 1),
+  hash TEXT NOT NULL,
+  angewandt_am TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
 -- JEV-12 (P7-T31): Runden-Kette (choice mit 5 Optionen, die fuenfte 'weitere'), offene Fragen fuer den User,
 -- Blocker. Nur neue Spalten mit Default/NULL (kein Tabellen-Rewrite).
 ALTER TABLE jev_entscheidungen ADD COLUMN IF NOT EXISTS runde INTEGER NOT NULL DEFAULT 1;
@@ -2263,6 +2272,118 @@ const SPERRE_BELEGT = 'SYNAPSE_SCHEMA_SPERRE_BELEGT';
 /** Marker im Fehlertext: Probelauf fertig — der Abbruch rollt die implizite Transaktion zurueck. */
 const PROBE_ENDE = 'SYNAPSE_SCHEMA_PROBE_ENDE';
 
+/**
+ * Kennung dieses Builds: sha256 ueber SCHEMA_SQL + AUTH_SCHEMA_SQL. ensureSchema schreibt sie nach Erfolg in
+ * schema_stand; pruefeSchema vergleicht sie LESEND. Aendert sich das Schema, aendert sich die Kennung.
+ */
+export const SCHEMA_KENNUNG = createHash('sha256').update(SCHEMA_SQL).update('\n;\n').update(AUTH_SCHEMA_SQL).digest('hex');
+
+export type SchemaStandArt = 'aktuell' | 'veraltet' | 'unbekannt' | 'leer';
+
+export interface SchemaPruefung {
+  /** aktuell = Kennung gleich; veraltet = andere Kennung; unbekannt = keine Kennung/Timeout/Fehler; leer = DB ohne Daten-Tabellen */
+  stand: SchemaStandArt;
+  erwartet: string;
+  vorhanden: string | null;
+  grund?: string;
+}
+
+/** Kurzer statement_timeout fuer die Pruefung: ein haengendes SELECT darf keinen Start blockieren */
+const PRUEF_TIMEOUT_MS = 3000;
+
+/**
+ * Schema PRUEFEN, nicht aendern (P7-T14): reines Lesen (ACCESS SHARE), kein DDL, kein LOCK, kein INSERT.
+ * Wirft nie. Fehler/Timeout -> 'unbekannt'. Jede Nachricht ist ein Server-Aufruf mit LOCAL-Timeout
+ * (implizite Transaktion, keine Rundreise mit gehaltener Sperre).
+ */
+export async function pruefeSchema(): Promise<SchemaPruefung> {
+  const basis = { erwartet: SCHEMA_KENNUNG };
+  const mitTimeout = (sql: string) => `SELECT set_config('statement_timeout', '${PRUEF_TIMEOUT_MS}', true); ${sql}`;
+  const letzteZeilen = (antwort: unknown): Array<Record<string, unknown>> => {
+    const letzte = (Array.isArray(antwort) ? antwort[antwort.length - 1] : antwort) as { rows?: Array<Record<string, unknown>> } | undefined;
+    return letzte?.rows ?? [];
+  };
+  try {
+    const pool = getPool();
+    const sentinel = letzteZeilen(await pool.query(
+      mitTimeout(`SELECT to_regclass('public.memories') IS NOT NULL AS hat_daten, to_regclass('public.schema_stand') IS NOT NULL AS hat_stand`),
+    ))[0] ?? {};
+    if (sentinel.hat_daten !== true) return { ...basis, stand: 'leer', vorhanden: null };
+    if (sentinel.hat_stand !== true) return { ...basis, stand: 'unbekannt', vorhanden: null, grund: 'schema_stand fehlt (API mit diesem Build noch nicht gestartet)' };
+    const zeile = letzteZeilen(await pool.query(mitTimeout(`SELECT hash FROM schema_stand WHERE id = 1`)))[0];
+    if (!zeile || typeof zeile.hash !== 'string') {
+      return { ...basis, stand: 'unbekannt', vorhanden: null, grund: 'schema_stand leer (API mit diesem Build noch nicht gestartet)' };
+    }
+    return { ...basis, stand: zeile.hash === SCHEMA_KENNUNG ? 'aktuell' : 'veraltet', vorhanden: zeile.hash };
+  } catch (error) {
+    const code = (error as { code?: string }).code;
+    return {
+      ...basis,
+      stand: 'unbekannt',
+      vorhanden: null,
+      grund: code === '57014' ? 'timeout' : (error instanceof Error ? error.message : String(error)),
+    };
+  }
+}
+
+export type SchemaModus = 'ausfuehren' | 'pruefen' | 'aus';
+
+/**
+ * Modus aus der Umgebung (SYNAPSE_SCHEMA=ausfuehren|pruefen|aus); ungueltige/fehlende Werte -> Standard des
+ * Aufrufers. Die Umgebung gewinnt: wer ohne API arbeitet, setzt SYNAPSE_SCHEMA=ausfuehren.
+ */
+export function schemaModus(standard: SchemaModus): SchemaModus {
+  const roh = process.env.SYNAPSE_SCHEMA?.trim().toLowerCase();
+  return roh === 'ausfuehren' || roh === 'pruefen' || roh === 'aus' ? roh : standard;
+}
+
+let schemaWarnungGeloggt = false;
+/** Nur fuer Tests: die Einmal-je-Prozess-Sperre der Warnung zuruecksetzen */
+export function leereSchemaWarnung(): void {
+  schemaWarnungGeloggt = false;
+}
+
+export interface SchemaSicherErgebnis {
+  modus: SchemaModus;
+  aktion: 'ausgefuehrt' | 'geprueft' | 'uebersprungen';
+  pruefung?: SchemaPruefung;
+}
+
+/**
+ * Schema fuer diesen Prozess sicherstellen (P7-T14). ensureSchema sperrt ALLE Produktions-Tabellen ~2,3 s;
+ * das darf nur der API-Start ('ausfuehren'). Alle anderen ('pruefen', Standard) lesen nur:
+ *  - aktuell -> nichts; veraltet/unbekannt -> EINE Hinweiszeile je Prozessstart (kein Fehler: vor dem ersten
+ *    API-Start mit diesem Build meldet jeder 'unbekannt', das ist erwartet);
+ *  - leer (frische DB, nichts zu sperren) -> einmal ausfuehren (Erstinstallation ohne API).
+ * 'aus' tut nichts. deps.ausfuehren ersetzt ensureSchema (Tests).
+ */
+export async function stelleSchemaSicher(
+  standard: SchemaModus = 'pruefen',
+  deps: { ausfuehren?: () => Promise<unknown> } = {},
+): Promise<SchemaSicherErgebnis> {
+  const modus = schemaModus(standard);
+  const ausfuehren = deps.ausfuehren ?? (() => ensureSchema());
+  if (modus === 'aus') return { modus, aktion: 'uebersprungen' };
+  if (modus === 'ausfuehren') {
+    await ausfuehren();
+    return { modus, aktion: 'ausgefuehrt' };
+  }
+  const pruefung = await pruefeSchema();
+  if (pruefung.stand === 'leer') {
+    console.error('[Synapse] Schema: Datenbank ist leer — Erstinstallation, Schema wird einmal angelegt');
+    await ausfuehren();
+    return { modus, aktion: 'ausgefuehrt', pruefung };
+  }
+  if ((pruefung.stand === 'veraltet' || pruefung.stand === 'unbekannt') && !schemaWarnungGeloggt) {
+    schemaWarnungGeloggt = true;
+    console.error(
+      `[Synapse] Schema-Hinweis: Stand ${pruefung.stand}${pruefung.grund ? ` (${pruefung.grund})` : ''} — ` +
+      'dieser Prozess aendert das Schema nicht; die API (Start mit diesem Build) legt es an. Mit SYNAPSE_SCHEMA=ausfuehren erzwingbar.',
+    );
+  }
+  return { modus, aktion: 'geprueft', pruefung };
+}
+
 export interface SchemaErgebnis {
   versuche: number;
   /** Wie oft das Einsammeln der Sperren neu begonnen wurde (Tabelle gerade belegt, kein Fehler). */
@@ -2403,7 +2524,16 @@ export async function ensureSchema(optionen: {
       const antwort = await client.query(nachricht) as unknown;
       const letzte = (Array.isArray(antwort) ? antwort[antwort.length - 1] : antwort) as { rows: Array<Record<string, unknown>> };
       const z = letzte.rows[0] ?? {};
-      return fertig(false, versuch, z.m0, z.m1, z.m2, z.m3, z.m4);
+      const ergebnis = fertig(false, versuch, z.m0, z.m1, z.m2, z.m3, z.m4);
+      // P7-T14: Kennung NACH dem DDL in eigener Kurz-Anweisung (nur die Mini-Tabelle, keine Grosssperre).
+      // Nicht bei Test-Koerper: der ersetzt SCHEMA_SQL und darf keine Produktions-Kennung schreiben.
+      if (optionen.koerper === undefined) {
+        await client.query(
+          `INSERT INTO schema_stand (id, hash, angewandt_am) VALUES (1, $1, NOW()) ON CONFLICT (id) DO UPDATE SET hash = EXCLUDED.hash, angewandt_am = NOW()`,
+          [SCHEMA_KENNUNG],
+        ).catch((e: unknown) => console.error(`[Synapse] schema_stand konnte nicht geschrieben werden: ${e instanceof Error ? e.message : String(e)}`));
+      }
+      return ergebnis;
     } catch (error) {
       const code = (error as { code?: string }).code;
       const meldung = error instanceof Error ? error.message : String(error);

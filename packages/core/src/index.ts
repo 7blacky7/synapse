@@ -13,7 +13,8 @@ export { GUIDE_OVERVIEW, TOOL_GUIDES } from './guide/index.js';
 export type { ToolGuide, ActionGuide } from './guide/index.js';
 
 // PostgreSQL
-export { getPool, testDatabaseConnection, closePool, ensureSchema } from './db/index.js';
+export { getPool, testDatabaseConnection, closePool, ensureSchema, pruefeSchema, stelleSchemaSicher, schemaModus, leereSchemaWarnung, SCHEMA_KENNUNG } from './db/index.js';
+export type { SchemaModus, SchemaPruefung, SchemaStandArt, SchemaSicherErgebnis } from './db/index.js';
 
 // Typen
 export * from './types/index.js';
@@ -918,7 +919,10 @@ async function migrateCollection(
  * @param projectName - Projekt-Name (Pflicht). Erstellt Per-Projekt Collections
  *   und migriert bei Dimensions-Mismatch automatisch mit Backup.
  */
-export async function initSynapse(projectName: string): Promise<boolean> {
+export async function initSynapse(
+  projectName: string,
+  optionen: { schema?: 'ausfuehren' | 'pruefen' | 'aus' } = {},
+): Promise<boolean> {
   console.error(`[Synapse] Initialisiere Projekt "${projectName}"...`);
 
   // 0. Embedding-Provider resetten damit aktuelle Config geladen wird
@@ -926,10 +930,12 @@ export async function initSynapse(projectName: string): Promise<boolean> {
   resetEmbeddingProvider();
 
   // 1. PostgreSQL testen + Schema sicherstellen
-  const { testDatabaseConnection, ensureSchema } = await import('./db/index.js');
+  // P7-T14: ensureSchema sperrt alle Produktions-Tabellen ~2,3 s — nur der API-Start fuehrt es aus
+  // (schema:'ausfuehren'); alle anderen Aufrufer pruefen nur (Standard) bzw. legen bei LEERER DB einmal an.
+  const { testDatabaseConnection, stelleSchemaSicher } = await import('./db/index.js');
   const dbOk = await testDatabaseConnection();
   if (dbOk) {
-    await ensureSchema();
+    await stelleSchemaSicher(optionen.schema ?? 'pruefen');
   } else {
     console.error('[Synapse] PostgreSQL nicht erreichbar - fahre ohne DB fort');
   }

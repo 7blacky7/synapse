@@ -19,7 +19,7 @@ import {
   getPendingEvents,
   upsertWrapperStatus,
   getWrapperStatus,
-  ensureSchema,
+  stelleSchemaSicher,
   getNewMessagesForAgent,
   getNewInboxMessages,
 } from '@synapse/core'
@@ -79,7 +79,9 @@ export class PgTransport implements WrapperTransport {
 
   async starte(): Promise<void> {
     await this.buch.messe('start', async () => {
-      await ensureSchema()
+      // P7-T14: nur PRUEFEN. Das Anlegen/Migrieren sperrt alle Produktions-Tabellen ~2,3 s (bei jedem
+      // Wrapper-Start) und gehoert dem API-Start. Leere DB -> einmal anlegen; SYNAPSE_SCHEMA=ausfuehren erzwingt.
+      await stelleSchemaSicher('pruefen')
     })
   }
 

@@ -185,7 +185,9 @@ export async function startServer(): Promise<void> {
   console.log('[Synapse API] Initialisiere...');
 
   // Synapse Core initialisieren
-  const initialized = await initSynapse('synapse-api');
+  // P7-T14: NUR die API fuehrt das Schema aus (ensureSchema sperrt alle Tabellen ~2,3 s); Wrapper, MCP-stdio
+  // und project(init) pruefen nur. Deploy-Reihenfolge: API zuerst — sie schreibt schema_stand.
+  const initialized = await initSynapse('synapse-api', { schema: 'ausfuehren' });
 
   if (!initialized) {
     console.error('[Synapse API] Core-Initialisierung fehlgeschlagen');

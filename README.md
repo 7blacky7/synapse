@@ -1012,6 +1012,13 @@ for f in packages/core/src/db/schema-sql/*.sql; do psql -v ON_ERROR_STOP=1 -d sy
 
 Details, Fallstricke und was der Export bewusst nicht enthaelt (keine Stammdaten,
 keine Rollen/Rechte, keine Qdrant-Collections): `packages/core/src/db/schema-sql/README.md`.
+**Wer das Schema anlegt (`SYNAPSE_SCHEMA`):** `ensureSchema()` sperrt kurz alle Tabellen (~2,3 s) und laeuft
+deshalb nur im API-Start (`SYNAPSE_SCHEMA=ausfuehren`, dort fest eingestellt). MCP-stdio, `project(init)` und
+Spezialisten-Wrapper haben den Standard `pruefen`: sie lesen nur die Kennung in `schema_stand`, warnen hoechstens
+einmal je Prozessstart bei veraltetem/unbekanntem Stand und legen das Schema nur bei einer LEEREN Datenbank einmal
+an; `aus` tut nichts. Wer ohne API arbeitet, setzt `SYNAPSE_SCHEMA=ausfuehren`. Deploy-Reihenfolge: API zuerst
+(sie schreibt `schema_stand`; bis dahin melden die anderen "unbekannt" — erwartet, kein Fehler).
+
 Im laufenden Betrieb legt `ensureSchema()` in `packages/core/src/db/schema.ts` das
 Schema selbst an; die SQL-Dateien sind dessen Spiegelung fuer den Kaltstart.
 

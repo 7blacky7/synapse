@@ -29,7 +29,7 @@ import {
   claimOpenPlanHints,
   getPendingEventHints,
   TOOL_GUIDES,
-  ensureSchema,
+  stelleSchemaSicher,
   logToolCall,
   resolveAgentId,
 } from '@synapse/core';
@@ -866,13 +866,14 @@ export async function startServer(): Promise<void> {
 
   console.error('[Synapse MCP] Server gestartet (v0.2.0)');
 
-  // Step 0: Haupt-DB-Schema sicherstellen (Tabellen + Migrationen, idempotent).
-  // Wichtig: VOR ensureAgentsSchema(), und VOR dem ersten Tool-Call — sonst
-  // schlagen Tools auf neuen Spalten/Tabellen mit "relation does not exist" fehl.
+  // Step 0: Haupt-DB-Schema PRUEFEN (P7-T14) — nicht mehr ausfuehren: das Anlegen/Migrieren sperrt alle
+  // Produktions-Tabellen ~2,3 s und gehoert dem API-Start (bei jedem stdio-Start blockierte es die Produktion).
+  // Leere DB -> einmal anlegen; sonst nur Hinweiszeile bei veraltetem Stand. SYNAPSE_SCHEMA=ausfuehren erzwingt.
+  // Wichtig: VOR ensureAgentsSchema() und dem ersten Tool-Call.
   try {
-    await ensureSchema();
+    await stelleSchemaSicher('pruefen');
   } catch (err) {
-    console.error('[Synapse] ensureSchema fehlgeschlagen — Tools koennten Schema-Fehler werfen:', err);
+    console.error('[Synapse] Schema-Pruefung fehlgeschlagen — Tools koennten Schema-Fehler werfen:', err);
   }
 
   // Step 1: Ensure agents DB schema exists before any tools are used
