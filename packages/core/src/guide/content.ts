@@ -860,7 +860,7 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
       'source: IMMER deine agent_id setzen (nie "claude-code" oder leer lassen).',
       'tags: Sinnvolle Tags fuer Filterung (z.B. "auto-handoff", "status", "problem").',
       'get ohne id: Alle Thoughts — limit setzen um Context zu sparen.',
-      'get mit id: Einzelner oder Array von IDs gezielt laden.',
+      'get mit id: Einzelner oder Array von IDs gezielt laden. id (auch bei update/delete): volle UUID oder eindeutiger Praefix, mind. 8 Zeichen (z. B. "04e14f2a"); mehrdeutig/unbekannt -> Fehler mit Kandidaten, nichts wird geaendert. Antwort nennt aufgeloeste_id.',
       'search: Semantisch, Englisch-Query bevorzugen.',
       'delete nach Verarbeitung: Halte die DB sauber, loese verarbeitete Thoughts.',
     ].join('\\n'),
@@ -868,7 +868,8 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
       'thought({ action: "add", project: "synapse", source: "guide-content-writer", content: "Tool X fertig.", tags: ["status"] })',
       'thought({ action: "get", project: "synapse", limit: 20 })',
       'thought({ action: "search", project: "synapse", query: "auto-handoff guide-content-writer" })',
-      'thought({ action: "delete", project: "synapse", id: "abc123" })',
+      'thought({ action: "get", project: "synapse", id: "04e14f2a" })',
+      'thought({ action: "delete", project: "synapse", id: "abc12345" })',
     ],
     anti_patterns: [
       'source: "claude-code" verwenden — immer deine agent_id.',

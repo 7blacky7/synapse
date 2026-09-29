@@ -535,6 +535,10 @@ export {
   removeWrapperStatus,
 } from './services/wrapper-status.js';
 export { setzeHeartbeatKonfiguration, setzeHeartbeatBeimSpawn, steuereHeartbeat } from './services/wrapper-status.js';
+// Thought-Kurz-IDs + PG als Quelle der Wahrheit (P10-T28)
+export { holeThoughtsMitProblemen, aendereThoughtPerId, loescheThoughtsPerId } from './services/thoughts.js';
+export type { ThoughtIdProblem, LoeschErgebnis } from './services/thoughts.js';
+export { loeseThoughtIdsAuf, pruefeIdEingabe } from './services/thought-ids.js';
 // specialist(status): Namensfilter + Leichen kenntlich machen (P7-T10)
 export { waehleSpezialisten, parseNamen, veraltetSchwelleMs, beschrifteZeile, kennzeichnung, ausblendHinweis } from './services/spezialisten-status-filter.js';
 

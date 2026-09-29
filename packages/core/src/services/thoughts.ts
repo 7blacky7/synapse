@@ -43,11 +43,20 @@ import {
   ensureCollection,
   insertVector,
   searchVectors,
-  scrollVectors,
   deleteVector,
   deleteVectors,
-  getVectors,
 } from '../qdrant/index.js';
+import {
+  loeseThoughtIdsAuf,
+  leseThoughtsAusPg,
+  leseThoughtsNachSourceAusPg,
+  leseThoughtsNachTagAusPg,
+  leseThoughtsNachIdsAusPg,
+  holeThoughtsPerEingabe,
+  mischeSuchtreffer,
+  type Aufloesung,
+  type ThoughtMitAufloesung,
+} from './thought-ids.js';
 import { embed } from '../embeddings/index.js';
 import type { EmbedOptions } from '../embeddings/index.js';
 import { getPool } from '../db/client.js';
@@ -208,41 +217,14 @@ export async function addThoughtsBatch(
 
 
 /**
- * Ruft Gedanken fuer ein Projekt ab
+ * Ruft Gedanken fuer ein Projekt ab — aus PostgreSQL (Quelle der Wahrheit), neueste zuerst.
+ * Sortierung und Limit in SQL (frueher: Qdrant-Scroll + JS-Sort = zufaellige N).
  */
 export async function getThoughts(
   project: string,
   limit: number = 50
 ): Promise<Thought[]> {
-  const collectionName = COLLECTIONS.projectThoughts(project);
-  const results = await scrollVectors<ThoughtPayload>(
-    collectionName,
-    {
-      must: [
-        {
-          key: 'project',
-          match: { value: project },
-        },
-      ],
-    },
-    limit
-  );
-
-  // Nach Timestamp sortieren (neueste zuerst)
-  const thoughts = results.map(r => ({
-    id: r.id,
-    project: r.payload.project,
-    source: r.payload.source as ThoughtSource,
-    content: r.payload.content,
-    tags: r.payload.tags,
-    timestamp: r.payload.timestamp,
-  }));
-
-  thoughts.sort((a, b) =>
-    new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
-  );
-
-  return thoughts;
+  return (await leseThoughtsAusPg(project, limit)) as Thought[];
 }
 
 /**
@@ -268,12 +250,25 @@ export async function searchThoughts(
     ],
   };
 
-  return searchVectors<ThoughtPayload>(
+  const treffer = await searchVectors<ThoughtPayload>(
     collectionName,
     queryVector,
     limit,
     filter
   );
+
+  // Qdrant liefert nur ids + score; Inhalt/Tags/source/timestamp kommen aus PostgreSQL.
+  // Treffer ohne PG-Zeile (verwaister Vektor) werden verworfen und gezaehlt.
+  const zeilen = await leseThoughtsNachIdsAusPg(project, treffer.map(t => String(t.id)));
+  const gemischt = mischeSuchtreffer(treffer, zeilen);
+  if (gemischt.verworfen > 0) {
+    console.error(`[Synapse] searchThoughts: ${gemischt.verworfen} Qdrant-Treffer ohne PG-Zeile verworfen (Projekt "${project}")`);
+  }
+  const ergebnis: ThoughtSearchResult[] = gemischt.treffer;
+  if (gemischt.verworfen > 0) {
+    (ergebnis as ThoughtSearchResult[] & { verworfen_ohne_pg?: number }).verworfen_ohne_pg = gemischt.verworfen;
+  }
+  return ergebnis;
 }
 
 /**
@@ -338,9 +333,9 @@ export async function updateThought(
  * Loescht einen Gedanken
  */
 export async function deleteThought(project: string, id: string): Promise<{ success: boolean; warning?: string }> {
-  // 1. PostgreSQL (Write-Primary) — fail-fast: wirft bei Fehler
+  // 1. PostgreSQL (Write-Primary) — fail-fast: wirft bei Fehler. Nur im eigenen Projekt.
   const pool = getPool();
-  await pool.query('DELETE FROM thoughts WHERE id = $1', [id]);
+  await pool.query('DELETE FROM thoughts WHERE id = $1 AND project = $2', [id, project]);
 
   // 2. Qdrant — Warning bei Fehler, PG-Daten bereits geloescht
   let warning: string | undefined;
@@ -397,26 +392,7 @@ export async function getThoughtsBySource(
   source: ThoughtSource,
   limit: number = 50
 ): Promise<Thought[]> {
-  const collectionName = COLLECTIONS.projectThoughts(project);
-  const results = await scrollVectors<ThoughtPayload>(
-    collectionName,
-    {
-      must: [
-        { key: 'project', match: { value: project } },
-        { key: 'source', match: { value: source } },
-      ],
-    },
-    limit
-  );
-
-  return results.map(r => ({
-    id: r.id,
-    project: r.payload.project,
-    source: r.payload.source as ThoughtSource,
-    content: r.payload.content,
-    tags: r.payload.tags,
-    timestamp: r.payload.timestamp,
-  }));
+  return (await leseThoughtsNachSourceAusPg(project, source, limit)) as Thought[];
 }
 
 /**
@@ -427,51 +403,95 @@ export async function getThoughtsByTag(
   tag: string,
   limit: number = 50
 ): Promise<Thought[]> {
-  const collectionName = COLLECTIONS.projectThoughts(project);
-  const results = await scrollVectors<ThoughtPayload>(
-    collectionName,
-    {
-      must: [
-        { key: 'project', match: { value: project } },
-        { key: 'tags', match: { any: [tag] } },
-      ],
-    },
-    limit
-  );
-
-  return results.map(r => ({
-    id: r.id,
-    project: r.payload.project,
-    source: r.payload.source as ThoughtSource,
-    content: r.payload.content,
-    tags: r.payload.tags,
-    timestamp: r.payload.timestamp,
-  }));
+  return (await leseThoughtsNachTagAusPg(project, tag, limit)) as Thought[];
 }
 
 /**
- * Ruft Gedanken anhand ihrer IDs ab (Batch)
- * Nutzt Qdrant client.retrieve() fuer einen einzelnen Call statt N Einzel-Abfragen
+ * Ruft Gedanken anhand ihrer IDs ab (Batch) — aus PostgreSQL.
+ * Akzeptiert volle UUIDs UND eindeutige Praefixe (mind. 8 Zeichen); nicht aufloesbare Eingaben
+ * fehlen im Ergebnis (Details: holeThoughtsMitProblemen). Gekuerzt angefragte tragen aufgeloeste_id.
  */
 export async function getThoughtsByIds(
   project: string,
   ids: string[]
 ): Promise<Thought[]> {
   if (ids.length === 0) return [];
+  const r = await holeThoughtsPerEingabe(project, ids);
+  return r.thoughts as Thought[];
+}
 
-  const collectionName = COLLECTIONS.projectThoughts(project);
-  const results = await getVectors<ThoughtPayload>(collectionName, ids);
+/** Wie getThoughtsByIds, meldet aber auch mehrdeutige/ungueltige/unbekannte Eingaben. */
+export async function holeThoughtsMitProblemen(
+  project: string,
+  ids: string[]
+): Promise<{ thoughts: ThoughtMitAufloesung[]; probleme: Aufloesung[] }> {
+  if (ids.length === 0) return { thoughts: [], probleme: [] };
+  return holeThoughtsPerEingabe(project, ids);
+}
 
-  return results
-    .filter(r => r.payload.project === project)
-    .map(r => ({
-      id: r.id,
-      project: r.payload.project,
-      source: r.payload.source as ThoughtSource,
-      content: r.payload.content,
-      tags: r.payload.tags,
-      timestamp: r.payload.timestamp,
-    }));
+export interface ThoughtIdProblem {
+  success: false;
+  status: Aufloesung['status'];
+  eingabe: string;
+  message: string;
+  kandidaten?: Aufloesung['kandidaten'];
+}
+
+function zuProblem(a: Aufloesung): ThoughtIdProblem {
+  const message = a.fehler
+    ?? (a.status === 'nicht_gefunden' ? `Gedanke "${a.eingabe}" nicht gefunden` : `id "${a.eingabe}" nicht aufloesbar`);
+  return { success: false, status: a.status, eingabe: a.eingabe, message, ...(a.kandidaten ? { kandidaten: a.kandidaten } : {}) };
+}
+
+/**
+ * update per volle UUID ODER Praefix. Nicht aufloesbar/mehrdeutig -> nichts wird geaendert.
+ */
+export async function aendereThoughtPerId(
+  project: string,
+  idEingabe: string,
+  changes: { content?: string; tags?: string[] }
+): Promise<(Thought & { aufgeloeste_id?: string }) | ThoughtIdProblem | null> {
+  const [a] = await loeseThoughtIdsAuf(project, [idEingabe]);
+  if (a.status !== 'ok' || !a.id) return zuProblem(a);
+  const t = await updateThought(project, a.id, changes);
+  if (!t) return zuProblem({ eingabe: idEingabe, status: 'nicht_gefunden' });
+  return a.gekuerzt ? { ...t, aufgeloeste_id: a.id } : t;
+}
+
+export interface LoeschErgebnis {
+  success: boolean;
+  deleted: number;
+  /** volle IDs, die geloescht wurden (bzw. geloescht wuerden bei dryRun) */
+  ids: string[];
+  /** Eingaben, die nicht ok waren (mehrdeutig/ungueltig/unbekannt) — dafuer geschah nichts */
+  probleme: ThoughtIdProblem[];
+  aufgeloest?: Array<{ eingabe: string; id: string }>;
+  dry_run?: boolean;
+  warning?: string;
+}
+
+/**
+ * delete per volle UUID(s) ODER Praefixe. Mehrdeutige/ungueltige/unbekannte Eingaben werden NICHT
+ * geloescht und einzeln gemeldet; die uebrigen laufen durch.
+ */
+export async function loescheThoughtsPerId(
+  project: string,
+  eingaben: string[],
+  optionen: { dryRun?: boolean } = {}
+): Promise<LoeschErgebnis> {
+  const aufl = await loeseThoughtIdsAuf(project, eingaben);
+  const probleme = aufl.filter(a => a.status !== 'ok').map(zuProblem);
+  const ids = [...new Set(aufl.filter(a => a.status === 'ok' && a.id).map(a => a.id as string))];
+  const aufgeloest = aufl
+    .filter(a => a.status === 'ok' && a.gekuerzt && a.id)
+    .map(a => ({ eingabe: a.eingabe, id: a.id as string }));
+  const extra = aufgeloest.length > 0 ? { aufgeloest } : {};
+  if (optionen.dryRun) {
+    return { success: ids.length > 0, deleted: 0, ids, probleme, dry_run: true, ...extra };
+  }
+  if (ids.length === 0) return { success: false, deleted: 0, ids: [], probleme, ...extra };
+  const r = await deleteThoughts(project, ids);
+  return { success: r.deleted > 0, deleted: r.deleted, ids, probleme, warning: r.warning, ...extra };
 }
 
 

@@ -57,7 +57,7 @@ export const thoughtTool: ConsolidatedTool = {
             { type: 'string' },
             { type: 'array', items: { type: 'string' }, minItems: 1 },
           ],
-          description: 'ID des Gedankens - fuer action "get" (einzeln oder Array), "delete" oder "update"',
+          description: 'ID des Gedankens - fuer action "get" (einzeln oder Array), "delete" oder "update". Volle UUID oder eindeutiger Praefix (mind. 8 Zeichen, z. B. "04e14f2a"); mehrdeutig/unbekannt -> Fehler mit Kandidaten, nichts wird geaendert.',
         },
         query: {
           type: 'string',
@@ -172,7 +172,13 @@ export const thoughtTool: ConsolidatedTool = {
           if (!isBatch) {
             return result.thoughts.length > 0
               ? { success: true, thought: result.thoughts[0], message: '1 Gedanke geladen' }
-              : { success: false, thought: null, message: `Gedanke "${args.id}" nicht gefunden` };
+              : {
+                success: false,
+                thought: null,
+                message: (result as { probleme?: Array<{ message?: string; fehler?: string }> }).probleme?.[0]?.fehler
+                  ?? `Gedanke "${args.id}" nicht gefunden`,
+                ...((result as { probleme?: unknown }).probleme ? { probleme: (result as { probleme?: unknown }).probleme } : {}),
+              };
           }
 
           // Array-Input → Batch-Response

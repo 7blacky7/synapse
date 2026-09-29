@@ -413,7 +413,7 @@ const MCP_TOOLS = [
             { type: 'string' },
             { type: 'array', items: { type: 'string' }, minItems: 1 },
           ],
-          description: 'ID des Gedankens - fuer action "get" (einzeln oder Array), "delete" oder "update"',
+          description: 'ID des Gedankens - fuer action "get" (einzeln oder Array), "delete" oder "update". Volle UUID oder eindeutiger Praefix (mind. 8 Zeichen, z. B. "04e14f2a"); mehrdeutig/unbekannt -> Fehler mit Kandidaten, nichts wird geaendert.',
         },
         query: { type: 'string', description: 'Suchanfrage - fuer action "search"' },
         limit: { type: 'number', description: 'Maximale Anzahl Ergebnisse (Standard: 50 fuer get, 10 fuer search)' },
@@ -2860,13 +2860,20 @@ async function handleToolCall(
             if (!ids || ids.length === 0) {
               return { success: false, thought: null, message: 'id ist erforderlich' };
             }
-            const result = await getThoughtsByIds(project, ids);
+            // ids: volle UUID oder eindeutiger Praefix (>= 8 Zeichen); Quelle PostgreSQL
+            const { holeThoughtsMitProblemen } = await import('@synapse/core');
+            const { thoughts: result, probleme } = await holeThoughtsMitProblemen(project, ids);
             if (!isBatch) {
               return result.length > 0
                 ? { success: true, thought: result[0], message: '1 Gedanke geladen' }
-                : { success: false, thought: null, message: `Gedanke "${args.id}" nicht gefunden` };
+                : {
+                  success: false,
+                  thought: null,
+                  message: probleme[0]?.fehler ?? `Gedanke "${args.id}" nicht gefunden`,
+                  ...(probleme.length > 0 ? { status: probleme[0].status, ...(probleme[0].kandidaten ? { kandidaten: probleme[0].kandidaten } : {}) } : {}),
+                };
             }
-            return { success: true, thoughts: result, count: result.length };
+            return { success: true, thoughts: result, count: result.length, ...(probleme.length > 0 ? { probleme } : {}) };
           }
           const thoughts = await getThoughts(project, num(args, 'limit') ?? 50);
           return { thoughts };
@@ -2887,15 +2894,22 @@ async function handleToolCall(
             if (ids.length > maxItems) {
               return { success: false, message: `Batch-Delete: Max ${maxItems} Items erlaubt, ${ids.length} angegeben` };
             }
+            // ids: volle UUIDs oder Praefixe; mehrdeutig/unbekannt -> nicht geloescht, einzeln gemeldet
+            const { loescheThoughtsPerId } = await import('@synapse/core');
+            const r = await loescheThoughtsPerId(project, ids, { dryRun });
             if (dryRun) {
-              return { success: true, dry_run: true, would_delete: ids, count: ids.length };
+              return { success: true, dry_run: true, would_delete: r.ids, count: r.ids.length, ...(r.probleme.length > 0 ? { probleme: r.probleme } : {}), ...(r.aufgeloest ? { aufgeloest: r.aufgeloest } : {}) };
             }
-            const results = await Promise.allSettled(ids.map(id => deleteThought(project, id)));
-            const deleted = results.filter(r => r.status === 'fulfilled').length;
-            return { success: true, deleted, total: ids.length };
+            return { success: r.deleted > 0, deleted: r.deleted, total: ids.length, warning: r.warning, ...(r.probleme.length > 0 ? { probleme: r.probleme } : {}), ...(r.aufgeloest ? { aufgeloest: r.aufgeloest } : {}) };
           }
-          const result = await deleteThought(project, reqStr(args, 'id'));
-          return { success: result.success, message: `Gedanke "${args.id}" geloescht`, warning: result.warning };
+          const { loescheThoughtsPerId: loescheEins } = await import('@synapse/core');
+          const eingabeId = ids && ids.length === 1 ? ids[0] : reqStr(args, 'id');
+          const einzel = await loescheEins(project, [eingabeId]);
+          if (einzel.deleted === 0) {
+            const p = einzel.probleme[0];
+            return { success: false, message: p?.message ?? `Gedanke "${eingabeId}" nicht gefunden`, ...(p?.status ? { status: p.status } : {}), ...(p?.kandidaten ? { kandidaten: p.kandidaten } : {}) };
+          }
+          return { success: true, message: `Gedanke "${einzel.ids[0]}" geloescht`, ...(einzel.aufgeloest ? { aufgeloeste_id: einzel.ids[0] } : {}), warning: einzel.warning };
         }
         case 'update': {
           const project = reqStr(args, 'project');
@@ -2905,7 +2919,9 @@ async function handleToolCall(
           if (newContent !== undefined) changes.content = newContent;
           const newTags = strArray(args, 'tags');
           if (newTags !== undefined) changes.tags = newTags;
-          const result = await updateThought(project, id, changes);
+          // id: volle UUID oder eindeutiger Praefix; mehrdeutig/unbekannt -> nichts geaendert
+          const { aendereThoughtPerId } = await import('@synapse/core');
+          const result = await aendereThoughtPerId(project, id, changes);
           return result;
         }
         default:

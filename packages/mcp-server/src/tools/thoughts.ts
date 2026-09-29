@@ -8,7 +8,9 @@ import {
   getThoughts as getThoughtsCore,
   searchThoughts as searchThoughtsCore,
   deleteThought as deleteThoughtCore,
-  getThoughtsByIds as getThoughtsByIdsCore,
+  holeThoughtsMitProblemen,
+  aendereThoughtPerId,
+  loescheThoughtsPerId,
   addThoughtsBatch as addThoughtsBatchCore,
 
 } from '@synapse/core';
@@ -195,21 +197,24 @@ export async function updateThoughtTool(
   message: string;
 }> {
   try {
-    const { updateThought } = await import('@synapse/core');
-    const thought = await updateThought(project, id, changes);
+    // id: volle UUID oder eindeutiger Praefix (>= 8 Zeichen); mehrdeutig/unbekannt -> nichts geaendert
+    const thought = await aendereThoughtPerId(project, id, changes);
 
-    if (!thought) {
+    if (!thought || ('success' in thought && thought.success === false)) {
+      const problem = thought as { message?: string; status?: string; kandidaten?: unknown } | null;
       return {
         success: false,
         thought: null,
-        message: `Gedanke "${id}" nicht gefunden in Projekt "${project}"`,
-      };
+        message: problem?.message ?? `Gedanke "${id}" nicht gefunden in Projekt "${project}"`,
+        ...(problem?.status ? { status: problem.status } : {}),
+        ...(problem?.kandidaten ? { kandidaten: problem.kandidaten } : {}),
+      } as { success: boolean; thought: Thought | null; message: string };
     }
 
     const changedFields = Object.keys(changes).filter(k => changes[k as keyof typeof changes] !== undefined);
     return {
       success: true,
-      thought,
+      thought: thought as Thought,
       message: `Gedanke "${id}" aktualisiert (${changedFields.join(', ')})`,
     };
   } catch (error) {
@@ -232,14 +237,25 @@ export async function deleteThought(
   message: string;
 }> {
   try {
-    const result = await deleteThoughtCore(project, id);
-
+    // id: volle UUID oder eindeutiger Praefix; mehrdeutig/unbekannt -> nichts geloescht
+    const result = await loescheThoughtsPerId(project, [id]);
+    if (result.deleted === 0) {
+      const p = result.probleme[0];
+      return {
+        success: false,
+        message: p?.message ?? `Gedanke "${id}" nicht gefunden in Projekt "${project}"`,
+        ...(p?.status ? { status: p.status } : {}),
+        ...(p?.kandidaten ? { kandidaten: p.kandidaten } : {}),
+      } as { success: boolean; message: string };
+    }
+    const volle = result.ids[0];
     return {
       success: true,
       message: result.warning
-        ? `Gedanke "${id}" aus Projekt "${project}" geloescht (Warning: ${result.warning})`
-        : `Gedanke "${id}" aus Projekt "${project}" geloescht`,
-    };
+        ? `Gedanke "${volle}" aus Projekt "${project}" geloescht (Warning: ${result.warning})`
+        : `Gedanke "${volle}" aus Projekt "${project}" geloescht`,
+      ...(result.aufgeloest ? { aufgeloeste_id: volle } : {}),
+    } as { success: boolean; message: string };
   } catch (error) {
     return {
       success: false,
@@ -270,24 +286,26 @@ export async function deleteThoughtsBatch(
 
   // dry_run: Preview ohne Loeschen
   if (dryRun) {
-    const { getThoughtsByIds } = await import('@synapse/core');
-    const thoughts = await getThoughtsByIds(project, ids);
+    const { thoughts, probleme } = await holeThoughtsMitProblemen(project, ids);
     return {
       success: true,
       dry_run: true,
       would_delete: thoughts.map(t => ({ id: t.id, source: t.source, content: t.content.substring(0, 100) })),
       count: thoughts.length,
+      ...(probleme.length > 0 ? { probleme } : {}),
       message: `dry_run: ${thoughts.length} Gedanken wuerden geloescht`,
     };
   }
 
   try {
-    const { deleteThoughts } = await import('@synapse/core');
-    const result = await deleteThoughts(project, ids);
+    // ids: volle UUIDs oder Praefixe; mehrdeutige/unbekannte werden NICHT geloescht und gemeldet
+    const result = await loescheThoughtsPerId(project, ids);
     return {
-      success: true,
+      success: result.success,
       deleted: result.deleted,
       warning: result.warning,
+      ...(result.probleme.length > 0 ? { probleme: result.probleme } : {}),
+      ...(result.aufgeloest ? { aufgeloest: result.aufgeloest } : {}),
       message: `${result.deleted} Gedanken geloescht`,
     };
   } catch (error) {
@@ -307,13 +325,15 @@ export async function getThoughtsByIdsTool(
   message: string;
 }> {
   try {
-    const thoughts = await getThoughtsByIdsCore(project, ids);
+    // ids: volle UUIDs oder eindeutige Praefixe (>= 8 Zeichen); Quelle: PostgreSQL
+    const { thoughts, probleme } = await holeThoughtsMitProblemen(project, ids);
 
     return {
       success: true,
       thoughts,
+      ...(probleme.length > 0 ? { probleme } : {}),
       message: `${thoughts.length} von ${ids.length} Gedanken geladen`,
-    };
+    } as { success: boolean; thoughts: Thought[]; message: string };
   } catch (error) {
     return {
       success: false,
