@@ -68,6 +68,7 @@ import {
   beiEchtemAnlass,
 } from './leerlauf-entscheidung.js'
 import { rotationsMarkerAktion, MARKER_PRUEF_MS } from './rotations-marker.js'
+import { baueWerkzeugHinweisKurz } from './werkzeuge-laden.js'
 
 // ---------------------------------------------------------------------------
 // Configuration from environment
@@ -1473,7 +1474,9 @@ Alles was du NICHT speicherst geht verloren.`,
     await startAgentProcess(systemPrompt)
 
     // Onboarding: tell agent to load its memory
-    const onboardingPrompt = `Du wurdest nach einem Context-Reset neu gestartet.
+    const onboardingPrompt = `${baueWerkzeugHinweisKurz()}
+
+Du wurdest nach einem Context-Reset neu gestartet.
 
 ERSTE AKTION: Lies deine gesicherten Daten:
 1. SKILL.md — dein Praxis-Wissen

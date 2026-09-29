@@ -1,4 +1,5 @@
 import type { SpecialistConfig } from './types.js'
+import { baueWerkzeugHinweis } from './werkzeuge-laden.js'
 
 export function buildSpecialistPrompt(
   config: SpecialistConfig,
@@ -20,6 +21,10 @@ Deine Modelldaten (Modell, Effort, Kontext, Cutoff) NICHT schaetzen, sondern mit
 
 ## Neue Arbeit
 Neue Arbeit: plan(action:'passende_tasks', project:'${config.project}', agent_id:'${config.name}') -> plan(action:'uebernehmen', project:'${config.project}', plan_id, task_id, agent_id:'${config.name}'). Nimm nur Tasks, die dir der Server als passend gibt. Gib keine Tasks an andere Agenten weiter. Passt nichts, melde dich im Channel und warte.`)
+
+  // 1b. Werkzeuge gezielt laden (P7-T16): kein breites ToolSearch nach "synapse" (~40k Kontext).
+  //     Fuer alle Runtimes (Gemini/agy kennen kein ToolSearch — dort harmlos), praefix-neutral.
+  sections.push(baueWerkzeugHinweis())
 
   // 2. Skills + Kontext (multi-file: rules.md, errors.md, patterns.md, context.md)
   if (skillContent) {

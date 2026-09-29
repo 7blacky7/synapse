@@ -256,7 +256,8 @@ async function projektDbBeiInit(projekt: string, projektPfad?: string): Promise<
   }
 }
 
-const MCP_TOOLS = [
+// Additiv exportiert (P7-T16): nur fuer scripts/messe-tool-schemas.mjs (lesende Schema-Messung), kein Laufzeit-Eingriff.
+export const MCP_TOOLS = [
   // 1. project
   {
     name: 'project',
