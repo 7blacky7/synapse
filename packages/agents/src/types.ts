@@ -27,6 +27,8 @@ export interface SpecialistStatus {
   provider?: string
   /** Voller Modell-API-String (z.B. 'gemini-3.1-flash-lite-preview'). Optional. */
   modelFullId?: string
+  /** Effort-Stufe (claude --effort), mit der der Spezialist gestartet wurde. Optional fuer alte status.json */
+  effort?: string
 }
 
 export interface StatusFile {

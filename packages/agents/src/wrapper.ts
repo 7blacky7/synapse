@@ -61,6 +61,10 @@ import {
 // ---------------------------------------------------------------------------
 const AGENT_NAME = process.env.SYNAPSE_AGENT_NAME!
 const AGENT_MODEL = process.env.SYNAPSE_AGENT_MODEL!
+// Stufe fuer claude --effort, gesetzt vom Spawn (leer = default_effort des Modells).
+// Konstante wie AGENT_MODEL: Rotation und keep_alive-Neustart laufen ueber
+// startAgentProcess und bekommen damit dieselbe Stufe wie der erste Start.
+const AGENT_EFFORT = process.env.SYNAPSE_AGENT_EFFORT || undefined
 const PROJECT_NAME = process.env.SYNAPSE_PROJECT_NAME || ''
 const PROJECT_PATH = process.env.SYNAPSE_PROJECT_PATH!
 const SOCKET_PATH = process.env.SYNAPSE_SOCKET_PATH!
@@ -695,6 +699,7 @@ function startSocketServer(): Promise<void> {
 async function startAgentProcess(systemPrompt: string): Promise<void> {
   await processManager.start(AGENT_NAME, AGENT_MODEL, systemPrompt, {
     cwd: PROJECT_PATH,
+    effort: AGENT_EFFORT,
   })
   processAlive = true
   log('Claude CLI subprocess started')
@@ -1596,6 +1601,7 @@ async function main() {
   log('Starting wrapper...')
   log('  Agent: %s', AGENT_NAME)
   log('  Model: %s', AGENT_MODEL)
+  log('  Effort: %s', AGENT_EFFORT ?? '(Standard des Modells)')
   log('  Project: %s', PROJECT_PATH)
   log('  Socket: %s', SOCKET_PATH)
   log('  Poll interval: %dms', POLL_INTERVAL)

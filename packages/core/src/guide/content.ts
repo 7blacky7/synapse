@@ -1393,6 +1393,7 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
       'name: eindeutige ID — KEINE Sonderzeichen / / .. / Leerzeichen, sonst Sicherheits-Reject.',
       'model: Alias aus der model_registry (unbekannter Alias → Fehlermeldung mit allen gueltigen). CLAUDE, immer neueste Version: opus / sonnet / haiku (200k Context), opus[1m] / sonnet[1m] = 1M Context (mehrere 1M-Modelle gleichzeitig moeglich, getestet 29.09.2026), fable = 1M nativ. Aeltere Versionen gezielt: opus-5, opus-4.8, opus-4.7, opus-4.6 (je auch mit [1m]), sonnet-5 / sonnet-5[1m], sonnet-4.6 (nur 200k), fable-5. GOOGLE: gemini-flash-lite / gemini-flash / gemini-pro = 1M Context, ~3-75x guenstiger (braucht GOOGLE_API_KEY auf dem Ziel-PC).',
       'keep_alive: true fuer langlaufende Spezialisten (Auto-Respawn bei Crash). Default false fuer One-Shot.',
+      'effort: low | medium | high | xhigh | max -> claude --effort. Weglassen = default_effort des Modells (Claude: medium; capabilities zeigt es je Modell) statt still der User-Einstellung. Bleibt bei Rotation und keep_alive-Neustart gleich, specialist(status) zeigt sie. Stufen je Modell (capabilities): eine Stufe, die das Modell nicht kann, ist ein Fehler mit den Stufen dieses Modells - die CLI wuerde still ausweichen (xhigh -> high bei opus-4.6/sonnet-4.6). haiku kennt keinen Effort, Gemini/antigravity bekommen kein Flag (effortHinweis). Ungueltiger Wert -> Fehler mit den erlaubten Stufen.',
       'Voraussetzung: FileWatcher-Daemon laeuft auf dem User-PC + Provider-Runtime installiert (Claude-CLI fuer opus/sonnet/haiku/fable, GOOGLE_API_KEY fuer gemini-*) + Projekt im Tray aktiv.',
     ].join('\\n'),
     examples: [
@@ -1410,13 +1411,13 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
     actions: {
       spawn: {
         description: 'Einen neuen Spezialisten starten (Subprozess auf dem User-PC: Claude-CLI fuer opus/sonnet/haiku/fable-Modelle, Gemini-Runtime fuer gemini-*-Modelle).',
-        params: 'project (req), name (req), model (req), expertise (req), task (req), project_path?, channel?, keep_alive?, allowed_tools?, cwd? — project_path wird via REST automatisch aus dem Daemon-Kontext ermittelt',
+        params: 'project (req), name (req), model (req), expertise (req), task (req), project_path?, channel?, keep_alive?, allowed_tools?, cwd?, effort? (low|medium|high|xhigh|max) — project_path wird via REST automatisch aus dem Daemon-Kontext ermittelt',
         example: 'specialist({ action: "spawn", project: "synapse", name: "doc-bot", model: "haiku", expertise: "Doku", task: "Schreibe README" })',
         tips: 'Web-KI: Job laeuft via Queue, Antwort innerhalb 60s. Bei Timeout pruefe ob Daemon laeuft.',
       },
       spawn_batch: {
         description: 'Mehrere Spezialisten atomar in einem Call starten (1..10).',
-        params: 'project (req), specialists (req, Array von { name, model, expertise, task, channel?, allowed_tools?, keep_alive? }), project_path? — auto-resolved via REST',
+        params: 'project (req), specialists (req, Array von { name, model, expertise, task, channel?, allowed_tools?, keep_alive?, effort? }), project_path? — auto-resolved via REST',
         example: 'specialist({ action: "spawn_batch", project: "synapse", specialists: [{ name: "a", model: "haiku", expertise: "X", task: "..." }, { name: "b", model: "haiku", expertise: "Y", task: "..." }] })',
         tips: 'Sequenziell (nicht parallel) — wegen Resource-Limits + Socket-Wait.',
       },

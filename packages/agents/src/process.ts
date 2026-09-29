@@ -6,7 +6,7 @@ import { writeFile, mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import type { StreamEvent, SendMessageResult } from './types.js'
-import { resolveModel, cliModelArg } from './models.js'
+import { resolveModel, cliModelArg, effortFuerCli } from './models.js'
 
 interface AgentProcess {
   agentName: string
@@ -28,6 +28,8 @@ interface StartOptions {
   projectName?: string
   expertise?: string
   task?: string
+  /** Stufe fuer claude --effort; fehlt sie, gilt default_effort des Modells. Nur claude-Zweig. */
+  effort?: string
 }
 
 interface AgentStatus {
@@ -78,6 +80,7 @@ class ProcessManager extends EventEmitter {
         )
       }
 
+      // opts.effort bewusst nicht: die node-Runtimes (Gemini, agy) kennen kein --effort.
       proc = spawn(
         'node',
         [runtimePath],
@@ -113,6 +116,13 @@ class ProcessManager extends EventEmitter {
         '--session-id', sessionId,
         '--permission-mode', 'bypassPermissions',
       ]
+
+      // --effort: feste Stufe statt still effortLevel aus ~/.claude/settings.json des
+      // Users. Angefragt (opts.effort) oder default_effort des Modells, geprueft gegen
+      // dessen effortStufen (effortFuerCli): nicht unterstuetzt = Fehler vor dem Start,
+      // kein stilles Ausweichen der CLI. Modelle ohne Stufen (haiku) bekommen kein Flag.
+      const effort = effortFuerCli(modelEntry, opts?.effort)
+      if (effort) args.push('--effort', effort)
 
       if (opts?.allowedTools?.length) {
         for (const tool of opts.allowedTools) {

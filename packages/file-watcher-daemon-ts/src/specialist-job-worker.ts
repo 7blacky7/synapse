@@ -161,6 +161,7 @@ async function dispatchSpecialistAction(job: SpecialistJobRow): Promise<Record<s
         args.channel ? String(args.channel) : undefined,
         Array.isArray(args.allowed_tools) ? (args.allowed_tools as string[]) : undefined,
         typeof args.keep_alive === 'boolean' ? args.keep_alive : undefined,
+        args.effort != null ? String(args.effort) : undefined,
       )) as Record<string, unknown>
     }
 
@@ -183,6 +184,7 @@ async function dispatchSpecialistAction(job: SpecialistJobRow): Promise<Record<s
             s.channel ? String(s.channel) : undefined,
             Array.isArray(s.allowed_tools) ? (s.allowed_tools as string[]) : undefined,
             typeof s.keep_alive === 'boolean' ? s.keep_alive : undefined,
+            s.effort != null ? String(s.effort) : undefined,
           )
           results.push(r as Record<string, unknown>)
         } catch (err) {

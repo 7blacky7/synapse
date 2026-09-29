@@ -33,6 +33,10 @@ export interface ModelEntry {
   pricingCacheUsdPerMtok?: number | null;
   cutoffDate?: string | null;
   enabled: boolean;
+  /** Stufe fuer claude --effort, wenn der Spawn keine nennt (NULL = kein Flag) */
+  defaultEffort?: string | null;
+  /** Stufen fuer claude --effort; leer = kein Flag (haiku 4.5, node-Runtimes) */
+  effortStufen?: string[];
 }
 
 let cache: Map<string, ModelEntry> | null = null;
@@ -54,6 +58,8 @@ interface DbRow {
   /** als ::text gelesen — ein DATE-Objekt waere lokale Mitternacht, toISOString() gaebe oestlich von UTC den Vortag */
   cutoff_date: string | null;
   enabled: boolean;
+  default_effort?: string | null;
+  effort_stufen?: string[] | null;
 }
 
 function rowToEntry(row: DbRow): ModelEntry {
@@ -73,6 +79,8 @@ function rowToEntry(row: DbRow): ModelEntry {
     pricingCacheUsdPerMtok: row.pricing_cache_usd_per_mtok ? Number(row.pricing_cache_usd_per_mtok) : null,
     cutoffDate: row.cutoff_date ? String(row.cutoff_date).slice(0, 10) : null,
     enabled: row.enabled,
+    defaultEffort: row.default_effort ?? null,
+    effortStufen: row.effort_stufen ?? [],
   };
 }
 
@@ -82,7 +90,8 @@ async function loadCache(): Promise<Map<string, ModelEntry>> {
   const result = await pool.query<DbRow>(
     `SELECT alias, full_id, provider, context_window, output_limit, env_required, runtime_binary, runtime_path,
             corridor_min, corridor_max, pricing_input_usd_per_mtok, pricing_output_usd_per_mtok,
-            pricing_cache_usd_per_mtok, cutoff_date::text AS cutoff_date, enabled
+            pricing_cache_usd_per_mtok, cutoff_date::text AS cutoff_date, enabled,
+            default_effort, effort_stufen
      FROM model_registry WHERE enabled = true`,
   );
   cache = new Map(result.rows.map(r => [r.alias, rowToEntry(r)]));

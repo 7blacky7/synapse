@@ -269,7 +269,8 @@ CREATE TABLE public.wrapper_status (
     tokens_percent numeric(5,2),
     channels text[] DEFAULT '{}'::text[] NOT NULL,
     connected_mcp boolean DEFAULT false NOT NULL,
-    last_activity timestamp with time zone DEFAULT now() NOT NULL
+    last_activity timestamp with time zone DEFAULT now() NOT NULL,
+    effort text
 );
 
 --

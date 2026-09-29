@@ -159,6 +159,10 @@ export type { KorridorWerte, KontextSchwellen } from './services/kontext-korrido
 export { pruefeRespawnKorridor } from './services/specialist-respawn.js';
 export type { KorridorPruefung } from './services/specialist-respawn.js';
 
+// Effort-Stufen fuer claude --effort (Spezialisten)
+export { EFFORT_STUFEN, istEffortStufe, pruefeEffort, waehleEffort } from './services/effort.js';
+export type { EffortStufe } from './services/effort.js';
+
 // Model-Cutoffs (Wissensstand je Modell, Tabelle model_cutoffs)
 export {
   resolveCutoff,

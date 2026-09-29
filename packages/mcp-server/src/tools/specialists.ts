@@ -9,7 +9,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 
-import { removeInboxForAgent, removeWrapperStatus, upsertWrapperStatus } from '@synapse/core';
+import { removeInboxForAgent, removeWrapperStatus, upsertWrapperStatus, EFFORT_STUFEN } from '@synapse/core';
 
 import {
   bereiteMcpBrueckeVor,
@@ -48,6 +48,9 @@ import {
   writeSkillFile,
   migrateSkillMd,
   createInitialAgent,
+  effortFuerCli,
+  resolveModel as resolveModelAusCache,
+  listAliases as listAliasesAusCache,
   type SkillFile,
   type SpecialistConfig,
   type SpecialistStatus,
@@ -82,6 +85,7 @@ export async function spawnSpecialistTool(
   channel?: string,
   allowedTools?: string[],
   keepAlive?: boolean,
+  effort?: string,
 ) {
   // 1. Modell aufloesen + provider-spezifische Checks
   const { resolveModel, listAliases, loadFromDb } = await import('@synapse/agents');
@@ -96,6 +100,18 @@ export async function spawnSpecialistTool(
       message: `Unbekanntes Modell-Alias "${model}". Verfuegbar: ${listAliases().join(', ')}`,
     });
   }
+
+  // 1b. Effort pruefen, bevor irgendetwas angelegt wird. Wirksame Stufe: angefragt
+  //     oder default_effort des Modells; undefined = kein Flag (haiku, Gemini).
+  let effortWirksam: string | undefined;
+  try {
+    effortWirksam = effortFuerCli(modelEntry, effort);
+  } catch (err) {
+    return jsonResult({ success: false, message: err instanceof Error ? err.message : String(err) });
+  }
+  const effortHinweis = effort && !effortWirksam
+    ? `effort "${effort}" ignoriert: Modell "${model}" laeuft nicht ueber die claude-CLI (Runtime ohne --effort).`
+    : undefined;
 
   // 2a. Provider-spezifischer Binary-Check
   if (modelEntry.binary === 'claude') {
@@ -237,6 +253,9 @@ export async function spawnSpecialistTool(
       ...process.env,
       SYNAPSE_AGENT_NAME: name,
       SYNAPSE_AGENT_MODEL: model,
+      // Immer ausdruecklich setzen: ein Spawn aus einem Spezialisten heraus erbt sonst
+      // ueber ...process.env dessen Stufe. Leer = Standard des Modells bzw. kein Flag.
+      SYNAPSE_AGENT_EFFORT: effortWirksam ?? '',
       SYNAPSE_PROJECT_NAME: project,
       SYNAPSE_PROJECT_PATH: projectPath,
       SYNAPSE_SOCKET_PATH: socketPath,
@@ -289,6 +308,7 @@ export async function spawnSpecialistTool(
     currentTask: task,
     provider: modelEntry.provider,
     modelFullId: modelEntry.fullId,
+    effort: effortWirksam,
   } as Partial<SpecialistStatus>);
 
   // 11b. Initiale PG-Zeile schreiben (sofortige Cross-Process-Visibility).
@@ -303,6 +323,7 @@ export async function spawnSpecialistTool(
       model,
       modelFullId: modelEntry.fullId,
       provider: modelEntry.provider,
+      effort: effortWirksam ?? null,
       status: 'running',
       busy: false,
       currentTask: task,
@@ -324,6 +345,7 @@ export async function spawnSpecialistTool(
       model,
       modelFullId: modelEntry.fullId,
       provider: modelEntry.provider,
+      effort: effortWirksam ?? null,
       expertise,
       task,
       project,
@@ -332,8 +354,9 @@ export async function spawnSpecialistTool(
       channel: channel ?? `${project}-general`,
       mcpBruecke,
     },
+    ...(effortHinweis ? { effortHinweis } : {}),
     message:
-      `Spezialist "${name}" (${model} → ${modelEntry.fullId}, provider: ${modelEntry.provider}) gestartet. ` +
+      `Spezialist "${name}" (${model} → ${modelEntry.fullId}, provider: ${modelEntry.provider}, effort: ${effortWirksam ?? 'kein Flag'}) gestartet. ` +
       `PID: ${wrapperPid}. Werkzeuge des inneren Agenten: ${mcpBruecke.grund}`,
   });
 }
@@ -940,6 +963,20 @@ export function getAgentCapabilitiesTool() {
   return jsonResult({
     success: true,
     claudeCli: cliInfo,
+    // Effort je Modell (claude --effort): Stufe ohne Angabe beim Spawn und ob das
+    // Modell ueberhaupt eine bekommt. Aus dem Registry-Cache bzw. STATIC_FALLBACK.
+    effortStufen: [...EFFORT_STUFEN],
+    models: listAliasesAusCache().map((alias) => {
+      const e = resolveModelAusCache(alias);
+      return {
+        alias,
+        fullId: e?.fullId,
+        provider: e?.provider,
+        effortStufen: e?.effortStufen ?? [],
+        effortSupported: (e?.effortStufen?.length ?? 0) > 0,
+        defaultEffort: e?.effortStufen?.length ? e.defaultEffort ?? null : null,
+      };
+    }),
     features: {
       specialists: cliInfo.available,
       channels: true,

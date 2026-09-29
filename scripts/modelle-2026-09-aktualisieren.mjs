@@ -11,8 +11,10 @@
 // EINE Quelle fuer Code, Seed-Vergleichstest und dieses Skript. Bestehende Zeilen:
 // full_id, context_window, Korridore (200k = 73/88, 1M = 80/97, Begruendung in
 // packages/core/src/services/kontext-korridor.ts), output_limit, pricing_* (je
-// Version, models.dev) und cutoff_date werden aktualisiert. Neue Aliase werden
-// komplett angelegt.
+// Version, models.dev), cutoff_date sowie effort_stufen/default_effort (Stufen fuer
+// claude --effort je Version, haiku 4.5 keine) werden aktualisiert. Neue Aliase werden
+// komplett angelegt. Fehlen die effort-Spalten noch (SCHEMA_SQL vor dem Deploy),
+// legt --apply sie an.
 //
 // Nutzung:
 //   node scripts/modelle-2026-09-aktualisieren.mjs           # Trockenlauf (Default): alt -> neu
@@ -35,7 +37,8 @@ const { Client } = requireFromCore('pg');
 const { MODEL_CUTOFF_SEED } = await import('../packages/core/dist/services/model-cutoffs.js');
 const { STATIC_FALLBACK } = await import('../packages/agents/dist/models.js');
 
-// [alias, full_id, context_window, corridor_min, corridor_max, preis_in, preis_out, preis_cache, cutoff_date, output_limit]
+// [alias, full_id, context_window, corridor_min, corridor_max, preis_in, preis_out, preis_cache, cutoff_date, output_limit,
+//  effort_stufen, default_effort]
 // Nur Claude (Gemini/Antigravity bleiben unangetastet). sonnet-4.6[1m] fehlt dort bewusst.
 const REGISTRY = Object.values(STATIC_FALLBACK)
   .filter((e) => e.provider === 'anthropic')
@@ -43,6 +46,7 @@ const REGISTRY = Object.values(STATIC_FALLBACK)
     e.alias, e.fullId, e.contextWindow, e.corridorMin, e.corridorMax,
     e.pricingInputUsdPerMtok, e.pricingOutputUsdPerMtok, e.pricingCacheUsdPerMtok,
     e.cutoffDate ?? null, e.outputLimit ?? null,
+    e.effortStufen ?? [], e.defaultEffort ?? null,
   ]);
 
 const client = new Client({ connectionString: process.env.DATABASE_URL });
@@ -53,30 +57,42 @@ await client.query("SET statement_timeout = '30s'");
 await client.query("SET idle_in_transaction_session_timeout = '30s'");
 
 try {
+  // effort-Spalten gibt es erst mit dem SCHEMA_SQL vom 29.09.2026.
+  const effortSpalten = (await client.query(
+    `SELECT COUNT(*)::int AS n FROM information_schema.columns
+      WHERE table_schema = 'public' AND table_name = 'model_registry'
+        AND column_name IN ('default_effort', 'effort_stufen')`,
+  )).rows[0].n === 2;
+
   // --- model_registry ---
   const alt = await client.query(
     `SELECT alias, full_id, context_window, corridor_min, corridor_max, output_limit,
             pricing_input_usd_per_mtok, pricing_output_usd_per_mtok, pricing_cache_usd_per_mtok,
-            cutoff_date::text AS cutoff_date
+            cutoff_date::text AS cutoff_date${effortSpalten ? ', default_effort, effort_stufen' : ''}
        FROM model_registry WHERE alias = ANY($1)`,
     [REGISTRY.map((r) => r[0])],
   );
   const altMap = new Map(alt.rows.map((r) => [r.alias, r]));
-  console.log('model_registry (alias: alt -> neu)');
+  console.log(`model_registry (alias: alt -> neu)${effortSpalten ? '' : ' — effort-Spalten fehlen noch, werden mit --apply angelegt'}`);
   let regAenderungen = 0;
   const zahl = (v) => (v === null || v === undefined ? null : Number(v));
-  for (const [alias, fullId, ctx, cmin, cmax, pin, pout, pcache, cutoff, output] of REGISTRY) {
+  const effortText = (stufen, standard) => (stufen?.length ? `[${stufen.join(',')}] std=${standard ?? 'NULL'}` : 'keine');
+  for (const [alias, fullId, ctx, cmin, cmax, pin, pout, pcache, cutoff, output, effortStufen, effortStd] of REGISTRY) {
     const a = altMap.get(alias);
     const vorher = a
       ? `${a.full_id} ${a.context_window} ${a.corridor_min}/${a.corridor_max} out=${a.output_limit ?? 'NULL'} ` +
-        `$${zahl(a.pricing_input_usd_per_mtok)}/${zahl(a.pricing_output_usd_per_mtok)}/${zahl(a.pricing_cache_usd_per_mtok)} ${a.cutoff_date ?? 'NULL'}`
+        `$${zahl(a.pricing_input_usd_per_mtok)}/${zahl(a.pricing_output_usd_per_mtok)}/${zahl(a.pricing_cache_usd_per_mtok)} ${a.cutoff_date ?? 'NULL'} ` +
+        `effort=${effortSpalten ? effortText(a.effort_stufen, a.default_effort) : '(Spalte fehlt)'}`
       : '(neu)';
-    const nachher = `${fullId} ${ctx} ${cmin}/${cmax} out=${output ?? 'NULL'} $${pin}/${pout}/${pcache} ${cutoff ?? 'NULL'}`;
+    const nachher = `${fullId} ${ctx} ${cmin}/${cmax} out=${output ?? 'NULL'} $${pin}/${pout}/${pcache} ${cutoff ?? 'NULL'} ` +
+      `effort=${effortText(effortStufen, effortStd)}`;
     const gleich = a && a.full_id === fullId && Number(a.context_window) === ctx &&
       Number(a.corridor_min) === cmin && Number(a.corridor_max) === cmax &&
       zahl(a.output_limit) === output && zahl(a.pricing_input_usd_per_mtok) === pin &&
       zahl(a.pricing_output_usd_per_mtok) === pout && zahl(a.pricing_cache_usd_per_mtok) === pcache &&
-      (a.cutoff_date ?? null) === cutoff;
+      (a.cutoff_date ?? null) === cutoff &&
+      effortSpalten && JSON.stringify(a.effort_stufen ?? null) === JSON.stringify(effortStufen) &&
+      (a.default_effort ?? null) === effortStd;
     if (!gleich) regAenderungen++;
     console.log(`  ${gleich ? '=' : '*'} ${alias.padEnd(14)} ${vorher}  ->  ${nachher}`);
   }
@@ -100,13 +116,16 @@ try {
   if (!APPLY) {
     console.log('Trockenlauf — nichts geschrieben. Mit --apply schreiben.');
   } else {
-    for (const [alias, fullId, ctx, cmin, cmax, pin, pout, pcache, cutoff, output] of REGISTRY) {
+    // Gleiche Anweisungen wie im SCHEMA_SQL (core db/schema.ts), idempotent.
+    await client.query('ALTER TABLE model_registry ADD COLUMN IF NOT EXISTS default_effort TEXT');
+    await client.query('ALTER TABLE model_registry ADD COLUMN IF NOT EXISTS effort_stufen TEXT[]');
+    for (const [alias, fullId, ctx, cmin, cmax, pin, pout, pcache, cutoff, output, effortStufen, effortStd] of REGISTRY) {
       await client.query(
         `INSERT INTO model_registry
            (alias, full_id, provider, context_window, env_required, runtime_binary, runtime_path,
             corridor_min, corridor_max, pricing_input_usd_per_mtok, pricing_output_usd_per_mtok,
-            pricing_cache_usd_per_mtok, cutoff_date, output_limit)
-         VALUES ($1, $2, 'anthropic', $3, ARRAY[]::TEXT[], 'claude', NULL, $4, $5, $6, $7, $8, $9, $10)
+            pricing_cache_usd_per_mtok, cutoff_date, output_limit, effort_stufen, default_effort)
+         VALUES ($1, $2, 'anthropic', $3, ARRAY[]::TEXT[], 'claude', NULL, $4, $5, $6, $7, $8, $9, $10, $11, $12)
          ON CONFLICT (alias) DO UPDATE SET
            full_id = EXCLUDED.full_id,
            context_window = EXCLUDED.context_window,
@@ -117,8 +136,10 @@ try {
            pricing_output_usd_per_mtok = EXCLUDED.pricing_output_usd_per_mtok,
            pricing_cache_usd_per_mtok = EXCLUDED.pricing_cache_usd_per_mtok,
            cutoff_date = EXCLUDED.cutoff_date,
+           effort_stufen = EXCLUDED.effort_stufen,
+           default_effort = EXCLUDED.default_effort,
            updated_at = NOW()`,
-        [alias, fullId, ctx, cmin, cmax, pin, pout, pcache, cutoff, output],
+        [alias, fullId, ctx, cmin, cmax, pin, pout, pcache, cutoff, output, effortStufen, effortStd],
       );
     }
     await client.query(

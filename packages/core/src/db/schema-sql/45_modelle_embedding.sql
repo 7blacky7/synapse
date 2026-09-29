@@ -76,7 +76,9 @@ CREATE TABLE public.model_registry (
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
     agy_model_value text,
-    default_disabled_tools text[] DEFAULT ARRAY[]::text[] NOT NULL
+    default_disabled_tools text[] DEFAULT ARRAY[]::text[] NOT NULL,
+    default_effort text,
+    effort_stufen text[]
 );
 
 --

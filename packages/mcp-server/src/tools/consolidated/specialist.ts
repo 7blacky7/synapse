@@ -22,7 +22,7 @@ import {
   updateSpecialistSkillTool,
   getAgentCapabilitiesTool,
 } from '../index.js';
-import { getWrapperStatus, listWrapperStatus, steuereHeartbeat } from '@synapse/core';
+import { getWrapperStatus, listWrapperStatus, steuereHeartbeat, EFFORT_STUFEN } from '@synapse/core';
 import type { WrapperStatusRow } from '@synapse/core';
 
 export const specialistTool: ConsolidatedTool = {
@@ -92,6 +92,12 @@ export const specialistTool: ConsolidatedTool = {
           description:
             'Aktiviert (a) periodisches Wecken im Idle UND (b) Auto-Respawn bei Crash/Context-Limit. Standard: true (sinnvoller Default fuer alle laufenden Spezialisten — Wrapper kostet kaum Tokens, Auto-Recovery ist wertvoll). Auf false setzen nur fuer One-Shot-Tasks die nach Abschluss sterben sollen.',
         },
+        effort: {
+          type: 'string',
+          enum: [...EFFORT_STUFEN],
+          description:
+            'Effort-Stufe fuer claude --effort (optional fuer: spawn; bei spawn_batch je Item). Weglassen = default_effort des Modells (capabilities -> models, Claude-Standard medium) — NICHT mehr die User-Einstellung. Bleibt bei Kontext-Rotation und keep_alive-Neustart gleich. Stufen je Modell: capabilities -> models[].effortStufen. Eine Stufe, die das Modell nicht kann, wird abgelehnt (die CLI wiche sonst STILL aus: xhigh -> high bei opus-4.6/sonnet-4.6); haiku kennt keinen Effort (Fehler). Gemini/antigravity: kein Flag (effortHinweis in der Antwort).',
+        },
 
         // status parameters
         // name, project_path: siehe oben
@@ -144,6 +150,7 @@ export const specialistTool: ConsolidatedTool = {
               channel: { type: 'string' },
               allowed_tools: { type: 'array', items: { type: 'string' } },
               keep_alive: { type: 'boolean' },
+              effort: { type: 'string', enum: [...EFFORT_STUFEN], description: 'Effort-Stufe, siehe effort' },
             },
             required: ['name', 'model', 'expertise', 'task'],
           },
@@ -173,6 +180,7 @@ export const specialistTool: ConsolidatedTool = {
         const channel = str(args, 'channel');
         const allowedTools = strArray(args, 'allowed_tools');
         const keepAlive = bool(args, 'keep_alive') ?? true;
+        const effort = str(args, 'effort');
 
         return await spawnSpecialistTool(
           name,
@@ -185,6 +193,7 @@ export const specialistTool: ConsolidatedTool = {
           channel,
           allowedTools,
           keepAlive,
+          effort,
         );
       }
 
@@ -200,6 +209,7 @@ export const specialistTool: ConsolidatedTool = {
           allowed_tools?: string[];
           keep_alive?: boolean;
           cwd?: string;
+          effort?: string;
         }>(args, 'specialists');
         if (!specs || specs.length === 0) {
           return { success: false, count: 0, results: [], message: 'specialists (Array) ist erforderlich' };
@@ -223,6 +233,7 @@ export const specialistTool: ConsolidatedTool = {
               s.channel ? String(s.channel) : undefined,
               Array.isArray(s.allowed_tools) ? s.allowed_tools.map(String) : undefined,
               typeof s.keep_alive === 'boolean' ? s.keep_alive : true,
+              s.effort != null ? String(s.effort) : undefined,
             );
             results.push(r as Record<string, unknown>);
           } catch (err) {
@@ -311,6 +322,7 @@ export const specialistTool: ConsolidatedTool = {
           busy: row.busy ?? false,
           ...(row.provider != null && { provider: row.provider }),
           ...(row.modelFullId != null && { modelFullId: row.modelFullId }),
+          ...(row.effort != null && { effort: row.effort }),
         });
 
         // Array-Support: Mehrere Spezialisten-Status in einem Call

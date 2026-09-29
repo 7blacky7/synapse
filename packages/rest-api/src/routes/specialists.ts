@@ -74,10 +74,10 @@ export async function specialistRoutes(fastify: FastifyInstance): Promise<void> 
    */
   fastify.post<{
     Params: { name: string };
-    Body: { name: string; model: string; cwd?: string; allowedTools?: string[] };
+    Body: { name: string; model: string; cwd?: string; allowedTools?: string[]; effort?: string };
   }>('/api/projects/:name/specialists/spawn', async (request, reply) => {
     const project = request.params.name;
-    const { name: specName, model, cwd, allowedTools } = request.body ?? {};
+    const { name: specName, model, cwd, allowedTools, effort } = request.body ?? {};
 
     if (!specName || !model) {
       return reply.status(400).send({
@@ -110,6 +110,7 @@ export async function specialistRoutes(fastify: FastifyInstance): Promise<void> 
           model,
           cwd: projectPath,
           allowedTools,
+          effort,
         },
       });
 

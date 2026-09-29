@@ -37,6 +37,12 @@ export interface WrapperStatusRow {
   heartbeatEnabled: boolean
   /** null = adaptive Ladder (10s..60min). Zahl = fester Takt in Millisekunden. */
   heartbeatIntervalMs: number | null
+  /**
+   * Effort-Stufe (claude --effort), mit der der Spezialist gestartet wurde. Nur Anzeige:
+   * Rotation und keep_alive holen sie aus SYNAPSE_AGENT_EFFORT des Wrappers.
+   * null = kein Flag (haiku, Gemini) oder Wrapper von vor dem Feld.
+   */
+  effort?: string | null
 }
 
 /** Datenbank-Row (snake_case) → WrapperStatusRow (camelCase) */
@@ -62,6 +68,7 @@ function mapRow(row: Record<string, unknown>): WrapperStatusRow {
     lastActivity: new Date(row.last_activity as string),
     heartbeatEnabled: (row.heartbeat_enabled as boolean) ?? true,
     heartbeatIntervalMs: row.heartbeat_interval_ms != null ? Number(row.heartbeat_interval_ms) : null,
+    effort: (row.effort as string | null | undefined) ?? null,
   }
 }
 
@@ -91,7 +98,7 @@ export async function upsertWrapperStatus(
         model, model_full_id, provider,
         status, busy, current_task,
         context_ceiling, tokens_input, tokens_output, tokens_percent,
-        channels, connected_mcp, last_activity
+        channels, connected_mcp, last_activity, effort
       ) VALUES (
         $1, $2, $3, $4, $5,
         $6, $7, $8,
@@ -101,7 +108,8 @@ export async function upsertWrapperStatus(
         $12, $13, $14, $15,
         COALESCE($16::TEXT[], '{}'),
         COALESCE($17::BOOLEAN, false),
-        NOW()
+        NOW(),
+        $18
       )
       ON CONFLICT (agent_name, project) DO UPDATE SET
         wrapper_pid     = COALESCE($3,            wrapper_status.wrapper_pid),
@@ -119,6 +127,7 @@ export async function upsertWrapperStatus(
         tokens_percent  = COALESCE($15,           wrapper_status.tokens_percent),
         channels        = COALESCE($16::TEXT[],   wrapper_status.channels),
         connected_mcp   = COALESCE($17::BOOLEAN,  wrapper_status.connected_mcp),
+        effort          = COALESCE($18,           wrapper_status.effort),
         last_activity   = NOW()`,
     [
       row.agentName,
@@ -138,6 +147,7 @@ export async function upsertWrapperStatus(
       row.tokensPercent ?? null,
       row.channels ?? null,      // null → INSERT: '{}', UPDATE: preserve existing
       row.connectedMcp ?? null,  // null → INSERT: false, UPDATE: preserve existing
+      row.effort ?? null,        // null → preserve existing (Heartbeats schicken kein effort)
     ],
   )
 }

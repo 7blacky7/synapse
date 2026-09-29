@@ -7,7 +7,10 @@
  * dient als Last-Resort-Fallback.
  */
 
-import { berechneKontextSchwellen, KORRIDOR_1M, KORRIDOR_200K, type KontextSchwellen } from '@synapse/core';
+import {
+  berechneKontextSchwellen, KORRIDOR_1M, KORRIDOR_200K, type KontextSchwellen,
+  istEffortStufe, pruefeEffort, waehleEffort, type EffortStufe,
+} from '@synapse/core';
 
 export type Provider = 'anthropic' | 'google' | 'antigravity';
 
@@ -37,6 +40,10 @@ export interface ModelEntry {
   pricingCacheUsdPerMtok?: number;
   /** Wissensstand (YYYY-MM-DD); massgeblich fuer Agenten ist core model_cutoffs */
   cutoffDate?: string;
+  /** Stufen, die das Modell fuer `claude --effort` wirklich bekommt. Leer/fehlt: kein Flag (haiku, node-Runtimes) */
+  effortStufen?: EffortStufe[];
+  /** Stufe fuer --effort, wenn der Spawn keine nennt — fest statt effortLevel aus den User-Settings */
+  defaultEffort?: EffortStufe;
 }
 
 /**
@@ -48,25 +55,56 @@ export interface ModelEntry {
 // und Cutoff gelten JE VERSION (full_id), nicht je Familie — Quelle models.dev,
 // Stand 29.09.2026. Jeder Alias einer Version (rein, [1m], versioniert) bekommt
 // dieselben Werte; gleiche Werte stehen im Seed (core db/schema.ts).
+// Effort-Stufen je Version (29.09.2026, claude-CLI 2.1.284). Belege je Zeile:
+//  K = in die CLI eingebetteter Modellkatalog, runtime.effort_levels (gelesen von d3n(),
+//      ausgewertet von VS() = Effort ueberhaupt, K6e() = xhigh, nJ() = max);
+//  R = Mitschnitt des API-Requests (ANTHROPIC_BASE_URL auf einen lokalen Fang-Server),
+//      output_config.effort bei --effort low/xhigh/max.
+// Kann ein Modell eine Stufe nicht, weicht die CLI STILL aus (R: xhigh -> high bei
+// opus-4.6/sonnet-4.6; haiku schickt gar kein output_config). Synapse lehnt solche
+// Stufen deshalb ab (core waehleEffort). Gleiche Werte im SCHEMA_SQL (core db/schema.ts).
+const ALLE_STUFEN: EffortStufe[] = ['low', 'medium', 'high', 'xhigh', 'max'];
+const OHNE_XHIGH: EffortStufe[] = ['low', 'medium', 'high', 'max'];
+const KEINE_STUFEN: EffortStufe[] = [];
+
 interface ClaudeVersion {
   outputLimit: number;
   preis: [input: number, output: number, cache: number];
   cutoffDate: string;
+  /** Stufen fuer --effort (Belege siehe oben) */
+  effort: EffortStufe[];
 }
 const CLAUDE_VERSIONEN: Record<string, ClaudeVersion> = {
-  'claude-fable-5-1': { outputLimit: 128_000, preis: [10, 50, 0.25], cutoffDate: '2026-06-01' },
-  // fable-5: Anthropic nennt keinen Cutoff, models.dev ueber Vertex
-  'claude-fable-5': { outputLimit: 128_000, preis: [10, 50, 1], cutoffDate: '2026-01-31' },
-  'claude-opus-5-5': { outputLimit: 128_000, preis: [4, 20, 0.2], cutoffDate: '2026-06-01' },
-  'claude-opus-5': { outputLimit: 128_000, preis: [5, 25, 0.5], cutoffDate: '2026-05-01' },
-  'claude-opus-4-8': { outputLimit: 128_000, preis: [5, 25, 0.5], cutoffDate: '2026-01-01' },
-  'claude-opus-4-7': { outputLimit: 128_000, preis: [5, 25, 0.5], cutoffDate: '2026-01-31' },
-  'claude-opus-4-6': { outputLimit: 128_000, preis: [5, 25, 0.5], cutoffDate: '2025-05-31' },
-  'claude-sonnet-5-5': { outputLimit: 128_000, preis: [2, 10, 0.2], cutoffDate: '2026-06-01' },
-  'claude-sonnet-5': { outputLimit: 128_000, preis: [2, 10, 0.2], cutoffDate: '2026-01-31' },
-  'claude-sonnet-4-6': { outputLimit: 128_000, preis: [3, 15, 0.3], cutoffDate: '2025-08-31' },
-  'claude-haiku-4-5-20251001': { outputLimit: 64_000, preis: [1, 5, 0.1], cutoffDate: '2025-02-28' },
+  // K: low..max; R: low/xhigh/max unveraendert
+  'claude-fable-5-1': { outputLimit: 128_000, preis: [10, 50, 0.25], cutoffDate: '2026-06-01', effort: ALLE_STUFEN },
+  // fable-5: Anthropic nennt keinen Cutoff, models.dev ueber Vertex. Effort: K low..max; R unveraendert
+  'claude-fable-5': { outputLimit: 128_000, preis: [10, 50, 1], cutoffDate: '2026-01-31', effort: ALLE_STUFEN },
+  // K: low..max (Katalog-Standard medium); R: low/xhigh/max unveraendert
+  'claude-opus-5-5': { outputLimit: 128_000, preis: [4, 20, 0.2], cutoffDate: '2026-06-01', effort: ALLE_STUFEN },
+  // K: low..max; R: low/xhigh/max unveraendert
+  'claude-opus-5': { outputLimit: 128_000, preis: [5, 25, 0.5], cutoffDate: '2026-05-01', effort: ALLE_STUFEN },
+  // K: low..max; R: low/xhigh/max unveraendert
+  'claude-opus-4-8': { outputLimit: 128_000, preis: [5, 25, 0.5], cutoffDate: '2026-01-01', effort: ALLE_STUFEN },
+  // K: low..max (Katalog-Standard xhigh); R: xhigh/max unveraendert
+  'claude-opus-4-7': { outputLimit: 128_000, preis: [5, 25, 0.5], cutoffDate: '2026-01-31', effort: ALLE_STUFEN },
+  // K: low,medium,high,max; K6e schliesst claude-opus-4-6 aus; R: xhigh -> high (still), max bleibt
+  'claude-opus-4-6': { outputLimit: 128_000, preis: [5, 25, 0.5], cutoffDate: '2025-05-31', effort: OHNE_XHIGH },
+  // NICHT im eingebetteten Katalog, VS/K6e/nJ schliessen es nicht aus; R: xhigh/max unveraendert
+  'claude-sonnet-5-5': { outputLimit: 128_000, preis: [2, 10, 0.2], cutoffDate: '2026-06-01', effort: ALLE_STUFEN },
+  // K: low..max; R: low/xhigh/max unveraendert
+  'claude-sonnet-5': { outputLimit: 128_000, preis: [2, 10, 0.2], cutoffDate: '2026-01-31', effort: ALLE_STUFEN },
+  // K: low,medium,high,max; K6e schliesst claude-sonnet-4-6 aus; R: xhigh -> high (still), max bleibt
+  'claude-sonnet-4-6': { outputLimit: 128_000, preis: [3, 15, 0.3], cutoffDate: '2025-08-31', effort: OHNE_XHIGH },
+  // K: kein effort_levels (thinking type none); VS schliesst claude-haiku-4-5 aus; R: kein output_config
+  'claude-haiku-4-5-20251001': { outputLimit: 64_000, preis: [1, 5, 0.1], cutoffDate: '2025-02-28', effort: KEINE_STUFEN },
 };
+
+/**
+ * Stufe, wenn der Spawn keine nennt. 'medium' = das bisherige Verhalten (effortLevel
+ * des Users stand auf medium), jetzt aber fest statt still geerbt. Gleicher Wert im
+ * SCHEMA_SQL (core db/schema.ts, UPDATE nach dem model_registry-Seed).
+ */
+const STANDARD_EFFORT: EffortStufe = 'medium';
 
 /**
  * Claude-Eintrag fuer einen Alias. Kontext = Abo-Kontext der CLI (200k, [1m] = 1M,
@@ -87,6 +125,8 @@ function claude(alias: string, fullId: string): ModelEntry {
     pricingOutputUsdPerMtok: version.preis[1],
     pricingCacheUsdPerMtok: version.preis[2],
     cutoffDate: version.cutoffDate,
+    effortStufen: version.effort,
+    defaultEffort: version.effort.includes(STANDARD_EFFORT) ? STANDARD_EFFORT : undefined,
   };
 }
 
@@ -226,6 +266,8 @@ async function ladeAusDb(): Promise<void> {
         pricingOutputUsdPerMtok: m.pricingOutputUsdPerMtok ?? undefined,
         pricingCacheUsdPerMtok: m.pricingCacheUsdPerMtok ?? undefined,
         cutoffDate: m.cutoffDate ?? undefined,
+        effortStufen: (m.effortStufen ?? []).filter(istEffortStufe),
+        defaultEffort: istEffortStufe(m.defaultEffort) ? m.defaultEffort : undefined,
       });
     }
     dbCache = map;
@@ -250,6 +292,22 @@ const CLI_ALIAS_OHNE_VERSION = /^(opus|sonnet|haiku|fable)(\[1m\])?$/;
 export function cliModelArg(entry: ModelEntry): string {
   if (CLI_ALIAS_OHNE_VERSION.test(entry.alias)) return entry.alias;
   return entry.alias.endsWith('[1m]') ? `${entry.fullId}[1m]` : entry.fullId;
+}
+
+/**
+ * Wert fuer `claude --effort` — oder undefined, dann setzt process.ts kein Flag.
+ * Angefragte Stufe (Spawn-Parameter effort, im Wrapper SYNAPSE_AGENT_EFFORT) vor
+ * default_effort des Modells, geprueft gegen die effortStufen DIESES Modells: eine
+ * Stufe, die es nicht kann, ist ein Fehler statt eines stillen Ausweichens der CLI
+ * (core waehleEffort). Kein Flag fuer node-Runtimes (Gemini/agy kennen es nicht) und
+ * unbekannte Modelle; dort wird nur die Stufe selbst geprueft.
+ */
+export function effortFuerCli(entry: ModelEntry | null, gewuenscht?: unknown): EffortStufe | undefined {
+  if (!entry || entry.binary !== 'claude') {
+    pruefeEffort(gewuenscht);
+    return undefined;
+  }
+  return waehleEffort(entry.alias, entry.effortStufen ?? [], entry.defaultEffort, gewuenscht);
 }
 
 /**

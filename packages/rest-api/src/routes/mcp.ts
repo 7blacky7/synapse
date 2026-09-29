@@ -719,6 +719,7 @@ const MCP_TOOLS = [
         channel: { type: 'string', description: 'Channel fuer Kommunikation (optional fuer: spawn, Standard: {project}-general)' },
         allowed_tools: { type: 'array', items: { type: 'string' }, description: 'Erlaubte Tools fuer den Spezialisten (optional fuer: spawn)' },
         keep_alive: { type: 'boolean', description: '⚠️ WICHTIG: keep_alive: true setzen fuer langlaufende Spezialisten. Aktiviert (a) periodisches Wecken im Idle UND (b) Auto-Respawn bei Crash (Context-Limit, OOM). Ohne keep_alive stirbt der Wrapper mit dem Agenten — kein Comeback, manueller Spawn noetig. Standard: false (nur fuer kurze One-Shot-Tasks).' },
+        effort: { type: 'string', enum: ['low', 'medium', 'high', 'xhigh', 'max'], description: 'Effort-Stufe fuer claude --effort (optional fuer: spawn; bei spawn_batch je Item im specialists-Array). Weglassen = default_effort des Modells (capabilities -> supportedModels, Claude-Standard medium) — NICHT mehr die User-Einstellung. Bleibt bei Kontext-Rotation und keep_alive-Neustart gleich. Stufen je Modell: capabilities -> supportedModels[].effort_stufen. Eine Stufe, die das Modell nicht kann, wird abgelehnt (die CLI wiche sonst STILL aus: xhigh -> high bei opus-4.6/sonnet-4.6); haiku kennt keinen Effort (Fehler). Gemini/antigravity: kein Flag.' },
         message: { type: 'string', description: 'Nachricht an den Spezialisten (erforderlich fuer: wake)' },
         section: { type: 'string', enum: ['regeln', 'fehler', 'patterns'], description: 'Abschnitt der SKILL.md (legacy, optional fuer: update_skill). Alternative: file' },
         file: { type: 'string', enum: ['rules', 'errors', 'patterns', 'context'], description: 'Ziel-Datei (neu, optional fuer: update_skill). Alternative zu section (legacy).' },
@@ -3456,7 +3457,7 @@ async function handleToolCall(
       // Specialist-Calls werden via PG-Queue an den lokalen FileWatcher-Daemon
       // delegiert (wo Claude-CLI + Projekt-FS verfuegbar sind).
       // status + capabilities lesen direkt aus PG ohne Queue.
-      const { enqueueSpecialistJob, waitForSpecialistJob, getPool, getWrapperStatus, listWrapperStatus, postToInbox } = await import('@synapse/core');
+      const { enqueueSpecialistJob, waitForSpecialistJob, getPool, getWrapperStatus, listWrapperStatus, postToInbox, EFFORT_STUFEN, pruefeEffort, waehleEffort, getModel } = await import('@synapse/core');
 
       // capabilities ist projekt-agnostisch — direkt aus PG ableiten.
       // projects-Tabelle = registrierte Daemons je hostname.
@@ -3474,8 +3475,8 @@ async function handleToolCall(
             `SELECT provider, model, status, COUNT(*)::text AS n
              FROM wrapper_status GROUP BY provider, model, status`,
           ),
-          pool.query<{ alias: string; full_id: string; provider: string; context_window: number; env_required: string[]; runtime_binary: string }>(
-            `SELECT alias, full_id, provider, context_window, env_required, runtime_binary
+          pool.query<{ alias: string; full_id: string; provider: string; context_window: number; env_required: string[]; runtime_binary: string; default_effort: string | null; effort_stufen: string[] | null }>(
+            `SELECT alias, full_id, provider, context_window, env_required, runtime_binary, default_effort, effort_stufen
              FROM model_registry WHERE enabled = true
              ORDER BY provider, alias`,
           ),
@@ -3494,6 +3495,8 @@ async function handleToolCall(
             byProviderModel: wrappersRes.rows,
           },
           supportedModels: modelsRes.rows,
+          // Stufen fuer specialist(spawn, effort); je Modell effort_stufen/default_effort oben
+          effortStufen: [...EFFORT_STUFEN],
           features: {
             specialists: hostsRes.rows.length > 0,
             channels: true,
@@ -3556,6 +3559,7 @@ async function handleToolCall(
           busy: row.busy ?? false,
           ...(row.provider != null && { provider: row.provider }),
           ...(row.modelFullId != null && { modelFullId: row.modelFullId }),
+          ...(row.effort != null && { effort: row.effort }),
         });
 
         if (name) {
@@ -3660,6 +3664,30 @@ async function handleToolCall(
 
       const actionStr = String(action ?? '');
       const queueableActions = ['spawn', 'spawn_batch', 'stop', 'purge', 'update_skill'];
+
+      // effort frueh pruefen: ein Tippfehler soll sofort mit den erlaubten Werten
+      // zurueckkommen, nicht erst nach dem Umweg ueber Queue und Daemon. Verbindlich
+      // bleibt die Pruefung im Daemon (spawnSpecialistTool).
+      // Kennt die Registry das Modell, wird die Stufe auch gegen SEINE effort_stufen geprueft.
+      const pruefeEffortFuer = async (model: unknown, effort: unknown): Promise<void> => {
+        const stufe = pruefeEffort(effort);
+        if (!stufe || typeof model !== 'string') return;
+        const eintrag = await getModel(model).catch(() => null);
+        if (eintrag && eintrag.binary === 'claude') {
+          waehleEffort(eintrag.alias, eintrag.effortStufen ?? [], eintrag.defaultEffort, stufe);
+        }
+      };
+      try {
+        const a = args as Record<string, unknown>;
+        if (actionStr === 'spawn') await pruefeEffortFuer(a.model, a.effort);
+        if (actionStr === 'spawn_batch') {
+          for (const s of objArray<{ model?: unknown; effort?: unknown }>(args, 'specialists') ?? []) {
+            await pruefeEffortFuer(s.model, s.effort);
+          }
+        }
+      } catch (err) {
+        return { success: false, error: 'invalid_effort', message: err instanceof Error ? err.message : String(err) };
+      }
       if (!queueableActions.includes(actionStr)) {
         return { success: false, error: `Unbekannte specialist action: "${actionStr}"` };
       }

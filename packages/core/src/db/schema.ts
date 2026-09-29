@@ -1339,6 +1339,33 @@ VALUES
   ('antigravity',       'agy-1.0.2',                      'antigravity', 1000000, ARRAY[]::TEXT[],         'node',   '@synapse/agents-antigravity/runtime', 95, 99, NULL,  NULL,  NULL,  NULL, NULL)
 ON CONFLICT (alias) DO NOTHING;
 
+-- Effort je Modell (29.09.2026): Stufen fuer claude --effort und Standard, wenn der Spawn
+-- keine nennt. Vorher lief jeder Spezialist ohne --effort und erbte still effortLevel aus
+-- ~/.claude/settings.json des Users. effort_stufen = die Stufen, die das Modell wirklich
+-- bekommt; leer oder NULL = kein Flag. Kann ein Modell eine Stufe nicht, weicht die CLI
+-- STILL aus (xhigh -> high bei opus-4.6/sonnet-4.6, haiku verwirft --effort ganz), darum
+-- lehnt Synapse solche Stufen beim Spawn ab. Belege je Version: CLAUDE_VERSIONEN in
+-- packages/agents/src/models.ts; scripts/test-effort.mjs vergleicht beide.
+-- Das UPDATE fuellt nur bekannte Claude-Versionen ohne Wert (effort_stufen IS NULL):
+-- einmal nach dem Anlegen der Spalten und fuer neue Seed-Zeilen, nie ueber gepflegte
+-- Werte. Bestehende Zeilen aendert sonst nur scripts/modelle-2026-09-aktualisieren.mjs.
+ALTER TABLE model_registry ADD COLUMN IF NOT EXISTS default_effort TEXT;
+ALTER TABLE model_registry ADD COLUMN IF NOT EXISTS effort_stufen TEXT[];
+UPDATE model_registry
+   SET effort_stufen = CASE
+         WHEN full_id IN ('claude-haiku-4-5-20251001') THEN ARRAY[]::TEXT[]
+         WHEN full_id IN ('claude-opus-4-6', 'claude-sonnet-4-6')
+           THEN ARRAY['low', 'medium', 'high', 'max']
+         WHEN full_id IN ('claude-fable-5-1', 'claude-fable-5', 'claude-opus-5-5', 'claude-opus-5',
+                          'claude-opus-4-8', 'claude-opus-4-7', 'claude-sonnet-5-5', 'claude-sonnet-5')
+           THEN ARRAY['low', 'medium', 'high', 'xhigh', 'max']
+       END,
+       default_effort = CASE WHEN full_id IN ('claude-haiku-4-5-20251001') THEN NULL ELSE 'medium' END
+ WHERE runtime_binary = 'claude' AND effort_stufen IS NULL
+   AND full_id IN ('claude-haiku-4-5-20251001', 'claude-opus-4-6', 'claude-sonnet-4-6',
+                   'claude-fable-5-1', 'claude-fable-5', 'claude-opus-5-5', 'claude-opus-5',
+                   'claude-opus-4-8', 'claude-opus-4-7', 'claude-sonnet-5-5', 'claude-sonnet-5');
+
 -- ==========================================================================
 -- model_cutoffs: Wissensstand (knowledge cutoff) je Modell-ID, datengetrieben.
 -- Ersetzt die frueher hart codierte Liste in services/chat.ts. Aufloesung und
@@ -1446,6 +1473,12 @@ CREATE INDEX IF NOT EXISTS idx_wrapper_status_status ON wrapper_status(status, l
 -- bei jedem UPDATE dieser Tabelle.
 ALTER TABLE wrapper_status ADD COLUMN IF NOT EXISTS heartbeat_enabled BOOLEAN NOT NULL DEFAULT TRUE;
 ALTER TABLE wrapper_status ADD COLUMN IF NOT EXISTS heartbeat_interval_ms INTEGER;
+
+-- Effort-Stufe, mit der der Spezialist laeuft (claude --effort, 29.09.2026). NULL = kein
+-- Flag (haiku, Gemini). Nur Anzeige in specialist(status): Rotation und keep_alive starten
+-- den inneren Prozess im selben Wrapper neu, die Stufe kommt dort aus SYNAPSE_AGENT_EFFORT -
+-- derselbe Weg wie das Modell (SYNAPSE_AGENT_MODEL). Kleine Tabelle, kein Index.
+ALTER TABLE wrapper_status ADD COLUMN IF NOT EXISTS effort TEXT;
 
 -- NOTIFY-Trigger fuer wrapper_status Aenderungen
 CREATE OR REPLACE FUNCTION notify_wrapper_status_change() RETURNS trigger AS $$
