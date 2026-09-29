@@ -169,6 +169,19 @@ export async function getWrapperStatus(
 }
 
 /**
+ * Alle Eintraege eines Spezialisten-Namens ueber alle Projekte (Selbstauskunft ohne project).
+ * Sortiert nach last_activity DESC.
+ */
+export async function listWrapperStatusFuerAgent(agentName: string): Promise<WrapperStatusRow[]> {
+  const pool = getPool()
+  const { rows } = await pool.query(
+    `SELECT * FROM wrapper_status WHERE agent_name = $1 ORDER BY last_activity DESC`,
+    [agentName],
+  )
+  return rows.map(mapRow)
+}
+
+/**
  * Listet alle Spezialisten eines Projekts.
  * Sortiert nach last_activity DESC (aktive zuerst).
  */

@@ -9,11 +9,14 @@ export function buildSpecialistPrompt(
   // 1. Rolle
   sections.push(`# Rolle: ${config.name}
 Du bist ein Spezialist fuer: ${config.expertise}
-Modell: ${config.model}
+Modell: ${config.model}, Effort: ${config.effort || 'ohne'}
 Projekt: ${config.project}
 
 ## Aktuelle Aufgabe
-${config.task}`)
+${config.task}
+
+## Deine Modelldaten
+Deine Modelldaten (Modell, Effort, Kontext, Cutoff) NICHT schaetzen, sondern mit specialist(action:'selbst', agent_id:'${config.name}') abrufen.`)
 
   // 2. Skills + Kontext (multi-file: rules.md, errors.md, patterns.md, context.md)
   if (skillContent) {

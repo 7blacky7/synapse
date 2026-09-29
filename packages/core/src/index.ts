@@ -159,6 +159,17 @@ export type { KorridorWerte, KontextSchwellen } from './services/kontext-korrido
 export { pruefeRespawnKorridor } from './services/specialist-respawn.js';
 export type { KorridorPruefung } from './services/specialist-respawn.js';
 
+// shell(exec): Warten bei neuer Channel-Nachricht unterbrechen (Task b5b5304a)
+export {
+  warteAufChannelNachricht, pruefeUnterbrechung, leseChannelNotify, istChannelMitglied,
+  unterbrechungsMeldung, SHELL_UNTERBRECHUNG_HINWEIS, CHANNEL_NOTIFY_KANAL,
+} from './services/shell-channel-unterbrechung.js';
+export type { ChannelUnterbrechung } from './services/shell-channel-unterbrechung.js';
+
+// Selbstauskunft fuer Spezialisten: specialist(action:'selbst')
+export { selbstAuskunft } from './services/specialist-selbst.js';
+export { listWrapperStatusFuerAgent } from './services/wrapper-status.js';
+
 // Effort-Stufen fuer claude --effort (Spezialisten)
 export { EFFORT_STUFEN, istEffortStufe, pruefeEffort, waehleEffort } from './services/effort.js';
 export type { EffortStufe } from './services/effort.js';

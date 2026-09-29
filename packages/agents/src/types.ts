@@ -9,6 +9,8 @@ export interface SpecialistConfig {
   channel?: string
   allowedTools?: string[]
   keepAlive?: boolean
+  /** Wirksame Effort-Stufe (claude --effort), fuer die Rollenzeile im Prompt. Fehlt = ohne Effort */
+  effort?: string
 }
 
 export interface SpecialistStatus {

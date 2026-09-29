@@ -47,7 +47,7 @@ const STANDARD_TIMEOUT_MS = 10_000;
 const STANDARD_CONFIDENCE_TOR = 0.5;
 /** Ab dieser Wahrscheinlichkeit fuer "braucht > 200k Kontext" gilt 1M */
 const SCHWELLE_LANGER_KONTEXT = 0.5;
-/** Mehr Tasks kommen nicht in einen Aufruf (Zustand klein halten) */
+/** Hoechstzahl der task_id je Aufruf (Zustand klein halten) */
 const MAX_TASKS = 50;
 /** Vermerk, wenn nicht gefragt wurde, weil es nur eine Option gab */
 export const EINZIGE_OPTION = 'einzige_option';
@@ -108,7 +108,7 @@ export interface JevEmpfehlung {
 export interface EmpfehlenOptionen {
   /** Aliase und/oder Gruppen (anthropic|abos|alle|codex|google|legacy, auch claude-abo|codex-abo|gemini-api). Standard 'anthropic'. */
   kandidaten?: unknown;
-  /** Nur diese Tasks. Standard: alle nicht erledigten. */
+  /** PFLICHT (User-Vorgabe 29.09.2026): genau diese Tasks, hoechstens 50. Jev bewertet nur, was ausdruecklich genannt ist. */
   task_ids?: string[];
   /** Standard true. false = nur anzeigen. */
   schreiben?: boolean;
@@ -417,6 +417,15 @@ export async function empfehleFuerPlan(
   const maxModelle = typeof maxRoh === 'number' && Number.isFinite(maxRoh) && maxRoh >= 1 ? Math.floor(maxRoh) : undefined;
   const hinweise: string[] = [];
 
+  // task_id ist Pflicht: kein stilles "alle offenen Tasks bewerten" mehr.
+  const taskIds = (optionen.task_ids ?? []).filter((id) => typeof id === 'string' && id.trim() !== '');
+  if (taskIds.length === 0) {
+    return fehlschlag('task_id ist Pflicht: die zu bewertenden Task-IDs ausdruecklich angeben (String oder Array). Jev bewertet nur, was genannt ist.');
+  }
+  if (taskIds.length > MAX_TASKS) {
+    return fehlschlag(`hoechstens ${MAX_TASKS} task_id je Aufruf (angegeben: ${taskIds.length}). Bitte aufteilen.`);
+  }
+
   let kandidaten: JevKandidat[];
   let lage: JevLage;
   try {
@@ -438,21 +447,9 @@ export async function empfehleFuerPlan(
     const plan = await lesePlan(project);
     if (!plan) return fehlschlag(`Kein Plan gefunden fuer Projekt: ${project}`);
     const alleTasks = Array.isArray(plan.tasks) ? plan.tasks : [];
-    let tasks: Array<Record<string, unknown>>;
-    if (optionen.task_ids && optionen.task_ids.length > 0) {
-      const fehlend = optionen.task_ids.filter((id) => !alleTasks.some((t) => t.id === id));
-      if (fehlend.length > 0) return fehlschlag(`Task nicht gefunden: ${fehlend.join(', ')}`);
-      tasks = optionen.task_ids.map((id) => alleTasks.find((t) => t.id === id)!);
-    } else {
-      tasks = alleTasks.filter((t) => t.status !== 'done');
-    }
-    if (tasks.length === 0) {
-      return { success: true, experimentell: true, message: 'Keine offenen Tasks im Plan, nichts zu empfehlen.', plan_id: plan.id, empfehlungen: [], geschrieben: 0 };
-    }
-    if (tasks.length > MAX_TASKS) {
-      hinweise.push(`${tasks.length} Tasks, bewertet nur die ersten ${MAX_TASKS}. Rest per task_id anfragen.`);
-      tasks = tasks.slice(0, MAX_TASKS);
-    }
+    const fehlend = taskIds.filter((id) => !alleTasks.some((t) => t.id === id));
+    if (fehlend.length > 0) return fehlschlag(`Task nicht gefunden: ${fehlend.join(', ')}`);
+    const tasks = taskIds.map((id) => alleTasks.find((t) => t.id === id)!);
 
     // --- Registry (Effort-Stufen, spawnbar) --------------------------------
     const stufenJeAlias = new Map<string, EffortStufe[]>();

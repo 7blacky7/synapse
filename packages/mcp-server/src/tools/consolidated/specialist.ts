@@ -22,7 +22,7 @@ import {
   updateSpecialistSkillTool,
   getAgentCapabilitiesTool,
 } from '../index.js';
-import { getWrapperStatus, listWrapperStatus, steuereHeartbeat, EFFORT_STUFEN } from '@synapse/core';
+import { getWrapperStatus, listWrapperStatus, steuereHeartbeat, EFFORT_STUFEN, selbstAuskunft } from '@synapse/core';
 import type { WrapperStatusRow } from '@synapse/core';
 
 export const specialistTool: ConsolidatedTool = {
@@ -35,8 +35,8 @@ export const specialistTool: ConsolidatedTool = {
       properties: {
         action: {
           type: 'string',
-          enum: ['spawn', 'spawn_batch', 'stop', 'purge', 'status', 'wake', 'update_skill', 'capabilities', 'heartbeat'],
-          description: 'Die auszuführende Aktion. spawn_batch = mehrere Spezialisten in einem Call starten (specialists-Array). purge = Stop + komplette Entfernung (FS-Verzeichnis, status.json, Channel-Memberships, Chat-Session). Auto-Respawn unmoeglich danach.',
+          enum: ['spawn', 'spawn_batch', 'stop', 'purge', 'status', 'wake', 'update_skill', 'capabilities', 'heartbeat', 'selbst'],
+          description: 'Die auszuführende Aktion. selbst = Selbstauskunft eines Spezialisten (agent_id Pflicht, project optional): Modell, Effort, Kontext, Tokens, Schwellen, Cutoff — nur aus DB/Registry, nichts geschaetzt. spawn_batch = mehrere Spezialisten in einem Call starten (specialists-Array). purge = Stop + komplette Entfernung (FS-Verzeichnis, status.json, Channel-Memberships, Chat-Session). Auto-Respawn unmoeglich danach.',
         },
 
         // spawn parameters
@@ -432,6 +432,10 @@ export const specialistTool: ConsolidatedTool = {
         const content = reqStr(args, 'content');
 
         return await updateSpecialistSkillTool(name, projectPath, section, skillAction, content, file);
+      }
+
+      case 'selbst': {
+        return await selbstAuskunft(str(args, 'agent_id'), str(args, 'project'));
       }
 
       case 'capabilities': {

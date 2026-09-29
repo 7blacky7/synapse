@@ -29,6 +29,9 @@ import {
   resolveAgentId,
   cancelShellJob,
   DETACH_AFTER_MS,
+  warteAufChannelNachricht,
+  unterbrechungsMeldung,
+  type ChannelUnterbrechung,
 } from '@synapse/core';
 
 const STREAMS_DIR = path.join(os.homedir(), '.synapse', 'shell-streams');
@@ -128,7 +131,7 @@ export const shellTool: ConsolidatedTool = {
   definition: {
     name: 'shell',
     description:
-      'Projekt-scoped Shell. AUTO-ROUTING (Default): aktiver lokaler Daemon (Heartbeat <30s) → exec via shell-queue (echtes FS, native Tools, git/sudo/GPU). Sonst → exec im Workspace-Docker-Container auf der synapse-api (isoliert, Source read-only). Antwort hat executed_via: "local"|"workspace". target:"workspace" oder isolated:true erzwingt den Container fuer isolierte Tests / Build-Sandboxing. target:"local" erzwingt Daemon. Source-Files IMMER via files-Tool editieren (Auto-Versionierung; im Workspace ist Source mode 0444). shell ist fuer install/build/test/git/etc. Actions: exec (default) | get_stream | history | get | log.',
+      'Projekt-scoped Shell. AUTO-ROUTING (Default): aktiver lokaler Daemon (Heartbeat <30s) → exec via shell-queue (echtes FS, native Tools, git/sudo/GPU). Sonst → exec im Workspace-Docker-Container auf der synapse-api (isoliert, Source read-only). Antwort hat executed_via: "local"|"workspace". target:"workspace" oder isolated:true erzwingt den Container fuer isolierte Tests / Build-Sandboxing. target:"local" erzwingt Daemon. Source-Files IMMER via files-Tool editieren (Auto-Versionierung; im Workspace ist Source mode 0444). shell ist fuer install/build/test/git/etc. Kommt waehrend des Wartens eine neue Nachricht in einem deiner Channels, kehrt exec sofort mit status \"running\" und unterbrochen_durch zurueck — der Job laeuft weiter. Actions: exec (default) | get_stream | history | get | log.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -319,12 +322,14 @@ export const shellTool: ConsolidatedTool = {
       // Prozess aber weiterlaufen. Ohne dieses Rennen wuerde der stdio-Server
       // bis zur harten Obergrenze (3 h) blockieren, weil execShellInProject
       // seit SH-1 erst beim echten Prozessende aufloest.
+      let streamId: string | undefined;
       const running = execShellInProject({
         project,
         command,
         cwd_relative: cwdRel,
         hard_limit_ms: timeoutMs,
         tail_lines: tailLines,
+        onStarted: (ctl) => { streamId = ctl.stream_id; },
       }) as Promise<Record<string, unknown>>;
 
       const detached = new Promise<Record<string, unknown>>((resolve) => {
@@ -333,8 +338,43 @@ export const shellTool: ConsolidatedTool = {
         }, DETACH_AFTER_MS);
       });
 
-      const first = await Promise.race([running, detached]);
-      if (first['__detached'] === true) {
+      // Task b5b5304a: eine neue Nachricht in einem Channel des Agenten beendet das
+      // Warten sofort. Der Prozess laeuft weiter (wie beim Abloesen).
+      const agentId = resolveAgentId(str(args, 'agent_id'));
+      const warteAbbruch = new AbortController();
+      const unterbrochen = new Promise<Record<string, unknown>>((resolve) => {
+        if (!agentId) return;
+        warteAufChannelNachricht(agentId, warteAbbruch.signal)
+          .then((u) => { if (u) resolve({ __unterbrochen: u }); })
+          .catch(() => { /* ein Hinweis darf exec nie brechen */ });
+      });
+
+      let first: Record<string, unknown>;
+      try {
+        first = await Promise.race([running, detached, unterbrochen]);
+      } finally {
+        warteAbbruch.abort();
+      }
+      if (first['__unterbrochen']) {
+        const u = first['__unterbrochen'] as ChannelUnterbrechung;
+        detachedRun = running;
+        const stand = streamId
+          ? getShellStream({ stream_id: streamId, tail_lines: tailLines, since_last_read: false })
+          : undefined;
+        result = {
+          status: 'running',
+          executed_via: 'local',
+          stream_id: streamId,
+          tail: stand?.['new_lines'],
+          unterbrochen_durch: u,
+          // Im stdio-Weg entsteht der shell_jobs-Eintrag erst beim Ende (persist), eine
+          // Job-ID fuer get/log/cancel gibt es deshalb noch nicht.
+          message: unterbrechungsMeldung(
+            u,
+            'Job laeuft weiter: Ausgabe per shell(get_stream, stream_id); Job-ID fuer shell(get|log) nach dem Ende via shell(history).',
+          ),
+        };
+      } else if (first['__detached'] === true) {
         detachedRun = running;
         result = {
           status: 'running_background',

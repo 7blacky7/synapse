@@ -20,6 +20,10 @@
 import { randomUUID } from 'node:crypto';
 import { getPool } from '../db/index.js';
 import { istTeilbar, execKeyFuer } from './shell-teilbar.js';
+import {
+  CHANNEL_NOTIFY_KANAL, pruefeUnterbrechung, unterbrechungsMeldung,
+  type ChannelUnterbrechung,
+} from './shell-channel-unterbrechung.js';
 
 export interface EnqueueArgs {
   project: string;
@@ -88,6 +92,11 @@ export interface ShellJobResult {
   error?: string;
   message?: string;
   stream_id?: string;
+  /**
+   * Gesetzt, wenn eine neue Channel-Nachricht das Warten beendet hat (Task b5b5304a).
+   * status ist dann 'running': der Job laeuft weiter, nur die Antwort kam frueher.
+   */
+  unterbrochen_durch?: ChannelUnterbrechung;
 }
 
 /**
@@ -629,14 +638,21 @@ export async function cancelShellJob(
  * REST-API-Seite: blockiert bis der Job einen terminalen Status erreicht oder
  * der Timeout ablaeuft. Nutzt PostgreSQL LISTEN/NOTIFY; initial wird der DB-
  * Zustand abgefragt (falls der Job bereits fertig ist bevor wir lauschen).
+ *
+ * Mit optionen.agentId (Task b5b5304a) lauscht derselbe Client zusaetzlich auf
+ * synapse_channel: eine fremde Nachricht in einem Channel, in dem der Agent Mitglied
+ * ist, beendet das WARTEN sofort mit status 'running' und unterbrochen_durch. Der Job
+ * selbst bleibt unberuehrt. Ohne agentId: Verhalten wie bisher.
  */
 export async function waitForShellJob(
   id: string,
   timeoutMs: number = DETACH_AFTER_MS,
+  optionen: { agentId?: string | null } = {},
 ): Promise<ShellJobResult> {
   const pool = getPool();
   const client = await pool.connect();
   const channel = doneChannelForJob(id);
+  const agentId = optionen.agentId || null;
   let notificationHandler: ((msg: { channel: string; payload?: string }) => void) | null = null;
   let timer: NodeJS.Timeout | null = null;
 
@@ -653,6 +669,7 @@ export async function waitForShellJob(
 
   try {
     await client.query(`LISTEN "${channel}"`);
+    if (agentId) await client.query(`LISTEN ${CHANNEL_NOTIFY_KANAL}`);
 
     // Race-Schutz: Job koennte bereits fertig sein bevor LISTEN aktiv wurde.
     const initial = await client.query<ShellJobRow>(
@@ -667,11 +684,24 @@ export async function waitForShellJob(
     }
 
     return await new Promise<ShellJobResult>((resolve, reject) => {
-      timer = setTimeout(() => {
+      // Genau EIN Ausgang: done-Notify, Channel-Nachricht oder Abloesegrenze.
+      let erledigt = false;
+      const beenden = (): boolean => {
+        if (erledigt) return false;
+        erledigt = true;
+        if (timer) {
+          clearTimeout(timer);
+          timer = null;
+        }
         if (notificationHandler) {
           client.removeListener('notification', notificationHandler);
           notificationHandler = null;
         }
+        return true;
+      };
+
+      timer = setTimeout(() => {
+        if (!beenden()) return;
         // Abloesegrenze erreicht (SH-1). Der Job laeuft weiter — wir hoeren nur
         // auf zu warten. Frueher kam hier der DB-Stand mit status 'timeout'
         // zurueck; das las jede KI als Fehlschlag und fuehrte dazu, dass sie
@@ -694,16 +724,27 @@ export async function waitForShellJob(
       }, timeoutMs);
 
       notificationHandler = (msg) => {
-        if (msg.channel !== channel) return;
-        if (timer) {
-          clearTimeout(timer);
-          timer = null;
+        if (erledigt) return;
+        if (msg.channel === channel) {
+          if (!beenden()) return;
+          fetchFinal().then(resolve).catch(reject);
+          return;
         }
-        if (notificationHandler) {
-          client.removeListener('notification', notificationHandler);
-          notificationHandler = null;
+        if (agentId && msg.channel === CHANNEL_NOTIFY_KANAL) {
+          void pruefeUnterbrechung(msg.payload, agentId).then((u) => {
+            if (!u || !beenden()) return;
+            fetchFinal()
+              .then((r) => {
+                // Gerade fertig geworden: das Endergebnis ist mehr wert als der Hinweis.
+                if (TERMINAL_STATUSES.includes(r.status as ShellJobRow['status'])) {
+                  resolve(r);
+                  return;
+                }
+                resolve({ ...r, status: 'running', unterbrochen_durch: u, message: unterbrechungsMeldung(u) });
+              })
+              .catch(reject);
+          });
         }
-        fetchFinal().then(resolve).catch(reject);
       };
       client.on('notification', notificationHandler);
     });
@@ -716,6 +757,7 @@ export async function waitForShellJob(
     }
     try {
       await client.query(`UNLISTEN "${channel}"`);
+      if (agentId) await client.query(`UNLISTEN ${CHANNEL_NOTIFY_KANAL}`);
     } catch {
       /* best effort */
     }

@@ -431,7 +431,7 @@ const MCP_TOOLS = [
         action: {
           type: 'string',
           enum: ['get', 'update', 'add_task', 'add_tasks_batch', 'update_task', 'delete_task', 'empfehlen'],
-          description: 'Aktion: "get" zum Abrufen, "update" zum Aktualisieren, "add_task" um eine Task hinzuzufuegen, "add_tasks_batch" um mehrere Tasks atomar hinzuzufuegen, "update_task" um eine Task zu aendern, "delete_task" um eine oder mehrere Tasks zu loeschen (id als String oder Array), "empfehlen" (EXPERIMENTELL) bewertet die offenen Tasks in EINEM Jev-Aufruf und schreibt je Task das Feld empfehlung {modell, effort, kontext 200k|1m, confidence, ...} — nur Empfehlung, kein Muss; unter dem Confidence-Tor unsicher statt Empfehlung',
+          description: 'Aktion: "get" zum Abrufen, "update" zum Aktualisieren, "add_task" um eine Task hinzuzufuegen, "add_tasks_batch" um mehrere Tasks atomar hinzuzufuegen, "update_task" um eine Task zu aendern, "delete_task" um eine oder mehrere Tasks zu loeschen (id als String oder Array), "empfehlen" (EXPERIMENTELL) bewertet die per task_id (PFLICHT) genannten Tasks in EINEM Jev-Aufruf und schreibt je Task das Feld empfehlung {modell, effort, kontext 200k|1m, confidence, ...} — nur Empfehlung, kein Muss; unter dem Confidence-Tor unsicher statt Empfehlung',
         },
         project: { type: 'string', description: 'Projekt-Name' },
         agent_id: { type: 'string', description: 'Agent-ID fuer Onboarding. Neue Agenten sehen automatisch Projekt-Regeln.' },
@@ -461,7 +461,7 @@ const MCP_TOOLS = [
             { type: 'string' },
             { type: 'array', items: { type: 'string' }, minItems: 1, maxItems: 50 },
           ],
-          description: 'Task-ID (String fuer update_task/delete_task, Array fuer Batch-delete_task; bei empfehlen: nur diese Task(s), sonst alle nicht erledigten)',
+          description: 'Task-ID (String fuer update_task/delete_task, Array fuer Batch-delete_task; bei empfehlen: PFLICHT, genau diese Task(s), hoechstens 50 — ohne task_id gibt es einen Fehler)',
         },
         status: {
           type: 'string',
@@ -718,8 +718,8 @@ const MCP_TOOLS = [
       properties: {
         action: {
           type: 'string',
-          enum: ['spawn', 'spawn_batch', 'stop', 'purge', 'status', 'wake', 'update_skill', 'capabilities', 'heartbeat'],
-          description: 'Die auszufuehrende Aktion',
+          enum: ['spawn', 'spawn_batch', 'stop', 'purge', 'status', 'wake', 'update_skill', 'capabilities', 'heartbeat', 'selbst'],
+          description: 'Die auszufuehrende Aktion. selbst = Selbstauskunft eines Spezialisten (agent_id Pflicht, project optional): Modell, Effort, Kontext, Tokens, Schwellen, Cutoff — nur aus DB/Registry, nichts geschaetzt.',
         },
         name: {
           oneOf: [
@@ -1101,7 +1101,7 @@ const MCP_TOOLS = [
   // 16. shell
   {
     name: 'shell',
-    description: 'Shell-Kommando im Projekt-Verzeichnis ausfuehren. AUTO-ROUTING (Default): laeuft ein lokaler FileWatcher-Daemon (frischer Heartbeat <30s) → Job geht via shell-queue an den Daemon (echtes FS, native Tools, git/sudo/GPU verfuegbar). Sonst → exec im Workspace-Docker-Container auf der synapse-api (isoliert, Source read-only). Antwort enthaelt executed_via: "local"|"workspace" damit die KI sieht wo es lief. EXPLIZIT erzwingen: isolated:true (oder target:"workspace") zwingt Container — sinnvoll fuer isolierte Tests, Build-Sandboxing, dependency-Experimente. target:"local" zwingt Daemon (Error wenn keiner aktiv). cwd ist auf das Projekt-Root + optional cwd_relative beschraenkt. WICHTIG: Source-Files in beiden Modi via files-Tool editieren (Auto-Versionierung; im Workspace ist Source mode 0444). shell ist fuer install/build/test/git/etc.',
+    description: 'Shell-Kommando im Projekt-Verzeichnis ausfuehren. AUTO-ROUTING (Default): laeuft ein lokaler FileWatcher-Daemon (frischer Heartbeat <30s) → Job geht via shell-queue an den Daemon (echtes FS, native Tools, git/sudo/GPU verfuegbar). Sonst → exec im Workspace-Docker-Container auf der synapse-api (isoliert, Source read-only). Antwort enthaelt executed_via: "local"|"workspace" damit die KI sieht wo es lief. EXPLIZIT erzwingen: isolated:true (oder target:"workspace") zwingt Container — sinnvoll fuer isolierte Tests, Build-Sandboxing, dependency-Experimente. target:"local" zwingt Daemon (Error wenn keiner aktiv). cwd ist auf das Projekt-Root + optional cwd_relative beschraenkt. WICHTIG: Source-Files in beiden Modi via files-Tool editieren (Auto-Versionierung; im Workspace ist Source mode 0444). shell ist fuer install/build/test/git/etc. Kommt waehrend des Wartens eine neue Nachricht in einem deiner Channels, kehrt exec sofort mit status "running" und unterbrochen_durch zurueck — der Job laeuft weiter (shell(get|log, id) oder shell(cancel, id)).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -3494,6 +3494,12 @@ async function handleToolCall(
       // projects-Tabelle = registrierte Daemons je hostname.
       // wrapper_status-Tabelle = aktive Spezialisten (running/idle).
       // model_registry = welche Modelle SUPPORTED sind (unabhaengig davon was aktuell laeuft).
+      // Selbstauskunft: nur DB/Registry, keine Queue (Channel 23092)
+      if (action === 'selbst') {
+        const { selbstAuskunft } = await import('@synapse/core');
+        return await selbstAuskunft(str(args, 'agent_id'), str(args, 'project'));
+      }
+
       if (action === 'capabilities') {
         const pool = getPool();
         const [hostsRes, wrappersRes, modelsRes] = await Promise.all([
@@ -5043,7 +5049,9 @@ async function handleToolCall(
       // SH-1: Wir warten nur bis zur Abloesegrenze. Danach kehrt der Call mit
       // status 'running_background' zurueck — der Job laeuft weiter und das
       // Ergebnis wird vollstaendig nach PG geschrieben (shell(get)/shell(log)).
-      const result = await waitForShellJob(id, DETACH_AFTER_MS);
+      // Task b5b5304a: eine neue Nachricht in einem Channel des Agenten beendet das Warten
+      // sofort (status 'running', unterbrochen_durch) — der Job laeuft weiter.
+      const result = await waitForShellJob(id, DETACH_AFTER_MS, { agentId: resolveAgentId(str(args, 'agent_id')) });
 
       return {
         success: !result.error,
@@ -5058,9 +5066,12 @@ async function handleToolCall(
         // Lauf gestartet wurde — die haette das Job-Ergebnis sonst ueberschrieben.
         // Bei attached/reused erklaert die Meldung aus enqueue, WARUM kein
         // eigener Lauf stattfand — sonst haelt der Agent das Ergebnis fuer seines.
-        message: (attached || reused) ? anhaengMeldung : result.message,
+        message: result.unterbrochen_durch
+          ? [result.message, (attached || reused) ? anhaengMeldung : undefined].filter(Boolean).join(' ')
+          : (attached || reused) ? anhaengMeldung : result.message,
         ...(attached ? { attached: true, attached_to } : {}),
         ...(reused ? { reused: true } : {}),
+        ...(result.unterbrochen_durch ? { unterbrochen_durch: result.unterbrochen_durch } : {}),
       };
     }
 

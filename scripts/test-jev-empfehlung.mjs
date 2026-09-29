@@ -174,6 +174,10 @@ const core = await import('../packages/core/dist/index.js');
 const katalog = await import('../packages/core/dist/services/jev-criteria-katalog.js');
 const QUELLE = '/home/blacky/dev/JEV-Test/daten/modellwahl_criteria.json';
 const M = katalog.MODELLWAHL_CRITERIA.modelle;
+/** task_id ist Pflicht (Channel 23092): die Tests nennen die offenen Tasks ausdruecklich. */
+const OFFEN = ['t1', 't2', 't3'];
+const empf = (projekt, opt = {}, d) => jev.empfehleFuerPlan(projekt, { task_ids: OFFEN, ...opt }, d);
+
 const ABOS = ['fable', 'gpt-5.6-luna', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-6-astra', 'haiku', 'opus', 'sonnet'];
 const CLAUDE = ['fable', 'haiku', 'opus', 'sonnet'];
 
@@ -194,7 +198,7 @@ await pruefe('Katalog: Kopie in synapse == JEV-Test-Quelle (sonst Kopie nachzieh
 
 await pruefe('Katalog: Modell-Choice je Kandidat, Stufen-Choice mit den Texten der Quelle', async () => {
   reset();
-  await jev.empfehleFuerPlan('testprojekt', { kandidaten: 'alle', lage: { paid_api: 'allowed' }, schreiben: false }, deps());
+  await empf('testprojekt', { kandidaten: 'alle', lage: { paid_api: 'allowed' }, schreiben: false }, deps());
   const f = q();
   assert.deepEqual(keys(f.model_0), [...ABOS, 'gemini-3.5-flash-lite', 'gemini-3.8-flash'].sort());
   assert.equal(f.model_0.criteria.haiku, M['claude-haiku-4-5'].stufen.default, 'Modell mit einer Stufe: deren Text');
@@ -211,7 +215,7 @@ await pruefe('Katalog: Modell-Choice je Kandidat, Stufen-Choice mit den Texten d
 
 await pruefe('Katalog: nur Stufen aus criteria UND Registry (kein opus max, kein sonnet xhigh)', async () => {
   reset();
-  await jev.empfehleFuerPlan('testprojekt', { kandidaten: ['opus', 'sonnet'], schreiben: false }, deps());
+  await empf('testprojekt', { kandidaten: ['opus', 'sonnet'], schreiben: false }, deps());
   assert.deepEqual(keys(q().effort_0_opus), ['high', 'low', 'medium', 'xhigh']);
   assert.deepEqual(keys(q().effort_0_sonnet), ['high', 'low', 'max', 'medium']);
 });
@@ -224,23 +228,23 @@ await pruefe('Katalog: Gruppennamen der Quelle (claude-abo, codex-abo, gemini-ap
 
 await pruefe('lage: im Zustand nur das Kontingent der angefragten Familien (Standard: nur claude_quota)', async () => {
   reset();
-  let r = await jev.empfehleFuerPlan('testprojekt', { schreiben: false }, deps());
+  let r = await empf('testprojekt', { schreiben: false }, deps());
   assert.deepEqual(fetchAufrufe[0].body.state.situation, { claude_quota: 'plenty' });
   assert.deepEqual(r.lage, { claude_quota: 'plenty', codex_quota: 'plenty', paid_api: 'not allowed' }, 'Ergebnis nennt die volle Lage');
   reset();
-  await jev.empfehleFuerPlan('testprojekt', { kandidaten: 'abos', lage: { codex_quota: 'low' }, schreiben: false }, deps());
+  await empf('testprojekt', { kandidaten: 'abos', lage: { codex_quota: 'low' }, schreiben: false }, deps());
   assert.deepEqual(fetchAufrufe[0].body.state.situation, { claude_quota: 'plenty', codex_quota: 'low' });
   reset();
-  await jev.empfehleFuerPlan('testprojekt', { kandidaten: 'alle', lage: { paid_api: 'allowed' }, schreiben: false }, deps());
+  await empf('testprojekt', { kandidaten: 'alle', lage: { paid_api: 'allowed' }, schreiben: false }, deps());
   assert.deepEqual(fetchAufrufe[0].body.state.situation, { claude_quota: 'plenty', codex_quota: 'plenty', paid_api: 'allowed' });
   reset();
-  await jev.empfehleFuerPlan('testprojekt', { kandidaten: 'codex', schreiben: false }, deps());
+  await empf('testprojekt', { kandidaten: 'codex', schreiben: false }, deps());
   assert.deepEqual(fetchAufrufe[0].body.state.situation, { codex_quota: 'plenty' });
 });
 
 await pruefe('lage: claude_quota exhausted -> keine Claude-Modelle; paid_api not allowed -> kein Gemini (Hinweis)', async () => {
   reset();
-  const r = await jev.empfehleFuerPlan('testprojekt', { kandidaten: 'alle', lage: { claude_quota: 'exhausted' }, schreiben: false }, deps());
+  const r = await empf('testprojekt', { kandidaten: 'alle', lage: { claude_quota: 'exhausted' }, schreiben: false }, deps());
   assert.equal(r.success, true, r.message);
   assert.deepEqual(keys(q().model_0), ['gpt-5.6-luna', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-6-astra']);
   assert.ok(r.hinweise.some((h) => /claude_quota/.test(h)), JSON.stringify(r.hinweise));
@@ -249,10 +253,10 @@ await pruefe('lage: claude_quota exhausted -> keine Claude-Modelle; paid_api not
 
 await pruefe('lage: ungueltiger Wert -> Fehler mit erlaubten Werten, kein fetch; alles vorgefiltert -> Fehler', async () => {
   reset();
-  let r = await jev.empfehleFuerPlan('testprojekt', { lage: { claude_quota: 'viel' } }, deps());
+  let r = await empf('testprojekt', { lage: { claude_quota: 'viel' } }, deps());
   assert.equal(r.success, false);
   assert.match(r.message, /plenty/);
-  r = await jev.empfehleFuerPlan('testprojekt', { kandidaten: 'google' }, deps());
+  r = await empf('testprojekt', { kandidaten: 'google' }, deps());
   assert.equal(r.success, false);
   assert.match(r.message, /paid_api/);
   assert.equal(fetchAufrufe.length, 0);
@@ -260,11 +264,11 @@ await pruefe('lage: ungueltiger Wert -> Fehler mit erlaubten Werten, kein fetch;
 
 await pruefe('Keine Kappung: abos bietet alle 8 Modelle an; max_optionen kappt nur die Modell-Choice (mit Hinweis)', async () => {
   reset();
-  let r = await jev.empfehleFuerPlan('testprojekt', { kandidaten: 'abos', schreiben: false }, deps());
+  let r = await empf('testprojekt', { kandidaten: 'abos', schreiben: false }, deps());
   assert.deepEqual(keys(q().model_0), ABOS);
   assert.deepEqual(r.ausgelassen, []);
   reset();
-  r = await jev.empfehleFuerPlan('testprojekt', { kandidaten: 'abos', max_optionen: 3, schreiben: false }, deps());
+  r = await empf('testprojekt', { kandidaten: 'abos', max_optionen: 3, schreiben: false }, deps());
   assert.equal(keys(q().model_0).length, 3);
   assert.equal(r.ausgelassen.length, 5);
   assert.ok(r.hinweise.some((h) => /max_optionen/.test(h)));
@@ -278,7 +282,7 @@ await pruefe('Keine Kappung: abos bietet alle 8 Modelle an; max_optionen kappt n
 await pruefe('Key fehlt: klare Meldung "Jev nicht konfiguriert", kein fetch, kein Absturz', async () => {
   reset();
   delete process.env.JEV_OPENROUTER_API_KEY;
-  const r = await jev.empfehleFuerPlan('testprojekt', {}, deps());
+  const r = await empf('testprojekt', {}, deps());
   assert.equal(r.success, false);
   assert.match(r.message, /Jev nicht konfiguriert/);
   assert.match(r.message, /JEV_OPENROUTER_API_KEY/);
@@ -291,7 +295,7 @@ await pruefe('Key fehlt: klare Meldung "Jev nicht konfiguriert", kein fetch, kei
 // ---------------------------------------------------------------------------
 await pruefe('Request: EIN Aufruf fuer alle offenen Tasks, Standard-URL/-Modell, Bearer-Key, Fragen/Tokens gemeldet', async () => {
   reset();
-  const r = await jev.empfehleFuerPlan('testprojekt', { schreiben: false }, deps());
+  const r = await empf('testprojekt', { schreiben: false }, deps());
   assert.equal(r.success, true, r.message);
   assert.equal(fetchAufrufe.length, 1);
   const { url, init, body } = fetchAufrufe[0];
@@ -313,7 +317,7 @@ await pruefe('Request: EIN Aufruf fuer alle offenen Tasks, Standard-URL/-Modell,
 
 await pruefe('Request: englische Anweisungen je Frage mit Tasknummer, Zustand mit Plan und Tasks', async () => {
   reset();
-  await jev.empfehleFuerPlan('testprojekt', { schreiben: false }, deps());
+  await empf('testprojekt', { schreiben: false }, deps());
   const { body } = fetchAufrufe[0];
   for (const [name, frage] of Object.entries(body.questions)) {
     const i = /_(\d+)/.exec(name)[1];
@@ -332,7 +336,7 @@ await pruefe('Request: englische Anweisungen je Frage mit Tasknummer, Zustand mi
 
 await pruefe('Request: stakes/previous_attempt je Task nur mit gueltigem Wert im Zustand', async () => {
   reset();
-  const r = await jev.empfehleFuerPlan('testprojekt', { schreiben: false }, deps());
+  const r = await empf('testprojekt', { schreiben: false }, deps());
   const t = fetchAufrufe[0].body.state.tasks;
   assert.equal(t[0].stakes, undefined);
   assert.equal(t[1].stakes, 'critical');
@@ -346,7 +350,7 @@ await pruefe('Request: task_id waehlt einzelne Tasks, JEV_API_URL/JEV_MODELL ueb
   process.env.JEV_API_URL = 'https://beispiel.invalid/systemone';
   process.env.JEV_MODELL = 'jev-latest';
   try {
-    const r = await jev.empfehleFuerPlan('testprojekt', { task_ids: ['t3'], schreiben: false }, deps());
+    const r = await empf('testprojekt', { task_ids: ['t3'], schreiben: false }, deps());
     assert.equal(r.success, true, r.message);
     assert.equal(fetchAufrufe[0].url, 'https://beispiel.invalid/systemone');
     assert.equal(fetchAufrufe[0].body.model, 'jev-latest');
@@ -358,9 +362,37 @@ await pruefe('Request: task_id waehlt einzelne Tasks, JEV_API_URL/JEV_MODELL ueb
   }
 });
 
+await pruefe('Request: ohne task_id -> klarer Fehler, kein fetch, nichts geschrieben (auch [] und undefined)', async () => {
+  for (const ohne of [{}, { task_ids: [] }, { task_ids: undefined }]) {
+    reset();
+    const r = await jev.empfehleFuerPlan('testprojekt', ohne, deps());
+    assert.equal(r.success, false, JSON.stringify(ohne));
+    assert.match(r.message, /task_id/);
+    assert.match(r.message, /Pflicht/);
+    assert.equal(fetchAufrufe.length, 0);
+    assert.equal(updates.length, 0);
+  }
+});
+
+await pruefe('Request: ausdruecklich genannte erledigte Task wird bewertet', async () => {
+  reset();
+  const r = await empf('testprojekt', { task_ids: ['t4'], schreiben: false }, deps());
+  assert.equal(r.success, true, r.message);
+  assert.deepEqual(r.empfehlungen.map((e) => e.task_id), ['t4']);
+});
+
+await pruefe('Request: mehr als 50 task_id -> Fehler', async () => {
+  reset();
+  const viele = Array.from({ length: 51 }, (_, i) => `x${i}`);
+  const r = await empf('testprojekt', { task_ids: viele }, deps());
+  assert.equal(r.success, false);
+  assert.match(r.message, /hoechstens 50 task_id/);
+  assert.equal(fetchAufrufe.length, 0);
+});
+
 await pruefe('Request: unbekannte task_id -> Fehler, kein fetch', async () => {
   reset();
-  const r = await jev.empfehleFuerPlan('testprojekt', { task_ids: ['gibt-es-nicht'] }, deps());
+  const r = await empf('testprojekt', { task_ids: ['gibt-es-nicht'] }, deps());
   assert.equal(r.success, false);
   assert.match(r.message, /gibt-es-nicht/);
   assert.equal(fetchAufrufe.length, 0);
@@ -389,7 +421,7 @@ await pruefe('Kandidaten: Gruppen google/codex, Mischung aus Alias und Gruppe, D
 await pruefe('Kandidaten: Unbekanntes -> Fehler mit erlaubten Werten; im Service success:false ohne fetch', async () => {
   assert.throws(() => jev.loeseKandidatenAuf(['opus', 'gpt-99']), (e) => /gpt-99/.test(e.message) && /abos/.test(e.message) && /alle/.test(e.message) && /opus/.test(e.message));
   reset();
-  const r = await jev.empfehleFuerPlan('testprojekt', { kandidaten: 'quatsch' }, deps());
+  const r = await empf('testprojekt', { kandidaten: 'quatsch' }, deps());
   assert.equal(r.success, false);
   assert.match(r.message, /quatsch/);
   assert.equal(fetchAufrufe.length, 0);
@@ -398,7 +430,7 @@ await pruefe('Kandidaten: Unbekanntes -> Fehler mit erlaubten Werten; im Service
 await pruefe('Kandidaten: Codex-Empfehlung ist spawnbar:false, Claude spawnbar:true', async () => {
   reset();
   antwortFuer = antworten({ 0: { modell: 'gpt-5.6-luna', effort: 'xhigh' }, 1: { modell: 'sonnet', effort: 'medium' } });
-  const r = await jev.empfehleFuerPlan('testprojekt', { kandidaten: ['codex', 'sonnet'], schreiben: false }, deps());
+  const r = await empf('testprojekt', { kandidaten: ['codex', 'sonnet'], schreiben: false }, deps());
   assert.equal(r.success, true, r.message);
   const [e0, e1] = r.empfehlungen.map((e) => e.empfehlung);
   assert.equal(e0.modell, 'gpt-5.6-luna');
@@ -416,7 +448,7 @@ await pruefe('Kandidaten: Codex-Empfehlung ist spawnbar:false, Claude spawnbar:t
 await pruefe('Stufe: gewertet wird die Stufen-Frage des GEWAEHLTEN Modells', async () => {
   reset();
   antwortFuer = antworten({ 0: { modell: 'sonnet', efforts: { opus: 'low', sonnet: 'max' } } });
-  const r = await jev.empfehleFuerPlan('testprojekt', { kandidaten: ['opus', 'sonnet'], task_ids: ['t1'], schreiben: false }, deps());
+  const r = await empf('testprojekt', { kandidaten: ['opus', 'sonnet'], task_ids: ['t1'], schreiben: false }, deps());
   const e = r.empfehlungen[0].empfehlung;
   assert.equal(e.modell, 'sonnet');
   assert.equal(e.effort, 'max');
@@ -426,7 +458,7 @@ await pruefe('Stufe: gewertet wird die Stufen-Frage des GEWAEHLTEN Modells', asy
 await pruefe('Stufe: haiku ohne Effort-Frage, Empfehlung effort null (einzige_option)', async () => {
   reset();
   antwortFuer = antworten({ 0: { modell: 'haiku' } });
-  const r = await jev.empfehleFuerPlan('testprojekt', { kandidaten: ['haiku', 'sonnet'], task_ids: ['t1'], schreiben: false }, deps());
+  const r = await empf('testprojekt', { kandidaten: ['haiku', 'sonnet'], task_ids: ['t1'], schreiben: false }, deps());
   assert.equal(q().effort_0_haiku, undefined);
   const e = r.empfehlungen[0].empfehlung;
   assert.equal(e.modell, 'haiku');
@@ -437,7 +469,7 @@ await pruefe('Stufe: haiku ohne Effort-Frage, Empfehlung effort null (einzige_op
 await pruefe('Stufe: opus-4.6 ohne xhigh (Registry) -> nur medium, keine Frage; opus behaelt xhigh', async () => {
   reset();
   antwortFuer = antworten({ 0: { modell: 'opus-4.6' } });
-  const r = await jev.empfehleFuerPlan('testprojekt', { kandidaten: ['opus-4.6', 'opus'], task_ids: ['t1'], schreiben: false }, deps());
+  const r = await empf('testprojekt', { kandidaten: ['opus-4.6', 'opus'], task_ids: ['t1'], schreiben: false }, deps());
   assert.equal(q().effort_0_opus_4_6, undefined);
   assert.ok(keys(q().effort_0_opus).includes('xhigh'));
   const e = r.empfehlungen[0].empfehlung;
@@ -449,13 +481,13 @@ await pruefe('Stufe: opus-4.6 ohne xhigh (Registry) -> nur medium, keine Frage; 
 await pruefe('Stufe: datengetrieben — ohne xhigh in der Registry keine xhigh-Option fuer opus', async () => {
   reset();
   registry = registry.map((m) => (m.alias === 'opus' ? { ...m, effortStufen: OHNE_XHIGH } : m));
-  await jev.empfehleFuerPlan('testprojekt', { kandidaten: ['opus', 'haiku'], schreiben: false }, deps());
+  await empf('testprojekt', { kandidaten: ['opus', 'haiku'], schreiben: false }, deps());
   assert.deepEqual(keys(q().effort_0_opus), ['high', 'low', 'medium']);
 });
 
 await pruefe('Einzige Option: ein Kandidat mit einer Stufe -> keine Choice, Confidence 1.0, Vermerk einzige_option', async () => {
   reset();
-  const r = await jev.empfehleFuerPlan('testprojekt', { kandidaten: ['fable'], schreiben: false }, deps());
+  const r = await empf('testprojekt', { kandidaten: ['fable'], schreiben: false }, deps());
   assert.deepEqual(Object.keys(q()).sort(), ['langer_kontext_0', 'langer_kontext_1', 'langer_kontext_2']);
   const e = r.empfehlungen[0].empfehlung;
   assert.equal(e.modell, 'fable');
@@ -471,7 +503,7 @@ await pruefe('Einzige Option: ein Kandidat mit einer Stufe -> keine Choice, Conf
 await pruefe('Confidence-Tor: Modell unter 0.5 -> unsicher mit bester_vorschlag, darueber Empfehlung', async () => {
   reset();
   antwortFuer = antworten({ 0: { modell: 'haiku', conf: 0.3 }, 1: { modell: 'sonnet', effort: 'medium', conf: 0.8 } });
-  const r = await jev.empfehleFuerPlan('testprojekt', { schreiben: false }, deps());
+  const r = await empf('testprojekt', { schreiben: false }, deps());
   const [e0, e1] = r.empfehlungen.map((e) => e.empfehlung);
   assert.equal(e0.unsicher, true);
   assert.equal(e0.bester_vorschlag.modell, 'haiku');
@@ -487,7 +519,7 @@ await pruefe('Confidence-Tor: Modell unter 0.5 -> unsicher mit bester_vorschlag,
 await pruefe('Confidence-Tor: unsichere Stufe -> Empfehlung bleibt, effort_unsicher markiert', async () => {
   reset();
   antwortFuer = antworten({ 0: { modell: 'opus', effort: 'high', conf: 0.9, effConf: 0.2 } });
-  const r = await jev.empfehleFuerPlan('testprojekt', { task_ids: ['t1'], schreiben: false }, deps());
+  const r = await empf('testprojekt', { task_ids: ['t1'], schreiben: false }, deps());
   const e = r.empfehlungen[0].empfehlung;
   assert.equal(e.modell, 'opus');
   assert.equal(e.effort, 'high');
@@ -498,12 +530,12 @@ await pruefe('Confidence-Tor: unsichere Stufe -> Empfehlung bleibt, effort_unsic
 await pruefe('Confidence-Tor: konfigurierbar (Parameter und JEV_CONFIDENCE_TOR)', async () => {
   reset();
   antwortFuer = antworten({ 0: { modell: 'haiku', conf: 0.8 } });
-  let r = await jev.empfehleFuerPlan('testprojekt', { task_ids: ['t1'], confidence_tor: 0.9, schreiben: false }, deps());
+  let r = await empf('testprojekt', { task_ids: ['t1'], confidence_tor: 0.9, schreiben: false }, deps());
   assert.equal(r.empfehlungen[0].empfehlung.unsicher, true);
   reset();
   antwortFuer = antworten({ 0: { modell: 'haiku', conf: 0.8 } });
   process.env.JEV_CONFIDENCE_TOR = '0.85';
-  r = await jev.empfehleFuerPlan('testprojekt', { task_ids: ['t1'], schreiben: false }, deps());
+  r = await empf('testprojekt', { task_ids: ['t1'], schreiben: false }, deps());
   assert.equal(r.empfehlungen[0].empfehlung.unsicher, true);
   assert.equal(r.confidence_tor, 0.85);
 });
@@ -511,7 +543,7 @@ await pruefe('Confidence-Tor: konfigurierbar (Parameter und JEV_CONFIDENCE_TOR)'
 await pruefe('Kontext: P(langer Kontext) >= 0.5 -> 1m mit spawn_alias opus[1m], sonst 200k', async () => {
   reset();
   antwortFuer = antworten({ 0: { effort: 'xhigh', p: 0.8 }, 1: { effort: 'medium', p: 0.2 } });
-  const r = await jev.empfehleFuerPlan('testprojekt', { kandidaten: ['opus'], schreiben: false }, deps());
+  const r = await empf('testprojekt', { kandidaten: ['opus'], schreiben: false }, deps());
   assert.equal(q().model_0, undefined, 'ein Kandidat: keine Modell-Frage');
   const [e0, e1] = r.empfehlungen.map((e) => e.empfehlung);
   assert.equal(e0.modell, 'opus');
@@ -534,7 +566,7 @@ await pruefe('wiederverwenden: idle opus[1m]-Spezialist wird fuer opus genannt, 
     { agentName: 'opus-kollege', model: 'opus[1m]', status: 'idle', busy: false },
   ];
   antwortFuer = antworten({ 0: { modell: 'opus', effort: 'medium' }, 1: { modell: 'haiku' } });
-  const r = await jev.empfehleFuerPlan('testprojekt', { schreiben: false }, deps());
+  const r = await empf('testprojekt', { schreiben: false }, deps());
   const [e0, e1] = r.empfehlungen.map((e) => e.empfehlung);
   assert.equal(e0.wiederverwenden, 'opus-kollege');
   assert.equal(e1.wiederverwenden, null);
@@ -549,7 +581,7 @@ await pruefe('Timeout: saubere Meldung, nichts geschrieben, Key nicht im Ergebni
   const haengt = (url, init) => new Promise((_, reject) => {
     init.signal.addEventListener('abort', () => reject(Object.assign(new Error('This operation was aborted'), { name: 'AbortError' })));
   });
-  const r = await jev.empfehleFuerPlan('testprojekt', {}, { ...deps(), fetch: haengt });
+  const r = await empf('testprojekt', {}, { ...deps(), fetch: haengt });
   assert.equal(r.success, false);
   assert.match(r.message, /Timeout/);
   assert.equal(updates.length, 0);
@@ -559,7 +591,7 @@ await pruefe('Timeout: saubere Meldung, nichts geschrieben, Key nicht im Ergebni
 await pruefe('HTTP-Fehler: Status in der Meldung, nichts geschrieben, Key nicht im Ergebnis', async () => {
   reset();
   const kaputt = async () => new Response('{"error":{"message":"Upstream kaputt"}}', { status: 502 });
-  const r = await jev.empfehleFuerPlan('testprojekt', {}, { ...deps(), fetch: kaputt });
+  const r = await empf('testprojekt', {}, { ...deps(), fetch: kaputt });
   assert.equal(r.success, false);
   assert.match(r.message, /HTTP 502/);
   assert.equal(updates.length, 0);
@@ -569,14 +601,14 @@ await pruefe('HTTP-Fehler: Status in der Meldung, nichts geschrieben, Key nicht 
 await pruefe('Netzfehler: saubere Meldung', async () => {
   reset();
   const weg = async () => { throw new TypeError('fetch failed'); };
-  const r = await jev.empfehleFuerPlan('testprojekt', {}, { ...deps(), fetch: weg });
+  const r = await empf('testprojekt', {}, { ...deps(), fetch: weg });
   assert.equal(r.success, false);
   assert.match(r.message, /fetch failed/);
 });
 
 await pruefe('Kein Plan: saubere Meldung, kein fetch', async () => {
   reset();
-  const r = await jev.empfehleFuerPlan('anderes-projekt', {}, deps());
+  const r = await empf('anderes-projekt', {}, deps());
   assert.equal(r.success, false);
   assert.match(r.message, /Kein Plan/);
   assert.equal(fetchAufrufe.length, 0);
@@ -589,7 +621,7 @@ await pruefe('Schreiben: nur empfehlung je bewerteter Task, alle anderen Felder 
   reset();
   const vorher = structuredClone(planZeile.tasks);
   antwortFuer = antworten({ 0: { modell: 'haiku' }, 1: { modell: 'sonnet', effort: 'medium' }, 2: { modell: 'opus', effort: 'xhigh', p: 0.9 } });
-  const r = await jev.empfehleFuerPlan('testprojekt', {}, deps());
+  const r = await empf('testprojekt', {}, deps());
   assert.equal(r.success, true, r.message);
   assert.equal(r.geschrieben, 3);
   assert.equal(updates.length, 1);
@@ -612,7 +644,7 @@ await pruefe('Schreiben: nur empfehlung je bewerteter Task, alle anderen Felder 
 await pruefe('Schreiben: schreiben:false aendert nichts', async () => {
   reset();
   const vorher = structuredClone(planZeile.tasks);
-  const r = await jev.empfehleFuerPlan('testprojekt', { schreiben: false }, deps());
+  const r = await empf('testprojekt', { schreiben: false }, deps());
   assert.equal(r.success, true);
   assert.equal(r.geschrieben, 0);
   assert.equal(updates.length, 0);
@@ -633,7 +665,7 @@ await pruefe('Schreiben: gleichzeitige Aenderung der Tasks -> neu gelesen, fremd
     return origQuery.call(this, sql, params);
   };
   try {
-    const r = await jev.empfehleFuerPlan('testprojekt', {}, deps());
+    const r = await empf('testprojekt', {}, deps());
     assert.equal(r.success, true, r.message);
     assert.equal(planZeile.tasks[1].vonAnderen, true);
     assert.equal(planZeile.tasks[1].status, 'done');

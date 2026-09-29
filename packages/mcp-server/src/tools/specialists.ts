@@ -200,6 +200,7 @@ export async function spawnSpecialistTool(
     cwd,
     channel,
     allowedTools,
+    effort: effortWirksam,
   };
   let systemPrompt = buildSpecialistPrompt(config, skill);
 
