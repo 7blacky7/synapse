@@ -1338,9 +1338,6 @@ VALUES
   -- agy-CLI: Pro-Abo via Keyring, KEIN API-Key (env_required leer), provider 'antigravity' (getrennt von 'google')
   ('antigravity',       'agy-1.0.2',                      'antigravity', 1000000, ARRAY[]::TEXT[],         'node',   '@synapse/agents-antigravity/runtime', 95, 99, NULL,  NULL,  NULL,  NULL, NULL)
 ON CONFLICT (alias) DO NOTHING;
-  -- agy-CLI: Pro-Abo via Keyring, KEIN API-Key (env_required leer), provider 'antigravity' (getrennt von 'google')
-  ('antigravity',       'agy-1.0.2',                      'antigravity', 1000000, ARRAY[]::TEXT[],         'node',   '@synapse/agents-antigravity/runtime', 95, 99, NULL,  NULL,  NULL,  NULL)
-ON CONFLICT (alias) DO NOTHING;
 
 -- ==========================================================================
 -- model_cutoffs: Wissensstand (knowledge cutoff) je Modell-ID, datengetrieben.
