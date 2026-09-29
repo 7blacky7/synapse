@@ -263,6 +263,23 @@ export interface OpPreview {
   error?: string;
   /** Nur im Rueckzugsprotokoll: der Plan, aus dem diese Op zurueckgezogen wurde. */
   withdrawn_from?: string;
+  /** Nur an committeten Plaenen (V2 ohne Grenze): was diese Op auf ihrer Datei ersetzt hat. */
+  zeilen?: ZeilenSplice;
+}
+
+/**
+ * V2 ohne Grenze (29.09.2026): exakter Zeilen-Spleiss einer Op beim commit. Die Op hat im Puffer
+ * ihrer Datei (in Anwende-Reihenfolge seq) ab Zeile start (0-basiert) weg Zeilen durch neu Zeilen
+ * ersetzt; vorher = Zeilenzahl davor, nach = content_hash der Datei nach dem ganzen commit. Aus
+ * diesen Spleissen rechnet ein spaeter Beitrag seine Zeilen um — O(Ops), ohne Obergrenze.
+ */
+export interface ZeilenSplice {
+  seq: number;
+  start: number;
+  weg: number;
+  neu: number;
+  vorher: number;
+  nach?: string;
 }
 
 /** Rueckzug eigener Ops aus einem gemeinsamen Plan — nichts wird geloescht, nur markiert. */
@@ -860,6 +877,48 @@ function applyOpInMemory(
   }
 }
 
+/**
+ * V2 ohne Grenze: wendet eine Op an wie applyOpInMemory und liefert dazu ihren exakten Zeilen-Spleiss.
+ * Zeilen-Ops: Bereich direkt aus der Op. Inhalts-Ops (create/update/search_replace/delete/move):
+ * gemeinsamer Anfang und gemeinsames Ende von vorher/nachher — genau der Bereich, den die Op
+ * ersetzt hat. Nur im commit (Inhalts-Ops kosten hier je ein Zeilen-Split).
+ */
+function applyOpMitZeilen(
+  buffers: Map<string, PreparedFile>,
+  op: FileBatchOp,
+  isFirstOpOnFile: boolean,
+  seq: number,
+): { context: string; sizeBefore: number; sizeAfter: number; zeilen?: ZeilenSplice } {
+  const src = buffers.get(op.file_path);
+  const zeilenOp = op.action === 'replace_lines' || op.action === 'insert_after' || op.action === 'delete_lines';
+  // Bei Zeilen-Ops wird das Array in-place gespleisst: nur die Laenge vorher merken.
+  const vorherZeilen = src && !src.deleted ? src.getLines() : null;
+  const vorher = vorherZeilen ? vorherZeilen.length : 0;
+  const start = op.action === 'insert_after' ? (op.after_line ?? 0) : (op.line_start ?? 1) - 1;
+  const weg = op.action === 'insert_after' ? 0 : (op.line_end ?? 0) - (op.line_start ?? 0) + 1;
+  const result = applyOpInMemory(buffers, op, isFirstOpOnFile);
+  if (!src || op.action === 'copy') return result;
+  const nachher = src.deleted ? [] : src.getLines();
+  if (zeilenOp) return { ...result, zeilen: { seq, start, weg, neu: nachher.length - vorher + weg, vorher } };
+  const alt = vorherZeilen ?? [];
+  const min = Math.min(alt.length, nachher.length);
+  let p = 0;
+  while (p < min && alt[p] === nachher[p]) p++;
+  let s = 0;
+  while (s < min - p && alt[alt.length - 1 - s] === nachher[nachher.length - 1 - s]) s++;
+  return { ...result, zeilen: { seq, start: p, weg: alt.length - p - s, neu: nachher.length - p - s, vorher } };
+}
+
+/** V2: content_hash der Datei nach dem commit an jeden Spleiss haengen (Kette zum naechsten commit). */
+function setzeZeilenNach(previews: OpPreview[], buffers: Map<string, PreparedFile>): OpPreview[] {
+  for (const preview of previews) {
+    if (!preview?.zeilen) continue;
+    const buf = buffers.get(preview.file_path);
+    preview.zeilen.nach = !buf || buf.deleted ? EMPTY_CONTENT_HASH : buf.finalHash;
+  }
+  return previews;
+}
+
 /** Helper: laedt Datei in Buffer-Map wenn noch nicht geladen, schreibt Hash in expectedHashes. */
 async function ensureBuffer(
   buffers: Map<string, PreparedFile>,
@@ -1078,6 +1137,8 @@ function conflictPreviews(
 function buildCombinedCoeditPreview(
   plan: FileBatchPlanRow,
   baselines: Map<string, string>,
+  /** V2 ohne Grenze: nur beim commit — je Op den Zeilen-Spleiss in previews[].zeilen festhalten. */
+  mitZeilen = false,
 ):
   | { ok: true; buffers: Map<string, PreparedFile>; previews: OpPreview[] }
   | { ok: false; conflict: CoeditConflictDetail; previews: OpPreview[] } {
@@ -1088,6 +1149,7 @@ function buildCombinedCoeditPreview(
   }
   const previews: OpPreview[] = new Array(plan.ops.length);
   const seenFiles = new Set<string>();
+  let zeilenSeq = 0;
   let applyPlan: Array<{ op: FileBatchOp; originalIndex: number }>;
   try {
     applyPlan = prepareOpsForApply(plan.ops);
@@ -1109,7 +1171,9 @@ function buildCombinedCoeditPreview(
     const first = !seenFiles.has(op.file_path);
     seenFiles.add(op.file_path);
     try {
-      const result = applyOpInMemory(buffers, op, first);
+      const result: { context: string; sizeBefore: number; sizeAfter: number; zeilen?: ZeilenSplice } = mitZeilen
+        ? applyOpMitZeilen(buffers, op, first, zeilenSeq++)
+        : applyOpInMemory(buffers, op, first);
       previews[originalIndex] = {
         index: originalIndex,
         file_path: op.file_path,
@@ -1118,6 +1182,7 @@ function buildCombinedCoeditPreview(
         size_before: result.sizeBefore,
         size_after: result.sizeAfter,
         context: result.context.slice(0, 200),
+        ...(result.zeilen ? { zeilen: result.zeilen } : {}),
       };
     } catch (error) {
       const message = `Gemeinsamer Re-Apply von Op ${originalIndex} fehlgeschlagen: ${(error as Error).message}`;
@@ -1133,7 +1198,7 @@ function buildCombinedCoeditPreview(
       return { ok: false, conflict, previews: conflictPreviews(plan.ops, [conflict]) };
     }
   }
-  return { ok: true, buffers, previews };
+  return { ok: true, buffers, previews: mitZeilen ? setzeZeilenNach(previews, buffers) : previews };
 }
 
 /**
@@ -1463,7 +1528,7 @@ async function commitCoeditBatch(args: {
       };
     }
 
-    const combined = buildCombinedCoeditPreview(plan, baselines);
+    const combined = buildCombinedCoeditPreview(plan, baselines, true);
     if (!combined.ok) {
       await client.query(
         `UPDATE file_batch_plans SET status = 'conflict', previews = $2::jsonb WHERE id = $1::bigint`,
@@ -2443,65 +2508,169 @@ async function emitPlanReadyForExactlyOneExistingPlan(
 }
 
 /**
- * Zeilen-Zuordnung alt -> neu per Myers-Diff (V2, 29.09.2026). Ergebnis[i] (1-basiert) ist die
- * Zeile im neuen Stand, die unveraendert der alten Zeile i entspricht, 0 = geaendert/entfernt.
- * null, wenn mehr als maxD Zeilen-Aenderungen zwischen beiden Staenden liegen (dann rechnet
- * niemand um, der Aufrufer lehnt ab — lieber ablehnen als eine falsche Zeile treffen).
+ * V2 ohne Grenze (User-Vorgabe 29.09.2026: Agenten aendern so viel, wie sie wollen). Eine
+ * Zeilen-Zuordnung alt -> neu: zeile(x) ist die Zeile im neuen Stand, die unveraendert der alten
+ * Zeile x entspricht (1-basiert), 0 = geaendert/entfernt. ungefaehr(x) nennt auch fuer geaenderte
+ * Zeilen die Stelle im neuen Stand (fuer den Ausschnitt einer Ablehnung).
  */
-function zeilenZuordnung(alt: string[], neu: string[], maxD = 2000): Int32Array | null {
-  const n = alt.length;
-  const m = neu.length;
-  const map = new Int32Array(n + 1);
-  let pre = 0;
-  while (pre < n && pre < m && alt[pre] === neu[pre]) { map[pre + 1] = pre + 1; pre++; }
-  let suf = 0;
-  while (suf < n - pre && suf < m - pre && alt[n - 1 - suf] === neu[m - 1 - suf]) { map[n - suf] = m - suf; suf++; }
-  const a = alt.slice(pre, n - suf);
-  const b = neu.slice(pre, m - suf);
-  const N = a.length;
-  const M = b.length;
-  if (N === 0 || M === 0) return map;
-  const lim = Math.min(N + M, maxD);
-  const off = lim + 1;
-  const v = new Int32Array(2 * lim + 3);
-  const trace: Int32Array[] = [];
-  let gefunden = -1;
-  suche: for (let d = 0; d <= lim; d++) {
-    // Stand VOR Schritt d, k in [-d-1, d+1] -> Index k + d + 1
-    trace.push(v.slice(off - d - 1, off + d + 2));
-    for (let k = -d; k <= d; k += 2) {
-      let x = k === -d || (k !== d && v[k - 1 + off] < v[k + 1 + off]) ? v[k + 1 + off] : v[k - 1 + off] + 1;
-      let y = x - k;
-      while (x < N && y < M && a[x] === b[y]) { x++; y++; }
-      v[k + off] = x;
-      if (x >= N && y >= M) { gefunden = d; break suche; }
+interface Zuordnung {
+  basisZeilen: number;
+  zeile(x: number): number;
+  ungefaehr(x: number): number;
+}
+
+/**
+ * Exakte Zuordnung aus den beim commit gespeicherten Zeilen-Spleissen (OpPreview.zeilen) — in
+ * Anwende-Reihenfolge. O(Ops) je Zeile, unabhaengig davon, wie viel geaendert wurde.
+ */
+function spliceZuordnung(splices: ZeilenSplice[]): Zuordnung {
+  const folge = [...splices].sort((left, right) => left.seq - right.seq);
+  const durch = (x: number, streng: boolean): number => {
+    let pos = x - 1;
+    for (const s of folge) {
+      if (pos < s.start) continue;
+      if (pos >= s.start + s.weg) { pos += s.neu - s.weg; continue; }
+      if (streng) return 0;
+      pos = s.start;
     }
+    return pos + 1;
+  };
+  return { basisZeilen: folge[0]?.vorher ?? 0, zeile: (x) => durch(x, true), ungefaehr: (x) => durch(x, false) };
+}
+
+/**
+ * Fallback-Zuordnung, wenn fuer einen Schritt keine Zeilentabelle existiert (commit vor dem Umbau
+ * oder Schreiben ausserhalb eines Plans): Patience-Diff ueber Zeilen, die in beiden Bereichen
+ * genau einmal vorkommen (LIS), dazwischen gemeinsamer Anfang/Ende — rekursiv, OHNE Obergrenze,
+ * O(n log n) je Ebene. Was sich nicht eindeutig zuordnen laesst, gilt als geaendert: dann wird
+ * lieber abgelehnt als eine falsche Zeile getroffen.
+ */
+function zeilenZuordnung(alt: string[], neu: string[]): Int32Array {
+  const map = new Int32Array(alt.length + 1);
+  const stapel: Array<[number, number, number, number]> = [[0, alt.length, 0, neu.length]];
+  while (stapel.length > 0) {
+    let [a0, a1, b0, b1] = stapel.pop() as [number, number, number, number];
+    while (a0 < a1 && b0 < b1 && alt[a0] === neu[b0]) { map[a0 + 1] = b0 + 1; a0++; b0++; }
+    while (a0 < a1 && b0 < b1 && alt[a1 - 1] === neu[b1 - 1]) { map[a1] = b1; a1--; b1--; }
+    if (a0 >= a1 || b0 >= b1) continue;
+    const zaehler = new Map<string, { a: number; b: number; ia: number; ib: number }>();
+    for (let i = a0; i < a1; i++) {
+      const eintrag = zaehler.get(alt[i]);
+      if (eintrag) eintrag.a++;
+      else zaehler.set(alt[i], { a: 1, b: 0, ia: i, ib: -1 });
+    }
+    for (let j = b0; j < b1; j++) {
+      const eintrag = zaehler.get(neu[j]);
+      if (eintrag) { eintrag.b++; eintrag.ib = j; }
+    }
+    const paare: Array<[number, number]> = [];
+    for (const eintrag of zaehler.values()) if (eintrag.a === 1 && eintrag.b === 1) paare.push([eintrag.ia, eintrag.ib]);
+    if (paare.length === 0) continue;
+    paare.sort((left, right) => left[0] - right[0]);
+    // Laengste aufsteigende Folge ueber die neue Position (Patience Sorting).
+    const enden: number[] = [];
+    const endeIdx: number[] = [];
+    const vorgaenger = new Int32Array(paare.length).fill(-1);
+    for (let k = 0; k < paare.length; k++) {
+      const ib = paare[k][1];
+      let lo = 0;
+      let hi = enden.length;
+      while (lo < hi) { const mitte = (lo + hi) >> 1; if (enden[mitte] < ib) lo = mitte + 1; else hi = mitte; }
+      if (lo > 0) vorgaenger[k] = endeIdx[lo - 1];
+      enden[lo] = ib;
+      endeIdx[lo] = k;
+    }
+    const kette: Array<[number, number]> = [];
+    for (let k = endeIdx[enden.length - 1]; k >= 0; k = vorgaenger[k]) kette.push(paare[k]);
+    kette.reverse();
+    let pa = a0;
+    let pb = b0;
+    for (const [ia, ib] of kette) {
+      map[ia + 1] = ib + 1;
+      if (ia > pa && ib > pb) stapel.push([pa, ia, pb, ib]);
+      pa = ia + 1;
+      pb = ib + 1;
+    }
+    if (pa < a1 && pb < b1) stapel.push([pa, a1, pb, b1]);
   }
-  if (gefunden < 0) return null;
-  let x = N;
-  let y = M;
-  for (let d = gefunden; d > 0; d--) {
-    const vd = trace[d];
-    const get = (k: number) => vd[k + d + 1];
-    const k = x - y;
-    const runter = k === -d || (k !== d && get(k - 1) < get(k + 1));
-    const prevK = runter ? k + 1 : k - 1;
-    const prevX = get(prevK);
-    const startX = runter ? prevX : prevX + 1;
-    const startY = startX - k;
-    while (x > startX && y > startY) { map[pre + x] = pre + y; x--; y--; }
-    x = prevX;
-    y = prevX - prevK;
-  }
-  while (x > 0 && y > 0) { map[pre + x] = pre + y; x--; y--; }
   return map;
 }
 
-/** Ungefaehre Position einer (evtl. geaenderten) alten Zeile im neuen Stand — fuer den Ausschnitt. */
-function ungefaehreZeile(map: Int32Array | null, zeile: number): number {
-  if (!map) return zeile;
-  for (let i = Math.min(zeile, map.length - 1); i >= 1; i--) if (map[i]) return map[i] + (zeile - i);
-  return zeile;
+function arrayZuordnung(map: Int32Array): Zuordnung {
+  return {
+    basisZeilen: map.length - 1,
+    zeile: (x) => (x >= 1 && x < map.length ? map[x] : 0),
+    ungefaehr: (x) => {
+      for (let i = Math.min(x, map.length - 1); i >= 1; i--) if (map[i]) return map[i] + (x - i);
+      return x;
+    },
+  };
+}
+
+function verkette(teile: Zuordnung[]): Zuordnung {
+  return {
+    basisZeilen: teile[0]?.basisZeilen ?? 0,
+    zeile: (x) => { let y = x; for (const teil of teile) { y = teil.zeile(y); if (!y) return 0; } return y; },
+    ungefaehr: (x) => teile.reduce((y, teil) => teil.ungefaehr(y), x),
+  };
+}
+
+/**
+ * Zuordnung vom Stand VOR dem commit von planId bis zum aktuellen Stand der Datei: die Zeilentabelle
+ * dieses commits, dann die der folgenden commits, deren Ausgangsstand genau dort anschliesst (Kette
+ * ueber content_hash). Fehlt fuer ein Stueck eine Tabelle (alter commit, Schreiben ohne Plan),
+ * schliesst der Fallback-Diff vom letzten bekannten Stand bis jetzt die Luecke.
+ */
+async function zuordnungSeitCommit(
+  project: string,
+  planId: string,
+  filePath: string,
+  basisHash: string,
+  aktuell: string[],
+  aktuellHash: string,
+): Promise<{ zuordnung: Zuordnung | null; grund?: string; tabellen: number; fallback: boolean }> {
+  const pool = getPool();
+  const teile: Zuordnung[] = [];
+  let hash = basisHash;
+  let zeile = (await pool.query<{ id: string; ops: FileBatchOp[]; previews: OpPreview[]; committed_at: string }>(
+    `SELECT id::text AS id, ops, previews, committed_at::text AS committed_at FROM file_batch_plans WHERE id = $1::bigint AND project = $2`,
+    [planId, project],
+  )).rows[0];
+  const gesehen = new Set<string>();
+  while (zeile && hash !== aktuellHash && !gesehen.has(zeile.id)) {
+    gesehen.add(zeile.id);
+    const splices = (Array.isArray(zeile.previews) ? zeile.previews : [])
+      .filter((preview) => preview && preview.file_path === filePath && preview.zeilen)
+      .map((preview) => preview.zeilen as ZeilenSplice);
+    // move/copy AUF diese Datei steht nicht in ihren Spleissen -> keine exakte Tabelle.
+    const ziel = (Array.isArray(zeile.ops) ? zeile.ops : []).some((op) => op.new_path === filePath);
+    if (splices.length === 0 || ziel || !splices[0].nach) break;
+    teile.push(spliceZuordnung(splices));
+    hash = splices[0].nach;
+    if (hash === aktuellHash) break;
+    zeile = (await pool.query<{ id: string; ops: FileBatchOp[]; previews: OpPreview[]; committed_at: string }>(
+      `SELECT id::text AS id, ops, previews, committed_at::text AS committed_at FROM file_batch_plans
+        WHERE project = $1 AND status = 'committed' AND expected_hashes ->> $2 = $3
+          AND committed_at >= $4::timestamptz AND id <> $5::bigint
+        ORDER BY committed_at, id LIMIT 1`,
+      [project, filePath, hash, zeile.committed_at, zeile.id],
+    )).rows[0];
+  }
+  const tabellen = teile.length;
+  if (hash === aktuellHash) return { zuordnung: verkette(teile), tabellen, fallback: false };
+  const text = hash === EMPTY_CONTENT_HASH
+    ? ''
+    : (await pool.query<{ content: string }>(
+        `SELECT content FROM file_versions
+          WHERE project = $1 AND file_path = $2 AND content_hash = $3
+          ORDER BY (batch_id = $4::bigint) DESC NULLS LAST, id DESC LIMIT 1`,
+        [project, filePath, hash, planId],
+      )).rows[0]?.content ?? null;
+  if (text === null) {
+    return { zuordnung: null, grund: 'ein Zwischenstand der Datei ist nicht mehr lesbar (file_versions)', tabellen, fallback: true };
+  }
+  teile.push(arrayZuordnung(zeilenZuordnung(text.split('\n'), aktuell)));
+  return { zuordnung: verkette(teile), tabellen, fallback: true };
 }
 
 interface AbgelehnteSpaeteOp {
@@ -2515,48 +2684,43 @@ interface AbgelehnteSpaeteOp {
 
 /**
  * V2: Zeilen-Ops eines spaeten Beitrags beziehen sich auf die Basis des committeten Plans
- * (expected_hashes, Inhalt aus file_versions dieses Batches). Umgerechnet wird per Zeilendiff
- * Basis -> aktueller Stand; jede Zielzeile muss unveraendert wiederzufinden sein, sonst wird
- * die Op abgelehnt (mit Ausschnitt des aktuellen Stands). Dateien, die der Plan nicht enthielt
- * oder deren Stand gleich der Basis ist, bleiben unberuehrt.
+ * (expected_hashes). Umgerechnet wird ueber die exakten Zeilentabellen der commits seitdem
+ * (zuordnungSeitCommit) — ohne Obergrenze fuer die Groesse der Aenderung. Jede Zielzeile muss
+ * unveraendert wiederzufinden sein, sonst wird die Op abgelehnt (mit Ausschnitt des aktuellen
+ * Stands). Dateien, die der Plan nicht enthielt oder deren Stand gleich der Basis ist, bleiben
+ * unberuehrt.
  */
 async function spaeteZeilenOpsUmrechnen(
   project: string,
   planId: string,
   ops: FileBatchOp[],
-): Promise<{ ok: true; ops: FileBatchOp[]; verschoben: number } | { ok: false; abgelehnt: AbgelehnteSpaeteOp[] }> {
+): Promise<
+  | { ok: true; ops: FileBatchOp[]; verschoben: number; messung: Array<{ file_path: string; ms: number; tabellen: number; fallback: boolean }> }
+  | { ok: false; abgelehnt: AbgelehnteSpaeteOp[] }
+> {
   const zeilenAktionen = new Set<FileBatchOpAction>(['replace_lines', 'insert_after', 'delete_lines']);
   const dateien = uniqueStrings(ops.filter((op) => zeilenAktionen.has(op.action)).map((op) => op.file_path));
-  if (dateien.length === 0) return { ok: true, ops, verschoben: 0 };
+  if (dateien.length === 0) return { ok: true, ops, verschoben: 0, messung: [] };
   const pool = getPool();
   const basisHashes = (await pool.query<{ expected_hashes: Record<string, string> }>(
     `SELECT expected_hashes FROM file_batch_plans WHERE id = $1::bigint AND project = $2`,
     [planId, project],
   )).rows[0]?.expected_hashes ?? {};
-  const zuordnung = new Map<string, { map: Int32Array | null; aktuell: string[]; grund?: string }>();
+  const zuordnung = new Map<string, { map: Zuordnung | null; aktuell: string[]; grund?: string }>();
+  const messung: Array<{ file_path: string; ms: number; tabellen: number; fallback: boolean }> = [];
   for (const filePath of dateien) {
     const basisHash = basisHashes[filePath];
     if (!basisHash) continue;
     const aktuellText = (await getFileContentFromPg(project, filePath)) ?? '';
-    if (contentHash(aktuellText) === basisHash) continue;
+    const aktuellHash = contentHash(aktuellText);
+    if (aktuellHash === basisHash) continue;
+    const t0 = Date.now();
     const aktuell = aktuellText.split('\n');
-    let basisText: string | null = basisHash === EMPTY_CONTENT_HASH ? '' : null;
-    if (basisText === null) {
-      basisText = (await pool.query<{ content: string }>(
-        `SELECT content FROM file_versions
-          WHERE project = $1 AND batch_id = $2::bigint AND file_path = $3 AND content_hash = $4
-          LIMIT 1`,
-        [project, planId, filePath, basisHash],
-      )).rows[0]?.content ?? null;
-    }
-    if (basisText === null) {
-      zuordnung.set(filePath, { map: null, aktuell, grund: 'der Stand vor dem commit ist nicht mehr lesbar (file_versions)' });
-      continue;
-    }
-    const map = zeilenZuordnung(basisText.split('\n'), aktuell);
-    zuordnung.set(filePath, map
-      ? { map, aktuell }
-      : { map: null, aktuell, grund: 'seit dem Stand vor dem commit hat sich zu viel geaendert, um Zeilen sicher umzurechnen' });
+    const kette = await zuordnungSeitCommit(project, planId, filePath, basisHash, aktuell, aktuellHash);
+    messung.push({ file_path: filePath, ms: Date.now() - t0, tabellen: kette.tabellen, fallback: kette.fallback });
+    zuordnung.set(filePath, kette.zuordnung
+      ? { map: kette.zuordnung, aktuell }
+      : { map: null, aktuell, grund: kette.grund ?? 'nicht umrechenbar' });
   }
 
   const abgelehnt: AbgelehnteSpaeteOp[] = [];
@@ -2566,7 +2730,7 @@ async function spaeteZeilenOpsUmrechnen(
     const z = zuordnung.get(op.file_path);
     if (!z) return op;
     const lehneAb = (grund: string, basisZeile: number): FileBatchOp => {
-      const ab = Math.max(1, ungefaehreZeile(z.map, basisZeile) - 3);
+      const ab = Math.max(1, (z.map ? z.map.ungefaehr(basisZeile) : basisZeile) - 3);
       abgelehnt.push({
         index,
         file_path: op.file_path,
@@ -2579,29 +2743,34 @@ async function spaeteZeilenOpsUmrechnen(
     };
     const erste = op.action === 'insert_after' ? (op.after_line ?? 0) : (op.line_start ?? 0);
     if (!z.map) return lehneAb(z.grund ?? 'nicht umrechenbar', erste);
+    const map = z.map;
     if (op.shift_mode === 'absolute' && ops.filter((o) => o.file_path === op.file_path && zeilenAktionen.has(o.action)).length > 1) {
       return lehneAb('shift_mode "absolute" mit mehreren Zeilen-Ops auf der Datei laesst sich nicht sicher umrechnen', erste);
     }
     if (op.action === 'insert_after') {
       const nach = op.after_line ?? 0;
-      if (nach <= 0 || nach >= z.map.length) return op; // 0 = Dateianfang; ausserhalb meldet der Trockenlauf
-      const ziel = z.map[nach];
+      if (nach <= 0 || nach > map.basisZeilen) return op; // 0 = Dateianfang; ausserhalb meldet der Trockenlauf
+      const ziel = map.zeile(nach);
       if (!ziel) return lehneAb(`Zeile ${nach} (nach der eingefuegt werden soll) wurde seit dem Stand vor dem commit geaendert oder entfernt`, nach);
       if (ziel !== nach) verschoben++;
       return { ...op, after_line: ziel };
     }
     const start = op.line_start ?? 0;
     const ende = op.line_end ?? 0;
-    if (start < 1 || ende < start || ende >= z.map.length) return op;
+    if (start < 1 || ende < start || ende > map.basisZeilen) return op;
+    const zielStart = map.zeile(start);
+    // Zusammenhaengend unveraendert: Start und Ende bilden sich ab und liegen gleich weit auseinander,
+    // und keine Zeile dazwischen wurde geaendert (je Zeile O(Ops) — nur die Zielzeilen der Op).
     for (let i = start; i <= ende; i++) {
-      if (!z.map[i] || z.map[i] - z.map[start] !== i - start) {
-        return lehneAb(`Zeile ${i} wurde seit dem Stand vor dem commit geaendert oder entfernt`, start);
+      const y = i === start ? zielStart : map.zeile(i);
+      if (!y || y - zielStart !== i - start) {
+        return lehneAb(`Zeile ${i} wurde seit dem Stand vor dem commit geaendert oder entfernt`, i);
       }
     }
-    if (z.map[start] !== start) verschoben++;
-    return { ...op, line_start: z.map[start], line_end: z.map[ende] };
+    if (zielStart !== start) verschoben++;
+    return { ...op, line_start: zielStart, line_end: zielStart + (ende - start) };
   });
-  return abgelehnt.length > 0 ? { ok: false, abgelehnt } : { ok: true, ops: neu, verschoben };
+  return abgelehnt.length > 0 ? { ok: false, abgelehnt } : { ok: true, ops: neu, verschoben, messung };
 }
 
 /**
@@ -2726,6 +2895,7 @@ async function followUpForLateContribution(
       already_consumed_ops: 0,
       total_plan_ops: result.total_ops,
       ...(umgerechnet.verschoben > 0 ? { umgerechnete_zeilen_ops: umgerechnet.verschoben } : {}),
+      ...(umgerechnet.messung.length > 0 ? { umrechnung: umgerechnet.messung } : {}),
       ...(waits.length > 0 ? { coedit_waits: waits } : {}),
       ...(beigetragen.length > 0 ? { beigetragen_in: beigetragen } : {}),
       message: waits.length === 0
@@ -3681,12 +3851,16 @@ async function commitLegacyBody(
   // Da die Ops in plan.ops in Original-Reihenfolge gespeichert sind, fuehrt
   // prepareOpsForApply zur gleichen Apply-Reihenfolge wie im Trockenlauf.
   const reapplyPlan = prepareOpsForApply(plan.ops);
+  // V2 ohne Grenze: Zeilen-Spleiss je Op, landet beim Abschluss in previews[].zeilen.
+  let zeilenSeq = 0;
+  const zeilenJeOp = new Map<number, ZeilenSplice>();
 
   for (const { op, originalIndex } of reapplyPlan) {
     const isFirstOpOnFile = !seenFile.has(op.file_path);
     seenFile.add(op.file_path);
     try {
-      applyOpInMemory(finalBuffers, op, isFirstOpOnFile);
+      const angewendet = applyOpMitZeilen(finalBuffers, op, isFirstOpOnFile, zeilenSeq++);
+      if (angewendet.zeilen) zeilenJeOp.set(originalIndex, angewendet.zeilen);
     } catch (err) {
       // Sollte eigentlich nicht passieren wenn Plan sauber war — defensive Behandlung.
       return {
@@ -3773,8 +3947,20 @@ async function commitLegacyBody(
   // Dateien Sekunden frueher — reservation_release vergleicht released_at mit committed_at.
   await lockClient.query(
     `UPDATE file_batch_plans SET status = 'committed', committed_at = clock_timestamp(),
-            reason = CONCAT_WS(' ', reason, $2::text) WHERE id = $1`,
-    [args.plan_id, `[committed von ${resolveAgentId(args.agent_id) ?? 'unbekannt'}]`],
+            reason = CONCAT_WS(' ', reason, $2::text), previews = $3::jsonb WHERE id = $1`,
+    [
+      args.plan_id,
+      `[committed von ${resolveAgentId(args.agent_id) ?? 'unbekannt'}]`,
+      JSON.stringify(setzeZeilenNach(
+        plan.ops.map((op, index) => {
+          const basis = Array.isArray(plan.previews) ? plan.previews : [];
+          const preview = basis[index]?.index === index ? basis[index] : (basis.find((p) => p?.index === index) ?? { index, file_path: op.file_path, action: op.action, ok: true });
+          const zeilen = zeilenJeOp.get(index);
+          return zeilen ? { ...preview, zeilen: { ...zeilen } } : preview;
+        }),
+        finalBuffers,
+      )),
+    ],
   );
   await notifyPlanCommitted(lockClient, plan, resolveAgentId(args.agent_id));
   await lockClient.query('COMMIT'); notifyPlanChange();
