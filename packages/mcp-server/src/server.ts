@@ -350,6 +350,19 @@ export function createServer(): Server {
           } catch { /* Hinweise duerfen Toolantworten nie brechen */ }
         }
 
+        // JEV-11 (P7-T30): bei aktivem jev-Schalter EINE kurze Zeile jev_modus, sonst nichts.
+        // Das jev-Tool selbst ist ausgenommen (seine Antworten tragen den Hinweis schon).
+        if (name !== 'jev' && typeof args?.project === 'string' && args.project) {
+          try {
+            const { holeJevModusHinweis } = await import('@synapse/core');
+            const jevModus = await holeJevModusHinweis(args.project);
+            if (jevModus) {
+              parsed.jev_modus = jevModus;
+              first.text = JSON.stringify(parsed, null, 2);
+            }
+          } catch { /* Hinweise duerfen Toolantworten nie brechen */ }
+        }
+
         // ⚠️ MEMORY, GEDANKE UND TASK SIND EBENFALLS HINWEISGEBER (Vorgabe des Users,
         // 02.08.2026). Ein Skillname steht genauso in einer Memory oder einer Task wie in
         // einer Channel-Nachricht. Wer nie einen Channel betritt, bekam vorher nie einen

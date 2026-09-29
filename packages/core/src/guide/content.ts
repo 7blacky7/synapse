@@ -1584,6 +1584,7 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
       'Unter Confidence 0.7 (Env JEV_ENTSCHEIDUNG_TOR, oder confidence_tor) gibt es KEINE Entscheidung — warte dann auf User/Koordinator.',
       'Ratenbremse: 30 Jev-Aufrufe je Stunde und Projekt (Env JEV_ENTSCHEIDUNG_RATE), danach Ablehnung.',
       'abwesend an/aus: nur agent_id koordinator (Namenstreue, keine Identitaetspruefung). bis oder stunden sind freiwillig; ohne beides laeuft der Schalter bis "aus". aus liefert das Protokoll seit dem Einschalten mit.',
+      'FELD jev_modus: Solange der Schalter des Projekts AN ist, traegt JEDE Tool-Antwort dieses Projekts (ausser guide und jev selbst) die Zeile jev_modus. Bei AUS fehlt das Feld. Der Schalter wird je Prozess bis zu 30 s gecacht (Env JEV_MODUS_CACHE_S), Ein-/Ausschalten wirkt also mit kurzer Verzoegerung. Bedeutung der Zeile: (1) Rueckfragen und Unstimmigkeiten mit Superpowers klaeren — skills(action:get_section) auf die Superpowers-Skills brainstorming, systematic-debugging, verification-before-completion; (2) Entscheidungen ueber jev(action:entscheiden), nur erlaubte Kategorien (variante, reihenfolge, umsetzungsweg, formulierung); (3) verbotene Kategorien (loeschen, deploy, git, secrets, aussenwirkung, kosten, regeln) und jede Entscheidung unter Confidence 0.7 warten weiter auf den User/Koordinator; (4) jede Jev-Entscheidung ist als "entschieden von Jev, nicht vom User" zu kennzeichnen.',
     ].join('\n'),
     examples: [
       'jev({ action: "abwesend", project: "synapse", modus: "status" })',
@@ -1594,13 +1595,25 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
       'Bei Confidence unter 0.7 trotzdem weitermachen — dann auf den User warten.',
       'Den Schalter als Nicht-Koordinator setzen — abgelehnt.',
       'Eine Jev-Entscheidung als Wunsch des Users ausgeben — sie ist immer als "entschieden von Jev" zu kennzeichnen.',
+      'Jev eine offene Frage stellen ("Wie soll ich das bauen?") — Jev BEANTWORTET KEINE FRAGEN, es waehlt nur mit Wahrscheinlichkeit zwischen vorgegebenen Optionen. Ohne gute Formulierung kommt nur "unsicher" zurueck.',
+    ],
+    workflow_examples: [
+      'Vorgehen Schritt fuer Schritt (auf diesen Abschnitt verweist die Zeile jev_modus und jede Ablehnung von entscheiden):',
+      '1. Offene Frage -> mit Superpowers (skills get_section superpowers-brainstorming bzw. superpowers-writing-plans) 2 bis 5 konkrete, sich ausschliessende Optionen erarbeiten.',
+      '2. Je Option in optionen {key: Beschreibung} schreiben, WANN sie richtig ist (Bedingung/Kriterium), nicht nur ihren Namen — Jev bewertet die Beschreibungen gegen den kontext. Server lehnt leere, Ein-Wort- und nur-Key-Beschreibungen ab.',
+      '3. typ waehlen: choice (Auswahl) ist der Normalfall; noul nur fuer eine klare AUSSAGE, die wahr oder falsch ist ("Die Aenderung bricht keine alten Aufrufe."), nie fuer eine W-Frage; score nur mit Ankern je Stufe (optionen {"1": Anker, ...}).',
+      '4. kontext: die Fakten, die zur Wahl noetig sind (Task, Befund, Einschraenkungen), kurz; keine Frage an Jev, keine Wiederholung der Optionen.',
+      '5. kategorie korrekt setzen (erlaubt: variante, reihenfolge, umsetzungsweg, formulierung; alles andere gehoert dem User).',
+      '6. Ergebnis pruefen: Confidence >= 0.7 (entschieden:true) -> umsetzen und im Channel als "entschieden von Jev (Confidence x)" melden. Darunter (grund unsicher, Feld tipp): Optionen EINMAL schaerfen (Beschreibungen trennschaerfer, Kontext ergaenzen) und erneut fragen; bleibt es unsicher -> warten bzw. Koordinator fragen.',
+      'GUTES BEISPIEL: jev({ action: "entscheiden", project: "synapse", agent_id: "plan-specht", kategorie: "umsetzungsweg", typ: "choice", frage: "Wie binden wir den Hinweis ein?", kontext: "Antworten haben schon shell_activity/open_plans; 2 Einhaengestellen (REST, stdio); Schalter wird selten geaendert", optionen: { hook: "Im bestehenden Response-Hook mitgeben: richtig, wenn der Hinweis an JEDER Antwort haengen soll und keine neue Stelle entstehen darf", eigenes_tool: "Als eigenes Tool abrufbar machen: richtig, wenn der Hinweis nur auf Nachfrage gelesen werden soll" } })',
+      'SCHLECHTES BEISPIEL: jev({ action: "entscheiden", ..., typ: "choice", frage: "Wie soll ich das machen?", optionen: { a: "so", b: "anders" } }) — offene Frage, Beschreibungen ohne Bedingung, kein kontext: Server lehnt ab bzw. Jev bleibt unsicher.',
     ],
     actions: {
       entscheiden: {
         description: 'Beantwortet eine erlaubte Rueckfrage per Jev — nur bei aktivem Schalter. Antwort enthaelt wahl, confidence, entschieden (true/false), Kennzeichnung "entschieden von Jev (Confidence x), nicht vom User" und protokoll_id.',
         params: 'project (req), agent_id (req), frage (req, max 500 Zeichen), kategorie (req), typ (noul|choice|score), optionen ({key: Beschreibung}), kontext (max 1500 Zeichen), task_id, hinweise (max 500 Zeichen), confidence_tor (0..1, Standard 0.7)',
         example: 'jev({ action: "entscheiden", project: "synapse", agent_id: "plan-specht", kategorie: "umsetzungsweg", typ: "noul", frage: "Test zuerst schreiben?" })',
-        tips: 'Schalter aus → kein Jev-Aufruf, keine Protokollzeile, Antwort "User/Koordinator fragen". Verbotene/unbekannte Kategorie, Ratenbremse, fehlender Key und Confidence unter 0.7 werden mit entschieden:false protokolliert (bei aktivem Schalter).',
+        tips: 'VORHER den Abschnitt "Vorgehen Schritt fuer Schritt" (workflow_examples) lesen: Jev beantwortet keine Fragen, es waehlt nur zwischen Optionen; Beschreibungen muessen sagen, WANN die Option richtig ist. Unsicher-Antworten tragen das Feld tipp. Schalter aus → kein Jev-Aufruf, keine Protokollzeile, Antwort "User/Koordinator fragen". Verbotene/unbekannte Kategorie, Ratenbremse, fehlender Key und Confidence unter 0.7 werden mit entschieden:false protokolliert (bei aktivem Schalter).',
       },
       abwesend: {
         description: 'Schalter "User abwesend" je Projekt anzeigen (status, jeder) oder setzen (an/aus, nur Koordinator).',

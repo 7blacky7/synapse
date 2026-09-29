@@ -536,6 +536,7 @@ export {
 export { setzeHeartbeatKonfiguration, setzeHeartbeatBeimSpawn, steuereHeartbeat } from './services/wrapper-status.js';
 
 // JEV-10: Jev entscheidet Rueckfragen, wenn der User weg ist (P7-T28)
+export { holeJevModusHinweis, leereJevModusCache, JEV_MODUS_ZEILE } from './services/jev-modus-hinweis.js';
 export {
   entscheideRueckfrage,
   setzeAbwesenheit,

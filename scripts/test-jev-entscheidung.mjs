@@ -439,6 +439,100 @@ await pruefe('SCHEMA_SQL: nur CREATE TABLE/INDEX IF NOT EXISTS fuer die neuen Ta
 });
 
 
+// 6b. Hilfreiche Fehler statt nacktem 'geht nicht' (P7-T30 Ergaenzung) -------------------------
+const ANLEITUNG = /guide\(tool_name:jev\).*Vorgehen/s;
+
+await pruefe('choice: Ein-Wort-/leere/nur-Key-Beschreibungen -> success:false mit Key-Nennung und Verweis auf guide(jev) Vorgehen', async () => {
+  reset();
+  await einschalten();
+  for (const [name, optionen, key] of [
+    ['ein Wort', { a: 'Variante A: kleiner Umbau mit wenig Risiko', b: 'schnell' }, 'b'],
+    ['leer', { a: 'Variante A: kleiner Umbau mit wenig Risiko', b: '   ' }, 'b'],
+    ['nur der Key', { a: 'a', b: 'Variante B: neuer Service, wenn viele Aufrufer' }, 'a'],
+  ]) {
+    const r = await mod.entscheideRueckfrage(P, frage({ optionen }), deps);
+    assert.equal(r.success, false, name);
+    assert.equal(r.entschieden, false, name);
+    assert.match(r.message, new RegExp(`"${key}"`), `${name}: nennt den Key`);
+    assert.match(r.message, /WANN|wann/, `${name}: sagt, was fehlt (wann ist die Option richtig)`);
+    assert.match(r.message, ANLEITUNG, `${name}: Verweis auf guide(jev) Vorgehen`);
+  }
+  assert.equal(fetchAufrufe.length, 0, 'kein Jev-Aufruf bei schlechter Eingabe');
+  assert.equal(zeilen.length, 0, 'keine Protokollzeile bei Eingabefehlern');
+});
+
+await pruefe('choice ohne optionen / mit zu wenigen -> Fehler mit Anleitung und Hinweis auf 2..5 Optionen', async () => {
+  reset();
+  await einschalten();
+  for (const optionen of [undefined, {}, { a: 'Variante A: kleiner Umbau mit wenig Risiko' }]) {
+    const r = await mod.entscheideRueckfrage(P, frage({ optionen }), deps);
+    assert.equal(r.success, false);
+    assert.match(r.message, /optionen/);
+    assert.match(r.message, ANLEITUNG);
+  }
+  assert.equal(fetchAufrufe.length, 0);
+});
+
+await pruefe('offene W-Frage als noul -> Fehler: noul braucht eine Aussage, wahr oder falsch', async () => {
+  reset();
+  await einschalten();
+  const basis = { agent_id: 'a', typ: 'noul', kategorie: 'umsetzungsweg' };
+  for (const f of ['Wie soll ich den Endpunkt bauen?', 'Welche Variante ist besser?', 'Warum bricht der Test?']) {
+    const r = await mod.entscheideRueckfrage(P, { ...basis, frage: f }, deps);
+    assert.equal(r.success, false, f);
+    assert.match(r.message, /Aussage|wahr oder falsch/, f);
+    assert.match(r.message, ANLEITUNG, f);
+  }
+  assert.equal(fetchAufrufe.length, 0);
+  // Gegenprobe: klare Aussage / Ja-Nein-Frage geht durch
+  antwortFuer = () => ({ entscheidung: { type: 'noul', noul: 0.9 } });
+  let r = await mod.entscheideRueckfrage(P, { ...basis, frage: 'Die Aenderung bricht keine alten Aufrufe.' }, deps);
+  assert.equal(r.success, true, r.message);
+  r = await mod.entscheideRueckfrage(P, { ...basis, frage: 'Soll ich Tests ergaenzen?' }, deps);
+  assert.equal(r.success, true, r.message);
+});
+
+await pruefe('W-Frage als choice MIT guten Optionen bleibt erlaubt', async () => {
+  reset();
+  await einschalten();
+  const r = await mod.entscheideRueckfrage(P, frage({ frage: 'Welche Variante nehmen wir fuer den Endpunkt?' }), deps);
+  assert.equal(r.success, true, r.message);
+  assert.equal(r.entschieden, true);
+});
+
+await pruefe('unsicher: Antwort enthaelt den Tipp (Optionen trennschaerfer beschreiben / Kontext ergaenzen), choice und noul', async () => {
+  reset();
+  await einschalten();
+  antwortFuer = () => ({ entscheidung: { type: 'choice', choice: 'a', confidence: 0.55 } });
+  let r = await mod.entscheideRueckfrage(P, frage(), deps);
+  assert.equal(r.grund, 'unsicher');
+  assert.match(r.tipp, /trennschaerfer/);
+  assert.match(r.tipp, /Kontext/);
+  assert.match(r.tipp, /einmal|EINMAL/);
+  assert.match(r.message, /User\/Koordinator fragen/);
+  antwortFuer = () => ({ entscheidung: { type: 'noul', noul: 0.5 } });
+  r = await mod.entscheideRueckfrage(P, { agent_id: 'a', frage: 'Soll ich Tests ergaenzen?', typ: 'noul', kategorie: 'umsetzungsweg' }, deps);
+  assert.equal(r.grund, 'unsicher');
+  assert.match(r.tipp, /trennschaerfer/);
+  // andere Ablehnungen tragen KEINEN Tipp
+  r = await mod.entscheideRueckfrage(P, frage({ kategorie: 'deploy' }), deps);
+  assert.equal(r.grund, 'kategorie_verboten');
+  assert.equal(r.tipp, undefined);
+});
+
+await pruefe('Guide jev: Abschnitt "Vorgehen Schritt fuer Schritt" mit 6 Schritten, gutem und schlechtem Beispiel', async () => {
+  const { TOOL_GUIDES } = await import('../packages/core/dist/guide/content.ts'.replace('.ts', '.js'));
+  const g = TOOL_GUIDES.jev;
+  const abschnitt = (g.workflow_examples ?? []).join('\n');
+  assert.match(abschnitt, /Vorgehen Schritt fuer Schritt/);
+  for (let i = 1; i <= 6; i++) assert.match(abschnitt, new RegExp(`(^|\\n)\\s*${i}\\.`), `Schritt ${i}`);
+  for (const wort of ['brainstorming', 'writing-plans', 'WANN', 'kontext', 'kategorie', '0.7', 'einmal', 'GUTES BEISPIEL', 'SCHLECHTES BEISPIEL']) {
+    assert.ok(abschnitt.toLowerCase().includes(wort.toLowerCase()), `Abschnitt nennt ${wort}`);
+  }
+  assert.match(abschnitt, /wahr oder falsch/);
+  assert.match(abschnitt, /Anker/);
+});
+
 // 7. Guide-Eintrag + Onboarding-Hinweis (Nachzug 29.09.) --------------------------------------
 await pruefe('Guide: TOOL_GUIDES.jev mit allen 4 Actions, Leitplanken und Beispiel', async () => {
   const { TOOL_GUIDES } = await import('../packages/core/dist/guide/content.js');

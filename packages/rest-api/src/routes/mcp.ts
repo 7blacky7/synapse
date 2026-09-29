@@ -1974,6 +1974,15 @@ async function attachShellJobHints(
     const plans = await claimOpenPlanHints(project, effectiveAgentId);
     if (plans) extras.open_plans = plans;
   } catch { /* best effort */ }
+  // JEV-11 (P7-T30): bei aktivem jev-Schalter EINE kurze Zeile, sonst nichts. Das jev-Tool selbst
+  // ist ausgenommen (seine Antworten tragen den Hinweis schon).
+  if (toolName !== 'jev') {
+    try {
+      const { holeJevModusHinweis } = await import('@synapse/core');
+      const jevModus = await holeJevModusHinweis(project);
+      if (jevModus) extras.jev_modus = jevModus;
+    } catch { /* best effort */ }
+  }
   return Object.keys(extras).length > 0 ? { ...result, ...extras } : result;
 }
 

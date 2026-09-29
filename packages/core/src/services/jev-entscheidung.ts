@@ -40,6 +40,14 @@ const MAX_KONTEXT = 1500;
 const MAX_HINWEISE = 500;
 const KOORDINATOR = /^(koordinator|coordinator)$/i;
 const FRAGE_NEU = 'User/Koordinator fragen';
+/** Verweis auf die Anleitung, die jede Eingabe-Ablehnung nennt */
+const ANLEITUNG = 'Anleitung: guide(tool_name:jev), Abschnitt "Vorgehen Schritt fuer Schritt".';
+/** Tipp bei unsicherem Ergebnis: Jev waehlt nur zwischen Optionen — die Formulierung entscheidet */
+export const TIPP_UNSICHER =
+  'Jev waehlt nur zwischen vorgegebenen Optionen. Optionen trennschaerfer beschreiben (WANN ist jede richtig?) ' +
+  'oder Kontext ergaenzen, dann EINMAL erneut fragen; bleibt es unsicher, User/Koordinator fragen.';
+/** Fragewoerter: eine offene W-Frage ist keine Aussage, die wahr oder falsch sein kann (typ noul) */
+const W_FRAGE = /^\s*(was|wie|wann|wo|wohin|woher|warum|wieso|weshalb|wozu|womit|wodurch|welche[rsnm]?|wer|wem|wen|wessen|what|how|why|which|when|where|who)\b/i;
 
 export type EntscheidungsTyp = 'noul' | 'choice' | 'score';
 
@@ -254,6 +262,13 @@ export async function entscheideRueckfrage(
   deps: EntscheidungsDeps = {},
 ): Promise<Record<string, unknown>> {
   const fehler = (message: string) => ({ success: false, entschieden: false, message });
+  /** Eingabefehler mit Verweis auf die Anleitung (kein nacktes 'geht nicht') */
+  const eingabeFehler = (message: string) => ({
+    success: false,
+    entschieden: false,
+    message: `${message} ${ANLEITUNG}`,
+    anleitung: 'guide(tool_name:jev) Abschnitt Vorgehen Schritt fuer Schritt',
+  });
 
   // --- Eingabe (billig, ohne Protokoll) -----------------------------------
   const agent = typeof anfrage.agent_id === 'string' ? anfrage.agent_id.trim() : '';
@@ -268,12 +283,33 @@ export async function entscheideRueckfrage(
   if (!kategorie) {
     return fehler(`kategorie ist Pflicht. Erlaubt: ${ERLAUBTE_KATEGORIEN.join(', ')}.`);
   }
+  if (typ === 'noul' && W_FRAGE.test(frage)) {
+    return eingabeFehler(
+      'typ noul braucht eine AUSSAGE, die wahr oder falsch sein kann (z. B. "Die Aenderung bricht keine alten Aufrufe."), ' +
+      'keine offene W-Frage. Offene Frage? Erst 2 bis 5 sich ausschliessende Optionen erarbeiten und typ choice mit optionen {key: Beschreibung} nutzen.',
+    );
+  }
   let criteria: Record<string, string> | undefined;
   if (typ === 'choice' || typ === 'score') {
     const roh = anfrage.optionen && typeof anfrage.optionen === 'object' ? anfrage.optionen : undefined;
     if (typ === 'choice') {
       const keys = roh ? Object.keys(roh) : [];
-      if (keys.length < 2 || keys.length > 10) return fehler('choice braucht 2 bis 10 optionen {key: Beschreibung}.');
+      if (keys.length < 2 || keys.length > 10) {
+        return eingabeFehler(
+          `choice braucht 2 bis 10 optionen {key: Beschreibung} (bekommen: ${keys.length}). Eine offene Frage ohne Optionen kann Jev nicht beantworten — ` +
+          'Jev waehlt nur zwischen vorgegebenen Optionen. Erarbeite 2 bis 5 konkrete, sich ausschliessende Optionen (z. B. mit Superpowers brainstorming) und beschreibe je Option, WANN sie richtig ist.',
+        );
+      }
+      const zuKurz = keys.filter((k) => {
+        const b = typeof roh![k] === 'string' ? (roh![k] as string).replace(/\s+/g, ' ').trim() : '';
+        return b.length < 12 || b.split(' ').length < 2 || b.toLowerCase() === k.trim().toLowerCase();
+      });
+      if (zuKurz.length > 0) {
+        return eingabeFehler(
+          `Beschreibung fehlt oder ist zu knapp bei ${zuKurz.map((k) => `"${k}"`).join(', ')}: mindestens ein kurzer Satz, der sagt, WANN die Option richtig ist (Bedingung/Kriterium), ` +
+          'nicht nur ihr Name. Jev bewertet die Beschreibungen gegen den kontext.',
+        );
+      }
       criteria = Object.fromEntries(keys.map((k) => [k, kurz(roh![k], 300) || k]));
     } else if (roh && Object.keys(roh).length > 0) {
       const keys = Object.keys(roh);
@@ -394,7 +430,7 @@ export async function entscheideRueckfrage(
         const protokoll_id = await protokolliere(project, { ...basis, wahl, confidence, entschieden: true, grund: null, jev_aufruf: true });
         return { success: true, entschieden: true, wahl, confidence, tor, kennzeichnung: kennzeichnung(confidence), protokoll_id, schalter };
       }
-      return { ...(await abgelehnt('unsicher', `Jev ist unsicher (p=${p}, Tor ${tor}).`, true, confidence)), tor };
+      return { ...(await abgelehnt('unsicher', `Jev ist unsicher (p=${p}, Tor ${tor}).`, true, confidence)), tor, tipp: TIPP_UNSICHER };
     }
 
     const gewaehlt = typeof a?.choice === 'string' ? a.choice : '';
@@ -410,7 +446,7 @@ export async function entscheideRueckfrage(
         kennzeichnung: kennzeichnung(conf), protokoll_id, schalter,
       };
     }
-    return { ...(await abgelehnt('unsicher', `Jev ist unsicher (Confidence ${conf}, Tor ${tor}).`, true, conf, wahl)), tor };
+    return { ...(await abgelehnt('unsicher', `Jev ist unsicher (Confidence ${conf}, Tor ${tor}).`, true, conf, wahl)), tor, tipp: TIPP_UNSICHER };
   } catch (err) {
     return fehler(ohneKey(`Entscheidung fehlgeschlagen: ${err instanceof Error ? err.message : String(err)}`, process.env.JEV_OPENROUTER_API_KEY?.trim() ?? ''));
   }
