@@ -2074,9 +2074,180 @@ CREATE INDEX IF NOT EXISTS idx_free_pool_events_ref
   ON free_pool_events(ref, at DESC) WHERE ref IS NOT NULL;
 `;
 
-export async function ensureSchema(): Promise<void> {
+/** Fehlercodes, bei denen ein neuer Versuch sinnvoll ist: Deadlock, Sperre nicht zu bekommen, Serialisierung. */
+const SCHEMA_WIEDERHOLBAR = new Set(['40P01', '55P03', '40001']);
+/** Marker im Fehlertext: eine Tabelle war beim Einsammeln belegt (kein Fehler, neue Sperr-Runde). */
+const SPERRE_BELEGT = 'SYNAPSE_SCHEMA_SPERRE_BELEGT';
+/** Marker im Fehlertext: Probelauf fertig — der Abbruch rollt die implizite Transaktion zurueck. */
+const PROBE_ENDE = 'SYNAPSE_SCHEMA_PROBE_ENDE';
+
+export interface SchemaErgebnis {
+  versuche: number;
+  /** Wie oft das Einsammeln der Sperren neu begonnen wurde (Tabelle gerade belegt, kein Fehler). */
+  sperr_runden: number;
+  /** Wie lange alle Tabellen exklusiv gehalten wurden (so lange stehen Schreiber), serverseitig gemessen. */
+  sperre_ms: number;
+  /** Wie lange das Einsammeln der Sperren in der erfolgreichen Runde dauerte. */
+  warte_ms: number;
+  gesamt_ms: number;
+  probe: boolean;
+  /** Die in der Schema-Transaktion wirksamen Timeouts (Beleg). */
+  timeouts: { lock_timeout: string; statement_timeout: string; idle_in_transaction_session_timeout: string };
+}
+
+/**
+ * Die komplette Schema-Transaktion als EINE Nachricht an den Server (Simple Query, mehrere
+ * Anweisungen = eine implizite Transaktion): Timeouts setzen, alle Tabellen einzeln sperren,
+ * SQL ausfuehren, Messwerte liefern. Zwischen erster Sperre und Transaktionsende gibt es KEINE
+ * Rundreise zum Client — niemand kann dazwischen warten. Scheitert eine Anweisung, rollt der Server
+ * die ganze Transaktion selbst zurueck (gemessen 29.09.2026: danach ist die Sitzung frei, kein
+ * ROLLBACK vom Client noetig). Der Probelauf endet mit einer absichtlichen Ausnahme: gleicher Weg.
+ */
+function schemaNachricht(o: {
+  sperrSchema: string;
+  koerper: string;
+  nurProbe: boolean;
+  lockMs: number;
+  statementMs: number;
+  idleMs: number;
+}): string {
+  const ausdruecke = [
+    `extract(epoch FROM clock_timestamp() - current_setting('synapse.schema_gesperrt')::timestamptz) * 1000`,
+    `extract(epoch FROM current_setting('synapse.schema_gesperrt')::timestamptz - current_setting('synapse.schema_start')::timestamptz) * 1000`,
+    `current_setting('lock_timeout')`,
+    `current_setting('statement_timeout')`,
+    `current_setting('idle_in_transaction_session_timeout')`,
+  ];
+  const messung = ausdruecke.join(', ');
+  return [
+    // lock_timeout 200 ms beim Einsammeln: kuerzer als deadlock_timeout (1 s) — wartet eine
+    // Live-Transaktion auf eine schon gesperrte Tabelle, bricht UNSER Warten ab, bevor ein Deadlock
+    // entsteht. statement_timeout je Anweisung, idle_in_transaction nur als Absicherung.
+    `SELECT set_config('statement_timeout', '${o.statementMs}ms', true),
+       set_config('idle_in_transaction_session_timeout', '${o.idleMs}ms', true),
+       set_config('lock_timeout', '200ms', true),
+       set_config('synapse.schema_start', clock_timestamp()::text, true),
+       set_config('application_name', 'synapse-ensure-schema', true)`,
+    // Reihenfolge: Tabellen, auf die viele verweisen, zuletzt (Live-Transaktionen schreiben erst die
+    // Kindtabelle und sperren dann per Fremdschluessel die Eltern). Belegt -> Marker, neue Runde.
+    `DO $synapse_sperren$ DECLARE t record; BEGIN
+      FOR t IN
+        SELECT format('%I.%I', schemaname, tablename) AS name FROM pg_tables
+         WHERE schemaname = '${o.sperrSchema}'
+         ORDER BY (SELECT COUNT(*) FROM pg_constraint c
+                    WHERE c.contype = 'f' AND c.confrelid = format('%I.%I', schemaname, tablename)::regclass
+                      AND c.conrelid <> c.confrelid), tablename
+      LOOP
+        BEGIN
+          EXECUTE 'LOCK TABLE ' || t.name || ' IN ACCESS EXCLUSIVE MODE';
+        EXCEPTION WHEN lock_not_available THEN
+          RAISE EXCEPTION '${SPERRE_BELEGT} %', t.name USING ERRCODE = '55P03';
+        END;
+      END LOOP;
+      PERFORM set_config('synapse.schema_gesperrt', clock_timestamp()::text, true);
+    END $synapse_sperren$`,
+    `SELECT set_config('lock_timeout', '${o.lockMs}ms', true)`,
+    o.koerper,
+    o.nurProbe
+      ? `DO $synapse_probe$ DECLARE s numeric; w numeric; l text; st text; i text; BEGIN
+          SELECT ${messung} INTO s, w, l, st, i;
+          RAISE EXCEPTION '${PROBE_ENDE}|%|%|%|%|%', round(s), round(w), l, st, i USING ERRCODE = 'P0001';
+        END $synapse_probe$`
+      : `SELECT ${ausdruecke.map((ausdruck, index) => `${ausdruck} AS m${index}`).join(', ')}`,
+  ].join(';\n');
+}
+
+/**
+ * Schema sicherstellen (beim Start). Entscheidung 29.09.2026 nach Probelaeufen unter Last und einem
+ * Vorfall: das SCHEMA_SQL lief ohne Sperr-Konzept und endete unter Last oft in "deadlock detected";
+ * eine erste Loesung hielt Tabellensperren ueber mehrere Client-Rundreisen, und ein Test-Hook wartete
+ * dazwischen auf Client-Code — 132 s "idle in transaction", die Produktion stand.
+ * Jetzt: jede Runde ist EIN Server-Aufruf (schemaNachricht) — alle Tabellen einzeln sperren (200 ms
+ * Wartegrenze), dann SCHEMA_SQL + AUTH_SCHEMA_SQL, alles in einer impliziten Transaktion ohne
+ * Rundreise; lock_timeout danach 5 s, statement_timeout 60 s je Anweisung, idle_in_transaction 10 s.
+ * Belegte Tabelle -> neue Sperr-Runde (Frist 120 s); 40P01/55P03/40001 -> Neuversuch mit Backoff
+ * (Default 5). Endgueltig gescheitert: klare Log-Zeile und Fehler — der Server hat alles
+ * zurueckgerollt, es gilt das ALTE Schema vollstaendig, nie ein halbes.
+ * nurProbe: alles ausfuehren, am Ende absichtlicher Abbruch = Rollback (Pflicht-Probelauf).
+ * Nur fuer Tests: vorAufruf laeuft VOR jedem Server-Aufruf (keine Sperre gehalten); sperrSchema und
+ * koerper ersetzen public und SCHEMA_SQL, damit Tests nur eigene Hilfsobjekte sperren.
+ */
+export async function ensureSchema(optionen: {
+  versuche?: number;
+  wartezeitMs?: number;
+  nurProbe?: boolean;
+  lockTimeoutMs?: number;
+  statementTimeoutMs?: number;
+  idleTimeoutMs?: number;
+  /** Wie lange insgesamt Sperren eingesammelt werden (Default 120 s), bevor aufgegeben wird. */
+  sperrFristMs?: number;
+  vorAufruf?: (versuch: number, runde: number) => Promise<void> | void;
+  sperrSchema?: string;
+  koerper?: string;
+} = {}): Promise<SchemaErgebnis> {
   const pool = getPool();
-  await pool.query(SCHEMA_SQL);
-  await pool.query(AUTH_SCHEMA_SQL);
-  console.error('[Synapse] PostgreSQL Schema bereit');
+  const maxVersuche = Math.max(1, optionen.versuche ?? 5);
+  const basisWarten = optionen.wartezeitMs ?? 500;
+  const sperrFrist = optionen.sperrFristMs ?? 120000;
+  const sperrSchema = optionen.sperrSchema ?? 'public';
+  if (!/^[a-z_][a-z0-9_]*$/.test(sperrSchema)) throw new Error(`ungueltiges sperrSchema: ${sperrSchema}`);
+  const nachricht = schemaNachricht({
+    sperrSchema,
+    koerper: optionen.koerper ?? `${SCHEMA_SQL}\n;\n${AUTH_SCHEMA_SQL}`,
+    nurProbe: optionen.nurProbe === true,
+    lockMs: Math.max(200, Math.round(optionen.lockTimeoutMs ?? 5000)),
+    statementMs: Math.max(1000, Math.round(optionen.statementTimeoutMs ?? 60000)),
+    idleMs: Math.max(1000, Math.round(optionen.idleTimeoutMs ?? 10000)),
+  });
+  const start = Date.now();
+  let sperrRunden = 0;
+  const fertig = (probe: boolean, versuch: number, s: unknown, w: unknown, l: unknown, st: unknown, i: unknown): SchemaErgebnis => {
+    const ergebnis: SchemaErgebnis = {
+      versuche: versuch,
+      sperr_runden: sperrRunden + 1,
+      sperre_ms: Math.round(Number(s)),
+      warte_ms: Math.round(Number(w)),
+      gesamt_ms: Date.now() - start,
+      probe,
+      timeouts: { lock_timeout: String(l), statement_timeout: String(st), idle_in_transaction_session_timeout: String(i) },
+    };
+    console.error(`[Synapse] PostgreSQL Schema ${probe ? 'Probelauf bestanden (Rollback)' : 'bereit'} — Versuch ${versuch}, Sperr-Runden ${ergebnis.sperr_runden}, Sperre ${ergebnis.sperre_ms} ms, Einsammeln ${ergebnis.warte_ms} ms`);
+    return ergebnis;
+  };
+  for (let versuch = 1; ; ) {
+    const client = await pool.connect();
+    try {
+      if (optionen.vorAufruf) await optionen.vorAufruf(versuch, sperrRunden + 1);
+      const antwort = await client.query(nachricht) as unknown;
+      const letzte = (Array.isArray(antwort) ? antwort[antwort.length - 1] : antwort) as { rows: Array<Record<string, unknown>> };
+      const z = letzte.rows[0] ?? {};
+      return fertig(false, versuch, z.m0, z.m1, z.m2, z.m3, z.m4);
+    } catch (error) {
+      const code = (error as { code?: string }).code;
+      const meldung = error instanceof Error ? error.message : String(error);
+      if (optionen.nurProbe && meldung.includes(PROBE_ENDE)) {
+        const [, s, w, l, st, i] = meldung.slice(meldung.indexOf(PROBE_ENDE)).split('|');
+        return fertig(true, versuch, s, w, l, st, i);
+      }
+      const detail = (error as { detail?: string }).detail;
+      const text = meldung + (detail ? ` | ${detail.replace(/\s+/g, ' ')}` : '');
+      if (code === '55P03' && meldung.includes(SPERRE_BELEGT) && Date.now() - start < sperrFrist) {
+        // Tabelle gerade belegt: kein Fehler, neu einsammeln (zaehlt nicht als Versuch).
+        sperrRunden++;
+        await new Promise((resolve) => setTimeout(resolve, 50 + Math.floor(Math.random() * 200)));
+        continue;
+      }
+      if (code && SCHEMA_WIEDERHOLBAR.has(code) && versuch < maxVersuche) {
+        const warten = basisWarten * 2 ** (versuch - 1) + Math.floor(Math.random() * basisWarten);
+        console.error(`[Synapse] Schema-Update Versuch ${versuch}/${maxVersuche} abgebrochen (${code}: ${text}) — vom Server zurueckgerollt, neuer Versuch in ${warten} ms`);
+        versuch++;
+        await new Promise((resolve) => setTimeout(resolve, warten));
+        continue;
+      }
+      console.error(`[Synapse] SCHEMA-UPDATE FEHLGESCHLAGEN nach ${versuch} Versuch(en) und ${sperrRunden + 1} Sperr-Runde(n) (${code ?? 'ohne Code'}: ${text}) — nichts geaendert (vom Server zurueckgerollt), es gilt das ALTE Schema vollstaendig. Neustart oder Ursache beheben.`);
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
 }
