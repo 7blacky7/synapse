@@ -133,6 +133,18 @@ blockiert nie, niemand zerstoert fremde Arbeit. Bei jedem Aufruf dieselbe `agent
 11. Keine Groessengrenzen: bis 10.000 Ops/edits je Aufruf, Anfragen bis 64 MB.
     `search_replace` mit `\n` trifft auch CRLF-Dateien.
 
+## 5c. Projekt-Datenbank (Spielwiese) und DB-Variablen
+
+SYSTEM vs. SPIELWIESE: Die Synapse-DB (192.168.50.65:5432, DB synapse) ist das SYSTEM. Jedes Projekt hat eine eigene SPIELWIESE-DB auf der Projekt-Instanz 192.168.50.65:5433 (Container postgresql16_2) mit eigener Rolle <db>_user — zum Entwickeln und Testen von Programmen mit Datenbank. Projekt-/Testdaten, Migrationen und Seeds gehoeren IMMER in die Spielwiese, NIE in die Synapse-DB.
+
+ZUGANGSDATEN: project(action:"projekt_db", project:"<name>") zeigt Host, Port, DB, User, Passwort und DATABASE_URL. Gibt es keine: vorhanden:false + fertiger Aufruf mit erstellen:true. Neue Projekte bekommen die DB bei init automatisch. Eine vorhandene, nicht von Synapse angelegte DB wird nie angefasst (vorhanden_fremd). Im Projektordner steht zusaetzlich DATABASE_URL in .env (wenn der Daemon laeuft).
+
+SHELL-JOBS (shell exec): Die Job-Umgebung setzt DATABASE_URL passend zum Projekt, in dem der Job laeuft:
+- normales Projekt -> seine Spielwiese (5433). Ohne Projekt-DB ist DATABASE_URL NICHT gesetzt, stattdessen SYNAPSE_PROJEKT_DB_HINWEIS mit dem Anlege-Aufruf.
+- Projekt synapse -> DATABASE_URL + SYNAPSE_DATABASE_URL = Synapse-System-DB, dazu SYNAPSE_DB_HINWEIS ("alleinige Synapse-System-DB, keine Spielwiese").
+- PG*-Variablen, Tokens, Secrets und URLs mit Zugangsdaten des Daemons sind aus der Job-Umgebung entfernt. Die shell-Antwort nennt in job_env, welche DB gesetzt wurde.
+Dein Programm liest DATABASE_URL wie ueblich — pruefe vor Migrationen/Seeds trotzdem kurz, dass Host:Port 5433 und die DB deines Projekts ist.
+
 ## 6. Events (Pflicht-Reaktion)
 
 Tool-Responses zeigen pending Events an. Events sind KEINE Chat-Nachrichten — sie sind **Steuersignale**.
