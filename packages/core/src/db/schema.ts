@@ -1004,6 +1004,18 @@ CREATE TABLE IF NOT EXISTS project_init_jobs (
 CREATE INDEX IF NOT EXISTS idx_project_init_jobs_status ON project_init_jobs(status, created_at);
 CREATE INDEX IF NOT EXISTS idx_project_init_jobs_pending ON project_init_jobs(created_at) WHERE status = 'pending';
 
+-- Projekt-DB (Spielwiese je Projekt auf 192.168.50.65:5433): Zugangsdaten fuer project(action projekt_db) und die Web-UI.
+-- Bewusst eigene Tabelle: nie in memories/thoughts/code_files, damit nichts davon in Suchindex oder Embeddings landet.
+CREATE TABLE IF NOT EXISTS projekt_datenbanken (
+  project TEXT PRIMARY KEY,
+  host TEXT NOT NULL,
+  port INTEGER NOT NULL,
+  db TEXT NOT NULL,
+  db_user TEXT NOT NULL,
+  passwort TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 CREATE OR REPLACE FUNCTION notify_project_init_job_created() RETURNS TRIGGER AS $$
 BEGIN
   PERFORM pg_notify('project_init_job_created', NEW.id::text);

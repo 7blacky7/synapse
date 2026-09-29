@@ -234,6 +234,23 @@ function getBaseUrl(request: FastifyRequest): string {
  */
 const WORKSPACE_EXEC_TIMEOUT_MS = 10 * 60 * 1000;
 
+/** projekt_db-Feld fuer project init/init_status/status — vorhanden ja/nein, ohne Passwort. */
+async function projektDbFeld(projekt: string): Promise<object> {
+  const { projektDbKurzinfo } = await import('@synapse/core');
+  return projektDbKurzinfo(projekt);
+}
+
+/** Bei init: Projekt-DB immer durch die API anlegen (best-effort, init scheitert nie daran). */
+async function projektDbBeiInit(projekt: string, projektPfad?: string): Promise<object> {
+  try {
+    const { stelleProjektDbSicher } = await import('./projekt-db.js');
+    const anlage = await stelleProjektDbSicher(projekt, projektPfad);
+    return { ...(await projektDbFeld(projekt)), anlage: anlage.status, anlage_hinweis: anlage.hinweis };
+  } catch (err) {
+    return { vorhanden: null, hinweis: (err as Error).message };
+  }
+}
+
 const MCP_TOOLS = [
   // 1. project
   {
@@ -244,10 +261,11 @@ const MCP_TOOLS = [
       properties: {
         action: {
           type: 'string',
-          enum: ['init', 'init_status', 'complete_setup', 'detect_tech', 'cleanup', 'stop', 'status', 'list', 'enable', 'disable'],
-          description: 'Aktion: init | init_status | complete_setup | detect_tech | cleanup | stop | status | list | enable | disable. enable/disable schalten das Projekt in PG (Source of Truth) — Parser-Worker und FileWatcher-Daemon folgen.',
+          enum: ['init', 'init_status', 'complete_setup', 'detect_tech', 'cleanup', 'stop', 'status', 'list', 'enable', 'disable', 'projekt_db'],
+          description: 'Aktion: init | init_status | complete_setup | detect_tech | cleanup | stop | status | list | enable | disable | projekt_db. projekt_db (project) zeigt die Projekt-DB (Spielwiese auf 192.168.50.65:5433): Host, Port, DB, User, Passwort, DATABASE_URL — oder vorhanden:false plus fertigen Aufruf; mit erstellen:true wird sie angelegt, falls keine existiert. Neue Projekte bekommen sie bei init automatisch; status zeigt nur vorhanden ja/nein. enable/disable schalten das Projekt in PG (Source of Truth) — Parser-Worker und FileWatcher-Daemon folgen.',
         },
         path: { type: 'string', description: 'Absoluter Pfad zum Projekt-Ordner. Bei action="init" optional — ohne path queued der Job an den Daemon und resolved gegen WORKSPACE_ROOT/name.' },
+        erstellen: { type: 'boolean', description: 'Nur projekt_db: true legt die Projekt-DB an, falls keine existiert (sonst nur anzeigen).' },
         name: { type: 'string', description: 'Projekt-Name. Pflicht fuer init wenn kein path gegeben. Erlaubt: 2-64 Zeichen [a-zA-Z0-9_-], beginnt mit Buchstabe/Ziffer.' },
         index_docs: { type: 'boolean', description: 'Framework-Dokumentation vorladen (Standard: true, fuer init)' },
         project: { type: 'string', description: 'Projekt-Name (fuer complete_setup, stop, list nutzt dies)' },
@@ -2136,6 +2154,7 @@ async function handleToolCall(
                 technologies: techs,
                 docsIndexed,
                 job_id: job.id,
+                projekt_db: await projektDbBeiInit(job.name, job.resolved_path),
                 message: job.message ?? `Projekt "${job.name}" angelegt unter ${job.resolved_path}.`,
               };
             }
@@ -2147,6 +2166,7 @@ async function handleToolCall(
                 error: 'daemon_unreachable',
                 job_id: job.id,
                 status: job.status,
+                projekt_db: await projektDbBeiInit(requestedName),
                 message: 'FileWatcher-Daemon auf dem Ziel-PC hat den Job nicht abgeholt. Pruefe ob der Tray laeuft. Status erneut abrufen mit project(action: "init_status", job_id: "<id>").',
               };
             }
@@ -2194,7 +2214,44 @@ async function handleToolCall(
             docsIndexed,
             registered_in_db: false,
             watcher_active: false,
+            projekt_db: await projektDbBeiInit(projectName, explicitPath),
             message: `Projekt "${projectName}": Docs indexiert (${docsIndexed}), aber NICHT in PostgreSQL registriert und KEIN FileWatcher gestartet — dieser REST-Aufruf kann das fuer einen expliziten Pfad nicht leisten (Hostname-Problem, siehe Code-Kommentar). Fuer vollstaendige Einrichtung project(action:"init", name:"${projectName}") OHNE path aufrufen (Self-Service ueber den lokalen Daemon) oder lokal ueber den MCP-Server (stdio) initialisieren.`,
+          };
+        }
+        case 'projekt_db': {
+          // Anzeigen (Standard) inkl. Passwort und DATABASE_URL; erstellen:true legt an,
+          // falls keine existiert. Spielwiese — Passwort in der Antwort ist gewollt.
+          const name = str(args, 'project') ?? str(args, 'name');
+          if (!name || !isValidProjectName(name)) {
+            return { success: false, error: 'invalid_name', message: 'Gueltiger Projekt-Name (project) erforderlich.' };
+          }
+          const { leseProjektDbZugang } = await import('@synapse/core');
+          let anlage: { status: string; hinweis: string; host?: string; port?: number; database?: string } | undefined;
+          if (bool(args, 'erstellen') === true && !(await leseProjektDbZugang(name))) {
+            const registry = await getProjectRegistryRows(name).catch(() => []);
+            const { stelleProjektDbSicher } = await import('./projekt-db.js');
+            anlage = await stelleProjektDbSicher(name, registry[0]?.path);
+          }
+          const zugang = await leseProjektDbZugang(name);
+          if (!zugang && anlage?.status === 'vorhanden_fremd') {
+            return { success: true, project: name, vorhanden: true, status: 'vorhanden_fremd', host: anlage.host, port: anlage.port, database: anlage.database, hinweis: anlage.hinweis };
+          }
+          if (!zugang) {
+            return {
+              success: !anlage,
+              project: name,
+              vorhanden: false,
+              ...(anlage ? { anlage: anlage.status, anlage_hinweis: anlage.hinweis } : {}),
+              hinweis: `Keine Projekt-DB. Erstellen mit project(action:"projekt_db", project:"${name}", erstellen:true)`,
+            };
+          }
+          return {
+            success: true,
+            project: name,
+            vorhanden: true,
+            ...zugang,
+            ...(anlage ? { anlage: anlage.status, anlage_hinweis: anlage.hinweis } : {}),
+            hinweis: 'Spielwiese auf der Projekt-Instanz (nicht die Synapse-DB). Im Projekt: DATABASE_URL in .env.',
           };
         }
         case 'init_status': {
@@ -2207,6 +2264,7 @@ async function handleToolCall(
             path: job.resolved_path,
             status: job.status,
             error: job.error,
+            projekt_db: job.status === 'done' ? await projektDbFeld(job.name) : undefined,
             message: job.message,
           };
         }
@@ -2255,6 +2313,7 @@ async function handleToolCall(
             registry,
             watcher_active: watcherActive,
             setup_phase: setupPhase,
+            projekt_db: await projektDbFeld(projectName),
           };
         }
         case 'list': {

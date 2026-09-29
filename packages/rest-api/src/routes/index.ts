@@ -27,3 +27,4 @@ export { wrapperBridgeRoutes } from './wrapper-bridge.js';
 export { agentWissenRoutes } from './agent-wissen.js';
 export { modelPoolRoutes } from './model-pool.js';
 export { agentRuntimeRoutes } from './agent-runtimes.js';
+export { projektDbRoutes } from './projekt-db.js';

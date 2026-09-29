@@ -22,6 +22,12 @@ import {
   getProjectStatusWithStats,
 } from '../index.js';
 
+/** projekt_db-Feld fuer init/init_status/status — vorhanden ja/nein, ohne Passwort. */
+async function projektDbFeld(projekt: string): Promise<object> {
+  const { projektDbKurzinfo } = await import('@synapse/core');
+  return projektDbKurzinfo(projekt);
+}
+
 const projectTool: ConsolidatedTool = {
   definition: {
     name: 'project',
@@ -31,8 +37,8 @@ const projectTool: ConsolidatedTool = {
       properties: {
         action: {
           type: 'string',
-          enum: ['init', 'init_status', 'complete_setup', 'detect_tech', 'cleanup', 'stop', 'status', 'list', 'enable', 'disable'],
-          description: 'Aktion: init | init_status | complete_setup | detect_tech | cleanup | stop | status | list | enable | disable. enable/disable schalten das Projekt in PG (Source of Truth) — Parser-Worker und FileWatcher-Daemon folgen.',
+          enum: ['init', 'init_status', 'complete_setup', 'detect_tech', 'cleanup', 'stop', 'status', 'list', 'enable', 'disable', 'projekt_db'],
+          description: 'Aktion: init | init_status | complete_setup | detect_tech | cleanup | stop | status | list | enable | disable | projekt_db. projekt_db (project) zeigt die Projekt-DB (Spielwiese auf 192.168.50.65:5433): Host, Port, DB, User, Passwort, DATABASE_URL — oder vorhanden:false plus fertigen Aufruf; mit erstellen:true wird sie angelegt, falls keine existiert. Neue Projekte bekommen sie bei init automatisch; status zeigt nur vorhanden ja/nein. enable/disable schalten das Projekt in PG (Source of Truth) — Parser-Worker und FileWatcher-Daemon folgen.',
         },
         path: {
           type: 'string',
@@ -45,6 +51,10 @@ const projectTool: ConsolidatedTool = {
         index_docs: {
           type: 'boolean',
           description: 'Framework-Dokumentation vorladen (Standard: true, für init)',
+        },
+        erstellen: {
+          type: 'boolean',
+          description: 'Nur projekt_db: true legt die Projekt-DB an, falls keine existiert (sonst nur anzeigen).',
         },
         project: {
           type: 'string',
@@ -133,7 +143,7 @@ const projectTool: ConsolidatedTool = {
             }
             if (job.status === 'done' && job.resolved_path) {
               const result = await initProjekt(job.resolved_path, job.name, indexDocs, agentId);
-              return { ...result, job_id: job.id, message: job.message ?? (result as { message?: string }).message };
+              return { ...result, job_id: job.id, projekt_db: await projektDbFeld(job.name), message: job.message ?? (result as { message?: string }).message };
             }
             // Wait gelaufen aber Job noch pending/running = Daemon hat nicht abgeholt.
             if (job.status === 'pending' || job.status === 'running') {
@@ -158,6 +168,38 @@ const projectTool: ConsolidatedTool = {
           return result;
         }
 
+        case 'projekt_db': {
+          // Anzeigen (Standard) inkl. Passwort und DATABASE_URL. erstellen:true: lokal gibt es
+          // keinen docker.sock der Projekt-Instanz — Job an den Daemon (template projekt_db), der
+          // die API-Route ruft und die .env schreibt; danach dieselbe Anzeige.
+          const { isValidProjectName, enqueueProjectInitJob, waitForProjectInitJob, expirePendingProjectInitJobs, leseProjektDbZugang } = await import('@synapse/core');
+          const name = str(args, 'project') ?? str(args, 'name');
+          if (!name || !isValidProjectName(name)) {
+            return { success: false, error: 'invalid_name', message: 'Gueltiger Projekt-Name (project) erforderlich.' };
+          }
+          const vorher = await leseProjektDbZugang(name);
+          if (vorher || bool(args, 'erstellen') !== true) {
+            return vorher
+              ? { success: true, project: name, vorhanden: true, ...vorher, hinweis: 'Spielwiese auf der Projekt-Instanz (nicht die Synapse-DB). Im Projekt: DATABASE_URL in .env.' }
+              : { success: true, project: name, vorhanden: false, hinweis: `Keine Projekt-DB. Erstellen mit project(action:"projekt_db", project:"${name}", erstellen:true)` };
+          }
+          const { id: jobId } = await enqueueProjectInitJob({
+            name,
+            hostname: str(args, 'hostname'),
+            template: 'projekt_db',
+            requested_by: resolveAgentId(str(args, 'agent_id')) ?? undefined,
+          });
+          const job = await waitForProjectInitJob(jobId, 35_000);
+          if (job.status === 'pending' || job.status === 'running') {
+            try { await expirePendingProjectInitJobs(30); } catch { /* best-effort */ }
+            return { success: false, error: 'daemon_unreachable', job_id: job.id, status: job.status, message: 'FileWatcher-Daemon hat den Job nicht (rechtzeitig) abgeschlossen. Status: project(action: "init_status", job_id).' };
+          }
+          const zugang = await leseProjektDbZugang(name);
+          return zugang
+            ? { success: true, project: name, vorhanden: true, ...zugang, job_id: job.id, message: job.message ?? job.error }
+            : { success: false, project: name, vorhanden: false, job_id: job.id, status: job.status, message: job.message ?? job.error };
+        }
+
         case 'init_status': {
           const { getProjectInitJob } = await import('@synapse/core');
           const jobId = reqStr(args, 'job_id');
@@ -169,6 +211,7 @@ const projectTool: ConsolidatedTool = {
             path: job.resolved_path,
             status: job.status,
             error: job.error,
+            projekt_db: job.status === 'done' ? await projektDbFeld(job.name) : undefined,
             message: job.message,
           };
         }
@@ -264,12 +307,14 @@ const projectTool: ConsolidatedTool = {
             return { success: false, error: 'project oder path erforderlich' };
           }
           if (path) {
-            return await getProjectStatusWithStats(path);
+            const statusErgebnis = await getProjectStatusWithStats(path);
+            const statusName = project ?? path.split(/[/\\]/).pop() ?? path;
+            return { ...statusErgebnis, projekt_db: await projektDbFeld(statusName) };
           }
           // Fallback: nur Stats anhand des Projektnamens
           const { getProjectStats } = await import('@synapse/core');
           const stats = await getProjectStats(project!);
-          return { success: true, stats, message: `Projekt "${project}" nicht lokal registriert — nur Index-Stats verfuegbar` };
+          return { success: true, stats, projekt_db: await projektDbFeld(project!), message: `Projekt "${project}" nicht lokal registriert — nur Index-Stats verfuegbar` };
         }
 
         case 'list': {

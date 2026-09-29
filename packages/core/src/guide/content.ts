@@ -1148,6 +1148,12 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
         example: 'project({ action: "init_status", job_id: "abc-123" })',
         tips: 'Status: pending|running|done|failed|rejected|timeout. Bei "done" enthaelt path den finalen Projekt-Pfad.',
       },
+      projekt_db: {
+        description: 'Projekt-DB (Spielwiese je Projekt auf 192.168.50.65:5433, Container postgresql16_2 — NICHT die Synapse-DB) anzeigen oder anlegen. Standard: anzeigen mit Host, Port, DB, User, Passwort und DATABASE_URL; gibt es keine, kommt vorhanden:false plus der fertige Aufruf. erstellen:true legt sie an, falls keine existiert (eine vorhandene wird nie angefasst). Neue Projekte bekommen sie bei init automatisch durch die API.',
+        params: 'project (req). Optional: erstellen (boolean).',
+        example: 'project({ action: "projekt_db", project: "mein-projekt" })  ODER  project({ action: "projekt_db", project: "coedit-test", erstellen: true })',
+        tips: 'Rolle <db>_user ohne Superuser/CREATEDB/CREATEROLE, Owner der eigenen DB, kein Zugriff auf andere Projekt-DBs. Laeuft der Daemon, steht DATABASE_URL zusaetzlich in <projekt>/.env (chmod 600). status zeigt nur vorhanden ja/nein, ohne Passwort.',
+      },
       status: {
         description: 'Projekt-Status, FileWatcher-Status und Statistiken abrufen.',
         params: 'path (req, absoluter Pfad)',

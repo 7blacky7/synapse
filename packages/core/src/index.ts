@@ -568,6 +568,38 @@ export {
 } from './services/project-init-queue.js';
 export type { ProjectInitJobRow, ProjectInitStatus, ProjectInitCompletion } from './services/project-init-queue.js';
 
+// Projekt-DB auf der Unraid-Projekt-Instanz (5433) beim Self-Service-Init
+export {
+  legeProjektDbAn,
+  leseProjektDbInfo,
+  leseProjektDbZugang,
+  projektDbKurzinfo,
+  ladeProjektDbKonfig,
+  pruefeProjektDbZiel,
+  leiteDbNamenAb,
+  rollenNameFuer,
+  bauPruefSql,
+  bauRolleSql,
+  bauAnlageSql,
+  bauNachpruefSql,
+  bauRueckbauSql,
+  projektDbDsn,
+  envHatDatabaseUrl,
+  schreibeProjektDbEnv,
+  ProjektDbSchutzFehler,
+  PROJEKT_DB_MEMORY_NAME,
+} from './services/projekt-db.js';
+export type {
+  ProjektDbErgebnis,
+  ProjektDbAnlage,
+  ProjektDbZugang,
+  ProjektDbStatus,
+  ProjektDbZiel,
+  ProjektDbKonfig,
+  PsqlAusfuehrer,
+  LegeProjektDbAnOptionen,
+} from './services/projekt-db.js';
+
 // Serverseitige Skill-Hooks (HOOK-3/HOOK-4)
 export {
   holeSprachSkillVorschlaege,

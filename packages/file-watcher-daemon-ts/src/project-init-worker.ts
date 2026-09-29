@@ -23,7 +23,10 @@ import {
   expirePendingProjectInitJobs,
   isValidProjectName,
   registerProject,
+  envHatDatabaseUrl,
+  schreibeProjektDbEnv,
   type ProjectInitJobRow,
+  type ProjektDbAnlage,
 } from '@synapse/core'
 
 import { getWorkspaceRoot, loadConfig, DEFAULT_SYNAPSE_API_URL } from './config.js'
@@ -152,6 +155,49 @@ interface InitResult {
   message: string
 }
 
+/**
+ * Projekt-DB ueber die synapse-api anlegen lassen (POST /api/projects/:name/projekt-db)
+ * und DATABASE_URL in <projekt>/.env schreiben (auch fuer eine schon vorhandene DB,
+ * deren Zugangsdaten in Synapse liegen). Passwort nicht loggen. Best-effort: wirft nie.
+ */
+async function richteProjektDbEin(name: string, projectPath: string): Promise<string> {
+  if (envHatDatabaseUrl(projectPath)) {
+    return 'Projekt-DB: .env enthaelt bereits DATABASE_URL — nichts angelegt.'
+  }
+  let baseUrl = DEFAULT_SYNAPSE_API_URL
+  let token: string | undefined
+  try {
+    const cfg = loadConfig() as ReturnType<typeof loadConfig> & { synapse_api_token?: unknown }
+    if (cfg.synapse_api_url) baseUrl = cfg.synapse_api_url
+    if (typeof cfg.synapse_api_token === 'string' && cfg.synapse_api_token) token = cfg.synapse_api_token
+  } catch { /* default-fallback */ }
+
+  let ergebnis: ProjektDbAnlage | undefined
+  let zugang: { host?: string; port?: number; database?: string; user?: string; passwort?: string } | null | undefined
+  try {
+    const res = await fetch(`${baseUrl.replace(/\/+$/, '')}/api/projects/${encodeURIComponent(name)}/projekt-db`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...(token ? { authorization: `Bearer ${token}` } : {}) },
+      body: JSON.stringify({ projekt_pfad: projectPath }),
+      signal: AbortSignal.timeout(90_000),
+    })
+    if (!res.ok) return `Projekt-DB: synapse-api antwortete HTTP ${res.status}.`
+    const antwort = (await res.json()) as { projekt_db?: ProjektDbAnlage; zugang?: typeof zugang }
+    ergebnis = antwort.projekt_db
+    zugang = antwort.zugang
+  } catch (err) {
+    return `Projekt-DB: synapse-api nicht erreichbar (${(err as Error).message}).`
+  }
+  if (!ergebnis) return 'Projekt-DB: Antwort ohne Ergebnis.'
+  if (!zugang?.passwort) return `Projekt-DB [${ergebnis.status}]: ${ergebnis.hinweis}`
+  try {
+    schreibeProjektDbEnv(projectPath, zugang)
+    return `Projekt-DB: ${ergebnis.hinweis} DATABASE_URL in ${path.join(projectPath, '.env')} (chmod 600).`
+  } catch (err) {
+    return `Projekt-DB: ${ergebnis.hinweis} .env nicht geschrieben (${(err as Error).message}) — Zugangsdaten per project(action:"projekt_db").`
+  }
+}
+
 async function initializeProject(
   job: ProjectInitJobRow,
   manager: WatcherManager,
@@ -167,6 +213,18 @@ async function initializeProject(
 
   const root = getWorkspaceRoot()
   const projectPath = path.resolve(root, job.name)
+
+  // Nur Projekt-DB fuer ein BESTEHENDES Projekt (project action "projekt_db", auf Wunsch).
+  if (job.template === 'projekt_db') {
+    if (!fs.existsSync(projectPath) || !fs.statSync(projectPath).isDirectory()) {
+      const err = new Error(
+        `Projektordner "${projectPath}" existiert nicht — Projekt-DB nur fuer bestehende Projekte.`,
+      ) as Error & { rejectReason: string }
+      err.rejectReason = 'not_found'
+      throw err
+    }
+    return { path: projectPath, message: await richteProjektDbEin(job.name, projectPath) }
+  }
 
   // Sandbox-Check: kein Path-Traversal aus dem Workspace-Root
   const rootAbs = path.resolve(root)
@@ -235,10 +293,16 @@ async function initializeProject(
     void startRemoteWorkspace(job.name)
   }
 
+  // Projekt-DB auf der Unraid-Projekt-Instanz — nur fuer neu angelegte Ordner,
+  // bestehende Projekte bekommen sie nur auf Wunsch. Best-effort: wirft nie.
+  const projektDbHinweis = alreadyExists
+    ? 'Projekt-DB: nicht automatisch angelegt (Ordner bestand schon) — auf Wunsch per project(action:"projekt_db").'
+    : await richteProjektDbEin(job.name, projectPath)
+
   return {
     path: projectPath,
-    message: alreadyExists
+    message: (alreadyExists
       ? `Projekt "${job.name}" war schon angelegt — registriert + Watcher gestartet.`
-      : `Projekt "${job.name}" angelegt unter ${projectPath} und gestartet.`,
+      : `Projekt "${job.name}" angelegt unter ${projectPath} und gestartet.`) + ` ${projektDbHinweis}`,
   }
 }
