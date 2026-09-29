@@ -265,12 +265,16 @@ export async function oauthRoutes(fastify: FastifyInstance): Promise<void> {
 
   /**
    * OAuth Protected Resource Metadata (RFC 9728).
-   * resource MUSS exakt die MCP-Server-URL sein (hier: ${baseUrl}/mcp).
+   * resource ist die WURZEL (${baseUrl}/): Der MCP-Endpunkt ist POST / (Streamable HTTP),
+   * die Connector-URL also https://<host>/. Der MCP-Client von claude.ai prueft, dass die
+   * gemeldete Ressource die eingetragene URL abdeckt (Pfad-Praefix). Mit ${baseUrl}/mcp
+   * lag "/" nicht darunter -> "Es konnte nicht ermittelt werden, wie sich dieser Server
+   * anmeldet" (29.09.2026). Die Wurzel deckt "/" UND "/mcp" ab.
    */
   fastify.get('/.well-known/oauth-protected-resource', async (request) => {
     const baseUrl = getBaseUrl(request);
     return {
-      resource: `${baseUrl}/mcp`,
+      resource: `${baseUrl}/`,
       authorization_servers: [baseUrl],
       scopes_supported: SUPPORTED_SCOPES,
       bearer_methods_supported: ['header'],
