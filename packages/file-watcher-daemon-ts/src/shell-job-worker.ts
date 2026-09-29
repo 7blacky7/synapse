@@ -303,6 +303,11 @@ async function runClaimedJob(project: string, job: ShellJobRow): Promise<void> {
   // Jobs, ist nach diesem Punkt aber nicht mehr Source-of-Truth.
   const streamId = (result['stream_id'] as string | undefined) ?? job.stream_id ?? undefined;
   const output = readStreamLog(streamId);
+  // shell_jobs hat keine eigene Spalte dafuer; message wird von der REST-Seite
+  // ohnehin durchgereicht. So sieht der Aufrufer ohne API-Deploy, welche DB-
+  // Variable sein Job hatte (ohne Passwort).
+  const jobEnv = result['job_env'] as { database_url?: string } | undefined;
+  const jobEnvText = jobEnv?.database_url ? `job_env: database_url=${jobEnv.database_url}` : undefined;
 
   await completeShellJob(job.id, {
     status,
@@ -316,7 +321,7 @@ async function runClaimedJob(project: string, job: ShellJobRow): Promise<void> {
             (result['message'] as string | undefined) ??
             'Job wurde abgebrochen. Angehaengte Wartende muessen neu starten.',
         }
-      : {}),
+      : jobEnvText ? { message: jobEnvText } : {}),
   });
   console.error(`[shell-worker] Job ${job.id} abgeschlossen mit status=${status} (output ${output ? output.length + ' bytes' : 'kein file'})`);
 }

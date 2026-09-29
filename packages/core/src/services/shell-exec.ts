@@ -15,6 +15,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import crypto from 'node:crypto';
 import { getProjectRoot } from './project-registry.js';
+import { baueJobUmgebung } from './shell-job-umgebung.js';
 
 const STREAMS_DIR = path.join(os.homedir(), '.synapse', 'shell-streams');
 const DEFAULT_TAIL_LINES = 5;
@@ -171,6 +172,12 @@ export async function execShellInProject(
     };
   }
 
+  // Nie die Daemon-Umgebung durchreichen: sie traegt DATABASE_URL der Synapse-DB
+  // und Tokens. DATABASE_URL zeigt stattdessen auf die DB DIESES Projekts
+  // (siehe shell-job-umgebung.ts). job_env meldet die Wahl ohne Passwort.
+  const jobUmgebung = await baueJobUmgebung(args.project);
+  const jobEnv = jobUmgebung.info;
+
   return new Promise((resolve) => {
     ensureStreamsDir();
     cleanupOldStreams();
@@ -203,7 +210,7 @@ export async function execShellInProject(
     // PGID des Waisen == Daemon-PID). Ein Gruppen-Kill haette damit den Daemon
     // selbst erschlagen. Deshalb: eigene Gruppe, dann gezielt -pgid beenden.
     const child = spawn('sh', ['-c', args.command], {
-      cwd, env: process.env, stdio: ['ignore', log, log],
+      cwd, env: jobUmgebung.env, stdio: ['ignore', log, log],
       detached: true,
     });
 
@@ -311,6 +318,7 @@ export async function execShellInProject(
         exit_code: meta.exit_code,
         detached,
         tail: tailLines(logPath(streamId), tailN),
+        job_env: jobEnv,
         ...(cancelled
           ? { message: 'Job wurde abgebrochen.' }
           : hardLimitHit
@@ -331,6 +339,7 @@ export async function execShellInProject(
         error: err.message,
         detached,
         tail: tailLines(logPath(streamId), tailN),
+        job_env: jobEnv,
       });
     });
   });

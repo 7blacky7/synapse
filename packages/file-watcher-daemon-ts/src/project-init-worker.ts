@@ -25,6 +25,7 @@ import {
   registerProject,
   envHatDatabaseUrl,
   schreibeProjektDbEnv,
+  vergissJobUmgebungCache,
   type ProjectInitJobRow,
   type ProjektDbAnlage,
 } from '@synapse/core'
@@ -188,6 +189,8 @@ async function richteProjektDbEin(name: string, projectPath: string): Promise<st
   } catch (err) {
     return `Projekt-DB: synapse-api nicht erreichbar (${(err as Error).message}).`
   }
+  // Shell-Jobs dieses Projekts sollen die neue DB sofort als DATABASE_URL sehen.
+  vergissJobUmgebungCache(name)
   if (!ergebnis) return 'Projekt-DB: Antwort ohne Ergebnis.'
   if (!zugang?.passwort) return `Projekt-DB [${ergebnis.status}]: ${ergebnis.hinweis}`
   try {

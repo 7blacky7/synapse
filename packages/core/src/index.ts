@@ -153,6 +153,12 @@ export {
   isProjectActive,
 } from './services/shell-exec.js';
 export type { ShellExecArgs, ShellGetStreamArgs } from './services/shell-exec.js';
+export {
+  baueJobUmgebung,
+  vergissJobUmgebungCache,
+  SYNAPSE_DB_HINWEIS,
+} from './services/shell-job-umgebung.js';
+export type { JobUmgebung, JobUmgebungInfo, BaueJobUmgebungOptionen } from './services/shell-job-umgebung.js';
 
 // Migrations
 export { migrateToRelativePaths } from './migrations/migrate-to-relative-paths.js';
