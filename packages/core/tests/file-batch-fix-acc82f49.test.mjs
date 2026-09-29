@@ -218,6 +218,44 @@ try {
   const c11 = await batch.commitBatch({ plan_id: p11.plan_id, agent_id: 'fa-o11' });
   pruefe(c11.success === true && await inhalt('src/r3.ts') === 'r3-1\nr3-2\nR3-BEITRAG\nr3-4\nFREMD\nr3-6\n', 'T11: commit schreibt den Beitrag auf den fremd geaenderten Stand', { c11: c11.success, r3: await inhalt('src/r3.ts') });
 
+  // ===== T12 Wait auf eine Owner-Datei, die KEIN Owner-Plan abdeckt (s2: ST2-STEUER-2 verloren) =====
+  // (a) Owner reserviert s1+s2, plant nur s1. Der Wartende auf s2 muss den offenen Owner-Plan als
+  //     Ziel bekommen (coedit_add erweitert ihn um die vom Owner reservierte s2). Vorher: kein Ziel,
+  //     der Wartende hing bis zum commit des Owners und fand danach gar keins mehr.
+  await anlegen('src/s1.ts', sechs('s1-'));
+  await anlegen('src/s2.ts', sechs('s2-'));
+  await res.addFileReservations({ project: PROJECT, agentId: 'fa-o12', filePaths: ['src/s1.ts', 'src/s2.ts'] });
+  const p12 = await batch.planBatch({ project: PROJECT, agent_id: 'fa-o12', ops: [rl('src/s1.ts', 1, 's1-1', 'S1')] });
+  const s2op = rl('src/s2.ts', 3, 's2-3', 'S2-BEITRAG');
+  const w12 = await batch.planBatch({ project: PROJECT, agent_id: 'fa-w12', ops: [s2op] });
+  const sp12 = await versuch(() => batch.getSharedPlanStatus({ project: PROJECT, wait_token: w12.coedit_waits?.[0]?.wait_token, agent_id: 'fa-w12' }));
+  pruefe(w12.coedit_waits?.[0]?.target_plan_id === p12.plan_id && sp12.target_plan_id === p12.plan_id,
+    'T12: Wait auf eine reservierte, noch nicht geplante Owner-Datei bekommt den offenen Owner-Plan als Ziel', { plan: w12.coedit_waits?.[0]?.target_plan_id, sps: sp12.target_plan_id, soll: p12.plan_id });
+  const a12 = await versuch(() => batch.addCoeditContribution({ project: PROJECT, plan_id: p12.plan_id, agent_id: 'fa-w12', ops: [s2op] }));
+  const c12 = await batch.commitBatch({ plan_id: p12.plan_id, agent_id: 'fa-o12' });
+  pruefe(a12.success === true && c12.success === true && await inhalt('src/s2.ts') === 's2-1\ns2-2\nS2-BEITRAG\ns2-4\ns2-5\ns2-6\n' && (await zeile(w12.plan_id))?.status === 'cancelled',
+    'T12: Beitrag landet im Owner-Plan, commit schreibt ihn, Traeger schliesst', { a12: a12.success, c12: c12.success, s2: await inhalt('src/s2.ts'), traeger: await zeile(w12.plan_id) });
+  // (b) Wie s2: Wait entsteht, bevor der Owner plant; ein Dritter deckt u2 im Owner-Plan ab; der Owner
+  //     committet, ohne dass der Wartende je ein Ziel sah. Danach muss shared_plan_status den
+  //     committeten Plan nennen, damit coedit_add in einen Folgeplan fuehrt — sonst ist die Op verloren.
+  await anlegen('src/u1.ts', sechs('u1-'));
+  await anlegen('src/u2.ts', sechs('u2-'));
+  await res.addFileReservations({ project: PROJECT, agentId: 'fa-o13', filePaths: ['src/u1.ts', 'src/u2.ts'] });
+  const u2op = rl('src/u2.ts', 3, 'u2-3', 'U2-SPAET');
+  const w13 = await batch.planBatch({ project: PROJECT, agent_id: 'fa-w13', ops: [u2op] });
+  const p13 = await batch.planBatch({ project: PROJECT, agent_id: 'fa-o13', ops: [rl('src/u1.ts', 1, 'u1-1', 'U1')] });
+  const x13ops = [rl('src/u1.ts', 5, 'u1-5', 'U1-X'), rl('src/u2.ts', 5, 'u2-5', 'U2-X')];
+  await batch.planBatch({ project: PROJECT, agent_id: 'fa-x13', ops: x13ops });
+  await batch.addCoeditContribution({ project: PROJECT, plan_id: p13.plan_id, agent_id: 'fa-x13', ops: x13ops });
+  await batch.commitBatch({ plan_id: p13.plan_id, agent_id: 'fa-o13' });
+  const sp13 = await versuch(() => batch.getSharedPlanStatus({ project: PROJECT, wait_token: w13.coedit_waits?.[0]?.wait_token, agent_id: 'fa-w13', wait_seconds: 5 }));
+  pruefe(sp13.target_plan_id === p13.plan_id && sp13.target_plan_status === 'committed',
+    'T12: nach commit ohne Beitrag nennt shared_plan_status den committeten Owner-Plan (Weg in den Folgeplan)', { target: sp13.target_plan_id, status: sp13.target_plan_status, soll: p13.plan_id, err: sp13.error });
+  const f13 = await versuch(() => batch.addCoeditContribution({ project: PROJECT, plan_id: sp13.target_plan_id ?? p13.plan_id, agent_id: 'fa-w13', ops: [u2op] }));
+  const fc13 = f13.follow_up && f13.plan_id ? await batch.commitBatch({ plan_id: f13.plan_id, agent_id: 'fa-w13' }) : null;
+  pruefe(fc13?.success === true && await inhalt('src/u2.ts') === 'u2-1\nu2-2\nU2-SPAET\nu2-4\nU2-X\nu2-6\n' && (await zeile(w13.plan_id))?.status === 'cancelled',
+    'T12: der spaete Beitrag landet per Folgeplan in der Datei, der leere Traeger schliesst', { f13: f13.follow_up, fc13: fc13?.success, u2: await inhalt('src/u2.ts'), traeger: await zeile(w13.plan_id) });
+
   // ===== T5 Schemas =====
   const mcpFiles = await import(join(hier, '..', '..', 'mcp-server', 'dist', 'tools', 'consolidated', 'files.js')).catch((e) => ({ fehler: e.message }));
   const sch = mcpFiles.filesTool?.definition?.inputSchema ?? mcpFiles.filesTool?.inputSchema ?? null;

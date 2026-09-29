@@ -1975,6 +1975,8 @@ interface PlanReadyPlan {
   owner_agent_id: string | null;
   expected_hashes: Record<string, string>;
   open_for_coedit: boolean;
+  /** Anzahl Ops; leere Traegerplaene des Owners (0) sind nie Ziel eines Waits. */
+  op_count?: number;
 }
 
 interface PlanReadyWait {
@@ -1997,6 +1999,20 @@ function planFullyCoversWait(plan: PlanReadyPlan, wait: PlanReadyWait): boolean 
   const planPaths = new Set(Object.keys(plan.expected_hashes));
   const requiredPaths = uniqueStrings(wait.deferred_ops.flatMap(touchedPaths));
   return requiredPaths.length > 0 && requiredPaths.some((filePath) => planPaths.has(filePath));
+}
+
+/**
+ * Ziel eines Waits unter den offenen Plaenen seines Owners (s2-Marke, 29.09.2026): zuerst der
+ * EINE Plan, der schon eine Datei des Waits abdeckt; deckt keiner sie ab, der EINZIGE offene
+ * Owner-Plan mit Ops — coedit_add erweitert ihn um die vom Owner reservierte Datei. Vorher bekam
+ * ein Wait auf eine reservierte, aber (noch) nicht geplante Datei kein Ziel, hing bis zum commit
+ * des Owners und fand danach keins mehr: seine Op ging verloren, sein Traeger blieb offen.
+ */
+function zielPlanFuerWait<T extends PlanReadyPlan>(plans: T[], wait: PlanReadyWait): T | null {
+  const covering = plans.filter((plan) => planFullyCoversWait(plan, wait));
+  if (covering.length > 0) return covering.length === 1 ? covering[0] : null;
+  const mitOps = plans.filter((plan) => (plan.op_count ?? 0) > 0);
+  return mitOps.length === 1 ? mitOps[0] : null;
 }
 
 async function emitPlanReady(
@@ -2057,7 +2073,8 @@ async function emitPlanReadyForExactlyOneExistingPlan(
 ): Promise<string | null> {
   if (!wait.waiting_agent) return null;
   const candidates = await client.query<PlanReadyPlan>(
-    `SELECT id::text AS id, project, owner_agent_id, expected_hashes, open_for_coedit
+    `SELECT id::text AS id, project, owner_agent_id, expected_hashes, open_for_coedit,
+            jsonb_array_length(ops)::int AS op_count
        FROM file_batch_plans
       WHERE project = $1 AND owner_agent_id = $2
         AND status = 'open' AND open_for_coedit = true
@@ -2068,11 +2085,11 @@ async function emitPlanReadyForExactlyOneExistingPlan(
     // Wait-Tabelle) und konnte unter Last einen Deadlock erzeugen.
     [wait.project, wait.primary_agent],
   );
-  const coveringPlans = candidates.rows.filter((plan) => planFullyCoversWait(plan, wait));
-  if (coveringPlans.length !== 1) return null;
-  await emitPlanReady(client, coveringPlans[0], wait);
+  const ziel = zielPlanFuerWait(candidates.rows, wait);
+  if (!ziel) return null;
+  await emitPlanReady(client, ziel, wait);
   // Befund 693bbf48 (b): die Ziel-Plan-ID gehoert auch in die plan-Antwort, nicht nur ins Event.
-  return coveringPlans[0].id;
+  return ziel.id;
 }
 
 /**
@@ -2688,7 +2705,9 @@ export async function getSharedPlanStatus(args: {
     const r = await getPool().query<{ f: string }>(
       `SELECT concat_ws('|', w.status, w.primary_plan_id, w.ready_at, cardinality(w.contributed_files), cardinality(w.no_change_files),
               (SELECT t.status::text FROM file_batch_plans t WHERE t.id = w.primary_plan_id),
-              (SELECT string_agg(p.id::text || ':' || p.status, ',' ORDER BY p.id) FROM file_batch_plans p
+              -- s2-Marke: auch die Op-Zahl, sonst weckt ein Beitrag, der den Owner-Plan auf die
+              -- Datei des Waits erweitert, den Long-Poll nicht.
+              (SELECT string_agg(p.id::text || ':' || p.status || ':' || jsonb_array_length(p.ops), ',' ORDER BY p.id) FROM file_batch_plans p
                 WHERE p.project = w.project AND p.owner_agent_id = w.primary_agent AND p.status = 'open')) AS f
          FROM file_batch_waits w WHERE w.wait_token = $1::uuid`,
       [args.wait_token],
@@ -2769,14 +2788,34 @@ async function sharedPlanStatusOnce(args: {
   let targetPlanId: string | null = wait.primary_plan_id;
   if (!targetPlanId) {
     const candidates = await pool.query<PlanReadyPlan>(
-      `SELECT id::text AS id, project, owner_agent_id, expected_hashes, open_for_coedit
+      `SELECT id::text AS id, project, owner_agent_id, expected_hashes, open_for_coedit,
+              jsonb_array_length(ops)::int AS op_count
          FROM file_batch_plans
         WHERE project = $1 AND owner_agent_id = $2 AND status = 'open' AND open_for_coedit = true
           AND NOT (previews @> '[{"ok": false}]'::jsonb)`,
       [args.project, wait.primary_agent],
     );
-    const covering = candidates.rows.filter((plan) => planFullyCoversWait(plan, wait));
-    if (covering.length === 1) targetPlanId = covering[0].id;
+    targetPlanId = zielPlanFuerWait(candidates.rows, wait)?.id ?? null;
+    if (!targetPlanId && wait.status === 'waiting' && candidates.rows.every((plan) => (plan.op_count ?? 0) === 0)) {
+      // s2-Marke (Race commit vs. Wait): der Owner hat NACH dem Entstehen dieses Waits committet,
+      // ohne dass der Wait je ein Ziel sah, und haelt keine der offenen Dateien mehr reserviert.
+      // Dann ist dieser committete Plan das Ziel: coedit_add fuehrt von dort in einen Folgeplan
+      // auf den aktuellen Stand und schliesst den leeren Traeger. Ohne das fand der Wartende nie
+      // mehr ein Ziel, seine Op ging verloren.
+      const erledigt = await pool.query<{ id: string }>(
+        `SELECT p.id::text AS id FROM file_batch_plans p
+          WHERE p.project = $1 AND p.owner_agent_id = $2 AND p.status = 'committed'
+            AND p.committed_at >= (SELECT w.created_at FROM file_batch_waits w WHERE w.wait_token = $3::uuid)
+            AND NOT EXISTS (
+              SELECT 1 FROM file_reservations r
+               WHERE r.project = $1 AND r.agent_id = $2 AND r.released_at IS NULL
+                 AND r.file_path = ANY($4::text[])
+            )
+          ORDER BY p.committed_at DESC, p.id DESC LIMIT 1`,
+        [args.project, wait.primary_agent, wait.wait_token, remainingWaitFiles(wait)],
+      );
+      targetPlanId = erledigt.rows[0]?.id ?? null;
+    }
   }
   const expired = new Date(wait.expires_at).getTime() <= Date.now();
   const completedFiles = completedWaitFiles(wait);
