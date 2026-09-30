@@ -71,6 +71,8 @@ export interface StatusNutzlast {
   project: string
   wrapperPid: number | null
   innerPid: number | null
+  /** true = inner_pid ausdruecklich auf innerPid setzen, auch auf NULL (Start: tote PID der alten Session loeschen). Nie 0. */
+  innerPidZuruecksetzen?: boolean
   socketPath: string | null
   model: string | null
   modelFullId: string | null

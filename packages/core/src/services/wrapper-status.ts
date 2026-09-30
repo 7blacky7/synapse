@@ -84,16 +84,24 @@ function mapRow(row: Record<string, unknown>): WrapperStatusRow {
  *   - Status-Aenderung: status + busy + currentTask uebergeben
  *   - wrapperStatusFlush (90s-Tick): ALLE Felder uebergeben fuer konsistenten State
  */
-export async function upsertWrapperStatus(
-  row: Partial<WrapperStatusRow> & { agentName: string; project: string },
-): Promise<void> {
-  const pool = getPool()
+export type WrapperStatusEingabe = Partial<WrapperStatusRow> & {
+  agentName: string
+  project: string
+  /**
+   * P7-T32: true = inner_pid wird ausdruecklich auf den uebergebenen Wert gesetzt, auch auf NULL (SQL: CASE WHEN $19 THEN $4 ...).
+   * Ohne das behaelt COALESCE die PID der ALTEN Session (tot) bis zum naechsten Write mit PID.
+   * NIE 0 als Ersatz: process.kill(0, ..) signalisiert die ganze Prozessgruppe.
+   */
+  innerPidZuruecksetzen?: boolean
+}
+
+/** Baut Statement + Parameter des Upserts (rein, ohne DB — testbar). */
+export function baueWrapperStatusUpsert(row: WrapperStatusEingabe): { text: string; values: unknown[] } {
   // Konvertiere undefined → null fuer alle optionalen Felder.
   // Im INSERT-Pfad: COALESCE($N, <default>) setzt den richtigen Default.
   // Im UPDATE-Pfad: COALESCE($N, wrapper_status.field) preserviert bestehende Werte.
   // So ist jedes Feld single-source: nur explizit gesetzte Werte aendern die DB.
-  await pool.query(
-    `INSERT INTO wrapper_status (
+  const text = `INSERT INTO wrapper_status (
         agent_name, project, wrapper_pid, inner_pid, socket_path,
         model, model_full_id, provider,
         status, busy, current_task,
@@ -113,7 +121,7 @@ export async function upsertWrapperStatus(
       )
       ON CONFLICT (agent_name, project) DO UPDATE SET
         wrapper_pid     = COALESCE($3,            wrapper_status.wrapper_pid),
-        inner_pid       = COALESCE($4,            wrapper_status.inner_pid),
+        inner_pid       = CASE WHEN $19::BOOLEAN THEN $4 ELSE COALESCE($4, wrapper_status.inner_pid) END,
         socket_path     = COALESCE($5,            wrapper_status.socket_path),
         model           = COALESCE($6,            wrapper_status.model),
         model_full_id   = COALESCE($7,            wrapper_status.model_full_id),
@@ -128,8 +136,9 @@ export async function upsertWrapperStatus(
         channels        = COALESCE($16::TEXT[],   wrapper_status.channels),
         connected_mcp   = COALESCE($17::BOOLEAN,  wrapper_status.connected_mcp),
         effort          = COALESCE($18,           wrapper_status.effort),
-        last_activity   = NOW()`,
-    [
+        last_activity   = NOW()`
+  // $19 = true: inner_pid wird auf $4 gesetzt, auch auf NULL (Reset); sonst bleibt COALESCE.
+  const values = [
       row.agentName,
       row.project,
       row.wrapperPid ?? null,
@@ -148,8 +157,14 @@ export async function upsertWrapperStatus(
       row.channels ?? null,      // null → INSERT: '{}', UPDATE: preserve existing
       row.connectedMcp ?? null,  // null → INSERT: false, UPDATE: preserve existing
       row.effort ?? null,        // null → preserve existing (Heartbeats schicken kein effort)
-    ],
-  )
+      row.innerPidZuruecksetzen === true,
+  ]
+  return { text, values }
+}
+
+export async function upsertWrapperStatus(row: WrapperStatusEingabe): Promise<void> {
+  const { text, values } = baueWrapperStatusUpsert(row)
+  await getPool().query(text, values)
 }
 
 /**

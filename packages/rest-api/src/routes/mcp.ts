@@ -191,6 +191,7 @@ import {
 } from '@synapse/core';
 import { minimatch } from 'minimatch';
 import { GUIDE_OVERVIEW, TOOL_GUIDES, logToolCall, queryToolCalls } from '@synapse/core';
+import { leiteAgentIdAusHeaders } from './agent-header.js';
 // PA-1: unbekannte Parameter melden statt still verwerfen — dieselbe Funktion wie im
 // lokalen MCP-Server, damit die beiden Strecken nicht auseinanderlaufen.
 import { pruefeUnbekannteParameter, baueErlaubteParameter } from '@synapse/core';
@@ -1813,16 +1814,7 @@ function objArray<T extends Record<string, unknown>>(
 // OpenAI/ChatGPT: User-Agent "openai-mcp/*" + X-Openai-Session "v1/<token>".
 //   → agent_id = "gpt-" + first8(session-token), pro ChatGPT-Konversation stabil.
 // Claude: liefert keinen stable User-/Session-Identifier — hier kein Auto-Detect.
-function deriveAgentIdFromHeaders(headers: Record<string, unknown>): string | undefined {
-  const ua = String(headers['user-agent'] || '').toLowerCase();
-  if (ua.startsWith('openai-mcp')) {
-    const session = String(headers['x-openai-session'] || '');
-    const m = session.match(/v1\/([A-Za-z0-9]{8})/);
-    if (m) return `gpt-${m[1].toLowerCase()}`;
-    return 'gpt-web';
-  }
-  return undefined;
-}
+// Umgesetzt in ./agent-header.ts (leiteAgentIdAusHeaders): zusaetzlich X-Synapse-Agent der Spezialisten-Bruecke (P7-T32).
 
 // =====================================================================
 // REST-Onboarding — Projekt-Regeln einmal pro (Agent, Projekt, Prozess)
@@ -5828,7 +5820,7 @@ export async function mcpRoutes(fastify: FastifyInstance): Promise<void> {
       return reply.status(400).send({ jsonrpc: '2.0', id, error: { code: -32600, message: 'Invalid JSON-RPC version' } });
     }
 
-    const derivedAgentId = deriveAgentIdFromHeaders(request.headers as Record<string, unknown>);
+    const derivedAgentId = leiteAgentIdAusHeaders(request.headers as Record<string, unknown>);
     // Hauptagenten-Kontext — identisch zum POST-/-Handler (die Doppelung der
     // beiden Handler ist Bestand; Aenderungen hier IMMER in beiden pflegen).
     const hauptagentSessionHeader = request.headers['x-synapse-hauptagent-session'];
@@ -6019,7 +6011,7 @@ export async function mcpRoutes(fastify: FastifyInstance): Promise<void> {
       return reply.status(400).send({ jsonrpc: '2.0', id, error: { code: -32600, message: 'Invalid JSON-RPC version' } });
     }
 
-    const derivedAgentId = deriveAgentIdFromHeaders(request.headers as Record<string, unknown>);
+    const derivedAgentId = leiteAgentIdAusHeaders(request.headers as Record<string, unknown>);
     // Hauptagenten-Kontext: der Runtime-Container schickt seine Session-ID im
     // Header mit (buildHauptagentMcpConfig im claude-driver). Nur der SERVER
     // setzt daraus session_id — eine von aussen behauptete session_id zaehlt nicht.

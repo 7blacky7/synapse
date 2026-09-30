@@ -121,6 +121,8 @@ const STUCK_TIMEOUT_MS = 120_000 // 2 Minuten ohne Event-Aktivitaet = stuck
 // (Ladder geht bis 60min — ohne eigenen Timer veraltet last_activity in PG)
 const WRAPPER_STATUS_PG_WRITE_INTERVAL_MS = 90_000
 let lastPgWriteTs = 0
+// P7-T32: erst wenn die PG-Zeile steht, schreibt ein Prozessstart (Rotation/Neustart) die neue PID sofort.
+let pgStatusInitialisiert = false
 let pgWriteTimerId: ReturnType<typeof setInterval> | null = null
 
 /** Gecachte Channel-Liste des Agenten (einmalig beim Start aus DB geladen) */
@@ -728,6 +730,8 @@ async function startAgentProcess(systemPrompt: string): Promise<void> {
   })
   processAlive = true
   log('Claude CLI subprocess started')
+  // P7-T32: neue innere PID sofort nach PG (sonst steht bis zum naechsten 90-s-Write die alte).
+  if (pgStatusInitialisiert) await updateStatusPg('running')
 }
 
 async function wakeAgent(message: string, optionen: { leerlaufWake?: boolean } = {}): Promise<SendMessageResult> {
@@ -1827,7 +1831,10 @@ async function main() {
         agentName: AGENT_NAME,
         project: PROJECT_NAME,
         wrapperPid: process.pid,
-        innerPid: null, // Claude CLI noch nicht gestartet an diesem Punkt
+        // P7-T32: echte PID (der Prozess laeuft hier meist schon) oder NULL — und die tote PID der
+        // alten Session in PG ausdruecklich ueberschreiben (COALESCE haette sie behalten). Nie 0.
+        innerPid: processManager.getStatus().get(AGENT_NAME)?.pid ?? null,
+        innerPidZuruecksetzen: true,
         socketPath: SOCKET_PATH,
         model: AGENT_MODEL,
         modelFullId: spawnModelEntry?.fullId ?? null,
@@ -1843,6 +1850,7 @@ async function main() {
         currentTask: null,
       })
       lastPgWriteTs = Date.now()
+      pgStatusInitialisiert = true
       log('PG-Status-Zeile initialisiert (running)')
     } catch (err) {
       log('Initiale PG-Status-Zeile fehlgeschlagen (non-fatal): %s', err)
@@ -1853,7 +1861,14 @@ async function main() {
   // Sichert last_activity auch wenn Ladder auf 60min steht (Idle-Agent).
   if (PROJECT_NAME) {
     pgWriteTimerId = setInterval(() => {
-      void updateStatusPg()
+      void (async () => {
+        // P7-T32: waehrend eines langen Turns (z. B. Initial-Wake) laufen weder wakeAgent-Ende noch Heartbeat-Sync;
+        // ohne das steht tokens 0, obwohl die JSONL schon Werte hat. Non-fatal.
+        if (agentBusy) {
+          try { await syncTokensFromHistory() } catch { /* Tokens bleiben beim letzten Stand */ }
+        }
+        await updateStatusPg()
+      })()
     }, WRAPPER_STATUS_PG_WRITE_INTERVAL_MS)
   }
 

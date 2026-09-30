@@ -262,6 +262,23 @@ export async function widerrufeWrapperTokens(
 }
 
 /**
+ * Inhalt von mcp-http.json (rein, testbar). X-Synapse-Agent (P7-T32) ordnet die Aufrufe des Agenten
+ * serverseitig ihm zu (tool_calls / shell(activity)), auch wenn er agent_id nicht mitschickt.
+ * Nur Zuordnung, keine Berechtigung — die traegt das Token.
+ */
+export function baueBrueckenConfig(endpunkt: string, token: string, agentName: string) {
+  return {
+    mcpServers: {
+      [SERVER_NAME]: {
+        type: 'http',
+        url: endpunkt,
+        headers: { Authorization: `Bearer ${token}`, 'X-Synapse-Agent': agentName },
+      },
+    },
+  };
+}
+
+/**
  * Bereitet die MCP-Konfiguration fuer den inneren Claude vor.
  *
  * Rueckgabe aktiv=false heisst: der heutige stdio-Weg gilt unveraendert.
@@ -366,15 +383,7 @@ export async function bereiteMcpBrueckeVor(
   }
 
   const configPfad = join(projectPath, '.synapse', 'agents', agentName, 'mcp-http.json');
-  const inhalt = {
-    mcpServers: {
-      [SERVER_NAME]: {
-        type: 'http',
-        url: endpunkt,
-        headers: { Authorization: `Bearer ${token}` },
-      },
-    },
-  };
+  const inhalt = baueBrueckenConfig(endpunkt, token, agentName);
   try {
     await writeFile(configPfad, JSON.stringify(inhalt, null, 2), 'utf-8');
     // Die Datei traegt ein Token — nur der Eigentuemer darf sie lesen.
