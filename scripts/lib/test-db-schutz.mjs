@@ -41,6 +41,23 @@ export function bewerteTestDb(env = process.env) {
 }
 
 /**
+ * Haerter (P7-T12) fuer Tests, die selbst eine Wegwerf-Datenbank anlegen und droppen:
+ * zusaetzlich zu bewerteTestDb -> Port 5432 (auch bei fehlender Portangabe = Default) auf JEDEM Host
+ * und Datenbankname 'synapse' sind Abbruch. Reine Funktion, keine Verbindung.
+ */
+export function bewerteSchemaProbeDb(env = process.env) {
+  const erst = bewerteTestDb(env);
+  if (erst.modus !== 'ok') return erst;
+  const url = new URL(erst.url);
+  if ((url.port || '5432') === '5432') {
+    return { modus: 'abbruch', grund: `Port ${url.port || '5432 (Default)'} ist der Live-Port` };
+  }
+  const dbName = decodeURIComponent(url.pathname.replace(/^\//, ''));
+  if (dbName === 'synapse') return { modus: 'abbruch', grund: "Datenbankname 'synapse'" };
+  return erst;
+}
+
+/**
  * Wendet die Bewertung an: skip -> Exit 0, abbruch -> Exit 2, ok -> DATABASE_URL setzen.
  * Gibt die Test-URL zurueck (nur bei 'ok').
  */
