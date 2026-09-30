@@ -62,6 +62,44 @@ export interface BaueJobUmgebungOptionen {
   leseZugang?: (projekt: string) => Promise<JobDbZugang | null>;
   /** Secrets-Datei, deren Namen entfernt werden (Default ~/.config/synapse/secrets.env). */
   secretsPfad?: string;
+  /** Home-Verzeichnis fuer die PATH-Ergaenzung (Default os.homedir()). */
+  home?: string;
+  /** Existenzpruefung fuer die PATH-Ergaenzung (Default fs.existsSync). */
+  existiert?: (pfad: string) => boolean;
+}
+
+/**
+ * P9-T13: Verzeichnisse, die ein Job im PATH braucht, der Daemon aber nicht immer hat
+ * (Start ueber start-watcher.sh/Tray ohne Login-Shell): cc-send liegt in ~/.local/bin,
+ * mise-Shims unter ~/.local/share/mise/shims.
+ */
+const PFAD_ERGAENZUNGEN = ['.local/bin', '.local/share/mise/shims'];
+
+function ohneSchlussSlash(p: string): string {
+  return p.length > 1 ? p.replace(/[\\/]+$/, '') : p;
+}
+
+/**
+ * Haengt fehlende, tatsaechlich vorhandene Verzeichnisse ANS ENDE des PATH. Rein additiv:
+ * Bestand und Reihenfolge bleiben (Toolchain-Prioritaet des Daemons), nichts wird
+ * vorangestellt, vorhandene Eintraege (auch mit Schluss-Slash) nicht doppelt aufgenommen.
+ * Leerer/fehlender PATH bleibt unveraendert.
+ */
+export function ergaenzeJobPfad(
+  pfad: string | undefined,
+  home: string,
+  existiert: (pfad: string) => boolean = fs.existsSync,
+  trenner: string = path.delimiter,
+): string | undefined {
+  if (!pfad) return pfad;
+  const vorhanden = new Set(pfad.split(trenner).map(ohneSchlussSlash));
+  const neu: string[] = [];
+  for (const rel of PFAD_ERGAENZUNGEN) {
+    const verz = `${ohneSchlussSlash(home)}/${rel}`;
+    if (vorhanden.has(verz) || !existiert(verz)) continue;
+    neu.push(verz);
+  }
+  return neu.length ? [pfad, ...neu].join(trenner) : pfad;
 }
 
 /** Variablen, die die DB-Wahl steuern — immer entfernt, nie per Durchlass erlaubt. */
@@ -167,6 +205,9 @@ export async function baueJobUmgebung(
       continue;
     }
     env[name] = wert;
+  }
+  if (env.PATH) {
+    env.PATH = ergaenzeJobPfad(env.PATH, optionen.home ?? os.homedir(), optionen.existiert ?? fs.existsSync);
   }
 
   let dbInfo = 'keine';

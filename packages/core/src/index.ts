@@ -213,6 +213,7 @@ export {
 export type { ShellExecArgs, ShellGetStreamArgs } from './services/shell-exec.js';
 export {
   baueJobUmgebung,
+  ergaenzeJobPfad,
   vergissJobUmgebungCache,
   SYNAPSE_DB_HINWEIS,
 } from './services/shell-job-umgebung.js';

@@ -102,7 +102,9 @@ try {
     if (projekt === 'kaputt') throw new Error('DB weg');
     return null;
   };
-  const opt = { basis, leseZugang: lookup, secretsPfad };
+  // P9-T13: PATH-Ergaenzung hier abgeschaltet (existiert:false) — sie hat eigenen Test
+  // (shell-job-pfad.test.mjs); sonst haengt der Test am echten ~/.local/bin des Rechners.
+  const opt = { basis, leseZugang: lookup, secretsPfad, existiert: () => false };
 
   if (typeof baueJobUmgebung !== 'function') {
     ok('baueJobUmgebung ist exportiert', false);
