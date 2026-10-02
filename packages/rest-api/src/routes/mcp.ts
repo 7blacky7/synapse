@@ -4343,6 +4343,9 @@ async function handleToolCall(
       const project = reqStr(args, 'project');
       switch (action) {
         case 'tree': {
+          // TODO(P4-T60 / ASSET-1, vorgemerkt 02.10.2026, NICHT gebaut): Asset-Eintraege mit Marker 'asset'
+          // im Baum. Muss mit mcp-server/src/tools/consolidated/code-intel.ts (case 'tree') uebereinstimmen.
+
           const tree = await getProjectTree(project, {
             path: str(args, 'path') ?? str(args, 'file_path'),
             recursive: bool(args, 'recursive'),
@@ -4433,6 +4436,10 @@ async function handleToolCall(
           return { success: true, results, count: results.length, mode: 'fulltext', project };
         }
         case 'file': {
+          // TODO(P4-T60 / ASSET-1, vorgemerkt 02.10.2026, NICHT gebaut): Weiche zu asset_intel bei Assets
+          // (und umgekehrt), mit Hinweis auf das antwortende Tool. Muss mit
+          // mcp-server/src/tools/consolidated/code-intel.ts (case 'file') uebereinstimmen.
+
           const filePath = str(args, 'file_path') ?? str(args, 'path');
           if (!filePath) throw new Error('Parameter "file_path" oder "path" ist erforderlich fuer action "file"');
           const file = await getFileContent(project, filePath, {

@@ -191,6 +191,11 @@ const ERKENNER_ZEICHEN = 600;
  *        (getLanguagesForFile, getParserVersionForFile), nichts aendern.
  */
 export function getParserForFile(filePath: string, inhalt?: string): LanguageParser | null {
+  // TODO(P4-T60 / ASSET-1, vorgemerkt 02.10.2026, NICHT gebaut): Asset-Formate gehoeren NICHT in diese
+  // Registry. LanguageParser.parse() nimmt Text; Assets brauchen Buffer/Stream. Eigene Registry
+  // (AssetInspector, Zuordnung zuerst per Magic Bytes, dann per Endung) unter packages/core/src/asset-intel/.
+  // Liefert diese Funktion fuer ein Asset null, ist das KEIN Fehler fuer parser-health.
+
   const ext = path.extname(filePath).toLowerCase();
   if (ext) {
     const byExt = parsers.find(p => p.extensions.includes(ext));

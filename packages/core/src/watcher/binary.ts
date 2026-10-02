@@ -194,6 +194,14 @@ const EXTRACTABLE_DOCUMENT_EXTENSIONS = new Set([
  * 'code'     Alles andere, also der normale Text-Pfad.
  */
 export function klassifiziereDatei(filePath: string): 'media' | 'dokument' | 'code' {
+  // TODO(P4-T60 / ASSET-1, vorgemerkt 02.10.2026, NICHT gebaut): vierte Klasse 'asset' fuer
+  // 3D-/Szenen-/Textur-/Audio-/Archiv-/Binaerformate (glb, obj, blend, fbx, uasset, dds, ...).
+  // Heute landen sie als 'code' (Zeichensalat) oder werden als binaer verworfen. Kuenftig:
+  // KEIN Rohinhalt in PostgreSQL, aber ein Eintrag im Projekt (Pfad, Groesse, Format, Hash,
+  // parser_version), damit Agenten wissen 'da ist etwas'. Inspektor-Registry: packages/core/src/asset-intel/.
+  // Offen: Asset-Eintrag so anlegen, dass Zaehler, health und parseUnparsedFiles ihn nicht als
+  // fehlerhafte Textdatei melden. Herkunft der Dateien (PC-Watcher vs. Asset-Store): P4-T69.
+
   if (isExtractableDocument(filePath)) return 'dokument';
   if (isMultimodalFile(filePath)) return 'media';
   return 'code';
