@@ -47,19 +47,55 @@ async function bremsen(): Promise<{ schalter: Array<Record<string, unknown>>; pa
   return { schalter, pausiert };
 }
 
-async function projektStand(project: string): Promise<{ registriert: boolean; aktiv: boolean; hosts: unknown[]; stufe: number; stufe_gesetzt: boolean }> {
+async function projektStand(project: string): Promise<{ registriert: boolean; aktiv: boolean; hosts: unknown[]; stufe: number; stufe_gesetzt: boolean; zurueckgestellt_bis: Date | null }> {
   const pool = getPool();
   const { rows } = await pool.query<{ hostname: string; enabled: boolean; last_access: Date }>(
     'SELECT hostname, enabled, last_access FROM projects WHERE name = $1 ORDER BY hostname', [project],
   );
   const prio = await pool.query<{ stufe: number }>('SELECT stufe FROM embed_prioritaet WHERE project = $1', [project]).catch(() => ({ rows: [] as Array<{ stufe: number }> }));
+  // P15-T26: Projekt zurueckgestellt (P15-T12 E4, intern warteschlange_verschieben). Eigene Abfrage, damit eine
+  // DB ohne die Spalte (vor dem E4-Schema) die Stufe nicht verliert.
+  const zurueck = await pool.query<{ bis: Date }>(
+    'SELECT zurueckgestellt_bis AS bis FROM embed_prioritaet WHERE project = $1 AND zurueckgestellt_bis > NOW()', [project],
+  ).catch(() => ({ rows: [] as Array<{ bis: Date }> }));
   return {
     registriert: rows.length > 0,
     aktiv: rows.some((r) => r.enabled),
     hosts: rows,
     stufe: prio.rows[0]?.stufe ?? 3,
     stufe_gesetzt: prio.rows.length > 0,
+    zurueckgestellt_bis: zurueck.rows[0]?.bis ?? null,
   };
+}
+
+const iso = (t: Date | string): string => new Date(t).toISOString();
+
+function projektZurueckBefund(project: string, bis: Date | null): string | null {
+  return bis ? `Projekt ${project} zurueckgestellt bis ${iso(bis)} (intern warteschlange_verschieben): weder Claims noch Parsen bis dahin; vorgezogene Chunks (prio > 0) laufen trotzdem.` : null;
+}
+
+/** P15-T26: offene Chunks mit Steuerung (zurueckgestellt / ans Projektende / vorgezogen). null = Spalten fehlen. */
+async function steuerungZahlen(project: string, filePath: string | null): Promise<{ zurueckgestellt: number; hinten: number; vorne: number } | null> {
+  try {
+    // Drei Teilabfragen, damit die Teilindizes idx_code_chunks_zurueckgestellt / idx_code_chunks_prio greifen
+    const { rows } = await getPool().query<{ zurueckgestellt: number; hinten: number; vorne: number }>(
+      `SELECT
+         (SELECT count(*)::int FROM code_chunks WHERE project = $1 AND ($2::text IS NULL OR file_path = $2)
+            AND embedded_at IS NULL AND zurueckgestellt_bis > NOW()) AS zurueckgestellt,
+         (SELECT count(*)::int FROM code_chunks WHERE project = $1 AND ($2::text IS NULL OR file_path = $2)
+            AND embedded_at IS NULL AND prio < 0) AS hinten,
+         (SELECT count(*)::int FROM code_chunks WHERE project = $1 AND ($2::text IS NULL OR file_path = $2)
+            AND embedded_at IS NULL AND prio > 0) AS vorne`, [project, filePath],
+    );
+    return rows[0] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function steuerungBefund(z: { zurueckgestellt: number; hinten: number; vorne: number } | null): string | null {
+  if (!z || (z.zurueckgestellt === 0 && z.hinten === 0 && z.vorne === 0)) return null;
+  return `Steuerung (intern warteschlange_verschieben): ${z.zurueckgestellt} zurueckgestellt, ${z.hinten} ans Projektende, ${z.vorne} vorgezogen (offene Chunks). warteschlange_liste(code_chunks, project, eintrag_status) zeigt sie.`;
 }
 
 // ───── warum_nicht ──────────────────────────────────────────────────────
@@ -103,7 +139,24 @@ async function warumNichtChunk(id: string): Promise<Record<string, unknown>> {
   if (c.lease_aktiv) befund.push(`Geclaimt von ${c.claimed_by} bis ${new Date(c.lease_until).toISOString()} - wartet auf dessen Abschluss oder Ablauf.`);
   else if (c.lease_until) befund.push(`Lease von ${c.claimed_by} ist abgelaufen (${new Date(c.lease_until).toISOString()}) - der Chunk ist wieder claimbar.`);
   if (c.claim_attempt >= 3) befund.push(`claim_attempt ${c.claim_attempt}: wurde mehrfach geclaimt und nie abgeschlossen - Verdacht auf einen Fehler beim Einbetten genau dieses Chunks (Laenge ${c.zeichen} Zeichen).`);
-  // Reihenfolge: Projekte mit kleinerer Stufe kommen zuerst dran
+  // P15-T26: Steuerung aus P15-T12 E4 (CLAIM_SQL: Schritt 0 prio > 0 vor allen Projekten, Schritt 1 nur prio NULL
+  // und nicht zurueckgestellt, Schritt 2 prio < 0 nur bei Rest-Limit; zurueckgestellte Projekte nur Schritt 0).
+  const st = await pool.query<{ prio: number | null; zurueckgestellt_bis: Date | null }>(
+    'SELECT prio, zurueckgestellt_bis FROM code_chunks WHERE id = $1', [id],
+  ).catch(() => ({ rows: [] as Array<{ prio: number | null; zurueckgestellt_bis: Date | null }> }));
+  const prio = st.rows[0]?.prio ?? null;
+  const zurueckBis = st.rows[0]?.zurueckgestellt_bis ?? null;
+  const vorgezogen = prio !== null && prio > 0;
+  if (zurueckBis && new Date(zurueckBis).getTime() > Date.now()) {
+    befund.push(`Chunk zurueckgestellt bis ${iso(zurueckBis)} (intern warteschlange_verschieben): wird bis dahin nicht geclaimt; nach:'einreihen' hebt es auf.`);
+  }
+  if (prio !== null && prio < 0) befund.push(`Chunk ans Projektende gestellt (prio ${prio}): kommt erst, wenn das Projekt sonst keine claimbaren Chunks mehr hat.`);
+  if (vorgezogen) befund.push(`Chunk vorgezogen (prio ${prio}): kommt vor allen Projekten an die Reihe (Claim-Schritt 0)${p.zurueckgestellt_bis ? ' und laeuft trotzdem, obwohl das Projekt zurueckgestellt ist' : ''}.`);
+  else {
+    const pz = projektZurueckBefund(c.project, p.zurueckgestellt_bis);
+    if (pz) befund.push(pz);
+  }
+  // Reihenfolge: Projekte mit kleinerer Stufe kommen zuerst dran (gilt nicht fuer vorgezogene Chunks)
   const vor = await pool.query<{ projekte: number; chunks: number }>(
     `SELECT count(DISTINCT cc.project)::int AS projekte, count(*)::int AS chunks
        FROM code_chunks cc
@@ -111,7 +164,7 @@ async function warumNichtChunk(id: string): Promise<Record<string, unknown>> {
         AND COALESCE((SELECT e.stufe FROM embed_prioritaet e WHERE e.project = cc.project), 3) < $1
         AND EXISTS (SELECT 1 FROM projects pr WHERE pr.name = cc.project AND pr.enabled)`, [p.stufe],
   );
-  if (vor.rows[0].chunks > 0) {
+  if (vor.rows[0].chunks > 0 && !vorgezogen) {
     befund.push(`Prioritaet: Projekt hat Stufe ${p.stufe}; vor ihm liegen ${vor.rows[0].projekte} Projekt(e) mit kleinerer Stufe und ${vor.rows[0].chunks} offenen Chunks.`);
   }
   const knoten = await pool.query<{ n: number }>(`SELECT count(*)::int AS n FROM embedding_knoten WHERE letzter_kontakt > NOW() - INTERVAL '2 minutes' AND NOT gesperrt_vom_user`).catch(() => ({ rows: [{ n: 0 }] }));
@@ -162,6 +215,11 @@ async function warumNichtDatei(project: string, filePath: string): Promise<Recor
     for (const s of b.schalter) if (s.name === 'embedding') befund.push(`Schalter embedding ist an (${s.modus}) - keine Claims.`);
     if (process.env.SYNAPSE_PARSE_EMBED_OFFEN === '0') befund.push('SYNAPSE_PARSE_EMBED_OFFEN=0: Chunks ohne Vektor laufen NUR ueber die Claim-Schleife, nicht ueber den Parse-Weg.');
   }
+  // P15-T26: Steuerung aus P15-T12 E4
+  const pzDatei = projektZurueckBefund(project, p.zurueckgestellt_bis);
+  if (pzDatei) befund.push(pzDatei);
+  const sbDatei = steuerungBefund(await steuerungZahlen(project, filePath));
+  if (sbDatei) befund.push(sbDatei);
   if (befund.length === 0) befund.push('Kein Hindernis gefunden: geparst, alle Chunks eingebettet.');
   return { art: 'datei', project, datei: f, chunks: c, parse_ausfall: ausfall, projekt: p, befund };
 }
@@ -194,6 +252,11 @@ async function warumNichtProjekt(project: string): Promise<Record<string, unknow
   if (z.ungeparst > 0) befund.push(`${z.ungeparst} Dateien warten aufs Parsen.`);
   if (c.offen > 0) befund.push(`${c.offen} Chunks ohne Vektor (${c.geclaimt} geclaimt, ${c.abgelaufen} mit abgelaufenem Lease). Stufe ${p.stufe}${p.stufe_gesetzt ? '' : ' (Standard)'}.`);
   if (ausfaelle > 0) befund.push(`${ausfaelle} Parse-Ausfaelle offen - intern(parse_ausfaelle, project).`);
+  // P15-T26: Steuerung aus P15-T12 E4
+  const pzProjekt = projektZurueckBefund(project, p.zurueckgestellt_bis);
+  if (pzProjekt) befund.push(pzProjekt.replace(`Projekt ${project} zurueckgestellt`, 'Projekt zurueckgestellt'));
+  const sbProjekt = steuerungBefund(await steuerungZahlen(project, null));
+  if (sbProjekt) befund.push(sbProjekt);
   if (befund.length === 0) befund.push('Kein Rueckstand und kein Hindernis gefunden.');
   return { art: 'projekt', project, projekt: p, dateien: z, chunks: c, parse_ausfaelle: ausfaelle, befund };
 }

@@ -31,6 +31,7 @@ import { COLLECTIONS } from '../types/index.js';
 import { embedBatch, embeddingModellKennung, zielDimension } from '../embeddings/index.js';
 import { deterministicChunkPointId } from './embedding-chunk-id.js';
 import { getPendingEvents } from './events.js';
+import { HOOK_EVENTS_SQL, hookEventsParameter } from './event-sichtbarkeit.js';
 import { parseAndEmbed } from './code.js';
 import { getParserPool, getParserPoolZustand } from '../parser/worker-pool.js';
 import { memoryNachzug } from './memory.js';
@@ -278,15 +279,8 @@ export async function claimsStatus(opt: { project?: string; limit: number }): Pr
 
 // ───── ereignisse ──────────────────────────────────────────────────────
 
-/** Wortgleich zu scripts/event-check.mjs (PostToolUse-Hook), damit die Hook-Sicht vergleichbar ist. */
-const HOOK_SQL = `SELECT id, event_type, priority, source_id, scope, created_at
-  FROM agent_events
-  WHERE project = $1
-    AND (scope = 'all' OR scope = 'agent:' || $2)
-    AND requires_ack = true
-    AND NOT EXISTS (SELECT 1 FROM agent_event_acks WHERE event_id = agent_events.id AND agent_id = $2)
-  ORDER BY CASE priority WHEN 'critical' THEN 0 WHEN 'high' THEN 1 ELSE 2 END, created_at ASC
-  LIMIT 100`;
+// P15-T26: Die Hook-Sicht kommt aus derselben Quelle wie der Hook selbst (event-sichtbarkeit.ts,
+// HOOK_EVENTS_SQL) - hier stand vorher eine eigene, veraltete Kopie ohne Sitzungs- und PLAN_READY-Filter.
 
 export async function ereignisse(opt: { project?: string; zielAgent?: string; stunden: number; limit: number }): Promise<Record<string, unknown>> {
   const pool = getPool();
@@ -312,18 +306,24 @@ export async function ereignisse(opt: { project?: string; zielAgent?: string; st
     if (!p) throw new DiagnoseFehler('parameter_fehlt', 'ereignisse mit ziel_agent braucht project.');
     const reg = (await pool.query<{ registered_at: Date }>('SELECT registered_at FROM agent_sessions WHERE id = $1', [opt.zielAgent])).rows[0] ?? null;
     const server = await getPendingEvents(p, opt.zielAgent, 100);
-    const hook = (await pool.query(HOOK_SQL, [p, opt.zielAgent])).rows;
+    // Hook-Sicht: dieselbe Abfrage wie scripts/event-check.mjs, nur mit Limit 100 statt 5 (der Hook zeigt die ersten 5)
+    const hook = (await pool.query(HOOK_EVENTS_SQL, hookEventsParameter(p, opt.zielAgent, 100))).rows;
     const serverIds = new Set(server.map((e) => Number(e.id)));
+    const hookIds = new Set(hook.map((e) => Number(e.id)));
     const nurHook = hook.filter((e) => !serverIds.has(Number(e.id)));
+    // requires_ack = false zeigt nur der Server (bewusster Hook-Unterschied), das ist keine Abweichung
+    const nurServer = server.filter((e) => e.requiresAck && !hookIds.has(Number(e.id)));
     agent = {
       agent: opt.zielAgent,
       registriert_am: reg?.registered_at ?? null,
       server_offen: server.map((e) => ({ id: e.id, typ: e.eventType, scope: e.scope, created_at: e.createdAt })),
       hook_offen: hook.length,
+      hook_ids: hook.map((e) => Number(e.id)),
       nur_im_hook: nurHook,
+      nur_beim_server: nurServer.map((e) => ({ id: e.id, typ: e.eventType, scope: e.scope, created_at: e.createdAt })),
     };
-    if (nurHook.length > 0) {
-      befund.push(`${opt.zielAgent}: der PostToolUse-Hook (scripts/event-check.mjs) zeigt ${nurHook.length} Event(s), die der Server NICHT als offen fuehrt (aelteste ${new Date(nurHook[0].created_at).toISOString()}). Ursache: event-check.mjs filtert weder nach Registrierung (${reg ? new Date(reg.registered_at).toISOString() : 'keine Sitzung, Server nimmt NOW()-1h'}) noch erledigte PLAN_READY - der Agent wird mit Alt-Events zu ACKs aufgefordert.`);
+    if (nurHook.length > 0 || nurServer.length > 0) {
+      befund.push(`${opt.zielAgent}: Hook (scripts/event-check.mjs) und Server (getPendingEvents) weichen ab - nur im Hook ${nurHook.length}, nur beim Server ${nurServer.length} (ACK-pflichtige). Der Hook nutzt event-sichtbarkeit.ts, getPendingEvents (events.ts) eine eigene Bedingung: beide auf eventsOffenBedingungSql bringen.`);
     }
   }
   if (befund.length === 0) befund.push('Keine auffaelligen offenen Events.');
@@ -335,7 +335,7 @@ export async function ereignisse(opt: { project?: string; zielAgent?: string; st
     events: offen,
     ...(agent ? { agent_sicht: agent } : {}),
     befund,
-    hinweis: 'offen: direkt adressiert (scope agent:<id>) ohne ACK des Ziels, oder scope all mit laufenden Wrappern ohne ACK. agent_sicht vergleicht getPendingEvents (Server, mit Registrierungs- und PLAN_READY-Filter) mit der SQL des PostToolUse-Hooks.',
+    hinweis: 'offen: direkt adressiert (scope agent:<id>) ohne ACK des Ziels, oder scope all mit laufenden Wrappern ohne ACK. agent_sicht vergleicht getPendingEvents (Server) mit der Abfrage des PostToolUse-Hooks (event-sichtbarkeit.ts HOOK_EVENTS_SQL, dieselbe wie scripts/event-check.mjs); hook_ids in Hook-Reihenfolge, der Hook zeigt die ersten 5.',
   };
 }
 

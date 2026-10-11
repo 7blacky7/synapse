@@ -239,9 +239,18 @@ try {
   r = await ausf({ action: 'ereignisse', project: PRJ, ziel_agent: 'diag-neu', stunden: 72 });
   const srv = (r.agent_sicht?.server_offen ?? []).map((e) => Number(e.id));
   const nurHook = (r.agent_sicht?.nur_im_hook ?? []).map((e) => Number(e.id));
-  pruefe(r.success && srv.includes(eDirekt) && srv.includes(eNeu) && !srv.includes(eAlt) && nurHook.length === 1 && nurHook[0] === eAlt
-    && r.befund.some((b) => /event-check\.mjs/.test(b)) && r.befund.some((b) => /direkt adressierte/.test(b)),
-    'E1 Alt-Event vor Registrierung nur in der Hook-Sicht, direkt adressiertes Event > 10 min ohne ACK gemeldet', r);
+  pruefe(r.success && srv.includes(eDirekt) && srv.includes(eNeu) && !srv.includes(eAlt) && r.befund.some((b) => /direkt adressierte/.test(b)),
+    'E1 Server: Alt-Event vor Registrierung nicht offen, direkt adressiertes Event > 10 min ohne ACK gemeldet', r);
+  // E3/E4 (P15-T26): Hook-Sicht von ereignisse == Menge des ECHTEN Hooks (scripts/event-check.mjs, gleiche DB).
+  // Vorher stand in intern-diagnose-welle2.ts eine eigene, veraltete Kopie der Hook-SQL (ohne Sitzungsfilter).
+  const { execFileSync } = await import('node:child_process');
+  const echterHook = JSON.parse(execFileSync(process.execPath, [join(hier, 'event-check.mjs'), 'diag-neu', PRJ, process.env.DATABASE_URL], { encoding: 'utf8' }))
+    .map((e) => Number(e.id));
+  const ereignisHook = (r.agent_sicht?.hook_ids ?? []).map(Number);
+  pruefe(echterHook.length === 2 && JSON.stringify(ereignisHook.slice(0, 5)) === JSON.stringify(echterHook) && r.agent_sicht?.hook_offen === echterHook.length,
+    'E3 ereignisse-Hook-Sicht == echter Hook (Menge und Reihenfolge)', { echterHook, ereignisHook, hook_offen: r.agent_sicht?.hook_offen });
+  pruefe(nurHook.length === 0 && !r.befund.some((b) => /event-check\.mjs/.test(b)),
+    'E4 nur_im_hook leer: Hook und Server zeigen dieselben Events', { nurHook, befund: r.befund });
   await pool.query(`INSERT INTO agent_event_acks (event_id, agent_id) VALUES ($1, 'diag-neu'), ($2, 'diag-neu'), ($3, 'diag-neu')`, [eAlt, eDirekt, eNeu]);
   r = await ausf({ action: 'ereignisse', project: PRJ, ziel_agent: 'diag-neu', stunden: 72 });
   const f5 = await ausf({ action: 'ereignisse', ziel_agent: 'diag-neu' });
@@ -302,6 +311,36 @@ try {
   const job = (await pool.query(`INSERT INTO shell_jobs (project, command, status) VALUES ($1, 'echo diag', 'pending') RETURNING id::text`, [PRJ])).rows[0].id;
   r = await ausf({ action: 'warum_nicht', shell_job_id: job });
   pruefe(r.befund?.some((b) => /nie ein Daemon/.test(b)), 'W5 Shell-Job ohne Daemon-Heartbeat', r.befund);
+
+  // W6..W9 (P15-T26): Steuerung aus P15-T12 E4 (code_chunks.prio/zurueckgestellt_bis, embed_prioritaet.zurueckgestellt_bis)
+  await pool.query(
+    `INSERT INTO code_chunks (id, project, file_path, chunk_index, content, line_start, line_end, prio, zurueckgestellt_bis) VALUES
+      ('diag-c5', $1, 'a.ts', 5, 'p', 5, 5, NULL, NOW() + INTERVAL '30 minutes'),
+      ('diag-c6', $1, 'a.ts', 6, 'q', 6, 6, -1, NULL),
+      ('diag-c7', $1, 'a.ts', 7, 'r', 7, 7, 1, NULL)`, [PRJ],
+  );
+  r = await ausf({ action: 'warum_nicht', chunk_id: 'diag-c5' });
+  pruefe(r.befund?.some((b) => /Chunk zurueckgestellt bis/.test(b)), 'W6 zurueckgestellter Chunk -> zurueckgestellt bis', r.befund);
+  r = await ausf({ action: 'warum_nicht', chunk_id: 'diag-c6' });
+  pruefe(r.befund?.some((b) => /ans Projektende/.test(b)), 'W7 Chunk mit prio < 0 -> ans Projektende', r.befund);
+  r = await ausf({ action: 'warum_nicht', chunk_id: 'diag-c7' });
+  pruefe(r.befund?.some((b) => /vorgezogen/.test(b)) && !r.befund.some((b) => /^Prioritaet: Projekt hat Stufe/.test(b)), 'W8 Chunk mit prio > 0 -> vorgezogen, keine Stufen-Warteschlange', r.befund);
+  await pool.query(`INSERT INTO embed_prioritaet (project, stufe, gesetzt_von, zurueckgestellt_bis) VALUES ($1, 3, 'diag', NOW() + INTERVAL '1 hour')
+    ON CONFLICT (project) DO UPDATE SET zurueckgestellt_bis = EXCLUDED.zurueckgestellt_bis`, [PRJ]);
+  r = await ausf({ action: 'warum_nicht', chunk_id: 'diag-c6' });
+  const w9a = r.befund;
+  r = await ausf({ action: 'warum_nicht', chunk_id: 'diag-c7' });
+  const w9b = r.befund;
+  r = await ausf({ action: 'warum_nicht', project: PRJ });
+  const w9c = r.befund;
+  r = await ausf({ action: 'warum_nicht', project: PRJ, file_path: 'a.ts' });
+  const w9d = r.befund;
+  pruefe(w9a?.some((b) => /Projekt .* zurueckgestellt bis/.test(b)) && w9b?.some((b) => /vorgezogen.*laeuft trotzdem/.test(b))
+    && w9c?.some((b) => /Projekt zurueckgestellt bis/.test(b)) && w9c?.some((b) => /1 zurueckgestellt, 1 ans Projektende, 1 vorgezogen/.test(b))
+    && w9d?.some((b) => /1 zurueckgestellt, 1 ans Projektende, 1 vorgezogen/.test(b)),
+    'W9 Projekt zurueckgestellt: Chunk, vorgezogener Chunk, Projekt und Datei nennen es', { w9a, w9b, w9c, w9d });
+  await pool.query(`DELETE FROM code_chunks WHERE id IN ('diag-c5', 'diag-c6', 'diag-c7')`);
+  await pool.query('DELETE FROM embed_prioritaet WHERE project = $1', [PRJ]);
 
   // P1..P3
   await PF.vermerkeAusfall(pool, { project: PRJ, filePath: 'a.ts', grund: 'timeout', details: 'diag-test', dauerMs: 5, dateiBytes: INHALT.length });
