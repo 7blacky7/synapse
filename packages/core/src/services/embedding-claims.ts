@@ -1,6 +1,7 @@
 import * as path from 'node:path';
 import { v4 as uuidv4 } from 'uuid';
 import { getPool } from '../db/client.js';
+import { leseSchalter } from './intern-schalter.js';
 import { ensureProjectCollection } from '../qdrant/collections.js';
 import { insertVector } from '../qdrant/operations.js';
 import type { CodeChunkPayload } from '../types/index.js';
@@ -85,6 +86,9 @@ export async function claimEmbeddingChunks(
   pool: EmbeddingClaimsDbPool = getPool() as unknown as EmbeddingClaimsDbPool,
 ): Promise<EmbeddingChunkClaim[]> {
   if (!/^[a-z0-9][a-z0-9._-]{0,63}$/.test(nodeId)) throw new Error('invalid_node_id');
+  // P14-T2: Schalter embedding (jeder Modus) -> keine Claims, weder fuer den Server noch fuer externe
+  // Knoten. Die Chunks bleiben offen und werden nach der Freigabe normal geclaimt.
+  if ((await leseSchalter('embedding')).aktiv) return [];
   const requestedLimit = boundedInt(options.limit, 1, 100);
   const leaseSeconds = boundedInt(options.leaseSeconds, 120, 900);
   const maxConcurrent = boundedInt(options.maxConcurrent, 2, 100);

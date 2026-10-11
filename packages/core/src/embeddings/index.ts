@@ -30,6 +30,7 @@ import { OpenAICompatibleProvider, PROVIDER_PRESETS } from './openai-compatible.
 import { GoogleEmbeddingProvider } from './google.js';
 import { CohereEmbeddingProvider } from './cohere.js';
 import { mitPraefix, type EmbedArt } from './modell-profil.js';
+import { schalterHaeltAn, type InternSchalterStand } from '../services/intern-schalter.js';
 
 export * from './types.js';
 export * from './modell-profil.js';
@@ -293,6 +294,33 @@ export class EmbeddingQueueFullError extends Error {
   }
 }
 
+/** P14-T2: der Schalter embedding (intern-Tool) haelt diesen Auftrag an. */
+export class EmbeddingAngehaltenError extends Error {
+  readonly code = 'EMBEDDING_ANGEHALTEN';
+
+  constructor(readonly priority: EmbedPriority, stand: InternSchalterStand) {
+    super(
+      `Embeddings angehalten (intern-Schalter embedding, modus ${stand.modus}, ` +
+        `${stand.dauerhaft ? 'dauerhaft' : `bis ${stand.bis}`}${stand.grund ? `, Grund: ${stand.grund}` : ''}). ` +
+        'Semantische Suche und neue Vektoren sind solange nicht verfuegbar — Volltext nutzen ' +
+        '(z. B. code_intel search ohne semantic). Geschriebenes bleibt in PostgreSQL und wird nach der Freigabe nachgetragen.',
+    );
+    this.name = 'EmbeddingAngehaltenError';
+  }
+}
+
+/**
+ * P14-T2: modus 'hintergrund' haelt Hintergrund-Auftraege an, 'alle' zusaetzlich die interaktiven.
+ * Rechenknoten (SYNAPSE_COMPUTE_NODE=1) fragen keinen Schalter — der gilt fuer die API.
+ */
+async function pruefeEmbeddingSchalter(priority: EmbedPriority): Promise<void> {
+  if (process.env.SYNAPSE_COMPUTE_NODE === '1') return;
+  const stand = priority === 'background'
+    ? await schalterHaeltAn('embedding', 'embedding (hintergrund)')
+    : await schalterHaeltAn('embedding', 'embedding (interaktiv)', ['alle']);
+  if (stand) throw new EmbeddingAngehaltenError(priority, stand);
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -399,6 +427,7 @@ async function runQueued<T>(
 ): Promise<T> {
   // Die Schleife wiederholt sich NUR nach einer Verdraengung (sonst return/throw).
   for (let neuversuch = false; ; neuversuch = true) {
+    await pruefeEmbeddingSchalter(options.priority ?? 'interactive');
     const lease = await acquireEmbedSlot(options, neuversuch);
     // Nur Hintergrund-Aufrufe sind verdraengbar.
     const abbruch = lease.priority === 'background' ? new AbortController() : null;
@@ -406,6 +435,8 @@ async function runQueued<T>(
     try {
       const gap = Date.now() - lastEmbedFinishMs;
       if (gap < MIN_GAP_MS) await sleep(MIN_GAP_MS - gap);
+      // P14-T2: ein Hintergrund-Auftrag kann lange in der Queue gewartet haben -> Schalter erneut pruefen
+      if (lease.priority === 'background') await pruefeEmbeddingSchalter('background');
       if (abbruch?.signal.aborted) {
         verdraengtHintergrund++;
         continue; // noch vor dem Aufruf verdraengt -> hinten neu einreihen

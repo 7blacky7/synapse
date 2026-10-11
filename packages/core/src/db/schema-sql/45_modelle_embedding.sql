@@ -143,3 +143,22 @@ CREATE TABLE public.embedding_collections (
 
 ALTER TABLE ONLY public.embedding_collections
     ADD CONSTRAINT embedding_collections_pkey PRIMARY KEY (collection);
+
+--
+-- Name: intern_schalter; Type: TABLE; Schema: public
+-- Anhalte-Schalter fuer interne Ablaeufe (P14-T1, von Hand nachgetragen bis zum naechsten Dump;
+-- Quelle: SCHEMA_SQL in schema.ts).
+--
+
+CREATE TABLE public.intern_schalter (
+    name text NOT NULL,
+    aktiv boolean DEFAULT false NOT NULL,
+    modus text,
+    bis timestamp with time zone,
+    grund text,
+    gesetzt_von text,
+    gesetzt_am timestamp with time zone DEFAULT now() NOT NULL
+);
+
+ALTER TABLE ONLY public.intern_schalter
+    ADD CONSTRAINT intern_schalter_pkey PRIMARY KEY (name);

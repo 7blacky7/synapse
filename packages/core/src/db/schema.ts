@@ -1036,6 +1036,9 @@ CREATE INDEX IF NOT EXISTS idx_tool_calls_project_ts ON tool_calls(project, ts D
 CREATE INDEX IF NOT EXISTS idx_tool_calls_agent ON tool_calls(agent_id, ts DESC);
 CREATE INDEX IF NOT EXISTS idx_tool_calls_tool  ON tool_calls(tool_name, ts DESC);
 CREATE INDEX IF NOT EXISTS idx_tool_calls_mut   ON tool_calls(ts DESC) WHERE is_mutation;
+-- P14-T4: reiner Zeit-Index fuer intern(action:'langsam') (Fenster ts > now() - N min ueber alle Projekte;
+-- ohne ihn Seq-Scan ueber die 90-Tage-Retention). Stand 11.10.2026 ~213k Zeilen -> Anlage weit unter 60 s.
+CREATE INDEX IF NOT EXISTS idx_tool_calls_ts    ON tool_calls(ts);
 
 -- ==========================================================================
 -- Specialist-Queue: REST-API ↔ FileWatcher-Daemon Specialist-Calls.
@@ -2231,6 +2234,20 @@ CREATE TABLE IF NOT EXISTS embedding_collections (
   quelle TEXT NOT NULL DEFAULT 'angelegt',
   angelegt_am TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   aktualisiert_am TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- INTERN-SCHALTER (P14-T1, 11.10.2026): Anhalte-Schalter fuer interne Ablaeufe (embedding, parser,
+-- context7), gesetzt ueber das Tool 'intern' (nur bei SYNAPSE_INTERN_TOOL=1), gelesen von den Workern
+-- je Tick (services/intern-schalter.ts). aktiv = Eingriff wirkt; bis = Ablauf (NULL nur bei
+-- ausdruecklich dauerhaft). Abgelaufene Zeilen gelten als aus und bleiben zur Einsicht stehen.
+CREATE TABLE IF NOT EXISTS intern_schalter (
+  name TEXT PRIMARY KEY,
+  aktiv BOOLEAN NOT NULL DEFAULT false,
+  modus TEXT,
+  bis TIMESTAMPTZ,
+  grund TEXT,
+  gesetzt_von TEXT,
+  gesetzt_am TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 -- API-Bruecke Schritt 4: das Wissen eines Spezialisten in der Datenbank statt als

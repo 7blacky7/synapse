@@ -34,6 +34,8 @@ import {
   context7AutomatikTick,
   initContext7Automatik,
   imHintergrund,
+  schalterHaeltAn,
+  registriereInternQuelle,
 } from '@synapse/core';
 import { listEmbeddingNodes } from './embedding-nodes.js';
 
@@ -107,6 +109,8 @@ export class ParserWorker {
     void imHintergrund(() => this.embeddingLoop());
     // P12-T17: Context7-Automatik (eigener Takt, eigene Drosselung — siehe context7-automatik.ts)
     initContext7Automatik();
+    // P14-T4: Stats fuer intern(action:'status')
+    registriereInternQuelle('parser_worker', () => this.getStats());
   }
 
   shutdown(): void {
@@ -151,6 +155,12 @@ export class ParserWorker {
   private async embeddingLoop(): Promise<void> {
     while (!this.stopped) {
       try {
+        // P14-T2: Schalter embedding -> ruhig warten (claimEmbeddingChunks liefert dann ohnehin []),
+        // statt in den Leerlauf-Backoff zu laufen, der nach der Freigabe bis zu 30 s nachhinkt.
+        if (await schalterHaeltAn('embedding', 'parser-worker/embedding-claims')) {
+          await sleep(5_000);
+          continue;
+        }
         const externeAktiv = (await listEmbeddingNodes(getPool())).some((node) => node.usable);
         const parallel = externeAktiv ? PARALLEL_GETEILT : PARALLEL_ALLEIN;
         if (parallel === 0) {
@@ -242,6 +252,9 @@ export class ParserWorker {
     // Haelften einzeln richtig aussahen. Eine zweite Formulierung derselben Regel
     // laeuft frueher oder spaeter wieder auseinander; deshalb genau eine.
     // Der Registry- und enabled-Guard steckt ebenfalls in projekteMitBacklog().
+    // P14-T2: Schalter parser -> das Parsen ruht. Backlog-Embedding und Context7 oben haben eigene Schalter.
+    if (await schalterHaeltAn('parser', 'parser-worker')) return;
+
     const projekte = await projekteMitBacklog(this.cfg.maxPerTick);
 
     if (projekte.length === 0) {

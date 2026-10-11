@@ -20,6 +20,7 @@
 import { v4 as uuidv4 } from 'uuid';
 import { createHash } from 'crypto';
 import { getPool, getHintergrundPool } from '../db/client.js';
+import { embeddingNachtragAngehalten } from './intern-schalter.js';
 import { embed } from '../embeddings/index.js';
 import type { EmbedOptions, EmbedPriority } from '../embeddings/index.js';
 import { ensureCollection } from '../qdrant/collections.js';
@@ -228,7 +229,8 @@ export async function speichereTechDoc(
   }
 
   // 2. Qdrant (Vektor-Index) — nachgereicht. Bis dahin embedded_at NULL = Backlog-Bedingung.
-  const embedOptions: EmbedOptions = optionen.priority ? { priority: optionen.priority } : {};
+  // Wer wartet (embeddingAbwarten), bettet interaktiv ein; sonst ist der Nachtrag Hintergrundarbeit (P5-T15).
+  const embedOptions: EmbedOptions = { priority: optionen.priority ?? (optionen.embeddingAbwarten ? 'interactive' : 'background') };
   let warning: string | undefined;
   let pending = true;
   if (optionen.embeddingAbwarten) {
@@ -270,6 +272,11 @@ export async function embeddeTechDocNach(
   embedOptions: EmbedOptions = {}
 ): Promise<void> {
   // P5-T15: Nachtraege sind Hintergrundarbeit -> eigener Pool, nie die Verbindungen der Tool-Anfragen
+  // P5-T15/P14-T2: der Nachtrag ist Hintergrundarbeit (die KI hat ihre Antwort schon), ausser ein Aufrufer
+  // wartet bewusst und setzt priority selbst. Schalter embedding an -> Hintergrund-Nachtrag auslassen;
+  // embedded_at bleibt NULL, der Backlog holt nach der Freigabe nach.
+  embedOptions = { ...embedOptions, priority: embedOptions.priority ?? 'background' };
+  if (embedOptions.priority === 'background' && await embeddingNachtragAngehalten()) return;
   const pool = getHintergrundPool();
   const { rows } = await pool.query(
     `SELECT framework, version, section, content, type, category, source, content_hash, indexed_at, project

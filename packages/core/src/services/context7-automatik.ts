@@ -67,6 +67,7 @@
  */
 
 import { getPool, imHintergrund } from '../db/client.js';
+import { schalterHaeltAn } from './intern-schalter.js';
 import { getContext7Client, Context7Fehler, type Context7Bibliothek, type Context7Doc } from './context7.js';
 import { context7Kontingent, type Context7Aufrufart } from './context7-kontingent.js';
 import {
@@ -185,6 +186,8 @@ export function stosseContext7An(project?: string): void {
 export async function context7AutomatikTick(): Promise<void> {
   const k = konfig();
   if (!k.aktiv || laeuft || Date.now() - letzterLauf < k.intervallMs) return;
+  // P14-T2: Schalter context7 (intern-Tool) statt context7_automatik_stand.pause_bis von Hand
+  if (await schalterHaeltAn('context7', 'context7-automatik')) return;
   laeuft = true;
   letzterLauf = Date.now();
   try {

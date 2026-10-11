@@ -39,6 +39,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { embed } from '../embeddings/index.js';
 import type { EmbedOptions } from '../embeddings/index.js';
 import { getPool, getHintergrundPool } from '../db/client.js';
+import { embeddingNachtragAngehalten } from './intern-schalter.js';
 import { ensureCollection } from '../qdrant/collections.js';
 import {
   insertVector,
@@ -490,6 +491,11 @@ export async function embeddeProposalNach(
   embedOptions: EmbedOptions = {},
 ): Promise<void> {
   // P5-T15: Nachtraege sind Hintergrundarbeit -> eigener Pool, nie die Verbindungen der Tool-Anfragen
+  // P5-T15/P14-T2: der Nachtrag ist Hintergrundarbeit (die KI hat ihre Antwort schon), ausser ein Aufrufer
+  // wartet bewusst und setzt priority selbst. Schalter embedding an -> Hintergrund-Nachtrag auslassen;
+  // embedded_at bleibt NULL, der Backlog holt nach der Freigabe nach.
+  embedOptions = { ...embedOptions, priority: embedOptions.priority ?? 'background' };
+  if (embedOptions.priority === 'background' && await embeddingNachtragAngehalten()) return;
   const pool = getHintergrundPool();
   const { rows } = await pool.query(
     `SELECT file_path, suggested_content, description, author, status, tags, created_at, updated_at

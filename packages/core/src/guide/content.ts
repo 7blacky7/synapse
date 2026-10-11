@@ -1685,4 +1685,41 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
     },
   },
 
+  // -------------------------------------------------------------------------
+  // intern — Debugging/Steuerung interner Ablaeufe (P14), nur bei SYNAPSE_INTERN_TOOL=1
+  // -------------------------------------------------------------------------
+  intern: {
+    summary: 'Steuert und zeigt interne Synapse-Ablaeufe (Embedding, Parser-Worker, Context7-Automatik, Ollama) ohne SQL und ohne Neustart. Das Tool existiert NUR, wenn die API mit SYNAPSE_INTERN_TOOL=1 gestartet wurde; sonst fehlt es in der Tool-Liste und jeder Aufruf wird abgelehnt (intern_tool_aus).',
+    when_to_use: 'Vor Messungen oder Eingriffen, die keine Nebenlast vertragen: Embeddings im Hintergrund anhalten, Parser-Worker oder Context7-Automatik pausieren, danach wieder freigeben.',
+    when_not_to_use: 'Nicht als Dauerzustand: jeder Schalter laeuft ab (Default/Obergrenze 12 h, SYNAPSE_INTERN_MAX_STUNDEN). Nicht zum Beenden von Prozessen oder Sitzungen — das kann das Tool bewusst nicht.',
+    param_tips: [
+      'aktiv:true = Ablauf angehalten, aktiv:false = wieder frei.',
+      'Dauer: hoechstens eines von bis (ISO), dauer_min, dauerhaft:true. Ohne Angabe gilt die Hoechstdauer; laengere Angaben werden gekappt (hinweis in der Antwort).',
+      'embedding: modus hintergrund (Standard) haelt Backlog, Embedding-Claims (Server UND externe Knoten) und nebenlaeufige Nachtraege an — Eintraege bleiben mit embedded_at NULL im Backlog, nichts geht verloren. modus alle haelt zusaetzlich interaktive Embeddings an: semantische Suchen liefern dann einen klaren Fehler (EMBEDDING_ANGEHALTEN) mit Hinweis auf Volltext.',
+      'parser: das Parsen im Parser-Worker ruht. context7: die Context7-Automatik ruht (ersetzt pause_bis von Hand).',
+      'Worker lesen den Schalter gecacht (SYNAPSE_INTERN_CACHE_MS, Default 5 s) — die Wirkung kommt mit dieser Verzoegerung.',
+    ].join('\n'),
+    examples: [
+      'intern({ action: "schalter_setzen", name: "embedding", aktiv: true, dauer_min: 60, grund: "Nemotron-Messung" })',
+      'intern({ action: "schalter_setzen", name: "embedding", aktiv: false })',
+      'intern({ action: "schalter_liste" })',
+    ],
+    anti_patterns: [
+      'Pausen per SQL in context7_automatik_stand oder anderen Tabellen setzen — dafuer gibt es die Schalter.',
+      'dauerhaft:true "zur Sicherheit" — ein vergessener Schalter haelt den Ablauf unbemerkt an.',
+    ],
+    actions: {
+      schalter_setzen: { description: 'Schalter an/aus mit Ablauf und Grund.', params: 'name (req: embedding|parser|context7), aktiv (req), modus, bis | dauer_min | dauerhaft, grund', example: 'intern({ action: "schalter_setzen", name: "parser", aktiv: true, dauer_min: 30 })' },
+      schalter_liste: { description: 'Alle Schalter mit wirksamem Zustand, Ablauf, Grund, gesetzt_von; dazu Hoechstdauer und moegliche Modi.', params: '-' },
+      ollama_status: { description: 'Ollama des Servers (OLLAMA_URL): Version, geladene Modelle wie "ollama ps" (Groesse, VRAM, GPU-/CPU-Anteil, Kontext, Ablauf), belegter VRAM, installierte Embedding-Modelle (capabilities, sonst Name), konfiguriertes Modell. nvidia-smi-Werte liefert die Ollama-API nicht.', params: '-' },
+      ollama_entladen: { description: 'Nimmt ein GELADENES Modell aus dem Speicher (keep_alive 0) und wartet bis 5 s, bis /api/ps es nicht mehr zeigt. Nicht geladene Modelle werden nicht angefasst. Beim konfigurierten Embedding-Modell ohne Schalter embedding: hinweis_schalter (sonst laedt die naechste Anfrage es wieder).', params: 'modell (req)', example: 'intern({ action: "ollama_entladen", modell: "qwen3-embedding:8b" })' },
+      status: { description: 'Gesamtbild: Embedding-Queue (inkl. preemptedBackground), DB-Pools haupt/hintergrund (gesamt/frei/wartend), offene Embeddings je Tabelle, Context7-Kontingent, Modell-Kennung, Schalter, quellen.parser_worker. Teilausfaelle stehen als { fehler } an ihrer Stelle.', params: '-' },
+      db_sitzungen: { description: 'pg_stat_activity der Synapse-DB: Anzahl nach Zustand und Client, laufende Abfragen ab min_sekunden, alle idle in transaction mit gehaltenen Sperren, blockierte Sitzungen samt blockierenden PIDs. NUR anzeigen — beendet wird nichts.', params: 'min_sekunden (Standard 5)' },
+      langsam: { description: 'Langsamste tool_calls der letzten Minuten plus je Tool/Action Anzahl, Median, Mittel, Max. Bewusst wartende Long-Polls (files plan_status/shared_plan_status/commit mit wait_seconds) sind ausgenommen und nur gezaehlt.', params: 'minuten (30), limit (20, max 200), project (Filter)' },
+      nachzug_jetzt: { description: 'Holt N offene Embeddings (embedded_at NULL) sofort im Hintergrund-Pool nach und meldet geprueft/nachgetragen/fehlgeschlagen, Dauer und den Rueckstand danach. Bei Schalter embedding an: angehalten:true, nichts angefasst.', params: 'limit (20, max 500), tabelle (memories|thoughts|proposals|tech_docs|skill_sections), project' },
+      embedding_messen: { description: 'Testmessung DIREKT gegen Ollama, nichts in PG/Qdrant: Ladezeit (falls nicht geladen), Latenz je Passage (Median/Max/Min), Passagen/s einzeln und als Batch, Dimension, ps-Auszug (VRAM, GPU-Anteil). warnungen: anderes Modell geladen, Schalter embedding aus, nicht 100 % GPU. Vorgehen fuer saubere Werte: schalter_setzen(embedding) -> ollama_entladen(altes Modell) -> embedding_messen -> ollama_entladen(Messmodell) -> Schalter aus.', params: 'modell (req), anzahl (20, 1..200), praefix (z. B. "passage: ")', example: 'intern({ action: "embedding_messen", modell: "hf.co/zenmagnets/Nemotron-3-Embed-1B-Q4_K_M-GGUF:latest", anzahl: 30, praefix: "passage: " })' },
+      ollama_laden: { description: 'Laedt ein INSTALLIERTES Modell vor (leere Eingabe mit keep_alive) und misst die Ladezeit. Nicht installierte -> modell_nicht_installiert, es wird nichts heruntergeladen.', params: 'modell (req), keep_alive (Standard 30m)' },
+    },
+  },
+
 };

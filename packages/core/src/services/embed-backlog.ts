@@ -20,6 +20,7 @@ import { embeddeThoughtNach } from './thoughts.js';
 import { embeddeProposalNach } from './proposals.js';
 import { embeddeTechDocNach } from './tech-docs.js';
 import { embeddeSkillSectionNach } from './skills.js';
+import { schalterHaeltAn } from './intern-schalter.js';
 
 /**
  * Welche Tabellen der Nachzug bedient, und womit.
@@ -47,6 +48,9 @@ const TABELLEN = [
   { name: 'skill_sections', sortSpalte: 'aktualisiert_am', idSpalte: 'punkt_id', nachtrag: embeddeSkillSectionNach },
 ] as const;
 
+/** Tabellen, die der Nachzug bedient (fuer Filter wie intern(nachzug_jetzt, tabelle)). */
+export const BACKLOG_TABELLEN: readonly string[] = TABELLEN.map((t) => t.name);
+
 /**
  * Hinweis fuer aufrufende KIs, wortgleich gehalten zum EMBEDDING_PENDING_HINT der Code-Seite.
  * Der Eintrag ist SOFORT ueber PostgreSQL abrufbar — nur die semantische Suche hinkt kurz nach.
@@ -60,6 +64,8 @@ export interface BacklogErgebnis {
   geprueft: number;
   nachgetragen: number;
   fehlgeschlagen: number;
+  /** P14-T2: true, wenn der Schalter embedding den Lauf angehalten hat (nichts angefasst). */
+  angehalten?: boolean;
 }
 
 /**
@@ -81,10 +87,14 @@ export interface BacklogErgebnis {
  */
 export async function embeddeOffeneEintraege(
   limit = 20,
-  project?: string
+  project?: string,
+  /** P14-T5: nur diese Tabelle (siehe BACKLOG_TABELLEN), sonst alle. */
+  nurTabelle?: string
 ): Promise<BacklogErgebnis> {
   const pool = getPool();
   const ergebnis: BacklogErgebnis = { geprueft: 0, nachgetragen: 0, fehlgeschlagen: 0 };
+  // P14-T2: Schalter embedding (jeder Modus) haelt den Nachzug an; embedded_at bleibt NULL, nichts geht verloren.
+  if (await schalterHaeltAn('embedding', 'embedding-backlog')) return { ...ergebnis, angehalten: true };
 
   // Das Limit gilt fuer den GESAMTEN Lauf, nicht je Tabelle: sonst wuerde ein grosser
   // Rueckstand in einer Tabelle die Drosselung der anderen beiden mit aushebeln.
@@ -92,6 +102,7 @@ export async function embeddeOffeneEintraege(
 
   for (const tabelle of TABELLEN) {
     if (uebrig <= 0) break;
+    if (nurTabelle && tabelle.name !== nurTabelle) continue;
 
     // Aeltester Rueckstand zuerst — ein Eintrag, der beim Schreiben gescheitert ist, soll
     // nicht dauerhaft hinter neu hinzukommenden zurueckstehen. Sortierspalte je Tabelle,

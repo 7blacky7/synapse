@@ -119,6 +119,13 @@ CREATE INDEX idx_tool_calls_agent ON public.tool_calls USING btree (agent_id, ts
 CREATE INDEX idx_tool_calls_mut ON public.tool_calls USING btree (ts DESC) WHERE is_mutation;
 
 --
+-- Name: idx_tool_calls_ts; Type: INDEX; Schema: public
+-- (P14-T4, von Hand nachgetragen bis zum naechsten Dump; Quelle: SCHEMA_SQL in schema.ts)
+--
+
+CREATE INDEX idx_tool_calls_ts ON public.tool_calls USING btree (ts);
+
+--
 -- Name: idx_tool_calls_project_ts; Type: INDEX; Schema: public
 --
 

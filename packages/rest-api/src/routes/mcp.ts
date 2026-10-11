@@ -199,6 +199,8 @@ import { leiteAgentIdAusHeaders } from './agent-header.js';
 import { pruefeUnbekannteParameter, baueErlaubteParameter } from '@synapse/core';
 // asset_intel (P4-T70): Schema und Dispatcher aus core — dieselben, die die stdio-Strecke einhaengt.
 import { ASSET_INTEL_DEFINITION, fuehreAssetIntelAus, ergaenzeCodeIntelAntwort } from '@synapse/core';
+// intern (P14): Definition und Dispatcher aus core; nur bei SYNAPSE_INTERN_TOOL=1 in der Liste.
+import { INTERN_DEFINITION, INTERN_TOOL_AUS, internToolAktiv, fuehreInternAus } from '@synapse/core';
 import {
   listeIgnoreRegeln,
   fuegeIgnoreRegelnHinzu,
@@ -1375,6 +1377,10 @@ export const MCP_TOOLS = [
       required: ['action', 'html'],
     },
   },
+  // 23. intern — Debugging/Steuerung interner Ablaeufe (P14). NUR bei SYNAPSE_INTERN_TOOL=1 beim
+  // Prozessstart in der Liste (beide tools/list-Stellen lesen MCP_TOOLS, PA-1 ebenso).
+  // Flache Kopie wie asset_intel: die OUTPUT_EXTRAS-Schleife setzt Felder am Objekt.
+  ...(internToolAktiv() ? [{ ...INTERN_DEFINITION }] : []),
 ];
 
 // ═══ OUTPUT-SCHEMAS (OpenAI-Empfehlung, Apps-SDK) ════════════════════════════
@@ -2219,6 +2225,10 @@ async function handleToolCall(
   // Gleiche Regel wie im lokalen MCP-Server, gleiche Funktion aus core. Ohne das haette die
   // eine Strecke streng geprueft und die andere weiter still verworfen.
   // ══════════════════════════════════════════════════════════════════════════════
+  // intern (P14): ohne SYNAPSE_INTERN_TOOL=1 gibt es das Tool nicht — klare Ablehnung statt
+  // "unbekannter Parameter" aus PA-1 (ohne Schema waere jeder Parameter unbekannt).
+  if (name === 'intern' && !internToolAktiv()) return { ...INTERN_TOOL_AUS };
+
   const parameterBefund = pruefeUnbekannteParameter(
     name,
     ERLAUBTE_PARAMETER.get(name) ?? new Set<string>(),
@@ -4383,6 +4393,12 @@ async function handleToolCall(
     // =================================================================
     case 'asset_intel':
       return fuehreAssetIntelAus(args);
+
+    // =================================================================
+    // 23. INTERN — Dispatcher aus core (P14); Freischaltung oben vor PA-1 geprueft.
+    // =================================================================
+    case 'intern':
+      return fuehreInternAus(args, effectiveAgentId);
 
     // =================================================================
     // 14. CODE_INTEL

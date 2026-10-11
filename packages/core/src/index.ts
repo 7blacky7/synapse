@@ -100,6 +100,39 @@ export type {
 } from './services/asset-intel-abfragen.js';
 export { ASSET_INTEL_DEFINITION, ASSET_INTEL_ACTIONS, fuehreAssetIntelAus } from './services/asset-intel-tool.js';
 export type { AssetIntelAction } from './services/asset-intel-tool.js';
+// Intern-Tool (P14): Schalter fuer interne Ablaeufe + Tool-Definition/Dispatcher (nur bei SYNAPSE_INTERN_TOOL=1)
+export {
+  INTERN_SCHALTER,
+  InternSchalterFehler,
+  setzeSchalter,
+  leseSchalter,
+  alleSchalter,
+  hoechstdauerMs,
+  istSchalterName,
+  schalterHaeltAn,
+  embeddingNachtragAngehalten,
+} from './services/intern-schalter.js';
+export type { InternSchalterName, InternSchalterStand, SetzeSchalterOptionen } from './services/intern-schalter.js';
+export {
+  INTERN_DEFINITION,
+  INTERN_ACTIONS,
+  INTERN_TOOL_AUS,
+  internToolAktiv,
+  fuehreInternAus,
+} from './services/intern-tool.js';
+export type { InternAction } from './services/intern-tool.js';
+export {
+  InternOllamaFehler,
+  ollamaStatus,
+  ollamaEntladen,
+  ollamaLaden,
+  embeddingMessen,
+  geladeneModelle,
+  gleichesModell,
+  ollamaBasis,
+} from './services/intern-ollama.js';
+export type { GeladenesModell } from './services/intern-ollama.js';
+export { internStatus, dbSitzungen, langsameAufrufe, registriereInternQuelle } from './services/intern-einblick.js';
 // Asset-Weiche code_intel <-> asset_intel + Baum-Marker (P4-T67/T70, Etappe C)
 export {
   ergaenzeCodeIntelAntwort,
