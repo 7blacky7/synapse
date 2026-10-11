@@ -24,6 +24,7 @@ import { startDaemonHeartbeat, type DaemonHeartbeatHandle } from './daemon-heart
 import { startEnabledSync, type EnabledSyncHandle } from './enabled-sync.js';
 import { startInternBruecke, type InternBrueckeHandle } from './intern-bruecke.js';
 import { registriereWorker } from '@synapse/core';
+import { startLogpflege, type LogpflegeHandle } from './logpflege.js';
 
 async function main(): Promise<void> {
   ensureConfigDir();
@@ -39,6 +40,16 @@ async function main(): Promise<void> {
       process.exit(0);
     }
   } catch { /* kein PID-File oder Prozess tot -> normal starten */ }
+
+  // P15 Logpflege: lokale Synapse-Logs rotieren (taeglich bzw. ab Groesse, copytruncate) und
+  // Rotationen loeschen, deren juengster Eintrag >= 30 Tage alt ist. Erst NACH der Single-Instance-
+  // Pruefung, damit ein zweiter, sofort endender Daemon nichts anfasst. Aus: SYNAPSE_LOGPFLEGE=0.
+  let logpflege: LogpflegeHandle | null = null;
+  try {
+    logpflege = startLogpflege();
+  } catch (err) {
+    console.error('[daemon] Logpflege konnte nicht gestartet werden:', err);
+  }
 
   const manager = new WatcherManager();
   const { port, projekte } = manager.statusAll();
@@ -207,6 +218,10 @@ async function main(): Promise<void> {
 
     if (internBruecke !== null) {
       try { internBruecke.stop(); } catch { /* ignore */ }
+    }
+
+    if (logpflege !== null) {
+      try { logpflege.stop(); } catch { /* ignore */ }
     }
 
     try {

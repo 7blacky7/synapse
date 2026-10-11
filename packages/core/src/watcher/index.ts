@@ -34,6 +34,7 @@ import { loadGitignore, istGesperrt, shouldIgnore, aktualisiereIgnoreRegeln } fr
 import { isBinaryFile, isExtractableDocument, isMultimodalFile, getFileType, MAX_MEDIA_SIZE_MB, assetArt, leseDateiKopf } from './binary.js';
 import { workerPausiert } from '../services/worker-steuerung.js';
 import { liegtImProjekt } from '../services/projekt-pfad.js';
+import { SkipMeldungen } from './skip-meldung.js';
 
 export * from './binary.js';
 export * from './ignore.js';
@@ -411,6 +412,28 @@ export function startFileWatcher(options: FileWatcherOptions): FileWatcherInstan
   let lastPgCheck = new Date(0).toISOString();
   let pgPollInterval: NodeJS.Timeout | null = null;
   let pgPollBusy = false;  // Re-Entrancy-Guard: verhindert Ueberlappen langsamer Polls (OOM-Schutz)
+  // P15 Logpflege (929b5b10): jede Skip-Zeile je Datei und Grund nur EINMAL, erneut erst nach einer
+  // Aenderung des Stands (PG-Inhalt bzw. Plattenstand). Vorher: eine Zeile je Runde (alle 2 s).
+  const skipMeldungen = new SkipMeldungen();
+
+  // Kann der Watcher diesen Pfad von der Platte einsammeln? Nur dann lohnt es, eine Zeile mit fremdem
+  // Plattenstand zurueckzustellen ("der naechste Tick sammelt es ein"). NICHT einsammelbar - und so bleibt
+  // es (User-Entscheidung 11.10.2026, Watcher wird nicht umgebaut): chokidar sieht ausgeblendete und
+  // .gitignore-Pfade nicht (ignored = shouldIgnore, auch fuer jedes Elternverzeichnis), die Ignore-Dateien
+  // im Projektwurzel loesen nur einen Regel-Reload aus, Binaerdateien ohne Dokument/Medium werden verworfen.
+  function watcherSammeltEin(relativePath: string, filePath: string): boolean {
+    if (filePath === gitignorePath || filePath === synapseignorePath) return false;
+    const teile = relativePath.split(/[\\/]/);
+    for (let i = 1; i <= teile.length; i++) {
+      if (shouldIgnore(ig, teile.slice(0, i).join('/'))) return false;
+    }
+    try {
+      if (isExtractableDocument(filePath) || isMultimodalFile(filePath)) return true;
+      return !isBinaryFile(filePath, leseDateiKopf(filePath));
+    } catch {
+      return false;
+    }
+  }
 
   // Start PG-Watcher (async setup, doesn't block return)
   (async () => {
@@ -463,7 +486,9 @@ export function startFileWatcher(options: FileWatcherOptions): FileWatcherInstan
             // NIE auf die Platte geschrieben (path.join wuerde ausserhalb landen) und bricht den Tick nicht ab
             // (istGesperrt/ignore wirft bei solchen Pfaden). Ueberspringen und protokollieren, Bestand bleibt.
             if (!liegtImProjekt(projectPath, relativePath)) {
-              console.error(`[Synapse] PG→FS Skip (Pfad ausserhalb des Projekts): ${JSON.stringify(relativePath)}`);
+              if (skipMeldungen.sollMelden(relativePath, 'ausserhalb', String(row.content_hash))) {
+                console.error(`[Synapse] PG→FS Skip (Pfad ausserhalb des Projekts): ${JSON.stringify(relativePath)}`);
+              }
               continue;
             }
             if (istGesperrt(relativePath, projectPath, projectName)) continue;
@@ -475,7 +500,9 @@ export function startFileWatcher(options: FileWatcherOptions): FileWatcherInstan
             const pending = pendingEvents.get(relativePath);
             if (pending && pending.type === 'unlink') {
               zurueckgestellt.push(alsIso(row.updated_at));
-              console.error(`[Synapse] PG→FS Skip (unlink pending): ${path.basename(relativePath)}`);
+              if (skipMeldungen.sollMelden(relativePath, 'unlink', String(row.content_hash))) {
+                console.error(`[Synapse] PG→FS Skip (unlink pending): ${path.basename(relativePath)}`);
+              }
               continue;
             }
             const filePath = path.join(projectPath, relativePath);  // absolut rekonstruieren
@@ -484,7 +511,10 @@ export function startFileWatcher(options: FileWatcherOptions): FileWatcherInstan
             if (exists) {
               localHash = crypto.createHash('sha256').update(fs.readFileSync(filePath, 'utf-8')).digest('hex');
             }
-            if (localHash === row.content_hash) continue;  // konvergiert → nichts zu tun
+            if (localHash === row.content_hash) {  // konvergiert → nichts zu tun
+              skipMeldungen.vergessen(relativePath);
+              continue;
+            }
             // SYNC-1: Ueberschreiben nur, wenn PG den Inhalt auf der Platte KENNT.
             //
             // Frueher entschied hier die mtime ("Disk neuer? dann nicht anfassen").
@@ -506,10 +536,19 @@ export function startFileWatcher(options: FileWatcherOptions): FileWatcherInstan
                 [projectName, relativePath, localHash]
               );
               if ((bekannt.rowCount ?? 0) === 0) {
-                zurueckgestellt.push(alsIso(row.updated_at));
-                console.error(
-                  `[Synapse] PG→FS Skip (fremde Aenderung auf der Platte, nicht ueberschrieben): ${relativePath}`
-                );
+                // Nur zurueckstellen (Checkpoint halten), wenn der Watcher den Pfad auch einsammeln kann.
+                // Sonst kaeme das Einsammeln nie und jede Runde fragte ab der aeltesten solchen Zeile neu
+                // (Endlosschleife, Befund 929b5b10). Ueberschrieben wird in beiden Faellen NICHT.
+                const einsammelbar = watcherSammeltEin(relativePath, filePath);
+                if (einsammelbar) zurueckgestellt.push(alsIso(row.updated_at));
+                const grund = einsammelbar ? 'fremd' : 'fremd-nicht-einsammelbar';
+                if (skipMeldungen.sollMelden(relativePath, grund, `${row.content_hash}|${localHash}`)) {
+                  console.error(
+                    einsammelbar
+                      ? `[Synapse] PG→FS Skip (fremde Aenderung auf der Platte, nicht ueberschrieben): ${relativePath}`
+                      : `[Synapse] PG→FS Skip (fremde Aenderung auf der Platte, nicht ueberschrieben; Watcher sammelt den Pfad nicht ein: ausgeblendet/.gitignore/binaer; einmalige Meldung bis zur naechsten Aenderung): ${relativePath}`
+                  );
+                }
                 continue;
               }
             }
@@ -524,6 +563,7 @@ export function startFileWatcher(options: FileWatcherOptions): FileWatcherInstan
             if (content == null) continue;
             fs.mkdirSync(path.dirname(filePath), { recursive: true });
             fs.writeFileSync(filePath, content, 'utf-8');
+            skipMeldungen.vergessen(relativePath);
             console.error(`[Synapse] PG→FS Sync: ${path.basename(filePath)}`);
           }
 
