@@ -6,6 +6,8 @@
 //      Vektor -> abgelehnt UND sofort freigegeben (claimed_by NULL); Qdrant bekam EINEN Upsert.
 //   S2 Validierung: leere items -> 400 invalid_completion.
 //   R1 Freigabe: eigener Claim mit Token -> frei; fremder Knoten-Token -> 403; falsches Token -> nichts.
+//   K2 (P15-T11) Vorausholen: zwei Stapel der halben Kapazitaet passen nebeneinander, ein dritter
+//      bekommt nichts (claimEmbeddingChunks: capacity = maxConcurrent - aktive Claims).
 // Aufruf: set -a; . <test-db.env>; set +a; node scripts/test-embedding-nodes-stapel.mjs
 // Braucht gebautes packages/core/dist und packages/rest-api/dist.
 import assert from 'node:assert/strict';
@@ -78,7 +80,10 @@ const fingerprint = { model: process.env.OLLAMA_MODEL, modelDigest: DIGEST, quan
 const token = (n) => `${String(n).padStart(8, '0')}-2222-4222-8222-222222222222`;
 
 const aufraeumen = async () => {
+  // K2 claimt ueber die Projektauswahl evtl. auch Chunks anderer Test-DB-Projekte -> zurueckgeben.
+  await pool.query('UPDATE code_chunks SET claimed_by = NULL, claim_token = NULL, lease_until = NULL WHERE claimed_by = $1 AND embedded_at IS NULL', [NODE]);
   await pool.query('DELETE FROM code_files WHERE project = $1', [PROJEKT]);
+  await pool.query('DELETE FROM projects WHERE name = $1', [PROJEKT]);
   await pool.query('DELETE FROM embedding_knoten WHERE node_id = $1', [NODE]);
   await pool.query('DELETE FROM auth_tokens WHERE token_hash = $1', ['hash-p15-stapel']);
 };
@@ -160,6 +165,29 @@ try {
   assert.equal(z4.claimed_by, null);
   assert.equal(z4.claim_token, null);
   console.log('OK  R1 Freigabe: fremder Knoten 403, falsches Token nichts, eigenes Token frei');
+
+  // K2
+  if ((await core.leseSchalter('embedding')).aktiv) {
+    console.log('SKIP K2: Schalter embedding in der Test-DB aktiv (keine Claims)');
+  } else {
+    await pool.query(`INSERT INTO projects (name, hostname, path, enabled) VALUES ($1, 'test', '/tmp/p15-stapel-test', true)`, [PROJEKT]);
+    for (let nr = 10; nr < 20; nr++) {
+      await pool.query(
+        `INSERT INTO code_chunks (id, project, file_path, chunk_index, content, line_start, line_end) VALUES ($1, $2, 'src/a.ts', $3, $4, 1, 1)`,
+        [`${PROJEKT}-c${nr}`, PROJEKT, nr, `frei ${nr}`],
+      );
+    }
+    const kapazitaet = 6;
+    const halb = kapazitaet / 2;
+    const claimHalb = () => core.claimEmbeddingChunks(NODE, { limit: halb, maxConcurrent: kapazitaet }, pool);
+    const rechnend = await claimHalb();
+    const vorausgeholt = await claimHalb();
+    const zuViel = await claimHalb();
+    assert.equal(rechnend.length, halb, 'erster halber Stapel');
+    assert.equal(vorausgeholt.length, halb, 'vorausgeholter halber Stapel passt neben den rechnenden');
+    assert.equal(zuViel.length, 0, 'dritter Stapel muss an der Kapazitaet scheitern');
+    console.log(`OK  K2 Vorausholen: Kapazitaet ${kapazitaet} -> 2 Stapel zu ${halb}, dritter 0`);
+  }
   console.log('ALLE PRUEFUNGEN GRUEN');
 } finally {
   await aufraeumen().catch(() => {});

@@ -619,6 +619,28 @@ func stopLokalenGPUHelper() error {
 	return nil
 }
 
+// gpuHelferApiBasen waehlt die API-Adressen fuer den GPU-Helfer (P15-T11).
+//
+// GEMESSEN 11.10.2026: der Helfer sprach den Aussteller (Cloudflare-Tunnel) an,
+// 120-160 ms Antwortzeit je Anfrage bei zwei Anfragen je Stapel - rund ein
+// Viertel des Zyklus, in dem die GPU stand. Der Tray selbst nimmt zuerst
+// synapse_api_url aus ~/.synapse/file-watcher/config.json (heute die LAN-Adresse
+// der API, siehe apiBases); der Helfer bekommt dieselbe Adresse als bevorzugte
+// und den Aussteller als Rueckfall (der Agent wechselt bei Transportfehlern und
+// kehrt per Heartbeat zurueck). Beide Adressen zeigen auf dieselbe API und
+// dieselbe Token-Datenbank, das Compute-Token gilt dort wie das Daemon-Token.
+func gpuHelferApiBasen(issuer, konfigURL string) (bevorzugt, rueckfall string) {
+	issuer = strings.TrimRight(strings.TrimSpace(issuer), "/")
+	lokal := strings.TrimRight(strings.TrimSpace(konfigURL), "/")
+	if lokal == "" || lokal == issuer {
+		return issuer, ""
+	}
+	if issuer == "" {
+		return lokal, ""
+	}
+	return lokal, issuer
+}
+
 func startLokalenGPUHelper(c gpuNodeConfig) error {
 	lokalerGPUHelperMu.Lock()
 	defer lokalerGPUHelperMu.Unlock()
@@ -639,7 +661,10 @@ func startLokalenGPUHelper(c gpuNodeConfig) error {
 	// P15-T6: Modell, Zieldimension, num_ctx und VRAM-Bedarf holt der Agent selbst aus dem
 	// Referenzvertrag der API (GET /api/embedding-nodes/reference) — hier wird nichts davon
 	// vorgegeben, sonst gaebe es zwei Quellen, die auseinanderlaufen koennen.
-	cmd.Env = append(os.Environ(), "SYNAPSE_API_URL="+c.Issuer, "SYNAPSE_API_TOKEN="+c.ComputeToken, "SYNAPSE_NODE_ID="+c.NodeID, "OLLAMA_URL="+gpuOllamaURL, fmt.Sprintf("SYNAPSE_GPU_INDEX=%d", c.GPUIndex), fmt.Sprintf("CUDA_VISIBLE_DEVICES=%d", c.GPUIndex))
+	// P15-T11: dieselbe bevorzugte Adresse wie der Tray selbst (readTrayConfig, apiBases), der
+	// Aussteller des Compute-Tokens bleibt Rueckfall. Leerer Rueckfall ueberschreibt einen geerbten Wert.
+	bevorzugt, rueckfall := gpuHelferApiBasen(c.Issuer, readTrayConfig().SynapseApiUrl)
+	cmd.Env = append(os.Environ(), "SYNAPSE_API_URL="+bevorzugt, "SYNAPSE_API_URL_RUECKFALL="+rueckfall, "SYNAPSE_API_TOKEN="+c.ComputeToken, "SYNAPSE_NODE_ID="+c.NodeID, "OLLAMA_URL="+gpuOllamaURL, fmt.Sprintf("SYNAPSE_GPU_INDEX=%d", c.GPUIndex), fmt.Sprintf("CUDA_VISIBLE_DEVICES=%d", c.GPUIndex))
 	logf, _ := os.OpenFile(filepath.Join(filepath.Dir(gpuConfigPath()), "compute-node.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
 	if logf != nil {
 		cmd.Stdout = logf

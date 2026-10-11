@@ -28,7 +28,9 @@ const stapel = [
   { chunkId: 'chunk-kurz-2', claimToken: '33333333-3333-4333-8333-333333333333', content: 'kurz zwei', contentHash: 'd'.repeat(64) },
 ];
 const haengt = { chunkId: 'chunk-haengt', claimToken: '44444444-4444-4444-8444-444444444444', content: 'HAENGT', contentHash: 'e'.repeat(64) };
-const CLAIM_BATCH = 4;
+// P15-T11: claimBatch = Kapazitaet offener Claims; der Knoten holt Stapel der halben Kapazitaet,
+// damit der vorausgeholte Stapel neben dem rechnenden Platz hat.
+const CLAIM_BATCH = 6;
 
 const embedAufrufe = [];
 let registration = null;
@@ -187,7 +189,8 @@ try {
   assert.equal(registration.model, model);
   assert.equal(registration.targetDimension, 3072);
   assert.equal(registration.numCtx, 8192);
-  assert.equal(claimLimits[0], CLAIM_BATCH, 'Claim-Limit = claimBatch des Servers');
+  assert.ok(claimLimits.length >= 2 && claimLimits.every((l) => l === CLAIM_BATCH / 2),
+    'Claim-Limit = halbe Kapazitaet (Vorausholen): ' + JSON.stringify(claimLimits));
 
   // Stapel: EIN Abschluss mit allen drei Eintraegen, in Claim-Reihenfolge.
   assert.equal(completion.model, model);

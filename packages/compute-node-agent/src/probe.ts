@@ -99,6 +99,38 @@ async function gpuInfo(): Promise<{ name: string | null; totalMb: number; freeMb
   }
 }
 
+/** OLLAMA_URL, nur strikt lokal (loopback HTTP). */
+function lokaleOllamaUrl(): string {
+  const ollamaUrl = (process.env.OLLAMA_URL || '').replace(/\/$/, '');
+  let parsedOllama: URL;
+  try { parsedOllama = new URL(ollamaUrl); } catch { throw new Error('OLLAMA_URL must be a loopback URL'); }
+  if (parsedOllama.protocol !== 'http:' || !['127.0.0.1', 'localhost', '::1'].includes(parsedOllama.hostname)) {
+    throw new Error('OLLAMA_URL must be strict loopback HTTP');
+  }
+  return ollamaUrl;
+}
+
+async function ollamaTag(ollamaUrl: string, model: string): Promise<OllamaTag> {
+  const tagsResponse = await fetch(`${ollamaUrl}/api/tags`, { signal: AbortSignal.timeout(10_000) });
+  if (!tagsResponse.ok) throw new Error(`Ollama tags failed: ${tagsResponse.status}`);
+  const tags = await tagsResponse.json() as { models: OllamaTag[] };
+  const tag = tags.models.find((item) =>
+    item.name === model || item.model === model || item.name.startsWith(`${model}:`),
+  );
+  if (!tag?.digest) throw new Error(`Ollama model or full digest missing: ${model}`);
+  return tag;
+}
+
+/**
+ * P15-T11: Nur der volle Digest des lokalen Modells (ein /api/tags, wenige ms, kein nvidia-smi).
+ * Der Knoten prueft damit nach JEDEM Stapel, dass das Modell waehrend des Rechnens nicht gewechselt
+ * hat; die volle Messung (probeNodeCapabilities) laeuft nur noch beim Start, periodisch und nach Fehlern.
+ * Ein anderes Modell, eine andere Quantisierung oder Dimension hat immer einen anderen Digest.
+ */
+export async function lokalerModellDigest(model: string): Promise<string> {
+  return (await ollamaTag(lokaleOllamaUrl(), model)).digest;
+}
+
 // pruefeEinstieg=true nur bei der ERSTEN Messung vor der Registrierung: dort ist
 // die Frage "passt das Modell in den freien Speicher?" richtig. Danach immer
 // false — sonst scheitert jede Folgemessung an dem Speicher, den das eigene
@@ -147,19 +179,8 @@ export async function probeNodeCapabilities(
       (belegtVomEigenenModell > 0 ? ` (+${belegtVomEigenenModell} MB bereits vom eigenen Modell belegt)` : ''),
     );
   }
-  const ollamaUrl = (process.env.OLLAMA_URL || '').replace(/\/$/, '');
-  let parsedOllama: URL;
-  try { parsedOllama = new URL(ollamaUrl); } catch { throw new Error('OLLAMA_URL must be a loopback URL'); }
-  if (parsedOllama.protocol !== 'http:' || !['127.0.0.1', 'localhost', '::1'].includes(parsedOllama.hostname)) {
-    throw new Error('OLLAMA_URL must be strict loopback HTTP');
-  }
-  const tagsResponse = await fetch(`${ollamaUrl}/api/tags`, { signal: AbortSignal.timeout(10_000) });
-  if (!tagsResponse.ok) throw new Error(`Ollama tags failed: ${tagsResponse.status}`);
-  const tags = await tagsResponse.json() as { models: OllamaTag[] };
-  const tag = tags.models.find((item) =>
-    item.name === model || item.model === model || item.name.startsWith(`${model}:`),
-  );
-  if (!tag?.digest) throw new Error(`Ollama model or full digest missing: ${model}`);
+  const ollamaUrl = lokaleOllamaUrl();
+  const tag = await ollamaTag(ollamaUrl, model);
 
   const showResponse = await fetch(`${ollamaUrl}/api/show`, {
     method: 'POST',
