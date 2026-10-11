@@ -19,7 +19,8 @@ import {
   COLLECTIONS,
   // Projekt
   detectTechnologies,
-  indexProjectTechnologies,
+  erkenneTechnologienAusPg,
+  stosseContext7An,
   getProjectStats,
   setProjectEnabled,
   getCollectionStats,
@@ -2264,16 +2265,19 @@ async function handleToolCall(
             }
 
             if (job.status === 'done' && job.resolved_path) {
-              let techs: Awaited<ReturnType<typeof detectTechnologies>> = [];
-              let docsIndexed = 0;
+              // P12-T17: Erkennung aus PG statt vom Dateisystem (der PC-Pfad existiert im
+              // API-Container nicht). Die Docs holt die Context7-Automatik im Hintergrund —
+              // gedrosselt und nur, was global noch fehlt. Ein frisch angelegtes Projekt hat
+              // meist noch keine Dateien in PG; die Automatik erkennt sie, sobald sie da sind.
+              let techs: Awaited<ReturnType<typeof erkenneTechnologienAusPg>> = [];
+              const docsIndexed = 0;
               if (indexDocs) {
                 try {
-                  techs = await detectTechnologies(job.resolved_path);
-                  const result = await indexProjectTechnologies(techs);
-                  docsIndexed = result.indexed;
-                } catch {
-                  // Tech-Detection vom REST-Container aus kann ohne FS-Zugriff scheitern — kein Fail.
+                  techs = await erkenneTechnologienAusPg(job.name);
+                } catch (err) {
+                  console.error(`[project init] Tech-Erkennung aus PG fehlgeschlagen: ${(err as Error).message}`);
                 }
+                stosseContext7An(job.name);
               }
               return {
                 success: true,
@@ -2281,6 +2285,7 @@ async function handleToolCall(
                 path: job.resolved_path,
                 technologies: techs,
                 docsIndexed,
+                docs_automatik: indexDocs ? 'angestossen (Context7 im Hintergrund, gedrosselt)' : 'aus',
                 job_id: job.id,
                 projekt_db: await projektDbBeiInit(job.name, job.resolved_path),
                 message: job.message ?? `Projekt "${job.name}" angelegt unter ${job.resolved_path}.`,
@@ -2320,17 +2325,17 @@ async function handleToolCall(
           // Watcher fehlen. Volle Einrichtung: Self-Service-Zweig oben (kein
           // "path", nur "name") oder lokaler MCP-Server (stdio).
           const projectName = requestedName || explicitPath.split(/[/\\]/).pop() || 'unknown';
-          let techs: Awaited<ReturnType<typeof detectTechnologies>> = [];
-          let docsIndexed = 0;
+          // P12-T17: wie oben — Erkennung aus PG (Projektname), Docs ueber die Context7-Automatik.
+          let techs: Awaited<ReturnType<typeof erkenneTechnologienAusPg>> = [];
+          const docsIndexed = 0;
 
           if (indexDocs) {
             try {
-              techs = await detectTechnologies(explicitPath);
-              const result = await indexProjectTechnologies(techs);
-              docsIndexed = result.indexed;
-            } catch {
-              // Docs-Indexierung kann ohne FS-Zugriff auf explicitPath scheitern — kein Fail des Gesamtaufrufs.
+              techs = await erkenneTechnologienAusPg(projectName);
+            } catch (err) {
+              console.error(`[project init] Tech-Erkennung aus PG fehlgeschlagen: ${(err as Error).message}`);
             }
+            stosseContext7An(projectName);
           }
 
           return {
@@ -2343,7 +2348,7 @@ async function handleToolCall(
             registered_in_db: false,
             watcher_active: false,
             projekt_db: await projektDbBeiInit(projectName, explicitPath),
-            message: `Projekt "${projectName}": Docs indexiert (${docsIndexed}), aber NICHT in PostgreSQL registriert und KEIN FileWatcher gestartet — dieser REST-Aufruf kann das fuer einen expliziten Pfad nicht leisten (Hostname-Problem, siehe Code-Kommentar). Fuer vollstaendige Einrichtung project(action:"init", name:"${projectName}") OHNE path aufrufen (Self-Service ueber den lokalen Daemon) oder lokal ueber den MCP-Server (stdio) initialisieren.`,
+            message: `Projekt "${projectName}": Docs-Automatik ${indexDocs ? 'angestossen' : 'aus'}, aber NICHT in PostgreSQL registriert und KEIN FileWatcher gestartet — dieser REST-Aufruf kann das fuer einen expliziten Pfad nicht leisten (Hostname-Problem, siehe Code-Kommentar). Fuer vollstaendige Einrichtung project(action:"init", name:"${projectName}") OHNE path aufrufen (Self-Service ueber den lokalen Daemon) oder lokal ueber den MCP-Server (stdio) initialisieren.`,
           };
         }
         case 'projekt_db': {

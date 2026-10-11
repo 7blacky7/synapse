@@ -1,6 +1,7 @@
 /**
  * MODUL: Dokumentations-Indexer
- * ZWECK: Laedt Framework-Dokumentation von Context7 und cached sie in Qdrant fuer schnellen Zugriff
+ * ZWECK: Laedt Framework-Dokumentation von Context7 und speichert sie PG-first und GLOBAL
+ *        (tech_docs, project NULL; Vektor in tech_docs_cache) fuer schnellen Zugriff
  *
  * INPUT:
  *   - framework: string - Name des Frameworks (z.B. "react", "vue")
@@ -12,33 +13,34 @@
  *
  * OUTPUT:
  *   - boolean: Ob Framework bereits gecacht ist
- *   - { indexed, cached }: Anzahl indexierter Chunks und Cache-Status
+ *   - { indexed, cached }: Anzahl neu gespeicherter Chunks und Cache-Status
  *   - { total, indexed, cached }: Statistiken ueber alle Technologien
  *
  * NEBENEFFEKTE:
- *   - Qdrant: Schreibt in Collection "synapse_tech_docs"
+ *   - PostgreSQL: Schreibt Zeilen in tech_docs (source 'context7', project NULL)
+ *   - Qdrant: Vektor in Collection "tech_docs_cache" — nachgereicht ueber speichereContext7Chunks
  *   - Netzwerk: Ruft Context7 API fuer Framework-Dokumentation ab
  *   - Logs: Konsolenausgabe bei Indexierung/Cache-Hit
  *
  * ABHÄNGIGKEITEN:
- *   - ../embeddings/index.js (intern) - Text-zu-Vektor Konvertierung
- *   - ../qdrant/index.js (intern) - Qdrant Client
+ *   - ../db/client.js (intern) - PostgreSQL (Cache-Pruefung)
  *   - ../chunking/index.js (intern) - Text-Chunking
  *   - ./context7.js (intern) - Context7 API Client
+ *   - ./tech-docs.js (intern) - PG-first-Speichern (speichereContext7Chunks)
  *   - ./tech-detection.js (intern) - Technologie-Typen
  *
  * HINWEISE:
  *   - Benoetigt CONTEXT7_API_KEY Umgebungsvariable
  *   - Nur Frameworks und Libraries werden indexiert (keine Tools/Runtimes)
- *   - Cache-Pruefung basiert auf framework + version Kombination
+ *   - Cache-Pruefung basiert auf framework + version Kombination — in PostgreSQL (P12-T16),
+ *     nicht mehr im Index: "ist es schon da" ist eine Existenzfrage, die beantwortet PG.
  */
 
-import { getEmbeddingProvider, embed, embeddingModellKennung } from '../embeddings/index.js';
-import { getQdrantClient } from '../qdrant/index.js';
-import { COLLECTIONS } from '../types/index.js';
+import { getPool } from '../db/client.js';
 import { chunkText } from '../chunking/index.js';
 import { getContext7Client, Context7Doc } from './context7.js';
 import { DetectedTechnology } from './tech-detection.js';
+import { speichereContext7Chunks } from './tech-docs.js';
 
 export interface IndexedDoc {
   id: string;
@@ -52,35 +54,23 @@ export interface IndexedDoc {
 }
 
 /**
- * Prüft ob Docs für ein Framework bereits gecacht sind
+ * Prüft ob Docs für ein Framework bereits gecacht sind (globale Context7-Zeilen in PG)
  */
 export async function isFrameworkCached(
   framework: string,
   version?: string
 ): Promise<boolean> {
-  const client = getQdrantClient();
-
   try {
-    // Suche nach existierenden Docs
-    const filter: any = {
-      must: [
-        { key: 'framework', match: { value: framework.toLowerCase() } },
-      ],
-    };
-
-    if (version) {
-      filter.must.push({ key: 'version', match: { value: version } });
-    }
-
-    const result = await client.scroll(COLLECTIONS.techDocs, {
-      filter,
-      limit: 1,
-      with_payload: false,
-      with_vector: false,
-    });
-
-    return result.points.length > 0;
-  } catch {
+    const { rows } = await getPool().query(
+      `SELECT 1 FROM tech_docs
+        WHERE framework = $1 AND source = 'context7' AND project IS NULL
+          AND ($2::text IS NULL OR version = $2)
+        LIMIT 1`,
+      [framework.toLowerCase(), version ?? null]
+    );
+    return rows.length > 0;
+  } catch (error) {
+    console.error('[DocsIndexer] Cache-Pruefung in PostgreSQL fehlgeschlagen:', error);
     return false;
   }
 }
@@ -119,10 +109,10 @@ export async function indexFrameworkDocs(
     return { indexed: 0, cached: false };
   }
 
-  // Docs chunken und embedden
+  // Docs chunken und PG-first speichern (Vektor wird nachgereicht)
   const indexedDocs = await processAndIndexDocs(docs);
 
-  console.error(`[DocsIndexer] ${indexedDocs} Chunks für ${framework} indexiert`);
+  console.error(`[DocsIndexer] ${indexedDocs} Chunks für ${framework} gespeichert`);
   return { indexed: indexedDocs, cached: false };
 }
 
@@ -165,10 +155,15 @@ export async function indexProjectTechnologies(
 }
 
 /**
- * Verarbeitet Docs: Chunking, Embedding, Speichern
+ * Verarbeitet Docs: Chunking, dann PG-first speichern (global, Context7).
+ * Der fruehere direkte Qdrant-upsert ist weg (P12-T16): er schrieb ohne PG-Zeile und mit einer
+ * ID ("doc-..."), die Qdrant als Punkt-ID gar nicht annimmt.
+ * @returns Anzahl NEU gespeicherter Chunks (Duplikate zaehlen nicht)
  */
-async function processAndIndexDocs(docs: Context7Doc[]): Promise<number> {
-  const client = getQdrantClient();
+async function processAndIndexDocs(
+  docs: Context7Doc[],
+  optionen: { embeddingAbwarten?: boolean } = {}
+): Promise<number> {
   let totalChunks = 0;
 
   for (const doc of docs) {
@@ -178,72 +173,39 @@ async function processAndIndexDocs(docs: Context7Doc[]): Promise<number> {
 
     // Text chunken
     const chunks = chunkText(doc.content);
+    const titel = doc.title || 'context7';
 
-    for (let i = 0; i < chunks.length; i++) {
-      const chunk = chunks[i];
-      const id = generateDocId(doc.framework, doc.title || '', i);
+    const ergebnis = await speichereContext7Chunks(
+      doc.framework || 'unbekannt',
+      doc.version || 'latest',
+      chunks.map((chunk, i) => ({
+        section: chunks.length > 1 ? `${titel} (${i + 1}/${chunks.length})` : titel,
+        content: chunk.content,
+      })),
+      optionen
+    );
 
-      try {
-        // Embedding erstellen
-        const vector = await embed(chunk.content, { priority: 'background' });
-
-        // In Qdrant speichern
-        await client.upsert(COLLECTIONS.techDocs, {
-          wait: true,
-          points: [
-            {
-              id,
-              vector,
-              payload: {
-                framework: doc.framework.toLowerCase(),
-                version: doc.version || null,
-                title: doc.title || null,
-                content: chunk.content,
-                chunkIndex: i,
-                totalChunks: chunks.length,
-                url: doc.url || null,
-                source: 'context7',
-                indexedAt: new Date().toISOString(), embedding_modell: embeddingModellKennung(),
-              },
-            },
-          ],
-        });
-
-        totalChunks++;
-      } catch (error) {
-        console.error(`[DocsIndexer] Chunk-Fehler:`, error);
-      }
+    if (ergebnis.fehlgeschlagen > 0) {
+      console.error(`[DocsIndexer] ${ergebnis.fehlgeschlagen} Chunks von "${titel}" nicht gespeichert`);
     }
+    totalChunks += ergebnis.gespeichert;
   }
 
   return totalChunks;
 }
 
 /**
- * Speichert manuell geholte Docs (z.B. von Context7 Suche)
+ * Speichert manuell geholte Docs (z.B. von Context7 Suche).
+ * embeddingAbwarten: true, wenn direkt danach semantisch gesucht wird.
  */
 export async function cacheSearchResults(
   docs: Context7Doc[],
-  searchQuery: string
+  searchQuery: string,
+  optionen: { embeddingAbwarten?: boolean } = {}
 ): Promise<number> {
   if (docs.length === 0) return 0;
 
   console.error(`[DocsIndexer] Cache ${docs.length} Suchergebnisse für "${searchQuery}"...`);
 
-  return await processAndIndexDocs(docs);
-}
-
-/**
- * Generiert eindeutige ID für Doc-Chunk
- */
-function generateDocId(framework: string, title: string, chunkIndex: number): string {
-  const base = `${framework}-${title}-${chunkIndex}`
-    .toLowerCase()
-    .replace(/[^a-z0-9-]/g, '-')
-    .replace(/-+/g, '-')
-    .substring(0, 100);
-
-  // UUID-artige ID erstellen
-  const hash = Buffer.from(base).toString('base64').substring(0, 8);
-  return `doc-${hash}-${Date.now().toString(36)}`;
+  return await processAndIndexDocs(docs, optionen);
 }

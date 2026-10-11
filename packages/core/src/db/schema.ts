@@ -268,6 +268,51 @@ CREATE TABLE IF NOT EXISTS tech_docs (
   indexed_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- P12-T17 (c7-auto): Context7-Bibliotheksregister — eine Zeile je Bibliothek, GLOBAL (Context7-Docs
+-- sind projektuebergreifend, tech_docs.project NULL). Grundlage der sparsamen Automatik
+-- (services/context7-automatik.ts): abgerufen wird nur, was hier fehlt oder wofuer Context7 ein
+-- neueres lastUpdateDate meldet. framework = kleingeschrieben wie tech_docs.framework.
+-- status: bestand (aus vorhandenen tech_docs uebernommen, ohne Abruf) | abgerufen | nicht_gefunden | fehler.
+-- quelle_stand = lastUpdateDate von Context7 zum eigenen Stand; abfragen = bisherige Queries (nur Information).
+CREATE TABLE IF NOT EXISTS context7_bibliotheken (
+  framework TEXT PRIMARY KEY,
+  anzeige_name TEXT,
+  status TEXT NOT NULL DEFAULT 'abgerufen',
+  library_id TEXT,
+  titel TEXT,
+  quelle_stand TIMESTAMPTZ,
+  versions TEXT[] NOT NULL DEFAULT '{}',
+  trust_score REAL,
+  benchmark_score REAL,
+  total_snippets INTEGER,
+  chunks INTEGER NOT NULL DEFAULT 0,
+  abfragen TEXT[] NOT NULL DEFAULT '{}',
+  gesamt_tokens INTEGER,
+  abgerufen_am TIMESTAMPTZ,
+  letzter_check TIMESTAMPTZ,
+  naechster_check TIMESTAMPTZ,
+  letzter_fehler TEXT,
+  erstellt_am TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_context7_bibliotheken_check ON context7_bibliotheken(naechster_check);
+
+-- P12-T17 (c7-auto): Context7-Kontingent (services/context7-kontingent.ts), genau eine Zeile (id = 1):
+-- Monatszaehler (monat = Beginn des Abrechnungsmonats) fuer JEDEN Aufruf mit API-Key, Tageszaehler,
+-- Pause nach 429/Quota, gemerktes tokens-Maximum des Gesamtabrufs. In PG, damit alles Neustarts ueberlebt.
+CREATE TABLE IF NOT EXISTS context7_automatik_stand (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  monat DATE,
+  abrufe_monat INTEGER NOT NULL DEFAULT 0,
+  tag DATE,
+  abrufe_heute INTEGER NOT NULL DEFAULT 0,
+  abrufe_gesamt BIGINT NOT NULL DEFAULT 0,
+  letzter_aufruf TIMESTAMPTZ,
+  pause_bis TIMESTAMPTZ,
+  pause_grund TEXT,
+  tokens_max INTEGER
+);
+INSERT INTO context7_automatik_stand (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
+
 CREATE TABLE IF NOT EXISTS code_files (
   id TEXT PRIMARY KEY,
   project TEXT NOT NULL,
@@ -371,6 +416,23 @@ CREATE INDEX IF NOT EXISTS idx_chat_messages_recipient ON chat_messages(recipien
 CREATE INDEX IF NOT EXISTS idx_agent_sessions_project ON agent_sessions(project);
 CREATE INDEX IF NOT EXISTS idx_tech_docs_framework ON tech_docs(framework, version);
 CREATE INDEX IF NOT EXISTS idx_tech_docs_hash ON tech_docs(content_hash);
+
+-- P12-T16 (docs-pg, 11.10.2026): Tech-Docs PG-first.
+-- project: NULL = global (source context7, Qdrant tech_docs_cache), sonst projektgebunden
+-- (source research/manual, Qdrant project_<p>_docs). Bis zum Migrationsskript
+-- packages/core/scripts/tech-docs-nach-pg.mjs haben ALLE Bestandszeilen project NULL.
+-- embedded_at: Nachzug wie bei memories (DEFAULT NOW() + DROP DEFAULT: Altbestand gilt als
+-- eingebettet, neue Zeilen starten mit NULL und werden vom Backlog gesehen).
+-- Dedupe: der benannte Constraint tech_docs_content_hash_key (UNIQUE content_hash, global)
+-- verhindert, dass dieselbe Recherche in zwei Projekten liegt -> ersetzt durch einen
+-- Unique-Index je (Projekt, Hash); global = ''. Der Index idx_tech_docs_hash bleibt.
+ALTER TABLE tech_docs ADD COLUMN IF NOT EXISTS project TEXT;
+ALTER TABLE tech_docs ADD COLUMN IF NOT EXISTS embedded_at TIMESTAMPTZ DEFAULT NOW();
+ALTER TABLE tech_docs ALTER COLUMN embedded_at DROP DEFAULT;
+ALTER TABLE tech_docs DROP CONSTRAINT IF EXISTS tech_docs_content_hash_key;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_tech_docs_project_hash ON tech_docs ((COALESCE(project, '')), content_hash);
+CREATE INDEX IF NOT EXISTS idx_tech_docs_project ON tech_docs(project);
+CREATE INDEX IF NOT EXISTS idx_tech_docs_embed_backlog ON tech_docs(indexed_at) WHERE embedded_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_code_files_project ON code_files(project);
 CREATE INDEX IF NOT EXISTS idx_code_files_path ON code_files(project, file_path);
 CREATE INDEX IF NOT EXISTS idx_code_files_type ON code_files(project, file_type);

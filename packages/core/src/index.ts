@@ -918,6 +918,20 @@ export type { Memory, MemoryWithRelatedCode, RelatedMemoryResult, RelatedCodeRes
 export type { DetectedTechnology } from './services/tech-detection.js';
 export type { Context7Doc } from './services/context7.js';
 export type { IndexedDoc } from './services/docs-indexer.js';
+// P12-T17: Context7-Automatik, Kontingent und inhaltsbasierte Tech-Erkennung
+export {
+  initContext7Automatik,
+  context7AutomatikTick,
+  stosseContext7An,
+  erkenneTechnologienAusPg,
+  merkeContext7Abfrage,
+} from './services/context7-automatik.js';
+export { context7Kontingent, kontingentKonfig, reserviereContext7Aufruf } from './services/context7-kontingent.js';
+export type { Context7Kontingent, Context7Stufe, Context7Aufrufart } from './services/context7-kontingent.js';
+export { detectTechnologiesAusInhalten, ERKENNUNGS_DATEINAMEN, MANIFEST_DATEINAMEN } from './services/tech-detection.js';
+export type { ManifestInhalt, ImportQuelle } from './services/tech-detection.js';
+export { Context7Fehler } from './services/context7.js';
+export type { Context7Bibliothek } from './services/context7.js';
 export type { ExtractedDocument, DocumentSearchResult } from './services/documents.js';
 export type {
   GlobalSearchOptions,

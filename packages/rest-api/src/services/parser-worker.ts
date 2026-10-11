@@ -9,6 +9,7 @@
  * OUTPUT: ruft parseUnparsedFiles(project) fuer alle Projekte mit offenem
  *         Backlog — welche das sind, beantwortet projekteMitBacklog() in core.
  *         Optional: konsumiert project-init-queue Jobs (TODO Phase B).
+ *         Stoesst je Tick die Context7-Automatik an (P12-T17, eigener Takt/Drosselung in core).
  *
  * NEBENEFFEKTE:
  *   - PostgreSQL: SELECT auf code_files, parseAndEmbed-Aufrufe (DELETE+INSERT
@@ -30,6 +31,8 @@ import {
   getPool,
   parseUnparsedFiles,
   projekteMitBacklog,
+  context7AutomatikTick,
+  initContext7Automatik,
 } from '@synapse/core';
 import { listEmbeddingNodes } from './embedding-nodes.js';
 
@@ -101,6 +104,8 @@ export class ParserWorker {
     setTimeout(() => this.fire(), 2_000);
     this.timer = setInterval(() => this.fire(), this.cfg.intervalMs);
     void this.embeddingLoop();
+    // P12-T17: Context7-Automatik (eigener Takt, eigene Drosselung — siehe context7-automatik.ts)
+    initContext7Automatik();
   }
 
   shutdown(): void {
@@ -220,6 +225,11 @@ export class ParserWorker {
     } catch (err) {
       console.error(`[parser-worker] Embedding-Backlog fehlgeschlagen: ${(err as Error).message}`);
     }
+
+    // CONTEXT7-AUTOMATIK (P12-T17) — ebenfalls VOR der Projektauswahl, aus demselben Grund wie
+    // der Backlog oben. Fire-and-forget: Context7-Aufrufe mit Pausen duerfen das Parsen nicht
+    // aufhalten. Ob ein Lauf faellig ist und dass er nie doppelt laeuft, entscheidet das Modul.
+    void context7AutomatikTick();
 
     // WELCHE PROJEKTE FAELLIG SIND, ENTSCHEIDET CORE — nicht dieser Worker.
     // Hier stand bis zum 28.07.2026 eine eigene Query, die nur parsed_at und

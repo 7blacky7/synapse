@@ -1,27 +1,26 @@
 /**
  * Synapse Core - Docs Service
- * Framework-Dokumentation cachen und durchsuchen
+ * Framework-Dokumentation (Context7, global) cachen und durchsuchen.
+ *
+ * P12-T16: Schreiben und Existenzfragen laufen ueber PostgreSQL (tech_docs, project NULL,
+ * source 'context7'); Qdrant (tech_docs_cache) beantwortet nur die Aehnlichkeitssuche.
  */
 
-import { v4 as uuidv4 } from 'uuid';
 import {
   DocEntry,
   DocEntryPayload,
   DocSearchResult,
   COLLECTIONS,
 } from '../types/index.js';
-import {
-  ensureCollection,
-  insertVector,
-  searchVectors,
-  scrollVectors,
-  deleteByFilter,
-} from '../qdrant/index.js';
+import { searchVectors } from '../qdrant/index.js';
 import { embed } from '../embeddings/index.js';
 import { getConfig } from '../config.js';
+import { getPool } from '../db/client.js';
+import { speichereTechDoc, loescheContext7Bibliothek, meldeContext7Abfrage } from './tech-docs.js';
 
 /**
- * Fuegt Dokumentation zum Cache hinzu
+ * Fuegt Dokumentation zum Cache hinzu — PG-first, global (Context7), Vektor abgewartet.
+ * Die url hat in tech_docs keine Spalte und wird nur im Rueckgabewert durchgereicht.
  */
 export async function cacheDoc(
   framework: string,
@@ -30,36 +29,32 @@ export async function cacheDoc(
   content: string,
   url?: string
 ): Promise<DocEntry> {
-  // Collection sicherstellen
-  await ensureCollection(COLLECTIONS.techDocs);
+  const result = await speichereTechDoc(
+    {
+      framework,
+      version,
+      section: title,
+      content,
+      type: 'code-example',
+      category: 'framework',
+      source: 'context7',
+    },
+    { embeddingAbwarten: true }
+  );
+  if (!result.success) {
+    throw new Error(result.message);
+  }
 
-  const doc: DocEntry = {
-    id: uuidv4(),
-    framework,
+  console.error(`[Synapse] Doku gecached: ${framework} ${version} - ${title}${result.duplicate ? ' (Duplikat)' : ''}`);
+  return {
+    id: result.id,
+    framework: framework.toLowerCase(),
     version,
     title,
     content,
     url,
     cachedAt: new Date().toISOString(),
   };
-
-  // Embedding aus Titel + Content generieren
-  const textForEmbedding = `${framework} ${version}: ${title}\n${content}`;
-  const vector = await embed(textForEmbedding);
-
-  const payload: DocEntryPayload = {
-    framework: doc.framework,
-    version: doc.version,
-    title: doc.title,
-    content: doc.content,
-    url: doc.url,
-    cached_at: doc.cachedAt,
-  };
-
-  await insertVector(COLLECTIONS.techDocs, vector, payload, doc.id);
-
-  console.error(`[Synapse] Doku gecached: ${framework} ${version} - ${title}`);
-  return doc;
 }
 
 /**
@@ -79,65 +74,64 @@ export async function searchDocs(
         must: [
           {
             key: 'framework',
-            match: { value: framework },
+            match: { value: framework.toLowerCase() },
           },
         ],
       }
     : undefined;
 
-  return searchVectors<DocEntryPayload>(
+  const results = await searchVectors<DocEntryPayload>(
     COLLECTIONS.techDocs,
     queryVector,
     limit,
     filter
   );
+
+  // Punkte aus dem PG-first-Weg tragen section/indexed_at (Payload von tech-docs.ts),
+  // Altpunkte title/cached_at — fuer die Aufrufer auf die alten Feldnamen abbilden.
+  return results.map(r => ({
+    ...r,
+    payload: {
+      ...r.payload,
+      title: r.payload.title ?? (r.payload.section as string | undefined) ?? '',
+      cached_at: r.payload.cached_at ?? (r.payload.indexed_at as string | undefined) ?? '',
+    },
+  }));
 }
 
 /**
- * Ruft alle gecachten Docs fuer ein Framework ab
+ * Ruft alle gecachten Docs fuer ein Framework ab (aus PostgreSQL)
  */
 export async function getDocsForFramework(
   framework: string,
   limit: number = 100
 ): Promise<DocEntry[]> {
-  const results = await scrollVectors<DocEntryPayload>(
-    COLLECTIONS.techDocs,
-    {
-      must: [
-        {
-          key: 'framework',
-          match: { value: framework },
-        },
-      ],
-    },
-    limit
+  const { rows } = await getPool().query(
+    `SELECT id, framework, version, section, content, indexed_at
+       FROM tech_docs
+      WHERE framework = $1 AND source = 'context7' AND project IS NULL
+      ORDER BY indexed_at DESC
+      LIMIT $2`,
+    [framework.toLowerCase(), limit]
   );
 
-  return results.map(r => ({
+  return rows.map(r => ({
     id: r.id,
-    framework: r.payload.framework,
-    version: r.payload.version,
-    title: r.payload.title,
-    content: r.payload.content,
-    url: r.payload.url,
-    cachedAt: r.payload.cached_at,
+    framework: r.framework,
+    version: r.version,
+    title: r.section ?? '',
+    content: r.content,
+    cachedAt: new Date(r.indexed_at).toISOString(),
   }));
 }
 
 /**
- * Loescht alle Docs fuer ein Framework
+ * Loescht alle (globalen Context7-)Docs fuer ein Framework — PG zuerst, dann Qdrant.
+ * Projektgebundene TechDocs (research/manual) bleiben bewusst unberuehrt.
  */
 export async function clearDocsForFramework(framework: string): Promise<void> {
-  await deleteByFilter(COLLECTIONS.techDocs, {
-    must: [
-      {
-        key: 'framework',
-        match: { value: framework },
-      },
-    ],
-  });
-
-  console.error(`[Synapse] Doku-Cache geloescht fuer: ${framework}`);
+  const anzahl = await loescheContext7Bibliothek(framework);
+  console.error(`[Synapse] Doku-Cache geloescht fuer: ${framework} (${anzahl} Eintraege)`);
 }
 
 /**
@@ -174,8 +168,9 @@ export async function searchDocsWithFallback(
         const docs = await context7.searchDocs(framework || '', query);
 
         if (docs.length > 0) {
-          // Ergebnisse cachen fuer naechstes Mal
-          await cacheSearchResults(docs, query);
+          // PG-first speichern; Vektoren ABWARTEN, weil direkt danach gesucht wird
+          const gespeichert = await cacheSearchResults(docs, query, { embeddingAbwarten: true });
+          meldeContext7Abfrage((framework || docs[0].framework || '').toLowerCase(), query, gespeichert);
 
           // Nochmal im Cache suchen (jetzt mit neuen Daten)
           return await searchDocs(query, framework, limit);
@@ -190,15 +185,13 @@ export async function searchDocsWithFallback(
 }
 
 /**
- * Listet alle gecachten Frameworks auf
+ * Listet alle gecachten Frameworks auf (aus PostgreSQL — Existenzfrage)
  */
 export async function listCachedFrameworks(): Promise<string[]> {
-  const results = await scrollVectors<DocEntryPayload>(
-    COLLECTIONS.techDocs,
-    {},
-    1000
+  const { rows } = await getPool().query(
+    `SELECT DISTINCT framework FROM tech_docs
+      WHERE source = 'context7' AND project IS NULL
+      ORDER BY framework`
   );
-
-  const frameworks = new Set(results.map(r => r.payload.framework));
-  return Array.from(frameworks).sort();
+  return rows.map(r => r.framework as string);
 }

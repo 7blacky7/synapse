@@ -11,13 +11,14 @@
  *
  * NEBENEFFEKTE: schreibt Vektoren nach Qdrant und setzt embedded_at in PostgreSQL
  *
- * ABHAENGIGKEITEN: ./memory.js (embeddeMemoryNach), ../db/pool.js
+ * ABHAENGIGKEITEN: ./memory.js (embeddeMemoryNach), ./tech-docs.js (embeddeTechDocNach), ../db/pool.js
  */
 
 import { getPool } from '../db/client.js';
 import { embeddeMemoryNach } from './memory.js';
 import { embeddeThoughtNach } from './thoughts.js';
 import { embeddeProposalNach } from './proposals.js';
+import { embeddeTechDocNach } from './tech-docs.js';
 
 /**
  * Welche Tabellen der Nachzug bedient, und womit.
@@ -28,11 +29,16 @@ import { embeddeProposalNach } from './proposals.js';
  * Laufzeit mit einem Spaltenfehler abbrechen, und zwar erst dann, wenn tatsaechlich ein
  * Rueckstand entsteht — also genau im Fehlerfall, fuer den der Nachzug gebaut ist.
  * Deshalb steht sie hier je Tabelle explizit.
+ *
+ * tech_docs (P12-T16): Sortierspalte indexed_at; project ist dort NULL fuer globale
+ * Context7-Zeilen. embeddeTechDocNach waehlt die Ziel-Collection selbst aus der PG-Zeile
+ * (project ? project_<p>_docs : tech_docs_cache), der uebergebene project-Wert ist egal.
  */
 const TABELLEN = [
   { name: 'memories', sortSpalte: 'updated_at', nachtrag: embeddeMemoryNach },
   { name: 'thoughts', sortSpalte: 'timestamp', nachtrag: embeddeThoughtNach },
   { name: 'proposals', sortSpalte: 'updated_at', nachtrag: embeddeProposalNach },
+  { name: 'tech_docs', sortSpalte: 'indexed_at', nachtrag: embeddeTechDocNach },
 ] as const;
 
 /**
@@ -135,7 +141,7 @@ export async function zaehleOffeneEmbeddings(project?: string): Promise<Record<s
   // thoughts und proposals tragen die Spalte bereits, ihre Schreibpfade sind aber noch
   // blockierend — dort kann derzeit gar kein Rueckstand entstehen. Sie werden trotzdem
   // gezaehlt, damit die Umstellung sofort sichtbar wird, sobald sie erfolgt.
-  for (const tabelle of ['memories', 'thoughts', 'proposals']) {
+  for (const tabelle of ['memories', 'thoughts', 'proposals', 'tech_docs']) {
     const { rows } = await pool.query(
       `SELECT count(*)::int AS n FROM ${tabelle}
         WHERE embedded_at IS NULL AND ($1::text IS NULL OR project = $1)`,
