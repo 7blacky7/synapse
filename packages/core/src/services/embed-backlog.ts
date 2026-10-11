@@ -75,6 +75,13 @@ const TABELLEN = [
 export const BACKLOG_TABELLEN: readonly string[] = TABELLEN.map((t) => t.name);
 
 /**
+ * P15-T12 E3: Tabellen in Abarbeitungsreihenfolge mit Sortier-/ID-Spalte - fuer
+ * intern(warteschlange_liste, wissen_nachzug). Nur lesend.
+ */
+export const BACKLOG_TABELLEN_INFO: ReadonlyArray<{ name: string; sortSpalte: string; idSpalte: string; mitProjekt: boolean }> =
+  TABELLEN.map((t) => ({ name: t.name, sortSpalte: t.sortSpalte, idSpalte: t.idSpalte, mitProjekt: t.mitProjekt }));
+
+/**
  * Zeilen je Stapel (P15-T4). Kein Modellwert: die Aufteilung in Ollama-Aufrufe macht embedBatch
  * (EMBED_OLLAMA_BATCH je Scheibe); hier geht es nur darum, wie viel ein Fehlschlag zurueckwirft.
  */

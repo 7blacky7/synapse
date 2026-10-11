@@ -17,7 +17,7 @@
  */
 
 import os from 'node:os';
-import { DAEMON_BEFEHLE, fuehreWorkerActionAus, workerStatus } from '@synapse/core';
+import { DAEMON_BEFEHLE, fuehreWorkerActionAus, fuehreWarteschlangeLokal, workerStatus } from '@synapse/core';
 import { leseApiZugang } from './skills-proxy.js';
 import { gpuHelferEinstellen, gpuHelferStatus } from './gpu-helfer-datei.js';
 
@@ -84,6 +84,8 @@ export function startInternBruecke(): InternBrueckeHandle {
       try {
         if (b.befehl === 'gpu_helfer_status') ergebnis = gpuHelferStatus();
         else if (b.befehl === 'gpu_helfer_einstellen') ergebnis = gpuHelferEinstellen(args);
+        // P15-T12 E3/E4: Speicher-Warteschlangen dieses Daemons (warteschlangen-register)
+        else if (b.befehl.startsWith('warteschlange_')) ergebnis = await fuehreWarteschlangeLokal(b.befehl, args, PROZESS);
         else ergebnis = await fuehreWorkerActionAus(b.befehl, args, typeof args.von === 'string' ? args.von : undefined, PROZESS);
       } catch (err) {
         const e = err as Error & { code?: string };

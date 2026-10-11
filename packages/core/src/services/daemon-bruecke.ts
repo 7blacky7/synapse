@@ -21,6 +21,8 @@ export const DAEMON_BEFEHLE = [
   'worker_status', 'worker_pausieren', 'worker_fortsetzen', 'worker_durchlauf',
   // P15-T11/T12: Einstellungen des lokalen GPU-Helfers (gpu-helfer.json, der Tray setzt sie um)
   'gpu_helfer_einstellen', 'gpu_helfer_status',
+  // P15-T12 E3/E4: Speicher-Warteschlangen des Daemons (index, asset, embedding_queue)
+  'warteschlange_liste', 'warteschlange_verschieben',
 ] as const;
 export type DaemonBefehlName = (typeof DAEMON_BEFEHLE)[number];
 

@@ -2004,6 +2004,49 @@ export async function projekteMitBacklog(
 }
 
 /**
+ * P15-T12 E3: faellige Dateien eines Projekts (nur lesend) fuer
+ * intern(warteschlange_liste, parser). Dieselbe Bedingung wie parseUnparsedFiles
+ * (baueFaelligkeitsBedingung, vollstaendig), keine zweite Formulierung der Regel.
+ * Reihenfolge: file_path (parseUnparsedFiles verteilt die Dateien auf parallele Worker).
+ */
+export async function listeFaelligeDateien(
+  project: string,
+  limit: number,
+  offset: number,
+  grund?: string
+): Promise<{ gesamt: number; dateien: Array<{ file_path: string; grund: string; updated_at: string | null; parsed_at: string | null }> }> {
+  const pool = getPool();
+  const { sql: faellig, params, grundSql } = await baueFaelligkeitsBedingung(2);
+  const alle: unknown[] = [project, ...params];
+  let grundFilter = '';
+  if (grund) {
+    alle.push(grund);
+    grundFilter = ` AND (${grundSql}) = $` + alle.length;
+  }
+  const basis = `FROM code_files WHERE code_files.project = $1 AND ${faellig}${grundFilter}`;
+  const gesamt = await pool.query<{ n: number }>(`SELECT count(*)::int AS n ${basis}`, alle);
+  const seite = [...alle, limit, offset];
+  const pLimit = '$' + (alle.length + 1);
+  const pOffset = '$' + (alle.length + 2);
+  const { rows } = await pool.query<{ file_path: string; grund: string; updated_at: Date | null; parsed_at: Date | null }>(
+    `SELECT code_files.file_path, ${grundSql} AS grund, code_files.updated_at, code_files.parsed_at
+       ${basis}
+      ORDER BY code_files.file_path
+      LIMIT ${pLimit} OFFSET ${pOffset}`,
+    seite
+  );
+  return {
+    gesamt: gesamt.rows[0]?.n ?? 0,
+    dateien: rows.map((r) => ({
+      file_path: r.file_path,
+      grund: r.grund,
+      updated_at: r.updated_at ? new Date(r.updated_at).toISOString() : null,
+      parsed_at: r.parsed_at ? new Date(r.parsed_at).toISOString() : null,
+    })),
+  };
+}
+
+/**
  * Arbeitet den Parse-Backlog eines Projekts ab. Welche Datei faellig ist und aus
  * welchem Grund, steht in baueFaelligkeitsBedingung — hier wird nur gehandelt.
  * Dynamisches Auto-Scaling: Worker-Count skaliert mit Queue-Groesse.

@@ -140,6 +140,8 @@ interface Job {
   rel: string;
   typ: FileEvent['type'];
   erledigt: Array<() => void>;
+  /** P15-T12 E3: eingereiht seit (ms) */
+  seit: number;
 }
 
 const warteschlange: Job[] = [];
@@ -161,7 +163,7 @@ function einreihen(project: string, root: string, rel: string, typ: FileEvent['t
       vorhanden.erledigt.push(resolve);
       return;
     }
-    const job: Job = { schluessel, project, root, rel, typ, erledigt: [resolve] };
+    const job: Job = { schluessel, project, root, rel, typ, erledigt: [resolve], seit: Date.now() };
     wartend.set(schluessel, job);
     warteschlange.push(job);
     pumpe();
@@ -196,6 +198,22 @@ function neuerWorker(): AssetInspektionsWorker {
   const w = new AssetInspektionsWorker();
   alleWorker.add(w);
   return w;
+}
+
+/** P15-T12 E3: wartende Asset-Auftraege in Reihenfolge plus laufende Inspektionen (nur lesend). */
+export function assetWarteschlange(): {
+  aktiv: number;
+  konkurrenz: number;
+  abgeschaltet: boolean;
+  wartend: Array<{ project: string; pfad: string; typ: string; wartet_ms: number }>;
+} {
+  const jetzt = Date.now();
+  return {
+    aktiv,
+    konkurrenz: konkurrenz(),
+    abgeschaltet: assetWegAus,
+    wartend: warteschlange.map((j) => ({ project: j.project, pfad: j.rel, typ: j.typ, wartet_ms: jetzt - j.seit })),
+  };
 }
 
 /** Wartet, bis die Warteschlange leer ist und keine Inspektion mehr laeuft. */

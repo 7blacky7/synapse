@@ -28,7 +28,11 @@ import {
   verifyAssetsAgainstFilesystem,
   workerPausiert,
   meldeWorkerArbeit,
+  registriereWarteschlange,
+  seiteAusListe,
+  assetWarteschlange,
 } from '@synapse/core';
+import type { WarteschlangenEintrag } from '@synapse/core';
 import {
   DaemonConfig,
   ProjektConfig,
@@ -69,21 +73,74 @@ export interface AggregateStatus {
 // ist → Speicher hat eine feste Obergrenze statt mit Datei-Anzahl zu wachsen.
 const MAX_CONCURRENT_INDEX = Math.max(1, Number(process.env.INDEX_MAX_CONCURRENT ?? 3));
 let activeIndexOps = 0;
-const indexWaiters: Array<() => void> = [];
-function acquireIndexSlot(): Promise<void> {
+/** P15-T12 E3: ein wartendes Ereignis (billig: nur Pfad und Zeitpunkt) — einsehbar ueber intern. */
+interface IndexWartender {
+  id: number;
+  project: string;
+  path: string;
+  typ: string;
+  seit: number;
+  weiter?: () => void;
+}
+const indexWaiters: IndexWartender[] = [];
+/** Ereignisse, die wegen der Pause von sync_fs_pg noch VOR dem Slot warten. */
+const pausiertWartend = new Map<number, IndexWartender>();
+let naechsteWarteId = 1;
+function acquireIndexSlot(w: IndexWartender): Promise<void> {
   if (activeIndexOps < MAX_CONCURRENT_INDEX) {
     activeIndexOps++;
     return Promise.resolve();
   }
   // Wartender bekommt den Slot uebergeben (release zaehlt NICHT runter) —
   // sonst akkumuliert der Counter und alle queuen ewig.
-  return new Promise<void>((resolve) => indexWaiters.push(resolve));
+  return new Promise<void>((resolve) => indexWaiters.push({ ...w, weiter: resolve }));
 }
 function releaseIndexSlot(): void {
   const next = indexWaiters.shift();
-  if (next) next();
+  if (next) next.weiter!();
   else activeIndexOps--;
 }
+
+function alsEintrag(w: IndexWartender, status: string, jetzt: number): WarteschlangenEintrag {
+  return {
+    id: String(w.id), projekt: w.project, typ: w.typ, status, prioritaet: null,
+    alter_s: Math.round((jetzt - w.seit) / 1000), details: { pfad: w.path },
+  };
+}
+
+// P15-T12 E3: Index-Slots und Asset-Auftraege sind ueber intern(warteschlange_liste, prozess daemon) einsehbar.
+registriereWarteschlange({
+  name: 'index',
+  beschreibung: `Datei-Ereignisse vor der Indexierung (Slots INDEX_MAX_CONCURRENT=${MAX_CONCURRENT_INDEX}); status pausiert = wartet auf das Ende der Pause von sync_fs_pg.`,
+  reihenfolge: 'FIFO: wer zuerst auf einen Slot wartet, bekommt ihn zuerst.',
+  verschiebbar: 'E4: Projekt bzw. einzelnes Ereignis vorne/hinten, Projekt zurueckstellen, einreihen.',
+  uebersicht: () => {
+    const je: Record<string, number> = {};
+    for (const w of [...indexWaiters, ...pausiertWartend.values()]) je[w.project] = (je[w.project] ?? 0) + 1;
+    return { anzahl: indexWaiters.length + pausiertWartend.size, wartend: indexWaiters.length, pausiert: pausiertWartend.size, slots_belegt: activeIndexOps, slots_max: MAX_CONCURRENT_INDEX, je_projekt: je };
+  },
+  liste: (f) => {
+    const jetzt = Date.now();
+    return seiteAusListe([
+      ...indexWaiters.map((w) => alsEintrag(w, 'wartend', jetzt)),
+      ...[...pausiertWartend.values()].map((w) => ({ ...alsEintrag(w, 'pausiert', jetzt), rang: null })),
+    ], f);
+  },
+});
+registriereWarteschlange({
+  name: 'asset',
+  beschreibung: 'Asset-Inspektionen (worker_thread, SYNAPSE_ASSET_KONKURRENZ); dasselbe Ziel wird nur einmal eingereiht.',
+  reihenfolge: 'FIFO.',
+  verschiebbar: 'Nein: kurze Auftraege; ein neues Ereignis fuer denselben Pfad ersetzt das wartende.',
+  uebersicht: () => {
+    const a = assetWarteschlange();
+    return { anzahl: a.wartend.length, laufend: a.aktiv, max_gleichzeitig: a.konkurrenz, abgeschaltet: a.abgeschaltet };
+  },
+  liste: (f) => seiteAusListe(assetWarteschlange().wartend.map((j, i) => ({
+    id: `${j.project}:${j.pfad}`, projekt: j.project, typ: j.typ, status: 'wartend', prioritaet: null, rang: i + 1,
+    alter_s: Math.round(j.wartet_ms / 1000), details: { pfad: j.pfad },
+  })), f),
+});
 
 /**
  * Unlink bleibt auch nach Disable erlaubt, damit bereits entfernte Dateien
@@ -334,8 +391,16 @@ export class WatcherManager {
     // billiges event-Objekt statt tausende indexFile()-Buffer parallel zu halten.
     // P15-T12: Worker sync_fs_pg pausiert (intern, prozess daemon) -> das Ereignis wartet hier als
     // billiges Objekt und wird nach der Pause normal verarbeitet; nichts geht verloren.
-    while (workerPausiert('sync_fs_pg')) await new Promise((r) => setTimeout(r, 5_000));
-    await acquireIndexSlot();
+    const wartender: IndexWartender = { id: naechsteWarteId++, project: event.project, path: event.path, typ: event.type, seit: Date.now() };
+    if (workerPausiert('sync_fs_pg')) {
+      pausiertWartend.set(wartender.id, wartender);
+      try {
+        while (workerPausiert('sync_fs_pg')) await new Promise((r) => setTimeout(r, 5_000));
+      } finally {
+        pausiertWartend.delete(wartender.id);
+      }
+    }
+    await acquireIndexSlot(wartender);
     try {
       const projektCfg = this.config.projekte.find((p) => p.name === event.project);
       if (!(await darfWatcherEventNachSlot(event.type, projektCfg?.enabled === true, event.project))) {

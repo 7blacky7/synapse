@@ -466,6 +466,19 @@ async function runQueued<T>(
   }
 }
 
+/**
+ * P15-T12 E3: wartende Auftraege dieses Prozesses in Abarbeitungsreihenfolge (interaktiv vor
+ * Hintergrund) - nur lesend, fuer intern(warteschlange_liste, embedding_queue).
+ */
+export function embeddingWarteschlangeEintraege(): Array<{ prioritaet: EmbedPriority; position: number; wartet_ms: number }> {
+  const jetzt = Date.now();
+  return [...interactiveQueue, ...backgroundQueue].map((e, i) => ({
+    prioritaet: e.priority,
+    position: i + 1,
+    wartet_ms: jetzt - e.queuedAt,
+  }));
+}
+
 /** Prozesslokale Scheduler-Metriken; Queue-Schutz ist ebenfalls pro Prozess. */
 export function getEmbeddingQueueStats(): EmbeddingQueueStats {
   const now = Date.now();

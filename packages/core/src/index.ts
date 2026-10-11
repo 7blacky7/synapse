@@ -141,6 +141,32 @@ export {
   vergissDaemons,
 } from './services/daemon-bruecke.js';
 export type { DaemonBefehl, DaemonBefehlName, DaemonUebersicht } from './services/daemon-bruecke.js';
+// P15-T12 E3/E4: Warteschlangen einsehen/umsortieren (Speicher-Register je Prozess + PG in der API)
+export {
+  registriereWarteschlange,
+  holeWarteschlange,
+  warteschlangenNamen,
+  vergissAlleWarteschlangen,
+  seiteAusListe,
+} from './services/warteschlangen-register.js';
+export type {
+  WarteschlangenDefinition,
+  WarteschlangenEintrag,
+  WarteschlangenFilter,
+  WarteschlangenListe,
+  VerschiebeAuftrag,
+  VerschiebeZiel,
+} from './services/warteschlangen-register.js';
+export {
+  WARTESCHLANGEN_ACTIONS,
+  WarteschlangenFehler,
+  fuehreWarteschlangeAus,
+  fuehreWarteschlangeLokal,
+  istWarteschlangenAction,
+} from './services/intern-warteschlangen.js';
+export { assetWarteschlange } from './services/asset-intel-sync.js';
+export { embeddingWarteschlangeEintraege } from './embeddings/index.js';
+export { listeFaelligeDateien } from './services/code.js';
 export {
   INTERN_DEFINITION,
   INTERN_ACTIONS,
