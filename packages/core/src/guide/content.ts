@@ -649,7 +649,8 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
       'JEV-SCHALTER (dauerhaft in PG, Tabelle jev_schalter): ebene global|projekt, funktion alle|empfehlung (plan empfehlen)|entscheidung (jev entscheiden + Hinweise jev_modus/jev_hinweis/jev_entscheidet)|plan_einordnen (plan einordnen)|erklaerungstopf (ab E1)|tool (das Tool jev). VORRANG: global aus = ueberall aus; sonst Projekt, dann Funktion; ein "an" weiter unten hebt ein "aus" darueber nicht auf. Ohne Eintrag = an. Ist ein Kontext aus, wird Jev NICHT aufgerufen und alle Jev-Hinweise verschwinden aus den Tool-Antworten; nach dem Wiedereinschalten erscheinen sie wieder. Bei global aus (alle oder tool) fehlt das Tool jev in tools/list (REST und stdio); ein Projekt-Schalter sperrt das Tool nur mit Antwort jev_aus, weil tools/list kein Projekt kennt. MCP-Clients laden die Tool-Liste meist nur beim Verbinden. Andere Prozesse sehen eine Aenderung nach spaetestens JEV_SCHALTER_CACHE_MS (5 s).',
       'JEV-KOSTEN: jeder Jev-Aufruf steht in jev_aufrufe (Zeit, Projekt, Funktion, Agent, input/output_tokens, usd, Quelle). usd = usage.cost der Antwort; fehlt es, input_tokens x Listenpreis (Env JEV_PREIS_JE_MIO_EINGABE, Standard 0,042 USD/Mio.). Ausgabe-Tokens kosten nichts. jev_kosten liefert Summen je Tag, Monat, Projekt, Funktion.',
       'JEV-BUDGET: optionale GLOBALE Grenze in USD je Abrechnungsmonat (ab reset_tag). Ohne Grenze keine Bremse. Vor jedem Aufruf wird atomar reserviert (JEV_BUDGET_RESERVE_USD, Standard 0,001), danach die echten Kosten nachgebucht; bei Erreichen pausiert Jev automatisch (wirkt wie global aus, Hinweis im Onboarding-Feld jev_hinweis und in jev_status). Weiter mit naechstem Reset, modus zuruecksetzen, hoeherer Grenze oder entfernen. kontostand:true fragt GET /api/v1/key (limit, limit_remaining, usage ...); der Key wird nie ausgegeben.',
-      'Setzen (jev_schalten, jev_budget setzen/entfernen/zuruecksetzen) nur agent_id koordinator|coordinator|user (Namenstreue). Lesen darf jeder.',
+      'JEV-OPTIONEN (global, dauerhaft, Tabelle jev_optionen, wirken ab E1 Erklaerungstopf): erklaerung_sprachen = gepflegte Sprachen der Erklaerungen, Deutsch und Englisch unabhaengig an/aus, mindestens eine an (beide aus wird abgelehnt), Standard beide an; alle eingeschalteten sind beim Ablegen Pflicht. jev_sprache = was Jev angeboten bekommt: en (Standard) | de | mix (braucht beide). Nur aus den gepflegten Sprachen wirksam; sonst Rueckfall auf eine gepflegte (en vor de) mit hinweis, jev_sprache_wirksam zeigt den geltenden Wert.',
+      'Setzen (jev_schalten, jev_budget setzen/entfernen/zuruecksetzen, jev_optionen setzen) nur agent_id koordinator|coordinator|user (Namenstreue). Lesen darf jeder.',
     ].join('\\n'),
     examples: [
       'admin({ action: "index_stats", project: "synapse", agent_id: "mein-agent" })',
@@ -722,6 +723,12 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
         params: 'modus (status Standard), grenze_usd, reset_tag (1..28), kontostand',
         example: 'admin({ action: "jev_budget", project: "synapse", modus: "setzen", grenze_usd: 5, agent_id: "koordinator" })',
         tips: 'Ueberschreitung hoechstens um die Kosten der gerade laufenden Aufrufe minus Reservierung. Setzen/entfernen/zuruecksetzen nur Koordinator/User.',
+      },
+      jev_optionen: {
+        description: 'Globale Jev-Optionen fuer den Erklaerungstopf (ab E1): gepflegte Erklaerungssprachen (erklaerung_de, erklaerung_en) und Jev-Sprache (en|de|mix).',
+        params: 'modus (status Standard | setzen), erklaerung_de, erklaerung_en (boolean, mind. eine an), jev_sprache (en|de|mix)',
+        example: 'admin({ action: "jev_optionen", project: "synapse", modus: "setzen", erklaerung_de: false, jev_sprache: "en", agent_id: "koordinator" })',
+        tips: 'Nicht genannte Optionen bleiben. Antwort: erklaerung_sprachen, gepflegte_sprachen, jev_sprache (Wunsch), jev_sprache_wirksam (nach Rueckfall), hinweis bei Rueckfall. Setzen nur Koordinator/User.',
       },
     },
   },

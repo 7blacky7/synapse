@@ -809,6 +809,8 @@ export {
 } from './services/jev-kosten.js';
 export type { JevBudgetStand, JevKostenUebersicht, JevAufrufBuchung, JevUsdQuelle } from './services/jev-kosten.js';
 export { JEV_ADMIN_ACTIONS, JEV_ADMIN_BESCHREIBUNG, JEV_ADMIN_PARAMETER, istJevAdminAction, fuehreJevAdminAus } from './services/jev-admin.js';
+export { JEV_SPRACHEN, JevOptionenFehler, leseJevOptionen, setzeJevOptionen, wirksameJevSprache } from './services/jev-optionen.js';
+export type { JevSprache, JevOptionen, JevErklaerungSprachen } from './services/jev-optionen.js';
 
 // Agenten-Wissen in der Datenbank (API-Bruecke Schritt 4). Additiv — der
 // Dateiweg in packages/agents/src/skills.ts bleibt unveraendert bestehen.

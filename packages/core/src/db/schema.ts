@@ -294,6 +294,14 @@ CREATE TABLE IF NOT EXISTS jev_budget_stand (
   gesetzt_von TEXT,
   gesetzt_am TIMESTAMPTZ
 );
+-- jev_optionen (a5fd30ea): globale Jev-Optionen als Name -> JSON, z. B. erklaerung_sprachen {de,en}, jev_sprache.
+-- Keine Zeile = Standardwert (beide Sprachen an, jev_sprache en).
+CREATE TABLE IF NOT EXISTS jev_optionen (
+  name TEXT PRIMARY KEY,
+  wert JSONB NOT NULL,
+  gesetzt_von TEXT,
+  gesetzt_am TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
 
 CREATE TABLE IF NOT EXISTS onboarding_ruhe (
   id SMALLINT PRIMARY KEY DEFAULT 1 CHECK (id = 1),

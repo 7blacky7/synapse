@@ -16,8 +16,9 @@
 
 import { JEV_FUNKTIONEN, JevSchalterFehler, jevSchalterListe, jevWirksam, setzeJevSchalter, filtereJevTool } from './jev-schalter.js';
 import { holeJevKontostand, jevBudgetStand, jevKostenUebersicht, setzeJevBudget, setzeJevBudgetZurueck } from './jev-kosten.js';
+import { JEV_SPRACHEN, JevOptionenFehler, leseJevOptionen, setzeJevOptionen } from './jev-optionen.js';
 
-export const JEV_ADMIN_ACTIONS = ['jev_status', 'jev_schalten', 'jev_kosten', 'jev_budget'] as const;
+export const JEV_ADMIN_ACTIONS = ['jev_status', 'jev_schalten', 'jev_kosten', 'jev_budget', 'jev_optionen'] as const;
 const DARF_SETZEN = /^(koordinator|coordinator|user)$/i;
 
 /** Beschreibungssatz fuer die admin-Tool-Definition (REST und stdio). */
@@ -25,7 +26,8 @@ export const JEV_ADMIN_BESCHREIBUNG =
   ' Jev-Steuerung: jev_status (wirksamer Stand je Funktion, Schalter, Budget, Monatskosten), ' +
   'jev_schalten (ebene global|projekt, funktion alle|empfehlung|entscheidung|plan_einordnen|erklaerungstopf|tool, aktiv, grund; nur Koordinator/User; ' +
   'global aus = ueberall aus, Jev wird nicht aufgerufen und alle Jev-Hinweise verschwinden), ' +
-  'jev_kosten (Summen je Tag/Monat/Projekt/Funktion in USD), jev_budget (modus status|setzen|entfernen|zuruecksetzen, grenze_usd je Monat, reset_tag, kontostand:true = OpenRouter-Kontostand).';
+  'jev_kosten (Summen je Tag/Monat/Projekt/Funktion in USD), jev_budget (modus status|setzen|entfernen|zuruecksetzen, grenze_usd je Monat, reset_tag, kontostand:true = OpenRouter-Kontostand), ' +
+  'jev_optionen (modus status|setzen; erklaerung_de/erklaerung_en = gepflegte Erklaerungssprachen, mind. eine an; jev_sprache en|de|mix, nur aus gepflegten Sprachen, sonst Rueckfall mit Hinweis; wirkt ab E1).';
 
 /** Zusaetzliche Parameter am admin-Tool (Schema-Properties, REST und stdio identisch). */
 export const JEV_ADMIN_PARAMETER: Record<string, Record<string, unknown>> = {
@@ -40,6 +42,9 @@ export const JEV_ADMIN_PARAMETER: Record<string, Record<string, unknown>> = {
   seit: { type: 'string', description: 'jev_kosten: ISO-Zeitpunkt (Standard vor 365 Tagen)' },
   bis: { type: 'string', description: 'jev_kosten: ISO-Zeitpunkt (Standard jetzt)' },
   nur_dieses_projekt: { type: 'boolean', description: 'jev_kosten: nur Aufrufe von project' },
+  erklaerung_de: { type: 'boolean', description: 'jev_optionen setzen: Deutsch als gepflegte Erklaerungssprache an/aus (mind. eine an)' },
+  erklaerung_en: { type: 'boolean', description: 'jev_optionen setzen: Englisch als gepflegte Erklaerungssprache an/aus (mind. eine an)' },
+  jev_sprache: { type: 'string', enum: [...JEV_SPRACHEN], description: 'jev_optionen setzen: Sprache, die Jev angeboten bekommt (en Standard | de | mix); nur aus den gepflegten Sprachen, sonst Rueckfall mit Hinweis' },
 };
 
 export function istJevAdminAction(action: string | undefined): boolean {
@@ -94,6 +99,7 @@ export async function fuehreJevAdminAus(
           budget,
           kosten_31_tage: 'gesamt' in kosten ? { gesamt: kosten.gesamt, je_funktion: kosten.je_funktion } : kosten,
           jev_tool_in_tools_list: sichtbar,
+          optionen: await leseJevOptionen(),
           hinweis: 'Vorrang: global aus = ueberall aus; sonst Projekt, dann Funktion; Budget-Pause wirkt wie global aus. Ohne Zeile = an.',
         };
       }
@@ -148,11 +154,24 @@ export async function fuehreJevAdminAus(
           hinweis: budget.grenze_usd === null ? 'Keine Grenze gesetzt: keine Bremse.' : 'Bei Erreichen pausiert Jev automatisch bis zum Reset (reset_tag) oder bis zur Aenderung per jev_budget.',
         };
       }
+      case 'jev_optionen': {
+        const modus = text(args.modus) ?? 'status';
+        if (modus === 'status') return { success: true, optionen: await leseJevOptionen() };
+        if (modus !== 'setzen') return { success: false, error: 'modus_ungueltig', message: 'jev_optionen: modus status | setzen.' };
+        if (!DARF_SETZEN.test(wer)) return nurKoordinator(wer);
+        const optionen = await setzeJevOptionen({
+          erklaerung_de: wahr(args.erklaerung_de),
+          erklaerung_en: wahr(args.erklaerung_en),
+          jev_sprache: text(args.jev_sprache),
+          agent: wer,
+        });
+        return { success: true, optionen, message: 'Jev-Optionen gespeichert (wirken ab E1, Erklaerungstopf).' };
+      }
       default:
         return { success: false, error: 'unbekannte_action', message: `Unbekannte Jev-Action "${action}". Erlaubt: ${JEV_ADMIN_ACTIONS.join(', ')}.` };
     }
   } catch (err) {
-    if (err instanceof JevSchalterFehler) return { success: false, error: err.code, message: err.message };
+    if (err instanceof JevSchalterFehler || err instanceof JevOptionenFehler) return { success: false, error: err.code, message: err.message };
     return { success: false, error: 'fehler', message: err instanceof Error ? err.message : String(err) };
   }
 }

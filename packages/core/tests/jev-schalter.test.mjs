@@ -18,6 +18,9 @@
  *   R  REST tools/list (beide Stellen): jev da bei an, fehlt bei global aus (ANKER: admin und code_intel
  *      stehen in derselben Liste), tools/call jev -> jev_aus; admin jev_status ueber REST erreichbar.
  *   S  stdio: jevTool.handler (mcp-server dist) lehnt bei Projekt aus ab; filtereJevTool entfernt jev.
+ *   O  Jev-Optionen (a5fd30ea): Standard beide Sprachen + jev_sprache en; beide aus abgelehnt; jev_sprache
+ *      ausserhalb en|de|mix abgelehnt; de aus + jev_sprache de -> Rueckfall en mit Hinweis; mix braucht beide;
+ *      setzen nur Koordinator/User; jev_status zeigt die Optionen.
  *
  * ABSICHERUNG: nur Test-DB (...:5433/synapse_test, sonst Exit 2). Qdrant/Ollama 127.0.0.1:9. Kein echter
  * Jev-Aufruf: jeder fetch ist ein Fake. Tabellen mit der DDL aus dem gebauten SCHEMA_SQL.
@@ -85,10 +88,10 @@ async function versuche(text, fn) {
 const db = await lade(dist, 'db', 'client.js');
 const pool = db.getPool();
 const schemaJs = readFileSync(join(dist, 'db', 'schema.js'), 'utf8');
-const ddl = ['jev_schalter', 'jev_aufrufe', 'jev_budget_stand', 'jev_entscheidet', 'jev_entscheidungen']
+const ddl = ['jev_schalter', 'jev_aufrufe', 'jev_budget_stand', 'jev_optionen', 'jev_entscheidet', 'jev_entscheidungen']
   .map((t) => schemaJs.match(new RegExp(`CREATE TABLE IF NOT EXISTS ${t} \\([\\s\\S]*?\\n\\);`))?.[0]);
-const fehlend = ['jev_schalter', 'jev_aufrufe', 'jev_budget_stand'].filter((_, i) => !ddl[i]);
-pruefe(fehlend.length === 0, 'DDL jev_schalter, jev_aufrufe, jev_budget_stand im gebauten SCHEMA_SQL', fehlend);
+const fehlend = ['jev_schalter', 'jev_aufrufe', 'jev_budget_stand', 'jev_optionen'].filter((_, i) => !ddl[i]);
+pruefe(fehlend.length === 0, 'DDL jev_schalter, jev_aufrufe, jev_budget_stand, jev_optionen im gebauten SCHEMA_SQL', fehlend);
 if (fehlend.length > 0) {
   console.error(`${fehler} FEHLER (Abbruch: ohne Tabellen keine weiteren Zusagen pruefbar)`);
   process.exit(1);
@@ -102,6 +105,7 @@ for (const a of ['ALTER TABLE jev_entscheidungen ADD COLUMN IF NOT EXISTS runde 
 const aufraeumen = async () => {
   await pool.query('DELETE FROM jev_schalter');
   await pool.query('DELETE FROM jev_budget_stand');
+  await pool.query('DELETE FROM jev_optionen');
   await pool.query('DELETE FROM jev_aufrufe WHERE project = ANY($1) OR project IS NULL', [[P, Q]]);
   await pool.query('DELETE FROM jev_entscheidet WHERE project = ANY($1)', [[P, Q]]);
   await pool.query('DELETE FROM jev_entscheidungen WHERE project = ANY($1)', [[P, Q]]);
@@ -333,6 +337,28 @@ try {
     const r = await jevTool.handler({ action: 'protokoll', project: P });
     pruefe(r.success === false && r.error === 'jev_aus', 'S stdio jevTool.handler bei Projekt tool aus -> jev_aus', r);
     await setze({ ebene: 'projekt', project: P, funktion: 'tool', aktiv: true });
+  });
+
+  // ── O Jev-Optionen ──
+  await versuche('O Optionen', async () => {
+    let r = await A.fuehreJevAdminAus('jev_optionen', {}, 'x');
+    pruefe(r.success && r.optionen?.erklaerung_sprachen?.de === true && r.optionen?.erklaerung_sprachen?.en === true
+      && r.optionen?.jev_sprache === 'en' && r.optionen?.jev_sprache_wirksam === 'en' && !r.optionen?.hinweis, 'O Standard: de+en an, jev_sprache en', r);
+    r = await A.fuehreJevAdminAus('jev_optionen', { modus: 'setzen', erklaerung_de: false, erklaerung_en: false }, 'koordinator');
+    pruefe(r.success === false && r.error === 'keine_sprache', 'O beide Sprachen aus -> keine_sprache, nichts gespeichert', r);
+    r = await A.fuehreJevAdminAus('jev_optionen', { modus: 'setzen', jev_sprache: 'fr' }, 'koordinator');
+    pruefe(r.success === false && r.error === 'jev_sprache_ungueltig', 'O jev_sprache fr -> jev_sprache_ungueltig', r);
+    r = await A.fuehreJevAdminAus('jev_optionen', { modus: 'setzen', jev_sprache: 'de' }, 'p15-irgendwer');
+    pruefe(r.success === false && r.error === 'nur_koordinator', 'O setzen nur Koordinator/User', r);
+    r = await A.fuehreJevAdminAus('jev_optionen', { modus: 'setzen', erklaerung_de: false, jev_sprache: 'de' }, 'koordinator');
+    pruefe(r.success && r.optionen.jev_sprache === 'de' && r.optionen.jev_sprache_wirksam === 'en' && /Rueckfall/.test(r.optionen.hinweis ?? '')
+      && JSON.stringify(r.optionen.gepflegte_sprachen) === '["en"]', 'O de aus + jev_sprache de -> Rueckfall en mit Hinweis, gepflegt [en]', r);
+    r = await A.fuehreJevAdminAus('jev_optionen', { modus: 'setzen', jev_sprache: 'mix' }, 'user');
+    pruefe(r.success && r.optionen.jev_sprache_wirksam === 'en' && /mix/.test(r.optionen.hinweis ?? ''), 'O mix bei nur en -> Rueckfall en', r);
+    r = await A.fuehreJevAdminAus('jev_optionen', { modus: 'setzen', erklaerung_de: true }, 'koordinator');
+    pruefe(r.success && r.optionen.jev_sprache === 'mix' && r.optionen.jev_sprache_wirksam === 'mix' && !r.optionen.hinweis, 'O de wieder an: mix wirksam, kein Hinweis (Wunsch blieb gespeichert)', r);
+    r = await A.fuehreJevAdminAus('jev_status', { project: P }, 'x');
+    pruefe(r.success && r.optionen?.jev_sprache === 'mix', 'O jev_status zeigt die Optionen', r.optionen);
   });
 
   // ── R REST ──
