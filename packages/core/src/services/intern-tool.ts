@@ -46,6 +46,10 @@ import {
 import { DaemonBrueckeFehler, daemonUebersicht, sendeAnDaemon } from './daemon-bruecke.js';
 // P15-T15: Diagnose-Actions leben in eigener Datei, hier nur eingehaengt.
 import { DIAGNOSE_ACTIONS, DIAGNOSE_BESCHREIBUNG, DIAGNOSE_PARAMETER, fuehreDiagnoseAus, istDiagnoseAction } from './intern-diagnose.js';
+// P15-T12 E3/E4: Warteschlangen-Actions leben in eigener Datei, hier nur eingehaengt.
+import {
+  WARTESCHLANGEN_ACTIONS, WARTESCHLANGEN_BESCHREIBUNG, WARTESCHLANGEN_PARAMETER, fuehreWarteschlangeAus, istWarteschlangenAction,
+} from './intern-warteschlangen.js';
 
 const INTERN_TOOL_BEIM_START = process.env.SYNAPSE_INTERN_TOOL === '1';
 
@@ -69,6 +73,7 @@ export const INTERN_ACTIONS = [
   'worker_status', 'worker_pausieren', 'worker_fortsetzen', 'worker_durchlauf',
   'gpu_helfer_status', 'gpu_helfer_einstellen',
   ...DIAGNOSE_ACTIONS,
+  ...WARTESCHLANGEN_ACTIONS,
 ] as const;
 export type InternAction = (typeof INTERN_ACTIONS)[number];
 
@@ -100,6 +105,7 @@ export const INTERN_DEFINITION = {
     'prozess "daemon" bzw. "daemon:<host>" steuert dieselben Actions im lokalen FileWatcher-Daemon (Long-Poll-Bruecke, Antwort <= 10 s). ' +
     'gpu_helfer_status / gpu_helfer_einstellen (lan_bevorzugen, embed_pause_ms; null entfernt) ueber den lokalen Daemon: ~/.synapse/file-watcher/gpu-helfer.json, der Tray startet den Helfer binnen ~5 s neu. ' +
     DIAGNOSE_BESCHREIBUNG +
+    WARTESCHLANGEN_BESCHREIBUNG +
     'Keine Aktion beendet Prozesse/Sitzungen oder loescht PG-Daten; nur neu_einbetten leert Qdrant-Collections (aus PG wiederherstellbar).',
   inputSchema: {
     type: 'object',
@@ -146,6 +152,7 @@ export const INTERN_DEFINITION = {
       num_batch: { type: ['number', 'null'], description: 'embedding_messen: num_batch (physischer Batch) fuer Ollama (Standard: EMBEDDING_NUM_BATCH, sonst Ollama-Standard); modellprofil_setzen: physischer Batch des Modells in Token' },
       keep_alive: { type: ['string', 'number'], description: 'ollama_laden: wie lange geladen bleiben (Ollama-Format, z. B. "30m", "2h", -1 = bis Neustart; Standard 30m)' },
       ...DIAGNOSE_PARAMETER,
+      ...WARTESCHLANGEN_PARAMETER,
     },
     required: ['action'],
   },
@@ -236,6 +243,8 @@ export async function fuehreInternAus(
   if (!internToolAktiv()) return { ...INTERN_TOOL_AUS, action };
   // P15-T15: Diagnose-Actions (intern-diagnose.ts) - wirft nie
   if (istDiagnoseAction(action)) return await fuehreDiagnoseAus(action, a, agentId);
+  // P15-T12 E3/E4: Warteschlangen (intern-warteschlangen.ts) - wirft nie
+  if (istWarteschlangenAction(action)) return await fuehreWarteschlangeAus(action, a, agentId);
   try {
     switch (action) {
       case 'schalter_setzen': {
