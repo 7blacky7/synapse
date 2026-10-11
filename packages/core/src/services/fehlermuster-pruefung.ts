@@ -22,6 +22,7 @@
  * wie, wo[]}. E3 haengt dieselben Befunde an Plan-Ops.
  */
 
+import { createHash } from 'node:crypto';
 import { getPool } from '../db/client.js';
 import { aenderungsBereiche, type Bereich } from './file-diff.js';
 import {
@@ -66,6 +67,11 @@ export interface FehlerBefund {
    * im Plan mit der verursachenden Op und den Ops, die erst zusammen den Fehler ergeben (beteiligt).
    */
   entstanden_bei?: { zeilen: [number, number]; op_index?: number; beteiligt?: number[] };
+  /**
+   * P16-T5 E3a: nachgelieferter Befund (Budget gerissen, trotzdem geschrieben) - zu WELCHEM Schreibvorgang er
+   * gehoert: Zeitpunkt der Pruefung und Kurz-Hash (sha1, 8 Zeichen) des damals geschriebenen Inhalts.
+   */
+  nachgeliefert_fuer?: { geprueft_um: string; fassung: string };
 }
 
 export const QUITTIER_HINWEIS = "nur bei absichtlich fehlerhaftem Inhalt quittierbar (quittieren:'<grund>')";
@@ -324,6 +330,11 @@ export interface SyntaxPruefer {
   /** true = Befunde in geaenderten Zeilen lehnen den Einzelschreibvorgang ab (nur Pruefer ohne bekannte Falsch-Positive). */
   sperrfaehig: boolean;
   pruefe(inhalt: string, filePath: string): SyntaxMeldung[] | Promise<SyntaxMeldung[]>;
+  /**
+   * P16-T5 E3a: optionales Mindestbudget in ms fuer GENAU diesen Lauf (z. B. Kaltstart des Pruef-Containers).
+   * Groesser als FEHLERPRUEFUNG_BUDGET_MS -> es wird bis dahin auf das Ergebnis gewartet statt nachzuliefern.
+   */
+  mindestBudgetMs?(): number | undefined;
 }
 
 const syntaxPruefer: SyntaxPruefer[] = [];
@@ -598,9 +609,12 @@ export async function pruefeSyntaxEinzelweg(eingabe: {
   let altlasten = 0;
   const budget = budgetMs();
   for (const p of pruefer) {
+    // E3a: Mindestbudget VOR dem Lauf lesen (danach ist ein kalter Container schon 'startet').
+    let pBudget = budget;
+    try { pBudget = Math.max(budget, Number(p.mindestBudgetMs?.()) || 0); } catch { /* Standardbudget */ }
     const lauf = Promise.resolve().then(() => p.pruefe(eingabe.neu, eingabe.filePath));
     let uhr: NodeJS.Timeout | undefined;
-    const zeit = new Promise<'zeit'>((r) => { uhr = setTimeout(() => r('zeit'), Math.max(0, budget - (Date.now() - t0))); });
+    const zeit = new Promise<'zeit'>((r) => { uhr = setTimeout(() => r('zeit'), Math.max(0, pBudget - (Date.now() - t0))); });
     let ergebnis: SyntaxMeldung[] | 'zeit';
     try {
       ergebnis = await Promise.race([lauf, zeit]);
@@ -615,7 +629,16 @@ export async function pruefeSyntaxEinzelweg(eingabe: {
       // Nachlieferung: nie blockierend, nur Hinweis.
       void lauf.then(async (meldungen) => {
         const { befund } = await auswerten(p, meldungen);
-        if (befund && eingabe.onNachgereicht) eingabe.onNachgereicht([{ ...befund, was: befund.was + ' (nachgeliefert, geschrieben wurde trotzdem)' }]);
+        if (befund && eingabe.onNachgereicht) {
+          // E3a: eindeutig dem verursachenden Schreibvorgang zuordnen (Zeit + Fassung), nicht der naechsten Antwort.
+          const fassung = createHash('sha1').update(eingabe.neu).digest('hex').slice(0, 8);
+          const um = new Date(t0).toISOString();
+          eingabe.onNachgereicht([{
+            ...befund,
+            nachgeliefert_fuer: { geprueft_um: um, fassung },
+            was: befund.was + ` (nachgeliefert fuer den Schreibvorgang um ${um.slice(11, 19)} UTC, Fassung ${fassung}; geschrieben wurde trotzdem)`,
+          }]);
+        }
       }).catch(() => {});
       continue;
     }

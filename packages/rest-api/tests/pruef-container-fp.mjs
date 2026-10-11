@@ -4,7 +4,7 @@
 // Pfad, Zeile und Meldung ausgegeben. Gleichzeitig Positivkontrolle (Anker, damit "0 Meldungen" etwas bedeutet):
 // die kleinste Datei mit angehaengter Zeile ")}] ((( {{{ [[[" MUSS gemeldet werden, sonst Exit 2.
 //
-// Aufruf:  node packages/rest-api/tests/pruef-container-fp.mjs [sprache=rust|python|shell|go] [max=2000]
+// Aufruf:  node packages/rest-api/tests/pruef-container-fp.mjs [sprache=rust|python|shell|go|php|ruby|lua] [max=2000]
 // Weiche Meldungen (weich:true, sperren nie) werden getrennt gezaehlt und gelistet; nur harte zaehlen als Fehlalarm.
 // Env:     DATABASE_URL (Pflicht), PRUEFCONTAINER_TEST_IMAGE (Standard synapse-pruefcontainer:latest)
 // Ausgabe: Zusammenfassung + je Meldung eine Zeile; Exit 0 = keine Meldung, 1 = Meldungen, 2 = Kontrolle versagt.
@@ -62,7 +62,9 @@ try {
   }
   // Positivkontrolle
   const kleinste = r.rows.reduce((a, b) => (a && a.content.length <= b.content.length ? a : b), null);
-  const kontrolle = kleinste ? (await pc.pruefe(sprache, kleinste.content + '\n)}] ((( {{{ [[[\n', 'kontrolle')).filter((x) => !x.weich) : [];
+  // PHP: nach einem schliessenden ?> waere die Zeile HTML-Text - deshalb dort mit eigenem <?php-Block.
+  const anhang = sprache === 'php' ? '\n<?php )}] ((( {{{ [[[\n' : '\n)}] ((( {{{ [[[\n';
+  const kontrolle = kleinste ? (await pc.pruefe(sprache, kleinste.content + anhang, 'kontrolle')).filter((x) => !x.weich) : [];
   zeiten.sort((a, b) => a - b);
   const p = (q) => (zeiten.length ? zeiten[Math.min(zeiten.length - 1, Math.floor(zeiten.length * q))].toFixed(1) : '-');
   console.log(`sprache ${sprache}: ${r.rows.length} Dateien, Meldungen ${treffer.length}, weich ${weich.length}, Fehler ${fehler}, Kontrolle ${kontrolle.length > 0 ? 'erkannt' : 'NICHT erkannt'}`);

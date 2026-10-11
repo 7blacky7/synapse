@@ -30,7 +30,7 @@ import { enqueueParseAndEmbed } from './code.js';
 import { deleteByFilePath } from '../qdrant/index.js';
 import { COLLECTIONS } from '../types/index.js';
 import { checkErrorPatterns, type ErrorPatternWarning } from './error-patterns.js';
-import { verfolgeFehlermusterPruefung, vormerkenBefunde } from './fehlermuster-auslieferung.js';
+import { verfolgeFehlermusterPruefung, vormerkenBefunde, ueberholeSyntaxBefunde } from './fehlermuster-auslieferung.js';
 import {
   hatSyntaxPruefer,
   pruefeSignaturen,
@@ -692,11 +692,15 @@ async function syntaxVorDemSchreiben(
   einzel: EinzelSchreibOptionen | undefined,
 ): Promise<{ hinweise: FehlerBefund[]; quittiert?: string }> {
   if (!einzel?.einzelweg) return { hinweise: [] };
+  // P16-T5 E3a: stand = dieser Schreibvorgang. Nachlieferungen tragen ihn; ein spaeterer durchgelaufener
+  // Schreibvorgang derselben Datei ueberholt sie (sie haengen dann nicht an fremden, gueltigen Antworten).
+  const stand = Date.now();
   const erg = await pruefeSyntaxEinzelweg({
     filePath, alt, neu, quittieren: einzel.quittieren,
-    onNachgereicht: (befunde) => vormerkenBefunde(agentId, filePath, befunde),
+    onNachgereicht: (befunde) => vormerkenBefunde(agentId, filePath, befunde, { stand }),
   });
   if (erg.blockierend.length > 0) throw new SyntaxfehlerAbgelehnt(filePath, erg.blockierend);
+  if (erg.status !== 'keine_pruefer') ueberholeSyntaxBefunde(agentId, filePath, stand);
   return { hinweise: erg.hinweise, quittiert: erg.quittiert };
 }
 

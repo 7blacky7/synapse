@@ -49,6 +49,8 @@ export interface FehlermusterHinweis {
   zeilen?: [number, number];
   pruefer?: string;
   quittiert_grund?: string;
+  /** P16-T5 E3a: nachgelieferter Syntaxbefund - Zeit und Fassung des Schreibvorgangs, zu dem er gehoert. */
+  nachgeliefert_fuer?: { geprueft_um: string; fassung: string };
   /** Fertiger Aufruf, um den Stand vor dem Schreiben zurueckzuholen (bei severity error). */
   restore?: string;
 }
@@ -66,6 +68,35 @@ interface Ausstehend {
   befund?: FehlerBefund;
   datei: string;
   zeit: number;
+  /** P16-T5 E3a: Startzeit des Schreibvorgangs, zu dem ein (nachgelieferter) Syntaxbefund gehoert. */
+  stand?: number;
+}
+
+/**
+ * P16-T5 E3a: juengster Schreibvorgang je Agent|Datei, dessen Syntaxpruefung durchlief (geschrieben). Ein
+ * nachgelieferter Befund eines AELTEREN Schreibvorgangs ist damit ueberholt: der Inhalt, zu dem er gehoert, liegt
+ * nicht mehr auf der Platte - er darf nicht an der Antwort eines spaeteren, gueltigen Schreibens haengen.
+ */
+const syntaxStand = new Map<string, number>();
+const SYNTAX_STAND_MAX = 2000;
+
+/**
+ * P16-T5 E3a: meldet einen durchgelaufenen Schreibvorgang (Startzeit stand) an agentId/datei. Vorgemerkte
+ * Syntaxbefunde aelterer Schreibvorgaenge derselben Datei fallen weg, spaeter eintreffende Nachlieferungen
+ * aelterer Schreibvorgaenge werden verworfen. Wirft nie.
+ */
+export function ueberholeSyntaxBefunde(agentId: string | null | undefined, datei: string, stand: number): void {
+  if (!agentId) return;
+  const k = `${agentId}|${datei}`;
+  syntaxStand.delete(k);
+  syntaxStand.set(k, stand);
+  while (syntaxStand.size > SYNTAX_STAND_MAX) syntaxStand.delete(syntaxStand.keys().next().value as string);
+  const liste = ausstehend.get(agentId);
+  if (!liste) return;
+  const rest = liste.filter((a) => !(a.datei === datei && a.befund?.quelle === 'syntax' && a.stand !== undefined && a.stand < stand));
+  if (rest.length === liste.length) return;
+  if (rest.length > 0) ausstehend.set(agentId, rest);
+  else ausstehend.delete(agentId);
 }
 
 function schluessel(a: Ausstehend): string {
@@ -77,9 +108,11 @@ function schluessel(a: Ausstehend): string {
  * Themenhinweisen). Derselbe Befund an derselben Datei ersetzt den aelteren (Zeilen koennen sich
  * verschoben haben). Wirft nie.
  */
-export function vormerkenBefunde(agentId: string | null | undefined, datei: string, befunde: FehlerBefund[]): void {
+export function vormerkenBefunde(agentId: string | null | undefined, datei: string, befunde: FehlerBefund[], opt: { stand?: number } = {}): void {
   if (!agentId || befunde.length === 0) return;
-  const neu: Ausstehend[] = befunde.map((befund) => ({ befund, datei, zeit: Date.now() }));
+  // E3a: Nachlieferung zu einem inzwischen ueberholten Schreibvorgang -> verwerfen.
+  if (opt.stand !== undefined && (syntaxStand.get(`${agentId}|${datei}`) ?? -Infinity) > opt.stand) return;
+  const neu: Ausstehend[] = befunde.map((befund) => ({ befund, datei, zeit: Date.now(), ...(opt.stand !== undefined ? { stand: opt.stand } : {}) }));
   const neueSchluessel = new Set(neu.map(schluessel));
   const liste = (ausstehend.get(agentId) ?? []).filter((a) => !neueSchluessel.has(schluessel(a)));
   const befundListe = [...liste.filter((a) => a.befund), ...neu];
@@ -188,6 +221,7 @@ export async function holeFehlermusterHinweise(agentId: string | undefined): Pro
           zeilen: a.befund.zeilen,
           pruefer: a.befund.pruefer,
           quittiert_grund: a.befund.quittiert_grund,
+          ...(a.befund.nachgeliefert_fuer ? { nachgeliefert_fuer: a.befund.nachgeliefert_fuer } : {}),
           restore: a.befund.restore,
         }
       : {
@@ -214,6 +248,11 @@ export async function holeFehlermusterHinweise(agentId: string | undefined): Pro
     if (thema > 0) {
       teile.push(`${thema} bekannte(s) Fehlermuster passt/passen THEMATISCH zu deiner letzten Aenderung `
         + '(Embedding-Aehnlichkeit, kein sicherer Fehlerbefund, quelle thema). Pruefe die genannte Datei gegen "was".');
+    }
+    const nachgeliefert = treffer.filter((t) => t.nachgeliefert_fuer).length;
+    if (nachgeliefert > 0) {
+      teile.push(`${nachgeliefert} nachgelieferte(r) Syntaxbefund(e) gehoert/gehoeren zu einem FRUEHEREN Schreibvorgang `
+        + '(nachgeliefert_fuer: Zeit und Fassung), nicht zum Aufruf dieser Antwort; die Datei steht noch auf dieser Fassung.');
     }
     teile.push('Geschrieben wurde trotzdem; ein Muster sperrt im Einzelschreibweg nichts.');
     if (rest.length > 0) teile.push(`Weitere ${rest.length} Hinweis(e) folgen mit der naechsten Antwort.`);
@@ -249,5 +288,6 @@ async function vermerkeGesehen(agentId: string, patternIds: string[]): Promise<v
 /** Nur fuer Tests: Zustand leeren. */
 export function _fehlermusterAuslieferungZuruecksetzen(): void {
   ausstehend.clear();
+  syntaxStand.clear();
   laufend.clear();
 }

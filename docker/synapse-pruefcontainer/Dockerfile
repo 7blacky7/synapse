@@ -7,8 +7,10 @@
 # read-only rootfs, tmpfs /tmp (noexec), User 65532, cap_drop ALL, no-new-privileges, Speicher-/CPU-/PID-Limit.
 #
 # Etappen: E1 Rust (rustfmt als reiner Parser). E2 Python (ast im Pruefserver, Python 3.14 + fissix fuer den
-# Python-2-Rueckfall), Shell (bash -n), Go (gofmt -e). Jede Sprache mit eigenem Werkzeug = eigene Builder-Stufe,
-# die Endstufe kopiert nur das Werkzeug.
+# Python-2-Rueckfall), Shell (bash -n), Go (gofmt -e). E3a PHP (php -l), Ruby (ruby -c), Lua (luac -p) aus Debian
+# trixie in der Endstufe (je ein Paket, zusammen ca. +75 MB entpackt). Sprachen mit grossem Einzelwerkzeug = eigene
+# Builder-Stufe, die Endstufe kopiert nur das Werkzeug. Zig bewusst NICHT (ast-check ist versionsabhaengig: zig 0.17
+# meldet 36 von 241 Dateien eines 0.14-Projekts; Binary 160-180 MB).
 
 ARG DEBIAN_TAG=bookworm-slim
 ARG RUST_VERSION=1.96.1
@@ -17,6 +19,8 @@ ARG RUST_VERSION=1.96.1
 ARG PYTHON_TAG=3.14-slim-trixie
 ARG GO_TAG=1.26-trixie
 ARG FISSIX_VERSION=24.4.24
+# E3a: Debian-Pakete der Endstufe (trixie: PHP 8.4, Ruby 3.3, Lua 5.4). Beim Anheben FP-Lauf wiederholen.
+ARG APT_PAKETE="php8.4-cli ruby lua5.4"
 
 # ─── Stufe rust: Toolchain nur zum Herauskopieren von rustfmt + Laufzeit-Bibliotheken ───
 FROM debian:${DEBIAN_TAG} AS rust
@@ -42,6 +46,9 @@ RUN mkdir -p /out/bin /out/versionen \
 # ─── Endstufe: Python-Basis (Interpreter fuer Pruefserver und Python-ast), bash ist enthalten ───
 FROM python:${PYTHON_TAG}
 ARG FISSIX_VERSION
+ARG APT_PAKETE
+RUN apt-get update && apt-get install -y --no-install-recommends ${APT_PAKETE} \
+ && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*
 # fissix (lib2to3-Fork, reiner Python-Parser) nur fuer den Python-2-Rueckfall; danach pip entfernen (wird zur
 # Laufzeit nicht gebraucht, spart Platz und Angriffsflaeche).
 RUN pip install --no-cache-dir --root-user-action=ignore --target /opt/pruef/py "fissix==${FISSIX_VERSION}" \
@@ -65,6 +72,9 @@ RUN python3 -m compileall -q /opt/pruef/py && mkdir -p /opt/pruef/leer && touch 
  && /opt/pruef/bin/rustfmt --version \
  && printf 'package x\n' | /opt/pruef/bin/gofmt -e >/dev/null \
  && bash --version | head -1 \
+ && php -n -v | head -1 && printf '<?php echo 1;\n' | php -n -l \
+ && ruby --disable=gems -v && printf 'x = 1\n' | ruby --disable=gems -c \
+ && luac5.4 -v && printf 'local x = 1\n' | luac5.4 -p - \
  && python3 -c "import sys; from fissix import pygram; from fissix.pgen2 import driver; print(sys.version.split()[0], 'fissix ok')" \
  && chmod -R a+rX /opt/pruef/cache /opt/pruef/versionen && ls -la /opt/pruef/cache/fissix/*/
 LABEL synapse.pruefcontainer="1" org.opencontainers.image.title="synapse-pruefcontainer"

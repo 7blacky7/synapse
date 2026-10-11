@@ -6,7 +6,8 @@ Syntaxpruefung fuer Sprachen, die im Node-Prozess der API nicht pruefbar sind. L
 synapse-pruefcontainer und spricht JSON-Zeilen ueber stdin/stdout - KEIN Netz (Container mit NetworkMode none),
 die API haengt sich per docker attach an (packages/rest-api/src/services/pruef-container.ts).
 
-SPRACHEN: rust (E1, rustfmt), python (E2, ast im Prozess + Python-2-Rueckfall), shell (E2, bash -n), go (E2, gofmt -e).
+SPRACHEN: rust (E1, rustfmt), python (E2, ast im Prozess + Python-2-Rueckfall), shell (E2, bash -n), go (E2, gofmt -e),
+          php (E3a, php -l), ruby (E3a, ruby -c), lua (E3a, luac -p).
 
 PROTOKOLL (eine JSON-Zeile je Nachricht, UTF-8):
   rein:  {"id": 7, "sprache": "rust", "inhalt": "...", "pfad": "src/a.rs"}
@@ -283,6 +284,88 @@ def pruefe_go(inhalt: str, pfad: str):
     return meldungen
 
 
+# ─── PHP: php -l (P16-T5 E3a) ─────────────────────────────────────────────────
+# php -l kompiliert nur (Lint-Modus): kein Ausfuehren, kein include/require. -n = keine php.ini. Gemeldet werden
+# "Parse error" und Compile-Zeit-"Fatal error" (z. B. doppelte Methode) - beides laedt PHP nicht. Deprecated/Warning
+# zur Compile-Zeit sind keine Syntaxfehler und werden nicht gemeldet.
+# Messung P16-T5 E3a: FP 0/513 echte .php im Index (parser-testkorpus, MyBB), warm p50 ~8 ms.
+
+_PHP_ZEILE = re.compile(r'^(?:PHP )?(?P<art>Parse error|Fatal error): (?P<meldung>.*) in Standard input code on line (?P<zeile>\d+)$')
+
+
+def pruefe_php(inhalt: str, pfad: str):
+    rc, out, err = lauf(['php', '-n', '-d', 'display_errors=stderr', '-d', 'log_errors=0', '-d', 'memory_limit=128M', '-l'],
+                        inhalt.encode('utf-8'))
+    if rc == 0:
+        return []
+    meldungen = []
+    for z in (err + b'\n' + out).decode('utf-8', 'replace').splitlines():
+        m = _PHP_ZEILE.match(z.strip())
+        if m:
+            meldungen.append({'zeile': int(m.group('zeile')), 'code': None,
+                              'meldung': m.group('meldung') if m.group('art') == 'Parse error' else f"{m.group('art')}: {m.group('meldung')}"})
+            break  # php -l meldet nur den ersten Fehler
+    if not meldungen:
+        sys.stderr.write(f'[pruefserver] php rc={rc} ohne Parse-Meldung fuer {pfad}: {(err or out)[:300]!r}\n')
+    return meldungen
+
+
+# ─── Ruby: ruby -c (P16-T5 E3a) ───────────────────────────────────────────────
+# ruby -c kompiliert nur bis zum Bytecode und fuehrt nichts aus (auch keine BEGIN-Bloecke, gemessen). --disable=gems
+# spart das Laden von RubyGems. Fehlerzeilen "-:Z: meldung"; Warnungen (z. B. "`it` calls without arguments") sind
+# weich. Grammatik = Ruby im Image (Debian trixie, 3.3).
+# Messung P16-T5 E3a: FP 0/3505 echte .rb/.rake/.gemspec (Rails), warm p50 ~9 ms.
+
+_RUBY_ZEILE = re.compile(r'^-:(?P<zeile>\d+): (?P<meldung>.*)$')
+
+
+def pruefe_ruby(inhalt: str, pfad: str):
+    rc, _out, err = lauf(['ruby', '--disable=gems', '-c'], inhalt.encode('utf-8'))
+    meldungen = []
+    for z in err.decode('utf-8', 'replace').splitlines():
+        m = _RUBY_ZEILE.match(z)
+        if not m:
+            continue
+        text = m.group('meldung')
+        if text.startswith('warning:'):
+            meldungen.append({'zeile': int(m.group('zeile')), 'code': 'warnung', 'meldung': text[8:].strip(), 'weich': True})
+        elif rc != 0:
+            meldungen.append({'zeile': int(m.group('zeile')), 'code': None, 'meldung': text})
+    if rc != 0 and not any(not x.get('weich') for x in meldungen):
+        sys.stderr.write(f'[pruefserver] ruby rc={rc} ohne Parse-Meldung fuer {pfad}: {err[:300]!r}\n')
+    return meldungen
+
+
+# ─── Lua: luac -p (P16-T5 E3a) ────────────────────────────────────────────────
+# luac -p parst nur (keine Ausgabedatei, nichts ausgefuehrt). Grammatik Lua 5.4. Lua 5.1/LuaJIT (z. B. Neovim)
+# kennt unbekannte Escapes ("\.") und Zahlen wie 1ULL - das sind dort keine Fehler, deshalb nur weich.
+# Messung P16-T5 E3a: FP 0/94 echte .lua (lite-xl, Lua 5.4), warm p50 ~1 ms.
+
+_LUA_ZEILE = re.compile(r'^luac[0-9.]*: stdin:(?P<zeile>\d+): (?P<meldung>.*)$')
+_LUA_VERSIONSABHAENGIG = re.compile(r'invalid escape sequence|malformed number')
+LUAC = os.environ.get('PRUEF_LUAC', 'luac5.4')
+
+
+def pruefe_lua(inhalt: str, pfad: str):
+    rc, _out, err = lauf([LUAC, '-p', '-'], inhalt.encode('utf-8'))
+    if rc == 0:
+        return []
+    meldungen = []
+    for z in err.decode('utf-8', 'replace').splitlines():
+        m = _LUA_ZEILE.match(z)
+        if m:
+            text = m.group('meldung')
+            eintrag = {'zeile': int(m.group('zeile')), 'code': None, 'meldung': text}
+            if _LUA_VERSIONSABHAENGIG.search(text):
+                eintrag.update({'code': 'lua54', 'weich': True,
+                                'meldung': f'{text} (Fehler in Lua 5.4; Lua 5.1/LuaJIT akzeptiert das)'})
+            meldungen.append(eintrag)
+            break
+    if not meldungen:
+        sys.stderr.write(f'[pruefserver] luac rc={rc} ohne Parse-Meldung fuer {pfad}: {err[:300]!r}\n')
+    return meldungen
+
+
 # ─── Versionen und Verteilung ─────────────────────────────────────────────────
 
 def version_von(cmd):
@@ -312,11 +395,21 @@ def version_go():
         return 'gofmt unbekannt'
 
 
+def version_nummer(name, cmd):
+    """'<name> <x.y.z>' aus der ersten Versionszeile (PHP 8.4.11 (cli) ..., ruby 3.3.8 (...), Lua 5.4.7 ...)."""
+    roh = version_von(cmd)
+    m = re.search(r'(\d+\.\d+(?:\.\d+)?)', roh)
+    return f'{name} {m.group(1)}' if m else roh
+
+
 PRUEFER = {
     'rust': (pruefe_rust, lambda: version_von(['rustfmt', '--version'])),
     'python': (pruefe_python, version_python),
     'shell': (pruefe_shell, version_bash),
     'go': (pruefe_go, version_go),
+    'php': (pruefe_php, lambda: version_nummer('php', ['php', '-n', '-v'])),
+    'ruby': (pruefe_ruby, lambda: version_nummer('ruby', ['ruby', '--disable=gems', '-v'])),
+    'lua': (pruefe_lua, lambda: version_nummer('luac', [LUAC, '-v'])),
 }
 
 

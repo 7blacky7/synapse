@@ -1,7 +1,8 @@
 /**
  * MODUL: Pruef-Container (P16-T5, Stufe S3, 11.10.2026)
  *
- * Syntaxpruefung fuer Sprachen, die im Node-Prozess der API nicht pruefbar sind (E1: Rust; E2: Python, Shell, Go).
+ * Syntaxpruefung fuer Sprachen, die im Node-Prozess der API nicht pruefbar sind (E1: Rust; E2: Python, Shell, Go;
+ * E3a: PHP, Ruby, Lua). E3a: Kaltstart-Budget, Vorwaermen beim Anmelden, Diagnose an intern(status).
  * Die Werkzeuge laufen im Container synapse-pruefcontainer (Dockerfile docker/synapse-pruefcontainer/); diese Datei
  * verwaltet ihn ueber docker.sock - wie der Workspace-Orchestrator - und meldet je Container-Sprache einen
  * Syntaxpruefer an
@@ -33,7 +34,7 @@ import Docker from 'dockerode';
 import { PassThrough } from 'node:stream';
 import { StringDecoder } from 'node:string_decoder';
 import { createHash } from 'node:crypto';
-import { registriereSyntaxPruefer, registriereWorker, workerPausiert, meldeWorkerArbeit, type SyntaxMeldung } from '@synapse/core';
+import { registriereSyntaxPruefer, registriereWorker, workerPausiert, meldeWorkerArbeit, registriereInternQuelle, type SyntaxMeldung } from '@synapse/core';
 
 /** Sprachen, die der Container prueft. sperrfaehig nur nach Falsch-Positiv-Test auf echten Index-Dateien. */
 export interface ContainerSprache {
@@ -54,6 +55,12 @@ export const CONTAINER_SPRACHEN: ContainerSprache[] = [
   { sprache: 'shell', endungen: ['sh', 'bash'], sperrfaehig: true, werkzeug: 'bash' },
   // P16-T5 E2: gofmt -e (go/parser), liest keine Imports.
   { sprache: 'go', endungen: ['go'], sperrfaehig: true, werkzeug: 'gofmt' },
+  // P16-T5 E3a: php -l (Parse error + Compile-Fatal), FP 0/513 Index-Dateien. .inc bewusst nicht (auch C/Pascal/BitBake).
+  { sprache: 'php', endungen: ['php', 'phtml'], sperrfaehig: true, werkzeug: 'php' },
+  // P16-T5 E3a: ruby -c (Ruby 3.3), FP 0/3505. Rakefile/Gemfile ohne Endung erreicht die Endungs-Zuordnung nicht.
+  { sprache: 'ruby', endungen: ['rb', 'rake', 'gemspec', 'ru'], sperrfaehig: true, werkzeug: 'ruby' },
+  // P16-T5 E3a: luac -p (Lua 5.4), FP 0/94; Lua-5.1/LuaJIT-Abweichungen (Escapes, 1ULL) nur weich.
+  { sprache: 'lua', endungen: ['lua'], sperrfaehig: true, werkzeug: 'luac' },
 ];
 
 export interface PruefContainerConfig {
@@ -73,6 +80,12 @@ export interface PruefContainerConfig {
   cacheEintraege: number;
   parallel: number;
   tickMs: number;
+  /**
+   * E3a: Budget fuer den Syntaxpruefer, solange der Container NICHT bereit ist (Kaltstart, gemessen 0,4-2 s).
+   * Statt 'teilweise' + Nachlieferung wartet der erste Schreibvorgang nach einem Idle-Stop auf das Ergebnis
+   * und wird bei Fehler gesperrt. 0 = aus (dann gilt FEHLERPRUEFUNG_BUDGET_MS auch beim Kaltstart).
+   */
+  kaltBudgetMs: number;
 }
 
 function envZahl(name: string, standard: number): number {
@@ -99,6 +112,7 @@ export function pruefContainerConfigAusEnv(): PruefContainerConfig {
     cacheEintraege: envZahl('PRUEFCONTAINER_CACHE_EINTRAEGE', 128),
     parallel: Math.max(1, envZahl('PRUEFCONTAINER_PARALLEL', 2)),
     tickMs: envZahl('PRUEFCONTAINER_TICK_MS', 60_000) || 60_000,
+    kaltBudgetMs: envZahl('PRUEFCONTAINER_KALT_BUDGET_MS', 3000),
   };
 }
 
@@ -131,6 +145,9 @@ type Antwort = { id?: number | null; ok?: boolean; meldungen?: SyntaxMeldung[]; 
 
 const START_FENSTER_MS = 5 * 60_000;
 const MAX_TIMEOUTS_IN_FOLGE = 3;
+/** Diagnose: so viele Auftragsdauern fuer p50/p95, so viele letzte Fehler. */
+const DAUERN_MAX = 200;
+const FEHLER_MAX = 8;
 
 export class PruefContainer {
   private zustandName: 'aus' | 'startet' | 'bereit' = 'aus';
@@ -150,6 +167,11 @@ export class PruefContainer {
   private laufend = new Map<string, Promise<SyntaxMeldung[]>>();
   private tick: NodeJS.Timeout | null = null;
   private z = { auftraege: 0, cache_treffer: 0, geteilt: 0, timeouts: 0, fehler: 0, abgelehnt: 0, starts: 0, abstuerze: 0, idle_stops: 0, ms_summe: 0 };
+  /** Diagnose (E3a): Dauern der letzten Auftraege (ms, inkl. Warteschlange), letzte Fehler, Speicherlimit laut inspect. */
+  private dauern: number[] = [];
+  private letzteFehler: Array<{ zeit: string; text: string }> = [];
+  private speicher: { memory: number; memory_swap: number; swap_begrenzt: boolean } | null = null;
+  private letzterStartMs: number | null = null;
   /** Wird nach jedem erfolgreichen Start mit den Werkzeugversionen aufgerufen. */
   onInfo?: (info: PruefContainerInfo) => void;
 
@@ -181,6 +203,27 @@ export class PruefContainer {
     return { gestoppt: false, zustand: this.zustandName };
   }
 
+  private merkeFehler(text: string): void {
+    this.letzteFehler.push({ zeit: new Date().toISOString(), text: text.slice(0, 300) });
+    while (this.letzteFehler.length > FEHLER_MAX) this.letzteFehler.shift();
+  }
+
+  /**
+   * E3a: Mindestbudget fuer den Syntaxpruefer (SyntaxPruefer.mindestBudgetMs). Solange der Container nicht bereit
+   * ist und keine Pause gilt, darf der Kaltstart abgewartet werden; warm gilt das normale Budget (undefined).
+   */
+  mindestBudgetMs(): number | undefined {
+    if (this.cfg.kaltBudgetMs <= 0 || Date.now() < this.pauseBis) return undefined;
+    return this.zustandName === 'bereit' && this.stream ? undefined : this.cfg.kaltBudgetMs;
+  }
+
+  /** E3a: Container im Hintergrund starten (API-Start), damit der erste Schreibvorgang ihn warm vorfindet. Wirft nie. */
+  vorwaermen(): void {
+    if (Date.now() < this.pauseBis) return;
+    this.letzteAktivitaet = Date.now();
+    this.bereitMachen().catch((err) => console.error(`[pruefcontainer] Vorwaermen fehlgeschlagen: ${(err as Error).message}`));
+  }
+
   /** Prueft inhalt im Container. Wirft PruefContainerNichtVerfuegbar/PruefContainerTimeout, wenn nicht pruefbar. */
   pruefe(sprache: string, inhalt: string, pfad: string): Promise<SyntaxMeldung[]> {
     const schluessel = `${sprache}|${pfad}|${createHash('sha1').update(inhalt).digest('hex')}`;
@@ -208,6 +251,8 @@ export class PruefContainer {
       const t0 = Date.now();
       const antwort = await this.schicke({ sprache, inhalt, pfad }, this.cfg.timeoutMs, { sprache, pfad }) as Antwort;
       this.z.ms_summe += Date.now() - t0;
+      this.dauern.push(Date.now() - t0);
+      if (this.dauern.length > DAUERN_MAX) this.dauern.shift();
       this.letzteAktivitaet = Date.now();
       return (Array.isArray(antwort.meldungen) ? antwort.meldungen : []).map((m) => ({
         zeile: m.zeile,
@@ -237,6 +282,7 @@ export class PruefContainer {
   private pausieren(grund: string): void {
     this.pauseBis = Date.now() + this.cfg.pauseMs;
     this.pauseGrund = grund;
+    this.merkeFehler(`Pause ${this.cfg.pauseMs} ms: ${grund}`);
     console.error(`[pruefcontainer] Pause ${this.cfg.pauseMs} ms: ${grund} - bis dahin kein Container-Pruefer verfuegbar (Schreiben laeuft ungeprueft weiter)`);
   }
 
@@ -257,7 +303,15 @@ export class PruefContainer {
       await this.entferneContainer();
       let container: Docker.Container;
       try {
-        container = await this.docker.createContainer(this.containerOptionen());
+        try {
+          container = await this.docker.createContainer(this.containerOptionen());
+        } catch (err) {
+          // 409: ein gleichnamiger Container ist zwischen Entfernen und Anlegen (wieder) aufgetaucht, z. B. Rest eines
+          // gerade beendeten Starts. Einmal entfernen und neu anlegen statt den Start scheitern zu lassen.
+          if ((err as { statusCode?: number }).statusCode !== 409) throw err;
+          await this.docker.getContainer(this.cfg.name).remove({ force: true }).catch(() => {});
+          container = await this.docker.createContainer(this.containerOptionen());
+        }
       } catch (err) {
         const status = (err as { statusCode?: number }).statusCode;
         if (status === 404) {
@@ -275,10 +329,25 @@ export class PruefContainer {
       this.info = antwort.info ?? { werkzeuge: {} };
       this.zustandName = 'bereit';
       this.timeoutsInFolge = 0;
+      this.letzterStartMs = Date.now() - t0;
+      // E3a: Speicherlimit am laufenden Container nachlesen. Ohne Swap-Accounting im Kernel setzt Docker
+      // MemorySwap still auf -1 (Unraid t60) - dann ist nur der RAM begrenzt; das soll sichtbar sein.
+      try {
+        const ins = await container.inspect();
+        const memory = Number(ins.HostConfig?.Memory ?? 0);
+        const memorySwap = Number(ins.HostConfig?.MemorySwap ?? 0);
+        this.speicher = { memory, memory_swap: memorySwap, swap_begrenzt: memorySwap === memory };
+        if (memorySwap !== memory) {
+          const text = `MemorySwap ${memorySwap} statt ${memory} (Kernel ohne Swap-Accounting?) - begrenzt ist nur der RAM`;
+          console.error(`[pruefcontainer] WARNUNG ${text}`);
+          this.merkeFehler(text);
+        }
+      } catch { /* Diagnose best effort */ }
       console.error(`[pruefcontainer] bereit nach ${Date.now() - t0} ms (${container.id.slice(0, 12)}, ${this.cfg.image}): ${JSON.stringify(this.info.werkzeuge)}`);
       try { this.onInfo?.(this.info); } catch { /* Anmeldung best effort */ }
     } catch (err) {
       console.error(`[pruefcontainer] Start fehlgeschlagen: ${(err as Error).message}`);
+      this.merkeFehler(`Start fehlgeschlagen: ${(err as Error).message}`);
       await this.stoppen('Start fehlgeschlagen').catch(() => {});
       throw err instanceof PruefContainerNichtVerfuegbar ? err : new PruefContainerNichtVerfuegbar(`Start fehlgeschlagen: ${(err as Error).message}`);
     }
@@ -344,6 +413,7 @@ export class PruefContainer {
       if (!this.stoppend && warBereit) {
         this.z.abstuerze++;
         console.error(`[pruefcontainer] Verbindung beendet (${grund}) - naechster Auftrag startet neu`);
+        this.merkeFehler(`Absturz/Verbindung beendet: ${grund}`);
       }
       this.alleAbweisen(`Pruef-Container beendet (${grund})`);
     };
@@ -364,7 +434,10 @@ export class PruefContainer {
     this.offen.delete(msg.id);
     if (o.timer) clearTimeout(o.timer);
     if (msg.ok) { this.timeoutsInFolge = 0; o.resolve(msg); }
-    else o.reject(new Error(`Pruef-Container: ${msg.fehler ?? 'unbekannter Fehler'}`));
+    else {
+      this.merkeFehler(`Auftrag abgelehnt: ${msg.fehler ?? 'unbekannter Fehler'}`);
+      o.reject(new Error(`Pruef-Container: ${msg.fehler ?? 'unbekannter Fehler'}`));
+    }
   }
 
   /** Schickt eine Nachricht und wartet auf die Antwort mit derselben id (limitMs 0 = ohne Limit). */
@@ -381,6 +454,7 @@ export class PruefContainer {
             this.z.timeouts++;
             this.timeoutsInFolge++;
             console.error(`[pruefcontainer] TIMEOUT nach ${limitMs} ms: ${timeoutInfo.sprache} ${timeoutInfo.pfad} (${this.timeoutsInFolge} in Folge)`);
+            this.merkeFehler(`Timeout ${limitMs} ms: ${timeoutInfo.sprache} ${timeoutInfo.pfad}`);
             if (this.timeoutsInFolge >= MAX_TIMEOUTS_IN_FOLGE) {
               this.timeoutsInFolge = 0;
               void this.stoppen(`${MAX_TIMEOUTS_IN_FOLGE} Timeouts in Folge`);
@@ -442,9 +516,21 @@ export class PruefContainer {
     return this.info;
   }
 
-  /** Diagnose. */
+  /**
+   * Diagnose (intern status -> quellen.pruefcontainer). lage: laeuft | startet | kalt (aus, startet beim naechsten
+   * Auftrag) | fehler (Pause nach Startfehlern/fehlendem Image, Auftraege sofort 'nicht verfuegbar').
+   */
   zustand(): Record<string, unknown> {
+    const pause = this.pauseBis > Date.now();
+    const d = [...this.dauern].sort((a, b) => a - b);
+    const q = (x: number) => (d.length ? d[Math.min(d.length - 1, Math.floor(d.length * x))] : null);
     return {
+      lage: pause ? 'fehler' : this.zustandName === 'bereit' ? 'laeuft' : this.zustandName === 'startet' ? 'startet' : 'kalt',
+      sprachen: CONTAINER_SPRACHEN.map((s) => s.sprache),
+      latenz_ms: { anzahl: d.length, p50: q(0.5), p95: q(0.95), max: d.length ? d[d.length - 1] : null, letzter_start: this.letzterStartMs },
+      letzte_fehler: [...this.letzteFehler].reverse(),
+      speicher: this.speicher,
+      kalt_budget_ms: this.cfg.kaltBudgetMs,
       zustand: this.zustandName,
       container: this.containerId?.slice(0, 12) ?? null,
       image: this.cfg.image,
@@ -468,6 +554,8 @@ export class PruefContainer {
 // ─── Anmeldung als Syntaxpruefer ─────────────────────────────────────────────
 
 let instanz: PruefContainer | null = null;
+/** Warum keine Container-Pruefer angemeldet sind (Diagnose); null = angemeldet bzw. noch nicht versucht. */
+let anmeldeGrund: string | null = 'noch nicht angemeldet';
 
 function versionAus(info: PruefContainerInfo | null, s: ContainerSprache): string {
   const roh = info?.werkzeuge?.[s.sprache];
@@ -485,6 +573,8 @@ function melde(pc: PruefContainer): void {
       endungen: s.endungen,
       sperrfaehig: s.sperrfaehig,
       pruefe: (inhalt, pfad) => pc.pruefe(s.sprache, inhalt, pfad),
+      // E3a: Kaltstart abwarten statt Nachlieferung (PRUEFCONTAINER_KALT_BUDGET_MS).
+      mindestBudgetMs: () => pc.mindestBudgetMs(),
     });
   }
 }
@@ -492,24 +582,32 @@ function melde(pc: PruefContainer): void {
 /**
  * Meldet die Container-Pruefer an (nur in der API, die den Container verwaltet). Rueckgabe: angemeldete Namen,
  * leer wenn ausgeschaltet, Docker nicht erreichbar oder das Image fehlt (dann je eine Logzeile, kein Fehler).
- * opt.docker/opt.cfg fuer Tests.
+ * opt.docker/opt.cfg fuer Tests. opt.vorwaermen (Standard: PRUEFCONTAINER_VORWAERMEN != '0'): Container gleich im
+ * Hintergrund starten. Der Zustand haengt als Quelle 'pruefcontainer' an intern(status), auch ohne Anmeldung (mit Grund).
  */
-export async function registriereContainerSyntaxPruefer(opt: { docker?: Docker; cfg?: Partial<PruefContainerConfig>; takt?: boolean } = {}): Promise<string[]> {
-  if (process.env.SYNTAXPRUEFUNG === '0' || process.env.PRUEFCONTAINER === '0') return [];
+export async function registriereContainerSyntaxPruefer(opt: { docker?: Docker; cfg?: Partial<PruefContainerConfig>; takt?: boolean; vorwaermen?: boolean } = {}): Promise<string[]> {
+  registriereInternQuelle('pruefcontainer', () => pruefContainerZustand() ?? { lage: 'nicht_angemeldet', grund: anmeldeGrund });
+  if (process.env.SYNTAXPRUEFUNG === '0' || process.env.PRUEFCONTAINER === '0') {
+    anmeldeGrund = 'ausgeschaltet (SYNTAXPRUEFUNG=0 oder PRUEFCONTAINER=0)';
+    return [];
+  }
   const cfg = { ...pruefContainerConfigAusEnv(), ...opt.cfg };
   const docker = opt.docker ?? new Docker({ socketPath: cfg.socketPath });
   try {
     await docker.ping();
   } catch (err) {
+    anmeldeGrund = `Docker nicht erreichbar: ${(err as Error).message}`;
     console.error(`[pruefcontainer] Docker nicht erreichbar (${(err as Error).message}) - keine Container-Pruefer (${CONTAINER_SPRACHEN.map((s) => s.sprache).join(', ')})`);
     return [];
   }
   try {
     await docker.getImage(cfg.image).inspect();
   } catch {
+    anmeldeGrund = `Image ${cfg.image} fehlt`;
     console.error(`[pruefcontainer] Image ${cfg.image} fehlt - keine Container-Pruefer. Bauen: docker build -t ${cfg.image} docker/synapse-pruefcontainer, danach API neu starten`);
     return [];
   }
+  anmeldeGrund = null;
   if (instanz) await instanz.beenden().catch(() => {});
   // Rest eines frueheren API-Prozesses (kein SIGTERM-Abbau): weg damit, sonst liefe er ohne Idle-Stop weiter.
   await docker.getContainer(cfg.name).remove({ force: true }).catch(() => {});
@@ -517,6 +615,7 @@ export async function registriereContainerSyntaxPruefer(opt: { docker?: Docker; 
   melde(pc);
   if (opt.takt !== false) pc.starteTakt();
   instanz = pc;
+  if (opt.vorwaermen ?? process.env.PRUEFCONTAINER_VORWAERMEN !== '0') pc.vorwaermen();
   return CONTAINER_SPRACHEN.map((s) => s.sprache);
 }
 
