@@ -127,12 +127,27 @@ export {
   WorkerSteuerungFehler,
 } from './services/worker-steuerung.js';
 export type { WorkerDefinition, WorkerPause, WorkerStand, PausiereOptionen } from './services/worker-steuerung.js';
+// P15-T12 E2: Befehle an lokale Daemons ueber den API-Long-Poll (nur Speicher)
+export {
+  DAEMON_BEFEHLE,
+  DaemonBrueckeFehler,
+  holeDaemonBefehle,
+  stelleDaemonBefehleZurueck,
+  meldeDaemonAntwort,
+  meldeDaemonStatus,
+  daemonUebersicht,
+  sendeAnDaemon,
+  istGueltigerHost,
+  vergissDaemons,
+} from './services/daemon-bruecke.js';
+export type { DaemonBefehl, DaemonBefehlName, DaemonUebersicht } from './services/daemon-bruecke.js';
 export {
   INTERN_DEFINITION,
   INTERN_ACTIONS,
   INTERN_TOOL_AUS,
   internToolAktiv,
   fuehreInternAus,
+  fuehreWorkerActionAus,
 } from './services/intern-tool.js';
 export type { InternAction } from './services/intern-tool.js';
 export {

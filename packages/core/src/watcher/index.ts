@@ -32,6 +32,7 @@ import { FileEvent } from '../types/index.js';
 import { getConfig } from '../config.js';
 import { loadGitignore, istGesperrt, shouldIgnore, aktualisiereIgnoreRegeln } from './ignore.js';
 import { isBinaryFile, isExtractableDocument, isMultimodalFile, getFileType, MAX_MEDIA_SIZE_MB, assetArt, leseDateiKopf } from './binary.js';
+import { workerPausiert } from '../services/worker-steuerung.js';
 
 export * from './binary.js';
 export * from './ignore.js';
@@ -422,6 +423,9 @@ export function startFileWatcher(options: FileWatcherOptions): FileWatcherInstan
 
       pgPollInterval = setInterval(async () => {
         if (pgPollBusy) return;  // vorheriger Poll laeuft noch → diesen Tick ueberspringen
+        // P15-T12: Worker sync_pg_fs pausiert (intern, prozess daemon) -> Tick auslassen; lastPgCheck
+        // bleibt stehen, nach der Pause holt der naechste Tick alles nach.
+        if (workerPausiert('sync_pg_fs')) return;
         pgPollBusy = true;
         try {
           // 1. Changed/new files: Kandidaten OHNE content laden — nur den Hash.

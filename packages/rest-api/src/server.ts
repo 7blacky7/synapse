@@ -40,6 +40,7 @@ import {
   modelPoolRoutes,
   projektDbRoutes,
 } from './routes/index.js';
+import { internDaemonRoutes } from './routes/intern-daemon.js';
 
 /**
  * Erstellt und konfiguriert den Fastify Server
@@ -102,6 +103,8 @@ export async function createServer(): Promise<FastifyInstance> {
   await fastify.register(trayRoutes);
   // GPU-1: Registry/Heartbeat externer Ollama-Compute-Knoten.
   await fastify.register(embeddingNodeRoutes);
+  // P15-T12 E2: Debug-Steuerung lokaler Daemons (Long-Poll; ohne SYNAPSE_INTERN_TOOL=1 nur debug:false).
+  await fastify.register(internDaemonRoutes);
 
   // API-Bruecke Schritt 1: alles, was der Spezialisten-Wrapper heute per direkter
   // PostgreSQL-Verbindung macht, als HTTP-Routen. Rein additiv — kein bestehender

@@ -23,6 +23,9 @@ import {
   expirePendingShellJobs,
   EXPIRE_PENDING_AFTER_SEC,
   reapOrphanedRunningJobs,
+  registriereWorker,
+  workerPausiert,
+  meldeWorkerArbeit,
 } from '@synapse/core';
 import type { ShellJobRow } from '@synapse/core';
 
@@ -127,11 +130,27 @@ export async function startShellJobWorker(
   // + verfallene Jobs wegraeumen. Die Frist ist mit SH-2 von 30 s auf 4 h gestiegen:
   // seit Jobs auf einen freien Slot warten duerfen, haette die alte Frist genau die
   // wartenden Auftraege stillschweigend verworfen.
+  // P15-T12: pausierbar ueber intern(worker_pausieren, worker shell, prozess daemon). Nur ausdruecklich,
+  // nicht in 'alle' — sonst sperrt man sich das shell-Tool selbst aus.
+  registriereWorker({
+    name: 'shell',
+    beschreibung: 'Shell-Jobs aus der Queue claimen und ausfuehren (laufende laufen bei Pause weiter)',
+    inAlle: false,
+    durchlauf: async () => {
+      const projekte = getActiveProjects();
+      for (const project of projekte) await processJob(project);
+      return { projekte: projekte.length };
+    },
+  });
+
   safetyInterval = setInterval(() => {
     if (stopped) return;
-    void expirePendingShellJobs(EXPIRE_PENDING_AFTER_SEC).catch((err: unknown) => {
-      console.error(`[shell-worker] expirePendingShellJobs Fehler:`, (err as Error).message);
-    });
+    // P15-T12: waehrend einer Pause nichts verfallen lassen — die Jobs warten nur.
+    if (!workerPausiert('shell')) {
+      void expirePendingShellJobs(EXPIRE_PENDING_AFTER_SEC).catch((err: unknown) => {
+        console.error(`[shell-worker] expirePendingShellJobs Fehler:`, (err as Error).message);
+      });
+    }
     for (const project of getActiveProjects()) {
       void processJob(project).catch((err: unknown) => {
         console.error(`[shell-worker] safety-net processJob(${project}) Fehler:`, (err as Error).message);
@@ -197,6 +216,8 @@ async function processJob(project: string): Promise<void> {
   // ein Wartender aus wie ein Laufender. Der Job bleibt lieber 'pending' und
   // wird geholt, sobald ein Slot frei wird (Freigabe unten + Safety-Net alle 10 s).
   if (laufendeJobs.size >= MAX_CONCURRENT_JOBS) return;
+  // P15-T12: pausiert -> nicht claimen, der Job bleibt pending.
+  if (workerPausiert('shell')) return;
 
   const job = await claimPendingShellJob(project, DAEMON_ID);
   if (!job) return; // Kein Job vorhanden oder von anderem Daemon geclaimed

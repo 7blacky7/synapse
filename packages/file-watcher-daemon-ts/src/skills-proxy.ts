@@ -44,7 +44,8 @@ interface ApiZugang {
   token: string | null;
 }
 
-function leseApiZugang(): ApiZugang {
+/** Auch fuer intern-bruecke.ts (P15-T12): derselbe Zugang, kein eigener Token. */
+export function leseApiZugang(): ApiZugang {
   let url = DEFAULT_SYNAPSE_API_URL;
   let token: string | null = null;
   try {

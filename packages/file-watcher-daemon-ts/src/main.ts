@@ -22,6 +22,8 @@ import { startSpecialistJobWorker, type SpecialistJobWorkerHandle } from './spec
 import { startProjectInitWorker, type ProjectInitWorkerHandle } from './project-init-worker.js';
 import { startDaemonHeartbeat, type DaemonHeartbeatHandle } from './daemon-heartbeat.js';
 import { startEnabledSync, type EnabledSyncHandle } from './enabled-sync.js';
+import { startInternBruecke, type InternBrueckeHandle } from './intern-bruecke.js';
+import { registriereWorker } from '@synapse/core';
 
 async function main(): Promise<void> {
   ensureConfigDir();
@@ -40,6 +42,18 @@ async function main(): Promise<void> {
 
   const manager = new WatcherManager();
   const { port, projekte } = manager.statusAll();
+
+  // P15-T12: Sync-Wege einzeln pausierbar (intern, prozess daemon). Nur ausdruecklich, nicht in 'alle'.
+  registriereWorker({
+    name: 'sync_pg_fs',
+    beschreibung: 'PG -> Platte: Aenderungen aus code_files auf die Festplatte schreiben (Poll je Projekt)',
+    inAlle: false,
+  });
+  registriereWorker({
+    name: 'sync_fs_pg',
+    beschreibung: 'Platte -> PG: Datei-Ereignisse indexieren (storeFileContent + Parsen/Embedding); Ereignisse warten bei Pause',
+    inAlle: false,
+  });
 
   // Enabled Projekte direkt starten
   await manager.startAllEnabled();
@@ -95,6 +109,16 @@ async function main(): Promise<void> {
     enabledSync = startEnabledSync(manager);
   } catch (err) {
     console.error('[daemon] Enabled-Sync konnte nicht gestartet werden:', err);
+  }
+
+  // P15-T12 E2: Debug-Steuerung ueber die API (nur wenn dort SYNAPSE_INTERN_TOOL=1 gilt).
+  let internBruecke: InternBrueckeHandle | null = null;
+  if (process.env.DAEMON_INTERN_BRUECKE_DISABLED !== '1') {
+    try {
+      internBruecke = startInternBruecke();
+    } catch (err) {
+      console.error('[daemon] intern-Bruecke konnte nicht gestartet werden:', err);
+    }
   }
 
   const app = buildApi({ manager });
@@ -179,6 +203,10 @@ async function main(): Promise<void> {
 
     if (enabledSync !== null) {
       try { enabledSync.stop(); } catch { /* ignore */ }
+    }
+
+    if (internBruecke !== null) {
+      try { internBruecke.stop(); } catch { /* ignore */ }
     }
 
     try {

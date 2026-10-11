@@ -26,6 +26,8 @@ import {
   klassifiziereDatei,
   verarbeiteAssetEreignis,
   verifyAssetsAgainstFilesystem,
+  workerPausiert,
+  meldeWorkerArbeit,
 } from '@synapse/core';
 import {
   DaemonConfig,
@@ -330,6 +332,9 @@ export class WatcherManager {
     // BACKPRESSURE: Slot holen BEVOR content gelesen/geparst wird. Bei vielen
     // gleichzeitigen Events (Initial-Scan) warten die ueberzaehligen hier als
     // billiges event-Objekt statt tausende indexFile()-Buffer parallel zu halten.
+    // P15-T12: Worker sync_fs_pg pausiert (intern, prozess daemon) -> das Ereignis wartet hier als
+    // billiges Objekt und wird nach der Pause normal verarbeitet; nichts geht verloren.
+    while (workerPausiert('sync_fs_pg')) await new Promise((r) => setTimeout(r, 5_000));
     await acquireIndexSlot();
     try {
       const projektCfg = this.config.projekte.find((p) => p.name === event.project);
@@ -370,6 +375,7 @@ export class WatcherManager {
           await indexFile(relPath, event.project, projectRoot);
         }
       }
+      meldeWorkerArbeit('sync_fs_pg');
     } catch (err) {
       console.error(
         `[manager] indexieren ${event.type} ${event.path} fehlgeschlagen:`,

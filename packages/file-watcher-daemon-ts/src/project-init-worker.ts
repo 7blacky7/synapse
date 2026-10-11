@@ -26,6 +26,9 @@ import {
   envHatDatabaseUrl,
   schreibeProjektDbEnv,
   vergissJobUmgebungCache,
+  registriereWorker,
+  workerPausiert,
+  meldeWorkerArbeit,
   type ProjectInitJobRow,
   type ProjektDbAnlage,
 } from '@synapse/core'
@@ -63,11 +66,21 @@ export async function startProjectInitWorker(
   })
 
   // Safety-Net alle 10s: pending Jobs catchen + alte timeout-en
+  // P15-T12: pausierbar ueber intern(worker_pausieren, worker project_init, prozess daemon)
+  registriereWorker({
+    name: 'project_init',
+    beschreibung: 'Project-Init-Jobs (Web-KI Self-Service) claimen und ausfuehren',
+    durchlauf: async () => { await processNextJob(manager); return { versucht: true } },
+  })
+
   safetyInterval = setInterval(() => {
     if (stopped) return
-    void expirePendingProjectInitJobs(30).catch((err: unknown) => {
-      console.error('[project-init-worker] expirePending Fehler:', (err as Error).message)
-    })
+    // P15-T12: waehrend einer Pause nichts verfallen lassen — die Jobs warten nur.
+    if (!workerPausiert('project_init')) {
+      void expirePendingProjectInitJobs(30).catch((err: unknown) => {
+        console.error('[project-init-worker] expirePending Fehler:', (err as Error).message)
+      })
+    }
     void processNextJob(manager).catch((err: unknown) => {
       console.error('[project-init-worker] safety-net Fehler:', (err as Error).message)
     })
@@ -98,8 +111,11 @@ export async function startProjectInitWorker(
 }
 
 async function processNextJob(manager: WatcherManager): Promise<void> {
+  // P15-T12: pausiert -> nicht claimen, der Job bleibt pending.
+  if (workerPausiert('project_init')) return
   const job = await claimPendingProjectInitJob(DAEMON_ID, HOSTNAME)
   if (!job) return
+  meldeWorkerArbeit('project_init')
 
   console.error(`[project-init-worker] Job ${job.id} (name=${job.name}) gestartet`)
 

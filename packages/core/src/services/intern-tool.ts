@@ -42,6 +42,7 @@ import {
   workerPauseMaxMin,
   workerStatus,
 } from './worker-steuerung.js';
+import { DaemonBrueckeFehler, daemonUebersicht, sendeAnDaemon } from './daemon-bruecke.js';
 
 const INTERN_TOOL_BEIM_START = process.env.SYNAPSE_INTERN_TOOL === '1';
 
@@ -63,6 +64,7 @@ export const INTERN_ACTIONS = [
   'nachzug_jetzt', 'embedding_messen', 'neu_einbetten', 'embed_prioritaet',
   'modellprofil', 'modellprofil_setzen', 'modellprofil_kalibrieren',
   'worker_status', 'worker_pausieren', 'worker_fortsetzen', 'worker_durchlauf',
+  'gpu_helfer_status', 'gpu_helfer_einstellen',
 ] as const;
 export type InternAction = (typeof INTERN_ACTIONS)[number];
 
@@ -91,6 +93,8 @@ export const INTERN_DEFINITION = {
     'worker_status: alle Hintergrund-Worker DIESES Prozesses (laeuft|pausiert, seit, bis, von, grund, zuletzt aktiv/Arbeit, Durchlaeufe) plus die PG-Schalter; ' +
     'worker_pausieren (worker: Name | Liste | "alle", dauer_min oder bis PFLICHT, grund PFLICHT): holt keine neue Arbeit mehr, laufender Stapel wird fertig, endet von selbst (Obergrenze SYNAPSE_WORKER_PAUSE_MAX_MIN), Neustart beendet jede Pause; ' +
     'worker_fortsetzen (worker | "alle"); worker_durchlauf (worker): genau ein Durchlauf jetzt, auch waehrend einer Pause. ' +
+    'prozess "daemon" bzw. "daemon:<host>" steuert dieselben Actions im lokalen FileWatcher-Daemon (Long-Poll-Bruecke, Antwort <= 10 s). ' +
+    'gpu_helfer_status / gpu_helfer_einstellen (lan_bevorzugen, embed_pause_ms; null entfernt) ueber den lokalen Daemon: ~/.synapse/file-watcher/gpu-helfer.json, der Tray startet den Helfer binnen ~5 s neu. ' +
     'Keine Aktion beendet Prozesse/Sitzungen oder loescht PG-Daten; nur neu_einbetten leert Qdrant-Collections (aus PG wiederherstellbar).',
   inputSchema: {
     type: 'object',
@@ -106,6 +110,9 @@ export const INTERN_DEFINITION = {
       dauerhaft: { type: 'boolean', description: 'schalter_setzen: ohne Ablauf (nur ausdruecklich)' },
       grund: { type: 'string', description: 'schalter_setzen / worker_pausieren: Grund (sichtbar in schalter_liste bzw. worker_status und im Log)' },
       worker: { type: ['string', 'array'], items: { type: 'string' }, description: 'worker_pausieren/worker_fortsetzen: Name, Liste oder "alle"; worker_durchlauf: ein Name. worker_status zeigt die Namen.' },
+      prozess: { type: 'string', description: 'worker_*: "api" (Standard) | "daemon" (der einzige verbundene lokale Daemon) | "daemon:<host>"; gpu_helfer_*: "daemon" (Standard) | "daemon:<host>"' },
+      lan_bevorzugen: { type: ['boolean', 'null'], description: 'gpu_helfer_einstellen: API im LAN zuerst (true) oder nur oeffentlich (false); null entfernt' },
+      embed_pause_ms: { type: ['number', 'null'], description: 'gpu_helfer_einstellen: Pause zwischen Embedding-Aufrufen des Helfers in ms (EMBED_MIN_GAP_MS); null entfernt' },
       modell: { type: 'string', description: 'ollama_entladen/ollama_laden: Modellname wie in ollama_status (ohne Tag = :latest); modellprofil/modellprofil_setzen: Embedding-Modell (Standard: das aktive)' },
       digest: { type: 'string', description: 'modellprofil_setzen: leer = gilt fuer jeden Digest (Standard), sonst sha256-Anfang (12..64 Hex)' },
       query_praefix: { type: ['string', 'null'], description: 'modellprofil_setzen: Praefix fuer Suchanfragen ("" = bewusst keiner, null = nicht kalibriert). Leerzeichen zaehlen mit.' },
@@ -396,6 +403,65 @@ export async function fuehreInternAus(
           })),
         };
       }
+      case 'worker_status':
+      case 'worker_pausieren':
+      case 'worker_fortsetzen':
+      case 'worker_durchlauf': {
+        const prozess = text(a, 'prozess') ?? 'api';
+        if (prozess === 'api') return await fuehreWorkerActionAus(action, a, agentId);
+        if (prozess !== 'daemon' && !prozess.startsWith('daemon:')) {
+          return fehler(action, 'parameter_ungueltig', 'prozess: api | daemon | daemon:<host>.');
+        }
+        const host = prozess.startsWith('daemon:') ? prozess.slice('daemon:'.length) : undefined;
+        const { host: ziel, ergebnis } = await sendeAnDaemon(action, {
+          worker: a.worker,
+          dauer_min: zahl(a, 'dauer_min'),
+          bis: text(a, 'bis'),
+          grund: text(a, 'grund'),
+          von: text(a, 'agent_id') ?? agentId,
+        }, host);
+        return { success: true, action, prozess: `daemon:${ziel}`, ...ergebnis, host: ziel };
+      }
+      case 'gpu_helfer_status':
+      case 'gpu_helfer_einstellen': {
+        const prozess = text(a, 'prozess') ?? 'daemon';
+        if (prozess !== 'daemon' && !prozess.startsWith('daemon:')) {
+          return fehler(action, 'parameter_ungueltig', 'prozess: daemon | daemon:<host> (der GPU-Helfer laeuft am lokalen PC).');
+        }
+        const host = prozess.startsWith('daemon:') ? prozess.slice('daemon:'.length) : undefined;
+        const args: Record<string, unknown> = {};
+        if (action === 'gpu_helfer_einstellen') {
+          if ('lan_bevorzugen' in a) args.lan_bevorzugen = a.lan_bevorzugen === null || a.lan_bevorzugen === 'null' ? null : wahr(a, 'lan_bevorzugen');
+          if ('embed_pause_ms' in a) args.embed_pause_ms = a.embed_pause_ms === null || a.embed_pause_ms === 'null' ? null : zahl(a, 'embed_pause_ms');
+        }
+        const { host: ziel, ergebnis } = await sendeAnDaemon(action, args, host);
+        return { success: true, action, prozess: `daemon:${ziel}`, ...ergebnis, host: ziel };
+      }
+      default:
+        return fehler(action, 'unbekannte_action', `Unbekannte action "${action}". Erlaubt: ${INTERN_ACTIONS.join(', ')}.`);
+    }
+  } catch (err) {
+    if (err instanceof InternSchalterFehler) return fehler(action, err.code, err.message);
+    if (err instanceof WorkerSteuerungFehler) return fehler(action, err.code, err.message);
+    if (err instanceof DaemonBrueckeFehler) return fehler(action, err.code, err.message);
+    if (err instanceof InternOllamaFehler) return fehler(action, err.code, err.message);
+    if (err instanceof InternModellprofilFehler) return fehler(action, err.code, err.message);
+    if (err instanceof ModellNichtKalibriertError) return fehler(action, err.code, err.message);
+    return fehler(action, 'interner_fehler', err instanceof Error ? err.message : String(err));
+  }
+}
+
+/**
+ * P15-T12: worker_* im eigenen Prozess. Die API ruft das fuer prozess 'api', der lokale Daemon fuer
+ * Befehle aus der Daemon-Bruecke (prozessName 'daemon:<host>'). Wirft WorkerSteuerungFehler.
+ */
+export async function fuehreWorkerActionAus(
+  action: string,
+  a: Record<string, unknown>,
+  agentId?: string,
+  prozessName = 'api',
+): Promise<Record<string, unknown>> {
+  switch (action) {
       case 'worker_status': {
         let schalter: unknown;
         try { schalter = await alleSchalter(); } catch (err) { schalter = { fehler: (err as Error).message }; }
@@ -403,12 +469,13 @@ export async function fuehreInternAus(
         return {
           success: true,
           action,
-          prozess: 'api',
+          prozess: prozessName,
           pause_max_min: workerPauseMaxMin(),
           pausiert: worker.filter((w) => w.zustand === 'pausiert').map((w) => w.name),
           worker,
           pg_schalter: schalter,
-          hinweis: 'Pausen leben im Speicher dieses Prozesses (Neustart beendet sie). pg_schalter = P14-Schalter (schalter_setzen), wirken zusaetzlich.',
+          ...(prozessName === 'api' ? { daemons: daemonUebersicht() } : {}),
+          hinweis: 'Pausen leben im Speicher dieses Prozesses (Neustart beendet sie). pg_schalter = P14-Schalter (schalter_setzen), wirken zusaetzlich. Lokale Daemons: prozess "daemon".',
         };
       }
       case 'worker_pausieren': {
@@ -435,14 +502,6 @@ export async function fuehreInternAus(
         return { success: true, action, ...(await loeseWorkerDurchlaufAus(namen?.[0])) };
       }
       default:
-        return fehler(action, 'unbekannte_action', `Unbekannte action "${action}". Erlaubt: ${INTERN_ACTIONS.join(', ')}.`);
-    }
-  } catch (err) {
-    if (err instanceof InternSchalterFehler) return fehler(action, err.code, err.message);
-    if (err instanceof WorkerSteuerungFehler) return fehler(action, err.code, err.message);
-    if (err instanceof InternOllamaFehler) return fehler(action, err.code, err.message);
-    if (err instanceof InternModellprofilFehler) return fehler(action, err.code, err.message);
-    if (err instanceof ModellNichtKalibriertError) return fehler(action, err.code, err.message);
-    return fehler(action, 'interner_fehler', err instanceof Error ? err.message : String(err));
+        return fehler(action, 'unbekannte_action', `Unbekannte action "${action}".`);
   }
 }

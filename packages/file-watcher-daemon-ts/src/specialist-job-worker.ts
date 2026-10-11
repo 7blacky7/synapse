@@ -19,6 +19,9 @@ import {
   claimPendingSpecialistJob,
   completeSpecialistJob,
   expirePendingSpecialistJobs,
+  registriereWorker,
+  workerPausiert,
+  meldeWorkerArbeit,
   type SpecialistJobRow,
 } from '@synapse/core'
 
@@ -78,11 +81,25 @@ export async function startSpecialistJobWorker(
   })
 
   // Safety-Net alle 10s
+  // P15-T12: pausierbar ueber intern(worker_pausieren, worker specialist_jobs, prozess daemon)
+  registriereWorker({
+    name: 'specialist_jobs',
+    beschreibung: 'Specialist-Jobs aus der Queue claimen und ausfuehren',
+    durchlauf: async () => {
+      const projekte = getActiveProjects()
+      for (const project of projekte) await processJob(project)
+      return { projekte: projekte.length }
+    },
+  })
+
   safetyInterval = setInterval(() => {
     if (stopped) return
-    void expirePendingSpecialistJobs(30).catch((err: unknown) => {
-      console.error(`[specialist-worker] expirePendingSpecialistJobs Fehler:`, (err as Error).message)
-    })
+    // P15-T12: waehrend einer Pause nichts verfallen lassen — die Jobs warten nur.
+    if (!workerPausiert('specialist_jobs')) {
+      void expirePendingSpecialistJobs(30).catch((err: unknown) => {
+        console.error(`[specialist-worker] expirePendingSpecialistJobs Fehler:`, (err as Error).message)
+      })
+    }
     for (const project of getActiveProjects()) {
       void processJob(project).catch((err: unknown) => {
         console.error(`[specialist-worker] safety-net processJob(${project}) Fehler:`, (err as Error).message)
@@ -119,8 +136,11 @@ export async function startSpecialistJobWorker(
 // ── Job-Verarbeitung ──────────────────────────────────────────────────────────
 
 async function processJob(project: string): Promise<void> {
+  // P15-T12: pausiert -> nicht claimen, der Job bleibt pending.
+  if (workerPausiert('specialist_jobs')) return
   const job = await claimPendingSpecialistJob(project, DAEMON_ID)
   if (!job) return
+  meldeWorkerArbeit('specialist_jobs')
 
   console.error(`[specialist-worker] Job ${job.id} (${project}) gestartet: action=${job.action}`)
 
