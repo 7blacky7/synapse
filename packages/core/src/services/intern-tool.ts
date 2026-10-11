@@ -61,7 +61,8 @@ export const INTERN_DEFINITION = {
     'db_sitzungen: pg_stat_activity (lange Abfragen, idle in transaction mit Sperren, Blockaden — nur anzeigen); ' +
     'langsam: langsamste Tool-Aufrufe der letzten Minuten ohne bewusst wartende. ' +
     'nachzug_jetzt: offene Embeddings sofort im Hintergrund-Pool nachholen; ' +
-    'embedding_messen (modell, anzahl, praefix): Testmessung direkt gegen Ollama ohne Schreiben (Ladezeit, Latenz, Passagen/s, Dimension, VRAM). ' +
+    'embedding_messen (modell, anzahl, praefix, num_ctx, num_batch): Testmessung direkt gegen Ollama ohne Schreiben (Ladezeit, Latenz, Passagen/s, Dimension, VRAM); ' +
+    'num_ctx/num_batch ohne Angabe aus EMBEDDING_NUM_CTX/EMBEDDING_NUM_BATCH, sonst Ollama-Standard. ' +
     'neu_einbetten (ausfuehren, arten): baut den Qdrant-Index nach einem Modellwechsel aus PostgreSQL neu auf — ' +
     'veraltete Collections leeren und neu anlegen, embedded_at zuruecksetzen, der Nachzug bettet ein; ohne ausfuehren:true nur Vorschau, ' +
     'erst nach dem Umschalten der Modell-Env. ' +
@@ -91,6 +92,8 @@ export const INTERN_DEFINITION = {
       stufe: { type: 'number', description: 'embed_prioritaet: 1 (zuerst) bis 4 (zuletzt), 0 = Eintrag entfernen (zurueck auf 3)' },
       anzahl: { type: 'number', description: 'embedding_messen: Zahl der Passagen (Standard 20, 1..200)' },
       praefix: { type: 'string', description: 'embedding_messen: Praefix vor jeder Passage, z. B. "passage: " (Leerzeichen zaehlen mit)' },
+      num_ctx: { type: 'number', description: 'embedding_messen: num_ctx fuer Ollama (Standard: EMBEDDING_NUM_CTX der Server-Env, sonst Ollama-Standard des Modells)' },
+      num_batch: { type: 'number', description: 'embedding_messen: num_batch (physischer Batch) fuer Ollama (Standard: EMBEDDING_NUM_BATCH, sonst Ollama-Standard)' },
       keep_alive: { type: ['string', 'number'], description: 'ollama_laden: wie lange geladen bleiben (Ollama-Format, z. B. "30m", "2h", -1 = bis Neustart; Standard 30m)' },
     },
     required: ['action'],
@@ -273,7 +276,19 @@ export async function fuehreInternAus(
         if (anzahl !== undefined && !(anzahl >= 1 && anzahl <= 200)) return fehler(action, 'parameter_ungueltig', 'anzahl: 1 bis 200.');
         // praefix NICHT trimmen: "passage: " endet mit einem Leerzeichen, das zum Format gehoert
         const praefix = typeof a.praefix === 'string' ? a.praefix : undefined;
-        return { success: true, action, ...(await embeddingMessen(modell, Math.floor(anzahl ?? 20), praefix)) };
+        // P15-T5: num_ctx/num_batch wie im Betrieb; ohne Angabe entscheidet embeddingMessen (Env bzw. weglassen)
+        const numCtx = zahl(a, 'num_ctx');
+        const numBatch = zahl(a, 'num_batch');
+        for (const [feld, wert] of [['num_ctx', numCtx], ['num_batch', numBatch]] as const) {
+          if (wert !== undefined && !(Number.isInteger(wert) && wert > 0)) {
+            return fehler(action, 'parameter_ungueltig', feld + ': positive ganze Zahl (Token).');
+          }
+        }
+        return {
+          success: true,
+          action,
+          ...(await embeddingMessen(modell, Math.floor(anzahl ?? 20), praefix, { num_ctx: numCtx, num_batch: numBatch })),
+        };
       }
       default:
         return fehler(action, 'unbekannte_action', `Unbekannte action "${action}". Erlaubt: ${INTERN_ACTIONS.join(', ')}.`);

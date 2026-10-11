@@ -54,6 +54,7 @@ const geladen = new Map([
   ['llama3.2:latest', { size: 3 * GB, size_vram: 3 * GB, context_length: 4096 }],
 ]);
 const aufrufe = [];
+let entladeAbbruch = false; // P15-T5: Entlade-Aufruf bricht ab, Ollama entlaedt trotzdem
 const server = http.createServer((req, res) => {
   let roh = '';
   req.on('data', (c) => { roh += c; });
@@ -73,6 +74,7 @@ const server = http.createServer((req, res) => {
     }
     if (req.url === '/api/embed' || req.url === '/api/generate') {
       aufrufe.push({ pfad: req.url, ...body });
+      if (body.keep_alive === 0 && entladeAbbruch) { geladen.delete(body.model); return req.socket.destroy(); }
       if (body.keep_alive === 0) geladen.delete(body.model);
       else geladen.set(body.model, { size: GB, size_vram: GB, context_length: 2048 });
       return json(200, req.url === '/api/embed' ? { model: body.model, embeddings: [] } : { model: body.model, response: '', done: true });
@@ -88,6 +90,9 @@ process.env.OLLAMA_MODEL = 'qwen3-embedding:8b';
 process.env.QDRANT_URL = 'http://127.0.0.1:9';
 process.env.SYNAPSE_INTERN_TOOL = '1';
 process.env.SYNAPSE_INTERN_CACHE_MS = '0';
+// P15-T5: ohne Env darf embedding_messen KEINE num_ctx/num_batch schicken (kein Code-Default)
+delete process.env.EMBEDDING_NUM_CTX;
+delete process.env.EMBEDDING_NUM_BATCH;
 
 const hier = dirname(fileURLToPath(import.meta.url));
 const dist = join(hier, '..', 'dist');
@@ -151,6 +156,28 @@ try {
   pruefe(r.success && r.geladen === true && r.war_schon_geladen === false && r.art === 'embedding' && typeof r.ladezeit_ms === 'number'
     && a5?.pfad === '/api/embed' && a5.keep_alive === '45m' && a5.model === 'hf.co/zenmagnets/Nemotron-3-Embed-1B-Q4_K_M-GGUF:latest',
     'O5 laden: Nemotron (ohne Tag) per /api/embed keep_alive 45m, geladen, Ladezeit', { r, a5 });
+
+  // O7 (P15-T5): Entlade-Aufruf bricht ab, Modell ist laut /api/ps trotzdem weg -> Erfolg + hinweis_aufruf
+  entladeAbbruch = true;
+  r = await T.fuehreInternAus({ action: 'ollama_entladen', modell: 'hf.co/zenmagnets/Nemotron-3-Embed-1B-Q4_K_M-GGUF' });
+  entladeAbbruch = false;
+  pruefe(r.success && r.entladen === true && typeof r.hinweis_aufruf === 'string' && !r.geladen.some((n) => n.startsWith('hf.co')),
+    'O7 Entlade-Aufruf abgebrochen, Modell aber entladen -> kein ollama_nicht_erreichbar, hinweis_aufruf', r);
+
+  // O8 (P15-T5): embedding_messen mit num_ctx/num_batch -> in jedem /api/embed; ohne Angabe und ohne Env -> keine options
+  const vorO8 = aufrufe.length;
+  r = await T.fuehreInternAus({ action: 'embedding_messen', modell: 'hf.co/zenmagnets/Nemotron-3-Embed-1B-Q4_K_M-GGUF', anzahl: 2, num_ctx: 4096, num_batch: 1024 });
+  const mitOpt = aufrufe.slice(vorO8);
+  pruefe(r.success && mitOpt.length === 4 && mitOpt.every((a) => a.options?.num_ctx === 4096 && a.options?.num_batch === 1024)
+    && r.optionen?.num_ctx === 4096 && r.optionen?.quelle?.num_batch === 'aufruf',
+    'O8 embedding_messen: num_ctx/num_batch in Lade-, Einzel- und Batch-Aufruf, Antwort nennt Quelle', { r, mitOpt });
+  const vorO8b = aufrufe.length;
+  r = await T.fuehreInternAus({ action: 'embedding_messen', modell: 'hf.co/zenmagnets/Nemotron-3-Embed-1B-Q4_K_M-GGUF', anzahl: 2 });
+  const ohneOpt = aufrufe.slice(vorO8b);
+  pruefe(r.success && ohneOpt.length >= 3 && ohneOpt.every((a) => a.options === undefined) && r.optionen?.num_ctx === null,
+    'O8 ohne Angabe und ohne Env: keine options (kein Code-Default)', { r, ohneOpt });
+  r = await T.fuehreInternAus({ action: 'embedding_messen', modell: 'hf.co/zenmagnets/Nemotron-3-Embed-1B-Q4_K_M-GGUF', num_ctx: -5 });
+  pruefe(!r.success && r.error === 'parameter_ungueltig', 'O8 num_ctx -5 -> parameter_ungueltig', r);
 
   // O6
   r = await T.fuehreInternAus({ action: 'ollama_entladen' });

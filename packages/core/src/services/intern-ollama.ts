@@ -161,16 +161,32 @@ export async function ollamaEntladen(modell: string): Promise<Record<string, unk
     };
   }
   const art = await istEmbeddingModell(treffer.name);
-  if (art.ja) await ollama('/api/embed', { body: { model: treffer.name, input: [], keep_alive: 0 }, zeitlimitMs: 30_000 });
-  else await ollama('/api/generate', { body: { model: treffer.name, keep_alive: 0 }, zeitlimitMs: 30_000 });
+  // P15-T5 (Befund B, thought cfa61811): der Entlade-Aufruf wartet, bis Ollama laufende Anfragen des
+  // Modells abgearbeitet hat - bei grossen Modellen unter Last laenger als die frueheren 30 s. Das
+  // Zeitlimit kam als ollama_nicht_erreichbar zurueck, obwohl das Modell danach entladen WAR.
+  // Jetzt: laengeres Zeitlimit, und ein Zeitlimit/Abbruch ist kein Fehler mehr, solange /api/ps
+  // danach zeigt, dass das Modell weg ist. Entscheidend ist der Zustand, nicht die Antwort des Aufrufs.
+  let aufrufHinweis: string | null = null;
+  try {
+    if (art.ja) await ollama('/api/embed', { body: { model: treffer.name, input: [], keep_alive: 0 }, zeitlimitMs: 120_000 });
+    else await ollama('/api/generate', { body: { model: treffer.name, keep_alive: 0 }, zeitlimitMs: 120_000 });
+  } catch (err) {
+    if (!(err instanceof InternOllamaFehler) || err.code !== 'ollama_nicht_erreichbar') throw err;
+    aufrufHinweis = err.message;
+  }
 
-  // Ollama entlaedt asynchron — bis 5 s nachsehen
+  // Ollama entlaedt asynchron — bis 5 s nachsehen, nach einem Zeitlimit bis 30 s
   let nachher = await geladeneModelle();
-  for (let i = 0; i < 10 && nachher.some((m) => gleichesModell(m.name, treffer.name)); i++) {
+  const runden = aufrufHinweis ? 60 : 10;
+  for (let i = 0; i < runden && nachher.some((m) => gleichesModell(m.name, treffer.name)); i++) {
     await sleep(500);
     nachher = await geladeneModelle();
   }
   const weg = !nachher.some((m) => gleichesModell(m.name, treffer.name));
+  if (!weg && aufrufHinweis) {
+    throw new InternOllamaFehler('entladen_zeitlimit',
+      'Der Entlade-Aufruf lief ins Zeitlimit und das Modell ist nach 30 s noch geladen (laufende Anfragen?). Ollama selbst antwortet (/api/ps). Aufruf: ' + aufrufHinweis);
+  }
   const ergebnis: Record<string, unknown> = {
     entladen: weg,
     war_geladen: true,
@@ -179,6 +195,7 @@ export async function ollamaEntladen(modell: string): Promise<Record<string, unk
     geladen: nachher.map((m) => m.name),
   };
   if (!weg) ergebnis.hinweis = 'Ollama meldet das Modell nach 5 s noch als geladen (laufende Anfragen?).';
+  if (weg && aufrufHinweis) ergebnis.hinweis_aufruf = 'Der Entlade-Aufruf lief ins Zeitlimit, das Modell ist laut /api/ps aber entladen.';
   // Das Embedding-Modell des Servers kommt mit der naechsten Anfrage zurueck, solange der Schalter aus ist.
   if (weg && gleichesModell(treffer.name, getConfig().embeddings.ollama.model) && !(await leseSchalter('embedding')).aktiv) {
     ergebnis.hinweis_schalter = 'Das ist das konfigurierte Embedding-Modell und der Schalter embedding ist aus — die naechste Embedding-Anfrage laedt es wieder. Vorher intern(schalter_setzen, name embedding, aktiv true) setzen.';
@@ -232,13 +249,47 @@ const BEISPIELTEXTE = [
   'Beim Entladen eines Modells wird der Grafikspeicher sofort für andere Aufgaben frei.',
 ];
 
+/** P15-T5: Ollama-Optionen fuer embedding_messen, um wie im Betrieb zu messen. */
+export interface MessOptionen {
+  num_ctx?: number;
+  num_batch?: number;
+}
+
+function positiveGanzzahl(wert: unknown): number | undefined {
+  const n = Number(wert);
+  return Number.isInteger(n) && n > 0 ? n : undefined;
+}
+
+/**
+ * num_ctx/num_batch: Angabe im Aufruf, sonst EMBEDDING_NUM_CTX/EMBEDDING_NUM_BATCH der Server-Env, sonst
+ * weggelassen (Ollama nimmt den Standard des Modells). Kein Wert im Code (Regel
+ * regel-keine-festverdrahteten-modellwerte); die Antwort nennt Wert und Quelle.
+ */
+function messOptionen(vorgabe: MessOptionen): { options: Record<string, number>; quelle: Record<string, string> } {
+  const options: Record<string, number> = {};
+  const quelle: Record<string, string> = {};
+  for (const [feld, env] of [['num_ctx', 'EMBEDDING_NUM_CTX'], ['num_batch', 'EMBEDDING_NUM_BATCH']] as const) {
+    const aufruf = positiveGanzzahl(vorgabe[feld]);
+    const ausEnv = positiveGanzzahl(process.env[env]);
+    if (aufruf !== undefined) { options[feld] = aufruf; quelle[feld] = 'aufruf'; }
+    else if (ausEnv !== undefined) { options[feld] = ausEnv; quelle[feld] = env; }
+    else quelle[feld] = 'weggelassen (Ollama-Standard des Modells)';
+  }
+  return { options, quelle };
+}
+
 /**
  * P14-T5: Testmessung eines Embedding-Modells DIREKT gegen Ollama (an der Synapse-Queue vorbei, nichts in
  * PG/Qdrant): Ladezeit (falls nicht geladen), Latenz je Passage (Median/Max/Min), Passagen/s einzeln und als
  * ein Batch, Dimension, danach der ps-Auszug des Modells. Warnt, wenn ein anderes Modell geladen ist oder
  * der Schalter embedding aus ist — beides verfaelscht die Messung. Das Modell bleibt 10 min geladen.
  */
-export async function embeddingMessen(modell: string, anzahl = 20, praefix = ''): Promise<Record<string, unknown>> {
+export async function embeddingMessen(
+  modell: string,
+  anzahl = 20,
+  praefix = '',
+  vorgabe: MessOptionen = {},
+): Promise<Record<string, unknown>> {
   const tags = await ollama<{ models?: TagModell[] }>('/api/tags');
   const installiert = (tags.models ?? []).find((m) => gleichesModell(m.name, modell));
   if (!installiert) {
@@ -248,6 +299,8 @@ export async function embeddingMessen(modell: string, anzahl = 20, praefix = '')
     );
   }
   const name = installiert.name;
+  const { options, quelle } = messOptionen(vorgabe);
+  const ollamaOptionen = Object.keys(options).length > 0 ? { options } : {};
   const warnungen: string[] = [];
   const art = await istEmbeddingModell(name, installiert.details);
   if (!art.ja) warnungen.push(`${name} meldet sich nicht als Embedding-Modell (erkannt ueber ${art.quelle}) — die Messung kann scheitern.`);
@@ -260,7 +313,7 @@ export async function embeddingMessen(modell: string, anzahl = 20, praefix = '')
   let ladezeitMs: number | null = null;
   if (!warSchonGeladen) {
     const t0 = Date.now();
-    await ollama('/api/embed', { body: { model: name, input: [], keep_alive: '10m' }, zeitlimitMs: 180_000 });
+    await ollama('/api/embed', { body: { model: name, input: [], keep_alive: '10m', ...ollamaOptionen }, zeitlimitMs: 180_000 });
     ladezeitMs = Date.now() - t0;
   }
 
@@ -271,13 +324,13 @@ export async function embeddingMessen(modell: string, anzahl = 20, praefix = '')
   const tEinzeln = Date.now();
   for (const text of texte) {
     const t0 = Date.now();
-    const r = await ollama<{ embeddings?: number[][] }>('/api/embed', { body: { model: name, input: text, keep_alive: '10m' }, zeitlimitMs: 120_000 });
+    const r = await ollama<{ embeddings?: number[][] }>('/api/embed', { body: { model: name, input: text, keep_alive: '10m', ...ollamaOptionen }, zeitlimitMs: 120_000 });
     latenzen.push(Date.now() - t0);
     dimension = r.embeddings?.[0]?.length ?? dimension;
   }
   const einzelnMs = Math.max(1, Date.now() - tEinzeln);
   const tBatch = Date.now();
-  const batch = await ollama<{ embeddings?: number[][] }>('/api/embed', { body: { model: name, input: texte, keep_alive: '10m' }, zeitlimitMs: 300_000 });
+  const batch = await ollama<{ embeddings?: number[][] }>('/api/embed', { body: { model: name, input: texte, keep_alive: '10m', ...ollamaOptionen }, zeitlimitMs: 300_000 });
   const batchMs = Math.max(1, Date.now() - tBatch);
   if ((batch.embeddings?.length ?? 0) !== anzahl) warnungen.push('Die Batch-Antwort hat nicht so viele Vektoren wie Eingaben.');
 
@@ -298,6 +351,7 @@ export async function embeddingMessen(modell: string, anzahl = 20, praefix = '')
     modell: name,
     anzahl,
     praefix: praefix || null,
+    optionen: { num_ctx: options.num_ctx ?? null, num_batch: options.num_batch ?? null, quelle },
     war_schon_geladen: warSchonGeladen,
     ladezeit_ms: ladezeitMs,
     dimension,
