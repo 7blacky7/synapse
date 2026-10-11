@@ -836,7 +836,7 @@ export {
   holeTopfKandidaten, ergaenzeTopfEmbeddings,
 } from './services/entscheidungstopf.js';
 export type { TopfEintrag, TopfAufbereitung, TopfEmbedFn, TopfDeps, TopfKandidat, TopfStatus } from './services/entscheidungstopf.js';
-export { durchsichtEntscheidung, fuehreJevTopfActionAus, istJevTopfAction, JEV_TOPF_ACTIONS, JEV_TOPF_BESCHREIBUNG, JEV_TOPF_PARAMETER } from './services/jev-entscheidung.js';
+export { durchsichtEntscheidung, entscheidungsDurchsichtZeile, fuehreJevTopfActionAus, istJevTopfAction, JEV_TOPF_ACTIONS, JEV_TOPF_BESCHREIBUNG, JEV_TOPF_PARAMETER } from './services/jev-entscheidung.js';
 export type { DurchsichtOptionen } from './services/jev-entscheidung.js';
 
 // Agenten-Wissen in der Datenbank (API-Bruecke Schritt 4). Additiv — der

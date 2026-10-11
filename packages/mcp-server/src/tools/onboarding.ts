@@ -252,6 +252,10 @@ export async function checkAgentOnboarding(
     const { erklaerungsFaelleZeile } = await import('@synapse/core');
     const erklZeile = await erklaerungsFaelleZeile({ project, agent_id: agentId, koordinator: isCoordinator });
 
+    // P15 Nachtrunde B (Entscheidungs-Topf E2): offene Durchsicht autonomer Jev-Entscheidungen, nur Koordinator. Wie im REST-Weg.
+    const { entscheidungsDurchsichtZeile } = await import('@synapse/core');
+    const durchsichtZeile = await entscheidungsDurchsichtZeile({ project, koordinator: isCoordinator });
+
     // Plan-Uebersicht (Task 137fabaf): nur aktive/offene Plaene mit Kurz-ID, keine Tasks.
     // Gleiches Feld wie im REST-Weg (routes/mcp.ts).
     const { planUebersicht } = await import('@synapse/core');
@@ -274,6 +278,7 @@ export async function checkAgentOnboarding(
       ...(setupHinweis ? { setup_hinweis: setupHinweis } : {}),
       ...(jevHinweis ? { jev_hinweis: jevHinweis } : {}),
       ...(erklZeile ? { erklaerung_faelle: erklZeile } : {}),
+      ...(durchsichtZeile ? { entscheidungen_durchsicht: durchsichtZeile } : {}),
       rules,
       ...(channelBlock ? { channels: channelBlock } : {}),
       ...(plaene.length > 0 ? { plaene } : {}),

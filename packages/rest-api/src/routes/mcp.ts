@@ -1956,6 +1956,12 @@ async function attachRestOnboarding(
     const erklZeile = await erklaerungsFaelleZeile({ project, agent_id: agentId, koordinator: role === 'koordinator' });
     const erklBlock = erklZeile ? { erklaerung_faelle: erklZeile } : {};
 
+    // P15 Nachtrunde B (Entscheidungs-Topf E2): offene Durchsicht autonomer Jev-Entscheidungen, nur Koordinator,
+    // als EINE Zeile, sonst nichts. Wie im lokalen Weg (mcp-server tools/onboarding.ts).
+    const { entscheidungsDurchsichtZeile } = await import('@synapse/core');
+    const durchsichtZeile = await entscheidungsDurchsichtZeile({ project, koordinator: role === 'koordinator' });
+    const durchsichtBlock = durchsichtZeile ? { entscheidungen_durchsicht: durchsichtZeile } : {};
+
     // Plan-Uebersicht (Task 137fabaf): nur aktive/offene Plaene mit Kurz-ID, keine Tasks.
     const { planUebersicht } = await import('@synapse/core');
     const plaene = await planUebersicht(project).catch(() => []);
@@ -1964,7 +1970,7 @@ async function attachRestOnboarding(
     if (rules.length === 0) {
       return {
         ...result,
-        agentOnboarding: { isFirstVisit: true, ...jevBlock, ...erklBlock, ...(channelBlock ? { channels: channelBlock } : {}), ...planBlock },
+        agentOnboarding: { isFirstVisit: true, ...jevBlock, ...erklBlock, ...durchsichtBlock, ...(channelBlock ? { channels: channelBlock } : {}), ...planBlock },
       };
     }
 
@@ -1986,6 +1992,7 @@ async function attachRestOnboarding(
         ...(abrufHinweis ? { volltext_hinweis: abrufHinweis } : {}),
         ...jevBlock,
         ...erklBlock,
+        ...durchsichtBlock,
         rules,
         ...(channelBlock ? { channels: channelBlock } : {}),
         ...planBlock,

@@ -936,6 +936,29 @@ export async function ueberstimmeEntscheidung(
 // P15 E1: Durchsicht + Topf-Actions am Tool jev
 // ---------------------------------------------------------------------------
 
+/**
+ * P15 Nachtrunde B (Entscheidungs-Topf E2, ohne Schema): Onboarding-Zeile fuer den Koordinator
+ * "N autonome Entscheidungen zur Durchsicht (davon M ohne Praezedenz), jev(durchsicht)". Dieselbe Menge wie
+ * jev(durchsicht) ohne urteil: entschieden, ohne Durchsicht, letzte 30 Tage. Andere Rollen, 0 offene oder
+ * fehlende Spalten -> undefined. Wirft nie (Onboarding darf nie brechen). Vorbild: erklaerungsFaelleZeile.
+ */
+export async function entscheidungsDurchsichtZeile(o: { project: string; koordinator: boolean }): Promise<string | undefined> {
+  try {
+    if (!o.project || !o.koordinator) return undefined;
+    const { rows } = await getPool().query<{ n: number; ohne: number }>(
+      `SELECT count(*)::int AS n, count(*) FILTER (WHERE ohne_praezedenz IS TRUE)::int AS ohne
+         FROM jev_entscheidungen
+        WHERE project = $1 AND entschieden = true AND durchsicht IS NULL AND zeit >= NOW() - INTERVAL '30 days'`,
+      [o.project],
+    );
+    const r = rows[0];
+    if (!r || r.n === 0) return undefined;
+    return `${r.n} autonome Entscheidungen zur Durchsicht (davon ${r.ohne} ohne Praezedenz), jev(durchsicht)`;
+  } catch {
+    return undefined;
+  }
+}
+
 export interface DurchsichtOptionen {
   agent_id?: string;
   /** Protokoll-Nummer; ohne id und urteil: Liste der offenen Durchsicht */
