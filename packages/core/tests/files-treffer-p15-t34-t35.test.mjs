@@ -98,6 +98,28 @@ try {
     await batch.cancelBatch?.({ plan_id: p.plan_id, agent_id: 'tr-b' }).catch(() => {});
   }
 
+  // Stand nach B1: z1, z2, NEU-a, NEU-b, z3..z20, X, z21..z30 (z21 = Zeile 24, z25 = Zeile 28).
+  // B2: Zeilen-Op auf einer Zeile, die ein search_replace ersetzt hat -> klarer Fehler, nichts geraten.
+  const p2 = await batch.planBatch({
+    project: PROJECT, agent_id: 'tr-b', ops: [
+      { file_path: 'src/b1.txt', action: 'search_replace', search: 'z25\n', replace: 'Z25neu\n' },
+      { file_path: 'src/b1.txt', action: 'replace_lines', line_start: 28, line_end: 28, content: 'R25' },
+    ],
+  }).catch((e) => ({ success: false, error: e?.message ?? String(e), failed_ops: e?.failed_ops, plan_id: e?.plan_id }));
+  const f2 = JSON.stringify(p2.failed_ops ?? p2.error ?? '');
+  pruefe(p2.failed_ops?.length === 1 && /Op #0 \(search_replace\)/.test(f2) && /ueberschneiden/.test(f2), 'B2: Ueberschneidung mit search_replace -> Fehler nennt Op #0', p2);
+  if (p2.plan_id) await batch.cancelBatch?.({ plan_id: p2.plan_id, agent_id: 'tr-b' })?.catch?.(() => {});
+
+  // B3 Kontrolle: Text-Op UNTERHALB der Zeilen-Op verschiebt nichts.
+  const p3 = await batch.planBatch({
+    project: PROJECT, agent_id: 'tr-b', ops: [
+      { file_path: 'src/b1.txt', action: 'search_replace', search: 'z28\n', replace: 'z28\nU1\nU2\n' },
+      { file_path: 'src/b1.txt', action: 'replace_lines', line_start: 24, line_end: 24, anchor_contains: 'z21', content: 'R' },
+    ],
+  }).catch((e) => ({ success: false, error: e?.message ?? String(e), failed_ops: e?.failed_ops, plan_id: e?.plan_id }));
+  pruefe(p3.success !== false && !(p3.failed_ops?.length), 'B3: Text-Op unterhalb verschiebt die Zeilen-Op nicht (Zeile 24 = z21 nach B1)', p3.failed_ops ?? p3.error);
+  if (p3.plan_id) await batch.cancelBatch?.({ plan_id: p3.plan_id, agent_id: 'tr-b' })?.catch?.(() => {});
+
   // C1
   await aufraeumen();
   const cfg = res.getReservationTtlConfig();

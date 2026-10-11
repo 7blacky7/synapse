@@ -1009,6 +1009,56 @@ function applyOpMitZeilen(
   return { ...result, zeilen, bereiche };
 }
 
+/** Text-Ops, deren Zeilen-Spleiss auto-Zeilen-Ops derselben Datei verschiebt (P15-T34-Nebenbefund). */
+const VERSCHIEBENDE_TEXT_OPS = new Set<FileBatchOpAction>(['search_replace', 'search_replace_batch']);
+
+function istAutoZeilenOp(op: FileBatchOp): boolean {
+  return (op.action === 'insert_after' || op.action === 'replace_lines' || op.action === 'delete_lines')
+    && (op.shift_mode ?? 'auto') === 'auto';
+}
+
+/**
+ * P15-T34-Nebenbefund (thought 008bc782, Plan 24851): auto-Zeilen-Ops meinen den Stand bei plan(),
+ * laufen aber NACH den search_replace-Ops derselben Datei. Vorher wurden ihre Zeilen nicht
+ * umgerechnet: fuegte ein search_replace oberhalb 8 Zeilen ein, traf insert_after(1728) die Zeile
+ * 1720. Jetzt: Zeilen durch die Spleisse der vorher angewendeten Text-Ops schieben (wie
+ * spliceZuordnung). Liegt eine Zielzeile in einem Bereich, den eine Text-Op ersetzt hat, oder hat
+ * eine Text-Op INNERHALB des Zielbereichs eingefuegt -> Fehler, nichts geraten.
+ */
+function zeilenOpUmrechnen(
+  op: FileBatchOp,
+  vorher: ReadonlyArray<{ splice: ZeilenSplice; index: number; action: FileBatchOpAction }>,
+): FileBatchOp {
+  const durch = (x: number): number => {
+    let pos = x - 1;
+    for (const { splice: s, index, action } of vorher) {
+      if (pos < s.start) continue;
+      if (pos >= s.start + s.weg) { pos += s.neu - s.weg; continue; }
+      throw new Error(
+        `${op.action}: Zeile ${x} (Stand bei plan()) wurde von Op #${index} (${action}) in derselben Datei ersetzt — ` +
+        `Zeilen-Op und Text-Op ueberschneiden sich. Zeilen-Op an den neuen Text anpassen (Anker) oder beide als eine Op formulieren.`,
+      );
+    }
+    return pos + 1;
+  };
+  if (op.action === 'insert_after') {
+    const nach = op.after_line ?? 0;
+    return nach <= 0 ? op : { ...op, after_line: durch(nach) };
+  }
+  const von = op.line_start ?? 1;
+  const bis = op.line_end ?? von;
+  const neuVon = durch(von);
+  const neuBis = durch(bis);
+  if (neuBis - neuVon !== bis - von) {
+    const quelle = vorher.find(({ splice: s }) => s.start > neuVon - 1 && s.start <= neuBis - 1) ?? vorher[vorher.length - 1];
+    throw new Error(
+      `${op.action}: im Bereich ${von}-${bis} (Stand bei plan()) hat Op #${quelle.index} (${quelle.action}) in derselben Datei ` +
+      `Zeilen eingefuegt oder entfernt — Zeilen-Op und Text-Op ueberschneiden sich. Zeilen-Op an den neuen Text anpassen oder beide als eine Op formulieren.`,
+    );
+  }
+  return { ...op, line_start: neuVon, line_end: neuBis };
+}
+
 /** Ergebnis von wendeOpsAn. */
 interface Angewendet {
   /** Vorschau je Op in Original-Reihenfolge (Luecken nur nach Abbruch). */
@@ -1049,14 +1099,26 @@ function wendeOpsAn(
   const fehler: Array<{ index: number; message: string }> = [];
   const seen = new Set<string>();
   let seq = 0;
+  // P15-T34-Nebenbefund: Dateien mit auto-Zeilen-Ops und die Spleisse ihrer bereits angewendeten Text-Ops.
+  const autoZeilenDateien = new Set(ops.filter(istAutoZeilenOp).map((op) => op.file_path));
+  const textSpleisse = new Map<string, Array<{ splice: ZeilenSplice; index: number; action: FileBatchOpAction }>>();
   for (const { op, originalIndex } of applyPlan) {
     const first = !seen.has(op.file_path);
     seen.add(op.file_path);
     const mitZeilen = typeof opts.zeilen === 'function' ? opts.zeilen(op.file_path) : opts.zeilen;
+    const spleissMerken = VERSCHIEBENDE_TEXT_OPS.has(op.action) && autoZeilenDateien.has(op.file_path);
     try {
-      const r: { context: string; sizeBefore: number; sizeAfter: number; zeilen?: ZeilenSplice; bereiche?: Bereich[] } = mitZeilen
-        ? applyOpMitZeilen(buffers, op, first, seq++, opts.fein === true)
-        : applyOpInMemory(buffers, op, first);
+      const vorherText = istAutoZeilenOp(op) ? textSpleisse.get(op.file_path) : undefined;
+      const wirkOp = vorherText && vorherText.length > 0 ? zeilenOpUmrechnen(op, vorherText) : op;
+      const r: { context: string; sizeBefore: number; sizeAfter: number; zeilen?: ZeilenSplice; bereiche?: Bereich[] } = mitZeilen || spleissMerken
+        ? applyOpMitZeilen(buffers, wirkOp, first, seq++, mitZeilen && opts.fein === true)
+        : applyOpInMemory(buffers, wirkOp, first);
+      if (spleissMerken && r.zeilen) {
+        const liste = textSpleisse.get(op.file_path) ?? [];
+        liste.push({ splice: r.zeilen, index: originalIndex, action: op.action });
+        textSpleisse.set(op.file_path, liste);
+      }
+      if (!mitZeilen) { delete r.zeilen; delete r.bereiche; }
       previews[originalIndex] = {
         index: originalIndex,
         file_path: op.file_path,
