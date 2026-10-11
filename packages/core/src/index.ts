@@ -704,6 +704,15 @@ export type { WrapperStatusRow, HeartbeatKonfiguration, HeartbeatUebersicht } fr
 
 // Skills (EXPERIMENTAL — Qdrant Skill-DB access)
 export { searchSkills, listSkills, getSkillSection, getSkillFull } from './services/skills.js';
+// P12-T13 Teil 2: Skills PG-first schreiben
+export {
+  speichereSkillSection,
+  loescheSkillSection,
+  loescheSkill,
+  ersetzeSkill,
+  embeddeSkillSectionNach,
+} from './services/skills.js';
+export type { SkillSectionEingabe, SkillSchreibErgebnis, SkillSicht, SkillScope } from './services/skills.js';
 
 // Free-Model-Pool: Katalog externer API-Modelle (vor allem kostenloser).
 // Die Modelllisten kommen live von den Anbietern; gepflegt wird nur die Endpunkt-Registry.

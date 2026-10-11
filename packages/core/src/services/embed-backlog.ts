@@ -19,6 +19,7 @@ import { embeddeMemoryNach } from './memory.js';
 import { embeddeThoughtNach } from './thoughts.js';
 import { embeddeProposalNach } from './proposals.js';
 import { embeddeTechDocNach } from './tech-docs.js';
+import { embeddeSkillSectionNach } from './skills.js';
 
 /**
  * Welche Tabellen der Nachzug bedient, und womit.
@@ -33,12 +34,17 @@ import { embeddeTechDocNach } from './tech-docs.js';
  * tech_docs (P12-T16): Sortierspalte indexed_at; project ist dort NULL fuer globale
  * Context7-Zeilen. embeddeTechDocNach waehlt die Ziel-Collection selbst aus der PG-Zeile
  * (project ? project_<p>_docs : tech_docs_cache), der uebergebene project-Wert ist egal.
+ *
+ * skill_sections (P12-T13): Schluessel heisst punkt_id (= Qdrant-Punkt-ID), Zeitspalte
+ * aktualisiert_am. Der importierte Bestand wird per skills-nach-pg.mjs --bestand-markieren als
+ * eingebettet markiert, sonst bettete der Backlog alle Altzeilen erneut ein.
  */
 const TABELLEN = [
-  { name: 'memories', sortSpalte: 'updated_at', nachtrag: embeddeMemoryNach },
-  { name: 'thoughts', sortSpalte: 'timestamp', nachtrag: embeddeThoughtNach },
-  { name: 'proposals', sortSpalte: 'updated_at', nachtrag: embeddeProposalNach },
-  { name: 'tech_docs', sortSpalte: 'indexed_at', nachtrag: embeddeTechDocNach },
+  { name: 'memories', sortSpalte: 'updated_at', idSpalte: 'id', nachtrag: embeddeMemoryNach },
+  { name: 'thoughts', sortSpalte: 'timestamp', idSpalte: 'id', nachtrag: embeddeThoughtNach },
+  { name: 'proposals', sortSpalte: 'updated_at', idSpalte: 'id', nachtrag: embeddeProposalNach },
+  { name: 'tech_docs', sortSpalte: 'indexed_at', idSpalte: 'id', nachtrag: embeddeTechDocNach },
+  { name: 'skill_sections', sortSpalte: 'aktualisiert_am', idSpalte: 'punkt_id', nachtrag: embeddeSkillSectionNach },
 ] as const;
 
 /**
@@ -91,7 +97,7 @@ export async function embeddeOffeneEintraege(
     // nicht dauerhaft hinter neu hinzukommenden zurueckstehen. Sortierspalte je Tabelle,
     // siehe Kommentar bei TABELLEN.
     const { rows } = await pool.query(
-      `SELECT id, project
+      `SELECT ${tabelle.idSpalte}::text AS id, project
          FROM ${tabelle.name}
         WHERE embedded_at IS NULL
           AND ($1::text IS NULL OR project = $1)
@@ -141,7 +147,7 @@ export async function zaehleOffeneEmbeddings(project?: string): Promise<Record<s
   // thoughts und proposals tragen die Spalte bereits, ihre Schreibpfade sind aber noch
   // blockierend — dort kann derzeit gar kein Rueckstand entstehen. Sie werden trotzdem
   // gezaehlt, damit die Umstellung sofort sichtbar wird, sobald sie erfolgt.
-  for (const tabelle of ['memories', 'thoughts', 'proposals', 'tech_docs']) {
+  for (const tabelle of ['memories', 'thoughts', 'proposals', 'tech_docs', 'skill_sections']) {
     const { rows } = await pool.query(
       `SELECT count(*)::int AS n FROM ${tabelle}
         WHERE embedded_at IS NULL AND ($1::text IS NULL OR project = $1)`,

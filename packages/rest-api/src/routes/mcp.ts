@@ -1326,7 +1326,24 @@ export const MCP_TOOLS = [
     inputSchema: {
       type: 'object',
       properties: {
-        action: { type: 'string', enum: ['search', 'list', 'get_section', 'get_full'], description: 'search | list | get_section | get_full' },
+        action: { type: 'string', enum: ['search', 'list', 'get_section', 'get_full', 'add_section', 'update_section', 'delete_section', 'delete_skill', 'replace_skill'], description: 'search | list | get_section | get_full | add_section (neue Section, Fehler wenn vorhanden) | update_section (vorhandene aendern, Fehler wenn nicht da) | delete_section | delete_skill | replace_skill (ganzen Skill durch sections[] ersetzen). Schreiben: PostgreSQL zuerst (Quelle der Wahrheit), der Vektor folgt im Hintergrund (embeddings_pending).' },
+        content: { type: 'string', description: 'add_section/update_section: Inhalt der Section (Pflicht)' },
+        tags: { type: 'array', items: { type: 'string' }, description: 'add_section/update_section: Tags (optional; auch als Komma-Liste)' },
+        scope: { type: 'string', enum: ['global', 'project', 'agent'], description: 'add/update/delete_section: Sichtbarkeit (Default global); project braucht skill_project, agent braucht skill_project + skill_agent' },
+        skill_project: { type: 'string', description: 'add/update/delete_section: Projekt bei scope project/agent' },
+        skill_agent: { type: 'string', description: 'add/update/delete_section: Agent bei scope agent' },
+        sections: {
+          type: 'array',
+          description: 'replace_skill: alle Sections des Skills [{ section, content, tags?, scope?, project?, agent? }]; nicht genannte werden geloescht',
+          items: {
+            type: 'object',
+            properties: {
+              section: { type: 'string' }, content: { type: 'string' }, tags: { type: 'array', items: { type: 'string' } },
+              scope: { type: 'string', enum: ['global', 'project', 'agent'] }, project: { type: 'string' }, agent: { type: 'string' },
+            },
+            required: ['section', 'content'],
+          },
+        },
         query: { type: 'string', description: 'search: Suchbegriff (semantisch)' },
         skill_name: { type: 'string', description: 'search (optional, filter): nur innerhalb 1 Skills semantisch suchen. list (optional, filter): nur Sections eines Skills. get_section/get_full: Pflicht.' },
         section: { type: 'string', description: 'get_section: Section-Name (Pflicht)' },
@@ -5746,8 +5763,25 @@ async function handleToolCall(
     }
 
     case 'skills': {
-      const { searchSkills, listSkills, getSkillSection, getSkillFull, holeOffeneSkillVorschlaege } =
-        await import('@synapse/core');
+      const {
+        searchSkills, listSkills, getSkillSection, getSkillFull, holeOffeneSkillVorschlaege,
+        speichereSkillSection, loescheSkillSection, loescheSkill, ersetzeSkill,
+      } = await import('@synapse/core');
+      // P12-T13: Tags als Array oder Komma-Liste
+      const tagsAus = (wert: unknown): string[] | undefined =>
+        Array.isArray(wert) ? wert.map(String)
+          : typeof wert === 'string' ? wert.split(',').map((t) => t.trim()).filter(Boolean)
+          : undefined;
+      const scopeAus = (wert: unknown): 'global' | 'project' | 'agent' | undefined =>
+        wert === 'global' || wert === 'project' || wert === 'agent' ? wert : undefined;
+      const EMBED_HINWEIS = 'In PostgreSQL gespeichert und sofort ueber list/get_section/get_full lesbar. ' +
+        'Die semantische Suche (search) spiegelt die Aenderung erst, wenn der Vektor nachgereicht ist.';
+      // Erwartete Schreibfehler (Section schon da / fehlt) als klare Antwort statt Exception
+      const alsSchreibfehler = (fehler: unknown) => {
+        const f = fehler as { name?: string; code?: string; message?: string };
+        if (f?.name === 'SkillSchreibFehler') return { success: false, error: f.code, message: f.message };
+        throw fehler;
+      };
       // Wer das Skill-Tool ueberhaupt anfasst, interessiert sich fuer Skills. Genau dann ist
       // der Rest des Vorrats nuetzlich: alles ab dem vierten Treffer bliebe sonst fuer immer
       // verborgen, weil jeder Skill einem Agenten nur EINMAL gezeigt wird.
@@ -5792,6 +5826,55 @@ async function handleToolCall(
             sections,
             ...(await naechsteVorschlaege()),
           };
+        }
+        case 'add_section':
+        case 'update_section': {
+          try {
+            const r = await speichereSkillSection({
+              skill_name: reqStr(args, 'skill_name'),
+              section: reqStr(args, 'section'),
+              content: reqStr(args, 'content'),
+              tags: tagsAus((args as Record<string, unknown>).tags),
+              scope: scopeAus(str(args, 'scope')),
+              project: str(args, 'skill_project') ?? null,
+              agent: str(args, 'skill_agent') ?? null,
+            }, { modus: action === 'add_section' ? 'anlegen' : 'aendern' });
+            return { success: true, ...r, ...(r.embeddings_pending ? { embeddings_hint: EMBED_HINWEIS } : {}), ...(await naechsteVorschlaege()) };
+          } catch (fehler) {
+            return alsSchreibfehler(fehler);
+          }
+        }
+        case 'delete_section': {
+          const r = await loescheSkillSection(reqStr(args, 'skill_name'), reqStr(args, 'section'), {
+            scope: scopeAus(str(args, 'scope')),
+            project: str(args, 'skill_project') ?? null,
+            agent: str(args, 'skill_agent') ?? null,
+          });
+          if (r.geloescht === 0) return { success: false, error: 'not_found', message: 'skill_name + section (+ Sicht) nicht gefunden' };
+          return { success: true, ...r };
+        }
+        case 'delete_skill': {
+          const r = await loescheSkill(reqStr(args, 'skill_name'));
+          return { success: true, ...r };
+        }
+        case 'replace_skill': {
+          const roh = (args as Record<string, unknown>).sections;
+          if (!Array.isArray(roh) || roh.length === 0) {
+            return { success: false, error: 'invalid_sections', message: 'sections[] muss mindestens eine Section enthalten (zum Entfernen delete_skill)' };
+          }
+          const sections = roh.map((s) => {
+            const o = (s ?? {}) as Record<string, unknown>;
+            return {
+              section: String(o.section ?? ''),
+              content: String(o.content ?? ''),
+              tags: tagsAus(o.tags),
+              scope: scopeAus(o.scope),
+              project: typeof o.project === 'string' ? o.project : null,
+              agent: typeof o.agent === 'string' ? o.agent : null,
+            };
+          });
+          const r = await ersetzeSkill(reqStr(args, 'skill_name'), sections);
+          return { success: true, ...r, ...(r.embeddings_pending ? { embeddings_hint: EMBED_HINWEIS + ' Massenweg: der Backlog bettet gedrosselt nach.' } : {}) };
         }
         default:
           return { success: false, error: `Unbekannte skills action: "${action}"` };

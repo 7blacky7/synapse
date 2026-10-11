@@ -17,12 +17,23 @@
  *   node packages/core/scripts/skills-nach-pg.mjs                (Trockenlauf)
  *   node packages/core/scripts/skills-nach-pg.mjs --ausfuehren   (schreibt)
  *   Optional: SKILL_QDRANT_URL (Default http://192.168.50.65:6333), SKILL_COLLECTION (Default skills)
+ *
+ * BESTAND MARKIEREN (P12-T13 Teil 2, VOR dem Deploy des Backlogs mit skill_sections ausfuehren):
+ *   node packages/core/scripts/skills-nach-pg.mjs --bestand-markieren               (Trockenlauf)
+ *   node packages/core/scripts/skills-nach-pg.mjs --bestand-markieren --ausfuehren  (schreibt)
+ *   Setzt fuer importierte Zeilen, deren Punkt in Qdrant EXISTIERT und die noch embedded_at NULL
+ *   haben: embedded_at = jetzt, embedding_modell = SKILL_BESTAND_KENNUNG (Default die
+ *   Produktions-Kennung wie in embedding_collections/payload.embedding_modell, Stand 11.10.2026).
+ *   Grund: qwen hat keinen Dokument-Praefix, die vorhandenen Vektoren passen zur Query-Seite;
+ *   neu eingebettet wird erst mit P12-T12. Idempotent.
  */
 import pg from 'pg';
 
 const QDRANT = (process.env.SKILL_QDRANT_URL || process.env.QDRANT_URL || 'http://192.168.50.65:6333').replace(/\/$/, '');
 const COLLECTION = process.env.SKILL_COLLECTION || 'skills';
 const AUSFUEHREN = process.argv.includes('--ausfuehren');
+const MARKIEREN = process.argv.includes('--bestand-markieren');
+const KENNUNG = process.env.SKILL_BESTAND_KENNUNG || 'ollama:qwen3-embedding:8b|digest:64b933495768|dim:3072|ohne-dokpraefix';
 
 const DDL = `
 CREATE TABLE IF NOT EXISTS skill_sections (
@@ -75,6 +86,31 @@ function alsZeile(p) {
 }
 
 const punkte = await alleSkillPunkte();
+
+if (MARKIEREN) {
+  const ids = punkte.map((p) => p.id).filter((id) => typeof id === 'number');
+  const client = new pg.Client({ connectionString: process.env.DATABASE_URL });
+  await client.connect();
+  try {
+    const offen = (await client.query(
+      'SELECT count(*)::int AS n FROM skill_sections WHERE embedded_at IS NULL AND punkt_id = ANY($1::bigint[])', [ids],
+    )).rows[0].n;
+    console.log(`Qdrant: ${ids.length} Punkte; davon in skill_sections noch ohne embedded_at: ${offen} (Kennung: ${KENNUNG})`);
+    if (!AUSFUEHREN) {
+      console.log('TROCKENLAUF - nichts geschrieben. Mit --ausfuehren markieren.');
+    } else {
+      const r = await client.query(
+        `UPDATE skill_sections SET embedded_at = NOW(), embedding_modell = $2
+          WHERE embedded_at IS NULL AND punkt_id = ANY($1::bigint[])`,
+        [ids, KENNUNG],
+      );
+      console.log(`MARKIERT: ${r.rowCount} Zeilen als eingebettet (${KENNUNG}).`);
+    }
+  } finally {
+    await client.end();
+  }
+  process.exit(0);
+}
 const zeilen = punkte.map(alsZeile);
 const skills = new Set(zeilen.map(z => z[1]));
 console.log(`Qdrant '${COLLECTION}': ${punkte.length} Sections, ${skills.size} Skills`);
