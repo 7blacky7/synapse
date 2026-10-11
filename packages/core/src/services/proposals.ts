@@ -40,6 +40,7 @@ import { embed } from '../embeddings/index.js';
 import type { EmbedOptions } from '../embeddings/index.js';
 import { getPool, getHintergrundPool } from '../db/client.js';
 import { embeddingNachtragAngehalten } from './intern-schalter.js';
+import { betteEinzelnEin, type NachzugQuelle } from './embed-nachzug.js';
 import { ensureCollection } from '../qdrant/collections.js';
 import {
   insertVector,
@@ -490,42 +491,56 @@ export async function embeddeProposalNach(
   id: string,
   embedOptions: EmbedOptions = {},
 ): Promise<void> {
-  // P5-T15: Nachtraege sind Hintergrundarbeit -> eigener Pool, nie die Verbindungen der Tool-Anfragen
   // P5-T15/P14-T2: der Nachtrag ist Hintergrundarbeit (die KI hat ihre Antwort schon), ausser ein Aufrufer
   // wartet bewusst und setzt priority selbst. Schalter embedding an -> Hintergrund-Nachtrag auslassen;
   // embedded_at bleibt NULL, der Backlog holt nach der Freigabe nach.
   embedOptions = { ...embedOptions, priority: embedOptions.priority ?? 'background' };
   if (embedOptions.priority === 'background' && await embeddingNachtragAngehalten()) return;
-  const pool = getHintergrundPool();
-  const { rows } = await pool.query(
-    `SELECT file_path, suggested_content, description, author, status, tags, created_at, updated_at
-       FROM proposals WHERE id = $1 AND project = $2`,
-    [id, project]
-  );
-  if (rows.length === 0) return; // zwischenzeitlich geloescht
-  const row = rows[0];
-
-  const COLLECTION_NAME = getCollectionName(project);
-  await ensureCollection(COLLECTION_NAME);
-
-  // Derselbe Text wie im Schreibpfad: description + file_path. Wer das hier aendert, ohne es
-  // dort zu aendern, bekommt zwei verschiedene Vektoren fuer denselben Eintrag — je nachdem,
-  // ob er beim Schreiben oder ueber den Backlog entstanden ist.
-  const vector = await embed(`${row.description} ${row.file_path}`, embedOptions);
-  const payload: ProposalPayload = {
-    project,
-    file_path: row.file_path,
-    suggested_content: row.suggested_content,
-    description: row.description,
-    author: row.author,
-    status: row.status,
-    tags: row.tags ?? [],
-    created_at: new Date(row.created_at).toISOString(),
-    updated_at: new Date(row.updated_at).toISOString(),
-  };
-
-  await deleteVector(COLLECTION_NAME, id).catch(() => { /* existierte noch nicht */ });
-  await insertVector(COLLECTION_NAME, vector, payload, id);
-
-  await pool.query('UPDATE proposals SET embedded_at = NOW() WHERE id = $1', [id]);
+  // P15-T4: Lesen, Text und Payload teilt sich der Einzelweg mit dem Stapel (proposalNachzug).
+  await betteEinzelnEin(proposalNachzug, id, embedOptions, (p) => p.project === project);
 }
+
+/** Inhaltsstand eines Proposals: updated_at. */
+const PROPOSAL_STAND = 't.updated_at::text';
+
+/**
+ * P15-T4: Lesen, Text und Payload eines Proposals — EINZIGE Stelle fuer Einzel-Nachtrag und Stapel
+ * (embed-nachzug.ts). Inhalt frisch aus PG (Hintergrund-Pool, P5-T15).
+ */
+export const proposalNachzug: NachzugQuelle = {
+  tabelle: 'proposals',
+  idSpalte: 'id',
+  idTyp: 'text',
+  standSql: PROPOSAL_STAND,
+  async lese(ids) {
+    const { rows } = await getHintergrundPool().query(
+      `SELECT t.id, t.project, t.file_path, t.suggested_content, t.description, t.author, t.status, t.tags,
+              t.created_at, t.updated_at, ${PROPOSAL_STAND} AS stand
+         FROM proposals t WHERE t.id = ANY($1::text[])`,
+      [ids]
+    );
+    return rows.map((row) => {
+      const payload: ProposalPayload = {
+        project: row.project,
+        file_path: row.file_path,
+        suggested_content: row.suggested_content,
+        description: row.description,
+        author: row.author,
+        status: row.status,
+        tags: row.tags ?? [],
+        created_at: new Date(row.created_at).toISOString(),
+        updated_at: new Date(row.updated_at).toISOString(),
+      };
+      return {
+        id: row.id,
+        project: row.project,
+        collection: getCollectionName(row.project),
+        // Derselbe Text wie im Schreibpfad: description + file_path. Wer das hier aendert, ohne es
+        // dort zu aendern, bekommt zwei verschiedene Vektoren fuer denselben Eintrag.
+        text: `${row.description} ${row.file_path}`,
+        payload: { ...payload },
+        stand: row.stand,
+      };
+    });
+  },
+};

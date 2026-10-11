@@ -55,6 +55,7 @@ import { embed, embeddingModellKennung, type EmbedOptions } from '../embeddings/
 import { ensureCollection } from '../qdrant/collections.js';
 import { getPool, getHintergrundPool } from '../db/client.js';
 import { embeddingNachtragAngehalten } from './intern-schalter.js';
+import { betteEinzelnEin, type NachzugQuelle } from './embed-nachzug.js';
 
 const SKILL_QDRANT_URL =
   process.env.SKILL_QDRANT_URL || process.env.QDRANT_URL || 'http://localhost:6333';
@@ -773,61 +774,76 @@ export async function embeddeSkillSectionNach(
   id: string,
   embedOptions: EmbedOptions = {},
 ): Promise<void> {
-  // P5-T15: Nachtraege sind Hintergrundarbeit -> eigener Pool, nie die Verbindungen der Tool-Anfragen
   // P5-T15/P14-T2: der Nachtrag ist Hintergrundarbeit (die KI hat ihre Antwort schon), ausser ein Aufrufer
   // wartet bewusst und setzt priority selbst. Schalter embedding an -> Hintergrund-Nachtrag auslassen;
   // embedded_at bleibt NULL, der Backlog holt nach der Freigabe nach.
   embedOptions = { ...embedOptions, priority: embedOptions.priority ?? 'background' };
   if (embedOptions.priority === 'background' && await embeddingNachtragAngehalten()) return;
-  const pool = getHintergrundPool();
-  const row = (await pool.query<{
-    punkt_id: string; skill_name: string; section: string; content: string; tags: string[] | null;
-    scope: SkillScope | null; project: string | null; agent: string | null; content_hash: string | null;
-    aktualisiert_am: Date;
-  }>(
-    `SELECT punkt_id::text AS punkt_id, skill_name, section, content, tags, scope, project, agent,
-            content_hash, aktualisiert_am
-       FROM skill_sections WHERE punkt_id = $1::bigint`,
-    [id],
-  )).rows[0];
-  if (!row) return; // zwischenzeitlich geloescht
-
-  const vector = await embed(row.content, embedOptions);
-  const modell = embeddingModellKennung();
-  const punkt = {
-    id: Number(row.punkt_id),
-    vector,
-    payload: {
-      skill_name: row.skill_name,
-      section: row.section,
-      content: row.content,
-      tags: row.tags ?? [],
-      ...(row.scope ? { scope: row.scope } : {}),
-      project: row.project,
-      agent: row.agent,
-      updated_at: new Date(row.aktualisiert_am).toISOString(),
-      content_hash: row.content_hash,
-      embedding_modell: modell,
-    },
-  };
-  const upsert = () => fetch(`${SKILL_QDRANT_URL}/collections/${SKILL_COLLECTION}/points?wait=true`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ points: [punkt] }),
-  });
-  let res = await upsert();
-  // P12-T12: nach intern(neu_einbetten) oder auf einer frischen Qdrant fehlt die Collection -> anlegen
-  // und einmal wiederholen. Nur wenn die Skills in der Synapse-Qdrant liegen (ensureCollection spricht
-  // QDRANT_URL an).
-  if (res.status === 404 && SKILL_QDRANT_URL === (process.env.QDRANT_URL || 'http://localhost:6333')) {
-    await ensureCollection(SKILL_COLLECTION);
-    res = await upsert();
-  }
-  if (!res.ok) throw new Error(`Skill-Qdrant upsert ${res.status}: ${(await res.text()).slice(0, 200)}`);
-
-  await pool.query(
-    `UPDATE skill_sections SET embedded_at = NOW(), embedding_modell = $2
-      WHERE punkt_id = $1::bigint AND content_hash IS NOT DISTINCT FROM $3`,
-    [id, modell, row.content_hash],
-  );
+  // P15-T4: Lesen, Payload und Upsert teilt sich der Einzelweg mit dem Stapel (skillSectionNachzug).
+  await betteEinzelnEin(skillSectionNachzug, id, embedOptions);
 }
+
+/** Inhaltsstand einer Section: content_hash (embedded_at nur, wenn sich der Inhalt nicht erneut geaendert hat). */
+const SKILL_STAND = 't.content_hash';
+
+/**
+ * P15-T4: Lesen, Payload und Upsert einer Skill-Section — EINZIGE Stelle fuer Einzel-Nachtrag und
+ * Stapel (embed-nachzug.ts). Eigener Upsert, weil die Skills in SKILL_QDRANT_URL liegen und die
+ * Punkt-ID eine Zahl ist (punkt_id). embedded_at + embedding_modell setzt markiereEingebettet.
+ */
+export const skillSectionNachzug: NachzugQuelle = {
+  tabelle: 'skill_sections',
+  idSpalte: 'punkt_id',
+  idTyp: 'bigint',
+  standSql: SKILL_STAND,
+  modellSpalte: true,
+  async lese(ids) {
+    const { rows } = await getHintergrundPool().query<{
+      punkt_id: string; skill_name: string; section: string; content: string; tags: string[] | null;
+      scope: SkillScope | null; project: string | null; agent: string | null; content_hash: string | null;
+      aktualisiert_am: Date; stand: string | null;
+    }>(
+      `SELECT t.punkt_id::text AS punkt_id, t.skill_name, t.section, t.content, t.tags, t.scope, t.project,
+              t.agent, t.content_hash, t.aktualisiert_am, ${SKILL_STAND} AS stand
+         FROM skill_sections t WHERE t.punkt_id = ANY($1::bigint[])`,
+      [ids],
+    );
+    const modell = embeddingModellKennung();
+    return rows.map((row) => ({
+      id: row.punkt_id,
+      project: row.project,
+      collection: SKILL_COLLECTION,
+      text: row.content,
+      payload: {
+        skill_name: row.skill_name,
+        section: row.section,
+        content: row.content,
+        tags: row.tags ?? [],
+        ...(row.scope ? { scope: row.scope } : {}),
+        project: row.project,
+        agent: row.agent,
+        updated_at: new Date(row.aktualisiert_am).toISOString(),
+        content_hash: row.content_hash,
+        embedding_modell: modell,
+      },
+      stand: row.stand,
+    }));
+  },
+  async schreibe(collection, liste) {
+    const punkte = liste.map(({ punkt, vector }) => ({ id: Number(punkt.id), vector, payload: punkt.payload }));
+    const upsert = () => fetch(`${SKILL_QDRANT_URL}/collections/${collection}/points?wait=true`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ points: punkte }),
+    });
+    let res = await upsert();
+    // P12-T12: nach intern(neu_einbetten) oder auf einer frischen Qdrant fehlt die Collection -> anlegen
+    // und einmal wiederholen. Nur wenn die Skills in der Synapse-Qdrant liegen (ensureCollection spricht
+    // QDRANT_URL an).
+    if (res.status === 404 && SKILL_QDRANT_URL === (process.env.QDRANT_URL || 'http://localhost:6333')) {
+      await ensureCollection(collection);
+      res = await upsert();
+    }
+    if (!res.ok) throw new Error(`Skill-Qdrant upsert ${res.status}: ${(await res.text()).slice(0, 200)}`);
+  },
+};

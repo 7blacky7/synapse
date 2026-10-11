@@ -66,15 +66,24 @@ const server = http.createServer((req, res) => {
     res.end(JSON.stringify({ models: [{ name: 'fake-embed' }] }));
     return;
   }
-  if (req.url === '/api/embeddings') {
+  // P12-T14: der Provider spricht /api/embed (Liste input -> Liste embeddings); /api/embeddings bleibt fuer Altes.
+  if (req.url === '/api/embeddings' || req.url === '/api/embed') {
     fakeEmbeds++;
-    req.resume();
+    let body = '';
+    req.on('data', (d) => { body += d; });
     let fertig = false;
-    const t = setTimeout(() => {
-      fertig = true;
-      res.setHeader('content-type', 'application/json');
-      res.end(JSON.stringify({ embedding: Array.from({ length: 8 }, (_, i) => (i + 1) / 8) }));
-    }, fakeMs);
+    let t;
+    req.on('end', () => {
+      t = setTimeout(() => {
+        fertig = true;
+        const vektor = Array.from({ length: 8 }, (_, i) => (i + 1) / 8);
+        res.setHeader('content-type', 'application/json');
+        if (req.url === '/api/embeddings') return res.end(JSON.stringify({ embedding: vektor }));
+        const eingabe = JSON.parse(body || '{}').input;
+        const n = Array.isArray(eingabe) ? eingabe.length : 1;
+        res.end(JSON.stringify({ embeddings: Array.from({ length: n }, () => vektor) }));
+      }, fakeMs);
+    });
     res.on('close', () => { if (!fertig) clearTimeout(t); });
     return;
   }

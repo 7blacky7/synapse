@@ -61,6 +61,7 @@ import { embed } from '../embeddings/index.js';
 import type { EmbedOptions } from '../embeddings/index.js';
 import { getPool, getHintergrundPool } from '../db/client.js';
 import { embeddingNachtragAngehalten } from './intern-schalter.js';
+import { betteEinzelnEin, type NachzugQuelle } from './embed-nachzug.js';
 import { updateTask } from './plans.js';
 import type { ProjectTask } from '../types/index.js';
 
@@ -512,42 +513,56 @@ export async function embeddeThoughtNach(
   id: string,
   embedOptions: EmbedOptions = {},
 ): Promise<void> {
-  // P5-T15: Nachtraege sind Hintergrundarbeit -> eigener Pool, nie die Verbindungen der Tool-Anfragen
   // P5-T15/P14-T2: der Nachtrag ist Hintergrundarbeit (die KI hat ihre Antwort schon), ausser ein Aufrufer
   // wartet bewusst und setzt priority selbst. Schalter embedding an -> Hintergrund-Nachtrag auslassen;
   // embedded_at bleibt NULL, der Backlog holt nach der Freigabe nach.
   embedOptions = { ...embedOptions, priority: embedOptions.priority ?? 'background' };
   if (embedOptions.priority === 'background' && await embeddingNachtragAngehalten()) return;
-  const pool = getHintergrundPool();
-
-  // ⚠️ thoughts IST ANDERS GEBAUT als memories und proposals: es gibt KEIN created_at und
-  // KEIN updated_at, sondern eine einzelne Spalte "timestamp". Wer hier oder im Backlog nach
-  // updated_at sortiert oder sie ausliest, bekommt zur Laufzeit einen Spaltenfehler — der
-  // Code sieht dabei genauso aus wie der funktionierende in memory.ts.
-  const { rows } = await pool.query(
-    `SELECT source, content, tags, timestamp, task_id
-       FROM thoughts WHERE id = $1 AND project = $2`,
-    [id, project]
-  );
-  if (rows.length === 0) return; // zwischenzeitlich geloescht
-  const row = rows[0];
-
-  const collectionName = COLLECTIONS.projectThoughts(project);
-  await ensureCollection(collectionName);
-
-  const vector = await embed(row.content, embedOptions);
-  const payload: ThoughtPayload = {
-    project,
-    source: row.source,
-    content: row.content,
-    tags: row.tags ?? [],
-    timestamp: new Date(row.timestamp).toISOString(),
-  };
-  if (row.task_id) (payload as ThoughtPayload & { task_id?: string }).task_id = row.task_id;
-
-  // Gleiche id wie die PG-Zeile: delete + insert wirkt als upsert. Das delete darf fehlen.
-  await deleteVector(collectionName, id).catch(() => { /* existierte noch nicht */ });
-  await insertVector(collectionName, vector, payload, id);
-
-  await pool.query('UPDATE thoughts SET embedded_at = NOW() WHERE id = $1', [id]);
+  // P15-T4: Lesen, Text und Payload teilt sich der Einzelweg mit dem Stapel (thoughtNachzug).
+  await betteEinzelnEin(thoughtNachzug, id, embedOptions, (p) => p.project === project);
 }
+
+/**
+ * Inhaltsstand eines Gedankens. ⚠️ thoughts hat KEIN updated_at (nur "timestamp" = Anlage), deshalb
+ * md5 ueber die eingebetteten Spalten: aendert updateThought Inhalt oder Tags waehrend des Einbettens,
+ * bleibt embedded_at NULL und der naechste Lauf holt den neuen Stand.
+ */
+const THOUGHT_STAND = "md5(concat_ws('|', t.content, t.tags::text, t.task_id))";
+
+/**
+ * P15-T4: Lesen, Text und Payload eines Gedankens — EINZIGE Stelle fuer Einzel-Nachtrag und Stapel
+ * (embed-nachzug.ts). Inhalt frisch aus PG (Hintergrund-Pool, P5-T15).
+ */
+export const thoughtNachzug: NachzugQuelle = {
+  tabelle: 'thoughts',
+  idSpalte: 'id',
+  idTyp: 'text',
+  standSql: THOUGHT_STAND,
+  async lese(ids) {
+    // ⚠️ KEIN created_at/updated_at in thoughts — Zeitspalte heisst "timestamp".
+    const { rows } = await getHintergrundPool().query(
+      `SELECT t.id, t.project, t.source, t.content, t.tags, t.timestamp, t.task_id,
+              ${THOUGHT_STAND} AS stand
+         FROM thoughts t WHERE t.id = ANY($1::text[])`,
+      [ids]
+    );
+    return rows.map((row) => {
+      const payload: ThoughtPayload = {
+        project: row.project,
+        source: row.source,
+        content: row.content,
+        tags: row.tags ?? [],
+        timestamp: new Date(row.timestamp).toISOString(),
+      };
+      if (row.task_id) (payload as ThoughtPayload & { task_id?: string }).task_id = row.task_id;
+      return {
+        id: row.id,
+        project: row.project,
+        collection: COLLECTIONS.projectThoughts(row.project),
+        text: row.content,
+        payload: { ...payload },
+        stand: row.stand,
+      };
+    });
+  },
+};

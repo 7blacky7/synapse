@@ -46,6 +46,7 @@ import {
 } from '../qdrant/operations.js';
 import { getPool, getHintergrundPool } from '../db/client.js';
 import { embeddingNachtragAngehalten } from './intern-schalter.js';
+import { betteEinzelnEin, type NachzugQuelle } from './embed-nachzug.js';
 import { searchCode } from './code.js';
 import { CodeChunkPayload, COLLECTIONS } from '../types/index.js';
 
@@ -301,43 +302,57 @@ export async function embeddeMemoryNach(
   id: string,
   embedOptions: EmbedOptions = {},
 ): Promise<void> {
-  // P5-T15: Nachtraege sind Hintergrundarbeit -> eigener Pool, nie die Verbindungen der Tool-Anfragen
   // P5-T15/P14-T2: der Nachtrag ist Hintergrundarbeit (die KI hat ihre Antwort schon), ausser ein Aufrufer
   // wartet bewusst und setzt priority selbst. Schalter embedding an -> Hintergrund-Nachtrag auslassen;
   // embedded_at bleibt NULL, der Backlog holt nach der Freigabe nach.
   embedOptions = { ...embedOptions, priority: embedOptions.priority ?? 'background' };
   if (embedOptions.priority === 'background' && await embeddingNachtragAngehalten()) return;
-  const pool = getHintergrundPool();
-  const { rows } = await pool.query(
-    `SELECT name, category, content, tags, created_at, updated_at
-       FROM memories WHERE id = $1 AND project = $2`,
-    [id, project]
-  );
-  if (rows.length === 0) return; // zwischenzeitlich geloescht — nichts nachzutragen
-  const row = rows[0];
-
-  const collectionName = COLLECTIONS.projectMemories(project);
-  await ensureCollection(collectionName);
-
-  const vector = await embed(row.content, embedOptions);
-  const payload: MemoryPayload = {
-    project,
-    name: row.name,
-    content: row.content,
-    category: row.category,
-    tags: row.tags ?? [],
-    linkedPaths: extractFilePaths(row.content),
-    createdAt: new Date(row.created_at).toISOString(),
-    updatedAt: new Date(row.updated_at).toISOString(),
-  };
-
-  // Gleiche id wie die PG-Zeile: delete + insert wirkt als upsert. Das delete darf fehlen
-  // (neuer Eintrag), deshalb wird sein Fehler geschluckt und nicht der ganze Nachtrag.
-  await deleteVector(collectionName, id).catch(() => { /* existierte noch nicht */ });
-  await insertVector(collectionName, vector, payload, id);
-
-  await pool.query('UPDATE memories SET embedded_at = NOW() WHERE id = $1', [id]);
+  // P15-T4: Lesen, Text und Payload teilt sich der Einzelweg mit dem Stapel (memoryNachzug).
+  await betteEinzelnEin(memoryNachzug, id, embedOptions, (p) => p.project === project);
 }
+
+/** Inhaltsstand einer Memory: updated_at, das writeMemory bei jedem Schreiben neu setzt. */
+const MEMORY_STAND = 't.updated_at::text';
+
+/**
+ * P15-T4: Lesen, Text und Payload einer Memory — EINZIGE Stelle fuer Einzel-Nachtrag und Stapel
+ * (embed-nachzug.ts). Inhalt frisch aus PG (Hintergrund-Pool, P5-T15): zwischen Schreiben und
+ * Nachreichen kann die Memory erneut geschrieben worden sein, dann zaehlt der NEUE Inhalt.
+ */
+export const memoryNachzug: NachzugQuelle = {
+  tabelle: 'memories',
+  idSpalte: 'id',
+  idTyp: 'text',
+  standSql: MEMORY_STAND,
+  async lese(ids) {
+    const { rows } = await getHintergrundPool().query(
+      `SELECT t.id, t.project, t.name, t.category, t.content, t.tags, t.created_at, t.updated_at,
+              ${MEMORY_STAND} AS stand
+         FROM memories t WHERE t.id = ANY($1::text[])`,
+      [ids]
+    );
+    return rows.map((row) => {
+      const payload: MemoryPayload = {
+        project: row.project,
+        name: row.name,
+        content: row.content,
+        category: row.category,
+        tags: row.tags ?? [],
+        linkedPaths: extractFilePaths(row.content),
+        createdAt: new Date(row.created_at).toISOString(),
+        updatedAt: new Date(row.updated_at).toISOString(),
+      };
+      return {
+        id: row.id,
+        project: row.project,
+        collection: COLLECTIONS.projectMemories(row.project),
+        text: row.content,
+        payload: { ...payload },
+        stand: row.stand,
+      };
+    });
+  },
+};
 
 
 /**

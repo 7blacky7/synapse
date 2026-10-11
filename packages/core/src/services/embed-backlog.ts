@@ -11,22 +11,32 @@
  *
  * NEBENEFFEKTE: schreibt Vektoren nach Qdrant und setzt embedded_at in PostgreSQL
  *
- * ABHAENGIGKEITEN: Nachtrag-Funktionen der Dienste (memory, thoughts, proposals, plans,
- *   error-patterns, tech-docs, skills), ../db/client.js
+ * STAPEL (P15-T4): je Tabelle werden bis zu EMBED_BACKLOG_STAPEL Zeilen (Standard 64) gemeinsam
+ *   eingebettet (embed-nachzug.ts: embedBatch, Qdrant-Upsert je Collection, embedded_at in einem
+ *   Statement). Frueher ein embed() je Zeile plus EMBED_MIN_GAP_MS -> ~2-4 Eintraege/s.
+ *   Scheitert ein Stapel, laufen seine Zeilen einzeln ueber die Nachtrag-Funktionen, damit ein
+ *   kaputter Eintrag nicht den Rest blockiert.
+ *
+ * ABHAENGIGKEITEN: NachzugQuellen + Nachtrag-Funktionen der Dienste (memory, thoughts, proposals,
+ *   plans, error-patterns, tech-docs, skills), ./embed-nachzug.js, ../db/client.js
  */
 
 import { getPool } from '../db/client.js';
-import { embeddeMemoryNach } from './memory.js';
-import { embeddeThoughtNach } from './thoughts.js';
-import { embeddeProposalNach } from './proposals.js';
-import { embeddePlanNach } from './plans.js';
-import { embeddeErrorPatternNach } from './error-patterns.js';
-import { embeddeTechDocNach } from './tech-docs.js';
-import { embeddeSkillSectionNach } from './skills.js';
+import { embeddeMemoryNach, memoryNachzug } from './memory.js';
+import { embeddeThoughtNach, thoughtNachzug } from './thoughts.js';
+import { embeddeProposalNach, proposalNachzug } from './proposals.js';
+import { embeddePlanNach, planNachzug } from './plans.js';
+import { embeddeErrorPatternNach, errorPatternNachzug } from './error-patterns.js';
+import { embeddeTechDocNach, techDocNachzug } from './tech-docs.js';
+import { embeddeSkillSectionNach, skillSectionNachzug } from './skills.js';
+import { betteStapelEin } from './embed-nachzug.js';
 import { schalterHaeltAn } from './intern-schalter.js';
 
 /**
  * Welche Tabellen der Nachzug bedient, und womit.
+ *
+ * REIHENFOLGE (P15-T4): skill_sections zuerst — die Skill-Hooks schlagen bei jeder Aktion Skills
+ * per Vektorsuche vor und liefern ohne Vektoren nichts. Danach Wissen in bisheriger Reihenfolge.
  *
  * ⚠️ DIE SORTIERSPALTE IST NICHT UEBERALL DIESELBE. memories und proposals haben
  * created_at/updated_at, thoughts hat WEDER NOCH — dort heisst die einzige Zeitspalte
@@ -36,7 +46,7 @@ import { schalterHaeltAn } from './intern-schalter.js';
  * Deshalb steht sie hier je Tabelle explizit.
  *
  * tech_docs (P12-T16): Sortierspalte indexed_at; project ist dort NULL fuer globale
- * Context7-Zeilen. embeddeTechDocNach waehlt die Ziel-Collection selbst aus der PG-Zeile
+ * Context7-Zeilen. Die Ziel-Collection waehlt techDocNachzug selbst aus der PG-Zeile
  * (project ? project_<p>_docs : tech_docs_cache), der uebergebene project-Wert ist egal.
  *
  * skill_sections (P12-T13): Schluessel heisst punkt_id (= Qdrant-Punkt-ID), Zeitspalte
@@ -45,19 +55,33 @@ import { schalterHaeltAn } from './intern-schalter.js';
  *
  * plans + error_patterns (P12-T12): seit dem Re-Embedding im Nachzug. error_patterns ist global
  * und hat KEINE project-Spalte (mitProjekt false) — ein Projektfilter ueberspringt sie.
+ *
+ * quelle = Stapelweg (embed-nachzug.ts), nachtrag = Einzelweg als Rueckfall. Beide bauen Text und
+ * Payload ueber dieselbe NachzugQuelle.lese. quelle ist eine Funktion, weil tech-docs.ts dieses
+ * Modul importiert (EMBED_PENDING_HINT): im Importzyklus waere die const beim Aufbau von TABELLEN
+ * noch nicht initialisiert (TDZ) — Funktionsdeklarationen wie nachtrag sind davon nicht betroffen.
  */
 const TABELLEN = [
-  { name: 'memories', sortSpalte: 'updated_at', idSpalte: 'id', mitProjekt: true, nachtrag: embeddeMemoryNach },
-  { name: 'thoughts', sortSpalte: 'timestamp', idSpalte: 'id', mitProjekt: true, nachtrag: embeddeThoughtNach },
-  { name: 'proposals', sortSpalte: 'updated_at', idSpalte: 'id', mitProjekt: true, nachtrag: embeddeProposalNach },
-  { name: 'plans', sortSpalte: 'updated_at', idSpalte: 'id', mitProjekt: true, nachtrag: embeddePlanNach },
-  { name: 'error_patterns', sortSpalte: 'created_at', idSpalte: 'id', mitProjekt: false, nachtrag: embeddeErrorPatternNach },
-  { name: 'tech_docs', sortSpalte: 'indexed_at', idSpalte: 'id', mitProjekt: true, nachtrag: embeddeTechDocNach },
-  { name: 'skill_sections', sortSpalte: 'aktualisiert_am', idSpalte: 'punkt_id', mitProjekt: true, nachtrag: embeddeSkillSectionNach },
+  { name: 'skill_sections', sortSpalte: 'aktualisiert_am', idSpalte: 'punkt_id', mitProjekt: true, quelle: () => skillSectionNachzug, nachtrag: embeddeSkillSectionNach },
+  { name: 'memories', sortSpalte: 'updated_at', idSpalte: 'id', mitProjekt: true, quelle: () => memoryNachzug, nachtrag: embeddeMemoryNach },
+  { name: 'thoughts', sortSpalte: 'timestamp', idSpalte: 'id', mitProjekt: true, quelle: () => thoughtNachzug, nachtrag: embeddeThoughtNach },
+  { name: 'proposals', sortSpalte: 'updated_at', idSpalte: 'id', mitProjekt: true, quelle: () => proposalNachzug, nachtrag: embeddeProposalNach },
+  { name: 'plans', sortSpalte: 'updated_at', idSpalte: 'id', mitProjekt: true, quelle: () => planNachzug, nachtrag: embeddePlanNach },
+  { name: 'error_patterns', sortSpalte: 'created_at', idSpalte: 'id', mitProjekt: false, quelle: () => errorPatternNachzug, nachtrag: embeddeErrorPatternNach },
+  { name: 'tech_docs', sortSpalte: 'indexed_at', idSpalte: 'id', mitProjekt: true, quelle: () => techDocNachzug, nachtrag: embeddeTechDocNach },
 ] as const;
 
 /** Tabellen, die der Nachzug bedient (fuer Filter wie intern(nachzug_jetzt, tabelle)). */
 export const BACKLOG_TABELLEN: readonly string[] = TABELLEN.map((t) => t.name);
+
+/**
+ * Zeilen je Stapel (P15-T4). Kein Modellwert: die Aufteilung in Ollama-Aufrufe macht embedBatch
+ * (EMBED_OLLAMA_BATCH je Scheibe); hier geht es nur darum, wie viel ein Fehlschlag zurueckwirft.
+ */
+function stapelGroesse(): number {
+  const n = Number(process.env.EMBED_BACKLOG_STAPEL);
+  return Number.isInteger(n) && n > 0 ? n : 64;
+}
 
 /** Projektbedingung je Tabelle: ohne project-Spalte nur, wenn kein Projektfilter gesetzt ist. */
 function projektBedingung(mitProjekt: boolean): string {
@@ -91,11 +115,11 @@ export interface BacklogErgebnis {
  * Er waere damit STILL VERLOREN: nichts schlaegt fehl, nichts wird geloggt, und die
  * semantische Suche findet ihn einfach nie. embedded_at IS NULL ist der einzige Zeuge.
  *
- * Analog zu parseUnparsedFiles auf der Code-Seite: sequenziell und gedrosselt, damit ein
- * grosser Rueckstand nicht seinerseits die Embedding-Queue verstopft und die interaktiven
- * Schreibvorgaenge ausbremst — das waere genau der Zustand, gegen den EMBED-1 gebaut ist.
+ * Gedrosselt ueber limit und die Prioritaet 'background': die Stapel laufen durch die
+ * Hintergrund-Queue und werden von interaktiven Schreibvorgaengen verdraengt — der Nachzug
+ * darf sie nicht ausbremsen, das waere genau der Zustand, gegen den EMBED-1 gebaut ist.
  *
- * @param limit Obergrenze je Lauf. Klein halten; der naechste Tick holt den Rest.
+ * @param limit Obergrenze je Lauf. Der naechste Tick holt den Rest.
  * @param project optional auf ein Projekt beschraenken (sonst alle).
  */
 export async function embeddeOffeneEintraege(
@@ -112,6 +136,7 @@ export async function embeddeOffeneEintraege(
   // Das Limit gilt fuer den GESAMTEN Lauf, nicht je Tabelle: sonst wuerde ein grosser
   // Rueckstand in einer Tabelle die Drosselung der anderen mit aushebeln.
   let uebrig = limit;
+  const stapel = stapelGroesse();
 
   for (const tabelle of TABELLEN) {
     if (uebrig <= 0) break;
@@ -130,20 +155,38 @@ export async function embeddeOffeneEintraege(
       [project ?? null, uebrig]
     );
 
-    for (const row of rows) {
-      ergebnis.geprueft++;
-      uebrig--;
+    for (let i = 0; i < rows.length; i += stapel) {
+      const teil = rows.slice(i, i + stapel);
+      ergebnis.geprueft += teil.length;
+      uebrig -= teil.length;
       try {
-        await tabelle.nachtrag(row.project, row.id, { priority: 'background' });
-        ergebnis.nachgetragen++;
+        ergebnis.nachgetragen += await betteStapelEin(
+          tabelle.quelle(),
+          teil.map((r) => r.id),
+          { priority: 'background' }
+        );
+        continue;
       } catch (err) {
-        // Nicht abbrechen: ein kaputter Eintrag darf den Rest des Rueckstands nicht blockieren.
-        // embedded_at bleibt NULL, der naechste Lauf versucht es erneut.
-        ergebnis.fehlgeschlagen++;
+        // Schalter waehrend des Laufs gesetzt -> anhalten statt einzeln weiterzumachen.
+        if (await schalterHaeltAn('embedding', 'embedding-backlog')) return { ...ergebnis, angehalten: true };
         console.error(
-          `[Synapse] Embedding-Nachtrag fehlgeschlagen (${tabelle.name}/${row.id}):`,
+          `[Synapse] Embedding-Stapel fehlgeschlagen (${tabelle.name}, ${teil.length} Eintraege), einzeln weiter:`,
           (err as Error).message
         );
+      }
+      // Rueckfall: einzeln, damit ein kaputter Eintrag den Rest des Stapels nicht blockiert.
+      for (const row of teil) {
+        try {
+          await tabelle.nachtrag(row.project, row.id, { priority: 'background' });
+          ergebnis.nachgetragen++;
+        } catch (err) {
+          // embedded_at bleibt NULL, der naechste Lauf versucht es erneut.
+          ergebnis.fehlgeschlagen++;
+          console.error(
+            `[Synapse] Embedding-Nachtrag fehlgeschlagen (${tabelle.name}/${row.id}):`,
+            (err as Error).message
+          );
+        }
       }
     }
   }

@@ -12,6 +12,7 @@ import { embed } from '../embeddings/index.js';
 import { insertVector, searchVectors, deleteVector } from '../qdrant/operations.js';
 import { ensureCollection } from '../qdrant/collections.js';
 import type { EmbedOptions } from '../embeddings/index.js';
+import { betteEinzelnEin, type NachzugQuelle } from './embed-nachzug.js';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -107,30 +108,47 @@ export async function embeddeErrorPatternNach(
   id: string,
   embedOptions: EmbedOptions = {},
 ): Promise<void> {
-  const pool = getPool();
-  const row = (await pool.query(
-    `SELECT id::text AS id, description, fix, severity, model_scope, found_by, found_in_model, created_at
-       FROM error_patterns WHERE id = $1::uuid`,
-    [id]
-  )).rows[0];
-  if (!row) return;
-  await ensureCollection(COLLECTIONS.globalErrorPatterns);
-  const vector = await embed(`${row.description}\n\n${row.fix}`, embedOptions);
-  await insertVector(
-    COLLECTIONS.globalErrorPatterns,
-    vector,
-    {
-      id: row.id,
-      severity: row.severity,
-      model_scope: row.model_scope,
-      found_by: row.found_by,
-      found_in_model: row.found_in_model,
-      created_at: new Date(row.created_at ?? Date.now()).toISOString(),
-    },
-    row.id
-  );
-  await pool.query('UPDATE error_patterns SET embedded_at = NOW() WHERE id = $1::uuid', [id]);
+  // P15-T4: Lesen, Text und Payload teilt sich der Einzelweg mit dem Stapel (errorPatternNachzug).
+  await betteEinzelnEin(errorPatternNachzug, id, embedOptions);
 }
+
+/** Inhaltsstand eines Error-Patterns (keine updated_at-Spalte): md5 der eingebetteten Spalten. */
+const ERROR_PATTERN_STAND = "md5(concat_ws('|', t.description, t.fix, t.severity, t.model_scope))";
+
+/**
+ * P15-T4: Lesen, Text und Payload eines Error-Patterns — EINZIGE Stelle fuer Einzel-Nachtrag und
+ * Stapel (embed-nachzug.ts). Globale Collection, kein Projekt.
+ */
+export const errorPatternNachzug: NachzugQuelle = {
+  tabelle: 'error_patterns',
+  idSpalte: 'id',
+  idTyp: 'uuid',
+  standSql: ERROR_PATTERN_STAND,
+  async lese(ids) {
+    const { rows } = await getPool().query(
+      `SELECT t.id::text AS id, t.description, t.fix, t.severity, t.model_scope, t.found_by, t.found_in_model,
+              t.created_at, ${ERROR_PATTERN_STAND} AS stand
+         FROM error_patterns t WHERE t.id = ANY($1::uuid[])`,
+      [ids]
+    );
+    return rows.map((row) => ({
+      id: row.id,
+      project: null,
+      collection: COLLECTIONS.globalErrorPatterns,
+      // Text unveraendert wie bisher: description, Leerzeile, fix.
+      text: [row.description, row.fix].join('\n\n'),
+      payload: {
+        id: row.id,
+        severity: row.severity,
+        model_scope: row.model_scope,
+        found_by: row.found_by,
+        found_in_model: row.found_in_model,
+        created_at: new Date(row.created_at ?? Date.now()).toISOString(),
+      },
+      stand: row.stand,
+    }));
+  },
+};
 
 export async function listErrorPatterns(
   modelScope?: string,

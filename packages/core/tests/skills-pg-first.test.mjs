@@ -21,6 +21,7 @@ if (!/:5433\/synapse_test(\?|$)/.test(process.env.DATABASE_URL ?? '')) {
 }
 
 const anfragen = [];
+const embedAufrufe = [];
 const server = http.createServer((req, res) => {
   let body = '';
   req.on('data', (d) => { body += d; });
@@ -28,6 +29,13 @@ const server = http.createServer((req, res) => {
     res.setHeader('content-type', 'application/json');
     if (req.url === '/api/tags') return res.end(JSON.stringify({ models: [{ name: 'fake-embed' }] }));
     if (req.url === '/api/embeddings') return res.end(JSON.stringify({ embedding: [0.1, 0.2, 0.3, 0.4] }));
+    // P12-T14: der Provider spricht /api/embed (Listen). P15-T4: Aufrufe mitzaehlen (Stapel = ein Aufruf).
+    if (req.url === '/api/embed') {
+      const eingabe = JSON.parse(body).input;
+      const liste = Array.isArray(eingabe) ? eingabe : [eingabe];
+      embedAufrufe.push(liste.length);
+      return res.end(JSON.stringify({ embeddings: liste.map(() => [0.1, 0.2, 0.3, 0.4]) }));
+    }
     if (req.url?.startsWith('/collections/')) {
       anfragen.push({ methode: req.method, url: req.url, body: body ? JSON.parse(body) : null });
       if (req.url.includes('/points/scroll')) return res.end(JSON.stringify({ result: { points: [], next_page_offset: null } }));
@@ -54,6 +62,7 @@ if (getConfig().qdrant.url !== FAKE || getConfig().embeddings.ollama.url !== FAK
 }
 const skills = await import(join(dist, 'services', 'skills.js'));
 const backlog = await import(join(dist, 'services', 'embed-backlog.js'));
+const nachzug = await import(join(dist, 'services', 'embed-nachzug.js'));
 const db = await import(join(dist, 'db', 'client.js'));
 const pool = db.getPool();
 
@@ -111,12 +120,33 @@ try {
   const z3 = await zeile('drei');
   await skills.embeddeSkillSectionNach(null, z3.id, { priority: 'background' });
   pruefe((await zeile('drei')).embedded_at !== null, 'S4: Nachtrag (wie im Backlog) bettet die Massen-Zeile ein', null);
+  // S4b (P15-T4): Backlog im Stapel — zwei offene Sections in EINEM Ollama-Aufruf und EINEM Qdrant-PUT
+  await skills.speichereSkillSection({ skill_name: S, section: 'vier', content: 'Inhalt vier' }, { nurBacklog: true });
+  const offenEins = await zeile('eins');
+  const offenVier = await zeile('vier');
+  const aufrufeVorher = embedAufrufe.length;
+  const erg = await backlog.embeddeOffeneEintraege(500, undefined, 'skill_sections');
+  const putStapel = anfragen.filter((a) => a.methode === 'PUT' && a.body?.points?.length >= 2)
+    .find((a) => [offenEins.id, offenVier.id].every((id) => a.body.points.some((p) => p.id === Number(id))));
+  const pVier = putStapel?.body.points.find((p) => p.id === Number(offenVier.id));
+  const neueAufrufe = embedAufrufe.slice(aufrufeVorher);
+  pruefe(erg.fehlgeschlagen === 0 && (await zeile('eins')).embedded_at && (await zeile('vier')).embedded_at
+    && (await zeile('vier')).embedding_modell && pVier?.payload.content === 'Inhalt vier' && pVier.payload.skill_name === S
+    && pVier.payload.embedding_modell && neueAufrufe.some((n) => n >= 2),
+    'S4b: Backlog bettet im Stapel ein (ein /api/embed mit mehreren Texten, ein PUT, embedded_at + Modell gesetzt)', { erg, neueAufrufe, pVier });
+  // S4c (P15-T4): Stand-Schutz — aendert sich der Inhalt waehrend des Einbettens, bleibt embedded_at NULL
+  await skills.speichereSkillSection({ skill_name: S, section: 'vier', content: 'Inhalt vier B' }, { modus: 'aendern', nurBacklog: true });
+  const punkte = await skills.skillSectionNachzug.lese([offenVier.id]);
+  await skills.speichereSkillSection({ skill_name: S, section: 'vier', content: 'Inhalt vier C' }, { modus: 'aendern', nurBacklog: true });
+  const markiert = await nachzug.markiereEingebettet(skills.skillSectionNachzug, punkte);
+  pruefe(punkte.length === 1 && markiert === 0 && (await zeile('vier')).embedded_at === null,
+    'S4c: Inhalt nach dem Lesen geaendert -> markiereEingebettet setzt embedded_at NICHT', { markiert });
   // S5
   const r5 = await skills.loescheSkill(S);
   const rest = (await pool.query('SELECT count(*)::int AS n FROM skill_sections WHERE skill_name=$1', [S])).rows[0].n;
   const nameWeg = (await pool.query('SELECT count(*)::int AS n FROM skill_names WHERE skill_name=$1', [S])).rows[0].n;
   const dels = anfragen.filter((a) => a.url.includes('/points/delete')).slice(-2);
-  pruefe(r5.geloescht === 2 && rest === 0 && nameWeg === 0 && dels.some((d) => Array.isArray(d.body?.points)) && dels.some((d) => d.body?.filter),
+  pruefe(r5.geloescht === 3 && rest === 0 && nameWeg === 0 && dels.some((d) => Array.isArray(d.body?.points)) && dels.some((d) => d.body?.filter),
     'S5: loescheSkill — PG leer, skill_names weg, Qdrant-Delete per ID und per Namensfilter', { r5, rest, nameWeg });
 } catch (e) {
   fehler++;

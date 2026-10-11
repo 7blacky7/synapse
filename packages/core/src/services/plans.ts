@@ -46,6 +46,7 @@ import {
   deleteVector,
 } from '../qdrant/index.js';
 import { embed, type EmbedOptions } from '../embeddings/index.js';
+import type { NachzugPunkt, NachzugQuelle } from './embed-nachzug.js';
 import { getPool } from '../db/client.js';
 import {
   planNummer, taskNummer, planKurzId, taskKurzId, waehleAktiven, ergaenzeTaskKurzIds,
@@ -132,31 +133,47 @@ export interface PlanListenEintrag {
  */
 export const planIndex = {
   async sync(plan: ProjectPlan, embedOptions: EmbedOptions = {}): Promise<void> {
-    const collection = COLLECTIONS.projectPlans(plan.project);
-    await ensureCollection(collection);
-    const vector = await embed(`${plan.name}\n${plan.description}\n${plan.goals.join('\n')}`, embedOptions);
-    const payload: ProjectPlanPayload = {
-      project: plan.project,
-      name: plan.name,
-      description: plan.description,
-      goals: plan.goals,
-      architecture: plan.architecture,
-      tasks: plan.tasks,
-      created_at: plan.createdAt,
-      updated_at: plan.updatedAt,
-      kurz_id: plan.kurz_id ?? null,
-      aktiv: plan.aktiv ?? false,
-      prioritaet: plan.prioritaet ?? 'mittel',
-      ...(plan.zurueckgestellt_bis ? { zurueckgestellt_bis: plan.zurueckgestellt_bis } : {}),
-    };
+    const punkt = planPunkt(plan, null);
+    await ensureCollection(punkt.collection);
+    const vector = await embed(punkt.text, embedOptions);
     try {
-      await deleteVector(collection, plan.id);
+      await deleteVector(punkt.collection, plan.id);
     } catch { /* Punkt fehlte — insert legt ihn an */ }
-    await insertVector(collection, vector, payload, plan.id);
+    await insertVector(punkt.collection, vector, punkt.payload, plan.id);
     // P12-T12: Marker fuer den Nachzug (embed-backlog), sonst holte er den Plan erneut.
     await getPool().query('UPDATE plans SET embedded_at = NOW() WHERE id = $1', [plan.id]);
   },
 };
+
+/**
+ * P15-T4: Text und Payload eines Plans — EINZIGE Stelle fuer planIndex.sync und den Stapel-Nachzug
+ * (planNachzug, embed-nachzug.ts).
+ */
+function planPunkt(plan: ProjectPlan, stand: string | null): NachzugPunkt {
+  const payload: ProjectPlanPayload = {
+    project: plan.project,
+    name: plan.name,
+    description: plan.description,
+    goals: plan.goals,
+    architecture: plan.architecture,
+    tasks: plan.tasks,
+    created_at: plan.createdAt,
+    updated_at: plan.updatedAt,
+    kurz_id: plan.kurz_id ?? null,
+    aktiv: plan.aktiv ?? false,
+    prioritaet: plan.prioritaet ?? 'mittel',
+    ...(plan.zurueckgestellt_bis ? { zurueckgestellt_bis: plan.zurueckgestellt_bis } : {}),
+  };
+  return {
+    id: plan.id,
+    project: plan.project,
+    collection: COLLECTIONS.projectPlans(plan.project),
+    // Text unveraendert wie bisher: name, description, goals je Zeile.
+    text: [plan.name, plan.description, plan.goals.join('\n')].join('\n'),
+    payload: { ...payload },
+    stand,
+  };
+}
 
 async function indexNachziehen(plan: ProjectPlan): Promise<string | undefined> {
   try {
@@ -183,6 +200,35 @@ export async function embeddePlanNach(
   if (!zeile) return;
   await planIndex.sync(zuPlan(zeile, alle), { ...embedOptions, priority: embedOptions.priority ?? 'background' });
 }
+
+/** Inhaltsstand eines Plans: updated_at (schreibePlan setzt es bei jeder Aenderung). */
+const PLAN_STAND = 't.updated_at::text';
+
+/**
+ * P15-T4: Stapel-Nachzug fuer Plaene. Der Plan wird wie in embeddePlanNach ueber lesePlaene/zuPlan
+ * gebaut (aktiv haengt von den anderen Plaenen des Projekts ab), Text und Payload aus planPunkt.
+ */
+export const planNachzug: NachzugQuelle = {
+  tabelle: 'plans',
+  idSpalte: 'id',
+  idTyp: 'text',
+  standSql: PLAN_STAND,
+  async lese(ids) {
+    const { rows } = await getPool().query<{ id: string; project: string; stand: string | null }>(
+      `SELECT t.id, t.project, ${PLAN_STAND} AS stand FROM plans t WHERE t.id = ANY($1::text[])`,
+      [ids],
+    );
+    const stand = new Map(rows.map((r) => [r.id, r.stand]));
+    const punkte: NachzugPunkt[] = [];
+    for (const project of new Set(rows.map((r) => r.project))) {
+      const alle = await lesePlaene(project);
+      for (const z of alle) {
+        if (stand.has(z.id)) punkte.push(planPunkt(zuPlan(z, alle), stand.get(z.id) ?? null));
+      }
+    }
+    return punkte;
+  },
+};
 
 // ---------------------------------------------------------------------------
 // Lesen

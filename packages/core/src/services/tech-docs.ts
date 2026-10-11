@@ -30,6 +30,7 @@ import { getAgentSession } from './chat.js';
 import { getContext7Client } from './context7.js';
 import { getLanguagesForFile } from '../parser/index.js';
 import { EMBED_PENDING_HINT } from './embed-backlog.js';
+import { betteEinzelnEin, type NachzugQuelle } from './embed-nachzug.js';
 
 export interface TechDoc {
   id: string;
@@ -271,43 +272,55 @@ export async function embeddeTechDocNach(
   id: string,
   embedOptions: EmbedOptions = {}
 ): Promise<void> {
-  // P5-T15: Nachtraege sind Hintergrundarbeit -> eigener Pool, nie die Verbindungen der Tool-Anfragen
   // P5-T15/P14-T2: der Nachtrag ist Hintergrundarbeit (die KI hat ihre Antwort schon), ausser ein Aufrufer
   // wartet bewusst und setzt priority selbst. Schalter embedding an -> Hintergrund-Nachtrag auslassen;
   // embedded_at bleibt NULL, der Backlog holt nach der Freigabe nach.
   embedOptions = { ...embedOptions, priority: embedOptions.priority ?? 'background' };
   if (embedOptions.priority === 'background' && await embeddingNachtragAngehalten()) return;
-  const pool = getHintergrundPool();
-  const { rows } = await pool.query(
-    `SELECT framework, version, section, content, type, category, source, content_hash, indexed_at, project
-       FROM tech_docs WHERE id = $1`,
-    [id]
-  );
-  if (rows.length === 0) return; // zwischenzeitlich geloescht — nichts nachzutragen
-  const row = rows[0];
-
-  const collectionName = zielCollection(row.project);
-  await ensureCollection(collectionName);
-
-  // Embedding-Text unveraendert wie bisher in addTechDoc.
-  const vector = await embed(`${row.framework} ${row.version} ${row.section ?? ''} ${row.content}`, embedOptions);
-
-  // Gleiche id wie die PG-Zeile: delete + insert wirkt als upsert.
-  await deleteVector(collectionName, id).catch(() => { /* existierte noch nicht */ });
-  await insertVector(collectionName, vector, {
-    framework: row.framework,
-    version: row.version,
-    section: row.section,
-    content: row.content,
-    type: row.type,
-    category: row.category,
-    source: row.source,
-    content_hash: row.content_hash,
-    indexed_at: new Date(row.indexed_at).toISOString(),
-  }, id);
-
-  await pool.query('UPDATE tech_docs SET embedded_at = NOW() WHERE id = $1', [id]);
+  // P15-T4: Lesen, Text und Payload teilt sich der Einzelweg mit dem Stapel (techDocNachzug).
+  await betteEinzelnEin(techDocNachzug, id, embedOptions);
 }
+
+/** Inhaltsstand einer Tech-Doc: content_hash. */
+const TECH_DOC_STAND = 't.content_hash';
+
+/**
+ * P15-T4: Lesen, Text und Payload einer Tech-Doc — EINZIGE Stelle fuer Einzel-Nachtrag und Stapel
+ * (embed-nachzug.ts). Inhalt UND Projekt (= Ziel-Collection) kommen aus der PG-Zeile.
+ */
+export const techDocNachzug: NachzugQuelle = {
+  tabelle: 'tech_docs',
+  idSpalte: 'id',
+  idTyp: 'text',
+  standSql: TECH_DOC_STAND,
+  async lese(ids) {
+    const { rows } = await getHintergrundPool().query(
+      `SELECT t.id, t.framework, t.version, t.section, t.content, t.type, t.category, t.source,
+              t.content_hash, t.indexed_at, t.project, ${TECH_DOC_STAND} AS stand
+         FROM tech_docs t WHERE t.id = ANY($1::text[])`,
+      [ids]
+    );
+    return rows.map((row) => ({
+      id: row.id,
+      project: row.project,
+      collection: zielCollection(row.project),
+      // Embedding-Text unveraendert wie bisher in addTechDoc.
+      text: `${row.framework} ${row.version} ${row.section ?? ''} ${row.content}`,
+      payload: {
+        framework: row.framework,
+        version: row.version,
+        section: row.section,
+        content: row.content,
+        type: row.type,
+        category: row.category,
+        source: row.source,
+        content_hash: row.content_hash,
+        indexed_at: new Date(row.indexed_at).toISOString(),
+      },
+      stand: row.stand,
+    }));
+  },
+};
 
 /**
  * Fuegt ein Tech-Doc hinzu (PG-first, siehe speichereTechDoc). Signatur bleibt fuer die
