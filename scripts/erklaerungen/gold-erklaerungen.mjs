@@ -8,7 +8,8 @@ import { readFileSync } from 'node:fs';
 
 const seed = JSON.parse(readFileSync(new URL('../../packages/core/data/erklaerungstopf-seed.json', import.meta.url), 'utf8'));
 
-export const ERKLAERUNGEN = Object.fromEntries(seed.eintraege.map((e) => [e.e0_klasse, { de: e.de, en: e.en }]));
+// Nur die E0-Eintraege: v2 (P15 Nachtrunde, andere Familien) hat kein e0_klasse.
+export const ERKLAERUNGEN = Object.fromEntries(seed.eintraege.filter((e) => e.e0_klasse).map((e) => [e.e0_klasse, { de: e.de, en: e.en }]));
 export const ZURUECKGEHALTEN = ['K10', 'S3', 'X_escape', 'X_erfunden'];
 /** E0-Familienkuerzel -> Pruefer-Familie (Name des Syntaxpruefers im Katalog). */
 export const FAMILIE = { ts: 'typescript', json: 'json', sql: 'libpg-query' };

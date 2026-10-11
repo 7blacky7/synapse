@@ -1,11 +1,12 @@
 {
   "format": "erklaerungstopf-seed",
   "version": 1,
-  "quelle": "P15-T33 E0 (thought 1486172c): 15 Gold-Erklaerungen, deutsch aus E0, englisch aus E1. Status (P15-T33 E2, Jev-Protokoll 2, nicht vom User): verifiziert, wo E0 die Verifikation (M6) UND eine zuverlaessige Jev-Erkennung (V3, Tor 0,7) belegt; K4 und K11 nur vorgeschlagen (Erkennung 3/5 bzw. 1/5).",
+  "quelle": "P15-T33 E0 (thought 1486172c): 15 Gold-Erklaerungen, deutsch aus E0, englisch aus E1. Status (P15-T33 E2, Jev-Protokoll 2, nicht vom User): verifiziert, wo E0 die Verifikation (M6) UND eine zuverlaessige Jev-Erkennung (V3, Tor 0,7) belegt; K4 und K11 nur vorgeschlagen (Erkennung 3/5 bzw. 1/5). v2 (P15 Nachtrunde, 11.10.2026, Eintraege mit v2:true): 35 generische Erklaerungen fuer python, shell, go, rust, php, ruby, kotlin, java, csharp, yaml, toml, dockerfile, cmake; verifiziert nur, wo je 3 Mutationen echter Index-Dateien vom echten Pruefer gesperrt wurden (Original ohne Befund) UND Jev auf dem Produktionsweg (baueSchatten/baueJevFrage, Kandidaten = alle Erklaerungen der Familie) 3/3 ueber Tor 0,7 richtig waehlte; sonst vorgeschlagen.",
   "hinweise": [
     "Generisch: keine Pfade, Bezeichner, Zeilen, Projekt- oder Agentennamen. ladeErklaerungstopfSeed prueft Generik und die gepflegten Sprachen (jev_optionen) vor dem Einfuegen.",
     "Idempotent ueber kennung (ON CONFLICT DO NOTHING); eine bestehende Erklaerung mit derselben Lage in der Familie gilt als vorhanden.",
-    "familie = Name des Syntaxpruefers (familieVon), schluessel = quelle|familie|code (nur Ordnung/Statistik)."
+    "familie = Name des Syntaxpruefers (familieVon), schluessel = quelle|familie|code (nur Ordnung/Statistik).",
+    "Gleiche Ursache in mehreren Familien steht vorerst je Familie einzeln (z. B. fehlende geschweifte Klammer); familienuebergreifende Erklaerungen entscheidet der User (Varianten A/C, thought 96cc1312)."
   ],
   "eintraege": [
     {
@@ -276,6 +277,636 @@
         "lage": "Comma before the closing parenthesis of an SQL list (column, value or argument list).",
         "wieso": "SQL allows no trailing comma; after the comma the parser expects another column or expression.",
         "abhilfe": "Remove the last comma before \")\"."
+      }
+    },
+    {
+      "kennung": "py-klammer-nicht-geschlossen",
+      "v2": true,
+      "familie": "python",
+      "schluessel": "syntax|python|SyntaxError",
+      "status": "verifiziert",
+      "beleg": "v2 (P15 Nachtrunde): echter Pruefer 3/3 (Original ohne Befund, Mutation gesperrt); Jev Produktionsweg Tor 0,7 richtig 3/3",
+      "de": {
+        "lage": "Eine runde Klammer wird geoeffnet, aber nicht wieder geschlossen.",
+        "wieso": "Bei der Aenderung ging die schliessende \")\" eines Aufrufs oder Ausdrucks verloren. Python liest die folgenden Zeilen als Fortsetzung des offenen Ausdrucks und meldet den Fehler oft erst spaeter.",
+        "abhilfe": "An der geaenderten Stelle die fehlende \")\" ergaenzen, sodass jede geoeffnete Klammer in derselben Anweisung geschlossen wird."
+      },
+      "en": {
+        "lage": "A parenthesis is opened but never closed.",
+        "wieso": "The change lost the closing \")\" of a call or expression. Python reads the following lines as a continuation of the open expression and often reports the error later.",
+        "abhilfe": "Add the missing \")\" at the changed place so that every opened parenthesis is closed within the same statement."
+      }
+    },
+    {
+      "kennung": "py-doppelpunkt-fehlt",
+      "v2": true,
+      "familie": "python",
+      "schluessel": "syntax|python|SyntaxError",
+      "status": "verifiziert",
+      "beleg": "v2 (P15 Nachtrunde): echter Pruefer 3/3 (Original ohne Befund, Mutation gesperrt); Jev Produktionsweg Tor 0,7 richtig 3/3",
+      "de": {
+        "lage": "Am Ende eines Blockkopfs (def, class, if, for, while, with, try) fehlt der Doppelpunkt.",
+        "wieso": "In Python endet jede Zeile, die einen eingerueckten Block einleitet, mit \":\". Ohne ihn erwartet der Parser die Anweisung in derselben Zeile.",
+        "abhilfe": "Den Doppelpunkt am Ende der Kopfzeile ergaenzen; der eingerueckte Block darunter bleibt unveraendert."
+      },
+      "en": {
+        "lage": "The colon at the end of a block header (def, class, if, for, while, with, try) is missing.",
+        "wieso": "In Python every line that opens an indented block ends with \":\". Without it the parser expects the statement on the same line.",
+        "abhilfe": "Add the colon at the end of the header line; the indented block below stays unchanged."
+      }
+    },
+    {
+      "kennung": "py-unerwartete-einrueckung",
+      "v2": true,
+      "familie": "python",
+      "schluessel": "syntax|python|IndentationError",
+      "status": "verifiziert",
+      "beleg": "v2 (P15 Nachtrunde): echter Pruefer 3/3 (Original ohne Befund, Mutation gesperrt); Jev Produktionsweg Tor 0,7 richtig 3/3",
+      "de": {
+        "lage": "Eine Zeile ist tiefer eingerueckt als die Anweisungen ihres Blocks (unerwartete Einrueckung).",
+        "wieso": "In Python bestimmt die Einrueckung die Blockstruktur. Eine Zeile mit mehr Leerzeichen als ihre Nachbarn, ohne dass davor ein Blockkopf mit \":\" steht, ist ungueltig - meist durch Einfuegen oder Kopieren mit falscher Einrueckung.",
+        "abhilfe": "Die Zeile auf die Einrueckung der umgebenden Anweisungen bringen (gleiche Anzahl Leerzeichen, keine Mischung mit Tabulatoren)."
+      },
+      "en": {
+        "lage": "A line is indented deeper than the statements of its block (unexpected indent).",
+        "wieso": "In Python indentation defines the block structure. A line with more leading spaces than its neighbours, without a block header ending in \":\" before it, is invalid - usually caused by inserting or pasting with the wrong indentation.",
+        "abhilfe": "Align the line with the indentation of the surrounding statements (same number of spaces, no mixing with tabs)."
+      }
+    },
+    {
+      "kennung": "py-string-nicht-geschlossen",
+      "v2": true,
+      "familie": "python",
+      "schluessel": "syntax|python|SyntaxError",
+      "status": "verifiziert",
+      "beleg": "v2 (P15 Nachtrunde): echter Pruefer 3/3 (Original ohne Befund, Mutation gesperrt); Jev Produktionsweg Tor 0,7 richtig 3/3",
+      "de": {
+        "lage": "Ein String-Literal wird in derselben Zeile nicht geschlossen.",
+        "wieso": "Das schliessende Anfuehrungszeichen fehlt. Ein normaler String in Python endet in derselben Zeile; nur dreifache Anfuehrungszeichen erlauben mehrere Zeilen.",
+        "abhilfe": "Das fehlende schliessende Anfuehrungszeichen (gleiche Art wie das oeffnende) ergaenzen."
+      },
+      "en": {
+        "lage": "A string literal is not closed on the same line.",
+        "wieso": "The closing quote is missing. A regular Python string must end on the same line; only triple quotes allow multiple lines.",
+        "abhilfe": "Add the missing closing quote (same kind as the opening one)."
+      }
+    },
+    {
+      "kennung": "sh-block-abschluss-fehlt",
+      "v2": true,
+      "familie": "shell",
+      "schluessel": "syntax|shell|Syntaxfehler: syntax error: unexpected end of file",
+      "status": "verifiziert",
+      "beleg": "v2 (P15 Nachtrunde): echter Pruefer 3/3 (Original ohne Befund, Mutation gesperrt); Jev Produktionsweg Tor 0,7 richtig 3/3",
+      "de": {
+        "lage": "Ein if-, for-, while- oder case-Block wird nicht abgeschlossen (fi, done oder esac fehlt).",
+        "wieso": "Die Aenderung hat die abschliessende Zeile eines Blocks entfernt. Die Shell sucht bis zum Dateiende nach dem Abschluss und meldet dann ein unerwartetes Dateiende.",
+        "abhilfe": "Das passende Schluesselwort (fi fuer if, done fuer for/while, esac fuer case) an der Stelle ergaenzen, an der der Block enden soll."
+      },
+      "en": {
+        "lage": "An if, for, while or case block is not closed (fi, done or esac is missing).",
+        "wieso": "The change removed the closing line of a block. The shell searches up to the end of the file for the terminator and then reports an unexpected end of file.",
+        "abhilfe": "Add the matching keyword (fi for if, done for for/while, esac for case) where the block is supposed to end."
+      }
+    },
+    {
+      "kennung": "sh-then-do-fehlt",
+      "v2": true,
+      "familie": "shell",
+      "schluessel": "syntax|shell|Syntaxfehler: syntax error near unexpected token `else'",
+      "status": "verifiziert",
+      "beleg": "v2 (P15 Nachtrunde): echter Pruefer 3/3 (Original ohne Befund, Mutation gesperrt); Jev Produktionsweg Tor 0,7 richtig 3/3",
+      "de": {
+        "lage": "Nach der Bedingung eines if oder einer Schleife fehlt then bzw. do.",
+        "wieso": "In der Shell folgt auf \"if Bedingung\" das Schluesselwort then und auf \"while/for ...\" das Schluesselwort do (in derselben Zeile nach \";\" oder in der naechsten). Fehlt es, trifft der Parser spaeter auf fi oder done und meldet ein unerwartetes Token.",
+        "abhilfe": "Nach der Bedingung \"; then\" bzw. \"; do\" ergaenzen."
+      },
+      "en": {
+        "lage": "The keyword then (after an if condition) or do (after a loop header) is missing.",
+        "wieso": "In the shell \"if condition\" must be followed by then and \"while/for ...\" by do (on the same line after \";\" or on the next line). Without it the parser later meets fi or done and reports an unexpected token.",
+        "abhilfe": "Add \"; then\" or \"; do\" after the condition."
+      }
+    },
+    {
+      "kennung": "sh-anfuehrung-offen",
+      "v2": true,
+      "familie": "shell",
+      "schluessel": "syntax|shell|Syntaxfehler: unexpected EOF while looking for matching `\"'",
+      "status": "verifiziert",
+      "beleg": "v2 (P15 Nachtrunde): echter Pruefer 3/3 (Original ohne Befund, Mutation gesperrt); Jev Produktionsweg Tor 0,7 richtig 3/3",
+      "de": {
+        "lage": "Ein Anfuehrungszeichen wird nicht geschlossen.",
+        "wieso": "Das schliessende Anfuehrungszeichen fehlt. Die Shell liest alles bis zum naechsten passenden Zeichen als einen String und meldet dann ein unerwartetes Dateiende bei der Suche nach dem Gegenstueck - oder ein unerwartetes Token (z. B. fi), weil der String das Blockende verschluckt hat.",
+        "abhilfe": "An der geaenderten Stelle das fehlende schliessende Anfuehrungszeichen ergaenzen."
+      },
+      "en": {
+        "lage": "A quote is not closed.",
+        "wieso": "The closing quote is missing. The shell reads everything up to the next matching character as one string and then reports an unexpected end of file while looking for the matching quote - or an unexpected token (for example fi) because the string swallowed the end of the block.",
+        "abhilfe": "Add the missing closing quote at the changed place."
+      }
+    },
+    {
+      "kennung": "go-geschweifte-klammer-fehlt",
+      "v2": true,
+      "familie": "go",
+      "schluessel": "syntax|go|Syntaxfehler: expected ';'<X>'EOF'",
+      "status": "verifiziert",
+      "beleg": "v2 (P15 Nachtrunde): echter Pruefer 3/3 (Original ohne Befund, Mutation gesperrt); Jev Produktionsweg Tor 0,7 richtig 3/3",
+      "de": {
+        "lage": "Eine Funktion oder ein Block wird nicht geschlossen: eine \"}\" fehlt.",
+        "wieso": "Die Aenderung hat eine schliessende geschweifte Klammer entfernt. Der Parser erreicht das Dateiende, waehrend noch ein Block offen ist.",
+        "abhilfe": "Die fehlende \"}\" am Ende des betroffenen Blocks ergaenzen; die Stelle ist dort, wo die Aenderung Klammern entfernt hat, nicht die gemeldete Position."
+      },
+      "en": {
+        "lage": "A function or block is not closed: a \"}\" is missing.",
+        "wieso": "The change removed a closing curly brace. The parser reaches the end of the file while a block is still open.",
+        "abhilfe": "Add the missing \"}\" at the end of the affected block; look where the change removed braces, not at the reported position."
+      }
+    },
+    {
+      "kennung": "go-runde-klammer-fehlt",
+      "v2": true,
+      "familie": "go",
+      "schluessel": "syntax|go|Syntaxfehler: missing ',' before newline in argument list",
+      "status": "verifiziert",
+      "beleg": "v2 (P15 Nachtrunde): echter Pruefer 3/3 (Original ohne Befund, Mutation gesperrt); Jev Produktionsweg Tor 0,7 richtig 3/3",
+      "de": {
+        "lage": "Eine runde Klammer eines Aufrufs oder Ausdrucks wird nicht geschlossen.",
+        "wieso": "Die schliessende \")\" fehlt. Go erwartet bei einem Zeilenumbruch in einer noch offenen Argumentliste ein Komma und meldet deshalb meist ein fehlendes Komma vor dem Zeilenumbruch (oder \"expected )\"), obwohl die Klammer fehlt.",
+        "abhilfe": "Die fehlende \")\" am Ende des Aufrufs bzw. Ausdrucks ergaenzen."
+      },
+      "en": {
+        "lage": "A parenthesis of a call or expression is not closed.",
+        "wieso": "The closing \")\" is missing. At a line break inside a still open argument list Go expects a comma and therefore usually reports a missing comma before the newline (or \"expected )\"), although the parenthesis is missing.",
+        "abhilfe": "Add the missing \")\" at the end of the call or expression."
+      }
+    },
+    {
+      "kennung": "go-zuweisung-ohne-wert",
+      "v2": true,
+      "familie": "go",
+      "schluessel": "syntax|go|Syntaxfehler: expected operand, found '}'",
+      "status": "verifiziert",
+      "beleg": "v2 (P15 Nachtrunde): echter Pruefer 3/3 (Original ohne Befund, Mutation gesperrt); Jev Produktionsweg Tor 0,7 richtig 3/3",
+      "de": {
+        "lage": "Eine Zuweisung oder Deklaration hat keinen Wert auf der rechten Seite.",
+        "wieso": "Nach := bzw. = muss ein Ausdruck folgen. Fehlt er, findet der Parser stattdessen das naechste Token (z. B. \"}\") und meldet einen fehlenden Operanden.",
+        "abhilfe": "Den Ausdruck rechts vom Zuweisungsoperator ergaenzen oder die unvollstaendige Zeile entfernen."
+      },
+      "en": {
+        "lage": "An assignment or declaration has no value on the right-hand side.",
+        "wieso": "An expression must follow := or =. If it is missing, the parser finds the next token instead (for example \"}\") and reports a missing operand.",
+        "abhilfe": "Add the expression to the right of the assignment operator or remove the incomplete line."
+      }
+    },
+    {
+      "kennung": "rs-geschweifte-klammer-fehlt",
+      "v2": true,
+      "familie": "rust",
+      "schluessel": "syntax|rust|Syntaxfehler: this file contains an unclosed delimiter",
+      "status": "verifiziert",
+      "beleg": "v2 (P15 Nachtrunde): echter Pruefer 3/3 (Original ohne Befund, Mutation gesperrt); Jev Produktionsweg Tor 0,7 richtig 3/3",
+      "de": {
+        "lage": "Ein Block wird nicht geschlossen: eine \"}\" fehlt (nicht geschlossenes Trennzeichen).",
+        "wieso": "Die Aenderung hat eine schliessende geschweifte Klammer entfernt. Rust meldet ein nicht geschlossenes Trennzeichen am Dateiende und verweist auf die oeffnende Klammer.",
+        "abhilfe": "Die fehlende \"}\" am Ende des betroffenen Blocks ergaenzen."
+      },
+      "en": {
+        "lage": "A block is not closed: a \"}\" is missing (unclosed delimiter).",
+        "wieso": "The change removed a closing curly brace. Rust reports an unclosed delimiter at the end of the file and points to the opening brace.",
+        "abhilfe": "Add the missing \"}\" at the end of the affected block."
+      }
+    },
+    {
+      "kennung": "rs-zuweisung-ohne-wert",
+      "v2": true,
+      "familie": "rust",
+      "schluessel": "syntax|rust|Syntaxfehler: expected expression, found `;`",
+      "status": "verifiziert",
+      "beleg": "v2 (P15 Nachtrunde): echter Pruefer 3/3 (Original ohne Befund, Mutation gesperrt); Jev Produktionsweg Tor 0,7 richtig 3/3",
+      "de": {
+        "lage": "Eine let-Bindung oder Zuweisung hat keinen Wert: nach \"=\" folgt direkt \";\".",
+        "wieso": "Rust erwartet nach \"=\" einen Ausdruck. Steht dort direkt das Semikolon, meldet der Parser \"expected expression\".",
+        "abhilfe": "Den fehlenden Ausdruck nach \"=\" ergaenzen oder die Bindung ohne \"=\" deklarieren (let name: Typ;)."
+      },
+      "en": {
+        "lage": "A let binding or assignment has no value: \"=\" is directly followed by \";\".",
+        "wieso": "Rust expects an expression after \"=\". If the semicolon follows directly, the parser reports \"expected expression\".",
+        "abhilfe": "Add the missing expression after \"=\" or declare the binding without \"=\" (let name: Type;)."
+      }
+    },
+    {
+      "kennung": "rs-semikolon-fehlt",
+      "v2": true,
+      "familie": "rust",
+      "schluessel": "syntax|rust|Syntaxfehler: expected `;`, found keyword `let`",
+      "status": "verifiziert",
+      "beleg": "v2 (P15 Nachtrunde): echter Pruefer 3/3 (Original ohne Befund, Mutation gesperrt); Jev Produktionsweg Tor 0,7 richtig 3/3",
+      "de": {
+        "lage": "Am Ende einer Anweisung fehlt das Semikolon, die naechste Anweisung folgt direkt.",
+        "wieso": "In Rust werden Anweisungen mit \";\" getrennt. Fehlt es, liest der Parser die naechste Zeile als Fortsetzung und meldet \"expected ;\" beim naechsten Schluesselwort.",
+        "abhilfe": "Das Semikolon am Ende der vorherigen Anweisung ergaenzen."
+      },
+      "en": {
+        "lage": "The semicolon at the end of a statement is missing and the next statement follows directly.",
+        "wieso": "Rust separates statements with \";\". Without it the parser reads the next line as a continuation and reports \"expected ;\" at the next keyword.",
+        "abhilfe": "Add the semicolon at the end of the previous statement."
+      }
+    },
+    {
+      "kennung": "php-zuweisung-ohne-wert",
+      "v2": true,
+      "familie": "php",
+      "schluessel": "syntax|php|Syntaxfehler: syntax error, unexpected token \";\"",
+      "status": "verifiziert",
+      "beleg": "v2 (P15 Nachtrunde): echter Pruefer 3/3 (Original ohne Befund, Mutation gesperrt); Jev Produktionsweg Tor 0,7 richtig 3/3",
+      "de": {
+        "lage": "Eine Zuweisung hat keinen Wert: nach \"=\" folgt direkt \";\".",
+        "wieso": "PHP erwartet nach dem Zuweisungsoperator einen Ausdruck. Das Semikolon an dieser Stelle ist ein unerwartetes Token.",
+        "abhilfe": "Den Wert nach \"=\" ergaenzen oder die unvollstaendige Zuweisung entfernen."
+      },
+      "en": {
+        "lage": "An assignment has no value: \"=\" is directly followed by \";\".",
+        "wieso": "PHP expects an expression after the assignment operator. A semicolon at this place is an unexpected token.",
+        "abhilfe": "Add the value after \"=\" or remove the incomplete assignment."
+      }
+    },
+    {
+      "kennung": "php-semikolon-fehlt",
+      "v2": true,
+      "familie": "php",
+      "schluessel": "syntax|php|Syntaxfehler: syntax error, unexpected variable \"<X>\"",
+      "status": "verifiziert",
+      "beleg": "v2 (P15 Nachtrunde): echter Pruefer 3/3 (Original ohne Befund, Mutation gesperrt); Jev Produktionsweg Tor 0,7 richtig 3/3",
+      "de": {
+        "lage": "Am Ende einer Anweisung fehlt das Semikolon.",
+        "wieso": "In PHP endet jede Anweisung mit \";\". Fehlt es, trifft der Parser in der naechsten Zeile auf ein unerwartetes Token (oft eine Variable).",
+        "abhilfe": "Das Semikolon am Ende der vorherigen Anweisung ergaenzen."
+      },
+      "en": {
+        "lage": "The semicolon at the end of a statement is missing.",
+        "wieso": "In PHP every statement ends with \";\". Without it the parser meets an unexpected token on the next line (often a variable).",
+        "abhilfe": "Add the semicolon at the end of the previous statement."
+      }
+    },
+    {
+      "kennung": "php-geschweifte-klammer-fehlt",
+      "v2": true,
+      "familie": "php",
+      "schluessel": "syntax|php|Syntaxfehler: Unclosed '{' on line N",
+      "status": "verifiziert",
+      "beleg": "v2 (P15 Nachtrunde): echter Pruefer 3/3 (Original ohne Befund, Mutation gesperrt); Jev Produktionsweg Tor 0,7 richtig 3/3",
+      "de": {
+        "lage": "Ein Block wird nicht geschlossen: eine \"}\" fehlt, PHP meldet ein unerwartetes Dateiende.",
+        "wieso": "Die Aenderung hat eine schliessende geschweifte Klammer entfernt; beim Dateiende ist noch eine Klasse, Funktion oder ein Block offen.",
+        "abhilfe": "Die fehlende \"}\" am Ende des betroffenen Blocks ergaenzen."
+      },
+      "en": {
+        "lage": "A block is not closed: a \"}\" is missing and PHP reports an unexpected end of file.",
+        "wieso": "The change removed a closing curly brace; at the end of the file a class, function or block is still open.",
+        "abhilfe": "Add the missing \"}\" at the end of the affected block."
+      }
+    },
+    {
+      "kennung": "rb-end-fehlt",
+      "v2": true,
+      "familie": "ruby",
+      "schluessel": "syntax|ruby|Syntaxfehler: syntax error, unexpected end-of-input, expecting `end' or dummy end",
+      "status": "verifiziert",
+      "beleg": "v2 (P15 Nachtrunde): echter Pruefer 3/3 (Original ohne Befund, Mutation gesperrt); Jev Produktionsweg Tor 0,7 richtig 3/3",
+      "de": {
+        "lage": "Zu einem def, class, module, if, do oder Block fehlt das abschliessende end.",
+        "wieso": "In Ruby schliesst end jeden dieser Bloecke. Die Aenderung hat eine end-Zeile entfernt; der Parser erreicht das Dateiende und erwartet noch end.",
+        "abhilfe": "Das fehlende end an der Stelle ergaenzen, an der der Block enden soll (Einrueckung als Hinweis nutzen)."
+      },
+      "en": {
+        "lage": "A def, class, module, if, do or block is missing its closing end.",
+        "wieso": "In Ruby end closes each of these blocks. The change removed an end line; the parser reaches the end of the file and still expects end.",
+        "abhilfe": "Add the missing end where the block is supposed to end (use the indentation as a guide)."
+      }
+    },
+    {
+      "kennung": "rb-end-zu-viel",
+      "v2": true,
+      "familie": "ruby",
+      "schluessel": "syntax|ruby|Syntaxfehler: syntax error, unexpected `end'",
+      "status": "verifiziert",
+      "beleg": "v2 (P15 Nachtrunde): echter Pruefer 3/3 (Original ohne Befund, Mutation gesperrt); Jev Produktionsweg Tor 0,7 richtig 3/3",
+      "de": {
+        "lage": "Ein end steht ohne zugehoerigen offenen Block (ein end zu viel).",
+        "wieso": "Die Aenderung hat ein zusaetzliches end eingefuegt oder den oeffnenden Teil (def, do, if ...) entfernt. Der Parser trifft auf end, obwohl kein Block offen ist.",
+        "abhilfe": "Das ueberzaehlige end entfernen oder den fehlenden Blockanfang wiederherstellen."
+      },
+      "en": {
+        "lage": "An end has no matching open block (one end too many).",
+        "wieso": "The change inserted an extra end or removed the opening part (def, do, if ...). The parser meets end although no block is open.",
+        "abhilfe": "Remove the surplus end or restore the missing block opening."
+      }
+    },
+    {
+      "kennung": "rb-klammer-nicht-geschlossen",
+      "v2": true,
+      "familie": "ruby",
+      "schluessel": "syntax|ruby|Syntaxfehler: syntax error, unexpected `end'<X>')'",
+      "status": "verifiziert",
+      "beleg": "v2 (P15 Nachtrunde): echter Pruefer 3/3 (Original ohne Befund, Mutation gesperrt); Jev Produktionsweg Tor 0,7 richtig 3/3",
+      "de": {
+        "lage": "Eine runde Klammer eines Methodenaufrufs wird nicht geschlossen.",
+        "wieso": "Die schliessende \")\" fehlt; Ruby liest weiter, bis der Ausdruck nicht mehr fortgesetzt werden kann, und erwartet dann \")\".",
+        "abhilfe": "Die fehlende \")\" am Ende der Argumentliste ergaenzen."
+      },
+      "en": {
+        "lage": "A parenthesis of a method call is not closed.",
+        "wieso": "The closing \")\" is missing; Ruby keeps reading until the expression cannot be continued and then expects \")\".",
+        "abhilfe": "Add the missing \")\" at the end of the argument list."
+      }
+    },
+    {
+      "kennung": "kt-zuweisung-ohne-wert",
+      "v2": true,
+      "familie": "kotlin",
+      "schluessel": "syntax|kotlin|kotlin-psi",
+      "status": "verifiziert",
+      "beleg": "v2 (P15 Nachtrunde): echter Pruefer 3/3 (Original ohne Befund, Mutation gesperrt); Jev Produktionsweg Tor 0,7 richtig 3/3",
+      "de": {
+        "lage": "Eine val/var-Deklaration oder Zuweisung hat keinen Wert nach \"=\".",
+        "wieso": "Kotlin erwartet nach \"=\" einen Ausdruck. Folgt stattdessen eine Klammer oder das Blockende, meldet der Parser \"Expecting an expression\".",
+        "abhilfe": "Den fehlenden Ausdruck nach \"=\" ergaenzen oder die unvollstaendige Zeile entfernen."
+      },
+      "en": {
+        "lage": "A val/var declaration or assignment has no value after \"=\".",
+        "wieso": "Kotlin expects an expression after \"=\". If a bracket or the end of the block follows instead, the parser reports \"Expecting an expression\".",
+        "abhilfe": "Add the missing expression after \"=\" or remove the incomplete line."
+      }
+    },
+    {
+      "kennung": "kt-geschweifte-klammer-fehlt",
+      "v2": true,
+      "familie": "kotlin",
+      "schluessel": "syntax|kotlin|kotlin-psi",
+      "status": "verifiziert",
+      "beleg": "v2 (P15 Nachtrunde): echter Pruefer 3/3 (Original ohne Befund, Mutation gesperrt); Jev Produktionsweg Tor 0,7 richtig 3/3",
+      "de": {
+        "lage": "Ein Block wird nicht geschlossen: eine \"}\" fehlt.",
+        "wieso": "Die Aenderung hat eine schliessende geschweifte Klammer entfernt; beim Dateiende ist noch eine Klasse, Funktion oder ein Lambda offen.",
+        "abhilfe": "Die fehlende \"}\" am Ende des betroffenen Blocks ergaenzen."
+      },
+      "en": {
+        "lage": "A block is not closed: a \"}\" is missing.",
+        "wieso": "The change removed a closing curly brace; at the end of the file a class, function or lambda is still open.",
+        "abhilfe": "Add the missing \"}\" at the end of the affected block."
+      }
+    },
+    {
+      "kennung": "java-semikolon-fehlt",
+      "v2": true,
+      "familie": "java",
+      "schluessel": "syntax|java|compiler.err.expected",
+      "status": "vorgeschlagen",
+      "beleg": "v2 (P15 Nachtrunde): echter Pruefer 3/3 (Original ohne Befund, Mutation gesperrt); Jev Produktionsweg Tor 0,7 richtig 2/3",
+      "de": {
+        "lage": "Am Ende einer Anweisung fehlt das Semikolon.",
+        "wieso": "In Java endet jede Anweisung mit \";\". Fehlt es, meldet der Compiler \"; expected\" am Ende dieser Anweisung.",
+        "abhilfe": "Das Semikolon am Ende der Anweisung ergaenzen."
+      },
+      "en": {
+        "lage": "The semicolon at the end of a statement is missing.",
+        "wieso": "In Java every statement ends with \";\". Without it the compiler reports \"; expected\" at the end of that statement.",
+        "abhilfe": "Add the semicolon at the end of the statement."
+      }
+    },
+    {
+      "kennung": "java-geschweifte-klammer-fehlt",
+      "v2": true,
+      "familie": "java",
+      "schluessel": "syntax|java|compiler.err.premature.eof",
+      "status": "verifiziert",
+      "beleg": "v2 (P15 Nachtrunde): echter Pruefer 3/3 (Original ohne Befund, Mutation gesperrt); Jev Produktionsweg Tor 0,7 richtig 3/3",
+      "de": {
+        "lage": "Ein Block wird nicht geschlossen: eine \"}\" fehlt, das Dateiende wird beim Parsen erreicht.",
+        "wieso": "Die Aenderung hat eine schliessende geschweifte Klammer entfernt; beim Dateiende ist noch eine Klasse oder Methode offen.",
+        "abhilfe": "Die fehlende \"}\" am Ende des betroffenen Blocks ergaenzen."
+      },
+      "en": {
+        "lage": "A block is not closed: a \"}\" is missing and the end of the file is reached while parsing.",
+        "wieso": "The change removed a closing curly brace; at the end of the file a class or method is still open.",
+        "abhilfe": "Add the missing \"}\" at the end of the affected block."
+      }
+    },
+    {
+      "kennung": "java-zuweisung-ohne-wert",
+      "v2": true,
+      "familie": "java",
+      "schluessel": "syntax|java|compiler.err.illegal.start.of.expr",
+      "status": "verifiziert",
+      "beleg": "v2 (P15 Nachtrunde): echter Pruefer 3/3 (Original ohne Befund, Mutation gesperrt); Jev Produktionsweg Tor 0,7 richtig 3/3",
+      "de": {
+        "lage": "Eine Variable wird mit \"=\" deklariert, aber ohne Wert: nach \"=\" folgt direkt \";\".",
+        "wieso": "Java erwartet nach \"=\" einen Ausdruck; das Semikolon an dieser Stelle ist ein ungueltiger Ausdrucksbeginn.",
+        "abhilfe": "Den Wert nach \"=\" ergaenzen oder \"=\" entfernen, wenn die Variable erst spaeter belegt wird."
+      },
+      "en": {
+        "lage": "A variable is declared with \"=\" but without a value: \"=\" is directly followed by \";\".",
+        "wieso": "Java expects an expression after \"=\"; the semicolon at this place is an illegal start of an expression.",
+        "abhilfe": "Add the value after \"=\" or remove \"=\" if the variable is assigned later."
+      }
+    },
+    {
+      "kennung": "cs-zuweisung-ohne-wert",
+      "v2": true,
+      "familie": "csharp",
+      "schluessel": "syntax|csharp|ts-error",
+      "status": "verifiziert",
+      "beleg": "v2 (P15 Nachtrunde): echter Pruefer 3/3 (Original ohne Befund, Mutation gesperrt); Jev Produktionsweg Tor 0,7 richtig 3/3",
+      "de": {
+        "lage": "Eine Variable wird mit \"=\" deklariert, aber ohne Wert: nach \"=\" folgt direkt \";\".",
+        "wieso": "C# erwartet nach \"=\" einen Ausdruck. Ohne ihn ist die Deklaration unvollstaendig und der Parser meldet ein unerwartetes Zeichen.",
+        "abhilfe": "Den Wert nach \"=\" ergaenzen oder \"=\" entfernen, wenn die Variable erst spaeter belegt wird."
+      },
+      "en": {
+        "lage": "A variable is declared with \"=\" but without a value: \"=\" is directly followed by \";\".",
+        "wieso": "C# expects an expression after \"=\". Without it the declaration is incomplete and the parser reports an unexpected character.",
+        "abhilfe": "Add the value after \"=\" or remove \"=\" if the variable is assigned later."
+      }
+    },
+    {
+      "kennung": "cs-geschweifte-klammer-fehlt",
+      "v2": true,
+      "familie": "csharp",
+      "schluessel": "syntax|csharp|ts-error",
+      "status": "verifiziert",
+      "beleg": "v2 (P15 Nachtrunde): echter Pruefer 3/3 (Original ohne Befund, Mutation gesperrt); Jev Produktionsweg Tor 0,7 richtig 3/3",
+      "de": {
+        "lage": "Ein Block wird nicht geschlossen: eine \"}\" fehlt.",
+        "wieso": "Die Aenderung hat eine schliessende geschweifte Klammer entfernt; beim Dateiende ist noch ein Namespace, eine Klasse oder Methode offen.",
+        "abhilfe": "Die fehlende \"}\" am Ende des betroffenen Blocks ergaenzen."
+      },
+      "en": {
+        "lage": "A block is not closed: a \"}\" is missing.",
+        "wieso": "The change removed a closing curly brace; at the end of the file a namespace, class or method is still open.",
+        "abhilfe": "Add the missing \"}\" at the end of the affected block."
+      }
+    },
+    {
+      "kennung": "yaml-tabulator-einrueckung",
+      "v2": true,
+      "familie": "yaml",
+      "schluessel": "syntax|yaml|TAB_AS_INDENT",
+      "status": "verifiziert",
+      "beleg": "v2 (P15 Nachtrunde): echter Pruefer 3/3 (Original ohne Befund, Mutation gesperrt); Jev Produktionsweg Tor 0,7 richtig 3/3",
+      "de": {
+        "lage": "Eine Zeile ist mit einem Tabulator statt mit Leerzeichen eingerueckt.",
+        "wieso": "YAML erlaubt fuer die Einrueckung nur Leerzeichen. Ein Tabulator am Zeilenanfang ist ein Syntaxfehler, auch wenn die Zeile im Editor richtig aussieht.",
+        "abhilfe": "Den Tabulator durch die passende Anzahl Leerzeichen ersetzen (gleiche Einrueckung wie die Nachbarzeilen derselben Ebene)."
+      },
+      "en": {
+        "lage": "A line is indented with a tab instead of spaces.",
+        "wieso": "YAML only allows spaces for indentation. A tab at the start of a line is a syntax error even if the line looks correct in the editor.",
+        "abhilfe": "Replace the tab with the appropriate number of spaces (same indentation as the neighbouring lines on that level)."
+      }
+    },
+    {
+      "kennung": "yaml-anfuehrung-offen",
+      "v2": true,
+      "familie": "yaml",
+      "schluessel": "syntax|yaml|MISSING_CHAR",
+      "status": "verifiziert",
+      "beleg": "v2 (P15 Nachtrunde): echter Pruefer 3/3 (Original ohne Befund, Mutation gesperrt); Jev Produktionsweg Tor 0,7 richtig 3/3",
+      "de": {
+        "lage": "Ein Wert in Anfuehrungszeichen wird nicht geschlossen.",
+        "wieso": "Das schliessende Anfuehrungszeichen fehlt; der Parser liest weiter, bis er das Dateiende oder ein unpassendes Zeichen erreicht, und meldet einen nicht abgeschlossenen String.",
+        "abhilfe": "Das fehlende schliessende Anfuehrungszeichen am Ende des Werts ergaenzen."
+      },
+      "en": {
+        "lage": "A quoted value is not closed.",
+        "wieso": "The closing quote is missing; the parser keeps reading until it reaches the end of the file or an unexpected character and reports an unterminated string.",
+        "abhilfe": "Add the missing closing quote at the end of the value."
+      }
+    },
+    {
+      "kennung": "toml-anfuehrung-offen",
+      "v2": true,
+      "familie": "toml",
+      "schluessel": "syntax|toml|TOML",
+      "status": "verifiziert",
+      "beleg": "v2 (P15 Nachtrunde): echter Pruefer 3/3 (Original ohne Befund, Mutation gesperrt); Jev Produktionsweg Tor 0,7 richtig 3/3",
+      "de": {
+        "lage": "Ein String-Wert wird nicht geschlossen.",
+        "wieso": "Das schliessende Anfuehrungszeichen fehlt. Ein einfacher TOML-String muss in derselben Zeile enden.",
+        "abhilfe": "Das fehlende schliessende Anfuehrungszeichen ergaenzen (fuer mehrzeilige Werte dreifache Anfuehrungszeichen verwenden)."
+      },
+      "en": {
+        "lage": "A string value is not closed.",
+        "wieso": "The closing quote is missing. A basic TOML string must end on the same line.",
+        "abhilfe": "Add the missing closing quote (use triple quotes for multi-line values)."
+      }
+    },
+    {
+      "kennung": "toml-schluessel-doppelt",
+      "v2": true,
+      "familie": "toml",
+      "schluessel": "syntax|toml|TOML",
+      "status": "verifiziert",
+      "beleg": "v2 (P15 Nachtrunde): echter Pruefer 3/3 (Original ohne Befund, Mutation gesperrt); Jev Produktionsweg Tor 0,7 richtig 3/3",
+      "de": {
+        "lage": "Derselbe Schluessel wird in einer Tabelle zweimal gesetzt.",
+        "wieso": "TOML verbietet, einen Schluessel mehrfach zu definieren. Meist wurde ein Eintrag hinzugefuegt, ohne den vorhandenen zu ersetzen.",
+        "abhilfe": "Den doppelten Eintrag entfernen und den gewuenschten Wert im verbleibenden setzen."
+      },
+      "en": {
+        "lage": "The same key is set twice in one table.",
+        "wieso": "TOML forbids defining a key more than once. Usually an entry was added without replacing the existing one.",
+        "abhilfe": "Remove the duplicate entry and set the desired value in the remaining one."
+      }
+    },
+    {
+      "kennung": "toml-tabelle-doppelt",
+      "v2": true,
+      "familie": "toml",
+      "schluessel": "syntax|toml|TOML",
+      "status": "verifiziert",
+      "beleg": "v2 (P15 Nachtrunde): echter Pruefer 3/3 (Original ohne Befund, Mutation gesperrt); Jev Produktionsweg Tor 0,7 richtig 3/3",
+      "de": {
+        "lage": "Eine Tabelle (Abschnitt in eckigen Klammern) wird zweimal definiert.",
+        "wieso": "In TOML darf jeder Tabellenkopf nur einmal vorkommen (ausser Arrays von Tabellen mit doppelten eckigen Klammern). Meist wurde ein Abschnitt kopiert oder an zweiter Stelle neu angelegt.",
+        "abhilfe": "Die Eintraege beider Abschnitte unter einem Tabellenkopf zusammenfuehren und den zweiten Kopf entfernen."
+      },
+      "en": {
+        "lage": "A table (section in square brackets) is defined twice.",
+        "wieso": "In TOML each table header may appear only once (except arrays of tables with double brackets). Usually a section was copied or created a second time.",
+        "abhilfe": "Merge the entries of both sections under one table header and remove the second header."
+      }
+    },
+    {
+      "kennung": "docker-unbekannte-anweisung",
+      "v2": true,
+      "familie": "dockerfile",
+      "schluessel": "syntax|dockerfile|Syntaxfehler: dockerfile parse error on line N: unknown instruction",
+      "status": "verifiziert",
+      "beleg": "v2 (P15 Nachtrunde): echter Pruefer 3/3 (Original ohne Befund, Mutation gesperrt; pruefgo aus dem Repo-Quelltext gebaut, das lokale Pruef-Image hat dockerfile noch nicht); Jev Produktionsweg Tor 0,7 richtig 3/3",
+      "de": {
+        "lage": "Eine Zeile beginnt mit einer unbekannten Anweisung (Tippfehler im Anweisungsnamen).",
+        "wieso": "Jede Zeile einer Docker-Bauanleitung beginnt mit einer bekannten Anweisung wie FROM, RUN, COPY oder ENV. Ein falsch geschriebener Name wird als unbekannte Anweisung abgelehnt.",
+        "abhilfe": "Den Anweisungsnamen korrigieren (Schreibweise pruefen)."
+      },
+      "en": {
+        "lage": "A line starts with an unknown instruction (typo in the instruction name).",
+        "wieso": "Every line of a Docker build file starts with a known instruction such as FROM, RUN, COPY or ENV. A misspelled name is rejected as an unknown instruction.",
+        "abhilfe": "Correct the instruction name (check the spelling)."
+      }
+    },
+    {
+      "kennung": "docker-fortsetzung-fehlt",
+      "v2": true,
+      "familie": "dockerfile",
+      "schluessel": "syntax|dockerfile|Syntaxfehler: dockerfile parse error on line N: unknown instruction",
+      "status": "verifiziert",
+      "beleg": "v2 (P15 Nachtrunde): echter Pruefer 3/3 (Original ohne Befund, Mutation gesperrt; pruefgo aus dem Repo-Quelltext gebaut, das lokale Pruef-Image hat dockerfile noch nicht); Jev Produktionsweg Tor 0,7 richtig 3/3",
+      "de": {
+        "lage": "Am Ende einer mehrzeiligen Anweisung fehlt der Backslash zur Zeilenfortsetzung.",
+        "wieso": "Ohne \"\\\" am Zeilenende endet die Anweisung dort. Die naechste Zeile wird dann als eigene Anweisung gelesen und als unbekannte Anweisung abgelehnt, obwohl sie zur vorherigen gehoert.",
+        "abhilfe": "Den Backslash am Ende der vorherigen Zeile ergaenzen (auf Leerzeichen danach achten)."
+      },
+      "en": {
+        "lage": "The backslash for line continuation is missing at the end of a multi-line instruction.",
+        "wieso": "Without \"\\\" at the end of the line the instruction ends there. The next line is then read as a separate instruction and rejected as unknown, although it belongs to the previous one.",
+        "abhilfe": "Add the backslash at the end of the previous line (watch out for trailing spaces after it)."
+      }
+    },
+    {
+      "kennung": "cmake-klammer-nicht-geschlossen",
+      "v2": true,
+      "familie": "cmake",
+      "schluessel": "syntax|cmake|cmake-parse",
+      "status": "vorgeschlagen",
+      "beleg": "v2 (P15 Nachtrunde): echter Pruefer 3/3 (Original ohne Befund, Mutation gesperrt); Jev Produktionsweg Tor 0,7 richtig 2/3",
+      "de": {
+        "lage": "Einem Befehlsaufruf fehlt die schliessende runde Klammer.",
+        "wieso": "In CMake endet jeder Befehl mit \")\". Fehlt sie, liest der Parser die folgenden Zeilen als weitere Argumente und meldet am Dateiende eine Funktion ohne schliessende Klammer.",
+        "abhilfe": "Die fehlende \")\" am Ende des Befehlsaufrufs ergaenzen."
+      },
+      "en": {
+        "lage": "A command invocation is missing its closing parenthesis.",
+        "wieso": "In CMake every command ends with \")\". Without it the parser reads the following lines as further arguments and reports a function missing its ending parenthesis at the end of the file.",
+        "abhilfe": "Add the missing \")\" at the end of the command invocation."
+      }
+    },
+    {
+      "kennung": "cmake-anfuehrung-offen",
+      "v2": true,
+      "familie": "cmake",
+      "schluessel": "syntax|cmake|cmake-parse",
+      "status": "verifiziert",
+      "beleg": "v2 (P15 Nachtrunde): echter Pruefer 3/3 (Original ohne Befund, Mutation gesperrt); Jev Produktionsweg Tor 0,7 richtig 3/3",
+      "de": {
+        "lage": "Ein Argument in Anfuehrungszeichen wird nicht geschlossen.",
+        "wieso": "Das schliessende Anfuehrungszeichen fehlt. Der offene String verschluckt die schliessende Klammer des Befehls; der Parser meldet deshalb eine Funktion ohne schliessende \")\" und nennt dabei einen nicht abgeschlossenen String oder das Dateiende.",
+        "abhilfe": "Das fehlende schliessende Anfuehrungszeichen ergaenzen."
+      },
+      "en": {
+        "lage": "A quoted argument is not closed.",
+        "wieso": "The closing quote is missing. The open string swallows the closing parenthesis of the command; the parser therefore reports a function missing its ending \")\" and mentions an unterminated string or the end of the file.",
+        "abhilfe": "Add the missing closing quote."
       }
     }
   ]

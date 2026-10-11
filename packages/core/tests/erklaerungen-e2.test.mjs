@@ -139,7 +139,7 @@ try {
 
   // ── D Seed-Datei ──
   await versuche('D Seed-Datei', async () => {
-    pruefe(seed.format === 'erklaerungstopf-seed' && seed.eintraege.length === 15, 'D Seed: Format erklaerungstopf-seed, 15 Eintraege', seed.eintraege.length);
+    pruefe(seed.format === 'erklaerungstopf-seed' && seed.eintraege.filter((e) => e.e0_klasse).length === 15, 'D Seed: Format erklaerungstopf-seed, 15 E0-Eintraege (v2 prueft erklaerungstopf-seed-v2.test)', seed.eintraege.length);
     pruefe(E.erklaerungstopfSeedPfad() === join(dist, '..', 'data', 'erklaerungstopf-seed.json'), 'D Seed-Pfad aus dist zeigt auf packages/core/data', E.erklaerungstopfSeedPfad());
     const probleme = seed.eintraege.map((e) => [e.kennung, E.pruefeSeedEintrag(e, ['de', 'en'])]).filter(([, p]) => p.length);
     pruefe(probleme.length === 0, 'D jeder Eintrag: de+en vollstaendig, Laenge, Generik-Pruefung bestanden', probleme);
@@ -149,7 +149,7 @@ try {
     const nurEn = { ...seed.eintraege[0], de: undefined };
     pruefe(E.pruefeSeedEintrag(nurEn, ['en']).length === 0 && E.pruefeSeedEintrag(nurEn, ['de', 'en']).some((x) => x.includes('de fehlt')),
       'D gepflegte Sprachen: nur en gepflegt -> ok, de gepflegt -> fehlt', E.pruefeSeedEintrag(nurEn, ['de', 'en']));
-    const st = Object.fromEntries(['verifiziert', 'vorgeschlagen'].map((s) => [s, seed.eintraege.filter((e) => e.status === s).map((e) => e.e0_klasse)]));
+    const st = Object.fromEntries(['verifiziert', 'vorgeschlagen'].map((s) => [s, seed.eintraege.filter((e) => e.e0_klasse && e.status === s).map((e) => e.e0_klasse)]));
     pruefe(st.verifiziert.length === 13 && st.vorgeschlagen.join(',') === 'K4,K11', 'D Status: 13 verifiziert, vorgeschlagen nur K4 und K11 (E0-Beleg)', st);
   });
 
@@ -159,16 +159,17 @@ try {
     await pool.query(`INSERT INTO erklaerungen (familie, lage_en, wieso_en, abhilfe_en, status, erstellt_von) VALUES ('typescript', $1, $2, $3, 'vorgeschlagen', 'e2-setup')`,
       [k1.en.lage.toUpperCase(), k1.en.wieso, k1.en.abhilfe]);
     const r1 = await E.ladeErklaerungstopfSeed({ agent: 'seed-test' });
-    pruefe(r1.success === true && r1.neu === 14 && r1.vorhanden === 1 && r1.abgelehnt === 0, 'D 1. Lauf: 14 neu, 1 vorhanden (gleiche Lage in der Familie, Gross/Klein egal)', r1);
+    const N = seed.eintraege.length;
+    pruefe(r1.success === true && r1.neu === N - 1 && r1.vorhanden === 1 && r1.abgelehnt === 0, `D 1. Lauf: ${N - 1} neu, 1 vorhanden (gleiche Lage in der Familie, Gross/Klein egal)`, r1);
     await pool.query(`DELETE FROM erklaerungen WHERE erstellt_von = 'e2-setup'`);
     const r2 = await E.ladeErklaerungstopfSeed({ agent: 'seed-test' });
-    pruefe(r2.success === true && r2.neu === 1 && r2.vorhanden === 14, 'D 2. Lauf: die fehlende kommt dazu (1 neu, 14 vorhanden)', r2);
+    pruefe(r2.success === true && r2.neu === 1 && r2.vorhanden === N - 1, `D 2. Lauf: die fehlende kommt dazu (1 neu, ${N - 1} vorhanden)`, r2);
     const r3 = await E.ladeErklaerungstopfSeed({ agent: 'seed-test' });
-    pruefe(r3.success === true && r3.neu === 0 && r3.vorhanden === 15, 'D idempotent: 3. Lauf 0 neu', r3);
+    pruefe(r3.success === true && r3.neu === 0 && r3.vorhanden === N, 'D idempotent: 3. Lauf 0 neu', r3);
     const { rows } = await pool.query(`SELECT kennung, familie, status, verifiziert_am IS NOT NULL AS va, lage_de IS NOT NULL AND lage_en IS NOT NULL AS beide, erstellt_von
       FROM erklaerungen WHERE kennung = ANY($1)`, [KENNUNGEN]);
     const erwartet = Object.fromEntries(seed.eintraege.map((e) => [e.kennung, e.status]));
-    pruefe(rows.length === 15 && rows.every((r) => r.status === erwartet[r.kennung] && r.va === (r.status === 'verifiziert') && r.beide && r.erstellt_von === 'seed-test'),
+    pruefe(rows.length === N && rows.every((r) => r.status === erwartet[r.kennung] && r.va === (r.status === 'verifiziert') && r.beide && r.erstellt_von === 'seed-test'),
       'D in PG: Status laut Seed, verifiziert_am nur bei verifiziert, de+en, erstellt_von', rows);
     const kaputt = join(mkdtempSync(join(tmpdir(), 'e2-seed-')), 'seed.json');
     writeFileSync(kaputt, JSON.stringify({ format: 'erklaerungstopf-seed', eintraege: [{ ...seed.eintraege[0], kennung: 'zz-e2-pfad', de: { ...seed.eintraege[0].de, lage: 'Im Projekt zz-erklaerungen-e2 fehlt in src/a/b.ts eine Klammer.' } }] }));
@@ -307,7 +308,7 @@ try {
     const nein = await JA.fuehreJevAdminAus('jev_erklaerungstopf', { modus: 'seed_laden' }, A);
     pruefe(nein.success === false && nein.error === 'nur_koordinator', 'A seed_laden nur Koordinator/User', nein);
     const ja = await JA.fuehreJevAdminAus('jev_erklaerungstopf', { modus: 'seed_laden' }, KOORD);
-    pruefe(ja.success === true && ja.neu === 0 && ja.vorhanden === 15, 'A seed_laden durch Koordinator: idempotent', ja);
+    pruefe(ja.success === true && ja.neu === 0 && ja.vorhanden === seed.eintraege.length, 'A seed_laden durch Koordinator: idempotent', ja);
     const nach = await JA.fuehreJevAdminAus('jev_erklaerungstopf', { modus: 'nachholen' }, KOORD);
     pruefe(nach.success === true && nach.geholt === 0, 'A nachholen durch Koordinator', nach);
   });
