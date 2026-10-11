@@ -53,6 +53,36 @@ console.log('Positivkontrollen');
   pruefe('K11 JSON: leer und BOM ok', j.pruefe('  \n', 'x.json').length === 0 && j.pruefe('﻿{"a":1}', 'x.json').length === 0);
   const e = j.pruefe('{"a": [1, 2', 'x.json');
   pruefe('K12 JSON: unerwartetes Ende -> letzte Zeile', e[0]?.zeile === 1 && e[0]?.spalte >= 1, e[0]);
+  // P16-T9: V8 meldet viele Fehler ohne Position; die Zeile darf bei abschliessendem \n nicht +1 verrutschen.
+  const stelle = (inhalt, z, s) => {
+    const m = j.pruefe(inhalt, 'x.json')[0];
+    pruefe(`K13 JSON-Stelle ${JSON.stringify(inhalt)} -> Z.${z} Sp.${s}`, m?.zeile === z && m?.spalte === s && !/is not valid JSON/.test(m?.meldung), m);
+  };
+  stelle('{ "a": 1, "b": }\n', 1, 16);
+  stelle('{ "a": 1, "b": }', 1, 16);
+  stelle('{ "a": 1, "b": }\n\n\n', 1, 16);
+  stelle('{"a": tru}\n', 1, 10);
+  stelle('[1,2,]\n', 1, 6);
+  stelle('{"a":\n', 1, 6);
+  stelle('{"a": [1, 2\n\n', 1, 12);
+  stelle('{\n "a": 1,\n}\n', 3, 1);
+  stelle('{"a":1 "b":2}\n', 1, 8);
+  stelle('{"a": 1}\n}\n', 2, 1);
+  stelle('{"a": "x\\q"}\n', 1, 10);
+  // Engine-unabhaengig: SpiderMonkey-Form (nur line/column) und Meldung ganz ohne Stelle
+  pruefe('K14 jsonFehlerStelle: line/column-Form', K.jsonFehlerStelle('{\n "a": }\n', 'JSON.parse: unexpected character at line 2 column 7 of the JSON data') === 8);
+  pruefe('K14 jsonFehlerStelle: ohne Stelle -> Scanner', K.jsonFehlerStelle('{\n "a": }\n', 'irgendwas') === 8);
+  // Gegenprobe: der Scanner stimmt mit V8 ueberein, wo V8 eine Position nennt, und haelt gueltiges JSON fuer gueltig
+  let gleich = 0;
+  const v8faelle = ['{"a":1 "b":2}', '{\n "a": 1,\n}', '\n\n{"a" 1}', '{"a": 1}\n}', '{"a": 01}', '{"a": "x\ty"}', '[1, 2 3]'];
+  for (const f of v8faelle) {
+    let v8 = null;
+    try { JSON.parse(f); } catch (err) { v8 = Number(/at position (\d+)/.exec(err.message)?.[1]); }
+    if (v8 !== null && v8 === K.jsonFehlerPosition(f)) gleich++;
+  }
+  pruefe('K15 Scanner = V8-Position', gleich === v8faelle.length, gleich);
+  const gueltig = ['{}', '[]', '0', '-1.5e+3', '"\\u00e4\\n"', '{"a": [true, false, null, {"b": "c"}]}', ' \n{"x": -0.0}\n'];
+  pruefe('K15 Scanner: gueltiges JSON = null', gueltig.every((g) => K.jsonFehlerPosition(g) === null));
 }
 {
   const c = def('postcss');

@@ -285,6 +285,165 @@ const JSON_WARUM = 'Der Inhalt ist kein gueltiges JSON; jedes Programm, das die 
 const JSON_WIE = 'Haeufig: Komma zwischen zwei Eintraegen fehlt, Komma nach dem letzten Eintrag zu viel, Schluessel ohne doppelte Anfuehrungszeichen, schliessende Klammer fehlt.';
 const JSON_WO = ['https://www.json.org/json-de.html'];
 
+class JsonHalt {
+  constructor(readonly pos: number) {}
+}
+
+/**
+ * Fehlerstelle eines ungueltigen JSON-Texts (0-basiert), unabhaengig von der Meldung der Engine. Noetig, weil V8
+ * viele Fehler OHNE Position meldet ("Unexpected token '}', ... is not valid JSON"); frueher fiel die Stelle dann
+ * auf das Textende und lag bei einer Datei mit abschliessendem \n eine Zeile zu tief (P16-T9). null = gueltiges JSON
+ * (oder Scanner gescheitert, z. B. Stackgrenze bei extremer Verschachtelung).
+ */
+export function jsonFehlerPosition(text: string): number | null {
+  const n = text.length;
+  let i = 0;
+  const halt = (pos: number): never => {
+    throw new JsonHalt(pos);
+  };
+  const istZiffer = (k: number): boolean => {
+    const z = text.charCodeAt(k);
+    return z >= 48 && z <= 57;
+  };
+  const ws = (): void => {
+    while (i < n && (text[i] === ' ' || text[i] === '\t' || text[i] === '\n' || text[i] === '\r')) i++;
+  };
+  const ziffern = (): void => {
+    if (!istZiffer(i)) halt(i);
+    while (istZiffer(i)) i++;
+  };
+  const zahl = (): void => {
+    if (text[i] === '-') i++;
+    if (text[i] === '0') i++;
+    else ziffern();
+    if (text[i] === '.') {
+      i++;
+      ziffern();
+    }
+    if (text[i] === 'e' || text[i] === 'E') {
+      i++;
+      if (text[i] === '+' || text[i] === '-') i++;
+      ziffern();
+    }
+  };
+  const zeichenkette = (): void => {
+    i++;
+    for (;;) {
+      if (i >= n) halt(i);
+      const c = text.charCodeAt(i);
+      if (c === 0x22) {
+        i++;
+        return;
+      }
+      if (c < 0x20) halt(i);
+      if (c === 0x5c) {
+        const e = text.charAt(i + 1);
+        if (e !== '' && '"\\/bfnrt'.includes(e)) i += 2;
+        else if (e === 'u' && /^[0-9a-fA-F]{4}$/.test(text.slice(i + 2, i + 6))) i += 6;
+        else halt(i + 1);
+        continue;
+      }
+      i++;
+    }
+  };
+  const wert = (): void => {
+    ws();
+    const c = text.charAt(i);
+    if (c === '{') {
+      i++;
+      ws();
+      if (text[i] === '}') {
+        i++;
+        return;
+      }
+      for (;;) {
+        ws();
+        if (text[i] !== '"') halt(i);
+        zeichenkette();
+        ws();
+        if (text[i] !== ':') halt(i);
+        i++;
+        wert();
+        ws();
+        if (text[i] === ',') {
+          i++;
+          continue;
+        }
+        if (text[i] === '}') {
+          i++;
+          return;
+        }
+        halt(i);
+      }
+    }
+    if (c === '[') {
+      i++;
+      ws();
+      if (text[i] === ']') {
+        i++;
+        return;
+      }
+      for (;;) {
+        wert();
+        ws();
+        if (text[i] === ',') {
+          i++;
+          continue;
+        }
+        if (text[i] === ']') {
+          i++;
+          return;
+        }
+        halt(i);
+      }
+    }
+    if (c === '"') return zeichenkette();
+    if (c === '-' || istZiffer(i)) return zahl();
+    for (const wort of ['true', 'false', 'null']) {
+      if (c === wort.charAt(0)) {
+        for (let k = 0; k < wort.length; k++, i++) if (text.charAt(i) !== wort.charAt(k)) halt(i);
+        return;
+      }
+    }
+    halt(i);
+  };
+  try {
+    wert();
+    ws();
+    return i < n ? i : null;
+  } catch (e) {
+    if (e instanceof JsonHalt) return e.pos;
+    return null;
+  }
+}
+
+/** Zeile/Spalte (1-basiert) -> Position (0-basiert). */
+function positionVon(text: string, zeile: number, spalte: number): number {
+  let start = 0;
+  for (let z = 1; z < zeile; z++) {
+    const nl = text.indexOf('\n', start);
+    if (nl === -1) return text.length;
+    start = nl + 1;
+  }
+  return Math.min(text.length, start + Math.max(0, spalte - 1));
+}
+
+/**
+ * Fehlerstelle (0-basiert) zu einer JSON.parse-Meldung: "at position N" (V8), sonst "line X column Y" (SpiderMonkey,
+ * V8 ab Node 20 zusaetzlich), sonst der eigene Scanner. Eine Stelle am bzw. hinter dem Inhaltsende (unerwartetes
+ * Ende, nur noch Leerraum) zeigt hinter das letzte Nicht-Leerzeichen, nicht auf die Zeile nach dem abschliessenden \n.
+ */
+export function jsonFehlerStelle(text: string, meldung: string): number {
+  let pos: number | null = null;
+  const p = /at position (\d+)/.exec(meldung);
+  const lc = /line (\d+) column (\d+)/.exec(meldung);
+  if (p) pos = Number(p[1]);
+  else if (lc) pos = positionVon(text, Number(lc[1]), Number(lc[2]));
+  if (pos === null) pos = jsonFehlerPosition(text) ?? text.length;
+  const ende = text.trimEnd().length;
+  return pos >= ende ? ende : pos;
+}
+
 export function pruefeJson(inhalt: string, pfad: string): SyntaxMeldung[] {
   const text = inhalt.charCodeAt(0) === 0xfeff ? inhalt.slice(1) : inhalt;
   if (text.trim() === '') return [];
@@ -298,10 +457,13 @@ export function pruefeJson(inhalt: string, pfad: string): SyntaxMeldung[] {
       const hatKommentar = /\/\/|\/\*/.test(text.replace(/"(?:[^"\\\n]|\\.)*"/g, '""'));
       if (!hatKommentar) {
         const roh = (err as Error).message;
-        const m = /at position (\d+)/.exec(roh);
-        const pos = m ? Number(m[1]) : text.length;
-        const { zeile, spalte } = zeileSpalte(text, pos);
-        const meldung = roh.replace(/\s*\(line \d+ column \d+\)/, '').replace(/ in JSON at position \d+/, '').trim();
+        const { zeile, spalte } = zeileSpalte(text, jsonFehlerStelle(text, roh));
+        const meldung = roh
+          .replace(/\s*\(line \d+ column \d+\)/, '')
+          .replace(/ in JSON at position \d+/, '')
+          .replace(/ at line \d+ column \d+ of the JSON data/, '')
+          .replace(/, "[\s\S]*" is not valid JSON$/, '')
+          .trim();
         return [{ zeile, spalte, code: 'JSON', meldung, warum: JSON_WARUM, wie: JSON_WIE, wo: JSON_WO }];
       }
     }
