@@ -66,7 +66,7 @@ import {
   deleteVectors,
   scrollePunktIds,
 } from '../qdrant/index.js';
-import { embed, embedBatch, embedMedia, supportsMultimodal } from '../embeddings/index.js';
+import { embed, embedBatch, embedMedia, supportsMultimodal, zielDimension } from '../embeddings/index.js';
 import { chunkFile } from '../chunking/index.js';
 import { readFileWithMetadata, getFileType, isExtractableDocument } from '../watcher/index.js';
 import { isMultimodalFile, getMediaMimeType, getMediaCategory, isBinaryFile, MAX_MEDIA_SIZE_MB, klassifiziereDatei, leseDateiKopf } from '../watcher/binary.js';
@@ -1370,10 +1370,12 @@ async function parseAndEmbedLauf(
   const skipEmbeddings = opts?.ohneEmbeddings === true || process.env.SYNAPSE_SKIP_EMBEDDINGS === '1';
   let offeneEmbeddings = 0;
   if (chunks.length > 0 && !skipEmbeddings) {
-    // GPU-2: Staging darf auf dem REST-Server keinen Provider-Probe-Embed
-    // ausloesen. Die verteilte Referenzdimension ist 3072; Compute-Nodes werden
-    // bereits bei Registrierung und Completion dagegen validiert.
-    const collectionName = await ensureProjectCollection(project, 3072);
+    // GPU-2: Staging soll auf dem REST-Server keinen Provider-Probe-Embed ausloesen - mit gesetztem
+    // EMBEDDING_TARGET_DIM tut zielDimension() das auch nicht. P12-T14: hier stand fest 3072; nach der
+    // Umstellung auf Nemotron/1024 meldete jeder Parse-Lauf DIMENSIONS-MISMATCH, und eine fehlende
+    // Collection waere mit 3072d angelegt worden.
+    const zielDim = await zielDimension();
+    const collectionName = await ensureProjectCollection(project, zielDim);
 
     // Was ist ueberhaupt noch zu tun?
     // Sind die Chunk-Rows von vorhin unveraendert, dann liegt alles mit einem
@@ -1897,7 +1899,11 @@ async function baueFaelligkeitsBedingung(
   // DER 5-MINUTEN-GUARD BLEIBT und haengt weiterhin an updated_at: er haelt Dateien
   // heraus, deren Embedding gerade LAEUFT. Ohne ihn zieht ein langsamer Ollama-Lauf
   // dieselbe Datei in jedem Tick erneut in den Backlog.
-  const embedOffen = `(code_files.updated_at < NOW() - INTERVAL '5 minutes'
+  // P12-T14: SYNAPSE_PARSE_EMBED_OFFEN=0 nimmt diesen Zweig heraus - Dateien, denen nur Vektoren
+  // fehlen, laufen dann NICHT durch die Parse-Pipeline, die Server-Chunk-Schleife (embedding-claims)
+  // bettet sie direkt ein. Gemessen 11.10.2026 nach neu_einbetten: der Parse-Weg belegte alle
+  // Hintergrund-Verbindungen (8/8, 20 wartend) und es wurde in 6 Minuten kein Chunk fertig.
+  const embedOffen = process.env.SYNAPSE_PARSE_EMBED_OFFEN === '0' ? 'FALSE' : `(code_files.updated_at < NOW() - INTERVAL '5 minutes'
                AND ${SQL_ENDUNG} NOT IN (${BINAER_ENDUNGEN_SQL})
                AND EXISTS (SELECT 1 FROM code_chunks cc
                             WHERE cc.project = code_files.project

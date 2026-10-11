@@ -565,6 +565,19 @@ export async function getEmbeddingDimension(): Promise<number> {
 }
 
 /**
+ * Zieldimension der Vektoren (P12-T14): EMBEDDING_TARGET_DIM, sonst die tatsaechlich erkannte
+ * Dimension des aktiven Modells. EINZIGE Quelle fuer Collection-Groessen und Vektor-Pruefungen.
+ * ⚠️ NIE eine Zahl im Code als Rueckfall (User-Vorgabe 11.10.2026): fest verdrahtete 3072 im
+ * Parse-Weg und in den Embedding-Claims haetten nach dem Wechsel auf Nemotron/1024 neue
+ * Collections mit der falschen Dimension angelegt und meldeten bei jedem Lauf DIMENSIONS-MISMATCH.
+ */
+export async function zielDimension(): Promise<number> {
+  const n = Number(process.env.EMBEDDING_TARGET_DIM);
+  if (Number.isInteger(n) && n > 0) return n;
+  return getEmbeddingDimension();
+}
+
+/**
  * Setzt den Provider zurueck (fuer Tests)
  */
 export function resetEmbeddingProvider(): void {

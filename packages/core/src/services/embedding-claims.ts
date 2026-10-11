@@ -1,17 +1,13 @@
 import * as path from 'node:path';
 import { v4 as uuidv4 } from 'uuid';
 import { getPool } from '../db/client.js';
+import { zielDimension } from '../embeddings/index.js';
 import { leseSchalter } from './intern-schalter.js';
 import { ensureProjectCollection } from '../qdrant/collections.js';
 import { insertVector, insertVectors } from '../qdrant/operations.js';
 import type { CodeChunkPayload } from '../types/index.js';
 import { deterministicChunkPointId, embeddingContentHash } from './embedding-chunk-id.js';
 
-/** P12-T12: Vorgabe-Dimension = EMBEDDING_TARGET_DIM (nach dem Modellwechsel 1024), Rueckfall 3072 wie bisher. */
-function zielDimension(): number {
-  const n = Number(process.env.EMBEDDING_TARGET_DIM);
-  return Number.isInteger(n) && n > 0 ? n : 3072;
-}
 
 export interface EmbeddingChunkClaim {
   chunkId: string;
@@ -76,7 +72,7 @@ function boundedInt(value: number | undefined, fallback: number, max: number): n
   return Math.min(value, max);
 }
 
-export function validateEmbeddingVector(vector: unknown, expectedDimension = 3072): vector is number[] {
+export function validateEmbeddingVector(vector: unknown, expectedDimension: number): vector is number[] {
   if (!Array.isArray(vector) || vector.length !== expectedDimension) return false;
   let normSq = 0;
   for (const value of vector) {
@@ -220,7 +216,8 @@ export async function completeEmbeddingClaim(
   input: CompleteEmbeddingClaimInput,
   dependencies: CompleteEmbeddingDependencies = {},
 ): Promise<CompleteEmbeddingClaimResult> {
-  if (!validateEmbeddingVector(input.vector, input.expectedDimension ?? zielDimension())) {
+  const dim = input.expectedDimension ?? await zielDimension();
+  if (!validateEmbeddingVector(input.vector, dim)) {
     throw new Error('invalid_embedding_vector');
   }
   const pool = dependencies.pool ?? (getPool() as unknown as EmbeddingClaimsDbPool);
@@ -300,7 +297,7 @@ export async function completeEmbeddingClaim(
       updated_at: new Date(row.server_now).toISOString(),
       content: row.content,
     };
-    const collection = await ensureCollection(row.project, input.expectedDimension ?? zielDimension());
+    const collection = await ensureCollection(row.project, dim);
     await writeVector(collection, input.vector, payload, pointId);
 
     const ack = await client.query(
@@ -351,7 +348,7 @@ export async function completeEmbeddingClaims(
   eintraege: StapelAbschlussEintrag[],
   expectedDimension?: number,
 ): Promise<{ abgeschlossen: string[]; abgelehnt: Array<{ chunkId: string; grund: string }> }> {
-  const dim = expectedDimension ?? zielDimension();
+  const dim = expectedDimension ?? await zielDimension();
   const abgelehnt: Array<{ chunkId: string; grund: string }> = [];
   const gueltig = eintraege.filter((e) => {
     if (validateEmbeddingVector(e.vector, dim)) return true;

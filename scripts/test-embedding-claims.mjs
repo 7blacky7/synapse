@@ -73,6 +73,8 @@ class ClaimState {
           ).length;
           return { rows: [{ count: String(count) }] };
         }
+        // Projektwahl (zweistufige Auswahl seit 01.08.2026, Prioritaet seit P12-T14): ein Projekt.
+        if (q.startsWith('SELECT p.name FROM')) return { rows: [{ name: 'p' }] };
         if (q.includes('FOR UPDATE OF cc SKIP LOCKED')) {
           const limit = values[0];
           const now = new Date();
