@@ -11,6 +11,7 @@
  *
  * Grenzen (alle per Env, Standardwerte in Klammern):
  *  - SYNTAX_WORKER_THREADS (2): Anzahl Worker; '0' = kein Pool (Pruefung im Haupt-Thread, index.ts).
+ *    Begrenzt auf 1..min(8, Kerne); geht vor der Vorgabe des Prozesses (syntaxWorkerZahl, P16-T9).
  *  - SYNTAX_PRUEFER_TIMEOUT_MS (5000): Reissleine je Auftrag, danach wird der Worker beendet; 0 = aus.
  *  - SYNTAX_WORKER_MAX_MB (256): Heap-Grenze je Worker (resourceLimits); Ueberschreitung = Ausfall.
  *  - SYNTAX_WARTESCHLANGE_MAX (64): mehr wartende Auftraege werden sofort abgelehnt (kein Stau).
@@ -25,6 +26,7 @@
 
 import { Worker } from 'node:worker_threads';
 import { createHash } from 'node:crypto';
+import os from 'node:os';
 import type { SyntaxMeldung } from '../fehlermuster-pruefung.js';
 
 const MAX_AUSFAELLE = 3;
@@ -33,6 +35,51 @@ function envZahl(name: string, standard: number): number {
   const roh = process.env[name];
   const wert = roh === undefined || roh.trim() === '' ? NaN : Number(roh);
   return Number.isFinite(wert) && wert >= 0 ? wert : standard;
+}
+
+/** Worker-Zahl, wenn weder Env noch Prozess etwas vorgeben. */
+export const SYNTAX_WORKER_STANDARD = 2;
+/** Feste Obergrenze der Worker-Zahl; zusaetzlich begrenzt durch die Kernzahl. */
+export const SYNTAX_WORKER_HOECHSTENS = 8;
+
+export interface SyntaxWorkerWahl {
+  anzahl: number;
+  quelle: 'env' | 'vorgabe' | 'standard';
+  /** Klartext, wenn ein Wert begrenzt oder verworfen wurde. */
+  hinweis?: string;
+}
+
+/** Obergrenze der Worker-Zahl: min(SYNTAX_WORKER_HOECHSTENS, Kerne), mindestens 1. */
+export function syntaxWorkerObergrenze(): number {
+  const kerne = typeof os.availableParallelism === 'function' ? os.availableParallelism() : os.cpus().length;
+  return Math.max(1, Math.min(SYNTAX_WORKER_HOECHSTENS, kerne || 1));
+}
+
+/**
+ * Worker-Zahl des Syntax-Pools (P16-T9): Env SYNTAX_WORKER_THREADS vor der Vorgabe des Prozesses
+ * (registriereStandardSyntaxPruefer({threads})) vor dem Standard 2. Gebrochene Werte werden abgerundet, alles
+ * auf 1..syntaxWorkerObergrenze() begrenzt. Unlesbare, negative oder Werte unter 1 in der Env werden verworfen
+ * (Hinweis). '0' (= kein Pool, Haupt-Thread) behandelt index.ts vorher.
+ */
+export function syntaxWorkerZahl(vorgabe?: number): SyntaxWorkerWahl {
+  const ober = syntaxWorkerObergrenze();
+  const begrenze = (n: number, quelle: SyntaxWorkerWahl['quelle'], text: string): SyntaxWorkerWahl => {
+    const ganz = Math.floor(n);
+    const anzahl = Math.max(1, Math.min(ober, ganz));
+    return anzahl === ganz ? { anzahl, quelle } : { anzahl, quelle, hinweis: `${text}${n} auf ${anzahl} begrenzt (erlaubt 1..${ober})` };
+  };
+  let verworfen: string | undefined;
+  const roh = process.env.SYNTAX_WORKER_THREADS;
+  if (roh !== undefined && roh.trim() !== '') {
+    const n = Number(roh);
+    if (Number.isFinite(n) && n >= 1) return begrenze(n, 'env', 'SYNTAX_WORKER_THREADS=');
+    verworfen = `SYNTAX_WORKER_THREADS=${JSON.stringify(roh)} ungueltig, ignoriert`;
+  }
+  const wahl = vorgabe !== undefined && Number.isFinite(vorgabe) && vorgabe >= 1
+    ? begrenze(vorgabe, 'vorgabe', 'Vorgabe ')
+    : begrenze(SYNTAX_WORKER_STANDARD, 'standard', 'Standard ');
+  if (verworfen) wahl.hinweis = wahl.hinweis ? `${verworfen}; ${wahl.hinweis}` : verworfen;
+  return wahl;
 }
 
 export class SyntaxPrueferTimeout extends Error {
@@ -90,7 +137,7 @@ export class SyntaxWorkerPool {
   private z = { auftraege: 0, cache_treffer: 0, geteilt: 0, timeouts: 0, ausfaelle: 0, abgelehnt: 0, worker_gestartet: 0, ms_summe: 0 };
 
   constructor(size?: number) {
-    this.size = Math.max(1, Math.floor(size ?? (envZahl('SYNTAX_WORKER_THREADS', 2) || 2)));
+    this.size = size === undefined ? syntaxWorkerZahl().anzahl : Math.max(1, Math.min(syntaxWorkerObergrenze(), Math.floor(size)));
     for (let i = 0; i < this.size; i++) this.starteSlot(i, 0);
   }
 
