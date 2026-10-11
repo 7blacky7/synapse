@@ -31,6 +31,10 @@ process.env.EMBEDDING_PROVIDER = 'ollama';
 process.env.QDRANT_URL = 'http://127.0.0.1:9';
 process.env.OLLAMA_URL = 'http://127.0.0.1:9';
 process.env.SYNAPSE_INTERN_TOOL = '1';
+// P15-T8: kein Standard-Modellname mehr im Code; Praefixe sonst aus dem Modellprofil (PG).
+process.env.OLLAMA_MODEL = 'fake-embed';
+process.env.EMBEDDING_QUERY_PREFIX = '';
+process.env.EMBEDDING_DOC_PREFIX = '';
 
 const hier = dirname(fileURLToPath(import.meta.url));
 const dist = join(hier, '..', 'dist');
@@ -71,7 +75,9 @@ try {
     'S1 Embedding-Queue mit maxConcurrent und preemptedBackground', r.embedding_queue);
   pruefe(typeof r.db_pools?.haupt?.gesamt === 'number' && r.db_pools?.haupt?.max === 20 && typeof r.db_pools?.hintergrund?.wartend === 'number',
     'S1 beide Pools (haupt max 20, hintergrund)', r.db_pools);
-  pruefe(offeneKeys === 'memories,proposals,skill_sections,tech_docs,thoughts', 'S1 offene Embeddings je Tabelle', r.offene_embeddings);
+  // P15-T4 hat plans und error_patterns in den Nachzug aufgenommen.
+  pruefe(offeneKeys === 'error_patterns,memories,plans,proposals,skill_sections,tech_docs,thoughts', 'S1 offene Embeddings je Tabelle', r.offene_embeddings);
+  pruefe(r.modellprofil && typeof r.modellprofil.kalibriert === 'boolean' && r.modellprofil.modell === 'fake-embed', 'S1 Modellprofil-Stand im Status (P15-T8)', r.modellprofil);
   pruefe(Array.isArray(r.schalter) && r.schalter.length === 3 && typeof r.embedding_modell === 'string', 'S1 drei Schalter + Modell-Kennung', { schalter: r.schalter, modell: r.embedding_modell });
   pruefe(r.quellen?.test_quelle?.ticks === 7 && r.quellen?.test_kaputt?.fehler === 'quelle kaputt', 'S1 Quellen: angemeldete erscheint, werfende als { fehler }', r.quellen);
 

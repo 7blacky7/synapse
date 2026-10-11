@@ -7,7 +7,7 @@
  *   - options.types: SearchType[] - Welche Typen durchsucht werden (code, thoughts, memories)
  *   - options.projectFilter: string[] - Optional: Nur bestimmte Projekte durchsuchen
  *   - options.limit: number - Maximale Ergebnisse pro Typ (default: 10)
- *   - options.minScore: number - Minimaler Score fuer Ergebnisse (default: 0.5)
+ *   - options.minScore: number - Minimaler Score (Standard: Schwelle global_search aus dem Modellprofil)
  *
  * OUTPUT:
  *   - GlobalSearchResult: Gemergte und sortierte Ergebnisse aller Collections
@@ -29,7 +29,7 @@
 
 import { listCollections } from '../qdrant/collections.js';
 import { searchVectors } from '../qdrant/operations.js';
-import { embed } from '../embeddings/index.js';
+import { embed, scoreSchwelle } from '../embeddings/index.js';
 import {
   COLLECTIONS,
   CodeChunkPayload,
@@ -51,7 +51,7 @@ export interface GlobalSearchOptions {
   projectFilter?: string[];
   /** Maximale Ergebnisse pro Typ (default: 10) */
   limit?: number;
-  /** Minimaler Score (default: 0.5) */
+  /** Minimaler Score (Standard: Schwelle global_search des aktiven Modells, P15-T8) */
   minScore?: number;
 }
 
@@ -142,11 +142,10 @@ export interface GlobalSearchResult {
 // Memories, Thoughts, Proposals sind jetzt per-Projekt: project_{name}_memories etc.
 
 /** Default-Optionen */
-const DEFAULT_OPTIONS: Required<GlobalSearchOptions> = {
+const DEFAULT_OPTIONS: Required<Omit<GlobalSearchOptions, 'minScore'>> = {
   types: ['code', 'thoughts', 'memories'],
   projectFilter: [],
   limit: 10,
-  minScore: 0.5,
 };
 
 // ===========================================
@@ -408,7 +407,8 @@ export async function globalSearch(
     types: options.types ?? DEFAULT_OPTIONS.types,
     projectFilter: options.projectFilter ?? DEFAULT_OPTIONS.projectFilter,
     limit: options.limit ?? DEFAULT_OPTIONS.limit,
-    minScore: options.minScore ?? DEFAULT_OPTIONS.minScore,
+    // P15-T8: hier stand 0.5 (qwen-Skala). Ohne Profilwert -> modell_nicht_kalibriert statt Altwert.
+    minScore: options.minScore ?? (await scoreSchwelle('global_search')),
   };
 
   // Query embedden

@@ -49,6 +49,9 @@ const FAKE = `http://127.0.0.1:${server.address().port}`;
 process.env.EMBEDDING_PROVIDER = 'ollama';
 process.env.OLLAMA_URL = FAKE;
 process.env.OLLAMA_MODEL = 'fake-embed';
+// P15-T8: Praefixe kommen sonst aus dem Modellprofil (PG) - hier ohne Praefix.
+process.env.EMBEDDING_QUERY_PREFIX = '';
+process.env.EMBEDDING_DOC_PREFIX = '';
 process.env.QDRANT_URL = FAKE;
 process.env.SKILL_QDRANT_URL = FAKE;
 delete process.env.EMBEDDING_TARGET_DIM;

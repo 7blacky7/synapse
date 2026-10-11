@@ -26,6 +26,14 @@ import { imHintergrund } from '../db/client.js';
 import { dbSitzungen, internStatus, langsameAufrufe } from './intern-einblick.js';
 import { NEU_EINBETTEN_ARTEN, neuEinbetten } from './neu-einbetten.js';
 import { listeEmbedPrioritaet, setzeEmbedPrioritaet } from './embed-prioritaet.js';
+import {
+  InternModellprofilFehler,
+  modellprofilAnzeigen,
+  modellprofilKalibrieren,
+  modellprofilSetzen,
+  type ProfilAenderung,
+} from './intern-modellprofil.js';
+import { ModellNichtKalibriertError } from '../embeddings/modell-profil.js';
 
 const INTERN_TOOL_BEIM_START = process.env.SYNAPSE_INTERN_TOOL === '1';
 
@@ -45,6 +53,7 @@ export const INTERN_ACTIONS = [
   'ollama_status', 'ollama_entladen', 'ollama_laden',
   'status', 'db_sitzungen', 'langsam',
   'nachzug_jetzt', 'embedding_messen', 'neu_einbetten', 'embed_prioritaet',
+  'modellprofil', 'modellprofil_setzen', 'modellprofil_kalibrieren',
 ] as const;
 export type InternAction = (typeof INTERN_ACTIONS)[number];
 
@@ -67,6 +76,9 @@ export const INTERN_DEFINITION = {
     'veraltete Collections leeren und neu anlegen, embedded_at zuruecksetzen, der Nachzug bettet ein; ohne ausfuehren:true nur Vorschau, ' +
     'erst nach dem Umschalten der Modell-Env. ' +
     'embed_prioritaet (projekte, stufe): Reihenfolge des Code-Nachzugs je Projekt, Stufe 1 zuerst bis 4 zuletzt (ohne Eintrag 3), stufe 0 entfernt; ohne projekte Liste mit offenem Rueckstand. ' +
+    'modellprofil (modell): Kalibrierung je Embedding-Modell aus PG (Praefixe, num_ctx, num_batch, max_stueck_zeichen, Score-Schwellen je Zweck), welches Profil gerade gilt, fehlende Zwecke, Pruefhinweise; ' +
+    'modellprofil_setzen (modell, digest, query_praefix, dok_praefix, ziel_dimension, num_ctx, num_batch, max_stueck_zeichen, score_schwellen, notiz, messwerte): nur genannte Felder, null = nicht kalibriert, score_schwellen werden gemischt (null entfernt einen Zweck); ohne modell das aktive; ' +
+    'modellprofil_kalibrieren (zweck, passend, rauschen, project, schreiben): misst mit dem aktiven Modell passende Anfragen gegen Rauschen und schlaegt die Mitte als Schwelle vor, schreibt nur mit schreiben:true und sauberer Trennung. ' +
     'Keine Aktion beendet Prozesse/Sitzungen oder loescht PG-Daten; nur neu_einbetten leert Qdrant-Collections (aus PG wiederherstellbar).',
   inputSchema: {
     type: 'object',
@@ -81,7 +93,19 @@ export const INTERN_DEFINITION = {
       dauer_min: { type: 'number', description: 'schalter_setzen: Ablauf in Minuten ab jetzt' },
       dauerhaft: { type: 'boolean', description: 'schalter_setzen: ohne Ablauf (nur ausdruecklich)' },
       grund: { type: 'string', description: 'schalter_setzen: Grund (sichtbar in schalter_liste und im Log)' },
-      modell: { type: 'string', description: 'ollama_entladen/ollama_laden: Modellname wie in ollama_status (ohne Tag = :latest)' },
+      modell: { type: 'string', description: 'ollama_entladen/ollama_laden: Modellname wie in ollama_status (ohne Tag = :latest); modellprofil/modellprofil_setzen: Embedding-Modell (Standard: das aktive)' },
+      digest: { type: 'string', description: 'modellprofil_setzen: leer = gilt fuer jeden Digest (Standard), sonst sha256-Anfang (12..64 Hex)' },
+      query_praefix: { type: ['string', 'null'], description: 'modellprofil_setzen: Praefix fuer Suchanfragen ("" = bewusst keiner, null = nicht kalibriert). Leerzeichen zaehlen mit.' },
+      dok_praefix: { type: ['string', 'null'], description: 'modellprofil_setzen: Praefix fuer gespeicherte Dokumente ("" = keiner, null = nicht kalibriert). Aendern heisst neu einbetten!' },
+      ziel_dimension: { type: ['number', 'null'], description: 'modellprofil_setzen: Kontrollwert der Zieldimension (wirksam bleibt EMBEDDING_TARGET_DIM)' },
+      max_stueck_zeichen: { type: ['number', 'null'], description: 'modellprofil_setzen: groesstes Textstueck in Zeichen je Embedding-Aufruf (unter dem physischen Batch des Modells)' },
+      score_schwellen: { type: ['object', 'string'], description: 'modellprofil_setzen: {zweck: zahl|null} - gemischt in die vorhandenen, null entfernt. Zwecke: modellprofil zeigt sie' },
+      notiz: { type: ['string', 'null'], description: 'modellprofil_setzen: Notiz (z. B. Verweis auf den Mess-Thought)' },
+      messwerte: { type: ['object', 'string'], description: 'modellprofil_setzen: Objekt, wird in die vorhandenen Messwerte gemischt' },
+      zweck: { type: 'string', description: 'modellprofil_kalibrieren: hook | channel_skill | global_search | graph_code | code_semantic_fallback | graph_wissen | error_patterns' },
+      passend: { type: 'array', items: { type: ['string', 'object'] }, description: 'modellprofil_kalibrieren: Anfragen mit erwartetem Treffer - Text oder {query, erwartet} (erwartet = Teil des Namens/Pfads)' },
+      rauschen: { type: 'array', items: { type: 'string' }, description: 'modellprofil_kalibrieren: Anfragen, zu denen nichts passen soll' },
+      schreiben: { type: 'boolean', description: 'modellprofil_kalibrieren: Vorschlag ins Profil des aktiven Modells schreiben (nur bei sauberer Trennung)' },
       min_sekunden: { type: 'number', description: 'db_sitzungen: laufende Abfragen ab so vielen Sekunden auflisten (Standard 5)' },
       minuten: { type: 'number', description: 'langsam: Zeitfenster in Minuten (Standard 30)' },
       limit: { type: 'number', description: 'langsam: hoechstens so viele Aufrufe (Standard 20, max 200); nachzug_jetzt: so viele Eintraege (Standard 20, max 500)' },
@@ -92,8 +116,8 @@ export const INTERN_DEFINITION = {
       stufe: { type: 'number', description: 'embed_prioritaet: 1 (zuerst) bis 4 (zuletzt), 0 = Eintrag entfernen (zurueck auf 3)' },
       anzahl: { type: 'number', description: 'embedding_messen: Zahl der Passagen (Standard 20, 1..200)' },
       praefix: { type: 'string', description: 'embedding_messen: Praefix vor jeder Passage, z. B. "passage: " (Leerzeichen zaehlen mit)' },
-      num_ctx: { type: 'number', description: 'embedding_messen: num_ctx fuer Ollama (Standard: EMBEDDING_NUM_CTX der Server-Env, sonst Ollama-Standard des Modells)' },
-      num_batch: { type: 'number', description: 'embedding_messen: num_batch (physischer Batch) fuer Ollama (Standard: EMBEDDING_NUM_BATCH, sonst Ollama-Standard)' },
+      num_ctx: { type: ['number', 'null'], description: 'embedding_messen: num_ctx fuer Ollama (Standard: EMBEDDING_NUM_CTX der Server-Env, sonst Ollama-Standard des Modells); modellprofil_setzen: num_ctx des Modells (null = nicht kalibriert)' },
+      num_batch: { type: ['number', 'null'], description: 'embedding_messen: num_batch (physischer Batch) fuer Ollama (Standard: EMBEDDING_NUM_BATCH, sonst Ollama-Standard); modellprofil_setzen: physischer Batch des Modells in Token' },
       keep_alive: { type: ['string', 'number'], description: 'ollama_laden: wie lange geladen bleiben (Ollama-Format, z. B. "30m", "2h", -1 = bis Neustart; Standard 30m)' },
     },
     required: ['action'],
@@ -142,6 +166,33 @@ function textListe(a: Record<string, unknown>, k: string): string[] | undefined 
   if (!roh) return undefined;
   const liste = roh.map((x) => String(x).trim()).filter(Boolean);
   return liste.length > 0 ? liste : undefined;
+}
+
+/** Feld fuer modellprofil_setzen: fehlt -> undefined, null bzw. "null" -> null (= nicht kalibriert). */
+function nullbar<T>(a: Record<string, unknown>, k: string, umwandeln: (v: unknown) => T): T | null | undefined {
+  if (!(k in a) || a[k] === undefined) return undefined;
+  if (a[k] === null || a[k] === 'null') return null;
+  return umwandeln(a[k]);
+}
+
+/** Objekt aus den Args: echtes Objekt oder JSON-Text (Connector mit altem Schema). */
+function objekt(a: Record<string, unknown>, k: string): Record<string, unknown> | undefined {
+  let v = a[k];
+  if (typeof v === 'string' && v.trim().startsWith('{')) {
+    try { v = JSON.parse(v); } catch { /* unten als ungueltig */ }
+  }
+  if (v === undefined) return undefined;
+  if (!v || typeof v !== 'object' || Array.isArray(v)) throw new InternModellprofilFehler('parameter_ungueltig', k + ': Objekt erwartet.');
+  return v as Record<string, unknown>;
+}
+
+/** Liste aus den Args: echtes Array oder JSON-Text. */
+function liste(a: Record<string, unknown>, k: string): unknown[] {
+  let v = a[k];
+  if (typeof v === 'string' && v.trim().startsWith('[')) {
+    try { v = JSON.parse(v); } catch { /* unten als leer */ }
+  }
+  return Array.isArray(v) ? v : [];
 }
 
 function fehler(action: string, code: string, message: string): Record<string, unknown> {
@@ -290,12 +341,56 @@ export async function fuehreInternAus(
           ...(await embeddingMessen(modell, Math.floor(anzahl ?? 20), praefix, { num_ctx: numCtx, num_batch: numBatch })),
         };
       }
+      case 'modellprofil':
+        return { success: true, action, ...(await modellprofilAnzeigen(text(a, 'modell'))) };
+      case 'modellprofil_setzen': {
+        const ganzzahl = (v: unknown): number => Number(v);
+        const roh = (v: unknown): string => String(v);
+        const schwellenRoh = objekt(a, 'score_schwellen');
+        const aenderung: ProfilAenderung = {
+          modell: text(a, 'modell'),
+          digest: text(a, 'digest'),
+          // Praefixe NICHT trimmen: "query: " endet mit einem Leerzeichen, das zum Format gehoert
+          query_praefix: nullbar(a, 'query_praefix', roh),
+          dok_praefix: nullbar(a, 'dok_praefix', roh),
+          ziel_dimension: nullbar(a, 'ziel_dimension', ganzzahl),
+          num_ctx: nullbar(a, 'num_ctx', ganzzahl),
+          num_batch: nullbar(a, 'num_batch', ganzzahl),
+          max_stueck_zeichen: nullbar(a, 'max_stueck_zeichen', ganzzahl),
+          notiz: nullbar(a, 'notiz', roh),
+          score_schwellen: schwellenRoh
+            ? Object.fromEntries(Object.entries(schwellenRoh).map(([z, w]) => [z, w === null || w === 'null' ? null : Number(w)]))
+            : undefined,
+          messwerte: objekt(a, 'messwerte'),
+          agent: text(a, 'agent_id') ?? agentId,
+        };
+        return { success: true, action, ...(await modellprofilSetzen(aenderung)) };
+      }
+      case 'modellprofil_kalibrieren': {
+        const zweck = text(a, 'zweck');
+        if (!zweck) return fehler(action, 'parameter_fehlt', 'zweck fehlt (modellprofil zeigt die Zwecke).');
+        const passend = liste(a, 'passend').map((p) => (
+          typeof p === 'string'
+            ? { query: p }
+            : { query: String((p as Record<string, unknown>)?.query ?? ''), erwartet: (p as Record<string, unknown>)?.erwartet ? String((p as Record<string, unknown>).erwartet) : undefined }
+        )).filter((p) => p.query.trim() !== '');
+        const rauschen = liste(a, 'rauschen').map(String).filter((q) => q.trim() !== '');
+        return {
+          success: true,
+          action,
+          ...(await modellprofilKalibrieren({
+            zweck, passend, rauschen, project: text(a, 'project'), schreiben: wahr(a, 'schreiben') === true, agent: text(a, 'agent_id') ?? agentId,
+          })),
+        };
+      }
       default:
         return fehler(action, 'unbekannte_action', `Unbekannte action "${action}". Erlaubt: ${INTERN_ACTIONS.join(', ')}.`);
     }
   } catch (err) {
     if (err instanceof InternSchalterFehler) return fehler(action, err.code, err.message);
     if (err instanceof InternOllamaFehler) return fehler(action, err.code, err.message);
+    if (err instanceof InternModellprofilFehler) return fehler(action, err.code, err.message);
+    if (err instanceof ModellNichtKalibriertError) return fehler(action, err.code, err.message);
     return fehler(action, 'interner_fehler', err instanceof Error ? err.message : String(err));
   }
 }

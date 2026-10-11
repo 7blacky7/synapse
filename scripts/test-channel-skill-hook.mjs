@@ -65,14 +65,17 @@ function fakePool() {
   };
 }
 
+// P15-T8: Schwellen kommen sonst aus dem Modellprofil (PG) - der Test gibt sie per Env vor.
+process.env.CHANNEL_SKILL_MIN_SCORE ??= '0.75';
+process.env.SCORE_SCHWELLE_CHANNEL_SKILL_ABSTAND ??= '0.04';
 const message = { id: 77, content: 'fal-ai-image Queue Workflow fuer Bildgenerierung.' };
 const synapse = { skill_name: 'synapse-agent-regeln', section: 'x', score: 0.86, content: '', tags: [], scope: 'global' };
 const fal = { skill_name: 'fal-ai-image', section: 'queue', score: 0.78, content: '', tags: [], scope: 'global' };
-assert.equal(waehleChannelSkillTreffer([synapse, fal], message.content)[0].skill_name, 'fal-ai-image');
+assert.equal(waehleChannelSkillTreffer([synapse, fal], message.content, 0.75, 0.04)[0].skill_name, 'fal-ai-image');
 assert.deepEqual(waehleChannelSkillTreffer([
   { ...synapse, score: 0.80 },
   { ...fal, skill_name: 'generic-image', score: 0.78 },
-], 'fachfremder Bildtext'), []);
+], 'fachfremder Bildtext', 0.75, 0.04), []);
 
 const pool = fakePool();
 const calls = [];

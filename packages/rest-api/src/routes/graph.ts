@@ -30,6 +30,7 @@ import {
   searchCode,
   searchMemories,
   searchThoughts,
+  scoreSchwelleOderHinweis,
   // Wissen
   getPlan,
   listMemories,
@@ -333,6 +334,12 @@ async function buildProjectGraph(name: string, symbolTypes: string[]) {
   };
 }
 
+/** P15-T8: Hinweise nicht kalibrierter Score-Schwellen fuer die Antwort (leer, wenn alle da sind). */
+function hinweisAus(...staende: Array<{ hinweis?: string }>): { hinweis?: string } {
+  const texte = [...new Set(staende.map((s) => s.hinweis).filter((h): h is string => !!h))];
+  return texte.length > 0 ? { hinweis: texte.join(' | ') } : {};
+}
+
 // ───────────────────────── Aggregation: Datei-Details ─────────────────────────
 async function buildFileDetails(project: string, filePath: string) {
   let queryText = filePath;
@@ -351,13 +358,19 @@ async function buildFileDetails(project: string, filePath: string) {
   const functions =
     fnList.status === 'fulfilled' ? fnList.value.map((f) => f.name) : [];
 
+  // P15-T8: Schwellen je Modell aus dem Profil (graph_code, graph_wissen) - hier standen 0.55/0.45
+  // (qwen-Skala). Nicht kalibriert -> keine Nachbarn und ein Hinweis in der Antwort.
+  const [schwelleCode, schwelleWissen] = await Promise.all([
+    scoreSchwelleOderHinweis('graph_code'),
+    scoreSchwelleOderHinweis('graph_wissen'),
+  ]);
   const semantic: { filePath: string; score: number }[] = [];
   const seen = new Set<string>();
   if (semResRaw.status === 'fulfilled') {
     for (const r of semResRaw.value) {
       const fp = r.payload?.file_path;
       if (!fp || fp === filePath || seen.has(fp)) continue;
-      if ((r.score ?? 0) < 0.55) continue;
+      if (schwelleCode.schwelle === null || (r.score ?? 0) < schwelleCode.schwelle) continue;
       seen.add(fp);
       semantic.push({ filePath: fp, score: Math.round((r.score ?? 0) * 100) / 100 });
     }
@@ -366,13 +379,13 @@ async function buildFileDetails(project: string, filePath: string) {
   const knowledge: { kind: string; label: string; score: number }[] = [];
   if (memResRaw.status === 'fulfilled') {
     for (const r of memResRaw.value) {
-      if ((r.score ?? 0) < 0.45) continue;
+      if (schwelleWissen.schwelle === null || (r.score ?? 0) < schwelleWissen.schwelle) continue;
       knowledge.push({ kind: 'memory', label: r.payload?.name ?? '', score: Math.round((r.score ?? 0) * 100) / 100 });
     }
   }
   if (thoResRaw.status === 'fulfilled') {
     for (const r of thoResRaw.value) {
-      if ((r.score ?? 0) < 0.45) continue;
+      if (schwelleWissen.schwelle === null || (r.score ?? 0) < schwelleWissen.schwelle) continue;
       knowledge.push({ kind: 'thought', label: String(r.payload?.content ?? '').slice(0, 60), score: Math.round((r.score ?? 0) * 100) / 100 });
     }
   }
@@ -385,6 +398,7 @@ async function buildFileDetails(project: string, filePath: string) {
     functions,
     semantic: semantic.slice(0, 6),
     knowledge: knowledge.slice(0, 8),
+    ...hinweisAus(schwelleCode, schwelleWissen),
   };
 }
 
@@ -632,6 +646,7 @@ async function buildKnowledgeDetail(
   // Semantische Nachbarn: Volltext (oder query/ref als Fallback) gegen
   // memories + thoughts. searchMemories/searchThoughts liefern roh
   // SearchResult { id, score, payload } — Zugriff via r.payload.*.
+  const schwelleWissen = await scoreSchwelleOderHinweis('graph_wissen');
   const q = (content || query || ref || '').slice(0, 400);
   const neighbors: { nodeId: string; kind: string; label: string; score: number }[] = [];
   if (q) {
@@ -643,7 +658,7 @@ async function buildKnowledgeDetail(
       for (const r of memRes.value) {
         const memName = String(r.payload?.name ?? '');
         if (!memName || (kind === 'memory' && memName === ref)) continue;
-        if ((r.score ?? 0) < 0.45) continue;
+        if (schwelleWissen.schwelle === null || (r.score ?? 0) < schwelleWissen.schwelle) continue;
         neighbors.push({
           nodeId: `mem:${memName}`,
           kind: 'memory',
@@ -656,7 +671,7 @@ async function buildKnowledgeDetail(
       for (const r of thoRes.value) {
         const tid = String(r.id ?? '');
         if (!tid || (kind === 'thought' && tid === ref)) continue;
-        if ((r.score ?? 0) < 0.45) continue;
+        if (schwelleWissen.schwelle === null || (r.score ?? 0) < schwelleWissen.schwelle) continue;
         const text = String(r.payload?.content ?? '');
         neighbors.push({
           nodeId: `tho:${tid}`,
@@ -678,6 +693,7 @@ async function buildKnowledgeDetail(
     tags,
     linkedPaths,
     neighbors: neighbors.slice(0, 8),
+    ...hinweisAus(schwelleWissen),
   };
 }
 

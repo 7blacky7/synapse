@@ -19,7 +19,8 @@ export interface NodeCapabilities {
   systemMemoryMb: number;
   cpuCores: number;
   gpuName: string | null;
-  maxConcurrency: number;
+  /** P15-T9: nur ein WUNSCH (SYNAPSE_NODE_MAX_CONCURRENCY); fehlt er, legt der Server die Stapelgroesse fest. */
+  maxConcurrency?: number;
   agentVersion: string;
 }
 
@@ -46,11 +47,15 @@ export interface EmbeddingReference {
   quantization: string | null;
   requiredTotalVramMb: number;
   requiredFreeVramMb: number;
+  /** P15-T8: Praefixe und Stueckgroesse aus dem Modellprofil der API (der Knoten liest kein PG). */
+  queryPraefix: string;
+  dokPraefix: string;
+  maxStueckZeichen: number | null;
 }
 
-function envPositiveInt(name: string, fallback: number): number {
+function envPositiveInt(name: string): number | undefined {
   const value = Number(process.env[name]);
-  return Number.isInteger(value) && value > 0 ? value : fallback;
+  return Number.isInteger(value) && value > 0 ? value : undefined;
 }
 
 /**
@@ -190,7 +195,8 @@ export async function probeNodeCapabilities(
     systemMemoryMb: Math.round(os.totalmem() / 1024 / 1024),
     cpuCores: os.cpus().length,
     gpuName: gpu.name,
-    maxConcurrency: envPositiveInt('SYNAPSE_NODE_MAX_CONCURRENCY', 2),
+    // P15-T9: hier stand ein fester Default 2 (216 Chunks/min); jetzt Wunsch oder Server-Vorgabe.
+    maxConcurrency: envPositiveInt('SYNAPSE_NODE_MAX_CONCURRENCY'),
     agentVersion: '0.1.0',
   };
 }

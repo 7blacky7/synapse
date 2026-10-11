@@ -19,7 +19,7 @@
  *   - Einzelne Punkte tragen zusaetzlich payload.embedding_modell (qdrant/operations.ts).
  */
 import { getPool } from '../db/client.js';
-import { embeddingModellKennung } from '../embeddings/modell-profil.js';
+import { embeddingModellKennung, sichereModellprofil } from '../embeddings/modell-profil.js';
 
 export type KennungsStatus = 'neu-registriert' | 'passt' | 'abweichend' | 'unbekannt';
 
@@ -44,7 +44,16 @@ function verzichte(grund: unknown): void {
 /** Neue Collection: Kennung und Dimension festhalten (ueberschreibt einen alten Eintrag gleichen Namens). */
 export async function registriereCollection(name: string, dimension: number): Promise<void> {
   if (deaktiviert) return;
-  const kennung = embeddingModellKennung();
+  // P15-T8: die Kennung braucht das Modellprofil. Nicht kalibriert -> nicht registrieren; der
+  // Schreibweg selbst scheitert dann ohnehin mit modell_nicht_kalibriert beim Einbetten.
+  let kennung: string;
+  try {
+    await sichereModellprofil();
+    kennung = embeddingModellKennung();
+  } catch (err) {
+    console.error('[Synapse] Kennungsregister: ' + String(err).slice(0, 240));
+    return;
+  }
   try {
     await getPool().query(
       `INSERT INTO embedding_collections (collection, modell_kennung, dimension, quelle)
@@ -62,7 +71,13 @@ export async function registriereCollection(name: string, dimension: number): Pr
 
 /** Bestehende Collection: passt das aktive Modell zum gespeicherten? Meldet Abweichungen einmal je Prozess. */
 export async function pruefeCollectionKennung(name: string, dimension: number | null): Promise<KennungsBefund> {
-  const aktuell = embeddingModellKennung();
+  let aktuell: string;
+  try {
+    await sichereModellprofil();
+    aktuell = embeddingModellKennung();
+  } catch (err) {
+    return { collection: name, status: 'unbekannt', aktuell: ('unbekannt: ' + String(err)).slice(0, 300) };
+  }
   const bekannt = geprueft.get(name);
   if (bekannt && bekannt.aktuell === aktuell) return bekannt;
   if (deaktiviert) return { collection: name, status: 'unbekannt', aktuell };

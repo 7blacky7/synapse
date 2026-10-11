@@ -95,6 +95,9 @@ await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
 process.env.EMBEDDING_PROVIDER = 'ollama';
 process.env.OLLAMA_URL = `http://127.0.0.1:${server.address().port}`;
 process.env.OLLAMA_MODEL = 'fake-embed';
+// P15-T8: Praefixe kommen sonst aus dem Modellprofil (PG) - hier ohne Praefix.
+process.env.EMBEDDING_QUERY_PREFIX = '';
+process.env.EMBEDDING_DOC_PREFIX = '';
 process.env.QDRANT_URL = 'http://127.0.0.1:9';
 process.env.EMBED_MIN_GAP_MS = '0';
 process.env.SYNAPSE_INTERN_CACHE_MS = '0';

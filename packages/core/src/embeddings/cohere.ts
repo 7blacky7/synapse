@@ -5,7 +5,6 @@
 
 import { EmbeddingProvider } from './types.js';
 
-const DEFAULT_MODEL = 'embed-v3.0';
 const BASE_URL = 'https://api.cohere.com/v2';
 
 export class CohereEmbeddingProvider implements EmbeddingProvider {
@@ -13,9 +12,11 @@ export class CohereEmbeddingProvider implements EmbeddingProvider {
   private apiKey: string;
   private model: string;
 
-  constructor(apiKey: string, model?: string) {
+  // P15-T8: Modell aus EMBEDDING_MODEL, kein Standardname im Code
+  constructor(apiKey: string, model: string) {
+    if (!model) throw new Error('Cohere-Embedding: kein Modell konfiguriert (EMBEDDING_MODEL).');
     this.apiKey = apiKey;
-    this.model = model || DEFAULT_MODEL;
+    this.model = model;
   }
 
   async embed(text: string): Promise<number[]> {

@@ -17,6 +17,10 @@ process.env.SYNAPSE_GPU_REQUIRED_TOTAL_MB = '12000';
 process.env.SYNAPSE_GPU_REQUIRED_FREE_MB = '7300';
 process.env.OLLAMA_URL = 'http://ollama-referenz.test:11434';
 process.env.SYNAPSE_OLLAMA_INFO_TTL_MS = '0';
+// P15-T8: Praefixe und Stueckgroesse kommen sonst aus dem Modellprofil (PG).
+process.env.EMBEDDING_QUERY_PREFIX = 'query: ';
+process.env.EMBEDDING_DOC_PREFIX = 'passage: ';
+process.env.EMBEDDING_MAX_INPUT_CHARS = '3276';
 
 const requireFromRest = createRequire(new URL('../packages/rest-api/package.json', import.meta.url));
 const Fastify = requireFromRest('fastify');
@@ -321,16 +325,23 @@ assert.equal(derivedRef.modelDigest, OLLAMA_DIGEST);
 assert.equal(derivedRef.nativeDimension, 4096);
 assert.equal(derivedRef.targetDimension, 3072);
 assert.equal(derivedRef.numCtx, 32768);
+assert.equal(derivedRef.queryPraefix, 'query: ');
+assert.equal(derivedRef.dokPraefix, 'passage: ');
+assert.equal(derivedRef.maxStueckZeichen, 3276);
 assert.equal(derivedRef.requiredTotalVramMb, OLLAMA_VRAM / 1024 / 1024);
 assert.equal(derivedRef.requiredFreeVramMb, OLLAMA_VRAM / 1024 / 1024);
 assert.equal(derived.json().download.modelSizeGb, 4.7);
 // Nicht ermittelbar -> 503 mit den fehlenden Feldern, kein stiller Altwert.
 ollamaFake = 'aus';
+// P15-T8: ohne Praefixe (Env weg, kein Profil fuer das Modell) darf es keinen Vertrag geben.
+delete process.env.EMBEDDING_QUERY_PREFIX;
+delete process.env.EMBEDDING_DOC_PREFIX;
 const unavailable = await app.inject({ method: 'GET', url: '/api/embedding-nodes/reference' });
 assert.equal(unavailable.statusCode, 503, unavailable.body);
 assert.equal(unavailable.json().error, 'reference_unavailable');
 assert.ok(unavailable.json().missing.some((m) => m.startsWith('nativeDimension')));
 assert.ok(unavailable.json().missing.some((m) => m.startsWith('requiredTotalVramMb')));
+assert.ok(unavailable.json().missing.some((m) => m.startsWith('praefixe')), JSON.stringify(unavailable.json().missing));
 assert.equal(forbiddenFetches, 0);
 
 await app.close();

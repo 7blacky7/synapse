@@ -29,7 +29,7 @@ import { OllamaEmbeddingProvider } from './ollama.js';
 import { OpenAICompatibleProvider, PROVIDER_PRESETS } from './openai-compatible.js';
 import { GoogleEmbeddingProvider } from './google.js';
 import { CohereEmbeddingProvider } from './cohere.js';
-import { mitPraefix, type EmbedArt } from './modell-profil.js';
+import { mitPraefix, sichereModellprofil, type EmbedArt } from './modell-profil.js';
 import { schalterHaeltAn, type InternSchalterStand } from '../services/intern-schalter.js';
 
 export * from './types.js';
@@ -73,6 +73,19 @@ function resolveApiKey(provider: string, config: SynapseConfig): string {
 }
 
 /**
+ * Modellname fuer Cloud-Provider aus EMBEDDING_MODEL (P15-T8). Bis zum 11.10.2026 stand je Provider ein
+ * Standardname im Code (gemini-embedding-2, text-embedding-3-small ...) - ein anderes Modell heisst ein
+ * anderer Vektorraum, das darf nie still passieren (Regel regel-keine-festverdrahteten-modellwerte).
+ */
+function konfiguriertesModell(provider: string, config: SynapseConfig): string {
+  const model = config.embeddings.model;
+  if (!model) {
+    throw new Error(`Kein Embedding-Modell fuer "${provider}" konfiguriert: EMBEDDING_MODEL setzen (kein Standardname im Code).`);
+  }
+  return model;
+}
+
+/**
  * Erstellt einen Provider basierend auf dem Namen
  */
 function createProvider(name: string, config: SynapseConfig): EmbeddingProvider {
@@ -86,21 +99,19 @@ function createProvider(name: string, config: SynapseConfig): EmbeddingProvider 
     case 'voyage': {
       const preset = PROVIDER_PRESETS[name];
       const apiKey = resolveApiKey(name, config);
-      const model = config.embeddings.model || preset.defaultModel;
+      const model = konfiguriertesModell(name, config);
       const baseURL = config.embeddings.baseUrl || preset.baseURL;
       return new OpenAICompatibleProvider({ name, apiKey, model, baseURL });
     }
 
     case 'google': {
       const apiKey = resolveApiKey('google', config);
-      const model = config.embeddings.model || undefined;
-      return new GoogleEmbeddingProvider(apiKey, model);
+      return new GoogleEmbeddingProvider(apiKey, konfiguriertesModell('google', config));
     }
 
     case 'cohere': {
       const apiKey = resolveApiKey('cohere', config);
-      const model = config.embeddings.model || undefined;
-      return new CohereEmbeddingProvider(apiKey, model);
+      return new CohereEmbeddingProvider(apiKey, konfiguriertesModell('cohere', config));
     }
 
     default:
@@ -146,12 +157,13 @@ export async function getEmbeddingProvider(
     }
 
     console.error('[Synapse] Ollama nicht erreichbar, versuche OpenAI Fallback...');
-    if (config.embeddings.openai.apiKey) {
+    // Nur mit ausdruecklich konfiguriertem Modell (EMBEDDING_MODEL) - kein Standardname im Code.
+    if (config.embeddings.openai.apiKey && config.embeddings.model) {
       const preset = PROVIDER_PRESETS['openai'];
       const openai = new OpenAICompatibleProvider({
         name: 'openai',
         apiKey: config.embeddings.openai.apiKey,
-        model: config.embeddings.model || preset.defaultModel,
+        model: config.embeddings.model,
         baseURL: preset.baseURL,
       });
       if (await openai.testConnection()) {
@@ -486,6 +498,8 @@ export async function embed(
   text: string,
   options: EmbedOptions = {},
 ): Promise<number[]> {
+  // P15-T8: Praefixe/num_ctx kommen aus dem Modellprofil (PG) - vor dem Slot laden, nicht darin.
+  await sichereModellprofil();
   return runQueued(async (signal) => {
     const provider = await getEmbeddingProvider({ strictOllama: options.strictOllama });
     return provider.embed(mitPraefix(text, options.art), signal);
@@ -505,6 +519,7 @@ export async function embedBatch(
   options: EmbedOptions = {},
 ): Promise<number[][]> {
   if (texts.length === 0) return [];
+  await sichereModellprofil();
   if (getConfig().embeddings.provider === 'ollama') {
     // Interaktiv: weiterhin je Text, damit eine Anfrage nach dem laufenden Text einspringen kann.
     if ((options.priority ?? 'interactive') === 'interactive') {

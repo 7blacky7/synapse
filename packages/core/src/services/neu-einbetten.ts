@@ -24,7 +24,7 @@
 import { getPool } from '../db/client.js';
 import { listCollections, getCollectionVectorSize, deleteCollection, ensureCollection } from '../qdrant/collections.js';
 import { getEmbeddingDimension } from '../embeddings/index.js';
-import { embeddingModellKennung } from '../embeddings/modell-profil.js';
+import { embeddingModellKennung, sichereModellprofil } from '../embeddings/modell-profil.js';
 import { COLLECTIONS } from '../types/index.js';
 import { resetProjectEmbeddings } from './code.js';
 
@@ -162,6 +162,7 @@ function meldung(err: unknown): string {
  */
 export async function neuEinbetten(opt: NeuEinbettenOptionen = {}): Promise<Record<string, unknown>> {
   const pool = getPool();
+  await sichereModellprofil();
   const kennung = embeddingModellKennung();
   const dimension = await getEmbeddingDimension();
   const filter = opt.arten && opt.arten.length > 0 ? new Set(opt.arten) : null;

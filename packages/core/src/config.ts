@@ -22,11 +22,12 @@ export function loadConfig(): SynapseConfig {
       provider: (process.env.EMBEDDING_PROVIDER as SynapseConfig['embeddings']['provider']) || 'ollama',
       ollama: {
         url: process.env.OLLAMA_URL || 'http://localhost:11434',
-        model: process.env.OLLAMA_MODEL || 'nomic-embed-text-v2-moe',
+        // P15-T8: kein Standardname - ohne OLLAMA_MODEL meldet embeddingModellName() einen klaren Fehler
+        model: process.env.OLLAMA_MODEL || '',
       },
       openai: {
         apiKey: process.env.OPENAI_API_KEY || undefined,
-        model: 'text-embedding-3-small',
+        model: process.env.EMBEDDING_MODEL || '',
       },
       apiKey: process.env.EMBEDDING_API_KEY || undefined,
       model: process.env.EMBEDDING_MODEL || undefined,

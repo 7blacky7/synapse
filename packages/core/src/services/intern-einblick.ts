@@ -14,7 +14,7 @@
 
 import type { Pool } from 'pg';
 import { getPool, getHintergrundPool } from '../db/client.js';
-import { getEmbeddingQueueStats, embeddingModellKennung } from '../embeddings/index.js';
+import { getEmbeddingQueueStats, embeddingModellKennung, modellprofilStand, sichereModellprofil } from '../embeddings/index.js';
 import { zaehleOffeneEmbeddings } from './embed-backlog.js';
 import { context7Kontingent } from './context7-kontingent.js';
 import { alleSchalter } from './intern-schalter.js';
@@ -53,7 +53,12 @@ export async function internStatus(): Promise<Record<string, unknown>> {
   const weitere: Record<string, unknown> = {};
   for (const [name, quelle] of quellen) weitere[name] = await sicher(quelle);
   return {
-    embedding_modell: await sicher(() => embeddingModellKennung()),
+    embedding_modell: await sicher(async () => { await sichereModellprofil(); return embeddingModellKennung(); }),
+    // P15-T8: welches Profil gilt (oder warum keins) - Details intern(modellprofil)
+    modellprofil: await sicher(async () => {
+      const s = await modellprofilStand();
+      return { modell: s.modell, digest: s.digest, kalibriert: s.profil !== null, grund: s.grund, zwecke: Object.keys(s.profil?.scoreSchwellen ?? {}) };
+    }),
     embedding_queue: getEmbeddingQueueStats(),
     db_pools: { haupt: poolStand(getPool()), hintergrund: poolStand(getHintergrundPool()) },
     offene_embeddings: offene,

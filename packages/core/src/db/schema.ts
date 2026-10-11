@@ -2253,6 +2253,35 @@ CREATE TABLE IF NOT EXISTS embedding_collections (
   aktualisiert_am TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+-- EMBEDDING-MODELLPROFILE (P15-T8, 11.10.2026, User-Vorgabe): Kalibrierung JE MODELL zentral in PG
+-- statt als Zahl/Name im Code. Ist Modell X aktiv, gelten die Werte von X (core/embeddings/
+-- modell-profil.ts, aktivesModellprofil). digest '' = gilt fuer jeden Digest des Modells, sonst
+-- Anfang des sha256 (mind. 12 Zeichen) - der laengste passende gewinnt.
+-- NULL in einem Feld = NICHT kalibriert: der Code meldet modell_nicht_kalibriert statt einen
+-- Ersatzwert zu nehmen. '' bei einem Praefix = bewusst ohne Praefix.
+-- score_schwellen: {"<zweck>": <zahl>}, Zwecke siehe SCORE_ZWECKE in modell-profil.ts.
+-- ziel_dimension ist nur ein Kontrollwert (wirksam bleibt EMBEDDING_TARGET_DIM).
+-- Gepflegt ueber intern(modellprofil_setzen / modellprofil_kalibrieren).
+CREATE TABLE IF NOT EXISTS embedding_modell_profile (
+  modell TEXT NOT NULL,
+  digest TEXT NOT NULL DEFAULT '',
+  query_praefix TEXT,
+  dok_praefix TEXT,
+  ziel_dimension INTEGER,
+  num_ctx INTEGER,
+  num_batch INTEGER,
+  max_stueck_zeichen INTEGER,
+  score_schwellen JSONB NOT NULL DEFAULT '{}'::jsonb,
+  kalibriert_am TIMESTAMPTZ,
+  kalibriert_von TEXT,
+  notiz TEXT,
+  messwerte JSONB,
+  angelegt_am TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  aktualisiert_am TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (modell, digest),
+  CONSTRAINT embedding_modell_profile_digest_form CHECK (digest = '' OR digest ~ '^[a-f0-9]{12,64}$')
+);
+
 -- INTERN-SCHALTER (P14-T1, 11.10.2026): Anhalte-Schalter fuer interne Ablaeufe (embedding, parser,
 -- context7), gesetzt ueber das Tool 'intern' (nur bei SYNAPSE_INTERN_TOOL=1), gelesen von den Workern
 -- je Tick (services/intern-schalter.ts). aktiv = Eingriff wirkt; bis = Ablauf (NULL nur bei

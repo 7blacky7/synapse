@@ -239,7 +239,7 @@ export async function searchRoutes(fastify: FastifyInstance): Promise<void> {
       minScore?: number;
     };
   }>('/api/search/global', async (request, reply) => {
-    const { query, types, projectFilter, limit = 10, minScore = 0.5 } = request.body;
+    const { query, types, projectFilter, limit = 10, minScore } = request.body; // minScore fehlt -> Profil (P15-T8)
 
     if (!query) {
       return reply.status(400).send({
@@ -284,7 +284,7 @@ export async function searchRoutes(fastify: FastifyInstance): Promise<void> {
       minScore?: number;
     };
   }>('/api/search/global/stream', async (request, reply) => {
-    const { query, types, projectFilter, limit = 10, minScore = 0.5 } = request.body;
+    const { query, types, projectFilter, limit = 10, minScore } = request.body; // minScore fehlt -> Profil (P15-T8)
 
     reply.raw.writeHead(200, {
       'Content-Type': 'text/event-stream',

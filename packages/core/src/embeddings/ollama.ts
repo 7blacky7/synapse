@@ -3,20 +3,44 @@
  * Lokale Embeddings mit GPU-Beschleunigung
  *
  * STUECKGROESSE (P12-T14, 11.10.2026): Ein Embedding-Modell muss jede Eingabe in EINEM physischen
- * Batch verarbeiten (Ollama n_batch/n_ubatch, Standard 2048 Token). Die Stueckgroesse richtete sich
- * frueher nach num_ctx (8192 -> ~16.000 Zeichen); qwen kam damit zurecht, Nemotron lehnte jeden
- * laengeren Text ab ("input (5671 tokens) is too large to process ... batch size 2048", 209 Fehler
- * in 30 Minuten). Jetzt: Stuecke von hoechstens EMBEDDING_NUM_BATCH * 1,6 Zeichen (2048 -> 3276),
- * Vektoren wie bisher gemittelt. num_batch wird bewusst NICHT vergroessert (User-Vorgabe).
- * ENDPUNKT: /api/embed statt /api/embeddings - nimmt Listen (echte Stapel) und kuerzt ein doch zu
- * langes Stueck ab, statt den ganzen Eintrag scheitern zu lassen.
+ * Batch verarbeiten (Ollama n_batch/n_ubatch). Die Stueckgroesse richtete sich frueher nach num_ctx;
+ * qwen kam damit zurecht, Nemotron lehnte jeden laengeren Text ab ("input (5671 tokens) is too large
+ * to process ... batch size 2048", 209 Fehler in 30 Minuten). Vektoren der Stuecke werden gemittelt.
+ * num_batch wird bewusst NICHT vergroessert (User-Vorgabe).
+ * ENDPUNKT: /api/embed statt /api/embeddings - nimmt Listen (echte Stapel).
+ *
+ * KEINE MODELLWERTE IM CODE (P15-T7, Regel regel-keine-festverdrahteten-modellwerte): hier standen
+ * 8192 (num_ctx) und 2048 (num_batch) als Rueckfall. Jetzt:
+ *   num_ctx      EMBEDDING_NUM_CTX -> Modellprofil num_ctx -> weglassen (Ollama-Standard des Modells)
+ *   Stueck       EMBEDDING_MAX_INPUT_CHARS -> Profil max_stueck_zeichen -> EMBEDDING_NUM_BATCH bzw.
+ *                Profil num_batch als Zeichenzahl (1 Zeichen >= 1 Token: vorsichtig) -> ungeteilt.
+ *                Lehnt Ollama trotzdem ab ("current batch size: N"), lernt der Provider die Grenze
+ *                aus der Meldung und versucht es geteilt erneut (Obergrenze fuer den Prozess).
+ * Das Profil laedt embed()/embedBatch() in embeddings/index.ts vorher (sichereModellprofil).
  */
 
 import { getConfig } from '../config.js';
 import { EmbeddingProvider } from './types.js';
+import { geladenesModellprofil } from './modell-profil.js';
 
 interface OllamaEmbedAntwort {
   embeddings: number[][];
+}
+
+/** Ollama hat eine Eingabe abgelehnt, weil sie nicht in den physischen Batch passt. */
+class BatchZuKleinFehler extends Error {
+  constructor(readonly batchToken: number, meldung: string) {
+    super(meldung);
+    this.name = 'BatchZuKleinFehler';
+  }
+}
+
+/** So oft wird nach einer Batch-Ablehnung mit kleineren Stuecken neu versucht. */
+const LERN_VERSUCHE = 3;
+
+function positiveEnv(name: string): number | null {
+  const n = Number(process.env[name]);
+  return Number.isInteger(n) && n > 0 ? n : null;
 }
 
 export class OllamaEmbeddingProvider implements EmbeddingProvider {
@@ -25,16 +49,19 @@ export class OllamaEmbeddingProvider implements EmbeddingProvider {
   private model: string;
   private modelEnsured = false;
   private targetDim: number;
+  /** Aus einer Ablehnung von Ollama gelernte Obergrenze in Zeichen (null = nichts gelernt). */
+  private gelernteStueckZeichen: number | null = null;
 
   constructor() {
     const config = getConfig();
     this.baseUrl = config.embeddings.ollama.url;
-    this.model = config.embeddings.ollama.model;
+    this.model = process.env.OLLAMA_MODEL || config.embeddings.ollama.model;
+    if (!this.model) {
+      throw new Error('Kein Ollama-Embedding-Modell konfiguriert: OLLAMA_MODEL setzen (kein Standardname im Code).');
+    }
     // MRL-Truncation (optional): wenn EMBEDDING_TARGET_DIM gesetzt ist, wird der
     // Embedding-Vektor auf diese Dimension gekuerzt + renormalisiert. Ollama
-    // liefert immer die native Dim (Nemotron-3-Embed-1B = 2048); mit
-    // EMBEDDING_TARGET_DIM=1024 passen die Vektoren in die 1024er-Collections.
-    // 0/unset = unveraendert.
+    // liefert immer die native Dim; 0/unset = unveraendert.
     this.targetDim = Number(process.env.EMBEDDING_TARGET_DIM) || 0;
   }
 
@@ -129,19 +156,46 @@ export class OllamaEmbeddingProvider implements EmbeddingProvider {
     return true;
   }
 
-  /** num_ctx der Anfrage (Default 8192) - Kontextfenster des geladenen Modells. */
-  private numCtx(): number {
-    return Number(process.env.EMBEDDING_NUM_CTX) || 8192;
+  /** num_ctx der Anfrage: Env -> Modellprofil -> null (Feld weglassen, Ollama-Standard des Modells). */
+  private numCtx(): number | null {
+    return positiveEnv('EMBEDDING_NUM_CTX') ?? geladenesModellprofil()?.numCtx ?? null;
   }
 
   /**
-   * Groesstes Stueck in Zeichen. Massgeblich ist der physische Batch (EMBEDDING_NUM_BATCH, Standard
-   * 2048 Token wie bei Ollama), nicht num_ctx. Faktor 1,6 Zeichen/Token ist vorsichtig (gemessen:
-   * 3300 Zeichen TypeScript = 981 Token). EMBEDDING_MAX_INPUT_CHARS uebersteuert.
+   * Groesstes Stueck in Zeichen. Massgeblich ist der physische Batch des Modells, nicht num_ctx.
+   * Reihenfolge siehe Dateikopf; eine gelernte Grenze deckelt jeden konfigurierten Wert.
+   * Infinity = nicht teilen (bis Ollama eine Grenze nennt).
    */
   private maxChars(): number {
-    const numBatch = Number(process.env.EMBEDDING_NUM_BATCH) || 2048;
-    return Number(process.env.EMBEDDING_MAX_INPUT_CHARS) || Math.floor(numBatch * 1.6);
+    const profil = geladenesModellprofil();
+    const konfiguriert = positiveEnv('EMBEDDING_MAX_INPUT_CHARS')
+      ?? profil?.maxStueckZeichen
+      ?? positiveEnv('EMBEDDING_NUM_BATCH')
+      ?? profil?.numBatch
+      ?? Number.POSITIVE_INFINITY;
+    return Math.min(konfiguriert, this.gelernteStueckZeichen ?? Number.POSITIVE_INFINITY);
+  }
+
+  /**
+   * Lehnt Ollama wegen des physischen Batches ab, Grenze lernen und neu versuchen: erst die genannte
+   * Token-Zahl als Zeichenzahl (1 Zeichen >= 1 Token), reicht das nicht, halbieren.
+   */
+  private async mitBatchLernen<T>(lauf: () => Promise<T>): Promise<T> {
+    for (let versuch = 0; ; versuch++) {
+      try {
+        return await lauf();
+      } catch (err) {
+        if (!(err instanceof BatchZuKleinFehler) || versuch >= LERN_VERSUCHE) throw err;
+        const vorher = this.gelernteStueckZeichen;
+        this.gelernteStueckZeichen = vorher === null || vorher > err.batchToken
+          ? err.batchToken
+          : Math.max(1, Math.floor(vorher / 2));
+        console.error(
+          `[Synapse] Ollama lehnt Eingabe ab (physischer Batch ${err.batchToken} Token) - Stueckgroesse fuer diesen Prozess ` +
+            `jetzt ${this.gelernteStueckZeichen} Zeichen. Dauerhaft: max_stueck_zeichen im Modellprofil setzen (intern modellprofil_setzen).`,
+        );
+      }
+    }
   }
 
   /**
@@ -151,6 +205,10 @@ export class OllamaEmbeddingProvider implements EmbeddingProvider {
     if (!this.modelEnsured) {
       await this.ensureModel();
     }
+    return this.mitBatchLernen(() => this.embedEinmal(text, signal));
+  }
+
+  private async embedEinmal(text: string, signal?: AbortSignal): Promise<number[]> {
     const maxChars = this.maxChars();
 
     // Passt in ein Stueck -> direkt embedden.
@@ -175,6 +233,7 @@ export class OllamaEmbeddingProvider implements EmbeddingProvider {
 
   /** Ein Aufruf an /api/embed fuer eine Liste von Texten. Ohne Dim-Truncation. */
   private async embedRaw(texte: string[], signal?: AbortSignal): Promise<number[][]> {
+    const numCtx = this.numCtx();
     const response = await fetch(`${this.baseUrl}/api/embed`, {
       method: 'POST',
       // P5-T15: verdraengter Hintergrund-Aufruf -> fetch bricht ab (Ollama rechnet ggf. kurz zu Ende)
@@ -183,12 +242,15 @@ export class OllamaEmbeddingProvider implements EmbeddingProvider {
       body: JSON.stringify({
         model: this.model,
         input: texte,
-        options: { num_ctx: this.numCtx() },
+        ...(numCtx !== null ? { options: { num_ctx: numCtx } } : {}),
       }),
     });
     if (!response.ok) {
-      const detail = (await response.text().catch(() => '')).slice(0, 200);
-      throw new Error(`Ollama Fehler: ${response.status} ${response.statusText} ${detail}`.trim());
+      const detail = (await response.text().catch(() => '')).slice(0, 300);
+      const meldung = `Ollama Fehler: ${response.status} ${response.statusText} ${detail}`.trim();
+      const batch = /batch size:?\s*(\d+)/i.exec(detail);
+      if (batch && Number(batch[1]) > 0) throw new BatchZuKleinFehler(Number(batch[1]), meldung);
+      throw new Error(meldung);
     }
     const data = (await response.json()) as OllamaEmbedAntwort;
     if (!Array.isArray(data.embeddings) || data.embeddings.length !== texte.length) {
@@ -223,18 +285,20 @@ export class OllamaEmbeddingProvider implements EmbeddingProvider {
     if (!this.modelEnsured) {
       await this.ensureModel();
     }
-    const maxChars = this.maxChars();
-    const ergebnis: number[][] = new Array(texts.length);
-    const kurzIdx: number[] = [];
-    for (let i = 0; i < texts.length; i++) {
-      if (texts[i].length <= maxChars) kurzIdx.push(i);
-      else ergebnis[i] = await this.embed(texts[i], signal);
-    }
-    if (kurzIdx.length > 0) {
-      const vektoren = await this.embedRaw(kurzIdx.map((i) => texts[i]), signal);
-      kurzIdx.forEach((i, k) => { ergebnis[i] = this.applyTargetDim(vektoren[k]); });
-    }
-    return ergebnis;
+    return this.mitBatchLernen(async () => {
+      const maxChars = this.maxChars();
+      const ergebnis: number[][] = new Array(texts.length);
+      const kurzIdx: number[] = [];
+      for (let i = 0; i < texts.length; i++) {
+        if (texts[i].length <= maxChars) kurzIdx.push(i);
+        else ergebnis[i] = await this.embedEinmal(texts[i], signal);
+      }
+      if (kurzIdx.length > 0) {
+        const vektoren = await this.embedRaw(kurzIdx.map((i) => texts[i]), signal);
+        kurzIdx.forEach((i, k) => { ergebnis[i] = this.applyTargetDim(vektoren[k]); });
+      }
+      return ergebnis;
+    });
   }
 
   /**

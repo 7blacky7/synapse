@@ -7,10 +7,6 @@ const apiUrl = (process.env.SYNAPSE_API_URL || '').replace(/\/$/, '');
 const token = process.env.SYNAPSE_API_TOKEN || '';
 const heartbeatMs = Number(process.env.SYNAPSE_NODE_HEARTBEAT_MS) || 30_000;
 const retryMs = Number(process.env.SYNAPSE_NODE_RETRY_MS) || 2_000;
-const configuredConcurrency = Number(process.env.SYNAPSE_NODE_MAX_CONCURRENCY);
-const nodeConcurrency = Number.isInteger(configuredConcurrency) && configuredConcurrency > 0
-  ? configuredConcurrency
-  : 2;
 
 if (!apiUrl || !token) {
   console.error('SYNAPSE_API_URL and SYNAPSE_API_TOKEN are required');
@@ -37,11 +33,10 @@ if (parsedApiUrl.username || parsedApiUrl.password || parsedApiUrl.search || par
 }
 
 // Der Compute-Prozess ist strikt lokal: kein getEmbeddingProvider() und damit
-// kein stiller OpenAI-Fallback. Die Node-Parallelitaet ist eine eigene Workerzahl
-// und veraendert EMBED_MAX_CONCURRENT des Servers nicht.
+// kein stiller OpenAI-Fallback. Die Stapelgroesse des Knotens (P15-T9) legt der
+// Server bei der Registrierung fest und veraendert EMBED_MAX_CONCURRENT nicht.
 process.env.EMBEDDING_PROVIDER = 'ollama';
 process.env.SYNAPSE_COMPUTE_NODE = '1';
-process.env.SYNAPSE_NODE_MAX_CONCURRENCY = String(nodeConcurrency);
 
 interface EmbeddingClaim {
   chunkId: string;
@@ -53,6 +48,16 @@ interface EmbeddingClaim {
 interface ClaimResponse {
   claims?: EmbeddingClaim[];
   reference?: EmbeddingReference;
+}
+
+interface RegisterResponse {
+  /** P15-T9: vom Server autorisierte Zahl gleichzeitiger Claims = Stapelgroesse je Runde. */
+  claimBatch?: number;
+}
+
+interface StapelAbschlussResponse {
+  abgeschlossen?: string[];
+  abgelehnt?: Array<{ chunkId: string; grund: string }>;
 }
 
 type Fingerprint = Pick<EmbeddingReference, 'model' | 'modelDigest' | 'nativeDimension' | 'targetDimension' | 'numCtx' | 'quantization'>;
@@ -107,19 +112,29 @@ async function holeReferenz(): Promise<EmbeddingReference> {
 }
 
 /**
- * core/embed() liest Modell, Zieldimension und num_ctx aus der Env (OLLAMA_MODEL,
- * EMBEDDING_TARGET_DIM, EMBEDDING_NUM_CTX). Der Knoten setzt sie aus dem Vertrag, BEVOR core
+ * core/embed() liest Modell, Zieldimension, num_ctx, Praefixe und Stueckgroesse aus der Env (OLLAMA_MODEL,
+ * EMBEDDING_TARGET_DIM, EMBEDDING_NUM_CTX, EMBEDDING_QUERY_PREFIX/_DOC_PREFIX, EMBEDDING_MAX_INPUT_CHARS). Der Knoten setzt sie aus dem Vertrag, BEVOR core
  * geladen wird — so rechnet er genau das, was er meldet, ohne eigene Vorgaben.
  */
 function uebernehmeReferenz(reference: EmbeddingReference): void {
+  // P15-T8: Praefixe und Stueckgroesse kommen aus dem Modellprofil der API. Fehlen sie (API vor
+  // P15-T8), wuerde der Knoten ohne Praefix andere Vektoren rechnen als der Server -> nicht starten.
+  if (typeof reference.queryPraefix !== 'string' || typeof reference.dokPraefix !== 'string') {
+    throw new Error('Referenzvertrag ohne queryPraefix/dokPraefix (API zu alt oder Modell nicht kalibriert) - Knoten startet nicht.');
+  }
   process.env.OLLAMA_MODEL = reference.model;
   process.env.EMBEDDING_TARGET_DIM = String(reference.targetDimension);
   process.env.EMBEDDING_NUM_CTX = String(reference.numCtx);
+  process.env.EMBEDDING_QUERY_PREFIX = reference.queryPraefix;
+  process.env.EMBEDDING_DOC_PREFIX = reference.dokPraefix;
+  if (reference.maxStueckZeichen) process.env.EMBEDDING_MAX_INPUT_CHARS = String(reference.maxStueckZeichen);
+  else delete process.env.EMBEDDING_MAX_INPUT_CHARS;
 }
 
 /** Hat sich der Vertrag in einem Punkt geaendert, den core beim Laden uebernommen hat? */
 function vertragGewechselt(alt: EmbeddingReference, neu: EmbeddingReference): boolean {
-  return alt.model !== neu.model || alt.targetDimension !== neu.targetDimension || alt.numCtx !== neu.numCtx;
+  return alt.model !== neu.model || alt.targetDimension !== neu.targetDimension || alt.numCtx !== neu.numCtx
+    || alt.queryPraefix !== neu.queryPraefix || alt.dokPraefix !== neu.dokPraefix || alt.maxStueckZeichen !== neu.maxStueckZeichen;
 }
 
 const bootId = randomUUID();
@@ -129,7 +144,35 @@ let stopped = false;
 let activeJobs = 0;
 let capabilities: Awaited<ReturnType<typeof probeNodeCapabilities>> | null = null;
 let startReferenz: EmbeddingReference | null = null;
-const stop = (): void => { stopped = true; };
+let claimBatch = 0;
+/** P15-T9: Claims, die dieser Prozess gerade haelt - beim Beenden werden sie zurueckgegeben. */
+const offeneClaims = new Map<string, string>();
+
+/**
+ * P15-T9: Gibt eigene Claims an den Server zurueck (geordnetes Beenden, gescheiterter Stapel). Ohne das
+ * blieben sie bis zum Lease-Ende (bis 15 min) blockiert. Best effort: ein Fehler wird gemeldet, nicht geworfen.
+ */
+async function gibClaimsFrei(claims: Array<{ chunkId: string; claimToken: string }>): Promise<void> {
+  if (claims.length === 0 || !capabilities) return;
+  try {
+    await api(`/api/embedding-nodes/${encodeURIComponent(capabilities.nodeId)}/claims/release`, { claims });
+  } catch (error) {
+    console.error('[ComputeNode] claim release failed (lease expires on its own):', error);
+  }
+}
+
+let beendet = false;
+const stop = (): void => {
+  stopped = true;
+  if (beendet) return;
+  beendet = true;
+  // Geordnetes Beenden (Tray "Helfer stoppen", SIGTERM): offene Claims zurueckgeben, dann raus.
+  const offen = [...offeneClaims].map(([chunkId, claimToken]) => ({ chunkId, claimToken }));
+  void gibClaimsFrei(offen).finally(() => {
+    if (offen.length > 0) console.error(`[ComputeNode] ${offen.length} offene Claims beim Beenden freigegeben`);
+    process.exit(0);
+  });
+};
 process.on('SIGINT', stop);
 process.on('SIGTERM', stop);
 
@@ -141,8 +184,13 @@ while (!stopped) {
     // Einzige Stelle mit harter Schwellenpruefung: vor der Registrierung.
     capabilities = await probeNodeCapabilities(reference, true);
     startReferenz = reference;
-    await api('/api/embedding-nodes/register', { ...capabilities, bootId, bootStartedAt });
-    console.error(`[ComputeNode] registered ${capabilities.nodeId} (${capabilities.modelDigest})`);
+    const antwort = await api<RegisterResponse>('/api/embedding-nodes/register', { ...capabilities, bootId, bootStartedAt });
+    // P15-T9: die Stapelgroesse kommt vom Server (SYNAPSE_NODE_MAX_CLAIMS bzw. unser Wunsch) - kein eigener Default.
+    if (!Number.isInteger(antwort.claimBatch) || (antwort.claimBatch as number) <= 0) {
+      throw new Error('Registrierung ohne claimBatch (API zu alt?) - Knoten arbeitet nicht mit geratener Stapelgroesse.');
+    }
+    claimBatch = antwort.claimBatch as number;
+    console.error(`[ComputeNode] registered ${capabilities.nodeId} (${capabilities.modelDigest}), claimBatch ${claimBatch}`);
     break;
   } catch (error) {
     console.error('[ComputeNode] registration failed, retrying:', error);
@@ -152,7 +200,7 @@ while (!stopped) {
 
 if (!capabilities) process.exit(0);
 
-const { embed } = await import('@synapse/core');
+const { embedBatch } = await import('@synapse/core');
 const registered = capabilities;
 const registrierteReferenz = startReferenz!;
 
@@ -190,7 +238,12 @@ async function heartbeatLoop(): Promise<void> {
   }
 }
 
-async function claimLoop(worker: number): Promise<void> {
+/**
+ * P15-T9: EIN Stapel je Runde - bis zu claimBatch Claims holen, in EINEM embedBatch einbetten (core teilt
+ * in Ollama-Scheiben, Praefixe/Stueckgroesse aus dem Vertrag) und in EINEM Aufruf abschliessen.
+ * Vorher je Chunk ein Claim-, Embed- und Abschluss-Aufruf in claimBatch parallelen Schleifen.
+ */
+async function claimLoop(): Promise<void> {
   // Wartezeit waechst, solange es nichts zu holen gibt, und faellt beim ersten
   // Treffer sofort zurueck. Grund (User-Vorgabe 01.08.2026): ein Knoten ohne
   // Arbeit soll pausieren statt anzuklopfen — gemessen wurden 16 ergebnislose
@@ -201,17 +254,19 @@ async function claimLoop(worker: number): Promise<void> {
   const wartezeitMax = Number(process.env.SYNAPSE_NODE_IDLE_MAX_MS) || 60_000;
   let wartezeit = retryMs;
   while (!stopped) {
+    let claims: EmbeddingClaim[] = [];
     try {
       const response = await api<ClaimResponse>(
         `/api/embedding-nodes/${encodeURIComponent(registered.nodeId)}/claims`,
-        { limit: 1 },
+        { limit: claimBatch },
       );
-      const claim = response.claims?.[0];
-      if (!claim) {
+      claims = response.claims ?? [];
+      if (claims.length === 0) {
         await sleep(wartezeit);
         wartezeit = Math.min(wartezeit * 2, wartezeitMax);
         continue;
       }
+      for (const c of claims) offeneClaims.set(c.chunkId, c.claimToken);
       wartezeit = retryMs;
       if (!response.reference) throw new Error('claim response has no embedding reference');
       const before = await probeNodeCapabilities(response.reference);
@@ -219,9 +274,9 @@ async function claimLoop(worker: number): Promise<void> {
         throw new Error('local model fingerprint differs from claim reference');
       }
 
-      activeJobs++;
+      activeJobs += claims.length;
       try {
-        const vector = await embed(claim.content, {
+        const vectors = await embedBatch(claims.map((c) => c.content), {
           priority: 'background',
           strictOllama: true,
         });
@@ -236,12 +291,15 @@ async function claimLoop(worker: number): Promise<void> {
         })) {
           throw new Error('local model fingerprint changed while embedding');
         }
-        await api(
-          `/api/embedding-nodes/${encodeURIComponent(registered.nodeId)}/claims/${encodeURIComponent(claim.chunkId)}/complete`,
+        const ergebnis = await api<StapelAbschlussResponse>(
+          `/api/embedding-nodes/${encodeURIComponent(registered.nodeId)}/claims/complete`,
           {
-            claimToken: claim.claimToken,
-            contentHash: claim.contentHash,
-            vector,
+            items: claims.map((c, i) => ({
+              chunkId: c.chunkId,
+              claimToken: c.claimToken,
+              contentHash: c.contentHash,
+              vector: vectors[i],
+            })),
             model: after.model,
             modelDigest: after.modelDigest,
             quantization: after.quantization,
@@ -250,17 +308,22 @@ async function claimLoop(worker: number): Promise<void> {
             numCtx: after.numCtx,
           },
         );
+        // Abgelehnte gibt der Server selbst frei; aus unserer Sicht ist der ganze Stapel erledigt.
+        for (const c of claims) offeneClaims.delete(c.chunkId);
+        if ((ergebnis.abgelehnt?.length ?? 0) > 0) {
+          console.error(`[ComputeNode] ${ergebnis.abgelehnt!.length} von ${claims.length} abgelehnt, z. B. ${ergebnis.abgelehnt![0].grund}`);
+        }
       } finally {
-        activeJobs--;
+        activeJobs -= claims.length;
       }
     } catch (error) {
-      console.error(`[ComputeNode] worker ${worker} failed, will retry:`, error);
+      console.error('[ComputeNode] batch failed, releasing claims and retrying:', error);
+      const haengend = claims.filter((c) => offeneClaims.has(c.chunkId));
+      for (const c of haengend) offeneClaims.delete(c.chunkId);
+      await gibClaimsFrei(haengend.map((c) => ({ chunkId: c.chunkId, claimToken: c.claimToken })));
       await sleep(retryMs);
     }
   }
 }
 
-await Promise.all([
-  heartbeatLoop(),
-  ...Array.from({ length: nodeConcurrency }, (_value, index) => claimLoop(index + 1)),
-]);
+await Promise.all([heartbeatLoop(), claimLoop()]);

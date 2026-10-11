@@ -21,7 +21,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { createHash } from 'crypto';
 import { getPool, getHintergrundPool } from '../db/client.js';
 import { embeddingNachtragAngehalten } from './intern-schalter.js';
-import { embed } from '../embeddings/index.js';
+import { embed, scoreSchwelleOderHinweis } from '../embeddings/index.js';
 import type { EmbedOptions, EmbedPriority } from '../embeddings/index.js';
 import { ensureCollection } from '../qdrant/collections.js';
 import { insertVector, deleteVector, deleteVectors, deleteByFilter } from '../qdrant/operations.js';
@@ -512,9 +512,16 @@ export async function searchTechDocs(
   }
 
   // Context7 Auto-Fetch: Wenn keine guten Ergebnisse und Framework bekannt (nur bei project/all scope)
-  const hasGoodResults = mapped.some(r => (r.score ?? 0) >= 0.60);
+  // P15-T8: "gut" haengt an der Score-Skala des Modells (Profil, Zweck tech_docs_gut; hier stand 0.60).
+  // Nicht kalibriert -> kein automatisches Nachladen, weil sich gut/schlecht nicht beurteilen laesst.
+  const gut = await scoreSchwelleOderHinweis('tech_docs_gut');
+  const gutAb = gut.schwelle;
+  if (gutAb === null && framework && scope !== 'global') {
+    console.error(`[Synapse TechDocs] Context7 Auto-Fetch aus: ${gut.hinweis}`);
+  }
+  const hasGoodResults = gutAb === null || mapped.some(r => (r.score ?? 0) >= gutAb);
   if (!hasGoodResults && framework && scope !== 'global') {
-    console.error(`[Synapse TechDocs] Keine guten Ergebnisse (Score < 0.60) — versuche Context7 Auto-Fetch fuer "${framework}"...`);
+    console.error(`[Synapse TechDocs] Keine guten Ergebnisse (Score < ${gutAb}) — versuche Context7 Auto-Fetch fuer "${framework}"...`);
 
     const context7 = getContext7Client();
     if (context7.isAvailable()) {

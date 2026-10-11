@@ -4,7 +4,7 @@
  *
  * INPUT:
  *   - apiKey: string - Google API Key (GOOGLE_API_KEY)
- *   - model?: string - Modellname (Standard: gemini-embedding-2-preview)
+ *   - model: string - Modellname (EMBEDDING_MODEL, Pflicht)
  *   - text: string - Zu embeddender Text
  *   - texts: string[] - Batch-Texte
  *   - data: Buffer + mimeType: string - Medien-Datei fuer Multimodal-Embedding
@@ -21,9 +21,8 @@
 
 import { EmbeddingProvider } from './types.js';
 
-// gemini-embedding-2 (stable, ohne -preview) — das Preview-Modell hatte striktes
-// Per-Minute-Quota; der stable Release hat normales Quota.
-const DEFAULT_MODEL = 'gemini-embedding-2';
+// Modellname kommt aus EMBEDDING_MODEL (embeddings/index.ts konfiguriertesModell) - hier stand bis
+// P15-T8 'gemini-embedding-2' als Standard (Regel regel-keine-festverdrahteten-modellwerte).
 const BASE_URL = 'https://generativelanguage.googleapis.com/v1beta';
 
 // Retry-Konfiguration fuer 429 (Quota) + transiente 5xx (Service-Unavailable):
@@ -92,9 +91,10 @@ export class GoogleEmbeddingProvider implements EmbeddingProvider {
   private apiKey: string;
   private model: string;
 
-  constructor(apiKey: string, model?: string) {
+  constructor(apiKey: string, model: string) {
+    if (!model) throw new Error('Google-Embedding: kein Modell konfiguriert (EMBEDDING_MODEL).');
     this.apiKey = apiKey;
-    this.model = model || DEFAULT_MODEL;
+    this.model = model;
   }
 
   async embed(text: string): Promise<number[]> {

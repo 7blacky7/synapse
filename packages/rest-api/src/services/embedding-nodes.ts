@@ -1,4 +1,12 @@
-import { embeddingModellName, getPool, ollamaModellInfo, zielDimension } from '@synapse/core';
+import {
+  aktivePraefixe,
+  embeddingModellName,
+  geladenesModellprofil,
+  getPool,
+  ollamaModellInfo,
+  sichereModellprofil,
+  zielDimension,
+} from '@synapse/core';
 
 export type EmbeddingNodeEffectiveStatus = 'locked' | 'failed' | 'busy' | 'ready';
 
@@ -11,6 +19,11 @@ export interface EmbeddingReferenceContract {
   quantization: string | null;
   requiredTotalVramMb: number;
   requiredFreeVramMb: number;
+  /** P15-T8: aus dem Modellprofil - der Knoten liest kein PostgreSQL und uebernimmt sie als Env. */
+  queryPraefix: string;
+  dokPraefix: string;
+  /** null = nicht kalibriert; der Knoten lernt die Grenze dann aus einer Ablehnung von Ollama. */
+  maxStueckZeichen: number | null;
 }
 
 export interface EmbeddingNodeRegistration {
@@ -110,7 +123,9 @@ export class EmbeddingReferenceUnavailable extends Error {
  *   modelDigest      SYNAPSE_OLLAMA_MODEL_DIGEST | /api/tags (fehlt beides: null -> reference_digest_not_configured)
  *   nativeDimension  SYNAPSE_OLLAMA_NATIVE_DIMENSION | /api/show <arch>.embedding_length
  *   targetDimension  zielDimension() (EMBEDDING_TARGET_DIM | erkannte Dimension des aktiven Modells)
- *   numCtx           EMBEDDING_NUM_CTX | /api/show <arch>.context_length
+ *   numCtx           EMBEDDING_NUM_CTX | Modellprofil num_ctx | /api/show <arch>.context_length
+ *   Praefixe         EMBEDDING_QUERY_PREFIX/_DOC_PREFIX | Modellprofil (P15-T8) - Pflicht
+ *   maxStueckZeichen EMBEDDING_MAX_INPUT_CHARS | Profil max_stueck_zeichen | EMBEDDING_NUM_BATCH | Profil num_batch | null
  *   quantization     SYNAPSE_OLLAMA_QUANTIZATION (sonst null = wird nicht verglichen)
  *   VRAM             SYNAPSE_GPU_REQUIRED_TOTAL_MB / _FREE_MB | belegter VRAM (/api/ps, wenn geladen)
  *                    bzw. Modellgroesse (/api/tags) plus SYNAPSE_GPU_RESERVE_MB
@@ -132,8 +147,19 @@ export async function getEmbeddingReferenceContract(): Promise<EmbeddingReferenc
     targetDimension = await zielDimension();
   } catch { /* unten als fehlend gemeldet */ }
 
+  // P15-T8: dieselben Quellen wie der Core-Provider (Env vor Modellprofil), damit Knoten und Server
+  // gleich rechnen. Praefixe fehlen -> der Knoten wuerde falsche Vektoren liefern -> Pflichtfeld.
+  let praefixe: { query: string; dokument: string } | null = null;
+  try {
+    await sichereModellprofil();
+    praefixe = aktivePraefixe();
+  } catch { /* unten als fehlend gemeldet */ }
+  const profil = geladenesModellprofil();
+  const maxStueckZeichen = positiveInt(env.EMBEDDING_MAX_INPUT_CHARS) ?? profil?.maxStueckZeichen
+    ?? positiveInt(env.EMBEDDING_NUM_BATCH) ?? profil?.numBatch ?? null;
+
   const nativeDimension = nativeEnv ?? info?.nativeDimension ?? null;
-  const numCtx = numCtxEnv ?? info?.kontextLaenge ?? null;
+  const numCtx = numCtxEnv ?? profil?.numCtx ?? info?.kontextLaenge ?? null;
   const requiredTotalVramMb = totalEnv ?? bedarfMb;
   const requiredFreeVramMb = freeEnv ?? bedarfMb;
   const missing: string[] = [];
@@ -142,6 +168,7 @@ export async function getEmbeddingReferenceContract(): Promise<EmbeddingReferenc
   if (numCtx === null) missing.push('numCtx (EMBEDDING_NUM_CTX | Ollama /api/show)');
   if (requiredTotalVramMb === null) missing.push('requiredTotalVramMb (SYNAPSE_GPU_REQUIRED_TOTAL_MB | Ollama /api/ps, /api/tags)');
   if (requiredFreeVramMb === null) missing.push('requiredFreeVramMb (SYNAPSE_GPU_REQUIRED_FREE_MB | Ollama /api/ps, /api/tags)');
+  if (praefixe === null) missing.push('praefixe (Modellprofil query_praefix/dok_praefix | EMBEDDING_QUERY_PREFIX/EMBEDDING_DOC_PREFIX)');
   if (missing.length > 0) throw new EmbeddingReferenceUnavailable(missing);
 
   return {
@@ -153,6 +180,9 @@ export async function getEmbeddingReferenceContract(): Promise<EmbeddingReferenc
     quantization: env.SYNAPSE_OLLAMA_QUANTIZATION?.trim() || null,
     requiredTotalVramMb: requiredTotalVramMb!,
     requiredFreeVramMb: requiredFreeVramMb!,
+    queryPraefix: praefixe!.query,
+    dokPraefix: praefixe!.dokument,
+    maxStueckZeichen,
   };
 }
 
@@ -326,3 +356,42 @@ export async function setEmbeddingNodeLock(
   );
   return result.rows[0] ?? null;
 }
+
+/**
+ * P15-T9: Wie viele Claims ein Knoten gleichzeitig halten (und je Runde als EINEN Stapel einbetten)
+ * darf. Der Server entscheidet: SYNAPSE_NODE_MAX_CLAIMS ist die Obergrenze; ein Knoten darf weniger
+ * verlangen (seine Env SYNAPSE_NODE_MAX_CONCURRENCY). Hier stand nichts, und der Knoten nahm fest 2
+ * (gemessen 11.10.2026: 216 Chunks/min; mit 8 per Env 1020 Chunks/min).
+ * Ist weder Obergrenze noch Wunsch gesetzt, gibt es keinen erfundenen Wert: null -> der Aufrufer
+ * lehnt die Registrierung mit node_capacity_not_configured ab.
+ */
+export function authorizedNodeCapacity(requested: number | null | undefined): number | null {
+  const serverMax = positiveInt(process.env.SYNAPSE_NODE_MAX_CLAIMS);
+  const wunsch = Number.isInteger(requested) && (requested as number) > 0 ? (requested as number) : null;
+  if (serverMax !== null && wunsch !== null) return Math.min(serverMax, wunsch);
+  return serverMax ?? wunsch;
+}
+
+/**
+ * P15-T9: Gibt Claims eines Knotens frei (geordnetes Beenden des Helfers, abgelehnte Stapel-Eintraege).
+ * Wirkt nur auf Chunks, die dieser Knoten mit genau diesem Token haelt und die noch nicht fertig sind -
+ * ein Nachzuegler hebt nie den Claim eines anderen auf. Ohne Freigabe blieben sie bis zum Lease-Ende
+ * (bis 15 min) blockiert.
+ */
+export async function releaseEmbeddingClaims(
+  nodeId: string,
+  claims: Array<{ chunkId: string; claimToken: string }>,
+  db: Queryable = getPool(),
+): Promise<string[]> {
+  if (claims.length === 0) return [];
+  const result = await db.query<{ id: string }>(
+    `UPDATE code_chunks c
+        SET claimed_by = NULL, claim_token = NULL, lease_until = NULL
+       FROM unnest($2::text[], $3::text[]) AS u(id, token)
+      WHERE c.id::text = u.id AND c.claim_token = u.token AND c.claimed_by = $1 AND c.embedded_at IS NULL
+      RETURNING c.id::text AS id`,
+    [nodeId, claims.map((c) => String(c.chunkId)), claims.map((c) => c.claimToken)],
+  );
+  return result.rows.map((r) => String(r.id));
+}
+

@@ -11,6 +11,7 @@ import * as path from 'path';
 import type { Pool, PoolClient, QueryResult, QueryResultRow } from 'pg';
 import { getPool } from '../db/client.js';
 import { findeSkillsNachName, searchSkillsForAgents, type SkillSearchHit } from './skills.js';
+import { scoreSchwelleOderHinweis } from '../embeddings/modell-profil.js';
 
 const HOOK_NAME = 'files_plan_language';
 const HOOK_QUERY_TIMEOUT_MS = 30;
@@ -293,12 +294,9 @@ const QUELLE_KLARTEXT: Record<SkillQuellenTyp, string> = {
 const CHANNEL_SKILL_BEITRITT_NACHRICHTEN = 3;
 
 const CHANNEL_HOOK_NAME = 'channel_feed_semantic';
-const configuredChannelSkillScore = Number(process.env.CHANNEL_SKILL_MIN_SCORE);
-const CHANNEL_SKILL_MIN_SCORE =
-  Number.isFinite(configuredChannelSkillScore) && configuredChannelSkillScore >= 0 && configuredChannelSkillScore <= 1
-    ? configuredChannelSkillScore
-    : 0.75;
-const CHANNEL_SKILL_AMBIGUITY_GAP = 0.04;
+// P15-T8: Mindestscore (Zweck channel_skill) und Mehrdeutigkeits-Abstand (channel_skill_abstand) kommen
+// aus dem Modellprofil (scoreSchwelle); CHANNEL_SKILL_MIN_SCORE bleibt als Env-Uebersteuerung. Hier
+// standen 0.75 und 0.04 - Werte der qwen-Skala, mit Nemotron kam darueber kaum noch etwas.
 const CHANNEL_SKILL_MAX_TEXT_CHARS = 12_000;
 
 /** Begrenzt den Feed, ohne einzelne gelesene Nachrichten komplett zu verlieren. */
@@ -385,7 +383,8 @@ export function istNamentlichGenannt(skillName: string | undefined | null, query
 export function waehleChannelSkillTreffer(
   hits: SkillSearchHit[],
   query: string,
-  minScore = CHANNEL_SKILL_MIN_SCORE,
+  minScore: number | null,
+  abstand: number | null,
 ): SkillSearchHit[] {
   // Namenserkennung: siehe istNamentlichGenannt weiter oben — eine Regel, eine Funktion.
   const heisstSo = (hit: SkillSearchHit) => istNamentlichGenannt(hit.skill_name, query);
@@ -413,7 +412,8 @@ export function waehleChannelSkillTreffer(
     if (!alt || hit.score > alt.score) beste.set(hit.skill_name, hit);
   }
   for (const hit of hits) {
-    if (!hit.skill_name || hit.score < minScore) continue;
+    // Ohne kalibrierte Schwelle (null) gibt es nur die namentlichen Treffer.
+    if (!hit.skill_name || minScore === null || hit.score < minScore) continue;
     const alt = beste.get(hit.skill_name);
     if (!alt || hit.score > alt.score) beste.set(hit.skill_name, hit);
   }
@@ -428,7 +428,9 @@ export function waehleChannelSkillTreffer(
   if (sortiert.length === 0) return [];
   if (namentliche.length > 0) return sortiert;
   const [erster, zweiter] = sortiert;
-  if (zweiter && erster.score - zweiter.score < CHANNEL_SKILL_AMBIGUITY_GAP) return [];
+  // Ohne kalibrierten Abstand laesst sich Mehrdeutigkeit nicht beurteilen -> nichts vorschlagen.
+  if (abstand === null) return [];
+  if (zweiter && erster.score - zweiter.score < abstand) return [];
   return [erster];
 }
 
@@ -554,6 +556,11 @@ export async function bereiteSkillVorschlaegeVor(
       }
     }
   }
+  // P15-T8: Schwellen des aktiven Modells; nicht kalibriert -> nur namentlich genannte Skills.
+  const [{ schwelle: minScore }, { schwelle: abstand }] = await Promise.all([
+    scoreSchwelleOderHinweis('channel_skill'),
+    scoreSchwelleOderHinweis('channel_skill_abstand'),
+  ]);
   await Promise.all(results.map(async ({ agent: agentId, hits }) => {
     // MEHRERE KANDIDATEN ABLEGEN, nicht nur den besten. Ein Agent sieht jeden Skill nur
     // einmal; sind die vorderen verbraucht, ruecken beim naechsten Abruf die naechsten
@@ -564,7 +571,7 @@ export async function bereiteSkillVorschlaegeVor(
     // tragen denselben Score 0,99, und eine Sortierung hat bei Gleichstand nichts zu
     // entscheiden. Wer einen Skill beim Namen nennt, bekommt ihn auch; der Deckel bleibt fuer
     // die semantischen Treffer, die sonst beliebig lang wuerden.
-    const gewaehlt = waehleChannelSkillTreffer(hits, query);
+    const gewaehlt = waehleChannelSkillTreffer(hits, query, minScore, abstand);
     const namentlich = gewaehlt.filter((hit) => istNamentlichGenannt(hit.skill_name, query));
     const semantisch = gewaehlt.filter((hit) => !istNamentlichGenannt(hit.skill_name, query));
     const treffer = [

@@ -8,7 +8,7 @@
 import { getPool } from '../db/client.js';
 import { COLLECTIONS } from '../types/index.js';
 import { getAgentSession } from './chat.js';
-import { embed } from '../embeddings/index.js';
+import { embed, scoreSchwelleOderHinweis } from '../embeddings/index.js';
 import { insertVector, searchVectors, deleteVector } from '../qdrant/operations.js';
 import { ensureCollection } from '../qdrant/collections.js';
 import type { EmbedOptions } from '../embeddings/index.js';
@@ -193,6 +193,9 @@ export async function deleteErrorPattern(id: string): Promise<boolean> {
 
 // ─── Write-Time Check ───────────────────────────────────────────────────────
 
+/** P15-T8: fehlende Schwelle nur einmal je Prozess melden (jeder Schreibvorgang ruft hier an). */
+let schwelleFehltGemeldet = false;
+
 export async function checkErrorPatterns(
   content: string,
   agentId: string
@@ -202,6 +205,15 @@ export async function checkErrorPatterns(
     if (!session) return [];
     const tier = getModelTier(session.model);
 
+    // P15-T8: Schwelle des aktiven Modells (Profil, Zweck error_patterns) - hier stand 0.65 (qwen-Skala).
+    // Nicht kalibriert -> keine Warnungen statt ungefilterter Treffer, und zwar vor dem Embedding.
+    const { schwelle, hinweis } = await scoreSchwelleOderHinweis('error_patterns');
+    if (schwelle === null) {
+      if (!schwelleFehltGemeldet) console.error('[error-patterns] Warnungen aus: ' + hinweis);
+      schwelleFehltGemeldet = true;
+      return [];
+    }
+
     // Hooks duerfen die eigentliche Antwort nie aufhalten: nur freien Slot nutzen.
     const contentVector = await embed(content, { maxQueueWaitMs: 0, art: 'query' });
     const allResults = await searchVectors(
@@ -209,7 +221,7 @@ export async function checkErrorPatterns(
       contentVector,
       5
     );
-    const results = allResults.filter(r => r.score > 0.65);
+    const results = allResults.filter(r => r.score > schwelle);
     if (results.length === 0) return [];
 
     const pool = getPool();

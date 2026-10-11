@@ -14,11 +14,12 @@ export interface OpenAICompatibleConfig {
   baseURL?: string;
 }
 
-export const PROVIDER_PRESETS: Record<string, { baseURL: string; defaultModel: string }> = {
-  openai: { baseURL: 'https://api.openai.com/v1', defaultModel: 'text-embedding-3-small' },
-  mistral: { baseURL: 'https://api.mistral.ai/v1', defaultModel: 'mistral-embed' },
-  jina: { baseURL: 'https://api.jina.ai/v1', defaultModel: 'jina-embeddings-v3' },
-  voyage: { baseURL: 'https://api.voyageai.com/v1', defaultModel: 'voyage-2' },
+// P15-T8: nur die Adressen - das Modell kommt immer aus EMBEDDING_MODEL (kein Standardname im Code).
+export const PROVIDER_PRESETS: Record<string, { baseURL: string }> = {
+  openai: { baseURL: 'https://api.openai.com/v1' },
+  mistral: { baseURL: 'https://api.mistral.ai/v1' },
+  jina: { baseURL: 'https://api.jina.ai/v1' },
+  voyage: { baseURL: 'https://api.voyageai.com/v1' },
 };
 
 export class OpenAICompatibleProvider implements EmbeddingProvider {

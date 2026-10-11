@@ -13,6 +13,7 @@ import {
   searchCode,
   searchCodeBatch,
   searchDocsWithFallback,
+  scoreSchwelleOderHinweis,
   listCollections,
   listeProjekte,
   scrollVectors,
@@ -5820,7 +5821,15 @@ async function handleToolCall(
           const limit = Math.min(num(args, 'limit') ?? 5, 20);
           const skillNameFilter = str(args, 'skill_name'); // optional: nur innerhalb 1 Skill
           const hits = await searchSkills(query, limit, skillNameFilter);
-          return { success: true, experimental: true, count: hits.length, scope: skillNameFilter ? `skill:${skillNameFilter}` : 'all', hits, ...(await naechsteVorschlaege()) };
+          // P15-T8: Mindest-Score der Claude-Code-Hooks (skill-suggest*.sh) aus dem Modellprofil, Zweck hook.
+          // null = Modell nicht kalibriert -> die Hooks zeigen nichts (kein Altwert).
+          const hookSchwelle = await scoreSchwelleOderHinweis('hook');
+          return {
+            success: true, experimental: true, count: hits.length, scope: skillNameFilter ? 'skill:' + skillNameFilter : 'all', hits,
+            score_schwelle: hookSchwelle.schwelle,
+            ...(hookSchwelle.hinweis ? { score_schwelle_hinweis: hookSchwelle.hinweis } : {}),
+            ...(await naechsteVorschlaege()),
+          };
         }
         case 'list': {
           const skillName = str(args, 'skill_name');

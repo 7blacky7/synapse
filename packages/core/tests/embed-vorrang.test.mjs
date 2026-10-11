@@ -47,16 +47,24 @@ const server = http.createServer((req, res) => {
     res.end(JSON.stringify({ models: [{ name: 'fake-embed' }] }));
     return;
   }
-  if (req.url === '/api/embeddings') {
+  // P15-T7: der Provider spricht seit bcee710 /api/embed (Liste input -> Liste embeddings); der Fake
+  // bediente nur /api/embeddings, damit war der Test rot, ohne dass es am Vorrang lag.
+  if (req.url === '/api/embed') {
     fakeAnfragen++;
-    req.resume();
+    let body = '';
     let fertig = false;
-    const t = setTimeout(() => {
-      fertig = true;
-      res.setHeader('content-type', 'application/json');
-      res.end(JSON.stringify({ embedding: Array.from({ length: 8 }, (_, i) => (i + 1) / 8) }));
-    }, EMBED_MS);
-    res.on('close', () => { if (!fertig) { clearTimeout(t); fakeAbbrueche++; } });
+    let t = null;
+    req.on('data', (stueck) => { body += stueck; });
+    req.on('end', () => {
+      let n = 1;
+      try { const input = JSON.parse(body).input; n = Array.isArray(input) ? input.length : 1; } catch { /* ein Text */ }
+      t = setTimeout(() => {
+        fertig = true;
+        res.setHeader('content-type', 'application/json');
+        res.end(JSON.stringify({ embeddings: Array.from({ length: n }, () => Array.from({ length: 8 }, (_, i) => (i + 1) / 8)) }));
+      }, EMBED_MS);
+    });
+    res.on('close', () => { if (!fertig) { if (t) clearTimeout(t); fakeAbbrueche++; } });
     return;
   }
   res.statusCode = 404;
@@ -72,6 +80,9 @@ process.env.EMBED_MAX_CONCURRENT = '2';
 process.env.EMBED_MIN_GAP_MS = '0';
 process.env.SYNAPSE_DB_HINTERGRUND_MAX = process.env.SYNAPSE_DB_HINTERGRUND_MAX || '8';
 delete process.env.EMBEDDING_TARGET_DIM;
+// P15-T8: Praefixe kommen sonst aus dem Modellprofil (PG) - hier geht es nur um den Vorrang.
+process.env.EMBEDDING_QUERY_PREFIX = '';
+process.env.EMBEDDING_DOC_PREFIX = '';
 
 const hier = dirname(fileURLToPath(import.meta.url));
 const dist = process.env.PLAENE_TEST_DIST || join(hier, '..', 'dist');

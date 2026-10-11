@@ -30,6 +30,7 @@ import {
   fullTextSearchCode,
   getFileContent,
   searchCode,
+  scoreSchwelleOderHinweis,
   getParserGesundheitDatei,
   getParserGesundheitUebersicht,
   ergaenzeCodeIntelAntwort,
@@ -345,8 +346,11 @@ async function codeIntelBestand(args: Record<string, unknown>): Promise<Record<s
 
         // Auto-Fallback auf Qdrant-Semantik bei 0 PG-Treffern
         const semanticResults = await searchCode(query, project, effectiveFileType, limit, filePath);
+        // P15-T8: Score-Cutoff je Modell (Zweck code_semantic_fallback, hier stand 0.65). Nicht
+        // kalibriert -> keine Treffer statt ungefilterter False Positives, mit Hinweis.
+        const cutoff = await scoreSchwelleOderHinweis('code_semantic_fallback');
         const mappedResults = semanticResults
-          .filter(r => r.score >= 0.65) // Score-Cutoff: keine False Positives
+          .filter(r => cutoff.schwelle !== null && r.score >= cutoff.schwelle)
           .filter(r => !excludeMd || r.payload.file_type !== 'md') // .md ausschliessen wenn kein Filter
           .map(r => ({
             file_path: r.payload.file_path,
@@ -357,7 +361,10 @@ async function codeIntelBestand(args: Record<string, unknown>): Promise<Record<s
             line_end: r.payload.line_end,
           }));
 
-        return { success: true, results: mappedResults, count: mappedResults.length, source: 'semantic-fallback', project };
+        return {
+          success: true, results: mappedResults, count: mappedResults.length, source: 'semantic-fallback', project,
+          ...(cutoff.hinweis ? { hinweis: cutoff.hinweis } : {}),
+        };
       }
 
       case 'file': {

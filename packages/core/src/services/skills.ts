@@ -51,7 +51,7 @@
 
 import { createHash } from 'crypto';
 import type { PoolClient } from 'pg';
-import { embed, embeddingModellKennung, type EmbedOptions } from '../embeddings/index.js';
+import { embed, embeddingModellKennung, sichereModellprofil, type EmbedOptions } from '../embeddings/index.js';
 import { ensureCollection } from '../qdrant/collections.js';
 import { getPool, getHintergrundPool } from '../db/client.js';
 import { embeddingNachtragAngehalten } from './intern-schalter.js';
@@ -808,6 +808,7 @@ export const skillSectionNachzug: NachzugQuelle = {
          FROM skill_sections t WHERE t.punkt_id = ANY($1::bigint[])`,
       [ids],
     );
+    await sichereModellprofil();
     const modell = embeddingModellKennung();
     return rows.map((row) => ({
       id: row.punkt_id,
