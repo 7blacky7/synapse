@@ -210,6 +210,42 @@ try {
   const ru11 = await zeile(a4.id);
   pruefe(u11.success && ru11.geltung?.sprachen?.[0] === 'py', 'U11 geltung per update (einzelner String -> Liste)', ru11.geltung);
 
+  // ── P15-T38 Bedienbarkeit ─────────────────────────────────────────────────
+  const u12 = await cc({ action: 'update_pattern', id: a4.id.slice(0, 8), warum: 'per Praefix' });
+  pruefe(u12.success && u12.id === a4.id && (await zeile(a4.id)).warum === 'per Praefix', 'U12 update_pattern mit eindeutigem 8-Zeichen-Praefix', u12);
+  const u13 = await cc({ action: 'update_pattern', id: a4.id.slice(0, 7), warum: 'zu kurz' });
+  pruefe(!u13.success && u13.error === 'nicht_gefunden' && /8 Zeichen/.test(u13.message) && (await zeile(a4.id)).warum === 'per Praefix',
+    'U13 Praefix unter 8 Zeichen -> nicht_gefunden mit Hinweis, nichts geaendert', u13);
+  for (const s of ['1', '2']) {
+    await pool.query(`INSERT INTO error_patterns (id, description, fix, severity, model_scope, found_by, found_in_model, status)
+      VALUES ($1, $2, 'x', 'warning', 'all', 'zz', 'opus', 'themenhinweis')`, [`abcd0038-0000-4000-8000-00000000000${s}`, `${PRAEFIX} U14 ${s}`]);
+  }
+  const u14 = await cc({ action: 'update_pattern', id: 'abcd0038', warum: 'mehrdeutig' });
+  const u14z = await pool.query(`SELECT count(*)::int AS n FROM error_patterns WHERE id::text LIKE 'abcd0038%' AND warum IS NULL`);
+  pruefe(!u14.success && u14.error === 'mehrdeutig' && u14.kandidaten?.length === 2 && u14z.rows[0].n === 2,
+    'U14 mehrdeutiger Praefix -> mehrdeutig mit Kandidaten, nichts geaendert', u14);
+  const a5 = await cc({ ...basis, description: PRAEFIX + ' A5', fix: 'x', erkennung: { signatur: ['zzT37Verboten\\(', 'zzT37Gibtsnicht'] } });
+  pruefe(!a5.success && a5.error === 'selbsttest' && /UND/.test(a5.message) && a5.message.includes("'A|B'") && /erkennung:\s*\{/.test(a5.message),
+    'A5 Liste in signatur = UND: Selbsttest-Meldung erklaert UND, Alternation und das erkennung{}-Format', a5);
+  // JSON-String-erkennung: JSON.parse macht aus \t ein Tab und aus \b ein Backspace -> zurueck in Regex-Escapes
+  const a6 = await cc({
+    ...basis, description: PRAEFIX + ' A6', fix: 'x', erkennung: '{"signatur": ["^[ \\t]*zzT38Tab\\\\(", "\\bzzT38Tab"]}',
+    beispiel_falsch: '\tzzT38Tab(1);', beispiel_richtig: 'x zzT38Tab(1);',
+  });
+  const ra6 = a6.success ? await zeile(a6.id) : null;
+  pruefe(a6.success && a6.selbsttest?.ok === true && ra6?.erkennung?.signatur?.[0] === '^[ \\t]*zzT38Tab\\(' && ra6?.erkennung?.signatur?.[1] === '\\bzzT38Tab',
+    'A6 Tab/Backspace aus JSON-Escapes werden zu \\t/\\b in der Signatur, Selbsttest mit echtem Tab im Beispiel ok', { a6, sig: ra6?.erkennung });
+  const a7 = await cc({ ...basis, description: PRAEFIX + ' A7', fix: 'x', erkennung: { signatur: ['^\\tzzT38Tab2\\('] }, beispiel_falsch: '\\tzzT38Tab2(1);', beispiel_richtig: 'zzT38Tab2(1);' });
+  pruefe(!a7.success && a7.error === 'selbsttest' && /Tab/.test(a7.message) && /Backslash/.test(a7.message),
+    'A7 beispiel_falsch mit Backslash+t statt Tab: Selbsttest-Meldung erklaert es', a7);
+  const UP = await lade(dist, 'services', 'unbekannte-parameter.js');
+  const erlaubt = new Set(Object.keys(tool.CODE_CHECK_DEFINITION.inputSchema.properties));
+  const up = UP.pruefeUnbekannteParameter('code_check', erlaubt, { action: 'add_pattern', signatur: ['x'], fenster: 'zeile' });
+  pruefe(up && /gehoert in erkennung/i.test(up.meldung) && /erkennung:\s*\{/.test(up.meldung) && /UND/.test(up.meldung),
+    'U15 signatur/fenster auf oberster Ebene: Meldung verweist auf das erkennung{}-Format', up);
+  pruefe(/UND/.test(tool.CODE_CHECK_DEFINITION.inputSchema.properties.erkennung.description) && /Praefix/.test(tool.CODE_CHECK_DEFINITION.inputSchema.properties.id.description),
+    'U16 Definition: signatur-Liste = UND, id-Praefix dokumentiert');
+
   // ── L1 list_patterns ──────────────────────────────────────────────────────
   const l1 = await cc({ action: 'list_patterns', limit: 500 });
   const k1 = l1.patterns?.find((p) => p.id === a1.id);

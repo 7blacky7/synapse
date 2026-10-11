@@ -65,6 +65,10 @@ const BEKANNTE_IRRTUEMER: Record<string, string> = {
     'Handler wertet es noch aus. Bis das behoben ist, ohne den Parameter arbeiten.',
   'files.agent_filter':
     'agent_filter fehlt derzeit im Schema (regressierter Paritaets-Fix vom 14.06.2026).',
+  // P15-T38: Signatur-Felder gehoeren in erkennung{} - die Meldung zeigt das Format.
+  ...Object.fromEntries(['signatur', 'gegen_signatur', 'flags', 'fenster', 'art'].map((k) => [`code_check.${k}`,
+    'gehoert in erkennung, nicht auf die oberste Ebene: erkennung: {art:\'regex\', signatur:[\'A\',\'B\'] (Liste = UND), ' +
+    'gegen_signatur:[\'C\'] (einer hebt auf), flags:\'imsu\', fenster:\'zeile\'|\'block\'|\'datei\'}; ODER als \'A|B\' in EINEM String.'])),
 };
 
 export interface ParameterBefund {

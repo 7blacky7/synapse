@@ -86,7 +86,9 @@ export interface AehnlichTreffer {
 
 export interface PflegeErgebnis {
   success: boolean;
-  error?: 'ungueltig' | 'selbsttest' | 'dublette' | 'nicht_gefunden' | 'grund_fehlt' | 'keine_aenderung';
+  error?: 'ungueltig' | 'selbsttest' | 'dublette' | 'nicht_gefunden' | 'mehrdeutig' | 'grund_fehlt' | 'keine_aenderung';
+  /** update_pattern mit mehrdeutigem ID-Praefix: passende Muster (hoechstens 5). */
+  kandidaten?: Array<{ id: string; titel: string | null }>;
   message: string;
   id?: string;
   model_scope?: string;
@@ -114,22 +116,79 @@ function alsObjekt(roh: unknown, name: string): { wert?: unknown; fehler?: strin
 const alsListe = (v: unknown): unknown =>
   typeof v === 'string' ? [v] : v;
 
+/**
+ * P15-T38: Kommt erkennung als JSON-String (oder hat der Client JSON-Escapes einmal zu oft aufgeloest), macht
+ * JSON.parse aus \t, \b, \f, \n, \r Steuerzeichen. In einer Regex-Quelle sind die Escapes gemeint - ein Backspace
+ * statt \b (Wortgrenze) liess den Selbsttest still scheitern. Steuerzeichen werden deshalb zurueckgewandelt.
+ */
+const STEUER_ESCAPE: Record<string, string> = { '\t': '\\t', '\b': '\\b', '\f': '\\f', '\n': '\\n', '\r': '\\r', '\v': '\\v' };
+const regexEscapesZurueck = (v: unknown): unknown =>
+  Array.isArray(v) ? v.map((q) => (typeof q === 'string' ? q.replace(/[\t\b\f\n\r\v]/g, (c) => STEUER_ESCAPE[c] ?? c) : q)) : v;
+
+/** Kurzbeschreibung des erkennung{}-Formats fuer Fehlermeldungen (P15-T38). */
+export const ERKENNUNG_FORMAT =
+  "Format: erkennung: {art:'regex', signatur:['A','B'] (Liste = UND: jeder Ausdruck muss im Fenster treffen), " +
+  "gegen_signatur:['C'] (einer hebt den Treffer auf), flags:'imsu', fenster:'zeile'|'block'|'datei'}; " +
+  "ODER = Alternation 'A|B' in EINEM String.";
+
+/** Selbsttest-Ablehnung mit Erklaerung der haeufigen Fallen (Liste = UND, Tab im Beispiel) und dem erkennung{}-Format. */
+function selbsttestMeldung(
+  test: SelbsttestErgebnis,
+  m: { erkennung?: Erkennung | null; beispiel_falsch?: string | null; beispiel_richtig?: string | null },
+  schluss: string,
+): string {
+  const teile = [`Selbsttest nicht bestanden: ${test.fehler.join('; ')}.`];
+  const n = m.erkennung?.signatur?.length ?? 0;
+  if (n > 1 && test.fehler.some((f) => f.startsWith('beispiel_falsch'))) {
+    teile.push(`signatur hat ${n} Eintraege: eine Liste bedeutet UND (alle muessen treffen). Fuer ODER die Ausdruecke als 'A|B' in EINEM String angeben.`);
+  }
+  const beispiele = `${m.beispiel_falsch ?? ''}\n${m.beispiel_richtig ?? ''}`;
+  if (beispiele.includes('\\t') && !beispiele.includes('\t')) {
+    teile.push('Tab: die Beispiele enthalten Backslash+t (zwei Zeichen), kein echtes Tab-Zeichen. Im Beispiel ein echtes Tab schreiben (in JSON "\\t"), in der Signatur \\t (in JSON "\\\\t"); oder statt [ \\t] einfach " *" bzw. \\s verwenden.');
+  }
+  teile.push('Die Signatur muss beispiel_falsch treffen und beispiel_richtig nicht treffen.', ERKENNUNG_FORMAT, schluss);
+  return teile.join(' ');
+}
+
+/**
+ * P15-T38: Muster-ID aus voller UUID oder eindeutigem Praefix (mind. 8 Zeichen, wie thought get). Mehrdeutig -> Fehler
+ * 'mehrdeutig' mit Kandidaten, unbekannt -> 'nicht_gefunden'. Nichts wird geaendert.
+ */
+export async function loeseMusterId(roh: string): Promise<{ id: string } | { fehler: PflegeErgebnis }> {
+  const id = roh.trim().toLowerCase();
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(id)) return { id };
+  if (!/^[0-9a-f-]{8,}$/.test(id)) {
+    return { fehler: { success: false, error: 'nicht_gefunden', message: `Muster ${roh} nicht gefunden: volle UUID oder eindeutigen Praefix (mind. 8 Zeichen, hex) angeben.` } };
+  }
+  const { rows } = await getPool().query(
+    `SELECT id::text AS id, titel FROM error_patterns WHERE id::text LIKE $1 ORDER BY id LIMIT 6`, [id + '%']);
+  if (rows.length === 1) return { id: rows[0].id as string };
+  if (rows.length === 0) return { fehler: { success: false, error: 'nicht_gefunden', message: `Kein Muster mit ID bzw. Praefix ${roh}` } };
+  return {
+    fehler: {
+      success: false, error: 'mehrdeutig',
+      message: `Praefix ${roh} ist mehrdeutig (${rows.length > 5 ? 'mehr als 5' : rows.length} Muster) - mehr Zeichen oder die volle UUID angeben. Nichts geaendert.`,
+      kandidaten: rows.slice(0, 5).map((r) => ({ id: r.id as string, titel: (r.titel as string | null) ?? null })),
+    },
+  };
+}
+
 /** erkennung: Objekt/JSON; signatur/gegen_signatur duerfen einzelne Strings sein; art Standard regex. */
 export function normalisiereErkennung(roh: unknown): { wert?: Erkennung | null; fehler: string[] } {
   if (roh === undefined) return { fehler: [] };
   const o = alsObjekt(roh, 'erkennung');
   if (o.fehler) return { fehler: [o.fehler] };
   if (o.wert === null) return { wert: null, fehler: [] };
-  if (!o.wert || typeof o.wert !== 'object' || Array.isArray(o.wert)) return { fehler: ['erkennung muss ein Objekt sein {art, signatur[], gegen_signatur[], flags, fenster}'] };
+  if (!o.wert || typeof o.wert !== 'object' || Array.isArray(o.wert)) return { fehler: ['erkennung muss ein Objekt sein. ' + ERKENNUNG_FORMAT] };
   const e = { ...(o.wert as Record<string, unknown>) };
   const erlaubt = ['art', 'signatur', 'gegen_signatur', 'flags', 'fenster', 'version'];
   const fremd = Object.keys(e).filter((k) => !erlaubt.includes(k));
   if (fremd.length) return { fehler: [`erkennung: unbekannte Felder ${fremd.join(', ')} (erlaubt: ${erlaubt.join(', ')})`] };
   if (e.art === undefined) e.art = 'regex';
-  if (e.signatur !== undefined) e.signatur = alsListe(e.signatur);
-  if (e.gegen_signatur !== undefined) e.gegen_signatur = alsListe(e.gegen_signatur);
+  if (e.signatur !== undefined) e.signatur = regexEscapesZurueck(alsListe(e.signatur));
+  if (e.gegen_signatur !== undefined) e.gegen_signatur = regexEscapesZurueck(alsListe(e.gegen_signatur));
   const fehler = validiereErkennung(e);
-  return fehler.length ? { fehler: fehler.map((f) => 'erkennung: ' + f) } : { wert: e as unknown as Erkennung, fehler: [] };
+  return fehler.length ? { fehler: [...fehler.map((f) => 'erkennung: ' + f), ERKENNUNG_FORMAT] } : { wert: e as unknown as Erkennung, fehler: [] };
 }
 
 /** geltung: {sprachen, dateimuster, projekte, frameworks} - je Liste von Strings (einzelner String erlaubt). */
@@ -299,7 +358,7 @@ export async function legeMusterAn(eingabe: MusterFelder & {
     if (!test.ok) {
       return {
         success: false, error: 'selbsttest', selbsttest: test, fehler: test.fehler,
-        message: `Selbsttest nicht bestanden: ${test.fehler.join('; ')}. Die Signatur muss beispiel_falsch treffen und beispiel_richtig nicht treffen. Nichts gespeichert.`,
+        message: selbsttestMeldung(test, eingabe, 'Nichts gespeichert.'),
       };
     }
   }
@@ -354,8 +413,12 @@ type Aenderbar = (typeof AENDERBAR)[number];
  * Aendert nur die angegebenen Felder. model_scope, found_by und found_in_model bleiben unveraendert (E-c).
  * Selbsttest und Dublettenpruefung laufen, wenn Signatur, Beispiele, Status bzw. Titel/description sich aendern.
  */
-export async function aendereMuster(id: string, aenderung: MusterFelder, vonAgent: string | null): Promise<PflegeErgebnis> {
+export async function aendereMuster(idOderPraefix: string, aenderung: MusterFelder, vonAgent: string | null): Promise<PflegeErgebnis> {
   const pool = getPool();
+  // P15-T38: wie thought get auch ein eindeutiger Praefix (mind. 8 Zeichen).
+  const aufgeloest = await loeseMusterId(idOderPraefix);
+  if ('fehler' in aufgeloest) return aufgeloest.fehler;
+  const id = aufgeloest.id;
   const { rows } = await pool.query('SELECT * FROM error_patterns WHERE id::text = $1', [id]);
   if (!rows.length) return { success: false, error: 'nicht_gefunden', message: `Muster ${id} nicht gefunden` };
   const alt = rows[0] as Record<string, unknown>;
@@ -396,7 +459,7 @@ export async function aendereMuster(id: string, aenderung: MusterFelder, vonAgen
     if (!test.ok) {
       return {
         success: false, error: 'selbsttest', selbsttest: test, fehler: test.fehler,
-        message: `Selbsttest nicht bestanden: ${test.fehler.join('; ')}. Nichts geaendert.`,
+        message: selbsttestMeldung(test, m, 'Nichts geaendert.'),
       };
     }
   }

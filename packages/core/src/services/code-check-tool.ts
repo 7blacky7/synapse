@@ -39,7 +39,7 @@ export const CODE_CHECK_DEFINITION = {
     type: 'object',
     properties: {
       action: { type: 'string', enum: [...CODE_CHECK_ACTIONS], description: 'add_pattern | update_pattern | list_patterns | delete_pattern' },
-      id: { type: 'string', description: 'Pflicht fuer update_pattern und delete_pattern: Pattern-ID' },
+      id: { type: 'string', description: 'Pflicht fuer update_pattern und delete_pattern: Pattern-ID. update_pattern: volle UUID oder eindeutiger Praefix (mind. 8 Zeichen, wie thought get; mehrdeutig -> Fehler mit Kandidaten, nichts geaendert). delete_pattern: volle UUID' },
       description: { type: 'string', description: 'add_pattern Pflicht: was ist der Fehler (Langtext). update_pattern: neuer Text' },
       fix: { type: 'string', description: 'add_pattern Pflicht: wie wird es richtig ("wie")' },
       found_in_model: { type: 'string', description: 'add_pattern Pflicht: Modell, das den Fehler machte (haiku/sonnet/opus/fable) - leitet model_scope ab, der danach unveraendert bleibt' },
@@ -48,7 +48,7 @@ export const CODE_CHECK_DEFINITION = {
       warum: { type: 'string', description: 'Warum ist es ein Fehler (Ursache/Folge)' },
       erkennung: {
         type: 'object',
-        description: 'Signatur: {art:"regex" (Standard), signatur:[Regex,...] (ALLE muessen treffen), gegen_signatur:[Regex,...] (EINE hebt auf), flags:"imsu", fenster:"zeile"|"block"|"datei"}. Braucht beispiel_falsch + beispiel_richtig (Selbsttest). null entfernt (update_pattern).',
+        description: 'Signatur: {art:"regex" (Standard), signatur:[Regex,...] (Liste = UND: ALLE muessen treffen; ODER als "A|B" in EINEM String), gegen_signatur:[Regex,...] (EINE hebt auf), flags:"imsu", fenster:"zeile"|"block"|"datei"}. signatur/gegen_signatur/flags/fenster gehoeren IN erkennung, nicht auf die oberste Ebene. Tab in der Regex als \\t (JSON "\\\\t"); Steuerzeichen aus JSON-Escapes (Tab, Backspace statt \\b) werden zurueck in Regex-Escapes gewandelt. Braucht beispiel_falsch + beispiel_richtig (Selbsttest). null entfernt (update_pattern).',
       },
       geltung: { type: 'object', description: 'Wo gilt das Muster: {sprachen:["ts","tsx"], dateimuster:["**/app/**"], projekte:["x"], frameworks:["next>=15"]}. Fehlt = ueberall' },
       verweise: {
