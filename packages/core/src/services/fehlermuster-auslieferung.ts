@@ -302,8 +302,18 @@ export async function holeFehlermusterHinweise(agentId: string | undefined): Pro
         + '(nachgeliefert_fuer: Zeit und Fassung, bezug frueher), nicht zum Aufruf dieser Antwort; die Datei steht noch auf dieser Fassung.');
     }
     if (erklaert > 0) {
+      // Nachtrunde A: Status je gewaehlter Erklaerung nennen, nicht pauschal "vorgeschlagen".
+      const verifiziert = treffer.filter((t) => t.quelle === 'erklaerung' && t.erklaerung?.status === 'verifiziert').length;
+      const vorgeschlagen = erklaert - verifiziert;
+      const VERIF = 'verifiziert = an einer echten Korrektur belegt';
+      const VORG = 'vorgeschlagen = noch nicht verifiziert';
+      const statusText = vorgeschlagen === 0
+        ? `status ${VERIF}`
+        : verifiziert === 0
+          ? `status ${VORG}`
+          : `davon ${verifiziert} verifiziert (an einer echten Korrektur belegt) und ${vorgeschlagen} vorgeschlagen (noch nicht verifiziert), siehe erklaerung.status`;
       teile.push(`${erklaert} Erklaerung(en) aus dem Erklaerungs-Topf (quelle erklaerung): Jev hat sie als Ursache deines letzten `
-        + 'Syntaxfehlers gewaehlt; status vorgeschlagen = noch nicht verifiziert. Passt sie nicht: erklaerung.passt_nicht.');
+        + `Syntaxfehlers gewaehlt; ${statusText}. Passt sie nicht: erklaerung.passt_nicht.`);
     }
     if (faelle > 0) {
       teile.push(`${faelle} offene(r) Erklaerungsfall/-faelle: fuer deinen Syntaxfehler gibt es noch keine Erklaerung - nach der `
