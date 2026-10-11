@@ -177,6 +177,12 @@ function woAusVerweisen(verweise: SignaturMuster['verweise']): string[] {
  * Prueft die aktiven Signatur-Muster auf dem geaenderten Bereich. Wirft nie.
  * fenster 'zeile' = geaenderte Zeilen, 'block' = +- FENSTER_BLOCK_ZEILEN, 'datei' = ganze Datei, zaehlt aber
  * nur, wenn ein Treffer im geaenderten Bereich (+- FENSTER_BLOCK_ZEILEN) liegt (sonst Altlast, nicht gemeldet).
+ *
+ * P15-T38: "geaendert" heisst WIRKLICH geaendert laut Zeilen-Diff (aenderungsBereiche), nicht der Gesamtbereich
+ * vom ersten bis zum letzten Unterschied und nicht die ganze Op-Spanne eines Plans. Vorher meldete ein Muster mit
+ * fenster 'zeile' eine unveraenderte Zeile zwischen zwei Aenderungen bzw. innerhalb einer search_replace-Spanne
+ * (Muster 12626875, mcp.ts:1595) und bei einer reinen Loeschung die Zeile davor. Jetzt: 'zeile' meldet nur
+ * Treffer auf geaenderten Zeilen, 'block' nur Treffer hoechstens FENSTER_BLOCK_ZEILEN von einer geaenderten Zeile.
  */
 export async function pruefeSignaturen(eingabe: {
   project?: string;
@@ -197,32 +203,69 @@ export async function pruefeSignaturen(eingabe: {
     if (muster.length === 0) return [];
     const zeilen = eingabe.neu.split('\n');
     const befunde: FehlerBefund[] = [];
-    const bereiche = eingabe.bereiche && eingabe.bereiche.length > 0 ? eingabe.bereiche : [gesamt];
+    // Wirklich geaenderte Zeilen (1-basiert im neuen Inhalt). Neue Datei: alle. Reine Loeschung: keine neue Zeile.
+    const hunks: Bereich[] = eingabe.alt
+      ? aenderungsBereiche(eingabe.alt.split('\n'), zeilen)
+      : [{ a0: 0, a1: 0, b0: 0, b1: zeilen.length }];
+    const geaendert = new Set<number>();
+    for (const h of hunks) for (let z = h.b0 + 1; z <= h.b1; z++) geaendert.add(z);
+    const naheGeaendert = (z: number, rand: number): boolean => {
+      for (let d = -rand; d <= rand; d++) if (geaendert.has(z + d)) return true;
+      return false;
+    };
+    // 'zeile': das Muster auf JEDER geaenderten Zeile des Bereichs einzeln (alle Signaturen auf derselben Zeile).
+    // Frueher lief es einmal ueber den ganzen Bereich als Text; pruefeErkennung liefert nur den ERSTEN Treffer, und
+    // der lag oft auf einer unveraenderten Zeile (P15-T38).
+    const zeilenTreffer = (e: Erkennung, von: number, bis: number): number[] => {
+      const treffer: number[] = [];
+      for (let z = von; z <= bis; z++) if (geaendert.has(z) && pruefeErkennung(e, zeilen[z - 1] ?? '').trifft) treffer.push(z);
+      return treffer;
+    };
+    // 'block': je zusammenhaengendem Lauf geaenderter Zeilen ein Fenster +- FENSTER_BLOCK_ZEILEN (reine Loeschung: um die
+    // Loeschstelle). Erster Lauf mit Treffer zaehlt; so liegt ein Treffer immer nahe einer Aenderung.
+    const blockTreffer = (e: Erkennung, von: number, bis: number, loeschung: boolean): number[] => {
+      const laeufe: Array<[number, number]> = [];
+      for (let z = von; z <= bis; z++) {
+        if (!geaendert.has(z)) continue;
+        const letzter = laeufe[laeufe.length - 1];
+        if (letzter && letzter[1] === z - 1) letzter[1] = z;
+        else laeufe.push([z, z]);
+      }
+      if (laeufe.length === 0 && loeschung) laeufe.push([von, bis]);
+      for (const [a, b] of laeufe) {
+        const s = Math.max(1, a - FENSTER_BLOCK_ZEILEN);
+        const t = Math.min(zeilen.length, b + FENSTER_BLOCK_ZEILEN);
+        const r = pruefeErkennung(e, zeilen.slice(s - 1, t).join('\n'));
+        if (r.trifft) return r.zeilen.map((z) => z + s - 1);
+      }
+      return [];
+    };
+    // Ohne Plan-Bereiche: je Diff-Hunk ein Bereich (statt EINES Bereichs vom ersten bis zum letzten Unterschied).
+    const bereiche = eingabe.bereiche && eingabe.bereiche.length > 0
+      ? eingabe.bereiche
+      : hunks.length > 0 ? hunks.map((h) => ({ von: h.b0 + 1, bis: h.b1, gesamt: zeilen.length })) : [gesamt];
     const gesehen = new Set<string>();
     const dateiTreffer = new Map<string, ReturnType<typeof pruefeErkennung>>();
     for (const m of muster) for (const bereich of bereiche) {
       const fenster = m.erkennung.fenster ?? 'block';
-      let start: number;
-      let ende: number;
-      if (fenster === 'datei') { start = 1; ende = zeilen.length; }
-      else {
-        const rand = fenster === 'zeile' ? 0 : FENSTER_BLOCK_ZEILEN;
-        const von = bereich.bis < bereich.von ? Math.max(1, bereich.von - 1) : bereich.von;
-        const bis = Math.max(bereich.bis, von);
-        start = Math.max(1, von - rand);
-        ende = Math.min(zeilen.length, bis + rand);
-      }
-      // fenster datei: einmal je Muster fuer die ganze Datei, nicht je Bereich neu (Plan mit vielen Ops).
-      let r: ReturnType<typeof pruefeErkennung>;
+      // Treffer-Zeilen absolut (1-basiert im neuen Inhalt).
+      let alleTreffer: number[];
       if (fenster === 'datei') {
-        r = dateiTreffer.get(m.id) ?? pruefeErkennung(m.erkennung, eingabe.neu);
+        // fenster datei: einmal je Muster fuer die ganze Datei, nicht je Bereich neu (Plan mit vielen Ops).
+        const r = dateiTreffer.get(m.id) ?? pruefeErkennung(m.erkennung, eingabe.neu);
         dateiTreffer.set(m.id, r);
+        if (!r.trifft) continue;
+        alleTreffer = r.zeilen;
       } else {
-        r = pruefeErkennung(m.erkennung, zeilen.slice(start - 1, ende).join('\n'));
+        const loeschung = bereich.bis < bereich.von;
+        const von = loeschung ? Math.max(1, bereich.von - 1) : bereich.von;
+        const bis = Math.max(bereich.bis, von);
+        alleTreffer = fenster === 'zeile'
+          ? zeilenTreffer(m.erkennung, von, bis)
+          : blockTreffer(m.erkennung, von, bis, loeschung);
       }
-      if (!r.trifft) continue;
-      const alleTreffer = r.zeilen.map((z) => z + start - 1);
-      const nahe = alleTreffer.filter((z) => liegtImBereich(z, bereich, FENSTER_BLOCK_ZEILEN));
+      if (alleTreffer.length === 0) continue;
+      const nahe = alleTreffer.filter((z) => liegtImBereich(z, bereich, FENSTER_BLOCK_ZEILEN) && naheGeaendert(z, FENSTER_BLOCK_ZEILEN));
       if (fenster === 'datei' && nahe.length === 0) continue;
       // Mehrere Bereiche (Plan): bei fenster datei nur die Treffer nahe DIESES Bereichs; einmal je Muster und Zeile.
       const trefferZeilen = fenster === 'datei' && eingabe.bereiche ? nahe : alleTreffer;

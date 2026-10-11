@@ -158,6 +158,27 @@ try {
   FP._signaturMusterCacheLeeren();
   const s7b = await CW.updateFileInPg(PRJ, 's/e.ts', 'zzNeuesMuster_5T(2)\n', AGENT);
   pruefe(!s7a.befunde?.length && s7b.befunde?.some((b) => b.pattern_id === P_NEU), 'S7 Musterliste aus dem Cache, neues Muster nach Cache-Leeren', { a: s7a.befunde, b: s7b.befunde });
+
+  // ---- S8-S12 (P15-T38): fenster zeile meldet nur GEAENDERTE Zeilen, nie eine unveraenderte Altzeile ----
+  const t0 = mitZeile(zeilen(30), 15, 'zzVerbotenerAufruf_7Q3(15);');
+  const t1 = mitZeile(mitZeile(t0, 3, 'export const z3 = 33;'), 28, 'export const z28 = 2828;');
+  const s8 = await FP.pruefeSignaturen({ project: PRJ, filePath: 's/x.ts', alt: t0, neu: t1 });
+  pruefe(!s8.some((b) => b.pattern_id === P_ERR), 'S8 Einzelweg, Aenderungen Z.3 + Z.28 um unveraenderte Trefferzeile Z.15: kein Befund', s8);
+  const t2 = mitZeile(t0, 12, 'export const z12 = 1212;');
+  const s9 = await FP.pruefeSignaturen({ project: PRJ, filePath: 's/x.ts', alt: t0, neu: t2, bereiche: [{ von: 10, bis: 20, gesamt: 31 }] });
+  pruefe(!s9.some((b) => b.pattern_id === P_ERR), 'S9 Plan-Op-Spanne Z.10-20, geaendert nur Z.12: unveraenderte Trefferzeile Z.15 kein Befund', s9);
+  const t3 = t0.split('\n');
+  t3.splice(15, 2);
+  const s10 = await FP.pruefeSignaturen({ project: PRJ, filePath: 's/x.ts', alt: t0, neu: t3.join('\n') });
+  pruefe(!s10.some((b) => b.pattern_id === P_ERR), 'S10 reine Loeschung direkt nach der Trefferzeile Z.15: kein Befund', s10);
+  const t4 = mitZeile(t2, 18, '  zzVerbotenerAufruf_7Q3(18);');
+  const s11 = await FP.pruefeSignaturen({ project: PRJ, filePath: 's/x.ts', alt: t0, neu: t4, bereiche: [{ von: 10, bis: 20, gesamt: 31 }] });
+  const b11 = s11.filter((b) => b.pattern_id === P_ERR);
+  pruefe(b11.length === 1 && b11[0].zeilen[0] === 18 && b11[0].zeilen[1] === 18 && t4.split('\n')[17].includes('zzVerbotenerAufruf_7Q3(18)'),
+    'S11 Kontrolle Plan: nur die geaenderte Trefferzeile Z.18 wird gemeldet (Anker im Text), nicht Z.15', s11);
+  const t5 = mitZeile(t0, 15, 'zzVerbotenerAufruf_7Q3(150);');
+  const s12 = await FP.pruefeSignaturen({ project: PRJ, filePath: 's/x.ts', alt: t0, neu: t5 });
+  pruefe(s12.some((b) => b.pattern_id === P_ERR && b.zeilen[0] === 15) && t5.split('\n')[14].includes('(150)'), 'S12 Kontrolle Einzelweg: geaenderte Trefferzeile Z.15 wird gemeldet', s12);
   FA._fehlermusterAuslieferungZuruecksetzen();
 
   // ---- Y: Syntax-Schnittstelle ----
