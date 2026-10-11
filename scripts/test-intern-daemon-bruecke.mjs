@@ -9,6 +9,9 @@
 //   B4 Kern: Antwort-Timeout -> daemon_antwortet_nicht, Befehl verworfen; mehrere Daemons ohne host -> daemon_mehrdeutig
 //   B5 API ohne SYNAPSE_INTERN_TOOL -> GET befehle liefert debug:false (eigener Kindprozess)
 //   B6 Daemon-Worker: shell pausiert -> processJob claimt nicht (Pruefung per Registry), sync_* nicht in 'alle'
+//   B8 (P15-T29) warteschlange_liste mit prozess daemon ueber das echte intern-bruecke.ts (Uebersicht + Liste)
+//   B9 (P15-T29) veralteter Daemon (alte Allowlist) antwortet befehl_unbekannt -> API meldet daemon_veraltet
+//      mit Klartext (Neustart), direkt, in der warteschlange_liste-Uebersicht und bei worker_status
 // Aufruf: set -a; . <test-db.env>; set +a; node scripts/test-intern-daemon-bruecke.mjs
 //   (PG nur fuer validateToken/alleSchalter; braucht gebaute dists von core, rest-api, file-watcher-daemon-ts)
 import assert from 'node:assert/strict';
@@ -151,6 +154,24 @@ try {
   assert.deepEqual(fs.readdirSync(path.dirname(gpuDatei)).filter((f) => f.endsWith('.tmp')), [], 'keine tmp-Reste');
   console.log('OK  B7 gpu_helfer_einstellen/-status: gezielt, null entfernt, fremde Schluessel bleiben, atomar');
 
+  // B8 (P15-T29): warteschlange_liste ueber das echte intern-bruecke.ts (gleicher Prozess = gleiches Register)
+  core.registriereWarteschlange({
+    name: 'b8_test', beschreibung: 'B8', reihenfolge: 'FIFO', verschiebbar: 'nein',
+    uebersicht: () => ({ anzahl: 2 }),
+    liste: (f) => core.seiteAusListe([
+      { id: 'e1', projekt: 'p', typ: 't', status: 'wartend', prioritaet: null, alter_s: 1 },
+      { id: 'e2', projekt: 'q', typ: 't', status: 'wartend', prioritaet: null, alter_s: 2 },
+    ], f),
+  });
+  r = await intern({ action: 'warteschlange_liste', prozess: 'daemon' });
+  assert.equal(r.success, true, JSON.stringify(r));
+  assert.equal(r.prozess, `daemon:${host}`);
+  assert.equal(r.warteschlangen.b8_test.anzahl, 2, JSON.stringify(r));
+  r = await intern({ action: 'warteschlange_liste', prozess: `daemon:${host}`, warteschlange: 'b8_test', project: 'q' });
+  assert.equal(r.success, true, JSON.stringify(r));
+  assert.deepEqual(r.eintraege.map((e) => [e.id, e.rang]), [['e2', 2]]);
+  console.log('OK  B8 warteschlange_liste ueber das echte intern-bruecke.ts (Uebersicht, Liste mit Filter)');
+
   // B3
   const vorher = core.daemonUebersicht()[0].angemeldet_seit;
   kern.vergissDaemons(); // Zustand der API weg wie nach einem Neustart; weckt den wartenden Poll
@@ -172,7 +193,47 @@ try {
   await assert.rejects(kern.sendeAnDaemon('worker_status', {}), (e) => e.code === 'daemon_mehrdeutig');
   await assert.rejects(kern.sendeAnDaemon('rm_rf', {}, 'stumm'), (e) => e.code === 'befehl_unbekannt');
   console.log('OK  B4 Timeout, mehrdeutig, unbekannter Befehl');
+
+  // B9 (P15-T29): Daemon mit aelterem Build — seine Allowlist kennt warteschlange_liste noch nicht.
+  // Er antwortet wie das alte intern-bruecke.ts (befehl_unbekannt ohne action). Live t54 kam das als
+  // nichtssagendes { fehler: 'befehl_unbekannt' } in der Uebersicht an.
+  kern.vergissDaemons();
+  let altLaeuft = true;
+  const altSchleife = (async () => {
+    while (altLaeuft) {
+      const bs = await kern.holeDaemonBefehle('alt', 200);
+      for (const b of bs) {
+        const alteListe = ['worker_status', 'worker_pausieren', 'worker_fortsetzen', 'worker_durchlauf'];
+        kern.meldeDaemonAntwort('alt', b.id, alteListe.includes(b.befehl)
+          ? { success: true, worker: [] }
+          : { success: false, error: 'befehl_unbekannt', message: `Befehl ${b.befehl} wird vom Daemon nicht ausgefuehrt.` });
+      }
+    }
+  })();
+  try {
+    r = await intern({ action: 'warteschlange_liste', prozess: 'daemon:alt', warteschlange: 'index' });
+    assert.equal(r.success, false, JSON.stringify(r));
+    assert.equal(r.error, 'daemon_veraltet', JSON.stringify(r));
+    assert.match(r.message, /alt.*warteschlange_liste.*neu starten/s, r.message);
+    r = await intern({ action: 'worker_status', prozess: 'daemon:alt' });
+    assert.equal(r.success, true, 'Befehle, die der alte Daemon kennt, gehen weiter: ' + JSON.stringify(r));
+    r = await intern({ action: 'sync_inspektor', project: 'zz-b9', file_path: 'a.ts', prozess: 'daemon:alt' });
+    assert.ok(JSON.stringify(r).includes('daemon_veraltet'), 'sync_inspektor nennt daemon_veraltet: ' + JSON.stringify(r).slice(0, 600));
+    r = await intern({ action: 'warteschlange_liste' });
+    assert.equal(r.success, true, JSON.stringify(r).slice(0, 400));
+    assert.equal(r.daemons?.['daemon:alt']?.fehler, 'daemon_veraltet', 'Uebersicht: ' + JSON.stringify(r.daemons));
+    assert.match(r.daemons['daemon:alt'].message, /neu starten/);
+  } finally {
+    altLaeuft = false;
+    kern.vergissDaemons();
+    await altSchleife;
+  }
+  console.log('OK  B9 veralteter Daemon: daemon_veraltet mit Klartext (direkt, Uebersicht, sync_inspektor), bekannte Befehle laufen');
   console.log('ALLE PRUEFUNGEN GRUEN');
+} catch (err) {
+  // P15-T29: vorher verschluckte das process.exit im finally jeden Fehler (EXIT 0 ohne Ausgabe).
+  console.error('FEHLER', err);
+  process.exitCode = 1;
 } finally {
   bruecke?.stop();
   core.setzeWorkerFort?.('alle');

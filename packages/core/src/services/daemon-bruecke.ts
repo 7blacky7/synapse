@@ -176,7 +176,8 @@ export function vergissDaemons(): void {
 /**
  * Stellt einen Befehl an einen Daemon zu und wartet auf die Antwort. Ohne host: der einzige verbundene
  * Daemon; mehrere -> Fehler mit Liste. Wirft DaemonBrueckeFehler (daemon_nicht_verbunden,
- * daemon_mehrdeutig, daemon_antwortet_nicht, befehl_unbekannt).
+ * daemon_mehrdeutig, daemon_antwortet_nicht, befehl_unbekannt, daemon_veraltet = der Daemon kennt einen
+ * Befehl der API-Allowlist nicht, P15-T29).
  */
 export async function sendeAnDaemon(
   befehl: string,
@@ -219,5 +220,18 @@ export async function sendeAnDaemon(
     ziel!.warteschlange.push(b);
     ziel!.wecker?.();
   });
+  // P15-T29: Die API kennt den Befehl (Allowlist oben), der Daemon nicht -> er laeuft mit einem aelteren
+  // Build (live t54: Daemon vor dem Neustart, warteschlange_liste kam als nacktes befehl_unbekannt an).
+  if (ergebnis.success === false && ergebnis.error === 'befehl_unbekannt') {
+    const kennt = Array.isArray(ergebnis.daemon_befehle) ? (ergebnis.daemon_befehle as unknown[]).map(String) : null;
+    const fehlen = kennt ? DAEMON_BEFEHLE.filter((x) => !kennt.includes(x)) : [];
+    const seit = daemons.get(zielHost)?.angemeldetSeit;
+    throw new DaemonBrueckeFehler('daemon_veraltet',
+      `Daemon ${zielHost} kennt den Befehl ${befehl} nicht: er laeuft mit einem aelteren Build als die API`
+      + `${seit ? ` (bei dieser API angemeldet seit ${new Date(seit).toISOString()})` : ''}.`
+      + ` Daemon mit dem aktuellen Build neu starten; Befehle, die er kennt, laufen weiter.`
+      + `${fehlen.length > 0 ? ` Es fehlen ihm: ${fehlen.join(', ')}.` : ''}`
+      + ` Antwort des Daemons: ${String(ergebnis.message ?? ergebnis.error)}`);
+  }
   return { host: zielHost, ergebnis };
 }

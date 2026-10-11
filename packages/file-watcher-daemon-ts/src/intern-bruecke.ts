@@ -81,7 +81,11 @@ export function startInternBruecke(): InternBrueckeHandle {
   async function fuehreAus(b: Befehl): Promise<void> {
     let ergebnis: Record<string, unknown>;
     if (!(DAEMON_BEFEHLE as readonly string[]).includes(b.befehl)) {
-      ergebnis = { success: false, error: 'befehl_unbekannt', message: `Befehl ${b.befehl} wird vom Daemon nicht ausgefuehrt.` };
+      // P15-T29: eigene Allowlist mitschicken, damit die API fehlende Befehle (veralteter Build) benennen kann
+      ergebnis = {
+        success: false, error: 'befehl_unbekannt', message: `Befehl ${b.befehl} wird vom Daemon nicht ausgefuehrt.`,
+        daemon_befehle: [...DAEMON_BEFEHLE],
+      };
     } else {
       const args = b.args ?? {};
       try {

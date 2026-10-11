@@ -717,7 +717,10 @@ export async function fuehreWarteschlangeAus(
             const { ergebnis } = await sendeAnDaemon(action, { project: text(a, 'project') }, d.host, 3_000);
             daemons[`daemon:${d.host}`] = ergebnis.success === false ? { fehler: ergebnis.error, message: ergebnis.message } : ergebnis.warteschlangen;
           } catch (err) {
-            daemons[`daemon:${d.host}`] = { fehler: (err as Error).message };
+            // P15-T29: Code UND Klartext (z. B. daemon_veraltet + "neu starten"), nicht nur die Meldung
+            daemons[`daemon:${d.host}`] = err instanceof DaemonBrueckeFehler
+              ? { fehler: err.code, message: err.message }
+              : { fehler: (err as Error).message };
           }
         }));
         if (Object.keys(daemons).length > 0) erg.daemons = daemons;
