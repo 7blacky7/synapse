@@ -79,6 +79,8 @@ function envGanzzahl(name: string, ersatz: number): number {
 
 const PARALLEL_GETEILT = envGanzzahl('SYNAPSE_SERVER_EMBED_PARALLEL_SHARED', 1);
 const PARALLEL_ALLEIN = envGanzzahl('SYNAPSE_SERVER_EMBED_PARALLEL_SOLO', 2);
+/** P12-T14: Chunks je Slot und Runde, als EIN Ollama-Aufruf eingebettet (vorher 1). */
+const STAPEL = Math.max(1, envGanzzahl('SYNAPSE_SERVER_EMBED_BATCH', 16));
 
 const sleep = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));
@@ -169,8 +171,8 @@ export class ParserWorker {
         }
 
         const claims = await claimEmbeddingChunks('unraid-local', {
-          limit: parallel,
-          maxConcurrent: parallel,
+          limit: parallel * STAPEL,
+          maxConcurrent: parallel * STAPEL,
           leaseSeconds: 900,
         });
 
@@ -186,12 +188,23 @@ export class ParserWorker {
         }
         this.leerlaufZyklen = 0;
 
-        await Promise.all(claims.map(async (claim) => {
+        // P12-T14: alle Claims dieser Runde als Stapel einbetten (embedBatch teilt in Scheiben je
+        // Queue-Slot); scheitert der Stapel, werden alle Claims freigegeben.
+        let vektoren: number[][];
+        try {
+          vektoren = await embedBatch(claims.map((c) => c.content), {
+            priority: 'background',
+            strictOllama: true,
+          });
+        } catch (err) {
+          await Promise.all(claims.map((c) => gibClaimFrei(c.chunkId, c.claimToken).catch(() => undefined)));
+          console.error('[parser-worker] Stapel mit ' + claims.length + ' Chunks fehlgeschlagen, Claims freigegeben: ' + (err as Error).message);
+          await sleep(2_000);
+          continue;
+        }
+        await Promise.all(claims.map(async (claim, idx) => {
           try {
-            const [vector] = await embedBatch([claim.content], {
-              priority: 'background',
-              strictOllama: true,
-            });
+            const vector = vektoren[idx];
             await completeEmbeddingClaim({
               nodeId: 'unraid-local',
               chunkId: claim.chunkId,

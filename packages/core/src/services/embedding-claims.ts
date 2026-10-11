@@ -139,7 +139,8 @@ export async function claimEmbeddingChunks(
         WHERE p.enabled
           AND EXISTS (SELECT 1 FROM code_chunks cc
                        WHERE cc.project = p.name AND cc.embedded_at IS NULL)
-        ORDER BY random()
+        -- P12-T14: erst die Embed-Prioritaet (Stufe 1 zuerst, ohne Eintrag 3), innerhalb zufaellig
+        ORDER BY COALESCE((SELECT e.stufe FROM embed_prioritaet e WHERE e.project = p.name), 3), random()
         LIMIT 1`,
     );
     const projekt = projektWahl.rows[0]?.name;

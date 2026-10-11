@@ -1,10 +1,23 @@
 /**
  * Synapse Core - Ollama Embedding Provider
  * Lokale Embeddings mit GPU-Beschleunigung
+ *
+ * STUECKGROESSE (P12-T14, 11.10.2026): Ein Embedding-Modell muss jede Eingabe in EINEM physischen
+ * Batch verarbeiten (Ollama n_batch/n_ubatch, Standard 2048 Token). Die Stueckgroesse richtete sich
+ * frueher nach num_ctx (8192 -> ~16.000 Zeichen); qwen kam damit zurecht, Nemotron lehnte jeden
+ * laengeren Text ab ("input (5671 tokens) is too large to process ... batch size 2048", 209 Fehler
+ * in 30 Minuten). Jetzt: Stuecke von hoechstens EMBEDDING_NUM_BATCH * 1,6 Zeichen (2048 -> 3276),
+ * Vektoren wie bisher gemittelt. num_batch wird bewusst NICHT vergroessert (User-Vorgabe).
+ * ENDPUNKT: /api/embed statt /api/embeddings - nimmt Listen (echte Stapel) und kuerzt ein doch zu
+ * langes Stueck ab, statt den ganzen Eintrag scheitern zu lassen.
  */
 
 import { getConfig } from '../config.js';
-import { EmbeddingProvider, OllamaEmbeddingResponse } from './types.js';
+import { EmbeddingProvider } from './types.js';
+
+interface OllamaEmbedAntwort {
+  embeddings: number[][];
+}
 
 export class OllamaEmbeddingProvider implements EmbeddingProvider {
   readonly name = 'ollama';
@@ -19,9 +32,9 @@ export class OllamaEmbeddingProvider implements EmbeddingProvider {
     this.model = config.embeddings.ollama.model;
     // MRL-Truncation (optional): wenn EMBEDDING_TARGET_DIM gesetzt ist, wird der
     // Embedding-Vektor auf diese Dimension gekuerzt + renormalisiert. Ollama
-    // liefert immer die native Dim (qwen3-embedding:8b = 4096); mit
-    // EMBEDDING_TARGET_DIM=3072 passen die Vektoren in bestehende 3072-Collections
-    // (Drop-in fuer gemini-embedding-2). 0/unset = unveraendert.
+    // liefert immer die native Dim (Nemotron-3-Embed-1B = 2048); mit
+    // EMBEDDING_TARGET_DIM=1024 passen die Vektoren in die 1024er-Collections.
+    // 0/unset = unveraendert.
     this.targetDim = Number(process.env.EMBEDDING_TARGET_DIM) || 0;
   }
 
@@ -116,36 +129,41 @@ export class OllamaEmbeddingProvider implements EmbeddingProvider {
     return true;
   }
 
+  /** num_ctx der Anfrage (Default 8192) - Kontextfenster des geladenen Modells. */
+  private numCtx(): number {
+    return Number(process.env.EMBEDDING_NUM_CTX) || 8192;
+  }
+
+  /**
+   * Groesstes Stueck in Zeichen. Massgeblich ist der physische Batch (EMBEDDING_NUM_BATCH, Standard
+   * 2048 Token wie bei Ollama), nicht num_ctx. Faktor 1,6 Zeichen/Token ist vorsichtig (gemessen:
+   * 3300 Zeichen TypeScript = 981 Token). EMBEDDING_MAX_INPUT_CHARS uebersteuert.
+   */
+  private maxChars(): number {
+    const numBatch = Number(process.env.EMBEDDING_NUM_BATCH) || 2048;
+    return Number(process.env.EMBEDDING_MAX_INPUT_CHARS) || Math.floor(numBatch * 1.6);
+  }
+
   /**
    * Generiert Embedding fuer einen Text
    */
   async embed(text: string, signal?: AbortSignal): Promise<number[]> {
-    // Sicherstellen dass Model verfuegbar ist
     if (!this.modelEnsured) {
       await this.ensureModel();
     }
+    const maxChars = this.maxChars();
 
-    // num_ctx anheben: Ollama laedt Embedding-Modelle per Default mit nur 4096
-    // Token. Lange Memories/Thoughts/Chunks sprengen das ("input length exceeds
-    // the context length" -> HTTP 500). Wir setzen num_ctx (Default 8192) direkt
-    // in der Anfrage, damit auch langer Text KOMPLETT embedded wird statt zu failen.
-    const numCtx = Number(process.env.EMBEDDING_NUM_CTX) || 8192;
-    // Sichere Stueckgroesse: garantiert < numCtx Token selbst bei sehr dichtem
-    // Text (~2 Zeichen/Token), mit Marge.
-    const maxChars = Number(process.env.EMBEDDING_MAX_INPUT_CHARS) || (numCtx * 2 - 384);
-
-    // Passt in einen Pass → direkt embedden.
+    // Passt in ein Stueck -> direkt embedden.
     if (text.length <= maxChars) {
-      return this.applyTargetDim(await this.embedRaw(text, numCtx, signal));
+      return this.applyTargetDim((await this.embedRaw([text], signal))[0]);
     }
 
-    // Zu lang → in Stuecke splitten, jedes embedden, Vektoren mitteln (mean-pooling)
-    // + renormalisieren. So geht KEIN Content verloren (statt zu truncaten) und der
-    // Kontext wird nie gesprengt — egal wie lang der Text ist (Memory/Thoughts/Docs).
-    const vectors: number[][] = [];
-    for (let i = 0; i < text.length; i += maxChars) {
-      vectors.push(await this.embedRaw(text.slice(i, i + maxChars), numCtx, signal));
-    }
+    // Zu lang -> in Stuecke teilen, alle in EINEM Aufruf einbetten, Vektoren mitteln
+    // (mean-pooling) + renormalisieren. So geht kein Inhalt verloren und kein Stueck
+    // sprengt den Batch des Modells.
+    const stuecke: string[] = [];
+    for (let i = 0; i < text.length; i += maxChars) stuecke.push(text.slice(i, i + maxChars));
+    const vectors = await this.embedRaw(stuecke, signal);
     const dim = vectors[0].length;
     const mean = new Array<number>(dim).fill(0);
     for (const v of vectors) {
@@ -155,31 +173,35 @@ export class OllamaEmbeddingProvider implements EmbeddingProvider {
     return this.applyTargetDim(mean);
   }
 
-  /** Ein einzelner Embed-Call an Ollama (mit num_ctx). Ohne Dim-Truncation. */
-  private async embedRaw(text: string, numCtx: number, signal?: AbortSignal): Promise<number[]> {
-    const response = await fetch(`${this.baseUrl}/api/embeddings`, {
+  /** Ein Aufruf an /api/embed fuer eine Liste von Texten. Ohne Dim-Truncation. */
+  private async embedRaw(texte: string[], signal?: AbortSignal): Promise<number[][]> {
+    const response = await fetch(`${this.baseUrl}/api/embed`, {
       method: 'POST',
       // P5-T15: verdraengter Hintergrund-Aufruf -> fetch bricht ab (Ollama rechnet ggf. kurz zu Ende)
       signal,
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         model: this.model,
-        prompt: text,
-        options: { num_ctx: numCtx },
+        input: texte,
+        options: { num_ctx: this.numCtx() },
       }),
     });
     if (!response.ok) {
-      throw new Error(`Ollama Fehler: ${response.status} ${response.statusText}`);
+      const detail = (await response.text().catch(() => '')).slice(0, 200);
+      throw new Error(`Ollama Fehler: ${response.status} ${response.statusText} ${detail}`.trim());
     }
-    const data = (await response.json()) as OllamaEmbeddingResponse;
-    return data.embedding;
+    const data = (await response.json()) as OllamaEmbedAntwort;
+    if (!Array.isArray(data.embeddings) || data.embeddings.length !== texte.length) {
+      throw new Error(`Ollama lieferte ${data.embeddings?.length ?? 0} statt ${texte.length} Vektoren`);
+    }
+    return data.embeddings;
   }
 
   /**
    * MRL-Truncation: kuerzt den Vektor auf targetDim (die ersten N Dimensionen —
-   * bei MRL-trainierten Modellen wie Qwen3 die informationsdichtesten) und
-   * normalisiert auf Laenge 1 (korrekte Cosine-Similarity). No-op wenn targetDim
-   * unset/0 oder der Vektor bereits <= targetDim ist.
+   * bei MRL-trainierten Modellen die informationsdichtesten) und normalisiert auf
+   * Laenge 1 (korrekte Cosine-Similarity). No-op wenn targetDim unset/0 oder der
+   * Vektor bereits <= targetDim ist.
    */
   private applyTargetDim(vec: number[]): number[] {
     if (!this.targetDim || this.targetDim <= 0 || vec.length <= this.targetDim) {
@@ -194,18 +216,25 @@ export class OllamaEmbeddingProvider implements EmbeddingProvider {
   }
 
   /**
-   * Generiert Embeddings fuer mehrere Texte (sequenziell)
-   * Ollama unterstuetzt kein natives Batch-Embedding
+   * Embeddings fuer mehrere Texte. Kurze Texte gehen in EINEM /api/embed-Aufruf durch (gemessen:
+   * 16 Code-Chunks, 3749 Token, 0,85 s); zu lange werden einzeln ueber embed() gestueckelt.
    */
-  async embedBatch(texts: string[]): Promise<number[][]> {
-    const embeddings: number[][] = [];
-
-    for (const text of texts) {
-      const embedding = await this.embed(text);
-      embeddings.push(embedding);
+  async embedBatch(texts: string[], signal?: AbortSignal): Promise<number[][]> {
+    if (!this.modelEnsured) {
+      await this.ensureModel();
     }
-
-    return embeddings;
+    const maxChars = this.maxChars();
+    const ergebnis: number[][] = new Array(texts.length);
+    const kurzIdx: number[] = [];
+    for (let i = 0; i < texts.length; i++) {
+      if (texts[i].length <= maxChars) kurzIdx.push(i);
+      else ergebnis[i] = await this.embed(texts[i], signal);
+    }
+    if (kurzIdx.length > 0) {
+      const vektoren = await this.embedRaw(kurzIdx.map((i) => texts[i]), signal);
+      kurzIdx.forEach((i, k) => { ergebnis[i] = this.applyTargetDim(vektoren[k]); });
+    }
+    return ergebnis;
   }
 
   /**

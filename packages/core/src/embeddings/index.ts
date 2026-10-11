@@ -506,7 +506,21 @@ export async function embedBatch(
 ): Promise<number[][]> {
   if (texts.length === 0) return [];
   if (getConfig().embeddings.provider === 'ollama') {
-    return Promise.all(texts.map((text) => embed(text, options)));
+    // Interaktiv: weiterhin je Text, damit eine Anfrage nach dem laufenden Text einspringen kann.
+    if ((options.priority ?? 'interactive') === 'interactive') {
+      return Promise.all(texts.map((text) => embed(text, options)));
+    }
+    // P12-T14: Hintergrund in Scheiben von EMBED_OLLAMA_BATCH (Standard 16) als EIN Aufruf je Scheibe.
+    // Vorher ein Queue-Slot je Text plus EMBED_MIN_GAP_MS Pause -> Code-Nachzug nur ~5 Chunks/s.
+    // Verdraengt ein interaktiver Auftrag eine Scheibe, laeuft sie danach als Ganzes erneut.
+    const scheibe = Math.max(1, Number(process.env.EMBED_OLLAMA_BATCH) || 16);
+    const scheiben: string[][] = [];
+    for (let i = 0; i < texts.length; i += scheibe) scheiben.push(texts.slice(i, i + scheibe));
+    const teile = await Promise.all(scheiben.map((s) => runQueued(async (signal) => {
+      const provider = await getEmbeddingProvider({ strictOllama: options.strictOllama });
+      return provider.embedBatch(s.map((t) => mitPraefix(t, options.art)), signal);
+    }, options)));
+    return teile.flat();
   }
   return runQueued(async () => {
     const provider = await getEmbeddingProvider({ strictOllama: options.strictOllama });

@@ -19,8 +19,8 @@ export interface EmbeddingProvider {
    */
   embed(text: string, signal?: AbortSignal): Promise<number[]>;
 
-  /** Generiert Embeddings fuer mehrere Texte (Batch) */
-  embedBatch(texts: string[]): Promise<number[][]>;
+  /** Generiert Embeddings fuer mehrere Texte (Batch). signal wie bei embed (optional). */
+  embedBatch(texts: string[], signal?: AbortSignal): Promise<number[][]>;
 
   /** Generiert Embedding fuer Medien-Dateien (Bild/Video) - nur multimodale Provider */
   embedMedia?(data: Buffer, mimeType: string): Promise<number[]>;
