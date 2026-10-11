@@ -29,6 +29,12 @@ FELDER von SPRACHE:
   max_meldungen  optional, Standard 5 (Folgefehler nach dem ersten sind selten hilfreich).
   max_kb         optional: Groessengrenze dieser Sprache in KB (Standard PRUEF_TS_MAX_KB = 1024, 0 = keine);
                  groessere Dateien werden nicht geprueft (kein Befund), weil der Baum RAM kostet.
+  fehlerort      optional: 'start' (Standard) | 'letztes_kind'. Hat ein ERROR-Knoten keine Fehler-Kinder, meldet
+                 'start' seinen Anfang, 'letztes_kind' den Anfang seines letzten Kindes (dort hat tree-sitter
+                 aufgegeben). Haskell umschliesst z. B. alles ab der ersten import-Zeile mit EINEM ERROR - 'start'
+                 meldet dann immer die import-Zeile. Messung P16-T12 (Zeile +-1 bei entfernter Klammer bzw.
+                 Muellzeile): Haskell 9 -> 44/44, Clojure 4 -> 58/301, OCaml 142 -> 155/218, Erlang 266 -> 271/273,
+                 Racket 277 -> 301/301; Elixir schlechter (114 -> 95/200), deshalb nur je Sprache einschalten.
   messung        Text: Messwerte und Begruendung des Modus (Doku, erscheint in info).
 
 GRUNDSAETZE
@@ -83,6 +89,8 @@ def pruefe_konfig(s, modulname):
     p = s['probe']
     if not isinstance(p, dict) or not p.get('gueltig') or not p.get('kaputt'):
         raise ValueError(f'ts_sprachen/{modulname}.py: probe braucht gueltig und kaputt')
+    if s.get('fehlerort', 'start') not in ('start', 'letztes_kind'):
+        raise ValueError(f'ts_sprachen/{modulname}.py: fehlerort {s["fehlerort"]!r} nicht in (start, letztes_kind)')
     for a in s.get('ausnahmen', []):
         if a.get('wirkung') not in ('weich', 'ignorieren') or not a.get('grund'):
             raise ValueError(f'ts_sprachen/{modulname}.py: Ausnahme braucht wirkung weich|ignorieren und grund')
@@ -218,14 +226,18 @@ def _zeile_von(quelle: bytes, byte_pos: int):
 def meldungen_aus_baum(s, baum, quelle: bytes):
     grenze = int(s.get('max_meldungen', 5))
     aus, gesehen = [], set()
+    letztes_kind = s.get('fehlerort') == 'letztes_kind'
     for n in fehlerknoten(baum.root_node, grenze * 4):
-        a, zeilentext = _zeile_von(quelle, n.start_byte)
-        ort = (n.start_point[0] + 1, _spalte(quelle, a, n.start_byte))
+        # fehlerknoten liefert ERROR nur ohne Fehler-Kinder; mit fehlerort 'letztes_kind' zeigt der Ort auf das
+        # letzte Kind (dort hat tree-sitter aufgegeben), die Art des Befunds bleibt die des ERROR-Knotens.
+        o = n.children[-1] if (letztes_kind and n.is_error and n.child_count) else n
+        a, zeilentext = _zeile_von(quelle, o.start_byte)
+        ort = (o.start_point[0] + 1, _spalte(quelle, a, o.start_byte))
         if ort in gesehen:
             continue
         gesehen.add(ort)
         if n.is_error:
-            schnipsel = quelle[n.start_byte:min(n.end_byte, n.start_byte + 40)].decode('utf-8', 'replace').split('\n')[0].strip()
+            schnipsel = quelle[o.start_byte:min(n.end_byte, o.start_byte + 40)].decode('utf-8', 'replace').split('\n')[0].strip()
             m = {'zeile': ort[0], 'spalte': ort[1], 'code': 'ts-error',
                  'meldung': f'Syntaxfehler: unerwartet {schnipsel!r}' if schnipsel else 'Syntaxfehler'}
         else:
