@@ -53,6 +53,19 @@ console.log('Positivkontrollen');
   pruefe('K11 JSON: leer und BOM ok', j.pruefe('  \n', 'x.json').length === 0 && j.pruefe('﻿{"a":1}', 'x.json').length === 0);
   const e = j.pruefe('{"a": [1, 2', 'x.json');
   pruefe('K12 JSON: unerwartetes Ende -> letzte Zeile', e[0]?.zeile === 1 && e[0]?.spalte >= 1, e[0]);
+  // Kleinkram D (E0-Befund 1486172c): Kommentar in einer .json ohne JSONC-Namen ist ein Fehler.
+  const kom = (inhalt, pfad) => j.pruefe(inhalt, pfad);
+  let km = kom('{\n  // c\n  "a": 1\n}\n', 'x.json');
+  pruefe('K16 JSON: // Kommentar -> Fehler Z.2 Sp.3', km.length === 1 && km[0].zeile === 2 && km[0].spalte === 3 && /Kommentar/.test(km[0].meldung), km);
+  km = kom('{\n  "a": 1 /* c */\n}\n', 'x.json');
+  pruefe('K16 JSON: /* */ Kommentar -> Fehler Z.2 Sp.10', km.length === 1 && km[0].zeile === 2 && km[0].spalte === 10 && /Kommentar/.test(km[0].meldung), km);
+  pruefe('K16 package.json: Kommentar ist Fehler', kom('{"a": 1, // c\n"b": 2}', 'package.json').length === 1);
+  km = kom('{"u": "http://x", // c\n"a": 1}', 'x.json');
+  pruefe('K16 JSON: // im String zaehlt nicht, Kommentar danach Sp.19', km.length === 1 && km[0].zeile === 1 && km[0].spalte === 19, km);
+  km = kom('{"a": 1 "b": 2 // c\n}', 'x.json');
+  pruefe('K16 JSON: Strukturfehler VOR dem Kommentar wird gemeldet', km.length === 1 && km[0].spalte === 9 && !/Kommentar/.test(km[0].meldung), km);
+  pruefe('K16 JSONC-Namen bleiben erlaubt (pyrightconfig, .vscode, .jsonc, tsconfig)',
+    ['pyrightconfig.json', '.vscode/settings.json', 'a/b.jsonc', 'tsconfig.base.json'].every((p) => kom('{\n // c\n "a": 1\n}', p).length === 0));
   // P16-T9: V8 meldet viele Fehler ohne Position; die Zeile darf bei abschliessendem \n nicht +1 verrutschen.
   const stelle = (inhalt, z, s) => {
     const m = j.pruefe(inhalt, 'x.json')[0];

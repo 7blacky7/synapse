@@ -263,7 +263,7 @@ export function pruefeTypescriptMitGrammatik(inhalt: string, pfad: string): Synt
 // ─── JSON ────────────────────────────────────────────────────────────────────
 
 /** Dateien, die per Konvention JSON mit Kommentaren/Trailing Commas sind (JSONC). */
-const JSONC_NAMEN = /^(tsconfig(\..+)?|jsconfig(\..+)?|devcontainer|\.devcontainer|settings|launch|tasks|extensions|keybindings|\.eslintrc|\.babelrc|babel\.config|turbo|deno|biome|api-extractor|tslint|\.swcrc|nest-cli|\.jshintrc|typedoc|\.oxlintrc)\.json$/;
+const JSONC_NAMEN = /^(tsconfig(\..+)?|jsconfig(\..+)?|devcontainer|\.devcontainer|settings|launch|tasks|extensions|keybindings|\.eslintrc|\.babelrc|babel\.config|turbo|deno|biome|api-extractor|tslint|\.swcrc|nest-cli|\.jshintrc|typedoc|\.oxlintrc|pyrightconfig)\.json$/;
 
 export function istJsonc(pfad: string): boolean {
   return JSONC_NAMEN.test(dateiname(pfad)) || /(^|\/)\.vscode\//.test(pfad) || /\.(jsonc|code-workspace)$/i.test(pfad);
@@ -447,6 +447,28 @@ export function jsonFehlerStelle(text: string, meldung: string): number {
   return pos >= ende ? ende : pos;
 }
 
+const JSON_KOMMENTAR_WARUM = 'JSON kennt keine Kommentare; JSON.parse, npm und die meisten Konfig-Loader brechen an dieser Stelle ab. Nur JSONC-Dateien (tsconfig*.json, .vscode/*.json, *.jsonc u. a.) erlauben sie.';
+const JSON_KOMMENTAR_WIE = 'Kommentar entfernen oder als Wert ablegen (z. B. "_kommentar": "..."). Liest ein Programm die Datei als JSONC, die Endung .jsonc verwenden.';
+
+/**
+ * Erste Kommentarstelle (0-basiert) ausserhalb von Strings, sonst null. Strings enden wie in der frueheren
+ * Regex-Pruefung auch an einem Zeilenumbruch, damit ein offener String nicht den Rest der Datei verschluckt.
+ */
+export function jsonKommentarStelle(text: string): number | null {
+  let imString = false;
+  for (let i = 0; i < text.length; i++) {
+    const z = text[i];
+    if (imString) {
+      if (z === '\\') { i++; continue; }
+      if (z === '"' || z === '\n') imString = false;
+      continue;
+    }
+    if (z === '"') { imString = true; continue; }
+    if (z === '/' && (text[i + 1] === '/' || text[i + 1] === '*')) return i;
+  }
+  return null;
+}
+
 export function pruefeJson(inhalt: string, pfad: string): SyntaxMeldung[] {
   const text = inhalt.charCodeAt(0) === 0xfeff ? inhalt.slice(1) : inhalt;
   if (text.trim() === '') return [];
@@ -456,19 +478,27 @@ export function pruefeJson(inhalt: string, pfad: string): SyntaxMeldung[] {
       JSON.parse(text);
       return [];
     } catch (err) {
-      // Datei mit Kommentaren = JSONC nach Absicht des Autors: nur echte Strukturfehler melden.
-      const hatKommentar = /\/\/|\/\*/.test(text.replace(/"(?:[^"\\\n]|\\.)*"/g, '""'));
-      if (!hatKommentar) {
-        const roh = (err as Error).message;
-        const { zeile, spalte } = zeileSpalte(text, jsonFehlerStelle(text, roh));
-        const meldung = roh
-          .replace(/\s*\(line \d+ column \d+\)/, '')
-          .replace(/ in JSON at position \d+/, '')
-          .replace(/ at line \d+ column \d+ of the JSON data/, '')
-          .replace(/, "[\s\S]*" is not valid JSON$/, '')
-          .trim();
-        return [{ zeile, spalte, code: 'JSON', meldung, warum: JSON_WARUM, wie: JSON_WIE, wo: JSON_WO }];
+      // Kleinkram D (E0-Befund 1486172c): Frueher galt eine .json MIT Kommentar als JSONC "nach Absicht des
+      // Autors" und lief durch den toleranten Parser - ein Kommentar in package.json & Co. blieb so unentdeckt.
+      // JSONC erkennt jetzt nur noch istJsonc (Dateiname/Ort); sonst ist der Kommentar selbst der Fehler.
+      // Messung 11.10.2026 ueber alle 1742 .json im Index: 2 Dateien mit Kommentar ausserhalb der JSONC-Namen,
+      // beide pyrightconfig.json (offiziell JSONC, jetzt in JSONC_NAMEN).
+      const roh = (err as Error).message;
+      const fehlerStelle = jsonFehlerStelle(text, roh);
+      const kommentar = jsonKommentarStelle(text);
+      if (kommentar !== null && kommentar <= fehlerStelle) {
+        const { zeile, spalte } = zeileSpalte(text, kommentar);
+        const art = text.startsWith('/*', kommentar) ? '/* */' : '//';
+        return [{ zeile, spalte, code: 'JSON', meldung: `Kommentar (${art}) ist in JSON nicht erlaubt`, warum: JSON_KOMMENTAR_WARUM, wie: JSON_KOMMENTAR_WIE, wo: JSON_WO }];
       }
+      const { zeile, spalte } = zeileSpalte(text, fehlerStelle);
+      const meldung = roh
+        .replace(/\s*\(line \d+ column \d+\)/, '')
+        .replace(/ in JSON at position \d+/, '')
+        .replace(/ at line \d+ column \d+ of the JSON data/, '')
+        .replace(/, "[\s\S]*" is not valid JSON$/, '')
+        .trim();
+      return [{ zeile, spalte, code: 'JSON', meldung, warum: JSON_WARUM, wie: JSON_WIE, wo: JSON_WO }];
     }
   }
   return pruefeJsonTolerant(text, pfad).slice(0, 1).map((m) => ({
