@@ -12,6 +12,12 @@
  *   - parse(): findet freien Worker oder queued; ein Worker bearbeitet
  *     zu einem Zeitpunkt genau einen Request.
  *   - Fehlerhafte Worker (error/exit) werden bis zu MAX_RETRIES neu gespawned.
+ *     Ein Erfolg setzt den Zaehler zurueck. Absichtlich beendete Worker (Reissleine)
+ *     zaehlen NICHT als Ausfall und werden nicht ein zweites Mal ersetzt (P15-T19).
+ *   - Nach MAX_RETRIES Ausfaellen in Folge ist der Slot stillgelegt. Sind ALLE Slots
+ *     stillgelegt, werden wartende und neue Auftraege sofort mit
+ *     ParserPoolStillgelegtError abgelehnt (nie ewig pending); nach
+ *     PARSER_POOL_WIEDERBELEBUNG_MS (Standard 60 s) belebt der naechste parse() sie neu.
  */
 
 import { Worker } from 'node:worker_threads';
@@ -47,6 +53,8 @@ interface WorkerSlot {
   laufendeDatei: string | null;
   startedAt: number | null;
   zeichen: number;
+  /** P15-T19: Zeitpunkt der Stilllegung (MAX_RETRIES Ausfaelle in Folge), sonst null. */
+  stillgelegtSeit: number | null;
 }
 
 /** Momentaufnahme eines laufenden Parse-Vorgangs. */
@@ -78,6 +86,35 @@ export class ParseTimeoutError extends Error {
     this.filePath = filePath;
     this.limitMs = limitMs;
   }
+}
+
+/**
+ * P15-T19: Kein Slot des Pools lebt mehr (alle nach MAX_RETRIES Ausfaellen in Folge stillgelegt).
+ * Vorher blieb ein Auftrag in diesem Zustand fuer immer in der Queue (thought 07ac26de). Jetzt
+ * wird er sofort abgelehnt: der Aufrufer (services/code.ts) behandelt das wie jeden Pool-Fehler
+ * und parst synchron im Main-Thread - die dokumentierte Rueckfallebene, wenn der Pool wirft.
+ * Anders als ParseTimeoutError ist das kein Hinweis auf eine haengende Datei.
+ */
+export class ParserPoolStillgelegtError extends Error {
+  readonly wiederbelebungMs: number;
+  constructor(size: number, wiederbelebungMs: number) {
+    super(`Parser-Pool stillgelegt: alle ${size} Worker nach ${MAX_RETRIES} Ausfaellen in Folge nicht neu gestartet; Wiederbelebung fruehestens nach ${wiederbelebungMs} ms`);
+    this.name = 'ParserPoolStillgelegtError';
+    this.wiederbelebungMs = wiederbelebungMs;
+  }
+}
+
+/**
+ * Pause, nach der ein stillgelegter Slot beim naechsten parse() einen neuen Worker bekommt.
+ * Warum Wiederbelebung statt endgueltig tot: der Pool lebt so lange wie der Daemon bzw. die
+ * REST-API. Ein voruebergehender Grund (Speicherdruck, kaputter Zustand) wuerde sonst den
+ * Off-Thread-Parse bis zum Neustart abschalten. Die Pause begrenzt die Kosten eines dauerhaften
+ * Fehlers auf hoechstens MAX_RETRIES+1 Worker-Starts je Pause.
+ */
+function wiederbelebungMs(): number {
+  const roh = process.env.PARSER_POOL_WIEDERBELEBUNG_MS;
+  const wert = roh === undefined || roh.trim() === '' ? NaN : Number(roh);
+  return Number.isFinite(wert) && wert >= 0 ? wert : 60_000;
 }
 
 /**
@@ -159,8 +196,12 @@ export class ParserWorkerPool {
       laufendeDatei: null,
       startedAt: null,
       zeichen: 0,
+      stillgelegtSeit: null,
     };
     this.slots[index] = slot;
+    // P15-T19: ein Worker wird hoechstens EINMAL als ausgefallen behandelt. Nach 'error'
+    // folgt noch ein 'exit' mit code != 0 - ohne diese Sperre gab es zwei Neustarts.
+    let abgehandelt = false;
 
     worker.on('message', (msg: WorkerResponse) => {
       if (slot.timer) { clearTimeout(slot.timer); slot.timer = null; }
@@ -178,7 +219,14 @@ export class ParserWorkerPool {
     });
 
     const handleFailure = (cause: unknown) => {
-      if (this.shuttingDown) return;
+      if (this.shuttingDown || abgehandelt) return;
+      abgehandelt = true;
+      // P15-T19: Absichtlich beendet (Reissleine im Timer, beende() hier unten) oder der Slot
+      // ist laengst neu besetzt: der Nachfolger laeuft schon. Ein zweiter spawnSlot wuerde ihn
+      // ueberschreiben und als ungetrackten Thread zuruecklassen - gemessen +1 Thread je
+      // Timeout und Stilllegung nach 4 Timeouts (thought 07ac26de). Das 'exit' des beendeten
+      // Workers kommt, solange er noch in beendend steht (beende() entfernt ihn erst danach).
+      if (this.beendend.has(worker) || this.slots[index] !== slot) return;
       if (slot.timer) { clearTimeout(slot.timer); slot.timer = null; }
       const resolver = slot.current;
       slot.current = null;
@@ -192,15 +240,24 @@ export class ParserWorkerPool {
         resolver.reject(new Error(`parser worker failed: ${msg}`));
       }
 
-      const nextRetries = retries + 1;
+      // P15-T19: der Zaehler kommt aus dem Slot, nicht aus der Closure von spawnSlot - nur
+      // slot.retries wird bei Erfolg (message) zurueckgesetzt. Vorher zaehlte die Closure
+      // ueber Erfolge hinweg weiter.
+      const nextRetries = slot.retries + 1;
       if (nextRetries > MAX_RETRIES) {
+        const pause = wiederbelebungMs();
         // eslint-disable-next-line no-console
-        console.error(`[parser-worker-pool] slot ${index} exceeded ${MAX_RETRIES} retries; not respawning`);
-        // slot bleibt leer; drainQueue ueberspringt es
+        console.error(`[parser-worker-pool] slot ${index} exceeded ${MAX_RETRIES} retries; stillgelegt, Wiederbelebung fruehestens nach ${pause} ms`);
+        // Slot gilt als busy, findFreeSlot ueberspringt ihn; parse() belebt ihn nach der Pause.
         this.slots[index] = {
           worker, busy: true, current: null, retries: nextRetries, timer: null,
-          laufendeDatei: null, startedAt: null, zeichen: 0,
+          laufendeDatei: null, startedAt: null, zeichen: 0, stillgelegtSeit: Date.now(),
         };
+        if (this.alleStillgelegt()) {
+          for (const item of this.queue.splice(0)) {
+            item.resolver.reject(new ParserPoolStillgelegtError(this.size, pause));
+          }
+        }
         return;
       }
       this.spawnSlot(index, nextRetries);
@@ -218,6 +275,10 @@ export class ParserWorkerPool {
     if (this.shuttingDown) {
       return Promise.reject(new Error('ParserWorkerPool is shutting down'));
     }
+    this.belebeStillgelegte();
+    if (this.alleStillgelegt()) {
+      return Promise.reject(new ParserPoolStillgelegtError(this.size, wiederbelebungMs()));
+    }
     return new Promise<ParseResult | null>((resolve, reject) => {
       const resolver: PendingResolver = { resolve, reject };
       const free = this.findFreeSlot();
@@ -226,6 +287,23 @@ export class ParserWorkerPool {
       } else {
         this.queue.push({ args, resolver });
       }
+    });
+  }
+
+  /** P15-T19: true, wenn kein Slot mehr einen lebenden Worker hat. */
+  private alleStillgelegt(): boolean {
+    return this.slots.length > 0 && this.slots.every((s) => !!s && s.stillgelegtSeit !== null);
+  }
+
+  /** P15-T19: stillgelegte Slots nach Ablauf der Pause mit frischem Worker (Zaehler 0) neu besetzen. */
+  private belebeStillgelegte(): void {
+    const pause = wiederbelebungMs();
+    const jetzt = Date.now();
+    this.slots.forEach((slot, i) => {
+      if (!slot || slot.stillgelegtSeit === null || jetzt - slot.stillgelegtSeit < pause) return;
+      // eslint-disable-next-line no-console
+      console.error(`[parser-worker-pool] slot ${i} nach ${pause} ms Pause wiederbelebt`);
+      this.spawnSlot(i, 0);
     });
   }
 
@@ -314,9 +392,10 @@ export class ParserWorkerPool {
 
   /**
    * P15-T15: Zustand JEDES Slots fuer intern(parser_pool) - nur lesen.
-   * stillgelegt = Slot nach MAX_RETRIES Fehlschlaegen nicht neu gestartet: er gilt dauerhaft als
-   * busy, findFreeSlot ueberspringt ihn, Auftraege bleiben in der Queue haengen (07ac26de).
-   * retries ist der SICHTBARE Zaehler; ein Erfolg setzt ihn auf 0.
+   * stillgelegt = Slot nach MAX_RETRIES Ausfaellen in Folge nicht neu gestartet: er gilt als busy,
+   * findFreeSlot ueberspringt ihn. Seit P15-T19 werden Auftraege abgelehnt, wenn ALLE Slots
+   * stillgelegt sind, und parse() belebt den Slot nach PARSER_POOL_WIEDERBELEBUNG_MS neu.
+   * retries ist der einzige Ausfall-Zaehler; ein Erfolg setzt ihn auf 0, Timeouts zaehlen nicht.
    */
   slotZustand(): Record<string, unknown> {
     const jetzt = Date.now();
@@ -327,7 +406,8 @@ export class ParserWorkerPool {
         thread_id: slot.worker.threadId,
         busy: slot.busy,
         retries: slot.retries,
-        stillgelegt: slot.retries > MAX_RETRIES,
+        stillgelegt: slot.stillgelegtSeit !== null || slot.retries > MAX_RETRIES,
+        stillgelegt_seit: slot.stillgelegtSeit === null ? null : new Date(slot.stillgelegtSeit).toISOString(),
         laufende_datei: slot.laufendeDatei,
         laufzeit_ms: slot.startedAt === null ? null : jetzt - slot.startedAt,
         zeichen: slot.laufendeDatei ? slot.zeichen : null,
