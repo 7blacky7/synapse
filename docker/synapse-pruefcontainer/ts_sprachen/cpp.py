@@ -12,5 +12,6 @@ SPRACHE = {
         'gueltig': 'template <typename T> T quadrat(T x) { return x * x; }\nauto f = [](int a) { return a; };\n',
         'kaputt': 'int main() {\n  int x = ;\n  return 0;\n}\n',
     },
-    'messung': 'P16-T11: FP .cpp 43 %, .hpp 48 %, .cc 83 %, .h 46 % der Index-Dateien; mit Heuristik 15 %. Nicht angemeldet.',
+    'messung': ('P16-T11: FP .cpp 43 %, .hpp 48 %, .cc 83 %, .h 46 % der Index-Dateien; mit Heuristik 15 %. Container '
+                '(Image t11, cpp/cc/cxx/hpp/inl/h): 1808/4039 (45 %), Positivkontrolle 10/10. Nicht angemeldet.'),
 }

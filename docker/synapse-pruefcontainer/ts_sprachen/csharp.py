@@ -22,6 +22,7 @@ SPRACHE = {
     ],
     'messung': (
         'P16-T11: FP 1/951 echte .cs (parser-testkorpus), der eine Fall ist die Grammatik-Luecke *(T*)&x - per '
-        'Ausnahme nur weich, damit 0 harte Fehlalarme. C#-12-Syntax ohne Befund. Offline warm p50 0,5 ms, p95 4,9 ms.'
+        'Ausnahme nur weich, damit 0 harte Fehlalarme. C#-12-Syntax ohne Befund. Container (Image t11): FP 0/947 hart, '
+        '1 weich; Positivkontrolle 10/10 (am Stand e3b 0/10); warm p50 0,9 ms, p95 6,9 ms; 521-Zeilen-Datei p50 4,9 ms.'
     ),
 }

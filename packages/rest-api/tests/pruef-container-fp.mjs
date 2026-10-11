@@ -16,7 +16,9 @@ import { PruefContainer, pruefContainerConfigAusEnv, CONTAINER_SPRACHEN } from '
 const pg = createRequire(new URL('../../core/package.json', import.meta.url))('pg');
 
 const [sprache = 'rust', maxRoh = '2000'] = process.argv.slice(2);
-const def = CONTAINER_SPRACHEN.find((s) => s.sprache === sprache);
+// P16-T11: nicht angemeldete Container-Sprachen (tree-sitter-Module mit modus 'aus') per ENDUNGEN=c,h messbar.
+const def = CONTAINER_SPRACHEN.find((s) => s.sprache === sprache)
+  ?? (process.env.ENDUNGEN ? { sprache, endungen: process.env.ENDUNGEN.split(',') } : undefined);
 if (!def) { console.error(`unbekannte Sprache ${sprache}; bekannt: ${CONTAINER_SPRACHEN.map((s) => s.sprache).join(', ')}`); process.exit(2); }
 if (!process.env.DATABASE_URL) { console.error('DATABASE_URL fehlt'); process.exit(2); }
 

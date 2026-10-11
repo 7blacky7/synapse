@@ -17,6 +17,7 @@ SPRACHE = {
     'messung': (
         'P16-T11: FP 0/328 echte .dart (morphcook-sonnetversion 310, eva-geraetesimulation 18); Dart-3-Syntax '
         '(Records, Patterns, Klassenmodifizierer, extension type, Punkt-Kurzform .red, Ziffern-Trenner) ohne Befund. '
-        'Offline warm p50 0,7 ms, p95 3,1 ms.'
+        'Container (Image t11): FP 0/326, Positivkontrolle 10/10 (am Stand e3b 0/10), warm p50 1,0 ms, p95 4,4 ms '
+        '(inkl. attach); 480-Zeilen-Datei p50 5,3 ms.'
     ),
 }

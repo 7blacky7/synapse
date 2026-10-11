@@ -13,5 +13,6 @@ SPRACHE = {
         'gueltig': 'static int f(int a) { return a + 1; }\n',
         'kaputt': 'int main(void) {\n  int x = ;\n  return 0;\n}\n',
     },
-    'messung': 'P16-T11: FP 1043/1959 .c (53 %), mit Praeprozessor-/Makro-Heuristik 215/1959 (11 %). Nicht angemeldet.',
+    'messung': ('P16-T11: FP 1043/1959 .c (53 %), mit Praeprozessor-/Makro-Heuristik 215/1959 (11 %). Container (Image '
+                't11): 1010/1919 (53 %), Positivkontrolle 10/10, warm p50 1,0 ms. Nicht angemeldet.'),
 }

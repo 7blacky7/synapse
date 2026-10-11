@@ -16,6 +16,7 @@ SPRACHE = {
     },
     'messung': (
         'P16-T11: FP 1/25 echte .swift (llama.swiftui LlamaState.swift Z.135 "while await !..."); Syntaxprobe: '
-        '"if let x {" und "guard let x else" (Swift 5.7) ergeben ERROR -> nur Hinweis. Offline warm p50 0,4 ms.'
+        '"if let x {" und "guard let x else" (Swift 5.7) ergeben ERROR -> nur Hinweis. Container (Image t11): FP 0 hart, '
+        '1 weich von 25; Positivkontrolle 10/10 als Hinweis (am Stand e3b 0/10); warm p50 0,9 ms, p95 3,1 ms.'
     ),
 }
