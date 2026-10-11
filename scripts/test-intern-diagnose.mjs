@@ -6,6 +6,8 @@
  *   B2 Memories: Zahl gleich (3 = 3), aber IDs verschieden -> nur ids_vergleichen zeigt fehlend 1 / verwaist 1
  *      (genau der Fall, den eine reine Zaehlung verdeckt).
  *   D1 durchsatz: Chunk mit claimed_by diag-knoten im Fenster -> erscheint je Knoten; claim_attempt 4 -> haengend.
+ *   D2 (P15-T20) durchsatz: Rampe (erst ab -120 s aktiv) -> je_min_aktiv ~13 statt 2.4 ueber das Fenster;
+ *      Luecke ~354 s zwischen Abschluessen erkannt; Verlauf je Minute mit leeren Minuten; Einzelabschluss -> null.
  *   W1..W5 warum_nicht: claim_attempt-Chunk, eingebetteter Chunk, Chunk im deaktivierten Projekt, unbekannte
  *      Datei, Shell-Job ohne Daemon.
  *   P1 parse_ausfaelle zeigt den vermerkten Ausfall; P2 parse_neu ohne ausfuehren aendert nichts (Ausfall bleibt,
@@ -154,6 +156,41 @@ try {
   pruefe(r.success && kn && kn.n >= 1 && typeof kn.je_min === 'number', 'D1 durchsatz: diag-knoten mit fertigem Chunk im Fenster', r.fertig_je_knoten);
   pruefe(r.haengend?.anzahl >= 1 && Array.isArray(r.befund) && r.befund.length > 0 && typeof r.offen?.claimbar === 'number',
     'D1 haengend (claim_attempt >= 3) gezaehlt, Befund vorhanden', { haengend: r.haengend, befund: r.befund });
+
+  // D2 (P15-T20): Rampe nach Start und Luecke mitten im Fenster. Abschluesse in Zweier-Stapeln (gleicher embedded_at).
+  //   diag-rampe: erst ab -120 s, alle 10 s ein Stapel bis -10 s -> 12 Stapel = 24 Chunks in ~110 s.
+  //   diag-luecke: -540..-510 s und -180..-150 s im 10-s-Takt -> Luecke 330 s zwischen, seit letztem 150 s.
+  await pool.query(
+    `INSERT INTO code_chunks (id, project, file_path, chunk_index, content, line_start, line_end, embedded_at, claimed_by, claim_attempt)
+     SELECT 'diag-r' || g || '-' || k, $1, 'a.ts', 100 + g * 2 + k, 'r', 1, 1, NOW() - make_interval(secs => 120 - g * 10), 'diag-rampe', 1
+       FROM generate_series(0, 11) g, generate_series(0, 1) k`, [PRJ]);
+  await pool.query(
+    `INSERT INTO code_chunks (id, project, file_path, chunk_index, content, line_start, line_end, embedded_at, claimed_by, claim_attempt)
+     SELECT 'diag-l' || i, $1, 'a.ts', 200 + i, 'l', 1, 1, NOW() - make_interval(secs => s), 'diag-luecke', 1
+       FROM unnest(ARRAY[540, 530, 520, 510, 180, 170, 160, 150]) WITH ORDINALITY AS u(s, i)`, [PRJ]);
+  r = await ausf({ action: 'durchsatz', minuten: 10 });
+  const ra = (r.fertig_je_knoten ?? []).find((k) => k.knoten === 'diag-rampe');
+  const lu = (r.fertig_je_knoten ?? []).find((k) => k.knoten === 'diag-luecke');
+  const dk = (r.fertig_je_knoten ?? []).find((k) => k.knoten === 'diag-knoten');
+  pruefe(ra?.n === 24 && ra.je_min_fenster === 2.4 && ra.aktiv_s >= 108 && ra.aktiv_s <= 112 && ra.je_min_aktiv >= 12.5 && ra.je_min_aktiv <= 13.5,
+    'D2a Rampe: je_min_fenster 2.4, je_min_aktiv ~13 ueber erster..letzter', ra);
+  pruefe(ra?.luecken?.some((l) => l.art === 'vor_erstem' && l.s >= 470 && l.s <= 490) && !ra.luecken.some((l) => l.art === 'zwischen')
+    && r.befund.some((b) => /diag-rampe: erst ab .* aktiv/.test(b)),
+    'D2b Rampe: Luecke vor_erstem ~480 s, keine zwischen (10-s-Takt < 30 s), Befund Start statt Einbruch', { luecken: ra?.luecken, befund: r.befund });
+  const mitte = lu?.luecken?.find((l) => l.art === 'zwischen');
+  pruefe(mitte && mitte.s >= 328 && mitte.s <= 332 && lu.luecken.some((l) => l.art === 'seit_letztem' && l.s >= 145)
+    && lu.je_min_ohne_luecken > lu.je_min_aktiv && r.befund.some((b) => /diag-luecke: 1 Luecke/.test(b)),
+    'D2c Luecke ~330 s zwischen Abschluessen + seit_letztem erkannt, je_min_ohne_luecken > je_min_aktiv', { lu, befund: r.befund });
+  pruefe(dk && dk.je_min_aktiv === null, 'D2d Kontrolle: ein einzelner Abschluss -> je_min_aktiv null (nicht belastbar)', dk);
+  const vSumme = (r.verlauf ?? []).reduce((s, v) => s + v.gesamt, 0);
+  const vRampe = (r.verlauf ?? []).map((v) => v.je_knoten['diag-rampe'] ?? 0);
+  pruefe(r.verlauf_schritt_min === 1 && r.verlauf.length >= 10 && r.verlauf.length <= 11 && vSumme === r.fertig_gesamt
+    && vRampe.slice(0, -3).every((n) => n === 0) && vRampe.reduce((s, n) => s + n, 0) === 24,
+    'D2e Verlauf je Minute: leere Minuten enthalten, Summe = fertig_gesamt, Rampe nur in den letzten Minuten', { verlauf: r.verlauf, fertig: r.fertig_gesamt });
+  const r60 = await ausf({ action: 'durchsatz', minuten: 180, luecke_s: 600 });
+  const lu60 = (r60.fertig_je_knoten ?? []).find((k) => k.knoten === 'diag-luecke');
+  pruefe(r60.verlauf_schritt_min === 3 && r60.verlauf.length <= 61 && r60.luecke_s === 600 && !lu60?.luecken?.some((l) => l.art === 'zwischen'),
+    'D2f 180 min: Schritt 3 min (<= 61 Eintraege), luecke_s 600 blendet die 330-s-Luecke aus', { schritt: r60.verlauf_schritt_min, n: r60.verlauf?.length, lu60 });
 
   // W1..W5
   r = await ausf({ action: 'warum_nicht', chunk_id: 'diag-c2' });

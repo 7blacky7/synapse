@@ -56,7 +56,7 @@ export function istDiagnoseAction(action: string): action is DiagnoseAction {
 /** Satz fuer die Tool-Beschreibung (intern-tool.ts haengt ihn an). */
 export const DIAGNOSE_BESCHREIBUNG =
   'DIAGNOSE (lesend): bestand_abgleich (project, arten, ids_vergleichen): PG gegen Qdrant je Collection, optional ID-Diff; ' +
-  'durchsatz (minuten): Chunks/min je Knoten, aktive Claims, claimbar, Befund kaputt-statt-leer; ' +
+  'durchsatz (minuten, luecke_s): Chunks/min je Knoten ueber Fenster und aktive Spanne, Luecken je Knoten, Verlauf je Minute, aktive Claims, claimbar, Befund kaputt-statt-leer; ' +
   'warum_nicht (chunk_id | project + file_path | project | shell_job_id): was haelt es auf; ' +
   'parser_pool: Slots, Queue, stillgelegte Slots, Threads; parse_ausfaelle (project, limit); ' +
   'parse_neu (project, file_path oder alle_ausfaelle, mit_embeddings, ausfuehren): ohne ausfuehren:true nur Vorschau; ' +
@@ -71,6 +71,7 @@ export const DIAGNOSE_PARAMETER: Record<string, unknown> = {
   ids_vergleichen: { type: 'boolean', description: 'bestand_abgleich: zusaetzlich IDs abgleichen (fehlend/verwaist; nur Wissens-Arten, braucht project oder arten)' },
   alle_ausfaelle: { type: 'boolean', description: 'parse_neu: alle Parse-Ausfaelle des Projekts (bis limit)' },
   mit_embeddings: { type: 'boolean', description: 'parse_neu: auch neu chunken/einbetten (Standard false = nur Symbole)' },
+  luecke_s: { type: 'number', description: 'durchsatz: Abstand ohne Abschluss, ab dem eine Luecke je Knoten gemeldet wird (Standard 30 s)' },
 };
 
 // ───── Hilfen ───────────────────────────────────────────────────────────
@@ -279,9 +280,26 @@ export async function bestandAbgleich(opt: { project?: string; arten?: string[];
 
 // ───── durchsatz ───────────────────────────────────────────────────────
 
-export async function durchsatz(minuten: number): Promise<Record<string, unknown>> {
+const OHNE_CLAIM = '(ohne Claim: Parse-Weg/Daemon)';
+
+/** Schrittweite des Verlaufs: 1 min bis 60 min Fenster, darueber so, dass hoechstens 60 Schritte entstehen. */
+export function verlaufSchrittMin(minuten: number): number {
+  return minuten <= 60 ? 1 : Math.ceil(minuten / 60);
+}
+
+interface Luecke { von: string; bis: string; s: number; art: 'zwischen' | 'vor_erstem' | 'seit_letztem' }
+
+/**
+ * P15-T20: je_min ueber die AKTIVE Zeitspanne (erster..letzter Abschluss) statt ueber das ganze Fenster.
+ * Nach Deploy/Neustart war ein Knoten nur einen Teil des Fensters aktiv - n/minuten meldete dann einen
+ * Einbruch, den es nicht gab (3-min-Fenster: 618.7/min gemeldet, ~1030/min echt).
+ * Abschluesse kommen in Stapeln mit gleichem embedded_at (completeEmbeddingClaims) - Luecken werden
+ * deshalb ueber DISTINCT embedded_at je Knoten gemessen.
+ */
+export async function durchsatz(minuten: number, lueckeS = 30): Promise<Record<string, unknown>> {
   const pool = getPool();
-  const [fertig, aktiv, offen, haengend, knoten, jeProjekt] = await Promise.all([
+  const schritt = verlaufSchrittMin(minuten);
+  const [fertig, aktiv, offen, haengend, knoten, jeProjekt, luecken, verlauf, jetzt] = await Promise.all([
     pool.query<{ knoten: string; n: number; erster: Date; letzter: Date }>(
       `SELECT COALESCE(claimed_by, '(ohne Claim: Parse-Weg/Daemon)') AS knoten, count(*)::int AS n,
               min(embedded_at) AS erster, max(embedded_at) AS letzter
@@ -310,6 +328,22 @@ export async function durchsatz(minuten: number): Promise<Record<string, unknown
       `SELECT cc.project, count(*)::int AS offen, COALESCE(e.stufe, 3) AS stufe
          FROM code_chunks cc LEFT JOIN embed_prioritaet e ON e.project = cc.project
         WHERE cc.embedded_at IS NULL GROUP BY cc.project, e.stufe ORDER BY COALESCE(e.stufe, 3), offen DESC LIMIT 10`),
+    pool.query<{ knoten: string; von: Date; bis: Date; s: number }>(
+      `WITH d AS (SELECT DISTINCT COALESCE(claimed_by, '${OHNE_CLAIM}') AS knoten, embedded_at AS t
+                    FROM code_chunks WHERE embedded_at > NOW() - make_interval(mins => $1::int)),
+            l AS (SELECT knoten, lag(t) OVER (PARTITION BY knoten ORDER BY t) AS von, t AS bis FROM d)
+       SELECT knoten, von, bis, EXTRACT(EPOCH FROM (bis - von))::float8 AS s
+         FROM l WHERE von IS NOT NULL AND bis - von > make_interval(secs => $2::int)
+        ORDER BY s DESC LIMIT 200`, [minuten, lueckeS]),
+    pool.query<{ ab: Date; knoten: string | null; n: number }>(
+      `WITH g AS (SELECT generate_series(
+                    to_timestamp(floor(EXTRACT(EPOCH FROM NOW() - make_interval(mins => $1::int)) / ($2::int * 60)) * $2::int * 60),
+                    NOW(), make_interval(mins => $2::int)) AS ab),
+            f AS (SELECT to_timestamp(floor(EXTRACT(EPOCH FROM embedded_at) / ($2::int * 60)) * $2::int * 60) AS ab,
+                         COALESCE(claimed_by, '${OHNE_CLAIM}') AS knoten, count(*)::int AS n
+                    FROM code_chunks WHERE embedded_at > NOW() - make_interval(mins => $1::int) GROUP BY 1, 2)
+       SELECT g.ab, f.knoten, COALESCE(f.n, 0)::int AS n FROM g LEFT JOIN f ON f.ab = g.ab ORDER BY g.ab`, [minuten, schritt]),
+    pool.query<{ jetzt: Date }>('SELECT NOW() AS jetzt'),
   ]);
   const haengendGesamt = (await pool.query<{ n: number }>(
     'SELECT count(*)::int AS n FROM code_chunks WHERE embedded_at IS NULL AND claim_attempt >= 3')).rows[0].n;
@@ -321,6 +355,51 @@ export async function durchsatz(minuten: number): Promise<Record<string, unknown
 
   const fertigGesamt = fertig.rows.reduce((s, r) => s + r.n, 0);
   const o = offen.rows[0];
+
+  // Aktive Spanne, Luecken (zwischen Abschluessen + Raender des Fensters) und je_min je Knoten
+  const jetztMs = new Date(jetzt.rows[0].jetzt).getTime();
+  const beginnMs = jetztMs - minuten * 60_000;
+  const rund1 = (x: number) => Math.round(x * 10) / 10;
+  const lueckenJe = new Map<string, Luecke[]>();
+  for (const l of luecken.rows) {
+    const liste = lueckenJe.get(l.knoten) ?? [];
+    liste.push({ von: new Date(l.von).toISOString(), bis: new Date(l.bis).toISOString(), s: Math.round(l.s), art: 'zwischen' });
+    lueckenJe.set(l.knoten, liste);
+  }
+  const fertigJeKnoten = fertig.rows.map((r) => {
+    const ersterMs = new Date(r.erster).getTime();
+    const letzterMs = new Date(r.letzter).getTime();
+    const liste = lueckenJe.get(r.knoten) ?? [];
+    if ((ersterMs - beginnMs) / 1000 > lueckeS) liste.push({ von: new Date(beginnMs).toISOString(), bis: new Date(ersterMs).toISOString(), s: Math.round((ersterMs - beginnMs) / 1000), art: 'vor_erstem' });
+    if ((jetztMs - letzterMs) / 1000 > lueckeS) liste.push({ von: new Date(letzterMs).toISOString(), bis: new Date(jetztMs).toISOString(), s: Math.round((jetztMs - letzterMs) / 1000), art: 'seit_letztem' });
+    liste.sort((x, y) => y.s - x.s);
+    const aktivS = Math.max(0, (letzterMs - ersterMs) / 1000);
+    const zwischenS = liste.filter((l) => l.art === 'zwischen').reduce((s, l) => s + l.s, 0);
+    // Unter 30 s aktiver Spanne (ein, zwei Stapel) ist eine Rate nicht belastbar.
+    const jeMinAktiv = aktivS >= 30 ? rund1(r.n / (aktivS / 60)) : null;
+    const ohneLueckenS = aktivS - zwischenS;
+    return {
+      ...r,
+      je_min: rund1(r.n / minuten),
+      je_min_fenster: rund1(r.n / minuten),
+      aktiv_s: Math.round(aktivS),
+      je_min_aktiv: jeMinAktiv,
+      je_min_ohne_luecken: ohneLueckenS >= 30 ? rund1(r.n / (ohneLueckenS / 60)) : null,
+      luecken_s_summe: liste.reduce((s, l) => s + l.s, 0),
+      luecken: liste.slice(0, 10),
+      ...(liste.length > 10 ? { luecken_gekappt: liste.length } : {}),
+    };
+  });
+
+  // Verlauf: ein Eintrag je Schritt (auch leere), je Knoten die Zahl fertiger Chunks
+  const verlaufMap = new Map<string, { ab: string; gesamt: number; je_knoten: Record<string, number> }>();
+  for (const v of verlauf.rows) {
+    const ab = new Date(v.ab).toISOString();
+    const e = verlaufMap.get(ab) ?? { ab, gesamt: 0, je_knoten: {} };
+    if (v.knoten) { e.je_knoten[v.knoten] = v.n; e.gesamt += v.n; }
+    verlaufMap.set(ab, e);
+  }
+  const verlaufListe = [...verlaufMap.values()];
   const befund: string[] = [];
   if (o.offen === 0) befund.push('LEER: kein Code-Chunk ohne Vektor.');
   else if (o.claimbar > 0 && fertigGesamt === 0) {
@@ -332,7 +411,15 @@ export async function durchsatz(minuten: number): Promise<Record<string, unknown
   } else if (o.claimbar === 0) {
     befund.push(`Nichts claimbar: ${o.offen} offen, davon ${o.projekt_aus} in deaktivierten/nicht registrierten Projekten, Rest geclaimt.`);
   } else {
-    befund.push(`Laeuft: ${fertigGesamt} Chunks in ${minuten} min (${Math.round((fertigGesamt / minuten) * 10) / 10}/min), ${o.claimbar} claimbar.`);
+    befund.push(`Laeuft: ${fertigGesamt} Chunks in ${minuten} min (${rund1(fertigGesamt / minuten)}/min ueber das Fenster), ${o.claimbar} claimbar.`);
+  }
+  for (const k of fertigJeKnoten) {
+    const rand = k.luecken.find((l) => l.art === 'seit_letztem');
+    if (rand && o.claimbar > 0) befund.push(`Knoten ${k.knoten}: seit ${rand.s} s kein Abschluss (letzter ${rand.von}).`);
+    const vorn = k.luecken.find((l) => l.art === 'vor_erstem');
+    if (vorn && k.je_min_aktiv !== null) befund.push(`Knoten ${k.knoten}: erst ab ${vorn.bis} aktiv - je_min_aktiv ${k.je_min_aktiv}/min statt ${k.je_min_fenster}/min ueber das Fenster (Start/Neustart, kein Einbruch).`);
+    const mitte = k.luecken.filter((l) => l.art === 'zwischen');
+    if (mitte.length > 0) befund.push(`Knoten ${k.knoten}: ${mitte.length} Luecke(n) > ${lueckeS} s zwischen Abschluessen, laengste ${mitte[0].s} s ab ${mitte[0].von}.`);
   }
   if (o.abgelaufen > 0) befund.push(`${o.abgelaufen} offene Chunks mit abgelaufenem Lease (Knoten abgebrochen; werden neu vergeben).`);
   if (haengendGesamt > 0) befund.push(`${haengendGesamt} Chunks mit claim_attempt >= 3 - scheitern wiederholt (Beispiele in haengend).`);
@@ -341,8 +428,11 @@ export async function durchsatz(minuten: number): Promise<Record<string, unknown
   }
   return {
     minuten,
-    fertig_je_knoten: fertig.rows.map((r) => ({ ...r, je_min: Math.round((r.n / minuten) * 10) / 10 })),
+    luecke_s: lueckeS,
+    fertig_je_knoten: fertigJeKnoten,
     fertig_gesamt: fertigGesamt,
+    verlauf_schritt_min: schritt,
+    verlauf: verlaufListe,
     aktive_claims: aktiv.rows,
     offen: o,
     haengend: { anzahl: haengendGesamt, beispiele: haengend.rows },
@@ -352,6 +442,7 @@ export async function durchsatz(minuten: number): Promise<Record<string, unknown
     worker_pausiert: pausiert,
     wissen_offen: wissenOffen,
     befund,
+    hinweis: 'je_min / je_min_fenster = n / minuten (ganzes Fenster). je_min_aktiv = n / (letzter - erster Abschluss), null unter 30 s. je_min_ohne_luecken zieht zusaetzlich die Luecken zwischen Abschluessen ab. luecken: art zwischen | vor_erstem (Fensterbeginn bis erster Abschluss) | seit_letztem (bis jetzt). Abschluesse kommen in Stapeln mit gleichem embedded_at.',
   };
 }
 
@@ -488,7 +579,8 @@ export async function fuehreDiagnoseAus(
       }
       case 'durchsatz': {
         const minuten = grenze(zahl(a, 'minuten'), 10, 1, 1440, 'minuten');
-        return { success: true, action, ...(await imHintergrund(() => durchsatz(minuten))) };
+        const lueckeS = grenze(zahl(a, 'luecke_s'), 30, 1, 3600, 'luecke_s');
+        return { success: true, action, ...(await imHintergrund(() => durchsatz(minuten, lueckeS))) };
       }
       case 'warum_nicht': {
         const datei = textListe(a, 'file_path');
