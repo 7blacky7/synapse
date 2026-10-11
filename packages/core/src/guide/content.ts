@@ -1333,7 +1333,8 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
       'add_pattern: description (was ist falsch) + fix (wie korrigieren) beide Pflicht.',
       'found_in_model: Modell-Name das den Fehler machte ("haiku", "sonnet", "opus").',
       'found_by: deine agent_id — wer hat den Fehler entdeckt.',
-      'severity: error|warning|info (Standard: warning). error = blockiert bei files-writes.',
+      'severity: error|warning|info (Standard: warning). Derzeit sperrt KEINE severity einen Schreibvorgang (Sperre bei error kommt mit P15-T17 E3 fuer files plan/commit).',
+      'Treffer kommen als Feld fehlermuster {anzahl, hinweis, treffer:[{pattern_id, severity, datei, was, wie}]} in der Antwort des Schreibaufrufs oder - falls die Pruefung laenger dauert - in deiner naechsten Tool-Antwort. Es sind THEMENHINWEISE (Embedding-Aehnlichkeit zum geaenderten Abschnitt), kein sicherer Fehlerbefund. Je Muster einmal pro Sitzung (Fenster FEHLERMUSTER_GESEHEN_STUNDEN, Standard 12 h); unbekanntes Modell sieht alle Muster (FEHLERMUSTER_UNBEKANNT_SIEHT_ALLE=0 schaltet ab).',
       'list_patterns model_scope: Filtert nach Modell-spezifischen Patterns.',
     ].join('\\n'),
     examples: [
