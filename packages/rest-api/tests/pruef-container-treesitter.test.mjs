@@ -249,9 +249,23 @@ test('TS5 Latenz warm (ohne Cache) im 30-ms-Budget, Speicherspitze', opt, async 
   }
 });
 
+test('TS6 Groessengrenze PRUEF_TS_MAX_KB (1024): groessere Datei ohne Befund, gleicher Fehler darunter gemeldet', opt, async () => {
+  const pc = new PruefContainer(docker, cfg({ name: NAME + '-gross', cacheEintraege: 0 }));
+  try {
+    const fuell = '// ' + 'x'.repeat(96) + '\n';
+    const unter = CS_KAPUTT + fuell.repeat(Math.floor(900 * 1024 / fuell.length));
+    const ueber = CS_KAPUTT + fuell.repeat(Math.ceil(1100 * 1024 / fuell.length));
+    const u = await pc.pruefe('csharp', unter, 'gross.cs');
+    assert.equal(u[0]?.zeile, 4, 'Anker: 900 KB wird geprueft und der Fehler in Z.4 gemeldet');
+    assert.deepEqual(await pc.pruefe('csharp', ueber, 'gross.cs'), [], '1100 KB: nicht geprueft, kein Befund');
+  } finally {
+    await pc.beenden();
+  }
+});
+
 test.after(async () => {
   await beendePruefContainer();
-  for (const n of ['-alt', '-info', '-faelle', '-ausnahme', '-reg', '-lat']) {
+  for (const n of ['-alt', '-info', '-faelle', '-ausnahme', '-reg', '-lat', '-gross']) {
     await docker.getContainer(NAME + n).remove({ force: true }).catch(() => {});
   }
 });

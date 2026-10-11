@@ -27,6 +27,8 @@ FELDER von SPRACHE:
                  Befund, wenn das Muster in seiner Quellzeile vorkommt (bekannte Grammatik-Luecken).
   filter         optional: Funktion (meldungen, quelle: bytes) -> meldungen, fuer Faelle jenseits eines Musters.
   max_meldungen  optional, Standard 5 (Folgefehler nach dem ersten sind selten hilfreich).
+  max_kb         optional: Groessengrenze dieser Sprache in KB (Standard PRUEF_TS_MAX_KB = 1024, 0 = keine);
+                 groessere Dateien werden nicht geprueft (kein Befund), weil der Baum RAM kostet.
   messung        Text: Messwerte und Begruendung des Modus (Doku, erscheint in info).
 
 GRUNDSAETZE
@@ -50,6 +52,12 @@ TS_VERZEICHNIS = os.environ.get('PRUEF_TS', '/opt/pruef/ts')
 MODI = ('sperrend', 'hinweis', 'aus')
 PFLICHTFELDER = ('name', 'endungen', 'grammatik', 'modus', 'probe')
 LESE_BLOCK = 1 << 20
+# Groessengrenze in KB (0 = keine): der Syntaxbaum braucht ein Vielfaches der Dateigroesse (Messung p16-ts-funktional:
+# ocaml 3,1-MB-Datei -> 99 MB, memory.peak 205 MB ohne JVM). Groessere Dateien bekommen KEINEN Befund (wie
+# SYNTAX_TS_GRAMMATIK_MAX_KB in core). Je Modul ueberschreibbar mit SPRACHE['max_kb'].
+MAX_KB = float(os.environ.get('PRUEF_TS_MAX_KB', '1024'))
+# Ab dieser Groesse gibt malloc_trim den Speicher des Baums nach dem Pruefen an das System zurueck.
+TRIM_AB_BYTES = 256 * 1024
 
 _sperre = threading.Lock()
 _lokal = threading.local()
@@ -158,8 +166,11 @@ def parse(grammatik, quelle: bytes, timeout_s):
     def weiter(*_args):
         return time.monotonic() > ende
 
+    # memoryview: der Lese-Callback darf NICHT je Aufruf kopieren - externe Scanner spulen zurueck und lesen tausendfach
+    # (Messung p16-ts-system: Perl-Datei 103 KB, 9748 Lesevorgaenge, mit Kopie 622 MB -> OOM; mit memoryview 25 MB).
+    mv = memoryview(quelle)
     try:
-        baum = p.parse(lambda off, _punkt: quelle[off:off + LESE_BLOCK], progress_callback=weiter)
+        baum = p.parse(lambda off, _punkt: mv[off:off + LESE_BLOCK], progress_callback=weiter)
     except ValueError:
         baum = None
     if baum is None:
@@ -239,12 +250,29 @@ def meldungen_aus_baum(s, baum, quelle: bytes):
     return aus
 
 
+def _malloc_trim():
+    try:
+        ctypes.CDLL('libc.so.6').malloc_trim(0)
+    except Exception:  # noqa: BLE001 - nur Speicherpflege, nie ein Pruefergebnis
+        pass
+
+
 def pruefe(s, inhalt: str, timeout_s):
     quelle = inhalt.encode('utf-8')
-    baum = parse(s['grammatik'], quelle, timeout_s)
-    if not baum.root_node.has_error:
+    grenze_kb = float(s.get('max_kb', MAX_KB))
+    if grenze_kb > 0 and len(quelle) > grenze_kb * 1024:
+        sys.stderr.write(f'[pruefserver] {s["name"]}: {len(quelle) // 1024} KB ueber der Grenze {grenze_kb:g} KB - '
+                         f'nicht geprueft\n')
         return []
-    return meldungen_aus_baum(s, baum, quelle)
+    baum = parse(s['grammatik'], quelle, timeout_s)
+    try:
+        if not baum.root_node.has_error:
+            return []
+        return meldungen_aus_baum(s, baum, quelle)
+    finally:
+        del baum
+        if len(quelle) >= TRIM_AB_BYTES:
+            _malloc_trim()
 
 
 def version(s):
