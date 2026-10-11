@@ -657,7 +657,8 @@ test('T17 Nachlieferung gehoert zum verursachenden Schreibvorgang, ein neuerer S
     await schlafe(500);
   };
   A._fehlermusterAuslieferungZuruecksetzen();
-  // (a) nur der kaputte Schreibvorgang: der Befund kommt nach, mit Zeit und Fassung GENAU dieses Inhalts.
+  // (a) nur der kaputte Schreibvorgang: der Befund kommt nach, mit Zeit und Fassung GENAU dieses Inhalts. Abgeholt
+  // ohne Antwort dazwischen = Antwort des verursachenden Aufrufs -> bezug dieser_aufruf (t61 Probe 1), nicht 'FRUEHER'.
   await kalt();
   assert.equal((await schreibe('ag-a', 'k/a.rs', kaputt)).status, 'teilweise');
   await abwarten();
@@ -667,7 +668,17 @@ test('T17 Nachlieferung gehoert zum verursachenden Schreibvorgang, ein neuerer S
   assert.equal(ha.treffer[0].datei, 'k/a.rs');
   assert.equal(ha.treffer[0].nachgeliefert_fuer.fassung, fassung);
   assert.match(ha.treffer[0].was, new RegExp(`nachgeliefert fuer den Schreibvorgang um \\d\\d:\\d\\d:\\d\\d UTC, Fassung ${fassung}`));
-  assert.match(ha.hinweis, /FRUEHEREN Schreibvorgang/);
+  assert.equal(ha.treffer[0].nachgeliefert_fuer.bezug, 'dieser_aufruf');
+  assert.match(ha.hinweis, /DIESES Aufrufs/);
+  assert.doesNotMatch(ha.hinweis, /FRUEHEREN/);
+  // (f) die Antwort des Schreibaufrufs holt ab, BEVOR die Nachlieferung da ist -> naechste Antwort: FRUEHEREN.
+  await kalt();
+  assert.equal((await schreibe('ag-f', 'k/f.rs', kaputt)).status, 'teilweise');
+  assert.equal(await A.holeFehlermusterHinweise('ag-f'), null, 'Antwort des Schreibaufrufs: noch nichts da');
+  await abwarten();
+  const hf = await A.holeFehlermusterHinweise('ag-f');
+  assert.equal(hf?.treffer?.[0]?.nachgeliefert_fuer?.bezug, 'frueher', JSON.stringify(hf));
+  assert.match(hf.hinweis, /FRUEHEREN Schreibvorgang/);
   // (b) Kontrolle ohne Ueberholen (Verhalten t60): der alte Befund haengt an der Antwort nach dem gueltigen Schreiben.
   await kalt();
   await schreibe('ag-b', 'k/b.rs', kaputt, false);

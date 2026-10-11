@@ -51,8 +51,12 @@ export interface FehlermusterHinweis {
   zeilen?: [number, number];
   pruefer?: string;
   quittiert_grund?: string;
-  /** P16-T5 E3a: nachgelieferter Syntaxbefund - Zeit und Fassung des Schreibvorgangs, zu dem er gehoert. */
-  nachgeliefert_fuer?: { geprueft_um: string; fassung: string };
+  /**
+   * P16-T5 E3a: nachgelieferter Syntaxbefund - Zeit und Fassung des Schreibvorgangs, zu dem er gehoert.
+   * bezug (t61): 'dieser_aufruf' = Schreibvorgang nach der letzten Antwort an den Agenten (in der Regel der Aufruf
+   * dieser Antwort), 'frueher' = Schreibvorgang vor der letzten Antwort.
+   */
+  nachgeliefert_fuer?: { geprueft_um: string; fassung: string; bezug?: 'dieser_aufruf' | 'frueher' };
   /** Fertiger Aufruf, um den Stand vor dem Schreiben zurueckzuholen (bei severity error). */
   restore?: string;
 }
@@ -83,6 +87,14 @@ interface Ausstehend {
  */
 const syntaxStand = new Map<string, number>();
 const SYNTAX_STAND_MAX = 2000;
+
+/**
+ * P16-T5 (t61 Probe 1): Zeitpunkt der letzten Abholung je Agent (= letzte Tool-Antwort mit Hinweisen). Ein
+ * nachgelieferter Befund, dessen Schreibvorgang DANACH begann, gehoert zum Aufruf der aktuellen Antwort; nur einer,
+ * der VORHER begann, gehoert zu einem frueheren Schreibvorgang. Vorher hiess es immer 'FRUEHER', auch wenn die
+ * Nachlieferung noch in der Antwort des verursachenden Schreibaufrufs ankam.
+ */
+const letzteAbholung = new Map<string, number>();
 
 /**
  * P16-T5 E3a: meldet einen durchgelaufenen Schreibvorgang (Startzeit stand) an agentId/datei. Vorgemerkte
@@ -198,6 +210,15 @@ export function verfolgeFehlermusterPruefung(
  */
 export async function holeFehlermusterHinweise(agentId: string | undefined): Promise<FehlermusterAuslieferung | null> {
   if (!agentId) return null;
+  // t61: vorige Abholung merken, bevor diese zaehlt (Zeitvergleich fuer den Bezug nachgelieferter Befunde).
+  const vorigeAbholung = letzteAbholung.get(agentId) ?? -Infinity;
+  letzteAbholung.delete(agentId);
+  letzteAbholung.set(agentId, Date.now());
+  while (letzteAbholung.size > SYNTAX_STAND_MAX) letzteAbholung.delete(letzteAbholung.keys().next().value as string);
+  const bezugVon = (a: Ausstehend): 'dieser_aufruf' | 'frueher' => {
+    const s = a.stand ?? Date.parse(a.befund?.nachgeliefert_fuer?.geprueft_um ?? '');
+    return Number.isFinite(s) && s < vorigeAbholung ? 'frueher' : 'dieser_aufruf';
+  };
   try {
     const offen = laufend.get(agentId);
     if (offen && offen.size > 0) {
@@ -239,7 +260,7 @@ export async function holeFehlermusterHinweise(agentId: string | undefined): Pro
           zeilen: a.befund.zeilen,
           pruefer: a.befund.pruefer,
           quittiert_grund: a.befund.quittiert_grund,
-          ...(a.befund.nachgeliefert_fuer ? { nachgeliefert_fuer: a.befund.nachgeliefert_fuer } : {}),
+          ...(a.befund.nachgeliefert_fuer ? { nachgeliefert_fuer: { ...a.befund.nachgeliefert_fuer, bezug: bezugVon(a) } } : {}),
           restore: a.befund.restore,
         }
       : {
@@ -269,10 +290,16 @@ export async function holeFehlermusterHinweise(agentId: string | undefined): Pro
       teile.push(`${thema} bekannte(s) Fehlermuster passt/passen THEMATISCH zu deiner letzten Aenderung `
         + '(Embedding-Aehnlichkeit, kein sicherer Fehlerbefund, quelle thema). Pruefe die genannte Datei gegen "was".');
     }
-    const nachgeliefert = treffer.filter((t) => t.nachgeliefert_fuer).length;
-    if (nachgeliefert > 0) {
-      teile.push(`${nachgeliefert} nachgelieferte(r) Syntaxbefund(e) gehoert/gehoeren zu einem FRUEHEREN Schreibvorgang `
-        + '(nachgeliefert_fuer: Zeit und Fassung), nicht zum Aufruf dieser Antwort; die Datei steht noch auf dieser Fassung.');
+    const diesem = treffer.filter((t) => t.nachgeliefert_fuer?.bezug === 'dieser_aufruf').length;
+    const frueher = treffer.filter((t) => t.nachgeliefert_fuer?.bezug === 'frueher').length;
+    if (diesem > 0) {
+      teile.push(`${diesem} nachgelieferte(r) Syntaxbefund(e) gehoert/gehoeren zum Schreibvorgang DIESES Aufrufs `
+        + '(nachgeliefert_fuer: Zeit und Fassung, bezug dieser_aufruf): die Pruefung hat ihr Zeitbudget gerissen, GESCHRIEBEN '
+        + 'wurde trotzdem - die Datei steht jetzt auf dieser fehlerhaften Fassung; korrigiere sie.');
+    }
+    if (frueher > 0) {
+      teile.push(`${frueher} nachgelieferte(r) Syntaxbefund(e) gehoert/gehoeren zu einem FRUEHEREN Schreibvorgang `
+        + '(nachgeliefert_fuer: Zeit und Fassung, bezug frueher), nicht zum Aufruf dieser Antwort; die Datei steht noch auf dieser Fassung.');
     }
     if (erklaert > 0) {
       teile.push(`${erklaert} Erklaerung(en) aus dem Erklaerungs-Topf (quelle erklaerung): Jev hat sie als Ursache deines letzten `
@@ -317,5 +344,6 @@ async function vermerkeGesehen(agentId: string, patternIds: string[]): Promise<v
 export function _fehlermusterAuslieferungZuruecksetzen(): void {
   ausstehend.clear();
   syntaxStand.clear();
+  letzteAbholung.clear();
   laufend.clear();
 }

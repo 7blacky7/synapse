@@ -4,6 +4,11 @@
  * Syntaxpruefung fuer Sprachen, die im Node-Prozess der API nicht pruefbar sind (E1: Rust; E2: Python, Shell, Go;
  * E3a: PHP, Ruby, Lua; E3b: Kotlin, Java). E3a: Kaltstart-Budget, Vorwaermen beim Anmelden, Diagnose an intern(status).
  *
+ * ERSTPRUEFUNG (Deploy t61 Probe 1): auch im WARMEN Container braucht die erste Pruefung einer Sprache laenger (Werkzeug
+ * zum ersten Mal starten, Grammatik laden; Unraid: erstes php -l 50 ms > 30-ms-Budget -> kaputte Datei geschrieben).
+ * Deshalb gilt das Kaltbudget je Sprache, bis diese Sprache seit dem Containerstart einmal geantwortet hat
+ * (erstGeprueft). JVM-Sprachen haben dafuer ihr eigenes Budget (jvmWarm, E3b).
+ *
  * E3b JVM: Kotlin und Java prueft ein JVM-Hilfsprozess IM SELBEN Container (pruefer_jvm.py, jvm/JvmPruefer.java).
  * pruefserver.py startet ihn traege (erste Kotlin-/Java-Anfrage oder Vorwaermen) und nach einem Absturz neu; er
  * lebt mit dem Container (gleicher Start, Idle-Stop, Diagnose). Hier gibt es dafuer keinen eigenen Verwaltungsweg,
@@ -229,6 +234,11 @@ export class PruefContainer {
    */
   private jvmWarm = new Set<string>();
   private jvm = { vorwaermungen: 0, letzte_vorwaermung_ms: null as number | null, fehler: 0, kalt_auftraege: 0 };
+  /**
+   * Erstpruefung: Sprachen, die seit dem letzten Containerstart einmal erfolgreich geantwortet haben. Fuer alle anderen
+   * gilt auch im warmen Container das Kaltbudget (erster Werkzeugstart bzw. Grammatik laden, t61: php 50 ms).
+   */
+  private erstGeprueft = new Set<string>();
   /** Wird nach jedem erfolgreichen Start mit den Werkzeugversionen aufgerufen. */
   onInfo?: (info: PruefContainerInfo) => void;
 
@@ -268,14 +278,18 @@ export class PruefContainer {
   /**
    * E3a: Mindestbudget fuer den Syntaxpruefer (SyntaxPruefer.mindestBudgetMs). Solange der Container nicht bereit
    * ist und keine Pause gilt, darf der Kaltstart abgewartet werden; warm gilt das normale Budget (undefined).
+   * Erstpruefung: auch warm gilt das Kaltbudget, solange die Sprache seit dem Containerstart noch nicht geantwortet hat.
    */
-  mindestBudgetMs(jvmSprache?: string): number | undefined {
+  mindestBudgetMs(sprache?: string): number | undefined {
     if (Date.now() < this.pauseBis) return undefined;
     const warm = this.zustandName === 'bereit' && !!this.stream;
+    const jvm = !!sprache && JVM_SPRACHEN.has(sprache);
     // E3b: Kotlin/Java warten auch bei warmem Container den JVM-Start bzw. die Parser-Initialisierung ab.
-    if (jvmSprache && this.cfg.jvmKaltBudgetMs > 0 && !(warm && this.jvmWarm.has(jvmSprache))) return Math.max(this.cfg.jvmKaltBudgetMs, warm ? 0 : this.cfg.kaltBudgetMs);
+    if (jvm && this.cfg.jvmKaltBudgetMs > 0 && !(warm && this.jvmWarm.has(sprache!))) return Math.max(this.cfg.jvmKaltBudgetMs, warm ? 0 : this.cfg.kaltBudgetMs);
     if (this.cfg.kaltBudgetMs <= 0) return undefined;
-    return warm ? undefined : this.cfg.kaltBudgetMs;
+    if (!warm) return this.cfg.kaltBudgetMs;
+    // Erstpruefung (t61): erster Lauf einer Sprache im warmen Container. JVM-Sprachen regelt jvmWarm (oben).
+    return sprache && !jvm && !this.erstGeprueft.has(sprache) ? this.cfg.kaltBudgetMs : undefined;
   }
 
   /** E3a: Container im Hintergrund starten (API-Start), damit der erste Schreibvorgang ihn warm vorfindet. Wirft nie. */
@@ -342,6 +356,7 @@ export class PruefContainer {
         throw err;
       }
       if (jvm) this.jvmWarm.add(sprache);
+      this.erstGeprueft.add(sprache);
       this.z.ms_summe += Date.now() - t0;
       this.dauern.push(Date.now() - t0);
       if (this.dauern.length > DAUERN_MAX) this.dauern.shift();
@@ -391,6 +406,7 @@ export class PruefContainer {
     this.z.starts++;
     this.zustandName = 'startet';
     this.jvmWarm.clear();
+    this.erstGeprueft.clear();
     const t0 = Date.now();
     try {
       await this.entferneContainer();
@@ -504,6 +520,7 @@ export class PruefContainer {
       const warBereit = this.zustandName === 'bereit';
       this.zustandName = 'aus';
       this.jvmWarm.clear();
+      this.erstGeprueft.clear();
       if (!this.stoppend && warBereit) {
         this.z.abstuerze++;
         console.error(`[pruefcontainer] Verbindung beendet (${grund}) - naechster Auftrag startet neu`);
@@ -598,6 +615,7 @@ export class PruefContainer {
       if (this.zustandName === 'bereit') console.error(`[pruefcontainer] Stop: ${grund}`);
       this.zustandName = 'aus';
       this.jvmWarm.clear();
+      this.erstGeprueft.clear();
       this.alleAbweisen(`Pruef-Container gestoppt (${grund})`);
       if (s) { try { s.end(); } catch { /* ignore */ } try { s.destroy?.(); } catch { /* ignore */ } }
       await this.entferneContainer();
@@ -626,6 +644,8 @@ export class PruefContainer {
       letzte_fehler: [...this.letzteFehler].reverse(),
       speicher: this.speicher,
       kalt_budget_ms: this.cfg.kaltBudgetMs,
+      // Erstpruefung: Sprachen, die seit dem Containerstart geantwortet haben (fuer die uebrigen gilt kalt_budget_ms).
+      erst_geprueft: [...this.erstGeprueft],
       // E3b: JVM-Hilfsprozess im Container (Kotlin/Java). bereit = hat seit dem Containerstart geantwortet.
       jvm: { bereit: [...JVM_SPRACHEN].every((s) => this.jvmWarm.has(s)), warm: [...this.jvmWarm], kalt_budget_ms: this.cfg.jvmKaltBudgetMs, ...this.jvm, beim_start: (this.info as { jvm?: unknown } | null)?.jvm ?? null },
       zustand: this.zustandName,
@@ -671,8 +691,8 @@ function melde(pc: PruefContainer): void {
       ...(s.dateinamen ? { dateinamen: s.dateinamen } : {}),
       sperrfaehig: s.sperrfaehig,
       pruefe: (inhalt, pfad) => pc.pruefe(s.sprache, inhalt, pfad),
-      // E3a: Kaltstart abwarten statt Nachlieferung (PRUEFCONTAINER_KALT_BUDGET_MS).
-      mindestBudgetMs: () => pc.mindestBudgetMs(s.jvm ? s.sprache : undefined),
+      // E3a: Kaltstart abwarten statt Nachlieferung (PRUEFCONTAINER_KALT_BUDGET_MS); auch die erste Pruefung je Sprache.
+      mindestBudgetMs: () => pc.mindestBudgetMs(s.sprache),
     });
   }
 }
