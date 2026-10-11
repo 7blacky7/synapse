@@ -19,7 +19,17 @@
  *   S1 sync_inspektor: PG neuer als letzte file_version -> Befund NEUER; offener Plan auf der Datei wird gezaehlt.
  *   K1 schema_probe Vorschau: Kennung des Builds; F1 Parameterfehler. R1 (DIAG_REGISTRIERT=1): ueber fuehreInternAus.
  *
- * ABSICHERUNG: nur Test-DB (...:5433/synapse_test), Qdrant = eigene Fake-Instanz, Ollama 127.0.0.1:9.
+ * WELLE 2 (P15-T16):
+ *   V1..V3 vektorraum_pruefen: ein Chunk mit fremdem Vektor -> BRUCH + je_herkunft; Kontrolle alle passend
+ *      -> einheitlich; fehlender Punkt -> "kein Punkt".
+ *   C1/C2 claims: aktiver + abgelaufener Claim je Knoten, Collection 16d gegen Ziel 8d -> Befund; Kontrolle 8d ohne.
+ *   E1/E2 ereignisse: Alt-Event vor der Registrierung erscheint NUR in der Hook-Sicht (event-check.mjs),
+ *      direkt adressiertes Event > 10 min ohne ACK -> Befund; nach ACK alles leer.
+ *   T2 wrapper_takt zaehlt direkt adressierte Events (scope agent:<name>) - vorher nie.
+ *   PT1/PT2 pipeline_trace: 1 Punkt fehlt + 1 verwaist -> beide Befunde; ausfuehren -> parsed_at neuer.
+ *   PM1..PM3 parser_messen: Vorschau ohne Parse, OK-Lauf mit Symbolen, erzwungener Timeout (PARSER_TIMEOUT_MS=1).
+ *
+ * ABSICHERUNG: nur Test-DB (...:5433/synapse_test), Qdrant und Ollama = eigene Fake-Instanz (127.0.0.1).
  * AUFRUF: set -a; . <test-db.env>; set +a; node scripts/test-intern-diagnose.mjs
  */
 import http from 'node:http';
@@ -34,8 +44,17 @@ if (!/:5433\/synapse_test(\?|$)/.test(DB_URL)) {
   process.exit(2);
 }
 
-// ── Fake-Qdrant ──
+// ── Fake-Qdrant + Fake-Ollama (ein Server) ──
 const qd = {};
+const qdDim = {};
+const qdVec = {};
+/** Deterministischer 8d-Vektor aus dem Text (Fake-Ollama). */
+function fakeVec(t) {
+  const h = createHash('sha256').update(String(t), 'utf8').digest();
+  const v = Array.from({ length: 8 }, (_, i) => (h[i] - 127.5) / 127.5);
+  const n = Math.sqrt(v.reduce((s, x) => s + x * x, 0)) || 1;
+  return v.map((x) => x / n);
+}
 const fake = http.createServer((req, res) => {
   let body = '';
   req.on('data', (c) => { body += c; });
@@ -54,13 +73,33 @@ const fake = http.createServer((req, res) => {
       const lim = b.limit ?? 10;
       return send({ points: alle.slice(off, off + lim).map((id) => ({ id })), next_page_offset: off + lim < alle.length ? off + lim : null });
     }
+    const json = (o) => { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify(o)); };
+    m = /^\/collections\/([^/]+)$/.exec(u.pathname);
+    if (m && req.method === 'GET') {
+      const n = decodeURIComponent(m[1]);
+      if (n in qdDim || n in qd || n in qdVec) return send({ status: 'green', points_count: (qd[n] ?? []).length, config: { params: { vectors: { size: qdDim[n] ?? 8, distance: 'Cosine' } } } });
+    }
+    m = /^\/collections\/([^/]+)\/points$/.exec(u.pathname);
+    if (m && req.method === 'POST') {
+      const v = qdVec[decodeURIComponent(m[1])] ?? {};
+      const b = JSON.parse(body || '{}');
+      return send((b.ids ?? []).filter((id) => v[id]).map((id) => ({ id, vector: v[id] })));
+    }
+    if (req.method === 'POST' && u.pathname === '/api/embed') {
+      const b = JSON.parse(body || '{}');
+      const eingaben = Array.isArray(b.input) ? b.input : [b.input];
+      return json({ model: b.model, embeddings: eingaben.map(fakeVec) });
+    }
+    if (u.pathname === '/api/tags') return json({ models: [{ name: 'fake-embed:latest', model: 'fake-embed:latest', digest: '0123456789abcdef0123' }] });
+    if (u.pathname === '/api/show') return json({ details: { family: 'fake' }, model_info: { 'fake.embedding_length': 8 }, capabilities: ['embedding'] });
     res.writeHead(404, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ status: { error: 'nicht im Fake: ' + req.method + ' ' + u.pathname } }));
   });
 });
 await new Promise((r) => fake.listen(0, '127.0.0.1', r));
 process.env.QDRANT_URL = `http://127.0.0.1:${fake.address().port}`;
-process.env.OLLAMA_URL = 'http://127.0.0.1:9';
+process.env.OLLAMA_URL = `http://127.0.0.1:${fake.address().port}`;
+process.env.EMBEDDING_TARGET_DIM = '8';
 process.env.EMBEDDING_PROVIDER = 'ollama';
 process.env.SYNAPSE_INTERN_TOOL = '1';
 process.env.OLLAMA_MODEL = 'fake-embed';
@@ -100,7 +139,8 @@ const INHALT = 'export function hallo(x: number): number {\n  return x + 1;\n}\n
 
 async function aufraeumen() {
   for (const t of ['code_call_edges', 'code_statements', 'code_references', 'code_symbols', 'parse_coverage', 'code_chunks', 'parse_failures',
-    'code_files', 'memories', 'file_batch_waits', 'file_batch_plans', 'wrapper_status', 'shell_jobs', 'file_versions', 'projects', 'embed_prioritaet']) {
+    'code_files', 'memories', 'file_batch_waits', 'file_batch_plans', 'wrapper_status', 'shell_jobs', 'file_versions', 'projects', 'embed_prioritaet',
+    'agent_events', 'agent_sessions']) {
     const spalte = t === 'projects' ? 'name' : 'project';
     await pool.query(`DELETE FROM ${t} WHERE ${spalte} = ANY($1)`, [PROJEKTE]).catch(() => {});
   }
@@ -149,6 +189,64 @@ try {
   pruefe(idm?.fehlend_in_qdrant === 1 && idm.fehlend_beispiele[0] === 'diag-m3' && idm?.verwaist_in_qdrant === 1 && idm.verwaist_beispiele[0] === 'diag-verwaist',
     'B2b ids_vergleichen: fehlend diag-m3, verwaist diag-verwaist', r.id_abgleich);
   pruefe(/Inhalts-Hashes/.test(idc?.uebersprungen ?? ''), 'B2c Code wird beim ID-Abgleich begruendet uebersprungen', idc);
+
+  // V1..V3 vektorraum_pruefen (P15-T16). Eingebettet sind hier diag-c1 ('x', idx 0) und diag-c3 ('z', idx 2, diag-knoten).
+  const E = await lade(dist, 'embeddings', 'index.js');
+  const CID = await lade(dist, 'services', 'embedding-chunk-id.js');
+  const pid = (idx, inhalt) => CID.deterministicChunkPointId(PRJ, 'a.ts', idx, inhalt);
+  const codeCol = COLLECTIONS.projectCode(PRJ);
+  qdDim[codeCol] = 8;
+  qdVec[codeCol] = { [pid(0, 'x')]: await E.embed('x'), [pid(2, 'z')]: fakeVec('ganz anderer Text, anderes Modell') };
+  r = await ausf({ action: 'vektorraum_pruefen', art: 'code', project: PRJ });
+  const v1 = (r.proben ?? []).find((p) => p.id === pid(0, 'x'));
+  const v3 = (r.proben ?? []).find((p) => p.id === pid(2, 'z'));
+  pruefe(r.success && r.stichprobe === 2 && v1?.kosinus > 0.999 && v1.befund === null && /fremd/.test(v3?.befund ?? '') && r.fremd === 1
+    && r.je_herkunft?.['diag-knoten']?.fremd === 1 && r.befund.some((b) => /VEKTORRAUM-BRUCH/.test(b)) && r.befund.some((b) => /diag-knoten: 1\/1/.test(b)),
+    'V1 fremder Vektor (diag-knoten) -> BRUCH, je_herkunft zeigt den Knoten, passender Chunk Kosinus ~1', r);
+  qdVec[codeCol][pid(2, 'z')] = await E.embed('z');
+  r = await ausf({ action: 'vektorraum_pruefen', art: 'code', project: PRJ });
+  pruefe(r.success && r.fremd === 0 && /einheitlich/.test(r.befund[0] ?? ''), 'V2 Kontrolle: alle Vektoren passend -> einheitlich', r.befund);
+  delete qdVec[codeCol][pid(0, 'x')];
+  r = await ausf({ action: 'vektorraum_pruefen', art: 'code', project: PRJ });
+  const f4 = await ausf({ action: 'vektorraum_pruefen', art: 'code' });
+  pruefe((r.proben ?? []).find((p) => p.id === pid(0, 'x'))?.befund === 'kein Punkt in Qdrant' && r.fremd === 1 && f4.error === 'parameter_fehlt',
+    'V3 fehlender Punkt -> kein Punkt in Qdrant; code ohne project -> parameter_fehlt', { proben: r.proben, f4 });
+
+  // C1/C2 claims
+  await pool.query(
+    `INSERT INTO code_chunks (id, project, file_path, chunk_index, content, line_start, line_end, embedded_at, claimed_by, claim_attempt, lease_until) VALUES
+      ('diag-k1', $1, 'a.ts', 50, 'k1', 1, 1, NULL, 'diag-knoten', 1, NOW() + INTERVAL '5 minutes'),
+      ('diag-k2', $1, 'a.ts', 51, 'k2', 1, 1, NULL, 'diag-knoten', 2, NOW() - INTERVAL '5 minutes')`, [PRJ]);
+  qdDim[codeCol] = 16;
+  r = await ausf({ action: 'claims', project: PRJ });
+  const ck = (r.je_knoten ?? []).find((k) => k.knoten === 'diag-knoten');
+  pruefe(r.success && ck?.aktiv === 1 && ck?.abgelaufen === 1 && ck?.max_versuch === 4 && r.ziel_dimension === 8
+    && r.befund.some((b) => /hat 16d, Zieldimension 8d/.test(b)) && (r.abgelaufen_beispiele ?? []).some((x) => x.id === 'diag-k2'),
+    'C1 claims: aktiv 1 / abgelaufen 1 je Knoten, Collection 16d gegen Ziel 8d erkannt', r);
+  qdDim[codeCol] = 8;
+  r = await ausf({ action: 'claims', project: PRJ });
+  pruefe(r.success && !r.befund.some((b) => /Zieldimension/.test(b)) && r.dimension?.[0]?.passt === true, 'C2 Kontrolle: Collection 8d = Ziel -> kein Dimensions-Befund', r.befund);
+  await pool.query(`DELETE FROM code_chunks WHERE id IN ('diag-k1', 'diag-k2')`);
+
+  // E1/E2 ereignisse
+  await pool.query(`INSERT INTO agent_sessions (id, project, registered_at) VALUES ('diag-neu', $1, NOW() - INTERVAL '30 minutes')`, [PRJ]);
+  const ev = async (scope, alterMin) => (await pool.query(
+    `INSERT INTO agent_events (project, event_type, scope, source_id, payload, requires_ack, created_at)
+     VALUES ($1, 'ANNOUNCEMENT', $2, 'diag', 'diag-test', true, NOW() - make_interval(mins => $3::int)) RETURNING id`, [PRJ, scope, alterMin])).rows[0].id;
+  const eAlt = await ev('all', 2880);
+  const eDirekt = await ev('agent:diag-neu', 20);
+  const eNeu = await ev('all', 1);
+  r = await ausf({ action: 'ereignisse', project: PRJ, ziel_agent: 'diag-neu', stunden: 72 });
+  const srv = (r.agent_sicht?.server_offen ?? []).map((e) => Number(e.id));
+  const nurHook = (r.agent_sicht?.nur_im_hook ?? []).map((e) => Number(e.id));
+  pruefe(r.success && srv.includes(eDirekt) && srv.includes(eNeu) && !srv.includes(eAlt) && nurHook.length === 1 && nurHook[0] === eAlt
+    && r.befund.some((b) => /event-check\.mjs/.test(b)) && r.befund.some((b) => /direkt adressierte/.test(b)),
+    'E1 Alt-Event vor Registrierung nur in der Hook-Sicht, direkt adressiertes Event > 10 min ohne ACK gemeldet', r);
+  await pool.query(`INSERT INTO agent_event_acks (event_id, agent_id) VALUES ($1, 'diag-neu'), ($2, 'diag-neu'), ($3, 'diag-neu')`, [eAlt, eDirekt, eNeu]);
+  r = await ausf({ action: 'ereignisse', project: PRJ, ziel_agent: 'diag-neu', stunden: 72 });
+  const f5 = await ausf({ action: 'ereignisse', ziel_agent: 'diag-neu' });
+  pruefe(r.success && r.agent_sicht?.nur_im_hook?.length === 0 && r.agent_sicht?.server_offen?.length === 0 && !r.befund.some((b) => /direkt adressierte/.test(b)) && f5.error === 'parameter_fehlt',
+    'E2 Kontrolle nach ACK: nichts offen; ziel_agent ohne project -> parameter_fehlt', { r, f5 });
 
   // D1
   r = await ausf({ action: 'durchsatz', minuten: 10 });
@@ -219,6 +317,20 @@ try {
   pruefe(r.success && r.modus === 'ausgefuehrt' && e0?.file_path === 'a.ts' && e0?.fehler === null && e0?.symbole_nachher > 0 && e0?.ausfall_vorher === 'timeout' && e0?.ausfall_nachher === null,
     'P3 parse_neu ausfuehren: Symbole > 0, Ausfall aufgeloest', r);
 
+  // PT1/PT2 pipeline_trace: erwartete Punkte = eingebettete Chunks von a.ts; einer fehlt, einer ist verwaist
+  const ec = (await pool.query(`SELECT chunk_index, content FROM code_chunks WHERE project = $1 AND file_path = 'a.ts' AND embedded_at IS NOT NULL ORDER BY chunk_index`, [PRJ])).rows;
+  const erw = ec.map((c) => pid(c.chunk_index, c.content));
+  qd[codeCol] = [...erw.slice(1), 'p-verwaist'];
+  r = await ausf({ action: 'pipeline_trace', project: PRJ, file_path: 'a.ts' });
+  const sq = r.stufen?.qdrant;
+  pruefe(r.success && r.modus === 'vorschau' && erw.length >= 2 && sq?.erwartet === erw.length && sq?.fehlend === 1 && sq?.fehlend_chunk_index?.[0] === ec[0].chunk_index && sq?.verwaist === 1
+    && r.stufen.chunks.offen >= 1 && r.befund.some((b) => /ohne Punkt/.test(b)) && r.befund.some((b) => /ohne passenden Chunk/.test(b)),
+    'PT1 pipeline_trace Vorschau: fehlender und verwaister Punkt, offene Chunks', r);
+  const parsedVor = r.stufen?.datei?.parsed_at;
+  r = await ausf({ action: 'pipeline_trace', project: PRJ, file_path: 'a.ts', ausfuehren: true });
+  pruefe(r.success && r.modus === 'ausgefuehrt' && r.fehler === null && r.delta?.symbole?.nachher > 0 && new Date(r.delta?.parsed_at?.nachher) > new Date(parsedVor) && typeof r.dauer_ms === 'number',
+    'PT2 pipeline_trace ausfuehren: neu geparst (parsed_at neuer), Symbole > 0', { delta: r.delta, fehler: r.fehler, befund: r.befund });
+
   // PP
   r = await ausf({ action: 'parser_pool' });
   pruefe(r.success && Array.isArray(r.pool?.slots) && r.pool.slots.length === r.pool.groesse, 'PP1 parser_pool: Pool nach dem Parse mit allen Slots', r.pool);
@@ -232,6 +344,23 @@ try {
   r = await ausf({ action: 'parser_pool' });
   pruefe(timeoutFehler?.name === 'ParseTimeoutError' && r.pool?.timeouts_gesamt >= 1 && r.pool?.beendet_gesamt >= 1 && r.pool?.beendet_exit_ausstehend === 0,
     'PP2 erzwungener Timeout: gezaehlt, Worker beendet, exit angekommen', { timeoutFehler: timeoutFehler?.name, pool: r.pool, threads: r.threads_prozess });
+
+  // PM1..PM3 parser_messen
+  r = await ausf({ action: 'parser_messen', project: PRJ, file_path: 'a.ts' });
+  const tStart = r.pool?.timeouts_gesamt;
+  pruefe(r.success && r.modus === 'vorschau' && r.zeichen === INHALT.length && typeof tStart === 'number', 'PM1 parser_messen Vorschau ohne Parse', r);
+  r = await ausf({ action: 'parser_messen', project: PRJ, file_path: 'a.ts', ausfuehren: true });
+  pruefe(r.success && r.modus === 'ausgefuehrt' && r.fehler === null && r.ergebnis?.symbole > 0 && r.timeouts_neu === 0 && typeof r.limit_ms === 'number' && r.limit_ms > 1000,
+    'PM2 parser_messen OK-Lauf ueber den Pool: Symbole, Limit, kein Timeout', r);
+  const GROSS = 'export const x = 1;\n'.repeat(200000);
+  await pool.query(
+    `INSERT INTO code_files (id, project, file_path, file_name, file_type, content, content_hash, file_size, updated_at, indexed_at)
+     VALUES ($1, $2, 'gross.ts', 'gross.ts', 'ts', $3, $4, $5, NOW(), NOW())`, [`${PRJ}:gross.ts`, PRJ, GROSS, sha(GROSS), GROSS.length]);
+  process.env.PARSER_TIMEOUT_MS = '1';
+  r = await ausf({ action: 'parser_messen', project: PRJ, file_path: 'gross.ts', ausfuehren: true });
+  delete process.env.PARSER_TIMEOUT_MS;
+  pruefe(r.success && r.fehler?.name === 'ParseTimeoutError' && r.timeouts_neu === 1 && r.limit_ms === 1 && r.befund.some((b) => /TIMEOUT/.test(b)),
+    'PM3 Positivkontrolle: erzwungener Timeout wird gemessen (timeouts_neu 1, Limit 1 ms)', r);
 
   // Z1
   const plan = async (owner, ops, status) => (await pool.query(
@@ -261,8 +390,11 @@ try {
   // T1
   await pool.query(`INSERT INTO wrapper_status (agent_name, project, status, busy) VALUES ('diag-taub', $1, 'idle', false), ('diag-ok', $1, 'idle', false)`, [PRJ]);
   await pool.query(`INSERT INTO specialist_inbox (from_agent, to_agent, content, processed, created_at) VALUES ('diag', 'diag-taub', 'hallo', false, NOW() - INTERVAL '10 minutes')`);
+  await pool.query(`INSERT INTO agent_events (project, event_type, scope, source_id, payload, requires_ack) VALUES ($1, 'ANNOUNCEMENT', 'agent:diag-taub', 'diag', 'direkt', true)`, [PRJ]);
   r = await ausf({ action: 'wrapper_takt', project: PRJ });
   pruefe(r.success && r.verdacht.includes(`${PRJ}/diag-taub`) && !r.verdacht.includes(`${PRJ}/diag-ok`), 'T1 liegende Post -> VERDACHT TAUB, Kontrolle nicht', { verdacht: r.verdacht, wrapper: r.wrapper });
+  const wt = (n) => (r.wrapper ?? []).find((w) => w.agent_name === n);
+  pruefe(wt('diag-taub')?.events_ohne_ack === wt('diag-ok')?.events_ohne_ack + 1, 'T2 direkt adressiertes Event (scope agent:diag-taub) zaehlt nur beim Ziel', { taub: wt('diag-taub'), ok: wt('diag-ok') });
 
   // S1
   await pool.query(`INSERT INTO file_versions (project, file_path, content, content_hash, agent_id, created_at) VALUES ($1, 'a.ts', 'alt', $2, 'diag', NOW() - INTERVAL '20 minutes')`, [PRJ, sha('alt')]);
@@ -284,6 +416,9 @@ try {
     const schema = T.INTERN_DEFINITION.inputSchema.properties;
     pruefe(r1.success && r1.action === 'warum_nicht' && T.INTERN_ACTIONS.includes('bestand_abgleich') && schema.chunk_id && schema.action.enum.includes('schema_probe'),
       'R1 ueber fuehreInternAus registriert (Actions + Schema)', r1);
+    pruefe(['vektorraum_pruefen', 'claims', 'ereignisse', 'pipeline_trace', 'parser_messen'].every((x) => T.INTERN_ACTIONS.includes(x) && schema.action.enum.includes(x))
+      && schema.ziel_agent && schema.art && schema.stichprobe && schema.luecke_s,
+      'R2 Welle 2 + luecke_s ueber intern-tool registriert (Actions + Schema)', Object.keys(schema));
   } else {
     console.log('SKIP    R1 (DIAG_REGISTRIERT=1 nach der Registrierung in intern-tool.ts)');
   }

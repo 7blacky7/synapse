@@ -41,11 +41,15 @@ import {
   warumNicht,
 } from './intern-diagnose-code.js';
 
+import { claimsStatus, ereignisse, parserMessen, pipelineTrace, vektorraumPruefen, VEKTORRAUM_ARTEN } from './intern-diagnose-welle2.js';
+
 export { DiagnoseFehler } from './intern-diagnose-code.js';
 
 export const DIAGNOSE_ACTIONS = [
   'bestand_abgleich', 'durchsatz', 'warum_nicht', 'parser_pool', 'parse_ausfaelle', 'parse_neu',
   'wrapper_takt', 'wartezustand', 'sync_inspektor', 'schema_probe',
+  // P15-T16 Welle 2 (intern-diagnose-welle2.ts)
+  'vektorraum_pruefen', 'claims', 'ereignisse', 'pipeline_trace', 'parser_messen',
 ] as const;
 export type DiagnoseAction = (typeof DIAGNOSE_ACTIONS)[number];
 
@@ -61,7 +65,12 @@ export const DIAGNOSE_BESCHREIBUNG =
   'parser_pool: Slots, Queue, stillgelegte Slots, Threads; parse_ausfaelle (project, limit); ' +
   'parse_neu (project, file_path oder alle_ausfaelle, mit_embeddings, ausfuehren): ohne ausfuehren:true nur Vorschau; ' +
   'wrapper_takt (project): Heartbeat, Inbox-/Event-Stau, Verdacht taub; wartezustand (project): offene Co-Edit-Waits; ' +
-  'sync_inspektor (project, file_path): PG-Stand gegen file_versions; schema_probe (ausfuehren): Schema-Kennung, mit ausfuehren:true Probelauf mit Rollback. ';
+  'sync_inspektor (project, file_path): PG-Stand gegen file_versions; schema_probe (ausfuehren): Schema-Kennung, mit ausfuehren:true Probelauf mit Rollback; ' +
+  'vektorraum_pruefen (art, project, stichprobe, schwelle): Qdrant-Vektoren gegen frisch eingebetteten Text, fremde Vektoren je Monat/Knoten; ' +
+  'claims (project, limit): Embedding-Claims je Knoten, Versuche, Collection-Dimension gegen Ziel; ' +
+  'ereignisse (project, ziel_agent, stunden): offene Events ohne ACK, mit ziel_agent Server- gegen Hook-Sicht; ' +
+  'pipeline_trace (project, file_path, ausfuehren, mit_embeddings): eine Datei durch alle Stufen, ohne ausfuehren:true nur lesen; ' +
+  'parser_messen (project, file_path, ausfuehren): Datei ueber den echten Parser-Pool messen, ohne ausfuehren:true Vorschau. ';
 
 /** Nur NEUE Parameter (vorhandene wie project, limit, minuten, ausfuehren, arten nutzt die Diagnose mit). */
 export const DIAGNOSE_PARAMETER: Record<string, unknown> = {
@@ -72,6 +81,11 @@ export const DIAGNOSE_PARAMETER: Record<string, unknown> = {
   alle_ausfaelle: { type: 'boolean', description: 'parse_neu: alle Parse-Ausfaelle des Projekts (bis limit)' },
   mit_embeddings: { type: 'boolean', description: 'parse_neu: auch neu chunken/einbetten (Standard false = nur Symbole)' },
   luecke_s: { type: 'number', description: 'durchsatz: Abstand ohne Abschluss, ab dem eine Luecke je Knoten gemeldet wird (Standard 30 s)' },
+  art: { type: 'string', enum: [...VEKTORRAUM_ARTEN], description: 'vektorraum_pruefen: welche Vektoren (code braucht project)' },
+  stichprobe: { type: 'number', description: 'vektorraum_pruefen: Zahl der Stichproben (Standard 10, 1..50)' },
+  schwelle: { type: 'number', description: 'vektorraum_pruefen: Kosinus, unter dem ein Vektor als fremd gilt (Standard 0.95)' },
+  ziel_agent: { type: 'string', description: 'ereignisse: Agent, dessen offene Events (Server- und Hook-Sicht) gezeigt werden; braucht project' },
+  stunden: { type: 'number', description: 'ereignisse: Zeitfenster in Stunden (Standard 24, max 720)' },
 };
 
 // ───── Hilfen ───────────────────────────────────────────────────────────
@@ -501,7 +515,7 @@ export async function wrapperTakt(project: string | undefined): Promise<Record<s
               WHERE i.to_agent = ws.agent_name AND i.processed = false) AS inbox_aelteste_s,
             (SELECT count(*)::int FROM agent_events e
               WHERE e.project = ws.project AND e.requires_ack AND e.created_at > NOW() - INTERVAL '24 hours'
-                AND (e.scope = 'all' OR e.scope = ws.agent_name)
+                AND (e.scope = 'all' OR e.scope = 'agent:' || ws.agent_name)
                 AND NOT EXISTS (SELECT 1 FROM agent_event_acks k WHERE k.event_id = e.id AND k.agent_id = ws.agent_name)) AS events_ohne_ack
        FROM wrapper_status ws
       WHERE ($1::text IS NULL OR ws.project = $1) AND ws.status NOT IN ('stopped')
@@ -627,6 +641,38 @@ export async function fuehreDiagnoseAus(
       }
       case 'schema_probe':
         return { success: true, action, ...(await schemaProbe(wahr(a, 'ausfuehren'))) };
+      case 'vektorraum_pruefen': {
+        const art = text(a, 'art');
+        if (!art) throw new DiagnoseFehler('parameter_fehlt', `vektorraum_pruefen: art fehlt (${VEKTORRAUM_ARTEN.join(' | ')}).`);
+        const schwelle = zahl(a, 'schwelle') ?? 0.95;
+        if (!Number.isFinite(schwelle) || schwelle <= 0 || schwelle > 1) throw new DiagnoseFehler('parameter_ungueltig', 'schwelle: Zahl in (0, 1].');
+        return {
+          success: true, action,
+          ...(await vektorraumPruefen({ art, project: text(a, 'project'), stichprobe: grenze(zahl(a, 'stichprobe'), 10, 1, 50, 'stichprobe'), schwelle })),
+        };
+      }
+      case 'claims':
+        return { success: true, action, ...(await imHintergrund(() => claimsStatus({ project: text(a, 'project'), limit: grenze(zahl(a, 'limit'), 10, 1, 100, 'limit') }))) };
+      case 'ereignisse':
+        return {
+          success: true, action,
+          ...(await ereignisse({
+            project: text(a, 'project'),
+            zielAgent: text(a, 'ziel_agent'),
+            stunden: grenze(zahl(a, 'stunden'), 24, 1, 720, 'stunden'),
+            limit: grenze(zahl(a, 'limit'), 100, 1, 500, 'limit'),
+          })),
+        };
+      case 'pipeline_trace':
+      case 'parser_messen': {
+        const project = text(a, 'project');
+        const datei = textListe(a, 'file_path')?.[0];
+        if (!project || !datei) throw new DiagnoseFehler('parameter_fehlt', `${action}: project und file_path angeben.`);
+        if (action === 'pipeline_trace') {
+          return { success: true, action, ...(await pipelineTrace({ project, filePath: datei, ausfuehren: wahr(a, 'ausfuehren'), mitEmbeddings: wahr(a, 'mit_embeddings') })) };
+        }
+        return { success: true, action, ...(await parserMessen({ project, filePath: datei, ausfuehren: wahr(a, 'ausfuehren') })) };
+      }
       default:
         return { success: false, action, error: 'unbekannte_action', message: `Keine Diagnose-Action: ${action}.` };
     }
