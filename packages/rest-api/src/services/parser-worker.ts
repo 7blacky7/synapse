@@ -24,7 +24,7 @@
 
 import {
   claimEmbeddingChunks,
-  completeEmbeddingClaim,
+  completeEmbeddingClaims,
   embedBatch,
   embeddeOffeneEintraege,
   expirePendingProjectInitJobs,
@@ -202,27 +202,30 @@ export class ParserWorker {
           await sleep(2_000);
           continue;
         }
-        await Promise.all(claims.map(async (claim, idx) => {
-          try {
-            const vector = vektoren[idx];
-            await completeEmbeddingClaim({
-              nodeId: 'unraid-local',
-              chunkId: claim.chunkId,
-              claimToken: claim.claimToken,
-              contentHash: claim.contentHash,
-              vector,
-            });
-            this.chunksEmbedded++;
-          } catch (err) {
-            // EIGENEN CLAIM SOFORT FREIGEBEN statt ihn 15 Minuten lang ablaufen
-            // zu lassen. Ein liegengebliebener Claim sieht im Betrieb aus wie
-            // ein haengender Knoten und blockiert den Chunk fuer alle anderen.
-            await gibClaimFrei(claim.chunkId, claim.claimToken).catch(() => undefined);
-            console.error(
-              `[parser-worker] Chunk ${claim.chunkId} fehlgeschlagen, Claim freigegeben: ${(err as Error).message}`
-            );
+        // P12-T14: Stapel-Abschluss (eine Transaktion, ein Upsert je Projekt). Abgelehnte und bei
+        // einem Fehler alle Claims SOFORT freigeben statt sie 15 Minuten ablaufen zu lassen — ein
+        // liegengebliebener Claim sieht aus wie ein haengender Knoten und blockiert den Chunk.
+        const nachId = new Map(claims.map((c) => [String(c.chunkId), c]));
+        try {
+          const erg = await completeEmbeddingClaims('unraid-local', claims.map((c, idx) => ({
+            chunkId: c.chunkId,
+            claimToken: c.claimToken,
+            contentHash: c.contentHash,
+            vector: vektoren[idx],
+          })));
+          this.chunksEmbedded += erg.abgeschlossen.length;
+          for (const a of erg.abgelehnt) {
+            const c = nachId.get(String(a.chunkId));
+            if (c) await gibClaimFrei(c.chunkId, c.claimToken).catch(() => undefined);
           }
-        }));
+          if (erg.abgelehnt.length > 0) {
+            console.error('[parser-worker] ' + erg.abgelehnt.length + ' Claims abgelehnt und freigegeben (z. B. ' + erg.abgelehnt[0].grund + ')');
+          }
+        } catch (err) {
+          await Promise.all(claims.map((c) => gibClaimFrei(c.chunkId, c.claimToken).catch(() => undefined)));
+          console.error('[parser-worker] Stapel-Abschluss fehlgeschlagen, ' + claims.length + ' Claims freigegeben: ' + (err as Error).message);
+          await sleep(2_000);
+        }
       } catch (err) {
         console.error(`[parser-worker] Embedding-Schleife fehlgeschlagen: ${(err as Error).message}`);
         await sleep(2_000);

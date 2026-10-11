@@ -3,7 +3,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { getPool } from '../db/client.js';
 import { leseSchalter } from './intern-schalter.js';
 import { ensureProjectCollection } from '../qdrant/collections.js';
-import { insertVector } from '../qdrant/operations.js';
+import { insertVector, insertVectors } from '../qdrant/operations.js';
 import type { CodeChunkPayload } from '../types/index.js';
 import { deterministicChunkPointId, embeddingContentHash } from './embedding-chunk-id.js';
 
@@ -314,6 +314,133 @@ export async function completeEmbeddingClaim(
 
     await client.query('COMMIT');
     return { completed: true, alreadyCompleted: false, pointId };
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export interface StapelAbschlussEintrag {
+  chunkId: string;
+  claimToken: string;
+  contentHash: string;
+  vector: number[];
+}
+
+/**
+ * P12-T14: Stapel-Abschluss fuer den Server-Embedding-Loop. Dieselben Pruefungen wie
+ * completeEmbeddingClaim (Vektor, Claim-Token, Knoten, Inhalts-Hash, Lease, Datei-Lock), aber EINE
+ * Transaktion, EIN Qdrant-Upsert je Projekt und EIN UPDATE fuer alle angenommenen Chunks.
+ * Gemessen vorher: ~9,5 Chunks/s, weil jeder Chunk eine eigene Transaktion mit Sperre,
+ * Zaehlabfrage und Einzel-Upsert bekam, waehrend Ollama im Stapel 51/s schafft.
+ * Abgelehnte Eintraege bleiben offen; der Aufrufer gibt deren Claims frei.
+ */
+export async function completeEmbeddingClaims(
+  nodeId: string,
+  eintraege: StapelAbschlussEintrag[],
+  expectedDimension?: number,
+): Promise<{ abgeschlossen: string[]; abgelehnt: Array<{ chunkId: string; grund: string }> }> {
+  const dim = expectedDimension ?? zielDimension();
+  const abgelehnt: Array<{ chunkId: string; grund: string }> = [];
+  const gueltig = eintraege.filter((e) => {
+    if (validateEmbeddingVector(e.vector, dim)) return true;
+    abgelehnt.push({ chunkId: e.chunkId, grund: 'invalid_embedding_vector' });
+    return false;
+  });
+  if (gueltig.length === 0) return { abgeschlossen: [], abgelehnt };
+  const nachId = new Map(gueltig.map((e) => [String(e.chunkId), e]));
+  const ids = [...nachId.keys()];
+
+  const client = await getPool().connect();
+  try {
+    await client.query('BEGIN');
+    // Datei-Sperren wie im Einzelweg, sortiert -> keine Verklemmung mit parseAndEmbed/anderen Knoten.
+    const dateien = await client.query<{ project: string; file_path: string }>(
+      'SELECT DISTINCT project, file_path FROM code_chunks WHERE id = ANY($1) ORDER BY project, file_path',
+      [ids],
+    );
+    for (const d of dateien.rows) {
+      await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`chunks:${d.project}:${d.file_path}`]);
+    }
+    const { rows } = await client.query<{
+      id: string; project: string; file_path: string; file_type: string; chunk_index: number;
+      content: string; content_hash: string | null; line_start: number; line_end: number;
+      claim_token: string | null; claimed_by: string | null; lease_until: Date | null;
+      embedded_at: Date | null; total_chunks: number; server_now: Date;
+    }>(
+      `SELECT cc.id, cc.project, cc.file_path, cf.file_type, cc.chunk_index,
+              cc.content, cc.content_hash, cc.line_start, cc.line_end,
+              cc.claim_token, cc.claimed_by, cc.lease_until, cc.embedded_at,
+              (SELECT COUNT(*) FROM code_chunks allc
+                WHERE allc.project=cc.project AND allc.file_path=cc.file_path)::int AS total_chunks,
+              NOW() AS server_now
+         FROM code_chunks cc
+         JOIN code_files cf ON cf.project=cc.project AND cf.file_path=cc.file_path
+        WHERE cc.id = ANY($1)
+        FOR UPDATE OF cc`,
+      [ids],
+    );
+
+    const gesehen = new Set<string>();
+    const abgeschlossen: string[] = [];
+    const zuSchreiben = new Map<string, Array<{ vector: number[]; payload: CodeChunkPayload; id: string }>>();
+    for (const row of rows) {
+      const id = String(row.id);
+      gesehen.add(id);
+      const e = nachId.get(id);
+      if (!e) continue;
+      if (
+        row.claim_token !== e.claimToken || row.claimed_by !== nodeId ||
+        row.content_hash !== e.contentHash || embeddingContentHash(row.content) !== e.contentHash
+      ) { abgelehnt.push({ chunkId: id, grund: 'claim_fence_rejected' }); continue; }
+      if (row.embedded_at) { abgeschlossen.push(id); continue; }
+      if (!row.lease_until || new Date(row.lease_until) <= new Date(row.server_now)) {
+        abgelehnt.push({ chunkId: id, grund: 'claim_lease_expired' });
+        continue;
+      }
+      const liste = zuSchreiben.get(row.project) ?? [];
+      liste.push({
+        id: deterministicChunkPointId(row.project, row.file_path, row.chunk_index, row.content),
+        vector: e.vector,
+        payload: {
+          file_path: row.file_path,
+          file_name: path.basename(row.file_path),
+          file_type: row.file_type,
+          line_start: row.line_start,
+          line_end: row.line_end,
+          project: row.project,
+          chunk_index: row.chunk_index,
+          total_chunks: row.total_chunks,
+          updated_at: new Date(row.server_now).toISOString(),
+          content: row.content,
+        },
+      });
+      zuSchreiben.set(row.project, liste);
+      abgeschlossen.push(id);
+    }
+    for (const id of ids) if (!gesehen.has(id)) abgelehnt.push({ chunkId: id, grund: 'claim_not_found' });
+
+    for (const [project, punkte] of zuSchreiben) {
+      const collection = await ensureProjectCollection(project, dim);
+      await insertVectors(collection, punkte);
+    }
+    const offen = [...zuSchreiben.values()].flat().length;
+    if (offen > 0) {
+      const neuIds = abgeschlossen.filter((id) => {
+        const r = rows.find((x) => String(x.id) === id);
+        return r && !r.embedded_at;
+      });
+      const ack = await client.query(
+        `UPDATE code_chunks SET embedded_at = NOW(), lease_until = NULL
+          WHERE id = ANY($1) AND claimed_by = $2 AND embedded_at IS NULL`,
+        [neuIds, nodeId],
+      );
+      if ((ack.rowCount ?? 0) !== neuIds.length) throw new Error('claim_ack_race');
+    }
+    await client.query('COMMIT');
+    return { abgeschlossen, abgelehnt };
   } catch (error) {
     await client.query('ROLLBACK').catch(() => undefined);
     throw error;

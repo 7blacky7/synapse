@@ -370,6 +370,7 @@ export type { BacklogErgebnis } from './services/embed-backlog.js';
 export {
   claimEmbeddingChunks,
   completeEmbeddingClaim,
+  completeEmbeddingClaims,
   validateEmbeddingVector,
 } from './services/embedding-claims.js';
 export type {
