@@ -22,13 +22,22 @@ import * as tar from 'tar-stream';
 import { minimatch } from 'minimatch';
 import { createHash } from 'node:crypto';
 import type { PoolClient } from 'pg';
-import { getPool, registriereWorker, workerPausiert, meldeWorkerArbeit } from '@synapse/core';
+import { getPool, registriereWorker, workerPausiert, meldeWorkerArbeit, createDefaultIgnore, shouldIgnore } from '@synapse/core';
 
-const DEFAULT_IGNORE_PATTERNS = [
-  'node_modules/**', '.git/**', 'dist/**', 'build/**', 'target/**',
-  '.next/**', '.nuxt/**', 'coverage/**', '__pycache__/**', '.pytest_cache/**',
-  '*.tsbuildinfo', '.DS_Store', '.cache/**',
-];
+/**
+ * P15-T40: Die Standard-Sperren kommen aus EINER Quelle, den DEFAULT_IGNORES in
+ * core/watcher/ignore.ts (dieselben, die der Daemon-Watcher nutzt). Vorher stand
+ * hier eine eigene Liste ohne .synapse, .env, *.pem usw. Sie gelten IMMER, auch
+ * wenn der Aufrufer eigene ignorePatterns mitgibt. Die Glob-Muster unten sind nur
+ * noch Zusatz fuer Dinge, die der Daemon nicht kennt.
+ */
+const STANDARD_SPERRE = createDefaultIgnore();
+const DEFAULT_IGNORE_PATTERNS = ['.pytest_cache/**', '*.tsbuildinfo'];
+
+/** true = Pfad bleibt draussen (Standard-Sperre oder eines der Glob-Muster). */
+export function istWorkspaceIgnoriert(dateiPfad: string, muster: string[] = DEFAULT_IGNORE_PATTERNS): boolean {
+  return shouldIgnore(STANDARD_SPERRE, dateiPfad) || muster.some((p) => minimatch(dateiPfad, p, { dot: true }));
+}
 
 export interface WorkspaceConfig {
   socketPath?: string;            // default /var/run/docker.sock
@@ -561,7 +570,7 @@ export class WorkspaceOrchestrator {
     let bytes = 0;
     for (const row of r.rows) {
       const fp = row.file_path as string;
-      if (ignore.some(p => minimatch(fp, p, { dot: true }))) continue;
+      if (istWorkspaceIgnoriert(fp, ignore)) continue;
       const content = Buffer.from(row.content as string, 'utf8');
       // Lockdown: uid=0 + mode=0444 → synapse user kann lesen, nicht modifizieren.
       // Shell-Schreibversuche auf Source ("echo > foo.ts", "sed -i") laufen ins
@@ -643,7 +652,7 @@ export class WorkspaceOrchestrator {
 
     let created = 0, updated = 0, unchanged = 0, skipped = 0;
     for (const { path: fp, content } of entries) {
-      if (ignore.some(p => minimatch(fp, p, { dot: true }))) { skipped++; continue; }
+      if (istWorkspaceIgnoriert(fp, ignore)) { skipped++; continue; }
       // NUL-Bytes strippen (PG UTF8) — selbe Defensive wie in code.ts.
       const text = content.toString('utf8').replace(/\0/g, '');
       const hash = createHash('sha256').update(text).digest('hex');

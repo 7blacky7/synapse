@@ -4,6 +4,18 @@ import type { SpecialistStatus, StatusFile } from './types.js'
 
 const DEFAULT_MAX_SPECIALISTS = 7
 
+/**
+ * Spezialisten-Status (Cache, PG wrapper_status ist primaer).
+ *
+ * ACHTUNG, ZWEI DATEIEN (P15-T40): .synapse/agents/status.json ist dieser
+ * Spezialisten-Cache {specialists, maxSpecialists, lastUpdate}; der Wrapper
+ * schreibt ihn bei jedem Aktivitaets-Update neu. .synapse/status.json ist
+ * etwas anderes: der Projektstatus aus core/services/project-status.ts
+ * (id, path, setupPhase). Der Pfad hier ist also kein Fehler — die Datei NICHT
+ * nach .synapse/status.json verlegen, das wuerde den Projektstatus
+ * ueberschreiben. Beide liegen unter .synapse/ und sind dort fuer den Index
+ * gesperrt (DEFAULT_IGNORES).
+ */
 function statusPath(projectPath: string): string {
   return join(projectPath, '.synapse', 'agents', 'status.json')
 }

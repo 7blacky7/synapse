@@ -58,6 +58,17 @@ const DEFAULT_IGNORES = [
   '.serverless',
   '.serena',
 
+  // Synapse-eigene Laufzeitdaten (P15-T40, 11.10.2026). Unter .synapse/ liegen
+  // Spezialisten-Wissen, Wrapper-Status (agents/status.json, sekuendlich neu
+  // geschrieben), Sockets, Logs, mcp-http.json mit Token und die Projekt-
+  // status.json. Alle Schreiber schreiben DIREKT auf die Platte, keiner geht
+  // ueber PG. Ohne diesen Eintrag zog der Daemon-Watcher alles in code_files
+  // (121.233 fs_change-Versionen bis 08.10.2026). Der alte moo-Daemon hatte die
+  // Regel (watcher.moo, "hart zusaetzlich"), beim Umbau auf TS ging sie verloren.
+  // gitignore-Semantik: trifft den Ordner .synapse auf jeder Ebene, NICHT die
+  // Datei .synapseignore.
+  '.synapse',
+
   // IDE/Editor
   '.idea',
   '.vscode',
