@@ -735,6 +735,8 @@ export type {
 
 export type { FunctionInfo, VariableInfo, SymbolInfo, ReferenceInfo, ReferencesResult, FullTextSearchResult, FileContentResult, FileContentOptions, TreeOptions, StatementInfo, CallEdgeInfo, CallEdgesResult, ExecutionFlowResult, EntrypointInfo } from './services/code-intel.js';
 export type { BatchEdit, BatchResult, BatchFehlschlag } from './services/code-write.js';
+// P15-T17: Einzelschreibweg (E-a) - Optionen und Ergebnis von createFileInPg/updateFileInPg
+export type { EinzelSchreibOptionen, SchreibErgebnis } from './services/code-write.js';
 export { getParserGesundheitDatei, getParserGesundheitUebersicht, backfillParserCoverage, schreibeParserCoverage } from './services/parser-health.js';
 export type { ParserGesundheitDatei, ParserGesundheitUebersicht, ParserBefundGesamt, ParserUebersichtDatei } from './services/parser-health.js';
 
@@ -1051,7 +1053,19 @@ export type { AgentEvent, EventAck, EventType, EventPriority } from './services/
 export type { TechDoc, TechDocType, TechDocResult } from './services/tech-docs.js';
 export type { ErrorPattern, ErrorPatternWarning } from './services/error-patterns.js';
 // P15-T17 E0: Fehlermuster-Treffer an den Agenten ausliefern (Nachlieferung)
-export { holeFehlermusterHinweise, verfolgeFehlermusterPruefung } from './services/fehlermuster-auslieferung.js';
+export { holeFehlermusterHinweise, verfolgeFehlermusterPruefung, vormerkenBefunde } from './services/fehlermuster-auslieferung.js';
+// P15-T17: Pruefkern (Signatur-Muster, Syntax-Schnittstelle fuer P16-T4)
+export {
+  pruefeSignaturen,
+  pruefeSyntaxEinzelweg,
+  registriereSyntaxPruefer,
+  hatSyntaxPruefer,
+  geaenderteZeilen,
+  ladeSignaturMuster,
+  SyntaxfehlerAbgelehnt,
+  QUITTIER_HINWEIS,
+} from './services/fehlermuster-pruefung.js';
+export type { FehlerBefund, SyntaxPruefer, SyntaxMeldung, SyntaxErgebnis } from './services/fehlermuster-pruefung.js';
 export type { FehlermusterHinweis, FehlermusterAuslieferung } from './services/fehlermuster-auslieferung.js';
 export type { Memory, MemoryWithRelatedCode, RelatedMemoryResult, RelatedCodeResult } from './services/memory.js';
 export type { DetectedTechnology } from './services/tech-detection.js';

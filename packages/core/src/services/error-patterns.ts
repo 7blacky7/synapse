@@ -326,6 +326,9 @@ export async function checkErrorPatterns(
 
       const pattern = patternResult.rows[0];
       if (MUSTER_OHNE_TREFFER.includes(pattern.status) || pattern.ersetzt_durch) continue;
+      // P15-T17: aktive Signatur-Muster melden sich nur ueber ihre Signatur (fehlermuster-pruefung.ts),
+      // nicht zusaetzlich als Themenhinweis per Embedding.
+      if (pattern.status === 'aktiv' && pattern.erkennung?.art === 'regex') continue;
       warnings.push({
         id: patternId,
         severity: pattern.severity,

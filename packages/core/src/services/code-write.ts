@@ -30,7 +30,15 @@ import { enqueueParseAndEmbed } from './code.js';
 import { deleteByFilePath } from '../qdrant/index.js';
 import { COLLECTIONS } from '../types/index.js';
 import { checkErrorPatterns, type ErrorPatternWarning } from './error-patterns.js';
-import { verfolgeFehlermusterPruefung } from './fehlermuster-auslieferung.js';
+import { verfolgeFehlermusterPruefung, vormerkenBefunde } from './fehlermuster-auslieferung.js';
+import {
+  hatSyntaxPruefer,
+  pruefeSignaturen,
+  pruefeSyntaxEinzelweg,
+  quittierVermerk,
+  SyntaxfehlerAbgelehnt,
+  type FehlerBefund,
+} from './fehlermuster-pruefung.js';
 
 /**
  * IDEA-3a: Resolve agent_id mit Default-Fallback.
@@ -629,6 +637,57 @@ function pruefeFehlermusterNebenlaeufig(pruefText: string, agentId: string, file
     .catch(() => { /* nebenlaeufig — ein Fehler hier darf den Schreibvorgang nicht beruehren */ });
 }
 
+/**
+ * P15-T17 (User-Regel E-a): Optionen des Einzelschreibwegs (files create/update/search_replace/
+ * replace_lines/insert_after/delete_lines). einzelweg:true schaltet die Syntaxpruefung VOR dem Schreiben
+ * ein: ein Befund eines sperrfaehigen Pruefers in geaenderten Zeilen lehnt ab (SyntaxfehlerAbgelehnt,
+ * nichts geschrieben). Pruefer docken mit P16-T4 an (registriereSyntaxPruefer); bis dahin ist nur die
+ * Musterpruefung aktiv. Plan-Commits, Restore und FS-Sync setzen einzelweg NICHT.
+ * quittieren: Absichtsgrund fuer absichtlich fehlerhaften Inhalt (E-b), landet in file_versions.reason.
+ */
+export interface EinzelSchreibOptionen {
+  einzelweg?: boolean;
+  quittieren?: string;
+}
+
+/** Ergebnis von createFileInPg/updateFileInPg. befunde = Signatur-Treffer und Syntax-Hinweise (auch ausgeliefert). */
+export interface SchreibErgebnis {
+  warnings?: ErrorPatternWarning[];
+  befunde?: FehlerBefund[];
+}
+
+/** Syntaxpruefung vor dem Schreiben (nur Einzelweg). Wirft SyntaxfehlerAbgelehnt bei sperrendem Befund. */
+async function syntaxVorDemSchreiben(
+  filePath: string,
+  alt: string,
+  neu: string,
+  agentId: string | null,
+  einzel: EinzelSchreibOptionen | undefined,
+): Promise<{ hinweise: FehlerBefund[]; quittiert?: string }> {
+  if (!einzel?.einzelweg) return { hinweise: [] };
+  const erg = await pruefeSyntaxEinzelweg({
+    filePath, alt, neu, quittieren: einzel.quittieren,
+    onNachgereicht: (befunde) => vormerkenBefunde(agentId, filePath, befunde),
+  });
+  if (erg.blockierend.length > 0) throw new SyntaxfehlerAbgelehnt(filePath, erg.blockierend);
+  return { hinweise: erg.hinweise, quittiert: erg.quittiert };
+}
+
+/** Signatur-Muster nach dem Schreiben: Befunde zurueckgeben und fuer die Tool-Antwort vormerken. Wirft nie. */
+async function befundeNachDemSchreiben(
+  project: string,
+  filePath: string,
+  alt: string,
+  neu: string,
+  agentId: string,
+  restoreVersionId: string | null,
+  zusatz: FehlerBefund[],
+): Promise<FehlerBefund[]> {
+  const befunde = [...zusatz, ...(await pruefeSignaturen({ project, filePath, alt, neu, restoreVersionId }))];
+  vormerkenBefunde(agentId, filePath, befunde);
+  return befunde;
+}
+
 export async function createFileInPg(
   project: string,
   filePath: string,
@@ -637,10 +696,14 @@ export async function createFileInPg(
   reason?: string,
   batchId?: number,
   editAction?: string,
-  enrichment?: VersionEnrichment
-): Promise<{ warnings?: ErrorPatternWarning[] }> {
+  enrichment?: VersionEnrichment,
+  einzel?: EinzelSchreibOptionen
+): Promise<SchreibErgebnis> {
   const resolvedAgentId = resolveAgentId(agentId);
   let warnings: ErrorPatternWarning[] | undefined;
+  // P15-T17 E-a: Syntaxfehler lehnen den Einzelschreibvorgang ab, bevor etwas geschrieben wird.
+  const syntax = await syntaxVorDemSchreiben(filePath, '', content, resolvedAgentId, einzel);
+  reason = quittierVermerk(reason, syntax.quittiert);
   // Neue Datei: alles daran ist neu, der Anfang steht also fuer die Aenderung.
   // Trotzdem gedeckelt — auch eine frisch angelegte Datei kann gross sein.
   if (resolvedAgentId) {
@@ -695,7 +758,13 @@ export async function createFileInPg(
 
   enqueueParseAndEmbed(project, filePath);
 
-  return warnings?.length ? { warnings } : {};
+  // P15-T17: Signatur-Muster (geschrieben wird trotzdem, error wird deutlich gemeldet).
+  let befunde: FehlerBefund[] = [];
+  if (resolvedAgentId && resolvedAgentId !== FS_AGENT_ID) {
+    befunde = await befundeNachDemSchreiben(project, filePath, '', content, resolvedAgentId, null, syntax.hinweise);
+  }
+
+  return { ...(warnings?.length ? { warnings } : {}), ...(befunde.length ? { befunde } : {}) };
 }
 
 /**
@@ -718,10 +787,19 @@ export async function updateFileInPg(
   editAction?: string,
   batchId?: number,
   reason?: string,
-  enrichment?: VersionEnrichment
-): Promise<{ warnings?: ErrorPatternWarning[] }> {
+  enrichment?: VersionEnrichment,
+  einzel?: EinzelSchreibOptionen
+): Promise<SchreibErgebnis> {
   const resolvedAgentId = resolveAgentId(agentId);
   let warnings: ErrorPatternWarning[] | undefined;
+  // P15-T17 E-a: Syntaxpruefung vor dem Schreiben (nur Einzelweg und nur, wenn fuer die Endung ein
+  // Pruefer registriert ist - sonst wird der alte Inhalt gar nicht erst gelesen).
+  let syntax: { hinweise: FehlerBefund[]; quittiert?: string } = { hinweise: [] };
+  if (einzel?.einzelweg && hatSyntaxPruefer(filePath)) {
+    const vorher = (await getFileContentFromPg(project, filePath)) ?? '';
+    syntax = await syntaxVorDemSchreiben(filePath, vorher, newContent, resolvedAgentId, einzel);
+    reason = quittierVermerk(reason, syntax.quittiert);
+  }
   // Die Fehlermuster-Pruefung laeuft NEBENLAEUFIG — ein Embedding hat im
   // synchronen Schreibpfad nichts zu suchen.
   //
@@ -748,6 +826,7 @@ export async function updateFileInPg(
   const client = await pool.connect();
   let rowCount = 0;
   let alterInhalt: string | undefined;
+  let versionIdVorher: string | undefined;
   try {
     await client.query('BEGIN');
 
@@ -757,7 +836,7 @@ export async function updateFileInPg(
     // RETURNING liefert den alten Stand gleich mit: damit kennt die Fehlermuster-
     // Pruefung weiter unten den geaenderten Abschnitt, ohne eine zweite Abfrage.
     // Bleibt die Zeile aus, war der Inhalt unveraendert — dann gibt es nichts zu pruefen.
-    const schnappschuss = await client.query<{ content: string }>(
+    const schnappschuss = await client.query<{ id: string; content: string }>(
       `INSERT INTO file_versions (project, file_path, content, content_hash, edit_action, agent_id, batch_id, size_bytes, reason, feature_tag, parent_version_id, git_commit_sha, agent_note)
        SELECT cf.project, cf.file_path, cf.content, cf.content_hash, $3, $4, $5,
               COALESCE(cf.file_size, OCTET_LENGTH(cf.content)), $7, $8, $9, $10, $11
@@ -766,7 +845,7 @@ export async function updateFileInPg(
          AND cf.file_path = $2
          AND cf.content IS NOT NULL
          AND cf.content_hash IS DISTINCT FROM $6
-       RETURNING content`,
+       RETURNING id::text AS id, content`,
       [
         project,
         filePath,
@@ -790,6 +869,7 @@ export async function updateFileInPg(
     );
     rowCount = result.rowCount ?? 0;
     alterInhalt = schnappschuss.rows[0]?.content;
+    versionIdVorher = schnappschuss.rows[0]?.id;
 
     await client.query('COMMIT');
   } catch (err) {
@@ -805,13 +885,17 @@ export async function updateFileInPg(
 
   // Geprueft wird nur der geaenderte Abschnitt, nicht die ganze Datei. Fehlt die
   // Snapshot-Zeile, war der Inhalt identisch — dann gibt es nichts zu pruefen.
+  let befunde: FehlerBefund[] = [];
   if (resolvedAgentId && resolvedAgentId !== FS_AGENT_ID && alterInhalt !== undefined) {
     pruefeFehlermusterNebenlaeufig(geaenderterAbschnitt(alterInhalt, newContent), resolvedAgentId, filePath);
+    // P15-T17: Signatur-Muster synchron auf den geaenderten Zeilen (geschrieben wird trotzdem).
+    befunde = await befundeNachDemSchreiben(project, filePath, alterInhalt, newContent, resolvedAgentId,
+      versionIdVorher ?? null, syntax.hinweise);
   }
 
   enqueueParseAndEmbed(project, filePath);
 
-  return warnings?.length ? { warnings } : {};
+  return { ...(warnings?.length ? { warnings } : {}), ...(befunde.length ? { befunde } : {}) };
 }
 
 /**

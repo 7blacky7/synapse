@@ -17,6 +17,7 @@ import {
   getFileContentFromPg,
   holeFehlermusterHinweise,
   resolveAgentId,
+  SyntaxfehlerAbgelehnt,
 } from '@synapse/core';
 
 /**
@@ -42,10 +43,12 @@ export async function filesRoutes(fastify: FastifyInstance): Promise<void> {
       file_path: string;
       content: string;
       agent_id?: string;
+      /** P15-T17 E-b: Syntaxbefund quittieren, NUR bei absichtlich fehlerhaftem Inhalt (Pflichtgrund). */
+      quittieren?: string;
     };
   }>('/api/projects/:name/files', async (request, reply) => {
     const { name } = request.params;
-    const { file_path, content, agent_id } = request.body;
+    const { file_path, content, agent_id, quittieren } = request.body;
 
     if (!file_path || content === undefined) {
       return reply.status(400).send({
@@ -55,7 +58,7 @@ export async function filesRoutes(fastify: FastifyInstance): Promise<void> {
     }
 
     try {
-      await createFileInPg(name, file_path, content, agent_id);
+      await createFileInPg(name, file_path, content, agent_id, undefined, undefined, undefined, undefined, { einzelweg: true, quittieren });
       const response: Record<string, unknown> = {
         success: true,
         message: `Datei "${file_path}" erstellt (${content.length} Zeichen)`,
@@ -63,6 +66,8 @@ export async function filesRoutes(fastify: FastifyInstance): Promise<void> {
       await haengeFehlermusterAn(response, agent_id);
       return response;
     } catch (error) {
+      // P15-T17 E-a: Syntaxfehler in geaenderten Zeilen -> nichts geschrieben, 422 mit Befund.
+      if (error instanceof SyntaxfehlerAbgelehnt) return reply.status(422).send(error.antwort());
       return reply.status(500).send({
         success: false,
         error: { message: String(error) },
@@ -89,6 +94,8 @@ export async function filesRoutes(fastify: FastifyInstance): Promise<void> {
       replace_all?: boolean;
       new_path?: string;
       agent_id?: string;
+      /** P15-T17 E-b: Syntaxbefund quittieren, NUR bei absichtlich fehlerhaftem Inhalt (Pflichtgrund). */
+      quittieren?: string;
     };
   }>('/api/projects/:name/files', async (request, reply) => {
     const { name } = request.params;
@@ -104,7 +111,9 @@ export async function filesRoutes(fastify: FastifyInstance): Promise<void> {
       replace_all,
       new_path,
       agent_id,
+      quittieren,
     } = request.body;
+    const einzel = { einzelweg: true, quittieren };
 
     if (!file_path) {
       return reply.status(400).send({
@@ -122,7 +131,7 @@ export async function filesRoutes(fastify: FastifyInstance): Promise<void> {
             error: { message: 'content ist erforderlich wenn keine operation angegeben' },
           });
         }
-        await updateFileInPg(name, file_path, content, agent_id);
+        await updateFileInPg(name, file_path, content, agent_id, 'update', undefined, undefined, undefined, einzel);
         const response: Record<string, unknown> = {
           success: true,
           message: `Datei "${file_path}" aktualisiert (${content.length} Zeichen)`,
@@ -162,7 +171,7 @@ export async function filesRoutes(fastify: FastifyInstance): Promise<void> {
               error: { message: String(err) },
             });
           }
-          await updateFileInPg(name, file_path, newContent, agent_id);
+          await updateFileInPg(name, file_path, newContent, agent_id, operation, undefined, undefined, undefined, einzel);
           const response: Record<string, unknown> = {
             success: true,
             message: `Zeilen ${line_start}-${line_end} in "${file_path}" ersetzt`,
@@ -187,7 +196,7 @@ export async function filesRoutes(fastify: FastifyInstance): Promise<void> {
               error: { message: String(err) },
             });
           }
-          await updateFileInPg(name, file_path, newContent, agent_id);
+          await updateFileInPg(name, file_path, newContent, agent_id, operation, undefined, undefined, undefined, einzel);
           const response: Record<string, unknown> = {
             success: true,
             message: `Inhalt nach Zeile ${after_line} in "${file_path}" eingefuegt`,
@@ -212,7 +221,7 @@ export async function filesRoutes(fastify: FastifyInstance): Promise<void> {
               error: { message: String(err) },
             });
           }
-          await updateFileInPg(name, file_path, newContent, agent_id);
+          await updateFileInPg(name, file_path, newContent, agent_id, operation, undefined, undefined, undefined, einzel);
           const response: Record<string, unknown> = {
             success: true,
             message: `Zeilen ${line_start}-${line_end} in "${file_path}" geloescht`,
@@ -239,7 +248,7 @@ export async function filesRoutes(fastify: FastifyInstance): Promise<void> {
               error: { message: sr.error },
             });
           }
-          await updateFileInPg(name, file_path, sr.content, agent_id);
+          await updateFileInPg(name, file_path, sr.content, agent_id, operation, undefined, undefined, undefined, einzel);
           const response: Record<string, unknown> = {
             success: true,
             count: sr.count,
@@ -284,6 +293,8 @@ export async function filesRoutes(fastify: FastifyInstance): Promise<void> {
         error: { message: `Unbekannte operation: "${operation}"` },
       });
     } catch (error) {
+      // P15-T17 E-a: Syntaxfehler in geaenderten Zeilen -> nichts geschrieben, 422 mit Befund.
+      if (error instanceof SyntaxfehlerAbgelehnt) return reply.status(422).send(error.antwort());
       return reply.status(500).send({
         success: false,
         error: { message: String(error) },

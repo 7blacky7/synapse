@@ -27,6 +27,7 @@
 
 import { getPool } from '../db/client.js';
 import type { ErrorPatternWarning } from './error-patterns.js';
+import type { FehlerBefund } from './fehlermuster-pruefung.js';
 
 /** Ein ausgelieferter Hinweis, wie er in der Tool-Antwort steht. */
 export interface FehlermusterHinweis {
@@ -37,6 +38,19 @@ export interface FehlermusterHinweis {
   was: string;
   /** Wie: Loesung aus dem Muster. */
   wie: string;
+  /**
+   * P15-T17: 'thema' = Embedding-Aehnlichkeit (kein sicherer Befund), 'muster' = Signatur-Treffer in den
+   * geaenderten Zeilen, 'syntax' = Syntaxbefund (nachgeliefert oder quittiert).
+   */
+  quelle?: 'thema' | 'muster' | 'syntax';
+  titel?: string;
+  warum?: string;
+  wo?: string[];
+  zeilen?: [number, number];
+  pruefer?: string;
+  quittiert_grund?: string;
+  /** Fertiger Aufruf, um den Stand vor dem Schreiben zurueckzuholen (bei severity error). */
+  restore?: string;
 }
 
 export interface FehlermusterAuslieferung {
@@ -46,9 +60,33 @@ export interface FehlermusterAuslieferung {
 }
 
 interface Ausstehend {
-  warnung: ErrorPatternWarning;
+  /** Themenhinweis aus checkErrorPatterns */
+  warnung?: ErrorPatternWarning;
+  /** P15-T17: Befund aus der Signatur- bzw. Syntaxpruefung */
+  befund?: FehlerBefund;
   datei: string;
   zeit: number;
+}
+
+function schluessel(a: Ausstehend): string {
+  return a.befund ? `${a.befund.pattern_id ?? a.befund.pruefer}|${a.datei}` : `${a.warnung?.id}|${a.datei}`;
+}
+
+/**
+ * P15-T17: Befunde der Signatur-/Syntaxpruefung fuer den Agenten vormerken (sofort, vor den
+ * Themenhinweisen). Derselbe Befund an derselben Datei ersetzt den aelteren (Zeilen koennen sich
+ * verschoben haben). Wirft nie.
+ */
+export function vormerkenBefunde(agentId: string | null | undefined, datei: string, befunde: FehlerBefund[]): void {
+  if (!agentId || befunde.length === 0) return;
+  const neu: Ausstehend[] = befunde.map((befund) => ({ befund, datei, zeit: Date.now() }));
+  const neueSchluessel = new Set(neu.map(schluessel));
+  const liste = (ausstehend.get(agentId) ?? []).filter((a) => !neueSchluessel.has(schluessel(a)));
+  const befundListe = [...liste.filter((a) => a.befund), ...neu];
+  const rest = liste.filter((a) => !a.befund);
+  const gesamt = [...befundListe, ...rest];
+  while (gesamt.length > MAX_JE_AGENT) gesamt.pop();
+  ausstehend.set(agentId, gesamt);
 }
 
 function zahlAusEnv(name: string, standard: number): number {
@@ -84,7 +122,9 @@ export function verfolgeFehlermusterPruefung(
       const liste = ausstehend.get(agentId) ?? [];
       for (const warnung of treffer) {
         // Dasselbe Muster an derselben Datei nur einmal vormerken.
-        if (liste.some((a) => a.warnung.id === warnung.id && a.datei === datei)) continue;
+        if (liste.some((a) => a.warnung?.id === warnung.id && a.datei === datei)) continue;
+        // Ein Signatur-Befund desselben Musters an derselben Datei ist genauer als der Themenhinweis.
+        if (liste.some((a) => a.befund?.pattern_id === warnung.id && a.datei === datei)) continue;
         liste.push({ warnung, datei, zeit: Date.now() });
       }
       while (liste.length > MAX_JE_AGENT) liste.shift();
@@ -131,21 +171,55 @@ export async function holeFehlermusterHinweise(agentId: string | undefined): Pro
     else ausstehend.delete(agentId);
     if (jetztAus.length === 0) return null;
 
-    await vermerkeGesehen(agentId, [...new Set(jetztAus.map((a) => a.warnung.id))]);
+    // gesehen gilt nur fuer Themenhinweise (Embedding); Signatur-Befunde kommen bei jedem Treffer.
+    await vermerkeGesehen(agentId, [...new Set(jetztAus.flatMap((a) => (a.warnung ? [a.warnung.id] : [])))]);
 
-    const treffer: FehlermusterHinweis[] = jetztAus.map((a) => ({
-      pattern_id: a.warnung.id,
-      severity: a.warnung.severity,
-      datei: a.datei,
-      was: a.warnung.description,
-      wie: a.warnung.fix,
-    }));
+    const treffer: FehlermusterHinweis[] = jetztAus.map((a) => (a.befund
+      ? {
+          pattern_id: a.befund.pattern_id ?? a.befund.pruefer,
+          severity: a.befund.severity,
+          datei: a.datei,
+          was: a.befund.was,
+          wie: a.befund.wie ?? '',
+          quelle: a.befund.quelle,
+          titel: a.befund.titel,
+          warum: a.befund.warum,
+          wo: a.befund.wo,
+          zeilen: a.befund.zeilen,
+          pruefer: a.befund.pruefer,
+          quittiert_grund: a.befund.quittiert_grund,
+          restore: a.befund.restore,
+        }
+      : {
+          pattern_id: a.warnung!.id,
+          severity: a.warnung!.severity,
+          datei: a.datei,
+          was: a.warnung!.description,
+          wie: a.warnung!.fix,
+          quelle: 'thema' as const,
+        }));
+    const sicher = treffer.filter((t) => t.quelle === 'muster' || t.quelle === 'syntax');
+    const fehlerTreffer = sicher.filter((t) => t.severity === 'error');
+    const thema = treffer.length - sicher.length;
+    const teile: string[] = [];
+    if (fehlerTreffer.length > 0) {
+      teile.push(`ACHTUNG: ${fehlerTreffer.length} Fehlermuster mit severity error in deinen geaenderten Zeilen `
+        + '(Signatur-Treffer, kein Themenverdacht). GESCHRIEBEN wurde trotzdem: korrigiere die Stelle nach "wie" '
+        + 'oder hole den Stand vorher mit "restore" zurueck.');
+    }
+    if (sicher.length > fehlerTreffer.length) {
+      teile.push(`${sicher.length - fehlerTreffer.length} Signatur-Treffer (warning) in deinen geaenderten Zeilen: `
+        + 'pruefe "was" und wende ggf. "wie" an.');
+    }
+    if (thema > 0) {
+      teile.push(`${thema} bekannte(s) Fehlermuster passt/passen THEMATISCH zu deiner letzten Aenderung `
+        + '(Embedding-Aehnlichkeit, kein sicherer Fehlerbefund, quelle thema). Pruefe die genannte Datei gegen "was".');
+    }
+    teile.push('Geschrieben wurde trotzdem; ein Muster sperrt im Einzelschreibweg nichts.');
+    if (rest.length > 0) teile.push(`Weitere ${rest.length} Hinweis(e) folgen mit der naechsten Antwort.`);
     return {
       anzahl: treffer.length,
-      hinweis: 'Bekannte Fehlermuster passen THEMATISCH zu deiner letzten Aenderung (Embedding-Aehnlichkeit, '
-        + 'kein sicherer Fehlerbefund). Pruefe die genannte Datei gegen "was" und wende ggf. "wie" an. '
-        + 'Geschrieben wurde trotzdem; severity sperrt hier nichts.'
-        + (rest.length > 0 ? ` Weitere ${rest.length} Hinweis(e) folgen mit der naechsten Antwort.` : ''),
+      hinweis: teile.join(' '),
       treffer,
     };
   } catch (err) {
