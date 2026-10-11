@@ -11,12 +11,17 @@
  *   Ausgabe: vorher -> nachher je Muster, Dubletten-Gruppen, Memory-Ziele.
  *
  * AUSFUEHREN (nur nach Freigabe des Koordinators):
- *   node scripts/fehlermuster-migration.mjs --ausfuehren --freigabe "<wer, wann>"
- *   Eine Transaktion fuer alle UPDATEs; danach je Ziel-Projekt EIN memory (writeMemory) mit den stillgelegten Mustern.
+ *   node scripts/fehlermuster-migration.mjs --ausfuehren --freigabe "<wer, wann>" --sicherung <datei.json>
+ *   1. SICHERUNG: alle error_patterns-Zeilen (SELECT *) als JSON nach <datei.json>, zurueckgelesen und gezaehlt.
+ *      Ohne --sicherung oder bei abweichender Zeilenzahl: Abbruch vor jeder Aenderung.
+ *   2. Eine Transaktion fuer alle UPDATEs und DELETEs (aktion loeschen).
+ *   3. Danach die Qdrant-Vektoren der geloeschten Muster entfernen (best effort) und je Ziel-Projekt
+ *      EIN memory (writeMemory) mit den stillgelegten Mustern.
  *   Bricht ab, wenn die E1-Spalten fehlen (Schema noch nicht deployt) oder der Trockenlauf Fehler hat.
- *   Nichts wird geloescht (User-Entscheidung E-d).
+ *   Geloescht wird NUR, was der Plan mit aktion 'loeschen' fuehrt (User-Freigabe 37673ac6: die 35 saar-quiz-
+ *   Muster); alles andere bleibt (E-d).
  */
-import { writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { PLAN, MEMORY_ZIELE } from './fehlermuster-migration-plan.mjs';
@@ -63,7 +68,8 @@ export function planAufloesen(rows, plan, erkennungsModul) {
       if (!e.selbsttest.ok) fehler.push(`${e.id}: Selbsttest: ${e.selbsttest.fehler.join('; ')}`);
     }
     if (['aktiv', 'themenhinweis'].includes(e.aktion) && !e.titel) fehler.push(`${e.id}: titel fehlt`);
-    if (e.aktion === 'stilllegen' && !e.grund) fehler.push(`${e.id}: grund fehlt`);
+    if (['stilllegen', 'loeschen'].includes(e.aktion) && !e.grund) fehler.push(`${e.id}: grund fehlt`);
+    if (e.aktion === 'loeschen' && (e.ziel_projekt || e.ersetzt_durch)) fehler.push(`${e.id}: loeschen hat weder ziel_projekt noch ersetzt_durch`);
     if (e.ziel_projekt && !MEMORY_ZIELE[e.ziel_projekt]) fehler.push(`${e.id}: unbekanntes ziel_projekt ${e.ziel_projekt}`);
   }
   // Kreuzprobe: Rauschen gegen korrekte Beispiele anderer Muster
@@ -97,6 +103,8 @@ export function zielZustand(e) {
     case 'stilllegen':
       return { ...basis, status: 'stillgelegt', ersetzt_durch: e.ersetzt_durch_voll ?? null,
         stillgelegt_grund: e.grund, statistik: { migriert: 'P15-T17 E1', memory_projekt: e.ziel_projekt ?? null } };
+    case 'loeschen':
+      return { ...basis, loeschen: true, grund: e.grund };
     default:
       throw new Error('unbekannte aktion ' + e.aktion);
   }
@@ -131,7 +139,7 @@ function kurzZeile(e) {
   const r = e.row;
   const vorher = `${r.severity}/${r.model_scope}`;
   const z = zielZustand(e);
-  let nachher = z.status;
+  let nachher = z.loeschen ? 'LOESCHEN' : z.status;
   if (z.severity && z.severity !== r.severity) nachher += ` (severity ${r.severity}->${z.severity})`;
   if (z.ersetzt_durch) nachher += ` -> ${e.ersetzt_durch}`;
   if (e.ziel_projekt) nachher += ` [memory ${e.ziel_projekt}]`;
@@ -139,19 +147,40 @@ function kurzZeile(e) {
   return `${e.voll_id.slice(0, 8)} | ${vorher} -> ${nachher} | ${titel}`;
 }
 
-/** Fuehrt die Migration in einer Transaktion aus. writeMemory(project, name, content, category, tags). */
-export async function ausfuehren(pool, eintraege, writeMemory) {
+/** Sichert alle error_patterns-Zeilen als JSON und prueft die Datei durch Zuruecklesen. */
+export async function sichern(pool, pfad) {
+  if (!pfad) throw new Error('Sicherung fehlt: --sicherung <datei.json> angeben (Pflicht vor dem Ausfuehren)');
+  const rows = (await pool.query('SELECT * FROM error_patterns ORDER BY created_at, id')).rows;
+  writeFileSync(pfad, JSON.stringify({ tabelle: 'error_patterns', erstellt: new Date().toISOString(), anzahl: rows.length, zeilen: rows }, null, 1));
+  const zurueck = JSON.parse(readFileSync(pfad, 'utf8'));
+  if (zurueck.zeilen?.length !== rows.length) throw new Error(`Sicherung ${pfad} unvollstaendig (${zurueck.zeilen?.length} von ${rows.length})`);
+  return { pfad, zeilen: rows.length };
+}
+
+/**
+ * Fuehrt die Migration in einer Transaktion aus. writeMemory(project, name, content, category, tags).
+ * optionen.sicherungPfad (Pflicht): JSON-Sicherung aller Zeilen VOR jeder Aenderung.
+ * optionen.loescheVektor(id): entfernt den Qdrant-Vektor eines geloeschten Musters (nach dem COMMIT, best effort).
+ */
+export async function ausfuehren(pool, eintraege, writeMemory, optionen = {}) {
   const spalten = (await pool.query(
     `SELECT column_name FROM information_schema.columns WHERE table_name = 'error_patterns'`)).rows.map((r) => r.column_name);
   const fehlend = E1_SPALTEN.filter((s) => !spalten.includes(s));
   if (fehlend.length) throw new Error('E1-Spalten fehlen (Schema noch nicht deployt): ' + fehlend.join(', '));
+  const sicherung = await sichern(pool, optionen.sicherungPfad);
   const client = await pool.connect();
   let geaendert = 0;
+  const geloescht = [];
   try {
     await client.query('BEGIN');
     await client.query("SET LOCAL lock_timeout = '5s'");
     for (const e of eintraege) {
       const z = zielZustand(e);
+      if (z.loeschen) {
+        const del = await client.query('DELETE FROM error_patterns WHERE id = $1', [z.id]);
+        if (del.rowCount) geloescht.push(z.id);
+        continue;
+      }
       const res = await client.query(
         `UPDATE error_patterns SET
            status = $2, titel = COALESCE($3, titel), warum = COALESCE($4, warum),
@@ -174,12 +203,18 @@ export async function ausfuehren(pool, eintraege, writeMemory) {
   } finally {
     client.release();
   }
+  const vektorFehler = [];
+  if (optionen.loescheVektor) {
+    for (const id of geloescht) {
+      try { await optionen.loescheVektor(id); } catch (err) { vektorFehler.push(`${id}: ${err?.message ?? err}`); }
+    }
+  }
   const memories = [];
   for (const m of memoryInhalte(eintraege)) {
     await writeMemory(m.projekt, m.name, m.content, m.category, m.tags);
     memories.push({ projekt: m.projekt, name: m.name, anzahl: m.anzahl });
   }
-  return { geaendert, memories };
+  return { geaendert, geloescht: geloescht.length, sicherung, vektor_fehler: vektorFehler, memories };
 }
 
 async function main() {
@@ -187,6 +222,7 @@ async function main() {
   const ausf = args.includes('--ausfuehren');
   const freigabe = args.includes('--freigabe') ? args[args.indexOf('--freigabe') + 1] : null;
   const berichtPfad = args.includes('--bericht') ? args[args.indexOf('--bericht') + 1] : null;
+  const sicherungPfad = args.includes('--sicherung') ? args[args.indexOf('--sicherung') + 1] : null;
   const erkennung = await lade(dist, 'services', 'fehlermuster-erkennung.js');
   const db = await lade(dist, 'db', 'client.js');
   const pool = db.getPool();
@@ -196,8 +232,8 @@ async function main() {
 
   const zaehl = (a) => eintraege.filter((e) => e.aktion === a).length;
   console.log(`MUSTER in DB: ${rows.length} | im Plan: ${eintraege.length}`);
-  console.log(`aktiv ${zaehl('aktiv')} | themenhinweis ${zaehl('themenhinweis')} | dublette ${zaehl('dublette')} | stilllegen ${zaehl('stilllegen')}`);
-  for (const a of ['aktiv', 'themenhinweis', 'dublette', 'stilllegen']) {
+  console.log(`aktiv ${zaehl('aktiv')} | themenhinweis ${zaehl('themenhinweis')} | dublette ${zaehl('dublette')} | stilllegen ${zaehl('stilllegen')} | loeschen ${zaehl('loeschen')}`);
+  for (const a of ['aktiv', 'themenhinweis', 'dublette', 'stilllegen', 'loeschen']) {
     console.log(`\n== ${a.toUpperCase()} ==`);
     for (const e of eintraege.filter((x) => x.aktion === a)) console.log(kurzZeile(e));
   }
@@ -221,9 +257,15 @@ async function main() {
   if (!ausf) { console.log('\nTROCKENLAUF - nichts geschrieben.'); await pool.end(); process.exit(fehler.length ? 1 : 0); }
   if (!freigabe) { console.error('ABBRUCH: --ausfuehren braucht --freigabe "<wer, wann>"'); await pool.end(); process.exit(2); }
   if (fehler.length) { console.error('ABBRUCH: Trockenlauf hat Fehler.'); await pool.end(); process.exit(2); }
+  if (!sicherungPfad) { console.error('ABBRUCH: --ausfuehren braucht --sicherung <datei.json> (Sicherung aller error_patterns vor der Aenderung)'); await pool.end(); process.exit(2); }
   const { writeMemory } = await lade(dist, 'services', 'memory.js');
-  const erg = await ausfuehren(pool, eintraege, writeMemory);
-  console.log(`AUSGEFUEHRT (Freigabe: ${freigabe}): ${erg.geaendert} Muster geaendert, memories: ${JSON.stringify(erg.memories)}`);
+  const { deleteVector } = await lade(dist, 'qdrant', 'operations.js');
+  const { COLLECTIONS } = await lade(dist, 'types', 'index.js');
+  const erg = await ausfuehren(pool, eintraege, writeMemory, {
+    sicherungPfad, loescheVektor: (id) => deleteVector(COLLECTIONS.globalErrorPatterns, id) });
+  console.log(`SICHERUNG: ${erg.sicherung.pfad} (${erg.sicherung.zeilen} Zeilen)`);
+  console.log(`AUSGEFUEHRT (Freigabe: ${freigabe}): ${erg.geaendert} Muster geaendert, ${erg.geloescht} geloescht, Vektor-Fehler ${erg.vektor_fehler.length}, memories: ${JSON.stringify(erg.memories)}`);
+  for (const f of erg.vektor_fehler) console.error('Vektor nicht geloescht: ' + f);
   await pool.end();
   process.exit(0);
 }

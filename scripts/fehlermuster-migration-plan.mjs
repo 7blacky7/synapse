@@ -1,6 +1,8 @@
 /**
  * P15-T17 E1: Migrationsplan der Bestands-Fehlermuster (Stand 11.10.2026, 139 Muster).
- * Grundlage: Konzept thought 6236baf2, User-Entscheidungen 215ff1dc (E-d: nichts loeschen).
+ * Grundlage: Konzept thought 6236baf2, User-Entscheidungen 215ff1dc (E-d: nichts loeschen),
+ * User-Freigabe 37673ac6 (11.10.2026): Liste freigegeben, AUSNAHME die 35 saar-quiz-Muster werden
+ * geloescht (keine saar-quiz-memory).
  *
  * aktion:
  *   aktiv          Signatur mit Selbsttest (beispiel_falsch trifft, beispiel_richtig nicht). severity -> warning
@@ -8,6 +10,7 @@
  *   themenhinweis  bleibt Embedding-Themenhinweis, bekommt einen titel.
  *   dublette       status stillgelegt, ersetzt_durch = kanonisches Muster, grund 'Dublette von <id>'.
  *   stilllegen     status stillgelegt + grund; ziel_projekt/memory: Inhalt wandert als memory dorthin.
+ *   loeschen       Zeile wird geloescht (PG + Qdrant-Vektor), nur mit ausdruecklicher User-Freigabe.
  *
  * ids sind 8-stellige Praefixe; das Migrationsskript loest sie eindeutig auf.
  * Fuehrt NICHTS aus - Ausfuehrung nur ueber scripts/fehlermuster-migration.mjs nach Freigabe.
@@ -16,12 +19,6 @@ const R = String.raw;
 
 // Memory-Ziele fuer stillgelegte Muster (E-d).
 export const MEMORY_ZIELE = {
-  'saar-quiz': {
-    name: 'fehlermuster-saar-quiz-stillgelegt',
-    category: 'documentation',
-    tags: ['fehlermuster', 'stillgelegt', 'P15-T17'],
-    kopf: 'Projektspezifische Fehlermuster aus dem Saar-Quiz-Aufbau (28./29.03.2026), am 11.10.2026 aus der globalen Fehlermuster-Pruefung genommen (P15-T17, E-d: nicht geloescht, hier nachlesbar; global status stillgelegt).',
-  },
   synapse: {
     name: 'fehlermuster-agenten-prozessregeln',
     category: 'documentation',
@@ -245,11 +242,11 @@ export const PLAN = [
   { id: '61be11c1', aktion: 'stilllegen', ziel_projekt: 'synapse',
     grund: 'Einzelbefund (min/max-Pruefung einer konkreten validate-Funktion), kein uebertragbares Muster. Nachlesbar in memory fehlermuster-agenten-prozessregeln.' },
 
-  // ---------------------------------------------------------------- stilllegen: projektspezifisch saar-quiz
+  // ---------------------------------------------------------------- loeschen: projektspezifisch saar-quiz (User-Freigabe 37673ac6)
   ...['37b62f49', 'ad628b98', 'e72eb691', '16c58dea', 'afacd05a', '7108551f', '2b66c94b', '24f0ac3b', '657521c8',
       '88872c74', '37ad8849', 'd7c0c3d4', '868f391d', 'ea091c5b', '9fc9b9fc', 'bafa0843', '4e56b045', '08450015',
       '85199595', 'd0c0c9e7', 'fca10acf', '8a8469ca', '7526da26', '1a7ce931', '5c7d9a85', '2edcebb8', 'c309dfab',
       '0756f830', 'ff18572b', 'bc8ed47b', '7c6a763f', '540817ec', '54ede2df', '2560e145', 'c7b7ab3a',
-  ].map((id) => ({ id, aktion: 'stilllegen', ziel_projekt: 'saar-quiz',
-    grund: 'Projektspezifischer Befund aus dem Saar-Quiz-Aufbau (konkrete Datei/Inhalt/Umgebung), nicht uebertragbar. Nachlesbar in memory fehlermuster-saar-quiz-stillgelegt (Projekt saar-quiz).' })),
+  ].map((id) => ({ id, aktion: 'loeschen',
+    grund: 'Projektspezifischer Befund aus dem Saar-Quiz-Aufbau (konkrete Datei/Inhalt/Umgebung), nicht uebertragbar. Geloescht nach User-Freigabe 11.10.2026 (thought 37673ac6), keine memory.' })),
 ];
