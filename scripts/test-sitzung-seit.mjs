@@ -36,6 +36,10 @@
  *       kein Laufzeittest (ein echter Spawn startet einen Wrapper-Prozess).
  * POSITIVKONTROLLE: am alten Stand (vor P15-T30) schlagen S1, S2 (Muster), S3, S4, S6, S9 fehl.
  *   Am Stand vor P15-T32 schlagen S11 (ausser Kontrolle), S12-S17 fehl.
+ *   P15-T32 Folge (Onboarding erneut): S18 sitzung:'neu' -> registerAgent meldet im SELBEN Prozess wieder
+ *       ersten Besuch, auch bei aktivem Ruhefenster und Eintrag unter alter Server-Kennung; 'fortsetzung' und
+ *       ohne Parameter bleibt es bekannt. S19 REST: index_stats mit sitzung:'neu' traegt agentOnboarding erneut.
+ *   Am Stand vor der Folge schlagen S18 (ausser Kontrollen) und S19 (dritter Aufruf) fehl.
  * ABSICHERUNG: nur Test-DB (...:5433/synapse_test); Ollama und Qdrant sind eigene Fakes.
  *   expireIdleAgentSessions(8) wirkt auf ALLE Sessions der Test-DB (nur Status, keine Loeschung).
  * AUFRUF: set -a; . <test-db.env>; set +a; node scripts/test-sitzung-seit.mjs
@@ -54,7 +58,7 @@ if (!/:5433\/synapse_test(\?|$)/.test(DB_URL)) {
 const MODELL = 'fake-t30-embed:latest';
 const MUSTER = 'f0f0f0f0-3030-4e00-8a30-0000000000a1';
 const P = 'zz-sitzung-t30';
-const A = Object.fromEntries(['s1', 's2', 's3', 's4', 's5', 's6', 's7', 's8', 's10a', 's10b', 's11', 's12', 's13', 's15', 's15b', 's16'].map((k) => [k, 'zz-t30-' + k]));
+const A = Object.fromEntries(['s1', 's2', 's3', 's4', 's5', 's6', 's7', 's8', 's10a', 's10b', 's11', 's12', 's13', 's15', 's15b', 's16', 's18', 's18r', 's18f', 's18o', 's19'].map((k) => [k, 'zz-t30-' + k]));
 const AGENTEN = Object.values(A);
 
 const ollama = http.createServer((req, res) => {
@@ -90,6 +94,8 @@ const qdrant = http.createServer((req, res) => {
         { id: MUSTER, version: 0, score: 0.8, payload: { id: MUSTER, model_scope: 'all', severity: 'error' } },
       ] }));
     }
+    // P15-T32 Folge: Scroll leer beantworten, sonst scheitert das REST-Onboarding (Regel-Liste) still und S19 sieht nie agentOnboarding.
+    if (/\/points\/scroll$/.test(u.pathname)) return res.end(JSON.stringify({ status: 'ok', time: 0, result: { points: [], next_page_offset: null } }));
     res.end(JSON.stringify({ status: 'ok', time: 0, result: {} }));
   });
 });
@@ -403,6 +409,62 @@ try {
   const { readFileSync } = await import('node:fs');
   const spez = readFileSync(join(repo, 'packages', 'mcp-server', 'dist', 'tools', 'specialists.js'), 'utf8');
   pruefe(/beginneSitzung\(name, project, 'neu'\)/.test(spez), "S17 spawnSpecialistTool ruft beginneSitzung(name, project, 'neu') (Quelltext-Anker, kein Laufzeittest)");
+
+  // ---- S18: sitzung:'neu' liefert das Onboarding im selben Prozess erneut ----
+  const signal = (agent, sitzungArt) => (hatSignal ? CH.wendeSitzungsSignalAn({ agentId: agent, project: P, sitzung: sitzungArt }) : undefined);
+  const inst18 = 'zz-t32f-inst-' + Date.now();
+  const erst18 = await PS.registerAgent(P, A.s18, inst18);
+  const zweit18 = await PS.registerAgent(P, A.s18, inst18);
+  pruefe(erst18 === true && zweit18 === false, 'S18 Kontrolle: erster Aufruf Onboarding, zweiter im selben Prozess nicht', { erst18, zweit18 });
+  await signal(A.s18, 'neu');
+  const dritt18 = await PS.registerAgent(P, A.s18, inst18);
+  pruefe(dritt18 === true, "S18 sitzung 'neu': Onboarding im selben Prozess erneut (wiederverwendeter Name bekommt die Regeln)", dritt18);
+  pruefe((await PS.registerAgent(P, A.s18, inst18)) === false, "S18 nach dem erneuten Onboarding wieder ruhig");
+  // fortsetzung und ohne Parameter: bleibt bekannt
+  await PS.registerAgent(P, A.s18f, inst18);
+  await signal(A.s18f, 'fortsetzung');
+  pruefe((await PS.registerAgent(P, A.s18f, inst18)) === false, "S18 sitzung 'fortsetzung': kein erneutes Onboarding");
+  await PS.registerAgent(P, A.s18o, inst18);
+  await signal(A.s18o, undefined);
+  pruefe((await PS.registerAgent(P, A.s18o, inst18)) === false, 'S18 ohne sitzung: kein erneutes Onboarding');
+  // Ruhefenster aktiv + Eintrag unter alter Server-Kennung (Lage nach einem Deploy)
+  const ruheAlt18 = (await pool.query('SELECT ruhe_bis, gesetzt_von, gesetzt_am FROM onboarding_ruhe WHERE id = 1')).rows[0] ?? null;
+  try {
+    await pool.query(`INSERT INTO onboarding_ruhe (id, ruhe_bis, gesetzt_von) VALUES (1, NOW() + interval '10 minutes', 'test-p15-t32')
+      ON CONFLICT (id) DO UPDATE SET ruhe_bis = EXCLUDED.ruhe_bis, gesetzt_von = EXCLUDED.gesetzt_von`);
+    await pool.query(`INSERT INTO agent_onboardings (agent_id, project, server_instance_id) VALUES ($1, $2, 'zz-t32f-inst-alt')`, [A.s18r, P]);
+    const instNeu = 'zz-t32f-inst-neu-' + Date.now();
+    const kontrolle18r = await PS.registerAgent(P, A.s18r, instNeu);
+    pruefe(kontrolle18r === false, 'S18 Kontrolle Ruhefenster: bekannter Agent bekommt nach Neustart kein Onboarding', kontrolle18r);
+    await signal(A.s18r, 'neu');
+    const neu18r = await PS.registerAgent(P, A.s18r, instNeu);
+    pruefe(neu18r === true, "S18 sitzung 'neu' bei aktivem Ruhefenster: Onboarding trotzdem erneut", neu18r);
+  } finally {
+    if (ruheAlt18) await pool.query('UPDATE onboarding_ruhe SET ruhe_bis = $1, gesetzt_von = $2, gesetzt_am = $3 WHERE id = 1', [ruheAlt18.ruhe_bis, ruheAlt18.gesetzt_von, ruheAlt18.gesetzt_am]);
+    else await pool.query('DELETE FROM onboarding_ruhe WHERE id = 1');
+  }
+
+  // ---- S19: REST Ende-zu-Ende, agentOnboarding in der index_stats-Antwort ----
+  const app19 = Fastify({ logger: false });
+  await app19.register(mcpRoutes);
+  await app19.ready();
+  const rest19 = async (args) => {
+    const res = await app19.inject({ method: 'POST', url: '/', payload: { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'admin', arguments: { action: 'index_stats', project: P, agent_id: A.s19, ...args } } } });
+    try { return JSON.parse(res.json().result.content[0].text); } catch { return res.json(); }
+  };
+  try {
+    const a19 = await rest19({});
+    const b19 = await rest19({});
+    pruefe(a19?.agentOnboarding?.isFirstVisit === true && b19?.agentOnboarding === undefined, 'S19 Kontrolle REST: erstes index_stats mit Onboarding, zweites ohne', { a: !!a19?.agentOnboarding, b: !!b19?.agentOnboarding });
+    const c19 = await rest19({ sitzung: 'fortsetzung' });
+    pruefe(c19?.agentOnboarding === undefined, "S19 REST sitzung 'fortsetzung': kein Onboarding", !!c19?.agentOnboarding);
+    const d19 = await rest19({ sitzung: 'neu' });
+    pruefe(d19?.agentOnboarding?.isFirstVisit === true && d19?.sitzung?.art === 'neu', "S19 REST sitzung 'neu': agentOnboarding erneut in der Antwort", { onboarding: !!d19?.agentOnboarding, sitzung: d19?.sitzung });
+    const e19 = await rest19({});
+    pruefe(e19?.agentOnboarding === undefined, 'S19 REST danach wieder ohne Onboarding', !!e19?.agentOnboarding);
+  } finally {
+    await app19.close();
+  }
 } catch (err) {
   fehler++;
   console.log('FEHLER  Ausnahme: ' + (err?.stack ?? err));

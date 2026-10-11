@@ -22,6 +22,7 @@
 
 import { getPool } from '../db/client.js';
 import { resolveCutoff } from './model-cutoffs.js';
+import { vergissOnboarding } from './project-status.js';
 
 export interface ChatMessage {
   id: number;
@@ -174,6 +175,8 @@ export interface SitzungsBeginn {
   aktivSeit: string;
   /** Status VOR dem Aufruf; null = Name war unbekannt. */
   vorherStatus: string | null;
+  /** Nur 'neu': Onboarding wird beim naechsten Tool-Aufruf erneut ausgeliefert (false = Zuruecksetzen scheiterte). */
+  onboardingErneut: boolean;
 }
 
 /**
@@ -194,7 +197,19 @@ export async function beginneSitzung(id: string, project: string, art: SitzungsA
   );
   const z = r.rows[0];
   console.error(`[Synapse Chat] Sitzung "${art}" fuer "${id}" (${project}), vorher: ${z?.vorher_status ?? 'unbekannt'}`);
+  // P15-T32 Folge: ein Spawn bekommt die Projekt-Regeln, auch unter altem Namen (onboardedKeys/Ruhefenster).
+  // 'fortsetzung' laesst das Onboarding unberuehrt. Scheitert das Zuruecksetzen, bleibt die Sitzung gesetzt.
+  let onboardingErneut = false;
+  if (art === 'neu') {
+    try {
+      await vergissOnboarding(project, id);
+      onboardingErneut = true;
+    } catch (err) {
+      console.error(`[Synapse Chat] Onboarding fuer "${id}" nicht zurueckgesetzt: ${err}`);
+    }
+  }
   return {
+    onboardingErneut,
     agentId: id,
     art,
     registeredAt: new Date(z.registered_at).toISOString(),
@@ -233,7 +248,8 @@ export async function wendeSitzungsSignalAn(eingabe: {
     sitzung_seit: b.sitzungSeit,
     aktiv_seit: b.aktivSeit,
     vorher_status: b.vorherStatus,
-    wirkung,
+    ...(art === 'neu' ? { onboarding_erneut: b.onboardingErneut } : {}),
+    wirkung: art === 'neu' && b.onboardingErneut ? `${wirkung} Die Projekt-Regeln (agentOnboarding) kommen erneut.` : wirkung,
   };
 }
 

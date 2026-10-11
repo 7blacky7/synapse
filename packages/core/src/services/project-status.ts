@@ -485,6 +485,31 @@ export async function registerAgent(
 }
 
 /**
+ * P15-T32 Folge: vergisst das Onboarding eines Agenten in diesem Projekt, damit der NAECHSTE Tool-Aufruf
+ * (registerAgent) wieder "erster Besuch" meldet und die Projekt-Regeln ausliefert.
+ * Aufgerufen NUR vom Sitzungs-Signal 'neu' (chat.ts beginneSitzung): ein frisch gespawnter Agent unter einem
+ * schon benutzten Namen bekam sonst im selben Prozess (onboardedKeys) bzw. nach einem Neustart im
+ * Ruhefenster (Eintrag unter alter Server-Kennung) KEINE Regeln.
+ *   - onboardedKeys: alle Schluessel "<instanz>:<agent>:<projekt>" dieses Prozesses fuer Agent+Projekt.
+ *     Andere Prozesse behalten ihren Speicher; die Regeln kommen in der Antwort des Prozesses, der das
+ *     Signal bearbeitet (index_stats laeuft mit Onboarding in derselben Antwort).
+ *   - agent_onboardings: ALLE Zeilen fuer Agent+Projekt (sonst greift das Ruhefenster ueber die alte
+ *     Server-Kennung). Das Rollen-Protokoll dieser Zeilen gehoerte zum Vorgaenger gleichen Namens.
+ * @returns Anzahl geloeschter agent_onboardings-Zeilen
+ */
+export async function vergissOnboarding(project: string, agentId: string): Promise<number> {
+  const endung = `:${agentId}:${project}`;
+  for (const key of [...onboardedKeys]) {
+    if (key.endsWith(endung)) onboardedKeys.delete(key);
+  }
+  const r = await getPool().query(
+    'DELETE FROM agent_onboardings WHERE agent_id = $1 AND project = $2',
+    [agentId, project]
+  );
+  return r.rowCount ?? 0;
+}
+
+/**
  * Prueft ob ein Agent dem Projekt bekannt ist (hat jemals einen Record in PG)
  */
 export async function isAgentKnown(project: string, agentId: string): Promise<boolean> {
