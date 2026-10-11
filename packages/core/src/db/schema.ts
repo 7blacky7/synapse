@@ -131,6 +131,21 @@ CREATE TABLE IF NOT EXISTS agent_sessions (
 -- (wird nicht mehr geschrieben) — Spalte bleibt fuer Bestandsdaten erhalten.
 ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS server_instance_id TEXT;
 
+-- P15-T30 (11.10.2026): Sitzungsbeginn getrennt von der Erstregistrierung (Konzept thought 0c9242d5).
+-- registered_at bleibt "erstmals registriert" und wird nie mehr fortgeschrieben.
+-- sitzung_seit = Beginn der laufenden Sitzung, bei JEDER Registrierung NOW()
+--   (Fehlermuster-gesehen, Reaper-Lebenszeichen, chat list).
+-- aktiv_seit = Beginn der laufenden Lebensphase: NOW() nur bei neuem Agenten oder wenn der bisherige
+--   status nicht 'active' war; Handoff/Rotation behalten ihn, damit unquittierte Events nicht verloren gehen.
+-- Ohne DEFAULT: Fremd-INSERTs mit eigenem registered_at bekaemen sonst einen falschen Sitzungsbeginn.
+-- Leser nehmen COALESCE(neue Spalte, registered_at). Backfill nur fuer Zeilen ohne Wert (danach 0 Zeilen).
+ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS sitzung_seit TIMESTAMPTZ;
+ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS aktiv_seit TIMESTAMPTZ;
+UPDATE agent_sessions
+   SET sitzung_seit = COALESCE(sitzung_seit, registered_at),
+       aktiv_seit = COALESCE(aktiv_seit, registered_at)
+ WHERE (sitzung_seit IS NULL OR aktiv_seit IS NULL) AND registered_at IS NOT NULL;
+
 -- Onboarding-Gedaechtnis: einmal pro (Agent, Projekt, Server-Prozess).
 -- Ersetzt den server_instance_id-Vergleich auf agent_sessions, der zwei Defekte hatte:
 -- (1) Ping-Pong: mehrere Prozesse ueberschreiben sich gegenseitig die eine Zeile (UNIQUE(id)),

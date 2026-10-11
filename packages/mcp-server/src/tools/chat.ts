@@ -173,7 +173,7 @@ export async function listAgents(
   project: string
 ): Promise<{
   success: boolean;
-  agents: Array<{ id: string; model: string | null; cutoffDate: string | null; registeredAt: string }>;
+  agents: Array<{ id: string; model: string | null; cutoffDate: string | null; registeredAt: string; sitzungSeit: string | null }>;
   message: string;
 }> {
   try {
@@ -185,6 +185,7 @@ export async function listAgents(
         model: a.model,
         cutoffDate: a.cutoffDate,
         registeredAt: a.registeredAt,
+        sitzungSeit: a.sitzungSeit,
       })),
       message: `${agents.length} aktive Agenten`,
     };

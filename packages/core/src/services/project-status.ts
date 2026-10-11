@@ -461,16 +461,21 @@ export async function registerAgent(
       }
     }
 
-    if (isFirstVisit) {
-      // Session-Tracking beibehalten (isAgentKnown, events) — ohne Instance-Ueberschreiben.
-      // ON CONFLICT DO NOTHING: chat.registerAgent pflegt model/status, hier nur Existenz.
-      await pool.query(
-        `INSERT INTO agent_sessions (id, project, status, registered_at)
-         VALUES ($1, $2, 'active', NOW())
-         ON CONFLICT (id) DO NOTHING`,
-        [agentId, project]
-      );
-    }
+    // Session-Tracking beibehalten (isAgentKnown, events) — ohne Instance-Ueberschreiben.
+    // chat.registerAgent pflegt model/cutoff, hier nur Existenz und Status.
+    // P15-T30: laeuft beim ERSTEN Aufruf je (Agent, Projekt, Prozess), unabhaengig von isFirstVisit.
+    // Ein noch aktiver Agent (Deploy, Ruhefenster) bleibt unberuehrt (WHERE). Ein abgemeldeter oder
+    // vom Reaper stillgelegter Agent, der wieder arbeitet, wird zurueckgeholt: status 'active' und
+    // neuer Sitzungs-/Lebensphasenbeginn (Events vor der Stilllegung zaehlen nicht mehr). Vorher blieb
+    // er fuer immer 'inactive', obwohl er arbeitete (seine Reservierungen galten dann als tot).
+    // registered_at bleibt "erstmals".
+    await pool.query(
+      `INSERT INTO agent_sessions (id, project, status, registered_at, sitzung_seit, aktiv_seit)
+       VALUES ($1, $2, 'active', NOW(), NOW(), NOW())
+       ON CONFLICT (id) DO UPDATE SET status = 'active', sitzung_seit = NOW(), aktiv_seit = NOW()
+        WHERE agent_sessions.status IS DISTINCT FROM 'active'`,
+      [agentId, project]
+    );
 
     return isFirstVisit;
   } catch {

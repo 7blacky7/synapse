@@ -38,7 +38,10 @@ export interface AgentSession {
   model: string | null;
   cutoffDate: string | null;
   status: string;
+  /** Erstmals registriert (wird bei Wiederanmeldung NICHT fortgeschrieben). */
   registeredAt: string;
+  /** P15-T30: Beginn der laufenden Sitzung (jede Registrierung). Altzeilen: registeredAt. */
+  sitzungSeit: string | null;
 }
 
 /**
@@ -91,13 +94,24 @@ export async function registerAgent(
 
   // Bekannter Cutoff ueberschreibt einen alten gespeicherten Wert; eine
   // Selbstauskunft fuellt nur, was noch fehlt oder ersetzt eine fruehere.
-  await pool.query(
-    `INSERT INTO agent_sessions (id, project, model, cutoff_date, status, registered_at)
-     VALUES ($1, $2, $3, $4, 'active', NOW())
+  // P15-T30: registered_at bleibt "erstmals". sitzung_seit = jede Registrierung (neue Sitzung).
+  // aktiv_seit nur neu, wenn der Agent vorher nicht 'active' war (abgemeldet, purged, vom Reaper
+  // stillgelegt) - ein Handoff/eine Rotation behaelt ihn, damit unquittierte Events nicht verloren gehen.
+  // Im SET sieht agent_sessions.status noch den ALTEN Wert.
+  const zeit = await pool.query<{ registered_at: Date; sitzung_seit: Date }>(
+    `INSERT INTO agent_sessions (id, project, model, cutoff_date, status, registered_at, sitzung_seit, aktiv_seit)
+     VALUES ($1, $2, $3, $4, 'active', NOW(), NOW(), NOW())
      ON CONFLICT (id) DO UPDATE SET status = 'active', model = COALESCE($3, agent_sessions.model),
-       cutoff_date = CASE WHEN $5::boolean THEN $4::date ELSE COALESCE($4::date, agent_sessions.cutoff_date) END`,
+       cutoff_date = CASE WHEN $5::boolean THEN $4::date ELSE COALESCE($4::date, agent_sessions.cutoff_date) END,
+       sitzung_seit = NOW(),
+       aktiv_seit = CASE WHEN agent_sessions.status IS DISTINCT FROM 'active' THEN NOW()
+                         ELSE COALESCE(agent_sessions.aktiv_seit, agent_sessions.registered_at, NOW()) END
+     RETURNING registered_at, sitzung_seit`,
     [id, project, model || null, resolvedCutoff, cutoffBekannt]
   );
+  const jetzt = new Date();
+  const registriert = zeit.rows[0]?.registered_at ?? jetzt;
+  const sitzung = zeit.rows[0]?.sitzung_seit ?? jetzt;
 
   console.error(`[Synapse Chat] Agent "${id}" registriert fuer Projekt "${project}"${model ? ` (${model})` : ''}`);
 
@@ -107,7 +121,8 @@ export async function registerAgent(
     model: model || null,
     cutoffDate: resolvedCutoff,
     status: 'active',
-    registeredAt: new Date().toISOString(),
+    registeredAt: new Date(registriert).toISOString(),
+    sitzungSeit: new Date(sitzung).toISOString(),
   };
 }
 
@@ -164,7 +179,9 @@ export async function unregisterAgent(id: string): Promise<void> {
  *   - der letzte Tool-Aufruf des Agenten (tool_calls.ts)
  *   - der Heartbeat seines Wrappers (wrapper_status.last_activity) — dadurch
  *     bleibt ein Spezialist verschont, der lebt und nur gerade wartet
- *   - die Anmeldung selbst, fuer Agenten die noch nichts getan haben
+ *   - die Anmeldung selbst, fuer Agenten die noch nichts getan haben. P15-T30: die LETZTE
+ *     Anmeldung (sitzung_seit) - mit registered_at (erstmals) wurde ein wieder angemeldeter
+ *     Agent ohne Tool-Aufruf beim naechsten Lauf sofort wieder stillgelegt.
  *
  * Es wird ausschliesslich der Status gesetzt, nichts geloescht: eine neue
  * Anmeldung holt die Session sofort zurueck.
@@ -178,9 +195,9 @@ export async function expireIdleAgentSessions(stunden?: number): Promise<number>
         SET status = 'inactive'
       WHERE s.status = 'active'
         AND GREATEST(
-              s.registered_at,
-              COALESCE((SELECT MAX(t.ts) FROM tool_calls t WHERE t.agent_id = s.id), s.registered_at),
-              COALESCE((SELECT MAX(w.last_activity) FROM wrapper_status w WHERE w.agent_name = s.id), s.registered_at)
+              COALESCE(s.sitzung_seit, s.registered_at),
+              COALESCE((SELECT MAX(t.ts) FROM tool_calls t WHERE t.agent_id = s.id), s.sitzung_seit, s.registered_at),
+              COALESCE((SELECT MAX(w.last_activity) FROM wrapper_status w WHERE w.agent_name = s.id), s.sitzung_seit, s.registered_at)
             ) < NOW() - (($1::numeric) * INTERVAL '1 hour')
       RETURNING s.id`,
     [frist]
@@ -199,7 +216,9 @@ export async function expireIdleAgentSessions(stunden?: number): Promise<number>
 export async function getAgentSession(id: string): Promise<AgentSession | null> {
   const pool = getPool();
   const result = await pool.query(
-    'SELECT id, project, model, cutoff_date, status, registered_at FROM agent_sessions WHERE id = $1',
+    `SELECT id, project, model, cutoff_date, status, registered_at,
+            COALESCE(sitzung_seit, registered_at) AS sitzung_seit
+       FROM agent_sessions WHERE id = $1`,
     [id]
   );
 
@@ -213,6 +232,7 @@ export async function getAgentSession(id: string): Promise<AgentSession | null> 
     cutoffDate: row.cutoff_date,
     status: row.status,
     registeredAt: row.registered_at,
+    sitzungSeit: row.sitzung_seit ?? null,
   };
 }
 
@@ -222,9 +242,10 @@ export async function getAgentSession(id: string): Promise<AgentSession | null> 
 export async function listActiveAgents(project: string): Promise<AgentSession[]> {
   const pool = getPool();
   const result = await pool.query(
-    `SELECT id, project, model, cutoff_date, status, registered_at
+    `SELECT id, project, model, cutoff_date, status, registered_at,
+            COALESCE(sitzung_seit, registered_at) AS sitzung_seit
      FROM agent_sessions WHERE project = $1 AND status = 'active'
-     ORDER BY registered_at DESC`,
+     ORDER BY COALESCE(sitzung_seit, registered_at) DESC`,
     [project]
   );
 
@@ -235,6 +256,7 @@ export async function listActiveAgents(project: string): Promise<AgentSession[]>
     cutoffDate: row.cutoff_date,
     status: row.status,
     registeredAt: row.registered_at,
+    sitzungSeit: row.sitzung_seit ?? null,
   }));
 }
 

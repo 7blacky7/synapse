@@ -207,7 +207,11 @@ export async function getPendingEvents(
     ? null
     : Math.max(1, Math.min(100, Math.trunc(limit)));
 
-  // Nur Events liefern die NACH der Registrierung des Agenten erstellt wurden.
+  // Nur Events liefern die NACH dem Beginn der laufenden Lebensphase des Agenten erstellt wurden
+  // (P15-T30: aktiv_seit; Altzeilen ohne Wert: registered_at). aktiv_seit bleibt bei Handoff/Rotation
+  // stehen (unquittierte Events der Vorsitzung bleiben offen) und beginnt neu, wenn ein abgemeldeter
+  // oder stillgelegter Name wieder auftaucht. Frueher galt registered_at = ERSTMALS registriert:
+  // ein wiederverwendeter Name bekam alle Alt-Events seit der allerersten Anmeldung.
   // Alte scope:'all' Events wurden bereits von damals aktiven Agenten bearbeitet —
   // ein neuer Agent muss sie nicht nochmal acken.
   // Direkt adressierte Events (scope: 'agent:<id>') werden immer geliefert.
@@ -224,7 +228,7 @@ export async function getPendingEvents(
        AND (
          e.scope = $2
          OR e.created_at > COALESCE(
-           (SELECT registered_at FROM agent_sessions WHERE id = $3),
+           (SELECT COALESCE(aktiv_seit, registered_at) FROM agent_sessions WHERE id = $3),
            NOW() - INTERVAL '1 hour'
          )
        )

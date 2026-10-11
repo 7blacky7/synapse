@@ -109,7 +109,8 @@ function scopeMatchesTier(scope: string, tier: string): boolean {
 /**
  * P15-T17 E0: "gesehen" gilt nicht mehr fuer immer je Agentenname, sondern fuer die laufende
  * Sitzung: nur innerhalb von FEHLERMUSTER_GESEHEN_STUNDEN (Standard 12) und nach der
- * Registrierung des Agenten (agent_sessions.registered_at). Geschrieben wird der Vermerk erst
+ * Beginn der laufenden Sitzung (P15-T30: agent_sessions.sitzung_seit, bei jeder Registrierung neu;
+ * Altzeilen ohne Wert: registered_at). Geschrieben wird der Vermerk erst
  * bei der tatsaechlichen Auslieferung (fehlermuster-auslieferung.ts).
  */
 function gesehenFensterStunden(): number {
@@ -309,7 +310,7 @@ export async function checkErrorPatterns(
         `SELECT 1 FROM error_pattern_seen
           WHERE pattern_id = $1 AND session_id = $2
             AND shown_at > GREATEST(NOW() - make_interval(hours => $3),
-                                    COALESCE((SELECT registered_at FROM agent_sessions WHERE id = $2), '-infinity'::timestamptz))`,
+                                    COALESCE((SELECT COALESCE(sitzung_seit, registered_at) FROM agent_sessions WHERE id = $2), '-infinity'::timestamptz))`,
         [patternId, agentId, gesehenFensterStunden()]
       );
       if (seen.rowCount && seen.rowCount > 0) continue;
