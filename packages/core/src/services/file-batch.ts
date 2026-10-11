@@ -416,6 +416,8 @@ export class PlanBatchOpsFailedError extends Error {
   superseded_plan_id?: string;
   /** Offene gemeinsame Plaene anderer Agenten auf denselben Pfaden (Ziel nach plan_update). */
   readonly shared_plans: SharedPlanRef[];
+  /** P6-T21: eigene offene Plaene auf denselben Pfaden — gegen deren Stand wurde schon geprueft. */
+  readonly eigene_plaene: SharedPlanRef[];
 
   constructor(args: {
     plan_id: string;
@@ -424,6 +426,7 @@ export class PlanBatchOpsFailedError extends Error {
     total_ops: number;
     files_touched: string[];
     shared_plans?: SharedPlanRef[];
+    eigene_plaene?: SharedPlanRef[];
   }) {
     const first = args.failed_ops[0];
     super(
@@ -431,12 +434,17 @@ export class PlanBatchOpsFailedError extends Error {
       `${args.failed_ops.length} von ${args.total_ops} Op(s) im Trockenlauf gescheitert, nichts geschrieben. ` +
       `Die Ops liegen als NEUER offener Plan ${args.plan_id} bereit (gescheiterte Ops in failed_ops). ` +
       `Korrigieren: files(action:"plan_update", plan_id:"${args.plan_id}", op_index:<index>, ops:[<korrigierte Op>]) ` +
-      `— ergibt einen Folgeplan mit eigener ID und verwirft diesen. ` +
+      `— ergibt einen Folgeplan mit NEUER plan_id (die aus der Antwort weiterverwenden) und verwirft diesen. ` +
       `Verwerfen: files(action:"cancel", plan_id:"${args.plan_id}").` +
       ((args.shared_plans ?? []).length > 0
         ? ` GEMEINSAMER PLAN: ${(args.shared_plans ?? []).map((p) => `Plan ${p.plan_id} von ${p.owner} (${p.files.join(', ')})`).join('; ')} ` +
           'ist auf diesen Pfaden offen. Dieser Entwurf konkurriert nicht (weder committbar noch beitretbar); ' +
           'nach plan_update landen die Ops fuer diese Pfade dort als Beitrag (coedit_waits -> coedit_add).'
+        : '') +
+      ((args.eigene_plaene ?? []).length > 0
+        ? ` EIGENER OFFENER PLAN ${(args.eigene_plaene ?? []).map((p) => `${p.plan_id} (${p.files.join(', ')})`).join('; ')}: ` +
+          'die Ops wurden auch zusammen mit ihm geprueft und passen nicht. Statt diesem Entwurf den eigenen Plan aendern: ' +
+          `files(action:"plan_update", plan_id:"${(args.eigene_plaene ?? [])[0]?.plan_id}", op_index, ops) — und diesen Entwurf verwerfen (cancel).`
         : ''),
     );
     this.name = 'PlanBatchOpsFailedError';
@@ -446,6 +454,7 @@ export class PlanBatchOpsFailedError extends Error {
     this.total_ops = args.total_ops;
     this.files_touched = args.files_touched;
     this.shared_plans = args.shared_plans ?? [];
+    this.eigene_plaene = args.eigene_plaene ?? [];
   }
 }
 
@@ -470,6 +479,7 @@ export function planFailureResponse(err: unknown, error = 'plan_failed'): Record
       previews: failed.previews,
       ...(failed.superseded_plan_id ? { superseded_plan_id: failed.superseded_plan_id } : {}),
       ...(failed.shared_plans && failed.shared_plans.length > 0 ? { shared_plans: failed.shared_plans } : {}),
+      ...(failed.eigene_plaene && failed.eigene_plaene.length > 0 ? { eigene_plaene: failed.eigene_plaene } : {}),
       message: failed.message,
     };
   }
@@ -2037,7 +2047,11 @@ export async function planBatch(args: {
   const vorabGescheitert = failedOpsOf(previews);
   if (vorabGescheitert.length > 0 && args.persist_failed !== false) {
     const pfade = uniqueStrings(vorabGescheitert.flatMap((failed) => touchedPaths(args.ops[failed.index])));
-    const ziele = groupSharedPlans(await findJoinableSharedPlans(getPool(), args.project, resolveAgentId(args.agent_id), pfade));
+    // P6-T21 (11.10.2026): auch der EIGENE offene Plan ist Pruefstand (mitEigenen). Vorher nahm diese
+    // Abfrage nur fremde Plaene; ein Nachtrag mit einem Anker, den erst eine Op des eigenen Entwurfs
+    // erzeugt (update/create im Plan, dann search_replace), scheiterte gegen die Platte -> plan_failed
+    // -> neuer Entwurf mit eigener ID, obwohl das Anhaengen weiter unten (merged_into) bereitsteht.
+    const ziele = groupSharedPlans(await findJoinableSharedPlans(getPool(), args.project, resolveAgentId(args.agent_id), pfade, true));
     for (const ziel of ziele) {
       const zielOps = (await getPool().query<{ ops: FileBatchOp[] }>(
         `SELECT ops FROM file_batch_plans WHERE id = $1::bigint`, [ziel.plan_id],
@@ -2084,6 +2098,12 @@ export async function planBatch(args: {
     const sharedPlansForDraft = groupSharedPlans(
       await findJoinableSharedPlans(getPool(), args.project, failedOwner, [...fileBuffers.keys()]),
     );
+    // P6-T21: liegt auf den Pfaden ein EIGENER offener Plan, wurde oben schon gemeinsam mit ihm
+    // geprueft — auch das passte nicht. Richtig ist dann plan_update auf DIESEN Plan; die Antwort nennt ihn.
+    const eigenePlaeneForDraft = failedOwner
+      ? groupSharedPlans((await findJoinableSharedPlans(getPool(), args.project, failedOwner, [...fileBuffers.keys()], true))
+          .filter((row) => row.owner_agent_id === failedOwner))
+      : [];
     const storedFailedOps = args.ops.map((op) => ({
       ...withoutCoeditMetadata(op),
       ...(failedOwner ? { agent_id: failedOwner } : {}),
@@ -2109,6 +2129,7 @@ export async function planBatch(args: {
       total_ops: args.ops.length,
       files_touched: [...fileBuffers.keys()],
       shared_plans: sharedPlansForDraft,
+      eigene_plaene: eigenePlaeneForDraft,
     });
   }
 
@@ -2171,7 +2192,10 @@ export async function planBatch(args: {
     const sharedPaths = new Set(primaryByPath.keys());
     // Runde 3: eine nur gegen den Zielplan gepruefte Op muss auch wirklich dorthin gehen. Ist das Ziel
     // inzwischen weg (committed/verworfen), neu planen — dann scheitert sie sauber als plan_failed.
-    const zielWeg = [...zielGeprueft].some(([index, zielId]) => !touchedPaths(args.ops[index]).every((filePath) => sharedPlanByPath.get(filePath) === zielId));
+    // P6-T21: das Ziel kann auch der eigene offene Plan sein (dann Anhaengen per merged_into).
+    const eigenesZielByPath = new Map(eigeneRows.map((row) => [row.file_path, row.plan_id] as const));
+    const zielWeg = [...zielGeprueft].some(([index, zielId]) => !touchedPaths(args.ops[index]).every((filePath) =>
+      (sharedPlanByPath.get(filePath) ?? eigenesZielByPath.get(filePath)) === zielId));
     if (zielWeg) {
       await client.query('ROLLBACK');
       client.release();
@@ -4761,9 +4785,15 @@ async function updatePlanInPlace(
     if (nextOps.length === 0) throw new Error('plan_update wuerde den Plan leeren — dafuer cancel verwenden');
     const isReplaced = (index: number) => index >= replacedFrom && index < replacedFrom + replacement.length;
 
-    const expected: Record<string, string> = { ...plan.expected_hashes };
+    // P6-T21 (a): nur Dateien, die nach der Aenderung noch eine Op haben. Eine Datei ohne Op bliebe
+    // sonst in expected_hashes/files_touched — und findJoinableSharedPlans ("expected_hashes ? Pfad")
+    // leitete fremde Agenten fuer genau diese Datei in einen Wait auf diesen Plan.
+    const verbleibend = new Set(nextOps.flatMap(touchedPaths));
+    const expected: Record<string, string> = Object.fromEntries(
+      Object.entries(plan.expected_hashes).filter(([filePath]) => verbleibend.has(filePath)),
+    );
     const baselines = new Map<string, string>();
-    for (const filePath of uniqueStrings([...Object.keys(expected), ...nextOps.flatMap(touchedPaths)])) {
+    for (const filePath of uniqueStrings([...Object.keys(expected), ...verbleibend])) {
       const content = (await getFileContentFromPg(args.project, filePath)) ?? '';
       const hash = contentHash(content);
       if (filePath in expected && expected[filePath] !== hash) {
@@ -4882,6 +4912,8 @@ export async function replanBatch(args: {
     if (error instanceof PlanBatchOpsFailedError) {
       await supersede(error.plan_id);
       error.superseded_plan_id = args.plan_id;
+      // P6-T21 (b): die neue ID gehoert an den Anfang — sonst arbeitet man am verworfenen Plan weiter.
+      error.message = `NEUE plan_id ${error.plan_id} — ab jetzt diese verwenden, Plan ${args.plan_id} ist dadurch verworfen. ${error.message}`;
     }
     throw error;
   }

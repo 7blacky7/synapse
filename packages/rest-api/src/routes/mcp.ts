@@ -4878,7 +4878,7 @@ async function handleToolCall(
         const allPreviewsOk = result.previews?.every((p) => p.ok) ?? true;
         const wie = result.in_place
           ? `Plan ${planId} im selben Plan aktualisiert (Waits und Beitraege bleiben gebunden)`
-          : `Plan ${result.plan_id} ersetzt Plan ${planId} (verworfen)`;
+          : `NEUE plan_id ${result.plan_id} — ab jetzt diese verwenden; Plan ${planId} ist dadurch verworfen`;
         if (bool(args, 'auto_commit') === true && allPreviewsOk && result.total_ops > 0) {
           const c = await commitBatch({ plan_id: result.plan_id, agent_id: agentId, agent_note: str(args, 'agent_note') });
           return {
