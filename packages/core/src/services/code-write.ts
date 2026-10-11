@@ -294,9 +294,9 @@ export function deleteLines(
 
 /**
  * Sucht und ersetzt einen String (alle Vorkommen).
- * Strategie:
- *   1. Whitespace-tolerantes Regex-Matching ([ \t]+ statt festes Whitespace) — häufigster Fall
- *   2. Exaktes Match fallback
+ * Strategie (P15-T34: exakt VOR tolerant):
+ *   1. Exaktes Match — gibt es exakte Treffer, zaehlen NUR diese
+ *   2. Sonst Whitespace-tolerantes Regex-Matching ([ \t]+ statt festes Whitespace, z. B. Tab vs Spaces)
  *   3. Keine Matches: Fuzzy-Finder mit ähnlichen Zeilen
  * @param content - Dateiinhalt als String
  * @param search  - Suchstring
@@ -337,8 +337,17 @@ function searchReplaceRoh(
 ): { content: string; count: number; fuzzyMatches?: FuzzyMatch[] } {
   if (!search) return { content, count: 0 };
 
-  // Strategie 1: Whitespace-tolerantes Regex (Spaces/Tabs flexibel, Substring-basiert)
-  // Löst den häufigsten Fall: Indentation-Unterschiede (Tab vs Spaces)
+  // Strategie 1 (P15-T34): exaktes Match zuerst. Vorher lief die tolerante Regex zuerst und machte
+  // auch aus der FUEHRENDEN Einrueckung "beliebig viel": ein replace_all auf einen 10-eingerueckten
+  // Block ersetzte die 8- und 6-eingerueckten Zwillinge mit (falsche Einrueckung), Folge-Edits fanden
+  // dann "0-mal"; ein exakt einmal vorkommender Block galt als mehrdeutig (Plan 24845).
+  const exakt = content.split(search);
+  if (exakt.length > 1) {
+    return { content: exakt.join(replace), count: exakt.length - 1 };
+  }
+
+  // Strategie 2: Whitespace-tolerantes Regex (Spaces/Tabs flexibel, Substring-basiert) — nur wenn es
+  // keinen exakten Treffer gibt (Indentation-Unterschiede, Tab vs Spaces)
   const escapedSearch = search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const flexibleSearch = escapedSearch.replace(/[ \t]+/g, '[ \\t]+');
 
@@ -353,13 +362,7 @@ function searchReplaceRoh(
       return { content: content.replace(regex, () => replace), count: matchArr.length };
     }
   } catch {
-    // Ungültiger Regex (edge case) — fall through zu exaktem Match
-  }
-
-  // Strategie 2: Exaktes Match
-  const split = content.split(search);
-  if (split.length > 1) {
-    return { content: split.join(replace), count: split.length - 1 };
+    // Ungültiger Regex (edge case) — fall through zum Fuzzy-Finder
   }
 
   // Strategie 3: Fuzzy-Finder
@@ -368,21 +371,23 @@ function searchReplaceRoh(
 }
 
 /**
- * Startpositionen aller Vorkommen eines Suchstrings (gleiche Whitespace-tolerante Logik wie searchReplace).
+ * Startpositionen aller Vorkommen eines Suchstrings (gleiche Logik wie searchReplace: exakt zuerst,
+ * Whitespace-tolerant nur ohne exakten Treffer — P15-T34).
  */
 function trefferPositionen(content: string, search: string): number[] {
   if (!search) return [];
+  const exakt: number[] = [];
+  for (let i = content.indexOf(search); i !== -1; i = content.indexOf(search, i + search.length)) exakt.push(i);
+  if (exakt.length > 0) return exakt;
   const escapedSearch = search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const flexibleSearch = escapedSearch.replace(/[ \t]+/g, '[ \\t]+');
   try {
     const positionen = Array.from(content.matchAll(new RegExp(flexibleSearch, 'g')), (m) => m.index ?? 0);
     if (positionen.length > 0) return positionen;
   } catch {
-    // Ungültiger Regex — Fallback auf exakten Vergleich
+    // Ungültiger Regex — kein toleranter Treffer
   }
-  const positionen: number[] = [];
-  for (let i = content.indexOf(search); i !== -1; i = content.indexOf(search, i + search.length)) positionen.push(i);
-  return positionen;
+  return [];
 }
 
 /** 1-basierte Zeilennummern zu aufsteigenden Zeichenpositionen. */
@@ -461,6 +466,27 @@ export function searchReplaceEindeutig(
 }
 
 /**
+ * P15-T34: Zusatz zur "0-mal"-Meldung, wenn der Suchtext im AUSGANGSSTAND vorkam und ein frueheres
+ * Edit desselben Batches ihn schon ersetzt hat (Edits laufen nacheinander auf dem Zwischenstand).
+ * Rechnet nur im Fehlerfall nach: die frueheren Edits erneut, bis der Text verschwindet.
+ */
+function verbrauchtVon(original: string, edits: BatchEdit[], index: number): string {
+  const suche = edits[index].search;
+  if (findeTreffer(original, suche).count === 0) return '';
+  let stand = original;
+  for (let k = 0; k < index; k++) {
+    const t = findeTreffer(stand, edits[k].search, edits[k].replace);
+    if (t.count === 0 || (t.count > 1 && !edits[k].replace_all)) continue;
+    stand = searchReplaceRoh(stand, t.suche, t.ersatz).content;
+    if (findeTreffer(stand, suche).count === 0) {
+      return ` Hinweis: der Suchtext stand im Ausgangsstand, Edit ${k}${edits[k].replace_all ? ' (replace_all)' : ''} `
+        + `hat ihn bereits ersetzt (Edits laufen nacheinander auf dem Zwischenstand) — Edits zusammenfassen oder Reihenfolge/Suchtexte anpassen.`;
+    }
+  }
+  return '';
+}
+
+/**
  * Ein einzelnes Edit fuer searchReplaceBatch.
  */
 export interface BatchEdit {
@@ -533,7 +559,8 @@ export function searchReplaceBatch(
         reason,
         count: treffer.count,
         lines: treffer.lines,
-        message: `Edit ${i}: ${trefferFehlerMeldung(treffer.count, treffer.lines, edit.search)}`,
+        message: `Edit ${i}: ${trefferFehlerMeldung(treffer.count, treffer.lines, edit.search)}`
+          + (treffer.count === 0 ? verbrauchtVon(content, edits, i) : ''),
       });
       warnings.push({
         index: i,
