@@ -42,7 +42,9 @@ export interface FehlermusterHinweis {
    * P15-T17: 'thema' = Embedding-Aehnlichkeit (kein sicherer Befund), 'muster' = Signatur-Treffer in den
    * geaenderten Zeilen, 'syntax' = Syntaxbefund (nachgeliefert oder quittiert).
    */
-  quelle?: 'thema' | 'muster' | 'syntax';
+  quelle?: 'thema' | 'muster' | 'syntax' | 'erklaerung';
+  /** P15-T33 E1: Erklaerung aus dem Erklaerungs-Topf (id, status, confidence, gepflegte Sprachen). */
+  erklaerung?: Record<string, unknown>;
   titel?: string;
   warum?: string;
   wo?: string[];
@@ -66,6 +68,8 @@ interface Ausstehend {
   warnung?: ErrorPatternWarning;
   /** P15-T17: Befund aus der Signatur- bzw. Syntaxpruefung */
   befund?: FehlerBefund;
+  /** P15-T33 E1: fertiger Hinweis (Erklaerungs-Topf, quelle 'erklaerung') */
+  hinweis?: FehlermusterHinweis;
   datei: string;
   zeit: number;
   /** P16-T5 E3a: Startzeit des Schreibvorgangs, zu dem ein (nachgelieferter) Syntaxbefund gehoert. */
@@ -100,6 +104,7 @@ export function ueberholeSyntaxBefunde(agentId: string | null | undefined, datei
 }
 
 function schluessel(a: Ausstehend): string {
+  if (a.hinweis) return `${a.hinweis.pattern_id}|${a.datei}`;
   return a.befund ? `${a.befund.pattern_id ?? a.befund.pruefer}|${a.datei}` : `${a.warnung?.id}|${a.datei}`;
 }
 
@@ -118,6 +123,19 @@ export function vormerkenBefunde(agentId: string | null | undefined, datei: stri
   const befundListe = [...liste.filter((a) => a.befund), ...neu];
   const rest = liste.filter((a) => !a.befund);
   const gesamt = [...befundListe, ...rest];
+  while (gesamt.length > MAX_JE_AGENT) gesamt.pop();
+  ausstehend.set(agentId, gesamt);
+}
+
+/**
+ * P15-T33 E1: fertigen Hinweis des Erklaerungs-Topfs (quelle 'erklaerung': gewaehlte Erklaerung oder offener Fall)
+ * vormerken - vorne, derselbe Hinweis an derselben Datei ersetzt den aelteren. Wirft nie.
+ */
+export function vormerkenErklaerung(agentId: string | null | undefined, datei: string, hinweis: FehlermusterHinweis): void {
+  if (!agentId) return;
+  const neu: Ausstehend = { hinweis, datei, zeit: Date.now() };
+  const k = schluessel(neu);
+  const gesamt = [neu, ...(ausstehend.get(agentId) ?? []).filter((a) => schluessel(a) !== k)];
   while (gesamt.length > MAX_JE_AGENT) gesamt.pop();
   ausstehend.set(agentId, gesamt);
 }
@@ -207,7 +225,7 @@ export async function holeFehlermusterHinweise(agentId: string | undefined): Pro
     // gesehen gilt nur fuer Themenhinweise (Embedding); Signatur-Befunde kommen bei jedem Treffer.
     await vermerkeGesehen(agentId, [...new Set(jetztAus.flatMap((a) => (a.warnung ? [a.warnung.id] : [])))]);
 
-    const treffer: FehlermusterHinweis[] = jetztAus.map((a) => (a.befund
+    const treffer: FehlermusterHinweis[] = jetztAus.map((a) => (a.hinweis ? a.hinweis : a.befund
       ? {
           pattern_id: a.befund.pattern_id ?? a.befund.pruefer,
           severity: a.befund.severity,
@@ -234,7 +252,9 @@ export async function holeFehlermusterHinweise(agentId: string | undefined): Pro
         }));
     const sicher = treffer.filter((t) => t.quelle === 'muster' || t.quelle === 'syntax');
     const fehlerTreffer = sicher.filter((t) => t.severity === 'error');
-    const thema = treffer.length - sicher.length;
+    const thema = treffer.filter((t) => t.quelle === 'thema').length;
+    const erklaert = treffer.filter((t) => t.quelle === 'erklaerung' && t.erklaerung).length;
+    const faelle = treffer.filter((t) => t.quelle === 'erklaerung' && !t.erklaerung).length;
     const teile: string[] = [];
     if (fehlerTreffer.length > 0) {
       teile.push(`ACHTUNG: ${fehlerTreffer.length} Fehlermuster mit severity error in deinen geaenderten Zeilen `
@@ -254,7 +274,15 @@ export async function holeFehlermusterHinweise(agentId: string | undefined): Pro
       teile.push(`${nachgeliefert} nachgelieferte(r) Syntaxbefund(e) gehoert/gehoeren zu einem FRUEHEREN Schreibvorgang `
         + '(nachgeliefert_fuer: Zeit und Fassung), nicht zum Aufruf dieser Antwort; die Datei steht noch auf dieser Fassung.');
     }
-    teile.push('Geschrieben wurde trotzdem; ein Muster sperrt im Einzelschreibweg nichts.');
+    if (erklaert > 0) {
+      teile.push(`${erklaert} Erklaerung(en) aus dem Erklaerungs-Topf (quelle erklaerung): Jev hat sie als Ursache deines letzten `
+        + 'Syntaxfehlers gewaehlt; status vorgeschlagen = noch nicht verifiziert. Passt sie nicht: erklaerung.passt_nicht.');
+    }
+    if (faelle > 0) {
+      teile.push(`${faelle} offene(r) Erklaerungsfall/-faelle: fuer deinen Syntaxfehler gibt es noch keine Erklaerung - nach der `
+        + 'Korrektur bitte generisch erklaeren (Aufruf in "wie").');
+    }
+    if (treffer.length > erklaert + faelle) teile.push('Geschrieben wurde trotzdem; ein Muster sperrt im Einzelschreibweg nichts.');
     if (rest.length > 0) teile.push(`Weitere ${rest.length} Hinweis(e) folgen mit der naechsten Antwort.`);
     return {
       anzahl: treffer.length,

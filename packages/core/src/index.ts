@@ -817,6 +817,14 @@ export type { JevBudgetStand, JevKostenUebersicht, JevAufrufBuchung, JevUsdQuell
 export { JEV_ADMIN_ACTIONS, JEV_ADMIN_BESCHREIBUNG, JEV_ADMIN_PARAMETER, istJevAdminAction, fuehreJevAdminAus } from './services/jev-admin.js';
 export { JEV_SPRACHEN, JevOptionenFehler, leseJevOptionen, setzeJevOptionen, wirksameJevSprache } from './services/jev-optionen.js';
 export type { JevSprache, JevOptionen, JevErklaerungSprachen } from './services/jev-optionen.js';
+// P15-T33 E1: Erklaerungs-Topf (Jev waehlt, Claude erklaert)
+export {
+  ERKLAERUNG_ACTIONS, ERKLAERUNG_PARAMETER, ERKLAERUNG_STATUS, meldeFehlerfall, verarbeiteFehlerfall, baueSchatten, jevZustand,
+  baueJevFrage, kriteriumText, waehleErklaerung, ladeKandidaten, pruefeGenerik, legeErklaerungAb, pruefeFall, verwerfeFall,
+  listeOffeneFaelle, holeFall, listeErklaerungen, bewerteErklaerung, erklaerungenTagespruefung, fuehreErklaerungsActionAus,
+  istErklaerungsAction, familieVon, schluesselVon, schwaerzeGeheimnisse,
+} from './services/erklaerungen.js';
+export type { Erklaerung, ErklaerungTexte, Schatten, Fehlerereignis, FallPruefung, JevVersuch } from './services/erklaerungen.js';
 
 // Agenten-Wissen in der Datenbank (API-Bruecke Schritt 4). Additiv — der
 // Dateiweg in packages/agents/src/skills.ts bleibt unveraendert bestehen.

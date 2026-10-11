@@ -23,6 +23,12 @@ const RESULT_CAP = (() => {
 })();
 
 /**
+ * P15-T33 E1: Tool-Actions, deren Antwort NIE in tool_calls.result landet. code_check(fall) liefert die
+ * maskierten Schattendaten eines Erklaerungsfalls - die gehoeren nur in erklaerung_faelle, nicht ins Audit.
+ */
+const OHNE_RESULT = new Set(['code_check:fall']);
+
+/**
  * Schreibzugriff-Heuristik aus dem Action-Namen. Verben werden als ganze
  * Wort-Segmente (zwischen Anfang/Ende/Unterstrich) gematcht, damit z.B.
  * "index_stats" (Read) nicht faelschlich als Mutation gilt, "index_media"
@@ -61,6 +67,9 @@ export interface ToolCallLogEntry {
 export async function logToolCall(entry: ToolCallLogEntry): Promise<void> {
   try {
     let result = entry.result ?? null;
+    if (result != null && OHNE_RESULT.has(`${entry.tool}:${entry.action ?? ''}`)) {
+      result = '[nicht protokolliert: Antwort enthaelt Schattendaten eines Erklaerungsfalls]';
+    }
     let resultBytes: number | null = null;
     let truncated = false;
     if (result != null) {

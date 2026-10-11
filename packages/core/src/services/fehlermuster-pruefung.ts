@@ -362,6 +362,29 @@ export function hatSyntaxPruefer(filePath: string): boolean {
   return syntaxPruefer.some((p) => p.endungen.includes(e));
 }
 
+/**
+ * P15-T33 E1 (Verifikation im Erklaerungs-Topf): alle SPERRFAEHIGEN Pruefer der Endung auf dem GANZEN Inhalt, ohne
+ * Zeitbudget (laeuft nie im Schreibweg). fehler = harte Meldungen (ohne weich); pruefer = Anzahl beteiligter Pruefer.
+ */
+export async function pruefeSyntaxVollstaendig(
+  filePath: string,
+  inhalt: string,
+): Promise<{ pruefer: number; fehler: Array<{ pruefer: string; zeile: number; code?: string; meldung: string }> }> {
+  const e = endungVon(filePath);
+  const liste = syntaxPruefer.filter((p) => p.sperrfaehig && p.endungen.includes(e));
+  const fehler: Array<{ pruefer: string; zeile: number; code?: string; meldung: string }> = [];
+  for (const p of liste) {
+    try {
+      for (const m of await p.pruefe(inhalt, filePath)) {
+        if (!m.weich) fehler.push({ pruefer: p.name, zeile: m.zeile, ...(m.code ? { code: m.code } : {}), meldung: m.meldung });
+      }
+    } catch (err) {
+      fehler.push({ pruefer: p.name, zeile: 0, meldung: `Pruefer-Ausnahme: ${err instanceof Error ? err.message : String(err)}` });
+    }
+  }
+  return { pruefer: liste.length, fehler };
+}
+
 export interface SyntaxErgebnis {
   status: 'keine_pruefer' | 'fertig' | 'teilweise';
   /** Sperrfaehige Befunde in geaenderten Zeilen, nicht quittiert -> Ablehnung */

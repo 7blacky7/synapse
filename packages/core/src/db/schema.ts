@@ -302,6 +302,58 @@ CREATE TABLE IF NOT EXISTS jev_optionen (
   gesetzt_von TEXT,
   gesetzt_am TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+-- P15-T33 E1 (11.10.2026): Erklaerungs-Topf (Konzept 0a089e5d v3). Nur neue Tabellen, keine Sperren auf Bestand.
+-- erklaerungen: GLOBALER Topf generischer Erklaerungen. Lage/Wieso/Abhilfe je Sprache nullable; welche Sprachen beim
+-- Ablegen Pflicht sind, regelt jev_optionen.erklaerung_sprachen. familie = Pruefer-Familie (typescript, json ...),
+-- schluessel = quelle|familie|code (nur Ordnung/Statistik). kennung = optionale eindeutige Kurzkennung.
+CREATE TABLE IF NOT EXISTS erklaerungen (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  kennung TEXT UNIQUE,
+  familie TEXT NOT NULL,
+  schluessel TEXT,
+  lage_de TEXT,
+  wieso_de TEXT,
+  abhilfe_de TEXT,
+  lage_en TEXT,
+  wieso_en TEXT,
+  abhilfe_en TEXT,
+  status TEXT NOT NULL DEFAULT 'vorgeschlagen' CHECK (status IN ('vorgeschlagen', 'verifiziert', 'stillgelegt')),
+  status_grund TEXT,
+  gewaehlt_n INTEGER NOT NULL DEFAULT 0,
+  verifiziert_n INTEGER NOT NULL DEFAULT 0,
+  passt_nicht_n INTEGER NOT NULL DEFAULT 0,
+  verifiziert_am TIMESTAMPTZ,
+  erstellt_von TEXT,
+  erstellt_am TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  geaendert_am TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CHECK (lage_de IS NOT NULL OR lage_en IS NOT NULL)
+);
+CREATE INDEX IF NOT EXISTS idx_erklaerungen_familie ON erklaerungen(familie, status);
+-- erklaerung_faelle: offene Faelle (Fehler OHNE sicher passende verifizierte Erklaerung) mit maskiertem Schatten
+-- (Ausschnitt +-30 nachher, vorher, Diff). Ein Fall je (project, datei, schluessel); geloescht nach verifizierter
+-- Antwort oder nach dem Stufenmodell (3 Monate Verwerfen mit User-Zustimmung, 6 markiert, 9 automatisch).
+CREATE TABLE IF NOT EXISTS erklaerung_faelle (
+  id BIGSERIAL PRIMARY KEY,
+  project TEXT NOT NULL,
+  agent_id TEXT,
+  datei TEXT NOT NULL,
+  familie TEXT NOT NULL,
+  schluessel TEXT NOT NULL,
+  befund JSONB NOT NULL,
+  bezug JSONB NOT NULL,
+  schatten JSONB NOT NULL,
+  jev JSONB,
+  erklaerung_id UUID REFERENCES erklaerungen(id) ON DELETE SET NULL,
+  erklaert_von TEXT,
+  erklaert_am TIMESTAMPTZ,
+  haeufigkeit INTEGER NOT NULL DEFAULT 1,
+  erstellt_am TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  aktualisiert_am TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  verwerfen_angefragt_am TIMESTAMPTZ,
+  markiert_am TIMESTAMPTZ,
+  UNIQUE (project, datei, schluessel)
+);
+CREATE INDEX IF NOT EXISTS idx_erklaerung_faelle_erstellt ON erklaerung_faelle(erstellt_am);
 
 CREATE TABLE IF NOT EXISTS onboarding_ruhe (
   id SMALLINT PRIMARY KEY DEFAULT 1 CHECK (id = 1),

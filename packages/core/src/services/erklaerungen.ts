@@ -1,0 +1,1163 @@
+/**
+ * MODUL: Erklaerungs-Topf (P15-T33 E1, 11.10.2026) - Jev waehlt, Claude erklaert.
+ * QUELLEN: Konzept thought 0a089e5d (v3), E0-Messung 1486172c, User-Entscheidungen a189da34 und a5fd30ea,
+ *          Jev-Client/Schalter/Optionen aus E0.5 (277cdc62).
+ *
+ * ABLAUF (Fehlerpfad, asynchron - der Schreibweg zahlt nur das Einreihen):
+ *  1. Ausloeser: Syntax-Ablehnung im Einzelschreibweg (code-write.ts) und Syntaxbefunde mit severity error an
+ *     Plan-Ops, die den commit sperren (plan-befunde.ts). meldeFehlerfall() reiht nur ein (kein await, kein PG).
+ *  2. Worker: Schalter 'erklaerungstopf' aus (global/Projekt/Funktion) -> nichts. Budget-Pause -> Fall ohne Jev.
+ *     Kandidaten = verifizierte Erklaerungen der PRUEFER-FAMILIE (bis 12, gleicher Schluessel zuerst); gibt es
+ *     keine, hoechstens 2 vorgeschlagene. Keine Kandidaten -> Fall, Jev wird nicht belastet.
+ *  3. Sonst EIN choice-Aufruf ueber den gemeinsamen Jev-Client (Schalter, Budget, Kosten an einer Stelle) mit
+ *     State V3 (Ausschnitt +-30 nachher, dieselbe Stelle vorher, Diff; maskiert) und 'keine'. Tor 0,7
+ *     (JEV_ERKLAERUNG_TOR). Gewaehlte Erklaerung -> Auslieferung ueber die Fehlermuster-Auslieferung (quelle
+ *     'erklaerung'); war sie verifiziert, wird KEIN Fall gespeichert. Sonst Fall (Schatten nur bei Fehler ohne
+ *     sicher passende verifizierte Erklaerung) mit Hinweis auf code_check(erklaerung_ablegen).
+ *  4. Ablegen (code_check erklaerung_ablegen): betroffener Agent oder Koordinator; Pflicht = alle gepflegten Sprachen
+ *     (jev_optionen); Generik-Pruefung (Pfade, Bezeichner, Literale, Zeilenangaben, Hashes, Codeblock, Geheimnisse,
+ *     Projekt/Agent, .env-Werte). Neue Erklaerung startet 'vorgeschlagen'.
+ *  5. Verifikation (beim Ablegen, fall_pruefen, Tagespruefung): (a) Erklaerung belegt, (b) neuer Stand der Datei
+ *     (Hash weder Fehlerstand noch Stand vorher), (c) Syntax auf dem GANZEN Stand ohne harte Meldung und keine
+ *     Signatur-Treffer auf den noch vorhandenen Zeilen der Fehleraenderung (Altlasten zaehlen nicht). Dann in EINER
+ *     Anweisung: Fall + Schatten geloescht, Erklaerung verifiziert. Quittierte Fehlerstaende zaehlen nie.
+ *  6. Stufenmodell fuer unverifizierbare Faelle: ab 3 Monaten darf der Koordinator mit Zustimmung des Users verwerfen
+ *     (fall_verwerfen, sonst Vermerk verwerfen_angefragt_am), ab 6 Monaten markiert, nach 9 Monaten automatisch
+ *     geloescht (erklaerungenTagespruefung, Job in der REST-API). Sonst kein Zeitablauf.
+ * DATENSCHUTZ: Schatten nur in erklaerung_faelle (nicht eingebettet, nicht im Audit: tool_calls speichert die
+ *   Antwort von code_check(fall) nicht). .env-Inhalte nur maskiert (NAME=[WERT]), Geheimnisse geschwaerzt.
+ */
+
+import { createHash } from 'node:crypto';
+import { getPool } from '../db/client.js';
+import { rufeJev } from './jev-client.js';
+import { jevWirksam } from './jev-schalter.js';
+import { leseJevOptionen, type JevErklaerungSprachen, type JevSprache } from './jev-optionen.js';
+import { istEnvDatei, maskiereEnv, schwaerzeEnvWerteInAntwort } from './env-maske.js';
+import { pruefeSignaturen, pruefeSyntaxVollstaendig, type FehlerBefund } from './fehlermuster-pruefung.js';
+import { vormerkenErklaerung, type FehlermusterHinweis } from './fehlermuster-auslieferung.js';
+
+// ─── Typen ───────────────────────────────────────────────────────────────────
+
+export const ERKLAERUNG_STATUS = ['vorgeschlagen', 'verifiziert', 'stillgelegt'] as const;
+export type ErklaerungStatus = (typeof ERKLAERUNG_STATUS)[number];
+export type ErklaerungSprache = 'de' | 'en';
+const SPRACHEN: ErklaerungSprache[] = ['de', 'en'];
+const TEXTFELDER = ['lage', 'wieso', 'abhilfe'] as const;
+
+export interface ErklaerungTexte {
+  lage: string;
+  wieso: string;
+  abhilfe: string;
+}
+
+export interface Erklaerung {
+  id: string;
+  kennung: string | null;
+  familie: string;
+  schluessel: string | null;
+  de: ErklaerungTexte | null;
+  en: ErklaerungTexte | null;
+  status: ErklaerungStatus;
+  status_grund: string | null;
+  gewaehlt_n: number;
+  verifiziert_n: number;
+  passt_nicht_n: number;
+  verifiziert_am: string | null;
+  erstellt_von: string | null;
+  erstellt_am: string | null;
+}
+
+interface ErklaerungRoh {
+  id: string;
+  kennung: string | null;
+  familie: string;
+  schluessel: string | null;
+  lage_de: string | null;
+  wieso_de: string | null;
+  abhilfe_de: string | null;
+  lage_en: string | null;
+  wieso_en: string | null;
+  abhilfe_en: string | null;
+  status: string;
+  status_grund: string | null;
+  gewaehlt_n: number;
+  verifiziert_n: number;
+  passt_nicht_n: number;
+  verifiziert_am: Date | null;
+  erstellt_von: string | null;
+  erstellt_am: Date | null;
+}
+
+const SPALTEN_E = 'id::text AS id, kennung, familie, schluessel, lage_de, wieso_de, abhilfe_de, lage_en, wieso_en, abhilfe_en, '
+  + 'status, status_grund, gewaehlt_n, verifiziert_n, passt_nicht_n, verifiziert_am, erstellt_von, erstellt_am';
+
+const iso = (d: Date | string | null | undefined): string | null => (d ? new Date(d).toISOString() : null);
+
+function texteAus(lage: string | null, wieso: string | null, abhilfe: string | null): ErklaerungTexte | null {
+  return lage && wieso && abhilfe ? { lage, wieso, abhilfe } : null;
+}
+
+function alsErklaerung(r: ErklaerungRoh): Erklaerung {
+  return {
+    id: r.id,
+    kennung: r.kennung,
+    familie: r.familie,
+    schluessel: r.schluessel,
+    de: texteAus(r.lage_de, r.wieso_de, r.abhilfe_de),
+    en: texteAus(r.lage_en, r.wieso_en, r.abhilfe_en),
+    status: r.status as ErklaerungStatus,
+    status_grund: r.status_grund,
+    gewaehlt_n: r.gewaehlt_n,
+    verifiziert_n: r.verifiziert_n,
+    passt_nicht_n: r.passt_nicht_n,
+    verifiziert_am: iso(r.verifiziert_am),
+    erstellt_von: r.erstellt_von,
+    erstellt_am: iso(r.erstellt_am),
+  };
+}
+
+const sha = (t: string): string => createHash('sha256').update(t, 'utf8').digest('hex');
+const KOORDINATOR = /^(koordinator|coordinator|user)$/i;
+
+// ─── Familie und Schluessel ──────────────────────────────────────────────────
+
+/** Pruefer-Familie eines Befunds: 'syntax:typescript@5.9' -> 'typescript'; sonst die Quelle. */
+export function familieVon(b: Pick<FehlerBefund, 'quelle' | 'pruefer'>): string {
+  if (b.quelle === 'syntax') {
+    const m = /^syntax:([^@]+)/.exec(b.pruefer ?? '');
+    return (m?.[1] ?? 'syntax').toLowerCase();
+  }
+  return String(b.quelle);
+}
+
+/** Meldung ohne Namen, Zahlen und Leerraum-Varianten (fuer Befunde ohne Code). */
+export function meldungsKlasse(text: string): string {
+  return String(text ?? '')
+    .replace(/'[^']{2,}'/g, "'<X>'")
+    .replace(/"[^"]{2,}"/g, '"<X>"')
+    .replace(/\d+/g, 'N')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 120);
+}
+
+/** quelle|familie|code - nur Ordnung (gleicher Code zuerst) und Statistik, NICHT die Kandidatenwahl (E0: Familie). */
+export function schluesselVon(b: Pick<FehlerBefund, 'quelle' | 'pruefer' | 'code' | 'was'>): string {
+  return `${b.quelle}|${familieVon(b)}|${b.code ?? meldungsKlasse(b.was)}`;
+}
+
+// ─── Geheimnisse ─────────────────────────────────────────────────────────────
+
+const GEHEIM = '[GEHEIM]';
+type Ersetzer = (treffer: string, ...gruppen: string[]) => string;
+const GEHEIM_MUSTER: Array<[RegExp, Ersetzer]> = [
+  [/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)/g, () => GEHEIM],
+  [/\bsk-[A-Za-z0-9_-]{16,}/g, () => GEHEIM],
+  [/\bgh[pousr]_[A-Za-z0-9]{20,}/g, () => GEHEIM],
+  [/\bgithub_pat_[A-Za-z0-9_]{20,}/g, () => GEHEIM],
+  [/\bAKIA[0-9A-Z]{16}\b/g, () => GEHEIM],
+  [/\bxox[abprs]-[A-Za-z0-9-]{10,}/g, () => GEHEIM],
+  [/\bAIza[0-9A-Za-z_-]{30,}/g, () => GEHEIM],
+  [/\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{4,}/g, () => GEHEIM],
+  [/\b(Bearer\s+)[A-Za-z0-9._~+/-]{16,}=*/gi, (_t, vor) => vor + GEHEIM],
+  [/([a-z][a-z0-9+.-]*:\/\/[^\s:/@]+:)[^\s@/]+@/gi, (_t, vor) => vor + GEHEIM + '@'],
+  [/\b((?:api[_-]?key|secret|token|passwor[dt]|passwd|pwd|access[_-]?key)["']?\s*[:=]\s*["'])[^"'\s]{8,}/gi, (_t, vor) => vor + GEHEIM],
+];
+
+/** Schwaerzt typische Geheimnisse (API-Keys, Tokens, private Schluessel, Passwoerter in URLs/Zuweisungen). */
+export function schwaerzeGeheimnisse(text: string): { text: string; treffer: number } {
+  if (typeof text !== 'string' || text === '') return { text, treffer: 0 };
+  let treffer = 0;
+  let aus = text;
+  for (const [re, ersetze] of GEHEIM_MUSTER) {
+    aus = aus.replace(re, (t: string, ...rest: unknown[]) => {
+      treffer++;
+      return ersetze(t, ...rest.filter((x): x is string => typeof x === 'string'));
+    });
+  }
+  return { text: aus, treffer };
+}
+
+const geschwaerzt = (t: string): string => schwaerzeGeheimnisse(t).text;
+
+// ─── Schatten (State V3) ─────────────────────────────────────────────────────
+
+export interface Schatten {
+  /** Dateiendung (Sprache) */
+  sprache: string;
+  /** Meldung des Pruefers mit Fundzeile */
+  fehler: string;
+  /** +-30 Zeilen um Entstehung und Fundstelle im fehlerhaften Stand, nummeriert */
+  code_nachher: string;
+  /** dieselbe Stelle vorher, nummeriert ('(neue Datei)') */
+  code_vorher: string;
+  /** die Aenderung: '- ' entfernt, '+ ' hinzugefuegt, '  ' Umfeld */
+  aenderung: string;
+  /** getrimmte hinzugefuegte Zeilen (Verifikation: Signatur-Muster nur hier) */
+  hinzugefuegt: string[];
+  /** .env-Datei: Inhalt nur als NAME=[WERT] */
+  maskiert: boolean;
+  zeilen_gesamt: number;
+}
+
+const FENSTER = 30;
+const MAX_ZEILENLAENGE = 300;
+const MAX_DIFF_SEITE = 40;
+const MAX_HINZU = 200;
+
+const zeilenVon = (text: string): string[] => text.split('\n').map((z) => (z.endsWith('\r') ? z.slice(0, -1) : z));
+const kurz = (z: string, n = MAX_ZEILENLAENGE): string => (z.length > n ? z.slice(0, n - 1) + '…' : z);
+
+function ausschnitt(zeilen: string[], zentren: number[], breite: number): string {
+  const nr = new Set<number>();
+  for (const z of zentren) {
+    for (let i = Math.max(0, z - breite); i <= Math.min(zeilen.length - 1, z + breite); i++) nr.add(i);
+  }
+  const sortiert = [...nr].sort((x, y) => x - y);
+  const aus: string[] = [];
+  let vorher = -2;
+  for (const i of sortiert) {
+    if (i !== vorher + 1 && aus.length) aus.push('   ...');
+    aus.push(String(i + 1).padStart(5) + ' | ' + kurz(zeilen[i]));
+    vorher = i;
+  }
+  return aus.join('\n');
+}
+
+function diffBereich(a: string[], b: string[]): { s: number; ea: number; eb: number } {
+  let s = 0;
+  while (s < a.length && s < b.length && a[s] === b[s]) s++;
+  let ea = a.length - 1;
+  let eb = b.length - 1;
+  while (ea >= s && eb >= s && a[ea] === b[eb]) { ea--; eb--; }
+  return { s, ea, eb };
+}
+
+function diffText(a: string[], b: string[]): { text: string; s: number; ea: number; eb: number } {
+  const { s, ea, eb } = diffBereich(a, b);
+  const aus: string[] = [];
+  for (let i = Math.max(0, s - 2); i < s; i++) aus.push('  ' + kurz(a[i]));
+  const seite = (zeilen: string[], von: number, bis: number, zeichen: string) => {
+    const n = bis - von + 1;
+    for (let i = von; i <= Math.min(bis, von + MAX_DIFF_SEITE - 1); i++) aus.push(zeichen + ' ' + kurz(zeilen[i]));
+    if (n > MAX_DIFF_SEITE) aus.push(`${zeichen} ... (${n - MAX_DIFF_SEITE} weitere Zeilen)`);
+  };
+  seite(a, s, ea, '-');
+  seite(b, s, eb, '+');
+  for (let i = eb + 1; i <= Math.min(b.length - 1, eb + 2); i++) aus.push('  ' + kurz(b[i]));
+  return { text: aus.join('\n'), s, ea, eb };
+}
+
+const endung = (datei: string): string => {
+  const name = datei.split('/').pop() ?? datei;
+  return name.includes('.') ? name.split('.').pop()!.toLowerCase() : name;
+};
+
+/**
+ * Schatten einer Fehlersituation (Variante V3 aus E0): Ausschnitt +-30 Zeilen um Entstehung (erste geaenderte
+ * Zeile bzw. befund.zeilen) und Fundstelle (bemerkt_bei) im fehlerhaften Stand, dieselbe Stelle vorher, Diff.
+ * .env-Dateien nur maskiert; Geheimnisse geschwaerzt. Reine Funktion.
+ */
+export function baueSchatten(e: {
+  datei: string;
+  befund: Pick<FehlerBefund, 'was' | 'zeilen' | 'bemerkt_bei'>;
+  basis: string;
+  ergebnis: string;
+}): Schatten {
+  const env = istEnvDatei(e.datei);
+  const basis = env ? maskiereEnv(e.basis ?? '') : (e.basis ?? '');
+  const ergebnis = env ? maskiereEnv(e.ergebnis ?? '') : (e.ergebnis ?? '');
+  const a = basis ? zeilenVon(basis) : [];
+  const b = zeilenVon(ergebnis);
+  const klemme = (z: number) => Math.min(Math.max(0, z), Math.max(0, b.length - 1));
+  const d = basis ? diffText(a, b) : { text: '(neue Datei)', s: 0, ea: -1, eb: b.length - 1 };
+  const bemerkt = klemme((e.befund.bemerkt_bei?.zeile ?? e.befund.zeilen?.[0] ?? 1) - 1);
+  const ursache = klemme((e.befund.zeilen?.[0] ?? 1) - 1);
+  const entstehung = basis ? klemme(d.s) : bemerkt;
+  const hinzu = (basis ? b.slice(d.s, d.eb + 1) : b).map((z) => z.trim()).filter((z) => z.length >= 2).slice(0, MAX_HINZU);
+  return {
+    sprache: endung(e.datei),
+    fehler: geschwaerzt(kurz(`${e.befund.was} (Zeile ${bemerkt + 1})`, 400)),
+    code_nachher: geschwaerzt(ausschnitt(b, [entstehung, ursache, bemerkt], FENSTER)),
+    code_vorher: basis ? geschwaerzt(ausschnitt(a, [d.s], FENSTER)) : '(neue Datei)',
+    aenderung: geschwaerzt(d.text),
+    hinzugefuegt: hinzu.map((z) => geschwaerzt(kurz(z))),
+    maskiert: env,
+    zeilen_gesamt: b.length,
+  };
+}
+
+/** Was Jev als state bekommt (ohne Dateipfad). */
+export function jevZustand(s: Pick<Schatten, 'sprache' | 'fehler' | 'code_nachher' | 'code_vorher' | 'aenderung'>): Record<string, string> {
+  return { sprache: s.sprache, fehler: s.fehler, code_nachher: s.code_nachher, code_vorher: s.code_vorher, aenderung: s.aenderung };
+}
+
+// ─── Jev-Frage ───────────────────────────────────────────────────────────────
+
+export const JEV_ERKLAERUNG_ANWEISUNG =
+  'A code change produced the error in state.fehler. state.code_nachher shows the faulty code with line numbers; '
+  + 'state.code_vorher shows the same place before the change and state.aenderung the change itself (- removed, + added). '
+  + 'Choose the explanation that describes the CAUSE of this error. Choose "keine" unless one explanation clearly fits.';
+export const JEV_KEINE = 'None of the listed explanations describes the cause of this error.';
+export const MAX_KANDIDATEN = 12;
+const MAX_VORGESCHLAGENE = 2;
+const ANTWORT_SCHLUESSEL = 'abcdefghijkl'.split('');
+
+type MitTexten = { id: string; de: ErklaerungTexte | null; en: ErklaerungTexte | null };
+
+/** Kriterium einer Erklaerung in der Jev-Sprache (en | de | mix); fehlt eine Sprache, gilt die andere. */
+export function kriteriumText(e: Pick<MitTexten, 'de' | 'en'>, sprache: JevSprache): string {
+  const en = e.en ? `${e.en.lage} Correct if: ${e.en.wieso}` : null;
+  const de = e.de ? `${e.de.lage} Richtig, wenn: ${e.de.wieso}` : null;
+  if (sprache === 'mix' && en && de) return `${en} / ${de}`;
+  if (sprache === 'de') return de ?? en ?? '';
+  return en ?? de ?? '';
+}
+
+/** Die choice-Frage an Jev: a..l = Kandidaten, 'keine'. zuordnung: Antwortschluessel -> Erklaerungs-ID. */
+export function baueJevFrage(kandidaten: MitTexten[], sprache: JevSprache): { questions: Record<string, unknown>; zuordnung: Record<string, string> } {
+  const criteria: Record<string, string> = {};
+  const zuordnung: Record<string, string> = {};
+  kandidaten.slice(0, MAX_KANDIDATEN).forEach((k, i) => {
+    criteria[ANTWORT_SCHLUESSEL[i]] = kriteriumText(k, sprache);
+    zuordnung[ANTWORT_SCHLUESSEL[i]] = k.id;
+  });
+  criteria.keine = JEV_KEINE;
+  return { questions: { erklaerung: { type: 'choice', instructions: JEV_ERKLAERUNG_ANWEISUNG, criteria } }, zuordnung };
+}
+
+/** Tor fuer die Auslieferung (Env JEV_ERKLAERUNG_TOR, Standard 0,7 laut E0). */
+export function erklaerungsTor(): number {
+  const roh = process.env.JEV_ERKLAERUNG_TOR?.trim();
+  const n = roh ? Number(roh) : NaN;
+  return Number.isFinite(n) && n >= 0 && n <= 1 ? n : 0.7;
+}
+
+export interface JevVersuch {
+  aufgerufen: boolean;
+  /** keine_kandidaten | budget | aus | kein_key | timeout | netz | http | fehler | keine | unter_tor | ungueltig */
+  grund?: string;
+  wahl?: string | null;
+  erklaerung_id?: string | null;
+  confidence?: number | null;
+  tor?: number;
+  sprache?: JevSprache;
+  usd?: number;
+  ms?: number;
+  message?: string;
+}
+
+/**
+ * Fragt Jev, welche Erklaerung die Ursache beschreibt (EIN Aufruf ueber rufeJev, funktion erklaerungstopf).
+ * gewaehlt nur bei gueltiger Wahl mit confidence >= Tor. Wirft nie.
+ */
+export async function waehleErklaerung<T extends MitTexten>(
+  a: { project: string | null; agent_id: string | null; schatten: Schatten; kandidaten: T[]; sprache: JevSprache },
+  deps: { fetch?: typeof fetch } = {},
+): Promise<{ jev: JevVersuch; gewaehlt: T | null }> {
+  const tor = erklaerungsTor();
+  if (a.kandidaten.length === 0) return { jev: { aufgerufen: false, grund: 'keine_kandidaten', tor, sprache: a.sprache }, gewaehlt: null };
+  const { questions, zuordnung } = baueJevFrage(a.kandidaten, a.sprache);
+  try {
+    const r = await rufeJev({ funktion: 'erklaerungstopf', project: a.project, agent_id: a.agent_id, state: jevZustand(a.schatten), questions }, deps);
+    if (!r.ok) {
+      const aufgerufen = !['aus', 'budget', 'kein_key'].includes(r.grund);
+      return { jev: { aufgerufen, grund: r.grund, message: r.message, tor, sprache: a.sprache }, gewaehlt: null };
+    }
+    const antwort = r.daten.answers?.erklaerung ?? {};
+    const wahl = typeof antwort.choice === 'string' ? antwort.choice : null;
+    const confidence = typeof antwort.confidence === 'number' ? antwort.confidence : null;
+    const id = wahl && wahl !== 'keine' ? zuordnung[wahl] ?? null : null;
+    const gewaehlt = id && confidence !== null && confidence >= tor ? a.kandidaten.find((k) => k.id === id) ?? null : null;
+    const grund = gewaehlt ? undefined : wahl === 'keine' ? 'keine' : id ? 'unter_tor' : 'ungueltig';
+    return {
+      jev: { aufgerufen: true, wahl, erklaerung_id: id, confidence, tor, sprache: a.sprache, usd: r.kosten.usd, ms: r.dauer_ms, ...(grund ? { grund } : {}) },
+      gewaehlt,
+    };
+  } catch (err) {
+    return { jev: { aufgerufen: true, grund: 'fehler', message: err instanceof Error ? err.message : String(err), tor, sprache: a.sprache }, gewaehlt: null };
+  }
+}
+
+/** Kandidaten der Familie: verifizierte (bis 12, gleicher Schluessel zuerst), sonst hoechstens 2 vorgeschlagene. */
+export async function ladeKandidaten(familie: string, schluessel: string): Promise<Erklaerung[]> {
+  const pool = getPool();
+  const ordnung = 'ORDER BY (schluessel = $2) DESC NULLS LAST, verifiziert_n DESC, gewaehlt_n DESC, erstellt_am';
+  const v = await pool.query<ErklaerungRoh>(
+    `SELECT ${SPALTEN_E} FROM erklaerungen WHERE familie = $1 AND status = 'verifiziert' ${ordnung} LIMIT ${MAX_KANDIDATEN}`,
+    [familie, schluessel],
+  );
+  if (v.rows.length > 0) return v.rows.map(alsErklaerung);
+  const p = await pool.query<ErklaerungRoh>(
+    `SELECT ${SPALTEN_E} FROM erklaerungen WHERE familie = $1 AND status = 'vorgeschlagen' ${ordnung} LIMIT ${MAX_VORGESCHLAGENE}`,
+    [familie, schluessel],
+  );
+  return p.rows.map(alsErklaerung);
+}
+
+// ─── Anzeige und Hinweise ────────────────────────────────────────────────────
+
+function gepflegt(s: JevErklaerungSprachen): ErklaerungSprache[] {
+  return SPRACHEN.filter((x) => s[x]);
+}
+
+/** Anzeige in den gepflegten Sprachen; primaer = Deutsch, wenn gepflegt und vorhanden, sonst Englisch. */
+function anzeige(e: Pick<Erklaerung, 'de' | 'en'>, sprachen: JevErklaerungSprachen): { primaer: ErklaerungTexte | null; sprachen: Partial<Record<ErklaerungSprache, ErklaerungTexte>> } {
+  const aus: Partial<Record<ErklaerungSprache, ErklaerungTexte>> = {};
+  for (const s of gepflegt(sprachen)) if (e[s]) aus[s] = e[s]!;
+  const primaer = aus.de ?? aus.en ?? e.de ?? e.en ?? null;
+  return { primaer, sprachen: Object.keys(aus).length ? aus : { ...(e.de ? { de: e.de } : {}), ...(e.en ? { en: e.en } : {}) } };
+}
+
+function ablegenAufruf(fallId: string, sprachen: JevErklaerungSprachen): string {
+  const felder = gepflegt(sprachen).flatMap((s) => TEXTFELDER.map((f) => `${f}_${s}`)).join(', ');
+  return `code_check({action:"erklaerung_ablegen", fall_id:"${fallId}", ${felder}})`;
+}
+
+function erklaerungsHinweis(e: Erklaerung, confidence: number | null, befund: FehlerBefund, sprachen: JevErklaerungSprachen): FehlermusterHinweis {
+  const a = anzeige(e, sprachen);
+  return {
+    pattern_id: `erklaerung:${e.id}`,
+    severity: 'info',
+    datei: befund.datei,
+    was: a.primaer?.lage ?? '',
+    warum: a.primaer?.wieso,
+    wie: a.primaer?.abhilfe ?? '',
+    quelle: 'erklaerung',
+    zeilen: befund.zeilen,
+    erklaerung: {
+      id: e.id,
+      status: e.status,
+      confidence,
+      sprachen: a.sprachen,
+      passt_nicht: `code_check({action:"erklaerung_bewerten", id:"${e.id}", bewertung:"passt_nicht"})`,
+    },
+  };
+}
+
+function fallHinweis(fallId: string, befund: FehlerBefund, sprachen: JevErklaerungSprachen): FehlermusterHinweis {
+  return {
+    pattern_id: `erklaerung-fall:${fallId}`,
+    severity: 'info',
+    datei: befund.datei,
+    was: `Zu diesem Fehler gibt es noch keine passende Erklaerung im Erklaerungs-Topf (offener Fall ${fallId}).`,
+    wie: `Nach deiner Korrektur: code_check({action:"fall", id:"${fallId}"}) lesen, dann ${ablegenAufruf(fallId, sprachen)} - `
+      + 'generisch (Lage, Wieso, Abhilfe), ohne Pfade, Bezeichner, Zeilenangaben oder Projektbezug.',
+    quelle: 'erklaerung',
+    zeilen: befund.zeilen,
+  };
+}
+
+// ─── Faelle speichern ────────────────────────────────────────────────────────
+
+export interface Fehlerereignis {
+  project: string;
+  agent_id: string | null;
+  befund: FehlerBefund;
+  /** Stand vorher ('' = neue Datei) */
+  basis: string;
+  /** fehlerhafter Stand (abgelehnt bzw. Plan-Schatten) */
+  ergebnis: string;
+  weg: 'einzelweg' | 'plan';
+  op_index?: number | null;
+}
+
+function schlankerBefund(b: FehlerBefund): Record<string, unknown> {
+  const t = (s: string | undefined) => (s === undefined ? undefined : geschwaerzt(kurz(s, 600)));
+  return {
+    quelle: b.quelle, pruefer: b.pruefer, severity: b.severity, datei: b.datei, zeilen: b.zeilen,
+    ...(b.code ? { code: b.code } : {}), was: t(b.was), ...(b.warum ? { warum: t(b.warum) } : {}), ...(b.wie ? { wie: t(b.wie) } : {}),
+    ...(b.bemerkt_bei ? { bemerkt_bei: b.bemerkt_bei } : {}), ...(b.entstanden_bei ? { entstanden_bei: b.entstanden_bei } : {}),
+  };
+}
+
+async function speichereFall(e: Fehlerereignis, d: {
+  familie: string; schluessel: string; schatten: Schatten; jev: JevVersuch; basisHash: string; ergebnisHash: string; erklaerungId: string | null;
+}): Promise<{ id: string; neu: boolean }> {
+  const bezug = { weg: e.weg, op_index: e.op_index ?? null, file_path: e.befund.datei, basis_hash: d.basisHash, ergebnis_hash: d.ergebnisHash };
+  const { rows } = await getPool().query<{ id: string; neu: boolean }>(
+    `INSERT INTO erklaerung_faelle (project, agent_id, datei, familie, schluessel, befund, bezug, schatten, jev, erklaerung_id, erklaert_von, erklaert_am)
+     VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8::jsonb, $9::jsonb, $10::uuid, CASE WHEN $10::uuid IS NULL THEN NULL ELSE 'jev' END,
+             CASE WHEN $10::uuid IS NULL THEN NULL ELSE NOW() END)
+     ON CONFLICT (project, datei, schluessel) DO UPDATE SET
+       agent_id = EXCLUDED.agent_id, befund = EXCLUDED.befund, bezug = EXCLUDED.bezug, schatten = EXCLUDED.schatten, jev = EXCLUDED.jev,
+       erklaerung_id = COALESCE(erklaerung_faelle.erklaerung_id, EXCLUDED.erklaerung_id),
+       erklaert_von = COALESCE(erklaerung_faelle.erklaert_von, EXCLUDED.erklaert_von),
+       erklaert_am = COALESCE(erklaerung_faelle.erklaert_am, EXCLUDED.erklaert_am),
+       haeufigkeit = erklaerung_faelle.haeufigkeit + 1, aktualisiert_am = NOW()
+     RETURNING id::text AS id, (xmax = 0) AS neu`,
+    [e.project, e.agent_id, e.befund.datei, d.familie, d.schluessel, JSON.stringify(schlankerBefund(e.befund)), JSON.stringify(bezug),
+      JSON.stringify(d.schatten), JSON.stringify(d.jev), d.erklaerungId],
+  );
+  return rows[0];
+}
+
+// ─── Warteschlange (Fehlerpfad, asynchron) ───────────────────────────────────
+
+const MAX_WARTESCHLANGE = 100;
+const DOPPELT_MS = 10 * 60 * 1000;
+const warteschlange: Fehlerereignis[] = [];
+const gesehen = new Map<string, number>();
+let aktiv: Promise<void> | null = null;
+let deps: { fetch?: typeof fetch } = {};
+let ueberlaufGemeldet = false;
+
+/** Nur fuer Tests: fetch fuer den Jev-Aufruf des Workers einsetzen ({} = echter fetch). */
+export function _setzeErklaerungDeps(d: { fetch?: typeof fetch } | null | undefined): void {
+  deps = d ?? {};
+  gesehen.clear();
+}
+
+function starte(): void {
+  if (aktiv) return;
+  aktiv = (async () => {
+    await new Promise<void>((r) => setImmediate(r));
+    while (warteschlange.length > 0) {
+      const e = warteschlange.shift()!;
+      try {
+        await verarbeiteFehlerfall(e, deps);
+      } catch (err) {
+        console.error('[erklaerungen] Fehlerfall nicht verarbeitet (non-blocking):', err instanceof Error ? err.message : err);
+      }
+    }
+  })().finally(() => {
+    aktiv = null;
+    if (warteschlange.length > 0) starte();
+  });
+}
+
+/** Nur fuer Tests/Shutdown: wartet, bis die Warteschlange leer ist. */
+export async function _erklaerungenLeerlauf(): Promise<void> {
+  while (aktiv || warteschlange.length > 0) {
+    if (!aktiv) starte();
+    await aktiv;
+  }
+}
+
+/**
+ * Fehlerpfad-Ausloeser: reiht eine Fehlersituation ein und kehrt sofort zurueck (kein await, kein PG, kein Jev).
+ * Nur Syntaxbefunde mit severity error in geaenderten Zeilen, nicht quittiert. Wirft nie.
+ */
+export function meldeFehlerfall(e: Fehlerereignis): void {
+  try {
+    const b = e.befund;
+    if (!b || b.quelle !== 'syntax' || b.severity !== 'error' || b.altlast || b.quittiert_grund || !e.project) return;
+    warteschlange.push(e);
+    if (warteschlange.length > MAX_WARTESCHLANGE) {
+      warteschlange.shift();
+      if (!ueberlaufGemeldet) {
+        ueberlaufGemeldet = true;
+        console.error(`[erklaerungen] Warteschlange voll (${MAX_WARTESCHLANGE}), aelteste Fehlersituationen verworfen.`);
+      }
+    }
+    starte();
+  } catch (err) {
+    console.error('[erklaerungen] meldeFehlerfall:', err instanceof Error ? err.message : err);
+  }
+}
+
+export interface FehlerfallErgebnis {
+  ergebnis: 'aus' | 'doppelt' | 'erklaert' | 'erklaert_vorgeschlagen' | 'fall';
+  fall_id?: string;
+  erklaerung_id?: string;
+  jev?: JevVersuch;
+  grund?: string;
+}
+
+/** Verarbeitet eine Fehlersituation (Worker; fuer Tests direkt aufrufbar). */
+export async function verarbeiteFehlerfall(e: Fehlerereignis, d: { fetch?: typeof fetch } = {}): Promise<FehlerfallErgebnis> {
+  const w = await jevWirksam(e.project, 'erklaerungstopf');
+  if (!w.an && w.ebene !== 'budget') return { ergebnis: 'aus', grund: w.text };
+  const familie = familieVon(e.befund);
+  const schluessel = schluesselVon(e.befund);
+  const ergebnisHash = sha(e.ergebnis);
+  const basisHash = sha(e.basis ?? '');
+  const jetzt = Date.now();
+  const merk = `${e.project}|${e.befund.datei}|${schluessel}|${ergebnisHash}`;
+  if ((gesehen.get(merk) ?? 0) > jetzt - DOPPELT_MS) return { ergebnis: 'doppelt' };
+  gesehen.set(merk, jetzt);
+  if (gesehen.size > 500) for (const [k, t] of gesehen) if (t <= jetzt - DOPPELT_MS) gesehen.delete(k);
+
+  const schatten = baueSchatten({ datei: e.befund.datei, befund: e.befund, basis: e.basis, ergebnis: e.ergebnis });
+  const optionen = await leseJevOptionen();
+  const kandidaten = await ladeKandidaten(familie, schluessel);
+  let jev: JevVersuch;
+  let gewaehlt: Erklaerung | null = null;
+  if (kandidaten.length === 0) {
+    jev = { aufgerufen: false, grund: 'keine_kandidaten' };
+  } else if (!w.an) {
+    jev = { aufgerufen: false, grund: 'budget', message: w.text };
+  } else {
+    const r = await waehleErklaerung({ project: e.project, agent_id: e.agent_id, schatten, kandidaten, sprache: optionen.jev_sprache_wirksam }, d);
+    jev = r.jev;
+    gewaehlt = r.gewaehlt;
+  }
+  if (gewaehlt) {
+    await getPool().query('UPDATE erklaerungen SET gewaehlt_n = gewaehlt_n + 1 WHERE id = $1::uuid', [gewaehlt.id]);
+    vormerkenErklaerung(e.agent_id, e.befund.datei, erklaerungsHinweis(gewaehlt, jev.confidence ?? null, e.befund, optionen.erklaerung_sprachen));
+    if (gewaehlt.status === 'verifiziert') return { ergebnis: 'erklaert', erklaerung_id: gewaehlt.id, jev };
+  }
+  const fall = await speichereFall(e, { familie, schluessel, schatten, jev, basisHash, ergebnisHash, erklaerungId: gewaehlt?.id ?? null });
+  if (!gewaehlt && fall.neu) vormerkenErklaerung(e.agent_id, e.befund.datei, fallHinweis(fall.id, e.befund, optionen.erklaerung_sprachen));
+  return { ergebnis: gewaehlt ? 'erklaert_vorgeschlagen' : 'fall', fall_id: fall.id, ...(gewaehlt ? { erklaerung_id: gewaehlt.id } : {}), jev };
+}
+
+// ─── Generik-Pruefung ────────────────────────────────────────────────────────
+
+export type GenerikArt = 'pfad' | 'bezeichner' | 'literal' | 'zeilenangabe' | 'hash' | 'codeblock' | 'geheimnis' | 'projekt' | 'agent' | 'env_wert';
+export interface GenerikVerstoss { art: GenerikArt; feld: string; fund: string }
+
+const ERLAUBTE_WOERTER = /^(JavaScript|TypeScript|CommonJS|NodeJS|GitHub|GitLab|PostgreSQL|MySQL|SQLite|MongoDB|GraphQL|WebSocket|OpenAPI|YAML|JSON|JSONC|HTML|XML|CSS|SQL|utf-?8|utf-?16|base64|sha\d+|md5|http2?|https|es\d+|ipv[46]|i18n|x64|x86|[A-Z]{1,5}\d{2,6})$/i;
+const escapeRe = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/** Bezeichner aus Code: camelCase, mit _ oder mit Ziffern, mindestens 4 Zeichen (Allerweltswoerter bleiben frei). */
+function bezeichnerAus(code: string): Set<string> {
+  const aus = new Set<string>();
+  for (const m of code.matchAll(/[A-Za-z_$][\w$]{3,}/g)) {
+    const t = m[0];
+    const auffaellig = /[a-z][A-Z]/.test(t) || (t.includes('_') && /[A-Za-z]/.test(t.replace(/_/g, ''))) || /[A-Za-z]\d|\d[A-Za-z]/.test(t);
+    if (auffaellig && !ERLAUBTE_WOERTER.test(t)) aus.add(t);
+  }
+  return aus;
+}
+
+/** String-Literale (6..80 Zeichen, mit Buchstaben) aus Code-Zeilen. */
+function literaleAus(zeilen: string[]): Set<string> {
+  const aus = new Set<string>();
+  for (const z of zeilen) {
+    for (const m of z.matchAll(/(['"`])([^'"`\n]{6,80})\1/g)) {
+      const t = m[2].trim();
+      if (t.length >= 6 && /[A-Za-z]/.test(t)) aus.add(t);
+    }
+  }
+  return aus;
+}
+
+const ohneZeilennummer = (text: string): string => text.split('\n').map((z) => z.replace(/^\s*\d+ \| /, '').replace(/^[-+ ] /, '')).join('\n');
+
+/**
+ * Prueft Erklaerungstexte auf Projektbezug (Verbotsliste aus dem Fall) und typische Lecks. Reine Funktion,
+ * .env-Werte prueft legeErklaerungAb zusaetzlich (braucht PG).
+ */
+export function pruefeGenerik(
+  felder: Record<string, string>,
+  kontext: { datei: string; project: string; agent_id: string | null; schatten: Partial<Schatten> | null },
+): GenerikVerstoss[] {
+  const aus: GenerikVerstoss[] = [];
+  const s = kontext.schatten ?? {};
+  const code = ohneZeilennummer([s.code_nachher ?? '', s.code_vorher ?? '', s.aenderung ?? ''].join('\n'));
+  const bezeichner = bezeichnerAus(code);
+  const literale = literaleAus([...ohneZeilennummer(s.aenderung ?? '').split('\n'), ...(s.hinzugefuegt ?? [])]);
+  const name = kontext.datei.split('/').pop() ?? kontext.datei;
+  const stamm = name.includes('.') ? name.slice(0, name.lastIndexOf('.')) : name;
+  const pfadTeile = [kontext.datei, name.length >= 5 ? name : ''].filter(Boolean);
+  for (const [feld, roh] of Object.entries(felder)) {
+    const text = String(roh ?? '');
+    const neu = (art: GenerikArt, fund: string) => {
+      if (!aus.some((v) => v.art === art && v.feld === feld && v.fund === fund)) aus.push({ art, feld, fund });
+    };
+    const klein = text.toLowerCase();
+    for (const p of pfadTeile) if (klein.includes(p.toLowerCase())) neu('pfad', p);
+    if (stamm.length >= 5 && new RegExp(`(^|[^A-Za-z0-9_])${escapeRe(stamm)}([^A-Za-z0-9_]|$)`, 'i').test(text)) neu('pfad', stamm);
+    const pfad = /(?:^|[\s("'`])((?:\.{0,2}\/)?[\w.-]+\/[\w./-]*\.[A-Za-z]{1,5})\b/.exec(text);
+    if (pfad) neu('pfad', pfad[1]);
+    for (const t of text.matchAll(/[A-Za-z_$][\w$]{3,}/g)) if (bezeichner.has(t[0])) neu('bezeichner', t[0]);
+    for (const l of literale) if (text.includes(l)) neu('literal', l);
+    const zeile = /\b(?:Zeilen?|Z\.|lines?|ln\.?)\s*\d+|:\d+:\d+\b|\bL\d{1,6}\b/i.exec(text);
+    if (zeile) neu('zeilenangabe', zeile[0]);
+    const hash = /\b(?=[0-9a-f]*\d)(?=[0-9a-f]*[a-f])[0-9a-f]{8,}\b/i.exec(text);
+    if (hash) neu('hash', hash[0]);
+    if (/```|~~~/.test(text)) neu('codeblock', '```');
+    if (schwaerzeGeheimnisse(text).treffer > 0) neu('geheimnis', '[GEHEIM]');
+    if (kontext.project.length >= 3 && new RegExp(`(^|[^A-Za-z0-9_-])${escapeRe(kontext.project)}([^A-Za-z0-9_-]|$)`, 'i').test(text)) neu('projekt', kontext.project);
+    const ag = kontext.agent_id ?? '';
+    if (ag.length >= 3 && !KOORDINATOR.test(ag) && new RegExp(`(^|[^A-Za-z0-9_-])${escapeRe(ag)}([^A-Za-z0-9_-]|$)`, 'i').test(text)) neu('agent', ag);
+  }
+  return aus;
+}
+
+// ─── Faelle lesen ────────────────────────────────────────────────────────────
+
+const STUFE_SQL = `CASE WHEN erstellt_am < NOW() - INTERVAL '9 months' THEN 'loeschen'
+  WHEN erstellt_am < NOW() - INTERVAL '6 months' THEN 'markiert'
+  WHEN erstellt_am < NOW() - INTERVAL '3 months' THEN 'verwerfen_anfragbar' ELSE 'neu' END`;
+
+interface FallRoh {
+  id: string;
+  project: string;
+  agent_id: string | null;
+  datei: string;
+  familie: string;
+  schluessel: string;
+  befund: Record<string, unknown>;
+  bezug: { weg?: string; op_index?: number | null; file_path?: string; basis_hash?: string; ergebnis_hash?: string };
+  schatten: Partial<Schatten>;
+  jev: JevVersuch | null;
+  erklaerung_id: string | null;
+  erklaert_von: string | null;
+  erklaert_am: Date | null;
+  haeufigkeit: number;
+  erstellt_am: Date;
+  aktualisiert_am: Date;
+  verwerfen_angefragt_am: Date | null;
+  markiert_am: Date | null;
+  stufe: string;
+}
+
+const SPALTEN_F = `id::text AS id, project, agent_id, datei, familie, schluessel, befund, bezug, schatten, jev, erklaerung_id::text AS erklaerung_id,
+  erklaert_von, erklaert_am, haeufigkeit, erstellt_am, aktualisiert_am, verwerfen_angefragt_am, markiert_am, ${STUFE_SQL} AS stufe`;
+
+async function ladeFall(id: string): Promise<FallRoh | null> {
+  if (!/^\d{1,18}$/.test(String(id ?? '').trim())) return null;
+  const { rows } = await getPool().query<FallRoh>(`SELECT ${SPALTEN_F} FROM erklaerung_faelle WHERE id = $1::bigint`, [String(id).trim()]);
+  return rows[0] ?? null;
+}
+
+async function ladeErklaerung(id: string): Promise<Erklaerung | null> {
+  const { rows } = await getPool().query<ErklaerungRoh>(`SELECT ${SPALTEN_E} FROM erklaerungen WHERE id = $1::uuid`, [id]);
+  return rows[0] ? alsErklaerung(rows[0]) : null;
+}
+
+/** Erklaerungs-ID: volle UUID oder eindeutiger Praefix (mind. 8 Zeichen). */
+async function loeseErklaerungId(roh: string | undefined): Promise<{ id: string } | { error: string; message: string; kandidaten?: string[] }> {
+  const t = String(roh ?? '').trim().toLowerCase();
+  if (!/^[0-9a-f-]{8,36}$/.test(t)) return { error: 'ungueltig', message: 'id: volle UUID oder eindeutiger Praefix (mind. 8 Zeichen).' };
+  const { rows } = await getPool().query<{ id: string }>(`SELECT id::text AS id FROM erklaerungen WHERE id::text LIKE $1 || '%' ORDER BY id LIMIT 5`, [t]);
+  if (rows.length === 0) return { error: 'nicht_gefunden', message: `Keine Erklaerung mit id "${t}".` };
+  if (rows.length > 1) return { error: 'mehrdeutig', message: `id "${t}" ist mehrdeutig.`, kandidaten: rows.map((r) => r.id) };
+  return { id: rows[0].id };
+}
+
+function stufenHinweis(stufe: string, id: string): string | undefined {
+  if (stufe === 'verwerfen_anfragbar') {
+    return `Seit ueber 3 Monaten offen: der Koordinator darf den User fragen, ob der Fall verworfen wird; mit Zustimmung code_check({action:"fall_verwerfen", id:"${id}", zustimmung_user:true}).`;
+  }
+  if (stufe === 'markiert') {
+    return `Seit ueber 6 Monaten offen und markiert: User erneut hinweisen. Nach 9 Monaten wird der Fall automatisch geloescht. Verwerfen mit Zustimmung: code_check({action:"fall_verwerfen", id:"${id}", zustimmung_user:true}).`;
+  }
+  if (stufe === 'loeschen') return 'Aelter als 9 Monate: wird bei der naechsten Tagespruefung automatisch geloescht.';
+  return undefined;
+}
+
+function alterTage(d: Date): number {
+  return Math.floor((Date.now() - new Date(d).getTime()) / 86_400_000);
+}
+
+export async function listeOffeneFaelle(o: { project?: string | null; agent_id?: string | null; limit?: number }): Promise<Record<string, unknown>> {
+  const limit = Math.min(Math.max(Number(o.limit) || 20, 1), 200);
+  const { rows } = await getPool().query<FallRoh>(
+    `SELECT ${SPALTEN_F} FROM erklaerung_faelle WHERE ($1::text IS NULL OR project = $1) AND ($2::text IS NULL OR agent_id = $2)
+      ORDER BY erstellt_am LIMIT $3`,
+    [o.project ?? null, o.agent_id ?? null, limit],
+  );
+  const zaehl = await getPool().query<{ stufe: string; n: number }>(
+    `SELECT ${STUFE_SQL} AS stufe, count(*)::int AS n FROM erklaerung_faelle WHERE ($1::text IS NULL OR project = $1) GROUP BY 1`,
+    [o.project ?? null],
+  );
+  const w = await jevWirksam(o.project ?? null, 'erklaerungstopf');
+  return {
+    success: true,
+    anzahl: zaehl.rows.reduce((s, r) => s + r.n, 0),
+    je_stufe: Object.fromEntries(zaehl.rows.map((r) => [r.stufe, r.n])),
+    faelle: rows.map((r) => ({
+      id: r.id,
+      project: r.project,
+      agent_id: r.agent_id,
+      datei: r.datei,
+      familie: r.familie,
+      schluessel: r.schluessel,
+      was: (r.befund as { was?: string }).was ?? null,
+      zeilen: (r.befund as { zeilen?: unknown }).zeilen ?? null,
+      haeufigkeit: r.haeufigkeit,
+      erklaerung_id: r.erklaerung_id,
+      alter_tage: alterTage(r.erstellt_am),
+      stufe: r.stufe,
+      ...(r.markiert_am ? { markiert_am: iso(r.markiert_am) } : {}),
+      ...(r.verwerfen_angefragt_am ? { verwerfen_angefragt_am: iso(r.verwerfen_angefragt_am) } : {}),
+      ...(stufenHinweis(r.stufe, r.id) ? { hinweis: stufenHinweis(r.stufe, r.id) } : {}),
+    })),
+    hinweis: 'Schatten je Fall: code_check({action:"fall", id}). Erklaeren: code_check({action:"erklaerung_ablegen", fall_id, ...}) - '
+      + 'nur der betroffene Agent oder der Koordinator. Geloescht wird ein Fall erst mit verifizierter Antwort (Stufenmodell 3/6/9 Monate).'
+      + (w.an ? '' : ` Jev-Funktion erklaerungstopf ist aus: ${w.text ?? ''}`),
+  };
+}
+
+export async function holeFall(id: string): Promise<Record<string, unknown>> {
+  const f = await ladeFall(id);
+  if (!f) return { success: false, error: 'nicht_gefunden', message: `Kein offener Fall mit id "${id}" (geloescht nach Verifikation oder nie angelegt).` };
+  const optionen = await leseJevOptionen();
+  const erklaerung = f.erklaerung_id ? await ladeErklaerung(f.erklaerung_id) : null;
+  return {
+    success: true,
+    fall: {
+      id: f.id, project: f.project, agent_id: f.agent_id, datei: f.datei, familie: f.familie, schluessel: f.schluessel,
+      befund: f.befund, bezug: f.bezug, schatten: f.schatten, jev: f.jev, haeufigkeit: f.haeufigkeit,
+      erstellt_am: iso(f.erstellt_am), aktualisiert_am: iso(f.aktualisiert_am), stufe: f.stufe, alter_tage: alterTage(f.erstellt_am),
+      ...(f.markiert_am ? { markiert_am: iso(f.markiert_am) } : {}),
+      ...(f.verwerfen_angefragt_am ? { verwerfen_angefragt_am: iso(f.verwerfen_angefragt_am) } : {}),
+    },
+    ...(erklaerung ? { erklaerung, erklaert_von: f.erklaert_von, erklaert_am: iso(f.erklaert_am) } : {}),
+    sprachen_pflicht: gepflegt(optionen.erklaerung_sprachen),
+    naechster_schritt: erklaerung
+      ? `Erklaerung belegt, noch nicht verifiziert: korrigierten Stand schreiben, dann code_check({action:"fall_pruefen", id:"${f.id}"}).`
+      : `${ablegenAufruf(f.id, optionen.erklaerung_sprachen)} - oder eine bestehende Erklaerung belegen: erklaerung_id statt Texten.`,
+    hinweis: 'Diese Antwort enthaelt Schattendaten und wird bewusst NICHT in tool_calls.result protokolliert.',
+  };
+}
+
+// ─── Verifikation ────────────────────────────────────────────────────────────
+
+export interface FallPruefung {
+  fall_id: string;
+  verifiziert: boolean;
+  geloescht: boolean;
+  gruende: string[];
+  erklaerung_id: string | null;
+  syntax?: Array<{ pruefer: string; zeile: number; code?: string; meldung: string }>;
+  muster?: number;
+  message: string;
+}
+
+/**
+ * Verifikation laut Konzept: (a) Erklaerung belegt und nicht stillgelegt, (b) neuer Stand (Hash weder Fehlerstand
+ * noch Stand vorher), (c) Syntax auf dem ganzen Stand ohne harte Meldung + keine Signatur-Treffer (error/warning) auf
+ * den noch vorhandenen Zeilen der Fehleraenderung. Erfuellt -> Fall geloescht und Erklaerung verifiziert in EINER
+ * Anweisung (keine Transaktion, die auf den Client wartet). Gibt null, wenn der Fall nicht (mehr) existiert.
+ */
+export async function pruefeFall(id: string): Promise<FallPruefung | null> {
+  const f = await ladeFall(id);
+  if (!f) return null;
+  const gruende: string[] = [];
+  const ergebnis = (extra: Partial<FallPruefung> = {}): FallPruefung => {
+    const verifiziert = extra.verifiziert ?? false;
+    return {
+      fall_id: f.id, verifiziert, geloescht: extra.geloescht ?? false, gruende, erklaerung_id: f.erklaerung_id, ...extra,
+      message: verifiziert
+        ? 'Verifiziert: korrigierter Stand ohne Befund. Fall und Schatten geloescht, Erklaerung als verifiziert gezaehlt.'
+        : `Nicht verifiziert (${gruende.join(', ')}). Der Fall bleibt offen.`,
+    };
+  };
+  if (!f.erklaerung_id) { gruende.push('keine_erklaerung'); return ergebnis(); }
+  const e = await ladeErklaerung(f.erklaerung_id);
+  if (!e) { gruende.push('keine_erklaerung'); return ergebnis(); }
+  if (e.status === 'stillgelegt') { gruende.push('erklaerung_stillgelegt'); return ergebnis(); }
+  const { rows } = await getPool().query<{ content: string | null }>(
+    'SELECT content FROM code_files WHERE project = $1 AND file_path = $2 AND deleted_at IS NULL', [f.project, f.datei],
+  );
+  const aktuell = rows[0]?.content ?? null;
+  if (aktuell === null) { gruende.push('datei_fehlt'); return ergebnis(); }
+  const h = sha(aktuell);
+  if (h === f.bezug?.ergebnis_hash) gruende.push('stand_unveraendert_fehlerstand');
+  else if (h === f.bezug?.basis_hash) gruende.push('stand_wie_vorher');
+  if (gruende.length) return ergebnis();
+  const syntax = await pruefeSyntaxVollstaendig(f.datei, aktuell);
+  if (syntax.pruefer === 0) gruende.push('kein_syntaxpruefer');
+  for (const m of syntax.fehler.slice(0, 3)) gruende.push(`syntax: ${m.code ? m.code + ' ' : ''}${kurz(m.meldung, 120)} (Z.${m.zeile})`);
+  let muster = 0;
+  const hinzu = new Set((f.schatten?.hinzugefuegt ?? []).map((z) => String(z).trim()).filter(Boolean));
+  if (hinzu.size > 0 && !f.schatten?.maskiert) {
+    const sig = await pruefeSignaturen({ project: f.project, filePath: f.datei, alt: '', neu: aktuell });
+    const zeilen = aktuell.split('\n');
+    muster = sig.filter((b) => b.severity !== 'info' && hinzu.has((zeilen[b.zeilen[0] - 1] ?? '').trim())).length;
+    if (muster > 0) gruende.push(`muster: ${muster} Signatur-Treffer auf Zeilen der Fehleraenderung`);
+  }
+  const syntaxListe = syntax.fehler.slice(0, 3);
+  if (gruende.length) return ergebnis({ syntax: syntaxListe, muster });
+  const { rows: r2 } = await getPool().query<{ geloescht: number; verifiziert: number }>(
+    `WITH weg AS (DELETE FROM erklaerung_faelle WHERE id = $1::bigint AND erklaerung_id = $2::uuid RETURNING erklaerung_id),
+          upd AS (UPDATE erklaerungen SET status = CASE WHEN status = 'vorgeschlagen' THEN 'verifiziert' ELSE status END,
+                         verifiziert_n = verifiziert_n + 1, verifiziert_am = NOW(), geaendert_am = NOW()
+                   WHERE id IN (SELECT erklaerung_id FROM weg) AND status <> 'stillgelegt' RETURNING id)
+     SELECT (SELECT count(*) FROM weg)::int AS geloescht, (SELECT count(*) FROM upd)::int AS verifiziert`,
+    [f.id, f.erklaerung_id],
+  );
+  if ((r2[0]?.geloescht ?? 0) === 0) { gruende.push('fall_geaendert'); return ergebnis({ syntax: syntaxListe, muster }); }
+  return ergebnis({ verifiziert: true, geloescht: true, syntax: [], muster: 0 });
+}
+
+// ─── Ablegen ─────────────────────────────────────────────────────────────────
+
+const MIN_TEXT = 8;
+const MAX_TEXT = 1200;
+
+function fehler(error: string, message: string, extra: Record<string, unknown> = {}): Record<string, unknown> {
+  return { success: false, error, message, ...extra };
+}
+
+/**
+ * Legt eine Erklaerung fuer einen Fall ab (neu als 'vorgeschlagen' oder bestehende per erklaerung_id belegen) und
+ * prueft sofort die Verifikation. Nur der betroffene Agent oder der Koordinator. Wirft nicht bei Eingabefehlern.
+ */
+export async function legeErklaerungAb(a: {
+  fall_id: string;
+  agent: string | null;
+  erklaerung_id?: string;
+  texte: Partial<Record<`${(typeof TEXTFELDER)[number]}_${ErklaerungSprache}`, string>>;
+  kennung?: string;
+}): Promise<Record<string, unknown>> {
+  const f = await ladeFall(a.fall_id);
+  if (!f) return fehler('nicht_gefunden', `Kein offener Fall mit id "${a.fall_id}".`);
+  const wer = a.agent ?? '';
+  if (!(wer && (wer === f.agent_id || KOORDINATOR.test(wer)))) {
+    return fehler('nur_betroffener', `Einen Fall schliesst nur der betroffene Agent (${f.agent_id ?? '?'}) oder der Koordinator (agent_id koordinator|coordinator|user), bekommen: "${wer}".`);
+  }
+  let erklaerung: Erklaerung | null = null;
+  if (a.erklaerung_id) {
+    const id = await loeseErklaerungId(a.erklaerung_id);
+    if ('error' in id) return fehler(id.error === 'nicht_gefunden' ? 'erklaerung_unbekannt' : id.error, id.message, id.kandidaten ? { kandidaten: id.kandidaten } : {});
+    erklaerung = await ladeErklaerung(id.id);
+    if (!erklaerung) return fehler('erklaerung_unbekannt', `Keine Erklaerung mit id "${a.erklaerung_id}".`);
+    if (erklaerung.status === 'stillgelegt') return fehler('erklaerung_stillgelegt', 'Die Erklaerung ist stillgelegt und kann keinen Fall belegen.');
+    if (erklaerung.familie !== f.familie) return fehler('familie_passt_nicht', `Erklaerung gehoert zur Familie ${erklaerung.familie}, der Fall zu ${f.familie}.`);
+  } else {
+    const optionen = await leseJevOptionen();
+    const pflicht = gepflegt(optionen.erklaerung_sprachen);
+    const texte: Record<string, string> = {};
+    for (const s of SPRACHEN) for (const feld of TEXTFELDER) {
+      const v = a.texte[`${feld}_${s}`];
+      if (typeof v === 'string' && v.trim()) texte[`${feld}_${s}`] = v.trim();
+    }
+    const fehlend = pflicht.flatMap((s) => TEXTFELDER.filter((feld) => !texte[`${feld}_${s}`]).map((feld) => `${feld}_${s}`));
+    if (fehlend.length) {
+      return fehler('sprache_fehlt', `Gepflegte Sprachen (${pflicht.join(', ')}) sind Pflicht, es fehlt: ${fehlend.join(', ')}. Einstellung: admin(action:"jev_optionen").`, { fehlend, sprachen_pflicht: pflicht });
+    }
+    for (const s of SPRACHEN) {
+      const da = TEXTFELDER.filter((feld) => texte[`${feld}_${s}`]);
+      if (da.length > 0 && da.length < 3) return fehler('sprache_unvollstaendig', `Sprache ${s} nur teilweise: lage, wieso und abhilfe gehoeren zusammen.`);
+    }
+    const laenge = Object.entries(texte).filter(([, v]) => v.length < MIN_TEXT || v.length > MAX_TEXT).map(([k]) => k);
+    if (laenge.length) return fehler('laenge', `Texte zwischen ${MIN_TEXT} und ${MAX_TEXT} Zeichen: ${laenge.join(', ')}.`);
+    const verstoesse = pruefeGenerik(texte, { datei: f.datei, project: f.project, agent_id: f.agent_id, schatten: f.schatten });
+    if (istEnvDatei(f.datei)) {
+      const gepr = await schwaerzeEnvWerteInAntwort(f.project, texte, [f.datei]);
+      for (const k of Object.keys(texte)) if (gepr[k] !== texte[k]) verstoesse.push({ art: 'env_wert', feld: k, fund: '[WERT]' });
+    }
+    if (verstoesse.length) {
+      return fehler('nicht_generisch', `Erklaerung nicht generisch: ${verstoesse.map((v) => `${v.art} in ${v.feld} ("${v.art === 'geheimnis' || v.art === 'env_wert' ? '***' : v.fund}")`).join('; ')}. `
+        + 'Erklaerungen beschreiben Lage, Wieso und Abhilfe allgemein - ohne Pfade, Dateinamen, Bezeichner, Literale, Zeilen, Hashes, Codebloecke, Projekt- oder Agentennamen.',
+        { verstoesse: verstoesse.map((v) => ({ ...v, fund: v.art === 'geheimnis' || v.art === 'env_wert' ? '***' : v.fund })) });
+    }
+    const kennung = a.kennung?.trim() || null;
+    if (kennung && !/^[a-z0-9][a-z0-9-]{2,60}$/.test(kennung)) return fehler('ungueltig', 'kennung: 3..61 Zeichen a-z, 0-9, Bindestrich.');
+    const dublette = await getPool().query<{ id: string }>(
+      `SELECT id::text AS id FROM erklaerungen WHERE familie = $1 AND status <> 'stillgelegt'
+         AND ((lage_en IS NOT NULL AND lower(lage_en) = lower($2)) OR (lage_de IS NOT NULL AND lower(lage_de) = lower($3))) LIMIT 1`,
+      [f.familie, texte.lage_en ?? '', texte.lage_de ?? ''],
+    );
+    if (dublette.rows[0]) {
+      return fehler('dublette', `Eine Erklaerung mit derselben Lage gibt es schon (${dublette.rows[0].id}) - mit erklaerung_id belegen.`, { erklaerung_id: dublette.rows[0].id });
+    }
+    try {
+      const { rows } = await getPool().query<ErklaerungRoh>(
+        `INSERT INTO erklaerungen (kennung, familie, schluessel, lage_de, wieso_de, abhilfe_de, lage_en, wieso_en, abhilfe_en, status, erstellt_von)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'vorgeschlagen', $10) RETURNING ${SPALTEN_E}`,
+        [kennung, f.familie, f.schluessel, texte.lage_de ?? null, texte.wieso_de ?? null, texte.abhilfe_de ?? null,
+          texte.lage_en ?? null, texte.wieso_en ?? null, texte.abhilfe_en ?? null, wer],
+      );
+      erklaerung = alsErklaerung(rows[0]);
+    } catch (err) {
+      if ((err as { code?: string }).code === '23505') return fehler('dublette', `kennung "${kennung}" ist schon vergeben.`);
+      throw err;
+    }
+  }
+  await getPool().query('UPDATE erklaerung_faelle SET erklaerung_id = $2::uuid, erklaert_von = $3, erklaert_am = NOW() WHERE id = $1::bigint',
+    [f.id, erklaerung.id, wer]);
+  const verifikation = await pruefeFall(f.id);
+  const nachher = verifikation?.verifiziert ? await ladeErklaerung(erklaerung.id) : erklaerung;
+  return {
+    success: true,
+    erklaerung: nachher,
+    verifikation,
+    message: verifikation?.verifiziert
+      ? 'Erklaerung abgelegt und verifiziert; Fall und Schatten sind geloescht.'
+      : `Erklaerung abgelegt (${nachher?.status}). Der Fall bleibt offen, bis der korrigierte Stand geprueft ist: korrigieren, dann code_check({action:"fall_pruefen", id:"${f.id}"}).`,
+  };
+}
+
+// ─── Stufenmodell ────────────────────────────────────────────────────────────
+
+/** fall_verwerfen: nur Koordinator, erst ab 3 Monaten, Loeschen nur mit zustimmung_user (sonst Vermerk). */
+export async function verwerfeFall(id: string, agent: string | null, zustimmungUser: boolean): Promise<Record<string, unknown>> {
+  if (!agent || !KOORDINATOR.test(agent)) {
+    return fehler('nur_koordinator', 'Faelle verwirft nur der Koordinator (agent_id koordinator|coordinator|user) mit Zustimmung des Users.');
+  }
+  const f = await ladeFall(id);
+  if (!f) return fehler('nicht_gefunden', `Kein offener Fall mit id "${id}".`);
+  if (f.stufe === 'neu') {
+    return fehler('zu_jung', 'Geloescht wird ein Fall mit verifizierter Antwort. Verwerfen ohne Antwort erst ab 3 Monaten (Stufenmodell), mit Zustimmung des Users.', { stufe: f.stufe, alter_tage: alterTage(f.erstellt_am) });
+  }
+  if (!zustimmungUser) {
+    await getPool().query('UPDATE erklaerung_faelle SET verwerfen_angefragt_am = NOW() WHERE id = $1::bigint', [f.id]);
+    return { success: true, ergebnis: 'angefragt', fall_id: f.id, stufe: f.stufe, message: `Vermerkt: Verwerfen angefragt. Frage den User; mit seiner Zustimmung code_check({action:"fall_verwerfen", id:"${f.id}", zustimmung_user:true}).` };
+  }
+  await getPool().query('DELETE FROM erklaerung_faelle WHERE id = $1::bigint', [f.id]);
+  console.error(`[erklaerungen] Fall ${f.id} (${f.project}, ${f.datei}) mit Zustimmung des Users verworfen (${agent}, Stufe ${f.stufe}).`);
+  return { success: true, ergebnis: 'verworfen', fall_id: f.id, stufe: f.stufe, message: 'Fall samt Schatten verworfen (Zustimmung des Users).' };
+}
+
+/**
+ * Tagespruefung (Job in der REST-API, einmal je Tag): belegte Faelle erneut verifizieren, ab 6 Monaten markieren,
+ * nach 9 Monaten loeschen (Fall + Schatten, keine Erklaerung). Wirft nie.
+ */
+export async function erklaerungenTagespruefung(o: { maxPruefungen?: number } = {}): Promise<{ geprueft: number; verifiziert: number; markiert: number; geloescht_9_monate: number; fehler?: string }> {
+  const aus = { geprueft: 0, verifiziert: 0, markiert: 0, geloescht_9_monate: 0 };
+  try {
+    const pool = getPool();
+    const max = Math.min(Math.max(o.maxPruefungen ?? 500, 1), 5000);
+    const ids = (await pool.query<{ id: string }>(
+      'SELECT id::text AS id FROM erklaerung_faelle WHERE erklaerung_id IS NOT NULL ORDER BY aktualisiert_am LIMIT $1', [max],
+    )).rows;
+    for (const { id } of ids) {
+      try {
+        const r = await pruefeFall(id);
+        aus.geprueft++;
+        if (r?.verifiziert) aus.verifiziert++;
+      } catch (err) {
+        console.error(`[erklaerungen] Tagespruefung Fall ${id}:`, err instanceof Error ? err.message : err);
+      }
+    }
+    const m = await pool.query(
+      `UPDATE erklaerung_faelle SET markiert_am = NOW() WHERE markiert_am IS NULL
+         AND erstellt_am < NOW() - INTERVAL '6 months' AND erstellt_am >= NOW() - INTERVAL '9 months'`,
+    );
+    aus.markiert = m.rowCount ?? 0;
+    const d = await pool.query(`DELETE FROM erklaerung_faelle WHERE erstellt_am < NOW() - INTERVAL '9 months'`);
+    aus.geloescht_9_monate = d.rowCount ?? 0;
+    if (aus.markiert || aus.geloescht_9_monate || aus.verifiziert) {
+      console.error(`[erklaerungen] Tagespruefung: ${aus.verifiziert}/${aus.geprueft} verifiziert, ${aus.markiert} markiert (6 Monate), ${aus.geloescht_9_monate} geloescht (9 Monate).`);
+    }
+    return aus;
+  } catch (err) {
+    return { ...aus, fehler: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+// ─── Erklaerungen lesen und bewerten ─────────────────────────────────────────
+
+export async function listeErklaerungen(o: { familie?: string; status?: string; id?: string; limit?: number }): Promise<Record<string, unknown>> {
+  const limit = Math.min(Math.max(Number(o.limit) || 20, 1), 200);
+  let idFilter: string | null = null;
+  if (o.id) {
+    const r = await loeseErklaerungId(o.id);
+    if ('error' in r) return fehler(r.error, r.message, r.kandidaten ? { kandidaten: r.kandidaten } : {});
+    idFilter = r.id;
+  }
+  if (o.status && !(ERKLAERUNG_STATUS as readonly string[]).includes(o.status)) {
+    return fehler('ungueltig', `erklaerung_status nur ${ERKLAERUNG_STATUS.join(' | ')}.`);
+  }
+  const { rows } = await getPool().query<ErklaerungRoh>(
+    `SELECT ${SPALTEN_E} FROM erklaerungen WHERE ($1::text IS NULL OR familie = $1) AND ($2::text IS NULL OR status = $2)
+       AND ($3::uuid IS NULL OR id = $3::uuid) ORDER BY familie, status, verifiziert_n DESC, erstellt_am LIMIT $4`,
+    [o.familie ?? null, o.status ?? null, idFilter, limit],
+  );
+  const optionen = await leseJevOptionen();
+  return {
+    success: true,
+    count: rows.length,
+    gepflegte_sprachen: gepflegt(optionen.erklaerung_sprachen),
+    erklaerungen: rows.map(alsErklaerung).map((e) => {
+      const a = anzeige(e, optionen.erklaerung_sprachen);
+      const { de: _de, en: _en, ...rest } = e;
+      return { ...rest, ...a.sprachen };
+    }),
+  };
+}
+
+export const BEWERTUNGEN = ['passt_nicht', 'stilllegen', 'reaktivieren'] as const;
+
+export async function bewerteErklaerung(o: { id?: string; bewertung?: string; grund?: string; agent: string | null }): Promise<Record<string, unknown>> {
+  const r = await loeseErklaerungId(o.id);
+  if ('error' in r) return fehler(r.error, r.message, r.kandidaten ? { kandidaten: r.kandidaten } : {});
+  const bewertung = o.bewertung ?? '';
+  if (!(BEWERTUNGEN as readonly string[]).includes(bewertung)) return fehler('ungueltig', `bewertung nur ${BEWERTUNGEN.join(' | ')}.`);
+  const pool = getPool();
+  if (bewertung === 'passt_nicht') {
+    await pool.query('UPDATE erklaerungen SET passt_nicht_n = passt_nicht_n + 1, geaendert_am = NOW() WHERE id = $1::uuid', [r.id]);
+    if (o.grund) console.error(`[erklaerungen] passt_nicht fuer ${r.id} von ${o.agent ?? '?'}: ${kurz(o.grund, 200)}`);
+    return { success: true, id: r.id, bewertung, erklaerung: await ladeErklaerung(r.id) };
+  }
+  if (!o.agent || !KOORDINATOR.test(o.agent)) return fehler('nur_koordinator', `${bewertung} nur durch den Koordinator (agent_id koordinator|coordinator|user).`);
+  if (bewertung === 'stilllegen') {
+    if (!o.grund || o.grund.trim().length < 10) return fehler('grund_fehlt', 'stilllegen braucht grund (mind. 10 Zeichen).');
+    await pool.query(`UPDATE erklaerungen SET status = 'stillgelegt', status_grund = $2, geaendert_am = NOW() WHERE id = $1::uuid`, [r.id, o.grund.trim()]);
+  } else {
+    await pool.query(
+      `UPDATE erklaerungen SET status = CASE WHEN verifiziert_n > 0 THEN 'verifiziert' ELSE 'vorgeschlagen' END, status_grund = $2, geaendert_am = NOW() WHERE id = $1::uuid`,
+      [r.id, o.grund?.trim() || null],
+    );
+  }
+  return { success: true, id: r.id, bewertung, erklaerung: await ladeErklaerung(r.id) };
+}
+
+// ─── Dispatcher (code_check) ─────────────────────────────────────────────────
+
+export const ERKLAERUNG_ACTIONS = ['offene_faelle', 'fall', 'erklaerung_ablegen', 'fall_pruefen', 'fall_verwerfen', 'erklaerungen', 'erklaerung_bewerten'] as const;
+
+/** Zusaetzliche Schema-Properties fuer code_check (REST und stdio aus EINER Quelle). */
+export const ERKLAERUNG_PARAMETER: Record<string, Record<string, unknown>> = {
+  project: { type: 'string', description: 'offene_faelle: nur Faelle dieses Projekts (Standard alle)' },
+  fall_id: { type: 'string', description: 'erklaerung_ablegen: ID des offenen Falls (aus offene_faelle bzw. dem Hinweis im Fehlerpfad)' },
+  erklaerung_id: { type: 'string', description: 'erklaerung_ablegen: bestehende Erklaerung belegen statt neue Texte (volle UUID oder Praefix >= 8)' },
+  lage_de: { type: 'string', description: 'erklaerung_ablegen: Lage (was ist passiert), deutsch - Pflicht, wenn Deutsch gepflegt ist (admin jev_optionen)' },
+  wieso_de: { type: 'string', description: 'erklaerung_ablegen: Wieso (Ursache), deutsch' },
+  abhilfe_de: { type: 'string', description: 'erklaerung_ablegen: Abhilfe (was tun), deutsch' },
+  lage_en: { type: 'string', description: 'erklaerung_ablegen: situation, english - Pflicht, wenn Englisch gepflegt ist' },
+  wieso_en: { type: 'string', description: 'erklaerung_ablegen: why (cause), english' },
+  abhilfe_en: { type: 'string', description: 'erklaerung_ablegen: fix, english' },
+  kennung: { type: 'string', description: 'erklaerung_ablegen: optionale Kurzkennung (a-z, 0-9, -), eindeutig' },
+  bewertung: { type: 'string', enum: [...BEWERTUNGEN], description: 'erklaerung_bewerten: passt_nicht (jeder) | stilllegen (Koordinator, grund >= 10) | reaktivieren (Koordinator)' },
+  zustimmung_user: { type: 'boolean', description: 'fall_verwerfen: der User hat dem Verwerfen zugestimmt (nur Koordinator, erst ab 3 Monaten)' },
+  familie: { type: 'string', description: 'erklaerungen: Pruefer-Familie (typescript, json, libpg-query, ...)' },
+  erklaerung_status: { type: 'string', enum: [...ERKLAERUNG_STATUS], description: 'erklaerungen: Filter vorgeschlagen | verifiziert | stillgelegt' },
+};
+
+export function istErklaerungsAction(action: string | undefined): boolean {
+  return typeof action === 'string' && (ERKLAERUNG_ACTIONS as readonly string[]).includes(action);
+}
+
+const text = (v: unknown): string | undefined => (typeof v === 'string' && v.trim() ? v.trim() : typeof v === 'number' ? String(v) : undefined);
+
+/** Fuehrt eine Erklaerungs-Action aus (code_check). agent = effektive Agent-ID. Wirft nie. */
+export async function fuehreErklaerungsActionAus(action: string, args: Record<string, unknown>, agent: string | null): Promise<Record<string, unknown>> {
+  try {
+    switch (action) {
+      case 'offene_faelle':
+        return await listeOffeneFaelle({ project: text(args.project) ?? null, limit: Number(args.limit) || undefined });
+      case 'fall': {
+        const id = text(args.id) ?? text(args.fall_id);
+        if (!id) return fehler('ungueltig', 'id (Fall-ID) fehlt.');
+        return await holeFall(id);
+      }
+      case 'erklaerung_ablegen': {
+        const fallId = text(args.fall_id) ?? text(args.id);
+        if (!fallId) return fehler('ungueltig', 'fall_id fehlt.');
+        const texte: Record<string, string> = {};
+        for (const s of SPRACHEN) for (const feld of TEXTFELDER) {
+          const v = text(args[`${feld}_${s}`]);
+          if (v) texte[`${feld}_${s}`] = v;
+        }
+        return await legeErklaerungAb({ fall_id: fallId, agent, erklaerung_id: text(args.erklaerung_id), texte, kennung: text(args.kennung) });
+      }
+      case 'fall_pruefen': {
+        const id = text(args.id) ?? text(args.fall_id);
+        if (!id) return fehler('ungueltig', 'id (Fall-ID) fehlt.');
+        const r = await pruefeFall(id);
+        return r ? { success: true, ...r } : fehler('nicht_gefunden', `Kein offener Fall mit id "${id}" (nach Verifikation geloescht oder nie angelegt).`);
+      }
+      case 'fall_verwerfen': {
+        const id = text(args.id) ?? text(args.fall_id);
+        if (!id) return fehler('ungueltig', 'id (Fall-ID) fehlt.');
+        return await verwerfeFall(id, agent, args.zustimmung_user === true || args.zustimmung_user === 'true');
+      }
+      case 'erklaerungen':
+        return await listeErklaerungen({ familie: text(args.familie), status: text(args.erklaerung_status), id: text(args.id), limit: Number(args.limit) || undefined });
+      case 'erklaerung_bewerten':
+        return await bewerteErklaerung({ id: text(args.id), bewertung: text(args.bewertung), grund: text(args.grund), agent });
+      default:
+        return fehler('unbekannte_action', `Unbekannte Erklaerungs-Action "${action}".`);
+    }
+  } catch (err) {
+    return fehler('fehler', err instanceof Error ? err.message : String(err));
+  }
+}

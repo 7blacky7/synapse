@@ -21,6 +21,7 @@
 
 import { createHash } from 'node:crypto';
 import { getPool } from '../db/client.js';
+import { meldeFehlerfall } from './erklaerungen.js';
 import {
   pruefeSignaturen,
   pruefeSyntaxEinzelweg,
@@ -130,6 +131,10 @@ export async function pruefePlanDateien(
         const teil = { ...roh, ...zuordnung };
         const schluessel = befundSchluessel(teil);
         const grund = quittiert.get(schluessel);
+        // P15-T33 E1: Syntaxbefund (error), der den commit sperrt -> Erklaerungs-Topf (nur einreihen, asynchron).
+        if (roh.quelle === 'syntax' && roh.severity === 'error' && !roh.altlast && !grund) {
+          meldeFehlerfall({ project, agent_id: zuordnung.agent_id, befund: roh, basis: datei.basis, ergebnis: datei.ergebnis, weg: 'plan', op_index: zuordnung.op_index });
+        }
         befunde.push({
           ...teil,
           id: hash(schluessel + '|' + roh.zeilen.join('-') + '|' + ergebnisHash).slice(0, 10),

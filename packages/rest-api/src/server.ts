@@ -322,6 +322,30 @@ export async function startServer(): Promise<void> {
     console.log('[Synapse API] Tool-Call-Retention per TOOLCALL_RETENTION_DISABLED=1 ausgeschaltet');
   }
 
+  // P15-T33 E1: Erklaerungs-Topf - Tagespruefung (belegte Faelle verifizieren, Stufenmodell: ab 6 Monaten
+  // markieren, nach 9 Monaten loeschen). Laeuft hier (24/7-REST, zentrale DB). ENV:
+  //   ERKLAERUNGEN_JOB_DISABLED=1   - Worker ausschalten
+  //   ERKLAERUNGEN_JOB_INTERVAL_MS  - Intervall (Default 24 h)
+  if (process.env.ERKLAERUNGEN_JOB_DISABLED !== '1') {
+    const { erklaerungenTagespruefung, registriereWorker, workerPausiert, meldeWorkerArbeit } = await import('@synapse/core');
+    const erklIntervallMs = process.env.ERKLAERUNGEN_JOB_INTERVAL_MS
+      ? parseInt(process.env.ERKLAERUNGEN_JOB_INTERVAL_MS, 10)
+      : 24 * 60 * 60 * 1000;
+    const erklLauf = async (): Promise<Record<string, unknown>> => {
+      const r = await erklaerungenTagespruefung();
+      if (r.verifiziert || r.markiert || r.geloescht_9_monate) meldeWorkerArbeit('erklaerungen');
+      return r;
+    };
+    registriereWorker({ name: 'erklaerungen', beschreibung: `Erklaerungs-Topf Tagespruefung (Intervall ${erklIntervallMs} ms)`, durchlauf: erklLauf });
+    const runErkl = (): void => {
+      if (workerPausiert('erklaerungen')) return;
+      void erklLauf().catch((err: unknown) => console.error('[Synapse API] Erklaerungs-Tagespruefung fehlgeschlagen:', err));
+    };
+    setTimeout(runErkl, 5 * 60 * 1000).unref(); // erster Lauf 5 min nach dem Start
+    setInterval(runErkl, erklIntervallMs).unref();
+    console.log(`[Synapse API] Erklaerungs-Tagespruefung aktiv (Intervall ${erklIntervallMs}ms)`);
+  }
+
   // Session-Reaper: meldet Agenten-Sessions ab, die seit Stunden kein Lebenszeichen
   // mehr zeigen. Ohne das bleibt jede Session ewig 'active' — gepurgte, abgestuerzte
   // und verschwundene Agenten inklusive. Am 2026-07-26 zeigte die Liste 28 Eintraege

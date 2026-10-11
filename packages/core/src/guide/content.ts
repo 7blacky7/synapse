@@ -1438,6 +1438,42 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
         params: 'id (req)',
         example: 'code_check({ action: "delete_pattern", id: "abc123" })',
       },
+      offene_faelle: {
+        description: 'P15-T33 Erklaerungs-Topf: offene Faelle (Syntaxfehler ohne passende verifizierte Erklaerung), ohne Schatten, mit Stufe (neu | verwerfen_anfragbar ab 3 Monaten | markiert ab 6 | loeschen ab 9).',
+        params: 'project (optional), limit',
+        example: 'code_check({ action: "offene_faelle", project: "synapse" })',
+      },
+      fall: {
+        description: 'Ein Fall mit maskiertem Schatten (Ausschnitt +-30 Zeilen nachher, vorher, Diff), Befund, Jev-Versuch und Pflichtsprachen. Die Antwort wird NICHT in tool_calls protokolliert.',
+        params: 'id (req, Fall-ID)',
+        example: 'code_check({ action: "fall", id: "17" })',
+      },
+      erklaerung_ablegen: {
+        description: 'Generische Erklaerung (Lage, Wieso, Abhilfe) fuer einen Fall ablegen oder eine bestehende per erklaerung_id belegen; startet die Verifikation. Nur der betroffene Agent oder der Koordinator.',
+        params: 'fall_id (req), lage_de/wieso_de/abhilfe_de und/oder lage_en/wieso_en/abhilfe_en (alle gepflegten Sprachen Pflicht, admin jev_optionen), erklaerung_id, kennung',
+        example: 'code_check({ action: "erklaerung_ablegen", fall_id: "17", lage_de: "Eine schliessende runde Klammer fehlt.", wieso_de: "...", abhilfe_de: "...", lage_en: "A closing parenthesis is missing.", wieso_en: "...", abhilfe_en: "..." })',
+        tips: 'Abgelehnt: sprache_fehlt, nicht_generisch (verstoesse: pfad, bezeichner, literal, zeilenangabe, hash, codeblock, geheimnis, projekt, agent, env_wert), nur_betroffener, dublette. Neue Erklaerungen starten vorgeschlagen; verifiziert erst, wenn der korrigierte Stand ohne Befund ist - dann werden Fall und Schatten geloescht.',
+      },
+      fall_pruefen: {
+        description: 'Verifikation: Erklaerung belegt, neuer Stand (weder Fehlerstand noch Stand vorher), Syntax auf dem ganzen Stand ohne Fehler, keine Signatur-Treffer auf den Zeilen der Fehleraenderung. Erfuellt -> Fall geloescht, Erklaerung verifiziert.',
+        params: 'id (req, Fall-ID)',
+        example: 'code_check({ action: "fall_pruefen", id: "17" })',
+      },
+      fall_verwerfen: {
+        description: 'Stufenmodell: nur Koordinator, erst ab 3 Monaten. Ohne zustimmung_user nur Vermerk (verwerfen_angefragt_am), mit zustimmung_user:true geloescht. Nach 9 Monaten loescht die Tagespruefung automatisch.',
+        params: 'id (req), zustimmung_user',
+        example: 'code_check({ action: "fall_verwerfen", id: "17", zustimmung_user: true, agent_id: "koordinator" })',
+      },
+      erklaerungen: {
+        description: 'Erklaerungen des globalen Topfs in den gepflegten Sprachen, mit Zaehlern (gewaehlt, verifiziert, passt_nicht).',
+        params: 'familie, erklaerung_status (vorgeschlagen|verifiziert|stillgelegt), id, limit',
+        example: 'code_check({ action: "erklaerungen", familie: "typescript", erklaerung_status: "verifiziert" })',
+      },
+      erklaerung_bewerten: {
+        description: 'Rueckmeldung zu einer ausgelieferten Erklaerung: passt_nicht (jeder); stilllegen (Koordinator, grund >= 10 Zeichen) und reaktivieren (Koordinator).',
+        params: 'id (req), bewertung (req), grund',
+        example: 'code_check({ action: "erklaerung_bewerten", id: "<uuid>", bewertung: "passt_nicht", grund: "Ursache war eine andere" })',
+      },
     },
   },
 

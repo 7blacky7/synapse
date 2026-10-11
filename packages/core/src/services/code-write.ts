@@ -31,6 +31,7 @@ import { deleteByFilePath } from '../qdrant/index.js';
 import { COLLECTIONS } from '../types/index.js';
 import { checkErrorPatterns, type ErrorPatternWarning } from './error-patterns.js';
 import { verfolgeFehlermusterPruefung, vormerkenBefunde, ueberholeSyntaxBefunde } from './fehlermuster-auslieferung.js';
+import { meldeFehlerfall } from './erklaerungen.js';
 import {
   hatSyntaxPruefer,
   pruefeSignaturen,
@@ -690,6 +691,7 @@ async function syntaxVorDemSchreiben(
   neu: string,
   agentId: string | null,
   einzel: EinzelSchreibOptionen | undefined,
+  project?: string,
 ): Promise<{ hinweise: FehlerBefund[]; quittiert?: string }> {
   if (!einzel?.einzelweg) return { hinweise: [] };
   // P16-T5 E3a: stand = dieser Schreibvorgang. Nachlieferungen tragen ihn; ein spaeterer durchgelaufener
@@ -699,7 +701,11 @@ async function syntaxVorDemSchreiben(
     filePath, alt, neu, quittieren: einzel.quittieren,
     onNachgereicht: (befunde) => vormerkenBefunde(agentId, filePath, befunde, { stand }),
   });
-  if (erg.blockierend.length > 0) throw new SyntaxfehlerAbgelehnt(filePath, erg.blockierend);
+  if (erg.blockierend.length > 0) {
+    // P15-T33 E1: Fehlerpfad -> Erklaerungs-Topf. Nur einreihen (kein await, kein PG, kein Jev) - kein Zuschlag.
+    if (project) meldeFehlerfall({ project, agent_id: agentId, befund: erg.blockierend[0], basis: alt, ergebnis: neu, weg: 'einzelweg' });
+    throw new SyntaxfehlerAbgelehnt(filePath, erg.blockierend);
+  }
   if (erg.status !== 'keine_pruefer') ueberholeSyntaxBefunde(agentId, filePath, stand);
   return { hinweise: erg.hinweise, quittiert: erg.quittiert };
 }
@@ -733,7 +739,7 @@ export async function createFileInPg(
   const resolvedAgentId = resolveAgentId(agentId);
   let warnings: ErrorPatternWarning[] | undefined;
   // P15-T17 E-a: Syntaxfehler lehnen den Einzelschreibvorgang ab, bevor etwas geschrieben wird.
-  const syntax = await syntaxVorDemSchreiben(filePath, '', content, resolvedAgentId, einzel);
+  const syntax = await syntaxVorDemSchreiben(filePath, '', content, resolvedAgentId, einzel, project);
   reason = quittierVermerk(reason, syntax.quittiert);
   // Neue Datei: alles daran ist neu, der Anfang steht also fuer die Aenderung.
   // Trotzdem gedeckelt — auch eine frisch angelegte Datei kann gross sein.
@@ -828,7 +834,7 @@ export async function updateFileInPg(
   let syntax: { hinweise: FehlerBefund[]; quittiert?: string } = { hinweise: [] };
   if (einzel?.einzelweg && hatSyntaxPruefer(filePath)) {
     const vorher = (await getFileContentFromPg(project, filePath)) ?? '';
-    syntax = await syntaxVorDemSchreiben(filePath, vorher, newContent, resolvedAgentId, einzel);
+    syntax = await syntaxVorDemSchreiben(filePath, vorher, newContent, resolvedAgentId, einzel, project);
     reason = quittierVermerk(reason, syntax.quittiert);
   }
   // Die Fehlermuster-Pruefung laeuft NEBENLAEUFIG — ein Embedding hat im
