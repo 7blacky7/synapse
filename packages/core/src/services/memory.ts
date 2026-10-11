@@ -44,7 +44,7 @@ import {
   deleteVectors,
   deleteByFilter,
 } from '../qdrant/operations.js';
-import { getPool } from '../db/client.js';
+import { getPool, getHintergrundPool } from '../db/client.js';
 import { searchCode } from './code.js';
 import { CodeChunkPayload, COLLECTIONS } from '../types/index.js';
 
@@ -300,7 +300,8 @@ export async function embeddeMemoryNach(
   id: string,
   embedOptions: EmbedOptions = {},
 ): Promise<void> {
-  const pool = getPool();
+  // P5-T15: Nachtraege sind Hintergrundarbeit -> eigener Pool, nie die Verbindungen der Tool-Anfragen
+  const pool = getHintergrundPool();
   const { rows } = await pool.query(
     `SELECT name, category, content, tags, created_at, updated_at
        FROM memories WHERE id = $1 AND project = $2`,

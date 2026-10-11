@@ -173,9 +173,16 @@ export async function getEmbeddingProvider(
 }
 
 // ───── Globale Embedding-Queue ────────────────────────────────────────────
-// Interaktive Aufrufe haben Vorrang vor Parser-/Backfill-Arbeit. Ein bereits
-// laufender Provider-Call wird nie abgebrochen; die Prioritaet wirkt nur beim
-// naechsten frei werdenden Slot.
+// Interaktive Aufrufe haben IMMER Vorrang vor Parser-/Backfill-Arbeit (P5-T15, User-Vorgabe
+// 11.10.2026: KI-Anfragen werden nie blockiert):
+//   - Ein Hintergrundauftrag startet nur, wenn KEIN interaktiver Auftrag laeuft oder wartet —
+//     auch nicht auf einen freien Slot.
+//   - Kommt ein interaktiver Auftrag, werden alle laufenden Hintergrund-Aufrufe per
+//     AbortController abgebrochen (Ollama: fetch-Abbruch) und hinten neu eingereiht; danach
+//     laufen sie automatisch weiter. Provider ohne Signal-Unterstuetzung rechnen zu Ende.
+//   - GEWOLLT: unter Dauerlast interaktiver Auftraege ruht der Hintergrund entsprechend laenger.
+//     Nichts geht verloren — verdraengte Auftraege warten in der Queue, und was in PG mit
+//     embedded_at NULL steht, holt der Backlog nach.
 function positiveEnvInt(name: string, fallback: number): number {
   const value = Number(process.env[name]);
   return Number.isInteger(value) && value > 0 ? value : fallback;
@@ -226,6 +233,8 @@ export interface EmbeddingQueueStats {
   currentLongestWaitMs: Record<EmbedPriority, number>;
   longestWaitMs: Record<EmbedPriority, number>;
   averageCallMs: number;
+  /** P5-T15: wie oft ein laufender Hintergrund-Aufruf fuer einen interaktiven verdraengt wurde. */
+  preemptedBackground: number;
 }
 
 interface EmbedLease {
@@ -254,6 +263,19 @@ const rejectedByPriority = zeroCounts();
 const longestWaitByPriority = zeroCounts();
 const interactiveQueue: QueueEntry[] = [];
 const backgroundQueue: QueueEntry[] = [];
+/** P5-T15: laufende Hintergrund-Aufrufe, die ein interaktiver Auftrag abbrechen darf. */
+const laufendeHintergrund = new Set<AbortController>();
+let verdraengtHintergrund = 0;
+
+/** Laeuft oder wartet gerade ein interaktiver Auftrag? Dann startet kein Hintergrund. */
+function interaktivBeschaeftigt(): boolean {
+  return activeByPriority.interactive > 0 || interactiveQueue.length > 0;
+}
+
+/** Bricht alle laufenden Hintergrund-Aufrufe ab; runQueued reiht sie hinten neu ein. */
+function brichHintergrundAb(): void {
+  for (const abbruch of laufendeHintergrund) abbruch.abort();
+}
 
 export class EmbeddingQueueFullError extends Error {
   readonly code = 'EMBEDDING_QUEUE_FULL';
@@ -307,19 +329,29 @@ function startLease(priority: EmbedPriority, queuedAt: number): EmbedLease {
 }
 
 function dispatchNext(): void {
-  if (activeEmbedCalls >= MAX_CONCURRENT_EMBED) return;
-  const entry = interactiveQueue.shift() ?? backgroundQueue.shift();
-  if (!entry) return;
-  if (entry.timer) clearTimeout(entry.timer);
-  entry.resolve(startLease(entry.priority, entry.queuedAt));
+  while (activeEmbedCalls < MAX_CONCURRENT_EMBED) {
+    let entry = interactiveQueue.shift();
+    if (!entry) {
+      // P5-T15: Hintergrund erst, wenn kein interaktiver Auftrag mehr laeuft
+      if (activeByPriority.interactive > 0) return;
+      entry = backgroundQueue.shift();
+    }
+    if (!entry) return;
+    if (entry.timer) clearTimeout(entry.timer);
+    entry.resolve(startLease(entry.priority, entry.queuedAt));
+  }
 }
 
-function acquireEmbedSlot(options: EmbedOptions = {}): Promise<EmbedLease> {
+function acquireEmbedSlot(options: EmbedOptions = {}, neuversuch = false): Promise<EmbedLease> {
   const priority = options.priority ?? 'interactive';
-  submittedByPriority[priority]++;
+  // Ein Neuversuch nach Verdraengung ist kein neuer Auftrag
+  if (!neuversuch) submittedByPriority[priority]++;
   const now = Date.now();
 
-  if (activeEmbedCalls < MAX_CONCURRENT_EMBED) {
+  // P5-T15: ein interaktiver Auftrag verdraengt laufende Hintergrund-Aufrufe; ein
+  // Hintergrundauftrag nimmt keinen freien Slot, solange Interaktives laeuft oder wartet.
+  if (priority === 'interactive') brichHintergrundAb();
+  if (activeEmbedCalls < MAX_CONCURRENT_EMBED && (priority === 'interactive' || !interaktivBeschaeftigt())) {
     return Promise.resolve(startLease(priority, now));
   }
 
@@ -362,16 +394,32 @@ function releaseEmbedSlot(lease: EmbedLease): void {
 }
 
 async function runQueued<T>(
-  operation: () => Promise<T>,
+  operation: (signal?: AbortSignal) => Promise<T>,
   options: EmbedOptions = {},
 ): Promise<T> {
-  const lease = await acquireEmbedSlot(options);
-  try {
-    const gap = Date.now() - lastEmbedFinishMs;
-    if (gap < MIN_GAP_MS) await sleep(MIN_GAP_MS - gap);
-    return await operation();
-  } finally {
-    releaseEmbedSlot(lease);
+  // Die Schleife wiederholt sich NUR nach einer Verdraengung (sonst return/throw).
+  for (let neuversuch = false; ; neuversuch = true) {
+    const lease = await acquireEmbedSlot(options, neuversuch);
+    // Nur Hintergrund-Aufrufe sind verdraengbar.
+    const abbruch = lease.priority === 'background' ? new AbortController() : null;
+    if (abbruch) laufendeHintergrund.add(abbruch);
+    try {
+      const gap = Date.now() - lastEmbedFinishMs;
+      if (gap < MIN_GAP_MS) await sleep(MIN_GAP_MS - gap);
+      if (abbruch?.signal.aborted) {
+        verdraengtHintergrund++;
+        continue; // noch vor dem Aufruf verdraengt -> hinten neu einreihen
+      }
+      return await operation(abbruch?.signal);
+    } catch (error) {
+      if (!abbruch?.signal.aborted) throw error;
+      // P5-T15: ein interaktiver Auftrag hat diesen Hintergrund-Aufruf verdraengt -> Slot frei
+      // (finally) und hinten neu einreihen; der Auftrag laeuft danach automatisch weiter.
+      verdraengtHintergrund++;
+    } finally {
+      if (abbruch) laufendeHintergrund.delete(abbruch);
+      releaseEmbedSlot(lease);
+    }
   }
 }
 
@@ -398,6 +446,7 @@ export function getEmbeddingQueueStats(): EmbeddingQueueStats {
     },
     longestWaitMs: { ...longestWaitByPriority },
     averageCallMs,
+    preemptedBackground: verdraengtHintergrund,
   };
 }
 
@@ -406,9 +455,9 @@ export async function embed(
   text: string,
   options: EmbedOptions = {},
 ): Promise<number[]> {
-  return runQueued(async () => {
+  return runQueued(async (signal) => {
     const provider = await getEmbeddingProvider({ strictOllama: options.strictOllama });
-    return provider.embed(mitPraefix(text, options.art));
+    return provider.embed(mitPraefix(text, options.art), signal);
   }, options);
 }
 

@@ -74,7 +74,7 @@ import { verarbeiteAssetEreignis } from './asset-intel-sync.js';
 import { loadGitignore, shouldIgnore } from '../watcher/ignore.js';
 import { getConfig } from '../config.js';
 import { indexDocument, removeDocument } from './documents.js';
-import { getPool } from '../db/client.js';
+import { getPool, imHintergrund } from '../db/client.js';
 import { getParserForFile } from '../parser/index.js';
 import { isProjectEnabled } from './project-registry.js';
 import { inTransaktionMitRetry, istTransienterPgFehler, wartezeitMs } from '../db/transient-retry.js';
@@ -359,7 +359,9 @@ function planeCrossFileReferences(project: string): void {
 export function enqueueParseAndEmbed(project: string, filePath: string): void {
   const key = `${project}:${filePath}`;
   if (parseQueue.has(key)) clearTimeout(parseQueue.get(key)!);
-  parseQueue.set(key, setTimeout(async () => {
+  // P5-T15: Parsen/Chunken nach einem Schreibvorgang ist Hintergrundarbeit -> Hintergrund-Pool
+  // (auch das anschliessende Cross-File-Linking erbt den Kontext).
+  parseQueue.set(key, setTimeout(() => void imHintergrund(async () => {
     parseQueue.delete(key);
     try {
       if (!(await isProjectEnabled(project))) return;
@@ -370,7 +372,7 @@ export function enqueueParseAndEmbed(project: string, filePath: string): void {
     // Cross-File References nach 5s Ruhe neu verknuepfen. Bei Disable
     // bleibt die Arbeit pending und prueft den Status bis zum Re-enable erneut.
     planeCrossFileReferences(project);
-  }, 2000));
+  }), 2000));
 }
 
 /**

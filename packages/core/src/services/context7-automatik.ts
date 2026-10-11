@@ -66,7 +66,7 @@
  *   - ../db/client.js, ./context7.js, ./context7-kontingent.js, ./tech-detection.js, ./tech-docs.js (intern)
  */
 
-import { getPool } from '../db/client.js';
+import { getPool, imHintergrund } from '../db/client.js';
 import { getContext7Client, Context7Fehler, type Context7Bibliothek, type Context7Doc } from './context7.js';
 import { context7Kontingent, type Context7Aufrufart } from './context7-kontingent.js';
 import {
@@ -188,7 +188,7 @@ export async function context7AutomatikTick(): Promise<void> {
   laeuft = true;
   letzterLauf = Date.now();
   try {
-    await lauf(k);
+    await imHintergrund(() => lauf(k)); // P5-T15: nie die Verbindungen der Tool-Anfragen
   } catch (err) {
     console.error(`[context7-auto] Lauf fehlgeschlagen: ${(err as Error).message}`);
   } finally {

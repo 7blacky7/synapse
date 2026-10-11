@@ -13,7 +13,7 @@ export { GUIDE_OVERVIEW, TOOL_GUIDES } from './guide/index.js';
 export type { ToolGuide, ActionGuide } from './guide/index.js';
 
 // PostgreSQL
-export { getPool, testDatabaseConnection, closePool, ensureSchema, pruefeSchema, stelleSchemaSicher, schemaModus, leereSchemaWarnung, SCHEMA_KENNUNG } from './db/index.js';
+export { getPool, getHintergrundPool, imHintergrund, istImHintergrund, testDatabaseConnection, closePool, ensureSchema, pruefeSchema, stelleSchemaSicher, schemaModus, leereSchemaWarnung, SCHEMA_KENNUNG } from './db/index.js';
 export type { SchemaModus, SchemaPruefung, SchemaStandArt, SchemaSicherErgebnis } from './db/index.js';
 
 // Typen

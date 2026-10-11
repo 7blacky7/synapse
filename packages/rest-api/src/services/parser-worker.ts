@@ -33,6 +33,7 @@ import {
   projekteMitBacklog,
   context7AutomatikTick,
   initContext7Automatik,
+  imHintergrund,
 } from '@synapse/core';
 import { listEmbeddingNodes } from './embedding-nodes.js';
 
@@ -103,7 +104,7 @@ export class ParserWorker {
     // Erster Tick gleich nach 2s (nicht beim Boot, damit Schema/Init durch sind).
     setTimeout(() => this.fire(), 2_000);
     this.timer = setInterval(() => this.fire(), this.cfg.intervalMs);
-    void this.embeddingLoop();
+    void imHintergrund(() => this.embeddingLoop());
     // P12-T17: Context7-Automatik (eigener Takt, eigene Drosselung — siehe context7-automatik.ts)
     initContext7Automatik();
   }
@@ -125,7 +126,8 @@ export class ParserWorker {
   private fire(): void {
     if (this.running) return;       // vorheriger Tick noch aktiv → ueberspringen
     this.running = true;
-    this.tick()
+    // P5-T15: alles im Tick ist Hintergrundarbeit -> Hintergrund-Pool (getPool liefert ihn darin)
+    imHintergrund(() => this.tick())
       .catch(err => console.error(`[parser-worker] tick error: ${(err as Error).message}`))
       .finally(() => { this.running = false; });
   }

@@ -119,7 +119,7 @@ export class OllamaEmbeddingProvider implements EmbeddingProvider {
   /**
    * Generiert Embedding fuer einen Text
    */
-  async embed(text: string): Promise<number[]> {
+  async embed(text: string, signal?: AbortSignal): Promise<number[]> {
     // Sicherstellen dass Model verfuegbar ist
     if (!this.modelEnsured) {
       await this.ensureModel();
@@ -136,7 +136,7 @@ export class OllamaEmbeddingProvider implements EmbeddingProvider {
 
     // Passt in einen Pass → direkt embedden.
     if (text.length <= maxChars) {
-      return this.applyTargetDim(await this.embedRaw(text, numCtx));
+      return this.applyTargetDim(await this.embedRaw(text, numCtx, signal));
     }
 
     // Zu lang → in Stuecke splitten, jedes embedden, Vektoren mitteln (mean-pooling)
@@ -144,7 +144,7 @@ export class OllamaEmbeddingProvider implements EmbeddingProvider {
     // Kontext wird nie gesprengt — egal wie lang der Text ist (Memory/Thoughts/Docs).
     const vectors: number[][] = [];
     for (let i = 0; i < text.length; i += maxChars) {
-      vectors.push(await this.embedRaw(text.slice(i, i + maxChars), numCtx));
+      vectors.push(await this.embedRaw(text.slice(i, i + maxChars), numCtx, signal));
     }
     const dim = vectors[0].length;
     const mean = new Array<number>(dim).fill(0);
@@ -156,9 +156,11 @@ export class OllamaEmbeddingProvider implements EmbeddingProvider {
   }
 
   /** Ein einzelner Embed-Call an Ollama (mit num_ctx). Ohne Dim-Truncation. */
-  private async embedRaw(text: string, numCtx: number): Promise<number[]> {
+  private async embedRaw(text: string, numCtx: number, signal?: AbortSignal): Promise<number[]> {
     const response = await fetch(`${this.baseUrl}/api/embeddings`, {
       method: 'POST',
+      // P5-T15: verdraengter Hintergrund-Aufruf -> fetch bricht ab (Ollama rechnet ggf. kurz zu Ende)
+      signal,
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         model: this.model,

@@ -12,8 +12,12 @@ export interface EmbeddingProvider {
   /** Name des Providers */
   readonly name: string;
 
-  /** Generiert Embedding fuer einen Text */
-  embed(text: string): Promise<number[]>;
+  /**
+   * Generiert Embedding fuer einen Text. signal (P5-T15): die Embedding-Queue bricht damit
+   * laufende Hintergrund-Aufrufe ab, sobald ein interaktiver Auftrag kommt. Provider ohne
+   * Unterstuetzung ignorieren es (der Aufruf laeuft dann zu Ende).
+   */
+  embed(text: string, signal?: AbortSignal): Promise<number[]>;
 
   /** Generiert Embeddings fuer mehrere Texte (Batch) */
   embedBatch(texts: string[]): Promise<number[][]>;

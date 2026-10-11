@@ -59,7 +59,7 @@ import {
 } from './thought-ids.js';
 import { embed } from '../embeddings/index.js';
 import type { EmbedOptions } from '../embeddings/index.js';
-import { getPool } from '../db/client.js';
+import { getPool, getHintergrundPool } from '../db/client.js';
 import { updateTask } from './plans.js';
 import type { ProjectTask } from '../types/index.js';
 
@@ -511,7 +511,8 @@ export async function embeddeThoughtNach(
   id: string,
   embedOptions: EmbedOptions = {},
 ): Promise<void> {
-  const pool = getPool();
+  // P5-T15: Nachtraege sind Hintergrundarbeit -> eigener Pool, nie die Verbindungen der Tool-Anfragen
+  const pool = getHintergrundPool();
 
   // ⚠️ thoughts IST ANDERS GEBAUT als memories und proposals: es gibt KEIN created_at und
   // KEIN updated_at, sondern eine einzelne Spalte "timestamp". Wer hier oder im Backlog nach

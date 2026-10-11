@@ -38,7 +38,7 @@
 import { v4 as uuidv4 } from 'uuid';
 import { embed } from '../embeddings/index.js';
 import type { EmbedOptions } from '../embeddings/index.js';
-import { getPool } from '../db/client.js';
+import { getPool, getHintergrundPool } from '../db/client.js';
 import { ensureCollection } from '../qdrant/collections.js';
 import {
   insertVector,
@@ -489,7 +489,8 @@ export async function embeddeProposalNach(
   id: string,
   embedOptions: EmbedOptions = {},
 ): Promise<void> {
-  const pool = getPool();
+  // P5-T15: Nachtraege sind Hintergrundarbeit -> eigener Pool, nie die Verbindungen der Tool-Anfragen
+  const pool = getHintergrundPool();
   const { rows } = await pool.query(
     `SELECT file_path, suggested_content, description, author, status, tags, created_at, updated_at
        FROM proposals WHERE id = $1 AND project = $2`,

@@ -19,7 +19,7 @@
 
 import { v4 as uuidv4 } from 'uuid';
 import { createHash } from 'crypto';
-import { getPool } from '../db/client.js';
+import { getPool, getHintergrundPool } from '../db/client.js';
 import { embed } from '../embeddings/index.js';
 import type { EmbedOptions, EmbedPriority } from '../embeddings/index.js';
 import { ensureCollection } from '../qdrant/collections.js';
@@ -93,6 +93,12 @@ export interface TechDocSpeicherOptionen {
   embeddingAbwarten?: boolean;
   /** Prioritaet in der Embedding-Queue; Bulk-Pfade (Context7) setzen 'background'. */
   priority?: EmbedPriority;
+  /**
+   * P5-T15: true = KEIN nebenlaeufiges Einbetten, nur embedded_at NULL — der gedrosselte Backlog
+   * (embeddeOffeneEintraege) holt es nach. Pflicht fuer Massen-Schreibwege (Context7-Chunks,
+   * Importe): sonst stoesst jede Zeile einen eigenen Nachtrag an und flutet Pool und Queue.
+   */
+  nurBacklog?: boolean;
 }
 
 export interface TechDocSpeicherErgebnis {
@@ -233,7 +239,7 @@ export async function speichereTechDoc(
       console.error('[Synapse TechDocs] Embedding fehlgeschlagen, Backlog holt es nach:', error);
       warning = `Embedding fehlgeschlagen (Backlog holt es nach): ${error}`;
     }
-  } else {
+  } else if (!optionen.nurBacklog) {
     void embeddeTechDocNach(project, id, embedOptions).catch((err) => {
       console.error(`[Synapse TechDocs] Embedding fuer "${id}" fehlgeschlagen, Backlog holt es nach:`, err);
     });
@@ -263,7 +269,8 @@ export async function embeddeTechDocNach(
   id: string,
   embedOptions: EmbedOptions = {}
 ): Promise<void> {
-  const pool = getPool();
+  // P5-T15: Nachtraege sind Hintergrundarbeit -> eigener Pool, nie die Verbindungen der Tool-Anfragen
+  const pool = getHintergrundPool();
   const { rows } = await pool.query(
     `SELECT framework, version, section, content, type, category, source, content_hash, indexed_at, project
        FROM tech_docs WHERE id = $1`,
@@ -336,7 +343,9 @@ export async function speichereContext7Chunks(
         category: 'framework',
         source: 'context7',
       },
-      { embeddingAbwarten: optionen.embeddingAbwarten, priority: 'background' }
+      // P5-T15: Massen-Schreibweg -> nur embedded_at NULL, der gedrosselte Backlog bettet nach.
+      // Wer direkt danach sucht (embeddingAbwarten), bettet wie bisher sofort ein.
+      { embeddingAbwarten: optionen.embeddingAbwarten, priority: 'background', nurBacklog: !optionen.embeddingAbwarten }
     );
     if (!r.success) ergebnis.fehlgeschlagen++;
     else if (r.duplicate) {
