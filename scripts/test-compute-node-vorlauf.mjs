@@ -14,6 +14,8 @@ import path from 'node:path';
 //   V4 Volle Modellpruefung (nvidia-smi) nur beim Start, nicht je Stapel; Digest-Pruefung je Stapel.
 //   V5 API-Rueckfall: bevorzugte Adresse tot (Verbindung abgelehnt) -> sofort ueber SYNAPSE_API_URL_RUECKFALL.
 //   V6 SIGTERM gibt ALLE offenen Claims frei: den rechnenden UND den vorausgeholten Stapel.
+//   V7 Statusdatei (SYNAPSE_NODE_STATUS_DATEI): aktive Adresse, Art, Rueckfall aktiv, Embed-Pause.
+//   V8 Embed-Pause (EMBED_MIN_GAP_MS, vom Tray aus gpu-helfer.json) kommt in core an: GPU-Luecke >= Pause.
 
 const listen = (server) => new Promise((resolve) =>
   server.listen(0, '127.0.0.1', () => resolve(server.address().port))
@@ -151,6 +153,8 @@ const [ollamaPort, apiPort, pgTrapPort, qdrantTrapPort] = await Promise.all([
 ]);
 const fakeBinDir = await mkdtemp(path.join(os.tmpdir(), 'synapse-fake-gpu-'));
 const smiLog = path.join(fakeBinDir, 'smi.log');
+const statusDatei = path.join(fakeBinDir, 'gpu-helfer-status.json');
+const EMBED_PAUSE_MS = 75;
 await writeFile(smiLog, '');
 await writeFile(
   path.join(fakeBinDir, 'nvidia-smi'),
@@ -167,6 +171,9 @@ const child = spawn(process.execPath, ['packages/compute-node-agent/dist/index.j
     SYNAPSE_GPU_INDEX: '0',
     SYNAPSE_API_URL: `http://127.0.0.1:${totPort}`,
     SYNAPSE_API_URL_RUECKFALL: `http://127.0.0.1:${apiPort}`,
+    SYNAPSE_API_URL_ART: 'lan',
+    SYNAPSE_NODE_STATUS_DATEI: statusDatei,
+    EMBED_MIN_GAP_MS: String(EMBED_PAUSE_MS),
     SYNAPSE_API_TOKEN: 'test-service-token',
     SYNAPSE_NODE_ID: 'vorlauf-test-node',
     SYNAPSE_NODE_MAX_CONCURRENCY: '',
@@ -211,6 +218,8 @@ try {
   // Lueckenlos: Embed B beginnt praktisch direkt nach Embed A (kein Claim/Abschluss dazwischen).
   const luecke = embed('B').start - embed('A').ende;
   assert.ok(luecke < CLAIM_MS, `GPU-Luecke zwischen A und B ${luecke} ms (>= Claim-Dauer ${CLAIM_MS} ms)`);
+  // V8: die Luecke ist die durchgereichte Embed-Pause (core MIN_GAP_MS), nicht der Default.
+  assert.ok(luecke >= EMBED_PAUSE_MS - 5, `GPU-Luecke ${luecke} ms < Embed-Pause ${EMBED_PAUSE_MS} ms - EMBED_MIN_GAP_MS nicht angekommen?`);
   // V2
   assert.equal(maxLaufendeEmbeds, 1, 'zwei /api/embed gleichzeitig');
   // V3
@@ -227,6 +236,14 @@ try {
   const sortiert = (l) => [...l].sort((a, b) => a.chunkId.localeCompare(b.chunkId));
   assert.deepEqual(sortiert(release.claims), sortiert(erwartet), 'SIGTERM hat nicht alle offenen Claims freigegeben');
   assert.equal(trapConnections, 0);
+  // V7
+  const status = JSON.parse(await readFile(statusDatei, 'utf8'));
+  assert.equal(status.adresse, `http://127.0.0.1:${apiPort}`);
+  assert.equal(status.art, 'oeffentlich');
+  assert.equal(status.rueckfall_aktiv, true);
+  assert.equal(status.lan_bevorzugen, true);
+  assert.equal(status.embed_pause_ms, EMBED_PAUSE_MS);
+  assert.deepEqual(status.adressen.map((a) => a.art), ['lan', 'oeffentlich']);
   console.log(
     `P15-T11 Vorlauf E2E: claimBatch=${CLAIM_BATCH} stapel=${CLAIM_BATCH / 2} gpu_luecke_A_B=${luecke}ms ` +
     `nvidia_smi=${smiAufrufe} tags=${tagsAufrufe} release=${release.claims.length} (rechnend+vorausgeholt) - ALLE PRUEFUNGEN GRUEN`,

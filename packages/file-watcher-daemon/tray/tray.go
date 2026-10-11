@@ -186,6 +186,8 @@ func onReady() {
 	go runPollLoop(stopChan)
 	go startSSE(stopChan)
 	go runLiveRefreshLoop(stopChan)
+	// P15-T11: gpu-helfer.json (Haekchen, KI ueber den Daemon, Hand) -> laufenden Helfer neu starten.
+	go gpuHelferEinstellungenBeobachten(stopChan)
 
 	triggerRefresh()
 }
@@ -1379,6 +1381,36 @@ func zeigeGPUFenster() {
 		})
 	}()
 
+	// P15-T11: LAN-Adresse nur als Option (Standard aus, Begruendung in gpu_helfer_einstellungen.go).
+	// Das Haekchen schreibt gpu-helfer.json; ein laufender Helfer startet mit der neuen Adresswahl neu.
+	adressStatus := widget.NewLabel("")
+	adressStatus.Wrapping = fyne.TextWrapWord
+	lanCheck := widget.NewCheck("API im LAN bevorzugen (synapse_api_url aus config.json, öffentliche Adresse als Rückfall)", nil)
+	lanCheck.SetChecked(ladeGPUHelferEinstellungen().LanBevorzugen)
+	lanCheck.OnChanged = func(an bool) {
+		go func() {
+			if err := setzeGPUHelferEinstellung("lan_bevorzugen", an); err != nil {
+				fyne.Do(func() { status.SetText("Einstellung nicht gespeichert: " + err.Error()) })
+				return
+			}
+			neu, err := gpuHelferBeiAenderungNeustarten()
+			fyne.Do(func() {
+				switch {
+				case err != nil:
+					status.SetText("Gespeichert, Neustart des GPU-Helfers fehlgeschlagen: " + err.Error())
+				case neu:
+					status.SetText("Gespeichert; GPU-Helfer startet mit der neuen Adresswahl neu.")
+				default:
+					status.SetText("Gespeichert; gilt beim nächsten Start des GPU-Helfers.")
+				}
+			})
+			// Der Helfer meldet seine Adresse nach der Registrierung (wenige Sekunden).
+			time.Sleep(4 * time.Second)
+			t := gpuHelferStatusText()
+			fyne.Do(func() { adressStatus.SetText(t) })
+		}()
+	}
+
 	var toggleButton *widget.Button
 	// P15-T9: fuer einen laufenden Helfer gab es nur "Sperren". Stoppen beendet den Prozess (SIGTERM ->
 	// der Helfer gibt seine offenen Claims zurueck), laesst die Registry aber unangetastet.
@@ -1513,7 +1545,9 @@ func zeigeGPUFenster() {
 	// immer einer wirkungslos war — und nach dem Sperren fuehrte keiner zurueck.
 	knopfBeschriften = func() {
 		eingerichtet, gesperrt, laeuft := gpuZustandLesen()
+		adressText := gpuHelferStatusText()
 		fyne.Do(func() {
+			adressStatus.SetText(adressText)
 			switch {
 			case !eingerichtet:
 				toggleButton.SetText("Meine GPU verwenden")
@@ -1695,7 +1729,8 @@ func zeigeGPUFenster() {
 	fenster.SetContent(container.NewVBox(status, details,
 		widget.NewLabel("GPU-Auswahl"), gpuSelect, pruefButton,
 		widget.NewLabel("Modell-Zielpfad (vor Download prüfen)"), modelDir,
-		container.NewHBox(toggleButton, stopButton)))
+		container.NewHBox(toggleButton, stopButton),
+		lanCheck, adressStatus))
 	fenster.Resize(fyne.NewSize(820, 760))
 	// Beim Oeffnen zeigt der Knopf sofort den echten Zustand statt einer Vorgabe.
 	go knopfBeschriften()

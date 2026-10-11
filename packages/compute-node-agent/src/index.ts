@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import 'dotenv/config';
 import { randomUUID } from 'node:crypto';
+import { renameSync, writeFileSync } from 'node:fs';
 import { lokalerModellDigest, probeNodeCapabilities, type EmbeddingReference } from './probe.js';
 
 const token = process.env.SYNAPSE_API_TOKEN || '';
@@ -43,10 +44,13 @@ if (!process.env.SYNAPSE_API_URL || !token) {
 // P15-T11: Der Tray gibt die bevorzugte Adresse (synapse_api_url aus config.json, im LAN) als
 // SYNAPSE_API_URL und den oeffentlichen Aussteller als SYNAPSE_API_URL_RUECKFALL. Gemessen am
 // 11.10.2026: ueber Cloudflare 120-160 ms Antwortzeit je Anfrage, zwei Anfragen je Stapel.
+// SYNAPSE_API_URL_ART sagt, was die bevorzugte Adresse ist ('lan' | 'oeffentlich'); der Rueckfall ist
+// immer die oeffentliche Adresse des Ausstellers. Nur fuer die Statusanzeige, nicht fuer Entscheidungen.
 const apiBasen: string[] = [];
-for (const [name, roh] of [
-  ['SYNAPSE_API_URL', process.env.SYNAPSE_API_URL || ''],
-  ['SYNAPSE_API_URL_RUECKFALL', process.env.SYNAPSE_API_URL_RUECKFALL || ''],
+const apiArten: string[] = [];
+for (const [name, roh, art] of [
+  ['SYNAPSE_API_URL', process.env.SYNAPSE_API_URL || '', process.env.SYNAPSE_API_URL_ART || 'oeffentlich'],
+  ['SYNAPSE_API_URL_RUECKFALL', process.env.SYNAPSE_API_URL_RUECKFALL || '', 'oeffentlich'],
 ] as const) {
   if (!roh.trim()) continue;
   const geprueft = pruefeApiUrl(roh);
@@ -54,7 +58,9 @@ for (const [name, roh] of [
     console.error(`${name} ${geprueft.fehler} - Adresse wird nicht benutzt`);
     continue;
   }
-  if (!apiBasen.includes(geprueft.url)) apiBasen.push(geprueft.url);
+  if (apiBasen.includes(geprueft.url)) continue;
+  apiBasen.push(geprueft.url);
+  apiArten.push(art);
 }
 if (apiBasen.length === 0) {
   console.error('Keine gueltige API-Adresse (SYNAPSE_API_URL / SYNAPSE_API_URL_RUECKFALL)');
@@ -62,6 +68,33 @@ if (apiBasen.length === 0) {
 }
 /** Index der Adresse, ueber die gerade gesprochen wird; 0 = bevorzugt. */
 let aktiveBasis = 0;
+
+/**
+ * P15-T11: Status fuer Tray und KI (SYNAPSE_NODE_STATUS_DATEI, setzt der Tray): welche API-Adresse
+ * gerade aktiv ist, ob der Rueckfall greift und mit welcher Embed-Pause der Helfer laeuft. Atomar
+ * geschrieben (tmp + rename), bei jedem Adresswechsel und nach der Registrierung. Best effort.
+ */
+function statusSchreiben(): void {
+  const datei = process.env.SYNAPSE_NODE_STATUS_DATEI;
+  if (!datei) return;
+  const pause = Number(process.env.EMBED_MIN_GAP_MS);
+  const status = {
+    pid: process.pid,
+    adresse: apiBasen[aktiveBasis],
+    art: apiArten[aktiveBasis],
+    rueckfall_aktiv: aktiveBasis !== 0,
+    adressen: apiBasen.map((url, i) => ({ url, art: apiArten[i] })),
+    lan_bevorzugen: apiArten[0] === 'lan',
+    embed_pause_ms: process.env.EMBED_MIN_GAP_MS !== undefined && process.env.EMBED_MIN_GAP_MS !== '' && Number.isFinite(pause) ? pause : null,
+    aktualisiert: new Date().toISOString(),
+  };
+  try {
+    writeFileSync(datei + '.tmp', JSON.stringify(status, null, 2));
+    renameSync(datei + '.tmp', datei);
+  } catch (error) {
+    console.error('[ComputeNode] Statusdatei nicht schreibbar:', error);
+  }
+}
 
 /** Verbindungsfehler, bei denen die Anfrage den Server sicher NICHT erreicht hat. */
 function nichtAngekommen(error: unknown): boolean {
@@ -83,6 +116,7 @@ async function apiFetch(path: string, init: RequestInit): Promise<Response> {
       if (apiBasen.length < 2 || aktiveBasis !== index) return;
       aktiveBasis = (index + 1) % apiBasen.length;
       console.error(`[ComputeNode] API ${basis} ${grund}, weiter ueber ${apiBasen[aktiveBasis]}`);
+      statusSchreiben();
     };
     try {
       const response = await fetch(basis + path, { ...init, signal: AbortSignal.timeout(30_000), redirect: 'error' });
@@ -192,6 +226,7 @@ async function zurueckZurBevorzugtenBasis(): Promise<void> {
     if (response.ok) {
       aktiveBasis = 0;
       console.error(`[ComputeNode] API ${apiBasen[0]} wieder erreichbar, zurueck auf die bevorzugte Adresse`);
+      statusSchreiben();
     }
   } catch {
     // weiter ueber die Rueckfall-Adresse
@@ -302,6 +337,7 @@ const vorlaufTiefe = claimBatch >= 2 ? 2 : 1;
 const stapelGroesse = Math.floor(claimBatch / vorlaufTiefe);
 console.error(`[ComputeNode] registered ${registered.nodeId} (${registered.modelDigest}) via ${apiBasen[aktiveBasis]}, ` +
   `claimBatch ${claimBatch} -> Stapel ${stapelGroesse}, ${vorlaufTiefe === 2 ? 'mit Vorausholen' : 'ohne Vorausholen'}`);
+statusSchreiben();
 
 /**
  * P15-T11: Stand der letzten VOLLEN Modellpruefung (nvidia-smi, /api/tags, /api/show) gegen den Vertrag.

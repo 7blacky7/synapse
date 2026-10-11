@@ -661,10 +661,10 @@ func startLokalenGPUHelper(c gpuNodeConfig) error {
 	// P15-T6: Modell, Zieldimension, num_ctx und VRAM-Bedarf holt der Agent selbst aus dem
 	// Referenzvertrag der API (GET /api/embedding-nodes/reference) — hier wird nichts davon
 	// vorgegeben, sonst gaebe es zwei Quellen, die auseinanderlaufen koennen.
-	// P15-T11: dieselbe bevorzugte Adresse wie der Tray selbst (readTrayConfig, apiBases), der
-	// Aussteller des Compute-Tokens bleibt Rueckfall. Leerer Rueckfall ueberschreibt einen geerbten Wert.
-	bevorzugt, rueckfall := gpuHelferApiBasen(c.Issuer, readTrayConfig().SynapseApiUrl)
-	cmd.Env = append(os.Environ(), "SYNAPSE_API_URL="+bevorzugt, "SYNAPSE_API_URL_RUECKFALL="+rueckfall, "SYNAPSE_API_TOKEN="+c.ComputeToken, "SYNAPSE_NODE_ID="+c.NodeID, "OLLAMA_URL="+gpuOllamaURL, fmt.Sprintf("SYNAPSE_GPU_INDEX=%d", c.GPUIndex), fmt.Sprintf("CUDA_VISIBLE_DEVICES=%d", c.GPUIndex))
+	// P15-T11: Adresswahl (LAN nur wenn in gpu-helfer.json eingeschaltet, sonst nur die oeffentliche
+	// Adresse des Ausstellers) und Embed-Pause kommen aus gpu_helfer_einstellungen.go.
+	start := sollGPUHelferStart(c)
+	cmd.Env = append(append(os.Environ(), start.env()...), "SYNAPSE_API_TOKEN="+c.ComputeToken, "SYNAPSE_NODE_ID="+c.NodeID, "OLLAMA_URL="+gpuOllamaURL, fmt.Sprintf("SYNAPSE_GPU_INDEX=%d", c.GPUIndex), fmt.Sprintf("CUDA_VISIBLE_DEVICES=%d", c.GPUIndex))
 	logf, _ := os.OpenFile(filepath.Join(filepath.Dir(gpuConfigPath()), "compute-node.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
 	if logf != nil {
 		cmd.Stdout = logf
@@ -676,5 +676,6 @@ func startLokalenGPUHelper(c gpuNodeConfig) error {
 	// Ohne diese Datei liest laufenderLokalerGPUHelper() beim naechsten Klick ins Leere
 	// und der Singleton greift nie — genau der Fehler, der hier behoben werden soll.
 	_ = os.WriteFile(lokalerGPUHelperPidPath(), []byte(strconv.Itoa(cmd.Process.Pid)), 0600)
+	merkeGPUHelferStart(start)
 	return cmd.Process.Release()
 }
