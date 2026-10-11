@@ -65,6 +65,11 @@ interface Slot {
   timer: NodeJS.Timeout | null;
   stillgelegtSeit: number | null;
   gestartet: number | null;
+  /** Worker hat aufgewaermt ('bereit'); vorher laeuft fuer einen Auftrag keine Reissleine. */
+  bereit: boolean;
+  /** Zeitpunkt des Worker-Starts (Aufwaermdauer fuer die Diagnose). */
+  gespawnt: number;
+  aufwaerm_ms: number | null;
 }
 
 type Antwort = { id: number; ok: true; meldungen: SyntaxMeldung[]; ms: number } | { id: number; ok: false; error: string } | { bereit: true };
@@ -98,16 +103,28 @@ export class SyntaxWorkerPool {
   private starteSlot(index: number, ausfaelle: number): void {
     const maxMb = envZahl('SYNTAX_WORKER_MAX_MB', 256) || 256;
     const worker = new Worker(workerUrl(), {
+      // execArgv des Elternprozesses ohne --input-type/--eval/--print (sonst startet kein Worker aus `node -e`).
+      execArgv: process.execArgv.filter((a) => !/^--(input-type|eval|print)\b|^-[ep]$/.test(a)),
       resourceLimits: { maxOldGenerationSizeMb: maxMb, maxYoungGenerationSizeMb: Math.min(64, Math.max(8, Math.floor(maxMb / 8))) },
     });
     this.z.worker_gestartet++;
     worker.unref();
-    const slot: Slot = { worker, auftrag: null, ausfaelle, timer: null, stillgelegtSeit: null, gestartet: null };
+    const slot: Slot = { worker, auftrag: null, ausfaelle, timer: null, stillgelegtSeit: null, gestartet: null, bereit: false, gespawnt: Date.now(), aufwaerm_ms: null };
     this.slots[index] = slot;
     let abgehandelt = false;
 
     worker.on('message', (msg: Antwort) => {
-      if ('bereit' in msg) return;
+      if ('bereit' in msg) {
+        slot.bereit = true;
+        slot.aufwaerm_ms = Date.now() - slot.gespawnt;
+        if (slot.auftrag && slot.timer) {
+          // Aufwaerm-Zuschlag faellt weg: ab jetzt gilt das normale Limit.
+          clearTimeout(slot.timer);
+          slot.timer = null;
+          this.starteUhr(slot, slot.auftrag, 0);
+        }
+        return;
+      }
       const a = slot.auftrag;
       if (!a || a.id !== msg.id) return;
       if (slot.timer) { clearTimeout(slot.timer); slot.timer = null; }
@@ -175,7 +192,22 @@ export class SyntaxWorkerPool {
     slot.auftrag = a;
     slot.gestartet = Date.now();
     slot.worker.ref();
-    const limit = envZahl('SYNTAX_PRUEFER_TIMEOUT_MS', 5000);
+    // Noch nicht aufgewaermt: Reissleine mit Aufwaerm-Zuschlag (haengt das Aufwaermen, greift sie trotzdem).
+    this.starteUhr(slot, a, slot.bereit ? 0 : envZahl('SYNTAX_AUFWAERM_MS', 30_000));
+    try {
+      slot.worker.postMessage({ id: a.id, pruefer: a.pruefer, inhalt: a.inhalt, pfad: a.pfad });
+    } catch (err) {
+      if (slot.timer) { clearTimeout(slot.timer); slot.timer = null; }
+      slot.auftrag = null;
+      a.reject(err instanceof Error ? err : new Error(String(err)));
+    }
+  }
+
+  /** Reissleine fuer den laufenden Auftrag - erst wenn der Worker aufgewaermt ist. */
+  private starteUhr(slot: Slot, a: Auftrag, zuschlag: number): void {
+    if (slot.timer) return;
+    const basis = envZahl('SYNTAX_PRUEFER_TIMEOUT_MS', 5000);
+    const limit = basis > 0 ? basis + zuschlag : 0;
     if (limit > 0) {
       slot.timer = setTimeout(() => {
         slot.timer = null;
@@ -190,13 +222,6 @@ export class SyntaxWorkerPool {
         this.verteile();
       }, limit);
       slot.timer.unref();
-    }
-    try {
-      slot.worker.postMessage({ id: a.id, pruefer: a.pruefer, inhalt: a.inhalt, pfad: a.pfad });
-    } catch (err) {
-      if (slot.timer) { clearTimeout(slot.timer); slot.timer = null; }
-      slot.auftrag = null;
-      a.reject(err instanceof Error ? err : new Error(String(err)));
     }
   }
 
@@ -246,7 +271,7 @@ export class SyntaxWorkerPool {
       beendet_exit_ausstehend: this.beendend.size,
       slots: this.slots.map((s, i) => ({
         slot: i, thread_id: s.worker.threadId, busy: s.auftrag !== null, ausfaelle: s.ausfaelle,
-        stillgelegt: s.stillgelegtSeit !== null, datei: s.auftrag?.pfad ?? null,
+        stillgelegt: s.stillgelegtSeit !== null, datei: s.auftrag?.pfad ?? null, bereit: s.bereit, aufwaerm_ms: s.aufwaerm_ms,
         laufzeit_ms: s.gestartet === null ? null : Date.now() - s.gestartet,
       })),
       zaehler: { ...this.z },

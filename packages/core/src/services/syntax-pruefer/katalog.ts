@@ -26,8 +26,8 @@ export interface PrueferDefinition {
   sperrfaehig: boolean;
   /** synchron oder async (WASM-/ESM-Bibliotheken laden beim ersten Aufruf nach) */
   pruefe(inhalt: string, pfad: string): SyntaxMeldung[] | Promise<SyntaxMeldung[]>;
-  /** kleiner gueltiger Inhalt zum Aufwaermen im Worker */
-  aufwaermen: { inhalt: string; pfad: string };
+  /** kleiner gueltiger Inhalt zum Aufwaermen im Worker; null = erst beim ersten Auftrag laden */
+  aufwaermen: { inhalt: string; pfad: string } | null;
 }
 
 // ─── Hilfen ──────────────────────────────────────────────────────────────────
@@ -500,6 +500,136 @@ export async function pruefeMarkdown(inhalt: string, _pfad: string): Promise<Syn
   }));
 }
 
+// ─── E4: protobuf, GraphQL, Vue, Svelte, Solidity ────────────────────────────────────────────
+
+export function pruefeProtobuf(inhalt: string, _pfad: string): SyntaxMeldung[] {
+  const pb = require('protobufjs') as { parse(t: string, o?: Record<string, unknown>): unknown };
+  try {
+    pb.parse(inhalt, { keepCase: true, alternateCommentMode: true });
+    return [];
+  } catch (err) {
+    const text = String((err as Error).message ?? err);
+    const z = /\(line (\d+)\)/.exec(text);
+    if (!z) throw err;
+    return [{
+      zeile: Number(z[1]), code: 'PROTO', meldung: text.replace(/\s*\(line \d+\)/, ''),
+      warum: 'Der protobuf-Parser (protobufjs) kann die .proto-Datei nicht lesen; protoc bricht mit einem Syntaxfehler ab.',
+      wie: 'Haeufig: Semikolon nach einem Feld fehlt, Feldnummer fehlt, in proto2 fehlt das Label (optional/required/repeated).',
+      wo: ['https://protobuf.dev/reference/protobuf/proto3-spec/'],
+    }];
+  }
+}
+
+export function pruefeGraphql(inhalt: string, _pfad: string): SyntaxMeldung[] {
+  if (inhalt.trim() === '') return [];
+  const g = require('graphql') as { parse(t: string): unknown };
+  try {
+    g.parse(inhalt);
+    return [];
+  } catch (err) {
+    const e = err as { message?: string; locations?: Array<{ line: number; column: number }> };
+    if (!e.locations?.length) throw err;
+    return [{
+      zeile: e.locations[0].line, spalte: e.locations[0].column, code: 'GraphQL',
+      meldung: String(e.message ?? '').replace(/^Syntax Error:\s*/, ''),
+      warum: 'Das Dokument ist kein gueltiges GraphQL (Schema oder Operation); Server bzw. Codegen lehnen es ab.',
+      wie: 'Haeufig: } oder ) fehlt, Argument ohne Doppelpunkt, Komma/Klammer an falscher Stelle.',
+      wo: ['https://spec.graphql.org/October2021/#sec-Language'],
+    }];
+  }
+}
+
+type VueOrt = { line: number; column: number };
+type VueBlock = { content: string; lang?: string; loc: { start: VueOrt } };
+type VueModul = {
+  parse(t: string, o?: Record<string, unknown>): { errors: Array<{ message?: string; loc?: { start: VueOrt } } | Error>; descriptor: { template: VueBlock | null; script: VueBlock | null; scriptSetup: VueBlock | null; styles: VueBlock[] } };
+  compileTemplate(o: Record<string, unknown>): { errors: Array<{ message?: string; loc?: { start: VueOrt } } | string> };
+};
+
+export async function pruefeVue(inhalt: string, pfad: string): Promise<SyntaxMeldung[]> {
+  const v = require('@vue/compiler-sfc') as VueModul;
+  const { errors, descriptor } = v.parse(inhalt, { filename: pfad || 'datei.vue' });
+  const wo = ['https://vuejs.org/api/sfc-spec.html'];
+  const ortVon = (e: unknown) => (e as { loc?: { start: VueOrt } }).loc?.start;
+  const meldungen: SyntaxMeldung[] = [];
+  const erste = errors.find((e) => ortVon(e));
+  if (erste) {
+    const o = ortVon(erste)!;
+    meldungen.push({ zeile: o.line, spalte: o.column, code: 'VUE', meldung: String((erste as { message?: string }).message ?? erste),
+      warum: 'Der Vue-SFC-Parser kann die Komponente nicht lesen (Blockstruktur oder Template).', wie: 'Tags im <template> paarweise schliessen, Bloecke <template>/<script>/<style> nicht verschachteln.', wo });
+  } else if (descriptor.template && !descriptor.template.lang) {
+    // Ausdruecke im Template ({{ }}, v-if, :prop) - Fehlerorte relativ zum Template-Inhalt.
+    const t = descriptor.template;
+    const c = v.compileTemplate({ source: t.content, filename: pfad || 'datei.vue', id: 'syntaxpruefung' });
+    const f = c.errors.find((e) => typeof e !== 'string' && e.loc);
+    if (f && typeof f !== 'string' && f.loc) {
+      const o = f.loc.start;
+      meldungen.push({ zeile: o.line + t.loc.start.line - 1, spalte: o.line === 1 ? o.column + t.loc.start.column - 1 : o.column, code: 'VUE-TEMPLATE',
+        meldung: String(f.message ?? f), warum: 'Ein Ausdruck im Vue-Template ist kein gueltiges JavaScript.', wie: 'Den Ausdruck in {{ }} bzw. im Attribut (v-if, :prop, @event) vervollstaendigen.', wo });
+    }
+  }
+  const bloecke: Array<Promise<SyntaxMeldung[]>> = [];
+  for (const s of [descriptor.script, descriptor.scriptSetup]) {
+    if (s) bloecke.push(pruefeEingebettet(s.lang || 'js', s.content, s.loc.start.line, s.loc.start.column, '<script>'));
+  }
+  for (const s of descriptor.styles) bloecke.push(pruefeEingebettet(s.lang || 'css', s.content, s.loc.start.line, s.loc.start.column, '<style>'));
+  for (const m of await Promise.all(bloecke)) meldungen.push(...m);
+  return meldungen.sort((a, b) => a.zeile - b.zeile);
+}
+
+type SvelteModul = { parse(t: string, o?: Record<string, unknown>): unknown };
+let svelteModul: Promise<SvelteModul> | null = null;
+
+export async function pruefeSvelte(inhalt: string, pfad: string): Promise<SyntaxMeldung[]> {
+  if (!svelteModul) svelteModul = import('svelte/compiler') as unknown as Promise<SvelteModul>;
+  const s = await svelteModul;
+  try {
+    s.parse(inhalt, { modern: true, filename: pfad || 'datei.svelte' });
+    return [];
+  } catch (err) {
+    const e = err as { code?: string; message?: string; start?: { line: number; column: number } };
+    if (!e.start) throw err;
+    return [{
+      zeile: e.start.line, spalte: e.start.column + 1, code: e.code ?? 'SVELTE',
+      meldung: String(e.message ?? '').split('\n')[0],
+      warum: 'Der Svelte-Compiler kann die Komponente nicht parsen; der Build bricht hier ab.',
+      wie: 'Bloecke ({#if}/{#each}/{#await}) mit {/if} usw. schliessen, Tags paarweise schliessen, Ausdruecke in { } vervollstaendigen.',
+      wo: e.code ? [`https://svelte.dev/docs/svelte/compiler-errors#${e.code}`] : ['https://svelte.dev/docs/svelte/compiler-errors'],
+    }];
+  }
+}
+
+/**
+ * Solidity ueber den offiziellen Compiler (solc-js: soljson WASM/asm.js, GPL-3.0, Wrapper MIT) - nur Parsen
+ * (Standard-JSON settings.stopAfter 'parsing'). Laden ~220 ms und ~130 MB RSS je Worker: deshalb erst beim
+ * ersten .sol-Auftrag (kein Aufwaermen); der erste Lauf reisst das Budget, das Ergebnis kommt ueber den Cache.
+ * sourceLocation.start zaehlt Bytes (UTF-8). Dateien fuer eine andere Compiler-Hauptversion (pragma) werden
+ * nicht gemeldet - solc 0.8 bricht dort vor dem Parsen ab.
+ */
+type SolcModul = { compile(input: string): string; version(): string };
+let solcModul: SolcModul | null = null;
+
+export function pruefeSolidity(inhalt: string, pfad: string): SyntaxMeldung[] {
+  if (inhalt.trim() === '') return [];
+  if (!solcModul) solcModul = require('solc') as SolcModul;
+  const datei = (pfad.split('/').pop() || 'datei.sol');
+  const aus = JSON.parse(solcModul.compile(JSON.stringify({
+    language: 'Solidity',
+    sources: { [datei]: { content: inhalt } },
+    settings: { stopAfter: 'parsing', outputSelection: { '*': { '': ['ast'] } } },
+  }))) as { errors?: Array<{ type: string; severity: string; message: string; errorCode?: string; sourceLocation?: { start: number; end: number } }> };
+  const f = (aus.errors ?? []).find((e) => e.severity === 'error');
+  if (!f || /requires different compiler version/.test(f.message)) return [];
+  const zeichen = Buffer.from(inhalt, 'utf8').subarray(0, Math.max(0, f.sourceLocation?.start ?? 0)).toString('utf8').length;
+  const { zeile, spalte } = zeileSpalte(inhalt, zeichen);
+  return [{
+    zeile, spalte, code: f.errorCode ? `${f.type} ${f.errorCode}` : f.type, meldung: f.message,
+    warum: 'Der Solidity-Compiler (solc, nur Parse-Phase) lehnt den Quelltext ab; die Kompilierung bricht hier ab.',
+    wie: 'Semikolons, Klammerpaare und unvollstaendige Ausdruecke an der Stelle pruefen.',
+    wo: ['https://docs.soliditylang.org/en/latest/grammar.html'],
+  }];
+}
+
 // ─── Katalog ─────────────────────────────────────────────────────────────────
 
 export const PRUEFER_KATALOG: PrueferDefinition[] = [
@@ -578,6 +708,48 @@ export const PRUEFER_KATALOG: PrueferDefinition[] = [
     sperrfaehig: false,
     pruefe: pruefeMarkdown,
     aufwaermen: { inhalt: '# a\n```json\n{"a": 1}\n```\n', pfad: 'w.md' },
+  },
+  {
+    // FP-Test: 629 echte .svelte-Dateien im Index, 0 Fehlalarme -> sperrfaehig.
+    name: 'svelte',
+    paket: 'svelte',
+    endungen: ['svelte'],
+    sperrfaehig: true,
+    pruefe: pruefeSvelte,
+    aufwaermen: { inhalt: '<script lang="ts">let a: number = 1;</script>\n{#if a}<p>{a}</p>{/if}\n<style>p { color: red; }</style>\n', pfad: 'w.svelte' },
+  },
+  // Ohne Dateien im Index kein Falsch-Positiv-Test moeglich -> nur Hinweis (warning), bis Dateien da sind.
+  {
+    name: 'protobuf',
+    paket: 'protobufjs',
+    endungen: ['proto'],
+    sperrfaehig: false,
+    pruefe: pruefeProtobuf,
+    aufwaermen: { inhalt: 'syntax = "proto3";\nmessage A { int32 a = 1; }\n', pfad: 'w.proto' },
+  },
+  {
+    name: 'graphql',
+    paket: 'graphql',
+    endungen: ['graphql', 'gql', 'graphqls'],
+    sperrfaehig: false,
+    pruefe: pruefeGraphql,
+    aufwaermen: { inhalt: 'query Q($a: ID!) { x(a: $a) { y } }\n', pfad: 'w.graphql' },
+  },
+  {
+    name: 'vue',
+    paket: '@vue/compiler-sfc',
+    endungen: ['vue'],
+    sperrfaehig: false,
+    pruefe: pruefeVue,
+    aufwaermen: { inhalt: '<template><p v-if="a">{{ a }}</p></template>\n<script setup lang="ts">\nconst a = 1;\n</script>\n', pfad: 'w.vue' },
+  },
+  {
+    name: 'solidity',
+    paket: 'solc',
+    endungen: ['sol'],
+    sperrfaehig: false,
+    pruefe: pruefeSolidity,
+    aufwaermen: null, // solc erst bei Bedarf laden (Groesse/Speicher)
   },
 ];
 

@@ -123,6 +123,37 @@ console.log('Positivkontrollen E3');
   pruefe('M4 Markdown nicht sperrfaehig', md.sperrfaehig === false && def('html').sperrfaehig === true);
 }
 
+console.log('Positivkontrollen E4');
+{
+  const p = await def('protobuf').pruefe('syntax = "proto3";\nmessage A {\n  int32 a = 1\n  string b = 2;\n}\n', 'x.proto');
+  pruefe('P-1 protobuf: Semikolon fehlt, Z.4', p[0]?.zeile === 4 && p[0]?.code === 'PROTO' && /expected/.test(p[0]?.meldung), p[0]);
+  pruefe('P-2 protobuf gueltig (import, map, oneof, service, proto2)', (await def('protobuf').pruefe('syntax = "proto3";\nimport "google/protobuf/timestamp.proto";\nmessage A { google.protobuf.Timestamp t = 1; map<string,int32> m = 2; oneof o { string s = 3; } }\nservice S { rpc F(A) returns (stream A); }\n', 'x.proto')).length === 0
+    && (await def('protobuf').pruefe('syntax = "proto2";\nmessage A { required int32 a = 1; extensions 100 to 199; }\n', 'x.proto')).length === 0);
+  const g = await def('graphql').pruefe('query {\n  a {\n    b(x: )\n  }\n}\n', 'x.graphql');
+  pruefe('G1 GraphQL: Wert fehlt Z.3 Sp.10', g[0]?.zeile === 3 && g[0]?.spalte === 10 && g[0]?.code === 'GraphQL', g[0]);
+  pruefe('G2 GraphQL-Schema gueltig', (await def('graphql').pruefe('type A @key(fields: "id") { id: ID! b(x: Int = 1): [String!] }\nextend type Query { a: A }\n', 'x.graphqls')).length === 0);
+  const vue = def('vue');
+  const v1 = await vue.pruefe('<template>\n  <div>\n    <span>\n  </div>\n</template>\n', 'x.vue');
+  pruefe('V1 Vue: Tag nicht geschlossen Z.3', v1[0]?.zeile === 3 && v1[0]?.code === 'VUE', v1[0]);
+  const v2 = await vue.pruefe('<template>\n  <p v-if="a &&">{{ b }}</p>\n</template>\n', 'x.vue');
+  pruefe('V2 Vue: Template-Ausdruck Z.2', v2[0]?.zeile === 2 && v2[0]?.spalte === 12 && /JavaScript expression/.test(v2[0]?.meldung), v2[0]);
+  const v3 = await vue.pruefe('<template><p>{{ a }}</p></template>\n<script setup lang="ts">\nconst a: number = ;\n</script>\n<style lang="scss">\n.a { .b { c: d }\n</style>\n', 'x.vue');
+  pruefe('V3 Vue: <script setup lang=ts> Z.3 und <style lang=scss> Z.6', v3.length === 2 && v3[0].zeile === 3 && v3[0].code === 'TS1109' && v3[1].zeile === 6, v3);
+  pruefe('V4 Vue gueltig', (await vue.pruefe('<template><div v-for="x in xs" :key="x.id" @click="f(x)">{{ x.n }}</div></template>\n<script>\nexport default { data: () => ({ xs: [] }) };\n</script>\n', 'x.vue')).length === 0);
+  const s = await def('svelte').pruefe('<script lang="ts">\n  let a: number = 1;\n</script>\n{#if a}\n  <p>{a}</p>\n', 'x.svelte');
+  pruefe('S-1 Svelte: {#if} nicht geschlossen', s.length === 1 && typeof s[0].zeile === 'number' && s[0].wo[0].includes('compiler-errors'), s[0]);
+  const s2 = await def('svelte').pruefe('<div>\n  <p>{a +}</p>\n</div>\n', 'x.svelte');
+  pruefe('S-2 Svelte: Ausdruck Z.2', s2[0]?.zeile === 2 && s2[0]?.spalte > 1, s2[0]);
+  pruefe('S-3 Svelte gueltig (Svelte-4- und -5-Syntax)', (await def('svelte').pruefe('<script>\n  export let a = 1;\n  let b = $state(0);\n</script>\n{#each [1,2] as x (x)}<p on:click={() => b++}>{x}</p>{/each}\n<style>p { color: red; }</style>\n', 'x.svelte')).length === 0);
+  pruefe('S-4 Svelte sperrfaehig, protobuf/graphql/vue/solidity nicht', def('svelte').sperrfaehig && !def('protobuf').sperrfaehig && !def('graphql').sperrfaehig && !def('vue').sperrfaehig && !def('solidity').sperrfaehig);
+  const sol = await def('solidity').pruefe('pragma solidity ^0.8.0;\ncontract A {\n  function f() public {\n}\n', 'x.sol');
+  pruefe('SOL1 Solidity: } fehlt -> ParserError', sol.length === 1 && /^ParserError/.test(sol[0].code), sol[0]);
+  const sol2 = await def('solidity').pruefe('// ÄÖÜ\npragma solidity ^0.8.0;\ncontract A {\n  function f() public { uint a = ; }\n}\n', 'x.sol');
+  pruefe('SOL2 Solidity: Ausdruck fehlt Z.4 Sp.34 (Bytes -> Zeichen)', sol2[0]?.zeile === 4 && sol2[0]?.spalte === 34 && /primary expression/.test(sol2[0]?.meldung), sol2[0]);
+  pruefe('SOL4 Solidity: andere Compiler-Hauptversion nicht gemeldet', (await def('solidity').pruefe('pragma solidity ^0.4.24;\ncontract A { function A() public { var x = 1; } }\n', 'x.sol')).length === 0);
+  pruefe('SOL3 Solidity gueltig', (await def('solidity').pruefe('pragma solidity ^0.8.0;\ncontract A { mapping(address => uint) b; event E(uint a); function f(uint x) external returns (uint) { emit E(x); return x * 2; } }\n', 'x.sol')).length === 0);
+}
+
 // ─── Einzelweg ueber registriereStandardSyntaxPruefer (Pool) ───
 console.log('Einzelweg mit Pool');
 {
@@ -200,7 +231,7 @@ console.log('Pool');
   await pool.beenden();
 }
 {
-  process.env.SYNTAX_WORKER_MAX_MB = '32';
+  process.env.SYNTAX_WORKER_MAX_MB = '128'; // muss ueber dem Aufwaerm-Bedarf aller Bibliotheken liegen
   const P = await lade('services', 'syntax-pruefer', 'pool.js');
   const pool = new P.SyntaxWorkerPool(1);
   let fehler = null;

@@ -18,11 +18,12 @@ interface Auftrag { id: number; pruefer: string; inhalt: string; pfad: string }
 if (!parentPort) throw new Error('syntax-pruefer/worker.ts laeuft nur als worker_thread');
 const port = parentPort;
 
-for (const p of katalog()) {
-  try { void Promise.resolve(p.pruefe(p.aufwaermen.inhalt, p.aufwaermen.pfad)).catch(() => {}); } catch { /* Aufwaermen ist best effort */ }
-}
+// Aufwaermen ist best effort; Auftraege warten, bis es fertig ist (der Pool startet seine Reissleine erst
+// mit der Meldung 'bereit', siehe pool.ts).
+const aufgewaermt = Promise.allSettled(katalog().map(async (p) => (p.aufwaermen ? p.pruefe(p.aufwaermen.inhalt, p.aufwaermen.pfad) : [])));
 
 port.on('message', async (a: Auftrag) => {
+  await aufgewaermt;
   const t0 = performance.now();
   try {
     const p = prueferNachName(a.pruefer);
@@ -34,4 +35,4 @@ port.on('message', async (a: Auftrag) => {
   }
 });
 
-port.postMessage({ bereit: true });
+void aufgewaermt.then(() => port.postMessage({ bereit: true }));
