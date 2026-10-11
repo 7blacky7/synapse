@@ -1056,6 +1056,10 @@ export type { TechDoc, TechDocType, TechDocResult } from './services/tech-docs.j
 export type { ErrorPattern, ErrorPatternWarning } from './services/error-patterns.js';
 // P15-T17 E0: Fehlermuster-Treffer an den Agenten ausliefern (Nachlieferung)
 export { holeFehlermusterHinweise, verfolgeFehlermusterPruefung, vormerkenBefunde } from './services/fehlermuster-auslieferung.js';
+// P15-T37: code_check - eine Definition + ein Dispatcher fuer stdio und REST; Musterpflege mit Selbsttest/Dubletten.
+export { CODE_CHECK_DEFINITION, CODE_CHECK_ACTIONS, fuehreCodeCheckAus, kompaktesMuster } from './services/code-check-tool.js';
+export { legeMusterAn, aendereMuster, findeDubletten, findeAehnliche, normalisiereErkennung, normalisiereGeltung, normalisiereVerweise } from './services/fehlermuster-pflege.js';
+export type { MusterFelder, PflegeErgebnis, DublettenTreffer, AehnlichTreffer } from './services/fehlermuster-pflege.js';
 // P15-T17: Pruefkern (Signatur-Muster, Syntax-Schnittstelle fuer P16-T4)
 export {
   pruefeSignaturen,

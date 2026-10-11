@@ -207,16 +207,24 @@ export const errorPatternNachzug: NachzugQuelle = {
 
 export async function listErrorPatterns(
   modelScope?: string,
-  limit: number = 20
+  limit: number = 20,
+  optionen: { status?: string } = {}
 ): Promise<ErrorPattern[]> {
   const pool = getPool();
   let query = 'SELECT * FROM error_patterns';
   const params: unknown[] = [];
+  const bedingungen: string[] = [];
 
   if (modelScope) {
-    query += ' WHERE model_scope = $1';
     params.push(modelScope);
+    bedingungen.push(`model_scope = $${params.length}`);
   }
+  // P15-T37: Filter nach status; NULL (Bestand) zaehlt als themenhinweis.
+  if (optionen.status) {
+    params.push(optionen.status);
+    bedingungen.push(`COALESCE(status, 'themenhinweis') = $${params.length}`);
+  }
+  if (bedingungen.length) query += ' WHERE ' + bedingungen.join(' AND ');
   query += ` ORDER BY created_at DESC LIMIT $${params.length + 1}`;
   params.push(limit);
 

@@ -189,10 +189,9 @@ import {
   // Daemon-Heartbeat (Auto-Routing shell ↔ workspace)
   isDaemonAliveForProject,
   getProjectRegistryRows,
-  // Error Patterns (code_check)
-  addErrorPattern,
-  listErrorPatterns,
-  deleteErrorPattern,
+  // Error Patterns (code_check, P15-T37: Definition + Dispatcher aus core)
+  CODE_CHECK_DEFINITION,
+  fuehreCodeCheckAus,
   resolveAgentId,
   getSetupPhase,
   setSetupPhase,
@@ -1243,27 +1242,9 @@ export const MCP_TOOLS = [
       required: ['action'],
     },
   },
-  // 17. code_check
-  {
-    name: 'code_check',
-    description: 'Eigene Fehler-Pattern-Bibliothek im Projekt-Workspace: bekannte Fehler + Loesungen registrieren, listen, eintragen-entfernen. Patterns werden bei lokalen Code-Schreib-Operationen automatisch herangezogen. Eigene lokale Datenbank, keine externen Systeme.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        action: { type: 'string', enum: ['add_pattern', 'list_patterns', 'delete_pattern'], description: 'Action' },
-        description: { type: 'string', description: 'Erforderlich fuer add_pattern: Was ist der Fehler' },
-        fix: { type: 'string', description: 'Erforderlich fuer add_pattern: Wie sieht der Fix aus' },
-        severity: { type: 'string', enum: ['error', 'warning', 'info'], description: 'Optional fuer add_pattern (Standard: warning)' },
-        found_in_model: { type: 'string', description: 'Erforderlich fuer add_pattern: Modell' },
-        found_by: { type: 'string', description: 'Erforderlich fuer add_pattern: Agent-ID' },
-        model_scope: { type: 'string', description: 'Optional fuer list_patterns' },
-        id: { type: 'string', description: 'Erforderlich fuer delete_pattern' },
-        limit: { type: 'number', description: 'Optional fuer list_patterns (Standard: 20)' },
-        agent_id: { type: 'string', description: 'Agent-ID' },
-      },
-      required: ['action'],
-    },
-  },
+  // 17. code_check — Definition aus core (P15-T37), keine eigene Kopie des Schemas.
+  // Flache Kopie wie asset_intel: die OUTPUT_EXTRAS-Schleife setzt Felder am Objekt.
+  { ...CODE_CHECK_DEFINITION },
   // 19. ignore — welche Dateien Synapse sieht (IGN-2)
   {
     name: 'ignore',
@@ -5558,35 +5539,9 @@ async function handleToolCall(
     // =================================================================
     // 17. CODE_CHECK
     // =================================================================
-    case 'code_check': {
-      const ccAction = reqStr(args, 'action');
-      switch (ccAction) {
-        case 'add_pattern': {
-          const description = reqStr(args, 'description');
-          const fix = reqStr(args, 'fix');
-          const severity = str(args, 'severity') ?? 'warning';
-          const foundInModel = reqStr(args, 'found_in_model');
-          const rawFoundBy = str(args, 'found_by');
-          const foundBy = resolveAgentId(rawFoundBy);
-          if (!foundBy) throw new Error('found_by erforderlich (oder SYNAPSE_AGENT_NAME setzen)');
-          const result = await addErrorPattern(description, fix, severity, foundBy, foundInModel);
-          return { success: true, ...result, message: `Pattern gespeichert (scope: ${result.modelScope})` };
-        }
-        case 'list_patterns': {
-          const modelScope = str(args, 'model_scope');
-          const limit = num(args, 'limit') ?? 20;
-          const patterns = await listErrorPatterns(modelScope, limit);
-          return { success: true, patterns, count: patterns.length };
-        }
-        case 'delete_pattern': {
-          const id = reqStr(args, 'id');
-          const deleted = await deleteErrorPattern(id);
-          return { success: deleted, message: deleted ? 'Pattern geloescht' : 'Pattern nicht gefunden' };
-        }
-        default:
-          return { success: false, error: `Unbekannte code_check action: "${ccAction}"` };
-      }
-    }
+    // P15-T37: Dispatcher aus core, derselbe wie im lokalen MCP-Server.
+    case 'code_check':
+      return fuehreCodeCheckAus(args, effectiveAgentId);
 
     // =================================================================
     // 19. IGNORE — welche Dateien Synapse sieht (IGN-2)
