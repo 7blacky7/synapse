@@ -15,6 +15,7 @@
 import { createRequire } from 'node:module';
 import { performance } from 'node:perf_hooks';
 import type { SyntaxMeldung } from '../fehlermuster-pruefung.js';
+import { pruefeCmake } from './cmake.js';
 
 const require = createRequire(import.meta.url);
 
@@ -25,6 +26,8 @@ export interface PrueferDefinition {
   /** feste Version statt der Paketversion (Pruefer ohne eigene Bibliothek) */
   version?: string;
   endungen: string[];
+  /** P16-T14: Dateinamen ohne Pfad, klein (z. B. cmakelists.txt) - exakter Vergleich, zusaetzlich zu endungen */
+  dateinamen?: string[];
   sperrfaehig: boolean;
   /** synchron oder async (WASM-/ESM-Bibliotheken laden beim ersten Aufruf nach) */
   pruefe(inhalt: string, pfad: string): SyntaxMeldung[] | Promise<SyntaxMeldung[]>;
@@ -1033,6 +1036,18 @@ export const PRUEFER_KATALOG: PrueferDefinition[] = [
     sperrfaehig: true,
     pruefe: pruefeSvelte,
     aufwaermen: { inhalt: '<script lang="ts">let a: number = 1;</script>\n{#if a}<p>{a}</p>{/if}\n<style>p { color: red; }</style>\n', pfad: 'w.svelte' },
+  },
+  // P16-T14: Nachbau von cmListFileLexer/cmListFileParser (cmake.ts). FP 0/996 Index-Dateien (+0/789 weitere), der eine
+  // Treffer README.cmake ist kein CMake. Gegen cmake 4.4 als Referenz: 401/403 Mutanten gleich erkannt, 2 gleich gueltig.
+  {
+    name: 'cmake',
+    paket: 'cmake',
+    version: 'cmListFile-4.1-nachbau',
+    endungen: ['cmake'],
+    dateinamen: ['cmakelists.txt'],
+    sperrfaehig: true,
+    pruefe: (inhalt) => pruefeCmake(inhalt),
+    aufwaermen: { inhalt: 'cmake_minimum_required(VERSION 3.20)\nif(A)\n  message(STATUS "x")\nendif()\n', pfad: 'CMakeLists.txt' },
   },
   // Ohne Dateien im Index kein Falsch-Positiv-Test moeglich -> nur Hinweis (warning), bis Dateien da sind.
   {

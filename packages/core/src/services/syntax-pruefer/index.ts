@@ -68,6 +68,7 @@ export function registriereStandardSyntaxPruefer(opt: { threads?: number } = {})
       name: def.name,
       version: def.version ?? paketVersion(def.paket),
       endungen: def.endungen,
+      ...(def.dateinamen ? { dateinamen: def.dateinamen } : {}),
       sperrfaehig: def.sperrfaehig,
       pruefe: pruefeMit(def),
     });

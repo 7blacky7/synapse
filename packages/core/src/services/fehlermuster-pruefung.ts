@@ -327,6 +327,11 @@ export interface SyntaxPruefer {
   version: string;
   /** Dateiendungen ohne Punkt, klein (ts, tsx, json ...) */
   endungen: string[];
+  /**
+   * P16-T14: optionale Dateinamen ohne Pfad, klein (cmakelists.txt, makefile, dockerfile, build ...) fuer Sprachen,
+   * die am Namen statt an der Endung haengen. Exakter Vergleich, zusaetzlich zu endungen.
+   */
+  dateinamen?: string[];
   /** true = Befunde in geaenderten Zeilen lehnen den Einzelschreibvorgang ab (nur Pruefer ohne bekannte Falsch-Positive). */
   sperrfaehig: boolean;
   pruefe(inhalt: string, filePath: string): SyntaxMeldung[] | Promise<SyntaxMeldung[]>;
@@ -356,10 +361,16 @@ function endungVon(filePath: string): string {
   return name.includes('.') ? name.split('.').pop()!.toLowerCase() : '';
 }
 
+/** P16-T14: zustaendige Pruefer einer Datei - Endung ODER exakter Dateiname (dateinamen). */
+function prueferFuer(filePath: string): SyntaxPruefer[] {
+  const e = endungVon(filePath);
+  const name = (filePath.split('/').pop() ?? filePath).toLowerCase();
+  return syntaxPruefer.filter((p) => p.endungen.includes(e) || (p.dateinamen?.includes(name) ?? false));
+}
+
 /** Gibt es fuer diese Datei einen Syntaxpruefer? (Ohne Pruefer muss der alte Inhalt nicht gelesen werden.) */
 export function hatSyntaxPruefer(filePath: string): boolean {
-  const e = endungVon(filePath);
-  return syntaxPruefer.some((p) => p.endungen.includes(e));
+  return prueferFuer(filePath).length > 0;
 }
 
 /**
@@ -370,8 +381,7 @@ export async function pruefeSyntaxVollstaendig(
   filePath: string,
   inhalt: string,
 ): Promise<{ pruefer: number; fehler: Array<{ pruefer: string; zeile: number; code?: string; meldung: string }> }> {
-  const e = endungVon(filePath);
-  const liste = syntaxPruefer.filter((p) => p.sperrfaehig && p.endungen.includes(e));
+  const liste = prueferFuer(filePath).filter((p) => p.sperrfaehig);
   const fehler: Array<{ pruefer: string; zeile: number; code?: string; meldung: string }> = [];
   for (const p of liste) {
     try {
@@ -582,8 +592,7 @@ export async function pruefeSyntaxEinzelweg(eingabe: {
   ops?: UrsacheOp[];
 }): Promise<SyntaxErgebnis> {
   const t0 = Date.now();
-  const e = endungVon(eingabe.filePath);
-  const pruefer = syntaxPruefer.filter((p) => p.endungen.includes(e));
+  const pruefer = prueferFuer(eingabe.filePath);
   const leer: SyntaxErgebnis = { status: 'keine_pruefer', blockierend: [], hinweise: [], altlasten: 0, dauer_ms: 0 };
   if (pruefer.length === 0) return leer;
   const bereich = geaenderteZeilen(eingabe.alt, eingabe.neu);
