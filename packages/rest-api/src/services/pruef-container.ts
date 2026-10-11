@@ -42,6 +42,7 @@ import { PassThrough } from 'node:stream';
 import { StringDecoder } from 'node:string_decoder';
 import { createHash } from 'node:crypto';
 import { registriereSyntaxPruefer, registriereWorker, workerPausiert, meldeWorkerArbeit, registriereInternQuelle, type SyntaxMeldung } from '@synapse/core';
+import { TREESITTER_SPRACHEN } from './pruef-container-treesitter.js';
 
 /** Sprachen, die der Container prueft. sperrfaehig nur nach Falsch-Positiv-Test auf echten Index-Dateien. */
 export interface ContainerSprache {
@@ -74,6 +75,8 @@ export const CONTAINER_SPRACHEN: ContainerSprache[] = [
   { sprache: 'kotlin', endungen: ['kt', 'kts'], sperrfaehig: true, werkzeug: 'kotlin-psi', jvm: true },
   // P16-T5 E3b: javac-API parse() (JDK 25), Preview-Meldungen nur weich.
   { sprache: 'java', endungen: ['java'], sperrfaehig: true, werkzeug: 'javac', jvm: true },
+  // P16-T11: tree-sitter-Sprachen (je Sprache eine Zeile in pruef-container-treesitter.ts + Modul ts_sprachen/).
+  ...TREESITTER_SPRACHEN,
 ];
 
 const JVM_SPRACHEN = new Set(CONTAINER_SPRACHEN.filter((s) => s.jvm).map((s) => s.sprache));

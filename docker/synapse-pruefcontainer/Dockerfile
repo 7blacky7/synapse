@@ -28,6 +28,10 @@ ARG APT_PAKETE="php8.4-cli ruby lua5.4"
 # Beim Anheben FP-Lauf wiederholen (pruef-container-fp.mjs kotlin / java).
 ARG KOTLIN_VERSION=2.4.21
 ARG MAVEN_TAG=3.9-eclipse-temurin-25
+# P16-T11: tree-sitter (Python-Bindings) + Grammatiken aus tree-sitter-language-pack (nur im Builder; die Pack-Version
+# legt die Grammatik-Staende fest). Beim Anheben FP-Lauf je tree-sitter-Sprache wiederholen.
+ARG TREE_SITTER_VERSION=0.26.0
+ARG TS_PACK_VERSION=1.21.3
 
 # ─── Stufe rust: Toolchain nur zum Herauskopieren von rustfmt + Laufzeit-Bibliotheken ───
 FROM debian:${DEBIAN_TAG} AS rust
@@ -66,6 +70,18 @@ RUN mvn -B -q dependency:copy-dependencies -Dkotlin.version=${KOTLIN_VERSION} -D
  && echo "javac $(/out/jvm/rt/bin/java -XshowSettings:properties -version 2>&1 | awk '/java.version = / {print $3}')" > /out/versionen/java \
  && cat /out/versionen/kotlin /out/versionen/java && du -sh /out/jvm/*
 
+# ─── Stufe treesitter (P16-T11): Bindings + Grammatiken aller ts_sprachen-Module, Probe je Sprache ───
+# ts_holen.py holt nur die Grammatiken, die ein Modul in ts_sprachen/ nennt, und bricht ab, wenn eine probe nicht
+# stimmt. Das Pack selbst kommt NICHT ins Image (zur Laufzeit kein Netz, kein Download).
+FROM python:${PYTHON_TAG} AS treesitter
+ARG TREE_SITTER_VERSION
+ARG TS_PACK_VERSION
+RUN pip install --no-cache-dir --root-user-action=ignore --target /out/py "tree-sitter==${TREE_SITTER_VERSION}" \
+ && pip install --no-cache-dir --root-user-action=ignore --no-deps --target /opt/pack "tree-sitter-language-pack==${TS_PACK_VERSION}"
+COPY pruefer_treesitter.py ts_holen.py /bau/
+COPY ts_sprachen/ /bau/ts_sprachen/
+RUN PYTHONPATH=/out/py:/opt/pack python3 /bau/ts_holen.py /out/ts ${TS_PACK_VERSION} && du -sh /out/py /out/ts
+
 # ─── Endstufe: Python-Basis (Interpreter fuer Pruefserver und Python-ast), bash ist enthalten ───
 FROM python:${PYTHON_TAG}
 ARG FISSIX_VERSION
@@ -85,6 +101,10 @@ COPY --from=go --chmod=0444 /out/versionen/go /opt/pruef/versionen/go
 COPY --from=jvm --chmod=0555 /out/jvm/ /opt/pruef/jvm/
 COPY --from=jvm --chmod=0444 /out/versionen/kotlin /out/versionen/java /opt/pruef/versionen/
 COPY --chmod=0444 pruefserver.py pruefer_jvm.py /opt/pruef/
+COPY --from=treesitter --chmod=0555 /out/py/ /opt/pruef/py/
+COPY --from=treesitter --chmod=0555 /out/ts/ /opt/pruef/ts/
+COPY --chmod=0555 pruefer_treesitter.py /opt/pruef/
+COPY --chmod=0555 ts_sprachen/ /opt/pruef/ts_sprachen/
 ENV PATH=/opt/pruef/bin:/usr/local/bin:/usr/bin:/bin \
     LD_LIBRARY_PATH=/opt/pruef/lib \
     PYTHONPATH=/opt/pruef/py \
@@ -101,6 +121,7 @@ RUN python3 -m compileall -q /opt/pruef/py && mkdir -p /opt/pruef/leer && touch 
  && ruby --disable=gems -v && printf 'x = 1\n' | ruby --disable=gems -c \
  && luac5.4 -v && printf 'local x = 1\n' | luac5.4 -p - \
  && /opt/pruef/jvm/rt/bin/java -Xshare:auto -cp '/opt/pruef/jvm/lib/*:/opt/pruef/jvm/klassen' JvmPruefer --probe \
+ && python3 -c "import sys; sys.path.insert(0, '/opt/pruef'); import pruefer_treesitter as t; p = t.selbsttest(); print('tree-sitter', t.info()['pack'], sorted(t.lade_sprachen()), p or 'probe ok'); sys.exit(1 if p else 0)" \
  && python3 -c "import sys; from fissix import pygram; from fissix.pgen2 import driver; print(sys.version.split()[0], 'fissix ok')" \
  && chmod -R a+rX /opt/pruef/cache /opt/pruef/versionen && ls -la /opt/pruef/cache/fissix/*/
 LABEL synapse.pruefcontainer="1" org.opencontainers.image.title="synapse-pruefcontainer"
