@@ -3,12 +3,15 @@ import {
   getPool,
   claimEmbeddingChunks,
   completeEmbeddingClaim,
+  completeEmbeddingClaims,
   ollamaModellInfo,
 } from '@synapse/core';
 import { validateToken, type AuthTokenRow } from '../services/auth.js';
 import {
+  authorizedNodeCapacity,
   compatibilityProblems,
   EmbeddingReferenceUnavailable,
+  releaseEmbeddingClaims,
   getEmbeddingReferenceContract,
   heartbeatEmbeddingNode,
   listEmbeddingNodes,
@@ -19,6 +22,8 @@ import {
   validateOllamaUrl,
   type EmbeddingNodeHeartbeat,
   type EmbeddingNodeRegistration,
+  type EmbeddingNodeRow,
+  type EmbeddingReferenceContract,
   type Queryable,
 } from '../services/embedding-nodes.js';
 
@@ -73,7 +78,48 @@ function validRegistration(input: EmbeddingNodeRegistration): boolean {
     Number.isInteger(input.numCtx) && input.numCtx > 0 &&
     Number.isInteger(input.vramTotalMb) && input.vramTotalMb >= 0 &&
     Number.isInteger(input.vramFreeMb) && input.vramFreeMb >= 0 && input.vramFreeMb <= input.vramTotalMb &&
-    Number.isInteger(input.maxConcurrency) && input.maxConcurrency > 0;
+    // P15-T9: maxConcurrency ist ein WUNSCH des Knotens und darf fehlen - dann entscheidet der Server
+    // (SYNAPSE_NODE_MAX_CLAIMS, authorizedNodeCapacity).
+    (input.maxConcurrency === undefined || input.maxConcurrency === null ||
+      (Number.isInteger(input.maxConcurrency) && input.maxConcurrency > 0));
+}
+
+/** Hoechstzahl Eintraege je Stapel-Abschluss/-Freigabe - dieselbe Grenze wie limit beim Claimen. */
+const MAX_STAPEL = 100;
+
+interface KnotenFingerprint {
+  model?: string;
+  modelDigest?: string;
+  quantization?: string | null;
+  nativeDimension?: number;
+  targetDimension?: number;
+  numCtx?: number;
+}
+
+/**
+ * Prueft den Modell-Fingerabdruck eines Abschlusses gegen Registry-Eintrag UND Referenzvertrag.
+ * null = in Ordnung; sonst die Problemliste (leer bei reinem Registry-Abweichen).
+ */
+function fingerprintProbleme(
+  f: KnotenFingerprint,
+  node: EmbeddingNodeRow,
+  reference: EmbeddingReferenceContract,
+): string[] | null {
+  const fingerprint = {
+    model: f.model!, modelDigest: f.modelDigest!, quantization: f.quantization ?? null,
+    nativeDimension: f.nativeDimension!, targetDimension: f.targetDimension!, numCtx: f.numCtx!,
+  };
+  const problems = compatibilityProblems(fingerprint, reference);
+  const registryMismatch =
+    f.model !== node.modell || normalizeDigest(f.modelDigest!) !== normalizeDigest(node.modell_digest) ||
+    (f.quantization ?? null) !== node.quantisierung || f.nativeDimension !== node.native_dimension ||
+    f.targetDimension !== node.ziel_dimension || f.numCtx !== node.num_ctx;
+  return registryMismatch || problems.length > 0 ? problems : null;
+}
+
+function gueltigerFingerprint(f: KnotenFingerprint): boolean {
+  return typeof f.model === 'string' && typeof f.modelDigest === 'string' &&
+    Number.isInteger(f.nativeDimension) && Number.isInteger(f.targetDimension) && Number.isInteger(f.numCtx);
 }
 
 function validHeartbeat(body: EmbeddingNodeHeartbeat): boolean {
@@ -194,13 +240,23 @@ export function createEmbeddingNodeRoutes(
             reference,
           });
         }
-        const node = await registerEmbeddingNode(auth!.token_hash, input, deps.db);
+        // P15-T9: Kapazitaet entscheidet der Server (Obergrenze SYNAPSE_NODE_MAX_CLAIMS, Wunsch des Knotens).
+        const claimBatch = authorizedNodeCapacity(input.maxConcurrency);
+        if (claimBatch === null) {
+          return reply.code(503).send({
+            success: false,
+            error: 'node_capacity_not_configured',
+            hint: 'SYNAPSE_NODE_MAX_CLAIMS an der API oder SYNAPSE_NODE_MAX_CONCURRENCY am Knoten setzen.',
+          });
+        }
+        const node = await registerEmbeddingNode(auth!.token_hash, { ...input, maxConcurrency: claimBatch }, deps.db);
         if (!node) return reply.code(409).send({ success: false, error: 'stale_registration' });
         return reply.code(201).send({
           success: true,
           nodeId: node.node_id,
           status: node.gesperrt_vom_user ? 'locked' : 'ready',
           locked: node.gesperrt_vom_user,
+          claimBatch,
         });
       },
     );
@@ -328,6 +384,70 @@ export function createEmbeddingNodeRoutes(
           const notFound = code === 'claim_not_found';
           return reply.code(badVector ? 400 : notFound ? 404 : 409).send({ success: false, error: code });
         }
+      },
+    );
+
+    // P15-T9: Stapel-Abschluss fuer Knoten - EIN Aufruf fuer bis zu MAX_STAPEL Claims. Je Eintrag dieselben
+    // Pruefungen wie beim Einzelabschluss (Vektor, Token, Knoten, Inhalts-Hash, Lease; completeEmbeddingClaims),
+    // dazu EIN Qdrant-Upsert je Projekt. Abgelehnte Eintraege gibt der Server sofort frei - sonst lagen
+    // sie bis zum Lease-Ende brach.
+    fastify.post<{
+      Params: { nodeId: string };
+      Body: KnotenFingerprint & { items?: Array<{ chunkId?: string; claimToken?: string; contentHash?: string; vector?: number[] }> };
+    }>(
+      '/api/embedding-nodes/:nodeId/claims/complete',
+      async (request, reply) => {
+        const { nodeId } = request.params;
+        const auth = await principal(request, deps);
+        const node = await usableNode(auth, nodeId, deps);
+        if (!node) return reply.code(403).send({ success: false, error: 'node_not_usable' });
+        const body = request.body ?? {};
+        const items = Array.isArray(body.items) ? body.items : [];
+        const itemsOk = items.length > 0 && items.length <= MAX_STAPEL && items.every((i) =>
+          typeof i?.chunkId === 'string' && i.chunkId.length > 0 && UUID_RE.test(i.claimToken ?? '') &&
+          /^[a-f0-9]{64}$/.test(i.contentHash ?? '') && Array.isArray(i.vector));
+        if (!itemsOk || !gueltigerFingerprint(body)) {
+          return reply.code(400).send({ success: false, error: 'invalid_completion' });
+        }
+        const reference = await getEmbeddingReferenceContract();
+        const probleme = fingerprintProbleme(body, node, reference);
+        if (probleme) {
+          return reply.code(409).send({ success: false, error: 'completion_fingerprint_mismatch', problems: probleme });
+        }
+        const eintraege = items.map((i) => ({
+          chunkId: i.chunkId!, claimToken: i.claimToken!, contentHash: i.contentHash!, vector: i.vector!,
+        }));
+        const erg = await completeEmbeddingClaims(nodeId, eintraege, reference.targetDimension);
+        const tokenVon = new Map(eintraege.map((e) => [e.chunkId, e.claimToken]));
+        const freigegeben = await releaseEmbeddingClaims(nodeId, erg.abgelehnt
+          .filter((a) => tokenVon.has(String(a.chunkId)))
+          .map((a) => ({ chunkId: String(a.chunkId), claimToken: tokenVon.get(String(a.chunkId))! })), deps.db);
+        return reply.send({ success: true, abgeschlossen: erg.abgeschlossen, abgelehnt: erg.abgelehnt, freigegeben });
+      },
+    );
+
+    // P15-T9: Ein Knoten gibt eigene Claims zurueck (geordnetes Beenden, gescheiterter Stapel). Bewusst NICHT
+    // usableNode: auch ein gesperrter oder inkompatibler Knoten muss seine Claims loswerden koennen. Die
+    // Freigabe wirkt nur auf Chunks dieses Knotens mit genau diesem Token (releaseEmbeddingClaims).
+    fastify.post<{ Params: { nodeId: string }; Body: { claims?: Array<{ chunkId?: string; claimToken?: string }> } }>(
+      '/api/embedding-nodes/:nodeId/claims/release',
+      async (request, reply) => {
+        const { nodeId } = request.params;
+        const auth = await principal(request, deps);
+        if (!validateNodeId(nodeId) || !tokenAllowsNode(auth, nodeId)) {
+          return reply.code(403).send({ success: false, error: 'node_token_mismatch' });
+        }
+        const claims = Array.isArray(request.body?.claims) ? request.body!.claims! : [];
+        if (claims.length > MAX_STAPEL || !claims.every((c) =>
+          typeof c?.chunkId === 'string' && c.chunkId.length > 0 && UUID_RE.test(c.claimToken ?? ''))) {
+          return reply.code(400).send({ success: false, error: 'invalid_release' });
+        }
+        const freigegeben = await releaseEmbeddingClaims(
+          nodeId,
+          claims.map((c) => ({ chunkId: c.chunkId!, claimToken: c.claimToken! })),
+          deps.db,
+        );
+        return reply.send({ success: true, freigegeben });
       },
     );
 
