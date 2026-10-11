@@ -17,17 +17,19 @@
 import { JEV_FUNKTIONEN, JevSchalterFehler, jevSchalterListe, jevWirksam, setzeJevSchalter, filtereJevTool } from './jev-schalter.js';
 import { holeJevKontostand, jevBudgetStand, jevKostenUebersicht, setzeJevBudget, setzeJevBudgetZurueck } from './jev-kosten.js';
 import { JEV_SPRACHEN, JevOptionenFehler, leseJevOptionen, setzeJevOptionen } from './jev-optionen.js';
+import { entscheidungstopfStatus, ergaenzeTopfEmbeddings, ladeEntscheidungstopfSeed } from './entscheidungstopf.js';
 
-export const JEV_ADMIN_ACTIONS = ['jev_status', 'jev_schalten', 'jev_kosten', 'jev_budget', 'jev_optionen'] as const;
+export const JEV_ADMIN_ACTIONS = ['jev_status', 'jev_schalten', 'jev_kosten', 'jev_budget', 'jev_optionen', 'jev_entscheidungstopf'] as const;
 const DARF_SETZEN = /^(koordinator|coordinator|user)$/i;
 
 /** Beschreibungssatz fuer die admin-Tool-Definition (REST und stdio). */
 export const JEV_ADMIN_BESCHREIBUNG =
   ' Jev-Steuerung: jev_status (wirksamer Stand je Funktion, Schalter, Budget, Monatskosten), ' +
-  'jev_schalten (ebene global|projekt, funktion alle|empfehlung|entscheidung|plan_einordnen|erklaerungstopf|tool, aktiv, grund; nur Koordinator/User; ' +
+  'jev_schalten (ebene global|projekt, funktion alle|empfehlung|entscheidung|plan_einordnen|erklaerungstopf|entscheidungstopf|tool, aktiv, grund; nur Koordinator/User; ' +
   'global aus = ueberall aus, Jev wird nicht aufgerufen und alle Jev-Hinweise verschwinden), ' +
   'jev_kosten (Summen je Tag/Monat/Projekt/Funktion in USD), jev_budget (modus status|setzen|entfernen|zuruecksetzen, grenze_usd je Monat, reset_tag, kontostand:true = OpenRouter-Kontostand), ' +
-  'jev_optionen (modus status|setzen; erklaerung_de/erklaerung_en = gepflegte Erklaerungssprachen, mind. eine an; jev_sprache en|de|mix, nur aus gepflegten Sprachen, sonst Rueckfall mit Hinweis; wirkt ab E1).';
+  'jev_optionen (modus status|setzen; erklaerung_de/erklaerung_en = gepflegte Erklaerungssprachen, mind. eine an; jev_sprache en|de|mix, nur aus gepflegten Sprachen, sonst Rueckfall mit Hinweis; entscheidung_ohne_praezedenz true|false = Jev waehlt auch ohne Praezedenz aus dem Entscheidungs-Topf, Standard true), ' +
+  'jev_entscheidungstopf (modus status = Zaehlung je Status/Herkunft | seed_laden = Startbestand idempotent laden, nur Koordinator/User).';
 
 /** Zusaetzliche Parameter am admin-Tool (Schema-Properties, REST und stdio identisch). */
 export const JEV_ADMIN_PARAMETER: Record<string, Record<string, unknown>> = {
@@ -35,7 +37,7 @@ export const JEV_ADMIN_PARAMETER: Record<string, Record<string, unknown>> = {
   funktion: { type: 'string', enum: ['alle', ...JEV_FUNKTIONEN], description: 'jev_schalten: welche Jev-Funktion (Standard alle)' },
   aktiv: { type: 'boolean', description: 'jev_schalten: true = an, false = aus (Pflicht)' },
   grund: { type: 'string', description: 'jev_schalten: Grund (sichtbar in jev_status)' },
-  modus: { type: 'string', enum: ['status', 'setzen', 'entfernen', 'zuruecksetzen'], description: 'jev_budget: status (Standard) | setzen (grenze_usd) | entfernen (keine Bremse) | zuruecksetzen (Monatszaehler 0)' },
+  modus: { type: 'string', enum: ['status', 'setzen', 'entfernen', 'zuruecksetzen', 'seed_laden'], description: 'jev_budget: status (Standard) | setzen (grenze_usd) | entfernen (keine Bremse) | zuruecksetzen (Monatszaehler 0); jev_entscheidungstopf: status | seed_laden' },
   grenze_usd: { type: 'number', description: 'jev_budget setzen: globale Kostengrenze in USD je Abrechnungsmonat' },
   reset_tag: { type: 'number', description: 'jev_budget setzen: Tag im Monat (1..28), an dem der Zaehler neu beginnt (Standard 1)' },
   kontostand: { type: 'boolean', description: 'jev_budget: true = OpenRouter-Kontostand (GET /api/v1/key) mitliefern' },
@@ -44,6 +46,7 @@ export const JEV_ADMIN_PARAMETER: Record<string, Record<string, unknown>> = {
   nur_dieses_projekt: { type: 'boolean', description: 'jev_kosten: nur Aufrufe von project' },
   erklaerung_de: { type: 'boolean', description: 'jev_optionen setzen: Deutsch als gepflegte Erklaerungssprache an/aus (mind. eine an)' },
   erklaerung_en: { type: 'boolean', description: 'jev_optionen setzen: Englisch als gepflegte Erklaerungssprache an/aus (mind. eine an)' },
+  entscheidung_ohne_praezedenz: { type: 'boolean', description: 'jev_optionen setzen: true = Jev waehlt auch ohne passende Praezedenz aus dem Entscheidungs-Topf (markiert, Durchsicht zuerst), false = offene Frage fuer den User (Standard true)' },
   jev_sprache: { type: 'string', enum: [...JEV_SPRACHEN], description: 'jev_optionen setzen: Sprache, die Jev angeboten bekommt (en Standard | de | mix); nur aus den gepflegten Sprachen, sonst Rueckfall mit Hinweis' },
 };
 
@@ -163,9 +166,19 @@ export async function fuehreJevAdminAus(
           erklaerung_de: wahr(args.erklaerung_de),
           erklaerung_en: wahr(args.erklaerung_en),
           jev_sprache: text(args.jev_sprache),
+          entscheidung_ohne_praezedenz: wahr(args.entscheidung_ohne_praezedenz),
           agent: wer,
         });
         return { success: true, optionen, message: 'Jev-Optionen gespeichert (wirken ab E1, Erklaerungstopf).' };
+      }
+      case 'jev_entscheidungstopf': {
+        const modus = text(args.modus) ?? 'status';
+        if (modus === 'status') return { success: true, topf: await entscheidungstopfStatus() };
+        if (modus !== 'seed_laden') return { success: false, error: 'modus_ungueltig', message: 'jev_entscheidungstopf: modus status | seed_laden.' };
+        if (!DARF_SETZEN.test(wer)) return nurKoordinator(wer);
+        const seed = await ladeEntscheidungstopfSeed({ agent: wer });
+        void ergaenzeTopfEmbeddings();
+        return { ...seed, topf: await entscheidungstopfStatus(), hinweis: 'Idempotent (kennung). Vektoren werden im Hintergrund berechnet. Durchsicht durch den User: jev(action:"topf", herkunft:"seed").' };
       }
       default:
         return { success: false, error: 'unbekannte_action', message: `Unbekannte Jev-Action "${action}". Erlaubt: ${JEV_ADMIN_ACTIONS.join(', ')}.` };

@@ -136,7 +136,7 @@ const setze = (o) => S.setzeJevSchalter({ agent: 'koordinator', grund: 'test', .
 try {
   // ── M Vorrangmatrix ──
   await versuche('M Vorrangmatrix', async () => {
-    pruefe(JSON.stringify([...S.JEV_FUNKTIONEN]) === JSON.stringify(['empfehlung', 'entscheidung', 'plan_einordnen', 'erklaerungstopf', 'tool']), 'M JEV_FUNKTIONEN = 5 Funktionen', S.JEV_FUNKTIONEN);
+    pruefe(JSON.stringify([...S.JEV_FUNKTIONEN]) === JSON.stringify(['empfehlung', 'entscheidung', 'plan_einordnen', 'erklaerungstopf', 'entscheidungstopf', 'tool']), 'M JEV_FUNKTIONEN = 6 Funktionen (P15 E1: + entscheidungstopf)', S.JEV_FUNKTIONEN);
     const alle = async (p) => Object.fromEntries(await Promise.all(S.JEV_FUNKTIONEN.map(async (f) => [f, (await S.jevWirksam(p, f)).an])));
     let w = await alle(P);
     pruefe(Object.values(w).every((x) => x === true), 'M ohne Zeile: alles an', w);
@@ -296,7 +296,8 @@ try {
     pruefe(r.success === true && r.entschieden === false && r.grund === 'jev_aus' && f.aufrufe.length === 0 && nachher === vorher, 'E Jev aus: grund jev_aus, kein fetch, keine Protokollzeile', { r, n: f.aufrufe.length, vorher, nachher });
     await setze({ ebene: 'projekt', project: P, funktion: 'entscheidung', aktiv: true });
     const r2 = await E.entscheideRueckfrage(P, { agent_id: 'jevschalter-test', frage: 'Die Aenderung bricht keine alten Aufrufe.', typ: 'noul', kategorie: 'variante' },
-      { fetch: fakeFetch(() => ({ status: 200, body: { answers: { entscheidung: { noul: 0.95 } }, usage: { input_tokens: 50, cost: 0.0000021 } } })) });
+      // P15 E1: ist der Entscheidungs-Topf lesbar, fragt Jev vorher 'irreversibel' (S2b) - die Antwort gehoert in den Fake
+      { fetch: fakeFetch(() => ({ status: 200, body: { answers: { entscheidung: { noul: 0.95 }, irreversibel: { noul: 0.02 } }, usage: { input_tokens: 50, cost: 0.0000021 } } })) });
     const z = (await pool.query("SELECT * FROM jev_aufrufe WHERE project = $1 AND funktion = 'entscheidung' ORDER BY id DESC LIMIT 1", [P])).rows[0];
     pruefe(r2.entschieden === true && r2.wahl === 'ja' && z && Number(z.usd) === 0.0000021, 'E an: Entscheidung wie bisher + Kostenzeile funktion entscheidung', { r2, z });
   });

@@ -63,6 +63,7 @@ import { getPool, getHintergrundPool } from '../db/client.js';
 import { embeddingNachtragAngehalten } from './intern-schalter.js';
 import { betteEinzelnEin, type NachzugQuelle } from './embed-nachzug.js';
 import { updateTask } from './plans.js';
+import { spiegeleThoughtInTopf } from './entscheidungstopf.js';
 import type { ProjectTask } from '../types/index.js';
 
 /**
@@ -116,6 +117,8 @@ export async function addThought(
   void embeddeThoughtNach(project, thought.id).catch(err => {
     console.error(`[Synapse] Thought-Embedding fehlgeschlagen, Backlog holt es nach:`, err);
   });
+  // P15 E1: thought mit Tags entscheidung+user -> roh-Eintrag im Entscheidungs-Topf (nebenlaeufig, wirft nie)
+  void spiegeleThoughtInTopf(project, { id: thought.id, source, content, tags });
 
   // 3. Optional: Task-Status atomar mit setzen (wenn taskId + taskStatus)
   if (taskId && taskStatus) {
@@ -197,6 +200,9 @@ export async function addThoughtsBatch(
       }
     }
   })();
+
+  // P15 E1: Entscheidungs-Topf-Spiegel (entscheidung+user -> roh-Eintrag, nebenlaeufig, wirft nie)
+  for (const t of thoughts) void spiegeleThoughtInTopf(project, { id: t.id, source, content: t.content, tags: t.tags });
 
   // 4. Optional: Task-Status fuer alle items mit task_id setzen
   if (taskStatus) {

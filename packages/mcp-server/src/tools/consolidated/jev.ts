@@ -17,6 +17,11 @@ import {
   holeEntscheidungsProtokoll,
   ueberstimmeEntscheidung,
   jevToolSperre,
+  fuehreJevTopfActionAus,
+  istJevTopfAction,
+  JEV_TOPF_ACTIONS,
+  JEV_TOPF_BESCHREIBUNG,
+  JEV_TOPF_PARAMETER,
 } from '@synapse/core';
 
 /** optionen kann als Objekt oder als JSON-String ankommen (Connector-Quirk) */
@@ -36,11 +41,11 @@ export const jevTool: ConsolidatedTool = {
   definition: {
     name: 'jev',
     description:
-      'Jev entscheidet Rueckfragen, wenn der User nicht da ist. Actions: entscheiden (erlaubte Rueckfrage per Jev beantworten: frage, typ noul|choice|score, kategorie variante|reihenfolge|umsetzungsweg|formulierung, optionen {key: Beschreibung}, agent_id — wirkt NUR bei aktivem Schalter, sonst Antwort \"User/Koordinator fragen\"; unter Confidence 0.7 keine Entscheidung; Antwort ist mit \"entschieden von Jev, nicht vom User\" gekennzeichnet), abwesend (modus an|aus|status; an/aus nur agent_id koordinator, auf Zuruf des Users; aus liefert das Protokoll), protokoll (Entscheidungen seit Schalter-Beginn), ueberstimmen (nur Koordinator). Verboten fuer Jev: loeschen, deploy, git, secrets, aussenwirkung, kosten, regeln.',
+      'Jev entscheidet Rueckfragen, wenn der User nicht da ist. Actions: entscheiden (erlaubte Rueckfrage per Jev beantworten: frage, typ noul|choice|score, kategorie variante|reihenfolge|umsetzungsweg|formulierung, optionen {key: Beschreibung}, agent_id — wirkt NUR bei aktivem Schalter, sonst Antwort \"User/Koordinator fragen\"; unter Confidence 0.7 keine Entscheidung; Antwort ist mit \"entschieden von Jev, nicht vom User\" gekennzeichnet), abwesend (modus an|aus|status; an/aus nur agent_id koordinator, auf Zuruf des Users; aus liefert das Protokoll), protokoll (Entscheidungen seit Schalter-Beginn), ueberstimmen (nur Koordinator). Verboten fuer Jev: loeschen, deploy, git, secrets, aussenwirkung, kosten, regeln, live_db, schema.' + JEV_TOPF_BESCHREIBUNG,
     inputSchema: {
       type: 'object',
       properties: {
-        action: { type: 'string', enum: ['entscheiden', 'abwesend', 'protokoll', 'ueberstimmen'], description: 'Aktion' },
+        action: { type: 'string', enum: ['entscheiden', 'abwesend', 'protokoll', 'ueberstimmen', ...JEV_TOPF_ACTIONS], description: 'Aktion' },
         project: { type: 'string', description: 'Projekt-Name' },
         agent_id: { type: 'string', description: 'Wer fragt/setzt (Pflicht fuer entscheiden, abwesend an/aus, ueberstimmen)' },
         frage: { type: 'string', description: 'Nur entscheiden: die Rueckfrage (max. 500 Zeichen)' },
@@ -66,6 +71,8 @@ export const jevTool: ConsolidatedTool = {
         id: { type: 'number', description: 'Nur ueberstimmen: Protokoll-Nummer' },
         wahl: { type: 'string', description: 'Nur ueberstimmen: die richtige Entscheidung (Option, ja/nein oder Zahl)' },
         notiz: { type: 'string', description: 'Nur ueberstimmen: Begruendung' },
+        // P15 E1: Entscheidungs-Topf (Definition aus core, REST identisch)
+        ...JEV_TOPF_PARAMETER,
       },
       required: ['action', 'project'],
     },
@@ -77,6 +84,7 @@ export const jevTool: ConsolidatedTool = {
     // P15-T33 E0.5: Funktion 'tool' fuer das Projekt (oder global/Budget) aus -> klare Ablehnung
     const sperre = await jevToolSperre(project);
     if (sperre) return sperre;
+    if (istJevTopfAction(action)) return await fuehreJevTopfActionAus(project, action, args);
     switch (action) {
       case 'entscheiden':
         return (await entscheideRueckfrage(project, {

@@ -354,6 +354,53 @@ CREATE TABLE IF NOT EXISTS erklaerung_faelle (
   UNIQUE (project, datei, schluessel)
 );
 CREATE INDEX IF NOT EXISTS idx_erklaerung_faelle_erstellt ON erklaerung_faelle(erstellt_am);
+-- P15 E1 (11.10.2026): Entscheidungs-Topf (Konzept 6591b268, User e7b013c2, E0 bfbf7968). GLOBAL: Eintraege sind
+-- Vorlagen ueber alle Projekte, herkunft_projekt nennt nur, wo sie entstanden. Ein Eintrag = EINE atomare
+-- User-Entscheidung (Wortlaut + Aufbereitung je Sprache). Nur User-Herkunft (S3: autonome Jev-Entscheidungen
+-- werden nie Praezedenz). embedding_en ist abgeleitet (frage + gilt_wenn), PG ist die Wahrheit.
+-- Nur neue Tabelle und neue Spalten (NULL bzw. konstanter Default) in jev_entscheidungen, keine Sperren auf Bestand.
+CREATE TABLE IF NOT EXISTS jev_entscheidungstopf (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  kennung TEXT UNIQUE,
+  herkunft_projekt TEXT,
+  themen TEXT[] NOT NULL DEFAULT '{}',
+  kategorie TEXT NOT NULL,
+  kandidat BOOLEAN NOT NULL DEFAULT true,
+  frage_de TEXT,
+  frage_en TEXT,
+  optionen JSONB,
+  gewaehlte_option TEXT,
+  kontext TEXT,
+  antwort_wortlaut TEXT NOT NULL,
+  wortlaut_rekonstruiert BOOLEAN NOT NULL DEFAULT false,
+  aufbereitet_de JSONB,
+  aufbereitet_en JSONB,
+  herkunft TEXT NOT NULL CHECK (herkunft IN ('tool', 'thought', 'seed', 'korrektur', 'chat', 'ask_user_question')),
+  quelle_ref TEXT,
+  status TEXT NOT NULL DEFAULT 'roh' CHECK (status IN ('roh', 'aktiv', 'ersetzt', 'stillgelegt')),
+  ersetzt_durch UUID,
+  status_grund TEXT,
+  gewaehlt_n INTEGER NOT NULL DEFAULT 0,
+  bestaetigt_n INTEGER NOT NULL DEFAULT 0,
+  korrigiert_n INTEGER NOT NULL DEFAULT 0,
+  embedding_en REAL[],
+  embedding_modell TEXT,
+  erfasst_von TEXT,
+  aufbereitet_von TEXT,
+  erstellt_am TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  geaendert_am TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CHECK (frage_de IS NOT NULL OR frage_en IS NOT NULL),
+  CHECK (status <> 'aktiv' OR aufbereitet_de IS NOT NULL OR aufbereitet_en IS NOT NULL)
+);
+CREATE INDEX IF NOT EXISTS idx_jev_entscheidungstopf_status ON jev_entscheidungstopf(status, kategorie);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_jev_entscheidungstopf_thought ON jev_entscheidungstopf(quelle_ref) WHERE herkunft = 'thought';
+ALTER TABLE jev_entscheidungen ADD COLUMN IF NOT EXISTS praezedenz_id UUID;
+ALTER TABLE jev_entscheidungen ADD COLUMN IF NOT EXISTS praezedenz_confidence DOUBLE PRECISION;
+ALTER TABLE jev_entscheidungen ADD COLUMN IF NOT EXISTS ohne_praezedenz BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE jev_entscheidungen ADD COLUMN IF NOT EXISTS irreversibel_p DOUBLE PRECISION;
+ALTER TABLE jev_entscheidungen ADD COLUMN IF NOT EXISTS durchsicht TEXT;
+ALTER TABLE jev_entscheidungen ADD COLUMN IF NOT EXISTS durchsicht_am TIMESTAMPTZ;
+ALTER TABLE jev_entscheidungen ADD COLUMN IF NOT EXISTS durchsicht_von TEXT;
 
 CREATE TABLE IF NOT EXISTS onboarding_ruhe (
   id SMALLINT PRIMARY KEY DEFAULT 1 CHECK (id = 1),

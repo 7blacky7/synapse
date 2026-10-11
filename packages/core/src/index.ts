@@ -825,6 +825,16 @@ export {
   istErklaerungsAction, familieVon, schluesselVon, schwaerzeGeheimnisse,
 } from './services/erklaerungen.js';
 export type { Erklaerung, ErklaerungTexte, Schatten, Fehlerereignis, FallPruefung, JevVersuch } from './services/erklaerungen.js';
+// P15 E1: Entscheidungs-Topf fuer Jev (Praezedenz, Sicherheit S2, Durchsicht, Seed, Thought-Spiegel)
+export {
+  TOPF_STATUS, TOPF_HERKUNFT, STANDARD_TOPF_KANDIDATEN, STANDARD_TOPF_TOR, STANDARD_IRREVERSIBEL_SCHWELLE, SICHERHEIT_MUSTER, IRREVERSIBEL_FRAGE,
+  scanneSicherheitText, leseAufbereitung, schreibeTopfEintrag, legeEntscheidungAb, bereiteEntscheidungAuf, listeEntscheidungstopf, zaehleTopf,
+  entscheidungstopfStatus, spiegeleThoughtInTopf, seedDateiPfad, ladeEntscheidungstopfSeed, topfDokText, topfKriterium, topfPraezedenzState,
+  holeTopfKandidaten, ergaenzeTopfEmbeddings,
+} from './services/entscheidungstopf.js';
+export type { TopfEintrag, TopfAufbereitung, TopfEmbedFn, TopfDeps, TopfKandidat, TopfStatus } from './services/entscheidungstopf.js';
+export { durchsichtEntscheidung, fuehreJevTopfActionAus, istJevTopfAction, JEV_TOPF_ACTIONS, JEV_TOPF_BESCHREIBUNG, JEV_TOPF_PARAMETER } from './services/jev-entscheidung.js';
+export type { DurchsichtOptionen } from './services/jev-entscheidung.js';
 
 // Agenten-Wissen in der Datenbank (API-Bruecke Schritt 4). Additiv — der
 // Dateiweg in packages/agents/src/skills.ts bleibt unveraendert bestehen.

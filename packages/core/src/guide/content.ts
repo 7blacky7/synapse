@@ -1687,12 +1687,13 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
     when_to_use: [
       'Du (Agent) willst den User etwas fragen — Variante A oder B, Reihenfolge, Umsetzungsweg, Formulierung — und er ist nicht da (Nacht, Loop).',
       'Erst abwesend(modus:"status") pruefen oder auf den Hinweis "User abwesend — Jev entscheidet ..." im Onboarding/plan(list) achten.',
-      'Koordinator: Schalter setzen (abwesend an/aus), Protokoll zeigen (protokoll), Fehlentscheidungen markieren (ueberstimmen).',
+      'Koordinator: Schalter setzen (abwesend an/aus; project "*" = alle Projekte), Protokoll zeigen (protokoll), Fehlentscheidungen markieren (ueberstimmen), autonome Entscheidungen durchsehen (durchsicht; ohne Praezedenz zuerst).',
+      'ENTSCHEIDUNGS-TOPF (P15 E1): Jede Antwort des Users auf eine Rueckfrage legt der Koordinator mit entscheidung_ablegen ab (Wortlaut + Aufbereitung de/en mit gilt_wenn) — oder als thought mit Tags entscheidung+user (wird automatisch roh erfasst, dann entscheidung_aufbereiten). Global gueltig als Vorlage. Bei aktiver Jev-Funktion entscheidungstopf nutzt entscheiden diese Eintraege als Praezedenz (Tor 0.8, danach Option Tor 0.7); ohne Praezedenz waehlt Jev trotzdem (Option entscheidung_ohne_praezedenz, Standard an), markiert ohne_praezedenz. Autonome Entscheidungen werden nie selbst Praezedenz. Keine Claude-Code-Hooks.',
     ].join(' '),
     when_not_to_use: [
       'JEV ABGESCHALTET (admin jev_schalten, global/Projekt/Funktion tool oder entscheidung, oder Budget-Pause): das Tool antwortet mit error jev_aus bzw. entscheiden mit grund jev_aus, es gibt keinen Jev-Aufruf, keine Protokollzeile und keine Hinweise jev_modus/jev_hinweis/jev_entscheidet. Bei global aus fehlt das Tool ganz in der Tool-Liste. Stand: admin(action:"jev_status").',
       'Schalter aus = User ist da: dann gar nicht aufrufen (entscheiden macht keinen Jev-Aufruf, antwortet nur "User/Koordinator fragen" und schreibt keine Protokollzeile).',
-      'Verbotene Kategorien: loeschen, deploy, git, secrets, aussenwirkung, kosten, regeln — die entscheidet nie Jev, der Server lehnt sie ab; unbekannte Kategorien ebenso.',
+      'Verbotene Kategorien: loeschen, deploy, git, secrets, aussenwirkung, kosten, regeln, live_db, schema — die entscheidet nie Jev, der Server lehnt sie ab; unbekannte Kategorien ebenso. Zusaetzlich prueft der Server den TEXT (Frage, Kontext, Optionen) auf Push, Deploy, Loeschen, Live-DB, Schema, Secrets, Kosten, Aussenwirkung, Regeln (grund sicherheit_text) und fragt Jev, ob die Antwort eine irreversible Aktion ausloest (grund sicherheit_irreversibel) — beides heisst: nie autonom.',
       'Nicht umkehrbare oder folgenreiche Entscheidungen — dort auf den User warten.',
     ].join(' '),
     param_tips: [
@@ -1749,6 +1750,28 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
         description: 'Koordinator markiert eine Jev-Entscheidung als ueberstimmt (Korrektur des Users). Daraus koennen jev-erkenntnis-Memories werden.',
         params: 'project (req), id (req, Protokoll-Nummer), wahl (req, die richtige Entscheidung), agent_id (req: koordinator), notiz',
         example: 'jev({ action: "ueberstimmen", project: "synapse", id: 3, wahl: "b", notiz: "User wollte B", agent_id: "koordinator" })',
+      },
+      entscheidung_ablegen: {
+        description: 'P15 E1: User-Entscheidung in den Entscheidungs-Topf legen (global, Vorlage fuer Jev). Mit Aufbereitung in allen gepflegten Sprachen (jev_optionen) direkt aktiv, sonst roh. Nur Koordinator/User.',
+        params: 'project (req), agent_id (req: koordinator|user), frage_de|frage_en (req), antwort_wortlaut (req, Original), kategorie (req), optionen ({key: Beschreibung}), gewaehlte_option, aufbereitet ({de:{entscheidung,begruendung,gilt_wenn}, en:{decision,reason,applies_when}}), themen, kandidat',
+        example: 'jev({ action: "entscheidung_ablegen", project: "synapse", agent_id: "koordinator", frage_de: "Ausgabeformat?", kategorie: "variante", antwort_wortlaut: "JSON", gewaehlte_option: "a", aufbereitet: { de: { entscheidung: "JSON", begruendung: "maschinenlesbar", gilt_wenn: "Richtig, wenn ..." }, en: { decision: "JSON", reason: "machine readable", applies_when: "Correct when ..." } } })',
+        tips: 'gilt_wenn/applies_when ist das Kriterium, an dem Jev erkennt, ob die Entscheidung eine neue Frage regelt: die BEDINGUNG ausschreiben, nicht das Thema. Verbotene Kategorien werden gespeichert, sind aber nie Praezedenz.',
+      },
+      entscheidung_aufbereiten: {
+        description: 'P15 E1: Topf-Eintrag ergaenzen und aktivieren (roh -> aktiv) oder stilllegen/ersetzen. Nur Koordinator/User.',
+        params: 'project (req), agent_id (req), eintrag_id (req, UUID oder kennung), aufbereitet, frage_de, frage_en, optionen, gewaehlte_option, kategorie, themen, kandidat, status (aktiv Standard | stillgelegt | ersetzt), status_grund, ersetzt_durch',
+        example: 'jev({ action: "entscheidung_aufbereiten", project: "synapse", agent_id: "koordinator", eintrag_id: "<uuid>", kategorie: "umsetzungsweg", aufbereitet: { de: {...}, en: {...} } })',
+      },
+      topf: {
+        description: 'P15 E1: Eintraege des Entscheidungs-Topfs (ohne Vektoren), roh zuerst.',
+        params: 'project (req), status, kategorie, herkunft (tool|thought|seed|korrektur), eintrag_id, limit',
+        example: 'jev({ action: "topf", project: "synapse", herkunft: "seed" })',
+      },
+      durchsicht: {
+        description: 'P15 E1: autonome Jev-Entscheidungen durchsehen. Ohne urteil: offene Liste (ohne Praezedenz zuerst). urteil ok = bestaetigt; korrigieren = ueberstimmt + neuer Topf-Eintrag herkunft korrektur mit dem Wortlaut des Users.',
+        params: 'project (req, "*" = alle), agent_id (req fuer urteil: koordinator|user), id (Protokoll-Nummer), urteil (ok|korrigieren), wahl (bei korrigieren), wortlaut, notiz, aufbereitet, seit',
+        example: 'jev({ action: "durchsicht", project: "synapse", agent_id: "koordinator", id: 12, urteil: "korrigieren", wahl: "b", wortlaut: "B war gemeint" })',
+        tips: 'Folgen einer falschen Entscheidung ueber files history/restore zuruecknehmen (regel-rueckbau-ueber-files-restore).',
       },
     },
   },

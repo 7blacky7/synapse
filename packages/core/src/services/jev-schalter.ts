@@ -11,6 +11,7 @@
  *   hebt ein "aus" darueber nicht auf: global aus = ueberall aus.
  * FUNKTIONEN: empfehlung (plan empfehlen), entscheidung (jev entscheiden + Hinweise jev_modus,
  *   jev_hinweis, jev_entscheidet), plan_einordnen (plan einordnen), erklaerungstopf (E1),
+ *   entscheidungstopf (P15 E1: Praezedenz-Schritt vor jev entscheiden; aus = alter Weg, Erfassung laeuft weiter),
  *   tool (das MCP-Tool jev selbst; global aus -> verschwindet aus tools/list).
  * CACHE: die ganze (kleine) Tabelle je Prozess, hoechstens alle JEV_SCHALTER_CACHE_MS (Standard
  *   5000) gelesen; setzeJevSchalter aktualisiert den Cache dieses Prozesses sofort. Andere Prozesse
@@ -22,7 +23,7 @@
 import { getPool } from '../db/client.js';
 import { jevBudgetPause } from './jev-kosten.js';
 
-export const JEV_FUNKTIONEN = ['empfehlung', 'entscheidung', 'plan_einordnen', 'erklaerungstopf', 'tool'] as const;
+export const JEV_FUNKTIONEN = ['empfehlung', 'entscheidung', 'plan_einordnen', 'erklaerungstopf', 'entscheidungstopf', 'tool'] as const;
 export type JevFunktion = (typeof JEV_FUNKTIONEN)[number];
 /** Platzhalter fuer "global" (project) bzw. "alle Funktionen" (funktion) */
 export const JEV_ALLE = '*';

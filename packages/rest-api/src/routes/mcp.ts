@@ -214,6 +214,8 @@ import { ASSET_INTEL_DEFINITION, fuehreAssetIntelAus, ergaenzeCodeIntelAntwort }
 import { INTERN_DEFINITION, INTERN_TOOL_AUS, internToolAktiv, fuehreInternAus } from '@synapse/core';
 // P15-T33 E0.5: Jev-Schalter (tools/list-Filter, Sperre des Tools jev) und Jev-Steuerung am admin-Tool
 import { filtereJevTool, jevToolSperre, istJevAdminAction, fuehreJevAdminAus, JEV_ADMIN_ACTIONS, JEV_ADMIN_BESCHREIBUNG, JEV_ADMIN_PARAMETER } from '@synapse/core';
+// P15 E1: Entscheidungs-Topf am Tool jev (Definition + Dispatcher aus core, stdio identisch)
+import { fuehreJevTopfActionAus, istJevTopfAction, JEV_TOPF_ACTIONS, JEV_TOPF_BESCHREIBUNG, JEV_TOPF_PARAMETER } from '@synapse/core';
 import {
   listeIgnoreRegeln,
   fuegeIgnoreRegelnHinzu,
@@ -696,11 +698,11 @@ export const MCP_TOOLS = [
   // 8b. jev (JEV-10, P7-T28)
   {
     name: 'jev',
-    description: 'Jev entscheidet Rueckfragen, wenn der User nicht da ist. Actions: entscheiden (erlaubte Rueckfrage per Jev beantworten: frage, typ noul|choice|score, kategorie variante|reihenfolge|umsetzungsweg|formulierung, optionen {key: Beschreibung}, agent_id — wirkt NUR bei aktivem Schalter, sonst Antwort "User/Koordinator fragen"; unter Confidence 0.7 keine Entscheidung; Antwort ist mit "entschieden von Jev, nicht vom User" gekennzeichnet), abwesend (modus an|aus|status; an/aus nur agent_id koordinator, auf Zuruf des Users; aus liefert das Protokoll), protokoll (Entscheidungen seit Schalter-Beginn), ueberstimmen (nur Koordinator). Verboten fuer Jev: loeschen, deploy, git, secrets, aussenwirkung, kosten, regeln.',
+    description: 'Jev entscheidet Rueckfragen, wenn der User nicht da ist. Actions: entscheiden (erlaubte Rueckfrage per Jev beantworten: frage, typ noul|choice|score, kategorie variante|reihenfolge|umsetzungsweg|formulierung, optionen {key: Beschreibung}, agent_id — wirkt NUR bei aktivem Schalter, sonst Antwort "User/Koordinator fragen"; unter Confidence 0.7 keine Entscheidung; Antwort ist mit "entschieden von Jev, nicht vom User" gekennzeichnet), abwesend (modus an|aus|status; an/aus nur agent_id koordinator, auf Zuruf des Users; aus liefert das Protokoll), protokoll (Entscheidungen seit Schalter-Beginn), ueberstimmen (nur Koordinator). Verboten fuer Jev: loeschen, deploy, git, secrets, aussenwirkung, kosten, regeln, live_db, schema.' + JEV_TOPF_BESCHREIBUNG,
     inputSchema: {
       type: 'object',
       properties: {
-        action: { type: 'string', enum: ['entscheiden', 'abwesend', 'protokoll', 'ueberstimmen'], description: 'Aktion' },
+        action: { type: 'string', enum: ['entscheiden', 'abwesend', 'protokoll', 'ueberstimmen', ...JEV_TOPF_ACTIONS], description: 'Aktion' },
         project: { type: 'string', description: 'Projekt-Name' },
         agent_id: { type: 'string', description: 'Wer fragt/setzt (Pflicht fuer entscheiden, abwesend an/aus, ueberstimmen)' },
         frage: { type: 'string', description: 'Nur entscheiden: die Rueckfrage (max. 500 Zeichen)' },
@@ -726,6 +728,8 @@ export const MCP_TOOLS = [
         id: { type: 'number', description: 'Nur ueberstimmen: Protokoll-Nummer' },
         wahl: { type: 'string', description: 'Nur ueberstimmen: die richtige Entscheidung (Option, ja/nein oder Zahl)' },
         notiz: { type: 'string', description: 'Nur ueberstimmen: Begruendung' },
+        // P15 E1: Entscheidungs-Topf (Definition aus core)
+        ...JEV_TOPF_PARAMETER,
       },
       required: ['action', 'project'],
     },
@@ -3773,6 +3777,8 @@ async function handleToolCallKern(
             agent_id: str(args, 'agent_id'),
           });
         default:
+          // P15 E1: Topf-Actions (entscheidung_ablegen, entscheidung_aufbereiten, topf, durchsicht)
+          if (action && istJevTopfAction(action)) return await fuehreJevTopfActionAus(project, action, args);
           return { success: false, error: `Unbekannte jev action: "${action}"` };
       }
     }

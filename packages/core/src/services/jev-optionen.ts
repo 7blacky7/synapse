@@ -7,6 +7,9 @@
  *   2) jev_sprache 'en' | 'de' | 'mix': welche Sprache Jev angeboten bekommt. Standard 'en'. Nur aus
  *      den gepflegten Sprachen wirksam ('mix' braucht beide); sonst gilt ein Rueckfall auf eine
  *      gepflegte Sprache (en vor de) mit Hinweis - gespeichert bleibt der Wunsch.
+ *   3) entscheidung_ohne_praezedenz (P15 E1, User e7b013c2): true = Jev waehlt auch ohne passende Praezedenz aus
+ *      dem Entscheidungs-Topf unter den Optionen (markiert, Durchsicht zuerst); false = offene Frage. Standard true.
+ *   Die gepflegten Sprachen gelten fuer BEIDE Toepfe (Erklaerungen und Entscheidungen).
  * TABELLE jev_optionen (name PK, wert JSONB). Fehlt eine Zeile, gilt der Standard. Lesefehler:
  *   Standardwerte mit Hinweis (wirft nicht).
  */
@@ -26,6 +29,8 @@ export interface JevOptionen {
   jev_sprache_wirksam: JevSprache;
   /** Anzeige fuer Agenten/User: die gepflegten Sprachen */
   gepflegte_sprachen: Array<'de' | 'en'>;
+  /** P15 E1: Jev entscheidet auch ohne Praezedenz aus dem Entscheidungs-Topf (Standard true) */
+  entscheidung_ohne_praezedenz: boolean;
   hinweis?: string;
   gesetzt_von: string | null;
   gesetzt_am: string | null;
@@ -39,6 +44,7 @@ export class JevOptionenFehler extends Error {
 
 const STANDARD_SPRACHEN: JevErklaerungSprachen = { de: true, en: true };
 const STANDARD_JEV_SPRACHE: JevSprache = 'en';
+const STANDARD_OHNE_PRAEZEDENZ = true;
 
 function istSprache(x: unknown): x is JevSprache {
   return typeof x === 'string' && (JEV_SPRACHEN as readonly string[]).includes(x);
@@ -57,7 +63,7 @@ export function wirksameJevSprache(sprachen: JevErklaerungSprachen, wunsch: JevS
   };
 }
 
-function baue(sprachen: JevErklaerungSprachen, wunsch: JevSprache, von: string | null, am: Date | null, zusatz?: string): JevOptionen {
+function baue(sprachen: JevErklaerungSprachen, wunsch: JevSprache, von: string | null, am: Date | null, zusatz?: string, ohnePraezedenz = STANDARD_OHNE_PRAEZEDENZ): JevOptionen {
   const w = wirksameJevSprache(sprachen, wunsch);
   const hinweis = [zusatz, w.hinweis].filter(Boolean).join(' ');
   return {
@@ -65,6 +71,7 @@ function baue(sprachen: JevErklaerungSprachen, wunsch: JevSprache, von: string |
     jev_sprache: wunsch,
     jev_sprache_wirksam: w.sprache,
     gepflegte_sprachen: (['de', 'en'] as const).filter((s) => sprachen[s]),
+    entscheidung_ohne_praezedenz: ohnePraezedenz,
     ...(hinweis ? { hinweis } : {}),
     gesetzt_von: von,
     gesetzt_am: am ? new Date(am).toISOString() : null,
@@ -82,14 +89,16 @@ function leseSprachen(wert: unknown): JevErklaerungSprachen | null {
 export async function leseJevOptionen(): Promise<JevOptionen> {
   try {
     const { rows } = await getPool().query<{ name: string; wert: unknown; gesetzt_von: string | null; gesetzt_am: Date | null }>(
-      `SELECT name, wert, gesetzt_von, gesetzt_am FROM jev_optionen WHERE name IN ('erklaerung_sprachen', 'jev_sprache')`,
+      `SELECT name, wert, gesetzt_von, gesetzt_am FROM jev_optionen WHERE name IN ('erklaerung_sprachen', 'jev_sprache', 'entscheidung_ohne_praezedenz')`,
     );
     const z = new Map(rows.map((r) => [r.name, r]));
     const sprachen = leseSprachen(z.get('erklaerung_sprachen')?.wert) ?? STANDARD_SPRACHEN;
     const roh = z.get('jev_sprache')?.wert;
     const wunsch = istSprache(roh) ? roh : STANDARD_JEV_SPRACHE;
     const juengste = [...z.values()].sort((a, b) => (b.gesetzt_am?.getTime() ?? 0) - (a.gesetzt_am?.getTime() ?? 0))[0];
-    return baue(sprachen, wunsch, juengste?.gesetzt_von ?? null, juengste?.gesetzt_am ?? null);
+    const ohneRoh = z.get('entscheidung_ohne_praezedenz')?.wert;
+    return baue(sprachen, wunsch, juengste?.gesetzt_von ?? null, juengste?.gesetzt_am ?? null, undefined,
+      typeof ohneRoh === 'boolean' ? ohneRoh : STANDARD_OHNE_PRAEZEDENZ);
   } catch (err) {
     return baue(STANDARD_SPRACHEN, STANDARD_JEV_SPRACHE, null, null,
       `Jev-Optionen nicht lesbar, es gelten die Standardwerte: ${err instanceof Error ? err.message : String(err)}.`);
@@ -100,9 +109,9 @@ export async function leseJevOptionen(): Promise<JevOptionen> {
  * Setzt einzelne Optionen (nicht genannte bleiben). Validierung: jev_sprache aus en|de|mix;
  * mindestens eine gepflegte Sprache. Wirft JevOptionenFehler (nichts geschrieben).
  */
-export async function setzeJevOptionen(o: { erklaerung_de?: boolean; erklaerung_en?: boolean; jev_sprache?: string; agent?: string | null }): Promise<JevOptionen> {
-  if (o.erklaerung_de === undefined && o.erklaerung_en === undefined && o.jev_sprache === undefined) {
-    throw new JevOptionenFehler('nichts_zu_setzen', 'modus setzen braucht mindestens eines von erklaerung_de, erklaerung_en, jev_sprache.');
+export async function setzeJevOptionen(o: { erklaerung_de?: boolean; erklaerung_en?: boolean; jev_sprache?: string; entscheidung_ohne_praezedenz?: boolean; agent?: string | null }): Promise<JevOptionen> {
+  if (o.erklaerung_de === undefined && o.erklaerung_en === undefined && o.jev_sprache === undefined && o.entscheidung_ohne_praezedenz === undefined) {
+    throw new JevOptionenFehler('nichts_zu_setzen', 'modus setzen braucht mindestens eines von erklaerung_de, erklaerung_en, jev_sprache, entscheidung_ohne_praezedenz.');
   }
   if (o.jev_sprache !== undefined && !istSprache(o.jev_sprache)) {
     throw new JevOptionenFehler('jev_sprache_ungueltig', `jev_sprache "${o.jev_sprache}" ungueltig. Erlaubt: ${JEV_SPRACHEN.join(', ')}.`);
@@ -122,5 +131,12 @@ export async function setzeJevOptionen(o: { erklaerung_de?: boolean; erklaerung_
      ON CONFLICT (name) DO UPDATE SET wert = EXCLUDED.wert, gesetzt_von = EXCLUDED.gesetzt_von, gesetzt_am = EXCLUDED.gesetzt_am`,
     [JSON.stringify(sprachen), JSON.stringify(wunsch), o.agent ?? null],
   );
+  if (typeof o.entscheidung_ohne_praezedenz === 'boolean') {
+    await getPool().query(
+      `INSERT INTO jev_optionen (name, wert, gesetzt_von, gesetzt_am) VALUES ('entscheidung_ohne_praezedenz', $1::jsonb, $2, NOW())
+       ON CONFLICT (name) DO UPDATE SET wert = EXCLUDED.wert, gesetzt_von = EXCLUDED.gesetzt_von, gesetzt_am = EXCLUDED.gesetzt_am`,
+      [JSON.stringify(o.entscheidung_ohne_praezedenz), o.agent ?? null],
+    );
+  }
   return leseJevOptionen();
 }

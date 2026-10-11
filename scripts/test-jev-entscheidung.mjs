@@ -98,7 +98,8 @@ pg.Pool.prototype.query = async function (sql, params = []) {
     const z = zeilen.find((x) => x.project === params[0] && x.id === Number(params[1]));
     return { rows: z ? [{ id: z.id }] : [], rowCount: z ? 1 : 0 };
   }
-  if (/^SELECT id, zeit, agent, task_id, kategorie, frage, typ, optionen, wahl, confidence, entschieden, grund, runde, erste_id, offen_fuer_user, blocker, ueberstimmt_von, ueberstimmt_wahl, ueberstimmt_notiz FROM jev_entscheidungen WHERE project = \$1/i.test(text)) {
+  // P15 E1: Protokoll-SELECT mit Topf-/Durchsicht-Spalten und project '*' (= alle Projekte)
+  if (/^SELECT id, zeit, agent, task_id, kategorie, frage, typ, optionen, wahl, confidence, entschieden, grund, runde, erste_id, offen_fuer_user, blocker, ueberstimmt_von, ueberstimmt_wahl, ueberstimmt_notiz, .* FROM jev_entscheidungen WHERE \(\$1 = '\*' OR project = \$1\)/i.test(text)) {
     const [project, seit, limit] = params;
     let r = zeilen.filter((z) => z.project === project && new Date(z.zeit) >= new Date(seit));
     if (/AND entschieden = true/i.test(text)) r = r.filter((z) => z.entschieden);
@@ -441,7 +442,7 @@ await pruefe('ueberstimmen: nur Koordinator, markiert die Zeile, unbekannte id -
 // 6. Leitplanken-Konstanten + Schema ----------------------------------------------------------
 await pruefe('Konstanten: erlaubte/verbotene Kategorien wie festgelegt', () => {
   assert.deepEqual([...mod.ERLAUBTE_KATEGORIEN], ['variante', 'reihenfolge', 'umsetzungsweg', 'formulierung']);
-  assert.deepEqual([...mod.VERBOTENE_KATEGORIEN], ['loeschen', 'deploy', 'git', 'secrets', 'aussenwirkung', 'kosten', 'regeln']);
+  assert.deepEqual([...mod.VERBOTENE_KATEGORIEN], ['loeschen', 'deploy', 'git', 'secrets', 'aussenwirkung', 'kosten', 'regeln', 'live_db', 'schema']);
   assert.equal(mod.STANDARD_ENTSCHEIDUNG_TOR, 0.7);
   assert.equal(mod.STANDARD_RATE_PRO_STUNDE, 30);
 });
@@ -874,7 +875,8 @@ await pruefe('Guide: TOOL_GUIDES.jev mit allen 4 Actions, Leitplanken und Beispi
   const g = TOOL_GUIDES.jev;
   assert.ok(g, 'Eintrag jev fehlt');
   assert.ok(g.summary && g.when_to_use, 'summary/when_to_use');
-  assert.deepEqual(Object.keys(g.actions ?? {}).sort(), ['abwesend', 'entscheiden', 'protokoll', 'ueberstimmen']);
+  // P15 E1: + Topf-Actions entscheidung_ablegen, entscheidung_aufbereiten, topf, durchsicht
+  assert.deepEqual(Object.keys(g.actions ?? {}).sort(), ['abwesend', 'durchsicht', 'entscheiden', 'entscheidung_ablegen', 'entscheidung_aufbereiten', 'protokoll', 'topf', 'ueberstimmen']);
   for (const a of Object.values(g.actions)) assert.ok(a.description && a.params && a.example, 'Action unvollstaendig');
   const text = JSON.stringify(g);
   for (const k of mod.VERBOTENE_KATEGORIEN) assert.ok(text.includes(k), `Leitplanke ${k} fehlt im Guide`);

@@ -346,6 +346,21 @@ export async function startServer(): Promise<void> {
     console.log(`[Synapse API] Erklaerungs-Tagespruefung aktiv (Intervall ${erklIntervallMs}ms)`);
   }
 
+  // P15 E1: Entscheidungs-Topf - Startbestand (packages/core/data/entscheidungstopf-seed.json) idempotent laden
+  // (ON CONFLICT kennung), Status aktiv; danach fehlende Vektoren im Hintergrund. 30 s nach dem Start.
+  //   ENTSCHEIDUNGSTOPF_SEED_DISABLED=1 - nicht laden (dann per admin(jev_entscheidungstopf, modus seed_laden))
+  if (process.env.ENTSCHEIDUNGSTOPF_SEED_DISABLED !== '1') {
+    const { ladeEntscheidungstopfSeed, ergaenzeTopfEmbeddings } = await import('@synapse/core');
+    setTimeout(() => {
+      void ladeEntscheidungstopfSeed({ agent: 'synapse-api-start' })
+        .then((r) => {
+          console.log(`[Synapse API] Entscheidungs-Topf Seed: ${JSON.stringify({ neu: r.neu, vorhanden: r.vorhanden, fehlerhaft: r.fehlerhaft, error: r.error })}`);
+          return ergaenzeTopfEmbeddings();
+        })
+        .catch((err: unknown) => console.error('[Synapse API] Entscheidungs-Topf Seed fehlgeschlagen:', err));
+    }, 30_000).unref();
+  }
+
   // Session-Reaper: meldet Agenten-Sessions ab, die seit Stunden kein Lebenszeichen
   // mehr zeigen. Ohne das bleibt jede Session ewig 'active' — gepurgte, abgestuerzte
   // und verschwundene Agenten inklusive. Am 2026-07-26 zeigte die Liste 28 Eintraege
