@@ -7,6 +7,8 @@ import (
 )
 
 func TestGPUHardwareGate(t *testing.T) {
+	// Testwerte (wie ein Referenzvertrag sie liefern koennte) — im Code gibt es keine (P15-T6).
+	const requiredTotal, requiredFree = 12000, 7300
 	tests := []struct {
 		name string
 		h    gpuHardware
@@ -18,10 +20,24 @@ func TestGPUHardwareGate(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := gpuHardwareSuitable(tc.h, gpuRequiredTotalMB, gpuRequiredFreeMB); got != tc.want {
+			if got := gpuHardwareSuitable(tc.h, requiredTotal, requiredFree); got != tc.want {
 				t.Fatalf("gpuHardwareSuitable(%+v) = %v, want %v", tc.h, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestManifestVerzeichnis(t *testing.T) {
+	faelle := map[string]string{
+		"":                                  "",
+		"nomic-embed-text":                  filepath.Join("registry.ollama.ai", "library", "nomic-embed-text"),
+		"user/modell":                       filepath.Join("registry.ollama.ai", "user", "modell"),
+		"hf.co/zenmagnets/Nemotron-3-Embed": filepath.Join("hf.co", "zenmagnets", "Nemotron-3-Embed"),
+	}
+	for ein, soll := range faelle {
+		if ist := manifestVerzeichnis(ein); ist != soll {
+			t.Fatalf("manifestVerzeichnis(%q) = %q, want %q", ein, ist, soll)
+		}
 	}
 }
 

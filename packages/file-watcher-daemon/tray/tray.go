@@ -1323,8 +1323,12 @@ func zeigeGPUFenster() {
 	// (2) Die feste Vorgabe ~/.ollama/models zeigte auf ein Verzeichnis mit zwei
 	//     alten Modellen — Ollama laeuft hier als SYSTEMDIENST und benutzt
 	//     /usr/share/ollama/.ollama/models. Das dedizierte Ollama startete damit ohne das
-	// gesuchte qwen3-embedding:8b und der Knoten kam nie zustande.
-	modelDir.SetText(ermittleModellVerzeichnis("qwen3-embedding:8b"))
+	// gesuchte Modell und der Knoten kam nie zustande.
+	// P15-T6: Welches Modell gesucht wird, sagt der Referenzvertrag (hier stand fest
+	// "qwen3-embedding:8b"). Bis er da ist, gilt das erste lesbare Verzeichnis; danach wird
+	// nach dem Vertragsmodell gesucht, solange der Nutzer das Feld nicht selbst geaendert hat.
+	vorschlagModelDir := ermittleModellVerzeichnis("")
+	modelDir.SetText(vorschlagModelDir)
 	gpuSelect := widget.NewSelect([]string{"GPU 0"}, nil)
 	gpuSelect.SetSelectedIndex(0)
 
@@ -1337,6 +1341,12 @@ func zeigeGPUFenster() {
 			return
 		}
 		ref, refOK = r, true
+		vertragsDir := ermittleModellVerzeichnis(ref.Reference.Model)
+		fyne.Do(func() {
+			if modelDir.Text == vorschlagModelDir {
+				modelDir.SetText(vertragsDir)
+			}
+		})
 		all, hardwareErr := detectAllGPUHardware()
 		options := make([]string, 0, len(all))
 		for i, h := range all {
@@ -1433,7 +1443,7 @@ func zeigeGPUFenster() {
 				err = saveGPUNodeConfig(cfg)
 			}
 			if err == nil {
-				err = startLokalenGPUHelper(cfg, ref.Reference)
+				err = startLokalenGPUHelper(cfg)
 			}
 			effectiveStatus := ""
 			if err == nil {
@@ -1551,6 +1561,10 @@ func zeigeGPUFenster() {
 			return
 		}
 		msg := fmt.Sprintf("Modell fehlt. Vor dem Start werden %.1f GB nach %s geladen. Fortfahren?", ref.Download.ModelSizeGb, modelDir.Text)
+		if ref.Download.ModelSizeGb <= 0 {
+			// P15-T6: die API nennt die Groesse aus Ollama /api/tags; unbekannt -> keine erfundene Zahl.
+			msg = fmt.Sprintf("Modell fehlt. Die API kennt die Downloadgröße nicht; ohne sie ist keine Speicherprüfung möglich (%s).", modelDir.Text)
+		}
 		dialog.NewConfirm("Download bestätigen", msg, func(ok bool) {
 			if ok {
 				startSetup(index, h, true)

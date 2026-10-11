@@ -19,11 +19,12 @@ import (
 	"time"
 )
 
+// P15-T6: Hier standen gpuRequiredTotalMB/FreeMB = 12000/7300 (qwen3-Werte). VRAM-Bedarf, Modell,
+// Digest und Dimensionen kommen ausschliesslich aus dem Referenzvertrag der API
+// (apiFetchEmbeddingReference) — Regel regel-keine-festverdrahteten-modellwerte.
 const (
-	gpuRequiredTotalMB = 12000
-	gpuRequiredFreeMB  = 7300
-	gpuOllamaHost      = "127.0.0.1:11435"
-	gpuOllamaURL       = "http://" + gpuOllamaHost
+	gpuOllamaHost = "127.0.0.1:11435"
+	gpuOllamaURL  = "http://" + gpuOllamaHost
 	// Standard-Ollama des Nutzers. Wird NUR gelesen, nie gesteuert: liegt das Modell
 	// dort bereits mit passendem Digest, waere ein erneuter 4,7-GB-Pull sinnlos.
 	standardOllamaURL = "http://127.0.0.1:11434"
@@ -278,6 +279,7 @@ func ermittleModellVerzeichnis(modell string) string {
 	if i := strings.IndexByte(kurz, ':'); i > 0 {
 		kurz = kurz[:i]
 	}
+	manifest := manifestVerzeichnis(kurz)
 	ersterLesbare := ""
 	for _, k := range kandidaten {
 		if strings.TrimSpace(k) == "" {
@@ -289,8 +291,8 @@ func ermittleModellVerzeichnis(modell string) string {
 		if ersterLesbare == "" {
 			ersterLesbare = k
 		}
-		if kurz != "" {
-			p := filepath.Join(k, "manifests", "registry.ollama.ai", "library", kurz)
+		if manifest != "" {
+			p := filepath.Join(k, "manifests", manifest)
 			if _, err := os.Stat(p); err == nil {
 				return k
 			}
@@ -300,6 +302,25 @@ func ermittleModellVerzeichnis(modell string) string {
 		return ersterLesbare
 	}
 	return filepath.Join(home, ".ollama", "models")
+}
+
+// manifestVerzeichnis bildet den Modellnamen (ohne Tag) auf den Pfad unter manifests/ ab.
+// P15-T6: "name" liegt unter registry.ollama.ai/library, "user/name" unter
+// registry.ollama.ai/user, ein Name mit eigenem Host (z. B. hf.co/zenmagnets/Nemotron-...)
+// unter genau diesem Pfad. Vorher galt nur der erste Fall — ein hf.co-Modell wurde nie gefunden.
+func manifestVerzeichnis(kurz string) string {
+	if strings.TrimSpace(kurz) == "" {
+		return ""
+	}
+	teile := strings.Split(kurz, "/")
+	switch len(teile) {
+	case 1:
+		return filepath.Join("registry.ollama.ai", "library", kurz)
+	case 2:
+		return filepath.Join("registry.ollama.ai", teile[0], teile[1])
+	default:
+		return filepath.Join(teile...)
+	}
 }
 
 func gpuConfigPath() string {
@@ -598,7 +619,7 @@ func stopLokalenGPUHelper() error {
 	return nil
 }
 
-func startLokalenGPUHelper(c gpuNodeConfig, ref apiEmbeddingReference) error {
+func startLokalenGPUHelper(c gpuNodeConfig) error {
 	lokalerGPUHelperMu.Lock()
 	defer lokalerGPUHelperMu.Unlock()
 	// Laeuft schon einer, bleibt es bei dem. Ein zweiter brachte keinen Durchsatz,
@@ -615,7 +636,10 @@ func startLokalenGPUHelper(c gpuNodeConfig, ref apiEmbeddingReference) error {
 		return err
 	}
 	cmd := exec.Command(node, agent)
-	cmd.Env = append(os.Environ(), "SYNAPSE_API_URL="+c.Issuer, "SYNAPSE_API_TOKEN="+c.ComputeToken, "SYNAPSE_NODE_ID="+c.NodeID, "OLLAMA_URL="+gpuOllamaURL, "OLLAMA_MODEL="+ref.Model, fmt.Sprintf("EMBEDDING_TARGET_DIM=%d", ref.TargetDimension), fmt.Sprintf("SYNAPSE_GPU_REQUIRED_FREE_MB=%d", ref.RequiredFreeVramMb), fmt.Sprintf("SYNAPSE_GPU_REQUIRED_TOTAL_MB=%d", ref.RequiredTotalVramMb), fmt.Sprintf("SYNAPSE_GPU_INDEX=%d", c.GPUIndex), fmt.Sprintf("CUDA_VISIBLE_DEVICES=%d", c.GPUIndex))
+	// P15-T6: Modell, Zieldimension, num_ctx und VRAM-Bedarf holt der Agent selbst aus dem
+	// Referenzvertrag der API (GET /api/embedding-nodes/reference) — hier wird nichts davon
+	// vorgegeben, sonst gaebe es zwei Quellen, die auseinanderlaufen koennen.
+	cmd.Env = append(os.Environ(), "SYNAPSE_API_URL="+c.Issuer, "SYNAPSE_API_TOKEN="+c.ComputeToken, "SYNAPSE_NODE_ID="+c.NodeID, "OLLAMA_URL="+gpuOllamaURL, fmt.Sprintf("SYNAPSE_GPU_INDEX=%d", c.GPUIndex), fmt.Sprintf("CUDA_VISIBLE_DEVICES=%d", c.GPUIndex))
 	logf, _ := os.OpenFile(filepath.Join(filepath.Dir(gpuConfigPath()), "compute-node.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
 	if logf != nil {
 		cmd.Stdout = logf
