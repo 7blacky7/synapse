@@ -23,6 +23,7 @@
  */
 
 import { getPool } from '../db/client.js';
+import { aenderungsBereiche, type Bereich } from './file-diff.js';
 import {
   FENSTER_BLOCK_ZEILEN,
   giltFuer,
@@ -58,6 +59,13 @@ export interface FehlerBefund {
   quittiert_grund?: string;
   /** Fertiger Aufruf, um den Stand vor dem Schreiben zurueckzuholen. */
   restore?: string;
+  /** P16-T8: wo der Parser den Fehler bemerkt hat (kann weit von der Ursache liegen, z. B. Dateiende). */
+  bemerkt_bei?: { zeile: number; spalte?: number };
+  /**
+   * P16-T8: wo der Fehler entstanden ist - Zeilen der verursachenden Aenderung im neuen Inhalt (= zeilen),
+   * im Plan mit der verursachenden Op und den Ops, die erst zusammen den Fehler ergeben (beteiligt).
+   */
+  entstanden_bei?: { zeilen: [number, number]; op_index?: number; beteiligt?: number[] };
 }
 
 export const QUITTIER_HINWEIS = "nur bei absichtlich fehlerhaftem Inhalt quittierbar (quittieren:'<grund>')";
@@ -316,6 +324,151 @@ function budgetMs(): number {
   return Number.isFinite(roh) && roh >= 0 ? roh : 30;
 }
 
+// ─── P16-T8: Ursache eines Syntaxbefunds (Op und Zeilen) ─────────────────────
+
+/** Op mit ihren Zeilenspannen im neuen Inhalt (0-basiert, halboffen [s, e); s === e = reine Loeschung vor s). */
+export interface UrsacheOp {
+  op_index: number;
+  spannen: Array<[number, number]>;
+}
+
+export interface Ursache {
+  /** Zeilen der verursachenden Aenderung im neuen Inhalt (1-basiert; Loeschung: die Zeile davor). */
+  zeilen: [number, number];
+  /** nur mit ops: verursachende Op (die ERSTE in Commit-Reihenfolge, nach der die Datei kaputt ist) */
+  op_index?: number;
+  /** Ops, die erst zusammen den Fehler ergeben (inkl. op_index), nur wenn mehr als eine */
+  beteiligt?: number[];
+  laeufe: number;
+}
+
+function ursacheMaxLaeufe(): number {
+  const roh = Number(process.env.FEHLERPRUEFUNG_URSACHE_MAX_LAEUFE);
+  return Number.isFinite(roh) && roh >= 0 ? roh : 24;
+}
+
+function ursacheMs(): number {
+  const roh = Number(process.env.FEHLERPRUEFUNG_URSACHE_MS);
+  return Number.isFinite(roh) && roh >= 0 ? roh : 1000;
+}
+
+/** Beruehrt die Op-Spanne [s, e) den Bereich [b0, b1) (beide 0-basiert, leer = Einfuege-/Loeschpunkt)? */
+function spanneBeruehrt(s: number, e: number, b0: number, b1: number): boolean {
+  if (s < e && b0 < b1) return s < b1 && e > b0;
+  return s <= b1 && e >= b0;
+}
+
+/** Liegt die 1-basierte Zeile in der Op-Spanne [s, e)? Wie plan-befunde.opZuordnung (Loeschung: Zeile davor/danach). */
+export function zeileInSpanne(zeile: number, s: number, e: number): boolean {
+  const a = zeile - 1;
+  return s < e ? a >= s && a < e : a <= s && a >= s - 1;
+}
+
+/** alt, in dem die Bereiche mit nimm(i) auf den neuen Stand gebracht sind (Zwischenstand). */
+function mitBereichen(alt: string[], neu: string[], bereiche: Bereich[], nimm: (i: number) => boolean): string {
+  const out: string[] = [];
+  let pa = 0;
+  bereiche.forEach((b, i) => {
+    for (let x = pa; x < b.a0; x++) out.push(alt[x]);
+    if (nimm(i)) for (let y = b.b0; y < b.b1; y++) out.push(neu[y]);
+    else for (let x = b.a0; x < b.a1; x++) out.push(alt[x]);
+    pa = b.a1;
+  });
+  for (let x = pa; x < alt.length; x++) out.push(alt[x]);
+  return out.join('\n');
+}
+
+function bereichZeilen(b: Bereich): [number, number] {
+  if (b.b1 > b.b0) return [b.b0 + 1, b.b1];
+  const z = Math.max(1, b.b0);
+  return [z, z];
+}
+
+/**
+ * P16-T8: Ursache eines Syntaxfehlers, den der Parser woanders bemerkt als dort, wo er entsteht (fehlende },
+ * offener String -> Meldung am Dateiende). Die Diff-Bereiche alt -> neu werden in Stufen geordnet: im Plan nach
+ * der spaetesten Op, deren Spanne den Bereich beruehrt (Commit-Reihenfolge), im Einzelweg je Bereich. Zwischenstand
+ * = alt + alle Bereiche bis zur Stufe; die ERSTE kaputte Stufe ist die Ursache, darin der erste kaputte Bereich.
+ * Kombination: beruehren mehrere Ops den Bereich oder ist die Stufe allein auf alt sauber, stehen die anderen Ops
+ * unter beteiligt. Nur im Fehlerfall aufrufen (kostet Pruefer-Laeufe); gedeckelt durch
+ * FEHLERPRUEFUNG_URSACHE_MAX_LAEUFE (24) und FEHLERPRUEFUNG_URSACHE_MS (1000). null = nicht bestimmbar (Deckel,
+ * Pruefer-Fehler) - dann gilt die bisherige Zuordnung.
+ */
+export async function findeUrsache(eingabe: {
+  pruefe: (inhalt: string) => SyntaxMeldung[] | Promise<SyntaxMeldung[]>;
+  alt: string;
+  neu: string;
+  ops?: UrsacheOp[];
+}): Promise<Ursache | null> {
+  const a = eingabe.alt.split('\n');
+  const n = eingabe.neu.split('\n');
+  const bereiche = aenderungsBereiche(a, n);
+  if (bereiche.length === 0) return null;
+  const max = ursacheMaxLaeufe();
+  const ende = Date.now() + ursacheMs();
+  let laeufe = 0;
+  const kaputt = async (text: string): Promise<boolean | null> => {
+    if (laeufe >= max || Date.now() > ende) return null;
+    laeufe++;
+    try {
+      return (await eingabe.pruefe(text)).length > 0;
+    } catch {
+      return null;
+    }
+  };
+  const ops = eingabe.ops && eingabe.ops.length > 0 ? eingabe.ops : undefined;
+  const beruehrer = bereiche.map((b) => (ops ? ops.filter((o) => o.spannen.some(([s, e]) => spanneBeruehrt(s, e, b.b0, b.b1))).map((o) => o.op_index) : []));
+  const spaeteste = ops ? Math.max(...ops.map((o) => o.op_index)) : 0;
+  const rang = bereiche.map((_, i) => (ops ? (beruehrer[i].length > 0 ? Math.max(...beruehrer[i]) : spaeteste) : i));
+  const stufen = [...new Set(rang)].sort((x, y) => x - y);
+
+  let r: number | null = null;
+  for (const st of stufen) {
+    const k = await kaputt(mitBereichen(a, n, bereiche, (i) => rang[i] <= st));
+    if (k === null) return null;
+    if (k) { r = st; break; }
+  }
+  if (r === null) return null;
+  const stufe = r;
+
+  // Innerhalb der Stufe die Bereiche einzeln dazunehmen; ohne Ergebnis (Deckel) die ganze Stufe.
+  const eigene = bereiche.map((_, i) => i).filter((i) => rang[i] === stufe);
+  let zeilen: [number, number] | null = eigene.length === 1 ? bereichZeilen(bereiche[eigene[0]]) : null;
+  let gewaehlt: number[] = eigene.length === 1 ? [eigene[0]] : eigene;
+  for (let j = 0; !zeilen && j < eigene.length - 1; j++) {
+    const mit = new Set(eigene.slice(0, j + 1));
+    const k = await kaputt(mitBereichen(a, n, bereiche, (i) => rang[i] < stufe || mit.has(i)));
+    if (k === null) break;
+    if (k) { zeilen = bereichZeilen(bereiche[eigene[j]]); gewaehlt = [eigene[j]]; }
+  }
+  if (!zeilen && eigene.length > 1) {
+    if (gewaehlt === eigene && laeufe < max && Date.now() <= ende) {
+      // alle bis auf den letzten sauber -> der letzte
+      zeilen = bereichZeilen(bereiche[eigene[eigene.length - 1]]);
+      gewaehlt = [eigene[eigene.length - 1]];
+    } else {
+      const erste = bereichZeilen(bereiche[eigene[0]]);
+      const letzte = bereichZeilen(bereiche[eigene[eigene.length - 1]]);
+      zeilen = [erste[0], Math.max(erste[0], letzte[1])];
+    }
+  }
+  if (!zeilen) return null;
+
+  if (!ops) return { zeilen, laeufe };
+  const beteiligt = new Set<number>([stufe, ...gewaehlt.flatMap((i) => beruehrer[i])]);
+  if (stufen[0] !== stufe) {
+    // Kombination ueber Abstand: die Stufe allein auf alt ist sauber -> erst mit den frueheren Ops kaputt.
+    const allein = await kaputt(mitBereichen(a, n, bereiche, (i) => rang[i] === stufe));
+    if (allein === false) for (const st of stufen) if (st < stufe) beteiligt.add(st);
+  }
+  return {
+    zeilen,
+    op_index: stufe,
+    ...(beteiligt.size > 1 ? { beteiligt: [...beteiligt].sort((x, y) => x - y) } : {}),
+    laeufe,
+  };
+}
+
 function syntaxBefund(p: SyntaxPruefer, m: SyntaxMeldung, filePath: string, inGeaendert: boolean, anzahl: number): FehlerBefund {
   const severity: FehlerBefund['severity'] = p.sperrfaehig && !m.weich ? 'error' : 'warning';
   return {
@@ -345,6 +498,11 @@ export async function pruefeSyntaxEinzelweg(eingabe: {
   neu: string;
   quittieren?: string;
   onNachgereicht?: (befunde: FehlerBefund[]) => void;
+  /**
+   * P16-T8 (Plan): Ops der Datei mit ihren Spannen im neuen Inhalt. Liegt die erste Meldung in keiner Op-Spanne
+   * (oder ausserhalb des Gesamtbereichs) und war der Stand vorher fehlerfrei, wird die verursachende Op gesucht.
+   */
+  ops?: UrsacheOp[];
 }): Promise<SyntaxErgebnis> {
   const t0 = Date.now();
   const e = endungVon(eingabe.filePath);
@@ -357,17 +515,35 @@ export async function pruefeSyntaxEinzelweg(eingabe: {
   const auswerten = async (p: SyntaxPruefer, meldungen: SyntaxMeldung[]) => {
     const neu = meldungen.filter((m) => liegtImBereich(m.zeile, bereich));
     const alt = meldungen.length - neu.length;
-    if (neu.length === 0 && meldungen.length > 0 && eingabe.alt) {
+    // P16-T8: im Plan zaehlt eine Meldung in keiner Op-Spanne wie eine ausserhalb des Gesamtbereichs.
+    const ops = eingabe.ops && eingabe.ops.length > 0 ? eingabe.ops : undefined;
+    const ausserhalbOps = !!ops && neu.length > 0 && !ops.some((o) => o.spannen.some(([s, e]) => zeileInSpanne(neu[0].zeile, s, e)));
+    if ((neu.length === 0 || ausserhalbOps) && meldungen.length > 0 && eingabe.alt) {
       // P16-T4: Fehlerstelle ausserhalb der geaenderten Zeilen (typisch: eine fehlende } meldet der Parser erst
       // am Dateiende). War der alte Stand fehlerfrei, hat die Aenderung den Fehler verursacht. Kostet einen
       // zweiten Lauf, aber nur im Fehlerfall.
       let fehlerVorher: number | null = null;
       try { fehlerVorher = (await p.pruefe(eingabe.alt, eingabe.filePath)).length; } catch { fehlerVorher = null; }
       if (fehlerVorher === 0) {
-        const m = meldungen[0];
+        const m = ausserhalbOps ? neu[0] : meldungen[0];
         const b = syntaxBefund(p, m, eingabe.filePath, true, meldungen.length);
+        b.bemerkt_bei = { zeile: m.zeile, ...(m.spalte !== undefined ? { spalte: m.spalte } : {}) };
+        const ort = `Z.${m.zeile}${m.spalte !== undefined ? ':' + m.spalte : ''}`;
         const von = Math.min(bereich.von, Math.max(bereich.bis, 1));
-        b.was += ` - Fehlerstelle Z.${m.zeile} liegt ausserhalb der geaenderten Zeilen ${von}-${Math.max(bereich.bis, von)}, der Stand vorher war fehlerfrei: die Ursache liegt in der Aenderung`;
+        b.was += ausserhalbOps
+          ? ` - bemerkt bei ${ort}, ausserhalb der von den Ops geaenderten Zeilen; der Stand vorher war fehlerfrei`
+          : ` - bemerkt bei ${ort}, ausserhalb der geaenderten Zeilen ${von}-${Math.max(bereich.bis, von)}; der Stand vorher war fehlerfrei`;
+        // P16-T8: verursachende Aenderung (Op und Zeilen) suchen - nur in diesem seltenen Fall, gedeckelt.
+        const u = await findeUrsache({ pruefe: (t) => p.pruefe(t, eingabe.filePath), alt: eingabe.alt, neu: eingabe.neu, ops }).catch(() => null);
+        if (u) {
+          b.zeilen = u.zeilen;
+          b.entstanden_bei = { zeilen: u.zeilen, ...(u.op_index !== undefined ? { op_index: u.op_index } : {}), ...(u.beteiligt ? { beteiligt: u.beteiligt } : {}) };
+          const andere = (u.beteiligt ?? []).filter((i) => i !== u.op_index);
+          b.was += `: entstanden in Z.${u.zeilen[0]}${u.zeilen[1] !== u.zeilen[0] ? '-' + u.zeilen[1] : ''}`
+            + (u.op_index !== undefined ? ` (op ${u.op_index}${andere.length > 0 ? `, erst zusammen mit op ${andere.join(', ')}` : ''})` : '');
+        } else {
+          b.was += ': die Ursache liegt in der Aenderung';
+        }
         return { befund: b, altlasten: 0 };
       }
     }

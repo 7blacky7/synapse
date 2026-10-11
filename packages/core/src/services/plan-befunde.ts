@@ -9,7 +9,10 @@
  *
  * REGELN (Konzept 6236baf2 Abschnitt 3, User-Entscheidungen 215ff1dc):
  *  - Ein Befund zaehlt nur, wenn seine Zeile in einer geaenderten Spanne liegt; sonst Altlast (nur gezaehlt).
- *  - Liegt er in keiner Op-Spanne, aber im geaenderten Bereich (Kombination), haengt er an der SPAETESTEN
+ *  - P16-T8: Ein Syntaxfehler, den der Parser in keiner Op-Spanne bemerkt (fehlende } -> Dateiende), wird bei
+ *    fehlerfreiem Ausgangsstand der VERURSACHENDEN Op zugeordnet (fehlermuster-pruefung.findeUrsache: Ops in
+ *    commit-Reihenfolge, erste kaputte Stufe) - zeilen = Entstehung, bemerkt_bei = Parser-Stelle.
+ *  - Sonst: liegt er in keiner Op-Spanne, aber im geaenderten Bereich (Kombination), haengt er an der SPAETESTEN
  *    Op der Datei, beteiligt = alle Ops der Datei.
  *  - severity error an einer Op SPERRT den commit (commitSperre), warning nie. Quittieren: Muster mit grund,
  *    Syntax nur bei absichtlich fehlerhaftem Inhalt (E-b, gleicher Pflichtgrund).
@@ -70,7 +73,14 @@ export function befundSchluessel(b: Pick<PlanBefund, 'pruefer' | 'datei' | 'op_i
   return [b.pruefer, b.datei, b.op_index ?? '-', b.code ?? b.pattern_id ?? ''].join('|');
 }
 
-function opZuordnung(zeilen: [number, number], datei: PruefDatei): { op_index: number | null; agent_id: string | null; beteiligt?: number[] } {
+function opZuordnung(roh: FehlerBefund, datei: PruefDatei): { op_index: number | null; agent_id: string | null; beteiligt?: number[] } {
+  // P16-T8: Syntaxbefund mit ermittelter Ursache -> an die verursachende Op (auch die eines anderen Agenten, coedit).
+  const ursache = roh.entstanden_bei;
+  if (ursache?.op_index !== undefined) {
+    const op = datei.ops.find((o) => o.op_index === ursache.op_index);
+    if (op) return { op_index: op.op_index, agent_id: op.agent_id, ...(ursache.beteiligt ? { beteiligt: ursache.beteiligt } : {}) };
+  }
+  const zeilen = roh.zeilen;
   const [a, b] = [zeilen[0] - 1, zeilen[1] - 1];
   const beruehrt = (s: number, e: number) => (s < e ? a < e && b >= s : a <= s && b >= s - 1);
   const treffer = datei.ops.filter((o) => o.spannen.some(([s, e]) => beruehrt(s, e)));
@@ -101,7 +111,11 @@ export async function pruefePlanDateien(
     const ergebnisHash = hash(datei.ergebnis);
     ergebnisHashes[datei.file_path] = ergebnisHash;
     try {
-      const syntax = await pruefeSyntaxEinzelweg({ filePath: datei.file_path, alt: datei.basis, neu: datei.ergebnis });
+      // P16-T8: Op-Spannen mitgeben, damit ein woanders bemerkter Fehler an seiner verursachenden Op landet.
+      const ursacheOps = datei.ops.length > 0 && datei.ops.every((o) => o.spannen.length > 0)
+        ? datei.ops.map((o) => ({ op_index: o.op_index, spannen: o.spannen }))
+        : undefined;
+      const syntax = await pruefeSyntaxEinzelweg({ filePath: datei.file_path, alt: datei.basis, neu: datei.ergebnis, ops: ursacheOps });
       if (syntax.status === 'teilweise') status = 'teilweise';
       altlasten += syntax.altlasten;
       // Signatur-Muster je Op-Spanne (sonst ein Befund je Muster und Datei - die Quittierung der einen Op gaebe den
@@ -112,7 +126,7 @@ export async function pruefePlanDateien(
         : undefined;
       const muster = await pruefeSignaturen({ project, filePath: datei.file_path, alt: datei.basis, neu: datei.ergebnis, bereiche });
       for (const roh of [...syntax.blockierend, ...syntax.hinweise, ...muster]) {
-        const zuordnung = opZuordnung(roh.zeilen, datei);
+        const zuordnung = opZuordnung(roh, datei);
         const teil = { ...roh, ...zuordnung };
         const schluessel = befundSchluessel(teil);
         const grund = quittiert.get(schluessel);
