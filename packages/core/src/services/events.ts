@@ -24,6 +24,7 @@
 
 import type { PoolClient } from 'pg';
 import { getPool } from '../db/client.js';
+import { eventsOffenBedingungSql } from './event-sichtbarkeit.js';
 
 export type EventType =
   | 'WORK_STOP'
@@ -207,50 +208,16 @@ export async function getPendingEvents(
     ? null
     : Math.max(1, Math.min(100, Math.trunc(limit)));
 
-  // Nur Events liefern die NACH dem Beginn der laufenden Lebensphase des Agenten erstellt wurden
-  // (P15-T30: aktiv_seit; Altzeilen ohne Wert: registered_at). aktiv_seit bleibt bei Handoff/Rotation
-  // stehen (unquittierte Events der Vorsitzung bleiben offen) und beginnt neu, wenn ein abgemeldeter
-  // oder stillgelegter Name wieder auftaucht. Frueher galt registered_at = ERSTMALS registriert:
-  // ein wiederverwendeter Name bekam alle Alt-Events seit der allerersten Anmeldung.
+  // Bedingung aus der GEMEINSAMEN Quelle event-sichtbarkeit.ts (P15-T26/P15-T30), dieselbe wie im
+  // PostToolUse-Hook (scripts/event-check.mjs) - keine Kopie mehr. scope:'all' zaehlt erst ab dem Beginn
+  // der laufenden Lebensphase (aktiv_seit, Altzeilen registered_at), siehe eventsSichtbarAbSql.
   // Alte scope:'all' Events wurden bereits von damals aktiven Agenten bearbeitet —
   // ein neuer Agent muss sie nicht nochmal acken.
   // Direkt adressierte Events (scope: 'agent:<id>') werden immer geliefert.
   const result = await pool.query(
     `SELECT e.id, e.project, e.event_type, e.priority, e.scope, e.source_id, e.payload, e.requires_ack, e.created_at
      FROM agent_events e
-     WHERE e.project = $1
-       AND (e.scope = 'all' OR e.scope = $2)
-       AND NOT EXISTS (
-         SELECT 1 FROM agent_event_acks
-         WHERE agent_event_acks.event_id = e.id
-           AND agent_event_acks.agent_id = $3
-       )
-       AND (
-         e.scope = $2
-         OR e.created_at > COALESCE(
-           (SELECT COALESCE(aktiv_seit, registered_at) FROM agent_sessions WHERE id = $3),
-           NOW() - INTERVAL '1 hour'
-         )
-       )
-       AND (
-         e.event_type <> 'PLAN_READY'
-         OR EXISTS (
-           SELECT 1 FROM file_batch_waits w
-           WHERE w.project = e.project
-             AND e.dedupe_key = 'plan-ready:' || w.wait_token::text
-             AND w.status IN ('waiting', 'linked')
-             AND (w.expires_at > NOW() OR EXISTS (SELECT 1 FROM file_batch_plans p WHERE p.id = w.primary_plan_id AND p.status = 'open'))
-         )
-         -- Runde 3 (Befund 46ccab5b-6): hat der Agent schon ein PLAN_READY fuer DENSELBEN Plan quittiert
-         -- (mehrere Waits -> mehrere Events), kommt kein weiteres fuer diesen Plan mehr in pending_events.
-         AND NOT EXISTS (
-           SELECT 1 FROM agent_events e2
-             JOIN agent_event_acks a2 ON a2.event_id = e2.id AND a2.agent_id = $3
-            WHERE e2.project = e.project AND e2.event_type = 'PLAN_READY' AND e2.scope = e.scope AND e2.id <> e.id
-              AND (CASE WHEN e2.payload LIKE '{%' THEN e2.payload::jsonb ->> 'plan_id' END)
-                = (CASE WHEN e.payload LIKE '{%' THEN e.payload::jsonb ->> 'plan_id' END)
-         )
-       )
+     WHERE ${eventsOffenBedingungSql({ projekt: '$1', scope: '$2', agent: '$3' })}
      ORDER BY
        CASE e.priority
          WHEN 'critical' THEN 0

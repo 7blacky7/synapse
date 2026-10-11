@@ -304,7 +304,9 @@ export async function ereignisse(opt: { project?: string; zielAgent?: string; st
   let agent: Record<string, unknown> | undefined;
   if (opt.zielAgent) {
     if (!p) throw new DiagnoseFehler('parameter_fehlt', 'ereignisse mit ziel_agent braucht project.');
-    const reg = (await pool.query<{ registered_at: Date }>('SELECT registered_at FROM agent_sessions WHERE id = $1', [opt.zielAgent])).rows[0] ?? null;
+    // P15-T30: registered_at = erstmals; Events zaehlen ab aktiv_seit (Lebensphase), Fehlermuster ab sitzung_seit.
+    const reg = (await pool.query<{ registered_at: Date; sitzung_seit: Date | null; aktiv_seit: Date | null; status: string | null }>(
+      'SELECT registered_at, sitzung_seit, aktiv_seit, status FROM agent_sessions WHERE id = $1', [opt.zielAgent])).rows[0] ?? null;
     const server = await getPendingEvents(p, opt.zielAgent, 100);
     // Hook-Sicht: dieselbe Abfrage wie scripts/event-check.mjs, nur mit Limit 100 statt 5 (der Hook zeigt die ersten 5)
     const hook = (await pool.query(HOOK_EVENTS_SQL, hookEventsParameter(p, opt.zielAgent, 100))).rows;
@@ -316,6 +318,9 @@ export async function ereignisse(opt: { project?: string; zielAgent?: string; st
     agent = {
       agent: opt.zielAgent,
       registriert_am: reg?.registered_at ?? null,
+      sitzung_seit: reg ? (reg.sitzung_seit ?? reg.registered_at) : null,
+      events_sichtbar_ab: reg ? (reg.aktiv_seit ?? reg.registered_at) : null,
+      status: reg?.status ?? null,
       server_offen: server.map((e) => ({ id: e.id, typ: e.eventType, scope: e.scope, created_at: e.createdAt })),
       hook_offen: hook.length,
       hook_ids: hook.map((e) => Number(e.id)),
@@ -323,7 +328,7 @@ export async function ereignisse(opt: { project?: string; zielAgent?: string; st
       nur_beim_server: nurServer.map((e) => ({ id: e.id, typ: e.eventType, scope: e.scope, created_at: e.createdAt })),
     };
     if (nurHook.length > 0 || nurServer.length > 0) {
-      befund.push(`${opt.zielAgent}: Hook (scripts/event-check.mjs) und Server (getPendingEvents) weichen ab - nur im Hook ${nurHook.length}, nur beim Server ${nurServer.length} (ACK-pflichtige). Der Hook nutzt event-sichtbarkeit.ts, getPendingEvents (events.ts) eine eigene Bedingung: beide auf eventsOffenBedingungSql bringen.`);
+      befund.push(`${opt.zielAgent}: Hook (scripts/event-check.mjs) und Server (getPendingEvents) weichen ab - nur im Hook ${nurHook.length}, nur beim Server ${nurServer.length} (ACK-pflichtige). Beide nutzen eventsOffenBedingungSql (event-sichtbarkeit.ts); eine Abweichung heisst unterschiedlicher Code-Stand (dist nicht neu gebaut, Hook aus anderem Checkout).`);
     }
   }
   if (befund.length === 0) befund.push('Keine auffaelligen offenen Events.');

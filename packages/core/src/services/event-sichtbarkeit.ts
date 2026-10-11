@@ -14,11 +14,15 @@
 /**
  * Ab wann scope:'all'-Events fuer den Agenten zaehlen (direkt adressierte zaehlen immer).
  * EINZIGE Stelle dieser Bedingung. Ohne Sitzung: die letzte Stunde.
+ * P15-T30: ab dem Beginn der laufenden LEBENSPHASE (agent_sessions.aktiv_seit; Altzeilen ohne Wert:
+ * registered_at). aktiv_seit bleibt bei Handoff/Rotation stehen (unquittierte Events der Vorsitzung
+ * bleiben offen) und beginnt neu, wenn ein abgemeldeter oder stillgelegter Name wieder auftaucht.
+ * Frueher registered_at = ERSTMALS registriert: ein wiederverwendeter Name bekam alle Alt-Events.
  * @param agentParam SQL-Platzhalter der Agent-ID, z. B. '$3'
  */
 export function eventsSichtbarAbSql(agentParam: string): string {
   return `COALESCE(
-           (SELECT registered_at FROM agent_sessions WHERE id = ${agentParam}),
+           (SELECT COALESCE(aktiv_seit, registered_at) FROM agent_sessions WHERE id = ${agentParam}),
            NOW() - INTERVAL '1 hour'
          )`;
 }
@@ -51,6 +55,8 @@ export function eventsOffenBedingungSql(p: { projekt: string; scope: string; age
              AND w.status IN ('waiting', 'linked')
              AND (w.expires_at > NOW() OR EXISTS (SELECT 1 FROM file_batch_plans p WHERE p.id = w.primary_plan_id AND p.status = 'open'))
          )
+         -- Runde 3 (Befund 46ccab5b-6): hat der Agent schon ein PLAN_READY fuer DENSELBEN Plan quittiert
+         -- (mehrere Waits -> mehrere Events), kommt kein weiteres fuer diesen Plan mehr.
          AND NOT EXISTS (
            SELECT 1 FROM agent_events e2
              JOIN agent_event_acks a2 ON a2.event_id = e2.id AND a2.agent_id = ${p.agent}
