@@ -79,6 +79,8 @@ function envGanzzahl(name: string, ersatz: number): number {
 
 const PARALLEL_GETEILT = envGanzzahl('SYNAPSE_SERVER_EMBED_PARALLEL_SHARED', 1);
 const PARALLEL_ALLEIN = envGanzzahl('SYNAPSE_SERVER_EMBED_PARALLEL_SOLO', 2);
+/** P15-T4-Folge: Wissens-Eintraege je Tick (seit dem Stapel-Nachzug billig; vorher fest 10). */
+const BACKLOG_JE_TICK = Math.max(1, envGanzzahl('SYNAPSE_BACKLOG_JE_TICK', 256));
 /** P12-T14: Chunks je Slot und Runde, als EIN Ollama-Aufruf eingebettet (vorher 1). */
 const STAPEL = Math.max(1, envGanzzahl('SYNAPSE_SERVER_EMBED_BATCH', 16));
 
@@ -263,7 +265,7 @@ export class ParserWorker {
     // Klein gedrosselt: der Nachzug darf die zwei Slots der Embedding-Queue nicht selbst
     // belegen, sonst bremst er die interaktiven Schreibvorgaenge aus, fuer die EMBED-1 gebaut ist.
     try {
-      const nachtrag = await embeddeOffeneEintraege(10);
+      const nachtrag = await embeddeOffeneEintraege(BACKLOG_JE_TICK);
       if (nachtrag.nachgetragen > 0) {
         console.error(`[parser-worker] Embedding-Backlog: ${nachtrag.nachgetragen} nachgetragen`);
       }
