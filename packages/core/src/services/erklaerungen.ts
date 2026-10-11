@@ -795,13 +795,38 @@ export interface GenerikVerstoss { art: GenerikArt; feld: string; fund: string }
 const ERLAUBTE_WOERTER = /^(JavaScript|TypeScript|CommonJS|NodeJS|GitHub|GitLab|PostgreSQL|MySQL|SQLite|MongoDB|GraphQL|WebSocket|OpenAPI|YAML|JSON|JSONC|HTML|XML|CSS|SQL|utf-?8|utf-?16|base64|sha\d+|md5|http2?|https|es\d+|ipv[46]|i18n|x64|x86|[A-Z]{1,5}\d{2,6})$/i;
 const escapeRe = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
+/**
+ * Allgemeine Datei- und Werkzeugnamen (Konventionsnamen, klein geschrieben). Sie benennen eine Dateiart, nicht das
+ * Projekt: "Dockerfile" oder "package.json" im Erklaerungstext ist generisch, auch wenn die Datei des Falls so heisst.
+ * Der volle Pfad mit Verzeichnis bleibt verboten.
+ */
+const ALLGEMEINE_DATEINAMEN = new Set([
+  'dockerfile', 'containerfile', '.dockerignore', 'docker-compose.yml', 'docker-compose.yaml', 'compose.yml', 'compose.yaml',
+  'makefile', 'gnumakefile', 'cmakelists.txt', 'cmakelists', 'meson.build', 'meson_options.txt', 'build', 'build.bazel',
+  'workspace', 'workspace.bazel', 'module.bazel', 'justfile', 'rakefile', 'jenkinsfile', 'vagrantfile', 'procfile',
+  'package.json', 'package-lock.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'yarn.lock', 'tsconfig.json', 'jsconfig.json',
+  'deno.json', 'cargo.toml', 'cargo.lock', 'go.mod', 'go.sum', 'go.work', 'pyproject.toml', 'setup.py', 'setup.cfg',
+  'requirements.txt', 'pipfile', 'pipfile.lock', 'gemfile', 'gemfile.lock', 'pom.xml', 'build.gradle', 'build.gradle.kts',
+  'settings.gradle', 'settings.gradle.kts', 'composer.json', 'pubspec.yaml', 'mix.exs', 'flake.nix', 'default.nix', 'shell.nix',
+  '.gitignore', '.gitattributes', '.editorconfig',
+]);
+/** Konventionsnamen, die mit Endung als Variante vorkommen (Dockerfile.dev, Makefile.am, Containerfile.test). */
+const ALLGEMEINE_VARIANTEN = new Set(['dockerfile', 'containerfile', 'makefile', 'gnumakefile', 'jenkinsfile']);
+
+export function istAllgemeinerDateiname(name: string): boolean {
+  const k = String(name ?? '').toLowerCase();
+  if (ALLGEMEINE_DATEINAMEN.has(k)) return true;
+  const punkt = k.indexOf('.');
+  return punkt > 0 && ALLGEMEINE_VARIANTEN.has(k.slice(0, punkt));
+}
+
 /** Bezeichner aus Code: camelCase, mit _ oder mit Ziffern, mindestens 4 Zeichen (Allerweltswoerter bleiben frei). */
 function bezeichnerAus(code: string): Set<string> {
   const aus = new Set<string>();
   for (const m of code.matchAll(/[A-Za-z_$][\w$]{3,}/g)) {
     const t = m[0];
     const auffaellig = /[a-z][A-Z]/.test(t) || (t.includes('_') && /[A-Za-z]/.test(t.replace(/_/g, ''))) || /[A-Za-z]\d|\d[A-Za-z]/.test(t);
-    if (auffaellig && !ERLAUBTE_WOERTER.test(t)) aus.add(t);
+    if (auffaellig && !ERLAUBTE_WOERTER.test(t) && !istAllgemeinerDateiname(t)) aus.add(t);
   }
   return aus;
 }
@@ -835,7 +860,10 @@ export function pruefeGenerik(
   const literale = literaleAus([...ohneZeilennummer(s.aenderung ?? '').split('\n'), ...(s.hinzugefuegt ?? [])]);
   const name = kontext.datei.split('/').pop() ?? kontext.datei;
   const stamm = name.includes('.') ? name.slice(0, name.lastIndexOf('.')) : name;
-  const pfadTeile = [kontext.datei, name.length >= 5 ? name : ''].filter(Boolean);
+  // Allgemeiner Konventionsname (Dockerfile, package.json ...): Name und Stamm sind frei, nur der volle Pfad mit
+  // Verzeichnis bleibt verboten (liegt die Datei im Root, ist der volle Pfad der Name selbst).
+  const allgemein = istAllgemeinerDateiname(name);
+  const pfadTeile = [allgemein && kontext.datei === name ? '' : kontext.datei, name.length >= 5 && !allgemein ? name : ''].filter(Boolean);
   for (const [feld, roh] of Object.entries(felder)) {
     const text = String(roh ?? '');
     const neu = (art: GenerikArt, fund: string) => {
@@ -843,7 +871,7 @@ export function pruefeGenerik(
     };
     const klein = text.toLowerCase();
     for (const p of pfadTeile) if (klein.includes(p.toLowerCase())) neu('pfad', p);
-    if (stamm.length >= 5 && new RegExp(`(^|[^A-Za-z0-9_])${escapeRe(stamm)}([^A-Za-z0-9_]|$)`, 'i').test(text)) neu('pfad', stamm);
+    if (!allgemein && stamm.length >= 5 && new RegExp(`(^|[^A-Za-z0-9_])${escapeRe(stamm)}([^A-Za-z0-9_]|$)`, 'i').test(text)) neu('pfad', stamm);
     const pfad = /(?:^|[\s("'`])((?:\.{0,2}\/)?[\w.-]+\/[\w./-]*\.[A-Za-z]{1,5})\b/.exec(text);
     if (pfad) neu('pfad', pfad[1]);
     for (const t of text.matchAll(/[A-Za-z_$][\w$]{3,}/g)) if (bezeichner.has(t[0])) neu('bezeichner', t[0]);
