@@ -12,7 +12,8 @@
  * OUTPUT:
  *   - Context7Bibliothek[]: sucheBibliotheken() — ALLE Metadaten aus /v2/libs/search
  *     (id, title, lastUpdateDate, versions, trustScore, benchmarkScore, totalSnippets, ...)
- *   - Context7Bibliothek | null: resolveLibrary() — beste Bibliothek samt Metadaten
+ *   - Context7Bibliothek | null: resolveLibrary() — passende Bibliothek samt Metadaten
+ *     (Namens-Rangfolge exakt > Titel-Wort > nicht gefunden, siehe bewerteNamen)
  *   - string | null: resolveLibraryId() — nur die ID (Altweg, unveraendert)
  *   - Context7Doc[]: searchDocs() / holeDocs() / holeGesamtDocs() — Array mit { framework, version?, content, url?, title? }
  *
@@ -104,6 +105,55 @@ function istKontingentAntwort(status: number, text: string): boolean {
   if (status === 429) return true;
   if (status === 402 || status === 403) return /quota|limit|rate|credit|plan/i.test(text);
   return false;
+}
+
+/** Wie gut ein Suchtreffer zum gesuchten Namen passt (siehe bewerteNamen/waehleBibliothek). */
+export type NamensStufe = 'exakt' | 'wort';
+
+/** Woerter, die im Namen nicht tragen ("Next.js" -> next, "OpenAI SDK" -> openai). */
+const NAMENS_FUELLWOERTER = new Set(['js', 'sdk', 'client', 'api', 'the', 'lib', 'library']);
+
+/** Woerter, die ein Titel neben dem Namen tragen darf, ohne ein anderes Paket zu meinen ("Flask Documentation"). */
+const DOKU_WOERTER = new Set(['docs', 'doc', 'documentation', 'dokumentation', 'guide', 'guides', 'reference', 'official', 'website', 'manual', 'handbook']);
+
+/** Kleinbuchstaben, nur a-z und 0-9. */
+function normiere(text: string): string {
+  return text.toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+/**
+ * Bewertet einen libs/search-Treffer gegen den gesuchten Namen (P12-T17-Fix 11.10.2026: "Flask"
+ * landete auf /maxcountryman/flask-login, weil der Bindestrich als Wortgrenze galt).
+ *   'exakt' — title oder letzter id-Teil normalisiert GLEICH dem Namen (mit/ohne Klammerzusatz,
+ *            mit/ohne Fuellwoerter): /pallets/flask, "Flask", /vercel/next.js, "React", "node-postgres".
+ *   'wort'  — der TITEL nennt den Namen als eigene Woerter und sonst hoechstens Doku-Woerter
+ *            ("Flask Documentation", "Tailwind CSS Docs") — egal wie die id aussieht
+ *            (/websites/flask_palletsprojects ist die offizielle Flask-Doku).
+ *   null    — alles andere: Name in einem Titel-Kompositum (Flask-Login, zod-i18n), Titel mit
+ *            weiteren Woertern (React Router, React Native, NextAuth.js = andere Pakete), oder der
+ *            Titel gibt nichts her und die id nennt den Namen nur in einem Kompositum.
+ */
+export function bewerteNamen(bib: { id: string; title: string }, name: string): NamensStufe | null {
+  const ohneKlammer = name.replace(/\([^)]*\)/g, ' ');
+  const klammer = (name.match(/\([^)]*\)/g) ?? []).map((k) => k.slice(1, -1));
+  const woerter = ohneKlammer.toLowerCase().split(/[^a-z0-9]+/).filter((w) => w && !NAMENS_FUELLWOERTER.has(w));
+  if (woerter.length === 0) return null;
+  const zusammen = woerter.join('');
+
+  const varianten = new Set([normiere(ohneKlammer), zusammen, ...klammer.map(normiere)].filter(Boolean));
+  const letzterIdTeil = bib.id.split('/').filter(Boolean).pop() ?? '';
+  if (varianten.has(normiere(bib.title)) || varianten.has(normiere(letzterIdTeil))) return 'exakt';
+
+  // Titel in Teile (Leerzeichen, Punkt, Schraegstrich ...); ein Teil mit Bindestrich/Unterstrich ist
+  // ein Kompositum — steckt der Name darin, ist es ein anderes Paket (Flask-Login).
+  const titelTeile = bib.title.toLowerCase().split(/[\s/.:,()]+/).filter(Boolean);
+  const komposita = titelTeile.filter((t) => /[-_]/.test(t)).flatMap((t) => t.split(/[-_]+/));
+  if (woerter.some((w) => komposita.includes(w))) return null;
+  const titelWoerter = titelTeile.filter((t) => !/[-_]/.test(t)).map(normiere).filter(Boolean);
+  const nameDa = woerter.every((w) => titelWoerter.includes(w)) || titelWoerter.includes(zusammen);
+  const fremd = titelWoerter.filter((t) =>
+    !woerter.includes(t) && t !== zusammen && !NAMENS_FUELLWOERTER.has(t) && !DOKU_WOERTER.has(t));
+  return nameDa && fremd.length === 0 ? 'wort' : null;
 }
 
 /**
@@ -205,17 +255,26 @@ export class Context7Client {
   }
 
   /**
-   * Waehlt aus Suchtreffern die beste Bibliothek (hoechster benchmarkScore — wie bisher).
-   * Ist bevorzugteId unter den Treffern, gewinnt sie: ein Update-Check vergleicht so dieselbe
-   * Bibliothek und springt nicht zwischen gleichnamigen Quellen hin und her.
+   * Waehlt aus Suchtreffern die Bibliothek, die WIRKLICH so heisst — Rangfolge nach bewerteNamen:
+   * 'exakt' vor 'wort', sonst null (= nicht gefunden; lieber nichts als fremde Docs unter falschem
+   * Namen). Innerhalb einer Stufe entscheidet trustScore, dann totalSnippets. Ist bevorzugteId
+   * (gemerkte library_id) in der besten Stufe, gewinnt sie: ein Update-Check bleibt so bei
+   * derselben Quelle und springt nicht zwischen gleichnamigen hin und her.
    */
-  waehleBibliothek(treffer: Context7Bibliothek[], bevorzugteId?: string | null): Context7Bibliothek | null {
-    if (treffer.length === 0) return null;
-    if (bevorzugteId) {
-      const gleich = treffer.find((t) => t.id === bevorzugteId);
-      if (gleich) return gleich;
+  waehleBibliothek(
+    treffer: Context7Bibliothek[],
+    name: string,
+    bevorzugteId?: string | null,
+  ): { bib: Context7Bibliothek; stufe: NamensStufe; gleichrangig: number } | null {
+    for (const stufe of ['exakt', 'wort'] as const) {
+      const kandidaten = treffer
+        .filter((t) => bewerteNamen(t, name) === stufe)
+        .sort((a, b) => (b.trustScore || 0) - (a.trustScore || 0) || (b.totalSnippets || 0) - (a.totalSnippets || 0));
+      if (kandidaten.length === 0) continue;
+      const bevorzugt = bevorzugteId ? kandidaten.find((t) => t.id === bevorzugteId) : undefined;
+      return { bib: bevorzugt ?? kandidaten[0], stufe, gleichrangig: kandidaten.length };
     }
-    return [...treffer].sort((a, b) => (b.benchmarkScore || 0) - (a.benchmarkScore || 0))[0];
+    return null;
   }
 
   /**
@@ -224,9 +283,9 @@ export class Context7Client {
   async resolveLibrary(framework: string): Promise<Context7Bibliothek | null> {
     try {
       console.error(`[Context7] Resolve Library fuer "${framework}"...`);
-      const best = this.waehleBibliothek(await this.sucheBibliotheken(framework));
+      const best = this.waehleBibliothek(await this.sucheBibliotheken(framework), framework)?.bib ?? null;
       if (!best) {
-        console.error(`[Context7] Keine Library gefunden fuer "${framework}"`);
+        console.error(`[Context7] Keine passende Library gefunden fuer "${framework}"`);
         return null;
       }
       console.error(`[Context7] Library-ID: ${best.id} (${best.title}, ${best.totalSnippets ?? '?'} Snippets, Stand ${best.lastUpdateDate ?? '?'})`);

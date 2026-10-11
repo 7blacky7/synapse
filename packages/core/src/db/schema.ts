@@ -272,7 +272,8 @@ CREATE TABLE IF NOT EXISTS tech_docs (
 -- sind projektuebergreifend, tech_docs.project NULL). Grundlage der sparsamen Automatik
 -- (services/context7-automatik.ts): abgerufen wird nur, was hier fehlt oder wofuer Context7 ein
 -- neueres lastUpdateDate meldet. framework = kleingeschrieben wie tech_docs.framework.
--- status: bestand (aus vorhandenen tech_docs uebernommen, ohne Abruf) | abgerufen | nicht_gefunden | fehler.
+-- status: bestand (aus vorhandenen tech_docs uebernommen, ohne Abruf) | abgerufen | nur_suche (nur der kleine
+-- Such-Fetch, Gesamtabruf steht aus) | nicht_gefunden | fehler.
 -- quelle_stand = lastUpdateDate von Context7 zum eigenen Stand; abfragen = bisherige Queries (nur Information).
 CREATE TABLE IF NOT EXISTS context7_bibliotheken (
   framework TEXT PRIMARY KEY,

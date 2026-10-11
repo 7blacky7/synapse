@@ -135,17 +135,19 @@ const KNOWN_NODE: Record<string, TechInfo> = {
   'rollup': { type: 'tool' },
   'turbo': { type: 'tool', displayName: 'Turborepo' },
 
-  // Datenbank/ORM
+  // Datenbank/ORM — Client-Bibliotheken unter ihrem PAKETNAMEN, nicht dem des Servers: sonst holt
+  // die Context7-Automatik die Server-Doku (PostgreSQL, MySQL, SQLite) fuer ein Projekt, das nur
+  // den Client benutzt (P12-T17-Fix 11.10.2026)
   'prisma': { type: 'library' },
   'drizzle-orm': { type: 'library', displayName: 'Drizzle' },
   'typeorm': { type: 'library', displayName: 'TypeORM' },
   'mongoose': { type: 'library' },
   'sequelize': { type: 'library' },
-  'pg': { type: 'library', displayName: 'PostgreSQL (pg)' },
-  'mysql2': { type: 'library', displayName: 'MySQL' },
-  'better-sqlite3': { type: 'library', displayName: 'SQLite' },
+  'pg': { type: 'library', displayName: 'node-postgres' },
+  'mysql2': { type: 'library' },
+  'better-sqlite3': { type: 'library' },
   'redis': { type: 'library', displayName: 'Redis' },
-  'ioredis': { type: 'library', displayName: 'Redis (ioredis)' },
+  'ioredis': { type: 'library' },
 
   // Vektor-Datenbanken
   '@qdrant/js-client-rest': { type: 'library', displayName: 'Qdrant' },

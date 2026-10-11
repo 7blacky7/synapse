@@ -16,11 +16,14 @@
  *      fehlen, kommen in die Warteschlange. Projekt B laedt nichts, was Projekt A schon hat.
  *   3. Faellige Update-Checks (naechster_check <= jetzt) kommen ebenfalls in die Warteschlange —
  *      nur in Kontingent-Stufe 'voll'.
+ *      Status 'nur_suche' (nur vom Such-Auto-Fetch geholt, ~5 Snippets) gilt als NEU: der
+ *      Gesamtabruf folgt, danach 'abgerufen'.
  *      REIHENFOLGE: neue vor Update-Checks; dann Framework vor Bibliothek, Manifest vor reinem
  *      Import, in mehreren Projekten benutzt vor Einzelfall.
  *   4. Hoechstens SYNAPSE_CONTEXT7_MAX_JE_TICK Bibliotheken je Lauf, Pause zwischen den Bibliotheken:
- *      - NAMENSABGLEICH (Pflicht): ein libs/search-Treffer zaehlt nur, wenn der Name als ganzes Wort
- *        in id/title vorkommt (passtZumNamen) — sonst 'nicht_gefunden', kein Docs-Abruf.
+ *      - NAMENS-RANGFOLGE (Pflicht, Context7Client.waehleBibliothek/bewerteNamen): exakt (title oder
+ *        letzter id-Teil = Name) vor Titel-Wort ("Flask Documentation"; nie Flask-Login, React Router),
+ *        sonst 'nicht_gefunden', kein Docs-Abruf. Je Stufe trustScore, dann totalSnippets.
  *      - NEU: 1x /v2/libs/search + 1x Gesamtabruf /v1/<id>?tokens=N&type=txt (User-Entscheidung
  *        11.10.2026: immer das Maximum — Context7 zaehlt Aufrufe, nicht Tokens; Messwert
  *        tokens=10000 -> ~91 Snippets, tokens=30000 -> 361, /v2/context liefert nur ~5). Lehnt Context7
@@ -28,8 +31,8 @@
  *        Meldung genannten Maximum bzw. 50000; der funktionierende Wert wird in
  *        context7_automatik_stand.tokens_max gemerkt und kuenftig benutzt.
  *        SYNAPSE_CONTEXT7_TOKENS=0 -> altes Verhalten: eine allgemeine /v2/context-Abfrage.
- *      - BESTAND ohne library_id: der erste Check speichert NUR die Zuordnung, und nur wenn sie
- *        eindeutig ist (ein passender Treffer oder Titel = Name). Kein Abruf.
+ *      - BESTAND ohne library_id: der erste Check speichert NUR die Zuordnung, und nur bei Stufe
+ *        'exakt'. Kein Abruf.
  *      - UPDATE-CHECK: 1x /v2/libs/search. Nur wenn lastUpdateDate neuer ist als der eigene Stand
  *        (quelle_stand bzw. abgerufen_am), derselbe EINE Abruf wie bei NEU dazu. Alte Chunks
  *        werden NIE automatisch geloescht (Dedupe per content_hash in speichereContext7Chunks —
@@ -107,7 +110,7 @@ function konfig(): Konfig {
 interface RegisterZeile {
   framework: string;
   anzeige_name: string | null;
-  status: 'bestand' | 'abgerufen' | 'nicht_gefunden' | 'fehler';
+  status: 'bestand' | 'abgerufen' | 'nur_suche' | 'nicht_gefunden' | 'fehler';
   library_id: string | null;
   quelle_stand: Date | null;
   abgerufen_am: Date | null;
@@ -129,9 +132,6 @@ const MAX_ABFRAGEN_JE_BIBLIOTHEK = 50;
 const PRIO_NEU = 100_000;
 const PRIO_FRAMEWORK = 10_000;
 const PRIO_MANIFEST = 1_000;
-
-/** Woerter, die im Namensabgleich nicht tragen ("Next.js" -> next, "OpenAI SDK" -> openai). */
-const NAMENS_FUELLWOERTER = new Set(['js', 'sdk', 'client', 'api', 'the', 'lib', 'library']);
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -225,8 +225,10 @@ export async function erkenneTechnologienAusPg(project: string): Promise<Detecte
 
 /**
  * Merkt eine Context7-Abfrage im Register (Beobachter fuer den Such-Auto-Fetch von tech-docs.ts).
- * Nur zur Information: Abfragen werden NICHT automatisch wiederholt. Ist die Bibliothek noch nicht
- * im Register, gilt sie danach als abgerufen — die Automatik holt sie nicht ein zweites Mal.
+ * Die Abfragen selbst werden NICHT automatisch wiederholt. Ist die Bibliothek noch nicht im Register
+ * (oder dort nicht_gefunden/fehler), bekommt sie status 'nur_suche' und naechster_check = jetzt: die
+ * Suche hat nur ~5 Snippets geholt, die Automatik behandelt sie wie neu und macht den Gesamtabruf.
+ * Eintraege 'bestand'/'abgerufen'/'nur_suche' bleiben sonst unveraendert, dort wird nur die Query angehaengt.
  * Best-effort: wirft nie.
  */
 export async function merkeContext7Abfrage(framework: string, query: string): Promise<void> {
@@ -237,42 +239,23 @@ export async function merkeContext7Abfrage(framework: string, query: string): Pr
     await getPool().query(
       `INSERT INTO context7_bibliotheken
               (framework, anzeige_name, status, abfragen, abgerufen_am, letzter_check, naechster_check)
-       VALUES (lower($1), $1, 'abgerufen', ARRAY[$2::text], NOW(), NOW(), NOW() + make_interval(days => $3::int))
+       VALUES (lower($1), $1, 'nur_suche', ARRAY[$2::text], NOW(), NOW(), NOW())
        ON CONFLICT (framework) DO UPDATE SET
          abfragen = CASE
            WHEN $2 = ANY(context7_bibliotheken.abfragen)
-             OR cardinality(context7_bibliotheken.abfragen) >= $4::int
+             OR cardinality(context7_bibliotheken.abfragen) >= $3::int
            THEN context7_bibliotheken.abfragen
            ELSE array_append(context7_bibliotheken.abfragen, $2::text) END,
          status = CASE WHEN context7_bibliotheken.status IN ('nicht_gefunden', 'fehler')
-                       THEN 'abgerufen' ELSE context7_bibliotheken.status END,
+                       THEN 'nur_suche' ELSE context7_bibliotheken.status END,
+         naechster_check = CASE WHEN context7_bibliotheken.status IN ('nicht_gefunden', 'fehler')
+                                THEN NOW() ELSE context7_bibliotheken.naechster_check END,
          abgerufen_am = COALESCE(context7_bibliotheken.abgerufen_am, NOW())`,
-      [name, abfrage, Math.round(konfig().checkTage), MAX_ABFRAGEN_JE_BIBLIOTHEK],
+      [name, abfrage, MAX_ABFRAGEN_JE_BIBLIOTHEK],
     );
   } catch (err) {
     console.error(`[context7-auto] Abfrage fuer ${name} nicht gemerkt: ${(err as Error).message}`);
   }
-}
-
-/**
- * Pflicht-Namensabgleich: jedes tragende Wort des Namens (ohne Klammerzusatz und Fuellwoerter wie
- * "js"/"sdk") muss als GANZES Wort in id oder title vorkommen — oder der zusammengezogene Name als
- * Wort ("Tailwind CSS" -> "tailwindcss"). Teilstrings zaehlen nicht ("archive" passt nicht zu "archiver").
- */
-export function passtZumNamen(bib: { id: string; title: string }, name: string): boolean {
-  const gesucht = woerter(name.replace(/\(.*?\)/g, ' ')).filter((w) => !NAMENS_FUELLWOERTER.has(w));
-  if (gesucht.length === 0) return false;
-  const vorhanden = new Set(woerter(`${bib.id} ${bib.title}`));
-  return gesucht.every((w) => vorhanden.has(w)) || vorhanden.has(gesucht.join(''));
-}
-
-/** Kleinbuchstaben, nur a-z und 0-9. */
-function normiere(text: string): string {
-  return text.toLowerCase().replace(/[^a-z0-9]/g, '');
-}
-
-function woerter(text: string): string[] {
-  return text.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
 }
 
 // ─── Lauf ────────────────────────────────────────────────────────────────────
@@ -400,8 +383,9 @@ async function sammleNeueBibliotheken(): Promise<void> {
   }
   if (gewuenscht.size === 0) return;
 
+  // 'nur_suche' zaehlt nicht als vorhanden: die Suche hat nur ~5 Snippets geholt, der Gesamtabruf fehlt
   const vorhanden = await pool.query<{ framework: string }>(
-    `SELECT framework FROM context7_bibliotheken WHERE framework = ANY($1::text[])`,
+    `SELECT framework FROM context7_bibliotheken WHERE framework = ANY($1::text[]) AND status <> 'nur_suche'`,
     [[...gewuenscht.keys()]],
   );
   const bekannt = new Set(vorhanden.rows.map((r) => r.framework));
@@ -450,32 +434,34 @@ async function bearbeite(k: Konfig, schluessel: string, name: string): Promise<A
   if (zeile?.naechster_check && zeile.naechster_check.getTime() > Date.now()) return null;
 
   const client = getContext7Client();
-  const istNeu = !zeile || zeile.status === 'nicht_gefunden' || zeile.status === 'fehler';
+  // 'nur_suche' = bisher nur der kleine Such-Fetch -> wie neu behandeln (Gesamtabruf)
+  const istNeu = !zeile || zeile.status === 'nicht_gefunden' || zeile.status === 'fehler' || zeile.status === 'nur_suche';
   const art: Context7Aufrufart = istNeu ? 'neu' : 'update';
 
   // ── Schritt 1: Bibliothek suchen (1 Aufruf) ──
-  let passende: Context7Bibliothek[];
+  let treffer: Context7Bibliothek[];
   try {
-    // Namens-Abgleich ist Pflicht: libs/search liefert auch fuer generische Namen ("archive")
-    // Treffer — ohne Abgleich landeten fremde Docs unter falschem Namen im Cache.
-    passende = (await client.sucheBibliotheken(name, art)).filter((b) => passtZumNamen(b, name));
+    treffer = await client.sucheBibliotheken(name, art);
   } catch (err) {
     return await behandleFehler(k, schluessel, name, err);
   }
-  const bib = client.waehleBibliothek(passende, zeile?.library_id);
+  // Namens-Rangfolge ist Pflicht (waehleBibliothek): exakt > Titel-Wort > nicht gefunden.
+  // libs/search liefert auch Plugins und Namensvettern (flask-login fuer "Flask") — ohne
+  // Rangfolge landeten fremde Docs unter falschem Namen im Cache.
+  const wahl = client.waehleBibliothek(treffer, name, zeile?.library_id);
+  const bib = wahl?.bib ?? null;
 
-  // Bestand ohne library_id: beim ersten Check NUR die Zuordnung merken, und auch die nur, wenn
-  // sie eindeutig ist. Kein Abruf — der Bestand ist da; ein Update holt erst der naechste Check.
+  // Bestand ohne library_id: beim ersten Check NUR die Zuordnung merken, und auch die nur bei
+  // Stufe 'exakt'. Kein Abruf — der Bestand ist da; ein Update holt erst der naechste Check.
   if (zeile?.status === 'bestand' && !zeile.library_id) {
-    const eindeutig = bib !== null && (passende.length === 1 || normiere(bib.title) === normiere(name));
-    if (bib && eindeutig) {
-      await schreibeMetadaten(schluessel, name, bib, null, k);
+    if (wahl && wahl.stufe === 'exakt') {
+      await schreibeMetadaten(schluessel, name, wahl.bib, null, k);
     } else {
       await pool.query(
         `UPDATE context7_bibliotheken
             SET letzter_check = NOW(), naechster_check = NOW() + make_interval(days => $2::int), letzter_fehler = $3
           WHERE framework = $1`,
-        [schluessel, Math.round(k.checkTage), bib ? `Zuordnung nicht eindeutig (${passende.length} Treffer)` : 'kein passender Treffer bei Context7'],
+        [schluessel, Math.round(k.checkTage), wahl ? `Zuordnung nicht eindeutig (nur Stufe ${wahl.stufe}: ${wahl.bib.id})` : 'kein passender Treffer bei Context7'],
       );
     }
     return null;
@@ -491,7 +477,7 @@ async function bearbeite(k: Konfig, schluessel: string, name: string): Promise<A
          letzter_check = NOW(), naechster_check = EXCLUDED.naechster_check, letzter_fehler = NULL`,
       [schluessel, name, Math.round(k.checkTage)],
     );
-    console.error(`[context7-auto] ${name}: bei Context7 kein passender Treffer`);
+    console.error(`[context7-auto] ${name}: bei Context7 kein passender Treffer (${treffer.length} Treffer, keiner exakt oder als Titel-Wort)`);
     return null;
   }
 
