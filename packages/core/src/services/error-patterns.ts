@@ -13,8 +13,23 @@ import { insertVector, searchVectors, deleteVector } from '../qdrant/operations.
 import { ensureCollection } from '../qdrant/collections.js';
 import type { EmbedOptions } from '../embeddings/index.js';
 import { betteEinzelnEin, type NachzugQuelle } from './embed-nachzug.js';
+import type { Erkennung, Geltung } from './fehlermuster-erkennung.js';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
+
+/** P15-T17 E1: Lebenszyklus eines Musters. NULL in der DB = Bestand = themenhinweis. */
+export type MusterStatus = 'entwurf' | 'aktiv' | 'themenhinweis' | 'stillgelegt';
+
+/** Verweis "wo kann ich nachlesen" (memory, thought, Doku, Datei:Zeile, Skill). */
+export interface MusterVerweis {
+  art: 'memory' | 'thought' | 'doku' | 'datei' | 'skill';
+  name?: string;
+  id?: string;
+  url?: string;
+  project?: string;
+  file_path?: string;
+  zeile?: number;
+}
 
 export interface ErrorPattern {
   id: string;
@@ -25,6 +40,18 @@ export interface ErrorPattern {
   foundBy: string;
   foundInModel: string;
   createdAt: string;
+  // P15-T17 E1 (alle optional, Bestand hat sie nicht)
+  titel?: string | null;
+  warum?: string | null;
+  erkennung?: Erkennung | null;
+  geltung?: Geltung | null;
+  verweise?: MusterVerweis[] | null;
+  beispielFalsch?: string | null;
+  beispielRichtig?: string | null;
+  status?: MusterStatus;
+  stillgelegtGrund?: string | null;
+  ersetztDurch?: string | null;
+  statistik?: Record<string, unknown> | null;
 }
 
 export interface ErrorPatternWarning {
@@ -32,7 +59,12 @@ export interface ErrorPatternWarning {
   severity: string;
   description: string;
   fix: string;
+  /** P15-T17 E1: Kurztitel, falls gepflegt */
+  titel?: string | null;
 }
+
+/** P15-T17 E1: Muster in diesem Status liefern keine Treffer mehr. */
+export const MUSTER_OHNE_TREFFER: readonly MusterStatus[] = ['stillgelegt', 'entwurf'];
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -130,7 +162,9 @@ export async function embeddeErrorPatternNach(
 }
 
 /** Inhaltsstand eines Error-Patterns (keine updated_at-Spalte): md5 der eingebetteten Spalten. */
-const ERROR_PATTERN_STAND = "md5(concat_ws('|', t.description, t.fix, t.severity, t.model_scope))";
+// P15-T17 E1: titel und beispiel_falsch gehen in den Text ein. concat_ws ueberspringt NULL - fuer den
+// Bestand (beide NULL) bleibt der Stand gleich, es wird also nichts neu eingebettet.
+const ERROR_PATTERN_STAND = "md5(concat_ws('|', t.description, t.fix, t.severity, t.model_scope, t.titel, t.beispiel_falsch))";
 
 /**
  * P15-T4: Lesen, Text und Payload eines Error-Patterns — EINZIGE Stelle fuer Einzel-Nachtrag und
@@ -144,7 +178,7 @@ export const errorPatternNachzug: NachzugQuelle = {
   async lese(ids) {
     const { rows } = await getPool().query(
       `SELECT t.id::text AS id, t.description, t.fix, t.severity, t.model_scope, t.found_by, t.found_in_model,
-              t.created_at, ${ERROR_PATTERN_STAND} AS stand
+              t.created_at, t.titel, t.beispiel_falsch, t.status, ${ERROR_PATTERN_STAND} AS stand
          FROM error_patterns t WHERE t.id = ANY($1::uuid[])`,
       [ids]
     );
@@ -152,10 +186,13 @@ export const errorPatternNachzug: NachzugQuelle = {
       id: row.id,
       project: null,
       collection: COLLECTIONS.globalErrorPatterns,
-      // Text unveraendert wie bisher: description, Leerzeile, fix.
-      text: [row.description, row.fix].join('\n\n'),
+      // Bestand unveraendert: description, Leerzeile, fix. P15-T17 E1: titel davor und das
+      // Fehlerbeispiel (Code) dahinter, wenn gepflegt - die Anfrage ist Code, das hilft dem Vorfilter.
+      text: [row.titel, row.description, row.fix, row.beispiel_falsch].filter((t) => t).join('\n\n'),
       payload: {
         id: row.id,
+        titel: row.titel ?? null,
+        status: row.status ?? 'themenhinweis',
         severity: row.severity,
         model_scope: row.model_scope,
         found_by: row.found_by,
@@ -192,6 +229,17 @@ export async function listErrorPatterns(
     foundBy: r.found_by as string,
     foundInModel: r.found_in_model as string,
     createdAt: r.created_at as string,
+    titel: (r.titel as string | null) ?? null,
+    warum: (r.warum as string | null) ?? null,
+    erkennung: (r.erkennung as Erkennung | null) ?? null,
+    geltung: (r.geltung as Geltung | null) ?? null,
+    verweise: (r.verweise as MusterVerweis[] | null) ?? null,
+    beispielFalsch: (r.beispiel_falsch as string | null) ?? null,
+    beispielRichtig: (r.beispiel_richtig as string | null) ?? null,
+    status: ((r.status as MusterStatus | null) ?? 'themenhinweis'),
+    stillgelegtGrund: (r.stillgelegt_grund as string | null) ?? null,
+    ersetztDurch: (r.ersetzt_durch as string | null) ?? null,
+    statistik: (r.statistik as Record<string, unknown> | null) ?? null,
   }));
 }
 
@@ -266,18 +314,23 @@ export async function checkErrorPatterns(
       );
       if (seen.rowCount && seen.rowCount > 0) continue;
 
+      // P15-T17 E1: status und ersetzt_durch aus PG (Qdrant-Payload kann veraltet sein).
+      // Stillgelegte Muster, Entwuerfe und zusammengelegte Dubletten liefern keine Treffer.
+      // Die Spalten kommen mit dem Schema von E1; fehlen sie (alte DB), gilt der Bestand.
       const patternResult = await pool.query(
-        'SELECT description, fix, severity FROM error_patterns WHERE id = $1',
+        'SELECT * FROM error_patterns WHERE id = $1',
         [patternId]
       );
       if (patternResult.rows.length === 0) continue;
 
       const pattern = patternResult.rows[0];
+      if (MUSTER_OHNE_TREFFER.includes(pattern.status) || pattern.ersetzt_durch) continue;
       warnings.push({
         id: patternId,
         severity: pattern.severity,
         description: pattern.description,
         fix: pattern.fix,
+        titel: pattern.titel ?? null,
       });
 
       // P15-T17 E0: KEIN gesehen-Vermerk mehr hier - erst bei der Auslieferung an den Agenten.

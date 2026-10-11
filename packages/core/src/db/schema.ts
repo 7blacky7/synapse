@@ -757,6 +757,20 @@ CREATE TABLE IF NOT EXISTS error_patterns (
 -- P12-T12 (11.10.2026): error_patterns im Nachzug, Muster wie memories (Bestand = eingebettet).
 ALTER TABLE error_patterns ADD COLUMN IF NOT EXISTS embedded_at TIMESTAMPTZ DEFAULT NOW();
 ALTER TABLE error_patterns ALTER COLUMN embedded_at DROP DEFAULT;
+-- P15-T17 E1 (11.10.2026): Muster erkennen den Fehler statt nur das Thema (Konzept thought 6236baf2).
+-- Alle Spalten nullable und ohne Default: reine Katalog-Aenderung, keine Tabellen-Umschreibung.
+-- status NULL = Bestand = themenhinweis. erkennung/geltung siehe services/fehlermuster-erkennung.ts.
+ALTER TABLE error_patterns ADD COLUMN IF NOT EXISTS titel TEXT;
+ALTER TABLE error_patterns ADD COLUMN IF NOT EXISTS warum TEXT;
+ALTER TABLE error_patterns ADD COLUMN IF NOT EXISTS erkennung JSONB;
+ALTER TABLE error_patterns ADD COLUMN IF NOT EXISTS geltung JSONB;
+ALTER TABLE error_patterns ADD COLUMN IF NOT EXISTS verweise JSONB;
+ALTER TABLE error_patterns ADD COLUMN IF NOT EXISTS beispiel_falsch TEXT;
+ALTER TABLE error_patterns ADD COLUMN IF NOT EXISTS beispiel_richtig TEXT;
+ALTER TABLE error_patterns ADD COLUMN IF NOT EXISTS status TEXT;
+ALTER TABLE error_patterns ADD COLUMN IF NOT EXISTS stillgelegt_grund TEXT;
+ALTER TABLE error_patterns ADD COLUMN IF NOT EXISTS ersetzt_durch UUID;
+ALTER TABLE error_patterns ADD COLUMN IF NOT EXISTS statistik JSONB;
 
 -- Error Pattern Seen Tracking
 CREATE TABLE IF NOT EXISTS error_pattern_seen (
