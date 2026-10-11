@@ -1023,6 +1023,7 @@ export {
   getReservationTtlConfig,
   refreshReservationTtlsForFiles,
   renewFileReservationTtls,
+  releaseStaleFileReservations,
   reservationTtlHint,
 } from './services/file-reservations.js';
 export type {

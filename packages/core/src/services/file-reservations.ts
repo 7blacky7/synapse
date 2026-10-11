@@ -372,6 +372,63 @@ export async function renewFileReservationTtls(
   return inTransaction((client) => renewDueWithClient(client, args));
 }
 
+export interface StaleReservationRelease {
+  /** Abgelaufen und laenger als die Grace-Frist her. */
+  abgelaufen: number;
+  /** Agent abgemeldet (agent_sessions.status <> 'active': unregister oder Session-Reaper). */
+  abgemeldet: number;
+}
+
+/**
+ * P15-T27 Ziel 3: Reservierungen freigeben, die niemanden mehr koordinieren.
+ *  - abgelaufen und laenger als SYNAPSE_RESERVATION_TTL_GRACE_MINUTES (Default 10) her. Bis P15-T27
+ *    blieb so eine Zeile mit released_at NULL ewig stehen: der reservation_ttl-Worker verlaengert nur
+ *    LEBENDE Reservierungen (renewDue), freigegeben hat ihn nie jemand — nur commit, release oder ein
+ *    Takeover beim reservation_add eines anderen. Die Grace bleibt, damit das Takeover-Konzept (CE-6)
+ *    unveraendert gilt; fuer plan zaehlt eine abgelaufene Reservierung schon ab Ablauf nicht mehr.
+ *  - Agent abgemeldet: agent_sessions.status <> 'active' (unregister oder Session-Reaper nach
+ *    SYNAPSE_SESSION_IDLE_HOURS ohne Lebenszeichen) — sofort, auch wenn die TTL noch laeuft.
+ * Laeuft im reservation_ttl-Worker (pausierbar seit P15-T12). Danach syncWaitExpiries je Datei.
+ */
+export async function releaseStaleFileReservations(
+  args: { project?: string } = {},
+): Promise<StaleReservationRelease> {
+  const config = getReservationTtlConfig();
+  return inTransaction(async (client) => {
+    const { rows } = await client.query<{ project: string; file_path: string; grund: string }>(
+      `WITH faellig AS (
+         SELECT r.id,
+                CASE WHEN r.expires_at <= NOW() - ($1 * INTERVAL '1 minute') THEN 'abgelaufen' ELSE 'abgemeldet' END AS grund
+           FROM file_reservations r
+          WHERE r.released_at IS NULL
+            AND ($2::text IS NULL OR r.project = $2)
+            AND (r.expires_at <= NOW() - ($1 * INTERVAL '1 minute')
+                 OR EXISTS (SELECT 1 FROM agent_sessions s WHERE s.id = r.agent_id AND s.status <> 'active'))
+          FOR UPDATE OF r SKIP LOCKED
+       )
+       UPDATE file_reservations r
+          SET released_at = NOW()
+         FROM faellig
+        WHERE r.id = faellig.id AND r.released_at IS NULL
+       RETURNING r.project, r.file_path, faellig.grund`,
+      [config.takeoverGraceMinutes, args.project ?? null],
+    );
+    const perProject = new Map<string, Set<string>>();
+    for (const row of rows) {
+      const paths = perProject.get(row.project) ?? new Set<string>();
+      paths.add(row.file_path);
+      perProject.set(row.project, paths);
+    }
+    for (const [project, paths] of perProject) {
+      await syncWaitExpiries(client, project, [...paths]);
+    }
+    return {
+      abgelaufen: rows.filter((row) => row.grund === 'abgelaufen').length,
+      abgemeldet: rows.filter((row) => row.grund === 'abgemeldet').length,
+    };
+  });
+}
+
 async function addWithClient(
   client: PoolClient,
   args: {
@@ -808,6 +865,13 @@ export async function findForeignActiveReservationPrimaries(
         WHERE project = $1
           AND file_path = ANY($2::text[])
           AND released_at IS NULL
+          -- P15-T27: nur LEBENDE Reservierungen koordinieren. Eine abgelaufene (niemand verlaengert
+          -- sie mehr, renewDue verlaengert nur lebende) oder die eines abgemeldeten Agenten erzeugte
+          -- vorher einen Wait, der sich nie loeste (Reservierung 3996, Plaene 24811/24812).
+          AND expires_at > NOW()
+          AND NOT EXISTS (
+            SELECT 1 FROM agent_sessions s WHERE s.id = file_reservations.agent_id AND s.status <> 'active'
+          )
      )
      SELECT file_path, agent_id AS reserved_by, reserved_at AS reserved_since, expires_at
        FROM ranked

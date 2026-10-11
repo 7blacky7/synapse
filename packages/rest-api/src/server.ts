@@ -333,18 +333,29 @@ export async function startServer(): Promise<void> {
 
   // CE-6: skalierbare Reservierungs-TTLs im 24/7-REST-Prozess (Default an).
   if (process.env.SYNAPSE_RESERVATION_TTL_WORKER_DISABLED !== '1') {
-    const { getReservationTtlConfig, renewFileReservationTtls, registriereWorker, workerPausiert } = await import('@synapse/core');
+    const { getReservationTtlConfig, renewFileReservationTtls, releaseStaleFileReservations, registriereWorker, workerPausiert } = await import('@synapse/core');
     const reservationTtl = getReservationTtlConfig();
     if (reservationTtl.enabled) {
+      // P15-T27: neben dem Verlaengern auch freigeben — abgelaufene nach der Grace-Frist und die
+      // abgemeldeter Agenten. Vorher verlaengerte der Worker nur, eine abgelaufene Reservierung blieb
+      // mit released_at NULL ewig stehen (Reservierung 3996).
+      const reservationLauf = async (): Promise<{ erneuert: number; abgelaufen: number; abgemeldet: number }> => {
+        const erneuert = await renewFileReservationTtls();
+        const frei = await releaseStaleFileReservations();
+        if (frei.abgelaufen + frei.abgemeldet > 0) {
+          console.log(`[Synapse API] Reservation-TTL-Worker: ${frei.abgelaufen} abgelaufene, ${frei.abgemeldet} abgemeldete Reservierung(en) freigegeben`);
+        }
+        return { erneuert, ...frei };
+      };
       // P15-T12: pausierbar und einzeln ausloesbar ueber intern(worker_*)
       registriereWorker({
         name: 'reservation_ttl',
-        beschreibung: `Reservierungs-TTLs verlaengern/ablaufen lassen (Intervall ${reservationTtl.workerIntervalMs} ms)`,
-        durchlauf: async () => { await renewFileReservationTtls(); return { erneuert: true }; },
+        beschreibung: `Reservierungs-TTLs verlaengern, tote Reservierungen freigeben (Intervall ${reservationTtl.workerIntervalMs} ms)`,
+        durchlauf: reservationLauf,
       });
       const runReservationRenewal = (): void => {
         if (workerPausiert('reservation_ttl')) return;
-        void renewFileReservationTtls().catch((error: unknown) => {
+        void reservationLauf().catch((error: unknown) => {
           console.error('[Synapse API] Reservation-TTL-Worker fehlgeschlagen:', error);
         });
       };

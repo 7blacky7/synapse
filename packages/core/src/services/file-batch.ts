@@ -2237,6 +2237,34 @@ export async function planBatch(args: {
     // Pfad der aelteste offene Plan (eigener oder fremder); nur Pfade ohne offenen Plan laufen
     // ueber die Reservierungs-Waits wie bisher. Vorher ging die fremde Reservierung vor: der
     // Wartende bekam kein Ziel, solange der Reservierende nicht plante, obwohl schon ein Plan offen war.
+    // P15-T27 Ziel 2: tote Waits des Aufrufers auf diesen Dateien schliessen (kein Ziel gebunden, der
+    // Primaeragent haelt keine lebende Reservierung mehr: abgelaufen, freigegeben, abgemeldet). Ein
+    // dadurch leerer Traeger wird unten zum Plan, statt dass ein neuer Plan entsteht. Vorher legte
+    // jeder Wiederholungsversuch einen neuen leeren Traeger an (Plaene 24809-24812).
+    let toteWaits = 0;
+    let toterTraeger: string | null = null;
+    if (ownerAgentId) {
+      const tot = await client.query<{ source_plan_id: string }>(
+        `UPDATE file_batch_waits w SET status = 'closed', updated_at = NOW()
+          WHERE w.project = $1 AND w.waiting_agent = $2 AND w.shared_files && $3::text[]
+            AND ${totWaitSql('w')}
+            AND EXISTS (SELECT 1 FROM file_batch_plans c WHERE c.id = w.source_plan_id AND c.status = 'open')
+          RETURNING w.source_plan_id::text AS source_plan_id`,
+        [args.project, ownerAgentId, plannedPaths],
+      );
+      toteWaits = tot.rowCount ?? 0;
+      const quellen = uniqueStrings(tot.rows.map((row) => row.source_plan_id));
+      if (quellen.length > 0) {
+        const leer = await client.query<{ id: string }>(
+          `SELECT c.id::text AS id FROM file_batch_plans c
+            WHERE c.id = ANY($1::bigint[]) AND c.status = 'open' AND jsonb_array_length(c.ops) = 0
+              AND NOT EXISTS (SELECT 1 FROM file_batch_waits w WHERE w.source_plan_id = c.id AND w.status <> 'closed')
+            ORDER BY c.created_at, c.id LIMIT 1`,
+          [quellen],
+        );
+        toterTraeger = leer.rows[0]?.id ?? null;
+      }
+    }
     const joinableRows = await findJoinableSharedPlans(client, args.project, ownerAgentId, plannedPaths, true);
     const eigeneRows = joinableRows.filter((row) => ownerAgentId && row.owner_agent_id === ownerAgentId);
     const fremdeRows = joinableRows.filter((row) => !ownerAgentId || row.owner_agent_id !== ownerAgentId);
@@ -2399,6 +2427,7 @@ export async function planBatch(args: {
     const mergedInto = zusammengefuehrt.map(({ plan_id, ops, files }) => ({ plan_id, ops, files }));
     if (zusammengefuehrt.length > 0 && immediateOps.length === 0 && sharedPaths.size === 0) {
       // Alles angehaengt: kein neuer Plan, die Antwort nennt den (ersten) Ziel-Plan.
+      if (toteWaits > 0) await closeOrphanCarriers(client, args.project, `Neuplanung nach Ablauf der Reservierung (angehaengt an Plan ${zusammengefuehrt[0].plan_id})`);
       await client.query('COMMIT'); notifyPlanChange();
       const erster = zusammengefuehrt[0];
       return {
@@ -2438,7 +2467,20 @@ export async function planBatch(args: {
       ...withoutCoeditMetadata(op),
       ...(ownerAgentId ? { agent_id: ownerAgentId } : {}),
     }));
-    const planRes = traeger ? null : await client.query<{ id: string; expires_at: string }>(
+    // P15-T27 Ziel 2: der leere Traeger eines toten Waits wird zum Plan (gleiche plan_id). Nur ohne
+    // neue Waits, sonst kollidierten deren Op-Indizes mit denen der geschlossenen Waits.
+    const umgewidmet = !traeger && toterTraeger && sharedPaths.size === 0
+      ? (await client.query<{ id: string }>(
+          `UPDATE file_batch_plans
+              SET ops = $2::jsonb, expected_hashes = $3::jsonb, previews = $4::jsonb, open_for_coedit = $5,
+                  reason = COALESCE($6, reason)
+            WHERE id = $1::bigint AND status = 'open' AND jsonb_array_length(ops) = 0
+            RETURNING id::text AS id`,
+          [toterTraeger, JSON.stringify(storedPlanOps), JSON.stringify(planExpectedHashes), JSON.stringify(planPreviews),
+            args.open_for_coedit ?? true, args.reason ?? null],
+        )).rows[0]?.id ?? null
+      : null;
+    const planRes = traeger || umgewidmet ? null : await client.query<{ id: string; expires_at: string }>(
       `INSERT INTO file_batch_plans (project, owner_agent_id, ops, expected_hashes, previews, open_for_coedit, reason)
        VALUES ($1, $2, $3::jsonb, $4::jsonb, $5::jsonb, $6, $7)
        RETURNING id::text AS id, expires_at::text AS expires_at`,
@@ -2452,7 +2494,11 @@ export async function planBatch(args: {
         args.reason ?? null,
       ],
     );
-    const planRow = traeger ? { id: traeger.id } : (planRes as { rows: Array<{ id: string; expires_at: string }> }).rows[0];
+    const planRow = traeger
+      ? { id: traeger.id }
+      : umgewidmet
+        ? { id: umgewidmet }
+        : (planRes as { rows: Array<{ id: string; expires_at: string }> }).rows[0];
 
     await emitPlanReadyForExistingWaits(client, {
       id: planRow.id,
@@ -2490,6 +2536,20 @@ export async function planBatch(args: {
         // Runde 3: im wiederverwendeten Traeger den offenen Wait auf dasselbe Ziel erweitern, statt einen
         // zweiten anzulegen (sonst zwei PLAN_READY fuer denselben Plan).
         const zielVorab = uniqueStrings(groupPaths.map((filePath) => sharedPlanByPath.get(filePath) ?? ''));
+        // P15-T27 Ziel 2: wiederholt der Agent denselben plan, solange der Wait lebt, kommen identische
+        // Ops nicht ein zweites Mal in den Wait (vorher: deferred_ops doppelt).
+        let erweiterIdx = deferredIndexes;
+        if (traeger) {
+          const vorhandenerWait = await client.query<{ deferred_ops: FileBatchOp[] }>(
+            `SELECT deferred_ops FROM file_batch_waits
+              WHERE source_plan_id = $1::bigint AND primary_agent = $2 AND status <> 'closed'
+                AND primary_plan_id IS NOT DISTINCT FROM $3::bigint
+              ORDER BY wait_token LIMIT 1`,
+            [traeger.id, primaryAgent, zielVorab.length === 1 && zielVorab[0] ? zielVorab[0] : null],
+          );
+          const schonDa = new Set((vorhandenerWait.rows[0]?.deferred_ops ?? []).map(coeditOpKey));
+          erweiterIdx = deferredIndexes.filter((index) => !schonDa.has(coeditOpKey(args.ops[index])));
+        }
         const erweitert = traeger
           ? await client.query<{ wait_token: string; expires_at: string }>(
               `UPDATE file_batch_waits
@@ -2507,7 +2567,8 @@ export async function planBatch(args: {
                    LIMIT 1)
                 RETURNING wait_token::text AS wait_token, expires_at::text AS expires_at`,
               [traeger.id, primaryAgent, zielVorab.length === 1 && zielVorab[0] ? zielVorab[0] : null,
-                JSON.stringify(deferredOps), gespeicherteIndexes, groupPaths],
+                JSON.stringify(erweiterIdx.map((index) => args.ops[index])),
+                erweiterIdx.map((index) => index + (traeger?.indexOffset ?? 0)), groupPaths],
             )
           : null;
         const waitRes = erweitert && erweitert.rows.length > 0 ? erweitert : await client.query<{ wait_token: string; expires_at: string }>(
@@ -2576,6 +2637,7 @@ export async function planBatch(args: {
       }
     }
 
+    if (toteWaits > 0) await closeOrphanCarriers(client, args.project, `Neuplanung nach Ablauf der Reservierung (Plan ${planRow.id})`);
     await client.query('COMMIT'); notifyPlanChange();
     const result: PlanBatchResult = {
       plan_id: planRow.id,
@@ -2594,6 +2656,14 @@ export async function planBatch(args: {
             reused_carrier: {
               plan_id: traeger.id,
               hinweis: `Kein zweiter Traeger: deine Ops liegen im vorhandenen leeren Traeger ${traeger.id} (Wait auf dasselbe Ziel erweitert). Beitragen wie gewohnt per coedit_add.`,
+            },
+          }
+        : {}),
+      ...(umgewidmet
+        ? {
+            reused_carrier: {
+              plan_id: umgewidmet,
+              hinweis: `Kein neuer Plan: dein Wait hatte kein Ziel mehr (Reservierung des anderen abgelaufen, freigegeben oder abgemeldet) und ist geschlossen. Deine Ops liegen jetzt direkt in deinem bisherigen Traeger ${umgewidmet}; committen wie gewohnt.`,
             },
           }
         : {}),
@@ -3883,6 +3953,8 @@ export async function getSharedPlanStatus(args: {
   const cheap = async () => {
     const r = await getPool().query<{ f: string }>(
       `SELECT concat_ws('|', w.status, w.primary_plan_id, w.ready_at, cardinality(w.contributed_files), cardinality(w.no_change_files),
+              -- P15-T27: "tot" weckt den Long-Poll beim Ablauf der Reservierung des Primaeragenten.
+              (${totWaitSql('w')})::text,
               (SELECT t.status::text FROM file_batch_plans t WHERE t.id = w.primary_plan_id),
               -- s2-Marke: auch die Op-Zahl, sonst weckt ein Beitrag, der den Owner-Plan auf die
               -- Datei des Waits erweitert, den Long-Poll nicht.
@@ -3920,7 +3992,10 @@ export async function pollPlanStatus(args: { plan_id: string; wait_seconds?: num
     const r = await getPool().query<{ f: string }>(
       `SELECT concat_ws('|', p.status, jsonb_array_length(p.ops), p.owner_agent_id, p.committed_at,
               (SELECT string_agg(w.waiting_agent || ':' || w.status, ',' ORDER BY w.waiting_agent)
-                 FROM file_batch_waits w WHERE w.primary_plan_id = p.id)) AS f
+                 FROM file_batch_waits w WHERE w.primary_plan_id = p.id),
+              -- P15-T27: eigene Waits (Traeger) samt "tot" — weckt den Long-Poll beim Ablauf der Reservierung.
+              (SELECT string_agg(w.wait_token::text || ':' || w.status || ':' || (${totWaitSql('w')})::text, ',' ORDER BY w.wait_token)
+                 FROM file_batch_waits w WHERE w.source_plan_id = p.id)) AS f
          FROM file_batch_plans p WHERE p.id = $1::bigint`,
       [args.plan_id],
     );
@@ -4004,7 +4079,12 @@ async function sharedPlanStatusOnce(args: {
       targetPlanId = erledigt.rows[0]?.id ?? null;
     }
   }
-  const expired = new Date(wait.expires_at).getTime() <= Date.now();
+  // P15-T27: ohne lebende Reservierung des Primaeragenten entsteht kein Ziel mehr -> expired,
+  // nicht erst nach expires_at (und auch, wenn er freigegeben hat oder abgemeldet ist).
+  const tot = !targetPlanId && (await pool.query<{ tot: boolean }>(
+    `SELECT ${totWaitSql('w')} AS tot FROM file_batch_waits w WHERE w.wait_token = $1::uuid`, [wait.wait_token],
+  )).rows[0]?.tot === true;
+  const expired = tot || new Date(wait.expires_at).getTime() <= Date.now();
   const completedFiles = completedWaitFiles(wait);
   return {
     success: true, wait_token: wait.wait_token, source_plan_id: wait.source_plan_id,
@@ -4699,6 +4779,21 @@ async function closeOrphanCarriers(client: PoolClient, project: string, anlass: 
 }
 
 /**
+ * P15-T27: SQL-Bedingung "toter Wait" fuer die Wait-Zeile mit Alias w. Ein Wait ohne gebundenes Ziel
+ * wartet darauf, dass sein Primaeragent plant. Haelt der auf KEINER der geteilten Dateien mehr eine
+ * lebende Reservierung (abgelaufen, freigegeben oder Agent abgemeldet), entsteht dieses Ziel nie mehr.
+ * Vorher hing so ein Wait endlos (retry_after_seconds 1, expires_at in der Vergangenheit).
+ */
+function totWaitSql(w: string): string {
+  return `(${w}.status = 'waiting' AND ${w}.primary_plan_id IS NULL AND NOT EXISTS (
+    SELECT 1 FROM file_reservations tot_r
+     WHERE tot_r.project = ${w}.project AND tot_r.agent_id = ${w}.primary_agent
+       AND tot_r.file_path = ANY(${w}.shared_files)
+       AND tot_r.released_at IS NULL AND tot_r.expires_at > NOW()
+       AND NOT EXISTS (SELECT 1 FROM agent_sessions tot_s WHERE tot_s.id = tot_r.agent_id AND tot_s.status <> 'active')))`;
+}
+
+/**
  * Befund 875d6a8c (c): PLAN_READY-Events zu einem committeten/verworfenen Plan als erledigt
  * quittieren — V1 (29.09.2026): nur fuer die uebergebenen Agenten, und die bekommen im selben Zug
  * ein Nachfolge-Event (emitPlanFolgeEvents). Nie mehr still fuer alle.
@@ -5009,9 +5104,11 @@ export async function getBatchPlan(plan_id: string): Promise<FileBatchPlanRow | 
   // Runde 3 (46ccab5b-6): die EIGENEN Waits dieses Plans (typisch: leerer Traeger) mit ihrem Ziel —
   // auch wenn das Ziel erst nach dem plan entstanden ist (Bindung in emitPlanReadyForExistingWaits).
   const eigeneWaits = await pool.query<NonNullable<FileBatchPlanRow['coedit_waits']>[number]>(
-    `SELECT wait_token::text AS wait_token, primary_agent, primary_plan_id::text AS target_plan_id, status::text AS wait_status,
+    `SELECT wait_token::text AS wait_token, primary_agent, primary_plan_id::text AS target_plan_id,
+            -- P15-T27: toter Wait (kein Ziel, keine lebende Reservierung des Primaeragenten) -> expired
+            CASE WHEN ${totWaitSql('w')} THEN 'expired' ELSE w.status::text END AS wait_status,
             shared_files, contributed_files, no_change_files, deferred_op_indexes AS coedit_source_op_indexes
-       FROM file_batch_waits
+       FROM file_batch_waits w
       WHERE source_plan_id = $1::bigint AND status <> 'closed'
       ORDER BY wait_token`,
     [plan_id],
@@ -5228,6 +5325,14 @@ export function buildPlanStatusResponse(plan: FileBatchPlanRow): Record<string, 
           coedit_waits: plan.coedit_waits,
           coedit_waits_hinweis: 'Eigene Waits dieses Plans: target_plan_id = Plan, in den coedit_add gehoert (null = Ziel entsteht noch). '
             + 'coedit_source_op_indexes = Nummern der zurueckgestellten Ops (fuer coedit_add mit op_index).',
+        }
+      : {}),
+    // P15-T27: ein toter Wait bekommt nie mehr ein Ziel — der Weg ist ein erneuter plan, nicht cancel.
+    ...(plan.status === 'open' && (plan.coedit_waits ?? []).some((wait) => wait.wait_status === 'expired')
+      ? {
+          coedit_waits_abgelaufen: 'Wait(s) mit wait_status expired: der Primaeragent haelt keine lebende Reservierung mehr (abgelaufen, freigegeben oder abgemeldet), '
+            + `dort entsteht kein Ziel mehr. Einfach erneut files(action:"plan") mit denselben Ops: dein Traeger ${plan.id} wird wiederverwendet und zum normalen Plan `
+            + '(gleiche plan_id, kein Wait, kein neuer Plan). Vorher nicht verwerfen.',
         }
       : {}),
     // Anzeige hier ist gekuerzt (previews[].context, ops_overview ohne Inhalt) — der Weg zur vollen Op:
