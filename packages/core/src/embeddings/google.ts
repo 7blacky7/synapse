@@ -23,9 +23,7 @@ import { EmbeddingProvider } from './types.js';
 
 // gemini-embedding-2 (stable, ohne -preview) — das Preview-Modell hatte striktes
 // Per-Minute-Quota; der stable Release hat normales Quota.
-// outputDimensionality=3072 macht den Output kompatibel zu existierenden Qdrant-Collections.
 const DEFAULT_MODEL = 'gemini-embedding-2';
-const OUTPUT_DIMENSIONALITY = 3072;
 const BASE_URL = 'https://generativelanguage.googleapis.com/v1beta';
 
 // Retry-Konfiguration fuer 429 (Quota) + transiente 5xx (Service-Unavailable):
@@ -34,6 +32,17 @@ const BASE_URL = 'https://generativelanguage.googleapis.com/v1beta';
 // (google.rpc.RetryInfo), wenn vorhanden.
 const MAX_ATTEMPTS = 5;
 const RETRYABLE_STATUS = new Set([429, 500, 502, 503, 504]);
+
+/**
+ * outputDimensionality (P15-T2): aus EMBEDDING_TARGET_DIM - derselben Quelle wie zielDimension().
+ * Ohne Env wird der Parameter weggelassen: Google liefert die native Dimension, und genau die
+ * erkennt zielDimension() dann. Hier stand fest 3072 (Regel regel-keine-festverdrahteten-modellwerte).
+ * Bewusst NICHT zielDimension() selbst: ohne Env bettet sie zur Erkennung ueber diesen Provider ein.
+ */
+function ausgabeDimension(): { outputDimensionality?: number } {
+  const n = Number(process.env.EMBEDDING_TARGET_DIM);
+  return Number.isInteger(n) && n > 0 ? { outputDimensionality: n } : {};
+}
 
 function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -96,7 +105,7 @@ export class GoogleEmbeddingProvider implements EmbeddingProvider {
       body: JSON.stringify({
         model: `models/${this.model}`,
         content: { parts: [{ text }] },
-        outputDimensionality: OUTPUT_DIMENSIONALITY,
+        ...ausgabeDimension(),
       }),
     }, 'Google Embedding');
 
@@ -124,7 +133,7 @@ export class GoogleEmbeddingProvider implements EmbeddingProvider {
           requests: batch.map(text => ({
             model: `models/${this.model}`,
             content: { parts: [{ text }] },
-            outputDimensionality: OUTPUT_DIMENSIONALITY,
+            ...ausgabeDimension(),
           })),
         }),
       }, 'Google Batch-Embedding');
