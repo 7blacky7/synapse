@@ -19,15 +19,15 @@ if (!parentPort) throw new Error('syntax-pruefer/worker.ts laeuft nur als worker
 const port = parentPort;
 
 for (const p of katalog()) {
-  try { p.pruefe(p.aufwaermen.inhalt, p.aufwaermen.pfad); } catch { /* Aufwaermen ist best effort */ }
+  try { void Promise.resolve(p.pruefe(p.aufwaermen.inhalt, p.aufwaermen.pfad)).catch(() => {}); } catch { /* Aufwaermen ist best effort */ }
 }
 
-port.on('message', (a: Auftrag) => {
+port.on('message', async (a: Auftrag) => {
   const t0 = performance.now();
   try {
     const p = prueferNachName(a.pruefer);
     if (!p) throw new Error(`unbekannter Syntaxpruefer: ${a.pruefer}`);
-    const meldungen = p.pruefe(a.inhalt, a.pfad);
+    const meldungen = await p.pruefe(a.inhalt, a.pfad);
     port.postMessage({ id: a.id, ok: true, meldungen, ms: performance.now() - t0 });
   } catch (err) {
     port.postMessage({ id: a.id, ok: false, error: err instanceof Error ? err.message : String(err) });

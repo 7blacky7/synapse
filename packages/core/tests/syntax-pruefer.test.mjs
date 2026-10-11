@@ -57,7 +57,7 @@ console.log('Positivkontrollen');
 {
   const c = def('postcss');
   const a = c.pruefe('a { color: red; }\nb { color: blue\n  margin: 0; }\n', 'x.css');
-  pruefe('K13 CSS: Semikolon fehlt Z.2', a[0]?.zeile === 2 && typeof a[0]?.spalte === 'number' && a[0]?.meldung === 'Missed semicolon', a[0]);
+  pruefe('K13 CSS: Semikolon fehlt Z.2', a[0]?.zeile === 2 && typeof a[0]?.spalte === 'number' && a[0]?.meldung === 'Missed semicolon' && a[0]?.weich === true, a[0]);
   const b = c.pruefe('.x {\n  &__e { c: d; }\n', 'x.scss');
   pruefe('K14 SCSS: Unclosed block', b[0]?.meldung === 'Unclosed block' && b[0]?.zeile === 1, b[0]);
   pruefe('K15 SCSS gueltig (Mixins, //-Kommentar)', c.pruefe('@mixin m($a: 1) { b: $a }\n.x { @include m(2); &__e { c: d } // k\n}\n', 'x.scss').length === 0);
@@ -67,12 +67,45 @@ console.log('Positivkontrollen');
   pruefe('K18 CSS: alte Hacks (progid, *zoom, _height) gueltig', c.pruefe("a { filter: progid:DXImageTransform.Microsoft.gradient(startColorstr='#80000000'); *zoom: 1; _height: 1px; }", 'x.css').length === 0);
 }
 
+console.log('Positivkontrollen E2');
+{
+  const s = def('libpg-query');
+  const a = await s.pruefe('SELECT a,\n  b\nFROM t WHERE (a = 1;\n', 'x.sql');
+  pruefe('S1 SQL: Klammer offen Z.3 Sp.20', a[0]?.zeile === 3 && a[0]?.spalte === 20 && a[0]?.code === 'PG' && /syntax error at or near/.test(a[0]?.meldung), a[0]);
+  const u = await s.pruefe("-- äöü\nSELECT 'ää' FROM t WHERE x = ;\n", 'x.sql');
+  pruefe('S2 SQL: Spalte trotz Umlauten (Bytes -> Zeichen)', u[0]?.zeile === 2 && u[0]?.spalte === 30, u[0]);
+  pruefe('S3 SQL gueltig (Funktion, $$, CTE)', (await s.pruefe('CREATE FUNCTION f() RETURNS int AS $$ select 1 $$ LANGUAGE sql;\nWITH x AS (SELECT 1) SELECT * FROM x;\n', 'x.sql')).length === 0);
+  pruefe('S4 SQL: MySQL-Datei wird nicht gemeldet', (await s.pruefe('CREATE TABLE `t` (id INT AUTO_INCREMENT PRIMARY KEY) ENGINE=InnoDB;\n', 'x.sql')).length === 0);
+  pruefe('S5 SQL: psql-Variable wird nicht gemeldet', (await s.pruefe('SELECT * FROM t WHERE id = :id;\n', 'x.sql')).length === 0);
+  const t = await def('toml').pruefe('a = 1\nb = [1,\nc = "x"\n', 'x.toml');
+  pruefe('T1 TOML: Array offen Z.3', t[0]?.zeile === 3 && t[0]?.spalte === 1 && t[0]?.code === 'TOML' && !!t[0]?.meldung, t[0]);
+  pruefe('T2 TOML: Tabelle doppelt', (await def('toml').pruefe('[a]\nx = 1\n[a]\ny = 2\n', 'x.toml'))[0]?.zeile === 3);
+  pruefe('T3 TOML gueltig', (await def('toml').pruefe('[tools]\nnode = "22"\n[[a.b]]\nc = { d = 1 }\n', 'x.toml')).length === 0);
+  const y = def('yaml').pruefe('a: 1\nb: [1, 2\nc: 3\n', 'x.yaml');
+  pruefe('Y1 YAML: Flow-Sequenz offen Z.3', y[0]?.zeile === 3 && typeof y[0]?.spalte === 'number' && !!y[0]?.code, y[0]);
+  pruefe('Y2 YAML: eigene Tags, doppelte Schluessel, mehrere Dokumente ok', def('yaml').pruefe('a: !Ref x\nb: !GetAtt y.z\nb: 2\n---\nc: 1\n', 'x.yml').length === 0);
+  pruefe('Y3 YAML: Helm-Vorlage wird nicht gemeldet', def('yaml').pruefe('a: {{ .Values.x }}\n  b: [\n', 'templates/x.yaml').length === 0);
+  const yt = def('yaml').pruefe('a:\n\tb: 1\n', 'x.yaml');
+  pruefe('Y4 YAML: Tabulator-Einrueckung', yt[0]?.zeile === 2, yt[0]);
+  const x = def('xml').pruefe('<a>\n  <b></a>\n', 'x.xml');
+  pruefe('X1 XML: Tag-Mismatch Z.2', x[0]?.zeile === 2 && typeof x[0]?.spalte === 'number' && /mismatch/.test(x[0]?.meldung), x[0]);
+  pruefe('X2 XML: SVG, &nbsp;, DOCTYPE gueltig', def('xml').pruefe('<?xml version="1.0"?>\n<!DOCTYPE svg>\n<svg xmlns="http://www.w3.org/2000/svg"><text>&nbsp;</text></svg>\n', 'x.svg').length === 0);
+  pruefe('X3 XML: Attribut doppelt', def('xml').pruefe('<a x="1" x="2"/>', 'x.csproj')[0]?.zeile === 1);
+  pruefe('X4 XML: Fragment mit zwei Wurzeln ok, Fehler im Fragment erkannt', def('xml').pruefe('<?xml version="1.0"?>\n<a/>\n<b/>\n', 'x.xml').length === 0
+    && def('xml').pruefe('<a/>\n<b>\n</c>\n', 'x.xml')[0]?.zeile === 2); // xmldom meldet das oeffnende Tag
+  pruefe('X5 XML ist nicht sperrfaehig', def('xml').sperrfaehig === false);
+  pruefe('Y5 YAML: ${...}-Vorlage wird nicht gemeldet', def('yaml').pruefe('a: [out_${X}.yaml]\n', 'x.yaml').length === 0);
+  const ym = def('yaml').pruefe('name: x\nexpertise: Researcher: kuratiert Docs\n', 'meta.yaml');
+  pruefe('Y6 YAML: Doppelpunkt im Klartext-Wert erkannt', ym[0]?.zeile === 2 && ym[0]?.spalte === 12, ym[0]);
+}
+
 // ─── Einzelweg ueber registriereStandardSyntaxPruefer (Pool) ───
 console.log('Einzelweg mit Pool');
 {
   FP._syntaxPrueferLeeren();
   const namen = S.registriereStandardSyntaxPruefer();
-  pruefe('E1 angemeldet', ['typescript', 'json', 'postcss', 'zz-pooltest'].every((n) => namen.includes(n)), namen);
+  pruefe('E1 angemeldet', ['typescript', 'json', 'postcss', 'libpg-query', 'toml', 'yaml', 'xml', 'zz-pooltest'].every((n) => namen.includes(n)), namen);
+  pruefe('E1 hatSyntaxPruefer E2', ['a.sql', 'b.toml', 'c.yml', 'd.svg'].every((p) => FP.hatSyntaxPruefer(p)));
   pruefe('E1 hatSyntaxPruefer', FP.hatSyntaxPruefer('a/b.tsx') && FP.hatSyntaxPruefer('a.JSON') && !FP.hatSyntaxPruefer('a.py'));
   await warte(1500); // Worker laden typescript/postcss
   const alt = Array.from({ length: 40 }, (_, i) => `export function f${i}(a: number): number {\n  return a + ${i};\n}`).join('\n') + '\n';

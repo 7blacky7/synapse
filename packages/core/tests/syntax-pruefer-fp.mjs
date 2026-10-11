@@ -40,7 +40,7 @@ try {
       for (const row of r.rows) {
         const t0 = performance.now();
         let m;
-        try { m = def.pruefe(row.content, row.file_path); } catch (err) { m = [{ zeile: 0, meldung: 'WIRFT: ' + err.message }]; }
+        try { m = await def.pruefe(row.content, row.file_path); } catch (err) { m = [{ zeile: 0, meldung: 'WIRFT: ' + err.message }]; }
         zeiten.push(performance.now() - t0);
         dateien++;
         if (m.length) {

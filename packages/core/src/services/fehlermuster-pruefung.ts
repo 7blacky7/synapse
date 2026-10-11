@@ -258,6 +258,11 @@ export interface SyntaxMeldung {
   warum?: string;
   wie?: string;
   wo?: string[];
+  /**
+   * P16-T4: Heuristik des Werkzeugs, strenger als die Sprachspezifikation (z. B. postcss "Missed semicolon"):
+   * wird nur als warning gemeldet, sperrt auch bei einem sperrfaehigen Pruefer nicht.
+   */
+  weich?: boolean;
 }
 
 export interface SyntaxPruefer {
@@ -312,7 +317,7 @@ function budgetMs(): number {
 }
 
 function syntaxBefund(p: SyntaxPruefer, m: SyntaxMeldung, filePath: string, inGeaendert: boolean, anzahl: number): FehlerBefund {
-  const severity: FehlerBefund['severity'] = p.sperrfaehig ? 'error' : 'warning';
+  const severity: FehlerBefund['severity'] = p.sperrfaehig && !m.weich ? 'error' : 'warning';
   return {
     quelle: 'syntax',
     pruefer: `syntax:${p.name}@${p.version}`,
