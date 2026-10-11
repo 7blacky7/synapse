@@ -244,6 +244,67 @@ Erst Struktur, dann Flow, erst ganz zuletzt Rohtext.
 
 ---
 
+## Asset-Intelligence: Nicht-Quellcode lesen (`asset_intel`)
+
+Binär- und Asset-Dateien landen nicht im Code-Index (kein Byte-Salat in `code_files`). Das Tool `asset_intel` liest sie stattdessen mit 31 formatspezifischen Inspektoren (plus einem generischen Fallback für unbekannte Binärdateien) und speichert nur abgeleitete Daten. Die Originaldatei bleibt die Quelle der Wahrheit; es wird nichts verändert.
+
+| Bereich | Inspektoren (Endungen) |
+|---|---|
+| 3D (6) | `.gltf` `.glb` `.obj` `.stl` `.ply` `.dae` |
+| Texturen/Bilder (8) | `.png`/`.apng` `.jpg` `.webp` `.dds` `.ktx` `.ktx2` `.exr` `.hdr` |
+| Audio/Video (2) | `.wav` `.ogg` `.flac` `.mp3` · `.mp4` `.mkv` `.avi` |
+| Archive/Datenbanken (4) | ZIP-Familie (`.zip` `.jar` `.docx` …), TAR-Familie (`.tar` `.gz` `.xz` `.zst` …), `.7z`, SQLite |
+| Executables (2) | PE (`.exe` `.dll` …), ELF (`.so` `.o` …) |
+| DCC (4) | `.blend` `.fbx` `.usd`/`.usda`/`.usdc` `.usdz` |
+| Unreal (5) | `.uasset`/`.umap` `.uexp` `.pak` `.utoc` `.ucas` |
+
+**Actions (13):** `tree`, `inspect`, `objects`, `references`, `used_by`, `missing`, `graph`, `roots`, `orphans`, `search`, `search_batch`, `move_preview`, `health`. Das Tool ist auf dem lokalen MCP-Server und über REST identisch (eine Definition und ein Dispatcher in `@synapse/core`).
+
+**Weiche zu `code_intel`:** `code_intel(file)` auf einen Asset-Pfad antwortet selbst mit `beantwortet_von: "asset_intel"`; leere `functions`/`symbols`/… auf Asset-Pfaden tragen das Feld `weiche`; `search` hängt `asset_treffer` an; `tree` zeigt Assets mit Marker (`show_assets: false` schaltet das ab). Umgekehrt antwortet `asset_intel` auf eine Textdatei mit `beantwortet_von: "code_intel"`.
+
+### Tabellen
+
+| Tabelle | Inhalt |
+|---|---|
+| `asset_files` | eine Zeile je Datei: Format, Status, Inspektor und Version, Größe, sha256, Metadaten, Warnungen |
+| `asset_objects` | Objekte je Datei (Meshes, Materialien, Archiveinträge, Export-/Import-Tabellen …) mit Position in der Datei |
+| `asset_references` | Verweise je Datei mit aufgelöstem Zielpfad und Auflösung (`datei`, `fehlt`, `intern`, `extern`, `eingebettet`, `ausserhalb`, `unbekannt`) |
+
+Die Tabellen sind bewusst von `code_files` getrennt: Der Abgleich gegen das Dateisystem würde Asset-Zeilen in `code_files` entfernen und der PG→FS-Sync danach die Datei auf der Platte löschen. Es wird kein Rohinhalt gespeichert.
+
+### Datenfluss
+
+```text
+lokaler Watcher (file-watcher-daemon-ts / MCP-Watcher)
+   sieht die Datei, liest nur den Kopf (4096 Byte)
+   ↓
+Warteschlange → Inspektion in eigenem worker_thread (hart abbrechbar)
+   ↓
+asset_files / asset_objects / asset_references (PostgreSQL)
+   ↓
+REST-API / Container / MCP: lesen nur (asset_intel)
+```
+
+Nur der lokale Watcher inspiziert. Beim Start gleicht er den Bestand gegen die Platte ab (Größe und Änderungszeit, bei Abweichung sha256; veraltete Inspektor-Versionen werden neu gelesen). Gelöschte Dateien bleiben als `quelle_nicht_gefunden` stehen (eingehende Verweise werden `fehlt`) und werden nach 30 Tagen entfernt; eine Umbenennung wird über die sha256 erkannt.
+
+### Einstellungen
+
+| Variable | Wirkung |
+|---|---|
+| `SYNAPSE_ASSET_MAX_OBJEKTE` | höchstens so viele Objekte je Datei in PostgreSQL (Standard 2000, Rest → `objekte_gekappt`) |
+| `SYNAPSE_ASSET_LESE_TIMEOUT_MS` | Zeitgrenze je Lese-Abfrage von `asset_intel`, 1–60000 (Standard 10000) |
+| `SYNAPSE_ASSET_KONKURRENZ` | parallele Inspektionen im Watcher (Standard 1, höchstens 2) |
+| `SYNAPSE_ASSET_WEICHE_CACHE_MS` | Cache der Frage „hat das Projekt Assets?“ in der `code_intel`-Weiche (Standard 10000, 0 = aus) |
+
+### Grenzen
+
+- Ohne laufenden lokalen Watcher entstehen keine Asset-Daten. Der Go-Daemon (`/api/fs/events`) und reine Container-Projekte bleiben bis P4-T69 (Asset-Store auf dem Server) leer.
+- Zstd-komprimierte `.blend`-Dateien werden nur ab Node 22.15 (bzw. 23.8) entpackt und gelesen, sonst nur erkannt.
+- `.uasset`/`.umap` werden nur in den unterstützten Versionsbändern gelesen; andere Versionen ergeben Status `teilweise` mit der Warnung `version_nicht_unterstuetzt`. Property-Daten der Exporte werden nicht dekodiert.
+- Sehr häufige Suchbegriffe können in `search` das Zeitlimit erreichen; dann mit `format`, `asset_type` oder `where` eingrenzen. In `search_batch` trifft das nur die betroffene Anfrage.
+
+---
+
 ## Parser-System
 
 `packages/core/src/parser/` enthält viele spezialisierte Parser. In der analysierten Projektstruktur sind dort 72 Dateien mit über 300 Funktionen indexiert.
@@ -324,6 +385,7 @@ specialist
 docs
 admin
 code_intel
+asset_intel
 code_check
 files
 shell

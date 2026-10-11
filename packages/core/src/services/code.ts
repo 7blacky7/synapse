@@ -69,7 +69,8 @@ import {
 import { embed, embedBatch, embedMedia, supportsMultimodal } from '../embeddings/index.js';
 import { chunkFile } from '../chunking/index.js';
 import { readFileWithMetadata, getFileType, isExtractableDocument } from '../watcher/index.js';
-import { isMultimodalFile, getMediaMimeType, getMediaCategory, isBinaryFile, MAX_MEDIA_SIZE_MB, klassifiziereDatei } from '../watcher/binary.js';
+import { isMultimodalFile, getMediaMimeType, getMediaCategory, isBinaryFile, MAX_MEDIA_SIZE_MB, klassifiziereDatei, leseDateiKopf } from '../watcher/binary.js';
+import { verarbeiteAssetEreignis } from './asset-intel-sync.js';
 import { loadGitignore, shouldIgnore } from '../watcher/ignore.js';
 import { getConfig } from '../config.js';
 import { indexDocument, removeDocument } from './documents.js';
@@ -2173,11 +2174,31 @@ export async function indexFile(
     console.error(`[Synapse] indexFile: Media gehoert nicht in den Code-Index, uebersprungen: ${filePath}`);
     return 0;
   }
+  // BINAER-SCHUTZ (P4-T67, Etappe D), gleiche Begruendung wie oben: seit Binaerdateien den
+  // Watcher als Asset-Ereignis verlassen, darf keine Aufrufstelle sie als Text speichern —
+  // auch keine, die das Feld asset nicht kennt. Nur der Kopf wird gelesen. Ist die Datei nicht
+  // lesbar, entscheidet wie bisher storeFileContent.
+  if (istBinaererKopf(filePath, projectRoot)) {
+    console.error(`[Synapse] indexFile: Binaerdatei gehoert nicht in den Code-Index, uebersprungen: ${filePath}`);
+    return 0;
+  }
   const changed = await storeFileContent(filePath, projectName, projectRoot);
   if (changed) {
     enqueueParseAndEmbed(projectName, filePath);
   }
   return changed ? 1 : 0;
+}
+
+/** true, wenn der Dateikopf binaer ist (Endung, Magic Bytes oder Nullbytes). */
+function istBinaererKopf(filePath: string, projectRoot: string): boolean {
+  const abs = path.isAbsolute(filePath) ? filePath : path.join(projectRoot, filePath);
+  let kopf: Buffer;
+  try {
+    kopf = leseDateiKopf(abs);
+  } catch {
+    return false;
+  }
+  return isBinaryFile(abs, kopf);
 }
 
 /**
@@ -2820,8 +2841,24 @@ async function detectRenameSource(
  * Verarbeitet ein FileWatcher Event.
  * event.path ist RELATIV, projectRoot ist der absolute Projekt-Pfad.
  */
-export async function handleFileEvent(event: FileEvent, projectRoot: string): Promise<void> {
+export async function handleFileEvent(
+  event: FileEvent,
+  projectRoot: string,
+  optionen: { assets?: boolean } = {}
+): Promise<void> {
   if (event.type !== 'unlink' && !(await istProjektFuerIndexArbeitAktiv(event.project, `Watcher-${event.type}`))) {
+    return;
+  }
+
+  // ASSET-WEG (P4-T67, Etappe D). Inspiziert wird nur auf ausdrueckliche Anforderung
+  // (assets:true): der Aufrufer muss die Datei auf der Platte sehen. Der Watcher im REST-Prozess
+  // (rest-api routes/projects.ts) ruft ohne Optionen auf und inspiziert deshalb nie.
+  // Nicht abgewartet: eigene Warteschlange mit worker_thread, der Code-Weg darf nicht warten.
+  if (event.asset && optionen.assets) {
+    void verarbeiteAssetEreignis(event, projectRoot);
+  }
+  // Binaerdateien: NUR Asset-Weg. Der Code-Weg sieht sie nicht — wie vor dem Umbau.
+  if (event.asset === 'nur_asset') {
     return;
   }
 

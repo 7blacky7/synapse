@@ -42,6 +42,7 @@ sich genau die richtige Abfolge:
 | `80_skills.sql` | Skills und Skill-Hook-Telemetrie |
 | `85_audit.sql` | Audit-Trail (`tool_calls`) und Fehlermuster |
 | `90_trigger.sql` | 11 Trigger |
+| `95_asset_intel.sql` | Asset-Intel: `asset_files`, `asset_objects`, `asset_references` (P4-T67) — **von Hand gepflegt**, nicht aus pg_dump; Fremdschluessel inline (zeigen nur auf `asset_files` derselben Datei) und daher nicht in den Zaehlungen unten |
 | `95_foreign_keys.sql` | alle 19 Fremdschluessel |
 
 **Warum diese Aufteilung funktioniert:** Fremdschluessel stehen NICHT inline in den

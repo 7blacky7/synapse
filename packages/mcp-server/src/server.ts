@@ -49,6 +49,7 @@ import {
   docsTool,
   adminTool,
   codeIntelTool,
+  assetIntelTool,
   codeCheckTool,
   ignoreTool,
   freeModelsTool,
@@ -168,6 +169,7 @@ export function createServer(): Server {
     docsTool.definition,
     adminTool.definition,
     codeIntelTool.definition,
+    assetIntelTool.definition,
     codeCheckTool.definition,
     ignoreTool.definition,
     freeModelsTool.definition,
@@ -792,6 +794,9 @@ export function createServer(): Server {
 
         case 'code_intel':
           return withOnboarding(await codeIntelTool.handler(args as Record<string, unknown>));
+
+        case 'asset_intel':
+          return withOnboarding(await assetIntelTool.handler(args as Record<string, unknown>));
 
         case 'code_check':
           return withOnboarding(await codeCheckTool.handler(args as Record<string, unknown>));

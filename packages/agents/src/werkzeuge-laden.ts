@@ -16,7 +16,7 @@
 export const STANDARD_WERKZEUGE = ['specialist', 'channel', 'plan', 'code_intel', 'files', 'shell'] as const
 
 /** Erst bei Bedarf laden, jeweils einzeln. */
-export const WERKZEUGE_BEI_BEDARF = ['skills', 'jev', 'memory', 'thought', 'event', 'chat', 'docs', 'search'] as const
+export const WERKZEUGE_BEI_BEDARF = ['skills', 'jev', 'memory', 'thought', 'event', 'chat', 'docs', 'search', 'asset_intel'] as const
 
 /** Kurzfassung fuer den Reset-Text (eine Zeile). */
 export function baueWerkzeugHinweisKurz(): string {

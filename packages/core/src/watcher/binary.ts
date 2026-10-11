@@ -14,10 +14,13 @@
  *   - FileType: 'text' | 'binary' | 'document' | 'multimodal' (getFileType)
  *   - number: MAX_MEDIA_SIZE_MB — Konfiguriertes Limit fuer Mediendateien
  *
- * NEBENEFFEKTE: keine
+ * NEBENEFFEKTE: keine — ausser leseDateiKopf (liest hoechstens KOPF_BYTES vom Dateianfang)
  *
- * ABHAENGIGKEITEN: keine externen
+ * ABHAENGIGKEITEN: ../asset-intel/registry.js (nur fuer assetEndungen, keine Inspektoren)
  */
+
+import * as fs from 'fs';
+import { standardRegistry } from '../asset-intel/registry.js';
 
 /** Bekannte binaere Datei-Extensions */
 const BINARY_EXTENSIONS = new Set([
@@ -226,4 +229,73 @@ export function getFileExtension(filePath: string): string {
 export function getFileType(filePath: string): string {
   const ext = getFileExtension(filePath);
   return ext || 'unknown';
+}
+
+// ===========================================================================
+// ASSETS (P4-T67, Etappe D)
+// ===========================================================================
+
+/** So viel vom Dateianfang lesen Watcher, Binaer-Schutz und Asset-Abgleich (wie asset-intel/run.ts). */
+export const KOPF_BYTES = 4096;
+
+/**
+ * Liest hoechstens `bytes` Bytes vom Dateianfang — NIE die ganze Datei. Frueher stand an den
+ * Aufrufstellen readFileSync(...).subarray(0, 512): fuer eine GB-Datei las das die volle Datei,
+ * um 512 Byte zu pruefen. Wirft wie readFileSync, wenn die Datei fehlt oder nicht lesbar ist.
+ */
+export function leseDateiKopf(absPfad: string, bytes: number = KOPF_BYTES): Buffer {
+  const fd = fs.openSync(absPfad, 'r');
+  try {
+    const buf = Buffer.alloc(bytes);
+    const gelesen = fs.readSync(fd, buf, 0, bytes, 0);
+    return buf.subarray(0, gelesen);
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+/**
+ * Wie eine Datei im Asset-Weg behandelt wird.
+ *   'nur_asset'   Binaerdatei, weder Dokument noch Media: geht NUR in asset_files (auch ohne
+ *                 zustaendigen Inspektor -> Status nicht_erkannt). Der Code-Weg sieht sie nie.
+ *   'zusaetzlich' Media (png/jpg/mp4/...) oder Textdatei mit Asset-Endung (.gltf, .usda, .dae,
+ *                 ASCII-.ply/.stl): bisheriger Weg unveraendert, die Asset-Inspektion kommt dazu.
+ */
+export type AssetArt = 'nur_asset' | 'zusaetzlich';
+
+let endungsCache: { anzahl: number; endungen: Set<string> } | null = null;
+
+/**
+ * Alle Endungen, die ein Asset-Inspektor beansprucht (Vereinigung aus der Standard-Registry,
+ * NICHT von Hand gepflegt). Gecacht und an die Inspektorzahl gekoppelt: wird die Registry erst
+ * spaeter befuellt (asset-intel/index.js haengt die Inspektoren beim Laden ein), gilt nie eine
+ * leere Menge fuer immer.
+ */
+export function assetEndungen(): ReadonlySet<string> {
+  const inspektoren = standardRegistry.list();
+  if (!endungsCache || endungsCache.anzahl !== inspektoren.length) {
+    const endungen = new Set<string>();
+    for (const insp of inspektoren) {
+      for (const e of insp.extensions) {
+        const k = e.trim().toLowerCase();
+        if (k) endungen.add(k.startsWith('.') ? k : '.' + k);
+      }
+    }
+    endungsCache = { anzahl: inspektoren.length, endungen };
+  }
+  return endungsCache.endungen;
+}
+
+/**
+ * Asset-Art einer Datei oder null (kein Asset). `head` = Dateikopf; ohne ihn (UNLINK, REST)
+ * entscheiden nur die Endungen. Reihenfolge: Dokument (eigener Weg, kein Asset) > Media >
+ * binaer > Text mit Asset-Endung.
+ */
+export function assetArt(filePath: string, head?: Uint8Array): AssetArt | null {
+  if (isExtractableDocument(filePath)) return null;
+  if (isMultimodalFile(filePath)) return 'zusaetzlich';
+  const kopf = head ? Buffer.from(head.buffer, head.byteOffset, head.byteLength) : undefined;
+  if (isBinaryFile(filePath, kopf)) return 'nur_asset';
+  const ext = filePath.toLowerCase().match(/\.[^.\\/]+$/)?.[0];
+  return ext && assetEndungen().has(ext) ? 'zusaetzlich' : null;
 }

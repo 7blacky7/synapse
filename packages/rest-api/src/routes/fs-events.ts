@@ -15,6 +15,7 @@ import {
   getProjectRoot,
   isProjectEnabled,
   klassifiziereDatei,
+  assetArt,
 } from '@synapse/core';
 
 // Akzeptiert beide Konventionen:
@@ -88,6 +89,13 @@ export async function fsEventsRoutes(fastify: FastifyInstance): Promise<void> {
         }
         if (!enabled) {
           return reply.status(200).send({ success: true, uebersprungen: 'project_disabled' });
+        }
+
+        // ASSETS (P4-T67): inspiziert wird nur im lokalen Watcher-Prozess, der die Datei sieht.
+        // Dieser Prozess inspiziert NIE, und Binaerdateien gehoeren nicht in den Code-Weg.
+        // Die Datei liegt hier nicht vor -> Entscheidung allein nach der Endung.
+        if (assetArt(relPath) === 'nur_asset') {
+          return reply.status(200).send({ success: true, uebersprungen: 'asset_nur_lokal' });
         }
 
         // KLASSIFIKATION PFLICHT — siehe klassifiziereDatei. Dieser Endpunkt hatte

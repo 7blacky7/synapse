@@ -25,6 +25,7 @@
  */
 
 import { getPool } from '../db/client.js';
+import { assetMarker, assetSammelZeile, holeBaumAssets } from './asset-weiche.js';
 
 // ─── getProjectTree ───────────────────────────────────────────────────────────
 
@@ -80,6 +81,11 @@ export interface TreeOptions {
   show_imports?: boolean;
   /** Nur Dateien mit bestimmtem Typ (z.B. 'typescript', 'sql') */
   file_type?: string;
+  /**
+   * Asset-Zeilen aus asset_files mit Marker zeigen (Standard: true, Etappe C). Wirkt nur, wenn das
+   * Projekt Asset-Eintraege hat und weder comment_contains noch file_type gesetzt ist.
+   */
+  show_assets?: boolean;
 }
 
 /**
@@ -227,6 +233,7 @@ export async function getProjectTree(
     show_functions = false,
     show_imports = false,
     file_type,
+    show_assets = true,
   } = options;
 
   // Projekt-Root-Pfad aus projects-Tabelle holen
@@ -283,7 +290,14 @@ export async function getProjectTree(
     params
   );
 
-  if (filesResult.rows.length === 0) {
+  // Etappe C (Entwurf 5.5): Asset-Zeilen aus asset_files, deren Pfad nicht in code_files steht. Ohne
+  // Asset-Eintraege im Projekt liefert holeBaumAssets nach EINER gecachten EXISTS-Abfrage nichts — der
+  // Baum bleibt dann byte-gleich. Kommentarsuche (comment_contains) und file_type schliessen Assets aus.
+  const baumAssets = show_assets && !comment_contains?.trim() && !file_type
+    ? await holeBaumAssets(project, dirPath)
+    : { zeilen: [], rest: new Map<string, Array<{ format: string; n: number }>>(), total: 0 };
+
+  if (filesResult.rows.length === 0 && baumAssets.zeilen.length === 0) {
     return `Kein Code indexiert fuer Projekt "${project}"${dirPath ? ` unter ${dirPath}` : ''}.`;
   }
 
@@ -347,7 +361,7 @@ export async function getProjectTree(
     for (const liste of trefferJeDatei.values()) liste.sort((a, b) => a.line - b.line);
   }
 
-  for (const row of filesResult.rows) {
+  for (const row of [...filesResult.rows, ...baumAssets.zeilen]) {
     // comment_contains: Dateien ohne Treffer gehoeren nicht in das Suchergebnis.
     if (filterText && !trefferJeDatei.has(row.file_path)) continue;
     const relPath = row.file_path;  // bereits relativ
@@ -370,15 +384,21 @@ export async function getProjectTree(
 
   const lines: string[] = [];
 
-  for (const [dir, files] of dirMap) {
+  // Mit Assets: Verzeichnisse nach Pfad sortiert (Asset-Verzeichnisse stehen sonst hinten), ohne wie bisher.
+  const mitAssets = baumAssets.zeilen.length > 0;
+  const verzeichnisse = mitAssets ? [...dirMap].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)) : dirMap;
+  for (const [dir, eintraege] of verzeichnisse) {
+    const files = mitAssets ? eintraege.filter((f) => !f._asset) : eintraege;
+    const assets = mitAssets ? eintraege.filter((f) => f._asset) : [];
     // Verzeichnis-Header
-    const dirMeta: string[] = [`${files.length} Dateien`];
+    const dirMeta: string[] = files.length > 0 || assets.length === 0 ? [`${files.length} Dateien`] : [];
     if (show_counts) {
       const fnTotal = files.reduce((s, f) => s + parseInt(f.fn_count ?? '0', 10), 0);
       const varTotal = files.reduce((s, f) => s + parseInt(f.var_count ?? '0', 10), 0);
       if (fnTotal > 0) dirMeta.push(`${fnTotal}fn`);
       if (varTotal > 0) dirMeta.push(`${varTotal}var`);
     }
+    if (assets.length > 0) dirMeta.push(`${assets[0].n_dir} Assets`);
     lines.push(`${dir} (${dirMeta.join(', ')})`);
 
     // Dateien
@@ -490,6 +510,11 @@ export async function getProjectTree(
         }
       }
     }
+
+    // Asset-Zeilen (Entwurf 5.5): je Verzeichnis hoechstens BAUM_ASSETS_JE_VERZEICHNIS, Rest als Sammelzeile.
+    for (const a of assets) lines.push(`  ${a.file_name} ${assetMarker(a)}`);
+    const restAssets = assets.length > 0 ? assets[0].n_dir - assets.length : 0;
+    if (restAssets > 0) lines.push(`  ${assetSammelZeile(dir, restAssets, baumAssets.rest.get(dir === '/' ? '' : dir))}`);
   }
 
   lines.push(`---`);
@@ -504,7 +529,7 @@ export async function getProjectTree(
       + `${trefferGesamt} Trefferzeilen fuer "${filterText}" | Projekt: ${project}`
     );
   } else {
-    lines.push(`${filesResult.rows.length} Dateien | Projekt: ${project}`);
+    lines.push(`${filesResult.rows.length} Dateien${baumAssets.total > 0 ? `, ${baumAssets.total} Assets` : ''} | Projekt: ${project}`);
   }
 
   return lines.join('\n');

@@ -231,6 +231,13 @@ export interface FileEvent {
   type: 'add' | 'change' | 'unlink';
   path: string;
   project: string;
+  /**
+   * Asset-Art (P4-T67, Etappe D). Fehlt bei allen Nicht-Assets — dann ist das Ereignis
+   * exakt wie vor dem Umbau. 'nur_asset': NUR der Asset-Weg (Binaerdatei), der Code-Weg
+   * sieht das Ereignis nicht. 'zusaetzlich': bisheriger Weg unveraendert, Asset-Inspektion
+   * kommt dazu (Media, Text-Assets wie .gltf).
+   */
+  asset?: 'nur_asset' | 'zusaetzlich';
 }
 
 // ===========================================

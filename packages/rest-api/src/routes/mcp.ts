@@ -2,7 +2,8 @@
  * Synapse API - MCP over HTTP Routes
  * Fuer Claude.ai Connectors (v0.2.0)
  *
- * 14 konsolidierte Action-basierte Tools — identisch zum MCP-Server.
+ * Konsolidierte Action-basierte Tools (MCP_TOOLS) — Schemas wie im MCP-Server (stdio).
+ * asset_intel (P4-T70) kommt fuer BEIDE Strecken als eine Definition + ein Dispatcher aus core.
  */
 
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
@@ -195,6 +196,8 @@ import { leiteAgentIdAusHeaders } from './agent-header.js';
 // PA-1: unbekannte Parameter melden statt still verwerfen — dieselbe Funktion wie im
 // lokalen MCP-Server, damit die beiden Strecken nicht auseinanderlaufen.
 import { pruefeUnbekannteParameter, baueErlaubteParameter } from '@synapse/core';
+// asset_intel (P4-T70): Schema und Dispatcher aus core — dieselben, die die stdio-Strecke einhaengt.
+import { ASSET_INTEL_DEFINITION, fuehreAssetIntelAus, ergaenzeCodeIntelAntwort } from '@synapse/core';
 import {
   listeIgnoreRegeln,
   fuegeIgnoreRegelnHinzu,
@@ -228,7 +231,7 @@ function getBaseUrl(request: FastifyRequest): string {
 }
 
 // =====================================================================
-// MCP Tool Definitionen — 14 konsolidierte Action-basierte Tools
+// MCP Tool Definitionen — konsolidierte Action-basierte Tools (24 Eintraege, Stand 02.10.2026)
 // Schemas identisch zum MCP-Server (packages/mcp-server/src/tools/consolidated/)
 // =====================================================================
 /**
@@ -945,6 +948,7 @@ export const MCP_TOOLS = [
         show_comments: { type: ['boolean', 'integer', 'string'], description: "Kommentare unter Dateien anzeigen (Standard: false, fuer tree). true = einer je Datei, Zahl = so viele, '*' = alle bis 50. Gezeigt werden Zeilennummer und Inhalt; wird gekappt, steht das in der Ausgabe." },
         show_functions: { type: 'boolean', description: 'Funktionsnamen auflisten (Standard: false, fuer tree)' },
         show_imports: { type: 'boolean', description: 'Import-Statements auflisten (Standard: false, fuer tree)' },
+        show_assets: { type: 'boolean', description: 'tree: Asset-Zeilen mit Marker zeigen (Standard true)' },
         file_path: { type: 'string', description: 'Datei-Pfad-Filter (LIKE-Pattern) fuer functions/variables/symbols/file/statements/calls/entrypoints — UND seit 08.08.2026 auch fuer search: dort im Volltext-Modus als LIKE-Teilpfad, mit semantic:true dagegen als VOLLSTAENDIGER Pfad, weil Qdrant keinen Teilstring-Vergleich kennt. Vorher wurde der Parameter bei search still verworfen und die Suche lieferte Treffer aus dem ganzen Projekt.' },
         name: { type: 'string', description: 'Symbol-Name-Filter (fuer functions/variables/symbols/references)' },
         value_contains: { type: 'string', description: "Sucht im INHALT des Symbols statt im Namen (fuer symbols). PFLICHT fuer Kommentare, Strings und TODOs: die tragen name=NULL, ein name-Filter findet dort nie etwas. Beispiel: symbol_type='comment' + value_contains='@SYN-'. Jeder Treffer traegt match_line (echte Zeile des Treffers; bei mehrzeiligen Kommentarbloecken NICHT line_start) und match_lines." },
@@ -980,6 +984,11 @@ export const MCP_TOOLS = [
       required: ['action', 'project'],
     },
   },
+
+  // 14b. asset_intel — Definition aus core (P4-T70), keine eigene Kopie des Schemas.
+  // FLACHE KOPIE, weil die OUTPUT_EXTRAS-Schleife unten description und outputSchema AM OBJEKT
+  // setzt: ohne Kopie veraenderte sie die core-Konstante, die die stdio-Strecke ausliefert.
+  { ...ASSET_INTEL_DEFINITION },
 
   // 15. files
   {
@@ -1455,6 +1464,16 @@ const OUTPUT_EXTRAS: Record<string, { props?: Record<string, unknown>; example?:
       results: { type: 'array', items: { type: 'object' } },
     },
     example: { success: true, count: 1, project: 'synapse', functions: [{ id: 'uuid', file_path: 'src/a.ts', name: 'foo', line_start: 10, line_end: 20, params: ['x:string'], return_type: 'void', is_exported: true }] },
+  },
+  asset_intel: {
+    props: {
+      beantwortet_von: { type: 'string' },
+      total: { type: ['number', 'null'] },
+      gekappt: { type: 'boolean' },
+      fehler: { type: 'string', description: 'Fehlercode bei success:false' },
+      nicht_verwendet: { type: 'array', items: { type: 'string' } },
+    },
+    example: { success: true, action: 'used_by', project: 'synapse', beantwortet_von: 'asset_intel', verweise: [{ file_path: 'models/crate.gltf', kind: 'texture', aufloesung: 'datei' }], total: 1, gekappt: false },
   },
   search: {
     props: { results: { type: 'array', items: { type: 'object' } }, count: { type: 'number' }, mode: { type: 'string' } },
@@ -4337,15 +4356,23 @@ async function handleToolCall(
       return { success: false, error: 'Watcher-Tool ist nur ueber MCP Server (stdio) verfuegbar — benoetigt lokale Dateisystem-Zugriffe' };
 
     // =================================================================
+    // 14b. ASSET_INTEL — Dispatcher aus core, identisch zur stdio-Strecke (P4-T70).
+    // Unbekannte Parameter hat PA-1 oben schon abgewiesen; fuehreAssetIntelAus wirft nie.
+    // =================================================================
+    case 'asset_intel':
+      return fuehreAssetIntelAus(args);
+
+    // =================================================================
     // 14. CODE_INTEL
     // =================================================================
-    case 'code_intel': {
+    // Etappe C (P4-T67/T70): die Asset-Weiche aus core haengt NACH der Bestandsantwort nur Zusatzfelder an;
+    // ohne Asset-Eintraege im Projekt bleibt jede Antwort byte-gleich. Spiegel: mcp-server consolidated/code-intel.ts.
+    case 'code_intel': return ergaenzeCodeIntelAntwort(action, args, await (async (): Promise<Record<string, unknown>> => {
       const project = reqStr(args, 'project');
       switch (action) {
         case 'tree': {
-          // TODO(P4-T60 / ASSET-1, vorgemerkt 02.10.2026, NICHT gebaut): Asset-Eintraege mit Marker 'asset'
-          // im Baum. Muss mit mcp-server/src/tools/consolidated/code-intel.ts (case 'tree') uebereinstimmen.
-
+          // Asset-Zeilen mit Marker liefert getProjectTree selbst (Etappe C). Muss mit
+          // mcp-server/src/tools/consolidated/code-intel.ts (case 'tree') uebereinstimmen.
           const tree = await getProjectTree(project, {
             path: str(args, 'path') ?? str(args, 'file_path'),
             recursive: bool(args, 'recursive'),
@@ -4360,6 +4387,7 @@ async function handleToolCall(
             show_functions: bool(args, 'show_functions'),
             show_imports: bool(args, 'show_imports'),
             file_type: str(args, 'file_type'),
+            show_assets: bool(args, 'show_assets'),
           });
           return { success: true, tree, project };
         }
@@ -4436,10 +4464,8 @@ async function handleToolCall(
           return { success: true, results, count: results.length, mode: 'fulltext', project };
         }
         case 'file': {
-          // TODO(P4-T60 / ASSET-1, vorgemerkt 02.10.2026, NICHT gebaut): Weiche zu asset_intel bei Assets
-          // (und umgekehrt), mit Hinweis auf das antwortende Tool. Muss mit
+          // Weiche zu asset_intel haengt ergaenzeCodeIntelAntwort an (Etappe C). Muss mit
           // mcp-server/src/tools/consolidated/code-intel.ts (case 'file') uebereinstimmen.
-
           const filePath = str(args, 'file_path') ?? str(args, 'path');
           if (!filePath) throw new Error('Parameter "file_path" oder "path" ist erforderlich fuer action "file"');
           const file = await getFileContent(project, filePath, {
@@ -4487,7 +4513,7 @@ async function handleToolCall(
         default:
           return { success: false, error: `Unbekannte code_intel action: "${action}"` };
       }
-    }
+    })());
 
     // =================================================================
     case 'files_batch':

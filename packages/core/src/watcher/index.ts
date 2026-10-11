@@ -31,7 +31,7 @@ import { Ignore } from 'ignore';
 import { FileEvent } from '../types/index.js';
 import { getConfig } from '../config.js';
 import { loadGitignore, istGesperrt, shouldIgnore, aktualisiereIgnoreRegeln } from './ignore.js';
-import { isBinaryFile, isExtractableDocument, isMultimodalFile, getFileType, MAX_MEDIA_SIZE_MB } from './binary.js';
+import { isBinaryFile, isExtractableDocument, isMultimodalFile, getFileType, MAX_MEDIA_SIZE_MB, assetArt, leseDateiKopf } from './binary.js';
 
 export * from './binary.js';
 export * from './ignore.js';
@@ -101,6 +101,9 @@ export function startFileWatcher(options: FileWatcherOptions): FileWatcherInstan
 
   // Debounce Map fuer Batch-Updates
   const pendingEvents = new Map<string, { type: FileEvent['type']; timeout: NodeJS.Timeout }>();
+  // Pfade, die in diesem Lauf als Asset weitergeleitet wurden. Beim UNLINK ist die Datei weg und
+  // laesst sich nicht mehr pruefen; ohne Endung (nur Magic) waere sie sonst nicht wiederzuerkennen.
+  const bekannteAssets = new Set<string>();
 
   /**
    * Liest neue Patterns aus .synapseignore
@@ -157,32 +160,57 @@ export function startFileWatcher(options: FileWatcherOptions): FileWatcherInstan
     // Binaere Dateien ueberspringen (nur bei add/change)
     // AUSNAHME: Extrahierbare Dokumente (PDF, Word, Excel) werden durchgelassen
     // AUSNAHME: Multimodal-Dateien (Bilder, Videos) werden bei Google-Provider durchgelassen
+    // ASSET-WEG (P4-T67, Etappe D): `asset` wird NUR fuer Assets gesetzt. Fuer alle anderen
+    // Dateien bleibt das Ereignis exakt wie vorher. 'nur_asset' erreicht den Code-Weg nie
+    // (die Konsumenten pruefen das Feld) — genau wie frueher, als Binaerdateien hier endeten.
+    let asset: FileEvent['asset'];
     if (type !== 'unlink') {
       try {
         const isDocument = isExtractableDocument(filePath);
         const isMedia = isMultimodalFile(filePath);
+        let kopf: Buffer | undefined;
 
         if (!isDocument && !isMedia) {
-          const buffer = fs.readFileSync(filePath).subarray(0, 512);
-          if (isBinaryFile(filePath, buffer)) {
-            return;
+          // Nur den Kopf lesen. Frueher: readFileSync der GANZEN Datei fuer 512 Byte — bei
+          // GB-Assets teuer. isBinaryFile prueft ohnehin nur die ersten 512 Byte: gleiches Urteil.
+          kopf = leseDateiKopf(filePath);
+          if (isBinaryFile(filePath, kopf)) {
+            // Frueher: verworfen. Jetzt: nur in den Asset-Weg.
+            if (assetArt(filePath, kopf) !== 'nur_asset') {
+              return;
+            }
+            asset = 'nur_asset';
           }
         }
 
-        // Dateigroesse pruefen (Dokumente: 50MB, Media: 20MB, Code: config)
-        const stats = fs.statSync(filePath);
-        const sizeMB = stats.size / (1024 * 1024);
-        const maxSize = isDocument ? 50 : isMedia ? MAX_MEDIA_SIZE_MB : config.files.maxSizeMB;
-        // Fuer reine Text-/Code-Dateien bedeutet maxSize <= 0: unbegrenzt.
-        // Dokumente und Medien liefern weiterhin positive feste Limits.
-        if (maxSize > 0 && sizeMB > maxSize) {
-          console.error(`[Synapse] Datei zu gross (${sizeMB.toFixed(2)}MB > ${maxSize}MB): ${relativePath}`);
-          return;
+        if (!asset) {
+          // Dateigroesse pruefen (Dokumente: 50MB, Media: 20MB, Code: config)
+          const stats = fs.statSync(filePath);
+          const sizeMB = stats.size / (1024 * 1024);
+          const maxSize = isDocument ? 50 : isMedia ? MAX_MEDIA_SIZE_MB : config.files.maxSizeMB;
+          // Fuer reine Text-/Code-Dateien bedeutet maxSize <= 0: unbegrenzt.
+          // Dokumente und Medien liefern weiterhin positive feste Limits.
+          if (maxSize > 0 && sizeMB > maxSize) {
+            console.error(`[Synapse] Datei zu gross (${sizeMB.toFixed(2)}MB > ${maxSize}MB): ${relativePath}`);
+            // Fuer den bisherigen Weg bleibt die Datei verworfen. Ein Asset (z. B. eine grosse
+            // PNG) geht trotzdem in den Asset-Weg; dessen Grenzen setzt inspectAsset selbst.
+            if (!assetArt(filePath, kopf)) {
+              return;
+            }
+            asset = 'nur_asset';
+          } else {
+            asset = assetArt(filePath, kopf) ?? undefined;
+          }
         }
       } catch {
         // Datei nicht mehr vorhanden - ignorieren
         return;
       }
+      if (asset) bekannteAssets.add(relativePath);
+    } else {
+      // Die Datei ist weg: nur Endung oder "in diesem Lauf als Asset gesehen" entscheiden.
+      asset = assetArt(filePath) ?? (bekannteAssets.has(relativePath) ? 'nur_asset' : undefined);
+      bekannteAssets.delete(relativePath);
     }
 
     // Existierendes Pending-Event abbrechen — relativePath als Key
@@ -207,8 +235,13 @@ export function startFileWatcher(options: FileWatcherOptions): FileWatcherInstan
             [projectName, relativePath]
           );
           if (!res.rows[0]) {
-            console.error(`[Synapse] UNLINK uebersprungen (Rename-detected): ${relativePath}`);
-            return;
+            if (!asset) {
+              console.error(`[Synapse] UNLINK uebersprungen (Rename-detected): ${relativePath}`);
+              return;
+            }
+            // Asset ohne Code-Zeile (Binaerdatei, Media): der Code-Weg bleibt wie bisher
+            // uebersprungen, nur der Asset-Weg erfaehrt vom Loeschen.
+            asset = 'nur_asset';
           }
         } catch {
           // PG nicht erreichbar — fail-open, normaler Unlink-Flow
@@ -220,6 +253,7 @@ export function startFileWatcher(options: FileWatcherOptions): FileWatcherInstan
         path: relativePath,
         project: projectName,
       };
+      if (asset) event.asset = asset;
 
       console.error(`[Synapse] ${type.toUpperCase()}: ${relativePath}`);
 

@@ -56,15 +56,20 @@ try {
   watcher = startFileWatcher({
     projectPath,
     projectName,
-    onFileChange: (event) => handleFileEvent(event, projectPath),
+    // assets:true — dieser Prozess sieht die Dateien und inspiziert Assets (P4-T67).
+    onFileChange: (event) => handleFileEvent(event, projectPath, { assets: true }),
     onError: (error) => console.error(`[Watcher-Daemon] FileWatcher Fehler:`, error),
     onIgnoreChange: async () => {
       console.error(`[Watcher-Daemon] .synapseignore geaendert — Cleanup erfolgt bei naechstem init_projekt`);
     },
     onReady: async () => {
       try {
-        const { verifyProjectAgainstFilesystem } = await import('@synapse/core');
+        const { verifyProjectAgainstFilesystem, verifyAssetsAgainstFilesystem } = await import('@synapse/core');
         await verifyProjectAgainstFilesystem(projectName, projectPath);
+        // Asset-Abgleich (P4-T67): nicht abgewartet, Inspektion im worker_thread.
+        void verifyAssetsAgainstFilesystem(projectName, projectPath).catch((err) =>
+          console.error(`[Watcher-Daemon] Asset-Abgleich fehlgeschlagen:`, err)
+        );
       } catch (err) {
         console.error(`[Watcher-Daemon] Reconcile fehlgeschlagen:`, err);
       }

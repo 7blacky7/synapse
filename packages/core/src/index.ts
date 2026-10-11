@@ -19,6 +19,105 @@ export type { SchemaModus, SchemaPruefung, SchemaStandArt, SchemaSicherErgebnis 
 // Typen
 export * from './types/index.js';
 
+// Asset-Intel (Nicht-Quellcode-Dateien): Inspektion + Speichern (P4-T60 ff., P4-T67)
+export * from './asset-intel/index.js';
+export {
+  speichereAssetErgebnis,
+  markiereAssetQuelleFehlt,
+  benenneAssetUm,
+  aktualisiereVerweisZiel,
+  entferneAssetsEndgueltig,
+  findeVerschobenesAsset,
+  loesePfadAuf,
+  normalisiereAssetPfad,
+  dateisystemPruefer,
+  ASSET_MAX_OBJEKTE_STANDARD,
+  ASSET_LOESCHFRIST_TAGE,
+} from './services/asset-intel-store.js';
+export type {
+  AssetAufloesung,
+  AufloesungsKontext,
+  VerweisAufloesung,
+  SpeicherOptionen,
+  SpeicherErgebnis,
+  QuelleFehltErgebnis,
+  EntfernenOptionen,
+} from './services/asset-intel-store.js';
+// Asset-Intel: Indexierung im lokalen Watcher (P4-T67, Etappe D)
+export {
+  verarbeiteAssetEreignis,
+  verifyAssetsAgainstFilesystem,
+  konfiguriereAssetSync,
+  assetSyncZaehler,
+  setzeAssetSyncZaehlerZurueck,
+  assetWegAbgeschaltet,
+  setzeAssetWegZurueck,
+  warteAufAssetLeerlauf,
+  beendeAssetSync,
+} from './services/asset-intel-sync.js';
+export type { AssetSyncKonfiguration, AssetSyncZaehler, AssetVerifyErgebnis } from './services/asset-intel-sync.js';
+export { AssetInspektionsWorker, WORKER_GNADENFRIST_MS } from './asset-intel/worker-runner.js';
+export type { WorkerInspektionsOptionen } from './asset-intel/worker-runner.js';
+export { assetArt, assetEndungen, leseDateiKopf, KOPF_BYTES } from './watcher/binary.js';
+export type { AssetArt } from './watcher/binary.js';
+// Asset-Intel Lesen + Tool asset_intel (P4-T67/T70, Etappe B1)
+export {
+  holeAssetBaum,
+  inspiziereAusDb,
+  holeObjekte,
+  holeVerweise,
+  holeBenutztVon,
+  holeFehlende,
+  holeGraph,
+  holeWurzelnUndWaisen,
+  sucheAssets,
+  sucheAssetsBatch,
+  movePreview,
+  assetHealth,
+  parseAssetFilter,
+  zerlegeSuchanfrage,
+  kappeAntwort,
+  escapeLike,
+  AssetIntelFehler,
+  ASSET_ANTWORT_MAX,
+  ASSET_DATA_WERT_MAX,
+  ASSET_MAX_FILTER,
+  ASSET_GRAPH_MAX_TIEFE,
+  ASSET_LESE_TIMEOUT_MS,
+  ASSET_STATUS,
+} from './services/asset-intel-abfragen.js';
+export type {
+  AssetFilter,
+  AssetFilterOp,
+  BaumOptionen,
+  InspektionsOptionen,
+  AssetInspektion,
+  ObjektOptionen,
+  VerweisOptionen,
+  GraphOptionen,
+  AssetGraph,
+  SuchOptionen,
+} from './services/asset-intel-abfragen.js';
+export { ASSET_INTEL_DEFINITION, ASSET_INTEL_ACTIONS, fuehreAssetIntelAus } from './services/asset-intel-tool.js';
+export type { AssetIntelAction } from './services/asset-intel-tool.js';
+// Asset-Weiche code_intel <-> asset_intel + Baum-Marker (P4-T67/T70, Etappe C)
+export {
+  ergaenzeCodeIntelAntwort,
+  loeseDateiWelt,
+  projektHatAssets,
+  vergissAssetStand,
+  holeBaumAssets,
+  assetMarker,
+  assetSammelZeile,
+  assetGroesse,
+  findeCodeDatei,
+  zaehleCodeDateien,
+  BAUM_ASSETS_JE_VERZEICHNIS,
+  WEICHE_SUCHTREFFER_MAX,
+  WEICHE_SUCH_ZEITGRENZE_MS,
+} from './services/asset-weiche.js';
+export type { AssetKurz, DateiWelt, BaumAsset, BaumAssets } from './services/asset-weiche.js';
+
 // Qdrant
 export {
   getQdrantClient,

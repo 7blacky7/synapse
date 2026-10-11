@@ -10,7 +10,7 @@ import type { FunctionDeclaration } from '@google/genai';
 import {
   projectTool, searchTool, memoryTool, thoughtTool, proposalTool,
   planTool, chatTool, channelTool, eventTool, specialistTool,
-  docsTool, adminTool, watcherTool, codeIntelTool, codeCheckTool,
+  docsTool, adminTool, watcherTool, codeIntelTool, assetIntelTool, codeCheckTool,
   filesTool, shellTool, guideTool,
 } from '@synapse/mcp-server/consolidated';
 import type { ConsolidatedTool } from '@synapse/mcp-server/consolidated';
@@ -19,7 +19,7 @@ import { convertSchema } from './schema-convert.js';
 const ALL_TOOLS: ConsolidatedTool[] = [
   projectTool, searchTool, memoryTool, thoughtTool, proposalTool,
   planTool, chatTool, channelTool, eventTool, specialistTool,
-  docsTool, adminTool, watcherTool, codeIntelTool, codeCheckTool,
+  docsTool, adminTool, watcherTool, codeIntelTool, assetIntelTool, codeCheckTool,
   filesTool, shellTool, guideTool,
 ];
 

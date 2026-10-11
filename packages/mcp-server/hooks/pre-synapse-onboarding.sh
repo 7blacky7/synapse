@@ -89,7 +89,7 @@ else
     MSG+="1. admin(action: \"index_stats\", project: \"${PROJECT_NAME}\", agent_id: \"${AGENT_ID}\", role: \"subagent\")\n"
     MSG+="   → Du bekommst Projekt-Regeln. Befolge sie.\n"
     MSG+="2. chat(action: \"get\", project: \"${PROJECT_NAME}\", agent_id: \"${AGENT_ID}\", limit: 10)\n\n"
-    MSG+="SUCHE: IMMER zuerst code_intel, dann search(action: \"code\"). Glob/Grep nur Fallback.\n"
+    MSG+="SUCHE: IMMER zuerst code_intel, dann search(action: \"code\"). Glob/Grep nur Fallback. Binaer-/Asset-Dateien (Bilder, 3D, Audio, Archive, Executables, Unreal, DCC): asset_intel.\n"
     MSG+="CHAT: channel(action: \"post\") fuer Status. DM: chat(action: \"send\", recipient_id: \"koordinator\") bei Problemen.\n"
     MSG+="ENDE: chat(action: \"unregister\", id: \"${AGENT_ID}\")\n"
     MSG+="agent_id: \"${AGENT_ID}\" an JEDEN Synapse-Aufruf. source: \"${AGENT_ID}\" bei thought(action: \"add\").\n"

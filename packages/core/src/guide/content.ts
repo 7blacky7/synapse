@@ -43,13 +43,13 @@ export interface ToolGuide {
 export const GUIDE_OVERVIEW = `
 # Synapse REST-API — Quick-Start fuer Web-KIs
 
-Du bist mit einem Synapse-Projekt verbunden. Diese REST-Schnittstelle bietet 21 Tools,
+Du bist mit einem Synapse-Projekt verbunden. Diese REST-Schnittstelle bietet 24 Tools,
 eines davon ist dieses guide-Tool.
 
-⚠️ Der lokale MCP-Server (stdio) bietet NICHT dieselbe Menge, sondern 18: ihm fehlen
-files_batch, skills und workspace. Wer eine Anleitung von der einen Oberflaeche auf die
-andere uebertraegt, sucht sonst ein Tool, das es dort nicht gibt. Umgekehrt ist nichts
-exklusiv lokal — die 18 sind eine echte Teilmenge der 21.
+⚠️ Der lokale MCP-Server (stdio) bietet NICHT dieselbe Menge, sondern 21: ihm fehlen
+files_batch, skills, workspace und artefakt. Wer eine Anleitung von der einen Oberflaeche auf die
+andere uebertraegt, sucht sonst ein Tool, das es dort nicht gibt. Umgekehrt ist fast nichts
+exklusiv lokal (nur free_models) — 20 Tools sind auf beiden Oberflaechen gleich.
 
 ## Scope (wichtig fuer Web-KI-Connectors)
 
@@ -93,6 +93,10 @@ Notizbuch + Code-Editor + Sub-Hilfsagenten.
 
 **Code-Exploration (lesen):**
   code_intel, search, files(read), docs
+
+**Assets / Nicht-Quellcode (lesen):**
+  asset_intel — Bilder, 3D, Audio, Archive, Executables, Unreal, DCC: Metadaten, Objekte,
+  Verweise, wer benutzt was, Abhaengigkeitsgraph. Auf REST und lokal (stdio) identisch.
 
 **Code-Aenderung (schreiben):**
   files(create/update/search_replace/replace_lines/insert_after), code_check
@@ -254,12 +258,12 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
     ].join(' '),
     when_not_to_use: [
       'Konzeptuelle Fragen ("wie funktioniert X?") — bleib im Tool: search mit semantic: true, oder search_batch fuer mehrere Fragen in einem Call.',
-      'Nicht-Code-Dateien wie Images/Binaerdateien.',
+      'Nicht-Code-Dateien wie Images/Binaerdateien — dafuer asset_intel (code_intel file auf einen Asset-Pfad antwortet selbst mit beantwortet_von asset_intel).',
     ].join(' '),
     param_tips: [
       'IMMER filter setzen (file_path, name, symbol_type) um Output klein zu halten.',
       'file_type: Extension ohne Punkt ("ts", "py") — NICHT "typescript" oder "python".',
-      'tree: depth: 1-2 reicht meist, show_functions: true wenn du Funktionen sehen willst.',
+      'tree: depth: 1-2 reicht meist, show_functions: true wenn du Funktionen sehen willst; show_assets: false blendet die Asset-Zeilen (Marker [asset ...]) aus.',
       'file: line_start + line_end setzen bei Dateien > 500 Zeilen, sonst sprengst du Context.',
       'search: limit: 5-10 sinnvoll, nicht 100.',
       'search: jeder Volltext-Treffer nennt die Zeilen (matches[].line/text) — danach file mit from_line/to_line um diese Zeile lesen. Kein grep -n noetig.',
@@ -280,7 +284,7 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
     actions: {
       tree: {
         description: 'Verzeichnisbaum mit Dateien + optional Funktions-Counts/Importen.',
-        params: 'path (prefix filter), depth, recursive, show_lines, show_functions, show_imports',
+        params: 'path (prefix filter), depth, recursive, show_lines, show_functions, show_imports, show_assets (Standard true)',
         example: 'code_intel({ action: "tree", project: "synapse", path: "packages/core/src", depth: 2 })',
         tips: 'Perfekt fuer "wie ist das Projekt organisiert" — mit depth: 1 erst mal Overview.',
       },
@@ -1635,6 +1639,49 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
         params: 'project (req), id (req, Protokoll-Nummer), wahl (req, die richtige Entscheidung), agent_id (req: koordinator), notiz',
         example: 'jev({ action: "ueberstimmen", project: "synapse", id: 3, wahl: "b", notiz: "User wollte B", agent_id: "koordinator" })',
       },
+    },
+  },
+
+  // -------------------------------------------------------------------------
+  // asset_intel — Struktur-Index fuer Nicht-Quellcode-Dateien (P4-T67/T70)
+  // -------------------------------------------------------------------------
+  asset_intel: {
+    summary: 'Struktur-Index fuer Dateien, die KEIN Quellcode sind: Bilder, Texturen, 3D-Modelle, Audio/Video, Archive, Executables, Unreal-Pakete, DCC-Dateien (blend, fbx ...). Liefert abgeleitete Daten der lokalen Inspektion — Metadaten, Objekte (Meshes, Materialien, Exporte ...) und Verweise zwischen Dateien. Nur lesend, ohne Embeddings, auf REST und lokal (stdio) mit DERSELBEN Definition und demselben Dispatcher.',
+    when_to_use: 'Fragen zu Assets: Welche Texturen nutzt dieses Modell (references)? Wer benutzt diese Textur (used_by)? Was bricht, wenn ich sie verschiebe (move_preview)? Welche Verweise zeigen ins Leere (missing)? Welche Bilder sind groesser als 4096 px (search mit Filter)? Wie haengen Dateien zusammen (graph)?',
+    when_not_to_use: 'Fuer Quellcode und Textdateien -> code_intel (file, functions, search). asset_intel kennt nur, was der LOKALE Watcher inspiziert hat: laeuft er nicht, ist der Index leer (health zeigt das). Verweise AUS Quellcode (z. B. "assets/x.png" in einer .ts-Datei) sind hier nicht enthalten.',
+    param_tips: [
+      'file_path ist projekt-relativ wie in code_intel. Mehrdeutige Kurzpfade -> Fehler pfad_mehrdeutig mit kandidaten.',
+      'where (objects, search): "<asset_type|kind>.<schluessel><op><wert>", op = != > >= < <= ~ (~ = enthaelt), max 5. Zahlvergleich greift nur, wenn der Wert eine Zahl ist ("4096" als Text zaehlt nicht). Beispiele: image.width>=4096, mesh.triangles>1000.',
+      'search-Kurzform in query: "format:png type:image image.width>=4096 rock".',
+      'inspect: limit gilt fuer Objekte UND Verweise, offset nur fuer Objekte.',
+      'Unbekannte Parameter werden abgewiesen (nicht still verworfen); Parameter, die fuer die action keine Wirkung haben, stehen in nicht_verwendet.',
+      'Jede Liste traegt total + gekappt; Antworten sind auf 60.000 Zeichen begrenzt.',
+    ].join('\n'),
+    examples: [
+      'asset_intel({ action: "health", project: "synapse" })',
+      'asset_intel({ action: "used_by", project: "synapse", file_path: "textures/rock.png" })',
+      'asset_intel({ action: "search", project: "synapse", query: "format:png image.width>=4096" })',
+    ],
+    anti_patterns: [
+      'Quellcode ueber asset_intel lesen wollen — Fehler datei_nicht_im_asset_index, richtig ist code_intel(file).',
+      'objects ohne object_type — Fehler object_type_fehlt; die Antwort nennt die vorhandenen Arten.',
+      'graph mit depth 10 auf einem grossen Projekt ohne limit — wird gekappt; erst depth 2-3.',
+      'search mit einem Begriff, der in fast jedem Pfad/Verweis steht (z. B. "Content", "/Game/") — liefert zwar (gemessen < 0,5 s bei 750.000 Verweisen), aber Tausende Treffer; mit format, asset_type oder where einengen.',
+    ],
+    actions: {
+      tree: { description: 'Asset-Baum als Text (Format, Groesse, Objekte, Verweise, Status je Datei).', params: 'path, depth, recursive, format, asset_type, status, limit (Standard 500)', example: 'asset_intel({ action: "tree", project: "synapse", path: "Content/Props" })' },
+      inspect: { description: 'Eine Datei: Metadaten, Warnungen, Objekte und Verweise seitenweise, Totale.', params: 'file_path (req), object_type, offset, limit', example: 'asset_intel({ action: "inspect", project: "synapse", file_path: "models/crate.gltf", limit: 20 })' },
+      objects: { description: 'Objekte einer Art projektweit, optional gefiltert.', params: 'object_type (req), file_path, name, where, limit, offset', example: 'asset_intel({ action: "objects", project: "synapse", object_type: "mesh", where: ["mesh.triangles>1000"] })' },
+      references: { description: 'Ausgehende Verweise einer Datei mit Aufloesung (datei, fehlt, intern, extern, eingebettet, ausserhalb, unbekannt).', params: 'file_path (req), kind, limit', example: 'asset_intel({ action: "references", project: "synapse", file_path: "models/crate.gltf" })' },
+      used_by: { description: 'Wer verweist auf diese Datei. include_name_matches liefert zusaetzlich Verweise mit gleichem Dateinamen, anderem Pfad (getrennt).', params: 'file_path (req), kind, limit, include_name_matches', example: 'asset_intel({ action: "used_by", project: "synapse", file_path: "textures/rock.png" })' },
+      missing: { description: 'Verweise ins Leere (aufloesung fehlt), projektweit oder fuer eine Datei.', params: 'file_path, kind, limit' },
+      graph: { description: 'Abhaengigkeiten ab einer Datei: down = worauf sie verweist, up = wer auf sie verweist. Zyklen werden markiert.', params: 'file_path (req), direction (down|up), depth (1..10, Standard 3), limit', example: 'asset_intel({ action: "graph", project: "synapse", file_path: "scenes/level.gltf", depth: 2 })' },
+      roots: { description: 'Dateien ohne eingehende, aber mit ausgehenden Verweisen.', params: 'format, asset_type, limit' },
+      orphans: { description: 'Dateien ganz ohne Verweise (weder ein- noch ausgehend).', params: 'format, asset_type, limit' },
+      search: { description: 'Lexikalische Suche ueber Pfad, Objektnamen und Verweisziele, mit Filtern; Treffer je Datei mit Fundstelle.', params: 'query (req), where, format, asset_type, limit', example: 'asset_intel({ action: "search", project: "synapse", query: "crate format:gltf" })' },
+      search_batch: { description: 'Bis zu 10 Suchen in einem Aufruf. Eine Suche mit ungueltigem Filter liefert ihren eigenen Fehler, die anderen laufen weiter. Das Zeitlimit (10 s) gilt je Suche: eine abgebrochene liefert fuer sich zeitlimit:true, treffer:[] und einen Hinweis, die anderen laufen normal.', params: 'queries (req, 1..10), limit' },
+      move_preview: { description: 'Was bricht beim Verschieben: eingehende und ausgehende Verweise mit Vorschlag fuer das neue target. Schreibt nichts.', params: 'file_path (req), new_path (req)', example: 'asset_intel({ action: "move_preview", project: "synapse", file_path: "tex/a.png", new_path: "textures/a.png" })' },
+      health: { description: 'Zustand des Index: Dateien je Status/Format/Typ, Formate ohne Inspektor, veraltete Inspektor-Versionen, fehlende Quellen. Mit file_path: eine Zeile samt Warnungen.', params: 'file_path' },
     },
   },
 

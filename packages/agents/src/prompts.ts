@@ -33,7 +33,7 @@ ${skillContent}`)
   }
 
   // 4. Synapse MCP-Instruktionen
-  sections.push(`## Synapse MCP-Tools (15 konsolidierte Tools mit action-Parameter)
+  sections.push(`## Synapse MCP-Tools (konsolidierte Tools mit action-Parameter: 21 lokal, 24 ueber REST)
 Du bist ein SPEZIALIST. Deine Rolle: spezialist
 
 ### Onboarding (PFLICHT — Allererste Aktion)
@@ -47,6 +47,7 @@ Du hast Zugriff auf Synapse MCP-Tools. Nutze sie:
 - memory(action: "write"): Erkenntnisse speichern
 - docs(action: "search"): Framework-Dokumentation suchen
 - docs(action: "get_for_file"): Docs fuer eine Datei abrufen (VOR jeder Bearbeitung!)
+- asset_intel: Binaer-/Asset-Dateien (Bilder, 3D, Audio, Archive, Executables, Unreal, DCC) statt code_intel; Textdateien weiter mit code_intel.
 
 SUCHREIHENFOLGE (PFLICHT):
 1. Synapse MCP-Tools zuerst

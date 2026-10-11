@@ -24,6 +24,8 @@ import {
   setProjectEnabled,
   isProjectEnabled,
   klassifiziereDatei,
+  verarbeiteAssetEreignis,
+  verifyAssetsAgainstFilesystem,
 } from '@synapse/core';
 import {
   DaemonConfig,
@@ -296,6 +298,12 @@ export class WatcherManager {
       onError: (err) => {
         console.error(`[manager] Watcher-Fehler "${p.name}":`, err.message);
       },
+      // Asset-Abgleich nach dem Erstscan (P4-T67): nur asset_*, inspiziert nur Abweichungen.
+      onReady: () => {
+        void verifyAssetsAgainstFilesystem(p.name, p.pfad).catch((err) =>
+          console.error(`[manager] Asset-Abgleich "${p.name}" fehlgeschlagen:`, (err as Error).message)
+        );
+      },
     });
     this.instances.set(p.name, instance);
     console.error(`[manager] Watcher gestartet: ${p.name} (${p.pfad})`);
@@ -336,6 +344,13 @@ export class WatcherManager {
       }
       let relPath = event.path;
       if (path.isAbsolute(relPath)) relPath = path.relative(projectRoot, relPath);
+      // ASSET-WEG (P4-T67, Etappe D): eigene Warteschlange mit worker_thread, NICHT abgewartet —
+      // der Index-Slot gehoert dem Code-Weg. 'nur_asset' (Binaerdateien) erreicht den Code-Weg
+      // nie, genau wie vor dem Umbau, als der Watcher sie verwarf.
+      if (event.asset) {
+        void verarbeiteAssetEreignis({ ...event, path: relPath }, projectRoot);
+        if (event.asset === 'nur_asset') return;
+      }
       if (event.type === 'unlink') {
         await removeFile(relPath, event.project);
       } else {

@@ -32,6 +32,7 @@ import {
   searchCode,
   getParserGesundheitDatei,
   getParserGesundheitUebersicht,
+  ergaenzeCodeIntelAntwort,
 } from '@synapse/core';
 
 import { ConsolidatedTool, str, reqStr, num, bool } from './types.js';
@@ -92,6 +93,10 @@ export const codeIntelTool: ConsolidatedTool = {
         show_imports: {
           type: 'boolean',
           description: 'Import-Statements auflisten (Standard: false, fuer tree)',
+        },
+        show_assets: {
+          type: 'boolean',
+          description: 'tree: Asset-Zeilen mit Marker zeigen (Standard true)',
         },
 
         // --- functions / variables / symbols ---
@@ -233,17 +238,20 @@ export const codeIntelTool: ConsolidatedTool = {
     },
   },
 
-  handler: async (args: Record<string, unknown>) => {
+  // Etappe C (P4-T67/T70): die Asset-Weiche aus core haengt NACH der Bestandsantwort nur Zusatzfelder an;
+  // ohne Asset-Eintraege im Projekt bleibt jede Antwort byte-gleich. Spiegel: rest-api/src/routes/mcp.ts.
+  handler: async (args: Record<string, unknown>) =>
+    ergaenzeCodeIntelAntwort(reqStr(args, 'action'), args, await codeIntelBestand(args)),
+};
+
+async function codeIntelBestand(args: Record<string, unknown>): Promise<Record<string, unknown>> {
     const action = reqStr(args, 'action');
     const project = reqStr(args, 'project');
 
     switch (action) {
       case 'tree': {
-        // TODO(P4-T60 / ASSET-1, vorgemerkt 02.10.2026, NICHT gebaut): Assets sollen hier als Eintraege
-        // mit Marker 'asset' erscheinen (Pfad, Groesse, Format, Status, ohne Rohinhalt), damit Agenten
-        // sehen, dass da etwas liegt. Die Daten kommen aus asset-intel, nicht aus code_files.
+        // Asset-Zeilen mit Marker liefert getProjectTree selbst (Etappe C, show_assets, Standard an).
         // Spiegel in rest-api/src/routes/mcp.ts (code_intel/tree) beachten.
-
         const tree = await getProjectTree(project, {
           path: str(args, 'path') ?? str(args, 'file_path'),
           recursive: bool(args, 'recursive'),
@@ -258,6 +266,7 @@ export const codeIntelTool: ConsolidatedTool = {
           show_functions: bool(args, 'show_functions'),
           show_imports: bool(args, 'show_imports'),
           file_type: str(args, 'file_type'),
+          show_assets: bool(args, 'show_assets'),
         });
         return { success: true, tree, project };
       }
@@ -352,13 +361,8 @@ export const codeIntelTool: ConsolidatedTool = {
       }
 
       case 'file': {
-        // TODO(P4-T60 / ASSET-1, vorgemerkt 02.10.2026, NICHT gebaut): WEICHE zu asset_intel. Ist
-        // filePath ein Asset (Magic Bytes/Endung), schaltet code_intel automatisch auf asset_intel und
-        // gibt DESSEN Zusammenfassung statt Inhalt aus. Die Antwort nennt, welches Tool geantwortet hat
-        // und warum ('Asset (glb) -> asset_intel'). Ausgabe wie sonst kappen. Umgekehrt schaltet
-        // asset_intel bei Quellcode-/Textdateien auf code_intel. Gleiches fuer search ohne Pfad:
-        // Asset-Treffer als eigener, markierter Abschnitt. Spiegel in rest-api/src/routes/mcp.ts.
-
+        // Weiche zu asset_intel (Asset-Pfad bzw. Text-Asset) haengt ergaenzeCodeIntelAntwort an (Etappe C).
+        // Spiegel in rest-api/src/routes/mcp.ts.
         const filePath = str(args, 'file_path') ?? str(args, 'path');
         if (!filePath) throw new Error('Parameter "file_path" oder "path" ist erforderlich fuer action "file"');
         const file = await getFileContent(project, filePath, {
@@ -429,5 +433,4 @@ export const codeIntelTool: ConsolidatedTool = {
           `Unbekannte action: "${action}". Erlaubte Werte: tree, functions, variables, symbols, references, search, file, statements, calls, flow, entrypoints, health`
         );
     }
-  },
-};
+}

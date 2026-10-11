@@ -30,6 +30,7 @@ import * as os from 'os';
 import {
   initSynapse,
   verifyProjectAgainstFilesystem,
+  verifyAssetsAgainstFilesystem,
   ensureProjectCollection,
   createPlan,
   getPlan,
@@ -131,6 +132,10 @@ async function tryReactivateProject(
   } catch (err) {
     console.error(`[Synapse MCP] Reconcile fehlgeschlagen:`, err);
   }
+  // Asset-Abgleich (P4-T67): nicht abgewartet, Inspektion im worker_thread.
+  void verifyAssetsAgainstFilesystem(name, projectPath).catch((err) =>
+    console.error(`[Synapse MCP] Asset-Abgleich fehlgeschlagen:`, err)
+  );
 
   activeProjects.add(name);
   cacheProjectPathBoth(name, projectPath);
@@ -368,6 +373,10 @@ export async function initProjekt(
   } catch (err) {
     console.error(`[Synapse MCP] Reconcile fehlgeschlagen:`, err);
   }
+  // Asset-Abgleich (P4-T67): nicht abgewartet, Inspektion im worker_thread.
+  void verifyAssetsAgainstFilesystem(name, projectPath).catch((err) =>
+    console.error(`[Synapse MCP] Asset-Abgleich fehlgeschlagen:`, err)
+  );
 
   activeProjects.add(name);
   cacheProjectPathBoth(name, projectPath);
