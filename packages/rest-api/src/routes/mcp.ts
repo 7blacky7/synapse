@@ -2054,6 +2054,13 @@ async function attachShellJobHints(
       if (jevModus) extras.jev_modus = jevModus;
     } catch { /* best effort */ }
   }
+  // P15-T17 E0: Fehlermuster-Treffer der eigenen Schreibvorgaenge (vorher nur im Log).
+  // Wartet kurz auf eine noch laufende Pruefung, sonst Nachlieferung mit der naechsten Antwort.
+  try {
+    const { holeFehlermusterHinweise } = await import('@synapse/core');
+    const fehlermuster = await holeFehlermusterHinweise(effectiveAgentId);
+    if (fehlermuster) extras.fehlermuster = fehlermuster;
+  } catch { /* best effort */ }
   return Object.keys(extras).length > 0 ? { ...result, ...extras } : result;
 }
 

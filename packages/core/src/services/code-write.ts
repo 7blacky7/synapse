@@ -30,6 +30,7 @@ import { enqueueParseAndEmbed } from './code.js';
 import { deleteByFilePath } from '../qdrant/index.js';
 import { COLLECTIONS } from '../types/index.js';
 import { checkErrorPatterns, type ErrorPatternWarning } from './error-patterns.js';
+import { verfolgeFehlermusterPruefung } from './fehlermuster-auslieferung.js';
 
 /**
  * IDEA-3a: Resolve agent_id mit Default-Fallback.
@@ -616,7 +617,10 @@ function geaenderterAbschnitt(alt: string, neu: string): string {
  */
 function pruefeFehlermusterNebenlaeufig(pruefText: string, agentId: string, filePath: string): void {
   if (!pruefText.trim()) return;
-  void checkErrorPatterns(pruefText, agentId)
+  const pruefung = checkErrorPatterns(pruefText, agentId);
+  // P15-T17 E0: Treffer fuer die Auslieferung an den Agenten vormerken (naechste Tool-Antwort).
+  verfolgeFehlermusterPruefung(agentId, filePath, pruefung);
+  void pruefung
     .then((treffer) => {
       for (const w of treffer) {
         console.error('[code-write] Fehlermuster (' + w.severity + ') bei ' + filePath + ': ' + w.description);

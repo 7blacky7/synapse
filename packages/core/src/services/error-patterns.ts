@@ -65,7 +65,24 @@ export function deriveModelScope(foundInModel: string): string {
 
 function scopeMatchesTier(scope: string, tier: string): boolean {
   if (scope === 'all') return true;
+  // P15-T17 E0 (User-Entscheidung E-c): unbekanntes Modell sieht ALLE Muster. Vorher galt NULL
+  // wie "nicht haiku" - bei 866 von ~1250 Sessions ohne model griffen nur die 7 'all'-Muster.
+  // NUR hier in der error_patterns-Pruefung; model_scope/getModelTier/deriveModelScope bleiben
+  // unveraendert (model_scope dient auch Tech-Docs). Abschaltbar mit
+  // FEHLERMUSTER_UNBEKANNT_SIEHT_ALLE=0 (dann wieder: unbekannt sieht nur 'all').
+  if (tier === 'unknown' && process.env.FEHLERMUSTER_UNBEKANNT_SIEHT_ALLE !== '0') return true;
   return scope === tier;
+}
+
+/**
+ * P15-T17 E0: "gesehen" gilt nicht mehr fuer immer je Agentenname, sondern fuer die laufende
+ * Sitzung: nur innerhalb von FEHLERMUSTER_GESEHEN_STUNDEN (Standard 12) und nach der
+ * Registrierung des Agenten (agent_sessions.registered_at). Geschrieben wird der Vermerk erst
+ * bei der tatsaechlichen Auslieferung (fehlermuster-auslieferung.ts).
+ */
+function gesehenFensterStunden(): number {
+  const roh = Number(process.env.FEHLERMUSTER_GESEHEN_STUNDEN);
+  return Number.isFinite(roh) && roh >= 0 ? roh : 12;
 }
 
 // ─── CRUD ───────────────────────────────────────────────────────────────────
@@ -201,9 +218,9 @@ export async function checkErrorPatterns(
   agentId: string
 ): Promise<ErrorPatternWarning[]> {
   try {
+    // P15-T17 E0: ohne Session bzw. ohne model ist das Modell unbekannt -> alle Muster.
     const session = await getAgentSession(agentId);
-    if (!session) return [];
-    const tier = getModelTier(session.model);
+    const tier = getModelTier(session?.model ?? null);
 
     // P15-T8: Schwelle des aktiven Modells (Profil, Zweck error_patterns) - hier stand 0.65 (qwen-Skala).
     // Nicht kalibriert -> keine Warnungen statt ungefilterter Treffer, und zwar vor dem Embedding.
@@ -215,7 +232,13 @@ export async function checkErrorPatterns(
     }
 
     // Hooks duerfen die eigentliche Antwort nie aufhalten: nur freien Slot nutzen.
-    const contentVector = await embed(content, { maxQueueWaitMs: 0, art: 'query' });
+    // P15-T17 E0: die Pruefung laeuft nebenlaeufig nach dem Schreiben - sie darf auf einen freien
+    // Slot warten (vorher 0 ms: bei belegter Queue fiel der Treffer still weg).
+    const embedWarteMs = Number(process.env.FEHLERMUSTER_EMBED_WARTE_MS);
+    const contentVector = await embed(content, {
+      maxQueueWaitMs: Number.isFinite(embedWarteMs) && embedWarteMs >= 0 ? embedWarteMs : 5000,
+      art: 'query',
+    });
     const allResults = await searchVectors(
       COLLECTIONS.globalErrorPatterns,
       contentVector,
@@ -235,8 +258,11 @@ export async function checkErrorPatterns(
       if (!scopeMatchesTier(scope, tier)) continue;
 
       const seen = await pool.query(
-        'SELECT 1 FROM error_pattern_seen WHERE pattern_id = $1 AND session_id = $2',
-        [patternId, agentId]
+        `SELECT 1 FROM error_pattern_seen
+          WHERE pattern_id = $1 AND session_id = $2
+            AND shown_at > GREATEST(NOW() - make_interval(hours => $3),
+                                    COALESCE((SELECT registered_at FROM agent_sessions WHERE id = $2), '-infinity'::timestamptz))`,
+        [patternId, agentId, gesehenFensterStunden()]
       );
       if (seen.rowCount && seen.rowCount > 0) continue;
 
@@ -254,10 +280,7 @@ export async function checkErrorPatterns(
         fix: pattern.fix,
       });
 
-      await pool.query(
-        'INSERT INTO error_pattern_seen (pattern_id, session_id) VALUES ($1, $2) ON CONFLICT DO NOTHING',
-        [patternId, agentId]
-      );
+      // P15-T17 E0: KEIN gesehen-Vermerk mehr hier - erst bei der Auslieferung an den Agenten.
     }
 
     return warnings;

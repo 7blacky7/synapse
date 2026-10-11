@@ -365,6 +365,17 @@ export function createServer(): Server {
           } catch { /* Hinweise duerfen Toolantworten nie brechen */ }
         }
 
+        // P15-T17 E0: Fehlermuster-Treffer der eigenen Schreibvorgaenge (vorher nur im Log).
+        // Wartet kurz auf eine noch laufende Pruefung, sonst Nachlieferung mit der naechsten Antwort.
+        try {
+          const { holeFehlermusterHinweise } = await import('@synapse/core');
+          const fehlermuster = await holeFehlermusterHinweise(agentId);
+          if (fehlermuster) {
+            parsed.fehlermuster = fehlermuster;
+            first.text = JSON.stringify(parsed, null, 2);
+          }
+        } catch { /* Hinweise duerfen Toolantworten nie brechen */ }
+
         // ⚠️ MEMORY, GEDANKE UND TASK SIND EBENFALLS HINWEISGEBER (Vorgabe des Users,
         // 02.08.2026). Ein Skillname steht genauso in einer Memory oder einer Task wie in
         // einer Channel-Nachricht. Wer nie einen Channel betritt, bekam vorher nie einen

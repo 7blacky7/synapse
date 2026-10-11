@@ -1032,6 +1032,9 @@ export type { ChatMessage, AgentSession } from './services/chat.js';
 export type { AgentEvent, EventAck, EventType, EventPriority } from './services/events.js';
 export type { TechDoc, TechDocType, TechDocResult } from './services/tech-docs.js';
 export type { ErrorPattern, ErrorPatternWarning } from './services/error-patterns.js';
+// P15-T17 E0: Fehlermuster-Treffer an den Agenten ausliefern (Nachlieferung)
+export { holeFehlermusterHinweise, verfolgeFehlermusterPruefung } from './services/fehlermuster-auslieferung.js';
+export type { FehlermusterHinweis, FehlermusterAuslieferung } from './services/fehlermuster-auslieferung.js';
 export type { Memory, MemoryWithRelatedCode, RelatedMemoryResult, RelatedCodeResult } from './services/memory.js';
 export type { DetectedTechnology } from './services/tech-detection.js';
 export type { Context7Doc } from './services/context7.js';
