@@ -1,9 +1,10 @@
 /**
  * MODUL: Pruef-Container (P16-T5, Stufe S3, 11.10.2026)
  *
- * Syntaxpruefung fuer Sprachen, die im Node-Prozess der API nicht pruefbar sind (E1: Rust). Die Werkzeuge laufen
- * im Container synapse-pruefcontainer (Dockerfile docker/synapse-pruefcontainer/); diese Datei verwaltet ihn ueber
- * docker.sock - wie der Workspace-Orchestrator - und meldet je Container-Sprache einen Syntaxpruefer an
+ * Syntaxpruefung fuer Sprachen, die im Node-Prozess der API nicht pruefbar sind (E1: Rust; E2: Python, Shell, Go).
+ * Die Werkzeuge laufen im Container synapse-pruefcontainer (Dockerfile docker/synapse-pruefcontainer/); diese Datei
+ * verwaltet ihn ueber docker.sock - wie der Workspace-Orchestrator - und meldet je Container-Sprache einen
+ * Syntaxpruefer an
  * (registriereSyntaxPruefer aus core, also derselbe Weg wie Stufe 1: Befund an Op, quittieren, Sperre).
  *
  * VERBINDUNG: KEIN Netz. Der Container laeuft mit NetworkMode none; PID 1 (pruefserver.py) spricht JSON-Zeilen
@@ -45,6 +46,14 @@ export interface ContainerSprache {
 export const CONTAINER_SPRACHEN: ContainerSprache[] = [
   // P16-T5 E1: rustfmt als reiner Parser, FP 0/1136 echte Index-Dateien, gemma rust_1/rust_5 erkannt.
   { sprache: 'rust', endungen: ['rs'], sperrfaehig: true, werkzeug: 'rustfmt' },
+  // P16-T5 E2: compile(PyCF_ONLY_AST) mit Python 3.14 + Python-2-Rueckfall (fissix). FP 0 auf den Index-Dateien,
+  // die 3 Meldungen dort sind echte Fehler (Messwerte im Bericht). Python 2 gueltig -> kein Befund.
+  { sprache: 'python', endungen: ['py', 'pyw', 'pyi'], sperrfaehig: true, werkzeug: 'python-ast' },
+  // P16-T5 E2: bash -n, nur Bourne-Shells (fremde Shebangs wie zsh/fish/tcsh/ksh werden nicht geprueft).
+  // .zsh/.fish bewusst nicht: zsh nennt ueber stdin keine Zeilen, fish-Syntax ist versionsabhaengig.
+  { sprache: 'shell', endungen: ['sh', 'bash'], sperrfaehig: true, werkzeug: 'bash' },
+  // P16-T5 E2: gofmt -e (go/parser), liest keine Imports.
+  { sprache: 'go', endungen: ['go'], sperrfaehig: true, werkzeug: 'gofmt' },
 ];
 
 export interface PruefContainerConfig {
@@ -205,6 +214,8 @@ export class PruefContainer {
         ...(typeof m.spalte === 'number' ? { spalte: m.spalte } : {}),
         ...(m.code ? { code: m.code } : {}),
         meldung: m.meldung,
+        // E2: Werkzeug-Warnungen (z. B. bash "here-document ... delimited by end-of-file") sperren nie.
+        ...(m.weich ? { weich: true } : {}),
       }));
     })();
     this.laufend.set(schluessel, p);
@@ -461,7 +472,7 @@ let instanz: PruefContainer | null = null;
 function versionAus(info: PruefContainerInfo | null, s: ContainerSprache): string {
   const roh = info?.werkzeuge?.[s.sprache];
   if (!roh) return `${s.werkzeug}@pruefcontainer`;
-  // "rustfmt 1.9.0-stable (31fca3adb2 2026-06-26)" -> "rustfmt-1.9.0-stable"
+  // "rustfmt 1.9.0-stable (31fca3adb2 2026-06-26)" -> "rustfmt-1.9.0-stable"; "python-ast 3.14.8" -> "python-ast-3.14.8"
   return roh.split(' (')[0].trim().replace(/\s+/g, '-');
 }
 

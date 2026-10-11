@@ -4,7 +4,8 @@
 // Pfad, Zeile und Meldung ausgegeben. Gleichzeitig Positivkontrolle (Anker, damit "0 Meldungen" etwas bedeutet):
 // die kleinste Datei mit angehaengter Zeile ")}] ((( {{{ [[[" MUSS gemeldet werden, sonst Exit 2.
 //
-// Aufruf:  node packages/rest-api/tests/pruef-container-fp.mjs [sprache=rust] [max=2000]
+// Aufruf:  node packages/rest-api/tests/pruef-container-fp.mjs [sprache=rust|python|shell|go] [max=2000]
+// Weiche Meldungen (weich:true, sperren nie) werden getrennt gezaehlt und gelistet; nur harte zaehlen als Fehlalarm.
 // Env:     DATABASE_URL (Pflicht), PRUEFCONTAINER_TEST_IMAGE (Standard synapse-pruefcontainer:latest)
 // Ausgabe: Zusammenfassung + je Meldung eine Zeile; Exit 0 = keine Meldung, 1 = Meldungen, 2 = Kontrolle versagt.
 import { createRequire } from 'node:module';
@@ -41,6 +42,7 @@ const pc = new PruefContainer(docker, {
 
 const projekte = new Map();
 const treffer = [];
+const weich = [];
 const zeiten = [];
 let fehler = 0;
 try {
@@ -49,7 +51,9 @@ try {
     const t = performance.now();
     try {
       const m = await pc.pruefe(sprache, z.content, z.file_path);
-      if (m.length > 0) treffer.push({ projekt: z.project, pfad: z.file_path, ...m[0] });
+      const hart = m.filter((x) => !x.weich);
+      if (hart.length > 0) treffer.push({ projekt: z.project, pfad: z.file_path, ...hart[0] });
+      else if (m.length > 0) weich.push({ projekt: z.project, pfad: z.file_path, ...m[0] });
     } catch (e) {
       fehler++;
       console.error(`FEHLER ${z.project}:${z.file_path}: ${e.message}`);
@@ -58,13 +62,14 @@ try {
   }
   // Positivkontrolle
   const kleinste = r.rows.reduce((a, b) => (a && a.content.length <= b.content.length ? a : b), null);
-  const kontrolle = kleinste ? await pc.pruefe(sprache, kleinste.content + '\n)}] ((( {{{ [[[\n', 'kontrolle') : [];
+  const kontrolle = kleinste ? (await pc.pruefe(sprache, kleinste.content + '\n)}] ((( {{{ [[[\n', 'kontrolle')).filter((x) => !x.weich) : [];
   zeiten.sort((a, b) => a - b);
   const p = (q) => (zeiten.length ? zeiten[Math.min(zeiten.length - 1, Math.floor(zeiten.length * q))].toFixed(1) : '-');
-  console.log(`sprache ${sprache}: ${r.rows.length} Dateien, Meldungen ${treffer.length}, Fehler ${fehler}, Kontrolle ${kontrolle.length > 0 ? 'erkannt' : 'NICHT erkannt'}`);
+  console.log(`sprache ${sprache}: ${r.rows.length} Dateien, Meldungen ${treffer.length}, weich ${weich.length}, Fehler ${fehler}, Kontrolle ${kontrolle.length > 0 ? 'erkannt' : 'NICHT erkannt'}`);
   console.log(`zeit je Datei (warm, inkl. attach) p50 ${p(0.5)} ms, p95 ${p(0.95)} ms, max ${p(1)} ms`);
   console.log(`projekte: ${[...projekte].sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k} ${v}`).join(', ')}`);
   for (const t of treffer) console.log(`MELDUNG ${t.projekt}:${t.pfad} Z.${t.zeile}:${t.spalte ?? '?'} ${t.meldung}`);
+  for (const t of weich) console.log(`WEICH ${t.projekt}:${t.pfad} Z.${t.zeile}:${t.spalte ?? '?'} ${t.meldung}`);
   process.exitCode = kontrolle.length === 0 ? 2 : treffer.length > 0 ? 1 : 0;
 } finally {
   await pc.beenden();

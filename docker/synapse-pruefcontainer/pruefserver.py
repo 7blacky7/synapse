@@ -6,10 +6,13 @@ Syntaxpruefung fuer Sprachen, die im Node-Prozess der API nicht pruefbar sind. L
 synapse-pruefcontainer und spricht JSON-Zeilen ueber stdin/stdout - KEIN Netz (Container mit NetworkMode none),
 die API haengt sich per docker attach an (packages/rest-api/src/services/pruef-container.ts).
 
+SPRACHEN: rust (E1, rustfmt), python (E2, ast im Prozess + Python-2-Rueckfall), shell (E2, bash -n), go (E2, gofmt -e).
+
 PROTOKOLL (eine JSON-Zeile je Nachricht, UTF-8):
   rein:  {"id": 7, "sprache": "rust", "inhalt": "...", "pfad": "src/a.rs"}
          {"id": 8, "info": true}
   raus:  {"id": 7, "ok": true, "meldungen": [{"zeile": 3, "spalte": 5, "code": null, "meldung": "..."}], "ms": 31.2}
+         Eine Meldung kann "weich": true tragen (Hinweis, sperrt nie).
          {"id": 7, "ok": false, "fehler": "..."}
          {"id": 8, "ok": true, "info": {"werkzeuge": {"rust": "rustfmt 1.9.0-stable ..."}, "parallel": 2}}
   Beim Start schreibt der Server einmal {"bereit": true, "info": {...}}.
@@ -18,8 +21,9 @@ GRUNDSAETZE
   - Nur reine Parse-Werkzeuge, nichts, was Code des Nutzers ausfuehrt (Makros, build.rs, Imports).
   - Inhalt kommt per stdin an das Werkzeug, nie als Datei; der Pfad dient nur der Anzeige.
   - Jedes Werkzeug laeuft mit Zeitlimit (PRUEF_WERKZEUG_TIMEOUT_S, Standard 5) in eigener Prozessgruppe und wird
-    danach samt Kindern beendet.
+    danach samt Kindern beendet. Python parst im Serverprozess (compile mit PyCF_ONLY_AST fuehrt nichts aus).
   - Parallelitaet PRUEF_PARALLEL (Standard 2), mehr Auftraege warten in der Warteschlange des Executors.
+  - Lieber nichts melden als falsch melden: Werkzeugausgaben ohne Ortsangabe werden nicht gemeldet.
 """
 import json
 import os
@@ -29,13 +33,19 @@ import subprocess
 import sys
 import threading
 import time
+import warnings
 from concurrent.futures import ThreadPoolExecutor
+
+# compile() meldet SyntaxWarnings (z. B. ungueltige Escapes) auf stderr - das sind keine Syntaxfehler und wuerden
+# nur das API-Log fuellen.
+warnings.simplefilter('ignore')
 
 TIMEOUT_S = float(os.environ.get('PRUEF_WERKZEUG_TIMEOUT_S', '5'))
 PARALLEL = max(1, int(os.environ.get('PRUEF_PARALLEL', '2')))
 RUST_EDITION = os.environ.get('PRUEF_RUST_EDITION', '2021')
 LEERES_VERZEICHNIS = os.environ.get('PRUEF_LEER', '/opt/pruef/leer')
 RUSTFMT_KONFIG = os.environ.get('PRUEF_RUSTFMT_KONFIG', '/opt/pruef/rustfmt.toml')
+VERSIONEN = os.environ.get('PRUEF_VERSIONEN', '/opt/pruef/versionen')
 
 _aus = sys.stdout
 _aus_sperre = threading.Lock()
@@ -110,6 +120,171 @@ def pruefe_rust(inhalt: str, pfad: str):
     return meldungen
 
 
+# ─── Python: ast im Serverprozess (P16-T5 E2) ─────────────────────────────────
+# compile(..., PyCF_ONLY_AST) baut nur den Syntaxbaum: kein Import, keine Ausfuehrung, warm unter 1 ms.
+# GRAMMATIK: die des Interpreters im Image (Python 3.14, per Image-Tag gepinnt). feature_version wird bewusst NICHT
+# gesetzt: es kann die Grammatik nur auf aeltere 3.x-Staende EINSCHRAENKEN (neuere Syntax wie PEP 695/701/758 wuerde
+# dann gemeldet) und kennt kein Python 2. Die neueste Grammatik ist die Obermenge fuer Python-3-Code.
+# PYTHON 2: Messung P16-T5 E2 auf 2829 Index-Dateien: 22 Python-3-Fehler, davon 19 gueltiges Python 2 (print-
+# Anweisung, Tabs/Leerzeichen gemischt, 0777, <>) und 3 echte Fehler. Deshalb: scheitert Python 3, parst die
+# Python-2-Grammatik von fissix (lib2to3-Fork, reiner Parser) nach. Gueltiges Python 2 -> kein Befund (die Datei ist
+# Python-2-Code). Scheitert auch Python 2 und ist die Python-3-Meldung ein Python-2-Merkmal, liegt der echte Fehler
+# dort, wo der Python-2-Parser haengen bleibt - diese Stelle wird gemeldet. Sonst die Python-3-Meldung.
+# Bewusste Luecke: ein Python-3-Projekt mit versehentlicher print-Anweisung ist gueltiges Python 2 und bleibt
+# unerkannt (lieber das als Fehlalarme auf Python-2-Code).
+
+_PY_ONLY_AST = 0x400  # ast.PyCF_ONLY_AST, ohne den ast-Import
+_PY2_MERKMAL = re.compile(r"Missing parentheses in call to|inconsistent use of tabs|leading zeros in decimal integer"
+                          r"|instead of '<>'|multiple exception types must be parenthesized")
+_py2_parser = None
+_py2_sperre = threading.Lock()
+
+
+def _py2_driver():
+    """fissix-Driver mit Python-2-Grammatik (print-Anweisung); False, wenn fissix fehlt."""
+    global _py2_parser
+    with _py2_sperre:
+        if _py2_parser is None:
+            try:
+                from fissix import pygram, pytree
+                from fissix.pgen2 import driver
+                _py2_parser = driver.Driver(pygram.python_grammar, convert=pytree.convert)
+            except Exception as e:  # noqa: BLE001
+                sys.stderr.write(f'[pruefserver] fissix nicht ladbar, kein Python-2-Rueckfall: {e}\n')
+                _py2_parser = False
+        return _py2_parser
+
+
+def _py2_fehler(inhalt: str):
+    """None = gueltiges Python 2; sonst (zeile, spalte, meldung). Wirft nichts."""
+    d = _py2_driver()
+    if not d:
+        return (0, 0, 'kein Python-2-Parser')
+    quelle = inhalt.replace('\r\n', '\n')
+    if not quelle.endswith('\n'):
+        quelle += '\n'
+    try:
+        d.parse_string(quelle)
+        return None
+    except Exception as e:  # noqa: BLE001 - ParseError, TokenError, IndentationError aus pgen2
+        ctx = getattr(e, 'context', None)
+        if ctx and isinstance(ctx, tuple) and len(ctx) == 2 and isinstance(ctx[1], tuple):
+            wert = getattr(e, 'value', None)
+            return (ctx[1][0], ctx[1][1] + 1, f'unerwartetes Token {wert!r}' if wert else 'Syntaxfehler')
+        a = getattr(e, 'args', ())
+        if len(a) == 2 and isinstance(a[1], tuple):
+            ort = a[1]
+            if len(ort) == 2 and all(isinstance(x, int) for x in ort):
+                return (ort[0], ort[1] + 1, str(a[0]))
+            if len(ort) >= 3 and isinstance(ort[1], int):
+                return (ort[1], (ort[2] or 0) + 1, str(a[0]))
+        return (0, 0, str(e)[:200])
+
+
+def pruefe_python(inhalt: str, pfad: str):
+    try:
+        compile(inhalt, pfad or '<pruef>', 'exec', flags=_PY_ONLY_AST, dont_inherit=True)
+        return []
+    except SyntaxError as e:
+        zeile, spalte, meldung, art = e.lineno, e.offset, e.msg, type(e).__name__
+    except (ValueError, MemoryError, RecursionError) as e:
+        # Nullbytes (aeltere Pythons), Speicher/Rekursion: kein Syntaxbefund mit Ort.
+        sys.stderr.write(f'[pruefserver] python {type(e).__name__} ohne Ort fuer {pfad}: {str(e)[:200]}\n')
+        return []
+    if not zeile:
+        return []
+    py2 = _py2_fehler(inhalt)
+    if py2 is None:
+        # Gueltiges Python 2: kein Befund.
+        return []
+    if _PY2_MERKMAL.search(meldung or '') and py2[0] > 0:
+        return [{'zeile': py2[0], 'spalte': py2[1], 'code': 'python2',
+                 'meldung': f'Python-2-Datei mit Syntaxfehler: {py2[2]} (Python 3 meldet zuerst Z.{zeile}: {meldung})'}]
+    m = {'zeile': zeile, 'code': art, 'meldung': meldung}
+    if isinstance(spalte, int) and spalte > 0:
+        m['spalte'] = spalte
+    return [m]
+
+
+# ─── Shell: bash -n (P16-T5 E2) ───────────────────────────────────────────────
+# bash -n liest und parst nur (noexec): keine Befehle, keine Substitutionen, keine Expansion. -O extglob, weil
+# extglob-Muster sonst Syntaxfehler sind, obwohl das Skript shopt -s extglob setzt (das -n nicht ausfuehrt).
+# Nur Bourne-Shells: eine Shebang-Zeile mit anderer Shell (zsh, fish, csh/tcsh, ksh) oder anderem Interpreter
+# (perl, python ...) -> nicht pruefbar, kein Befund. Ohne Shebang gilt bash. CRLF wird vor dem Parsen zu LF (sonst
+# meldet bash jede Windows-Datei).
+# Messung P16-T5 E2: 825 echte .sh/.bash/.ksh, 21 fremde Shebangs uebersprungen, 804 geprueft, 1 Meldung (eine
+# .sh-Datei, die CMake enthaelt). zsh: ueber stdin ohne Zeilennummern, 0 Index-Dateien -> nicht angemeldet. fish:
+# Syntax versionsabhaengig (fish 4.0 meldete 6 von 1426 Dateien einer neueren fish-Version) -> nicht angemeldet.
+# Grenze: bash -n prueft keine arithmetischen Ausdruecke $(( )) und keine Befehle in Strings.
+
+_BOURNE = {'sh', 'bash', 'dash', 'ash', 'busybox'}
+_BASH_ZEILE = re.compile(r'^bash: (?:line|Zeile) (?P<zeile>\d+): (?P<meldung>.*)$')
+
+
+def shebang_shell(inhalt: str):
+    """Name des Interpreters aus der Shebang-Zeile (ohne Versionsziffern), None ohne Shebang."""
+    if not inhalt.startswith('#!'):
+        return None
+    teile = inhalt.split('\n', 1)[0][2:].strip().split()
+    if not teile:
+        return None
+    name = teile[0].rsplit('/', 1)[-1]
+    if name == 'env':
+        rest = [t for t in teile[1:] if not t.startswith('-') and '=' not in t]
+        name = rest[0].rsplit('/', 1)[-1] if rest else ''
+    return re.sub(r'[0-9.]+$', '', name)
+
+
+def pruefe_shell(inhalt: str, pfad: str):
+    shell = shebang_shell(inhalt)
+    if shell is not None and shell not in _BOURNE:
+        return []
+    rc, _out, err = lauf(['bash', '-O', 'extglob', '-n'], inhalt.replace('\r\n', '\n').encode('utf-8'))
+    meldungen = []
+    for z in err.decode('utf-8', 'replace').splitlines():
+        m = _BASH_ZEILE.match(z)
+        if not m:
+            continue
+        text = m.group('meldung')
+        if text.startswith('`'):
+            continue  # Kontextzeile (Wiederholung des Quelltexts) zur Meldung davor
+        if text.startswith('warning:'):
+            meldungen.append({'zeile': int(m.group('zeile')), 'code': 'warnung', 'meldung': text[9:].strip(), 'weich': True})
+        elif rc != 0:
+            meldungen.append({'zeile': int(m.group('zeile')), 'code': None, 'meldung': text})
+    return meldungen
+
+
+# ─── Go: gofmt -e (P16-T5 E2) ─────────────────────────────────────────────────
+# gofmt parst mit go/parser, liest keine Imports und keine go.mod, fuehrt nichts aus. -e meldet alle Fehler
+# ("<standard input>:Z:S: meldung"); gekappt auf GO_MAX_MELDUNGEN, Folgefehler danach sind selten hilfreich.
+
+_GO_ZEILE = re.compile(r'^<standard input>:(?P<zeile>\d+):(?P<spalte>\d+): (?P<meldung>.*)$')
+GO_MAX_MELDUNGEN = 20
+
+
+def pruefe_go(inhalt: str, pfad: str):
+    rc, _out, err = lauf(['gofmt', '-e'], inhalt.encode('utf-8'))
+    if rc == 0:
+        return []
+    meldungen = []
+    gesehen = set()
+    for z in err.decode('utf-8', 'replace').splitlines():
+        m = _GO_ZEILE.match(z)
+        if m and z not in gesehen:
+            # gofmt -e wiederholt Folgefehler an derselben Stelle (z. B. zweimal "expected ';', found 'EOF'").
+            gesehen.add(z)
+            meldungen.append({'zeile': int(m.group('zeile')), 'spalte': int(m.group('spalte')), 'code': None,
+                              'meldung': m.group('meldung')})
+        if len(meldungen) >= GO_MAX_MELDUNGEN:
+            break
+    if not meldungen:
+        sys.stderr.write(f'[pruefserver] gofmt rc={rc} ohne Parse-Meldung fuer {pfad}: {err[:300]!r}\n')
+    return meldungen
+
+
+# ─── Versionen und Verteilung ─────────────────────────────────────────────────
+
 def version_von(cmd):
     try:
         rc, out, err = lauf(cmd, b'')
@@ -118,14 +293,37 @@ def version_von(cmd):
         return f'unbekannt ({e})'
 
 
+def version_python():
+    return f'python-ast {sys.version.split()[0]}'
+
+
+def version_bash():
+    roh = version_von(['bash', '--version'])
+    m = re.search(r'version (\d+\.\d+(?:\.\d+)?)', roh)
+    return f'bash {m.group(1)}' if m else roh
+
+
+def version_go():
+    # gofmt hat kein --version; die Go-Version schreibt der Image-Build nach versionen/go ("go1.26.9").
+    try:
+        with open(os.path.join(VERSIONEN, 'go'), encoding='utf-8') as f:
+            return f'gofmt {f.read().strip()}'
+    except OSError:
+        return 'gofmt unbekannt'
+
+
 PRUEFER = {
-    'rust': (pruefe_rust, ['rustfmt', '--version']),
+    'rust': (pruefe_rust, lambda: version_von(['rustfmt', '--version'])),
+    'python': (pruefe_python, version_python),
+    'shell': (pruefe_shell, version_bash),
+    'go': (pruefe_go, version_go),
 }
 
 
 def info():
-    return {'werkzeuge': {name: version_von(v) for name, (_f, v) in PRUEFER.items()},
-            'parallel': PARALLEL, 'timeout_s': TIMEOUT_S, 'rust_edition': RUST_EDITION}
+    return {'werkzeuge': {name: v() for name, (_f, v) in PRUEFER.items()},
+            'parallel': PARALLEL, 'timeout_s': TIMEOUT_S, 'rust_edition': RUST_EDITION,
+            'python2_rueckfall': bool(_py2_driver())}
 
 
 def bearbeite(auftrag):
