@@ -32,7 +32,7 @@ import {
   seiteAusListe,
   assetWarteschlange,
 } from '@synapse/core';
-import type { WarteschlangenEintrag } from '@synapse/core';
+import type { VerschiebeAuftrag, WarteschlangenEintrag } from '@synapse/core';
 import {
   DaemonConfig,
   ProjektConfig,
@@ -81,30 +81,150 @@ interface IndexWartender {
   typ: string;
   seit: number;
   weiter?: () => void;
+  /** P15-T12 E4: 1 = vorgezogen, -1 = ans Ende (ueberstimmt die Projekt-Regel) */
+  vorrang?: 1 | -1;
+  /** P15-T12 E4: bis dahin keinen Slot (ms seit Epoche) */
+  zurueckBis?: number;
 }
 const indexWaiters: IndexWartender[] = [];
+/** P15-T12 E4: Steuerung je Projekt und markierte Ereignisse. Alles leer = reines FIFO wie vorher. */
+const projektVorrang = new Map<string, 1 | -1>();
+const projektZurueck = new Map<string, number>();
+const markierteEreignisse = new Set<number>();
+let wecker: NodeJS.Timeout | null = null;
+
+function steuerungAktiv(): boolean {
+  return projektVorrang.size > 0 || projektZurueck.size > 0 || markierteEreignisse.size > 0;
+}
+
+/** Rang-Klasse eines Wartenden: 1 vor 0 vor -1; null = zurueckgestellt (bekommt jetzt keinen Slot). */
+function klasse(w: IndexWartender, jetzt: number): 1 | 0 | -1 | null {
+  if (!steuerungAktiv()) return 0;
+  const bis = w.zurueckBis ?? projektZurueck.get(w.project);
+  if (bis !== undefined && bis > jetzt) return null;
+  return w.vorrang ?? projektVorrang.get(w.project) ?? 0;
+}
+
+/** Wartende in der Reihenfolge, in der sie Slots bekommen (zurueckgestellte am Ende). */
+function indexReihenfolge(jetzt = Date.now()): Array<{ w: IndexWartender; k: 1 | 0 | -1 | null }> {
+  const mit = indexWaiters.map((w, i) => ({ w, k: klasse(w, jetzt), i }));
+  const wert = (k: 1 | 0 | -1 | null): number => (k === null ? -2 : k);
+  return mit.sort((x, y) => wert(y.k) - wert(x.k) || x.i - y.i).map(({ w, k }) => ({ w, k }));
+}
+
+/** Weckt die Vergabe, wenn die frueheste Zurueckstellung endet (sonst warteten die Ereignisse bis zum naechsten Release). */
+function planeWecker(jetzt: number): void {
+  let frueh = Infinity;
+  for (const w of indexWaiters) {
+    const bis = w.zurueckBis ?? projektZurueck.get(w.project);
+    if (bis !== undefined && bis > jetzt) frueh = Math.min(frueh, bis);
+  }
+  if (wecker) { clearTimeout(wecker); wecker = null; }
+  if (frueh === Infinity) return;
+  wecker = setTimeout(() => { wecker = null; vergebeFreieSlots(); }, Math.max(50, frueh - jetzt + 10));
+  wecker.unref?.();
+}
+
+/** Gibt freie Slots an Wartende: ohne Steuerung FIFO (shift), sonst beste Klasse, darin FIFO. */
+function vergebeFreieSlots(): void {
+  const jetzt = Date.now();
+  while (activeIndexOps < MAX_CONCURRENT_INDEX && indexWaiters.length > 0) {
+    let index = 0;
+    if (steuerungAktiv()) {
+      index = -1;
+      let beste = -2;
+      for (let i = 0; i < indexWaiters.length; i++) {
+        const k = klasse(indexWaiters[i], jetzt);
+        if (k !== null && k > beste) { beste = k; index = i; if (k === 1) break; }
+      }
+      if (index < 0) { planeWecker(jetzt); return; }
+    }
+    const [w] = indexWaiters.splice(index, 1);
+    markierteEreignisse.delete(w.id);
+    activeIndexOps++;
+    w.weiter!();
+  }
+  if (steuerungAktiv()) planeWecker(jetzt);
+}
 /** Ereignisse, die wegen der Pause von sync_fs_pg noch VOR dem Slot warten. */
 const pausiertWartend = new Map<number, IndexWartender>();
 let naechsteWarteId = 1;
 function acquireIndexSlot(w: IndexWartender): Promise<void> {
-  if (activeIndexOps < MAX_CONCURRENT_INDEX) {
+  if (activeIndexOps < MAX_CONCURRENT_INDEX && indexWaiters.length === 0 && klasse(w, Date.now()) !== null) {
     activeIndexOps++;
     return Promise.resolve();
   }
-  // Wartender bekommt den Slot uebergeben (release zaehlt NICHT runter) —
-  // sonst akkumuliert der Counter und alle queuen ewig.
-  return new Promise<void>((resolve) => indexWaiters.push({ ...w, weiter: resolve }));
+  // P15-T12 E4: einreihen und sofort vergeben (synchron) — ohne Steuerung genau das alte FIFO.
+  return new Promise<void>((resolve) => {
+    indexWaiters.push({ ...w, weiter: resolve });
+    vergebeFreieSlots();
+  });
 }
 function releaseIndexSlot(): void {
-  const next = indexWaiters.shift();
-  if (next) next.weiter!();
-  else activeIndexOps--;
+  // Slot zurueck und sofort (synchron) weitergeben; ohne Steuerung bekommt ihn der Erste (FIFO).
+  activeIndexOps--;
+  vergebeFreieSlots();
 }
 
-function alsEintrag(w: IndexWartender, status: string, jetzt: number): WarteschlangenEintrag {
+/** Nur fuer Tests (scripts/test-warteschlangen-index.mjs): Slot-Vergabe direkt treiben. */
+export const indexSlotsFuerTests = {
+  acquire: (project: string, pfad: string): Promise<void> =>
+    acquireIndexSlot({ id: naechsteWarteId++, project, path: pfad, typ: 'change', seit: Date.now() }),
+  release: releaseIndexSlot,
+  belegt: (): number => activeIndexOps,
+};
+
+/** P15-T12 E4: intern(warteschlange_verschieben, index, prozess daemon). */
+function verschiebeIndex(a: VerschiebeAuftrag): Record<string, unknown> {
+  const ids = a.eintrag_ids ?? [];
+  if (ids.length > 0) {
+    const betroffen: string[] = [];
+    const nichtGefunden: string[] = [];
+    for (const id of ids) {
+      const i = indexWaiters.findIndex((w) => String(w.id) === id);
+      if (i < 0) { nichtGefunden.push(id); continue; }
+      const w = indexWaiters[i];
+      delete w.vorrang;
+      delete w.zurueckBis;
+      markierteEreignisse.delete(w.id);
+      if (a.nach === 'vorne' || a.nach === 'hinten') {
+        w.vorrang = a.nach === 'vorne' ? 1 : -1;
+        indexWaiters.splice(i, 1);
+        if (a.nach === 'vorne') indexWaiters.unshift(w); else indexWaiters.push(w);
+        markierteEreignisse.add(w.id);
+      } else if (a.nach === 'zurueckstellen') {
+        w.zurueckBis = a.bis_ms;
+        markierteEreignisse.add(w.id);
+      }
+      betroffen.push(id);
+    }
+    vergebeFreieSlots();
+    return {
+      ebene: 'ereignisse', nach: a.nach, geaendert: betroffen.length,
+      ...(nichtGefunden.length > 0 ? { nicht_gefunden: nichtGefunden, hinweis: 'Nicht (mehr) wartend; Ereignisse im Status pausiert stehen noch vor der Warteschlange.' } : {}),
+    };
+  }
+  const p = a.project!;
+  if (a.nach === 'vorne' || a.nach === 'hinten') { projektVorrang.set(p, a.nach === 'vorne' ? 1 : -1); projektZurueck.delete(p); }
+  else if (a.nach === 'zurueckstellen') projektZurueck.set(p, a.bis_ms!);
+  else { projektVorrang.delete(p); projektZurueck.delete(p); }
+  vergebeFreieSlots();
   return {
-    id: String(w.id), projekt: w.project, typ: w.typ, status, prioritaet: null,
-    alter_s: Math.round((jetzt - w.seit) / 1000), details: { pfad: w.path },
+    ebene: 'projekt', project: p, nach: a.nach,
+    wartend_im_projekt: indexWaiters.filter((w) => w.project === p).length,
+    ...(a.nach === 'zurueckstellen' ? { zurueckgestellt_bis: new Date(a.bis_ms!).toISOString() } : {}),
+    hinweis: 'Gilt im Speicher dieses Daemons bis zum Neustart.',
+  };
+}
+
+function alsEintrag(w: IndexWartender, status: string, jetzt: number, k: 1 | 0 | -1 | null = 0): WarteschlangenEintrag {
+  const bis = w.zurueckBis ?? projektZurueck.get(w.project);
+  return {
+    id: String(w.id), projekt: w.project, typ: w.typ,
+    status: k === null ? 'zurueckgestellt' : status,
+    prioritaet: k === 1 ? 'vorne' : k === -1 ? 'hinten' : null,
+    alter_s: Math.round((jetzt - w.seit) / 1000),
+    details: { pfad: w.path, ...(k === null && bis ? { zurueckgestellt_bis: new Date(bis).toISOString() } : {}) },
   };
 }
 
@@ -112,20 +232,32 @@ function alsEintrag(w: IndexWartender, status: string, jetzt: number): Warteschl
 registriereWarteschlange({
   name: 'index',
   beschreibung: `Datei-Ereignisse vor der Indexierung (Slots INDEX_MAX_CONCURRENT=${MAX_CONCURRENT_INDEX}); status pausiert = wartet auf das Ende der Pause von sync_fs_pg.`,
-  reihenfolge: 'FIFO: wer zuerst auf einen Slot wartet, bekommt ihn zuerst.',
-  verschiebbar: 'E4: Projekt bzw. einzelnes Ereignis vorne/hinten, Projekt zurueckstellen, einreihen.',
+  reihenfolge: 'FIFO: wer zuerst auf einen Slot wartet, bekommt ihn zuerst. Mit Steuerung: vorne vor normal vor hinten, darin FIFO; zurueckgestellte warten.',
+  verschiebbar: 'Projekt (project) oder Ereignis (eintrag_id): vorne, hinten, zurueckstellen (dauer_min|bis), einreihen. Nur im Speicher, ein Neustart hebt es auf.',
   uebersicht: () => {
     const je: Record<string, number> = {};
     for (const w of [...indexWaiters, ...pausiertWartend.values()]) je[w.project] = (je[w.project] ?? 0) + 1;
-    return { anzahl: indexWaiters.length + pausiertWartend.size, wartend: indexWaiters.length, pausiert: pausiertWartend.size, slots_belegt: activeIndexOps, slots_max: MAX_CONCURRENT_INDEX, je_projekt: je };
+    const jetzt = Date.now();
+    return {
+      anzahl: indexWaiters.length + pausiertWartend.size, wartend: indexWaiters.length, pausiert: pausiertWartend.size,
+      slots_belegt: activeIndexOps, slots_max: MAX_CONCURRENT_INDEX, je_projekt: je,
+      ...(steuerungAktiv() ? {
+        steuerung: {
+          projekt_vorrang: Object.fromEntries(projektVorrang),
+          projekt_zurueckgestellt_bis: Object.fromEntries([...projektZurueck].filter(([, b]) => b > jetzt).map(([p, b]) => [p, new Date(b).toISOString()])),
+          markierte_ereignisse: markierteEreignisse.size,
+        },
+      } : {}),
+    };
   },
   liste: (f) => {
     const jetzt = Date.now();
     return seiteAusListe([
-      ...indexWaiters.map((w) => alsEintrag(w, 'wartend', jetzt)),
+      ...indexReihenfolge(jetzt).map(({ w, k }) => alsEintrag(w, 'wartend', jetzt, k)),
       ...[...pausiertWartend.values()].map((w) => ({ ...alsEintrag(w, 'pausiert', jetzt), rang: null })),
     ], f);
   },
+  verschieben: (a) => verschiebeIndex(a),
 });
 registriereWarteschlange({
   name: 'asset',

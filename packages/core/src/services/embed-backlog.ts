@@ -209,6 +209,23 @@ export async function embeddeOffeneEintraege(
 }
 
 /**
+ * P15-T12 E4: bestimmte Eintraege einer Tabelle SOFORT einbetten (intern warteschlange_verschieben
+ * wissen_nachzug, nach vorne). Gleicher Stapelweg wie der Nachzug; nur Zeilen mit embedded_at NULL.
+ */
+export async function embeddeEintraegeJetzt(tabelle: string, ids: string[]): Promise<{ angefragt: number; nachgetragen: number }> {
+  const t = TABELLEN.find((x) => x.name === tabelle);
+  if (!t) throw new Error(`unbekannte Tabelle ${tabelle}`);
+  if (ids.length === 0) return { angefragt: 0, nachgetragen: 0 };
+  const { rows } = await getPool().query(
+    `SELECT ${t.idSpalte}::text AS id FROM ${t.name} WHERE embedded_at IS NULL AND ${t.idSpalte}::text = ANY($1::text[])`,
+    [ids]
+  );
+  if (rows.length === 0) return { angefragt: ids.length, nachgetragen: 0 };
+  const nachgetragen = await betteStapelEin(t.quelle(), rows.map((r) => r.id), { priority: 'background' });
+  return { angefragt: ids.length, nachgetragen };
+}
+
+/**
  * Wie viele Eintraege warten noch auf ihren Vektor? Fuer Diagnose und Tests.
  *
  * Bewusst getrennt von embeddeOffeneEintraege: eine Zaehlung darf keine Nebenwirkung haben,

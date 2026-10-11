@@ -353,6 +353,9 @@ CREATE TABLE IF NOT EXISTS embed_prioritaet (
   gesetzt_von TEXT,
   gesetzt_am TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+-- P15-T12 E4: Projekt zurueckstellen (intern warteschlange_verschieben): bis dahin weder Code-Claims
+-- (embedding-claims.ts projektWahl) noch Parsen (projekteMitBacklog). Vorgezogene Chunks (prio > 0) gehen vor.
+ALTER TABLE embed_prioritaet ADD COLUMN IF NOT EXISTS zurueckgestellt_bis TIMESTAMPTZ;
 
 -- SETUP-1: Setup-Phase-Tracking (projektweiter Einrichtungsfortschritt).
 -- Eigene Tabelle statt Spalte in projects, weil projects PK (name, hostname)
@@ -628,6 +631,23 @@ CREATE INDEX IF NOT EXISTS idx_code_chunks_claimable
 CREATE INDEX IF NOT EXISTS idx_code_chunks_claim_ordnung
   ON code_chunks(project, file_path, chunk_index)
   WHERE embedded_at IS NULL;
+
+-- P15-T12 E4 (11.10.2026): Einzel-Chunk-Steuerung fuer intern(warteschlange_verschieben).
+-- prio: NULL = normal (Regelfall); > 0 = vor allen anderen (alle Projekte, hoechster Wert zuerst);
+--   < 0 = ans Ende seines Projekts. zurueckgestellt_bis: bis dahin claimt niemand den Chunk.
+-- Bewusst KEIN Schein-Claim ueber claimed_by/lease_until: Claims gehoeren Knoten mit Token und
+--   Lease; die Diagnose (durchsatz, warum_nicht) wuerde sonst verfaelscht.
+-- Beide Spalten ohne DEFAULT: ADD COLUMN ist dann nur eine Katalog-Aenderung, kein Umschreiben.
+ALTER TABLE code_chunks ADD COLUMN IF NOT EXISTS prio SMALLINT;
+ALTER TABLE code_chunks ADD COLUMN IF NOT EXISTS zurueckgestellt_bis TIMESTAMPTZ;
+-- Schritt 0 und 2 der Claim-Abfrage (embedding-claims.ts CLAIM_SQL): leer, solange niemand prio setzt.
+CREATE INDEX IF NOT EXISTS idx_code_chunks_prio
+  ON code_chunks(prio DESC, project, file_path, chunk_index)
+  WHERE embedded_at IS NULL AND prio IS NOT NULL;
+-- Zurueckgestellte Chunks finden (warteschlange_liste/_verschieben, warum_nicht) ohne Vollscan.
+CREATE INDEX IF NOT EXISTS idx_code_chunks_zurueckgestellt
+  ON code_chunks(project, zurueckgestellt_bis)
+  WHERE zurueckgestellt_bis IS NOT NULL;
 
 -- ============================================================================
 -- CodeIntel Ablauf-Ebene (Statement-/Execution-Flow)

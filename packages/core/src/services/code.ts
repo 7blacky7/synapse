@@ -1990,6 +1990,8 @@ export async function projekteMitBacklog(
           WHERE cc.embedded_at IS NULL
        ) q
       WHERE EXISTS (SELECT 1 FROM projects p WHERE p.name = q.project AND p.enabled)
+        -- P15-T12 E4: zurueckgestellte Projekte (intern warteschlange_verschieben) ruhen bis dahin.
+        AND NOT EXISTS (SELECT 1 FROM embed_prioritaet z WHERE z.project = q.project AND z.zurueckgestellt_bis > NOW())
       GROUP BY q.project
       -- P12-T12: erst die Embed-Prioritaet (Stufe 1 zuerst, ohne Eintrag 3), dann der groesste
       -- Rueckstand. Vorher nur die Groesse: ein Testkorpus mit 444k Chunks blockierte alles andere.

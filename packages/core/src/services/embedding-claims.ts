@@ -67,6 +67,80 @@ export interface CompleteEmbeddingDependencies {
   ) => Promise<void>;
 }
 
+const CLAIM_SPALTEN = `cc.id, cc.project, cc.file_path, cf.file_type, cc.chunk_index,
+              cc.content, cc.line_start, cc.line_end,
+              (SELECT COUNT(*) FROM code_chunks allc
+                WHERE allc.project=cc.project AND allc.file_path=cc.file_path)::int AS total_chunks`;
+
+/**
+ * P15-T12 E4: die Abfragen der Chunk-Auswahl, exportiert fuer Messung (scripts/messung-claim-explain.mjs)
+ * und Regressionstest. Reihenfolge in claimEmbeddingChunks:
+ *   vorgezogen  Schritt 0: prio > 0, ueber ALLE aktiven Projekte, hoechste prio zuerst. Laeuft ueber den
+ *               Teilindex idx_code_chunks_prio, der leer ist, solange niemand eine prio setzt.
+ *   projektWahl Projekt waehlen wie bisher (Stufe, dann zufaellig); zurueckgestellte Projekte
+ *               (embed_prioritaet.zurueckgestellt_bis) fallen heraus.
+ *   normal      Schritt 1: UNVERAENDERT bis auf zwei Heap-Filter (prio IS NULL, nicht zurueckgestellt);
+ *               die Zeilen werden fuer content/lease_until ohnehin gelesen.
+ *   hinten      Schritt 2, nur bei Rest-Limit: prio < 0 des gewaehlten Projekts ("ans Projektende").
+ * Ohne gesetzte prio/zurueckgestellt_bis ist die Reihenfolge identisch zu vorher (Regressionstest).
+ */
+export const CLAIM_SQL = {
+  vorgezogen: `SELECT ${CLAIM_SPALTEN}
+         FROM code_chunks cc
+         JOIN code_files cf ON cf.project=cc.project AND cf.file_path=cc.file_path
+        WHERE cc.embedded_at IS NULL
+          AND cc.prio > 0
+          AND (cc.lease_until IS NULL OR cc.lease_until < NOW())
+          AND (cc.zurueckgestellt_bis IS NULL OR cc.zurueckgestellt_bis <= NOW())
+          AND EXISTS (SELECT 1 FROM projects p WHERE p.name = cc.project AND p.enabled)
+        ORDER BY cc.prio DESC, cc.project, cc.file_path, cc.chunk_index
+        LIMIT $1
+        FOR UPDATE OF cc SKIP LOCKED`,
+  projektWahl: `SELECT p.name
+         FROM (SELECT DISTINCT name, enabled FROM projects) p
+        WHERE p.enabled
+          AND EXISTS (SELECT 1 FROM code_chunks cc
+                       WHERE cc.project = p.name AND cc.embedded_at IS NULL)
+          AND NOT EXISTS (SELECT 1 FROM embed_prioritaet z
+                           WHERE z.project = p.name AND z.zurueckgestellt_bis > NOW())
+        ORDER BY COALESCE((SELECT e.stufe FROM embed_prioritaet e WHERE e.project = p.name), 3), random()
+        LIMIT 1`,
+  normal: `SELECT ${CLAIM_SPALTEN}
+         FROM code_chunks cc
+         JOIN code_files cf ON cf.project=cc.project AND cf.file_path=cc.file_path
+        WHERE cc.project = $2
+          AND cc.embedded_at IS NULL
+          AND (cc.lease_until IS NULL OR cc.lease_until < NOW())
+          AND cc.prio IS NULL
+          AND (cc.zurueckgestellt_bis IS NULL OR cc.zurueckgestellt_bis <= NOW())
+        ORDER BY cc.file_path, cc.chunk_index
+        LIMIT $1
+        FOR UPDATE OF cc SKIP LOCKED`,
+  hinten: `SELECT ${CLAIM_SPALTEN}
+         FROM code_chunks cc
+         JOIN code_files cf ON cf.project=cc.project AND cf.file_path=cc.file_path
+        WHERE cc.project = $2
+          AND cc.embedded_at IS NULL
+          AND cc.prio < 0
+          AND (cc.lease_until IS NULL OR cc.lease_until < NOW())
+          AND (cc.zurueckgestellt_bis IS NULL OR cc.zurueckgestellt_bis <= NOW())
+        ORDER BY cc.prio DESC, cc.file_path, cc.chunk_index
+        LIMIT $1
+        FOR UPDATE OF cc SKIP LOCKED`,
+} as const;
+
+interface ClaimZeile {
+  id: string;
+  project: string;
+  file_path: string;
+  file_type: string;
+  chunk_index: number;
+  content: string;
+  line_start: number;
+  line_end: number;
+  total_chunks: number;
+}
+
 function boundedInt(value: number | undefined, fallback: number, max: number): number {
   if (!Number.isInteger(value) || value == null || value <= 0) return fallback;
   return Math.min(value, max);
@@ -129,50 +203,28 @@ export async function claimEmbeddingChunks(
     // die Chunk-Auswahl laeuft danach ueber idx_code_chunks_claim_ordnung mit
     // frueher Abbruchmoeglichkeit. Nebeneffekt, fachlich erwuenscht: ein Knoten
     // arbeitet eine Datei am Stueck ab statt quer durch den Bestand zu springen.
-    const projektWahl = await client.query<{ name: string }>(
-      `SELECT p.name
-         FROM (SELECT DISTINCT name, enabled FROM projects) p
-        WHERE p.enabled
-          AND EXISTS (SELECT 1 FROM code_chunks cc
-                       WHERE cc.project = p.name AND cc.embedded_at IS NULL)
-        -- P12-T14: erst die Embed-Prioritaet (Stufe 1 zuerst, ohne Eintrag 3), innerhalb zufaellig
-        ORDER BY COALESCE((SELECT e.stufe FROM embed_prioritaet e WHERE e.project = p.name), 3), random()
-        LIMIT 1`,
-    );
-    const projekt = projektWahl.rows[0]?.name;
-    if (!projekt) {
+    // P15-T12 E4: Schritt 0 - ausdruecklich vorgezogene Chunks (prio > 0) vor allem anderen.
+    // P12-T14: danach Projektwahl nach Embed-Prioritaet (Stufe 1 zuerst, ohne Eintrag 3), innerhalb zufaellig.
+    const ausgewaehlt: ClaimZeile[] = (await client.query<ClaimZeile>(CLAIM_SQL.vorgezogen, [limit])).rows;
+    let rest = limit - ausgewaehlt.length;
+    if (rest > 0) {
+      const projektWahl = await client.query<{ name: string }>(CLAIM_SQL.projektWahl);
+      const projekt = projektWahl.rows[0]?.name;
+      if (projekt) {
+        const normal = await client.query<ClaimZeile>(CLAIM_SQL.normal, [rest, projekt]);
+        ausgewaehlt.push(...normal.rows);
+        rest -= normal.rows.length;
+        // Schritt 2: Chunks, die ausdruecklich ans Projektende gestellt wurden (prio < 0).
+        if (rest > 0) ausgewaehlt.push(...(await client.query<ClaimZeile>(CLAIM_SQL.hinten, [rest, projekt])).rows);
+      }
+    }
+    if (ausgewaehlt.length === 0) {
       await client.query('COMMIT');
       return [];
     }
 
-    const selected = await client.query<{
-      id: string;
-      project: string;
-      file_path: string;
-      file_type: string;
-      chunk_index: number;
-      content: string;
-      line_start: number;
-      line_end: number;
-      total_chunks: number;
-    }>(
-      `SELECT cc.id, cc.project, cc.file_path, cf.file_type, cc.chunk_index,
-              cc.content, cc.line_start, cc.line_end,
-              (SELECT COUNT(*) FROM code_chunks allc
-                WHERE allc.project=cc.project AND allc.file_path=cc.file_path)::int AS total_chunks
-         FROM code_chunks cc
-         JOIN code_files cf ON cf.project=cc.project AND cf.file_path=cc.file_path
-        WHERE cc.project = $2
-          AND cc.embedded_at IS NULL
-          AND (cc.lease_until IS NULL OR cc.lease_until < NOW())
-        ORDER BY cc.file_path, cc.chunk_index
-        LIMIT $1
-        FOR UPDATE OF cc SKIP LOCKED`,
-      [limit, projekt],
-    );
-
     const claims: EmbeddingChunkClaim[] = [];
-    for (const row of selected.rows) {
+    for (const row of ausgewaehlt) {
       const contentHash = embeddingContentHash(row.content);
       const claimToken = uuidv4();
       const updated = await client.query<{ claim_attempt: number; lease_until: Date }>(

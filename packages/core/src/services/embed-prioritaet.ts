@@ -23,6 +23,8 @@ export interface EmbedPrioritaetZeile {
   gesetzt_von: string | null;
   gesetzt_am: string | null;
   code_offen: number;
+  /** P15-T12 E4: Projekt ruht bis dahin (intern warteschlange_verschieben) */
+  zurueckgestellt_bis: string | null;
 }
 
 /** Stufe (1..4) fuer Projekte setzen, oder mit stufe 0 den Eintrag entfernen (zurueck auf 3). */
@@ -53,8 +55,9 @@ export async function setzeEmbedPrioritaet(
 export async function listeEmbedPrioritaet(): Promise<EmbedPrioritaetZeile[]> {
   const { rows } = await getPool().query<{
     project: string; stufe: number | null; gesetzt_von: string | null; gesetzt_am: Date | null; code_offen: number;
+    zurueckgestellt_bis: Date | null;
   }>(
-    `SELECT p.project, e.stufe, e.gesetzt_von, e.gesetzt_am,
+    `SELECT p.project, e.stufe, e.gesetzt_von, e.gesetzt_am, e.zurueckgestellt_bis,
             (SELECT count(*) FROM code_chunks c WHERE c.project = p.project AND c.embedded_at IS NULL)::int AS code_offen
        FROM (SELECT DISTINCT name AS project FROM projects) p
        LEFT JOIN embed_prioritaet e ON e.project = p.project
@@ -67,5 +70,7 @@ export async function listeEmbedPrioritaet(): Promise<EmbedPrioritaetZeile[]> {
     gesetzt_von: r.gesetzt_von,
     gesetzt_am: r.gesetzt_am ? new Date(r.gesetzt_am).toISOString() : null,
     code_offen: r.code_offen,
+    zurueckgestellt_bis: r.zurueckgestellt_bis && new Date(r.zurueckgestellt_bis).getTime() > Date.now()
+      ? new Date(r.zurueckgestellt_bis).toISOString() : null,
   }));
 }
