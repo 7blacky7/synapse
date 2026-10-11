@@ -29,7 +29,7 @@ function lineAt(text: string, pos: number): number {
 
 class RParser implements LanguageParser {
   language = 'r';
-  extensions = ['.r', '.R', '.Rmd'];
+  extensions = ['.r', '.rmd'];
   /** Bei inhaltlichen Parser-Aenderungen erhoehen (siehe LanguageParser.version). */
   // 2: Zeilenberechnung ueber Index statt Praefix-Kopie (siehe lineAt).
   version = 2;

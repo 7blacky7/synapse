@@ -147,6 +147,21 @@ const parsers: LanguageParser[] = [
   markdownParser,
 ];
 
+/**
+ * Endung (kleingeschrieben, mit Punkt) -> Parser. Der erste Eintrag in parsers[] gewinnt,
+ * wie vorher beim find(). Die Endungen der Parser werden hier KLEINGESCHRIEBEN
+ * eingetragen, gesucht wird mit path.extname(...).toLowerCase(): so kann eine
+ * gross geschriebene Endung in einer Parser-Liste (P16-T3: '.Rmd' im r-Parser wurde
+ * nie getroffen) nicht mehr ins Leere laufen.
+ */
+const parserNachEndung = new Map<string, LanguageParser>();
+for (const p of parsers) {
+  for (const e of p.extensions) {
+    const schluessel = e.toLowerCase();
+    if (!parserNachEndung.has(schluessel)) parserNachEndung.set(schluessel, p);
+  }
+}
+
 /** Dateiname-basiertes Matching fuer Dateien ohne Extension (Makefile, Dockerfile) */
 const filenameParsers: Record<string, LanguageParser> = {
   'makefile': makefileParser,
@@ -198,7 +213,7 @@ export function getParserForFile(filePath: string, inhalt?: string): LanguagePar
 
   const ext = path.extname(filePath).toLowerCase();
   if (ext) {
-    const byExt = parsers.find(p => p.extensions.includes(ext));
+    const byExt = parserNachEndung.get(ext);
     if (byExt) return byExt;
   }
   // Fallback: Dateiname-basiertes Matching (Makefile, Dockerfile, BUILD, WORKSPACE etc.)

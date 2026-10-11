@@ -1362,7 +1362,7 @@ function parse(content: string, filePath: string): ParseResult {
 
 export const typescriptParser: LanguageParser = {
   language: 'typescript',
-  extensions: ['.ts', '.tsx', '.js', '.jsx', '.mts', '.mjs'],
+  extensions: ['.ts', '.tsx', '.js', '.jsx', '.mts', '.mjs', '.cjs', '.cts'],
   /** Bei inhaltlichen Parser-Aenderungen erhoehen (siehe LanguageParser.version). */
   // 2: Zeilenberechnung ueber Index statt Praefix-Kopie (Kommentar-Durchlauf).
   // 3: Lexikalischer Kommentar-Scanner statt Volltext-Regex; Strings bleiben kommentar-frei.
