@@ -115,6 +115,7 @@ import {
   deleteLines,
   searchReplace,
   searchReplaceBatch,
+  searchReplaceEindeutig,
   applyContentRange,
   embeddingPendingHint,
   // File-Versionierung (Schritt 1)
@@ -1022,6 +1023,7 @@ export const MCP_TOOLS = [
         after_line: { type: 'number', description: 'Nach dieser Zeile einfuegen (fuer insert_after)' },
         search: { type: 'string', description: 'Suchtext (fuer search_replace)' },
         replace: { type: 'string', description: 'Ersetzungstext (fuer search_replace)' },
+        replace_all: { type: 'boolean', description: 'Fuer search_replace: alle Vorkommen ersetzen (Default false). Ohne replace_all muss search GENAU EINMAL vorkommen, sonst wird nichts geschrieben (Fehler nennt Trefferzahl und Zeilen).' },
         edits: {
           type: 'array',
           description: 'Edits fuer search_replace_batch (1..10.000 Elemente — praktisch unbegrenzt)',
@@ -5193,10 +5195,22 @@ async function handleToolCall(
           if (currentContent === null) return { success: false, error: `Datei "${filePath}" nicht gefunden` };
           const searchStr = reqStr(args, 'search');
           const replaceStr = reqStr(args, 'replace');
-          const { content: newContent, count } = searchReplace(currentContent, searchStr, replaceStr);
-          if (count === 0) return { success: true, count: 0, message: `Kein Vorkommen von "${searchStr}" in "${filePath}"` };
-          const result = await updateFileInPg(project, filePath, newContent, agentId, undefined, undefined, str(args, 'reason'), enrichment);
-          const response: Record<string, unknown> = { success: true, count, message: `${count} Vorkommen ersetzt in "${filePath}"` };
+          // P15-T10: ohne replace_all muss der Suchtext genau einmal vorkommen — sonst nichts schreiben
+          // (vorher: alle Vorkommen ersetzt, 0 Treffer meldete success:true).
+          const sr = searchReplaceEindeutig(currentContent, searchStr, replaceStr, bool(args, 'replace_all') === true);
+          if (!sr.ok) {
+            return {
+              success: false,
+              count: sr.count,
+              lines: sr.lines,
+              error: sr.error,
+              ...(sr.fuzzyMatches && sr.fuzzyMatches.length > 0
+                ? { fuzzyMatches: sr.fuzzyMatches, hint: 'Kein exakter Match. Ähnliche Zeilen oben — meintest du eine davon?' }
+                : {}),
+            };
+          }
+          const result = await updateFileInPg(project, filePath, sr.content, agentId, undefined, undefined, str(args, 'reason'), enrichment);
+          const response: Record<string, unknown> = { success: true, count: sr.count, lines: sr.lines, message: `${sr.count} Vorkommen ersetzt in "${filePath}"` };
           if (result.warnings?.length) {
             response.errorPatterns = {
               count: result.warnings.length,
@@ -5215,11 +5229,14 @@ async function handleToolCall(
             return { success: false, error: 'edits muss ein nicht-leeres Array sein' };
           }
           const { content: newContent, result: batchResult } = searchReplaceBatch(currentContent, rawEdits as Array<{ search: string; replace: string; replace_all?: boolean }>);
-          if (batchResult.applied === 0) {
+          // P15-T10: atomar — passt ein Edit nicht, wird NICHTS geschrieben (vorher: Rest trotzdem geschrieben).
+          if (batchResult.failed.length > 0) {
             return {
               success: false,
               ...batchResult,
-              message: `Keine Edits angewendet in "${filePath}"`,
+              error: `${batchResult.failed.length}/${batchResult.total} Edits passen nicht — nichts geschrieben in "${filePath}". `
+                + batchResult.failed.slice(0, 20).map((f) => f.message).join(' | '),
+              message: `Nichts geschrieben in "${filePath}" — Edits korrigieren und den ganzen Batch erneut schicken`,
             };
           }
           const result = await updateFileInPg(project, filePath, newContent, agentId, undefined, undefined, str(args, 'reason'), enrichment);

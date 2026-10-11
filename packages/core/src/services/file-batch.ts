@@ -27,6 +27,8 @@ import {
   contentHash,
   searchReplace,
   searchReplaceBatch,
+  findeTreffer,
+  trefferFehlerMeldung,
   replaceLines,
   insertAfterLine,
   deleteLines,
@@ -822,11 +824,13 @@ function applyOpInMemory(
       if (op.search === undefined) throw new Error('search_replace: search fehlt');
       if (op.replace === undefined) throw new Error('search_replace: replace fehlt');
       if (src.deleted) throw new Error('search_replace: Datei wurde in dieser Batch geloescht');
-      const r = searchReplace(src.finalContent, op.search, op.replace);
-      if (r.count === 0) throw new Error(`search_replace: 0 matches fuer "${op.search.slice(0, 40)}…"`);
-      if (r.count > 1 && !op.replace_all) {
-        throw new Error(`search_replace: ${r.count} matches — replace_all=true setzen oder Kontext praezisieren`);
+      // P15-T10: Trefferzahl UND Zeilen nennen, damit der Agent weiss, wo der Suchtext steht.
+      const treffer = findeTreffer(src.finalContent, op.search, op.replace);
+      if (treffer.count === 0) throw new Error(`search_replace: 0 matches — ${trefferFehlerMeldung(0, [], op.search)}`);
+      if (treffer.count > 1 && !op.replace_all) {
+        throw new Error(`search_replace: ${treffer.count} matches — ${trefferFehlerMeldung(treffer.count, treffer.lines, op.search)}`);
       }
+      const r = searchReplace(src.finalContent, op.search, op.replace);
       src.finalContent = r.content;
       src.finalHash = contentHash(r.content);
       return { context: `search_replace: ${r.count} ersetzt`, sizeBefore, sizeAfter: utf8Bytes(r.content) };
@@ -835,7 +839,14 @@ function applyOpInMemory(
       if (!op.edits || op.edits.length === 0) throw new Error('search_replace_batch: edits[] fehlt');
       if (src.deleted) throw new Error('search_replace_batch: Datei wurde in dieser Batch geloescht');
       const r = searchReplaceBatch(src.finalContent, op.edits);
-      if (r.result.applied === 0) throw new Error(`search_replace_batch: 0/${r.result.total} angewendet`);
+      // P15-T10: atomar — passt ein Edit nicht (0 Treffer, mehrdeutig ohne replace_all), scheitert die Op.
+      if (r.result.failed.length > 0) {
+        throw new Error(
+          `search_replace_batch: ${r.result.failed.length}/${r.result.total} Edits passen nicht, nichts angewendet — `
+          + r.result.failed.slice(0, 20).map((f) => f.message).join(' | ')
+          + (r.result.failed.length > 20 ? ` | … (${r.result.failed.length - 20} weitere)` : '')
+        );
+      }
       src.finalContent = r.content;
       src.finalHash = contentHash(r.content);
       return { context: `search_replace_batch: ${r.result.applied}/${r.result.total}`, sizeBefore, sizeAfter: utf8Bytes(r.content) };

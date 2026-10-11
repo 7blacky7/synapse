@@ -8,7 +8,7 @@ import {
   replaceLines,
   insertAfterLine,
   deleteLines,
-  searchReplace,
+  searchReplaceEindeutig,
   createFileInPg,
   updateFileInPg,
   softDeleteFile,
@@ -77,6 +77,8 @@ export async function filesRoutes(fastify: FastifyInstance): Promise<void> {
       after_line?: number;
       search?: string;
       replace?: string;
+      /** search_replace: alle Vorkommen ersetzen (Default false = Suchtext muss genau einmal vorkommen) */
+      replace_all?: boolean;
       new_path?: string;
       agent_id?: string;
     };
@@ -91,6 +93,7 @@ export async function filesRoutes(fastify: FastifyInstance): Promise<void> {
       after_line,
       search,
       replace,
+      replace_all,
       new_path,
       agent_id,
     } = request.body;
@@ -241,19 +244,23 @@ export async function filesRoutes(fastify: FastifyInstance): Promise<void> {
               error: { message: 'search und replace sind fuer search_replace erforderlich' },
             });
           }
-          const { content: newContent, count } = searchReplace(currentContent, search, replace);
-          if (count === 0) {
-            return {
-              success: true,
-              count: 0,
-              message: `Kein Vorkommen von "${search}" gefunden in "${file_path}"`,
-            };
+          // P15-T10: ohne replace_all muss der Suchtext genau einmal vorkommen — sonst nichts schreiben
+          // (409 bei Mehrdeutigkeit, 404 wenn er nicht vorkommt; vorher: alle ersetzt bzw. success:true).
+          const sr = searchReplaceEindeutig(currentContent, search, replace, replace_all === true);
+          if (!sr.ok) {
+            return reply.status(sr.count === 0 ? 404 : 409).send({
+              success: false,
+              count: sr.count,
+              lines: sr.lines,
+              error: { message: sr.error },
+            });
           }
-          const result = await updateFileInPg(name, file_path, newContent, agent_id);
+          const result = await updateFileInPg(name, file_path, sr.content, agent_id);
           const response: Record<string, unknown> = {
             success: true,
-            count,
-            message: `${count} Vorkommen von "${search}" ersetzt in "${file_path}"`,
+            count: sr.count,
+            lines: sr.lines,
+            message: `${sr.count} Vorkommen von "${search}" ersetzt in "${file_path}"`,
           };
           if (result.warnings?.length) {
             response.errorPatterns = {

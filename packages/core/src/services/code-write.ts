@@ -359,21 +359,96 @@ function searchReplaceRoh(
 }
 
 /**
- * Zählt Vorkommen eines Suchstrings im Content (gleiche Whitespace-tolerante Logik wie searchReplace).
- * Interner Helfer fuer searchReplaceBatch.
+ * Startpositionen aller Vorkommen eines Suchstrings (gleiche Whitespace-tolerante Logik wie searchReplace).
  */
-function countOccurrences(content: string, search: string): number {
-  if (!search) return 0;
+function trefferPositionen(content: string, search: string): number[] {
+  if (!search) return [];
   const escapedSearch = search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const flexibleSearch = escapedSearch.replace(/[ \t]+/g, '[ \\t]+');
   try {
-    const regex = new RegExp(flexibleSearch, 'g');
-    const matchArr = content.match(regex);
-    if (matchArr && matchArr.length > 0) return matchArr.length;
+    const positionen = Array.from(content.matchAll(new RegExp(flexibleSearch, 'g')), (m) => m.index ?? 0);
+    if (positionen.length > 0) return positionen;
   } catch {
-    // Ungültiger Regex — Fallback auf exakten Split
+    // Ungültiger Regex — Fallback auf exakten Vergleich
   }
-  return content.split(search).length - 1;
+  const positionen: number[] = [];
+  for (let i = content.indexOf(search); i !== -1; i = content.indexOf(search, i + search.length)) positionen.push(i);
+  return positionen;
+}
+
+/** 1-basierte Zeilennummern zu aufsteigenden Zeichenpositionen. */
+function zeilenZuPositionen(content: string, positionen: number[]): number[] {
+  const zeilen: number[] = [];
+  let zeile = 1;
+  let ab = 0;
+  for (const pos of positionen) {
+    for (let i = content.indexOf('\n', ab); i !== -1 && i < pos; i = content.indexOf('\n', i + 1)) zeile++;
+    ab = pos;
+    // ab muss hinter dem zuletzt gezaehlten \n liegen: der Scan oben beginnt bei ab neu
+    zeilen.push(zeile);
+  }
+  return zeilen;
+}
+
+/**
+ * Treffer eines Suchtexts mit Zeilennummern — dieselbe Logik wie searchReplace
+ * (Whitespace-tolerant, bei 0 Treffern die CRLF-Variante). suche/ersatz sind die tatsaechlich
+ * anzuwendenden Texte (bei CRLF-Treffer in CRLF-Form).
+ */
+export function findeTreffer(
+  content: string,
+  search: string,
+  replace = ''
+): { count: number; lines: number[]; suche: string; ersatz: string } {
+  let suche = search;
+  let ersatz = replace;
+  let positionen = trefferPositionen(content, suche);
+  if (positionen.length === 0) {
+    const crlfSuche = crlfVariante(content, suche);
+    const crlfPositionen = crlfSuche ? trefferPositionen(content, crlfSuche) : [];
+    if (crlfSuche && crlfPositionen.length > 0) {
+      suche = crlfSuche;
+      ersatz = alsCrlf(ersatz);
+      positionen = crlfPositionen;
+    }
+  }
+  return { count: positionen.length, lines: zeilenZuPositionen(content, positionen), suche, ersatz };
+}
+
+/**
+ * Handlungsleitende Fehlermeldung fuer einen search_replace-Suchtext, der nicht genau einmal
+ * vorkommt (P15-T10). Nennt Trefferzahl und Zeilen und was der Agent tun soll.
+ */
+export function trefferFehlerMeldung(count: number, lines: number[], search: string): string {
+  const vorschau = JSON.stringify(search.length > 80 ? `${search.slice(0, 80)}…` : search);
+  if (count === 0) {
+    return `Suchtext ${vorschau} kommt 0-mal vor — nichts geschrieben. Suchtext exakt aus dem aktuellen Dateiinhalt kopieren (code_intel file / files read).`;
+  }
+  const zeilen = lines.length > 30 ? `${lines.slice(0, 30).join(', ')}, … (${lines.length - 30} weitere)` : lines.join(', ');
+  return `Suchtext ${vorschau} ist mehrdeutig: ${count} Treffer in Zeilen ${zeilen} — nichts geschrieben. `
+    + `Suchtext um umgebende Zeilen erweitern, bis er genau einmal vorkommt, oder replace_all:true setzen, wenn wirklich alle ${count} Stellen ersetzt werden sollen.`;
+}
+
+/**
+ * search_replace mit Eindeutigkeitspruefung (P15-T10): ohne replace_all muss der Suchtext genau
+ * einmal vorkommen, mit replace_all mindestens einmal. Sonst ok:false, content unveraendert,
+ * error mit Trefferzahl und Zeilen.
+ */
+export function searchReplaceEindeutig(
+  content: string,
+  search: string,
+  replace: string,
+  replaceAll = false
+): { ok: boolean; content: string; count: number; lines: number[]; error?: string; fuzzyMatches?: FuzzyMatch[] } {
+  const treffer = findeTreffer(content, search, replace);
+  if (treffer.count === 0) {
+    return { ok: false, content, count: 0, lines: [], error: trefferFehlerMeldung(0, [], search), fuzzyMatches: findSimilarLines(content, search) };
+  }
+  if (treffer.count > 1 && !replaceAll) {
+    return { ok: false, content, count: treffer.count, lines: treffer.lines, error: trefferFehlerMeldung(treffer.count, treffer.lines, search) };
+  }
+  const ergebnis = searchReplace(content, search, replace);
+  return { ok: true, content: ergebnis.content, count: ergebnis.count, lines: treffer.lines };
 }
 
 /**
@@ -392,20 +467,39 @@ export interface BatchResult {
   applied: number;
   skipped: number;
   total: number;
+  /** Kompatibilitaet: je fehlgeschlagenem Edit ein Eintrag (reason "no_match" bzw. "multiple_matches (N occurrences)"). */
   warnings: Array<{ index: number; search_preview: string; reason: string }>;
+  /** P15-T10: fehlgeschlagene Edits. Nicht leer = NICHTS angewendet, content ist der Original-Inhalt. */
+  failed: BatchFehlschlag[];
+}
+
+/** Ein Edit aus searchReplaceBatch, dessen Suchtext nicht passt (P15-T10). */
+export interface BatchFehlschlag {
+  index: number;
+  search_preview: string;
+  reason: 'no_match' | 'multiple_matches';
+  count: number;
+  /** 1-basierte Zeilen der Treffer (leer bei no_match). */
+  lines: number[];
+  /** Handlungsleitende Meldung: was der Agent tun soll. */
+  message: string;
 }
 
 /**
  * Fuehrt mehrere Search-Replace-Edits sequenziell auf einem Content durch.
  * Liest das File 1× im Speicher, schreibt am Ende 1×.
  *
- * Verhalten (continue-with-warnings):
- *   - 0 matches             → skipped, reason: "no_match"
- *   - N>1 ohne replace_all  → skipped, reason: "multiple_matches (N occurrences)"
- *   - 1 match (oder replace_all+match) → applied
+ * Verhalten (atomar, P15-T10 — vorher continue-with-warnings: mehrdeutige oder fehlende Suchtexte
+ * wurden still uebersprungen und die Aufrufer schrieben den Rest trotzdem):
+ *   - 1 Treffer (oder replace_all + mindestens 1 Treffer) → angewendet
+ *   - 0 Treffer                → failed, reason "no_match"
+ *   - N>1 ohne replace_all     → failed, reason "multiple_matches" mit Zeilen
+ *   - Ist irgendein Edit fehlgeschlagen, kommt der ORIGINAL-Inhalt zurueck (applied 0,
+ *     skipped = total). Alle Edits werden trotzdem geprueft, damit jeder Fehler auf einmal
+ *     gemeldet wird. Aufrufer schreiben bei failed.length > 0 nichts.
  *
  * @param content - Dateiinhalt als String
- * @param edits   - Array von BatchEdit (1..50 Elemente empfohlen)
+ * @param edits   - Array von BatchEdit
  * @returns { content: string; result: BatchResult }
  */
 export function searchReplaceBatch(
@@ -414,48 +508,39 @@ export function searchReplaceBatch(
 ): { content: string; result: BatchResult } {
   let current = content;
   let applied = 0;
-  let skipped = 0;
-  const warnings: Array<{ index: number; search_preview: string; reason: string }> = [];
+  const warnings: BatchResult['warnings'] = [];
+  const failed: BatchFehlschlag[] = [];
 
   for (let i = 0; i < edits.length; i++) {
     const edit = edits[i];
     const search_preview = edit.search.slice(0, 80);
-    let suche = edit.search;
-    let ersatz = edit.replace;
-    let count = countOccurrences(current, suche);
-    if (count === 0) {
-      // CRLF-Datei, Suchtext mit blossem \n: wie searchReplace die CRLF-Form versuchen.
-      const crlfSuche = crlfVariante(current, suche);
-      const crlfAnzahl = crlfSuche ? countOccurrences(current, crlfSuche) : 0;
-      if (crlfSuche && crlfAnzahl > 0) {
-        suche = crlfSuche;
-        ersatz = alsCrlf(ersatz);
-        count = crlfAnzahl;
-      }
-    }
-
-    if (count === 0) {
-      skipped++;
-      warnings.push({ index: i, search_preview, reason: 'no_match' });
+    // Dieselbe Trefferlogik wie searchReplace (Whitespace-tolerant, CRLF-Variante).
+    const treffer = findeTreffer(current, edit.search, edit.replace);
+    if (treffer.count === 0 || (treffer.count > 1 && !edit.replace_all)) {
+      const reason = treffer.count === 0 ? 'no_match' : 'multiple_matches';
+      failed.push({
+        index: i,
+        search_preview,
+        reason,
+        count: treffer.count,
+        lines: treffer.lines,
+        message: `Edit ${i}: ${trefferFehlerMeldung(treffer.count, treffer.lines, edit.search)}`,
+      });
+      warnings.push({
+        index: i,
+        search_preview,
+        reason: reason === 'no_match' ? 'no_match' : `multiple_matches (${treffer.count} occurrences)`,
+      });
       continue;
     }
-
-    if (count > 1 && !edit.replace_all) {
-      skipped++;
-      warnings.push({ index: i, search_preview, reason: `multiple_matches (${count} occurrences)` });
-      continue;
-    }
-
-    // Genau 1 Match oder replace_all gesetzt → anwenden
-    const { content: newContent } = searchReplace(current, suche, ersatz);
-    current = newContent;
+    current = searchReplaceRoh(current, treffer.suche, treffer.ersatz).content;
     applied++;
   }
 
-  return {
-    content: current,
-    result: { applied, skipped, total: edits.length, warnings },
-  };
+  if (failed.length > 0) {
+    return { content, result: { applied: 0, skipped: edits.length, total: edits.length, warnings, failed } };
+  }
+  return { content: current, result: { applied, skipped: 0, total: edits.length, warnings, failed } };
 }
 
 /**

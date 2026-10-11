@@ -439,20 +439,21 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
         ].join(' '),
       },
       search_replace: {
-        description: 'Gezielter String-Replace. search muss exakt matchen.',
-        params: 'search, replace',
+        description: 'Gezielter String-Replace. Ohne replace_all muss search GENAU EINMAL vorkommen; bei 0 oder mehreren Treffern wird nichts geschrieben (success:false mit count, lines und Handlungshinweis).',
+        params: 'search, replace, replace_all? (Default false; true = alle Vorkommen ersetzen, mindestens 1 Treffer noetig)',
         example: 'files({ action: "search_replace", project: "synapse", file_path: "x.ts", search: "const x = 1", replace: "const x = 2" })',
-        tips: 'Bei mehrdeutigem Match: nimm mehr Umgebungs-Kontext in search.',
+        tips: 'Mehrdeutig (count > 1, lines nennt die Zeilen): search um umgebende Zeilen erweitern, bis er eindeutig ist — oder replace_all:true, wenn wirklich alle Stellen gemeint sind. 0 Treffer: Suchtext exakt aus dem aktuellen Inhalt kopieren (code_intel file / files read). Spaces/Tabs werden tolerant verglichen, mehrzeilige Suchtexte treffen auch CRLF-Dateien.',
       },
       search_replace_batch: {
-        description: 'Mehrere Search-Replace-Edits in einem Aufruf. Datei wird 1× gelesen und 1× geschrieben. Continue-with-warnings: 0-match und multi-match (ohne replace_all) werden uebersprungen, Rest wird angewendet.',
+        description: 'Mehrere Search-Replace-Edits in einem Aufruf, ATOMAR: Datei wird 1× gelesen und nur geschrieben, wenn JEDES Edit passt. Ein Edit mit 0 Treffern oder mit mehreren Treffern ohne replace_all -> success:false, nichts geschrieben, failed[] nennt jedes betroffene Edit.',
         params: 'edits (Array, 1..10.000 Elemente — praktisch unbegrenzt: { search, replace, replace_all? })',
         example: 'files({ action: "search_replace_batch", project: "synapse", file_path: "src/x.ts", edits: [{ search: "const x = 1", replace: "const x = 2" }, { search: "foo", replace: "bar", replace_all: true }] })',
         tips: [
           'Jedes Edit wird sequenziell auf dem aktuellen Content angewendet — spaetere Edits sehen Aenderungen frueherer.',
           'replace_all: true wenn der String mehrfach vorkommt und alle Vorkommen ersetzt werden sollen.',
-          'Response enthaelt applied, skipped, total und warnings[{ index, search_preview, reason }].',
-          'reason: "no_match" oder "multiple_matches (N occurrences)".',
+          'Fehler: failed[{ index, search_preview, reason: "no_match" | "multiple_matches", count, lines, message }] — alle Edits werden geprueft, jeder Fehler kommt auf einmal. Korrigieren und den ganzen Batch erneut schicken.',
+          'Erfolg: applied = total, skipped 0. warnings bleibt aus Kompatibilitaet (reason "no_match" bzw. "multiple_matches (N occurrences)" je fehlgeschlagenem Edit).',
+          'Plan-Op search_replace_batch scheitert ebenso als Ganzes (plan_failed), wenn ein Edit nicht passt.',
         ].join(' '),
       },
       replace_lines: {

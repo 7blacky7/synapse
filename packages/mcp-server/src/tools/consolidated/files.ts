@@ -16,6 +16,7 @@ import {
   deleteLines,
   searchReplace,
   searchReplaceBatch,
+  searchReplaceEindeutig,
   getDocsForFile,
   getProjectRoot,
   toRelativePath,
@@ -134,6 +135,10 @@ export const filesTool: ConsolidatedTool = {
         replace: {
           type: 'string',
           description: 'Ersetzungsstring (fuer search_replace)',
+        },
+        replace_all: {
+          type: 'boolean',
+          description: 'Fuer search_replace: alle Vorkommen ersetzen (Default false). Ohne replace_all muss search GENAU EINMAL vorkommen, sonst wird nichts geschrieben (Fehler nennt Trefferzahl und Zeilen).',
         },
         edits: {
           type: 'array',
@@ -834,25 +839,22 @@ export const filesTool: ConsolidatedTool = {
         if (currentContent === null) return { success: false, error: `Datei "${filePath}" nicht gefunden` };
         const searchStr = reqStr(args, 'search');
         const replaceStr = reqStr(args, 'replace');
-        const { content: newContent, count, fuzzyMatches } = searchReplace(currentContent, searchStr, replaceStr);
-
-        // Keine Matches gefunden — Datei wurde NICHT geändert
-        if (count === 0) {
-          if (fuzzyMatches && fuzzyMatches.length > 0) {
-            return {
-              success: false,
-              count: 0,
-              fuzzyMatches,
-              hint: `Kein exakter Match. Ähnliche Zeilen oben — meintest du eine davon?`,
-            };
-          }
-          return { success: false, count: 0, message: `Kein Vorkommen von "${searchStr}" in "${filePath}"` };
+        // P15-T10: ohne replace_all muss der Suchtext genau einmal vorkommen — sonst nichts schreiben.
+        const sr = searchReplaceEindeutig(currentContent, searchStr, replaceStr, bool(args, 'replace_all') === true);
+        if (!sr.ok) {
+          return {
+            success: false,
+            count: sr.count,
+            lines: sr.lines,
+            error: sr.error,
+            ...(sr.fuzzyMatches && sr.fuzzyMatches.length > 0
+              ? { fuzzyMatches: sr.fuzzyMatches, hint: 'Kein exakter Match. Ähnliche Zeilen oben — meintest du eine davon?' }
+              : {}),
+          };
         }
-
-        // Exakte Matches gefunden — ersetzen
-        const result = await updateFileInPg(project, filePath, newContent, agentId, undefined, undefined, reason, enrichment);
+        const result = await updateFileInPg(project, filePath, sr.content, agentId, undefined, undefined, reason, enrichment);
         return await attachWarnings(
-          { success: true, count, message: `${count} Vorkommen ersetzt in "${filePath}"` },
+          { success: true, count: sr.count, lines: sr.lines, message: `${sr.count} Vorkommen ersetzt in "${filePath}"` },
           result
         );
       }
@@ -867,12 +869,14 @@ export const filesTool: ConsolidatedTool = {
         const edits = rawEdits as BatchEdit[];
         const { content: newContent, result: batchResult } = searchReplaceBatch(currentContent, edits);
 
-        // Nur schreiben wenn mindestens ein Edit angewendet wurde
-        if (batchResult.applied === 0) {
+        // P15-T10: atomar — passt ein Edit nicht, wird NICHTS geschrieben (vorher: Rest trotzdem geschrieben).
+        if (batchResult.failed.length > 0) {
           return {
             success: false,
             ...batchResult,
-            message: `Keine Edits angewendet in "${filePath}"`,
+            error: `${batchResult.failed.length}/${batchResult.total} Edits passen nicht — nichts geschrieben in "${filePath}". `
+              + batchResult.failed.slice(0, 20).map((f) => f.message).join(' | '),
+            message: `Nichts geschrieben in "${filePath}" — Edits korrigieren und den ganzen Batch erneut schicken`,
           };
         }
 
