@@ -386,16 +386,26 @@ export async function syncInspektor(project: string, filePath: string): Promise<
     };
     if (berechnet && f.content_hash && berechnet !== f.content_hash) befund.push('content_hash passt NICHT zum Inhalt in PG - Hash veraltet, der Sync vergleicht dann falsch.');
     if (f.deleted_at) befund.push(`In PG als geloescht markiert (${new Date(f.deleted_at).toISOString()}).`);
+    // P15-T28: file_versions halten den Stand VOR dem Schreiben (updateFileInPg im selben Commit wie das
+    // UPDATE, commitBatch, snapshotFileVersion vor delete/move, createFile mit leerem Marker); created_at ist
+    // der Zeitpunkt des Schreibens. Die juengste Version ist also der VORGAENGER des PG-Stands. Vorher wurde
+    // der Normalfall (Hash ungleich, updated_at = created_at) als "AELTER - unerwartet" gemeldet.
     const letzte = versionen.rows[0];
     if (!letzte) {
       befund.push('Keine file_version: die Datei wurde nie ueber das files-Tool geschrieben (nur Watcher/Erstscan). Zuruecksetzen ueber files(restore) geht dann nicht.');
-    } else if (letzte.content_hash !== f.content_hash) {
-      const neuer = new Date(f.updated_at) > new Date(letzte.created_at);
-      befund.push(neuer
-        ? `PG-Stand weicht von der letzten file_version (${letzte.id}, ${letzte.agent_id ?? '?'}) ab und ist NEUER: zuletzt von der Platte gekommen (Editor, git, lokaler Edit ohne files-Tool).`
-        : `PG-Stand weicht von der letzten file_version (${letzte.id}) ab, ist aber AELTER - unerwartet, Versionierung pruefen.`);
     } else {
-      befund.push(`PG-Stand = letzte file_version ${letzte.id} (${letzte.agent_id ?? '?'}, ${new Date(letzte.created_at).toISOString()}).`);
+      const toleranzS = 5;
+      const dtS = (new Date(f.updated_at).getTime() - new Date(letzte.created_at).getTime()) / 1000;
+      const wer = `${letzte.agent_id ?? '?'}, ${letzte.edit_action ?? '?'}, ${new Date(letzte.created_at).toISOString()}`;
+      if (letzte.content_hash === f.content_hash) {
+        befund.push(`PG-Stand = Stand VOR dem letzten Versionseintrag ${letzte.id} (${wer}): Schnappschuss ohne Inhaltsaenderung (z. B. vor delete/move) oder die Aenderung wurde inzwischen zurueckgenommen.`);
+      } else if (Math.abs(dtS) <= toleranzS) {
+        befund.push(`PG-Stand = Ergebnis der letzten Aenderung ueber das files-Tool (${wer}); file_version ${letzte.id} haelt den Stand DAVOR.`);
+      } else if (dtS > toleranzS) {
+        befund.push(`PG wurde ${Math.round(dtS)} s nach dem letzten Versionseintrag ${letzte.id} (${wer}) erneut geaendert, ohne eigenen Versionseintrag: zuletzt von der Platte gekommen (Editor, git, lokaler Edit ohne files-Tool).`);
+      } else {
+        befund.push(`PG-Stand (updated_at ${new Date(f.updated_at).toISOString()}) ist AELTER als der letzte Versionseintrag ${letzte.id} (${wer}) und gleicht dessen Vorher-Stand nicht - unerwartet: der Schreibvorgang zu dieser Version ist nicht in code_files angekommen. Versionierung pruefen.`);
+      }
     }
   }
   if (reservierungen.rows.length > 0) befund.push(`${reservierungen.rows.length} aktive Reservierung(en).`);

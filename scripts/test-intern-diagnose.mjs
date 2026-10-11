@@ -399,8 +399,32 @@ try {
   // S1
   await pool.query(`INSERT INTO file_versions (project, file_path, content, content_hash, agent_id, created_at) VALUES ($1, 'a.ts', 'alt', $2, 'diag', NOW() - INTERVAL '20 minutes')`, [PRJ, sha('alt')]);
   r = await ausf({ action: 'sync_inspektor', project: PRJ, file_path: 'a.ts' });
-  pruefe(r.success && r.befund.some((b) => /NEUER/.test(b)) && r.pg?.hash_aus_inhalt === sha(INHALT) && r.offene_plaene.some((p) => p.id === offenPlan),
+  pruefe(r.success && r.befund.some((b) => /erneut geaendert, ohne eigenen Versionseintrag/.test(b)) && r.pg?.hash_aus_inhalt === sha(INHALT) && r.offene_plaene.some((p) => p.id === offenPlan),
     'S1 PG neuer als letzte file_version; offener Plan auf der Datei gezaehlt', r);
+
+  // S2-S5 (P15-T28): echte Versionsfolge ueber den Schreibweg. file_versions halten den Stand VOR dem
+  // Schreiben (updateFileInPg, im selben Commit wie das UPDATE) - live t54 meldete das als "AELTER".
+  const CW = await lade(dist, 'services', 'code-write.js');
+  const V1 = 'export const v = 1;\n', V2 = 'export const v = 2;\n', V3 = 'export const v = 3;\n';
+  await pool.query(
+    `INSERT INTO code_files (id, project, file_path, file_name, file_type, content, content_hash, file_size, updated_at, indexed_at)
+     VALUES ($1, $2, 'b.ts', 'b.ts', 'ts', $3, $4, $5, NOW() - INTERVAL '10 minutes', NOW() - INTERVAL '10 minutes')`,
+    [`${PRJ}:b.ts`, PRJ, V1, sha(V1), V1.length],
+  );
+  await CW.updateFileInPg(PRJ, 'b.ts', V2, 'diag-s2', 'update');
+  await CW.updateFileInPg(PRJ, 'b.ts', V3, 'diag-s3', 'search_replace');
+  const sb = () => ausf({ action: 'sync_inspektor', project: PRJ, file_path: 'b.ts' });
+  r = await sb();
+  pruefe(r.success && r.versionen[0]?.content_hash === sha(V2) && r.pg?.content_hash === sha(V3),
+    'S2 Aufbau: juengste Version haelt V2 (Stand davor), PG = V3', { v: r.versionen?.map((v) => v.content_hash.slice(0, 8)), pg: r.pg?.content_hash?.slice(0, 8) });
+  pruefe(!r.befund.some((b) => /AELTER|unerwartet/.test(b)) && r.befund.some((b) => /Ergebnis der letzten Aenderung.*diag-s3/.test(b)),
+    'S3 normaler files-Schreibvorgang: kein AELTER/unerwartet, Befund nennt die Aenderung (diag-s3)', r.befund);
+  await CW.snapshotFileVersion(PRJ, 'b.ts', 'move', 'Schnappschuss', 'diag-s4');
+  r = await sb();
+  pruefe(r.befund.some((b) => /VOR dem letzten Versionseintrag/.test(b)), 'S4 Schnappschuss ohne Aenderung: PG = Vorher-Stand der juengsten Version', r.befund);
+  await pool.query(`INSERT INTO file_versions (project, file_path, content, content_hash, agent_id, created_at) VALUES ($1, 'b.ts', 'fremd', $2, 'diag-s5', NOW() + INTERVAL '1 minute')`, [PRJ, sha('fremd')]);
+  r = await sb();
+  pruefe(r.befund.some((b) => /unerwartet/.test(b)), 'S5 Gegenprobe: Version juenger als der PG-Stand mit fremdem Vorher-Stand bleibt unerwartet', r.befund);
 
   // K1 + F1
   r = await ausf({ action: 'schema_probe' });
