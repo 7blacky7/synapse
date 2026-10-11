@@ -213,7 +213,9 @@ test('J4 JVM-Absturz: nur Kotlin/Java kurz betroffen, andere Sprachen laufen, JV
   const z = pruefContainerZustand();
   assert.equal(z.zaehler.starts, startsVorher, 'Container nicht neu gestartet');
   assert.equal(z.zaehler.abstuerze, z0.zaehler.abstuerze, 'kein Containerabsturz');
-  assert.equal(z.jvm.bereit, true);
+  // P16-T13: jvm.bereit heisst "ALLE JVM-Sprachen warm" (seit scala/groovy auch diese); nach dem Neustart ist nur die
+  // tatsaechlich angefragte Sprache wieder warm.
+  assert.ok(z.jvm.warm.includes('kotlin'), JSON.stringify(z.jvm));
 });
 
 test('J5 JVM faellt dauerhaft aus: Kotlin-Schreiben geht ungeprueft durch und wird protokolliert', opt, async () => {

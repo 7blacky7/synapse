@@ -27,11 +27,16 @@ ARG APT_PAKETE="php8.4-cli ruby lua5.4"
 # E3b: neueste stabile Kotlin-Version (Grammatik des Kotlin-Parsers) und JDK 25 LTS (Java-Sprachstand = JDK).
 # Beim Anheben FP-Lauf wiederholen (pruef-container-fp.mjs kotlin / java).
 ARG KOTLIN_VERSION=2.4.21
+# P16-T13: Scala (scalameta) und Groovy im selben JVM-Hilfsprozess. Beim Anheben FP-Lauf wiederholen (scala / groovy).
+ARG SCALAMETA_VERSION=4.17.4
+ARG GROOVY_VERSION=5.0.2
 ARG MAVEN_TAG=3.9-eclipse-temurin-25
 # P16-T11: tree-sitter (Python-Bindings) + Grammatiken aus tree-sitter-language-pack (nur im Builder; die Pack-Version
 # legt die Grammatik-Staende fest). Beim Anheben FP-Lauf je tree-sitter-Sprache wiederholen.
 ARG TREE_SITTER_VERSION=0.26.0
 ARG TS_PACK_VERSION=1.21.3
+# P16-T13: naga-cli (WGSL-Parser von wgpu). Beim Anheben FP-Lauf wiederholen (pruef-container-fp.mjs wgsl).
+ARG NAGA_VERSION=30.0.1
 
 # ─── Stufe rust: Toolchain nur zum Herauskopieren von rustfmt + Laufzeit-Bibliotheken ───
 FROM debian:${DEBIAN_TAG} AS rust
@@ -47,6 +52,12 @@ RUN curl -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path --profile mini
  && for so in $(ldd "$SYSROOT/bin/rustfmt" | awk '/=> \// {print $3}' | grep "$SYSROOT"); do cp "$so" /out/lib/; done \
  && ls -la /out/bin /out/lib
 
+# ─── Stufe naga (P16-T13): naga-cli fuer WGSL, ~5 MB, nur gegen glibc/libgcc gelinkt (trixie wie die Endstufe) ───
+FROM rust:${RUST_VERSION}-slim-trixie AS naga
+ARG NAGA_VERSION
+RUN CARGO_PROFILE_RELEASE_STRIP=true cargo install --locked --root /out/naga "naga-cli@${NAGA_VERSION}" \
+ && /out/naga/bin/naga --version && ls -la /out/naga/bin
+
 # ─── Stufe go: nur gofmt (statisch gelinkt, ~3 MB) ───
 FROM golang:${GO_TAG} AS go
 RUN mkdir -p /out/bin /out/versionen \
@@ -58,15 +69,20 @@ RUN mkdir -p /out/bin /out/versionen \
 # java.desktop braucht der Kotlin-Parser (intellij-core), ohne startet KotlinCoreEnvironment nicht (gemessen).
 FROM maven:${MAVEN_TAG} AS jvm
 ARG KOTLIN_VERSION
+ARG SCALAMETA_VERSION
+ARG GROOVY_VERSION
 WORKDIR /bau
 COPY jvm/pom.xml jvm/JvmPruefer.java /bau/
-RUN mvn -B -q dependency:copy-dependencies -Dkotlin.version=${KOTLIN_VERSION} -DoutputDirectory=/out/jvm/lib \
+RUN mvn -B -q dependency:copy-dependencies -Dkotlin.version=${KOTLIN_VERSION} -Dscalameta.version=${SCALAMETA_VERSION} \
+      -Dgroovy.version=${GROOVY_VERSION} -DoutputDirectory=/out/jvm/lib \
  && mkdir -p /out/jvm/klassen /out/versionen \
  && javac -nowarn -cp '/out/jvm/lib/*' -d /out/jvm/klassen JvmPruefer.java \
  && jlink --add-modules java.base,java.desktop,java.logging,java.management,jdk.compiler,jdk.unsupported \
       --strip-debug --no-man-pages --no-header-files --compress=zip-6 --generate-cds-archive --output /out/jvm/rt \
  && /out/jvm/rt/bin/java -Xshare:auto -cp '/out/jvm/lib/*:/out/jvm/klassen' JvmPruefer --probe \
  && echo "kotlin-psi ${KOTLIN_VERSION}" > /out/versionen/kotlin \
+ && echo "scalameta ${SCALAMETA_VERSION}" > /out/versionen/scala \
+ && echo "groovy ${GROOVY_VERSION}" > /out/versionen/groovy \
  && echo "javac $(/out/jvm/rt/bin/java -XshowSettings:properties -version 2>&1 | awk '/java.version = / {print $3}')" > /out/versionen/java \
  && cat /out/versionen/kotlin /out/versionen/java && du -sh /out/jvm/*
 
@@ -97,10 +113,11 @@ RUN pip install --no-cache-dir --root-user-action=ignore --target /opt/pruef/py 
 COPY --from=rust --chmod=0555 /out/bin/ /opt/pruef/bin/
 COPY --from=rust --chmod=0555 /out/lib/ /opt/pruef/lib/
 COPY --from=go --chmod=0555 /out/bin/ /opt/pruef/bin/
+COPY --from=naga --chmod=0555 /out/naga/bin/naga /opt/pruef/bin/naga
 COPY --from=go --chmod=0444 /out/versionen/go /opt/pruef/versionen/go
 COPY --from=jvm --chmod=0555 /out/jvm/ /opt/pruef/jvm/
-COPY --from=jvm --chmod=0444 /out/versionen/kotlin /out/versionen/java /opt/pruef/versionen/
-COPY --chmod=0444 pruefserver.py pruefer_jvm.py /opt/pruef/
+COPY --from=jvm --chmod=0444 /out/versionen/kotlin /out/versionen/java /out/versionen/scala /out/versionen/groovy /opt/pruef/versionen/
+COPY --chmod=0444 pruefserver.py pruefer_jvm.py pruefer_naga.py /opt/pruef/
 COPY --from=treesitter --chmod=0555 /out/py/ /opt/pruef/py/
 COPY --from=treesitter --chmod=0555 /out/ts/ /opt/pruef/ts/
 COPY --chmod=0555 pruefer_treesitter.py /opt/pruef/
@@ -120,6 +137,7 @@ RUN python3 -m compileall -q /opt/pruef/py && mkdir -p /opt/pruef/leer && touch 
  && php -n -v | head -1 && printf '<?php echo 1;\n' | php -n -l \
  && ruby --disable=gems -v && printf 'x = 1\n' | ruby --disable=gems -c \
  && luac5.4 -v && printf 'local x = 1\n' | luac5.4 -p - \
+ && naga --version && printf 'fn f() -> i32 { return 1; }\n' | naga --validate 0 --stdin-file-path p.wgsl \
  && /opt/pruef/jvm/rt/bin/java -Xshare:auto -cp '/opt/pruef/jvm/lib/*:/opt/pruef/jvm/klassen' JvmPruefer --probe \
  && python3 -c "import sys; sys.path.insert(0, '/opt/pruef'); import pruefer_treesitter as t; p = t.selbsttest(); print('tree-sitter', t.info()['pack'], sorted(t.lade_sprachen()), p or 'probe ok'); sys.exit(1 if p else 0)" \
  && python3 -c "import sys; from fissix import pygram; from fissix.pgen2 import driver; print(sys.version.split()[0], 'fissix ok')" \

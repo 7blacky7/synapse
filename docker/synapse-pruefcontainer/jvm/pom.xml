@@ -13,12 +13,25 @@
   <packaging>pom</packaging>
   <properties>
     <kotlin.version>2.4.21</kotlin.version>
+    <!-- P16-T13: Scala-Parser (scalameta, nur parsers + Abhaengigkeiten) und Groovy-Compiler (nur Kern-Jar). -->
+    <scalameta.version>4.17.4</scalameta.version>
+    <groovy.version>5.0.2</groovy.version>
   </properties>
   <dependencies>
     <dependency>
       <groupId>org.jetbrains.kotlin</groupId>
       <artifactId>kotlin-compiler-embeddable</artifactId>
       <version>${kotlin.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>org.scalameta</groupId>
+      <artifactId>parsers_2.13</artifactId>
+      <version>${scalameta.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.groovy</groupId>
+      <artifactId>groovy</artifactId>
+      <version>${groovy.version}</version>
     </dependency>
   </dependencies>
 </project>

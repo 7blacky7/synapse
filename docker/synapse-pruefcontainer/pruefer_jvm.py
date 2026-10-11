@@ -226,9 +226,18 @@ def pruefer(timeout_s: float):
 
     def java(inhalt, pfad):
         return _helfer.pruefe('java', inhalt, pfad, timeout_s)
+
+    # P16-T13: Scala (scalameta) und Groovy (Groovy-Compiler bis CONVERSION) im selben JVM-Prozess.
+    def scala(inhalt, pfad):
+        return _helfer.pruefe('scala', inhalt, pfad, timeout_s)
+
+    def groovy(inhalt, pfad):
+        return _helfer.pruefe('groovy', inhalt, pfad, timeout_s)
     return {
         'kotlin': (kotlin, lambda: _version('kotlin', 'kotlin-psi unbekannt')),
         'java': (java, lambda: _version('java', 'javac unbekannt')),
+        'scala': (scala, lambda: _version('scala', 'scalameta unbekannt')),
+        'groovy': (groovy, lambda: _version('groovy', 'groovy unbekannt')),
     }
 
 

@@ -9,7 +9,8 @@ die API haengt sich per docker attach an (packages/rest-api/src/services/pruef-c
 SPRACHEN: rust (E1, rustfmt), python (E2, ast im Prozess + Python-2-Rueckfall), shell (E2, bash -n), go (E2, gofmt -e),
           php (E3a, php -l), ruby (E3a, ruby -c), lua (E3a, luac -p),
           kotlin + java (E3b, traeger JVM-Hilfsprozess, Modul pruefer_jvm.py),
-          tree-sitter-Sprachen (P16-T11, Modul pruefer_treesitter.py, je Sprache eine Datei in ts_sprachen/).
+          tree-sitter-Sprachen (P16-T11, Modul pruefer_treesitter.py, je Sprache eine Datei in ts_sprachen/),
+          wgsl (P16-T13, naga, Modul pruefer_naga.py).
 
 PROTOKOLL (eine JSON-Zeile je Nachricht, UTF-8):
   rein:  {"id": 7, "sprache": "rust", "inhalt": "...", "pfad": "src/a.rs"}
@@ -41,6 +42,7 @@ import warnings
 from concurrent.futures import ThreadPoolExecutor
 
 import pruefer_jvm
+import pruefer_naga
 import pruefer_treesitter
 
 # compile() meldet SyntaxWarnings (z. B. ungueltige Escapes) auf stderr - das sind keine Syntaxfehler und wuerden
@@ -419,6 +421,8 @@ PRUEFER = {
 }
 # E3b: Kotlin/Java ueber den JVM-Hilfsprozess. Ein JVM-Ausfall betrifft nur diese beiden (ok:false), nie die anderen.
 PRUEFER.update(pruefer_jvm.pruefer(TIMEOUT_S))
+# P16-T13: WGSL ueber naga-cli (Modul pruefer_naga.py), nur echte Parsefehler, Vorlagen mit #-Zeilen ausgelassen.
+PRUEFER.update(pruefer_naga.pruefer(lauf))
 # P16-T11: tree-sitter-Sprachen, je Sprache ein Modul in ts_sprachen/ (pruefer_treesitter.py). Eigene Werkzeuge oben
 # haben Vorrang: ein tree-sitter-Modul ersetzt nie einen vorhandenen Pruefer gleichen Namens.
 for _name, _eintrag in pruefer_treesitter.pruefer(TIMEOUT_S).items():

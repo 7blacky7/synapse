@@ -217,7 +217,11 @@ test('T1 Anmeldung + gemma-Fehler erkannt (Zeile, Spalte, sperrend), gueltiges G
   const namen = await registriereContainerSyntaxPruefer({ cfg: cfg(), takt: false, vorwaermen: false });
   // E3b: kotlin, java (JVM-Hilfsprozess, pruef-container-jvm.test.mjs); P16-T11: tree-sitter-Sprachen
   // (pruef-container-treesitter.test.mjs). Reihenfolge = CONTAINER_SPRACHEN.
-  assert.deepEqual(namen, ['rust', 'python', 'shell', 'go', 'php', 'ruby', 'lua', 'kotlin', 'java', 'csharp', 'dart', 'swift']);
+  // P16-T13: scala, groovy (JVM), wgsl (naga), perl, ada (pruef-container-system.test.mjs); P16-T12: haskell .. r
+  // (pruef-container-funktional.test.mjs).
+  assert.deepEqual(namen, ['rust', 'python', 'shell', 'go', 'php', 'ruby', 'lua', 'kotlin', 'java', 'scala', 'groovy', 'wgsl',
+    'csharp', 'dart', 'swift',
+    'perl', 'ada', 'haskell', 'ocaml', 'ocaml_interface', 'elixir', 'erlang', 'clojure', 'racket', 'r']);
   assert.equal(core.hatSyntaxPruefer('src/a.rs'), true);
   const t0 = Date.now();
   const r = await core.pruefeSyntaxEinzelweg({ filePath: 'src/a.rs', alt: '', neu: GEMMA_RUST_1 });
@@ -730,7 +734,9 @@ test('T18 E3a-Latenz warm im Budget, Speicherspitze unter Last, Diagnose an inte
     const z = pc.zustand();
     assert.equal(z.lage, 'laeuft');
     assert.ok(z.latenz_ms.anzahl >= 120 && z.latenz_ms.p50 !== null && z.latenz_ms.p95 >= z.latenz_ms.p50, JSON.stringify(z.latenz_ms));
-    assert.deepEqual(z.sprachen, ['rust', 'python', 'shell', 'go', 'php', 'ruby', 'lua', 'kotlin', 'java', 'csharp', 'dart', 'swift']);
+    assert.deepEqual(z.sprachen, ['rust', 'python', 'shell', 'go', 'php', 'ruby', 'lua', 'kotlin', 'java', 'scala', 'groovy', 'wgsl',
+      'csharp', 'dart', 'swift',
+      'perl', 'ada', 'haskell', 'ocaml', 'ocaml_interface', 'elixir', 'erlang', 'clojure', 'racket', 'r']);
     assert.equal(z.speicher.swap_begrenzt, true);
   } finally {
     await pc.beenden();

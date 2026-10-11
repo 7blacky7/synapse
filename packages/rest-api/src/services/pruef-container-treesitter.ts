@@ -20,4 +20,25 @@ export const TREESITTER_SPRACHEN: ContainerSprache[] = [
   { sprache: 'dart', endungen: ['dart'], sperrfaehig: true, werkzeug: 'tree-sitter-dart' },
   // P16-T11: nur Hinweis - Grammatik kennt 'if let x {' / 'guard let x else' (Swift 5.7) nicht, FP 1/25.
   { sprache: 'swift', endungen: ['swift'], sperrfaehig: false, werkzeug: 'tree-sitter-swift' },
+  // P16-T13: FP 0/275 (.pl/.pm/.t), Positivkontrolle 28/30. Bewusst nicht perl -c (fuehrt BEGIN-Bloecke aus).
+  { sprache: 'perl', endungen: ['pl', 'pm', 't', 'psgi'], sperrfaehig: true, werkzeug: 'tree-sitter-perl' },
+  // P16-T13: FP 0/1048 hart (1 GNAT-Erweiterung 'range 1 .. <>' per Ausnahme weich), Ada 2022 ohne Befund.
+  { sprache: 'ada', endungen: ['adb', 'ads', 'ada'], sperrfaehig: true, werkzeug: 'tree-sitter-ada' },
+  // P16-T12 (funktionale Sprachen, Messwerte je Modul in ts_sprachen/<sprache>.py, Bericht im thought zu P16-T12):
+  // Haskell FP 0/225, Positivkontrolle 40/40 (hlint gleichwertig, aber ~350 ms Spawn und +87 MB).
+  { sprache: 'haskell', endungen: ['hs', 'hs-boot'], sperrfaehig: true, werkzeug: 'tree-sitter-haskell' },
+  // OCaml FP 0/2406 hart (Primitiv-Alias/Record-Kopie aus OCaml-trunk nur weich), 29 absichtlich kaputte Testdateien.
+  { sprache: 'ocaml', endungen: ['ml'], sperrfaehig: true, werkzeug: 'tree-sitter-ocaml' },
+  // OCaml-Schnittstellen FP 0/630 (gemeldet nur absichtlich kaputte Tests und Platzhalter-Vorlagen).
+  { sprache: 'ocaml_interface', endungen: ['mli'], sperrfaehig: true, werkzeug: 'tree-sitter-ocaml_interface' },
+  // Elixir FP 0/1025, Positivkontrolle 40/41 (Code.string_to_quoted gleichwertig, braucht BEAM).
+  { sprache: 'elixir', endungen: ['ex', 'exs'], sperrfaehig: true, werkzeug: 'tree-sitter-elixir' },
+  // Erlang FP 0/1382 hart (Befunde in Makro-Zeilen/-Argumenten nur weich), Positivkontrolle hart 36/40.
+  { sprache: 'erlang', endungen: ['erl', 'hrl', 'escript'], sperrfaehig: true, werkzeug: 'tree-sitter-erlang' },
+  // Clojure FP 0/3693 (1 echter Fehler in einer .edn), Positivkontrolle 40/40.
+  { sprache: 'clojure', endungen: ['clj', 'cljs', 'cljc', 'edn', 'bb'], sperrfaehig: true, werkzeug: 'tree-sitter-clojure' },
+  // Racket FP 0/2863 (#lang mit eigenem Reader wie at-exp wird nicht geprueft), Positivkontrolle 41/41.
+  { sprache: 'racket', endungen: ['rkt', 'rktl', 'rktd'], sperrfaehig: true, werkzeug: 'tree-sitter-racket' },
+  // R FP 0/89, Positivkontrolle 24/24 (Rscript parse() gleichwertig, braucht R).
+  { sprache: 'r', endungen: ['r', 'rprofile'], sperrfaehig: true, werkzeug: 'tree-sitter-r' },
 ];

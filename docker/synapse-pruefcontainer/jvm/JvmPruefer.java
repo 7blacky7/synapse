@@ -11,11 +11,15 @@
  *   java:   javac-API JavacTask.parse() (nur Parser, keine Attribution), Meldung = erster Diagnostic ERROR.
  *           Sprachstand = das JDK des Images (javac ohne --release = neueste Sprache). Meldungen, die nur sagen, dass
  *           eine Preview-Funktion abgeschaltet ist, sind weich (gueltiger Code einer neueren Java-Version).
+ *   scala:  scalameta-Parser (P16-T13), .sbt mit Dialekt Sbt1, sonst Scala213Source3 und bei Fehler Scala3 (Scala 2 und
+ *           3 ohne Dateikennzeichen); scheitern beide, gilt die Meldung des Dialekts, der weiter gekommen ist.
+ *   groovy: Groovy-Compiler bis Phase CONVERSION (Parser + AST-Aufbau, keine Klassenaufloesung, keine lokalen
+ *           AST-Transformationen); die globale Grab-Transformation ist abgeschaltet (kein Netz, kein Download).
  *
  * PROTOKOLL (Zeilen, UTF-8, Tab-getrennt, Texte Base64, damit Tabs/Zeilenumbrueche im Inhalt nichts stoeren):
  *   Start:  der Prozess schreibt "bereit" (Kotlin/Java selbst werden erst bei Bedarf initialisiert).
- *   rein:   <id> \t kotlin|java \t b64(pfad) \t b64(inhalt)
- *           <id> \t warm                       (beide Parser initialisieren und anwaermen)
+ *   rein:   <id> \t kotlin|java|scala|groovy \t b64(pfad) \t b64(inhalt)
+ *           <id> \t warm                       (alle Parser initialisieren und anwaermen)
  *   raus:   <id> \t ok \t <n> [\t zeile \t spalte \t weich(0|1) \t b64(code) \t b64(meldung)]*n
  *           <id> \t fehler \t b64(text)
  * System.out wird auf stderr umgelenkt: Ausgaben aus den Bibliotheken koennen das Protokoll nicht stoeren.
@@ -31,6 +35,7 @@ import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
 import javax.tools.Diagnostic;
 import javax.tools.DiagnosticCollector;
 import javax.tools.JavaCompiler;
@@ -52,6 +57,14 @@ import org.jetbrains.kotlin.com.intellij.psi.util.PsiTreeUtil;
 import org.jetbrains.kotlin.config.CompilerConfiguration;
 import org.jetbrains.kotlin.psi.KtFile;
 import org.jetbrains.kotlin.psi.KtPsiFactory;
+import org.codehaus.groovy.control.CompilationUnit;
+import org.codehaus.groovy.control.MultipleCompilationErrorsException;
+import org.codehaus.groovy.control.Phases;
+import org.codehaus.groovy.control.messages.SyntaxErrorMessage;
+import org.codehaus.groovy.syntax.SyntaxException;
+import scala.meta.Dialect;
+import scala.meta.inputs.Input;
+import scala.meta.internal.parsers.ScalametaParser;
 
 public final class JvmPruefer {
   private static final Base64.Encoder B64 = Base64.getEncoder();
@@ -143,8 +156,65 @@ public final class JvmPruefer {
     return m;
   }
 
+  /** Scala-Parsefehler mit Offset (zum Vergleich zweier Dialekte); null = gueltig. */
+  private record ScalaFehler(int offset, Meldung meldung) {}
+
+  private static ScalaFehler scalaParse(String text, Dialect d, String dialektName) {
+    try {
+      new ScalametaParser(new Input.String(text), d, scala.meta.parsers.ParserOptions$.MODULE$.implicitParseOptions())
+          .parseSource();
+      return null;
+    } catch (Exception e) {
+      // Scala-Ausnahmen sind fuer javac "checked", werden aber nicht deklariert - deshalb Exception + instanceof.
+      scala.meta.inputs.Position p;
+      String text2;
+      if (e instanceof scala.meta.parsers.ParseException pe) { p = pe.pos(); text2 = pe.shortMessage(); }
+      else if (e instanceof scala.meta.tokenizers.TokenizeException te) { p = te.pos(); text2 = te.shortMessage(); }
+      else throw new RuntimeException(e);
+      return new ScalaFehler(p.start(), new Meldung(p.startLine() + 1, p.startColumn() + 1, false, "scalameta-" + dialektName,
+          text2));
+    }
+  }
+
+  static List<Meldung> pruefeScala(String pfad, String text) {
+    if (pfad != null && pfad.endsWith(".sbt")) {
+      ScalaFehler f = scalaParse(text, scala.meta.dialects.package$.MODULE$.Sbt1(), "sbt1");
+      return f == null ? List.of() : List.of(f.meldung());
+    }
+    ScalaFehler s2 = scalaParse(text, scala.meta.dialects.package$.MODULE$.Scala213Source3(), "scala213source3");
+    if (s2 == null) return List.of();
+    ScalaFehler s3 = scalaParse(text, scala.meta.dialects.package$.MODULE$.Scala3(), "scala3");
+    if (s3 == null) return List.of();
+    return List.of(s2.offset() >= s3.offset() ? s2.meldung() : s3.meldung());
+  }
+
+  static List<Meldung> pruefeGroovy(String pfad, String text) {
+    // voll qualifiziert: CompilerConfiguration ist oben schon die Kotlin-Klasse
+    org.codehaus.groovy.control.CompilerConfiguration cc = new org.codehaus.groovy.control.CompilerConfiguration();
+    cc.setDisabledGlobalASTTransformations(Set.of("groovy.grape.GrabAnnotationTransformation"));
+    CompilationUnit cu = new CompilationUnit(cc);
+    cu.addSource(dateiname(pfad, ".groovy", "pruef.groovy"), text);
+    try {
+      cu.compile(Phases.CONVERSION);
+      return List.of();
+    } catch (MultipleCompilationErrorsException e) {
+      for (Object o : e.getErrorCollector().getErrors()) {
+        if (o instanceof SyntaxErrorMessage s) {
+          SyntaxException x = s.getCause();
+          return List.of(new Meldung(Math.max(1, x.getStartLine()), Math.max(1, x.getStartColumn()), false, "groovy",
+              x.getOriginalMessage()));
+        }
+      }
+      // Fehler ohne Ortsangabe (z. B. Konfiguration) sind keine Syntaxbefunde des Nutzers - nicht melden.
+      System.err.println("[jvm] groovy ohne Syntaxmeldung: " + e.getMessage());
+      return List.of();
+    }
+  }
+
   private static void warm() {
     for (int i = 0; i < 30; i++) {
+      pruefeScala("W.scala", "package w\nfinal case class P(x: Int)\nobject W { def f(p: P): Int = p match { case P(x) if x > " + i + " => x; case _ => 0 } }\n");
+      pruefeGroovy("w.groovy", "def f(List<Integer> l) { l.collect { it * " + i + " }.findAll { it > 1 } }\nprintln f([1, 2, 3])\n");
       pruefeKotlin("w.kt", "package w\n\ndata class P(val x: Int)\n\nfun f(p: P) = when (p.x) { 0 -> \"null\" else -> \"$" + "{p.x + " + i + "}\" }\n");
       pruefeJava("W.java", "class W { record R(int x) {} int f(Object o) { return o instanceof R(int x) ? x + " + i + " : 0; } }\n");
     }
@@ -158,8 +228,13 @@ public final class JvmPruefer {
       warm();
       List<Meldung> k = pruefeKotlin("p.kt", "fun a() {\n  val x = \n}\n");
       List<Meldung> j = pruefeJava("P.java", "class P {\n  void a() { int x = ; }\n}\n");
-      System.err.println("probe kotlin " + k + " java " + j);
-      if (k.isEmpty() || j.isEmpty()) System.exit(1);
+      List<Meldung> s = pruefeScala("P.scala", "object P {\n  val x = \n}\n");
+      List<Meldung> s3 = pruefeScala("Q.scala", "enum Farbe:\n  case Rot, Gruen\n\ndef f(x: Int): Int =\n  if x > 0 then x else -x\n");
+      List<Meldung> g = pruefeGroovy("p.groovy", "def a() {\n  def x = \n}\n");
+      List<Meldung> g2 = pruefeGroovy("q.groovy", "@Grab('org.example:nicht-da:1.0')\nimport groovy.transform.Field\n@Field int y = 1\nprintln y\n");
+      System.err.println("probe kotlin " + k + " java " + j + " scala " + s + " scala3-gueltig " + s3 + " groovy " + g
+          + " groovy-grab-gueltig " + g2);
+      if (k.isEmpty() || j.isEmpty() || s.isEmpty() || !s3.isEmpty() || g.isEmpty() || !g2.isEmpty()) System.exit(1);
       return;
     }
     BufferedReader ein = new BufferedReader(new InputStreamReader(System.in, StandardCharsets.UTF_8));
@@ -180,6 +255,10 @@ public final class JvmPruefer {
           m = pruefeKotlin(aus64(t[2]), aus64(t[3]));
         } else if (t.length >= 4 && t[1].equals("java")) {
           m = pruefeJava(aus64(t[2]), aus64(t[3]));
+        } else if (t.length >= 4 && t[1].equals("scala")) {
+          m = pruefeScala(aus64(t[2]), aus64(t[3]));
+        } else if (t.length >= 4 && t[1].equals("groovy")) {
+          m = pruefeGroovy(aus64(t[2]), aus64(t[3]));
         } else {
           throw new IllegalArgumentException("unbekannte Anfrage");
         }

@@ -76,6 +76,14 @@ export const CONTAINER_SPRACHEN: ContainerSprache[] = [
   { sprache: 'kotlin', endungen: ['kt', 'kts'], sperrfaehig: true, werkzeug: 'kotlin-psi', jvm: true },
   // P16-T5 E3b: javac-API parse() (JDK 25), Preview-Meldungen nur weich.
   { sprache: 'java', endungen: ['java'], sperrfaehig: true, werkzeug: 'javac', jvm: true },
+  // P16-T13: scalameta 4.17 (Scala213Source3, Rueckfall Scala3; .sbt als Sbt1), FP src 0/1282, ausserhalb der
+  // absichtlich kaputten neg-/presentation-Tests 4/7900 Randfaelle des scala-Compiler-Testkorpus.
+  { sprache: 'scala', endungen: ['scala', 'sbt'], sperrfaehig: true, werkzeug: 'scalameta', jvm: true },
+  // P16-T13: Groovy-Compiler bis Phase CONVERSION (keine Klassenaufloesung, Grab abgeschaltet), FP 0/17 (.gradle/.groovy).
+  { sprache: 'groovy', endungen: ['groovy', 'gradle', 'gvy', 'gy', 'gsh'], sperrfaehig: true, werkzeug: 'groovy', jvm: true },
+  // P16-T13: naga-cli 30 (nur Parsefehler, --validate 0), FP 0/546 echte .wgsl (4 Meldungen = 2 echte Fehler, je
+  // doppelt im Index); Vorlagen mit #-Praeprozessor (llama.cpp ggml-webgpu, 79 Dateien) werden nicht geprueft.
+  { sprache: 'wgsl', endungen: ['wgsl'], sperrfaehig: true, werkzeug: 'naga' },
   // P16-T11: tree-sitter-Sprachen (je Sprache eine Zeile in pruef-container-treesitter.ts + Modul ts_sprachen/).
   ...TREESITTER_SPRACHEN,
 ];
