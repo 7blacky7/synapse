@@ -511,7 +511,7 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
         description: 'Versionshistorie einer Datei (neueste zuerst). Liefert Metadata ohne Inhalt — voller Inhalt via get_version.',
         params: 'file_path (req), limit? (Standard 50, Max 500)',
         example: 'files({ action: "versions", project: "synapse", file_path: "src/x.ts", limit: 20 })',
-        tips: 'Jede Aenderung erzeugt automatisch einen Snapshot. edit_action zeigt was geaendert hat (update / search_replace / restore:<id> / etc.). batch_id ist gesetzt wenn die Aenderung Teil eines Multi-File-Edits war.',
+        tips: 'Jede Aenderung erzeugt automatisch einen Snapshot des Stands VOR der Aenderung: content_hash/size_bytes (und get_version.content) sind dieser Vorher-Stand, den restore zurueckholt. nachher {content_hash, size_bytes, quelle} ist der Stand NACH der Aenderung (quelle naechste_version, aktueller_stand oder geloescht). edit_action zeigt was geaendert hat (create / update / search_replace / search_replace_batch / replace_lines / insert_after / delete_lines / batch:<plan_id>:<ops> / restore:<id> / etc.). batch_id ist gesetzt wenn die Aenderung Teil eines Multi-File-Edits war.',
       },
       get_version: {
         description: 'Liefert eine konkrete Version inklusive content.',

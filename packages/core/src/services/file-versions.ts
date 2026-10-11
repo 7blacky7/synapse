@@ -73,11 +73,50 @@ function kurzDiff(diff: VersionDiff, max = LISTE_DIFF_ZEILEN): VersionDiff {
 }
 
 /**
+ * Kleinkram C: nachher je Zeile in EINER Abfrage. Nachfolger wie beim Diff (ergaenzeDiffs): naechste Version
+ * derselben Datei, Zeilen desselben Batches zaehlen nicht; ohne Nachfolger der aktuelle Stand in code_files,
+ * ohne den 'geloescht'. Ignore-Ereignisse sind keine Datei-Aenderungen und bekommen keins.
+ */
+async function ergaenzeNachher<T extends FileVersionMeta>(rows: T[]): Promise<void> {
+  const ids = rows.filter((row) => !(row.edit_action ?? '').startsWith('ignore_')).map((row) => row.id);
+  if (ids.length === 0) return;
+  const res = await getPool().query<{
+    id: string; n_hash: string | null; n_size: string | number | null; hat_n: boolean;
+    cf_hash: string | null; cf_size: string | number | null; hat_cf: boolean;
+  }>(
+    `SELECT v.id::text AS id, n.content_hash AS n_hash, n.size_bytes AS n_size, (n.id IS NOT NULL) AS hat_n,
+            cf.content_hash AS cf_hash, COALESCE(cf.file_size, OCTET_LENGTH(cf.content)) AS cf_size,
+            (cf.file_path IS NOT NULL) AS hat_cf
+       FROM file_versions v
+       LEFT JOIN LATERAL (
+         SELECT n.id, n.content_hash, n.size_bytes FROM file_versions n
+          WHERE n.project = v.project AND n.file_path = v.file_path AND n.id > v.id
+            AND (v.batch_id IS NULL OR n.batch_id IS DISTINCT FROM v.batch_id)
+          ORDER BY n.id LIMIT 1) n ON TRUE
+       LEFT JOIN code_files cf
+         ON cf.project = v.project AND cf.file_path = v.file_path AND cf.deleted_at IS NULL
+      WHERE v.id = ANY($1::bigint[])`,
+    [ids],
+  );
+  const zahl = (x: string | number | null): number | null => (x === null ? null : Number(x));
+  for (const z of res.rows) {
+    const row = rows.find((r) => r.id === z.id);
+    if (!row) continue;
+    row.nachher = z.hat_n
+      ? { content_hash: z.n_hash, size_bytes: zahl(z.n_size), quelle: 'naechste_version' }
+      : z.hat_cf
+        ? { content_hash: z.cf_hash, size_bytes: zahl(z.cf_size), quelle: 'aktueller_stand' }
+        : { content_hash: null, size_bytes: null, quelle: 'geloescht' };
+  }
+}
+
+/**
  * Fehlende Diffs (NULL: Schreiben ausserhalb eines Plans, Alt-Bestand, oder der Prozess starb zwischen
  * commit und nebenlaeufigem Schreiben) beim Lesen nachrechnen und zurueckschreiben — so fehlt nie etwas.
  * Ignore-Ereignisse (edit_action ignore_*) sind keine Datei-Aenderungen und bekommen keins.
  */
 async function ergaenzeDiffs<T extends FileVersionMeta>(rows: T[], opts: { max: number; kurz: boolean }): Promise<T[]> {
+  await ergaenzeNachher(rows);
   const fehlend = rows
     .filter((row) => (row.diff === null || row.diff === undefined) && !(row.edit_action ?? '').startsWith('ignore_'))
     .slice(0, opts.max);
@@ -131,6 +170,18 @@ export interface FileVersionMeta {
   agent_note?: string | null;
   /** P15-T22: Diff der Aenderung, die diese Version abgeloest hat (content -> Nachfolger). */
   diff?: VersionDiff | null;
+  /**
+   * Kleinkram C (Befund 184ca6f3): Stand NACH der Aenderung dieser Zeile. content_hash/size_bytes oben sind
+   * der Stand VOR dem Schreiben (passend zu content, den restore zurueckholt) und wurden als Ergebnis gelesen.
+   */
+  nachher?: VersionNachher | null;
+}
+
+/** Stand nach der Aenderung: naechste Version derselben Datei (nicht aus demselben Batch), sonst code_files. */
+export interface VersionNachher {
+  content_hash: string | null;
+  size_bytes: number | null;
+  quelle: 'naechste_version' | 'aktueller_stand' | 'geloescht';
 }
 
 export interface FileVersionFull extends FileVersionMeta {

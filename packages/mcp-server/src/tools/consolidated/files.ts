@@ -772,7 +772,7 @@ export const filesTool: ConsolidatedTool = {
               `Nach dem Commit bleibt der Pfad ausgeblendet, bis die Regel abgeschaltet wird: ignore(action:"disable", pattern:"${vorbereitung.hinweis.regel}").`,
           };
         }
-        const result = await updateFileInPg(project, filePath, await envWeg.schreibInhalt(content), agentId, undefined, undefined, reason, enrichment, einzel);
+        const result = await updateFileInPg(project, filePath, await envWeg.schreibInhalt(content), agentId, 'update', undefined, reason, enrichment, einzel);
         const response: Record<string, unknown> = { success: true, message: `Datei "${filePath}" aktualisiert (${content.length} Zeichen)` };
         if (wasFixed) response.autoFixed = 'Content war doppelt escaped (\\n statt Newlines) — automatisch korrigiert.';
         if (vorbereitung.modus === 'direkt_mit_hinweis') {
@@ -837,7 +837,7 @@ export const filesTool: ConsolidatedTool = {
         const { content } = unescapeIfNeeded(reqStr(args, 'content'));
         if (lineStart === undefined || lineEnd === undefined) return { success: false, error: 'line_start und line_end erforderlich' };
         const newContent = replaceLines(currentContent, lineStart, lineEnd, content);
-        const result = await updateFileInPg(project, filePath, await envWeg.schreibInhalt(newContent), agentId, undefined, undefined, reason, enrichment, einzel);
+        const result = await updateFileInPg(project, filePath, await envWeg.schreibInhalt(newContent), agentId, 'replace_lines', undefined, reason, enrichment, einzel);
         return await attachWarnings(
           { success: true, message: `Zeilen ${lineStart}-${lineEnd} in "${filePath}" ersetzt` },
           result
@@ -851,7 +851,7 @@ export const filesTool: ConsolidatedTool = {
         const { content } = unescapeIfNeeded(reqStr(args, 'content'));
         if (afterLine === undefined) return { success: false, error: 'after_line erforderlich' };
         const newContent = insertAfterLine(currentContent, afterLine, content);
-        const result = await updateFileInPg(project, filePath, await envWeg.schreibInhalt(newContent), agentId, undefined, undefined, reason, enrichment, einzel);
+        const result = await updateFileInPg(project, filePath, await envWeg.schreibInhalt(newContent), agentId, 'insert_after', undefined, reason, enrichment, einzel);
         return await attachWarnings(
           { success: true, message: `Inhalt nach Zeile ${afterLine} in "${filePath}" eingefuegt` },
           result
@@ -865,7 +865,7 @@ export const filesTool: ConsolidatedTool = {
         const lineEnd = num(args, 'line_end');
         if (lineStart === undefined || lineEnd === undefined) return { success: false, error: 'line_start und line_end erforderlich' };
         const newContent = deleteLines(currentContent, lineStart, lineEnd);
-        const result = await updateFileInPg(project, filePath, await envWeg.schreibInhalt(newContent), agentId, undefined, undefined, reason, enrichment, einzel);
+        const result = await updateFileInPg(project, filePath, await envWeg.schreibInhalt(newContent), agentId, 'delete_lines', undefined, reason, enrichment, einzel);
         return await attachWarnings(
           { success: true, message: `Zeilen ${lineStart}-${lineEnd} in "${filePath}" geloescht` },
           result
@@ -890,7 +890,7 @@ export const filesTool: ConsolidatedTool = {
               : {}),
           };
         }
-        const result = await updateFileInPg(project, filePath, await envWeg.schreibInhalt(sr.content), agentId, undefined, undefined, reason, enrichment, einzel);
+        const result = await updateFileInPg(project, filePath, await envWeg.schreibInhalt(sr.content), agentId, 'search_replace', undefined, reason, enrichment, einzel);
         return await attachWarnings(
           { success: true, count: sr.count, lines: sr.lines, message: `${sr.count} Vorkommen ersetzt in "${filePath}"` },
           result
@@ -918,7 +918,7 @@ export const filesTool: ConsolidatedTool = {
           };
         }
 
-        const writeResult = await updateFileInPg(project, filePath, await envWeg.schreibInhalt(newContent), agentId, undefined, undefined, reason, enrichment, einzel);
+        const writeResult = await updateFileInPg(project, filePath, await envWeg.schreibInhalt(newContent), agentId, 'search_replace_batch', undefined, reason, enrichment, einzel);
         const response: Record<string, unknown> = {
           success: true,
           ...batchResult,

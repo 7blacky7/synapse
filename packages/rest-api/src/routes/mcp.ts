@@ -5181,7 +5181,7 @@ async function handleToolCallKern(
                 `Nach dem Commit bleibt der Pfad ausgeblendet, bis die Regel abgeschaltet wird: ignore(action:"disable", pattern:"${vorbereitung.hinweis.regel}").`,
             };
           }
-          const result = await updateFileInPg(project, filePath, await envWeg.schreibInhalt(content), agentId, undefined, undefined, str(args, 'reason'), enrichment, einzel);
+          const result = await updateFileInPg(project, filePath, await envWeg.schreibInhalt(content), agentId, 'update', undefined, str(args, 'reason'), enrichment, einzel);
           const response: Record<string, unknown> = { success: true, message: `Datei "${filePath}" aktualisiert (${content.length} Zeichen)` };
           if (vorbereitung.modus === 'direkt_mit_hinweis') {
             await markiereEinzelneDateiIgnoriert(project, filePath);
@@ -5239,7 +5239,7 @@ async function handleToolCallKern(
           const content = reqStr(args, 'content');
           if (lineStart === undefined || lineEnd === undefined) return { success: false, error: 'line_start und line_end erforderlich' };
           const newContent = replaceLines(currentContent, lineStart, lineEnd, content);
-          const result = await updateFileInPg(project, filePath, await envWeg.schreibInhalt(newContent), agentId, undefined, undefined, str(args, 'reason'), enrichment, einzel);
+          const result = await updateFileInPg(project, filePath, await envWeg.schreibInhalt(newContent), agentId, 'replace_lines', undefined, str(args, 'reason'), enrichment, einzel);
           const response: Record<string, unknown> = { success: true, message: `Zeilen ${lineStart}-${lineEnd} in "${filePath}" ersetzt` };
           if (result.warnings?.length) {
             response.errorPatterns = {
@@ -5258,7 +5258,7 @@ async function handleToolCallKern(
           const content = reqStr(args, 'content');
           if (afterLine === undefined) return { success: false, error: 'after_line erforderlich' };
           const newContent = insertAfterLine(currentContent, afterLine, content);
-          const result = await updateFileInPg(project, filePath, await envWeg.schreibInhalt(newContent), agentId, undefined, undefined, str(args, 'reason'), enrichment, einzel);
+          const result = await updateFileInPg(project, filePath, await envWeg.schreibInhalt(newContent), agentId, 'insert_after', undefined, str(args, 'reason'), enrichment, einzel);
           const response: Record<string, unknown> = { success: true, message: `Inhalt nach Zeile ${afterLine} in "${filePath}" eingefuegt` };
           if (result.warnings?.length) {
             response.errorPatterns = {
@@ -5277,7 +5277,7 @@ async function handleToolCallKern(
           const lineEnd = num(args, 'line_end');
           if (lineStart === undefined || lineEnd === undefined) return { success: false, error: 'line_start und line_end erforderlich' };
           const newContent = deleteLines(currentContent, lineStart, lineEnd);
-          const result = await updateFileInPg(project, filePath, await envWeg.schreibInhalt(newContent), agentId, undefined, undefined, str(args, 'reason'), enrichment, einzel);
+          const result = await updateFileInPg(project, filePath, await envWeg.schreibInhalt(newContent), agentId, 'delete_lines', undefined, str(args, 'reason'), enrichment, einzel);
           const response: Record<string, unknown> = { success: true, message: `Zeilen ${lineStart}-${lineEnd} in "${filePath}" geloescht` };
           if (result.warnings?.length) {
             response.errorPatterns = {
@@ -5308,7 +5308,7 @@ async function handleToolCallKern(
                 : {}),
             };
           }
-          const result = await updateFileInPg(project, filePath, await envWeg.schreibInhalt(sr.content), agentId, undefined, undefined, str(args, 'reason'), enrichment, einzel);
+          const result = await updateFileInPg(project, filePath, await envWeg.schreibInhalt(sr.content), agentId, 'search_replace', undefined, str(args, 'reason'), enrichment, einzel);
           const response: Record<string, unknown> = { success: true, count: sr.count, lines: sr.lines, message: `${sr.count} Vorkommen ersetzt in "${filePath}"` };
           if (result.warnings?.length) {
             response.errorPatterns = {
@@ -5338,7 +5338,7 @@ async function handleToolCallKern(
               message: `Nichts geschrieben in "${filePath}" — Edits korrigieren und den ganzen Batch erneut schicken`,
             };
           }
-          const result = await updateFileInPg(project, filePath, await envWeg.schreibInhalt(newContent), agentId, undefined, undefined, str(args, 'reason'), enrichment, einzel);
+          const result = await updateFileInPg(project, filePath, await envWeg.schreibInhalt(newContent), agentId, 'search_replace_batch', undefined, str(args, 'reason'), enrichment, einzel);
           const response: Record<string, unknown> = {
             success: true,
             ...batchResult,
