@@ -30,6 +30,24 @@ interface OllamaTag {
   details?: { quantization_level?: string };
 }
 
+/**
+ * Referenzvertrag der API (GET /api/embedding-nodes/reference, P15-T1). EINZIGE Quelle fuer Modell,
+ * Zieldimension, num_ctx und VRAM-Bedarf des Knotens — keine eigenen Defaults (Regel
+ * regel-keine-festverdrahteten-modellwerte). Bis zum 11.10.2026 standen hier qwen3-embedding:8b,
+ * 3072, 8192 und 12000/7300 MB als Rueckfall; nach dem Wechsel auf Nemotron haette ein Knoten ohne
+ * passende Env mit Altwerten registriert und waere (zu Recht) abgewiesen worden.
+ */
+export interface EmbeddingReference {
+  model: string;
+  modelDigest: string | null;
+  nativeDimension: number;
+  targetDimension: number;
+  numCtx: number;
+  quantization: string | null;
+  requiredTotalVramMb: number;
+  requiredFreeVramMb: number;
+}
+
 function envPositiveInt(name: string, fallback: number): number {
   const value = Number(process.env[name]);
   return Number.isInteger(value) && value > 0 ? value : fallback;
@@ -44,11 +62,10 @@ function envPositiveInt(name: string, fallback: number): number {
  * Faellt die Abfrage aus, wird 0 angenommen: lieber eine Registrierung zu viel
  * ablehnen als eine zu viel zulassen.
  */
-async function eigenesModellImVram(): Promise<number> {
+async function eigenesModellImVram(model: string): Promise<number> {
   try {
     const ollamaUrl = (process.env.OLLAMA_URL || '').replace(/\/$/, '');
     if (!ollamaUrl) return 0;
-    const model = process.env.OLLAMA_MODEL || 'qwen3-embedding:8b';
     const antwort = await fetch(`${ollamaUrl}/api/ps`, { signal: AbortSignal.timeout(5_000) });
     if (!antwort.ok) return 0;
     const daten = await antwort.json() as { models?: Array<{ name?: string; model?: string; size_vram?: number }> };
@@ -81,11 +98,16 @@ async function gpuInfo(): Promise<{ name: string | null; totalMb: number; freeMb
 // die Frage "passt das Modell in den freien Speicher?" richtig. Danach immer
 // false — sonst scheitert jede Folgemessung an dem Speicher, den das eigene
 // Modell belegt (siehe Kommentar unten bei requiredFreeMb).
-export async function probeNodeCapabilities(pruefeEinstieg = false): Promise<NodeCapabilities> {
+export async function probeNodeCapabilities(
+  reference: EmbeddingReference,
+  pruefeEinstieg = false,
+): Promise<NodeCapabilities> {
   // GPU-3: fail-closed und zwingend VOR jedem Ollama-Netzaufruf.
   const gpu = await gpuInfo();
-  const requiredFreeMb = envPositiveInt('SYNAPSE_GPU_REQUIRED_FREE_MB', 7300);
-  const requiredTotalMb = envPositiveInt('SYNAPSE_GPU_REQUIRED_TOTAL_MB', 12000);
+  // P15-T6: Bedarf und Modell aus dem Referenzvertrag, nicht aus eigenen Defaults.
+  const requiredFreeMb = reference.requiredFreeVramMb;
+  const requiredTotalMb = reference.requiredTotalVramMb;
+  const model = reference.model;
 
   // ⚠️ DIE FREI-SCHWELLE IST EINE EINSTIEGSBEDINGUNG, KEINE DAUERBEDINGUNG.
   // Sie beantwortet die Frage "passt das Modell ueberhaupt hinein?". Sobald es
@@ -109,7 +131,7 @@ export async function probeNodeCapabilities(pruefeEinstieg = false): Promise<Nod
   // Registrierung. Gemessen am 01.08.2026 nach einem Neustart des Agenten.
   // Die Frage der Einstiegspruefung ist "passt das Modell hinein?", und wenn es
   // bereits DRIN ist, lautet die Antwort offensichtlich ja.
-  const belegtVomEigenenModell = pruefeEinstieg ? await eigenesModellImVram() : 0;
+  const belegtVomEigenenModell = pruefeEinstieg ? await eigenesModellImVram(model) : 0;
   const verfuegbarMb = gpu.freeMb + belegtVomEigenenModell;
   const gpuFehlt = !gpu.name || gpu.totalMb < requiredTotalMb;
   const zuWenigFrei = verfuegbarMb < requiredFreeMb;
@@ -126,7 +148,6 @@ export async function probeNodeCapabilities(pruefeEinstieg = false): Promise<Nod
   if (parsedOllama.protocol !== 'http:' || !['127.0.0.1', 'localhost', '::1'].includes(parsedOllama.hostname)) {
     throw new Error('OLLAMA_URL must be strict loopback HTTP');
   }
-  const model = process.env.OLLAMA_MODEL || 'qwen3-embedding:8b';
   const tagsResponse = await fetch(`${ollamaUrl}/api/tags`, { signal: AbortSignal.timeout(10_000) });
   if (!tagsResponse.ok) throw new Error(`Ollama tags failed: ${tagsResponse.status}`);
   const tags = await tagsResponse.json() as { models: OllamaTag[] };
@@ -160,8 +181,10 @@ export async function probeNodeCapabilities(pruefeEinstieg = false): Promise<Nod
     modelDigest: tag.digest,
     quantization: show.details?.quantization_level || tag.details?.quantization_level || null,
     nativeDimension: Number(embeddingLength),
-    targetDimension: envPositiveInt('EMBEDDING_TARGET_DIM', 3072),
-    numCtx: envPositiveInt('EMBEDDING_NUM_CTX', 8192),
+    // Zieldimension und num_ctx sind Vorgaben des Vertrags; index.ts setzt sie fuer core/embed()
+    // in die Env (EMBEDDING_TARGET_DIM, EMBEDDING_NUM_CTX), damit gemeldet = gerechnet gilt.
+    targetDimension: reference.targetDimension,
+    numCtx: reference.numCtx,
     vramTotalMb: gpu.totalMb,
     vramFreeMb: gpu.freeMb,
     systemMemoryMb: Math.round(os.totalmem() / 1024 / 1024),

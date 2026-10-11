@@ -39,21 +39,39 @@ const ollama = http.createServer(async (request, response) => {
       model_info: { 'qwen3.embedding_length': 4096 },
     });
   }
-  if (request.url === '/api/embeddings') {
+  // P12-T14: der Provider spricht /api/embed (Liste input -> Liste embeddings).
+  // P15-T6: Modell und num_ctx kommen aus dem Referenzvertrag, nicht aus der Env des Knotens.
+  if (request.url === '/api/embed') {
     assert.equal(body.model, model);
-    assert.equal(typeof body.prompt, 'string');
+    assert.ok(Array.isArray(body.input));
     assert.deepEqual(body.options, { num_ctx: 8192 });
-    assert.equal('input' in body, false);
-    ollamaPrompts.push(body.prompt);
-    return json(response, 200, { embedding: new Array(4096).fill(1) });
+    ollamaPrompts.push(...body.input);
+    return json(response, 200, { embeddings: body.input.map(() => new Array(4096).fill(1)) });
   }
   json(response, 404, {});
 });
+
+// P15-T6: Referenzvertrag wie GET /api/embedding-nodes/reference (P15-T1) ihn liefert.
+const referenz = {
+  model,
+  modelDigest: digest,
+  nativeDimension: 4096,
+  targetDimension: 3072,
+  numCtx: 8192,
+  quantization: 'Q8_0',
+  requiredTotalVramMb: 12000,
+  requiredFreeVramMb: 7300,
+};
+let referenzAbrufe = 0;
 
 const api = http.createServer(async (request, response) => {
   const chunks = [];
   for await (const chunk of request) chunks.push(chunk);
   const body = chunks.length ? JSON.parse(Buffer.concat(chunks).toString()) : {};
+  if (request.method === 'GET' && request.url === '/api/embedding-nodes/reference') {
+    referenzAbrufe++;
+    return json(response, 200, { success: true, reference: referenz });
+  }
   if (request.url === '/api/embedding-nodes/register') {
     registration = body;
     return json(response, 201, { success: true });
@@ -64,14 +82,7 @@ const api = http.createServer(async (request, response) => {
       return json(response, 200, {
         success: true,
         claims: [],
-        reference: {
-          model,
-          modelDigest: digest,
-          nativeDimension: 4096,
-          targetDimension: 3072,
-          numCtx: 8192,
-          quantization: 'Q8_0',
-        },
+        reference: referenz,
       });
     }
     claimGiven = true;
@@ -83,14 +94,7 @@ const api = http.createServer(async (request, response) => {
         content,
         contentHash: 'b'.repeat(64),
       }],
-      reference: {
-        model,
-        modelDigest: digest,
-        nativeDimension: 4096,
-        targetDimension: 3072,
-        numCtx: 8192,
-        quantization: 'Q8_0',
-      },
+      reference: referenz,
     });
   }
   if (request.url?.endsWith('/complete')) {
@@ -135,9 +139,10 @@ const child = spawn(process.execPath, ['packages/compute-node-agent/dist/index.j
     SYNAPSE_NODE_HEARTBEAT_MS: '100',
     SYNAPSE_NODE_RETRY_MS: '20',
     OLLAMA_URL: `http://127.0.0.1:${ollamaPort}`,
-    OLLAMA_MODEL: model,
-    EMBEDDING_TARGET_DIM: '3072',
-    EMBEDDING_NUM_CTX: '8192',
+    // P15-T6: absichtlich falsche Env — der Vertrag der API muss gewinnen.
+    OLLAMA_MODEL: 'falsches-modell:latest',
+    EMBEDDING_TARGET_DIM: '17',
+    EMBEDDING_NUM_CTX: '17',
     OPENAI_API_KEY: 'must-never-be-used',
     DATABASE_URL: `postgresql://127.0.0.1:${pgTrapPort}/forbidden`,
     QDRANT_URL: `http://127.0.0.1:${qdrantTrapPort}`,
@@ -162,6 +167,10 @@ try {
   if (child.exitCode === null) child.kill('SIGKILL');
 
   assert.equal(registration.maxConcurrency, 1);
+  assert.ok(referenzAbrufe >= 1, 'Agent hat den Referenzvertrag nicht abgerufen');
+  assert.equal(registration.model, model);
+  assert.equal(registration.targetDimension, 3072);
+  assert.equal(registration.numCtx, 8192);
   assert.equal(completion.model, model);
   assert.equal(completion.modelDigest, digest);
   assert.equal(completion.nativeDimension, 4096);
