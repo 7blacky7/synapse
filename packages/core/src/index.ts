@@ -636,6 +636,12 @@ export {
   expireIdleAgentSessions,
   sendMessage as sendChatMessage,
   getMessages as getChatMessages,
+  // P15-T32: Sitzungs-Signal (admin index_stats sitzung, Spezialisten-Spawn)
+  SITZUNGS_ARTEN,
+  SITZUNG_PARAMETER,
+  pruefeSitzungsArt,
+  beginneSitzung,
+  wendeSitzungsSignalAn,
   // Agent-Rollen (Regel-Sichtbarkeit — geteilt von MCP-Server und REST-API)
   erlaubteRollen,
   regelSichtbarFuer,

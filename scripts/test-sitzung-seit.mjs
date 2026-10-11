@@ -22,7 +22,20 @@
  *   S10 Onboarding-Ruhefenster (onboarding_ruhe aktiv, Agent unter anderer Server-Kennung bekannt):
  *       kein erneutes Onboarding; aktiver Agent unberuehrt (Event bleibt), stillgelegter wird active.
  *       Die Zeile onboarding_ruhe der Test-DB wird danach wiederhergestellt.
+ *   P15-T32 (Spawn-Signal, Konzept thought b2293c76):
+ *   S11 Spawn mit wiederverwendetem Namen, Vorsitzung noch active: OHNE Signal bleibt das Event (Kontrolle,
+ *       = Handoff); mit beginneSitzung(...,'neu') ist der Broadcast weg, das direkt adressierte Event bleibt,
+ *       das Fehlermuster gilt als nicht gesehen; H11 Hook == Server.
+ *   S12 'fortsetzung' bei aktiver Vorsitzung: Event bleibt, aktiv_seit unveraendert, Muster frisch.
+ *   S13 'fortsetzung' bei stillgelegter Vorsitzung: wie chat register (active, Alt-Event weg).
+ *   S14 pruefeSitzungsArt: nur 'neu'|'fortsetzung', fehlend -> undefined, sonst Fehler.
+ *   S15 REST tools/call admin index_stats mit sitzung:'neu' (inject): Antwortfeld sitzung, Alt-Event weg;
+ *       ohne sitzung unveraendert (kein Feld, aktiv_seit gleich); ungueltiger Wert -> Fehler; ohne agent_id -> Hinweis.
+ *   S16 stdio adminTool.handler index_stats mit sitzung:'neu': dieselbe Wirkung.
+ *   S17 spawnSpecialistTool (mcp-server dist) ruft beginneSitzung(name, project, 'neu') - QUELLTEXT-ANKER,
+ *       kein Laufzeittest (ein echter Spawn startet einen Wrapper-Prozess).
  * POSITIVKONTROLLE: am alten Stand (vor P15-T30) schlagen S1, S2 (Muster), S3, S4, S6, S9 fehl.
+ *   Am Stand vor P15-T32 schlagen S11 (ausser Kontrolle), S12-S17 fehl.
  * ABSICHERUNG: nur Test-DB (...:5433/synapse_test); Ollama und Qdrant sind eigene Fakes.
  *   expireIdleAgentSessions(8) wirkt auf ALLE Sessions der Test-DB (nur Status, keine Loeschung).
  * AUFRUF: set -a; . <test-db.env>; set +a; node scripts/test-sitzung-seit.mjs
@@ -41,7 +54,7 @@ if (!/:5433\/synapse_test(\?|$)/.test(DB_URL)) {
 const MODELL = 'fake-t30-embed:latest';
 const MUSTER = 'f0f0f0f0-3030-4e00-8a30-0000000000a1';
 const P = 'zz-sitzung-t30';
-const A = Object.fromEntries(['s1', 's2', 's3', 's4', 's5', 's6', 's7', 's8', 's10a', 's10b'].map((k) => [k, 'zz-t30-' + k]));
+const A = Object.fromEntries(['s1', 's2', 's3', 's4', 's5', 's6', 's7', 's8', 's10a', 's10b', 's11', 's12', 's13', 's15', 's15b', 's16'].map((k) => [k, 'zz-t30-' + k]));
 const AGENTEN = Object.values(A);
 
 const ollama = http.createServer((req, res) => {
@@ -150,6 +163,7 @@ async function aufraeumen() {
   await pool.query('DELETE FROM error_pattern_seen WHERE session_id = ANY($1)', [AGENTEN]);
   await pool.query('DELETE FROM error_patterns WHERE id = $1::uuid', [MUSTER]);
   await pool.query('DELETE FROM agent_onboardings WHERE agent_id = ANY($1)', [AGENTEN]);
+  await pool.query('DELETE FROM tool_calls WHERE agent_id = ANY($1)', [AGENTEN]).catch(() => {});
   await pool.query('DELETE FROM agent_sessions WHERE id = ANY($1)', [AGENTEN]);
 }
 
@@ -284,6 +298,111 @@ try {
     else await pool.query('DELETE FROM onboarding_ruhe WHERE id = 1');
     if (ruheVorher !== undefined) process.env.SYNAPSE_ONBOARDING_RUHE_MIN = ruheVorher;
   }
+
+  // ================= P15-T32: Spawn-Signal =================
+  const hatSignal = typeof CH.beginneSitzung === 'function' && typeof CH.pruefeSitzungsArt === 'function';
+  pruefe(hatSignal, 'S11 Anker: core chat.js exportiert beginneSitzung und pruefeSitzungsArt');
+  const aktivAb = (z) => new Date(z.aktiv_seit ?? z.registered_at).getTime();
+
+  // ---- S11: Spawn, wiederverwendeter Name, Vorsitzung noch active (< 4 h) ----
+  await sitzung(A.s11, 'active', '2 hours');
+  const e11 = await ev('s11-vorsitzung', '30 minutes');
+  const e11d = await ev('s11-direkt', '30 minutes', 'agent:' + A.s11);
+  await gesehen(A.s11, '10 minutes');
+  await PS.registerAgent(P, A.s11, 'zz-t32-inst-' + Date.now());
+  const o11vor = await offen(A.s11);
+  pruefe(o11vor.includes(e11), 'S11 Kontrolle ohne Signal: Broadcast der Vorsitzung offen (heutiges Verhalten = Handoff)', o11vor);
+  if (hatSignal) await CH.beginneSitzung(A.s11, P, 'neu');
+  const o11 = await offen(A.s11);
+  pruefe(!o11.includes(e11), "S11 sitzung 'neu': Broadcast der Vorsitzung nicht mehr offen", o11);
+  pruefe(o11.includes(e11d), "S11 sitzung 'neu': direkt adressiertes Event bleibt offen", o11);
+  const m11 = await muster(A.s11);
+  pruefe(m11.includes(MUSTER), "S11 sitzung 'neu': Fehlermuster der Vorsitzung gilt nicht als gesehen", m11);
+  const h11 = await hookGleichServer(A.s11, 'H11 Hook == Server nach Spawn-Signal');
+  pruefe(!h11.includes(e11) && h11.includes(e11d), 'H11 Hook: kein Alt-Broadcast, direktes Event da', h11);
+  await schlaf(5);
+  const e11neu = await ev('s11-neu', '0 seconds');
+  pruefe((await offen(A.s11)).includes(e11neu), 'S11 Gegenprobe: Broadcast nach dem Spawn offen');
+  const z11 = await zeile(A.s11);
+  pruefe(z11.status === 'active' && Date.now() - new Date(z11.registered_at).getTime() > 3600_000, 'S11 status active, registered_at bleibt erstmals', z11);
+
+  // ---- S12: fortsetzung, Vorsitzung active ----
+  await sitzung(A.s12, 'active', '2 hours');
+  const e12 = await ev('s12-vorsitzung', '30 minutes');
+  await gesehen(A.s12, '10 minutes');
+  const z12vor = await zeile(A.s12);
+  if (hatSignal) await CH.beginneSitzung(A.s12, P, 'fortsetzung');
+  const z12 = await zeile(A.s12);
+  const o12 = await offen(A.s12);
+  pruefe(o12.includes(e12), "S12 sitzung 'fortsetzung': unquittiertes Event der Vorsitzung bleibt offen", o12);
+  pruefe(aktivAb(z12) === aktivAb(z12vor), "S12 sitzung 'fortsetzung': Beginn der Lebensphase unveraendert", { vorher: z12vor, nachher: z12 });
+  pruefe(z12.sitzung_seit && Date.now() - new Date(z12.sitzung_seit).getTime() < 60_000, "S12 sitzung 'fortsetzung': sitzung_seit frisch", z12.sitzung_seit);
+  const m12 = await muster(A.s12);
+  pruefe(m12.includes(MUSTER), "S12 sitzung 'fortsetzung': Fehlermuster im neuen Kontext frisch", m12);
+
+  // ---- S13: fortsetzung, Vorsitzung stillgelegt ----
+  await sitzung(A.s13, 'inactive', '30 days');
+  const e13 = await ev('s13-alt', '10 days');
+  if (hatSignal) await CH.beginneSitzung(A.s13, P, 'fortsetzung');
+  const z13 = await zeile(A.s13);
+  const o13 = await offen(A.s13);
+  pruefe(z13.status === 'active' && !o13.includes(e13), "S13 sitzung 'fortsetzung' nach Stilllegung: active, Alt-Event weg (wie chat register)", { status: z13.status, o13 });
+
+  // ---- S14: pruefeSitzungsArt ----
+  if (hatSignal) {
+    const art = (w) => { try { return CH.pruefeSitzungsArt(w); } catch (e) { return '!' + e.message; } };
+    pruefe(art(undefined) === undefined && art(null) === undefined && art('') === undefined, 'S14 fehlend -> undefined', [art(undefined), art(null), art('')]);
+    pruefe(art('neu') === 'neu' && art('fortsetzung') === 'fortsetzung', "S14 'neu' und 'fortsetzung' gueltig");
+    const f = [art('NEU'), art('spawn'), art(42)];
+    pruefe(f.every((x) => typeof x === 'string' && x.startsWith('!') && /neu/.test(x) && /fortsetzung/.test(x)), 'S14 ungueltig -> Fehler nennt die erlaubten Werte', f);
+  } else pruefe(false, 'S14 pruefeSitzungsArt fehlt');
+
+  // ---- S15: REST tools/call admin index_stats ----
+  const { createRequire } = await import('node:module');
+  const repo = join(hier, '..');
+  const Fastify = createRequire(join(repo, 'packages', 'rest-api', 'package.json'))('fastify');
+  const { mcpRoutes } = await lade(repo, 'packages', 'rest-api', 'dist', 'routes', 'mcp.js');
+  const app = Fastify({ logger: false });
+  await app.register(mcpRoutes);
+  await app.ready();
+  const rest = async (args) => {
+    const res = await app.inject({ method: 'POST', url: '/', payload: { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'admin', arguments: { action: 'index_stats', project: P, ...args } } } });
+    const body = res.json();
+    try { return JSON.parse(body.result.content[0].text); } catch { return body; }
+  };
+  try {
+    await sitzung(A.s15, 'active', '2 hours');
+    await sitzung(A.s15b, 'active', '2 hours');
+    const e15 = await ev('s15-vorsitzung', '30 minutes');
+    const z15bvor = await zeile(A.s15b);
+    const r15 = await rest({ agent_id: A.s15, sitzung: 'neu' });
+    pruefe(r15?.sitzung?.art === 'neu' && r15?.sitzung?.aktiv_seit, "S15 REST index_stats sitzung:'neu' -> Antwortfeld sitzung", r15?.sitzung ?? r15);
+    pruefe(!(await offen(A.s15)).includes(e15), "S15 REST sitzung:'neu': Broadcast der Vorsitzung nicht mehr offen");
+    const r15b = await rest({ agent_id: A.s15b });
+    const z15b = await zeile(A.s15b);
+    pruefe(r15b && r15b.sitzung === undefined && (await offen(A.s15b)).includes(e15) && aktivAb(z15b) === aktivAb(z15bvor),
+      'S15 REST ohne sitzung: unveraendert (kein Feld, Event offen, Lebensphase gleich)', { feld: r15b?.sitzung, z15b });
+    const r15c = await rest({ agent_id: A.s15b, sitzung: 'spawn' });
+    pruefe(JSON.stringify(r15c).includes('fortsetzung') && (await offen(A.s15b)).includes(e15), 'S15 REST ungueltiger Wert -> Fehler mit erlaubten Werten, nichts geaendert', r15c);
+    const r15d = await rest({ sitzung: 'neu' });
+    pruefe(r15d?.sitzung?.art === undefined && typeof r15d?.sitzung?.hinweis === 'string', 'S15 REST sitzung ohne agent_id -> Hinweis, nichts geaendert', r15d?.sitzung ?? r15d);
+  } finally {
+    await app.close();
+  }
+
+  // ---- S16: stdio adminTool.handler ----
+  await sitzung(A.s16, 'active', '2 hours');
+  const e16 = await ev('s16-vorsitzung', '30 minutes');
+  const { adminTool } = await lade(repo, 'packages', 'mcp-server', 'dist', 'tools', 'consolidated', 'admin.js');
+  let r16;
+  try { r16 = await adminTool.handler({ action: 'index_stats', project: P, agent_id: A.s16, sitzung: 'neu' }); } catch (e) { r16 = { fehler: e.message }; }
+  pruefe(r16?.sitzung?.art === 'neu', "S16 stdio index_stats sitzung:'neu' -> Antwortfeld sitzung", r16?.sitzung ?? r16);
+  pruefe(!(await offen(A.s16)).includes(e16), "S16 stdio sitzung:'neu': Broadcast der Vorsitzung nicht mehr offen");
+
+  // ---- S17: Spezialisten-Spawn (Quelltext-Anker im gebauten mcp-server) ----
+  const { readFileSync } = await import('node:fs');
+  const spez = readFileSync(join(repo, 'packages', 'mcp-server', 'dist', 'tools', 'specialists.js'), 'utf8');
+  pruefe(/beginneSitzung\(name, project, 'neu'\)/.test(spez), "S17 spawnSpecialistTool ruft beginneSitzung(name, project, 'neu') (Quelltext-Anker, kein Laufzeittest)");
 } catch (err) {
   fehler++;
   console.log('FEHLER  Ausnahme: ' + (err?.stack ?? err));

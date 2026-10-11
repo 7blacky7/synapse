@@ -9,7 +9,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 
-import { removeInboxForAgent, removeWrapperStatus, upsertWrapperStatus, setzeHeartbeatBeimSpawn, EFFORT_STUFEN } from '@synapse/core';
+import { removeInboxForAgent, removeWrapperStatus, upsertWrapperStatus, setzeHeartbeatBeimSpawn, EFFORT_STUFEN, beginneSitzung } from '@synapse/core';
 
 import {
   bereiteMcpBrueckeVor,
@@ -234,6 +234,17 @@ export async function spawnSpecialistTool(
   await ensureGeneralChannel(project, name, name);
   if (channel && channel !== `${project}-general`) {
     await joinChannel(project, channel, name);
+  }
+
+  // 8b. P15-T32: Spawn = NEUE Sitzung, auch wenn der Name noch eine aktive Vorsitzung hat (Stop ohne Purge,
+  //     Neu-Spawn unter altem Namen): Broadcasts von vorher sind nicht offen, Fehlermuster frisch; an den
+  //     Namen adressierte Events bleiben. Die Rotation (wrapper.ts rotateAgent) und der keep_alive-Neustart
+  //     laufen NICHT hier durch und behalten ihre unquittierten Events. Der System-Prompt (prompts.ts) ist
+  //     bei Spawn und Rotation derselbe - nur hier ist das Ereignis eindeutig. PG-Ausfall blockiert nicht.
+  try {
+    await beginneSitzung(name, project, 'neu');
+  } catch (err) {
+    console.error(`[Synapse] Sitzungsbeginn fuer "${name}" nicht gesetzt (non-fatal): ${err}`);
   }
 
   // 9. Wrapper als DETACHED Prozess starten

@@ -60,6 +60,9 @@ import {
   updateProposal,
   // Onboarding (geteilt mit MCP-Server via agent_onboardings-Tabelle in PG)
   registerAgent,
+  // P15-T32: Sitzungs-Signal admin(index_stats, sitzung)
+  wendeSitzungsSignalAn,
+  SITZUNG_PARAMETER,
   getRulesForNewAgent,
   // Chat
   registerChatAgent,
@@ -931,6 +934,8 @@ export const MCP_TOOLS = [
           enum: ['koordinator', 'spezialist', 'subagent', 'channelverwalter'],
           description: 'Agenten-Rolle fuer rollenspezifisches Onboarding (optional, Fallback: Erkennung ueber agent_id)',
         },
+        // P15-T32: Sitzungs-Signal (neu = Spawn, fortsetzung = Handoff/Rotation), Schema aus core
+        ...SITZUNG_PARAMETER,
         // P15-T33 E0.5: Jev-Steuerung (jev_status, jev_schalten, jev_kosten, jev_budget)
         ...JEV_ADMIN_PARAMETER,
       },
@@ -4316,6 +4321,8 @@ async function handleToolCallKern(
         }
         case 'index_stats': {
           const project = reqStr(args, 'project');
+          // P15-T32: Sitzungs-Signal ZUERST (ungueltiger Wert wirft, bevor etwas geaendert wird).
+          const sitzungFeld = await wendeSitzungsSignalAn({ agentId: str(args, 'agent_id'), project, sitzung: args.sitzung });
           const codeStats = await getProjectStats(project);
           let thoughtsCount = 0;
           let memoriesCount = 0;
@@ -4355,6 +4362,7 @@ async function handleToolCallKern(
               thoughts: { vectors: thoughtsCount },
               memories: { vectors: memoriesCount },
             },
+            ...(sitzungFeld ? { sitzung: sitzungFeld } : {}),
           };
         }
         case 'detailed_stats': {

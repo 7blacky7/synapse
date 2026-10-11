@@ -30,8 +30,13 @@ export {
   listActiveAgents,
   sendMessage,
   getMessages,
+  SITZUNGS_ARTEN,
+  SITZUNG_PARAMETER,
+  pruefeSitzungsArt,
+  beginneSitzung,
+  wendeSitzungsSignalAn,
 } from './chat.js';
-export type { ChatMessage, AgentSession } from './chat.js';
+export type { ChatMessage, AgentSession, SitzungsArt, SitzungsBeginn } from './chat.js';
 export {
   erlaubteRollen, regelSichtbarFuer, tagVerdacht,
   baueOnboardingRegeln, baueRegelAbrufHinweis,

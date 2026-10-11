@@ -22,7 +22,7 @@ import {
   confirmIdea,
   indexMediaWrapper,
 } from '../index.js';
-import { migrateToRelativePaths, JEV_ADMIN_ACTIONS, JEV_ADMIN_BESCHREIBUNG, JEV_ADMIN_PARAMETER, istJevAdminAction, fuehreJevAdminAus } from '@synapse/core';
+import { migrateToRelativePaths, JEV_ADMIN_ACTIONS, JEV_ADMIN_BESCHREIBUNG, JEV_ADMIN_PARAMETER, istJevAdminAction, fuehreJevAdminAus, wendeSitzungsSignalAn, SITZUNG_PARAMETER } from '@synapse/core';
 
 export const adminTool: ConsolidatedTool = {
   definition: {
@@ -97,6 +97,8 @@ export const adminTool: ConsolidatedTool = {
           enum: ['koordinator', 'spezialist', 'subagent', 'channelverwalter'],
           description: 'Agenten-Rolle fuer rollenspezifisches Onboarding (optional, Fallback: Erkennung ueber agent_id)',
         },
+        // === P15-T32: Sitzungs-Signal (neu = Spawn, fortsetzung = Handoff/Rotation), Schema aus core ===
+        ...SITZUNG_PARAMETER,
         // === P15-T33 E0.5: Jev-Steuerung (jev_status, jev_schalten, jev_kosten, jev_budget) ===
         ...JEV_ADMIN_PARAMETER,
       },
@@ -196,10 +198,12 @@ export const adminTool: ConsolidatedTool = {
       // ===== INDEX_STATS =====
       case 'index_stats': {
         const project = reqStr(args, 'project');
+        // P15-T32: Sitzungs-Signal ZUERST (ungueltiger Wert wirft, bevor etwas geaendert wird). Wie REST.
+        const sitzung = await wendeSitzungsSignalAn({ agentId: str(args, 'agent_id'), project, sitzung: args.sitzung });
 
         const result = await getIndexStats(project);
 
-        return result;
+        return sitzung ? { ...result, sitzung } : result;
       }
 
       // ===== DETAILED_STATS =====

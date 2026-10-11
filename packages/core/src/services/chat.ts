@@ -127,6 +127,117 @@ export async function registerAgent(
 }
 
 /**
+ * P15-T32 (Konzept thought b2293c76): ausdrueckliches Sitzungs-Signal.
+ * Ohne Signal ist ein Agent, der im selben Serverprozess einen alten Namen wiederverwendet, waehrend die
+ * Vorsitzung noch 'active' ist (< 4 h, Reaper), von einem Handoff nicht zu unterscheiden: das Onboarding
+ * laeuft nur einmal je (Server-Kennung, Agent, Projekt) und laesst aktive Agenten unberuehrt.
+ *   'neu'         = Spawn (neuer Agent, auch unter altem Namen): sitzung_seit UND aktiv_seit = jetzt, auch bei
+ *                   aktiver Vorsitzung. Broadcasts (scope 'all') von vorher sind nicht mehr offen, Fehlermuster
+ *                   gelten als nicht gesehen. Direkt adressierte Events (scope 'agent:<id>') bleiben IMMER offen
+ *                   (event-sichtbarkeit.ts) - an den Namen geschickte Arbeit geht nicht verloren.
+ *   'fortsetzung' = Handoff/Rotation: neuer Kontext, derselbe logische Agent. sitzung_seit = jetzt (Fehlermuster
+ *                   frisch), aktiv_seit bleibt (unquittierte Events bleiben), ausser die Vorsitzung war nicht mehr
+ *                   'active' (dann wie chat register: neue Lebensphase).
+ * Wer kein Signal schickt, bekommt das bisherige Verhalten (rueckwaertskompatibel).
+ */
+export const SITZUNGS_ARTEN = ['neu', 'fortsetzung'] as const;
+export type SitzungsArt = (typeof SITZUNGS_ARTEN)[number];
+
+/** Tool-Schema-Eigenschaft fuer admin(index_stats) - EINE Quelle fuer REST und stdio. */
+export const SITZUNG_PARAMETER = {
+  sitzung: {
+    type: 'string',
+    enum: [...SITZUNGS_ARTEN],
+    description:
+      "Optional fuer index_stats (mit agent_id): Sitzungs-Signal. 'neu' = du bist frisch gespawnt (auch unter einem " +
+      'schon benutzten Namen): Broadcasts und gesehene Fehlermuster der Vorsitzung gelten nicht fuer dich, an dich ' +
+      "adressierte Events bleiben. 'fortsetzung' = Handoff/Rotation: unquittierte Events bleiben, Fehlermuster " +
+      'gelten im neuen Kontext als nicht gesehen. Ohne Angabe bleibt die Sitzung unveraendert.',
+  },
+} as const;
+
+/** Prueft den Parameter sitzung. Fehlend/leer -> undefined; sonst nur 'neu' | 'fortsetzung', alles andere wirft. */
+export function pruefeSitzungsArt(wert: unknown): SitzungsArt | undefined {
+  if (wert === undefined || wert === null || wert === '') return undefined;
+  if (typeof wert === 'string' && (SITZUNGS_ARTEN as readonly string[]).includes(wert)) return wert as SitzungsArt;
+  throw new Error(
+    `Ungueltiger Wert fuer sitzung: ${JSON.stringify(wert)}. Erlaubt: 'neu' (frisch gespawnter Agent, auch mit altem ` +
+    `Namen) oder 'fortsetzung' (Handoff/Rotation desselben Agenten). Ohne Angabe bleibt die Sitzung unveraendert.`
+  );
+}
+
+export interface SitzungsBeginn {
+  agentId: string;
+  art: SitzungsArt;
+  registeredAt: string;
+  sitzungSeit: string;
+  aktivSeit: string;
+  /** Status VOR dem Aufruf; null = Name war unbekannt. */
+  vorherStatus: string | null;
+}
+
+/**
+ * Beginnt ausdruecklich eine Sitzung (siehe SITZUNGS_ARTEN). Setzt status 'active'; registered_at bleibt
+ * "erstmals". Bewusst unabhaengig vom Onboarding-Gedaechtnis (onboardedKeys): das Signal gilt immer.
+ */
+export async function beginneSitzung(id: string, project: string, art: SitzungsArt): Promise<SitzungsBeginn> {
+  const pool = getPool();
+  const r = await pool.query<{ registered_at: Date; sitzung_seit: Date; aktiv_seit: Date; vorher_status: string | null }>(
+    `WITH vorher AS (SELECT status FROM agent_sessions WHERE id = $1)
+     INSERT INTO agent_sessions (id, project, status, registered_at, sitzung_seit, aktiv_seit)
+     VALUES ($1, $2, 'active', NOW(), NOW(), NOW())
+     ON CONFLICT (id) DO UPDATE SET status = 'active', sitzung_seit = NOW(),
+       aktiv_seit = CASE WHEN $3::text = 'neu' OR agent_sessions.status IS DISTINCT FROM 'active' THEN NOW()
+                         ELSE COALESCE(agent_sessions.aktiv_seit, agent_sessions.registered_at, NOW()) END
+     RETURNING registered_at, sitzung_seit, aktiv_seit, (SELECT status FROM vorher) AS vorher_status`,
+    [id, project, art]
+  );
+  const z = r.rows[0];
+  console.error(`[Synapse Chat] Sitzung "${art}" fuer "${id}" (${project}), vorher: ${z?.vorher_status ?? 'unbekannt'}`);
+  return {
+    agentId: id,
+    art,
+    registeredAt: new Date(z.registered_at).toISOString(),
+    sitzungSeit: new Date(z.sitzung_seit).toISOString(),
+    aktivSeit: new Date(z.aktiv_seit).toISOString(),
+    vorherStatus: z.vorher_status ?? null,
+  };
+}
+
+/**
+ * Gemeinsamer Weg fuer admin(index_stats) in REST und stdio: prueft den Parameter, beginnt die Sitzung und
+ * liefert das Antwortfeld "sitzung". Ohne Parameter: undefined (nichts geaendert, kein Feld).
+ * Ungueltiger Wert: wirft (vor jeder Aenderung). Ohne agent_id: nur ein Hinweis.
+ */
+export async function wendeSitzungsSignalAn(eingabe: {
+  agentId?: string;
+  project: string;
+  sitzung: unknown;
+}): Promise<Record<string, unknown> | undefined> {
+  const art = pruefeSitzungsArt(eingabe.sitzung);
+  if (!art) return undefined;
+  if (!eingabe.agentId) {
+    return { hinweis: `sitzung:'${art}' braucht agent_id - ohne Agent gibt es keine Sitzung. Nichts geaendert.` };
+  }
+  const b = await beginneSitzung(eingabe.agentId, eingabe.project, art);
+  const warAktiv = b.vorherStatus === 'active';
+  const wirkung = art === 'neu'
+    ? 'Neue Sitzung (Spawn): Broadcasts von vor diesem Zeitpunkt sind fuer dich nicht offen, Fehlermuster gelten als '
+      + 'nicht gesehen. An dich direkt adressierte Events bleiben offen.'
+    : warAktiv
+      ? 'Fortsetzung: unquittierte Events der Vorsitzung bleiben offen, Fehlermuster gelten im neuen Kontext als nicht gesehen.'
+      : 'Fortsetzung, aber die Vorsitzung war nicht mehr aktiv (oder der Name neu): neue Lebensphase wie bei chat register, '
+        + 'Broadcasts von vorher sind nicht offen.';
+  return {
+    art,
+    sitzung_seit: b.sitzungSeit,
+    aktiv_seit: b.aktivSeit,
+    vorher_status: b.vorherStatus,
+    wirkung,
+  };
+}
+
+/**
  * Registriert mehrere Agenten auf einmal
  */
 export async function registerAgentsBatch(

@@ -666,9 +666,14 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
     actions: {
       index_stats: {
         description: 'Projekt-Statistiken + Agenten-Onboarding (Regeln, Hinweise).',
-        params: 'project (req), agent_id (empfohlen fuer Onboarding)',
-        example: 'admin({ action: "index_stats", project: "synapse", agent_id: "guide-content-writer" })',
-        tips: 'IMMER als erste Aktion aufrufen. agent_id = deine ID → Regeln werden geladen.',
+        params: 'project (req), agent_id (empfohlen fuer Onboarding), role, sitzung (optional: neu | fortsetzung)',
+        example: 'admin({ action: "index_stats", project: "synapse", agent_id: "guide-content-writer", role: "subagent", sitzung: "neu" })',
+        tips: 'IMMER als erste Aktion aufrufen. agent_id = deine ID → Regeln werden geladen. '
+          + 'sitzung (P15-T32, nur mit agent_id): "neu" = du bist frisch gespawnt, auch unter einem schon benutzten Namen - '
+          + 'Broadcasts und gesehene Fehlermuster der Vorsitzung gelten nicht fuer dich, an dich adressierte Events bleiben. '
+          + '"fortsetzung" = Handoff/Rotation desselben Agenten - unquittierte Events bleiben, Fehlermuster gelten im neuen '
+          + 'Kontext als nicht gesehen. Ohne sitzung aendert sich an der Sitzung nichts. Die Antwort traegt dann das Feld sitzung '
+          + '(art, sitzung_seit, aktiv_seit, vorher_status, wirkung). Spezialisten bekommen "neu" beim spawn automatisch.',
       },
       detailed_stats: {
         description: 'Detaillierte Collection-Statistiken pro Typ.',
