@@ -19,6 +19,7 @@ import {
   resolveAgentId,
   SyntaxfehlerAbgelehnt,
   pruefeFilesPfadArgs,
+  EnvSchreibweg,
 } from '@synapse/core';
 
 /**
@@ -73,6 +74,8 @@ export async function filesRoutes(fastify: FastifyInstance): Promise<void> {
   }>('/api/projects/:name/files', { preHandler: pfadVorpruefung }, async (request, reply) => {
     const { name } = request.params;
     const { file_path, content, agent_id, quittieren } = request.body;
+    // P15-T36 Teil 2: .env-Dateien in der maskierten Sicht (NAME=[WERT] beim Schreiben = unveraendert).
+    const envWeg = new EnvSchreibweg(name, file_path ?? '');
 
     if (!file_path || content === undefined) {
       return reply.status(400).send({
@@ -82,12 +85,12 @@ export async function filesRoutes(fastify: FastifyInstance): Promise<void> {
     }
 
     try {
-      await createFileInPg(name, file_path, content, agent_id, undefined, undefined, undefined, undefined, { einzelweg: true, quittieren });
+      await createFileInPg(name, file_path, await envWeg.schreibInhalt(content), agent_id, undefined, undefined, undefined, undefined, { einzelweg: true, quittieren });
       const response: Record<string, unknown> = {
         success: true,
         message: `Datei "${file_path}" erstellt (${content.length} Zeichen)`,
       };
-      await haengeFehlermusterAn(response, agent_id);
+      Object.assign(response, envWeg.felder()); await haengeFehlermusterAn(response, agent_id);
       return response;
     } catch (error) {
       // P15-T17 E-a: Syntaxfehler in geaenderten Zeilen -> nichts geschrieben, 422 mit Befund.
@@ -138,6 +141,8 @@ export async function filesRoutes(fastify: FastifyInstance): Promise<void> {
       quittieren,
     } = request.body;
     const einzel = { einzelweg: true, quittieren };
+    // P15-T36 Teil 2: .env-Dateien in der maskierten Sicht (NAME=[WERT] beim Schreiben = unveraendert).
+    const envWeg = new EnvSchreibweg(name, file_path ?? '');
 
     if (!file_path) {
       return reply.status(400).send({
@@ -155,12 +160,12 @@ export async function filesRoutes(fastify: FastifyInstance): Promise<void> {
             error: { message: 'content ist erforderlich wenn keine operation angegeben' },
           });
         }
-        await updateFileInPg(name, file_path, content, agent_id, 'update', undefined, undefined, undefined, einzel);
+        await updateFileInPg(name, file_path, await envWeg.schreibInhalt(content), agent_id, 'update', undefined, undefined, undefined, einzel);
         const response: Record<string, unknown> = {
           success: true,
           message: `Datei "${file_path}" aktualisiert (${content.length} Zeichen)`,
         };
-        await haengeFehlermusterAn(response, agent_id);
+        Object.assign(response, envWeg.felder()); await haengeFehlermusterAn(response, agent_id);
         return response;
       }
 
@@ -171,7 +176,7 @@ export async function filesRoutes(fastify: FastifyInstance): Promise<void> {
         operation === 'delete_lines' ||
         operation === 'search_replace'
       ) {
-        const currentContent = await getFileContentFromPg(name, file_path);
+        const currentContent = await envWeg.lese();
         if (currentContent === null) {
           return reply.status(404).send({
             success: false,
@@ -195,12 +200,12 @@ export async function filesRoutes(fastify: FastifyInstance): Promise<void> {
               error: { message: String(err) },
             });
           }
-          await updateFileInPg(name, file_path, newContent, agent_id, operation, undefined, undefined, undefined, einzel);
+          await updateFileInPg(name, file_path, await envWeg.schreibInhalt(newContent), agent_id, operation, undefined, undefined, undefined, einzel);
           const response: Record<string, unknown> = {
             success: true,
             message: `Zeilen ${line_start}-${line_end} in "${file_path}" ersetzt`,
           };
-          await haengeFehlermusterAn(response, agent_id);
+          Object.assign(response, envWeg.felder()); await haengeFehlermusterAn(response, agent_id);
           return response;
         }
 
@@ -220,12 +225,12 @@ export async function filesRoutes(fastify: FastifyInstance): Promise<void> {
               error: { message: String(err) },
             });
           }
-          await updateFileInPg(name, file_path, newContent, agent_id, operation, undefined, undefined, undefined, einzel);
+          await updateFileInPg(name, file_path, await envWeg.schreibInhalt(newContent), agent_id, operation, undefined, undefined, undefined, einzel);
           const response: Record<string, unknown> = {
             success: true,
             message: `Inhalt nach Zeile ${after_line} in "${file_path}" eingefuegt`,
           };
-          await haengeFehlermusterAn(response, agent_id);
+          Object.assign(response, envWeg.felder()); await haengeFehlermusterAn(response, agent_id);
           return response;
         }
 
@@ -245,12 +250,12 @@ export async function filesRoutes(fastify: FastifyInstance): Promise<void> {
               error: { message: String(err) },
             });
           }
-          await updateFileInPg(name, file_path, newContent, agent_id, operation, undefined, undefined, undefined, einzel);
+          await updateFileInPg(name, file_path, await envWeg.schreibInhalt(newContent), agent_id, operation, undefined, undefined, undefined, einzel);
           const response: Record<string, unknown> = {
             success: true,
             message: `Zeilen ${line_start}-${line_end} in "${file_path}" geloescht`,
           };
-          await haengeFehlermusterAn(response, agent_id);
+          Object.assign(response, envWeg.felder()); await haengeFehlermusterAn(response, agent_id);
           return response;
         }
 
@@ -272,14 +277,14 @@ export async function filesRoutes(fastify: FastifyInstance): Promise<void> {
               error: { message: sr.error },
             });
           }
-          await updateFileInPg(name, file_path, sr.content, agent_id, operation, undefined, undefined, undefined, einzel);
+          await updateFileInPg(name, file_path, await envWeg.schreibInhalt(sr.content), agent_id, operation, undefined, undefined, undefined, einzel);
           const response: Record<string, unknown> = {
             success: true,
             count: sr.count,
             lines: sr.lines,
             message: `${sr.count} Vorkommen von "${search}" ersetzt in "${file_path}"`,
           };
-          await haengeFehlermusterAn(response, agent_id);
+          Object.assign(response, envWeg.felder()); await haengeFehlermusterAn(response, agent_id);
           return response;
         }
       }

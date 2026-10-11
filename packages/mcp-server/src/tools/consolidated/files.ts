@@ -20,6 +20,7 @@ import {
   getDocsForFile,
   getProjectRoot,
   pruefeFilesPfadArgs,
+  EnvSchreibweg,
   applyContentRange,
   listFileVersions,
   listFileHistory,
@@ -634,6 +635,9 @@ export const filesTool: ConsolidatedTool = {
 
     // Ab hier: actions die file_path brauchen.
     let filePath = reqStr(args, 'file_path');
+    // P15-T36 Teil 2: Einzelweg auf .env-Dateien in der maskierten Sicht (NAME=[WERT]); beim Schreiben heisst
+    // NAME=[WERT] "unveraendert" (core env-maske.ts). Hinweise auf ueberschriebene Werte haengt attachWarnings an.
+    const envWeg = new EnvSchreibweg(project, filePath);
 
     // P15-T36: file_path ist oben (pruefeFilesPfadArgs) bereits normalisiert; absolute Pfade wurden abgelehnt.
 
@@ -694,7 +698,7 @@ export const filesTool: ConsolidatedTool = {
       }
       // Nicht-blockierender Embedding-Lag-Hinweis (Symbole sofort da, Vektoren laden nach).
       try {
-        Object.assign(response, await embeddingPendingHint(project, filePath));
+        Object.assign(response, envWeg.felder(), await embeddingPendingHint(project, filePath));
       } catch { /* Hinweis darf Write nicht blockieren */ }
       return attachDirectWriteReservationHint(response, [filePath]);
     }
@@ -723,7 +727,7 @@ export const filesTool: ConsolidatedTool = {
               (vorbereitung.hinweis.ignoriert ? ` Nach dem Commit bleibt der Pfad ausgeblendet, bis die Regel abgeschaltet wird: ignore(action:"disable", pattern:"${vorbereitung.hinweis.regel}").` : ''),
           };
         }
-        const result = await createFileInPg(project, filePath, content, agentId, reason, undefined, undefined, enrichment, einzel);
+        const result = await createFileInPg(project, filePath, await envWeg.schreibInhalt(content), agentId, reason, undefined, undefined, enrichment, einzel);
         const response: Record<string, unknown> = { success: true, message: `Datei "${filePath}" erstellt (${content.length} Zeichen)` };
         if (wasFixed) response.autoFixed = 'Content war doppelt escaped (\\n statt Newlines) — automatisch korrigiert.';
         if (vorbereitung.modus === 'direkt_mit_hinweis') {
@@ -742,7 +746,7 @@ export const filesTool: ConsolidatedTool = {
         const { leseUpdateAnker, hatUpdateAnker, pruefeUpdateAnker } = await import('@synapse/core');
         const anker = leseUpdateAnker(args);
         if (hatUpdateAnker(anker)) {
-          const aktuell = await getFileContentFromPg(project, filePath);
+          const aktuell = await envWeg.lese();
           if (aktuell === null) {
             return { success: false, error: 'anchor_mismatch', message: `update: Datei "${filePath}" nicht gefunden — mit Anker kann nur eine bestehende Datei aktualisiert werden (neu anlegen: action="create").` };
           }
@@ -768,7 +772,7 @@ export const filesTool: ConsolidatedTool = {
               `Nach dem Commit bleibt der Pfad ausgeblendet, bis die Regel abgeschaltet wird: ignore(action:"disable", pattern:"${vorbereitung.hinweis.regel}").`,
           };
         }
-        const result = await updateFileInPg(project, filePath, content, agentId, undefined, undefined, reason, enrichment, einzel);
+        const result = await updateFileInPg(project, filePath, await envWeg.schreibInhalt(content), agentId, undefined, undefined, reason, enrichment, einzel);
         const response: Record<string, unknown> = { success: true, message: `Datei "${filePath}" aktualisiert (${content.length} Zeichen)` };
         if (wasFixed) response.autoFixed = 'Content war doppelt escaped (\\n statt Newlines) — automatisch korrigiert.';
         if (vorbereitung.modus === 'direkt_mit_hinweis') {
@@ -781,7 +785,7 @@ export const filesTool: ConsolidatedTool = {
       }
 
       case 'read': {
-        const rawContent = await getFileContentFromPg(project, filePath);
+        const rawContent = await envWeg.lese();
         if (rawContent === null) {
           return { success: false, error: `Datei "${filePath}" nicht gefunden in Projekt "${project}"` };
         }
@@ -826,14 +830,14 @@ export const filesTool: ConsolidatedTool = {
       }
 
       case 'replace_lines': {
-        const currentContent = await getFileContentFromPg(project, filePath);
+        const currentContent = await envWeg.lese();
         if (currentContent === null) return { success: false, error: `Datei "${filePath}" nicht gefunden` };
         const lineStart = num(args, 'line_start');
         const lineEnd = num(args, 'line_end');
         const { content } = unescapeIfNeeded(reqStr(args, 'content'));
         if (lineStart === undefined || lineEnd === undefined) return { success: false, error: 'line_start und line_end erforderlich' };
         const newContent = replaceLines(currentContent, lineStart, lineEnd, content);
-        const result = await updateFileInPg(project, filePath, newContent, agentId, undefined, undefined, reason, enrichment, einzel);
+        const result = await updateFileInPg(project, filePath, await envWeg.schreibInhalt(newContent), agentId, undefined, undefined, reason, enrichment, einzel);
         return await attachWarnings(
           { success: true, message: `Zeilen ${lineStart}-${lineEnd} in "${filePath}" ersetzt` },
           result
@@ -841,13 +845,13 @@ export const filesTool: ConsolidatedTool = {
       }
 
       case 'insert_after': {
-        const currentContent = await getFileContentFromPg(project, filePath);
+        const currentContent = await envWeg.lese();
         if (currentContent === null) return { success: false, error: `Datei "${filePath}" nicht gefunden` };
         const afterLine = num(args, 'after_line');
         const { content } = unescapeIfNeeded(reqStr(args, 'content'));
         if (afterLine === undefined) return { success: false, error: 'after_line erforderlich' };
         const newContent = insertAfterLine(currentContent, afterLine, content);
-        const result = await updateFileInPg(project, filePath, newContent, agentId, undefined, undefined, reason, enrichment, einzel);
+        const result = await updateFileInPg(project, filePath, await envWeg.schreibInhalt(newContent), agentId, undefined, undefined, reason, enrichment, einzel);
         return await attachWarnings(
           { success: true, message: `Inhalt nach Zeile ${afterLine} in "${filePath}" eingefuegt` },
           result
@@ -855,13 +859,13 @@ export const filesTool: ConsolidatedTool = {
       }
 
       case 'delete_lines': {
-        const currentContent = await getFileContentFromPg(project, filePath);
+        const currentContent = await envWeg.lese();
         if (currentContent === null) return { success: false, error: `Datei "${filePath}" nicht gefunden` };
         const lineStart = num(args, 'line_start');
         const lineEnd = num(args, 'line_end');
         if (lineStart === undefined || lineEnd === undefined) return { success: false, error: 'line_start und line_end erforderlich' };
         const newContent = deleteLines(currentContent, lineStart, lineEnd);
-        const result = await updateFileInPg(project, filePath, newContent, agentId, undefined, undefined, reason, enrichment, einzel);
+        const result = await updateFileInPg(project, filePath, await envWeg.schreibInhalt(newContent), agentId, undefined, undefined, reason, enrichment, einzel);
         return await attachWarnings(
           { success: true, message: `Zeilen ${lineStart}-${lineEnd} in "${filePath}" geloescht` },
           result
@@ -869,7 +873,7 @@ export const filesTool: ConsolidatedTool = {
       }
 
       case 'search_replace': {
-        const currentContent = await getFileContentFromPg(project, filePath);
+        const currentContent = await envWeg.lese();
         if (currentContent === null) return { success: false, error: `Datei "${filePath}" nicht gefunden` };
         const searchStr = reqStr(args, 'search');
         const replaceStr = reqStr(args, 'replace');
@@ -886,7 +890,7 @@ export const filesTool: ConsolidatedTool = {
               : {}),
           };
         }
-        const result = await updateFileInPg(project, filePath, sr.content, agentId, undefined, undefined, reason, enrichment, einzel);
+        const result = await updateFileInPg(project, filePath, await envWeg.schreibInhalt(sr.content), agentId, undefined, undefined, reason, enrichment, einzel);
         return await attachWarnings(
           { success: true, count: sr.count, lines: sr.lines, message: `${sr.count} Vorkommen ersetzt in "${filePath}"` },
           result
@@ -894,7 +898,7 @@ export const filesTool: ConsolidatedTool = {
       }
 
       case 'search_replace_batch': {
-        const currentContent = await getFileContentFromPg(project, filePath);
+        const currentContent = await envWeg.lese();
         if (currentContent === null) return { success: false, error: `Datei "${filePath}" nicht gefunden` };
         const rawEdits = args['edits'];
         if (!Array.isArray(rawEdits) || rawEdits.length === 0) {
@@ -914,7 +918,7 @@ export const filesTool: ConsolidatedTool = {
           };
         }
 
-        const writeResult = await updateFileInPg(project, filePath, newContent, agentId, undefined, undefined, reason, enrichment, einzel);
+        const writeResult = await updateFileInPg(project, filePath, await envWeg.schreibInhalt(newContent), agentId, undefined, undefined, reason, enrichment, einzel);
         const response: Record<string, unknown> = {
           success: true,
           ...batchResult,

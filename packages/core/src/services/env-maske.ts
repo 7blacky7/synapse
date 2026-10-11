@@ -1,0 +1,341 @@
+/**
+ * P15-T36 Teil 2 (User-Entscheidung 11.10.2026, thought 58492366): Werte von .env-Dateien erscheinen in
+ * KEINER Ausgabe. Gilt fuer echte .env/.env.* und die Vorlagen .env.example/.env.sample/.env.template.
+ *
+ * REINE AUSGABE-SCHICHT: In PostgreSQL und auf der Platte bleibt der echte Inhalt. Der Daemon-Abgleich,
+ * restore und commit arbeiten mit echten Werten. Maskiert wird nur, was an einen Aufrufer geht (code_intel,
+ * files read/versions/history/get_version, Plan-Diffs, plan_status, Fehlermeldungen) und was in den
+ * Suchindex geht (code_chunks/Embeddings).
+ *
+ * FORMAT: NAME=[WERT]. Variablennamen, export-Praefix, Kommentare, Leerzeilen und LEERE Werte bleiben
+ * sichtbar. Mehrzeilige Werte in Anfuehrungszeichen: Folgezeilen werden [WERT]. Zeilen, die weder
+ * Zuweisung noch Kommentar sind, werden ganz [WERT] (lieber zu viel verborgen). Zeilenzahl und CRLF
+ * bleiben gleich — Zeilennummern, Zeilen-Ops und Anker funktionieren in der maskierten Sicht.
+ *
+ * ZURUECKSCHREIBEN: Wer maskiert liest und zurueckschreibt (read -> aendern -> write), schickt NAME=[WERT].
+ * Der Platzhalter heisst "unveraendert lassen": entmaskiereEnv setzt die Originalzeile(n) von NAME ein.
+ * Invariante: entmaskiereEnv(maskiereEnv(x), x) === x. Ein Platzhalter ohne bekannten Wert bleibt als
+ * Text stehen und wird gemeldet.
+ *
+ * HINWEISE statt Abbruch: Ueberschreibt/entfernt ein Schreibvorgang (oder restore) eine Variable mit
+ * vorhandenem Wert, nennt die Antwort "NAME: Wert ueberschrieben/entfernt/zurueckgesetzt, per
+ * files(restore) wiederherstellbar" — nur Namen, nie Werte.
+ */
+
+import { getPool } from '../db/client.js';
+import { getFileContentFromPg } from './code-write.js';
+
+/** Der Platzhalter fuer jeden verborgenen Wert. */
+export const ENV_PLATZHALTER = '[WERT]';
+
+/** Dieselbe Regel als PostgreSQL-Regex (Basename .env oder .env.*). */
+export const ENV_PFAD_REGEX_SQL = '(^|/)\\.env(\\.[^/]*)?$';
+
+/** .env oder .env.* (Basename), egal in welchem Verzeichnis. */
+export function istEnvDatei(pfad: string | null | undefined): boolean {
+  if (typeof pfad !== 'string' || pfad === '') return false;
+  const name = pfad.replace(/\\/g, '/').split('/').pop() ?? '';
+  return name === '.env' || name.startsWith('.env.');
+}
+
+const KV = /^(\s*(?:export\s+)?)([A-Za-z_][A-Za-z0-9_.-]*)(\s*=\s*)(.*)$/;
+
+type Stueck =
+  | { art: 'kv'; name: string; praefix: string; trenner: string; wert: string; zeilen: string[]; leer: boolean }
+  | { art: 'text'; zeilen: string[] }
+  | { art: 'sonst'; zeilen: string[] };
+
+function ohneCr(zeile: string): { text: string; cr: string } {
+  return zeile.endsWith('\r') ? { text: zeile.slice(0, -1), cr: '\r' } : { text: zeile, cr: '' };
+}
+
+function istLeerWert(wert: string): boolean {
+  const w = wert.trim();
+  return w === '' || w.startsWith('#') || /^(""|''|``)\s*(#.*)?$/.test(w);
+}
+
+/** true, wenn ein mit quote begonnener Wert in rest (Text nach dem oeffnenden Zeichen) NICHT schliesst. */
+function bleibtOffen(rest: string, quote: string): boolean {
+  for (let i = 0; i < rest.length; i++) {
+    if (quote === '"' && rest[i] === '\\') { i++; continue; }
+    if (rest[i] === quote) return false;
+  }
+  return true;
+}
+
+/** Zerlegt einen .env-Text in Stuecke (Zuweisung inkl. Folgezeilen, Kommentar/Leerzeile, sonstige Zeile). */
+function zerlegeEnv(text: string): Stueck[] {
+  const zeilen = text.split('\n');
+  const out: Stueck[] = [];
+  for (let i = 0; i < zeilen.length; i++) {
+    const roh = zeilen[i];
+    const t = ohneCr(roh).text;
+    const trim = t.trim();
+    if (trim === '' || trim.startsWith('#')) { out.push({ art: 'text', zeilen: [roh] }); continue; }
+    const m = KV.exec(t);
+    if (!m) { out.push({ art: 'sonst', zeilen: [roh] }); continue; }
+    const [, praefix, name, trenner, wert] = m;
+    const stueckZeilen = [roh];
+    const w = wert.trimStart();
+    const q = w[0];
+    if ((q === '"' || q === "'" || q === '`') && bleibtOffen(w.slice(1), q)) {
+      while (i + 1 < zeilen.length) {
+        i++;
+        stueckZeilen.push(zeilen[i]);
+        if (!bleibtOffen(ohneCr(zeilen[i]).text, q)) break;
+      }
+    }
+    const ganzerWert = [wert, ...stueckZeilen.slice(1).map((z) => ohneCr(z).text)].join('\n');
+    out.push({ art: 'kv', name, praefix, trenner, wert: ganzerWert, zeilen: stueckZeilen, leer: stueckZeilen.length === 1 && istLeerWert(wert) });
+  }
+  return out;
+}
+
+/** Maskiert einen .env-Text: NAME=[WERT], leere Werte und Kommentare bleiben. Zeilenzahl/CRLF unveraendert. */
+export function maskiereEnv(text: string): string {
+  if (typeof text !== 'string' || text === '') return text;
+  const aus: string[] = [];
+  for (const s of zerlegeEnv(text)) {
+    if (s.art === 'text') { aus.push(s.zeilen[0]); continue; }
+    if (s.art === 'sonst') { aus.push(ENV_PLATZHALTER + ohneCr(s.zeilen[0]).cr); continue; }
+    if (s.leer) { aus.push(s.zeilen[0]); continue; }
+    s.zeilen.forEach((z, k) => {
+      aus.push((k === 0 ? `${s.praefix}${s.name}${s.trenner}${ENV_PLATZHALTER}` : ENV_PLATZHALTER) + ohneCr(z).cr);
+    });
+  }
+  return aus.join('\n');
+}
+
+/** maskiereEnv nur fuer .env-Pfade, sonst unveraendert. */
+export function envSicht(pfad: string | null | undefined, text: string): string {
+  return istEnvDatei(pfad) ? maskiereEnv(text) : text;
+}
+
+/**
+ * Setzt Platzhalter wieder ein: NAME=[WERT] -> Originalzeile(n) von NAME aus alt (bei Duplikaten in
+ * Reihenfolge), alleinstehendes [WERT] -> naechste sonstige Zeile aus alt bzw. Folgezeilen eines
+ * mehrzeiligen Werts. Platzhalter ohne Gegenstueck bleiben als Text stehen (hinweise).
+ */
+export function entmaskiereEnv(neu: string, alt: string): { inhalt: string; hinweise: string[] } {
+  if (typeof neu !== 'string' || !neu.includes(ENV_PLATZHALTER)) return { inhalt: neu, hinweise: [] };
+  const proName = new Map<string, string[][]>();
+  const sonst: string[][] = [];
+  for (const s of zerlegeEnv(alt ?? '')) {
+    if (s.art === 'kv' && !s.leer) {
+      const liste = proName.get(s.name) ?? [];
+      liste.push(s.zeilen);
+      proName.set(s.name, liste);
+    } else if (s.art === 'sonst') {
+      sonst.push(s.zeilen);
+    }
+  }
+  const zeilen = neu.split('\n');
+  const aus: string[] = [];
+  const hinweise = new Set<string>();
+  for (let i = 0; i < zeilen.length; i++) {
+    const t = ohneCr(zeilen[i]).text;
+    const m = KV.exec(t);
+    if (m && m[4].trim() === ENV_PLATZHALTER) {
+      const quelle = proName.get(m[2])?.shift();
+      if (quelle) {
+        aus.push(...quelle);
+        let folge = quelle.length - 1;
+        while (folge > 0 && i + 1 < zeilen.length && ohneCr(zeilen[i + 1]).text.trim() === ENV_PLATZHALTER) { i++; folge--; }
+        continue;
+      }
+      hinweise.add(`${m[2]}: Platzhalter ${ENV_PLATZHALTER} ohne bekannten Wert, als Text geschrieben`);
+      aus.push(zeilen[i]);
+      continue;
+    }
+    if (t.trim() === ENV_PLATZHALTER) {
+      const quelle = sonst.shift();
+      if (quelle) { aus.push(...quelle); continue; }
+      hinweise.add(`Zeile ${aus.length + 1}: Platzhalter ${ENV_PLATZHALTER} ohne bekannten Inhalt, als Text geschrieben`);
+    }
+    aus.push(zeilen[i]);
+  }
+  return { inhalt: aus.join('\n'), hinweise: [...hinweise] };
+}
+
+/**
+ * Variablen mit vorhandenem Wert, die neu ueberschreibt oder entfernt — nur Namen, nie Werte.
+ * art 'restore': beides heisst "zurueckgesetzt". Neue Variablen und leere alte Werte erzeugen keinen Hinweis.
+ */
+export function envHinweise(alt: string, neu: string, art: 'schreiben' | 'restore'): string[] {
+  if ((alt ?? '') === (neu ?? '')) return [];
+  const werte = (text: string): Map<string, string[]> => {
+    const map = new Map<string, string[]>();
+    for (const s of zerlegeEnv(text ?? '')) {
+      if (s.art !== 'kv') continue;
+      const liste = map.get(s.name) ?? [];
+      liste.push(s.leer ? '' : s.wert);
+      map.set(s.name, liste);
+    }
+    return map;
+  };
+  const vorher = werte(alt);
+  const nachher = werte(neu);
+  const aus: string[] = [];
+  for (const [name, liste] of vorher) {
+    if (!liste.some((w) => w !== '')) continue;
+    const jetzt = nachher.get(name);
+    const was = !jetzt ? 'entfernt' : JSON.stringify(jetzt) !== JSON.stringify(liste) ? 'überschrieben' : null;
+    if (!was) continue;
+    aus.push(`${name}: Wert ${art === 'restore' ? 'zurückgesetzt' : was}, per files(restore) wiederherstellbar`);
+  }
+  return aus;
+}
+
+/** Unified-Diff-Text maskieren: Zeilen ' ', '+', '-' werden als .env-Zeile maskiert, Koepfe bleiben. */
+export function maskiereEnvDiffText(text: string): string {
+  if (typeof text !== 'string' || text === '') return text;
+  return text.split('\n').map((z) => {
+    if (z.startsWith('@@')) return z;
+    const c = z[0];
+    return c === ' ' || c === '+' || c === '-' ? c + maskiereEnv(z.slice(1)) : z;
+  }).join('\n');
+}
+
+/** Diff-Eintrag (text) einer .env-Datei maskieren; andere Pfade unveraendert. */
+export function maskiereEnvDiff<T extends { text?: string } | null | undefined>(pfad: string | null | undefined, diff: T): T {
+  if (!diff || !istEnvDatei(pfad) || typeof diff.text !== 'string') return diff;
+  return { ...diff, text: maskiereEnvDiffText(diff.text) };
+}
+
+/** Op-Felder (content, search, replace, anchor_*, edits) einer Op auf eine .env-Datei maskieren. */
+export function maskiereEnvOp<T extends object>(op: T): T {
+  const o = op as Record<string, unknown>;
+  if (!istEnvDatei(o.file_path as string) && !istEnvDatei(o.new_path as string)) return op;
+  const kopie: Record<string, unknown> = { ...o };
+  for (const feld of ['content', 'search', 'replace', 'anchor_text', 'anchor_contains']) {
+    if (typeof kopie[feld] === 'string') kopie[feld] = maskiereEnv(kopie[feld] as string);
+  }
+  if (Array.isArray(kopie.edits)) {
+    kopie.edits = (kopie.edits as Array<Record<string, unknown>>).map((e) => ({
+      ...e,
+      ...(typeof e.search === 'string' ? { search: maskiereEnv(e.search) } : {}),
+      ...(typeof e.replace === 'string' ? { replace: maskiereEnv(e.replace) } : {}),
+    }));
+  }
+  return kopie as T;
+}
+
+/**
+ * Einzelschreibweg (files create/update/search_replace/replace_lines/... in REST und stdio): lese() liefert
+ * den Stand in der Sicht des Agenten (bei .env maskiert), schreibInhalt() loest Platzhalter gegen den echten
+ * Stand auf und sammelt die Hinweise, felder() haengt sie an die Antwort.
+ */
+export class EnvSchreibweg {
+  readonly istEnv: boolean;
+  private real: string | null | undefined = undefined;
+  hinweise: string[] = [];
+
+  constructor(private readonly project: string, private readonly filePath: string) {
+    this.istEnv = istEnvDatei(filePath);
+  }
+
+  async lese(): Promise<string | null> {
+    this.real = await getFileContentFromPg(this.project, this.filePath);
+    if (this.real === null) return null;
+    return this.istEnv ? maskiereEnv(this.real) : this.real;
+  }
+
+  async schreibInhalt(neu: string): Promise<string> {
+    if (!this.istEnv) return neu;
+    if (this.real === undefined) this.real = await getFileContentFromPg(this.project, this.filePath);
+    const alt = this.real ?? '';
+    const r = entmaskiereEnv(neu, alt);
+    this.hinweise = [...envHinweise(alt, r.inhalt, 'schreiben'), ...r.hinweise];
+    return r.inhalt;
+  }
+
+  felder(): Record<string, unknown> {
+    return this.hinweise.length > 0 ? { env_hinweise: this.hinweise } : {};
+  }
+}
+
+/** Hinweise eines committeten Batches: Stand vor dem commit (file_versions) gegen den Endstand (code_files). */
+export async function envHinweiseFuerBatch(batchId: string): Promise<string[]> {
+  const rows = (await getPool().query<{ file_path: string; vorher: string | null; nachher: string | null; weg: boolean | null }>(
+    `SELECT DISTINCT ON (v.file_path) v.file_path, v.content AS vorher, cf.content AS nachher, (cf.deleted_at IS NOT NULL) AS weg
+       FROM file_versions v
+       LEFT JOIN code_files cf ON cf.project = v.project AND cf.file_path = v.file_path
+      WHERE v.batch_id = $1::bigint AND v.file_path ~ $2
+      ORDER BY v.file_path, v.id`,
+    [batchId, ENV_PFAD_REGEX_SQL],
+  )).rows;
+  const aus: string[] = [];
+  for (const row of rows) {
+    const neu = row.weg || row.nachher === null ? '' : row.nachher;
+    for (const h of envHinweise(row.vorher ?? '', neu, 'schreiben')) aus.push(rows.length > 1 ? `${row.file_path} – ${h}` : h);
+  }
+  return aus;
+}
+
+// ─── Sicherheitsnetz: bekannte Werte aus einer Antwort schwaerzen ─────────────────────────────────
+
+const WERT_MIN_LAENGE = 6;
+
+/** Werte eines .env-Texts, die als Klartext in einer Antwort nichts zu suchen haben (ab 6 Zeichen). */
+function envWerteAus(text: string): string[] {
+  const aus = new Set<string>();
+  for (const s of zerlegeEnv(text ?? '')) {
+    if (s.art !== 'kv' || s.leer) continue;
+    const roh = s.wert.trim();
+    const kandidaten = [roh, roh.replace(/^(["'`])([\s\S]*)\1$/, '$2'), ...roh.split('\n').map((z) => z.trim().replace(/^["'`]|["'`]$/g, ''))];
+    for (const k of kandidaten) {
+      if (k.length >= WERT_MIN_LAENGE && !/^(true|false|null|\d+)$/i.test(k)) aus.add(k);
+    }
+  }
+  return [...aus];
+}
+
+function envPfadeIn(wert: unknown, aus: Set<string>, tiefe = 0): void {
+  if (tiefe > 12 || wert === null || typeof wert !== 'object') return;
+  if (Array.isArray(wert)) { for (const w of wert) envPfadeIn(w, aus, tiefe + 1); return; }
+  for (const [k, v] of Object.entries(wert as Record<string, unknown>)) {
+    if (typeof v === 'string' && (k === 'file_path' || k === 'new_path' || k === 'datei') && istEnvDatei(v)) aus.add(v);
+    else if (typeof v === 'object') envPfadeIn(v, aus, tiefe + 1);
+  }
+}
+
+function ersetzeInStrings<T>(wert: T, werte: string[]): T {
+  if (typeof wert === 'string') {
+    let s: string = wert;
+    for (const w of werte) if (s.includes(w)) s = s.split(w).join(ENV_PLATZHALTER);
+    return s as unknown as T;
+  }
+  if (Array.isArray(wert)) return wert.map((w) => ersetzeInStrings(w, werte)) as unknown as T;
+  if (wert && typeof wert === 'object') {
+    const aus: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(wert as Record<string, unknown>)) aus[k] = ersetzeInStrings(v, werte);
+    return aus as T;
+  }
+  return wert;
+}
+
+/**
+ * Sicherheitsnetz fuer Antworten von files/files_batch/code_intel: sind .env-Pfade beteiligt (Argumente
+ * oder Felder file_path/new_path/datei der Antwort), werden deren aktuelle Werte in allen Strings der
+ * Antwort durch [WERT] ersetzt. Faengt Stellen, die die strukturierte Maskierung nicht kennt (z. B. eine
+ * Fehlermeldung, die eine Zeile zitiert). Ohne .env-Bezug unveraendert und ohne DB-Zugriff.
+ * ENV_SICHERHEITSNETZ=0 schaltet es ab (nur fuer Tests: so wird die strukturierte Maskierung allein geprueft).
+ */
+export async function schwaerzeEnvWerteInAntwort<T>(project: string | undefined, antwort: T, argPfade: Array<string | undefined> = []): Promise<T> {
+  if (!project || process.env.ENV_SICHERHEITSNETZ === '0') return antwort;
+  const pfade = new Set<string>(argPfade.filter((p): p is string => istEnvDatei(p)));
+  envPfadeIn(antwort, pfade);
+  if (pfade.size === 0) return antwort;
+  try {
+    const rows = (await getPool().query<{ content: string | null }>(
+      'SELECT content FROM code_files WHERE project = $1 AND file_path = ANY($2::text[])',
+      [project, [...pfade]],
+    )).rows;
+    const werte = [...new Set(rows.flatMap((r) => envWerteAus(r.content ?? '')))].sort((a, b) => b.length - a.length);
+    if (werte.length === 0) return antwort;
+    return ersetzeInStrings(antwort, werte);
+  } catch (fehler) {
+    console.error(`[env-maske] Sicherheitsnetz uebersprungen: ${(fehler as Error).message}`);
+    return antwort;
+  }
+}

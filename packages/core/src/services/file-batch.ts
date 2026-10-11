@@ -39,6 +39,7 @@ import {
 } from './code-write.js';
 import type { BatchEdit } from './code-write.js';
 import { enqueueParseAndEmbed } from './code.js';
+import { entmaskiereEnv, envHinweiseFuerBatch, istEnvDatei, maskiereEnv, maskiereEnvDiff, maskiereEnvOp } from './env-maske.js';
 import { performance } from 'node:perf_hooks';
 import { createHash } from 'node:crypto';
 import {
@@ -610,6 +611,8 @@ export type CommitBatchResult =
       committed_ops?: number;
       /** Vom commit freigegebene Reservierungen (Befund 693bbf48 c). */
       released_reservations?: Array<{ agent_id: string; file_path: string }>;
+      /** P15-T36 Teil 2: .env-Variablen mit vorhandenem Wert, die der commit ueberschrieben/entfernt hat (nur Namen). */
+      env_hinweise?: string[];
     }
   | {
       success: false;
@@ -825,7 +828,36 @@ function utf8Bytes(s: string): number {
  * Lifecycle-Ops (delete, move, copy) erfordern dass der DST-Buffer (move/copy)
  * vorher per ensureBuffer() geladen wurde — passiert in planBatch/commitBatch.
  */
+/** Ops, die den Inhalt einer Datei aus Agenten-Text bilden (Text, Anker, Zeilen). */
+const ENV_INHALTS_OPS = new Set<FileBatchOpAction>(['create', 'update', 'search_replace', 'search_replace_batch', 'replace_lines', 'insert_after', 'delete_lines']);
+
+/**
+ * P15-T36 Teil 2: Inhalts-Ops auf .env-Dateien laufen in der MASKIERTEN Sicht (NAME=[WERT]) — genau dem
+ * Text, den der Agent gelesen hat. Anker, search, Zeilennummern und Fehlermeldungen (0 Treffer, fuzzy,
+ * anchor mismatch) sehen also nur die Maske. Danach werden die Platzhalter gegen den echten Stand
+ * aufgeloest (entmaskiereEnv: NAME=[WERT] = unveraendert). Der Puffer, seine Hashes und alles, was der
+ * commit schreibt, bleiben echt. Gilt fuer Trockenlauf, commit, gemeinsamen commit und Plan-Schatten,
+ * weil alle ueber diese Funktion laufen.
+ */
 function applyOpInMemory(
+  buffers: Map<string, PreparedFile>,
+  op: FileBatchOp,
+  isFirstOpOnFile: boolean,
+): { context: string; sizeBefore: number; sizeAfter: number } {
+  const src = buffers.get(op.file_path);
+  if (!src || src.deleted || !ENV_INHALTS_OPS.has(op.action) || !istEnvDatei(op.file_path)) {
+    return applyOpInMemoryKern(buffers, op, isFirstOpOnFile);
+  }
+  const real = src.finalContent;
+  const sicht = new PreparedFile(maskiereEnv(real));
+  sicht.wasNewlyCreated = src.wasNewlyCreated;
+  const r = applyOpInMemoryKern(new Map([[op.file_path, sicht]]), op, isFirstOpOnFile);
+  src.finalContent = entmaskiereEnv(sicht.finalContent, real).inhalt;
+  src.wasNewlyCreated = sicht.wasNewlyCreated;
+  return { ...r, sizeBefore: utf8Bytes(real), sizeAfter: src.byteSize() };
+}
+
+function applyOpInMemoryKern(
   buffers: Map<string, PreparedFile>,
   op: FileBatchOp,
   isFirstOpOnFile: boolean,
@@ -4275,6 +4307,12 @@ export async function commitBatch(args: {
     // COMMIT, verzoegert und gefaehrdet den commit nicht (Fehler nur im Log; fehlt es, rechnet history/
     // get_version es beim Lesen nach).
     if (result.success) diffNachCommitPlanen(result.plan_id);
+    // P15-T36 Teil 2: kein Abbruch, aber ein Hinweis, welche .env-Variablen mit Wert der commit ueberschrieben
+    // oder entfernt hat (nur Namen; Stand vor dem commit aus file_versions des Batches).
+    if (result.success) {
+      const envListe = await envHinweiseFuerBatch(result.plan_id).catch(() => [] as string[]);
+      if (envListe.length > 0) return { ...result, env_hinweise: envListe };
+    }
     if (result.success || result.status !== 'waiting_for_contributors') return result;
     let blockers = result.waiting_for ?? [];
     for (;;) {
@@ -5481,10 +5519,11 @@ export async function getPlanOpsVollstaendig(args: {
       ergebnis.push({ op_index: index, fehler: `op_index ${index} ausserhalb 0..${ops.length - 1}` });
       continue;
     }
-    const volleOp: Record<string, unknown> = { ...op };
+    // P15-T36 Teil 2: Ops auf .env-Dateien nur maskiert zeigen (content, search/replace, edits, Anker).
+    const volleOp: Record<string, unknown> = maskiereEnvOp({ ...op });
     let contentFenster: Record<string, number> | undefined;
-    if (typeof op.content === 'string' && (args.from_line !== undefined || args.to_line !== undefined)) {
-      const zeilen = op.content.split('\n');
+    if (typeof volleOp.content === 'string' && (args.from_line !== undefined || args.to_line !== undefined)) {
+      const zeilen = (volleOp.content as string).split('\n');
       const von = Math.max(1, Number(args.from_line ?? 1));
       const bis = Math.min(zeilen.length, Number(args.to_line ?? zeilen.length));
       volleOp.content = zeilen.slice(von - 1, bis).join('\n');
@@ -5520,7 +5559,7 @@ export async function getPlanOpsVollstaendig(args: {
               hinweis: 'Op aendert im Endstand nichts sichtbar (Ergebnis gleich Basis oder von einer spaeteren Op ueberschrieben).',
             };
           }
-          return dateiAusgabe(datei, eigene, (k) => label(datei.hunkOps[k]), Number.MAX_SAFE_INTEGER, datei.ops);
+          return maskiereEnvDiff(filePath, dateiAusgabe(datei, eigene, (k) => label(datei.hunkOps[k]), Number.MAX_SAFE_INTEGER, datei.ops));
         });
       }
     }
@@ -5853,7 +5892,8 @@ function planDiffAus(args: {
     const alle = (datei.d?.hunks ?? []).map((_, k) => k);
     const ausgabe = dateiAusgabe(datei, alle, (k) => label(datei.hunkOps[k]), Math.min(diffMaxZeilen(), budget), datei.ops.map(zeige));
     budget -= ausgabe.text ? ausgabe.text.split('\n').length : 0;
-    dateien.push(ausgabe);
+    // P15-T36 Teil 2: Diff von .env-Dateien nur maskiert ausliefern.
+    dateien.push(maskiereEnvDiff(datei.file_path, ausgabe));
   }
   const nichtAnwendbar = stand.angewendet.fehler
     .filter((f) => (!args.previews || args.previews[f.index]?.ok === false) && (!args.indexMap || args.indexMap.has(f.index)))

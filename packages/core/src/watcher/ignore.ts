@@ -117,8 +117,10 @@ const DEFAULT_IGNORES = [
  * P15-T36 (User 11.10.2026): '.env.example' ist eine Vorlage ohne Geheimnis und soll ueber files
  * schreibbar sein und zwischen Platte und Datenbank laufen. Sie bleibt durch '.env.*' AUSGEBLENDET
  * (nicht in Suche/Baum/Embeddings), weil die Werte nicht angezeigt werden sollen.
+ * P15-T36 Teil 2 (User 11.10.2026, 58492366): ebenso .env.sample und .env.template. Ihre Werte zeigt
+ * keine Ausgabe (services/env-maske.ts, NAME=[WERT]); echte .env/.env.* bleiben gesperrt.
  */
-const SPERR_AUSNAHMEN = ['!.env.example'];
+const SPERR_AUSNAHMEN = ['!.env.example', '!.env.sample', '!.env.template'];
 
 /**
  * Laedt die geltenden Ignore-Regeln und erstellt eine Ignore-Instanz.

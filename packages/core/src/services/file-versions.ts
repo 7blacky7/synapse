@@ -15,6 +15,7 @@
 import { getPool } from '../db/client.js';
 import { updateFileInPg, getFileContentFromPg } from './code-write.js';
 import { dateiDiff, diffMaxZeichen, diffMaxZeilen, diffText } from './file-diff.js';
+import { envHinweise, envSicht, istEnvDatei, maskiereEnvDiff } from './env-maske.js';
 
 /**
  * P15-T22: Unified-Diff der Aenderung, die eine Version abgeloest hat. Eine Zeile in file_versions haelt
@@ -107,6 +108,8 @@ async function ergaenzeDiffs<T extends FileVersionMeta>(rows: T[], opts: { max: 
     }
   }
   if (opts.kurz) for (const row of rows) if (row.diff) row.diff = kurzDiff(row.diff);
+  // P15-T36 Teil 2: Diffs von .env-Dateien nur maskiert ausliefern (gespeichert bleibt das echte Diff).
+  for (const row of rows) if (row.diff) row.diff = maskiereEnvDiff(row.file_path, row.diff);
   return rows;
 }
 
@@ -163,6 +166,8 @@ export async function getFileVersion(
   versionId: string | number,
   /** P15-T22: Diff mitliefern (bei NULL nachrechnen). restore braucht es nicht. */
   mitDiff = true,
+  /** P15-T36 Teil 2: roh = echter Inhalt auch bei .env (nur intern: restore, Vorschau). Sonst maskiert. */
+  opts: { roh?: boolean } = {},
 ): Promise<FileVersionFull | null> {
   const pool = getPool();
   const result = await pool.query<FileVersionFull>(
@@ -176,7 +181,17 @@ export async function getFileVersion(
   );
   const row = result.rows[0];
   if (!row) return null;
-  return mitDiff ? (await ergaenzeDiffs([row], { max: 1, kurz: false }))[0] : row;
+  const fertig = mitDiff ? (await ergaenzeDiffs([row], { max: 1, kurz: false }))[0] : row;
+  if (opts.roh || !istEnvDatei(fertig.file_path)) return fertig;
+  return { ...fertig, content: envSicht(fertig.file_path, fertig.content ?? ''), diff: maskiereEnvDiff(fertig.file_path, fertig.diff) };
+}
+
+/** Ergebnis eines restore je Datei; env_hinweise nur bei .env-Dateien mit zurueckgesetzten Werten. */
+export interface RestoreErgebnis {
+  project: string;
+  file_path: string;
+  restored_from: string;
+  env_hinweise?: string[];
 }
 
 /**
@@ -189,11 +204,13 @@ export async function restoreFileVersion(
   versionId: string | number,
   agentId?: string,
   reason?: string
-): Promise<{ project: string; file_path: string; restored_from: string }> {
-  const version = await getFileVersion(versionId, false);
+): Promise<RestoreErgebnis> {
+  const version = await getFileVersion(versionId, false, { roh: true });
   if (!version) {
     throw new Error(`Version ${versionId} nicht gefunden.`);
   }
+  // P15-T36 Teil 2: kein Abbruch, aber ein Hinweis, welche .env-Variablen zurueckgesetzt werden (nur Namen).
+  const envVorher = istEnvDatei(version.file_path) ? ((await getFileContentFromPg(version.project, version.file_path)) ?? '') : null;
   // reason geht als eigener Parameter in die Version, NICHT in edit_action:
   // dort steht `restore:<id>` und liefert der Anzeige Aktion und Quellversion.
   // Frueher wurde gar kein reason gesetzt — im Events-Tab war beim Zurueckrollen
@@ -208,10 +225,12 @@ export async function restoreFileVersion(
     undefined,
     reason
   );
+  const envHinweiseListe = envVorher !== null ? envHinweise(envVorher, version.content, 'restore') : [];
   return {
     project: version.project,
     file_path: version.file_path,
     restored_from: version.id,
+    ...(envHinweiseListe.length > 0 ? { env_hinweise: envHinweiseListe } : {}),
   };
 }
 
@@ -319,12 +338,12 @@ export async function restoreBatch(
   batchId: string | number,
   agentId?: string,
   reason?: string
-): Promise<Array<{ project: string; file_path: string; restored_from: string }>> {
+): Promise<RestoreErgebnis[]> {
   const versions = await listBatchVersions(batchId);
   if (versions.length === 0) {
     throw new Error(`Keine Versionen fuer Batch ${batchId} gefunden.`);
   }
-  const out: Array<{ project: string; file_path: string; restored_from: string }> = [];
+  const out: RestoreErgebnis[] = [];
   for (const v of versions) {
     // Derselbe Grund an jede Datei der Batch — sonst traegt beim Zurueckrollen
     // eines Multi-File-Sets nur ein Teil der Zeilen eine Erklaerung.
@@ -352,15 +371,16 @@ export async function restoreBatchVorschau(
     // Gemeinsamer commit: je Autor eine Zeile derselben Datei mit demselben Vorher-Stand — einmal zeigen.
     if (gesehen.has(v.file_path)) continue;
     gesehen.add(v.file_path);
-    const ziel = await getFileVersion(v.id, false);
+    const ziel = await getFileVersion(v.id, false, { roh: true });
     const aktuell = (await getFileContentFromPg(v.project, v.file_path)) ?? '';
+    // P15-T36 Teil 2: rueckgaengig wird aus echten Inhalten berechnet und bei .env maskiert ausgeliefert.
     out.push({
       project: v.project,
       file_path: v.file_path,
       restored_from: v.id,
       edit_action: v.edit_action,
       batch_diff: v.diff ?? null,
-      rueckgaengig: versionsDiff(aktuell, ziel?.content ?? ''),
+      rueckgaengig: maskiereEnvDiff(v.file_path, versionsDiff(aktuell, ziel?.content ?? '')),
     });
   }
   return out;

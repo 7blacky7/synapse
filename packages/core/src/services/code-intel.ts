@@ -26,6 +26,7 @@
 
 import { getPool } from '../db/client.js';
 import { assetMarker, assetSammelZeile, holeBaumAssets } from './asset-weiche.js';
+import { envSicht, istEnvDatei, maskiereEnv } from './env-maske.js';
 
 // ─── getProjectTree ───────────────────────────────────────────────────────────
 
@@ -1614,13 +1615,19 @@ export async function fullTextSearchCode(
     begriffe: [w, ...[...(stammVon.get(w) ?? '').matchAll(/'([^']+)'/g)].map(m => m[1]).filter(s => s.length >= 3)],
   }));
 
-  return result.rows.map(row => ({
-    file_path: row.file_path,
-    file_type: row.file_type,
-    headline: row.headline ?? '',
-    rank: parseFloat(row.rank),
-    ...findeSuchZeilen(row.content ?? '', woerter, { limit: zeilen.match_limit, skip: zeilen.match_skip }),
-  }));
+  // P15-T36 Teil 2: .env-Dateien liefern Trefferzeilen aus der Maske (NAME=[WERT]); die headline stammt aus
+  // dem echten Inhalt (ts_headline) und wird durch die erste Trefferzeile der Maske ersetzt.
+  return result.rows.map(row => {
+    const env = istEnvDatei(row.file_path);
+    const zeilenTreffer = findeSuchZeilen(env ? maskiereEnv(row.content ?? '') : (row.content ?? ''), woerter, { limit: zeilen.match_limit, skip: zeilen.match_skip });
+    return {
+      file_path: row.file_path,
+      file_type: row.file_type,
+      headline: env ? (zeilenTreffer.matches?.[0]?.text ?? '') : (row.headline ?? ''),
+      rank: parseFloat(row.rank),
+      ...zeilenTreffer,
+    };
+  });
 }
 
 // ─── getFileContent ───────────────────────────────────────────────────────────
@@ -1741,7 +1748,8 @@ export async function getFileContent(
   if (!result.rows[0]) return null;
   const row = result.rows[0];
 
-  const ranged = applyContentRange(row.content ?? '', options);
+  // P15-T36 Teil 2: .env-Dateien nur maskiert (NAME=[WERT]) ausliefern — auch ausgeblendete und Bestandszeilen.
+  const ranged = applyContentRange(envSicht(row.file_path, row.content ?? ''), options);
 
   return {
     file_path: row.file_path,

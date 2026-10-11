@@ -32,6 +32,7 @@ import {
 } from '../watcher/ignore.js';
 import { getFileContentFromPg, contentHash } from './code-write.js';
 import { planBatch } from './file-batch.js';
+import { envSicht } from './env-maske.js';
 import type { FileBatchOp, PlanBatchResult } from './file-batch.js';
 
 /**
@@ -574,11 +575,14 @@ export async function pruefeUndBereiteSchreibenVor(args: {
     return { modus: 'direkt' };
   }
 
+  // P15-T36 Teil 2: bei .env-Dateien sieht der Agent nur die Maske (NAME=[WERT]) — Anker und
+  // aktueller_inhalt kommen aus derselben Sicht (der Plan wird in der maskierten Sicht angewendet).
+  const sicht = envSicht(filePath, bestehenderInhalt!);
   const ankerZeile =
-    bestehenderInhalt!
+    sicht
       .split('\n')
       .map((zeile) => zeile.trim())
-      .find((zeile) => zeile.length > 0) ?? bestehenderInhalt!.slice(0, 40);
+      .find((zeile) => zeile.length > 0) ?? sicht.slice(0, 40);
 
   const op: FileBatchOp = {
     file_path: filePath,
@@ -598,5 +602,5 @@ export async function pruefeUndBereiteSchreibenVor(args: {
     reason: reason ?? grundText,
   });
 
-  return { modus: 'plan', hinweis, plan, aktueller_inhalt: bestehenderInhalt };
+  return { modus: 'plan', hinweis, plan, aktueller_inhalt: sicht };
 }

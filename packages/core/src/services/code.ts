@@ -72,6 +72,7 @@ import { readFileWithMetadata, getFileType, isExtractableDocument } from '../wat
 import { isMultimodalFile, getMediaMimeType, getMediaCategory, isBinaryFile, MAX_MEDIA_SIZE_MB, klassifiziereDatei, leseDateiKopf } from '../watcher/binary.js';
 import { verarbeiteAssetEreignis } from './asset-intel-sync.js';
 import { loadGitignore, shouldIgnore } from '../watcher/ignore.js';
+import { envSicht, istEnvDatei, maskiereEnv } from './env-maske.js';
 import { getConfig } from '../config.js';
 import { indexDocument, removeDocument } from './documents.js';
 import { getPool, imHintergrund } from '../db/client.js';
@@ -546,7 +547,8 @@ async function parseAndEmbedLauf(
     console.error(`[Synapse] Kein Inhalt in PG fuer: ${filePath}`);
     return;
   }
-  const content: string = fileRow.rows[0].content;
+  // P15-T36 Teil 2: .env-Dateien gehen nur maskiert (NAME=[WERT]) in Symbole, Chunks und Embeddings.
+  const content: string = envSicht(filePath, fileRow.rows[0].content);
   const fileType: string = fileRow.rows[0].file_type;
 
   // Leere Files (0 Bytes) sind trotzdem "verarbeitet" — als parsed markieren damit
@@ -3041,6 +3043,13 @@ async function ohneAusgeblendete<T extends { payload?: { file_path?: string } | 
   limit: number,
 ): Promise<T[]> {
   if (treffer.length === 0) return treffer;
+  // P15-T36 Teil 2: Alt-Vektoren von .env-Dateien koennen Werte im Payload tragen -> nur maskiert ausliefern.
+  for (const eintrag of treffer) {
+    const payload = eintrag.payload as { file_path?: string; content?: unknown } | null | undefined;
+    if (payload && typeof payload.content === 'string' && istEnvDatei(payload.file_path)) {
+      (eintrag as { payload?: unknown }).payload = { ...payload, content: maskiereEnv(payload.content) };
+    }
+  }
 
   const pfade = [
     ...new Set(

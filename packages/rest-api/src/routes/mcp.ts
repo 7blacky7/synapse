@@ -151,6 +151,8 @@ import {
   listFileReservations,
   normalizeReservationFilePaths,
   pruefeFilesPfadArgs,
+  EnvSchreibweg,
+  schwaerzeEnvWerteInAntwort,
   getDirectWriteReservationHint,
   holeSprachSkillVorschlaege,
   holeChannelSkillVorschlaege,
@@ -2216,7 +2218,29 @@ const ERLAUBTE_PARAMETER = baueErlaubteParameter(
   MCP_TOOLS as Array<{ name: string; inputSchema?: { properties?: Record<string, unknown> } }>,
 );
 
+/** P15-T36 Teil 2: Tools, deren Antworten Dateiinhalte tragen koennen (Sicherheitsnetz fuer .env-Werte). */
+const ENV_NETZ_TOOLS = new Set(['files', 'files_batch', 'code_intel']);
+
+/**
+ * P15-T36 Teil 2: Sicherheitsnetz hinter der strukturierten Maskierung (core env-maske.ts). Sind an einem
+ * files/files_batch/code_intel-Aufruf .env-Dateien beteiligt (Argumente oder file_path-Felder der Antwort),
+ * werden deren aktuelle Werte in allen Strings der Antwort durch [WERT] ersetzt — auch an Stellen, die die
+ * Maskierung nicht kennt (z. B. eine Fehlermeldung, die eine Zeile zitiert). Ohne .env-Bezug ein No-op.
+ */
 async function handleToolCall(
+  name: string,
+  args: Record<string, unknown>,
+  effectiveAgentId?: string,
+): Promise<unknown> {
+  const antwort = await handleToolCallKern(name, args, effectiveAgentId);
+  if (!ENV_NETZ_TOOLS.has(name)) return antwort;
+  const ops = Array.isArray(args.ops) ? (args.ops as Array<Record<string, unknown> | null>) : [];
+  const pfade = [args.file_path, args.new_path, ...ops.flatMap((op) => [op?.file_path, op?.new_path])]
+    .filter((pfad): pfad is string => typeof pfad === 'string');
+  return schwaerzeEnvWerteInAntwort(typeof args.project === 'string' ? args.project : undefined, antwort, pfade);
+}
+
+async function handleToolCallKern(
   name: string,
   args: Record<string, unknown>,
   effectiveAgentId?: string,
@@ -5046,6 +5070,9 @@ async function handleToolCall(
       }
 
       const filePath = reqStr(args, 'file_path');
+      // P15-T36 Teil 2: Einzelweg auf .env-Dateien in der maskierten Sicht (NAME=[WERT]) — lesen, suchen,
+      // Anker und Zeilen sehen die Maske; beim Schreiben heisst NAME=[WERT] "unveraendert" (core env-maske.ts).
+      const envWeg = new EnvSchreibweg(project, filePath);
 
       if (action === 'versions') {
         const limit = num(args, 'limit') ?? 50;
@@ -5085,7 +5112,7 @@ async function handleToolCall(
                 (vorbereitung.hinweis.ignoriert ? ` Nach dem Commit bleibt der Pfad ausgeblendet, bis die Regel abgeschaltet wird: ignore(action:"disable", pattern:"${vorbereitung.hinweis.regel}").` : ''),
             };
           }
-          const result = await createFileInPg(project, filePath, content, agentId, str(args, 'reason'), undefined, undefined, enrichment, einzel);
+          const result = await createFileInPg(project, filePath, await envWeg.schreibInhalt(content), agentId, str(args, 'reason'), undefined, undefined, enrichment, einzel);
           const response: Record<string, unknown> = { success: true, message: `Datei "${filePath}" erstellt (${content.length} Zeichen)` };
           if (vorbereitung.modus === 'direkt_mit_hinweis') {
             await markiereEinzelneDateiIgnoriert(project, filePath);
@@ -5100,7 +5127,7 @@ async function handleToolCall(
               hint: `${result.warnings.length} bekannte Fehler-Patterns matchen deinen Code`,
             };
           }
-          Object.assign(response, await embeddingPendingHint(project, filePath));
+          Object.assign(response, envWeg.felder(), await embeddingPendingHint(project, filePath));
           return response;
         }
         case 'update': {
@@ -5109,7 +5136,7 @@ async function handleToolCall(
           const { leseUpdateAnker, hatUpdateAnker, pruefeUpdateAnker } = await import('@synapse/core');
           const anker = leseUpdateAnker(args);
           if (hatUpdateAnker(anker)) {
-            const aktuell = await getFileContentFromPg(project, filePath);
+            const aktuell = await envWeg.lese();
             if (aktuell === null) {
               return { success: false, error: 'anchor_mismatch', message: `update: Datei "${filePath}" nicht gefunden — mit Anker kann nur eine bestehende Datei aktualisiert werden (neu anlegen: action="create").` };
             }
@@ -5135,7 +5162,7 @@ async function handleToolCall(
                 `Nach dem Commit bleibt der Pfad ausgeblendet, bis die Regel abgeschaltet wird: ignore(action:"disable", pattern:"${vorbereitung.hinweis.regel}").`,
             };
           }
-          const result = await updateFileInPg(project, filePath, content, agentId, undefined, undefined, str(args, 'reason'), enrichment, einzel);
+          const result = await updateFileInPg(project, filePath, await envWeg.schreibInhalt(content), agentId, undefined, undefined, str(args, 'reason'), enrichment, einzel);
           const response: Record<string, unknown> = { success: true, message: `Datei "${filePath}" aktualisiert (${content.length} Zeichen)` };
           if (vorbereitung.modus === 'direkt_mit_hinweis') {
             await markiereEinzelneDateiIgnoriert(project, filePath);
@@ -5150,7 +5177,7 @@ async function handleToolCall(
               hint: `${result.warnings.length} bekannte Fehler-Patterns matchen deinen Code`,
             };
           }
-          Object.assign(response, await embeddingPendingHint(project, filePath));
+          Object.assign(response, envWeg.felder(), await embeddingPendingHint(project, filePath));
           return response;
         }
         case 'delete': {
@@ -5168,7 +5195,7 @@ async function handleToolCall(
           return { success: true, message: `Datei kopiert: "${filePath}" → "${newPath}"`, ...(await embeddingPendingHint(project, newPath)) };
         }
         case 'read': {
-          const rawContent = await getFileContentFromPg(project, filePath);
+          const rawContent = await envWeg.lese();
           if (rawContent === null) {
             return { success: false, error: `Datei "${filePath}" nicht gefunden in Projekt "${project}"` };
           }
@@ -5186,14 +5213,14 @@ async function handleToolCall(
           };
         }
         case 'replace_lines': {
-          const currentContent = await getFileContentFromPg(project, filePath);
+          const currentContent = await envWeg.lese();
           if (currentContent === null) return { success: false, error: `Datei "${filePath}" nicht gefunden` };
           const lineStart = num(args, 'line_start');
           const lineEnd = num(args, 'line_end');
           const content = reqStr(args, 'content');
           if (lineStart === undefined || lineEnd === undefined) return { success: false, error: 'line_start und line_end erforderlich' };
           const newContent = replaceLines(currentContent, lineStart, lineEnd, content);
-          const result = await updateFileInPg(project, filePath, newContent, agentId, undefined, undefined, str(args, 'reason'), enrichment, einzel);
+          const result = await updateFileInPg(project, filePath, await envWeg.schreibInhalt(newContent), agentId, undefined, undefined, str(args, 'reason'), enrichment, einzel);
           const response: Record<string, unknown> = { success: true, message: `Zeilen ${lineStart}-${lineEnd} in "${filePath}" ersetzt` };
           if (result.warnings?.length) {
             response.errorPatterns = {
@@ -5202,17 +5229,17 @@ async function handleToolCall(
               hint: `${result.warnings.length} bekannte Fehler-Patterns matchen deinen Code`,
             };
           }
-          Object.assign(response, await embeddingPendingHint(project, filePath));
+          Object.assign(response, envWeg.felder(), await embeddingPendingHint(project, filePath));
           return response;
         }
         case 'insert_after': {
-          const currentContent = await getFileContentFromPg(project, filePath);
+          const currentContent = await envWeg.lese();
           if (currentContent === null) return { success: false, error: `Datei "${filePath}" nicht gefunden` };
           const afterLine = num(args, 'after_line');
           const content = reqStr(args, 'content');
           if (afterLine === undefined) return { success: false, error: 'after_line erforderlich' };
           const newContent = insertAfterLine(currentContent, afterLine, content);
-          const result = await updateFileInPg(project, filePath, newContent, agentId, undefined, undefined, str(args, 'reason'), enrichment, einzel);
+          const result = await updateFileInPg(project, filePath, await envWeg.schreibInhalt(newContent), agentId, undefined, undefined, str(args, 'reason'), enrichment, einzel);
           const response: Record<string, unknown> = { success: true, message: `Inhalt nach Zeile ${afterLine} in "${filePath}" eingefuegt` };
           if (result.warnings?.length) {
             response.errorPatterns = {
@@ -5221,17 +5248,17 @@ async function handleToolCall(
               hint: `${result.warnings.length} bekannte Fehler-Patterns matchen deinen Code`,
             };
           }
-          Object.assign(response, await embeddingPendingHint(project, filePath));
+          Object.assign(response, envWeg.felder(), await embeddingPendingHint(project, filePath));
           return response;
         }
         case 'delete_lines': {
-          const currentContent = await getFileContentFromPg(project, filePath);
+          const currentContent = await envWeg.lese();
           if (currentContent === null) return { success: false, error: `Datei "${filePath}" nicht gefunden` };
           const lineStart = num(args, 'line_start');
           const lineEnd = num(args, 'line_end');
           if (lineStart === undefined || lineEnd === undefined) return { success: false, error: 'line_start und line_end erforderlich' };
           const newContent = deleteLines(currentContent, lineStart, lineEnd);
-          const result = await updateFileInPg(project, filePath, newContent, agentId, undefined, undefined, str(args, 'reason'), enrichment, einzel);
+          const result = await updateFileInPg(project, filePath, await envWeg.schreibInhalt(newContent), agentId, undefined, undefined, str(args, 'reason'), enrichment, einzel);
           const response: Record<string, unknown> = { success: true, message: `Zeilen ${lineStart}-${lineEnd} in "${filePath}" geloescht` };
           if (result.warnings?.length) {
             response.errorPatterns = {
@@ -5240,11 +5267,11 @@ async function handleToolCall(
               hint: `${result.warnings.length} bekannte Fehler-Patterns matchen deinen Code`,
             };
           }
-          Object.assign(response, await embeddingPendingHint(project, filePath));
+          Object.assign(response, envWeg.felder(), await embeddingPendingHint(project, filePath));
           return response;
         }
         case 'search_replace': {
-          const currentContent = await getFileContentFromPg(project, filePath);
+          const currentContent = await envWeg.lese();
           if (currentContent === null) return { success: false, error: `Datei "${filePath}" nicht gefunden` };
           const searchStr = reqStr(args, 'search');
           const replaceStr = reqStr(args, 'replace');
@@ -5262,7 +5289,7 @@ async function handleToolCall(
                 : {}),
             };
           }
-          const result = await updateFileInPg(project, filePath, sr.content, agentId, undefined, undefined, str(args, 'reason'), enrichment, einzel);
+          const result = await updateFileInPg(project, filePath, await envWeg.schreibInhalt(sr.content), agentId, undefined, undefined, str(args, 'reason'), enrichment, einzel);
           const response: Record<string, unknown> = { success: true, count: sr.count, lines: sr.lines, message: `${sr.count} Vorkommen ersetzt in "${filePath}"` };
           if (result.warnings?.length) {
             response.errorPatterns = {
@@ -5271,11 +5298,11 @@ async function handleToolCall(
               hint: `${result.warnings.length} bekannte Fehler-Patterns matchen deinen Code`,
             };
           }
-          Object.assign(response, await embeddingPendingHint(project, filePath));
+          Object.assign(response, envWeg.felder(), await embeddingPendingHint(project, filePath));
           return response;
         }
         case 'search_replace_batch': {
-          const currentContent = await getFileContentFromPg(project, filePath);
+          const currentContent = await envWeg.lese();
           if (currentContent === null) return { success: false, error: `Datei "${filePath}" nicht gefunden` };
           const rawEdits = args['edits'];
           if (!Array.isArray(rawEdits) || rawEdits.length === 0) {
@@ -5292,7 +5319,7 @@ async function handleToolCall(
               message: `Nichts geschrieben in "${filePath}" — Edits korrigieren und den ganzen Batch erneut schicken`,
             };
           }
-          const result = await updateFileInPg(project, filePath, newContent, agentId, undefined, undefined, str(args, 'reason'), enrichment, einzel);
+          const result = await updateFileInPg(project, filePath, await envWeg.schreibInhalt(newContent), agentId, undefined, undefined, str(args, 'reason'), enrichment, einzel);
           const response: Record<string, unknown> = {
             success: true,
             ...batchResult,
@@ -5305,7 +5332,7 @@ async function handleToolCall(
               hint: `${result.warnings.length} bekannte Fehler-Patterns matchen deinen Code`,
             };
           }
-          Object.assign(response, await embeddingPendingHint(project, filePath));
+          Object.assign(response, envWeg.felder(), await embeddingPendingHint(project, filePath));
           return response;
         }
         default:

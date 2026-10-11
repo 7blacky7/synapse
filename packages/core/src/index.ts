@@ -1057,6 +1057,21 @@ export {
   PfadGesperrt,
 } from './services/projekt-pfad.js';
 export type { PfadFehlerGrund, PfadFehlerAntwort } from './services/projekt-pfad.js';
+// P15-T36 Teil 2: .env-Werte in allen Ausgaben maskieren (NAME=[WERT]), Platzhalter beim Schreiben = unveraendert
+export {
+  ENV_PLATZHALTER,
+  istEnvDatei,
+  maskiereEnv,
+  envSicht,
+  entmaskiereEnv,
+  envHinweise,
+  maskiereEnvDiffText,
+  maskiereEnvDiff,
+  maskiereEnvOp,
+  EnvSchreibweg,
+  envHinweiseFuerBatch,
+  schwaerzeEnvWerteInAntwort,
+} from './services/env-maske.js';
 export type {
   FileReservation,
   ReservationMutationResult,
