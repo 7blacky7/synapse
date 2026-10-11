@@ -18,8 +18,9 @@ import { JEV_FUNKTIONEN, JevSchalterFehler, jevSchalterListe, jevWirksam, setzeJ
 import { holeJevKontostand, jevBudgetStand, jevKostenUebersicht, setzeJevBudget, setzeJevBudgetZurueck } from './jev-kosten.js';
 import { JEV_SPRACHEN, JevOptionenFehler, leseJevOptionen, setzeJevOptionen } from './jev-optionen.js';
 import { entscheidungstopfStatus, ergaenzeTopfEmbeddings, ladeEntscheidungstopfSeed } from './entscheidungstopf.js';
+import { erklaerungstopfStatus, holeErklaerungsEreignisseNach, ladeErklaerungstopfSeed } from './erklaerungen.js';
 
-export const JEV_ADMIN_ACTIONS = ['jev_status', 'jev_schalten', 'jev_kosten', 'jev_budget', 'jev_optionen', 'jev_entscheidungstopf'] as const;
+export const JEV_ADMIN_ACTIONS = ['jev_status', 'jev_schalten', 'jev_kosten', 'jev_budget', 'jev_optionen', 'jev_entscheidungstopf', 'jev_erklaerungstopf'] as const;
 const DARF_SETZEN = /^(koordinator|coordinator|user)$/i;
 
 /** Beschreibungssatz fuer die admin-Tool-Definition (REST und stdio). */
@@ -29,7 +30,8 @@ export const JEV_ADMIN_BESCHREIBUNG =
   'global aus = ueberall aus, Jev wird nicht aufgerufen und alle Jev-Hinweise verschwinden), ' +
   'jev_kosten (Summen je Tag/Monat/Projekt/Funktion in USD), jev_budget (modus status|setzen|entfernen|zuruecksetzen, grenze_usd je Monat, reset_tag, kontostand:true = OpenRouter-Kontostand), ' +
   'jev_optionen (modus status|setzen; erklaerung_de/erklaerung_en = gepflegte Erklaerungssprachen, mind. eine an; jev_sprache en|de|mix, nur aus gepflegten Sprachen, sonst Rueckfall mit Hinweis; entscheidung_ohne_praezedenz true|false = Jev waehlt auch ohne Praezedenz aus dem Entscheidungs-Topf, Standard true), ' +
-  'jev_entscheidungstopf (modus status = Zaehlung je Status/Herkunft | seed_laden = Startbestand idempotent laden, nur Koordinator/User).';
+  'jev_entscheidungstopf (modus status = Zaehlung je Status/Herkunft | seed_laden = Startbestand idempotent laden, nur Koordinator/User), ' +
+  'jev_erklaerungstopf (modus status = Erklaerungen je Familie/Status, offene Faelle, Warteschlange | seed_laden = Startbestand idempotent laden | nachholen = liegengebliebene Fehlersituationen verarbeiten; seed_laden/nachholen nur Koordinator/User).';
 
 /** Zusaetzliche Parameter am admin-Tool (Schema-Properties, REST und stdio identisch). */
 export const JEV_ADMIN_PARAMETER: Record<string, Record<string, unknown>> = {
@@ -37,7 +39,7 @@ export const JEV_ADMIN_PARAMETER: Record<string, Record<string, unknown>> = {
   funktion: { type: 'string', enum: ['alle', ...JEV_FUNKTIONEN], description: 'jev_schalten: welche Jev-Funktion (Standard alle)' },
   aktiv: { type: 'boolean', description: 'jev_schalten: true = an, false = aus (Pflicht)' },
   grund: { type: 'string', description: 'jev_schalten: Grund (sichtbar in jev_status)' },
-  modus: { type: 'string', enum: ['status', 'setzen', 'entfernen', 'zuruecksetzen', 'seed_laden'], description: 'jev_budget: status (Standard) | setzen (grenze_usd) | entfernen (keine Bremse) | zuruecksetzen (Monatszaehler 0); jev_entscheidungstopf: status | seed_laden' },
+  modus: { type: 'string', enum: ['status', 'setzen', 'entfernen', 'zuruecksetzen', 'seed_laden', 'nachholen'], description: 'jev_budget: status (Standard) | setzen (grenze_usd) | entfernen (keine Bremse) | zuruecksetzen (Monatszaehler 0); jev_entscheidungstopf: status | seed_laden; jev_erklaerungstopf: status | seed_laden | nachholen' },
   grenze_usd: { type: 'number', description: 'jev_budget setzen: globale Kostengrenze in USD je Abrechnungsmonat' },
   reset_tag: { type: 'number', description: 'jev_budget setzen: Tag im Monat (1..28), an dem der Zaehler neu beginnt (Standard 1)' },
   kontostand: { type: 'boolean', description: 'jev_budget: true = OpenRouter-Kontostand (GET /api/v1/key) mitliefern' },
@@ -179,6 +181,21 @@ export async function fuehreJevAdminAus(
         const seed = await ladeEntscheidungstopfSeed({ agent: wer });
         void ergaenzeTopfEmbeddings();
         return { ...seed, topf: await entscheidungstopfStatus(), hinweis: 'Idempotent (kennung). Vektoren werden im Hintergrund berechnet. Durchsicht durch den User: jev(action:"topf", herkunft:"seed").' };
+      }
+      case 'jev_erklaerungstopf': {
+        // P15-T33 E2: Erklaerungs-Topf - Stand, Startbestand, Nachholen liegengebliebener Fehlersituationen
+        const modus = text(args.modus) ?? 'status';
+        if (modus === 'status') return { success: true, topf: await erklaerungstopfStatus() };
+        if (modus !== 'seed_laden' && modus !== 'nachholen') {
+          return { success: false, error: 'modus_ungueltig', message: 'jev_erklaerungstopf: modus status | seed_laden | nachholen.' };
+        }
+        if (!DARF_SETZEN.test(wer)) return nurKoordinator(wer);
+        if (modus === 'nachholen') {
+          const n = await holeErklaerungsEreignisseNach();
+          return { success: !n.error, ...n, topf: await erklaerungstopfStatus() };
+        }
+        const seed = await ladeErklaerungstopfSeed({ agent: wer });
+        return { ...seed, topf: await erklaerungstopfStatus(), hinweis: 'Idempotent (kennung; gleiche Lage in der Familie gilt als vorhanden). Liste: code_check(action:"erklaerungen").' };
       }
       default:
         return { success: false, error: 'unbekannte_action', message: `Unbekannte Jev-Action "${action}". Erlaubt: ${JEV_ADMIN_ACTIONS.join(', ')}.` };

@@ -823,6 +823,9 @@ export {
   baueJevFrage, kriteriumText, waehleErklaerung, ladeKandidaten, pruefeGenerik, legeErklaerungAb, pruefeFall, verwerfeFall,
   listeOffeneFaelle, holeFall, listeErklaerungen, bewerteErklaerung, erklaerungenTagespruefung, fuehreErklaerungsActionAus,
   istErklaerungsAction, familieVon, schluesselVon, schwaerzeGeheimnisse,
+  // P15-T33 E2: Startbestand, persistente Warteschlange, Onboarding-Zeile
+  ladeErklaerungstopfSeed, erklaerungstopfSeedPfad, pruefeSeedEintrag, erklaerungstopfStatus, holeErklaerungsEreignisseNach,
+  erklaerungsFaelleZeile,
 } from './services/erklaerungen.js';
 export type { Erklaerung, ErklaerungTexte, Schatten, Fehlerereignis, FallPruefung, JevVersuch } from './services/erklaerungen.js';
 // P15 E1: Entscheidungs-Topf fuer Jev (Praezedenz, Sicherheit S2, Durchsicht, Seed, Thought-Spiegel)

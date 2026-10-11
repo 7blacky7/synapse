@@ -361,6 +361,22 @@ export async function startServer(): Promise<void> {
     }, 30_000).unref();
   }
 
+  // P15-T33 E2: Erklaerungs-Topf - Startbestand (packages/core/data/erklaerungstopf-seed.json) idempotent laden und
+  // liegengebliebene Fehlersituationen (erklaerung_ereignisse, abgebrochener Prozess) nachholen. 30 s nach dem Start.
+  //   ERKLAERUNGSTOPF_SEED_DISABLED=1 - Seed nicht laden (dann per admin(jev_erklaerungstopf, modus seed_laden));
+  //   das Nachholen laeuft trotzdem (auch in der Tagespruefung).
+  setTimeout(() => {
+    void (async () => {
+      const { ladeErklaerungstopfSeed, holeErklaerungsEreignisseNach } = await import('@synapse/core');
+      if (process.env.ERKLAERUNGSTOPF_SEED_DISABLED !== '1') {
+        const r = await ladeErklaerungstopfSeed({ agent: 'synapse-api-start' });
+        console.log(`[Synapse API] Erklaerungs-Topf Seed: ${JSON.stringify({ neu: r.neu, vorhanden: r.vorhanden, abgelehnt: r.abgelehnt, fehlerhaft: r.fehlerhaft, error: r.error })}`);
+      }
+      const n = await holeErklaerungsEreignisseNach();
+      if (n.geholt || n.error) console.log(`[Synapse API] Erklaerungs-Topf nachgeholt: ${JSON.stringify(n)}`);
+    })().catch((err: unknown) => console.error('[Synapse API] Erklaerungs-Topf Start fehlgeschlagen:', err));
+  }, 30_000).unref();
+
   // Session-Reaper: meldet Agenten-Sessions ab, die seit Stunden kein Lebenszeichen
   // mehr zeigen. Ohne das bleibt jede Session ewig 'active' — gepurgte, abgestuerzte
   // und verschwundene Agenten inklusive. Am 2026-07-26 zeigte die Liste 28 Eintraege

@@ -1440,8 +1440,8 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
       },
       offene_faelle: {
         description: 'P15-T33 Erklaerungs-Topf: offene Faelle (Syntaxfehler ohne passende verifizierte Erklaerung), ohne Schatten, mit Stufe (neu | verwerfen_anfragbar ab 3 Monaten | markiert ab 6 | loeschen ab 9).',
-        params: 'project (optional), limit',
-        example: 'code_check({ action: "offene_faelle", project: "synapse" })',
+        params: 'project (optional), nur_eigene (optional: nur Faelle des aufrufenden Agenten), limit. Onboarding nennt offene Faelle als Zeile erklaerung_faelle (Koordinator: Projekt, Agent: eigene). Startbestand des Topfs: 15 generische Erklaerungen aus E0 (admin jev_erklaerungstopf, modus status | seed_laden | nachholen).',
+        example: 'code_check({ action: "offene_faelle", project: "synapse", nur_eigene: true })',
       },
       fall: {
         description: 'Ein Fall mit maskiertem Schatten (Ausschnitt +-30 Zeilen nachher, vorher, Diff), Befund, Jev-Versuch und Pflichtsprachen. Die Antwort wird NICHT in tool_calls protokolliert.',

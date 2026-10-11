@@ -354,6 +354,25 @@ CREATE TABLE IF NOT EXISTS erklaerung_faelle (
   UNIQUE (project, datei, schluessel)
 );
 CREATE INDEX IF NOT EXISTS idx_erklaerung_faelle_erstellt ON erklaerung_faelle(erstellt_am);
+-- P15-T33 E2 (11.10.2026): persistente Warteschlange des Erklaerungs-Topfs. Der Worker sichert jede Fehlersituation
+-- VORBEREITET (Schatten maskiert, Hashes, Befund - kein Volltext), bevor er Jev fragt, und loescht die Zeile danach.
+-- Bricht der Prozess ab, holt ein Prozess sie beim Start bzw. in der Tagespruefung nach (Claim geclaimt_am, verwaist
+-- nach 5 Minuten, SKIP LOCKED). Nur neue Tabelle, keine Sperren auf Bestand.
+CREATE TABLE IF NOT EXISTS erklaerung_ereignisse (
+  id BIGSERIAL PRIMARY KEY,
+  project TEXT NOT NULL,
+  agent_id TEXT,
+  datei TEXT NOT NULL,
+  familie TEXT NOT NULL,
+  schluessel TEXT NOT NULL,
+  befund JSONB NOT NULL,
+  bezug JSONB NOT NULL,
+  schatten JSONB NOT NULL,
+  versuche INTEGER NOT NULL DEFAULT 0,
+  erstellt_am TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  geclaimt_am TIMESTAMPTZ,
+  geclaimt_von TEXT
+);
 -- P15 E1 (11.10.2026): Entscheidungs-Topf (Konzept 6591b268, User e7b013c2, E0 bfbf7968). GLOBAL: Eintraege sind
 -- Vorlagen ueber alle Projekte, herkunft_projekt nennt nur, wo sie entstanden. Ein Eintrag = EINE atomare
 -- User-Entscheidung (Wortlaut + Aufbereitung je Sprache). Nur User-Herkunft (S3: autonome Jev-Entscheidungen

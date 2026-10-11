@@ -248,6 +248,10 @@ export async function checkAgentOnboarding(
     const { baueAbwesenheitsHinweis } = await import('@synapse/core');
     const jevHinweis = await baueAbwesenheitsHinweis(project);
 
+    // P15-T33 E2: offene Erklaerungs-Faelle (Koordinator: Projekt, sonst nur eigene) als EINE Zeile. Wie im REST-Weg.
+    const { erklaerungsFaelleZeile } = await import('@synapse/core');
+    const erklZeile = await erklaerungsFaelleZeile({ project, agent_id: agentId, koordinator: isCoordinator });
+
     // Plan-Uebersicht (Task 137fabaf): nur aktive/offene Plaene mit Kurz-ID, keine Tasks.
     // Gleiches Feld wie im REST-Weg (routes/mcp.ts).
     const { planUebersicht } = await import('@synapse/core');
@@ -269,6 +273,7 @@ export async function checkAgentOnboarding(
       ...(abrufHinweis ? { volltext_hinweis: abrufHinweis } : {}),
       ...(setupHinweis ? { setup_hinweis: setupHinweis } : {}),
       ...(jevHinweis ? { jev_hinweis: jevHinweis } : {}),
+      ...(erklZeile ? { erklaerung_faelle: erklZeile } : {}),
       rules,
       ...(channelBlock ? { channels: channelBlock } : {}),
       ...(plaene.length > 0 ? { plaene } : {}),

@@ -1950,6 +1950,12 @@ async function attachRestOnboarding(
     const jevHinweis = await baueAbwesenheitsHinweis(project);
     const jevBlock = jevHinweis ? { jev_hinweis: jevHinweis } : {};
 
+    // P15-T33 E2: offene Erklaerungs-Faelle (Koordinator: Projekt, sonst nur eigene) als EINE Zeile, sonst nichts.
+    // Wie im lokalen Weg (mcp-server tools/onboarding.ts).
+    const { erklaerungsFaelleZeile } = await import('@synapse/core');
+    const erklZeile = await erklaerungsFaelleZeile({ project, agent_id: agentId, koordinator: role === 'koordinator' });
+    const erklBlock = erklZeile ? { erklaerung_faelle: erklZeile } : {};
+
     // Plan-Uebersicht (Task 137fabaf): nur aktive/offene Plaene mit Kurz-ID, keine Tasks.
     const { planUebersicht } = await import('@synapse/core');
     const plaene = await planUebersicht(project).catch(() => []);
@@ -1958,7 +1964,7 @@ async function attachRestOnboarding(
     if (rules.length === 0) {
       return {
         ...result,
-        agentOnboarding: { isFirstVisit: true, ...jevBlock, ...(channelBlock ? { channels: channelBlock } : {}), ...planBlock },
+        agentOnboarding: { isFirstVisit: true, ...jevBlock, ...erklBlock, ...(channelBlock ? { channels: channelBlock } : {}), ...planBlock },
       };
     }
 
@@ -1979,6 +1985,7 @@ async function attachRestOnboarding(
         message: '📋 WILLKOMMEN! Als neuer Agent beachte bitte folgende Projekt-Regeln:',
         ...(abrufHinweis ? { volltext_hinweis: abrufHinweis } : {}),
         ...jevBlock,
+        ...erklBlock,
         rules,
         ...(channelBlock ? { channels: channelBlock } : {}),
         ...planBlock,

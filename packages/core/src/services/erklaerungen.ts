@@ -26,9 +26,18 @@
  *     geloescht (erklaerungenTagespruefung, Job in der REST-API). Sonst kein Zeitablauf.
  * DATENSCHUTZ: Schatten nur in erklaerung_faelle (nicht eingebettet, nicht im Audit: tool_calls speichert die
  *   Antwort von code_check(fall) nicht). .env-Inhalte nur maskiert (NAME=[WERT]), Geheimnisse geschwaerzt.
+ * E2 (11.10.2026): Startbestand packages/core/data/erklaerungstopf-seed.json (ladeErklaerungstopfSeed, beim API-Start
+ *   und per admin(jev_erklaerungstopf, modus seed_laden); Generik und gepflegte Sprachen wie beim Ablegen geprueft).
+ *   PERSISTENTE WARTESCHLANGE: der Worker sichert jede Fehlersituation vorbereitet (Schatten maskiert, Hashes, kein
+ *   Volltext) in erklaerung_ereignisse, BEVOR er Jev fragt, und loescht sie danach; holeErklaerungsEreignisseNach()
+ *   holt Liegengebliebenes beim Start und in der Tagespruefung nach. Onboarding-Zeile: erklaerungsFaelleZeile().
  */
 
 import { createHash } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
+import { hostname } from 'node:os';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { getPool } from '../db/client.js';
 import { rufeJev } from './jev-client.js';
 import { jevWirksam } from './jev-schalter.js';
@@ -472,10 +481,20 @@ function schlankerBefund(b: FehlerBefund): Record<string, unknown> {
   };
 }
 
-async function speichereFall(e: Fehlerereignis, d: {
-  familie: string; schluessel: string; schatten: Schatten; jev: JevVersuch; basisHash: string; ergebnisHash: string; erklaerungId: string | null;
-}): Promise<{ id: string; neu: boolean }> {
-  const bezug = { weg: e.weg, op_index: e.op_index ?? null, file_path: e.befund.datei, basis_hash: d.basisHash, ergebnis_hash: d.ergebnisHash };
+/** Vorbereitete Fehlersituation: alles, was der Worker braucht - ohne Volltext (Schatten maskiert, Hashes). */
+interface Vorbereitet {
+  project: string;
+  agent_id: string | null;
+  befund: FehlerBefund;
+  familie: string;
+  schluessel: string;
+  schatten: Schatten;
+  bezug: { weg: Fehlerereignis['weg']; op_index: number | null; file_path: string; basis_hash: string; ergebnis_hash: string };
+  /** Zeile in erklaerung_ereignisse (null = nicht gesichert, z. B. Tabelle noch nicht angelegt) */
+  ereignis_id: string | null;
+}
+
+async function speichereFall(v: Vorbereitet, d: { jev: JevVersuch; erklaerungId: string | null }): Promise<{ id: string; neu: boolean }> {
   const { rows } = await getPool().query<{ id: string; neu: boolean }>(
     `INSERT INTO erklaerung_faelle (project, agent_id, datei, familie, schluessel, befund, bezug, schatten, jev, erklaerung_id, erklaert_von, erklaert_am)
      VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8::jsonb, $9::jsonb, $10::uuid, CASE WHEN $10::uuid IS NULL THEN NULL ELSE 'jev' END,
@@ -487,21 +506,34 @@ async function speichereFall(e: Fehlerereignis, d: {
        erklaert_am = COALESCE(erklaerung_faelle.erklaert_am, EXCLUDED.erklaert_am),
        haeufigkeit = erklaerung_faelle.haeufigkeit + 1, aktualisiert_am = NOW()
      RETURNING id::text AS id, (xmax = 0) AS neu`,
-    [e.project, e.agent_id, e.befund.datei, d.familie, d.schluessel, JSON.stringify(schlankerBefund(e.befund)), JSON.stringify(bezug),
-      JSON.stringify(d.schatten), JSON.stringify(d.jev), d.erklaerungId],
+    [v.project, v.agent_id, v.befund.datei, v.familie, v.schluessel, JSON.stringify(schlankerBefund(v.befund)), JSON.stringify(v.bezug),
+      JSON.stringify(v.schatten), JSON.stringify(d.jev), d.erklaerungId],
   );
   return rows[0];
 }
 
-// ─── Warteschlange (Fehlerpfad, asynchron) ───────────────────────────────────
+// ─── Warteschlange (Fehlerpfad, asynchron, persistent seit E2) ───────────────
+// meldeFehlerfall reiht nur im Speicher ein (kein await, kein PG). Der Worker bereitet jede Situation vor (Schalter,
+// Dedup, Schatten) und SICHERT sie in erklaerung_ereignisse, bevor er Jev fragt; nach der Verarbeitung wird die Zeile
+// geloescht. Bricht der Prozess ab, holt holeErklaerungsEreignisseNach() die Zeile beim naechsten Start bzw. in der
+// Tagespruefung nach (Claim ueber geclaimt_am, verwaist nach VERWAIST_MIN, SKIP LOCKED). Verloren gehen kann nur,
+// was zwischen meldeFehlerfall und dem ersten Worker-Schritt lag (Millisekunden). Fehlt die Tabelle (Schema noch
+// nicht angewendet), arbeitet der Worker wie in E1 nur im Speicher weiter (eine Log-Zeile).
 
 const MAX_WARTESCHLANGE = 100;
 const DOPPELT_MS = 10 * 60 * 1000;
+/** Ein Claim, der aelter ist, gilt als verwaist (Prozess abgebrochen); ein Jev-Aufruf dauert unter 1 s. */
+const VERWAIST_MIN = 5;
+/** Nach so vielen gescheiterten Verarbeitungen wird eine gesicherte Situation verworfen (Log-Zeile). */
+const MAX_VERSUCHE = 3;
+const PROZESS = `${hostname()}:${process.pid}:${Date.now().toString(36)}`;
 const warteschlange: Fehlerereignis[] = [];
+const bereit: Vorbereitet[] = [];
 const gesehen = new Map<string, number>();
 let aktiv: Promise<void> | null = null;
 let deps: { fetch?: typeof fetch } = {};
 let ueberlaufGemeldet = false;
+let sichernFehlerGemeldet = false;
 
 /** Nur fuer Tests: fetch fuer den Jev-Aufruf des Workers einsetzen ({} = echter fetch). */
 export function _setzeErklaerungDeps(d: { fetch?: typeof fetch } | null | undefined): void {
@@ -509,27 +541,44 @@ export function _setzeErklaerungDeps(d: { fetch?: typeof fetch } | null | undefi
   gesehen.clear();
 }
 
+const fehlerText = (err: unknown): string => (err instanceof Error ? err.message : String(err));
+
 function starte(): void {
   if (aktiv) return;
   aktiv = (async () => {
     await new Promise<void>((r) => setImmediate(r));
-    while (warteschlange.length > 0) {
-      const e = warteschlange.shift()!;
+    for (;;) {
+      // Erst alles Eingereihte vorbereiten und in PG sichern, dann einzeln verarbeiten (Jev).
+      while (warteschlange.length > 0) {
+        const e = warteschlange.shift()!;
+        try {
+          const r = await bereiteVor(e);
+          if ('v' in r) {
+            bereit.push(r.v);
+            // Gesichert in PG: was hier aus dem Speicher faellt, holt holeErklaerungsEreignisseNach() nach.
+            if (bereit.length > MAX_WARTESCHLANGE) bereit.shift();
+          }
+        } catch (err) {
+          console.error('[erklaerungen] Fehlersituation nicht vorbereitet (non-blocking):', fehlerText(err));
+        }
+      }
+      const v = bereit.shift();
+      if (!v) break;
       try {
-        await verarbeiteFehlerfall(e, deps);
+        await bearbeite(v, deps);
       } catch (err) {
-        console.error('[erklaerungen] Fehlerfall nicht verarbeitet (non-blocking):', err instanceof Error ? err.message : err);
+        console.error('[erklaerungen] Fehlerfall nicht verarbeitet (non-blocking):', fehlerText(err));
       }
     }
   })().finally(() => {
     aktiv = null;
-    if (warteschlange.length > 0) starte();
+    if (warteschlange.length > 0 || bereit.length > 0) starte();
   });
 }
 
 /** Nur fuer Tests/Shutdown: wartet, bis die Warteschlange leer ist. */
 export async function _erklaerungenLeerlauf(): Promise<void> {
-  while (aktiv || warteschlange.length > 0) {
+  while (aktiv || warteschlange.length > 0 || bereit.length > 0) {
     if (!aktiv) starte();
     await aktiv;
   }
@@ -553,7 +602,7 @@ export function meldeFehlerfall(e: Fehlerereignis): void {
     }
     starte();
   } catch (err) {
-    console.error('[erklaerungen] meldeFehlerfall:', err instanceof Error ? err.message : err);
+    console.error('[erklaerungen] meldeFehlerfall:', fehlerText(err));
   }
 }
 
@@ -563,25 +612,102 @@ export interface FehlerfallErgebnis {
   erklaerung_id?: string;
   jev?: JevVersuch;
   grund?: string;
+  /** E2: Zeile in erklaerung_ereignisse, solange die Situation in Arbeit war (null = nicht gesichert) */
+  ereignis_id?: string | null;
 }
 
-/** Verarbeitet eine Fehlersituation (Worker; fuer Tests direkt aufrufbar). */
-export async function verarbeiteFehlerfall(e: Fehlerereignis, d: { fetch?: typeof fetch } = {}): Promise<FehlerfallErgebnis> {
+/** Sichert eine vorbereitete Situation in PG (Claim dieses Prozesses). Fehler -> null, Arbeit geht im Speicher weiter. */
+async function sichereEreignis(v: Vorbereitet): Promise<string | null> {
+  try {
+    const { rows } = await getPool().query<{ id: string }>(
+      `INSERT INTO erklaerung_ereignisse (project, agent_id, datei, familie, schluessel, befund, bezug, schatten, versuche, geclaimt_am, geclaimt_von)
+       VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8::jsonb, 1, NOW(), $9) RETURNING id::text AS id`,
+      [v.project, v.agent_id, v.befund.datei, v.familie, v.schluessel, JSON.stringify(schlankerBefund(v.befund)), JSON.stringify(v.bezug),
+        JSON.stringify(v.schatten), PROZESS],
+    );
+    sichernFehlerGemeldet = false;
+    return rows[0]?.id ?? null;
+  } catch (err) {
+    if (!sichernFehlerGemeldet) {
+      sichernFehlerGemeldet = true;
+      console.error('[erklaerungen] Fehlersituation nicht in PG gesichert, Verarbeitung nur im Speicher:', fehlerText(err));
+    }
+    return null;
+  }
+}
+
+async function loescheEreignis(id: string | null): Promise<void> {
+  if (!id) return;
+  try {
+    await getPool().query('DELETE FROM erklaerung_ereignisse WHERE id = $1::bigint', [id]);
+  } catch (err) {
+    console.error(`[erklaerungen] Ereignis ${id} nicht geloescht:`, fehlerText(err));
+  }
+}
+
+/** Nach einem Fehler: Claim freigeben (naechster Nachhol-Lauf), ab MAX_VERSUCHE verwerfen. */
+async function gibEreignisFrei(id: string | null): Promise<void> {
+  if (!id) return;
+  try {
+    const { rows } = await getPool().query<{ versuche: number }>(
+      `WITH weg AS (DELETE FROM erklaerung_ereignisse WHERE id = $1::bigint AND versuche >= $2 RETURNING versuche),
+            frei AS (UPDATE erklaerung_ereignisse SET geclaimt_am = NULL, geclaimt_von = NULL
+                      WHERE id = $1::bigint AND versuche < $2 RETURNING versuche)
+       SELECT versuche FROM weg`,
+      [id, MAX_VERSUCHE],
+    );
+    if (rows[0]) console.error(`[erklaerungen] Ereignis ${id} nach ${rows[0].versuche} Versuchen verworfen.`);
+  } catch (err) {
+    console.error(`[erklaerungen] Ereignis ${id} nicht freigegeben:`, fehlerText(err));
+  }
+}
+
+type Vorbereitung = { fertig: FehlerfallErgebnis } | { v: Vorbereitet };
+
+/** Schritt 1 (ohne Jev): Schalter, Dedup, Schatten, Sicherung in PG. */
+async function bereiteVor(e: Fehlerereignis): Promise<Vorbereitung> {
   const w = await jevWirksam(e.project, 'erklaerungstopf');
-  if (!w.an && w.ebene !== 'budget') return { ergebnis: 'aus', grund: w.text };
+  if (!w.an && w.ebene !== 'budget') return { fertig: { ergebnis: 'aus', grund: w.text } };
   const familie = familieVon(e.befund);
   const schluessel = schluesselVon(e.befund);
   const ergebnisHash = sha(e.ergebnis);
   const basisHash = sha(e.basis ?? '');
   const jetzt = Date.now();
   const merk = `${e.project}|${e.befund.datei}|${schluessel}|${ergebnisHash}`;
-  if ((gesehen.get(merk) ?? 0) > jetzt - DOPPELT_MS) return { ergebnis: 'doppelt' };
+  if ((gesehen.get(merk) ?? 0) > jetzt - DOPPELT_MS) return { fertig: { ergebnis: 'doppelt' } };
   gesehen.set(merk, jetzt);
   if (gesehen.size > 500) for (const [k, t] of gesehen) if (t <= jetzt - DOPPELT_MS) gesehen.delete(k);
+  const v: Vorbereitet = {
+    project: e.project,
+    agent_id: e.agent_id,
+    befund: e.befund,
+    familie,
+    schluessel,
+    schatten: baueSchatten({ datei: e.befund.datei, befund: e.befund, basis: e.basis, ergebnis: e.ergebnis }),
+    bezug: { weg: e.weg, op_index: e.op_index ?? null, file_path: e.befund.datei, basis_hash: basisHash, ergebnis_hash: ergebnisHash },
+    ereignis_id: null,
+  };
+  v.ereignis_id = await sichereEreignis(v);
+  return { v };
+}
 
-  const schatten = baueSchatten({ datei: e.befund.datei, befund: e.befund, basis: e.basis, ergebnis: e.ergebnis });
+/** Schritt 2: Kandidaten, Jev, Auslieferung bzw. Fall. Erfolg -> gesicherte Zeile geloescht; Fehler -> Claim frei. */
+async function bearbeite(v: Vorbereitet, d: { fetch?: typeof fetch }): Promise<FehlerfallErgebnis> {
+  try {
+    const r = await bearbeiteKern(v, d);
+    await loescheEreignis(v.ereignis_id);
+    return { ...r, ereignis_id: v.ereignis_id };
+  } catch (err) {
+    await gibEreignisFrei(v.ereignis_id);
+    throw err;
+  }
+}
+
+async function bearbeiteKern(v: Vorbereitet, d: { fetch?: typeof fetch }): Promise<FehlerfallErgebnis> {
+  const w = await jevWirksam(v.project, 'erklaerungstopf');
+  if (!w.an && w.ebene !== 'budget') return { ergebnis: 'aus', grund: w.text };
   const optionen = await leseJevOptionen();
-  const kandidaten = await ladeKandidaten(familie, schluessel);
+  const kandidaten = await ladeKandidaten(v.familie, v.schluessel);
   let jev: JevVersuch;
   let gewaehlt: Erklaerung | null = null;
   if (kandidaten.length === 0) {
@@ -589,18 +715,76 @@ export async function verarbeiteFehlerfall(e: Fehlerereignis, d: { fetch?: typeo
   } else if (!w.an) {
     jev = { aufgerufen: false, grund: 'budget', message: w.text };
   } else {
-    const r = await waehleErklaerung({ project: e.project, agent_id: e.agent_id, schatten, kandidaten, sprache: optionen.jev_sprache_wirksam }, d);
+    const r = await waehleErklaerung({ project: v.project, agent_id: v.agent_id, schatten: v.schatten, kandidaten, sprache: optionen.jev_sprache_wirksam }, d);
     jev = r.jev;
     gewaehlt = r.gewaehlt;
   }
   if (gewaehlt) {
     await getPool().query('UPDATE erklaerungen SET gewaehlt_n = gewaehlt_n + 1 WHERE id = $1::uuid', [gewaehlt.id]);
-    vormerkenErklaerung(e.agent_id, e.befund.datei, erklaerungsHinweis(gewaehlt, jev.confidence ?? null, e.befund, optionen.erklaerung_sprachen));
+    vormerkenErklaerung(v.agent_id, v.befund.datei, erklaerungsHinweis(gewaehlt, jev.confidence ?? null, v.befund, optionen.erklaerung_sprachen));
     if (gewaehlt.status === 'verifiziert') return { ergebnis: 'erklaert', erklaerung_id: gewaehlt.id, jev };
   }
-  const fall = await speichereFall(e, { familie, schluessel, schatten, jev, basisHash, ergebnisHash, erklaerungId: gewaehlt?.id ?? null });
-  if (!gewaehlt && fall.neu) vormerkenErklaerung(e.agent_id, e.befund.datei, fallHinweis(fall.id, e.befund, optionen.erklaerung_sprachen));
+  const fall = await speichereFall(v, { jev, erklaerungId: gewaehlt?.id ?? null });
+  if (!gewaehlt && fall.neu) vormerkenErklaerung(v.agent_id, v.befund.datei, fallHinweis(fall.id, v.befund, optionen.erklaerung_sprachen));
   return { ergebnis: gewaehlt ? 'erklaert_vorgeschlagen' : 'fall', fall_id: fall.id, ...(gewaehlt ? { erklaerung_id: gewaehlt.id } : {}), jev };
+}
+
+/** Verarbeitet eine Fehlersituation (Worker; fuer Tests direkt aufrufbar). */
+export async function verarbeiteFehlerfall(e: Fehlerereignis, d: { fetch?: typeof fetch } = {}): Promise<FehlerfallErgebnis> {
+  const r = await bereiteVor(e);
+  if ('fertig' in r) return r.fertig;
+  return bearbeite(r.v, d);
+}
+
+interface EreignisRoh {
+  id: string;
+  project: string;
+  agent_id: string | null;
+  familie: string;
+  schluessel: string;
+  befund: FehlerBefund;
+  bezug: Vorbereitet['bezug'];
+  schatten: Schatten;
+}
+
+/**
+ * Holt liegengebliebene Fehlersituationen nach (Prozess abgebrochen, bevor sie verarbeitet waren): nie geclaimte
+ * bzw. seit verwaistMin Minuten verwaiste Zeilen, Claim mit SKIP LOCKED (mehrere Prozesse teilen die DB). Beim
+ * API-Start, in der Tagespruefung und per admin(jev_erklaerungstopf, modus nachholen). Wirft nie.
+ */
+export async function holeErklaerungsEreignisseNach(o: { max?: number; verwaistMin?: number; fetch?: typeof fetch } = {}): Promise<{ geholt: number; verarbeitet: number; fehler: number; ergebnisse: Record<string, number>; error?: string }> {
+  const aus = { geholt: 0, verarbeitet: 0, fehler: 0, ergebnisse: {} as Record<string, number> };
+  try {
+    const max = Math.min(Math.max(o.max ?? 200, 1), 1000);
+    const verwaist = Math.max(o.verwaistMin ?? VERWAIST_MIN, 0);
+    const { rows } = await getPool().query<EreignisRoh>(
+      `UPDATE erklaerung_ereignisse SET geclaimt_am = NOW(), geclaimt_von = $1, versuche = versuche + 1
+        WHERE id IN (SELECT id FROM erklaerung_ereignisse
+                      WHERE geclaimt_am IS NULL OR geclaimt_am < NOW() - make_interval(secs => $2::double precision)
+                      ORDER BY id LIMIT $3 FOR UPDATE SKIP LOCKED)
+        RETURNING id::text AS id, project, agent_id, familie, schluessel, befund, bezug, schatten`,
+      [PROZESS, verwaist * 60, max],
+    );
+    aus.geholt = rows.length;
+    for (const r of rows) {
+      const v: Vorbereitet = {
+        project: r.project, agent_id: r.agent_id, befund: r.befund, familie: r.familie, schluessel: r.schluessel,
+        schatten: r.schatten, bezug: r.bezug, ereignis_id: r.id,
+      };
+      try {
+        const e = await bearbeite(v, o.fetch ? { fetch: o.fetch } : deps);
+        aus.verarbeitet++;
+        aus.ergebnisse[e.ergebnis] = (aus.ergebnisse[e.ergebnis] ?? 0) + 1;
+      } catch (err) {
+        aus.fehler++;
+        console.error(`[erklaerungen] Nachholen Ereignis ${r.id}:`, fehlerText(err));
+      }
+    }
+    if (aus.geholt) console.error(`[erklaerungen] ${aus.verarbeitet}/${aus.geholt} liegengebliebene Fehlersituationen nachgeholt.`);
+    return aus;
+  } catch (err) {
+    return { ...aus, error: fehlerText(err) };
+  }
 }
 
 // ─── Generik-Pruefung ────────────────────────────────────────────────────────
@@ -752,8 +936,9 @@ export async function listeOffeneFaelle(o: { project?: string | null; agent_id?:
     [o.project ?? null, o.agent_id ?? null, limit],
   );
   const zaehl = await getPool().query<{ stufe: string; n: number }>(
-    `SELECT ${STUFE_SQL} AS stufe, count(*)::int AS n FROM erklaerung_faelle WHERE ($1::text IS NULL OR project = $1) GROUP BY 1`,
-    [o.project ?? null],
+    `SELECT ${STUFE_SQL} AS stufe, count(*)::int AS n FROM erklaerung_faelle WHERE ($1::text IS NULL OR project = $1)
+       AND ($2::text IS NULL OR agent_id = $2) GROUP BY 1`,
+    [o.project ?? null, o.agent_id ?? null],
   );
   const w = await jevWirksam(o.project ?? null, 'erklaerungstopf');
   return {
@@ -1000,10 +1185,12 @@ export async function verwerfeFall(id: string, agent: string | null, zustimmungU
  * Tagespruefung (Job in der REST-API, einmal je Tag): belegte Faelle erneut verifizieren, ab 6 Monaten markieren,
  * nach 9 Monaten loeschen (Fall + Schatten, keine Erklaerung). Wirft nie.
  */
-export async function erklaerungenTagespruefung(o: { maxPruefungen?: number } = {}): Promise<{ geprueft: number; verifiziert: number; markiert: number; geloescht_9_monate: number; fehler?: string }> {
-  const aus = { geprueft: 0, verifiziert: 0, markiert: 0, geloescht_9_monate: 0 };
+export async function erklaerungenTagespruefung(o: { maxPruefungen?: number } = {}): Promise<{ geprueft: number; verifiziert: number; markiert: number; geloescht_9_monate: number; nachgeholt: number; fehler?: string }> {
+  const aus = { geprueft: 0, verifiziert: 0, markiert: 0, geloescht_9_monate: 0, nachgeholt: 0 };
   try {
     const pool = getPool();
+    // E2: liegengebliebene Fehlersituationen (abgebrochener Prozess) zuerst nachholen
+    aus.nachgeholt = (await holeErklaerungsEreignisseNach()).verarbeitet;
     const max = Math.min(Math.max(o.maxPruefungen ?? 500, 1), 5000);
     const ids = (await pool.query<{ id: string }>(
       'SELECT id::text AS id FROM erklaerung_faelle WHERE erklaerung_id IS NOT NULL ORDER BY aktualisiert_am LIMIT $1', [max],
@@ -1030,6 +1217,168 @@ export async function erklaerungenTagespruefung(o: { maxPruefungen?: number } = 
     return aus;
   } catch (err) {
     return { ...aus, fehler: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+// ─── Startbestand, Status, Onboarding-Zeile (E2) ─────────────────────────────
+
+interface SeedErklaerung {
+  kennung: string;
+  familie: string;
+  schluessel?: string;
+  status?: string;
+  beleg?: string;
+  de?: Partial<ErklaerungTexte>;
+  en?: Partial<ErklaerungTexte>;
+}
+
+/** Pfad der Seed-Datei (packages/core/data, relativ zu dist/services bzw. src/services). */
+export function erklaerungstopfSeedPfad(): string {
+  return join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'data', 'erklaerungstopf-seed.json');
+}
+
+/**
+ * Prueft einen Seed-Eintrag wie erklaerung_ablegen: kennung, Status, gepflegte Sprachen vollstaendig, Laenge,
+ * Generik (ohne Fall: Pfade, Zeilenangaben, Hashes, Codebloecke, Geheimnisse). Liefert die Probleme (leer = gut).
+ */
+export function pruefeSeedEintrag(e: SeedErklaerung, pflicht: ErklaerungSprache[]): string[] {
+  const aus: string[] = [];
+  if (!e || typeof e.kennung !== 'string' || !/^[a-z0-9][a-z0-9-]{2,60}$/.test(e.kennung)) aus.push('kennung ungueltig');
+  if (!e || typeof e.familie !== 'string' || !e.familie.trim()) aus.push('familie fehlt');
+  const status = e?.status ?? 'vorgeschlagen';
+  if (status !== 'vorgeschlagen' && status !== 'verifiziert') aus.push(`status ${status} (nur vorgeschlagen | verifiziert)`);
+  const texte: Record<string, string> = {};
+  for (const s of SPRACHEN) {
+    const t = e?.[s];
+    const da = TEXTFELDER.filter((feld) => typeof t?.[feld] === 'string' && t[feld]!.trim());
+    if (da.length > 0 && da.length < 3) aus.push(`Sprache ${s} unvollstaendig`);
+    for (const feld of da) texte[`${feld}_${s}`] = t![feld]!.trim();
+  }
+  for (const s of pflicht) if (!TEXTFELDER.every((feld) => texte[`${feld}_${s}`])) aus.push(`gepflegte Sprache ${s} fehlt`);
+  if (Object.keys(texte).length === 0) aus.push('keine Texte');
+  for (const [k, v] of Object.entries(texte)) if (v.length < MIN_TEXT || v.length > MAX_TEXT) aus.push(`Laenge ${k}`);
+  for (const v of pruefeGenerik(texte, { datei: '', project: '', agent_id: null, schatten: null })) aus.push(`nicht generisch: ${v.art} in ${v.feld} ("${v.fund}")`);
+  return aus;
+}
+
+/**
+ * Laedt den Startbestand idempotent: ON CONFLICT kennung DO NOTHING, eine nicht stillgelegte Erklaerung mit derselben
+ * Lage in der Familie gilt als vorhanden. Status laut Seed (verifiziert nur, wo E0 es belegt). Beim API-Start und per
+ * admin(jev_erklaerungstopf, modus seed_laden). Wirft nie.
+ */
+export async function ladeErklaerungstopfSeed(o: { datei?: string; agent?: string | null } = {}): Promise<Record<string, unknown>> {
+  const datei = o.datei ?? erklaerungstopfSeedPfad();
+  let seed: { format?: string; eintraege?: SeedErklaerung[] };
+  try {
+    seed = JSON.parse(await readFile(datei, 'utf8')) as typeof seed;
+  } catch (err) {
+    return { success: false, error: 'seed_nicht_lesbar', message: `Seed-Datei nicht lesbar (${datei}): ${fehlerText(err)}` };
+  }
+  if (seed.format !== 'erklaerungstopf-seed' || !Array.isArray(seed.eintraege)) {
+    return { success: false, error: 'seed_format', message: 'Seed-Datei hat nicht das Format erklaerungstopf-seed.' };
+  }
+  let pflicht: ErklaerungSprache[];
+  try {
+    pflicht = gepflegt((await leseJevOptionen()).erklaerung_sprachen);
+  } catch (err) {
+    return { success: false, error: 'fehler', message: fehlerText(err) };
+  }
+  let neu = 0, vorhanden = 0, abgelehnt = 0, fehlerhaft = 0;
+  const fehler: string[] = [];
+  for (const e of seed.eintraege) {
+    const probleme = pruefeSeedEintrag(e, pflicht);
+    if (probleme.length) {
+      abgelehnt++;
+      if (fehler.length < 10) fehler.push(`${e?.kennung ?? '?'}: ${probleme.join('; ')}`);
+      continue;
+    }
+    try {
+      const status = e.status === 'verifiziert' ? 'verifiziert' : 'vorgeschlagen';
+      const t = (s: ErklaerungSprache, f: (typeof TEXTFELDER)[number]): string | null => e[s]?.[f]?.trim() || null;
+      const r = await getPool().query(
+        `INSERT INTO erklaerungen (kennung, familie, schluessel, lage_de, wieso_de, abhilfe_de, lage_en, wieso_en, abhilfe_en, status, status_grund,
+           verifiziert_am, erstellt_von)
+         SELECT $1::text, $2::text, $3::text, $4::text, $5::text, $6::text, $7::text, $8::text, $9::text, $10::text, $11::text,
+                CASE WHEN $10::text = 'verifiziert' THEN NOW() END, $12::text
+          WHERE NOT EXISTS (SELECT 1 FROM erklaerungen WHERE familie = $2::text AND status <> 'stillgelegt'
+                  AND ((lage_en IS NOT NULL AND lower(lage_en) = lower($7::text)) OR (lage_de IS NOT NULL AND lower(lage_de) = lower($4::text))))
+         ON CONFLICT (kennung) DO NOTHING`,
+        [e.kennung, e.familie.trim(), e.schluessel ?? null, t('de', 'lage'), t('de', 'wieso'), t('de', 'abhilfe'), t('en', 'lage'), t('en', 'wieso'),
+          t('en', 'abhilfe'), status, `Seed (Startbestand E0)${e.beleg ? `: ${e.beleg}` : ''}`, o.agent ?? 'seed'],
+      );
+      if ((r.rowCount ?? 0) > 0) neu++; else vorhanden++;
+    } catch (err) {
+      fehlerhaft++;
+      if (fehler.length < 10) fehler.push(`${e.kennung}: ${fehlerText(err)}`);
+    }
+  }
+  return {
+    success: abgelehnt === 0 && fehlerhaft === 0,
+    gelesen: seed.eintraege.length, neu, vorhanden, abgelehnt, fehlerhaft,
+    sprachen_pflicht: pflicht,
+    ...(fehler.length ? { fehler } : {}),
+  };
+}
+
+/** Stand des Topfs fuer admin(jev_erklaerungstopf, modus status). Wirft nicht bei fehlender Ereignis-Tabelle. */
+export async function erklaerungstopfStatus(): Promise<Record<string, unknown>> {
+  const pool = getPool();
+  const je = await pool.query<{ familie: string; status: string; n: number }>(
+    'SELECT familie, status, count(*)::int AS n FROM erklaerungen GROUP BY 1, 2 ORDER BY 1, 2',
+  );
+  const jeStatus: Record<string, number> = {};
+  const jeFamilie: Record<string, Record<string, number>> = {};
+  for (const r of je.rows) {
+    jeStatus[r.status] = (jeStatus[r.status] ?? 0) + r.n;
+    (jeFamilie[r.familie] ??= {})[r.status] = r.n;
+  }
+  const faelle = await pool.query<{ n: number }>('SELECT count(*)::int AS n FROM erklaerung_faelle');
+  let gesichert: Record<string, unknown>;
+  try {
+    const q = await pool.query<{ n: number; verwaist: number }>(
+      `SELECT count(*)::int AS n, count(*) FILTER (WHERE geclaimt_am IS NULL OR geclaimt_am < NOW() - make_interval(secs => $1::double precision))::int AS verwaist
+         FROM erklaerung_ereignisse`,
+      [VERWAIST_MIN * 60],
+    );
+    gesichert = { gesichert: q.rows[0]?.n ?? 0, nachzuholen: q.rows[0]?.verwaist ?? 0 };
+  } catch (err) {
+    gesichert = { fehler: `erklaerung_ereignisse nicht lesbar (Schema noch nicht angewendet?): ${fehlerText(err)}` };
+  }
+  return {
+    erklaerungen: { gesamt: je.rows.reduce((s, r) => s + r.n, 0), je_status: jeStatus, je_familie: jeFamilie },
+    offene_faelle: faelle.rows[0]?.n ?? 0,
+    warteschlange: { ...gesichert, im_speicher: warteschlange.length + bereit.length },
+  };
+}
+
+/**
+ * Onboarding-Zeile: "N offene Erklaerungs-Faelle, code_check(offene_faelle)". Koordinator: alle Faelle des Projekts
+ * (plus Stufen ab 3 bzw. 6 Monaten); andere Rollen: nur die eigenen (agent_id). Keine Faelle, Funktion
+ * erklaerungstopf aus oder Tabelle fehlt -> undefined. Wirft nie (Onboarding darf nie brechen).
+ */
+export async function erklaerungsFaelleZeile(o: { project: string; agent_id: string | null; koordinator: boolean }): Promise<string | undefined> {
+  try {
+    if (!o.project) return undefined;
+    const agent = o.koordinator ? null : (o.agent_id ?? null);
+    if (!o.koordinator && !agent) return undefined;
+    const w = await jevWirksam(o.project, 'erklaerungstopf');
+    if (!w.an && w.ebene !== 'budget') return undefined;
+    const { rows } = await getPool().query<{ n: number; ab3: number; ab6: number }>(
+      `SELECT count(*)::int AS n,
+              count(*) FILTER (WHERE erstellt_am < NOW() - INTERVAL '3 months' AND erstellt_am >= NOW() - INTERVAL '6 months')::int AS ab3,
+              count(*) FILTER (WHERE erstellt_am < NOW() - INTERVAL '6 months')::int AS ab6
+         FROM erklaerung_faelle WHERE project = $1 AND ($2::text IS NULL OR agent_id = $2)`,
+      [o.project, agent],
+    );
+    const r = rows[0];
+    if (!r || r.n === 0) return undefined;
+    let zeile = `${r.n} offene Erklaerungs-Faelle, ${o.koordinator ? 'code_check(offene_faelle)' : 'code_check(offene_faelle, nur_eigene:true)'}`;
+    if (o.koordinator && (r.ab3 > 0 || r.ab6 > 0)) {
+      zeile += ` - davon ${r.ab6} ueber 6 Monate (markiert, User erneut hinweisen), ${r.ab3} ueber 3 Monate (Verwerfen beim User anfragbar)`;
+    }
+    return zeile;
+  } catch {
+    return undefined;
   }
 }
 
@@ -1097,6 +1446,7 @@ export const ERKLAERUNG_ACTIONS = ['offene_faelle', 'fall', 'erklaerung_ablegen'
 /** Zusaetzliche Schema-Properties fuer code_check (REST und stdio aus EINER Quelle). */
 export const ERKLAERUNG_PARAMETER: Record<string, Record<string, unknown>> = {
   project: { type: 'string', description: 'offene_faelle: nur Faelle dieses Projekts (Standard alle)' },
+  nur_eigene: { type: 'boolean', description: 'offene_faelle: nur Faelle des aufrufenden Agenten (agent_id)' },
   fall_id: { type: 'string', description: 'erklaerung_ablegen: ID des offenen Falls (aus offene_faelle bzw. dem Hinweis im Fehlerpfad)' },
   erklaerung_id: { type: 'string', description: 'erklaerung_ablegen: bestehende Erklaerung belegen statt neue Texte (volle UUID oder Praefix >= 8)' },
   lage_de: { type: 'string', description: 'erklaerung_ablegen: Lage (was ist passiert), deutsch - Pflicht, wenn Deutsch gepflegt ist (admin jev_optionen)' },
@@ -1123,7 +1473,11 @@ export async function fuehreErklaerungsActionAus(action: string, args: Record<st
   try {
     switch (action) {
       case 'offene_faelle':
-        return await listeOffeneFaelle({ project: text(args.project) ?? null, limit: Number(args.limit) || undefined });
+        return await listeOffeneFaelle({
+          project: text(args.project) ?? null,
+          agent_id: args.nur_eigene === true || args.nur_eigene === 'true' ? (agent ?? '') : null,
+          limit: Number(args.limit) || undefined,
+        });
       case 'fall': {
         const id = text(args.id) ?? text(args.fall_id);
         if (!id) return fehler('ungueltig', 'id (Fall-ID) fehlt.');
