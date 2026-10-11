@@ -42,6 +42,9 @@ import {
 } from './intern-diagnose-code.js';
 
 import { claimsStatus, ereignisse, parserMessen, pipelineTrace, vektorraumPruefen, VEKTORRAUM_ARTEN } from './intern-diagnose-welle2.js';
+// P15-T23: Daemon-Teile (Platte, Pool im Daemon) ueber die Bruecke
+import { diagnoseZiel, ergaenzeSyncInspektorUmDaemon, parserPoolUeberDaemon } from './intern-diagnose-daemon.js';
+import { DaemonBrueckeFehler } from './daemon-bruecke.js';
 
 export { DiagnoseFehler } from './intern-diagnose-code.js';
 
@@ -62,10 +65,10 @@ export const DIAGNOSE_BESCHREIBUNG =
   'DIAGNOSE (lesend): bestand_abgleich (project, arten, ids_vergleichen): PG gegen Qdrant je Collection, optional ID-Diff; ' +
   'durchsatz (minuten, luecke_s): Chunks/min je Knoten ueber Fenster und aktive Spanne, Luecken je Knoten, Verlauf je Minute, aktive Claims, claimbar, Befund kaputt-statt-leer; ' +
   'warum_nicht (chunk_id | project + file_path | project | shell_job_id): was haelt es auf; ' +
-  'parser_pool: Slots, Queue, stillgelegte Slots, Threads; parse_ausfaelle (project, limit); ' +
+  'parser_pool (prozess): Slots, Queue, stillgelegte Slots, Threads, mit prozess "daemon" | "daemon:<host>" der Pool im lokalen Daemon; parse_ausfaelle (project, limit); ' +
   'parse_neu (project, file_path oder alle_ausfaelle, mit_embeddings, ausfuehren): ohne ausfuehren:true nur Vorschau; ' +
   'wrapper_takt (project): Heartbeat, Inbox-/Event-Stau, Verdacht taub; wartezustand (project): offene Co-Edit-Waits; ' +
-  'sync_inspektor (project, file_path): PG-Stand gegen file_versions; schema_probe (ausfuehren): Schema-Kennung, mit ausfuehren:true Probelauf mit Rollback; ' +
+  'sync_inspektor (project, file_path, prozess): PG-Stand gegen file_versions, mit prozess "daemon" | "daemon:<host>" dazu der Plattenstand im Daemon (existiert, groesse, mtime, sha256, Vergleich mit PG); schema_probe (ausfuehren): Schema-Kennung, mit ausfuehren:true Probelauf mit Rollback; ' +
   'vektorraum_pruefen (art, project, stichprobe, schwelle): Qdrant-Vektoren gegen frisch eingebetteten Text, fremde Vektoren je Monat/Knoten; ' +
   'claims (project, limit): Embedding-Claims je Knoten, Versuche, Collection-Dimension gegen Ziel; ' +
   'ereignisse (project, ziel_agent, stunden): offene Events ohne ACK, mit ziel_agent Server- gegen Hook-Sicht; ' +
@@ -609,8 +612,11 @@ export async function fuehreDiagnoseAus(
           })),
         };
       }
-      case 'parser_pool':
+      case 'parser_pool': {
+        const ziel = diagnoseZiel(text(a, 'prozess'));
+        if (ziel.daemon) return await parserPoolUeberDaemon(ziel.host);
         return { success: true, action, ...parserPool() };
+      }
       case 'parse_ausfaelle':
         return { success: true, action, ...(await parseAusfaelle(text(a, 'project'), grenze(zahl(a, 'limit'), 50, 1, 500, 'limit'))) };
       case 'parse_neu': {
@@ -637,7 +643,10 @@ export async function fuehreDiagnoseAus(
         const project = text(a, 'project');
         const datei = textListe(a, 'file_path')?.[0];
         if (!project || !datei) throw new DiagnoseFehler('parameter_fehlt', 'sync_inspektor: project und file_path angeben.');
-        return { success: true, action, ...(await syncInspektor(project, datei)) };
+        const ziel = diagnoseZiel(text(a, 'prozess'));
+        const pgTeil = await syncInspektor(project, datei);
+        if (!ziel.daemon) return { success: true, action, ...pgTeil };
+        return { success: true, action, ...(await ergaenzeSyncInspektorUmDaemon(pgTeil, project, datei, ziel.host)) };
       }
       case 'schema_probe':
         return { success: true, action, ...(await schemaProbe(wahr(a, 'ausfuehren'))) };
@@ -678,6 +687,7 @@ export async function fuehreDiagnoseAus(
     }
   } catch (err) {
     if (err instanceof DiagnoseFehler) return { success: false, action, error: err.code, message: err.message };
+    if (err instanceof DaemonBrueckeFehler) return { success: false, action, error: err.code, message: err.message };
     return { success: false, action, error: 'interner_fehler', message: err instanceof Error ? err.message : String(err) };
   }
 }

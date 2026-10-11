@@ -12,12 +12,15 @@
  *   - debug:true -> beim ersten Mal (auch nach jedem Wiederverbinden) Anmeldung mit worker_status,
  *     dann Befehle ausfuehren und per POST /api/intern/daemon/antwort melden.
  *   - Fehler (API-Neustart, Netz) -> Backoff 1..30 s, danach wird der Modus neu erkannt.
- * Ausfuehrbar sind nur die Befehle aus DAEMON_BEFEHLE (core) — kein Shell, kein Dateizugriff.
+ * Ausfuehrbar sind nur die Befehle aus DAEMON_BEFEHLE (core) — kein Shell. Einziger Dateizugriff:
+ * sync_datei (P15-T23) liest eine Datei eines in config.json eingetragenen Projekts (stat + Hash,
+ * kein Ausbruch aus dem Projektpfad, nur lesend).
  * AUS: DAEMON_INTERN_BRUECKE_DISABLED=1.
  */
 
 import os from 'node:os';
-import { DAEMON_BEFEHLE, fuehreWorkerActionAus, fuehreWarteschlangeLokal, workerStatus } from '@synapse/core';
+import { DAEMON_BEFEHLE, fuehreDiagnoseLokal, fuehreWorkerActionAus, fuehreWarteschlangeLokal, workerStatus } from '@synapse/core';
+import { findProjekt, loadConfig } from './config.js';
 import { leseApiZugang } from './skills-proxy.js';
 import { gpuHelferEinstellen, gpuHelferStatus } from './gpu-helfer-datei.js';
 
@@ -86,6 +89,13 @@ export function startInternBruecke(): InternBrueckeHandle {
         else if (b.befehl === 'gpu_helfer_einstellen') ergebnis = gpuHelferEinstellen(args);
         // P15-T12 E3/E4: Speicher-Warteschlangen dieses Daemons (warteschlangen-register)
         else if (b.befehl.startsWith('warteschlange_')) ergebnis = await fuehreWarteschlangeLokal(b.befehl, args, PROZESS);
+        // P15-T23: Diagnose im Daemon (Plattenstand einer Datei, Parser-Pool dieses Prozesses)
+        else if (b.befehl === 'sync_datei' || b.befehl === 'parser_pool') {
+          ergebnis = await fuehreDiagnoseLokal(b.befehl, args, {
+            prozess: PROZESS,
+            projektPfad: (name) => findProjekt(loadConfig(), name)?.pfad,
+          });
+        }
         else ergebnis = await fuehreWorkerActionAus(b.befehl, args, typeof args.von === 'string' ? args.von : undefined, PROZESS);
       } catch (err) {
         const e = err as Error & { code?: string };

@@ -23,6 +23,8 @@ export const DAEMON_BEFEHLE = [
   'gpu_helfer_einstellen', 'gpu_helfer_status',
   // P15-T12 E3/E4: Speicher-Warteschlangen des Daemons (index, asset, embedding_queue)
   'warteschlange_liste', 'warteschlange_verschieben',
+  // P15-T23: Diagnose im Daemon - Plattenstand einer Datei gegen PG, Parser-Pool des Daemon-Prozesses (nur lesend)
+  'sync_datei', 'parser_pool',
 ] as const;
 export type DaemonBefehlName = (typeof DAEMON_BEFEHLE)[number];
 

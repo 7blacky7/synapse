@@ -6,9 +6,8 @@
  *
  * NUR LESEN, mit EINER Ausnahme: parse_neu mit ausfuehren:true parst Dateien neu (parseAndEmbed mit
  *   erzwingeParse, Standard ohne Embeddings). Ohne ausfuehren nur Vorschau.
- * PROZESS: parser_pool und Worker-Pausen zeigen DIESEN Prozess (REST-API). Der Pool im lokalen Daemon
- *   und die Platte (sync_inspektor) sind von hier nicht erreichbar - Vorschlag fuer die E2-Bruecke
- *   steht in der Antwort (daemon_teil).
+ * PROZESS: parser_pool und Worker-Pausen zeigen DIESEN Prozess (REST-API). Pool und Platte des lokalen
+ *   Daemons kommen seit P15-T23 ueber die Bruecke (intern-diagnose-daemon.ts, prozess "daemon").
  * ANTWORT: Objekte mit befund[] in Klartext; Fehler wirft DiagnoseFehler (der Dispatcher faengt).
  */
 
@@ -414,7 +413,7 @@ export async function syncInspektor(project: string, filePath: string): Promise<
     daemon: h ?? null,
     platte: null,
     befund,
-    daemon_teil: 'Vorschlag E2: Daemon-Befehl sync_datei {project, file_path} -> {existiert, groesse, mtime, sha256, gleich_pg, letzter_pgPoll_checkpoint, wartende_watcher_events}. Erst nach Absprache mit p15-pause gebaut.',
+    daemon_teil: 'Plattenstand (existiert, groesse, mtime, sha256, Vergleich mit PG): prozess "daemon" bzw. "daemon:<host>" angeben.',
   };
 }
 
@@ -429,7 +428,8 @@ function threadZahl(): number | null {
   }
 }
 
-export function parserPool(): Record<string, unknown> {
+export function parserPool(prozess = 'api'): Record<string, unknown> {
+  const daemonTeil = prozess === 'api' ? { daemon_teil: DAEMON_POOL } : {};
   const zustand = getParserPoolZustand();
   const befund: string[] = [];
   const threads = threadZahl();
@@ -437,7 +437,7 @@ export function parserPool(): Record<string, unknown> {
     befund.push(process.env.PARSER_WORKER_THREADS === '0'
       ? 'Pool deaktiviert (PARSER_WORKER_THREADS=0): Parse laeuft im Hauptthread, ohne Reissleine.'
       : 'Pool in diesem Prozess noch nie benutzt (wird beim ersten Parse angelegt).');
-    return { prozess: 'api', pool: null, threads_prozess: threads, befund, daemon_teil: DAEMON_POOL };
+    return { prozess, pool: null, threads_prozess: threads, befund, ...daemonTeil };
   }
   const slots = (zustand.slots as Array<Record<string, unknown>>) ?? [];
   const still = slots.filter((s) => s.stillgelegt === true);
@@ -454,13 +454,13 @@ export function parserPool(): Record<string, unknown> {
   if (Number(zustand.beendet_exit_ausstehend) > 0) befund.push(`${zustand.beendet_exit_ausstehend} beendete Worker ohne exit-Ereignis - moegliche verwaiste Threads.`);
   if (befund.length === 0) befund.push('Pool unauffaellig.');
   return {
-    prozess: 'api',
+    prozess,
     pool: zustand,
     threads_prozess: threads,
     hinweis: 'threads_prozess zaehlt ALLE Threads (libuv, V8, Pool) - nur im Verlauf aussagekraeftig: steigt sie nach Timeouts dauerhaft, leben beendete Worker weiter.',
     befund,
-    daemon_teil: DAEMON_POOL,
+    ...daemonTeil,
   };
 }
 
-const DAEMON_POOL = 'Der Daemon parst mit eigenem Pool (indexFile). Vorschlag E2: Daemon-Befehl parser_pool -> dieselbe Antwort aus dem Daemon-Prozess (getParserPoolZustand + /proc/self/task). Erst nach Absprache mit p15-pause.';
+const DAEMON_POOL = 'Der Daemon parst mit eigenem Pool (indexFile): prozess "daemon" bzw. "daemon:<host>" zeigt ihn.';
