@@ -4,7 +4,7 @@
 // Pfad, Zeile und Meldung ausgegeben. Gleichzeitig Positivkontrolle (Anker, damit "0 Meldungen" etwas bedeutet):
 // die kleinste Datei mit angehaengter Zeile ")}] ((( {{{ [[[" MUSS gemeldet werden, sonst Exit 2.
 //
-// Aufruf:  node packages/rest-api/tests/pruef-container-fp.mjs [sprache=rust|python|shell|go|php|ruby|lua] [max=2000]
+// Aufruf:  node packages/rest-api/tests/pruef-container-fp.mjs [sprache=rust|python|shell|go|php|ruby|lua|kotlin|java|...] [max=2000]
 // Weiche Meldungen (weich:true, sperren nie) werden getrennt gezaehlt und gelistet; nur harte zaehlen als Fehlalarm.
 // Env:     DATABASE_URL (Pflicht), PRUEFCONTAINER_TEST_IMAGE (Standard synapse-pruefcontainer:latest)
 // Ausgabe: Zusammenfassung + je Meldung eine Zeile; Exit 0 = keine Meldung, 1 = Meldungen, 2 = Kontrolle versagt.

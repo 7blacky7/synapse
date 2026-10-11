@@ -215,7 +215,9 @@ test('T0 alter Stand: fuer .rs gibt es keinen Pruefer (Positivkontrolle muss rot
 test('T1 Anmeldung + gemma-Fehler erkannt (Zeile, Spalte, sperrend), gueltiges Gegenbeispiel ohne Befund', opt, async () => {
   process.env.FEHLERPRUEFUNG_BUDGET_MS = '20000'; // deterministisch: Kaltstart abwarten statt Nachlieferung
   const namen = await registriereContainerSyntaxPruefer({ cfg: cfg(), takt: false, vorwaermen: false });
-  assert.deepEqual(namen, ['rust', 'python', 'shell', 'go', 'php', 'ruby', 'lua']);
+  // E3b: kotlin, java (JVM-Hilfsprozess, pruef-container-jvm.test.mjs); P16-T11: tree-sitter-Sprachen
+  // (pruef-container-treesitter.test.mjs). Reihenfolge = CONTAINER_SPRACHEN.
+  assert.deepEqual(namen, ['rust', 'python', 'shell', 'go', 'php', 'ruby', 'lua', 'kotlin', 'java', 'csharp', 'dart', 'swift']);
   assert.equal(core.hatSyntaxPruefer('src/a.rs'), true);
   const t0 = Date.now();
   const r = await core.pruefeSyntaxEinzelweg({ filePath: 'src/a.rs', alt: '', neu: GEMMA_RUST_1 });
@@ -259,8 +261,9 @@ test('T4 Haertung und Limits am laufenden Container', opt, async () => {
   assert.ok(i, 'Testcontainer laeuft');
   assert.equal(i.HostConfig.NetworkMode, 'none');
   assert.equal(i.HostConfig.ReadonlyRootfs, true);
-  assert.equal(i.HostConfig.Memory, 256 * 1024 * 1024);
-  assert.equal(i.HostConfig.MemorySwap, 256 * 1024 * 1024);
+  // E3b: Standard 384 MB (Lastmessung mit allen Sprachen inkl. JVM, Bericht P16-T5 E3b)
+  assert.equal(i.HostConfig.Memory, 384 * 1024 * 1024);
+  assert.equal(i.HostConfig.MemorySwap, 384 * 1024 * 1024);
   assert.equal(i.HostConfig.NanoCpus, 1e9);
   assert.equal(i.HostConfig.PidsLimit, 64);
   assert.deepEqual(i.HostConfig.CapDrop, ['ALL']);
@@ -270,7 +273,7 @@ test('T4 Haertung und Limits am laufenden Container', opt, async () => {
   assert.equal((i.HostConfig.Binds ?? []).length, 0, 'keine Binds');
   // E3a: der Pruef-Container liest das Limit selbst nach (Unraid t60: MemorySwap -1 ohne Swap-Accounting).
   const sp = pruefContainerZustand().speicher;
-  assert.deepEqual(sp, { memory: 256 * 1024 * 1024, memory_swap: 256 * 1024 * 1024, swap_begrenzt: true });
+  assert.deepEqual(sp, { memory: 384 * 1024 * 1024, memory_swap: 384 * 1024 * 1024, swap_begrenzt: true });
 });
 
 test('T5 Latenz warm (verschiedene Inhalte, ohne Cache)', opt, async () => {
@@ -727,7 +730,7 @@ test('T18 E3a-Latenz warm im Budget, Speicherspitze unter Last, Diagnose an inte
     const z = pc.zustand();
     assert.equal(z.lage, 'laeuft');
     assert.ok(z.latenz_ms.anzahl >= 120 && z.latenz_ms.p50 !== null && z.latenz_ms.p95 >= z.latenz_ms.p50, JSON.stringify(z.latenz_ms));
-    assert.deepEqual(z.sprachen, ['rust', 'python', 'shell', 'go', 'php', 'ruby', 'lua']);
+    assert.deepEqual(z.sprachen, ['rust', 'python', 'shell', 'go', 'php', 'ruby', 'lua', 'kotlin', 'java', 'csharp', 'dart', 'swift']);
     assert.equal(z.speicher.swap_begrenzt, true);
   } finally {
     await pc.beenden();
