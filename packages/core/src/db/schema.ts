@@ -1226,6 +1226,38 @@ CREATE TABLE IF NOT EXISTS skill_names (
 CREATE INDEX IF NOT EXISTS idx_skill_names_trgm
   ON skill_names USING gin (skill_name gin_trgm_ops);
 
+-- SKILL-INHALTE ALS QUELLE DER WAHRHEIT (P12-T13, 11.10.2026).
+--
+-- Bis hierher lagen die Skill-Sections NUR als Payload in der Qdrant-Collection 'skills'
+-- (skill-db.mjs schrieb direkt dorthin). Ein Reset dieser Collection - z. B. beim Wechsel
+-- des Embedding-Modells - haette alle Skills vernichtet; skill_names oben kennt nur Namen.
+-- Jetzt steht jeder Abschnitt hier, Qdrant haelt nur noch den Vektor dazu.
+--
+-- punkt_id = ID des Qdrant-Punktes (skill-db vergibt Ganzzahlen). Dadurch bleiben Import,
+-- Re-Embedding und Loeschen deckungsgleich, ohne zweite Zuordnungstabelle.
+-- scope darf NULL sein: 12 Bestandseintraege haben keinen; die Suche behandelt das wie global.
+-- embedded_at / embedding_modell: welcher Vektor in Qdrant liegt (P12-T6). NULL = unbekannt
+-- bzw. noch nicht eingebettet - nicht als "fertig" werten.
+CREATE TABLE IF NOT EXISTS skill_sections (
+  punkt_id BIGINT PRIMARY KEY,
+  skill_name TEXT NOT NULL,
+  section TEXT NOT NULL,
+  content TEXT NOT NULL,
+  tags TEXT[] NOT NULL DEFAULT '{}',
+  scope TEXT,
+  project TEXT,
+  agent TEXT,
+  content_hash TEXT,
+  aktualisiert_am TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  embedded_at TIMESTAMPTZ,
+  embedding_modell TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_skill_sections_eindeutig
+  ON skill_sections (skill_name, section, COALESCE(scope, 'global'), COALESCE(project, ''), COALESCE(agent, ''));
+CREATE INDEX IF NOT EXISTS idx_skill_sections_skill ON skill_sections (skill_name);
+CREATE INDEX IF NOT EXISTS idx_skill_sections_offen ON skill_sections (punkt_id) WHERE embedded_at IS NULL;
+
+
 -- VORBERECHNETE SKILL-KANDIDATEN, QUELLENNEUTRAL (umgebaut 02.08.2026).
 --
 -- ⚠️ DER CHANNEL IST NUR EINER VON MEHREREN HINWEISGEBERN (Vorgabe des Users).
@@ -2121,6 +2153,22 @@ CREATE TABLE IF NOT EXISTS embedding_knoten (
 );
 CREATE INDEX IF NOT EXISTS idx_embedding_knoten_letzter_kontakt
   ON embedding_knoten(letzter_kontakt);
+
+-- EMBEDDING-KENNUNG JE QDRANT-COLLECTION (P12-T6, 11.10.2026).
+-- Welches Modell (Kennung aus core/embeddings/modell-profil.ts: Provider, Modell, Digest,
+-- Zieldimension, Dokument-Praefix) eine Collection fuellt. Bisher verglich Synapse nur die
+-- Dimension - der Wechsel Google -> qwen3 (beide 3072d) blieb unbemerkt (P5-T9).
+-- quelle: 'angelegt' = beim Anlegen registriert; 'bestand-ungeprueft' = beim ersten Blick
+-- uebernommen, Inhalt kann noch aus einem frueheren Modell stammen.
+-- Das Register MELDET Abweichungen nur (qdrant/kennung-register.ts), es loescht nichts.
+CREATE TABLE IF NOT EXISTS embedding_collections (
+  collection TEXT PRIMARY KEY,
+  modell_kennung TEXT NOT NULL,
+  dimension INTEGER,
+  quelle TEXT NOT NULL DEFAULT 'angelegt',
+  angelegt_am TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  aktualisiert_am TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
 
 -- API-Bruecke Schritt 4: das Wissen eines Spezialisten in der Datenbank statt als
 -- Datei unter .synapse/agents/<name>/. Bildet packages/agents/src/skills.ts ab:

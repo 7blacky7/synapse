@@ -154,7 +154,7 @@ export async function checkErrorPatterns(
     const tier = getModelTier(session.model);
 
     // Hooks duerfen die eigentliche Antwort nie aufhalten: nur freien Slot nutzen.
-    const contentVector = await embed(content, { maxQueueWaitMs: 0 });
+    const contentVector = await embed(content, { maxQueueWaitMs: 0, art: 'query' });
     const allResults = await searchVectors(
       COLLECTIONS.globalErrorPatterns,
       contentVector,

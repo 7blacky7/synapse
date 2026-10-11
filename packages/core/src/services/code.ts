@@ -2754,7 +2754,7 @@ export async function searchMedia(
     throw new Error('Projekt muss angegeben werden fuer Media-Suche');
   }
 
-  const queryVector = await embed(query);
+  const queryVector = await embed(query, { art: 'query' });
   const collectionName = COLLECTIONS.projectMedia(projectName);
 
   const filter: Record<string, unknown> = { must: [] };
@@ -2917,7 +2917,7 @@ export async function searchCode(
   filePath?: string
 ): Promise<CodeSearchResult[]> {
   // Query embedden
-  const queryVector = await embed(query);
+  const queryVector = await embed(query, { art: 'query' });
 
   // Filter erstellen
   const filter: Record<string, unknown> = { must: [] };
@@ -3038,7 +3038,7 @@ export async function searchCodeBatch(
   if (queries.length === 0) return [];
 
   // Embedding-Batch — Spart N-1 API-Roundtrips zu Google
-  const vectors = await embedBatch(queries);
+  const vectors = await embedBatch(queries, { art: 'query' });
 
   const collectionName = COLLECTIONS.projectCode(projectName);
   const filter: Record<string, unknown> = { must: [{ key: 'project', match: { value: projectName } }] };

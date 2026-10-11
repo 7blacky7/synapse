@@ -418,7 +418,7 @@ export async function searchMemories(
   limit: number = 10
 ): Promise<MemorySearchResult[]> {
   const collectionName = COLLECTIONS.projectMemories(project);
-  const queryVector = await embed(query);
+  const queryVector = await embed(query, { art: 'query' });
 
   const filter: Record<string, unknown> = {
     must: [

@@ -151,6 +151,10 @@ export {
   getEmbeddingDimension,
   embed,
   embedBatch,
+  mitPraefix,
+  aktivePraefixe,
+  embeddingModellName,
+  embeddingModellKennung,
   getEmbeddingQueueStats,
   EmbeddingQueueFullError,
   embedMedia,
@@ -1108,6 +1112,19 @@ export async function initSynapse(
     const colDim = await getCollectionVectorSize(colName);
     if (colDim === null) continue;
 
+    // P12-T11/T12 (Befund 1dbb8308): die automatische Migration liest hoechstens 10000 Punkte,
+    // LOESCHT danach die Collection und behandelt nur DIESES Projekt; Code-Collections werden
+    // sofort geloescht. Ein Dimensionswechsel fuehrt deshalb nur noch zu einer Meldung - das
+    // Neu-Einbetten macht das Re-Embedding-Werkzeug (neue Collections, Nachzug, Umschalten).
+    // Altes Verhalten nur ausdruecklich: SYNAPSE_START_MIGRATION=1.
+    if (colDim !== currentDim && process.env.SYNAPSE_START_MIGRATION !== '1') {
+      console.error(
+        `[Synapse] ⚠️ DIMENSIONS-MISMATCH: "${colName}" hat ${colDim}d, Modell liefert ${currentDim}d. ` +
+        `NICHTS geloescht oder migriert - Schreiben in diese Collection schlaegt fehl, bis sie mit dem ` +
+        `Re-Embedding-Werkzeug neu aufgebaut ist (SYNAPSE_START_MIGRATION=1 = alte Automatik).`
+      );
+      continue;
+    }
     if (colDim !== currentDim) {
       // Code-Collections: einfach loeschen (Filewatcher re-indexiert)
       if (colName.endsWith('_code')) {

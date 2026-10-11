@@ -57,6 +57,35 @@ CREATE TABLE public.skill_names (
 );
 
 --
+-- Name: skill_sections; Type: TABLE; Schema: public
+-- Skill-Inhalte als Quelle der Wahrheit (P12-T13); Qdrant 'skills' haelt nur den Vektor.
+--
+
+CREATE TABLE public.skill_sections (
+    punkt_id bigint NOT NULL,
+    skill_name text NOT NULL,
+    section text NOT NULL,
+    content text NOT NULL,
+    tags text[] DEFAULT '{}'::text[] NOT NULL,
+    scope text,
+    project text,
+    agent text,
+    content_hash text,
+    aktualisiert_am timestamp with time zone DEFAULT now() NOT NULL,
+    embedded_at timestamp with time zone,
+    embedding_modell text
+);
+
+ALTER TABLE ONLY public.skill_sections
+    ADD CONSTRAINT skill_sections_pkey PRIMARY KEY (punkt_id);
+
+CREATE UNIQUE INDEX idx_skill_sections_eindeutig ON public.skill_sections USING btree (skill_name, section, COALESCE(scope, 'global'::text), COALESCE(project, ''::text), COALESCE(agent, ''::text));
+
+CREATE INDEX idx_skill_sections_skill ON public.skill_sections USING btree (skill_name);
+
+CREATE INDEX idx_skill_sections_offen ON public.skill_sections USING btree (punkt_id) WHERE (embedded_at IS NULL);
+
+--
 -- Name: skill_hook_deliveries skill_hook_deliveries_pkey; Type: CONSTRAINT; Schema: public
 --
 

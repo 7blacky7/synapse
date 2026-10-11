@@ -155,7 +155,7 @@ export async function searchTechDocs(
 
   const { getConfig } = await import('../config.js');
   const qdrantUrl = getConfig().qdrant.url;
-  const queryVector = await embed(query);
+  const queryVector = await embed(query, { art: 'query' });
 
   const must: Array<Record<string, unknown>> = [];
   if (framework) must.push({ key: 'framework', match: { value: framework.toLowerCase() } });

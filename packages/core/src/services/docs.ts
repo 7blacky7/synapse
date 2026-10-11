@@ -71,7 +71,7 @@ export async function searchDocs(
   limit: number = 10
 ): Promise<DocSearchResult[]> {
   // Query embedden
-  const queryVector = await embed(query);
+  const queryVector = await embed(query, { art: 'query' });
 
   // Filter erstellen
   const filter: Record<string, unknown> | undefined = framework

@@ -178,7 +178,7 @@ export async function searchSkills(
   } = {},
 ): Promise<SkillSearchHit[]> {
   const { embedding, searchTimeoutMs, ...filterOpts } = opts;
-  const vec = await embed(query, embedding);
+  const vec = await embed(query, { ...embedding, art: 'query' });
   const filter = baueSkillSichtbarkeitsFilter({ skillName, ...filterOpts });
   const timeoutMs = Number.isFinite(searchTimeoutMs) && Number(searchTimeoutMs) > 0
     ? Math.floor(Number(searchTimeoutMs))
@@ -207,7 +207,7 @@ export async function searchSkillsForAgents(
   limit = 8,
   opts: { embedding?: EmbedOptions; searchTimeoutMs?: number } = {},
 ): Promise<Array<{ agent: string; hits: SkillSearchHit[] }>> {
-  const vector = await embed(query, opts.embedding);
+  const vector = await embed(query, { ...opts.embedding, art: 'query' });
   const timeoutMs = Number.isFinite(opts.searchTimeoutMs) && Number(opts.searchTimeoutMs) > 0
     ? Math.floor(Number(opts.searchTimeoutMs))
     : DEFAULT_SKILL_SEARCH_TIMEOUT_MS;

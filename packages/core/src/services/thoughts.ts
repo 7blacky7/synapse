@@ -238,7 +238,7 @@ export async function searchThoughts(
   const collectionName = COLLECTIONS.projectThoughts(project);
 
   // Query embedden
-  const queryVector = await embed(query);
+  const queryVector = await embed(query, { art: 'query' });
 
   // Filter erstellen
   const filter: Record<string, unknown> = {

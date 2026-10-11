@@ -368,7 +368,7 @@ export async function searchProposals(
   limit: number = 10
 ): Promise<SearchResult<ProposalPayload>[]> {
   const collName = getCollectionName(project);
-  const queryVector = await embed(query);
+  const queryVector = await embed(query, { art: 'query' });
 
   const filter: Record<string, unknown> = {
     must: [

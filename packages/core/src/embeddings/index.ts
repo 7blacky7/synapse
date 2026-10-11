@@ -29,8 +29,10 @@ import { OllamaEmbeddingProvider } from './ollama.js';
 import { OpenAICompatibleProvider, PROVIDER_PRESETS } from './openai-compatible.js';
 import { GoogleEmbeddingProvider } from './google.js';
 import { CohereEmbeddingProvider } from './cohere.js';
+import { mitPraefix, type EmbedArt } from './modell-profil.js';
 
 export * from './types.js';
+export * from './modell-profil.js';
 export { OllamaEmbeddingProvider } from './ollama.js';
 export { OpenAICompatibleProvider } from './openai-compatible.js';
 export { OpenAICompatibleProvider as OpenAIEmbeddingProvider } from './openai-compatible.js';
@@ -205,6 +207,12 @@ export interface EmbedOptions {
   maxQueueWaitMs?: number;
   /** Compute-Node: lokales Ollama erzwingen, insbesondere bei gesetztem OpenAI-Key. */
   strictOllama?: boolean;
+  /**
+   * P12-T4: 'query' fuer Suchanfragen, sonst 'dokument' (Standard). Bestimmt den Praefix laut
+   * Model-Card (modell-profil.ts). Jeder Suchpfad MUSS 'query' setzen - ohne Praefix verlieren
+   * die Modelle messbar an Treffsicherheit.
+   */
+  art?: EmbedArt;
 }
 
 export interface EmbeddingQueueStats {
@@ -400,7 +408,7 @@ export async function embed(
 ): Promise<number[]> {
   return runQueued(async () => {
     const provider = await getEmbeddingProvider({ strictOllama: options.strictOllama });
-    return provider.embed(text);
+    return provider.embed(mitPraefix(text, options.art));
   }, options);
 }
 
@@ -422,7 +430,7 @@ export async function embedBatch(
   }
   return runQueued(async () => {
     const provider = await getEmbeddingProvider({ strictOllama: options.strictOllama });
-    return provider.embedBatch(texts);
+    return provider.embedBatch(texts.map((t) => mitPraefix(t, options.art)));
   }, options);
 }
 

@@ -125,3 +125,21 @@ ALTER TABLE ONLY public.model_cutoffs
 --
 
 CREATE INDEX idx_embedding_knoten_letzter_kontakt ON public.embedding_knoten USING btree (letzter_kontakt);
+
+
+--
+-- Name: embedding_collections; Type: TABLE; Schema: public
+-- Modell-Kennung je Qdrant-Collection (P12-T6); meldet Modellwechsel, loescht nichts.
+--
+
+CREATE TABLE public.embedding_collections (
+    collection text NOT NULL,
+    modell_kennung text NOT NULL,
+    dimension integer,
+    quelle text DEFAULT 'angelegt'::text NOT NULL,
+    angelegt_am timestamp with time zone DEFAULT now() NOT NULL,
+    aktualisiert_am timestamp with time zone DEFAULT now() NOT NULL
+);
+
+ALTER TABLE ONLY public.embedding_collections
+    ADD CONSTRAINT embedding_collections_pkey PRIMARY KEY (collection);

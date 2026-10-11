@@ -25,6 +25,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { getQdrantClient } from './client.js';
 import { SearchResult } from '../types/index.js';
 import { getPool } from '../db/client.js';
+import { embeddingModellKennung } from '../embeddings/modell-profil.js';
 
 // ===========================================
 // PATH-CANONICALIZATION
@@ -119,7 +120,9 @@ export async function insertVector<T extends Record<string, unknown>>(
 ): Promise<string> {
   const client = getQdrantClient();
   const pointId = id || uuidv4();
-  const canonPayload = await canonicalizePayload(payload);
+  // P12-T6: jeder Punkt traegt das Modell, das seinen Vektor erzeugt hat. Aufrufer uebergeben
+  // immer einen frisch berechneten Vektor, deshalb gilt die aktuelle Kennung (auch beim Ueberschreiben).
+  const canonPayload = { ...(await canonicalizePayload(payload)), embedding_modell: embeddingModellKennung() };
 
   await client.upsert(collection, {
     wait: true,
@@ -148,7 +151,7 @@ export async function insertVectors<T extends Record<string, unknown>>(
     items.map(async item => ({
       id: item.id || uuidv4(),
       vector: item.vector,
-      payload: await canonicalizePayload(item.payload),
+      payload: { ...(await canonicalizePayload(item.payload)), embedding_modell: embeddingModellKennung() },
     }))
   );
 

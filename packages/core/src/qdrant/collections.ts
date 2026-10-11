@@ -24,6 +24,7 @@
 import { getQdrantClient } from './client.js';
 import { COLLECTIONS } from '../types/index.js';
 import { getEmbeddingDimension } from '../embeddings/index.js';
+import { registriereCollection, pruefeCollectionKennung } from './kennung-register.js';
 
 /**
  * Prueft ob eine Collection existiert
@@ -95,6 +96,9 @@ export async function ensureCollection(
         `aktuelles Modell liefert ${size}d. Migration noetig.`
       );
     }
+    // P12-T6: die Dimension allein erkennt keinen Modellwechsel bei gleicher Groesse.
+    // Nicht abwarten - jeder Schreibweg ruft ensureCollection, er soll nicht auf PG warten.
+    void pruefeCollectionKennung(name, collectionDim);
     return;
   }
 
@@ -105,6 +109,7 @@ export async function ensureCollection(
     },
   });
 
+  await registriereCollection(name, size);
   console.error(`[Synapse] Collection "${name}" erstellt (${size}d)`);
 }
 

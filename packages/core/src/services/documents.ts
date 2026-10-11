@@ -306,7 +306,7 @@ export async function searchDocuments(
   const collectionName = COLLECTIONS.projectCode(projectName);
 
   // Query embedding
-  const queryVector = await embed(query);
+  const queryVector = await embed(query, { art: 'query' });
 
   // Filter aufbauen
   const filter: any = {

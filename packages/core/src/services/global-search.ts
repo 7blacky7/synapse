@@ -412,7 +412,7 @@ export async function globalSearch(
   };
 
   // Query embedden
-  const queryVector = await embed(query);
+  const queryVector = await embed(query, { art: 'query' });
 
   // Projekte sammeln
   const searchedProjects = new Set<string>();

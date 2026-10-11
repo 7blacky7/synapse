@@ -33,7 +33,7 @@
  *   - Cache-Pruefung basiert auf framework + version Kombination
  */
 
-import { getEmbeddingProvider, embed } from '../embeddings/index.js';
+import { getEmbeddingProvider, embed, embeddingModellKennung } from '../embeddings/index.js';
 import { getQdrantClient } from '../qdrant/index.js';
 import { COLLECTIONS } from '../types/index.js';
 import { chunkText } from '../chunking/index.js';
@@ -203,7 +203,7 @@ async function processAndIndexDocs(docs: Context7Doc[]): Promise<number> {
                 totalChunks: chunks.length,
                 url: doc.url || null,
                 source: 'context7',
-                indexedAt: new Date().toISOString(),
+                indexedAt: new Date().toISOString(), embedding_modell: embeddingModellKennung(),
               },
             },
           ],
