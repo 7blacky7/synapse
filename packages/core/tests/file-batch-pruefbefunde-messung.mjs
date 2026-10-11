@@ -6,7 +6,8 @@
  * Je Konfiguration (5/50/100 KB x 1/10/50 Ops) N verschraenkte Laeufe planBatch mit Pruefung gegen
  * FEHLERPRUEFUNG_PLAN=0; Plan danach verworfen. (1) misst pruefeGespeichertenPlan (Schatten neu bauen inkl.
  * PG-Lesen + Pruefung, obere Schranke) und pruefung.dauer_ms (nur Stufe 1).
- * AUFRUF: set -a; . <test-db.env>; set +a; node packages/core/tests/file-batch-pruefbefunde-messung.mjs [N]
+ * AUFRUF: set -a; . <test-db.env>; set +a; node packages/core/tests/file-batch-pruefbefunde-messung.mjs [N] [ohne-ts]
+ *   ohne-ts = Stand heute (noch kein Syntaxpruefer registriert, P16-T4), nur Signatur-Muster.
  */
 import http from 'node:http';
 import { createRequire } from 'node:module';
@@ -65,7 +66,7 @@ try {
     );
   }
   FP._signaturMusterCacheLeeren();
-  FP.registriereSyntaxPruefer({
+  if (process.argv[3] !== 'ohne-ts') FP.registriereSyntaxPruefer({
     name: 'typescript', version: ts.version, endungen: ['ts', 'tsx', 'js', 'mjs'], sperrfaehig: true,
     pruefe: (text, filePath) => {
       const sf = ts.createSourceFile(filePath, text, ts.ScriptTarget.Latest, false);

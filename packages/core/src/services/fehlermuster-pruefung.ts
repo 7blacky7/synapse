@@ -191,6 +191,7 @@ export async function pruefeSignaturen(eingabe: {
     const befunde: FehlerBefund[] = [];
     const bereiche = eingabe.bereiche && eingabe.bereiche.length > 0 ? eingabe.bereiche : [gesamt];
     const gesehen = new Set<string>();
+    const dateiTreffer = new Map<string, ReturnType<typeof pruefeErkennung>>();
     for (const m of muster) for (const bereich of bereiche) {
       const fenster = m.erkennung.fenster ?? 'block';
       let start: number;
@@ -203,8 +204,14 @@ export async function pruefeSignaturen(eingabe: {
         start = Math.max(1, von - rand);
         ende = Math.min(zeilen.length, bis + rand);
       }
-      const text = zeilen.slice(start - 1, ende).join('\n');
-      const r = pruefeErkennung(m.erkennung, text);
+      // fenster datei: einmal je Muster fuer die ganze Datei, nicht je Bereich neu (Plan mit vielen Ops).
+      let r: ReturnType<typeof pruefeErkennung>;
+      if (fenster === 'datei') {
+        r = dateiTreffer.get(m.id) ?? pruefeErkennung(m.erkennung, eingabe.neu);
+        dateiTreffer.set(m.id, r);
+      } else {
+        r = pruefeErkennung(m.erkennung, zeilen.slice(start - 1, ende).join('\n'));
+      }
       if (!r.trifft) continue;
       const alleTreffer = r.zeilen.map((z) => z + start - 1);
       const nahe = alleTreffer.filter((z) => liegtImBereich(z, bereich, FENSTER_BLOCK_ZEILEN));

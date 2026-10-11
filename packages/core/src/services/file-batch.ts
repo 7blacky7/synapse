@@ -2601,9 +2601,11 @@ export async function planBatch(args: {
             args.open_for_coedit ?? true, args.reason ?? null],
         )).rows[0]?.id ?? null
       : null;
+    // P15-T17 E3: voller Plan -> Befunde gleich beim INSERT speichern (kein zweiter Roundtrip nach dem COMMIT).
+    const vorabPruefung = !traeger && !umgewidmet && !geteilt && planOps.length > 0 && planPruefungAn() ? await pruefungLauf : null;
     const planRes = traeger || umgewidmet ? null : await client.query<{ id: string; expires_at: string }>(
-      `INSERT INTO file_batch_plans (project, owner_agent_id, ops, expected_hashes, previews, open_for_coedit, reason)
-       VALUES ($1, $2, $3::jsonb, $4::jsonb, $5::jsonb, $6, $7)
+      `INSERT INTO file_batch_plans (project, owner_agent_id, ops, expected_hashes, previews, open_for_coedit, reason, befunde)
+       VALUES ($1, $2, $3::jsonb, $4::jsonb, $5::jsonb, $6, $7, $8::jsonb)
        RETURNING id::text AS id, expires_at::text AS expires_at`,
       [
         args.project,
@@ -2613,6 +2615,7 @@ export async function planBatch(args: {
         JSON.stringify(planPreviews),
         args.open_for_coedit ?? true,
         args.reason ?? null,
+        vorabPruefung ? JSON.stringify(vorabPruefung) : null,
       ],
     );
     const planRow = traeger
@@ -2767,7 +2770,7 @@ export async function planBatch(args: {
       const roh = geteilt ? null : await pruefungLauf;
       if (roh) {
         planPruefung = roh;
-        await speicherePlanBefunde(planRow.id, roh);
+        if (!vorabPruefung) await speicherePlanBefunde(planRow.id, roh);
       } else {
         planPruefung = (await pruefeGespeichertenPlanSicher(planRow.id))?.pruefung ?? null;
       }
