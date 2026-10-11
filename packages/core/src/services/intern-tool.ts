@@ -32,6 +32,7 @@ import {
   modellprofilKalibrieren,
   modellprofilSetzen,
   type ProfilAenderung,
+  type KalibrierAnfrage,
 } from './intern-modellprofil.js';
 import { ModellNichtKalibriertError } from '../embeddings/modell-profil.js';
 import {
@@ -43,6 +44,8 @@ import {
   workerStatus,
 } from './worker-steuerung.js';
 import { DaemonBrueckeFehler, daemonUebersicht, sendeAnDaemon } from './daemon-bruecke.js';
+// P15-T15: Diagnose-Actions leben in eigener Datei, hier nur eingehaengt.
+import { DIAGNOSE_ACTIONS, DIAGNOSE_BESCHREIBUNG, DIAGNOSE_PARAMETER, fuehreDiagnoseAus, istDiagnoseAction } from './intern-diagnose.js';
 
 const INTERN_TOOL_BEIM_START = process.env.SYNAPSE_INTERN_TOOL === '1';
 
@@ -65,6 +68,7 @@ export const INTERN_ACTIONS = [
   'modellprofil', 'modellprofil_setzen', 'modellprofil_kalibrieren',
   'worker_status', 'worker_pausieren', 'worker_fortsetzen', 'worker_durchlauf',
   'gpu_helfer_status', 'gpu_helfer_einstellen',
+  ...DIAGNOSE_ACTIONS,
 ] as const;
 export type InternAction = (typeof INTERN_ACTIONS)[number];
 
@@ -95,6 +99,7 @@ export const INTERN_DEFINITION = {
     'worker_fortsetzen (worker | "alle"); worker_durchlauf (worker): genau ein Durchlauf jetzt, auch waehrend einer Pause. ' +
     'prozess "daemon" bzw. "daemon:<host>" steuert dieselben Actions im lokalen FileWatcher-Daemon (Long-Poll-Bruecke, Antwort <= 10 s). ' +
     'gpu_helfer_status / gpu_helfer_einstellen (lan_bevorzugen, embed_pause_ms; null entfernt) ueber den lokalen Daemon: ~/.synapse/file-watcher/gpu-helfer.json, der Tray startet den Helfer binnen ~5 s neu. ' +
+    DIAGNOSE_BESCHREIBUNG +
     'Keine Aktion beendet Prozesse/Sitzungen oder loescht PG-Daten; nur neu_einbetten leert Qdrant-Collections (aus PG wiederherstellbar).',
   inputSchema: {
     type: 'object',
@@ -121,10 +126,11 @@ export const INTERN_DEFINITION = {
       max_stueck_zeichen: { type: ['number', 'null'], description: 'modellprofil_setzen: groesstes Textstueck in Zeichen je Embedding-Aufruf (unter dem physischen Batch des Modells)' },
       score_schwellen: { type: ['object', 'string'], description: 'modellprofil_setzen: {zweck: zahl|null} - gemischt in die vorhandenen, null entfernt. Zwecke: modellprofil zeigt sie' },
       notiz: { type: ['string', 'null'], description: 'modellprofil_setzen: Notiz (z. B. Verweis auf den Mess-Thought)' },
-      messwerte: { type: ['object', 'string'], description: 'modellprofil_setzen: Objekt, wird in die vorhandenen Messwerte gemischt' },
-      zweck: { type: 'string', description: 'modellprofil_kalibrieren: hook | channel_skill | global_search | graph_code | code_semantic_fallback | graph_wissen | error_patterns' },
-      passend: { type: 'array', items: { type: ['string', 'object'] }, description: 'modellprofil_kalibrieren: Anfragen mit erwartetem Treffer - Text oder {query, erwartet} (erwartet = Teil des Namens/Pfads)' },
-      rauschen: { type: 'array', items: { type: 'string' }, description: 'modellprofil_kalibrieren: Anfragen, zu denen nichts passen soll' },
+      messwerte: { type: ['object', 'string'], description: 'modellprofil_setzen: Objekt, wird in die vorhandenen Messwerte gemischt (wie: messwerte_modus)' },
+      messwerte_modus: { type: 'string', enum: ['tief', 'oben', 'ersetzen'], description: 'modellprofil_setzen: tief (Standard, rekursiv, null entfernt einen Schluessel) | oben (nur oberste Ebene ersetzen) | ersetzen (ganzes Objekt neu)' },
+      zweck: { type: 'string', description: 'modellprofil_kalibrieren: hook | channel_skill | global_search | graph_code | code_semantic_fallback | graph_wissen | error_patterns | tech_docs_gut' },
+      passend: { type: 'array', items: { type: ['string', 'object'] }, description: 'modellprofil_kalibrieren: Anfragen mit erwartetem Treffer - Text oder {query, erwartet, framework} (erwartet = Teil des Namens/Pfads; error_patterns: ID-Anfang oder Teil der Beschreibung; framework nur tech_docs_gut)' },
+      rauschen: { type: 'array', items: { type: ['string', 'object'] }, description: 'modellprofil_kalibrieren: Anfragen, zu denen nichts passen soll - Text oder {query, framework}' },
       schreiben: { type: 'boolean', description: 'modellprofil_kalibrieren: Vorschlag ins Profil des aktiven Modells schreiben (nur bei sauberer Trennung)' },
       min_sekunden: { type: 'number', description: 'db_sitzungen: laufende Abfragen ab so vielen Sekunden auflisten (Standard 5)' },
       minuten: { type: 'number', description: 'langsam: Zeitfenster in Minuten (Standard 30)' },
@@ -139,6 +145,7 @@ export const INTERN_DEFINITION = {
       num_ctx: { type: ['number', 'null'], description: 'embedding_messen: num_ctx fuer Ollama (Standard: EMBEDDING_NUM_CTX der Server-Env, sonst Ollama-Standard des Modells); modellprofil_setzen: num_ctx des Modells (null = nicht kalibriert)' },
       num_batch: { type: ['number', 'null'], description: 'embedding_messen: num_batch (physischer Batch) fuer Ollama (Standard: EMBEDDING_NUM_BATCH, sonst Ollama-Standard); modellprofil_setzen: physischer Batch des Modells in Token' },
       keep_alive: { type: ['string', 'number'], description: 'ollama_laden: wie lange geladen bleiben (Ollama-Format, z. B. "30m", "2h", -1 = bis Neustart; Standard 30m)' },
+      ...DIAGNOSE_PARAMETER,
     },
     required: ['action'],
   },
@@ -227,6 +234,8 @@ export async function fuehreInternAus(
   const a = args ?? {};
   const action = text(a, 'action') ?? '';
   if (!internToolAktiv()) return { ...INTERN_TOOL_AUS, action };
+  // P15-T15: Diagnose-Actions (intern-diagnose.ts) - wirft nie
+  if (istDiagnoseAction(action)) return await fuehreDiagnoseAus(action, a, agentId);
   try {
     switch (action) {
       case 'schalter_setzen': {
@@ -382,6 +391,7 @@ export async function fuehreInternAus(
             ? Object.fromEntries(Object.entries(schwellenRoh).map(([z, w]) => [z, w === null || w === 'null' ? null : Number(w)]))
             : undefined,
           messwerte: objekt(a, 'messwerte'),
+          messwerte_modus: text(a, 'messwerte_modus'),
           agent: text(a, 'agent_id') ?? agentId,
         };
         return { success: true, action, ...(await modellprofilSetzen(aenderung)) };
@@ -389,12 +399,9 @@ export async function fuehreInternAus(
       case 'modellprofil_kalibrieren': {
         const zweck = text(a, 'zweck');
         if (!zweck) return fehler(action, 'parameter_fehlt', 'zweck fehlt (modellprofil zeigt die Zwecke).');
-        const passend = liste(a, 'passend').map((p) => (
-          typeof p === 'string'
-            ? { query: p }
-            : { query: String((p as Record<string, unknown>)?.query ?? ''), erwartet: (p as Record<string, unknown>)?.erwartet ? String((p as Record<string, unknown>).erwartet) : undefined }
-        )).filter((p) => p.query.trim() !== '');
-        const rauschen = liste(a, 'rauschen').map(String).filter((q) => q.trim() !== '');
+        // P15-T18: roh durchreichen - modellprofilKalibrieren normalisiert (Text oder {query, erwartet, framework})
+        const passend = liste(a, 'passend') as Array<string | KalibrierAnfrage>;
+        const rauschen = liste(a, 'rauschen') as Array<string | KalibrierAnfrage>;
         return {
           success: true,
           action,
