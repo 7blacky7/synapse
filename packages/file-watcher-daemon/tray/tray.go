@@ -1380,6 +1380,9 @@ func zeigeGPUFenster() {
 	}()
 
 	var toggleButton *widget.Button
+	// P15-T9: fuer einen laufenden Helfer gab es nur "Sperren". Stoppen beendet den Prozess (SIGTERM ->
+	// der Helfer gibt seine offenen Claims zurueck), laesst die Registry aber unangetastet.
+	var stopButton *widget.Button
 	// knopfBeschriften wird erst weiter unten belegt, aber schon hier von
 	// startSetup gebraucht — daher die Vorab-Deklaration.
 	var knopfBeschriften func()
@@ -1522,6 +1525,11 @@ func zeigeGPUFenster() {
 				toggleButton.SetText("GPU eingerichtet, Helfer läuft nicht — klicken zum Starten")
 			}
 			toggleButton.Enable()
+			if laeuft {
+				stopButton.Enable()
+			} else {
+				stopButton.Disable()
+			}
 		})
 	}
 	// verwendenStarten ist der bisherige Verwenden-Weg: Hardware messen, Digest
@@ -1624,6 +1632,21 @@ func zeigeGPUFenster() {
 			}
 		}()
 	})
+	stopButton = widget.NewButton("GPU-Helfer stoppen", func() {
+		stopButton.Disable()
+		status.SetText("GPU-Helfer wird beendet …")
+		go func() {
+			if err := stopLokalenGPUHelper(); err != nil {
+				fyne.Do(func() { status.SetText("Stoppen fehlgeschlagen: " + err.Error()) })
+			} else {
+				fyne.Do(func() {
+					status.SetText("GPU-Helfer beendet. Der Knoten bleibt registriert und ungesperrt; offene Aufträge hat er zurückgegeben.")
+				})
+			}
+			knopfBeschriften()
+		}()
+	})
+	stopButton.Disable()
 	// Nachmessen auf Knopfdruck: Hardware und lokales Modell koennen sich
 	// jederzeit aendern (anderes Modell geladen, Spiel belegt VRAM). Ohne diesen
 	// Knopf muesste man das Fenster schliessen und neu oeffnen, um einen
@@ -1672,7 +1695,7 @@ func zeigeGPUFenster() {
 	fenster.SetContent(container.NewVBox(status, details,
 		widget.NewLabel("GPU-Auswahl"), gpuSelect, pruefButton,
 		widget.NewLabel("Modell-Zielpfad (vor Download prüfen)"), modelDir,
-		container.NewHBox(toggleButton)))
+		container.NewHBox(toggleButton, stopButton)))
 	fenster.Resize(fyne.NewSize(820, 760))
 	// Beim Oeffnen zeigt der Knopf sofort den echten Zustand statt einer Vorgabe.
 	go knopfBeschriften()
