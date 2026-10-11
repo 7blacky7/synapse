@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  P16-T5 E3b: nur zum Herunterladen der Kotlin-Parser-Bibliotheken im Image-Build (Builder-Stufe jvm im Dockerfile):
+    mvn -B -q dependency:copy-dependencies -Dkotlin.version=<KOTLIN_VERSION> -DoutputDirectory=/out/jvm/lib
+  Es wird nichts gebaut und nichts veroeffentlicht. Die Version setzt das Dockerfile (ARG KOTLIN_VERSION).
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>synapse</groupId>
+  <artifactId>pruefcontainer-jvm</artifactId>
+  <version>1</version>
+  <packaging>pom</packaging>
+  <properties>
+    <kotlin.version>2.4.21</kotlin.version>
+  </properties>
+  <dependencies>
+    <dependency>
+      <groupId>org.jetbrains.kotlin</groupId>
+      <artifactId>kotlin-compiler-embeddable</artifactId>
+      <version>${kotlin.version}</version>
+    </dependency>
+  </dependencies>
+</project>

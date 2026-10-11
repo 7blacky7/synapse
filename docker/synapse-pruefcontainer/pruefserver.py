@@ -7,11 +7,13 @@ synapse-pruefcontainer und spricht JSON-Zeilen ueber stdin/stdout - KEIN Netz (C
 die API haengt sich per docker attach an (packages/rest-api/src/services/pruef-container.ts).
 
 SPRACHEN: rust (E1, rustfmt), python (E2, ast im Prozess + Python-2-Rueckfall), shell (E2, bash -n), go (E2, gofmt -e),
-          php (E3a, php -l), ruby (E3a, ruby -c), lua (E3a, luac -p).
+          php (E3a, php -l), ruby (E3a, ruby -c), lua (E3a, luac -p),
+          kotlin + java (E3b, traeger JVM-Hilfsprozess, Modul pruefer_jvm.py).
 
 PROTOKOLL (eine JSON-Zeile je Nachricht, UTF-8):
   rein:  {"id": 7, "sprache": "rust", "inhalt": "...", "pfad": "src/a.rs"}
          {"id": 8, "info": true}
+         {"id": 9, "vorwaermen": ["jvm"]}   (E3b: JVM starten und anwaermen; Antwort erst, wenn sie bereit ist)
   raus:  {"id": 7, "ok": true, "meldungen": [{"zeile": 3, "spalte": 5, "code": null, "meldung": "..."}], "ms": 31.2}
          Eine Meldung kann "weich": true tragen (Hinweis, sperrt nie).
          {"id": 7, "ok": false, "fehler": "..."}
@@ -36,6 +38,8 @@ import threading
 import time
 import warnings
 from concurrent.futures import ThreadPoolExecutor
+
+import pruefer_jvm
 
 # compile() meldet SyntaxWarnings (z. B. ungueltige Escapes) auf stderr - das sind keine Syntaxfehler und wuerden
 # nur das API-Log fuellen.
@@ -411,12 +415,14 @@ PRUEFER = {
     'ruby': (pruefe_ruby, lambda: version_nummer('ruby', ['ruby', '--disable=gems', '-v'])),
     'lua': (pruefe_lua, lambda: version_nummer('luac', [LUAC, '-v'])),
 }
+# E3b: Kotlin/Java ueber den JVM-Hilfsprozess. Ein JVM-Ausfall betrifft nur diese beiden (ok:false), nie die anderen.
+PRUEFER.update(pruefer_jvm.pruefer(TIMEOUT_S))
 
 
 def info():
     return {'werkzeuge': {name: v() for name, (_f, v) in PRUEFER.items()},
             'parallel': PARALLEL, 'timeout_s': TIMEOUT_S, 'rust_edition': RUST_EDITION,
-            'python2_rueckfall': bool(_py2_driver())}
+            'python2_rueckfall': bool(_py2_driver()), 'jvm': pruefer_jvm.zustand()}
 
 
 def bearbeite(auftrag):
@@ -424,6 +430,12 @@ def bearbeite(auftrag):
     try:
         if auftrag.get('info'):
             schreibe({'id': aid, 'ok': True, 'info': info()})
+            return
+        if auftrag.get('vorwaermen'):
+            erg = {}
+            if 'jvm' in auftrag.get('vorwaermen'):
+                erg['jvm'] = pruefer_jvm.vorwaermen(TIMEOUT_S)
+            schreibe({'id': aid, 'ok': True, 'vorgewaermt': erg})
             return
         sprache = auftrag.get('sprache')
         eintrag = PRUEFER.get(sprache)

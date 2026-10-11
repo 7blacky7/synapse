@@ -11,6 +11,9 @@
 # trixie in der Endstufe (je ein Paket, zusammen ca. +75 MB entpackt). Sprachen mit grossem Einzelwerkzeug = eigene
 # Builder-Stufe, die Endstufe kopiert nur das Werkzeug. Zig bewusst NICHT (ast-check ist versionsabhaengig: zig 0.17
 # meldet 36 von 241 Dateien eines 0.14-Projekts; Binary 160-180 MB).
+# E3b Kotlin + Java: EIN JVM-Hilfsprozess (jvm/JvmPruefer.java), den pruefserver.py traege startet. Kotlin-Parser aus
+# kotlin-compiler-embeddable (PSI), Java ueber die javac-API (nur parse). JVM-Laufzeit per jlink (nur die noetigen
+# Module), Bibliotheken per Maven nur im Builder.
 
 ARG DEBIAN_TAG=bookworm-slim
 ARG RUST_VERSION=1.96.1
@@ -21,6 +24,10 @@ ARG GO_TAG=1.26-trixie
 ARG FISSIX_VERSION=24.4.24
 # E3a: Debian-Pakete der Endstufe (trixie: PHP 8.4, Ruby 3.3, Lua 5.4). Beim Anheben FP-Lauf wiederholen.
 ARG APT_PAKETE="php8.4-cli ruby lua5.4"
+# E3b: neueste stabile Kotlin-Version (Grammatik des Kotlin-Parsers) und JDK 25 LTS (Java-Sprachstand = JDK).
+# Beim Anheben FP-Lauf wiederholen (pruef-container-fp.mjs kotlin / java).
+ARG KOTLIN_VERSION=2.4.21
+ARG MAVEN_TAG=3.9-eclipse-temurin-25
 
 # ─── Stufe rust: Toolchain nur zum Herauskopieren von rustfmt + Laufzeit-Bibliotheken ───
 FROM debian:${DEBIAN_TAG} AS rust
@@ -43,6 +50,22 @@ RUN mkdir -p /out/bin /out/versionen \
  && go env GOVERSION > /out/versionen/go \
  && cat /out/versionen/go
 
+# ─── Stufe jvm: Kotlin-Bibliotheken (Maven), Hilfsprozess kompilieren, schlanke JVM per jlink ───
+# java.desktop braucht der Kotlin-Parser (intellij-core), ohne startet KotlinCoreEnvironment nicht (gemessen).
+FROM maven:${MAVEN_TAG} AS jvm
+ARG KOTLIN_VERSION
+WORKDIR /bau
+COPY jvm/pom.xml jvm/JvmPruefer.java /bau/
+RUN mvn -B -q dependency:copy-dependencies -Dkotlin.version=${KOTLIN_VERSION} -DoutputDirectory=/out/jvm/lib \
+ && mkdir -p /out/jvm/klassen /out/versionen \
+ && javac -nowarn -cp '/out/jvm/lib/*' -d /out/jvm/klassen JvmPruefer.java \
+ && jlink --add-modules java.base,java.desktop,java.logging,java.management,jdk.compiler,jdk.unsupported \
+      --strip-debug --no-man-pages --no-header-files --compress=zip-6 --generate-cds-archive --output /out/jvm/rt \
+ && /out/jvm/rt/bin/java -Xshare:auto -cp '/out/jvm/lib/*:/out/jvm/klassen' JvmPruefer --probe \
+ && echo "kotlin-psi ${KOTLIN_VERSION}" > /out/versionen/kotlin \
+ && echo "javac $(/out/jvm/rt/bin/java -XshowSettings:properties -version 2>&1 | awk '/java.version = / {print $3}')" > /out/versionen/java \
+ && cat /out/versionen/kotlin /out/versionen/java && du -sh /out/jvm/*
+
 # ─── Endstufe: Python-Basis (Interpreter fuer Pruefserver und Python-ast), bash ist enthalten ───
 FROM python:${PYTHON_TAG}
 ARG FISSIX_VERSION
@@ -59,7 +82,9 @@ COPY --from=rust --chmod=0555 /out/bin/ /opt/pruef/bin/
 COPY --from=rust --chmod=0555 /out/lib/ /opt/pruef/lib/
 COPY --from=go --chmod=0555 /out/bin/ /opt/pruef/bin/
 COPY --from=go --chmod=0444 /out/versionen/go /opt/pruef/versionen/go
-COPY --chmod=0444 pruefserver.py /opt/pruef/pruefserver.py
+COPY --from=jvm --chmod=0555 /out/jvm/ /opt/pruef/jvm/
+COPY --from=jvm --chmod=0444 /out/versionen/kotlin /out/versionen/java /opt/pruef/versionen/
+COPY --chmod=0444 pruefserver.py pruefer_jvm.py /opt/pruef/
 ENV PATH=/opt/pruef/bin:/usr/local/bin:/usr/bin:/bin \
     LD_LIBRARY_PATH=/opt/pruef/lib \
     PYTHONPATH=/opt/pruef/py \
@@ -75,6 +100,7 @@ RUN python3 -m compileall -q /opt/pruef/py && mkdir -p /opt/pruef/leer && touch 
  && php -n -v | head -1 && printf '<?php echo 1;\n' | php -n -l \
  && ruby --disable=gems -v && printf 'x = 1\n' | ruby --disable=gems -c \
  && luac5.4 -v && printf 'local x = 1\n' | luac5.4 -p - \
+ && /opt/pruef/jvm/rt/bin/java -Xshare:auto -cp '/opt/pruef/jvm/lib/*:/opt/pruef/jvm/klassen' JvmPruefer --probe \
  && python3 -c "import sys; from fissix import pygram; from fissix.pgen2 import driver; print(sys.version.split()[0], 'fissix ok')" \
  && chmod -R a+rX /opt/pruef/cache /opt/pruef/versionen && ls -la /opt/pruef/cache/fissix/*/
 LABEL synapse.pruefcontainer="1" org.opencontainers.image.title="synapse-pruefcontainer"
