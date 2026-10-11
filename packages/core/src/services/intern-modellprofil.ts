@@ -26,6 +26,7 @@ import { searchCode } from './code.js';
 import { searchMemories } from './memory.js';
 import { searchThoughts } from './thoughts.js';
 import { globalSearch } from './global-search.js';
+import { searchTechDocs } from './tech-docs.js';
 
 export class InternModellprofilFehler extends Error {
   constructor(readonly code: string, message: string) {
@@ -47,9 +48,32 @@ export interface ProfilAenderung {
   /** Zweck -> Schwelle; null entfernt den Zweck. Nicht genannte Zwecke bleiben. */
   score_schwellen?: Record<string, number | null>;
   notiz?: string | null;
-  /** Wird in die vorhandenen Messwerte gemischt (jsonb ||), nicht ersetzt. */
+  /** Wird in die vorhandenen Messwerte gemischt - wie, sagt messwerte_modus. */
   messwerte?: Record<string, unknown>;
+  /**
+   * P15-T18: 'tief' (Standard) mischt rekursiv, null entfernt einen Schluessel; 'oben' ersetzt nur die
+   * Schluessel der obersten Ebene (Verhalten vor T18 - ein Teil-Objekt ersetzte den ganzen Zweck);
+   * 'ersetzen' setzt das gesamte messwerte-Objekt neu.
+   */
+  messwerte_modus?: string;
   agent?: string;
+}
+
+export const MESSWERTE_MODI = ['tief', 'oben', 'ersetzen'] as const;
+
+function istObjekt(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v);
+}
+
+/** Rekursiv mischen: Objekte werden zusammengefuehrt, null entfernt den Schluessel, alles andere ersetzt. */
+export function mischeTief(alt: unknown, neu: Record<string, unknown>): Record<string, unknown> {
+  const ergebnis: Record<string, unknown> = istObjekt(alt) ? { ...alt } : {};
+  for (const [k, v] of Object.entries(neu)) {
+    if (v === null) delete ergebnis[k];
+    else if (istObjekt(v)) ergebnis[k] = mischeTief(ergebnis[k], v);
+    else ergebnis[k] = v;
+  }
+  return ergebnis;
 }
 
 const GANZZAHL_FELDER = ['ziel_dimension', 'num_ctx', 'num_batch', 'max_stueck_zeichen'] as const;
@@ -144,43 +168,73 @@ export async function modellprofilSetzen(aenderung: ProfilAenderung): Promise<Re
   if (aenderung.messwerte !== undefined && (typeof aenderung.messwerte !== 'object' || aenderung.messwerte === null || Array.isArray(aenderung.messwerte))) {
     throw new InternModellprofilFehler('parameter_ungueltig', 'messwerte: Objekt (wird in die vorhandenen Messwerte gemischt).');
   }
+  const modus = aenderung.messwerte_modus ?? 'tief';
+  if (!(MESSWERTE_MODI as readonly string[]).includes(modus)) {
+    throw new InternModellprofilFehler('parameter_ungueltig', `messwerte_modus: ${MESSWERTE_MODI.join(' | ')}.`);
+  }
   if (spalten.length === 0 && Object.keys(neueSchwellen).length === 0 && entfernt.length === 0 && aenderung.messwerte === undefined) {
     throw new InternModellprofilFehler('parameter_fehlt', 'Nichts zu setzen: mindestens ein Feld, score_schwellen oder messwerte angeben.');
   }
 
+  // P15-T18: tief/ersetzen brauchen den alten Stand -> in einer Transaktion lesen (FOR UPDATE) und das
+  // fertige Objekt schreiben. 'oben' (und ohne messwerte) bleibt beim jsonb || auf oberster Ebene.
+  const ganzesObjekt = aenderung.messwerte !== undefined && modus !== 'oben';
+  const client = ganzesObjekt ? await getPool().connect() : null;
+  try {
+  let messwerteNeu: Record<string, unknown> = aenderung.messwerte ?? {};
+  if (client) {
+    await client.query('BEGIN');
+    const alt = await client.query<{ messwerte: unknown }>(
+      'SELECT messwerte FROM embedding_modell_profile WHERE modell = $1 AND digest = $2 FOR UPDATE', [modell, digest],
+    );
+    messwerteNeu = modus === 'ersetzen' ? mischeTief({}, messwerteNeu) : mischeTief(alt.rows[0]?.messwerte ?? {}, messwerteNeu);
+  }
   const n = werte.length;
-  werte.push(JSON.stringify(neueSchwellen), entfernt, JSON.stringify(aenderung.messwerte ?? {}), aenderung.agent ?? null);
+  werte.push(JSON.stringify(neueSchwellen), entfernt, JSON.stringify(messwerteNeu), aenderung.agent ?? null);
   const pS = n + 1, pR = n + 2, pM = n + 3, pV = n + 4;
   const einfuegeSpalten = ['modell', 'digest', ...spalten, 'score_schwellen', 'messwerte', 'kalibriert_am', 'kalibriert_von'];
   const einfuegeWerte = ['$1', '$2', ...spalten.map((_, i) => '$' + (i + 3)), `$${pS}::jsonb`, `$${pM}::jsonb`, 'NOW()', `$${pV}`];
   const update = [
     ...spalten.map((s) => `${s} = EXCLUDED.${s}`),
     `score_schwellen = (p.score_schwellen || $${pS}::jsonb) - $${pR}::text[]`,
-    `messwerte = COALESCE(p.messwerte, '{}'::jsonb) || $${pM}::jsonb`,
+    ganzesObjekt ? `messwerte = $${pM}::jsonb` : `messwerte = COALESCE(p.messwerte, '{}'::jsonb) || $${pM}::jsonb`,
     'kalibriert_am = NOW()',
     'kalibriert_von = EXCLUDED.kalibriert_von',
     'aktualisiert_am = NOW()',
   ];
-  const { rows } = await getPool().query(
+  const { rows } = await (client ?? getPool()).query(
     `INSERT INTO embedding_modell_profile AS p (${einfuegeSpalten.join(', ')})
      VALUES (${einfuegeWerte.join(', ')})
      ON CONFLICT (modell, digest) DO UPDATE SET ${update.join(', ')}
      RETURNING ${PROFIL_SPALTEN}`,
     werte,
   );
+  if (client) await client.query('COMMIT');
   // Dieser Prozess liest beim naechsten Zugriff neu; andere Prozesse nach SYNAPSE_MODELLPROFIL_TTL_MS.
   vergissModellprofil();
-  return { profil: rows[0], hinweis: 'Gilt in diesem Prozess sofort, in anderen nach dem Cache-Intervall (SYNAPSE_MODELLPROFIL_TTL_MS, Standard 60 s).' };
+  return { profil: rows[0], messwerte_modus: modus, hinweis: 'Gilt in diesem Prozess sofort, in anderen nach dem Cache-Intervall (SYNAPSE_MODELLPROFIL_TTL_MS, Standard 60 s).' };
+  } catch (err) {
+    if (client) await client.query('ROLLBACK').catch(() => undefined);
+    throw err;
+  } finally {
+    client?.release();
+  }
 }
 
 // ───── Kalibrieren ──────────────────────────────────────────────────────
 
+/** Eine Mess-Anfrage. framework nur fuer tech_docs_gut (Qdrant-Filter wie searchTechDocs). */
+export interface KalibrierAnfrage { query: string; erwartet?: string; framework?: string }
+
 export interface KalibrierAuftrag {
   zweck: string;
-  /** Anfragen, die einen Treffer liefern SOLLEN; erwartet = Teil des Namens/Pfads des richtigen Treffers. */
-  passend: Array<{ query: string; erwartet?: string }>;
-  /** Anfragen, zu denen NICHTS passen soll ("ok mach weiter", "danke" ...). */
-  rauschen: string[];
+  /**
+   * Anfragen, die einen Treffer liefern SOLLEN; erwartet = Teil des Namens/Pfads des richtigen Treffers
+   * (error_patterns: ID-Anfang ODER Teil der Beschreibung). Text oder {query, erwartet?, framework?}.
+   */
+  passend: Array<string | KalibrierAnfrage>;
+  /** Anfragen, zu denen NICHTS passen soll ("ok mach weiter", "danke" ...). Text oder {query, framework?}. */
+  rauschen: Array<string | KalibrierAnfrage>;
   /** Fuer graph_code, graph_wissen, code_semantic_fallback (sonst Filter fuer global_search). */
   project?: string;
   schreiben?: boolean;
@@ -189,9 +243,22 @@ export interface KalibrierAuftrag {
 
 interface Treffer { name: string; score: number }
 
-const KALIBRIERBAR: ScoreZweck[] = ['hook', 'channel_skill', 'global_search', 'graph_code', 'code_semantic_fallback', 'graph_wissen', 'error_patterns'];
+const KALIBRIERBAR: ScoreZweck[] = ['hook', 'channel_skill', 'global_search', 'graph_code', 'code_semantic_fallback', 'graph_wissen', 'error_patterns', 'tech_docs_gut'];
 
-async function suche(zweck: ScoreZweck, query: string, project?: string): Promise<Treffer[]> {
+/** Text oder Objekt -> KalibrierAnfrage; leere Anfragen fallen weg (Connector schickt evtl. JSON-Text). */
+export function normalisiereAnfragen(roh: unknown[]): KalibrierAnfrage[] {
+  return roh.map((p): KalibrierAnfrage => {
+    if (typeof p === 'string') return { query: p };
+    const o = (p ?? {}) as Record<string, unknown>;
+    return {
+      query: String(o.query ?? ''),
+      erwartet: o.erwartet ? String(o.erwartet) : undefined,
+      framework: o.framework ? String(o.framework) : undefined,
+    };
+  }).filter((p) => p.query.trim() !== '');
+}
+
+async function suche(zweck: ScoreZweck, query: string, project?: string, framework?: string): Promise<Treffer[]> {
   const brauchtProjekt = (): string => {
     if (!project) throw new InternModellprofilFehler('parameter_fehlt', `Zweck ${zweck} misst in einem Projekt: project angeben.`);
     return project;
@@ -216,10 +283,28 @@ async function suche(zweck: ScoreZweck, query: string, project?: string): Promis
       ];
     }
     case 'error_patterns': {
+      // P15-T18: die Qdrant-Payload traegt keine Beschreibung -> aus PG dazuholen. Name = "<id>: <Beschreibung>",
+      // damit erwartet als ID-Anfang ODER als Teil der Beschreibung passt.
       const vektor = await embed(query, { art: 'query' });
-      return (await searchVectors(COLLECTIONS.globalErrorPatterns, vektor, 10))
-        .map((r) => ({ name: String((r.payload as Record<string, unknown>)?.description ?? r.id).slice(0, 80), score: r.score }));
+      const treffer = await searchVectors(COLLECTIONS.globalErrorPatterns, vektor, 10);
+      const ids = treffer.map((r) => String(r.id)).filter((id) => /^[0-9a-f-]{36}$/i.test(id));
+      const beschreibung = new Map<string, string>();
+      if (ids.length > 0) {
+        const { rows } = await getPool().query<{ id: string; description: string }>(
+          'SELECT id::text, description FROM error_patterns WHERE id = ANY($1::uuid[])', [ids],
+        );
+        for (const r of rows) beschreibung.set(r.id.toLowerCase(), r.description);
+      }
+      return treffer.map((r) => {
+        const id = String(r.id);
+        const text = beschreibung.get(id.toLowerCase()) ?? String((r.payload as Record<string, unknown>)?.description ?? '');
+        return { name: (text ? `${id}: ${text}` : id).slice(0, 160), score: r.score };
+      });
     }
+    case 'tech_docs_gut':
+      // P15-T18: derselbe Weg wie searchTechDocs (scope all, framework-Filter), aber ohne Context7-Nachladen.
+      return (await searchTechDocs(query, { framework, project, scope: 'all', limit: 10, ohneNachladen: true }))
+        .map((r) => ({ name: `${r.framework ?? ''}:${r.section ?? ''}:${r.id}`, score: r.score ?? 0 }));
     default:
       throw new InternModellprofilFehler(
         'kalibrierung_nicht_unterstuetzt',
@@ -236,17 +321,20 @@ export async function modellprofilKalibrieren(auftrag: KalibrierAuftrag): Promis
   if (!istZweck(zweck)) {
     throw new InternModellprofilFehler('parameter_ungueltig', `zweck: ${Object.keys(SCORE_ZWECKE).join(' | ')}.`);
   }
-  if (auftrag.passend.length === 0 || auftrag.rauschen.length === 0) {
+  const passendAnfragen = normalisiereAnfragen(auftrag.passend);
+  const rauschAnfragen = normalisiereAnfragen(auftrag.rauschen);
+  if (passendAnfragen.length === 0 || rauschAnfragen.length === 0) {
     throw new InternModellprofilFehler('parameter_fehlt', 'passend und rauschen brauchen je mindestens eine Anfrage (besser 10+ bzw. 5+).');
   }
   const passend = [];
-  for (const p of auftrag.passend) {
-    const treffer = (await suche(zweck, p.query, auftrag.project)).sort((a, b) => b.score - a.score);
+  for (const p of passendAnfragen) {
+    const treffer = (await suche(zweck, p.query, auftrag.project, p.framework)).sort((a, b) => b.score - a.score);
     const richtig = p.erwartet
       ? treffer.find((t) => t.name.toLowerCase().includes(p.erwartet!.toLowerCase()))
       : treffer[0];
     passend.push({
       query: p.query,
+      ...(p.framework ? { framework: p.framework } : {}),
       erwartet: p.erwartet ?? null,
       score: richtig ? rund(richtig.score) : null,
       rang: richtig ? treffer.indexOf(richtig) + 1 : null,
@@ -254,9 +342,9 @@ export async function modellprofilKalibrieren(auftrag: KalibrierAuftrag): Promis
     });
   }
   const rauschen = [];
-  for (const query of auftrag.rauschen) {
-    const treffer = (await suche(zweck, query, auftrag.project)).sort((a, b) => b.score - a.score);
-    rauschen.push({ query, bester: treffer[0] ? { name: treffer[0].name, score: rund(treffer[0].score) } : null });
+  for (const r of rauschAnfragen) {
+    const treffer = (await suche(zweck, r.query, auftrag.project, r.framework)).sort((a, b) => b.score - a.score);
+    rauschen.push({ query: r.query, ...(r.framework ? { framework: r.framework } : {}), bester: treffer[0] ? { name: treffer[0].name, score: rund(treffer[0].score) } : null });
   }
 
   const passendScores = passend.map((p) => p.score).filter((s): s is number => s !== null).sort((a, b) => a - b);
@@ -267,8 +355,8 @@ export async function modellprofilKalibrieren(auftrag: KalibrierAuftrag): Promis
   const trennbar = passendMin !== null && rauschenMax !== null && passendMin > rauschenMax;
   const vorschlag = trennbar ? rund((passendMin! + rauschenMax!) / 2) : null;
   const durchgelassen = vorschlag === null ? null : {
-    passend: `${passendScores.filter((s) => s >= vorschlag).length}/${auftrag.passend.length}`,
-    rauschen: `${rauschScores.filter((s) => s >= vorschlag).length}/${auftrag.rauschen.length}`,
+    passend: `${passendScores.filter((s) => s >= vorschlag).length}/${passendAnfragen.length}`,
+    rauschen: `${rauschScores.filter((s) => s >= vorschlag).length}/${rauschAnfragen.length}`,
   };
   const stand = await modellprofilStand();
   const ergebnis: Record<string, unknown> = {
@@ -300,7 +388,7 @@ export async function modellprofilKalibrieren(auftrag: KalibrierAuftrag): Promis
           [zweck]: {
             am: new Date().toISOString(),
             passend_min: passendMin, passend_median: ergebnis.passend_median, rauschen_max: rauschenMax,
-            n_passend: auftrag.passend.length, n_rauschen: auftrag.rauschen.length, nicht_gefunden: nichtGefunden.length,
+            n_passend: passendAnfragen.length, n_rauschen: rauschAnfragen.length, nicht_gefunden: nichtGefunden.length,
           },
         },
         agent: auftrag.agent,

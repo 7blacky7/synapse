@@ -433,9 +433,11 @@ export async function searchTechDocs(
     project?: string;
     limit?: number;
     scope?: 'global' | 'project' | 'all';
+    /** P15-T18: nur suchen, nie Context7 nachladen (Kalibrierung von tech_docs_gut misst damit). */
+    ohneNachladen?: boolean;
   } = {}
 ): Promise<Array<TechDocResult>> {
-  const { framework, type, source, project, limit: rawLimit = 10, scope = 'project' } = options;
+  const { framework, type, source, project, limit: rawLimit = 10, scope = 'project', ohneNachladen = false } = options;
   const limit = typeof rawLimit === 'string' ? parseInt(rawLimit, 10) : rawLimit;
 
   const { getConfig } = await import('../config.js');
@@ -514,6 +516,7 @@ export async function searchTechDocs(
   // Context7 Auto-Fetch: Wenn keine guten Ergebnisse und Framework bekannt (nur bei project/all scope)
   // P15-T8: "gut" haengt an der Score-Skala des Modells (Profil, Zweck tech_docs_gut; hier stand 0.60).
   // Nicht kalibriert -> kein automatisches Nachladen, weil sich gut/schlecht nicht beurteilen laesst.
+  if (ohneNachladen) return mapped;
   const gut = await scoreSchwelleOderHinweis('tech_docs_gut');
   const gutAb = gut.schwelle;
   if (gutAb === null && framework && scope !== 'global') {
