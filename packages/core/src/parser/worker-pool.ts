@@ -117,6 +117,22 @@ export class ParserWorkerPool {
   private queue: QueueItem[] = [];
   private initialized = false;
   private shuttingDown = false;
+  /**
+   * P15-T15: beendete Worker, deren 'exit' noch aussteht, und Zaehler aller Beendigungen.
+   * Nur Buchfuehrung fuer intern(parser_pool) - PTZ-24 (Thought 07ac26de) mass je Timeout einen
+   * Thread mehr, der nach dem Abbruch weiterlebte; slots.length zeigt das nicht.
+   */
+  private beendend = new Set<Worker>();
+  private beendetGesamt = 0;
+  private timeoutsGesamt = 0;
+
+  /** terminate() mit Buchfuehrung; Fehler beim Beenden werden wie bisher ignoriert. */
+  private beende(worker: Worker): void {
+    this.beendetGesamt++;
+    this.beendend.add(worker);
+    worker.once('exit', () => { this.beendend.delete(worker); });
+    try { void worker.terminate(); } catch { /* ignore */ }
+  }
 
   constructor(size?: number) {
     const fromEnv = Number(process.env.PARSER_WORKER_THREADS);
@@ -169,7 +185,7 @@ export class ParserWorkerPool {
       slot.busy = false;
       slot.laufendeDatei = null;
       slot.startedAt = null;
-      try { worker.terminate(); } catch { /* ignore */ }
+      this.beende(worker);
 
       if (resolver) {
         const msg = cause instanceof Error ? cause.message : String(cause);
@@ -245,7 +261,8 @@ export class ParserWorkerPool {
       slot.startedAt = null;
       // eslint-disable-next-line no-console
       console.error(`[parser-worker-pool] PARSE-TIMEOUT nach ${limitMs} ms: ${args.filePath} — Worker wird beendet, Datei uebersprungen`);
-      try { slot.worker.terminate(); } catch { /* ignore */ }
+      this.timeoutsGesamt++;
+      this.beende(slot.worker);
       if (wartender) wartender.reject(new ParseTimeoutError(args.filePath, limitMs));
       if (index >= 0 && !this.shuttingDown) this.spawnSlot(index);
       this.drainQueue();
@@ -293,6 +310,40 @@ export class ParserWorkerPool {
   /** Wartende Auftraege, die noch keinen freien Worker bekommen haben. */
   warteschlange(): number {
     return this.queue.length;
+  }
+
+  /**
+   * P15-T15: Zustand JEDES Slots fuer intern(parser_pool) - nur lesen.
+   * stillgelegt = Slot nach MAX_RETRIES Fehlschlaegen nicht neu gestartet: er gilt dauerhaft als
+   * busy, findFreeSlot ueberspringt ihn, Auftraege bleiben in der Queue haengen (07ac26de).
+   * retries ist der SICHTBARE Zaehler; ein Erfolg setzt ihn auf 0.
+   */
+  slotZustand(): Record<string, unknown> {
+    const jetzt = Date.now();
+    const slots = this.slots.map((slot, i) => {
+      if (!slot) return { slot: i, fehlt: true };
+      return {
+        slot: i,
+        thread_id: slot.worker.threadId,
+        busy: slot.busy,
+        retries: slot.retries,
+        stillgelegt: slot.retries > MAX_RETRIES,
+        laufende_datei: slot.laufendeDatei,
+        laufzeit_ms: slot.startedAt === null ? null : jetzt - slot.startedAt,
+        zeichen: slot.laufendeDatei ? slot.zeichen : null,
+        limit_ms: slot.laufendeDatei ? parseTimeoutFor(slot.zeichen) : null,
+      };
+    });
+    return {
+      groesse: this.size,
+      initialisiert: this.initialized,
+      warteschlange: this.queue.length,
+      max_retries: MAX_RETRIES,
+      slots,
+      beendet_gesamt: this.beendetGesamt,
+      timeouts_gesamt: this.timeoutsGesamt,
+      beendet_exit_ausstehend: this.beendend.size,
+    };
   }
 
   private drainQueue(): void {
@@ -354,6 +405,15 @@ export function getParserActivity(): { laufend: ParserAktivitaet[]; wartend: num
     return { laufend: [], wartend: 0, poolAktiv: false };
   }
   return { laufend: singleton.aktivitaet(), wartend: singleton.warteschlange(), poolAktiv: true };
+}
+
+/**
+ * P15-T15: Slot-Zustand des Pools dieses Prozesses fuer intern(parser_pool).
+ * null, wenn der Pool deaktiviert (PARSER_WORKER_THREADS=0) oder noch nie benutzt wurde.
+ */
+export function getParserPoolZustand(): Record<string, unknown> | null {
+  if (!singleton || singletonDisabled) return null;
+  return singleton.slotZustand();
 }
 
 /** Test-Hook: setzt Singleton zurueck (nur fuer Tests / Reload-Szenarien). */
