@@ -15,7 +15,21 @@ import {
   moveFileInPg,
   copyFileInPg,
   getFileContentFromPg,
+  holeFehlermusterHinweise,
+  resolveAgentId,
 } from '@synapse/core';
+
+/**
+ * P15-T17 E2: Fehlermuster-Treffer an die REST-Antwort haengen (Feld fehlermuster, wie MCP seit E0).
+ * Vorher stand hier errorPatterns aus result.warnings - das war immer leer: code-write liefert keine
+ * warnings, die Pruefung laeuft nebenlaeufig nach dem Schreiben. Jetzt wartet die Antwort kurz
+ * (FEHLERMUSTER_WARTE_MS) auf die laufende Pruefung; sonst kommt der Hinweis mit der naechsten
+ * Antwort an denselben Agenten (MCP oder REST). Wirft nie.
+ */
+async function haengeFehlermusterAn(response: Record<string, unknown>, agentId: string | undefined): Promise<void> {
+  const fehlermuster = await holeFehlermusterHinweise(resolveAgentId(agentId) ?? undefined);
+  if (fehlermuster) response.fehlermuster = fehlermuster;
+}
 
 export async function filesRoutes(fastify: FastifyInstance): Promise<void> {
   /**
@@ -41,18 +55,12 @@ export async function filesRoutes(fastify: FastifyInstance): Promise<void> {
     }
 
     try {
-      const result = await createFileInPg(name, file_path, content, agent_id);
+      await createFileInPg(name, file_path, content, agent_id);
       const response: Record<string, unknown> = {
         success: true,
         message: `Datei "${file_path}" erstellt (${content.length} Zeichen)`,
       };
-      if (result.warnings?.length) {
-        response.errorPatterns = {
-          count: result.warnings.length,
-          warnings: result.warnings,
-          hint: `${result.warnings.length} bekannte Fehler-Patterns matchen deinen Code`,
-        };
-      }
+      await haengeFehlermusterAn(response, agent_id);
       return response;
     } catch (error) {
       return reply.status(500).send({
@@ -114,18 +122,12 @@ export async function filesRoutes(fastify: FastifyInstance): Promise<void> {
             error: { message: 'content ist erforderlich wenn keine operation angegeben' },
           });
         }
-        const result = await updateFileInPg(name, file_path, content, agent_id);
+        await updateFileInPg(name, file_path, content, agent_id);
         const response: Record<string, unknown> = {
           success: true,
           message: `Datei "${file_path}" aktualisiert (${content.length} Zeichen)`,
         };
-        if (result.warnings?.length) {
-          response.errorPatterns = {
-            count: result.warnings.length,
-            warnings: result.warnings,
-            hint: `${result.warnings.length} bekannte Fehler-Patterns matchen deinen Code`,
-          };
-        }
+        await haengeFehlermusterAn(response, agent_id);
         return response;
       }
 
@@ -160,18 +162,12 @@ export async function filesRoutes(fastify: FastifyInstance): Promise<void> {
               error: { message: String(err) },
             });
           }
-          const result = await updateFileInPg(name, file_path, newContent, agent_id);
+          await updateFileInPg(name, file_path, newContent, agent_id);
           const response: Record<string, unknown> = {
             success: true,
             message: `Zeilen ${line_start}-${line_end} in "${file_path}" ersetzt`,
           };
-          if (result.warnings?.length) {
-            response.errorPatterns = {
-              count: result.warnings.length,
-              warnings: result.warnings,
-              hint: `${result.warnings.length} bekannte Fehler-Patterns matchen deinen Code`,
-            };
-          }
+          await haengeFehlermusterAn(response, agent_id);
           return response;
         }
 
@@ -191,18 +187,12 @@ export async function filesRoutes(fastify: FastifyInstance): Promise<void> {
               error: { message: String(err) },
             });
           }
-          const result = await updateFileInPg(name, file_path, newContent, agent_id);
+          await updateFileInPg(name, file_path, newContent, agent_id);
           const response: Record<string, unknown> = {
             success: true,
             message: `Inhalt nach Zeile ${after_line} in "${file_path}" eingefuegt`,
           };
-          if (result.warnings?.length) {
-            response.errorPatterns = {
-              count: result.warnings.length,
-              warnings: result.warnings,
-              hint: `${result.warnings.length} bekannte Fehler-Patterns matchen deinen Code`,
-            };
-          }
+          await haengeFehlermusterAn(response, agent_id);
           return response;
         }
 
@@ -222,18 +212,12 @@ export async function filesRoutes(fastify: FastifyInstance): Promise<void> {
               error: { message: String(err) },
             });
           }
-          const result = await updateFileInPg(name, file_path, newContent, agent_id);
+          await updateFileInPg(name, file_path, newContent, agent_id);
           const response: Record<string, unknown> = {
             success: true,
             message: `Zeilen ${line_start}-${line_end} in "${file_path}" geloescht`,
           };
-          if (result.warnings?.length) {
-            response.errorPatterns = {
-              count: result.warnings.length,
-              warnings: result.warnings,
-              hint: `${result.warnings.length} bekannte Fehler-Patterns matchen deinen Code`,
-            };
-          }
+          await haengeFehlermusterAn(response, agent_id);
           return response;
         }
 
@@ -255,20 +239,14 @@ export async function filesRoutes(fastify: FastifyInstance): Promise<void> {
               error: { message: sr.error },
             });
           }
-          const result = await updateFileInPg(name, file_path, sr.content, agent_id);
+          await updateFileInPg(name, file_path, sr.content, agent_id);
           const response: Record<string, unknown> = {
             success: true,
             count: sr.count,
             lines: sr.lines,
             message: `${sr.count} Vorkommen von "${search}" ersetzt in "${file_path}"`,
           };
-          if (result.warnings?.length) {
-            response.errorPatterns = {
-              count: result.warnings.length,
-              warnings: result.warnings,
-              hint: `${result.warnings.length} bekannte Fehler-Patterns matchen deinen Code`,
-            };
-          }
+          await haengeFehlermusterAn(response, agent_id);
           return response;
         }
       }
