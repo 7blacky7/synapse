@@ -41,4 +41,6 @@ export const TREESITTER_SPRACHEN: ContainerSprache[] = [
   { sprache: 'racket', endungen: ['rkt', 'rktl', 'rktd'], sperrfaehig: true, werkzeug: 'tree-sitter-racket' },
   // R FP 0/89, Positivkontrolle 24/24 (Rscript parse() gleichwertig, braucht R).
   { sprache: 'r', endungen: ['r', 'rprofile'], sperrfaehig: true, werkzeug: 'tree-sitter-r' },
+  // P16-T14: Nix FP 0/167 (+0/43963 nixpkgs), deckungsgleich mit nix-instantiate --parse (299 Mutanten).
+  { sprache: 'nix', endungen: ['nix'], sperrfaehig: true, werkzeug: 'tree-sitter-nix' },
 ];

@@ -10,7 +10,9 @@ SPRACHEN: rust (E1, rustfmt), python (E2, ast im Prozess + Python-2-Rueckfall), 
           php (E3a, php -l), ruby (E3a, ruby -c), lua (E3a, luac -p),
           kotlin + java (E3b, traeger JVM-Hilfsprozess, Modul pruefer_jvm.py),
           tree-sitter-Sprachen (P16-T11, Modul pruefer_treesitter.py, je Sprache eine Datei in ts_sprachen/),
-          wgsl (P16-T13, naga, Modul pruefer_naga.py).
+          wgsl (P16-T13, naga, Modul pruefer_naga.py),
+          make, linkerscript, meson, dockerfile, hcl, starlark, jsonnet (P16-T14, Modul pruefer_build.py, Go-Binary
+          pruefgo); nix als tree-sitter-Modul.
 
 PROTOKOLL (eine JSON-Zeile je Nachricht, UTF-8):
   rein:  {"id": 7, "sprache": "rust", "inhalt": "...", "pfad": "src/a.rs"}
@@ -41,6 +43,7 @@ import time
 import warnings
 from concurrent.futures import ThreadPoolExecutor
 
+import pruefer_build
 import pruefer_jvm
 import pruefer_naga
 import pruefer_treesitter
@@ -423,6 +426,9 @@ PRUEFER = {
 PRUEFER.update(pruefer_jvm.pruefer(TIMEOUT_S))
 # P16-T13: WGSL ueber naga-cli (Modul pruefer_naga.py), nur echte Parsefehler, Vorlagen mit #-Zeilen ausgelassen.
 PRUEFER.update(pruefer_naga.pruefer(lauf))
+# P16-T14: Build-/Konfig-Sprachen (Modul pruefer_build.py): GNU make, GNU ld, Meson-Parser, pruefgo (Go) fuer
+# Dockerfile/HCL/Starlark/Jsonnet. Nur Parsen; make laeuft mit -n und SHELL=/bin/true.
+PRUEFER.update(pruefer_build.pruefer(lauf))
 # P16-T11: tree-sitter-Sprachen, je Sprache ein Modul in ts_sprachen/ (pruefer_treesitter.py). Eigene Werkzeuge oben
 # haben Vorrang: ein tree-sitter-Modul ersetzt nie einen vorhandenen Pruefer gleichen Namens.
 for _name, _eintrag in pruefer_treesitter.pruefer(TIMEOUT_S).items():

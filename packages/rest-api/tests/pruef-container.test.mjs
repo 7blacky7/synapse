@@ -220,8 +220,9 @@ test('T1 Anmeldung + gemma-Fehler erkannt (Zeile, Spalte, sperrend), gueltiges G
   // P16-T13: scala, groovy (JVM), wgsl (naga), perl, ada (pruef-container-system.test.mjs); P16-T12: haskell .. r
   // (pruef-container-funktional.test.mjs).
   assert.deepEqual(namen, ['rust', 'python', 'shell', 'go', 'php', 'ruby', 'lua', 'kotlin', 'java', 'scala', 'groovy', 'wgsl',
+    'dockerfile', 'hcl', 'starlark', 'jsonnet', 'make', 'meson', 'linkerscript',
     'csharp', 'dart', 'swift',
-    'perl', 'ada', 'haskell', 'ocaml', 'ocaml_interface', 'elixir', 'erlang', 'clojure', 'racket', 'r']);
+    'perl', 'ada', 'haskell', 'ocaml', 'ocaml_interface', 'elixir', 'erlang', 'clojure', 'racket', 'r', 'nix']);
   assert.equal(core.hatSyntaxPruefer('src/a.rs'), true);
   const t0 = Date.now();
   const r = await core.pruefeSyntaxEinzelweg({ filePath: 'src/a.rs', alt: '', neu: GEMMA_RUST_1 });
@@ -735,8 +736,9 @@ test('T18 E3a-Latenz warm im Budget, Speicherspitze unter Last, Diagnose an inte
     assert.equal(z.lage, 'laeuft');
     assert.ok(z.latenz_ms.anzahl >= 120 && z.latenz_ms.p50 !== null && z.latenz_ms.p95 >= z.latenz_ms.p50, JSON.stringify(z.latenz_ms));
     assert.deepEqual(z.sprachen, ['rust', 'python', 'shell', 'go', 'php', 'ruby', 'lua', 'kotlin', 'java', 'scala', 'groovy', 'wgsl',
+      'dockerfile', 'hcl', 'starlark', 'jsonnet', 'make', 'meson', 'linkerscript',
       'csharp', 'dart', 'swift',
-      'perl', 'ada', 'haskell', 'ocaml', 'ocaml_interface', 'elixir', 'erlang', 'clojure', 'racket', 'r']);
+      'perl', 'ada', 'haskell', 'ocaml', 'ocaml_interface', 'elixir', 'erlang', 'clojure', 'racket', 'r', 'nix']);
     assert.equal(z.speicher.swap_begrenzt, true);
   } finally {
     await pc.beenden();

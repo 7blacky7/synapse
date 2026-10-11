@@ -26,11 +26,13 @@ const c = new pg.Client({ connectionString: process.env.DATABASE_URL });
 await c.connect();
 await c.query('SET default_transaction_read_only = on');
 const muster = def.endungen.map((e) => `%.${e}`);
+// P16-T14: Sprachen mit Dateinamen (Makefile, Dockerfile, CMakeLists.txt ...): exakter Name, Gross/Klein egal.
+const namen = (def.dateinamen ?? []).flatMap((n) => [n, `%/${n}`]);
 const r = await c.query(
   `SELECT project, file_path, content FROM code_files
-    WHERE deleted_at IS NULL AND content IS NOT NULL AND file_path LIKE ANY($1)
+    WHERE deleted_at IS NULL AND content IS NOT NULL AND (file_path LIKE ANY($1) OR lower(file_path) LIKE ANY($3))
       AND length(content) BETWEEN 50 AND 200000
-    ORDER BY md5(project || file_path) LIMIT $2`, [muster, Number(maxRoh)]);
+    ORDER BY md5(project || file_path) LIMIT $2`, [muster, Number(maxRoh), namen]);
 await c.end();
 
 const docker = new Docker({ socketPath: process.env.WORKSPACE_DOCKER_SOCKET || '/var/run/docker.sock' });

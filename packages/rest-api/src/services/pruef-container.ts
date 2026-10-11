@@ -49,6 +49,8 @@ import { TREESITTER_SPRACHEN } from './pruef-container-treesitter.js';
 export interface ContainerSprache {
   sprache: string;
   endungen: string[];
+  /** P16-T14: exakte Dateinamen ohne Pfad, klein (makefile, dockerfile, build ...) - zusaetzlich zu endungen. */
+  dateinamen?: string[];
   sperrfaehig: boolean;
   werkzeug: string;
   /** E3b: geprueft vom JVM-Hilfsprozess im Container (eigenes Kaltbudget, traeger Start). */
@@ -84,6 +86,22 @@ export const CONTAINER_SPRACHEN: ContainerSprache[] = [
   // P16-T13: naga-cli 30 (nur Parsefehler, --validate 0), FP 0/546 echte .wgsl (4 Meldungen = 2 echte Fehler, je
   // doppelt im Index); Vorlagen mit #-Praeprozessor (llama.cpp ggml-webgpu, 79 Dateien) werden nicht geprueft.
   { sprache: 'wgsl', endungen: ['wgsl'], sperrfaehig: true, werkzeug: 'naga' },
+  // P16-T14 (Modul pruefer_build.py, Messwerte im Bericht zu P16-T14). Dockerfile: buildkit-Parser + instructions,
+  // FP 0/102 (Dockerfile.<x>-Varianten bewusst nicht: darunter ERB-Vorlagen wie Dockerfile.tt).
+  { sprache: 'dockerfile', endungen: ['dockerfile'], dateinamen: ['dockerfile', 'containerfile'], sperrfaehig: true, werkzeug: 'pruefgo' },
+  // HCL (hclsyntax, Terraform/Packer/Nomad), FP 0/10.
+  { sprache: 'hcl', endungen: ['tf', 'tfvars', 'hcl'], sperrfaehig: true, werkzeug: 'pruefgo' },
+  // Starlark (Parser von buildifier), FP 0/4 (+0/18 weitere BUILD/.bzl).
+  { sprache: 'starlark', endungen: ['bzl', 'star', 'bazel'], dateinamen: ['build', 'workspace'], sperrfaehig: true, werkzeug: 'pruefgo' },
+  // Jsonnet (Parser von jsonnetfmt), 0 Fehlalarme auf 302: Meldungen nur in absichtlich kaputten Testdateien.
+  { sprache: 'jsonnet', endungen: ['jsonnet', 'libsonnet'], sperrfaehig: true, werkzeug: 'pruefgo' },
+  // GNU make -n mit SHELL=/bin/true, nur Syntaxmeldungen; FP 0/321 (1 echter GNU-make-Fehler). .mak/Makefile.<x>
+  // bewusst nicht: dort stehen nmake-/Watcom-/Amiga-Dialekte.
+  { sprache: 'make', endungen: ['mk'], dateinamen: ['makefile', 'gnumakefile'], sperrfaehig: true, werkzeug: 'make' },
+  // Meson-Parser (mesonbuild.mparser), FP 0/5 (+0/20 weitere), Positivkontrolle 25/25.
+  { sprache: 'meson', endungen: [], dateinamen: ['meson.build', 'meson_options.txt', 'meson.options'], sperrfaehig: true, werkzeug: 'meson-mparser' },
+  // GNU ld -T (Umgebungs-Befehle wie OUTPUT_ARCH geleert), FP 0/12 (+0/15 weitere), Positivkontrolle 52/52.
+  { sprache: 'linkerscript', endungen: ['ld', 'lds'], sperrfaehig: true, werkzeug: 'ld' },
   // P16-T11: tree-sitter-Sprachen (je Sprache eine Zeile in pruef-container-treesitter.ts + Modul ts_sprachen/).
   ...TREESITTER_SPRACHEN,
 ];
@@ -650,6 +668,7 @@ function melde(pc: PruefContainer): void {
       // Getter: die Werkzeugversion steht erst nach dem ersten Start fest; ein Befund entsteht immer erst danach.
       get version() { return versionAus(pc.werkzeugInfo(), s); },
       endungen: s.endungen,
+      ...(s.dateinamen ? { dateinamen: s.dateinamen } : {}),
       sperrfaehig: s.sperrfaehig,
       pruefe: (inhalt, pfad) => pc.pruefe(s.sprache, inhalt, pfad),
       // E3a: Kaltstart abwarten statt Nachlieferung (PRUEFCONTAINER_KALT_BUDGET_MS).
