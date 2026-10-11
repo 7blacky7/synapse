@@ -16,6 +16,7 @@
  */
 
 import { leseAbwesenheit } from './jev-entscheidung.js';
+import { jevEntscheidungsHinweiseAn } from './jev-schalter.js';
 
 export const JEV_MODUS_ZEILE =
   'User abwesend — Rueckfragen/Unstimmigkeiten: Superpowers nutzen, Entscheidungen per jev(action:entscheiden) ' +
@@ -43,7 +44,8 @@ export async function holeJevModusHinweis(project: string, jetzt: number = Date.
     const dauer = cacheDauerMs();
     const treffer = cache.get(project);
     if (dauer > 0 && treffer && jetzt < treffer.bis) {
-      return treffer.aktiv ? JEV_MODUS_ZEILE : null;
+      // P15-T33 E0.5: der Jev-Schalter wirkt sofort (eigener kurzer Cache), nicht erst nach diesem Cache.
+      return treffer.aktiv && (await jevEntscheidungsHinweiseAn(project)) ? JEV_MODUS_ZEILE : null;
     }
     const stand = await leseAbwesenheit(project);
     if (dauer > 0) cache.set(project, { bis: jetzt + dauer, aktiv: stand.aktiv });

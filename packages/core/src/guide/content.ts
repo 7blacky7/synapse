@@ -632,6 +632,7 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
       'save_idea + confirm_idea um Feature-Ideen strukturiert einzureichen.',
       'index_media um Bilder/Videos in Qdrant zu indexieren.',
       'migrate/restore fuer Daten-Migration (selten, nur PL-Scope).',
+      'jev_status/jev_schalten/jev_kosten/jev_budget: Jev (OpenRouter-Entscheidungsmodell) global, je Projekt oder je Funktion an/aus schalten, Kosten ansehen, globale Kostengrenze setzen (P15-T33).',
     ].join(' '),
     when_not_to_use: [
       'Code lesen/schreiben → code_intel oder files.',
@@ -645,6 +646,10 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
       'confirm_idea: idea_id aus save_idea-Response. custom_name optional.',
       'migrate dry_run: true zuerst pruefen bevor echter Lauf.',
       'index_media: path muss absoluter Pfad sein. recursive: true ist Standard.',
+      'JEV-SCHALTER (dauerhaft in PG, Tabelle jev_schalter): ebene global|projekt, funktion alle|empfehlung (plan empfehlen)|entscheidung (jev entscheiden + Hinweise jev_modus/jev_hinweis/jev_entscheidet)|plan_einordnen (plan einordnen)|erklaerungstopf (ab E1)|tool (das Tool jev). VORRANG: global aus = ueberall aus; sonst Projekt, dann Funktion; ein "an" weiter unten hebt ein "aus" darueber nicht auf. Ohne Eintrag = an. Ist ein Kontext aus, wird Jev NICHT aufgerufen und alle Jev-Hinweise verschwinden aus den Tool-Antworten; nach dem Wiedereinschalten erscheinen sie wieder. Bei global aus (alle oder tool) fehlt das Tool jev in tools/list (REST und stdio); ein Projekt-Schalter sperrt das Tool nur mit Antwort jev_aus, weil tools/list kein Projekt kennt. MCP-Clients laden die Tool-Liste meist nur beim Verbinden. Andere Prozesse sehen eine Aenderung nach spaetestens JEV_SCHALTER_CACHE_MS (5 s).',
+      'JEV-KOSTEN: jeder Jev-Aufruf steht in jev_aufrufe (Zeit, Projekt, Funktion, Agent, input/output_tokens, usd, Quelle). usd = usage.cost der Antwort; fehlt es, input_tokens x Listenpreis (Env JEV_PREIS_JE_MIO_EINGABE, Standard 0,042 USD/Mio.). Ausgabe-Tokens kosten nichts. jev_kosten liefert Summen je Tag, Monat, Projekt, Funktion.',
+      'JEV-BUDGET: optionale GLOBALE Grenze in USD je Abrechnungsmonat (ab reset_tag). Ohne Grenze keine Bremse. Vor jedem Aufruf wird atomar reserviert (JEV_BUDGET_RESERVE_USD, Standard 0,001), danach die echten Kosten nachgebucht; bei Erreichen pausiert Jev automatisch (wirkt wie global aus, Hinweis im Onboarding-Feld jev_hinweis und in jev_status). Weiter mit naechstem Reset, modus zuruecksetzen, hoeherer Grenze oder entfernen. kontostand:true fragt GET /api/v1/key (limit, limit_remaining, usage ...); der Key wird nie ausgegeben.',
+      'Setzen (jev_schalten, jev_budget setzen/entfernen/zuruecksetzen) nur agent_id koordinator|coordinator|user (Namenstreue). Lesen darf jeder.',
     ].join('\\n'),
     examples: [
       'admin({ action: "index_stats", project: "synapse", agent_id: "mein-agent" })',
@@ -695,6 +700,28 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
         description: 'Bilder/Videos in Qdrant indexieren fuer semantische Suche.',
         params: 'project (req), path (req, absolut), recursive',
         example: 'admin({ action: "index_media", project: "synapse", path: "/home/user/images" })',
+      },
+      jev_status: {
+        description: 'Wirksamer Jev-Stand je Funktion fuer project (an/aus, Ebene, Grund), gesetzte Schalter, Budget, Kosten der letzten 31 Tage, ob das Tool jev in tools/list steht.',
+        params: 'project (empfohlen)',
+        example: 'admin({ action: "jev_status", project: "synapse", agent_id: "koordinator" })',
+      },
+      jev_schalten: {
+        description: 'Jev an/aus: global, je Projekt, je Funktion. Nur Koordinator/User.',
+        params: 'ebene (req: global|projekt), project (req bei projekt), funktion (alle|empfehlung|entscheidung|plan_einordnen|erklaerungstopf|tool, Standard alle), aktiv (req, boolean), grund',
+        example: 'admin({ action: "jev_schalten", project: "synapse", ebene: "global", funktion: "alle", aktiv: false, grund: "Kosten sparen", agent_id: "koordinator" })',
+        tips: 'Wiedereinschalten mit aktiv:true auf DERSELBEN Ebene/Funktion. Global aus schlaegt jedes Projekt-an.',
+      },
+      jev_kosten: {
+        description: 'Jev-Kosten in USD: gesamt, je Tag (62 juengste), je Monat, je Projekt, je Funktion.',
+        params: 'seit, bis (ISO, Standard letzte 365 Tage), nur_dieses_projekt (mit project)',
+        example: 'admin({ action: "jev_kosten", project: "synapse", nur_dieses_projekt: true })',
+      },
+      jev_budget: {
+        description: 'Globale Kostengrenze je Abrechnungsmonat: status | setzen (grenze_usd, reset_tag) | entfernen | zuruecksetzen; kontostand:true liefert den OpenRouter-Kontostand.',
+        params: 'modus (status Standard), grenze_usd, reset_tag (1..28), kontostand',
+        example: 'admin({ action: "jev_budget", project: "synapse", modus: "setzen", grenze_usd: 5, agent_id: "koordinator" })',
+        tips: 'Ueberschreitung hoechstens um die Kosten der gerade laufenden Aufrufe minus Reservierung. Setzen/entfernen/zuruecksetzen nur Koordinator/User.',
       },
     },
   },
@@ -1614,6 +1641,7 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
       'Koordinator: Schalter setzen (abwesend an/aus), Protokoll zeigen (protokoll), Fehlentscheidungen markieren (ueberstimmen).',
     ].join(' '),
     when_not_to_use: [
+      'JEV ABGESCHALTET (admin jev_schalten, global/Projekt/Funktion tool oder entscheidung, oder Budget-Pause): das Tool antwortet mit error jev_aus bzw. entscheiden mit grund jev_aus, es gibt keinen Jev-Aufruf, keine Protokollzeile und keine Hinweise jev_modus/jev_hinweis/jev_entscheidet. Bei global aus fehlt das Tool ganz in der Tool-Liste. Stand: admin(action:"jev_status").',
       'Schalter aus = User ist da: dann gar nicht aufrufen (entscheiden macht keinen Jev-Aufruf, antwortet nur "User/Koordinator fragen" und schreibt keine Protokollzeile).',
       'Verbotene Kategorien: loeschen, deploy, git, secrets, aussenwirkung, kosten, regeln — die entscheidet nie Jev, der Server lehnt sie ab; unbekannte Kategorien ebenso.',
       'Nicht umkehrbare oder folgenreiche Entscheidungen — dort auf den User warten.',

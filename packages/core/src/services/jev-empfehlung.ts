@@ -41,10 +41,10 @@ import {
   type JevKandidat,
 } from './jev-criteria.js';
 import { KATALOG_QUELLE, KATALOG_STAND } from './jev-criteria-katalog.js';
+import { rufeJev, JEV_STANDARD_MODELL } from './jev-client.js';
 
-export const JEV_STANDARD_URL = 'https://openrouter.ai/api/v1/systemone';
-export const JEV_STANDARD_MODELL = 'typesafe/jev-1.13-20260917';
-const STANDARD_TIMEOUT_MS = 10_000;
+// URL/Modell-Standard stehen seit P15-T33 E0.5 im gemeinsamen Jev-Client (einzige Aufrufstelle).
+export { JEV_STANDARD_URL, JEV_STANDARD_MODELL } from './jev-client.js';
 const STANDARD_CONFIDENCE_TOR = 0.5;
 /** Ab dieser Wahrscheinlichkeit fuer "braucht > 200k Kontext" gilt 1M */
 const SCHWELLE_LANGER_KONTEXT = 0.5;
@@ -493,9 +493,7 @@ export async function empfehleFuerPlan(
       'Ohne Key gibt es keine Empfehlung; Plan und Tasks bleiben unveraendert.',
     );
   }
-  const url = process.env.JEV_API_URL?.trim() || JEV_STANDARD_URL;
   const modell = process.env.JEV_MODELL?.trim() || JEV_STANDARD_MODELL;
-  const timeoutMs = zahlAusEnv('JEV_TIMEOUT_MS') ?? STANDARD_TIMEOUT_MS;
   const torRoh = typeof optionen.confidence_tor === 'number' ? optionen.confidence_tor : zahlAusEnv('JEV_CONFIDENCE_TOR');
   const tor = torRoh !== undefined && torRoh >= 0 && torRoh <= 1 ? torRoh : STANDARD_CONFIDENCE_TOR;
   const schreiben = optionen.schreiben !== false;
@@ -668,33 +666,14 @@ export async function empfehleFuerPlan(
     });
     const fragen = Object.keys(questions).length;
 
-    const f = deps.fetch ?? fetch;
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
-    const start = Date.now();
-    let antwort: Response;
-    try {
-      antwort = await f(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
-        body: JSON.stringify({ model: modell, state, questions }),
-        signal: ctrl.signal,
-      });
-    } catch (err) {
-      if (ctrl.signal.aborted) return fehlschlag(`Jev-Timeout nach ${timeoutMs} ms, nichts geschrieben.`);
-      return fehlschlag(ohneKey(`Jev nicht erreichbar: ${err instanceof Error ? err.message : String(err)}`, key));
-    } finally {
-      clearTimeout(timer);
-    }
-    if (!antwort.ok) {
-      const text = await antwort.text().catch(() => '');
-      return fehlschlag(ohneKey(`Jev-Fehler HTTP ${antwort.status}: ${kurz(text, 300)}`, key));
-    }
-    const daten = (await antwort.json()) as {
+    // P15-T33 E0.5: einziger Jev-Aufruf ueber den gemeinsamen Client (Schalter, Budget, Kosten).
+    const jr = await rufeJev({ funktion: 'empfehlung', project, state, questions }, { fetch: deps.fetch });
+    if (!jr.ok) return fehlschlag(jr.grund === 'timeout' ? `${jr.message}, nichts geschrieben.` : jr.message);
+    const daten = jr.daten as {
       answers?: Record<string, { choice?: unknown; confidence?: unknown; noul?: unknown }>;
       usage?: { input_tokens?: number; cost?: number };
     };
-    const dauerMs = Date.now() - start;
+    const dauerMs = jr.dauer_ms;
     const answers = daten.answers ?? {};
     const zahl = (x: unknown) => (typeof x === 'number' ? x : 0);
 

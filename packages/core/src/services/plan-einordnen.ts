@@ -17,9 +17,8 @@
 
 import { getPlan, getAllePlaene, verschiebeTasks, type PlanRef } from './plans.js';
 import { planNummer, taskNummer } from './plan-kurz-ids.js';
-import { JEV_STANDARD_URL, JEV_STANDARD_MODELL } from './jev-empfehlung.js';
+import { rufeJev } from './jev-client.js';
 
-const STANDARD_TIMEOUT_MS = 10_000;
 const STANDARD_CONFIDENCE_TOR = 0.5;
 /** Hoechstzahl task_id je Aufruf */
 export const EINORDNEN_MAX_TASKS = 200;
@@ -152,9 +151,6 @@ export async function ordneTasksEin(
       'Ohne Key gibt es keinen Vorschlag; nichts wurde verschoben.',
     );
   }
-  const url = process.env.JEV_API_URL?.trim() || JEV_STANDARD_URL;
-  const modell = process.env.JEV_MODELL?.trim() || JEV_STANDARD_MODELL;
-  const timeoutMs = zahlAusEnv('JEV_TIMEOUT_MS') ?? STANDARD_TIMEOUT_MS;
   const torRoh = typeof optionen.confidence_tor === 'number' ? optionen.confidence_tor : zahlAusEnv('JEV_CONFIDENCE_TOR');
   const tor = torRoh !== undefined && torRoh >= 0 && torRoh <= 1 ? torRoh : STANDARD_CONFIDENCE_TOR;
   const verschieben = optionen.verschieben === true;
@@ -215,7 +211,6 @@ export async function ordneTasksEin(
     const tasks = aufgeloest as Array<Record<string, unknown>>;
 
     // --- Jev, Blocks a 50 ---------------------------------------------------
-    const f = deps.fetch ?? fetch;
     const zeilen: EinordnenZeile[] = [];
     let dauerMs = 0;
     let aufrufe = 0;
@@ -239,32 +234,14 @@ export async function ordneTasksEin(
         };
       });
 
-      const ctrl = new AbortController();
-      const timer = setTimeout(() => ctrl.abort(), timeoutMs);
-      const t0 = Date.now();
-      let antwort: Response;
-      try {
-        antwort = await f(url, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
-          body: JSON.stringify({ model: modell, state, questions }),
-          signal: ctrl.signal,
-        });
-      } catch (err) {
-        if (ctrl.signal.aborted) return fehlschlag(`Jev-Timeout nach ${timeoutMs} ms, nichts verschoben.`);
-        return fehlschlag(ohneKey(`Jev nicht erreichbar: ${err instanceof Error ? err.message : String(err)}`, key));
-      } finally {
-        clearTimeout(timer);
-      }
-      if (!antwort.ok) {
-        const text = await antwort.text().catch(() => '');
-        return fehlschlag(ohneKey(`Jev-Fehler HTTP ${antwort.status}: ${kurz(text, 300)}`, key));
-      }
-      const daten = (await antwort.json()) as {
+      // P15-T33 E0.5: einziger Jev-Aufruf ueber den gemeinsamen Client (Schalter, Budget, Kosten).
+      const jr = await rufeJev({ funktion: 'plan_einordnen', project, state, questions }, { fetch: deps.fetch });
+      if (!jr.ok) return fehlschlag(jr.grund === 'timeout' ? `${jr.message}, nichts verschoben.` : jr.message);
+      const daten = jr.daten as {
         answers?: Record<string, { choice?: unknown; confidence?: unknown }>;
         usage?: { input_tokens?: number; cost?: number };
       };
-      dauerMs += Date.now() - t0;
+      dauerMs += jr.dauer_ms;
       aufrufe++;
       if (typeof daten.usage?.input_tokens === 'number') inputTokens = (inputTokens ?? 0) + daten.usage.input_tokens;
       if (typeof daten.usage?.cost === 'number') cost = (cost ?? 0) + daten.usage.cost;

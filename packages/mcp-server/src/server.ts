@@ -32,6 +32,7 @@ import {
   stelleSchemaSicher,
   logToolCall,
   resolveAgentId,
+  filtereJevTool,
 } from '@synapse/core';
 import { ensureAgentsSchema, detectClaudeCli, heartbeatController, readStatus, postToInbox, postMessage, checkInbox } from '@synapse/agents';
 
@@ -186,8 +187,10 @@ export function createServer(): Server {
   );
 
   // EINE Quelle fuer beides: was hier ausgeliefert wird, ist genau das, wogegen PA-1 prueft.
+  // P15-T33 E0.5: ist Jev GLOBAL abgeschaltet (admin jev_schalten), fehlt das Tool jev in der Liste.
+  // Grenze: MCP-Clients holen die Liste meist nur beim Verbinden - wirksam ab der naechsten Sitzung.
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: ALLE_DEFINITIONEN,
+    tools: await filtereJevTool(ALLE_DEFINITIONEN),
   }));
 
   // Tool-Aufrufe verarbeiten

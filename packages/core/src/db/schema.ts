@@ -256,6 +256,44 @@ ALTER TABLE jev_entscheidungen ADD COLUMN IF NOT EXISTS runde INTEGER NOT NULL D
 ALTER TABLE jev_entscheidungen ADD COLUMN IF NOT EXISTS erste_id BIGINT;
 ALTER TABLE jev_entscheidungen ADD COLUMN IF NOT EXISTS offen_fuer_user BOOLEAN NOT NULL DEFAULT false;
 ALTER TABLE jev_entscheidungen ADD COLUMN IF NOT EXISTS blocker BOOLEAN NOT NULL DEFAULT false;
+-- P15-T33 E0.5 (11.10.2026): Jev-Schalter, Kosten je Aufruf, globales Budget. Nur neue Tabellen
+-- (CREATE ... IF NOT EXISTS), keine Aenderung an bestehenden, keine Sperren auf Bestand.
+-- jev_schalter: project '*' = global, funktion '*' = alle Funktionen; keine Zeile = an.
+CREATE TABLE IF NOT EXISTS jev_schalter (
+  project TEXT NOT NULL,
+  funktion TEXT NOT NULL,
+  aktiv BOOLEAN NOT NULL,
+  grund TEXT,
+  gesetzt_von TEXT,
+  gesetzt_am TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (project, funktion)
+);
+-- jev_aufrufe: ein Eintrag je Jev-Aufruf; usd = usage.cost (Quelle antwort) oder input_tokens x Listenpreis.
+CREATE TABLE IF NOT EXISTS jev_aufrufe (
+  id BIGSERIAL PRIMARY KEY,
+  zeit TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  project TEXT,
+  funktion TEXT NOT NULL,
+  agent_id TEXT,
+  input_tokens INTEGER,
+  output_tokens INTEGER,
+  usd NUMERIC(18,12) NOT NULL DEFAULT 0,
+  usd_quelle TEXT NOT NULL,
+  ms INTEGER,
+  ok BOOLEAN NOT NULL,
+  fehler TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_jev_aufrufe_zeit ON jev_aufrufe(zeit);
+-- jev_budget_stand: genau eine Zeile; grenze_usd NULL = keine Bremse; Zaehler je Abrechnungsmonat ab reset_tag.
+CREATE TABLE IF NOT EXISTS jev_budget_stand (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  grenze_usd NUMERIC(12,6),
+  reset_tag INTEGER NOT NULL DEFAULT 1,
+  monat DATE,
+  verbraucht_usd NUMERIC(18,12) NOT NULL DEFAULT 0,
+  gesetzt_von TEXT,
+  gesetzt_am TIMESTAMPTZ
+);
 
 CREATE TABLE IF NOT EXISTS onboarding_ruhe (
   id SMALLINT PRIMARY KEY DEFAULT 1 CHECK (id = 1),

@@ -16,6 +16,7 @@ import {
   setzeAbwesenheit,
   holeEntscheidungsProtokoll,
   ueberstimmeEntscheidung,
+  jevToolSperre,
 } from '@synapse/core';
 
 /** optionen kann als Objekt oder als JSON-String ankommen (Connector-Quirk) */
@@ -73,6 +74,9 @@ export const jevTool: ConsolidatedTool = {
   handler: async (args: Record<string, unknown>) => {
     const action = reqStr(args, 'action');
     const project = reqStr(args, 'project');
+    // P15-T33 E0.5: Funktion 'tool' fuer das Projekt (oder global/Budget) aus -> klare Ablehnung
+    const sperre = await jevToolSperre(project);
+    if (sperre) return sperre;
     switch (action) {
       case 'entscheiden':
         return (await entscheideRueckfrage(project, {

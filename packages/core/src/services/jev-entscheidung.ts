@@ -26,7 +26,8 @@
  */
 
 import { getPool } from '../db/client.js';
-import { JEV_STANDARD_URL, JEV_STANDARD_MODELL } from './jev-empfehlung.js';
+import { rufeJev } from './jev-client.js';
+import { jevWirksam, type JevWirkung } from './jev-schalter.js';
 
 export const ERLAUBTE_KATEGORIEN = ['variante', 'reihenfolge', 'umsetzungsweg', 'formulierung'] as const;
 export const VERBOTENE_KATEGORIEN = ['loeschen', 'deploy', 'git', 'secrets', 'aussenwirkung', 'kosten', 'regeln'] as const;
@@ -40,7 +41,6 @@ export const STANDARD_MAX_RUNDEN = 4;
 export const WEITERE_KEY = 'weitere';
 const WEITERE_BESCHREIBUNG = 'none of the four fits well enough; better options exist that are not listed';
 const MAX_VERWORFEN = 20;
-const STANDARD_TIMEOUT_MS = 10_000;
 const MAX_FRAGE = 500;
 const MAX_KONTEXT = 1500;
 const MAX_HINWEISE = 500;
@@ -64,6 +64,8 @@ export interface AbwesenheitsStand {
   gesetzt_von?: string | null;
   /** true = war an, ist aber per bis abgelaufen */
   abgelaufen?: boolean;
+  /** P15-T33 E0.5: Jev ist fuer das Projekt abgeschaltet (Schalter/Budget) - der gespeicherte Schalter wirkt dann nicht */
+  jev_aus?: string;
 }
 
 export interface EntscheidungsDeps {
@@ -99,12 +101,22 @@ export async function leseAbwesenheit(project: string): Promise<AbwesenheitsStan
   if (rows.length === 0) return { aktiv: false };
   const z = rows[0] as { aktiv: boolean; seit: Date | null; bis: Date | null; gesetzt_von: string | null };
   const abgelaufen = z.aktiv && z.bis !== null && z.bis !== undefined && new Date(z.bis).getTime() <= Date.now();
+  // P15-T33 E0.5: ist Jev (tool/entscheidung) fuer das Projekt aus, entscheidet Jev nicht - alle
+  // Hinweise, die an aktiv haengen (jev_modus, jev_hinweis, jev_entscheidet), verschwinden damit.
+  let jevAus: JevWirkung | undefined;
+  if (z.aktiv && !abgelaufen) {
+    for (const f of ['tool', 'entscheidung'] as const) {
+      const w = await jevWirksam(project, f);
+      if (!w.an) { jevAus = w; break; }
+    }
+  }
   return {
-    aktiv: z.aktiv && !abgelaufen,
+    aktiv: z.aktiv && !abgelaufen && !jevAus,
     seit: z.seit,
     bis: z.bis,
     gesetzt_von: z.gesetzt_von,
     ...(abgelaufen ? { abgelaufen: true } : {}),
+    ...(jevAus ? { jev_aus: jevAus.text ?? 'Jev ist abgeschaltet.' } : {}),
   };
 }
 
@@ -197,7 +209,13 @@ export function hinweisText(stand: AbwesenheitsStand): string | undefined {
  */
 export async function baueAbwesenheitsHinweis(project: string): Promise<string | undefined> {
   try {
-    return hinweisText(await leseAbwesenheit(project));
+    const stand = await leseAbwesenheit(project);
+    if (stand.aktiv) return hinweisText(stand);
+    // P15-T33 E0.5: eine Budget-Pause meldet sich im Onboarding (statt still zu verschwinden); ein
+    // ausdruecklich abgeschalteter Jev (global/Projekt) bleibt dagegen ganz ohne Hinweis.
+    const w = await jevWirksam(project, 'entscheidung');
+    if (!w.an && w.ebene === 'budget') return w.text;
+    return undefined;
   } catch {
     return undefined;
   }
@@ -472,6 +490,11 @@ export async function entscheideRueckfrage(
   const basis = { agent, task_id, kategorie, frage, typ, optionen: criteria ?? null, runde, erste_id: ersteId, offen_fuer_user: false, blocker: false };
 
   try {
+    // --- P15-T33 E0.5: Jev abgeschaltet (Schalter/Budget) = kein Aufruf, kein Protokoll --------
+    const jevW = await jevWirksam(project, 'entscheidung');
+    if (!jevW.an) {
+      return { success: true, entschieden: false, grund: 'jev_aus', message: `${jevW.text ?? 'Jev ist abgeschaltet.'} ${FRAGE_NEU}.`, jev_aus: jevW };
+    }
     // --- Schalter: aus = nichts kostet etwas, nichts wird protokolliert -------
     const stand = await leseAbwesenheit(project);
     if (!stand.aktiv) {
@@ -544,13 +567,9 @@ export async function entscheideRueckfrage(
     }
 
     // --- Jev -----------------------------------------------------------------------------
-    const key = process.env.JEV_OPENROUTER_API_KEY?.trim() ?? '';
-    if (!key) {
+    if (!process.env.JEV_OPENROUTER_API_KEY?.trim()) {
       return abgelehnt('kein_key', 'Jev nicht konfiguriert (JEV_OPENROUTER_API_KEY fehlt in der Umgebung dieses Prozesses).');
     }
-    const url = process.env.JEV_API_URL?.trim() || JEV_STANDARD_URL;
-    const modell = process.env.JEV_MODELL?.trim() || JEV_STANDARD_MODELL;
-    const timeoutMs = zahlAusEnv('JEV_TIMEOUT_MS') ?? STANDARD_TIMEOUT_MS;
     const torRoh = typeof anfrage.confidence_tor === 'number' ? anfrage.confidence_tor : zahlAusEnv('JEV_ENTSCHEIDUNG_TOR');
     const tor = torRoh !== undefined && torRoh >= 0 && torRoh <= 1 ? torRoh : STANDARD_ENTSCHEIDUNG_TOR;
     const hinweise = kurz(anfrage.hinweise, MAX_HINWEISE);
@@ -580,35 +599,20 @@ export async function entscheideRueckfrage(
         ? { type: 'noul', instructions: `${grundText} Give the probability that the answer is yes.` }
         : { type: 'choice', instructions: grundText, criteria };
 
-    const f = deps.fetch ?? fetch;
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
-    let antwort: Response;
-    try {
-      antwort = await f(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
-        body: JSON.stringify({ model: modell, state, questions: { entscheidung: question } }),
-        signal: ctrl.signal,
-      });
-    } catch (err) {
-      const msg = ctrl.signal.aborted
-        ? `Jev-Timeout nach ${timeoutMs} ms.`
-        : ohneKey(`Jev nicht erreichbar: ${err instanceof Error ? err.message : String(err)}`, key);
+    // P15-T33 E0.5: einziger Jev-Aufruf ueber den gemeinsamen Client (Schalter, Budget, Kosten).
+    const jr = await rufeJev({ funktion: 'entscheidung', project, agent_id: agent, state, questions: { entscheidung: question } }, { fetch: deps.fetch });
+    if (!jr.ok) {
+      if (jr.grund === 'aus' || jr.grund === 'budget') {
+        return { success: true, entschieden: false, grund: 'jev_aus', message: `${jr.message} ${FRAGE_NEU}.`, jev_aus: jr.wirkung, schalter };
+      }
+      if (jr.grund === 'kein_key') {
+        return abgelehnt('kein_key', 'Jev nicht konfiguriert (JEV_OPENROUTER_API_KEY fehlt in der Umgebung dieses Prozesses).');
+      }
+      const msg = jr.grund === 'timeout' ? `${jr.message}.` : jr.message;
       const protokoll_id = await protokolliere(project, { ...basis, wahl: null, confidence: null, entschieden: false, grund: 'jev_fehler', jev_aufruf: true });
       return { success: false, entschieden: false, grund: 'jev_fehler', message: `${msg} ${FRAGE_NEU}.`, protokoll_id, schalter };
-    } finally {
-      clearTimeout(timer);
     }
-    if (!antwort.ok) {
-      const text = await antwort.text().catch(() => '');
-      const protokoll_id = await protokolliere(project, { ...basis, wahl: null, confidence: null, entschieden: false, grund: 'jev_fehler', jev_aufruf: true });
-      return {
-        success: false, entschieden: false, grund: 'jev_fehler', protokoll_id, schalter,
-        message: `${ohneKey(`Jev-Fehler HTTP ${antwort.status}: ${kurz(text, 300)}`, key)} ${FRAGE_NEU}.`,
-      };
-    }
-    const daten = (await antwort.json()) as { answers?: Record<string, { choice?: string; confidence?: number; noul?: number }> };
+    const daten = jr.daten as { answers?: Record<string, { choice?: string; confidence?: number; noul?: number }> };
     const a = daten.answers?.entscheidung;
 
     if (typ === 'noul') {

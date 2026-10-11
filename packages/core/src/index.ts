@@ -795,6 +795,20 @@ export {
   WEITERE_KEY,
   STANDARD_RATE_PRO_STUNDE,
 } from './services/jev-entscheidung.js';
+// P15-T33 E0.5: Jev-Schalter, gemeinsamer Jev-Client, Kosten/Budget, Steuerung am admin-Tool
+export {
+  JEV_FUNKTIONEN, JEV_ALLE, JevSchalterFehler, jevWirksam, jevEntscheidungsHinweiseAn, filtereJevTool, jevToolSperre,
+  setzeJevSchalter, jevSchalterListe, leereJevSchalterCache,
+} from './services/jev-schalter.js';
+export type { JevFunktion, JevWirkung, JevSchalterZeile, SetzeJevSchalterOptionen } from './services/jev-schalter.js';
+export { rufeJev, jevKonfig } from './services/jev-client.js';
+export type { JevAnfrage, JevErgebnis, JevAntwortDaten, JevKonfig } from './services/jev-client.js';
+export {
+  bucheJevAufruf, jevKostenAusUsage, jevPreisJeMio, jevBudgetStand, jevBudgetPause, reserviereJevBudget, bucheJevBudget,
+  setzeJevBudget, setzeJevBudgetZurueck, jevKostenUebersicht, holeJevKontostand,
+} from './services/jev-kosten.js';
+export type { JevBudgetStand, JevKostenUebersicht, JevAufrufBuchung, JevUsdQuelle } from './services/jev-kosten.js';
+export { JEV_ADMIN_ACTIONS, JEV_ADMIN_BESCHREIBUNG, JEV_ADMIN_PARAMETER, istJevAdminAction, fuehreJevAdminAus } from './services/jev-admin.js';
 
 // Agenten-Wissen in der Datenbank (API-Bruecke Schritt 4). Additiv — der
 // Dateiweg in packages/agents/src/skills.ts bleibt unveraendert bestehen.

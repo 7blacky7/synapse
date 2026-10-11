@@ -209,6 +209,8 @@ import { pruefeUnbekannteParameter, baueErlaubteParameter } from '@synapse/core'
 import { ASSET_INTEL_DEFINITION, fuehreAssetIntelAus, ergaenzeCodeIntelAntwort } from '@synapse/core';
 // intern (P14): Definition und Dispatcher aus core; nur bei SYNAPSE_INTERN_TOOL=1 in der Liste.
 import { INTERN_DEFINITION, INTERN_TOOL_AUS, internToolAktiv, fuehreInternAus } from '@synapse/core';
+// P15-T33 E0.5: Jev-Schalter (tools/list-Filter, Sperre des Tools jev) und Jev-Steuerung am admin-Tool
+import { filtereJevTool, jevToolSperre, istJevAdminAction, fuehreJevAdminAus, JEV_ADMIN_ACTIONS, JEV_ADMIN_BESCHREIBUNG, JEV_ADMIN_PARAMETER } from '@synapse/core';
 import {
   listeIgnoreRegeln,
   fuegeIgnoreRegelnHinzu,
@@ -899,13 +901,13 @@ export const MCP_TOOLS = [
   // 12. admin
   {
     name: 'admin',
-    description: 'Wartungs- und Statistik-Operationen der eigenen Synapse-Instanz: Index-Statistiken, Backup-Restore innerhalb der eigenen DB, Ideen-Eingang, Indexierung lokaler Mediendateien im Projekt-Verzeichnis. Wirkt nur auf die User-eigene lokale Synapse-Datenbank. Keine externen Systeme.',
+    description: 'Wartungs- und Statistik-Operationen der eigenen Synapse-Instanz: Index-Statistiken, Backup-Restore innerhalb der eigenen DB, Ideen-Eingang, Indexierung lokaler Mediendateien im Projekt-Verzeichnis. Wirkt nur auf die User-eigene lokale Synapse-Datenbank. Keine externen Systeme.' + JEV_ADMIN_BESCHREIBUNG,
     inputSchema: {
       type: 'object',
       properties: {
         action: {
           type: 'string',
-          enum: ['migrate', 'restore', 'save_idea', 'confirm_idea', 'index_media', 'index_stats', 'detailed_stats'],
+          enum: ['migrate', 'restore', 'save_idea', 'confirm_idea', 'index_media', 'index_stats', 'detailed_stats', ...JEV_ADMIN_ACTIONS],
           description: 'Die auszufuehrende Admin-Action',
         },
         project: { type: 'string', description: 'Projekt-Name (erforderlich fuer alle Actions ausser confirm_idea)' },
@@ -929,6 +931,8 @@ export const MCP_TOOLS = [
           enum: ['koordinator', 'spezialist', 'subagent', 'channelverwalter'],
           description: 'Agenten-Rolle fuer rollenspezifisches Onboarding (optional, Fallback: Erkennung ueber agent_id)',
         },
+        // P15-T33 E0.5: Jev-Steuerung (jev_status, jev_schalten, jev_kosten, jev_budget)
+        ...JEV_ADMIN_PARAMETER,
       },
       required: ['action'],
     },
@@ -2253,6 +2257,11 @@ async function handleToolCallKern(
   // intern (P14): ohne SYNAPSE_INTERN_TOOL=1 gibt es das Tool nicht — klare Ablehnung statt
   // "unbekannter Parameter" aus PA-1 (ohne Schema waere jeder Parameter unbekannt).
   if (name === 'intern' && !internToolAktiv()) return { ...INTERN_TOOL_AUS };
+  // P15-T33 E0.5: Jev fuer das Projekt (oder global/Budget) abgeschaltet -> das Tool jev lehnt klar ab.
+  if (name === 'jev') {
+    const sperre = await jevToolSperre(typeof args.project === 'string' ? args.project : null);
+    if (sperre) return sperre;
+  }
 
   const parameterBefund = pruefeUnbekannteParameter(
     name,
@@ -4246,6 +4255,8 @@ async function handleToolCallKern(
     // 12. ADMIN
     // =================================================================
     case 'admin': {
+      // P15-T33 E0.5: Jev-Schalter, Kosten, Budget (Logik in core jev-admin.ts, identisch zu stdio)
+      if (istJevAdminAction(action)) return await fuehreJevAdminAus(action as string, args, effectiveAgentId);
       switch (action) {
         case 'migrate':
           return { success: false, error: 'Action "migrate" ist nur ueber MCP Server (stdio) verfuegbar' };
@@ -6057,7 +6068,8 @@ export async function mcpRoutes(fastify: FastifyInstance): Promise<void> {
 
         case 'tools/list':
           // Hauptagenten-Aufrufer sehen GENAU EIN Werkzeug (Auflage 26.08.2026).
-          result = { tools: hauptagentSession ? MCP_TOOLS.filter((t) => t.name === 'artefakt') : MCP_TOOLS };
+          // P15-T33 E0.5: bei GLOBAL abgeschaltetem Jev fehlt das Tool jev.
+          result = { tools: hauptagentSession ? MCP_TOOLS.filter((t) => t.name === 'artefakt') : await filtereJevTool(MCP_TOOLS) };
           break;
 
         case 'tools/call': {
@@ -6251,7 +6263,8 @@ export async function mcpRoutes(fastify: FastifyInstance): Promise<void> {
 
         case 'tools/list':
           // Hauptagenten-Aufrufer sehen GENAU EIN Werkzeug (Auflage 26.08.2026).
-          result = { tools: hauptagentSession ? MCP_TOOLS.filter((t) => t.name === 'artefakt') : MCP_TOOLS };
+          // P15-T33 E0.5: bei GLOBAL abgeschaltetem Jev fehlt das Tool jev.
+          result = { tools: hauptagentSession ? MCP_TOOLS.filter((t) => t.name === 'artefakt') : await filtereJevTool(MCP_TOOLS) };
           break;
 
         case 'tools/call': {
