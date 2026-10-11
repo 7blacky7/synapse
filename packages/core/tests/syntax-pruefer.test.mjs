@@ -154,6 +154,87 @@ console.log('Positivkontrollen E4');
   pruefe('SOL3 Solidity gueltig', (await def('solidity').pruefe('pragma solidity ^0.8.0;\ncontract A { mapping(address => uint) b; event E(uint a); function f(uint x) external returns (uint) { emit E(x); return x * 2; } }\n', 'x.sol')).length === 0);
 }
 
+console.log('P16-T10 TS/JS-Grammatik (Binder/Checker)');
+{
+  const ts = (c, p) => def('typescript').pruefe(c, p);
+  const erst = (c, p) => ts(c, p)[0] ?? null;
+  // Rot am Stand vor P16-T10 (nur parseDiagnostics): jede Zeile muss jetzt erkannt werden
+  const rot = [
+    ['GR1 .mjs await in nicht-async Funktion', 'export function f() {\n  return await g();\n}\n', 'a.mjs', 'TS1308', 2],
+    ['GR2 .js await in nicht-async Funktion (gemma javascript_1)', 'function f() {\n  return (await new Promise((r) => r(1)));\n}\n', 'a.js', 'TS1308', 2],
+    ['GR3 .ts doppelter Modifier', 'class A {\n  public public x = 1;\n}\n', 'a.ts', 'TS1028', 2],
+    ['GR4 .ts Modifier-Reihenfolge', 'class A { static public x = 1; }\n', 'a.ts', 'TS1029', 1],
+    ['GR5 .ts return ausserhalb Funktion', 'const a = 1;\nreturn a;\n', 'a.ts', 'TS1108', 2],
+    ['GR6 .mjs ohne import/export ist trotzdem Modul (strict): reserviertes Wort', 'const x = 1;\nconst package = x;\n', 'a.mjs', 'TS1214', 2],
+    ['GR7 .js Typannotation', 'function f(x: number) { return x; }\n', 'a.js', 'TS8010', 1],
+    ['GR8 .js let doppelt', 'let a = 1;\nlet a = 2;\n', 'a.js', 'TS2451', 1],
+    ['GR9 .ts break ausserhalb Schleife', 'for (;;) {}\nbreak;\n', 'a.ts', 'TS1105', 2],
+    ['GR10 .ts Pflichtparameter nach optionalem', 'export function f(a?: number, b: number) { return b; }\n', 'a.ts', 'TS1016', 1],
+    ['GR11 .ts yield ausserhalb Generator', 'export function h() {\n  yield 1;\n}\n', 'a.ts', 'TS1163', 2],
+    ['GR12 .tsx doppeltes JSX-Attribut', 'export const E = () => <div a="1" a="2" />;\n', 'a.tsx', 'TS17001', 1],
+    ['GR13 .ts zwei export default', 'export default 1;\nexport default 2;\n', 'a.ts', 'TS2528', 1],
+    ['GR14 .ts reserviertes Wort im Modul', 'export const interface = 1;\n', 'a.ts', 'TS1214', 1],
+    ['GR15 .ts abstrakte Methode in normaler Klasse', 'export class B {\n  abstract g(): void;\n}\n', 'a.ts', 'TS1244', 2],
+  ];
+  for (const [name, c, p, code, zeile] of rot) {
+    const m = erst(c, p);
+    pruefe(name, m?.code === code && m?.zeile === zeile && typeof m?.spalte === 'number' && !!m?.warum && !!m?.wie && m?.wo?.[0]?.includes(code.toLowerCase()), m);
+  }
+  const m = erst('function f() {\n  return await g();\n}\n', 'a.mjs');
+  pruefe('GR16 Grammatik-Befund: Spalte des await, eigener warum-Text', m?.spalte === 10 && /Grammatikregel/.test(m?.warum) && /async/.test(m?.wie), m);
+  const pz = ts('function f() {\n  await g();\n  const a = ;\n}\n', 'a.ts');
+  pruefe('GR17 Parse-Fehler gehen vor (nur TS1109, kein TS1308)', pz.length === 1 && pz[0].code === 'TS1109', pz);
+
+  // Gueltig: darf nichts melden (Top-Level-await, CommonJS, Typfehler, Dekoratoren, Flow, JSX)
+  const gruen = [
+    ['GN1 .mjs Top-Level-await ohne Export', 'const x = await fetch("u");\nconsole.log(x);\n', 'a.mjs'],
+    ['GN2 .ts Top-Level-await mit Export', 'export const x = await g();\n', 'a.ts'],
+    ['GN3 .ts Top-Level-await ohne Import/Export (Moduldatei je nach tsconfig)', 'const x = await g();\n', 'a.ts'],
+    ['GN4 .js Top-Level-await', 'import { a } from "./a.js";\nawait a();\n', 'a.js'],
+    ['GN5 .cjs return auf oberster Ebene', 'if (!process.env.X) return;\nmodule.exports = 1;\n', 'a.cjs'],
+    ['GN6 .js return auf oberster Ebene (CommonJS)', 'if (x) return 1;\n', 'a.js'],
+    ['GN7 .ts nur Typfehler und unbekannte Namen', 'const x: number = "s";\nfoo();\nArray.from([]);\nimport y from "gibt-es-nicht";\nexport { y };\n', 'a.ts'],
+    ['GN8 .ts async/await, for await, Generator', 'export async function f(b: AsyncIterable<number>) {\n  for await (const a of b) await a;\n}\nexport function* g() { yield 1; }\n', 'a.ts'],
+    ['GN9 .ts NestJS-Parameterdekorator', 'import { Body, Controller, Post } from "@nestjs/common";\n@Controller("x")\nexport class C {\n  @Post()\n  m(@Body() b: unknown) { return b; }\n}\n', 'a.ts'],
+    ['GN10 .js Flow-Annotation', '// @flow\nfunction f(x: number): number { return x; }\nmodule.exports = f;\n', 'a.js'],
+    ['GN11 .jsx JSX', 'export const E = () => <div className="x">{1}</div>;\n', 'a.jsx'],
+    ['GN12 .tsx Generics + JSX', 'export function L<T,>(p: { xs: T[] }) {\n  return <ul>{p.xs.map((x, i) => <li key={i}>{String(x)}</li>)}</ul>;\n}\n', 'a.tsx'],
+    ['GN13 .ts enum/namespace/interface/abstract/overloads', 'export enum E { A }\nexport namespace N { export const x = 1; }\nexport interface I { a: number }\nexport abstract class A { abstract f(): void; }\nexport function o(a: string): string;\nexport function o(a: number): number;\nexport function o(a: any) { return a; }\n', 'a.ts'],
+    ['GN14 .d.ts Deklarationen', 'declare module "x" {\n  export function f(): void;\n}\nexport declare const a: number;\n', 'a.d.ts'],
+    ['GN15 .js Skript mit with und package (sloppy mode)', 'var package = 1;\nwith (o) { x = package; }\n', 'a.js'],
+    ['GN16 .mts/.cts gueltig', 'export const a = 1;\n', 'a.mts'],
+  ];
+  for (const [name, c, p] of gruen) {
+    const r = ts(c, p);
+    pruefe(name, r.length === 0, r);
+  }
+  pruefe('GN17 cts gueltig', ts('const a = require("x");\nexport = a;\n', 'a.cts').length === 0, ts('const a = require("x");\nexport = a;\n', 'a.cts'));
+
+  // Eingebettete Bloecke bleiben beim reinen Parse (Doku-Schnipsel mit Top-Level-return/await sind normal)
+  pruefe('GE1 Markdown-Fence mit return/await ausserhalb Funktion: keine Meldung', (await def('markdown-codebloecke').pruefe('```js\nreturn await x;\n```\n```ts\nfunction f() { await g(); }\n```\n', 'x.md')).length === 0);
+  pruefe('GE2 pruefeTypescript (eingebettet) bleibt Parse-only', K.pruefeTypescript('function f() { await g(); }\n', 'e.js').length === 0);
+
+  // Schalter und Zeitdeckel
+  const alt = process.env.SYNTAX_TS_GRAMMATIK_MS;
+  const altKb = process.env.SYNTAX_TS_GRAMMATIK_MAX_KB;
+  process.env.SYNTAX_TS_GRAMMATIK_MS = '0';
+  pruefe('GS1 SYNTAX_TS_GRAMMATIK_MS=0 schaltet die Grammatikstufe ab', ts('function f() { await g(); }\n', 'a.ts').length === 0 && ts('const a = ;\n', 'a.ts').length === 1);
+  process.env.SYNTAX_TS_GRAMMATIK_MS = '0.000001';
+  process.env.SYNTAX_TS_GRAMMATIK_MAX_KB = '0';
+  const gross = Array.from({ length: 3000 }, (_, i) => `export function f${i}(a: number) { const b = a * ${i}; return [b].map((x) => x + 1); }`).join('\n') + '\nfunction z() { await q(); }\n';
+  const t0 = performance.now();
+  const gd = ts(gross, 'gross.ts');
+  pruefe('GS2 gerissener Zeitdeckel: kein Befund, kein Wurf, schnell', gd.length === 0 && performance.now() - t0 < 2000, gd.length);
+  process.env.SYNTAX_TS_GRAMMATIK_MS = '60000';
+  delete process.env.SYNTAX_TS_GRAMMATIK_MAX_KB;
+  pruefe('GS4 Standard-Groessengrenze 32 KB: grosse Datei nur geparst', gross.length > 32 * 1024 && ts(gross, 'gross.ts').length === 0);
+  process.env.SYNTAX_TS_GRAMMATIK_MAX_KB = '0';
+  const g2 = ts(gross, 'gross.ts');
+  if (alt === undefined) delete process.env.SYNTAX_TS_GRAMMATIK_MS; else process.env.SYNTAX_TS_GRAMMATIK_MS = alt;
+  if (altKb === undefined) delete process.env.SYNTAX_TS_GRAMMATIK_MAX_KB; else process.env.SYNTAX_TS_GRAMMATIK_MAX_KB = altKb;
+  pruefe('GS3 ohne Groessengrenze, grosser Deckel: Befund am Dateiende', g2.length === 1 && g2[0].code === 'TS1308' && g2[0].zeile === 3001, g2[0]);
+}
+
 // ─── Einzelweg ueber registriereStandardSyntaxPruefer (Pool) ───
 console.log('Einzelweg mit Pool');
 {

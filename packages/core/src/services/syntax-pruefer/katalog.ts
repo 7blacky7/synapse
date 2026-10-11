@@ -5,13 +5,15 @@
  * mit SYNTAX_WORKER_THREADS=0 im Haupt-Thread. Die Bibliotheken werden erst beim ersten Aufruf geladen
  * (createRequire), damit der Haupt-Thread beim Registrieren nur die Metadaten braucht.
  *
- * Jeder Pruefer meldet NUR Parse-Fehler (keine Typen, keine Lint-Regeln): Zeile/Spalte 1-basiert,
+ * Jeder Pruefer meldet NUR Syntax-/Grammatikfehler (keine Typen, keine Lint-Regeln; TS/JS seit P16-T10 zusaetzlich
+ * die Grammatikfehler aus Binder/Checker, siehe pruefeTypescriptMitGrammatik): Zeile/Spalte 1-basiert,
  * Meldung des Werkzeugs, dazu warum/wie/wo im Befundformat (fehlermuster-pruefung.ts).
  * sperrfaehig steht nur dort auf true, wo der Falsch-Positiv-Test (tests/syntax-pruefer-fp.mjs)
  * an echten Index-Dateien 0 Fehlalarme ergab.
  */
 
 import { createRequire } from 'node:module';
+import { performance } from 'node:perf_hooks';
 import type { SyntaxMeldung } from '../fehlermuster-pruefung.js';
 
 const require = createRequire(import.meta.url);
@@ -73,6 +75,19 @@ const TS_WIE: Record<number, string> = {
   1161: 'Regulaeren Ausdruck mit / schliessen.',
   17002: 'Schliessendes JSX-Tag passend zum oeffnenden Tag setzen.',
   17008: 'Dem JSX-Element fehlt das schliessende Tag.',
+  // Grammatikfehler aus Binder/Checker (P16-T10)
+  1028: 'Den doppelten Zugriffsmodifier entfernen.',
+  1029: 'Modifier umstellen: Zugriffsmodifier (public/private/protected) vor static/readonly/abstract/async.',
+  1030: 'Den doppelten Modifier entfernen.',
+  1016: 'Pflichtparameter vor die optionalen Parameter stellen oder dem Parameter einen Standardwert geben.',
+  1104: 'continue nur innerhalb einer Schleife verwenden.',
+  1105: 'break nur innerhalb einer Schleife oder eines switch verwenden.',
+  1108: 'return gehoert in eine Funktion; auf oberster Ebene eines ES-Moduls bzw. einer TS-Datei ist es ungueltig.',
+  1163: 'Die Funktion als Generator (function*) deklarieren oder yield entfernen.',
+  1308: 'Die umgebende Funktion als async deklarieren (async function / async () =>) oder das await entfernen. Top-Level-await geht nur auf oberster Ebene eines ES-Moduls.',
+  2451: 'Die Variable nur einmal mit let/const deklarieren; danach nur zuweisen oder umbenennen.',
+  2528: 'Nur ein export default je Modul.',
+  17001: 'Das doppelte JSX-Attribut entfernen.',
 };
 
 function tsScriptKind(pfad: string): number {
@@ -85,10 +100,18 @@ function tsScriptKind(pfad: string): number {
   }
 }
 
-export function pruefeTypescript(inhalt: string, pfad: string): SyntaxMeldung[] {
-  const t = ts();
-  const sf = t.createSourceFile(pfad || 'datei.ts', inhalt, t.ScriptTarget.Latest, false, tsScriptKind(pfad));
-  const diags = ((sf as unknown as { parseDiagnostics?: import('typescript').DiagnosticWithLocation[] }).parseDiagnostics) ?? [];
+const TS_WARUM_PARSE = 'Der TypeScript-Parser kann den Quelltext an dieser Stelle nicht lesen; die Datei laesst sich so nicht kompilieren bzw. ausfuehren. Weitere Meldungen danach sind meist Folgefehler.';
+const TS_WIE_PARSE = 'Die Stelle und die Zeilen davor pruefen (Klammern, Kommas, Anfuehrungszeichen).';
+const TS_WARUM_GRAMMATIK = 'Der Quelltext ist lesbar, verletzt aber eine Grammatikregel von JavaScript/TypeScript (TypeScript meldet sie erst nach dem Parsen, im Binder/Checker). Node bzw. tsc lehnen die Datei an dieser Stelle ab; es ist kein Typfehler.';
+const TS_WIE_GRAMMATIK = 'Die im Meldungstext genannte Regel an dieser Stelle einhalten. TS8xxx in einer JavaScript-Datei: TypeScript-Syntax (Typannotation, Modifier, Interface ...) entfernen oder die Datei als .ts/.tsx fuehren.';
+
+type TsDiagnose = import('typescript').Diagnostic;
+
+function parseDiagnosen(sf: import('typescript').SourceFile): readonly TsDiagnose[] {
+  return ((sf as unknown as { parseDiagnostics?: import('typescript').DiagnosticWithLocation[] }).parseDiagnostics) ?? [];
+}
+
+function tsMeldungen(t: TsModul, sf: import('typescript').SourceFile, diags: readonly TsDiagnose[], warum: string, wieStandard: string): SyntaxMeldung[] {
   return diags.map((d) => {
     const lc = sf.getLineAndCharacterOfPosition(d.start ?? 0);
     return {
@@ -96,11 +119,142 @@ export function pruefeTypescript(inhalt: string, pfad: string): SyntaxMeldung[] 
       spalte: lc.character + 1,
       code: `TS${d.code}`,
       meldung: t.flattenDiagnosticMessageText(d.messageText, ' '),
-      warum: 'Der TypeScript-Parser kann den Quelltext an dieser Stelle nicht lesen; die Datei laesst sich so nicht kompilieren bzw. ausfuehren. Weitere Meldungen danach sind meist Folgefehler.',
-      wie: TS_WIE[d.code] ?? 'Die Stelle und die Zeilen davor pruefen (Klammern, Kommas, Anfuehrungszeichen).',
+      warum,
+      wie: TS_WIE[d.code] ?? wieStandard,
       wo: [`https://typescript.tv/errors/#ts${d.code}`],
     };
   });
+}
+
+/** Nur Parse-Fehler (parseDiagnostics). Fuer eingebettete Bloecke (HTML-script, Markdown-Fences, Vue/Svelte): dort sind Ausschnitte mit Top-Level-return/await normal. */
+export function pruefeTypescript(inhalt: string, pfad: string): SyntaxMeldung[] {
+  const t = ts();
+  const sf = t.createSourceFile(pfad || 'datei.ts', inhalt, t.ScriptTarget.Latest, false, tsScriptKind(pfad));
+  return tsMeldungen(t, sf, parseDiagnosen(sf), TS_WARUM_PARSE, TS_WIE_PARSE);
+}
+
+/**
+ * P16-T10: Grammatikfehler, die TypeScript erst im Binder/Checker meldet (z. B. TS1308 await ausserhalb async).
+ * ALLOWLIST statt Blocklist. Basis ist TypeScripts eigene Liste plainJSErrors (program.ts): die Codes, die TS
+ * selbst in ungeprueftem JavaScript immer meldet, weil sie unabhaengig von Typen sind. OHNE deren Laufzeit-/Typcodes
+ * 2803, 2839, 18013. Dazu reine TS-Grammatik (Modifier, Parameter, Accessoren, ambient, return ausserhalb Funktion).
+ * Bewusst NICHT: Typfehler TS2xxx, Optionen-abhaengige Codes wie Top-Level-await je nach module/Moduldatei
+ * (1375, 1378, 1309, 1431, 1432), Parameter-Dekoratoren (1206, haengt an experimentalDecorators), Codes, die eine lib
+ * brauchen (1064, 1055, 2697).
+ */
+const TS_GRAMMATIK_CODES: ReadonlySet<number> = new Set([
+  // Binder: Strict-Mode, reservierte Woerter, Redeklaration, mehrfacher Default-Export
+  1100, 1101, 1102, 1210, 1214, 1215, 1262, 1344, 1359, 2451, 2480, 2492, 2528, 2752, 2753,
+  // Anweisungen und Spruenge
+  1104, 1105, 1107, 1108, 1113, 1114, 1115, 1116, 18041,
+  // await, yield, for await
+  1103, 1106, 1163, 1308, 2852, 18038,
+  // Modifier
+  1028, 1029, 1030, 1031, 1042, 1044, 1070, 1071, 1089, 1090, 1184, 1191, 1193, 1243, 1244, 1248,
+  // Parameter, Accessoren, Konstruktoren
+  1013, 1014, 1015, 1016, 1047, 1048, 1049, 1051, 1052, 1053, 1054, 1092, 1093, 1094, 1095, 1341, 1368, 18006, 18012,
+  // Deklarationen, Destrukturierung, Schleifenkoepfe
+  1091, 1123, 1155, 1156, 1182, 1186, 1188, 1189, 1190, 1197, 1211, 1255, 2462, 2501, 2566,
+  // ambient (.d.ts, declare)
+  1039, 1040, 1046, 1183,
+  // Klassen und private Namen
+  1111, 1172, 1174, 1451, 18016, 18036,
+  // Ausdruecke, Objektliterale, Import/Export
+  1005, 1009, 1097, 1117, 1162, 1171, 1200, 1258, 1312, 1325, 1358, 1450, 1473, 1474, 5076, 17012,
+  // JSX
+  2633, 17000, 17001, 18007,
+]);
+
+/** Laufzeitdeckel der Grammatikstufe in ms (Env SYNTAX_TS_GRAMMATIK_MS, Standard 200, 0 = Grammatikstufe aus). */
+function tsGrammatikMs(): number {
+  const roh = process.env.SYNTAX_TS_GRAMMATIK_MS;
+  const n = Number(roh);
+  return roh !== undefined && roh.trim() !== '' && Number.isFinite(n) && n >= 0 ? n : 200;
+}
+
+/**
+ * Groessengrenze der Grammatikstufe in KB (Env SYNTAX_TS_GRAMMATIK_MAX_KB, Standard 32, 0 = keine Grenze). Der Checker kostet
+ * rund 0,5-0,7 ms je KB Implementierungscode (gemessen 11.10.2026: 50 KB p95 37 ms, 100 KB p95 61 ms gegenueber 4-8 ms
+ * nur Parse); darueber bleibt es beim reinen Parse, damit die Abnahme aus P16-T4 (Median-Zuschlag <= 5 ms) haelt.
+ */
+function tsGrammatikMaxZeichen(): number {
+  const roh = process.env.SYNTAX_TS_GRAMMATIK_MAX_KB;
+  const n = Number(roh);
+  const kb = roh !== undefined && roh.trim() !== '' && Number.isFinite(n) && n >= 0 ? n : 32;
+  return kb === 0 ? Infinity : kb * 1024;
+}
+
+/** Kuenstlicher, eindeutiger Dateiname mit der Endung des echten Pfads (Endung steuert JS/TS, JSX und .d.ts). */
+function tsGrammatikDateiname(pfad: string): string {
+  const n = dateiname(pfad);
+  const dts = /\.d\.([cm]?ts)$/.exec(n);
+  const e = endung(pfad);
+  const ext = dts ? `.d.${dts[1]}` : ['ts', 'tsx', 'mts', 'cts', 'js', 'jsx', 'mjs', 'cjs'].includes(e) ? `.${e}` : '.ts';
+  return `/syntaxpruefung/datei${ext}`;
+}
+
+/**
+ * Parse wie pruefeTypescript; nur wenn die Datei fehlerfrei parst, zusaetzlich die Grammatikstufe: ein Ein-Datei-Program
+ * mit eigenem CompilerHost (kein Dateisystem, noLib, noResolve, checkJs NICHT gesetzt = TS-Modus fuer ungeprueftes JS),
+ * davon nur die Allowlist-Codes, bei JavaScript ausserdem die TS8xxx aus getSyntacticDiagnostics (TypeScript-Syntax
+ * in .js; nicht bei @flow-Dateien). return auf oberster Ebene ist in .js/.cjs/.jsx erlaubt (CommonJS).
+ * Zeitdeckel ueber einen CancellationToken: wird er gerissen oder wirft der Checker, gilt nur das Parse-Ergebnis.
+ */
+export function pruefeTypescriptMitGrammatik(inhalt: string, pfad: string): SyntaxMeldung[] {
+  const t = ts();
+  const name = tsGrammatikDateiname(pfad);
+  const e = endung(pfad);
+  // .mjs/.mts sind immer ES-Module (strict, Top-Level-await erlaubt), auch ohne import/export. Wie moduleDetection
+  // "force" in TypeScript; muss beim Parsen gesetzt werden, weil die SourceFile hier nicht vom Program erzeugt wird.
+  const modulErzwingen = e === 'mjs' || e === 'mts';
+  const sf = t.createSourceFile(name, inhalt, {
+    languageVersion: t.ScriptTarget.Latest,
+    setExternalModuleIndicator: modulErzwingen
+      ? (f) => { (f as unknown as { externalModuleIndicator?: unknown }).externalModuleIndicator = true; }
+      : undefined,
+  }, false, tsScriptKind(pfad));
+  const parse = parseDiagnosen(sf);
+  if (parse.length > 0) return tsMeldungen(t, sf, parse, TS_WARUM_PARSE, TS_WIE_PARSE);
+  const ms = tsGrammatikMs();
+  if (ms === 0 || inhalt.length > tsGrammatikMaxZeichen()) return [];
+  const js = e === 'js' || e === 'jsx' || e === 'mjs' || e === 'cjs';
+  const commonJsMoeglich = e === 'js' || e === 'jsx' || e === 'cjs';
+  let diags: TsDiagnose[];
+  try {
+    const frist = performance.now() + ms;
+    const token: import('typescript').CancellationToken = {
+      isCancellationRequested: () => performance.now() > frist,
+      throwIfCancellationRequested: () => { if (performance.now() > frist) throw new t.OperationCanceledException(); },
+    };
+    const host: import('typescript').CompilerHost = {
+      getSourceFile: (f) => (f === name ? sf : undefined),
+      getDefaultLibFileName: () => '/syntaxpruefung/lib.d.ts',
+      writeFile: () => {},
+      getCurrentDirectory: () => '/syntaxpruefung',
+      getCanonicalFileName: (f) => f,
+      useCaseSensitiveFileNames: () => true,
+      getNewLine: () => '\n',
+      fileExists: (f) => f === name,
+      readFile: () => undefined,
+    };
+    const optionen: import('typescript').CompilerOptions = {
+      noLib: true, noResolve: true, types: [], noEmit: true, allowJs: true,
+      target: t.ScriptTarget.ESNext, module: t.ModuleKind.ESNext, jsx: t.JsxEmit.Preserve,
+      ...(modulErzwingen ? { moduleDetection: t.ModuleDetectionKind.Force } : {}),
+    };
+    const prog = t.createProgram({ rootNames: [name], options: optionen, host });
+    const quelle = prog.getSourceFile(name);
+    if (!quelle) return [];
+    const flow = js && /@flow\b/.test(inhalt.slice(0, 2000));
+    const syn = js && !flow ? prog.getSyntacticDiagnostics(quelle, token).filter((d) => d.code >= 8000 && d.code < 9000) : [];
+    const sem = prog.getSemanticDiagnostics(quelle, token)
+      .filter((d) => TS_GRAMMATIK_CODES.has(d.code) && !(commonJsMoeglich && d.code === 1108));
+    diags = [...syn, ...sem].sort((a, b) => (a.start ?? 0) - (b.start ?? 0));
+  } catch {
+    // Zeitdeckel (OperationCanceledException) oder interner Checker-Fehler: kein Fehlalarm, nur weniger Abdeckung.
+    return [];
+  }
+  return tsMeldungen(t, sf, diags, TS_WARUM_GRAMMATIK, TS_WIE_GRAMMATIK);
 }
 
 // ─── JSON ────────────────────────────────────────────────────────────────────
@@ -638,8 +792,8 @@ export const PRUEFER_KATALOG: PrueferDefinition[] = [
     paket: 'typescript',
     endungen: ['ts', 'tsx', 'mts', 'cts', 'js', 'jsx', 'mjs', 'cjs'],
     sperrfaehig: true,
-    pruefe: pruefeTypescript,
-    aufwaermen: { inhalt: 'export const a: number = 1;\nfunction f(x) { return <b>{x}</b>; }\n', pfad: 'w.tsx' },
+    pruefe: pruefeTypescriptMitGrammatik,
+    aufwaermen: { inhalt: 'export const a: number = 1;\nexport async function g() { await a; }\nfunction f(x) { return <b>{x}</b>; }\n', pfad: 'w.tsx' },
   },
   {
     name: 'json',
