@@ -176,15 +176,22 @@ export async function pruefeSignaturen(eingabe: {
   alt: string;
   neu: string;
   restoreVersionId?: string | null;
+  /**
+   * P15-T17 E3 (Plan): statt des EINEN Gesamtbereichs (gemeinsamer Anfang/Ende) diese geaenderten Bereiche
+   * einzeln pruefen - je Op-Spanne, damit jede Op ihren eigenen Befund bekommt (1-basiert, bis < von = Loeschung).
+   */
+  bereiche?: GeaenderteZeilen[];
 }): Promise<FehlerBefund[]> {
   try {
-    const bereich = geaenderteZeilen(eingabe.alt, eingabe.neu);
-    if (!bereich) return [];
+    const gesamt = geaenderteZeilen(eingabe.alt, eingabe.neu);
+    if (!gesamt) return [];
     const muster = (await ladeSignaturMuster()).filter((m) => giltFuer(m.geltung, eingabe.filePath, eingabe.project));
     if (muster.length === 0) return [];
     const zeilen = eingabe.neu.split('\n');
     const befunde: FehlerBefund[] = [];
-    for (const m of muster) {
+    const bereiche = eingabe.bereiche && eingabe.bereiche.length > 0 ? eingabe.bereiche : [gesamt];
+    const gesehen = new Set<string>();
+    for (const m of muster) for (const bereich of bereiche) {
       const fenster = m.erkennung.fenster ?? 'block';
       let start: number;
       let ende: number;
@@ -199,10 +206,15 @@ export async function pruefeSignaturen(eingabe: {
       const text = zeilen.slice(start - 1, ende).join('\n');
       const r = pruefeErkennung(m.erkennung, text);
       if (!r.trifft) continue;
-      const trefferZeilen = r.zeilen.map((z) => z + start - 1);
-      if (fenster === 'datei' && !trefferZeilen.some((z) => liegtImBereich(z, bereich, FENSTER_BLOCK_ZEILEN))) continue;
+      const alleTreffer = r.zeilen.map((z) => z + start - 1);
+      const nahe = alleTreffer.filter((z) => liegtImBereich(z, bereich, FENSTER_BLOCK_ZEILEN));
+      if (fenster === 'datei' && nahe.length === 0) continue;
+      // Mehrere Bereiche (Plan): bei fenster datei nur die Treffer nahe DIESES Bereichs; einmal je Muster und Zeile.
+      const trefferZeilen = fenster === 'datei' && eingabe.bereiche ? nahe : alleTreffer;
       const a = Math.min(...trefferZeilen);
       const b = Math.max(...trefferZeilen);
+      if (gesehen.has(`${m.id}|${a}`)) continue;
+      gesehen.add(`${m.id}|${a}`);
       const ausschnitt = (zeilen[a - 1] ?? '').trim().slice(0, 80);
       const id8 = m.id.slice(0, 8);
       befunde.push({

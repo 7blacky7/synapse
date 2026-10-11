@@ -997,6 +997,8 @@ export {
   planSchattenDiff,
   buildPlanStatusResponseMitDiff,
   schreibeCommitDiffs,
+  pruefeGespeichertenPlan,
+  befundeQuittierenLesen,
 } from './services/file-batch.js';
 export type { PlanDiff, PlanDiffDatei } from './services/file-batch.js';
 export { dateiDiff, aenderungsBereiche, diffText } from './services/file-diff.js';

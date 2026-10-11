@@ -40,6 +40,18 @@ import {
 import type { BatchEdit } from './code-write.js';
 import { enqueueParseAndEmbed } from './code.js';
 import { performance } from 'node:perf_hooks';
+import { createHash } from 'node:crypto';
+import {
+  pruefePlanDateien,
+  speicherePlanBefunde,
+  ladePlanBefunde,
+  commitSperre,
+  quittiereBefunde,
+  befundUebersicht,
+  type PlanBefund,
+  type PlanPruefung,
+  type PruefDatei,
+} from './plan-befunde.js';
 import { aenderungsBereiche, dateiDiff, diffMaxZeichen, diffMaxZeilen, diffText, zeilenZuordnung, type Bereich, type DateiDiff } from './file-diff.js';
 import {
   findForeignActiveReservationPrimaries,
@@ -383,6 +395,8 @@ export interface PlanBatchResult {
   reused_carrier?: { plan_id: string; hinweis: string };
   /** P15-T22: Unified-Diff aus dem Plan-Schatten (je Datei ueber alle Ops dieses Plans). */
   diff?: PlanDiff;
+  /** P15-T17 E3: Pruefbefunde je Op (befundUebersicht); severity error sperrt den commit. */
+  pruefung?: Record<string, unknown> | null;
 }
 
 /** Eine im Trockenlauf gescheiterte Op eines Plans. */
@@ -617,6 +631,14 @@ export type CommitBatchResult =
       ops_zum_neu_planen?: FileBatchOp[];
       /** P15-T31: was der Agent jetzt tun soll. */
       was_tun?: string;
+      /** P15-T17 E3 (error pruef_befunde): offene error-Befunde an Ops, nichts geschrieben. */
+      geschrieben?: false;
+      blockierende?: Array<Record<string, unknown>>;
+      abruf?: string;
+      korrektur?: string;
+      quittieren?: string;
+      pruefung?: Record<string, unknown> | null;
+      quittierung_abgelehnt?: Array<{ id: string; grund: string }>;
       committed?: 0;
       message: string;
     };
@@ -2198,6 +2220,11 @@ export async function planBatch(args: {
   const planDiffFuer = (nurDateien?: Set<string>, indexMap?: Map<number, number>): PlanDiff => planDiffAus({
     ops: args.ops, owner: resolveAgentId(args.agent_id) ?? null, stand: schattenStand, start: schattenStart, previews, nurDateien, indexMap,
   });
+  // P15-T17 E3: Pruefbefunde (Syntax + Signatur-Muster) auf DEMSELBEN Trockenlauf-Schatten - kein Extra-
+  // Lesezugriff; laeuft neben der Plan-TX und wird erst fuer die Antwort abgewartet. Wirft nie.
+  const pruefungLauf: Promise<PlanPruefung | null> = failedOpsOf(previews).length > 0 || !planPruefungAn()
+    ? Promise.resolve(null)
+    : pruefePlanDateien(args.project, pruefDateienAus(schattenStand, args.ops, resolveAgentId(args.agent_id) ?? null)).catch(() => null);
 
   // Runde 3 (Nachtrag dc2d7eac b): Pfade, die als Wait in einen offenen fremden Plan gehen, werden spaeter
   // auf den Stand DES ZIELPLANS angewendet (Platte + dessen Ops). Eine gegen die Platte gescheiterte Op
@@ -2520,6 +2547,9 @@ export async function planBatch(args: {
       if (toteWaits > 0) await closeOrphanCarriers(client, args.project, `Neuplanung nach Ablauf der Reservierung (angehaengt an Plan ${zusammengefuehrt[0].plan_id})`);
       await client.query('COMMIT'); notifyPlanChange();
       const erster = zusammengefuehrt[0];
+      // P15-T17 E3: die Zielplaene mit den angehaengten Ops neu pruefen (Befunde an deren Ops).
+      const zielPruefung = await pruefeGespeichertenPlanSicher(erster.plan_id);
+      for (const weiterer of zusammengefuehrt.slice(1)) await pruefeGespeichertenPlanSicher(weiterer.plan_id);
       return {
         plan_id: erster.plan_id,
         total_ops: erster.total_ops,
@@ -2528,6 +2558,7 @@ export async function planBatch(args: {
         previews: erster.previews,
         merged_into: mergedInto,
         ...(mergeOverlaps.length > 0 ? { overlap_warnings: mergeOverlaps } : {}),
+        ...(zielPruefung ? { pruefung: befundUebersicht(zielPruefung.pruefung) } : {}),
       };
     }
 
@@ -2729,6 +2760,19 @@ export async function planBatch(args: {
 
     if (toteWaits > 0) await closeOrphanCarriers(client, args.project, `Neuplanung nach Ablauf der Reservierung (Plan ${planRow.id})`);
     await client.query('COMMIT'); notifyPlanChange();
+    // P15-T17 E3: Pruefbefunde an die Ops dieses Plans. Voller Plan: Ergebnis des Laufs auf dem Trockenlauf-
+    // Schatten. Teilplan (Waits/Anhaengen): andere Op-Indizes -> am gespeicherten Plan neu pruefen.
+    let planPruefung: PlanPruefung | null = null;
+    if (planOps.length > 0 && planPruefungAn()) {
+      const roh = geteilt ? null : await pruefungLauf;
+      if (roh) {
+        planPruefung = roh;
+        await speicherePlanBefunde(planRow.id, roh);
+      } else {
+        planPruefung = (await pruefeGespeichertenPlanSicher(planRow.id))?.pruefung ?? null;
+      }
+    }
+    for (const ziel of zusammengefuehrt) await pruefeGespeichertenPlanSicher(ziel.plan_id);
     const result: PlanBatchResult = {
       plan_id: planRow.id,
       total_ops: planOps.length,
@@ -2737,8 +2781,10 @@ export async function planBatch(args: {
       previews: planPreviews,
       // P15-T22: Diff aus dem Trockenlauf-Schatten; bei Teilplaenen (Waits/Anhaengen) nur dessen Dateien und Ops.
       ...(planOps.length > 0
-        ? { diff: geteilt ? planDiffFuer(new Set(planFiles), new Map(immediateEntries.map(({ originalIndex }, index) => [originalIndex, index] as const))) : planDiffFuer() }
+        ? { diff: diffMitBefunden(geteilt ? planDiffFuer(new Set(planFiles), new Map(immediateEntries.map(({ originalIndex }, index) => [originalIndex, index] as const))) : planDiffFuer(), planPruefung?.befunde) }
         : {}),
+      // P15-T17 E3: Befunde je Op (Zaehler, erste Befunde, Sperre) - severity error sperrt den commit.
+      ...(planPruefung ? { pruefung: befundUebersicht(planPruefung) } : {}),
       ...(mergedInto.length > 0 ? { merged_into: mergedInto } : {}),
       ...(mergeOverlaps.length > 0 ? { overlap_warnings: mergeOverlaps } : {}),
       ...(traeger
@@ -3404,7 +3450,7 @@ function findeVerursacher(ops: FileBatchOp[], fehlIndex: number, baselines: Map<
   return null;
 }
 
-export async function addCoeditContribution(args: {
+async function addCoeditContributionKern(args: {
   project: string;
   plan_id: string;
   agent_id?: string;
@@ -4207,6 +4253,8 @@ export async function commitBatch(args: {
   agent_note?: string;
   /** E1: so lange (Sekunden, max. 50) warten, solange aktive Beitragende noch nicht ready sind. */
   wait_seconds?: number;
+  /** P15-T17 E3: Pruefbefunde quittieren [{id, grund}] (Syntax nur bei absichtlich fehlerhaftem Inhalt). */
+  befunde_quittieren?: Array<{ id: string; grund?: string }>;
 }): Promise<CommitBatchResult> {
   // E1 (29.09.2026): wartet ein gemeinsamer Plan noch auf aktive Beitragende
   // (waiting_for_contributors), haelt wait_seconds die Anfrage serverseitig, bis alle
@@ -4333,6 +4381,7 @@ async function commitBatchOnce(args: {
   plan_id: string;
   agent_id?: string;
   agent_note?: string;
+  befunde_quittieren?: Array<{ id: string; grund?: string }>;
 }): Promise<CommitBatchResult> {
   const pool = getPool();
 
@@ -4434,11 +4483,21 @@ async function commitBatchOnce(args: {
              AND shared_files && $4::text[])`,
     [args.plan_id, plan.owner_agent_id, plan.project, planPaths],
   );
+  // P15-T17 E3: Pruefbefunde gegen den aktuellen Stand neu bauen (Drift, neue Beitraege, Quittierungen) -
+  // ein offener error-Befund an einer Op sperrt den commit, BEVOR etwas geschrieben wird.
+  let commitArgs = args;
+  if (Array.isArray(plan.ops) && plan.ops.length > 0) {
+    const pruef = await pruefeVorCommit(args.plan_id, args.befunde_quittieren);
+    if (pruef.sperre) return pruef.sperre;
+    if (pruef.vermerk && !(args.agent_note ?? '').includes(pruef.vermerk)) {
+      commitArgs = { ...args, agent_note: [args.agent_note, pruef.vermerk].filter(Boolean).join(' ') };
+    }
+  }
   const distinctOpAgents = new Set(plan.ops.map((op) => op.agent_id).filter(Boolean));
   if (Number(coeditWaitCount.rows[0]?.count ?? 0) > 0 || distinctOpAgents.size > 1) {
-    return commitCoeditBatch(args);
+    return commitCoeditBatch(commitArgs);
   }
-  return commitLegacyLocked(args, plan);
+  return commitLegacyLocked(commitArgs, plan);
 }
 
 /**
@@ -5163,7 +5222,12 @@ export async function replanBatch(args: {
   const ownDraft = failedOpsOf(plan.previews).length > 0
     && (!plan.owner_agent_id || caller === plan.owner_agent_id)
     && !plan.ops.some((op) => op.agent_id && op.agent_id !== plan.owner_agent_id);
-  if (!ownDraft) return updatePlanInPlace(args, caller);
+  if (!ownDraft) {
+    const imPlan = await updatePlanInPlace(args, caller);
+    // P15-T17 E3: neu pruefen, Quittierungen bleiben (Schluessel ohne Zeilen).
+    const geprueft = await pruefeGespeichertenPlanSicher(imPlan.plan_id);
+    return { ...imPlan, ...(geprueft ? { pruefung: befundUebersicht(geprueft.pruefung) } : {}) };
+  }
   const waits = await getPool().query<{ n: string }>(
     `SELECT COUNT(*)::text AS n FROM file_batch_waits
       WHERE (source_plan_id = $1::bigint OR primary_plan_id = $1::bigint)
@@ -5399,6 +5463,8 @@ export async function getPlanOpsVollstaendig(args: {
   // die sie im Endstand erzeugt — ungekuerzt.
   const stand = await ladeSchattenStand(plan);
   const dateien = 'fehler' in stand ? [] : schattenDateien(stand, ops);
+  // P15-T17 E3: gespeicherte Pruefbefunde; je Op die eigenen (und Kombinationsbefunde mit beteiligt).
+  const alleBefunde = (await ladePlanBefunde(plan.id))?.befunde ?? [];
   const mehrere = new Set(ops.map((op) => op.agent_id ?? plan.owner_agent_id)).size > 1;
   const label = (liste: number[]): string =>
     `op ${liste.map((i) => `${i}${mehrere ? ` (${ops[i]?.agent_id ?? plan.owner_agent_id ?? '?'})` : ''}`).join(',')}`;
@@ -5450,6 +5516,15 @@ export async function getPlanOpsVollstaendig(args: {
           }
           return dateiAusgabe(datei, eigene, (k) => label(datei.hunkOps[k]), Number.MAX_SAFE_INTEGER, datei.ops);
         });
+      }
+    }
+    const opBefunde = alleBefunde.filter((b) => b.op_index === index || (b.beteiligt ?? []).includes(index));
+    if (opBefunde.length > 0) {
+      eintrag.befunde = opBefunde;
+      if (Array.isArray(eintrag.diff)) {
+        eintrag.diff = (eintrag.diff as Array<Record<string, unknown>>).map((d) => (typeof d.text === 'string'
+          ? { ...d, text: befundeImDiffText(d.text, opBefunde.filter((b) => b.datei === d.file_path)) }
+          : d));
       }
     }
     ergebnis.push(eintrag);
@@ -5891,9 +5966,207 @@ export async function planSchattenDiff(plan: FileBatchPlanRow): Promise<PlanDiff
 /** plan_status-Antwort mit Diff je Datei ueber alle Ops (MCP-Server und REST-API). */
 export async function buildPlanStatusResponseMitDiff(plan: FileBatchPlanRow): Promise<Record<string, unknown>> {
   const antwort = buildPlanStatusResponse(plan);
+  // P15-T17 E3: gespeicherte Pruefbefunde (Zaehler je Op, op_indices_mit_befund) und im Diff unter ihrer Zeile.
+  const gespeichert = await ladePlanBefunde(plan.id);
+  const pruefung = befundUebersicht(gespeichert);
   try {
-    return { ...antwort, diff: await planSchattenDiff(plan) };
+    const diff = await planSchattenDiff(plan);
+    return { ...antwort, ...(pruefung ? { pruefung } : {}), diff: 'fehler' in diff ? diff : diffMitBefunden(diff, gespeichert?.befunde) };
   } catch (error) {
-    return { ...antwort, diff: { fehler: (error as Error).message } };
+    return { ...antwort, ...(pruefung ? { pruefung } : {}), diff: { fehler: (error as Error).message } };
   }
+}
+
+// ─── P15-T17 E3: Pruefbefunde an Plan-Ops ────────────────────────────────────────────────────────
+
+/**
+ * Adapter Plan-Schatten -> Pruefdateien (plan-befunde.ts): je Datei Basis (Stand bei plan()), Endstand nach
+ * allen Ops und je Op ihre Zeilenspannen im Endstand (opBereicheImEndstand, 0-basiert halboffen). Dieselbe
+ * Anwende-Schleife wie commit und Diff (ee444d99 P.2), damit der Befund an der richtigen Op landet.
+ */
+function pruefDateienAus(stand: SchattenStand, ops: FileBatchOp[], owner: string | null): PruefDatei[] {
+  const imEnd = opBereicheImEndstand(stand.angewendet, ops);
+  const out: PruefDatei[] = [];
+  for (const [filePath, basis] of stand.basen) {
+    const buf = stand.buffers.get(filePath);
+    if (!buf) continue;
+    const opsDerDatei = stand.angewendet.folge.filter((i) => touchedPaths(ops[i]).includes(filePath)).sort((a, b) => a - b);
+    if (opsDerDatei.length === 0) continue;
+    out.push({
+      file_path: filePath,
+      basis,
+      ergebnis: buf.deleted ? '' : buf.finalContent,
+      ...(buf.deleted ? { geloescht: true } : {}),
+      ops: opsDerDatei.map((i) => ({ op_index: i, agent_id: ops[i]?.agent_id ?? owner, spannen: imEnd.get(i) ?? [] })),
+    });
+  }
+  return out;
+}
+
+/** sha256 des Endstands je (nicht geloeschter) Datei, wie PlanPruefung.ergebnis_hashes. */
+function ergebnisHashesAus(dateien: PruefDatei[]): Record<string, string> {
+  return Object.fromEntries(dateien.filter((d) => !d.geloescht)
+    .map((d) => [d.file_path, createHash('sha256').update(d.ergebnis).digest('hex')] as const));
+}
+
+function gleicheHashes(a: Record<string, string>, b: Record<string, string>): boolean {
+  const schluessel = Object.keys(a);
+  return schluessel.length === Object.keys(b).length && schluessel.every((k) => a[k] === b[k]);
+}
+
+/** Notaus/Messvergleich: FEHLERPRUEFUNG_PLAN=0 schaltet Pruefung und commit-Sperre der Plaene ab (Standard an). */
+function planPruefungAn(): boolean {
+  return process.env.FEHLERPRUEFUNG_PLAN !== '0';
+}
+
+/** So lange gilt eine gespeicherte Pruefung bei unveraendertem Endstand (ms, Env FEHLERPRUEFUNG_GUELTIG_MS, Standard 60000). */
+function pruefungGueltigMs(): number {
+  const roh = Number(process.env.FEHLERPRUEFUNG_GUELTIG_MS);
+  return Number.isFinite(roh) && roh >= 0 ? roh : 60_000;
+}
+
+/**
+ * Plan-Schatten eines gespeicherten Plans neu bauen (aktueller Stand; bei Drift der Stand bei plan()), pruefen
+ * und speichern. Quittierungen frueherer Pruefungen bleiben (Schluessel ohne Zeilen); quittierungen werden
+ * angewendet. Ist der Endstand seit der letzten vollstaendigen Pruefung unveraendert und diese juenger als
+ * FEHLERPRUEFUNG_GUELTIG_MS, wird sie wiederverwendet (z. B. auto_commit direkt nach plan).
+ */
+export async function pruefeGespeichertenPlan(
+  planId: string,
+  quittierungen: Array<{ id: string; grund?: string }> = [],
+): Promise<{ pruefung: PlanPruefung; abgelehnt: Array<{ id: string; grund: string }>; neu_geprueft: boolean } | null> {
+  const plan = (await getPool().query<{
+    id: string; project: string; owner_agent_id: string | null; ops: FileBatchOp[]; expected_hashes: Record<string, string>; status: FileBatchStatus;
+  }>(
+    `SELECT id::text AS id, project, owner_agent_id, ops, expected_hashes, status FROM file_batch_plans WHERE id = $1::bigint`,
+    [planId],
+  )).rows[0];
+  const ops = plan && Array.isArray(plan.ops) ? plan.ops : [];
+  if (!plan || ops.length === 0) return null;
+  const stand = await ladeSchattenStand(plan);
+  if ('fehler' in stand) return null;
+  const dateien = pruefDateienAus(stand, ops, plan.owner_agent_id);
+  const vorher = await ladePlanBefunde(planId);
+  let pruefung: PlanPruefung;
+  let neuGeprueft = false;
+  if (vorher && vorher.status === 'fertig' && Date.now() - new Date(vorher.geprueft_am).getTime() < pruefungGueltigMs()
+    && gleicheHashes(vorher.ergebnis_hashes ?? {}, ergebnisHashesAus(dateien))) {
+    pruefung = vorher;
+  } else {
+    pruefung = await pruefePlanDateien(plan.project, dateien, vorher?.befunde ?? []);
+    neuGeprueft = true;
+  }
+  let abgelehnt: Array<{ id: string; grund: string }> = [];
+  if (quittierungen.length > 0) {
+    const q = quittiereBefunde(pruefung.befunde, quittierungen);
+    pruefung = { ...pruefung, befunde: q.befunde };
+    abgelehnt = q.abgelehnt;
+  }
+  if (neuGeprueft || quittierungen.length > 0) await speicherePlanBefunde(planId, pruefung);
+  return { pruefung, abgelehnt, neu_geprueft: neuGeprueft };
+}
+
+async function pruefeGespeichertenPlanSicher(
+  planId: string,
+  quittierungen: Array<{ id: string; grund?: string }> = [],
+): Promise<Awaited<ReturnType<typeof pruefeGespeichertenPlan>>> {
+  if (!planPruefungAn()) return null;
+  try {
+    return await pruefeGespeichertenPlan(planId, quittierungen);
+  } catch (error) {
+    console.error(`[file-batch] P15-T17: Pruefung von Plan ${planId} fehlgeschlagen (non-blocking): ${(error as Error).message}`);
+    return null;
+  }
+}
+
+/**
+ * commit-Sperre (P15-T17 E3): vor dem Schreiben gegen den aktuellen Stand neu pruefen und befunde_quittieren
+ * anwenden. Offener error-Befund an einer Op -> pruef_befunde, nichts geschrieben (warning/Altlast nie).
+ * vermerk: quittierte error-Befunde fuer agent_note der file_versions (der Grund wird protokolliert, E-b).
+ */
+async function pruefeVorCommit(
+  planId: string,
+  quittierungen: Array<{ id: string; grund?: string }> = [],
+): Promise<{ sperre: CommitBatchResult | null; vermerk?: string }> {
+  const ergebnis = await pruefeGespeichertenPlanSicher(planId, Array.isArray(quittierungen) ? quittierungen : []);
+  if (!ergebnis) return { sperre: null };
+  const { pruefung, abgelehnt } = ergebnis;
+  const sperre = commitSperre(planId, pruefung.befunde);
+  if (sperre) {
+    return {
+      sperre: {
+        ...sperre,
+        status: 'open',
+        pruefung: befundUebersicht(pruefung),
+        ...(abgelehnt.length > 0 ? { quittierung_abgelehnt: abgelehnt } : {}),
+      } as unknown as CommitBatchResult,
+    };
+  }
+  const quittiert = pruefung.befunde.filter((b) => b.status === 'quittiert' && b.severity === 'error');
+  if (quittiert.length === 0) return { sperre: null };
+  return {
+    sperre: null,
+    vermerk: quittiert.map((b) => `[Befund quittiert: ${b.pruefer} ${b.datei}:${b.zeilen[0]} op ${b.op_index ?? '-'} - ${b.quittiert_grund ?? ''}]`).join(' '),
+  };
+}
+
+/** Befunde im Unified-Diff direkt unter ihrer Zeile im Endstand ("+"- bzw. Umfeld-Zeile): "!! befund <id> ...". */
+function befundeImDiffText(text: string, befunde: PlanBefund[]): string {
+  if (!text || befunde.length === 0) return text;
+  const nachZeile = new Map<number, PlanBefund[]>();
+  for (const b of befunde) nachZeile.set(b.zeilen[0], [...(nachZeile.get(b.zeilen[0]) ?? []), b]);
+  const aus: string[] = [];
+  let neu = 0;
+  for (const zeile of text.split('\n')) {
+    aus.push(zeile);
+    const kopf = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(zeile);
+    if (kopf) { neu = Number(kopf[1]); continue; }
+    if (neu <= 0 || !(zeile.startsWith('+') || zeile.startsWith(' '))) continue;
+    for (const b of nachZeile.get(neu) ?? []) {
+      aus.push(`!! befund ${b.id} op ${b.op_index ?? '-'} ${b.severity}${b.status === 'quittiert' ? ' (quittiert)' : ''}: ${b.was}`.slice(0, 300));
+    }
+    neu++;
+  }
+  return aus.join('\n');
+}
+
+function diffMitBefunden(diff: PlanDiff, befunde: PlanBefund[] | undefined): PlanDiff {
+  if (!befunde || befunde.length === 0) return diff;
+  return {
+    ...diff,
+    dateien: diff.dateien.map((d) => (d.text ? { ...d, text: befundeImDiffText(d.text, befunde.filter((b) => b.datei === d.file_path)) } : d)),
+  };
+}
+
+/** befunde_quittieren aus Tool-Argumenten (Array oder JSON-String) lesen. */
+export function befundeQuittierenLesen(wert: unknown): Array<{ id: string; grund?: string }> | undefined {
+  let roh = wert;
+  if (typeof roh === 'string') {
+    try { roh = JSON.parse(roh); } catch { return undefined; }
+  }
+  if (!Array.isArray(roh)) return undefined;
+  const liste = roh
+    .filter((q): q is Record<string, unknown> => Boolean(q) && typeof q === 'object' && typeof (q as Record<string, unknown>).id === 'string')
+    .map((q) => ({ id: String(q.id), ...(typeof q.grund === 'string' ? { grund: q.grund } : {}) }));
+  return liste.length > 0 ? liste : undefined;
+}
+
+/**
+ * coedit_add (P15-T17 E3): nach dem Beitrag den gemeinsamen Plan neu pruefen. Der Befund haengt an der Op des
+ * Beitragenden (agent_id der Op); ein Kombinationsfehler an der spaeteren Op mit beteiligt.
+ */
+export async function addCoeditContribution(args: Parameters<typeof addCoeditContributionKern>[0]): Promise<CoeditAddResult> {
+  const result = await addCoeditContributionKern(args);
+  if (!result.success || !result.plan_id || !(Number(result.appended_ops) > 0)) return result;
+  const ergebnis = await pruefeGespeichertenPlanSicher(result.plan_id);
+  if (!ergebnis) return result;
+  const caller = resolveAgentId(args.agent_id) ?? null;
+  const eigene = ergebnis.pruefung.befunde.filter((b) => b.agent_id === caller && b.status === 'offen');
+  return {
+    ...result,
+    pruefung: befundUebersicht(ergebnis.pruefung),
+    ...(eigene.length > 0
+      ? { eigene_befunde: eigene.map((b) => ({ id: b.id, op_index: b.op_index, severity: b.severity, datei: b.datei, zeilen: b.zeilen, was: b.was })) }
+      : {}),
+  };
 }

@@ -135,6 +135,7 @@ import {
   opIndicesLesen,
   reservationTtlHint,
   commitBatch,
+  befundeQuittierenLesen,
   nichtsGeschriebenBefund,
   cancelBatch,
   getBatchPlan,
@@ -1106,6 +1107,7 @@ export const MCP_TOOLS = [
         feature_tag: { type: 'string', description: 'Logischer Feature-Group-Tag (z.B. "idea-thought-task-link"). Wird in file_versions.feature_tag gespeichert. history(feature_tag=...) filtert danach.' },
         parent_version_id: { type: 'string', description: 'Referenziert vorherige Version, die dieses Edit korrigiert/ersetzt. BIGINT als String. Erlaubt Korrektur-Chain-Tracking.' },
         git_commit_sha: { type: 'string', description: 'Optionaler Git-Commit-SHA, der diese Aenderung im File-System repraesentiert.' },
+        befunde_quittieren: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, grund: { type: 'string' } }, required: ['id', 'grund'] }, description: 'commit: Pruefbefunde des Plans quittieren [{id, grund}] (id aus pruefung.befunde bzw. blockierende). Grund mind. 5 Zeichen, landet in file_versions.agent_note. Syntaxbefunde NUR bei absichtlich fehlerhaftem Inhalt (Test-Fixture, Negativbeispiel). Ohne Quittierung sperrt ein offener error-Befund an einer Op den commit (error pruef_befunde).' },
         quittieren: { type: 'string', description: 'Einzelschreibweg (create/update/search_replace/replace_lines/insert_after/delete_lines): Syntaxbefund quittieren - NUR bei absichtlich fehlerhaftem Inhalt (Test-Fixture, Negativbeispiel). Pflichtgrund (mind. 5 Zeichen), landet in file_versions.reason. Ohne quittieren lehnt ein Syntaxfehler in geaenderten Zeilen das Schreiben ab.' },
       },
       required: ['action', 'project'],
@@ -1184,6 +1186,7 @@ export const MCP_TOOLS = [
         wait_seconds: { type: 'number', description: 'plan_status/shared_plan_status: Long-Poll bis max. 50 s — der Server wartet, bis sich Status/Zielplan/Wait-Stand aendern (Antwort: changed, waited_seconds). commit: wartet der gemeinsame Plan auf aktive, noch nicht bereite Beitragende (status waiting_for_contributors, kein Fehler), haelt der Server bis max. 50 s und schreibt, sobald alle ready/no_changes sind oder inaktiv werden.' },
         files: { type: 'array', items: { type: 'string' }, description: 'coedit_no_changes: konkrete gemeinsame Dateien ohne eigenen Beitrag.' },
         auto_commit: { type: 'boolean', description: 'plan + commit in einem Call (default false). Versionierung bleibt aktiv.' },
+        befunde_quittieren: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, grund: { type: 'string' } }, required: ['id', 'grund'] }, description: 'commit: Pruefbefunde quittieren [{id, grund}]; Syntax nur bei absichtlich fehlerhaftem Inhalt.' },
         agent_note: { type: 'string', description: '(optional): KI-eigene Beobachtungen pro Batch (zusaetzlich zum User-reason).' },
         reason: { type: 'string', description: 'Optional fuer Audit-Trail (file_versions.reason)' },
         since: { type: 'string', description: 'history: ISO-Timestamp ab dem Eintraege gelistet werden' },
@@ -4737,7 +4740,7 @@ async function handleToolCall(
             byFile.set(op.file_path, list);
           }
           const committed: Array<{ file_path: string; batch_id: string; ops: number }> = [];
-          const failed: Array<{ file_path: string; error: string; message: string }> = [];
+          const failed: Array<{ file_path: string; error: string; message: string; plan_id?: string; blockierende?: unknown }> = [];
           const coeditWaits: import('@synapse/core').CoeditWaitGroup[] = [];
           const seenWaitTokens = new Set<string>();
           let deferredOps = 0;
@@ -4750,7 +4753,7 @@ async function handleToolCall(
           };
           type Ergebnis =
             | ({ art: 'ok'; wert: { file_path: string; batch_id: string; ops: number } | null; traeger?: string } & WaitMeta)
-            | ({ art: 'fehler'; wert: { file_path: string; error: string; message: string } } & WaitMeta);
+            | ({ art: 'fehler'; wert: { file_path: string; error: string; message: string; plan_id?: string; blockierende?: unknown } } & WaitMeta);
           const eintraege = [...byFile.entries()];
           const ergebnisse: Array<Ergebnis | undefined> = new Array(eintraege.length);
           const GLEICHZEITIG = 8;
@@ -4787,7 +4790,11 @@ async function handleToolCall(
                 } else {
                   ergebnisse[index] = {
                     art: 'fehler',
-                    wert: { file_path: filePath, error: c.error ?? 'commit_failed', message: c.message ?? 'commit failed' },
+                    wert: {
+                      file_path: filePath, error: c.error ?? 'commit_failed', message: c.message ?? 'commit failed',
+                      // P15-T17 E3: gesperrt durch Pruefbefunde -> Plan bleibt offen (korrigieren oder quittieren).
+                      ...(c.error === 'pruef_befunde' ? { plan_id: plan.plan_id, blockierende: c.blockierende } : {}),
+                    },
                     waits,
                     deferred,
                   };
@@ -4914,6 +4921,9 @@ async function handleToolCall(
           if (c.success) {
             return { ...c, plan: result, auto_committed: true, message: `Plan ${result.plan_id} angelegt + sofort committed (auto_commit) — ${c.committed} Datei(en), ${c.committed_ops ?? '?'} Op(s) geaendert. batch_id=${c.batch_id}.` };
           }
+          if (c.error === 'pruef_befunde') {
+            return { ...c, plan: result, auto_committed: false, message: `Plan ${result.plan_id} angelegt, NICHT committed (auto_commit): ${c.message} Plan bleibt offen.` };
+          }
           return { ...c, plan: result, auto_committed: false, message: `Plan ${result.plan_id} angelegt, auto-commit fehlgeschlagen — Plan bleibt offen, kann manuell committet oder cancelt werden.` };
         }
         const skillHook = bool(args, 'auto_commit') === true
@@ -4974,7 +4984,9 @@ async function handleToolCall(
             auto_committed: c.success,
             message: c.success
               ? `${wie} und ist committed — ${c.committed} Datei(en), ${c.committed_ops ?? '?'} Op(s) geaendert. batch_id=${c.batch_id}.`
-              : `${wie}, auto-commit fehlgeschlagen — Plan bleibt offen.`,
+              : c.error === 'pruef_befunde'
+                ? `${wie}, NICHT committed: ${c.message} Plan bleibt offen.`
+                : `${wie}, auto-commit fehlgeschlagen — Plan bleibt offen.`,
           };
         }
         return {
@@ -4986,7 +4998,10 @@ async function handleToolCall(
       if (action === 'commit') {
         const planId = reqStr(args, 'plan_id');
         try {
-          const result = await commitBatch({ plan_id: planId, agent_id: agentId, agent_note: str(args, 'agent_note'), wait_seconds: num(args, 'wait_seconds') });
+          const result = await commitBatch({
+            plan_id: planId, agent_id: agentId, agent_note: str(args, 'agent_note'), wait_seconds: num(args, 'wait_seconds'),
+            befunde_quittieren: befundeQuittierenLesen((args as Record<string, unknown>).befunde_quittieren),
+          });
           if (result.success) {
             return { ...result, message: `Plan ${result.plan_id} committed — ${result.committed} Datei(en), ${result.committed_ops ?? '?'} Op(s) geaendert. batch_id=${result.batch_id}.` };
           }

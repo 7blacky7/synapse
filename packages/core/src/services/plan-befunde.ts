@@ -104,7 +104,13 @@ export async function pruefePlanDateien(
       const syntax = await pruefeSyntaxEinzelweg({ filePath: datei.file_path, alt: datei.basis, neu: datei.ergebnis });
       if (syntax.status === 'teilweise') status = 'teilweise';
       altlasten += syntax.altlasten;
-      const muster = await pruefeSignaturen({ project, filePath: datei.file_path, alt: datei.basis, neu: datei.ergebnis });
+      // Signatur-Muster je Op-Spanne (sonst ein Befund je Muster und Datei - die Quittierung der einen Op gaebe den
+      // Fehler der anderen mit frei). Ohne Spannen (Zuordnung uebersprungen) der Gesamtbereich.
+      const gesamtZeilen = datei.ergebnis.split('\n').length;
+      const bereiche = datei.ops.length > 0 && datei.ops.every((o) => o.spannen.length > 0)
+        ? datei.ops.flatMap((o) => o.spannen.map(([s, e]) => ({ von: s + 1, bis: e, gesamt: gesamtZeilen })))
+        : undefined;
+      const muster = await pruefeSignaturen({ project, filePath: datei.file_path, alt: datei.basis, neu: datei.ergebnis, bereiche });
       for (const roh of [...syntax.blockierend, ...syntax.hinweise, ...muster]) {
         const zuordnung = opZuordnung(roh.zeilen, datei);
         const teil = { ...roh, ...zuordnung };

@@ -36,6 +36,7 @@ import {
   opIndicesLesen,
   reservationTtlHint,
   commitBatch,
+  befundeQuittierenLesen,
   nichtsGeschriebenBefund,
   cancelBatch,
   getBatchPlan,
@@ -296,6 +297,11 @@ export const filesTool: ConsolidatedTool = {
           type: 'string',
           description: 'Optionaler Git-Commit-SHA, der diese Aenderung im File-System repraesentiert.',
         },
+        befunde_quittieren: {
+          type: 'array',
+          items: { type: 'object', properties: { id: { type: 'string' }, grund: { type: 'string' } }, required: ['id', 'grund'] },
+          description: 'commit: Pruefbefunde des Plans quittieren [{id, grund}] (id aus pruefung.befunde bzw. blockierende). Grund mind. 5 Zeichen, landet in file_versions.agent_note. Syntaxbefunde NUR bei absichtlich fehlerhaftem Inhalt (Test-Fixture, Negativbeispiel). Ohne Quittierung sperrt ein offener error-Befund an einer Op den commit (error pruef_befunde).',
+        },
         quittieren: {
           type: 'string',
           description: 'Einzelschreibweg (create/update/search_replace/replace_lines/insert_after/delete_lines): Syntaxbefund quittieren - NUR bei absichtlich fehlerhaftem Inhalt (Test-Fixture, Negativbeispiel). Pflichtgrund (mind. 5 Zeichen), landet in file_versions.reason. Ohne quittieren lehnt ein Syntaxfehler in geaenderten Zeilen das Schreiben ab.',
@@ -489,6 +495,9 @@ export const filesTool: ConsolidatedTool = {
         if (c.success) {
           return { ...c, plan: result, auto_committed: true, message: `Plan ${result.plan_id} angelegt + sofort committed (auto_commit) — ${c.committed} Datei(en), ${c.committed_ops ?? '?'} Op(s) geaendert. batch_id=${c.batch_id}.` };
         }
+        if (c.error === 'pruef_befunde') {
+          return { ...c, plan: result, auto_committed: false, message: `Plan ${result.plan_id} angelegt, NICHT committed (auto_commit): ${c.message} Plan bleibt offen.` };
+        }
         return { ...c, plan: result, auto_committed: false, message: `Plan ${result.plan_id} angelegt, auto-commit fehlgeschlagen — Plan offen, kann manuell committet oder cancelt werden.` };
       }
       const skillHook = bool(args, 'auto_commit') === true
@@ -549,7 +558,9 @@ export const filesTool: ConsolidatedTool = {
           auto_committed: c.success,
           message: c.success
             ? `${wie} und ist committed — ${c.committed} Datei(en), ${c.committed_ops ?? '?'} Op(s) geaendert. batch_id=${c.batch_id}.`
-            : `${wie}, auto-commit fehlgeschlagen — Plan bleibt offen.`,
+            : c.error === 'pruef_befunde'
+              ? `${wie}, NICHT committed: ${c.message} Plan bleibt offen.`
+              : `${wie}, auto-commit fehlgeschlagen — Plan bleibt offen.`,
         };
       }
       return {
@@ -560,7 +571,10 @@ export const filesTool: ConsolidatedTool = {
     }
     if (action === 'commit') {
       const planId = reqStr(args, 'plan_id');
-      const result = await commitBatch({ plan_id: planId, agent_id: agentId, agent_note: typeof args.agent_note === 'string' ? args.agent_note : undefined, wait_seconds: num(args, 'wait_seconds') });
+      const result = await commitBatch({
+        plan_id: planId, agent_id: agentId, agent_note: typeof args.agent_note === 'string' ? args.agent_note : undefined, wait_seconds: num(args, 'wait_seconds'),
+        befunde_quittieren: befundeQuittierenLesen((args as Record<string, unknown>).befunde_quittieren),
+      });
       if (result.success) {
         return {
           ...result,
