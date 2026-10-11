@@ -26,6 +26,7 @@ import {
   getFileVersion,
   restoreFileVersion,
   restoreBatch,
+  restoreBatchVorschau,
   planBatch,
   replanBatch,
   planFailureResponse,
@@ -38,6 +39,7 @@ import {
   cancelBatch,
   getBatchPlan,
   buildPlanStatusResponse,
+  buildPlanStatusResponseMitDiff,
   addCoeditContribution,
   markCoeditReady,
   markCoeditNoChanges,
@@ -179,6 +181,10 @@ export const filesTool: ConsolidatedTool = {
           type: 'string',
           description: 'Batch-ID (fuer restore_batch — rollt alle Files einer Multi-File-Batch zurueck).',
         },
+        vorschau: {
+          type: 'boolean',
+          description: 'restore_batch: true = nur Vorschau, schreibt NICHTS. Je Datei batch_diff (was der Batch geaendert hat) und rueckgaengig (was restore_batch jetzt aendern wuerde), als Unified-Diff.',
+        },
         limit: {
           type: 'number',
           description: 'versions: Max Eintraege (Standard 50, Max 500).',
@@ -190,11 +196,11 @@ export const filesTool: ConsolidatedTool = {
         op_indices: {
           type: 'array',
           items: { type: 'number' },
-          description: 'plan_status: mehrere Ops VOLLSTAENDIG liefern (auch als JSON-String "[0,1]" oder "0,1"; alle Felder ungekuerzt, agent_id, Status, vorher/nachher). from_line/to_line schneiden ein Fenster aus content.',
+          description: 'plan_status: mehrere Ops VOLLSTAENDIG liefern (auch als JSON-String "[0,1]" oder "0,1"; alle Felder ungekuerzt, agent_id, Status, Unified-Diff der Op im Gesamtbild des Plans). from_line/to_line schneiden ein Fenster aus content.',
         },
         op_index: {
           type: 'number',
-          description: 'coedit_add: coedit_source_op_index der zurueckgestellten Op, die ops[0] ersetzt und beitraegt (z. B. nach contribution_failed). plan_status: Index einer Op, die VOLLSTAENDIG geliefert wird (alle Felder ungekuerzt, agent_id, Status, betroffene Zeilen vorher/nachher). plan_update: Index der zu ersetzenden Op (0-basiert); ops[] ersetzt genau diese. Ohne op_index ersetzt ops[] alle Ops.',
+          description: 'coedit_add: coedit_source_op_index der zurueckgestellten Op, die ops[0] ersetzt und beitraegt (z. B. nach contribution_failed). plan_status: Index einer Op, die VOLLSTAENDIG geliefert wird (alle Felder ungekuerzt, agent_id, Status, Unified-Diff der Op im Gesamtbild des Plans, anwendbar:false wenn nicht anwendbar). plan_update: Index der zu ersetzenden Op (0-basiert); ops[] ersetzt genau diese. Ohne op_index ersetzt ops[] alle Ops.',
         },
         ops: {
           type: 'array',
@@ -422,6 +428,17 @@ export const filesTool: ConsolidatedTool = {
     }
     if (action === 'restore_batch') {
       const batchId = reqStr(args, 'batch_id');
+      if ((args as Record<string, unknown>).vorschau === true) {
+        // P15-T22: Vorschau mit Diff, schreibt nichts.
+        const vorschau = await restoreBatchVorschau(batchId);
+        return {
+          success: true,
+          vorschau: true,
+          batch_id: batchId,
+          files: vorschau,
+          message: `Vorschau restore_batch ${batchId}: ${vorschau.length} Datei(en), nichts geschrieben. batch_diff = was der Batch geaendert hat, rueckgaengig = was restore_batch jetzt aendern wuerde. Ausfuehren: restore_batch ohne vorschau.`,
+        };
+      }
       const restored = await restoreBatch(batchId, agentId, reason);
       return {
         success: true,
@@ -553,7 +570,8 @@ export const filesTool: ConsolidatedTool = {
       if (waitSeconds) return pollPlanStatus({ plan_id: planId, wait_seconds: waitSeconds });
       const plan = await getBatchPlan(planId);
       if (!plan) return { success: false, error: 'plan_not_found', message: `Plan ${planId} nicht gefunden.` };
-      return buildPlanStatusResponse(plan);
+      // P15-T22: mit Unified-Diff je Datei aus dem Plan-Schatten.
+      return buildPlanStatusResponseMitDiff(plan);
     }
     if (action === 'history') {
       const project = reqStr(args, 'project');

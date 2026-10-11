@@ -39,6 +39,8 @@ import {
 } from './code-write.js';
 import type { BatchEdit } from './code-write.js';
 import { enqueueParseAndEmbed } from './code.js';
+import { performance } from 'node:perf_hooks';
+import { aenderungsBereiche, dateiDiff, diffMaxZeichen, diffMaxZeilen, diffText, zeilenZuordnung, type Bereich, type DateiDiff } from './file-diff.js';
 import {
   findForeignActiveReservationPrimaries,
   refreshReservationTtlsForFiles,
@@ -379,6 +381,8 @@ export interface PlanBatchResult {
   overlap_warnings?: CoeditConflictDetail[];
   /** Runde 3: statt eines zweiten leeren Traegers wurde der vorhandene wiederverwendet. */
   reused_carrier?: { plan_id: string; hinweis: string };
+  /** P15-T22: Unified-Diff aus dem Plan-Schatten (je Datei ueber alle Ops dieses Plans). */
+  diff?: PlanDiff;
 }
 
 /** Eine im Trockenlauf gescheiterte Op eines Plans. */
@@ -420,6 +424,8 @@ export class PlanBatchOpsFailedError extends Error {
   readonly shared_plans: SharedPlanRef[];
   /** P6-T21: eigene offene Plaene auf denselben Pfaden — gegen deren Stand wurde schon geprueft. */
   readonly eigene_plaene: SharedPlanRef[];
+  /** P15-T22: Diff der anwendbaren Ops aus dem Plan-Schatten, nicht anwendbare unter nicht_anwendbar. */
+  diff?: PlanDiff;
 
   constructor(args: {
     plan_id: string;
@@ -429,6 +435,7 @@ export class PlanBatchOpsFailedError extends Error {
     files_touched: string[];
     shared_plans?: SharedPlanRef[];
     eigene_plaene?: SharedPlanRef[];
+    diff?: PlanDiff;
   }) {
     const first = args.failed_ops[0];
     super(
@@ -457,6 +464,7 @@ export class PlanBatchOpsFailedError extends Error {
     this.files_touched = args.files_touched;
     this.shared_plans = args.shared_plans ?? [];
     this.eigene_plaene = args.eigene_plaene ?? [];
+    if (args.diff) this.diff = args.diff;
   }
 }
 
@@ -482,6 +490,7 @@ export function planFailureResponse(err: unknown, error = 'plan_failed'): Record
       ...(failed.superseded_plan_id ? { superseded_plan_id: failed.superseded_plan_id } : {}),
       ...(failed.shared_plans && failed.shared_plans.length > 0 ? { shared_plans: failed.shared_plans } : {}),
       ...(failed.eigene_plaene && failed.eigene_plaene.length > 0 ? { eigene_plaene: failed.eigene_plaene } : {}),
+      ...(failed.diff ? { diff: failed.diff } : {}),
       message: failed.message,
     };
   }
@@ -942,7 +951,9 @@ function applyOpMitZeilen(
   op: FileBatchOp,
   isFirstOpOnFile: boolean,
   seq: number,
-): { context: string; sizeBefore: number; sizeAfter: number; zeilen?: ZeilenSplice } {
+  /** P15-T22: zusaetzlich die genauen geaenderten Bereiche (Inhalts-Ops: Diff nur im Fenster des Spleisses). */
+  fein = false,
+): { context: string; sizeBefore: number; sizeAfter: number; zeilen?: ZeilenSplice; bereiche?: Bereich[] } {
   const src = buffers.get(op.file_path);
   const zeilenOp = op.action === 'replace_lines' || op.action === 'insert_after' || op.action === 'delete_lines';
   // Bei Zeilen-Ops wird das Array in-place gespleisst: nur die Laenge vorher merken.
@@ -953,14 +964,92 @@ function applyOpMitZeilen(
   const result = applyOpInMemory(buffers, op, isFirstOpOnFile);
   if (!src || op.action === 'copy') return result;
   const nachher = src.deleted ? [] : src.getLines();
-  if (zeilenOp) return { ...result, zeilen: { seq, start, weg, neu: nachher.length - vorher + weg, vorher } };
+  if (zeilenOp) {
+    const neu = nachher.length - vorher + weg;
+    return { ...result, zeilen: { seq, start, weg, neu, vorher }, ...(fein ? { bereiche: [{ a0: start, a1: start + weg, b0: start, b1: start + neu }] } : {}) };
+  }
   const alt = vorherZeilen ?? [];
   const min = Math.min(alt.length, nachher.length);
   let p = 0;
   while (p < min && alt[p] === nachher[p]) p++;
   let s = 0;
   while (s < min - p && alt[alt.length - 1 - s] === nachher[nachher.length - 1 - s]) s++;
-  return { ...result, zeilen: { seq, start: p, weg: alt.length - p - s, neu: nachher.length - p - s, vorher } };
+  const zeilen: ZeilenSplice = { seq, start: p, weg: alt.length - p - s, neu: nachher.length - p - s, vorher };
+  if (!fein) return { ...result, zeilen };
+  const bereiche = aenderungsBereiche(alt.slice(p, alt.length - s), nachher.slice(p, nachher.length - s))
+    .map((b) => ({ a0: b.a0 + p, a1: b.a1 + p, b0: b.b0 + p, b1: b.b1 + p }));
+  return { ...result, zeilen, bereiche };
+}
+
+/** Ergebnis von wendeOpsAn. */
+interface Angewendet {
+  /** Vorschau je Op in Original-Reihenfolge (Luecken nur nach Abbruch). */
+  previews: OpPreview[];
+  zeilen: Map<number, ZeilenSplice>;
+  /** Nur mit fein: genaue geaenderte Bereiche je Op (Koordinaten ihres Puffers zum Anwendezeitpunkt). */
+  bereiche: Map<number, Bereich[]>;
+  /** Original-Indizes der angewendeten Ops in Anwende-Reihenfolge. */
+  folge: number[];
+  fehler: Array<{ index: number; message: string }>;
+}
+
+/**
+ * P15-T22: EINE Anwende-Schleife fuer Trockenlauf (planBatch), Legacy-commit, gemeinsamen commit
+ * (buildCombinedCoeditPreview) und Plan-Schatten (plan_status, Diff). Vorher drei Kopien derselben
+ * Schleife — ein Befund an der falschen Op waere die Folge, sobald eine davon abweicht.
+ * Reihenfolge: prepareOpsForApply (Auto-Shift der Zeilen-Ops). applyOpInMemory wirft vor jeder
+ * Mutation: eine gescheiterte Op laesst den Puffer unberuehrt. weiterBeiFehler:false bricht ab
+ * (commit), true laeuft weiter und markiert jede gescheiterte Op (Trockenlauf, Schatten).
+ */
+function wendeOpsAn(
+  buffers: Map<string, PreparedFile>,
+  ops: FileBatchOp[],
+  opts: {
+    /** Zeilen-Spleiss je Op berechnen (commit: immer; Trockenlauf/Schatten: je Datei bis zur Groessengrenze). */
+    zeilen: boolean | ((filePath: string) => boolean);
+    fein?: boolean;
+    /** Spleiss auch in previews[].zeilen (gemeinsamer commit). */
+    zeilenInPreview?: boolean;
+    weiterBeiFehler: boolean;
+  },
+  applyPlan: Array<{ op: FileBatchOp; originalIndex: number }> = prepareOpsForApply(ops),
+): Angewendet {
+  const previews: OpPreview[] = new Array(ops.length);
+  const zeilen = new Map<number, ZeilenSplice>();
+  const bereiche = new Map<number, Bereich[]>();
+  const folge: number[] = [];
+  const fehler: Array<{ index: number; message: string }> = [];
+  const seen = new Set<string>();
+  let seq = 0;
+  for (const { op, originalIndex } of applyPlan) {
+    const first = !seen.has(op.file_path);
+    seen.add(op.file_path);
+    const mitZeilen = typeof opts.zeilen === 'function' ? opts.zeilen(op.file_path) : opts.zeilen;
+    try {
+      const r: { context: string; sizeBefore: number; sizeAfter: number; zeilen?: ZeilenSplice; bereiche?: Bereich[] } = mitZeilen
+        ? applyOpMitZeilen(buffers, op, first, seq++, opts.fein === true)
+        : applyOpInMemory(buffers, op, first);
+      previews[originalIndex] = {
+        index: originalIndex,
+        file_path: op.file_path,
+        action: op.action,
+        ok: true,
+        size_before: r.sizeBefore,
+        size_after: r.sizeAfter,
+        context: r.context.slice(0, 200),
+        ...(r.zeilen && opts.zeilenInPreview ? { zeilen: r.zeilen } : {}),
+      };
+      if (r.zeilen) zeilen.set(originalIndex, r.zeilen);
+      if (r.bereiche) bereiche.set(originalIndex, r.bereiche);
+      folge.push(originalIndex);
+    } catch (error) {
+      const message = (error as Error).message;
+      previews[originalIndex] = { index: originalIndex, file_path: op.file_path, action: op.action, ok: false, error: message };
+      fehler.push({ index: originalIndex, message });
+      if (!opts.weiterBeiFehler) break;
+    }
+  }
+  return { previews, zeilen, bereiche, folge, fehler };
 }
 
 /** V2: content_hash der Datei nach dem commit an jeden Spleiss haengen (Kette zum naechsten commit). */
@@ -1289,9 +1378,6 @@ function buildCombinedCoeditPreview(
     const content = baselines.get(filePath) ?? '';
     buffers.set(filePath, new PreparedFile(content, expectedHash));
   }
-  const previews: OpPreview[] = new Array(plan.ops.length);
-  const seenFiles = new Set<string>();
-  let zeilenSeq = 0;
   let applyPlan: Array<{ op: FileBatchOp; originalIndex: number }>;
   try {
     applyPlan = prepareOpsForApply(plan.ops);
@@ -1309,37 +1395,23 @@ function buildCombinedCoeditPreview(
     return { ok: false, conflict, previews: conflictPreviews(plan.ops, [conflict]) };
   }
 
-  for (const { op, originalIndex } of applyPlan) {
-    const first = !seenFiles.has(op.file_path);
-    seenFiles.add(op.file_path);
-    try {
-      const result: { context: string; sizeBefore: number; sizeAfter: number; zeilen?: ZeilenSplice } = mitZeilen
-        ? applyOpMitZeilen(buffers, op, first, zeilenSeq++)
-        : applyOpInMemory(buffers, op, first);
-      previews[originalIndex] = {
-        index: originalIndex,
-        file_path: op.file_path,
-        action: op.action,
-        ok: true,
-        size_before: result.sizeBefore,
-        size_after: result.sizeAfter,
-        context: result.context.slice(0, 200),
-        ...(result.zeilen ? { zeilen: result.zeilen } : {}),
-      };
-    } catch (error) {
-      const message = `Gemeinsamer Re-Apply von Op ${originalIndex} fehlgeschlagen: ${(error as Error).message}`;
-      const conflict: CoeditConflictDetail = {
-        file_path: op.file_path,
-        left_op_index: originalIndex,
-        right_op_index: originalIndex,
-        left_agent_id: op.agent_id ?? 'unknown',
-        right_agent_id: op.agent_id ?? 'unknown',
-        reason: 'composite_reapply_failed',
-        message,
-      };
-      return { ok: false, conflict, previews: conflictPreviews(plan.ops, [conflict]) };
-    }
+  // P15-T22: dieselbe Anwende-Schleife wie Trockenlauf, Legacy-commit und Plan-Schatten (wendeOpsAn).
+  const angewendet = wendeOpsAn(buffers, plan.ops, { zeilen: mitZeilen, zeilenInPreview: true, weiterBeiFehler: false }, applyPlan);
+  const gescheitert = angewendet.fehler[0];
+  if (gescheitert) {
+    const op = plan.ops[gescheitert.index];
+    const conflict: CoeditConflictDetail = {
+      file_path: op.file_path,
+      left_op_index: gescheitert.index,
+      right_op_index: gescheitert.index,
+      left_agent_id: op.agent_id ?? 'unknown',
+      right_agent_id: op.agent_id ?? 'unknown',
+      reason: 'composite_reapply_failed',
+      message: `Gemeinsamer Re-Apply von Op ${gescheitert.index} fehlgeschlagen: ${gescheitert.message}`,
+    };
+    return { ok: false, conflict, previews: conflictPreviews(plan.ops, [conflict]) };
   }
+  const previews = angewendet.previews;
   return { ok: true, buffers, previews: mitZeilen ? setzeZeilenNach(previews, buffers) : previews };
 }
 
@@ -2014,41 +2086,28 @@ export async function planBatch(args: {
   // previews wird in Original-Reihenfolge zurueckgeliefert (User-Sicht), nicht
   // in Apply-Reihenfolge. Pro originalIndex eine Slot-Position vorbelegen.
   const previews: OpPreview[] = new Array(args.ops.length);
-  const seenFileInApplyOrder = new Set<string>();
-
-  for (const { op, originalIndex } of applyPlan) {
-    const wasUnknown = !seenFileInApplyOrder.has(op.file_path);
-    seenFileInApplyOrder.add(op.file_path);
+  // P15-T22: erst alle Dateien laden (gleiche Reihenfolge wie vorher -> gleiche expected_hashes und
+  // files_touched), die Basis fuer den Plan-Schatten festhalten (kein Extra-Lesezugriff), dann EINE
+  // Anwende-Schleife wie commit (wendeOpsAn). Kein Abbruch: alle Ops laufen durch, damit der gespeicherte
+  // Plan JEDE gescheiterte Op markiert; applyOpInMemory wirft vor jeder Mutation.
+  for (const { op } of applyPlan) {
     await ensureBuffer(fileBuffers, expectedHashes, args.project, op.file_path);
-
     if ((op.action === 'move' || op.action === 'copy') && op.new_path) {
       await ensureBuffer(fileBuffers, expectedHashes, args.project, op.new_path);
     }
-
-    try {
-      const { context, sizeBefore, sizeAfter } = applyOpInMemory(fileBuffers, op, wasUnknown);
-      previews[originalIndex] = {
-        index: originalIndex,
-        file_path: op.file_path,
-        action: op.action,
-        ok: true,
-        size_before: sizeBefore,
-        size_after: sizeAfter,
-        context: context.slice(0, 200),
-      };
-    } catch (err) {
-      previews[originalIndex] = {
-        index: originalIndex,
-        file_path: op.file_path,
-        action: op.action,
-        ok: false,
-        error: (err as Error).message,
-      };
-      // Kein Abbruch: alle Ops laufen durch, damit der gespeicherte Plan JEDE
-      // gescheiterte Op markiert. applyOpInMemory wirft vor jeder Mutation, der
-      // Buffer bleibt bei einem Fehler unveraendert.
-    }
   }
+  const schattenStart = performance.now();
+  const schattenBasen = new Map([...fileBuffers].map(([filePath, buf]) => [filePath, buf.finalContent] as const));
+  const trocken = wendeOpsAn(fileBuffers, args.ops, {
+    zeilen: (filePath) => (schattenBasen.get(filePath)?.length ?? 0) <= diffMaxZeichen(),
+    fein: true,
+    weiterBeiFehler: true,
+  }, applyPlan);
+  trocken.previews.forEach((preview, index) => { previews[index] = preview; });
+  const schattenStand: SchattenStand = { basen: schattenBasen, buffers: fileBuffers, angewendet: trocken, drift: new Map() };
+  const planDiffFuer = (nurDateien?: Set<string>, indexMap?: Map<number, number>): PlanDiff => planDiffAus({
+    ops: args.ops, owner: resolveAgentId(args.agent_id) ?? null, stand: schattenStand, start: schattenStart, previews, nurDateien, indexMap,
+  });
 
   // Runde 3 (Nachtrag dc2d7eac b): Pfade, die als Wait in einen offenen fremden Plan gehen, werden spaeter
   // auf den Stand DES ZIELPLANS angewendet (Platte + dessen Ops). Eine gegen die Platte gescheiterte Op
@@ -2141,6 +2200,7 @@ export async function planBatch(args: {
       files_touched: [...fileBuffers.keys()],
       shared_plans: sharedPlansForDraft,
       eigene_plaene: eigenePlaeneForDraft,
+      diff: planDiffFuer(),
     });
   }
 
@@ -2523,6 +2583,10 @@ export async function planBatch(args: {
       files_touched: planFiles,
       expected_hashes: planExpectedHashes,
       previews: planPreviews,
+      // P15-T22: Diff aus dem Trockenlauf-Schatten; bei Teilplaenen (Waits/Anhaengen) nur dessen Dateien und Ops.
+      ...(planOps.length > 0
+        ? { diff: geteilt ? planDiffFuer(new Set(planFiles), new Map(immediateEntries.map(({ originalIndex }, index) => [originalIndex, index] as const))) : planDiffFuer() }
+        : {}),
       ...(mergedInto.length > 0 ? { merged_into: mergedInto } : {}),
       ...(mergeOverlaps.length > 0 ? { overlap_warnings: mergeOverlaps } : {}),
       ...(traeger
@@ -2811,64 +2875,6 @@ function spliceZuordnung(splices: ZeilenSplice[]): Zuordnung {
     return pos + 1;
   };
   return { basisZeilen: folge[0]?.vorher ?? 0, zeile: (x) => durch(x, true), ungefaehr: (x) => durch(x, false) };
-}
-
-/**
- * Fallback-Zuordnung, wenn fuer einen Schritt keine Zeilentabelle existiert (commit vor dem Umbau
- * oder Schreiben ausserhalb eines Plans): Patience-Diff ueber Zeilen, die in beiden Bereichen
- * genau einmal vorkommen (LIS), dazwischen gemeinsamer Anfang/Ende — rekursiv, OHNE Obergrenze,
- * O(n log n) je Ebene. Was sich nicht eindeutig zuordnen laesst, gilt als geaendert: dann wird
- * lieber abgelehnt als eine falsche Zeile getroffen.
- */
-function zeilenZuordnung(alt: string[], neu: string[]): Int32Array {
-  const map = new Int32Array(alt.length + 1);
-  const stapel: Array<[number, number, number, number]> = [[0, alt.length, 0, neu.length]];
-  while (stapel.length > 0) {
-    let [a0, a1, b0, b1] = stapel.pop() as [number, number, number, number];
-    while (a0 < a1 && b0 < b1 && alt[a0] === neu[b0]) { map[a0 + 1] = b0 + 1; a0++; b0++; }
-    while (a0 < a1 && b0 < b1 && alt[a1 - 1] === neu[b1 - 1]) { map[a1] = b1; a1--; b1--; }
-    if (a0 >= a1 || b0 >= b1) continue;
-    const zaehler = new Map<string, { a: number; b: number; ia: number; ib: number }>();
-    for (let i = a0; i < a1; i++) {
-      const eintrag = zaehler.get(alt[i]);
-      if (eintrag) eintrag.a++;
-      else zaehler.set(alt[i], { a: 1, b: 0, ia: i, ib: -1 });
-    }
-    for (let j = b0; j < b1; j++) {
-      const eintrag = zaehler.get(neu[j]);
-      if (eintrag) { eintrag.b++; eintrag.ib = j; }
-    }
-    const paare: Array<[number, number]> = [];
-    for (const eintrag of zaehler.values()) if (eintrag.a === 1 && eintrag.b === 1) paare.push([eintrag.ia, eintrag.ib]);
-    if (paare.length === 0) continue;
-    paare.sort((left, right) => left[0] - right[0]);
-    // Laengste aufsteigende Folge ueber die neue Position (Patience Sorting).
-    const enden: number[] = [];
-    const endeIdx: number[] = [];
-    const vorgaenger = new Int32Array(paare.length).fill(-1);
-    for (let k = 0; k < paare.length; k++) {
-      const ib = paare[k][1];
-      let lo = 0;
-      let hi = enden.length;
-      while (lo < hi) { const mitte = (lo + hi) >> 1; if (enden[mitte] < ib) lo = mitte + 1; else hi = mitte; }
-      if (lo > 0) vorgaenger[k] = endeIdx[lo - 1];
-      enden[lo] = ib;
-      endeIdx[lo] = k;
-    }
-    const kette: Array<[number, number]> = [];
-    for (let k = endeIdx[enden.length - 1]; k >= 0; k = vorgaenger[k]) kette.push(paare[k]);
-    kette.reverse();
-    let pa = a0;
-    let pb = b0;
-    for (const [ia, ib] of kette) {
-      map[ia + 1] = ib + 1;
-      if (ia > pa && ib > pb) stapel.push([pa, ia, pb, ib]);
-      pa = ia + 1;
-      pb = ib + 1;
-    }
-    if (pa < a1 && pb < b1) stapel.push([pa, a1, pb, b1]);
-  }
-  return map;
 }
 
 function arrayZuordnung(map: Int32Array): Zuordnung {
@@ -4043,6 +4049,10 @@ export async function commitBatch(args: {
   const caller = resolveAgentId(args.agent_id);
   for (;;) {
     const result = await commitBatchOnce(args);
+    // P15-T22 Ziel 2: endgueltiges Diff an die file_versions des Batches haengen — nebenlaeufig nach dem
+    // COMMIT, verzoegert und gefaehrdet den commit nicht (Fehler nur im Log; fehlt es, rechnet history/
+    // get_version es beim Lesen nach).
+    if (result.success) diffNachCommitPlanen(result.plan_id);
     if (result.success || result.status !== 'waiting_for_contributors') return result;
     let blockers = result.waiting_for ?? [];
     for (;;) {
@@ -4247,32 +4257,21 @@ async function commitLegacyBody(
     const content = currentBuffers.get(filePath) ?? '';
     finalBuffers.set(filePath, new PreparedFile(content, expectedHash));
   }
-  const seenFile = new Set<string>();
-
-  // Re-Apply muss IDENTISCH zu planBatch ablaufen — d.h. erneuter Auto-Shift.
-  // Da die Ops in plan.ops in Original-Reihenfolge gespeichert sind, fuehrt
-  // prepareOpsForApply zur gleichen Apply-Reihenfolge wie im Trockenlauf.
-  const reapplyPlan = prepareOpsForApply(plan.ops);
+  // Re-Apply muss IDENTISCH zu planBatch ablaufen — d.h. erneuter Auto-Shift. P15-T22: dieselbe
+  // Anwende-Schleife wie Trockenlauf, gemeinsamer commit und Plan-Schatten (wendeOpsAn); prepareOpsForApply
+  // ergibt aus plan.ops (Original-Reihenfolge) dieselbe Apply-Reihenfolge wie im Trockenlauf.
   // V2 ohne Grenze: Zeilen-Spleiss je Op, landet beim Abschluss in previews[].zeilen.
-  let zeilenSeq = 0;
-  const zeilenJeOp = new Map<number, ZeilenSplice>();
-
-  for (const { op, originalIndex } of reapplyPlan) {
-    const isFirstOpOnFile = !seenFile.has(op.file_path);
-    seenFile.add(op.file_path);
-    try {
-      const angewendet = applyOpMitZeilen(finalBuffers, op, isFirstOpOnFile, zeilenSeq++);
-      if (angewendet.zeilen) zeilenJeOp.set(originalIndex, angewendet.zeilen);
-    } catch (err) {
-      // Sollte eigentlich nicht passieren wenn Plan sauber war — defensive Behandlung.
-      return {
-        success: false,
-        plan_id: args.plan_id,
-        status: 'stale',
-        error: 'reapply_failed',
-        message: `Re-Apply von Op ${originalIndex} fehlgeschlagen: ${(err as Error).message}`,
-      };
-    }
+  const reapply = wendeOpsAn(finalBuffers, plan.ops, { zeilen: true, weiterBeiFehler: false });
+  const zeilenJeOp = reapply.zeilen;
+  if (reapply.fehler.length > 0) {
+    // Sollte eigentlich nicht passieren wenn Plan sauber war — defensive Behandlung.
+    return {
+      success: false,
+      plan_id: args.plan_id,
+      status: 'stale',
+      error: 'reapply_failed',
+      message: `Re-Apply von Op ${reapply.fehler[0].index} fehlgeschlagen: ${reapply.fehler[0].message}`,
+    };
   }
 
   // Schreiben mit batch_id=plan.id — file_versions-Snapshots tragen die Batch-ID.
@@ -5076,9 +5075,9 @@ export function opIndicesLesen(value: unknown): number[] | undefined {
 /**
  * Fremde Op vollstaendig sehen (User-Vorgabe 29.09.2026): plan_status mit op_index / op_indices
  * liefert jede gewuenschte Op KOMPLETT — agent_id, action, alle Felder (content, search/replace,
- * edits, anchor_*, Zeilen), reason, Status (aktiv/committed/zurueckgezogen/verworfen) und die
- * betroffenen Zeilen vorher/nachher (Op allein gegen die Basis des Plans angewendet, 3 Zeilen
- * Kontext). Nichts gekuerzt; from_line/to_line schneiden nur auf Wunsch ein Fenster aus content.
+ * edits, anchor_*, Zeilen), reason, Status (aktiv/committed/zurueckgezogen/verworfen) und ihr
+ * Unified-Diff im Gesamtbild des Plans (P15-T22: Plan-Schatten = Stand bei plan() + alle Ops in
+ * commit-Reihenfolge; nicht anwendbare Ops ehrlich als anwendbar:false, kein erfundenes nachher). Nichts gekuerzt; from_line/to_line schneiden nur auf Wunsch ein Fenster aus content.
  * Basis: offener Plan = aktueller Dateistand, committeter Plan = Stand vor dem commit (file_versions).
  */
 export async function getPlanOpsVollstaendig(args: {
@@ -5108,24 +5107,15 @@ export async function getPlanOpsVollstaendig(args: {
     : plan.status === 'open' || plan.status === 'conflict' ? 'aktiv'
       : plan.status === 'committed' ? 'committed'
         : plan.status === 'cancelled' ? 'verworfen' : plan.status;
-  const basisCache = new Map<string, string | null>();
-  const basis = async (filePath: string): Promise<string | null> => {
-    if (basisCache.has(filePath)) return basisCache.get(filePath) ?? null;
-    const hash = plan.expected_hashes?.[filePath];
-    let text: string | null;
-    if (plan.status === 'committed' && hash) {
-      text = hash === EMPTY_CONTENT_HASH ? '' : (await pool.query<{ content: string }>(
-        `SELECT content FROM file_versions WHERE project = $1 AND file_path = $2 AND content_hash = $3
-          ORDER BY (batch_id = $4::bigint) DESC NULLS LAST, id DESC LIMIT 1`,
-        [plan.project, filePath, hash, plan.id],
-      )).rows[0]?.content ?? null;
-    } else {
-      text = (await getFileContentFromPg(plan.project, filePath)) ?? '';
-    }
-    basisCache.set(filePath, text);
-    return text;
-  };
-  const kontext = 3;
+  // P15-T22: Plan-Schatten statt "Op allein gegen die Basis" (Befund Plan 23535: ein Block vom ersten bis
+  // zum letzten Edit, nachher auch fuer nicht anwendbare Ops, Basis = heutiger Stand, CRLF-Rauschen).
+  // Alle Ops des Plans in commit-Reihenfolge auf den Stand bei plan(), nur im Speicher; je Op die Hunks,
+  // die sie im Endstand erzeugt — ungekuerzt.
+  const stand = await ladeSchattenStand(plan);
+  const dateien = 'fehler' in stand ? [] : schattenDateien(stand, ops);
+  const mehrere = new Set(ops.map((op) => op.agent_id ?? plan.owner_agent_id)).size > 1;
+  const label = (liste: number[]): string =>
+    `op ${liste.map((i) => `${i}${mehrere ? ` (${ops[i]?.agent_id ?? plan.owner_agent_id ?? '?'})` : ''}`).join(',')}`;
   const ergebnis: Array<Record<string, unknown>> = [];
   for (const index of indices) {
     const op = ops[index];
@@ -5150,28 +5140,30 @@ export async function getPlanOpsVollstaendig(args: {
       ...(contentFenster ? { content_fenster: contentFenster } : {}),
       ...(previews.find((preview) => preview?.index === index) ? { preview: previews.find((preview) => preview?.index === index) } : {}),
     };
-    const text = await basis(op.file_path);
-    if (text === null) {
-      eintrag.vorher_nachher_fehlt = 'Stand vor dem commit ist nicht mehr lesbar (file_versions) — die Op selbst ist vollstaendig oben.';
+    if ('fehler' in stand) {
+      eintrag.diff_fehlt = `Plan-Schatten nicht baubar: ${stand.fehler} — die Op selbst ist vollstaendig oben.`;
     } else {
-      const buffers = new Map<string, PreparedFile>([[op.file_path, new PreparedFile(text)]]);
-      if (op.new_path) buffers.set(op.new_path, new PreparedFile((await getFileContentFromPg(plan.project, op.new_path)) ?? ''));
-      try {
-        const angewendet = applyOpMitZeilen(buffers, op, true, 0);
-        const z = angewendet.zeilen;
-        if (z) {
-          const alt = text.split('\n');
-          const buf = buffers.get(op.file_path) as PreparedFile;
-          const neu = buf.deleted ? [] : buf.getLines();
-          const ab = Math.max(0, z.start - kontext);
-          eintrag.bereich = { ab_zeile: z.start + 1, alte_zeilen: z.weg, neue_zeilen: z.neu };
-          eintrag.vorher = { ab_zeile: ab + 1, zeilen: alt.slice(ab, z.start + z.weg + kontext) };
-          eintrag.nachher = { ab_zeile: ab + 1, zeilen: neu.slice(ab, z.start + z.neu + kontext) };
-        } else {
-          eintrag.bereich = { hinweis: `${op.action} aendert ${op.file_path} nicht (Ziel: ${op.new_path ?? '-'})` };
-        }
-      } catch (error) {
-        eintrag.anwendung = `allein gegen die Basis nicht anwendbar: ${(error as Error).message}`;
+      const gescheitert = stand.angewendet.fehler.find((f) => f.index === index);
+      if (gescheitert) {
+        eintrag.anwendbar = false;
+        eintrag.nicht_anwendbar = gescheitert.message;
+        eintrag.diff = null;
+        eintrag.diff_hinweis = 'Op ist im Gesamtbild des Plans (Stand bei plan() + alle Ops in commit-Reihenfolge) nicht anwendbar — '
+          + 'es gibt kein nachher. Die Op selbst steht vollstaendig unter op.';
+      } else {
+        eintrag.anwendbar = true;
+        eintrag.diff = touchedPaths(op).map((filePath) => {
+          const datei = dateien.find((d) => d.file_path === filePath);
+          if (!datei) return { file_path: filePath, plus: 0, minus: 0, hinweis: 'im Endstand unveraendert' };
+          const eigene = datei.hunkOps.map((liste, k) => (liste.includes(index) ? k : -1)).filter((k) => k >= 0);
+          if (datei.d && eigene.length === 0) {
+            return {
+              file_path: filePath, plus: 0, minus: 0, ...(datei.drift ? { drift: datei.drift } : {}),
+              hinweis: 'Op aendert im Endstand nichts sichtbar (Ergebnis gleich Basis oder von einer spaeteren Op ueberschrieben).',
+            };
+          }
+          return dateiAusgabe(datei, eigene, (k) => label(datei.hunkOps[k]), Number.MAX_SAFE_INTEGER, datei.ops);
+        });
       }
     }
     ergebnis.push(eintrag);
@@ -5182,9 +5174,12 @@ export async function getPlanOpsVollstaendig(args: {
     plan_status: plan.status,
     owner_agent_id: plan.owner_agent_id,
     ops_count: ops.length,
-    basis: plan.status === 'committed' ? 'Stand vor dem commit (file_versions)' : 'aktueller Dateistand',
+    basis: plan.status === 'committed'
+      ? 'Stand vor dem commit (file_versions)'
+      : 'Stand bei plan() (expected_hashes; bei Drift aus file_versions, siehe drift)',
     ops: ergebnis,
-    message: `${ergebnis.length} Op(s) von Plan ${plan.id} vollstaendig (ungekuerzt). vorher/nachher: die Op allein gegen die Basis angewendet, ${kontext} Zeilen Kontext.`,
+    message: `${ergebnis.length} Op(s) von Plan ${plan.id} vollstaendig (ungekuerzt). diff: Unified-Diff der Hunks, die die Op im Gesamtbild des Plans erzeugt `
+      + '(Basis + alle Ops in commit-Reihenfolge, 3 Zeilen Umfeld, Kopf "op <index>", CRLF nur fuer die Anzeige normalisiert). anwendbar:false = kein nachher.',
   };
 }
 
@@ -5281,4 +5276,330 @@ export function buildPlanStatusResponse(plan: FileBatchPlanRow): Record<string, 
       ? { batch_id: plan.id, committed_by: /\[committed von ([^\]]+)\]/.exec(plan.reason ?? '')?.[1] ?? null }
       : {}),
   };
+}
+
+// ─── P15-T22: Plan-Schatten + Diff ─────────────────────────────────────────────────────────────────
+
+/**
+ * Plan-Schatten (User-Vorgabe 11.10.2026, Konzept d747d128 / ee444d99 / 5f914485): je betroffener Datei
+ * der Stand bei plan() (Hash in expected_hashes) und der Endstand nach ALLEN Ops in commit-Reihenfolge —
+ * gebaut mit derselben Anwende-Schleife wie commit (wendeOpsAn), NUR im Speicher, nie persistiert, nie in
+ * code_files/Index/Qdrant/Sync. Grundlage fuer die Diffs (P15-T22) und die Pruefungen (P15-T17).
+ */
+interface SchattenStand {
+  basen: Map<string, string>;
+  buffers: Map<string, PreparedFile>;
+  angewendet: Angewendet;
+  /** Je Datei: Hinweis, wenn die Datei seit plan() geaendert wurde. */
+  drift: Map<string, string>;
+}
+
+export interface PlanDiffDatei {
+  file_path: string;
+  /** Ops, die diese Datei im Endstand aendern (Original-Index des Plans). */
+  ops: number[];
+  plus: number;
+  minus: number;
+  /** Unified-Diff (Kopf je Hunk: "@@ -a,n +b,m @@ op <index>"). */
+  text?: string;
+  crlf?: true;
+  nur_zeilenenden?: true;
+  neu?: true;
+  geloescht?: true;
+  drift?: string;
+  gekappt?: { zeilen: number; hunks: number; hinweis: string };
+  hinweis?: string;
+}
+
+export interface PlanDiff {
+  dateien: PlanDiffDatei[];
+  nicht_anwendbar?: Array<{ op_index: number; file_path: string; agent_id: string | null; fehler: string }>;
+  /** Dauer fuer Diff (inkl. Laden der Basis bei plan_status) in ms. */
+  ms: number;
+  hinweis: string;
+}
+
+
+/**
+ * Position x (0-basiert, Zeilengrenze) durch die Bereiche einer spaeteren Op schieben. links = Anfang
+ * einer Spanne, rechts = Ende. Eine Einfuegung genau an x gehoert nicht zur Spanne.
+ */
+function schiebe(x: number, spaeter: Bereich[], seite: 'links' | 'rechts'): number {
+  let off = 0;
+  for (const r of spaeter) {
+    if (r.a1 < x || (r.a1 === x && r.a0 < r.a1)) { off = r.b1 - r.a1; continue; }
+    if (r.a0 === r.a1 && r.a0 === x) return seite === 'links' ? r.b1 : r.b0;
+    if (r.a0 < x) return seite === 'links' ? r.b0 : r.b1;
+    break;
+  }
+  return x + off;
+}
+
+/** Je Op ihre geaenderten Zeilen im ENDSTAND der Datei (durch alle spaeteren Ops derselben Datei geschoben). */
+function opBereicheImEndstand(angewendet: Angewendet, ops: FileBatchOp[]): Map<number, Array<[number, number]>> {
+  const proDatei = new Map<string, Array<{ index: number; bereiche: Bereich[] }>>();
+  for (const index of angewendet.folge) {
+    const bereiche = angewendet.bereiche.get(index);
+    if (!bereiche) continue;
+    const liste = proDatei.get(ops[index].file_path) ?? [];
+    liste.push({ index, bereiche });
+    proDatei.set(ops[index].file_path, liste);
+  }
+  const out = new Map<number, Array<[number, number]>>();
+  for (const liste of proDatei.values()) {
+    // Sehr viele Ops auf einer Datei: Zuordnung je Hunk dann ueber alle Ops der Datei (O(Ops^2) vermeiden).
+    if (liste.length > 500) continue;
+    liste.forEach(({ index, bereiche }, k) => {
+      let spannen = bereiche.map((b) => [b.b0, b.b1] as [number, number]);
+      for (let j = k + 1; j < liste.length; j++) {
+        const spaeter = liste[j].bereiche;
+        spannen = spannen.map(([s, e]) => {
+          const s2 = schiebe(s, spaeter, 'links');
+          return [s2, Math.max(s2, schiebe(e, spaeter, 'rechts'))] as [number, number];
+        });
+      }
+      out.set(index, spannen);
+    });
+  }
+  return out;
+}
+
+function beruehrt(s: number, e: number, b: Bereich): boolean {
+  if (s < e && b.b0 < b.b1) return s < b.b1 && e > b.b0;
+  return s <= b.b1 && e >= b.b0;
+}
+
+interface SchattenDatei {
+  file_path: string;
+  d: DateiDiff | null;
+  /** Je Hunk die Ops (Original-Index), die ihn erzeugen. */
+  hunkOps: number[][];
+  ops: number[];
+  neu: boolean;
+  geloescht: boolean;
+  zu_gross?: number;
+  drift?: string;
+}
+
+/** Diff Basis -> Endstand je Datei und Zuordnung jedes Hunks zu seinen Ops. */
+function schattenDateien(stand: SchattenStand, ops: FileBatchOp[]): SchattenDatei[] {
+  const imEnd = opBereicheImEndstand(stand.angewendet, ops);
+  const out: SchattenDatei[] = [];
+  for (const [filePath, basis] of stand.basen) {
+    const buf = stand.buffers.get(filePath);
+    if (!buf) continue;
+    const ergebnis = buf.deleted ? '' : buf.finalContent;
+    const opsDerDatei = stand.angewendet.folge.filter((i) => touchedPaths(ops[i]).includes(filePath)).sort((a, b) => a - b);
+    if (opsDerDatei.length === 0 && basis === ergebnis) continue;
+    const drift = stand.drift.get(filePath);
+    const gemeinsam = {
+      file_path: filePath,
+      ops: opsDerDatei,
+      neu: basis === '' && !buf.deleted && ergebnis !== '',
+      geloescht: Boolean(buf.deleted) && basis !== '',
+      ...(drift ? { drift } : {}),
+    };
+    const groesse = Math.max(basis.length, ergebnis.length);
+    if (groesse > diffMaxZeichen()) {
+      out.push({ ...gemeinsam, d: null, hunkOps: [], zu_gross: groesse });
+      continue;
+    }
+    const d = dateiDiff(basis, ergebnis);
+    const ohneZuordnung = opsDerDatei.filter((i) => !imEnd.has(i));
+    const hunkOps = d.hunks.map((h) => {
+      const treffer = opsDerDatei.filter((i) => (imEnd.get(i) ?? []).some(([s, e]) => h.bereiche.some((b) => beruehrt(s, e, b))));
+      const alle = [...new Set([...treffer, ...ohneZuordnung])].sort((a, b) => a - b);
+      return alle.length > 0 ? alle : [...opsDerDatei];
+    });
+    out.push({ ...gemeinsam, d, hunkOps });
+  }
+  return out;
+}
+
+/** Eine Datei (bzw. die Hunks hunkIndizes) als Antwort-Eintrag; maxZeilen kappt den Text. */
+function dateiAusgabe(
+  datei: SchattenDatei,
+  hunkIndizes: number[],
+  kopf: (k: number) => string,
+  maxZeilen: number,
+  opsAnzeige: number[],
+): PlanDiffDatei {
+  const aus: PlanDiffDatei = {
+    file_path: datei.file_path,
+    ops: opsAnzeige,
+    plus: 0,
+    minus: 0,
+    ...(datei.neu ? { neu: true as const } : {}),
+    ...(datei.geloescht ? { geloescht: true as const } : {}),
+    ...(datei.drift ? { drift: datei.drift } : {}),
+  };
+  if (!datei.d) {
+    return { ...aus, hinweis: `Datei zu gross fuer ein Diff (${datei.zu_gross} Zeichen > FILES_DIFF_MAX_ZEICHEN ${diffMaxZeichen()}) — die Ops selbst: plan_status(op_index).` };
+  }
+  const d = datei.d;
+  const hunks = hunkIndizes.map((k) => d.hunks[k]);
+  for (const h of hunks) for (const b of h.bereiche) { aus.minus += b.a1 - b.a0; aus.plus += b.b1 - b.b0; }
+  if (d.crlf) aus.crlf = true;
+  if (d.nur_zeilenenden) aus.nur_zeilenenden = true;
+  if (hunks.length === 0) return { ...aus, hinweis: d.nur_zeilenenden ? 'nur Zeilenenden geaendert (CRLF/LF)' : 'keine Aenderung' };
+  if (maxZeilen <= 0) {
+    return { ...aus, gekappt: { zeilen: aus.plus + aus.minus, hunks: hunks.length, hinweis: 'Antwort-Budget erschoepft — Diff dieser Datei: files(action:"plan_status", plan_id, op_index).' } };
+  }
+  const nummer = new Map(hunks.map((h, i) => [h, hunkIndizes[i]] as const));
+  const t = diffText(d, hunks, (h) => kopf(nummer.get(h) ?? 0), maxZeilen);
+  return {
+    ...aus,
+    text: t.text,
+    ...(t.gekappt
+      ? { gekappt: { ...t.gekappt, hinweis: `gekappt bei ${maxZeilen} Zeilen (FILES_DIFF_MAX_ZEILEN) — einzelne Op ungekuerzt: files(action:"plan_status", plan_id, op_index).` } }
+      : {}),
+  };
+}
+
+/** Kompaktes Diff eines ganzen Plans (je Datei ueber alle Ops). indexMap/nurDateien: Teilplan (planBatch mit Waits). */
+function planDiffAus(args: {
+  ops: FileBatchOp[];
+  owner: string | null;
+  stand: SchattenStand;
+  start: number;
+  previews?: OpPreview[];
+  nurDateien?: Set<string>;
+  indexMap?: Map<number, number>;
+}): PlanDiff {
+  const { ops, stand } = args;
+  const zeige = (i: number): number => (args.indexMap ? args.indexMap.get(i) ?? i : i);
+  const agentVon = (i: number): string | null => ops[i]?.agent_id ?? args.owner;
+  const mehrere = new Set(ops.map((_, i) => agentVon(i))).size > 1;
+  const label = (liste: number[]): string => `op ${liste.map((i) => `${zeige(i)}${mehrere ? ` (${agentVon(i) ?? '?'})` : ''}`).join(',')}`;
+  let budget = diffMaxZeilen() * 4;
+  const dateien: PlanDiffDatei[] = [];
+  for (const datei of schattenDateien(stand, ops)) {
+    if (args.nurDateien && !args.nurDateien.has(datei.file_path)) continue;
+    const alle = (datei.d?.hunks ?? []).map((_, k) => k);
+    const ausgabe = dateiAusgabe(datei, alle, (k) => label(datei.hunkOps[k]), Math.min(diffMaxZeilen(), budget), datei.ops.map(zeige));
+    budget -= ausgabe.text ? ausgabe.text.split('\n').length : 0;
+    dateien.push(ausgabe);
+  }
+  const nichtAnwendbar = stand.angewendet.fehler
+    .filter((f) => (!args.previews || args.previews[f.index]?.ok === false) && (!args.indexMap || args.indexMap.has(f.index)))
+    .map((f) => ({ op_index: zeige(f.index), file_path: ops[f.index].file_path, agent_id: agentVon(f.index), fehler: f.message.slice(0, 500) }));
+  return {
+    dateien,
+    ...(nichtAnwendbar.length > 0 ? { nicht_anwendbar: nichtAnwendbar } : {}),
+    ms: Math.round((performance.now() - args.start) * 10) / 10,
+    hinweis: 'Unified-Diff je Datei aus dem Plan-Schatten: Basis = Stand bei plan(), alle anwendbaren Ops in commit-Reihenfolge, 3 Zeilen Umfeld, '
+      + 'Kopf je Hunk "op <index>". CRLF nur fuer die Anzeige normalisiert. nicht_anwendbar: diese Ops fehlen im Diff (kein erfundenes nachher). '
+      + 'Einzelne Op ungekuerzt: files(action:"plan_status", plan_id, op_index).',
+  };
+}
+
+/**
+ * Basis des Schattens laden: committeter Plan = Stand vor dem commit (file_versions mit dem Hash aus
+ * expected_hashes); sonst der aktuelle Stand, wenn sein Hash dem bei plan() gleicht — andernfalls (Drift)
+ * der Stand bei plan() aus file_versions plus Hinweis, und wenn der fehlt, der aktuelle Stand plus Hinweis.
+ */
+async function ladeSchattenStand(plan: {
+  id: string; project: string; ops: FileBatchOp[]; expected_hashes: Record<string, string>; status: FileBatchStatus;
+}): Promise<SchattenStand | { fehler: string }> {
+  const pool = getPool();
+  const ops = Array.isArray(plan.ops) ? plan.ops : [];
+  const pfade = uniqueStrings([...Object.keys(plan.expected_hashes ?? {}), ...ops.flatMap(touchedPaths)]);
+  const ausVersion = async (filePath: string, hash: string): Promise<string | null> => (hash === EMPTY_CONTENT_HASH ? '' : (await pool.query<{ content: string }>(
+    `SELECT content FROM file_versions WHERE project = $1 AND file_path = $2 AND content_hash = $3
+      ORDER BY (batch_id = $4::bigint) DESC NULLS LAST, id DESC LIMIT 1`,
+    [plan.project, filePath, hash, plan.id],
+  )).rows[0]?.content ?? null);
+  const basen = new Map<string, string>();
+  const drift = new Map<string, string>();
+  for (const filePath of pfade) {
+    const hash = plan.expected_hashes?.[filePath];
+    if (plan.status === 'committed' && hash) {
+      const damals = await ausVersion(filePath, hash);
+      if (damals !== null) { basen.set(filePath, damals); continue; }
+      basen.set(filePath, (await getFileContentFromPg(plan.project, filePath)) ?? '');
+      drift.set(filePath, 'Stand vor dem commit ist nicht mehr lesbar (file_versions) — Diff gegen den AKTUELLEN Stand, ungenau.');
+      continue;
+    }
+    const aktuell = (await getFileContentFromPg(plan.project, filePath)) ?? '';
+    const aktuellHash = contentHash(aktuell);
+    if (!hash || aktuellHash === hash) { basen.set(filePath, aktuell); continue; }
+    const folge = plan.status === 'open' ? ' commit endet stale — neu planen.' : '';
+    const damals = await ausVersion(filePath, hash);
+    if (damals !== null) {
+      basen.set(filePath, damals);
+      drift.set(filePath, `Datei seit plan() geaendert (Hash ${hash.slice(0, 8)} -> ${aktuellHash.slice(0, 8)}); Diff gegen den Stand bei plan().${folge}`);
+    } else {
+      basen.set(filePath, aktuell);
+      drift.set(filePath, `Datei seit plan() geaendert (Hash ${hash.slice(0, 8)} -> ${aktuellHash.slice(0, 8)}), Stand bei plan() nicht mehr lesbar — Diff gegen den AKTUELLEN Stand.${folge}`);
+    }
+  }
+  const buffers = new Map([...basen].map(([filePath, text]) => [filePath, new PreparedFile(text)] as const));
+  try {
+    const angewendet = wendeOpsAn(buffers, ops, {
+      zeilen: (filePath) => (basen.get(filePath)?.length ?? 0) <= diffMaxZeichen(),
+      fein: true,
+      weiterBeiFehler: true,
+    });
+    return { basen, buffers, angewendet, drift };
+  } catch (error) {
+    return { fehler: (error as Error).message };
+  }
+}
+
+/**
+ * P15-T22 Ziel 2: nach dem commit aus den tatsaechlich uebernommenen Ops (Plan-Schatten des committeten
+ * Plans: Stand vor dem commit + alle Ops) je Datei das endgueltige Diff an die file_versions-Zeile des
+ * Batches haengen (content = Stand vor dem Schreiben). Nur das Diff wird gespeichert, nie der Schatten.
+ */
+export async function schreibeCommitDiffs(planId: string): Promise<number> {
+  const plan = (await getPool().query<{
+    id: string; project: string; owner_agent_id: string | null; ops: FileBatchOp[]; expected_hashes: Record<string, string>; status: FileBatchStatus;
+  }>(
+    `SELECT id::text AS id, project, owner_agent_id, ops, expected_hashes, status FROM file_batch_plans WHERE id = $1::bigint`,
+    [planId],
+  )).rows[0];
+  if (!plan || plan.status !== 'committed') return 0;
+  const ops = Array.isArray(plan.ops) ? plan.ops : [];
+  const stand = await ladeSchattenStand(plan);
+  if ('fehler' in stand) return 0;
+  const mehrere = new Set(ops.map((op) => op.agent_id ?? plan.owner_agent_id)).size > 1;
+  const label = (liste: number[]): string =>
+    `op ${liste.map((i) => `${i}${mehrere ? ` (${ops[i]?.agent_id ?? plan.owner_agent_id ?? '?'})` : ''}`).join(',')}`;
+  let geschrieben = 0;
+  for (const datei of schattenDateien(stand, ops)) {
+    const { file_path: filePath, ...rest } = dateiAusgabe(datei, (datei.d?.hunks ?? []).map((_, k) => k), (k) => label(datei.hunkOps[k]), diffMaxZeilen(), datei.ops);
+    const r = await getPool().query(
+      `UPDATE file_versions SET diff = $4::jsonb
+        WHERE project = $1 AND batch_id = $2::bigint AND file_path = $3 AND diff IS NULL`,
+      [plan.project, plan.id, filePath, JSON.stringify({ ...rest, plan_id: plan.id, quelle: 'commit' })],
+    );
+    geschrieben += r.rowCount ?? 0;
+  }
+  return geschrieben;
+}
+
+function diffNachCommitPlanen(planId: string): void {
+  setImmediate(() => {
+    schreibeCommitDiffs(planId).catch((error) => {
+      console.error(`[file-batch] P15-T22: Diff nach commit ${planId} nicht geschrieben (wird beim Lesen nachberechnet): ${(error as Error).message}`);
+    });
+  });
+}
+
+/** P15-T22: kompaktes Diff eines gespeicherten Plans (plan_status ohne op_index). */
+export async function planSchattenDiff(plan: FileBatchPlanRow): Promise<PlanDiff | { fehler: string }> {
+  const start = performance.now();
+  const stand = await ladeSchattenStand(plan);
+  if ('fehler' in stand) return { fehler: `Plan-Schatten nicht baubar: ${stand.fehler}` };
+  return planDiffAus({ ops: Array.isArray(plan.ops) ? plan.ops : [], owner: plan.owner_agent_id, stand, start, previews: plan.previews });
+}
+
+/** plan_status-Antwort mit Diff je Datei ueber alle Ops (MCP-Server und REST-API). */
+export async function buildPlanStatusResponseMitDiff(plan: FileBatchPlanRow): Promise<Record<string, unknown>> {
+  const antwort = buildPlanStatusResponse(plan);
+  try {
+    return { ...antwort, diff: await planSchattenDiff(plan) };
+  } catch (error) {
+    return { ...antwort, diff: { fehler: (error as Error).message } };
+  }
 }

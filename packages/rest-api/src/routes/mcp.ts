@@ -123,6 +123,7 @@ import {
   getFileVersion,
   restoreFileVersion,
   restoreBatch,
+  restoreBatchVorschau,
   listFileHistory,
   // Multi-File Plan/Commit (Schritt 2)
   planBatch,
@@ -137,6 +138,7 @@ import {
   cancelBatch,
   getBatchPlan,
   buildPlanStatusResponse,
+  buildPlanStatusResponseMitDiff,
   addCoeditContribution,
   markCoeditReady,
   markCoeditNoChanges,
@@ -1046,9 +1048,10 @@ export const MCP_TOOLS = [
         truncate_long_lines: { type: 'number', description: 'read: Zeilen laenger als N Zeichen kuerzen + Marker. 0 = aus (Standard).' },
         version_id: { type: 'string', description: 'Versions-ID (BIGSERIAL als String). Pflicht fuer get_version/restore. Bei history (): zeigt Korrektur-Chain ab dieser Version (rekursiv via parent_version_id).' },
         batch_id: { type: 'string', description: 'Batch-ID (fuer restore_batch — rollt alle Files einer Multi-File-Batch zurueck).' },
+        vorschau: { type: 'boolean', description: 'restore_batch: true = nur Vorschau, schreibt NICHTS. Je Datei batch_diff (was der Batch geaendert hat) und rueckgaengig (was restore_batch jetzt aendern wuerde), als Unified-Diff.' },
         plan_id: { type: 'string', description: 'Plan-ID (fuer commit, cancel, plan_status, plan_update). String wegen BIGSERIAL.' },
-        op_indices: { type: 'array', items: { type: 'number' }, description: 'plan_status: mehrere Ops VOLLSTAENDIG liefern (auch als JSON-String "[0,1]" oder "0,1") (alle Felder ungekuerzt, agent_id, Status, vorher/nachher). from_line/to_line schneiden ein Fenster aus content.' },
-        op_index: { type: 'number', description: 'coedit_add: coedit_source_op_index der zurueckgestellten Op, die ops[0] ersetzt und beitraegt (z. B. nach contribution_failed). plan_status: Index einer Op, die VOLLSTAENDIG geliefert wird (alle Felder ungekuerzt, agent_id, Status, betroffene Zeilen vorher/nachher). plan_update: Index der zu ersetzenden Op (0-basiert); ops[] ersetzt genau diese. Ohne op_index ersetzt ops[] alle Ops.' },
+        op_indices: { type: 'array', items: { type: 'number' }, description: 'plan_status: mehrere Ops VOLLSTAENDIG liefern (auch als JSON-String "[0,1]" oder "0,1") (alle Felder ungekuerzt, agent_id, Status, Unified-Diff der Op im Gesamtbild des Plans). from_line/to_line schneiden ein Fenster aus content.' },
+        op_index: { type: 'number', description: 'coedit_add: coedit_source_op_index der zurueckgestellten Op, die ops[0] ersetzt und beitraegt (z. B. nach contribution_failed). plan_status: Index einer Op, die VOLLSTAENDIG geliefert wird (alle Felder ungekuerzt, agent_id, Status, Unified-Diff der Op im Gesamtbild des Plans, anwendbar:false wenn nicht anwendbar). plan_update: Index der zu ersetzenden Op (0-basiert); ops[] ersetzt genau diese. Ohne op_index ersetzt ops[] alle Ops.' },
         agent_id: { type: 'string', description: 'Optional: Audit-Agent fuer file_versions. Bei Web-KI-Calls ohne Wrapper wird agent_id aus User-Agent/X-Openai-Session abgeleitet (z.B. "gpt-<8charsessionid>"). DARF weggelassen oder leer sein — Server ergaenzt automatisch. AUSNAHME action=history: dort wirkt agent_id als EXAKTER Read-Filter — fuer die volle Projekt-History weglassen!' },
         agent_filter: { type: 'string', description: 'Nur fuer history: expliziter exakter Agent-Filter (bevorzugt gegenueber agent_id-als-Filter)' },
         ops: {
@@ -1159,12 +1162,13 @@ export const MCP_TOOLS = [
           },
         },
         plan_id: { type: 'string', description: 'Pflicht fuer commit, cancel, plan_status, plan_update' },
-        op_indices: { type: 'array', items: { type: 'number' }, description: 'plan_status: mehrere Ops VOLLSTAENDIG liefern (auch als JSON-String "[0,1]" oder "0,1") (alle Felder ungekuerzt, agent_id, Status, vorher/nachher). from_line/to_line schneiden ein Fenster aus content.' },
-        op_index: { type: 'number', description: 'coedit_add: coedit_source_op_index der zurueckgestellten Op, die ops[0] ersetzt und beitraegt (z. B. nach contribution_failed). plan_status: Index einer Op, die VOLLSTAENDIG geliefert wird (alle Felder ungekuerzt, agent_id, Status, betroffene Zeilen vorher/nachher). plan_update: Index der zu ersetzenden Op (0-basiert); ohne op_index ersetzt ops[] alle Ops.' },
+        op_indices: { type: 'array', items: { type: 'number' }, description: 'plan_status: mehrere Ops VOLLSTAENDIG liefern (auch als JSON-String "[0,1]" oder "0,1") (alle Felder ungekuerzt, agent_id, Status, Unified-Diff der Op im Gesamtbild des Plans). from_line/to_line schneiden ein Fenster aus content.' },
+        op_index: { type: 'number', description: 'coedit_add: coedit_source_op_index der zurueckgestellten Op, die ops[0] ersetzt und beitraegt (z. B. nach contribution_failed). plan_status: Index einer Op, die VOLLSTAENDIG geliefert wird (alle Felder ungekuerzt, agent_id, Status, Unified-Diff der Op im Gesamtbild des Plans, anwendbar:false wenn nicht anwendbar). plan_update: Index der zu ersetzenden Op (0-basiert); ohne op_index ersetzt ops[] alle Ops.' },
         from_line: { type: 'number', description: 'plan_status (mit op_index/op_indices): erste Zeile (1-basiert) des ungekuerzten content-Fensters. Ohne Angabe: ab Zeile 1.' },
         to_line: { type: 'number', description: 'plan_status (mit op_index/op_indices): letzte Zeile (inklusiv) des ungekuerzten content-Fensters. Ohne Angabe: bis zum Ende.' },
         version_id: { type: 'string', description: 'Pflicht fuer restore' },
         batch_id: { type: 'string', description: 'Pflicht fuer restore_batch' },
+        vorschau: { type: 'boolean', description: 'restore_batch: true = nur Vorschau (Diff je Datei), schreibt nichts.' },
         agent_id: { type: 'string', description: 'Optionale Agent-ID (Audit-Trail). AUSNAHME action=history: wirkt als exakter Read-Filter — fuer volle Projekt-History weglassen.' },
         agent_filter: { type: 'string', description: 'Expliziter Agent-Filter fuer history oder reservation_list.' },
         release_paths: { type: 'array', items: { type: 'string' }, description: 'reservation_update: explizit freizugebende Pfade.' },
@@ -4688,6 +4692,17 @@ async function handleToolCall(
       }
       if (action === 'restore_batch') {
         const batchId = reqStr(args, 'batch_id');
+        if ((args as Record<string, unknown>).vorschau === true) {
+          // P15-T22: Vorschau mit Diff, schreibt nichts.
+          const vorschau = await restoreBatchVorschau(batchId);
+          return {
+            success: true,
+            vorschau: true,
+            batch_id: batchId,
+            files: vorschau,
+            message: `Vorschau restore_batch ${batchId}: ${vorschau.length} Datei(en), nichts geschrieben. batch_diff = was der Batch geaendert hat, rueckgaengig = was restore_batch jetzt aendern wuerde. Ausfuehren: restore_batch ohne vorschau.`,
+          };
+        }
         const restored = await restoreBatch(batchId, agentId, str(args, 'reason'));
         return {
           success: true,
@@ -4970,7 +4985,8 @@ async function handleToolCall(
         if (waitSeconds) return pollPlanStatus({ plan_id: planId, wait_seconds: waitSeconds });
         const plan = await getBatchPlan(planId);
         if (!plan) return { success: false, error: 'plan_not_found', message: `Plan ${planId} nicht gefunden.` };
-        return buildPlanStatusResponse(plan);
+        // P15-T22: mit Unified-Diff je Datei aus dem Plan-Schatten.
+        return buildPlanStatusResponseMitDiff(plan);
       }
       if (action === 'history') {
         const limit = num(args, 'limit') ?? 50;

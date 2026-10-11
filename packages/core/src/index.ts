@@ -738,8 +738,10 @@ export {
   restoreFileVersion,
   listBatchVersions,
   restoreBatch,
+  restoreBatchVorschau,
+  versionsDiff,
 } from './services/file-versions.js';
-export type { FileVersionMeta, FileVersionFull } from './services/file-versions.js';
+export type { FileVersionMeta, FileVersionFull, VersionDiff } from './services/file-versions.js';
 
 // Wrapper-Status (PG Source-of-Truth fuer laufende Spezialisten)
 export {
@@ -980,7 +982,12 @@ export {
   pollPlanStatus,
   getPlanOpsVollstaendig,
   opIndicesLesen,
+  planSchattenDiff,
+  buildPlanStatusResponseMitDiff,
+  schreibeCommitDiffs,
 } from './services/file-batch.js';
+export type { PlanDiff, PlanDiffDatei } from './services/file-batch.js';
+export { dateiDiff, aenderungsBereiche, diffText } from './services/file-diff.js';
 export { claimOpenPlanHints } from './services/plan-hints.js';
 export type { OpenPlanHints, OpenPlanHintEntry } from './services/plan-hints.js';
 export type {

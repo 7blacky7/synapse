@@ -414,6 +414,10 @@ ALTER TABLE file_versions ADD COLUMN IF NOT EXISTS parent_version_id BIGINT;
 ALTER TABLE file_versions ADD COLUMN IF NOT EXISTS git_commit_sha TEXT;
 -- IDEA-6: KI-eigene Analyse/Beobachtungen pro Batch, optional
 ALTER TABLE file_versions ADD COLUMN IF NOT EXISTS agent_note TEXT;
+-- P15-T22 (11.10.2026): Unified-Diff der Aenderung, die diese Version abgeloest hat (content ist der
+-- Stand VOR dem Schreiben). Nach einem commit nebenlaeufig gefuellt, sonst beim Lesen nachberechnet.
+-- Nullable ohne DEFAULT: ADD COLUMN ist nur eine Katalog-Aenderung, kein Umschreiben der Tabelle.
+ALTER TABLE file_versions ADD COLUMN IF NOT EXISTS diff JSONB;
 DO $$ BEGIN
   IF NOT EXISTS (
     SELECT 1 FROM pg_constraint WHERE conname = 'file_versions_parent_version_id_fkey'

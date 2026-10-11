@@ -61,10 +61,11 @@ try {
   pruefe(v.success === true && e?.op_index === 1 && e?.agent_id === 'oa-owner' && e?.status === 'aktiv' && e?.op?.action === 'insert_after'
     && e?.op?.content === block && e?.op?.anchor_text === 'a5' && e?.op?.after_line === 5 && e?.op?.reason === 'Block nach a5',
     'A1: fremde Op komplett (agent_id, action, content 5.000 Zeilen ungekuerzt, Anker, reason, Status)', { success: v.success, error: v.error, len: e?.op?.content?.length, soll: block.length, keys: e && Object.keys(e) });
-  const nachher = e?.nachher?.zeilen ?? [];
-  pruefe(e?.vorher?.zeilen?.includes('a5') && e?.vorher?.zeilen?.includes('a6') && nachher.includes('a5') && nachher.includes('// OWNER-BLOCK 1') && nachher.includes('// OWNER-BLOCK 5000') && nachher.includes('a6')
-    && nachher.filter((z) => z.startsWith('// OWNER-BLOCK')).length === 5000,
-    'A1: vorher/nachher zeigen die betroffenen Zeilen vollstaendig (alle 5.000 eingefuegten Zeilen)', { vorher: e?.vorher, nachherLaenge: nachher.length });
+  // P15-T22: statt vorher/nachher ein Unified-Diff der Op im Gesamtbild des Plans (alle Ops, Stand bei plan()).
+  const diffZeilen = String(e?.diff?.[0]?.text ?? '').split('\n');
+  pruefe(e?.anwendbar === true && diffZeilen.includes(' a5') && diffZeilen.includes('+// OWNER-BLOCK 1') && diffZeilen.includes('+// OWNER-BLOCK 5000')
+    && diffZeilen.filter((z) => z.startsWith('+// OWNER-BLOCK')).length === 5000 && !e?.diff?.[0]?.gekappt,
+    'A1: diff zeigt die Aenderung der Op vollstaendig (alle 5.000 eingefuegten Zeilen, Umfeld a5)', { diff0: diffZeilen.slice(0, 8), laenge: diffZeilen.length });
   const einzeln = await versuch(() => ansehen({ plan_id: p.plan_id, op_index: 2 }));
   pruefe(einzeln.ops?.[0]?.agent_id === 'oa-b' && einzeln.ops?.[0]?.op?.content === 'B6', 'A1: op_index einzeln, Beitrag von B mit Autor', einzeln.ops?.[0]);
   const fenster = await versuch(() => ansehen({ plan_id: p.plan_id, op_index: 1, from_line: 100, to_line: 102 }));
