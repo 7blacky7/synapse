@@ -1106,6 +1106,7 @@ export const MCP_TOOLS = [
         feature_tag: { type: 'string', description: 'Logischer Feature-Group-Tag (z.B. "idea-thought-task-link"). Wird in file_versions.feature_tag gespeichert. history(feature_tag=...) filtert danach.' },
         parent_version_id: { type: 'string', description: 'Referenziert vorherige Version, die dieses Edit korrigiert/ersetzt. BIGINT als String. Erlaubt Korrektur-Chain-Tracking.' },
         git_commit_sha: { type: 'string', description: 'Optionaler Git-Commit-SHA, der diese Aenderung im File-System repraesentiert.' },
+        quittieren: { type: 'string', description: 'Einzelschreibweg (create/update/search_replace/replace_lines/insert_after/delete_lines): Syntaxbefund quittieren - NUR bei absichtlich fehlerhaftem Inhalt (Test-Fixture, Negativbeispiel). Pflichtgrund (mind. 5 Zeichen), landet in file_versions.reason. Ohne quittieren lehnt ein Syntaxfehler in geaenderten Zeilen das Schreiben ab.' },
       },
       required: ['action', 'project'],
     },
@@ -4581,6 +4582,8 @@ async function handleToolCall(
       const enrichment = (featureTag || parentVersionId || gitCommitSha || agentNote)
         ? { feature_tag: featureTag ?? null, parent_version_id: parentVersionId ?? null, git_commit_sha: gitCommitSha ?? null, agent_note: agentNote ?? null }
         : undefined;
+      // P15-T17 E-a: Einzelschreibweg - Syntaxfehler lehnen ab (sobald Pruefer registriert sind), quittieren nur mit Absichtsgrund.
+      const einzel = { einzelweg: true, quittieren: str(args, 'quittieren') };
 
 
       const reservationPaths = (key: string, required = false): string[] => {
@@ -5080,7 +5083,7 @@ async function handleToolCall(
                 (vorbereitung.hinweis.ignoriert ? ` Nach dem Commit bleibt der Pfad ausgeblendet, bis die Regel abgeschaltet wird: ignore(action:"disable", pattern:"${vorbereitung.hinweis.regel}").` : ''),
             };
           }
-          const result = await createFileInPg(project, filePath, content, agentId, str(args, 'reason'), undefined, undefined, enrichment);
+          const result = await createFileInPg(project, filePath, content, agentId, str(args, 'reason'), undefined, undefined, enrichment, einzel);
           const response: Record<string, unknown> = { success: true, message: `Datei "${filePath}" erstellt (${content.length} Zeichen)` };
           if (vorbereitung.modus === 'direkt_mit_hinweis') {
             await markiereEinzelneDateiIgnoriert(project, filePath);
@@ -5130,7 +5133,7 @@ async function handleToolCall(
                 `Nach dem Commit bleibt der Pfad ausgeblendet, bis die Regel abgeschaltet wird: ignore(action:"disable", pattern:"${vorbereitung.hinweis.regel}").`,
             };
           }
-          const result = await updateFileInPg(project, filePath, content, agentId, undefined, undefined, str(args, 'reason'), enrichment);
+          const result = await updateFileInPg(project, filePath, content, agentId, undefined, undefined, str(args, 'reason'), enrichment, einzel);
           const response: Record<string, unknown> = { success: true, message: `Datei "${filePath}" aktualisiert (${content.length} Zeichen)` };
           if (vorbereitung.modus === 'direkt_mit_hinweis') {
             await markiereEinzelneDateiIgnoriert(project, filePath);
@@ -5188,7 +5191,7 @@ async function handleToolCall(
           const content = reqStr(args, 'content');
           if (lineStart === undefined || lineEnd === undefined) return { success: false, error: 'line_start und line_end erforderlich' };
           const newContent = replaceLines(currentContent, lineStart, lineEnd, content);
-          const result = await updateFileInPg(project, filePath, newContent, agentId, undefined, undefined, str(args, 'reason'), enrichment);
+          const result = await updateFileInPg(project, filePath, newContent, agentId, undefined, undefined, str(args, 'reason'), enrichment, einzel);
           const response: Record<string, unknown> = { success: true, message: `Zeilen ${lineStart}-${lineEnd} in "${filePath}" ersetzt` };
           if (result.warnings?.length) {
             response.errorPatterns = {
@@ -5207,7 +5210,7 @@ async function handleToolCall(
           const content = reqStr(args, 'content');
           if (afterLine === undefined) return { success: false, error: 'after_line erforderlich' };
           const newContent = insertAfterLine(currentContent, afterLine, content);
-          const result = await updateFileInPg(project, filePath, newContent, agentId, undefined, undefined, str(args, 'reason'), enrichment);
+          const result = await updateFileInPg(project, filePath, newContent, agentId, undefined, undefined, str(args, 'reason'), enrichment, einzel);
           const response: Record<string, unknown> = { success: true, message: `Inhalt nach Zeile ${afterLine} in "${filePath}" eingefuegt` };
           if (result.warnings?.length) {
             response.errorPatterns = {
@@ -5226,7 +5229,7 @@ async function handleToolCall(
           const lineEnd = num(args, 'line_end');
           if (lineStart === undefined || lineEnd === undefined) return { success: false, error: 'line_start und line_end erforderlich' };
           const newContent = deleteLines(currentContent, lineStart, lineEnd);
-          const result = await updateFileInPg(project, filePath, newContent, agentId, undefined, undefined, str(args, 'reason'), enrichment);
+          const result = await updateFileInPg(project, filePath, newContent, agentId, undefined, undefined, str(args, 'reason'), enrichment, einzel);
           const response: Record<string, unknown> = { success: true, message: `Zeilen ${lineStart}-${lineEnd} in "${filePath}" geloescht` };
           if (result.warnings?.length) {
             response.errorPatterns = {
@@ -5257,7 +5260,7 @@ async function handleToolCall(
                 : {}),
             };
           }
-          const result = await updateFileInPg(project, filePath, sr.content, agentId, undefined, undefined, str(args, 'reason'), enrichment);
+          const result = await updateFileInPg(project, filePath, sr.content, agentId, undefined, undefined, str(args, 'reason'), enrichment, einzel);
           const response: Record<string, unknown> = { success: true, count: sr.count, lines: sr.lines, message: `${sr.count} Vorkommen ersetzt in "${filePath}"` };
           if (result.warnings?.length) {
             response.errorPatterns = {
@@ -5287,7 +5290,7 @@ async function handleToolCall(
               message: `Nichts geschrieben in "${filePath}" — Edits korrigieren und den ganzen Batch erneut schicken`,
             };
           }
-          const result = await updateFileInPg(project, filePath, newContent, agentId, undefined, undefined, str(args, 'reason'), enrichment);
+          const result = await updateFileInPg(project, filePath, newContent, agentId, undefined, undefined, str(args, 'reason'), enrichment, einzel);
           const response: Record<string, unknown> = {
             success: true,
             ...batchResult,

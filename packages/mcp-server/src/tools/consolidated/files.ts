@@ -296,6 +296,10 @@ export const filesTool: ConsolidatedTool = {
           type: 'string',
           description: 'Optionaler Git-Commit-SHA, der diese Aenderung im File-System repraesentiert.',
         },
+        quittieren: {
+          type: 'string',
+          description: 'Einzelschreibweg (create/update/search_replace/replace_lines/insert_after/delete_lines): Syntaxbefund quittieren - NUR bei absichtlich fehlerhaftem Inhalt (Test-Fixture, Negativbeispiel). Pflichtgrund (mind. 5 Zeichen), landet in file_versions.reason. Ohne quittieren lehnt ein Syntaxfehler in geaenderten Zeilen das Schreiben ab.',
+        },
       },
       required: ['action', 'project'],
     },
@@ -306,6 +310,8 @@ export const filesTool: ConsolidatedTool = {
     const project = reqStr(args, 'project');
     const agentId = resolveAgentId(str(args, 'agent_id')) ?? undefined;
     const reason = str(args, 'reason');
+    // P15-T17 E-a: Einzelschreibweg - Syntaxfehler lehnen ab (sobald Pruefer registriert sind), quittieren nur mit Absichtsgrund.
+    const einzel = { einzelweg: true, quittieren: str(args, 'quittieren') };
     // History-Enrichment (additive, alle nullable)
     const featureTag = str(args, 'feature_tag');
     const parentVersionId = str(args, 'parent_version_id');
@@ -659,13 +665,8 @@ export const filesTool: ConsolidatedTool = {
     }
 
     async function attachWarnings(response: Record<string, unknown>, result: { warnings?: Array<{ id: string; severity: string; description: string; fix: string }> }) {
-      if (result.warnings?.length) {
-        response.errorPatterns = {
-          count: result.warnings.length,
-          warnings: result.warnings,
-          hint: `${result.warnings.length} bekannte Fehler-Patterns matchen deinen Code`,
-        };
-      }
+      // P15-T17: Fehlermuster-Treffer kommen ueber die Auslieferung (server.ts, Feld fehlermuster); result.warnings war immer leer.
+      void result;
       // Framework-Docs (Breaking Changes, Gotchas) einmalig pro Agent anhaengen
       if (agentId) {
         try {
@@ -712,7 +713,7 @@ export const filesTool: ConsolidatedTool = {
               (vorbereitung.hinweis.ignoriert ? ` Nach dem Commit bleibt der Pfad ausgeblendet, bis die Regel abgeschaltet wird: ignore(action:"disable", pattern:"${vorbereitung.hinweis.regel}").` : ''),
           };
         }
-        const result = await createFileInPg(project, filePath, content, agentId, reason, undefined, undefined, enrichment);
+        const result = await createFileInPg(project, filePath, content, agentId, reason, undefined, undefined, enrichment, einzel);
         const response: Record<string, unknown> = { success: true, message: `Datei "${filePath}" erstellt (${content.length} Zeichen)` };
         if (wasFixed) response.autoFixed = 'Content war doppelt escaped (\\n statt Newlines) — automatisch korrigiert.';
         if (vorbereitung.modus === 'direkt_mit_hinweis') {
@@ -757,7 +758,7 @@ export const filesTool: ConsolidatedTool = {
               `Nach dem Commit bleibt der Pfad ausgeblendet, bis die Regel abgeschaltet wird: ignore(action:"disable", pattern:"${vorbereitung.hinweis.regel}").`,
           };
         }
-        const result = await updateFileInPg(project, filePath, content, agentId, undefined, undefined, reason, enrichment);
+        const result = await updateFileInPg(project, filePath, content, agentId, undefined, undefined, reason, enrichment, einzel);
         const response: Record<string, unknown> = { success: true, message: `Datei "${filePath}" aktualisiert (${content.length} Zeichen)` };
         if (wasFixed) response.autoFixed = 'Content war doppelt escaped (\\n statt Newlines) — automatisch korrigiert.';
         if (vorbereitung.modus === 'direkt_mit_hinweis') {
@@ -828,7 +829,7 @@ export const filesTool: ConsolidatedTool = {
         const { content } = unescapeIfNeeded(reqStr(args, 'content'));
         if (lineStart === undefined || lineEnd === undefined) return { success: false, error: 'line_start und line_end erforderlich' };
         const newContent = replaceLines(currentContent, lineStart, lineEnd, content);
-        const result = await updateFileInPg(project, filePath, newContent, agentId, undefined, undefined, reason, enrichment);
+        const result = await updateFileInPg(project, filePath, newContent, agentId, undefined, undefined, reason, enrichment, einzel);
         return await attachWarnings(
           { success: true, message: `Zeilen ${lineStart}-${lineEnd} in "${filePath}" ersetzt` },
           result
@@ -842,7 +843,7 @@ export const filesTool: ConsolidatedTool = {
         const { content } = unescapeIfNeeded(reqStr(args, 'content'));
         if (afterLine === undefined) return { success: false, error: 'after_line erforderlich' };
         const newContent = insertAfterLine(currentContent, afterLine, content);
-        const result = await updateFileInPg(project, filePath, newContent, agentId, undefined, undefined, reason, enrichment);
+        const result = await updateFileInPg(project, filePath, newContent, agentId, undefined, undefined, reason, enrichment, einzel);
         return await attachWarnings(
           { success: true, message: `Inhalt nach Zeile ${afterLine} in "${filePath}" eingefuegt` },
           result
@@ -856,7 +857,7 @@ export const filesTool: ConsolidatedTool = {
         const lineEnd = num(args, 'line_end');
         if (lineStart === undefined || lineEnd === undefined) return { success: false, error: 'line_start und line_end erforderlich' };
         const newContent = deleteLines(currentContent, lineStart, lineEnd);
-        const result = await updateFileInPg(project, filePath, newContent, agentId, undefined, undefined, reason, enrichment);
+        const result = await updateFileInPg(project, filePath, newContent, agentId, undefined, undefined, reason, enrichment, einzel);
         return await attachWarnings(
           { success: true, message: `Zeilen ${lineStart}-${lineEnd} in "${filePath}" geloescht` },
           result
@@ -881,7 +882,7 @@ export const filesTool: ConsolidatedTool = {
               : {}),
           };
         }
-        const result = await updateFileInPg(project, filePath, sr.content, agentId, undefined, undefined, reason, enrichment);
+        const result = await updateFileInPg(project, filePath, sr.content, agentId, undefined, undefined, reason, enrichment, einzel);
         return await attachWarnings(
           { success: true, count: sr.count, lines: sr.lines, message: `${sr.count} Vorkommen ersetzt in "${filePath}"` },
           result
@@ -909,7 +910,7 @@ export const filesTool: ConsolidatedTool = {
           };
         }
 
-        const writeResult = await updateFileInPg(project, filePath, newContent, agentId, undefined, undefined, reason, enrichment);
+        const writeResult = await updateFileInPg(project, filePath, newContent, agentId, undefined, undefined, reason, enrichment, einzel);
         const response: Record<string, unknown> = {
           success: true,
           ...batchResult,

@@ -1245,6 +1245,9 @@ CREATE TABLE IF NOT EXISTS file_batch_plans (
 CREATE INDEX IF NOT EXISTS idx_file_batch_plans_status ON file_batch_plans(project, status, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_file_batch_plans_open ON file_batch_plans(project, expires_at) WHERE status = 'open';
 ALTER TABLE file_batch_plans ADD COLUMN IF NOT EXISTS reason TEXT;
+-- P15-T17 E3: Pruefbefunde (Syntax/Fehlermuster) je Op des Plans; nullable, ohne Default.
+-- Der Plan-Schatten selbst wird NIE gespeichert, nur die kleinen Befunde (Sperre ueberlebt Neustart).
+ALTER TABLE file_batch_plans ADD COLUMN IF NOT EXISTS befunde JSONB;
 
 -- ==========================================================================
 -- Kooperative Dateireservierungen (Co-Edit CE-1).
