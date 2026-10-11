@@ -15,6 +15,7 @@
  *   POST   /projects/:name/reindex        Parse-Stand verwerfen, Backlog parst neu
  *   POST   /projects/:name/open-file      Datei im Standard-Editor oeffnen (Body: Pfad)
  *   DELETE /projects/:name
+ *   POST   /skills/:aktion                Skill-DB ueber den Daemon-Token (skills-proxy.ts)
  */
 
 import os from 'node:os';
@@ -26,6 +27,7 @@ import { getPool, listChannels, getChannelMessages, postChannelMessage, listActi
 import type { WrapperStatusRow } from '@synapse/core';
 import { readStatus, removeSpecialist } from '@synapse/agents';
 import type { WatcherManager } from './manager.js';
+import { registriereSkillsProxy } from './skills-proxy.js';
 
 const STARTED_AT = Date.now();
 
@@ -571,6 +573,10 @@ export function buildApi(opts: BuildApiOptions): FastifyInstance {
     });
     return reply;
   });
+
+  // ---- POST /skills/:aktion ----------------------------------------------
+  // Skill-DB fuer lokale Werkzeuge (skill-db.mjs, Hooks) mit dem Daemon-Token (P12-T19).
+  registriereSkillsProxy(app);
 
   // ---- 404-Fallback -------------------------------------------------------
   app.setNotFoundHandler((_req, reply) => {
