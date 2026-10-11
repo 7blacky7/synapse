@@ -5,6 +5,9 @@ import {
   completeEmbeddingClaim,
   completeEmbeddingClaims,
   ollamaModellInfo,
+  registriereWorker,
+  workerPausiert,
+  meldeWorkerArbeit,
 } from '@synapse/core';
 import { validateToken, type AuthTokenRow } from '../services/auth.js';
 import {
@@ -139,6 +142,11 @@ export function createEmbeddingNodeRoutes(
     validateToken: overrides.validateToken ?? validateToken,
     db: overrides.db ?? getPool(),
   };
+  // P15-T12: Claim-Vergabe an externe GPU-Knoten einzeln pausierbar (intern worker_pausieren gpu_knoten)
+  registriereWorker({
+    name: 'gpu_knoten',
+    beschreibung: 'Claim-Vergabe an externe GPU-Knoten (POST /api/embedding-nodes/:nodeId/claims); pausiert = leere Claims',
+  });
 
   return async (fastify: FastifyInstance): Promise<void> => {
     // P15-T1: Referenzvertrag nicht ermittelbar (Env fehlt, Ollama des Servers antwortet nicht) ->
@@ -309,10 +317,22 @@ export function createEmbeddingNodeRoutes(
         if (!Number.isInteger(requested) || requested <= 0 || requested > 100) {
           return reply.code(400).send({ success: false, error: 'invalid_claim_limit' });
         }
+        // P15-T12: intern(worker_pausieren, gpu_knoten) -> leere Antwort, der Knoten geht in seinen
+        // Leerlauf-Backoff. Abschluss/Freigabe laufender Claims (complete/release) bleiben offen.
+        const pause = workerPausiert('gpu_knoten');
+        if (pause) {
+          return reply.send({
+            success: true,
+            claims: [],
+            pausiert: pause,
+            reference: await getEmbeddingReferenceContract(),
+          });
+        }
         const claims = await claimEmbeddingChunks(nodeId, {
           limit: requested,
           maxConcurrent: node.max_concurrency,
         });
+        if (claims.length > 0) meldeWorkerArbeit('gpu_knoten');
         return reply.send({
           success: true,
           claims,

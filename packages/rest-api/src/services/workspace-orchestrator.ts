@@ -22,7 +22,7 @@ import * as tar from 'tar-stream';
 import { minimatch } from 'minimatch';
 import { createHash } from 'node:crypto';
 import type { PoolClient } from 'pg';
-import { getPool } from '@synapse/core';
+import { getPool, registriereWorker, workerPausiert, meldeWorkerArbeit } from '@synapse/core';
 
 const DEFAULT_IGNORE_PATTERNS = [
   'node_modules/**', '.git/**', 'dist/**', 'build/**', 'target/**',
@@ -1081,13 +1081,20 @@ export class WorkspaceOrchestrator {
 
   private startIdleStopLoop(): void {
     if (this.idleTimer) clearInterval(this.idleTimer);
+    // P15-T12: pausierbar und einzeln ausloesbar ueber intern(worker_*)
+    registriereWorker({
+      name: 'workspace_idle_stop',
+      beschreibung: `Workspace-Container nach ${this.cfg.idleStopMinutes} min ohne Aktivitaet stoppen (Tick ${this.cfg.tickIntervalMs} ms)`,
+      durchlauf: () => this.idleStopTick(),
+    });
     this.idleTimer = setInterval(() => {
+      if (workerPausiert('workspace_idle_stop')) return;
       this.idleStopTick().catch(err => console.error(`[Workspaces] idleStopTick: ${(err as Error).message}`));
     }, this.cfg.tickIntervalMs);
   }
 
-  private async idleStopTick(): Promise<void> {
-    if (!this.dockerAvailable) return;
+  private async idleStopTick(): Promise<{ gestoppt: number; docker: boolean }> {
+    if (!this.dockerAvailable) return { gestoppt: 0, docker: false };
     const pool = getPool();
     const cutoff = new Date(Date.now() - this.cfg.idleStopMinutes * 60_000);
     const r = await pool.query(
@@ -1098,6 +1105,8 @@ export class WorkspaceOrchestrator {
     for (const row of r.rows) {
       await this.stopProject(row.project, `idle > ${this.cfg.idleStopMinutes}min`, row.name);
     }
+    if (r.rows.length > 0) meldeWorkerArbeit('workspace_idle_stop');
+    return { gestoppt: r.rows.length, docker: true };
   }
 }
 

@@ -34,6 +34,14 @@ import {
   type ProfilAenderung,
 } from './intern-modellprofil.js';
 import { ModellNichtKalibriertError } from '../embeddings/modell-profil.js';
+import {
+  WorkerSteuerungFehler,
+  loeseWorkerDurchlaufAus,
+  pausiereWorker,
+  setzeWorkerFort,
+  workerPauseMaxMin,
+  workerStatus,
+} from './worker-steuerung.js';
 
 const INTERN_TOOL_BEIM_START = process.env.SYNAPSE_INTERN_TOOL === '1';
 
@@ -54,6 +62,7 @@ export const INTERN_ACTIONS = [
   'status', 'db_sitzungen', 'langsam',
   'nachzug_jetzt', 'embedding_messen', 'neu_einbetten', 'embed_prioritaet',
   'modellprofil', 'modellprofil_setzen', 'modellprofil_kalibrieren',
+  'worker_status', 'worker_pausieren', 'worker_fortsetzen', 'worker_durchlauf',
 ] as const;
 export type InternAction = (typeof INTERN_ACTIONS)[number];
 
@@ -79,6 +88,9 @@ export const INTERN_DEFINITION = {
     'modellprofil (modell): Kalibrierung je Embedding-Modell aus PG (Praefixe, num_ctx, num_batch, max_stueck_zeichen, Score-Schwellen je Zweck), welches Profil gerade gilt, fehlende Zwecke, Pruefhinweise; ' +
     'modellprofil_setzen (modell, digest, query_praefix, dok_praefix, ziel_dimension, num_ctx, num_batch, max_stueck_zeichen, score_schwellen, notiz, messwerte): nur genannte Felder, null = nicht kalibriert, score_schwellen werden gemischt (null entfernt einen Zweck); ohne modell das aktive; ' +
     'modellprofil_kalibrieren (zweck, passend, rauschen, project, schreiben): misst mit dem aktiven Modell passende Anfragen gegen Rauschen und schlaegt die Mitte als Schwelle vor, schreibt nur mit schreiben:true und sauberer Trennung. ' +
+    'worker_status: alle Hintergrund-Worker DIESES Prozesses (laeuft|pausiert, seit, bis, von, grund, zuletzt aktiv/Arbeit, Durchlaeufe) plus die PG-Schalter; ' +
+    'worker_pausieren (worker: Name | Liste | "alle", dauer_min oder bis PFLICHT, grund PFLICHT): holt keine neue Arbeit mehr, laufender Stapel wird fertig, endet von selbst (Obergrenze SYNAPSE_WORKER_PAUSE_MAX_MIN), Neustart beendet jede Pause; ' +
+    'worker_fortsetzen (worker | "alle"); worker_durchlauf (worker): genau ein Durchlauf jetzt, auch waehrend einer Pause. ' +
     'Keine Aktion beendet Prozesse/Sitzungen oder loescht PG-Daten; nur neu_einbetten leert Qdrant-Collections (aus PG wiederherstellbar).',
   inputSchema: {
     type: 'object',
@@ -89,10 +101,11 @@ export const INTERN_DEFINITION = {
       name: { type: 'string', enum: Object.keys(INTERN_SCHALTER), description: 'schalter_setzen: Schalter' },
       aktiv: { type: 'boolean', description: 'schalter_setzen: true = anhalten, false = wieder freigeben' },
       modus: { type: 'string', description: 'schalter_setzen: embedding hintergrund (Standard) | alle; parser/context7 pause' },
-      bis: { type: 'string', description: 'schalter_setzen: Ablauf als ISO-Zeitpunkt' },
-      dauer_min: { type: 'number', description: 'schalter_setzen: Ablauf in Minuten ab jetzt' },
+      bis: { type: 'string', description: 'schalter_setzen / worker_pausieren: Ablauf als ISO-Zeitpunkt' },
+      dauer_min: { type: 'number', description: 'schalter_setzen / worker_pausieren: Ablauf in Minuten ab jetzt' },
       dauerhaft: { type: 'boolean', description: 'schalter_setzen: ohne Ablauf (nur ausdruecklich)' },
-      grund: { type: 'string', description: 'schalter_setzen: Grund (sichtbar in schalter_liste und im Log)' },
+      grund: { type: 'string', description: 'schalter_setzen / worker_pausieren: Grund (sichtbar in schalter_liste bzw. worker_status und im Log)' },
+      worker: { type: ['string', 'array'], items: { type: 'string' }, description: 'worker_pausieren/worker_fortsetzen: Name, Liste oder "alle"; worker_durchlauf: ein Name. worker_status zeigt die Namen.' },
       modell: { type: 'string', description: 'ollama_entladen/ollama_laden: Modellname wie in ollama_status (ohne Tag = :latest); modellprofil/modellprofil_setzen: Embedding-Modell (Standard: das aktive)' },
       digest: { type: 'string', description: 'modellprofil_setzen: leer = gilt fuer jeden Digest (Standard), sonst sha256-Anfang (12..64 Hex)' },
       query_praefix: { type: ['string', 'null'], description: 'modellprofil_setzen: Praefix fuer Suchanfragen ("" = bewusst keiner, null = nicht kalibriert). Leerzeichen zaehlen mit.' },
@@ -383,11 +396,50 @@ export async function fuehreInternAus(
           })),
         };
       }
+      case 'worker_status': {
+        let schalter: unknown;
+        try { schalter = await alleSchalter(); } catch (err) { schalter = { fehler: (err as Error).message }; }
+        const worker = workerStatus();
+        return {
+          success: true,
+          action,
+          prozess: 'api',
+          pause_max_min: workerPauseMaxMin(),
+          pausiert: worker.filter((w) => w.zustand === 'pausiert').map((w) => w.name),
+          worker,
+          pg_schalter: schalter,
+          hinweis: 'Pausen leben im Speicher dieses Prozesses (Neustart beendet sie). pg_schalter = P14-Schalter (schalter_setzen), wirken zusaetzlich.',
+        };
+      }
+      case 'worker_pausieren': {
+        const erg = pausiereWorker(textListe(a, 'worker'), {
+          dauer_min: zahl(a, 'dauer_min'),
+          bis: text(a, 'bis'),
+          grund: text(a, 'grund'),
+          von: text(a, 'agent_id') ?? agentId,
+        });
+        return {
+          success: true,
+          action,
+          ...erg,
+          message: `${erg.pausiert.length} Worker pausiert bis ${erg.bis}; laufende Arbeit wird fertig, danach nichts Neues.`,
+        };
+      }
+      case 'worker_fortsetzen': {
+        const erg = setzeWorkerFort(textListe(a, 'worker'), text(a, 'agent_id') ?? agentId);
+        return { success: true, action, ...erg };
+      }
+      case 'worker_durchlauf': {
+        const namen = textListe(a, 'worker');
+        if (namen && namen.length > 1) return fehler(action, 'parameter_ungueltig', 'worker_durchlauf: genau ein Worker.');
+        return { success: true, action, ...(await loeseWorkerDurchlaufAus(namen?.[0])) };
+      }
       default:
         return fehler(action, 'unbekannte_action', `Unbekannte action "${action}". Erlaubt: ${INTERN_ACTIONS.join(', ')}.`);
     }
   } catch (err) {
     if (err instanceof InternSchalterFehler) return fehler(action, err.code, err.message);
+    if (err instanceof WorkerSteuerungFehler) return fehler(action, err.code, err.message);
     if (err instanceof InternOllamaFehler) return fehler(action, err.code, err.message);
     if (err instanceof InternModellprofilFehler) return fehler(action, err.code, err.message);
     if (err instanceof ModellNichtKalibriertError) return fehler(action, err.code, err.message);

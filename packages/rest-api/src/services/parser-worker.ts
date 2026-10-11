@@ -36,6 +36,10 @@ import {
   imHintergrund,
   schalterHaeltAn,
   registriereInternQuelle,
+  registriereWorker,
+  workerPausiert,
+  meldeWorkerArbeit,
+  stosseContext7An,
 } from '@synapse/core';
 import { listEmbeddingNodes } from './embedding-nodes.js';
 
@@ -87,6 +91,15 @@ const STAPEL = Math.max(1, envGanzzahl('SYNAPSE_SERVER_EMBED_BATCH', 16));
 const sleep = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));
 
+/** P15-T12: Ergebnis eines einzelnen Embedding-Stapels des Servers. */
+interface StapelErgebnis {
+  status: 'schalter' | 'aus' | 'leer' | 'fehler' | 'ok';
+  claims?: number;
+  abgeschlossen?: number;
+  abgelehnt?: number;
+  fehler?: string;
+}
+
 export class ParserWorker {
   private cfg: Required<ParserWorkerConfig>;
   private timer: NodeJS.Timeout | null = null;
@@ -132,6 +145,27 @@ export class ParserWorker {
     initContext7Automatik();
     // P14-T4: Stats fuer intern(action:'status')
     registriereInternQuelle('parser_worker', () => this.getStats());
+    // P15-T12: einzeln pausierbar/ausloesbar ueber intern(worker_*)
+    registriereWorker({
+      name: 'server_embedding',
+      beschreibung: 'Code-Chunks als Knoten unraid-local claimen und einbetten (Dauerschleife, Leerlauf-Backoff bis 30 s)',
+      durchlauf: () => this.einStapel(),
+    });
+    registriereWorker({
+      name: 'wissen_nachzug',
+      beschreibung: `Wissens-Embeddings nachholen (memories, thoughts, ...), je Parser-Tick bis ${BACKLOG_JE_TICK}`,
+      durchlauf: () => this.wissenSchritt(),
+    });
+    registriereWorker({
+      name: 'context7',
+      beschreibung: 'Context7-Automatik (Tech-Doku), je Parser-Tick, eigener Takt',
+      durchlauf: async () => { stosseContext7An(); await context7AutomatikTick(); return { angestossen: true }; },
+    });
+    registriereWorker({
+      name: 'parser',
+      beschreibung: `Parser-Backlog je Projekt (Tick ${this.cfg.intervalMs} ms, bis ${this.cfg.maxPerTick} Projekte)`,
+      durchlauf: () => this.parserSchritt(),
+    });
   }
 
   shutdown(): void {
@@ -176,26 +210,13 @@ export class ParserWorker {
   private async embeddingLoop(): Promise<void> {
     while (!this.stopped) {
       try {
-        // P14-T2: Schalter embedding -> ruhig warten (claimEmbeddingChunks liefert dann ohnehin []),
-        // statt in den Leerlauf-Backoff zu laufen, der nach der Freigabe bis zu 30 s nachhinkt.
-        if (await schalterHaeltAn('embedding', 'parser-worker/embedding-claims')) {
+        // P15-T12: pausiert -> nichts Neues claimen; der laufende Stapel ist an dieser Stelle schon fertig.
+        if (workerPausiert('server_embedding')) {
           await sleep(5_000);
           continue;
         }
-        const externeAktiv = (await listEmbeddingNodes(getPool())).some((node) => node.usable);
-        const parallel = externeAktiv ? PARALLEL_GETEILT : PARALLEL_ALLEIN;
-        if (parallel === 0) {
-          await sleep(5_000);
-          continue;
-        }
-
-        const claims = await claimEmbeddingChunks('unraid-local', {
-          limit: parallel * STAPEL,
-          maxConcurrent: parallel * STAPEL,
-          leaseSeconds: 900,
-        });
-
-        if (claims.length === 0) {
+        const erg = await this.einStapel();
+        if (erg.status === 'leer') {
           // Leerlauf ist der NORMALFALL, nicht die Ausnahme: sind alle Projekte
           // fertig oder deaktiviert, gibt es dauerhaft nichts zu holen. Ohne
           // Backoff fragt der Server dann jede Sekunde eine Transaktion mit
@@ -203,47 +224,14 @@ export class ParserWorker {
           // Arbeit da ist.
           this.leerlaufZyklen = Math.min(this.leerlaufZyklen + 1, 30);
           await sleep(1_000 * this.leerlaufZyklen);
-          continue;
-        }
-        this.leerlaufZyklen = 0;
-
-        // P12-T14: alle Claims dieser Runde als Stapel einbetten (embedBatch teilt in Scheiben je
-        // Queue-Slot); scheitert der Stapel, werden alle Claims freigegeben.
-        let vektoren: number[][];
-        try {
-          vektoren = await embedBatch(claims.map((c) => c.content), {
-            priority: 'background',
-            strictOllama: true,
-          });
-        } catch (err) {
-          await Promise.all(claims.map((c) => gibClaimFrei(c.chunkId, c.claimToken).catch(() => undefined)));
-          console.error('[parser-worker] Stapel mit ' + claims.length + ' Chunks fehlgeschlagen, Claims freigegeben: ' + (err as Error).message);
+        } else if (erg.status === 'schalter' || erg.status === 'aus') {
+          // P14-T2: Schalter embedding -> ruhig warten statt in den Leerlauf-Backoff zu laufen,
+          // der nach der Freigabe bis zu 30 s nachhinkt. aus = SYNAPSE_SERVER_EMBED_PARALLEL_* = 0.
+          await sleep(5_000);
+        } else if (erg.status === 'fehler') {
           await sleep(2_000);
-          continue;
-        }
-        // P12-T14: Stapel-Abschluss (eine Transaktion, ein Upsert je Projekt). Abgelehnte und bei
-        // einem Fehler alle Claims SOFORT freigeben statt sie 15 Minuten ablaufen zu lassen — ein
-        // liegengebliebener Claim sieht aus wie ein haengender Knoten und blockiert den Chunk.
-        const nachId = new Map(claims.map((c) => [String(c.chunkId), c]));
-        try {
-          const erg = await completeEmbeddingClaims('unraid-local', claims.map((c, idx) => ({
-            chunkId: c.chunkId,
-            claimToken: c.claimToken,
-            contentHash: c.contentHash,
-            vector: vektoren[idx],
-          })));
-          this.chunksEmbedded += erg.abgeschlossen.length;
-          for (const a of erg.abgelehnt) {
-            const c = nachId.get(String(a.chunkId));
-            if (c) await gibClaimFrei(c.chunkId, c.claimToken).catch(() => undefined);
-          }
-          if (erg.abgelehnt.length > 0) {
-            console.error('[parser-worker] ' + erg.abgelehnt.length + ' Claims abgelehnt und freigegeben (z. B. ' + erg.abgelehnt[0].grund + ')');
-          }
-        } catch (err) {
-          await Promise.all(claims.map((c) => gibClaimFrei(c.chunkId, c.claimToken).catch(() => undefined)));
-          console.error('[parser-worker] Stapel-Abschluss fehlgeschlagen, ' + claims.length + ' Claims freigegeben: ' + (err as Error).message);
-          await sleep(2_000);
+        } else {
+          this.leerlaufZyklen = 0;
         }
       } catch (err) {
         console.error(`[parser-worker] Embedding-Schleife fehlgeschlagen: ${(err as Error).message}`);
@@ -252,8 +240,75 @@ export class ParserWorker {
     }
   }
 
+  /**
+   * P15-T12: genau ein Stapel (claimen, einbetten, abschliessen) — von der Schleife und von
+   * intern(worker_durchlauf, server_embedding) gerufen. Wirft nur bei Fehlern vor dem Claim.
+   */
+  private async einStapel(): Promise<StapelErgebnis> {
+    if (await schalterHaeltAn('embedding', 'parser-worker/embedding-claims')) return { status: 'schalter' };
+    const externeAktiv = (await listEmbeddingNodes(getPool())).some((node) => node.usable);
+    const parallel = externeAktiv ? PARALLEL_GETEILT : PARALLEL_ALLEIN;
+    if (parallel === 0) return { status: 'aus' };
+
+    const claims = await claimEmbeddingChunks('unraid-local', {
+      limit: parallel * STAPEL,
+      maxConcurrent: parallel * STAPEL,
+      leaseSeconds: 900,
+    });
+    if (claims.length === 0) return { status: 'leer', claims: 0 };
+
+    // P12-T14: alle Claims dieser Runde als Stapel einbetten (embedBatch teilt in Scheiben je
+    // Queue-Slot); scheitert der Stapel, werden alle Claims freigegeben.
+    let vektoren: number[][];
+    try {
+      vektoren = await embedBatch(claims.map((c) => c.content), {
+        priority: 'background',
+        strictOllama: true,
+      });
+    } catch (err) {
+      await Promise.all(claims.map((c) => gibClaimFrei(c.chunkId, c.claimToken).catch(() => undefined)));
+      console.error('[parser-worker] Stapel mit ' + claims.length + ' Chunks fehlgeschlagen, Claims freigegeben: ' + (err as Error).message);
+      return { status: 'fehler', claims: claims.length, fehler: (err as Error).message };
+    }
+    // P12-T14: Stapel-Abschluss (eine Transaktion, ein Upsert je Projekt). Abgelehnte und bei
+    // einem Fehler alle Claims SOFORT freigeben statt sie 15 Minuten ablaufen zu lassen — ein
+    // liegengebliebener Claim sieht aus wie ein haengender Knoten und blockiert den Chunk.
+    const nachId = new Map(claims.map((c) => [String(c.chunkId), c]));
+    try {
+      const erg = await completeEmbeddingClaims('unraid-local', claims.map((c, idx) => ({
+        chunkId: c.chunkId,
+        claimToken: c.claimToken,
+        contentHash: c.contentHash,
+        vector: vektoren[idx],
+      })));
+      this.chunksEmbedded += erg.abgeschlossen.length;
+      meldeWorkerArbeit('server_embedding');
+      for (const a of erg.abgelehnt) {
+        const c = nachId.get(String(a.chunkId));
+        if (c) await gibClaimFrei(c.chunkId, c.claimToken).catch(() => undefined);
+      }
+      if (erg.abgelehnt.length > 0) {
+        console.error('[parser-worker] ' + erg.abgelehnt.length + ' Claims abgelehnt und freigegeben (z. B. ' + erg.abgelehnt[0].grund + ')');
+      }
+      return { status: 'ok', claims: claims.length, abgeschlossen: erg.abgeschlossen.length, abgelehnt: erg.abgelehnt.length };
+    } catch (err) {
+      await Promise.all(claims.map((c) => gibClaimFrei(c.chunkId, c.claimToken).catch(() => undefined)));
+      console.error('[parser-worker] Stapel-Abschluss fehlgeschlagen, ' + claims.length + ' Claims freigegeben: ' + (err as Error).message);
+      return { status: 'fehler', claims: claims.length, fehler: (err as Error).message };
+    }
+  }
+
   private async tick(): Promise<void> {
     this.ticksDone++;
+    await this.wissenSchritt();
+    this.context7Schritt();
+    await this.parserSchritt();
+  }
+
+  /** P15-T12: Wissens-Nachzug als eigener Schritt (pausierbar, einzeln ausloesbar). */
+  private async wissenSchritt(): Promise<Record<string, unknown>> {
+    const pause = workerPausiert('wissen_nachzug');
+    if (pause) return { pausiert: pause };
 
     // EMBEDDING-BACKLOG (EMBED-1) — bewusst VOR der Projektauswahl unten.
     // Die Schreibpfade von memories stossen ihr Embedding seit EMBED-1 nebenlaeufig an; faellt
@@ -267,16 +322,28 @@ export class ParserWorker {
     try {
       const nachtrag = await embeddeOffeneEintraege(BACKLOG_JE_TICK);
       if (nachtrag.nachgetragen > 0) {
+        meldeWorkerArbeit('wissen_nachzug');
         console.error(`[parser-worker] Embedding-Backlog: ${nachtrag.nachgetragen} nachgetragen`);
       }
+      return { ...nachtrag };
     } catch (err) {
       console.error(`[parser-worker] Embedding-Backlog fehlgeschlagen: ${(err as Error).message}`);
+      return { fehler: (err as Error).message };
     }
+  }
+
+  /** P15-T12: Context7-Automatik anstossen (fire-and-forget, pausierbar). */
+  private context7Schritt(): void {
+    if (workerPausiert('context7')) return;
 
     // CONTEXT7-AUTOMATIK (P12-T17) — ebenfalls VOR der Projektauswahl, aus demselben Grund wie
     // der Backlog oben. Fire-and-forget: Context7-Aufrufe mit Pausen duerfen das Parsen nicht
     // aufhalten. Ob ein Lauf faellig ist und dass er nie doppelt laeuft, entscheidet das Modul.
     void context7AutomatikTick();
+  }
+
+  /** P15-T12: Parsen des Backlogs als eigener Schritt (pausierbar, einzeln ausloesbar). */
+  private async parserSchritt(): Promise<Record<string, unknown>> {
 
     // WELCHE PROJEKTE FAELLIG SIND, ENTSCHEIDET CORE — nicht dieser Worker.
     // Hier stand bis zum 28.07.2026 eine eigene Query, die nur parsed_at und
@@ -288,27 +355,34 @@ export class ParserWorker {
     // laeuft frueher oder spaeter wieder auseinander; deshalb genau eine.
     // Der Registry- und enabled-Guard steckt ebenfalls in projekteMitBacklog().
     // P14-T2: Schalter parser -> das Parsen ruht. Backlog-Embedding und Context7 oben haben eigene Schalter.
-    if (await schalterHaeltAn('parser', 'parser-worker')) return;
+    if (await schalterHaeltAn('parser', 'parser-worker')) return { schalter_parser: true };
+    // P15-T12: Prozess-Pause des Parsers (intern worker_pausieren)
+    const pause = workerPausiert('parser');
+    if (pause) return { pausiert: pause };
 
     const projekte = await projekteMitBacklog(this.cfg.maxPerTick);
 
     if (projekte.length === 0) {
       // Stale init-jobs aufraeumen (15 Min-Cutoff) — kostet nichts wenn nichts da.
       await expirePendingProjectInitJobs(900).catch(() => 0);
-      return;
+      return { projekte: 0, dateien: 0 };
     }
 
+    let dateien = 0;
     for (const row of projekte) {
       try {
         const n = await parseUnparsedFiles(row.project);
         if (n > 0) {
           this.filesDone += n;
+          dateien += n;
           console.error(`[parser-worker] ${row.project}: ${n} files geparst (Backlog war ${row.faellig})`);
         }
       } catch (err) {
         console.error(`[parser-worker] ${row.project} fehlgeschlagen: ${(err as Error).message}`);
       }
     }
+    if (dateien > 0) meldeWorkerArbeit('parser');
+    return { projekte: projekte.length, dateien };
   }
 }
 

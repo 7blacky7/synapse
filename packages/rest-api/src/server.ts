@@ -269,14 +269,23 @@ export async function startServer(): Promise<void> {
   //   SYNAPSE_TOOLCALL_RETENTION_DAYS=N    — Frist in Tagen (Default 90)
   //   TOOLCALL_RETENTION_INTERVAL_MS=N     — Lauf-Intervall (Default 6h)
   if (process.env.TOOLCALL_RETENTION_DISABLED !== '1') {
-    const { expireOldToolCalls } = await import('@synapse/core');
+    const { expireOldToolCalls, registriereWorker, workerPausiert, meldeWorkerArbeit } = await import('@synapse/core');
     const retentionIntervalMs = process.env.TOOLCALL_RETENTION_INTERVAL_MS
       ? parseInt(process.env.TOOLCALL_RETENTION_INTERVAL_MS, 10)
       : 6 * 60 * 60 * 1000;
+    // P15-T12: pausierbar und einzeln ausloesbar ueber intern(worker_*)
+    const retentionLauf = async (): Promise<{ ausgealtert: number }> => {
+      const n = await expireOldToolCalls();
+      if (n > 0) {
+        meldeWorkerArbeit('retention');
+        console.log(`[Synapse API] Tool-Call-Retention: ${n} Eintraege ausgealtert`);
+      }
+      return { ausgealtert: n };
+    };
+    registriereWorker({ name: 'retention', beschreibung: `Tool-Call-Retention (Intervall ${retentionIntervalMs} ms)`, durchlauf: retentionLauf });
     const runRetention = (): void => {
-      void expireOldToolCalls().then((n) => {
-        if (n > 0) console.log(`[Synapse API] Tool-Call-Retention: ${n} Eintraege ausgealtert`);
-      });
+      if (workerPausiert('retention')) return;
+      void retentionLauf().catch((err: unknown) => console.error('[Synapse API] Tool-Call-Retention fehlgeschlagen:', err));
     };
     runRetention(); // einmal beim Start
     setInterval(runRetention, retentionIntervalMs).unref();
@@ -294,14 +303,23 @@ export async function startServer(): Promise<void> {
   //   SYNAPSE_SESSION_IDLE_HOURS=N     — Frist ohne Lebenszeichen (Default 4)
   //   SESSION_REAPER_INTERVAL_MS=N     — Lauf-Intervall (Default 30 min)
   if (process.env.SESSION_REAPER_DISABLED !== '1') {
-    const { expireIdleAgentSessions } = await import('@synapse/core');
+    const { expireIdleAgentSessions, registriereWorker, workerPausiert, meldeWorkerArbeit } = await import('@synapse/core');
     const reaperIntervalMs = process.env.SESSION_REAPER_INTERVAL_MS
       ? parseInt(process.env.SESSION_REAPER_INTERVAL_MS, 10)
       : 30 * 60 * 1000;
+    // P15-T12: pausierbar und einzeln ausloesbar ueber intern(worker_*)
+    const reaperLauf = async (): Promise<{ abgemeldet: number }> => {
+      const n = await expireIdleAgentSessions();
+      if (n > 0) {
+        meldeWorkerArbeit('session_reaper');
+        console.log(`[Synapse API] Session-Reaper: ${n} Session(s) abgemeldet`);
+      }
+      return { abgemeldet: n };
+    };
+    registriereWorker({ name: 'session_reaper', beschreibung: `Agenten-Sessions ohne Lebenszeichen abmelden (Intervall ${reaperIntervalMs} ms)`, durchlauf: reaperLauf });
     const runReaper = (): void => {
-      void expireIdleAgentSessions().then((n) => {
-        if (n > 0) console.log(`[Synapse API] Session-Reaper: ${n} Session(s) abgemeldet`);
-      });
+      if (workerPausiert('session_reaper')) return;
+      void reaperLauf().catch((err: unknown) => console.error('[Synapse API] Session-Reaper fehlgeschlagen:', err));
     };
     runReaper(); // einmal beim Start
     setInterval(runReaper, reaperIntervalMs).unref();
@@ -312,10 +330,17 @@ export async function startServer(): Promise<void> {
 
   // CE-6: skalierbare Reservierungs-TTLs im 24/7-REST-Prozess (Default an).
   if (process.env.SYNAPSE_RESERVATION_TTL_WORKER_DISABLED !== '1') {
-    const { getReservationTtlConfig, renewFileReservationTtls } = await import('@synapse/core');
+    const { getReservationTtlConfig, renewFileReservationTtls, registriereWorker, workerPausiert } = await import('@synapse/core');
     const reservationTtl = getReservationTtlConfig();
     if (reservationTtl.enabled) {
+      // P15-T12: pausierbar und einzeln ausloesbar ueber intern(worker_*)
+      registriereWorker({
+        name: 'reservation_ttl',
+        beschreibung: `Reservierungs-TTLs verlaengern/ablaufen lassen (Intervall ${reservationTtl.workerIntervalMs} ms)`,
+        durchlauf: async () => { await renewFileReservationTtls(); return { erneuert: true }; },
+      });
       const runReservationRenewal = (): void => {
+        if (workerPausiert('reservation_ttl')) return;
         void renewFileReservationTtls().catch((error: unknown) => {
           console.error('[Synapse API] Reservation-TTL-Worker fehlgeschlagen:', error);
         });

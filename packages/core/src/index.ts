@@ -113,6 +113,20 @@ export {
   embeddingNachtragAngehalten,
 } from './services/intern-schalter.js';
 export type { InternSchalterName, InternSchalterStand, SetzeSchalterOptionen } from './services/intern-schalter.js';
+// P15-T12: Worker-Steuerung im Prozess-Speicher (pausieren/fortsetzen/durchlauf) fuer das intern-Tool
+export {
+  registriereWorker,
+  workerPausiert,
+  meldeWorkerArbeit,
+  pausiereWorker,
+  setzeWorkerFort,
+  loeseWorkerDurchlaufAus,
+  workerStatus,
+  workerNamen,
+  workerPauseMaxMin,
+  WorkerSteuerungFehler,
+} from './services/worker-steuerung.js';
+export type { WorkerDefinition, WorkerPause, WorkerStand, PausiereOptionen } from './services/worker-steuerung.js';
 export {
   INTERN_DEFINITION,
   INTERN_ACTIONS,
