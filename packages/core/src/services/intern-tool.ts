@@ -117,6 +117,30 @@ function wahr(a: Record<string, unknown>, k: string): boolean | undefined {
   return undefined;
 }
 
+/**
+ * Liste aus den Args: echtes Array, JSON-Text "[\"a\",\"b\"]" (Connector mit altem Schema schickt
+ * unbekannte Felder als Text) oder Komma-Liste. Ohne JSON-Erkennung wurden aus ["a","b"] die
+ * Namen ["a" und "b"] — so geschehen am 11.10.2026 bei embed_prioritaet.
+ */
+function textListe(a: Record<string, unknown>, k: string): string[] | undefined {
+  const v = a[k];
+  let roh: unknown[] | undefined;
+  if (Array.isArray(v)) roh = v;
+  else if (typeof v === 'string' && v.trim() !== '') {
+    const t = v.trim();
+    if (t.startsWith('[')) {
+      try {
+        const p: unknown = JSON.parse(t);
+        if (Array.isArray(p)) roh = p;
+      } catch { /* kein JSON -> Komma-Liste */ }
+    }
+    roh ??= t.split(',');
+  }
+  if (!roh) return undefined;
+  const liste = roh.map((x) => String(x).trim()).filter(Boolean);
+  return liste.length > 0 ? liste : undefined;
+}
+
 function fehler(action: string, code: string, message: string): Record<string, unknown> {
   return { success: false, action, error: code, message };
 }
@@ -216,10 +240,7 @@ export async function fuehreInternAus(
         };
       }
       case 'neu_einbetten': {
-        const roh = a.arten;
-        const arten = Array.isArray(roh)
-          ? roh.map(String)
-          : typeof roh === 'string' && roh.trim() !== '' ? roh.split(',').map((s) => s.trim()).filter(Boolean) : undefined;
+        const arten = textListe(a, 'arten');
         const falsch = (arten ?? []).filter((x) => !(NEU_EINBETTEN_ARTEN as readonly string[]).includes(x));
         if (falsch.length > 0) {
           return fehler(action, 'parameter_ungueltig', 'arten: ' + NEU_EINBETTEN_ARTEN.join(' | ') + ' (unbekannt: ' + falsch.join(', ') + ').');
@@ -229,10 +250,7 @@ export async function fuehreInternAus(
         return { success: true, action, ...erg };
       }
       case 'embed_prioritaet': {
-        const roh = a.projekte;
-        const projekte = Array.isArray(roh)
-          ? roh.map(String).map((s) => s.trim()).filter(Boolean)
-          : typeof roh === 'string' && roh.trim() !== '' ? roh.split(',').map((s) => s.trim()).filter(Boolean) : [];
+        const projekte = textListe(a, 'projekte') ?? [];
         if (projekte.length > 0) {
           const stufe = zahl(a, 'stufe');
           if (stufe === undefined || !Number.isInteger(stufe) || stufe < 0 || stufe > 4) {
