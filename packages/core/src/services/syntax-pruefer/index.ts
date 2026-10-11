@@ -47,7 +47,7 @@ export function registriereStandardSyntaxPruefer(opt: { threads?: number } = {})
   for (const def of katalog()) {
     registriereSyntaxPruefer({
       name: def.name,
-      version: paketVersion(def.paket),
+      version: def.version ?? paketVersion(def.paket),
       endungen: def.endungen,
       sperrfaehig: def.sperrfaehig,
       pruefe: pruefeMit(def),

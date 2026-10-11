@@ -99,6 +99,30 @@ console.log('Positivkontrollen E2');
   pruefe('Y6 YAML: Doppelpunkt im Klartext-Wert erkannt', ym[0]?.zeile === 2 && ym[0]?.spalte === 12, ym[0]);
 }
 
+console.log('Positivkontrollen E3');
+{
+  const h = def('html');
+  const a = await h.pruefe('<div>\n  <a href="x" class="y"title="z">t</a>\n</div>\n', 'x.html');
+  pruefe('H1 HTML: Leerzeichen zwischen Attributen fehlt Z.2', a[0]?.zeile === 2 && a[0]?.code === 'missing-whitespace-between-attributes' && typeof a[0]?.spalte === 'number' && a[0]?.wo[0]?.includes('#parse-error-'), a[0]);
+  const s = await h.pruefe('<!doctype html>\n<html><body>\n<script>\n  let a = ;\n</script>\n</body></html>\n', 'x.html');
+  pruefe('H2 HTML: Fehler im <script> auf Dateizeile 4 abgebildet', s[0]?.zeile === 4 && s[0]?.spalte === 11 && s[0]?.code === 'TS1109' && s[0]?.meldung.startsWith('<script>'), s[0]);
+  const st = await h.pruefe('<p>x</p><style>a { color: red; } }</style>\n', 'x.htm');
+  pruefe('H3 HTML: <style> in Zeile 1, Spalte verschoben', st[0]?.zeile === 1 && st[0]?.spalte === 34 && st[0]?.code === 'CssSyntaxError', st[0]);
+  pruefe('H4 HTML: Vorlage {{ }} wird nicht gemeldet', (await h.pruefe('<div>{{ a }}<a b="1"c="2"></a></div>', 'x.html')).length === 0);
+  const j = await h.pruefe('<script type="application/ld+json">\n{"a": 1,}\n</script><script type="text/template"><div>{ a</div></script>', 'x.html');
+  pruefe('H5 HTML: JSON-Script geprueft, text/template nicht', j.length === 1 && j[0].zeile === 2 && j[0].code === 'JSON', j);
+  pruefe('H6 HTML: Fragment, <div/>, a < b, &copy gueltig', (await h.pruefe('<div/><p>a < b &copy 2026</p><br>\n', 'x.html')).length === 0);
+  const e = await h.pruefe('<ul>\n  <li>x</li>\n</ul\n\n<p class="a">y</p>\n', 'x.html');
+  pruefe('H7 HTML: </ul ohne > erkannt', e.length >= 1 && e[0].code === 'unexpected-character-in-attribute-name', e[0]);
+  const md = def('markdown-codebloecke');
+  const m = await md.pruefe('# T\n\n```json\n{"a": 1\n "b": 2}\n```\n', 'x.md');
+  pruefe('M1 Markdown: json-Fence, Fehler auf Dateizeile 5', m[0]?.zeile === 5 && m[0]?.code === 'JSON' && /Codeblock/.test(m[0]?.meldung), m[0]);
+  const l = await md.pruefe('- Punkt:\n\n  ```ts\n  const a = ;\n  ```\n', 'x.md');
+  pruefe('M2 Markdown: eingerueckter Fence in Liste', l[0]?.zeile === 4 && l[0]?.spalte === 13, l[0]);
+  pruefe('M3 Markdown: Auslassung, unbekannte Sprache, offener Fence nicht gemeldet', (await md.pruefe('```js\nfoo(a, ...)\n// ...\n```\n```text\n{ a\n```\n```json\n{', 'x.md')).length === 0);
+  pruefe('M4 Markdown nicht sperrfaehig', md.sperrfaehig === false && def('html').sperrfaehig === true);
+}
+
 // ─── Einzelweg ueber registriereStandardSyntaxPruefer (Pool) ───
 console.log('Einzelweg mit Pool');
 {

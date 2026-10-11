@@ -20,6 +20,8 @@ export interface PrueferDefinition {
   name: string;
   /** npm-Paket, dessen Version in die Pruefer-Kennung geht */
   paket: string;
+  /** feste Version statt der Paketversion (Pruefer ohne eigene Bibliothek) */
+  version?: string;
   endungen: string[];
   sperrfaehig: boolean;
   /** synchron oder async (WASM-/ESM-Bibliotheken laden beim ersten Aufruf nach) */
@@ -359,6 +361,145 @@ export function pruefeXml(roh: string, _pfad: string): SyntaxMeldung[] {
   }
 }
 
+// ─── Eingebettete Bloecke (HTML script/style, Markdown-Fences) ─────────────────────────
+
+type Teilpruefer = (text: string, pfad: string) => SyntaxMeldung[] | Promise<SyntaxMeldung[]>;
+const EINGEBETTET: Record<string, [Teilpruefer, string]> = {
+  js: [pruefeTypescript, 'e.js'], javascript: [pruefeTypescript, 'e.js'], mjs: [pruefeTypescript, 'e.js'], cjs: [pruefeTypescript, 'e.js'],
+  jsx: [pruefeTypescript, 'e.jsx'], ts: [pruefeTypescript, 'e.ts'], typescript: [pruefeTypescript, 'e.ts'], tsx: [pruefeTypescript, 'e.tsx'],
+  json: [pruefeJson, 'e.json'], jsonc: [pruefeJson, 'e.jsonc'], json5: [pruefeJson, 'e.jsonc'],
+  css: [pruefeCss, 'e.css'], scss: [pruefeCss, 'e.scss'], less: [pruefeCss, 'e.less'],
+  sql: [pruefeSql, 'e.sql'], postgres: [pruefeSql, 'e.sql'], postgresql: [pruefeSql, 'e.sql'], pgsql: [pruefeSql, 'e.sql'],
+  toml: [pruefeToml, 'e.toml'], yaml: [pruefeYaml, 'e.yaml'], yml: [pruefeYaml, 'e.yaml'],
+  xml: [pruefeXml, 'e.xml'], svg: [pruefeXml, 'e.svg'],
+};
+
+/** Platzhalter in Beispielcode ("...", "// ...", "{ ... }"): Ausschnitt, kein vollstaendiger Code. */
+const AUSLASSUNG = /^\s*(\.\.\.|…|(\/\/|#|--)\s*(\.\.\.|…).*)\s*$|\{\s*(\.\.\.|…)\s*\}|\[\s*(\.\.\.|…)\s*\]|<\.\.\.>/m;
+
+/**
+ * Prueft einen eingebetteten Block mit dem Pruefer seiner Sprache und bildet Zeile/Spalte auf die Datei ab.
+ * z0/s0 = 1-basierte Startzeile/-spalte des Blocks in der Datei. Nur die erste Meldung je Block (Kaskaden).
+ */
+export async function pruefeEingebettet(sprache: string, text: string, z0: number, s0: number, kontext: string): Promise<SyntaxMeldung[]> {
+  const ziel = EINGEBETTET[sprache.toLowerCase()];
+  if (!ziel || text.trim() === '' || VORLAGE.test(text)) return [];
+  const m = (await ziel[0](text, ziel[1]))[0];
+  if (!m) return [];
+  return [{
+    ...m,
+    zeile: m.zeile + z0 - 1,
+    spalte: m.zeile === 1 && typeof m.spalte === 'number' ? m.spalte + s0 - 1 : m.spalte,
+    meldung: `${kontext}: ${m.meldung}`,
+  }];
+}
+
+// ─── HTML (parse5, WHATWG-Tokenizer) ─────────────────────────────────────────────────
+
+/**
+ * Gemeldete parse5-Fehler: nur solche, die das Dokument tatsaechlich anders lesen lassen als gemeint
+ * (Tag/Kommentar laeuft bis Dateiende, Attribute verschmelzen oder fallen weg). Bewusst NICHT: missing-doctype
+ * (Fragmente), <div/>, "a < b" im Text, &copy ohne Semikolon - Browser lesen das wie gemeint.
+ */
+const HTML_HART: Record<string, string> = {
+  'eof-in-tag': 'Tag nicht geschlossen - es fehlt > (oder ein Anfuehrungszeichen eines Attributs), der Rest der Datei wird als Tag gelesen.',
+  'eof-in-comment': 'Kommentar <!-- nicht mit --> geschlossen - der Rest der Datei ist Kommentar.',
+  'eof-in-script-html-comment-like-text': '<!-- im <script> nicht geschlossen - der Rest der Datei gehoert zum Script.',
+  'duplicate-attribute': 'Attribut doppelt - der Browser nimmt nur das erste.',
+  'missing-whitespace-between-attributes': 'Leerzeichen zwischen zwei Attributen fehlt (oft ein Anfuehrungszeichen zu viel oder zu wenig).',
+  'unexpected-character-in-attribute-name': 'Ungueltiges Zeichen im Attributnamen (" \' < oder =) - meist ein fehlendes Anfuehrungszeichen davor.',
+  'unexpected-equals-sign-before-attribute-name': '= ohne Attributnamen.',
+  'unexpected-character-in-unquoted-attribute-value': 'Wert ohne Anfuehrungszeichen enthaelt " \' < = oder ` - Wert in Anfuehrungszeichen setzen.',
+  'missing-attribute-value': 'Attribut mit = aber ohne Wert.',
+  'end-tag-with-attributes': 'Schliessendes Tag mit Attributen.',
+  'incorrectly-closed-comment': 'Kommentar mit --!> statt --> geschlossen.',
+  'abrupt-closing-of-empty-comment': 'Leerer Kommentar <!--> bzw. <!--->.',
+};
+
+interface P5Knoten {
+  nodeName: string;
+  value?: string;
+  attrs?: Array<{ name: string; value: string }>;
+  childNodes?: P5Knoten[];
+  content?: P5Knoten;
+  sourceCodeLocation?: { startLine: number; startCol: number } | null;
+}
+type P5Fehler = { code: string; startLine: number; startCol: number };
+type P5Modul = {
+  parse(t: string, o: Record<string, unknown>): P5Knoten;
+  parseFragment(t: string, o: Record<string, unknown>): P5Knoten;
+};
+let p5Modul: Promise<P5Modul> | null = null;
+
+const SCRIPT_JS = /^(|text\/javascript|application\/javascript|module|text\/babel|application\/ecmascript|text\/ecmascript)$/i;
+const SCRIPT_JSON = /^(application\/json|importmap|application\/ld\+json|speculationrules)$/i;
+
+export async function pruefeHtml(inhalt: string, _pfad: string): Promise<SyntaxMeldung[]> {
+  if (inhalt.trim() === '' || VORLAGE.test(inhalt)) return [];
+  if (!p5Modul) p5Modul = import('parse5') as unknown as Promise<P5Modul>;
+  const p5 = await p5Modul;
+  const fehler: P5Fehler[] = [];
+  const opt = { sourceCodeLocationInfo: true, onParseError: (e: P5Fehler) => { if (HTML_HART[e.code]) fehler.push(e); } };
+  const dokument = /<!doctype|<html[\s>]/i.test(inhalt) ? p5.parse(inhalt, opt) : p5.parseFragment(inhalt, opt);
+  const meldungen: SyntaxMeldung[] = fehler.slice(0, 1).map((e) => ({
+    zeile: e.startLine,
+    spalte: e.startCol,
+    code: e.code,
+    meldung: HTML_HART[e.code],
+    warum: 'Der HTML-Tokenizer (WHATWG, wie im Browser) liest das Dokument an dieser Stelle anders als gemeint.',
+    wie: HTML_HART[e.code],
+    wo: [`https://html.spec.whatwg.org/multipage/parsing.html#parse-error-${e.code}`],
+  }));
+  const bloecke: Array<Promise<SyntaxMeldung[]>> = [];
+  const lauf = (n: P5Knoten) => {
+    if (n.nodeName === 'script' || n.nodeName === 'style') {
+      const text = n.childNodes?.[0];
+      const ort = text?.sourceCodeLocation;
+      if (text?.value && ort) {
+        const typ = (n.attrs?.find((a) => a.name === 'type')?.value ?? '').trim();
+        const lang = (n.attrs?.find((a) => a.name === 'lang')?.value ?? '').trim();
+        let sprache = '';
+        if (n.nodeName === 'style') sprache = lang || 'css';
+        else if (SCRIPT_JSON.test(typ)) sprache = 'json';
+        else if (SCRIPT_JS.test(typ)) sprache = lang || 'js';
+        if (sprache) bloecke.push(pruefeEingebettet(sprache, text.value, ort.startLine, ort.startCol, `<${n.nodeName}>`));
+      }
+    }
+    for (const k of n.childNodes ?? []) lauf(k);
+    if (n.content) lauf(n.content);
+  };
+  lauf(dokument);
+  for (const m of await Promise.all(bloecke)) meldungen.push(...m);
+  return meldungen.sort((a, b) => a.zeile - b.zeile);
+}
+
+// ─── Markdown: Code-Fences an den Pruefer ihrer Sprache ───────────────────────────────────────
+
+export async function pruefeMarkdown(inhalt: string, _pfad: string): Promise<SyntaxMeldung[]> {
+  const zeilen = inhalt.split('\n');
+  const bloecke: Array<Promise<SyntaxMeldung[]>> = [];
+  for (let i = 0; i < zeilen.length; i++) {
+    const auf = /^(\s{0,3})(`{3,}|~{3,})\s*([\w+#.-]*)/.exec(zeilen[i]);
+    if (!auf) continue;
+    const [, einzug, zaun, roh] = auf;
+    let ende = i + 1;
+    const schluss = new RegExp(`^\\s{0,3}${zaun[0] === '`' ? '`' : '~'}{${zaun.length},}\\s*$`);
+    while (ende < zeilen.length && !schluss.test(zeilen[ende])) ende++;
+    if (ende >= zeilen.length) break; // offener Zaun: Markdown liest bis Dateiende, kein Codefehler
+    const sprache = roh.toLowerCase();
+    const text = zeilen.slice(i + 1, ende).map((z) => (z.startsWith(einzug) ? z.slice(einzug.length) : z.trimStart())).join('\n');
+    if (EINGEBETTET[sprache] && !AUSLASSUNG.test(text)) {
+      bloecke.push(pruefeEingebettet(sprache, text, i + 2, einzug.length + 1, `Codeblock \`\`\`${sprache}`));
+    }
+    i = ende;
+  }
+  const meldungen = (await Promise.all(bloecke)).flat();
+  return meldungen.map((m) => ({
+    ...m,
+    warum: `${m.warum ?? ''} (Codebeispiel in Markdown: wird nur gemeldet, nie gesperrt.)`.trim(),
+  }));
+}
+
 // ─── Katalog ─────────────────────────────────────────────────────────────────
 
 export const PRUEFER_KATALOG: PrueferDefinition[] = [
@@ -419,6 +560,24 @@ export const PRUEFER_KATALOG: PrueferDefinition[] = [
     sperrfaehig: false,
     pruefe: pruefeXml,
     aufwaermen: { inhalt: '<a x="1"><b/></a>', pfad: 'w.xml' },
+  },
+  {
+    name: 'html',
+    paket: 'parse5',
+    endungen: ['html', 'htm'],
+    sperrfaehig: true,
+    pruefe: pruefeHtml,
+    aufwaermen: { inhalt: '<!doctype html><p class="a">x</p><script>let a = 1;</script><style>a{b:c}</style>', pfad: 'w.html' },
+  },
+  {
+    name: 'markdown-codebloecke',
+    paket: 'typescript',
+    version: '1',
+    endungen: ['md', 'markdown'],
+    // Beispielcode in Doku ist oft absichtlich unvollstaendig: nur Hinweis.
+    sperrfaehig: false,
+    pruefe: pruefeMarkdown,
+    aufwaermen: { inhalt: '# a\n```json\n{"a": 1}\n```\n', pfad: 'w.md' },
   },
 ];
 
