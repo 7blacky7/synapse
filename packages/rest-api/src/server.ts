@@ -252,6 +252,19 @@ export async function startServer(): Promise<void> {
     console.error('[Synapse API] ParserPool-Init fehlgeschlagen:', err);
   }
 
+  // P16-T4: Syntaxpruefer Stufe 1 (TS/JS, JSON, CSS ...) fuer files plan/commit und Einzelschreibweg.
+  // Eigener Worker-Pool (SYNTAX_WORKER_THREADS, Default 2; 0 = Haupt-Thread), startet hier vorgewaermt.
+  // Notaus: SYNTAXPRUEFUNG=0.
+  try {
+    const { registriereStandardSyntaxPruefer } = await import('@synapse/core');
+    const namen = registriereStandardSyntaxPruefer();
+    console.log(namen.length > 0
+      ? `[Synapse API] Syntaxpruefer angemeldet: ${namen.join(', ')}`
+      : '[Synapse API] Syntaxpruefer aus (SYNTAXPRUEFUNG=0)');
+  } catch (err) {
+    console.error('[Synapse API] Syntaxpruefer-Anmeldung fehlgeschlagen (Schreibweg laeuft ohne Syntaxpruefung):', err);
+  }
+
   // Parser-Worker: server-seitige parseUnparsedFiles-Schleife. Schliesst die Luecke
   // wenn KEIN lokaler FileWatcher-Daemon laeuft — Files die via files-Tool / Web-KI
   // in code_files landen, werden hier nachgezogen + code_intel sieht sie.

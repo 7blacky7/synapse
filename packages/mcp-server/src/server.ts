@@ -895,6 +895,15 @@ export async function startServer(): Promise<void> {
   // Step 1: Ensure agents DB schema exists before any tools are used
   await ensureAgentsSchema();
 
+  // P16-T4: Syntaxpruefer Stufe 1 fuer files plan/commit und Einzelschreibweg dieses Prozesses.
+  // Ein Worker je stdio-Prozess (es laufen viele davon); SYNTAX_WORKER_THREADS ueberschreibt, SYNTAXPRUEFUNG=0 = aus.
+  try {
+    const { registriereStandardSyntaxPruefer } = await import('@synapse/core');
+    registriereStandardSyntaxPruefer({ threads: 1 });
+  } catch (err) {
+    console.error('[Synapse MCP] Syntaxpruefer-Anmeldung fehlgeschlagen (Schreibweg ohne Syntaxpruefung):', err);
+  }
+
   // Step 2: Reconnect to running specialists and clean up orphans for all known projects
   const cliInfo = detectClaudeCli();
   if (cliInfo.available) {

@@ -349,9 +349,23 @@ export async function pruefeSyntaxEinzelweg(eingabe: {
   const bereich = geaenderteZeilen(eingabe.alt, eingabe.neu);
   if (!bereich) return { ...leer, status: 'fertig' };
 
-  const auswerten = (p: SyntaxPruefer, meldungen: SyntaxMeldung[]) => {
+  const auswerten = async (p: SyntaxPruefer, meldungen: SyntaxMeldung[]) => {
     const neu = meldungen.filter((m) => liegtImBereich(m.zeile, bereich));
     const alt = meldungen.length - neu.length;
+    if (neu.length === 0 && meldungen.length > 0 && eingabe.alt) {
+      // P16-T4: Fehlerstelle ausserhalb der geaenderten Zeilen (typisch: eine fehlende } meldet der Parser erst
+      // am Dateiende). War der alte Stand fehlerfrei, hat die Aenderung den Fehler verursacht. Kostet einen
+      // zweiten Lauf, aber nur im Fehlerfall.
+      let fehlerVorher: number | null = null;
+      try { fehlerVorher = (await p.pruefe(eingabe.alt, eingabe.filePath)).length; } catch { fehlerVorher = null; }
+      if (fehlerVorher === 0) {
+        const m = meldungen[0];
+        const b = syntaxBefund(p, m, eingabe.filePath, true, meldungen.length);
+        const von = Math.min(bereich.von, Math.max(bereich.bis, 1));
+        b.was += ` - Fehlerstelle Z.${m.zeile} liegt ausserhalb der geaenderten Zeilen ${von}-${Math.max(bereich.bis, von)}, der Stand vorher war fehlerfrei: die Ursache liegt in der Aenderung`;
+        return { befund: b, altlasten: 0 };
+      }
+    }
     return { befund: neu.length ? syntaxBefund(p, neu[0], eingabe.filePath, true, neu.length) : null, altlasten: alt };
   };
 
@@ -375,13 +389,13 @@ export async function pruefeSyntaxEinzelweg(eingabe: {
     if (ergebnis === 'zeit') {
       status = 'teilweise';
       // Nachlieferung: nie blockierend, nur Hinweis.
-      void lauf.then((meldungen) => {
-        const { befund } = auswerten(p, meldungen);
+      void lauf.then(async (meldungen) => {
+        const { befund } = await auswerten(p, meldungen);
         if (befund && eingabe.onNachgereicht) eingabe.onNachgereicht([{ ...befund, was: befund.was + ' (nachgeliefert, geschrieben wurde trotzdem)' }]);
       }).catch(() => {});
       continue;
     }
-    const { befund, altlasten: a } = auswerten(p, ergebnis);
+    const { befund, altlasten: a } = await auswerten(p, ergebnis);
     altlasten += a;
     if (befund) befunde.push(befund);
   }

@@ -20,6 +20,9 @@
     "openai": "^4.20.0",
     "pdf-parse": "^2.4.5",
     "pg": "^8.20.0",
+    "postcss": "^8.5.29",
+    "postcss-less": "^6.0.0",
+    "postcss-scss": "^4.0.9",
     "typescript": "^5.9.3",
     "uuid": "^9.0.0",
     "xlsx": "^0.18.5"

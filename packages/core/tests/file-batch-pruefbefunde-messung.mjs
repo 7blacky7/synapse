@@ -6,8 +6,9 @@
  * Je Konfiguration (5/50/100 KB x 1/10/50 Ops) N verschraenkte Laeufe planBatch mit Pruefung gegen
  * FEHLERPRUEFUNG_PLAN=0; Plan danach verworfen. (1) misst pruefeGespeichertenPlan (Schatten neu bauen inkl.
  * PG-Lesen + Pruefung, obere Schranke) und pruefung.dauer_ms (nur Stufe 1).
- * AUFRUF: set -a; . <test-db.env>; set +a; node packages/core/tests/file-batch-pruefbefunde-messung.mjs [N] [ohne-ts]
- *   ohne-ts = Stand heute (noch kein Syntaxpruefer registriert, P16-T4), nur Signatur-Muster.
+ * AUFRUF: set -a; . <test-db.env>; set +a; node packages/core/tests/file-batch-pruefbefunde-messung.mjs [N] [ohne-ts|haupt]
+ *   ohne Option = Stufe-1-Pruefer aus P16-T4 (registriereStandardSyntaxPruefer, Worker-Pool);
+ *   ohne-ts = kein Syntaxpruefer, nur Signatur-Muster; haupt = Pruefer im Haupt-Thread (SYNTAX_WORKER_THREADS=0).
  */
 import http from 'node:http';
 import { createRequire } from 'node:module';
@@ -66,13 +67,15 @@ try {
     );
   }
   FP._signaturMusterCacheLeeren();
-  if (process.argv[3] !== 'ohne-ts') FP.registriereSyntaxPruefer({
-    name: 'typescript', version: ts.version, endungen: ['ts', 'tsx', 'js', 'mjs'], sperrfaehig: true,
-    pruefe: (text, filePath) => {
-      const sf = ts.createSourceFile(filePath, text, ts.ScriptTarget.Latest, false);
-      return (sf.parseDiagnostics ?? []).map((d) => ({ zeile: sf.getLineAndCharacterOfPosition(d.start ?? 0).line + 1, code: `TS${d.code}`, meldung: ts.flattenDiagnosticMessageText(d.messageText, ' ') }));
-    },
-  });
+  // P16-T4: die echten Stufe-1-Pruefer (Worker-Pool); 'haupt' = SYNTAX_WORKER_THREADS=0 (Haupt-Thread).
+  if (process.argv[3] === 'haupt') process.env.SYNTAX_WORKER_THREADS = '0';
+  // Derselbe Plan laeuft N-mal mit identischem Ergebnis: ohne das waere ab Lauf 2 jede Pruefung ein Cache-Treffer.
+  process.env.SYNTAX_CACHE_EINTRAEGE = process.env.SYNTAX_CACHE_EINTRAEGE ?? '0';
+  if (process.argv[3] !== 'ohne-ts') {
+    const S = await lade(dist, 'services', 'syntax-pruefer', 'index.js');
+    console.log('Syntaxpruefer:', S.registriereStandardSyntaxPruefer().join(','), 'ts', ts.version);
+    await new Promise((r) => setTimeout(r, 2000));
+  }
   const zeilenFuer = (kb) => {
     const out = [];
     let i = 0;

@@ -1072,6 +1072,17 @@ export {
   QUITTIER_HINWEIS,
 } from './services/fehlermuster-pruefung.js';
 export type { FehlerBefund, SyntaxPruefer, SyntaxMeldung, SyntaxErgebnis } from './services/fehlermuster-pruefung.js';
+// P16-T4: Syntaxpruefer Stufe 1 (TS/JS, JSON, CSS ...) im eigenen Worker-Pool
+export {
+  registriereStandardSyntaxPruefer,
+  syntaxPoolZustand,
+  beendeSyntaxPool,
+  SyntaxWorkerPool,
+  SyntaxPrueferTimeout,
+  SyntaxPoolNichtVerfuegbar,
+  PRUEFER_KATALOG,
+} from './services/syntax-pruefer/index.js';
+export type { PrueferDefinition } from './services/syntax-pruefer/index.js';
 export type { FehlermusterHinweis, FehlermusterAuslieferung } from './services/fehlermuster-auslieferung.js';
 export type { Memory, MemoryWithRelatedCode, RelatedMemoryResult, RelatedCodeResult } from './services/memory.js';
 export type { DetectedTechnology } from './services/tech-detection.js';
