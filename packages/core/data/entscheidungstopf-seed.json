@@ -1,0 +1,1855 @@
+{
+  "format": "entscheidungstopf-seed",
+  "version": 1,
+  "erstellt_am": "2026-10-11",
+  "erstellt_von": "p15-entscheid-e0",
+  "konzept": "6591b268 (Konzept v1), User-Idee 1d19a7a9, User-Entscheidung e7b013c2",
+  "hinweise": [
+    "Ein Eintrag = EINE atomare Entscheidung des Users. Geltung global als Vorlage (User e7b013c2); herkunft_projekt nennt nur, wo sie entstand.",
+    "antwort_wortlaut ist der Text des Users. Wo nur die Notiz des Koordinators existiert, steht deren Text und wortlaut_rekonstruiert ist true.",
+    "aufbereitet.gilt_wenn ist das Kriterium fuer Jev: wann diese Entscheidung eine neue Frage regelt.",
+    "kandidat=false: verbotene Kategorie (loeschen, deploy, git, secrets, aussenwirkung, kosten, regeln) oder einmalige Faktenlage. Solche Eintraege werden gespeichert, sind aber nie Praezedenz.",
+    "optionen/gewaehlte_option sind aus Konzept und Notiz rekonstruiert; der User sieht den Bestand einmal durch."
+  ],
+  "eintraege": [
+    {
+      "id": "ent-001",
+      "quelle": { "art": "thought", "ref": "215ff1dc", "teil": "E-a" },
+      "herkunft_projekt": "synapse",
+      "kategorie": "umsetzungsweg",
+      "kandidat": true,
+      "themen": ["fehlerpruefung", "schreiben", "syntax", "fehlermuster"],
+      "frage": {
+        "de": "Was passiert im Einzel-Schreibweg (files create/update/search_replace), wenn die Pruefung einen Befund der Stufe error meldet?",
+        "en": "What happens in the single-file write path (files create/update/search_replace) when the check reports an error-level finding?"
+      },
+      "optionen": [
+        { "key": "a", "de": "Immer schreiben, Befund nur melden", "en": "Always write, only report the finding" },
+        { "key": "b", "de": "Immer ablehnen, egal ob Syntaxfehler oder Fehlermuster", "en": "Always reject, whether syntax error or error pattern" },
+        { "key": "c", "de": "Mittelweg: Syntaxfehler ablehnen, Fehlermuster schreiben und deutlich melden", "en": "Middle way: reject syntax errors, write error patterns and report them clearly" },
+        { "key": "d", "de": "Schalter je Projekt, Standard aus", "en": "Per-project switch, off by default" }
+      ],
+      "gewaehlte_option": "c",
+      "antwort_wortlaut": "E-a EINZELWEG bei error: MITTELWEG. Syntaxfehler -> Schreiben wird ABGELEHNT. Fehlermuster (error) -> schreiben UND deutlich melden.",
+      "wortlaut_rekonstruiert": true,
+      "aufbereitet": {
+        "de": {
+          "entscheidung": "Ein Syntaxfehler in den geaenderten Zeilen lehnt den Schreibvorgang ab (nichts geschrieben, Befund in der Antwort). Ein Fehlermuster mit Stufe error wird geschrieben und deutlich gemeldet, mit Weg zum Zuruecknehmen.",
+          "begruendung": "Kaputte Syntax ist eindeutig und macht die Datei unbrauchbar; Fehlermuster sind Heuristiken mit moeglichen Fehlalarmen und duerfen die Arbeit nicht blockieren.",
+          "gilt_wenn": "Richtig, wenn es darum geht, ob eine automatische Pruefung einen Schreib- oder Speichervorgang blockiert oder nur warnt: harte, eindeutige Fehler blockieren, heuristische Befunde warnen nur."
+        },
+        "en": {
+          "decision": "A syntax error in the changed lines rejects the write (nothing written, finding in the response). An error-level pattern match is written and reported clearly, with a way to undo.",
+          "reason": "Broken syntax is unambiguous and makes the file unusable; error patterns are heuristics that can misfire and must not block work.",
+          "applies_when": "Correct when the question is whether an automatic check should block a write/save or only warn: hard, unambiguous errors block, heuristic findings only warn."
+        }
+      }
+    },
+    {
+      "id": "ent-002",
+      "quelle": { "art": "thought", "ref": "215ff1dc", "teil": "E-b" },
+      "herkunft_projekt": "synapse",
+      "kategorie": "variante",
+      "kandidat": true,
+      "themen": ["fehlerpruefung", "quittieren", "syntax", "ausnahme"],
+      "frage": {
+        "de": "Duerfen Agenten einen Syntaxfehler-Befund quittieren und trotzdem schreiben?",
+        "en": "May agents acknowledge a syntax-error finding and write anyway?"
+      },
+      "optionen": [
+        { "key": "a", "de": "Nur bei absichtlich fehlerhaftem Inhalt (Test-Fixture, Negativbeispiel), mit Pflichtgrund, der protokolliert wird", "en": "Only for intentionally broken content (test fixture, negative example), with a mandatory, logged reason" },
+        { "key": "b", "de": "Ja, jederzeit mit einem Flag", "en": "Yes, any time with a flag" },
+        { "key": "c", "de": "Nie", "en": "Never" },
+        { "key": "d", "de": "Nur der Koordinator darf quittieren", "en": "Only the coordinator may acknowledge" }
+      ],
+      "gewaehlte_option": "a",
+      "antwort_wortlaut": "QUITTIEREN von Syntaxfehlern: NUR wenn der kaputte Inhalt ABSICHT ist (z. B. Test-Fixture, parser-testkorpus, bewusst fehlerhafte Beispiele) - dann mit Pflichtgrund. Sonst NICHT quittierbar. Die Meldung soll das klar sagen.",
+      "wortlaut_rekonstruiert": true,
+      "aufbereitet": {
+        "de": {
+          "entscheidung": "Quittieren eines Syntaxbefunds ist nur erlaubt, wenn der fehlerhafte Inhalt Absicht ist (Test-Fixture, Parser-Testkorpus, Negativbeispiel). Ein Grund ist Pflicht und wird protokolliert; die Fehlermeldung sagt woertlich, dass nur absichtlich fehlerhafter Inhalt quittierbar ist.",
+          "begruendung": "Ein freier Ausweg wuerde die Sperre wertlos machen; echte Testfaelle brauchen aber einen Weg, und der Grund macht die Ausnahme nachvollziehbar.",
+          "gilt_wenn": "Richtig, wenn gefragt wird, ob und wie eine Schutzpruefung umgangen werden darf: nur fuer einen eng benannten, begruendeten Ausnahmefall mit protokolliertem Grund, nie als allgemeiner Schalter."
+        },
+        "en": {
+          "decision": "Acknowledging a syntax finding is allowed only when the broken content is intentional (test fixture, parser test corpus, negative example). A reason is mandatory and logged; the error message states literally that only intentionally broken content can be acknowledged.",
+          "reason": "A free bypass would make the block worthless; real test cases still need a way, and the reason keeps the exception traceable.",
+          "applies_when": "Correct when asked whether and how a protective check may be bypassed: only for a narrowly named, justified exception with a logged reason, never as a general switch."
+        }
+      }
+    },
+    {
+      "id": "ent-003",
+      "quelle": { "art": "thought", "ref": "215ff1dc", "teil": "E-c" },
+      "herkunft_projekt": "synapse",
+      "kategorie": "variante",
+      "kandidat": true,
+      "themen": ["fehlermuster", "model_scope", "filter", "ursache"],
+      "frage": {
+        "de": "Der Filter model_scope versteckt Fehlermuster, weil bei 866 Sessions das Modell NULL ist. Filter abschaffen?",
+        "en": "The model_scope filter hides error patterns because 866 sessions have model NULL. Remove the filter?"
+      },
+      "optionen": [
+        { "key": "a", "de": "Filter abschaffen", "en": "Remove the filter" },
+        { "key": "b", "de": "Filter behalten, NULL wie 'nicht haiku' behandeln", "en": "Keep the filter, treat NULL like 'not haiku'" },
+        { "key": "c", "de": "Filter behalten; unbekanntes Modell sieht alle Muster; Ursache der fehlenden Modelle finden und beheben", "en": "Keep the filter; unknown model sees all patterns; find and fix why the model is missing" },
+        { "key": "d", "de": "Sessions ohne Modell loeschen", "en": "Delete sessions without a model" }
+      ],
+      "gewaehlte_option": "c",
+      "antwort_wortlaut": "model_scope: NICHT abschaffen (User). Filter bleibt. Problem der 866 Sessions mit model NULL anders loesen: (1) unbekanntes Modell = alle Muster sehen (NULL nicht wie 'nicht haiku' behandeln), (2) Ursache finden, warum register/Sessions kein model haben, und beheben.",
+      "wortlaut_rekonstruiert": true,
+      "aufbereitet": {
+        "de": {
+          "entscheidung": "Der Filter bleibt. Fehlt die Angabe (unbekanntes Modell), wird nichts weggefiltert, also alle Muster gezeigt. Zusaetzlich wird die Ursache der fehlenden Angabe gesucht und behoben.",
+          "begruendung": "Der Filter hat weitere Nutzer (Tech-Docs); das Problem sind fehlende Daten, nicht der Filter. Unbekannt darf nicht still wie ein bestimmter Wert behandelt werden.",
+          "gilt_wenn": "Richtig, wenn ein vorhandener Mechanismus wegen fehlender oder falscher Daten schlecht wirkt und gefragt wird, ob man ihn entfernt: Mechanismus behalten, fehlende Werte sicher behandeln (im Zweifel mehr zeigen), Datenursache beheben."
+        },
+        "en": {
+          "decision": "Keep the filter. When the value is missing (unknown model), nothing is filtered out, so all patterns are shown. Additionally find and fix the cause of the missing value.",
+          "reason": "The filter has other users (tech docs); the problem is missing data, not the filter. Unknown must not silently be treated as a specific value.",
+          "applies_when": "Correct when an existing mechanism works badly because of missing or wrong data and the question is whether to remove it: keep the mechanism, handle missing values safely (when in doubt show more), fix the data cause."
+        }
+      }
+    },
+    {
+      "id": "ent-004",
+      "quelle": { "art": "thought", "ref": "215ff1dc", "teil": "E-d" },
+      "herkunft_projekt": "synapse",
+      "kategorie": "loeschen",
+      "kandidat": false,
+      "themen": ["fehlermuster", "stilllegen", "memory", "nicht-loeschen"],
+      "frage": {
+        "de": "Was passiert mit stillgelegten und projektspezifischen Fehlermustern bei der Migration?",
+        "en": "What happens to retired and project-specific error patterns during the migration?"
+      },
+      "optionen": [
+        { "key": "a", "de": "Loeschen", "en": "Delete" },
+        { "key": "b", "de": "Nicht loeschen: projektspezifische als memory mit Begruendung ins Ursprungsprojekt, global mit Status stillgelegt + Grund", "en": "Do not delete: project-specific ones become a memory with reason in their origin project, global ones stay with status retired + reason" },
+        { "key": "c", "de": "Unveraendert aktiv lassen", "en": "Leave unchanged and active" }
+      ],
+      "gewaehlte_option": "b",
+      "antwort_wortlaut": "STILLGELEGTE/PROJEKTSPEZIFISCHE MUSTER: NICHT LOESCHEN. Projektspezifische Muster wandern mit Begruendung als memory in ihr Ursprungsprojekt; global bleiben sie mit Status 'stillgelegt' + Grund nachvollziehbar.",
+      "wortlaut_rekonstruiert": true,
+      "aufbereitet": {
+        "de": {
+          "entscheidung": "Wissen wird nicht geloescht, sondern umgezogen oder stillgelegt: projektspezifisches als memory ins Ursprungsprojekt, globales mit Status stillgelegt und Grund.",
+          "begruendung": "Nachvollziehbarkeit; Wissen soll nicht verloren gehen.",
+          "gilt_wenn": "Richtig, wenn ueber das Entfernen veralteten Wissens entschieden wird. Loeschen entscheidet nie Jev."
+        },
+        "en": {
+          "decision": "Knowledge is not deleted but moved or retired: project-specific items become a memory in their origin project, global ones get status retired with a reason.",
+          "reason": "Traceability; knowledge must not be lost.",
+          "applies_when": "Correct when deciding about removing outdated knowledge. Deletion is never decided by Jev."
+        }
+      }
+    },
+    {
+      "id": "ent-005",
+      "quelle": { "art": "thought", "ref": "37673ac6", "teil": "saar-quiz" },
+      "herkunft_projekt": "synapse",
+      "kategorie": "loeschen",
+      "kandidat": false,
+      "einmalig": true,
+      "themen": ["fehlermuster", "migration", "saar-quiz"],
+      "frage": {
+        "de": "Die 35 saar-quiz-spezifischen Fehlermuster: als memory ins Projekt saar-quiz oder loeschen?",
+        "en": "The 35 saar-quiz-specific error patterns: move as memory into project saar-quiz or delete?"
+      },
+      "optionen": [
+        { "key": "a", "de": "Als saar-quiz-Memory anlegen", "en": "Create a saar-quiz memory" },
+        { "key": "b", "de": "Loeschen, keine Memory", "en": "Delete, no memory" }
+      ],
+      "gewaehlte_option": "b",
+      "antwort_wortlaut": "saar-quiz-Memory? loeschen",
+      "wortlaut_rekonstruiert": false,
+      "aufbereitet": {
+        "de": {
+          "entscheidung": "Die saar-quiz-spezifischen Muster werden geloescht, ohne Memory. Abweichung von ent-004 nur fuer saar-quiz.",
+          "begruendung": "Fuer dieses Projekt hat der User keinen Bedarf an dem Wissen.",
+          "gilt_wenn": "Einmalige Freigabe fuer genau diesen Bestand; keine Vorlage."
+        },
+        "en": {
+          "decision": "The saar-quiz-specific patterns are deleted without a memory. Deviation from ent-004 for saar-quiz only.",
+          "reason": "The user has no need for this knowledge in that project.",
+          "applies_when": "One-time approval for exactly this data set; not a template."
+        }
+      }
+    },
+    {
+      "id": "ent-006",
+      "quelle": { "art": "thought", "ref": "37673ac6", "teil": "severity" },
+      "herkunft_projekt": "synapse",
+      "kategorie": "variante",
+      "kandidat": true,
+      "themen": ["fehlermuster", "schweregrad", "einfuehrung", "fehlalarme"],
+      "frage": {
+        "de": "Mit welchem Schweregrad starten die 27 migrierten, aktiven Fehlermuster?",
+        "en": "With which severity do the 27 migrated active error patterns start?"
+      },
+      "optionen": [
+        { "key": "a", "de": "Alle als error", "en": "All as error" },
+        { "key": "b", "de": "Wie bisher gespeichert", "en": "As previously stored" },
+        { "key": "c", "de": "Gemischt nach Einschaetzung des Agenten", "en": "Mixed by the agent's judgement" },
+        { "key": "d", "de": "Alle als warning; einzeln auf error hochstufen, wenn die Statistik keine Fehlalarme zeigt", "en": "All as warning; promote individually to error once statistics show no false alarms" }
+      ],
+      "gewaehlte_option": "d",
+      "antwort_wortlaut": "SEVERITY: alle 27 aktiven starten als warning; Hochstufen auf error einzeln erst, wenn die Statistik keine Fehlalarme zeigt.",
+      "wortlaut_rekonstruiert": true,
+      "aufbereitet": {
+        "de": {
+          "entscheidung": "Neue oder migrierte Pruefregeln starten in der mildesten wirksamen Stufe (warning). Hochgestuft wird einzeln und erst mit Beleg aus der Statistik, dass keine Fehlalarme auftreten.",
+          "begruendung": "Ungeprueftes darf nicht sofort blockieren; die Statistik liefert den Beleg.",
+          "gilt_wenn": "Richtig, wenn eine neue Regel, Pruefung oder Sperre eingefuehrt wird und die Frage ist, wie streng sie von Anfang an wirkt: zuerst mild, verschaerfen erst mit Messbeleg."
+        },
+        "en": {
+          "decision": "New or migrated check rules start at the mildest effective level (warning). They are promoted individually and only with statistical evidence of no false alarms.",
+          "reason": "Unproven checks must not block right away; statistics provide the evidence.",
+          "applies_when": "Correct when a new rule, check or block is introduced and the question is how strict it is from the start: mild first, tighten only with measured evidence."
+        }
+      }
+    },
+    {
+      "id": "ent-007",
+      "quelle": { "art": "thought", "ref": "37673ac6", "teil": "ausfuehrung" },
+      "herkunft_projekt": "synapse",
+      "kategorie": "loeschen",
+      "kandidat": false,
+      "themen": ["migration", "sicherung", "reihenfolge", "deploy"],
+      "frage": {
+        "de": "Wann und wie wird die freigegebene Fehlermuster-Migration ausgefuehrt?",
+        "en": "When and how is the approved error-pattern migration executed?"
+      },
+      "optionen": [
+        { "key": "a", "de": "Sofort", "en": "Immediately" },
+        { "key": "b", "de": "Erst nach Deploy des Schemas (API, dann Daemon); vorher Sicherung aller Zeilen als JSON-Export", "en": "Only after the schema deploy (API, then daemon); before that back up all rows as a JSON export" }
+      ],
+      "gewaehlte_option": "b",
+      "antwort_wortlaut": "AUSFUEHRUNG erst NACH Deploy des E1-Schemas (API zuerst, dann Daemon). Vorher Sicherung aller error_patterns-Zeilen (JSON-Export als thought oder Datei), damit nichts verloren geht ausser den freigegebenen saar-quiz-Loeschungen.",
+      "wortlaut_rekonstruiert": true,
+      "aufbereitet": {
+        "de": {
+          "entscheidung": "Destruktive Datenoperationen laufen erst, wenn der Code, der sie braucht, deployt ist, und erst nach einer vollstaendigen Sicherung der betroffenen Zeilen.",
+          "begruendung": "Nichts darf ausser dem Freigegebenen verloren gehen; Reihenfolge Deploy vor Daten.",
+          "gilt_wenn": "Vorlage fuer den Koordinator; Ausfuehrung destruktiver Operationen entscheidet nie Jev."
+        },
+        "en": {
+          "decision": "Destructive data operations run only once the code that needs them is deployed and only after a full backup of the affected rows.",
+          "reason": "Nothing but the approved items may be lost; deploy before data.",
+          "applies_when": "Template for the coordinator; executing destructive operations is never decided by Jev."
+        }
+      }
+    },
+    {
+      "id": "ent-008",
+      "quelle": { "art": "thought", "ref": "bf106cb9" },
+      "herkunft_projekt": "synapse",
+      "kategorie": "loeschen",
+      "kandidat": false,
+      "themen": ["aufraeumen", "index", ".synapse", "gegenprobe"],
+      "frage": {
+        "de": "Was genau darf das DB-Aufraeumen der .synapse/-Eintraege entfernen?",
+        "en": "What exactly may the DB cleanup of .synapse/ entries remove?"
+      },
+      "optionen": [
+        { "key": "a", "de": "Alles, was der Vorschlag nennt", "en": "Everything the proposal lists" },
+        { "key": "b", "de": "Nur Zeilen mit Pfad-Praefix .synapse/, nichts auf der Platte, mit Zaehlung und Gegenprobe", "en": "Only rows with path prefix .synapse/, nothing on disk, with counts and cross-check" }
+      ],
+      "gewaehlte_option": "b",
+      "antwort_wortlaut": "Entfernt werden NUR Index-Eintraege, deren Pfad mit .synapse/ beginnt. Der eigentliche Projektcode im Index bleibt VOLLSTAENDIG unangetastet. AUF DER FESTPLATTE WIRD NICHTS GELOESCHT. WHERE-Bedingung zwingend auf den Pfad-Praefix; vorher Zaehlung je Projekt UND Gegenprobe. Stapel mit lock_timeout, Schonmodus.",
+      "wortlaut_rekonstruiert": true,
+      "aufbereitet": {
+        "de": {
+          "entscheidung": "Loeschen nur mit enger, zwingender Bedingung, ohne Plattenzugriff, mit Zaehlung vorher und Gegenprobe, dass alles andere unveraendert bleibt; in Stapeln, schonend.",
+          "begruendung": "Projektcode im Index darf nie mitgerissen werden.",
+          "gilt_wenn": "Einmalige Freigabe; Loeschen entscheidet nie Jev."
+        },
+        "en": {
+          "decision": "Delete only with a narrow mandatory condition, no disk access, counts beforehand and a cross-check that everything else is unchanged; in batches, gently.",
+          "reason": "Project code in the index must never be taken along.",
+          "applies_when": "One-time approval; deletion is never decided by Jev."
+        }
+      }
+    },
+    {
+      "id": "ent-009",
+      "quelle": { "art": "thought", "ref": "dc7dcfb8", "teil": "1" },
+      "herkunft_projekt": "synapse",
+      "kategorie": "variante",
+      "kandidat": true,
+      "themen": ["pfade", "validierung", "absolut", "streng"],
+      "frage": {
+        "de": "Ein Tool bekommt einen absoluten Pfad, der unter dem Projekt-Root liegt. Umrechnen oder ablehnen?",
+        "en": "A tool receives an absolute path that lies under the project root. Convert it or reject it?"
+      },
+      "optionen": [
+        { "key": "a", "de": "Streng ablehnen, kein Umrechnen", "en": "Reject strictly, no conversion" },
+        { "key": "b", "de": "Still in einen relativen Pfad umrechnen", "en": "Silently convert to a relative path" },
+        { "key": "c", "de": "Umrechnen mit Warnung", "en": "Convert with a warning" },
+        { "key": "d", "de": "Je nach Tool unterschiedlich", "en": "Different per tool" }
+      ],
+      "gewaehlte_option": "a",
+      "antwort_wortlaut": "Absolute Pfade werden STRENG abgelehnt, auch wenn sie unter dem Projekt-Root liegen (kein Umrechnen).",
+      "wortlaut_rekonstruiert": true,
+      "aufbereitet": {
+        "de": {
+          "entscheidung": "Absolute Pfade werden immer abgelehnt, auch unter dem Projekt-Root. Es wird nichts still umgerechnet. Relative Pfade mit .. innerhalb des Roots werden aufgeloest, Backslash gilt als Trenner.",
+          "begruendung": "Eine klare Regel ist sicherer als stilles Raten; Umrechnen verschleiert Fehler im Aufrufer.",
+          "gilt_wenn": "Richtig, wenn eine Eingabe formal falsch, aber erratbar ist und gefragt wird, ob das System sie still korrigiert oder klar ablehnt: bei Sicherheits- oder Pfadfragen klar ablehnen mit verstaendlicher Meldung."
+        },
+        "en": {
+          "decision": "Absolute paths are always rejected, even under the project root. Nothing is silently converted. Relative paths with .. inside the root are resolved, backslash counts as separator.",
+          "reason": "A clear rule is safer than silent guessing; converting hides mistakes in the caller.",
+          "applies_when": "Correct when an input is formally wrong but guessable and the question is whether the system silently fixes it or clearly rejects it: for security or path matters reject clearly with an understandable message."
+        }
+      }
+    },
+    {
+      "id": "ent-010",
+      "quelle": { "art": "thought", "ref": "58492366", "teil": "Vorlagen schreibbar", "auch": "dc7dcfb8 (2)" },
+      "herkunft_projekt": "synapse",
+      "kategorie": "variante",
+      "kandidat": true,
+      "themen": ["env", "sperre", "vorlagen", "files"],
+      "frage": {
+        "de": "Sollen .env.example/.env.sample/.env.template ueber das files-Tool schreibbar sein, obwohl .env gesperrt ist?",
+        "en": "Should .env.example/.env.sample/.env.template be writable via the files tool although .env is locked?"
+      },
+      "optionen": [
+        { "key": "a", "de": "Nein, alles mit .env sperren", "en": "No, lock everything with .env" },
+        { "key": "b", "de": "Ja, auch echte .env schreibbar machen", "en": "Yes, make real .env writable too" },
+        { "key": "c", "de": "Ja: Vorlagen als Ausnahme schreibbar, echte .env bleibt gesperrt", "en": "Yes: templates writable as an exception, real .env stays locked" },
+        { "key": "d", "de": "Nur lesbar", "en": "Read-only" }
+      ],
+      "gewaehlte_option": "c",
+      "antwort_wortlaut": "Ausnahme !.env.example in die Standard-Sperre aufnehmen. ... Vorlagen .env.example/.env.sample/.env.template sind ueber files schreibbar (Ausnahme in der Sperre); echte .env bleibt gesperrt.",
+      "wortlaut_rekonstruiert": true,
+      "aufbereitet": {
+        "de": {
+          "entscheidung": "Vorlagen (.env.example, .env.sample, .env.template) sind als Ausnahme von der Standard-Sperre schreibbar; echte .env-Dateien bleiben gesperrt.",
+          "begruendung": "Vorlagen gehoeren zum Projekt und muessen gepflegt werden; echte Umgebungsdateien enthalten Geheimnisse.",
+          "gilt_wenn": "Richtig, wenn eine Sperre zu breit greift und eine harmlose, zum Projekt gehoerende Dateiart mit erfasst: schmale, benannte Ausnahme statt Sperre aufheben."
+        },
+        "en": {
+          "decision": "Templates (.env.example, .env.sample, .env.template) are writable as an exception to the default lock; real .env files stay locked.",
+          "reason": "Templates belong to the project and need maintenance; real environment files contain secrets.",
+          "applies_when": "Correct when a lock is too broad and also catches a harmless file type that belongs to the project: a narrow, named exception instead of lifting the lock."
+        }
+      }
+    },
+    {
+      "id": "ent-011",
+      "quelle": { "art": "thought", "ref": "58492366", "teil": "maskieren", "auch": "dc7dcfb8 Nachtrag" },
+      "herkunft_projekt": "synapse",
+      "kategorie": "variante",
+      "kandidat": true,
+      "themen": ["env", "maskierung", "ausgaben", "embeddings"],
+      "frage": {
+        "de": "Wie werden Werte aus .env-Dateien und ihren Vorlagen in Tool-Ausgaben angezeigt?",
+        "en": "How are values from .env files and their templates shown in tool outputs?"
+      },
+      "optionen": [
+        { "key": "a", "de": "Im Klartext", "en": "In plain text" },
+        { "key": "b", "de": "Ueberall maskiert als NAME=[WERT], in allen Ausgaben inkl. Diff, Plan, Suche, Fehlermeldungen und Embeddings; leere Werte duerfen leer erscheinen", "en": "Masked everywhere as NAME=[VALUE], in all outputs incl. diff, plan, search, error messages and embeddings; empty values may show empty" },
+        { "key": "c", "de": "Nur in Vorlagen im Klartext", "en": "Plain text only in templates" },
+        { "key": "d", "de": "Datei gar nicht anzeigen", "en": "Do not show the file at all" }
+      ],
+      "gewaehlte_option": "b",
+      "antwort_wortlaut": "Die Werte in .env.example werden NIE angezeigt (nur die Variablennamen, Werte maskiert in Lesen/Diff/Plan/Suche). ... MASKIEREN: Die Werte von .env-Dateien (echte .env/.env.* UND Vorlagen) erscheinen in ALLEN Ausgaben nur als NAME=[WERT].",
+      "wortlaut_rekonstruiert": true,
+      "aufbereitet": {
+        "de": {
+          "entscheidung": "Werte aus .env-Dateien und Vorlagen erscheinen in keiner Ausgabe, nur die Namen (NAME=[WERT]). Das gilt fuer Lesen, Suche, Diff, Versionen, Plaene, Fehlermeldungen und Embeddings; Werte werden nicht indexiert.",
+          "begruendung": "In Vorlagen landen in der Praxis oft echte Keys; Maskieren kostet nichts.",
+          "gilt_wenn": "Richtig, wenn Inhalte, die Geheimnisse enthalten koennten, irgendwo ausgegeben, protokolliert oder indexiert werden: Namen zeigen, Werte maskieren, und zwar auf allen Wegen."
+        },
+        "en": {
+          "decision": "Values from .env files and templates appear in no output, only the names (NAME=[VALUE]). This covers reading, search, diff, versions, plans, error messages and embeddings; values are not indexed.",
+          "reason": "Templates often contain real keys in practice; masking costs nothing.",
+          "applies_when": "Correct whenever content that may contain secrets is output, logged or indexed anywhere: show names, mask values, on every path."
+        }
+      }
+    },
+    {
+      "id": "ent-012",
+      "quelle": { "art": "thought", "ref": "58492366", "teil": "ueberschreiben" },
+      "herkunft_projekt": "synapse",
+      "kategorie": "variante",
+      "kandidat": true,
+      "ersetzt": "Ueberschreibschutz aus dc7dcfb8 (Abbruch + Bestaetigung)",
+      "themen": ["env", "ueberschreiben", "hinweis", "restore"],
+      "frage": {
+        "de": "Ein Schreibvorgang ueberschreibt eine .env-Variable, die schon einen Wert hat. Abbrechen, bestaetigen lassen oder nur hinweisen?",
+        "en": "A write overwrites a .env variable that already has a value. Abort, require confirmation, or just notify?"
+      },
+      "optionen": [
+        { "key": "a", "de": "Harter Abbruch", "en": "Hard abort" },
+        { "key": "b", "de": "Abbruch, Ueberschreiben nur mit ausdruecklicher Bestaetigung", "en": "Abort, overwrite only with explicit confirmation" },
+        { "key": "c", "de": "Still ueberschreiben", "en": "Overwrite silently" },
+        { "key": "d", "de": "Kein Abbruch, kein Bestaetigungszwang; Hinweis ohne Werte, dass per files(restore) wiederherstellbar", "en": "No abort, no confirmation; a notice without values that it can be restored via files(restore)" }
+      ],
+      "gewaehlte_option": "d",
+      "antwort_wortlaut": "KEIN harter Abbruch und KEINE Bestaetigungspflicht, auch nicht beim Entfernen und bei restore. ... Hinweis in der Antwort: 'NAME: Wert ueberschrieben/zurueckgesetzt, per files(restore) wiederherstellbar', ohne Werte.",
+      "wortlaut_rekonstruiert": true,
+      "aufbereitet": {
+        "de": {
+          "entscheidung": "Kein Abbruch und keine Bestaetigungspflicht. Die Antwort enthaelt einen Hinweis mit dem Namen der Variable (ohne Wert) und dem Weg zur Wiederherstellung ueber files(restore). Gilt auch fuer Entfernen und restore.",
+          "begruendung": "Alles ist versioniert und wiederherstellbar; Bestaetigungsschleifen bremsen Agenten ohne echten Schutzgewinn.",
+          "gilt_wenn": "Richtig, wenn eine umkehrbare Aenderung bestehende Werte ueberschreibt und gefragt wird, ob man blockiert oder bestaetigen laesst: nicht blockieren, informieren und den Rueckweg nennen."
+        },
+        "en": {
+          "decision": "No abort and no confirmation. The response contains a notice with the variable name (no value) and how to restore via files(restore). Also applies to removal and restore.",
+          "reason": "Everything is versioned and restorable; confirmation loops slow agents down without real protection.",
+          "applies_when": "Correct when a reversible change overwrites existing values and the question is whether to block or ask for confirmation: do not block, inform and name the way back."
+        }
+      }
+    },
+    {
+      "id": "ent-013",
+      "quelle": { "art": "thought", "ref": "5a5ab4de", "auch": "aba08348" },
+      "herkunft_projekt": "synapse",
+      "kategorie": "git",
+      "kandidat": false,
+      "themen": ["branch", "merge", "main", "deploy"],
+      "frage": {
+        "de": "Soll die Arbeit nach main gemergt werden?",
+        "en": "Should the work be merged into main?"
+      },
+      "optionen": [
+        { "key": "a", "de": "Ja, merge/fast-forward nach main", "en": "Yes, merge/fast-forward into main" },
+        { "key": "b", "de": "Nein, alles bleibt auf dem Arbeits-Branch; Deploys aus diesem Branch", "en": "No, everything stays on the working branch; deploys from it" }
+      ],
+      "gewaehlte_option": "b",
+      "antwort_wortlaut": "Die gesamte Arbeit bleibt auf dem Branch nacht-session/gpu-lastverteilung-und-hooks. KEIN Merge oder fast-forward nach main. Deploys werden weiterhin aus diesem Branch gebaut. Nicht erneut fragen.",
+      "wortlaut_rekonstruiert": true,
+      "aufbereitet": {
+        "de": {
+          "entscheidung": "Kein Merge nach main; Arbeit und Deploys bleiben auf dem Arbeits-Branch. Nicht erneut fragen.",
+          "begruendung": "Der User entscheidet den Merge selbst.",
+          "gilt_wenn": "Git-Entscheidung, nie autonom; dient nur als Erinnerung, die Frage nicht erneut zu stellen."
+        },
+        "en": {
+          "decision": "No merge into main; work and deploys stay on the working branch. Do not ask again.",
+          "reason": "The user decides the merge himself.",
+          "applies_when": "Git decision, never autonomous; only a reminder not to ask again."
+        }
+      }
+    },
+    {
+      "id": "ent-014",
+      "quelle": { "art": "thought", "ref": "a189da34", "teil": "Schattendaten" },
+      "herkunft_projekt": "synapse",
+      "kategorie": "variante",
+      "kandidat": true,
+      "themen": ["erklaerungstopf", "speichern", "datensparsamkeit", "aufbewahrung"],
+      "frage": {
+        "de": "Wann werden Schattendaten (Datei-Stand vor/nach einer Op) fuer den Erklaerungstopf gespeichert und wann geloescht?",
+        "en": "When are shadow data (file state before/after an op) stored for the explanation pot, and when are they deleted?"
+      },
+      "optionen": [
+        { "key": "a", "de": "Immer speichern, nie loeschen", "en": "Always store, never delete" },
+        { "key": "b", "de": "Immer speichern, nach 30 Tagen loeschen", "en": "Always store, delete after 30 days" },
+        { "key": "c", "de": "Nur bei Fehler ohne passende Erklaerung speichern; loeschen, sobald eine verifizierte Antwort existiert", "en": "Store only on an error without a fitting explanation; delete once a verified answer exists" },
+        { "key": "d", "de": "Nie speichern", "en": "Never store" }
+      ],
+      "gewaehlte_option": "c",
+      "antwort_wortlaut": "Schattendaten werden NUR gespeichert, wenn ein Fehler aufgetreten ist und noch keine passende Erklaerung existiert. Schatten ohne Fehler werden nie persistiert. Geloescht wird der Fall samt Schatten, sobald eine VERIFIZIERTE Antwort existiert.",
+      "wortlaut_rekonstruiert": true,
+      "aufbereitet": {
+        "de": {
+          "entscheidung": "Arbeitsdaten werden nur gespeichert, wenn sie gebraucht werden (Fehler ohne vorhandene Erklaerung), und entfernt, sobald ihr Zweck erfuellt ist (verifizierte Antwort).",
+          "begruendung": "Datensparsamkeit; nichts ansammeln, was niemand mehr braucht.",
+          "gilt_wenn": "Richtig, wenn entschieden wird, ob Zwischen- oder Diagnosedaten dauerhaft gespeichert werden: nur bei konkretem Bedarf speichern und nach Erfuellung des Zwecks verwerfen."
+        },
+        "en": {
+          "decision": "Working data are stored only when needed (an error without an existing explanation) and removed once their purpose is fulfilled (a verified answer).",
+          "reason": "Data minimisation; do not accumulate what nobody needs any more.",
+          "applies_when": "Correct when deciding whether intermediate or diagnostic data are persisted: store only on concrete need and discard once the purpose is fulfilled."
+        }
+      }
+    },
+    {
+      "id": "ent-015",
+      "quelle": { "art": "thought", "ref": "a189da34", "teil": "Stufenmodell" },
+      "herkunft_projekt": "synapse",
+      "kategorie": "variante",
+      "kandidat": true,
+      "themen": ["erklaerungstopf", "aufbewahrung", "fristen", "user-hinweis"],
+      "frage": {
+        "de": "Was passiert mit Faellen, die sich nie verifizieren lassen?",
+        "en": "What happens to cases that can never be verified?"
+      },
+      "optionen": [
+        { "key": "a", "de": "Fuer immer behalten", "en": "Keep forever" },
+        { "key": "b", "de": "Stufenmodell: ab 3 Monaten darf der Koordinator den User fragen, ab 6 Monaten markieren und erneut hinweisen, nach 9 Monaten automatisch loeschen", "en": "Staged model: from 3 months the coordinator may ask the user, from 6 months mark and remind again, after 9 months delete automatically" },
+        { "key": "c", "de": "Nach 1 Monat automatisch loeschen", "en": "Delete automatically after 1 month" },
+        { "key": "d", "de": "Der Agent loescht nach eigenem Ermessen", "en": "The agent deletes at its own discretion" }
+      ],
+      "gewaehlte_option": "b",
+      "antwort_wortlaut": "UNVERIFIZIERBARE Faelle laufen nach einem Stufenmodell: ab 3 Monaten darf der Koordinator beim User das Verwerfen anfragen, ab 6 Monaten wird der Fall markiert und der User erneut hingewiesen, nach 9 Monaten wird er automatisch geloescht.",
+      "wortlaut_rekonstruiert": true,
+      "aufbereitet": {
+        "de": {
+          "entscheidung": "Ungeklaerte Altfaelle laufen in Stufen ab: erst Nachfrage beim User (3 Monate), dann Markierung und erneuter Hinweis (6 Monate), erst danach automatisches Loeschen (9 Monate).",
+          "begruendung": "Der User behaelt die Kontrolle, aber nichts bleibt ewig liegen.",
+          "gilt_wenn": "Richtig, wenn es um den Umgang mit ungeklaerten, alternden Eintraegen geht: gestuft, zuerst den User fragen, automatisches Entfernen erst nach langer Frist und mehrfachem Hinweis."
+        },
+        "en": {
+          "decision": "Unresolved old cases expire in stages: first ask the user (3 months), then mark and remind again (6 months), only then delete automatically (9 months).",
+          "reason": "The user keeps control, but nothing lingers forever.",
+          "applies_when": "Correct when handling unresolved, ageing entries: staged, ask the user first, automatic removal only after a long period and repeated notice."
+        }
+      }
+    },
+    {
+      "id": "ent-016",
+      "quelle": { "art": "thought", "ref": "a189da34", "teil": "Jev-Eingabe" },
+      "herkunft_projekt": "synapse",
+      "kategorie": "umsetzungsweg",
+      "kandidat": true,
+      "themen": ["jev", "eingabe", "kontext", "maskierung", "cloud"],
+      "frage": {
+        "de": "Was bekommt Jev als Eingabe, um einen Fehler zu erklaeren, und darf das an die OpenRouter-Cloud gehen?",
+        "en": "What does Jev get as input to explain an error, and may it go to the OpenRouter cloud?"
+      },
+      "optionen": [
+        { "key": "a", "de": "Nur die Fehlermeldung, lokal", "en": "Only the error message, locally" },
+        { "key": "b", "de": "Ausschnitt +-30 Zeilen plus Diff, maskiert; OpenRouter-Cloud ist ok", "en": "Excerpt +-30 lines plus diff, masked; OpenRouter cloud is fine" },
+        { "key": "c", "de": "Die ganze Datei, unmaskiert", "en": "The whole file, unmasked" },
+        { "key": "d", "de": "Nichts, Jev raet", "en": "Nothing, Jev guesses" }
+      ],
+      "gewaehlte_option": "b",
+      "antwort_wortlaut": "Jev bekommt den fehlerhaften Inhalt (Ausschnitt +-30 Zeilen plus Diff, maskiert). OpenRouter-Cloud ist ok. Jev ist nativ in core angebunden.",
+      "wortlaut_rekonstruiert": true,
+      "aufbereitet": {
+        "de": {
+          "entscheidung": "Jev bekommt so viel Kontext wie gemessen noetig (+-30 Zeilen plus Diff), Geheimnisse maskiert; die Cloud ist dafuer erlaubt. Jev ist nativ in core angebunden.",
+          "begruendung": "Die Messung (E0) zeigte diese Variante als beste; ganze Dateien bringen nichts, Maskieren schuetzt Geheimnisse.",
+          "gilt_wenn": "Richtig, wenn festgelegt wird, wie viel Kontext ein Modell bekommt: die gemessen beste, begrenzte Menge statt alles, immer maskiert."
+        },
+        "en": {
+          "decision": "Jev gets as much context as measured necessary (+-30 lines plus diff), secrets masked; the cloud is allowed for this. Jev is wired natively into core.",
+          "reason": "Measurement (E0) showed this variant as best; whole files do not help, masking protects secrets.",
+          "applies_when": "Correct when deciding how much context a model receives: the measured best, bounded amount rather than everything, always masked."
+        }
+      }
+    },
+    {
+      "id": "ent-017",
+      "quelle": { "art": "thought", "ref": "a189da34", "teil": "global generisch" },
+      "herkunft_projekt": "synapse",
+      "kategorie": "variante",
+      "kandidat": true,
+      "themen": ["erklaerungstopf", "global", "generisch", "auswahl"],
+      "frage": {
+        "de": "Ist der Erklaerungstopf je Projekt oder global, und erzeugt Jev Erklaerungen selbst?",
+        "en": "Is the explanation pot per project or global, and does Jev generate explanations itself?"
+      },
+      "optionen": [
+        { "key": "a", "de": "Je Projekt, Jev formuliert frei", "en": "Per project, Jev writes freely" },
+        { "key": "b", "de": "Global, Jev formuliert frei", "en": "Global, Jev writes freely" },
+        { "key": "c", "de": "Je Projekt, Jev waehlt nur aus", "en": "Per project, Jev only selects" },
+        { "key": "d", "de": "Global mit generischen Erklaerungen ohne Projektbezug; Jev waehlt nur aus", "en": "Global with generic explanations without project reference; Jev only selects" }
+      ],
+      "gewaehlte_option": "d",
+      "antwort_wortlaut": "Der Topf ist GLOBAL. Die Erklaerungen sind generisch (Lage, Wieso, Abhilfe), nie projektbezogen. Jev waehlt nur aus.",
+      "wortlaut_rekonstruiert": true,
+      "aufbereitet": {
+        "de": {
+          "entscheidung": "Gemeinsames Wissen liegt global und ist generisch formuliert, ohne Projektbezug. Jev erzeugt keine Texte, sondern waehlt nur aus vorhandenen, geprueften Eintraegen.",
+          "begruendung": "Generisches Wissen nuetzt allen Projekten; Auswahl statt Erzeugung haelt Jev kontrollierbar.",
+          "gilt_wenn": "Richtig, wenn entschieden wird, ob ein Wissensbestand projektweit oder global gilt und ob ein kleines Modell selbst Text erzeugt: global und generisch, das Modell waehlt nur aus."
+        },
+        "en": {
+          "decision": "Shared knowledge is global and written generically, without project reference. Jev does not generate text but only selects from existing, reviewed entries.",
+          "reason": "Generic knowledge helps all projects; selection instead of generation keeps Jev controllable.",
+          "applies_when": "Correct when deciding whether a knowledge store is per project or global and whether a small model generates text itself: global and generic, the model only selects."
+        }
+      }
+    },
+    {
+      "id": "ent-018",
+      "quelle": { "art": "thought", "ref": "a189da34", "teil": "Fall schliessen" },
+      "herkunft_projekt": "synapse",
+      "kategorie": "variante",
+      "kandidat": true,
+      "themen": ["erklaerungstopf", "rechte", "abschluss"],
+      "frage": {
+        "de": "Wer darf einen offenen Fall im Erklaerungstopf schliessen?",
+        "en": "Who may close an open case in the explanation pot?"
+      },
+      "optionen": [
+        { "key": "a", "de": "Nur der User", "en": "Only the user" },
+        { "key": "b", "de": "Jeder Agent", "en": "Any agent" },
+        { "key": "c", "de": "Der betroffene Agent oder der Koordinator", "en": "The affected agent or the coordinator" },
+        { "key": "d", "de": "Nur Jev automatisch", "en": "Only Jev automatically" }
+      ],
+      "gewaehlte_option": "c",
+      "antwort_wortlaut": "Einen Fall schliesst der betroffene Agent oder der Koordinator.",
+      "wortlaut_rekonstruiert": true,
+      "aufbereitet": {
+        "de": {
+          "entscheidung": "Schliessen darf, wer den Fall hat (betroffener Agent) oder wer koordiniert; nicht beliebige Dritte.",
+          "begruendung": "Wer den Fehler erlebt hat, kann die Loesung bestaetigen; der Koordinator als Rueckfall.",
+          "gilt_wenn": "Richtig, wenn gefragt wird, wer einen eigenen Vorgang (Fall, Plan, Ticket) abschliessen darf: der Besitzer oder der Koordinator, nicht fremde Agenten."
+        },
+        "en": {
+          "decision": "A case may be closed by its owner (the affected agent) or by the coordinator; not by arbitrary third parties.",
+          "reason": "Whoever hit the error can confirm the fix; the coordinator as fallback.",
+          "applies_when": "Correct when asked who may close an item (case, plan, ticket): its owner or the coordinator, not other agents."
+        }
+      }
+    },
+    {
+      "id": "ent-019",
+      "quelle": { "art": "thought", "ref": "a5fd30ea", "teil": "1 gepflegte Sprachen", "ersetzt": "Sprachpunkt a189da34" },
+      "herkunft_projekt": "synapse",
+      "kategorie": "variante",
+      "kandidat": true,
+      "themen": ["sprache", "einstellung", "pflichtfelder", "jev-optionen"],
+      "frage": {
+        "de": "In welchen Sprachen muessen Erklaerungen beim Ablegen gepflegt werden?",
+        "en": "In which languages must explanations be maintained when stored?"
+      },
+      "optionen": [
+        { "key": "a", "de": "Fest nur Englisch", "en": "Fixed: English only" },
+        { "key": "b", "de": "Frei einstellbar: Deutsch an/aus, Englisch an/aus, mind. eine an; alle eingeschalteten sind Pflicht", "en": "Freely configurable: German on/off, English on/off, at least one on; all enabled ones are mandatory" },
+        { "key": "c", "de": "Fest Deutsch und Englisch", "en": "Fixed: German and English" },
+        { "key": "d", "de": "Beliebig, nichts Pflicht", "en": "Any, nothing mandatory" }
+      ],
+      "gewaehlte_option": "b",
+      "antwort_wortlaut": "Sprachen der Erklaerungen sind frei einstellbar, in den JEV-OPTIONEN (admin, global, dauerhaft in PG). GEPFLEGTE SPRACHEN: Deutsch an/aus und Englisch an/aus, unabhaengig voneinander. Mindestens eine muss an sein. Alle eingeschalteten Sprachen sind Pflicht. Standard beim User: beide an.",
+      "wortlaut_rekonstruiert": true,
+      "aufbereitet": {
+        "de": {
+          "entscheidung": "Die Pflichtsprachen sind eine Einstellung (global, in PG): Deutsch und Englisch unabhaengig schaltbar, mindestens eine an; jede eingeschaltete ist beim Ablegen Pflicht. Standard beide an.",
+          "begruendung": "Andere Synapse-Nutzer sollen z. B. nur Englisch fahren koennen; fest verdrahtete Sprachen passen nicht fuer alle.",
+          "gilt_wenn": "Richtig, wenn eine Eigenschaft fuer verschiedene Nutzer verschieden sein kann (Sprache, Umfang): als Einstellung mit sinnvollem Standard anbieten statt fest zu verdrahten."
+        },
+        "en": {
+          "decision": "Mandatory languages are a setting (global, in PG): German and English independently switchable, at least one on; every enabled one is mandatory when storing. Default both on.",
+          "reason": "Other Synapse users should be able to run e.g. English only; hard-wired languages do not fit everyone.",
+          "applies_when": "Correct when a property may differ between users (language, scope): offer it as a setting with a sensible default instead of hard-wiring it."
+        }
+      }
+    },
+    {
+      "id": "ent-020",
+      "quelle": { "art": "thought", "ref": "a5fd30ea", "teil": "2 Sprache fuer Jev", "auch": "a189da34 Sprache" },
+      "herkunft_projekt": "synapse",
+      "kategorie": "variante",
+      "kandidat": true,
+      "themen": ["sprache", "jev", "rueckfall", "englisch"],
+      "frage": {
+        "de": "In welcher Sprache bekommt Jev die Texte angeboten?",
+        "en": "In which language does Jev get the texts?"
+      },
+      "optionen": [
+        { "key": "a", "de": "Einstellbar: nur Englisch | nur Deutsch | Mix, nur aus gepflegten Sprachen, Rueckfall mit Hinweis; Standard nach Messung (Vorschlag Englisch)", "en": "Configurable: English only | German only | mix, only from maintained languages, fallback with notice; default after measurement (proposed English)" },
+        { "key": "b", "de": "Immer Deutsch", "en": "Always German" },
+        { "key": "c", "de": "Immer beide", "en": "Always both" },
+        { "key": "d", "de": "Sprache des Agenten", "en": "The agent's language" }
+      ],
+      "gewaehlte_option": "a",
+      "antwort_wortlaut": "SPRACHE FUER JEV: nur Englisch | nur Deutsch | Mix (beide). Nur aus den gepflegten Sprachen waehlbar; ist die gewaehlte nicht vorhanden, gibt es einen Rueckfall auf die vorhandene, mit Hinweis. ... den Standard fuer JEV-Sprache danach festlegen (Vorschlag aus JEV-Test: Englisch).",
+      "wortlaut_rekonstruiert": true,
+      "aufbereitet": {
+        "de": {
+          "entscheidung": "Die Jev-Sprache ist einstellbar (en, de, mix), nur aus vorhandenen Sprachen; fehlt die gewaehlte, wird auf die vorhandene zurueckgefallen und das gemeldet. Den Standard legt eine Messung fest; Ausgangsvorschlag Englisch.",
+          "begruendung": "Englisch ist Jevs primaere Trainingssprache; die Messung soll entscheiden, nicht die Annahme.",
+          "gilt_wenn": "Richtig, wenn ein Standardwert gewaehlt werden muss, den man messen kann: einstellbar machen, Rueckfall mit Hinweis, Standard nach Messung festlegen."
+        },
+        "en": {
+          "decision": "Jev's language is configurable (en, de, mix), only from available languages; if the chosen one is missing, fall back to the available one and report it. The default is set by measurement; initial proposal English.",
+          "reason": "English is Jev's primary training language; measurement should decide, not assumption.",
+          "applies_when": "Correct when a default must be chosen that can be measured: make it configurable, fall back with a notice, set the default after measuring."
+        }
+      }
+    },
+    {
+      "id": "ent-021",
+      "quelle": { "art": "thought", "ref": "f13335dd", "teil": "Schalter" },
+      "herkunft_projekt": "synapse",
+      "kategorie": "variante",
+      "kandidat": true,
+      "themen": ["jev", "schalter", "projekt", "hinweise-ausblenden"],
+      "frage": {
+        "de": "Wie fein soll Jev abschaltbar sein, und was passiert mit Jev-Hinweisen, wenn er aus ist?",
+        "en": "How fine-grained should Jev be switchable, and what happens to Jev hints when it is off?"
+      },
+      "optionen": [
+        { "key": "a", "de": "Ein globaler Schalter; Hinweise bleiben", "en": "One global switch; hints remain" },
+        { "key": "b", "de": "Gar nicht schaltbar", "en": "Not switchable" },
+        { "key": "c", "de": "Nur per Env-Variable", "en": "Only via env variable" },
+        { "key": "d", "de": "Hauptschalter global, je Projekt, je Funktion; ist ein Kontext aus, verschwinden alle Jev-Hinweise und die Tool-Beschreibung tritt zurueck", "en": "Main switch global, per project, per function; when a context is off, all Jev hints disappear and the tool description recedes" }
+      ],
+      "gewaehlte_option": "d",
+      "antwort_wortlaut": "JEV sein mcp tool in synapse komplett ab/anschaltbar sein in allen situationen, ein extra schaltpunkt, sowie wenn alle schaltpunkte entfernt sind verschwinden auch die JEV hinweise aus den tool aufrufen sie erscheinen erst wieder wenn er wieder aktiviert wurde und das auch pro projekt, oder wenn halt global die funktion abgestellt ist dann die auch oder halt einzeln diese anstellen und sowas.",
+      "wortlaut_rekonstruiert": false,
+      "aufbereitet": {
+        "de": {
+          "entscheidung": "Jev ist dreistufig schaltbar: global (Hauptschalter), je Projekt, je Funktion. Global aus heisst ueberall aus. Wo Jev aus ist, verschwinden seine Hinweise aus allen Tool-Antworten und die Beschreibung tritt zurueck; nach dem Einschalten erscheinen sie wieder. Dauerhaft in PG, gesetzt per Tool/Admin.",
+          "begruendung": "Der User will Jev in jeder Lage komplett abstellen koennen, ohne Reste im Kontext der Agenten.",
+          "gilt_wenn": "Richtig, wenn eine optionale Funktion eingefuehrt wird und gefragt wird, wie schaltbar sie ist und was im ausgeschalteten Zustand sichtbar bleibt: global/Projekt/Funktion schaltbar, aus heisst auch unsichtbar."
+        },
+        "en": {
+          "decision": "Jev is switchable at three levels: global (main switch), per project, per function. Global off means off everywhere. Where Jev is off, its hints disappear from all tool responses and the description recedes; after switching on they reappear. Persisted in PG, set via tool/admin.",
+          "reason": "The user wants to be able to switch Jev off completely in every situation, without leftovers in agents' context.",
+          "applies_when": "Correct when an optional feature is introduced and the question is how switchable it is and what stays visible when off: switchable global/project/function, off also means invisible."
+        }
+      }
+    },
+    {
+      "id": "ent-022",
+      "quelle": { "art": "thought", "ref": "f13335dd", "teil": "Kosten erfassen" },
+      "herkunft_projekt": "synapse",
+      "kategorie": "variante",
+      "kandidat": true,
+      "themen": ["kostenerfassung", "statistik", "jev", "openrouter"],
+      "frage": {
+        "de": "Sollen die Kosten jedes Jev-Aufrufs erfasst werden, und wie fein?",
+        "en": "Should the cost of each Jev call be recorded, and how finely?"
+      },
+      "optionen": [
+        { "key": "a", "de": "Je Aufruf mit Tokens und USD; Summen je Tag, Monat, Projekt und Funktion, abrufbar ueber das Tool", "en": "Per call with tokens and USD; totals per day, month, project and function, available via the tool" },
+        { "key": "b", "de": "Nein, nur das OpenRouter-Dashboard", "en": "No, only the OpenRouter dashboard" },
+        { "key": "c", "de": "Nur eine Monatssumme", "en": "Only a monthly total" },
+        { "key": "d", "de": "Nur im Log", "en": "Only in the log" }
+      ],
+      "gewaehlte_option": "a",
+      "antwort_wortlaut": "[Kosten] natuerlich auch berechnen lassen. Momentan habe ich 50 Euro auf meinem Open Router.",
+      "wortlaut_rekonstruiert": false,
+      "aufbereitet": {
+        "de": {
+          "entscheidung": "Jeder kostenpflichtige Aufruf wird mit Tokens und Kosten (laut Antwort des Anbieters) erfasst; Summen je Tag, Monat, Projekt und Funktion sind ueber das Tool abrufbar. Kontostand per Anbieter-API, wenn moeglich.",
+          "begruendung": "Der User will sehen, was Jev kostet, bevor er Grenzen setzt.",
+          "gilt_wenn": "Richtig, wenn ein Dienst mit Kosten pro Aufruf eingebunden wird: jeden Aufruf mit Kosten erfassen und aufgeschluesselt abrufbar machen."
+        },
+        "en": {
+          "decision": "Every paid call is recorded with tokens and cost (as reported by the provider); totals per day, month, project and function are available via the tool. Balance via the provider API where possible.",
+          "reason": "The user wants to see what Jev costs before setting limits.",
+          "applies_when": "Correct when a service with per-call cost is integrated: record every call with its cost and make it available broken down."
+        }
+      }
+    },
+    {
+      "id": "ent-023",
+      "quelle": { "art": "thought", "ref": "f13335dd", "teil": "Budget" },
+      "herkunft_projekt": "synapse",
+      "kategorie": "variante",
+      "kandidat": true,
+      "themen": ["budget", "kostengrenze", "pause", "jev"],
+      "frage": {
+        "de": "Soll es eine Kostengrenze fuer Jev geben, und was passiert beim Erreichen?",
+        "en": "Should there be a cost limit for Jev, and what happens when it is reached?"
+      },
+      "optionen": [
+        { "key": "a", "de": "Feste Grenze im Code", "en": "Fixed limit in code" },
+        { "key": "b", "de": "Keine Grenze", "en": "No limit" },
+        { "key": "c", "de": "Optionale globale Grenze, per Tool setzbar; beim Erreichen pausiert Jev automatisch mit Hinweis; ohne Grenze keine Bremse", "en": "Optional global limit, settable via tool; when reached Jev pauses automatically with a notice; without a limit no brake" },
+        { "key": "d", "de": "Grenze je Agent", "en": "Limit per agent" }
+      ],
+      "gewaehlte_option": "c",
+      "antwort_wortlaut": "Vielleicht werde ich da eine Grenze dann irgendwann mal setzen. Das koennten wir einbauen ... Mach's einfach mit ins Tool rein, dann kann ich das sagen, die globale.",
+      "wortlaut_rekonstruiert": false,
+      "aufbereitet": {
+        "de": {
+          "entscheidung": "Eine optionale, globale Kostengrenze (z. B. je Monat) ist per Tool setzbar. Bei Erreichen pausiert Jev automatisch und meldet das. Ohne gesetzte Grenze gibt es keine Bremse.",
+          "begruendung": "Der User will die Grenze selbst setzen koennen, wenn er sie braucht; kein erzwungener Wert.",
+          "gilt_wenn": "Richtig, wenn ein Schutz gegen Kosten oder Verbrauch gebaut wird: optional, vom User per Tool setzbar, bei Erreichen pausieren statt abbrechen, ohne Wert keine Bremse."
+        },
+        "en": {
+          "decision": "An optional global cost limit (e.g. per month) can be set via the tool. When reached, Jev pauses automatically and says so. Without a limit there is no brake.",
+          "reason": "The user wants to set the limit himself when he needs it; no forced value.",
+          "applies_when": "Correct when building protection against cost or consumption: optional, settable by the user via a tool, pause when reached instead of failing, no value means no brake."
+        }
+      }
+    },
+    {
+      "id": "ent-024",
+      "quelle": { "art": "thought", "ref": "f13335dd", "teil": "Persistenz", "auch": "memory regel-postgres-ist-die-wahrheit-qdrant-ist-abgeleitet" },
+      "herkunft_projekt": "synapse",
+      "kategorie": "umsetzungsweg",
+      "kandidat": true,
+      "themen": ["einstellungen", "persistenz", "postgres", "tool"],
+      "frage": {
+        "de": "Wo werden Schalter und Einstellungen (z. B. Jev-Schalter, Budget) gespeichert und wie gesetzt?",
+        "en": "Where are switches and settings (e.g. Jev switches, budget) stored and how are they set?"
+      },
+      "optionen": [
+        { "key": "a", "de": "In Env-Variablen", "en": "In env variables" },
+        { "key": "b", "de": "In einer Datei im Projekt", "en": "In a file in the project" },
+        { "key": "c", "de": "Im Speicher des Prozesses", "en": "In process memory" },
+        { "key": "d", "de": "Dauerhaft in PostgreSQL, gesetzt ueber ein Tool bzw. Admin", "en": "Persistently in PostgreSQL, set via a tool or admin" }
+      ],
+      "gewaehlte_option": "d",
+      "antwort_wortlaut": "Alles dauerhaft in PG, gesetzt ueber ein Tool bzw. Admin.",
+      "wortlaut_rekonstruiert": true,
+      "aufbereitet": {
+        "de": {
+          "entscheidung": "Einstellungen und Zustaende liegen dauerhaft in PostgreSQL und werden ueber ein Tool (bzw. admin) gesetzt, nicht ueber Env oder Dateien.",
+          "begruendung": "PostgreSQL ist die Quelle der Wahrheit; ein Tool macht das Setzen fuer User und Agenten gleich und nachvollziehbar.",
+          "gilt_wenn": "Richtig, wenn entschieden wird, wo ein laufzeitveraenderbarer Wert oder Zustand liegt: in PostgreSQL, gesetzt per Tool."
+        },
+        "en": {
+          "decision": "Settings and states live persistently in PostgreSQL and are set via a tool (or admin), not via env or files.",
+          "reason": "PostgreSQL is the source of truth; a tool makes setting it uniform and traceable for user and agents.",
+          "applies_when": "Correct when deciding where a runtime-changeable value or state lives: in PostgreSQL, set via a tool."
+        }
+      }
+    },
+    {
+      "id": "ent-025",
+      "quelle": { "art": "thought", "ref": "e7b013c2", "teil": "1" },
+      "herkunft_projekt": "synapse",
+      "kategorie": "variante",
+      "kandidat": true,
+      "themen": ["entscheidungstopf", "geltung", "global", "vorlagen"],
+      "frage": {
+        "de": "Gelten Eintraege im Entscheidungstopf nur im eigenen Projekt oder global?",
+        "en": "Do entries in the decision pot apply only in their own project or globally?"
+      },
+      "optionen": [
+        { "key": "a", "de": "Nur im eigenen Projekt", "en": "Only in their own project" },
+        { "key": "b", "de": "Global als Vorlagen ueber alle Projekte", "en": "Globally as templates across all projects" },
+        { "key": "c", "de": "Je Eintrag waehlbar, Standard Projekt", "en": "Selectable per entry, default project" },
+        { "key": "d", "de": "Global, aber nur fuer den Koordinator", "en": "Global, but only for the coordinator" }
+      ],
+      "gewaehlte_option": "b",
+      "antwort_wortlaut": "GELTUNG GLOBAL: Eintraege dienen als VORLAGEN ueber alle Projekte.",
+      "wortlaut_rekonstruiert": true,
+      "aufbereitet": {
+        "de": {
+          "entscheidung": "User-Entscheidungen gelten global als Vorlagen fuer alle Projekte; das Herkunftsprojekt ist nur Hinweis.",
+          "begruendung": "Die Haltung des Users ist projektuebergreifend dieselbe.",
+          "gilt_wenn": "Richtig, wenn gefragt wird, ob gesammelte Vorgaben oder Vorlagen des Users nur lokal oder ueberall gelten: global, Herkunft als Hinweis."
+        },
+        "en": {
+          "decision": "User decisions apply globally as templates for all projects; the origin project is only a hint.",
+          "reason": "The user's stance is the same across projects.",
+          "applies_when": "Correct when asked whether collected rules or templates of the user apply only locally or everywhere: globally, origin as a hint."
+        }
+      }
+    },
+    {
+      "id": "ent-026",
+      "quelle": { "art": "thought", "ref": "e7b013c2", "teil": "2" },
+      "herkunft_projekt": "synapse",
+      "kategorie": "variante",
+      "kandidat": true,
+      "themen": ["entscheidungstopf", "ohne-praezedenz", "jev-entscheidet", "protokoll"],
+      "frage": {
+        "de": "Was tut Jev im Abwesend-Modus, wenn keine passende fruehere User-Entscheidung existiert?",
+        "en": "What does Jev do in away mode when no fitting earlier user decision exists?"
+      },
+      "optionen": [
+        { "key": "a", "de": "Frage liegen lassen, bis der User zurueck ist", "en": "Leave the question until the user is back" },
+        { "key": "b", "de": "Dem Koordinator uebergeben", "en": "Hand over to the coordinator" },
+        { "key": "c", "de": "Jev waehlt trotzdem unter den angebotenen Optionen; Sicherheitsgrenzen bleiben; jede autonome Entscheidung ins Protokoll zur Durchsicht", "en": "Jev still chooses among the offered options; safety limits stay; every autonomous decision goes into the log for review" },
+        { "key": "d", "de": "Jev formuliert eine eigene Antwort", "en": "Jev writes its own answer" }
+      ],
+      "gewaehlte_option": "c",
+      "antwort_wortlaut": "OHNE passende Praezedenz: Jev MUSS trotzdem entscheiden, also unter den angebotenen Optionen A/B/C usw. waehlen. Spaeter kann er auch mit einer gespeicherten Vorlage antworten. Die Frage bleibt NICHT liegen. Die Sicherheitsgrenzen bleiben unberuehrt. Jede autonome Entscheidung kommt ins Protokoll zur Durchsicht.",
+      "wortlaut_rekonstruiert": true,
+      "aufbereitet": {
+        "de": {
+          "entscheidung": "Auch ohne Praezedenz entscheidet Jev, indem er unter den angebotenen Optionen waehlt; die Arbeit bleibt nicht stehen. Verbotene Kategorien und der Text-Scan gelten unveraendert; jede autonome Entscheidung wird zur Durchsicht protokolliert.",
+          "begruendung": "Liegen gebliebene Fragen blockieren die Nacht; das Protokoll erlaubt dem User spaeter die Korrektur.",
+          "gilt_wenn": "Richtig, wenn gefragt wird, ob die Arbeit bei einer harmlosen, umkehrbaren Frage ohne Vorgabe anhalten soll: nicht anhalten, entscheiden, protokollieren, spaeter durchsehen."
+        },
+        "en": {
+          "decision": "Even without a precedent Jev decides by choosing among the offered options; work does not stall. Forbidden categories and the text scan stay unchanged; every autonomous decision is logged for review.",
+          "reason": "Stalled questions block the night; the log lets the user correct later.",
+          "applies_when": "Correct when asked whether work should halt on a harmless, reversible question without guidance: do not halt, decide, log, review later."
+        }
+      }
+    },
+    {
+      "id": "ent-027",
+      "quelle": { "art": "thought", "ref": "e7b013c2", "teil": "3" },
+      "herkunft_projekt": "synapse",
+      "kategorie": "variante",
+      "kandidat": true,
+      "themen": ["abwesend", "automatik", "zuruf", "schalter"],
+      "frage": {
+        "de": "Wird der Abwesend-Modus nur auf Zuruf des Users eingeschaltet oder auch automatisch nach N Minuten ohne Eingabe?",
+        "en": "Is away mode switched on only when the user says so, or also automatically after N minutes without input?"
+      },
+      "optionen": [
+        { "key": "a", "de": "Nur auf Zuruf", "en": "Only on the user's call" },
+        { "key": "b", "de": "Automatisch nach N Minuten", "en": "Automatically after N minutes" },
+        { "key": "c", "de": "Beides", "en": "Both" },
+        { "key": "d", "de": "Nachts automatisch", "en": "Automatically at night" }
+      ],
+      "gewaehlte_option": "a",
+      "antwort_wortlaut": "ABWESEND-MODUS nur auf Zuruf.",
+      "wortlaut_rekonstruiert": true,
+      "aufbereitet": {
+        "de": {
+          "entscheidung": "Der Abwesend-Modus wird nur auf ausdruecklichen Zuruf des Users geschaltet; keine Automatik.",
+          "begruendung": "Mehr Entscheidungsfreiheit fuer Jev nur, wenn der User das bewusst will.",
+          "gilt_wenn": "Richtig, wenn gefragt wird, ob ein Modus, der Agenten oder Jev mehr Autonomie gibt, automatisch aktiviert werden darf: nein, nur auf ausdruecklichen Zuruf."
+        },
+        "en": {
+          "decision": "Away mode is switched only on the user's explicit call; no automation.",
+          "reason": "More decision freedom for Jev only when the user wants it consciously.",
+          "applies_when": "Correct when asked whether a mode that gives agents or Jev more autonomy may be activated automatically: no, only on explicit call."
+        }
+      }
+    },
+    {
+      "id": "ent-028",
+      "quelle": { "art": "thought", "ref": "e7b013c2", "teil": "4" },
+      "herkunft_projekt": "synapse",
+      "kategorie": "umsetzungsweg",
+      "kandidat": true,
+      "themen": ["hooks", "settings.json", "erfassung", "nicht-vermischen"],
+      "frage": {
+        "de": "Sollen fuer die Erfassung von User-Antworten Hooks in ~/.claude/settings.json eingetragen werden?",
+        "en": "Should hooks be added to ~/.claude/settings.json to capture user answers?"
+      },
+      "optionen": [
+        { "key": "a", "de": "Ja, PostToolUse und PreToolUse auf AskUserQuestion", "en": "Yes, PostToolUse and PreToolUse on AskUserQuestion" },
+        { "key": "b", "de": "Nur PostToolUse", "en": "Only PostToolUse" },
+        { "key": "c", "de": "Nein; Erfassung nur per Tool-Aufruf durch den Koordinator und automatisch aus thoughts mit Tags entscheidung+user", "en": "No; capture only via tool calls by the coordinator and automatically from thoughts tagged entscheidung+user" },
+        { "key": "d", "de": "Hooks in der Projekt-settings statt global", "en": "Hooks in project settings instead of global" }
+      ],
+      "gewaehlte_option": "c",
+      "antwort_wortlaut": "KEINE Hooks in ~/.claude/settings.json ('nicht vermischen'). Erfasst wird nur per Tool-Aufruf (jev entscheidung_ablegen/aufbereiten) durch den Koordinator plus automatisch aus thoughts mit den Tags entscheidung+user.",
+      "wortlaut_rekonstruiert": true,
+      "aufbereitet": {
+        "de": {
+          "entscheidung": "Keine neuen Hooks in der globalen Claude-Konfiguration. Synapse-Funktionen werden ueber Synapse-Tools und Daten (thought-Tags) bedient, harness-unabhaengig.",
+          "begruendung": "Der User will Harness-Konfiguration und Synapse nicht vermischen.",
+          "gilt_wenn": "Richtig, wenn eine Synapse-Funktion ueber Eingriffe in die Konfiguration des Harness (Claude-Code-Hooks, settings.json) oder ueber Synapse-eigene Tools gebaut werden koennte: Synapse-eigene Tools."
+        },
+        "en": {
+          "decision": "No new hooks in the global Claude configuration. Synapse features are served through Synapse tools and data (thought tags), harness-independent.",
+          "reason": "The user does not want to mix harness configuration with Synapse.",
+          "applies_when": "Correct when a Synapse feature could be built either by changing the harness configuration (Claude Code hooks, settings.json) or with Synapse's own tools: use Synapse's own tools."
+        }
+      }
+    },
+    {
+      "id": "ent-029",
+      "quelle": { "art": "thought", "ref": "1d19a7a9" },
+      "herkunft_projekt": "synapse",
+      "kategorie": "variante",
+      "kandidat": true,
+      "themen": ["entscheidungstopf", "wortlaut", "aufbereitung", "speichern"],
+      "frage": {
+        "de": "Was wird von einer User-Antwort im Entscheidungstopf gespeichert?",
+        "en": "What is stored from a user answer in the decision pot?"
+      },
+      "optionen": [
+        { "key": "a", "de": "Nur der Wortlaut", "en": "Only the verbatim text" },
+        { "key": "b", "de": "Nur eine Zusammenfassung", "en": "Only a summary" },
+        { "key": "c", "de": "Nur die gewaehlte Option", "en": "Only the chosen option" },
+        { "key": "d", "de": "Wortlaut und eine aufbereitete Fassung im Sinn des Users; beide bleiben erhalten", "en": "Verbatim text and a refined version in the user's sense; both are kept" }
+      ],
+      "gewaehlte_option": "d",
+      "antwort_wortlaut": "Wenn du mir Fragen stellst, speicherst du meine Antworten und gibst so Jeff auch Entscheidungsfreiheit, fuer komplexere Fragen. Du speicherst nicht nur meine Antworten, du generierst selbst noch eine dazu. Die natuerlich immer besser ist als meine. Aber die im Sinn meinen Kontext enthaelt.",
+      "wortlaut_rekonstruiert": false,
+      "aufbereitet": {
+        "de": {
+          "entscheidung": "Gespeichert werden der Originalwortlaut und eine aufbereitete Fassung (praeziser, vollstaendiger, mit Kontext und Gruenden, aber genau im Sinn des Users). Beide bleiben erhalten.",
+          "begruendung": "Der Wortlaut ist knapp und kontextarm; die Aufbereitung macht ihn fuer Jev nutzbar, das Original bleibt als Beleg.",
+          "gilt_wenn": "Richtig, wenn Aussagen des Users fuer spaetere Nutzung abgelegt werden: Original unveraendert behalten und eine aufbereitete Fassung daneben stellen."
+        },
+        "en": {
+          "decision": "Stored are the original wording and a refined version (more precise, complete, with context and reasons, but exactly in the user's sense). Both are kept.",
+          "reason": "The wording is terse and lacks context; the refinement makes it usable for Jev, the original stays as evidence.",
+          "applies_when": "Correct when statements of the user are stored for later use: keep the original unchanged and put a refined version next to it."
+        }
+      }
+    },
+    {
+      "id": "ent-030",
+      "quelle": { "art": "thought", "ref": "6070c47c", "teil": "7 Embedding nebenlaeufig" },
+      "herkunft_projekt": "synapse",
+      "kategorie": "umsetzungsweg",
+      "kandidat": true,
+      "themen": ["embedding", "nebenlaeufig", "schreibweg", "backlog"],
+      "frage": {
+        "de": "Sollen Memory, Thought und Proposal beim Anlegen auf ihr Embedding warten?",
+        "en": "Should memory, thought and proposal wait for their embedding when created?"
+      },
+      "optionen": [
+        { "key": "a", "de": "Ja, synchron warten", "en": "Yes, wait synchronously" },
+        { "key": "b", "de": "Nein: erst PG schreiben, Embedding nebenlaeufig nachreichen; embedded_at + Backlog holen Verlorenes nach", "en": "No: write PG first, add the embedding concurrently; embedded_at + backlog recover anything lost" },
+        { "key": "c", "de": "Nein, Embedding ganz weglassen", "en": "No, drop the embedding entirely" },
+        { "key": "d", "de": "Nur bei grossen Texten nebenlaeufig", "en": "Concurrent only for large texts" }
+      ],
+      "gewaehlte_option": "b",
+      "antwort_wortlaut": "EMBEDDING NEBENLAEUFIG (User-Vorgabe): Memory, Gedanke und Proposal warten weder beim Anlegen noch beim Aktualisieren auf das Embedding. embedded_at + Backlog kamen ZUERST, sonst waere es der Tausch von 'blockiert' gegen 'still verloren'.",
+      "wortlaut_rekonstruiert": true,
+      "aufbereitet": {
+        "de": {
+          "entscheidung": "Schreibwege warten nicht auf abgeleitete Arbeit (Embedding). PG-Zeile zuerst, Embedding nebenlaeufig; ein Marker (embedded_at) und ein Backlog sorgen dafuer, dass nichts still verloren geht.",
+          "begruendung": "Blockieren kostet Zeit; nebenlaeufig ohne Nachhol-Mechanismus wuerde still Daten verlieren.",
+          "gilt_wenn": "Richtig, wenn ein Schreibvorgang auf eine langsame, abgeleitete Nacharbeit (Index, Embedding, Vorschau) warten muesste: nicht warten, nebenlaeufig nachreichen, mit Marker und Nachholweg."
+        },
+        "en": {
+          "decision": "Write paths do not wait for derived work (embedding). PG row first, embedding concurrently; a marker (embedded_at) and a backlog ensure nothing is silently lost.",
+          "reason": "Blocking costs time; concurrency without a catch-up mechanism would silently lose data.",
+          "applies_when": "Correct when a write would have to wait for slow derived follow-up work (index, embedding, preview): do not wait, do it concurrently, with a marker and a catch-up path."
+        }
+      }
+    },
+    {
+      "id": "ent-031",
+      "quelle": { "art": "thought", "ref": "e46bf005", "teil": ".gitignore" },
+      "herkunft_projekt": "synapse",
+      "kategorie": "variante",
+      "kandidat": true,
+      "themen": ["ignore", "sperren", ".gitignore", "bearbeitbar"],
+      "frage": {
+        "de": "Gehoert .gitignore zu den gesperrten Dateien (nicht in der DB, nicht ueber files schreibbar)?",
+        "en": "Does .gitignore belong to the locked files (not in the DB, not writable via files)?"
+      },
+      "optionen": [
+        { "key": "a", "de": "Ja, sperren", "en": "Yes, lock it" },
+        { "key": "b", "de": "Nur ausblenden", "en": "Only hide it" },
+        { "key": "c", "de": "Nur lesbar", "en": "Read-only" },
+        { "key": "d", "de": "Nein, normale bearbeitbare Datei", "en": "No, a normal editable file" }
+      ],
+      "gewaehlte_option": "d",
+      "antwort_wortlaut": ".gitignore gehoert AUSDRUECKLICH NICHT zu den Sperren (User-Korrektur): Aufraeum-Kram, und die Datei will man aendern koennen.",
+      "wortlaut_rekonstruiert": true,
+      "aufbereitet": {
+        "de": {
+          "entscheidung": ".gitignore ist eine normale, bearbeitbare Projektdatei und wird nicht gesperrt.",
+          "begruendung": "Die Datei ist Projekt-Konfiguration, die man aendern koennen muss; Sperren gilt nur fuer Geheimnisse und Ballast.",
+          "gilt_wenn": "Richtig, wenn entschieden wird, ob eine Konfigurationsdatei des Projekts gesperrt oder ausgeblendet wird: Projekt-Konfiguration, die man pflegt, bleibt bearbeitbar."
+        },
+        "en": {
+          "decision": ".gitignore is a normal, editable project file and is not locked.",
+          "reason": "The file is project configuration that must be editable; locking is only for secrets and clutter.",
+          "applies_when": "Correct when deciding whether a project configuration file gets locked or hidden: project configuration that is maintained stays editable."
+        }
+      }
+    },
+    {
+      "id": "ent-032",
+      "quelle": { "art": "thought", "ref": "90b03490" },
+      "herkunft_projekt": "synapse",
+      "kategorie": "variante",
+      "kandidat": true,
+      "themen": ["onboarding", "projektfremd", "regeln", "sichtbarkeit"],
+      "frage": {
+        "de": "Ein Agent aus Projekt A ruft ein Tool mit project:'synapse' auf. Bekommt er das Onboarding und die Regeln von synapse?",
+        "en": "An agent from project A calls a tool with project:'synapse'. Does it receive synapse's onboarding and rules?"
+      },
+      "optionen": [
+        { "key": "a", "de": "Nein, projektfremde Agenten sehen Regeln und Inhalte nicht ohne Nachfrage/Freigabe", "en": "No, agents from other projects do not see rules and content without asking/approval" },
+        { "key": "b", "de": "Ja, volles Onboarding", "en": "Yes, full onboarding" },
+        { "key": "c", "de": "Ja, aber ohne Passwoerter", "en": "Yes, but without passwords" },
+        { "key": "d", "de": "Nur Regeln, keine Inhalte", "en": "Only rules, no content" }
+      ],
+      "gewaehlte_option": "a",
+      "antwort_wortlaut": "Agenten, die nicht zum Projekt gehoeren, duerfen dessen Regeln/Inhalte nicht ohne Nachfrage sehen.",
+      "wortlaut_rekonstruiert": true,
+      "aufbereitet": {
+        "de": {
+          "entscheidung": "Regeln und Inhalte eines Projekts bekommen nur Agenten dieses Projekts. Projektfremde brauchen eine Nachfrage oder ausdrueckliche Freigabe.",
+          "begruendung": "Im Onboarding standen Zugangsdaten; projektfremde Agenten erhielten sie ungefragt.",
+          "gilt_wenn": "Richtig, wenn Daten oder Regeln eines Projekts an Agenten ausgeliefert werden und gefragt wird, wer sie sehen darf: nur die Agenten des Projekts, alle anderen nur mit Freigabe."
+        },
+        "en": {
+          "decision": "A project's rules and content are delivered only to agents of that project. Others need to ask or have explicit approval.",
+          "reason": "The onboarding contained credentials; agents from other projects received them unasked.",
+          "applies_when": "Correct when data or rules of a project are delivered to agents and the question is who may see them: only the project's agents, others only with approval."
+        }
+      }
+    },
+    {
+      "id": "ent-033",
+      "quelle": { "art": "thought", "ref": "50c14dfe" },
+      "herkunft_projekt": "synapse",
+      "kategorie": "umsetzungsweg",
+      "kandidat": true,
+      "themen": ["spezialisten", "gpt", "codex", "abo", "modelle"],
+      "frage": {
+        "de": "Ueber welchen Weg laufen GPT-Spezialisten, und welche Modelle stehen zur Wahl?",
+        "en": "Which route do GPT specialists use, and which models are available?"
+      },
+      "optionen": [
+        { "key": "a", "de": "OpenRouter-API, nur das neueste Modell", "en": "OpenRouter API, only the newest model" },
+        { "key": "b", "de": "Codex-CLI im Abo, alle dort verfuegbaren Modelle", "en": "Codex CLI on the subscription, all models available there" },
+        { "key": "c", "de": "OpenAI-API direkt", "en": "OpenAI API directly" },
+        { "key": "d", "de": "Gar keine GPT-Spezialisten", "en": "No GPT specialists at all" }
+      ],
+      "gewaehlte_option": "b",
+      "antwort_wortlaut": "GPT-Spezialisten ueber Codex-CLI (Abo), ALLE Modelle die am 29.09. in Codex/chatgpt.com verfuegbar sind.",
+      "wortlaut_rekonstruiert": true,
+      "aufbereitet": {
+        "de": {
+          "entscheidung": "GPT-Spezialisten laufen ueber die Codex-CLI mit dem Abo; waehlbar sind alle dort verfuegbaren Modelle.",
+          "begruendung": "Abo-Kontingent statt Bezahl-API; Auswahl breit halten.",
+          "gilt_wenn": "Richtig, wenn ein Modellanbieter angebunden wird und es Abo- und Bezahl-API-Wege gibt: den Abo-Weg (CLI) bevorzugen und alle dort verfuegbaren Modelle anbieten."
+        },
+        "en": {
+          "decision": "GPT specialists run via the Codex CLI on the subscription; all models available there are selectable.",
+          "reason": "Subscription quota instead of paid API; keep the choice broad.",
+          "applies_when": "Correct when a model provider is integrated and there are subscription and paid-API routes: prefer the subscription route (CLI) and offer all models available there."
+        }
+      }
+    },
+    {
+      "id": "ent-034",
+      "quelle": { "art": "thought", "ref": "b5359c93", "teil": "Effort" },
+      "herkunft_projekt": "synapse",
+      "kategorie": "variante",
+      "kandidat": true,
+      "themen": ["effort", "standard", "modellwahl"],
+      "frage": {
+        "de": "Welcher Effort ist Standard fuer gestartete Agenten, und wer waehlt ihn?",
+        "en": "Which effort is the default for spawned agents, and who chooses it?"
+      },
+      "optionen": [
+        { "key": "a", "de": "Standard high, fest", "en": "Default high, fixed" },
+        { "key": "b", "de": "Standard low", "en": "Default low" },
+        { "key": "c", "de": "Standard medium; Jev empfiehlt den Effort je Task", "en": "Default medium; Jev recommends the effort per task" },
+        { "key": "d", "de": "Immer max", "en": "Always max" }
+      ],
+      "gewaehlte_option": "c",
+      "antwort_wortlaut": "Standard-Effort medium; Jev waehlt Effort.",
+      "wortlaut_rekonstruiert": true,
+      "aufbereitet": {
+        "de": {
+          "entscheidung": "Standard-Effort ist medium; Jev schlaegt den Effort je Task vor.",
+          "begruendung": "Ausgewogener Standard, Anpassung an die Aufgabe ueber Jev.",
+          "gilt_wenn": "Richtig, wenn ein Standard fuer Ressourcen- oder Qualitaetsstufen gesetzt wird: mittlere Stufe als Standard, Anpassung je Aufgabe durch Empfehlung."
+        },
+        "en": {
+          "decision": "Default effort is medium; Jev proposes the effort per task.",
+          "reason": "Balanced default, adapted to the task via Jev.",
+          "applies_when": "Correct when a default for resource or quality levels is set: middle level as default, per-task adjustment by recommendation."
+        }
+      }
+    },
+    {
+      "id": "ent-035",
+      "quelle": { "art": "thought", "ref": "b5359c93", "teil": "nur Empfehlung" },
+      "herkunft_projekt": "synapse",
+      "kategorie": "variante",
+      "kandidat": true,
+      "themen": ["jev", "empfehlung", "verbindlichkeit"],
+      "frage": {
+        "de": "Sind Jevs Modell- und Effort-Vorschlaege verbindlich?",
+        "en": "Are Jev's model and effort proposals binding?"
+      },
+      "optionen": [
+        { "key": "a", "de": "Verbindlich", "en": "Binding" },
+        { "key": "b", "de": "Nur Empfehlung, kein Muss", "en": "Only a recommendation, not a must" },
+        { "key": "c", "de": "Verbindlich ab Confidence 0,9", "en": "Binding from confidence 0.9" },
+        { "key": "d", "de": "Verbindlich nur nachts", "en": "Binding only at night" }
+      ],
+      "gewaehlte_option": "b",
+      "antwort_wortlaut": "alles von Jev nur Empfehlung",
+      "wortlaut_rekonstruiert": true,
+      "aufbereitet": {
+        "de": {
+          "entscheidung": "Alles, was Jev zu Modell, Effort und Kontext vorschlaegt, ist Empfehlung; der Koordinator darf abweichen.",
+          "begruendung": "Jev ist ein kleines Modell; die Verantwortung bleibt beim Koordinator.",
+          "gilt_wenn": "Richtig, wenn gefragt wird, ob die Ausgabe eines Hilfsmodells verbindlich umgesetzt wird: nur Empfehlung, Abweichen erlaubt."
+        },
+        "en": {
+          "decision": "Everything Jev proposes about model, effort and context is a recommendation; the coordinator may deviate.",
+          "reason": "Jev is a small model; responsibility stays with the coordinator.",
+          "applies_when": "Correct when asked whether the output of a helper model is applied bindingly: only a recommendation, deviation allowed."
+        }
+      }
+    },
+    {
+      "id": "ent-036",
+      "quelle": { "art": "thought", "ref": "b5359c93", "teil": "Kandidaten" },
+      "herkunft_projekt": "synapse",
+      "kategorie": "reihenfolge",
+      "kandidat": true,
+      "themen": ["modellwahl", "kandidaten", "etappen", "claude-cli"],
+      "frage": {
+        "de": "Welche Modelle schlaegt Jev vor, solange die Codex-/Gemini-Anbindung noch nicht steht?",
+        "en": "Which models does Jev propose while the Codex/Gemini integration is not ready?"
+      },
+      "optionen": [
+        { "key": "a", "de": "Vorerst nur Claude-CLI-Modelle; Codex/Gemini erst, wenn deren Schicht steht", "en": "For now only Claude CLI models; Codex/Gemini once their layer is ready" },
+        { "key": "b", "de": "Alle Anbieter sofort", "en": "All providers right away" },
+        { "key": "c", "de": "Nur Gemini", "en": "Only Gemini" },
+        { "key": "d", "de": "Das guenstigste Modell", "en": "The cheapest model" }
+      ],
+      "gewaehlte_option": "a",
+      "antwort_wortlaut": "vorerst nur Claude-CLI-Kandidaten (Codex/Gemini = JEV-6, wenn die andere Schicht steht)",
+      "wortlaut_rekonstruiert": true,
+      "aufbereitet": {
+        "de": {
+          "entscheidung": "Angeboten wird nur, was tatsaechlich gestartet werden kann (Claude-CLI). Weitere Anbieter kommen erst dazu, wenn ihre Laufzeit steht.",
+          "begruendung": "Eine Empfehlung fuer ein nicht startbares Modell nuetzt nichts.",
+          "gilt_wenn": "Richtig, wenn Optionen angeboten werden, von denen einige noch nicht nutzbar sind: nur Nutzbares anbieten, den Rest erst nach Fertigstellung freischalten."
+        },
+        "en": {
+          "decision": "Only what can actually be launched (Claude CLI) is offered. Further providers are added once their runtime is ready.",
+          "reason": "A recommendation for a model that cannot be launched is useless.",
+          "applies_when": "Correct when offering options some of which are not usable yet: offer only usable ones, unlock the rest once they are finished."
+        }
+      }
+    },
+    {
+      "id": "ent-037",
+      "quelle": { "art": "thought", "ref": "b5359c93", "teil": "keep_alive" },
+      "herkunft_projekt": "synapse",
+      "kategorie": "variante",
+      "kandidat": true,
+      "themen": ["spezialisten", "keep_alive", "speichern"],
+      "frage": {
+        "de": "Soll der keep_alive-Wert eines Spezialisten dauerhaft gespeichert werden?",
+        "en": "Should a specialist's keep_alive value be stored persistently?"
+      },
+      "optionen": [
+        { "key": "a", "de": "Ja, in PG", "en": "Yes, in PG" },
+        { "key": "b", "de": "Ja, in der Wrapper-Konfiguration", "en": "Yes, in the wrapper configuration" },
+        { "key": "c", "de": "Nein, nicht speichern", "en": "No, do not store it" },
+        { "key": "d", "de": "Nur fuer Koordinator-Spawns", "en": "Only for coordinator spawns" }
+      ],
+      "gewaehlte_option": "c",
+      "antwort_wortlaut": "keep_alive NICHT speichern.",
+      "wortlaut_rekonstruiert": true,
+      "aufbereitet": {
+        "de": {
+          "entscheidung": "keep_alive wird beim Start mitgegeben, aber nicht dauerhaft gespeichert.",
+          "begruendung": "Ein gespeicherter Lebensdauer-Schalter wirkt unbemerkt ueber die Sitzung hinaus nach.",
+          "gilt_wenn": "Richtig, wenn ein sitzungsbezogener Laufzeitschalter (Lebensdauer, Neustart-Verhalten) dauerhaft gespeichert werden koennte: nicht speichern, je Start setzen."
+        },
+        "en": {
+          "decision": "keep_alive is passed at start but not stored persistently.",
+          "reason": "A stored lifetime switch silently persists beyond the session.",
+          "applies_when": "Correct when a session-scoped runtime switch (lifetime, restart behaviour) could be stored persistently: do not store it, set it per start."
+        }
+      }
+    },
+    {
+      "id": "ent-038",
+      "quelle": { "art": "thought", "ref": "b5359c93", "teil": "Nacht-Loop" },
+      "herkunft_projekt": "synapse",
+      "kategorie": "umsetzungsweg",
+      "kandidat": true,
+      "themen": ["spezialisten", "tasks", "selbstzuteilung", "nacht"],
+      "frage": {
+        "de": "Wie bekommen dauerlaufende Spezialisten nachts ihre Tasks?",
+        "en": "How do long-running specialists get their tasks at night?"
+      },
+      "optionen": [
+        { "key": "a", "de": "Der Koordinator verteilt jede Task einzeln", "en": "The coordinator assigns every task individually" },
+        { "key": "b", "de": "Jev verteilt die Tasks", "en": "Jev distributes the tasks" },
+        { "key": "c", "de": "Jeder nimmt die naechste offene Task", "en": "Everyone takes the next open task" },
+        { "key": "d", "de": "Spezialisten holen sich per passende_tasks/uebernehmen nur Tasks, die zu ihrem Profil passen; der Server prueft; kein Weiterreichen; Koordinator spawnt nur, wenn kein passender existiert", "en": "Specialists fetch only tasks matching their profile via passende_tasks/uebernehmen; the server checks; no handing on; the coordinator spawns only if no fitting one exists" }
+      ],
+      "gewaehlte_option": "d",
+      "antwort_wortlaut": "Spezialisten laufen keep_alive, Koordinator spawnt nur, wenn kein passender existiert. Jev BEWERTET nur. Spezialisten holen sich per plan(passende_tasks) -> plan(uebernehmen) nur passende Tasks (Server prueft Passt-Regel), kein Weiterreichen.",
+      "wortlaut_rekonstruiert": true,
+      "aufbereitet": {
+        "de": {
+          "entscheidung": "Selbstzuteilung mit Pruefung: Spezialisten holen sich nur passende Tasks, der Server prueft die Passung; Jev bewertet nur; der Koordinator spawnt nur bei Bedarf.",
+          "begruendung": "Der Koordinator soll nachts kein Nadeloehr sein, ohne dass unpassende Modelle Tasks uebernehmen.",
+          "gilt_wenn": "Richtig, wenn Arbeit an mehrere Agenten verteilt wird und der Koordinator entlastet werden soll: Selbstzuteilung nach Profil mit serverseitiger Pruefung."
+        },
+        "en": {
+          "decision": "Self-assignment with checks: specialists fetch only matching tasks, the server checks the fit; Jev only rates; the coordinator spawns only when needed.",
+          "reason": "The coordinator must not be a bottleneck at night, without unsuitable models taking tasks.",
+          "applies_when": "Correct when work is distributed to several agents and the coordinator should be relieved: profile-based self-assignment with server-side checks."
+        }
+      }
+    },
+    {
+      "id": "ent-039",
+      "quelle": { "art": "thought", "ref": "ae3ab716", "auch": "480dd38e" },
+      "herkunft_projekt": "synapse",
+      "kategorie": "reihenfolge",
+      "kandidat": true,
+      "themen": ["alte-tasks", "pruefen-statt-bauen", "plaene", "widersprueche"],
+      "frage": {
+        "de": "Duerfen aeltere offene Tasks aus anderen Plaenen abgearbeitet werden, wenn sie klar aussehen?",
+        "en": "May older open tasks from other plans be implemented if they look clear?"
+      },
+      "optionen": [
+        { "key": "a", "de": "Ja, der Reihe nach", "en": "Yes, one after another" },
+        { "key": "b", "de": "Nein: nur im Zusammenhang pruefen (Ueberschneidungen, Widersprueche), Ergebnis als Notiz fuer den User; kein Status, keine Umsetzung", "en": "No: only check them in context (overlaps, contradictions), result as a note for the user; no status change, no implementation" },
+        { "key": "c", "de": "Ja, wenn die Task hohe Prioritaet hat", "en": "Yes, if the task has high priority" },
+        { "key": "d", "de": "Alle aelteren Tasks schliessen", "en": "Close all older tasks" }
+      ],
+      "gewaehlte_option": "b",
+      "antwort_wortlaut": "Die aelteren offenen Tasks NICHT abarbeiten - der User weiss nicht, was davon wirklich noch offen ist; nichts doppelt bauen. Erlaubt: nur PRUEFEN. ... koennen von ANDEREN Tasks ueberholt sein, einander widersprechen oder FALSCH INTERPRETIERT sein. Deshalb NIEMALS einzeln abarbeiten.",
+      "wortlaut_rekonstruiert": true,
+      "aufbereitet": {
+        "de": {
+          "entscheidung": "Alte offene Tasks werden nicht umgesetzt, auch wenn sie klar wirken. Erlaubt ist nur Pruefen im Zusammenhang (verwandte Tasks gemeinsam, Ueberschneidungen und Widersprueche notieren), Ergebnis als Notiz fuer den User, ohne Statusaenderung. Umgesetzt wird nur, was einen frischen Beleg hat.",
+          "begruendung": "Alte Tasks koennen erledigt, ueberholt, widerspruechlich oder falsch verstanden sein; Doppelbau vermeiden.",
+          "gilt_wenn": "Richtig, wenn ein Agent alte oder fremde Auftraege ohne frische Bestaetigung vorfindet und fragt, ob er sie umsetzt: pruefen und notieren statt bauen."
+        },
+        "en": {
+          "decision": "Old open tasks are not implemented even if they look clear. Only checking in context is allowed (related tasks together, note overlaps and contradictions), result as a note for the user, without status change. Only work with fresh evidence is implemented.",
+          "reason": "Old tasks may be done, superseded, contradictory or misread; avoid building twice.",
+          "applies_when": "Correct when an agent finds old or foreign assignments without fresh confirmation and asks whether to implement them: check and note instead of building."
+        }
+      }
+    },
+    {
+      "id": "ent-040",
+      "quelle": { "art": "thought", "ref": "04e14f2a", "auch": "Skill synapse-agent-regeln code-intel-nutzung" },
+      "herkunft_projekt": "synapse",
+      "kategorie": "umsetzungsweg",
+      "kandidat": true,
+      "themen": ["code-lesen", "code_intel", "review", "kontext-sparen"],
+      "frage": {
+        "de": "Wie liest ein Agent Code beim Pruefen oder Review: ganze Datei oder gezielt?",
+        "en": "How does an agent read code when checking or reviewing: whole file or targeted?"
+      },
+      "optionen": [
+        { "key": "a", "de": "Ganze Datei lesen", "en": "Read the whole file" },
+        { "key": "b", "de": "grep im Terminal", "en": "grep in the terminal" },
+        { "key": "c", "de": "Gezielt mit code_intel: functions/symbols/search -> Trefferzeilen -> file(from_line,to_line); beim Review git diff --stat fuer den Umfang", "en": "Targeted with code_intel: functions/symbols/search -> hit lines -> file(from_line,to_line); for reviews git diff --stat for the scope" },
+        { "key": "d", "de": "Die IDE oeffnen", "en": "Open the IDE" }
+      ],
+      "gewaehlte_option": "c",
+      "antwort_wortlaut": "Beim Pruefen/Lesen IM FLOW code_intel benutzen, nie ganze Dateien wahllos lesen. Reihenfolge: code_intel functions/symbols/search (mit file_path) -> Treffer-Zeilen -> file(from_line, to_line) nur um die Stelle.",
+      "wortlaut_rekonstruiert": true,
+      "aufbereitet": {
+        "de": {
+          "entscheidung": "Code wird gezielt ueber code_intel gelesen: erst suchen (functions, symbols, search), dann nur den Zeilenbereich um die Stelle. Fuer Reviews zuerst den Umfang per git diff --stat, dann die geaenderten Funktionen.",
+          "begruendung": "Ganze Dateien kosten Kontext; der Index liefert den aktuellen Stand aus PG.",
+          "gilt_wenn": "Richtig, wenn ein Agent Code oder grosse Texte untersuchen muss: gezielt suchen und nur den relevanten Ausschnitt lesen."
+        },
+        "en": {
+          "decision": "Code is read in a targeted way via code_intel: search first (functions, symbols, search), then only the line range around the spot. For reviews first the scope via git diff --stat, then the changed functions.",
+          "reason": "Whole files cost context; the index delivers the current state from PG.",
+          "applies_when": "Correct when an agent has to examine code or large texts: search in a targeted way and read only the relevant excerpt."
+        }
+      }
+    },
+    {
+      "id": "ent-041",
+      "quelle": { "art": "memory", "ref": "arbeitsregeln-koordinator-durcharbeiten", "teil": "1", "auch": "regel-keine-context-panik, regel-kein-kontext-jammern" },
+      "herkunft_projekt": "synapse",
+      "kategorie": "reihenfolge",
+      "kandidat": true,
+      "themen": ["durcharbeiten", "pause", "kontext", "abschliessen"],
+      "frage": {
+        "de": "Der Agent hat einen Teil fertig und noch Kontext uebrig. Pausieren und den User fragen oder weiterarbeiten?",
+        "en": "The agent finished a part and still has context left. Pause and ask the user, or keep working?"
+      },
+      "optionen": [
+        { "key": "a", "de": "Pausieren und fragen, ob weitergemacht werden soll", "en": "Pause and ask whether to continue" },
+        { "key": "b", "de": "Zusammenfassen und an eine neue Sitzung uebergeben", "en": "Summarise and hand over to a new session" },
+        { "key": "c", "de": "Weiterarbeiten bis die Aufgabe fertig ist; Kontext erst Thema, wenn der Hook warnt", "en": "Keep working until the task is done; context only matters once the hook warns" },
+        { "key": "d", "de": "Den Rest weglassen", "en": "Drop the rest" }
+      ],
+      "gewaehlte_option": "c",
+      "antwort_wortlaut": "NIE pausieren, NIE 'es ist genug' / 'guter Punkt zum Aufhoeren' sagen. Durcharbeiten bis die Aufgabe fertig ist. ... 'Wie oft soll ich dir noch sagen, du sollst dich nicht beschweren, erst nachdem du selbst gewarnt wirst?'",
+      "wortlaut_rekonstruiert": false,
+      "aufbereitet": {
+        "de": {
+          "entscheidung": "Durcharbeiten bis die Aufgabe fertig ist; nicht pausieren, nicht fragen, ob pausiert werden soll. Der Kontextstand ist erst Thema, wenn der Hook warnt (gelb: Aufgabe abschliessen, rot: Handoff), und dann in einem Satz.",
+          "begruendung": "Vorzeitiges Aufhoeren verschenkt Arbeitszeit; der Hook misst genauer als die Selbsteinschaetzung.",
+          "gilt_wenn": "Richtig, wenn ein Agent ueberlegt, eine laufende Aufgabe vorzeitig abzuschliessen, zu pausieren oder an eine neue Sitzung abzugeben, ohne dass eine echte Warnung vorliegt: weiterarbeiten."
+        },
+        "en": {
+          "decision": "Keep working until the task is done; do not pause, do not ask whether to pause. Context level only matters once the hook warns (yellow: finish the task, red: handoff), and then in one sentence.",
+          "reason": "Stopping early wastes working time; the hook measures more precisely than self-assessment.",
+          "applies_when": "Correct when an agent considers finishing early, pausing or handing a running task to a new session without a real warning: keep working."
+        }
+      }
+    },
+    {
+      "id": "ent-042",
+      "quelle": { "art": "memory", "ref": "arbeitsregeln-koordinator-durcharbeiten", "teil": "2+3" },
+      "herkunft_projekt": "synapse",
+      "kategorie": "umsetzungsweg",
+      "kandidat": true,
+      "themen": ["selbst-review", "plan-abgleich", "gruendlichkeit"],
+      "frage": {
+        "de": "Wie oft wird eine fertige Umsetzung gegen den Plan geprueft, bevor sie als fertig gilt?",
+        "en": "How often is a finished implementation checked against the plan before it counts as done?"
+      },
+      "optionen": [
+        { "key": "a", "de": "Zweimal: jeder Plan-Punkt umgesetzt? etwas vergessen? Empirisch pruefen statt voreilig schliessen", "en": "Twice: every plan item implemented? anything forgotten? check empirically instead of concluding early" },
+        { "key": "b", "de": "Gar nicht, Tests reichen", "en": "Not at all, tests suffice" },
+        { "key": "c", "de": "Einmal kurz", "en": "Once briefly" },
+        { "key": "d", "de": "Der User prueft", "en": "The user checks" }
+      ],
+      "gewaehlte_option": "a",
+      "antwort_wortlaut": "NIE voreilige Schluesse ziehen. Gruendlich + empirisch pruefen bevor etwas als 'geht nicht' / 'fertig' gilt. Einen ausgefuehrten Plan IMMER ZWEIMAL gegen die Implementierung pruefen.",
+      "wortlaut_rekonstruiert": false,
+      "aufbereitet": {
+        "de": {
+          "entscheidung": "Vor 'fertig' oder 'geht nicht' wird empirisch geprueft, und ein ausgefuehrter Plan wird in zwei Durchgaengen gegen die Umsetzung abgeglichen (alles umgesetzt? etwas vergessen?).",
+          "begruendung": "Voreilige Schluesse und vergessene Plan-Punkte sind die haeufigsten Fehler.",
+          "gilt_wenn": "Richtig, wenn ein Agent eine Arbeit als fertig oder unmoeglich melden will: vorher empirisch belegen und zweimal gegen den Plan abgleichen."
+        },
+        "en": {
+          "decision": "Before 'done' or 'impossible' there is an empirical check, and an executed plan is compared with the implementation in two passes (everything done? anything forgotten?).",
+          "reason": "Premature conclusions and forgotten plan items are the most common mistakes.",
+          "applies_when": "Correct when an agent wants to report work as done or impossible: prove it empirically first and compare twice against the plan."
+        }
+      }
+    },
+    {
+      "id": "ent-043",
+      "quelle": { "art": "memory", "ref": "regel-multi-file-edits-files-plan" },
+      "herkunft_projekt": "synapse",
+      "kategorie": "umsetzungsweg",
+      "kandidat": true,
+      "themen": ["files", "plan", "atomar", "mehrere-dateien"],
+      "frage": {
+        "de": "Eine Aenderung betrifft mehrere Dateien. Einzelne files-Aufrufe je Datei oder ein Plan?",
+        "en": "A change touches several files. Individual files calls per file or one plan?"
+      },
+      "optionen": [
+        { "key": "a", "de": "Einzelne Aufrufe nacheinander", "en": "Individual calls one after another" },
+        { "key": "b", "de": "Direkt auf der Platte editieren", "en": "Edit directly on disk" },
+        { "key": "c", "de": "Je Datei ein eigener Plan", "en": "One plan per file" },
+        { "key": "d", "de": "Ein files(plan) mit allen Ops, dann commit (atomar, ein Batch, rueckrollbar)", "en": "One files(plan) with all ops, then commit (atomic, one batch, revertible)" }
+      ],
+      "gewaehlte_option": "d",
+      "antwort_wortlaut": "Bei Aenderungen an MEHREREN Dateien IMMER files(action:'plan') + commit nutzen - ALLE Datei-Ops in EINEM atomaren Aufruf.",
+      "wortlaut_rekonstruiert": true,
+      "aufbereitet": {
+        "de": {
+          "entscheidung": "Zusammengehoerige Aenderungen an mehreren Dateien gehen als ein files(plan) mit allen Ops und einem commit: atomar, als ein Batch versioniert, per restore_batch rueckrollbar.",
+          "begruendung": "Einzelaufrufe erzeugen Teilzustaende, sind langsamer und erschweren den Rueckbau.",
+          "gilt_wenn": "Richtig, wenn mehrere zusammengehoerige Aenderungen geschrieben werden: als eine atomare, rueckrollbare Einheit statt Schritt fuer Schritt."
+        },
+        "en": {
+          "decision": "Related changes to several files go as one files(plan) with all ops and one commit: atomic, versioned as one batch, revertible via restore_batch.",
+          "reason": "Single calls create partial states, are slower and make rollback harder.",
+          "applies_when": "Correct when several related changes are written: as one atomic, revertible unit instead of step by step."
+        }
+      }
+    },
+    {
+      "id": "ent-044",
+      "quelle": { "art": "memory", "ref": "regel-subagenten-statt-spezialisten" },
+      "herkunft_projekt": "synapse",
+      "kategorie": "formulierung",
+      "kandidat": true,
+      "themen": ["subagent", "spawn-prompt", "onboarding", "skill", "channel"],
+      "frage": {
+        "de": "Was muss im Spawn-Prompt eines Subagenten fuer Synapse-Arbeit stehen?",
+        "en": "What must the spawn prompt of a subagent for Synapse work contain?"
+      },
+      "optionen": [
+        { "key": "a", "de": "Nur die Aufgabe", "en": "Only the task" },
+        { "key": "b", "de": "Aufgabe und Dateiliste", "en": "Task and file list" },
+        { "key": "c", "de": "Anmeldung mit eigener agent_id, Skill synapse-agent-regeln laden, Synapse-Tools statt lokaler Datei-Ops, konkreter Channel fuer Absprachen, Schutz geteilter Dateien", "en": "Login with own agent_id, load skill synapse-agent-regeln, Synapse tools instead of local file ops, a concrete channel for coordination, protection of shared files" },
+        { "key": "d", "de": "Den ganzen Chatverlauf", "en": "The whole chat history" }
+      ],
+      "gewaehlte_option": "c",
+      "antwort_wortlaut": "Wenn der Koordinator SUBAGENTEN nutzt, MUSS der Spawn-Prompt folgendes vorgeben: 1. Anmeldung als Subagent mit eigener agent_id 2. Skill abrufen (Pflicht) 3. Synapse-Tools nutzen 4. Peer-Absprache via Channel 5. Shared-File-Schutz.",
+      "wortlaut_rekonstruiert": true,
+      "aufbereitet": {
+        "de": {
+          "entscheidung": "Der Spawn-Prompt nennt: Anmeldung mit eigener agent_id (Onboarding), Pflicht-Skill synapse-agent-regeln plus aufgabenspezifische Skills, ausschliesslich Synapse-Tools, den konkreten Channel fuer Absprachen und den Schutz gemeinsam genutzter Dateien.",
+          "begruendung": "Ohne diese Vorgaben arbeiten Subagenten ohne Regeln, an Synapse vorbei und ohne Abstimmung.",
+          "gilt_wenn": "Richtig, wenn ein Auftrag an einen neuen Agenten formuliert wird: Identitaet, Regeln/Skills, Werkzeugweg, Kommunikationskanal und Konfliktschutz ausdruecklich nennen."
+        },
+        "en": {
+          "decision": "The spawn prompt states: login with own agent_id (onboarding), mandatory skill synapse-agent-regeln plus task-specific skills, Synapse tools only, the concrete channel for coordination and protection of shared files.",
+          "reason": "Without these, subagents work without rules, bypass Synapse and do not coordinate.",
+          "applies_when": "Correct when writing an assignment for a new agent: name identity, rules/skills, tool route, communication channel and conflict protection explicitly."
+        }
+      }
+    },
+    {
+      "id": "ent-045",
+      "quelle": { "art": "memory", "ref": "regel-context-handoff-nur-eigenes-bash", "auch": "regel-koordinator-kontextwarnung-handoff-und-cc-send-pid" },
+      "herkunft_projekt": "synapse",
+      "kategorie": "umsetzungsweg",
+      "kandidat": true,
+      "themen": ["prozesse", "kill", "shell", "context-handoff", "absturz"],
+      "frage": {
+        "de": "Ueber welches Werkzeug wird context-handoff.sh (oder ein anderes Skript, das Prozesse ueber die Elternkette beendet) gestartet?",
+        "en": "Through which tool is context-handoff.sh (or another script that kills processes via the parent chain) started?"
+      },
+      "optionen": [
+        { "key": "a", "de": "Ueber shell(exec) der Synapse-API", "en": "Via shell(exec) of the Synapse API" },
+        { "key": "b", "de": "Nur mit dem eigenen Bash-Tool des Harness, nie ueber die Synapse-Shell", "en": "Only with the harness's own Bash tool, never via the Synapse shell" },
+        { "key": "c", "de": "Ueber den lokalen MCP-Server", "en": "Via the local MCP server" },
+        { "key": "d", "de": "Per cron", "en": "Via cron" }
+      ],
+      "gewaehlte_option": "b",
+      "antwort_wortlaut": "context-handoff.sh IMMER NUR mit dem EIGENEN Bash-Tool ausfuehren. NIEMALS ueber shell(action:'exec'). DER DESKTOP DES USERS STUERZT DABEI AB.",
+      "wortlaut_rekonstruiert": true,
+      "aufbereitet": {
+        "de": {
+          "entscheidung": "Skripte, die Prozesse ueber die Elternkette finden und beenden (context-handoff.sh, kill/pkill/pgrep-basierte), laufen nur ueber das eigene Bash-Tool, nie ueber die Synapse-Shell.",
+          "begruendung": "Ueber die Synapse-Shell haengt das Skript an der Prozesskette des Daemons; der Kill trifft die Desktop-Sitzung.",
+          "gilt_wenn": "Richtig, wenn ein Befehl Prozesse beendet oder die Prozesskette auswertet und gefragt wird, ueber welches Werkzeug er laeuft: nur ueber das eigene Bash-Tool."
+        },
+        "en": {
+          "decision": "Scripts that find and kill processes via the parent chain (context-handoff.sh, kill/pkill/pgrep-based) run only via the agent's own Bash tool, never via the Synapse shell.",
+          "reason": "Via the Synapse shell the script hangs on the daemon's process chain; the kill hits the desktop session.",
+          "applies_when": "Correct when a command kills processes or evaluates the process chain and the question is which tool runs it: only the agent's own Bash tool."
+        }
+      }
+    },
+    {
+      "id": "ent-046",
+      "quelle": { "art": "memory", "ref": "regel-postgres-ist-die-wahrheit-qdrant-ist-abgeleitet" },
+      "herkunft_projekt": "synapse",
+      "kategorie": "umsetzungsweg",
+      "kandidat": true,
+      "themen": ["postgres", "qdrant", "quelle-der-wahrheit", "lesen"],
+      "frage": {
+        "de": "Soll eine Existenz- oder Vollstaendigkeitsfrage (gibt es Eintrag X? wie viele?) gegen Qdrant oder PostgreSQL gestellt werden?",
+        "en": "Should an existence or completeness question (does entry X exist? how many?) be asked of Qdrant or PostgreSQL?"
+      },
+      "optionen": [
+        { "key": "a", "de": "Qdrant, weil schneller", "en": "Qdrant, because faster" },
+        { "key": "b", "de": "Beide und vergleichen", "en": "Both and compare" },
+        { "key": "c", "de": "PostgreSQL; Qdrant nur fuer Aehnlichkeit", "en": "PostgreSQL; Qdrant only for similarity" },
+        { "key": "d", "de": "Ein Cache", "en": "A cache" }
+      ],
+      "gewaehlte_option": "c",
+      "antwort_wortlaut": "POSTGRESQL IST DIE QUELLE DER WAHRHEIT. QDRANT IST EIN ABGELEITETER INDEX. ALLES landet ZUERST in PostgreSQL. ... Eine Existenz-, Vollstaendigkeits- oder Regelfrage darf NIE gegen den Index gestellt werden.",
+      "wortlaut_rekonstruiert": true,
+      "aufbereitet": {
+        "de": {
+          "entscheidung": "Was existiert, beantwortet PostgreSQL; Qdrant nur, was aehnlich ist. Geschrieben wird zuerst in PG, der Index wird abgeleitet und nachgereicht.",
+          "begruendung": "Der Index kann hinterherhinken oder Eintraege verlieren, ohne es zu melden.",
+          "gilt_wenn": "Richtig, wenn entschieden wird, aus welchem Speicher eine Frage beantwortet oder in welchen zuerst geschrieben wird: Primaerspeicher (PG) fuer Existenz und Wahrheit, abgeleiteter Index nur fuer Aehnlichkeit."
+        },
+        "en": {
+          "decision": "What exists is answered by PostgreSQL; Qdrant only answers what is similar. Writes go to PG first, the index is derived and added later.",
+          "reason": "The index can lag or lose entries without saying so.",
+          "applies_when": "Correct when deciding from which store a question is answered or into which one to write first: primary store (PG) for existence and truth, the derived index only for similarity."
+        }
+      }
+    },
+    {
+      "id": "ent-047",
+      "quelle": { "art": "memory", "ref": "regel-anweisungen-an-agenten-im-channel" },
+      "herkunft_projekt": "synapse",
+      "kategorie": "umsetzungsweg",
+      "kandidat": true,
+      "themen": ["kommunikation", "channel", "direktnachricht", "nachvollziehbar"],
+      "frage": {
+        "de": "Antwortet der Koordinator einem Agenten per Direktnachricht oder im Projekt-Channel?",
+        "en": "Does the coordinator answer an agent by direct message or in the project channel?"
+      },
+      "optionen": [
+        { "key": "a", "de": "Immer im Channel; Direktnachricht hoechstens als Weckruf 'siehe Channel, Nachricht N'", "en": "Always in the channel; a direct message at most as a wake-up 'see channel, message N'" },
+        { "key": "b", "de": "Per Direktnachricht", "en": "By direct message" },
+        { "key": "c", "de": "Per E-Mail", "en": "By e-mail" },
+        { "key": "d", "de": "Gar nicht, Agent soll selbst entscheiden", "en": "Not at all, the agent should decide" }
+      ],
+      "gewaehlte_option": "a",
+      "antwort_wortlaut": "Der Koordinator antwortet Agenten IMMER im Projekt-Channel (channel post), nicht nur per Direktnachricht. Grund: Anweisungen, Antworten auf Rueckfragen und Abnahmen muessen im Channel nachvollziehbar dokumentiert sein.",
+      "wortlaut_rekonstruiert": true,
+      "aufbereitet": {
+        "de": {
+          "entscheidung": "Anweisungen, Antworten und Abnahmen laufen im Projekt-Channel; eine Direktnachricht ist hoechstens ein Weckruf mit Verweis auf die Channel-Nachricht. Agenten berichten ebenfalls im Channel.",
+          "begruendung": "Nachvollziehbarkeit: alles Wichtige steht dokumentiert an einem Ort.",
+          "gilt_wenn": "Richtig, wenn zwischen privatem und dokumentiertem Kommunikationsweg gewaehlt wird: der dokumentierte, gemeinsame Kanal."
+        },
+        "en": {
+          "decision": "Instructions, answers and acceptances go into the project channel; a direct message is at most a wake-up pointing to the channel message. Agents report in the channel too.",
+          "reason": "Traceability: everything important is documented in one place.",
+          "applies_when": "Correct when choosing between a private and a documented communication route: the documented, shared channel."
+        }
+      }
+    },
+    {
+      "id": "ent-048",
+      "quelle": { "art": "memory", "ref": "regel-rueckbau-ueber-files-restore" },
+      "herkunft_projekt": "synapse",
+      "kategorie": "umsetzungsweg",
+      "kandidat": true,
+      "themen": ["rueckbau", "restore", "versionierung"],
+      "frage": {
+        "de": "Eine Aenderung soll zurueckgenommen werden. Von Hand zurueckbauen oder ueber die Versionierung?",
+        "en": "A change is to be undone. Revert by hand or via versioning?"
+      },
+      "optionen": [
+        { "key": "a", "de": "Von Hand zuruecktippen", "en": "Type it back by hand" },
+        { "key": "b", "de": "git checkout", "en": "git checkout" },
+        { "key": "c", "de": "Datei loeschen und neu anlegen", "en": "Delete and recreate the file" },
+        { "key": "d", "de": "files(history) -> files(restore) bzw. restore_batch; nur bei spaeteren gewollten Aenderungen gezielt entfernen und begruenden; danach mit git diff belegen", "en": "files(history) -> files(restore) or restore_batch; only with later wanted changes remove selectively and justify; then prove with git diff" }
+      ],
+      "gewaehlte_option": "d",
+      "antwort_wortlaut": "Aenderungen, die zurueckgenommen werden sollen, NICHT von Hand zurueckbauen, sondern ueber die Versionierung von Synapse: files(history) -> files(restore) bzw. restore_batch.",
+      "wortlaut_rekonstruiert": true,
+      "aufbereitet": {
+        "de": {
+          "entscheidung": "Zuruecknehmen ueber die Versionierung (files history -> restore/restore_batch), nicht von Hand. Nur wenn danach gewollte Aenderungen in derselben Datei kamen, gezielt entfernen und das begruenden; anschliessend per git diff belegen, dass nichts uebrig ist.",
+          "begruendung": "restore stellt den exakten Vorzustand her und ist selbst versioniert; Handarbeit hinterlaesst Reste.",
+          "gilt_wenn": "Richtig, wenn etwas rueckgaengig gemacht werden soll und es einen versionierten Wiederherstellungsweg gibt: diesen nutzen statt manuell nachzubauen."
+        },
+        "en": {
+          "decision": "Undo via versioning (files history -> restore/restore_batch), not by hand. Only if wanted changes followed in the same file, remove selectively and justify; afterwards prove with git diff that nothing is left.",
+          "reason": "restore recreates the exact previous state and is itself versioned; manual work leaves remnants.",
+          "applies_when": "Correct when something is to be undone and a versioned restore path exists: use it instead of rebuilding manually."
+        }
+      }
+    },
+    {
+      "id": "ent-049",
+      "quelle": { "art": "memory", "ref": "regel-koordinator-kontextwarnung-handoff-und-cc-send-pid", "teil": "Haiku" },
+      "herkunft_projekt": "synapse",
+      "kategorie": "variante",
+      "kandidat": true,
+      "themen": ["modellwahl", "haiku", "pruefauftrag", "kontext"],
+      "frage": {
+        "de": "Welches Modell bekommt ein laengerer Pruefauftrag (viele Dateien lesen und bewerten)?",
+        "en": "Which model gets a longer review assignment (read and assess many files)?"
+      },
+      "optionen": [
+        { "key": "a", "de": "Haiku, weil billig", "en": "Haiku, because cheap" },
+        { "key": "b", "de": "Kein Haiku; ein staerkeres Modell (Sonnet/Opus) mit ausreichend Kontext", "en": "No Haiku; a stronger model (Sonnet/Opus) with sufficient context" },
+        { "key": "c", "de": "Egal", "en": "Does not matter" },
+        { "key": "d", "de": "Jev macht den Pruefauftrag", "en": "Jev does the review" }
+      ],
+      "gewaehlte_option": "b",
+      "antwort_wortlaut": "Haiku-Spezialisten nicht fuer laengere Pruefauftraege einsetzen (kommen mit ihrem Kontext nicht zurecht; bestand-haiku am 29.09. deshalb beendet).",
+      "wortlaut_rekonstruiert": true,
+      "aufbereitet": {
+        "de": {
+          "entscheidung": "Fuer laengere Pruefauftraege kein Haiku einsetzen, sondern ein staerkeres Modell mit ausreichend Kontext.",
+          "begruendung": "Haiku kam am 29.09. mit dem Kontext eines Pruefauftrags nicht zurecht und wurde beendet.",
+          "gilt_wenn": "Richtig, wenn ein Modell fuer eine lange, kontextreiche Aufgabe gewaehlt wird: nicht das kleinste Modell, sondern eines, das den Kontext traegt."
+        },
+        "en": {
+          "decision": "Do not use Haiku for longer review assignments; use a stronger model with sufficient context.",
+          "reason": "On 29.09. Haiku could not cope with the context of a review assignment and was stopped.",
+          "applies_when": "Correct when choosing a model for a long, context-heavy task: not the smallest model, but one that can carry the context."
+        }
+      }
+    },
+    {
+      "id": "ent-050",
+      "quelle": { "art": "memory", "ref": "regel-jev-erkenntnisse-sammeln" },
+      "herkunft_projekt": "synapse",
+      "kategorie": "umsetzungsweg",
+      "kandidat": true,
+      "themen": ["jev", "modellwahl", "erkenntnisse", "datenbasis", "memory"],
+      "frage": {
+        "de": "Was passiert mit Beobachtungen, wie gut ein Modell oder eine Stufe zu einer Aufgabe gepasst hat?",
+        "en": "What happens with observations about how well a model or level fitted a task?"
+      },
+      "optionen": [
+        { "key": "a", "de": "Nur im Chat erwaehnen", "en": "Only mention them in chat" },
+        { "key": "b", "de": "Nur Fehlschlaege notieren", "en": "Only note failures" },
+        { "key": "c", "de": "Jede Beobachtung, positiv wie negativ, als memory jev-erkenntnis-<datum>-<stichwort> im festen Format speichern", "en": "Store every observation, positive and negative, as memory jev-erkenntnis-<date>-<keyword> in a fixed format" },
+        { "key": "d", "de": "Gar nicht", "en": "Not at all" }
+      ],
+      "gewaehlte_option": "c",
+      "antwort_wortlaut": "Jede Beobachtung, wie gut ein Modell/eine Stufe/ein Kontext zu einer Aufgabe passt, wird als Memory gespeichert. Positive UND negative Faelle eintragen - nur Fehler zu sammeln verzerrt die Datenbasis.",
+      "wortlaut_rekonstruiert": true,
+      "aufbereitet": {
+        "de": {
+          "entscheidung": "Beobachtungen zur Modellpassung werden als memory im festen Format gespeichert (Modell, Effort, Kontext, Aufgabe, Beobachtung, Beleg, Folgerung), positive und negative Faelle.",
+          "begruendung": "So entsteht eine unverzerrte Datenbasis, mit der Jev spaeter vergleichen kann.",
+          "gilt_wenn": "Richtig, wenn Erfahrungen gesammelt werden, die spaeter als Datenbasis dienen: strukturiert, mit Beleg, Erfolge und Fehlschlaege gleichermassen."
+        },
+        "en": {
+          "decision": "Observations about model fit are stored as memories in a fixed format (model, effort, context, task, observation, evidence, conclusion), positive and negative cases.",
+          "reason": "This creates an unbiased data basis Jev can compare against later.",
+          "applies_when": "Correct when collecting experience that later serves as a data basis: structured, with evidence, successes and failures alike."
+        }
+      }
+    },
+    {
+      "id": "ent-051",
+      "quelle": { "art": "memory", "ref": "regel-entwurf-ist-offener-plan" },
+      "herkunft_projekt": "synapse",
+      "kategorie": "umsetzungsweg",
+      "kandidat": true,
+      "themen": ["entwurf", "plan", "scratchpad", "code-schreiben"],
+      "frage": {
+        "de": "Wo entwirft ein Agent groessere Code-Aenderungen, bevor sie geschrieben werden?",
+        "en": "Where does an agent draft larger code changes before they are written?"
+      },
+      "optionen": [
+        { "key": "a", "de": "Im lokalen Scratchpad, danach abschreiben", "en": "In the local scratchpad, then copy over" },
+        { "key": "b", "de": "Als offener files(plan) ohne commit: ansehen, per plan_update nachbessern, erst dann commit", "en": "As an open files(plan) without commit: inspect, refine via plan_update, only then commit" },
+        { "key": "c", "de": "Direkt committen und nachbessern", "en": "Commit directly and fix afterwards" },
+        { "key": "d", "de": "Im Chat", "en": "In the chat" }
+      ],
+      "gewaehlte_option": "b",
+      "antwort_wortlaut": "Code-Entwuerfe NICHT im lokalen Scratchpad/Dateisystem vorbereiten und danach als Plan abschreiben. Der offene Plan in Synapse IST der Entwurf.",
+      "wortlaut_rekonstruiert": true,
+      "aufbereitet": {
+        "de": {
+          "entscheidung": "Der Entwurf ist ein offener files(plan) ohne commit. Ansehen mit plan_status, Nachbessern mit plan_update (je Op), Ergaenzen mit weiterem plan auf dieselben Dateien; erst wenn zufrieden commit.",
+          "begruendung": "Kein doppeltes Schreiben; der Koordinator sieht den Entwurf und kann vor dem Commit eingreifen.",
+          "gilt_wenn": "Richtig, wenn ein Agent eine Aenderung vorbereiten will, bevor sie wirksam wird: im System als pruefbaren Entwurf anlegen, nicht in einer privaten Zwischenkopie."
+        },
+        "en": {
+          "decision": "The draft is an open files(plan) without commit. Inspect with plan_status, refine with plan_update (per op), extend with another plan on the same files; commit only when satisfied.",
+          "reason": "No double writing; the coordinator sees the draft and can intervene before the commit.",
+          "applies_when": "Correct when an agent wants to prepare a change before it takes effect: create it in the system as a reviewable draft, not in a private intermediate copy."
+        }
+      }
+    },
+    {
+      "id": "ent-052",
+      "quelle": { "art": "memory", "ref": "regel-scratchpad-nur-fuer-wegwerf" },
+      "herkunft_projekt": "synapse",
+      "kategorie": "umsetzungsweg",
+      "kandidat": true,
+      "themen": ["scratchpad", "skripte", "repo", "wegwerf"],
+      "frage": {
+        "de": "Ein Test- oder Pruefskript wird spaeter wieder gebraucht. Scratchpad oder Repo?",
+        "en": "A test or check script will be needed again later. Scratchpad or repo?"
+      },
+      "optionen": [
+        { "key": "a", "de": "Scratchpad", "en": "Scratchpad" },
+        { "key": "b", "de": "Home-Verzeichnis", "en": "Home directory" },
+        { "key": "c", "de": "Als thought speichern", "en": "Store as a thought" },
+        { "key": "d", "de": "Ins Repo (scripts/ bzw. packages/*/tests) per files; das Scratchpad nur fuer Wegwerf-Arbeit", "en": "Into the repo (scripts/ or packages/*/tests) via files; the scratchpad only for throwaway work" }
+      ],
+      "gewaehlte_option": "d",
+      "antwort_wortlaut": "Das Scratchpad ist NUR fuer Wegwerf-Arbeit. ... wiederverwendbare Test- und Pruefskripte ins Repo (scripts/, packages/*/tests) per files; Ergebnisse, Konzepte und Berichte als thought bzw. memory.",
+      "wortlaut_rekonstruiert": true,
+      "aufbereitet": {
+        "de": {
+          "entscheidung": "Im Scratchpad nur Einmaliges (Mess-/Zaehlskripte, Logs). Wiederverwendbare Skripte gehoeren per files ins Repo, Ergebnisse und Berichte als thought oder memory.",
+          "begruendung": "Alles versioniert, geprueft und auffindbar; nichts geht verloren, wenn das Scratchpad verschwindet.",
+          "gilt_wenn": "Richtig, wenn entschieden wird, wo ein Artefakt abgelegt wird: Wiederverwendbares versioniert im Projekt, nur Wegwerf-Arbeit im Scratchpad."
+        },
+        "en": {
+          "decision": "The scratchpad holds only one-off work (measurement/count scripts, logs). Reusable scripts go into the repo via files, results and reports as thought or memory.",
+          "reason": "Everything versioned, checked and findable; nothing is lost when the scratchpad disappears.",
+          "applies_when": "Correct when deciding where an artefact is stored: reusable things versioned in the project, only throwaway work in the scratchpad."
+        }
+      }
+    },
+    {
+      "id": "ent-053",
+      "quelle": { "art": "memory", "ref": "regel-keine-festverdrahteten-modellwerte" },
+      "herkunft_projekt": "synapse",
+      "kategorie": "umsetzungsweg",
+      "kandidat": true,
+      "themen": ["festverdrahtet", "modellwerte", "konfiguration", "embedding"],
+      "frage": {
+        "de": "Darf eine Modellgroesse (Vektor-Dimension, Modellname, num_ctx) als Standardwert im Code stehen?",
+        "en": "May a model value (vector dimension, model name, num_ctx) appear as a default in code?"
+      },
+      "optionen": [
+        { "key": "a", "de": "Nie, auch nicht als Rueckfall; aus Profil/Env/Referenzvertrag holen", "en": "Never, not even as fallback; get it from profile/env/reference contract" },
+        { "key": "b", "de": "Ja, als Rueckfall", "en": "Yes, as fallback" },
+        { "key": "c", "de": "Ja, mit Kommentar", "en": "Yes, with a comment" },
+        { "key": "d", "de": "Nur in Tests", "en": "Only in tests" }
+      ],
+      "gewaehlte_option": "a",
+      "antwort_wortlaut": "Sowas darf nie festverdrahtet sein.",
+      "wortlaut_rekonstruiert": false,
+      "aufbereitet": {
+        "de": {
+          "entscheidung": "Modellwerte (Modell, Dimension, Digest, Quantisierung, num_ctx/num_batch, VRAM-Grenzen) stehen nie als Zahl oder Name im Code, auch nicht als Rueckfall. Quelle sind Modellprofil, Env oder der Referenzvertrag der API.",
+          "begruendung": "Nach dem Modellwechsel fuehrten verdrahtete Werte (3072d, num_ctx) zu Dimensionsfehlern und Hunderten abgelehnter Texte.",
+          "gilt_wenn": "Richtig, wenn ein Wert von einem austauschbaren Modell oder einer Umgebung abhaengt und gefragt wird, ob er im Code stehen darf: nein, aus Konfiguration oder Profil lesen."
+        },
+        "en": {
+          "decision": "Model values (model, dimension, digest, quantisation, num_ctx/num_batch, VRAM limits) never appear as a number or name in code, not even as fallback. Sources are the model profile, env or the API reference contract.",
+          "reason": "After the model switch, hard-wired values (3072d, num_ctx) caused dimension errors and hundreds of rejected texts.",
+          "applies_when": "Correct when a value depends on an exchangeable model or environment and the question is whether it may live in code: no, read it from configuration or profile."
+        }
+      }
+    },
+    {
+      "id": "ent-054",
+      "quelle": { "art": "memory", "ref": "regel-wiederaufnahme-ueber-synapse-history" },
+      "herkunft_projekt": "synapse",
+      "kategorie": "umsetzungsweg",
+      "kandidat": true,
+      "themen": ["wiederaufnahme", "abbruch", "history", "activity"],
+      "frage": {
+        "de": "Nach einem Abbruch: Wie findet ein Agent heraus, was er zuletzt getan hat?",
+        "en": "After an interruption: how does an agent find out what it did last?"
+      },
+      "optionen": [
+        { "key": "a", "de": "git diff und git log", "en": "git diff and git log" },
+        { "key": "b", "de": "Den Koordinator fragen", "en": "Ask the coordinator" },
+        { "key": "c", "de": "Synapse: files(history, agent_filter), shell(activity), eigene thoughts und Channel, plan(get)", "en": "Synapse: files(history, agent_filter), shell(activity), own thoughts and channel, plan(get)" },
+        { "key": "d", "de": "Von vorn anfangen", "en": "Start over" }
+      ],
+      "gewaehlte_option": "c",
+      "antwort_wortlaut": "Nach einem Abbruch rekonstruiert ein Agent seinen Arbeitsstand IMMER ueber Synapse, NICHT ueber git.",
+      "wortlaut_rekonstruiert": true,
+      "aufbereitet": {
+        "de": {
+          "entscheidung": "Arbeitsstand wird ueber Synapse rekonstruiert: files(history) mit eigenem Filter, shell(activity), eigene thoughts und Channel-Feed, plan(get). git ist nur fuer commit/push.",
+          "begruendung": "Die Synapse-History enthaelt Begruendung je Aenderung, Shell-Laeufe und Tests; git zeigt nur den Diff.",
+          "gilt_wenn": "Richtig, wenn ein Agent nach Unterbrechung seinen Stand ermitteln muss: die reichhaltigste eigene Protokollquelle (Synapse) statt des nackten Dateivergleichs."
+        },
+        "en": {
+          "decision": "Work state is reconstructed via Synapse: files(history) with own filter, shell(activity), own thoughts and channel feed, plan(get). git is only for commit/push.",
+          "reason": "The Synapse history contains the reason per change, shell runs and tests; git only shows the diff.",
+          "applies_when": "Correct when an agent must determine its state after an interruption: the richest own log source (Synapse) instead of a bare file diff."
+        }
+      }
+    },
+    {
+      "id": "ent-055",
+      "quelle": { "art": "memory", "ref": "regel-deploy-rollback-staende-begrenzen" },
+      "herkunft_projekt": "synapse",
+      "kategorie": "deploy",
+      "kandidat": false,
+      "themen": ["deploy", "aufraeumen", "rollback", "container"],
+      "frage": {
+        "de": "Wie viele alte Container/Images behaelt ein Deploy-Skript?",
+        "en": "How many old containers/images does a deploy script keep?"
+      },
+      "optionen": [
+        { "key": "a", "de": "Alle", "en": "All" },
+        { "key": "b", "de": "Laufend, prev, prev-vor-tN und eine benannte stabile Reserve; Rest erst nach Verifikation entfernen", "en": "Running, prev, prev-before-tN and one named stable reserve; remove the rest only after verification" }
+      ],
+      "gewaehlte_option": "b",
+      "antwort_wortlaut": "Jedes Deploy-Skript raeumt am Ende auf, NACHDEM der neue Container verifiziert ist. Behalten: synapse-api, synapse-api-prev, synapse-api-prev-vor-t<N> und EINE aeltere stabile Reserve. Nie vor der Verifikation aufraeumen; bei Rollback nichts loeschen.",
+      "wortlaut_rekonstruiert": true,
+      "aufbereitet": {
+        "de": {
+          "entscheidung": "Nach verifiziertem Deploy werden nur der laufende Stand, zwei Rueckfallstaende und eine benannte Reserve behalten; der Rest wird entfernt. Nie vor der Verifikation, nie bei Rollback.",
+          "begruendung": "42 gestoppte Container und ~220 Images belegten Unraid.",
+          "gilt_wenn": "Deploy und Loeschen; Vorlage fuer Deploy-Skripte, nie autonom durch Jev."
+        },
+        "en": {
+          "decision": "After a verified deploy only the running state, two fallback states and one named reserve are kept; the rest is removed. Never before verification, never on rollback.",
+          "reason": "42 stopped containers and ~220 images filled Unraid.",
+          "applies_when": "Deploy and deletion; template for deploy scripts, never autonomous by Jev."
+        }
+      }
+    },
+    {
+      "id": "ent-056",
+      "quelle": { "art": "memory", "ref": "regel-keine-fremde-agent-id" },
+      "herkunft_projekt": "synapse",
+      "kategorie": "umsetzungsweg",
+      "kandidat": true,
+      "themen": ["agent_id", "rechte", "proben", "koordinator"],
+      "frage": {
+        "de": "Ein Subagent braucht fuer eine Probe eine Koordinator-Aktion (z. B. Jev-Schalter setzen). Fuehrt er sie mit agent_id 'koordinator' selbst aus?",
+        "en": "A subagent needs a coordinator action for a probe (e.g. setting a Jev switch). Does it run it itself with agent_id 'koordinator'?"
+      },
+      "optionen": [
+        { "key": "a", "de": "Ja, fuer Proben ist das ok", "en": "Yes, for probes that is fine" },
+        { "key": "b", "de": "Ja, mit Vermerk im Bericht", "en": "Yes, with a note in the report" },
+        { "key": "c", "de": "Nein: nur eigene agent_id; die Probe mit genauem Aufruf und erwartetem Ergebnis im Bericht beschreiben, der Koordinator fuehrt sie aus", "en": "No: only its own agent_id; describe the probe with exact call and expected result in the report, the coordinator runs it" },
+        { "key": "d", "de": "Probe weglassen", "en": "Skip the probe" }
+      ],
+      "gewaehlte_option": "c",
+      "antwort_wortlaut": "Ein Agent nutzt bei Synapse-Calls IMMER nur seine EIGENE agent_id, nie die eines anderen, auch nicht fuer Proben. Aktionen, die Koordinator- oder User-Rechte brauchen, fuehrt ein Subagent NICHT selbst aus.",
+      "wortlaut_rekonstruiert": true,
+      "aufbereitet": {
+        "de": {
+          "entscheidung": "Jeder Agent handelt nur unter eigener agent_id. Braucht eine Probe hoehere Rechte, beschreibt der Subagent sie mit genauem Aufruf und erwartetem Ergebnis, und der Koordinator fuehrt sie aus und vermerkt das Ergebnis.",
+          "begruendung": "Das Activity-Log muss zeigen, wer wirklich gehandelt hat; die Rechtepruefung muss etwas bedeuten.",
+          "gilt_wenn": "Richtig, wenn ein Agent fuer eine Aufgabe Rechte oder Identitaet eines anderen braeuchte: nicht ausleihen, sondern an den Berechtigten uebergeben."
+        },
+        "en": {
+          "decision": "Every agent acts only under its own agent_id. If a probe needs higher rights, the subagent describes it with exact call and expected result, and the coordinator runs it and records the result.",
+          "reason": "The activity log must show who really acted; the rights check must mean something.",
+          "applies_when": "Correct when an agent would need another's rights or identity for a task: do not borrow them, hand over to whoever is authorised."
+        }
+      }
+    }
+  ]
+}
