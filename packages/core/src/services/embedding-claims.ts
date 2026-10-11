@@ -7,6 +7,12 @@ import { insertVector } from '../qdrant/operations.js';
 import type { CodeChunkPayload } from '../types/index.js';
 import { deterministicChunkPointId, embeddingContentHash } from './embedding-chunk-id.js';
 
+/** P12-T12: Vorgabe-Dimension = EMBEDDING_TARGET_DIM (nach dem Modellwechsel 1024), Rueckfall 3072 wie bisher. */
+function zielDimension(): number {
+  const n = Number(process.env.EMBEDDING_TARGET_DIM);
+  return Number.isInteger(n) && n > 0 ? n : 3072;
+}
+
 export interface EmbeddingChunkClaim {
   chunkId: string;
   claimToken: string;
@@ -213,7 +219,7 @@ export async function completeEmbeddingClaim(
   input: CompleteEmbeddingClaimInput,
   dependencies: CompleteEmbeddingDependencies = {},
 ): Promise<CompleteEmbeddingClaimResult> {
-  if (!validateEmbeddingVector(input.vector, input.expectedDimension ?? 3072)) {
+  if (!validateEmbeddingVector(input.vector, input.expectedDimension ?? zielDimension())) {
     throw new Error('invalid_embedding_vector');
   }
   const pool = dependencies.pool ?? (getPool() as unknown as EmbeddingClaimsDbPool);
@@ -293,7 +299,7 @@ export async function completeEmbeddingClaim(
       updated_at: new Date(row.server_now).toISOString(),
       content: row.content,
     };
-    const collection = await ensureCollection(row.project, input.expectedDimension ?? 3072);
+    const collection = await ensureCollection(row.project, input.expectedDimension ?? zielDimension());
     await writeVector(collection, input.vector, payload, pointId);
 
     const ack = await client.query(

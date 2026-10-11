@@ -10,6 +10,8 @@ import { COLLECTIONS } from '../types/index.js';
 import { getAgentSession } from './chat.js';
 import { embed } from '../embeddings/index.js';
 import { insertVector, searchVectors, deleteVector } from '../qdrant/operations.js';
+import { ensureCollection } from '../qdrant/collections.js';
+import type { EmbedOptions } from '../embeddings/index.js';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -85,20 +87,49 @@ export async function addErrorPattern(
   );
   const id = result.rows[0].id;
 
-  // Qdrant — non-blocking
+  // Qdrant — non-blocking; derselbe Weg wie der Nachzug (P12-T12), der bei Fehlschlag nachholt
   try {
-    const vector = await embed(`${description}\n\n${fix}`);
-    await insertVector(
-      COLLECTIONS.globalErrorPatterns,
-      vector,
-      { id, severity, model_scope: modelScope, found_by: foundBy, found_in_model: foundInModel, created_at: new Date().toISOString() },
-      id
-    );
+    await embeddeErrorPatternNach(null, id);
   } catch (err) {
-    console.error('[error-patterns] Qdrant upsert fehlgeschlagen (non-blocking):', err);
+    console.error('[error-patterns] Qdrant upsert fehlgeschlagen (non-blocking, Nachzug holt nach):', err);
   }
 
   return { id, modelScope };
+}
+
+/**
+ * P12-T12: traegt den Vektor eines Error-Patterns nach (Backlog; Signatur wie die anderen
+ * Nachtraege, project bleibt ungenutzt — die Collection ist global). Legt die Collection bei
+ * Bedarf an (nach intern(neu_einbetten) ist sie leer neu angelegt oder fehlt).
+ */
+export async function embeddeErrorPatternNach(
+  _project: string | null,
+  id: string,
+  embedOptions: EmbedOptions = {},
+): Promise<void> {
+  const pool = getPool();
+  const row = (await pool.query(
+    `SELECT id::text AS id, description, fix, severity, model_scope, found_by, found_in_model, created_at
+       FROM error_patterns WHERE id = $1::uuid`,
+    [id]
+  )).rows[0];
+  if (!row) return;
+  await ensureCollection(COLLECTIONS.globalErrorPatterns);
+  const vector = await embed(`${row.description}\n\n${row.fix}`, embedOptions);
+  await insertVector(
+    COLLECTIONS.globalErrorPatterns,
+    vector,
+    {
+      id: row.id,
+      severity: row.severity,
+      model_scope: row.model_scope,
+      found_by: row.found_by,
+      found_in_model: row.found_in_model,
+      created_at: new Date(row.created_at ?? Date.now()).toISOString(),
+    },
+    row.id
+  );
+  await pool.query('UPDATE error_patterns SET embedded_at = NOW() WHERE id = $1::uuid', [id]);
 }
 
 export async function listErrorPatterns(

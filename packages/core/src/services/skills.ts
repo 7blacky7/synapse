@@ -52,6 +52,7 @@
 import { createHash } from 'crypto';
 import type { PoolClient } from 'pg';
 import { embed, embeddingModellKennung, type EmbedOptions } from '../embeddings/index.js';
+import { ensureCollection } from '../qdrant/collections.js';
 import { getPool, getHintergrundPool } from '../db/client.js';
 import { embeddingNachtragAngehalten } from './intern-schalter.js';
 
@@ -793,28 +794,35 @@ export async function embeddeSkillSectionNach(
 
   const vector = await embed(row.content, embedOptions);
   const modell = embeddingModellKennung();
-  const res = await fetch(`${SKILL_QDRANT_URL}/collections/${SKILL_COLLECTION}/points?wait=true`, {
+  const punkt = {
+    id: Number(row.punkt_id),
+    vector,
+    payload: {
+      skill_name: row.skill_name,
+      section: row.section,
+      content: row.content,
+      tags: row.tags ?? [],
+      ...(row.scope ? { scope: row.scope } : {}),
+      project: row.project,
+      agent: row.agent,
+      updated_at: new Date(row.aktualisiert_am).toISOString(),
+      content_hash: row.content_hash,
+      embedding_modell: modell,
+    },
+  };
+  const upsert = () => fetch(`${SKILL_QDRANT_URL}/collections/${SKILL_COLLECTION}/points?wait=true`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      points: [{
-        id: Number(row.punkt_id),
-        vector,
-        payload: {
-          skill_name: row.skill_name,
-          section: row.section,
-          content: row.content,
-          tags: row.tags ?? [],
-          ...(row.scope ? { scope: row.scope } : {}),
-          project: row.project,
-          agent: row.agent,
-          updated_at: new Date(row.aktualisiert_am).toISOString(),
-          content_hash: row.content_hash,
-          embedding_modell: modell,
-        },
-      }],
-    }),
+    body: JSON.stringify({ points: [punkt] }),
   });
+  let res = await upsert();
+  // P12-T12: nach intern(neu_einbetten) oder auf einer frischen Qdrant fehlt die Collection -> anlegen
+  // und einmal wiederholen. Nur wenn die Skills in der Synapse-Qdrant liegen (ensureCollection spricht
+  // QDRANT_URL an).
+  if (res.status === 404 && SKILL_QDRANT_URL === (process.env.QDRANT_URL || 'http://localhost:6333')) {
+    await ensureCollection(SKILL_COLLECTION);
+    res = await upsert();
+  }
   if (!res.ok) throw new Error(`Skill-Qdrant upsert ${res.status}: ${(await res.text()).slice(0, 200)}`);
 
   await pool.query(

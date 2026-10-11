@@ -105,6 +105,9 @@ ALTER TABLE thoughts  ADD COLUMN IF NOT EXISTS embedded_at TIMESTAMPTZ DEFAULT N
 ALTER TABLE thoughts  ALTER COLUMN embedded_at DROP DEFAULT;
 ALTER TABLE proposals ADD COLUMN IF NOT EXISTS embedded_at TIMESTAMPTZ DEFAULT NOW();
 ALTER TABLE proposals ALTER COLUMN embedded_at DROP DEFAULT;
+-- P12-T12 (11.10.2026): plans im Nachzug. Bestand gilt als eingebettet (DEFAULT NOW), neue Zeilen NULL.
+ALTER TABLE plans     ADD COLUMN IF NOT EXISTS embedded_at TIMESTAMPTZ DEFAULT NOW();
+ALTER TABLE plans     ALTER COLUMN embedded_at DROP DEFAULT;
 
 -- Teil-Indizes: der Backlog fragt ausschliesslich nach den offenen Zeilen, und das sind im
 -- Normalbetrieb sehr wenige. Ein Teil-Index bleibt dadurch winzig, auch wenn die Tabellen wachsen.
@@ -716,6 +719,9 @@ CREATE TABLE IF NOT EXISTS error_patterns (
   found_in_model TEXT NOT NULL,
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
+-- P12-T12 (11.10.2026): error_patterns im Nachzug, Muster wie memories (Bestand = eingebettet).
+ALTER TABLE error_patterns ADD COLUMN IF NOT EXISTS embedded_at TIMESTAMPTZ DEFAULT NOW();
+ALTER TABLE error_patterns ALTER COLUMN embedded_at DROP DEFAULT;
 
 -- Error Pattern Seen Tracking
 CREATE TABLE IF NOT EXISTS error_pattern_seen (

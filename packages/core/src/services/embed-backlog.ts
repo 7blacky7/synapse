@@ -11,13 +11,16 @@
  *
  * NEBENEFFEKTE: schreibt Vektoren nach Qdrant und setzt embedded_at in PostgreSQL
  *
- * ABHAENGIGKEITEN: ./memory.js (embeddeMemoryNach), ./tech-docs.js (embeddeTechDocNach), ../db/pool.js
+ * ABHAENGIGKEITEN: Nachtrag-Funktionen der Dienste (memory, thoughts, proposals, plans,
+ *   error-patterns, tech-docs, skills), ../db/client.js
  */
 
 import { getPool } from '../db/client.js';
 import { embeddeMemoryNach } from './memory.js';
 import { embeddeThoughtNach } from './thoughts.js';
 import { embeddeProposalNach } from './proposals.js';
+import { embeddePlanNach } from './plans.js';
+import { embeddeErrorPatternNach } from './error-patterns.js';
 import { embeddeTechDocNach } from './tech-docs.js';
 import { embeddeSkillSectionNach } from './skills.js';
 import { schalterHaeltAn } from './intern-schalter.js';
@@ -39,17 +42,27 @@ import { schalterHaeltAn } from './intern-schalter.js';
  * skill_sections (P12-T13): Schluessel heisst punkt_id (= Qdrant-Punkt-ID), Zeitspalte
  * aktualisiert_am. Der importierte Bestand wird per skills-nach-pg.mjs --bestand-markieren als
  * eingebettet markiert, sonst bettete der Backlog alle Altzeilen erneut ein.
+ *
+ * plans + error_patterns (P12-T12): seit dem Re-Embedding im Nachzug. error_patterns ist global
+ * und hat KEINE project-Spalte (mitProjekt false) — ein Projektfilter ueberspringt sie.
  */
 const TABELLEN = [
-  { name: 'memories', sortSpalte: 'updated_at', idSpalte: 'id', nachtrag: embeddeMemoryNach },
-  { name: 'thoughts', sortSpalte: 'timestamp', idSpalte: 'id', nachtrag: embeddeThoughtNach },
-  { name: 'proposals', sortSpalte: 'updated_at', idSpalte: 'id', nachtrag: embeddeProposalNach },
-  { name: 'tech_docs', sortSpalte: 'indexed_at', idSpalte: 'id', nachtrag: embeddeTechDocNach },
-  { name: 'skill_sections', sortSpalte: 'aktualisiert_am', idSpalte: 'punkt_id', nachtrag: embeddeSkillSectionNach },
+  { name: 'memories', sortSpalte: 'updated_at', idSpalte: 'id', mitProjekt: true, nachtrag: embeddeMemoryNach },
+  { name: 'thoughts', sortSpalte: 'timestamp', idSpalte: 'id', mitProjekt: true, nachtrag: embeddeThoughtNach },
+  { name: 'proposals', sortSpalte: 'updated_at', idSpalte: 'id', mitProjekt: true, nachtrag: embeddeProposalNach },
+  { name: 'plans', sortSpalte: 'updated_at', idSpalte: 'id', mitProjekt: true, nachtrag: embeddePlanNach },
+  { name: 'error_patterns', sortSpalte: 'created_at', idSpalte: 'id', mitProjekt: false, nachtrag: embeddeErrorPatternNach },
+  { name: 'tech_docs', sortSpalte: 'indexed_at', idSpalte: 'id', mitProjekt: true, nachtrag: embeddeTechDocNach },
+  { name: 'skill_sections', sortSpalte: 'aktualisiert_am', idSpalte: 'punkt_id', mitProjekt: true, nachtrag: embeddeSkillSectionNach },
 ] as const;
 
 /** Tabellen, die der Nachzug bedient (fuer Filter wie intern(nachzug_jetzt, tabelle)). */
 export const BACKLOG_TABELLEN: readonly string[] = TABELLEN.map((t) => t.name);
+
+/** Projektbedingung je Tabelle: ohne project-Spalte nur, wenn kein Projektfilter gesetzt ist. */
+function projektBedingung(mitProjekt: boolean): string {
+  return mitProjekt ? '($1::text IS NULL OR project = $1)' : '$1::text IS NULL';
+}
 
 /**
  * Hinweis fuer aufrufende KIs, wortgleich gehalten zum EMBEDDING_PENDING_HINT der Code-Seite.
@@ -97,7 +110,7 @@ export async function embeddeOffeneEintraege(
   if (await schalterHaeltAn('embedding', 'embedding-backlog')) return { ...ergebnis, angehalten: true };
 
   // Das Limit gilt fuer den GESAMTEN Lauf, nicht je Tabelle: sonst wuerde ein grosser
-  // Rueckstand in einer Tabelle die Drosselung der anderen beiden mit aushebeln.
+  // Rueckstand in einer Tabelle die Drosselung der anderen mit aushebeln.
   let uebrig = limit;
 
   for (const tabelle of TABELLEN) {
@@ -108,10 +121,10 @@ export async function embeddeOffeneEintraege(
     // nicht dauerhaft hinter neu hinzukommenden zurueckstehen. Sortierspalte je Tabelle,
     // siehe Kommentar bei TABELLEN.
     const { rows } = await pool.query(
-      `SELECT ${tabelle.idSpalte}::text AS id, project
+      `SELECT ${tabelle.idSpalte}::text AS id, ${tabelle.mitProjekt ? 'project' : 'NULL::text AS project'}
          FROM ${tabelle.name}
         WHERE embedded_at IS NULL
-          AND ($1::text IS NULL OR project = $1)
+          AND ${projektBedingung(tabelle.mitProjekt)}
         ORDER BY ${tabelle.sortSpalte}
         LIMIT $2`,
       [project ?? null, uebrig]
@@ -155,16 +168,13 @@ export async function zaehleOffeneEmbeddings(project?: string): Promise<Record<s
   const pool = getPool();
   const ergebnis: Record<string, number> = {};
 
-  // thoughts und proposals tragen die Spalte bereits, ihre Schreibpfade sind aber noch
-  // blockierend — dort kann derzeit gar kein Rueckstand entstehen. Sie werden trotzdem
-  // gezaehlt, damit die Umstellung sofort sichtbar wird, sobald sie erfolgt.
-  for (const tabelle of ['memories', 'thoughts', 'proposals', 'tech_docs', 'skill_sections']) {
+  for (const tabelle of TABELLEN) {
     const { rows } = await pool.query(
-      `SELECT count(*)::int AS n FROM ${tabelle}
-        WHERE embedded_at IS NULL AND ($1::text IS NULL OR project = $1)`,
+      `SELECT count(*)::int AS n FROM ${tabelle.name}
+        WHERE embedded_at IS NULL AND ${projektBedingung(tabelle.mitProjekt)}`,
       [project ?? null]
     );
-    ergebnis[tabelle] = rows[0].n;
+    ergebnis[tabelle.name] = rows[0].n;
   }
 
   return ergebnis;

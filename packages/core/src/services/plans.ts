@@ -45,7 +45,7 @@ import {
   insertVector,
   deleteVector,
 } from '../qdrant/index.js';
-import { embed } from '../embeddings/index.js';
+import { embed, type EmbedOptions } from '../embeddings/index.js';
 import { getPool } from '../db/client.js';
 import {
   planNummer, taskNummer, planKurzId, taskKurzId, waehleAktiven, ergaenzeTaskKurzIds,
@@ -131,10 +131,10 @@ export interface PlanListenEintrag {
  * Tests den Index ersetzen koennen; ein Fehler kommt als warning zurueck, nie als Ausnahme.
  */
 export const planIndex = {
-  async sync(plan: ProjectPlan): Promise<void> {
+  async sync(plan: ProjectPlan, embedOptions: EmbedOptions = {}): Promise<void> {
     const collection = COLLECTIONS.projectPlans(plan.project);
     await ensureCollection(collection);
-    const vector = await embed(`${plan.name}\n${plan.description}\n${plan.goals.join('\n')}`);
+    const vector = await embed(`${plan.name}\n${plan.description}\n${plan.goals.join('\n')}`, embedOptions);
     const payload: ProjectPlanPayload = {
       project: plan.project,
       name: plan.name,
@@ -153,6 +153,8 @@ export const planIndex = {
       await deleteVector(collection, plan.id);
     } catch { /* Punkt fehlte — insert legt ihn an */ }
     await insertVector(collection, vector, payload, plan.id);
+    // P12-T12: Marker fuer den Nachzug (embed-backlog), sonst holte er den Plan erneut.
+    await getPool().query('UPDATE plans SET embedded_at = NOW() WHERE id = $1', [plan.id]);
   },
 };
 
@@ -164,6 +166,22 @@ async function indexNachziehen(plan: ProjectPlan): Promise<string | undefined> {
     console.error('[Synapse] Qdrant Plan-Index nicht nachgezogen (PG ist geschrieben):', error);
     return `Qdrant-Write fehlgeschlagen: ${error}`;
   }
+}
+
+/**
+ * P12-T12: traegt den Vektor eines Plans nach (Backlog; Signatur wie die anderen Nachtraege).
+ * Liest den Plan frisch aus PG; fehlt er inzwischen, gibt es nichts zu tun.
+ */
+export async function embeddePlanNach(
+  project: string | null,
+  id: string,
+  embedOptions: EmbedOptions = {},
+): Promise<void> {
+  if (!project) return;
+  const alle = await lesePlaene(project);
+  const zeile = alle.find((z) => z.id === id);
+  if (!zeile) return;
+  await planIndex.sync(zuPlan(zeile, alle), { ...embedOptions, priority: embedOptions.priority ?? 'background' });
 }
 
 // ---------------------------------------------------------------------------

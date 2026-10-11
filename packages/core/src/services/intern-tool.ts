@@ -7,7 +7,9 @@
  * SICHTBARKEIT: Das Tool existiert nur, wenn der Prozess mit SYNAPSE_INTERN_TOOL=1 gestartet wurde
  *   (beim Laden dieses Moduls festgehalten, internToolAktiv()). Sonst steht es nicht in tools/list,
  *   und jeder Aufruf wird mit INTERN_TOOL_AUS abgelehnt.
- * GRENZEN: Keine Aktion beendet Prozesse oder Sitzungen, keine loescht Daten.
+ * GRENZEN: Keine Aktion beendet Prozesse oder Sitzungen, keine loescht PG-Daten. Einzige Ausnahme beim
+ *   Qdrant-Index: neu_einbetten (nur mit ausfuehren:true) leert veraltete Collections — sie sind aus PG
+ *   wiederherstellbar und werden vom Nachzug neu befuellt (P12-T12).
  * ANTWORT: { success, action, ... } — wirft nie; Fehler als { success:false, action, error:<code>, message }.
  */
 
@@ -22,6 +24,7 @@ import { InternOllamaFehler, embeddingMessen, ollamaEntladen, ollamaLaden, ollam
 import { BACKLOG_TABELLEN, embeddeOffeneEintraege, zaehleOffeneEmbeddings } from './embed-backlog.js';
 import { imHintergrund } from '../db/client.js';
 import { dbSitzungen, internStatus, langsameAufrufe } from './intern-einblick.js';
+import { NEU_EINBETTEN_ARTEN, neuEinbetten } from './neu-einbetten.js';
 
 const INTERN_TOOL_BEIM_START = process.env.SYNAPSE_INTERN_TOOL === '1';
 
@@ -40,7 +43,7 @@ export const INTERN_ACTIONS = [
   'schalter_setzen', 'schalter_liste',
   'ollama_status', 'ollama_entladen', 'ollama_laden',
   'status', 'db_sitzungen', 'langsam',
-  'nachzug_jetzt', 'embedding_messen',
+  'nachzug_jetzt', 'embedding_messen', 'neu_einbetten',
 ] as const;
 export type InternAction = (typeof INTERN_ACTIONS)[number];
 
@@ -58,7 +61,10 @@ export const INTERN_DEFINITION = {
     'langsam: langsamste Tool-Aufrufe der letzten Minuten ohne bewusst wartende. ' +
     'nachzug_jetzt: offene Embeddings sofort im Hintergrund-Pool nachholen; ' +
     'embedding_messen (modell, anzahl, praefix): Testmessung direkt gegen Ollama ohne Schreiben (Ladezeit, Latenz, Passagen/s, Dimension, VRAM). ' +
-    'Keine Aktion beendet Prozesse/Sitzungen oder loescht Daten.',
+    'neu_einbetten (ausfuehren, arten): baut den Qdrant-Index nach einem Modellwechsel aus PostgreSQL neu auf — ' +
+    'veraltete Collections leeren und neu anlegen, embedded_at zuruecksetzen, der Nachzug bettet ein; ohne ausfuehren:true nur Vorschau, ' +
+    'erst nach dem Umschalten der Modell-Env. ' +
+    'Keine Aktion beendet Prozesse/Sitzungen oder loescht PG-Daten; nur neu_einbetten leert Qdrant-Collections (aus PG wiederherstellbar).',
   inputSchema: {
     type: 'object',
     properties: {
@@ -76,7 +82,9 @@ export const INTERN_DEFINITION = {
       min_sekunden: { type: 'number', description: 'db_sitzungen: laufende Abfragen ab so vielen Sekunden auflisten (Standard 5)' },
       minuten: { type: 'number', description: 'langsam: Zeitfenster in Minuten (Standard 30)' },
       limit: { type: 'number', description: 'langsam: hoechstens so viele Aufrufe (Standard 20, max 200); nachzug_jetzt: so viele Eintraege (Standard 20, max 500)' },
-      tabelle: { type: 'string', enum: ['memories', 'thoughts', 'proposals', 'tech_docs', 'skill_sections'], description: 'nachzug_jetzt: nur diese Tabelle (sonst alle)' },
+      tabelle: { type: 'string', enum: [...BACKLOG_TABELLEN], description: 'nachzug_jetzt: nur diese Tabelle (sonst alle)' },
+      ausfuehren: { type: 'boolean', description: 'neu_einbetten: true = wirklich ausfuehren (Standard: nur Vorschau)' },
+      arten: { type: 'array', items: { type: 'string', enum: [...NEU_EINBETTEN_ARTEN] }, description: 'neu_einbetten: nur diese Arten (Standard alle)' },
       anzahl: { type: 'number', description: 'embedding_messen: Zahl der Passagen (Standard 20, 1..200)' },
       praefix: { type: 'string', description: 'embedding_messen: Praefix vor jeder Passage, z. B. "passage: " (Leerzeichen zaehlen mit)' },
       keep_alive: { type: ['string', 'number'], description: 'ollama_laden: wie lange geladen bleiben (Ollama-Format, z. B. "30m", "2h", -1 = bis Neustart; Standard 30m)' },
@@ -202,6 +210,19 @@ export async function fuehreInternAus(
           offen_danach: await zaehleOffeneEmbeddings(project),
           ...(erg.angehalten ? { hinweis: 'Schalter embedding ist an — nichts nachgetragen. Erst schalter_setzen(name embedding, aktiv false).' } : {}),
         };
+      }
+      case 'neu_einbetten': {
+        const roh = a.arten;
+        const arten = Array.isArray(roh)
+          ? roh.map(String)
+          : typeof roh === 'string' && roh.trim() !== '' ? roh.split(',').map((s) => s.trim()).filter(Boolean) : undefined;
+        const falsch = (arten ?? []).filter((x) => !(NEU_EINBETTEN_ARTEN as readonly string[]).includes(x));
+        if (falsch.length > 0) {
+          return fehler(action, 'parameter_ungueltig', 'arten: ' + NEU_EINBETTEN_ARTEN.join(' | ') + ' (unbekannt: ' + falsch.join(', ') + ').');
+        }
+        // Hintergrund-Pool: die Zaehl- und UPDATE-Abfragen sollen die Tool-Verbindungen nicht belegen (P5-T15)
+        const erg = await imHintergrund(() => neuEinbetten({ ausfuehren: wahr(a, 'ausfuehren') === true, arten }));
+        return { success: true, action, ...erg };
       }
       case 'embedding_messen': {
         const modell = text(a, 'modell');
