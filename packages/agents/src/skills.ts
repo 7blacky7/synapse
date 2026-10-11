@@ -1,5 +1,6 @@
 import { readFile, writeFile, mkdir, readdir, rename, access, rm } from 'node:fs/promises'
 import { join } from 'node:path'
+import { serialisiereAgentMeta, leseAgentMetaYaml } from '@synapse/core'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -67,14 +68,9 @@ export async function readMeta(projectPath: string, agentName: string): Promise<
   const path = join(agentDir(projectPath, agentName), 'meta.yaml')
   try {
     const raw = await readFile(path, 'utf-8')
-    const meta: Record<string, string> = {}
-    for (const line of raw.split('\n')) {
-      const idx = line.indexOf(':')
-      if (idx === -1) continue
-      const key = line.slice(0, idx).trim()
-      const value = line.slice(idx + 1).trim()
-      if (key && value) meta[key] = value
-    }
+    // Tolerant: Bestand 'expertise: X: Y' (ungequotet, P15-T39) wird zeilenweise
+    // gelesen, gequotete Werte des neuen Writers werden entquotet.
+    const meta = leseAgentMetaYaml(raw)
     if (!meta.name || !meta.model || !meta.expertise || !meta.created) return null
     return {
       name: meta.name,
@@ -89,7 +85,9 @@ export async function readMeta(projectPath: string, agentName: string): Promise<
 
 export async function writeMeta(projectPath: string, agentName: string, meta: AgentMeta): Promise<void> {
   const dir = await ensureAgentDir(projectPath, agentName)
-  const content = `name: ${meta.name}\nmodel: ${meta.model}\nexpertise: ${meta.expertise}\ncreated: ${meta.created}\n`
+  // Gueltiges YAML: Werte mit ':', ' #', Anfuehrungszeichen, Zeilenumbruch usw.
+  // werden gequotet (P15-T39). Vorher entstand 'expertise: X: Y' = ungueltiges YAML.
+  const content = serialisiereAgentMeta(meta)
   await writeFile(join(dir, 'meta.yaml'), content, 'utf-8')
 }
 

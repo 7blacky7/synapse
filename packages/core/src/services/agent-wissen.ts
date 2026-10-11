@@ -40,6 +40,7 @@
 
 import { getPool } from '../db/index.js';
 import type { PoolClient } from 'pg';
+import { leseAgentMetaYaml } from './agent-meta-yaml.js';
 
 // ---------------------------------------------------------------------------
 // Typen
@@ -233,14 +234,9 @@ function leseMetaAusText(roh: string, warnungen: string[]): AgentMetaDaten | nul
       return null;
     }
   } else {
-    felder = {};
-    for (const zeile of text.split('\n')) {
-      const idx = zeile.indexOf(':');
-      if (idx === -1) continue;
-      const schluessel = zeile.slice(0, idx).trim();
-      const wert = zeile.slice(idx + 1).trim();
-      if (schluessel && wert) felder[schluessel] = wert;
-    }
+    // meta.yaml: zeilenweise wie bisher (Bestand 'expertise: X: Y' bleibt lesbar),
+    // gequotete Werte des neuen Writers werden entquotet (P15-T39).
+    felder = leseAgentMetaYaml(text);
   }
 
   const holen = (name: string): string | null => {

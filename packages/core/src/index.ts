@@ -821,6 +821,12 @@ export type {
   AgentMetaDaten,
   AgentWissen,
 } from './services/agent-wissen.js';
+export {
+  serialisiereAgentMeta,
+  leseAgentMetaYaml,
+  yamlSkalar,
+} from './services/agent-meta-yaml.js';
+export type { AgentMetaFelder } from './services/agent-meta-yaml.js';
 export type { WrapperStatusRow, HeartbeatKonfiguration, HeartbeatUebersicht } from './services/wrapper-status.js';
 
 // Skills (EXPERIMENTAL — Qdrant Skill-DB access)
