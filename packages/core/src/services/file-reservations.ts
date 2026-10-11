@@ -326,9 +326,15 @@ async function renewDueWithClient(
     filters.push(`r.file_path = ANY($${values.length}::text[])`);
   }
   const { rows } = await client.query<{
-    id: string; project: string; agent_id: string; file_path: string;
+    id: string; project: string; agent_id: string; file_path: string; letzte_aktivitaet: Date | string;
   }>(
-    `SELECT r.id::text AS id, r.project, r.agent_id, r.file_path
+    // P15-T35: letzte_aktivitaet = juengster eigener Tool-Call des Besitzers. Die Verlaengerung
+    // rechnet ab DIESEM Zeitpunkt, nicht ab NOW() — ein Worker-Tick Minuten spaeter schenkt einem
+    // laengst stillen Besitzer sonst eine volle TTL.
+    `SELECT r.id::text AS id, r.project, r.agent_id, r.file_path,
+            (SELECT MAX(t.ts) FROM tool_calls t
+              WHERE t.agent_id = r.agent_id
+                AND (t.project = r.project OR t.project IS NULL)) AS letzte_aktivitaet
        FROM file_reservations r
       WHERE ${filters.join(' AND ')}
         -- Nur echte Tool-Aktivitaet verlaengert (28.09.2026). Ein offener Plan ist KEIN
@@ -347,14 +353,19 @@ async function renewDueWithClient(
   );
 
   const touched = new Map<string, Set<string>>();
+  // P15-T35 (Befund c0639b81): Basis-TTL ohne Skalierung nach Beteiligten. Vorher NOW() + TTL x
+  // Beteiligte: wer auf eine Datei wartete oder sie mitreservierte, verlaengerte damit die
+  // Reservierung eines abwesenden Besitzers (Live: 4212 auf 40 Min). Die Skalierung gilt weiter
+  // beim eigenen reservation_add (refreshReservationTtlsForFiles); ein aktiver Besitzer wird bei
+  // jeder neuen Aktivitaet erneut verlaengert. GREATEST: nie kuerzen.
+  const basisSekunden = scaledTtlSeconds(config, 1);
   for (const row of rows) {
-    const participants = await reservationParticipantCount(client, row.project, row.file_path);
     await client.query(
       `UPDATE file_reservations
-          SET expires_at = NOW() + ($2 * INTERVAL '1 second'),
+          SET expires_at = GREATEST(expires_at, $3::timestamptz + ($2 * INTERVAL '1 second')),
               last_extended_at = NOW()
         WHERE id = $1::bigint AND released_at IS NULL AND expires_at > NOW()`,
-      [row.id, scaledTtlSeconds(config, participants)],
+      [row.id, basisSekunden, row.letzte_aktivitaet],
     );
     const paths = touched.get(row.project) ?? new Set<string>();
     paths.add(row.file_path);
