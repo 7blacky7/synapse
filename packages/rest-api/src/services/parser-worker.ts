@@ -108,7 +108,24 @@ export class ParserWorker {
     // Erster Tick gleich nach 2s (nicht beim Boot, damit Schema/Init durch sind).
     setTimeout(() => this.fire(), 2_000);
     this.timer = setInterval(() => this.fire(), this.cfg.intervalMs);
-    void imHintergrund(() => this.embeddingLoop());
+    // P12-T14: Claims des EIGENEN Knotens aus einem frueheren Prozess freigeben, bevor die Schleife
+    // startet. Alle Server-Prozesse heissen 'unraid-local'; ein neuer Prozess hat keine laufenden
+    // Claims, verwaiste (Deploy/Absturz mitten im Stapel) zaehlten aber gegen seine Kapazitaet und
+    // legten den Code-Nachzug bis zum Lease-Ablauf (15 min) still - gemessen nach t47 -> t48.
+    void imHintergrund(async () => {
+      try {
+        const frei = await getPool().query(
+          `UPDATE code_chunks SET claimed_by = NULL, claim_token = NULL, lease_until = NULL
+            WHERE claimed_by = 'unraid-local' AND embedded_at IS NULL`,
+        );
+        if ((frei.rowCount ?? 0) > 0) {
+          console.error('[parser-worker] ' + frei.rowCount + ' verwaiste eigene Claims beim Start freigegeben');
+        }
+      } catch (err) {
+        console.error('[parser-worker] Freigabe verwaister Claims fehlgeschlagen: ' + (err as Error).message);
+      }
+      await this.embeddingLoop();
+    });
     // P12-T17: Context7-Automatik (eigener Takt, eigene Drosselung — siehe context7-automatik.ts)
     initContext7Automatik();
     // P14-T4: Stats fuer intern(action:'status')
