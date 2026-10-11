@@ -265,6 +265,18 @@ export async function startServer(): Promise<void> {
     console.error('[Synapse API] Syntaxpruefer-Anmeldung fehlgeschlagen (Schreibweg laeuft ohne Syntaxpruefung):', err);
   }
 
+  // P16-T5: Pruef-Container (Stufe S3) fuer Sprachen ausserhalb des Node-Prozesses (E1: Rust). Die API verwaltet
+  // ihn selbst ueber docker.sock (Start bei Bedarf, Idle-Stop, Neustart nach Absturz), siehe services/pruef-container.ts.
+  // Ohne Docker oder ohne Image (docker build -t synapse-pruefcontainer:latest docker/synapse-pruefcontainer) bleibt
+  // es bei Stufe 1. Notaus: PRUEFCONTAINER=0. Limits: PRUEFCONTAINER_MEM_MB (256), PRUEFCONTAINER_CPUS (1).
+  try {
+    const { registriereContainerSyntaxPruefer } = await import('./services/pruef-container.js');
+    const namen = await registriereContainerSyntaxPruefer();
+    if (namen.length > 0) console.log(`[Synapse API] Container-Syntaxpruefer angemeldet: ${namen.join(', ')}`);
+  } catch (err) {
+    console.error('[Synapse API] Container-Syntaxpruefer-Anmeldung fehlgeschlagen (Schreibweg laeuft ohne):', err);
+  }
+
   // Parser-Worker: server-seitige parseUnparsedFiles-Schleife. Schliesst die Luecke
   // wenn KEIN lokaler FileWatcher-Daemon laeuft — Files die via files-Tool / Web-KI
   // in code_files landen, werden hier nachgezogen + code_intel sieht sie.
