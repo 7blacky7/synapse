@@ -1397,7 +1397,7 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
       create: { description: 'Channel anlegen (name, project, created_by, optional description).' },
       join: { description: 'Beitreten — channel_name als String oder Array fuer Batch-Join.' },
       leave: { description: 'Verlassen — channel_name als String oder Array.' },
-      post: { description: 'Nachricht in Channel (channel_name, sender, content). Bulk-Mode: messages[] (1..20) fuer mehrere Posts in einem Call — sender + channel_name gelten fuer alle.' },
+      post: { description: 'Nachricht in Channel (channel_name, sender, content). Bulk-Mode: messages[] (1..20) fuer mehrere Posts in einem Call — sender + channel_name gelten fuer alle. Posts kurz halten: Ergebnisse, Befunde, Berichte zuerst als thought (per ID lesbar, 8 Zeichen reichen) oder memory (per Name lesbar) ablegen und hier nur ID/Name mit einer Zeile nennen (z. B. "T2 fertig, Ergebnis: thought ab12cd34"); ausfuehrlich nur bei Rueckfrage, Entscheidung, Blocker oder Hinweis fuer den User.' },
       feed: { description: 'Channel-Inhalt lesen (limit, since_id, before_id, order, optional preview-Truncation). order:"asc" + since_id blaettert von vorne durch — ohne das bekommst du immer nur die neuesten limit Nachrichten und erreichst den Anfang langer Channels nie.' },
       list: { description: 'Alle Channels im Projekt.' },
     },

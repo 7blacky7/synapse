@@ -624,7 +624,7 @@ export const MCP_TOOLS = [
   // 8. channel
   {
     name: 'channel',
-    description: 'Channels (Gruppen-Notizboards) zwischen Sub-Hilfsagenten im eigenen Synapse-Projekt verwalten: anlegen, beitreten, verlassen, posten, lesen, listen. Lokale Datenbank, project-scoped. Optionales agent_id aktiviert Attribution und einmaliges Projekt-Onboarding ueber den gemeinsamen MCP-Pfad; sender ist nur der sichtbare Nachrichten-Absender und ersetzt agent_id nicht. Keine externen Chat-Systeme.',
+    description: 'Channels (Gruppen-Notizboards) zwischen Sub-Hilfsagenten im eigenen Synapse-Projekt verwalten: anlegen, beitreten, verlassen, posten, lesen, listen. Lokale Datenbank, project-scoped. Optionales agent_id aktiviert Attribution und einmaliges Projekt-Onboarding ueber den gemeinsamen MCP-Pfad; sender ist nur der sichtbare Nachrichten-Absender und ersetzt agent_id nicht. POSTS KURZ HALTEN: Ergebnisse, Befunde und laengere Berichte zuerst als thought (Zwischenstand/Befund/Uebergabe, per ID lesbar, 8 Zeichen reichen) oder memory (dauerhaftes Wissen, per Name lesbar) ablegen und im Channel nur ID bzw. Name mit einer Zeile nennen (z. B. "T2 fertig, Ergebnis: thought ab12cd34"). Ausfuehrlich nur, wenn etwas zu besprechen ist: Rueckfrage, Entscheidung, Blocker, Hinweis fuer den User. Keine externen Chat-Systeme.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -661,13 +661,13 @@ export const MCP_TOOLS = [
             + 'Herkunfts-Tags (aus-channel, channel:<name>, stand:<datum>). Fehlt der Name, sagt die Antwort das.',
         },
         sender: { type: 'string', description: 'Absender (Agent-Name, fuer post)' },
-        content: { type: 'string', description: 'Nachrichteninhalt (fuer post)' },
+        content: { type: 'string', description: 'Nachrichteninhalt (fuer post). Kurz: Ergebnis vorher als thought (ID) oder memory (Name) ablegen, hier nur ID/Name mit einer Zeile; ausfuehrlich nur bei Rueckfrage, Entscheidung, Blocker oder Hinweis fuer den User.' },
         limit: { type: 'number', description: 'Max. Nachrichten (Standard: 20, fuer feed)' },
         since_id: { type: 'number', description: 'Nur Nachrichten nach dieser ID (fuer feed)' },
         preview: { type: 'boolean', description: 'Inhalte auf 200 Zeichen kuerzen (fuer feed)' },
         messages: {
           type: 'array',
-          description: 'Bulk-Mode fuer post: 1..20 Nachrichten in einem Channel in einem Call. Jedes Item: { content }. project + channel_name + sender gelten fuer alle. Best-effort.',
+          description: 'Bulk-Mode fuer post: 1..20 Nachrichten in einem Channel in einem Call. Jedes Item: { content }. project + channel_name + sender gelten fuer alle. Best-effort. Jede Nachricht kurz wie bei content (Ergebnisse als thought-ID/memory-Name).',
           minItems: 1,
           maxItems: 20,
           items: {

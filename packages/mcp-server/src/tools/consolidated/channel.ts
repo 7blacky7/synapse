@@ -244,7 +244,7 @@ async function handleList(args: Record<string, unknown>) {
 export const channelTool: ConsolidatedTool = {
   definition: {
     name: 'channel',
-    description: 'Verwaltet Channels fuer Spezialisten-Kommunikation (create, join, leave, post, feed, list). Optionales agent_id aktiviert Attribution und einmaliges Projekt-Onboarding ueber den gemeinsamen MCP-Pfad; sender ist nur der sichtbare Nachrichten-Absender und ersetzt agent_id nicht.',
+    description: 'Verwaltet Channels fuer Spezialisten-Kommunikation (create, join, leave, post, feed, list). Optionales agent_id aktiviert Attribution und einmaliges Projekt-Onboarding ueber den gemeinsamen MCP-Pfad; sender ist nur der sichtbare Nachrichten-Absender und ersetzt agent_id nicht. POSTS KURZ HALTEN: Ergebnisse, Befunde und laengere Berichte zuerst als thought (Zwischenstand/Befund/Uebergabe, per ID lesbar, 8 Zeichen reichen) oder memory (dauerhaftes Wissen, per Name lesbar) ablegen und im Channel nur ID bzw. Name mit einer Zeile nennen (z. B. "T2 fertig, Ergebnis: thought ab12cd34"). Ausfuehrlich nur, wenn etwas zu besprechen ist: Rueckfrage, Entscheidung, Blocker, Hinweis fuer den User.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -309,7 +309,7 @@ export const channelTool: ConsolidatedTool = {
         },
         content: {
           type: 'string',
-          description: 'Nachrichteninhalt (fuer post)',
+          description: 'Nachrichteninhalt (fuer post). Kurz: Ergebnis vorher als thought (ID) oder memory (Name) ablegen, hier nur ID/Name mit einer Zeile; ausfuehrlich nur bei Rueckfrage, Entscheidung, Blocker oder Hinweis fuer den User.',
         },
         // feed: limit, since_id, preview
         limit: {
@@ -343,7 +343,7 @@ export const channelTool: ConsolidatedTool = {
         },
         messages: {
           type: 'array',
-          description: 'Bulk-Mode fuer post: 1..20 Nachrichten in einem Channel in einem Call. Jedes Item: { content }. project + channel_name + sender gelten fuer alle. Best-effort.',
+          description: 'Bulk-Mode fuer post: 1..20 Nachrichten in einem Channel in einem Call. Jedes Item: { content }. project + channel_name + sender gelten fuer alle. Best-effort. Jede Nachricht kurz wie bei content (Ergebnisse als thought-ID/memory-Name).',
           minItems: 1,
           maxItems: 20,
           items: {
