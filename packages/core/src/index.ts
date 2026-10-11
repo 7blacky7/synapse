@@ -167,6 +167,14 @@ export {
   fuehreWarteschlangeLokal,
   istWarteschlangenAction,
 } from './services/intern-warteschlangen.js';
+export {
+  WAITS_ACTIONS,
+  fuehreWaitsAus,
+  istWaitsAction,
+  toteWaitsListe,
+  toteWaitsSichernUndSchliessen,
+} from './services/intern-waits.js';
+export type { ToterWait, WaitGeschlossen } from './services/intern-waits.js';
 export { assetWarteschlange } from './services/asset-intel-sync.js';
 export { embeddingWarteschlangeEintraege } from './embeddings/index.js';
 export { listeFaelligeDateien } from './services/code.js';
@@ -979,6 +987,8 @@ export {
   PlanBatchOpsFailedError,
   planFailureResponse,
   buildCancelResponse,
+  nichtsGeschriebenBefund,
+  opZumNeuPlanen,
   pollPlanStatus,
   getPlanOpsVollstaendig,
   opIndicesLesen,

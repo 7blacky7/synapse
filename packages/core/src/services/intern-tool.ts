@@ -50,6 +50,8 @@ import { DIAGNOSE_ACTIONS, DIAGNOSE_BESCHREIBUNG, DIAGNOSE_PARAMETER, fuehreDiag
 import {
   WARTESCHLANGEN_ACTIONS, WARTESCHLANGEN_BESCHREIBUNG, WARTESCHLANGEN_PARAMETER, fuehreWarteschlangeAus, istWarteschlangenAction,
 } from './intern-warteschlangen.js';
+// P15-T31: tote Co-Edit-Waits sichten, sichern, schliessen (intern-waits.ts).
+import { WAITS_ACTIONS, WAITS_BESCHREIBUNG, WAITS_PARAMETER, fuehreWaitsAus, istWaitsAction } from './intern-waits.js';
 
 const INTERN_TOOL_BEIM_START = process.env.SYNAPSE_INTERN_TOOL === '1';
 
@@ -74,6 +76,7 @@ export const INTERN_ACTIONS = [
   'gpu_helfer_status', 'gpu_helfer_einstellen',
   ...DIAGNOSE_ACTIONS,
   ...WARTESCHLANGEN_ACTIONS,
+  ...WAITS_ACTIONS,
 ] as const;
 export type InternAction = (typeof INTERN_ACTIONS)[number];
 
@@ -106,6 +109,7 @@ export const INTERN_DEFINITION = {
     'gpu_helfer_status / gpu_helfer_einstellen (lan_bevorzugen, embed_pause_ms; null entfernt) ueber den lokalen Daemon: ~/.synapse/file-watcher/gpu-helfer.json, der Tray startet den Helfer binnen ~5 s neu. ' +
     DIAGNOSE_BESCHREIBUNG +
     WARTESCHLANGEN_BESCHREIBUNG +
+    WAITS_BESCHREIBUNG +
     'Keine Aktion beendet Prozesse/Sitzungen oder loescht PG-Daten; nur neu_einbetten leert Qdrant-Collections (aus PG wiederherstellbar).',
   inputSchema: {
     type: 'object',
@@ -142,7 +146,7 @@ export const INTERN_DEFINITION = {
       minuten: { type: 'number', description: 'langsam: Zeitfenster in Minuten (Standard 30)' },
       limit: { type: 'number', description: 'langsam: hoechstens so viele Aufrufe (Standard 20, max 200); nachzug_jetzt: so viele Eintraege (Standard 20, max 500)' },
       tabelle: { type: 'string', enum: [...BACKLOG_TABELLEN], description: 'nachzug_jetzt: nur diese Tabelle (sonst alle)' },
-      ausfuehren: { type: 'boolean', description: 'neu_einbetten: true = wirklich ausfuehren (Standard: nur Vorschau)' },
+      ausfuehren: { type: 'boolean', description: 'neu_einbetten / waits_tot: true = wirklich ausfuehren (Standard: nur Vorschau)' },
       arten: { type: 'array', items: { type: 'string', enum: [...NEU_EINBETTEN_ARTEN] }, description: 'neu_einbetten: nur diese Arten (Standard alle)' },
       projekte: { type: 'array', items: { type: 'string' }, description: 'embed_prioritaet: Projekte, deren Stufe gesetzt wird' },
       stufe: { type: 'number', description: 'embed_prioritaet: 1 (zuerst) bis 4 (zuletzt), 0 = Eintrag entfernen (zurueck auf 3)' },
@@ -153,6 +157,7 @@ export const INTERN_DEFINITION = {
       keep_alive: { type: ['string', 'number'], description: 'ollama_laden: wie lange geladen bleiben (Ollama-Format, z. B. "30m", "2h", -1 = bis Neustart; Standard 30m)' },
       ...DIAGNOSE_PARAMETER,
       ...WARTESCHLANGEN_PARAMETER,
+      ...WAITS_PARAMETER,
     },
     required: ['action'],
   },
@@ -245,6 +250,8 @@ export async function fuehreInternAus(
   if (istDiagnoseAction(action)) return await fuehreDiagnoseAus(action, a, agentId);
   // P15-T12 E3/E4: Warteschlangen (intern-warteschlangen.ts) - wirft nie
   if (istWarteschlangenAction(action)) return await fuehreWarteschlangeAus(action, a, agentId);
+  // P15-T31: tote Co-Edit-Waits (intern-waits.ts) - wirft nie
+  if (istWaitsAction(action)) return await fuehreWaitsAus(action, a, agentId);
   try {
     switch (action) {
       case 'schalter_setzen': {

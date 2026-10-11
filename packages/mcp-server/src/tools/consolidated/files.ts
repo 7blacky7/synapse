@@ -36,6 +36,7 @@ import {
   opIndicesLesen,
   reservationTtlHint,
   commitBatch,
+  nichtsGeschriebenBefund,
   cancelBatch,
   getBatchPlan,
   buildPlanStatusResponse,
@@ -471,6 +472,11 @@ export const filesTool: ConsolidatedTool = {
       }
       // Shared Ops bleiben persistent im Wait; auto_commit schreibt nur den
       // konfliktfreien Teilplan und niemals einen leeren Plan.
+      // P15-T31: auto_commit ohne Op im Plan -> nothing_written mit Grund und was_tun (nie success).
+      if (bool(args, 'auto_commit') === true && result.total_ops === 0) {
+        const n = await nichtsGeschriebenBefund(result.plan_id, 'auto_commit');
+        return { ...n, plan: result, auto_committed: false };
+      }
       const allPreviewsOk = result.previews?.every(p => p.ok) ?? true;
       if (bool(args, 'auto_commit') === true && allPreviewsOk && result.total_ops > 0) {
         const c = await commitBatch({ plan_id: result.plan_id, agent_id: agentId, agent_note: typeof args.agent_note === 'string' ? args.agent_note : undefined });
@@ -523,6 +529,11 @@ export const filesTool: ConsolidatedTool = {
       const wie = result.in_place
         ? `Plan ${planId} im selben Plan aktualisiert (Waits und Beitraege bleiben gebunden)`
         : `NEUE plan_id ${result.plan_id} — ab jetzt diese verwenden; Plan ${planId} ist dadurch verworfen`;
+      // P15-T31: auto_commit ohne Op im Plan -> nichts geschrieben, klar gemeldet.
+      if (bool(args, 'auto_commit') === true && result.total_ops === 0) {
+        const n = await nichtsGeschriebenBefund(result.plan_id, 'auto_commit');
+        return { ...n, plan: result, ...(result.in_place ? {} : { superseded_plan_id: planId }), auto_committed: false };
+      }
       if (bool(args, 'auto_commit') === true && allPreviewsOk && result.total_ops > 0) {
         const c = await commitBatch({ plan_id: result.plan_id, agent_id: agentId, agent_note: typeof args.agent_note === 'string' ? args.agent_note : undefined });
         return {

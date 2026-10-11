@@ -135,6 +135,7 @@ import {
   opIndicesLesen,
   reservationTtlHint,
   commitBatch,
+  nichtsGeschriebenBefund,
   cancelBatch,
   getBatchPlan,
   buildPlanStatusResponse,
@@ -4745,7 +4746,7 @@ async function handleToolCall(
             deferred: number;
           };
           type Ergebnis =
-            | ({ art: 'ok'; wert: { file_path: string; batch_id: string; ops: number } | null } & WaitMeta)
+            | ({ art: 'ok'; wert: { file_path: string; batch_id: string; ops: number } | null; traeger?: string } & WaitMeta)
             | ({ art: 'fehler'; wert: { file_path: string; error: string; message: string } } & WaitMeta);
           const eintraege = [...byFile.entries()];
           const ergebnisse: Array<Ergebnis | undefined> = new Array(eintraege.length);
@@ -4768,7 +4769,8 @@ async function handleToolCall(
                 const waits = plan.coedit_waits ?? [];
                 const deferred = plan.deferred_ops ?? 0;
                 if (plan.total_ops === 0) {
-                  ergebnisse[index] = { art: 'ok', wert: null, waits, deferred };
+                  // P15-T31: leerer Traeger (Ops warten) — fuer den nothing_written-Befund merken.
+                  ergebnisse[index] = { art: 'ok', wert: null, traeger: plan.plan_id, waits, deferred };
                   continue;
                 }
                 const c = await commitBatch({ plan_id: plan.plan_id, agent_id: agentId, agent_note: str(args, 'agent_note') });
@@ -4803,9 +4805,11 @@ async function handleToolCall(
           );
 
           // Eingabe-Reihenfolge wiederherstellen; Waits werden tokenbasiert dedupliziert.
+          const traegerIds: string[] = [];
           for (const e of ergebnisse) {
             if (!e) continue;
             if (e.art === 'ok' && e.wert) committed.push(e.wert);
+            if (e.art === 'ok' && !e.wert && e.traeger) traegerIds.push(e.traeger);
             if (e.art === 'fehler') failed.push(e.wert);
             deferredOps += e.deferred;
             for (const wait of e.waits) {
@@ -4853,6 +4857,15 @@ async function handleToolCall(
               }
             }
           }
+          // P15-T31: keine Datei committed und keine gescheitert -> alles wartet bzw. nichts zu tun.
+          // Vorher success:true mit committed [] — sah aus wie geschrieben.
+          if (committed.length === 0 && failed.length === 0) {
+            const n = await nichtsGeschriebenBefund(traegerIds, 'auto_commit');
+            return {
+              ...n, mode: 'per_file_atomic', committed, failed, committed_count: 0, failed_count: 0,
+              ...waitExtras, auto_committed: false,
+            };
+          }
           return {
             success: failed.length === 0,
             mode: 'per_file_atomic',
@@ -4883,6 +4896,13 @@ async function handleToolCall(
         } catch (err) {
           // Scheitert eine Op, liegt der Batch als neuer offener Plan vor (plan_id + failed_ops).
           return planFailureResponse(err);
+        }
+        // P15-T31: auto_commit, aber keine Op im Plan (alles wartet im Co-Edit-Wait bzw. nichts zu tun):
+        // es wird NICHTS geschrieben. Vorher kam success:true zurueck und der Agent hielt das fuer
+        // geschrieben. Jetzt nothing_written mit Grund (wartet | abgelaufen | leer) und was_tun.
+        if (bool(args, 'auto_commit') === true && result.total_ops === 0) {
+          const n = await nichtsGeschriebenBefund(result.plan_id, 'auto_commit');
+          return { ...n, plan: result, auto_committed: false };
         }
         // auto_commit:true -> direkt commit, ABER nur wenn alle Previews ok sind.
         const allPreviewsOk = result.previews?.every(p => p.ok) ?? true;
@@ -4937,6 +4957,11 @@ async function handleToolCall(
         const wie = result.in_place
           ? `Plan ${planId} im selben Plan aktualisiert (Waits und Beitraege bleiben gebunden)`
           : `NEUE plan_id ${result.plan_id} — ab jetzt diese verwenden; Plan ${planId} ist dadurch verworfen`;
+        // P15-T31: auto_commit ohne Op im Plan -> nichts geschrieben, klar gemeldet.
+        if (bool(args, 'auto_commit') === true && result.total_ops === 0) {
+          const n = await nichtsGeschriebenBefund(result.plan_id, 'auto_commit');
+          return { ...n, plan: result, ...(result.in_place ? {} : { superseded_plan_id: planId }), auto_committed: false };
+        }
         if (bool(args, 'auto_commit') === true && allPreviewsOk && result.total_ops > 0) {
           const c = await commitBatch({ plan_id: result.plan_id, agent_id: agentId, agent_note: str(args, 'agent_note') });
           return {

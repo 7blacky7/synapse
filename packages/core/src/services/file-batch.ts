@@ -607,8 +607,36 @@ export type CommitBatchResult =
       waiting_for?: CommitWaitingFor[];
       /** commit mit wait_seconds: so lange hat der Server gewartet. */
       waited_seconds?: number;
+      /** P15-T31: der Plan hatte keine Op — es wurde NICHTS geschrieben (error nothing_written). */
+      nichts_geschrieben?: true;
+      /** P15-T31: wartet (Wait lebt), abgelaufen (Wait tot), leer (keine Op, kein Wait). */
+      grund?: NichtsGeschriebenGrund;
+      /** P15-T31: die offenen Waits der betroffenen Traeger. */
+      waits?: NichtsGeschriebenWait[];
+      /** P15-T31 (grund abgelaufen): die Ops aus den toten Waits, fertig fuer files(action:"plan"). */
+      ops_zum_neu_planen?: FileBatchOp[];
+      /** P15-T31: was der Agent jetzt tun soll. */
+      was_tun?: string;
+      committed?: 0;
       message: string;
     };
+
+/** P15-T31: warum ein commit nichts geschrieben hat. */
+export type NichtsGeschriebenGrund = 'wartet' | 'abgelaufen' | 'leer';
+
+/** P15-T31: ein offener Wait eines leeren Traegers in der nothing_written-Antwort. */
+export interface NichtsGeschriebenWait {
+  plan_id: string;
+  wait_token: string;
+  /** Auf wen der Wait wartet (Primaeragent mit der Reservierung). */
+  primary_agent: string;
+  shared_files: string[];
+  /** waiting | linked | ready | no_changes | expired (tot: Ziel entsteht nie mehr). */
+  wait_status: string;
+  target_plan_id: string | null;
+  /** So viele Ops liegen im Wait und sind NICHT geschrieben. */
+  ops: number;
+}
 
 /** E1: ein aktiver, noch nicht bereiter Beitragender/Wartender, auf den ein commit wartet. */
 export interface CommitWaitingFor {
@@ -4153,6 +4181,92 @@ export async function commitBatch(args: {
   }
 }
 
+/** P15-T31: Co-Edit-Metadaten aus einer Wait-Op entfernen, damit sie direkt in files(plan) passt. */
+export function opZumNeuPlanen(op: FileBatchOp): FileBatchOp {
+  const sauber: Record<string, unknown> = {};
+  for (const [schluessel, wert] of Object.entries(op as unknown as Record<string, unknown>)) {
+    if (schluessel === 'agent_id' || schluessel.startsWith('coedit_')) continue;
+    sauber[schluessel] = wert;
+  }
+  return sauber as unknown as FileBatchOp;
+}
+
+/**
+ * P15-T31: Antwort fuer einen commit bzw. auto_commit, der NICHTS geschrieben hat, weil der Plan
+ * (bzw. jeder der Plaene) keine Op enthaelt. Schreibt nichts, aendert keinen Status.
+ *  - wartet:     offene Waits leben noch (der Primaeragent haelt seine Reservierung) — warten.
+ *  - abgelaufen: mindestens ein Wait ist tot (totWaitSql) — dieselben Ops neu planen, der Traeger
+ *                wird wiederverwendet (P15-T27); die Ops stehen in ops_zum_neu_planen.
+ *  - leer:       keine Op und kein offener Wait — es gab nichts zu schreiben; Plan verwerfen.
+ * Mehrere Plaene (auto_commit ueber mehrere Dateien): abgelaufen vor wartet vor leer.
+ */
+export async function nichtsGeschriebenBefund(
+  planIds: string | string[],
+  anlass: 'commit' | 'auto_commit' = 'commit',
+): Promise<Extract<CommitBatchResult, { success: false }>> {
+  const ids = uniqueStrings(Array.isArray(planIds) ? planIds : [planIds]);
+  const res = await getPool().query<{
+    plan_id: string; wait_token: string; primary_agent: string; shared_files: string[];
+    wait_status: string; target_plan_id: string | null; deferred_ops: FileBatchOp[];
+  }>(
+    `SELECT w.source_plan_id::text AS plan_id, w.wait_token::text AS wait_token, w.primary_agent, w.shared_files,
+            CASE WHEN ${totWaitSql('w')} THEN 'expired' ELSE w.status END AS wait_status,
+            w.primary_plan_id::text AS target_plan_id, w.deferred_ops
+       FROM file_batch_waits w
+      WHERE w.source_plan_id = ANY($1::bigint[]) AND w.status <> 'closed'
+      ORDER BY w.source_plan_id, w.created_at, w.wait_token`,
+    [ids],
+  );
+  const waits: NichtsGeschriebenWait[] = res.rows.map((row) => ({
+    plan_id: row.plan_id, wait_token: row.wait_token, primary_agent: row.primary_agent,
+    shared_files: row.shared_files, wait_status: row.wait_status, target_plan_id: row.target_plan_id,
+    ops: Array.isArray(row.deferred_ops) ? row.deferred_ops.length : 0,
+  }));
+  const tot = res.rows.filter((row) => row.wait_status === 'expired');
+  const grund: NichtsGeschriebenGrund = tot.length > 0 ? 'abgelaufen' : waits.length > 0 ? 'wartet' : 'leer';
+  const planText = ids.length === 1 ? `Plan ${ids[0]}` : `Plaene ${ids.join(', ')}`;
+  const opsGesamt = waits.reduce((summe, wait) => summe + wait.ops, 0);
+  const auf = uniqueStrings(waits.map((wait) => wait.primary_agent)).join(', ');
+  const dateien = uniqueStrings(waits.flatMap((wait) => wait.shared_files)).join(', ');
+  const vorsatz = `NICHTS GESCHRIEBEN${anlass === 'auto_commit' ? ' (auto_commit)' : ''}: ${planText}`;
+  const opsZumNeuPlanen = tot.flatMap((row) => (Array.isArray(row.deferred_ops) ? row.deferred_ops : []).map(opZumNeuPlanen));
+  let message: string;
+  let wasTun: string;
+  if (grund === 'abgelaufen') {
+    const totAuf = uniqueStrings(tot.map((row) => row.primary_agent)).join(', ');
+    message = `${vorsatz} enthaelt keine Op. Deine Op(s) liegen in ${tot.length} Co-Edit-Wait(s), die auf ${totAuf} warten — `
+      + `dessen Reservierung ist abgelaufen, freigegeben oder der Agent ist abgemeldet. Dieser Wait loest sich nie mehr (wait_status expired), `
+      + `die Op(s) sind NICHT geschrieben.`;
+    wasTun = `Dieselben Ops erneut planen: files(action:"plan", ops:<ops_zum_neu_planen>) — liegt noch ein leerer Traeger auf den Dateien, `
+      + `wird er wiederverwendet (reused_carrier), die Ops landen direkt im Plan; danach files(action:"commit", plan_id) oder gleich auto_commit:true. `
+      + `Den Traeger vorher NICHT verwerfen (cancel schliesst seine Waits). ops_zum_neu_planen enthaelt die Ops vollstaendig.`;
+  } else if (grund === 'wartet') {
+    message = `${vorsatz} ist ein leerer Traeger: ${opsGesamt} Op(s) warten im Co-Edit-Wait auf ${auf} (Datei(en) ${dateien}) `
+      + `und sind NICHT geschrieben.`;
+    wasTun = `Warten statt neu planen: files(action:"plan_status", plan_id:"${waits[0]?.plan_id ?? ids[0]}", wait_seconds:50) bzw. `
+      + `files(action:"shared_plan_status", wait_token, wait_seconds:50) — Long-Poll, wacht bei Zielplan, Ablauf oder Aenderung auf. `
+      + `Steht target_plan_id (Event PLAN_READY): dort mit coedit_add beitragen und coedit_ready melden. Wird der Wait expired, `
+      + `dieselben Ops neu planen (der Traeger wird wiederverwendet). Den Traeger NICHT verwerfen — cancel schliesst die Waits samt deinen Ops.`;
+  } else {
+    message = `${vorsatz} enthaelt keine Op und keinen offenen Wait — es gab nichts zu schreiben.`;
+    wasTun = `Pruefen, ob die Aenderung woanders liegt (merged_into der plan-Antwort, files(action:"history")). `
+      + `Den leeren Plan verwerfen: files(action:"cancel", plan_id:"${ids[0]}").`;
+  }
+  return {
+    success: false,
+    plan_id: ids[0] ?? '',
+    status: 'open',
+    error: 'nothing_written',
+    nichts_geschrieben: true,
+    committed: 0,
+    grund,
+    ...(waits.length > 0 ? { waits } : {}),
+    ...(opsZumNeuPlanen.length > 0 ? { ops_zum_neu_planen: opsZumNeuPlanen } : {}),
+    was_tun: wasTun,
+    message: `${message} ${wasTun}`,
+  };
+}
+
 async function commitBatchOnce(args: {
   plan_id: string;
   agent_id?: string;
@@ -4228,6 +4342,19 @@ async function commitBatchOnce(args: {
       message: `Plan ${args.plan_id} enthaelt ${failedOps.length} gescheiterte Op(s) und ist nicht committbar. ` +
         `Korrigieren: files(action:"plan_update", plan_id:"${args.plan_id}", op_index:<index>, ops:[...]) oder verwerfen: files(action:"cancel").`,
     };
+  }
+
+  // P15-T31: ein Plan ohne Op schreibt nichts. Vorher meldete der commit eines leeren Traegers
+  // success mit committed 0 und setzte ihn auf 'committed' — der Agent hielt das fuer einen
+  // Schreiberfolg, und der Wait mit seinen Ops verlor seinen Traeger. Jetzt: nothing_written mit
+  // Grund, Plan und Waits bleiben offen. Ausnahme: an diesen Plan gebundene Beitragende (er ist
+  // ZIEL eines Waits) — dann entscheidet wie bisher der Co-Edit-Pfad (waiting_for_contributors).
+  if (!Array.isArray(plan.ops) || plan.ops.length === 0) {
+    const gebunden = await pool.query<{ n: number }>(
+      `SELECT COUNT(*)::int AS n FROM file_batch_waits WHERE primary_plan_id = $1::bigint AND status <> 'closed'`,
+      [args.plan_id],
+    );
+    if (Number(gebunden.rows[0]?.n ?? 0) === 0) return nichtsGeschriebenBefund(args.plan_id, 'commit');
   }
 
   // Nur echte gemeinsame Plaene wechseln in den dedizierten CE-4-TX-Pfad.
@@ -4784,7 +4911,7 @@ async function closeOrphanCarriers(client: PoolClient, project: string, anlass: 
  * lebende Reservierung (abgelaufen, freigegeben oder Agent abgemeldet), entsteht dieses Ziel nie mehr.
  * Vorher hing so ein Wait endlos (retry_after_seconds 1, expires_at in der Vergangenheit).
  */
-function totWaitSql(w: string): string {
+export function totWaitSql(w: string): string {
   return `(${w}.status = 'waiting' AND ${w}.primary_plan_id IS NULL AND NOT EXISTS (
     SELECT 1 FROM file_reservations tot_r
      WHERE tot_r.project = ${w}.project AND tot_r.agent_id = ${w}.primary_agent
