@@ -75,6 +75,12 @@ class ClaimState {
         }
         // Projektwahl (zweistufige Auswahl seit 01.08.2026, Prioritaet seit P12-T14): ein Projekt.
         if (q.startsWith('SELECT p.name FROM')) return { rows: [{ name: 'p' }] };
+        // P15-T24: total_chunks einmal je Datei des Stapels.
+        if (q.startsWith('SELECT k.project, k.file_path')) {
+          const [projekte, pfade] = values;
+          return { rows: projekte.map((p, i) => ({ project: p, file_path: pfade[i],
+            total_chunks: this.rows.filter((row) => row.project === p && row.file_path === pfade[i]).length })) };
+        }
         if (q.includes('FOR UPDATE OF cc SKIP LOCKED')) {
           const limit = values[0];
           const now = new Date();
@@ -151,6 +157,7 @@ const [nodeA, nodeB] = await Promise.all([
 assert.equal(nodeA.length, 2);
 assert.equal(nodeB.length, 2);
 assert.equal(new Set([...nodeA, ...nodeB].map((claim) => claim.chunkId)).size, 4);
+assert.ok([...nodeA, ...nodeB].every((claim) => claim.totalChunks === 4), 'P15-T24: totalChunks je Datei');
 
 const sameNodeState = new ClaimState();
 const sameNode = await Promise.all([

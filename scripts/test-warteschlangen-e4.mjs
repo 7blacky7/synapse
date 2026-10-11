@@ -114,7 +114,7 @@ try {
   }
   // R2
   await stufe(A, 2);
-  const wahl = async (sql, n) => { const s = []; for (let i = 0; i < n; i++) s.push((await pool.query(sql)).rows[0]?.name); return s; };
+  const wahl = async (sql, n) => { const s = []; for (let i = 0; i < n; i++) s.push((await pool.query(sql, sql.includes('$1') ? [[]] : [])).rows[0]?.name); return s; };
   let neuW = await wahl(CLAIM_SQL.projektWahl, 20);
   let altW = await wahl(ALT_PROJEKTWAHL, 20);
   pruefe(neuW.every((x) => x === A) && altW.every((x) => x === A), 'R2 Stufe 2 vor Stufe 3 (alt und neu)', { neuW, altW });
