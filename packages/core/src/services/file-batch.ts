@@ -53,6 +53,7 @@ import {
   type PruefDatei,
 } from './plan-befunde.js';
 import { aenderungsBereiche, dateiDiff, diffMaxZeichen, diffMaxZeilen, diffText, zeilenZuordnung, type Bereich, type DateiDiff } from './file-diff.js';
+import { normalisiereOps } from './projekt-pfad.js';
 import {
   findForeignActiveReservationPrimaries,
   refreshReservationTtlsForFiles,
@@ -2185,11 +2186,9 @@ export async function planBatch(args: {
   // 0. Pre-Flight: file_path-Pflichtcheck + Overlap-Check + Auto-Shift Reorder.
   //    Single-Op-Plaene und Plaene ohne Multi-Op pro Datei kommen unveraendert
   //    durch — backwards compatible.
-  for (let i = 0; i < args.ops.length; i++) {
-    if (!args.ops[i].file_path) {
-      throw new Error(`Op ${i}: file_path fehlt`);
-    }
-  }
+  // P15-T36: Pfade jeder Op normalisieren (projekt-pfad.ts, inkl. Pflicht "Op i: file_path fehlt") und F3:
+  // Schreibziele auf gesperrten Pfaden ablehnen - BEVOR etwas geladen oder als Plan gespeichert wird.
+  args = { ...args, ops: await normalisiereOps(args.project, args.ops) };
   const applyPlan = prepareOpsForApply(args.ops);
 
   // 1. Group by file_path, lade aktuelle Dateien nur einmal.
@@ -3470,6 +3469,8 @@ async function addCoeditContributionKern(args: {
   if (!caller) throw new Error("agent_id ist fuer coedit_add erforderlich");
   if (!Array.isArray(args.ops) || args.ops.length === 0) throw new Error("ops[] darf nicht leer sein");
   if (args.ops.length > MAX_OPS_JE_AUFRUF) throw new Error(`ops[] maximal ${MAX_OPS_JE_AUFRUF} Eintraege`);
+  // P15-T36: Co-Edit-Beitraege laufen nicht ueber den planBatch-Pre-Flight -> hier dieselbe Pfadpruefung.
+  args = { ...args, ops: await normalisiereOps(args.project, args.ops) };
 
   // Perf (User-Auftrag 29.09.2026): Die Dateien, die der Beitrag beruehrt, werden VOR der
   // Transaktion geladen und gehasht — ohne Plan-/Wait-Sperren. Unter der Sperre wird nur noch
@@ -5099,6 +5100,8 @@ async function updatePlanInPlace(
   caller: string | null | undefined,
 ): Promise<PlanBatchResult & { in_place: true }> {
   if (!caller) throw new Error('agent_id ist fuer plan_update erforderlich');
+  // P15-T36: plan_update im selben Plan laeuft nicht ueber planBatch -> hier dieselbe Pfadpruefung.
+  args = { ...args, ops: await normalisiereOps(args.project, args.ops) };
   const client = await getPool().connect();
   try {
     await client.query('BEGIN');

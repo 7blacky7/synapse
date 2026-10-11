@@ -113,6 +113,14 @@ const DEFAULT_IGNORES = [
 ];
 
 /**
+ * Ausnahmen, die NUR in der Sperre gelten (ladeSperrRegeln/istGesperrt), nicht in der Sichtbarkeit.
+ * P15-T36 (User 11.10.2026): '.env.example' ist eine Vorlage ohne Geheimnis und soll ueber files
+ * schreibbar sein und zwischen Platte und Datenbank laufen. Sie bleibt durch '.env.*' AUSGEBLENDET
+ * (nicht in Suche/Baum/Embeddings), weil die Werte nicht angezeigt werden sollen.
+ */
+const SPERR_AUSNAHMEN = ['!.env.example'];
+
+/**
  * Laedt die geltenden Ignore-Regeln und erstellt eine Ignore-Instanz.
  *
  * Drei Quellen, in dieser Reihenfolge (spaetere Regel gewinnt, wie bei gitignore):
@@ -237,6 +245,7 @@ export function getDefaultIgnores(): string[] {
 export function ladeSperrRegeln(_projectPath: string, project?: string): Ignore {
   const ig = ignore();
   ig.add(DEFAULT_IGNORES);
+  ig.add(SPERR_AUSNAHMEN);
 
   const gesperrt = gepufferteSperrRegeln(project);
   if (gesperrt?.length) ig.add(gesperrt);
@@ -473,4 +482,28 @@ export function erklaereIgnore(
     regel: ignoriert ? treffer?.regel ?? null : null,
     herkunft: ignoriert ? treffer?.herkunft ?? null : null,
   };
+}
+
+/**
+ * P15-T36 (F3): Ist der Pfad GESPERRT, und durch welche Regel? Gleiche Entscheidung wie istGesperrt
+ * (DEFAULT_IGNORES + Ausnahmen + Projektregeln modus 'gesperrt'), dazu die zuletzt zutreffende Regel
+ * (gitignore-Semantik) samt Herkunft fuer die Fehlermeldung von files. Erwartet einen normalisierten,
+ * projekt-relativen Pfad (die ignore-Lib wirft bei '../x' und absoluten Pfaden).
+ */
+export function erklaereSperre(
+  relativePath: string,
+  project?: string,
+): { gesperrt: boolean; regel: string | null; herkunft: 'standard' | 'datenbank' | null } {
+  if (!istGesperrt(relativePath, '', project)) return { gesperrt: false, regel: null, herkunft: null };
+  const quellen: Array<['standard' | 'datenbank', readonly string[]]> = [
+    ['standard', DEFAULT_IGNORES],
+    ['datenbank', gepufferteSperrRegeln(project) ?? []],
+  ];
+  let treffer: { regel: string; herkunft: 'standard' | 'datenbank' } | null = null;
+  for (const [herkunft, liste] of quellen) {
+    for (const muster of liste) {
+      if (!muster.startsWith('!') && shouldIgnore(ignore().add(muster), relativePath)) treffer = { regel: muster, herkunft };
+    }
+  }
+  return { gesperrt: true, regel: treffer?.regel ?? null, herkunft: treffer?.herkunft ?? null };
 }

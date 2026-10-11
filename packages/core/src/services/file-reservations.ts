@@ -6,6 +6,7 @@
  */
 
 import { posix as path } from 'node:path';
+import { normalisiereProjektPfad, PfadUngueltig } from './projekt-pfad.js';
 import type { PoolClient } from 'pg';
 import { getPool } from '../db/client.js';
 import { contentHash } from './code-write.js';
@@ -156,16 +157,16 @@ function normalizePlanId(value?: string): string | null {
 export function normalizeReservationFilePaths(filePaths: readonly string[]): string[] {
   const result = new Set<string>();
   for (const raw of filePaths) {
-    const trimmed = raw.trim().replace(/\\/g, '/');
-    if (!trimmed) continue;
-    if (trimmed.startsWith('/') || /^[A-Za-z]:\//.test(trimmed)) {
-      throw new Error(`Reservierungspfad muss projekt-relativ sein: "${raw}"`);
+    // P15-T36: dieselbe Normalisierung wie files/files_batch (projekt-pfad.ts). Kein trim mehr (Leerzeichen
+    // sind legale Namenszeichen); ein leerer oder nur aus Leerzeichen bestehender Eintrag wird wie bisher
+    // uebersprungen. Absolut (auch unter dem Root), Ausbruch und Steuerzeichen werden abgelehnt.
+    if (typeof raw !== 'string' || !raw.trim()) continue;
+    try {
+      result.add(normalisiereProjektPfad(raw).pfad);
+    } catch (fehler) {
+      if (fehler instanceof PfadUngueltig) throw new Error(`Ungueltiger Reservierungspfad: ${fehler.message}`);
+      throw fehler;
     }
-    const normalized = path.normalize(trimmed);
-    if (normalized === '.' || normalized === '..' || normalized.startsWith('../')) {
-      throw new Error(`Ungueltiger Reservierungspfad: "${raw}"`);
-    }
-    result.add(normalized);
   }
   if (result.size === 0) {
     throw new Error('Mindestens ein file_path ist erforderlich');

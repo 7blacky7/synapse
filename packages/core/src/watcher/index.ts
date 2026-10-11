@@ -33,6 +33,7 @@ import { getConfig } from '../config.js';
 import { loadGitignore, istGesperrt, shouldIgnore, aktualisiereIgnoreRegeln } from './ignore.js';
 import { isBinaryFile, isExtractableDocument, isMultimodalFile, getFileType, MAX_MEDIA_SIZE_MB, assetArt, leseDateiKopf } from './binary.js';
 import { workerPausiert } from '../services/worker-steuerung.js';
+import { liegtImProjekt } from '../services/projekt-pfad.js';
 
 export * from './binary.js';
 export * from './ignore.js';
@@ -458,6 +459,13 @@ export function startFileWatcher(options: FileWatcherOptions): FileWatcherInstan
             // AUSGEBLENDETE PFADE MUESSEN HIER DURCH: sonst entsteht ein Eintrag in
             // der Datenbank, den es auf der Platte nie gibt — genau der Fall, der
             // am 28.07. die Parser-Fixtures verschluckt hat.
+            // P15-T36: Daemon-Schutz. Ein Pfad, der aus dem Projekt fuehrt ('../x') oder absolut ist, wird
+            // NIE auf die Platte geschrieben (path.join wuerde ausserhalb landen) und bricht den Tick nicht ab
+            // (istGesperrt/ignore wirft bei solchen Pfaden). Ueberspringen und protokollieren, Bestand bleibt.
+            if (!liegtImProjekt(projectPath, relativePath)) {
+              console.error(`[Synapse] PG→FS Skip (Pfad ausserhalb des Projekts): ${JSON.stringify(relativePath)}`);
+              continue;
+            }
             if (istGesperrt(relativePath, projectPath, projectName)) continue;
             // BUGFIX 2026-05-07 (unlink-bootstrap-race): wenn fuer dieses File
             // ein chokidar-unlink-Event pending ist (User hat gerade rm/mv
@@ -527,6 +535,11 @@ export function startFileWatcher(options: FileWatcherOptions): FileWatcherInstan
           );
 
           for (const row of deleted.rows) {
+            // P15-T36: Daemon-Schutz auch beim Loeschen - nie ausserhalb des Projekts unlinken.
+            if (!liegtImProjekt(projectPath, row.file_path)) {
+              console.error(`[Synapse] PG→FS Delete-Skip (Pfad ausserhalb des Projekts): ${JSON.stringify(row.file_path)}`);
+              continue;
+            }
             const filePath = path.join(projectPath, row.file_path);  // absolut rekonstruieren
             if (fs.existsSync(filePath)) {
               fs.unlinkSync(filePath);

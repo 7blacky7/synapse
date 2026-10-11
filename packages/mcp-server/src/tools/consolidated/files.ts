@@ -19,7 +19,7 @@ import {
   searchReplaceEindeutig,
   getDocsForFile,
   getProjectRoot,
-  toRelativePath,
+  pruefeFilesPfadArgs,
   applyContentRange,
   listFileVersions,
   listFileHistory,
@@ -327,18 +327,19 @@ export const filesTool: ConsolidatedTool = {
       : undefined;
 
 
+    // P15-T36: file_path/new_path EINMAL normalisieren (core projekt-pfad.ts) und in args zurueckschreiben.
+    // Absolute Pfade werden streng abgelehnt (vorher hier unter dem Root umgerechnet), F3: pfad_gesperrt.
+    const pfadFehler = await pruefeFilesPfadArgs(project, args);
+    if (pfadFehler) return pfadFehler;
+
     const reservationPaths = async (key: string, required = false): Promise<string[]> => {
       const raw = strArray(args, key);
       if (!raw || raw.length === 0) {
         if (required) throw new Error(`Parameter "${key}" ist erforderlich`);
         return [];
       }
-      const projectRootPath = await getProjectRoot(project);
-      const relative = raw.map((filePath) =>
-        projectRootPath && path.isAbsolute(filePath)
-          ? toRelativePath(projectRootPath, filePath)
-          : filePath);
-      return normalizeReservationFilePaths(relative);
+      // P15-T36: absolute Pfade werden nicht mehr umgerechnet, sondern abgelehnt (wie REST, User 11.10.2026).
+      return normalizeReservationFilePaths(raw);
     };
 
 
@@ -634,12 +635,7 @@ export const filesTool: ConsolidatedTool = {
     // Ab hier: actions die file_path brauchen.
     let filePath = reqStr(args, 'file_path');
 
-    // Pfade normalisieren: DB erwartet relative Pfade
-    const projectRootPath = await getProjectRoot(project);
-    if (projectRootPath && path.isAbsolute(filePath)) {
-      filePath = toRelativePath(projectRootPath, filePath);
-    }
-    // Wenn filePath immer noch absolut (kein projectRoot gefunden): als Fallback behalten
+    // P15-T36: file_path ist oben (pruefeFilesPfadArgs) bereits normalisiert; absolute Pfade wurden abgelehnt.
 
     // Haiku escaped Content manchmal doppelt: "\"use client\";\n\nimport..."
     // Detection: Literale \n im String aber keine echten Newlines → doppelt escaped
@@ -812,10 +808,7 @@ export const filesTool: ConsolidatedTool = {
       }
 
       case 'move': {
-        let newPath = reqStr(args, 'new_path');
-        if (projectRootPath && path.isAbsolute(newPath)) {
-          newPath = toRelativePath(projectRootPath, newPath);
-        }
+        const newPath = reqStr(args, 'new_path');
         await moveFileInPg(project, filePath, newPath);
         return attachDirectWriteReservationHint(
           { success: true, message: `Datei verschoben: "${filePath}" → "${newPath}"`, ...(await embeddingPendingHint(project, newPath)) },
@@ -824,10 +817,7 @@ export const filesTool: ConsolidatedTool = {
       }
 
       case 'copy': {
-        let newPath = reqStr(args, 'new_path');
-        if (projectRootPath && path.isAbsolute(newPath)) {
-          newPath = toRelativePath(projectRootPath, newPath);
-        }
+        const newPath = reqStr(args, 'new_path');
         await copyFileInPg(project, filePath, newPath);
         return attachDirectWriteReservationHint(
           { success: true, message: `Datei kopiert: "${filePath}" → "${newPath}"`, ...(await embeddingPendingHint(project, newPath)) },

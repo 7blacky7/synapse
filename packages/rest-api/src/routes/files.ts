@@ -3,7 +3,7 @@
  * Datei-CRUD fuer den Code-Editor (PostgreSQL-basiert)
  */
 
-import { FastifyInstance } from 'fastify';
+import { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import {
   replaceLines,
   insertAfterLine,
@@ -18,7 +18,31 @@ import {
   holeFehlermusterHinweise,
   resolveAgentId,
   SyntaxfehlerAbgelehnt,
+  pruefeFilesPfadArgs,
 } from '@synapse/core';
+
+/**
+ * P15-T36: dieselbe Pfadpruefung wie files/files_batch (core projekt-pfad.ts) vor jedem Handler dieser
+ * Routen. Normalisiert file_path/new_path im Body (der Handler liest danach den normalisierten Pfad) und
+ * antwortet bei Ausbruch/absolut/Steuerzeichen (pfad_ungueltig) bzw. gesperrtem Schreibziel (pfad_gesperrt)
+ * mit 400. POST = create, DELETE = delete, PUT = operation (ohne operation: update).
+ */
+async function pfadVorpruefung(request: FastifyRequest, reply: FastifyReply): Promise<unknown> {
+  const body = request.body as Record<string, unknown> | undefined;
+  if (!body || typeof body !== 'object') return undefined;
+  const name = (request.params as { name?: string }).name ?? '';
+  const operation = typeof body.operation === 'string' ? body.operation : undefined;
+  const action = request.method === 'POST' ? 'create' : request.method === 'DELETE' ? 'delete' : (operation ?? 'update');
+  const pruefArgs: Record<string, unknown> = { action, file_path: body.file_path, new_path: body.new_path };
+  const fehler = await pruefeFilesPfadArgs(name, pruefArgs);
+  if (fehler) {
+    const { success: _success, error: code, ...rest } = fehler;
+    return reply.status(400).send({ success: false, error: { code, ...rest } });
+  }
+  if (typeof pruefArgs.file_path === 'string') body.file_path = pruefArgs.file_path;
+  if (typeof pruefArgs.new_path === 'string') body.new_path = pruefArgs.new_path;
+  return undefined;
+}
 
 /**
  * P15-T17 E2: Fehlermuster-Treffer an die REST-Antwort haengen (Feld fehlermuster, wie MCP seit E0).
@@ -46,7 +70,7 @@ export async function filesRoutes(fastify: FastifyInstance): Promise<void> {
       /** P15-T17 E-b: Syntaxbefund quittieren, NUR bei absichtlich fehlerhaftem Inhalt (Pflichtgrund). */
       quittieren?: string;
     };
-  }>('/api/projects/:name/files', async (request, reply) => {
+  }>('/api/projects/:name/files', { preHandler: pfadVorpruefung }, async (request, reply) => {
     const { name } = request.params;
     const { file_path, content, agent_id, quittieren } = request.body;
 
@@ -97,7 +121,7 @@ export async function filesRoutes(fastify: FastifyInstance): Promise<void> {
       /** P15-T17 E-b: Syntaxbefund quittieren, NUR bei absichtlich fehlerhaftem Inhalt (Pflichtgrund). */
       quittieren?: string;
     };
-  }>('/api/projects/:name/files', async (request, reply) => {
+  }>('/api/projects/:name/files', { preHandler: pfadVorpruefung }, async (request, reply) => {
     const { name } = request.params;
     const {
       file_path,
@@ -311,7 +335,7 @@ export async function filesRoutes(fastify: FastifyInstance): Promise<void> {
     Body: {
       file_path: string;
     };
-  }>('/api/projects/:name/files', async (request, reply) => {
+  }>('/api/projects/:name/files', { preHandler: pfadVorpruefung }, async (request, reply) => {
     const { name } = request.params;
     const { file_path } = request.body;
 

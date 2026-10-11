@@ -150,6 +150,7 @@ import {
   updateFileReservations,
   listFileReservations,
   normalizeReservationFilePaths,
+  pruefeFilesPfadArgs,
   getDirectWriteReservationHint,
   holeSprachSkillVorschlaege,
   holeChannelSkillVorschlaege,
@@ -1001,7 +1002,7 @@ export const MCP_TOOLS = [
   // 15. files
   {
     name: 'files',
-    description: 'Datei-CRUD im eigenen Projekt-Verzeichnis. Pfade sind relativ zum Projekt-Root und werden gegen Path-Traversal validiert. FileWatcher synchronisiert die Aenderungen automatisch. ENTSCHEIDUNGS-MATRIX (Write-Ops): (1) Datei darf NICHT existieren → action="create" (ohne upsert). (2) Datei wurde gelesen, gezielt modifizieren → action="update" mit anchor_text/anchor_contains und optional anchor_text/anchor_contains aus dem gelesenen Snapshot (Drift-Schutz: Anker ist optional, ohne Anker wird direkt geschrieben; Mismatch = Fehler ohne Schreiben; PFLICHT ist der Anker nur bei update-Ops in plan/files_batch). (3) Datei generieren/regenerieren ohne Pre-Read (Templates, Migrations, Codegen) → action="create" mit upsert:true (akzeptierst Drift-Risiko bewusst). (4) Punktuelle Aenderung statt Komplett-Rewrite → search_replace / replace_lines / insert_after / delete_lines. Multi-File Plan/Commit (action="plan"+"commit") fuer atomare Edits ueber mehrere Dateien mit Hash-Konflikt-Erkennung; auto_commit:true wechselt bei Multi-File auf per-File-Atomicity. restore_batch rollt komplette Plan-Sets zurueck. Erweiterte Optionen: agent_note, feature_tag/parent_version_id/git_commit_sha (Versions-Anreicherung). Keine freien absoluten Pfade, keine externen Systeme.',
+    description: 'Datei-CRUD im eigenen Projekt-Verzeichnis. Pfade sind relativ zum Projekt-Root: ".." innerhalb des Projekts wird aufgeloest, Backslash gilt als Trenner; abgelehnt werden Ausbruch ueber den Root, absolute Pfade (auch unter dem Root) und Steuerzeichen (error pfad_ungueltig) sowie Schreiben auf gesperrte Pfade wie .synapse/, .env, node_modules/ (error pfad_gesperrt; Lesen und Loeschen bleiben moeglich). FileWatcher synchronisiert die Aenderungen automatisch. ENTSCHEIDUNGS-MATRIX (Write-Ops): (1) Datei darf NICHT existieren → action="create" (ohne upsert). (2) Datei wurde gelesen, gezielt modifizieren → action="update" mit anchor_text/anchor_contains und optional anchor_text/anchor_contains aus dem gelesenen Snapshot (Drift-Schutz: Anker ist optional, ohne Anker wird direkt geschrieben; Mismatch = Fehler ohne Schreiben; PFLICHT ist der Anker nur bei update-Ops in plan/files_batch). (3) Datei generieren/regenerieren ohne Pre-Read (Templates, Migrations, Codegen) → action="create" mit upsert:true (akzeptierst Drift-Risiko bewusst). (4) Punktuelle Aenderung statt Komplett-Rewrite → search_replace / replace_lines / insert_after / delete_lines. Multi-File Plan/Commit (action="plan"+"commit") fuer atomare Edits ueber mehrere Dateien mit Hash-Konflikt-Erkennung; auto_commit:true wechselt bei Multi-File auf per-File-Atomicity. restore_batch rollt komplette Plan-Sets zurueck. Erweiterte Optionen: agent_note, feature_tag/parent_version_id/git_commit_sha (Versions-Anreicherung). Keine freien absoluten Pfade, keine externen Systeme.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -4568,6 +4569,11 @@ async function handleToolCall(
         : undefined;
       // P15-T17 E-a: Einzelschreibweg - Syntaxfehler lehnen ab (sobald Pruefer registriert sind), quittieren nur mit Absichtsgrund.
       const einzel = { einzelweg: true, quittieren: str(args, 'quittieren') };
+      // P15-T36: file_path/new_path EINMAL normalisieren (core projekt-pfad.ts) und in args zurueckschreiben,
+      // damit alle Actions, Antworttexte und attachDirectWriteReservationHint denselben Pfad sehen. Absolute
+      // Pfade werden streng abgelehnt (User 11.10.2026), F3: Schreibziel gesperrt -> pfad_gesperrt.
+      const pfadFehler = await pruefeFilesPfadArgs(project, args as Record<string, unknown>);
+      if (pfadFehler) return pfadFehler;
 
 
       const reservationPaths = (key: string, required = false): string[] => {

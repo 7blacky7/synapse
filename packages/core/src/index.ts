@@ -1046,6 +1046,17 @@ export {
   releaseStaleFileReservations,
   reservationTtlHint,
 } from './services/file-reservations.js';
+// P15-T36: Projekt-Pfade (eine Normalisierung + Sperre fuer files/files_batch, Plaene, Co-Edit, Reservierungen)
+export {
+  normalisiereProjektPfad,
+  normalisiereOps,
+  pruefeSchreibZiel,
+  pruefeFilesPfadArgs,
+  liegtImProjekt,
+  PfadUngueltig,
+  PfadGesperrt,
+} from './services/projekt-pfad.js';
+export type { PfadFehlerGrund, PfadFehlerAntwort } from './services/projekt-pfad.js';
 export type {
   FileReservation,
   ReservationMutationResult,
