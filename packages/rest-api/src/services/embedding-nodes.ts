@@ -1,4 +1,4 @@
-import { getConfig, getPool } from '@synapse/core';
+import { embeddingModellName, getPool, ollamaModellInfo, zielDimension } from '@synapse/core';
 
 export type EmbeddingNodeEffectiveStatus = 'locked' | 'failed' | 'busy' | 'ready';
 
@@ -86,22 +86,73 @@ export interface Queryable {
   ): Promise<{ rows: T[]; rowCount?: number | null }>;
 }
 
-function positiveInt(value: string | undefined, fallback: number): number {
+function positiveInt(value: string | undefined): number | null {
   const parsed = Number(value);
-  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
 }
 
-export function getEmbeddingReferenceContract(): EmbeddingReferenceContract {
-  const digest = (process.env.SYNAPSE_OLLAMA_MODEL_DIGEST ?? '').trim().toLowerCase();
+/** Referenzvertrag nicht vollstaendig ermittelbar; missing nennt die Felder samt Quelle. */
+export class EmbeddingReferenceUnavailable extends Error {
+  constructor(public readonly missing: string[]) {
+    super(`Embedding-Referenz unvollstaendig: ${missing.join(', ')}`);
+  }
+}
+
+/**
+ * Referenzvertrag fuer GPU-Knoten und Tray (P15-T1).
+ *
+ * ⚠️ KEINE MODELLWERTE IM CODE (Regel regel-keine-festverdrahteten-modellwerte): hier standen bis zum
+ * 11.10.2026 4096/3072/8192/12000/7300 als Rueckfall. Nach dem Wechsel qwen3 -> Nemotron haette der
+ * Vertrag ohne passende Env weiter qwen-Werte verlangt und jeden Nemotron-Knoten abgewiesen.
+ *
+ * Quellen je Feld (Env ausdruecklich vor Ollama des Servers bzw. Core):
+ *   model            embeddingModellName()
+ *   modelDigest      SYNAPSE_OLLAMA_MODEL_DIGEST | /api/tags (fehlt beides: null -> reference_digest_not_configured)
+ *   nativeDimension  SYNAPSE_OLLAMA_NATIVE_DIMENSION | /api/show <arch>.embedding_length
+ *   targetDimension  zielDimension() (EMBEDDING_TARGET_DIM | erkannte Dimension des aktiven Modells)
+ *   numCtx           EMBEDDING_NUM_CTX | /api/show <arch>.context_length
+ *   quantization     SYNAPSE_OLLAMA_QUANTIZATION (sonst null = wird nicht verglichen)
+ *   VRAM             SYNAPSE_GPU_REQUIRED_TOTAL_MB / _FREE_MB | belegter VRAM (/api/ps, wenn geladen)
+ *                    bzw. Modellgroesse (/api/tags) plus SYNAPSE_GPU_RESERVE_MB
+ * Fehlt ein Pflichtwert und ist er nicht ermittelbar: EmbeddingReferenceUnavailable statt stillem Default.
+ */
+export async function getEmbeddingReferenceContract(): Promise<EmbeddingReferenceContract> {
+  const env = process.env;
+  const envDigest = (env.SYNAPSE_OLLAMA_MODEL_DIGEST ?? '').trim().toLowerCase();
+  const nativeEnv = positiveInt(env.SYNAPSE_OLLAMA_NATIVE_DIMENSION);
+  const numCtxEnv = positiveInt(env.EMBEDDING_NUM_CTX);
+  const totalEnv = positiveInt(env.SYNAPSE_GPU_REQUIRED_TOTAL_MB);
+  const freeEnv = positiveInt(env.SYNAPSE_GPU_REQUIRED_FREE_MB);
+  // Ollama nur fragen, wenn die Env nicht alles ausdruecklich festlegt.
+  const info = !envDigest || !nativeEnv || !numCtxEnv || !totalEnv || !freeEnv ? await ollamaModellInfo() : null;
+  const modellBytes = info?.vramBytes ?? info?.groesseBytes ?? null;
+  const bedarfMb = modellBytes ? Math.ceil(modellBytes / 1024 / 1024) + (positiveInt(env.SYNAPSE_GPU_RESERVE_MB) ?? 0) : null;
+  let targetDimension: number | null = null;
+  try {
+    targetDimension = await zielDimension();
+  } catch { /* unten als fehlend gemeldet */ }
+
+  const nativeDimension = nativeEnv ?? info?.nativeDimension ?? null;
+  const numCtx = numCtxEnv ?? info?.kontextLaenge ?? null;
+  const requiredTotalVramMb = totalEnv ?? bedarfMb;
+  const requiredFreeVramMb = freeEnv ?? bedarfMb;
+  const missing: string[] = [];
+  if (nativeDimension === null) missing.push('nativeDimension (SYNAPSE_OLLAMA_NATIVE_DIMENSION | Ollama /api/show)');
+  if (targetDimension === null) missing.push('targetDimension (EMBEDDING_TARGET_DIM | Embedding-Probe)');
+  if (numCtx === null) missing.push('numCtx (EMBEDDING_NUM_CTX | Ollama /api/show)');
+  if (requiredTotalVramMb === null) missing.push('requiredTotalVramMb (SYNAPSE_GPU_REQUIRED_TOTAL_MB | Ollama /api/ps, /api/tags)');
+  if (requiredFreeVramMb === null) missing.push('requiredFreeVramMb (SYNAPSE_GPU_REQUIRED_FREE_MB | Ollama /api/ps, /api/tags)');
+  if (missing.length > 0) throw new EmbeddingReferenceUnavailable(missing);
+
   return {
-    model: process.env.OLLAMA_MODEL || getConfig().embeddings.ollama.model,
-    modelDigest: digest || null,
-    nativeDimension: positiveInt(process.env.SYNAPSE_OLLAMA_NATIVE_DIMENSION, 4096),
-    targetDimension: positiveInt(process.env.EMBEDDING_TARGET_DIM, 3072),
-    numCtx: positiveInt(process.env.EMBEDDING_NUM_CTX, 8192),
-    quantization: process.env.SYNAPSE_OLLAMA_QUANTIZATION?.trim() || null,
-    requiredTotalVramMb: positiveInt(process.env.SYNAPSE_GPU_REQUIRED_TOTAL_MB, 12000),
-    requiredFreeVramMb: positiveInt(process.env.SYNAPSE_GPU_REQUIRED_FREE_MB, 7300),
+    model: embeddingModellName(),
+    modelDigest: envDigest || info?.digest || null,
+    nativeDimension: nativeDimension!,
+    targetDimension: targetDimension!,
+    numCtx: numCtx!,
+    quantization: env.SYNAPSE_OLLAMA_QUANTIZATION?.trim() || null,
+    requiredTotalVramMb: requiredTotalVramMb!,
+    requiredFreeVramMb: requiredFreeVramMb!,
   };
 }
 
@@ -126,7 +177,7 @@ export function validateOllamaUrl(value: string): boolean {
 
 export function compatibilityProblems(
   node: Pick<EmbeddingNodeRegistration, 'model' | 'modelDigest' | 'nativeDimension' | 'targetDimension' | 'numCtx' | 'quantization'>,
-  reference = getEmbeddingReferenceContract(),
+  reference: EmbeddingReferenceContract,
 ): string[] {
   const problems: string[] = [];
   const digest = normalizeDigest(typeof node.modelDigest === 'string' ? node.modelDigest : '');
@@ -222,7 +273,7 @@ export async function listEmbeddingNodes(
   nowMs?: number,
 ): Promise<Array<EmbeddingNodeRow & { effectiveStatus: EmbeddingNodeEffectiveStatus; usable: boolean; compatibilityProblems: string[] }>> {
   const result = await db.query<EmbeddingNodeRow>('SELECT *, NOW() AS server_now FROM embedding_knoten ORDER BY node_id');
-  const reference = getEmbeddingReferenceContract();
+  const reference = await getEmbeddingReferenceContract();
   return result.rows.map((row) => {
     const problems = compatibilityProblems({
       model: row.modell,

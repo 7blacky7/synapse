@@ -188,6 +188,7 @@ export {
   aktivePraefixe,
   embeddingModellName,
   embeddingModellKennung,
+  zielDimension,
   getEmbeddingQueueStats,
   EmbeddingQueueFullError,
   embedMedia,
@@ -199,6 +200,9 @@ export {
   GoogleEmbeddingProvider,
   CohereEmbeddingProvider,
 } from './embeddings/index.js';
+// P15-T1: Modellwerte aus Ollama (Digest, Groesse, VRAM, Dimension, Kontext) statt fest verdrahtet
+export { ollamaModellInfo, vergissOllamaModellInfo } from './embeddings/ollama-modell-info.js';
+export type { OllamaModellInfo } from './embeddings/ollama-modell-info.js';
 export type {
   EmbeddingProvider,
   EmbedOptions,

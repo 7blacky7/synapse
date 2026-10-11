@@ -3,10 +3,12 @@ import {
   getPool,
   claimEmbeddingChunks,
   completeEmbeddingClaim,
+  ollamaModellInfo,
 } from '@synapse/core';
 import { validateToken, type AuthTokenRow } from '../services/auth.js';
 import {
   compatibilityProblems,
+  EmbeddingReferenceUnavailable,
   getEmbeddingReferenceContract,
   heartbeatEmbeddingNode,
   listEmbeddingNodes,
@@ -93,10 +95,21 @@ export function createEmbeddingNodeRoutes(
   };
 
   return async (fastify: FastifyInstance): Promise<void> => {
+    // P15-T1: Referenzvertrag nicht ermittelbar (Env fehlt, Ollama des Servers antwortet nicht) ->
+    // 503 mit den fehlenden Feldern statt stiller Altwerte. Gilt nur in diesem Plugin (register kapselt).
+    fastify.setErrorHandler((error, _request, reply) => {
+      if (error instanceof EmbeddingReferenceUnavailable) {
+        return reply.code(503).send({ success: false, error: 'reference_unavailable', missing: error.missing });
+      }
+      return reply.send(error);
+    });
+
     // GPU-3: Referenzdaten sind keine Geheimnisse. Der Tray zeigt Modell, VOLLEN
     // Digest und Dimension, bevor der Nutzer irgendeinen Download startet.
     fastify.get('/api/embedding-nodes/reference', async (_request, reply) => {
-      const reference = getEmbeddingReferenceContract();
+      const reference = await getEmbeddingReferenceContract();
+      // P15-T1: Downloadgroesse aus /api/tags des Servers statt einer Zahl im Code; unbekannt -> null.
+      const groesse = (await ollamaModellInfo().catch(() => null))?.groesseBytes ?? null;
       return reply.send({
         success: true,
         reference,
@@ -105,7 +118,7 @@ export function createEmbeddingNodeRoutes(
           windows: 'https://ollama.com/download/windows',
           macos: 'https://ollama.com/download/mac',
           model: `https://ollama.com/library/${encodeURIComponent(reference.model)}`,
-          modelSizeGb: 4.7,
+          modelSizeGb: groesse === null ? null : Math.round(groesse / 1e8) / 10,
         },
       });
     });
@@ -124,7 +137,7 @@ export function createEmbeddingNodeRoutes(
         );
         if (!node) return reply.code(404).send({ success: false, error: 'node_not_registered' });
         const { service_token_hash: _secret, ...visible } = node;
-        return reply.send({ success: true, reference: getEmbeddingReferenceContract(), node: visible });
+        return reply.send({ success: true, reference: await getEmbeddingReferenceContract(), node: visible });
       },
     );
 
@@ -142,7 +155,7 @@ export function createEmbeddingNodeRoutes(
         if (!tokenAllowsNode(auth, input.nodeId)) {
           return reply.code(403).send({ success: false, error: 'node_token_mismatch' });
         }
-        const reference = getEmbeddingReferenceContract();
+        const reference = await getEmbeddingReferenceContract();
         // ⚠⚠ HIER STAND BIS ZUM 01.08.2026 AUCH EINE FREI-SCHWELLE, UND SIE WAR DIE
         // VIERTE UND LETZTE STELLE DERSELBEN FALLE.
         //
@@ -172,13 +185,13 @@ export function createEmbeddingNodeRoutes(
             measuredTotalVramMb: input.vramTotalMb,
           });
         }
-        const problems = compatibilityProblems(input);
+        const problems = compatibilityProblems(input, reference);
         if (problems.length > 0) {
           return reply.code(409).send({
             success: false,
             error: 'incompatible_node',
             problems,
-            reference: getEmbeddingReferenceContract(),
+            reference,
           });
         }
         const node = await registerEmbeddingNode(auth!.token_hash, input, deps.db);
@@ -207,7 +220,7 @@ export function createEmbeddingNodeRoutes(
         if (!body || !validHeartbeat(body)) {
           return reply.code(400).send({ success: false, error: 'invalid_heartbeat' });
         }
-        const problems = compatibilityProblems(body);
+        const problems = compatibilityProblems(body, await getEmbeddingReferenceContract());
         if (problems.length > 0) {
           return reply.code(409).send({ success: false, error: 'incompatible_node', problems });
         }
@@ -247,7 +260,7 @@ export function createEmbeddingNodeRoutes(
         return reply.send({
           success: true,
           claims,
-          reference: getEmbeddingReferenceContract(),
+          reference: await getEmbeddingReferenceContract(),
         });
       },
     );
@@ -286,7 +299,8 @@ export function createEmbeddingNodeRoutes(
           model, modelDigest, quantization: quantization ?? null,
           nativeDimension: nativeDimension!, targetDimension: targetDimension!, numCtx: numCtx!,
         };
-        const fingerprintProblems = compatibilityProblems(fingerprint);
+        const reference = await getEmbeddingReferenceContract();
+        const fingerprintProblems = compatibilityProblems(fingerprint, reference);
         const registryMismatch =
           model !== node.modell || normalizeDigest(modelDigest) !== normalizeDigest(node.modell_digest) ||
           (quantization ?? null) !== node.quantisierung || nativeDimension !== node.native_dimension ||
@@ -305,7 +319,7 @@ export function createEmbeddingNodeRoutes(
             claimToken: claimToken!,
             contentHash: contentHash!,
             vector,
-            expectedDimension: getEmbeddingReferenceContract().targetDimension,
+            expectedDimension: reference.targetDimension,
           });
           return reply.send({ success: true, ...result });
         } catch (error) {
@@ -324,7 +338,7 @@ export function createEmbeddingNodeRoutes(
       }
       return reply.send({
         success: true,
-        reference: getEmbeddingReferenceContract(),
+        reference: await getEmbeddingReferenceContract(),
         nodes: (await listEmbeddingNodes(deps.db)).map(({ service_token_hash: _secret, ...node }) => node),
       });
     });

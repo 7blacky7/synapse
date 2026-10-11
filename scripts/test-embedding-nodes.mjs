@@ -12,6 +12,11 @@ process.env.OLLAMA_MODEL = 'qwen3-embedding:8b';
 process.env.SYNAPSE_OLLAMA_NATIVE_DIMENSION = '4096';
 process.env.EMBEDDING_TARGET_DIM = '3072';
 process.env.EMBEDDING_NUM_CTX = '8192';
+// P15-T1: keine VRAM-Defaults mehr im Code -> ausdruecklich setzen; Ollama des Servers ist eine Attrappe.
+process.env.SYNAPSE_GPU_REQUIRED_TOTAL_MB = '12000';
+process.env.SYNAPSE_GPU_REQUIRED_FREE_MB = '7300';
+process.env.OLLAMA_URL = 'http://ollama-referenz.test:11434';
+process.env.SYNAPSE_OLLAMA_INFO_TTL_MS = '0';
 
 const requireFromRest = createRequire(new URL('../packages/rest-api/package.json', import.meta.url));
 const Fastify = requireFromRest('fastify');
@@ -19,6 +24,7 @@ const { createEmbeddingNodeRoutes } =
   await import('../packages/rest-api/dist/routes/embedding-nodes.js');
 const {
   compatibilityProblems,
+  getEmbeddingReferenceContract,
   deriveEmbeddingNodeStatus,
   validateOllamaUrl,
 } = await import('../packages/rest-api/dist/services/embedding-nodes.js');
@@ -90,7 +96,22 @@ const db = {
 };
 
 let forbiddenFetches = 0;
-globalThis.fetch = async () => {
+let ollamaFake = 'aus';
+const OLLAMA_DIGEST = 'c'.repeat(64);
+const OLLAMA_VRAM = 6 * 1024 * 1024 * 1024;
+const ollamaAntwort = {
+  '/api/tags': { models: [{ name: 'qwen3-embedding:8b', digest: OLLAMA_DIGEST, size: 4_700_000_000 }] },
+  '/api/ps': { models: [{ name: 'qwen3-embedding:8b', size_vram: OLLAMA_VRAM }] },
+  '/api/show': { model_info: { 'general.architecture': 'qwen3', 'qwen3.embedding_length': 4096, 'qwen3.context_length': 32768 } },
+};
+globalThis.fetch = async (url) => {
+  const ziel = String(url);
+  // P15-T1: das Ollama des SERVERS (OLLAMA_URL) darf fuer den Referenzvertrag gefragt werden.
+  if (ziel.startsWith(process.env.OLLAMA_URL)) {
+    const antwort = ollamaAntwort[new URL(ziel).pathname];
+    if (ollamaFake !== 'an' || !antwort) throw new Error('ollama attrappe aus');
+    return new Response(JSON.stringify(antwort), { status: 200, headers: { 'content-type': 'application/json' } });
+  }
   forbiddenFetches++;
   throw new Error('REST registry must not fetch client ollama_url');
 };
@@ -287,7 +308,30 @@ assert.equal(
   deriveEmbeddingNodeStatus(statusRow(120_001, { gesperrt_vom_user: true }), now),
   'locked',
 );
-assert.deepEqual(compatibilityProblems(registration), []);
+assert.deepEqual(compatibilityProblems(registration, await getEmbeddingReferenceContract()), []);
+
+// P15-T1: ohne Env kommen Digest, Dimension, num_ctx und VRAM aus dem Ollama des Servers.
+for (const k of ['SYNAPSE_OLLAMA_MODEL_DIGEST', 'SYNAPSE_OLLAMA_NATIVE_DIMENSION', 'EMBEDDING_NUM_CTX',
+  'SYNAPSE_GPU_REQUIRED_TOTAL_MB', 'SYNAPSE_GPU_REQUIRED_FREE_MB']) delete process.env[k];
+ollamaFake = 'an';
+const derived = await app.inject({ method: 'GET', url: '/api/embedding-nodes/reference' });
+assert.equal(derived.statusCode, 200, derived.body);
+const derivedRef = derived.json().reference;
+assert.equal(derivedRef.modelDigest, OLLAMA_DIGEST);
+assert.equal(derivedRef.nativeDimension, 4096);
+assert.equal(derivedRef.targetDimension, 3072);
+assert.equal(derivedRef.numCtx, 32768);
+assert.equal(derivedRef.requiredTotalVramMb, OLLAMA_VRAM / 1024 / 1024);
+assert.equal(derivedRef.requiredFreeVramMb, OLLAMA_VRAM / 1024 / 1024);
+assert.equal(derived.json().download.modelSizeGb, 4.7);
+// Nicht ermittelbar -> 503 mit den fehlenden Feldern, kein stiller Altwert.
+ollamaFake = 'aus';
+const unavailable = await app.inject({ method: 'GET', url: '/api/embedding-nodes/reference' });
+assert.equal(unavailable.statusCode, 503, unavailable.body);
+assert.equal(unavailable.json().error, 'reference_unavailable');
+assert.ok(unavailable.json().missing.some((m) => m.startsWith('nativeDimension')));
+assert.ok(unavailable.json().missing.some((m) => m.startsWith('requiredTotalVramMb')));
+assert.equal(forbiddenFetches, 0);
 
 await app.close();
 console.log(JSON.stringify({
