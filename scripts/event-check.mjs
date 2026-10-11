@@ -16,19 +16,49 @@ const [,, agentId, project, dbUrl] = process.argv;
 const pool = new Pool({ connectionString: dbUrl, max: 1 });
 
 try {
+  // P15-T21: Bedingung WORTGLEICH zu getPendingEvents (packages/core/src/services/events.ts),
+  // damit der Hook exakt die Menge des Servers zeigt (einziger Unterschied: requires_ack = true,
+  // der Hook fordert nur dort zum Quittieren auf, wo ein ACK verlangt ist). Direkt per SQL statt ueber
+  // die API: der Hook laeuft nach jedem Tool-Aufruf, muss schnell sein und auch ohne API funktionieren.
+  // Aenderungen an getPendingEvents hier nachziehen (test-event-check-hook.mjs vergleicht beide).
   const r = await pool.query(
-    `SELECT id, event_type, priority, source_id, payload
-     FROM agent_events
-     WHERE project = $1
-       AND (scope = 'all' OR scope = 'agent:' || $2)
-       AND requires_ack = true
+    `SELECT e.id, e.event_type, e.priority, e.source_id, e.payload
+     FROM agent_events e
+     WHERE e.project = $1
+       AND (e.scope = 'all' OR e.scope = $2)
+       AND e.requires_ack = true
        AND NOT EXISTS (
          SELECT 1 FROM agent_event_acks
-         WHERE event_id = agent_events.id AND agent_id = $2
+         WHERE agent_event_acks.event_id = e.id
+           AND agent_event_acks.agent_id = $3
        )
-     ORDER BY CASE priority WHEN 'critical' THEN 0 WHEN 'high' THEN 1 ELSE 2 END, created_at ASC
+       AND (
+         e.scope = $2
+         OR e.created_at > COALESCE(
+           (SELECT registered_at FROM agent_sessions WHERE id = $3),
+           NOW() - INTERVAL '1 hour'
+         )
+       )
+       AND (
+         e.event_type <> 'PLAN_READY'
+         OR EXISTS (
+           SELECT 1 FROM file_batch_waits w
+           WHERE w.project = e.project
+             AND e.dedupe_key = 'plan-ready:' || w.wait_token::text
+             AND w.status IN ('waiting', 'linked')
+             AND (w.expires_at > NOW() OR EXISTS (SELECT 1 FROM file_batch_plans p WHERE p.id = w.primary_plan_id AND p.status = 'open'))
+         )
+         AND NOT EXISTS (
+           SELECT 1 FROM agent_events e2
+             JOIN agent_event_acks a2 ON a2.event_id = e2.id AND a2.agent_id = $3
+            WHERE e2.project = e.project AND e2.event_type = 'PLAN_READY' AND e2.scope = e.scope AND e2.id <> e.id
+              AND (CASE WHEN e2.payload LIKE '{%' THEN e2.payload::jsonb ->> 'plan_id' END)
+                = (CASE WHEN e.payload LIKE '{%' THEN e.payload::jsonb ->> 'plan_id' END)
+         )
+       )
+     ORDER BY CASE e.priority WHEN 'critical' THEN 0 WHEN 'high' THEN 1 ELSE 2 END, e.created_at ASC
      LIMIT 5`,
-    [project, agentId]
+    [project, `agent:${agentId}`, agentId]
   );
   console.log(JSON.stringify(r.rows));
 } catch {
