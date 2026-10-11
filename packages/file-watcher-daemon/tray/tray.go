@@ -1387,7 +1387,12 @@ func zeigeGPUFenster() {
 	adressStatus.Wrapping = fyne.TextWrapWord
 	lanCheck := widget.NewCheck("API im LAN bevorzugen (synapse_api_url aus config.json, öffentliche Adresse als Rückfall)", nil)
 	lanCheck.SetChecked(ladeGPUHelferEinstellungen().LanBevorzugen)
+	// Nur auf dem UI-Faden gelesen/gesetzt (fyne.Do), daher ohne Mutex.
+	lanProgrammatisch := false
 	lanCheck.OnChanged = func(an bool) {
+		if !lanHaekchenSchreiben(an, lanProgrammatisch, ladeGPUHelferEinstellungen().LanBevorzugen) {
+			return
+		}
 		go func() {
 			if err := setzeGPUHelferEinstellung("lan_bevorzugen", an); err != nil {
 				fyne.Do(func() { status.SetText("Einstellung nicht gespeichert: " + err.Error()) })
@@ -1731,6 +1736,19 @@ func zeigeGPUFenster() {
 		widget.NewLabel("Modell-Zielpfad (vor Download prüfen)"), modelDir,
 		container.NewHBox(toggleButton, stopButton),
 		lanCheck, adressStatus))
+	// Der 5-s-Pruefktakt (gpuHelferEinstellungenBeobachten) fuehrt Haekchen und Adressstatus nach,
+	// solange das Fenster offen ist - auch wenn KI/Daemon gpu-helfer.json geaendert haben.
+	fensterNr := meldeGPUFensterAn(func(e gpuHelferEinstellungen, text string) {
+		fyne.Do(func() {
+			if lanCheck.Checked != e.LanBevorzugen {
+				lanProgrammatisch = true
+				lanCheck.SetChecked(e.LanBevorzugen)
+				lanProgrammatisch = false
+			}
+			adressStatus.SetText(text)
+		})
+	})
+	fenster.SetOnClosed(func() { meldeGPUFensterAb(fensterNr) })
 	fenster.Resize(fyne.NewSize(820, 760))
 	// Beim Oeffnen zeigt der Knopf sofort den echten Zustand statt einer Vorgabe.
 	go knopfBeschriften()

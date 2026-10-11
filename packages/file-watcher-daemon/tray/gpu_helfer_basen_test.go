@@ -137,3 +137,60 @@ func TestSetzeGPUHelferEinstellung(t *testing.T) {
 		t.Error("negative Pause muss als nicht gesetzt gelten")
 	}
 }
+
+// Nur ein Klick des Menschen schreibt; der programmatische Abgleich nie.
+func TestLanHaekchenSchreiben(t *testing.T) {
+	faelle := []struct {
+		an, programmatisch, datei, erwartet bool
+	}{
+		{true, false, false, true},  // Mensch schaltet ein
+		{false, false, true, true},  // Mensch schaltet aus
+		{true, true, true, false},   // Abgleich nach KI-Aenderung: kein Rueckschreiben/Neustart
+		{false, true, false, false}, // Abgleich nach KI-Aenderung (aus)
+		{true, true, false, false},  // programmatisch, selbst wenn es abwiche
+		{true, false, true, false},  // Wert steht schon in der Datei
+	}
+	for _, f := range faelle {
+		if got := lanHaekchenSchreiben(f.an, f.programmatisch, f.datei); got != f.erwartet {
+			t.Errorf("lanHaekchenSchreiben(%v, %v, %v) = %v, erwartet %v", f.an, f.programmatisch, f.datei, got, f.erwartet)
+		}
+	}
+}
+
+// Der Pruefktakt meldet dem offenen Fenster den Dateistand; nach dem Schliessen nicht mehr,
+// und das Schliessen eines alten Fensters meldet ein neueres nicht ab.
+func TestGpuFensterBenachrichtigen(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	if err := setzeGPUHelferEinstellung("lan_bevorzugen", true); err != nil {
+		t.Fatal(err)
+	}
+	aufrufe := 0
+	var zuletzt gpuHelferEinstellungen
+	alt := meldeGPUFensterAn(func(e gpuHelferEinstellungen, _ string) { aufrufe++; zuletzt = e })
+	gpuFensterBenachrichtigen()
+	if aufrufe != 1 || !zuletzt.LanBevorzugen {
+		t.Fatalf("Fenster nicht benachrichtigt: aufrufe=%d %+v", aufrufe, zuletzt)
+	}
+	// KI/Daemon schaltet aus -> naechster Takt meldet aus
+	if err := setzeGPUHelferEinstellung("lan_bevorzugen", false); err != nil {
+		t.Fatal(err)
+	}
+	gpuFensterBenachrichtigen()
+	if aufrufe != 2 || zuletzt.LanBevorzugen {
+		t.Fatalf("Aenderung nicht gemeldet: aufrufe=%d %+v", aufrufe, zuletzt)
+	}
+	neuAufrufe := 0
+	neu := meldeGPUFensterAn(func(gpuHelferEinstellungen, string) { neuAufrufe++ })
+	meldeGPUFensterAb(alt)
+	gpuFensterBenachrichtigen()
+	if neuAufrufe != 1 || aufrufe != 2 {
+		t.Fatalf("Abmelden des alten Fensters hat das neue getroffen: neu=%d alt=%d", neuAufrufe, aufrufe)
+	}
+	meldeGPUFensterAb(neu)
+	gpuFensterBenachrichtigen()
+	if neuAufrufe != 1 {
+		t.Fatal("nach dem Schliessen noch benachrichtigt")
+	}
+}

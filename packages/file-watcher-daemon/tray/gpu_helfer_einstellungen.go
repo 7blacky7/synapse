@@ -198,8 +198,53 @@ func gpuHelferEinstellungenBeobachten(stop chan struct{}) {
 			} else if neu {
 				fmt.Fprintln(os.Stderr, "[gpu-helfer] mit neuen Einstellungen neu gestartet")
 			}
+			gpuFensterBenachrichtigen()
 		}
 	}
+}
+
+// Offenes GPU-Fenster: der Pruefktakt meldet ihm den Dateistand (Haekchen) und den
+// Adressstatus. Sonst zeigte das Haekchen nach einer Aenderung durch KI/Daemon den
+// alten Stand, solange das Fenster offen ist.
+var (
+	gpuFensterMu   sync.Mutex
+	gpuFensterHook func(gpuHelferEinstellungen, string)
+	gpuFensterNr   int
+)
+
+// meldeGPUFensterAn registriert das offene Fenster; die Nummer braucht das Abmelden,
+// damit ein zweites Fenster nicht vom Schliessen des ersten abgemeldet wird.
+func meldeGPUFensterAn(f func(gpuHelferEinstellungen, string)) int {
+	gpuFensterMu.Lock()
+	defer gpuFensterMu.Unlock()
+	gpuFensterNr++
+	gpuFensterHook = f
+	return gpuFensterNr
+}
+
+func meldeGPUFensterAb(nr int) {
+	gpuFensterMu.Lock()
+	defer gpuFensterMu.Unlock()
+	if nr == gpuFensterNr {
+		gpuFensterHook = nil
+	}
+}
+
+func gpuFensterBenachrichtigen() {
+	gpuFensterMu.Lock()
+	h := gpuFensterHook
+	gpuFensterMu.Unlock()
+	if h != nil {
+		h(ladeGPUHelferEinstellungen(), gpuHelferStatusText())
+	}
+}
+
+// lanHaekchenSchreiben: nur ein Klick des Menschen schreibt. Ein programmatisches
+// SetChecked (Abgleich mit der Datei) loest OnChanged ebenfalls aus und darf weder
+// zurueckschreiben noch neu starten; entspricht der Wert schon der Datei, gibt es
+// ebenfalls nichts zu tun.
+func lanHaekchenSchreiben(an, programmatisch, dateiWert bool) bool {
+	return !programmatisch && an != dateiWert
 }
 
 type gpuHelferStatus struct {
