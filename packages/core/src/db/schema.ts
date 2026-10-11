@@ -343,6 +343,17 @@ CREATE TABLE IF NOT EXISTS projects (
 -- werden vom Parser-Worker uebersprungen — siehe parser-worker.ts).
 ALTER TABLE projects ADD COLUMN IF NOT EXISTS enabled BOOLEAN NOT NULL DEFAULT TRUE;
 
+-- EMBED-PRIORITAET (P12-T12, 11.10.2026): Reihenfolge, in der der Parser-Worker Projekte mit
+-- offenem Embedding-Rueckstand bedient (projekteMitBacklog). Stufe 1 = zuerst ... 4 = zuletzt;
+-- ohne Eintrag gilt 3. Eigene Tabelle statt Spalte in projects, weil projects je Projekt eine
+-- Zeile JE HOSTNAME hat (siehe SETUP-1 unten). Gesetzt ueber intern(embed_prioritaet).
+CREATE TABLE IF NOT EXISTS embed_prioritaet (
+  project TEXT PRIMARY KEY,
+  stufe INTEGER NOT NULL CHECK (stufe BETWEEN 1 AND 4),
+  gesetzt_von TEXT,
+  gesetzt_am TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 -- SETUP-1: Setup-Phase-Tracking (projektweiter Einrichtungsfortschritt).
 -- Eigene Tabelle statt Spalte in projects, weil projects PK (name, hostname)
 -- hat — pro Projekt eine Zeile JE HOSTNAME (inkl. virtuellem 'rest-api'-Eintrag,

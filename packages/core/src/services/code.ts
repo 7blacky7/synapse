@@ -1985,7 +1985,9 @@ export async function projekteMitBacklog(
        ) q
       WHERE EXISTS (SELECT 1 FROM projects p WHERE p.name = q.project AND p.enabled)
       GROUP BY q.project
-      ORDER BY faellig DESC
+      -- P12-T12: erst die Embed-Prioritaet (Stufe 1 zuerst, ohne Eintrag 3), dann der groesste
+      -- Rueckstand. Vorher nur die Groesse: ein Testkorpus mit 444k Chunks blockierte alles andere.
+      ORDER BY COALESCE((SELECT e.stufe FROM embed_prioritaet e WHERE e.project = q.project), 3), faellig DESC
       LIMIT ${pLimit}`,
     params
   );

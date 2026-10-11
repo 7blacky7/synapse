@@ -25,6 +25,7 @@ import { BACKLOG_TABELLEN, embeddeOffeneEintraege, zaehleOffeneEmbeddings } from
 import { imHintergrund } from '../db/client.js';
 import { dbSitzungen, internStatus, langsameAufrufe } from './intern-einblick.js';
 import { NEU_EINBETTEN_ARTEN, neuEinbetten } from './neu-einbetten.js';
+import { listeEmbedPrioritaet, setzeEmbedPrioritaet } from './embed-prioritaet.js';
 
 const INTERN_TOOL_BEIM_START = process.env.SYNAPSE_INTERN_TOOL === '1';
 
@@ -43,7 +44,7 @@ export const INTERN_ACTIONS = [
   'schalter_setzen', 'schalter_liste',
   'ollama_status', 'ollama_entladen', 'ollama_laden',
   'status', 'db_sitzungen', 'langsam',
-  'nachzug_jetzt', 'embedding_messen', 'neu_einbetten',
+  'nachzug_jetzt', 'embedding_messen', 'neu_einbetten', 'embed_prioritaet',
 ] as const;
 export type InternAction = (typeof INTERN_ACTIONS)[number];
 
@@ -64,6 +65,7 @@ export const INTERN_DEFINITION = {
     'neu_einbetten (ausfuehren, arten): baut den Qdrant-Index nach einem Modellwechsel aus PostgreSQL neu auf — ' +
     'veraltete Collections leeren und neu anlegen, embedded_at zuruecksetzen, der Nachzug bettet ein; ohne ausfuehren:true nur Vorschau, ' +
     'erst nach dem Umschalten der Modell-Env. ' +
+    'embed_prioritaet (projekte, stufe): Reihenfolge des Code-Nachzugs je Projekt, Stufe 1 zuerst bis 4 zuletzt (ohne Eintrag 3), stufe 0 entfernt; ohne projekte Liste mit offenem Rueckstand. ' +
     'Keine Aktion beendet Prozesse/Sitzungen oder loescht PG-Daten; nur neu_einbetten leert Qdrant-Collections (aus PG wiederherstellbar).',
   inputSchema: {
     type: 'object',
@@ -85,6 +87,8 @@ export const INTERN_DEFINITION = {
       tabelle: { type: 'string', enum: [...BACKLOG_TABELLEN], description: 'nachzug_jetzt: nur diese Tabelle (sonst alle)' },
       ausfuehren: { type: 'boolean', description: 'neu_einbetten: true = wirklich ausfuehren (Standard: nur Vorschau)' },
       arten: { type: 'array', items: { type: 'string', enum: [...NEU_EINBETTEN_ARTEN] }, description: 'neu_einbetten: nur diese Arten (Standard alle)' },
+      projekte: { type: 'array', items: { type: 'string' }, description: 'embed_prioritaet: Projekte, deren Stufe gesetzt wird' },
+      stufe: { type: 'number', description: 'embed_prioritaet: 1 (zuerst) bis 4 (zuletzt), 0 = Eintrag entfernen (zurueck auf 3)' },
       anzahl: { type: 'number', description: 'embedding_messen: Zahl der Passagen (Standard 20, 1..200)' },
       praefix: { type: 'string', description: 'embedding_messen: Praefix vor jeder Passage, z. B. "passage: " (Leerzeichen zaehlen mit)' },
       keep_alive: { type: ['string', 'number'], description: 'ollama_laden: wie lange geladen bleiben (Ollama-Format, z. B. "30m", "2h", -1 = bis Neustart; Standard 30m)' },
@@ -223,6 +227,26 @@ export async function fuehreInternAus(
         // Hintergrund-Pool: die Zaehl- und UPDATE-Abfragen sollen die Tool-Verbindungen nicht belegen (P5-T15)
         const erg = await imHintergrund(() => neuEinbetten({ ausfuehren: wahr(a, 'ausfuehren') === true, arten }));
         return { success: true, action, ...erg };
+      }
+      case 'embed_prioritaet': {
+        const roh = a.projekte;
+        const projekte = Array.isArray(roh)
+          ? roh.map(String).map((s) => s.trim()).filter(Boolean)
+          : typeof roh === 'string' && roh.trim() !== '' ? roh.split(',').map((s) => s.trim()).filter(Boolean) : [];
+        if (projekte.length > 0) {
+          const stufe = zahl(a, 'stufe');
+          if (stufe === undefined || !Number.isInteger(stufe) || stufe < 0 || stufe > 4) {
+            return fehler(action, 'parameter_ungueltig', 'stufe: 1 (zuerst) bis 4 (zuletzt), 0 = Eintrag entfernen.');
+          }
+          const erg = await setzeEmbedPrioritaet(projekte, stufe, text(a, 'agent_id') ?? agentId);
+          return { success: true, action, ...erg, stufe, projekte, liste: await listeEmbedPrioritaet() };
+        }
+        return {
+          success: true,
+          action,
+          hinweis: 'Reihenfolge des Code-Nachzugs: Stufe 1 zuerst, ohne Eintrag 3; innerhalb einer Stufe der groesste Rueckstand zuerst.',
+          liste: await listeEmbedPrioritaet(),
+        };
       }
       case 'embedding_messen': {
         const modell = text(a, 'modell');
