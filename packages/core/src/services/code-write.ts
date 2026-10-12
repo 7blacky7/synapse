@@ -972,7 +972,7 @@ async function releasePlanlessReservationsAfterSingleWrite(project: string, agen
   if (rows.length > 0) {
     const batch = await import('./file-batch.js');
     batch.notifyReservationWaiters();
-    await batch.replanUnblockedReservationWaits(project);
+    await batch.replanUnblockedReservationWaits(project, rows.map((r) => r.file_path));
   }
   return rows.map((row) => ({ ...row, reason: 'freigegeben nach eigenem Commit' }));
 }

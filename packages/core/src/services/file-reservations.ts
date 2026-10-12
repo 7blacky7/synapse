@@ -444,13 +444,14 @@ export async function releaseStaleFileReservations(
     return {
       abgelaufen: rows.filter((row) => row.grund === 'abgelaufen').length,
       abgemeldet: rows.filter((row) => row.grund === 'abgemeldet').length,
+      freigaben: [...perProject].map(([project, paths]) => ({ project, paths: [...paths] })),
     };
   });
   if (result.abgelaufen + result.abgemeldet > 0) {
     const batch = await import('./file-batch.js');
-    await batch.replanUnblockedReservationWaits(args.project);
+    for (const entry of result.freigaben) await batch.replanUnblockedReservationWaits(entry.project, entry.paths);
   }
-  return result;
+  return { abgelaufen: result.abgelaufen, abgemeldet: result.abgemeldet };
 }
 
 async function addWithClient(
@@ -723,7 +724,7 @@ export async function releaseFileReservations(args: {
   });
   if (result.released.length > 0) {
     const batch = await import('./file-batch.js');
-    await batch.replanUnblockedReservationWaits(args.project);
+    await batch.replanUnblockedReservationWaits(args.project, result.released.map((r) => r.file_path));
   }
   return result;
 }

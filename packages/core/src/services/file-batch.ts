@@ -2176,7 +2176,7 @@ async function commitCoeditBatch(args: {
     await closeOrphanCarriers(client, plan.project, `commit von Plan ${args.plan_id}`);
     await notifyPlanCommitted(client, plan, commitCaller, reservationTransfers);
     await client.query('COMMIT'); notifyPlanChange();
-    if (planlessReleased.length > 0) await replanUnblockedReservationWaits(plan.project);
+    if (releasedReservations.length > 0) await replanUnblockedReservationWaits(plan.project, releasedReservations.map((r) => r.file_path));
 
     for (const file of writtenFiles) {
       if (!file.deleted) enqueueParseAndEmbed(plan.project, file.file_path);
@@ -4256,28 +4256,92 @@ export function notifyReservationWaiters(): void {
  * Planlose Freigabe: Waits ohne Zielplan erhalten ihre gespeicherten Ops erneut über planBatch.
  * Ein Wait wird erst fällig, wenn für keine seiner Dateien mehr eine aktive Reservierung besteht.
  */
-export async function replanUnblockedReservationWaits(project?: string): Promise<number> {
+export async function replanUnblockedReservationWaits(project: string, filePaths: readonly string[]): Promise<number> {
+  // P6-T38: keine projektweite Alt-Wait-Aufarbeitung als Nebenwirkung eines Writes.
+  if (!project || !filePaths?.length) return 0;
   const pool = getPool();
-  const { rows } = await pool.query<{ project: string; waiting_agent: string; deferred_ops: FileBatchOp[] }>(
-    `UPDATE file_batch_waits w
-        SET expires_at = NOW(), updated_at = NOW()
-      WHERE w.status = 'waiting' AND w.primary_plan_id IS NULL
-        AND w.waiting_agent IS NOT NULL AND jsonb_array_length(w.deferred_ops) > 0
-        AND ($1::text IS NULL OR w.project = $1)
-        AND NOT EXISTS (
-          SELECT 1 FROM unnest(w.shared_files) AS shared(file_path)
-          JOIN file_reservations r ON r.project = w.project AND r.file_path = shared.file_path
-            AND r.released_at IS NULL AND r.expires_at > NOW()
-        )
-      RETURNING w.project, w.waiting_agent, w.deferred_ops`,
-    [project ?? null],
-  );
   let planned = 0;
-  for (const wait of rows) {
-    const result = await planBatch({ project: wait.project, agent_id: wait.waiting_agent, ops: wait.deferred_ops });
-    planned += result.total_ops ?? 0;
+  const eligible = `w.project = $1 AND w.shared_files && $2::text[]
+    AND w.status = 'waiting' AND w.primary_plan_id IS NULL
+    AND w.waiting_agent IS NOT NULL AND jsonb_array_length(w.deferred_ops) > 0
+    AND NOT EXISTS (
+      SELECT 1 FROM unnest(w.shared_files) AS shared(file_path)
+      JOIN file_reservations r ON r.project = w.project AND r.file_path = shared.file_path
+        AND r.released_at IS NULL AND r.expires_at > NOW()
+    )`;
+  try {
+    const { rows } = await pool.query<{ wait_token: string }>(
+      `SELECT w.wait_token::text FROM file_batch_waits w WHERE ${eligible}`,
+      [project, [...filePaths]],
+    );
+    for (const candidate of rows) {
+      const client = await pool.connect();
+      const lockKey = `reservation-replan:${candidate.wait_token}`;
+      let locked = false;
+      try {
+        // Zwei Freigaben duerfen denselben gespeicherten Beitrag nicht doppelt planen.
+        locked = (await client.query<{ locked: boolean }>(
+          'SELECT pg_try_advisory_lock(hashtextextended($1, 0)) AS locked', [lockKey],
+        )).rows[0].locked;
+        if (!locked) continue;
+        const current = await client.query<{ waiting_agent: string; source_plan_id: string; deferred_ops: FileBatchOp[] }>(
+          `UPDATE file_batch_waits w SET expires_at = NOW(), updated_at = NOW()
+            WHERE ${eligible} AND w.wait_token = $3::uuid
+            RETURNING w.waiting_agent, w.source_plan_id::text, w.deferred_ops`,
+          [project, [...filePaths], candidate.wait_token],
+        );
+        const wait = current.rows[0];
+        if (!wait) continue;
+        try {
+          const result = await planBatch({ project, agent_id: wait.waiting_agent, ops: wait.deferred_ops });
+          planned += result.total_ops ?? 0;
+        } catch (error) {
+          if (!(error instanceof PlanBatchOpsFailedError)) throw error;
+          // planBatch hat den gesamten Beitrag bereits verlustfrei als Fehlerentwurf gespeichert.
+          // Nur diesen Wait abschliessen und seinen Autor informieren; Hauptwrite bleibt erfolgreich.
+          await client.query('BEGIN');
+          await client.query(
+            `UPDATE file_batch_waits SET status = 'closed', primary_plan_id = $2::bigint, updated_at = NOW()
+              WHERE wait_token = $1::uuid AND project = $3`,
+            [candidate.wait_token, error.plan_id, project],
+          );
+          await client.query(
+            `UPDATE file_batch_plans c SET status = 'cancelled',
+                reason = CONCAT_WS(' ', c.reason, $3::text)
+              WHERE c.id = $1::bigint AND c.project = $2 AND c.status = 'open'
+                AND jsonb_array_length(c.ops) = 0
+                AND NOT EXISTS (SELECT 1 FROM file_batch_waits w WHERE w.source_plan_id = c.id AND w.status <> 'closed')`,
+            [wait.source_plan_id, project, `[Beitrag erhalten in Fehlerentwurf ${error.plan_id}]`],
+          );
+          await emitEventOnce({
+            project, eventType: 'PLAN_CHANGED', priority: 'normal',
+            scope: `agent:${wait.waiting_agent}`, sourceId: 'files', requiresAck: true,
+            dedupeKey: `reservation-replan-failed:${candidate.wait_token}:${error.plan_id}`,
+            payload: JSON.stringify({
+              plan_id: error.plan_id, source_plan_id: wait.source_plan_id, wait_token: candidate.wait_token,
+              reason: 'reservation_replan_failed',
+              message: 'Reservierung freigegeben; dein Folgebeitrag ist nicht anwendbar und als Fehlerentwurf erhalten. Der ausloesende Write war erfolgreich.',
+              ansehen: `files(action:"plan_status", plan_id:"${error.plan_id}", ansicht:"befunde")`,
+              reparieren: `files(action:"plan_update", plan_id:"${error.plan_id}", op_index:<Index>, ops:[<korrigierte Op>])`,
+            }),
+          }, client);
+          await client.query('COMMIT');
+        }
+      } catch (error) {
+        await client.query('ROLLBACK').catch(() => {});
+        // Auch unerwartete Folgefehler duerfen einen bereits gespeicherten Write nicht umdeuten.
+        // Ohne gesicherten Fehlerentwurf bleibt der Wait fuer einen spaeteren Versuch erhalten.
+        console.warn('[Coedit] Reservierungs-Folgeplanung fehlgeschlagen:', candidate.wait_token,
+          error instanceof Error ? error.name : 'unknown');
+      } finally {
+        if (locked) await client.query('SELECT pg_advisory_unlock(hashtextextended($1, 0))', [lockKey]).catch(() => {});
+        client.release();
+      }
+    }
+    if (rows.length > 0) notifyPlanChange();
+  } catch (error) {
+    console.warn('[Coedit] Reservierungs-Folgeplanung nicht verfuegbar:', error instanceof Error ? error.name : 'unknown');
   }
-  if (rows.length > 0) notifyPlanChange();
   return planned;
 }
 function sleepOrWake(ms: number): Promise<void> {
@@ -5050,9 +5114,9 @@ async function commitLegacyBody(
     [plan.project, resolveAgentId(args.agent_id)],
   )).rows.map((reservation) => ({ ...reservation, reason: 'freigegeben nach eigenem Commit' }));
   legacyReleased.push(...ownPlanlessReleased);
-  if (ownPlanlessReleased.length > 0) {
+  if (legacyReleased.length > 0) {
     notifyPlanChange();
-    await replanUnblockedReservationWaits(plan.project);
+    await replanUnblockedReservationWaits(plan.project, legacyReleased.map((r) => r.file_path));
   }
 
   return {
