@@ -193,7 +193,7 @@ export async function specialistRoutes(fastify: FastifyInstance): Promise<void> 
         args: { name: specName },
       });
 
-      const result = await waitForSpecialistJob(id, 60_000);
+      const result = await waitForSpecialistJob(id, 135_000);
       // Audit: dieser Weg lief bisher an tool_calls VORBEI. GEMESSEN 02.08.2026 —
       // references(logToolCall) hatte genau zwei Aufrufer (stdio + MCP-ueber-REST),
       // diese Route keinen. Jeder Klick im Dashboard war damit unsichtbar, und die

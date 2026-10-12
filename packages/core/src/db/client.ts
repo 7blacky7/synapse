@@ -35,8 +35,22 @@
  */
 
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { Pool } from 'pg';
+import { Pool, Client } from 'pg';
 import { getConfig } from '../config.js';
+
+let dbProzess = process.env.SYNAPSE_DB_PROZESS ?? 'api';
+export function setzeDbProzess(art: 'wrapper' | 'daemon'): void {
+  if (_pool || _hintergrundPool) throw new Error('DB-Prozessprofil muss vor der ersten Verbindung gesetzt werden');
+  dbProzess = art;
+}
+const kleinerProzess = () => dbProzess === 'wrapper' || dbProzess === 'daemon';
+
+/** LISTEN braucht eine dauerhafte Verbindung, aber keinen Platz im Query-Pool. */
+export async function verbindeListenClient(): Promise<Client> {
+  const client = new Client({ connectionString: getConfig().database.url, application_name: 'synapse-' + dbProzess + '-listen' });
+  try { await client.connect(); return client; }
+  catch (err) { await client.end().catch(() => {}); throw err; }
+}
 
 let _pool: Pool | null = null;
 let _hintergrundPool: Pool | null = null;
@@ -52,7 +66,14 @@ function envGanzzahl(name: string, ersatz: number): number {
 function hauptPool(): Pool {
   if (!_pool) {
     const config = getConfig();
-    _pool = new Pool({ connectionString: config.database.url, max: 20 });
+    _pool = new Pool({
+      connectionString: config.database.url,
+      max: kleinerProzess() ? 3 : 20,
+      idleTimeoutMillis: envGanzzahl('SYNAPSE_DB_IDLE_MS', 10_000),
+      connectionTimeoutMillis: kleinerProzess() ? 10_000 : 0,
+      application_name: 'synapse-' + dbProzess,
+    });
+    _pool.on('error', err => console.error('[Synapse] Ruhende DB-Verbindung:', err.message));
   }
   return _pool;
 }
@@ -63,7 +84,8 @@ export function getHintergrundPool(): Pool {
     const config = getConfig();
     _hintergrundPool = new Pool({
       connectionString: config.database.url,
-      max: envGanzzahl('SYNAPSE_DB_HINTERGRUND_MAX', 8),
+      max: kleinerProzess() ? 2 : envGanzzahl('SYNAPSE_DB_HINTERGRUND_MAX', 8),
+      idleTimeoutMillis: envGanzzahl('SYNAPSE_DB_IDLE_MS', 10_000),
       connectionTimeoutMillis: envGanzzahl('SYNAPSE_DB_HINTERGRUND_WARTE_MS', 60_000),
     });
     // Ein Fehler eines ruhenden Hintergrund-Clients (Verbindung weg) darf den Prozess nicht beenden.

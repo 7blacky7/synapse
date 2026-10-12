@@ -18,6 +18,7 @@ import os from 'node:os'
 import { execFileSync } from 'node:child_process'
 import {
   getPool,
+  verbindeListenClient,
   claimPendingProjectInitJob,
   completeProjectInitJob,
   expirePendingProjectInitJobs,
@@ -51,7 +52,7 @@ export async function startProjectInitWorker(
   let safetyInterval: ReturnType<typeof setInterval> | null = null
   let stopped = false
 
-  listenClient = await getPool().connect()
+  listenClient = await verbindeListenClient()
   await listenClient.query('LISTEN project_init_job_created')
 
   listenClient.on('notification', (msg: { channel: string; payload?: string }) => {
@@ -101,7 +102,7 @@ export async function startProjectInitWorker(
     }
     if (listenClient !== null) {
       try { await listenClient.query('UNLISTEN *') } catch { /* ignore */ }
-      try { listenClient.release() } catch { /* ignore */ }
+      try { await listenClient.end() } catch { /* ignore */ }
       listenClient = null
     }
     console.error('[project-init-worker] gestoppt.')

@@ -25,8 +25,11 @@ export { loadConfig, getConfig, resetConfig } from './config.js';
 export { GUIDE_OVERVIEW, TOOL_GUIDES } from './guide/index.js';
 export type { ToolGuide, ActionGuide } from './guide/index.js';
 
+export { lokalerProjektpfad, pruefeWrapperProzess, stoppeLokalenWrapper, reapLokaleWrapper } from './services/wrapper-prozess.js';
+export { getProjectRecordById } from './services/project-record-ids.js';
+
 // PostgreSQL
-export { getPool, getHintergrundPool, imHintergrund, istImHintergrund, testDatabaseConnection, closePool, ensureSchema, pruefeSchema, stelleSchemaSicher, schemaModus, leereSchemaWarnung, SCHEMA_KENNUNG } from './db/index.js';
+export { setzeDbProzess, verbindeListenClient, getPool, getHintergrundPool, imHintergrund, istImHintergrund, testDatabaseConnection, closePool, ensureSchema, pruefeSchema, stelleSchemaSicher, schemaModus, leereSchemaWarnung, SCHEMA_KENNUNG } from './db/index.js';
 export type { SchemaModus, SchemaPruefung, SchemaStandArt, SchemaSicherErgebnis } from './db/index.js';
 
 // Typen
@@ -1483,4 +1486,3 @@ export async function initSynapse(
   console.error(`[Synapse] Projekt "${projectName}" bereit`);
   return true;
 }
-export { getProjectRecordById } from './services/project-record-ids.js';

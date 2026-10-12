@@ -9,7 +9,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 
-import { removeInboxForAgent, removeWrapperStatus, upsertWrapperStatus, setzeHeartbeatBeimSpawn, EFFORT_STUFEN, beginneSitzung } from '@synapse/core';
+import { stoppeLokalenWrapper, removeInboxForAgent, removeWrapperStatus, upsertWrapperStatus, setzeHeartbeatBeimSpawn, EFFORT_STUFEN, beginneSitzung } from '@synapse/core';
 
 import {
   bereiteMcpBrueckeVor,
@@ -449,58 +449,16 @@ export function prozessTodMeldung(steps: Record<string, unknown>): string {
 export async function stopSpecialistTool(
   name: string,
   projectPath: string,
+  project?: string,
 ) {
-  const steps: Record<string, unknown> = {};
-
-  // Wrapper-PID merken VOR dem Stop
-  let wrapperPid: number | null = null;
-  try {
-    const status = await readStatus(projectPath);
-    wrapperPid = status.specialists[name]?.wrapperPid ?? null;
-  } catch { /* ignore */ }
-
-  try {
-    // Stop-Kommando senden
-    if (heartbeatController.isConnected(name)) {
-      await heartbeatController.sendStop(name);
-    }
-  } catch (err) {
-    console.error(`[Synapse] Fehler beim Stoppen von "${name}": ${err}`);
+  const result = await stoppeLokalenWrapper(name, projectPath, project);
+  if (result.success === true) {
+    await heartbeatController.disconnectFromWrapper(name);
+    await updateSpecialist(projectPath, name, {
+      status: 'stopped', lastActivity: new Date().toISOString(), currentTask: undefined,
+    });
   }
-
-  // Verbindung trennen
-  await heartbeatController.disconnectFromWrapper(name);
-
-  // Erfolg nur melden, wenn der Prozess weg ist (P2-T386): frueher wurde der Stop nur
-  // gesendet, wenn eine Heartbeat-Verbindung bestand — sonst lief der Wrapper weiter,
-  // obwohl "gestoppt" gemeldet und der Status auf stopped gesetzt wurde.
-  if (wrapperPid && wrapperPid > 0) {
-    const tot = await beendeWrapperProzess(wrapperPid, steps);
-    if (!tot) {
-      return jsonResult({
-        success: false,
-        message: `Spezialist "${name}" NICHT gestoppt: Wrapper-Prozess ${wrapperPid} lebt noch, `
-          + `SIGTERM und SIGKILL blieben wirkungslos. Status unveraendert — Prozess von Hand pruefen.`,
-        wrapper_pid: wrapperPid,
-        steps,
-      });
-    }
-  } else {
-    steps.prozess_beendet = 'keine Wrapper-PID bekannt — Prozesstod UNGEPRUEFT';
-  }
-
-  // Status aktualisieren
-  await updateSpecialist(projectPath, name, {
-    status: 'stopped',
-    lastActivity: new Date().toISOString(),
-    currentTask: null,
-  } as any);
-
-  return jsonResult({
-    success: true,
-    message: `Spezialist "${name}" gestoppt. ${prozessTodMeldung(steps)}`,
-    steps,
-  });
+  return jsonResult(result);
 }
 
 // ---------------------------------------------------------------------------

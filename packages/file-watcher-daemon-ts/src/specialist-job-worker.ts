@@ -16,6 +16,9 @@ import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import {
   getPool,
+  verbindeListenClient,
+  lokalerProjektpfad,
+  reapLokaleWrapper,
   claimPendingSpecialistJob,
   completeSpecialistJob,
   expirePendingSpecialistJobs,
@@ -59,8 +62,9 @@ export async function startSpecialistJobWorker(
   let listenClient: any = null
   let safetyInterval: ReturnType<typeof setInterval> | null = null
   let stopped = false
+  let reaperLaeuft = false
 
-  listenClient = await pool.connect()
+  listenClient = await verbindeListenClient()
   await listenClient.query('LISTEN specialist_job_created')
 
   listenClient.on('notification', (msg: { channel: string; payload?: string }) => {
@@ -94,6 +98,12 @@ export async function startSpecialistJobWorker(
 
   safetyInterval = setInterval(() => {
     if (stopped) return
+    if (!reaperLaeuft && !workerPausiert('specialist_jobs')) {
+      reaperLaeuft = true
+      void reapLokaleWrapper(getActiveProjects()).catch(err => {
+        console.error('[specialist-worker] Reaper:', err.message)
+      }).finally(() => { reaperLaeuft = false })
+    }
     // P15-T12: waehrend einer Pause nichts verfallen lassen — die Jobs warten nur.
     if (!workerPausiert('specialist_jobs')) {
       void expirePendingSpecialistJobs(30).catch((err: unknown) => {
@@ -124,7 +134,7 @@ export async function startSpecialistJobWorker(
     }
     if (listenClient !== null) {
       try { await listenClient.query('UNLISTEN *') } catch { /* ignore */ }
-      try { listenClient.release() } catch { /* ignore */ }
+      try { await listenClient.end() } catch { /* ignore */ }
       listenClient = null
     }
     console.error('[specialist-worker] gestoppt.')
@@ -138,7 +148,7 @@ export async function startSpecialistJobWorker(
 async function processJob(project: string): Promise<void> {
   // P15-T12: pausiert -> nicht claimen, der Job bleibt pending.
   if (workerPausiert('specialist_jobs')) return
-  const job = await claimPendingSpecialistJob(project, DAEMON_ID)
+  const job = await claimPendingSpecialistJob(project, DAEMON_ID, os.hostname())
   if (!job) return
   meldeWorkerArbeit('specialist_jobs')
 
@@ -164,7 +174,7 @@ async function processJob(project: string): Promise<void> {
  * Tools liegen in @synapse/mcp-server — dynamic import damit der Daemon
  * nicht zwingend mcp-server im Build braucht.
  */
-async function dispatchSpecialistAction(job: SpecialistJobRow): Promise<Record<string, unknown>> {
+export async function dispatchSpecialistAction(job: SpecialistJobRow): Promise<Record<string, unknown>> {
   const args = job.args as Record<string, unknown>
   const tools = await import('@synapse/mcp-server/tools')
 
@@ -221,15 +231,17 @@ async function dispatchSpecialistAction(job: SpecialistJobRow): Promise<Record<s
     }
 
     case 'stop': {
+      const path = await lokalerProjektpfad(job.project)
+      if (!path) throw new Error('Stop: Projektpfad dieses Hosts nicht eindeutig registriert')
       const names = Array.isArray(args.name) ? (args.name as unknown[]).map(String) : [String(args.name)]
-      const projectPath = String(args.project_path)
+      const projectPath = path
       if (names.length === 1) {
-        return (await tools.stopSpecialistTool(names[0], projectPath)) as Record<string, unknown>
+        return (await tools.stopSpecialistTool(names[0], projectPath, job.project)) as Record<string, unknown>
       }
       const results: Array<Record<string, unknown>> = []
       const errors: string[] = []
       for (const n of names) {
-        try { results.push((await tools.stopSpecialistTool(n, projectPath)) as Record<string, unknown>) }
+        try { results.push((await tools.stopSpecialistTool(n, projectPath, job.project)) as Record<string, unknown>) }
         catch (e) { errors.push(`${n}: ${e}`) }
       }
       return { results, count: results.length, errors }

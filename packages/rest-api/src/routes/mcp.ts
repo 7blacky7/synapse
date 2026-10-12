@@ -4159,7 +4159,7 @@ async function handleToolCallKern(
           action: actionStr as 'spawn' | 'spawn_batch' | 'stop' | 'purge' | 'update_skill',
           args: jobArgs,
         });
-        const result = await waitForSpecialistJob(id, 60_000);
+        const result = await waitForSpecialistJob(id, actionStr === 'stop' ? 135_000 : 60_000);
         if (result.status === 'done') {
           return result.result ?? { success: true, message: 'Spezialist-Aktion erfolgreich' };
         }

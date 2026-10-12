@@ -23,10 +23,11 @@ import { startProjectInitWorker, type ProjectInitWorkerHandle } from './project-
 import { startDaemonHeartbeat, type DaemonHeartbeatHandle } from './daemon-heartbeat.js';
 import { startEnabledSync, type EnabledSyncHandle } from './enabled-sync.js';
 import { startInternBruecke, type InternBrueckeHandle } from './intern-bruecke.js';
-import { registriereWorker } from '@synapse/core';
+import { registriereWorker, setzeDbProzess } from '@synapse/core';
 import { startLogpflege, type LogpflegeHandle } from './logpflege.js';
 
 async function main(): Promise<void> {
+  setzeDbProzess('daemon');
   ensureConfigDir();
 
   // Single-Instance: lebt der Daemon aus daemon.pid noch, beenden wir uns

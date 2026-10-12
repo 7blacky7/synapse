@@ -87,11 +87,20 @@ export async function enqueueSpecialistJob(args: {
   args: Record<string, unknown>;
 }): Promise<{ id: string }> {
   const pool = getPool();
+  let jobArgs = args.args;
+  if (args.action === 'stop') {
+    const pfad = typeof jobArgs.project_path === 'string' ? jobArgs.project_path : null;
+    const { rows } = await pool.query<{ hostname: string; path: string }>(
+      "SELECT DISTINCT hostname,path FROM projects WHERE name=$1 AND path NOT LIKE '/virtual/%' AND ($2::text IS NULL OR path=$2)",
+      [args.project, pfad]);
+    if (rows.length !== 1) throw new Error('Stop-Zielhost nicht eindeutig registriert');
+    jobArgs = { ...jobArgs, project: args.project, project_path: rows[0].path, target_hostname: rows[0].hostname };
+  }
   const res = await pool.query<{ id: string }>(
     `INSERT INTO specialist_jobs (project, action, args)
      VALUES ($1, $2, $3::jsonb)
      RETURNING id`,
-    [args.project, args.action, JSON.stringify(args.args)],
+    [args.project, args.action, JSON.stringify(jobArgs)],
   );
   return { id: res.rows[0].id };
 }
@@ -103,6 +112,7 @@ export async function enqueueSpecialistJob(args: {
 export async function claimPendingSpecialistJob(
   project: string,
   daemonId: string,
+  hostname?: string,
 ): Promise<SpecialistJobRow | null> {
   const pool = getPool();
   const client = await pool.connect();
@@ -112,11 +122,12 @@ export async function claimPendingSpecialistJob(
       `SELECT * FROM specialist_jobs
        WHERE project = $1
          AND status = 'pending'
+         AND (args->>'target_hostname' IS NULL OR args->>'target_hostname'=$2::text)
          AND created_at > NOW() - interval '30 seconds'
        ORDER BY created_at ASC
        LIMIT 1
        FOR UPDATE SKIP LOCKED`,
-      [project],
+      [project, hostname ?? null],
     );
     if (res.rows.length === 0) {
       await client.query('ROLLBACK');

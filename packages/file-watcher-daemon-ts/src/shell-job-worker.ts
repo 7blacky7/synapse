@@ -17,6 +17,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {
   getPool,
+  verbindeListenClient,
   maskiereShellText,
   claimPendingShellJob,
   completeShellJob,
@@ -89,7 +90,7 @@ export async function startShellJobWorker(
   let stopped = false;
 
   // Dedizierter Dedicated-Client fuer LISTEN (darf nicht zurueck in den Pool)
-  listenClient = await pool.connect();
+  listenClient = await verbindeListenClient();
   await listenClient.query('LISTEN shell_job_created');
   // SH-2: Abbruch-Signale. Der Kindprozess lebt nur hier im Daemon — die
   // REST-Seite kann ihn nicht beenden, sie kann den Wunsch nur zustellen.
@@ -194,7 +195,7 @@ export async function startShellJobWorker(
         /* ignore: Client koennte schon weg sein */
       }
       try {
-        listenClient.release();
+        await listenClient.end();
       } catch {
         /* ignore */
       }

@@ -213,6 +213,11 @@ class ProcessManager extends EventEmitter {
     }
   }
 
+  /** Letzte Frist des Wrappers: ausschließlich sein eigenes Kind beenden. */
+  forceStop(agentName: string): void {
+    this.processes.get(agentName)?.proc.kill('SIGKILL')
+  }
+
   async stop(agentName: string): Promise<void> {
     const agent = this.processes.get(agentName)
     if (!agent) return

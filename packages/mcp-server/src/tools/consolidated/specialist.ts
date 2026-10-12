@@ -259,7 +259,7 @@ export const specialistTool: ConsolidatedTool = {
         if (names && names.length > 1) {
           const projectPath = reqStr(args, 'project_path');
           const settled = await Promise.allSettled(
-            names.map(n => stopSpecialistTool(n, projectPath))
+            names.map(n => stopSpecialistTool(n, projectPath, str(args, 'project')))
           );
           const results: Array<Record<string, unknown>> = [];
           const errors: string[] = [];
@@ -273,7 +273,7 @@ export const specialistTool: ConsolidatedTool = {
         // Bestehend: Einzelner Stop
         const name = reqStr(args, 'name');
         const projectPath = reqStr(args, 'project_path');
-        return await stopSpecialistTool(name, projectPath);
+        return await stopSpecialistTool(name, projectPath, str(args, 'project'));
       }
 
       case 'purge': {

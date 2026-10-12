@@ -20,6 +20,7 @@
  */
 
 import { createServer, type Server, type Socket } from 'node:net'
+import { setzeDbProzess } from '@synapse/core'
 import { unlinkSync, chmodSync, existsSync } from 'node:fs'
 import { readFile, unlink } from 'node:fs/promises'
 import { homedir } from 'node:os'
@@ -113,6 +114,9 @@ let agentBusy = false
 let agentBusySince = 0
 let tokensAtBusyStart = 0
 let shuttingDown = false
+let shutdownStarted = false
+let stopDeadline: ReturnType<typeof setTimeout> | null = null
+const STOP_FRIST_MS = Math.min(120_000, Math.max(1000, Number(process.env.SYNAPSE_WRAPPER_STOP_MS) || 60_000))
 let processAlive = true
 
 const STUCK_TIMEOUT_MS = 120_000 // 2 Minuten ohne Event-Aktivitaet = stuck
@@ -556,7 +560,12 @@ async function handleWake(message: string | undefined, id?: number): Promise<Wra
 }
 
 async function handleStop(id?: number): Promise<WrapperResponse> {
+  if (shuttingDown) return { jsonrpc: '2.0', result: { stopping: true }, id }
   log('Stop requested — asking agent to save and shutting down')
+  stopDeadline = setTimeout(() => {
+    processManager.forceStop(AGENT_NAME)
+    process.exit(1)
+  }, STOP_FRIST_MS)
 
   // SOFORT shuttingDown setzen — verhindert dass der Exit-Handler den Inner-Claude-
   // Exit als "Crash" interpretiert + KEEP_ALIVE-Auto-Respawn ausloest. Sonst Race:
@@ -567,14 +576,16 @@ async function handleStop(id?: number): Promise<WrapperResponse> {
   // Ask agent to save before stopping
   if (processAlive && !agentBusy) {
     try {
-      await wakeAgent(
+      let saveTimer: ReturnType<typeof setTimeout> | undefined
+      try { await Promise.race([wakeAgent(
         `Du wirst gleich gestoppt. PFLICHT-AKTION JETZT:
 1. Sichere deinen kompletten Wissensstand in MEMORY.md
 2. Update deinen SKILL.md falls noetig
 3. Antworte mit MEMORY_SAVED wenn fertig
 
 Alles was du NICHT speicherst geht verloren.`,
-      )
+      ), new Promise<void>(resolve => { saveTimer = setTimeout(resolve, Math.max(100, STOP_FRIST_MS - 6000)) })]) }
+      finally { if (saveTimer) clearTimeout(saveTimer) }
     } catch (err) {
       log('Could not ask agent to save before stop: %s', err)
     }
@@ -1659,8 +1670,13 @@ async function cleanup() {
 }
 
 async function gracefulShutdown(reason: string) {
-  if (shuttingDown) return
+  if (shutdownStarted) return
+  shutdownStarted = true
   shuttingDown = true
+  if (!stopDeadline) stopDeadline = setTimeout(() => {
+    processManager.forceStop(AGENT_NAME)
+    process.exit(1)
+  }, STOP_FRIST_MS)
   log('Graceful shutdown initiated (reason: %s)', reason)
 
   // Stop agent process
@@ -1674,12 +1690,13 @@ async function gracefulShutdown(reason: string) {
   }
 
   await cleanup()
+  if (stopDeadline) clearTimeout(stopDeadline)
   process.exit(0)
 }
 
 function setupSignalHandlers() {
-  process.on('SIGTERM', () => void gracefulShutdown('SIGTERM'))
-  process.on('SIGINT', () => void gracefulShutdown('SIGINT'))
+  process.on('SIGTERM', () => void handleStop())
+  process.on('SIGINT', () => void handleStop())
 
   process.on('uncaughtException', (err) => {
     log('Uncaught exception: %s', err.message)
@@ -1731,6 +1748,7 @@ function validateEnv() {
 }
 
 async function main() {
+  setzeDbProzess('wrapper')
   validateEnv()
 
   log('Starting wrapper...')
