@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# synapse-chat.sh — Nachricht an den Synapse-Chat senden
+# synapse-chat.sh — Nachricht an den Synapse-Agenten-Chat senden
 #
 # Nutzung:
 #   synapse-chat "Nachricht an alle"
@@ -17,9 +17,6 @@ CONTENT="${1:?Nachricht fehlt. Nutzung: synapse-chat \"Nachricht\" [empfaenger] 
 RECIPIENT="${2:-}"
 SENDER="${3:-user}"
 PROJECT="${SYNAPSE_PROJECT:-synapse}"
-DB_URL="${SYNAPSE_DB_URL:-}"
-if [[ -z "$DB_URL" ]]; then echo "SYNAPSE_DB_URL nicht gesetzt" >&2; exit 1; fi
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-# Insert via node + pg
-node "$SCRIPT_DIR/chat-send.mjs" "$PROJECT" "$SENDER" "$CONTENT" "$RECIPIENT" "$DB_URL"
+node "$SCRIPT_DIR/chat-send.mjs" "$PROJECT" "$SENDER" "$CONTENT" "$RECIPIENT"
