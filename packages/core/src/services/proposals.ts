@@ -41,7 +41,6 @@ import type { EmbedOptions } from '../embeddings/index.js';
 import { getPool, getHintergrundPool } from '../db/client.js';
 import { embeddingNachtragAngehalten } from './intern-schalter.js';
 import { betteEinzelnEin, type NachzugQuelle } from './embed-nachzug.js';
-import { ensureCollection } from '../qdrant/collections.js';
 import {
   insertVector,
   searchVectors,
@@ -85,8 +84,7 @@ export async function createProposal(
   author: string,
   tags: string[] = []
 ): Promise<Proposal> {
-  const COLLECTION_NAME = getCollectionName(project);
-  await ensureCollection(COLLECTION_NAME);
+  // P10-T11: Collection erst beim Hintergrund-Nachtrag anlegen; PostgreSQL ist führend.
 
   const now = new Date().toISOString();
   const id = uuidv4();

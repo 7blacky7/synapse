@@ -40,7 +40,6 @@ import {
   COLLECTIONS,
 } from '../types/index.js';
 import {
-  ensureCollection,
   insertVector,
   searchVectors,
   deleteVector,
@@ -77,9 +76,7 @@ export async function addThought(
   taskId?: string,
   taskStatus?: ProjectTask['status']
 ): Promise<Thought> {
-  // Collection sicherstellen
-  const collectionName = COLLECTIONS.projectThoughts(project);
-  await ensureCollection(collectionName);
+  // P10-T11: Collection-Prüfung gehört zum Index-Nachtrag, nicht vor den PG-Write.
 
   // Das Embedding passiert NICHT mehr hier, sondern nebenlaeufig nach dem PG-Schreiben
   // (siehe unten). Frueher stand an dieser Stelle ein await embed(content) VOR dem Insert —
@@ -149,9 +146,7 @@ export async function addThoughtsBatch(
 ): Promise<{ thoughts: Thought[]; warning?: string }> {
   if (items.length === 0) return { thoughts: [] };
 
-  const collectionName = COLLECTIONS.projectThoughts(project);
-  await ensureCollection(collectionName);
-
+  // P10-T11: Auch ein Batch speichert unabhängig von der Verfügbarkeit des Suchindex.
   const now = new Date().toISOString();
   const thoughts: Thought[] = items.map(item => ({
     id: uuidv4(),

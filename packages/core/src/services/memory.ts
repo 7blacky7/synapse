@@ -35,7 +35,6 @@
 import { v4 as uuidv4 } from 'uuid';
 import { embed } from '../embeddings/index.js';
 import type { EmbedOptions } from '../embeddings/index.js';
-import { ensureCollection } from '../qdrant/collections.js';
 import {
   insertVector,
   searchVectors,
@@ -184,9 +183,7 @@ export async function writeMemory(
     }
   }
 
-  const collectionName = COLLECTIONS.projectMemories(project);
-  await ensureCollection(collectionName);
-
+  // P10-T11: Collection erst im Index-Nachtrag prüfen; Qdrant darf PG nicht blockieren.
   const existing = await getMemoryByName(project, name);
   const now = new Date().toISOString();
   const linkedPaths = extractFilePaths(content);
