@@ -676,6 +676,7 @@ export {
   addTechDoc,
   searchTechDocs,
   getDocsForFile,
+  getFileSteckbrief,
   deleteTechDoc,
   updateTechDoc,
   // Events

@@ -87,6 +87,7 @@ import {
   addTechDoc,
   searchTechDocs,
   getDocsForFile,
+  getFileSteckbrief,
   deleteTechDoc,
   updateTechDoc,
   // Code Intelligence
@@ -870,7 +871,7 @@ export const MCP_TOOLS = [
         framework: { type: 'string', description: 'Framework/Sprache (z.B. react, python, express); bei get_for_file: optionaler Framework-Filter' },
         framework_warnungen: { type: 'boolean', description: 'get_for_file: Framework-Warnungen abrufen (Standard true)' },
         memories: { type: 'boolean', description: 'get_for_file: passende Projekt-Memories kompakt hinzufuegen (Standard false)' },
-        steckbrief: { type: 'boolean', description: 'Platzhalter fuer Datei-Steckbriefe in Teil B; derzeit ohne Wirkung' },
+        steckbrief: { type: 'boolean', description: 'get_for_file: gespeicherten Datei-Steckbrief samt frischer Struktur hinzufuegen (Standard false)' },
         version: { type: 'string', description: 'Version (z.B. 19.0, 3.12)' },
         section: { type: 'string', description: 'Abschnitt (z.B. hooks, routing, breaking-changes)' },
         content: { type: 'string', description: 'Inhalt des Docs' },
@@ -4204,12 +4205,19 @@ async function handleToolCallKern(
           };
           const getForFile = async (filePath: string) => {
             const result = await getDocsForFile(filePath, agentId, project, opts);
-            if (bool(args, 'memories') !== true) return result;
+            const ergaenzeSteckbrief = async <T extends Record<string, unknown>>(antwort: T) => (
+              bool(args, 'steckbrief') === true
+                ? { ...antwort, steckbrief: await getFileSteckbrief(project, filePath) }
+                : antwort
+            );
+            if (bool(args, 'memories') !== true) return ergaenzeSteckbrief(result);
             let matches;
             try {
               matches = await findMemoriesForPath(project, filePath, 5);
             } catch (error) {
-              if (typeof error === 'object' && error !== null && 'status' in error && error.status === 404) return { ...result, memories: [] };
+              if (typeof error === 'object' && error !== null && 'status' in error && error.status === 404) {
+                return ergaenzeSteckbrief({ ...result, memories: [] });
+              }
               throw error;
             }
             const memories = matches.map(({ memory }) => ({
@@ -4217,7 +4225,7 @@ async function handleToolCallKern(
               kurzfassung: memory.content.trim().slice(0, 240) + (memory.content.trim().length > 240 ? '…' : ''),
               link: { action: 'read', project, name: memory.name },
             }));
-            return { ...result, memories };
+            return ergaenzeSteckbrief({ ...result, memories });
           };
           const filePaths = strArray(args, 'file_path');
           if (filePaths && filePaths.length > 1) {

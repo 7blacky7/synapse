@@ -11,6 +11,7 @@ export * from './file-reservations.js';
 export * from './thoughts.js';
 export * from './plans.js';
 export * from './docs.js';
+export * from './file-steckbrief.js';
 export * from './tech-detection.js';
 export * from './context7.js';
 export * from './docs-indexer.js';
