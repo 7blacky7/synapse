@@ -1,0 +1,777 @@
+{
+  "setup": "lokale HTTP-Doubles, Cosinus-Ranking; echte core/REST/stdio-Aufrufe und synapse_test",
+  "records": {
+    "rest:search:datenbank Transaktionen": [
+      {
+        "name": "datenbank-wissen",
+        "score": 1.0000000000000002
+      },
+      {
+        "name": "tests-wissen",
+        "score": 0.3423738101934388
+      },
+      {
+        "name": "shell-wissen",
+        "score": 0.326126542682214
+      },
+      {
+        "name": "hooks-wissen",
+        "score": 0.30878171376688457
+      },
+      {
+        "name": "gpu-wissen",
+        "score": 0.2903101354116246
+      }
+    ],
+    "rest:search:auth Rollen": [
+      {
+        "name": "auth-wissen",
+        "score": 1.0000000000000002
+      },
+      {
+        "name": "tests-wissen",
+        "score": 0.3664491432125592
+      },
+      {
+        "name": "shell-wissen",
+        "score": 0.35004258543531347
+      },
+      {
+        "name": "hooks-wissen",
+        "score": 0.33255798054814617
+      },
+      {
+        "name": "gpu-wissen",
+        "score": 0.3139652099991
+      }
+    ],
+    "rest:search:cache Nachzug": [
+      {
+        "name": "cache-wissen",
+        "score": 0.9999999999999998
+      },
+      {
+        "name": "tests-wissen",
+        "score": 0.3893144741468494
+      },
+      {
+        "name": "shell-wissen",
+        "score": 0.37274485644310956
+      },
+      {
+        "name": "hooks-wissen",
+        "score": 0.35511456708995315
+      },
+      {
+        "name": "gpu-wissen",
+        "score": 0.3363925903488603
+      }
+    ],
+    "rest:search:parser Syntax": [
+      {
+        "name": "parser-wissen",
+        "score": 1.0000000000000002
+      },
+      {
+        "name": "tests-wissen",
+        "score": 0.4110173906742065
+      },
+      {
+        "name": "shell-wissen",
+        "score": 0.3942804716561865
+      },
+      {
+        "name": "hooks-wissen",
+        "score": 0.37649814076015214
+      },
+      {
+        "name": "gpu-wissen",
+        "score": 0.3576385163723061
+      }
+    ],
+    "rest:search:gpu Vorrang": [
+      {
+        "name": "gpu-wissen",
+        "score": 0.9999999999999998
+      },
+      {
+        "name": "tests-wissen",
+        "score": 0.43160170258136693
+      },
+      {
+        "name": "shell-wissen",
+        "score": 0.41469271086507226
+      },
+      {
+        "name": "hooks-wissen",
+        "score": 0.3967514632467265
+      },
+      {
+        "name": "parser-wissen",
+        "score": 0.3576385163723061
+      }
+    ],
+    "rest:find:src/datenbank.ts": [
+      {
+        "name": "datenbank-wissen",
+        "score": 1.0000000000000002,
+        "matchType": "semantic"
+      },
+      {
+        "name": "tests-wissen",
+        "score": 0.3423738101934388,
+        "matchType": "semantic"
+      },
+      {
+        "name": "shell-wissen",
+        "score": 0.326126542682214,
+        "matchType": "semantic"
+      },
+      {
+        "name": "hooks-wissen",
+        "score": 0.30878171376688457,
+        "matchType": "semantic"
+      },
+      {
+        "name": "gpu-wissen",
+        "score": 0.2903101354116246,
+        "matchType": "semantic"
+      }
+    ],
+    "rest:find:src/auth.ts": [
+      {
+        "name": "auth-wissen",
+        "score": 1.0000000000000002,
+        "matchType": "semantic"
+      },
+      {
+        "name": "tests-wissen",
+        "score": 0.3664491432125592,
+        "matchType": "semantic"
+      },
+      {
+        "name": "shell-wissen",
+        "score": 0.35004258543531347,
+        "matchType": "semantic"
+      },
+      {
+        "name": "hooks-wissen",
+        "score": 0.33255798054814617,
+        "matchType": "semantic"
+      },
+      {
+        "name": "gpu-wissen",
+        "score": 0.3139652099991,
+        "matchType": "semantic"
+      }
+    ],
+    "rest:find:src/cache.ts": [
+      {
+        "name": "cache-wissen",
+        "score": 0.9999999999999998,
+        "matchType": "semantic"
+      },
+      {
+        "name": "tests-wissen",
+        "score": 0.3893144741468494,
+        "matchType": "semantic"
+      },
+      {
+        "name": "shell-wissen",
+        "score": 0.37274485644310956,
+        "matchType": "semantic"
+      },
+      {
+        "name": "hooks-wissen",
+        "score": 0.35511456708995315,
+        "matchType": "semantic"
+      },
+      {
+        "name": "gpu-wissen",
+        "score": 0.3363925903488603,
+        "matchType": "semantic"
+      }
+    ],
+    "rest:find:src/parser.ts": [
+      {
+        "name": "parser-wissen",
+        "score": 1.0000000000000002,
+        "matchType": "semantic"
+      },
+      {
+        "name": "tests-wissen",
+        "score": 0.4110173906742065,
+        "matchType": "semantic"
+      },
+      {
+        "name": "shell-wissen",
+        "score": 0.3942804716561865,
+        "matchType": "semantic"
+      },
+      {
+        "name": "hooks-wissen",
+        "score": 0.37649814076015214,
+        "matchType": "semantic"
+      },
+      {
+        "name": "gpu-wissen",
+        "score": 0.3576385163723061,
+        "matchType": "semantic"
+      }
+    ],
+    "rest:find:src/gpu.ts": [
+      {
+        "name": "gpu-wissen",
+        "score": 0.9999999999999998,
+        "matchType": "semantic"
+      },
+      {
+        "name": "tests-wissen",
+        "score": 0.43160170258136693,
+        "matchType": "semantic"
+      },
+      {
+        "name": "shell-wissen",
+        "score": 0.41469271086507226,
+        "matchType": "semantic"
+      },
+      {
+        "name": "hooks-wissen",
+        "score": 0.3967514632467265,
+        "matchType": "semantic"
+      },
+      {
+        "name": "parser-wissen",
+        "score": 0.3576385163723061,
+        "matchType": "semantic"
+      }
+    ],
+    "stdio:search:datenbank Transaktionen": [
+      {
+        "name": "datenbank-wissen",
+        "score": 1.0000000000000002
+      },
+      {
+        "name": "tests-wissen",
+        "score": 0.3423738101934388
+      },
+      {
+        "name": "shell-wissen",
+        "score": 0.326126542682214
+      },
+      {
+        "name": "hooks-wissen",
+        "score": 0.30878171376688457
+      },
+      {
+        "name": "gpu-wissen",
+        "score": 0.2903101354116246
+      }
+    ],
+    "stdio:search:auth Rollen": [
+      {
+        "name": "auth-wissen",
+        "score": 1.0000000000000002
+      },
+      {
+        "name": "tests-wissen",
+        "score": 0.3664491432125592
+      },
+      {
+        "name": "shell-wissen",
+        "score": 0.35004258543531347
+      },
+      {
+        "name": "hooks-wissen",
+        "score": 0.33255798054814617
+      },
+      {
+        "name": "gpu-wissen",
+        "score": 0.3139652099991
+      }
+    ],
+    "stdio:search:cache Nachzug": [
+      {
+        "name": "cache-wissen",
+        "score": 0.9999999999999998
+      },
+      {
+        "name": "tests-wissen",
+        "score": 0.3893144741468494
+      },
+      {
+        "name": "shell-wissen",
+        "score": 0.37274485644310956
+      },
+      {
+        "name": "hooks-wissen",
+        "score": 0.35511456708995315
+      },
+      {
+        "name": "gpu-wissen",
+        "score": 0.3363925903488603
+      }
+    ],
+    "stdio:search:parser Syntax": [
+      {
+        "name": "parser-wissen",
+        "score": 1.0000000000000002
+      },
+      {
+        "name": "tests-wissen",
+        "score": 0.4110173906742065
+      },
+      {
+        "name": "shell-wissen",
+        "score": 0.3942804716561865
+      },
+      {
+        "name": "hooks-wissen",
+        "score": 0.37649814076015214
+      },
+      {
+        "name": "gpu-wissen",
+        "score": 0.3576385163723061
+      }
+    ],
+    "stdio:search:gpu Vorrang": [
+      {
+        "name": "gpu-wissen",
+        "score": 0.9999999999999998
+      },
+      {
+        "name": "tests-wissen",
+        "score": 0.43160170258136693
+      },
+      {
+        "name": "shell-wissen",
+        "score": 0.41469271086507226
+      },
+      {
+        "name": "hooks-wissen",
+        "score": 0.3967514632467265
+      },
+      {
+        "name": "parser-wissen",
+        "score": 0.3576385163723061
+      }
+    ],
+    "stdio:find:src/datenbank.ts": [
+      {
+        "name": "datenbank-wissen",
+        "score": 1.0000000000000002,
+        "matchType": "semantic"
+      },
+      {
+        "name": "tests-wissen",
+        "score": 0.3423738101934388,
+        "matchType": "semantic"
+      },
+      {
+        "name": "shell-wissen",
+        "score": 0.326126542682214,
+        "matchType": "semantic"
+      },
+      {
+        "name": "hooks-wissen",
+        "score": 0.30878171376688457,
+        "matchType": "semantic"
+      },
+      {
+        "name": "gpu-wissen",
+        "score": 0.2903101354116246,
+        "matchType": "semantic"
+      }
+    ],
+    "stdio:find:src/auth.ts": [
+      {
+        "name": "auth-wissen",
+        "score": 1.0000000000000002,
+        "matchType": "semantic"
+      },
+      {
+        "name": "tests-wissen",
+        "score": 0.3664491432125592,
+        "matchType": "semantic"
+      },
+      {
+        "name": "shell-wissen",
+        "score": 0.35004258543531347,
+        "matchType": "semantic"
+      },
+      {
+        "name": "hooks-wissen",
+        "score": 0.33255798054814617,
+        "matchType": "semantic"
+      },
+      {
+        "name": "gpu-wissen",
+        "score": 0.3139652099991,
+        "matchType": "semantic"
+      }
+    ],
+    "stdio:find:src/cache.ts": [
+      {
+        "name": "cache-wissen",
+        "score": 0.9999999999999998,
+        "matchType": "semantic"
+      },
+      {
+        "name": "tests-wissen",
+        "score": 0.3893144741468494,
+        "matchType": "semantic"
+      },
+      {
+        "name": "shell-wissen",
+        "score": 0.37274485644310956,
+        "matchType": "semantic"
+      },
+      {
+        "name": "hooks-wissen",
+        "score": 0.35511456708995315,
+        "matchType": "semantic"
+      },
+      {
+        "name": "gpu-wissen",
+        "score": 0.3363925903488603,
+        "matchType": "semantic"
+      }
+    ],
+    "stdio:find:src/parser.ts": [
+      {
+        "name": "parser-wissen",
+        "score": 1.0000000000000002,
+        "matchType": "semantic"
+      },
+      {
+        "name": "tests-wissen",
+        "score": 0.4110173906742065,
+        "matchType": "semantic"
+      },
+      {
+        "name": "shell-wissen",
+        "score": 0.3942804716561865,
+        "matchType": "semantic"
+      },
+      {
+        "name": "hooks-wissen",
+        "score": 0.37649814076015214,
+        "matchType": "semantic"
+      },
+      {
+        "name": "gpu-wissen",
+        "score": 0.3576385163723061,
+        "matchType": "semantic"
+      }
+    ],
+    "stdio:find:src/gpu.ts": [
+      {
+        "name": "gpu-wissen",
+        "score": 0.9999999999999998,
+        "matchType": "semantic"
+      },
+      {
+        "name": "tests-wissen",
+        "score": 0.43160170258136693,
+        "matchType": "semantic"
+      },
+      {
+        "name": "shell-wissen",
+        "score": 0.41469271086507226,
+        "matchType": "semantic"
+      },
+      {
+        "name": "hooks-wissen",
+        "score": 0.3967514632467265,
+        "matchType": "semantic"
+      },
+      {
+        "name": "parser-wissen",
+        "score": 0.3576385163723061,
+        "matchType": "semantic"
+      }
+    ]
+  },
+  "requests": [
+    {
+      "vector": [
+        1,
+        0.06,
+        0.09,
+        0.12,
+        0.15,
+        0.18,
+        0.21,
+        0.24
+      ],
+      "limit": 5,
+      "filterProject": true
+    },
+    {
+      "vector": [
+        0.03,
+        1,
+        0.09,
+        0.12,
+        0.15,
+        0.18,
+        0.21,
+        0.24
+      ],
+      "limit": 5,
+      "filterProject": true
+    },
+    {
+      "vector": [
+        0.03,
+        0.06,
+        1,
+        0.12,
+        0.15,
+        0.18,
+        0.21,
+        0.24
+      ],
+      "limit": 5,
+      "filterProject": true
+    },
+    {
+      "vector": [
+        0.03,
+        0.06,
+        0.09,
+        1,
+        0.15,
+        0.18,
+        0.21,
+        0.24
+      ],
+      "limit": 5,
+      "filterProject": true
+    },
+    {
+      "vector": [
+        0.03,
+        0.06,
+        0.09,
+        0.12,
+        1,
+        0.18,
+        0.21,
+        0.24
+      ],
+      "limit": 5,
+      "filterProject": true
+    },
+    {
+      "vector": [
+        1,
+        0.06,
+        0.09,
+        0.12,
+        0.15,
+        0.18,
+        0.21,
+        0.24
+      ],
+      "limit": 5,
+      "filterProject": true
+    },
+    {
+      "vector": [
+        0.03,
+        1,
+        0.09,
+        0.12,
+        0.15,
+        0.18,
+        0.21,
+        0.24
+      ],
+      "limit": 5,
+      "filterProject": true
+    },
+    {
+      "vector": [
+        0.03,
+        0.06,
+        1,
+        0.12,
+        0.15,
+        0.18,
+        0.21,
+        0.24
+      ],
+      "limit": 5,
+      "filterProject": true
+    },
+    {
+      "vector": [
+        0.03,
+        0.06,
+        0.09,
+        1,
+        0.15,
+        0.18,
+        0.21,
+        0.24
+      ],
+      "limit": 5,
+      "filterProject": true
+    },
+    {
+      "vector": [
+        0.03,
+        0.06,
+        0.09,
+        0.12,
+        1,
+        0.18,
+        0.21,
+        0.24
+      ],
+      "limit": 5,
+      "filterProject": true
+    },
+    {
+      "vector": [
+        1,
+        0.06,
+        0.09,
+        0.12,
+        0.15,
+        0.18,
+        0.21,
+        0.24
+      ],
+      "limit": 5,
+      "filterProject": true
+    },
+    {
+      "vector": [
+        0.03,
+        1,
+        0.09,
+        0.12,
+        0.15,
+        0.18,
+        0.21,
+        0.24
+      ],
+      "limit": 5,
+      "filterProject": true
+    },
+    {
+      "vector": [
+        0.03,
+        0.06,
+        1,
+        0.12,
+        0.15,
+        0.18,
+        0.21,
+        0.24
+      ],
+      "limit": 5,
+      "filterProject": true
+    },
+    {
+      "vector": [
+        0.03,
+        0.06,
+        0.09,
+        1,
+        0.15,
+        0.18,
+        0.21,
+        0.24
+      ],
+      "limit": 5,
+      "filterProject": true
+    },
+    {
+      "vector": [
+        0.03,
+        0.06,
+        0.09,
+        0.12,
+        1,
+        0.18,
+        0.21,
+        0.24
+      ],
+      "limit": 5,
+      "filterProject": true
+    },
+    {
+      "vector": [
+        1,
+        0.06,
+        0.09,
+        0.12,
+        0.15,
+        0.18,
+        0.21,
+        0.24
+      ],
+      "limit": 5,
+      "filterProject": true
+    },
+    {
+      "vector": [
+        0.03,
+        1,
+        0.09,
+        0.12,
+        0.15,
+        0.18,
+        0.21,
+        0.24
+      ],
+      "limit": 5,
+      "filterProject": true
+    },
+    {
+      "vector": [
+        0.03,
+        0.06,
+        1,
+        0.12,
+        0.15,
+        0.18,
+        0.21,
+        0.24
+      ],
+      "limit": 5,
+      "filterProject": true
+    },
+    {
+      "vector": [
+        0.03,
+        0.06,
+        0.09,
+        1,
+        0.15,
+        0.18,
+        0.21,
+        0.24
+      ],
+      "limit": 5,
+      "filterProject": true
+    },
+    {
+      "vector": [
+        0.03,
+        0.06,
+        0.09,
+        0.12,
+        1,
+        0.18,
+        0.21,
+        0.24
+      ],
+      "limit": 5,
+      "filterProject": true
+    }
+  ]
+}

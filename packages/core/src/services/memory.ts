@@ -355,32 +355,13 @@ export async function listMemories(
   project: string,
   category?: Memory['category']
 ): Promise<Memory[]> {
-  const must: Array<Record<string, unknown>> = [
-    { key: 'project', match: { value: project } },
-  ];
-
-  if (category) {
-    must.push({ key: 'category', match: { value: category } });
-  }
-
-  const collectionName = COLLECTIONS.projectMemories(project);
-  const results = await scrollVectors<MemoryPayload>(
-    collectionName,
-    { must },
-    1000
+  // Existenz und Vollständigkeit kommen aus PG, unabhängig vom Vektor-Nachzug.
+  // UNIQUE(project, name) verhindert doppelte Namen; Qdrant-Stücke sind keine Memories.
+  const { rows } = await getPool().query<MemoryZeile>(
+    'SELECT id, project, name, content, category, tags, created_at, updated_at FROM memories WHERE project = $1 AND ($2::text IS NULL OR category = $2) ORDER BY name, id',
+    [project, category ?? null],
   );
-
-  return results.map((point) => ({
-    id: point.id as string,
-    project: point.payload.project,
-    name: point.payload.name,
-    content: point.payload.content,
-    category: point.payload.category as Memory['category'],
-    tags: point.payload.tags,
-    linkedPaths: point.payload.linkedPaths || [],
-    createdAt: point.payload.createdAt,
-    updatedAt: point.payload.updatedAt,
-  }));
+  return rows.map(memoryAusZeile);
 }
 
 /**

@@ -79,6 +79,10 @@ const memoryTool: ConsolidatedTool = {
           type: 'number',
           description: 'Max. Ergebnisse (optional, Standard: 10 für find_for_file)',
         },
+        names_only: {
+          type: 'boolean',
+          description: 'Nur fuer list: ausschliesslich Memory-Namen liefern',
+        },
         codeLimit: {
           type: 'number',
           description: 'Max. Code-Chunks (optional, Standard: 10 für read_with_code)',
