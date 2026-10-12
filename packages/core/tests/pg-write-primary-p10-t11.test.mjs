@@ -2,9 +2,13 @@
 import assert from 'node:assert/strict';
 import {randomUUID} from 'node:crypto';
 import {createServer} from 'node:http';
+import {readFile} from 'node:fs/promises';
 const dbUrl = new URL(process.env.DATABASE_URL ?? 'http://invalid');
 assert.equal(dbUrl.port, '5433');
 assert.equal(dbUrl.pathname, '/synapse_test');
+const schema = 'sol3_t11_' + randomUUID().replaceAll('-','');
+dbUrl.searchParams.set('options','-c search_path=' + schema + ',public');
+process.env.DATABASE_URL = dbUrl.toString();
 let offline = true, qdrantErrors = 0;
 const collections = new Set(), points = new Map();
 const fake = createServer((req, res) => {
@@ -74,6 +78,15 @@ const writers = [
 ];
 const failures = [], saved = [];
 try {
+  await originalQuery('CREATE SCHEMA ' + schema);
+  for (const table of ['memories','thoughts','proposals','plans','embedding_collections']) {
+    await originalQuery('CREATE TABLE ' + table + ' (LIKE public.' + table + ' INCLUDING ALL)');
+  }
+  // P10-T12: Test-DB kann älter sein; neue Schema-Invariante nur in der eigenen Fixture ergänzen.
+  const source = await readFile(new URL('../src/db/schema.ts',import.meta.url),'utf8');
+  const unique = source.match(/CREATE UNIQUE INDEX IF NOT EXISTS uq_memories_project_name[^;]+;/)?.[0];
+  assert(unique, 'Laufzeitschema liefert Memory-Unique-Index');
+  await originalQuery(unique);
   for (const [label, table, write, backfill] of writers) {
     try {
       const result = await write();
@@ -113,8 +126,7 @@ try {
   console.log('PASS P10-T11: vier Schreibwege, harte PG-Fehler, Plan-Warnung und fünf Nachträge');
 } finally {
   failPg = false;
-  for (const table of ['memories','thoughts','proposals','plans']) await originalQuery('DELETE FROM ' + table + ' WHERE project=$1',[project]);
-  if (collections.size) await originalQuery('DELETE FROM embedding_collections WHERE collection=ANY($1::text[])',[[...collections]]);
+  await originalQuery('DROP SCHEMA ' + schema + ' CASCADE');
   pool.query = originalQuery;
   await getHintergrundPool().end();
   await pool.end();

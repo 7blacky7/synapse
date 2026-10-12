@@ -184,10 +184,9 @@ export async function writeMemory(
   }
 
   // P10-T11: Collection erst im Index-Nachtrag prüfen; Qdrant darf PG nicht blockieren.
-  const existing = await getMemoryByName(project, name);
   const now = new Date().toISOString();
   const linkedPaths = extractFilePaths(content);
-  const id = existing?.id || uuidv4();
+  const id = uuidv4();
 
   const memory: Memory = {
     id,
@@ -197,19 +196,24 @@ export async function writeMemory(
     category,
     tags,
     linkedPaths,
-    createdAt: existing?.createdAt || now,
+    createdAt: now,
     updatedAt: now,
   };
 
   // 1. PostgreSQL (Write-Primary) — fail-fast: wirft bei Fehler
   const pool = getPool();
-  await pool.query(
+  const gespeichert = await pool.query(
     `INSERT INTO memories (id, project, name, category, content, tags, created_at, updated_at)
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-     ON CONFLICT (id) DO UPDATE SET
-       content = $5, category = $4, tags = $6, updated_at = $8, embedded_at = NULL`,
+     ON CONFLICT (project, name) DO UPDATE SET
+       content = $5, category = $4, tags = $6, updated_at = $8, embedded_at = NULL
+     RETURNING id, created_at, updated_at`,
     [id, project, name, category, content, tags, memory.createdAt, memory.updatedAt]
   );
+  // P10-T12: Bei konkurrierenden Erstschreibern gilt die ID der tatsächlich gespeicherten Zeile.
+  memory.id = gespeichert.rows[0].id;
+  memory.createdAt = new Date(gespeichert.rows[0].created_at).toISOString();
+  memory.updatedAt = new Date(gespeichert.rows[0].updated_at).toISOString();
 
   // 2. Qdrant (Vektor-Index) — NEBENLAEUFIG seit EMBED-1.
   // Der Aufruf kehrt zurueck, sobald die Zeile in PostgreSQL steht; der Vektor wird
@@ -221,7 +225,7 @@ export async function writeMemory(
   // mit und lief in ein Timeout — obwohl die Daten laengst in PG standen.
   let warning: string | undefined =
     regelHinweise.length > 0 ? regelHinweise.join(' | ') : undefined;
-  void embeddeMemoryNach(project, id).catch(err => {
+  void embeddeMemoryNach(project, memory.id).catch(err => {
     console.error(`[Synapse] Memory-Embedding fuer "${name}" fehlgeschlagen, Backlog holt es nach:`, err);
   });
 

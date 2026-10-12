@@ -47,6 +47,9 @@ CREATE TABLE IF NOT EXISTS memories (
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- P10-T12: dieselbe Eindeutigkeit wie im SQL-Spiegel und im bestehenden Live-Schema.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_memories_project_name ON memories (project, name);
+
 CREATE TABLE IF NOT EXISTS thoughts (
   id TEXT PRIMARY KEY,
   project TEXT NOT NULL,
@@ -72,6 +75,8 @@ CREATE TABLE IF NOT EXISTS plans (
   created_at TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_plans_project_name ON plans (project, name);
 
 CREATE TABLE IF NOT EXISTS proposals (
   id TEXT PRIMARY KEY,
