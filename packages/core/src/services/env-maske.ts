@@ -25,7 +25,7 @@
 import {SHELL_KV_ZEILE as KV,SHELL_BEARER,SHELL_SSHPASS,SHELL_JSON_FREI,SHELL_KV_FREI,holeShellLiteralMatcher,sammleShellMaskenTreffer,shellIstLeerWert,type ShellMaskenTreffer} from './shell-masken-katalog.js';
 import { getPool } from '../db/client.js';
 import { getFileContentFromPg } from './code-write.js';
-import { entmaskiereMcpJson, istMcpJsonDatei, maskiereMcpJson, maskiereMcpJsonDiffText, maskiereMcpJsonFragment, mcpJsonHinweise, mcpJsonSicht, mcpJsonWerte, MCP_JSON_PFAD_REGEX_SQL, maskiereUrl, istShellGeheimnisName, SHELL_LITERAL_MIN_LAENGE, shellUrlPasswoerter } from './mcp-json-maske.js';
+import { entmaskiereMcpJson, istMcpJsonDatei, maskiereMcpJson, maskiereMcpJsonDiffText, maskiereMcpJsonFragment, mcpJsonHinweise, mcpJsonSicht, mcpJsonWerte, MCP_JSON_PFAD_REGEX_SQL, maskiereUrl, istShellGeheimnisName, istShellJsonGeheimnisName, SHELL_LITERAL_MIN_LAENGE, shellUrlPasswoerter } from './mcp-json-maske.js';
 export { entmaskiereMcpJson, istMcpJsonDatei, maskiereMcpJson, maskiereMcpJsonDiffText, mcpJsonHinweise, mcpJsonSicht } from './mcp-json-maske.js';
 
 export {istShellGeheimnisName,SHELL_LITERAL_MIN_LAENGE} from './mcp-json-maske.js';
@@ -421,7 +421,7 @@ export function maskiereShellText(text: string, bekannteWerte: readonly string[]
     if(kv && istShellGeheimnisName(kv[2])) return maskiereEnv(zeile);
     return zeile.replace(SHELL_JSON_FREI,
       (ganz,praefix:string,q:string,name:string,trenner:string,wert:string)=>
-        istShellGeheimnisName(name)
+        istShellJsonGeheimnisName(name)
           ? praefix+q+name+q+trenner+wert[0]+ENV_PLATZHALTER+wert[0] : ganz);
   }).join('\n');
   aus=aus.replace(SHELL_KV_FREI,

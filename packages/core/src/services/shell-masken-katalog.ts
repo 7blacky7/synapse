@@ -1,5 +1,5 @@
 /** P10-T42: EIN Katalog für Live-Regeln und Ersetzungsprovenienz; keine zweite Maskierungsregelmenge. */
-import {istShellGeheimnisName,SHELL_LITERAL_MIN_LAENGE,URL_ZUGANGSDATEN,MCP_JSON_FELD_PREFIX,MCP_JSON_FELD_WERT} from './mcp-json-maske.js';
+import {istShellGeheimnisName,istShellJsonGeheimnisName,SHELL_LITERAL_MIN_LAENGE,URL_ZUGANGSDATEN,MCP_JSON_FELD_PREFIX,MCP_JSON_FELD_WERT} from './mcp-json-maske.js';
 export const SHELL_KV_ZEILE=/^(\s*(?:export\s+)?)([A-Za-z_][A-Za-z0-9_.-]*)(\s*=\s*)(.*)$/;
 export const SHELL_BEARER=/(Bearer\s+)[A-Za-z0-9._~+\/=-]+/gi;
 /** Live-Regel: Passwort hinter sshpass -p (auch -p'x', -p"x", -px). Gruppe 1 Praefix, Gruppe 2 Wert. */
@@ -72,7 +72,7 @@ export function sammleShellMaskenTreffer(text:string,werte:readonly string[],opt
   for(const m of body.matchAll(kopie(MCP_JSON_FELD_PREFIX))){
    let name='';try{name=JSON.parse(m[1]);}catch{/* Unvollständige Logfragmente sind kein verifizierter Feldname. */}
    const start=offset+m.index!+m[0].length,value=MCP_JSON_FELD_WERT.exec(body.slice(m.index!+m[0].length));
-   if(value){namen.push({start,ende:start+value[0].length,name});if(istShellGeheimnisName(name)&&!value[0].trim().startsWith('{')&&!value[0].trim().startsWith('['))add('json_geheimname',start,start+value[0].length,name);}
+   if(value){namen.push({start,ende:start+value[0].length,name});if(istShellJsonGeheimnisName(name)&&!value[0].trim().startsWith('{')&&!value[0].trim().startsWith('['))add('json_geheimname',start,start+value[0].length,name);}
   }
   offset+=line.length+1;
  }
@@ -80,7 +80,7 @@ export function sammleShellMaskenTreffer(text:string,werte:readonly string[],opt
   const start=m.index!+m[1].length+m[2].length+m[3].length,end=m.index!+m[0].length;namen.push({start,ende:end,name:m[2]});
   if(istShellGeheimnisName(m[2]))add('kv_geheimname',start,end,m[2]);
  }
- for(const m of text.matchAll(kopie(SHELL_JSON_FREI)))if(istShellGeheimnisName(m[3])){const start=m.index!+m[0].length-m[5].length;add('json_geheimname',start,start+m[5].length,m[3]);}
+ for(const m of text.matchAll(kopie(SHELL_JSON_FREI)))if(istShellJsonGeheimnisName(m[3])){const start=m.index!+m[0].length-m[5].length;add('json_geheimname',start,start+m[5].length,m[3]);}
  const nameAn=(start:number,end:number)=>namen.filter(n=>n.start<=start&&n.ende>=end).sort((a,b)=>(a.ende-a.start)-(b.ende-b.start))[0]?.name??opt.name;
  // Schon ersetzte Literale behalten den tatsächlichen Feldnamen, auch bei öffentlichen Flags.
  const rohNamen=namen.map(n=>({...n,start:startAn(n.start),ende:endeAn(n.ende)}));
@@ -107,7 +107,7 @@ export function sammleShellMaskenTreffer(text:string,werte:readonly string[],opt
   const q=/^["']/.test(m[1]),start=m.index!+m[0].length-m[1].length+(q?1:0),end=m.index!+m[0].length-(q?1:0);
   annotiere('sshpass_passwort',start,end,'sshpass -p');
  }
- if(opt.strukturiert&&opt.name&&istShellGeheimnisName(opt.name)){
+ if(opt.strukturiert&&opt.name&&istShellJsonGeheimnisName(opt.name)){
   const start=/^[A-Za-z_][A-Za-z0-9_.-]*=/.test(original)?original.indexOf('=')+1:0;addRaw('json_geheimname',start,original.length,opt.name);
  }
  treffer.sort((a,b)=>a.start-b.start||b.ende-a.ende);

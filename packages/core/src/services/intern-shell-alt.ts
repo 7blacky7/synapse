@@ -17,7 +17,7 @@
 import { getPool } from '../db/client.js';
 import { ladeShellWerte, maskiereShellDaten, maskiereShellText } from './shell-maske.js';
 import { sammleShellMaskenTreffer } from './shell-masken-katalog.js';
-import { istShellGeheimnisName } from './mcp-json-maske.js';
+import { istShellJsonGeheimnisName } from './mcp-json-maske.js';
 import { darfKoordinatorOderUser } from './rollen-pruefung.js';
 
 export const SHELL_ALT_ACTIONS = ['shell_altbestand_maskieren'] as const;
@@ -72,7 +72,7 @@ function diagnoseFeld(alt:unknown,neu:unknown,werte:readonly string[]):MaskenDia
       });
       if(!hits.length)treffer.push({regel:'struktur_oder_format',laenge:a.length});
     }else if(a&&b&&typeof a==='object'&&typeof b==='object'){
-      for(const [k,v]of Object.entries(a))walk(v,(b as Record<string,unknown>)[k],istShellGeheimnisName(k)?k:name);
+      for(const [k,v]of Object.entries(a))walk(v,(b as Record<string,unknown>)[k],istShellJsonGeheimnisName(k)?k:name);
     }else treffer.push({regel:'struktur_oder_format',laenge:JSON.stringify(a)?.length??0});
   };
   walk(alt,neu);

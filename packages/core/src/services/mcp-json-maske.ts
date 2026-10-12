@@ -15,6 +15,13 @@ export function istShellGeheimnisName(name:string):boolean{
   if(/^(?:input|output|total|cached|prompt|completion)_tokens(?:_|$)/.test(norm))return false;
   return /(?:^|[_.-])(?:keys?|tokens?|secrets?|password|pass|pwd|auth|authorization|credentials?)(?:$|[_.-])/.test(norm);
 }
+/** Ein generisches JSON-Feld key/keys benennt oft einen Datenbankschluessel.
+ * Ohne Secret-Qualifier ist es kein Geheimnisindikator; bekannte Literale bleiben geschuetzt.
+ * Env-Zuweisungen und die strengere MCP-Konfigmaske behalten ihre bisherige Regel.
+ */
+export function istShellJsonGeheimnisName(name:string):boolean {
+  return !/^keys?$/i.test(name) && istShellGeheimnisName(name);
+}
 export const URL_ZUGANGSDATEN = /(?<![a-z0-9+.-])([a-z][a-z0-9+.-]*:\/\/)[^/@?#:\s]+:[^/@?#\s]*@/gi;
 
 export function istMcpJsonDatei(pfad: string | null | undefined): boolean {
@@ -47,7 +54,7 @@ function wiederherstelleUrl(neu: string, alt: string): string {
 }
 
 function maskiereWert(wert: unknown, sensibel = false, schluessel = '', shell = false): unknown {
-  const hierSensibel = sensibel || (!shell && SENSIBLE_BEREICHE.has(schluessel.toLowerCase())) || (shell ? istShellGeheimnisName(schluessel) : SENSIBLER_SCHLUESSEL.test(schluessel));
+  const hierSensibel = sensibel || (!shell && SENSIBLE_BEREICHE.has(schluessel.toLowerCase())) || (shell ? istShellJsonGeheimnisName(schluessel) : SENSIBLER_SCHLUESSEL.test(schluessel));
   if (Array.isArray(wert)) return wert.map((eintrag) => maskiereWert(eintrag, hierSensibel, '', shell));
   if (wert !== null && typeof wert === 'object') {
     return Object.fromEntries(Object.entries(wert as Record<string, unknown>).map(([k, v]) => [k, maskiereWert(v, hierSensibel, k, shell)]));
@@ -139,7 +146,7 @@ type GeheimeFelder = Map<string, { name: string; wert: string }>;
 function geheimeFelder(text: string, shell = false): GeheimeFelder {
   const aus: GeheimeFelder = new Map();
   const geheRekursiv = (wert: unknown, sensibel: boolean, schluessel: string, pfad: string): void => {
-    const hierSensibel = shell ? sensibel || istShellGeheimnisName(schluessel) : maskierbarerSchluessel(sensibel, schluessel);
+    const hierSensibel = shell ? sensibel || istShellJsonGeheimnisName(schluessel) : maskierbarerSchluessel(sensibel, schluessel);
     if (Array.isArray(wert)) {
       wert.forEach((v, i) => geheRekursiv(v, hierSensibel, '', pfad + '[' + i + ']'));
       return;
@@ -204,8 +211,8 @@ export function maskiereMcpJsonDiffText(text: string, shell = false): string {
     let key = '';
     try { key = JSON.parse(m[2]) as string; } catch { return zeile; }
     const value = m[4];
-    const sensibel = bloecke.length > 0 || (shell ? istShellGeheimnisName(key) : maskierbarerSchluessel(false, key));
-    const container = shell ? istShellGeheimnisName(key) : SENSIBLE_BEREICHE.has(key.toLowerCase()) || SENSIBLER_SCHLUESSEL.test(key);
+    const sensibel = bloecke.length > 0 || (shell ? istShellJsonGeheimnisName(key) : maskierbarerSchluessel(false, key));
+    const container = shell ? istShellJsonGeheimnisName(key) : SENSIBLE_BEREICHE.has(key.toLowerCase()) || SENSIBLER_SCHLUESSEL.test(key);
     let safe = value;
     if (sensibel && value !== '{' && value !== '[' && !value.startsWith('{') && !value.startsWith('[')) {
       safe = JSON.stringify(PLATZHALTER);
@@ -224,7 +231,7 @@ export function maskiereMcpJsonFragment(text: string, shell = false): string {
     // Nur echte Feld-Praefixe scannen; kein KEY-Suchvorlauf durch lange zitierte Werte.
     for(const m of line.matchAll(MCP_JSON_FELD_PREFIX)) {
       let key='';try{key=JSON.parse(m[1]);}catch{/* unvollstaendiger Feldname */}
-      if(!(shell ? istShellGeheimnisName(key) : SENSIBLER_SCHLUESSEL.test(key)))continue;
+      if(!(shell ? istShellJsonGeheimnisName(key) : SENSIBLER_SCHLUESSEL.test(key)))continue;
       const von=m.index!+m[0].length, value=MCP_JSON_FELD_WERT.exec(line.slice(von));
       if(value)edits.push({von,bis:von+value[0].length,text:JSON.stringify(PLATZHALTER)});
     }

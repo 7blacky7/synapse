@@ -2,7 +2,7 @@
 import {createHash} from 'node:crypto';
 import {maskiereShellDaten,maskiereShellText} from './shell-maske.js';
 import {sammleShellMaskenTreffer,holeShellLiteralMatcher,type ShellMaskenTreffer,type ShellMaskenRegel} from './shell-masken-katalog.js';
-import {istShellGeheimnisName} from './mcp-json-maske.js';
+import {istShellJsonGeheimnisName} from './mcp-json-maske.js';
 import {rufeJev,type JevAnfrage,type JevErgebnis} from './jev-client.js';
 import {jevPreisJeMio} from './jev-kosten.js';
 
@@ -87,7 +87,7 @@ export function gruppiereShellAltbestand(zeilen:readonly ShellAltZeile[],werte:r
     try{walk(JSON.parse(roh),JSON.parse(neu),pfad,[...weg,null],parents);return;}catch{/* freie Logzeile */}
    }
    const teile=pfad.split('.').map(p=>p.replace(/\[\d+\]/g,''));
-   const direct=teile[teile.length-1]??'',sensibel=[...teile].reverse().find(istShellGeheimnisName);
+   const direct=teile[teile.length-1]??'',sensibel=[...teile].reverse().find(istShellJsonGeheimnisName);
    const strukturSafe=parents.slice(-2).reverse().map(strukturVon).join('\n');
    if(typeof roh==='string'&&typeof neu==='string'){
     const meta=sensibel?{name:sensibel,strukturiert:true}:{name:direct};
