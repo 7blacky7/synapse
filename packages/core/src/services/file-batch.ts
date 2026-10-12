@@ -1447,7 +1447,27 @@ function detectCrossAgentConflicts(
   const bautAuf = new Map<number, number>();
   ops.forEach((op, index) => {
     const eigene = regions[index];
-    if (eigene.length !== 1 || eigene[0].anchor !== 'search_replace:unresolvable' || !istReineEinfuegung(op)) return;
+    if (eigene.length !== 1 || eigene[0].anchor !== 'search_replace:unresolvable' || !op.search) return;
+    if (!istReineEinfuegung(op)) {
+      // P6-T34: eigene Folgeersetzung auf neuem Text (25209 Op8 -> Op9).
+      // Die Baseline kennt den Suchtext noch nicht. Nur eine eindeutig fruehere,
+      // eigene Quelle darf die Region liefern; fremde/mehrdeutige bleiben konservativ.
+      if (!op.agent_id || op.replace_all) return;
+      const quellen = ops.flatMap((other, otherIndex) =>
+        otherIndex < index && other.file_path === op.file_path && neuerTextVon(other).includes(op.search as string)
+          ? [otherIndex] : []);
+      if (quellen.length !== 1 || ops[quellen[0]].agent_id !== op.agent_id) return;
+      const quelle = quellen[0];
+      regions[index] = regions[quelle].map((region) => region.kind === 'file' ? region : ({
+        file_path: region.file_path,
+        kind: 'span',
+        start: region.insertAt ?? region.start,
+        end: region.insertAt ?? region.end,
+        anchor: `ersetzt-eigene-op:${quelle}`,
+      }));
+      // Kein insertAt/builds_on: eine Ersetzung bekommt keine Einfuegungsfreistellung.
+      return;
+    }
     const quelle = ops.findIndex((other, otherIndex) => otherIndex !== index && other.file_path === op.file_path
       && neuerTextVon(other).includes(op.search as string));
     if (quelle < 0) return;
