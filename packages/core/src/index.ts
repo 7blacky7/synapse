@@ -850,6 +850,7 @@ export {
 } from './services/jev-kosten.js';
 export type { JevBudgetStand, JevKostenUebersicht, JevAufrufBuchung, JevUsdQuelle } from './services/jev-kosten.js';
 export { JEV_ADMIN_ACTIONS, JEV_ADMIN_BESCHREIBUNG, JEV_ADMIN_PARAMETER, istJevAdminAction, fuehreJevAdminAus } from './services/jev-admin.js';
+export { KONTEXTPROFIL_ADMIN_ACTIONS, KONTEXTPROFIL_ADMIN_PARAMETER, istKontextprofilAdminAction, fuehreKontextprofilAdminAus } from './services/kontextprofil-admin.js';
 export { JEV_SPRACHEN, JevOptionenFehler, leseJevOptionen, setzeJevOptionen, wirksameJevSprache } from './services/jev-optionen.js';
 export type { JevSprache, JevOptionen, JevErklaerungSprachen } from './services/jev-optionen.js';
 // P15-T33 E1: Erklaerungs-Topf (Jev waehlt, Claude erklaert)

@@ -224,7 +224,7 @@ import { mitCodeIntelSchatten } from '@synapse/core';
 // intern (P14): Definition und Dispatcher aus core; nur bei SYNAPSE_INTERN_TOOL=1 in der Liste.
 import { INTERN_DEFINITION, INTERN_TOOL_AUS, internToolAktiv, fuehreInternAus } from '@synapse/core';
 // P15-T33 E0.5: Jev-Schalter (tools/list-Filter, Sperre des Tools jev) und Jev-Steuerung am admin-Tool
-import { filtereJevTool, jevToolSperre, istJevAdminAction, fuehreJevAdminAus, JEV_ADMIN_ACTIONS, JEV_ADMIN_BESCHREIBUNG, JEV_ADMIN_PARAMETER } from '@synapse/core';
+import { filtereJevTool, jevToolSperre, istJevAdminAction, fuehreJevAdminAus, JEV_ADMIN_ACTIONS, JEV_ADMIN_BESCHREIBUNG, JEV_ADMIN_PARAMETER, KONTEXTPROFIL_ADMIN_ACTIONS, KONTEXTPROFIL_ADMIN_PARAMETER, istKontextprofilAdminAction, fuehreKontextprofilAdminAus } from '@synapse/core';
 // P15 E1: Entscheidungs-Topf am Tool jev (Definition + Dispatcher aus core, stdio identisch)
 import { fuehreJevTopfActionAus, istJevTopfAction, JEV_TOPF_ACTIONS, JEV_TOPF_BESCHREIBUNG, JEV_TOPF_PARAMETER } from '@synapse/core';
 import {
@@ -932,7 +932,7 @@ export const MCP_TOOLS = [
       properties: {
         action: {
           type: 'string',
-          enum: ['migrate', 'restore', 'save_idea', 'confirm_idea', 'index_media', 'index_stats', 'detailed_stats', ...JEV_ADMIN_ACTIONS],
+          enum: ['migrate', 'restore', 'save_idea', 'confirm_idea', 'index_media', 'index_stats', 'detailed_stats', ...JEV_ADMIN_ACTIONS, ...KONTEXTPROFIL_ADMIN_ACTIONS],
           description: 'Die auszufuehrende Admin-Action',
         },
         project: { type: 'string', description: 'Projekt-Name (erforderlich fuer alle Actions ausser confirm_idea)' },
@@ -960,6 +960,7 @@ export const MCP_TOOLS = [
         ...SITZUNG_PARAMETER,
         // P15-T33 E0.5: Jev-Steuerung (jev_status, jev_schalten, jev_kosten, jev_budget)
         ...JEV_ADMIN_PARAMETER,
+        ...KONTEXTPROFIL_ADMIN_PARAMETER,
       },
       required: ['action'],
     },
@@ -4324,6 +4325,7 @@ async function handleToolCallKern(
     // =================================================================
     case 'admin': {
       // P15-T33 E0.5: Jev-Schalter, Kosten, Budget (Logik in core jev-admin.ts, identisch zu stdio)
+      if (istKontextprofilAdminAction(action as string)) return fuehreKontextprofilAdminAus(action as string, args, effectiveAgentId);
       if (istJevAdminAction(action)) return await fuehreJevAdminAus(action as string, args, effectiveAgentId);
       switch (action) {
         case 'migrate':

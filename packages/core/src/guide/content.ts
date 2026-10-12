@@ -741,6 +741,21 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
         example: 'admin({ action: "jev_optionen", project: "synapse", modus: "setzen", erklaerung_de: false, jev_sprache: "en", agent_id: "koordinator" })',
         tips: 'Nicht genannte Optionen bleiben. Antwort: erklaerung_sprachen, gepflegte_sprachen, jev_sprache (Wunsch), jev_sprache_wirksam (nach Rueckfall), hinweis bei Rueckfall. Setzen nur Koordinator/User.',
       },
+      kontextprofil_liste: {
+        description: 'Kontextprofile auflisten (vorbereitet, noch nicht aktiv; speichert nichts). Nur Koordinator/User.',
+        params: 'ziel (optional, agent_id oder Namensmuster)',
+        example: 'admin({ action: "kontextprofil_liste", ziel: "luna-*", agent_id: "koordinator" })',
+      },
+      kontextprofil_setzen: {
+        description: 'Kontextprofil setzen (vorbereitet, noch nicht aktiv; speichert nichts). Nur Koordinator/User.',
+        params: 'ziel, kontext_budget, stufe (normal|kompakt|minimal), hinweise_aus[], hinweise_nur[], grund',
+        example: 'admin({ action: "kontextprofil_setzen", ziel: "luna-2", kontext_budget: 25000, stufe: "kompakt", grund: "Test" , agent_id: "koordinator" })',
+      },
+      kontextprofil_entfernen: {
+        description: 'Kontextprofil entfernen (vorbereitet, noch nicht aktiv; speichert nichts). Nur Koordinator/User.',
+        params: 'ziel, grund',
+        example: 'admin({ action: "kontextprofil_entfernen", ziel: "luna-2", grund: "Ende des Tests", agent_id: "koordinator" })',
+      },
     },
   },
 

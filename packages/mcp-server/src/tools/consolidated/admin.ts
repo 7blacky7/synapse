@@ -22,7 +22,7 @@ import {
   confirmIdea,
   indexMediaWrapper,
 } from '../index.js';
-import { migrateToRelativePaths, JEV_ADMIN_ACTIONS, JEV_ADMIN_BESCHREIBUNG, JEV_ADMIN_PARAMETER, istJevAdminAction, fuehreJevAdminAus, wendeSitzungsSignalAn, SITZUNG_PARAMETER } from '@synapse/core';
+import { migrateToRelativePaths, JEV_ADMIN_ACTIONS, JEV_ADMIN_BESCHREIBUNG, JEV_ADMIN_PARAMETER, istJevAdminAction, fuehreJevAdminAus, KONTEXTPROFIL_ADMIN_ACTIONS, KONTEXTPROFIL_ADMIN_PARAMETER, istKontextprofilAdminAction, fuehreKontextprofilAdminAus, wendeSitzungsSignalAn, SITZUNG_PARAMETER } from '@synapse/core';
 
 export const adminTool: ConsolidatedTool = {
   definition: {
@@ -33,7 +33,7 @@ export const adminTool: ConsolidatedTool = {
       properties: {
         action: {
           type: 'string',
-          enum: ['migrate', 'restore', 'save_idea', 'confirm_idea', 'index_media', 'index_stats', 'detailed_stats', 'migrate_paths', ...JEV_ADMIN_ACTIONS],
+          enum: ['migrate', 'restore', 'save_idea', 'confirm_idea', 'index_media', 'index_stats', 'detailed_stats', 'migrate_paths', ...JEV_ADMIN_ACTIONS, ...KONTEXTPROFIL_ADMIN_ACTIONS],
           description: 'Die auszuführende Admin-Action',
         },
         // === migrate ===
@@ -101,6 +101,7 @@ export const adminTool: ConsolidatedTool = {
         ...SITZUNG_PARAMETER,
         // === P15-T33 E0.5: Jev-Steuerung (jev_status, jev_schalten, jev_kosten, jev_budget) ===
         ...JEV_ADMIN_PARAMETER,
+        ...KONTEXTPROFIL_ADMIN_PARAMETER,
       },
       required: ['action'],
     },
@@ -112,6 +113,7 @@ export const adminTool: ConsolidatedTool = {
       throw new Error('Parameter "action" ist erforderlich');
     }
     // P15-T33 E0.5: Jev-Schalter, Kosten, Budget (Logik in core jev-admin.ts, identisch zu REST)
+    if (istKontextprofilAdminAction(action)) return fuehreKontextprofilAdminAus(action, args, str(args, 'agent_id'));
     if (istJevAdminAction(action)) return await fuehreJevAdminAus(action, args, str(args, 'agent_id'));
 
     switch (action) {
