@@ -102,109 +102,57 @@ export interface MemoryWithRelatedCode {
   hasMoreCode: boolean;
 }
 
-/**
- * Gueltige Datei-Extensions fuer Pfadvalidierung
- */
-const VALID_EXTENSIONS = [
-  '.ts', '.js', '.py', '.tsx', '.jsx', '.vue',
-  '.css', '.scss', '.html', '.json', '.yaml', '.yml', '.md', '.sql'
-];
-
-/**
- * Blacklist fuer ungueltige Pfad-Segmente
- */
+/** Ausgeschlossene Build-/Abhaengigkeitspfade und URL-Schemata. */
 const PATH_BLACKLIST = ['node_modules', 'dist', '.git', 'http://', 'https://'];
 
-/**
- * Prueft ob ein Pfad gueltig ist
- * - Muss Extension aus VALID_EXTENSIONS haben
- * - Darf keine Blacklist-Eintraege enthalten
- * - Muss mindestens einen Pfad-Separator enthalten
- */
-export function isValidFilePath(path: string): boolean {
-  if (!path || typeof path !== 'string') {
-    return false;
-  }
-
-  // Muss mindestens einen Pfad-Separator enthalten
-  if (!path.includes('/') && !path.includes('\\')) {
-    return false;
-  }
-
-  // Blacklist pruefen
-  const lowerPath = path.toLowerCase();
-  for (const blacklisted of PATH_BLACKLIST) {
-    if (lowerPath.includes(blacklisted.toLowerCase())) {
-      return false;
-    }
-  }
-
-  // Extension pruefen
-  const hasValidExtension = VALID_EXTENSIONS.some(ext =>
-    lowerPath.endsWith(ext)
-  );
-
-  return hasValidExtension;
+function normalizeMemoryPath(path: string): string {
+  return path.trim().replace(/\\/g, '/').replace(/\/+/g, '/').replace(/^(?:\.\/)+/, '');
 }
 
 /**
- * Extrahiert Dateipfade aus Text
- * - Unix-Pfade (packages/core/src/file.ts)
- * - Windows-Pfade (packages\core\src\file.ts)
- * - Backtick-Referenzen (`path/to/file.ts`)
- * - Markdown-Links [text](path)
- *
- * Normalisiert alle Pfade zu Unix-Style und gibt dedupliziertes Array zurueck
+ * Projektpfade brauchen ein Verzeichnis und eine allgemeine Datei-Endung.
+ * Reine Dateinamen, URLs, Domain-Referenzen und Versionsnummern sind keine Links.
+ * Ein explizites ./ erlaubt auch einen projektrelativen Ordner mit Domain-Schreibweise.
  */
+export function isValidFilePath(path: string): boolean {
+  if (!path || typeof path !== 'string') return false;
+  const unixPath = path.trim().replace(/\\/g, '/');
+  if (!unixPath.includes('/') || unixPath.startsWith('//') || /[?#@\r\n]/.test(unixPath)) return false;
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(unixPath)) return false;
+  const lowerPath = unixPath.toLowerCase();
+  if (PATH_BLACKLIST.some(part => lowerPath.includes(part))) return false;
+  const firstSegment = unixPath.split('/')[0];
+  if (/^[\p{L}\p{N}-]+(?:\.[\p{L}\p{N}-]+)*\.[a-z]{2,63}$/iu.test(firstSegment)) return false;
+  const filename = unixPath.split('/').pop() ?? '';
+  if (/^v?\d+(?:\.\d+)+(?:[-+][\w.-]+)?$/i.test(filename)) return false;
+  const extension = /\.([a-z0-9]{1,8})$/i.exec(filename)?.[1];
+  return !!extension;
+}
+
+/** Extrahiert Backtick-, Markdown- und freie Pfadreferenzen, normalisiert und dedupliziert. */
 export function extractFilePaths(content: string): string[] {
-  if (!content || typeof content !== 'string') {
-    return [];
-  }
-
+  if (!content || typeof content !== 'string') return [];
   const paths = new Set<string>();
-
-  // Regex fuer Backtick-Referenzen: `path/to/file.ts`
-  const backtickRegex = /`([^`]+?(?:\.ts|\.js|\.py|\.tsx|\.jsx|\.vue|\.css|\.scss|\.html|\.json|\.yaml|\.yml|\.md|\.sql))`/gi;
-
-  // Regex fuer Markdown-Links: [text](path/to/file.ts)
-  const markdownLinkRegex = /\[[^\]]*\]\(([^)]+?(?:\.ts|\.js|\.py|\.tsx|\.jsx|\.vue|\.css|\.scss|\.html|\.json|\.yaml|\.yml|\.md|\.sql))\)/gi;
-
-  // Regex fuer allgemeine Pfade (Unix und Windows)
-  // Erfasst Pfade die mit Buchstabe/. beginnen und eine Extension haben
-  const generalPathRegex = /(?:^|[\s"'(])([a-zA-Z0-9_.][a-zA-Z0-9_./\\-]*(?:\.ts|\.js|\.py|\.tsx|\.jsx|\.vue|\.css|\.scss|\.html|\.json|\.yaml|\.yml|\.md|\.sql))(?:[\s"'),:]|$)/gim;
-
-  // Backtick-Pfade extrahieren
-  let match: RegExpExecArray | null;
-  while ((match = backtickRegex.exec(content)) !== null) {
-    const path = match[1].trim();
-    if (path) {
-      paths.add(path);
+  const patterns = [
+    /\x60([^\x60\r\n]+)\x60/g,
+    /\[[^\]]*\]\(([^)\r\n]+)\)/g,
+    /(?:^|[\s"'(\x60])((?:[a-z]:[\\/])?[\p{L}\p{N}_./\\-]+\.[a-z0-9]{1,8})(?=[\s"'),:;\x60\]>]|[.!?](?:\s|$)|$)/gimu,
+  ];
+  for (const pattern of patterns) {
+    for (const match of content.matchAll(pattern)) {
+      const path = match[1].trim();
+      if (isValidFilePath(path)) paths.add(normalizeMemoryPath(path));
     }
   }
+  return [...paths];
+}
 
-  // Markdown-Links extrahieren
-  while ((match = markdownLinkRegex.exec(content)) !== null) {
-    const path = match[1].trim();
-    if (path) {
-      paths.add(path);
-    }
-  }
-
-  // Allgemeine Pfade extrahieren
-  while ((match = generalPathRegex.exec(content)) !== null) {
-    const path = match[1].trim();
-    if (path) {
-      paths.add(path);
-    }
-  }
-
-  // Normalisieren (Windows -> Unix) und filtern
-  const normalized = Array.from(paths)
-    .map(p => p.replace(/\\/g, '/'))
-    .filter(isValidFilePath);
-
-  // Deduplizieren nach Normalisierung
-  return [...new Set(normalized)];
+/** Tags sind nur dann Dateiverknuepfungen, wenn der ganze Tag ein Projektpfad ist. */
+function memoryLinkedPaths(content: string, tags: string[] | null): string[] {
+  return [...new Set([
+    ...extractFilePaths(content),
+    ...(tags ?? []).filter(isValidFilePath).map(normalizeMemoryPath),
+  ])];
 }
 
 /**
@@ -367,7 +315,7 @@ interface MemoryZeile {
 function memoryAusZeile(row: MemoryZeile): Memory {
   return {
     id: row.id, project: row.project, name: row.name, content: row.content,
-    category: row.category, tags: row.tags ?? [], linkedPaths: extractFilePaths(row.content),
+    category: row.category, tags: row.tags ?? [], linkedPaths: memoryLinkedPaths(row.content, row.tags),
     createdAt: row.created_at instanceof Date ? row.created_at.toISOString() : row.created_at,
     updatedAt: row.updated_at instanceof Date ? row.updated_at.toISOString() : row.updated_at,
   };
@@ -801,8 +749,8 @@ export async function getMemoriesByNames(
  *
  * Matching-Logik:
  * - Normalisiert Pfade zu Unix-Style
- * - Prüft ob linkedPath mit filePath endet (exakt)
- * - Prüft ob linkedPath den Dateinamen enthält (fuzzy)
+ * - Exakter Pfad: 1.0; Suffix an Segmentgrenze: 0.9
+ * - Keine Pfadtreffer nur aufgrund gleicher Dateinamen
  * - Optional: Semantische Suche mit Dateiname als Query
  *
  * @param project - Projekt-Identifikator
@@ -815,91 +763,56 @@ export async function findMemoriesForPath(
   filePath: string,
   limit: number = 10
 ): Promise<RelatedMemoryResult[]> {
-  // Normalisiere zu Unix-Style
-  const normalizedPath = filePath.replace(/\\/g, '/');
-
-  // Extrahiere Dateiname aus Pfad
-  const pathParts = normalizedPath.split('/');
-  const fileName = pathParts[pathParts.length - 1];
-
-  // Map für Deduplizierung: memory.id -> RelatedMemoryResult
+  if (limit <= 0) return [];
+  const normalizedPath = normalizeMemoryPath(filePath);
+  const fileName = normalizedPath.split('/').pop() ?? '';
   const resultMap = new Map<string, RelatedMemoryResult>();
 
-  // 1. Hole alle Memories des Projekts via scrollVectors
-  const collectionName = COLLECTIONS.projectMemories(project);
-  const allPoints = await scrollVectors<MemoryPayload>(
-    collectionName,
-    {
-      must: [{ key: 'project', match: { value: project } }],
-    },
-    1000
+  // Existenz und aktuelle Inhalte kommen ausschliesslich aus PG, ohne Scroll-Obergrenze.
+  const { rows } = await getPool().query<MemoryZeile>(
+    'SELECT id, project, name, content, category, tags, created_at, updated_at FROM memories WHERE project = $1 ORDER BY id',
+    [project],
   );
-
-  // 2. Prüfe Path-Matches
-  for (const point of allPoints) {
-    const linkedPaths = point.payload.linkedPaths || [];
-
-    for (const linkedPath of linkedPaths) {
-      // Normalisiere linkedPath
-      const normalizedLinkedPath = linkedPath.replace(/\\/g, '/');
-
-      // Flexibles Matching:
-      // a) Endet mit dem Suchpfad (z.B. "src/file.ts" matched "packages/core/src/file.ts")
-      // b) Enthält den Dateinamen
-      const endsWithPattern = normalizedPath.endsWith(normalizedLinkedPath) ||
-                              normalizedLinkedPath.endsWith(normalizedPath);
-      const containsFileName = normalizedLinkedPath.includes(fileName);
-
-      if (endsWithPattern || containsFileName) {
-        const memory = payloadToMemory({ id: point.id as string, payload: point.payload });
-        resultMap.set(memory.id, {
-          memory,
-          matchType: 'path',
-          score: endsWithPattern ? 1.0 : 0.8, // Exakter Match höher
-        });
-        break; // Ein Match pro Memory reicht
+  const memories = rows.map(memoryAusZeile);
+  const byId = new Map(memories.map(memory => [memory.id, memory]));
+  if (isValidFilePath(filePath)) {
+    for (const memory of memories) {
+      let score = 0;
+      for (const linkedPath of memory.linkedPaths) {
+        if (normalizedPath === linkedPath) {
+          score = 1;
+          break;
+        }
+        // Der Suffix muss mit einem kompletten Verzeichnis-Segment beginnen.
+        if (normalizedPath.endsWith('/' + linkedPath) || linkedPath.endsWith('/' + normalizedPath)) {
+          score = Math.max(score, 0.9);
+        }
       }
+      if (score > 0) resultMap.set(memory.id, { memory, matchType: 'path', score });
     }
   }
 
-  // 3. Optional: Semantische Suche mit Dateiname als Query
-  // Nur wenn wir noch Platz im Limit haben
-  const pathMatchCount = resultMap.size;
-  const remainingLimit = limit - pathMatchCount;
-
-  if (remainingLimit > 0 && fileName) {
+  if (resultMap.size < limit && fileName) {
     try {
-      const semanticResults = await searchMemories(fileName, project, remainingLimit + pathMatchCount);
-
+      const semanticResults = await searchMemories(fileName, project, limit);
       for (const result of semanticResults) {
-        const memoryId = result.id;
-
-        // Nur hinzufügen wenn nicht schon als path-match vorhanden
-        if (!resultMap.has(memoryId)) {
-          const memory = payloadToMemory({ id: memoryId, payload: result.payload });
-          resultMap.set(memoryId, {
-            memory,
-            matchType: 'semantic',
-            score: result.score,
-          });
+        // Der Index liefert Aehnlichkeit, niemals Existenz oder veraltete Inhalte.
+        // Grosse Memories haben mehrere Stuecke mit dem PG-Schluessel im Payload.
+        const stueck = result.payload.wissen_stueck as { eintrag_id?: unknown } | undefined;
+        const memoryId = typeof stueck?.eintrag_id === 'string' ? stueck.eintrag_id : result.id;
+        const memory = byId.get(memoryId);
+        if (!memory || resultMap.get(memoryId)?.matchType === 'path') continue;
+        const previous = resultMap.get(memoryId);
+        if (!previous || (previous.score ?? 0) < result.score) {
+          resultMap.set(memoryId, { memory, matchType: 'semantic', score: result.score });
         }
       }
     } catch {
-      // Semantische Suche optional - bei Fehler ignorieren
+      // Semantik ist optional; PG-Pfadtreffer bleiben auch bei Index-/Embedding-Ausfall.
     }
   }
-
-  // 4. Sortieren: path-matches zuerst, dann nach Score
-  const results = Array.from(resultMap.values());
-  results.sort((a, b) => {
-    // Path-Matches haben Priorität
-    if (a.matchType === 'path' && b.matchType !== 'path') return -1;
-    if (a.matchType !== 'path' && b.matchType === 'path') return 1;
-
-    // Innerhalb gleicher matchType: nach Score sortieren
-    return (b.score || 0) - (a.score || 0);
-  });
-
-  // 5. Limit anwenden
-  return results.slice(0, limit);
+  return [...resultMap.values()].sort((a, b) => {
+    if (a.matchType !== b.matchType) return a.matchType === 'path' ? -1 : 1;
+    return (b.score ?? 0) - (a.score ?? 0) || a.memory.id.localeCompare(b.memory.id);
+  }).slice(0, limit);
 }
