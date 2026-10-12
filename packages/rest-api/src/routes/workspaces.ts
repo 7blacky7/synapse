@@ -4,6 +4,7 @@
  */
 
 import { FastifyInstance } from 'fastify';
+import{shellSicherungsParameter,resolveAgentId}from'@synapse/core';
 import { getWorkspaceOrchestrator } from '../services/workspace-orchestrator.js';
 
 function ensureAvailable(reply: import('fastify').FastifyReply): ReturnType<typeof getWorkspaceOrchestrator> {
@@ -201,7 +202,7 @@ export async function workspaceRoutes(fastify: FastifyInstance): Promise<void> {
    */
   fastify.post<{
     Params: { name: string };
-    Body: { command?: string; timeoutMs?: number; workingDir?: string; workspace?: string; role?: string; exposePorts?: number[] };
+    Body: { command?: string; timeoutMs?: number; workingDir?: string; workspace?: string; role?: string; exposePorts?: number[];agent_id?:string;shell?:string;bestaetigt?:unknown };
   }>('/api/projects/:name/workspace/exec', async (request, reply) => {
     const orch = ensureAvailable(reply);
     if (!orch) return;
@@ -216,6 +217,8 @@ export async function workspaceRoutes(fastify: FastifyInstance): Promise<void> {
     try {
       const result = await orch.exec(request.params.name, command, {
         timeoutMs: request.body.timeoutMs,
+        agent_id:resolveAgentId(request.body.agent_id),
+        ...shellSicherungsParameter(request.body as unknown as Record<string,unknown>),
         workingDir: request.body.workingDir,
         workspace: ws,
         role: request.body.role,

@@ -23,6 +23,7 @@ import { getPool } from '../db/client.js';
 import { daemonUebersicht, sendeAnDaemon } from './daemon-bruecke.js';
 import { resolveAgentId } from './agent-id-resolver.js';
 import { resolveProjectTaskId } from './task-id-resolver.js';
+import { darfKoordinatorOderUser } from './rollen-pruefung.js';
 import { merkeFileTaskVersion } from './file-task-zuordnung.js';
 import { pruefeUpdateAnker } from './update-anker.js';
 import { emitEventOnce } from './events.js';
@@ -4909,12 +4910,11 @@ async function commitBatchOnce(args: {
     };
   }
   const caller = resolveAgentId(args.agent_id);
-  const koordinationsRolle = /^(koordinator|coordinator|user)$/i;
   const opAutoren = uniqueStrings((Array.isArray(plan.ops) ? plan.ops : [])
     .map((op) => op.agent_id ?? plan.owner_agent_id ?? '')
     .filter(Boolean));
   let beteiligt = caller !== null && caller === plan.owner_agent_id;
-  if (caller && koordinationsRolle.test(caller)) beteiligt = true;
+  if (caller && darfKoordinatorOderUser(caller)) beteiligt = true;
   if (caller && opAutoren.includes(caller)) beteiligt = true;
   if (caller && !beteiligt) {
     const wait = await pool.query<{ beteiligt: boolean }>(

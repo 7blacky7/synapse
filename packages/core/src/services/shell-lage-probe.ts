@@ -4,10 +4,10 @@ export interface ShellProbePfad {
   naechster_elternpfad?: string; links: Array<{pfad:string;ziel:string}>;
   mount?: string; dev?: string; fehler?: string;
 }
-export interface ShellProbeAnfrage { cwd?: string; variablen?: string[]; pfade?: string[]; }
+export interface ShellProbeAnfrage { cwd?: string; variablen?: string[]; pfade?: string[]; prozesse?:boolean; }
 export interface ShellProbeAntwort {
   cwd: string; os: 'linux'|'windows'|'macos'|'wsl'; env: Record<string,string>;
-  pfade: ShellProbePfad[];
+  pfade: ShellProbePfad[]; prozesse?:{pids:number[];namen:string[]}; rechner?:string;
 }
 export async function probeShellLage(input: ShellProbeAnfrage): Promise<ShellProbeAntwort> {
   // Alles in dieser Funktion: toString() erzeugt denselben festen Helfer, keine zweite Implementierung.
@@ -74,7 +74,24 @@ export async function probeShellLage(input: ShellProbeAnfrage): Promise<ShellPro
     if(!found && !r.fehler)r.fehler='elternpfad_grenze';
     records.push(r);
   }
-  return {cwd,os:windows?'windows':process.platform==='darwin'?'macos':process.env.WSL_DISTRO_NAME?'wsl':'linux',env,pfade:records};
+  let prozesse:ShellProbeAntwort['prozesse'];
+  if(input.prozesse){
+    if(process.platform!=='linux')throw Error('container_prozesslage_nicht_verfuegbar');
+    const pids=new Set<number>(),namen=new Set<string>(),seen=new Set<number>();
+    let pid=process.pid;
+    for(let i=0;i<32&&pid>0&&!seen.has(pid);i++){
+      seen.add(pid);
+      const raw=await fs.readFile('/proc/'+pid+'/stat','utf8');
+      const m=raw.match(/^(\d+)\s+\((.*)\)\s+\S+\s+(\d+)\s+(\d+)/);
+      if(!m)throw Error('container_prozesslage_nicht_lesbar');
+      pids.add(Number(m[1]));namen.add(m[2].toLowerCase());
+      if(Number(m[4])>0)pids.add(Number(m[4]));
+      pid=Number(m[3]);
+    }
+    prozesse={pids:[...pids],namen:[...namen]};
+  }
+  return {cwd,os:windows?'windows':process.platform==='darwin'?'macos':process.env.WSL_DISTRO_NAME?'wsl':'linux',env,pfade:records,
+    ...(prozesse?{prozesse,rechner:(await import('node:os')).hostname()}:{} )};
 }
 /** Der Nutzerbefehl ist nie Teil dieses Programms; nur JSON-Daten in argv[1]. */
 export function shellLageProbeProgramm(): string {

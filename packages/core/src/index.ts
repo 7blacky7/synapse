@@ -439,6 +439,11 @@ export type { ShellLage, ShellLageKontext } from './services/shell-lage.js';
 export { probeShellLage, shellLageProbeProgramm } from './services/shell-lage-probe.js';
 export type { ShellProbeAnfrage, ShellProbeAntwort } from './services/shell-lage-probe.js';
 export { waehleShellStart } from './services/shell-start.js';
+export {SHELL_SICHERUNGS_PARAMETER,shellSicherungsParameter,shellSicherungsAntwortAus}from'./services/shell-sicherungs-vertrag.js';
+export {pruefeShellStart,regelVersion}from'./services/shell-start-sicherung.js';
+export type{ShellBestaetigung,ShellSicherungsAntwort}from'./services/shell-start-sicherung.js';
+export type{SicherungsShell}from'./services/shell-sicherung-parser.js';
+export {holeShellStartKatalog,beginneShellSicherungsJob,beendeShellSicherungsJob}from'./services/shell-sicherungs-lauf.js';
 
 // Shell-Exec (gemeinsam fuer MCP-Tool + REST /api/shell)
 export {

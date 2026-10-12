@@ -18,6 +18,9 @@
  */
 
 import { randomUUID } from 'node:crypto';
+import {pruefeShellEinreihung,type ShellJobSicherung}from'./shell-einreihung-sicherung.js';
+import type{ShellBestaetigung,ShellSicherungsAntwort}from'./shell-start-sicherung.js';
+import type{SicherungsShell}from'./shell-sicherung-parser.js';
 import {maskiereShellAntwort,maskiereShellVorSpeichern} from './shell-maske.js';
 import { getPool } from '../db/index.js';
 import { istTeilbar, execKeyFuer } from './shell-teilbar.js';
@@ -27,6 +30,8 @@ import {
 } from './shell-channel-unterbrechung.js';
 
 export interface EnqueueArgs {
+  bestaetigt?:ShellBestaetigung|null;
+  shell?:SicherungsShell;
   project: string;
   command: string;
   cwd_relative?: string;
@@ -42,6 +47,7 @@ export interface EnqueueArgs {
 }
 
 export interface ShellJobRow {
+  sicherung?:ShellJobSicherung|null;
   id: string;
   project: string;
   agent_id: string | null;
@@ -80,7 +86,7 @@ export interface ShellJobCompletion {
   output?: string;
 }
 
-export interface ShellJobResult {
+export interface ShellJobResult extends Partial<ShellSicherungsAntwort> {
   maskiert?: number;
   id: string;
   /**
@@ -125,6 +131,7 @@ function doneChannelForJob(id: string): string {
 async function formatResult(row: ShellJobRow): Promise<ShellJobResult> {
   return maskiereShellAntwort(row.project,{
     id: row.id,
+    ...(row.sicherung?.antwort??{}),
     status: row.status,
     exit_code: row.exit_code ?? undefined,
     tail: row.tail ?? undefined,
@@ -186,7 +193,9 @@ export async function enqueueShellJob(
   // exec_key wird NUR bei nebenwirkungsfreien Befehlen gesetzt (Positivliste in
   // shell-teilbar.ts). Alles andere bekommt NULL und laeuft ungehindert doppelt —
   // ein zweites `git commit` MUSS ein zweites Mal laufen.
-  const teilbar = args.force !== true && istTeilbar(args.command);
+  const sicherung=await pruefeShellEinreihung(args);
+  const anfrage=sicherung.sicherung?await maskiereShellVorSpeichern(args.project,sicherung.sicherung):null;
+  const teilbar = sicherung.wiederverwendbar && args.force !== true && istTeilbar(args.command);
   const execKey = teilbar
     ? execKeyFuer({
         project: args.project,
@@ -305,8 +314,8 @@ export async function enqueueShellJob(
   }
 
   const res = await pool.query<{ id: string }>(
-    `INSERT INTO shell_jobs (project, command, cwd_relative, timeout_ms, tail_lines, stream_id, agent_id)
-     VALUES ($1, $2, $3, $4, $5, $6, $7)
+    `INSERT INTO shell_jobs (project, command, cwd_relative, timeout_ms, tail_lines, stream_id, agent_id, sicherung)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)
      RETURNING id`,
     [
       args.project,
@@ -318,6 +327,7 @@ export async function enqueueShellJob(
       args.tail_lines ?? 5,
       streamId,
       args.agent_id ?? null,
+      anfrage?JSON.stringify(anfrage):null,
     ],
   );
   return { id: res.rows[0].id, stream_id: streamId };
@@ -979,7 +989,9 @@ export async function getShellJobById(id: string): Promise<ShellJobDetail | null
   );
   if (rows.length === 0) return null;
   const row = rows[0];
-  return maskiereShellAntwort(row.project,{ ...row, output_line_count: countLines(row.output) });
+  const {sicherung,...normal}=row;
+  const sichtbar=sicherung?.antwort||sicherung?.anfrage?.bestaetigt||sicherung?.anfrage?.shell;
+  return maskiereShellAntwort(row.project,{ ...normal,...(sichtbar?{sicherung}:{}), output_line_count: countLines(row.output) });
 }
 
 /**

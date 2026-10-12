@@ -24,6 +24,7 @@ export interface ShellLageZiel {
 export interface ShellLage {
   shell: SicherungsShell; os: ShellLageKontext['os']; cwd:string; project_root:string;
   variablen: Array<{name:string;wert?:string;gesetzt:boolean}>;
+  kommandos?:ShellTextKommando[]; quell_hash?:string;
   ziele:ShellLageZiel[]; ungeklaert:string[]; sicher_aufloesbar:boolean; hinweis?:string; hash:string;
 }
 interface Wert {wert?:string;leer:string[];probleme:string[];glob:boolean;}
@@ -157,6 +158,7 @@ export async function ermittleShellLage(command:string,ctx:ShellLageKontext):Pro
   if(env.CD===undefined)env.CD=ctx.cwd;
   let cwd=ctx.cwd;
   const ziele:ShellLageZiel[]=[];
+  const kommandos:ShellTextKommando[]=[];
   const unresolved=tree.ungeklart.filter(x=>!['ziel_dynamisch','dynamisches_programm'].includes(x));
   const probe=ctx.probe??probeShellLage;
   const expand=(w:ShellWort,art:SicherungsShell,local=env)=>expandiere(w,art,local,ctx,vars);
@@ -197,6 +199,18 @@ export async function ermittleShellLage(command:string,ctx:ShellLageKontext):Pro
       else unresolved.push('cmd_set_unbekannt');
       continue;
     }
+    // Strukturiert weitergeben: keine erneute Shell-Auswertung expandierter Werte.
+    const aufgeloest=(w:ShellWort):ShellWort=>{
+      const v=expand(w,art,local);
+      unresolved.push(...v.probleme);
+      return {...w,text:v.wert??w.text,dynamisch:v.wert===undefined};
+    };
+    const projected:ShellTextKommando={
+      argv:k.argv.map(aufgeloest),
+      umleitungen:(k.umleitungs_woerter??k.umleitungen.map(text=>({text,dynamisch:false}))).map(aufgeloest).map(w=>w.text),
+      shell:art,nach:k.nach,
+    };
+    if(projected.argv.length||projected.umleitungen.length)kommandos.push(projected);
     const cmd=expand(k.argv[0]??{text:'',dynamisch:false},art,local);
     if(cmd.probleme.length)unresolved.push(...cmd.probleme);
     if(/^(?:eval|source|\.)$/.test(cmd.wert??''))unresolved.push('lage_nicht_sicher_aufloesbar');
@@ -243,7 +257,8 @@ export async function ermittleShellLage(command:string,ctx:ShellLageKontext):Pro
   }
   const ungeklaert=[...new Set(unresolved)];
   const base={shell,os:ctx.os,cwd:ctx.cwd,project_root:ctx.project_root,
+    quell_hash:createHash('sha256').update(command).digest('hex'),
     sicher_aufloesbar:ungeklaert.length===0,...(ungeklaert.length?{hinweis:'Lage nicht sicher auflösbar'}:{}),
-    variablen:[...vars.values()].sort((a,b)=>a.name.localeCompare(b.name)),ziele,ungeklaert};
+    variablen:[...vars.values()].sort((a,b)=>a.name.localeCompare(b.name)),kommandos,ziele,ungeklaert};
   return {...base,hash:createHash('sha256').update(JSON.stringify(base)).digest('hex')};
 }

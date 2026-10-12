@@ -21,6 +21,7 @@ import {
   claimPendingShellJob,
   completeShellJob,
   execShellInProject,
+  mitUserHerkunft,userHerkunftAusMetadata,
   expirePendingShellJobs,
   EXPIRE_PENDING_AFTER_SEC,
   reapOrphanedRunningJobs,
@@ -239,14 +240,19 @@ async function processJob(project: string): Promise<void> {
 }
 
 /** Fuehrt einen bereits geclaimten Job aus und schreibt sein Ergebnis. */
-async function runClaimedJob(project: string, job: ShellJobRow): Promise<void> {
+export async function runClaimedJob(project: string, job: ShellJobRow): Promise<void> {
   console.error(`[shell-worker] Job ${job.id} (${project}) gestartet: ${job.command}`);
 
   let result: Record<string, unknown>;
   try {
-    result = (await execShellInProject({
+    const ausfuehren=()=>execShellInProject({
       project: job.project,
       command: job.command,
+      agent_id: job.agent_id,
+      bestaetigt: job.sicherung?.anfrage?.bestaetigt,
+      shell: job.sicherung?.anfrage?.shell,
+      sicherungs_job_id: job.id,
+      sicherungs_ursprung: 'daemon',
       cwd_relative: job.cwd_relative ?? undefined,
       // job.timeout_ms ist seit SH-1 die HARTE Obergrenze, nicht die Antwortfrist.
       // Der Worker wartet hier bis zum ECHTEN Ende des Prozesses — auch Stunden.
@@ -264,7 +270,9 @@ async function runClaimedJob(project: string, job: ShellJobRow): Promise<void> {
           `[shell-worker] Job ${job.id} laeuft im Hintergrund weiter (pid ${info.pid ?? '?'})`,
         );
       },
-    })) as Record<string, unknown>;
+    });
+    const herkunft=userHerkunftAusMetadata({herkunft:job.sicherung?.anfrage?.herkunft});
+    result=(await (herkunft?mitUserHerkunft(herkunft.kanal,ausfuehren):ausfuehren())) as Record<string,unknown>;
   } catch (err: unknown) {
     // Unerwarteter Fehler in execShellInProject selbst
     const m = (err as Error).message ?? String(err);
@@ -283,7 +291,7 @@ async function runClaimedJob(project: string, job: ShellJobRow): Promise<void> {
     // error = Maschinen-Code, message = human-Text mit Anweisung — getrennt
     // damit Web-KI-Connectors maschinell matchen UND dem User Anweisungen
     // weitergeben koennen ("Bitte Projekt im Tray aktivieren").
-    const isInactive = result['error'] === 'project_inactive';
+    const isInactive = result['error'] === 'project_inactive' || result['status'] === 'rejected';
     const errCode = String(result['error']);
     const errMsg =
       (result['message'] as string | undefined) ??

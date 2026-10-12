@@ -61,6 +61,7 @@ function normalisiere(k: ShellTextKommando): ShellTextKommando {
   }
   return { argv, umleitungen: k.umleitungen };
 }
+export function normalisiereShellKommando(k:ShellTextKommando):ShellTextKommando{return normalisiere(k);}
 const gilt = (g: ShellGeltung, o: ShellPruefOptionen): boolean =>
   (g.bereich !== 'projekt' || g.project === o.project) &&
   (!g.os?.length || !!o.os && g.os.includes(o.os)) &&
@@ -68,6 +69,7 @@ const gilt = (g: ShellGeltung, o: ShellPruefOptionen): boolean =>
 export interface ShellPruefOptionen {
   shell?: SicherungsShell; project?: string; os?: 'linux' | 'windows' | 'macos' | 'wsl';
   rechner?: string; katalog?: ShellSicherungsKatalog;
+  kommandos?: ShellTextKommando[];
 }
 function regex(pattern: string, text: string): boolean {
   if (pattern.length > 512) throw new Error('shell_regel_muster_zu_lang');
@@ -106,7 +108,7 @@ export function pruefeShellText(
 ): ShellTextErgebnis {
   const katalog = opts.katalog ?? SHELL_SICHERUNG_SEED;
   const tree = parseShellText(command, opts.shell ?? 'bash');
-  const commands = tree.kommandos.map(normalisiere);
+  const commands = (opts.kommandos ?? tree.kommandos).map(normalisiere);
   const activeAnswers = new Set(katalog.antworten.filter(a => a.status === 'aktiv' && gilt(a, opts)).map(a => a.id));
   const treffer: ShellTextErgebnis['treffer'] = [];
   for (const r of katalog.regeln) {

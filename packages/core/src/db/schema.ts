@@ -2494,6 +2494,9 @@ CREATE INDEX IF NOT EXISTS idx_asset_refs_ziel        ON asset_references(projec
 CREATE INDEX IF NOT EXISTS idx_asset_refs_fehlt       ON asset_references(project) WHERE aufloesung = 'fehlt';
 CREATE INDEX IF NOT EXISTS idx_asset_refs_target_trgm ON asset_references USING gin (target gin_trgm_ops);
 
+-- P10-T37: Spiegel schema-sql/61_shell_sicherungs_audit.sql, Altbestand bleibt NULL.
+ALTER TABLE shell_jobs ADD COLUMN IF NOT EXISTS sicherung JSONB;
+
 
 
 `;

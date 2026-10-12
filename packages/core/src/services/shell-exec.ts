@@ -19,7 +19,9 @@ import os from 'node:os';
 import crypto from 'node:crypto';
 import { getProjectRoot } from './project-registry.js';
 import { baueJobUmgebung } from './shell-job-umgebung.js';
-import { ermittleShellLage, type ShellLage } from './shell-lage.js';
+import { ermittleShellLage, type ShellLage, type ShellLageKontext } from './shell-lage.js';
+import {pruefeShellStart,type ShellBestaetigung}from'./shell-start-sicherung.js';
+import{holeShellStartKatalog,geschuetzteShellProzesse,beginneShellSicherungsJob,beendeShellSicherungsJob}from'./shell-sicherungs-lauf.js';
 import { waehleShellStart } from './shell-start.js';
 import type { SicherungsShell } from './shell-sicherung-parser.js';
 
@@ -67,6 +69,11 @@ export type ShellExecArgs = {
   shell?: SicherungsShell;
   /** Fester Preflight-Anschluss; E3 nutzt ihn, E2 aktiviert keine Stufen. Maskierte Daten. */
   onLage?: (lage: ShellLage) => Promise<void> | void;
+  agent_id?: string | null;
+  bestaetigt?: ShellBestaetigung | null;
+  /** Interne bestehende Queue-ID; keine neue Berechtigung. */
+  sicherungs_job_id?: string;
+  sicherungs_ursprung?: 'daemon' | 'mcp_local' | 'workspace';
   /** @deprecated Altname der Abloesegrenze. Wirkt als detach_after_ms. */
   timeout_ms?: number;
   /** Abloesegrenze in ms (Default DEFAULT_DETACH_MS). Bricht nichts ab. */
@@ -196,14 +203,31 @@ export async function execShellInProject(
     return { error: 'cwd_outside_project', message: 'cwd_relative darf nicht aus dem Projekt-Root ausbrechen' };
   }
   const start = waehleShellStart(args.shell);
+  const lageKontext: ShellLageKontext = {
+    shell: start.shell, os: process.platform === 'win32' ? 'windows' : process.platform === 'darwin' ? 'macos' : process.env.WSL_DISTRO_NAME ? 'wsl' : 'linux',
+    cwd, project_root: projectRoot, env: jobUmgebung.env, env_vollstaendig: true,
+  };
+  let lage = await ermittleShellLage(args.command, lageKontext);
   if (args.onLage) {
-    const lage = await ermittleShellLage(args.command, {
-      shell: start.shell, os: process.platform === 'win32' ? 'windows' : process.platform === 'darwin' ? 'macos' : process.env.WSL_DISTRO_NAME ? 'wsl' : 'linux',
-      cwd, project_root: projectRoot, env: jobUmgebung.env, env_vollstaendig: true,
-    });
-    await args.onLage(maskiereShellDaten(lage, werte).daten);
+    await args.onLage(maskiereShellDaten(lage, werte, true).daten);
+    // Ein interner Observer darf die Bestätigung nicht über eine zwischenzeitliche Änderung retten.
+    lage = await ermittleShellLage(args.command, lageKontext);
   }
-  return new Promise((resolve) => {
+  const prozesse = /\b(?:kill|pkill|killall|taskkill|stop-process)\b/i.test(args.command)
+    ? await geschuetzteShellProzesse()
+    : {pids:[process.pid,process.ppid],namen:[path.basename(process.execPath).toLowerCase()]};
+  const katalog = await holeShellStartKatalog();
+  const pruefung = pruefeShellStart({project:args.project,command:args.command,lage,
+    agent_id:args.agent_id,bestaetigt:args.bestaetigt,rechner:os.hostname(),
+    geschuetzte_pids:prozesse.pids,geschuetzte_namen:prozesse.namen},katalog);
+  const sicherungsJob = await beginneShellSicherungsJob({project:args.project,command:args.command,
+    cwd_relative:args.cwd_relative,agent_id:args.agent_id,job_id:args.sicherungs_job_id,
+    entscheidung:pruefung,lage,rechner:os.hostname(),ursprung:args.sicherungs_ursprung});
+  if (!pruefung.darf_starten) {
+    return maskiereShellDaten({status:'rejected',error:pruefung.antwort?.error??'shell_anleitung',
+      ...pruefung.antwort,...(sicherungsJob?{id:sicherungsJob}:{})},werte,true).daten;
+  }
+  const result = await new Promise<Record<string,unknown>>((resolve) => {
     ensureStreamsDir();
     cleanupOldStreams();
     const streamId = crypto.randomBytes(8).toString('hex');
@@ -374,6 +398,10 @@ export async function execShellInProject(
       });
     });
   });
+  if (sicherungsJob && !args.sicherungs_job_id) await beendeShellSicherungsJob(sicherungsJob,args.project,result);
+  return pruefung.antwort
+    ? maskiereShellDaten({...pruefung.antwort,...result,...(sicherungsJob?{id:sicherungsJob}:{})},werte,true).daten
+    : result;
 }
 
 export function getShellStream(args: ShellGetStreamArgs): Record<string, unknown> {

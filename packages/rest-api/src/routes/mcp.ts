@@ -7,7 +7,7 @@
  */
 
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
-import {mitShellAusgabe} from '@synapse/core';
+import {mitShellAusgabe,SHELL_SICHERUNGS_PARAMETER,shellSicherungsParameter,shellSicherungsAntwortAus} from '@synapse/core';
 import { zeigeArtefakt } from '../services/agent-runtime/artefakt-tool.js';
 import {
   // Code-Suche
@@ -1254,6 +1254,7 @@ export const MCP_TOOLS = [
     inputSchema: {
       type: 'object',
       properties: {
+        ...SHELL_SICHERUNGS_PARAMETER,
         maskierung: {type:'boolean',description:'Anzeige maskieren (Default true); false nur Koordinator/User mit grund. Persistenz bleibt maskiert.'},
         grund: {type:'string',description:'Audit-Grund fuer maskierung:false (mind. 10 Zeichen)'},
         action: { type: 'string', enum: ['exec', 'get_stream', 'history', 'get', 'log', 'activity', 'cancel', 'hide'], description: 'Default: exec. log + id liefert Zeilenrange (1-100); log + id + query liefert Such-Treffer mit Zeilennummern. cancel + id bricht einen laufenden Job ab — in den ersten 10 Minuten nur durch den Agenten, der ihn gestartet hat, danach durch jeden. hide + id blendet die shell_activity-Hinweise zu einem Job aus — in den ersten 3 Minuten NACH DEM ABSCHLUSS nur durch den Starter, danach durch jeden; der Starter bleibt dabei immer Empfaenger.' },
@@ -5539,6 +5540,8 @@ async function handleToolCallKern(
           // Die Ablaufmeldung sagt das ausdruecklich, statt nur 'timeout' zu melden.
           const r = await orch.exec(project, command, {
             timeoutMs: WORKSPACE_EXEC_TIMEOUT_MS,
+            agent_id:resolveAgentId(str(args,'agent_id')),
+            ...shellSicherungsParameter(args),
             workingDir: cwdRel ? `/workspace/${cwdRel.replace(/^\/+/, '')}` : undefined,
             workspace: str(args, 'workspace'),
           });
@@ -5548,7 +5551,8 @@ async function handleToolCallKern(
           return {
             success: r.exitCode === 0 && !r.timedOut,
             executed_via: 'workspace',
-            status: r.timedOut ? 'timeout' : (r.exitCode === 0 ? 'done' : 'failed'),
+            status: r.status??(r.timedOut ? 'timeout' : (r.exitCode === 0 ? 'done' : 'failed')),
+            ...shellSicherungsAntwortAus(r as unknown as Record<string,unknown>),
             exit_code: r.exitCode,
             tail,
             stderr_tail: r.stderr ? r.stderr.split('\n').slice(-20) : undefined,
@@ -5576,6 +5580,7 @@ async function handleToolCallKern(
       const { id, stream_id, attached, attached_to, reused, message: anhaengMeldung } = await enqueueShellJob({
         project,
         command,
+        ...shellSicherungsParameter(args),
         cwd_relative: cwdRel,
         timeout_ms: timeoutMs,
         tail_lines: tailLines,
@@ -5600,6 +5605,7 @@ async function handleToolCallKern(
       return {
         success: !result.error,
         executed_via: 'local',
+        ...shellSicherungsAntwortAus(result as unknown as Record<string,unknown>),
         id, // Job-UUID fuer shell(get)/shell(log) — DX-Befund 2
         status: result.status,
         stream_id: result.stream_id,
@@ -5808,12 +5814,14 @@ async function handleToolCallKern(
             : undefined;
           const result = await orch.exec(project, command, {
             timeoutMs: num(args, 'timeout_ms'),
+            agent_id:resolveAgentId(str(args,'agent_id')),
+            ...shellSicherungsParameter(args),
             workingDir: str(args, 'working_dir'),
             exposePorts,
             workspace: wsArg,
             role: str(args, 'role'),
           });
-          return { success: true, project, workspace: wsArg, dns_name: dnsForProject(project, wsArg), ...result };
+          return { success: result.ausgefuehrt!==false, project, workspace: wsArg, dns_name: dnsForProject(project, wsArg), ...result };
         }
         case 'materialize': {
           const project = reqStr(args, 'project');

@@ -12,7 +12,7 @@
  */
 
 import type { ConsolidatedTool } from './types.js';
-import {mitShellAusgabe} from '@synapse/core';
+import {mitShellAusgabe,SHELL_SICHERUNGS_PARAMETER,shellSicherungsParameter,shellSicherungsAntwortAus,completeShellJob} from '@synapse/core';
 import { str, num, reqStr, strArray, bool } from './types.js';
 import os from 'node:os';
 import fs from 'node:fs';
@@ -63,10 +63,12 @@ async function execViaWorkspace(
   timeoutMs: number,
   tailLines: number | undefined,
   workspace?: string,
+  sicherung:ReturnType<typeof shellSicherungsParameter>={},
+  agent_id?:string|null,
 ): Promise<Record<string, unknown>> {
   const base = getSynapseApiUrl();
   const url = `${base}/api/projects/${encodeURIComponent(project)}/workspace/exec`;
-  const body: Record<string, unknown> = { command, timeoutMs };
+  const body: Record<string, unknown> = { command, timeoutMs,...sicherung,...(agent_id?{agent_id}:{}) };
   if (cwdRel) body.workingDir = `/workspace/${cwdRel.replace(/^\/+/, '')}`;
   if (workspace) body.workspace = workspace;
   try {
@@ -96,18 +98,20 @@ async function execViaWorkspace(
       durationMs?: number;
       error?: { message?: string };
     };
+    const safety=shellSicherungsAntwortAus(data as Record<string,unknown>);
     const stdout = data.stdout ?? '';
     const lines = stdout.split('\n');
     const tail = tailLines ? lines.slice(-tailLines) : lines;
     return {
       success: !data.error && data.exitCode === 0 && !data.timedOut,
       executed_via: 'workspace',
-      status: data.timedOut ? 'timeout' : (data.exitCode === 0 ? 'done' : 'failed'),
+      status: data.timedOut ? 'timeout' : (data.exitCode === 0 ? 'done' : Object.keys(safety).length&&data.exitCode==null ? 'rejected':'failed'),
       exit_code: data.exitCode,
       tail,
       stderr_tail: data.stderr ? data.stderr.split('\n').slice(-20) : undefined,
       duration_ms: data.durationMs,
       error: data.error?.message,
+      ...safety,
     };
   } catch (err) {
     return {
@@ -136,6 +140,7 @@ export const shellTool: ConsolidatedTool = {
     inputSchema: {
       type: 'object',
       properties: {
+        ...SHELL_SICHERUNGS_PARAMETER,
         maskierung: {type:'boolean',description:'Anzeige maskieren (Default true); false nur Koordinator/User mit grund. Persistenz bleibt maskiert.'},
         grund: {type:'string',description:'Audit-Grund fuer maskierung:false (mind. 10 Zeichen)'},
         action: {
@@ -301,6 +306,8 @@ export const shellTool: ConsolidatedTool = {
     const cwdRel = str(args, 'cwd_relative');
     const timeoutMs = num(args, 'timeout_ms');
     const tailLines = num(args, 'tail_lines');
+    const sicherung=shellSicherungsParameter(args);
+    const actor=resolveAgentId(str(args,'agent_id'));
 
     // Auto-Routing local ↔ workspace (siehe Tool-Description)
     const targetArg = (str(args, 'target') ?? 'auto').toLowerCase();
@@ -319,7 +326,7 @@ export const shellTool: ConsolidatedTool = {
     let detachedRun: Promise<Record<string, unknown>> | null = null;
 
     if (target === 'workspace') {
-      result = await execViaWorkspace(project, command, cwdRel, timeoutMs ?? WORKSPACE_EXEC_TIMEOUT_MS, tailLines, str(args, 'workspace'));
+      result = await execViaWorkspace(project, command, cwdRel, timeoutMs ?? WORKSPACE_EXEC_TIMEOUT_MS, tailLines, str(args, 'workspace'),sicherung,actor);
     } else {
       // SH-1: Nach der Abloesegrenze antworten wir dem Aufrufer, lassen den
       // Prozess aber weiterlaufen. Ohne dieses Rennen wuerde der stdio-Server
@@ -329,6 +336,8 @@ export const shellTool: ConsolidatedTool = {
       const running = execShellInProject({
         project,
         command,
+        agent_id:actor,
+        ...sicherung,
         cwd_relative: cwdRel,
         hard_limit_ms: timeoutMs,
         tail_lines: tailLines,
@@ -398,7 +407,7 @@ export const shellTool: ConsolidatedTool = {
     const persist = async (final: Record<string, unknown>): Promise<string | undefined> => {
       try {
         const errCode = final['error'] as string | undefined;
-        const isInactive = errCode === 'project_inactive';
+        const isInactive = errCode === 'project_inactive' || final['status']==='rejected';
         const status: 'done' | 'failed' | 'rejected' | 'timeout' = errCode
           ? (isInactive ? 'rejected' : 'failed')
           : (final['status'] === 'done'
@@ -409,6 +418,11 @@ export const shellTool: ConsolidatedTool = {
                   ? 'timeout'
                   : 'failed');
         const streamId = (final['stream_id'] as string | undefined) ?? undefined;
+        if(typeof final.id==='string'){
+          await completeShellJob(final.id,{status,exit_code:final.exit_code as number|undefined,tail:final.tail as string[]|undefined,
+            error:errCode,message:final.message as string|undefined,output:readStreamLog(streamId)});
+          return final.id;
+        }
         const persistedId = await insertCompletedShellJob({
           project,
           command,

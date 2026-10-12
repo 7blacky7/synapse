@@ -16,6 +16,7 @@
 import { FastifyInstance } from 'fastify';
 import {
   enqueueShellJob,
+  shellSicherungsParameter,shellSicherungsAntwortAus,resolveAgentId,
   waitForShellJob,
   DETACH_AFTER_MS,
   HARD_LIMIT_MS,
@@ -26,6 +27,9 @@ import {
 } from '@synapse/core';
 
 interface ShellBody {
+  agent_id?:string;
+  shell?:string;
+  bestaetigt?:unknown;
   action?: 'exec' | 'get_stream' | 'history' | 'get' | 'log';
   project?: string;
   command?: string;
@@ -129,6 +133,8 @@ export async function shellRoutes(fastify: FastifyInstance): Promise<void> {
         const { id, stream_id, attached, attached_to, reused, message: anhaengMeldung } = await enqueueShellJob({
           project: body.project,
           command: body.command,
+          agent_id:resolveAgentId(body.agent_id),
+          ...shellSicherungsParameter(body as unknown as Record<string,unknown>),
           cwd_relative: body.cwd_relative,
           timeout_ms: hardLimitMs,
           tail_lines: body.tail_lines,
@@ -140,6 +146,7 @@ export async function shellRoutes(fastify: FastifyInstance): Promise<void> {
         // ein klares Fehlersignal, sonst hangt der Call stillschweigend.
         return reply.status(statusFor(result as unknown as Record<string, unknown>)).send({
           success: !result.error,
+          ...shellSicherungsAntwortAus(result as unknown as Record<string,unknown>),
           status: result.status,
           stream_id: result.stream_id ?? stream_id,
           exit_code: result.exit_code,

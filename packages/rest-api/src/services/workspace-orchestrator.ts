@@ -23,7 +23,8 @@ import { minimatch } from 'minimatch';
 import { createHash } from 'node:crypto';
 import type { PoolClient } from 'pg';
 import { getPool, registriereWorker, workerPausiert, meldeWorkerArbeit, createDefaultIgnore, shouldIgnore, ermittleShellLage, shellLageProbeProgramm, maskiereShellAntwort } from '@synapse/core';
-import type { ShellLage } from '@synapse/core';
+import type { ShellLage,ShellBestaetigung,ShellSicherungsAntwort,SicherungsShell } from '@synapse/core';
+import {pruefeShellStart,holeShellStartKatalog,beginneShellSicherungsJob,beendeShellSicherungsJob,waehleShellStart}from'@synapse/core';
 import type { ShellProbeAnfrage, ShellProbeAntwort } from '@synapse/core';
 
 /**
@@ -494,8 +495,8 @@ export class WorkspaceOrchestrator {
   async exec(
     project: string,
     command: string,
-    opts: { timeoutMs?: number; workingDir?: string; exposePorts?: number[]; workspace?: string; role?: string; onLage?: (lage: ShellLage) => Promise<void> | void } = {}
-  ): Promise<{ stdout: string; stderr: string; exitCode: number | null; timedOut: boolean; durationMs: number; internal_urls?: Record<number, string> }> {
+    opts: { timeoutMs?: number; workingDir?: string; exposePorts?: number[]; workspace?: string; role?: string; agent_id?:string|null; bestaetigt?:ShellBestaetigung|null; shell?:SicherungsShell; onLage?: (lage: ShellLage) => Promise<void> | void } = {}
+  ): Promise<{ stdout: string; stderr: string; exitCode: number | null; timedOut: boolean; durationMs: number; internal_urls?: Record<number, string> } & Partial<ShellSicherungsAntwort> & {status?:string;id?:string}> {
     if (!this.dockerAvailable) {
       throw new Error('Workspace-Orchestrator nicht verfuegbar (Docker-Socket nicht erreichbar)');
     }
@@ -503,22 +504,30 @@ export class WorkspaceOrchestrator {
     const containerId = await this.ensureProjectRunning(project, wsName, opts.role);
     const container = this.docker.getContainer(containerId);
     const workingDir = opts.workingDir ?? '/workspace';
-    if (opts.onLage) {
-      const names = [...command.matchAll(/\$(?:env:)?([A-Za-z_]\w*)|\$\{([A-Za-z_]\w*)/g)].map(m=>m[1]??m[2]);
-      const context = await this.lageProbeImContainer(container, { variablen: [...new Set(['HOME', 'PWD', ...names])] }, workingDir);
-      const lage = await ermittleShellLage(command, {
-        shell: 'sh', os: context.os, cwd: context.cwd, project_root: '/workspace', env: context.env, env_vollstaendig: true,
-        probe: (input) => this.lageProbeImContainer(container, input, workingDir),
-      });
-      await opts.onLage(await maskiereShellAntwort(project, lage));
-    }
+    const names = [...command.matchAll(/\$(?:env:)?([A-Za-z_]\w*)|\$\{([A-Za-z_]\w*)/g)].map(m=>m[1]??m[2]);
+    const context = await this.lageProbeImContainer(container, { variablen: [...new Set(['HOME', 'PWD', ...names])],prozesse:true }, workingDir);
+    const start=waehleShellStart(opts.shell,'linux');
+    const ermittle=()=>ermittleShellLage(command, {
+      shell:start.shell,os:context.os,cwd:context.cwd,project_root:'/workspace',env:context.env,env_vollstaendig:true,
+      probe:(input)=>this.lageProbeImContainer(container,input,workingDir),
+    });
+    let lage=await ermittle();
+    if(opts.onLage){await opts.onLage(await maskiereShellAntwort(project,lage));lage=await ermittle();}
+    const katalog=await holeShellStartKatalog();
+    const pruefung=pruefeShellStart({project,command,lage,agent_id:opts.agent_id,bestaetigt:opts.bestaetigt,
+      rechner:context.rechner??containerId,geschuetzte_pids:context.prozesse?.pids,geschuetzte_namen:context.prozesse?.namen},katalog);
+    const sicherungsJob=await beginneShellSicherungsJob({project,command,agent_id:opts.agent_id,entscheidung:pruefung,lage,
+      ursprung:'workspace',rechner:context.rechner??containerId});
+    if(!pruefung.darf_starten)return maskiereShellAntwort(project,{
+      stdout:'',stderr:'',exitCode:null,timedOut:false,durationMs:0,status:'rejected',
+      ...pruefung.antwort,...(sicherungsJob?{id:sicherungsJob}:{})});
     const timeoutMs = opts.timeoutMs ?? 60_000;
     const t0 = Date.now();
     console.error(`[Workspaces] exec ${project}: ${command.slice(0, 120)}${command.length > 120 ? '…' : ''} (timeout=${timeoutMs}ms)`);
     void this.appendToLog(containerId, `EXEC: ${command.slice(0, 200)}`);
 
     const exec = await container.exec({
-      Cmd: ['/bin/sh', '-c', command],
+      Cmd: [opts.shell?start.programm:'/bin/sh', ...start.prefix, command],
       AttachStdout: true,
       AttachStderr: true,
       Tty: false,
@@ -578,7 +587,11 @@ export class WorkspaceOrchestrator {
     const internal_urls: Record<number, string> = {};
     if (opts.exposePorts) for (const p of opts.exposePorts) internal_urls[p] = this.internalUrl(project, p, wsName);
 
-    return { stdout, stderr, exitCode, timedOut, durationMs: dt, ...(opts.exposePorts ? { internal_urls } : {}) };
+    const result={stdout,stderr,exitCode,timedOut,durationMs:dt,...(opts.exposePorts?{internal_urls}:{}),
+      ...(pruefung.antwort?pruefung.antwort:{}),...(sicherungsJob?{id:sicherungsJob}:{})};
+    if(sicherungsJob)await beendeShellSicherungsJob(sicherungsJob,project,{
+      status:timedOut?'hard_limit':exitCode===0?'done':'failed',exit_code:exitCode,tail:(stdout+stderr).split('\n').slice(-5)});
+    return maskiereShellAntwort(project,result);
   }
 
   /**

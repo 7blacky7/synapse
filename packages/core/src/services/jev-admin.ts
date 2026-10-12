@@ -21,7 +21,7 @@ import { entscheidungstopfStatus, ergaenzeTopfEmbeddings, ladeEntscheidungstopfS
 import { erklaerungstopfStatus, holeErklaerungsEreignisseNach, ladeErklaerungstopfSeed } from './erklaerungen.js';
 
 export const JEV_ADMIN_ACTIONS = ['jev_status', 'jev_schalten', 'jev_kosten', 'jev_budget', 'jev_optionen', 'jev_entscheidungstopf', 'jev_erklaerungstopf'] as const;
-const DARF_SETZEN = /^(koordinator|coordinator|user)$/i;
+import { darfKoordinatorOderUser } from './rollen-pruefung.js';
 
 /** Beschreibungssatz fuer die admin-Tool-Definition (REST und stdio). */
 export const JEV_ADMIN_BESCHREIBUNG =
@@ -109,7 +109,7 @@ export async function fuehreJevAdminAus(
         };
       }
       case 'jev_schalten': {
-        if (!DARF_SETZEN.test(wer)) return nurKoordinator(wer);
+        if (!darfKoordinatorOderUser(wer)) return nurKoordinator(wer);
         const aktiv = wahr(args.aktiv);
         if (aktiv === undefined) return { success: false, error: 'aktiv_fehlt', message: 'aktiv (true = an, false = aus) ist Pflicht.' };
         const ebene = text(args.ebene) ?? '';
@@ -137,7 +137,7 @@ export async function fuehreJevAdminAus(
       }
       case 'jev_budget': {
         const modus = text(args.modus) ?? 'status';
-        if (modus !== 'status' && !DARF_SETZEN.test(wer)) return nurKoordinator(wer);
+        if (modus !== 'status' && !darfKoordinatorOderUser(wer)) return nurKoordinator(wer);
         let budget;
         if (modus === 'setzen') {
           const grenze = zahl(args.grenze_usd);
@@ -163,7 +163,7 @@ export async function fuehreJevAdminAus(
         const modus = text(args.modus) ?? 'status';
         if (modus === 'status') return { success: true, optionen: await leseJevOptionen() };
         if (modus !== 'setzen') return { success: false, error: 'modus_ungueltig', message: 'jev_optionen: modus status | setzen.' };
-        if (!DARF_SETZEN.test(wer)) return nurKoordinator(wer);
+        if (!darfKoordinatorOderUser(wer)) return nurKoordinator(wer);
         const optionen = await setzeJevOptionen({
           erklaerung_de: wahr(args.erklaerung_de),
           erklaerung_en: wahr(args.erklaerung_en),
@@ -177,7 +177,7 @@ export async function fuehreJevAdminAus(
         const modus = text(args.modus) ?? 'status';
         if (modus === 'status') return { success: true, topf: await entscheidungstopfStatus() };
         if (modus !== 'seed_laden') return { success: false, error: 'modus_ungueltig', message: 'jev_entscheidungstopf: modus status | seed_laden.' };
-        if (!DARF_SETZEN.test(wer)) return nurKoordinator(wer);
+        if (!darfKoordinatorOderUser(wer)) return nurKoordinator(wer);
         const seed = await ladeEntscheidungstopfSeed({ agent: wer });
         void ergaenzeTopfEmbeddings();
         return { ...seed, topf: await entscheidungstopfStatus(), hinweis: 'Idempotent (kennung). Vektoren werden im Hintergrund berechnet. Durchsicht durch den User: jev(action:"topf", herkunft:"seed").' };
@@ -189,7 +189,7 @@ export async function fuehreJevAdminAus(
         if (modus !== 'seed_laden' && modus !== 'nachholen') {
           return { success: false, error: 'modus_ungueltig', message: 'jev_erklaerungstopf: modus status | seed_laden | nachholen.' };
         }
-        if (!DARF_SETZEN.test(wer)) return nurKoordinator(wer);
+        if (!darfKoordinatorOderUser(wer)) return nurKoordinator(wer);
         if (modus === 'nachholen') {
           const n = await holeErklaerungsEreignisseNach();
           return { success: !n.error, ...n, topf: await erklaerungstopfStatus() };

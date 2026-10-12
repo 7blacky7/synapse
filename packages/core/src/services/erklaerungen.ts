@@ -34,6 +34,7 @@
  */
 
 import { createHash } from 'node:crypto';
+import { darfKoordinatorOderUser } from './rollen-pruefung.js';
 import { readFile } from 'node:fs/promises';
 import { hostname } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -127,7 +128,6 @@ function alsErklaerung(r: ErklaerungRoh): Erklaerung {
 }
 
 const sha = (t: string): string => createHash('sha256').update(t, 'utf8').digest('hex');
-const KOORDINATOR = /^(koordinator|coordinator|user)$/i;
 
 // ─── Familie und Schluessel ──────────────────────────────────────────────────
 
@@ -907,7 +907,7 @@ export function pruefeGenerik(
     if (schwaerzeGeheimnisse(text).treffer > 0) neu('geheimnis', '[GEHEIM]');
     if (kontext.project.length >= 3 && new RegExp(`(^|[^A-Za-z0-9_-])${escapeRe(kontext.project)}([^A-Za-z0-9_-]|$)`, 'i').test(text)) neu('projekt', kontext.project);
     const ag = kontext.agent_id ?? '';
-    if (ag.length >= 3 && !KOORDINATOR.test(ag) && new RegExp(`(^|[^A-Za-z0-9_-])${escapeRe(ag)}([^A-Za-z0-9_-]|$)`, 'i').test(text)) neu('agent', ag);
+    if (ag.length >= 3 && !darfKoordinatorOderUser(ag) && new RegExp(`(^|[^A-Za-z0-9_-])${escapeRe(ag)}([^A-Za-z0-9_-]|$)`, 'i').test(text)) neu('agent', ag);
   }
   return aus;
 }
@@ -1135,7 +1135,7 @@ export async function legeErklaerungAb(a: {
   const f = await ladeFall(a.fall_id);
   if (!f) return fehler('nicht_gefunden', `Kein offener Fall mit id "${a.fall_id}".`);
   const wer = a.agent ?? '';
-  if (!(wer && (wer === f.agent_id || KOORDINATOR.test(wer)))) {
+  if (!(wer && (wer === f.agent_id || darfKoordinatorOderUser(wer)))) {
     return fehler('nur_betroffener', `Einen Fall schliesst nur der betroffene Agent (${f.agent_id ?? '?'}) oder der Koordinator (agent_id koordinator|coordinator|user), bekommen: "${wer}".`);
   }
   let erklaerung: Erklaerung | null = null;
@@ -1216,7 +1216,7 @@ export async function legeErklaerungAb(a: {
 /** fall_verwerfen: Koordinator jederzeit, andere Agenten ab 3 Monaten; Grund und Zustimmung sind Pflicht. */
 export async function verwerfeFall(id: string, agent: string | null, zustimmungUser: boolean, grund?: string): Promise<Record<string, unknown>> {
   if (!agent) return fehler('agent_fehlt', 'fall_verwerfen braucht eine eigene agent_id.');
-  const koordinator = KOORDINATOR.test(agent);
+  const koordinator = darfKoordinatorOderUser(agent);
   const f = await ladeFall(id);
   if (!f) return fehler('nicht_gefunden', `Kein offener Fall mit id "${id}".`);
   if (!koordinator && f.stufe === 'neu') {
@@ -1477,7 +1477,7 @@ export async function bewerteErklaerung(o: { id?: string; bewertung?: string; gr
     if (o.grund) console.error(`[erklaerungen] passt_nicht fuer ${r.id} von ${o.agent ?? '?'}: ${kurz(o.grund, 200)}`);
     return { success: true, id: r.id, bewertung, erklaerung: await ladeErklaerung(r.id) };
   }
-  if (!o.agent || !KOORDINATOR.test(o.agent)) return fehler('nur_koordinator', `${bewertung} nur durch den Koordinator (agent_id koordinator|coordinator|user).`);
+  if (!o.agent || !darfKoordinatorOderUser(o.agent)) return fehler('nur_koordinator', `${bewertung} nur durch den Koordinator (agent_id koordinator|coordinator|user).`);
   if (bewertung === 'stilllegen') {
     if (!o.grund || o.grund.trim().length < 10) return fehler('grund_fehlt', 'stilllegen braucht grund (mind. 10 Zeichen).');
     await pool.query(`UPDATE erklaerungen SET status = 'stillgelegt', status_grund = $2, geaendert_am = NOW() WHERE id = $1::uuid`, [r.id, o.grund.trim()]);

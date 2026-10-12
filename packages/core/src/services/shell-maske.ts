@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {getPool} from '../db/client.js';
+import {darfKoordinatorOderUser}from'./rollen-pruefung.js';
 import {getProjectRoot} from './project-registry.js';
 import {maskiereShellText,shellGeheimWerte,maskiereMcpJson} from './env-maske.js';
 export {maskiereShellText} from './env-maske.js';
@@ -64,6 +65,8 @@ export function maskiereShellDaten<T>(daten:T,werte:readonly string[],steuerdate
     if(Array.isArray(wert))return wert.map(w=>walk(w,logdaten));
     if(wert && typeof wert==='object' && !(wert instanceof Date))return Object.fromEntries(Object.entries(wert).map(([k,v])=>{
       if(!logdaten && control.has(k))return [k,v];
+      // Nur unsere typisierten SHA256-Steuerdaten; niemals stdout/tail/Log-JSON.
+      if(!logdaten && ['befehl_hash','lage_hash','regelversion','hash'].includes(k) && typeof v==='string' && /^[a-f0-9]{64}$/i.test(v))return [k,v];
       const original=JSON.stringify({[k]:v}),safe=maskiereMcpJson(original,true);
       if(safe!==original)try {maskiert+=(safe.match(/\[WERT\]/g)??[]).length-(original.match(/\[WERT\]/g)??[]).length;return [k,walk(JSON.parse(safe)[k],logdaten||payload.has(k))];}catch {/* normales Feld */}
       return [k,walk(v,logdaten||payload.has(k))];
@@ -118,7 +121,7 @@ export async function mitShellAusgabe<T>(args:Record<string,unknown>,lauf:()=>Pr
   }catch {/* unbekannter Stream wird vom bestehenden Handler gemeldet */}
   if(args.maskierung===false){
     const actor=String(args.agent_id??process.env.SYNAPSE_AGENT_NAME??'');
-    if(!/^(koordinator|coordinator|user)$/i.test(actor))throw new Error('Maskierung abschalten darf nur Koordinator/User');
+    if(!darfKoordinatorOderUser(actor))throw new Error('Maskierung abschalten darf nur Koordinator/User');
     if(typeof args.grund!=='string'||args.grund.trim().length<10)throw new Error('Maskierung abschalten erfordert einen Grund (mindestens 10 Zeichen)');
     await logToolCall({project,agentId:actor,tool:'shell',action:'maskierung_aus',argsPreview:JSON.stringify({grund:args.grund,action:args.action,id:args.id}),ok:true});
     const antwort=await drossleShellJobHinweis(args,await sicht.run(true,lauf));
