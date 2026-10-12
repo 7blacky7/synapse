@@ -1668,7 +1668,7 @@ interface PendingIdea {
 
 const pendingIdeas = new Map<string, PendingIdea>();
 
-// Cleanup alte Ideen nach 30 Minuten
+// Cleanup alte Ideen nach 30 Minuten; der Wartungstimer darf Tests und kurze CLI-Prozesse nicht halten.
 setInterval(() => {
   const now = Date.now();
   for (const [id, idea] of pendingIdeas.entries()) {
@@ -1676,7 +1676,7 @@ setInterval(() => {
       pendingIdeas.delete(id);
     }
   }
-}, 5 * 60 * 1000);
+}, 5 * 60 * 1000).unref();
 
 /**
  * Generiert einen eindeutigen Namen aus dem Content
@@ -4488,11 +4488,11 @@ async function handleToolCallKern(
           return { success: true, tree, project };
         }
         case 'functions': {
-          const functions = await getFunctions(project, str(args, 'file_path'), str(args, 'name'), bool(args, 'exported_only'));
+          const functions = await getFunctions(project, str(args, 'file_path'), str(args, 'name'), bool(args, 'exported_only'), num(args, 'limit'));
           return { success: true, functions, count: functions.length, project };
         }
         case 'variables': {
-          const variables = await getVariables(project, str(args, 'file_path'), str(args, 'name'), bool(args, 'with_values'));
+          const variables = await getVariables(project, str(args, 'file_path'), str(args, 'name'), bool(args, 'with_values'), num(args, 'limit'));
           return { success: true, variables, count: variables.length, project };
         }
         case 'symbols': {

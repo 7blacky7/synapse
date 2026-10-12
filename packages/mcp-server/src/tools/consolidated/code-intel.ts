@@ -282,7 +282,7 @@ async function codeIntelBestand(args: Record<string, unknown>): Promise<Record<s
         const filePath = str(args, 'file_path');
         const name = str(args, 'name');
         const exportedOnly = bool(args, 'exported_only');
-        const functions = await getFunctions(project, filePath, name, exportedOnly);
+        const functions = await getFunctions(project, filePath, name, exportedOnly, num(args, 'limit'));
         return { success: true, functions, count: functions.length, project };
       }
 
@@ -290,7 +290,7 @@ async function codeIntelBestand(args: Record<string, unknown>): Promise<Record<s
         const filePath = str(args, 'file_path');
         const name = str(args, 'name');
         const withValues = bool(args, 'with_values');
-        const variables = await getVariables(project, filePath, name, withValues);
+        const variables = await getVariables(project, filePath, name, withValues, num(args, 'limit'));
         return { success: true, variables, count: variables.length, project };
       }
 
@@ -393,7 +393,7 @@ async function codeIntelBestand(args: Record<string, unknown>): Promise<Record<s
         const filePath = str(args, 'file_path');
         const scope = str(args, 'scope');
         const topLevelOnly = bool(args, 'top_level_only');
-        const statements = await getStatements(project, filePath, scope, topLevelOnly);
+        const statements = await getStatements(project, filePath, scope, topLevelOnly, num(args, 'limit'));
         return { success: true, statements, count: statements.length, project };
       }
 

@@ -559,7 +559,8 @@ export async function getFunctions(
   project: string,
   filePath?: string,
   name?: string,
-  exportedOnly?: boolean
+  exportedOnly?: boolean,
+  limit?: number
 ): Promise<FunctionInfo[]> {
   const pool = getPool();
 
@@ -578,6 +579,8 @@ export async function getFunctions(
     conditions.push('cs.is_exported = true');
   }
 
+  if (limit !== undefined) params.push(limit);
+  const limitClause = limit === undefined ? '' : ` LIMIT $${params.length}`;
   const where = conditions.join(' AND ');
 
   const result = await pool.query(
@@ -598,7 +601,7 @@ export async function getFunctions(
      WHERE ${where}
      GROUP BY cs.id, cs.file_path, cs.name, cs.line_start, cs.line_end,
               cs.params, cs.return_type, cs.is_exported, parent.name
-     ORDER BY cs.file_path, cs.line_start`,
+     ORDER BY cs.file_path, cs.line_start${limitClause}`,
     params
   );
 
@@ -636,7 +639,8 @@ export async function getVariables(
   project: string,
   filePath?: string,
   name?: string,
-  withValues?: boolean
+  withValues?: boolean,
+  limit?: number
 ): Promise<VariableInfo[]> {
   const pool = getPool();
 
@@ -659,6 +663,8 @@ export async function getVariables(
     ? `, CASE WHEN length(cs.value) > 500 THEN left(cs.value, 500) || ' …[value gekuerzt, ' || length(cs.value) || ' Zeichen gesamt]' ELSE cs.value END AS value`
     : '';
 
+  if (limit !== undefined) params.push(limit);
+  const limitClause = limit === undefined ? '' : ` LIMIT $${params.length}`;
   const result = await pool.query(
     `SELECT
        cs.id,
@@ -670,7 +676,7 @@ export async function getVariables(
        ${valueCol}
      FROM code_symbols cs
      WHERE ${where}
-     ORDER BY cs.file_path, cs.line_start`,
+     ORDER BY cs.file_path, cs.line_start${limitClause}`,
     params
   );
 

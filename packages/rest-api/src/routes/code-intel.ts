@@ -98,13 +98,14 @@ export async function codeIntelRoutes(fastify: FastifyInstance): Promise<void> {
       file_path?: string;
       name?: string;
       exported_only?: string;
+      limit?: string;
     };
   }>('/api/projects/:name/code-intel/functions', async (request, reply) => {
     const { name } = request.params;
-    const { file_path, name: fnName, exported_only } = request.query;
+    const { file_path, name: fnName, exported_only, limit } = request.query;
 
     try {
-      const result = await getFunctions(name, file_path, fnName, exported_only === 'true');
+      const result = await getFunctions(name, file_path, fnName, exported_only === 'true', limit !== undefined ? parseInt(limit, 10) : undefined);
 
       return {
         success: true,
@@ -129,13 +130,14 @@ export async function codeIntelRoutes(fastify: FastifyInstance): Promise<void> {
       file_path?: string;
       name?: string;
       with_values?: string;
+      limit?: string;
     };
   }>('/api/projects/:name/code-intel/variables', async (request, reply) => {
     const { name } = request.params;
-    const { file_path, name: varName, with_values } = request.query;
+    const { file_path, name: varName, with_values, limit } = request.query;
 
     try {
-      const result = await getVariables(name, file_path, varName, with_values === 'true');
+      const result = await getVariables(name, file_path, varName, with_values === 'true', limit !== undefined ? parseInt(limit, 10) : undefined);
 
       return {
         success: true,
@@ -339,13 +341,14 @@ export async function codeIntelRoutes(fastify: FastifyInstance): Promise<void> {
       file_path?: string;
       scope?: string;
       top_level_only?: string;
+      limit?: string;
     };
   }>('/api/projects/:name/code-intel/statements', async (request, reply) => {
     const { name } = request.params;
-    const { file_path, scope, top_level_only } = request.query;
+    const { file_path, scope, top_level_only, limit } = request.query;
 
     try {
-      const result = await getStatements(name, file_path, scope, top_level_only === 'true');
+      const result = await getStatements(name, file_path, scope, top_level_only === 'true', limit !== undefined ? parseInt(limit, 10) : undefined);
 
       return {
         success: true,

@@ -249,11 +249,11 @@ async function ghostTree(project: string, args: Row, stand: Schatten, planId: st
 async function abfrage(action: string, args: Row): Promise<Row> {
   const project=String(args.project);
   switch(action){
-    case 'functions': {const functions=await ci.getFunctions(project,s(args,'file_path'),s(args,'name'),args.exported_only===true);return {success:true,functions,count:functions.length,project};}
+    case 'functions': {const functions=await ci.getFunctions(project,s(args,'file_path'),s(args,'name'),args.exported_only===true,n(args,'limit'));return {success:true,functions,count:functions.length,project};}
     case 'symbols': {const symbols=await ci.getSymbols(project,String(args.symbol_type),s(args,'file_path'),s(args,'name'),n(args,'limit')??100,s(args,'value_contains'));return {success:true,symbols,count:symbols.length,symbol_type:args.symbol_type,project};}
     case 'references': return {success:true,...await ci.getReferences(project,String(args.name),args.include_name_matches===true,n(args,'limit')??200),project};
     case 'file': {const f=await ci.getFileContent(project,s(args,'file_path')??s(args,'path')??'',{from:n(args,'from_line'),to:n(args,'to_line'),truncate_long_lines:n(args,'truncate_long_lines')});return f?{success:true,...f,project}:{success:false,message:'Datei im Schatten nicht gefunden',project};}
-    case 'statements': {const statements=await ci.getStatements(project,s(args,'file_path'),s(args,'scope'),args.top_level_only===true);return {success:true,statements,count:statements.length,project};}
+    case 'statements': {const statements=await ci.getStatements(project,s(args,'file_path'),s(args,'scope'),args.top_level_only===true,n(args,'limit'));return {success:true,statements,count:statements.length,project};}
     case 'calls': {const r=await ci.getCallEdges(project,s(args,'file_path'),s(args,'callee')??s(args,'name'),n(args,'limit')??200);return {success:true,...r,count:r.calls.length,project};}
     case 'search': {const results=await ci.fullTextSearchCode(project,String(args.query),s(args,'file_type'),n(args,'limit')??20,s(args,'file_path'),{match_limit:n(args,'match_limit'),match_skip:n(args,'match_skip')});return {success:true,results,count:results.length,mode:'fulltext',project};}
     default: return {success:false,error:'Schatten wird für diese Action nicht unterstützt',project};
