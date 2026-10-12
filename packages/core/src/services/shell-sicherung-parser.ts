@@ -3,8 +3,8 @@
  * Absichtlich begrenzte Grammatik: unauflösbare Konstrukte werden ausgewiesen.
  */
 export type SicherungsShell = 'bash' | 'sh' | 'pwsh' | 'cmd';
-export interface ShellWort { text: string; dynamisch: boolean; }
-export interface ShellTextKommando { argv: ShellWort[]; umleitungen: string[]; }
+export interface ShellWort { text: string; dynamisch: boolean; raw?: string; }
+export interface ShellTextKommando { argv: ShellWort[]; umleitungen: string[]; umleitungs_woerter?: ShellWort[]; zuweisungen?: ShellWort[]; shell?: SicherungsShell; nach?: string; }
 export interface ShellTextBaum { kommandos: ShellTextKommando[]; ungeklart: string[]; komplex: boolean; }
 type Token = ShellWort & { operator?: boolean; quoted?: boolean; };
 const TRENNER = new Set([';', '&&', '||', '|', '&', '\n', '(', ')', '{', '}']);
@@ -15,35 +15,40 @@ export function parseShellText(text: string, shell: SicherungsShell = 'bash', ti
   const out: ShellTextBaum = { kommandos: [], ungeklart: [], komplex: false };
   if (tiefe > 8 || text.length > 262144) { out.ungeklart.push('parser_grenze'); return out; }
   let tokens: Token[] = [], word = '', dynamisch = false, begonnen = false;
-  let quote = '', i = 0, quoted = false;
+  let quote = '', i = 0, quoted = false, wordStart = 0;
   const nested = (s: string, art: SicherungsShell = shell) => {
     const r = parseShellText(s, art, tiefe + 1);
     out.kommandos.push(...r.kommandos); out.ungeklart.push(...r.ungeklart); out.komplex = true;
   };
   const emitWord = () => {
-    if (begonnen) tokens.push({ text: word, dynamisch, quoted });
+    if (begonnen) tokens.push({ text: word, dynamisch, quoted, raw: text.slice(wordStart, i) });
     word = ''; dynamisch = false; begonnen = false; quoted = false;
   };
   const flush = () => {
     if (!tokens.length) return;
-    let argv: ShellWort[] = [], umleitungen: string[] = [];
+    let argv: ShellWort[] = [], umleitungen: string[] = [], umleitungs_woerter: ShellWort[] = [];
     for (let k = 0; k < tokens.length; k++) {
       const t = tokens[k];
       if (t.operator) {
-        if (/^[0-9]*(?:>|>>|>|&>|&>>)$/.test(t.text)) {
+        if (/^(?:>&|<&)$/.test(t.text)) { k++; }
+        else if (/^[0-9]*(?:>|>>|>|&>|&>>)$/.test(t.text)) {
           umleitungen.push(tokens[k + 1]?.text ?? '');
+          if(tokens[k+1])umleitungs_woerter.push(tokens[k+1]);
           if (tokens[k + 1]?.dynamisch) out.ungeklart.push('ziel_dynamisch');
           k++;
         } else if (/^(?:[0-9]*<|<<-?|<<<)$/.test(t.text)) k++;
         continue;
       }
-      argv.push({ text: t.text, dynamisch: t.dynamisch });
+      argv.push({ text: t.text, dynamisch: t.dynamisch, raw: t.raw });
     }
     // Shell-Zuweisungen stehen vor dem ausführbaren Wort, nicht als Kommando.
-    while (argv.length && /^[A-Za-z_][\w]*=/.test(argv[0].text)) argv.shift();
+    const zuweisungen: ShellWort[]=[];
+    while (argv.length && /^[A-Za-z_][\w]*=/.test(argv[0].text)) zuweisungen.push(argv.shift()!);
     // Kontrollwörter sind keine ausführbaren Programme.
-    while (argv.length && /^(?:then|do|else|if|while|until|!|&)$/.test(argv[0].text)) argv.shift();
-    if (argv.length || umleitungen.length) out.kommandos.push({ argv, umleitungen });
+    while (argv.length && /^(?:then|do|else|if|while|until|!|&)$/.test(argv[0].text)) {
+      out.ungeklart.push('kontrollfluss_nicht_statisch');argv.shift();
+    }
+    if (argv.length || umleitungen.length || zuweisungen.length) out.kommandos.push({ argv, umleitungen, umleitungs_woerter, zuweisungen, shell });
     if (argv.length) {
       const b = basis(argv[0].text);
       if (argv[0].dynamisch || /^(?:eval|source|\.)$/i.test(b)) out.ungeklart.push('dynamisches_programm');
@@ -78,6 +83,7 @@ export function parseShellText(text: string, shell: SicherungsShell = 'bash', ti
   };
   while (i < text.length) {
     const c = text[i];
+    if (!begonnen && !/\s/.test(c) && !/[;&|<>(){}]/.test(c)) wordStart=i;
     const esc = shell === 'pwsh' ? String.fromCharCode(96) : shell === 'cmd' ? '^' : '\\';
     if (quote !== "'" && c === esc) {
       if (i + 1 >= text.length) out.ungeklart.push('offenes_escape');
@@ -150,9 +156,9 @@ export function parseShellText(text: string, shell: SicherungsShell = 'bash', ti
       // Leere {} in find -exec sind ein normales Argument, kein Block.
       if (c === '{' && text[i + 1] === '}') { word += '{}'; begonnen = true; i += 2; continue; }
       emitWord();
-      const op = ['&&', '||', '<<<', '<<-', '<<', '>>', '&>', '|&'].find(x => text.startsWith(x, i)) ?? c;
+      const op = ['&&', '||', '<<<', '<<-', '<<', '>>', '&>>', '&>', '>&', '<&', '|&'].find(x => text.startsWith(x, i)) ?? c;
       out.komplex = true;
-      if (TRENNER.has(op) || op === '|&') flush();
+      if (TRENNER.has(op) || op === '|&') { flush(); if(out.kommandos.length)out.kommandos[out.kommandos.length-1].nach=op; }
       else {
         // 2> ist stderr-Umleitung, nicht das zusätzliche Argument "2".
         if (op.includes('>') && tokens.at(-1)?.text.match(/^\d+$/)) tokens.pop();

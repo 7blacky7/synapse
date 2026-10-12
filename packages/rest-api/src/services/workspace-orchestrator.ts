@@ -22,7 +22,9 @@ import * as tar from 'tar-stream';
 import { minimatch } from 'minimatch';
 import { createHash } from 'node:crypto';
 import type { PoolClient } from 'pg';
-import { getPool, registriereWorker, workerPausiert, meldeWorkerArbeit, createDefaultIgnore, shouldIgnore } from '@synapse/core';
+import { getPool, registriereWorker, workerPausiert, meldeWorkerArbeit, createDefaultIgnore, shouldIgnore, ermittleShellLage, shellLageProbeProgramm, maskiereShellAntwort } from '@synapse/core';
+import type { ShellLage } from '@synapse/core';
+import type { ShellProbeAnfrage, ShellProbeAntwort } from '@synapse/core';
 
 /**
  * P15-T40: Die Standard-Sperren kommen aus EINER Quelle, den DEFAULT_IGNORES in
@@ -455,10 +457,44 @@ export class WorkspaceOrchestrator {
     return `http://${this.cfg.containerNamePrefix}-${sanitize(project)}${suffix}:${port}`;
   }
 
+  /** P10-T36: fester Node-Lesehelfer im Zielcontainer; Nutzertext niemals evaluiert. */
+  private async lageProbeImContainer(
+    container: Docker.Container, input: ShellProbeAnfrage, cwd: string,
+  ): Promise<ShellProbeAntwort> {
+    const probe = await container.exec({
+      Cmd: ['node', '-e', shellLageProbeProgramm(), JSON.stringify(input)],
+      AttachStdout: true, AttachStderr: true, Tty: false, User: '1000:1000', WorkingDir: cwd,
+    });
+    const stream = await probe.start({ hijack: true, stdin: false });
+    const stdout = new PassThrough(), stderr = new PassThrough();
+    const chunks: Buffer[]=[]; let bytes=0;
+    this.docker.modem.demuxStream(stream, stdout, stderr);
+    return new Promise((resolve,reject)=>{
+      let done=false;
+      const finish=(err?:Error)=>{
+        if(done)return;done=true;clearTimeout(timer);
+        if(err){stream.destroy();reject(err);return;}
+        try{
+          const result=JSON.parse(Buffer.concat(chunks).toString('utf8')) as ShellProbeAntwort;
+          if(typeof result.cwd!=='string'||!Array.isArray(result.pfade)||!result.env)throw Error();
+          resolve(result);
+        }catch{reject(Error('workspace_lage_helfer_nicht_verfuegbar'));}
+      };
+      const timer=setTimeout(()=>finish(Error('workspace_lage_timeout')),5000);
+      stdout.on('data',(chunk:Buffer)=>{
+        bytes+=chunk.length;
+        if(bytes>262144){finish(Error('workspace_lage_grenze'));return;}
+        chunks.push(Buffer.from(chunk));
+      });
+      stderr.resume();
+      stdout.once('end',()=>finish());stream.once('error',()=>finish(Error('workspace_lage_helfer_nicht_verfuegbar')));
+    });
+  }
+
   async exec(
     project: string,
     command: string,
-    opts: { timeoutMs?: number; workingDir?: string; exposePorts?: number[]; workspace?: string; role?: string } = {}
+    opts: { timeoutMs?: number; workingDir?: string; exposePorts?: number[]; workspace?: string; role?: string; onLage?: (lage: ShellLage) => Promise<void> | void } = {}
   ): Promise<{ stdout: string; stderr: string; exitCode: number | null; timedOut: boolean; durationMs: number; internal_urls?: Record<number, string> }> {
     if (!this.dockerAvailable) {
       throw new Error('Workspace-Orchestrator nicht verfuegbar (Docker-Socket nicht erreichbar)');
@@ -466,6 +502,16 @@ export class WorkspaceOrchestrator {
     const { ws: wsName } = this.wsKey(project, opts.workspace ?? 'main');
     const containerId = await this.ensureProjectRunning(project, wsName, opts.role);
     const container = this.docker.getContainer(containerId);
+    const workingDir = opts.workingDir ?? '/workspace';
+    if (opts.onLage) {
+      const names = [...command.matchAll(/\$(?:env:)?([A-Za-z_]\w*)|\$\{([A-Za-z_]\w*)/g)].map(m=>m[1]??m[2]);
+      const context = await this.lageProbeImContainer(container, { variablen: [...new Set(['HOME', 'PWD', ...names])] }, workingDir);
+      const lage = await ermittleShellLage(command, {
+        shell: 'sh', os: context.os, cwd: context.cwd, project_root: '/workspace', env: context.env, env_vollstaendig: true,
+        probe: (input) => this.lageProbeImContainer(container, input, workingDir),
+      });
+      await opts.onLage(await maskiereShellAntwort(project, lage));
+    }
     const timeoutMs = opts.timeoutMs ?? 60_000;
     const t0 = Date.now();
     console.error(`[Workspaces] exec ${project}: ${command.slice(0, 120)}${command.length > 120 ? '…' : ''} (timeout=${timeoutMs}ms)`);

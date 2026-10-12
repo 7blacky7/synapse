@@ -431,6 +431,11 @@ export {
 } from './services/model-cutoffs.js';
 export { pruefeShellText, ladeShellSicherungsKatalog, seedShellSicherung, zaehleShellSicherungsBestand } from './services/shell-sicherung.js';
 export type { ShellSicherungsKatalog, ShellTextErgebnis, ShellSicherungsRegel, ShellAntwortEintrag } from './services/shell-sicherung.js';
+export { ermittleShellLage } from './services/shell-lage.js';
+export type { ShellLage, ShellLageKontext } from './services/shell-lage.js';
+export { probeShellLage, shellLageProbeProgramm } from './services/shell-lage-probe.js';
+export type { ShellProbeAnfrage, ShellProbeAntwort } from './services/shell-lage-probe.js';
+export { waehleShellStart } from './services/shell-start.js';
 
 // Shell-Exec (gemeinsam fuer MCP-Tool + REST /api/shell)
 export {

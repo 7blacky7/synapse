@@ -1,0 +1,42 @@
+/** P10-T36: echte Win32/PowerShell/cmd-Matrix, ausschließlich eigener Testordner. */
+import assert from'node:assert/strict';
+import{mkdtemp,mkdir,writeFile,symlink,stat}from'node:fs/promises';
+import{join,dirname,win32}from'node:path';import{fileURLToPath}from'node:url';import{execFileSync}from'node:child_process';
+import{ermittleShellLage}from'../dist/services/shell-lage.js';
+import{probeShellLage,shellLageProbeProgramm}from'../dist/services/shell-lage-probe.js';
+import{waehleShellStart}from'../dist/services/shell-start.js';
+assert.equal(process.platform,'win32');
+const base=dirname(dirname(fileURLToPath(import.meta.url)));
+const root=await mkdtemp(join(base,'runtime-'));assert.ok(root.toLowerCase().startsWith('c:\\synapse-e2-test\\sol-2\\'));
+await mkdir(join(root,'safe'));await writeFile(join(root,'safe','x.txt'),'owned fixture');
+const outside=await mkdtemp(join(base,'outside-'));await writeFile(join(outside,'other.txt'),'owned fixture');
+await symlink(outside,join(root,'junction'),'junction');
+const opts={os:'windows',shell:'pwsh',cwd:root,project_root:root,env:{}};
+let r=await ermittleShellLage('$ordner=""; Remove-Item "$ordner\\*" -Recurse -Force',opts);
+assert.equal(r.ziele[0].pfad,'C:\\*');assert.equal(r.ziele[0].wurzel,true);
+r=await ermittleShellLage('Remove-Item -LiteralPath "'+join(root,'junction','other.txt')+'" -Force',opts);
+assert.equal(r.ziele[0].im_projekt,false);assert.equal(r.ziele[0].kanonisch,join(outside,'other.txt'));assert.ok(r.ziele[0].links.length);
+r=await ermittleShellLage('Remove-Item -LiteralPath "'+join(root,'new','missing.txt')+'"',opts);
+assert.equal(r.ziele[0].existiert,false);assert.equal(r.ziele[0].naechster_elternpfad,root);
+r=await ermittleShellLage('$root="'+root+'"; $p=Join-Path $root "safe"; Remove-Item -LiteralPath $p',opts);
+assert.equal(r.ziele[0].pfad,join(root,'safe'));
+r=await ermittleShellLage('rmdir /s /q C:temp',{...opts,shell:'cmd'});
+assert.equal(r.ziele[0].pfad,join(root,'temp'));
+r=await ermittleShellLage('rmdir /s /q Z:temp',{...opts,shell:'cmd'});
+assert.ok(r.ungeklaert.includes('laufwerks_cwd_unbekannt'));
+for(const target of ['\\\\server\\share\\*','\\\\.\\PhysicalDrive0','\\\\?\\C:\\Windows']){
+ r=await ermittleShellLage('Remove-Item -LiteralPath "'+target+'"',opts);
+ assert.ok(r.ziele[0].unc||r.ziele[0].geraet);assert.ok(r.ungeklaert.includes('namespace_nicht_geprueft'));
+}
+const psPath=join(base,'pwsh7','pwsh.exe');await stat(psPath);
+const script='$ordner=""; $value="$ordner\\*"; [pscustomobject]@{value=$value;root=(Get-Location).Drive.Root;rooted=[IO.Path]::IsPathRooted($value)} | ConvertTo-Json -Compress';
+const ps=JSON.parse(execFileSync(psPath,['-NoLogo','-NoProfile','-NonInteractive','-Command',script],{cwd:root,encoding:'utf8'}));
+assert.equal(ps.value,'\\*');assert.equal(ps.root,'C:\\');assert.equal(ps.rooted,true);
+const legacy=JSON.parse(execFileSync('powershell.exe',['-NoProfile','-NonInteractive','-Command',script],{cwd:root,encoding:'utf8'}));
+assert.deepEqual(legacy,ps);
+const start=waehleShellStart('cmd','win32');
+assert.equal(execFileSync(start.programm,[...start.prefix,'for %I in (C:temp) do @echo %~fI'],{cwd:root,encoding:'utf8'}).trim(),join(root,'temp'));
+const node=process.execPath;
+const native=JSON.parse(execFileSync(node,['-e',shellLageProbeProgramm(),JSON.stringify({cwd:root,pfade:[join(root,'junction','other.txt')]})],{encoding:'utf8'}));
+assert.equal(native.pfade[0].kanonisch,join(outside,'other.txt'));assert.ok(native.pfade[0].links.length);
+console.log(JSON.stringify({plattform:process.platform,node:process.version,windows_matrix:'gruen',powerShell5:true,powerShell7:true,junction:true,rootFall:true,driveRelative:true,namespaceOhneZugriff:true}));

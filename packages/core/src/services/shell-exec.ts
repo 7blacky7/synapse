@@ -18,6 +18,9 @@ import os from 'node:os';
 import crypto from 'node:crypto';
 import { getProjectRoot } from './project-registry.js';
 import { baueJobUmgebung } from './shell-job-umgebung.js';
+import { ermittleShellLage, type ShellLage } from './shell-lage.js';
+import { waehleShellStart } from './shell-start.js';
+import type { SicherungsShell } from './shell-sicherung-parser.js';
 
 const STREAMS_DIR = path.join(os.homedir(), '.synapse', 'shell-streams');
 const DEFAULT_TAIL_LINES = 5;
@@ -59,6 +62,10 @@ export type ShellExecArgs = {
   project: string;
   command: string;
   cwd_relative?: string;
+  /** P10-T36: native Shellwahl; Windows standardmäßig cmd, POSIX sh. */
+  shell?: SicherungsShell;
+  /** Fester Preflight-Anschluss; E3 nutzt ihn, E2 aktiviert keine Stufen. Maskierte Daten. */
+  onLage?: (lage: ShellLage) => Promise<void> | void;
   /** @deprecated Altname der Abloesegrenze. Wirkt als detach_after_ms. */
   timeout_ms?: number;
   /** Abloesegrenze in ms (Default DEFAULT_DETACH_MS). Bricht nichts ab. */
@@ -182,23 +189,23 @@ export async function execShellInProject(
   const werte=await ladeShellWerte(args.project);
   const jobEnv = maskiereShellDaten(jobUmgebung.info,werte).daten;
 
+  const cwd = args.cwd_relative ? path.resolve(projectRoot, args.cwd_relative) : projectRoot;
+  const relCheck = path.relative(projectRoot, cwd);
+  if (relCheck.startsWith('..') || path.isAbsolute(relCheck)) {
+    return { error: 'cwd_outside_project', message: 'cwd_relative darf nicht aus dem Projekt-Root ausbrechen' };
+  }
+  const start = waehleShellStart(args.shell);
+  if (args.onLage) {
+    const lage = await ermittleShellLage(args.command, {
+      shell: start.shell, os: process.platform === 'win32' ? 'windows' : process.platform === 'darwin' ? 'macos' : process.env.WSL_DISTRO_NAME ? 'wsl' : 'linux',
+      cwd, project_root: projectRoot, env: jobUmgebung.env, env_vollstaendig: true,
+    });
+    await args.onLage(maskiereShellDaten(lage, werte).daten);
+  }
   return new Promise((resolve) => {
     ensureStreamsDir();
     cleanupOldStreams();
-
     const streamId = crypto.randomBytes(8).toString('hex');
-    const cwd = args.cwd_relative
-      ? path.resolve(projectRoot, args.cwd_relative)
-      : projectRoot;
-
-    const relCheck = path.relative(projectRoot, cwd);
-    if (relCheck.startsWith('..') || path.isAbsolute(relCheck)) {
-      resolve({
-        error: 'cwd_outside_project',
-        message: 'cwd_relative darf nicht aus dem Projekt-Root ausbrechen',
-      });
-      return;
-    }
 
     const log = fs.openSync(logPath(streamId), 'w');
     // detached:true gibt dem Kind eine EIGENE Prozessgruppe, und das ist die
@@ -213,9 +220,9 @@ export async function execShellInProject(
     // Ohne detached liegt das Kind in der Prozessgruppe des DAEMONS (gemessen:
     // PGID des Waisen == Daemon-PID). Ein Gruppen-Kill haette damit den Daemon
     // selbst erschlagen. Deshalb: eigene Gruppe, dann gezielt -pgid beenden.
-    const child = spawn('sh', ['-c', args.command], {
+    const child = spawn(start.programm, [...start.prefix, args.command], {
       cwd, env: jobUmgebung.env, stdio: ['ignore', 'pipe', 'pipe'],
-      detached: true,
+      detached: start.detached, windowsHide: true,
     });
 
     /**
@@ -223,6 +230,12 @@ export async function execShellInProject(
      * Kindprozess zurueck, falls die Gruppe nicht (mehr) existiert.
      */
     const beendeGruppe = (signal: NodeJS.Signals): void => {
+      if (process.platform === 'win32' && child.pid) {
+        // Festes Programm + ausschließlich unsere Kind-PID, kein Nutzerbefehl.
+        const stop = spawn('taskkill.exe', ['/pid', String(child.pid), '/t', ...(signal === 'SIGKILL' ? ['/f'] : [])], { stdio: 'ignore', windowsHide: true });
+        stop.on('error', () => { try { child.kill(signal); } catch { /* schon beendet */ } });
+        return;
+      }
       try {
         if (child.pid) process.kill(-child.pid, signal);
         else child.kill(signal);
