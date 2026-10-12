@@ -15,7 +15,9 @@
  */
 
 import { getPool } from '../db/client.js';
-import { ladeShellWerte, maskiereShellDaten } from './shell-maske.js';
+import { ladeShellWerte, maskiereShellDaten, maskiereShellText } from './shell-maske.js';
+import { sammleShellMaskenTreffer } from './shell-masken-katalog.js';
+import { istShellGeheimnisName } from './mcp-json-maske.js';
 import { darfKoordinatorOderUser } from './rollen-pruefung.js';
 
 export const SHELL_ALT_ACTIONS = ['shell_altbestand_maskieren'] as const;
@@ -31,7 +33,10 @@ export const SHELL_ALT_BESCHREIBUNG =
   'Koordinator/User, je Zeile Sperre und Neuberechnung, laufende Jobs bleiben, nicht umkehrbar. ';
 
 /** Nur NEUE Parameter (project, ausfuehren und limit gibt es schon). */
-export const SHELL_ALT_PARAMETER: Record<string, unknown> = {};
+export const SHELL_ALT_PARAMETER: Record<string, unknown> = {
+  seit: {type:'string',description:'Nur Zeilen ab diesem ISO-Zeitpunkt (shell_jobs.created_at bzw. tool_calls.ts).'},
+  diagnose: {type:'boolean',description:'Nur Vorschau: bis zu 100 geaenderte Felder mit ID, Regel, Name und Laenge; niemals Werte.'},
+};
 
 const FELDER = { shell_jobs: ['output', 'tail', 'message', 'error'], tool_calls: ['result', 'args_preview', 'error'] } as const;
 type Tabelle = keyof typeof FELDER;
@@ -45,7 +50,38 @@ function daten(t: Tabelle, r: Record<string, unknown>): Record<string, unknown> 
   return Object.fromEntries(FELDER[t].map((k) => [k, r[k]]));
 }
 
-export async function shellAltbestandMaskieren(opt: { project?: string; ausfuehren: boolean; limit?: number }): Promise<Record<string, unknown>> {
+
+interface MaskenDiagnose {
+  tabelle:Tabelle; id:string; feld:string;
+  ohne_wertliste:boolean;
+  treffer:Array<{regel:string;name?:string;laenge:number}>;
+  treffer_gekappt:boolean;
+}
+/** Nur Klassifikation: keine Ausschnitte, Werte oder Wert-Hashes verlassen diesen Weg. */
+function diagnoseFeld(alt:unknown,neu:unknown,werte:readonly string[]):MaskenDiagnose['treffer'] {
+  const treffer:MaskenDiagnose['treffer']=[];
+  const walk=(a:unknown,b:unknown,name?:string):void=>{
+    if(JSON.stringify(a)===JSON.stringify(b))return;
+    if(typeof a==='string'){
+      if(typeof b==='string')try {const x=JSON.parse(a),y=JSON.parse(b);walk(x,y,name);return;}catch {/* freier Text */}
+      const hits=sammleShellMaskenTreffer(a,werte,name?{name,strukturiert:true}:{});
+      for(const h of hits)treffer.push({
+        regel:h.regel,
+        ...(h.name?{name:maskiereShellText(h.name,werte).text}:{}),
+        laenge:h.ende-h.start,
+      });
+      if(!hits.length)treffer.push({regel:'struktur_oder_format',laenge:a.length});
+    }else if(a&&b&&typeof a==='object'&&typeof b==='object'){
+      for(const [k,v]of Object.entries(a))walk(v,(b as Record<string,unknown>)[k],istShellGeheimnisName(k)?k:name);
+    }else treffer.push({regel:'struktur_oder_format',laenge:JSON.stringify(a)?.length??0});
+  };
+  walk(alt,neu);
+  return treffer;
+}
+
+export async function shellAltbestandMaskieren(opt: { project?: string; ausfuehren: boolean; limit?: number; seit?:string; diagnose?:boolean }): Promise<Record<string, unknown>> {
+  if(opt.seit && (!/^\d{4}-\d{2}-\d{2}T/.test(opt.seit)||!Number.isFinite(Date.parse(opt.seit))))throw new Error('seit muss ein gueltiger ISO-Zeitpunkt sein');
+  const diagnose:MaskenDiagnose[]=[];let diagnoseGekappt=false;
   const pool = getPool();
   const werteCache = new Map<string, readonly string[]>();
   const werte = async (p: string): Promise<readonly string[]> => {
@@ -64,6 +100,7 @@ export async function shellAltbestandMaskieren(opt: { project?: string; ausfuehr
       const params: unknown[] = [];
       if (t === 'tool_calls') where.push("tool_name='shell'");
       if (opt.project) { params.push(opt.project); where.push('project=$' + params.length); }
+      if (opt.seit) {params.push(opt.seit);where.push((t==='shell_jobs'?'created_at':'ts')+'>=$'+params.length+'::timestamptz');}
       if (nach !== null) { params.push(nach); where.push(idSpalte(t) + '>$' + params.length); }
       const zeilen = (await pool.query(
         'SELECT ' + idSpalte(t) + ' AS id,project,' + FELDER[t].join(',') + (t === 'shell_jobs' ? ',status' : '') +
@@ -77,6 +114,17 @@ export async function shellAltbestandMaskieren(opt: { project?: string; ausfuehr
         if (JSON.stringify(neu) === JSON.stringify(vorher)) continue;
         if (laufend(t, r.status)) { z.laufend++; continue; }
         z.zu_aendern++;
+        if(opt.diagnose && !opt.ausfuehren){
+          const w=await werte(r.project??'');
+          for(const feld of FELDER[t]){
+            if(JSON.stringify(vorher[feld])===JSON.stringify(neu[feld]))continue;
+            if(diagnose.length>=100){diagnoseGekappt=true;continue;}
+            const treffer=diagnoseFeld(vorher[feld],neu[feld],w);
+            diagnose.push({tabelle:t,id:String(r.id),feld,
+              ohne_wertliste:JSON.stringify(maskiereShellDaten({[feld]:vorher[feld]},[],true).daten[feld])!==JSON.stringify(vorher[feld]),
+              treffer:treffer.slice(0,100),treffer_gekappt:treffer.length>100});
+          }
+        }
         if (!opt.ausfuehren || geschriebenGesamt >= grenze) continue;
         const c = await pool.connect();
         try {
@@ -114,6 +162,8 @@ export async function shellAltbestandMaskieren(opt: { project?: string; ausfuehr
     action: 'shell_altbestand_maskieren',
     modus: opt.ausfuehren ? 'ausgefuehrt' : 'vorschau',
     project: opt.project ?? null,
+    ...(opt.seit?{seit:opt.seit}:{}),
+    ...(opt.diagnose&&!opt.ausfuehren?{diagnose,diagnose_gekappt:diagnoseGekappt}:{}),
     tabellen: aus,
     offen_danach: opt.ausfuehren ? rest : undefined,
     sekunden: Math.round((Date.now() - beginn) / 1000),
@@ -133,7 +183,9 @@ export async function fuehreShellAltAus(action: ShellAltAction, a: Record<string
     const project = typeof a.project === 'string' && a.project.trim() !== '' ? a.project.trim() : undefined;
     const limitRoh = typeof a.limit === 'number' ? a.limit : typeof a.limit === 'string' ? Number(a.limit) : undefined;
     const limit = limitRoh !== undefined && Number.isFinite(limitRoh) && limitRoh > 0 ? limitRoh : undefined;
-    return await shellAltbestandMaskieren({ project, ausfuehren, limit });
+    const seit = typeof a.seit==='string'?a.seit:undefined;
+    const diagnose = a.diagnose===true || a.diagnose==='true';
+    return await shellAltbestandMaskieren({ project, ausfuehren, limit, seit, diagnose });
   } catch (e) {
     return { success: false, action, error: 'fehler', message: (e as Error).message };
   }
