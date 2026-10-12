@@ -12,7 +12,7 @@ import * as ci from './code-intel.js';
 type Row = Record<string, unknown>;
 type Plan = { id: string; project: string; ops: FileBatchOp[]; expected_hashes: Record<string,string>; status: FileBatchStatus };
 type Datei = { file_path: string; content: string; deleted: boolean; neu: boolean; drift?: string };
-type Schatten = { dateien: Datei[]; tabellen: Record<string,Row[]>; umleitung: Record<string,string>; ms: number; bytes: number; befunde: unknown[] };
+type Schatten = { dateien: Datei[]; tabellen: Record<string,Row[]>; umleitung: Record<string,string>; namen: string[]; symbolFinger: string; ms: number; bytes: number; befunde: unknown[] };
 const cache = new Map<string,{ finger: string; bis: number; wert: Schatten }>();
 const MAX_CACHE_BYTES = 32 * 1024 * 1024;
 let bauten = 0, treffer = 0;
@@ -20,6 +20,10 @@ export function schattenCacheStatistik() { return { eintraege: cache.size, baute
 const hash = (text: string) => createHash('sha256').update(text).digest('hex');
 const s = (args: Row, key: string): string | undefined => typeof args[key] === 'string' ? args[key] : undefined;
 const n = (args: Row, key: string): number | undefined => typeof args[key] === 'number' ? args[key] : undefined;
+
+async function indexSymbole(pool: Pool, project: string, namen: string[], pfade: string[]): Promise<Row[]> {
+  return (await pool.query<Row>('SELECT id,file_path,name,symbol_type,is_exported,line_start FROM code_symbols WHERE project=$1 AND (name=ANY($2::text[]) OR file_path=ANY($3::text[])) ORDER BY id',[project,namen,pfade])).rows;
+}
 
 async function lade(plan: Plan, nach?: number): Promise<Schatten> {
   const key = JSON.stringify([plan.project,plan.id,nach ?? null]);
@@ -31,7 +35,11 @@ async function lade(plan: Plan, nach?: number): Promise<Schatten> {
   const jetzt = Date.now();
   for(const [k,v] of cache) if(v.bis<=jetzt) cache.delete(k);
   const alt = cache.get(key);
-  if(alt?.finger===finger) { treffer++; return alt.wert; }
+  if(alt?.finger===finger) {
+    // Der Codegraph kann neue IDs erhalten, ohne dass Quelltext oder offene Ops sich ändern.
+    const ziele=await indexSymbole(pool,plan.project,alt.wert.namen,pfade);
+    if(hash(JSON.stringify(ziele))===alt.wert.symbolFinger) { treffer++; return alt.wert; }
+  }
   cache.delete(key);
   const start = performance.now();
   const stand = await getCodeIntelSchatten({...plan,ops});
@@ -65,20 +73,32 @@ async function lade(plan: Plan, nach?: number): Promise<Schatten> {
       statement_id:call.statement_temp_id?ids.get(call.statement_temp_id):null,target_symbol_id:null}));
   }
   const namen = [...new Set([...tabellen.code_symbols.map(r=>r.name),...[...parsen.values()].flatMap(r=>r.references.map(ref=>ref.symbol_name)),
-    ...tabellen.code_call_edges.map(r=>r.callee_name)].filter(Boolean))];
-  const echte = (await pool.query('SELECT id,file_path,name,symbol_type,is_exported,line_start FROM code_symbols WHERE project=$1 AND (name=ANY($2::text[]) OR file_path=ANY($3::text[]))',[plan.project,namen,pfade])).rows;
+    ...tabellen.code_call_edges.map(r=>r.callee_name)].filter((value): value is string => typeof value==='string'))];
+  const echte = await indexSymbole(pool,plan.project,namen,pfade);
   const verdeckt = new Set(dateien.map(f=>f.file_path));
-  const symbole = [...tabellen.code_symbols,...echte.filter(r=>!verdeckt.has(r.file_path))];
+  const symbole = [...tabellen.code_symbols,...echte.filter(r=>!verdeckt.has(String(r.file_path)))];
+  const quellPfad = (file: string) => file.replace(/\.(?:[cm]?[jt]sx?|py)$/,'');
   const ziel = (name: string, file: string, feld=false): Row | undefined => {
-    const kandidaten = symbole.filter(r=>r.name===name && r.symbol_type!=='string' && (feld?r.symbol_type==='field':r.symbol_type!=='field'));
-    return kandidaten.find(r=>r.file_path===file && r.symbol_type!=='import') ??
-      kandidaten.find(r=>r.is_exported && r.symbol_type!=='import') ??
-      (kandidaten.length===1?kandidaten[0]:undefined);
+    // Wie der echte Linker: Deklarationen vor Importen/Re-Exports; Mehrdeutigkeit bleibt NULL.
+    const kandidaten = symbole.filter(r=>r.name===name && r.symbol_type!=='string' &&
+      r.symbol_type!=='import' && r.symbol_type!=='export' && (feld?r.symbol_type==='field':r.symbol_type!=='field'));
+    const lokal = kandidaten.filter(r=>r.file_path===file);
+    if(lokal.length) return lokal.length===1?lokal[0]:undefined;
+    const exportiert = kandidaten.filter(r=>r.is_exported);
+    const imports = tabellen.code_symbols.filter(r=>r.file_path===file && r.symbol_type==='import' &&
+      (r.name===name || (Array.isArray(r.params) && r.params.includes(name))));
+    for(const imp of imports) {
+      if(typeof imp.value!=='string' || !imp.value.startsWith('.')) continue;
+      const quelle=quellPfad(path.posix.normalize(path.posix.join(path.posix.dirname(file),imp.value)));
+      const passend=exportiert.filter(r=>typeof r.file_path==='string' && quellPfad(r.file_path)===quelle);
+      if(passend.length) return passend.length===1?passend[0]:undefined;
+    }
+    return exportiert.length===1?exportiert[0]:kandidaten.length===1?kandidaten[0]:undefined;
   };
   const umleitung: Record<string,string> = {};
-  for(const altSym of echte.filter(r=>verdeckt.has(r.file_path))) {
+  for(const altSym of echte.filter(r=>verdeckt.has(String(r.file_path)))) {
     const neu = tabellen.code_symbols.find(r=>r.file_path===altSym.file_path && r.name===altSym.name && r.symbol_type===altSym.symbol_type);
-    if(neu) umleitung[altSym.id]=String(neu.id);
+    if(neu) umleitung[String(altSym.id)]=String(neu.id);
   }
   for(const [file,result] of parsen) {
     result.references.forEach((ref,i)=>{
@@ -88,7 +108,7 @@ async function lade(plan: Plan, nach?: number): Promise<Schatten> {
     });
   }
   for(const call of tabellen.code_call_edges) call.target_symbol_id=ziel(String(call.callee_name),String(call.file_path))?.id ?? null;
-  const wert: Schatten = {dateien,tabellen,umleitung,ms:Math.round((performance.now()-start)*10)/10,bytes:0,befunde:stand.nicht_anwendbar};
+  const wert: Schatten = {dateien,tabellen,umleitung,namen,symbolFinger:hash(JSON.stringify(echte)),ms:Math.round((performance.now()-start)*10)/10,bytes:0,befunde:stand.nicht_anwendbar};
   wert.bytes=Buffer.byteLength(JSON.stringify(wert));
   bauten++;
   if(wert.bytes<=MAX_CACHE_BYTES) {
@@ -113,17 +133,25 @@ function lesePool(pool: Pool, project: string, stand: Schatten): Pool {
         const ctes=[ '_synapse_ghost_context AS (SELECT $'+p+'::text AS project, $'+files+'::text[] AS files, $'+map+'::jsonb AS map)', ...benutzt.map(table=>{
           params.push(JSON.stringify(stand.tabellen[table]));
           const data=params.length;
-          let real='r.*';
-          if(table==='code_references' || table==='code_call_edges') {
+          const where='r.project=$'+p+' AND NOT (r.file_path=ANY($'+files+'::text[]))';
+          let real='SELECT r.* FROM '+table+' r WHERE '+where;
+          if((table==='code_references' || table==='code_call_edges') && Object.keys(stand.umleitung).length) {
             const col=table==='code_references'?'symbol_id':'target_symbol_id';
-            real="(jsonb_populate_record(NULL::"+table+",to_jsonb(r)||jsonb_build_object('"+col+"',COALESCE($"+map+"::jsonb->>r."+col+",r."+col+")))).*";
+            const keys='ARRAY(SELECT jsonb_object_keys($'+map+'::jsonb))';
+            // Unveraenderte IDs bleiben nackte Spalten: JOINs nutzen ihre vorhandenen Indizes.
+            // Nur betroffene Verweise werden umgeleitet, niemals der globale Bestand serialisiert.
+            real+=' AND (r.'+col+' IS NULL OR NOT (r.'+col+'=ANY('+keys+')))'
+              +" UNION ALL SELECT (jsonb_populate_record(NULL::"+table+",to_jsonb(r)||jsonb_build_object('"+col+"',$"+map+"::jsonb->>r."+col+"))).* FROM "+table+" r WHERE "+where+" AND r."+col+"=ANY("+keys+")";
           }
           const virt=table==='code_files'
             ? "SELECT (jsonb_populate_record(NULL::code_files,j||jsonb_build_object('tsv',to_tsvector('english',j->>'content'),'tsv_zerlegt',to_tsvector('simple',regexp_replace(j->>'content','[^A-Za-z0-9]+',' ','g'))))).* FROM jsonb_array_elements($"+data+"::jsonb) j"
             : "SELECT * FROM jsonb_populate_recordset(NULL::"+table+",$"+data+"::jsonb)";
-          return '_synapse_ghost_'+table+' AS (SELECT '+real+' FROM '+table+' r WHERE NOT (r.project=$'+p+' AND r.file_path=ANY($'+files+'::text[])) UNION ALL '+virt+')';
+          return '_synapse_ghost_'+table+' AS NOT MATERIALIZED ('+real+' UNION ALL '+virt+')';
         })];
-        const rewritten=sql.replace(/\b(code_files|code_symbols|code_references|code_statements|code_call_edges)\b/g,table=>'_synapse_ghost_'+table);
+        // Nur im Schatten: die Definitionsabfrage darf keinen Import/Re-Export vorziehen.
+        const definitionSort=sql.replace("CASE WHEN symbol_type = 'string' THEN 2 WHEN symbol_type = 'field' THEN 1 ELSE 0 END",
+          "CASE WHEN symbol_type IN ('import','export') THEN 2 WHEN symbol_type = 'string' THEN 3 WHEN symbol_type = 'field' THEN 1 ELSE 0 END");
+        const rewritten=definitionSort.replace(/\b(code_files|code_symbols|code_references|code_statements|code_call_edges)\b/g,table=>'_synapse_ghost_'+table);
         return target.query('WITH '+ctes.join(',')+' '+rewritten,params);
       };
     }
