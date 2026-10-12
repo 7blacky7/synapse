@@ -10,7 +10,18 @@ if [ -z "$INPUT" ]; then exit 0; fi
 if ! command -v jq &>/dev/null; then exit 0; fi
 
 HOOK_EVENT=$(echo "$INPUT" | jq -r '.hook_event_name // empty')
-if [ -z "$HOOK_EVENT" ]; then exit 0; fi
+case "$HOOK_EVENT" in
+    PreToolUse|SubagentStart) ;;
+    *) exit 0 ;;
+esac
+
+# Der globale Claude-Hook wird auch in den Spezialisten-Wrapper-Prozessen
+# ausgefuehrt. Deren System-Prompt enthaelt bereits das richtige Onboarding.
+if [ "$HOOK_EVENT" = "PreToolUse" ] && {
+    [ -n "${SYNAPSE_AGENT_NAME:-}" ] || [ "${SYNAPSE_WRAPPER_MODE:-}" = "1" ];
+}; then
+    exit 0
+fi
 
 # ============================================
 # Projektverzeichnis ermitteln
@@ -56,8 +67,12 @@ QDRANT_URL="${QDRANT_URL:-http://192.168.50.65:6333}"
 # KOORDINATOR (PreToolUse:Read)
 # ============================================
 if [ "$HOOK_EVENT" != "SubagentStart" ]; then
-    # Einmal pro Session: Nach erstem Anzeigen nicht mehr wiederholen
-    MARKER="/tmp/synapse-onboarded-${PROJECT_NAME}-koordinator.marker"
+    # Marker pro Claude-Session; PID-Kette ist der Rueckfall fuer alte Hook-Payloads.
+    SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // empty')
+    SESSION_KEY="${SESSION_ID:-${SYNAPSE_SESSION_ID:-${CLAUDE_WRAPPER_PID:-$PPID}}}"
+    SESSION_KEY=$(printf '%s' "$SESSION_KEY" | tr -c '[:alnum:]_.-' '_')
+    PROJECT_KEY=$(printf '%s' "$PROJECT_NAME" | tr -c '[:alnum:]_.-' '_')
+    MARKER="/tmp/synapse-onboarded-${PROJECT_KEY}-koordinator-${SESSION_KEY}.marker"
     if [ -f "$MARKER" ]; then
         exit 0
     fi

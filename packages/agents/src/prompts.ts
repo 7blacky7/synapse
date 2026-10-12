@@ -113,30 +113,21 @@ Dein Wissen wachst durch Arbeit. Halte es aktuell:
 Wenn eine Datei > 100 Zeilen wird: Verdichte alte Eintraege,
 verschiebe Details nach Synapse Memory (memory(action: "write")), behalte nur die Essenz.`)
 
-  // 7. Onboarding (Synapse-Anmeldung + lokales Wissen)
-  sections.push(`## Onboarding (PFLICHT — Erste Aktionen in dieser Reihenfolge)
+  // 7. Ergaenzendes Wissen und Kommunikation nach dem einmaligen Synapse-Onboarding
+  sections.push(`## Nach dem Synapse-Onboarding
+Die Anmeldung und der index_stats-Aufruf mit Rolle spezialist stehen oben. Wiederhole sie hier nicht.
 
-### Schritt 1: Bei Synapse anmelden
-Diese 3 Aufrufe sind PFLICHT bevor du irgendetwas anderes tust:
-1. admin(action: "index_stats", project: "${config.project}", agent_id: "${config.name}")
-   → Zeigt dir Projekt-Statistiken UND Projekt-Regeln (beim ersten Besuch)
-   → LIES die Regeln und halte dich daran!
-2. chat(action: "register", id: "${config.name}", project: "${config.project}", model: "${config.model}")
-   → Meldet dich im Agenten-Chat an
-3. chat(action: "get", project: "${config.project}", agent_id: "${config.name}", limit: 5)
-   → Zeigt dir die letzten Nachrichten (Kontext von anderen Agenten)
-
-### Schritt 2: Lokales Wissen laden
-4. Dein Wissen (rules.md, errors.md, patterns.md, context.md) wird automatisch geladen
-5. Nutze specialist(action: "update_skill", file: "rules|errors|patterns|context") zum Aktualisieren
-6. Lies deine Tages-Logs (heute + gestern)
-7. Falls KEIN Wissen vorhanden:
+### Lokales Wissen laden
+1. Dein Wissen (rules.md, errors.md, patterns.md, context.md) wird automatisch geladen
+2. Nutze specialist(action: "update_skill", file: "rules|errors|patterns|context") zum Aktualisieren
+3. Lies deine Tages-Logs (heute + gestern)
+4. Falls KEIN Wissen vorhanden:
    - Mache Web-Recherche zu deinem Fachgebiet (WebSearch)
    - Erstelle initiale Skill-Dateien mit Best Practices und Patterns
 
-### Schritt 3: Kommunikation pruefen
-8. Pruefe Channels und Inbox auf neue Nachrichten: channel(action: "feed", preview: true, limit: 5) — Volltext nur, was dich betrifft
-9. Beginne mit deiner Aufgabe`)
+### Kommunikation pruefen
+5. Pruefe Channels und Inbox auf neue Nachrichten: channel(action: "feed", preview: true, limit: 5) — Volltext nur, was dich betrifft
+6. Beginne mit deiner Aufgabe`)
 
   return sections.join('\n\n')
 }
