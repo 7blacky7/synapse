@@ -653,6 +653,9 @@ export type CommitBatchResult =
       pruefung?: Record<string, unknown> | null;
       quittierung_abgelehnt?: Array<{ id: string; grund: string }>;
       committed?: 0;
+      owner_agent_id?: string | null;
+      caller_agent_id?: string | null;
+      eigene_offene_plaene?: Array<{ plan_id: string; project: string }>;
       message: string;
     };
 
@@ -4563,6 +4566,55 @@ async function commitBatchOnce(args: {
       status: 'conflict',
       error: 'conflict',
       message: `Plan ${args.plan_id} hat einen terminalen Co-Edit-Konflikt; cancel + replan erforderlich.`,
+    };
+  }
+  const caller = resolveAgentId(args.agent_id);
+  const koordinationsRolle = /^(koordinator|coordinator|user)$/i;
+  const opAutoren = uniqueStrings((Array.isArray(plan.ops) ? plan.ops : [])
+    .map((op) => op.agent_id ?? plan.owner_agent_id ?? '')
+    .filter(Boolean));
+  let beteiligt = caller !== null && caller === plan.owner_agent_id;
+  if (caller && koordinationsRolle.test(caller)) beteiligt = true;
+  if (caller && opAutoren.includes(caller)) beteiligt = true;
+  if (caller && !beteiligt) {
+    const wait = await pool.query<{ beteiligt: boolean }>(
+      `SELECT EXISTS (
+         SELECT 1 FROM file_batch_waits
+          WHERE project = $1 AND waiting_agent = $2
+            AND (source_plan_id = $3::bigint OR primary_plan_id = $3::bigint)
+       ) AS beteiligt`,
+      [plan.project, caller, args.plan_id],
+    );
+    beteiligt = wait.rows[0]?.beteiligt === true;
+  }
+  // Ohne agent_id gilt dieselbe Sicherheitsregel wie bei cancel: nur ein Plan
+  // ohne Ops fremder Autoren darf durch den nicht zuordenbaren Aufrufer laufen.
+  const fremdeAutoren = opAutoren.filter((autor) => autor !== plan.owner_agent_id);
+  const ohneIdentitaetErlaubt = caller === null && fremdeAutoren.length === 0;
+  if (!beteiligt && !ohneIdentitaetErlaubt) {
+    const eigeneOffenePlaene = caller
+      ? (await pool.query<{ plan_id: string; project: string }>(
+        `SELECT id::text AS plan_id, project
+           FROM file_batch_plans
+          WHERE project = $1 AND owner_agent_id = $2 AND status = 'open'
+          ORDER BY created_at DESC, id DESC
+          LIMIT 10`,
+        [plan.project, caller],
+      )).rows
+      : [];
+    const ownerText = plan.owner_agent_id ?? 'unbekannt';
+    const eigeneText = eigeneOffenePlaene.length > 0
+      ? eigeneOffenePlaene.map((p) => p.plan_id).join(', ')
+      : 'keine';
+    return {
+      success: false,
+      plan_id: args.plan_id,
+      status: 'open',
+      error: 'fremder_plan',
+      owner_agent_id: plan.owner_agent_id,
+      caller_agent_id: caller,
+      eigene_offene_plaene: eigeneOffenePlaene,
+      message: `Fremder Plan: Owner ist ${ownerText}; Aufrufer ${caller ?? 'ohne agent_id'} ist nicht beteiligt. Deine offenen Plaene: ${eigeneText}. Pruefe die Plan-ID und committe einen eigenen Plan.`,
     };
   }
   const failedOps = failedOpsOf(plan.previews);
