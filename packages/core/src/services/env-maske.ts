@@ -22,7 +22,7 @@
  * files(restore) wiederherstellbar" — nur Namen, nie Werte.
  */
 
-import {SHELL_KV_ZEILE as KV,SHELL_BEARER,SHELL_JSON_FREI,SHELL_KV_FREI,holeShellLiteralMatcher,sammleShellMaskenTreffer,shellIstLeerWert,type ShellMaskenTreffer} from './shell-masken-katalog.js';
+import {SHELL_KV_ZEILE as KV,SHELL_BEARER,SHELL_SSHPASS,SHELL_JSON_FREI,SHELL_KV_FREI,holeShellLiteralMatcher,sammleShellMaskenTreffer,shellIstLeerWert,type ShellMaskenTreffer} from './shell-masken-katalog.js';
 import { getPool } from '../db/client.js';
 import { getFileContentFromPg } from './code-write.js';
 import { entmaskiereMcpJson, istMcpJsonDatei, maskiereMcpJson, maskiereMcpJsonDiffText, maskiereMcpJsonFragment, mcpJsonHinweise, mcpJsonSicht, mcpJsonWerte, MCP_JSON_PFAD_REGEX_SQL, maskiereUrl, istShellGeheimnisName, SHELL_LITERAL_MIN_LAENGE, shellUrlPasswoerter } from './mcp-json-maske.js';
@@ -410,6 +410,12 @@ export function maskiereShellText(text: string, bekannteWerte: readonly string[]
   aus=maskiereMcpJsonFragment(aus,true);
   aus=maskiereUrl(aus);
   aus=aus.replace(SHELL_BEARER,(_,praefix:string)=>praefix+ENV_PLATZHALTER);
+  // P10-T42: sshpass -p <passwort> (Fund aus dem Altbestand-Test). Schon maskierte Werte bleiben, Quotes bleiben.
+  aus=aus.replace(SHELL_SSHPASS,(ganz,praefix:string,wert:string)=>{
+    const q=wert[0]==='"'||wert[0]==="'"?wert[0]:'';
+    const kern=q?wert.slice(1,-1):wert;
+    return kern===ENV_PLATZHALTER?ganz:praefix+q+ENV_PLATZHALTER+q;
+  });
   aus=aus.split('\n').map(zeile=>{
     const kv=KV.exec(ohneCr(zeile).text);
     if(kv && istShellGeheimnisName(kv[2])) return maskiereEnv(zeile);

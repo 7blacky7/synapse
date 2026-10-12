@@ -53,6 +53,8 @@ import {
 } from './intern-warteschlangen.js';
 // P15-T31: tote Co-Edit-Waits sichten, sichern, schliessen (intern-waits.ts).
 import { WAITS_ACTIONS, WAITS_BESCHREIBUNG, WAITS_PARAMETER, fuehreWaitsAus, istWaitsAction } from './intern-waits.js';
+// P10-T42: Shell-Altbestand mit der Live-Maske nachmaskieren (intern-shell-alt.ts).
+import { SHELL_ALT_ACTIONS, SHELL_ALT_BESCHREIBUNG, SHELL_ALT_PARAMETER, fuehreShellAltAus, istShellAltAction } from './intern-shell-alt.js';
 
 const INTERN_TOOL_BEIM_START = process.env.SYNAPSE_INTERN_TOOL === '1';
 
@@ -78,6 +80,7 @@ export const INTERN_ACTIONS = [
   ...DIAGNOSE_ACTIONS,
   ...WARTESCHLANGEN_ACTIONS,
   ...WAITS_ACTIONS,
+  ...SHELL_ALT_ACTIONS,
 ] as const;
 export type InternAction = (typeof INTERN_ACTIONS)[number];
 
@@ -112,6 +115,7 @@ export const INTERN_DEFINITION = {
     DIAGNOSE_BESCHREIBUNG +
     WARTESCHLANGEN_BESCHREIBUNG +
     WAITS_BESCHREIBUNG +
+    SHELL_ALT_BESCHREIBUNG +
     'Keine Aktion beendet Prozesse/Sitzungen oder loescht PG-Daten; nur neu_einbetten leert Qdrant-Collections (aus PG wiederherstellbar).',
   inputSchema: {
     type: 'object',
@@ -167,6 +171,7 @@ export const INTERN_DEFINITION = {
       ...DIAGNOSE_PARAMETER,
       ...WARTESCHLANGEN_PARAMETER,
       ...WAITS_PARAMETER,
+      ...SHELL_ALT_PARAMETER,
     },
     required: ['action'],
   },
@@ -261,6 +266,8 @@ export async function fuehreInternAus(
   if (istWarteschlangenAction(action)) return await fuehreWarteschlangeAus(action, a, agentId);
   // P15-T31: tote Co-Edit-Waits (intern-waits.ts) - wirft nie
   if (istWaitsAction(action)) return await fuehreWaitsAus(action, a, agentId);
+  // P10-T42: Shell-Altbestand nachmaskieren (intern-shell-alt.ts) - wirft nie
+  if (istShellAltAction(action)) return await fuehreShellAltAus(action, a, agentId);
   try {
     switch (action) {
       case 'schalter_setzen': {

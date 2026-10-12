@@ -2,6 +2,8 @@
 import {istShellGeheimnisName,SHELL_LITERAL_MIN_LAENGE,URL_ZUGANGSDATEN,MCP_JSON_FELD_PREFIX,MCP_JSON_FELD_WERT} from './mcp-json-maske.js';
 export const SHELL_KV_ZEILE=/^(\s*(?:export\s+)?)([A-Za-z_][A-Za-z0-9_.-]*)(\s*=\s*)(.*)$/;
 export const SHELL_BEARER=/(Bearer\s+)[A-Za-z0-9._~+\/=-]+/gi;
+/** Live-Regel: Passwort hinter sshpass -p (auch -p'x', -p"x", -px). Gruppe 1 Praefix, Gruppe 2 Wert. */
+export const SHELL_SSHPASS=/((?:^|\s)sshpass\s+-p\s*)("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s"']+)/g;
 export const SHELL_JSON_FREI=/(^|[\s,{])(["']?)([A-Za-z_][A-Za-z0-9_.-]*)\2(\s*:\s*)("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')/g;
 export const SHELL_KV_FREI=/(^|[\s,{"'])([A-Za-z_][A-Za-z0-9_.-]*)(\s*=\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s"',;\\]+)/g;
 export type ShellMaskenRegel='env_literal'|'url_passwort'|'bearer'|'kv_geheimname'|'json_geheimname'|'mcp_json_feld'|'sshpass_passwort';
