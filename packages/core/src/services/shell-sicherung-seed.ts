@@ -1,5 +1,63 @@
 /** P10-T35: unabhängige Seeds; keine DCG-Regeln oder Packtexte. */
 import type { ShellSicherungsKatalog } from './shell-sicherung.js';
+/** Exakte frühere ausgelieferte Default-Muster; nur Identitätsprüfung, keine zusätzliche Risikoliste. */
+export const SHELL_SICHERUNG_VORGAENGER:Record<string,ShellSicherungsKatalog['risiko_verben'][number]['muster'][]>= {
+  "risiko:mutation": [
+    {
+      "command": [
+        "^(?:aws|gcloud|az|gsutil|kubectl|terraform|pulumi|rclone|docker|git|redis-cli|psql|mysql|systemctl|kill|pkill|killall|rm|mv|cp|chmod|chown|dd|mkfs.*|wipefs|sh|bash|pwsh|powershell|cmd|python[\\d.]*|node|eval|source|\\.)(?:\\.exe)?$"
+      ],
+      "argv_any": [
+        "(?:^|[-_\\s])(?:delete|remove|terminate|destroy|purge|drop|truncate|flushall|flushdb|reset|clean|prune|kill|stop|disable|mask|isolate|mirror|sync|force|overwrite|restore|rebase|apply|rmtree|unlink|writeFile|rmSync)(?:$|[-_(\\s])",
+        "^-r[fR]*$",
+        "^-[fR]*r[fR]*$",
+        "^--delete",
+        "^of="
+      ],
+      "ausnahmen": [
+        {
+          "command": [
+            "^git$",
+            "^apply$"
+          ],
+          "argv_all": [
+            "^--cached$"
+          ],
+          "argv_none": [
+            "^--index$"
+          ]
+        },
+        {
+          "command": [
+            "^git$",
+            "^restore$"
+          ],
+          "argv_all": [
+            "^(?:--staged|-S)$"
+          ],
+          "argv_none": [
+            "^(?:--worktree|-W|-SW|-WS)$"
+          ]
+        },
+        {
+          "command": [
+            "^git$",
+            "^update-index$"
+          ]
+        },
+        {
+          "command": [
+            "^git$",
+            "^add$"
+          ],
+          "argv_any": [
+            "^(?:--patch|-p)$"
+          ]
+        }
+      ]
+    }
+  ]
+};
 export const SHELL_SICHERUNG_SEED: ShellSicherungsKatalog = {
   "regeln": [
 {
@@ -729,7 +787,7 @@ export const SHELL_SICHERUNG_SEED: ShellSicherungsKatalog = {
     },
     {
       "id": "git.add",
-      "version": 1,
+      "version": 2,
       "art": "text",
       "stufe": "anleitung",
       "status": "aktiv",
@@ -742,6 +800,20 @@ export const SHELL_SICHERUNG_SEED: ShellSicherungsKatalog = {
           "^\\.$",
           "^-A$",
           "^--all$"
+        ],
+        "ausnahmen": [
+          {
+            "command": [
+              "^git$",
+              "^add$"
+            ],
+            "argv_option_any": [
+              "^(?:-n|--dry-run)$"
+            ],
+            "argv_none": [
+              "^--pathspec-from-file(?:=|$)"
+            ]
+          }
         ]
       },
       "antwort_id": "git.add",
@@ -754,7 +826,9 @@ export const SHELL_SICHERUNG_SEED: ShellSicherungsKatalog = {
         "git add ."
       ],
       "negativ": [
-        "git status --short"
+        "git status --short",
+        "git add -A -n",
+        "git add --all --dry-run"
       ]
     },
     {
@@ -2116,8 +2190,18 @@ export const SHELL_SICHERUNG_SEED: ShellSicherungsKatalog = {
             "argv_any": [
               "^(?:--patch|-p)$"
             ]
+          },
+          {
+            "command": [
+              "^git$",
+              "^(?:status|log|show|diff|ls-files|ls-tree|rev-parse|rev-list|show-ref|describe|cat-file)$"
+            ],
+            "argv_none": [
+              "^--(?:output|ext-diff|textconv)(?:=|$)"
+            ]
           }
-        ]
+        ],
+        "argv_ohne_nachrichten": true
       },
       "status": "aktiv",
       "quelle": "P10-T35: unabhängige Risikowortklassifikation, kein DCG"

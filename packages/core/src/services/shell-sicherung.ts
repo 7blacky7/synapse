@@ -8,6 +8,7 @@ import { parseShellText, type SicherungsShell, type ShellTextKommando } from './
 import { SHELL_SICHERUNG_SEED } from './shell-sicherung-seed.js';
 export interface ShellMuster {
   command: string[]; argv_any?: string[]; argv_all?: string[]; argv_none?: string[];
+  argv_option_any?:string[];argv_ohne_nachrichten?:boolean;
   umleitung?: boolean; target_regex?: string; ausnahmen?: ShellMuster[];
   skript_ziel?:'ausserhalb';skript_db?:'ohne_testprojekt';skript_exec?:'ungeklaert';
 }
@@ -77,6 +78,17 @@ function regex(pattern: string, text: string): boolean {
   if (pattern.length > 512) throw new Error('shell_regel_muster_zu_lang');
   return new RegExp(pattern, 'i').test(text);
 }
+/** Git-Nachrichten sind Daten; Shell-Substitutionen erscheinen separat im Syntaxbaum. */
+function gitNachrichtenIndizes(k:ShellTextKommando):Set<number>{
+  const data=new Set<number>();
+  if(k.argv[0]?.text!=='git'||k.argv[1]?.text!=='commit')return data;
+  for(let i=2;i<k.argv.length;i++){
+    const t=k.argv[i].text;if(t==='--')break;
+    if(t==='-m'||t==='--message'){if(k.argv[i+1])data.add(++i);}
+    else if(t.startsWith('--message=')||t.startsWith('-m')&&t.length>2)data.add(i);
+  }
+  return data;
+}
 function trifft(m: ShellMuster, k: ShellTextKommando): boolean {
   if(!k.umleitungen.length&&!k.argv.some(a=>a.dynamisch)&&m.ausnahmen?.some(x=>trifft(x,k)))return false;
   if(m.skript_ziel==='ausserhalb'&&k.skript_operation?.ziel_im_projekt===true)return false;
@@ -84,10 +96,12 @@ function trifft(m: ShellMuster, k: ShellTextKommando): boolean {
   if(m.skript_exec==='ungeklaert'&&k.skript_operation?.statischer_befehl)return false;
   if (m.umleitung) return k.umleitungen.some(x => !m.target_regex || regex(m.target_regex, x));
   if (!m.command.length || !m.command.every((p, i) => regex(p, k.argv[i]?.text ?? ''))) return false;
-  const args = k.argv.slice(m.command.length).map(a => a.text);
+  const data=m.argv_ohne_nachrichten?gitNachrichtenIndizes(k):new Set<number>();
+  const args = k.argv.slice(m.command.length).filter((_a,i)=>!data.has(i+m.command.length)).map(a => a.text);
   const stop = args.indexOf('--');
   const optionArgs = stop < 0 ? args : args.slice(0, stop);
   if (m.argv_none?.some(p => optionArgs.some(a => regex(p, a)))) return false;
+  if(m.argv_option_any&&!m.argv_option_any.some(p=>optionArgs.some(a=>regex(p,a))))return false;
   if (m.argv_any && !m.argv_any.some(p => args.some(a => regex(p, a)))) return false;
   if (m.argv_all && !m.argv_all.every(p => args.some(a => regex(p, a)))) return false;
   return true;

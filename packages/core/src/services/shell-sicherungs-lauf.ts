@@ -1,7 +1,7 @@
 /** P10-T37: aktueller Katalog, read-only Prozesslage und maskiertes Job-Audit. */
 import {getPool}from'../db/client.js';
 import{ladeShellSicherungsKatalog,type ShellSicherungsKatalog}from'./shell-sicherung.js';
-import{SHELL_SICHERUNG_SEED}from'./shell-sicherung-seed.js';
+import{SHELL_SICHERUNG_SEED,SHELL_SICHERUNG_VORGAENGER}from'./shell-sicherung-seed.js';
 import{maskiereShellVorSpeichern}from'./shell-maske.js';
 import type{ShellStartEntscheidung,ShellBestaetigung}from'./shell-start-sicherung.js';
 import type{ShellLage}from'./shell-lage.js';
@@ -20,14 +20,14 @@ export function verbindeShellStartKatalog(db:ShellSicherungsKatalog):ShellSicher
     const canonical=(v:unknown):string=>JSON.stringify(v,(_k,value)=>value&&typeof value==='object'&&!Array.isArray(value)?
       Object.fromEntries(Object.keys(value).sort().map(k=>[k,value[k]])):value);
     const {skript_ziel:_z,skript_db:_d,skript_exec:_e,ausnahmen:_a,...alt}=shipped.muster;
-    return canonical(r.muster)===canonical(alt)?{...r,version:shipped.version,muster:shipped.muster}:r;
+    return [alt,...SHELL_SICHERUNG_VORGAENGER['regel:'+r.id]??[]].some(x=>canonical(r.muster)===canonical(x))?{...r,version:shipped.version,muster:shipped.muster}:r;
   });
   const risiko_verben=merge(SHELL_SICHERUNG_SEED.risiko_verben,db.risiko_verben).map(v=>{
     const shipped=SHELL_SICHERUNG_SEED.risiko_verben.find(x=>x.id===v.id);
     if(!shipped||v.status!=='aktiv'||v.quelle!==shipped.quelle)return v;
-    const {ausnahmen:_a,...alt}=shipped.muster;
+    const {ausnahmen:_a,argv_ohne_nachrichten:_n,...alt}=shipped.muster;
     const canonical=(value:unknown):string=>JSON.stringify(value,(_k,x)=>x&&typeof x==='object'&&!Array.isArray(x)?Object.fromEntries(Object.keys(x).sort().map(k=>[k,x[k]])):x);
-    return canonical(v.muster)===canonical(alt)?{...v,muster:shipped.muster}:v;
+    return [alt,...SHELL_SICHERUNG_VORGAENGER['risiko:'+v.id]??[]].some(x=>canonical(v.muster)===canonical(x))?{...v,muster:shipped.muster}:v;
   });
   return {regeln,
     antworten:merge(SHELL_SICHERUNG_SEED.antworten,db.antworten),risiko_verben};
