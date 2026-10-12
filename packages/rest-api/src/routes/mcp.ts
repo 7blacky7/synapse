@@ -2700,9 +2700,8 @@ async function handleToolCallKern(
                 if (!it.name || typeof it.name !== 'string') throw new Error('name fehlt oder ist kein String');
                 if (!it.content || typeof it.content !== 'string') throw new Error('content fehlt oder ist kein String');
                 const tags = Array.isArray(it.tags) ? it.tags.filter((t): t is string => typeof t === 'string') : [];
-                const existing = await getMemoryByName(project, it.name);
-                await writeMemory(project, it.name, it.content, it.category ?? 'note', tags);
-                results.push({ index: i, ok: true, name: it.name, isUpdate: !!existing });
+                const memory = await writeMemory(project, it.name, it.content, it.category ?? 'note', tags);
+                results.push({ index: i, ok: true, name: it.name, isUpdate: memory.isUpdate });
                 applied++;
               } catch (err) {
                 results.push({ index: i, ok: false, name: typeof it.name === 'string' ? it.name : undefined, error: (err as Error).message });
@@ -2722,13 +2721,12 @@ async function handleToolCallKern(
           const content = reqStr(args, 'content');
           const category = str(args, 'category') as 'documentation' | 'note' | 'architecture' | 'decision' | 'rules' | 'other' | undefined;
           const tags = strArray(args, 'tags');
-          const existing = await getMemoryByName(project, memName);
           const memory = await writeMemory(project, memName, content, category, tags);
           return {
             success: true,
             memory: { name: memory.name, category: memory.category, sizeChars: memory.content.length },
-            isUpdate: !!existing,
-            message: existing ? `Memory "${memory.name}" aktualisiert` : `Memory "${memory.name}" erstellt`,
+            isUpdate: memory.isUpdate,
+            message: memory.isUpdate ? `Memory "${memory.name}" aktualisiert` : `Memory "${memory.name}" erstellt`,
             // 2.1: die Regel-Hinweise aus writeMemory duerfen nicht verlorengehen. Diese Antwort
             // wird von Hand gebaut — memory(update) gibt das Ergebnis roh zurueck und trug das Feld
             // deshalb laengst, memory(write) verschluckte es. Nur setzen wenn vorhanden, sonst

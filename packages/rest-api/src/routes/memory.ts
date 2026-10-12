@@ -39,7 +39,6 @@ export async function memoryRoutes(fastify: FastifyInstance): Promise<void> {
     }
 
     try {
-      const existing = await getMemoryByName(name, memoryName);
       const memory = await writeMemory(name, memoryName, content, category, tags);
 
       return {
@@ -52,8 +51,8 @@ export async function memoryRoutes(fastify: FastifyInstance): Promise<void> {
           createdAt: memory.createdAt,
           updatedAt: memory.updatedAt,
         },
-        isUpdate: !!existing,
-        message: existing
+        isUpdate: memory.isUpdate,
+        message: memory.isUpdate
           ? `Memory "${memoryName}" aktualisiert (${content.length} Zeichen)`
           : `Memory "${memoryName}" erstellt (${content.length} Zeichen)`,
       };

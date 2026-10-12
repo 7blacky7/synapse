@@ -164,7 +164,7 @@ export async function writeMemory(
   content: string,
   category: Memory['category'] = 'note',
   tags: string[] = []
-): Promise<Memory> {
+): Promise<Memory & { isUpdate: boolean }> {
   // Bei Regeln pruefen, ob eine Rollenbindung gemeint war, aber nicht wirksam ist.
   // Nur ein Hinweis, kein Eingriff — die Memory wird unveraendert geschrieben.
   // Ohne das faellt ein vergessenes oder falsch geschriebenes "-only" niemandem
@@ -207,7 +207,7 @@ export async function writeMemory(
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
      ON CONFLICT (project, name) DO UPDATE SET
        content = $5, category = $4, tags = $6, updated_at = $8, embedded_at = NULL
-     RETURNING id, created_at, updated_at`,
+     RETURNING id, created_at, updated_at, (xmax = 0) AS inserted`,
     [id, project, name, category, content, tags, memory.createdAt, memory.updatedAt]
   );
   // P10-T12: Bei konkurrierenden Erstschreibern gilt die ID der tatsächlich gespeicherten Zeile.
@@ -231,7 +231,7 @@ export async function writeMemory(
 
   const codeRefInfo = linkedPaths.length > 0 ? ` (${linkedPaths.length} Code-Referenzen)` : '';
   console.error(`[Synapse] Memory "${name}" gespeichert für Projekt "${project}"${codeRefInfo}`);
-  return { ...memory, warning };
+  return { ...memory, warning, isUpdate: !gespeichert.rows[0].inserted };
 }
 
 /**

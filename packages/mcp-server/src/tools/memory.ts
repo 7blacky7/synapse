@@ -29,11 +29,9 @@ export async function writeMemory(
   tags: string[] = []
 ): Promise<string> {
   try {
-    const existing = await getMemoryByName(project, name);
-    const isUpdate = !!existing;
-    await writeMemoryCore(project, name, content, category, tags);
+    const memory = await writeMemoryCore(project, name, content, category, tags);
 
-    return isUpdate
+    return memory.isUpdate
       ? `✅ Memory "${name}" aktualisiert | ${content.length} Zeichen | ${category}`
       : `✅ Memory "${name}" erstellt | ${content.length} Zeichen | ${category}`;
   } catch (error) {
