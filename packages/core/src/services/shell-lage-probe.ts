@@ -2,7 +2,7 @@
 export interface ShellProbePfad {
   pfad: string; kanonisch?: string; existiert?: boolean; verzeichnis?: boolean;
   naechster_elternpfad?: string; links: Array<{pfad:string;ziel:string}>;
-  mount?: string; dev?: string; fehler?: string;
+  mount?: string; dev?: string; fehler?: string;eigener_benutzer?:boolean;
 }
 export interface ShellProbeAnfrage { cwd?: string; variablen?: string[]; pfade?: string[]; prozesse?:boolean;umgebungsdatei?:string; }
 export interface ShellProbeAntwort {
@@ -35,6 +35,7 @@ export async function probeShellLage(input: ShellProbeAnfrage): Promise<ShellPro
     for(let depth=0;depth<64;depth++){
       try {
         const st=await fs.lstat(parent);
+        if(parent===pfad&&typeof process.getuid==='function')r.eigener_benutzer=st.uid===process.getuid();
         r.existiert=parent===pfad;r.verzeichnis=parent===pfad?st.isDirectory():undefined;
         r.naechster_elternpfad=r.existiert?p.dirname(pfad):parent;
         const real=await fs.realpath(parent);

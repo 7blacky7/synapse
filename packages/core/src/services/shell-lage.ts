@@ -3,6 +3,7 @@
  * Native Dateisystemprobe ist austauschbar (Daemon/Container derselbe Helfer).
  */
 import path from 'node:path';
+import{gebundeneBuildLogFakten}from'./shell-build-log-fakten.js';
 import{skriptFakten}from'./shell-inline-pruefung.js';
 import {createHash}from'node:crypto';
 import {parseShellText,type SicherungsShell,type ShellWort,type ShellTextKommando}from'./shell-sicherung-parser.js';
@@ -26,7 +27,7 @@ export interface ShellLage {
   shell: SicherungsShell; os: ShellLageKontext['os']; cwd:string; project_root:string;
   variablen: Array<{name:string;wert?:string;gesetzt:boolean}>;
   kommandos?:ShellTextKommando[]; quell_hash?:string; inline_pfade?:Record<string,boolean|undefined>;scratchpad_roots?:string[];testprojekt?:boolean;
-  ziele:ShellLageZiel[]; ungeklaert:string[]; sicher_aufloesbar:boolean; hinweis?:string; hash:string;
+  build_log?:{belege:Array<{pfad:string;kanonisch:string;scope:string}>;hash:string};ziele:ShellLageZiel[]; ungeklaert:string[]; sicher_aufloesbar:boolean; hinweis?:string; hash:string;
 }
 interface Wert {wert?:string;leer:string[];probleme:string[];glob:boolean;}
 const basis=(s:string)=>s.replace(/\\/g,'/').split('/').pop()??s;
@@ -151,7 +152,8 @@ function targets(k:ShellTextKommando):Array<{word:ShellWort;rolle:'ziel'|'quelle
 }
 export async function ermittleShellLage(command:string,ctx:ShellLageKontext):Promise<ShellLage>{
   const shell=ctx.shell??(winOs(ctx)?'cmd':'sh'),p=pArt(ctx);
-  const tree=parseShellText(command,shell);
+  const buildLog=await gebundeneBuildLogFakten(command,{...ctx,shell},ctx.probe??probeShellLage);
+  const tree=parseShellText(buildLog?.text??command,shell);
   const vars=new Map<string,{name:string;wert?:string;gesetzt:boolean}>();
   const actualEnv={...(ctx.env??{})};
   ctx={...ctx,env:actualEnv};
@@ -212,7 +214,7 @@ export async function ermittleShellLage(command:string,ctx:ShellLageKontext):Pro
     };
     const projected:ShellTextKommando={
       argv:k.argv.map(aufgeloest),
-      umleitungen:(k.umleitungs_woerter??k.umleitungen.map(text=>({text,dynamisch:false}))).map(aufgeloest).map(w=>w.text),
+      umleitungen:(k.umleitungs_woerter??k.umleitungen.map(text=>({text,dynamisch:false}))).map(w=>{const a=aufgeloest(w);return a.text===''&&w.dynamisch?{...a,text:w.text,dynamisch:true}:a;}).map(w=>w.text),
       shell:art,nach:k.nach,
       ...(k.inline_skript?{inline_skript:{...k.inline_skript,
         text:k.inline_skript.argv_index!==undefined?aufgeloest(k.argv[k.inline_skript.argv_index]).text:
@@ -298,6 +300,7 @@ export async function ermittleShellLage(command:string,ctx:ShellLageKontext):Pro
   }
   const ungeklaert=[...new Set(unresolved)];
   const base={shell,os:ctx.os,cwd:ctx.cwd,project_root:ctx.project_root,
+    ...(buildLog?{build_log:{belege:buildLog.belege,hash:buildLog.hash}}:{}),
     quell_hash:createHash('sha256').update(command).digest('hex'),
     sicher_aufloesbar:ungeklaert.length===0,...(ungeklaert.length?{hinweis:'Lage nicht sicher auflösbar'}:{}),
     ...(kommandos.some(k=>k.inline_skript)?{scratchpad_roots,testprojekt,...(ctx.inspect!==false?{inline_pfade}:{})}:{}),

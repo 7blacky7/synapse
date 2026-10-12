@@ -1,14 +1,17 @@
 /** P10-T47: ausschließlich read-only Shell-Bestandszählung, keine Inhalte ausgeben. */
-import assert from'node:assert/strict';import path from'node:path';
+import assert from'node:assert/strict';import path from'node:path';import{pathToFileURL}from'node:url';
 import{getPool,closePool}from'../dist/db/client.js';
 import{ermittleShellLage}from'../dist/services/shell-lage.js';
 import{pruefeShellStart}from'../dist/services/shell-start-sicherung.js';
 import{holeShellStartKatalog}from'../dist/services/shell-sicherungs-lauf.js';
+export const SHELL_BESTAND_JOBS_SQL="SELECT j.id::text,j.project,j.command,j.cwd_relative,j.sicherung,p.path AS root FROM shell_jobs j LEFT JOIN LATERAL (SELECT path FROM projects WHERE name=j.project ORDER BY CASE WHEN path=j.sicherung#>>'{lage,project_root}' THEN 0 WHEN path NOT LIKE '/virtual/%' THEN 1 ELSE 2 END,hostname,path LIMIT 1) p ON TRUE WHERE j.created_at>=$2::timestamptz-INTERVAL '7 days' AND j.created_at<=$2::timestamptz AND j.id::text>$1 ORDER BY j.id::text LIMIT 500";
+export const shellGrundGruppen=reasons=>[...new Set(reasons.map(reason=>reason.split(':')[0]))];
+export async function zaehleShellBestand(){
 const u=new URL(process.env.DATABASE_URL||'http://invalid');assert.equal(u.pathname,'/synapse');assert.equal(u.port,'5432');
 const katalog=await holeShellStartKatalog(),counts={gesamt:0,anleitung:0,inline_anleitung:0,nach_grund:{},gespeicherte_lage:0};
 const bis=process.argv.find(x=>x.startsWith('--bis='))?.slice(6)??new Date().toISOString();assert.ok(Number.isFinite(Date.parse(bis)));let cursor='0';
 for(;;){
- const{rows}=await getPool().query("SELECT j.id::text,j.project,j.command,j.cwd_relative,j.sicherung,p.path AS root FROM shell_jobs j LEFT JOIN projects p ON p.name=j.project WHERE j.created_at>=$2::timestamptz-INTERVAL '7 days' AND j.created_at<=$2::timestamptz AND j.id::text>$1 ORDER BY j.id::text LIMIT 500",[cursor,bis]);
+ const{rows}=await getPool().query(SHELL_BESTAND_JOBS_SQL,[cursor,bis]);
  if(!rows.length)break;
  for(const row of rows){
   cursor=row.id;const known=row.sicherung?.lage,root=known?.project_root??row.root??'/unknown';
@@ -18,9 +21,11 @@ for(;;){
   if(result.antwort?.stufe!=='anleitung'||result.darf_starten)continue;
   counts.anleitung++;
   const reasons=lage.ungeklaert??[];
-  for(const reason of new Set(reasons)){const group=reason.split(':')[0];counts.nach_grund[group]=(counts.nach_grund[group]??0)+1;}
+  for(const group of shellGrundGruppen(reasons)){counts.nach_grund[group]=(counts.nach_grund[group]??0)+1;}
   if(reasons.includes('inline_oder_script_lage_unbekannt')||reasons.includes('interpreter_datei'))counts.inline_anleitung++;
  }
 }
 console.log('P10_T47_7TAGE_'+(process.argv.includes('--alt')?'ALT':'NEU')+'='+JSON.stringify(counts));
-await closePool();process.exit(0);
+await closePool();
+}
+if(process.argv[1]&&import.meta.url===pathToFileURL(path.resolve(process.argv[1])).href)await zaehleShellBestand();
