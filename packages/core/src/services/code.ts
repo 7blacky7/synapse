@@ -3288,62 +3288,100 @@ export async function getProjectStats(projectName: string): Promise<{
   }
 }
 
-/**
- * Sucht Dateien nach Pfad-Pattern in PostgreSQL
- * Glob-Patterns werden zu SQL LIKE/Regex konvertiert
- */
-export async function searchFilesByPath(
-  project: string,
-  pathPattern: string,
-  options: { contentPattern?: string; limit?: number } = {}
-): Promise<Array<{
+/** Ein Dateitreffer; Inhaltsfelder zeigen den ersten passenden PG-Chunk. */
+interface PfadTreffer {
   filePath: string;
   fileName: string;
   fileType: string;
   chunkCount: number;
   fileSize: number;
-}>> {
-  const { limit = 50 } = options;
-  const pool = getPool();
+  lineStart: number | null;
+  lineEnd: number | null;
+  content: string | null;
+}
+interface PfadSuchOptionen { contentPattern?: string; limit?: number; withTotal?: boolean }
+interface PfadSuchSeite { results: PfadTreffer[]; totalMatches: number }
 
-  // Glob → PostgreSQL Regex (~): Konvertierung mit Marker-Methode
-  // Reihenfolge: Glob-Konstrukte zuerst durch Marker ersetzen,
-  // dann Sonderzeichen escapen, dann Marker durch Regex ersetzen.
-  // So werden . in *.ts escaped, aber . in [^/]* bleiben intakt.
-  let sqlPattern = pathPattern
+/** Ohne withTotal bleibt der bisherige Array-Vertrag erhalten. */
+export function searchFilesByPath(
+  project: string, pathPattern: string, options: PfadSuchOptionen & { withTotal: true }
+): Promise<PfadSuchSeite>;
+export function searchFilesByPath(
+  project: string, pathPattern: string, options?: PfadSuchOptionen & { withTotal?: false }
+): Promise<PfadTreffer[]>;
+/**
+ * Gemeinsame PG-Pfadsuche fuer REST und stdio. Zaehlt Dateien vor LIMIT;
+ * contentPattern prueft die PG-Chunks per case-insensitive PostgreSQL-Regex.
+ */
+export async function searchFilesByPath(
+  project: string,
+  pathPattern: string,
+  options: PfadSuchOptionen = {}
+): Promise<PfadTreffer[] | PfadSuchSeite> {
+  const limit = options.limit ?? 50;
+  if (!Number.isInteger(limit) || limit < 0) throw new Error('limit muss eine nichtnegative ganze Zahl sein');
+  const pool = getPool();
+  const contentPattern = options.contentPattern || null;
+  // Auch bei null Treffern ungueltige Regex melden (nicht vom Queryplan abhaengig).
+  if (contentPattern !== null) {
+    try {
+      await pool.query('SELECT $1::text ~* $2::text', ['', contentPattern]);
+    } catch (error) {
+      if ((error as { code?: string }).code === '2201B') {
+        throw new Error('Ungueltiges Regex-Pattern: ' + contentPattern);
+      }
+      throw error;
+    }
+  }
+
+  const pattern = pathPattern.replace(/\\/g, '/').replace(/^\//, '');
+  let sqlPattern = pattern
     .replace(/\*\*\//g, '\x01GLOBSTARSLASH\x01')
     .replace(/\*\*/g, '\x01GLOBSTAR\x01')
     .replace(/\*/g, '\x01STAR\x01')
     .replace(/\?/g, '\x01QUESTION\x01')
-    .replace(/\./g, '\\.')
+    .replace(/[.+^$(){}|\\]/g, '\\$&')
     .replace(/\x01GLOBSTARSLASH\x01/g, '(.*/)?')
     .replace(/\x01GLOBSTAR\x01/g, '.*')
     .replace(/\x01STAR\x01/g, '[^/]*')
-    .replace(/\x01QUESTION\x01/g, '.');
-
-  // Relative Pfade in DB — Pattern matcht direkt
-  // Fuehrenden / entfernen falls vorhanden (absolute→relative Normalisierung)
-  if (pathPattern.startsWith('/')) {
-    sqlPattern = sqlPattern.substring(1);
-  }
-  // Kein '.*/' Prefix noetig — Pfade sind bereits relativ
+    .replace(/\x01QUESTION\x01/g, '[^/]');
+  // matchBase wie bisher im REST-Weg: *.ts trifft auch src/a.ts, nicht a.ts.bak.
+  sqlPattern = (pattern.includes('/') ? '^' : '(^|/)') + sqlPattern + '$';
 
   const result = await pool.query(
-    `SELECT file_path, file_name, file_type, chunk_count, file_size
-     FROM code_files
-     WHERE project = $1 AND file_path ~ $2
-     ORDER BY file_path
-     LIMIT $3`,
-    [project, sqlPattern, limit]
+    `WITH treffer AS MATERIALIZED (
+       SELECT f.project, f.file_path, f.file_name, f.file_type, f.chunk_count, f.file_size
+       FROM code_files f
+       WHERE f.project = $1 AND f.deleted_at IS NULL AND f.file_path ~ $2
+         AND ($3::text IS NULL OR EXISTS (
+           SELECT 1 FROM code_chunks c
+           WHERE c.project = f.project AND c.file_path = f.file_path AND c.content ~* $3
+         ))
+     ), seite AS (
+       SELECT f.*, c.line_start, c.line_end, c.content
+       FROM (SELECT * FROM treffer ORDER BY file_path LIMIT $4) f
+       LEFT JOIN LATERAL (
+         SELECT line_start, line_end, content FROM code_chunks c
+         WHERE c.project = f.project AND c.file_path = f.file_path
+           AND ($3::text IS NULL OR c.content ~* $3)
+         ORDER BY chunk_index LIMIT 1
+       ) c ON true
+     )
+     SELECT (SELECT COUNT(*) FROM treffer) AS total,
+       COALESCE((SELECT jsonb_agg(to_jsonb(s) ORDER BY s.file_path) FROM seite s), '[]'::jsonb) AS files`,
+    [project, sqlPattern, contentPattern, limit]
   );
-
-  return result.rows.map(row => ({
+  const results: PfadTreffer[] = result.rows[0].files.map((row: Record<string, any>) => ({
     filePath: row.file_path,
     fileName: row.file_name,
     fileType: row.file_type,
     chunkCount: row.chunk_count,
     fileSize: row.file_size,
+    lineStart: row.line_start,
+    lineEnd: row.line_end,
+    content: row.content,
   }));
+  return options.withTotal ? { results, totalMatches: Number(result.rows[0].total) } : results;
 }
 
 // ─── linkCrossFileReferences ────────────────────────────────────────────────────

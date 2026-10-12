@@ -165,13 +165,17 @@ export async function searchByPath(
   const { limit = 50 } = options;
 
   try {
-    const results = await searchFilesByPath(project, pathPattern, { limit });
+    const { results, totalMatches } = await searchFilesByPath(project, pathPattern, {
+      contentPattern: options.contentPattern, limit, withTotal: true,
+    });
 
     return {
       success: true,
       results,
-      totalMatches: results.length,
-      message: `${results.length} Treffer gefunden`,
+      totalMatches,
+      message: totalMatches > results.length
+        ? `${results.length} von ${totalMatches} Treffern angezeigt`
+        : `${totalMatches} Treffer gefunden`,
     };
   } catch (error) {
     return {

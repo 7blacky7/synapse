@@ -13,6 +13,7 @@ import { zeigeArtefakt } from '../services/agent-runtime/artefakt-tool.js';
 import {
   // Code-Suche
   searchCode,
+  searchFilesByPath,
   searchCodeBatch,
   searchDocsWithFallback,
   scoreSchwelleOderHinweis,
@@ -2563,43 +2564,20 @@ async function handleToolCallKern(
           }));
         }
         case 'path': {
-          const project = reqStr(args, 'project');
-          const pathPattern = reqStr(args, 'path_pattern');
-          const contentPattern = str(args, 'content_pattern');
-          const limit = num(args, 'limit') ?? 50;
-          const collectionName = COLLECTIONS.projectCode(project);
-
-          const allPoints = await scrollVectors<{
-            file_path: string; file_name: string; file_type: string;
-            line_start: number; line_end: number; content: string;
-          }>(collectionName, {}, 10000);
-
-          let matches = allPoints.filter(point => {
-            const fp = point.payload?.file_path || '';
-            return minimatch(fp.replace(/\\/g, '/'), pathPattern, { matchBase: true });
-          });
-          if (contentPattern) {
-            let regex: RegExp;
-            try {
-              regex = new RegExp(contentPattern, 'i');
-            } catch {
-              return { success: false, error: `Ungueltiges Regex-Pattern: ${contentPattern}` };
-            }
-            matches = matches.filter(p => regex.test(p.payload?.content || ''));
+          try {
+            const { results, totalMatches } = await searchFilesByPath(
+              reqStr(args, 'project'), reqStr(args, 'path_pattern'),
+              { contentPattern: str(args, 'content_pattern'), limit: num(args, 'limit') ?? 50, withTotal: true }
+            );
+            return {
+              success: true, results, totalMatches,
+              message: totalMatches > results.length
+                ? `${results.length} von ${totalMatches} Treffern angezeigt`
+                : `${totalMatches} Treffer gefunden`,
+            };
+          } catch (error) {
+            return { success: false, error: (error as Error).message };
           }
-          const totalMatches = matches.length;
-          return {
-            success: true,
-            results: matches.slice(0, limit).map(p => ({
-              filePath: p.payload.file_path, fileName: p.payload.file_name,
-              fileType: p.payload.file_type, lineStart: p.payload.line_start,
-              lineEnd: p.payload.line_end, content: p.payload.content,
-            })),
-            totalMatches,
-            message: totalMatches > limit
-              ? `${limit} von ${totalMatches} Treffern angezeigt`
-              : `${totalMatches} Treffer gefunden`,
-          };
         }
         case 'code_with_path': {
           const query = reqStr(args, 'query');
