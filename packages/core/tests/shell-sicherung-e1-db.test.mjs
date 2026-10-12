@@ -1,0 +1,31 @@
+/** P10-T35: Schema-Probe, Seed/Snapshot/Audit; nur eigene Test-DB. */
+import assert from 'node:assert/strict';
+import {randomUUID} from 'node:crypto';
+const u=new URL(process.env.DATABASE_URL||'http://invalid');
+assert.equal(u.pathname,'/synapse_test');assert.equal(u.port,'5433');
+const db=await import('../dist/db/client.js');
+const {ensureSchema}=await import('../dist/db/schema.js');
+const {seedShellSicherung,ladeShellSicherungsKatalog,pruefeShellText}=await import('../dist/services/shell-sicherung.js');
+const p=db.getPool();
+const before=(await p.query("SELECT to_regclass('shell_sicherungsregeln')::text AS name")).rows[0].name;
+assert.equal((await ensureSchema({nurProbe:true})).probe,true);
+assert.equal((await p.query("SELECT to_regclass('shell_sicherungsregeln')::text AS name")).rows[0].name,before,'Probe rollt zurück');
+await ensureSchema();
+const actor={agent_id:'sol-2-e1-test',grund:'P10-T35 Testseed'};
+const first=await seedShellSicherung(p,actor);
+assert.deepEqual(await seedShellSicherung(p,actor),{antworten:0,regeln:0,risiko_verben:0});
+const catalog=await ladeShellSicherungsKatalog(p);
+assert.equal(pruefeShellText('rm x',{katalog:catalog}).treffer.some(t=>t.regel_id==='fs.rm'),true);
+const project='test-shell-e1-db-'+randomUUID();
+await p.query('INSERT INTO projects(name,hostname,path) VALUES($1,$2,$3)',[project,'test','/virtual/e1-test']);
+const id='test-'+randomUUID();
+const r=catalog.regeln.find(x=>x.id==='fs.rm');
+await p.query('INSERT INTO shell_sicherungsregeln(id,version,art,stufe,muster,antwort_id,quelle,status,os,bereich,project,rechner,positiv,negativ) VALUES($1,2,$2,$3,$4::jsonb,$5,$6,$7,$8,$9,$10,$11,$12::jsonb,$13::jsonb)',
+[id,r.art,r.stufe,JSON.stringify(r.muster),r.antwort_id,r.quelle,'aktiv',['windows'],'projekt',project,['test-host'],JSON.stringify(['rm x']),JSON.stringify(['git status'])]);
+const fresh=await ladeShellSicherungsKatalog(p);
+assert.ok(pruefeShellText('rm x',{katalog:fresh,project,os:'windows',rechner:'test-host'}).treffer.some(x=>x.regel_id===id));
+assert.ok(!pruefeShellText('rm x',{katalog:fresh,project,os:'linux',rechner:'test-host'}).treffer.some(x=>x.regel_id===id));
+const audits=await p.query("SELECT count(*)::integer AS n FROM shell_sicherungs_audit WHERE agent_id=$1 AND grund=$2 AND created_at IS NOT NULL",[actor.agent_id,actor.grund]);
+assert.ok(audits.rows[0].n>=first.regeln+first.antworten+first.risiko_verben);
+console.log('P10-T35 Schema-Probe/Rollback, Seed-Idempotenz, DB-Scopes, Audit gruen.');
+await db.closePool();process.exit(0);

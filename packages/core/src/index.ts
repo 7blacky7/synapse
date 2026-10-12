@@ -422,6 +422,8 @@ export {
   invalidateCutoffCache,
   MODEL_CUTOFF_SEED,
 } from './services/model-cutoffs.js';
+export { pruefeShellText, ladeShellSicherungsKatalog, seedShellSicherung, zaehleShellSicherungsBestand } from './services/shell-sicherung.js';
+export type { ShellSicherungsKatalog, ShellTextErgebnis, ShellSicherungsRegel, ShellAntwortEintrag } from './services/shell-sicherung.js';
 
 // Shell-Exec (gemeinsam fuer MCP-Tool + REST /api/shell)
 export {
