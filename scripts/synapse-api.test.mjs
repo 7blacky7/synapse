@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { test } from 'node:test';
+import { afterEach, test } from 'node:test';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -7,6 +7,10 @@ import { pathToFileURL } from 'node:url';
 
 const helperUrl = pathToFileURL(new URL('./synapse-api.mjs', import.meta.url).pathname).href;
 const tempHomes = [];
+
+afterEach(async () => {
+  await Promise.all(tempHomes.splice(0).map(home => rm(home, { recursive: true, force: true })));
+});
 
 async function setup() {
   const home = await mkdtemp(join(tmpdir(), 'synapse-api-test-'));
@@ -41,15 +45,15 @@ test('gemeinsamer Client liest Konfiguration und ruft MCP-Tool mit Bearer auf', 
     arguments: { action: 'pending', project: 'test', agent_id: 'luna-2' },
   });
   assert.deepEqual(result, { success: true, messages: [] });
-  assert.ok(home);
 });
 
-test('Umgebungs-Token hat Vorrang und JSON-RPC/MCP-Fehler werden lesbar gemeldet', async () => {
+test('SYNAPSE_API_URL überschreibt die Config-URL, der Env-Token hat Vorrang und API-Fehler werden lesbar gemeldet', async () => {
   const home = await setup();
   const { loadApiConfig, callMcpTool } = await import(helperUrl);
-  const config = await loadApiConfig({ home, env: { SYNAPSE_API_TOKEN: 'override-token' } });
+  const config = await loadApiConfig({ home, env: { SYNAPSE_API_URL: 'https://override.test/', SYNAPSE_API_TOKEN: 'override-token' } });
   let authorization;
-  const fetchImpl = async (_url, options) => {
+  const fetchImpl = async (url, options) => {
+    assert.equal(String(url), 'https://override.test/mcp/messages');
     authorization = options.headers.Authorization;
     return new Response(JSON.stringify({ error: { message: 'unauthorized' } }), {
       status: 401,
@@ -61,5 +65,4 @@ test('Umgebungs-Token hat Vorrang und JSON-RPC/MCP-Fehler werden lesbar gemeldet
     /HTTP 401.*unauthorized/,
   );
   assert.equal(authorization, 'Bearer override-token');
-  assert.ok(home);
 });
