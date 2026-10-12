@@ -409,7 +409,19 @@ export function startFileWatcher(options: FileWatcherOptions): FileWatcherInstan
   });
 
   // ═══ PG-Watcher: Externe Aenderungen aus PostgreSQL auf Festplatte synchen ═══
-  let lastPgCheck = new Date(0).toISOString();
+  // Der Startbestand kommt seitenweise ueber den Vollabgleich; Delta beginnt jetzt.
+  let lastPgCheck = new Date().toISOString();
+  // updated_at ist der Transaktionsbeginn, NICHT die Sichtbarkeits-/Commit-Reihenfolge.
+  // Ueberlappung faengt spaete Commits zeitnah ab; der Vollabgleich auch beliebig alte.
+  const positiveMs = (name: string, fallback: number): number => {
+    const wert = Number(process.env[name]);
+    return Number.isFinite(wert) && wert > 0 ? wert : fallback;
+  };
+  const pgOverlapMs = positiveMs('SYNAPSE_PGFS_OVERLAP_MS', 120_000);
+  const pgFullReconcileMs = positiveMs('SYNAPSE_PGFS_FULL_RECONCILE_MS', 300_000);
+  const pgFullBatchFiles = Math.max(1, Math.floor(positiveMs('SYNAPSE_PGFS_FULL_BATCH_FILES', 500)));
+  let letzterVollabgleich: number | null = null;
+  let vollabgleichStand: { begann: number; changedAfter: string | null; deletedAfter: string | null; dateien: number; nachgeholt: number } | null = null;
   let pgPollInterval: NodeJS.Timeout | null = null;
   let pgPollBusy = false;  // Re-Entrancy-Guard: verhindert Ueberlappen langsamer Polls (OOM-Schutz)
   // P15 Logpflege (929b5b10): jede Skip-Zeile je Datei und Grund nur EINMAL, erneut erst nach einer
@@ -451,6 +463,14 @@ export function startFileWatcher(options: FileWatcherOptions): FileWatcherInstan
         // bleibt stehen, nach der Pause holt der naechste Tick alles nach.
         if (workerPausiert('sync_pg_fs')) return;
         pgPollBusy = true;
+        const pollBeginn = Date.now();
+        if (!vollabgleichStand && (letzterVollabgleich === null || pollBeginn - letzterVollabgleich >= pgFullReconcileMs)) {
+          vollabgleichStand = { begann: pollBeginn, changedAfter: '', deletedAfter: '', dateien: 0, nachgeholt: 0 };
+        }
+        const vollabgleich = vollabgleichStand;
+        let nachgeholteDateien = 0;
+        const checkpointVorher = lastPgCheck;
+        const untergrenze = new Date(Math.max(0, Date.parse(lastPgCheck) - pgOverlapMs)).toISOString();
         try {
           // 1. Changed/new files: Kandidaten OHNE content laden — nur den Hash.
           //    Der grosse content (inkl. Multi-MB-PDFs/Binaries) wird NICHT fuer
@@ -458,13 +478,22 @@ export function startFileWatcher(options: FileWatcherOptions): FileWatcherInstan
           //    eine Datei wirklich geschrieben werden muss. Alle Contents
           //    gleichzeitig im Query-Result zu halten war der native-Buffer-
           //    Treiber des OOM (RSS waechst ueber den JS-Heap-Cap hinaus).
-          const changed = await pool.query(
-            `SELECT file_path, content_hash, updated_at
-             FROM code_files
-             WHERE project = $1 AND updated_at > $2
-               AND content IS NOT NULL AND deleted_at IS NULL`,
-            [projectName, lastPgCheck]
+          const delta = await pool.query(
+            `SELECT file_path, content_hash, updated_at FROM code_files
+             WHERE project = $1 AND updated_at >= $2 AND content IS NOT NULL AND deleted_at IS NULL`,
+            [projectName, untergrenze]
           );
+          // Keyset-Paging statt eines synchronen Hash-Laufs ueber zehntausende Dateien.
+          // Delta laeuft auch waehrend des Vollabgleichs in JEDEM Tick; geloeschte Zeilen
+          // verschieben keine Offsets. Neue Zeilen hinter dem Cursor sieht der naechste Vollabgleich.
+          const volleSeite = vollabgleich?.changedAfter != null ? await pool.query(
+            `SELECT file_path, content_hash, updated_at FROM code_files
+             WHERE project = $1 AND file_path > $2 AND content IS NOT NULL AND deleted_at IS NULL
+             ORDER BY file_path LIMIT $3`, [projectName, vollabgleich.changedAfter, pgFullBatchFiles]
+          ) : { rows: [] };
+          const deltaPfade = new Set(delta.rows.map(row => row.file_path));
+          const vollePfade = new Set(volleSeite.rows.map(row => row.file_path));
+          const changed = { rows: [...new Map([...delta.rows, ...volleSeite.rows].map(row => [row.file_path, row])).values()] };
 
           // Zeilen, die dieser Tick bewusst NICHT geschrieben hat. Sie halten den
           // Checkpoint zurueck, damit der naechste Tick sie erneut sieht.
@@ -499,7 +528,7 @@ export function startFileWatcher(options: FileWatcherOptions): FileWatcherInstan
             // gemacht und der unlink-Handler skippt mit "Rename-detected".
             const pending = pendingEvents.get(relativePath);
             if (pending && pending.type === 'unlink') {
-              zurueckgestellt.push(alsIso(row.updated_at));
+              if (deltaPfade.has(relativePath)) zurueckgestellt.push(alsIso(row.updated_at));
               if (skipMeldungen.sollMelden(relativePath, 'unlink', String(row.content_hash))) {
                 console.error(`[Synapse] PG→FS Skip (unlink pending): ${path.basename(relativePath)}`);
               }
@@ -540,7 +569,9 @@ export function startFileWatcher(options: FileWatcherOptions): FileWatcherInstan
                 // Sonst kaeme das Einsammeln nie und jede Runde fragte ab der aeltesten solchen Zeile neu
                 // (Endlosschleife, Befund 929b5b10). Ueberschrieben wird in beiden Faellen NICHT.
                 const einsammelbar = watcherSammeltEin(relativePath, filePath);
-                if (einsammelbar) zurueckgestellt.push(alsIso(row.updated_at));
+                // Alte Vollabgleich-Zeilen duerfen den Delta-Merkpunkt nicht auf den
+                // Projektanfang zuruecksetzen; FS-Aenderungen kommen ueber den Watcher.
+                if (einsammelbar && deltaPfade.has(relativePath)) zurueckgestellt.push(alsIso(row.updated_at));
                 const grund = einsammelbar ? 'fremd' : 'fremd-nicht-einsammelbar';
                 if (skipMeldungen.sollMelden(relativePath, grund, `${row.content_hash}|${localHash}`)) {
                   console.error(
@@ -564,16 +595,27 @@ export function startFileWatcher(options: FileWatcherOptions): FileWatcherInstan
             fs.mkdirSync(path.dirname(filePath), { recursive: true });
             fs.writeFileSync(filePath, content, 'utf-8');
             skipMeldungen.vergessen(relativePath);
-            console.error(`[Synapse] PG→FS Sync: ${path.basename(filePath)}`);
+            const ausVollabgleich = vollePfade.has(relativePath);
+            if (ausVollabgleich) nachgeholteDateien++;
+            const nachgeholt = ausVollabgleich || alsIso(row.updated_at) <= checkpointVorher;
+            console.error(nachgeholt
+              ? `[Synapse] PG→FS Nachgeholt (${ausVollabgleich ? 'Vollabgleich' : 'Überlappung'}): ${relativePath}`
+              : `[Synapse] PG→FS Sync: ${relativePath}`);
           }
 
           // 2. Soft-deleted files
-          const deleted = await pool.query(
+          const deletedDelta = await pool.query(
             `SELECT id, file_path, updated_at FROM code_files
-             WHERE project = $1 AND deleted_at IS NOT NULL AND deleted_at > $2`,
-            [projectName, lastPgCheck]
+             WHERE project = $1 AND deleted_at IS NOT NULL AND deleted_at >= $2`,
+            [projectName, untergrenze]
           );
-
+          const geloeschteSeite = vollabgleich?.deletedAfter != null ? await pool.query(
+            `SELECT id, file_path, updated_at FROM code_files
+             WHERE project = $1 AND deleted_at IS NOT NULL AND file_path > $2 ORDER BY file_path LIMIT $3`,
+            [projectName, vollabgleich.deletedAfter, pgFullBatchFiles]
+          ) : { rows: [] };
+          const volleLoeschPfade = new Set(geloeschteSeite.rows.map(row => row.file_path));
+          const deleted = { rows: [...new Map([...deletedDelta.rows, ...geloeschteSeite.rows].map(row => [row.file_path, row])).values()] };
           for (const row of deleted.rows) {
             // P15-T36: Daemon-Schutz auch beim Loeschen - nie ausserhalb des Projekts unlinken.
             if (!liegtImProjekt(projectPath, row.file_path)) {
@@ -583,7 +625,11 @@ export function startFileWatcher(options: FileWatcherOptions): FileWatcherInstan
             const filePath = path.join(projectPath, row.file_path);  // absolut rekonstruieren
             if (fs.existsSync(filePath)) {
               fs.unlinkSync(filePath);
-              console.error(`[Synapse] PG→FS Delete: ${path.basename(filePath)}`);
+              const ausVollabgleich = volleLoeschPfade.has(row.file_path);
+              if (ausVollabgleich) nachgeholteDateien++;
+              console.error(ausVollabgleich || alsIso(row.updated_at) <= checkpointVorher
+                ? `[Synapse] PG→FS Nachgeholt (${ausVollabgleich ? 'Vollabgleich' : 'Überlappung'}, gelöscht): ${row.file_path}`
+                : `[Synapse] PG→FS Delete: ${row.file_path}`);
             }
             try {
               const collectionName = COLLECTIONS.projectCode(projectName);
@@ -613,6 +659,18 @@ export function startFileWatcher(options: FileWatcherOptions): FileWatcherInstan
               if (knappDavor < neuerStand) neuerStand = knappDavor;
             }
             lastPgCheck = neuerStand;
+          }
+          // Seiten-Cursor erst nach erfolgreicher Verarbeitung verschieben, Fehler werden wiederholt.
+          if (vollabgleich) {
+            vollabgleich.dateien += volleSeite.rows.length + geloeschteSeite.rows.length;
+            vollabgleich.nachgeholt += nachgeholteDateien;
+            vollabgleich.changedAfter = volleSeite.rows.length < pgFullBatchFiles ? null : volleSeite.rows.at(-1)!.file_path;
+            vollabgleich.deletedAfter = geloeschteSeite.rows.length < pgFullBatchFiles ? null : geloeschteSeite.rows.at(-1)!.file_path;
+            if (vollabgleich.changedAfter === null && vollabgleich.deletedAfter === null) {
+              letzterVollabgleich = Date.now();
+              console.error(`[Synapse] PG→FS Vollabgleich: Projekt=${JSON.stringify(projectName)} Dateien=${vollabgleich.dateien} Dauer_ms=${letzterVollabgleich - vollabgleich.begann} nachgeholt=${vollabgleich.nachgeholt}`);
+              vollabgleichStand = null;
+            }
           }
         } catch {
           // PG not reachable — ignore, next poll will retry

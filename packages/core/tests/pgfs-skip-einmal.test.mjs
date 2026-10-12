@@ -10,8 +10,8 @@
  *   K1 gitignorierter Pfad mit fremdem Plattenstand: genau EINE Skip-Zeile ueber mehrere Runden.
  *   K2 einsammelbarer Pfad mit fremdem Plattenstand (Watcher-Callback hier leer): ebenfalls genau EINE Zeile.
  *   K3 Platte unveraendert (kein Ueberschreiben, Schutz SYNC-1 bleibt).
- *   K4 Checkpoint laeuft am gitignorierten Pfad vorbei: eine weitere Plattenaenderung dort wird NICHT erneut
- *      geprueft (keine zweite Zeile); am einsammelbaren Pfad (weiter zurueckgestellt) meldet sie sich einmal neu.
+ *   K4 P6-T41: Ueberlappung/Vollabgleich pruefen auch gitignorierte Pfade erneut.
+ *      Ein neuer Plattenstand meldet sich je Pfad genau einmal, unveraenderter Stand bleibt still.
  *   K5 Aenderung in PG (neuer Inhalt) -> genau eine neue Zeile fuer den gitignorierten Pfad.
  *   K6 Positivkontrolle Sync: eine neue PG-Zeile ohne Plattendatei wird geschrieben (Poller arbeitet).
  * POSITIVKONTROLLE: am Stand vor dem Fix zaehlt K1/K2 eine Zeile je Runde (> 1) -> FEHL.
@@ -108,7 +108,7 @@ try {
   fs.writeFileSync(join(wurzel, IGN), 'PLATTE-A2\n');
   fs.writeFileSync(join(wurzel, SAMMEL), 'PLATTE-B2\n');
   await schlaf(5000);
-  pruefe(skips(IGN) === 1, `K4 gitignorierter Pfad wird nach Vorruecken des Checkpoints nicht erneut geprueft (gezaehlt ${skips(IGN)})`);
+  pruefe(skips(IGN) === 2, `K4 Ueberlappung meldet neuen Plattenstand einmal (gezaehlt ${skips(IGN)})`);
   pruefe(skips(SAMMEL) === 2, `K4 einsammelbarer Pfad (zurueckgestellt) meldet den neuen Plattenstand einmal (gezaehlt ${skips(SAMMEL)})`);
 
   // K5: Aenderung in PG.
@@ -117,7 +117,7 @@ try {
     [PROJECT, IGN, 'PG-A2\n', sha('PG-A2\n')]
   );
   await schlaf(7000);
-  pruefe(skips(IGN) === 2, `K5 nach Aenderung in PG genau 1 neue Zeile (gezaehlt ${skips(IGN)})`);
+  pruefe(skips(IGN) === 3, `K5 nach Aenderung in PG genau 1 neue Zeile (gezaehlt ${skips(IGN)})`);
   pruefe(fs.readFileSync(join(wurzel, IGN), 'utf8') === 'PLATTE-A2\n', 'K5 Platte weiter unveraendert');
 
   // K6: Positivkontrolle, der Poller schreibt noch.

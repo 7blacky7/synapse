@@ -103,6 +103,10 @@ async function commitDateiAufPlatteWarten(
       if (datei.deleted) {
         lesbarerStand = true;
         if (platte.existiert === false) return 'ja';
+      } else if (platte.existiert === false) {
+        // Ein bestaetigt fehlender Pfad ist ein lesbarer, noch nicht synchroner Stand.
+        // Bis zur Frist weiter warten: der Poller kann die Datei noch nachholen.
+        lesbarerStand = true;
       } else if (typeof platte.sha256 === 'string') {
         lesbarerStand = true;
         if (platte.sha256 === datei.hash) return 'ja';
