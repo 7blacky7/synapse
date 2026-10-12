@@ -21,9 +21,9 @@
  *     (Hash weder Fehlerstand noch Stand vorher), (c) Syntax auf dem GANZEN Stand ohne harte Meldung und keine
  *     Signatur-Treffer auf den noch vorhandenen Zeilen der Fehleraenderung (Altlasten zaehlen nicht). Dann in EINER
  *     Anweisung: Fall + Schatten geloescht, Erklaerung verifiziert. Quittierte Fehlerstaende zaehlen nie.
- *  6. Stufenmodell fuer unverifizierbare Faelle: ab 3 Monaten darf der Koordinator mit Zustimmung des Users verwerfen
- *     (fall_verwerfen, sonst Vermerk verwerfen_angefragt_am), ab 6 Monaten markiert, nach 9 Monaten automatisch
- *     geloescht (erklaerungenTagespruefung, Job in der REST-API). Sonst kein Zeitablauf.
+ *  6. Stufenmodell fuer unverifizierbare Faelle: andere Agenten duerfen ab 3 Monaten mit Grund und User-Zustimmung
+ *     verwerfen; der Koordinator jederzeit. Ab 6 Monaten markiert, nach 9 Monaten automatisch geloescht.
+ *     (erklaerungenTagespruefung, Job in der REST-API). Sonst kein Zeitablauf.
  * DATENSCHUTZ: Schatten nur in erklaerung_faelle (nicht eingebettet, nicht im Audit: tool_calls speichert die
  *   Antwort von code_check(fall) nicht). .env-Inhalte nur maskiert (NAME=[WERT]), Geheimnisse geschwaerzt.
  * E2 (11.10.2026): Startbestand packages/core/data/erklaerungstopf-seed.json (ladeErklaerungstopfSeed, beim API-Start
@@ -543,6 +543,11 @@ export function _setzeErklaerungDeps(d: { fetch?: typeof fetch } | null | undefi
 
 const fehlerText = (err: unknown): string => (err instanceof Error ? err.message : String(err));
 
+function istDeployProbe(e: Pick<Fehlerereignis, 'befund'>): boolean {
+  const datei = e.befund?.datei?.replace(/\\/g, '/');
+  return typeof datei === 'string' && /(^|\/)coedit-test\//.test(datei);
+}
+
 function starte(): void {
   if (aktiv) return;
   aktiv = (async () => {
@@ -591,7 +596,7 @@ export async function _erklaerungenLeerlauf(): Promise<void> {
 export function meldeFehlerfall(e: Fehlerereignis): void {
   try {
     const b = e.befund;
-    if (!b || b.quelle !== 'syntax' || b.severity !== 'error' || b.altlast || b.quittiert_grund || !e.project) return;
+    if (!b || b.quelle !== 'syntax' || b.severity !== 'error' || b.altlast || b.quittiert_grund || !e.project || istDeployProbe(e)) return;
     warteschlange.push(e);
     if (warteschlange.length > MAX_WARTESCHLANGE) {
       warteschlange.shift();
@@ -607,7 +612,7 @@ export function meldeFehlerfall(e: Fehlerereignis): void {
 }
 
 export interface FehlerfallErgebnis {
-  ergebnis: 'aus' | 'doppelt' | 'erklaert' | 'erklaert_vorgeschlagen' | 'fall';
+  ergebnis: 'aus' | 'doppelt' | 'probe_uebersprungen' | 'erklaert' | 'erklaert_vorgeschlagen' | 'fall';
   fall_id?: string;
   erklaerung_id?: string;
   jev?: JevVersuch;
@@ -666,6 +671,7 @@ type Vorbereitung = { fertig: FehlerfallErgebnis } | { v: Vorbereitet };
 
 /** Schritt 1 (ohne Jev): Schalter, Dedup, Schatten, Sicherung in PG. */
 async function bereiteVor(e: Fehlerereignis): Promise<Vorbereitung> {
+  if (istDeployProbe(e)) return { fertig: { ergebnis: 'probe_uebersprungen', grund: 'coedit-test' } };
   const w = await jevWirksam(e.project, 'erklaerungstopf');
   if (!w.an && w.ebene !== 'budget') return { fertig: { ergebnis: 'aus', grund: w.text } };
   const familie = familieVon(e.befund);
@@ -693,6 +699,10 @@ async function bereiteVor(e: Fehlerereignis): Promise<Vorbereitung> {
 
 /** Schritt 2: Kandidaten, Jev, Auslieferung bzw. Fall. Erfolg -> gesicherte Zeile geloescht; Fehler -> Claim frei. */
 async function bearbeite(v: Vorbereitet, d: { fetch?: typeof fetch }): Promise<FehlerfallErgebnis> {
+  if (istDeployProbe(v)) {
+    await loescheEreignis(v.ereignis_id);
+    return { ergebnis: 'probe_uebersprungen', grund: 'coedit-test' };
+  }
   try {
     const r = await bearbeiteKern(v, d);
     await loescheEreignis(v.ereignis_id);
@@ -1190,23 +1200,23 @@ export async function legeErklaerungAb(a: {
 
 // ─── Stufenmodell ────────────────────────────────────────────────────────────
 
-/** fall_verwerfen: nur Koordinator, erst ab 3 Monaten, Loeschen nur mit zustimmung_user (sonst Vermerk). */
-export async function verwerfeFall(id: string, agent: string | null, zustimmungUser: boolean): Promise<Record<string, unknown>> {
-  if (!agent || !KOORDINATOR.test(agent)) {
-    return fehler('nur_koordinator', 'Faelle verwirft nur der Koordinator (agent_id koordinator|coordinator|user) mit Zustimmung des Users.');
-  }
+/** fall_verwerfen: Koordinator jederzeit, andere Agenten ab 3 Monaten; Grund und Zustimmung sind Pflicht. */
+export async function verwerfeFall(id: string, agent: string | null, zustimmungUser: boolean, grund?: string): Promise<Record<string, unknown>> {
+  if (!agent) return fehler('agent_fehlt', 'fall_verwerfen braucht eine eigene agent_id.');
+  const koordinator = KOORDINATOR.test(agent);
   const f = await ladeFall(id);
   if (!f) return fehler('nicht_gefunden', `Kein offener Fall mit id "${id}".`);
-  if (f.stufe === 'neu') {
-    return fehler('zu_jung', 'Geloescht wird ein Fall mit verifizierter Antwort. Verwerfen ohne Antwort erst ab 3 Monaten (Stufenmodell), mit Zustimmung des Users.', { stufe: f.stufe, alter_tage: alterTage(f.erstellt_am) });
+  if (!koordinator && f.stufe === 'neu') {
+    return fehler('zu_jung', 'Andere Agenten duerfen einen Fall erst ab 3 Monaten verwerfen.', { stufe: f.stufe, alter_tage: alterTage(f.erstellt_am) });
   }
-  if (!zustimmungUser) {
-    await getPool().query('UPDATE erklaerung_faelle SET verwerfen_angefragt_am = NOW() WHERE id = $1::bigint', [f.id]);
-    return { success: true, ergebnis: 'angefragt', fall_id: f.id, stufe: f.stufe, message: `Vermerkt: Verwerfen angefragt. Frage den User; mit seiner Zustimmung code_check({action:"fall_verwerfen", id:"${f.id}", zustimmung_user:true}).` };
+  const begruendung = grund?.trim();
+  if (!begruendung || begruendung.length < 10) {
+    return fehler('grund_fehlt', 'fall_verwerfen braucht eine Begruendung mit mindestens 10 Zeichen.');
   }
+  if (!zustimmungUser) return fehler('zustimmung_fehlt', 'fall_verwerfen braucht zustimmung_user:true.');
   await getPool().query('DELETE FROM erklaerung_faelle WHERE id = $1::bigint', [f.id]);
-  console.error(`[erklaerungen] Fall ${f.id} (${f.project}, ${f.datei}) mit Zustimmung des Users verworfen (${agent}, Stufe ${f.stufe}).`);
-  return { success: true, ergebnis: 'verworfen', fall_id: f.id, stufe: f.stufe, message: 'Fall samt Schatten verworfen (Zustimmung des Users).' };
+  console.error(`[erklaerungen] Fall ${f.id} (${f.project}, ${f.datei}) verworfen; agent=${agent}; zustimmung_user=true; grund=${JSON.stringify(begruendung)}; stufe=${f.stufe}.`);
+  return { success: true, ergebnis: 'verworfen', fall_id: f.id, stufe: f.stufe, message: 'Fall samt Schatten verworfen (Grund und Zustimmung protokolliert).' };
 }
 
 /**
@@ -1485,7 +1495,8 @@ export const ERKLAERUNG_PARAMETER: Record<string, Record<string, unknown>> = {
   abhilfe_en: { type: 'string', description: 'erklaerung_ablegen: fix, english' },
   kennung: { type: 'string', description: 'erklaerung_ablegen: optionale Kurzkennung (a-z, 0-9, -), eindeutig' },
   bewertung: { type: 'string', enum: [...BEWERTUNGEN], description: 'erklaerung_bewerten: passt_nicht (jeder) | stilllegen (Koordinator, grund >= 10) | reaktivieren (Koordinator)' },
-  zustimmung_user: { type: 'boolean', description: 'fall_verwerfen: der User hat dem Verwerfen zugestimmt (nur Koordinator, erst ab 3 Monaten)' },
+  zustimmung_user: { type: 'boolean', description: 'fall_verwerfen: Pflichtfeld; der User hat dem Verwerfen zugestimmt' },
+  grund: { type: 'string', description: 'fall_verwerfen: Pflicht, mindestens 10 Zeichen; erklaerung_bewerten: Begruendung' },
   familie: { type: 'string', description: 'erklaerungen: Pruefer-Familie (typescript, json, libpg-query, ...)' },
   erklaerung_status: { type: 'string', enum: [...ERKLAERUNG_STATUS], description: 'erklaerungen: Filter vorgeschlagen | verifiziert | stillgelegt' },
 };
@@ -1530,7 +1541,7 @@ export async function fuehreErklaerungsActionAus(action: string, args: Record<st
       case 'fall_verwerfen': {
         const id = text(args.id) ?? text(args.fall_id);
         if (!id) return fehler('ungueltig', 'id (Fall-ID) fehlt.');
-        return await verwerfeFall(id, agent, args.zustimmung_user === true || args.zustimmung_user === 'true');
+        return await verwerfeFall(id, agent, args.zustimmung_user === true || args.zustimmung_user === 'true', text(args.grund));
       }
       case 'erklaerungen':
         return await listeErklaerungen({ familie: text(args.familie), status: text(args.erklaerung_status), id: text(args.id), limit: Number(args.limit) || undefined });

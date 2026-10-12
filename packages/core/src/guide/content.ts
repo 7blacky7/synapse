@@ -1460,9 +1460,9 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
         example: 'code_check({ action: "fall_pruefen", id: "17" })',
       },
       fall_verwerfen: {
-        description: 'Stufenmodell: nur Koordinator, erst ab 3 Monaten. Ohne zustimmung_user nur Vermerk (verwerfen_angefragt_am), mit zustimmung_user:true geloescht. Nach 9 Monaten loescht die Tagespruefung automatisch.',
-        params: 'id (req), zustimmung_user',
-        example: 'code_check({ action: "fall_verwerfen", id: "17", zustimmung_user: true, agent_id: "koordinator" })',
+        description: 'Koordinator darf jederzeit verwerfen, andere Agenten ab 3 Monaten. grund (mindestens 10 Zeichen) und zustimmung_user:true sind Pflicht; Agent, Grund und Zustimmung werden protokolliert. Die 6/9-Monats-Stufen der Tagespruefung bleiben bestehen.',
+        params: 'id (req), grund (req, mindestens 10 Zeichen), zustimmung_user (req, true)',
+        example: 'code_check({ action: "fall_verwerfen", id: "17", grund: "User hat das Verwerfen freigegeben", zustimmung_user: true })',
       },
       erklaerungen: {
         description: 'Erklaerungen des globalen Topfs in den gepflegten Sprachen, mit Zaehlern (gewaehlt, verifiziert, passt_nicht).',

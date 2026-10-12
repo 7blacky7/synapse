@@ -38,7 +38,7 @@ export const CODE_CHECK_DEFINITION = {
     'Neue Muster starten als warning; error nur per update_pattern mit grund. ' +
     'ERKLAERUNGS-TOPF (P15-T33): Syntaxfehler ohne passende Erklaerung werden als offener Fall gesammelt; offene_faelle, fall (Schatten), ' +
     'erklaerung_ablegen (generisch, gepflegte Sprachen Pflicht; nur betroffener Agent oder Koordinator), fall_pruefen (Verifikation), ' +
-    'fall_verwerfen (Koordinator, ab 3 Monaten, mit User-Zustimmung), erklaerungen, erklaerung_bewerten. Eigene lokale Datenbank, keine externen Systeme.',
+    'fall_verwerfen (Koordinator jederzeit, andere Agenten ab 3 Monaten; grund >=10 Zeichen und zustimmung_user:true Pflicht), erklaerungen, erklaerung_bewerten. Eigene lokale Datenbank, keine externen Systeme.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -64,7 +64,7 @@ export const CODE_CHECK_DEFINITION = {
       beispiel_richtig: { type: 'string', description: 'Korrigierter Code, den die Signatur NICHT treffen darf (Selbsttest)' },
       status: { type: 'string', enum: [...PFLEGE_STATUS], description: 'aktiv (Signatur mit Selbsttest, Standard mit erkennung) | themenhinweis (Standard ohne) | stillgelegt (braucht grund). list_patterns: Filter' },
       severity: { type: 'string', enum: [...PFLEGE_SEVERITY], description: 'add_pattern: warning (Standard) oder info - error wird beim Anlegen auf warning gesetzt. update_pattern: error nur fuer aktive Signatur-Muster mit grund' },
-      grund: { type: 'string', description: 'update_pattern: Pflicht fuer severity error und status stillgelegt (mind. 10 Zeichen), wird protokolliert' },
+      grund: { type: 'string', description: 'fall_verwerfen: Pflicht, mindestens 10 Zeichen, wird protokolliert. update_pattern: Pflicht fuer severity error und status stillgelegt (mind. 10 Zeichen), wird protokolliert' },
       dublette_ok: { type: 'boolean', description: 'Trotz aehnlichem Muster (gleicher Titel / beispiel_falsch schon erkannt) speichern. Gleiche Signatur oder description bleibt abgelehnt' },
       model_scope: { type: 'string', description: 'list_patterns: Filter nach model_scope. Wird bei add/update NICHT gesetzt (abgeleitet aus found_in_model)' },
       limit: { type: 'number', description: 'list_patterns: max. Ergebnisse (Standard 20)' },

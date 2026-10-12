@@ -16,7 +16,7 @@
  *      Auslieferung quelle 'erklaerung'; jev_sprache en/de/mix steuert die Kriterien.
  *   T  Tor: Confidence 0,5 und 'keine' -> Fall mit Jev-Versuch, keine Auslieferung einer Erklaerung.
  *   A  Schalter erklaerungstopf (Projekt) aus -> kein fetch, kein Fall; Budget-Pause -> Fall ohne fetch.
- *   L  Stufenmodell: fall_verwerfen nur Koordinator, erst ab 3 Monaten, nur mit zustimmung_user (sonst Vermerk);
+ *   L  fall_verwerfen: Koordinator jederzeit, andere Agenten ab 3 Monaten; grund >=10 Zeichen und zustimmung_user Pflicht;
  *      Tagespruefung markiert ab 6 Monaten, loescht ab 9 Monaten, laesst juengere stehen.
  *   R  Plan-Ausloeser: Syntaxbefund an einer Plan-Op -> Fall mit bezug.weg plan und op_index.
  *   B  erklaerungen (Liste) und erklaerung_bewerten (passt_nicht, stilllegen nur Koordinator mit grund).
@@ -319,6 +319,19 @@ try {
       'T keine -> derselbe Fall (haeufigkeit 2), jev.wahl keine', fs.map((x) => ({ h: x.haeufigkeit, jev: x.jev })));
   });
 
+  // ── A Deploy-Proben ──
+  await versuche('A Deploy-Proben', async () => {
+    await pool.query('DELETE FROM erklaerung_faelle WHERE project = $1', [PRJ]);
+    const event = {
+      project: PRJ, agent_id: A, basis: '', ergebnis: 'defekt',
+      weg: 'einzelweg',
+      befund: { quelle: 'syntax', pruefer: 'python', severity: 'error', datei: 'coedit-test/zz.py', code: 'SyntaxError', was: 'absichtlich kaputter Test', zeilen: [1] },
+    };
+    E.meldeFehlerfall(event);
+    await E._erklaerungenLeerlauf();
+    pruefe((await faelle()).length === 0, 'A Deploy-Probe in coedit-test/ erzeugt keinen Erklaerungs-Fall');
+  });
+
   // ── A Schalter und Budget ──
   await versuche('A Schalter', async () => {
     await pool.query('DELETE FROM erklaerung_faelle WHERE project = $1', [PRJ]);
@@ -341,16 +354,27 @@ try {
   // ── L Stufenmodell ──
   await versuche('L Stufen', async () => {
     const id = String((await faelle())[0]?.id);
-    const jung = await cc({ action: 'fall_verwerfen', id, zustimmung_user: true }, KOORD);
-    pruefe(jung.success === false && jung.error === 'zu_jung', 'L juenger als 3 Monate: Verwerfen abgelehnt (zu_jung)', jung);
-    const agent = await cc({ action: 'fall_verwerfen', id, zustimmung_user: true }, A);
-    pruefe(agent.success === false && agent.error === 'nur_koordinator', 'L fall_verwerfen nur Koordinator', agent);
-    await pool.query(`UPDATE erklaerung_faelle SET erstellt_am = NOW() - INTERVAL '4 months' WHERE id = $1`, [id]);
-    const frage = await cc({ action: 'fall_verwerfen', id }, KOORD);
-    const nach = (await faelle())[0];
-    pruefe(frage.success === true && frage.ergebnis === 'angefragt' && nach?.verwerfen_angefragt_am, 'L ohne zustimmung_user: nur Vermerk verwerfen_angefragt_am, Fall bleibt', { frage, nach });
-    const weg = await cc({ action: 'fall_verwerfen', id, zustimmung_user: true }, KOORD);
-    pruefe(weg.success === true && weg.ergebnis === 'verworfen' && (await faelle()).length === 0, 'L mit zustimmung_user nach 3 Monaten: Fall verworfen', weg);
+    const jung = await cc({ action: 'fall_verwerfen', id, zustimmung_user: true, grund: 'Probe-Fall mit User-Freigabe' }, KOORD);
+    pruefe(jung.success === true && jung.ergebnis === 'verworfen', 'L Koordinator verwirft jungen Fall mit Grund und Zustimmung', jung);
+    const einTestFall = async (schluessel, monate) => String((await pool.query(
+      `INSERT INTO erklaerung_faelle (project, agent_id, datei, familie, schluessel, befund, bezug, schatten, erstellt_am)
+       VALUES ($1, $2, $3, 'typescript', $4, '{}'::jsonb, '{}'::jsonb, '{}'::jsonb, NOW() - ($5 || ' months')::interval) RETURNING id`,
+      [PRJ, A, DATEI, schluessel, String(monate)])).rows[0].id);
+    const jungFremdId = await einTestFall('syntax|typescript|ZZ-young-other', 0);
+    const fremdJung = await cc({ action: 'fall_verwerfen', id: jungFremdId, zustimmung_user: true, grund: 'Probe-Fall mit User-Freigabe' }, A);
+    pruefe(fremdJung.success === false && fremdJung.error === 'zu_jung', 'L anderer Agent unter 3 Monaten: zu_jung', fremdJung);
+
+    const grundId = await einTestFall('syntax|typescript|ZZ-grund', 4);
+    const fehlenderGrund = await cc({ action: 'fall_verwerfen', id: grundId, zustimmung_user: true }, KOORD);
+    pruefe(fehlenderGrund.success === false && fehlenderGrund.error === 'grund_fehlt', 'L Koordinator braucht eine Begruendung von mindestens 10 Zeichen', fehlenderGrund);
+    const zustimmungId = await einTestFall('syntax|typescript|ZZ-zustimmung', 4);
+    const fehlendeZustimmung = await cc({ action: 'fall_verwerfen', id: zustimmungId, grund: 'Probe-Fall mit User-Freigabe' }, KOORD);
+    pruefe(fehlendeZustimmung.success === false && fehlendeZustimmung.error === 'zustimmung_fehlt', 'L Koordinator braucht zustimmung_user:true', fehlendeZustimmung);
+
+    const stageId = await einTestFall('syntax|typescript|ZZ-stage', 4);
+    const weg = await cc({ action: 'fall_verwerfen', id: stageId, zustimmung_user: true, grund: 'Probe-Fall mit User-Freigabe' }, A);
+    pruefe(weg.success === true && weg.ergebnis === 'verworfen', 'L anderer Agent darf ab 3 Monaten mit Pflichtangaben verwerfen', weg);
+    await pool.query('DELETE FROM erklaerung_faelle WHERE id = ANY($1::bigint[])', [[jungFremdId, grundId, zustimmungId]]);
 
     const ein = async (schl, monate) => (await pool.query(
       `INSERT INTO erklaerung_faelle (project, agent_id, datei, familie, schluessel, befund, bezug, schatten, erstellt_am)
