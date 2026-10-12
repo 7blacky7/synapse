@@ -2,7 +2,7 @@
 import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { toolAntwortKompaktAktiv, kompaktiereToolAntwort } from './tool-antwort.js';
-import type { ShellJobDetail } from './shell-queue.js';
+import type { ShellJobDetail, ShellJobSummary } from './shell-queue.js';
 
 export type ShellJobAnzeige = Omit<Partial<ShellJobDetail>, 'sicherung'> & Pick<ShellJobDetail, 'id' | 'project' | 'command' | 'status'> & {
   sicherung?: Record<string, unknown> | null;
@@ -58,4 +58,31 @@ export function shellJobAnzeige(job: ShellJobDetail, detail?: string): ShellJobA
   }
   result.sicherung = sicherung;
   return kompaktiereToolAntwort(result, 'shell') as ShellJobAnzeige;
+}
+
+/** P10-T54: History zeigt begrenzte Vorschauen, Details bleiben per Job-ID abrufbar. */
+export function shellHistoryAnzeige(job: ShellJobSummary): ShellJobSummary {
+  if (!toolAntwortKompaktAktiv()) return job;
+  const result: ShellJobSummary & Record<string, unknown> = { ...job };
+  const kurz = (text: string, limit: number): string => {
+    if (text.length <= limit) return text;
+    let prefix = text.slice(0, limit - 1);
+    // Auch an der Vorschaugrenze bleibt ein UTF-16-Surrogatpaar vollständig.
+    const last = prefix.charCodeAt(prefix.length - 1);
+    if (last >= 0xd800 && last <= 0xdbff) prefix = prefix.slice(0, -1);
+    return prefix + '…';
+  };
+  for (const field of ['command', 'cwd_relative', 'error', 'message', 'source'] as const) {
+    const text = job[field];
+    if (typeof text === 'string' && text.length > 300) {
+      result[field] = kurz(text, 300);
+      result[field + '_truncated'] = true;
+    }
+  }
+  if (Array.isArray(job.tail)) {
+    const lines = job.tail.slice(-3);
+    result.tail = lines.map(line => kurz(line, 160));
+    if (job.tail.length > 3 || lines.some(line => line.length > 160)) result.tail_truncated = true;
+  }
+  return result;
 }

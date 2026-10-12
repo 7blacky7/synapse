@@ -146,7 +146,7 @@ export const shellTool: ConsolidatedTool = {
         action: {
           type: 'string',
           enum: ['exec', 'get_stream', 'history', 'get', 'log', 'activity', 'cancel'],
-          description: 'Default: exec. history/get/log = Shell-Jobs (Detail-Lupe, voller Output). activity = Multi-Agenten-Aufsicht ueber ALLE Tool-Aufrufe (Shell + jedes andere Tool), interleaved nach Zeit.',
+          description: 'Default: exec. history = Shell-Job-Metadaten mit kurzer Vorschau; get/log = Details und voller Output. activity = Multi-Agenten-Aufsicht ueber ALLE Tool-Aufrufe (Shell + jedes andere Tool), interleaved nach Zeit.',
         },
         project: { type: 'string', description: 'Projekt-Name (Pflicht fuer exec; optional fuer history Filter)' },
         command: { type: 'string', description: 'Shell-Kommando (Pflicht fuer exec)' },
@@ -202,6 +202,7 @@ export const shellTool: ConsolidatedTool = {
 
     if (action === 'history') {
       const jobs = await getShellJobs({
+        anzeige: 'kompakt',
         project: str(args, 'project'),
         limit: num(args, 'limit'),
         offset: num(args, 'offset'),

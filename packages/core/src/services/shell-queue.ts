@@ -18,7 +18,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { shellJobAnzeige, type ShellJobAnzeige } from './shell-job-anzeige.js';
+import { shellJobAnzeige, shellHistoryAnzeige, type ShellJobAnzeige } from './shell-job-anzeige.js';
 import {pruefeShellEinreihung,type ShellJobSicherung}from'./shell-einreihung-sicherung.js';
 import type{ShellBestaetigung,ShellSicherungsAntwort}from'./shell-start-sicherung.js';
 import type{SicherungsShell}from'./shell-sicherung-parser.js';
@@ -896,6 +896,8 @@ export interface ShellJobSummary {
  * Lookup mit `get` oder `log` lohnt.
  */
 export async function getShellJobs(opts: {
+  /** Nur MCP: begrenzte Vorschau; interne/HTTP-Leser behalten die vollständige Summary. */
+  anzeige?: 'kompakt';
   project?: string;
   limit?: number;
   offset?: number;
@@ -931,7 +933,8 @@ export async function getShellJobs(opts: {
      LIMIT $${params.length - 1} OFFSET $${params.length}`,
     params,
   );
-  return Promise.all(rows.map(row=>maskiereShellAntwort(row.project,row))) as Promise<ShellJobSummary[]>;
+  const jobs = await Promise.all(rows.map(row=>maskiereShellAntwort(row.project,row))) as ShellJobSummary[];
+  return opts.anzeige === 'kompakt' ? jobs.map(shellHistoryAnzeige) : jobs;
 }
 
 export interface ShellJobDetail extends ShellJobRow {

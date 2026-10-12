@@ -211,7 +211,7 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
         tips: 'Fuer lange Commands ueber REST braucht es das nicht: exec loest sich nach 20 s selbst ab, und das Endergebnis holst du spaeter via "get" oder "log".',
       },
       history: {
-        description: 'Liste vergangener Jobs eines Projekts (oder global). Sortiert nach created_at DESC. Liefert Metadata mit output_line_count + source — KEIN voller Output (zu gross fuer Liste).',
+        description: 'Liste vergangener Jobs eines Projekts (oder global), sortiert nach created_at DESC. Liefert Metadaten mit output_line_count + source, Kommando-/Meldungsvorschau bis 300 Zeichen und maximal drei Tail-Zeilen à 160 Zeichen. *_truncated markiert gekürzte Vorschauen; volle Details per get mit Job-ID.',
         params: 'project (optional Filter), limit (Default 20, Max 200), offset, status (pending|running|done|failed|rejected|timeout)',
         example: 'shell({ action: "history", project: "synapse", limit: 10, status: "failed" })',
         tips: 'Wenn du einen alten Build oder Test-Lauf nachschauen willst — IMMER zuerst history um die UUID zu finden, dann get/log fuer Details.',

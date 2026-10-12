@@ -5443,6 +5443,7 @@ async function handleToolCallKern(
 
       if (shellAction === 'history') {
         const jobs = await getShellJobs({
+          anzeige: 'kompakt',
           project: str(args, 'project'),
           limit: num(args, 'limit'),
           offset: num(args, 'offset'),
