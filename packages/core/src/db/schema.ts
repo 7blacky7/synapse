@@ -558,6 +558,23 @@ CREATE TABLE IF NOT EXISTS projects (
 -- werden vom Parser-Worker uebersprungen — siehe parser-worker.ts).
 ALTER TABLE projects ADD COLUMN IF NOT EXISTS enabled BOOLEAN NOT NULL DEFAULT TRUE;
 
+-- P10-T40/P10-T43: gemeinsame persistente Hinweis-Drossel, je Projekt abschaltbar.
+CREATE TABLE IF NOT EXISTS hinweis_optionen (
+  project TEXT PRIMARY KEY,
+  aktiv BOOLEAN NOT NULL DEFAULT TRUE,
+  gesetzt_von TEXT,
+  gesetzt_am TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE TABLE IF NOT EXISTS hinweis_gesehen (
+  project TEXT NOT NULL,
+  agent_id TEXT NOT NULL,
+  art TEXT NOT NULL,
+  sitzung TEXT NOT NULL,
+  fingerprint TEXT NOT NULL,
+  gezeigt_am TIMESTAMPTZ NOT NULL,
+  PRIMARY KEY (project, agent_id, art)
+);
+
 -- EMBED-PRIORITAET (P12-T12, 11.10.2026): Reihenfolge, in der der Parser-Worker Projekte mit
 -- offenem Embedding-Rueckstand bedient (projekteMitBacklog). Stufe 1 = zuerst ... 4 = zuletzt;
 -- ohne Eintrag gilt 3. Eigene Tabelle statt Spalte in projects, weil projects je Projekt eine

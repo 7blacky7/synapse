@@ -106,6 +106,7 @@ export async function maskiereShellVorSpeichern<T>(project:string|undefined,date
 
 import {AsyncLocalStorage} from 'node:async_hooks';
 import {logToolCall} from './tool-call-log.js';
+import {drossleShellJobHinweis} from './shell-job-hinweis.js';
 const sicht=new AsyncLocalStorage<boolean>();
 export function shellSichtUnmaskiert():boolean{return sicht.getStore()===true;}
 /** Anzeige-Override mit vorhandener Namenstreue, Speicherung bleibt unabhaengig davon geschuetzt. */
@@ -120,11 +121,11 @@ export async function mitShellAusgabe<T>(args:Record<string,unknown>,lauf:()=>Pr
     if(!/^(koordinator|coordinator|user)$/i.test(actor))throw new Error('Maskierung abschalten darf nur Koordinator/User');
     if(typeof args.grund!=='string'||args.grund.trim().length<10)throw new Error('Maskierung abschalten erfordert einen Grund (mindestens 10 Zeichen)');
     await logToolCall({project,agentId:actor,tool:'shell',action:'maskierung_aus',argsPreview:JSON.stringify({grund:args.grund,action:args.action,id:args.id}),ok:true});
-    const antwort=await sicht.run(true,lauf);
+    const antwort=await drossleShellJobHinweis(args,await sicht.run(true,lauf));
     return antwort && typeof antwort==='object' && !Array.isArray(antwort)
       ? {...antwort,maskierung_audit:{agent_id:actor,grund:maskiereShellText(args.grund).text}} : antwort;
   }
-  return maskiereShellAntwort(project,await lauf());
+  return maskiereShellAntwort(project,await drossleShellJobHinweis(args,await lauf()));
 }
 
 /** Ausschliesslich zaehlen, keine Altzeile bereinigen. Aktuelle bekannte Werte + gemeinsame Muster. */

@@ -10,6 +10,7 @@ export { mitCodeIntelSchatten, schattenCacheStatistik } from './services/code-in
 export type { RegelVerzeichnis } from './services/agent-rollen.js';
 // P10-T33: gemeinsame Shell-Maske, auch fuer Lage-/Audit-Daten.
 export {maskiereShellAntwort,maskiereShellDaten,maskiereShellText,ladeShellWerte,mitShellAusgabe,shellSichtUnmaskiert} from './services/shell-maske.js';
+export {claimHinweis,projektHinweisOption} from './services/hinweis-drossel.js';
 
 export { holeAgentOnboarding } from './services/agent-onboarding.js';
 

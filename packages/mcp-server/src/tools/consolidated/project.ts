@@ -35,9 +35,10 @@ const projectTool: ConsolidatedTool = {
     inputSchema: {
       type: 'object',
       properties: {
+        hinweise: {type:'boolean',description:'project(hinweise): optionale Hinweise je Projekt gemeinsam an/aus; setzen nur Koordinator/User. Ohne Wert Status.'},
         action: {
           type: 'string',
-          enum: ['init', 'init_status', 'complete_setup', 'detect_tech', 'cleanup', 'stop', 'status', 'list', 'enable', 'disable', 'projekt_db'],
+          enum: ['init', 'init_status', 'complete_setup', 'detect_tech', 'cleanup', 'stop', 'status', 'list', 'enable', 'disable', 'projekt_db', 'hinweise'],
           description: 'Aktion: init | init_status | complete_setup | detect_tech | cleanup | stop | status | list | enable | disable | projekt_db. projekt_db (project) zeigt die Projekt-DB (Spielwiese auf 192.168.50.65:5433): Host, Port, DB, User, Passwort, DATABASE_URL — oder vorhanden:false plus fertigen Aufruf; mit erstellen:true wird sie angelegt, falls keine existiert. Neue Projekte bekommen sie bei init automatisch; status zeigt nur vorhanden ja/nein. enable/disable schalten das Projekt in PG (Source of Truth) — Parser-Worker und FileWatcher-Daemon folgen.',
         },
         path: {
@@ -168,6 +169,11 @@ const projectTool: ConsolidatedTool = {
           return result;
         }
 
+        case 'hinweise': {
+          const {projektHinweisOption} = await import('@synapse/core');
+          if(args.hinweise !== undefined && typeof args.hinweise !== 'boolean')throw new Error('hinweise muss boolean sein');
+          return projektHinweisOption(reqStr(args,'project'),String(args.agent_id??process.env.SYNAPSE_AGENT_NAME??''),args.hinweise as boolean|undefined);
+        }
         case 'projekt_db': {
           // Anzeigen (Standard) inkl. Passwort und DATABASE_URL. erstellen:true: lokal gibt es
           // keinen docker.sock der Projekt-Instanz — Job an den Daemon (template projekt_db), der

@@ -344,7 +344,7 @@ async function runClaimedJob(project: string, job: ShellJobRow): Promise<void> {
             (result['message'] as string | undefined) ??
             'Job wurde abgebrochen. Angehaengte Wartende muessen neu starten.',
         }
-      : jobEnvText ? { message: jobEnvText } : {}),
+      : result['message'] ? { message: String(result['message']) } : jobEnvText ? { message: jobEnvText } : {}),
   });
   console.error(`[shell-worker] Job ${job.id} abgeschlossen mit status=${status} (output ${output ? output.length + ' bytes' : 'kein file'})`);
 }

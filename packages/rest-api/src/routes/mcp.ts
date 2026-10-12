@@ -297,9 +297,10 @@ export const MCP_TOOLS = [
       properties: {
         action: {
           type: 'string',
-          enum: ['init', 'init_status', 'complete_setup', 'detect_tech', 'cleanup', 'stop', 'status', 'list', 'enable', 'disable', 'projekt_db'],
+          enum: ['init', 'init_status', 'complete_setup', 'detect_tech', 'cleanup', 'stop', 'status', 'list', 'enable', 'disable', 'projekt_db', 'hinweise'],
           description: 'Aktion: init | init_status | complete_setup | detect_tech | cleanup | stop | status | list | enable | disable | projekt_db. projekt_db (project) zeigt die Projekt-DB (Spielwiese auf 192.168.50.65:5433): Host, Port, DB, User, Passwort, DATABASE_URL — oder vorhanden:false plus fertigen Aufruf; mit erstellen:true wird sie angelegt, falls keine existiert. Neue Projekte bekommen sie bei init automatisch; status zeigt nur vorhanden ja/nein. enable/disable schalten das Projekt in PG (Source of Truth) — Parser-Worker und FileWatcher-Daemon folgen.',
         },
+        hinweise: {type:'boolean',description:'project(hinweise): optionale Hinweise je Projekt gemeinsam an/aus; setzen nur Koordinator/User. Ohne Wert Status.'},
         path: { type: 'string', description: 'Absoluter Pfad zum Projekt-Ordner. Bei action="init" optional — ohne path queued der Job an den Daemon und resolved gegen WORKSPACE_ROOT/name.' },
         erstellen: { type: 'boolean', description: 'Nur projekt_db: true legt die Projekt-DB an, falls keine existiert (sonst nur anzeigen).' },
         name: { type: 'string', description: 'Projekt-Name. Pflicht fuer init wenn kein path gegeben. Erlaubt: 2-64 Zeichen [a-zA-Z0-9_-], beginnt mit Buchstabe/Ziffer.' },
@@ -1274,7 +1275,7 @@ export const MCP_TOOLS = [
         tail_lines: { type: 'number', description: 'Default 5' },
         agent_ids: { type: 'array', items: { type: 'string' }, description: 'activity: Filter auf Agenten (Namen ODER IDs, z.B. ["sub-r0"]). Ohne = alle.' },
         tools: { type: 'array', items: { type: 'string' }, description: 'activity: Filter auf Tools (z.B. ["files","memory"]). Ohne = alle Tools interleaved.' },
-        detail: { type: 'string', enum: ['meta', 'summary', 'full'], description: 'activity: Rueckgabe-Tiefe. meta(Default)=ohne result; summary=+Vorschau; full=result bis Cap.' },
+        detail: { type: 'string', enum: ['meta', 'summary', 'full'], description: 'get + full: job_env gezielt anzeigen (auch bei ausgeschalteten Hinweisen). activity: Rueckgabe-Tiefe. meta(Default)=ohne result; summary=+Vorschau; full=result bis Cap.' },
         mutations_only: { type: 'boolean', description: 'activity: nur Schreibzugriffe (files.create/update, memory.write, ...).' },
         errors_only: { type: 'boolean', description: 'activity: nur fehlgeschlagene Calls.' },
         since: { type: 'string', description: 'activity: ISO-Timestamp — nur Eintraege ab dann.' },
@@ -2384,6 +2385,11 @@ async function handleToolCallKern(
             projekt_db: await projektDbBeiInit(projectName, explicitPath),
             message: `Projekt "${projectName}": Docs-Automatik ${indexDocs ? 'angestossen' : 'aus'}, aber NICHT in PostgreSQL registriert und KEIN FileWatcher gestartet — dieser REST-Aufruf kann das fuer einen expliziten Pfad nicht leisten (Hostname-Problem, siehe Code-Kommentar). Fuer vollstaendige Einrichtung project(action:"init", name:"${projectName}") OHNE path aufrufen (Self-Service ueber den lokalen Daemon) oder lokal ueber den MCP-Server (stdio) initialisieren.`,
           };
+        }
+        case 'hinweise': {
+          const {projektHinweisOption} = await import('@synapse/core');
+          if(args.hinweise !== undefined && typeof args.hinweise !== 'boolean')throw new Error('hinweise muss boolean sein');
+          return projektHinweisOption(reqStr(args,'project'),String(effectiveAgentId??args.agent_id??process.env.SYNAPSE_AGENT_NAME??''),args.hinweise as boolean|undefined);
         }
         case 'projekt_db': {
           // Anzeigen (Standard) inkl. Passwort und DATABASE_URL; erstellen:true legt an,

@@ -175,7 +175,7 @@ export const shellTool: ConsolidatedTool = {
         },
         agent_ids: { type: 'array', items: { type: 'string' }, description: 'activity: Filter auf Agenten (Namen ODER IDs, z.B. ["sub-r0","flow-lead"]). Ohne = alle.' },
         tools: { type: 'array', items: { type: 'string' }, description: 'activity: Filter auf Tools (z.B. ["files","memory"]). Ohne = alle Tools interleaved.' },
-        detail: { type: 'string', enum: ['meta', 'summary', 'full'], description: 'activity: Rueckgabe-Tiefe. meta(Default)=Tool+Action+Args+Status+Dauer (KEIN result); summary=+result-Vorschau; full=gespeichertes result bis Cap.' },
+        detail: { type: 'string', enum: ['meta', 'summary', 'full'], description: 'get + full: job_env gezielt anzeigen (auch bei ausgeschalteten Hinweisen). activity: Rueckgabe-Tiefe. meta(Default)=Tool+Action+Args+Status+Dauer (KEIN result); summary=+result-Vorschau; full=gespeichertes result bis Cap.' },
         mutations_only: { type: 'boolean', description: 'activity: nur Schreibzugriffe (files.create/update, memory.write, ...).' },
         errors_only: { type: 'boolean', description: 'activity: nur fehlgeschlagene Calls.' },
         since: { type: 'string', description: 'activity: ISO-Timestamp — nur Eintraege ab dann.' },
