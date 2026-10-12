@@ -217,10 +217,10 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
         tips: 'Wenn du einen alten Build oder Test-Lauf nachschauen willst — IMMER zuerst history um die UUID zu finden, dann get/log fuer Details.',
       },
       get: {
-        description: 'Einzelnen Job per ID inkl. vollem Output (gecappt 1MB). Liefert auch claimed_by, completed_at, output_truncated.',
-        params: 'id (req)',
+        description: 'Einzelnen Job per ID inkl. vollem Output (gecappt 1MB). Sicherungsanalyse standardmäßig ohne doppelte Lage/Skripttexte; detail:full liefert die vollständige maskierte Analyse.',
+        params: 'id (req), detail (full = volle Sicherungsanalyse und job_env)',
         example: 'shell({ action: "get", id: "750a83b6-2c8e-483f-baee-7d8e6d323717" })',
-        tips: 'output_truncated:true bedeutet der Output war groesser als 1MB — nutze action:"log" mit query/range fuer gezielten Zugriff statt alles zu laden.',
+        tips: 'output_truncated:true bedeutet der Output war groesser als 1MB — nutze action:"log" mit query/range. Bei vollem output entfällt tail. Text-Verweise enthalten Länge und SHA-256; detail:"full" zeigt die vollständige Analyse. Interne exec_key-Werte werden nicht ausgeliefert.',
       },
       log: {
         description: 'Zeilengenauer Zugriff auf den Output eines Jobs. ZWEI Modi: (a) Zeilenrange via from_line/to_line, (b) Such-Treffer mit Zeilennummern via query (Substring oder Regex).',

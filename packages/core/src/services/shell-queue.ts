@@ -18,6 +18,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
+import { shellJobAnzeige, type ShellJobAnzeige } from './shell-job-anzeige.js';
 import {pruefeShellEinreihung,type ShellJobSicherung}from'./shell-einreihung-sicherung.js';
 import type{ShellBestaetigung,ShellSicherungsAntwort}from'./shell-start-sicherung.js';
 import type{SicherungsShell}from'./shell-sicherung-parser.js';
@@ -981,7 +982,9 @@ export async function reapOrphanedRunningJobs(hostname: string): Promise<number>
   return res.rowCount ?? 0;
 }
 
-export async function getShellJobById(id: string): Promise<ShellJobDetail | null> {
+export function getShellJobById(id: string): Promise<ShellJobDetail | null>;
+export function getShellJobById(id: string, optionen: { anzeige: 'kompakt' | 'full' }): Promise<ShellJobAnzeige | null>;
+export async function getShellJobById(id: string, optionen?: { anzeige: 'kompakt' | 'full' }): Promise<ShellJobDetail | ShellJobAnzeige | null> {
   const pool = getPool();
   const { rows } = await pool.query<ShellJobRow>(
     `SELECT * FROM shell_jobs WHERE id = $1`,
@@ -991,7 +994,8 @@ export async function getShellJobById(id: string): Promise<ShellJobDetail | null
   const row = rows[0];
   const {sicherung,...normal}=row;
   const sichtbar=sicherung?.antwort||sicherung?.anfrage?.bestaetigt||sicherung?.anfrage?.shell;
-  return maskiereShellAntwort(row.project,{ ...normal,...(sichtbar?{sicherung}:{}), output_line_count: countLines(row.output) });
+  const job = await maskiereShellAntwort(row.project,{ ...normal,...(sichtbar?{sicherung}:{}), output_line_count: countLines(row.output) });
+  return optionen ? shellJobAnzeige(job, optionen.anzeige) : job;
 }
 
 /**

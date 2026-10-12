@@ -180,7 +180,7 @@ export const shellTool: ConsolidatedTool = {
         },
         agent_ids: { type: 'array', items: { type: 'string' }, description: 'activity: Filter auf Agenten (Namen ODER IDs, z.B. ["sub-r0","flow-lead"]). Ohne = alle.' },
         tools: { type: 'array', items: { type: 'string' }, description: 'activity: Filter auf Tools (z.B. ["files","memory"]). Ohne = alle Tools interleaved.' },
-        detail: { type: 'string', enum: ['meta', 'summary', 'full'], description: 'get + full: job_env gezielt anzeigen (auch bei ausgeschalteten Hinweisen). activity: Rueckgabe-Tiefe. meta(Default)=Tool+Action+Args+Status+Dauer (KEIN result); summary=+result-Vorschau; full=gespeichertes result bis Cap.' },
+        detail: { type: 'string', enum: ['meta', 'summary', 'full'], description: 'get: standardmäßig kompakte Sicherungsanalyse; full liefert zusätzlich volle Lage/Inline-Texte und job_env (auch bei ausgeschalteten Hinweisen). activity: Rueckgabe-Tiefe. meta(Default)=Tool+Action+Args+Status+Dauer (KEIN result); summary=+result-Vorschau; full=gespeichertes result bis Cap.' },
         mutations_only: { type: 'boolean', description: 'activity: nur Schreibzugriffe (files.create/update, memory.write, ...).' },
         errors_only: { type: 'boolean', description: 'activity: nur fehlgeschlagene Calls.' },
         since: { type: 'string', description: 'activity: ISO-Timestamp — nur Eintraege ab dann.' },
@@ -224,7 +224,7 @@ export const shellTool: ConsolidatedTool = {
       if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(jobId)) {
         return { content: [{ type: 'text', text: JSON.stringify({ success: false, error: 'invalid_job_id', message: `"${jobId}" ist keine Job-UUID${/^[0-9a-f]{16}$/i.test(jobId) ? ' (das ist eine stream_id)' : ''} — nutze das id-Feld der exec-Antwort oder shell(history).` }, null, 2) }] };
       }
-      const job = await getShellJobById(reqStr(args, 'id'));
+      const job = await getShellJobById(reqStr(args, 'id'), { anzeige: str(args, 'detail') === 'full' ? 'full' : 'kompakt' });
       if (!job) {
         return {
           content: [

@@ -1,0 +1,1574 @@
+{
+  "task": "P10-T51",
+  "captured_before": "K1-K4/E1/N2/N3",
+  "normalization": "Zeit/IDs/Root und explizite Wrapper; Inhalte bleiben",
+  "records": {
+    "shell-get-done": {
+      "rest": {
+        "success": true,
+        "job": {
+          "id": "<ID:done>",
+          "project": "<PROJECT>",
+          "command": "printf T51_GOLDEN",
+          "cwd_relative": null,
+          "timeout_ms": 30000,
+          "tail_lines": 5,
+          "status": "done",
+          "exit_code": 0,
+          "tail": [
+            "Zeile zwei"
+          ],
+          "error": null,
+          "stream_id": null,
+          "claimed_by": null,
+          "claimed_at": null,
+          "completed_at": "<ZEIT>",
+          "created_at": "<ZEIT>",
+          "updated_at": "<ZEIT>",
+          "message": null,
+          "output": "T51_GOLDEN\nZeile zwei\n",
+          "output_truncated": false,
+          "agent_id": "<AGENT>",
+          "cancelled_by": null,
+          "cancelled_at": null,
+          "exec_key": "[WERT]",
+          "attached_agents": null,
+          "project_state_at": null,
+          "hint_agents": null,
+          "output_size": 0,
+          "output_line_count": 2,
+          "maskiert": 1,
+          "job_env": {
+            "database_url": "keine"
+          }
+        }
+      },
+      "restTextPayload": {
+        "success": true,
+        "job": {
+          "id": "<ID:done>",
+          "project": "<PROJECT>",
+          "command": "printf T51_GOLDEN",
+          "cwd_relative": null,
+          "timeout_ms": 30000,
+          "tail_lines": 5,
+          "status": "done",
+          "exit_code": 0,
+          "tail": [
+            "Zeile zwei"
+          ],
+          "error": null,
+          "stream_id": null,
+          "claimed_by": null,
+          "claimed_at": null,
+          "completed_at": "<ZEIT>",
+          "created_at": "<ZEIT>",
+          "updated_at": "<ZEIT>",
+          "message": null,
+          "output": "T51_GOLDEN\nZeile zwei\n",
+          "output_truncated": false,
+          "agent_id": "<AGENT>",
+          "cancelled_by": null,
+          "cancelled_at": null,
+          "exec_key": "[WERT]",
+          "attached_agents": null,
+          "project_state_at": null,
+          "hint_agents": null,
+          "output_size": 0,
+          "output_line_count": 2,
+          "maskiert": 1,
+          "job_env": {
+            "database_url": "keine"
+          }
+        }
+      },
+      "stdio": {
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"success\":true,\"job\":{\"id\":\"<ID:done>\",\"project\":\"<PROJECT>\",\"command\":\"printf T51_GOLDEN\",\"cwd_relative\":null,\"timeout_ms\":30000,\"tail_lines\":5,\"status\":\"done\",\"exit_code\":0,\"tail\":[\"Zeile zwei\"],\"error\":null,\"stream_id\":null,\"claimed_by\":null,\"claimed_at\":null,\"completed_at\":\"<ZEIT>\",\"created_at\":\"<ZEIT>\",\"updated_at\":\"<ZEIT>\",\"message\":null,\"output\":\"T51_GOLDEN\\nZeile zwei\\n\",\"output_truncated\":false,\"agent_id\":\"<AGENT>\",\"cancelled_by\":null,\"cancelled_at\":null,\"exec_key\":\"[WERT]\",\"attached_agents\":null,\"project_state_at\":null,\"hint_agents\":null,\"output_size\":0,\"output_line_count\":2,\"maskiert\":1,\"job_env\":{\"database_url\":\"keine\"}}}"
+          }
+        ]
+      },
+      "restTextChars": 3153,
+      "stdioTextChars": 3295
+    },
+    "shell-get-inline": {
+      "rest": {
+        "success": true,
+        "job": {
+          "id": "<ID:inline>",
+          "project": "<PROJECT>",
+          "command": "node -e \"console.log('T51_GOLDEN_SCRIPT')\"",
+          "cwd_relative": null,
+          "timeout_ms": 30000,
+          "tail_lines": 5,
+          "status": "rejected",
+          "exit_code": null,
+          "tail": null,
+          "error": null,
+          "stream_id": null,
+          "claimed_by": null,
+          "claimed_at": null,
+          "completed_at": "<ZEIT>",
+          "created_at": "<ZEIT>",
+          "updated_at": "<ZEIT>",
+          "message": null,
+          "output": null,
+          "output_truncated": false,
+          "agent_id": "<AGENT>",
+          "cancelled_by": null,
+          "cancelled_at": null,
+          "exec_key": "[WERT]",
+          "attached_agents": null,
+          "project_state_at": null,
+          "hint_agents": null,
+          "output_size": 0,
+          "sicherung": {
+            "lage": {
+              "os": "linux",
+              "cwd": "<ROOT>",
+              "hash": "fixture-lage",
+              "shell": "sh",
+              "ziele": [],
+              "kommandos": [
+                {
+                  "argv": [
+                    {
+                      "raw": "node",
+                      "text": "node",
+                      "dynamisch": false
+                    },
+                    {
+                      "raw": "-e",
+                      "text": "-e",
+                      "dynamisch": false
+                    },
+                    {
+                      "raw": "\"console.log('T51_GOLDEN_SCRIPT')\"",
+                      "text": "console.log('T51_GOLDEN_SCRIPT')",
+                      "dynamisch": false
+                    }
+                  ],
+                  "inline_skript": {
+                    "text": "console.log('T51_GOLDEN_SCRIPT')",
+                    "sprache": "javascript"
+                  }
+                }
+              ],
+              "variablen": [],
+              "ungeklaert": [
+                "fixture-inline"
+              ],
+              "project_root": "<ROOT>",
+              "sicher_aufloesbar": false
+            },
+            "audit": {
+              "agent_id": "<AGENT>",
+              "created_at": "<ZEIT>",
+              "entscheidung": "anleitung"
+            },
+            "antwort": {
+              "lage": {
+                "os": "linux",
+                "cwd": "<ROOT>",
+                "hash": "fixture-lage",
+                "shell": "sh",
+                "ziele": [],
+                "kommandos": [
+                  {
+                    "argv": [
+                      {
+                        "raw": "node",
+                        "text": "node",
+                        "dynamisch": false
+                      },
+                      {
+                        "raw": "-e",
+                        "text": "-e",
+                        "dynamisch": false
+                      },
+                      {
+                        "raw": "\"console.log('T51_GOLDEN_SCRIPT')\"",
+                        "text": "console.log('T51_GOLDEN_SCRIPT')",
+                        "dynamisch": false
+                      }
+                    ],
+                    "inline_skript": {
+                      "text": "console.log('T51_GOLDEN_SCRIPT')",
+                      "sprache": "javascript"
+                    }
+                  }
+                ],
+                "variablen": [],
+                "ungeklaert": [
+                  "fixture-inline"
+                ],
+                "project_root": "<ROOT>",
+                "sicher_aufloesbar": false
+              },
+              "stufe": "anleitung",
+              "risiko": "Fester Testfall",
+              "success": false,
+              "ausgefuehrt": false,
+              "bestaetigungsdaten": {
+                "lage_hash": "fixture-lage",
+                "befehl_hash": "469e61a808097466c42b7c69953a680c6fe4f81cd7e3975b7dcd18a9a2d6669c",
+                "regelversion": "fixture"
+              }
+            }
+          },
+          "output_line_count": 0,
+          "maskiert": 1
+        }
+      },
+      "restTextPayload": {
+        "success": true,
+        "job": {
+          "id": "<ID:inline>",
+          "project": "<PROJECT>",
+          "command": "node -e \"console.log('T51_GOLDEN_SCRIPT')\"",
+          "cwd_relative": null,
+          "timeout_ms": 30000,
+          "tail_lines": 5,
+          "status": "rejected",
+          "exit_code": null,
+          "tail": null,
+          "error": null,
+          "stream_id": null,
+          "claimed_by": null,
+          "claimed_at": null,
+          "completed_at": "<ZEIT>",
+          "created_at": "<ZEIT>",
+          "updated_at": "<ZEIT>",
+          "message": null,
+          "output": null,
+          "output_truncated": false,
+          "agent_id": "<AGENT>",
+          "cancelled_by": null,
+          "cancelled_at": null,
+          "exec_key": "[WERT]",
+          "attached_agents": null,
+          "project_state_at": null,
+          "hint_agents": null,
+          "output_size": 0,
+          "sicherung": {
+            "lage": {
+              "os": "linux",
+              "cwd": "<ROOT>",
+              "hash": "fixture-lage",
+              "shell": "sh",
+              "ziele": [],
+              "kommandos": [
+                {
+                  "argv": [
+                    {
+                      "raw": "node",
+                      "text": "node",
+                      "dynamisch": false
+                    },
+                    {
+                      "raw": "-e",
+                      "text": "-e",
+                      "dynamisch": false
+                    },
+                    {
+                      "raw": "\"console.log('T51_GOLDEN_SCRIPT')\"",
+                      "text": "console.log('T51_GOLDEN_SCRIPT')",
+                      "dynamisch": false
+                    }
+                  ],
+                  "inline_skript": {
+                    "text": "console.log('T51_GOLDEN_SCRIPT')",
+                    "sprache": "javascript"
+                  }
+                }
+              ],
+              "variablen": [],
+              "ungeklaert": [
+                "fixture-inline"
+              ],
+              "project_root": "<ROOT>",
+              "sicher_aufloesbar": false
+            },
+            "audit": {
+              "agent_id": "<AGENT>",
+              "created_at": "<ZEIT>",
+              "entscheidung": "anleitung"
+            },
+            "antwort": {
+              "lage": {
+                "os": "linux",
+                "cwd": "<ROOT>",
+                "hash": "fixture-lage",
+                "shell": "sh",
+                "ziele": [],
+                "kommandos": [
+                  {
+                    "argv": [
+                      {
+                        "raw": "node",
+                        "text": "node",
+                        "dynamisch": false
+                      },
+                      {
+                        "raw": "-e",
+                        "text": "-e",
+                        "dynamisch": false
+                      },
+                      {
+                        "raw": "\"console.log('T51_GOLDEN_SCRIPT')\"",
+                        "text": "console.log('T51_GOLDEN_SCRIPT')",
+                        "dynamisch": false
+                      }
+                    ],
+                    "inline_skript": {
+                      "text": "console.log('T51_GOLDEN_SCRIPT')",
+                      "sprache": "javascript"
+                    }
+                  }
+                ],
+                "variablen": [],
+                "ungeklaert": [
+                  "fixture-inline"
+                ],
+                "project_root": "<ROOT>",
+                "sicher_aufloesbar": false
+              },
+              "stufe": "anleitung",
+              "risiko": "Fester Testfall",
+              "success": false,
+              "ausgefuehrt": false,
+              "bestaetigungsdaten": {
+                "lage_hash": "fixture-lage",
+                "befehl_hash": "469e61a808097466c42b7c69953a680c6fe4f81cd7e3975b7dcd18a9a2d6669c",
+                "regelversion": "fixture"
+              }
+            }
+          },
+          "output_line_count": 0,
+          "maskiert": 1
+        }
+      },
+      "stdio": {
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"success\":true,\"job\":{\"id\":\"<ID:inline>\",\"project\":\"<PROJECT>\",\"command\":\"node -e \\\"console.log('T51_GOLDEN_SCRIPT')\\\"\",\"cwd_relative\":null,\"timeout_ms\":30000,\"tail_lines\":5,\"status\":\"rejected\",\"exit_code\":null,\"tail\":null,\"error\":null,\"stream_id\":null,\"claimed_by\":null,\"claimed_at\":null,\"completed_at\":\"<ZEIT>\",\"created_at\":\"<ZEIT>\",\"updated_at\":\"<ZEIT>\",\"message\":null,\"output\":null,\"output_truncated\":false,\"agent_id\":\"<AGENT>\",\"cancelled_by\":null,\"cancelled_at\":null,\"exec_key\":\"[WERT]\",\"attached_agents\":null,\"project_state_at\":null,\"hint_agents\":null,\"output_size\":0,\"sicherung\":{\"lage\":{\"os\":\"linux\",\"cwd\":\"<ROOT>\",\"hash\":\"fixture-lage\",\"shell\":\"sh\",\"ziele\":[],\"kommandos\":[{\"argv\":[{\"raw\":\"node\",\"text\":\"node\",\"dynamisch\":false},{\"raw\":\"-e\",\"text\":\"-e\",\"dynamisch\":false},{\"raw\":\"\\\"console.log('T51_GOLDEN_SCRIPT')\\\"\",\"text\":\"console.log('T51_GOLDEN_SCRIPT')\",\"dynamisch\":false}],\"inline_skript\":{\"text\":\"console.log('T51_GOLDEN_SCRIPT')\",\"sprache\":\"javascript\"}}],\"variablen\":[],\"ungeklaert\":[\"fixture-inline\"],\"project_root\":\"<ROOT>\",\"sicher_aufloesbar\":false},\"audit\":{\"agent_id\":\"<AGENT>\",\"created_at\":\"<ZEIT>\",\"entscheidung\":\"anleitung\"},\"antwort\":{\"lage\":{\"os\":\"linux\",\"cwd\":\"<ROOT>\",\"hash\":\"fixture-lage\",\"shell\":\"sh\",\"ziele\":[],\"kommandos\":[{\"argv\":[{\"raw\":\"node\",\"text\":\"node\",\"dynamisch\":false},{\"raw\":\"-e\",\"text\":\"-e\",\"dynamisch\":false},{\"raw\":\"\\\"console.log('T51_GOLDEN_SCRIPT')\\\"\",\"text\":\"console.log('T51_GOLDEN_SCRIPT')\",\"dynamisch\":false}],\"inline_skript\":{\"text\":\"console.log('T51_GOLDEN_SCRIPT')\",\"sprache\":\"javascript\"}}],\"variablen\":[],\"ungeklaert\":[\"fixture-inline\"],\"project_root\":\"<ROOT>\",\"sicher_aufloesbar\":false},\"stufe\":\"anleitung\",\"risiko\":\"Fester Testfall\",\"success\":false,\"ausgefuehrt\":false,\"bestaetigungsdaten\":{\"lage_hash\":\"fixture-lage\",\"befehl_hash\":\"469e61a808097466c42b7c69953a680c6fe4f81cd7e3975b7dcd18a9a2d6669c\",\"regelversion\":\"fixture\"}}},\"output_line_count\":0,\"maskiert\":1}}"
+          }
+        ]
+      },
+      "restTextChars": 3759,
+      "stdioTextChars": 2684
+    },
+    "shell-get-git": {
+      "rest": {
+        "success": true,
+        "job": {
+          "id": "<ID:git>",
+          "project": "<PROJECT>",
+          "command": "git apply --cached",
+          "cwd_relative": null,
+          "timeout_ms": 30000,
+          "tail_lines": 5,
+          "status": "rejected",
+          "exit_code": null,
+          "tail": null,
+          "error": null,
+          "stream_id": null,
+          "claimed_by": null,
+          "claimed_at": null,
+          "completed_at": "<ZEIT>",
+          "created_at": "<ZEIT>",
+          "updated_at": "<ZEIT>",
+          "message": null,
+          "output": null,
+          "output_truncated": false,
+          "agent_id": "<AGENT>",
+          "cancelled_by": null,
+          "cancelled_at": null,
+          "exec_key": "[WERT]",
+          "attached_agents": null,
+          "project_state_at": null,
+          "hint_agents": null,
+          "output_size": 0,
+          "sicherung": {
+            "lage": {
+              "os": "linux",
+              "cwd": "<ROOT>",
+              "hash": "fixture-git",
+              "shell": "sh",
+              "ziele": [],
+              "kommandos": [
+                {
+                  "argv": [
+                    {
+                      "raw": "git",
+                      "text": "git",
+                      "dynamisch": false
+                    },
+                    {
+                      "raw": "apply",
+                      "text": "apply",
+                      "dynamisch": false
+                    },
+                    {
+                      "raw": "--cached",
+                      "text": "--cached",
+                      "dynamisch": false
+                    }
+                  ]
+                }
+              ],
+              "variablen": [],
+              "ungeklaert": [
+                "fixture-index"
+              ],
+              "project_root": "<ROOT>",
+              "sicher_aufloesbar": false
+            },
+            "audit": {
+              "agent_id": "<AGENT>",
+              "created_at": "<ZEIT>",
+              "entscheidung": "anleitung"
+            },
+            "antwort": {
+              "lage": {
+                "os": "linux",
+                "cwd": "<ROOT>",
+                "hash": "fixture-git",
+                "shell": "sh",
+                "ziele": [],
+                "kommandos": [
+                  {
+                    "argv": [
+                      {
+                        "raw": "git",
+                        "text": "git",
+                        "dynamisch": false
+                      },
+                      {
+                        "raw": "apply",
+                        "text": "apply",
+                        "dynamisch": false
+                      },
+                      {
+                        "raw": "--cached",
+                        "text": "--cached",
+                        "dynamisch": false
+                      }
+                    ]
+                  }
+                ],
+                "variablen": [],
+                "ungeklaert": [
+                  "fixture-index"
+                ],
+                "project_root": "<ROOT>",
+                "sicher_aufloesbar": false
+              },
+              "stufe": "anleitung",
+              "risiko": "Fester Testfall",
+              "success": false,
+              "ausgefuehrt": false,
+              "bestaetigungsdaten": {
+                "lage_hash": "fixture-git",
+                "befehl_hash": "fb198b63c52ea69e63ffbf6e098cb032e7308fe01315525e29038769479278b6",
+                "regelversion": "fixture"
+              }
+            }
+          },
+          "output_line_count": 0,
+          "maskiert": 1
+        }
+      },
+      "restTextPayload": {
+        "success": true,
+        "job": {
+          "id": "<ID:git>",
+          "project": "<PROJECT>",
+          "command": "git apply --cached",
+          "cwd_relative": null,
+          "timeout_ms": 30000,
+          "tail_lines": 5,
+          "status": "rejected",
+          "exit_code": null,
+          "tail": null,
+          "error": null,
+          "stream_id": null,
+          "claimed_by": null,
+          "claimed_at": null,
+          "completed_at": "<ZEIT>",
+          "created_at": "<ZEIT>",
+          "updated_at": "<ZEIT>",
+          "message": null,
+          "output": null,
+          "output_truncated": false,
+          "agent_id": "<AGENT>",
+          "cancelled_by": null,
+          "cancelled_at": null,
+          "exec_key": "[WERT]",
+          "attached_agents": null,
+          "project_state_at": null,
+          "hint_agents": null,
+          "output_size": 0,
+          "sicherung": {
+            "lage": {
+              "os": "linux",
+              "cwd": "<ROOT>",
+              "hash": "fixture-git",
+              "shell": "sh",
+              "ziele": [],
+              "kommandos": [
+                {
+                  "argv": [
+                    {
+                      "raw": "git",
+                      "text": "git",
+                      "dynamisch": false
+                    },
+                    {
+                      "raw": "apply",
+                      "text": "apply",
+                      "dynamisch": false
+                    },
+                    {
+                      "raw": "--cached",
+                      "text": "--cached",
+                      "dynamisch": false
+                    }
+                  ]
+                }
+              ],
+              "variablen": [],
+              "ungeklaert": [
+                "fixture-index"
+              ],
+              "project_root": "<ROOT>",
+              "sicher_aufloesbar": false
+            },
+            "audit": {
+              "agent_id": "<AGENT>",
+              "created_at": "<ZEIT>",
+              "entscheidung": "anleitung"
+            },
+            "antwort": {
+              "lage": {
+                "os": "linux",
+                "cwd": "<ROOT>",
+                "hash": "fixture-git",
+                "shell": "sh",
+                "ziele": [],
+                "kommandos": [
+                  {
+                    "argv": [
+                      {
+                        "raw": "git",
+                        "text": "git",
+                        "dynamisch": false
+                      },
+                      {
+                        "raw": "apply",
+                        "text": "apply",
+                        "dynamisch": false
+                      },
+                      {
+                        "raw": "--cached",
+                        "text": "--cached",
+                        "dynamisch": false
+                      }
+                    ]
+                  }
+                ],
+                "variablen": [],
+                "ungeklaert": [
+                  "fixture-index"
+                ],
+                "project_root": "<ROOT>",
+                "sicher_aufloesbar": false
+              },
+              "stufe": "anleitung",
+              "risiko": "Fester Testfall",
+              "success": false,
+              "ausgefuehrt": false,
+              "bestaetigungsdaten": {
+                "lage_hash": "fixture-git",
+                "befehl_hash": "fb198b63c52ea69e63ffbf6e098cb032e7308fe01315525e29038769479278b6",
+                "regelversion": "fixture"
+              }
+            }
+          },
+          "output_line_count": 0,
+          "maskiert": 1
+        }
+      },
+      "stdio": {
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"success\":true,\"job\":{\"id\":\"<ID:git>\",\"project\":\"<PROJECT>\",\"command\":\"git apply --cached\",\"cwd_relative\":null,\"timeout_ms\":30000,\"tail_lines\":5,\"status\":\"rejected\",\"exit_code\":null,\"tail\":null,\"error\":null,\"stream_id\":null,\"claimed_by\":null,\"claimed_at\":null,\"completed_at\":\"<ZEIT>\",\"created_at\":\"<ZEIT>\",\"updated_at\":\"<ZEIT>\",\"message\":null,\"output\":null,\"output_truncated\":false,\"agent_id\":\"<AGENT>\",\"cancelled_by\":null,\"cancelled_at\":null,\"exec_key\":\"[WERT]\",\"attached_agents\":null,\"project_state_at\":null,\"hint_agents\":null,\"output_size\":0,\"sicherung\":{\"lage\":{\"os\":\"linux\",\"cwd\":\"<ROOT>\",\"hash\":\"fixture-git\",\"shell\":\"sh\",\"ziele\":[],\"kommandos\":[{\"argv\":[{\"raw\":\"git\",\"text\":\"git\",\"dynamisch\":false},{\"raw\":\"apply\",\"text\":\"apply\",\"dynamisch\":false},{\"raw\":\"--cached\",\"text\":\"--cached\",\"dynamisch\":false}]}],\"variablen\":[],\"ungeklaert\":[\"fixture-index\"],\"project_root\":\"<ROOT>\",\"sicher_aufloesbar\":false},\"audit\":{\"agent_id\":\"<AGENT>\",\"created_at\":\"<ZEIT>\",\"entscheidung\":\"anleitung\"},\"antwort\":{\"lage\":{\"os\":\"linux\",\"cwd\":\"<ROOT>\",\"hash\":\"fixture-git\",\"shell\":\"sh\",\"ziele\":[],\"kommandos\":[{\"argv\":[{\"raw\":\"git\",\"text\":\"git\",\"dynamisch\":false},{\"raw\":\"apply\",\"text\":\"apply\",\"dynamisch\":false},{\"raw\":\"--cached\",\"text\":\"--cached\",\"dynamisch\":false}]}],\"variablen\":[],\"ungeklaert\":[\"fixture-index\"],\"project_root\":\"<ROOT>\",\"sicher_aufloesbar\":false},\"stufe\":\"anleitung\",\"risiko\":\"Fester Testfall\",\"success\":false,\"ausgefuehrt\":false,\"bestaetigungsdaten\":{\"lage_hash\":\"fixture-git\",\"befehl_hash\":\"fb198b63c52ea69e63ffbf6e098cb032e7308fe01315525e29038769479278b6\",\"regelversion\":\"fixture\"}}},\"output_line_count\":0,\"maskiert\":1}}"
+          }
+        ]
+      },
+      "restTextChars": 3340,
+      "stdioTextChars": 2359
+    },
+    "shell-get-running": {
+      "rest": {
+        "success": true,
+        "job": {
+          "id": "<ID:running>",
+          "project": "<PROJECT>",
+          "command": "printf T51_RUNNING",
+          "cwd_relative": null,
+          "timeout_ms": 30000,
+          "tail_lines": 5,
+          "status": "running",
+          "exit_code": null,
+          "tail": null,
+          "error": null,
+          "stream_id": null,
+          "claimed_by": null,
+          "claimed_at": null,
+          "completed_at": null,
+          "created_at": "<ZEIT>",
+          "updated_at": "<ZEIT>",
+          "message": null,
+          "output": null,
+          "output_truncated": false,
+          "agent_id": "<AGENT>",
+          "cancelled_by": null,
+          "cancelled_at": null,
+          "exec_key": "[WERT]",
+          "attached_agents": null,
+          "project_state_at": null,
+          "hint_agents": null,
+          "output_size": 0,
+          "output_line_count": 0,
+          "maskiert": 1
+        }
+      },
+      "restTextPayload": {
+        "success": true,
+        "job": {
+          "id": "<ID:running>",
+          "project": "<PROJECT>",
+          "command": "printf T51_RUNNING",
+          "cwd_relative": null,
+          "timeout_ms": 30000,
+          "tail_lines": 5,
+          "status": "running",
+          "exit_code": null,
+          "tail": null,
+          "error": null,
+          "stream_id": null,
+          "claimed_by": null,
+          "claimed_at": null,
+          "completed_at": null,
+          "created_at": "<ZEIT>",
+          "updated_at": "<ZEIT>",
+          "message": null,
+          "output": null,
+          "output_truncated": false,
+          "agent_id": "<AGENT>",
+          "cancelled_by": null,
+          "cancelled_at": null,
+          "exec_key": "[WERT]",
+          "attached_agents": null,
+          "project_state_at": null,
+          "hint_agents": null,
+          "output_size": 0,
+          "output_line_count": 0,
+          "maskiert": 1
+        }
+      },
+      "stdio": {
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"success\":true,\"job\":{\"id\":\"<ID:running>\",\"project\":\"<PROJECT>\",\"command\":\"printf T51_RUNNING\",\"cwd_relative\":null,\"timeout_ms\":30000,\"tail_lines\":5,\"status\":\"running\",\"exit_code\":null,\"tail\":null,\"error\":null,\"stream_id\":null,\"claimed_by\":null,\"claimed_at\":null,\"completed_at\":null,\"created_at\":\"<ZEIT>\",\"updated_at\":\"<ZEIT>\",\"message\":null,\"output\":null,\"output_truncated\":false,\"agent_id\":\"<AGENT>\",\"cancelled_by\":null,\"cancelled_at\":null,\"exec_key\":\"[WERT]\",\"attached_agents\":null,\"project_state_at\":null,\"hint_agents\":null,\"output_size\":0,\"output_line_count\":0,\"maskiert\":1}}"
+          }
+        ]
+      },
+      "restTextChars": 900,
+      "stdioTextChars": 865
+    },
+    "shell-history": {
+      "rest": {
+        "success": true,
+        "count": 4,
+        "jobs": [
+          {
+            "id": "<ID:done>",
+            "project": "<PROJECT>",
+            "agent_id": "<AGENT>",
+            "command": "printf T51_GOLDEN",
+            "cwd_relative": null,
+            "status": "done",
+            "exit_code": 0,
+            "tail": [
+              "Zeile zwei"
+            ],
+            "error": null,
+            "message": null,
+            "output_truncated": false,
+            "stream_id": null,
+            "source": null,
+            "created_at": "<ZEIT>",
+            "completed_at": "<ZEIT>",
+            "output_line_count": 2
+          },
+          {
+            "id": "<ID:inline>",
+            "project": "<PROJECT>",
+            "agent_id": "<AGENT>",
+            "command": "node -e \"console.log('T51_GOLDEN_SCRIPT')\"",
+            "cwd_relative": null,
+            "status": "rejected",
+            "exit_code": null,
+            "tail": null,
+            "error": null,
+            "message": null,
+            "output_truncated": false,
+            "stream_id": null,
+            "source": null,
+            "created_at": "<ZEIT>",
+            "completed_at": "<ZEIT>",
+            "output_line_count": 0
+          },
+          {
+            "id": "<ID:git>",
+            "project": "<PROJECT>",
+            "agent_id": "<AGENT>",
+            "command": "git apply --cached",
+            "cwd_relative": null,
+            "status": "rejected",
+            "exit_code": null,
+            "tail": null,
+            "error": null,
+            "message": null,
+            "output_truncated": false,
+            "stream_id": null,
+            "source": null,
+            "created_at": "<ZEIT>",
+            "completed_at": "<ZEIT>",
+            "output_line_count": 0
+          },
+          {
+            "id": "<ID:running>",
+            "project": "<PROJECT>",
+            "agent_id": "<AGENT>",
+            "command": "printf T51_RUNNING",
+            "cwd_relative": null,
+            "status": "running",
+            "exit_code": null,
+            "tail": null,
+            "error": null,
+            "message": null,
+            "output_truncated": false,
+            "stream_id": null,
+            "source": null,
+            "created_at": "<ZEIT>",
+            "completed_at": null,
+            "output_line_count": 0
+          }
+        ]
+      },
+      "restTextPayload": {
+        "success": true,
+        "count": 4,
+        "jobs": [
+          {
+            "id": "<ID:done>",
+            "project": "<PROJECT>",
+            "agent_id": "<AGENT>",
+            "command": "printf T51_GOLDEN",
+            "cwd_relative": null,
+            "status": "done",
+            "exit_code": 0,
+            "tail": [
+              "Zeile zwei"
+            ],
+            "error": null,
+            "message": null,
+            "output_truncated": false,
+            "stream_id": null,
+            "source": null,
+            "created_at": "<ZEIT>",
+            "completed_at": "<ZEIT>",
+            "output_line_count": 2
+          },
+          {
+            "id": "<ID:inline>",
+            "project": "<PROJECT>",
+            "agent_id": "<AGENT>",
+            "command": "node -e \"console.log('T51_GOLDEN_SCRIPT')\"",
+            "cwd_relative": null,
+            "status": "rejected",
+            "exit_code": null,
+            "tail": null,
+            "error": null,
+            "message": null,
+            "output_truncated": false,
+            "stream_id": null,
+            "source": null,
+            "created_at": "<ZEIT>",
+            "completed_at": "<ZEIT>",
+            "output_line_count": 0
+          },
+          {
+            "id": "<ID:git>",
+            "project": "<PROJECT>",
+            "agent_id": "<AGENT>",
+            "command": "git apply --cached",
+            "cwd_relative": null,
+            "status": "rejected",
+            "exit_code": null,
+            "tail": null,
+            "error": null,
+            "message": null,
+            "output_truncated": false,
+            "stream_id": null,
+            "source": null,
+            "created_at": "<ZEIT>",
+            "completed_at": "<ZEIT>",
+            "output_line_count": 0
+          },
+          {
+            "id": "<ID:running>",
+            "project": "<PROJECT>",
+            "agent_id": "<AGENT>",
+            "command": "printf T51_RUNNING",
+            "cwd_relative": null,
+            "status": "running",
+            "exit_code": null,
+            "tail": null,
+            "error": null,
+            "message": null,
+            "output_truncated": false,
+            "stream_id": null,
+            "source": null,
+            "created_at": "<ZEIT>",
+            "completed_at": null,
+            "output_line_count": 0
+          }
+        ]
+      },
+      "stdio": {
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"success\":true,\"count\":4,\"jobs\":[{\"id\":\"<ID:done>\",\"project\":\"<PROJECT>\",\"agent_id\":\"<AGENT>\",\"command\":\"printf T51_GOLDEN\",\"cwd_relative\":null,\"status\":\"done\",\"exit_code\":0,\"tail\":[\"Zeile zwei\"],\"error\":null,\"message\":null,\"output_truncated\":false,\"stream_id\":null,\"source\":null,\"created_at\":\"<ZEIT>\",\"completed_at\":\"<ZEIT>\",\"output_line_count\":2},{\"id\":\"<ID:inline>\",\"project\":\"<PROJECT>\",\"agent_id\":\"<AGENT>\",\"command\":\"node -e \\\"console.log('T51_GOLDEN_SCRIPT')\\\"\",\"cwd_relative\":null,\"status\":\"rejected\",\"exit_code\":null,\"tail\":null,\"error\":null,\"message\":null,\"output_truncated\":false,\"stream_id\":null,\"source\":null,\"created_at\":\"<ZEIT>\",\"completed_at\":\"<ZEIT>\",\"output_line_count\":0},{\"id\":\"<ID:git>\",\"project\":\"<PROJECT>\",\"agent_id\":\"<AGENT>\",\"command\":\"git apply --cached\",\"cwd_relative\":null,\"status\":\"rejected\",\"exit_code\":null,\"tail\":null,\"error\":null,\"message\":null,\"output_truncated\":false,\"stream_id\":null,\"source\":null,\"created_at\":\"<ZEIT>\",\"completed_at\":\"<ZEIT>\",\"output_line_count\":0},{\"id\":\"<ID:running>\",\"project\":\"<PROJECT>\",\"agent_id\":\"<AGENT>\",\"command\":\"printf T51_RUNNING\",\"cwd_relative\":null,\"status\":\"running\",\"exit_code\":null,\"tail\":null,\"error\":null,\"message\":null,\"output_truncated\":false,\"stream_id\":null,\"source\":null,\"created_at\":\"<ZEIT>\",\"completed_at\":null,\"output_line_count\":0}]}"
+          }
+        ]
+      },
+      "restTextChars": 2424,
+      "stdioTextChars": 2107
+    },
+    "files-plan-status": {
+      "rest": {
+        "success": true,
+        "plan_id": "<BATCH_ID>",
+        "project": "<PROJECT>",
+        "status": "open",
+        "owner_agent_id": "<AGENT>",
+        "open_for_coedit": true,
+        "ops_count": 1,
+        "coedit_ops_count": 0,
+        "files_touched": [
+          "src/golden.ts"
+        ],
+        "previews": [
+          {
+            "ok": true,
+            "index": 0,
+            "action": "search_replace",
+            "context": "search_replace: 1 ersetzt",
+            "file_path": "src/golden.ts",
+            "size_after": 57,
+            "size_before": 57
+          }
+        ],
+        "previews_count": 1,
+        "contributors": [
+          "<AGENT>"
+        ],
+        "ops_overview": [
+          {
+            "index": 0,
+            "agent_id": "<AGENT>",
+            "file_path": "src/golden.ts",
+            "action": "search_replace",
+            "reason": "Eigene Golden-Fixture"
+          }
+        ],
+        "op_vollstaendig": "Jede Op ungekuerzt (alle Felder, content, Anker, reason, Status, betroffene Zeilen vorher/nachher): files(action:'plan_status', plan_id:'<BATCH_ID>', op_index:N) oder op_indices:[...]; from_line/to_line schneiden ein Fenster aus sehr grossem content.",
+        "reason": null,
+        "created_at": "<ZEIT>",
+        "committed_at": null,
+        "pruefung": {
+          "status": "fertig",
+          "dauer_ms": "<DAUER>",
+          "sperre": false,
+          "anzahl": 0,
+          "je_op": {},
+          "op_indices_mit_befund": [],
+          "befunde": [],
+          "altlasten": 0
+        },
+        "diff": {
+          "dateien": [
+            {
+              "file_path": "src/golden.ts",
+              "ops": [
+                0
+              ],
+              "plus": 1,
+              "minus": 1,
+              "text": "@@ -1,3 +1,3 @@ op 0\n-export const goldenAlpha = 42;\n+export const goldenAlpha = 43;\n // goldenAlpha goldenBeta\n "
+            }
+          ],
+          "ms": "<DAUER>",
+          "hinweis": "Unified-Diff je Datei aus dem Plan-Schatten: Basis = Stand bei plan(), alle anwendbaren Ops in commit-Reihenfolge, 3 Zeilen Umfeld, Kopf je Hunk \"op <index>\". CRLF nur fuer die Anzeige normalisiert. nicht_anwendbar: diese Ops fehlen im Diff (kein erfundenes nachher). Einzelne Op ungekuerzt: files(action:\"plan_status\", plan_id, op_index)."
+        }
+      },
+      "restTextPayload": {
+        "success": true,
+        "plan_id": "<BATCH_ID>",
+        "project": "<PROJECT>",
+        "status": "open",
+        "owner_agent_id": "<AGENT>",
+        "open_for_coedit": true,
+        "ops_count": 1,
+        "coedit_ops_count": 0,
+        "files_touched": [
+          "src/golden.ts"
+        ],
+        "previews": [
+          {
+            "ok": true,
+            "index": 0,
+            "action": "search_replace",
+            "context": "search_replace: 1 ersetzt",
+            "file_path": "src/golden.ts",
+            "size_after": 57,
+            "size_before": 57
+          }
+        ],
+        "previews_count": 1,
+        "contributors": [
+          "<AGENT>"
+        ],
+        "ops_overview": [
+          {
+            "index": 0,
+            "agent_id": "<AGENT>",
+            "file_path": "src/golden.ts",
+            "action": "search_replace",
+            "reason": "Eigene Golden-Fixture"
+          }
+        ],
+        "op_vollstaendig": "Jede Op ungekuerzt (alle Felder, content, Anker, reason, Status, betroffene Zeilen vorher/nachher): files(action:'plan_status', plan_id:'<BATCH_ID>', op_index:N) oder op_indices:[...]; from_line/to_line schneiden ein Fenster aus sehr grossem content.",
+        "reason": null,
+        "created_at": "<ZEIT>",
+        "committed_at": null,
+        "pruefung": {
+          "status": "fertig",
+          "dauer_ms": "<DAUER>",
+          "sperre": false,
+          "anzahl": 0,
+          "je_op": {},
+          "op_indices_mit_befund": [],
+          "befunde": [],
+          "altlasten": 0
+        },
+        "diff": {
+          "dateien": [
+            {
+              "file_path": "src/golden.ts",
+              "ops": [
+                0
+              ],
+              "plus": 1,
+              "minus": 1,
+              "text": "@@ -1,3 +1,3 @@ op 0\n-export const goldenAlpha = 42;\n+export const goldenAlpha = 43;\n // goldenAlpha goldenBeta\n "
+            }
+          ],
+          "ms": "<DAUER>",
+          "hinweis": "Unified-Diff je Datei aus dem Plan-Schatten: Basis = Stand bei plan(), alle anwendbaren Ops in commit-Reihenfolge, 3 Zeilen Umfeld, Kopf je Hunk \"op <index>\". CRLF nur fuer die Anzeige normalisiert. nicht_anwendbar: diese Ops fehlen im Diff (kein erfundenes nachher). Einzelne Op ungekuerzt: files(action:\"plan_status\", plan_id, op_index)."
+        }
+      },
+      "stdio": {
+        "success": true,
+        "plan_id": "<BATCH_ID>",
+        "project": "<PROJECT>",
+        "status": "open",
+        "owner_agent_id": "<AGENT>",
+        "open_for_coedit": true,
+        "ops_count": 1,
+        "coedit_ops_count": 0,
+        "files_touched": [
+          "src/golden.ts"
+        ],
+        "previews": [
+          {
+            "ok": true,
+            "index": 0,
+            "action": "search_replace",
+            "context": "search_replace: 1 ersetzt",
+            "file_path": "src/golden.ts",
+            "size_after": 57,
+            "size_before": 57
+          }
+        ],
+        "previews_count": 1,
+        "contributors": [
+          "<AGENT>"
+        ],
+        "ops_overview": [
+          {
+            "index": 0,
+            "agent_id": "<AGENT>",
+            "file_path": "src/golden.ts",
+            "action": "search_replace",
+            "reason": "Eigene Golden-Fixture"
+          }
+        ],
+        "op_vollstaendig": "Jede Op ungekuerzt (alle Felder, content, Anker, reason, Status, betroffene Zeilen vorher/nachher): files(action:'plan_status', plan_id:'<BATCH_ID>', op_index:N) oder op_indices:[...]; from_line/to_line schneiden ein Fenster aus sehr grossem content.",
+        "reason": null,
+        "created_at": "<ZEIT>",
+        "committed_at": null,
+        "pruefung": {
+          "status": "fertig",
+          "dauer_ms": "<DAUER>",
+          "sperre": false,
+          "anzahl": 0,
+          "je_op": {},
+          "op_indices_mit_befund": [],
+          "befunde": [],
+          "altlasten": 0
+        },
+        "diff": {
+          "dateien": [
+            {
+              "file_path": "src/golden.ts",
+              "ops": [
+                0
+              ],
+              "plus": 1,
+              "minus": 1,
+              "text": "@@ -1,3 +1,3 @@ op 0\n-export const goldenAlpha = 42;\n+export const goldenAlpha = 43;\n // goldenAlpha goldenBeta\n "
+            }
+          ],
+          "ms": "<DAUER>",
+          "hinweis": "Unified-Diff je Datei aus dem Plan-Schatten: Basis = Stand bei plan(), alle anwendbaren Ops in commit-Reihenfolge, 3 Zeilen Umfeld, Kopf je Hunk \"op <index>\". CRLF nur fuer die Anzeige normalisiert. nicht_anwendbar: diese Ops fehlen im Diff (kein erfundenes nachher). Einzelne Op ungekuerzt: files(action:\"plan_status\", plan_id, op_index)."
+        }
+      },
+      "restTextChars": 2101,
+      "stdioTextChars": 4403
+    },
+    "plan-get": {
+      "rest": {
+        "id": "<ID:plan>",
+        "project": "<PROJECT>",
+        "name": "Golden-Plan",
+        "description": "Fester Plantext",
+        "goals": [],
+        "tasks": [
+          {
+            "id": "<ID:task>",
+            "title": "Golden-Task",
+            "status": "todo",
+            "kurz_id": "P1-T1",
+            "priority": "high",
+            "description": "Bleibt erhalten"
+          }
+        ],
+        "createdAt": "<ZEIT>",
+        "updatedAt": "<ZEIT>",
+        "kurz_id": "P1",
+        "aktiv": true,
+        "plaene_im_projekt": 1,
+        "prioritaet": "hoch",
+        "tasks_total": 1,
+        "tasks_returned": 1,
+        "plan_ref": {
+          "id": "<ID:plan>",
+          "kurz_id": "P1",
+          "name": "Golden-Plan",
+          "aktiv": true
+        }
+      },
+      "restTextPayload": {
+        "id": "<ID:plan>",
+        "project": "<PROJECT>",
+        "name": "Golden-Plan",
+        "description": "Fester Plantext",
+        "goals": [],
+        "tasks": [
+          {
+            "id": "<ID:task>",
+            "title": "Golden-Task",
+            "status": "todo",
+            "kurz_id": "P1-T1",
+            "priority": "high",
+            "description": "Bleibt erhalten"
+          }
+        ],
+        "createdAt": "<ZEIT>",
+        "updatedAt": "<ZEIT>",
+        "kurz_id": "P1",
+        "aktiv": true,
+        "plaene_im_projekt": 1,
+        "prioritaet": "hoch",
+        "tasks_total": 1,
+        "tasks_returned": 1,
+        "plan_ref": {
+          "id": "<ID:plan>",
+          "kurz_id": "P1",
+          "name": "Golden-Plan",
+          "aktiv": true
+        }
+      },
+      "stdio": {
+        "success": true,
+        "plan": {
+          "id": "<ID:plan>",
+          "project": "<PROJECT>",
+          "name": "Golden-Plan",
+          "description": "Fester Plantext",
+          "goals": [],
+          "tasks": [
+            {
+              "id": "<ID:task>",
+              "title": "Golden-Task",
+              "status": "todo",
+              "kurz_id": "P1-T1",
+              "priority": "high",
+              "description": "Bleibt erhalten"
+            }
+          ],
+          "createdAt": "<ZEIT>",
+          "updatedAt": "<ZEIT>",
+          "kurz_id": "P1",
+          "aktiv": true,
+          "plaene_im_projekt": 1,
+          "prioritaet": "hoch"
+        },
+        "message": "Plan \"Golden-Plan\" geladen",
+        "plan_ref": {
+          "id": "<ID:plan>",
+          "kurz_id": "P1",
+          "name": "Golden-Plan",
+          "aktiv": true
+        },
+        "tasks": [
+          {
+            "id": "<ID:task>",
+            "title": "Golden-Task",
+            "status": "todo",
+            "kurz_id": "P1-T1",
+            "priority": "high",
+            "description": "Bleibt erhalten"
+          }
+        ],
+        "tasks_total": 1,
+        "tasks_returned": 1
+      },
+      "restTextChars": 769,
+      "stdioTextChars": 2500
+    },
+    "thought-get": {
+      "rest": {
+        "success": true,
+        "thought": {
+          "id": "<ID:thoughtA>",
+          "project": "<PROJECT>",
+          "source": "<AGENT>",
+          "content": "goldenAlpha Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. ",
+          "tags": [
+            "fixture"
+          ],
+          "timestamp": "<ZEIT>"
+        },
+        "message": "1 Gedanke geladen"
+      },
+      "restTextPayload": {
+        "success": true,
+        "thought": {
+          "id": "<ID:thoughtA>",
+          "project": "<PROJECT>",
+          "source": "<AGENT>",
+          "content": "goldenAlpha Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. ",
+          "tags": [
+            "fixture"
+          ],
+          "timestamp": "<ZEIT>"
+        },
+        "message": "1 Gedanke geladen"
+      },
+      "stdio": {
+        "success": true,
+        "thought": {
+          "id": "<ID:thoughtA>",
+          "project": "<PROJECT>",
+          "source": "<AGENT>",
+          "content": "goldenAlpha Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. ",
+          "tags": [
+            "fixture"
+          ],
+          "timestamp": "<ZEIT>"
+        },
+        "message": "1 Gedanke geladen"
+      },
+      "restTextChars": 903,
+      "stdioTextChars": 2126
+    },
+    "thought-search": {
+      "rest": {
+        "result": [
+          {
+            "id": "<ID:thoughtA>",
+            "score": 0.9,
+            "payload": {
+              "project": "<PROJECT>",
+              "source": "<AGENT>",
+              "content": "goldenAlpha Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. ",
+              "tags": [
+                "fixture"
+              ],
+              "timestamp": "<ZEIT>"
+            }
+          },
+          {
+            "id": "<ID:thoughtB>",
+            "score": 0.8,
+            "payload": {
+              "project": "<PROJECT>",
+              "source": "<AGENT>",
+              "content": "goldenAlpha zweiter Treffer",
+              "tags": [
+                "fixture"
+              ],
+              "timestamp": "<ZEIT>"
+            }
+          }
+        ]
+      },
+      "restTextPayload": [
+        {
+          "id": "<ID:thoughtA>",
+          "score": 0.9,
+          "payload": {
+            "project": "<PROJECT>",
+            "source": "<AGENT>",
+            "content": "goldenAlpha Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. ",
+            "tags": [
+              "fixture"
+            ],
+            "timestamp": "<ZEIT>"
+          }
+        },
+        {
+          "id": "<ID:thoughtB>",
+          "score": 0.8,
+          "payload": {
+            "project": "<PROJECT>",
+            "source": "<AGENT>",
+            "content": "goldenAlpha zweiter Treffer",
+            "tags": [
+              "fixture"
+            ],
+            "timestamp": "<ZEIT>"
+          }
+        }
+      ],
+      "stdio": {
+        "success": true,
+        "results": [
+          {
+            "id": "<ID:thoughtA>",
+            "project": "<PROJECT>",
+            "source": "<AGENT>",
+            "content": "goldenAlpha Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. Erhaltener Gedankeninhalt. ",
+            "tags": [
+              "fixture"
+            ],
+            "timestamp": "<ZEIT>",
+            "score": 0.9
+          },
+          {
+            "id": "<ID:thoughtB>",
+            "project": "<PROJECT>",
+            "source": "<AGENT>",
+            "content": "goldenAlpha zweiter Treffer",
+            "tags": [
+              "fixture"
+            ],
+            "timestamp": "<ZEIT>",
+            "score": 0.8
+          }
+        ],
+        "message": "2 Gedanken gefunden"
+      },
+      "restTextChars": 1261,
+      "stdioTextChars": 1305
+    },
+    "channel-feed": {
+      "rest": {
+        "success": true,
+        "channel": "golden",
+        "messages": [
+          {
+            "id": "<MESSAGE_ID>",
+            "channelName": "golden",
+            "sender": "<AGENT>",
+            "content": "goldenAlpha Nachricht",
+            "createdAt": "<ZEIT>"
+          }
+        ],
+        "count": 1,
+        "action": "feed"
+      },
+      "restTextPayload": {
+        "success": true,
+        "channel": "golden",
+        "messages": [
+          {
+            "id": "<MESSAGE_ID>",
+            "channelName": "golden",
+            "sender": "<AGENT>",
+            "content": "goldenAlpha Nachricht",
+            "createdAt": "<ZEIT>"
+          }
+        ],
+        "count": 1,
+        "action": "feed"
+      },
+      "stdio": {
+        "content": [
+          {
+            "type": "text",
+            "text": "{\n  \"success\": true,\n  \"channel\": \"golden\",\n  \"count\": 1,\n  \"messages\": [\n    {\n      \"id\": \"<MESSAGE_ID>\",\n      \"sender\": \"<AGENT>\",\n      \"content\": \"goldenAlpha Nachricht\",\n      \"createdAt\": \"<ZEIT>\"\n    }\n  ]\n}"
+          }
+        ]
+      },
+      "restTextChars": 308,
+      "stdioTextChars": 1573
+    },
+    "channel-feed-empty": {
+      "rest": {
+        "success": true,
+        "channel": "golden",
+        "messages": [],
+        "count": 0,
+        "action": "feed"
+      },
+      "restTextPayload": {
+        "success": true,
+        "channel": "golden",
+        "messages": [],
+        "count": 0,
+        "action": "feed"
+      },
+      "stdio": {
+        "content": [
+          {
+            "type": "text",
+            "text": "{\n  \"success\": true,\n  \"channel\": \"golden\",\n  \"count\": 0,\n  \"messages\": []\n}"
+          }
+        ]
+      },
+      "restTextChars": 96,
+      "stdioTextChars": 164
+    },
+    "code-search-one": {
+      "rest": {
+        "success": true,
+        "results": [
+          {
+            "file_path": "src/golden.ts",
+            "file_type": "ts",
+            "headline": "export const <b>goldenAlpha</b> = 42;\n// <b>goldenAlpha</b> goldenBeta",
+            "rank": 0.075990885,
+            "matches": [
+              {
+                "line": 1,
+                "text": "export const goldenAlpha = 42;"
+              },
+              {
+                "line": 2,
+                "text": "// goldenAlpha goldenBeta"
+              }
+            ],
+            "total_matches": 2,
+            "matches_gekappt": false
+          }
+        ],
+        "count": 1,
+        "mode": "fulltext",
+        "project": "<PROJECT>"
+      },
+      "restTextPayload": {
+        "success": true,
+        "results": [
+          {
+            "file_path": "src/golden.ts",
+            "file_type": "ts",
+            "headline": "export const <b>goldenAlpha</b> = 42;\n// <b>goldenAlpha</b> goldenBeta",
+            "rank": 0.075990885,
+            "matches": [
+              {
+                "line": 1,
+                "text": "export const goldenAlpha = 42;"
+              },
+              {
+                "line": 2,
+                "text": "// goldenAlpha goldenBeta"
+              }
+            ],
+            "total_matches": 2,
+            "matches_gekappt": false
+          }
+        ],
+        "count": 1,
+        "mode": "fulltext",
+        "project": "<PROJECT>"
+      },
+      "stdio": {
+        "success": true,
+        "results": [
+          {
+            "file_path": "src/golden.ts",
+            "file_type": "ts",
+            "headline": "export const <b>goldenAlpha</b> = 42;\n// <b>goldenAlpha</b> goldenBeta",
+            "rank": 0.075990885,
+            "matches": [
+              {
+                "line": 1,
+                "text": "export const goldenAlpha = 42;"
+              },
+              {
+                "line": 2,
+                "text": "// goldenAlpha goldenBeta"
+              }
+            ],
+            "total_matches": 2,
+            "matches_gekappt": false
+          }
+        ],
+        "count": 1,
+        "source": "pg-fulltext",
+        "project": "<PROJECT>"
+      },
+      "restTextChars": 599,
+      "stdioTextChars": 2694
+    },
+    "code-search-two": {
+      "rest": {
+        "success": true,
+        "results": [
+          {
+            "file_path": "src/golden.ts",
+            "file_type": "ts",
+            "headline": "export const <b>goldenAlpha</b> = 42;\n// <b>goldenAlpha</b> <b>goldenBeta</b>",
+            "rank": 0.18681316,
+            "matches": [
+              {
+                "line": 2,
+                "text": "// goldenAlpha goldenBeta",
+                "words": [
+                  "goldenalpha",
+                  "goldenbeta"
+                ]
+              },
+              {
+                "line": 1,
+                "text": "export const goldenAlpha = 42;",
+                "words": [
+                  "goldenalpha"
+                ]
+              }
+            ],
+            "total_matches": 2,
+            "total_matches_all_words": 1,
+            "matches_gekappt": false
+          }
+        ],
+        "count": 1,
+        "mode": "fulltext",
+        "project": "<PROJECT>"
+      },
+      "restTextPayload": {
+        "success": true,
+        "results": [
+          {
+            "file_path": "src/golden.ts",
+            "file_type": "ts",
+            "headline": "export const <b>goldenAlpha</b> = 42;\n// <b>goldenAlpha</b> <b>goldenBeta</b>",
+            "rank": 0.18681316,
+            "matches": [
+              {
+                "line": 2,
+                "text": "// goldenAlpha goldenBeta",
+                "words": [
+                  "goldenalpha",
+                  "goldenbeta"
+                ]
+              },
+              {
+                "line": 1,
+                "text": "export const goldenAlpha = 42;",
+                "words": [
+                  "goldenalpha"
+                ]
+              }
+            ],
+            "total_matches": 2,
+            "total_matches_all_words": 1,
+            "matches_gekappt": false
+          }
+        ],
+        "count": 1,
+        "mode": "fulltext",
+        "project": "<PROJECT>"
+      },
+      "stdio": {
+        "success": true,
+        "results": [
+          {
+            "file_path": "src/golden.ts",
+            "file_type": "ts",
+            "headline": "export const <b>goldenAlpha</b> = 42;\n// <b>goldenAlpha</b> <b>goldenBeta</b>",
+            "rank": 0.18681316,
+            "matches": [
+              {
+                "line": 2,
+                "text": "// goldenAlpha goldenBeta",
+                "words": [
+                  "goldenalpha",
+                  "goldenbeta"
+                ]
+              },
+              {
+                "line": 1,
+                "text": "export const goldenAlpha = 42;",
+                "words": [
+                  "goldenalpha"
+                ]
+              }
+            ],
+            "total_matches": 2,
+            "total_matches_all_words": 1,
+            "matches_gekappt": false
+          }
+        ],
+        "count": 1,
+        "source": "pg-fulltext",
+        "project": "<PROJECT>"
+      },
+      "restTextChars": 787,
+      "stdioTextChars": 792
+    }
+  }
+}

@@ -1290,7 +1290,7 @@ export const MCP_TOOLS = [
         tail_lines: { type: 'number', description: 'Default 5' },
         agent_ids: { type: 'array', items: { type: 'string' }, description: 'activity: Filter auf Agenten (Namen ODER IDs, z.B. ["sub-r0"]). Ohne = alle.' },
         tools: { type: 'array', items: { type: 'string' }, description: 'activity: Filter auf Tools (z.B. ["files","memory"]). Ohne = alle Tools interleaved.' },
-        detail: { type: 'string', enum: ['meta', 'summary', 'full'], description: 'get + full: job_env gezielt anzeigen (auch bei ausgeschalteten Hinweisen). activity: Rueckgabe-Tiefe. meta(Default)=ohne result; summary=+Vorschau; full=result bis Cap.' },
+        detail: { type: 'string', enum: ['meta', 'summary', 'full'], description: 'get: standardmäßig kompakte Sicherungsanalyse; full liefert zusätzlich volle Lage/Inline-Texte und job_env (auch bei ausgeschalteten Hinweisen). activity: Rueckgabe-Tiefe. meta(Default)=ohne result; summary=+Vorschau; full=result bis Cap.' },
         mutations_only: { type: 'boolean', description: 'activity: nur Schreibzugriffe (files.create/update, memory.write, ...).' },
         errors_only: { type: 'boolean', description: 'activity: nur fehlgeschlagene Calls.' },
         since: { type: 'string', description: 'activity: ISO-Timestamp — nur Eintraege ab dann.' },
@@ -5456,7 +5456,7 @@ async function handleToolCallKern(
         if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(jobId)) {
           return { success: false, error: 'invalid_job_id', message: `"${jobId}" ist keine Job-UUID${/^[0-9a-f]{16}$/i.test(jobId) ? ' (das ist eine stream_id)' : ''} — nutze das id-Feld der exec-Antwort oder shell(history).` };
         }
-        const job = await getShellJobById(reqStr(args, 'id'));
+        const job = await getShellJobById(reqStr(args, 'id'), { anzeige: str(args, 'detail') === 'full' ? 'full' : 'kompakt' });
         if (!job) {
           return { success: false, error: 'unknown_job', message: `Job ${reqStr(args, 'id')} nicht gefunden` };
         }
