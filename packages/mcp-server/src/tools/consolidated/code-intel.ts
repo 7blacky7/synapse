@@ -34,6 +34,7 @@ import {
   getParserGesundheitDatei,
   getParserGesundheitUebersicht,
   ergaenzeCodeIntelAntwort,
+  mitCodeIntelSchatten,
 } from '@synapse/core';
 
 import { ConsolidatedTool, str, reqStr, num, bool } from './types.js';
@@ -60,6 +61,10 @@ export const codeIntelTool: ConsolidatedTool = {
           type: 'string',
           description: 'Agent-ID fuer Onboarding',
         },
+
+        schatten: { type: 'string', description: "Offener plan_id oder 'alle': Ghost-Overlay für file/functions/symbols/references/search/statements/calls. Alle Pläne getrennt; keine semantische Suche." },
+        stand_nach_op: { type: 'integer', minimum: 0, description: 'Optionaler Zwischenstand nach diesem 0-basierten Op-Index.' },
+        show_ghosts: { type: 'boolean', description: 'tree: Ghost-Dateien [g]/[g~] und neue Ordner [g] mit plan_id. Standard false, bisherige Index-Zählwerte unverändert.' },
 
         // --- tree ---
         path: {
@@ -242,7 +247,8 @@ export const codeIntelTool: ConsolidatedTool = {
   // Etappe C (P4-T67/T70): die Asset-Weiche aus core haengt NACH der Bestandsantwort nur Zusatzfelder an;
   // ohne Asset-Eintraege im Projekt bleibt jede Antwort byte-gleich. Spiegel: rest-api/src/routes/mcp.ts.
   handler: async (args: Record<string, unknown>) =>
-    ergaenzeCodeIntelAntwort(reqStr(args, 'action'), args, await codeIntelBestand(args)),
+    mitCodeIntelSchatten(reqStr(args, 'action'), args, async () =>
+      ergaenzeCodeIntelAntwort(reqStr(args, 'action'), args, await codeIntelBestand(args))),
 };
 
 async function codeIntelBestand(args: Record<string, unknown>): Promise<Record<string, unknown>> {

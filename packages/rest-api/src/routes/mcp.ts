@@ -216,6 +216,7 @@ import { leiteAgentIdAusHeaders } from './agent-header.js';
 import { pruefeUnbekannteParameter, baueErlaubteParameter } from '@synapse/core';
 // asset_intel (P4-T70): Schema und Dispatcher aus core — dieselben, die die stdio-Strecke einhaengt.
 import { ASSET_INTEL_DEFINITION, fuehreAssetIntelAus, ergaenzeCodeIntelAntwort } from '@synapse/core';
+import { mitCodeIntelSchatten } from '@synapse/core';
 // intern (P14): Definition und Dispatcher aus core; nur bei SYNAPSE_INTERN_TOOL=1 in der Liste.
 import { INTERN_DEFINITION, INTERN_TOOL_AUS, internToolAktiv, fuehreInternAus } from '@synapse/core';
 // P15-T33 E0.5: Jev-Schalter (tools/list-Filter, Sperre des Tools jev) und Jev-Steuerung am admin-Tool
@@ -982,6 +983,9 @@ export const MCP_TOOLS = [
         show_functions: { type: 'boolean', description: 'Funktionsnamen auflisten (Standard: false, fuer tree)' },
         show_imports: { type: 'boolean', description: 'Import-Statements auflisten (Standard: false, fuer tree)' },
         show_assets: { type: 'boolean', description: 'tree: Asset-Zeilen mit Marker zeigen (Standard true)' },
+        schatten: { type: 'string', description: "Offener plan_id oder 'alle': Ghost-Overlay für file/functions/symbols/references/search/statements/calls. Alle Pläne getrennt; keine semantische Suche." },
+        stand_nach_op: { type: 'integer', minimum: 0, description: 'Optionaler Zwischenstand nach diesem 0-basierten Op-Index.' },
+        show_ghosts: { type: 'boolean', description: 'tree: Ghost-Dateien [g]/[g~] und neue Ordner [g] mit plan_id. Standard false, bisherige Index-Zählwerte unverändert.' },
         file_path: { type: 'string', description: 'Datei-Pfad-Filter (LIKE-Pattern) fuer functions/variables/symbols/file/statements/calls/entrypoints — UND seit 08.08.2026 auch fuer search: dort im Volltext-Modus als LIKE-Teilpfad, mit semantic:true dagegen als VOLLSTAENDIGER Pfad, weil Qdrant keinen Teilstring-Vergleich kennt. Vorher wurde der Parameter bei search still verworfen und die Suche lieferte Treffer aus dem ganzen Projekt.' },
         name: { type: 'string', description: 'Symbol-Name-Filter (fuer functions/variables/symbols/references)' },
         value_contains: { type: 'string', description: "Sucht im INHALT des Symbols statt im Namen (fuer symbols). PFLICHT fuer Kommentare, Strings und TODOs: die tragen name=NULL, ein name-Filter findet dort nie etwas. Beispiel: symbol_type='comment' + value_contains='@SYN-'. Jeder Treffer traegt match_line (echte Zeile des Treffers; bei mehrzeiligen Kommentarbloecken NICHT line_start) und match_lines." },
@@ -4515,7 +4519,7 @@ async function handleToolCallKern(
     // =================================================================
     // Etappe C (P4-T67/T70): die Asset-Weiche aus core haengt NACH der Bestandsantwort nur Zusatzfelder an;
     // ohne Asset-Eintraege im Projekt bleibt jede Antwort byte-gleich. Spiegel: mcp-server consolidated/code-intel.ts.
-    case 'code_intel': return ergaenzeCodeIntelAntwort(action, args, await (async (): Promise<Record<string, unknown>> => {
+    case 'code_intel': return mitCodeIntelSchatten(action!, args, async () => ergaenzeCodeIntelAntwort(action, args, await (async (): Promise<Record<string, unknown>> => {
       const project = reqStr(args, 'project');
       switch (action) {
         case 'tree': {
@@ -4661,7 +4665,7 @@ async function handleToolCallKern(
         default:
           return { success: false, error: `Unbekannte code_intel action: "${action}"` };
       }
-    })());
+    })()));
 
     // =================================================================
     case 'files_batch':

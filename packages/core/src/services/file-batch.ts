@@ -6137,6 +6137,30 @@ export async function planSchattenDiff(plan: FileBatchPlanRow): Promise<PlanDiff
   return planDiffAus({ ops: Array.isArray(plan.ops) ? plan.ops : [], owner: plan.owner_agent_id, stand, start, previews: plan.previews });
 }
 
+/** P6-T27: read-only Bruecke zur gemeinsamen Op-Anwendung, keine zweite Edit-Engine. */
+export async function getCodeIntelSchatten(plan: Parameters<typeof ladeSchattenStand>[0]): Promise<{
+  dateien: Array<{ file_path: string; content: string; deleted: boolean; neu: boolean; drift?: string }>;
+  nicht_anwendbar: Array<{ op_index: number; file_path: string; fehler: string }>;
+}> {
+  const stand = await ladeSchattenStand(plan);
+  if ('fehler' in stand) throw new Error('Plan-Schatten nicht baubar');
+  const beruehrt = new Set(stand.angewendet.folge.flatMap(i => {
+    const op = plan.ops[i];
+    return op.action === 'copy' ? [op.new_path!] : op.new_path ? [op.file_path, op.new_path] : [op.file_path];
+  }));
+  return {
+    dateien: [...stand.buffers].filter(([file]) => beruehrt.has(file)).map(([file, buffer]) => ({
+      file_path: file, content: maskiereDatei(file, buffer.finalContent),
+      deleted: buffer.deleted === true, neu: buffer.wasNewlyCreated === true,
+      ...((stand.drift.get(file) ?? stand.drift.get(plan.ops.find(op => op.new_path === file && stand.drift.has(op.file_path))?.file_path ?? ''))
+        ? { drift: stand.drift.get(file) ?? stand.drift.get(plan.ops.find(op => op.new_path === file && stand.drift.has(op.file_path))!.file_path) } : {}),
+    })),
+    nicht_anwendbar: stand.angewendet.fehler.map(f => ({
+      op_index: f.index, file_path: plan.ops[f.index].file_path, fehler: 'Operation nicht anwendbar; plan_status mit op_index untersuchen',
+    })),
+  };
+}
+
 /** plan_status-Antwort mit Diff je Datei ueber alle Ops (MCP-Server und REST-API). */
 export async function buildPlanStatusResponseMitDiff(plan: FileBatchPlanRow): Promise<Record<string, unknown>> {
   const antwort = buildPlanStatusResponse(plan);

@@ -5,6 +5,9 @@
  * @packageDocumentation
  */
 
+// P6-T27: optionale Ghost-Schatten, Standardabfragen unveraendert.
+export { mitCodeIntelSchatten, schattenCacheStatistik } from './services/code-intel-schatten.js';
+
 // Konfiguration
 export { loadConfig, getConfig, resetConfig } from './config.js';
 

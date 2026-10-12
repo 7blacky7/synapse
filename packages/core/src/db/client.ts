@@ -74,8 +74,14 @@ export function getHintergrundPool(): Pool {
   return _hintergrundPool;
 }
 
+/** P6-T27: separater, nur im expliziten Lese-Overlay aktiver Anfragekontext. */
+const lesePoolKontext = new AsyncLocalStorage<Pool>();
+export function mitLesePool<T>(pool: Pool, fn: () => Promise<T>): Promise<T> {
+  return lesePoolKontext.run(pool, fn);
+}
+
 export function getPool(): Pool {
-  return hintergrundKontext.getStore() ? getHintergrundPool() : hauptPool();
+  return lesePoolKontext.getStore() ?? (hintergrundKontext.getStore() ? getHintergrundPool() : hauptPool());
 }
 
 /**
