@@ -1,0 +1,2 @@
+{"type":"user","timestamp":"2026-10-11T13:00:00.000Z","message":{"content":"Du bist sol-3 (agent_id sol-3)"}}
+{"type":"assistant","timestamp":"2026-10-11T13:01:00.000Z","message":{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"/home/example/skills/synapse-agent-regeln/SKILL.md"}}]}}

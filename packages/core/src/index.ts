@@ -156,6 +156,7 @@ export {
 export type { DaemonBefehl, DaemonBefehlName, DaemonUebersicht } from './services/daemon-bruecke.js';
 // P15-T23: Diagnose-Befehle im Daemon (sync_datei, parser_pool)
 export { fuehreDiagnoseLokal, syncDateiLokal, DIAGNOSE_DAEMON_BEFEHLE } from './services/intern-diagnose-daemon.js';
+export { skillNutzungLokal, parseSkillSessionJsonl } from './services/intern-nutzung-daemon.js';
 export type { DiagnoseDaemonKontext } from './services/intern-diagnose-daemon.js';
 // P15-T12 E3/E4: Warteschlangen einsehen/umsortieren (Speicher-Register je Prozess + PG in der API)
 export {

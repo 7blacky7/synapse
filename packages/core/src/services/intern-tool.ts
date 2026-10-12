@@ -24,6 +24,7 @@ import { InternOllamaFehler, embeddingMessen, ollamaEntladen, ollamaLaden, ollam
 import { BACKLOG_TABELLEN, embeddeOffeneEintraege, zaehleOffeneEmbeddings } from './embed-backlog.js';
 import { imHintergrund } from '../db/client.js';
 import { dbSitzungen, internStatus, langsameAufrufe } from './intern-einblick.js';
+import { nutzungsStatistik } from './intern-nutzung.js';
 import { NEU_EINBETTEN_ARTEN, neuEinbetten } from './neu-einbetten.js';
 import { listeEmbedPrioritaet, setzeEmbedPrioritaet } from './embed-prioritaet.js';
 import {
@@ -69,7 +70,7 @@ export const INTERN_TOOL_AUS = {
 export const INTERN_ACTIONS = [
   'schalter_setzen', 'schalter_liste',
   'ollama_status', 'ollama_entladen', 'ollama_laden',
-  'status', 'db_sitzungen', 'langsam',
+  'status', 'db_sitzungen', 'langsam', 'nutzung',
   'nachzug_jetzt', 'embedding_messen', 'neu_einbetten', 'embed_prioritaet',
   'modellprofil', 'modellprofil_setzen', 'modellprofil_kalibrieren',
   'worker_status', 'worker_pausieren', 'worker_fortsetzen', 'worker_durchlauf',
@@ -92,6 +93,7 @@ export const INTERN_DEFINITION = {
     'status: Embedding-Queue, DB-Pools, offene Embeddings, Parser-Worker, Context7-Kontingent, Modell, Schalter in einem Aufruf; ' +
     'db_sitzungen: pg_stat_activity (lange Abfragen, idle in transaction mit Sperren, Blockaden — nur anzeigen); ' +
     'langsam: langsamste Tool-Aufrufe der letzten Minuten ohne bewusst wartende. ' +
+    'nutzung: read-only Zaehlung nach Zeit, Agent, Tool und Action (seit, bis, bucket, agent_ids, tools, project); optional skills:true liest lokale JSONL-Sitzungen ueber den Daemon und liefert nur Zaehlungen/Skill-Namen. ' +
     'nachzug_jetzt: offene Embeddings sofort im Hintergrund-Pool nachholen; ' +
     'embedding_messen (modell, anzahl, praefix, num_ctx, num_batch): Testmessung direkt gegen Ollama ohne Schreiben (Ladezeit, Latenz, Passagen/s, Dimension, VRAM); ' +
     'num_ctx/num_batch ohne Angabe aus EMBEDDING_NUM_CTX/EMBEDDING_NUM_BATCH, sonst Ollama-Standard. ' +
@@ -115,12 +117,12 @@ export const INTERN_DEFINITION = {
     type: 'object',
     properties: {
       action: { type: 'string', enum: [...INTERN_ACTIONS], description: 'Aktion' },
-      project: { type: 'string', description: 'Optional; bei langsam und nachzug_jetzt Filter auf ein Projekt, sonst nur Attribution (Schalter gelten fuer den ganzen Prozess)' },
+      project: { type: 'string', description: 'nutzung: Filter auf ein Projekt; langsam/nachzug_jetzt: jeweiliger Projektfilter; sonst Attribution (Schalter gelten fuer den ganzen Prozess)' },
       agent_id: { type: 'string', description: 'Agent-ID (landet in gesetzt_von)' },
       name: { type: 'string', enum: Object.keys(INTERN_SCHALTER), description: 'schalter_setzen: Schalter' },
       aktiv: { type: 'boolean', description: 'schalter_setzen: true = anhalten, false = wieder freigeben' },
       modus: { type: 'string', description: 'schalter_setzen: embedding hintergrund (Standard) | alle; parser/context7 pause' },
-      bis: { type: 'string', description: 'schalter_setzen / worker_pausieren: Ablauf als ISO-Zeitpunkt' },
+      bis: { type: 'string', description: 'nutzung: Ende (ISO-Zeitpunkt; Standard jetzt); schalter_setzen / worker_pausieren: Ablauf als ISO-Zeitpunkt' },
       dauer_min: { type: 'number', description: 'schalter_setzen / worker_pausieren: Ablauf in Minuten ab jetzt' },
       dauerhaft: { type: 'boolean', description: 'schalter_setzen: ohne Ablauf (nur ausdruecklich)' },
       grund: { type: 'string', description: 'schalter_setzen / worker_pausieren: Grund (sichtbar in schalter_liste bzw. worker_status und im Log)' },
@@ -143,6 +145,13 @@ export const INTERN_DEFINITION = {
       rauschen: { type: 'array', items: { type: ['string', 'object'] }, description: 'modellprofil_kalibrieren: Anfragen, zu denen nichts passen soll - Text oder {query, framework}' },
       schreiben: { type: 'boolean', description: 'modellprofil_kalibrieren: Vorschlag ins Profil des aktiven Modells schreiben (nur bei sauberer Trennung)' },
       min_sekunden: { type: 'number', description: 'db_sitzungen: laufende Abfragen ab so vielen Sekunden auflisten (Standard 5)' },
+      seit: { type: 'string', description: 'nutzung: Beginn (ISO-Zeitpunkt; Standard letzte 24 h)' },
+      bucket: { type: 'string', enum: ['stunde', 'tag'], description: 'nutzung: Zeitgruppierung (Standard tag)' },
+      agent_ids: { type: 'array', items: { type: 'string' }, description: 'nutzung: auf diese Agenten begrenzen' },
+      tools: { type: 'array', items: { type: 'string' }, description: 'nutzung: auf diese Synapse-Tools begrenzen' },
+      skills: { type: 'boolean', description: 'nutzung: zusaetzlich lokale Codex-/Claude-Sitzungen nach wirklich gelesenen SKILL.md-Dateien scannen (Standard false)' },
+      vergleich_seit: { type: 'string', description: 'nutzung: Beginn des optionalen Vergleichszeitraums (nur zusammen mit vergleich_bis)' },
+      vergleich_bis: { type: 'string', description: 'nutzung: Ende des optionalen Vergleichszeitraums (nur zusammen mit vergleich_seit)' },
       minuten: { type: 'number', description: 'langsam: Zeitfenster in Minuten (Standard 30)' },
       limit: { type: 'number', description: 'langsam: hoechstens so viele Aufrufe (Standard 20, max 200); nachzug_jetzt: so viele Eintraege (Standard 20, max 500)' },
       tabelle: { type: 'string', enum: [...BACKLOG_TABELLEN], description: 'nachzug_jetzt: nur diese Tabelle (sonst alle)' },
@@ -315,6 +324,44 @@ export async function fuehreInternAus(
           action,
           ...(await langsameAufrufe({ minuten: Math.ceil(minuten ?? 30), limit: Math.min(Math.floor(limit ?? 20), 200), project: text(a, 'project') })),
         };
+      }
+      case 'nutzung': {
+        const seit = text(a, 'seit');
+        const bis = text(a, 'bis');
+        const vergleichSeit = text(a, 'vergleich_seit');
+        const vergleichBis = text(a, 'vergleich_bis');
+        const bucket = text(a, 'bucket') ?? 'tag';
+        if (bucket !== 'tag' && bucket !== 'stunde') return fehler(action, 'parameter_ungueltig', 'bucket: tag | stunde.');
+        for (const [feld, wert] of [['seit', seit], ['bis', bis], ['vergleich_seit', vergleichSeit], ['vergleich_bis', vergleichBis]] as const) {
+          if (wert !== undefined && !Number.isFinite(Date.parse(wert))) return fehler(action, 'parameter_ungueltig', feld + ': ISO-Zeitpunkt erwartet.');
+        }
+        if (seit !== undefined && bis !== undefined && Date.parse(seit) >= Date.parse(bis)) return fehler(action, 'parameter_ungueltig', 'seit muss vor bis liegen.');
+        if ((vergleichSeit === undefined) !== (vergleichBis === undefined)) return fehler(action, 'parameter_ungueltig', 'vergleich_seit und vergleich_bis gemeinsam angeben.');
+        if (vergleichSeit !== undefined && vergleichBis !== undefined && Date.parse(vergleichSeit) >= Date.parse(vergleichBis)) return fehler(action, 'parameter_ungueltig', 'vergleich_seit muss vor vergleich_bis liegen.');
+        const limit = zahl(a, 'limit');
+        if (limit !== undefined && !(limit > 0)) return fehler(action, 'parameter_ungueltig', 'limit muss eine Zahl > 0 sein.');
+        const erg = await nutzungsStatistik({
+          seit, bis, bucket, agent_ids: textListe(a, 'agent_ids'), tools: textListe(a, 'tools'),
+          project: text(a, 'project'), limit: Math.min(Math.floor(limit ?? 200), 500),
+          vergleich_seit: vergleichSeit, vergleich_bis: vergleichBis,
+        });
+        let skill_nutzung: unknown;
+        if (wahr(a, 'skills') === true) {
+          const prozess = text(a, 'prozess') ?? 'daemon';
+          if (prozess !== 'daemon' && !prozess.startsWith('daemon:')) return fehler(action, 'parameter_ungueltig', 'skills:true nutzt prozess daemon | daemon:<host>.');
+          const host = prozess.startsWith('daemon:') ? prozess.slice('daemon:'.length) : undefined;
+          const ende = bis ?? new Date().toISOString();
+          const start = seit ?? new Date(Date.parse(ende) - 24 * 60 * 60 * 1000).toISOString();
+          try {
+            const { host: ziel, ergebnis } = await sendeAnDaemon('skills_scan', {
+              seit: start, bis: ende, bucket, agent_ids: textListe(a, 'agent_ids'), project: text(a, 'project'),
+            }, host, 30_000);
+            skill_nutzung = { prozess: 'daemon:' + ziel, ...ergebnis };
+          } catch (err) {
+            skill_nutzung = { verfuegbar: false, error: err instanceof DaemonBrueckeFehler ? err.code : 'daemon_fehler' };
+          }
+        }
+        return { success: true, action, ...erg, ...(skill_nutzung === undefined ? {} : { skill_nutzung }) };
       }
       case 'nachzug_jetzt': {
         const limit = zahl(a, 'limit');

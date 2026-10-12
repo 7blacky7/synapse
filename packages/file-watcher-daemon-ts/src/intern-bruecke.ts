@@ -19,7 +19,7 @@
  */
 
 import os from 'node:os';
-import { DAEMON_BEFEHLE, fuehreDiagnoseLokal, fuehreWorkerActionAus, fuehreWarteschlangeLokal, workerStatus } from '@synapse/core';
+import { DAEMON_BEFEHLE, fuehreDiagnoseLokal, skillNutzungLokal, fuehreWorkerActionAus, fuehreWarteschlangeLokal, workerStatus } from '@synapse/core';
 import { findProjekt, loadConfig } from './config.js';
 import { leseApiZugang } from './skills-proxy.js';
 import { gpuHelferEinstellen, gpuHelferStatus } from './gpu-helfer-datei.js';
@@ -93,6 +93,16 @@ export function startInternBruecke(): InternBrueckeHandle {
         else if (b.befehl === 'gpu_helfer_einstellen') ergebnis = gpuHelferEinstellen(args);
         // P15-T12 E3/E4: Speicher-Warteschlangen dieses Daemons (warteschlangen-register)
         else if (b.befehl.startsWith('warteschlange_')) ergebnis = await fuehreWarteschlangeLokal(b.befehl, args, PROZESS);
+        // P10-T44: JSONL-Nutzung nur lesen; Ergebnisse enthalten keine Transcript-Inhalte.
+        else if (b.befehl === 'skills_scan') {
+          if (typeof args.project === 'string') {
+            const projekt = findProjekt(loadConfig(), args.project);
+            if (!projekt) throw Object.assign(new Error('Projekt unbekannt.'), { code: 'projekt_unbekannt' });
+            ergebnis = await skillNutzungLokal(args, projekt.pfad);
+          } else {
+            ergebnis = await skillNutzungLokal(args);
+          }
+        }
         // P15-T23: Diagnose im Daemon (Plattenstand einer Datei, Parser-Pool dieses Prozesses)
         else if (b.befehl === 'sync_datei' || b.befehl === 'parser_pool') {
           ergebnis = await fuehreDiagnoseLokal(b.befehl, args, {

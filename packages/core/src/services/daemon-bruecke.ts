@@ -24,7 +24,7 @@ export const DAEMON_BEFEHLE = [
   // P15-T12 E3/E4: Speicher-Warteschlangen des Daemons (index, asset, embedding_queue)
   'warteschlange_liste', 'warteschlange_verschieben',
   // P15-T23: Diagnose im Daemon - Plattenstand einer Datei gegen PG, Parser-Pool des Daemon-Prozesses (nur lesend)
-  'sync_datei', 'parser_pool',
+  'sync_datei', 'parser_pool', 'skills_scan',
 ] as const;
 export type DaemonBefehlName = (typeof DAEMON_BEFEHLE)[number];
 
