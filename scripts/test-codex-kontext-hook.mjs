@@ -1,9 +1,10 @@
 #!/usr/bin/env node
-// P7-T48: contract test for the Codex PostToolUse context hook.
-// Run with: node scripts/test-codex-kontext-hook.mjs
+// P7-T48: Vertragstest für den Codex-PostToolUse-Kontexthook.
+// Ausführen mit: node scripts/test-codex-kontext-hook.mjs
 
 import assert from 'node:assert/strict';
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, closeSync, mkdirSync, mkdtempSync, openSync, rmSync, writeFileSync, writeSync } from 'node:fs';
+import { performance } from 'node:perf_hooks';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -14,6 +15,8 @@ const root = mkdtempSync(join(tmpdir(), 'p7-t48-hook-test-'));
 const home = join(root, 'codex-home');
 const bin = join(root, 'bin');
 const transcript = join(root, 'transcript.jsonl');
+const fallbackTranscript = join(root, 'fallback-transcript.jsonl');
+const largeTranscript = join(root, 'large-transcript.jsonl');
 const fakeCcSend = join(bin, 'cc-send');
 const fixture = (tokens) => JSON.stringify({
   type: 'event_msg',
@@ -24,16 +27,16 @@ const fixture = (tokens) => JSON.stringify({
 });
 
 mkdirSync(bin, { recursive: true });
-writeFileSync(fakeCcSend, '#!/bin/sh\nif [ "$1" = "--list" ]; then printf "  PID %s disposable-wrapper\\n" "$P7_TEST_MATCH_PID"; fi\n');
+writeFileSync(fakeCcSend, '#!/bin/sh\nif [ "$1" = "--list" ]; then printf "  PID %s disposable-wrapper\\\\n" "$P7_TEST_MATCH_PID"; fi\n');
 chmodSync(fakeCcSend, 0o755);
 
-function runHook({ session = 'probe-session', threshold, listedPid = process.pid } = {}) {
+function runHook({ session = 'probe-session', threshold, listedPid = process.pid, transcriptPath = transcript } = {}) {
   const env = {
     ...process.env,
     CODEX_HOME: home,
-    PATH: `${bin}:${process.env.PATH}`,
+    PATH: bin + ':' + process.env.PATH,
     P7_TEST_MATCH_PID: String(listedPid),
-    CC_WRAP_PID: '999999', // deliberately stale: the hook must use the process ancestry
+    CC_WRAP_PID: '999999', // Ungültige geerbte PID: Der Hook muss die Elternkette prüfen.
   };
   if (threshold !== undefined) env.CODEX_CONTEXT_THRESHOLD_PERCENT = String(threshold);
   return spawnSync(process.execPath, [script], {
@@ -41,7 +44,7 @@ function runHook({ session = 'probe-session', threshold, listedPid = process.pid
     env,
     input: JSON.stringify({
       session_id: session,
-      transcript_path: transcript,
+      transcript_path: transcriptPath,
       cwd: root,
       hook_event_name: 'PostToolUse',
       model: 'test-model',
@@ -58,11 +61,25 @@ function setTokens(...values) {
   writeFileSync(transcript, values.map(fixture).join('\n') + '\n');
 }
 
+function writeLargeTranscript(path, size, trailingTokenCount = true) {
+  const fd = openSync(path, 'w');
+  const chunk = Buffer.alloc(1024 * 1024, 'x');
+  try {
+    if (!trailingTokenCount) writeSync(fd, fixture(90) + '\n');
+    for (let written = 0; written < size; written += chunk.length) {
+      writeSync(fd, chunk, 0, Math.min(chunk.length, size - written));
+    }
+    if (trailingTokenCount) writeSync(fd, '\n' + fixture(90) + '\n');
+  } finally {
+    closeSync(fd);
+  }
+}
+
 try {
   setTokens(95, 79);
   const below = runHook();
   assert.equal(below.status, 0, below.stderr);
-  assert.equal(below.stdout, '', 'under 80% must produce no hook output');
+  assert.equal(below.stdout, '', 'Unter 80 % darf kein Hook-Text erscheinen.');
 
   setTokens(79, 80);
   const crossed = runHook();
@@ -76,13 +93,13 @@ try {
   assert.match(context, /task_id/i);
   assert.match(context, /session-uebergabe/i);
   assert.match(context, /ERLEDIGT[\s\S]*OFFEN[\s\S]*NEXT[\s\S]*Dateien[\s\S]*Plan-IDs/i);
-  assert.match(context, new RegExp(`CC_SEND_VON=.*cc-send ${process.pid} '\\/clear'`));
+  assert.match(context, new RegExp("CC_SEND_VON=.*cc-send " + process.pid + " '/clear'"));
   assert.match(context, /thought get <8 Zeichen>/);
   assert.match(context, /index_stats sitzung fortsetzung onboarding true/);
 
   const duplicate = runHook();
   assert.equal(duplicate.status, 0, duplicate.stderr);
-  assert.equal(duplicate.stdout, '', 'same session and threshold must emit only once');
+  assert.equal(duplicate.stdout, '', 'Dieselbe Sitzung und Schwelle dürfen nur einmal melden.');
 
   setTokens(50);
   const secondThreshold = runHook({ threshold: 50 });
@@ -97,7 +114,19 @@ try {
   assert.match(fallback, /Koordinator/i);
   assert.doesNotMatch(fallback, /cc-send 999999/);
 
-  console.log('5 Checks OK: unter Schwelle, Schwellen-Ausgabe, einmalig, zweite Schwelle, Fallback ohne Wrapper.');
+  writeLargeTranscript(fallbackTranscript, 1024 * 1024, false);
+  const fallbackScan = runHook({ session: 'fallback-scan', transcriptPath: fallbackTranscript });
+  assert.equal(fallbackScan.status, 0, fallbackScan.stderr);
+  assert.match(fallbackScan.stdout, /Kontext-Handoff-Schwelle erreicht/);
+
+  const largeSize = 100 * 1024 * 1024;
+  writeLargeTranscript(largeTranscript, largeSize);
+  const startedAt = performance.now();
+  const largeRun = runHook({ session: 'large-transcript', transcriptPath: largeTranscript });
+  const elapsedMs = performance.now() - startedAt;
+  assert.equal(largeRun.status, 0, largeRun.stderr);
+  assert.match(largeRun.stdout, /Kontext-Handoff-Schwelle erreicht/);
+  console.log('7 Prüfungen OK; 100 MiB Transkript, Hook-Laufzeit ' + elapsedMs.toFixed(1) + ' ms.');
 } finally {
   rmSync(root, { recursive: true, force: true });
 }

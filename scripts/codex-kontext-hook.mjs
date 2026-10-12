@@ -1,13 +1,12 @@
 #!/usr/bin/env node
-// Codex PostToolUse hook: add a one-time handoff reminder at a context threshold.
-// Configure CODEX_CONTEXT_THRESHOLD_PERCENT (default 80) to change the percentage.
+// Codex-PostToolUse-Hook: Handoff-Hinweis ab einer einmaligen Kontextschwelle.
+// CODEX_CONTEXT_THRESHOLD_PERCENT ändert die Schwelle (Standard: 80).
 
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, writeFileSync } from 'node:fs';
+import { closeSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { createInterface } from 'node:readline';
 
 async function readInput() {
   let value = '';
@@ -15,34 +14,66 @@ async function readInput() {
   return JSON.parse(value);
 }
 
+function tokenCountFromLine(line) {
+  try {
+    const row = JSON.parse(line);
+    const event = row.type === 'event_msg' ? row.payload : row;
+    if (event?.type !== 'token_count' || !event.info) return null;
+    const tokens = event.info.last_token_usage?.input_tokens;
+    const window = event.info.model_context_window;
+    if (Number.isFinite(tokens) && Number.isFinite(window) && tokens >= 0 && window > 0) {
+      return { tokens, window };
+    }
+  } catch {
+    // Unvollständige JSONL-Zeilen während eines Schreibvorgangs überspringen.
+  }
+  return null;
+}
+
 async function readLastTokenCount(transcriptPath) {
   if (typeof transcriptPath !== 'string' || !transcriptPath) return null;
-  let latest = null;
-  const lines = createInterface({ input: (await import('node:fs')).createReadStream(transcriptPath), crlfDelay: Infinity });
-  for await (const line of lines) {
-    try {
-      const row = JSON.parse(line);
-      const event = row.type === 'event_msg' ? row.payload : row;
-      if (event?.type !== 'token_count' || !event.info) continue;
-      const tokens = event.info.last_token_usage?.input_tokens;
-      const window = event.info.model_context_window;
-      if (Number.isFinite(tokens) && Number.isFinite(window) && tokens >= 0 && window > 0) {
-        latest = { tokens, window };
+
+  let fd;
+  try {
+    fd = openSync(transcriptPath, 'r');
+    const fileSize = fstatSync(fd).size;
+    let windowSize = Math.min(256 * 1024, fileSize);
+
+    while (windowSize > 0) {
+      const start = fileSize - windowSize;
+      const buffer = Buffer.allocUnsafe(windowSize);
+      let bytesRead = 0;
+      while (bytesRead < windowSize) {
+        const count = readSync(fd, buffer, bytesRead, windowSize - bytesRead, start + bytesRead);
+        if (count === 0) break;
+        bytesRead += count;
       }
-    } catch {
-      // Transcript JSONL can contain incomplete trailing records while Codex is writing.
+
+      const lines = buffer.subarray(0, bytesRead).toString('utf8').split(/\r?\n/);
+      // Die erste Zeile kann am Fensteranfang abgeschnitten sein.
+      if (start > 0) lines.shift();
+      for (let index = lines.length - 1; index >= 0; index--) {
+        const usage = tokenCountFromLine(lines[index]);
+        if (usage) return usage;
+      }
+
+      if (start === 0) break;
+      windowSize = Math.min(fileSize, windowSize * 2);
     }
+  } finally {
+    if (fd !== undefined) closeSync(fd);
   }
-  return latest;
+
+  return null;
 }
 
 function getParentPid(pid) {
   try {
-    const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
+    const stat = readFileSync('/proc/' + pid + '/stat', 'utf8');
     const end = stat.lastIndexOf(')');
     if (end < 0) return null;
     const fields = stat.slice(end + 2).trim().split(/\s+/);
-    const parent = Number(fields[1]); // fields[0] is state, fields[1] is ppid
+    const parent = Number(fields[1]); // fields[0] ist Status, fields[1] die Eltern-PID.
     return Number.isInteger(parent) && parent > 0 ? parent : null;
   } catch {
     return null;
@@ -76,7 +107,7 @@ function claimOnce(sessionId, thresholdPercent) {
   const stateDir = join(codexHome, 'codex-kontext-hook-state');
   mkdirSync(stateDir, { recursive: true, mode: 0o700 });
   const sessionHash = createHash('sha256').update(sessionId).digest('hex');
-  const file = join(stateDir, `${sessionHash}-${thresholdPercent}.json`);
+  const file = join(stateDir, sessionHash + '-' + thresholdPercent + '.json');
   let fd;
   try {
     fd = openSync(file, 'wx', 0o600);
@@ -91,20 +122,20 @@ function claimOnce(sessionId, thresholdPercent) {
 }
 
 function buildContext(wrapperPid, tokens, window, thresholdPercent) {
-  const thresholdLabel = `${thresholdPercent}% (${tokens.toLocaleString('en-US')}/${window.toLocaleString('en-US')} tokens)`;
+  const thresholdLabel = thresholdPercent + '% (' + tokens.toLocaleString('en-US') + '/' + window.toLocaleString('en-US') + ' tokens)';
   const handoff = [
-    `Kontext-Handoff-Schwelle erreicht: ${thresholdLabel}.`,
+    'Kontext-Handoff-Schwelle erreicht: ' + thresholdLabel + '.',
     'Schließe den gerade laufenden Schritt ab und committe die eigenen Änderungen.',
     'Schreibe danach ein Synapse-Thought im aktuellen Projekt mit source = deiner Agent-ID, task_id = der aktuellen Task und tags = [session-uebergabe].',
     'Der Thought-Inhalt muss die Abschnitte ERLEDIGT, OFFEN, NEXT, DATEIEN und PLAN-IDs enthalten.',
   ];
 
   if (wrapperPid === null) {
-    handoff.push('Keine cc-wrap-PID in deiner Prozess-Elternkette gefunden: schreibe nur das Handoff-Thought und melde dich danach beim Koordinator. Sende kein /clear.');
+    handoff.push('Keine cc-wrap-PID in deiner Prozess-Elternkette gefunden: Schreibe nur das Handoff-Thought und melde dich danach beim Koordinator. Sende kein /clear.');
   } else {
     handoff.push('Sende danach diese beiden Zeilen an deine eigene cc-wrap-Sitzung:');
-    handoff.push(`CC_SEND_VON=<eigene Agent-ID> cc-send ${wrapperPid} '/clear'`);
-    handoff.push(`CC_SEND_VON=<eigene Agent-ID> cc-send ${wrapperPid} 'Du bist <eigene Agent-ID>. thought get <8 Zeichen> lesen, dann löschen, als <eigene Agent-ID> weiterarbeiten: project status per Pfad, admin index_stats sitzung fortsetzung onboarding true.'`);
+    handoff.push("CC_SEND_VON=<eigene Agent-ID> cc-send " + wrapperPid + " '/clear'");
+    handoff.push("CC_SEND_VON=<eigene Agent-ID> cc-send " + wrapperPid + " 'Du bist <eigene Agent-ID>. thought get <8 Zeichen> lesen, dann löschen, als <eigene Agent-ID> weiterarbeiten: project status per Pfad, admin index_stats sitzung fortsetzung onboarding true.'");
     handoff.push('Beende diese Runde unmittelbar nach dem zweiten cc-send.');
   }
 
@@ -135,6 +166,6 @@ async function main() {
 }
 
 main().catch((error) => {
-  // Hooks should fail open: a parsing or filesystem issue must not stop the agent.
-  process.stderr.write(`codex-kontext-hook: ${error instanceof Error ? error.message : String(error)}\n`);
+  // Fehler beim Lesen oder Parsen dürfen den Agenten nicht anhalten.
+  process.stderr.write('codex-kontext-hook: ' + (error instanceof Error ? error.message : String(error)) + '\n');
 });
