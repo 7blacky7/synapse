@@ -76,7 +76,8 @@ CREATE TABLE public.file_versions (
     feature_tag text,
     parent_version_id bigint,
     git_commit_sha text,
-    agent_note text
+    agent_note text,
+    task_id text
 );
 
 --
@@ -219,6 +220,12 @@ CREATE INDEX idx_fv_git_sha ON public.file_versions USING btree (git_commit_sha)
 --
 
 CREATE INDEX idx_fv_parent ON public.file_versions USING btree (parent_version_id) WHERE (parent_version_id IS NOT NULL);
+
+--
+-- Name: idx_fv_task_id; Type: INDEX; Schema: public
+--
+
+CREATE INDEX idx_fv_task_id ON public.file_versions USING btree (task_id) WHERE (task_id IS NOT NULL);
 
 --
 -- Name: idx_watcher_events_path; Type: INDEX; Schema: public

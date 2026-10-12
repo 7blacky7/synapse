@@ -48,6 +48,7 @@ import {
  */
 // resolveAgentId: zentral in agent-id-resolver.ts (DRY mit file-batch.ts)
 import { resolveAgentId } from './agent-id-resolver.js';
+import { resolveProjectTaskId } from './task-id-resolver.js';
 
 /**
  * SYNC-1: agent_id fuer Aenderungen, die direkt auf dem Dateisystem passiert sind
@@ -70,6 +71,8 @@ export interface VersionEnrichment {
    *  wird zusaetzlich ein UPDATE in file-batch.ts auf alle Rows der Batch
    *  ausgefuehrt; bei single-file writes wird agent_note direkt mit-eingetragen. */
   agent_note?: string | null;
+  /** P6-T24: Task-UUID oder Kurz-ID, wird projektweit validiert. */
+  task_id?: string | null;
 }
 
 // ─── String-Operationen (pure) ────────────────────────────────────────────────
@@ -737,6 +740,7 @@ export async function createFileInPg(
   einzel?: EinzelSchreibOptionen
 ): Promise<SchreibErgebnis> {
   const resolvedAgentId = resolveAgentId(agentId);
+  const taskId = enrichment?.task_id != null ? await resolveProjectTaskId(project, enrichment.task_id) : null;
   let warnings: ErrorPatternWarning[] | undefined;
   // P15-T17 E-a: Syntaxfehler lehnen den Einzelschreibvorgang ab, bevor etwas geschrieben wird.
   const syntax = await syntaxVorDemSchreiben(filePath, '', content, resolvedAgentId, einzel, project);
@@ -775,8 +779,8 @@ export async function createFileInPg(
   // Der spaetere "echte" Snapshot via updateFileInPg fuegt sich nahtlos an.
   try {
     await pool.query(
-      `INSERT INTO file_versions (project, file_path, content, content_hash, edit_action, agent_id, batch_id, size_bytes, reason, feature_tag, parent_version_id, git_commit_sha, agent_note)
-       VALUES ($1, $2, '', $3, $4, $5, $6, 0, $7, $8, $9, $10, $11)`,
+      `INSERT INTO file_versions (project, file_path, content, content_hash, edit_action, agent_id, batch_id, size_bytes, reason, feature_tag, parent_version_id, git_commit_sha, agent_note, task_id)
+       VALUES ($1, $2, '', $3, $4, $5, $6, 0, $7, $8, $9, $10, $11, $12)`,
       [
         project,
         filePath,
@@ -789,6 +793,7 @@ export async function createFileInPg(
         enrichment?.parent_version_id ?? null,
         enrichment?.git_commit_sha ?? null,
         enrichment?.agent_note ?? null,
+        taskId,
       ]
     );
   } catch { /* Tabelle existiert in alten Schemata vlt nicht — best-effort */ }
@@ -828,6 +833,7 @@ export async function updateFileInPg(
   einzel?: EinzelSchreibOptionen
 ): Promise<SchreibErgebnis> {
   const resolvedAgentId = resolveAgentId(agentId);
+  const taskId = enrichment?.task_id != null ? await resolveProjectTaskId(project, enrichment.task_id) : null;
   let warnings: ErrorPatternWarning[] | undefined;
   // P15-T17 E-a: Syntaxpruefung vor dem Schreiben (nur Einzelweg und nur, wenn fuer die Endung ein
   // Pruefer registriert ist - sonst wird der alte Inhalt gar nicht erst gelesen).
@@ -874,9 +880,9 @@ export async function updateFileInPg(
     // Pruefung weiter unten den geaenderten Abschnitt, ohne eine zweite Abfrage.
     // Bleibt die Zeile aus, war der Inhalt unveraendert — dann gibt es nichts zu pruefen.
     const schnappschuss = await client.query<{ id: string; content: string }>(
-      `INSERT INTO file_versions (project, file_path, content, content_hash, edit_action, agent_id, batch_id, size_bytes, reason, feature_tag, parent_version_id, git_commit_sha, agent_note)
+      `INSERT INTO file_versions (project, file_path, content, content_hash, edit_action, agent_id, batch_id, size_bytes, reason, feature_tag, parent_version_id, git_commit_sha, agent_note, task_id)
        SELECT cf.project, cf.file_path, cf.content, cf.content_hash, $3, $4, $5,
-              COALESCE(cf.file_size, OCTET_LENGTH(cf.content)), $7, $8, $9, $10, $11
+              COALESCE(cf.file_size, OCTET_LENGTH(cf.content)), $7, $8, $9, $10, $11, $12
        FROM code_files cf
        WHERE cf.project = $1
          AND cf.file_path = $2
@@ -895,6 +901,7 @@ export async function updateFileInPg(
         enrichment?.parent_version_id ?? null,
         enrichment?.git_commit_sha ?? null,
         enrichment?.agent_note ?? null,
+        taskId,
       ]
     );
 
@@ -953,17 +960,19 @@ export async function snapshotFileVersion(
   filePath: string,
   editAction: string,
   reason: string,
-  agentId: string = FS_AGENT_ID
+  agentId: string = FS_AGENT_ID,
+  taskRef?: string,
 ): Promise<boolean> {
+  const taskId = taskRef !== undefined ? await resolveProjectTaskId(project, taskRef) : null;
   const pool = getPool();
   const res = await pool.query(
     `INSERT INTO file_versions
-       (project, file_path, content, content_hash, edit_action, agent_id, size_bytes, reason)
+       (project, file_path, content, content_hash, edit_action, agent_id, size_bytes, reason, task_id)
      SELECT cf.project, cf.file_path, cf.content, cf.content_hash, $3, $4,
-            COALESCE(cf.file_size, OCTET_LENGTH(cf.content)), $5
+            COALESCE(cf.file_size, OCTET_LENGTH(cf.content)), $5, $6
        FROM code_files cf
       WHERE cf.project = $1 AND cf.file_path = $2 AND cf.content IS NOT NULL`,
-    [project, filePath, editAction, agentId, reason]
+    [project, filePath, editAction, agentId, reason, taskId]
   );
   return (res.rowCount ?? 0) > 0;
 }
@@ -1071,13 +1080,14 @@ export async function copyFileInPg(
   project: string,
   sourcePath: string,
   targetPath: string,
-  agentId?: string
+  agentId?: string,
+  taskRef?: string,
 ): Promise<{ warnings?: ErrorPatternWarning[] }> {
   const sourceContent = await getFileContentFromPg(project, sourcePath);
   if (sourceContent === null) {
     throw new Error(`Quelldatei nicht gefunden: ${sourcePath}`);
   }
-  return createFileInPg(project, targetPath, sourceContent, agentId);
+  return createFileInPg(project, targetPath, sourceContent, agentId, undefined, undefined, undefined, taskRef !== undefined ? { task_id: taskRef } : undefined);
 }
 
 /**

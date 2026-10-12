@@ -552,6 +552,7 @@ export async function pruefeUndBereiteSchreibenVor(args: {
   aktion: 'create' | 'update';
   agentId?: string;
   reason?: string;
+  task_id?: string;
 }): Promise<SchreibVorbereitung> {
   const { project, filePath, content, aktion, agentId, reason } = args;
 
@@ -599,6 +600,7 @@ export async function pruefeUndBereiteSchreibenVor(args: {
     project,
     agent_id: agentId,
     ops: [op],
+    task_id: args.task_id,
     reason: reason ?? grundText,
   });
 

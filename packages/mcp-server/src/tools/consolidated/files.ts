@@ -7,7 +7,9 @@
 import {
   createFileInPg,
   updateFileInPg,
+  resolveProjectTaskId,
   softDeleteFile,
+  snapshotFileVersion,
   moveFileInPg,
   copyFileInPg,
   getFileContentFromPg,
@@ -83,7 +85,7 @@ export const filesTool: ConsolidatedTool = {
       'auto_commit:true bei plan() spart den separaten commit-Call. ' +
       'agent_note speichert KI-Beobachtungen pro Batch (zusaetzlich zum User-reason). ' +
       'ops[].anchor_text / anchor_contains macht Pre-flight Verifikation auf der Ziel-Zeile (Schutz vor Drift). ' +
-      'feature_tag, parent_version_id, git_commit_sha reichern die Versions-Snapshots an (Filter via history).',
+      'feature_tag, parent_version_id, git_commit_sha reichern Versions-Snapshots an. task_id (UUID oder P<n>-T<m>) verknuepft Writes und filtert versions/history.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -96,6 +98,7 @@ export const filesTool: ConsolidatedTool = {
           type: 'string',
           description: 'Projekt-Name',
         },
+        task_id: { type: 'string', description: 'Optional: Task-UUID oder Kurz-ID P<n>-T<m>, wird validiert; plan gilt fuer alle Ops, ops[].task_id ueberschreibt.' },
         file_path: {
           oneOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' }, minItems: 1 }],
           description: 'Projekt-relativer Pfad. Array nur fuer reservation_add/release/list; bestehende Datei-Actions erwarten weiter einen String.',
@@ -224,6 +227,7 @@ export const filesTool: ConsolidatedTool = {
               action: { type: 'string', enum: ['create', 'update', 'search_replace', 'search_replace_batch', 'replace_lines', 'insert_after', 'delete_lines', 'delete', 'move', 'copy'] },
               new_path: { type: 'string' },
               reason: { type: 'string' },
+              task_id: { type: 'string', description: 'Optional: Task-UUID oder Kurz-ID P<n>-T<m>, ueberschreibt task_id am Plan.' },
               content: { type: 'string' },
               search: { type: 'string' },
               replace: { type: 'string' },
@@ -330,8 +334,11 @@ export const filesTool: ConsolidatedTool = {
     const featureTag = str(args, 'feature_tag');
     const parentVersionId = str(args, 'parent_version_id');
     const gitCommitSha = str(args, 'git_commit_sha');
-    const enrichment = (featureTag || parentVersionId || gitCommitSha)
-      ? { feature_tag: featureTag ?? null, parent_version_id: parentVersionId ?? null, git_commit_sha: gitCommitSha ?? null }
+    const taskRef = str(args, 'task_id');
+    const taskId = taskRef !== undefined && ['create', 'update', 'search_replace', 'search_replace_batch', 'replace_lines', 'insert_after', 'delete_lines', 'delete', 'move', 'copy', 'plan', 'plan_update', 'coedit_add', 'restore', 'restore_batch', 'commit'].includes(action)
+      ? await resolveProjectTaskId(project, taskRef) : taskRef;
+    const enrichment = (featureTag || parentVersionId || gitCommitSha || taskId !== undefined)
+      ? { feature_tag: featureTag ?? null, parent_version_id: parentVersionId ?? null, git_commit_sha: gitCommitSha ?? null, task_id: taskId ?? null }
       : undefined;
 
 
@@ -445,7 +452,7 @@ export const filesTool: ConsolidatedTool = {
     }
     if (action === 'restore') {
       const versionId = reqStr(args, 'version_id');
-      const r = await restoreFileVersion(versionId, agentId, reason);
+      const r = await restoreFileVersion(versionId, agentId, reason, str(args, 'task_id'));
       return {
         success: true,
         ...r,
@@ -465,7 +472,7 @@ export const filesTool: ConsolidatedTool = {
           message: `Vorschau restore_batch ${batchId}: ${vorschau.length} Datei(en), nichts geschrieben. batch_diff = was der Batch geaendert hat, rueckgaengig = was restore_batch jetzt aendern wuerde. Ausfuehren: restore_batch ohne vorschau.`,
         };
       }
-      const restored = await restoreBatch(batchId, agentId, reason);
+      const restored = await restoreBatch(batchId, agentId, reason, str(args, 'task_id'));
       return {
         success: true,
         batch_id: batchId,
@@ -487,6 +494,7 @@ export const filesTool: ConsolidatedTool = {
         result = await planBatch({
           project,
           agent_id: agentId,
+          task_id: str(args, 'task_id'),
           ops: opsRaw as FileBatchOp[],
           open_for_coedit: typeof args.open_for_coedit === 'boolean' ? args.open_for_coedit : undefined,
           reason,
@@ -545,7 +553,7 @@ export const filesTool: ConsolidatedTool = {
           project,
           plan_id: planId,
           agent_id: agentId,
-          ops: opsRaw as FileBatchOp[],
+          ops: (opsRaw as FileBatchOp[]).map((op) => ({ ...op, task_id: op.task_id ?? str(args, 'task_id') })),
           op_index: num(args, 'op_index'),
           open_for_coedit: typeof args.open_for_coedit === 'boolean' ? args.open_for_coedit : undefined,
           reason,
@@ -585,7 +593,7 @@ export const filesTool: ConsolidatedTool = {
     if (action === 'commit') {
       const planId = reqStr(args, 'plan_id');
       const result = await commitBatch({
-        plan_id: planId, agent_id: agentId, agent_note: typeof args.agent_note === 'string' ? args.agent_note : undefined, wait_seconds: num(args, 'wait_seconds'),
+        plan_id: planId, agent_id: agentId, task_id: str(args, 'task_id'), agent_note: typeof args.agent_note === 'string' ? args.agent_note : undefined, wait_seconds: num(args, 'wait_seconds'),
         befunde_quittieren: befundeQuittierenLesen((args as Record<string, unknown>).befunde_quittieren),
       });
       if (result.success) {
@@ -631,6 +639,7 @@ export const filesTool: ConsolidatedTool = {
         // Enrichment-Filter
         feature_tag: str(args, 'feature_tag'),
         version_id: str(args, 'version_id'),
+        task_id: str(args, 'task_id'),
       });
       return {
         success: true,
@@ -720,7 +729,7 @@ export const filesTool: ConsolidatedTool = {
       case 'create': {
         const raw = reqStr(args, 'content');
         const { content, wasFixed } = unescapeIfNeeded(raw);
-        const vorbereitung = await pruefeUndBereiteSchreibenVor({ project, filePath, content, aktion: 'create', agentId, reason });
+        const vorbereitung = await pruefeUndBereiteSchreibenVor({ project, filePath, content, aktion: 'create', agentId, reason, task_id: taskId });
         if (vorbereitung.modus === 'plan') {
           const grundText = vorbereitung.hinweis.ignoriert
             ? `Pfad "${filePath}" existiert bereits UND ist durch die Regel "${vorbereitung.hinweis.regel}" ausgeblendet`
@@ -769,7 +778,7 @@ export const filesTool: ConsolidatedTool = {
             return { success: false, error: 'anchor_mismatch', message: err instanceof Error ? err.message : String(err) };
           }
         }
-        const vorbereitung = await pruefeUndBereiteSchreibenVor({ project, filePath, content, aktion: 'update', agentId, reason });
+        const vorbereitung = await pruefeUndBereiteSchreibenVor({ project, filePath, content, aktion: 'update', agentId, reason, task_id: taskId });
         if (vorbereitung.modus === 'plan') {
           return {
             success: true,
@@ -817,6 +826,7 @@ export const filesTool: ConsolidatedTool = {
       }
 
       case 'delete': {
+        if (taskId) await snapshotFileVersion(project, filePath, 'delete', reason ?? 'delete', agentId ?? 'unknown', taskId);
         await softDeleteFile(project, filePath);
         return attachDirectWriteReservationHint(
           { success: true, message: `Datei "${filePath}" geloescht` },
@@ -826,6 +836,7 @@ export const filesTool: ConsolidatedTool = {
 
       case 'move': {
         const newPath = reqStr(args, 'new_path');
+        if (taskId) await snapshotFileVersion(project, filePath, 'move', reason ?? 'move', agentId ?? 'unknown', taskId);
         await moveFileInPg(project, filePath, newPath);
         return attachDirectWriteReservationHint(
           { success: true, message: `Datei verschoben: "${filePath}" → "${newPath}"`, ...(await embeddingPendingHint(project, newPath)) },
@@ -835,7 +846,7 @@ export const filesTool: ConsolidatedTool = {
 
       case 'copy': {
         const newPath = reqStr(args, 'new_path');
-        await copyFileInPg(project, filePath, newPath);
+        await copyFileInPg(project, filePath, newPath, taskId !== undefined ? agentId : undefined, taskId);
         return attachDirectWriteReservationHint(
           { success: true, message: `Datei kopiert: "${filePath}" → "${newPath}"`, ...(await embeddingPendingHint(project, newPath)) },
           [filePath, newPath],
@@ -942,7 +953,7 @@ export const filesTool: ConsolidatedTool = {
 
       case 'versions': {
         const limit = num(args, 'limit') ?? 50;
-        const versions = await listFileVersions(project, filePath, limit);
+        const versions = await listFileVersions(project, filePath, limit, str(args, 'task_id'));
         return {
           success: true,
           project,

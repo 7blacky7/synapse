@@ -324,6 +324,8 @@ export async function getAllePlaene(project: string): Promise<ProjectPlan[]> {
  * task_id -> Task DIESES Plans: UUID oder Kurz-ID P<n>-T<m>. Gehoert die Kurz-ID zu einem
  * anderen Plan oder gibt es die Task nicht: Fehlertext statt Task.
  */
+export { resolveProjectTaskId } from './task-id-resolver.js';
+
 export function findeTaskInPlan(plan: ProjectPlan, ref: string): ProjectTask | string {
   const kurz = taskNummer(ref);
   if (kurz) {

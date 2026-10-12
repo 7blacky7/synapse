@@ -109,7 +109,9 @@ import {
   // Files (Code-Write)
   createFileInPg,
   updateFileInPg,
+  resolveProjectTaskId,
   softDeleteFile,
+  snapshotFileVersion,
   moveFileInPg,
   copyFileInPg,
   getFileContentFromPg,
@@ -1019,7 +1021,7 @@ export const MCP_TOOLS = [
   // 15. files
   {
     name: 'files',
-    description: 'Datei-CRUD im eigenen Projekt-Verzeichnis. Pfade sind relativ zum Projekt-Root: ".." innerhalb des Projekts wird aufgeloest, Backslash gilt als Trenner; abgelehnt werden Ausbruch ueber den Root, absolute Pfade (auch unter dem Root) und Steuerzeichen (error pfad_ungueltig) sowie Schreiben auf gesperrte Pfade wie .synapse/, .env, node_modules/ (error pfad_gesperrt; Lesen und Loeschen bleiben moeglich). FileWatcher synchronisiert die Aenderungen automatisch. ENTSCHEIDUNGS-MATRIX (Write-Ops): (1) Datei darf NICHT existieren → action="create" (ohne upsert). (2) Datei wurde gelesen, gezielt modifizieren → action="update" mit anchor_text/anchor_contains und optional anchor_text/anchor_contains aus dem gelesenen Snapshot (Drift-Schutz: Anker ist optional, ohne Anker wird direkt geschrieben; Mismatch = Fehler ohne Schreiben; PFLICHT ist der Anker nur bei update-Ops in plan/files_batch). (3) Datei generieren/regenerieren ohne Pre-Read (Templates, Migrations, Codegen) → action="create" mit upsert:true (akzeptierst Drift-Risiko bewusst). (4) Punktuelle Aenderung statt Komplett-Rewrite → search_replace / replace_lines / insert_after / delete_lines. Multi-File Plan/Commit (action="plan"+"commit") fuer atomare Edits ueber mehrere Dateien mit Hash-Konflikt-Erkennung; auto_commit:true wechselt bei Multi-File auf per-File-Atomicity. restore_batch rollt komplette Plan-Sets zurueck. Erweiterte Optionen: agent_note, feature_tag/parent_version_id/git_commit_sha (Versions-Anreicherung). Keine freien absoluten Pfade, keine externen Systeme.',
+    description: 'Datei-CRUD im eigenen Projekt-Verzeichnis. Optional task_id (UUID oder P<n>-T<m>) verknuepft Schreibversionen und filtert history/versions. Pfade sind relativ zum Projekt-Root: ".." innerhalb des Projekts wird aufgeloest, Backslash gilt als Trenner; abgelehnt werden Ausbruch ueber den Root, absolute Pfade (auch unter dem Root) und Steuerzeichen (error pfad_ungueltig) sowie Schreiben auf gesperrte Pfade wie .synapse/, .env, node_modules/ (error pfad_gesperrt; Lesen und Loeschen bleiben moeglich). FileWatcher synchronisiert die Aenderungen automatisch. ENTSCHEIDUNGS-MATRIX (Write-Ops): (1) Datei darf NICHT existieren → action="create" (ohne upsert). (2) Datei wurde gelesen, gezielt modifizieren → action="update" mit anchor_text/anchor_contains und optional anchor_text/anchor_contains aus dem gelesenen Snapshot (Drift-Schutz: Anker ist optional, ohne Anker wird direkt geschrieben; Mismatch = Fehler ohne Schreiben; PFLICHT ist der Anker nur bei update-Ops in plan/files_batch). (3) Datei generieren/regenerieren ohne Pre-Read (Templates, Migrations, Codegen) → action="create" mit upsert:true (akzeptierst Drift-Risiko bewusst). (4) Punktuelle Aenderung statt Komplett-Rewrite → search_replace / replace_lines / insert_after / delete_lines. Multi-File Plan/Commit (action="plan"+"commit") fuer atomare Edits ueber mehrere Dateien mit Hash-Konflikt-Erkennung; auto_commit:true wechselt bei Multi-File auf per-File-Atomicity. restore_batch rollt komplette Plan-Sets zurueck. Erweiterte Optionen: agent_note, feature_tag/parent_version_id/git_commit_sha (Versions-Anreicherung). Keine freien absoluten Pfade, keine externen Systeme.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1029,6 +1031,7 @@ export const MCP_TOOLS = [
           description: 'Datei-Aktion. versions/get_version/restore/restore_batch arbeiten auf der Versionshistorie. plan/commit/cancel/plan_status/plan_update implementieren atomare Multi-File-Edits ueber mehrere Dateien. history listet Aenderungen mit Begruendung (Crash-Recovery) — agent_id wirkt dort als EXAKTER Filter, fuer die volle Projekt-History weglassen.',
         },
         project: { type: 'string', description: 'Projekt-Name' },
+        task_id: { type: 'string', description: 'Optional: Task-UUID oder Kurz-ID P<n>-T<m>; plan gilt fuer alle Ops, ops[].task_id ueberschreibt.' },
         file_path: { oneOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' }, minItems: 1 }], description: 'Projekt-relativer Pfad. Array nur fuer reservation_add/release/list; bestehende Datei-Actions erwarten weiter einen String.' },
         release_paths: { type: 'array', items: { type: 'string' }, description: 'reservation_update: explizit freizugebende Pfade.' },
         keep_paths: { type: 'array', items: { type: 'string' }, description: 'reservation_update: explizit beizubehaltende Pfade.' },
@@ -1086,6 +1089,7 @@ export const MCP_TOOLS = [
               action: { type: 'string', enum: ['create', 'update', 'search_replace', 'search_replace_batch', 'replace_lines', 'insert_after', 'delete_lines', 'delete', 'move', 'copy'] },
               new_path: { type: 'string' },
               reason: { type: 'string' },
+              task_id: { type: 'string', description: 'Optionale Task-UUID oder Kurz-ID P<n>-T<m>; ueberschreibt Task auf Plan-Ebene.' },
               content: { type: 'string' },
               search: { type: 'string' },
               replace: { type: 'string' },
@@ -1134,7 +1138,7 @@ export const MCP_TOOLS = [
   // 15b. files_batch — alias for files Multi-File-Plan/Commit (OpenAI-Cache-Buster)
   {
     name: 'files_batch',
-    description: 'Atomare Multi-File-Edits ueber mehrere Dateien (Plan-Phase Trockenlauf, dann Commit alle gemeinsam). Identische Implementierung wie files-Tool, aber als eigenes Tool exponiert weil manche MCP-Clients (z.B. ChatGPT) die action-Enum vom files-Tool aggressiv cachen und neue Werte (plan/commit/cancel) nicht erkennen. Nutze dieses Tool wenn files(action: "plan") nicht mehr klappt. Erweiterte Optionen: auto_commit:true (plan+commit in einem Call), agent_note (KI-Beobachtungen pro Batch), ops[].anchor_text/anchor_contains (Pre-flight Drift-Schutz auf der Ziel-Zeile), feature_tag/parent_version_id/git_commit_sha (Versions-Anreicherung + history-Filter).',
+    description: 'Optional task_id (UUID oder P<n>-T<m>) verknuepft Versionen; ops[].task_id hat Vorrang. Atomare Multi-File-Edits ueber mehrere Dateien (Plan-Phase Trockenlauf, dann Commit alle gemeinsam). Identische Implementierung wie files-Tool, aber als eigenes Tool exponiert weil manche MCP-Clients (z.B. ChatGPT) die action-Enum vom files-Tool aggressiv cachen und neue Werte (plan/commit/cancel) nicht erkennen. Nutze dieses Tool wenn files(action: "plan") nicht mehr klappt. Erweiterte Optionen: auto_commit:true (plan+commit in einem Call), agent_note (KI-Beobachtungen pro Batch), ops[].anchor_text/anchor_contains (Pre-flight Drift-Schutz auf der Ziel-Zeile), feature_tag/parent_version_id/git_commit_sha (Versions-Anreicherung + history-Filter).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1144,6 +1148,7 @@ export const MCP_TOOLS = [
           description: 'plan: Trockenlauf, gibt plan_id zurueck; scheitert eine Op, entsteht trotzdem ein neuer offener Plan (plan_id + failed_ops), korrigierbar per plan_update (ersetzt op_index bzw. alle Ops, neue plan_id, alter Plan verworfen). Plaene laufen nicht ab. commit: Legacy-Plan unveraendert; Co-Edit-Plan atomar gaten, validieren und gemeinsam committen oder terminal conflict. cancel: open/conflict verwerfen. plan_status: Plan-Details. history: Aenderungs-Log. restore/restore_batch: Versionierungs-Rollback.',
         },
         project: { type: 'string', description: 'Projekt-Name' },
+        task_id: { type: 'string', description: 'Optionale Task-UUID oder P<n>-T<m>; Schreibversionen verknuepfen, history filtern.' },
         ops: {
           description: 'Multi-File Edit-Plan (1..10.000 Operationen, praktisch unbegrenzt). Jede Op: { file_path, action, ...op-spezifische Felder }. Aktionen: create, update, search_replace, search_replace_batch, replace_lines (line_start/line_end/content), insert_after (after_line/content), delete_lines (line_start/line_end), delete (ganze Datei), move (file_path -> new_path), copy (file_path -> new_path). Multi-Op-auf-gleicher-Datei: per Default shift_mode="auto" → line-Ops werden reverse-order appliziert; ueberlappende Ranges sind ein harter Error vor jeder Mutation.',
           type: 'array',
@@ -1167,6 +1172,7 @@ export const MCP_TOOLS = [
               upsert: { type: 'boolean', description: '(optional, nur fuer action="create"): wenn true und die Datei existiert bereits, wird der content als update ueberschrieben statt zu failen. Default false — bewusst opt-in damit KI nicht versehentlich existierende Files killt.' },
               new_path: { type: 'string' },
               reason: { type: 'string' },
+              task_id: { type: 'string', description: 'Optionale Task-Referenz, hat Vorrang vor task_id am Plan.' },
               edits: {
                 type: 'array',
                 items: {
@@ -4630,8 +4636,11 @@ async function handleToolCallKern(
       const parentVersionId = str(args, 'parent_version_id');
       const gitCommitSha = str(args, 'git_commit_sha');
       const agentNote = str(args, 'agent_note');
-      const enrichment = (featureTag || parentVersionId || gitCommitSha || agentNote)
-        ? { feature_tag: featureTag ?? null, parent_version_id: parentVersionId ?? null, git_commit_sha: gitCommitSha ?? null, agent_note: agentNote ?? null }
+      const taskRef = str(args, 'task_id');
+      const taskId = taskRef !== undefined && ['create', 'update', 'search_replace', 'search_replace_batch', 'replace_lines', 'insert_after', 'delete_lines', 'delete', 'move', 'copy', 'plan', 'plan_update', 'coedit_add', 'restore', 'restore_batch', 'commit'].includes(action ?? '')
+        ? await resolveProjectTaskId(project, taskRef) : taskRef;
+      const enrichment = (featureTag || parentVersionId || gitCommitSha || agentNote || taskId !== undefined)
+        ? { feature_tag: featureTag ?? null, parent_version_id: parentVersionId ?? null, git_commit_sha: gitCommitSha ?? null, agent_note: agentNote ?? null, task_id: taskId ?? null }
         : undefined;
       // P15-T17 E-a: Einzelschreibweg - Syntaxfehler lehnen ab (sobald Pruefer registriert sind), quittieren nur mit Absichtsgrund.
       const einzel = { einzelweg: true, quittieren: str(args, 'quittieren') };
@@ -4656,7 +4665,7 @@ async function handleToolCallKern(
         if (!agentId) throw new Error("agent_id ist fuer coedit_add erforderlich");
         const coeditOps = (args as Record<string, unknown>).ops;
         if (!Array.isArray(coeditOps) || coeditOps.length === 0) throw new Error("ops[] muss mindestens eine Operation enthalten");
-        return addCoeditContribution({ project, plan_id: reqStr(args, "plan_id"), agent_id: agentId, ops: coeditOps as import("@synapse/core").FileBatchOp[], wait_token: str(args, "wait_token"), op_index: num(args, "op_index") });
+        return addCoeditContribution({ project, plan_id: reqStr(args, "plan_id"), agent_id: agentId, ops: (coeditOps as import("@synapse/core").FileBatchOp[]).map((op) => ({ ...op, task_id: op.task_id ?? taskId })), wait_token: str(args, "wait_token"), op_index: num(args, "op_index") });
       }
       if (action === "coedit_ready") {
         if (!agentId) throw new Error("agent_id ist fuer coedit_ready erforderlich");
@@ -4747,7 +4756,7 @@ async function handleToolCallKern(
       }
       if (action === 'restore') {
         const versionId = reqStr(args, 'version_id');
-        const r = await restoreFileVersion(versionId, agentId, str(args, 'reason'));
+        const r = await restoreFileVersion(versionId, agentId, str(args, 'reason'), str(args, 'task_id'));
         return {
           success: true,
           ...r,
@@ -4767,7 +4776,7 @@ async function handleToolCallKern(
             message: `Vorschau restore_batch ${batchId}: ${vorschau.length} Datei(en), nichts geschrieben. batch_diff = was der Batch geaendert hat, rueckgaengig = was restore_batch jetzt aendern wuerde. Ausfuehren: restore_batch ohne vorschau.`,
           };
         }
-        const restored = await restoreBatch(batchId, agentId, str(args, 'reason'));
+        const restored = await restoreBatch(batchId, agentId, str(args, 'reason'), str(args, 'task_id'));
         return {
           success: true,
           batch_id: batchId,
@@ -4783,7 +4792,8 @@ async function handleToolCallKern(
         if (!Array.isArray(opsRaw) || opsRaw.length === 0) {
           return { success: false, error: 'invalid_ops', message: 'ops[] muss ein Array mit mindestens 1 Element sein.' };
         }
-        const opsTyped = opsRaw as import('@synapse/core').FileBatchOp[];
+        const taskId = str(args, 'task_id');
+        const opsTyped = (opsRaw as import('@synapse/core').FileBatchOp[]).map((op) => ({ ...op, task_id: op.task_id ?? taskId }));
 
         // auto_commit + Multi-File: per-File-Atomicity. Wir gruppieren nach file_path
         // und committen jede Datei isoliert — ein Fehler auf File X bricht nicht
@@ -4956,6 +4966,7 @@ async function handleToolCallKern(
           result = await planBatch({
             project,
             agent_id: agentId,
+            task_id: str(args, 'task_id'),
             ops: opsTyped,
             open_for_coedit: typeof args.open_for_coedit === 'boolean' ? args.open_for_coedit as boolean : undefined,
             reason: str(args, 'reason'),
@@ -5015,7 +5026,7 @@ async function handleToolCallKern(
             project,
             plan_id: planId,
             agent_id: agentId,
-            ops: opsRaw as import('@synapse/core').FileBatchOp[],
+            ops: (opsRaw as import('@synapse/core').FileBatchOp[]).map((op) => ({ ...op, task_id: op.task_id ?? str(args, 'task_id') })),
             op_index: num(args, 'op_index'),
             open_for_coedit: typeof args.open_for_coedit === 'boolean' ? args.open_for_coedit as boolean : undefined,
             reason: str(args, 'reason'),
@@ -5056,7 +5067,7 @@ async function handleToolCallKern(
         const planId = reqStr(args, 'plan_id');
         try {
           const result = await commitBatch({
-            plan_id: planId, agent_id: agentId, agent_note: str(args, 'agent_note'), wait_seconds: num(args, 'wait_seconds'),
+            plan_id: planId, agent_id: agentId, task_id: str(args, 'task_id'), agent_note: str(args, 'agent_note'), wait_seconds: num(args, 'wait_seconds'),
             befunde_quittieren: befundeQuittierenLesen((args as Record<string, unknown>).befunde_quittieren),
           });
           if (result.success) {
@@ -5103,6 +5114,7 @@ async function handleToolCallKern(
           // Enrichment-Filter
           feature_tag: str(args, 'feature_tag'),
           version_id: str(args, 'version_id'),
+          task_id: str(args, 'task_id'),
         });
         return {
           success: true,
@@ -5124,7 +5136,7 @@ async function handleToolCallKern(
 
       if (action === 'versions') {
         const limit = num(args, 'limit') ?? 50;
-        const versions = await listFileVersions(project, filePath, limit);
+        const versions = await listFileVersions(project, filePath, limit, str(args, 'task_id'));
         return {
           success: true,
           project,
@@ -5140,7 +5152,7 @@ async function handleToolCallKern(
       switch (action) {
         case 'create': {
           const content = reqStr(args, 'content');
-          const vorbereitung = await pruefeUndBereiteSchreibenVor({ project, filePath, content, aktion: 'create', agentId, reason: str(args, 'reason') });
+          const vorbereitung = await pruefeUndBereiteSchreibenVor({ project, filePath, content, aktion: 'create', agentId, reason: str(args, 'reason'), task_id: taskId });
           if (vorbereitung.modus === 'plan') {
             const grundText = vorbereitung.hinweis.ignoriert
               ? `Pfad "${filePath}" existiert bereits UND ist durch die Regel "${vorbereitung.hinweis.regel}" ausgeblendet`
@@ -5194,7 +5206,7 @@ async function handleToolCallKern(
               return { success: false, error: 'anchor_mismatch', message: err instanceof Error ? err.message : String(err) };
             }
           }
-          const vorbereitung = await pruefeUndBereiteSchreibenVor({ project, filePath, content, aktion: 'update', agentId, reason: str(args, 'reason') });
+          const vorbereitung = await pruefeUndBereiteSchreibenVor({ project, filePath, content, aktion: 'update', agentId, reason: str(args, 'reason'), task_id: taskId });
           if (vorbereitung.modus === 'plan') {
             return {
               success: true,
@@ -5229,17 +5241,19 @@ async function handleToolCallKern(
           return response;
         }
         case 'delete': {
+          if (str(args, 'task_id')) await snapshotFileVersion(project, filePath, 'delete', str(args, 'reason') ?? 'delete', agentId ?? 'unknown', str(args, 'task_id'));
           await softDeleteFile(project, filePath);
           return { success: true, message: `Datei "${filePath}" geloescht` };
         }
         case 'move': {
           const newPath = reqStr(args, 'new_path');
+          if (str(args, 'task_id')) await snapshotFileVersion(project, filePath, 'move', str(args, 'reason') ?? 'move', agentId ?? 'unknown', str(args, 'task_id'));
           await moveFileInPg(project, filePath, newPath);
           return { success: true, message: `Datei verschoben: "${filePath}" → "${newPath}"`, ...(await embeddingPendingHint(project, newPath)) };
         }
         case 'copy': {
           const newPath = reqStr(args, 'new_path');
-          await copyFileInPg(project, filePath, newPath);
+          await copyFileInPg(project, filePath, newPath, taskId !== undefined ? agentId : undefined, taskId);
           return { success: true, message: `Datei kopiert: "${filePath}" → "${newPath}"`, ...(await embeddingPendingHint(project, newPath)) };
         }
         case 'read': {

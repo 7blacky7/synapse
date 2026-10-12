@@ -13,6 +13,7 @@
  */
 
 import { getPool } from '../db/client.js';
+import { resolveProjectTaskId } from './task-id-resolver.js';
 import { updateFileInPg, getFileContentFromPg } from './code-write.js';
 import { dateiDiff, diffMaxZeichen, diffMaxZeilen, diffText } from './file-diff.js';
 import { envHinweise, mcpJsonHinweise, envSicht, istEnvDatei, istMaskierteDatei, maskiereEnvDiff } from './env-maske.js';
@@ -195,19 +196,21 @@ export interface FileVersionFull extends FileVersionMeta {
 export async function listFileVersions(
   project: string,
   filePath: string,
-  limit = 50
+  limit = 50,
+  taskRef?: string,
 ): Promise<FileVersionMeta[]> {
   const safeLimit = Math.max(1, Math.min(limit, 500));
   const pool = getPool();
+  const taskId = taskRef !== undefined ? await resolveProjectTaskId(project, taskRef) : null;
   const result = await pool.query<FileVersionMeta>(
     `SELECT id::text AS id, project, file_path, content_hash, edit_action, agent_id,
             batch_id::text AS batch_id, size_bytes, created_at::text AS created_at, reason,
             feature_tag, parent_version_id::text AS parent_version_id, git_commit_sha, agent_note, diff
      FROM file_versions
-     WHERE project = $1 AND file_path = $2
+     WHERE project = $1 AND file_path = $2 AND ($4::text IS NULL OR task_id = $4)
      ORDER BY created_at DESC, id DESC
      LIMIT $3`,
-    [project, filePath, safeLimit]
+    [project, filePath, safeLimit, taskId]
   );
   return ergaenzeDiffs(result.rows, { max: NACHBERECHNEN_JE_AUFRUF, kurz: true });
 }
@@ -254,7 +257,8 @@ export interface RestoreErgebnis {
 export async function restoreFileVersion(
   versionId: string | number,
   agentId?: string,
-  reason?: string
+  reason?: string,
+  taskRef?: string,
 ): Promise<RestoreErgebnis> {
   const version = await getFileVersion(versionId, false, { roh: true });
   if (!version) {
@@ -274,7 +278,8 @@ export async function restoreFileVersion(
     agentId,
     `restore:${version.id}`,
     undefined,
-    reason
+    reason,
+    taskRef !== undefined ? { task_id: taskRef } : undefined
   );
   const envHinweiseListe = envVorher === null ? [] : istEnvDatei(version.file_path)
     ? envHinweise(envVorher, version.content, 'restore')
@@ -302,6 +307,7 @@ export async function listFileHistory(
     limit?: number;
     feature_tag?: string;
     version_id?: string | number;
+    task_id?: string;
   } = {},
 ): Promise<FileVersionMeta[]> {
   const safeLimit = Math.max(1, Math.min(opts.limit ?? 50, 500));
@@ -323,9 +329,10 @@ export async function listFileHistory(
               batch_id::text AS batch_id, size_bytes, created_at::text AS created_at, reason,
             feature_tag, parent_version_id::text AS parent_version_id, git_commit_sha, agent_note, diff
        FROM chain
+       WHERE ($4::text IS NULL OR task_id = $4)
        ORDER BY created_at DESC, id DESC
        LIMIT $3`,
-      [opts.version_id, project, safeLimit],
+      [opts.version_id, project, safeLimit, opts.task_id !== undefined ? await resolveProjectTaskId(project, opts.task_id) : null],
     );
     return ergaenzeDiffs(result.rows, { max: NACHBERECHNEN_JE_AUFRUF, kurz: true });
   }
@@ -347,6 +354,11 @@ export async function listFileHistory(
   if (opts.feature_tag) {
     params.push(opts.feature_tag);
     conds.push(`feature_tag = $${params.length}`);
+  }
+  if (opts.task_id !== undefined) {
+    const resolvedTaskId = await resolveProjectTaskId(project, opts.task_id);
+    params.push(resolvedTaskId);
+    conds.push(`task_id = $${params.length}`);
   }
   params.push(safeLimit);
   const result = await pool.query<FileVersionMeta>(
@@ -390,7 +402,8 @@ export async function listBatchVersions(
 export async function restoreBatch(
   batchId: string | number,
   agentId?: string,
-  reason?: string
+  reason?: string,
+  taskRef?: string,
 ): Promise<RestoreErgebnis[]> {
   const versions = await listBatchVersions(batchId);
   if (versions.length === 0) {
@@ -400,7 +413,7 @@ export async function restoreBatch(
   for (const v of versions) {
     // Derselbe Grund an jede Datei der Batch — sonst traegt beim Zurueckrollen
     // eines Multi-File-Sets nur ein Teil der Zeilen eine Erklaerung.
-    const r = await restoreFileVersion(v.id, agentId, reason);
+    const r = await restoreFileVersion(v.id, agentId, reason, taskRef);
     out.push(r);
   }
   return out;

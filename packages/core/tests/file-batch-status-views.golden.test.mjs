@@ -11,9 +11,16 @@ import { dirname, join } from 'node:path';
 import { createRequire } from 'node:module';
 
 
+const dbUrl = new URL(process.env.DATABASE_URL || 'http://ungueltig');
+assert.equal(dbUrl.pathname, '/synapse_test', 'Golden-Test nur in synapse_test');
+assert.equal(dbUrl.port, '5433', 'Golden-Test nur auf der Test-Instanz');
+process.env.QDRANT_URL = 'http://127.0.0.1:9';
+process.env.OLLAMA_URL = 'http://127.0.0.1:9';
+
 const hier = dirname(fileURLToPath(import.meta.url));
 const coreDist = join(hier, '..', 'dist');
-const batch = await import(join(coreDist, 'services', 'file-batch.js'));
+// Diagnose: ein exakt gespeicherter Alt-Snapshot kann als separates Modul gebaut werden.
+const batch = await import(join(coreDist, 'services', process.env.STATUS_VIEWS_BATCH_MODULE || 'file-batch.js'));
 const reservations = await import(join(coreDist, 'services', 'file-reservations.js'));
 const { getPool } = await import(join(coreDist, 'db', 'client.js'));
 const { filesTool } = await import(join(hier, '..', '..', 'mcp-server', 'dist', 'tools', 'consolidated', 'files.js'));
@@ -44,6 +51,7 @@ function pruefe(bedingung, text, detail) {
   if (!bedingung) throw new Error(`${text}${detail === undefined ? '' : ` — ${JSON.stringify(detail)}`}`);
 }
 async function aufraeumen() {
+  await pool.query('DELETE FROM tool_calls WHERE project = $1', [PROJECT]);
   await pool.query('DELETE FROM agent_event_acks WHERE event_id IN (SELECT id FROM agent_events WHERE project = $1)', [PROJECT]);
   for (const tabelle of ['file_batch_waits', 'file_batch_plans', 'file_reservations', 'file_versions', 'code_files', 'agent_events']) {
     await pool.query(`DELETE FROM ${tabelle} WHERE project = $1`, [PROJECT]);
@@ -143,6 +151,12 @@ try {
     pruefe(envText.includes('[WERT]'), 'Kompaktansicht markiert maskierten .env.example-Wert');
   }
 
+  // Der Golden enthaelt commit_wartet_auf fuer einen AKTIVEN Warter. Aktivitaet selbst
+  // setzen statt vom Verlauf eines vorherigen Testlaufs abzuhaengen; aufraeumen entfernt sie.
+  await pool.query(
+    `INSERT INTO tool_calls (project, tool_name, action, agent_id, args_preview, duration_ms, ok, ts)
+     VALUES ($1, 'files', 'plan', 'gold-waiter', 'Golden-Testaktivitaet', 0, true, NOW())`,
+    [PROJECT]);
   // Gemeinsamer Plan mit Co-Edit-Wait und shared_plan_status.
   await dateiAnlegen('src/shared.ts', 'export const shared = 1;\n');
   await reservations.addFileReservations({ project: PROJECT, agentId: 'gold-owner', filePaths: ['src/shared.ts'] });

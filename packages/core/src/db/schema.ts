@@ -597,6 +597,9 @@ ALTER TABLE file_versions ADD COLUMN IF NOT EXISTS agent_note TEXT;
 -- Stand VOR dem Schreiben). Nach einem commit nebenlaeufig gefuellt, sonst beim Lesen nachberechnet.
 -- Nullable ohne DEFAULT: ADD COLUMN ist nur eine Katalog-Aenderung, kein Umschreiben der Tabelle.
 ALTER TABLE file_versions ADD COLUMN IF NOT EXISTS diff JSONB;
+-- P6-T24: optionale Task-Zuordnung, ohne Bestands-Backfill oder Default.
+ALTER TABLE file_versions ADD COLUMN IF NOT EXISTS task_id TEXT;
+CREATE INDEX IF NOT EXISTS idx_fv_task_id ON file_versions(task_id) WHERE task_id IS NOT NULL;
 DO $$ BEGIN
   IF NOT EXISTS (
     SELECT 1 FROM pg_constraint WHERE conname = 'file_versions_parent_version_id_fkey'

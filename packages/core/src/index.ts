@@ -512,6 +512,7 @@ export {
   aendereTasks,
   getAllePlaene,
   findeTaskInPlan,
+  resolveProjectTaskId,
   verschiebeTasks,
   planUebersicht,
   listPlansDetail,
@@ -608,6 +609,7 @@ export {
   softDeleteFile,
   moveFileInPg,
   copyFileInPg,
+  snapshotFileVersion,
   getFileContentFromPg,
   // Backup
   dumpCollectionToFile,

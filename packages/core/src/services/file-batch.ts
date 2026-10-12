@@ -21,6 +21,7 @@ import type { PoolClient } from 'pg';
 import { EventEmitter } from 'node:events';
 import { getPool } from '../db/client.js';
 import { resolveAgentId } from './agent-id-resolver.js';
+import { resolveProjectTaskId } from './task-id-resolver.js';
 import { pruefeUpdateAnker } from './update-anker.js';
 import { emitEventOnce } from './events.js';
 import {
@@ -96,6 +97,8 @@ export interface FileBatchOp {
   coedit_source_op_index?: number;
   /** Optionale Per-Op-Begruendung; ueberschreibt Plan-Top-Level-reason fuer diese Datei. */
   reason?: string;
+  /** P6-T24: validierte Task-UUID am Plan oder pro Op. */
+  task_id?: string;
   /** update */
   content?: string;
   /** search_replace */
@@ -1755,6 +1758,7 @@ async function notifyPlanCommitted(
 async function commitCoeditBatch(args: {
   plan_id: string;
   agent_id?: string;
+  task_id?: string;
   agent_note?: string;
 }): Promise<CommitBatchResult> {
   const pool = getPool();
@@ -1922,14 +1926,15 @@ async function commitCoeditBatch(args: {
     // kompletten Dateiinhalt pro Op (500 Ops x 2 MB = 1 GB je commit). Attribution
     // bleibt erhalten — jeder beteiligte Agent hat seinen Eintrag, mit Op-Zahl.
     const snapshots = new Map<string, {
-      filePath: string; agentId: string | null; count: number; actions: Set<string>; reasons: Set<string>;
+      filePath: string; agentId: string | null; taskId: string | null; count: number; actions: Set<string>; reasons: Set<string>;
     }>();
     for (const op of plan.ops) {
       const agentId = op.agent_id ?? plan.owner_agent_id ?? resolveAgentId(args.agent_id) ?? null;
       for (const filePath of touchedPaths(op)) {
-        const key = `${filePath}\u0000${agentId ?? ''}`;
+        const taskId = op.task_id ?? args.task_id ?? null;
+        const key = `${filePath}\u0000${agentId ?? ''}\u0000${taskId ?? ''}`;
         const entry = snapshots.get(key)
-          ?? { filePath, agentId, count: 0, actions: new Set<string>(), reasons: new Set<string>() };
+          ?? { filePath, agentId, taskId, count: 0, actions: new Set<string>(), reasons: new Set<string>() };
         entry.count++;
         entry.actions.add(op.action);
         // Begruendung je Autor: alle eigenen Op-reasons dieses Agenten auf dieser Datei.
@@ -1946,8 +1951,8 @@ async function commitCoeditBatch(args: {
       await client.query(
         `INSERT INTO file_versions
            (project, file_path, content, content_hash, edit_action, agent_id, batch_id,
-            size_bytes, reason, agent_note)
-         VALUES ($1, $2, $3, $4, $5, $6, $7::bigint, $8, $9, $10)`,
+            size_bytes, reason, agent_note, task_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7::bigint, $8, $9, $10, $11)`,
         [
           plan.project,
           entry.filePath,
@@ -1959,6 +1964,7 @@ async function commitCoeditBatch(args: {
           Buffer.byteLength(before, 'utf8'),
           entry.reasons.size > 0 ? [...entry.reasons].join(' | ') : plan.reason,
           args.agent_note ?? null,
+          entry.taskId,
         ],
       );
     }
@@ -2198,6 +2204,7 @@ async function lockFilesForPlanning(
 export async function planBatch(args: {
   project: string;
   agent_id?: string;
+  task_id?: string;
   ops: FileBatchOp[];
   open_for_coedit?: boolean;
   reason?: string;
@@ -2218,9 +2225,14 @@ export async function planBatch(args: {
   // 0. Pre-Flight: file_path-Pflichtcheck + Overlap-Check + Auto-Shift Reorder.
   //    Single-Op-Plaene und Plaene ohne Multi-Op pro Datei kommen unveraendert
   //    durch — backwards compatible.
+  // P6-T24: Task-Refs vor Planerzeugung projektweit aufloesen; unbekannt heisst kein Plan/Write.
+  const opsMitTasks = await Promise.all(args.ops.map(async (op) => {
+    const ref = op.task_id ?? args.task_id;
+    return ref !== undefined ? { ...op, task_id: await resolveProjectTaskId(args.project, ref) } : op;
+  }));
   // P15-T36: Pfade jeder Op normalisieren (projekt-pfad.ts, inkl. Pflicht "Op i: file_path fehlt") und F3:
   // Schreibziele auf gesperrten Pfaden ablehnen - BEVOR etwas geladen oder als Plan gespeichert wird.
-  args = { ...args, ops: await normalisiereOps(args.project, args.ops) };
+  args = { ...args, ops: await normalisiereOps(args.project, opsMitTasks) };
   const applyPlan = prepareOpsForApply(args.ops);
 
   // 1. Group by file_path, lade aktuelle Dateien nur einmal.
@@ -3502,7 +3514,7 @@ async function addCoeditContributionKern(args: {
   if (!Array.isArray(args.ops) || args.ops.length === 0) throw new Error("ops[] darf nicht leer sein");
   if (args.ops.length > MAX_OPS_JE_AUFRUF) throw new Error(`ops[] maximal ${MAX_OPS_JE_AUFRUF} Eintraege`);
   // P15-T36: Co-Edit-Beitraege laufen nicht ueber den planBatch-Pre-Flight -> hier dieselbe Pfadpruefung.
-  args = { ...args, ops: await normalisiereOps(args.project, args.ops) };
+  args = { ...args, ops: await normalisiereOps(args.project, await Promise.all(args.ops.map(async (op) => op.task_id !== undefined ? { ...op, task_id: await resolveProjectTaskId(args.project, op.task_id) } : op))) };
 
   // Perf (User-Auftrag 29.09.2026): Die Dateien, die der Beitrag beruehrt, werden VOR der
   // Transaktion geladen und gehasht — ohne Plan-/Wait-Sperren. Unter der Sperre wird nur noch
@@ -4284,6 +4296,7 @@ async function sharedPlanStatusOnce(args: {
  */
 export async function commitBatch(args: {
   plan_id: string;
+  task_id?: string;
   agent_id?: string;
   /** IDEA-6: optionale KI-Beobachtungen — wird in alle file_versions dieser Batch geschrieben. */
   agent_note?: string;
@@ -4292,6 +4305,11 @@ export async function commitBatch(args: {
   /** P15-T17 E3: Pruefbefunde quittieren [{id, grund}] (Syntax nur bei absichtlich fehlerhaftem Inhalt). */
   befunde_quittieren?: Array<{ id: string; grund?: string }>;
 }): Promise<CommitBatchResult> {
+  if (args.task_id !== undefined) {
+    const taskPlan = await getBatchPlan(args.plan_id);
+    if (!taskPlan) throw new Error(`Plan ${args.plan_id} nicht gefunden`);
+    args = { ...args, task_id: await resolveProjectTaskId(taskPlan.project, args.task_id) };
+  }
   // E1 (29.09.2026): wartet ein gemeinsamer Plan noch auf aktive Beitragende
   // (waiting_for_contributors), haelt wait_seconds die Anfrage serverseitig, bis alle
   // ready/no_changes melden oder inaktiv werden, und schreibt dann — echtes Warten ohne Schleife
@@ -4422,6 +4440,7 @@ export async function nichtsGeschriebenBefund(
 async function commitBatchOnce(args: {
   plan_id: string;
   agent_id?: string;
+  task_id?: string;
   agent_note?: string;
   befunde_quittieren?: Array<{ id: string; grund?: string }>;
 }): Promise<CommitBatchResult> {
@@ -4536,7 +4555,15 @@ async function commitBatchOnce(args: {
     }
   }
   const distinctOpAgents = new Set(plan.ops.map((op) => op.agent_id).filter(Boolean));
-  if (Number(coeditWaitCount.rows[0]?.count ?? 0) > 0 || distinctOpAgents.size > 1) {
+  // Mehrere Tasks an derselben Datei brauchen je Task einen atomaren Snapshot.
+  const tasksJeDatei = new Map<string, Set<string | undefined>>();
+  for (const op of plan.ops) for (const path of touchedPaths(op)) {
+    const tasks = tasksJeDatei.get(path) ?? new Set<string | undefined>();
+    tasks.add(op.task_id ?? args.task_id);
+    tasksJeDatei.set(path, tasks);
+  }
+  const mehrereTasks = [...tasksJeDatei.values()].some((tasks) => tasks.size > 1);
+  if (Number(coeditWaitCount.rows[0]?.count ?? 0) > 0 || distinctOpAgents.size > 1 || mehrereTasks) {
     return commitCoeditBatch(commitArgs);
   }
   return commitLegacyLocked(commitArgs, plan);
@@ -4551,7 +4578,7 @@ async function commitBatchOnce(args: {
  * beginnt der commit neu (Routing wird neu entschieden).
  */
 async function commitLegacyLocked(
-  args: { plan_id: string; agent_id?: string; agent_note?: string },
+  args: { plan_id: string; agent_id?: string; task_id?: string; agent_note?: string },
   plan: FileBatchPlanRow,
 ): Promise<CommitBatchResult> {
   const lockClient = await getPool().connect();
@@ -4580,7 +4607,7 @@ async function commitLegacyLocked(
 }
 
 async function commitLegacyBody(
-  args: { plan_id: string; agent_id?: string; agent_note?: string },
+  args: { plan_id: string; agent_id?: string; task_id?: string; agent_note?: string },
   plan: FileBatchPlanRow,
   lockClient: PoolClient,
 ): Promise<CommitBatchResult> {
@@ -4651,7 +4678,9 @@ async function commitLegacyBody(
 
   // Pro Datei: erste Op im Plan, deren reason gesetzt ist, gewinnt — sonst Top-Level reason.
   const reasonPerFile = new Map<string, string | undefined>();
+  const taskIdPerFile = new Map<string, string>();
   for (const op of plan.ops) {
+    for (const path of touchedPaths(op)) if (op.task_id && !taskIdPerFile.has(path)) taskIdPerFile.set(path, op.task_id);
     if (op.reason && !reasonPerFile.has(op.file_path)) {
       reasonPerFile.set(op.file_path, op.reason);
     }
@@ -4666,6 +4695,7 @@ async function commitLegacyBody(
     const expectedHash = plan.expected_hashes[filePath];
     const existedBefore = expectedHash !== EMPTY_CONTENT_HASH;
     const effectiveReason = reasonPerFile.get(filePath) ?? fallbackReason;
+    const effectiveTaskId = taskIdPerFile.get(filePath) ?? args.task_id;
 
     if (buf.deleted) {
       if (!existedBefore) {
@@ -4677,14 +4707,14 @@ async function commitLegacyBody(
       const oldContent = currentBuffers.get(filePath) ?? '';
       const oldSize = Buffer.byteLength(oldContent, 'utf8');
       await pool.query(
-        `INSERT INTO file_versions (project, file_path, content, content_hash, edit_action, agent_id, batch_id, size_bytes, reason)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-        [plan.project, filePath, oldContent, contentHash(oldContent), `batch:${args.plan_id}:delete`, resolveAgentId(args.agent_id), batchIdSafe ?? null, oldSize, effectiveReason ?? null],
+        `INSERT INTO file_versions (project, file_path, content, content_hash, edit_action, agent_id, batch_id, size_bytes, reason, task_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+        [plan.project, filePath, oldContent, contentHash(oldContent), `batch:${args.plan_id}:delete`, resolveAgentId(args.agent_id), batchIdSafe ?? null, oldSize, effectiveReason ?? null, effectiveTaskId ?? null],
       );
       writtenFiles.push({ file_path: filePath, size: 0, hash: EMPTY_CONTENT_HASH, created: false, deleted: true });
     } else if (!existedBefore) {
       // Datei wurde in dieser Batch erstellt (create | move-target | copy-target).
-      await createFileInPg(plan.project, filePath, buf.finalContent, args.agent_id, effectiveReason, batchIdSafe, `batch:${args.plan_id}:create`);
+      await createFileInPg(plan.project, filePath, buf.finalContent, args.agent_id, effectiveReason, batchIdSafe, `batch:${args.plan_id}:create`, effectiveTaskId ? { task_id: effectiveTaskId } : undefined);
       writtenFiles.push({
         file_path: filePath,
         size: Buffer.byteLength(buf.finalContent, 'utf8'),
@@ -4693,7 +4723,7 @@ async function commitLegacyBody(
       });
     } else if (buf.finalHash !== expectedHash) {
       // Bestehende Datei wurde im Plan editiert.
-      await updateFileInPg(plan.project, filePath, buf.finalContent, args.agent_id, `batch:${args.plan_id}`, batchIdSafe, effectiveReason);
+      await updateFileInPg(plan.project, filePath, buf.finalContent, args.agent_id, `batch:${args.plan_id}`, batchIdSafe, effectiveReason, effectiveTaskId ? { task_id: effectiveTaskId } : undefined);
       writtenFiles.push({
         file_path: filePath,
         size: Buffer.byteLength(buf.finalContent, 'utf8'),
@@ -5139,7 +5169,7 @@ async function updatePlanInPlace(
 ): Promise<PlanBatchResult & { in_place: true }> {
   if (!caller) throw new Error('agent_id ist fuer plan_update erforderlich');
   // P15-T36: plan_update im selben Plan laeuft nicht ueber planBatch -> hier dieselbe Pfadpruefung.
-  args = { ...args, ops: await normalisiereOps(args.project, args.ops) };
+  args = { ...args, ops: await normalisiereOps(args.project, await Promise.all(args.ops.map(async (op) => op.task_id !== undefined ? { ...op, task_id: await resolveProjectTaskId(args.project, op.task_id) } : op))) };
   const client = await getPool().connect();
   try {
     await client.query('BEGIN');
@@ -5257,6 +5287,7 @@ export async function replanBatch(args: {
   reason?: string;
 }): Promise<PlanBatchResult & { superseded_plan_id?: string; in_place?: boolean }> {
   if (!Array.isArray(args.ops) || args.ops.length === 0) throw new Error('ops[] darf nicht leer sein');
+  args = { ...args, ops: await Promise.all(args.ops.map(async (op) => op.task_id !== undefined ? { ...op, task_id: await resolveProjectTaskId(args.project, op.task_id) } : op)) };
   const plan = await getBatchPlan(args.plan_id);
   if (!plan || plan.project !== args.project) throw new Error(`Plan ${args.plan_id} nicht gefunden`);
   if (plan.status !== 'open') {
