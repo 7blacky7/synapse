@@ -307,9 +307,11 @@ const projectTool: ConsolidatedTool = {
             return { success: false, error: 'project oder path erforderlich' };
           }
           if (path) {
-            const statusErgebnis = await getProjectStatusWithStats(path);
-            const statusName = project ?? path.split(/[/\\]/).pop() ?? path;
-            return { ...statusErgebnis, projekt_db: await projektDbFeld(statusName) };
+            const { ermittleProjektAusPfad } = await import('@synapse/core');
+            const erkannt = await ermittleProjektAusPfad(path);
+            if (project && project !== erkannt.project) throw new Error('project passt nicht zum registrierten Pfad.');
+            const statusErgebnis = await getProjectStatusWithStats(erkannt.path);
+            return { ...statusErgebnis, status: { ...statusErgebnis.status, ...erkannt }, projekt_db: await projektDbFeld(erkannt.project) };
           }
           // Fallback: nur Stats anhand des Projektnamens
           const { getProjectStats } = await import('@synapse/core');

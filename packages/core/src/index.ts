@@ -9,6 +9,10 @@
 export { mitCodeIntelSchatten, schattenCacheStatistik } from './services/code-intel-schatten.js';
 export type { RegelVerzeichnis } from './services/agent-rollen.js';
 
+export { holeAgentOnboarding } from './services/agent-onboarding.js';
+
+export { ermittleProjektAusPfad } from './services/project-registry.js';
+
 // Konfiguration
 export { loadConfig, getConfig, resetConfig } from './config.js';
 
@@ -795,7 +799,7 @@ export type { ProposalIdProblem } from './services/proposal-ids.js';
 export { waehleSpezialisten, parseNamen, veraltetSchwelleMs, beschrifteZeile, kennzeichnung, ausblendHinweis } from './services/spezialisten-status-filter.js';
 
 // JEV-10: Jev entscheidet Rueckfragen, wenn der User weg ist (P7-T28)
-export { holeJevModusHinweis, leereJevModusCache, JEV_MODUS_ZEILE } from './services/jev-modus-hinweis.js';
+export { holeJevModusHinweis, holeJevSitzungsHinweis, leereJevModusCache, JEV_MODUS_ZEILE } from './services/jev-modus-hinweis.js';
 export {
   entscheideRueckfrage,
   setzeAbwesenheit,

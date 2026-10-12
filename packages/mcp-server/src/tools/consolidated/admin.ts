@@ -199,11 +199,12 @@ export const adminTool: ConsolidatedTool = {
       case 'index_stats': {
         const project = reqStr(args, 'project');
         // P15-T32: Sitzungs-Signal ZUERST (ungueltiger Wert wirft, bevor etwas geaendert wird). Wie REST.
-        const sitzung = await wendeSitzungsSignalAn({ agentId: str(args, 'agent_id'), project, sitzung: args.sitzung });
+        const signal = await wendeSitzungsSignalAn({ agentId: str(args, 'agent_id'), project, sitzung: args.sitzung, role: str(args, 'role'), onboarding: bool(args, 'onboarding') });
+        const { agentOnboarding, ...sitzung } = signal ?? {};
 
         const result = await getIndexStats(project);
 
-        return sitzung ? { ...result, sitzung } : result;
+        return signal ? { ...result, sitzung, ...(agentOnboarding ? { agentOnboarding } : {}) } : result;
       }
 
       // ===== DETAILED_STATS =====

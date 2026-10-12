@@ -19,8 +19,8 @@
  *
  * DROSSELUNG: Shell-Jobs haben ein Ende-Ereignis, das genau einmal gemeldet wird.
  * Plaene haben keins. Gemeldet wird deshalb je Agent+Projekt nur, wenn sich der
- * Bestand geaendert hat (Plan dazu/weg, Ops- oder Fehlerzahl anders) oder die
- * letzte Meldung laenger als ERINNERUNG_MIN her ist. Der Zustand liegt im
+ * Bestand geaendert hat (Plan dazu/weg, Ops, Fehler, Autoren oder Wait-Aktivität)
+ * oder ausdrücklich Onboarding ausgeliefert wird. Der Zustand liegt im
  * Prozessspeicher: ein Neustart meldet hoechstens einmal zu viel, nie zu wenig.
  */
 
@@ -28,9 +28,6 @@ import { getPool } from '../db/index.js';
 
 /** Mehr Plaene zeigen wir nie einzeln; der Rest steht nur als Zahl da. */
 const MAX_EINTRAEGE = 5;
-
-/** Unveraenderter Bestand wird fruehestens nach so vielen Minuten wiederholt. */
-const ERINNERUNG_MIN = 15;
 
 /** So viele Dateinamen je Plan, der Rest als "+N". */
 const DATEIEN_MAX = 3;
@@ -80,13 +77,14 @@ function dateienText(pfade: string[]): string {
 
 /**
  * Liefert den open_plans-Block fuer diesen Agenten oder null (nichts offen bzw.
- * unveraendert und zuletzt vor weniger als ERINNERUNG_MIN gemeldet).
+ * unverändert seit der letzten Meldung; keine zeitgesteuerte Wiederholung).
  * Darf eine Tool-Antwort nie zum Scheitern bringen.
  */
 export async function claimOpenPlanHints(
   project: string,
   agentId: string,
   jetzt: number = Date.now(),
+  onboarding = false,
 ): Promise<OpenPlanHints | null> {
   if (!project || !agentId) return null;
   try {
@@ -138,17 +136,20 @@ export async function claimOpenPlanHints(
     const sortiert = [...aktuelle.filter((r) => r.owner_agent_id === agentId), ...aktuelle.filter((r) => r.owner_agent_id !== agentId)];
     const top = sortiert.slice(0, MAX_EINTRAEGE);
     const gesamt = rows.length;
-    const fingerprint = `${gesamt}|${traeger}|${alte.length}|` + top.map((r) => `${r.id}:${r.ops}:${r.fehler_ops}`).join(',');
+    const fingerprint = `${gesamt}|${traeger}|${alte.length}|` + rows.map((r) => `${r.id}:${r.ops}:${r.fehler_ops}:${r.open_for_coedit}:${(r.agenten ?? []).join('/')}:${new Date(r.aktivitaet).getTime()}`).join(',');
     const vorher = zuletzt.get(key);
-    if (vorher && vorher.fingerprint === fingerprint && jetzt - vorher.at < ERINNERUNG_MIN * 60000) {
+    if (!onboarding && vorher && vorher.fingerprint === fingerprint) {
       return null;
     }
     zuletzt.set(key, { fingerprint, at: jetzt });
     if (zuletzt.size > 2000) {
       for (const [k, v] of zuletzt) {
-        if (jetzt - v.at > ERINNERUNG_MIN * 60000) zuletzt.delete(k);
+        if (zuletzt.size > 2000 && k !== key) zuletzt.delete(k);
       }
     }
+
+    // Beim bloßen Prozessneustart keine ausschließlich alten Pläne wiederholen.
+    if (!onboarding && !vorher && top.length === 0 && traeger === 0) return null;
 
     const plaene = top.map((r) => {
       const eintrag: OpenPlanHintEntry = {

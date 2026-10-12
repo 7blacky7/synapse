@@ -381,7 +381,7 @@ async function ruheLaeuftNoch(): Promise<boolean> {
 }
 
 /** Einmal pro Prozess: tote Instance-Rows aus agent_onboardings raeumen */
-let onboardingCleanupDone = false;
+// Zustellnachweise bleiben erhalten, auch über längere Prozesspausen hinweg.
 
 /**
  * Prueft ob ein Agent in dieser Server-Instanz bereits ongeboardet wurde.
@@ -399,89 +399,43 @@ let onboardingCleanupDone = false;
  *   gegriffen hat. Ohne sie sieht eine geratene Rolle aus wie eine erklaerte.
  * @returns true wenn Agent NEU ist (Onboarding zeigen), false wenn bereits bekannt
  */
+/** Prüft den dauerhaften Zustellnachweis, unabhängig vom Serverprozess. */
+export async function istOnboardingBekannt(project: string, agentId: string): Promise<boolean> {
+  const r = await getPool().query('SELECT 1 FROM agent_onboardings WHERE agent_id=$1 AND project=$2 LIMIT 1', [agentId, project]);
+  return r.rows.length > 0;
+}
+
 export async function registerAgent(
-  project: string,
-  agentId: string,
-  serverInstanceId: string,
-  rolle?: string,
-  rolleQuelle?: string
+  project: string, agentId: string, serverInstanceId: string,
+  rolle?: string, rolleQuelle?: string, explizit = false,
 ): Promise<boolean> {
   const key = `${serverInstanceId}:${agentId}:${project}`;
-  if (onboardedKeys.has(key)) {
-    return false;
-  }
-
+  if (!explizit && onboardedKeys.has(key)) return false;
+  const client = await getPool().connect();
   try {
-    const pool = getPool();
-
-    // Retention: Instance-IDs sind prozess-gebunden — Rows aelter als 7 Tage sind tot.
-    // Fire-and-forget, einmal pro Prozess.
-    if (!onboardingCleanupDone) {
-      onboardingCleanupDone = true;
-      pool
-        .query(`DELETE FROM agent_onboardings WHERE onboarded_at < NOW() - INTERVAL '7 days'`)
-        .catch(() => {});
-    }
-
-    const result = await pool.query(
+    await client.query('BEGIN');
+    // Kurze Claim-Transaktion: Aufbereitung erfolgt vorher, ohne belegte Verbindung.
+    await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [JSON.stringify([project, agentId])]);
+    const bekannt = await client.query('SELECT 1 FROM agent_onboardings WHERE agent_id=$1 AND project=$2 LIMIT 1', [agentId, project]);
+    const liefern = explizit || bekannt.rows.length === 0;
+    if (liefern) await client.query(
       `INSERT INTO agent_onboardings (agent_id, project, server_instance_id, rolle, rolle_quelle)
-       VALUES ($1, $2, $3, $4, $5)
-       ON CONFLICT (agent_id, project, server_instance_id) DO NOTHING`,
-      [agentId, project, serverInstanceId, rolle ?? null, rolleQuelle ?? null]
-    );
-    onboardedKeys.add(key);
-
-    let isFirstVisit = (result.rowCount ?? 0) > 0;
-
-    // ⚠️ RUHEFENSTER NACH EINEM DEPLOY (ON-1). Die Server-Kennung ist prozessgebunden und bei
-    // jedem Containerstart neu — formal ist danach JEDER Agent "zum ersten Mal" da, obwohl sich
-    // an den Regeln nichts geaendert hat. In einer Deploy-Nacht kam das volle Onboarding so
-    // siebenmal an denselben Agenten, an jedem Tool-Aufruf haengend.
-    // Unterdrueckt wird deshalb NUR die Wiederholung: der Agent muss unter einer ANDEREN
-    // Server-Kennung schon einen Eintrag haben. Wer noch nie da war — ein frisch gespawnter
-    // Subagent — bekommt seine Regeln unveraendert, denn genau dafuer gibt es das Onboarding.
-    // Der INSERT oben laeuft in beiden Faellen: dadurch bleibt der Agent auch NACH Ablauf des
-    // Fensters ruhig, statt verspaetet doch noch begruesst zu werden.
-    if (isFirstVisit) {
-      // ON-2: nicht mehr "wie lange laeuft MEIN Prozess", sondern "laeuft das Fenster laut DB".
-      if (await ruheLaeuftNoch()) {
-        const frueher = await pool.query(
-          `SELECT 1 FROM agent_onboardings
-            WHERE agent_id = $1 AND project = $2 AND server_instance_id <> $3
-            LIMIT 1`,
-          [agentId, project, serverInstanceId]
-        );
-        if (frueher.rows.length > 0) {
-          console.info(
-            `[Onboarding] Ruhefenster aktiv: "${agentId}" (${project}) war schon vor dem Neustart da `
-            + `— kein erneutes Onboarding. Abschalten mit SYNAPSE_ONBOARDING_RUHE_MIN=0.`
-          );
-          isFirstVisit = false;
-        }
-      }
-    }
-
-    // Session-Tracking beibehalten (isAgentKnown, events) — ohne Instance-Ueberschreiben.
-    // chat.registerAgent pflegt model/cutoff, hier nur Existenz und Status.
-    // P15-T30: laeuft beim ERSTEN Aufruf je (Agent, Projekt, Prozess), unabhaengig von isFirstVisit.
-    // Ein noch aktiver Agent (Deploy, Ruhefenster) bleibt unberuehrt (WHERE). Ein abgemeldeter oder
-    // vom Reaper stillgelegter Agent, der wieder arbeitet, wird zurueckgeholt: status 'active' und
-    // neuer Sitzungs-/Lebensphasenbeginn (Events vor der Stilllegung zaehlen nicht mehr). Vorher blieb
-    // er fuer immer 'inactive', obwohl er arbeitete (seine Reservierungen galten dann als tot).
-    // registered_at bleibt "erstmals".
-    await pool.query(
+       VALUES ($1,$2,$3,$4,$5)
+       ON CONFLICT (agent_id, project, server_instance_id) DO UPDATE
+       SET onboarded_at=NOW(), rolle=EXCLUDED.rolle, rolle_quelle=EXCLUDED.rolle_quelle`,
+      [agentId, project, serverInstanceId, rolle ?? null, rolleQuelle ?? null]);
+    await client.query(
       `INSERT INTO agent_sessions (id, project, status, registered_at, sitzung_seit, aktiv_seit)
-       VALUES ($1, $2, 'active', NOW(), NOW(), NOW())
-       ON CONFLICT (id) DO UPDATE SET status = 'active', sitzung_seit = NOW(), aktiv_seit = NOW()
-        WHERE agent_sessions.status IS DISTINCT FROM 'active'`,
-      [agentId, project]
-    );
-
-    return isFirstVisit;
-  } catch {
-    // Bei PG-Fehler sicherheitshalber Onboarding zeigen
-    return true;
-  }
+       VALUES ($1,$2,'active',NOW(),NOW(),NOW())
+       ON CONFLICT (id) DO UPDATE SET status='active', sitzung_seit=NOW(), aktiv_seit=NOW()
+       WHERE agent_sessions.status IS DISTINCT FROM 'active'`, [agentId, project]);
+    await client.query('COMMIT');
+    onboardedKeys.add(key);
+    return liefern;
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally { client.release(); }
 }
 
 /**

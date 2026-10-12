@@ -146,6 +146,10 @@ export type SitzungsArt = (typeof SITZUNGS_ARTEN)[number];
 
 /** Tool-Schema-Eigenschaft fuer admin(index_stats) - EINE Quelle fuer REST und stdio. */
 export const SITZUNG_PARAMETER = {
+  onboarding: {
+    type: 'boolean',
+    description: "index_stats: bei Kontextwechsel zusammen mit sitzung:'fortsetzung', project, agent_id und role: Regeln erneut direkt in dieser Antwort; laufende Bindungen und Events bleiben.",
+  },
   sitzung: {
     type: 'string',
     enum: [...SITZUNGS_ARTEN],
@@ -175,7 +179,7 @@ export interface SitzungsBeginn {
   aktivSeit: string;
   /** Status VOR dem Aufruf; null = Name war unbekannt. */
   vorherStatus: string | null;
-  /** Nur 'neu': Onboarding wird beim naechsten Tool-Aufruf erneut ausgeliefert (false = Zuruecksetzen scheiterte). */
+  /** Legacy-Aufrufer ohne direkte Zustellung: ob 'neu' den nächsten Onboarding-Aufruf freigegeben hat. */
   onboardingErneut: boolean;
 }
 
@@ -183,7 +187,7 @@ export interface SitzungsBeginn {
  * Beginnt ausdruecklich eine Sitzung (siehe SITZUNGS_ARTEN). Setzt status 'active'; registered_at bleibt
  * "erstmals". Bewusst unabhaengig vom Onboarding-Gedaechtnis (onboardedKeys): das Signal gilt immer.
  */
-export async function beginneSitzung(id: string, project: string, art: SitzungsArt): Promise<SitzungsBeginn> {
+export async function beginneSitzung(id: string, project: string, art: SitzungsArt, onboardingDirekt = false): Promise<SitzungsBeginn> {
   const pool = getPool();
   const r = await pool.query<{ registered_at: Date; sitzung_seit: Date; aktiv_seit: Date; vorher_status: string | null }>(
     `WITH vorher AS (SELECT status FROM agent_sessions WHERE id = $1)
@@ -200,7 +204,7 @@ export async function beginneSitzung(id: string, project: string, art: SitzungsA
   // P15-T32 Folge: ein Spawn bekommt die Projekt-Regeln, auch unter altem Namen (onboardedKeys/Ruhefenster).
   // 'fortsetzung' laesst das Onboarding unberuehrt. Scheitert das Zuruecksetzen, bleibt die Sitzung gesetzt.
   let onboardingErneut = false;
-  if (art === 'neu') {
+  if (art === 'neu' && !onboardingDirekt) {
     try {
       await vergissOnboarding(project, id);
       onboardingErneut = true;
@@ -225,31 +229,35 @@ export async function beginneSitzung(id: string, project: string, art: SitzungsA
  * Ungueltiger Wert: wirft (vor jeder Aenderung). Ohne agent_id: nur ein Hinweis.
  */
 export async function wendeSitzungsSignalAn(eingabe: {
-  agentId?: string;
-  project: string;
-  sitzung: unknown;
+  agentId?: string; project: string; sitzung: unknown; role?: string;
+  onboarding?: boolean; serverInstanceId?: string;
 }): Promise<Record<string, unknown> | undefined> {
   const art = pruefeSitzungsArt(eingabe.sitzung);
-  if (!art) return undefined;
-  if (!eingabe.agentId) {
-    return { hinweis: `sitzung:'${art}' braucht agent_id - ohne Agent gibt es keine Sitzung. Nichts geaendert.` };
+  const { rolleFuerAgent } = await import('./agent-rollen.js');
+  if (eingabe.onboarding && (!art || !eingabe.project?.trim() || !eingabe.agentId?.trim()
+      || rolleFuerAgent(eingabe.agentId, eingabe.role).quelle !== 'angegeben')) {
+    throw new Error('onboarding:true braucht sitzung, project, agent_id und eine gültige ausdrücklich angegebene role.');
   }
-  const b = await beginneSitzung(eingabe.agentId, eingabe.project, art);
-  const warAktiv = b.vorherStatus === 'active';
-  const wirkung = art === 'neu'
-    ? 'Neue Sitzung (Spawn): Broadcasts von vor diesem Zeitpunkt sind fuer dich nicht offen, Fehlermuster gelten als '
-      + 'nicht gesehen. An dich direkt adressierte Events bleiben offen.'
-    : warAktiv
-      ? 'Fortsetzung: unquittierte Events der Vorsitzung bleiben offen, Fehlermuster gelten im neuen Kontext als nicht gesehen.'
-      : 'Fortsetzung, aber die Vorsitzung war nicht mehr aktiv (oder der Name neu): neue Lebensphase wie bei chat register, '
-        + 'Broadcasts von vorher sind nicht offen.';
+  if (!art) return undefined;
+  if (!eingabe.agentId) return { hinweis: `sitzung:'${art}' braucht agent_id - ohne Agent gibt es keine Sitzung. Nichts geaendert.` };
+  const direkt = art === 'neu' || eingabe.onboarding === true;
+  // Kein Vergessen-Fenster: ein paralleler normaler Aufruf darf den Refresh nicht übernehmen.
+  const b = await beginneSitzung(eingabe.agentId, eingabe.project, art, direkt);
+  const { holeAgentOnboarding } = await import('./agent-onboarding.js');
+  const agentOnboarding = direkt ? await holeAgentOnboarding({
+    project: eingabe.project, agentId: eingabe.agentId, role: eingabe.role,
+    serverInstanceId: eingabe.serverInstanceId ?? 'sitzungs-signal', explizit: true,
+  }) : null;
   return {
-    art,
-    sitzung_seit: b.sitzungSeit,
-    aktiv_seit: b.aktivSeit,
-    vorher_status: b.vorherStatus,
-    ...(art === 'neu' ? { onboarding_erneut: b.onboardingErneut } : {}),
-    wirkung: art === 'neu' && b.onboardingErneut ? `${wirkung} Die Projekt-Regeln (agentOnboarding) kommen erneut.` : wirkung,
+    art, project: eingabe.project,
+    sitzung_seit: b.sitzungSeit, aktiv_seit: b.aktivSeit, vorher_status: b.vorherStatus,
+    ...(direkt ? { onboarding_erneut: !!agentOnboarding } : {}),
+    ...(agentOnboarding ? { agentOnboarding, rolle: agentOnboarding.rolle } : {}),
+    wirkung: art === 'neu'
+      ? 'Neue Sitzung: frühere Broadcasts sind nicht offen; direkt adressierte Events bleiben.'
+      : b.vorherStatus === 'active'
+        ? 'Fortsetzung: unquittierte Events und laufende Bindungen bleiben erhalten.'
+        : 'Fortsetzung einer inaktiven Sitzung: neue Lebensphase; frühere Broadcasts sind nicht offen.',
   };
 }
 

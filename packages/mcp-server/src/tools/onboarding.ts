@@ -154,135 +154,22 @@ export async function checkAgentOnboarding(
     return null;
   }
 
-  // Rolle VOR der Registrierung bestimmen — sie gehoert ins Protokoll (Punkt 3a, 02.08.2026).
-  // ⚠️ EINE Rollenbestimmung fuer beide Wege (Punkt 2.5). Hier stand das Original,
-  // in mcp.ts eine leicht abweichende Kopie. GEMESSEN: 179 von 181 Identitaeten landen im
-  // Standard 'subagent', der spezialist-Zweig hat seit dem 03.05.2026 null Treffer. Die
-  // Erkennung bleibt vorerst wie sie ist — sie ist jetzt nur an EINER Stelle und sagt dazu,
-  // ob sie geraten hat.
-  const { rolleFuerAgent, rollenQuelleKlartext } = await import('@synapse/core');
-  const { rolle: effectiveRole, quelle: rollenQuelle } = rolleFuerAgent(agentId, role ?? null);
-  const isCoordinator = effectiveRole === 'koordinator';
-
-  // Agent bekannt in dieser Server-Instanz? Rolle + Quelle wandern mit ins Protokoll —
-  // erst dadurch wird "derselbe Agent, zwei verschiedene Rollen" ein GROUP BY statt eines
-  // Zufallsfundes. Das Protokoll sagt, was das System ENTSCHIEDEN hat, nicht ob es stimmte.
-  const isFirstVisit = await registerAgent(
-    project,
-    agentId,
-    SERVER_INSTANCE_ID,
-    effectiveRole,
-    rollenQuelle,
-  );
-
-  if (!isFirstVisit) {
-    // Agent bereits bekannt - keine Regeln
-    return { isFirstVisit: false };
-  }
-
-  console.error(
-    `[Synapse MCP] Neuer Agent "${agentId}" erkannt (Rolle: ${effectiveRole}, Quelle: ${rollenQuelle}) - lade Regeln...`,
-  );
-
   try {
-    const ruleMemories = await getRulesForNewAgent(project);
-
-    // Auto-Inject: Handoff-Regeln hinzufuegen wenn nicht vorhanden (PROTOTYP)
-    await ensureHandoffRules(project, ruleMemories);
-    // CH-4: Meldet sich ein Channelverwalter zum ersten Mal, entsteht seine Pflichtregel
-    // im Projekt — damit der Koordinator die Auflagen nicht in jeden Spawn-Prompt schreiben
-    // muss. Idempotent: existiert sie, passiert nichts.
-    if (effectiveRole === 'channelverwalter') {
-      const { ensureChannelverwalterRegel } = await import('@synapse/core');
-      await ensureChannelverwalterRegel(project);
-    }
-    // Regeln neu laden falls Handoff-Regeln gerade erstellt wurden
-    const allRules = await getOnboardingMemories(project);
-
-    // Rollenspezifische Regeln filtern — gemeinsame Erkennung aus core
-    // (agent-rollen.ts), damit dieser Weg und die REST-API nicht auseinanderlaufen.
-    // Der exakte Vergleich von vorher liess z.B. "koordinator-only" (deutsch)
-    // stillschweigend durchfallen: die Regel ging dann an alle Rollen.
-    const { tagVerdacht, baueOnboardingRegelwerk, baueRegelAbrufHinweis } =
-      await import('@synapse/core');
-    for (const m of allRules) {
-      for (const hinweis of tagVerdacht(m.tags)) {
-        console.error(`[Onboarding] Regel "${m.name}" (${project}): ${hinweis}`);
-      }
-    }
-    const { rules, regel_verzeichnis } = baueOnboardingRegelwerk(allRules, project, effectiveRole);
-
-    // ⚠️ NICHT MEHR ALLES IM VOLLTEXT (Messung 02.08.2026): 34 Regeln, 65.000 Zeichen, und
-    // das bei JEDEM Wechsel der Server-Kennung erneut. Volltext behalten die Regeln mit dem
-    // Tag "pflicht"; alle anderen kommen als Auszug, der Volltext ist einen Aufruf entfernt.
-    // Dieselbe Funktion wie im REST-Weg — zwei Kopien derselben Aufbereitung waeren genau der
-    // Fehler, den diese Codebasis an anderer Stelle teuer bezahlt hat.
-    const gekuerzt = rules.filter((r) => !r.vollstaendig).length;
-    const abrufHinweis = baueRegelAbrufHinweis(project, gekuerzt);
-
-    // ⚠️ KEIN VOLLTEXT-BLOCK MEHR (G-b, gemessen 26.08.2026). Hier stand bis heute ein
-    // rulesMessage, das JEDE Regel ein ZWEITES Mal im Volltext trug — gebaut aus demselben
-    // rules-Array, das direkt darunter ohnehin ausgeliefert wird. GEMESSEN auf dieser
-    // Strecke, Rolle subagent, 25 Regeln: rules 31.924 Zeichen, rulesMessage 33.238 Zeichen.
-    // Derselbe Text, doppelt, bei jedem Erstkontakt. Die REST-Strecke (routes/mcp.ts) hat
-    // diesen Block nie gehabt und wurde trotzdem verstanden.
-    // Was NUR in rulesMessage stand, steht jetzt als eigenes Feld daneben: der Abrufhinweis
-    // als volltext_hinweis (Feldname wie im REST-Weg) und der Setup-Hinweis als setup_hinweis.
-    // Die Channel-Uebersicht ging ohnehin schon strukturiert als channels hinaus — ihre
-    // Textfassung war Teil derselben Dopplung.
-    const setupHinweis =
-      isCoordinator && (await getSetupPhase(project, path)) === 'initial-pending'
-        ? '⚠️ Projekt-Setup unvollstaendig. Starte /projekt-setup oder frage den User.'
-        : undefined;
-
-    // CH-1 (15.08.2026): Welche Channels laufen noch, wer haengt drin, was war zuletzt los.
-    // Dieselbe core-Funktion wie im REST-Weg — der Block soll auf beiden Strecken gleich sein.
-    const { baueChannelUebersicht } = await import('@synapse/core');
-    const channelBlock = await baueChannelUebersicht(project, isCoordinator);
-
-    // JEV-10 (P7-T28): bei aktivem Abwesenheits-Schalter ein Satz, sonst nichts. Wie im REST-Weg.
-    const { baueAbwesenheitsHinweis } = await import('@synapse/core');
-    const jevHinweis = await baueAbwesenheitsHinweis(project);
-
-    // P15-T33 E2: offene Erklaerungs-Faelle (Koordinator: Projekt, sonst nur eigene) als EINE Zeile. Wie im REST-Weg.
-    const { erklaerungsFaelleZeile } = await import('@synapse/core');
-    const erklZeile = await erklaerungsFaelleZeile({ project, agent_id: agentId, koordinator: isCoordinator });
-
-    // P15 Nachtrunde B (Entscheidungs-Topf E2): offene Durchsicht autonomer Jev-Entscheidungen, nur Koordinator. Wie im REST-Weg.
-    const { entscheidungsDurchsichtZeile } = await import('@synapse/core');
-    const durchsichtZeile = await entscheidungsDurchsichtZeile({ project, koordinator: isCoordinator });
-
-    // Plan-Uebersicht (Task 137fabaf): nur aktive/offene Plaene mit Kurz-ID, keine Tasks.
-    // Gleiches Feld wie im REST-Weg (routes/mcp.ts).
-    const { planUebersicht } = await import('@synapse/core');
-    const plaene = await planUebersicht(project).catch(() => []);
-
-    console.error(`[Synapse MCP] ${rules.length} Regeln fuer Agent "${agentId}" geladen`);
-
-    // ⚠️ FELDSCHNITT WIE IM REST-WEG (routes/mcp.ts, agentOnboarding). rolle/rolle_quelle/
-    // rolle_hinweis und volltext_hinweis entstanden auf DIESER Strecke bisher gar nicht. Der
-    // Kommentar in server.ts sagt seit dem 15.08., es werde alles durchgereicht — das stimmt
-    // auch, nur erzeugt hat sie hier niemand. Durchreichen ersetzt kein Erzeugen.
-    // Wer hier ein Feld ergaenzt, ergaenzt es auch in routes/mcp.ts — sonst laufen die beiden
-    // Strecken wieder auseinander, und genau das faellt niemandem auf.
-    return {
-      isFirstVisit: true,
-      rolle: effectiveRole,
-      rolle_quelle: rollenQuelle,
-      rolle_hinweis: rollenQuelleKlartext(effectiveRole, rollenQuelle, role ?? null),
-      ...(abrufHinweis ? { volltext_hinweis: abrufHinweis } : {}),
-      ...(setupHinweis ? { setup_hinweis: setupHinweis } : {}),
-      ...(jevHinweis ? { jev_hinweis: jevHinweis } : {}),
-      ...(erklZeile ? { erklaerung_faelle: erklZeile } : {}),
-      ...(durchsichtZeile ? { entscheidungen_durchsicht: durchsichtZeile } : {}),
-      rules,
-      regel_verzeichnis,
-      ...(channelBlock ? { channels: channelBlock } : {}),
-      ...(plaene.length > 0 ? { plaene } : {}),
-    };
+    const { holeAgentOnboarding } = await import('@synapse/core');
+    let setupHinweis: string | undefined;
+    const block = await holeAgentOnboarding({
+      project, agentId, role, serverInstanceId: SERVER_INSTANCE_ID,
+      vorbereiten: async () => {
+        await ensureHandoffRules(project, await getRulesForNewAgent(project));
+        if (role === 'koordinator' && await getSetupPhase(project, path) === 'initial-pending') {
+          setupHinweis = '⚠️ Projekt-Setup unvollstaendig. Starte /projekt-setup oder frage den User.';
+        }
+      },
+    });
+    return block ? { ...block, ...(setupHinweis ? { setup_hinweis: setupHinweis } : {}) } : { isFirstVisit: false };
   } catch (error) {
-    console.error(`[Synapse MCP] Fehler beim Laden der Regeln:`, error);
-    return { isFirstVisit: true };
+    console.error('[Synapse MCP] Onboarding-Aufbereitung fehlgeschlagen:', error);
+    return { isFirstVisit: false };
   }
 }
 
@@ -290,29 +177,7 @@ export async function checkAgentOnboarding(
 const HANDOFF_RULE_NAME = 'context-handoff-regeln';
 
 /** PROTOTYP: Handoff-Regeln im Content */
-const HANDOFF_RULE_CONTENT = `## Context-Handoff Regeln (PROTOTYP)
-
-Synapse unterstuetzt automatischen Session-Handoff wenn das Context-Window voll wird.
-
-### Wann Handoff noetig ist
-- Du wirst automatisch per Hook gewarnt (95% = gelb, 98% = rot)
-- Bei GELB: Aktuellen Task abschliessen, dann Handoff planen
-- Bei ROT: SOFORT Handoff ausfuehren
-
-### Handoff-Protokoll (3 Schritte)
-
-**1. Thought speichern (Schnelleinstieg):**
-thought(action: "add", project: "<projekt>", source: "<dein-name>",
-  content: "SESSION-HANDOFF: <Fortschritt> | NAECHSTER SCHRITT: <was> | CHAT-SEIT: <timestamp>",
-  tags: ["session-uebergabe"])
-
-**2. Neue Session starten:**
-bash <projekt-pfad>/scripts/context-handoff/context-handoff.sh "<projekt-pfad>" "<projekt-name>" "<aufgabe>"
-
-### Wichtig
-- Handoff NICHT mitten in einer Datei-Bearbeitung — erst commit
-- Die neue Session liest automatisch den Synapse-Kontext und arbeitet weiter
-- Neuen einzigartigen Agent-Namen in der Folge-Session verwenden`;
+const HANDOFF_RULE_CONTENT = `Context-Handoff: Arbeitsstand als thought mit eigener ID/Projekt sichern. Nach Kontextwechsel das Projekt über project(status, path:<aktueller Arbeitsordner>, agent_id:<eigene ID>) auflösen; status.project übernehmen. Dann admin(index_stats, project, agent_id, role, sitzung:'fortsetzung', onboarding:true) und Regeln in agentOnboarding lesen. Gleiche Agent-ID weiterverwenden; offene Events, Channels und Co-Edit-Bindungen erhalten. Automatischer Kontextwechsel braucht eine echte strukturierte Wrapper-Schnittstelle. Kein selbst erfundener Schwellwert oder Neustartbefehl.`;
 
 /**
  * PROTOTYP: Prueft ob Handoff-Regeln existieren und erstellt sie automatisch

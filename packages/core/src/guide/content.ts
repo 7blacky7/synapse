@@ -671,15 +671,15 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
     actions: {
       index_stats: {
         description: 'Projekt-Statistiken + Agenten-Onboarding (Regeln, Hinweise).',
-        params: 'project (req), agent_id (empfohlen fuer Onboarding), role, sitzung (optional: neu | fortsetzung)',
+        params: 'project (req), agent_id, role, sitzung (neu | fortsetzung), onboarding (boolean; Refresh braucht alle vier vorherigen Felder)',
         example: 'admin({ action: "index_stats", project: "synapse", agent_id: "guide-content-writer", role: "subagent", sitzung: "neu" })',
-        tips: 'IMMER als erste Aktion aufrufen. agent_id = deine ID → Regeln werden geladen. '
+        tips: 'Zuerst project(status, path:<aktueller Arbeitsordner>, agent_id) lesen und status.project übernehmen; kein basename-/Vorsitzungs-Raten. agent_id = deine ID. '
           + 'sitzung (P15-T32, nur mit agent_id): "neu" = du bist frisch gespawnt, auch unter einem schon benutzten Namen - '
           + 'Broadcasts und gesehene Fehlermuster der Vorsitzung gelten nicht fuer dich, an dich adressierte Events bleiben, '
           + 'und die Projekt-Regeln (agentOnboarding) kommen erneut, auch wenn der Name in diesem Prozess schon bekannt war. '
           + '"fortsetzung" = Handoff/Rotation desselben Agenten - unquittierte Events bleiben, Fehlermuster gelten im neuen '
           + 'Kontext als nicht gesehen. Ohne sitzung aendert sich an der Sitzung nichts. Die Antwort traegt dann das Feld sitzung '
-          + '(art, sitzung_seit, aktiv_seit, vorher_status, wirkung). Spezialisten bekommen "neu" beim spawn automatisch.',
+          + '(art, sitzung_seit, aktiv_seit, vorher_status, wirkung). Bei Kontextwechsel fortsetzung + onboarding:true: Regeln direkt in dieser Antwort erneut; Channels, ACKs, Reservierungen, Waits und Beiträge bleiben. Ohne onboarding:true keine erneuten Regeln. Keine automatische Compaction-Erkennung ohne echte Wrapper-Schnittstelle.',
       },
       detailed_stats: {
         description: 'Detaillierte Collection-Statistiken pro Typ.',

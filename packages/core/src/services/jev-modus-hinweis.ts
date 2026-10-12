@@ -1,14 +1,14 @@
 /**
- * jev_modus — eine kurze Zeile an jeder Tool-Antwort, solange der jev-Schalter des Projekts AN ist
+ * jev_modus — Zustandszeile bei Start/Refresh und konkreten Änderungen
  * (P7-T30 / JEV-11, 29.09.2026).
  *
  * WARUM IM CODE UND NICHT ALS PROJEKT-REGEL: Die Anweisung "bei Rueckfragen/Unstimmigkeiten
  * Superpowers nutzen, Entscheidungen ueber jev(entscheiden)" gilt in jedem Projekt, in dem der
  * Schalter an ist. Eine Regel (memory) gaehlte nur fuer das Projekt, in dem sie steht.
  *
- * VEREINFACHUNG (User): KEIN Volltext, keine Drosselung, keine Merker je Agent. Jede Antwort bekommt
- * dieselbe kurze Zeile; der ausfuehrliche Text (Superpowers, erlaubte/verbotene Kategorien, Tor 0.7)
- * steht im guide-Eintrag jev, dorthin verweist die Zeile. Schalter AUS -> null (kein Feld, kein Text).
+ * P7-T40: holeJevSitzungsHinweis liefert den Satz beim Start/Refresh und bei Schalteränderung.
+ * holeJevModusHinweis bleibt die reine Zustandsabfrage für bestehende Aufrufer.
+ * Schalter AUS -> null; die ausführliche Anleitung steht weiterhin im Guide.
  *
  * Damit nicht jeder Tool-Call eine DB-Abfrage kostet, wird der Schalter je Prozess und Projekt kurz
  * gecacht (Standard 30 s, Env JEV_MODUS_CACHE_S; 0 = kein Cache). Ein DB-Fehler ergibt null und wird
@@ -23,6 +23,18 @@ export const JEV_MODUS_ZEILE =
   '(nur erlaubte Kategorien, sonst warten). Wie: guide(tool_name:jev) Abschnitt Vorgehen.';
 
 const STANDARD_CACHE_S = 30;
+
+/** P7-T40: statischer Satz beim Onboarding; später nur bei konkreter Zustandsänderung. */
+const agentModus = new Map<string, string | null>();
+export async function holeJevSitzungsHinweis(project: string, agentId: string, onboarding = false): Promise<string | null> {
+  const zeile = await holeJevModusHinweis(project);
+  const key = JSON.stringify([project, agentId]);
+  const bekannt = agentModus.has(key);
+  const vorher = agentModus.get(key);
+  agentModus.set(key, zeile);
+  return onboarding || (bekannt && vorher !== zeile) ? zeile : null;
+}
+
 
 const cache = new Map<string, { bis: number; aktiv: boolean }>();
 

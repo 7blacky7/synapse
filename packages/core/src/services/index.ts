@@ -3,6 +3,7 @@
  * Re-exportiert alle Service-Funktionen
  */
 
+export * from './agent-onboarding.js';
 export * from './code.js';
 export * from './code-intel.js';
 export * from './code-write.js';

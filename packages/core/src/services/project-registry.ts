@@ -9,6 +9,28 @@ import { getPool } from '../db/client.js';
 
 const HOSTNAME = os.hostname();
 
+/** Projektname ausschließlich aus registriertem absoluten Root oder Unterordner. */
+export async function ermittleProjektAusPfad(eingabe: string): Promise<{project: string; path: string}> {
+  const { posix, win32 } = await import('node:path');
+  const windows = win32.isAbsolute(eingabe) && !posix.isAbsolute(eingabe);
+  const api = windows ? win32 : posix;
+  if (!api.isAbsolute(eingabe)) throw new Error('Projektpfad muss absolut sein.');
+  const norm = (s: string) => {
+    const n = api.normalize(s).replace(/[\\/]+$/, '') || api.parse(s).root;
+    return windows ? n.toLowerCase() : n;
+  };
+  const ziel = norm(eingabe);
+  const rows = (await getPool().query<{name: string; path: string}>('SELECT name, path FROM projects WHERE path IS NOT NULL')).rows;
+  const treffer = rows.filter(r => api.isAbsolute(r.path) && (
+    ziel === norm(r.path) || ziel.startsWith(norm(r.path).replace(/[\\/]+$/, '') + api.sep)
+  )).sort((a,b) => norm(b.path).length - norm(a.path).length);
+  if (!treffer.length) throw new Error('Kein registriertes Projekt für diesen Pfad. Projekt nicht raten oder automatisch initialisieren.');
+  const beste = treffer.filter(r => norm(r.path).length === norm(treffer[0].path).length);
+  if (new Set(beste.map(r => r.name)).size !== 1) throw new Error('Mehrdeutiger Projektpfad: ' + [...new Set(beste.map(r => r.name))].join(', '));
+  return { project: beste[0].name, path: beste[0].path };
+}
+
+
 /**
  * Registriert ein Projekt fuer den aktuellen Host.
  * UPSERT: aktualisiert path + last_access wenn bereits vorhanden.

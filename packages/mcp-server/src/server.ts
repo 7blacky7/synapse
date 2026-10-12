@@ -347,7 +347,7 @@ export function createServer(): Server {
         // Agent in claimOpenPlanHints: nur bei geaendertem Bestand oder alle 15 Minuten.
         if (typeof args?.project === 'string' && args.project) {
           try {
-            const planHints = await claimOpenPlanHints(args.project, agentId);
+            const planHints = await claimOpenPlanHints(args.project, agentId, Date.now(), !!parsed.agentOnboarding);
             if (planHints) {
               parsed.open_plans = planHints;
               first.text = JSON.stringify(parsed, null, 2);
@@ -359,8 +359,8 @@ export function createServer(): Server {
         // Das jev-Tool selbst ist ausgenommen (seine Antworten tragen den Hinweis schon).
         if (name !== 'jev' && typeof args?.project === 'string' && args.project) {
           try {
-            const { holeJevModusHinweis } = await import('@synapse/core');
-            const jevModus = await holeJevModusHinweis(args.project);
+            const { holeJevSitzungsHinweis } = await import('@synapse/core');
+            const jevModus = await holeJevSitzungsHinweis(args.project, agentId, !!parsed.agentOnboarding);
             if (jevModus) {
               parsed.jev_modus = jevModus;
               first.text = JSON.stringify(parsed, null, 2);
@@ -413,12 +413,13 @@ export function createServer(): Server {
         return { content: [{ type: 'text', text: JSON.stringify(out, null, 2) }] };
       }
 
-      const onboarding = await checkAgentOnboarding(projectName, agentId, undefined, role);
+      const registrierung = name === 'chat' && ['register', 'register_batch'].includes(String(args?.action));
+      const onboarding = result.agentOnboarding || registrierung ? null : await checkAgentOnboarding(projectName, agentId, undefined, role);
       const enhanced: Record<string, unknown> = { ...result };
       if (toolGuideHint) enhanced.tool_guide = toolGuideHint;
 
       // Onboarding-Regeln bei erstem Besuch
-      if (onboarding?.isFirstVisit && onboarding.rules && onboarding.rules.length > 0) {
+      if (onboarding?.isFirstVisit) {
         // ⚠️ HIER WURDEN BIS ZUM 15.08.2026 DREI FELDER VON HAND KOPIERT und alles andere
         // stillschweigend verworfen. Was checkAgentOnboarding zusaetzlich liefert, kam damit
         // NIE beim Agenten an: rolle/rolle_quelle/rolle_hinweis (das Rollen-Protokoll, das
@@ -451,7 +452,7 @@ export function createServer(): Server {
       // Aktive Agenten anzeigen (kompakte Einblendung)
       try {
         const agentList = await listAgents(projectName);
-        if (agentList.success && agentList.agents.length > 0) {
+        if (enhanced.agentOnboarding && agentList.success && agentList.agents.length > 0) {
           const others = agentList.agents.filter(a => a.id !== agentId);
           if (others.length > 0) {
             // ⚠️ KEINE OBJEKTLISTE MEHR (15.08.2026, User-Vorgabe). Hier stand zusaetzlich ein

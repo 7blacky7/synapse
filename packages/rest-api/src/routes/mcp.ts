@@ -1913,8 +1913,11 @@ type RestAgentRole = 'koordinator' | 'spezialist' | 'subagent';
 
 async function attachRestOnboarding(
   result: unknown,
-  args: Record<string, unknown>
+  args: Record<string, unknown>,
+  toolName?: string,
 ): Promise<unknown> {
+  // Registrierung bereitet den Start vor; index_stats liefert dessen Regeln genau einmal.
+  if (toolName === 'chat' && ['register', 'register_batch'].includes(String(args.action))) return result;
   const agentId = typeof args.agent_id === 'string' ? args.agent_id : undefined;
   const project = typeof args.project === 'string' ? args.project : undefined;
   // ⚠️ OHNE agent_id GAB ES BISHER WORTLOS NICHTS (Punkt 2.4, 02.08.2026).
@@ -1934,97 +1937,16 @@ async function attachRestOnboarding(
   // Nur plain Objects erweiterbar — Arrays/Primitives unveraendert durchreichen
   if (typeof result !== 'object' || result === null || Array.isArray(result)) return result;
 
+  if ('agentOnboarding' in result) return result;
   try {
-    const isFirstVisit = await registerAgent(project, agentId, REST_INSTANCE_ID);
-    if (!isFirstVisit) return result;
-
-    // ⚠️ EINE Rollenbestimmung fuer beide Wege (Punkt 2.5). Hier stand eine zweite Kopie der
-    // Logik aus onboarding.ts — entstanden am 05.06.2026 mit dem Commit-Text "geteilt mit
-    // MCP-Server". Der Instinkt war richtig, nur wurde kopiert statt geteilt.
-    const { rolleFuerAgent, rollenQuelleKlartext } = await import('@synapse/core');
-    const { rolle: role, quelle: rollenQuelle } =
-      rolleFuerAgent(agentId, typeof args.role === 'string' ? args.role : null);
-
-    // CH-4: Pflichtregel des Channelverwalters sicherstellen, BEVOR die Regeln gelesen werden —
-    // sonst bekaeme er sie erst beim zweiten Onboarding, also praktisch nie.
-    if (role === 'channelverwalter') {
-      const { ensureChannelverwalterRegel } = await import('@synapse/core');
-      await ensureChannelverwalterRegel(project);
-    }
-
-    const allRules = await getOnboardingMemories(project);
-    // Rollenbindung ueber die gemeinsame Erkennung in core (agent-rollen.ts) —
-    // tolerant gegenueber Schreibweisen, und dieselbe Logik wie im lokalen Weg.
-    const { tagVerdacht, baueOnboardingRegelwerk, baueRegelAbrufHinweis } =
-      await import('@synapse/core');
-    for (const m of allRules) {
-      for (const hinweis of tagVerdacht(m.tags)) {
-        console.warn(`[Onboarding] Regel "${m.name}" (${project}): ${hinweis}`);
-      }
-    }
-    // ⚠️ NICHT MEHR ALLES IM VOLLTEXT (Messung 02.08.2026): 34 Regeln, 65.000 Zeichen, und
-    // das bei JEDEM Wechsel der Server-Kennung erneut — in einer Deploy-Nacht fuenfmal.
-    // Volltext behalten die Regeln mit dem Tag "pflicht", der Rest kommt als Auszug mit
-    // Abrufhinweis. Dieselbe Funktion wie im lokalen Weg, damit beide nicht auseinanderlaufen.
-    const { rules, regel_verzeichnis } = baueOnboardingRegelwerk(allRules, project, role);
-    const abrufHinweis = baueRegelAbrufHinweis(
-      project,
-      rules.filter((r: { vollstaendig: boolean }) => !r.vollstaendig).length,
-    );
-
-    // CH-1: Channel-Uebersicht — dieselbe Quelle wie im lokalen Weg.
-    const { baueChannelUebersicht } = await import('@synapse/core');
-    const channelBlock = await baueChannelUebersicht(project, role === 'koordinator');
-
-    // JEV-10 (P7-T28): bei aktivem Abwesenheits-Schalter ein Satz, sonst nichts. Wie im lokalen Weg.
-    const { baueAbwesenheitsHinweis } = await import('@synapse/core');
-    const jevHinweis = await baueAbwesenheitsHinweis(project);
-    const jevBlock = jevHinweis ? { jev_hinweis: jevHinweis } : {};
-
-    // P15-T33 E2: offene Erklaerungs-Faelle (Koordinator: Projekt, sonst nur eigene) als EINE Zeile, sonst nichts.
-    // Wie im lokalen Weg (mcp-server tools/onboarding.ts).
-    const { erklaerungsFaelleZeile } = await import('@synapse/core');
-    const erklZeile = await erklaerungsFaelleZeile({ project, agent_id: agentId, koordinator: role === 'koordinator' });
-    const erklBlock = erklZeile ? { erklaerung_faelle: erklZeile } : {};
-
-    // P15 Nachtrunde B (Entscheidungs-Topf E2): offene Durchsicht autonomer Jev-Entscheidungen, nur Koordinator,
-    // als EINE Zeile, sonst nichts. Wie im lokalen Weg (mcp-server tools/onboarding.ts).
-    const { entscheidungsDurchsichtZeile } = await import('@synapse/core');
-    const durchsichtZeile = await entscheidungsDurchsichtZeile({ project, koordinator: role === 'koordinator' });
-    const durchsichtBlock = durchsichtZeile ? { entscheidungen_durchsicht: durchsichtZeile } : {};
-
-    // Plan-Uebersicht (Task 137fabaf): nur aktive/offene Plaene mit Kurz-ID, keine Tasks.
-    const { planUebersicht } = await import('@synapse/core');
-    const plaene = await planUebersicht(project).catch(() => []);
-    const planBlock = plaene.length > 0 ? { plaene } : {};
-
-    return {
-      ...result,
-      agentOnboarding: {
-        isFirstVisit: true,
-        // ⚠️ DIE ROLLE GEHOERT IN DIE ANTWORT (Punkt 2.3). Sie entschied darueber, welche Regeln
-        // ein Agent sieht, war aber nirgends ablesbar — auch nicht fuer den Agenten selbst.
-        // Steht sie da, faellt eine Fehleinstufung beim Lesen auf statt gar nicht.
-        rolle: role,
-        rolle_quelle: rollenQuelle,
-        rolle_hinweis: rollenQuelleKlartext(
-          role,
-          rollenQuelle,
-          typeof args.role === 'string' ? args.role : null,
-        ),
-        message: '📋 WILLKOMMEN! Als neuer Agent beachte bitte folgende Projekt-Regeln:',
-        ...(abrufHinweis ? { volltext_hinweis: abrufHinweis } : {}),
-        ...jevBlock,
-        ...erklBlock,
-        ...durchsichtBlock,
-        rules,
-        regel_verzeichnis,
-        ...(channelBlock ? { channels: channelBlock } : {}),
-        ...planBlock,
-      },
-    };
-  } catch {
-    // Onboarding darf nie den Tool-Call brechen
+    const { holeAgentOnboarding } = await import('@synapse/core');
+    const agentOnboarding = await holeAgentOnboarding({
+      project, agentId, role: typeof args.role === 'string' ? args.role : undefined,
+      serverInstanceId: REST_INSTANCE_ID,
+    });
+    return agentOnboarding ? { ...result, agentOnboarding } : result;
+  } catch (error) {
+    console.error('[Onboarding] Aufbereitung fehlgeschlagen; beim nächsten Aufruf erneut versuchen:', error);
     return result;
   }
 }
@@ -2087,15 +2009,15 @@ async function attachShellJobHints(
     } catch { /* best effort */ }
   }
   try {
-    const plans = await claimOpenPlanHints(project, effectiveAgentId);
+    const plans = await claimOpenPlanHints(project, effectiveAgentId, Date.now(), 'agentOnboarding' in result);
     if (plans) extras.open_plans = plans;
   } catch { /* best effort */ }
   // JEV-11 (P7-T30): bei aktivem jev-Schalter EINE kurze Zeile, sonst nichts. Das jev-Tool selbst
   // ist ausgenommen (seine Antworten tragen den Hinweis schon).
   if (toolName !== 'jev') {
     try {
-      const { holeJevModusHinweis } = await import('@synapse/core');
-      const jevModus = await holeJevModusHinweis(project);
+      const { holeJevSitzungsHinweis } = await import('@synapse/core');
+      const jevModus = await holeJevSitzungsHinweis(project, effectiveAgentId, 'agentOnboarding' in result);
       if (jevModus) extras.jev_modus = jevModus;
     } catch { /* best effort */ }
   }
@@ -2540,9 +2462,13 @@ async function handleToolCallKern(
           return { success: false, error: 'Action "stop" ist nur ueber MCP Server (stdio) verfuegbar — FileWatcher benoetigt' };
         case 'status': {
           // Akzeptiert path ODER project (Web-KIs uebergeben oft project statt path).
-          const raw = str(args, 'project') ?? str(args, 'path');
-          if (!raw) return { success: false, error: 'project oder path erforderlich' };
-          const projectName = raw.split(/[/\\]/).pop() || raw;
+          const pfad = str(args, 'path');
+          const angegeben = str(args, 'project');
+          if (!pfad && !angegeben) return { success: false, error: 'project oder path erforderlich' };
+          const { ermittleProjektAusPfad } = await import('@synapse/core');
+          const erkannt = pfad ? await ermittleProjektAusPfad(pfad) : undefined;
+          if (erkannt && angegeben && angegeben !== erkannt.project) throw new Error('project passt nicht zum registrierten Pfad.');
+          const projectName = erkannt?.project ?? angegeben!;
           const codeStats = await getProjectStats(projectName);
           // Ehrlicher Status statt nur Code-Stats: registriert? Watcher aktiv?
           // setupPhase kommt seit SETUP-1 aus PostgreSQL (project_setup_status) —
@@ -2554,6 +2480,7 @@ async function handleToolCallKern(
           return {
             success: true,
             stats: codeStats,
+            status: { project: projectName, ...(erkannt ? { path: erkannt.path } : {}) },
             registered_in_db: registry.length > 0,
             registry,
             watcher_active: watcherActive,
@@ -4390,7 +4317,8 @@ async function handleToolCallKern(
         case 'index_stats': {
           const project = reqStr(args, 'project');
           // P15-T32: Sitzungs-Signal ZUERST (ungueltiger Wert wirft, bevor etwas geaendert wird).
-          const sitzungFeld = await wendeSitzungsSignalAn({ agentId: str(args, 'agent_id'), project, sitzung: args.sitzung });
+          const signal = await wendeSitzungsSignalAn({ agentId: str(args, 'agent_id'), project, sitzung: args.sitzung, role: str(args, 'role'), onboarding: bool(args, 'onboarding') });
+          const { agentOnboarding, ...sitzungFeld } = signal ?? {};
           const codeStats = await getProjectStats(project);
           let thoughtsCount = 0;
           let memoriesCount = 0;
@@ -4430,7 +4358,8 @@ async function handleToolCallKern(
               thoughts: { vectors: thoughtsCount },
               memories: { vectors: memoriesCount },
             },
-            ...(sitzungFeld ? { sitzung: sitzungFeld } : {}),
+            ...(signal ? { sitzung: sitzungFeld } : {}),
+            ...(agentOnboarding ? { agentOnboarding } : {}),
           };
         }
         case 'detailed_stats': {
@@ -6213,6 +6142,7 @@ export async function mcpRoutes(fastify: FastifyInstance): Promise<void> {
                         toolArgs,
                       ),
                       toolArgs,
+                      toolName,
                     ),
                     toolName,
                     toolArgs,
@@ -6407,6 +6337,7 @@ export async function mcpRoutes(fastify: FastifyInstance): Promise<void> {
                         toolArgs,
                       ),
                     toolArgs,
+                    toolName,
                   ),
                   toolName,
                   toolArgs,

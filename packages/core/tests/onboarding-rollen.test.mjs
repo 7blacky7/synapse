@@ -99,10 +99,18 @@ function adapter(relative,name,catalog,extra={}){
     erklaerungsFaelleZeile:async()=>null,entscheidungsDurchsichtZeile:async()=>null,
     planUebersicht:async()=>[],
   };
+  // Exercise the production shared loader as well; only storage/lifecycle dependencies are stubbed.
+  const sharedSource=readFileSync(new URL('../src/services/agent-onboarding.ts',import.meta.url),'utf8');
+  const sharedAst=ts.createSourceFile('shared.ts',sharedSource,ts.ScriptTarget.Latest,true);
+  const shared=sharedAst.statements.find(n=>ts.isFunctionDeclaration(n)&&n.name?.text==='holeAgentOnboarding');
+  const sharedText=shared.getText(sharedAst).replace(/^export\s+/,'').replaceAll("import('../index.js')","Promise.resolve(sharedCore)");
+  const sharedJs=ts.transpileModule(sharedText,{compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText;
+  const sharedDeps={...core,sharedCore:core,istOnboardingBekannt:async(project,id)=>seen.has(project+':'+id)};
+  core.holeAgentOnboarding=new Function('deps','const {'+Object.keys(sharedDeps).join(',')+'}=deps;'+sharedJs+';return holeAgentOnboarding')(sharedDeps);
   const text=node.getText(parsed).replace(/^export\s+/,'').replaceAll("import('@synapse/core')","Promise.resolve(core)");
   const compiled=ts.transpileModule(text,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.None}}).outputText;
   const deps={core,...core,REST_INSTANCE_ID:'adapter-test',SERVER_INSTANCE_ID:'adapter-test',
-    console:{error(){},warn(){}},getCachedProjectPath:()=>'/test',
+    console,getCachedProjectPath:()=>'/test',
     ermittleProjektStatus:async()=>({project:'rollen-test'}),getSetupPhase:async()=> 'ready',
     ensureHandoffRules:async()=>{},...extra,
   };
@@ -113,6 +121,7 @@ for(const catalog of [memories, [memories[5],memories[6]]]){
     const rest=adapter('../../rest-api/src/routes/mcp.ts','attachRestOnboarding',catalog);
     const stdio=adapter('../../mcp-server/src/tools/onboarding.ts','checkAgentOnboarding',catalog);
     const args={project:'rollen-test',agent_id:'sol-3-adapter-'+role,role};
+    assert.equal((await rest({success:true},{...args,action:'register'},'chat')).agentOnboarding,undefined,'chat registration waits for explicit start');
     const a=(await rest({success:true},args)).agentOnboarding;
     const b=await stdio(args.project,args.agent_id,'/test',role);
     assert(a&&b,'Both adapters emit onboarding');
