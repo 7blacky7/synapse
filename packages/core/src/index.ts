@@ -1483,3 +1483,4 @@ export async function initSynapse(
   console.error(`[Synapse] Projekt "${projectName}" bereit`);
   return true;
 }
+export { getProjectRecordById } from './services/project-record-ids.js';
