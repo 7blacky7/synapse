@@ -743,6 +743,7 @@ export {
   reapOrphanedRunningJobs,
   aktuellerDateistand,
   claimShellJobHints,
+  markShellJobSeenForToolCall,
   pruneShellJobNotices,
   CANCEL_PROTECTED_MS,
   EXPIRE_PENDING_AFTER_SEC,

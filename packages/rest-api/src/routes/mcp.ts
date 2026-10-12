@@ -186,6 +186,7 @@ import {
   markChannelRead,
   claimUnreadChannelHints,
   claimShellJobHints,
+  markShellJobSeenForToolCall,
   claimOpenPlanHints,
   // Inbox
   postToInbox,
@@ -2006,6 +2007,12 @@ async function attachShellJobHints(
     || Array.isArray(result)) {
     return result;
   }
+  if (toolName === 'shell' && effectiveAgentId) {
+    try {
+      await markShellJobSeenForToolCall(str(args, 'action'), args, result, effectiveAgentId);
+    } catch { /* Best-effort: der Ergebnis-Hinweis darf die Antwort nie brechen */ }
+  }
+
   const project = str(args, 'project');
   if (!project) return result;
 

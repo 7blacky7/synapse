@@ -248,6 +248,72 @@ export async function claimShellJobHints(
  * Die Tabelle waechst sonst mit (Jobs x Agenten) und wird nie kleiner.
  * ON DELETE CASCADE deckt nur geloeschte Jobs ab — Jobs bleiben aber stehen.
  */
+const SHELL_JOB_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Vermerkt, dass ein Agent das Ergebnis eines Shell-Tool-Aufrufs bereits gesehen hat.
+ * Start und Abschluss bleiben getrennt, damit ein gelesener laufender Job spaeter
+ * trotzdem genau eine Fertigmeldung ausloesen kann.
+ */
+export async function markShellJobSeenForToolCall(
+  actionValue: unknown,
+  args: Record<string, unknown>,
+  resultValue: unknown,
+  agentId: string | null | undefined,
+): Promise<void> {
+  if (!agentId || typeof resultValue !== 'object' || resultValue === null || Array.isArray(resultValue)) return;
+
+  const action = typeof actionValue === 'string' && actionValue ? actionValue : 'exec';
+  const result = resultValue as Record<string, unknown>;
+  let jobId: string | undefined;
+  let streamId: string | undefined;
+
+  if (action === 'exec') {
+    const status = typeof result.status === 'string' ? result.status : '';
+    if (!status || status === 'pending' || status === 'running' || status === 'running_background') return;
+    if (typeof result.id === 'string' && SHELL_JOB_ID_PATTERN.test(result.id)) jobId = result.id;
+  } else if (action === 'get' || action === 'log') {
+    if (result.success !== true || typeof args.id !== 'string' || !SHELL_JOB_ID_PATTERN.test(args.id)) return;
+    jobId = args.id;
+  } else if (action === 'get_stream') {
+    if (typeof result.error === 'string' || typeof args.stream_id !== 'string' || !args.stream_id) return;
+    streamId = args.stream_id;
+  } else {
+    return;
+  }
+
+  try {
+    const pool = getPool();
+    if (jobId) {
+      await pool.query(
+        `INSERT INTO shell_job_notices (job_id, agent_id, kind)
+         SELECT id, $2, CASE WHEN status IN ('pending', 'running') THEN 'start' ELSE 'done' END
+         FROM shell_jobs WHERE id = $1::uuid
+         ON CONFLICT DO NOTHING`,
+        [jobId, agentId],
+      );
+    } else if (streamId) {
+      await pool.query(
+        `INSERT INTO shell_job_notices (job_id, agent_id, kind)
+         SELECT id, $2, CASE WHEN status IN ('pending', 'running') THEN 'start' ELSE 'done' END
+         FROM shell_jobs WHERE stream_id = $1
+         ORDER BY created_at DESC
+         LIMIT 1
+         ON CONFLICT DO NOTHING`,
+        [streamId, agentId],
+      );
+    }
+  } catch (error) {
+    // Seen-Marker ist Best-effort und darf die Shell-Antwort nie brechen.
+    console.error('[ShellHints] Gelesener Job konnte nicht vermerkt werden:', error);
+  }
+}
+
+/**
+ * Raeumt Zustellvermerke weg, deren Job aelter ist als das Fertig-Fenster.
+ * Die Tabelle waechst sonst mit (Jobs x Agenten) und wird nie kleiner.
+ * ON DELETE CASCADE deckt nur geloeschte Jobs ab — Jobs bleiben aber stehen.
+ */
 export async function pruneShellJobNotices(maxAgeHours: number = 24): Promise<number> {
   try {
     const res = await getPool().query(

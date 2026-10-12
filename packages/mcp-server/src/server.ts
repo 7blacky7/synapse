@@ -26,6 +26,7 @@ import {
 import {
   claimUnreadChannelHints,
   claimShellJobHints,
+  markShellJobSeenForToolCall,
   claimOpenPlanHints,
   getPendingEventHints,
   TOOL_GUIDES,
@@ -333,6 +334,17 @@ export function createServer(): Server {
         // Koordination — wer sieht, dass ein anderer gerade baut, baut nicht
         // nochmal. shell selbst ist ausgenommen: dessen Antworten sprechen
         // ohnehin ueber Jobs. Best-effort, darf die Antwort nie brechen.
+        if (name === 'shell') {
+          try {
+            await markShellJobSeenForToolCall(
+              typeof args?.action === 'string' ? args.action : undefined,
+              (args ?? {}) as Record<string, unknown>,
+              parsed,
+              agentId,
+            );
+          } catch { /* Seen-Marker duerfen eine Tool-Antwort nie brechen */ }
+        }
+
         if (name !== 'shell' && typeof args?.project === 'string' && args.project) {
           try {
             const shellHints = await claimShellJobHints(args.project, agentId, 3);
