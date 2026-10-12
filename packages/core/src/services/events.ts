@@ -33,6 +33,8 @@ export type EventType =
   | 'TEAM_DISCUSSION'
   | 'ANNOUNCEMENT'
   | 'PLAN_READY'
+  // P6-T31: wartender Agent bittet den Reservierenden um Plan oder Freigabe.
+  | 'PLAN_WAITING'
   // V1 (29.09.2026): Nachfolge-Events eines gemeinsamen Plans, persistent bis ack.
   | 'PLAN_COMMITTED'
   | 'PLAN_CANCELLED'
@@ -250,6 +252,23 @@ function truncateEventSummary(value: string, maxLength = 80): string {
 }
 
 function summarizePendingEvent(event: AgentEvent): string {
+  if (event.eventType === 'PLAN_WAITING' && event.payload) {
+    try {
+      const payload = JSON.parse(event.payload) as Record<string, unknown>;
+      const waitingAgent = String(payload.waiting_agent ?? event.sourceId);
+      const sharedFiles = Array.isArray(payload.shared_files)
+        ? payload.shared_files.filter((value): value is string => typeof value === 'string')
+        : [];
+      const fileHint = sharedFiles.length === 1
+        ? sharedFiles[0]
+        : sharedFiles.length > 1
+          ? `${sharedFiles.length} Dateien`
+          : 'Dateien';
+      return truncateEventSummary(`Agent ${waitingAgent} wartet auf deinen Plan oder Freigabe fuer ${fileHint}`);
+    } catch {
+      // Kaputtes Payload darf den Antwort-Hook nicht brechen.
+    }
+  }
   if (event.eventType === 'PLAN_READY' && event.payload) {
     try {
       const payload = JSON.parse(event.payload) as Record<string, unknown>;

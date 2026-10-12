@@ -379,6 +379,8 @@ export interface CoeditWaitGroup {
   wait_token: string;
   retry_after_seconds: number;
   expires_at: string;
+  /** P6-T31: konkrete Recovery, wenn die Primaerreservierung noch keinen Zielplan hat. */
+  handlungsanweisung?: string;
   /** Gesetzt, wenn der Wait in einen schon offenen gemeinsamen Plan fuehrt: Ziel fuer coedit_add. */
   target_plan_id?: string;
 }
@@ -2791,6 +2793,49 @@ export async function planBatch(args: {
         );
         const targetPlanIds = uniqueStrings(groupPaths.map((filePath) => sharedPlanByPath.get(filePath) ?? ''));
         const targetPlanId = targetPlanIds.length === 1 && targetPlanIds[0] ? targetPlanIds[0] : reservationTarget;
+        if (!targetPlanId && ownerAgentId) {
+          await emitEventOnce({
+            project: args.project,
+            eventType: 'PLAN_WAITING',
+            priority: 'normal',
+            scope: `agent:${primaryAgent}`,
+            sourceId: ownerAgentId,
+            payload: JSON.stringify({
+              wait_token: waitRow.wait_token,
+              waiting_agent: ownerAgentId,
+              primary_agent: primaryAgent,
+              shared_files: groupPaths,
+              expires_at: asIso(waitRow.expires_at),
+              actions: {
+                plan: {
+                  tool: 'files',
+                  action: 'plan',
+                  project: args.project,
+                  agent_id: primaryAgent,
+                  file_paths: groupPaths,
+                  ops_hint: 'Eigene konkrete Ops fuer diese Datei(en) einsetzen; dadurch wird der wartende Beitrag an deinen Plan gebunden.',
+                },
+                release: {
+                  tool: 'files',
+                  action: 'reservation_release',
+                  project: args.project,
+                  agent_id: primaryAgent,
+                  file_path: groupPaths.length === 1 ? groupPaths[0] : groupPaths,
+                },
+                waiting_agent: {
+                  tool: 'files',
+                  action: 'coedit_add',
+                  project: args.project,
+                  agent_id: ownerAgentId,
+                  wait_token: waitRow.wait_token,
+                  plan_id: 'aus PLAN_READY',
+                },
+              },
+            }),
+            requiresAck: true,
+            dedupeKey: `plan-waiting:${waitRow.wait_token}`,
+          }, client);
+        }
         if (targetPlanId) {
           // Befund 875d6a8c (a): Ziel bekannt -> Wait sofort binden (nicht nur im Event nennen).
           await client.query(
@@ -2798,12 +2843,19 @@ export async function planBatch(args: {
             [waitRow.wait_token, targetPlanId],
           );
         }
+        const handlungsanweisung = targetPlanId ? undefined : [
+          `Kein Zielplan vorhanden. ${primaryAgent}: Lege mit deinen eigenen Ops einen Plan auf den gemeldeten Pfaden an (${JSON.stringify(groupPaths)}); dadurch wird ${ownerAgentId} gebunden und kann per coedit_add mit diesem wait_token beitragen.`,
+          `Oder gib nicht mehr benoetigte Pfade frei: files(action:"reservation_release", project:${JSON.stringify(args.project)}, agent_id:${JSON.stringify(primaryAgent)}, file_path:${JSON.stringify(groupPaths.length === 1 ? groupPaths[0] : groupPaths)}).`,
+          `${ownerAgentId}: pruefe den Status hoechstens alle 60 Sekunden mit files(action:"plan_status", project:${JSON.stringify(args.project)}, agent_id:${JSON.stringify(ownerAgentId)}, plan_id:${JSON.stringify(planRow.id)}, wait_seconds:50) oder files(action:"shared_plan_status", project:${JSON.stringify(args.project)}, agent_id:${JSON.stringify(ownerAgentId)}, wait_token:${JSON.stringify(waitRow.wait_token)}, wait_seconds:50).`,
+          `Wenn der Wait expired ist, plane dieselben Ops erneut; der leere Traeger ${planRow.id} wird wiederverwendet. Vorher nicht canceln.`,
+        ].join(' ');
         coeditWaits.push({
           primary_agent: primaryAgent,
           shared_files: groupPaths,
           wait_token: waitRow.wait_token,
           retry_after_seconds: retryAfterSeconds,
           expires_at: asIso(waitRow.expires_at),
+          ...(handlungsanweisung ? { handlungsanweisung } : {}),
           ...(targetPlanId ? { target_plan_id: targetPlanId } : {}),
         });
       }
