@@ -25,6 +25,7 @@
 import type { PoolClient } from 'pg';
 import { getPool } from '../db/client.js';
 import { eventsOffenBedingungSql } from './event-sichtbarkeit.js';
+import { darfKoordinatorOderUser } from './rollen-pruefung.js';
 
 export type EventType =
   | 'WORK_STOP'
@@ -165,7 +166,10 @@ export async function emitEventOnce(
 }
 
 /**
- * Quittiert ein Event durch einen Agenten
+ * Eigener Scope/all: normale Quittierung. Fremder Scope: nur Koordinator/User
+ * oder ohne aktive Zielsession, immer mit Pflichtgrund in reaction.
+ * Stellvertretung schreibt den ACK fuer den Empfaenger, damit sein Event geschlossen
+ * ist; reaction vermerkt Akteur und Grund. Pruefung und Schreiben in einer SQL-Anweisung.
  */
 export async function acknowledgeEvent(
   eventId: number,
@@ -175,14 +179,32 @@ export async function acknowledgeEvent(
   const pool = getPool();
 
   const result = await pool.query(
-    `INSERT INTO agent_event_acks (event_id, agent_id, acked_at, reaction)
-     VALUES ($1, $2, NOW(), $3)
-     ON CONFLICT (event_id, agent_id) DO UPDATE SET acked_at = NOW(), reaction = COALESCE($3, agent_event_acks.reaction)
+    `WITH ziel AS (
+       SELECT e.*, CASE WHEN e.scope LIKE 'agent:%' THEN substring(e.scope FROM 7) END AS empfaenger
+       FROM agent_events e WHERE e.id = $1
+     )
+     INSERT INTO agent_event_acks (event_id, agent_id, acked_at, reaction)
+     SELECT e.id, COALESCE(e.empfaenger, $2), NOW(),
+       CASE WHEN e.scope = 'all' OR e.empfaenger = $2 THEN $3 ELSE $5 END
+     FROM ziel e
+     WHERE e.scope = 'all' OR e.empfaenger = $2
+       OR (e.empfaenger <> '' AND $5::text IS NOT NULL AND (
+         $4::boolean OR NOT EXISTS (
+           SELECT 1 FROM agent_sessions s
+           WHERE s.id = e.empfaenger AND s.project = e.project AND s.status = 'active'
+         )
+       ))
+     ON CONFLICT (event_id, agent_id) DO UPDATE
+       SET acked_at = NOW(), reaction = COALESCE(EXCLUDED.reaction, agent_event_acks.reaction)
      RETURNING event_id, agent_id, acked_at, reaction`,
-    [eventId, agentId, reaction ?? null]
+    [eventId, agentId, reaction ?? null, darfKoordinatorOderUser(agentId),
+      reaction?.trim() ? `stellvertretend durch ${agentId}; Grund: ${reaction.trim()}` : null]
   );
 
   const row = result.rows[0];
+  if (!row) {
+    throw new Error(`Event #${eventId} nicht gefunden oder Agent "${agentId}" darf es nicht quittieren. Stellvertretend nur als Koordinator/User oder ohne aktive Zielsession; Grund in reaction ist Pflicht.`);
+  }
   const ack: EventAck = {
     eventId: row.event_id,
     agentId: row.agent_id,
