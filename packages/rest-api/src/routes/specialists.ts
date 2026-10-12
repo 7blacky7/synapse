@@ -390,14 +390,16 @@ export async function specialistRoutes(fastify: FastifyInstance): Promise<void> 
     }
   });
 
-  // P10-T41: Herkunft kommt ausschließlich aus dem geprüften UI-Zugang.
+  // P10-T41: Herkunft aus bestehender Web-UI-Sitzung bzw. Tray-/Daemon-Verbindung.
+  // Tray und Daemon teilen bewusst den Service-Token; nur der Tray ruft user-post auf.
   fastify.post<{ Params: { name: string; channel: string }; Body: { content?: string } }>(
     '/api/projects/:name/channels/:channel/user-post', async (request, reply) => {
       const bearer = /^Bearer\s+(.+)$/i.exec(request.headers.authorization ?? '')?.[1];
       const principal = bearer ? await validateToken(bearer) : null;
-      const kanal = principal?.kind === 'session'
-        ? principal.scope === 'ui:tray' ? 'tray' : principal.scope === null ? 'web-ui-chat' : null
-        : null;
+      const kanal = principal?.kind === 'session' && principal.scope === null
+        ? 'web-ui-chat'
+        : principal?.kind === 'service' && (principal.scope === 'daemon' || principal.scope?.startsWith('daemon:'))
+          ? 'tray' : null;
       if (!kanal) return reply.code(403).send({ success: false, error: { message: 'User-Nachrichten benötigen den angemeldeten Tray- oder Web-UI-Zugang; sender/agent_id ersetzen ihn nicht.' } });
       const content = typeof request.body?.content === 'string' ? request.body.content.trim() : '';
       if (!content) return reply.code(400).send({ success: false, error: { message: 'content ist erforderlich' } });

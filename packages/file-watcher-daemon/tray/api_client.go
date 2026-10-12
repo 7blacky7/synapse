@@ -671,47 +671,11 @@ type apiVerifyResponse struct {
 	Issuer    string `json:"-"`
 }
 
-// Tray-Chat-Zugang getrennt vom Daemon speichern und an den Aussteller binden.
-type trayUserSession struct {
-	Token string `json:"token"`
-	Issuer string `json:"issuer"`
-}
-
-func trayUserSessionPath() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil { return "", err }
-	return filepath.Join(home, ".synapse", "tray", "user-session.json"), nil
-}
-
-func verbindeTrayUser(code string) error {
-	var r apiVerifyResponse
-	if err := apiPinnedRequest(http.MethodPost, apiDefaultTunnel, "/api/auth/tray-session", map[string]string{"code": code}, "", &r); err != nil { return err }
-	if !r.Success || r.Token == "" { return fmt.Errorf("Tray-Zugang wurde nicht ausgestellt") }
-	path, err := trayUserSessionPath()
-	if err != nil { return err }
-	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil { return err }
-	data, err := json.Marshal(trayUserSession{Token: r.Token, Issuer: apiDefaultTunnel})
-	if err != nil { return err }
-	f, err := os.CreateTemp(filepath.Dir(path), ".user-session-*")
-	if err != nil { return err }
-	tmp := f.Name()
-	defer os.Remove(tmp)
-	if _, err = f.Write(data); err != nil { f.Close(); return err }
-	if err = f.Close(); err != nil { return err }
-	return os.Rename(tmp, path)
-}
-
+// Tray-Chat nutzt dieselbe bestehende Verbindung wie die übrigen Tray-Aufrufe.
 func sendeTrayUserNachricht(project, channel, content string) error {
-	path, err := trayUserSessionPath()
-	if err != nil { return err }
-	data, err := os.ReadFile(path)
-	if err != nil { return fmt.Errorf("Bitte einmal erneut „Mit Synapse verbinden“ öffnen, um den Chat-Zugang einzurichten. Die Nachricht bleibt erhalten.") }
-	var session trayUserSession
-	if err := json.Unmarshal(data, &session); err != nil { return fmt.Errorf("Chat-Zugang unlesbar; bitte erneut mit Synapse verbinden") }
-	if session.Token == "" || session.Issuer != apiDefaultTunnel { return fmt.Errorf("Chat-Zugang fehlt oder gehört zu einem anderen Server; bitte erneut mit Synapse verbinden") }
 	var result struct { Success bool `json:"success"` }
-	err = apiPinnedRequest(http.MethodPost, session.Issuer, "/api/projects/"+urlSeg(project)+"/channels/"+urlSeg(channel)+"/user-post", map[string]string{"content": content}, session.Token, &result)
-	if err != nil { return fmt.Errorf("Nachricht nicht gesendet: %w. Bei abgelaufenem Zugang erneut mit Synapse verbinden", err) }
+	_, err := apiRequestBody(http.MethodPost, "/api/projects/"+urlSeg(project)+"/channels/"+urlSeg(channel)+"/user-post", map[string]string{"content": content}, &result)
+	if err != nil { return fmt.Errorf("Nachricht nicht gesendet: %w", err) }
 	if !result.Success { return fmt.Errorf("Nachricht wurde nicht bestätigt") }
 	return nil
 }

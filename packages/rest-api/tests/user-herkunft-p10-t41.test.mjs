@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
 import {randomUUID} from 'node:crypto';
+import {readFileSync,readdirSync} from 'node:fs';
+import {fileURLToPath} from 'node:url';
+import {join} from 'node:path';
 const u=new URL(process.env.DATABASE_URL||'http://ungueltig');
 assert.equal(u.port,'5433');assert.equal(u.pathname,'/synapse_test');
 const {getPool}=await import('../../core/dist/db/client.js');
@@ -19,7 +22,7 @@ try {
  await pool.query("INSERT INTO specialist_channels(name,project,created_by) VALUES('test',$1,'sol-3')",[project]);
  assert.equal(darfKoordinatorOderUser('koordinator'),true);
  assert.equal(darfKoordinatorOderUser('user'),false,'freier Name user ist kein Userausweis');
- const web=await token('session',null),tray=await token('session','ui:tray'),daemon=await token('service','daemon:tray');
+ const web=await token('session',null),tray=await token('service','daemon:tray'),daemon=tray;
  for(const bearer of [web,tray]) {
   const res=await post(bearer,{sender:'koordinator',agent_id:'user',herkunft:{kanal:'anders'}});
   assert.equal(res.statusCode,200,res.body);
@@ -33,7 +36,12 @@ try {
  assert.equal((await post(access.token)).statusCode,403);
  const expired=await auth.issueSessionToken('ui:tray',-1000);tokens.push(expired.token);
  assert.equal((await post(expired.token)).statusCode,401);
- const denied=await post(daemon);assert.equal(denied.statusCode,403,denied.body);
+ for(const [kind,scope] of [['service','compute-node:test'],['service','mcp:tools'],['service','daemon-fake'],['session','ui:tray']]) {
+  assert.equal((await post(await token(kind,scope),{kanal:'tray',sender:'user'})).statusCode,403,kind+':'+scope);
+ }
+ for(const scope of ['daemon','daemon:host']) {
+  assert.equal((await post(await token('service',scope))).statusCode,200,scope);
+ }
  const fake=await post(daemon,{sender:'user',metadata:{herkunft:{akteur:'user',kanal:'tray'}}},'post');
  assert.equal(fake.statusCode,200,fake.body);
  await postChannelMessage(project,'test','user','Gefälschter Metadatensatz',{herkunft:{akteur:'user',kanal:'tray'},sonst:'bleibt'});
@@ -53,12 +61,27 @@ try {
  ]);
  assert.deepEqual(contexts,[true,false],'Userkontext bleibt auf eigenen Aufruf beschränkt');
  const login=await app.inject({method:'POST',url:'/api/auth/tray-session',headers:{authorization:'Bearer '+daemon},payload:{}});
- assert.equal(login.statusCode,401,'Daemon-Zugang kann keine Tray-Identität ausstellen');
+ assert.equal(login.statusCode,404,'Separater Tray-Login ist entfernt');
  await auth.revokeToken(tray);
  assert.equal((await post(tray)).statusCode,401);
  process.env.SYNAPSE_AUTH_DISABLED='1';
- assert.equal((await post(daemon)).statusCode,403,'Bootstrap gewährt keine Userherkunft');
+ assert.equal((await post('ungueltig')).statusCode,403,'Bootstrap gewährt ohne gültigen Zugang keine Userherkunft');
  delete process.env.SYNAPSE_AUTH_DISABLED;
+ const daemonRoot=fileURLToPath(new URL('../../file-watcher-daemon-ts/src/',import.meta.url));
+ let checked=0, daemonAnchor=false;
+ function pruefeDaemon(dir) {
+  for(const e of readdirSync(dir,{withFileTypes:true})) {
+   const p=join(dir,e.name);
+   if(e.isDirectory())pruefeDaemon(p);
+   else if(e.name.endsWith('.ts')) {
+    const source=readFileSync(p,'utf8');checked++;
+    if(e.name==='main.ts')daemonAnchor=true;
+    assert.ok(!source.includes('user-post'),'Daemon darf keine User-Nachrichten senden: '+p);
+   }
+  }
+ }
+ pruefeDaemon(daemonRoot);
+ assert.ok(daemonAnchor&&checked>10,'Realer TS-Daemon mit Einstieg geprüft');
  console.log('P10-T41 PASS: UI/Tray, Herkunft gespeichert, Agent/Spoof abgewiesen, Feed/Push, Widerruf/Bootstrap');
 } finally {
  delete process.env.SYNAPSE_AUTH_DISABLED;

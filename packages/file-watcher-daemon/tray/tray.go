@@ -1806,9 +1806,6 @@ func zeigeVerbindungsFenster() {
 			if err == nil {
 				err = speichereApiToken(antwort.Token)
 			}
-			if err == nil {
-				err = verbindeTrayUser(code)
-			}
 
 			var meldung string
 			if err != nil {
