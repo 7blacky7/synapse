@@ -358,42 +358,30 @@ export const memoryNachzug: NachzugQuelle = {
 /**
  * Liest ein Memory nach Name
  */
+interface MemoryZeile {
+  id: string; project: string; name: string; content: string; category: Memory['category'];
+  tags: string[] | null; created_at: Date | string; updated_at: Date | string;
+}
+
+/** PG enthält das ganze Memory; Qdrant enthält nur abgeleitete Stücke. */
+function memoryAusZeile(row: MemoryZeile): Memory {
+  return {
+    id: row.id, project: row.project, name: row.name, content: row.content,
+    category: row.category, tags: row.tags ?? [], linkedPaths: extractFilePaths(row.content),
+    createdAt: row.created_at instanceof Date ? row.created_at.toISOString() : row.created_at,
+    updatedAt: row.updated_at instanceof Date ? row.updated_at.toISOString() : row.updated_at,
+  };
+}
+
 export async function getMemoryByName(
   project: string,
   name: string
 ): Promise<Memory | null> {
-  try {
-    const collectionName = COLLECTIONS.projectMemories(project);
-    const results = await scrollVectors<MemoryPayload>(
-      collectionName,
-      {
-        must: [
-          { key: 'project', match: { value: project } },
-          { key: 'name', match: { value: name } },
-        ],
-      },
-      1
-    );
-
-    if (results.length === 0) {
-      return null;
-    }
-
-    const point = results[0];
-    return {
-      id: point.id as string,
-      project: point.payload.project,
-      name: point.payload.name,
-      content: point.payload.content,
-      category: point.payload.category as Memory['category'],
-      tags: point.payload.tags,
-      linkedPaths: point.payload.linkedPaths || [],
-      createdAt: point.payload.createdAt,
-      updatedAt: point.payload.updatedAt,
-    };
-  } catch {
-    return null;
-  }
+  const { rows } = await getPool().query<MemoryZeile>(
+    'SELECT id, project, name, content, category, tags, created_at, updated_at FROM memories WHERE project = $1 AND name = $2 ORDER BY updated_at DESC, id LIMIT 1',
+    [project, name],
+  );
+  return rows.length === 0 ? null : memoryAusZeile(rows[0]);
 }
 
 /**
@@ -776,49 +764,36 @@ function payloadToMemory(point: { id: string; payload: MemoryPayload }): Memory 
 export async function getRulesForNewAgent(
   project: string
 ): Promise<Memory[]> {
-  return listMemories(project, 'rules');
+  const { rows } = await getPool().query<MemoryZeile>(
+    "SELECT id, project, name, content, category, tags, created_at, updated_at FROM memories WHERE project = $1 AND category = 'rules' ORDER BY name, updated_at DESC, id",
+    [project],
+  );
+  return rows.map(memoryAusZeile);
+}
+
+/** Regeln samt ausgegliedertem Wissen für das verlustfreie Onboarding-Verzeichnis. */
+export async function getOnboardingMemories(project: string): Promise<Memory[]> {
+  const { rows } = await getPool().query<MemoryZeile>(
+    "SELECT id, project, name, content, category, tags, created_at, updated_at FROM memories WHERE project = $1 AND (category = 'rules' OR (category = 'documentation' AND 'onboarding-wissen' = ANY(tags))) ORDER BY name, updated_at DESC, id",
+    [project],
+  );
+  return rows.map(memoryAusZeile);
 }
 
 /**
  * Liest mehrere Memories anhand ihrer Namen (Batch)
- * Nutzt Qdrant should-Filter fuer einen einzelnen Call statt N Einzel-Abfragen
+ * Liest vollständige Memories aus PG in einer Abfrage, unabhängig vom Vektor-Nachzug.
  */
 export async function getMemoriesByNames(
   project: string,
   names: string[]
 ): Promise<Memory[]> {
   if (names.length === 0) return [];
-
-  const collectionName = COLLECTIONS.projectMemories(project);
-
-  // Qdrant should-Filter: project MUST match AND (name1 OR name2 OR ...)
-  const nameFilters = names.map(name => ({
-    key: 'name',
-    match: { value: name },
-  }));
-
-  const results = await scrollVectors<MemoryPayload>(
-    collectionName,
-    {
-      must: [
-        { key: 'project', match: { value: project } },
-      ],
-      should: nameFilters,
-    },
-    names.length  // Limit = Anzahl angefragter Names
+  const { rows } = await getPool().query<MemoryZeile>(
+    'SELECT DISTINCT ON (name) id, project, name, content, category, tags, created_at, updated_at FROM memories WHERE project = $1 AND name = ANY($2::text[]) ORDER BY name, updated_at DESC, id',
+    [project, names],
   );
-
-  return results.map(point => ({
-    id: point.id as string,
-    project: point.payload.project,
-    name: point.payload.name,
-    content: point.payload.content,
-    category: point.payload.category as Memory['category'],
-    tags: point.payload.tags,
-    linkedPaths: point.payload.linkedPaths || [],
-    createdAt: point.payload.createdAt,
-    updatedAt: point.payload.updatedAt,
-  }));
+  return rows.map(memoryAusZeile);
 }
 
 /**

@@ -7,6 +7,7 @@
 
 // P6-T27: optionale Ghost-Schatten, Standardabfragen unveraendert.
 export { mitCodeIntelSchatten, schattenCacheStatistik } from './services/code-intel-schatten.js';
+export type { RegelVerzeichnis } from './services/agent-rollen.js';
 
 // Konfiguration
 export { loadConfig, getConfig, resetConfig } from './config.js';
@@ -565,6 +566,7 @@ export {
   readMemoryWithRelatedCode,
   findMemoriesForPath,
   getRulesForNewAgent,
+  getOnboardingMemories,
   // Documents
   extractDocument,
   extractPDF,
@@ -653,6 +655,7 @@ export {
   erlaubteRollen,
   regelSichtbarFuer,
   baueOnboardingRegeln,
+  baueOnboardingRegelwerk,
   baueRegelAbrufHinweis,
   rolleFuerAgent,
   rollenQuelleKlartext,

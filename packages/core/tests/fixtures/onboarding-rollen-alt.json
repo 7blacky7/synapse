@@ -1,0 +1,1942 @@
+{
+  "task": "P7-T38",
+  "captured_at": "2026-10-12T13:05:19Z",
+  "token_method": "estimate ceil(JSON chars / 4), not tokenizer tokens",
+  "old_onboarding": {
+    "koordinator": {
+      "entries": 112,
+      "names": 66,
+      "chars": 96791,
+      "estimated_tokens": 24198,
+      "sha256": "df0ca39c0fcb2bbae592c3c51183609a883d7bbd4d176f940740b00027a48b56"
+    },
+    "spezialist": {
+      "entries": 85,
+      "names": 43,
+      "chars": 82305,
+      "estimated_tokens": 20577,
+      "sha256": "5e896f35b06c52dd37422bdec51f76f5dbd0c00e58fc9ead3bffa066035ade32"
+    },
+    "subagent": {
+      "entries": 89,
+      "names": 45,
+      "chars": 89952,
+      "estimated_tokens": 22488,
+      "sha256": "eba52f96e7a605b2b0756f3e6ce714ca9de321555f96cb6f9ac80f52ceba2f47"
+    },
+    "channelverwalter": {
+      "entries": 68,
+      "names": 39,
+      "chars": 65975,
+      "estimated_tokens": 16494,
+      "sha256": "b6de41d635c6751623851f2b2b809e83c411141f95294dccdbb490ca1c053f88"
+    }
+  },
+  "memories": [
+    {
+      "id": "54679de1-1225-4be3-9b0e-510353d77675",
+      "name": "agenten-koennen-bilder-selbst-sehen",
+      "category": "rules",
+      "tags": [
+        "bilder",
+        "view_image",
+        "codex",
+        "abnahme",
+        "arbeitsweise",
+        "gemessen",
+        "ki-browser"
+      ],
+      "created_at": "2026-08-29T09:01:45.917Z",
+      "updated_at": "2026-08-29T09:01:45.917Z",
+      "chars": 2521,
+      "sha256": "5849624478fce6be8365824a9da5883942b0440a389556d197b3de11f2eb7266"
+    },
+    {
+      "id": "12e9ca5c-e9fd-42f5-a806-803f9d6a1f65",
+      "name": "agent-skill-pflicht",
+      "category": "rules",
+      "tags": [
+        "agent-onboarding",
+        "pflicht"
+      ],
+      "created_at": "2026-04-05T22:01:20.992Z",
+      "updated_at": "2026-04-05T22:01:20.992Z",
+      "chars": 385,
+      "sha256": "f7bd190c0ed2f88890fe9de1ac25d66326ff952bdee1b95c71c18f7ff5ed3e43"
+    },
+    {
+      "id": "9017bafa-4517-41ff-b0e8-cb9937b67a87",
+      "name": "arbeitsregeln-koordinator-durcharbeiten",
+      "category": "rules",
+      "tags": [
+        "arbeitsregeln",
+        "koordinator",
+        "durcharbeiten",
+        "selbst-review",
+        "coordinator-only"
+      ],
+      "created_at": "2026-05-25T00:36:56.597Z",
+      "updated_at": "2026-06-14T20:57:32.900Z",
+      "chars": 537,
+      "sha256": "0313cbbccb9eb61eb06b15f1c08e27d4b9490129e1a77689b83143eea7461fe8"
+    },
+    {
+      "id": "2e83e003-50e8-4d23-965a-9a5758fe01b1",
+      "name": "commit-konventionen",
+      "category": "rules",
+      "tags": [
+        "setup"
+      ],
+      "created_at": "2026-03-15T06:58:06.911Z",
+      "updated_at": "2026-03-15T06:58:06.911Z",
+      "chars": 365,
+      "sha256": "9bfd63ebe63addff15cd86344d37b0f674406889653aaec584b4bd89623b6a78"
+    },
+    {
+      "id": "b6417739-a98c-46f8-92c3-6a58f5ab85ba",
+      "name": "context-handoff-regeln",
+      "category": "rules",
+      "tags": [
+        "context-handoff",
+        "prototyp",
+        "coordinator-only"
+      ],
+      "created_at": "2026-03-16T17:10:11.590Z",
+      "updated_at": "2026-03-16T17:10:11.590Z",
+      "chars": 1176,
+      "sha256": "dbfe52029dca31e0870743c14f61f4bb4c7761f7dbb287971030956d682f2728"
+    },
+    {
+      "id": "9d59766d-ae7f-4b4d-b333-5eca5ec3eda3",
+      "name": "deploy-synapse-api-intern-tool",
+      "category": "rules",
+      "tags": [
+        "deploy",
+        "intern-tool",
+        "P14",
+        "env",
+        "koordinator-only"
+      ],
+      "created_at": "2026-10-11T07:52:04.607Z",
+      "updated_at": "2026-10-11T07:52:16.701Z",
+      "chars": 1137,
+      "sha256": "038475d80ad233918d44b491b43b997a53f1eacfab83505cf64638e7a4130289"
+    },
+    {
+      "id": "9914e77a-f6da-4788-aa11-3b6a1feb4ea1",
+      "name": "deploy-synapse-api-projektdb-mount",
+      "category": "rules",
+      "tags": [
+        "pflicht",
+        "deploy",
+        "unraid",
+        "synapse-api",
+        "projekt-db"
+      ],
+      "created_at": "2026-09-29T13:36:05.858Z",
+      "updated_at": "2026-09-29T13:36:05.858Z",
+      "chars": 1349,
+      "sha256": "97bf2b2c348285895ba3b05907c4df8387c3b02aeddbd23dcd7ece63009b170a"
+    },
+    {
+      "id": "5f70eeb5-12ad-411b-b2c1-c94de4b19290",
+      "name": "deploy-synapse-api-unraid",
+      "category": "rules",
+      "tags": [
+        "pflicht",
+        "tray",
+        "deploy",
+        "docker",
+        "port-mapping",
+        "spezialist-only",
+        "webui",
+        "synapse-api",
+        "unraid",
+        "subagent-only",
+        "koordinator-only",
+        "ngrok"
+      ],
+      "created_at": "2026-06-14T17:04:43.920Z",
+      "updated_at": "2026-09-29T14:03:11.709Z",
+      "chars": 11395,
+      "sha256": "d85d736f44c681ddb5c278f7176ef257aee615265ce66fed762756753beedf56"
+    },
+    {
+      "id": "6aedacf6-27f1-498a-8265-dfbf4e4ffa9e",
+      "name": "falle-alter-mcp-stand-verwirft-neue-parameter",
+      "category": "rules",
+      "tags": [
+        "aus-channel",
+        "channel:rueckfragen-chv-n3",
+        "channels",
+        "deploy",
+        "falle",
+        "koordinator-only",
+        "mcp",
+        "parameter",
+        "spezialist-only",
+        "stand:2026-08-15",
+        "subagent-only"
+      ],
+      "created_at": "2026-08-15T14:22:22.885Z",
+      "updated_at": "2026-08-15T14:22:22.885Z",
+      "chars": 2660,
+      "sha256": "679d15f3bea280f308d1e67d5661f3b0f78a05db900e4b5e1e010889bf5f6df1"
+    },
+    {
+      "id": "53fb7121-7fbc-4739-91e9-f68b25887c6f",
+      "name": "feedback-synapse-tools-statt-curl",
+      "category": "rules",
+      "tags": [
+        "feedback",
+        "workflow",
+        "synapse-tools"
+      ],
+      "created_at": "2026-04-21T22:51:58.732Z",
+      "updated_at": "2026-04-25T18:59:02.922Z",
+      "chars": 1700,
+      "sha256": "10ea6c675faaff8dc49dd778789ff0a4eabfdf3e60309be371b1b483ee929d1c"
+    },
+    {
+      "id": "f2c2ee8d-ff27-4acb-a9d4-6051cef1cb55",
+      "name": "fehler-direkt-edit-dann-files-doppelt",
+      "category": "rules",
+      "tags": [
+        "files",
+        "fehler",
+        "koordinator"
+      ],
+      "created_at": "2026-09-29T20:45:24.447Z",
+      "updated_at": "2026-09-29T20:45:24.447Z",
+      "chars": 608,
+      "sha256": "f7bcff2115d971ad0c025d5d74a5d330d4c7ec34193b8ad6358d1e3ab156c495"
+    },
+    {
+      "id": "32bf12a7-c9f8-4622-8911-180454e6b931",
+      "name": "fehler-git-stash-im-synapse-projekt",
+      "category": "rules",
+      "tags": [
+        "git",
+        "fehler",
+        "files",
+        "sync"
+      ],
+      "created_at": "2026-09-29T22:48:39.848Z",
+      "updated_at": "2026-09-29T22:48:39.848Z",
+      "chars": 599,
+      "sha256": "d36e7cf4924a773163e31e9c97dc76e73cb7f1e6d572760ed80c3f4c25a66881"
+    },
+    {
+      "id": "5014813d-75a2-475d-bdcd-224e4c6d13d7",
+      "name": "handoff-cc-pid-update-reminder",
+      "category": "rules",
+      "tags": [
+        "handoff",
+        "cc-send",
+        "specialists",
+        "reminder",
+        "coordinator-only"
+      ],
+      "created_at": "2026-05-03T01:46:55.288Z",
+      "updated_at": "2026-06-14T20:57:42.062Z",
+      "chars": 903,
+      "sha256": "502cffd085c68b498c0c3dea3db6c86f032c5f0b394d3166060e98f2e8fa2e0a"
+    },
+    {
+      "id": "f54c11b8-d99e-41c8-a3ff-df77838f4ceb",
+      "name": "koordinator-cc-send-pid-sprecher-regel",
+      "category": "rules",
+      "tags": [
+        "coordinator-only",
+        "cc-send",
+        "pid",
+        "sprecher",
+        "koordinator",
+        "regel",
+        "session-wechsel"
+      ],
+      "created_at": "2026-06-14T22:06:23.848Z",
+      "updated_at": "2026-06-14T22:08:12.515Z",
+      "chars": 1230,
+      "sha256": "65228995f32da7562562539533f2dfb5876df873fd093243ad0e9a7d0ea73747"
+    },
+    {
+      "id": "1427bfaf-a30a-4f06-865a-e05548e65470",
+      "name": "koordinator-lesson-purge-vs-stop-2026-05-03",
+      "category": "rules",
+      "tags": [
+        "lessons-learned",
+        "specialist-lifecycle",
+        "koordinator",
+        "coordinator-only"
+      ],
+      "created_at": "2026-05-03T15:21:49.991Z",
+      "updated_at": "2026-06-14T20:57:34.796Z",
+      "chars": 1329,
+      "sha256": "5f22a500c7911e26b941f37878395bb1e1768f7802913aca6242b7e07608c54d"
+    },
+    {
+      "id": "371a6808-2765-4785-a0a9-3636595dad27",
+      "name": "koordinator-respawn-regel",
+      "category": "rules",
+      "tags": [
+        "koordinator",
+        "respawn",
+        "pid",
+        "channel",
+        "regel",
+        "coordinator-only"
+      ],
+      "created_at": "2026-05-06T23:30:05.079Z",
+      "updated_at": "2026-06-14T20:56:11.037Z",
+      "chars": 1614,
+      "sha256": "5b2b69fd8cbe21bbdfedb1c09cef6568dee06d5a7a0342c39cd74bc2f56a6e64"
+    },
+    {
+      "id": "dddf8483-df7c-49b2-ad73-1692d9360611",
+      "name": "koordinator-subagent-history-check-und-autoloop-regel",
+      "category": "rules",
+      "tags": [
+        "koordinator",
+        "subagent",
+        "loop",
+        "history-check",
+        "coordinator-only",
+        "files-tool"
+      ],
+      "created_at": "2026-06-14T22:56:11.154Z",
+      "updated_at": "2026-06-14T22:56:11.154Z",
+      "chars": 1119,
+      "sha256": "4cec324e00df01bf0739d5da898e93362371a5b829d5009c16c83ff52647e88f"
+    },
+    {
+      "id": "a142863e-185e-4c1c-822c-fe21b925e4ee",
+      "name": "nacht-session-loop-multi-parser",
+      "category": "rules",
+      "tags": [
+        "nacht-session",
+        "loop",
+        "parser",
+        "autonom",
+        "coordinator-only"
+      ],
+      "created_at": "2026-03-27T00:39:05.150Z",
+      "updated_at": "2026-06-14T20:57:39.184Z",
+      "chars": 1064,
+      "sha256": "a5768093bed3d152e3a5576708a37bd5069ba793d4336ed6757ba91041865fee"
+    },
+    {
+      "id": "2c78f096-7496-4fb8-95ab-0a327b1943ba",
+      "name": "nacht-session-loop-regeln",
+      "category": "rules",
+      "tags": [
+        "nacht-session",
+        "loop-regeln",
+        "2026-03-26",
+        "coordinator-only"
+      ],
+      "created_at": "2026-03-25T23:33:45.144Z",
+      "updated_at": "2026-06-14T20:57:37.721Z",
+      "chars": 758,
+      "sha256": "5848fe4f51fff573192b976d494e80d1f5b3bf807cbe076dacd48c661f86fe68"
+    },
+    {
+      "id": "939e8b5b-c403-4356-962a-18287fec0e19",
+      "name": "projekt-regeln",
+      "category": "rules",
+      "tags": [
+        "setup"
+      ],
+      "created_at": "2026-03-15T06:58:00.031Z",
+      "updated_at": "2026-07-28T08:54:55.891Z",
+      "chars": 2483,
+      "sha256": "e91961a05d9ff20893cd3c8a04616ec838e58b4675a159fbead73dce96f9510e"
+    },
+    {
+      "id": "548fa563-4083-4bfe-a150-34e370b300d5",
+      "name": "regel-agenten-koennen-nicht-warten",
+      "category": "rules",
+      "tags": [
+        "pflicht",
+        "koordinator-only",
+        "warte-loop",
+        "shell",
+        "agenten",
+        "wrapper",
+        "gemessen"
+      ],
+      "created_at": "2026-08-26T19:22:29.819Z",
+      "updated_at": "2026-08-26T19:22:29.819Z",
+      "chars": 2550,
+      "sha256": "e6ef34ea25c8b0e287d5fcc7b3a9f0e44d5625bf7e718462127bedf3d8c296d9"
+    },
+    {
+      "id": "b299d3da-92b6-4ccb-a282-2c4805f97c88",
+      "name": "regel-alte-nacht-branches-ignorieren",
+      "category": "rules",
+      "tags": [
+        "regel",
+        "branches",
+        "wichtig",
+        "coordinator-only"
+      ],
+      "created_at": "2026-03-26T22:02:43.888Z",
+      "updated_at": "2026-06-14T20:57:40.709Z",
+      "chars": 620,
+      "sha256": "61bb740aa8693f302d7f377cefced18113949328dc40b391428e55d69c3ac121"
+    },
+    {
+      "id": "2fdbb501-2d64-4227-a0fe-13e2c933642d",
+      "name": "regel-anweisungen-an-agenten-im-channel",
+      "category": "rules",
+      "tags": [
+        "pflicht",
+        "channel",
+        "kommunikation",
+        "koordinator-only"
+      ],
+      "created_at": "2026-09-29T18:52:05.084Z",
+      "updated_at": "2026-09-29T18:52:05.084Z",
+      "chars": 489,
+      "sha256": "776e1d56a7c506100c02120308505b30b5fc7fbb91ada35da58efd8cc40a5fb3"
+    },
+    {
+      "id": "809e9e4b-26f8-4119-912c-7bb887742e09",
+      "name": "regel-auto-respawn-spezialisten",
+      "category": "rules",
+      "tags": [
+        "regel",
+        "auto-respawn",
+        "spezialisten",
+        "koordinator",
+        "coordinator-only"
+      ],
+      "created_at": "2026-04-12T20:42:06.743Z",
+      "updated_at": "2026-06-14T20:57:36.321Z",
+      "chars": 992,
+      "sha256": "8b303613b17bc1a4b8effc41bb1fa79615c4edbcd1469f2a30cac7e9d37f5db1"
+    },
+    {
+      "id": "4dbaa2db-830e-4474-ab5b-c7d4ef9378fb",
+      "name": "regel-branch-pro-idee",
+      "category": "rules",
+      "tags": [
+        "regel",
+        "branching",
+        "nacht-session",
+        "autonome-arbeit"
+      ],
+      "created_at": "2026-03-25T23:49:42.865Z",
+      "updated_at": "2026-03-25T23:49:42.865Z",
+      "chars": 662,
+      "sha256": "4889d07e7d9102e967f9a5477197c724c8936d00cae16ed73284be666c76c705"
+    },
+    {
+      "id": "f4ee3e74-0495-4c62-96e1-87f80a480783",
+      "name": "regel-build-exit-code-pruefen",
+      "category": "rules",
+      "tags": [
+        "werkzeug-falle",
+        "build",
+        "verifikation",
+        "tsc",
+        "shell"
+      ],
+      "created_at": "2026-07-28T12:36:29.297Z",
+      "updated_at": "2026-07-28T12:36:29.297Z",
+      "chars": 3316,
+      "sha256": "3840636e265eed0f6c4f4cb4f30102b04c650b7092430506c600557bda2834ac"
+    },
+    {
+      "id": "88d5ee63-05e3-4759-8f25-46b667a27ed1",
+      "name": "regel-channelverwalter",
+      "category": "rules",
+      "tags": [
+        "channelverwalter-only",
+        "pflicht",
+        "channels",
+        "aufraeumen"
+      ],
+      "created_at": "2026-08-15T12:36:15.965Z",
+      "updated_at": "2026-08-15T13:56:15.181Z",
+      "chars": 8012,
+      "sha256": "0f4cb9661de3924e8c16ecc102fd433c70c54f72063e0b486658ada7f72995cc"
+    },
+    {
+      "id": "77dafa8e-f859-4646-9e4d-e8ffdb5b3e64",
+      "name": "regel-coedit-reservierung-und-ablauf",
+      "category": "rules",
+      "tags": [
+        "aus-channel",
+        "channel:coedit",
+        "coedit",
+        "files",
+        "koordination",
+        "reservierung",
+        "stand:2026-08-15"
+      ],
+      "created_at": "2026-08-03T00:23:17.274Z",
+      "updated_at": "2026-09-29T12:14:41.894Z",
+      "chars": 2720,
+      "sha256": "510681ead4941801f74c5635d7c70e8f62a5d273ecd64d5a7be19c13d7f4861b"
+    },
+    {
+      "id": "b025bc1f-eff0-4d2f-9a9a-7cbf32a51d56",
+      "name": "regel-context-handoff-nur-eigenes-bash",
+      "category": "rules",
+      "tags": [
+        "handoff",
+        "shell",
+        "pflicht",
+        "werkzeug-falle",
+        "koordinator-only"
+      ],
+      "created_at": "2026-07-28T12:35:47.210Z",
+      "updated_at": "2026-07-28T12:35:47.210Z",
+      "chars": 1608,
+      "sha256": "8624743709b50669c4bb942473e4bc0e61f076a36863041a4eaf51d8bf9bb3da"
+    },
+    {
+      "id": "02f22787-366b-4f3c-9e6c-1bcb2ddee9a7",
+      "name": "regel-deploy-rollback-staende-begrenzen",
+      "category": "rules",
+      "tags": [
+        "regel",
+        "deploy",
+        "unraid",
+        "docker",
+        "aufraeumen",
+        "zugang"
+      ],
+      "created_at": "2026-10-11T13:12:38.442Z",
+      "updated_at": "2026-10-12T10:10:38.789Z",
+      "chars": 1989,
+      "sha256": "230032ff624ee2ad14c492c9abc2e4963406687e882cb8613f07f8de7f846beb"
+    },
+    {
+      "id": "b11415ea-fafe-4b07-943d-774087ca0e9b",
+      "name": "regel-deploy-schema-sql-probelauf",
+      "category": "rules",
+      "tags": [
+        "subagent-only",
+        "koordinator-only",
+        "schema",
+        "pflicht",
+        "gemessen",
+        "deploy",
+        "spezialist-only",
+        "sql"
+      ],
+      "created_at": "2026-08-02T20:49:01.536Z",
+      "updated_at": "2026-10-11T12:51:02.489Z",
+      "chars": 2475,
+      "sha256": "23fbd041b64a910cc31d45907e703a428d3af9b97c56da2ea28f1de9dcaad8c3"
+    },
+    {
+      "id": "8f166852-d654-4cb8-8ee3-3e9aa52cb888",
+      "name": "regel-entwurf-ist-offener-plan",
+      "category": "rules",
+      "tags": [
+        "files",
+        "plan",
+        "entwurf",
+        "scratchpad",
+        "pflicht"
+      ],
+      "created_at": "2026-10-11T06:15:00.790Z",
+      "updated_at": "2026-10-11T07:01:31.685Z",
+      "chars": 1761,
+      "sha256": "ab02c9cfd5e4be11f2526d9da729ef4ab9ac9c98538264a81aac5bfd208d732a"
+    },
+    {
+      "id": "955743fe-92ba-42b9-8550-5ed4a4c6167b",
+      "name": "regel-files-plan-timeout",
+      "category": "rules",
+      "tags": [
+        "files",
+        "pflicht",
+        "datenintegritaet",
+        "timeout",
+        "plan",
+        "pitfall"
+      ],
+      "created_at": "2026-07-25T16:09:11.452Z",
+      "updated_at": "2026-07-25T16:52:51.027Z",
+      "chars": 1642,
+      "sha256": "75b4b9c631d273e3c8a2da0f1fdd7704c53b14b7e95214c4fda7352a7754507f"
+    },
+    {
+      "id": "2cca86be-2076-4b98-b298-25f670b32f06",
+      "name": "regel-files-tool-dollar-falle",
+      "category": "rules",
+      "tags": [
+        "einheiten",
+        "dollar-falle",
+        "spezialist-only",
+        "files",
+        "regel",
+        "preview",
+        "subagent-only",
+        "koordinator-only"
+      ],
+      "created_at": "2026-07-25T14:53:25.497Z",
+      "updated_at": "2026-08-15T12:39:20.796Z",
+      "chars": 4454,
+      "sha256": "225ced026693a2d5eedbfde77ea10c2160c035fffa8487330e672efb981ad919"
+    },
+    {
+      "id": "ed887f6e-3098-4192-9006-1a7b0ba5dd2e",
+      "name": "regel-jev-erkenntnisse-sammeln",
+      "category": "rules",
+      "tags": [
+        "jev-erkenntnis",
+        "modellwahl",
+        "regel"
+      ],
+      "created_at": "2026-09-29T22:11:08.654Z",
+      "updated_at": "2026-09-29T22:11:08.654Z",
+      "chars": 1082,
+      "sha256": "bbe70c0e58ef4a630459bdad022d88406db28ee106ec0168f0306543c8dd7800"
+    },
+    {
+      "id": "ef6bface-0912-42f3-9c7d-2ebf11c9928e",
+      "name": "regel-keine-context-panik",
+      "category": "rules",
+      "tags": [
+        "rules",
+        "context",
+        "handoff",
+        "arbeitsweise"
+      ],
+      "created_at": "2026-07-28T14:03:10.602Z",
+      "updated_at": "2026-07-28T14:03:10.602Z",
+      "chars": 1754,
+      "sha256": "08f11059ff795346ecab618b2988221926a176afde617547a1f659408de55648"
+    },
+    {
+      "id": "90c81987-32c5-40fe-aa99-a621bd3c0d74",
+      "name": "regel-keine-festverdrahteten-modellwerte",
+      "category": "rules",
+      "tags": [
+        "regel",
+        "embedding",
+        "dimension",
+        "modell",
+        "pflicht",
+        "P12"
+      ],
+      "created_at": "2026-10-11T09:43:57.333Z",
+      "updated_at": "2026-10-11T09:43:57.333Z",
+      "chars": 1464,
+      "sha256": "24281eeae7293d7bf41fb4c08f7565069bcf5190df732627560350fc64fce9be"
+    },
+    {
+      "id": "6b7cc6d6-22e8-44c0-862c-0f06cb3a2455",
+      "name": "regel-keine-fremde-agent-id",
+      "category": "rules",
+      "tags": [
+        "agent_id",
+        "rechte",
+        "deploy",
+        "proben",
+        "arbeitsweise"
+      ],
+      "created_at": "2026-10-11T16:26:49.808Z",
+      "updated_at": "2026-10-11T16:26:49.808Z",
+      "chars": 677,
+      "sha256": "2f6f5c0d812d4b7d5f58b5325a4eb475c55803a786bc59d441b5bdbea5852136"
+    },
+    {
+      "id": "fd2af81f-35a1-4499-9a98-afb8516c6d40",
+      "name": "regel-keine-unsichtbarkeit-agent-id",
+      "category": "rules",
+      "tags": [
+        "rules",
+        "audit",
+        "agent-id",
+        "tray"
+      ],
+      "created_at": "2026-05-03T18:25:58.936Z",
+      "updated_at": "2026-05-03T18:25:58.936Z",
+      "chars": 1038,
+      "sha256": "06a564850ec1f4d50cc98730039d7aa687fa18ed6fbd436d3658472dda0c5d30"
+    },
+    {
+      "id": "2827d006-f32e-46bb-8034-a77ee21994a2",
+      "name": "regel-keine-vfs-drift",
+      "category": "rules",
+      "tags": [
+        "drift",
+        "rules",
+        "architecture-invariante",
+        "spezialist-only",
+        "race",
+        "subagent-only",
+        "koordinator-only"
+      ],
+      "created_at": "2026-05-10T15:00:17.383Z",
+      "updated_at": "2026-08-15T12:39:20.788Z",
+      "chars": 6117,
+      "sha256": "94a1bae67133298a93002d9985c8c82653af7d89ed5e21e4d9ca0b6ced4604df"
+    },
+    {
+      "id": "2a644875-564f-4d5e-9731-cf2d9ff5c7f2",
+      "name": "regel-kein-github-push-bis-projekt-steht",
+      "category": "rules",
+      "tags": [
+        "git",
+        "github",
+        "push",
+        "regel",
+        "koordinator"
+      ],
+      "created_at": "2026-09-29T23:17:52.803Z",
+      "updated_at": "2026-09-29T23:19:32.033Z",
+      "chars": 753,
+      "sha256": "7cdc4bae24da0b3422e0aaf5f94fa1d431be1b0503541da8f48d031329a9c66b"
+    },
+    {
+      "id": "3d8b38a7-a4a2-4897-8d38-fa85ef506313",
+      "name": "regel-kein-kontext-jammern",
+      "category": "rules",
+      "tags": [
+        "regel",
+        "user-vorgabe",
+        "koordinator-only",
+        "kontext",
+        "arbeitshaltung"
+      ],
+      "created_at": "2026-08-01T21:23:02.604Z",
+      "updated_at": "2026-08-01T21:23:02.604Z",
+      "chars": 1658,
+      "sha256": "e7b91d0b3168d7f8dc0e802ee4762145fe0708513a436d66b82740660441e25d"
+    },
+    {
+      "id": "70a20fc3-878a-4528-8295-5722c0ef112a",
+      "name": "regel-koordinator-kontextwarnung-handoff-und-cc-send-pid",
+      "category": "rules",
+      "tags": [
+        "koordinator-only",
+        "handoff",
+        "cc-send",
+        "kontext"
+      ],
+      "created_at": "2026-09-29T20:35:51.232Z",
+      "updated_at": "2026-09-29T20:35:51.232Z",
+      "chars": 1001,
+      "sha256": "d6c55682e66b11c165f972f4c9632f841f45c8fdd20b038981af3640bee8b771"
+    },
+    {
+      "id": "0f260db0-d408-4f86-9fe7-e6c65ba90ca6",
+      "name": "regel-multi-file-edits-files-plan",
+      "category": "rules",
+      "tags": [
+        "files",
+        "workflow",
+        "koordinator",
+        "user-vorgabe"
+      ],
+      "created_at": "2026-07-18T06:53:01.153Z",
+      "updated_at": "2026-07-18T06:53:01.153Z",
+      "chars": 1110,
+      "sha256": "a6c97a8c2ab8fe35bf311d8170662a57f1b610ddbed39fd0c8b3ed5c23bd30ae"
+    },
+    {
+      "id": "0e6d5a9c-809b-4fa8-a60a-f0655e2fea50",
+      "name": "regel-nullzusagen-brauchen-anker",
+      "category": "rules",
+      "tags": [
+        "pflicht",
+        "tests",
+        "fixtures",
+        "muster-stille-teilantwort",
+        "parser",
+        "anker"
+      ],
+      "created_at": "2026-08-26T18:39:36.982Z",
+      "updated_at": "2026-08-26T18:39:36.982Z",
+      "chars": 2582,
+      "sha256": "7be964454de70057e74c891d02f7ef63540d6ef2c64f4670964b1e407d508761"
+    },
+    {
+      "id": "d43f85f6-a151-437b-b03e-bfa11ecc5e5e",
+      "name": "regel-postgres-ist-die-wahrheit-qdrant-ist-abgeleitet",
+      "category": "rules",
+      "tags": [
+        "regel",
+        "user-vorgabe",
+        "architektur-invariante",
+        "postgres",
+        "qdrant",
+        "pflicht"
+      ],
+      "created_at": "2026-08-15T14:28:20.775Z",
+      "updated_at": "2026-08-15T14:28:20.775Z",
+      "chars": 2325,
+      "sha256": "941002ab26ece13b0021c609ac44d8a7156435bbbabcbf29e6e5ea2976a65e02"
+    },
+    {
+      "id": "c9ddcbba-9c56-44a6-b82a-0c609b2011b4",
+      "name": "regel-rueckbau-ueber-files-restore",
+      "category": "rules",
+      "tags": [
+        "pflicht",
+        "files",
+        "restore",
+        "rueckbau",
+        "versionierung"
+      ],
+      "created_at": "2026-09-29T19:48:30.518Z",
+      "updated_at": "2026-09-29T19:48:30.518Z",
+      "chars": 692,
+      "sha256": "dead4e75d10cbba1f8663f0876ee9a5a1280e2118cf1c3721c04969d228953e7"
+    },
+    {
+      "id": "7c290a5e-30b0-4760-b1ba-08a42d13d7c5",
+      "name": "regel-schema-60s-und-keine-sperre-mit-client-warten",
+      "category": "rules",
+      "tags": [
+        "pflicht",
+        "schema",
+        "deploy",
+        "sperren",
+        "tests"
+      ],
+      "created_at": "2026-09-29T11:13:00.244Z",
+      "updated_at": "2026-09-29T11:13:00.244Z",
+      "chars": 1317,
+      "sha256": "d5ab762416b73ef868fe31818d7315cc01238b866cb3de33ffbb328e040ecb59"
+    },
+    {
+      "id": "f1a964e4-63f7-4e8d-91bd-3e583715aa49",
+      "name": "regel-scratchpad-nur-fuer-wegwerf",
+      "category": "rules",
+      "tags": [
+        "scratchpad",
+        "files",
+        "plan",
+        "arbeitsweise",
+        "user-vorgabe"
+      ],
+      "created_at": "2026-10-11T15:56:52.262Z",
+      "updated_at": "2026-10-11T15:59:15.085Z",
+      "chars": 1060,
+      "sha256": "af254bb923a9bd558719f37d2e7e0fa84fdfc6ebe23fc991ca95ffc65bad1e4e"
+    },
+    {
+      "id": "3241c508-915e-44ff-8e38-cc2bf1ee26fe",
+      "name": "regel-spawn-prompt-minimal-task-id",
+      "category": "rules",
+      "tags": [
+        "koordinator-only",
+        "spawn",
+        "subagent",
+        "prompt",
+        "kontext"
+      ],
+      "created_at": "2026-10-12T12:36:11.665Z",
+      "updated_at": "2026-10-12T12:36:11.665Z",
+      "chars": 648,
+      "sha256": "5102038c7e69777991584adbe0ad583339f0af95c08f9073f0d57080335a4f7b"
+    },
+    {
+      "id": "a7cdb488-e99c-4a0d-a2c1-527f893789d0",
+      "name": "regel-spezialisten-skills-knapp",
+      "category": "rules",
+      "tags": [
+        "koordinator-only",
+        "spezialisten",
+        "skills",
+        "kontext"
+      ],
+      "created_at": "2026-09-29T22:28:50.188Z",
+      "updated_at": "2026-09-29T22:28:50.188Z",
+      "chars": 544,
+      "sha256": "437c1a5db9b68f8e1c5ee3fa1f1aade82fd801162da9532e9f2aa1af5fa06e46"
+    },
+    {
+      "id": "b018a449-faf2-48dd-951e-ede3b9e8fc94",
+      "name": "regel-subagenten-statt-spezialisten",
+      "category": "rules",
+      "tags": [
+        "regel",
+        "subagenten",
+        "onboarding",
+        "skills",
+        "files",
+        "plan",
+        "thought",
+        "koordinator-only"
+      ],
+      "created_at": "2026-06-20T16:08:04.878Z",
+      "updated_at": "2026-07-25T22:49:31.034Z",
+      "chars": 1930,
+      "sha256": "ad8a79d2c678316b71e0eba19150c2681237ffa06ef9acdf7e62cfab80dd6a07"
+    },
+    {
+      "id": "d0e420f6-4dd6-4f0c-bad4-76b12fa5e2c8",
+      "name": "regel-subagenten-synapse-tools-vollnutzung",
+      "category": "rules",
+      "tags": [
+        "subagent-only"
+      ],
+      "created_at": "2026-04-25T18:40:53.946Z",
+      "updated_at": "2026-06-14T20:58:12.181Z",
+      "chars": 1949,
+      "sha256": "3db0124ec05b37243c8d91bf59aa6f5ed742b82c1cf786efa1d0592da882acbb"
+    },
+    {
+      "id": "f368cc23-003a-47a3-8ab8-45c3b89b282a",
+      "name": "regel-subagent-kontext-watch-und-uebergabe",
+      "category": "rules",
+      "tags": [
+        "regel",
+        "subagenten",
+        "kontext",
+        "handoff",
+        "koordinator-only",
+        "plugin"
+      ],
+      "created_at": "2026-10-11T13:13:04.600Z",
+      "updated_at": "2026-10-11T13:13:04.600Z",
+      "chars": 1532,
+      "sha256": "eaafd2bb107619ab618d258678fa29847aa66db335026c7d495a950c98027e74"
+    },
+    {
+      "id": "aaae68bc-778f-4623-b81b-568055259616",
+      "name": "regel-testfreigabe-intern-und-testkorpus",
+      "category": "rules",
+      "tags": [
+        "regel",
+        "testen",
+        "intern",
+        "parser-testkorpus",
+        "freigabe"
+      ],
+      "created_at": "2026-10-11T11:59:26.324Z",
+      "updated_at": "2026-10-11T11:59:26.324Z",
+      "chars": 733,
+      "sha256": "249f6e76987d61e9b6663493347553c5bc1a0cafecd0474ee7d7d335c8e66200"
+    },
+    {
+      "id": "eb5b7829-974a-4c19-b3ef-5563a2e8b91a",
+      "name": "regel-tests-immer-per-task-agent",
+      "category": "rules",
+      "tags": [
+        "koordinator-only",
+        "tests",
+        "agenten",
+        "arbeitsweise"
+      ],
+      "created_at": "2026-08-15T09:57:36.530Z",
+      "updated_at": "2026-08-15T09:59:22.192Z",
+      "chars": 1940,
+      "sha256": "159f2ef5163b612920be98acf23ac73da7769a780841215dba36eaa959576d68"
+    },
+    {
+      "id": "24eb5057-44c8-4cfb-8058-70750d22afb8",
+      "name": "regel-unmarkierte-attrappen-lecken",
+      "category": "rules",
+      "tags": [
+        "fehlerklasse",
+        "mock",
+        "attrappe",
+        "web-ui",
+        "gemessen",
+        "datenintegritaet",
+        "pflicht"
+      ],
+      "created_at": "2026-08-29T10:00:09.689Z",
+      "updated_at": "2026-08-29T10:00:09.689Z",
+      "chars": 2797,
+      "sha256": "8fd952bb5543ac5d485e1d604cb0a6446f814d6276b82a7fc6211f8d3bd5f178"
+    },
+    {
+      "id": "9c90a301-ac2b-4f90-ad4f-778a1921cfb4",
+      "name": "regel-webrecherche-ueber-ki-browser",
+      "category": "rules",
+      "tags": [
+        "ki-browser",
+        "recherche",
+        "webfetch",
+        "quellen"
+      ],
+      "created_at": "2026-10-12T11:41:45.009Z",
+      "updated_at": "2026-10-12T11:44:57.617Z",
+      "chars": 1273,
+      "sha256": "3996d4cd1e36c58492fdf78821c93e09184c078f4838fcfaa24618d153f2d728"
+    },
+    {
+      "id": "2f9bfc63-47b7-4b75-9acd-72ac2e4dfb50",
+      "name": "regel-wiederaufnahme-ueber-synapse-history",
+      "category": "rules",
+      "tags": [
+        "regel",
+        "wiederaufnahme",
+        "crash-recovery",
+        "history",
+        "agenten",
+        "pflicht"
+      ],
+      "created_at": "2026-10-11T10:05:26.194Z",
+      "updated_at": "2026-10-11T10:05:26.194Z",
+      "chars": 1223,
+      "sha256": "1a5f4be781faa9320b42dc99e593faf9bebf06c9b4f062758db7fd96f3f8135c"
+    },
+    {
+      "id": "5c56ed3b-a096-4451-b001-de6e6498c858",
+      "name": "regel-zuruecksetzen-nur-ueber-files-restore",
+      "category": "rules",
+      "tags": [
+        "regel",
+        "pflicht",
+        "files",
+        "git",
+        "restore"
+      ],
+      "created_at": "2026-10-11T11:13:09.841Z",
+      "updated_at": "2026-10-11T11:13:09.841Z",
+      "chars": 859,
+      "sha256": "92a98f10fb654df0806978f093d2b7286ddd9928cd913852e759e3b4c23d90fb"
+    },
+    {
+      "id": "7486c7be-9390-47c9-9964-307cd8aa7671",
+      "name": "rest-api-tool-einschraenkungen",
+      "category": "rules",
+      "tags": [
+        "rules",
+        "rest-api",
+        "tools",
+        "web-ki",
+        "live-verifiziert"
+      ],
+      "created_at": "2026-03-27T13:41:38.377Z",
+      "updated_at": "2026-08-02T12:26:06.475Z",
+      "chars": 6259,
+      "sha256": "26d873fb36f0feef4d3fbd93c598b47fff27081cb21689d9313a92b58af09583"
+    },
+    {
+      "id": "a2d26e3c-219f-4088-b1ee-910f0c1095e2",
+      "name": "specialist-lifecycle-rules",
+      "category": "rules",
+      "tags": [
+        "specialist",
+        "lifecycle",
+        "rules",
+        "coordinator-only"
+      ],
+      "created_at": "2026-05-03T10:38:16.382Z",
+      "updated_at": "2026-08-02T09:52:33.552Z",
+      "chars": 3789,
+      "sha256": "196b110ca6c4cad348b1189d427458bad7ad31c9808c104129c46deb4aef7980"
+    },
+    {
+      "id": "614b2892-10b2-4fb2-a290-fee50e38b49b",
+      "name": "subagent-tooling-regel",
+      "category": "rules",
+      "tags": [
+        "subagent",
+        "tooling",
+        "code-intel",
+        "files",
+        "shell",
+        "regel",
+        "pflicht",
+        "subagent-only"
+      ],
+      "created_at": "2026-06-14T14:12:01.873Z",
+      "updated_at": "2026-06-14T20:58:10.481Z",
+      "chars": 3380,
+      "sha256": "b49a72b9bd08598ba0246dd057b28b9f918ccc7b1c52da60903519dbfb304f76"
+    },
+    {
+      "id": "80e26753-d7db-4f20-9a56-0eabad2a10fd",
+      "name": "synapse-projekt-regeln-kurzfassung",
+      "category": "rules",
+      "tags": [
+        "projekt-regeln",
+        "pflicht",
+        "2026-08-02"
+      ],
+      "created_at": "2026-08-02T16:18:15.970Z",
+      "updated_at": "2026-08-02T16:18:15.970Z",
+      "chars": 1586,
+      "sha256": "34f48b079f53cde4edfaef58e5b4e9e90a0f4b343c39d61ab67deae76ffa5dff"
+    },
+    {
+      "id": "26c10f7a-d42e-4f34-b97c-bc9732fdcd94",
+      "name": "team-governance-architektur-quelle-codebase-guide",
+      "category": "rules",
+      "tags": [
+        "governance",
+        "architektur",
+        "quelle",
+        "epistemologie",
+        "2026-04-13"
+      ],
+      "created_at": "2026-04-12T22:56:22.719Z",
+      "updated_at": "2026-04-12T22:56:22.719Z",
+      "chars": 1127,
+      "sha256": "17e6835632a1ae357633941ebf703f5562fa147aaaad24d561a870f975517496"
+    },
+    {
+      "id": "599eea72-7add-4cc2-9334-adad04e99d14",
+      "name": "token-haengt-an-der-adresse-nicht-am-browser",
+      "category": "rules",
+      "tags": [
+        "ki-browser",
+        "token",
+        "abnahme",
+        "web-ui",
+        "falle",
+        "messfehler"
+      ],
+      "created_at": "2026-08-26T22:51:31.507Z",
+      "updated_at": "2026-08-26T22:51:31.507Z",
+      "chars": 2965,
+      "sha256": "3b1edf2a64e95a6bb75795cb7cf6c8f73def1b1fb1d3955b179ac28e5ece755b"
+    },
+    {
+      "id": "fa87dabe-99a9-4f0a-8269-b15f3c8de5dc",
+      "name": "tray-probe-projekt-regeln-kritisch",
+      "category": "rules",
+      "tags": [
+        "rules",
+        "pflicht",
+        "synapse"
+      ],
+      "created_at": "2026-08-02T18:52:20.250Z",
+      "updated_at": "2026-08-02T18:52:20.250Z",
+      "chars": 2220,
+      "sha256": "12492bf7bef5003b80a48b3978b7fd4658807bd81c8582f9ceb5792761b37857"
+    },
+    {
+      "id": "367c1a2a-5d9a-4179-b77c-57d005577428",
+      "name": "webui-design-standard",
+      "category": "rules",
+      "tags": [
+        "webui",
+        "frontend",
+        "design",
+        "standard",
+        "pflicht",
+        "ui"
+      ],
+      "created_at": "2026-06-14T18:00:16.147Z",
+      "updated_at": "2026-06-14T18:00:16.147Z",
+      "chars": 1613,
+      "sha256": "233deeb949c94763dbb1f7983bcdadf7d2c4a2034fa4d17dca0545010759525c"
+    },
+    {
+      "id": "c9599229-3bab-49cc-ac0f-0e879cc43746",
+      "name": "WICHTIG-zwei-projekte-2026-05-10",
+      "category": "rules",
+      "tags": [
+        "WICHTIG",
+        "rules",
+        "synapse-api-v2",
+        "repo-isolation",
+        "agent-warning"
+      ],
+      "created_at": "2026-05-10T16:42:52.279Z",
+      "updated_at": "2026-05-10T16:42:52.279Z",
+      "chars": 2181,
+      "sha256": "131002597c8b0cd43ce9435366c24ae8827766fbd44e5c8a12345e5b24170f8d"
+    }
+  ],
+  "approved_assignment": [
+    {
+      "name": "agenten-koennen-bilder-selbst-sehen",
+      "category": "documentation",
+      "tags": [
+        "bilder",
+        "view_image",
+        "codex",
+        "abnahme",
+        "arbeitsweise",
+        "gemessen",
+        "ki-browser",
+        "onboarding-wissen"
+      ]
+    },
+    {
+      "name": "agent-skill-pflicht",
+      "category": "rules",
+      "tags": [
+        "agent-onboarding",
+        "pflicht",
+        "alle"
+      ]
+    },
+    {
+      "name": "arbeitsregeln-koordinator-durcharbeiten",
+      "category": "rules",
+      "tags": [
+        "arbeitsregeln",
+        "koordinator",
+        "durcharbeiten",
+        "selbst-review",
+        "koordinator-only"
+      ]
+    },
+    {
+      "name": "commit-konventionen",
+      "category": "rules",
+      "tags": [
+        "setup",
+        "alle"
+      ]
+    },
+    {
+      "name": "context-handoff-regeln",
+      "category": "rules",
+      "tags": [
+        "context-handoff",
+        "prototyp",
+        "koordinator-only"
+      ]
+    },
+    {
+      "name": "deploy-synapse-api-intern-tool",
+      "category": "documentation",
+      "tags": [
+        "deploy",
+        "intern-tool",
+        "P14",
+        "env",
+        "onboarding-wissen"
+      ]
+    },
+    {
+      "name": "deploy-synapse-api-projektdb-mount",
+      "category": "documentation",
+      "tags": [
+        "pflicht",
+        "deploy",
+        "unraid",
+        "synapse-api",
+        "projekt-db",
+        "onboarding-wissen"
+      ]
+    },
+    {
+      "name": "deploy-synapse-api-unraid",
+      "category": "documentation",
+      "tags": [
+        "pflicht",
+        "tray",
+        "deploy",
+        "docker",
+        "port-mapping",
+        "webui",
+        "synapse-api",
+        "unraid",
+        "ngrok",
+        "onboarding-wissen"
+      ]
+    },
+    {
+      "name": "falle-alter-mcp-stand-verwirft-neue-parameter",
+      "category": "documentation",
+      "tags": [
+        "aus-channel",
+        "channel:rueckfragen-chv-n3",
+        "channels",
+        "deploy",
+        "falle",
+        "mcp",
+        "parameter",
+        "stand:2026-08-15",
+        "onboarding-wissen"
+      ]
+    },
+    {
+      "name": "feedback-synapse-tools-statt-curl",
+      "category": "rules",
+      "tags": [
+        "feedback",
+        "workflow",
+        "synapse-tools",
+        "alle"
+      ]
+    },
+    {
+      "name": "fehler-direkt-edit-dann-files-doppelt",
+      "category": "rules",
+      "tags": [
+        "files",
+        "fehler",
+        "koordinator",
+        "alle"
+      ]
+    },
+    {
+      "name": "fehler-git-stash-im-synapse-projekt",
+      "category": "rules",
+      "tags": [
+        "git",
+        "fehler",
+        "files",
+        "sync",
+        "alle"
+      ]
+    },
+    {
+      "name": "handoff-cc-pid-update-reminder",
+      "category": "rules",
+      "tags": [
+        "handoff",
+        "cc-send",
+        "specialists",
+        "reminder",
+        "koordinator-only"
+      ]
+    },
+    {
+      "name": "koordinator-cc-send-pid-sprecher-regel",
+      "category": "rules",
+      "tags": [
+        "cc-send",
+        "pid",
+        "sprecher",
+        "koordinator",
+        "regel",
+        "session-wechsel",
+        "koordinator-only"
+      ]
+    },
+    {
+      "name": "koordinator-lesson-purge-vs-stop-2026-05-03",
+      "category": "rules",
+      "tags": [
+        "lessons-learned",
+        "specialist-lifecycle",
+        "koordinator",
+        "koordinator-only"
+      ]
+    },
+    {
+      "name": "koordinator-respawn-regel",
+      "category": "rules",
+      "tags": [
+        "koordinator",
+        "respawn",
+        "pid",
+        "channel",
+        "regel",
+        "koordinator-only"
+      ]
+    },
+    {
+      "name": "koordinator-subagent-history-check-und-autoloop-regel",
+      "category": "rules",
+      "tags": [
+        "koordinator",
+        "subagent",
+        "loop",
+        "history-check",
+        "files-tool",
+        "koordinator-only"
+      ]
+    },
+    {
+      "name": "nacht-session-loop-multi-parser",
+      "category": "rules",
+      "tags": [
+        "nacht-session",
+        "loop",
+        "parser",
+        "autonom",
+        "ueberholt"
+      ]
+    },
+    {
+      "name": "nacht-session-loop-regeln",
+      "category": "rules",
+      "tags": [
+        "nacht-session",
+        "loop-regeln",
+        "2026-03-26",
+        "koordinator-only"
+      ]
+    },
+    {
+      "name": "projekt-regeln",
+      "category": "documentation",
+      "tags": [
+        "setup",
+        "onboarding-wissen"
+      ]
+    },
+    {
+      "name": "regel-agenten-koennen-nicht-warten",
+      "category": "rules",
+      "tags": [
+        "pflicht",
+        "warte-loop",
+        "shell",
+        "agenten",
+        "wrapper",
+        "gemessen",
+        "koordinator-only"
+      ]
+    },
+    {
+      "name": "regel-alte-nacht-branches-ignorieren",
+      "category": "rules",
+      "tags": [
+        "regel",
+        "branches",
+        "wichtig",
+        "koordinator-only"
+      ]
+    },
+    {
+      "name": "regel-anweisungen-an-agenten-im-channel",
+      "category": "rules",
+      "tags": [
+        "pflicht",
+        "channel",
+        "kommunikation",
+        "koordinator-only"
+      ]
+    },
+    {
+      "name": "regel-auto-respawn-spezialisten",
+      "category": "rules",
+      "tags": [
+        "regel",
+        "auto-respawn",
+        "spezialisten",
+        "koordinator",
+        "koordinator-only"
+      ]
+    },
+    {
+      "name": "regel-branch-pro-idee",
+      "category": "rules",
+      "tags": [
+        "regel",
+        "branching",
+        "nacht-session",
+        "autonome-arbeit",
+        "koordinator-only"
+      ]
+    },
+    {
+      "name": "regel-build-exit-code-pruefen",
+      "category": "rules",
+      "tags": [
+        "werkzeug-falle",
+        "build",
+        "verifikation",
+        "tsc",
+        "shell",
+        "alle"
+      ]
+    },
+    {
+      "name": "regel-channelverwalter",
+      "category": "rules",
+      "tags": [
+        "pflicht",
+        "channels",
+        "aufraeumen",
+        "channelverwalter-only"
+      ]
+    },
+    {
+      "name": "regel-coedit-reservierung-und-ablauf",
+      "category": "rules",
+      "tags": [
+        "aus-channel",
+        "channel:coedit",
+        "coedit",
+        "files",
+        "koordination",
+        "reservierung",
+        "stand:2026-08-15",
+        "alle"
+      ]
+    },
+    {
+      "name": "regel-context-handoff-nur-eigenes-bash",
+      "category": "rules",
+      "tags": [
+        "handoff",
+        "shell",
+        "pflicht",
+        "werkzeug-falle",
+        "koordinator-only"
+      ]
+    },
+    {
+      "name": "regel-deploy-rollback-staende-begrenzen",
+      "category": "rules",
+      "tags": [
+        "regel",
+        "deploy",
+        "unraid",
+        "docker",
+        "aufraeumen",
+        "zugang",
+        "koordinator-only"
+      ]
+    },
+    {
+      "name": "regel-deploy-schema-sql-probelauf",
+      "category": "documentation",
+      "tags": [
+        "schema",
+        "pflicht",
+        "gemessen",
+        "deploy",
+        "sql",
+        "onboarding-wissen"
+      ]
+    },
+    {
+      "name": "regel-entwurf-ist-offener-plan",
+      "category": "rules",
+      "tags": [
+        "files",
+        "plan",
+        "entwurf",
+        "scratchpad",
+        "pflicht",
+        "alle"
+      ]
+    },
+    {
+      "name": "regel-files-plan-timeout",
+      "category": "rules",
+      "tags": [
+        "files",
+        "pflicht",
+        "datenintegritaet",
+        "timeout",
+        "plan",
+        "pitfall",
+        "alle"
+      ]
+    },
+    {
+      "name": "regel-files-tool-dollar-falle",
+      "category": "rules",
+      "tags": [
+        "einheiten",
+        "dollar-falle",
+        "files",
+        "regel",
+        "preview",
+        "alle"
+      ]
+    },
+    {
+      "name": "regel-jev-erkenntnisse-sammeln",
+      "category": "documentation",
+      "tags": [
+        "jev-erkenntnis",
+        "modellwahl",
+        "regel",
+        "onboarding-wissen"
+      ]
+    },
+    {
+      "name": "regel-keine-context-panik",
+      "category": "rules",
+      "tags": [
+        "rules",
+        "context",
+        "handoff",
+        "arbeitsweise",
+        "alle"
+      ]
+    },
+    {
+      "name": "regel-keine-festverdrahteten-modellwerte",
+      "category": "rules",
+      "tags": [
+        "regel",
+        "embedding",
+        "dimension",
+        "modell",
+        "pflicht",
+        "P12",
+        "alle"
+      ]
+    },
+    {
+      "name": "regel-keine-fremde-agent-id",
+      "category": "rules",
+      "tags": [
+        "agent_id",
+        "rechte",
+        "deploy",
+        "proben",
+        "arbeitsweise",
+        "alle"
+      ]
+    },
+    {
+      "name": "regel-keine-unsichtbarkeit-agent-id",
+      "category": "rules",
+      "tags": [
+        "rules",
+        "audit",
+        "agent-id",
+        "tray",
+        "alle"
+      ]
+    },
+    {
+      "name": "regel-keine-vfs-drift",
+      "category": "rules",
+      "tags": [
+        "drift",
+        "rules",
+        "architecture-invariante",
+        "race",
+        "alle"
+      ]
+    },
+    {
+      "name": "regel-kein-github-push-bis-projekt-steht",
+      "category": "rules",
+      "tags": [
+        "git",
+        "github",
+        "push",
+        "regel",
+        "koordinator",
+        "alle"
+      ]
+    },
+    {
+      "name": "regel-kein-kontext-jammern",
+      "category": "rules",
+      "tags": [
+        "regel",
+        "user-vorgabe",
+        "kontext",
+        "arbeitshaltung",
+        "koordinator-only"
+      ]
+    },
+    {
+      "name": "regel-koordinator-kontextwarnung-handoff-und-cc-send-pid",
+      "category": "rules",
+      "tags": [
+        "handoff",
+        "cc-send",
+        "kontext",
+        "koordinator-only"
+      ]
+    },
+    {
+      "name": "regel-multi-file-edits-files-plan",
+      "category": "rules",
+      "tags": [
+        "files",
+        "workflow",
+        "koordinator",
+        "user-vorgabe",
+        "alle"
+      ]
+    },
+    {
+      "name": "regel-nullzusagen-brauchen-anker",
+      "category": "rules",
+      "tags": [
+        "pflicht",
+        "tests",
+        "fixtures",
+        "muster-stille-teilantwort",
+        "parser",
+        "anker",
+        "alle"
+      ]
+    },
+    {
+      "name": "regel-postgres-ist-die-wahrheit-qdrant-ist-abgeleitet",
+      "category": "rules",
+      "tags": [
+        "regel",
+        "user-vorgabe",
+        "architektur-invariante",
+        "postgres",
+        "qdrant",
+        "pflicht",
+        "alle"
+      ]
+    },
+    {
+      "name": "regel-rueckbau-ueber-files-restore",
+      "category": "rules",
+      "tags": [
+        "pflicht",
+        "files",
+        "restore",
+        "rueckbau",
+        "versionierung",
+        "alle"
+      ]
+    },
+    {
+      "name": "regel-schema-60s-und-keine-sperre-mit-client-warten",
+      "category": "rules",
+      "tags": [
+        "pflicht",
+        "schema",
+        "deploy",
+        "sperren",
+        "tests",
+        "alle"
+      ]
+    },
+    {
+      "name": "regel-scratchpad-nur-fuer-wegwerf",
+      "category": "rules",
+      "tags": [
+        "scratchpad",
+        "files",
+        "plan",
+        "arbeitsweise",
+        "user-vorgabe",
+        "alle"
+      ]
+    },
+    {
+      "name": "regel-spawn-prompt-minimal-task-id",
+      "category": "rules",
+      "tags": [
+        "spawn",
+        "subagent",
+        "prompt",
+        "kontext",
+        "koordinator-only"
+      ]
+    },
+    {
+      "name": "regel-spezialisten-skills-knapp",
+      "category": "rules",
+      "tags": [
+        "spezialisten",
+        "skills",
+        "kontext",
+        "koordinator-only"
+      ]
+    },
+    {
+      "name": "regel-subagenten-statt-spezialisten",
+      "category": "rules",
+      "tags": [
+        "regel",
+        "subagenten",
+        "onboarding",
+        "skills",
+        "files",
+        "plan",
+        "thought",
+        "koordinator-only"
+      ]
+    },
+    {
+      "name": "regel-subagenten-synapse-tools-vollnutzung",
+      "category": "rules",
+      "tags": [
+        "subagent-only"
+      ]
+    },
+    {
+      "name": "regel-subagent-kontext-watch-und-uebergabe",
+      "category": "rules",
+      "tags": [
+        "regel",
+        "subagenten",
+        "kontext",
+        "handoff",
+        "plugin",
+        "koordinator-only"
+      ]
+    },
+    {
+      "name": "regel-testfreigabe-intern-und-testkorpus",
+      "category": "documentation",
+      "tags": [
+        "regel",
+        "testen",
+        "intern",
+        "parser-testkorpus",
+        "freigabe",
+        "onboarding-wissen"
+      ]
+    },
+    {
+      "name": "regel-tests-immer-per-task-agent",
+      "category": "rules",
+      "tags": [
+        "tests",
+        "agenten",
+        "arbeitsweise",
+        "koordinator-only"
+      ]
+    },
+    {
+      "name": "regel-unmarkierte-attrappen-lecken",
+      "category": "rules",
+      "tags": [
+        "fehlerklasse",
+        "mock",
+        "attrappe",
+        "web-ui",
+        "gemessen",
+        "datenintegritaet",
+        "pflicht",
+        "alle"
+      ]
+    },
+    {
+      "name": "regel-webrecherche-ueber-ki-browser",
+      "category": "documentation",
+      "tags": [
+        "ki-browser",
+        "recherche",
+        "webfetch",
+        "quellen",
+        "onboarding-wissen"
+      ]
+    },
+    {
+      "name": "regel-wiederaufnahme-ueber-synapse-history",
+      "category": "rules",
+      "tags": [
+        "regel",
+        "wiederaufnahme",
+        "crash-recovery",
+        "history",
+        "agenten",
+        "pflicht",
+        "alle"
+      ]
+    },
+    {
+      "name": "regel-zuruecksetzen-nur-ueber-files-restore",
+      "category": "rules",
+      "tags": [
+        "regel",
+        "pflicht",
+        "files",
+        "git",
+        "restore",
+        "alle"
+      ]
+    },
+    {
+      "name": "rest-api-tool-einschraenkungen",
+      "category": "documentation",
+      "tags": [
+        "rules",
+        "rest-api",
+        "tools",
+        "web-ki",
+        "live-verifiziert",
+        "onboarding-wissen"
+      ]
+    },
+    {
+      "name": "specialist-lifecycle-rules",
+      "category": "rules",
+      "tags": [
+        "specialist",
+        "lifecycle",
+        "rules",
+        "koordinator-only"
+      ]
+    },
+    {
+      "name": "subagent-tooling-regel",
+      "category": "rules",
+      "tags": [
+        "subagent",
+        "tooling",
+        "code-intel",
+        "files",
+        "shell",
+        "regel",
+        "pflicht",
+        "subagent-only"
+      ]
+    },
+    {
+      "name": "synapse-projekt-regeln-kurzfassung",
+      "category": "documentation",
+      "tags": [
+        "projekt-regeln",
+        "pflicht",
+        "2026-08-02",
+        "onboarding-wissen"
+      ]
+    },
+    {
+      "name": "team-governance-architektur-quelle-codebase-guide",
+      "category": "documentation",
+      "tags": [
+        "governance",
+        "architektur",
+        "quelle",
+        "epistemologie",
+        "2026-04-13",
+        "onboarding-wissen"
+      ]
+    },
+    {
+      "name": "token-haengt-an-der-adresse-nicht-am-browser",
+      "category": "documentation",
+      "tags": [
+        "ki-browser",
+        "token",
+        "abnahme",
+        "web-ui",
+        "falle",
+        "messfehler",
+        "onboarding-wissen"
+      ]
+    },
+    {
+      "name": "tray-probe-projekt-regeln-kritisch",
+      "category": "documentation",
+      "tags": [
+        "rules",
+        "pflicht",
+        "synapse",
+        "onboarding-wissen"
+      ]
+    },
+    {
+      "name": "webui-design-standard",
+      "category": "rules",
+      "tags": [
+        "webui",
+        "frontend",
+        "design",
+        "standard",
+        "pflicht",
+        "ui",
+        "spezialist-only"
+      ]
+    },
+    {
+      "name": "WICHTIG-zwei-projekte-2026-05-10",
+      "category": "rules",
+      "tags": [
+        "WICHTIG",
+        "rules",
+        "synapse-api-v2",
+        "repo-isolation",
+        "agent-warning",
+        "alle"
+      ]
+    }
+  ]
+}

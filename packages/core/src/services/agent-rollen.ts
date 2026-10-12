@@ -82,6 +82,7 @@ export function erlaubteRollen(tags: string[]): Set<AgentRolle> | null {
 
 /** Ob eine Regel mit diesen Tags fuer die Rolle sichtbar ist. */
 export function regelSichtbarFuer(tags: string[] | undefined, rolle: AgentRolle): boolean {
+  if ((tags ?? []).some((t) => ['ueberholt', 'überholt'].includes(normalisiere(t)))) return false;
   const erlaubt = erlaubteRollen(tags ?? []);
   return erlaubt === null || erlaubt.has(rolle);
 }
@@ -247,12 +248,70 @@ export interface OnboardingRegel {
 export function baueOnboardingRegeln(
   memories: Array<{ name: string; content: string; tags?: string[] }>,
 ): OnboardingRegel[] {
-  return memories.map((m) => {
+  return eindeutigeRegeln(memories).map((m) => {
     const pflicht = (m.tags ?? []).some((t) => t?.toLowerCase().trim() === PFLICHT_TAG);
     if (pflicht) return { name: m.name, content: m.content, vollstaendig: true };
     return { name: m.name, auszug: kuerzeRegel(m.content), vollstaendig: false };
   });
 }
+
+/** Ein Eintrag pro Name; der PG-Katalog wird nach Aktualität sortiert geliefert. */
+function eindeutigeRegeln<T extends { name: string }>(memories: T[]): T[] {
+  const namen = new Set<string>();
+  return memories.filter((m) => {
+    if (namen.has(m.name)) return false;
+    namen.add(m.name);
+    return true;
+  });
+}
+
+export interface RegelVerzeichnis {
+  abruf: string;
+  hinweis: string;
+  anzahl: Record<AgentRolle | 'alle' | 'wissen' | 'ueberholt' | 'nur_andere_rollen', number>;
+  eintraege: Array<{
+    name: string;
+    status: 'regel' | 'wissen' | 'ueberholt';
+    rollen: Array<AgentRolle | 'alle'>;
+  }>;
+}
+
+/** Ein gemeinsamer Block für REST und stdio, auch ohne sichtbare Regeln. */
+export function baueOnboardingRegelwerk(
+  memories: Array<{ name: string; content: string; category: string; tags?: string[] }>,
+  project: string,
+  rolle: AgentRolle,
+): { rules: OnboardingRegel[]; regel_verzeichnis: RegelVerzeichnis } {
+  const katalog = eindeutigeRegeln(memories);
+  const anzahl: RegelVerzeichnis['anzahl'] = {
+    alle: 0, koordinator: 0, spezialist: 0, subagent: 0, channelverwalter: 0,
+    wissen: 0, ueberholt: 0, nur_andere_rollen: 0,
+  };
+  const eintraege: RegelVerzeichnis['eintraege'] = [];
+  const sichtbar: typeof katalog = [];
+  for (const m of katalog) {
+    const tags = m.tags ?? [];
+    const status = tags.some((t) => ['ueberholt', 'überholt'].includes(normalisiere(t)))
+      ? 'ueberholt' : m.category === 'rules' ? 'regel' : 'wissen';
+    const gebunden = erlaubteRollen(tags);
+    const rollen: Array<AgentRolle | 'alle'> = gebunden ? [...gebunden] : ['alle'];
+    eintraege.push({ name: m.name, status, rollen });
+    if (status !== 'regel') { anzahl[status]++; continue; }
+    for (const r of rollen) anzahl[r]++;
+    if (regelSichtbarFuer(tags, rolle)) sichtbar.push(m);
+    else anzahl.nur_andere_rollen++;
+  }
+  const abruf = `memory(action:"read", project:"${project}", name:"<name>")`;
+  return {
+    rules: baueOnboardingRegeln(sichtbar),
+    regel_verzeichnis: {
+      abruf,
+      hinweis: `${anzahl.nur_andere_rollen} Regel(n) nur für andere Rollen; ${anzahl.wissen} Wissenseinträge; ${anzahl.ueberholt} überholt. Verzeichnis vollständig, Volltext bei Bedarf über ${abruf}.`,
+      anzahl, eintraege,
+    },
+  };
+}
+
 
 /** Anfang einer Regel, an einer Wortgrenze abgeschnitten. */
 function kuerzeRegel(content: string): string {

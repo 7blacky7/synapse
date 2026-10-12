@@ -27,6 +27,7 @@ import * as os from 'os';
 import {
   registerAgent,
   getRulesForNewAgent,
+  getOnboardingMemories,
   ermittleProjektStatus,
   getSetupPhase,
   writeMemory,
@@ -58,6 +59,7 @@ export interface OnboardingResult {
   /** Nur fuer Koordinatoren und nur bei unvollstaendigem Projekt-Setup. */
   setup_hinweis?: string;
   rules?: OnboardingRule[];
+  regel_verzeichnis?: import('@synapse/core').RegelVerzeichnis;
 }
 
 /** Agenten-Rollen fuer rollenspezifisches Onboarding */
@@ -195,32 +197,26 @@ export async function checkAgentOnboarding(
       await ensureChannelverwalterRegel(project);
     }
     // Regeln neu laden falls Handoff-Regeln gerade erstellt wurden
-    const allRules = await getRulesForNewAgent(project);
+    const allRules = await getOnboardingMemories(project);
 
     // Rollenspezifische Regeln filtern — gemeinsame Erkennung aus core
     // (agent-rollen.ts), damit dieser Weg und die REST-API nicht auseinanderlaufen.
     // Der exakte Vergleich von vorher liess z.B. "koordinator-only" (deutsch)
     // stillschweigend durchfallen: die Regel ging dann an alle Rollen.
-    const { regelSichtbarFuer, tagVerdacht, baueOnboardingRegeln, baueRegelAbrufHinweis } =
+    const { tagVerdacht, baueOnboardingRegelwerk, baueRegelAbrufHinweis } =
       await import('@synapse/core');
     for (const m of allRules) {
       for (const hinweis of tagVerdacht(m.tags)) {
         console.error(`[Onboarding] Regel "${m.name}" (${project}): ${hinweis}`);
       }
     }
-    const finalRules = allRules.filter((m) => regelSichtbarFuer(m.tags, effectiveRole));
-    void isCoordinator;
-
-    if (finalRules.length === 0) {
-      return { isFirstVisit: true };
-    }
+    const { rules, regel_verzeichnis } = baueOnboardingRegelwerk(allRules, project, effectiveRole);
 
     // ⚠️ NICHT MEHR ALLES IM VOLLTEXT (Messung 02.08.2026): 34 Regeln, 65.000 Zeichen, und
     // das bei JEDEM Wechsel der Server-Kennung erneut. Volltext behalten die Regeln mit dem
     // Tag "pflicht"; alle anderen kommen als Auszug, der Volltext ist einen Aufruf entfernt.
     // Dieselbe Funktion wie im REST-Weg — zwei Kopien derselben Aufbereitung waeren genau der
     // Fehler, den diese Codebasis an anderer Stelle teuer bezahlt hat.
-    const rules: OnboardingRule[] = baueOnboardingRegeln(finalRules);
     const gekuerzt = rules.filter((r) => !r.vollstaendig).length;
     const abrufHinweis = baueRegelAbrufHinweis(project, gekuerzt);
 
@@ -280,6 +276,7 @@ export async function checkAgentOnboarding(
       ...(erklZeile ? { erklaerung_faelle: erklZeile } : {}),
       ...(durchsichtZeile ? { entscheidungen_durchsicht: durchsichtZeile } : {}),
       rules,
+      regel_verzeichnis,
       ...(channelBlock ? { channels: channelBlock } : {}),
       ...(plaene.length > 0 ? { plaene } : {}),
     };

@@ -46,12 +46,9 @@ import {
   setProjectStatus,
   setSetupPhase,
   updateLastAccess,
-  registerAgent,
-  getRulesForNewAgent,
   registerProject,
 } from '@synapse/core';
 import type { DetectedTechnology } from '@synapse/core';
-import { SERVER_INSTANCE_ID } from '../server.js';
 import { ensureProjectInDaemon, disableProjectInDaemon, ensureTray } from '../daemon-client.js';
 import type { SetupQuestion } from './setup.js';
 
@@ -59,7 +56,9 @@ import type { SetupQuestion } from './setup.js';
 const activeProjects = new Set<string>();
 
 /** Speichert Projekt-Pfade fuer Shutdown und Onboarding (name -> path) */
-import { cacheProjectPath as cachePathInOnboarding } from './onboarding.js';
+import { cacheProjectPath as cachePathInOnboarding, checkAgentOnboarding } from './onboarding.js';
+import type { OnboardingRule } from './onboarding.js';
+import type { RegelVerzeichnis } from '@synapse/core';
 import { heartbeatController } from '@synapse/agents';
 const projectPaths = new Map<string, string>();
 
@@ -67,12 +66,6 @@ const projectPaths = new Map<string, string>();
 function cacheProjectPathBoth(name: string, path: string): void {
   projectPaths.set(name, path);
   cachePathInOnboarding(name, path);
-}
-
-/** Regel-Memory fuer Onboarding-Response */
-interface RuleMemory {
-  name: string;
-  content: string;
 }
 
 /** Return-Typ fuer initProjekt */
@@ -84,7 +77,8 @@ type InitResult = {
   technologies?: DetectedTechnology[];
   docsIndexed?: { total: number; indexed: number; cached: number };
   isFirstVisit?: boolean;
-  rules?: RuleMemory[];
+  rules?: OnboardingRule[];
+  regel_verzeichnis?: RegelVerzeichnis;
   setupRequired?: {
     phase: string;
     questions: SetupQuestion[];
@@ -155,21 +149,8 @@ async function tryReactivateProject(
     console.error(`[Synapse] Specialist reconnect failed for "${name}":`, err);
   }
 
-  // Agent-Onboarding bei Reaktivierung
-  let isFirstVisit = false;
-  let rules: RuleMemory[] | undefined;
-
-  if (agentId) {
-    isFirstVisit = await registerAgent(name, agentId, SERVER_INSTANCE_ID);
-    if (isFirstVisit) {
-      try {
-        const ruleMemories = await getRulesForNewAgent(name);
-        if (ruleMemories.length > 0) {
-          rules = ruleMemories.map(m => ({ name: m.name, content: m.content }));
-        }
-      } catch { /* ignore */ }
-    }
-  }
+  const { isFirstVisit = false, rules, regel_verzeichnis } =
+    (await checkAgentOnboarding(name, agentId, projectPath)) ?? {};
 
   const rulesHint = rules && rules.length > 0
     ? `\n\n📋 PROJEKT-REGELN (bitte beachten!):\n${rules.map(r => `- ${r.name}`).join('\n')}`
@@ -182,6 +163,7 @@ async function tryReactivateProject(
     message: `Projekt "${name}" reaktiviert (bereits indexiert)${rulesHint}`,
     isFirstVisit,
     rules,
+    regel_verzeichnis,
   };
 }
 
@@ -276,20 +258,8 @@ export async function initProjekt(
     }
     updateLastAccess(projectPath);
 
-    let isFirstVisit = false;
-    let rules: RuleMemory[] | undefined;
-
-    if (agentId) {
-      isFirstVisit = await registerAgent(name, agentId, SERVER_INSTANCE_ID);
-      if (isFirstVisit) {
-        try {
-          const ruleMemories = await getRulesForNewAgent(name);
-          if (ruleMemories.length > 0) {
-            rules = ruleMemories.map(m => ({ name: m.name, content: m.content }));
-          }
-        } catch { /* ignore */ }
-      }
-    }
+    const { isFirstVisit = false, rules, regel_verzeichnis } =
+      (await checkAgentOnboarding(name, agentId, projectPath)) ?? {};
 
     const rulesHint = rules && rules.length > 0
       ? `\n\n📋 PROJEKT-REGELN (bitte beachten!):\n${rules.map(r => `- ${r.name}`).join('\n')}`
@@ -302,6 +272,7 @@ export async function initProjekt(
       message: `Projekt "${name}" ist bereits aktiv${rulesHint}`,
       isFirstVisit,
       rules,
+      regel_verzeichnis,
     };
   }
 
@@ -429,30 +400,8 @@ export async function initProjekt(
   }
 
   // ===== AGENT ONBOARDING =====
-  let isFirstVisit = false;
-  let rules: RuleMemory[] | undefined;
-
-  if (agentId) {
-    // Pruefen ob Agent neu ist und registrieren
-    isFirstVisit = await registerAgent(name, agentId, SERVER_INSTANCE_ID);
-
-    if (isFirstVisit) {
-      // Regeln-Memories fuer neuen Agent laden
-      console.error(`[Synapse MCP] Neuer Agent "${agentId}" - lade Regeln...`);
-      try {
-        const ruleMemories = await getRulesForNewAgent(name);
-        if (ruleMemories.length > 0) {
-          rules = ruleMemories.map(m => ({
-            name: m.name,
-            content: m.content,
-          }));
-          console.error(`[Synapse MCP] ${rules.length} Regeln fuer Agent geladen`);
-        }
-      } catch (error) {
-        console.error(`[Synapse MCP] Fehler beim Laden der Regeln:`, error);
-      }
-    }
-  }
+  const { isFirstVisit = false, rules, regel_verzeichnis } =
+    (await checkAgentOnboarding(name, agentId, projectPath)) ?? {};
 
   // Hinweis fuer KI generieren
   const techList = technologies.map(t => t.name).join(', ');
@@ -476,6 +425,7 @@ export async function initProjekt(
     docsIndexed,
     isFirstVisit,
     rules,
+    regel_verzeichnis,
     setupRequired,
   };
 }

@@ -39,10 +39,10 @@ export {
 export type { ChatMessage, AgentSession, SitzungsArt, SitzungsBeginn } from './chat.js';
 export {
   erlaubteRollen, regelSichtbarFuer, tagVerdacht,
-  baueOnboardingRegeln, baueRegelAbrufHinweis,
+  baueOnboardingRegeln, baueRegelAbrufHinweis, baueOnboardingRegelwerk,
   rolleFuerAgent, rollenQuelleKlartext,
 } from './agent-rollen.js';
-export type { AgentRolle, OnboardingRegel, RollenQuelle } from './agent-rollen.js';
+export type { AgentRolle, OnboardingRegel, RollenQuelle, RegelVerzeichnis } from './agent-rollen.js';
 export { holeWerkzeugRegeln, baueWerkzeugMarken, WERKZEUG_MARKE_PRAEFIX, WERKZEUG_REGEL_FELD } from './werkzeug-regeln.js';
 export type { WerkzeugRegel } from './werkzeug-regeln.js';
 export { addTechDoc, searchTechDocs, getDocsForFile, deleteTechDoc, updateTechDoc } from './tech-docs.js';

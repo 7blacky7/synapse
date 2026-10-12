@@ -7,6 +7,7 @@
  */
 
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
+import {mitShellAusgabe} from '@synapse/core';
 import { zeigeArtefakt } from '../services/agent-runtime/artefakt-tool.js';
 import {
   // Code-Suche
@@ -63,7 +64,7 @@ import {
   // P15-T32: Sitzungs-Signal admin(index_stats, sitzung)
   wendeSitzungsSignalAn,
   SITZUNG_PARAMETER,
-  getRulesForNewAgent,
+  getOnboardingMemories,
   // Chat
   registerChatAgent,
   registerAgentsBatch,
@@ -1249,6 +1250,8 @@ export const MCP_TOOLS = [
     inputSchema: {
       type: 'object',
       properties: {
+        maskierung: {type:'boolean',description:'Anzeige maskieren (Default true); false nur Koordinator/User mit grund. Persistenz bleibt maskiert.'},
+        grund: {type:'string',description:'Audit-Grund fuer maskierung:false (mind. 10 Zeichen)'},
         action: { type: 'string', enum: ['exec', 'get_stream', 'history', 'get', 'log', 'activity', 'cancel', 'hide'], description: 'Default: exec. log + id liefert Zeilenrange (1-100); log + id + query liefert Such-Treffer mit Zeilennummern. cancel + id bricht einen laufenden Job ab — in den ersten 10 Minuten nur durch den Agenten, der ihn gestartet hat, danach durch jeden. hide + id blendet die shell_activity-Hinweise zu einem Job aus — in den ersten 3 Minuten NACH DEM ABSCHLUSS nur durch den Starter, danach durch jeden; der Starter bleibt dabei immer Empfaenger.' },
         id: { type: 'string', description: 'Job-UUID (Pflicht fuer get/log). NICHT die stream_id aus der exec-Antwort — die Job-UUID liefert shell(history).' },
         limit: { type: 'number', description: 'history: max Jobs (Default 20, Max 200)' },
@@ -1949,10 +1952,10 @@ async function attachRestOnboarding(
       await ensureChannelverwalterRegel(project);
     }
 
-    const allRules = await getRulesForNewAgent(project);
+    const allRules = await getOnboardingMemories(project);
     // Rollenbindung ueber die gemeinsame Erkennung in core (agent-rollen.ts) —
     // tolerant gegenueber Schreibweisen, und dieselbe Logik wie im lokalen Weg.
-    const { regelSichtbarFuer, tagVerdacht, baueOnboardingRegeln, baueRegelAbrufHinweis } =
+    const { tagVerdacht, baueOnboardingRegelwerk, baueRegelAbrufHinweis } =
       await import('@synapse/core');
     for (const m of allRules) {
       for (const hinweis of tagVerdacht(m.tags)) {
@@ -1963,7 +1966,7 @@ async function attachRestOnboarding(
     // das bei JEDEM Wechsel der Server-Kennung erneut — in einer Deploy-Nacht fuenfmal.
     // Volltext behalten die Regeln mit dem Tag "pflicht", der Rest kommt als Auszug mit
     // Abrufhinweis. Dieselbe Funktion wie im lokalen Weg, damit beide nicht auseinanderlaufen.
-    const rules = baueOnboardingRegeln(allRules.filter((m) => regelSichtbarFuer(m.tags, role)));
+    const { rules, regel_verzeichnis } = baueOnboardingRegelwerk(allRules, project, role);
     const abrufHinweis = baueRegelAbrufHinweis(
       project,
       rules.filter((r: { vollstaendig: boolean }) => !r.vollstaendig).length,
@@ -1995,13 +1998,6 @@ async function attachRestOnboarding(
     const plaene = await planUebersicht(project).catch(() => []);
     const planBlock = plaene.length > 0 ? { plaene } : {};
 
-    if (rules.length === 0) {
-      return {
-        ...result,
-        agentOnboarding: { isFirstVisit: true, ...jevBlock, ...erklBlock, ...durchsichtBlock, ...(channelBlock ? { channels: channelBlock } : {}), ...planBlock },
-      };
-    }
-
     return {
       ...result,
       agentOnboarding: {
@@ -2022,6 +2018,7 @@ async function attachRestOnboarding(
         ...erklBlock,
         ...durchsichtBlock,
         rules,
+        regel_verzeichnis,
         ...(channelBlock ? { channels: channelBlock } : {}),
         ...planBlock,
       },
@@ -2287,6 +2284,7 @@ export async function handleToolCall(
   args: Record<string, unknown>,
   effectiveAgentId?: string,
 ): Promise<unknown> {
+  if(name==='shell')return mitShellAusgabe({...args,agent_id:effectiveAgentId??args.agent_id},()=>handleToolCallKern(name,args,effectiveAgentId));
   const antwort = name === 'files' || name === 'files_batch'
     ? await mitFileTaskWarnung(args, () => handleToolCallKern(name, args, effectiveAgentId))
     : await handleToolCallKern(name, args, effectiveAgentId);
