@@ -6,6 +6,8 @@ const SENSIBLE_BEREICHE = new Set(['env', 'headers']);
 export const SHELL_LITERAL_MIN_LAENGE=8;
 export function istShellGeheimnisName(name:string):boolean{
   const norm=name.replace(/([a-z0-9])([A-Z])/g,'$1_$2').toLowerCase();
+  // Synapse-Verfahrenskennungen sind keine Authentifizierungs-Tokens; UUID-Form allein genügt nicht.
+  if(/^(?:wait_token|batch_token|stream_id)$/.test(norm))return false;
   // Zähler/Maße beschreiben Geheimnisse, tragen aber selbst keine Zugangsdaten.
   if(/(?:^|[_.-])(?:count|length|size|limit|ttl|timeout|duration|ms|rate|usage|used|path|file)$/.test(norm))return false;
   if(/^(?:input|output|total|cached|prompt|completion)_tokens(?:_|$)/.test(norm))return false;
