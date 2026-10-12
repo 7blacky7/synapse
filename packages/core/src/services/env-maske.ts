@@ -24,8 +24,10 @@
 
 import { getPool } from '../db/client.js';
 import { getFileContentFromPg } from './code-write.js';
-import { entmaskiereMcpJson, istMcpJsonDatei, maskiereMcpJson, maskiereMcpJsonDiffText, maskiereMcpJsonFragment, mcpJsonHinweise, mcpJsonSicht, mcpJsonWerte, MCP_JSON_PFAD_REGEX_SQL, maskiereUrl } from './mcp-json-maske.js';
+import { entmaskiereMcpJson, istMcpJsonDatei, maskiereMcpJson, maskiereMcpJsonDiffText, maskiereMcpJsonFragment, mcpJsonHinweise, mcpJsonSicht, mcpJsonWerte, MCP_JSON_PFAD_REGEX_SQL, maskiereUrl, istShellGeheimnisName, SHELL_LITERAL_MIN_LAENGE, shellUrlPasswoerter } from './mcp-json-maske.js';
 export { entmaskiereMcpJson, istMcpJsonDatei, maskiereMcpJson, maskiereMcpJsonDiffText, mcpJsonHinweise, mcpJsonSicht } from './mcp-json-maske.js';
+
+export {istShellGeheimnisName,SHELL_LITERAL_MIN_LAENGE} from './mcp-json-maske.js';
 
 /** Der Platzhalter fuer jeden verborgenen Wert. */
 export const ENV_PLATZHALTER = '[WERT]';
@@ -374,13 +376,18 @@ export async function schwaerzeEnvWerteInAntwort<T>(project: string | undefined,
 
 /** P10-T33: dieselbe P15-Maske auch fuer freie Shell-Ausgaben; Bestandsformate bleiben erhalten. */
 export function shellGeheimWerte(envText: string, jsonText = ''): string[] {
-  const aus = new Set<string>(mcpJsonWerte(jsonText, 1).flatMap(w=>[w,...w.split('\n').filter(Boolean)]));
-  for (const teil of zerlegeEnv(envText)) {
-    if (teil.art !== 'kv' || teil.leer) continue;
-    const roh=teil.wert.trim();
-    for(const w of [roh,roh.replace(/^(["'\x60])([\s\S]*)\1$/,'$2'),...roh.split('\n').map(z=>z.trim().replace(/^["'\x60]|["'\x60]$/g,''))])
-      if(w && w!==ENV_PLATZHALTER) aus.add(w);
-  }
+  const aus=new Set<string>();
+  const sammle=(roh:string,sensibel:boolean)=>{
+    const varianten=[roh.trim(),roh.trim().replace(/^(["'\x60])([\s\S]*)\1$/,'$2'),
+      ...roh.split('\n').map(z=>z.trim().replace(/^["'\x60]|["'\x60]$/g,''))];
+    for(const w of varianten){
+      if(sensibel && w.length>=SHELL_LITERAL_MIN_LAENGE && w!==ENV_PLATZHALTER)aus.add(w);
+      const bearer=/^Bearer\s+(.+)$/i.exec(w);if(sensibel && bearer && bearer[1].length>=SHELL_LITERAL_MIN_LAENGE)aus.add(bearer[1]);
+      for(const pass of shellUrlPasswoerter(w))aus.add(pass);
+    }
+  };
+  for(const w of mcpJsonWerte(jsonText,SHELL_LITERAL_MIN_LAENGE,true))sammle(w,true);
+  for(const teil of zerlegeEnv(envText))if(teil.art==='kv' && !teil.leer)sammle(teil.wert,istShellGeheimnisName(teil.name));
   return [...aus];
 }
 const shellLiteralMatcher = new WeakMap<readonly string[],RegExp|readonly string[]|null>();
@@ -388,7 +395,7 @@ export function maskiereShellText(text: string, bekannteWerte: readonly string[]
   let maskiert=0, aus=text;
   let matcher=shellLiteralMatcher.get(bekannteWerte);
   if(matcher===undefined){
-    const werte=[...new Set(bekannteWerte)].filter(w=>w && w!==ENV_PLATZHALTER).sort((a,b)=>b.length-a.length);
+    const werte=[...new Set(bekannteWerte)].filter(w=>w.length>=SHELL_LITERAL_MIN_LAENGE && w!==ENV_PLATZHALTER).sort((a,b)=>b.length-a.length);
     // Sehr grosse Literale ueberschreiten die Regex-Engine-Grenze: keine Regex mit Klartext-Fehler.
     matcher=werte.reduce((n,w)=>n+w.length,0)>32768?werte:werte.length?new RegExp('\\[WERT\\]|'+werte.map(w=>w.replace(/[.*+?^\x24{}()|[\]\\]/g,'\\$&')).join('|'),'g'):null;
     shellLiteralMatcher.set(bekannteWerte,matcher);
@@ -410,20 +417,20 @@ export function maskiereShellText(text: string, bekannteWerte: readonly string[]
     const safe=walk(JSON.parse(strukturiert));
     return {text:maskiert?JSON.stringify(safe,null,aus.includes('\n')?2:undefined)+(aus.endsWith('\n')?'\n':''):aus,maskiert};
   }catch { /* freie Logzeile statt vollstaendigem JSON */ }
-  aus=maskiereMcpJsonFragment(aus);
+  aus=maskiereMcpJsonFragment(aus,true);
   aus=maskiereUrl(aus);
   aus=aus.replace(/(Bearer\s+)[A-Za-z0-9._~+\/=-]+/gi,(_,praefix:string)=>praefix+ENV_PLATZHALTER);
   aus=aus.split('\n').map(zeile=>{
     const kv=KV.exec(ohneCr(zeile).text);
-    if(kv && /(?:key|token|secret|password|pass|pwd|auth|credential)/i.test(kv[2])) return maskiereEnv(zeile);
+    if(kv && istShellGeheimnisName(kv[2])) return maskiereEnv(zeile);
     return zeile.replace(/(^|[\s,{])(["']?)([A-Za-z_][A-Za-z0-9_.-]*)\2(\s*:\s*)("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')/g,
       (ganz,praefix:string,q:string,name:string,trenner:string,wert:string)=>
-        /(?:key|token|secret|password|pass|pwd|auth|credential)/i.test(name)
+        istShellGeheimnisName(name)
           ? praefix+q+name+q+trenner+wert[0]+ENV_PLATZHALTER+wert[0] : ganz);
   }).join('\n');
   aus=aus.replace(/(^|[\s,{"'])([A-Za-z_][A-Za-z0-9_.-]*)(\s*=\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s"',;\\]+)/g,
     (ganz,praefix:string,name:string,trenner:string)=>
-      /(?:key|token|secret|password|pass|pwd|auth|credential)/i.test(name)?praefix+name+trenner+ENV_PLATZHALTER:ganz);
+      istShellGeheimnisName(name)?praefix+name+trenner+ENV_PLATZHALTER:ganz);
   maskiert+=Math.max(0,(aus.match(/\[WERT\]/g)??[]).length-vorher);
   return {text:aus,maskiert};
 }

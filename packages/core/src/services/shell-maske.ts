@@ -30,7 +30,10 @@ export function leseShellWerteVomFs(root?: string): string[] {
     };
     walk(root);
   }
-  for(const [name,value]of Object.entries(process.env))if(value && !/^(?:PWD|OLDPWD|SYNAPSE_SECRETS_ENV)$/.test(name) && !/(?:_PATH|_FILE)$/.test(name) && /(?:key|token|secret|password|pass|pwd|auth|credential)/i.test(name))werte.add(value);
+  for(const [name,value]of Object.entries(process.env)){
+    if(!value || /^(?:PWD|OLDPWD|SYNAPSE_SECRETS_ENV)$/.test(name) || /(?:_PATH|_FILE)$/.test(name))continue;
+    for(const wert of shellGeheimWerte(name+'='+value))werte.add(wert);
+  }
   return [...werte];
 }
 export async function ladeShellWerte(project?: string, optionen: {projektFs?:boolean} = {}): Promise<string[]> {

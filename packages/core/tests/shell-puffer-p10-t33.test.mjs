@@ -35,7 +35,7 @@ const oldFetch=globalThis.fetch;
 globalThis.fetch=async(input,init)=>String(input).includes('/projects/'+project+'/status')?new Response('{"enabled":true}',{status:200}):oldFetch(input,init);
 try{
  assert.equal((await pool.query('SELECT current_database() AS db')).rows[0].db,'synapse_test');
- fs.mkdirSync(root,{recursive:true});fs.writeFileSync(path.join(root,'.env'),'HIDDEN='+fake+'\n');
+ fs.mkdirSync(root,{recursive:true});fs.writeFileSync(path.join(root,'.env'),'HIDDEN_SECRET='+fake+'\n');
  await pool.query('INSERT INTO projects(name,hostname,path,enabled) VALUES($1,$2,$3,true)',[project,os.hostname(),root]);
  const script='process.stdout.write("x".repeat('+String(limit-8)+')+'+JSON.stringify(fake.slice(0,8))+');setTimeout(()=>process.stdout.write('+JSON.stringify(fake.slice(8)+suffix)+'+"y".repeat('+String(limit)+')),100);setTimeout(()=>process.exit(0),1200)';
  const command="node -e '"+script.replaceAll("'","'\\''")+"'";

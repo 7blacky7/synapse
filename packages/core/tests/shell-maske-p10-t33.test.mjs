@@ -72,13 +72,13 @@ try{
  assert.equal(maske.maskiereShellText('log KEY=inlineSecret').text,'log KEY=[WERT]');
  const docker=JSON.parse(maske.maskiereShellText('{"Config":{"Env":["API_KEY=dockerSecret","LANG=C.UTF8"]}}').text);
  assert.equal(docker.Config.Env[0],'API_KEY=[WERT]');assert.equal(docker.Config.Env[1],'LANG=C.UTF8');
- fs.writeFileSync(path.join(root,'.mcp.json'),JSON.stringify({mcpServers:{test:{env:{UNNAMED:'mcpOnlyValue-98765'}}}}));
+ fs.writeFileSync(path.join(root,'.mcp.json'),JSON.stringify({mcpServers:{test:{env:{API_KEY:'mcpOnlyValue-98765'}}}}));
  fs.writeFileSync(path.join(root,'secrets.env'),'DEPLOY_AUTH=deployOnlyValue-98765\n');
  for(const [command,value]of [["node -e 'process.stdout.write(\"mcpOnlyValue-98765\")'",'mcpOnlyValue-98765'],["cut -d= -f2 secrets.env",'deployOnlyValue-98765']]){
    assert(!JSON.stringify(await execShellInProject({project,command})).includes(value));
  }
  const pgSecret='pgOnlyValue-98765';
- await pool.query("INSERT INTO code_files(id,project,file_path,file_name,file_type,content,content_hash,file_size) VALUES($1,$2,'cfg/.env.sample','.env.sample','sample',$3,'fixture',30)",[randomUUID(),project,'HIDDEN='+pgSecret]);
+ await pool.query("INSERT INTO code_files(id,project,file_path,file_name,file_type,content,content_hash,file_size) VALUES($1,$2,'cfg/.env.sample','.env.sample','sample',$3,'fixture',30)",[randomUUID(),project,'HIDDEN_SECRET='+pgSecret]);
  assert(!JSON.stringify(await maske.maskiereShellAntwort(project,{tail:[pgSecret]})).includes(pgSecret));
  await audit.logToolCall({project:null,agentId:'sol-1-test',tool:'shell',action:'get',ok:true,result:JSON.stringify({job:{project,output:pgSecret}})});
  assert(!JSON.stringify((await pool.query("SELECT result FROM tool_calls WHERE agent_id='sol-1-test' AND project IS NULL AND position($1 in result)>0",[project])).rows).includes(pgSecret));
@@ -103,7 +103,7 @@ try{
  const identitaet='11111111-1111-4111-8111-111111111111';
  const metadata=await maske.maskiereShellAntwort(project,{status:'done',id:identitaet,tail:['literal 1']});
  assert.equal(metadata.id,identitaet,'Secret-Werte maskieren keine Steuer-ID');
- assert.equal(metadata.tail[0],'literal [WERT]');
+ assert.equal(metadata.tail[0],'literal 1','kurzes öffentliches FLAG-Literal bleibt lesbar');
 
 
 
