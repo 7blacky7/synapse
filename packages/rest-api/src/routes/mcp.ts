@@ -1137,6 +1137,7 @@ export const MCP_TOOLS = [
         open_for_coedit: { type: 'boolean', description: 'Optional fuer plan: ob der konkrete waiting_agent per coedit_add beitragen darf (default true). false lehnt coedit_add mutationsfrei ab.' },
         wait_token: { type: 'string', description: 'Opaquer CE-2-Wait-Token fuer shared_plan_status; optional fuer coedit_add (genau diesen Wait verwenden).' },
         wait_seconds: { type: 'number', description: 'plan_status/shared_plan_status: Long-Poll bis max. 50 s — der Server wartet, bis sich Status/Zielplan/Wait-Stand aendern (Antwort: changed, waited_seconds). commit: wartet der gemeinsame Plan auf aktive, noch nicht bereite Beitragende (status waiting_for_contributors, kein Fehler), haelt der Server bis max. 50 s und schreibt, sobald alle ready/no_changes sind oder inaktiv werden.' },
+        wait_sync: { type: 'boolean', description: 'Optional fuer commit: nach dem Commit bis SYNAPSE_COMMIT_WAIT_SYNC_MAX_SECONDS (Default 5, max. 30) auf den Datei-Hash auf dem verbundenen lokalen Daemon warten. Ohne Daemon bleibt auf_platte unbekannt.' },
         files: { type: 'array', items: { type: 'string' }, description: 'coedit_no_changes: konkrete gemeinsame Dateien ohne eigenen Beitrag.' },
         auto_commit: { type: 'boolean', description: '(optional fuer plan): wenn true, wird direkt nach plan() automatisch commit() aufgerufen — spart einen Tool-Call wenn kein User-Review vor commit gewuenscht. Versionierung bleibt aktiv (file_versions + batch_id), Rollback via restore_batch jederzeit moeglich.' },
         agent_note: { type: 'string', description: '(optional fuer plan/commit): KI-eigene Beobachtungen/Analyse zum Batch (zusaetzlich zum reason des Users). Wird in alle file_versions dieser Batch geschrieben. Empfohlen ab ≥3 Ops oder Multi-File Batches.' },
@@ -1230,6 +1231,7 @@ export const MCP_TOOLS = [
         open_for_coedit: { type: 'boolean', description: 'plan: ob der konkrete waiting_agent Co-Edit-Ops beitragen darf (default true)' },
         wait_token: { type: 'string', description: 'Opaquer CE-2-Wait-Token fuer shared_plan_status; optional fuer coedit_add (genau diesen Wait verwenden).' },
         wait_seconds: { type: 'number', description: 'plan_status/shared_plan_status: Long-Poll bis max. 50 s — der Server wartet, bis sich Status/Zielplan/Wait-Stand aendern (Antwort: changed, waited_seconds). commit: wartet der gemeinsame Plan auf aktive, noch nicht bereite Beitragende (status waiting_for_contributors, kein Fehler), haelt der Server bis max. 50 s und schreibt, sobald alle ready/no_changes sind oder inaktiv werden.' },
+        wait_sync: { type: 'boolean', description: 'Optional fuer commit: nach dem Commit bis SYNAPSE_COMMIT_WAIT_SYNC_MAX_SECONDS (Default 5, max. 30) auf den Datei-Hash auf dem verbundenen lokalen Daemon warten. Ohne Daemon bleibt auf_platte unbekannt.' },
         files: { type: 'array', items: { type: 'string' }, description: 'coedit_no_changes: konkrete gemeinsame Dateien ohne eigenen Beitrag.' },
         auto_commit: { type: 'boolean', description: 'plan + commit in einem Call (default false). Versionierung bleibt aktiv.' },
         befunde_quittieren: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, grund: { type: 'string' } }, required: ['id', 'grund'] }, description: 'commit: Pruefbefunde quittieren [{id, grund}]; Syntax nur bei absichtlich fehlerhaftem Inhalt.' },
@@ -5052,7 +5054,7 @@ async function handleToolCallKern(
         const planId = reqStr(args, 'plan_id');
         try {
           const result = await commitBatch({
-            plan_id: planId, agent_id: agentId, task_id: str(args, 'task_id'), agent_note: str(args, 'agent_note'), wait_seconds: num(args, 'wait_seconds'),
+            plan_id: planId, agent_id: agentId, task_id: str(args, 'task_id'), agent_note: str(args, 'agent_note'), wait_seconds: num(args, 'wait_seconds'), wait_sync: bool(args, 'wait_sync') === true,
             befunde_quittieren: befundeQuittierenLesen((args as Record<string, unknown>).befunde_quittieren),
           });
           if (result.success) {

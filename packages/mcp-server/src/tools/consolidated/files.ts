@@ -283,6 +283,10 @@ export const filesTool: ConsolidatedTool = {
           type: 'number',
           description: 'plan_status/shared_plan_status: Long-Poll bis max. 50 s — der Server wartet, bis sich Status/Zielplan/Wait-Stand aendern (Antwort: changed, waited_seconds). commit: wartet der gemeinsame Plan auf aktive, noch nicht bereite Beitragende (status waiting_for_contributors, kein Fehler), haelt der Server bis max. 50 s und schreibt, sobald alle ready/no_changes sind oder inaktiv werden.',
         },
+        wait_sync: {
+          type: 'boolean',
+          description: 'Optional fuer commit: nach dem Commit bis SYNAPSE_COMMIT_WAIT_SYNC_MAX_SECONDS (Default 5, max. 30) auf den Datei-Hash auf dem verbundenen lokalen Daemon warten. Ohne Daemon bleibt auf_platte unbekannt.',
+        },
         files: {
           type: 'array',
           items: { type: 'string' },
@@ -603,7 +607,7 @@ export const filesTool: ConsolidatedTool = {
     if (action === 'commit') {
       const planId = reqStr(args, 'plan_id');
       const result = await commitBatch({
-        plan_id: planId, agent_id: agentId, task_id: str(args, 'task_id'), agent_note: typeof args.agent_note === 'string' ? args.agent_note : undefined, wait_seconds: num(args, 'wait_seconds'),
+        plan_id: planId, agent_id: agentId, task_id: str(args, 'task_id'), agent_note: typeof args.agent_note === 'string' ? args.agent_note : undefined, wait_seconds: num(args, 'wait_seconds'), wait_sync: bool(args, 'wait_sync') === true,
         befunde_quittieren: befundeQuittierenLesen((args as Record<string, unknown>).befunde_quittieren),
       });
       if (result.success) {

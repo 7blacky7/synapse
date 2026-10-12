@@ -20,6 +20,7 @@
 import type { PoolClient } from 'pg';
 import { EventEmitter } from 'node:events';
 import { getPool } from '../db/client.js';
+import { daemonUebersicht, sendeAnDaemon } from './daemon-bruecke.js';
 import { resolveAgentId } from './agent-id-resolver.js';
 import { resolveProjectTaskId } from './task-id-resolver.js';
 import { merkeFileTaskVersion } from './file-task-zuordnung.js';
@@ -74,6 +75,65 @@ export const MAX_OPS_JE_AUFRUF = 10_000;
 
 /** Hash eines leeren Strings — Marker fuer "Datei existiert (noch) nicht". */
 const EMPTY_CONTENT_HASH = contentHash('');
+
+/** P6-T33: maximale Commit-Wartezeit fuer den Daemon-Hashvergleich (0..30 s, Default 5 s). */
+function commitSyncWartezeitMs(): number {
+  const sekunden = Number(process.env.SYNAPSE_COMMIT_WAIT_SYNC_MAX_SECONDS ?? 5);
+  return Number.isFinite(sekunden) ? Math.max(0, Math.min(30, sekunden)) * 1000 : 5_000;
+}
+
+type CommitSyncStatus = 'ja' | 'nein' | 'unbekannt';
+type CommitSyncDatei = Extract<CommitBatchResult, { success: true }>['files'][number];
+
+async function commitDateiAufPlatteWarten(
+  project: string,
+  datei: CommitSyncDatei,
+  host: string,
+  deadline: number,
+): Promise<CommitSyncStatus> {
+  let lesbarerStand = false;
+  while (Date.now() < deadline) {
+    try {
+      const rest = Math.max(1, deadline - Date.now());
+      const { ergebnis } = await sendeAnDaemon('sync_datei', { project, file_path: datei.file_path }, host, Math.min(750, rest));
+      const platte = ergebnis.platte as Record<string, unknown> | undefined;
+      if (ergebnis.success !== true || !platte || typeof platte.existiert !== 'boolean') return 'unbekannt';
+      if (datei.deleted) {
+        lesbarerStand = true;
+        if (platte.existiert === false) return 'ja';
+      } else if (typeof platte.sha256 === 'string') {
+        lesbarerStand = true;
+        if (platte.sha256 === datei.hash) return 'ja';
+      } else {
+        return 'unbekannt';
+      }
+    } catch {
+      return 'unbekannt';
+    }
+    await new Promise((resolve) => setTimeout(resolve, Math.min(200, Math.max(1, deadline - Date.now()))));
+  }
+  return lesbarerStand ? 'nein' : 'unbekannt';
+}
+
+async function commitDateienAufPlatteWarten(
+  project: string,
+  dateien: CommitSyncDatei[],
+  maxMs: number,
+): Promise<Map<string, CommitSyncStatus>> {
+  const daemons = daemonUebersicht().filter((daemon) => daemon.verbunden);
+  const ergebnis = new Map<string, CommitSyncStatus>(dateien.map((datei) => [datei.file_path, 'unbekannt']));
+  if (daemons.length !== 1 || maxMs <= 0) return ergebnis;
+  const deadline = Date.now() + maxMs;
+  let index = 0;
+  const worker = async () => {
+    while (index < dateien.length) {
+      const datei = dateien[index++];
+      ergebnis.set(datei.file_path, await commitDateiAufPlatteWarten(project, datei, daemons[0].host, deadline));
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(4, dateien.length) }, () => worker()));
+  return ergebnis;
+}
 
 export type FileBatchStatus = 'open' | 'committed' | 'cancelled' | 'expired' | 'stale' | 'conflict';
 
@@ -4629,6 +4689,8 @@ export async function commitBatch(args: {
   agent_note?: string;
   /** E1: so lange (Sekunden, max. 50) warten, solange aktive Beitragende noch nicht ready sind. */
   wait_seconds?: number;
+  /** P6-T33: nach erfolgreichem Commit optional auf den Datei-Hash beim lokalen Daemon warten. */
+  wait_sync?: boolean;
   /** P15-T17 E3: Pruefbefunde quittieren [{id, grund}] (Syntax nur bei absichtlich fehlerhaftem Inhalt). */
   befunde_quittieren?: Array<{ id: string; grund?: string }>;
 }): Promise<CommitBatchResult> {
@@ -4655,10 +4717,21 @@ export async function commitBatch(args: {
     // P15-T36 Teil 2: kein Abbruch, aber ein Hinweis, welche .env-Variablen mit Wert der commit ueberschrieben
     // oder entfernt hat (nur Namen; Stand vor dem commit aus file_versions des Batches).
     if (result.success) {
+      let syncStatus: Map<string, CommitSyncStatus> | undefined;
+      if (args.wait_sync === true) {
+        const planProjekt = (await getPool().query<{ project: string }>(
+          'SELECT project FROM file_batch_plans WHERE id = $1::bigint', [result.plan_id],
+        )).rows[0]?.project;
+        syncStatus = planProjekt
+          ? await commitDateienAufPlatteWarten(planProjekt, result.files, commitSyncWartezeitMs())
+          : new Map(result.files.map((datei) => [datei.file_path, 'unbekannt' as const]));
+      }
       const mitSyncStatus = {
         ...result,
-        files: result.files.map((datei) => ({ ...datei, auf_platte: 'unbekannt' as const })),
-        sync_hinweis: 'PG->FS-Sync laeuft asynchron; ohne lokale Daemon-Bestaetigung ist auf_platte unbekannt. Vor lokaler Ausfuehrung kurz warten.',
+        files: result.files.map((datei) => ({ ...datei, auf_platte: syncStatus?.get(datei.file_path) ?? 'unbekannt' as const })),
+        sync_hinweis: args.wait_sync === true
+          ? 'Auf Platte beschreibt den Hashvergleich des verbundenen lokalen Daemons; ohne eindeutige Daemon-Antwort bleibt der Status unbekannt.'
+          : 'PG->FS-Sync laeuft asynchron; ohne lokale Daemon-Bestaetigung ist auf_platte unbekannt. Vor lokaler Ausfuehrung kurz warten.',
       };
       const envListe = await envHinweiseFuerBatch(result.plan_id).catch(() => [] as string[]);
       return envListe.length > 0 ? { ...mitSyncStatus, env_hinweise: envListe } : mitSyncStatus;
