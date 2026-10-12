@@ -4,6 +4,7 @@
  */
 import {createHash}from'node:crypto';
 import path from'node:path';
+import{skriptFakten}from'./shell-inline-pruefung.js';
 import {pruefeShellText,normalisiereShellKommando,type ShellSicherungsKatalog,type ShellAntwortEintrag}from'./shell-sicherung.js';
 import {parseShellText,type SicherungsShell}from'./shell-sicherung-parser.js';
 import type{ShellLage}from'./shell-lage.js';
@@ -38,7 +39,7 @@ function lageKommandos(o:ShellStartEingabe){
 }
 function selbstschaden(o:ShellStartEingabe):string|undefined {
   const pids=new Set(o.geschuetzte_pids??[]),names=new Set((o.geschuetzte_namen??[]).map(x=>x.toLowerCase()));
-  for(const k of (lageKommandos(o)??parseShellText(o.command,o.lage.shell).kommandos).map(normalisiereShellKommando)){
+  for(const k of (lageKommandos(o)??parseShellText(o.command,o.lage.shell).kommandos).flatMap(k=>k.inline_skript?skriptFakten(k.inline_skript.text,k.inline_skript.sprache,{project:o.project,cwd:o.lage.cwd,testprojekt:o.lage.testprojekt,inline_pfade:o.lage.inline_pfade,scratchpad_roots:o.lage.scratchpad_roots,projekt_root:o.lage.project_root,os:o.lage.os}):[k]).map(normalisiereShellKommando)){
     const words=k.argv.map(w=>w.text);let name=basename(words.shift()??'');
     while(/^(?:sudo|env|command|exec|nohup)$/.test(name)){
       while(words.length&&(words[0].startsWith('-')||/^[A-Za-z_]\w*=/.test(words[0])))words.shift();
@@ -91,9 +92,10 @@ function vorschau(a:ShellAntwortEintrag|undefined,o:ShellStartEingabe,k:ShellSic
   return check.stufe==='laeuft'&&!check.risiko_verb&&!check.ungeklaert.length?text:fallback;
 }
 export function pruefeShellStart(o:ShellStartEingabe,k:ShellSicherungsKatalog):ShellStartEntscheidung{
-  const text=pruefeShellText(o.command,{shell:o.lage.shell,project:o.project,os:o.lage.os,rechner:o.rechner,katalog:k,kommandos:lageKommandos(o)});
+  const text=pruefeShellText(o.command,{shell:o.lage.shell,project:o.project,os:o.lage.os,rechner:o.rechner,katalog:k,kommandos:lageKommandos(o),cwd:o.lage.cwd,testprojekt:o.lage.testprojekt,inline_pfade:o.lage.inline_pfade,scratchpad_roots:o.lage.scratchpad_roots,projekt_root:o.lage.project_root});
   const hard=selbstschaden(o);
   let stufe=text.stufe;
+  if(text.ungeklaert.includes('parser_grenze')&&/^\s*(?:node|python[\d.]*)(?:\.exe)?\b/.test(o.command))stufe='anleitung';
   if(hard)stufe='sperre';
   else if(text.risiko_verb&&!o.lage.sicher_aufloesbar&&stufe==='laeuft')stufe='anleitung';
   const befehl_hash=createHash('sha256').update(JSON.stringify([o.project,o.command])).digest('hex');

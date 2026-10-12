@@ -7,11 +7,30 @@ import type{ShellStartEntscheidung,ShellBestaetigung}from'./shell-start-sicherun
 import type{ShellLage}from'./shell-lage.js';
 /** Gepflegte DB-Einträge überschreiben gleichnamigen Grundstock, auch stillgelegt. */
 export async function holeShellStartKatalog():Promise<ShellSicherungsKatalog>{
-  const db=await ladeShellSicherungsKatalog(getPool());
+  return verbindeShellStartKatalog(await ladeShellSicherungsKatalog(getPool()));
+}
+/** Reiner Abgleich: DB-Pflege bleibt maßgeblich, alte unveränderte Defaults erhalten neue Semantik. */
+export function verbindeShellStartKatalog(db:ShellSicherungsKatalog):ShellSicherungsKatalog{
   const merge=<T extends {id:string}>(base:T[],rows:T[]):T[]=>[...new Map([...base,...rows].map(x=>[x.id,x])).values()];
-  return {regeln:merge(SHELL_SICHERUNG_SEED.regeln,db.regeln),
-    antworten:merge(SHELL_SICHERUNG_SEED.antworten,db.antworten),
-    risiko_verben:merge(SHELL_SICHERUNG_SEED.risiko_verben,db.risiko_verben)};
+  const regeln=merge(SHELL_SICHERUNG_SEED.regeln,db.regeln).map(r=>{
+    const shipped=SHELL_SICHERUNG_SEED.regeln.find(x=>x.id===r.id);
+    if(!shipped||r.status!=='aktiv'||r.version>=shipped.version||r.quelle!==shipped.quelle||
+       r.stufe!==shipped.stufe||r.bereich!==shipped.bereich||r.project!==shipped.project||
+       (r.os?.length??0)||(r.rechner?.length??0))return r;
+    const canonical=(v:unknown):string=>JSON.stringify(v,(_k,value)=>value&&typeof value==='object'&&!Array.isArray(value)?
+      Object.fromEntries(Object.keys(value).sort().map(k=>[k,value[k]])):value);
+    const {skript_ziel:_z,skript_db:_d,skript_exec:_e,ausnahmen:_a,...alt}=shipped.muster;
+    return canonical(r.muster)===canonical(alt)?{...r,version:shipped.version,muster:shipped.muster}:r;
+  });
+  const risiko_verben=merge(SHELL_SICHERUNG_SEED.risiko_verben,db.risiko_verben).map(v=>{
+    const shipped=SHELL_SICHERUNG_SEED.risiko_verben.find(x=>x.id===v.id);
+    if(!shipped||v.status!=='aktiv'||v.quelle!==shipped.quelle)return v;
+    const {ausnahmen:_a,...alt}=shipped.muster;
+    const canonical=(value:unknown):string=>JSON.stringify(value,(_k,x)=>x&&typeof x==='object'&&!Array.isArray(x)?Object.fromEntries(Object.keys(x).sort().map(k=>[k,x[k]])):x);
+    return canonical(v.muster)===canonical(alt)?{...v,muster:shipped.muster}:v;
+  });
+  return {regeln,
+    antworten:merge(SHELL_SICHERUNG_SEED.antworten,db.antworten),risiko_verben};
 }
 export{geschuetzteShellProzesse}from'./shell-prozess-lage.js';
 export interface ShellPruefSpeicher {

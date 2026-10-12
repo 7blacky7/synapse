@@ -3,11 +3,13 @@
  * DB-Katalog explizit laden; Seeds für Tests/initiale Katalogbefüllung.
  */
 import type { Pool } from 'pg';
+import{skriptFakten,type InlineKontext}from'./shell-inline-pruefung.js';
 import { parseShellText, type SicherungsShell, type ShellTextKommando } from './shell-sicherung-parser.js';
 import { SHELL_SICHERUNG_SEED } from './shell-sicherung-seed.js';
 export interface ShellMuster {
   command: string[]; argv_any?: string[]; argv_all?: string[]; argv_none?: string[];
-  umleitung?: boolean; target_regex?: string;
+  umleitung?: boolean; target_regex?: string; ausnahmen?: ShellMuster[];
+  skript_ziel?:'ausserhalb';skript_db?:'ohne_testprojekt';skript_exec?:'ungeklaert';
 }
 export interface ShellGeltung {
   os?: Array<'linux' | 'windows' | 'macos' | 'wsl'>;
@@ -59,14 +61,14 @@ function normalisiere(k: ShellTextKommando): ShellTextKommando {
     }
     argv.unshift(head);
   }
-  return { argv, umleitungen: k.umleitungen };
+  return { argv, umleitungen: k.umleitungen,...(k.inline_skript?{inline_skript:k.inline_skript}:{}),...(k.skript_operation?{skript_operation:k.skript_operation}:{}) };
 }
 export function normalisiereShellKommando(k:ShellTextKommando):ShellTextKommando{return normalisiere(k);}
 const gilt = (g: ShellGeltung, o: ShellPruefOptionen): boolean =>
   (g.bereich !== 'projekt' || g.project === o.project) &&
   (!g.os?.length || !!o.os && g.os.includes(o.os)) &&
   (!g.rechner?.length || !!o.rechner && g.rechner.includes(o.rechner));
-export interface ShellPruefOptionen {
+export interface ShellPruefOptionen extends InlineKontext {
   shell?: SicherungsShell; project?: string; os?: 'linux' | 'windows' | 'macos' | 'wsl';
   rechner?: string; katalog?: ShellSicherungsKatalog;
   kommandos?: ShellTextKommando[];
@@ -76,6 +78,10 @@ function regex(pattern: string, text: string): boolean {
   return new RegExp(pattern, 'i').test(text);
 }
 function trifft(m: ShellMuster, k: ShellTextKommando): boolean {
+  if(!k.umleitungen.length&&!k.argv.some(a=>a.dynamisch)&&m.ausnahmen?.some(x=>trifft(x,k)))return false;
+  if(m.skript_ziel==='ausserhalb'&&k.skript_operation?.ziel_im_projekt===true)return false;
+  if(m.skript_db==='ohne_testprojekt'&&k.skript_operation?.testprojekt)return false;
+  if(m.skript_exec==='ungeklaert'&&k.skript_operation?.statischer_befehl)return false;
   if (m.umleitung) return k.umleitungen.some(x => !m.target_regex || regex(m.target_regex, x));
   if (!m.command.length || !m.command.every((p, i) => regex(p, k.argv[i]?.text ?? ''))) return false;
   const args = k.argv.slice(m.command.length).map(a => a.text);
@@ -108,7 +114,8 @@ export function pruefeShellText(
 ): ShellTextErgebnis {
   const katalog = opts.katalog ?? SHELL_SICHERUNG_SEED;
   const tree = parseShellText(command, opts.shell ?? 'bash');
-  const commands = (opts.kommandos ?? tree.kommandos).map(normalisiere);
+  const commands = (opts.kommandos ?? tree.kommandos).map(normalisiere).flatMap(k=>k.inline_skript?
+    skriptFakten(k.inline_skript.text,k.inline_skript.sprache,{...opts,cwd:k.inline_skript.cwd??opts.cwd}).map(normalisiere):[k]);
   const activeAnswers = new Set(katalog.antworten.filter(a => a.status === 'aktiv' && gilt(a, opts)).map(a => a.id));
   const treffer: ShellTextErgebnis['treffer'] = [];
   for (const r of katalog.regeln) {

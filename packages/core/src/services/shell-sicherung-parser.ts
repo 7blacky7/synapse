@@ -4,7 +4,8 @@
  */
 export type SicherungsShell = 'bash' | 'sh' | 'pwsh' | 'cmd';
 export interface ShellWort { text: string; dynamisch: boolean; raw?: string; }
-export interface ShellTextKommando { argv: ShellWort[]; umleitungen: string[]; umleitungs_woerter?: ShellWort[]; zuweisungen?: ShellWort[]; shell?: SicherungsShell; nach?: string; }
+export interface ShellInlineSkript { sprache:'node'|'python';text:string;expansion:boolean;argv_index?:number;cwd?:string; }
+export interface ShellTextKommando { inline_skript?:ShellInlineSkript; skript_operation?:import('./shell-inline-pruefung.js').InlineOperation; argv: ShellWort[]; umleitungen: string[]; umleitungs_woerter?: ShellWort[]; zuweisungen?: ShellWort[]; shell?: SicherungsShell; nach?: string; }
 export interface ShellTextBaum { kommandos: ShellTextKommando[]; ungeklart: string[]; komplex: boolean; }
 type Token = ShellWort & { operator?: boolean; quoted?: boolean; };
 const TRENNER = new Set([';', '&&', '||', '|', '&', '\n', '(', ')', '{', '}']);
@@ -48,7 +49,10 @@ export function parseShellText(text: string, shell: SicherungsShell = 'bash', ti
     while (argv.length && /^(?:then|do|else|if|while|until|!|&)$/.test(argv[0].text)) {
       out.ungeklart.push('kontrollfluss_nicht_statisch');argv.shift();
     }
-    if (argv.length || umleitungen.length || zuweisungen.length) out.kommandos.push({ argv, umleitungen, umleitungs_woerter, zuweisungen, shell });
+    const interpreter=/^(?:node|python[\d.]*)(?:\.exe)?$/i.test(basis(argv[0]?.text??''));
+    const option=argv.findIndex((a,i)=>i>0&&/^(?:-c|-e|--eval)$/.test(a.text));
+    const inline=interpreter&&option>=0&&argv[option+1]?{sprache:(/^node/i.test(basis(argv[0].text))?'node':'python') as 'node'|'python',text:argv[option+1].text,expansion:false,argv_index:option+1}:undefined;
+    if (argv.length || umleitungen.length || zuweisungen.length) out.kommandos.push({ argv, umleitungen, umleitungs_woerter, zuweisungen, shell,...(inline?{inline_skript:inline}:{}) });
     if (argv.length) {
       const b = basis(argv[0].text);
       if (argv[0].dynamisch || /^(?:eval|source|\.)$/i.test(b)) out.ungeklart.push('dynamisches_programm');
@@ -59,7 +63,7 @@ export function parseShellText(text: string, shell: SicherungsShell = 'bash', ti
           nested(argv[option + 1].text, art);
         } else if (argv.length > 1) out.ungeklart.push('script_datei');
       }
-      if (/^(?:node|python[\d.]*)$/.test(b) && !argv.some(a => /^(?:-c|-e|--eval)$/.test(a.text))) out.ungeklart.push('interpreter_datei');
+      if (/^(?:node|python[\d.]*)(?:\.exe)?$/i.test(b) && !inline && !(tokens.some(t=>t.operator&&/^<<-?$/.test(t.text))&&argv.slice(1).every(a=>a.text==='-'||a.text.startsWith('-')))) out.ungeklart.push('interpreter_datei');
       const exec = argv.findIndex(a => /^-exec(?:dir)?$/.test(a.text));
       if (b === 'find' && exec >= 0) {
         const end = argv.findIndex((a, k) => k > exec && (a.text === '+' || a.text === ';'));
@@ -129,9 +133,11 @@ export function parseShellText(text: string, shell: SicherungsShell = 'bash', ti
           if (text.slice(end, lineEnd).replace(/^\t+/, '') === delimiter) {
             const body = text.slice(start, end);
             if (SCRIPT.test(basis(owner))) nested(body, /pwsh|powershell/i.test(owner) ? 'pwsh' : 'bash');
-            else if (/^(?:node|python[\d.]*)$/.test(basis(owner)))
-              out.kommandos.push({ argv: [{text:basis(owner),dynamisch:false},{text:/^node$/.test(basis(owner))?'-e':'-c',dynamisch:false},{text:body,dynamisch:false}], umleitungen:[] });
-            else if (expandHere) {
+            else if (/^(?:node|python[\d.]*)(?:\.exe)?$/i.test(basis(owner))&&out.kommandos.at(-1)?.argv.slice(1).every(a=>a.text==='-'||a.text.startsWith('-'))) {
+              const command=out.kommandos.at(-1)!;
+              command.inline_skript={sprache:/^node/i.test(basis(owner))?'node':'python',text:body,expansion:expandHere};
+            }
+            if (expandHere && !SCRIPT.test(basis(owner))) {
               // Here-Doc-Daten sind keine Befehle; nur echte Substitutionen laufen.
               for (let h = 0; h < body.length; h++) {
                 if (body[h] === '\\') { h++; continue; }

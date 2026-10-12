@@ -2,6 +2,124 @@
 import type { ShellSicherungsKatalog } from './shell-sicherung.js';
 export const SHELL_SICHERUNG_SEED: ShellSicherungsKatalog = {
   "regeln": [
+{
+    "id": "inline.ungeklaert",
+    "version": 1,
+    "art": "text",
+    "stufe": "anleitung",
+    "status": "aktiv",
+    "muster": {
+        "command": [
+            "^(?:node|python[\\d.]*)$"
+        ],
+        "argv_any": [
+            "^inline\\.ungeklaert\\(\\)$"
+        ]
+    },
+    "antwort_id": "inline.exec",
+    "quelle": "P10-T47: Sprachtext nicht vollständig analysierbar",
+    "bereich": "global",
+    "project": null,
+    "os": [],
+    "rechner": [],
+    "positiv": [],
+    "negativ": []
+},
+{
+    "id": "inline.exec",
+    "version": 1,
+    "art": "text",
+    "stufe": "anleitung",
+    "status": "aktiv",
+    "muster": {
+        "command": [
+            "^(?:node|python[\\d.]*)$"
+        ],
+        "argv_any": [
+            "\\b(?:child_process\\.(?:exec|execSync|spawn|spawnSync|execFile|execFileSync)|subprocess\\.(?:run|call|Popen|check_call|check_output)|os\\.(?:system|popen))\\s*\\("
+        ],
+        "skript_exec": "ungeklaert"
+    },
+    "antwort_id": "inline.exec",
+    "quelle": "P10-T47: statische Sprachaufrufe, keine Skriptausführung",
+    "bereich": "global",
+    "project": null,
+    "os": [],
+    "rechner": [],
+    "positiv": [],
+    "negativ": []
+},
+{
+    "id": "inline.signal",
+    "version": 1,
+    "art": "text",
+    "stufe": "anleitung",
+    "status": "aktiv",
+    "muster": {
+        "command": [
+            "^(?:node|python[\\d.]*)$"
+        ],
+        "argv_any": [
+            "\\b(?:process|os)\\.(?:kill|killpg)\\s*\\("
+        ]
+    },
+    "antwort_id": "inline.signal",
+    "quelle": "P10-T47: Signalaufrufe im Skript",
+    "bereich": "global",
+    "project": null,
+    "os": [],
+    "rechner": [],
+    "positiv": [],
+    "negativ": []
+},
+{
+    "id": "inline.net",
+    "version": 1,
+    "art": "text",
+    "stufe": "anleitung",
+    "status": "aktiv",
+    "muster": {
+        "command": [
+            "^(?:node|python[\\d.]*)$"
+        ],
+        "argv_any": [
+            "\\b(?:requests|httpx|axios)\\.(?:post|put|patch|delete)\\s*\\(",
+            "^<(?:POST|PUT|PATCH|DELETE|<dynamisch>)>$"
+        ]
+    },
+    "antwort_id": "inline.net",
+    "quelle": "P10-T47: schreibende HTTP-Aufrufe",
+    "bereich": "global",
+    "project": null,
+    "os": [],
+    "rechner": [],
+    "positiv": [],
+    "negativ": []
+},
+{
+    "id": "inline.db",
+    "version": 1,
+    "art": "text",
+    "stufe": "anleitung",
+    "status": "aktiv",
+    "muster": {
+        "command": [
+            "^(?:node|python[\\d.]*)$"
+        ],
+        "argv_any": [
+            "^<SQL:(?:CREATE|ALTER|DROP|TRUNCATE|DELETE|UPDATE|INSERT|DYNAMISCH)>$"
+        ],
+        "skript_db": "ohne_testprojekt"
+    },
+    "antwort_id": "db.sql",
+    "quelle": "P10-T47: SQL-Schreiboperationen ohne Testprojekt",
+    "bereich": "global",
+    "project": null,
+    "os": [],
+    "rechner": [],
+    "positiv": [],
+    "negativ": []
+},
     {
       "id": "fs.rm",
       "version": 1,
@@ -226,7 +344,7 @@ export const SHELL_SICHERUNG_SEED: ShellSicherungsKatalog = {
     },
     {
       "id": "git.restore",
-      "version": 1,
+      "version": 2,
       "art": "text",
       "stufe": "anleitung",
       "status": "aktiv",
@@ -234,6 +352,20 @@ export const SHELL_SICHERUNG_SEED: ShellSicherungsKatalog = {
         "command": [
           "^git$",
           "^restore$"
+        ],
+        "ausnahmen": [
+          {
+            "command": [
+              "^git$",
+              "^restore$"
+            ],
+            "argv_all": [
+              "^(?:--staged|-S)$"
+            ],
+            "argv_none": [
+              "^(?:--worktree|-W|-SW|-WS)$"
+            ]
+          }
         ]
       },
       "antwort_id": "git.restore",
@@ -903,11 +1035,12 @@ export const SHELL_SICHERUNG_SEED: ShellSicherungsKatalog = {
     },
     {
       "id": "inline.python",
-      "version": 1,
+      "version": 2,
       "art": "text",
       "stufe": "anleitung",
       "status": "aktiv",
       "muster": {
+        "skript_ziel": "ausserhalb",
         "command": [
           "^python[\\d.]*$"
         ],
@@ -933,11 +1066,12 @@ export const SHELL_SICHERUNG_SEED: ShellSicherungsKatalog = {
     },
     {
       "id": "inline.node",
-      "version": 1,
+      "version": 2,
       "art": "text",
       "stufe": "anleitung",
       "status": "aktiv",
       "muster": {
+        "skript_ziel": "ausserhalb",
         "command": [
           "^node$"
         ],
@@ -963,6 +1097,72 @@ export const SHELL_SICHERUNG_SEED: ShellSicherungsKatalog = {
     }
   ],
   "antworten": [
+{
+    "id": "inline.exec",
+    "version": 1,
+    "beschreibung": "Statisch erkannter Skriptaufruf",
+    "risiko": "Der Skriptaufruf startet einen nicht statisch aufgelösten externen Befehl.",
+    "sicher": {
+        "bash": "pwd",
+        "sh": "pwd",
+        "pwsh": "Get-Location",
+        "cmd": "cd"
+    },
+    "danach": "Den tatsächlichen Befehl beziehungsweise Empfänger prüfen und auf das beabsichtigte Ziel begrenzen.",
+    "platzhalter": {},
+    "quelle": "P10-T47: statische Sprachaufrufe",
+    "status": "aktiv",
+    "bereich": "global",
+    "project": null,
+    "os": [],
+    "rechner": [],
+    "positiv": [],
+    "negativ": []
+},
+{
+    "id": "inline.signal",
+    "version": 1,
+    "beschreibung": "Statisch erkannter Skriptaufruf",
+    "risiko": "Der Skriptaufruf sendet ein Prozesssignal.",
+    "sicher": {
+        "bash": "pwd",
+        "sh": "pwd",
+        "pwsh": "Get-Location",
+        "cmd": "cd"
+    },
+    "danach": "Den tatsächlichen Befehl beziehungsweise Empfänger prüfen und auf das beabsichtigte Ziel begrenzen.",
+    "platzhalter": {},
+    "quelle": "P10-T47: statische Sprachaufrufe",
+    "status": "aktiv",
+    "bereich": "global",
+    "project": null,
+    "os": [],
+    "rechner": [],
+    "positiv": [],
+    "negativ": []
+},
+{
+    "id": "inline.net",
+    "version": 1,
+    "beschreibung": "Statisch erkannter Skriptaufruf",
+    "risiko": "Der Skriptaufruf schreibt über HTTP auf ein externes Ziel.",
+    "sicher": {
+        "bash": "pwd",
+        "sh": "pwd",
+        "pwsh": "Get-Location",
+        "cmd": "cd"
+    },
+    "danach": "Den tatsächlichen Befehl beziehungsweise Empfänger prüfen und auf das beabsichtigte Ziel begrenzen.",
+    "platzhalter": {},
+    "quelle": "P10-T47: statische Sprachaufrufe",
+    "status": "aktiv",
+    "bereich": "global",
+    "project": null,
+    "os": [],
+    "rechner": [],
+    "positiv": [],
+    "negativ": []
+},
     {
       "id": "fs.rm",
       "version": 1,
@@ -1876,6 +2076,47 @@ export const SHELL_SICHERUNG_SEED: ShellSicherungsKatalog = {
           "^-[fR]*r[fR]*$",
           "^--delete",
           "^of="
+        ],
+        "ausnahmen": [
+          {
+            "command": [
+              "^git$",
+              "^apply$"
+            ],
+            "argv_all": [
+              "^--cached$"
+            ],
+            "argv_none": [
+              "^--index$"
+            ]
+          },
+          {
+            "command": [
+              "^git$",
+              "^restore$"
+            ],
+            "argv_all": [
+              "^(?:--staged|-S)$"
+            ],
+            "argv_none": [
+              "^(?:--worktree|-W|-SW|-WS)$"
+            ]
+          },
+          {
+            "command": [
+              "^git$",
+              "^update-index$"
+            ]
+          },
+          {
+            "command": [
+              "^git$",
+              "^add$"
+            ],
+            "argv_any": [
+              "^(?:--patch|-p)$"
+            ]
+          }
         ]
       },
       "status": "aktiv",

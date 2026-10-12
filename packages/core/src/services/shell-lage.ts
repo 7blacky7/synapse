@@ -3,6 +3,7 @@
  * Native Dateisystemprobe ist austauschbar (Daemon/Container derselbe Helfer).
  */
 import path from 'node:path';
+import{skriptFakten}from'./shell-inline-pruefung.js';
 import {createHash}from'node:crypto';
 import {parseShellText,type SicherungsShell,type ShellWort,type ShellTextKommando}from'./shell-sicherung-parser.js';
 import {probeShellLage,type ShellProbeAnfrage,type ShellProbeAntwort}from'./shell-lage-probe.js';
@@ -11,7 +12,7 @@ export interface ShellLageKontext {
   shell?: SicherungsShell; os?: 'linux'|'windows'|'macos'|'wsl';
   cwd: string; project_root: string; env?: Record<string,string|undefined>;
   variablen?: Record<string,string|undefined>;
-  env_vollstaendig?: boolean; drive_cwds?: Record<string,string>;
+  env_vollstaendig?: boolean; drive_cwds?: Record<string,string>; scratchpad_roots?:string[];
   inspect?: boolean; probe?: (input:ShellProbeAnfrage)=>Promise<ShellProbeAntwort>;
 }
 export interface ShellLageZiel {
@@ -24,7 +25,7 @@ export interface ShellLageZiel {
 export interface ShellLage {
   shell: SicherungsShell; os: ShellLageKontext['os']; cwd:string; project_root:string;
   variablen: Array<{name:string;wert?:string;gesetzt:boolean}>;
-  kommandos?:ShellTextKommando[]; quell_hash?:string;
+  kommandos?:ShellTextKommando[]; quell_hash?:string; inline_pfade?:Record<string,boolean|undefined>;scratchpad_roots?:string[];testprojekt?:boolean;
   ziele:ShellLageZiel[]; ungeklaert:string[]; sicher_aufloesbar:boolean; hinweis?:string; hash:string;
 }
 interface Wert {wert?:string;leer:string[];probleme:string[];glob:boolean;}
@@ -158,6 +159,9 @@ export async function ermittleShellLage(command:string,ctx:ShellLageKontext):Pro
   if(env.CD===undefined)env.CD=ctx.cwd;
   let cwd=ctx.cwd;
   const ziele:ShellLageZiel[]=[];
+  const inline_pfade:Record<string,boolean|undefined>={};
+  let testprojekt=false;try{const db=new URL(ctx.env?.DATABASE_URL??'');testprojekt=db.port==='5433'&&!['/synapse','/postgres','/'].includes(db.pathname);}catch{/* keine verifizierte Spielwiese */}
+  const scratchpad_roots=ctx.scratchpad_roots??(ctx.env?.SYNAPSE_SCRATCHPAD_ROOT?[ctx.env.SYNAPSE_SCRATCHPAD_ROOT]:[]);
   const kommandos:ShellTextKommando[]=[];
   const unresolved=tree.ungeklart.filter(x=>!['ziel_dynamisch','dynamisches_programm'].includes(x));
   const probe=ctx.probe??probeShellLage;
@@ -209,12 +213,32 @@ export async function ermittleShellLage(command:string,ctx:ShellLageKontext):Pro
       argv:k.argv.map(aufgeloest),
       umleitungen:(k.umleitungs_woerter??k.umleitungen.map(text=>({text,dynamisch:false}))).map(aufgeloest).map(w=>w.text),
       shell:art,nach:k.nach,
+      ...(k.inline_skript?{inline_skript:{...k.inline_skript,
+        text:k.inline_skript.argv_index!==undefined?aufgeloest(k.argv[k.inline_skript.argv_index]).text:
+          k.inline_skript.expansion?expand({text:k.inline_skript.text,
+            raw:String.fromCharCode(34)+k.inline_skript.text.replaceAll(String.fromCharCode(34),String.fromCharCode(92,34))+String.fromCharCode(34),
+            dynamisch:true},art,local).wert??k.inline_skript.text:k.inline_skript.text}}:{}),
     };
+    if(projected.inline_skript){
+      projected.inline_skript.cwd=cwd;
+      if(ctx.inspect!==false){
+        const paths=[...new Set(skriptFakten(projected.inline_skript.text,projected.inline_skript.sprache,{cwd,projekt_root:ctx.project_root,os:ctx.os})
+          .map(k=>k.skript_operation?.ziel).filter((x):x is string=>typeof x==='string').map(x=>p.resolve(cwd,x)))].slice(0,64);
+        if(paths.length){
+          const roots=[ctx.project_root,...scratchpad_roots];
+          const native=await probe({cwd,pfade:[...paths,...roots]});
+          for(let i=0;i<paths.length;i++){
+            const n=native.pfade[i];
+            inline_pfade[paths[i]]=n?.kanonisch&&!n.fehler?roots.some((root,j)=>innerhalb(native.pfade[paths.length+j]?.kanonisch??root,n.kanonisch!,p,winOs(ctx))):undefined;
+          }
+        }
+      }
+    }
     if(projected.argv.length||projected.umleitungen.length)kommandos.push(projected);
     const cmd=expand(k.argv[0]??{text:'',dynamisch:false},art,local);
     if(cmd.probleme.length)unresolved.push(...cmd.probleme);
     if(/^(?:eval|source|\.)$/.test(cmd.wert??''))unresolved.push('lage_nicht_sicher_aufloesbar');
-    if(/^(?:node|python[\d.]*)(?:\.exe)?$/.test(cmd.wert??''))unresolved.push('inline_oder_script_lage_unbekannt');
+    if(/^(?:node|python[\d.]*)(?:\.exe)?$/.test(cmd.wert??'')&&!k.inline_skript)unresolved.push('inline_oder_script_lage_unbekannt');
     if(art!==shell)unresolved.push('interpreter_scope_nicht_verifiziert');
     if(/^(?:cd|set-location)$/i.test(cmd.wert??'')){
       const val=expand(k.argv[1]??{text:'$HOME',raw:'$HOME',dynamisch:true},art,local);
@@ -259,6 +283,7 @@ export async function ermittleShellLage(command:string,ctx:ShellLageKontext):Pro
   const base={shell,os:ctx.os,cwd:ctx.cwd,project_root:ctx.project_root,
     quell_hash:createHash('sha256').update(command).digest('hex'),
     sicher_aufloesbar:ungeklaert.length===0,...(ungeklaert.length?{hinweis:'Lage nicht sicher auflösbar'}:{}),
+    ...(kommandos.some(k=>k.inline_skript)?{scratchpad_roots,testprojekt,...(ctx.inspect!==false?{inline_pfade}:{})}:{}),
     variablen:[...vars.values()].sort((a,b)=>a.name.localeCompare(b.name)),kommandos,ziele,ungeklaert};
   return {...base,hash:createHash('sha256').update(JSON.stringify(base)).digest('hex')};
 }
