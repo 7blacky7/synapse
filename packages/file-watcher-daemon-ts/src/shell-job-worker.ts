@@ -17,6 +17,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {
   getPool,
+  maskiereShellText,
   claimPendingShellJob,
   completeShellJob,
   execShellInProject,
@@ -328,13 +329,14 @@ async function runClaimedJob(project: string, job: ShellJobRow): Promise<void> {
   // ohnehin durchgereicht. So sieht der Aufrufer ohne API-Deploy, welche DB-
   // Variable sein Job hatte (ohne Passwort).
   const jobEnv = result['job_env'] as { database_url?: string } | undefined;
-  const jobEnvText = jobEnv?.database_url ? `job_env: database_url=${jobEnv.database_url}` : undefined;
+  const jobEnvText = jobEnv?.database_url ? `job_env: database_url=${maskiereShellText(jobEnv.database_url).text}` : undefined;
 
   await completeShellJob(job.id, {
     status,
     exit_code: exitCode,
     tail,
     output,
+    ...(result['maskiert']?{maskiert:Number(result['maskiert'])}:{}),
     ...(abgebrochen
       ? {
           error: 'cancelled',

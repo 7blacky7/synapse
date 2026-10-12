@@ -10,6 +10,8 @@
  */
 
 import { spawn } from 'node:child_process';
+import { StringDecoder } from 'node:string_decoder';
+import {ladeShellWerte,maskiereShellDaten,maskiereShellText} from './shell-maske.js';
 import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -95,6 +97,7 @@ type StreamMeta = {
   status: 'running' | 'done' | 'failed';
   exit_code?: number;
   last_read_offset: number;
+  maskiert?: number;
   log_path: string;
 };
 
@@ -176,7 +179,8 @@ export async function execShellInProject(
   // und Tokens. DATABASE_URL zeigt stattdessen auf die DB DIESES Projekts
   // (siehe shell-job-umgebung.ts). job_env meldet die Wahl ohne Passwort.
   const jobUmgebung = await baueJobUmgebung(args.project);
-  const jobEnv = jobUmgebung.info;
+  const werte=await ladeShellWerte(args.project);
+  const jobEnv = maskiereShellDaten(jobUmgebung.info,werte).daten;
 
   return new Promise((resolve) => {
     ensureStreamsDir();
@@ -210,7 +214,7 @@ export async function execShellInProject(
     // PGID des Waisen == Daemon-PID). Ein Gruppen-Kill haette damit den Daemon
     // selbst erschlagen. Deshalb: eigene Gruppe, dann gezielt -pgid beenden.
     const child = spawn('sh', ['-c', args.command], {
-      cwd, env: jobUmgebung.env, stdio: ['ignore', log, log],
+      cwd, env: jobUmgebung.env, stdio: ['ignore', 'pipe', 'pipe'],
       detached: true,
     });
 
@@ -239,6 +243,22 @@ export async function execShellInProject(
       log_path: logPath(streamId),
     };
     writeMeta(meta);
+
+    // P10-T33: Klartext darf nie in die Stream-Datei. UTF-8 und Geheimnisse ueber Chunk-Grenzen.
+    const decoderOut=new StringDecoder('utf8'),decoderErr=new StringDecoder('utf8');
+    let pending='',maskiert=0;
+    const schreibe=(text:string)=>{
+      const safe=maskiereShellText(text,werte);maskiert+=safe.maskiert;
+      fs.writeSync(log,safe.text);
+    };
+    const empfange=(text:string)=>{
+      pending+=text;
+      const bis=pending.lastIndexOf('\n');
+      if(bis>=0){schreibe(pending.slice(0,bis+1));pending=pending.slice(bis+1);}
+    };
+    child.stdout?.on('data',(chunk:Buffer)=>empfange(decoderOut.write(chunk)));
+    child.stderr?.on('data',(chunk:Buffer)=>empfange(decoderErr.write(chunk)));
+    const flush=()=>{empfange(decoderOut.end());empfange(decoderErr.end());if(pending){schreibe(pending);pending='';}};
 
     // ── Abbruch von aussen (SH-2) ──
     // Der Aufrufer bekommt eine Handhabe auf den Kindprozess. Ohne sie koennte
@@ -303,7 +323,9 @@ export async function execShellInProject(
       if (cancelKillTimer) clearTimeout(cancelKillTimer);
     };
 
-    child.on('exit', (code) => {
+    child.on('close', (code) => {
+      flush();
+      if(maskiert) meta.maskiert=maskiert;
       clearTimers();
       try { fs.closeSync(log); } catch { /* already closed */ }
       meta.status = (hardLimitHit || cancelled) ? 'failed' : (code === 0 ? 'done' : 'failed');
@@ -319,6 +341,7 @@ export async function execShellInProject(
         detached,
         tail: tailLines(logPath(streamId), tailN),
         job_env: jobEnv,
+        ...(maskiert?{maskiert}:{}),
         ...(cancelled
           ? { message: 'Job wurde abgebrochen.' }
           : hardLimitHit
@@ -328,6 +351,8 @@ export async function execShellInProject(
     });
 
     child.on('error', (err) => {
+      flush();
+      if(maskiert)meta.maskiert=maskiert;
       clearTimers();
       try { fs.closeSync(log); } catch { /* ignore */ }
       meta.status = 'failed';
@@ -336,7 +361,7 @@ export async function execShellInProject(
       resolve({
         status: 'failed',
         stream_id: streamId,
-        error: err.message,
+        error: maskiereShellText(err.message,werte).text,
         detached,
         tail: tailLines(logPath(streamId), tailN),
         job_env: jobEnv,
@@ -368,6 +393,7 @@ export function getShellStream(args: ShellGetStreamArgs): Record<string, unknown
     exit_code: meta.exit_code,
     new_lines: lines.slice(-tailN),
     total_bytes: fullLog.length,
+    ...(meta.maskiert?{maskiert:meta.maskiert}:{}),
   };
 }
 

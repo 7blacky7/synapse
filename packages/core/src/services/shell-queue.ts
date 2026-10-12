@@ -18,6 +18,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
+import {maskiereShellAntwort,maskiereShellVorSpeichern} from './shell-maske.js';
 import { getPool } from '../db/index.js';
 import { istTeilbar, execKeyFuer } from './shell-teilbar.js';
 import {
@@ -67,6 +68,7 @@ export interface ShellJobRow {
 }
 
 export interface ShellJobCompletion {
+  maskiert?: number;
   status: 'done' | 'failed' | 'rejected' | 'timeout';
   exit_code?: number;
   tail?: string[];
@@ -79,6 +81,7 @@ export interface ShellJobCompletion {
 }
 
 export interface ShellJobResult {
+  maskiert?: number;
   id: string;
   /**
    * 'running_background' ist KEIN gespeicherter Job-Status, sondern eine reine
@@ -119,8 +122,8 @@ function doneChannelForJob(id: string): string {
   return `shell_job_done_${id.replace(/-/g, '_')}`;
 }
 
-function formatResult(row: ShellJobRow): ShellJobResult {
-  return {
+async function formatResult(row: ShellJobRow): Promise<ShellJobResult> {
+  return maskiereShellAntwort(row.project,{
     id: row.id,
     status: row.status,
     exit_code: row.exit_code ?? undefined,
@@ -128,7 +131,8 @@ function formatResult(row: ShellJobRow): ShellJobResult {
     error: row.error ?? undefined,
     message: row.message ?? undefined,
     stream_id: row.stream_id ?? undefined,
-  };
+    ...(row.message?.match(/maskiert:\s*(\d+) Werte/)?{maskiert:Number(row.message.match(/maskiert:\s*(\d+) Werte/)![1])}:{}),
+  });
 }
 
 const TERMINAL_STATUSES: ShellJobRow['status'][] = ['done', 'failed', 'rejected', 'timeout'];
@@ -385,6 +389,9 @@ export async function completeShellJob(
   result: ShellJobCompletion,
 ): Promise<void> {
   const pool = getPool();
+  const project=(await pool.query<{project:string}>('SELECT project FROM shell_jobs WHERE id=$1',[id])).rows[0]?.project;
+  result=await maskiereShellVorSpeichern(project,result);
+  if(result.maskiert)result.message=[result.message,`maskiert: ${result.maskiert} Werte`].filter(Boolean).join('; ');
   // Output cappen — sehr grosse Logs sprengen die JSON-Response der KI-Tools.
   // Bei Bedarf kann der File-Fallback die volle Groesse liefern.
   let output = result.output ?? null;
@@ -799,6 +806,11 @@ export async function insertCompletedShellJob(args: {
   agent_id?: string | null;
 }): Promise<{ id: string }> {
   const pool = getPool();
+  const command=args.command;
+  const safe=await maskiereShellVorSpeichern(args.project,args) as typeof args & {maskiert?:number};
+  if(safe.maskiert)safe.message=[safe.message,`maskiert: ${safe.maskiert} Werte`].filter(Boolean).join('; ');
+  args=safe;
+  args.command=command; // Ausfuehrungs-/Audit-Kommando bleibt in der Job-Steuerung, Ausgaben sind geschwaerzt.
   let output = args.output ?? null;
   let truncated = false;
   if (output !== null && output.length > MAX_OUTPUT_BYTES) {
@@ -908,7 +920,7 @@ export async function getShellJobs(opts: {
      LIMIT $${params.length - 1} OFFSET $${params.length}`,
     params,
   );
-  return rows as ShellJobSummary[];
+  return Promise.all(rows.map(row=>maskiereShellAntwort(row.project,row))) as Promise<ShellJobSummary[]>;
 }
 
 export interface ShellJobDetail extends ShellJobRow {
@@ -967,7 +979,7 @@ export async function getShellJobById(id: string): Promise<ShellJobDetail | null
   );
   if (rows.length === 0) return null;
   const row = rows[0];
-  return { ...row, output_line_count: countLines(row.output) };
+  return maskiereShellAntwort(row.project,{ ...row, output_line_count: countLines(row.output) });
 }
 
 /**
@@ -984,6 +996,7 @@ export async function getShellJobLogLines(
   from_line: number;
   to_line: number;
   lines: string[];
+  maskiert?: number;
 } | null> {
   const job = await getShellJobById(id);
   if (!job) return null;
@@ -994,7 +1007,7 @@ export async function getShellJobLogLines(
   const from = Math.max(1, fromLine ?? 1);
   const to = Math.min(total, toLine ?? from + 99);
   const lines = total === 0 ? [] : all.slice(from - 1, to);
-  return { found: true, total_lines: total, from_line: from, to_line: to, lines };
+  return { found: true, total_lines: total, from_line: from, to_line: to, lines,...(job.message?.match(/maskiert:\s*(\d+) Werte/)?{maskiert:Number(job.message.match(/maskiert:\s*(\d+) Werte/)![1])}:{}) };
 }
 
 /**
@@ -1014,6 +1027,7 @@ export async function searchShellJobLog(
   total_matches: number;
   matches: Array<{ line_number: number; content: string }>;
   truncated: boolean;
+  maskiert?: number;
 } | null> {
   const job = await getShellJobById(id);
   if (!job) return null;
@@ -1049,6 +1063,7 @@ export async function searchShellJobLog(
     total_matches: totalMatches,
     matches,
     truncated: totalMatches > matches.length,
+    ...(job.message?.match(/maskiert:\s*(\d+) Werte/)?{maskiert:Number(job.message.match(/maskiert:\s*(\d+) Werte/)![1])}:{}),
   };
 }
 

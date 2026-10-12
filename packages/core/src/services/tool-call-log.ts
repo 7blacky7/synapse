@@ -15,6 +15,7 @@
  */
 
 import { getPool } from '../db/index.js';
+import {maskiereShellVorSpeichern,maskiereShellAntwort} from './shell-maske.js';
 
 /** Cap fuer das gespeicherte result (Storage-/PII-Hebel). Default 32 KB. */
 const RESULT_CAP = (() => {
@@ -66,6 +67,7 @@ export interface ToolCallLogEntry {
  */
 export async function logToolCall(entry: ToolCallLogEntry): Promise<void> {
   try {
+    if(entry.tool==='shell')entry=await maskiereShellVorSpeichern(entry.project??undefined,entry);
     let result = entry.result ?? null;
     if (result != null && OHNE_RESULT.has(`${entry.tool}:${entry.action ?? ''}`)) {
       result = '[nicht protokolliert: Antwort enthaelt Schattendaten eines Erklaerungsfalls]';
@@ -170,7 +172,7 @@ export async function queryToolCalls(f: ActivityFilters): Promise<ToolCallRow[]>
     detail === 'full'
       ? `${baseCols}, result, result_bytes, result_truncated`
       : detail === 'summary'
-        ? `${baseCols}, left(result, 200) AS result_preview, result_bytes, result_truncated`
+        ? `${baseCols}, result, result_bytes, result_truncated`
         : baseCols;
 
   const limit = Math.min(Math.max(f.limit ?? 50, 1), 500);
@@ -180,7 +182,11 @@ export async function queryToolCalls(f: ActivityFilters): Promise<ToolCallRow[]>
     ` ORDER BY ts DESC LIMIT ${limit}`;
 
   const res = await pool.query<ToolCallRow>(sql, params);
-  return res.rows;
+  return Promise.all(res.rows.map(async row=>{
+    const safe=row.tool_name==='shell'?await maskiereShellAntwort(row.project??undefined,row):row;
+    if(detail==='summary'){const {result,...rest}=safe;return {...rest,result_preview:result?.slice(0,200)??null};}
+    return safe;
+  }));
 }
 
 /**

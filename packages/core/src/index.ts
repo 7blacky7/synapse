@@ -8,6 +8,8 @@
 // P6-T27: optionale Ghost-Schatten, Standardabfragen unveraendert.
 export { mitCodeIntelSchatten, schattenCacheStatistik } from './services/code-intel-schatten.js';
 export type { RegelVerzeichnis } from './services/agent-rollen.js';
+// P10-T33: gemeinsame Shell-Maske, auch fuer Lage-/Audit-Daten.
+export {maskiereShellAntwort,maskiereShellDaten,maskiereShellText,ladeShellWerte,mitShellAusgabe,shellSichtUnmaskiert} from './services/shell-maske.js';
 
 export { holeAgentOnboarding } from './services/agent-onboarding.js';
 

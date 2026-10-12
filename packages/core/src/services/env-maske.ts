@@ -24,7 +24,7 @@
 
 import { getPool } from '../db/client.js';
 import { getFileContentFromPg } from './code-write.js';
-import { entmaskiereMcpJson, istMcpJsonDatei, maskiereMcpJson, maskiereMcpJsonDiffText, maskiereMcpJsonFragment, mcpJsonHinweise, mcpJsonSicht, mcpJsonWerte, MCP_JSON_PFAD_REGEX_SQL } from './mcp-json-maske.js';
+import { entmaskiereMcpJson, istMcpJsonDatei, maskiereMcpJson, maskiereMcpJsonDiffText, maskiereMcpJsonFragment, mcpJsonHinweise, mcpJsonSicht, mcpJsonWerte, MCP_JSON_PFAD_REGEX_SQL, maskiereUrl } from './mcp-json-maske.js';
 export { entmaskiereMcpJson, istMcpJsonDatei, maskiereMcpJson, maskiereMcpJsonDiffText, mcpJsonHinweise, mcpJsonSicht } from './mcp-json-maske.js';
 
 /** Der Platzhalter fuer jeden verborgenen Wert. */
@@ -370,4 +370,56 @@ export async function schwaerzeEnvWerteInAntwort<T>(project: string | undefined,
     console.error(`[env-maske] Sicherheitsnetz uebersprungen: ${(fehler as Error).message}`);
     return antwort;
   }
+}
+
+/** P10-T33: dieselbe P15-Maske auch fuer freie Shell-Ausgaben; Bestandsformate bleiben erhalten. */
+export function shellGeheimWerte(envText: string, jsonText = ''): string[] {
+  const aus = new Set<string>(mcpJsonWerte(jsonText, 1).flatMap(w=>[w,...w.split('\n').filter(Boolean)]));
+  for (const teil of zerlegeEnv(envText)) {
+    if (teil.art !== 'kv' || teil.leer) continue;
+    const roh=teil.wert.trim();
+    for(const w of [roh,roh.replace(/^(["'\x60])([\s\S]*)\1$/,'$2'),...roh.split('\n').map(z=>z.trim().replace(/^["'\x60]|["'\x60]$/g,''))])
+      if(w && w!==ENV_PLATZHALTER) aus.add(w);
+  }
+  return [...aus];
+}
+const shellLiteralMatcher = new WeakMap<readonly string[],RegExp|null>();
+export function maskiereShellText(text: string, bekannteWerte: readonly string[] = []): {text: string; maskiert: number} {
+  let maskiert=0, aus=text;
+  let matcher=shellLiteralMatcher.get(bekannteWerte);
+  if(matcher===undefined){
+    const werte=[...new Set(bekannteWerte)].filter(w=>w && w!==ENV_PLATZHALTER).sort((a,b)=>b.length-a.length);
+    matcher=werte.length?new RegExp('\\[WERT\\]|'+werte.map(w=>w.replace(/[.*+?^\x24{}()|[\]\\]/g,'\\$&')).join('|'),'g'):null;
+    shellLiteralMatcher.set(bekannteWerte,matcher);
+  }
+  if(matcher)aus=aus.replace(matcher,(wert)=>{if(wert===ENV_PLATZHALTER)return wert;maskiert++;return ENV_PLATZHALTER;});
+  const vorher=(aus.match(/\[WERT\]/g)??[]).length;
+  if(/^\s*[\[{]/.test(aus))try {
+    const original=JSON.parse(aus),strukturiert=maskiereMcpJson(aus,true);
+    maskiert+=Math.max(0,(strukturiert.match(/\[WERT\]/g)??[]).length-vorher);
+    const walk=(v:unknown):unknown=>{
+      if(typeof v==='string'){const r=maskiereShellText(v,bekannteWerte);maskiert+=r.maskiert;return r.text;}
+      if(Array.isArray(v))return v.map(walk);
+      if(v && typeof v==='object')return Object.fromEntries(Object.entries(v).map(([k,w])=>[k,walk(w)]));
+      return v;
+    };
+    const safe=walk(JSON.parse(strukturiert));
+    return {text:maskiert?JSON.stringify(safe,null,aus.includes('\n')?2:undefined)+(aus.endsWith('\n')?'\n':''):aus,maskiert};
+  }catch { /* freie Logzeile statt vollstaendigem JSON */ }
+  aus=maskiereMcpJsonFragment(aus);
+  aus=maskiereUrl(aus);
+  aus=aus.replace(/(Bearer\s+)[A-Za-z0-9._~+\/=-]+/gi,(_,praefix:string)=>praefix+ENV_PLATZHALTER);
+  aus=aus.split('\n').map(zeile=>{
+    const kv=KV.exec(ohneCr(zeile).text);
+    if(kv && /(?:key|token|secret|password|pass|pwd|auth|credential)/i.test(kv[2])) return maskiereEnv(zeile);
+    return zeile.replace(/(^|[\s,{])(["']?)([A-Za-z_][A-Za-z0-9_.-]*)\2(\s*:\s*)("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')/g,
+      (ganz,praefix:string,q:string,name:string,trenner:string,wert:string)=>
+        /(?:key|token|secret|password|pass|pwd|auth|credential)/i.test(name)
+          ? praefix+q+name+q+trenner+wert[0]+ENV_PLATZHALTER+wert[0] : ganz);
+  }).join('\n');
+  aus=aus.replace(/(^|[\s,{"'])([A-Za-z_][A-Za-z0-9_.-]*)(\s*=\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s"',;\\]+)/g,
+    (ganz,praefix:string,name:string,trenner:string)=>
+      /(?:key|token|secret|password|pass|pwd|auth|credential)/i.test(name)?praefix+name+trenner+ENV_PLATZHALTER:ganz);
+  maskiert+=Math.max(0,(aus.match(/\[WERT\]/g)??[]).length-vorher);
+  return {text:aus,maskiert};
 }

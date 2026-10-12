@@ -12,6 +12,7 @@
  */
 
 import type { ConsolidatedTool } from './types.js';
+import {mitShellAusgabe} from '@synapse/core';
 import { str, num, reqStr, strArray, bool } from './types.js';
 import os from 'node:os';
 import fs from 'node:fs';
@@ -135,6 +136,8 @@ export const shellTool: ConsolidatedTool = {
     inputSchema: {
       type: 'object',
       properties: {
+        maskierung: {type:'boolean',description:'Anzeige maskieren (Default true); false nur Koordinator/User mit grund. Persistenz bleibt maskiert.'},
+        grund: {type:'string',description:'Audit-Grund fuer maskierung:false (mind. 10 Zeichen)'},
         action: {
           type: 'string',
           enum: ['exec', 'get_stream', 'history', 'get', 'log', 'activity', 'cancel'],
@@ -180,7 +183,7 @@ export const shellTool: ConsolidatedTool = {
       required: ['action'],
     },
   },
-  handler: async (args) => {
+  handler: async (args) => mitShellAusgabe(args,async()=>{
     const action = str(args, 'action') ?? 'exec';
 
     if (action === 'get_stream') {
@@ -440,5 +443,5 @@ export const shellTool: ConsolidatedTool = {
     }
 
     return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
-  },
+  }),
 };
