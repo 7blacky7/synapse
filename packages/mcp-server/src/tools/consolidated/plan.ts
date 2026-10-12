@@ -4,7 +4,7 @@
  */
 
 import type { ConsolidatedTool } from './types.js';
-import { reqStr, str, strArray, objArray } from './types.js';
+import { reqStr, str, strArray, objArray, bool } from './types.js';
 import {
   getProjectPlan,
   updateProjectPlan,
@@ -121,6 +121,8 @@ export const planTool: ConsolidatedTool = {
           enum: ['todo', 'in_progress', 'done', 'blocked'],
           description: 'Neuer Task-Status (fuer update_task)',
         },
+        compact: { type: 'boolean', description: 'get: Standard true; false liefert Beschreibungen. Mit task_id standardmaessig Volltext.' },
+        limit: { type: 'number', description: 'get: maximale Anzahl Tasks; ohne limit alle passenden Tasks.' },
         // fuer "add_tasks_batch"
         tasks: {
           type: 'array',
@@ -200,12 +202,13 @@ export const planTool: ConsolidatedTool = {
         const filtered = statusFilter ? idTasks.filter((t) => t.status === statusFilter) : idTasks;
         const taskLimit = typeof a.limit === 'number' && a.limit > 0 ? a.limit : undefined;
         const limited = taskLimit ? filtered.slice(0, taskLimit) : filtered;
-        const compact = a.compact === true;
+        const compact = bool(args, 'compact') ?? !nachId.gefiltert;
         const tasks = compact
           ? limited.map((t) => ({ id: t.id, kurz_id: t.kurz_id, title: t.title, status: t.status, priority: t.priority }))
           : limited;
         return {
           ...p,
+          ...(p.plan ? { plan: { ...p.plan, tasks } } : {}),
           tasks,
           tasks_total: allTasks.length,
           tasks_returned: tasks.length,

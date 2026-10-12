@@ -49,6 +49,7 @@ export async function thoughtsRoutes(fastify: FastifyInstance): Promise<void> {
       source: string;
       content: string;
       tags?: string[];
+      name?: string;
     };
   }>('/api/projects/:name/thoughts', async (request, reply) => {
     const { name } = request.params;
@@ -62,7 +63,7 @@ export async function thoughtsRoutes(fastify: FastifyInstance): Promise<void> {
     }
 
     try {
-      const thought = await addThought(name, source, content, tags);
+      const thought = await addThought(name, source, content, tags, undefined, undefined, request.body.name);
 
       return {
         success: true,

@@ -1,0 +1,68 @@
+/** P10-T60: Topf-Vertrag, eigene Test-DB/Schema, Jev ausschliesslich als Double. */
+import assert from 'node:assert/strict';import {randomUUID} from 'node:crypto';
+const url=new URL(process.env.DATABASE_URL||'http://ungueltig');assert.equal(url.port,'5433');assert.equal(url.pathname,'/synapse_test');
+const schema='t60_topf_'+randomUUID().replaceAll('-','');url.searchParams.set('options','-c search_path='+schema+',public');
+process.env.DATABASE_URL=url.toString();process.env.SYNAPSE_DATABASE_URL=url.toString();
+const {getPool,closePool}=await import('../dist/db/client.js'),pool=getPool();
+try{
+ await pool.query('CREATE SCHEMA "'+schema+'"');
+ for(const table of ['jev_entscheidungstopf','erklaerungen','jev_optionen','jev_entscheidungen'])await pool.query('CREATE TABLE "'+schema+'".'+table+' (LIKE public.'+table+' INCLUDING ALL)');
+ const ids=[];
+ for(const [name,text]of [['kleiner-treffer','Andere Bedeutung'],['bester-treffer','Gesuchte Bedeutung'],[null,'Alter Eintrag ohne Namen']]){
+  ids.push((await pool.query("INSERT INTO jev_entscheidungstopf(kennung,kategorie,antwort_wortlaut,frage_de,status,herkunft) VALUES($1,'variante',$2,$2,'roh','tool') RETURNING id",[name,text])).rows[0].id);
+ }
+ const decision=await import('../dist/services/entscheidungstopf.js');
+ const list=await decision.listeEntscheidungstopf();
+ assert.deepEqual(list.namen,['bester-treffer','kleiner-treffer'],'Standard nur Namen, sortiert');
+ const mod=await import('../dist/services/topf-namen.js');
+ let calls=0;
+ const jev=async a=>{calls++;return {ok:true,daten:{answers:Object.fromEntries(Object.entries(a.state.eintraege).map(([key,value])=>[key,{noul:value.name==='bester-treffer'?0.94:0.12}]))},kosten:{usd:0},dauer_ms:0,modell:'double'};};
+ assert.equal((await mod.leseTopf({topf:'entscheidung'},'fixture','sol-3',{jev})).anzahl,3);
+ assert.equal(calls,0,'keine automatische kostenpflichtige Abfrage');
+ const denied=await mod.trageTopfNamenNach({topf:'entscheidung',ausfuehren:true},'sol-3');assert.equal(denied.success,false);
+ const preview=await mod.trageTopfNamenNach({topf:'entscheidung'},'sol-3');assert.equal(preview.anzahl,1);
+ assert.equal((await pool.query('SELECT kennung FROM jev_entscheidungstopf WHERE id=$1',[ids[2]])).rows[0].kennung,null);
+ const applied=await mod.trageTopfNamenNach({topf:'entscheidung',ausfuehren:true},'koordinator');assert.equal(applied.geschrieben,1);
+ assert.equal((await mod.trageTopfNamenNach({topf:'entscheidung'},'sol-3')).anzahl,0,'Nachtrag idempotent');
+ const result=await mod.leseTopf({topf:'entscheidung',frage:'Gesuchte Bedeutung'},'fixture','sol-3',{jev});
+ assert.equal(result.name,'bester-treffer');assert.equal(result.prozent,94);assert.equal(result.passend,true);
+ assert.equal(result.message,'Ja, im Topf-Eintrag bester-treffer (94 %)');
+ const no=await mod.leseTopf({frage:'Gesuchte Bedeutung',schwelle:99},'fixture','sol-3',{jev});
+ assert.equal(no.passend,false);assert.equal(no.name,'bester-treffer');
+ const blocked=await mod.leseTopf({frage:'Gesuchte Bedeutung'},'fixture','sol-3',{jev:async()=>({ok:false,grund:'budget',message:'Budgetgrenze'})});
+ assert.equal(blocked.success,false);assert.equal(blocked.error,'budget');assert.equal('passend'in blocked,false);
+ const invalid=await mod.leseTopf({frage:'Gesuchte Bedeutung'},'fixture','sol-3',{jev:async()=>({ok:true,daten:{answers:{}},kosten:{usd:0}})});
+ assert.equal(invalid.success,false,'fehlende Bewertungen sind kein Nein');
+ const detail=await mod.leseTopf({name:'bester-treffer'},'fixture','sol-3');assert.equal(detail.eintraege[0].antwort_wortlaut,'Gesuchte Bedeutung');
+ const missing=await decision.schreibeTopfEintrag({frage_de:'Frage',antwort_wortlaut:'Antwort',kategorie:'variante'},{herkunft:'tool',erfasst_von:'sol-3'});
+ assert.equal(missing.error,'name_fehlt');
+ const created=await decision.schreibeTopfEintrag({name:'vom-autor',frage_de:'Frage',antwort_wortlaut:'Antwort',kategorie:'variante'},{herkunft:'tool',erfasst_von:'sol-3'});
+ assert.equal(created.success,true);assert.equal(created.name,'vom-autor');
+ const mirror=await decision.spiegeleThoughtInTopf('fixture',{id:randomUUID(),content:'Entscheidung',tags:['entscheidung','user']});
+ assert.equal(mirror.angelegt,false);assert.ok(mirror.fehler.includes('name'));
+ await pool.query("INSERT INTO erklaerungen(kennung,familie,schluessel,lage_de,wieso_de,abhilfe_de,status) VALUES(NULL,'fixture','fixture','Lage','Ursache','Abhilfe','vorgeschlagen')");
+ assert.equal((await mod.trageTopfNamenNach({topf:'erklaerung'},'sol-3')).anzahl,1);
+ assert.equal((await mod.trageTopfNamenNach({topf:'erklaerung',ausfuehren:true},'koordinator')).geschrieben,1);
+ assert.equal((await mod.leseTopf({topf:'erklaerung'},'fixture','sol-3')).namen.length,1);
+ const E=await import('../dist/services/jev-entscheidung.js');
+ const correctionId=(await pool.query("INSERT INTO jev_entscheidungen(project,frage,typ,entschieden,kategorie) VALUES('fixture','Frage','choice',true,'variante') RETURNING id")).rows[0].id;
+ const before=(await pool.query('SELECT * FROM jev_entscheidungen WHERE id=$1',[correctionId])).rows[0];
+ const conflict=await E.durchsichtEntscheidung('fixture',{agent_id:'koordinator',id:correctionId,name:'vom-autor',urteil:'korrigieren',wahl:'a'});
+ assert.equal(conflict.success,false);assert.deepEqual((await pool.query('SELECT * FROM jev_entscheidungen WHERE id=$1',[correctionId])).rows[0],before,'Namenskonflikt rollt komplette Korrektur zurueck');
+ const corrected=await E.durchsichtEntscheidung('fixture',{agent_id:'koordinator',id:correctionId,name:'korrektur-neu',urteil:'korrigieren',wahl:'a'});assert.equal(corrected.success,true);
+ const thoughts=await import('../dist/services/thoughts.js');
+ await assert.rejects(()=>thoughts.addThought('fixture','sol-3','Test',['entscheidung','user']),/name/);
+ await assert.rejects(()=>thoughts.addThoughtsBatch('fixture','sol-3',[{content:'ok'},{content:'nein',tags:['entscheidung','user']}]),/name/);
+ const explanation=await import('../dist/services/erklaerungen.js');
+ assert.equal((await explanation.legeErklaerungAb({fall_id:'999',agent:'sol-3',texte:{}})).error,'name_fehlt');
+ const validMirror=await decision.spiegeleThoughtInTopf('fixture',{id:randomUUID(),name:'spiegel-name',content:'Autor-Wortlaut',tags:['entscheidung','user']});assert.equal(validMirror.angelegt,true);
+ await pool.query("INSERT INTO jev_entscheidungstopf(kennung,kategorie,antwort_wortlaut,frage_de,status,herkunft) SELECT 'fuell-'||n,'variante','Andere Bedeutung','Frage','roh','tool' FROM generate_series(1,24)n");
+ await pool.query("INSERT INTO jev_entscheidungstopf(kennung,kategorie,antwort_wortlaut,frage_de,status,herkunft) VALUES('zz-globales-maximum','variante','Gesuchte Bedeutung','Frage','roh','tool')");
+ let batches=0;
+ const across=await mod.leseTopf({frage:'Gesuchte Bedeutung',vollstaendig:true},'fixture','sol-3',{jev:async a=>{batches++;return {ok:true,daten:{answers:Object.fromEntries(Object.entries(a.state.eintraege).map(([key,value])=>[key,{noul:value.name==='zz-globales-maximum'?0.98:0.91}]))},kosten:{usd:0}};}});
+ assert.equal(batches,2);assert.equal(across.name,'zz-globales-maximum');assert.equal(across.prozent,98);assert.equal(across.eintrag.name,'zz-globales-maximum');
+ assert.equal((await mod.leseTopf({frage:'Test',schwelle:101},'fixture','sol-3',{jev})).error,'schwelle');
+ const explanationResult=await mod.leseTopf({topf:'erklaerung',frage:'Lage'},'fixture','sol-3',{jev:async a=>({ok:true,daten:{answers:Object.fromEntries(Object.keys(a.questions).map(k=>[k,{noul:0.9}]))},kosten:{usd:0}})});
+ assert.equal(explanationResult.passend,true);assert.equal(explanationResult.prozent,90);
+ console.log('PASS P10-T60 Namenpflicht, Vorschau/Nachtrag, beideToepfe, hoechsteProzentzahl, Schwelle, keinAutoJev, Budget/ungueltig');
+}finally{await pool.query('DROP SCHEMA IF EXISTS "'+schema+'" CASCADE');await closePool();}

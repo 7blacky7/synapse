@@ -164,6 +164,7 @@ export const specialistTool: ConsolidatedTool = {
         },
       },
       required: ['action'],
+      allOf: [{ if: { properties: { action: { const: 'status' } }, required: ['action'] }, then: { required: ['project'] } }],
     },
   },
 

@@ -26,6 +26,7 @@ import { readFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getPool } from '../db/client.js';
+import { leseTopf, topfName } from './topf-namen.js';
 import { embed } from '../embeddings/index.js';
 import { embeddingModellKennung, sichereModellprofil } from '../embeddings/modell-profil.js';
 import { leseJevOptionen, type JevSprache } from './jev-optionen.js';
@@ -186,6 +187,7 @@ function leseThemen(roh: unknown): string[] | undefined {
 // ---------------------------------------------------------------------------
 
 export interface AblegenEingabe {
+  name?: unknown;
   frage_de?: unknown;
   frage_en?: unknown;
   optionen?: unknown;
@@ -202,8 +204,10 @@ export interface AblegenEingabe {
 /** Interner Schreibweg (ohne Rechtepruefung) - auch fuer Korrekturen aus der Durchsicht. */
 export async function schreibeTopfEintrag(
   e: AblegenEingabe,
-  meta: { herkunft: (typeof TOPF_HERKUNFT)[number]; quelle_ref?: string | null; erfasst_von?: string | null },
+  meta: { herkunft: (typeof TOPF_HERKUNFT)[number]; quelle_ref?: string | null; erfasst_von?: string | null; db?: Pick<ReturnType<typeof getPool>, 'query'> },
 ): Promise<Record<string, unknown>> {
+  const name = topfName(e.name);
+  if (!name) return { success: false, error: 'name_fehlt', message: 'name vom Ersteller ist Pflicht (1..160 Zeichen ohne Steuerzeichen).' };
   const frageDe = text(e.frage_de, 1000);
   const frageEn = text(e.frage_en, 1000);
   const wortlaut = text(e.antwort_wortlaut);
@@ -215,21 +219,22 @@ export async function schreibeTopfEintrag(
   const fehlen = await fehlendeSprachen(aufb);
   const status: TopfStatus = aufb && fehlen.length === 0 ? 'aktiv' : 'roh';
   const kandidat = e.kandidat === false || e.kandidat === 'false' ? false : true;
-  const { rows } = await getPool().query<{ id: string }>(
+  const { rows } = await (meta.db ?? getPool()).query<{ id: string }>(
     `INSERT INTO jev_entscheidungstopf (herkunft_projekt, themen, kategorie, kandidat, frage_de, frage_en, optionen, gewaehlte_option, kontext,
-       antwort_wortlaut, aufbereitet_de, aufbereitet_en, herkunft, quelle_ref, status, erfasst_von, aufbereitet_von)
-     VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10, $11::jsonb, $12::jsonb, $13, $14, $15, $16, $17)
+       antwort_wortlaut, aufbereitet_de, aufbereitet_en, herkunft, quelle_ref, status, erfasst_von, aufbereitet_von, kennung)
+     VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10, $11::jsonb, $12::jsonb, $13, $14, $15, $16, $17, $18)
      RETURNING id`,
     [
       text(e.herkunft_projekt, 200) ?? null, leseThemen(e.themen) ?? [], kategorie, kandidat, frageDe ?? null, frageEn ?? null,
       JSON.stringify(leseOptionen(e.optionen)), text(e.gewaehlte_option, 200) ?? null, text(e.kontext, 1500) ?? null, wortlaut,
       aufb?.de ? JSON.stringify(aufb.de) : null, aufb?.en ? JSON.stringify(aufb.en) : null, meta.herkunft, meta.quelle_ref ?? null, status,
-      meta.erfasst_von ?? null, status === 'aktiv' ? (meta.erfasst_von ?? null) : null,
+      meta.erfasst_von ?? null, status === 'aktiv' ? (meta.erfasst_von ?? null) : null, name,
     ],
   );
   return {
     success: true,
     id: rows[0].id,
+    name,
     status,
     ...(status === 'roh'
       ? {
@@ -306,21 +311,9 @@ export async function bereiteEntscheidungAuf(
   }
 }
 
-/** jev(topf): Liste (ohne Vektoren). Filter status, kategorie, herkunft, eintrag_id. */
-export async function listeEntscheidungstopf(f: { status?: unknown; kategorie?: unknown; herkunft?: unknown; eintrag_id?: unknown; limit?: unknown } = {}): Promise<Record<string, unknown>> {
-  try {
-    const limit = Math.min(Math.max(Math.floor(Number(f.limit) || 100), 1), 500);
-    const { rows } = await getPool().query<TopfEintrag>(
-      `SELECT ${SPALTEN} FROM jev_entscheidungstopf
-        WHERE ($1::text IS NULL OR status = $1) AND ($2::text IS NULL OR kategorie = $2) AND ($3::text IS NULL OR herkunft = $3)
-          AND ($4::text IS NULL OR id::text = $4 OR kennung = $4)
-        ORDER BY (status = 'roh') DESC, geaendert_am DESC LIMIT $5`,
-      [text(f.status, 20) ?? null, text(f.kategorie, 40) ?? null, text(f.herkunft, 40) ?? null, text(f.eintrag_id, 100) ?? null, limit],
-    );
-    return { success: true, anzahl: rows.length, eintraege: rows };
-  } catch (err) {
-    return { success: false, message: `Topf nicht lesbar: ${err instanceof Error ? err.message : String(err)}` };
-  }
+/** Kompakte Namenliste; Details und ausdrueckliche Bedeutungsfrage ueber den gemeinsamen Vertrag. */
+export async function listeEntscheidungstopf(f: Record<string, unknown> = {}): Promise<Record<string, unknown>> {
+  return leseTopf({ ...f, topf: 'entscheidung' });
 }
 
 /** Zaehler einer Praezedenz erhoehen (gewaehlt_n, bestaetigt_n, korrigiert_n). Wirft nie. */
@@ -353,19 +346,21 @@ export async function entscheidungstopfStatus(): Promise<Record<string, unknown>
  */
 export async function spiegeleThoughtInTopf(
   project: string,
-  t: { id: string; source?: string | null; content: string; tags?: string[] | null },
+  t: { id: string; source?: string | null; content: string; tags?: string[] | null; name?: string },
 ): Promise<{ angelegt: boolean; id?: string; fehler?: string }> {
   const tags = (t.tags ?? []).map((x) => String(x).trim().toLowerCase());
   if (!tags.includes('entscheidung') || !tags.includes('user')) return { angelegt: false };
+  const name = topfName(t.name);
+  if (!name) return { angelegt: false, fehler: 'name vom Ersteller ist Pflicht (1..160 Zeichen ohne Steuerzeichen).' };
   try {
     const erste = kurz(t.content.split('\n').find((z) => z.trim()) ?? t.content, 300);
     const { rows } = await getPool().query<{ id: string }>(
-      `INSERT INTO jev_entscheidungstopf (herkunft_projekt, themen, kategorie, kandidat, frage_de, antwort_wortlaut, herkunft, quelle_ref, status, erfasst_von)
-       VALUES ($1, $2, $3, false, $4, $5, 'thought', $6, 'roh', $7)
+      `INSERT INTO jev_entscheidungstopf (herkunft_projekt, themen, kategorie, kandidat, frage_de, antwort_wortlaut, herkunft, quelle_ref, status, erfasst_von, kennung)
+       VALUES ($1, $2, $3, false, $4, $5, 'thought', $6, 'roh', $7, $8)
        ON CONFLICT (quelle_ref) WHERE herkunft = 'thought' DO NOTHING
        RETURNING id`,
       [project, tags.filter((x) => x !== 'entscheidung' && x !== 'user').slice(0, 20), KATEGORIE_OFFEN,
-        `(aus thought ${t.id.slice(0, 8)}, Frage noch aufzubereiten) ${erste}`, t.content.slice(0, 20_000), t.id, t.source ?? null],
+        `(aus thought ${t.id.slice(0, 8)}, Frage noch aufzubereiten) ${erste}`, t.content.slice(0, 20_000), t.id, t.source ?? null, name],
     );
     return rows.length > 0 ? { angelegt: true, id: rows[0].id } : { angelegt: false };
   } catch (err) {
@@ -417,6 +412,7 @@ export async function ladeEntscheidungstopfSeed(o: { datei?: string; agent?: str
   const fehler: string[] = [];
   for (const e of seed.eintraege) {
     try {
+      if (!topfName(e.id)) throw new Error('name (Seed-id) fehlt oder ist ungueltig');
       const a = e.aufbereitet ?? {};
       const ersetzt = e.ersetzt ?? e.quelle?.ersetzt;
       const ref = e.quelle ? `${e.quelle.art ?? 'quelle'}:${e.quelle.ref ?? ''}${e.quelle.teil ? `#${e.quelle.teil}` : ''}` : null;

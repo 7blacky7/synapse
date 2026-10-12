@@ -428,6 +428,7 @@ export const MCP_TOOLS = [
         project: { type: 'string', description: 'Projekt-Name' },
         agent_id: { type: 'string', description: 'Agent-ID fuer Onboarding. Neue Agenten sehen automatisch Projekt-Regeln.' },
         source: { type: 'string', description: 'Quelle (z.B. claude-code, gpt, user) - fuer action "add" oder "add_batch"' },
+        name: { type: 'string', description: 'add: Name vom Ersteller ist Pflicht bei Tags entscheidung+user.' },
         content: { type: 'string', description: 'Inhalt des Gedankens - fuer action "add" oder "update"' },
         tags: { type: 'array', items: { type: 'string' }, description: 'Optionale Tags - fuer action "add" oder "update"' },
         items: {
@@ -437,6 +438,7 @@ export const MCP_TOOLS = [
             properties: {
               content: { type: 'string' },
               tags: { type: 'array', items: { type: 'string' } },
+              name: { type: 'string', description: 'Pflicht bei Tags entscheidung+user.' },
               task_id: { type: 'string', description: 'Optional: Task-ID fuer Verknuepfung pro Item' },
             },
             required: ['content'],
@@ -461,7 +463,7 @@ export const MCP_TOOLS = [
         dry_run: { type: 'boolean', description: 'Preview-Modus — NUR aktiv wenn name/id ein Array ist (Batch-Delete). Bei Single-String wird sofort geloescht, dry_run wird ignoriert. Wenn die UI eine Bestaetigung erzwingen soll, ruf erst mit Array + dry_run:true auf, dann mit Array ohne dry_run.' },
         max_items: { type: 'number', description: 'Max. erlaubte Items pro Batch-Delete (Standard: 10, nur fuer delete mit Array)' },
       },
-      required: ['action'],
+      required: ['action', 'project'],
     },
   },
   // 5. plan
@@ -540,7 +542,7 @@ export const MCP_TOOLS = [
         max_optionen: { type: 'number', description: 'Nur fuer empfehlen: Hoechstzahl der Modelle in der Modell-Choice (Standard unbegrenzt; jedes angefragte Modell kommt vor). Die Stufen fragt Jev je Modell getrennt.' },
         schreiben: { type: 'boolean', description: 'Nur fuer empfehlen: Empfehlung in plans.tasks schreiben (Standard true). false = nur anzeigen.' },
         confidence_tor: { type: 'number', description: 'Nur fuer empfehlen: unter dieser Confidence (0..1) gibt es keine Empfehlung, sondern unsicher + bester_vorschlag. Standard JEV_CONFIDENCE_TOR bzw. 0.5.' },
-        compact: { type: 'boolean', description: 'Nur fuer get: Tasks ohne description liefern (id/title/status/priority) — Context-sparend' },
+        compact: { type: 'boolean', description: 'get: Standard true; false liefert Beschreibungen. Mit task_id standardmaessig Volltext.' },
         limit: { type: 'number', description: 'Nur fuer get: max. Anzahl Tasks in der Antwort' },
       },
       required: ['action', 'project'],
@@ -864,6 +866,7 @@ export const MCP_TOOLS = [
         content: { type: 'string', description: 'Inhalt des Eintrags (erforderlich fuer: update_skill)' },
       },
       required: ['action'],
+      allOf: [{ if: { properties: { action: { const: 'status' } }, required: ['action'] }, then: { required: ['project'] } }],
     },
   },
   // 11. docs
@@ -1270,7 +1273,7 @@ export const MCP_TOOLS = [
         grund: {type:'string',description:'Audit-Grund fuer maskierung:false (mind. 10 Zeichen)'},
         action: { type: 'string', enum: ['exec', 'get_stream', 'history', 'get', 'log', 'activity', 'cancel', 'hide'], description: 'Default: exec. log + id liefert Zeilenrange (1-100); log + id + query liefert Such-Treffer mit Zeilennummern. cancel + id bricht einen laufenden Job ab — in den ersten 10 Minuten nur durch den Agenten, der ihn gestartet hat, danach durch jeden. hide + id blendet die shell_activity-Hinweise zu einem Job aus — in den ersten 3 Minuten NACH DEM ABSCHLUSS nur durch den Starter, danach durch jeden; der Starter bleibt dabei immer Empfaenger.' },
         id: { type: 'string', description: 'Job-UUID (Pflicht fuer get/log). NICHT die stream_id aus der exec-Antwort — die Job-UUID liefert shell(history).' },
-        limit: { type: 'number', description: 'history: max Jobs (Default 20, Max 200)' },
+        limit: { type: 'number', description: 'history: max Jobs (Default 20, Max 200); activity: max Eintraege (Default 50, Max 500)' },
         offset: { type: 'number', description: 'history: Skip N (Default 0)' },
         status: { type: 'string', enum: ['pending', 'running', 'done', 'failed', 'rejected', 'timeout'], description: 'history: Filter auf Status' },
         from_line: { type: 'number', description: 'log: ab Zeile N (1-basiert)' },
@@ -2864,7 +2867,7 @@ async function handleToolCallKern(
             project, source,
             reqStr(args, 'content'), strArrayOrEmpty(args, 'tags'),
             str(args, 'task_id'),
-            str(args, 'task_status') as Parameters<typeof addThought>[5]
+            str(args, 'task_status') as Parameters<typeof addThought>[5], str(args, 'name')
           );
           // Anti-Echo (DX-Befund 4): nicht den kompletten Content zurueckspielen,
           // den der Agent gerade selbst geschrieben hat — id + Preview reichen.
@@ -2874,6 +2877,7 @@ async function handleToolCallKern(
             id: t.id,
             tags: t.tags,
             timestamp: t.timestamp,
+            warning: result.warning,
             content_length: t.content.length,
             content_preview: t.content.length > 120 ? `${t.content.slice(0, 120)}…` : t.content,
             message: `Gedanke gespeichert von "${source}"`,
@@ -2909,7 +2913,7 @@ async function handleToolCallKern(
           const project = reqStr(args, 'project');
           const source = resolveAgentId(str(args, 'source'));
           if (!source) throw new Error('Parameter "source" ist erforderlich (oder SYNAPSE_AGENT_NAME setzen)');
-          const items = objArray<{ content: string; tags?: string[] }>(args, 'items');
+          const items = objArray<{ content: string; tags?: string[]; name?: string }>(args, 'items');
           if (!items || items.length === 0) {
             return { success: false, count: 0, thoughts: [], message: 'items (Array) ist erforderlich' };
           }
@@ -2919,6 +2923,7 @@ async function handleToolCallKern(
           const normalized = items
             .map(it => ({
               content: String(it.content ?? ''),
+              name: typeof it.name === 'string' ? it.name : undefined,
               tags: Array.isArray(it.tags) ? it.tags.map(String) : undefined,
               task_id: typeof (it as unknown as { task_id?: unknown }).task_id === 'string' ? (it as unknown as { task_id: string }).task_id : undefined,
             }))
@@ -3051,7 +3056,7 @@ async function handleToolCallKern(
           const filtered = statusFilter ? idTasks.filter(t => t.status === statusFilter) : idTasks;
           const taskLimit = num(args, 'limit');
           const limited = taskLimit && taskLimit > 0 ? filtered.slice(0, taskLimit) : filtered;
-          const compact = bool(args, 'compact') === true;
+          const compact = bool(args, 'compact') ?? !nachId.gefiltert;
           const tasks = compact
             ? limited.map(t => ({ id: t.id, kurz_id: t.kurz_id, title: t.title, status: t.status, priority: t.priority }))
             : limited;
@@ -3065,7 +3070,7 @@ async function handleToolCallKern(
             ...(nachId.gefiltert ? { tasks_task_id_filter: true } : {}),
             ...(nachId.nichtGefunden.length > 0 ? { tasks_nicht_gefunden: nachId.nichtGefunden } : {}),
             ...(compact || tasks.length < allTasks.length
-              ? { tip: 'Task-Liste gefiltert/kompakt — volle Descriptions via plan(get) ohne compact/status/limit.' }
+              ? { tip: 'Task-Liste kompakt/gefiltert — Beschreibungen via task_id oder compact:false.' }
               : {}),
             ...planKontext(plan),
           };

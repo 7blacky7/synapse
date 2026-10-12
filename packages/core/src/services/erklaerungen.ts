@@ -1,3 +1,4 @@
+import { topfName } from './topf-namen.js';
 /**
  * MODUL: Erklaerungs-Topf (P15-T33 E1, 11.10.2026) - Jev waehlt, Claude erklaert.
  * QUELLEN: Konzept thought 0a089e5d (v3), E0-Messung 1486172c, User-Entscheidungen a189da34 und a5fd30ea,
@@ -1147,7 +1148,11 @@ export async function legeErklaerungAb(a: {
   erklaerung_id?: string;
   texte: Partial<Record<`${(typeof TEXTFELDER)[number]}_${ErklaerungSprache}`, string>>;
   kennung?: string;
+  name?: string;
 }): Promise<Record<string, unknown>> {
+  const name = topfName(a.name ?? a.kennung);
+  if (!a.erklaerung_id && !name) return fehler('name_fehlt', 'name vom Ersteller ist Pflicht (1..160 Zeichen ohne Steuerzeichen).');
+  if (a.name && a.kennung && a.name.trim() !== a.kennung.trim()) return fehler('name_widerspruch', 'name und kennung muessen identisch sein.');
   const f = await ladeFall(a.fall_id);
   if (!f) return fehler('nicht_gefunden', `Kein offener Fall mit id "${a.fall_id}".`);
   const wer = a.agent ?? '';
@@ -1190,8 +1195,7 @@ export async function legeErklaerungAb(a: {
         + 'Erklaerungen beschreiben Lage, Wieso und Abhilfe allgemein - ohne Pfade, Dateinamen, Bezeichner, Literale, Zeilen, Hashes, Codebloecke, Projekt- oder Agentennamen.',
         { verstoesse: verstoesse.map((v) => ({ ...v, fund: v.art === 'geheimnis' || v.art === 'env_wert' ? '***' : v.fund })) });
     }
-    const kennung = a.kennung?.trim() || null;
-    if (kennung && !/^[a-z0-9][a-z0-9-]{2,60}$/.test(kennung)) return fehler('ungueltig', 'kennung: 3..61 Zeichen a-z, 0-9, Bindestrich.');
+    const kennung = name!;
     const dublette = await getPool().query<{ id: string }>(
       `SELECT id::text AS id FROM erklaerungen WHERE familie = $1 AND status <> 'stillgelegt'
          AND ((lage_en IS NOT NULL AND lower(lage_en) = lower($2)) OR (lage_de IS NOT NULL AND lower(lage_de) = lower($3))) LIMIT 1`,
@@ -1522,7 +1526,8 @@ export const ERKLAERUNG_PARAMETER: Record<string, Record<string, unknown>> = {
   lage_en: { type: 'string', description: 'erklaerung_ablegen: situation, english - Pflicht, wenn Englisch gepflegt ist' },
   wieso_en: { type: 'string', description: 'erklaerung_ablegen: why (cause), english' },
   abhilfe_en: { type: 'string', description: 'erklaerung_ablegen: fix, english' },
-  kennung: { type: 'string', description: 'erklaerung_ablegen: optionale Kurzkennung (a-z, 0-9, -), eindeutig' },
+  name: { type: 'string', minLength: 1, maxLength: 160, description: 'erklaerung_ablegen: vom Ersteller gesetzter eindeutiger Name, Pflicht bei neuer Erklaerung.' },
+  kennung: { type: 'string', description: 'erklaerung_ablegen: kompatibler Alias fuer name.' },
   bewertung: { type: 'string', enum: [...BEWERTUNGEN], description: 'erklaerung_bewerten: passt_nicht (jeder) | stilllegen (Koordinator, grund >= 10) | reaktivieren (Koordinator)' },
   zustimmung_user: { type: 'boolean', description: 'fall_verwerfen: Pflichtfeld; der User hat dem Verwerfen zugestimmt' },
   grund: { type: 'string', description: 'fall_verwerfen: Pflicht, mindestens 10 Zeichen; erklaerung_bewerten: Begruendung' },
@@ -1559,7 +1564,7 @@ export async function fuehreErklaerungsActionAus(action: string, args: Record<st
           const v = text(args[`${feld}_${s}`]);
           if (v) texte[`${feld}_${s}`] = v;
         }
-        return await legeErklaerungAb({ fall_id: fallId, agent, erklaerung_id: text(args.erklaerung_id), texte, kennung: text(args.kennung) });
+        return await legeErklaerungAb({ fall_id: fallId, agent, erklaerung_id: text(args.erklaerung_id), texte, name: text(args.name), kennung: text(args.kennung) });
       }
       case 'fall_pruefen': {
         const id = text(args.id) ?? text(args.fall_id);

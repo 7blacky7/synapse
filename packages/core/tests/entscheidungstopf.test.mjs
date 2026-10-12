@@ -75,8 +75,16 @@ pruefe(/'roh', 'aktiv', 'ersetzt', 'stillgelegt'/.test(topfDdl) && /antwort_wort
   'S jev_entscheidungstopf: Status roh|aktiv|ersetzt|stillgelegt, Wortlaut Pflicht, Aufbereitung je Sprache', topfDdl);
 pruefe(!/\bproject TEXT NOT NULL/.test(topfDdl), 'S Topf ist global (kein Pflicht-Projekt, nur herkunft_projekt)');
 
+const privateSchema = 'topf_regression_' + process.pid + '_' + Date.now();
+const privateUrl = new URL(DB_URL); privateUrl.searchParams.set('options', '-c search_path=' + privateSchema + ',public');
+process.env.DATABASE_URL = privateUrl.toString(); process.env.SYNAPSE_DATABASE_URL = privateUrl.toString();
 const db = await lade(dist, 'db', 'client.js');
 const pool = db.getPool();
+await pool.query('CREATE SCHEMA "' + privateSchema + '"');
+for (const { tablename } of (await pool.query("SELECT tablename FROM pg_tables WHERE schemaname='public'")).rows) {
+  const q = '"' + tablename.replaceAll('"', '""') + '"';
+  await pool.query('CREATE TABLE "' + privateSchema + '".' + q + ' (LIKE public.' + q + ' INCLUDING ALL)');
+}
 await pool.query("SET lock_timeout = '5s'");
 for (const d of ddl) await pool.query(d);
 for (const m of alters) await pool.query(m[0]);
@@ -173,7 +181,7 @@ await versuche('D Seed', async () => {
 // --- A: ablegen / aufbereiten ----------------------------------------------------------------
 let eintragId = null;
 await versuche('A ablegen/aufbereiten', async () => {
-  const basis = { frage_de: 'Welches Ausgabeformat soll die Tool-Antwort haben?', kategorie: 'variante', antwort_wortlaut: 'JSON, immer.', gewaehlte_option: 'a', themen: ['format'] };
+  const basis = { name: 'test-ausgabeformat', frage_de: 'Welches Ausgabeformat soll die Tool-Antwort haben?', kategorie: 'variante', antwort_wortlaut: 'JSON, immer.', gewaehlte_option: 'a', themen: ['format'] };
   let r = await E.fuehreJevTopfActionAus(PRJ, 'entscheidung_ablegen', { ...basis, agent_id: AG, aufbereitet: AUFB('ZZT-MARKER') });
   pruefe(r.success === false && /Koordinator/.test(r.message ?? ''), 'A ablegen nur Koordinator/User', r);
   r = await E.fuehreJevTopfActionAus(PRJ, 'entscheidung_ablegen', { ...basis, agent_id: KOORD, aufbereitet: { de: AUFB('x').de } });
@@ -185,14 +193,14 @@ await versuche('A ablegen/aufbereiten', async () => {
   const { rows } = await pool.query('SELECT herkunft_projekt, herkunft, aufbereitet_von FROM jev_entscheidungstopf WHERE id = $1', [rohId]);
   pruefe(rows[0]?.herkunft === 'tool' && rows[0]?.herkunft_projekt === PRJ && rows[0]?.aufbereitet_von === KOORD, 'A Herkunft tool, herkunft_projekt, aufbereitet_von', rows);
   const l = await E.fuehreJevTopfActionAus(PRJ, 'topf', { status: 'aktiv' });
-  pruefe(l.success === true && l.eintraege?.some((e) => e.id === rohId), 'O Dispatcher topf listet', l);
+  pruefe(l.success === true && l.namen?.includes('test-ausgabeformat'), 'O Dispatcher topf listet', l);
 });
 
 // --- T: Thought-Spiegel --------------------------------------------------------------------------
 await versuche('T Thought-Spiegel', async () => {
   const id1 = '00000000-0000-4000-8000-00000000e1a1';
-  const r = await T.spiegeleThoughtInTopf(PRJ, { id: id1, source: 'koordinator', content: 'USER-ENTSCHEIDUNG: Variante B nehmen.', tags: ['entscheidung', 'user'] });
-  const r2 = await T.spiegeleThoughtInTopf(PRJ, { id: id1, source: 'koordinator', content: 'USER-ENTSCHEIDUNG: Variante B nehmen.', tags: ['entscheidung', 'user'] });
+  const r = await T.spiegeleThoughtInTopf(PRJ, { id: id1, name: 'test-thought', source: 'koordinator', content: 'USER-ENTSCHEIDUNG: Variante B nehmen.', tags: ['entscheidung', 'user'] });
+  const r2 = await T.spiegeleThoughtInTopf(PRJ, { id: id1, name: 'test-thought', source: 'koordinator', content: 'USER-ENTSCHEIDUNG: Variante B nehmen.', tags: ['entscheidung', 'user'] });
   const r3 = await T.spiegeleThoughtInTopf(PRJ, { id: '00000000-0000-4000-8000-00000000e1a2', source: 'x', content: 'nur Notiz', tags: ['notiz'] });
   const { rows } = await pool.query(`SELECT status, herkunft, quelle_ref, kandidat FROM jev_entscheidungstopf WHERE herkunft = 'thought'`);
   pruefe(rows.length === 1 && rows[0].status === 'roh' && rows[0].quelle_ref === id1 && rows[0].kandidat === false && r?.angelegt === true && r2?.angelegt === false,
@@ -205,10 +213,10 @@ await versuche('T Thought-Spiegel', async () => {
 // --- K: Kandidaten -----------------------------------------------------------------------------------
 await versuche('K Kandidaten', async () => {
   for (let i = 0; i < 7; i++) {
-    await T.legeEntscheidungAb({ frage_de: `Fuellfrage ${i} zu Datenbank Index Nummer ${i}`, kategorie: 'umsetzungsweg', antwort_wortlaut: `Wortlaut ${i}`,
+    await T.legeEntscheidungAb({ name: `test-fuellung-${i}`, frage_de: `Fuellfrage ${i} zu Datenbank Index Nummer ${i}`, kategorie: 'umsetzungsweg', antwort_wortlaut: `Wortlaut ${i}`,
       aufbereitet: { de: { entscheidung: `Index ${i}`, begruendung: 'b', gilt_wenn: `Richtig bei Index ${i} Datenbank` }, en: { decision: `Index ${i}`, reason: 'r', applies_when: `Correct for database index ${i}` } } }, KOORD);
   }
-  await T.legeEntscheidungAb({ frage_de: 'Darf geloescht werden?', kategorie: 'loeschen', antwort_wortlaut: 'Nein', aufbereitet: AUFB('ZZT-VERBOTEN') }, KOORD);
+  await T.legeEntscheidungAb({ name: 'test-loeschen', frage_de: 'Darf geloescht werden?', kategorie: 'loeschen', antwort_wortlaut: 'Nein', aufbereitet: AUFB('ZZT-VERBOTEN') }, KOORD);
   const k = await T.holeTopfKandidaten('Welches Ausgabeformat soll die Antwort des Tools haben, JSON oder Text?', { erlaubte: [...E.ERLAUBTE_KATEGORIEN] }, { embed: mockEmbed });
   pruefe(k.kandidaten.length === 6 && k.kandidaten[0].eintrag.id === eintragId && k.quelle === 'embedding', 'K Top 6, passender Eintrag zuerst, Quelle embedding', k.kandidaten.map((x) => [x.eintrag.frage_de, x.score]));
   pruefe(!k.kandidaten.some((x) => x.eintrag.kategorie === 'loeschen'), 'K verbotene Kategorie nie Kandidat');
@@ -306,13 +314,13 @@ await versuche('P Praezedenz', async () => {
   z = await protokollZeile(praezedenzEntscheidungId);
   const { rows: b } = await pool.query('SELECT bestaetigt_n, korrigiert_n FROM jev_entscheidungstopf WHERE id = $1', [eintragId]);
   pruefe(d.success === true && z.durchsicht === 'bestaetigt' && z.durchsicht_von === KOORD && b[0].bestaetigt_n === 1, 'R ok -> bestaetigt, bestaetigt_n der Praezedenz +1', { d, z, b });
-  d = await E.durchsichtEntscheidung(PRJ, { agent_id: KOORD, id: ohneId, urteil: 'korrigieren', wahl: 'a', wortlaut: 'Nein, JSON war richtig.' });
+  d = await E.durchsichtEntscheidung(PRJ, { agent_id: KOORD, id: ohneId, name: 'test-korrektur-ohne', urteil: 'korrigieren', wahl: 'a', wortlaut: 'Nein, JSON war richtig.' });
   z = await protokollZeile(ohneId);
   const { rows: k } = await pool.query(`SELECT status, herkunft, quelle_ref, gewaehlte_option, antwort_wortlaut FROM jev_entscheidungstopf WHERE herkunft = 'korrektur'`);
   pruefe(d.success === true && z.durchsicht === 'korrigiert' && JSON.stringify(z.ueberstimmt_wahl) === '"a"' && k.length === 1 && k[0].status === 'roh'
     && k[0].gewaehlte_option === 'a' && k[0].antwort_wortlaut === 'Nein, JSON war richtig.' && k[0].quelle_ref === `jev_entscheidungen:${ohneId}` && !!d.neuer_eintrag,
     'R korrigieren -> ueberstimmt + neuer Topf-Eintrag herkunft korrektur (roh, Wortlaut des Users)', { d, z, k });
-  d = await E.durchsichtEntscheidung(PRJ, { agent_id: KOORD, id: praezedenzEntscheidungId, urteil: 'korrigieren', wahl: 'b', wortlaut: 'Doch B.' });
+  d = await E.durchsichtEntscheidung(PRJ, { agent_id: KOORD, id: praezedenzEntscheidungId, name: 'test-korrektur-mit', urteil: 'korrigieren', wahl: 'b', wortlaut: 'Doch B.' });
   const { rows: b2 } = await pool.query('SELECT korrigiert_n FROM jev_entscheidungstopf WHERE id = $1', [eintragId]);
   pruefe(d.success === true && b2[0].korrigiert_n === 1, 'R korrigieren einer Praezedenz-Entscheidung -> korrigiert_n +1', b2);
   const aus = await E.setzeAbwesenheit(PRJ, { modus: 'aus', agent_id: KOORD });
@@ -338,13 +346,14 @@ await versuche('V Tool-Strecken', async () => {
   pruefe(['entscheidung_ablegen', 'entscheidung_aufbereiten', 'topf', 'durchsicht'].every((a) => enumA.includes(a)) && !!jevTool.definition.inputSchema.properties.aufbereitet,
     'V stdio: Actions + Parameter des Topfs in der Definition', enumA);
   const r = await jevTool.handler({ action: 'topf', project: PRJ, status: 'aktiv' });
-  pruefe(r.success === true && Array.isArray(r.eintraege) && r.eintraege.length > 0, 'V stdio: jev(topf) ueber den Handler', r.anzahl);
+  pruefe(r.success === true && Array.isArray(r.namen) && r.namen.length > 0, 'V stdio: jev(topf) ueber den Handler', r.anzahl);
   const rest = readFileSync(restPfad, 'utf8');
   pruefe(/istJevTopfAction\)?\(action\)/.test(rest) && /fuehreJevTopfActionAus\)?\(project, action, args\)/.test(rest) && /\.\.\.JEV_TOPF_PARAMETER/.test(rest) && /\.\.\.JEV_TOPF_ACTIONS/.test(rest),
     'V REST: Definition (Actions, Parameter) und Dispatcher eingebunden');
 });
 
 await aufraeumen();
+await pool.query('DROP SCHEMA "' + privateSchema + '" CASCADE');
 await pool.end().catch(() => undefined);
 console.log(`\n${ok} OK, ${fehler} FEHLER`);
 process.exit(fehler === 0 ? 0 : 1);
