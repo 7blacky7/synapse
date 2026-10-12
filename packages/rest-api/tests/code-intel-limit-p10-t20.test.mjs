@@ -20,7 +20,16 @@ const { getPool, closePool } = await load('packages/core/dist/db/client.js');
 const { codeIntelTool } = await load('packages/mcp-server/dist/tools/consolidated/code-intel.js');
 const { createServer } = await load('packages/rest-api/dist/server.js');
 // P10-T51 (K3): die MCP-Huelle laesst null-Felder weg; der stdio-Handler liefert das Rohobjekt.
-const { kompaktiereToolAntwort, toolAntwortKompaktAktiv } = await load('packages/core/dist/services/tool-antwort.js');
+// Erwartung UNABHAENGIG vom geprueften Helfer nach der freigegebenen Regel (null/undefined-Schluessel
+// weg, exit_code bleibt, Arrays vollstaendig); Rueckweg SYNAPSE_TOOL_ANTWORT_KOMPAKT=0.
+const kompaktAus = ['0', 'false', 'aus', 'off', 'nein'].includes(String(process.env.SYNAPSE_TOOL_ANTWORT_KOMPAKT ?? '').trim().toLowerCase());
+function ohneNullFelder(wert) {
+  if (Array.isArray(wert)) return wert.map(ohneNullFelder);
+  if (wert === null || typeof wert !== 'object') return wert;
+  return Object.fromEntries(Object.entries(wert)
+    .filter(([k, v]) => v !== undefined && (v !== null || k === 'exit_code'))
+    .map(([k, v]) => [k, ohneNullFelder(v)]));
+}
 const pool = getPool();
 const project = 'test-p10-t20-' + randomUUID();
 const functions = ['fn_a', 'fn_b', 'fn_c'];
@@ -133,7 +142,7 @@ try {
     const fn = await run('functions', {});
     const vars = await run('variables', {});
     // Golden bleibt der Altwert; ueber die MCP-Huelle gilt die freigegebene Regel (null-Felder entfallen).
-    const erwartet = (wert) => (name === 'REST-MCP' && toolAntwortKompaktAktiv() ? kompaktiereToolAntwort(wert, 'code_intel') : wert);
+    const erwartet = (wert) => (name === 'REST-MCP' && !kompaktAus ? ohneNullFelder(wert) : wert);
     equalJson(fn, erwartet({ success: true, functions: expectedFunctions, count: 3, project }), name + ' Golden functions ohne limit (Altverhalten)');
     equalJson(vars, erwartet({ success: true, variables: expectedVariables, count: 3, project }), name + ' Golden variables ohne limit (Altverhalten)');
   }
