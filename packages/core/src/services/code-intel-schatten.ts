@@ -13,7 +13,7 @@ type Row = Record<string, unknown>;
 type Plan = { id: string; project: string; ops: FileBatchOp[]; expected_hashes: Record<string,string>; status: FileBatchStatus };
 type Datei = { file_path: string; content: string; deleted: boolean; neu: boolean; drift?: string };
 type Schatten = { dateien: Datei[]; tabellen: Record<string,Row[]>; umleitung: Record<string,string>; definitionen: Record<string,string>; namen: string[]; symbolFinger: string; ms: number; bytes: number; befunde: unknown[] };
-const cache = new Map<string,{ finger: string; bis: number; wert: Schatten }>();
+const cache = new Map<string,{ finger: string; bis: number; wert: Schatten; status: FileBatchStatus }>();
 const MAX_CACHE_BYTES = 32 * 1024 * 1024;
 let bauten = 0, treffer = 0;
 export function schattenCacheStatistik() { return { eintraege: cache.size, bauten, treffer }; }
@@ -30,8 +30,8 @@ async function lade(plan: Plan, nach?: number): Promise<Schatten> {
   const ops = nach === undefined ? plan.ops : plan.ops.slice(0,nach+1);
   const pfade = [...new Set(ops.flatMap(op=>[op.file_path,...(op.new_path?[op.new_path]:[])]))];
   const pool = getPool();
-  const aktuell = (await pool.query('SELECT file_path,content_hash,ignored FROM code_files WHERE project=$1 AND file_path=ANY($2::text[]) ORDER BY file_path',[plan.project,pfade])).rows;
-  const finger = hash(JSON.stringify([ops,plan.expected_hashes,aktuell]));
+  const aktuell = (await pool.query('SELECT file_path,content_hash,ignored,deleted_at,parsed_at,updated_at,parser_version FROM code_files WHERE project=$1 AND file_path=ANY($2::text[]) ORDER BY file_path',[plan.project,pfade])).rows;
+  const finger = hash(JSON.stringify([plan.status,ops,plan.expected_hashes,aktuell]));
   const jetzt = Date.now();
   for(const [k,v] of cache) if(v.bis<=jetzt) cache.delete(k);
   const alt = cache.get(key);
@@ -44,7 +44,23 @@ async function lade(plan: Plan, nach?: number): Promise<Schatten> {
   const start = performance.now();
   const stand = await getCodeIntelSchatten({...plan,ops});
   const tabellen: Record<string,Row[]> = {code_files:[],code_symbols:[],code_references:[],code_statements:[],code_call_edges:[]};
-  const dateien = stand.dateien;
+  // P6-T29: content_hash wird schon beim Schreiben gesetzt, parsed_at erst nach dem Struktur-Parse.
+  // Bereite Dateien gehen einzeln an den echten Index; neuere Inhalte verdrängen alte Commits.
+  const geloescht=stand.dateien.filter(f=>f.deleted).map(f=>f.file_path);
+  const restGraph=plan.status==='committed' && geloescht.length ? new Set((await pool.query(
+    `SELECT file_path FROM code_symbols WHERE project=$1 AND file_path=ANY($2::text[])
+     UNION SELECT file_path FROM code_statements WHERE project=$1 AND file_path=ANY($2::text[])
+     UNION SELECT file_path FROM code_call_edges WHERE project=$1 AND file_path=ANY($2::text[])
+     UNION SELECT file_path FROM code_references WHERE project=$1 AND file_path=ANY($2::text[])`,[plan.project,geloescht])).rows.map(r=>String(r.file_path))) : new Set<string>();
+  const dateien = plan.status==='committed' ? stand.dateien.filter(f=>{
+    const real=aktuell.find(r=>r.file_path===f.file_path);
+    if(f.deleted) return restGraph.has(f.file_path);
+    if(!real) return true;
+    if(real.deleted_at || real.ignored || real.content_hash!==hash(f.content)) return false;
+    const fertig=real.parsed_at && real.updated_at && new Date(real.parsed_at)>=new Date(real.updated_at) &&
+      (!getParserForFile(f.file_path,f.content) || real.parser_version!==null);
+    return !fertig;
+  }) : stand.dateien;
   let nummer = -1;
   const parsen = new Map<string,ReturnType<NonNullable<ReturnType<typeof getParserForFile>>['parse']>>();
   for(const f of dateien) {
@@ -77,15 +93,26 @@ async function lade(plan: Plan, nach?: number): Promise<Schatten> {
   const echte = await indexSymbole(pool,plan.project,namen,pfade);
   const verdeckt = new Set(dateien.map(f=>f.file_path));
   const symbole = [...tabellen.code_symbols,...echte.filter(r=>!verdeckt.has(String(r.file_path)))];
+  // Name/Pfad-Indizes verhindern wiederholte globale Symbol-Scans im kalten Schatten-Linker.
+  const symboleJeName = new Map<string,Row[]>(), importsJeDatei = new Map<string,Row[]>();
+  for(const sym of symbole) {
+    const key=String(sym.name), liste=symboleJeName.get(key)??[];
+    liste.push(sym);symboleJeName.set(key,liste);
+  }
+  for(const sym of tabellen.code_symbols.filter(r=>r.symbol_type==='import')) {
+    const key=String(sym.file_path), liste=importsJeDatei.get(key)??[];
+    liste.push(sym);importsJeDatei.set(key,liste);
+  }
   const quellPfad = (file: string) => file.replace(/\.(?:[cm]?[jt]sx?|py)$/,'');
   const ziel = (name: string, file: string, feld=false): Row | undefined => {
     // Wie der echte Linker: Deklarationen vor Importen/Re-Exports; Mehrdeutigkeit bleibt NULL.
-    const kandidaten = symbole.filter(r=>r.name===name && r.symbol_type!=='string' &&
+    const namensSymbole=symboleJeName.get(name)??[];
+    const kandidaten = namensSymbole.filter(r=> r.symbol_type!=='string' &&
       r.symbol_type!=='import' && r.symbol_type!=='export' && (feld?r.symbol_type==='field':r.symbol_type!=='field'));
     const lokal = kandidaten.filter(r=>r.file_path===file);
     if(lokal.length) return lokal.length===1?lokal[0]:undefined;
     const exportiert = kandidaten.filter(r=>r.is_exported);
-    const imports = tabellen.code_symbols.filter(r=>r.file_path===file && r.symbol_type==='import' &&
+    const imports = (importsJeDatei.get(file)??[]).filter(r=>
       (r.name===name || (Array.isArray(r.params) && r.params.includes(name))));
     for(const imp of imports) {
       if(typeof imp.value!=='string' || !imp.value.startsWith('.')) continue;
@@ -98,7 +125,7 @@ async function lade(plan: Plan, nach?: number): Promise<Schatten> {
           (quellPfad(r.file_path)===modul || quellPfad(r.file_path)===modul+'/index');
         const passend=exportiert.filter(imModul);
         if(passend.length) return passend.length===1?passend[0]:undefined;
-        const weiter=symbole.filter(r=>r.name===name && r.symbol_type==='export' && imModul(r));
+        const weiter=namensSymbole.filter(r=>r.symbol_type==='export' && imModul(r));
         const ziele=weiter.flatMap(r=>{
           if(typeof r.value!=='string' || !r.value.startsWith('.')) return [];
           const def=folge(quellPfad(path.posix.normalize(path.posix.join(path.posix.dirname(String(r.file_path)),r.value))));
@@ -137,7 +164,7 @@ async function lade(plan: Plan, nach?: number): Promise<Schatten> {
   bauten++;
   if(wert.bytes<=MAX_CACHE_BYTES) {
     while(cache.size>=64 || [...cache.values()].reduce((sum,v)=>sum+v.wert.bytes,0)+wert.bytes>MAX_CACHE_BYTES) cache.delete(cache.keys().next().value!);
-    cache.set(key,{finger,bis:jetzt+60_000,wert});
+    cache.set(key,{finger,bis:jetzt+60_000,wert,status:plan.status});
   }
   return wert;
 }
@@ -232,9 +259,57 @@ async function abfrage(action: string, args: Row): Promise<Row> {
     default: return {success:false,error:'Schatten wird für diese Action nicht unterstützt',project};
   }
 }
-/** Ohne Schalter exakt die alte Callback-Antwort, ohne zusätzliche DB-Abfrage. */
+/** P6-T29: nur noch nicht geparste Dateien bereits geschlossener Commits, keine offenen Pläne. */
+async function commitUebergaben(project: string): Promise<Array<{plan: Plan; stand: Schatten}>> {
+  const plans=(await getPool().query(
+    `SELECT p.id::text,p.project,p.ops,p.expected_hashes,p.status FROM file_batch_plans p
+     WHERE p.project=$1 AND p.status='committed' AND p.committed_at IS NOT NULL
+       AND EXISTS (SELECT 1 FROM code_files f WHERE f.project=p.project AND f.updated_at<=p.committed_at AND NOT f.ignored
+         AND p.expected_hashes ? f.file_path
+         AND ((f.deleted_at IS NULL AND (f.parsed_at IS NULL OR f.parsed_at<f.updated_at OR f.parser_version IS NULL)) OR
+          (f.deleted_at IS NOT NULL AND (EXISTS (SELECT 1 FROM code_symbols x WHERE x.project=f.project AND x.file_path=f.file_path)
+            OR EXISTS (SELECT 1 FROM code_statements x WHERE x.project=f.project AND x.file_path=f.file_path)
+            OR EXISTS (SELECT 1 FROM code_call_edges x WHERE x.project=f.project AND x.file_path=f.file_path)
+            OR EXISTS (SELECT 1 FROM code_references x WHERE x.project=f.project AND x.file_path=f.file_path)))))
+     ORDER BY p.committed_at,p.id`,[project])).rows as Plan[];
+  const kandidaten=new Set(plans.map(p=>p.id));
+  for(const [key,v] of cache) {
+    const [proj,id]=JSON.parse(key);
+    if(proj===project && v.status==='committed' && !kandidaten.has(id)) cache.delete(key);
+  }
+  const out:Array<{plan:Plan;stand:Schatten}>=[];
+  for(const plan of plans) {
+    const stand=await lade(plan);
+    if(stand.dateien.length) out.push({plan,stand});
+    else cache.delete(JSON.stringify([project,plan.id,null]));
+  }
+  return out;
+}
+async function standardMitUebergabe(project: string, bestand: ()=>Promise<Row>): Promise<Row> {
+  const pending=await commitUebergaben(project);
+  if(!pending.length) return bestand();
+  const letzte=new Map<string,string>();
+  for(const {plan,stand}of pending) for(const f of stand.dateien) letzte.set(f.file_path,plan.id);
+  const merged:Schatten={dateien:[],tabellen:{code_files:[],code_symbols:[],code_references:[],code_statements:[],code_call_edges:[]},
+    umleitung:{},definitionen:{},namen:[],symbolFinger:'',ms:0,bytes:0,befunde:[]};
+  for(const {plan,stand}of pending) {
+    const pfade=new Set(stand.dateien.filter(f=>letzte.get(f.file_path)===plan.id).map(f=>f.file_path));
+    merged.dateien.push(...stand.dateien.filter(f=>pfade.has(f.file_path)));
+    for(const table of Object.keys(merged.tabellen)) merged.tabellen[table].push(...stand.tabellen[table].filter(r=>pfade.has(String(r.file_path))));
+    Object.assign(merged.umleitung,stand.umleitung);Object.assign(merged.definitionen,stand.definitionen);
+  }
+  let antwort=await mitLesePool(lesePool(getPool(),project,merged),bestand);
+  for(const {plan,stand}of pending) antwort=markiere(antwort,plan.id,new Set(stand.dateien.filter(f=>letzte.get(f.file_path)===plan.id).map(f=>f.file_path))) as Row;
+  return {...antwort,index_folgt:pending.map(({plan,stand})=>({plan_id:plan.id,status:'committet, Index folgt',dateien:stand.dateien.map(f=>f.file_path)}))};
+}
+/** Ohne Schalter unveränderte Antwort; ausschließlich ausstehende Commits überbrücken den Parse-Lag. */
+
 export async function mitCodeIntelSchatten(action: string,args: Row,bestand: ()=>Promise<Row>): Promise<Row> {
-  if(args.schatten===undefined && !(action==='tree' && args.show_ghosts===true)) return bestand();
+  if(args.schatten===undefined && !(action==='tree' && args.show_ghosts===true)) {
+    const project=s(args,'project');
+    return project && args.semantic!==true && ['tree','functions','symbols','references','search','file','statements','calls'].includes(action)
+      ? standardMitUebergabe(project,bestand) : bestand();
+  }
   const project=s(args,'project');
   if(!project) return {success:false,error:'project ist erforderlich'};
   if(args.semantic===true || action==='search_batch') return {success:false,error:'Keine semantische Suche auf Ghost-Schatten',project};
@@ -245,7 +320,7 @@ export async function mitCodeIntelSchatten(action: string,args: Row,bestand: ()=
   const auswahl=args.schatten??'alle';
   if(typeof auswahl!=='string' || (auswahl!=='alle'&&!/^\d+$/.test(auswahl))) return {success:false,error:'schatten muss plan_id oder alle sein',project};
   const pool=getPool();
-  const plans=(await pool.query("SELECT id::text,project,ops,expected_hashes,status FROM file_batch_plans WHERE project=$1 AND status='open' AND ($2='alle' OR id::text=$2) ORDER BY id",[project,auswahl])).rows as Plan[];
+  const plans=(await pool.query("SELECT id::text,project,ops,expected_hashes,status FROM file_batch_plans WHERE project=$1 AND (status='open' OR (status='committed' AND committed_at IS NOT NULL)) AND ($2='alle' OR id::text=$2) AND ($2<>'alle' OR status='open' OR EXISTS (SELECT 1 FROM code_files f WHERE f.project=file_batch_plans.project AND f.updated_at<=file_batch_plans.committed_at AND NOT f.ignored AND file_batch_plans.expected_hashes ? f.file_path AND ((f.deleted_at IS NULL AND (f.parsed_at IS NULL OR f.parsed_at<f.updated_at OR f.parser_version IS NULL)) OR (f.deleted_at IS NOT NULL AND (EXISTS (SELECT 1 FROM code_symbols x WHERE x.project=f.project AND x.file_path=f.file_path) OR EXISTS (SELECT 1 FROM code_statements x WHERE x.project=f.project AND x.file_path=f.file_path) OR EXISTS (SELECT 1 FROM code_call_edges x WHERE x.project=f.project AND x.file_path=f.file_path) OR EXISTS (SELECT 1 FROM code_references x WHERE x.project=f.project AND x.file_path=f.file_path)))))) ORDER BY id",[project,auswahl])).rows as Plan[];
   const offene=new Set(plans.map(p=>p.id));
   for(const key of cache.keys()) {
     const [proj,id]=JSON.parse(key);
@@ -257,17 +332,23 @@ export async function mitCodeIntelSchatten(action: string,args: Row,bestand: ()=
     if(typeof args.stand_nach_op==='number' && args.stand_nach_op>=plan.ops.length) return {success:false,error:'stand_nach_op liegt außerhalb des Plans',project};
     try {
       const stand=await lade(plan,n(args,'stand_nach_op'));
+      if(plan.status==='committed' && !stand.dateien.length) {
+        cache.delete(JSON.stringify([project,plan.id,n(args,'stand_nach_op')??null]));
+        if(auswahl!=='alle') return bestand();
+        continue;
+      }
       const antwort=action==='tree'?await ghostTree(project,args,stand,plan.id):
         await mitLesePool(lesePool(pool,project,stand),()=>abfrage(action,args));
       antworten.push({...markiere(antwort,plan.id,new Set(stand.dateien.map(f=>f.file_path))) as Row,plan_id:plan.id,
         ...(stand.befunde.length?{nicht_anwendbar:stand.befunde}:{}),
         ...(stand.dateien.some(f=>f.drift)?{drift:stand.dateien.filter(f=>f.drift).map(f=>({file_path:f.file_path,hinweis:f.drift}))}:{}),
-        schatten_parse_ms:stand.ms});
+        schatten_parse_ms:stand.ms,...(plan.status==='committed'?{status:'committet, Index folgt'}:{})});
     } catch {
       return {success:false,error:'Ghost-Schatten konnte nicht untersucht werden',plan_id:plan.id,project};
     }
   }
   if(auswahl!=='alle') return antworten[0];
+  if(!antworten.length) return bestand();
   if(action==='tree') {
     const basis=await ci.getProjectTree(project,args);
     const extras=antworten.map(r=>String(r.tree).split('\nGhost-Schatten (Index-Zählwerte oben unverändert):\n')[1]).filter(Boolean);
