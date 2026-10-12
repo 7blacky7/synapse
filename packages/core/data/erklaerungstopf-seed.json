@@ -10,6 +10,91 @@
   ],
   "eintraege": [
     {
+      "kennung": "shell-ergebnis-test-rot",
+      "familie": "shell-ergebnis:test_rot",
+      "schluessel": "muster|shell-ergebnis:test_rot|test_rot",
+      "status": "vorgeschlagen",
+      "beleg": "P10-T46: generischer zweisprachiger Startbestand, Fake-Jev-Vertrag getestet; noch keine echte Korrekturverifikation.",
+      "de": {
+        "lage": "Ein Test ist fehlgeschlagen.",
+        "wieso": "Eine Prüfung hat eine verletzte Zusage gemeldet; ein schon bekannter Fehler bleibt klärungsbedürftig.",
+        "abhilfe": "Ein roter Test darf nicht stehen bleiben: Ursache klären, korrigieren und erneut prüfen oder als konkreten Befund melden."
+      },
+      "en": {
+        "lage": "A test failed.",
+        "wieso": "A check reported a violated expectation; an already known failure still needs investigation.",
+        "abhilfe": "Investigate the failed assertion, fix and rerun it, or report a concrete finding; do not leave a red test unexplained."
+      }
+    },
+    {
+      "kennung": "shell-ergebnis-build-fehler",
+      "familie": "shell-ergebnis:build_fehler",
+      "schluessel": "muster|shell-ergebnis:build_fehler|build_fehler",
+      "status": "vorgeschlagen",
+      "beleg": "P10-T46: generischer zweisprachiger Startbestand, Fake-Jev-Vertrag getestet; noch keine echte Korrekturverifikation.",
+      "de": {
+        "lage": "Der Build ist fehlgeschlagen.",
+        "wieso": "Der Compiler oder Build-Prozess konnte kein erfolgreich geprüftes Ergebnis erzeugen.",
+        "abhilfe": "Den ersten relevanten Build-Fehler klären, korrigieren und den Build erneut mit geprüftem Exitcode ausführen."
+      },
+      "en": {
+        "lage": "The build failed.",
+        "wieso": "The compiler or build process could not produce a successfully checked result.",
+        "abhilfe": "Investigate the first relevant build error, fix it, and rerun the build while checking its exit code."
+      }
+    },
+    {
+      "kennung": "shell-ergebnis-module-not-found",
+      "familie": "shell-ergebnis:module_not_found",
+      "schluessel": "muster|shell-ergebnis:module_not_found|module_not_found",
+      "status": "vorgeschlagen",
+      "beleg": "P10-T46: generischer zweisprachiger Startbestand, Fake-Jev-Vertrag getestet; noch keine echte Korrekturverifikation.",
+      "de": {
+        "lage": "Ein benötigtes Modul wurde nicht gefunden.",
+        "wieso": "Die Laufzeit kann eine referenzierte Abhängigkeit oder eine erzeugte Datei nicht auflösen.",
+        "abhilfe": "Abhängigkeiten, Importpfad und Build-Stand prüfen; die konkrete fehlende Voraussetzung beheben und erneut ausführen."
+      },
+      "en": {
+        "lage": "A required module could not be found.",
+        "wieso": "The runtime cannot resolve a referenced dependency or generated file.",
+        "abhilfe": "Check dependencies, import resolution and build state; repair the specific missing prerequisite and rerun."
+      }
+    },
+    {
+      "kennung": "shell-ergebnis-befehl-nicht-gefunden",
+      "familie": "shell-ergebnis:befehl_nicht_gefunden",
+      "schluessel": "muster|shell-ergebnis:befehl_nicht_gefunden|befehl_nicht_gefunden",
+      "status": "vorgeschlagen",
+      "beleg": "P10-T46: generischer zweisprachiger Startbestand, Fake-Jev-Vertrag getestet; noch keine echte Korrekturverifikation.",
+      "de": {
+        "lage": "Ein aufgerufener Befehl wurde nicht gefunden.",
+        "wieso": "Die Shell kann das Programm in der aktuellen Laufzeitumgebung nicht auflösen.",
+        "abhilfe": "Befehlsnamen und konfigurierte Laufzeitumgebung prüfen; das vorhandene Projektwerkzeug korrekt aufrufen."
+      },
+      "en": {
+        "lage": "A requested command could not be found.",
+        "wieso": "The shell cannot resolve the program in the current runtime environment.",
+        "abhilfe": "Check the command name and configured runtime environment, then invoke the appropriate project tool correctly."
+      }
+    },
+    {
+      "kennung": "shell-ergebnis-zeitlimit",
+      "familie": "shell-ergebnis:zeitlimit",
+      "schluessel": "muster|shell-ergebnis:zeitlimit|zeitlimit",
+      "status": "vorgeschlagen",
+      "beleg": "P10-T46: generischer zweisprachiger Startbestand, Fake-Jev-Vertrag getestet; noch keine echte Korrekturverifikation.",
+      "de": {
+        "lage": "Die Ausführung hat ihr Zeitlimit erreicht.",
+        "wieso": "Der Prozess wurde nicht rechtzeitig fertig; das ist kein belegter erfolgreicher Abschluss.",
+        "abhilfe": "Letzte Ausgabe und Prozesszustand prüfen; die Ursache des Zeitlimits klären, bevor erneut gestartet wird."
+      },
+      "en": {
+        "lage": "Execution reached its time limit.",
+        "wieso": "The process did not finish in time; this does not establish a successful completion.",
+        "abhilfe": "Inspect the latest output and process state; investigate the timeout cause before starting another run."
+      }
+    },
+    {
       "kennung": "ts-geschweifte-klammer-fehlt",
       "e0_klasse": "K1",
       "familie": "typescript",
