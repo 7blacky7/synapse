@@ -350,8 +350,10 @@ try {
     const rest = readFileSync(join(repo, 'packages', 'rest-api', 'src', 'routes', 'mcp.ts'), 'utf8');
     const stdio = readFileSync(join(repo, 'packages', 'mcp-server', 'src', 'tools', 'onboarding.ts'), 'utf8');
     const server = readFileSync(join(repo, 'packages', 'rest-api', 'src', 'server.ts'), 'utf8');
-    pruefe(/erklaerungsFaelleZeile\(/.test(rest) && /\.\.\.erklBlock/.test(rest) && /erklaerungsFaelleZeile\(/.test(stdio) && /erklaerung_faelle: erklZeile/.test(stdio),
-      'O Onboarding-Zeile in REST (routes/mcp.ts) und stdio (tools/onboarding.ts) verdrahtet');
+    // P7-T40: Zeile wird im gemeinsamen Ladepfad gebaut; REST und stdio muessen genau diesen Pfad nutzen.
+    const gemeinsam = readFileSync(join(repo, 'packages', 'core', 'src', 'services', 'agent-onboarding.ts'), 'utf8');
+    pruefe(/erklaerungsFaelleZeile\(/.test(gemeinsam) && /erklaerung_faelle: faelle/.test(gemeinsam) && /holeAgentOnboarding\(/.test(rest) && /holeAgentOnboarding\(/.test(stdio),
+      'O Onboarding-Zeile im gemeinsamen Pfad (core agent-onboarding.ts) gebaut, von REST (routes/mcp.ts) und stdio (tools/onboarding.ts) genutzt');
     pruefe(/ladeErklaerungstopfSeed\(/.test(server) && /holeErklaerungsEreignisseNach\(/.test(server), 'O API-Start: Seed laden und Nachholen verdrahtet (rest-api server.ts)');
   });
 
