@@ -4292,6 +4292,38 @@ export async function replanUnblockedReservationWaits(project: string, filePaths
         );
         const wait = current.rows[0];
         if (!wait) continue;
+        // P6-T39: der Wait-Lock schuetzt auch die Entscheidung, einen verwaisten Beitrag zu schliessen.
+        const aktiv = (await client.query(
+          "SELECT 1 FROM agent_sessions WHERE id = $1 AND project = $2 AND status = 'active'",
+          [wait.waiting_agent, project],
+        )).rowCount;
+        if (!aktiv) {
+          await client.query('BEGIN');
+          await client.query(
+            "UPDATE file_batch_waits SET status = 'closed', updated_at = NOW() WHERE wait_token = $1::uuid AND project = $2",
+            [candidate.wait_token, project],
+          );
+          await client.query(
+            `UPDATE file_batch_plans c SET status = 'cancelled',
+                reason = CONCAT_WS(' ', c.reason, $3::text)
+              WHERE c.id = $1::bigint AND c.project = $2 AND c.status = 'open'
+                AND jsonb_array_length(c.ops) = 0
+                AND NOT EXISTS (SELECT 1 FROM file_batch_waits w WHERE w.source_plan_id = c.id AND w.status <> 'closed')`,
+            [wait.source_plan_id, project, '[P6-T39: Wait geschlossen, keine aktive Agent-Sitzung; gespeicherte Ops erhalten]'],
+          );
+          await emitEventOnce({
+            project, eventType: 'PLAN_CHANGED', priority: 'normal',
+            scope: `agent:${wait.waiting_agent}`, sourceId: 'files', requiresAck: false,
+            dedupeKey: `inactive-wait-closed:${candidate.wait_token}`,
+            payload: JSON.stringify({
+              reason: 'inactive_wait_closed', wait_token: candidate.wait_token,
+              source_plan_id: wait.source_plan_id,
+              message: 'Wait ohne aktive Agent-Sitzung geschlossen; gespeicherte Ops erhalten, kein neuer Plan.',
+            }),
+          }, client);
+          await client.query('COMMIT');
+          continue;
+        }
         try {
           const result = await planBatch({ project, agent_id: wait.waiting_agent, ops: wait.deferred_ops });
           planned += result.total_ops ?? 0;

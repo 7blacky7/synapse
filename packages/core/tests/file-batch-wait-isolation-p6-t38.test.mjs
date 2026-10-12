@@ -16,6 +16,8 @@ async function scenario(mode, broken = false) {
   projects.push(project);
   const owner = project + '-owner', oldOwner = project + '-old-owner';
   const oldAgent = project + '-old', goodAgent = project + '-good', badAgent = project + '-bad';
+  // P6-T39: betroffene aktive Autoren; fehlende/inaktive Sessions haben einen eigenen Test.
+  await pool.query("INSERT INTO agent_sessions(id,project,status,sitzung_seit) SELECT unnest($1::text[]),$2,'active',NOW()",[[goodAgent,badAgent],project]);
   const create = await batch.planBatch({ project, agent_id: owner,
     ops: ['old.txt','good.txt','bad.txt','own.txt'].map(file_path => ({ action:'create', file_path, content:'BASE\n' })) });
   assert.equal((await batch.commitBatch({plan_id:create.plan_id,agent_id:owner})).success,true);
@@ -100,7 +102,7 @@ try {
 } finally {
   for (const project of projects) {
     await pool.query('DELETE FROM agent_event_acks WHERE event_id IN (SELECT id FROM agent_events WHERE project=$1)',[project]);
-    for (const table of ['file_batch_waits','file_batch_plans','file_reservations','file_versions','code_files','agent_events','tool_calls']) {
+    for (const table of ['file_batch_waits','file_batch_plans','file_reservations','file_versions','code_files','agent_events','tool_calls','agent_sessions']) {
       await pool.query('DELETE FROM '+table+' WHERE project=$1',[project]);
     }
   }
