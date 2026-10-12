@@ -86,7 +86,8 @@ function entpackeInnereHuelle(payload: unknown, optionen: ToolErgebnisOptionen):
   try { innen = JSON.parse(block.text); } catch { return payload; }
   if (!istSchlichtesObjekt(innen)) return payload;
   const { content: _content, ...anhaenge } = payload;
-  return { ...anhaenge, ...innen };
+  // Äußere Hooks sind der jüngste Stand; ein fachliches success:false bleibt sichtbar.
+  return { ...innen, ...anhaenge, ...('success' in innen ? { success: innen.success } : {}) };
 }
 
 /** Baut die MCP-Huelle aus einem Tool-Ergebnis. */

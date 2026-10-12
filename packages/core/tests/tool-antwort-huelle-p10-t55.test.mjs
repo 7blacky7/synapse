@@ -16,6 +16,8 @@ for(const [tool,action,inner]of[
   assert.deepEqual(parse(stdio),parse(result));
   assert.deepEqual(stdio.structuredContent,parse(result));
 }
+const collision=baueToolErgebnis({success:true,tool_guide:{stand:'neu'},content:[{type:'text',text:JSON.stringify({success:false,tool_guide:{stand:'alt'},error:'unknown_job'})}]},{tool:'shell',action:'get'});
+assert.deepEqual(parse(collision),{success:false,tool_guide:{stand:'neu'},error:'unknown_job'});
 const error=baueToolErgebnis({content:[{type:'text',text:'{"success":false,"error":"unknown_job"}'}]},{tool:'shell',action:'get',isError:true,strukturiert:true});
 assert.equal(error.isError,true);assert.equal(parse(error).success,false);
 for(const text of ['Freier Text','[1,2]','null','kaputtes {JSON']){
