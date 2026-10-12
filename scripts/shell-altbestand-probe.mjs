@@ -48,21 +48,26 @@ try{
  const categories={};for(const g of all)categories[g.regel]=(categories[g.regel]??0)+1;
  console.log(JSON.stringify({modus:real?'50er-Probe':'Inventar',regelversion:SHELL_ALT_REGELVERSION,geprueft,gruppen:all.length,kritische_gruppen:kritisch.length,kategorien:categories,scan_ms:Date.now()-scanStart,seed}));
  if(real){
-  if(kritisch.length>30)throw new Error('50er-Grenze und alle kritischen Gruppen plus 20 Zufall unvereinbar; Koordinator-Entscheidung erforderlich');
-  if(rest.length<50-kritisch.length)throw new Error('Zu wenige zusätzliche Gruppen für exakt 50');
+  // Koordinator24982: 10 feste Regeln prüfen, 40 echte Jev-Gruppen (je10 Kategorien).
+  const sample=(regel,n,det)=>{
+   const eligible=all.filter(g=>g.regel===regel&&shellAltIstDeterministisch(g)===det).sort((a,b)=>randomKey(a).localeCompare(randomKey(b)));
+   if(eligible.length<n)throw new Error('Zu wenige Gruppen für Schicht '+regel);
+   return eligible.slice(0,n);
+  };
+  const fixed=[...sample('url_passwort',4,true),...sample('sshpass_passwort',3,true),...sample('bearer',3,true)];
+  const jev=[...sample('json_geheimname',10,false),...sample('kv_geheimname',10,false),...sample('env_literal',10,false),...sample('mcp_json_feld',10,false)];
   if(!process.env.JEV_OPENROUTER_API_KEY){
    const env=fs.readFileSync(path.join(os.homedir(),'dev/JEV-Test/.env'),'utf8');
    process.env.JEV_OPENROUTER_API_KEY=(env.match(/^OPENROUTER_API_KEY=(.*)$/m)?.[1]??'').trim().replace(/^["']|["']$/g,'');
   }
   if(!process.env.JEV_OPENROUTER_API_KEY)throw new Error('Jev-Key fehlt');
-  const selected=[...kritisch,...rest.slice(0,50-kritisch.length)];
+  const selected=[...fixed,...jev];
   const result=await bewerteShellAltbestand(selected,{project:null,agent_id:'sol-1'});
   const decisions=new Map(result.bewertungen.map(b=>[b.gruppe,b])),verteilung={};
   for(const g of selected){const b=decisions.get(g.id),key=g.regel+' × '+(b?.bewertung??'nicht_bewertet');verteilung[key]=(verteilung[key]??0)+1;}
-  const examples=selected.filter(g=>!shellAltIstDeterministisch(g)).slice(0,7);
-  for(const regel of ['sshpass_passwort','url_passwort','bearer']){const g=selected.find(g=>g.regel===regel);if(g&&!examples.includes(g))examples.push(g);}
-  for(const g of selected)if(examples.length<10&&!examples.includes(g))examples.push(g);
-  console.log(JSON.stringify({status:result.status,auswahl:selected.length,kritisch:kritisch.length,zufall_mindestens:20,deterministisch:selected.filter(shellAltIstDeterministisch).length,jev_aufrufe:result.bewertungen.filter(b=>b.grund!=='deterministisch').length,usd:result.usd,verteilung,beispiele:examples.slice(0,10).map(g=>({regel:g.regel,name:g.name,zeile:g.zeile,fenster:g.fenster,bewertung:decisions.get(g.id)?.bewertung,confidence:decisions.get(g.id)?.confidence,grund:decisions.get(g.id)?.grund}))}));
+  const describe=g=>({gruppe:g.id,regel:g.regel,name:g.name,feld:g.feld,zeile:g.zeile,fenster:g.fenster,struktur:g.struktur,bewertung:decisions.get(g.id)?.bewertung,confidence:decisions.get(g.id)?.confidence,grund:decisions.get(g.id)?.grund});
+  const examples=[...jev.filter(g=>g.regel==='json_geheimname').slice(0,3),...jev.filter(g=>g.regel==='kv_geheimname').slice(0,3),...jev.filter(g=>g.regel==='env_literal').slice(0,2),...jev.filter(g=>g.regel==='mcp_json_feld').slice(0,2)];
+  console.log(JSON.stringify({status:result.status,auswahl:selected.length,deterministisch:fixed.length,jev_aufrufe:jev.length,usd:result.usd,verteilung,jev_offen:result.bewertungen.filter(b=>b.bewertung==='offen').length,deterministische_pruefung:fixed.map(describe),beispiele:examples.map(describe)}));
   if(result.status!=='fertig')throw new Error('Probe wegen Jev-Budget pausiert');
   if(result.bewertungen.some(b=>b.grund.startsWith('jev_')))throw new Error('Jev-Aufruf fehlgeschlagen; Bericht prüfen');
  }
