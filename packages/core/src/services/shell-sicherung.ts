@@ -62,7 +62,7 @@ function normalisiere(k: ShellTextKommando): ShellTextKommando {
     }
     argv.unshift(head);
   }
-  return { argv, umleitungen: k.umleitungen,...(k.inline_skript?{inline_skript:k.inline_skript}:{}),...(k.skript_operation?{skript_operation:k.skript_operation}:{}) };
+  return { argv, umleitungen: k.umleitungen,...(k.umgebungsquelle?{umgebungsquelle:k.umgebungsquelle}:{}),...(k.inline_skript?{inline_skript:k.inline_skript}:{}),...(k.skript_operation?{skript_operation:k.skript_operation}:{}) };
 }
 export function normalisiereShellKommando(k:ShellTextKommando):ShellTextKommando{return normalisiere(k);}
 const gilt = (g: ShellGeltung, o: ShellPruefOptionen): boolean =>
@@ -129,7 +129,7 @@ export function pruefeShellText(
   const katalog = opts.katalog ?? SHELL_SICHERUNG_SEED;
   const tree = parseShellText(command, opts.shell ?? 'bash');
   const commands = (opts.kommandos ?? tree.kommandos).map(normalisiere).flatMap(k=>k.inline_skript?
-    skriptFakten(k.inline_skript.text,k.inline_skript.sprache,{...opts,cwd:k.inline_skript.cwd??opts.cwd}).map(normalisiere):[k]);
+    skriptFakten(k.inline_skript.text,k.inline_skript.sprache,{...opts,testprojekt:k.inline_skript.testprojekt??opts.testprojekt,cwd:k.inline_skript.cwd??opts.cwd}).map(normalisiere):[k]);
   const activeAnswers = new Set(katalog.antworten.filter(a => a.status === 'aktiv' && gilt(a, opts)).map(a => a.id));
   const treffer: ShellTextErgebnis['treffer'] = [];
   for (const r of katalog.regeln) {

@@ -4,9 +4,10 @@ export interface ShellProbePfad {
   naechster_elternpfad?: string; links: Array<{pfad:string;ziel:string}>;
   mount?: string; dev?: string; fehler?: string;
 }
-export interface ShellProbeAnfrage { cwd?: string; variablen?: string[]; pfade?: string[]; prozesse?:boolean; }
+export interface ShellProbeAnfrage { cwd?: string; variablen?: string[]; pfade?: string[]; prozesse?:boolean;umgebungsdatei?:string; }
 export interface ShellProbeAntwort {
   cwd: string; os: 'linux'|'windows'|'macos'|'wsl'; env: Record<string,string>;
+  umgebungsdatei?:{pfad:string;sha256:string;testprojekt:boolean;exportiert:boolean;port?:string;datenbank?:string};
   pfade: ShellProbePfad[]; prozesse?:{pids:number[];namen:string[]}; rechner?:string;
 }
 export async function probeShellLage(input: ShellProbeAnfrage): Promise<ShellProbeAntwort> {
@@ -74,6 +75,24 @@ export async function probeShellLage(input: ShellProbeAnfrage): Promise<ShellPro
     if(!found && !r.fehler)r.fehler='elternpfad_grenze';
     records.push(r);
   }
+  let umgebungsdatei:ShellProbeAntwort['umgebungsdatei'];
+  if(input.umgebungsdatei&&p.basename(input.umgebungsdatei)==='test-db.env'){
+    const pfad=p.resolve(cwd,input.umgebungsdatei);
+    if(!windows||!/^\\\\/.test(pfad))try{
+      const st=await fs.stat(pfad);
+      if(st.isFile()&&st.size<=16384){
+        const bytes=await fs.readFile(pfad),sha256=(await import('node:crypto')).createHash('sha256').update(bytes).digest('hex');
+        const lines=bytes.toString('utf8').split(/\r?\n/).filter(x=>x.trim()&&!x.trim().startsWith('#'));
+        let testprojekt=false,exportiert=false;
+        // Ein einziger Literalwert: keine Shell-Auswertung, Zweitvariable oder Umleitung.
+        if(lines.length===1){
+          const m=lines[0].match(/^\s*(export\s+)?DATABASE_URL=(?:'([^']*)'|"([^"$`\\]*)"|([^ \t"'$`\\;|&<>()]*))\s*$/);
+          if(m)try{const u=new URL(m[2]??m[3]??m[4]);testprojekt=/^postgres(?:ql)?:$/.test(u.protocol)&&u.port==='5433'&&u.pathname==='/synapse_test';exportiert=!!m[1];}catch{testprojekt=false;/* Ungültige URL ist bewusst kein Test-DB-Nachweis. */}
+        }
+        umgebungsdatei={pfad,sha256,testprojekt,exportiert,...(testprojekt?{port:'5433',datenbank:'synapse_test'}:{})};
+      }
+    }catch{/* unlesbar oder außerhalb des Dateisystems: kein Nachweis */}
+  }
   let prozesse:ShellProbeAntwort['prozesse'];
   if(input.prozesse){
     if(process.platform!=='linux')throw Error('container_prozesslage_nicht_verfuegbar');
@@ -90,7 +109,7 @@ export async function probeShellLage(input: ShellProbeAnfrage): Promise<ShellPro
     }
     prozesse={pids:[...pids],namen:[...namen]};
   }
-  return {cwd,os:windows?'windows':process.platform==='darwin'?'macos':process.env.WSL_DISTRO_NAME?'wsl':'linux',env,pfade:records,
+  return {...(umgebungsdatei?{umgebungsdatei}:{}),cwd,os:windows?'windows':process.platform==='darwin'?'macos':process.env.WSL_DISTRO_NAME?'wsl':'linux',env,pfade:records,
     ...(prozesse?{prozesse,rechner:(await import('node:os')).hostname()}:{} )};
 }
 /** Der Nutzerbefehl ist nie Teil dieses Programms; nur JSON-Daten in argv[1]. */

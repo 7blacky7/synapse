@@ -123,7 +123,9 @@ function nodeFakten(text:string,o:InlineKontext,tiefe:number):ShellTextKommando[
   if(ts.isCallExpression(n)&&ts.isPropertyAccessExpression(n.expression)&&/^(?:push|pop|shift|unshift|splice|sort|reverse|fill|copyWithin)$/.test(n.expression.name.text)){const key=baseIdentifier(n.expression.expression);if(key)mutable.add(key);}
   ts.forEachChild(n,bind);
  }
- bind(file);const wrappers=new Set(functions.values());let budget=0,grenze=false;
+ bind(file);
+ if(mutable.has('process'))o={...o,testprojekt:false};
+ const wrappers=new Set(functions.values());let budget=0,grenze=false;
  function visit(n:ts.Node,scope:Scope,depth=0):void{
   if(depth>12||++budget>2048){if(!grenze){out.push(fakt('inline.ungeklaert',[],'node',o));grenze=true;}return;}
   if((ts.isArrowFunction(n)||ts.isFunctionExpression(n)||ts.isFunctionDeclaration(n))&&wrappers.has(n))return;

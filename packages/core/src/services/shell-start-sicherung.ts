@@ -39,7 +39,7 @@ function lageKommandos(o:ShellStartEingabe){
 }
 function selbstschaden(o:ShellStartEingabe):string|undefined {
   const pids=new Set(o.geschuetzte_pids??[]),names=new Set((o.geschuetzte_namen??[]).map(x=>x.toLowerCase()));
-  for(const k of (lageKommandos(o)??parseShellText(o.command,o.lage.shell).kommandos).flatMap(k=>k.inline_skript?skriptFakten(k.inline_skript.text,k.inline_skript.sprache,{project:o.project,cwd:o.lage.cwd,testprojekt:o.lage.testprojekt,inline_pfade:o.lage.inline_pfade,scratchpad_roots:o.lage.scratchpad_roots,projekt_root:o.lage.project_root,os:o.lage.os}):[k]).map(normalisiereShellKommando)){
+  for(const k of (lageKommandos(o)??parseShellText(o.command,o.lage.shell).kommandos).flatMap(k=>k.inline_skript?skriptFakten(k.inline_skript.text,k.inline_skript.sprache,{project:o.project,cwd:o.lage.cwd,testprojekt:k.inline_skript.testprojekt??o.lage.testprojekt,inline_pfade:o.lage.inline_pfade,scratchpad_roots:o.lage.scratchpad_roots,projekt_root:o.lage.project_root,os:o.lage.os}):[k]).map(normalisiereShellKommando)){
     const words=k.argv.map(w=>w.text);let name=basename(words.shift()??'');
     while(/^(?:sudo|env|command|exec|nohup)$/.test(name)){
       while(words.length&&(words[0].startsWith('-')||/^[A-Za-z_]\w*=/.test(words[0])))words.shift();

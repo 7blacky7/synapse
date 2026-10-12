@@ -163,6 +163,7 @@ export async function ermittleShellLage(command:string,ctx:ShellLageKontext):Pro
   let testprojekt=false;try{const db=new URL(ctx.env?.DATABASE_URL??'');testprojekt=db.port==='5433'&&!['/synapse','/postgres','/'].includes(db.pathname);}catch{/* keine verifizierte Spielwiese */}
   const scratchpad_roots=ctx.scratchpad_roots??(ctx.env?.SYNAPSE_SCRATCHPAD_ROOT?[ctx.env.SYNAPSE_SCRATCHPAD_ROOT]:[]);
   const kommandos:ShellTextKommando[]=[];
+  const mitQuelle=tree.kommandos.some(k=>/^(?:source|\.)$/.test(k.argv[0]?.text??''));let autoExport=false;
   const unresolved=tree.ungeklart.filter(x=>!['ziel_dynamisch','dynamisches_programm'].includes(x));
   const probe=ctx.probe??probeShellLage;
   const expand=(w:ShellWort,art:SicherungsShell,local=env)=>expandiere(w,art,local,ctx,vars);
@@ -186,7 +187,7 @@ export async function ermittleShellLage(command:string,ctx:ShellLageKontext):Pro
     const local={...env};
     for(const w of k.zuweisungen??[]){
       const m=(w.raw??w.text).match(/^([A-Za-z_]\w*)=([\s\S]*)$/);
-      if(m){const v=expand({text:m[2],raw:m[2],dynamisch:true},art,local);local[m[1]]=v.wert;if(!k.argv.length&&!['|','|&','&'].includes(k.nach??''))env[m[1]]=v.wert;unresolved.push(...v.probleme);}
+      if(m){if(mitQuelle&&m[1]==='DATABASE_URL')testprojekt=false;const v=expand({text:m[2],raw:m[2],dynamisch:true},art,local);local[m[1]]=v.wert;if(!k.argv.length&&!['|','|&','&'].includes(k.nach??''))env[m[1]]=v.wert;unresolved.push(...v.probleme);}
     }
     const psAssignment=art==='pwsh'?k.argv.map(w=>w.raw??w.text).join(' ').match(/^\$(env:)?([A-Za-z_]\w*)\s*=\s*([\s\S]*)$/i):null;
     if(psAssignment){
@@ -221,6 +222,7 @@ export async function ermittleShellLage(command:string,ctx:ShellLageKontext):Pro
     };
     if(projected.inline_skript){
       projected.inline_skript.cwd=cwd;
+      if(mitQuelle)projected.inline_skript.testprojekt=testprojekt;
       if(ctx.inspect!==false){
         const paths=[...new Set(skriptFakten(projected.inline_skript.text,projected.inline_skript.sprache,{cwd,projekt_root:ctx.project_root,os:ctx.os})
           .map(k=>k.skript_operation?.ziel).filter((x):x is string=>typeof x==='string').map(x=>p.resolve(cwd,x)))].slice(0,64);
@@ -237,7 +239,22 @@ export async function ermittleShellLage(command:string,ctx:ShellLageKontext):Pro
     if(projected.argv.length||projected.umleitungen.length)kommandos.push(projected);
     const cmd=expand(k.argv[0]??{text:'',dynamisch:false},art,local);
     if(cmd.probleme.length)unresolved.push(...cmd.probleme);
-    if(/^(?:eval|source|\.)$/.test(cmd.wert??''))unresolved.push('lage_nicht_sicher_aufloesbar');
+    if(mitQuelle&&/^(?:export|unset)$/.test(cmd.wert??'')&&projected.argv.slice(1).some(w=>/^(?:DATABASE_URL)(?:=|$)/.test(w.text)))testprojekt=false;
+    if(art==='sh'||art==='bash'){
+      if(cmd.wert==='set'&&projected.argv.length===2){if(projected.argv[1].text==='-a')autoExport=true;if(projected.argv[1].text==='+a')autoExport=false;}
+      if(/^(?:source|\.)$/.test(cmd.wert??'')){
+        const file=projected.argv[1],pfad=file&&!file.dynamisch?p.resolve(cwd,file.text):undefined;
+        let verified=false;
+        if(pfad&&projected.argv.length===2&&!(k.zuweisungen?.length)&&!k.umleitungen.length&&!['&&','||','|','|&','&'].includes(k.nach??'')&&ctx.inspect!==false){
+          const q=(await probe({cwd,umgebungsdatei:pfad})).umgebungsdatei;
+          if(q&&q.pfad===pfad&&/^[a-f0-9]{64}$/.test(q.sha256)&&q.testprojekt&&q.port==='5433'&&q.datenbank==='synapse_test'&&(autoExport||q.exportiert)){
+            projected.umgebungsquelle={pfad,sha256:q.sha256,testprojekt:true,port:q.port,datenbank:q.datenbank};testprojekt=true;verified=true;
+          }
+        }
+        if(!verified){testprojekt=false;unresolved.push('lage_nicht_sicher_aufloesbar');}
+      }
+    }
+    if(cmd.wert==='eval'||art!=='sh'&&art!=='bash'&&/^(?:source|\.)$/.test(cmd.wert??''))unresolved.push('lage_nicht_sicher_aufloesbar');
     if(/^(?:node|python[\d.]*)(?:\.exe)?$/.test(cmd.wert??'')&&!k.inline_skript)unresolved.push('inline_oder_script_lage_unbekannt');
     if(art!==shell)unresolved.push('interpreter_scope_nicht_verifiziert');
     if(/^(?:cd|set-location)$/i.test(cmd.wert??'')){
