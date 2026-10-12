@@ -30,6 +30,7 @@ import { embeddeErrorPatternNach, errorPatternNachzug } from './error-patterns.j
 import { embeddeTechDocNach, techDocNachzug } from './tech-docs.js';
 import { embeddeSkillSectionNach, skillSectionNachzug } from './skills.js';
 import { betteStapelEin } from './embed-nachzug.js';
+import { wissensNachzugWo } from './wissen-stuecke.js';
 import { schalterHaeltAn } from './intern-schalter.js';
 
 /**
@@ -154,8 +155,8 @@ export async function embeddeOffeneEintraege(
     // siehe Kommentar bei TABELLEN.
     const { rows } = await pool.query(
       `SELECT ${tabelle.idSpalte}::text AS id, ${tabelle.mitProjekt ? 'project' : 'NULL::text AS project'}
-         FROM ${tabelle.name}
-        WHERE embedded_at IS NULL
+         FROM ${tabelle.name} t
+        WHERE ${wissensNachzugWo(tabelle.quelle())}
           AND ${projektBedingung(tabelle.mitProjekt)}
         ORDER BY ${tabelle.sortSpalte}
         LIMIT $2`,
@@ -217,7 +218,7 @@ export async function embeddeEintraegeJetzt(tabelle: string, ids: string[]): Pro
   if (!t) throw new Error(`unbekannte Tabelle ${tabelle}`);
   if (ids.length === 0) return { angefragt: 0, nachgetragen: 0 };
   const { rows } = await getPool().query(
-    `SELECT ${t.idSpalte}::text AS id FROM ${t.name} WHERE embedded_at IS NULL AND ${t.idSpalte}::text = ANY($1::text[])`,
+    `SELECT ${t.idSpalte}::text AS id FROM ${t.name} t WHERE ${wissensNachzugWo(t.quelle())} AND ${t.idSpalte}::text = ANY($1::text[])`,
     [ids]
   );
   if (rows.length === 0) return { angefragt: ids.length, nachgetragen: 0 };
@@ -237,8 +238,8 @@ export async function zaehleOffeneEmbeddings(project?: string): Promise<Record<s
 
   for (const tabelle of TABELLEN) {
     const { rows } = await pool.query(
-      `SELECT count(*)::int AS n FROM ${tabelle.name}
-        WHERE embedded_at IS NULL AND ${projektBedingung(tabelle.mitProjekt)}`,
+      `SELECT count(*)::int AS n FROM ${tabelle.name} t
+        WHERE ${wissensNachzugWo(tabelle.quelle())} AND ${projektBedingung(tabelle.mitProjekt)}`,
       [project ?? null]
     );
     ergebnis[tabelle.name] = rows[0].n;

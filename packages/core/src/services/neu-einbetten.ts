@@ -114,11 +114,26 @@ async function zaehleZeilen(art: NeuEinbettenArt, project: string | null): Promi
 async function setzeZurueck(art: NeuEinbettenArt, project: string | null): Promise<number> {
   if (art === 'code') return (await resetProjectEmbeddings(project ?? '')).chunksReset;
   const q = PG_QUELLE[art];
-  const res = await getPool().query(
-    `UPDATE ${q.tabelle} SET embedded_at = NULL WHERE ${q.wo}`,
-    q.mitProjekt ? [project] : [],
-  );
-  return res.rowCount ?? 0;
+  const client = await getPool().connect();
+  try {
+    await client.query('BEGIN');
+    const res = await client.query(
+      `UPDATE ${q.tabelle} SET embedded_at = NULL WHERE ${q.wo}`,
+      q.mitProjekt ? [project] : [],
+    );
+    // P12-T10: auch teilweise quittierte Stuecke nach einem Collection-Reset
+    // neu einplanen. Die Quellzeilen sind dabei gesperrt; alte ACKs schreiben
+    // ohne ihren passenden Status nichts mehr.
+    await client.query(
+      'DELETE FROM wissen_stueck_status WHERE quelle=$1 AND project IS NOT DISTINCT FROM $2::text',
+      [q.tabelle, project],
+    );
+    await client.query('COMMIT');
+    return res.rowCount ?? 0;
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => undefined);
+    throw error;
+  } finally { client.release(); }
 }
 
 /** Eingebettete PG-Zeilen, deren Ziel-Collection fehlt — ihre Vektoren gibt es dann nicht. */

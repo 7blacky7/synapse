@@ -186,6 +186,9 @@ interface BestandZeile {
   qdrant: number | null;
   differenz: number | null;
   befund?: string;
+  /** P12-T10: nur vorhanden, wenn Zusatzstuecke/teilfertige Grundpunkte existieren. */
+  pg_stuecke?: number;
+  pg_punkte_erwartet?: number;
 }
 
 async function qdrantAnzahl(name: string): Promise<number | null> {
@@ -195,6 +198,22 @@ async function qdrantAnzahl(name: string): Promise<number | null> {
   } catch {
     return null;
   }
+}
+
+
+/** Abgeleitete Punkte sind ebenfalls PG-gedeckt, auch während des Nachzugs. */
+async function wissensStueckPunkte(tabelle: string, project: string | null): Promise<Array<{
+  punkt_id:string; stueck_nr:number; grund_noch_offen:boolean;
+}>> {
+  if (!['memories','thoughts','tech_docs'].includes(tabelle)) return [];
+  const {rows} = await getPool().query(
+    `SELECT w.punkt_id,w.stueck_nr,(t.embedded_at IS NULL) AS grund_noch_offen
+       FROM wissen_stuecke w
+       JOIN wissen_stueck_status ws USING(quelle,eintrag_id)
+       JOIN ${tabelle} t ON t.id::text=w.eintrag_id AND t.project IS NOT DISTINCT FROM ws.project
+      WHERE w.quelle=$1 AND ws.project IS NOT DISTINCT FROM $2::text AND w.embedded_at IS NOT NULL`,
+    [tabelle,project]);
+  return rows;
 }
 
 export async function bestandAbgleich(opt: { project?: string; arten?: string[]; idsVergleichen: boolean; limit: number }): Promise<Record<string, unknown>> {
@@ -234,16 +253,30 @@ export async function bestandAbgleich(opt: { project?: string; arten?: string[];
   }
   const liste = [...zeilen.values()];
   await jeweils(liste, 8, async (z) => {
+    const stuecke = await wissensStueckPunkte(QUELLEN[z.art].tabelle,z.project);
+    const zusatz = stuecke.filter(x=>x.stueck_nr>=0).length;
+    const teilfertigeGrundpunkte = stuecke.filter(x=>x.stueck_nr===-1 && x.grund_noch_offen).length;
+    const erwartet = z.pg_eingebettet + zusatz + teilfertigeGrundpunkte;
+    if (zusatz || teilfertigeGrundpunkte) {
+      z.pg_stuecke = zusatz;
+      z.pg_punkte_erwartet = erwartet;
+    }
     z.qdrant = vorhanden.has(z.collection) ? await qdrantAnzahl(z.collection) : null;
     if (!vorhanden.has(z.collection)) {
-      z.differenz = -z.pg_eingebettet;
-      if (z.pg_eingebettet > 0) z.befund = `Collection fehlt, aber ${z.pg_eingebettet} PG-Zeilen gelten als eingebettet`;
+      z.differenz = -erwartet;
+      if (erwartet > 0) z.befund = z.pg_punkte_erwartet !== undefined
+        ? `Collection fehlt, aber ${erwartet} PG-gedeckte Punkte werden erwartet`
+        : `Collection fehlt, aber ${z.pg_eingebettet} PG-Zeilen gelten als eingebettet`;
       return;
     }
     if (z.qdrant === null) { z.befund = 'Qdrant-Zaehlung fehlgeschlagen'; return; }
-    z.differenz = z.qdrant - z.pg_eingebettet;
-    if (z.differenz > 0) z.befund = `${z.differenz} Punkte mehr als eingebettete PG-Zeilen (verwaist oder Altpunkte)`;
-    else if (z.differenz < 0) z.befund = `${-z.differenz} eingebettete PG-Zeilen ohne Punkt (still verloren)`;
+    z.differenz = z.qdrant - erwartet;
+    if (z.differenz > 0) z.befund = z.pg_punkte_erwartet !== undefined
+      ? `${z.differenz} Punkte mehr als erwartete PG-Punkte (verwaist oder Altpunkte)`
+      : `${z.differenz} Punkte mehr als eingebettete PG-Zeilen (verwaist oder Altpunkte)`;
+    else if (z.differenz < 0) z.befund = z.pg_punkte_erwartet !== undefined
+      ? `${-z.differenz} erwartete PG-Punkte fehlen (still verloren)`
+      : `${-z.differenz} eingebettete PG-Zeilen ohne Punkt (still verloren)`;
   });
 
   const jeArt: Record<string, { collections: number; pg_gesamt: number; pg_eingebettet: number; qdrant: number; abweichend: number }> = {};
@@ -270,11 +303,14 @@ export async function bestandAbgleich(opt: { project?: string; arten?: string[];
         q.projekt ? [z.project] : [],
       );
       const pg = new Set(pgIds.rows.map((r) => r.id.toLowerCase()));
+      const eintraege = pg.size;
+      for (const stueck of await wissensStueckPunkte(q.tabelle,z.project)) pg.add(stueck.punkt_id.toLowerCase());
       const qd = new Set((await scrollePunktIds(z.collection, {}, 2000)).map((x) => String(x).toLowerCase()));
       const fehlend = [...pg].filter((x) => !qd.has(x));
       const verwaist = [...qd].filter((x) => !pg.has(x));
       diffs.push({
-        collection: z.collection, pg_eingebettet: pg.size, qdrant_punkte: qd.size,
+        collection: z.collection, pg_eingebettet: eintraege, qdrant_punkte: qd.size,
+        ...(z.pg_punkte_erwartet !== undefined ? {pg_punkte_erwartet:pg.size} : {}),
         fehlend_in_qdrant: fehlend.length, fehlend_beispiele: fehlend.slice(0, 10),
         verwaist_in_qdrant: verwaist.length, verwaist_beispiele: verwaist.slice(0, 10),
       });
@@ -291,7 +327,8 @@ export async function bestandAbgleich(opt: { project?: string; arten?: string[];
     nicht_zugeordnet: nichtZugeordnet,
     ...(SKILLS_GETRENNT ? { hinweis_skills: 'Skills liegen in einer eigenen Qdrant (SKILL_QDRANT_URL) - nicht abgeglichen.' } : {}),
     ...(idDiff !== undefined ? { id_abgleich: idDiff } : {}),
-    hinweis: 'Qdrant mit count(exact). differenz = Qdrant - eingebettete PG-Zeilen. Code: Abweichungen nach oben = Altpunkte frueherer Dateistaende. Offene Embeddings (embedded_at NULL) zaehlen nicht als Abweichung.',
+    hinweis: 'Qdrant mit count(exact). differenz = Qdrant - eingebettete PG-Zeilen. Code: Abweichungen nach oben = Altpunkte frueherer Dateistaende. Offene Embeddings (embedded_at NULL) zaehlen nicht als Abweichung.' +
+      (liste.some(z=>z.pg_punkte_erwartet!==undefined) ? ' P12-T10: gespeicherte Stückpunkte und teilfertige Grundpunkte sind zusätzlich berücksichtigt (pg_punkte_erwartet).' : ''),
   };
 }
 

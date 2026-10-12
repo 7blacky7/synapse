@@ -187,11 +187,86 @@ export async function searchVectors<T>(
     throw error;
   }
 
-  return results.map(result => ({
-    id: result.id as string,
-    score: result.score,
-    payload: result.payload as T,
-  }));
+  // P12-T10: Stuecktreffer auf ihren Eintrag zurueckfuehren. Das beste
+  // Stueck zaehlt, die bisherigen Payloads/IDs bleiben in allen Suchaufgaben gleich.
+  const gruppen = new Map<string, SearchResult<T>>();
+  let offset = 0;
+  let stueckeGesehen = false;
+  const stueckIds = new Set<string>();
+  while (true) {
+    for (const result of results) {
+      const raw = result.payload as Record<string, unknown>;
+      const stueck = raw?.wissen_stueck as { eintrag_id?: string } | undefined;
+      const istStueck = typeof stueck?.eintrag_id === 'string';
+      stueckeGesehen ||= istStueck;
+      const id = istStueck ? stueck!.eintrag_id! : result.id as string;
+      let payload: unknown = raw;
+      if (istStueck) {
+        stueckIds.add(id);
+        const { wissen_stueck: _intern, ...original } = raw;
+        payload = original;
+      }
+      const vorher = gruppen.get(id);
+      if (!vorher || result.score > vorher.score) gruppen.set(id, { id, score:result.score, payload:payload as T });
+    }
+    offset += results.length;
+    if (gruppen.size >= limit || !stueckeGesehen || results.length < limit) break;
+    // Kein fester Oversampling-Faktor: auch viele Stuecke eines einzigen
+    // Eintrags duerfen die naechsten passenden Eintraege nicht verdraengen.
+    results = await client.search(collection, {
+      vector:queryVector, limit, offset,
+      filter:filter as Parameters<typeof client.search>[1]['filter'], with_payload:true,
+    });
+  }
+  // Zusatzpunkte speichern nur den Stuecktext (kein N-faches Duplizieren
+  // langer Originale). Nur Stuecktreffer werden aus PG auf den Eintrag gehoben;
+  // die bisherigen kurzen Suchausgaben bleiben bytegenau unveraendert.
+  const wissen = /^project_(.+)_(memories|thoughts)$/.exec(collection);
+  if (wissen && stueckIds.size > 0) {
+    const felder = wissen[2] === 'memories'
+      ? 'id,content,tags,name,category,created_at,updated_at'
+      : 'id,content,tags,source,timestamp,task_id';
+    const { rows } = await getPool().query(
+      `SELECT ${felder} FROM ${wissen[2]} WHERE project=$1 AND id=ANY($2::text[])`,
+      [wissen[1],[...stueckIds]]);
+    const zeilen = new Map(rows.map(row=>[row.id,row]));
+    for (const id of stueckIds) {
+      const treffer = gruppen.get(id);
+      const zeile = zeilen.get(id);
+      if (!zeile) { gruppen.delete(id); continue; }
+      if (!treffer) continue;
+      const payload = { ...(treffer.payload as Record<string,unknown>), content:zeile.content, tags:zeile.tags };
+      if (wissen[2] === 'memories') Object.assign(payload, {
+        name:zeile.name, category:zeile.category,
+        createdAt:new Date(zeile.created_at).toISOString(), updatedAt:new Date(zeile.updated_at).toISOString(),
+      });
+      else Object.assign(payload, {
+        source:zeile.source, timestamp:new Date(zeile.timestamp).toISOString(),
+        ...(zeile.task_id != null ? {task_id:zeile.task_id} : {}),
+      });
+      treffer.payload = payload as T;
+    }
+  }
+  const docs = collection === 'tech_docs_cache' ? {project:null}
+    : /^project_(.+)_docs$/.exec(collection);
+  if (docs && stueckIds.size > 0) {
+    const project = Array.isArray(docs) ? docs[1] : docs.project;
+    const {rows} = await getPool().query(
+      'SELECT * FROM tech_docs WHERE project IS NOT DISTINCT FROM $1::text AND id=ANY($2::text[])',
+      [project,[...stueckIds]]);
+    const zeilen = new Map(rows.map(row=>[row.id,row]));
+    for (const id of stueckIds) {
+      const treffer = gruppen.get(id), z = zeilen.get(id);
+      if (!z) { gruppen.delete(id); continue; }
+      if (treffer) treffer.payload = {
+        framework:z.framework, version:z.version, section:z.section, content:z.content,
+        type:z.type, category:z.category, source:z.source, content_hash:z.content_hash,
+        indexed_at:new Date(z.indexed_at).toISOString(),
+        embedding_modell:(treffer.payload as Record<string,unknown>).embedding_modell,
+      } as T;
+    }
+  }
+  return [...gruppen.values()].sort((a,b)=>b.score-a.score).slice(0,limit);
 }
 
 /**
@@ -203,6 +278,7 @@ export async function deleteVector(
 ): Promise<void> {
   const client = getQdrantClient();
 
+  await loescheWissensStuecke(collection, [id]);
   await client.delete(collection, {
     wait: true,
     points: [id],
@@ -219,6 +295,7 @@ export async function deleteVectors(
   if (ids.length === 0) return;
   const client = getQdrantClient();
 
+  await loescheWissensStuecke(collection, ids);
   await client.delete(collection, {
     wait: true,
     points: ids,
@@ -479,4 +556,23 @@ export async function scrollePunkteMitPayload<T>(
   }
 
   return raus;
+}
+
+// P12-T10: bei Eintrags-Loeschungen verschwinden auch abgeleitete Stuecke.
+// Nur Wissen-Collections; Code/Skills/andere bisherigen Wege bleiben unangetastet.
+async function loescheWissensStuecke(collection: string, ids: string[]): Promise<void> {
+  const m = /^project_(.+)_(memories|thoughts|docs)$/.exec(collection);
+  if ((!m && collection !== 'tech_docs_cache') || ids.length === 0) return;
+  const quelle = m ? (m[2] === 'docs' ? 'tech_docs' : m[2]) : 'tech_docs';
+  const project = m ? m[1] : null;
+  const must: Array<{key:string; match:{value:string} | {any:string[]}}> = [
+    {key:'wissen_stueck.eintrag_id',match:{any:ids}},
+  ];
+  // TechDoc-Payloads tragen bisher keinen project-Schluessel; die Collection
+  // ist bereits projektgebunden. Memory/Thought-Filter bleiben zusaetzlich scharf.
+  if (m && quelle !== 'tech_docs') must.push({key:'project',match:{value:m[1]}});
+  await getQdrantClient().delete(collection,{wait:true,filter:{must}});
+  await getPool().query(
+    'DELETE FROM wissen_stueck_status WHERE quelle=$1 AND project IS NOT DISTINCT FROM $2::text AND eintrag_id=ANY($3::text[])',
+    [quelle,project,ids]);
 }

@@ -24,7 +24,7 @@ import { embeddingNachtragAngehalten } from './intern-schalter.js';
 import { embed, scoreSchwelleOderHinweis } from '../embeddings/index.js';
 import type { EmbedOptions, EmbedPriority } from '../embeddings/index.js';
 import { ensureCollection } from '../qdrant/collections.js';
-import { insertVector, deleteVector, deleteVectors, deleteByFilter } from '../qdrant/operations.js';
+import { insertVector, deleteVector, deleteVectors, deleteByFilter, searchVectors } from '../qdrant/operations.js';
 import { COLLECTIONS } from '../types/index.js';
 import { getAgentSession } from './chat.js';
 import { getContext7Client } from './context7.js';
@@ -282,7 +282,9 @@ export async function embeddeTechDocNach(
 }
 
 /** Inhaltsstand einer Tech-Doc: content_hash. */
-const TECH_DOC_STAND = 't.content_hash';
+// P12-T10: Header/Scope gehoeren zum eingebetteten Text und Payload.
+// content_hash allein erkennt eine Aenderung von framework/section/project nicht.
+const TECH_DOC_STAND = "md5(concat_ws('|', t.content_hash, t.framework, t.version, t.section, t.type, t.category, t.source, t.project, t.indexed_at::text))";
 
 /**
  * P15-T4: Lesen, Text und Payload einer Tech-Doc — EINZIGE Stelle fuer Einzel-Nachtrag und Stapel
@@ -451,30 +453,9 @@ export async function searchTechDocs(
 
   /** Fuehrt eine Qdrant-Suche in einer Collection durch */
   async function searchInCollection(collectionName: string): Promise<TechDocResult[]> {
-    const searchBody: Record<string, unknown> = {
-      vector: queryVector,
-      limit,
-      with_payload: true,
-    };
-    if (must.length > 0) {
-      searchBody.filter = { must };
-    }
-
-    console.error(`[Synapse TechDocs] Suche in "${collectionName}" mit ${queryVector.length}d Vektor, limit=${limit}`);
-
-    const response = await fetch(`${qdrantUrl}/collections/${collectionName}/points/search`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(searchBody),
-    });
-
-    if (!response.ok) {
-      const errBody = await response.text();
-      throw new Error(`Qdrant search failed: ${response.status} ${errBody}`);
-    }
-
-    const data = await response.json() as { result: Array<{ id: string; score: number; payload: Record<string, unknown> }> };
-    return data.result.map(r => ({
+    const results = await searchVectors<Record<string, unknown>>(
+      collectionName, queryVector, limit, must.length ? {must} : undefined);
+    return results.map(r => ({
       id: r.id as string,
       score: r.score,
       framework: r.payload.framework as string,

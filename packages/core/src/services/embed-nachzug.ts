@@ -19,6 +19,7 @@
 import { ensureCollection, insertVectors } from '../qdrant/index.js';
 import { embed, embedBatch, embeddingModellKennung, type EmbedOptions } from '../embeddings/index.js';
 import { getHintergrundPool } from '../db/client.js';
+import { betteWissenEin } from './wissen-stuecke.js';
 
 /** Ein nachzutragender Vektor: woher, wohin, welcher Text, welche Payload. */
 export interface NachzugPunkt {
@@ -111,6 +112,7 @@ export async function betteEinzelnEin(
 ): Promise<void> {
   const punkt = (await quelle.lese([id])).find((p) => !passt || passt(p));
   if (!punkt) return; // zwischenzeitlich geloescht — nichts nachzutragen
+  if (await betteWissenEin(quelle, punkt, embedOptions)) return;
   const vector = await embed(punkt.text, embedOptions);
   await schreibePunkte(quelle, [{ punkt, vector }]);
   await markiereEingebettet(quelle, [punkt]);
@@ -128,10 +130,16 @@ export async function betteStapelEin(
   ids: string[],
   embedOptions: EmbedOptions,
 ): Promise<number> {
-  const punkte = await quelle.lese(ids);
-  if (punkte.length === 0) return 0;
+  const gelesen = await quelle.lese(ids);
+  if (gelesen.length === 0) return 0;
+  const punkte: NachzugPunkt[] = [];
+  // Lange Eintraege laufen scheibenweise; kurze behalten den bisherigen Stapelweg.
+  for (const punkt of gelesen) {
+    if (!await betteWissenEin(quelle, punkt, embedOptions)) punkte.push(punkt);
+  }
+  if (punkte.length === 0) return gelesen.length;
   const vektoren = await embedBatch(punkte.map((p) => p.text), embedOptions);
   await schreibePunkte(quelle, punkte.map((punkt, i) => ({ punkt, vector: vektoren[i] })));
   await markiereEingebettet(quelle, punkte);
-  return punkte.length;
+  return gelesen.length;
 }
