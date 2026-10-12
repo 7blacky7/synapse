@@ -105,6 +105,7 @@ const S = await lade(dist, 'services', 'jev-schalter.js');
 const CC = await lade(dist, 'services', 'code-check-tool.js');
 const JA = await lade(dist, 'services', 'jev-admin.js');
 const E = await lade(dist, 'services', 'erklaerungen.js');
+const CORE = await lade(dist, 'index.js');
 const FB = await lade(dist, 'services', 'file-batch.js');
 
 FP._syntaxPrueferLeeren();
@@ -255,9 +256,11 @@ try {
     const kandidaten = familien.map((n) => seed.eintraege.find((e) => e.familie === `fileplan:${n}`));
     pruefe(kandidaten.every(Boolean), 'P6-T32 Seed: drei getrennte File-Plan-Familien', kandidaten.map((e) => e?.kennung));
     const fragen = E.baueJevFrage([{ id: 'test', de: { lage: 'Deutsch', wieso: 'Deutsch', abhilfe: 'Deutsch' }, en: { lage: 'English', wieso: 'English', abhilfe: 'English' } }], 'en');
-    pruefe(E.JEV_KEINE_TEXTE?.de && E.JEV_KEINE_TEXTE?.en === E.JEV_KEINE
-      && fragen.questions.erklaerung.criteria.keine === E.JEV_KEINE,
-      'P6-T32 „keine passt“ ist zweisprachig; englischer Standardtext bleibt bytegleich');
+    const keineTexte = CORE.JEV_KEINE_TEXTE;
+    pruefe(keineTexte?.de === 'Keine der aufgeführten Erklärungen beschreibt die Ursache dieses Fehlers.'
+      && keineTexte?.en === E.JEV_KEINE && CORE.JEV_KEINE === keineTexte.en
+      && fragen.questions.erklaerung.criteria.keine === keineTexte.en,
+      'P6-T32 „keine passt“: öffentlicher Baustein zeigt Deutsch an und gibt Englisch an Jev');
 
     const szenarien = [
       { art: 'anchor_mismatch', agent: 'p6t32-anchor', op: { file_path: TS.datei, action: 'insert_after', after_line: 1, anchor_text: 'not the current line', content: 'export const neu = 1;' }, wahl: 'a', confidence: 0.95 },

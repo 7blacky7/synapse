@@ -308,11 +308,12 @@ export const JEV_ERKLAERUNG_ANWEISUNG =
   'A code change produced the error in state.fehler. state.code_nachher shows the faulty code with line numbers; '
   + 'state.code_vorher shows the same place before the change and state.aenderung the change itself (- removed, + added). '
   + 'Choose the explanation that describes the CAUSE of this error. Choose "keine" unless one explanation clearly fits.';
-export const JEV_KEINE = 'None of the listed explanations describes the cause of this error.';
 export const JEV_KEINE_TEXTE = {
   de: 'Keine der aufgeführten Erklärungen beschreibt die Ursache dieses Fehlers.',
-  en: JEV_KEINE,
+  en: 'None of the listed explanations describes the cause of this error.',
 } as const;
+/** Legacy English label for callers that need Jev's language. */
+export const JEV_KEINE = JEV_KEINE_TEXTE.en;
 export const MAX_KANDIDATEN = 12;
 const MAX_VORGESCHLAGENE = 2;
 const ANTWORT_SCHLUESSEL = 'abcdefghijkl'.split('');
@@ -336,7 +337,7 @@ export function baueJevFrage(kandidaten: MitTexten[], sprache: JevSprache): { qu
     criteria[ANTWORT_SCHLUESSEL[i]] = kriteriumText(k, sprache);
     zuordnung[ANTWORT_SCHLUESSEL[i]] = k.id;
   });
-  criteria.keine = JEV_KEINE;
+  criteria.keine = JEV_KEINE_TEXTE.en;
   return { questions: { erklaerung: { type: 'choice', instructions: JEV_ERKLAERUNG_ANWEISUNG, criteria } }, zuordnung };
 }
 

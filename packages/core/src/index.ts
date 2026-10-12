@@ -845,7 +845,7 @@ export type { JevSprache, JevOptionen, JevErklaerungSprachen } from './services/
 // P15-T33 E1: Erklaerungs-Topf (Jev waehlt, Claude erklaert)
 export {
   ERKLAERUNG_ACTIONS, ERKLAERUNG_PARAMETER, ERKLAERUNG_STATUS, meldeFehlerfall, verarbeiteFehlerfall, baueSchatten, jevZustand,
-  baueJevFrage, kriteriumText, waehleErklaerung, ladeKandidaten, pruefeGenerik, legeErklaerungAb, pruefeFall, verwerfeFall,
+  JEV_KEINE, JEV_KEINE_TEXTE, baueJevFrage, kriteriumText, waehleErklaerung, ladeKandidaten, pruefeGenerik, legeErklaerungAb, pruefeFall, verwerfeFall,
   listeOffeneFaelle, holeFall, listeErklaerungen, bewerteErklaerung, erklaerungenTagespruefung, fuehreErklaerungsActionAus,
   istErklaerungsAction, familieVon, schluesselVon, schwaerzeGeheimnisse,
   // P15-T33 E2: Startbestand, persistente Warteschlange, Onboarding-Zeile
