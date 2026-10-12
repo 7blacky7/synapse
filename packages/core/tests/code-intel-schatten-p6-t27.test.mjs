@@ -96,6 +96,7 @@ try {
    const moved = await core.mitCodeIntelSchatten('file',{project,schatten:move,file_path:'basis.ts'},async()=>null);
    assert.equal(moved.file_path,'umzug/basis.ts');
    assert.match((await core.mitCodeIntelSchatten('tree',{project,schatten:move,show_ghosts:true},async()=>null)).tree,/\[g\] umzug\//);
+   assert.match((await core.mitCodeIntelSchatten('tree',{project,schatten:move,show_ghosts:true},async()=>null)).tree,/\[g~\] basis.ts \(plan \d+, geloescht\)/);
    const secrets = await plan([{action:'create',file_path:'.env.example',content:'PASSWORD=geheim123\n'},{action:'create',file_path:'.mcp.json.backup',content:'{"mcpServers":{"s":{"env":{"API_KEY":"geheim123"}}}}'}]);
    for(const file_path of ['.env.example','.mcp.json.backup']){
     const r=await core.mitCodeIntelSchatten('file',{project,schatten:secrets,file_path},async()=>null);

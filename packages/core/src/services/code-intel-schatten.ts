@@ -146,7 +146,7 @@ async function ghostTree(project: string, args: Row, stand: Schatten, planId: st
   const echte=(await getPool().query('SELECT file_path FROM code_files WHERE project=$1 AND NOT ignored',[project])).rows.map(r=>r.file_path as string);
   const dirs=new Set(echte.flatMap(file=>{const out:string[]=[];let dir=path.posix.dirname(file);while(dir!=='.'){out.push(dir);dir=path.posix.dirname(dir);}return out;}));
   const base=(s(args,'path')??s(args,'file_path')??'').replace(/\/$/,'');
-  const selected=stand.dateien.filter(f=>!f.deleted && f.file_path.includes(base) &&
+  const selected=stand.dateien.filter(f=>(!f.deleted || echte.includes(f.file_path)) && f.file_path.includes(base) &&
     (!args.file_type || path.extname(f.file_path).slice(1)===args.file_type) &&
     !stand.tabellen.code_files.find(r=>r.file_path===f.file_path)?.ignored);
   const zeilen:string[]=[], seen=new Set<string>();
@@ -159,7 +159,7 @@ async function ghostTree(project: string, args: Row, stand: Schatten, planId: st
       const dir=teile.slice(0,i).join('/');
       if(!seen.has(dir)){seen.add(dir);zeilen.push('  '.repeat(i-1)+(dirs.has(dir)?'':'[g] ')+dir+'/ (plan '+planId+')');}
     }
-    zeilen.push('  '.repeat(teile.length-1)+(echte.includes(f.file_path)?'[g~] ':'[g] ')+path.posix.basename(f.file_path)+' (plan '+planId+')');
+    zeilen.push('  '.repeat(teile.length-1)+(echte.includes(f.file_path)?'[g~] ':'[g] ')+path.posix.basename(f.file_path)+' (plan '+planId+(f.deleted?', geloescht':'')+')');
   }
   return {success:true,tree:tree+(zeilen.length?'\nGhost-Schatten (Index-Zählwerte oben unverändert):\n'+zeilen.join('\n'):''),project};
 }
