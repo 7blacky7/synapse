@@ -49,6 +49,7 @@ import {
 // resolveAgentId: zentral in agent-id-resolver.ts (DRY mit file-batch.ts)
 import { resolveAgentId } from './agent-id-resolver.js';
 import { resolveProjectTaskId } from './task-id-resolver.js';
+import { merkeFileTaskVersion } from './file-task-zuordnung.js';
 
 /**
  * SYNC-1: agent_id fuer Aenderungen, die direkt auf dem Dateisystem passiert sind
@@ -778,9 +779,9 @@ export async function createFileInPg(
   // Wir koennten das genauer pruefen, aber pragmatisch: immer einen Marker schreiben.
   // Der spaetere "echte" Snapshot via updateFileInPg fuegt sich nahtlos an.
   try {
-    await pool.query(
+    const marker = await pool.query<{ id: string }>(
       `INSERT INTO file_versions (project, file_path, content, content_hash, edit_action, agent_id, batch_id, size_bytes, reason, feature_tag, parent_version_id, git_commit_sha, agent_note, task_id)
-       VALUES ($1, $2, '', $3, $4, $5, $6, 0, $7, $8, $9, $10, $11, $12)`,
+       VALUES ($1, $2, '', $3, $4, $5, $6, 0, $7, $8, $9, $10, $11, $12) RETURNING id::text AS id`,
       [
         project,
         filePath,
@@ -796,6 +797,7 @@ export async function createFileInPg(
         taskId,
       ]
     );
+    if (marker.rows[0]) merkeFileTaskVersion({ id: marker.rows[0].id, file_path: filePath, task_id: taskId, edit_action: editAction ?? 'create' });
   } catch { /* Tabelle existiert in alten Schemata vlt nicht — best-effort */ }
 
   enqueueParseAndEmbed(project, filePath);
@@ -923,6 +925,7 @@ export async function updateFileInPg(
     client.release();
   }
 
+  if (versionIdVorher) merkeFileTaskVersion({ id: versionIdVorher, file_path: filePath, task_id: taskId, edit_action: editAction ?? 'update' });
   if (rowCount === 0) {
     console.error(`[code-write] updateFileInPg: Keine Datei gefunden fuer ${project}/${filePath}`);
   }
@@ -965,15 +968,17 @@ export async function snapshotFileVersion(
 ): Promise<boolean> {
   const taskId = taskRef !== undefined ? await resolveProjectTaskId(project, taskRef) : null;
   const pool = getPool();
-  const res = await pool.query(
+  const res = await pool.query<{ id: string }>(
     `INSERT INTO file_versions
        (project, file_path, content, content_hash, edit_action, agent_id, size_bytes, reason, task_id)
      SELECT cf.project, cf.file_path, cf.content, cf.content_hash, $3, $4,
             COALESCE(cf.file_size, OCTET_LENGTH(cf.content)), $5, $6
        FROM code_files cf
-      WHERE cf.project = $1 AND cf.file_path = $2 AND cf.content IS NOT NULL`,
+      WHERE cf.project = $1 AND cf.file_path = $2 AND cf.content IS NOT NULL
+      RETURNING id::text AS id`,
     [project, filePath, editAction, agentId, reason, taskId]
   );
+  for (const row of res.rows) merkeFileTaskVersion({ id: row.id, file_path: filePath, task_id: taskId, edit_action: editAction });
   return (res.rowCount ?? 0) > 0;
 }
 

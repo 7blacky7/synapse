@@ -22,6 +22,7 @@ import { EventEmitter } from 'node:events';
 import { getPool } from '../db/client.js';
 import { resolveAgentId } from './agent-id-resolver.js';
 import { resolveProjectTaskId } from './task-id-resolver.js';
+import { merkeFileTaskVersion } from './file-task-zuordnung.js';
 import { pruefeUpdateAnker } from './update-anker.js';
 import { emitEventOnce } from './events.js';
 import {
@@ -1948,11 +1949,11 @@ async function commitCoeditBatch(args: {
       const beforeHash = beforeHashes.get(entry.filePath) ?? contentHash(before);
       beforeHashes.set(entry.filePath, beforeHash);
       const actions = [...entry.actions].join(',');
-      await client.query(
+      const marker = await client.query<{ id: string }>(
         `INSERT INTO file_versions
            (project, file_path, content, content_hash, edit_action, agent_id, batch_id,
             size_bytes, reason, agent_note, task_id)
-         VALUES ($1, $2, $3, $4, $5, $6, $7::bigint, $8, $9, $10, $11)`,
+         VALUES ($1, $2, $3, $4, $5, $6, $7::bigint, $8, $9, $10, $11) RETURNING id::text AS id`,
         [
           plan.project,
           entry.filePath,
@@ -1967,6 +1968,7 @@ async function commitCoeditBatch(args: {
           entry.taskId,
         ],
       );
+      for (const row of marker.rows) merkeFileTaskVersion({ id: row.id, file_path: entry.filePath, task_id: entry.taskId });
     }
 
     const writtenFiles: Array<{
@@ -4706,11 +4708,12 @@ async function commitLegacyBody(
       await softDeleteFile(plan.project, filePath);
       const oldContent = currentBuffers.get(filePath) ?? '';
       const oldSize = Buffer.byteLength(oldContent, 'utf8');
-      await pool.query(
+      const marker = await pool.query<{ id: string }>(
         `INSERT INTO file_versions (project, file_path, content, content_hash, edit_action, agent_id, batch_id, size_bytes, reason, task_id)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id::text AS id`,
         [plan.project, filePath, oldContent, contentHash(oldContent), `batch:${args.plan_id}:delete`, resolveAgentId(args.agent_id), batchIdSafe ?? null, oldSize, effectiveReason ?? null, effectiveTaskId ?? null],
       );
+      for (const row of marker.rows) merkeFileTaskVersion({ id: row.id, file_path: filePath, task_id: effectiveTaskId ?? null });
       writtenFiles.push({ file_path: filePath, size: 0, hash: EMPTY_CONTENT_HASH, created: false, deleted: true });
     } else if (!existedBefore) {
       // Datei wurde in dieser Batch erstellt (create | move-target | copy-target).

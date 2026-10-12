@@ -14,6 +14,7 @@
 
 import { getPool } from '../db/client.js';
 import { resolveProjectTaskId } from './task-id-resolver.js';
+import { ergaenzeFileTasks } from './file-task-zuordnung.js';
 import { updateFileInPg, getFileContentFromPg } from './code-write.js';
 import { dateiDiff, diffMaxZeichen, diffMaxZeilen, diffText } from './file-diff.js';
 import { envHinweise, mcpJsonHinweise, envSicht, istEnvDatei, istMaskierteDatei, maskiereEnvDiff } from './env-maske.js';
@@ -117,6 +118,7 @@ async function ergaenzeNachher<T extends FileVersionMeta>(rows: T[]): Promise<vo
  * Ignore-Ereignisse (edit_action ignore_*) sind keine Datei-Aenderungen und bekommen keins.
  */
 async function ergaenzeDiffs<T extends FileVersionMeta>(rows: T[], opts: { max: number; kurz: boolean }): Promise<T[]> {
+  await ergaenzeFileTasks(rows);
   await ergaenzeNachher(rows);
   const fehlend = rows
     .filter((row) => (row.diff === null || row.diff === undefined) && !(row.edit_action ?? '').startsWith('ignore_'))
@@ -169,6 +171,9 @@ export interface FileVersionMeta {
   parent_version_id?: string | null;
   git_commit_sha?: string | null;
   agent_note?: string | null;
+  /** Nur bei vorhandener Task-Zuordnung; NULL wird vor Auslieferung entfernt. */
+  task_id?: string;
+  task_kurz_id?: string;
   /** P15-T22: Diff der Aenderung, die diese Version abgeloest hat (content -> Nachfolger). */
   diff?: VersionDiff | null;
   /**
@@ -198,6 +203,7 @@ export async function listFileVersions(
   filePath: string,
   limit = 50,
   taskRef?: string,
+  opts: { ohne_task?: boolean; since?: string; agent_id?: string } = {},
 ): Promise<FileVersionMeta[]> {
   const safeLimit = Math.max(1, Math.min(limit, 500));
   const pool = getPool();
@@ -205,12 +211,15 @@ export async function listFileVersions(
   const result = await pool.query<FileVersionMeta>(
     `SELECT id::text AS id, project, file_path, content_hash, edit_action, agent_id,
             batch_id::text AS batch_id, size_bytes, created_at::text AS created_at, reason,
-            feature_tag, parent_version_id::text AS parent_version_id, git_commit_sha, agent_note, diff
+            feature_tag, parent_version_id::text AS parent_version_id, git_commit_sha, agent_note, diff, task_id
      FROM file_versions
      WHERE project = $1 AND file_path = $2 AND ($4::text IS NULL OR task_id = $4)
+       AND (NOT $5::boolean OR task_id IS NULL)
+       AND ($6::timestamptz IS NULL OR created_at >= $6::timestamptz)
+       AND ($7::text IS NULL OR agent_id = $7)
      ORDER BY created_at DESC, id DESC
      LIMIT $3`,
-    [project, filePath, safeLimit, taskId]
+    [project, filePath, safeLimit, taskId, opts.ohne_task === true, opts.since ?? null, opts.agent_id ?? null]
   );
   return ergaenzeDiffs(result.rows, { max: NACHBERECHNEN_JE_AUFRUF, kurz: true });
 }
@@ -228,13 +237,14 @@ export async function getFileVersion(
     `SELECT id::text AS id, project, file_path, content, content_hash,
             edit_action, agent_id, batch_id::text AS batch_id,
             size_bytes, created_at::text AS created_at, reason,
-            feature_tag, parent_version_id::text AS parent_version_id, git_commit_sha, agent_note, diff
+            feature_tag, parent_version_id::text AS parent_version_id, git_commit_sha, agent_note, diff, task_id
      FROM file_versions
      WHERE id = $1`,
     [versionId]
   );
   const row = result.rows[0];
   if (!row) return null;
+  if (!mitDiff) await ergaenzeFileTasks([row]);
   const fertig = mitDiff ? (await ergaenzeDiffs([row], { max: 1, kurz: false }))[0] : row;
   if (opts.roh || !istMaskierteDatei(fertig.file_path)) return fertig;
   return { ...fertig, content: envSicht(fertig.file_path, fertig.content ?? ''), diff: maskiereEnvDiff(fertig.file_path, fertig.diff) };
@@ -308,6 +318,7 @@ export async function listFileHistory(
     feature_tag?: string;
     version_id?: string | number;
     task_id?: string;
+    ohne_task?: boolean;
   } = {},
 ): Promise<FileVersionMeta[]> {
   const safeLimit = Math.max(1, Math.min(opts.limit ?? 50, 500));
@@ -327,12 +338,15 @@ export async function listFileHistory(
        )
        SELECT id::text AS id, project, file_path, content_hash, edit_action, agent_id,
               batch_id::text AS batch_id, size_bytes, created_at::text AS created_at, reason,
-            feature_tag, parent_version_id::text AS parent_version_id, git_commit_sha, agent_note, diff
+            feature_tag, parent_version_id::text AS parent_version_id, git_commit_sha, agent_note, diff, task_id
        FROM chain
        WHERE ($4::text IS NULL OR task_id = $4)
+         AND (NOT $5::boolean OR task_id IS NULL)
+         AND ($6::timestamptz IS NULL OR created_at >= $6::timestamptz)
+         AND ($7::text IS NULL OR agent_id = $7)
        ORDER BY created_at DESC, id DESC
        LIMIT $3`,
-      [opts.version_id, project, safeLimit, opts.task_id !== undefined ? await resolveProjectTaskId(project, opts.task_id) : null],
+      [opts.version_id, project, safeLimit, opts.task_id !== undefined ? await resolveProjectTaskId(project, opts.task_id) : null, opts.ohne_task === true, opts.ohne_task ? opts.since ?? null : null, opts.ohne_task ? opts.agent_id ?? null : null],
     );
     return ergaenzeDiffs(result.rows, { max: NACHBERECHNEN_JE_AUFRUF, kurz: true });
   }
@@ -360,11 +374,12 @@ export async function listFileHistory(
     params.push(resolvedTaskId);
     conds.push(`task_id = $${params.length}`);
   }
+  if (opts.ohne_task === true) conds.push('task_id IS NULL');
   params.push(safeLimit);
   const result = await pool.query<FileVersionMeta>(
     `SELECT id::text AS id, project, file_path, content_hash, edit_action, agent_id,
             batch_id::text AS batch_id, size_bytes, created_at::text AS created_at, reason,
-            feature_tag, parent_version_id::text AS parent_version_id, git_commit_sha, agent_note, diff
+            feature_tag, parent_version_id::text AS parent_version_id, git_commit_sha, agent_note, diff, task_id
      FROM file_versions
      WHERE ${conds.join(' AND ')}
      ORDER BY created_at DESC, id DESC
@@ -385,13 +400,13 @@ export async function listBatchVersions(
   const result = await pool.query<FileVersionMeta>(
     `SELECT id::text AS id, project, file_path, content_hash, edit_action, agent_id,
             batch_id::text AS batch_id, size_bytes, created_at::text AS created_at, reason,
-            feature_tag, parent_version_id::text AS parent_version_id, git_commit_sha, agent_note, diff
+            feature_tag, parent_version_id::text AS parent_version_id, git_commit_sha, agent_note, diff, task_id
      FROM file_versions
      WHERE batch_id = $1
      ORDER BY created_at ASC, id ASC`,
     [batchId]
   );
-  return result.rows;
+  return ergaenzeFileTasks(result.rows);
 }
 
 /**

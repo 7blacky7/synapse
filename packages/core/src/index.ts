@@ -875,6 +875,8 @@ export type { AgentMetaFelder } from './services/agent-meta-yaml.js';
 export type { WrapperStatusRow, HeartbeatKonfiguration, HeartbeatUebersicht } from './services/wrapper-status.js';
 
 // Skills (EXPERIMENTAL — Qdrant Skill-DB access)
+export { mitFileTaskWarnung, ordneFileTasksZu } from './services/file-task-zuordnung.js';
+export type { FileTaskZuordnung } from './services/file-task-zuordnung.js';
 export { searchSkills, listSkills, getSkillSection, getSkillFull } from './services/skills.js';
 // P12-T13 Teil 2: Skills PG-first schreiben
 export {

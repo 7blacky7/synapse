@@ -109,6 +109,8 @@ import {
   // Files (Code-Write)
   createFileInPg,
   updateFileInPg,
+  mitFileTaskWarnung,
+  ordneFileTasksZu,
   resolveProjectTaskId,
   softDeleteFile,
   snapshotFileVersion,
@@ -1030,10 +1032,15 @@ export const MCP_TOOLS = [
       properties: {
         action: {
           type: 'string',
-          enum: ['create', 'update', 'delete', 'move', 'copy', 'read', 'replace_lines', 'insert_after', 'delete_lines', 'search_replace', 'search_replace_batch', 'versions', 'get_version', 'restore', 'restore_batch', 'plan', 'commit', 'cancel', 'plan_status', 'history', 'reservation_add', 'reservation_release', 'reservation_update', 'reservation_list', 'coedit_add', 'coedit_ready', 'coedit_no_changes', 'shared_plan_status', 'plan_update'],
+          enum: ['create', 'update', 'delete', 'move', 'copy', 'read', 'replace_lines', 'insert_after', 'delete_lines', 'search_replace', 'search_replace_batch', 'versions', 'get_version', 'restore', 'restore_batch', 'plan', 'commit', 'cancel', 'plan_status', 'history', 'reservation_add', 'reservation_release', 'reservation_update', 'reservation_list', 'coedit_add', 'coedit_ready', 'coedit_no_changes', 'shared_plan_status', 'plan_update', 'task_zuordnen'],
           description: 'Datei-Aktion. versions/get_version/restore/restore_batch arbeiten auf der Versionshistorie. plan/commit/cancel/plan_status/plan_update implementieren atomare Multi-File-Edits ueber mehrere Dateien. history listet Aenderungen mit Begruendung (Crash-Recovery) — agent_id wirkt dort als EXAKTER Filter, fuer die volle Projekt-History weglassen.',
         },
         project: { type: 'string', description: 'Projekt-Name' },
+        ohne_task: { type: 'boolean', description: 'history/versions: nur Versionen ohne task_id; since/seit begrenzt Altbestand. Kein Backfill.' },
+        seit: { type: 'string', description: 'history/versions: Alias fuer since (ISO-Zeitpunkt/Datum).' },
+        version_ids: { type: 'array', items: { type: 'string' }, description: 'task_zuordnen: Versions-IDs, alternativ batch_id oder plan_id.' },
+        ueberschreiben: { type: 'boolean', description: 'task_zuordnen: vorhandene Zuordnung nur mit true und grund ersetzen.' },
+        grund: { type: 'string', description: 'Audit-Begruendung; Pflicht beim Ueberschreiben.' },
         task_id: { type: 'string', description: 'Optional: Task-UUID oder Kurz-ID P<n>-T<m>; plan gilt fuer alle Ops, ops[].task_id ueberschreibt.' },
         file_path: { oneOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' }, minItems: 1 }], description: 'Projekt-relativer Pfad. Array nur fuer reservation_add/release/list; bestehende Datei-Actions erwarten weiter einen String.' },
         release_paths: { type: 'array', items: { type: 'string' }, description: 'reservation_update: explizit freizugebende Pfade.' },
@@ -1147,10 +1154,15 @@ export const MCP_TOOLS = [
       properties: {
         action: {
           type: 'string',
-          enum: ['plan', 'commit', 'cancel', 'plan_status', 'history', 'restore', 'restore_batch', 'reservation_add', 'reservation_release', 'reservation_update', 'reservation_list', 'coedit_add', 'coedit_ready', 'coedit_no_changes', 'shared_plan_status', 'plan_update'],
+          enum: ['plan', 'commit', 'cancel', 'plan_status', 'history', 'restore', 'restore_batch', 'reservation_add', 'reservation_release', 'reservation_update', 'reservation_list', 'coedit_add', 'coedit_ready', 'coedit_no_changes', 'shared_plan_status', 'plan_update', 'task_zuordnen'],
           description: 'plan: Trockenlauf, gibt plan_id zurueck; scheitert eine Op, entsteht trotzdem ein neuer offener Plan (plan_id + failed_ops), korrigierbar per plan_update (ersetzt op_index bzw. alle Ops, neue plan_id, alter Plan verworfen). Plaene laufen nicht ab. commit: Legacy-Plan unveraendert; Co-Edit-Plan atomar gaten, validieren und gemeinsam committen oder terminal conflict. cancel: open/conflict verwerfen. plan_status: Plan-Details. history: Aenderungs-Log. restore/restore_batch: Versionierungs-Rollback.',
         },
         project: { type: 'string', description: 'Projekt-Name' },
+        ohne_task: { type: 'boolean', description: 'history/versions: nur Versionen ohne task_id; since/seit begrenzt Altbestand. Kein Backfill.' },
+        seit: { type: 'string', description: 'history/versions: Alias fuer since (ISO-Zeitpunkt/Datum).' },
+        version_ids: { type: 'array', items: { type: 'string' }, description: 'task_zuordnen: Versions-IDs, alternativ batch_id oder plan_id.' },
+        ueberschreiben: { type: 'boolean', description: 'task_zuordnen: vorhandene Zuordnung nur mit true und grund ersetzen.' },
+        grund: { type: 'string', description: 'Audit-Begruendung; Pflicht beim Ueberschreiben.' },
         task_id: { type: 'string', description: 'Optionale Task-UUID oder P<n>-T<m>; Schreibversionen verknuepfen, history filtern.' },
         ops: {
           description: 'Multi-File Edit-Plan (1..10.000 Operationen, praktisch unbegrenzt). Jede Op: { file_path, action, ...op-spezifische Felder }. Aktionen: create, update, search_replace, search_replace_batch, replace_lines (line_start/line_end/content), insert_after (after_line/content), delete_lines (line_start/line_end), delete (ganze Datei), move (file_path -> new_path), copy (file_path -> new_path). Multi-Op-auf-gleicher-Datei: per Default shift_mode="auto" → line-Ops werden reverse-order appliziert; ueberlappende Ranges sind ein harter Error vor jeder Mutation.',
@@ -2271,7 +2283,9 @@ export async function handleToolCall(
   args: Record<string, unknown>,
   effectiveAgentId?: string,
 ): Promise<unknown> {
-  const antwort = await handleToolCallKern(name, args, effectiveAgentId);
+  const antwort = name === 'files' || name === 'files_batch'
+    ? await mitFileTaskWarnung(args, () => handleToolCallKern(name, args, effectiveAgentId))
+    : await handleToolCallKern(name, args, effectiveAgentId);
   if (!ENV_NETZ_TOOLS.has(name)) return antwort;
   const ops = Array.isArray(args.ops) ? (args.ops as Array<Record<string, unknown> | null>) : [];
   const pfade = [args.file_path, args.new_path, ...ops.flatMap((op) => [op?.file_path, op?.new_path])]
@@ -4654,6 +4668,9 @@ async function handleToolCallKern(
     case 'files': {
       const project = reqStr(args, 'project');
       const agentId = resolveAgentId(str(args, 'agent_id')) ?? undefined;
+      if (action === 'task_zuordnen') return ordneFileTasksZu({ project, agent_id: agentId, task_id: reqStr(args, 'task_id'),
+        version_ids: strArray(args, 'version_ids'), batch_id: str(args, 'batch_id'), plan_id: str(args, 'plan_id'),
+        ueberschreiben: bool(args, 'ueberschreiben') === true, grund: str(args, 'grund') });
       // History-Enrichment (additive, alle nullable)
       const featureTag = str(args, 'feature_tag');
       const parentVersionId = str(args, 'parent_version_id');
@@ -5132,12 +5149,13 @@ async function handleToolCallKern(
         const entries = await listFileHistory(project, {
           agent_id: agentFilter, // READ-FILTER: kein resolveAgentId
           file_path: str(args, 'file_path'),
-          since: str(args, 'since'),
+          since: str(args, 'since') ?? str(args, 'seit'),
           limit,
           // Enrichment-Filter
           feature_tag: str(args, 'feature_tag'),
           version_id: str(args, 'version_id'),
           task_id: str(args, 'task_id'),
+          ohne_task: bool(args, 'ohne_task') === true,
         });
         return {
           success: true,
@@ -5159,7 +5177,7 @@ async function handleToolCallKern(
 
       if (action === 'versions') {
         const limit = num(args, 'limit') ?? 50;
-        const versions = await listFileVersions(project, filePath, limit, str(args, 'task_id'));
+        const versions = await listFileVersions(project, filePath, limit, str(args, 'task_id'), { ohne_task: bool(args, 'ohne_task') === true, since: str(args, 'since') ?? str(args, 'seit'), agent_id: str(args, 'agent_filter') });
         return {
           success: true,
           project,
@@ -5264,19 +5282,19 @@ async function handleToolCallKern(
           return response;
         }
         case 'delete': {
-          if (str(args, 'task_id')) await snapshotFileVersion(project, filePath, 'delete', str(args, 'reason') ?? 'delete', agentId ?? 'unknown', str(args, 'task_id'));
+          await snapshotFileVersion(project, filePath, 'delete', str(args, 'reason') ?? 'delete', agentId ?? 'unknown', str(args, 'task_id'));
           await softDeleteFile(project, filePath);
           return { success: true, message: `Datei "${filePath}" geloescht` };
         }
         case 'move': {
           const newPath = reqStr(args, 'new_path');
-          if (str(args, 'task_id')) await snapshotFileVersion(project, filePath, 'move', str(args, 'reason') ?? 'move', agentId ?? 'unknown', str(args, 'task_id'));
+          await snapshotFileVersion(project, filePath, 'move', str(args, 'reason') ?? 'move', agentId ?? 'unknown', str(args, 'task_id'));
           await moveFileInPg(project, filePath, newPath);
           return { success: true, message: `Datei verschoben: "${filePath}" → "${newPath}"`, ...(await embeddingPendingHint(project, newPath)) };
         }
         case 'copy': {
           const newPath = reqStr(args, 'new_path');
-          await copyFileInPg(project, filePath, newPath, taskId !== undefined ? agentId : undefined, taskId);
+          await copyFileInPg(project, filePath, newPath, agentId, taskId);
           return { success: true, message: `Datei kopiert: "${filePath}" → "${newPath}"`, ...(await embeddingPendingHint(project, newPath)) };
         }
         case 'read': {

@@ -7,6 +7,8 @@
 import {
   createFileInPg,
   updateFileInPg,
+  mitFileTaskWarnung,
+  ordneFileTasksZu,
   resolveProjectTaskId,
   softDeleteFile,
   snapshotFileVersion,
@@ -91,13 +93,18 @@ export const filesTool: ConsolidatedTool = {
       properties: {
         action: {
           type: 'string',
-          enum: ['create', 'update', 'read', 'delete', 'move', 'copy', 'replace_lines', 'insert_after', 'delete_lines', 'search_replace', 'search_replace_batch', 'versions', 'get_version', 'restore', 'restore_batch', 'plan', 'commit', 'cancel', 'plan_status', 'history', 'reservation_add', 'reservation_release', 'reservation_update', 'reservation_list', 'coedit_add', 'coedit_ready', 'coedit_no_changes', 'shared_plan_status', 'plan_update'],
+          enum: ['create', 'update', 'read', 'delete', 'move', 'copy', 'replace_lines', 'insert_after', 'delete_lines', 'search_replace', 'search_replace_batch', 'versions', 'get_version', 'restore', 'restore_batch', 'plan', 'commit', 'cancel', 'plan_status', 'history', 'reservation_add', 'reservation_release', 'reservation_update', 'reservation_list', 'coedit_add', 'coedit_ready', 'coedit_no_changes', 'shared_plan_status', 'plan_update', 'task_zuordnen'],
           description: 'Action inkl. Multi-File, Reservierungen und CE-3: coedit_add | coedit_ready | coedit_no_changes | shared_plan_status. plan_update korrigiert einen offenen Plan (op_index + ops) als Folgeplan mit eigener ID.',
         },
         project: {
           type: 'string',
           description: 'Projekt-Name',
         },
+        ohne_task: { type: 'boolean', description: 'history/versions: nur Versionen ohne Task; since/seit grenzt Altbestand ein. Kein automatischer Nachtrag.' },
+        seit: { type: 'string', description: 'history/versions: Alias fuer since (ISO-Zeitpunkt/Datum), damit Altbestand nicht die Kontrolle fuellt.' },
+        version_ids: { type: 'array', items: { type: 'string' }, description: 'task_zuordnen: explizite Versions-IDs, alternativ batch_id oder plan_id.' },
+        ueberschreiben: { type: 'boolean', description: 'task_zuordnen: vorhandene Zuordnung nur mit true und grund ersetzen.' },
+        grund: { type: 'string', description: 'Begruendung der Nachzuordnung; Pflicht beim Ueberschreiben, wird auditiert.' },
         task_id: { type: 'string', description: 'Optional: Task-UUID oder Kurz-ID P<n>-T<m>, wird validiert; plan gilt fuer alle Ops, ops[].task_id ueberschreibt.' },
         file_path: {
           oneOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' }, minItems: 1 }],
@@ -323,11 +330,14 @@ export const filesTool: ConsolidatedTool = {
     },
   },
 
-  handler: async (args: Record<string, unknown>) => {
+  handler: async (args: Record<string, unknown>) => mitFileTaskWarnung(args, async () => {
     const action = reqStr(args, 'action');
     const project = reqStr(args, 'project');
     const agentId = resolveAgentId(str(args, 'agent_id')) ?? undefined;
     const reason = str(args, 'reason');
+    if (action === 'task_zuordnen') return ordneFileTasksZu({ project, agent_id: agentId, task_id: reqStr(args, 'task_id'),
+      version_ids: strArray(args, 'version_ids'), batch_id: str(args, 'batch_id'), plan_id: str(args, 'plan_id'),
+      ueberschreiben: bool(args, 'ueberschreiben') === true, grund: str(args, 'grund') });
     // P15-T17 E-a: Einzelschreibweg - Syntaxfehler lehnen ab (sobald Pruefer registriert sind), quittieren nur mit Absichtsgrund.
     const einzel = { einzelweg: true, quittieren: str(args, 'quittieren') };
     // History-Enrichment (additive, alle nullable)
@@ -634,12 +644,13 @@ export const filesTool: ConsolidatedTool = {
       const entries = await listFileHistory(project, {
         agent_id: agentFilter, // READ-FILTER: kein resolveAgentId (DX-Befund 1)
         file_path: str(args, 'file_path'),
-        since: str(args, 'since'),
+        since: str(args, 'since') ?? str(args, 'seit'),
         limit,
         // Enrichment-Filter
         feature_tag: str(args, 'feature_tag'),
         version_id: str(args, 'version_id'),
         task_id: str(args, 'task_id'),
+        ohne_task: bool(args, 'ohne_task') === true,
       });
       return {
         success: true,
@@ -826,7 +837,7 @@ export const filesTool: ConsolidatedTool = {
       }
 
       case 'delete': {
-        if (taskId) await snapshotFileVersion(project, filePath, 'delete', reason ?? 'delete', agentId ?? 'unknown', taskId);
+        await snapshotFileVersion(project, filePath, 'delete', reason ?? 'delete', agentId ?? 'unknown', taskId);
         await softDeleteFile(project, filePath);
         return attachDirectWriteReservationHint(
           { success: true, message: `Datei "${filePath}" geloescht` },
@@ -836,7 +847,7 @@ export const filesTool: ConsolidatedTool = {
 
       case 'move': {
         const newPath = reqStr(args, 'new_path');
-        if (taskId) await snapshotFileVersion(project, filePath, 'move', reason ?? 'move', agentId ?? 'unknown', taskId);
+        await snapshotFileVersion(project, filePath, 'move', reason ?? 'move', agentId ?? 'unknown', taskId);
         await moveFileInPg(project, filePath, newPath);
         return attachDirectWriteReservationHint(
           { success: true, message: `Datei verschoben: "${filePath}" → "${newPath}"`, ...(await embeddingPendingHint(project, newPath)) },
@@ -846,7 +857,7 @@ export const filesTool: ConsolidatedTool = {
 
       case 'copy': {
         const newPath = reqStr(args, 'new_path');
-        await copyFileInPg(project, filePath, newPath, taskId !== undefined ? agentId : undefined, taskId);
+        await copyFileInPg(project, filePath, newPath, agentId, taskId);
         return attachDirectWriteReservationHint(
           { success: true, message: `Datei kopiert: "${filePath}" → "${newPath}"`, ...(await embeddingPendingHint(project, newPath)) },
           [filePath, newPath],
@@ -953,7 +964,7 @@ export const filesTool: ConsolidatedTool = {
 
       case 'versions': {
         const limit = num(args, 'limit') ?? 50;
-        const versions = await listFileVersions(project, filePath, limit, str(args, 'task_id'));
+        const versions = await listFileVersions(project, filePath, limit, str(args, 'task_id'), { ohne_task: bool(args, 'ohne_task') === true, since: str(args, 'since') ?? str(args, 'seit'), agent_id: str(args, 'agent_filter') });
         return {
           success: true,
           project,
@@ -969,5 +980,5 @@ export const filesTool: ConsolidatedTool = {
       default:
         throw new Error(`Unbekannte files action: ${action}. Erlaubt: create, update, read, delete, move, copy, replace_lines, insert_after, delete_lines, search_replace, search_replace_batch, versions, get_version, restore, restore_batch, history, plan, commit, cancel, plan_status`);
     }
-  },
+  }),
 };
