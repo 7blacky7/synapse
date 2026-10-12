@@ -59,12 +59,10 @@ function withoutNull(value, key = '') {
 }
 function approvedChange(value, label, mode, inner = false) {
   let result=JSON.parse(JSON.stringify(value));
-  // Historische innere stdio-Hüllen bleiben erhalten; nur Shell-get projiziert seinen Job.
+  // P10-T55: ausschließlich shell/get und channel/feed verlieren die zusätzliche Hülle.
   if (mode==='stdio' && result?.content?.[0]?.text) {
-    if (label.startsWith('shell-get-')) {
-      const text=result.content[0].text;
-      const changed=approvedChange(JSON.parse(text),label,mode,true);
-      result.content[0].text=JSON.stringify(changed,null,text.includes('\n')?2:undefined);
+    if (label.startsWith('shell-get-') || label.startsWith('channel-feed')) {
+      result=approvedChange(JSON.parse(result.content[0].text),label,mode,true);
     }
   } else if (label.startsWith('shell-get-') && result?.job) {
     const job=result.job;
@@ -121,6 +119,7 @@ async function both(label, name, args) {
   const stdio = await client.callTool({name,arguments:input});
   assert(!stdio.isError,label + ': stdio erfolgreich');
   const st = stdio.content.find(b => b.type === 'text').text;
+  if(process.argv.includes('--check-t55')&&((name==='shell'&&args.action==='get')||(name==='channel'&&args.action==='feed')))assert.deepEqual(stdio.structuredContent,JSON.parse(st),'T55 tatsächliche Text-/Strukturausgabe identisch');
   const rp = normalize(rest.structuredContent), sp = normalize(JSON.parse(st));
   records[label] = {rest:rp,restTextPayload:normalize(restTextPayload),stdio:sp,restTextChars:rt.length,stdioTextChars:st.length};
   if (!capture && !verifyOld && !checkK1) {
@@ -208,7 +207,7 @@ try {
   for (const name of ['done','inline','git','running']) await both('shell-get-'+name,'shell',{action:'get',id:ids[name]});
   await both('shell-history','shell',{action:'history',limit:4});
   await both('files-plan-status','files',{action:'plan_status',plan_id:planned.plan_id});
-  await both('plan-get','plan',{action:'get',plan_id:'P1'});
+  await both('plan-get','plan',{action:'get',plan_id:'P1',compact:false});
   await both('thought-get','thought',{action:'get',id:ids.thoughtA});
   await both('thought-search','thought',{action:'search',query:'goldenAlpha',limit:2});
   assert.equal(records['thought-search'].rest.result.length,2,'Zwei echte Fixture-Treffer');
@@ -218,6 +217,9 @@ try {
   await both('code-search-two','code_intel',{action:'search',query:'goldenAlpha goldenBeta',limit:5});
   assert(records['code-search-one'].rest.results.length>0,'Einwort-Suche hat echten Treffer');
   assert(records['code-search-two'].rest.results.length>0,'Zweiwort-Suche hat echten Treffer');
+  if(process.argv.includes('--check-t55'))for(const label of ['shell-get-done','shell-get-running','channel-feed','channel-feed-empty']){
+    const row=records[label];console.log('T55_MESSUNG '+JSON.stringify({label,restText:row.restTextChars,stdioText:row.stdioTextChars}));
+  }
   const baseline={task:'P10-T51',captured_before:'K1-K4/E1/N2/N3',normalization:'Zeit/IDs/Root und explizite Wrapper; Inhalte bleiben',records};
   if (capture) console.log('T51_GOLDEN_JSON '+JSON.stringify(baseline));
   else if (checkK1) {
@@ -232,6 +234,12 @@ try {
       assert.equal(Object.hasOwn(denied.job.sicherung.antwort,'lage'),false,mode+': keine doppelte Lage');
     }
     console.log('P10-T51 K1 grün: beide echte Transporte');
+  } else if(process.argv.includes('--check-t55')) {
+    for(const label of ['shell-get-done','shell-get-running','channel-feed','channel-feed-empty'])assert(!Object.hasOwn(records[label].stdio,'content'),label+': keine innere stdio-Hülle');
+    assert.deepEqual(records['shell-get-done'].stdio,records['shell-get-done'].rest);
+    assert.equal(records['shell-get-running'].stdio.job.exit_code,null);
+    assert.deepEqual(records['channel-feed-empty'].stdio.messages,[]);assert.equal(records['channel-feed-empty'].stdio.count,0);
+    console.log('P10-T55 echte REST/stdio-Probe grün.');
   } else {
     const old=JSON.parse(await readFile(new URL('./fixtures/tool-antwort-p10-t51-alt.json',import.meta.url),'utf8'));
     for (const [label,row] of Object.entries(records)) for (const mode of ['rest','stdio']) {

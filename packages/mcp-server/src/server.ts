@@ -807,6 +807,7 @@ export function createServer(): Server {
         baseResp as { content: Array<{ type: string; text: string }>; isError?: boolean },
       ),
       name,
+      typeof args?.action === 'string' ? args.action : undefined,
     );
   });
 

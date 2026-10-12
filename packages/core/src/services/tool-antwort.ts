@@ -68,15 +68,31 @@ export interface ToolErgebnisHuelle {
 export interface ToolErgebnisOptionen {
   /** Tool-Name fuer die Ausnahmen-Liste. */
   tool?: string;
+  /** Aktion begrenzt die freigegebene Legacy-Hüllenvereinheitlichung. */
+  action?: string;
   isError?: boolean;
   /** REST: structuredContent mitliefern (Arrays als { result }). */
   strukturiert?: boolean;
 }
 
+/** Nur die zwei freigegebenen Legacy-Antworten entpacken; Daten/Textblöcke bleiben Daten. */
+function entpackeInnereHuelle(payload: unknown, optionen: ToolErgebnisOptionen): unknown {
+  if (!((optionen.tool === 'shell' && optionen.action === 'get') ||
+        (optionen.tool === 'channel' && optionen.action === 'feed'))) return payload;
+  if (!istSchlichtesObjekt(payload) || !Array.isArray(payload.content) || payload.content.length !== 1) return payload;
+  const block = payload.content[0];
+  if (!istSchlichtesObjekt(block) || block.type !== 'text' || typeof block.text !== 'string') return payload;
+  let innen: unknown;
+  try { innen = JSON.parse(block.text); } catch { return payload; }
+  if (!istSchlichtesObjekt(innen)) return payload;
+  const { content: _content, ...anhaenge } = payload;
+  return { ...anhaenge, ...innen };
+}
+
 /** Baut die MCP-Huelle aus einem Tool-Ergebnis. */
 export function baueToolErgebnis(payload: unknown, optionen: ToolErgebnisOptionen = {}): ToolErgebnisHuelle {
   const kompakt = toolAntwortKompaktAktiv();
-  let objekt: unknown = kompakt ? kompaktiereToolAntwort(payload, optionen.tool) : payload;
+  let objekt: unknown = kompakt ? kompaktiereToolAntwort(entpackeInnereHuelle(payload, optionen), optionen.tool) : payload;
   if (kompakt && !optionen.isError && istSchlichtesObjekt(objekt) && !('success' in objekt)) {
     objekt = { success: true, ...objekt };
   }
@@ -95,9 +111,10 @@ export function baueToolErgebnis(payload: unknown, optionen: ToolErgebnisOptione
  * stdio: die fertige Antwort (Text-JSON in content[0]) am Ende EINMAL kompaktieren.
  * Nicht-JSON-Text bleibt unveraendert. Mutiert content[0].text und gibt resp zurueck.
  */
-export function kompaktiereTextErgebnis<T extends { content?: Array<{ type: string; text?: string }>; isError?: boolean }>(
+export function kompaktiereTextErgebnis<T extends { content?: Array<{ type: string; text?: string }>; structuredContent?: Record<string, unknown>; isError?: boolean }>(
   resp: T,
   tool?: string,
+  action?: string,
 ): T {
   if (!toolAntwortKompaktAktiv()) return resp;
   const erstes = resp?.content?.[0];
@@ -108,6 +125,9 @@ export function kompaktiereTextErgebnis<T extends { content?: Array<{ type: stri
   } catch {
     return resp;
   }
-  erstes.text = baueToolErgebnis(geparst, { tool, isError: resp.isError === true }).content[0].text;
+  const strukturiert = (tool === 'shell' && action === 'get') || (tool === 'channel' && action === 'feed');
+  const huelle = baueToolErgebnis(geparst, { tool, action, isError: resp.isError === true, strukturiert });
+  erstes.text = huelle.content[0].text;
+  if (strukturiert) resp.structuredContent = huelle.structuredContent;
   return resp;
 }
