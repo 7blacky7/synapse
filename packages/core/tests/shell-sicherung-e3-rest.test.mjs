@@ -1,15 +1,20 @@
-import assert from'node:assert/strict';import{randomUUID}from'node:crypto';import{mkdtemp}from'node:fs/promises';import{join}from'node:path';import{homedir}from'node:os';import{createRequire}from'node:module';
+import{createTestFixtureCleanup,trackShellStreams}from'./_helfer/test-fixture-cleanup.mjs';
+import{fixtureCleanupCheckpoint}from'./_helfer/fixture-cleanup-checkpoint.mjs';
+import assert from'node:assert/strict';import{randomUUID}from'node:crypto';import{createRequire}from'node:module';
 const u=new URL(process.env.DATABASE_URL||'http://invalid');assert.equal(u.pathname,'/synapse_test');assert.equal(u.port,'5433');
+const cleanup=createTestFixtureCleanup();const oldFetch=globalThis.fetch;const fixtureProjects=[];let fixtureApp;
+try{
 const{getPool,closePool}=await import('../dist/db/client.js');
 const{claimPendingShellJob}=await import('../dist/services/shell-queue.js');
 const{runClaimedJob}=await import('../../file-watcher-daemon-ts/dist/shell-job-worker.js');
 const{shellRoutes}=await import('../../rest-api/dist/routes/shell.js');
 const{handleToolCall}=await import('../../rest-api/dist/routes/mcp.js');
 const require=createRequire(new URL('../../rest-api/package.json',import.meta.url)),app=require('fastify')();
-await app.register(shellRoutes);
+fixtureApp=app;await app.register(shellRoutes);
 globalThis.fetch=async()=>new Response('{"enabled":true}',{status:200});
 for(const mode of ['http','mcp']){
- const root=await mkdtemp(join(homedir(),'dev','synapse-e3-rest-')),project='test-e3-rest-'+randomUUID();
+ const root=await cleanup.createRoot('synapse-e3-rest-'),project='test-e3-rest-'+randomUUID();
+fixtureProjects.push(project);cleanup.trackProject(project);await fixtureCleanupCheckpoint();
  await getPool().query('INSERT INTO projects(name,hostname,path)VALUES($1,$2,$3)',[project,'test',root]);
  await getPool().query("INSERT INTO shell_sicherungsregeln(id,version,art,stufe,muster,antwort_id,quelle,status,bereich,project,positiv,negativ)VALUES($1,1,'text','anleitung',$2::jsonb,'fs.rm','owned-test','aktiv','projekt',$3,'[]','[]')",['owned-'+randomUUID(),JSON.stringify({command:['^printf$']}),project]);
  const args={action:'exec',project,command:'printf E3_REST',agent_id:'sol-2',target:'local'};
@@ -28,4 +33,19 @@ for(const mode of ['http','mcp']){
  assert.equal(rows.length,2);assert.equal(rows[0].sicherung.audit.agent_id,'sol-2');assert.equal(rows[1].sicherung.audit.entscheidung,'bestaetigt');
 }
 console.log('P10-T37 REST: HTTP und MCP mit realem Worker, flacher Ablehnung, Rollenbestätigung und demselben auditierten Job grün.');
-await app.close();await closePool();process.exit(0);
+
+
+}finally{
+ globalThis.fetch=oldFetch;
+ try{
+  try{
+   if(fixtureApp)await fixtureApp.close();
+   if(fixtureProjects.length){
+    const pool=(await import('../dist/db/client.js')).getPool();
+    const{rows}=await pool.query('SELECT stream_id FROM shell_jobs WHERE project=ANY($1::text[]) AND stream_id IS NOT NULL',[fixtureProjects]);
+    for(const row of rows)cleanup.trackStreamId(row.stream_id);
+    await pool.query('DELETE FROM projects WHERE name=ANY($1::text[])',[fixtureProjects]);
+   }
+  }finally{await(await import('../dist/db/client.js')).closePool();}
+ }finally{await cleanup.cleanup();cleanup.dispose();}
+}

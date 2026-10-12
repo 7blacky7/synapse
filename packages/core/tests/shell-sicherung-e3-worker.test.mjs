@@ -1,9 +1,14 @@
-import assert from'node:assert/strict';import{randomUUID}from'node:crypto';import{mkdtemp}from'node:fs/promises';import{join}from'node:path';import{homedir}from'node:os';
+import{createTestFixtureCleanup,trackShellStreams}from'./_helfer/test-fixture-cleanup.mjs';
+import{fixtureCleanupCheckpoint}from'./_helfer/fixture-cleanup-checkpoint.mjs';
+import assert from'node:assert/strict';import{randomUUID}from'node:crypto';
 const u=new URL(process.env.DATABASE_URL||'http://invalid');assert.equal(u.pathname,'/synapse_test');assert.equal(u.port,'5433');
+const cleanup=createTestFixtureCleanup();const oldFetch=globalThis.fetch;const fixtureProjects=[];let fixtureApp;
+try{
 const{getPool,closePool}=await import('../dist/db/client.js');
 const{enqueueShellJob,claimPendingShellJob,waitForShellJob,getShellJobById}=await import('../dist/services/shell-queue.js');
 const{runClaimedJob}=await import('../../file-watcher-daemon-ts/dist/shell-job-worker.js');
-const root=await mkdtemp(join(homedir(),'dev','synapse-e3-worker-')),project='test-e3-worker-'+randomUUID();
+const root=await cleanup.createRoot('synapse-e3-worker-'),project='test-e3-worker-'+randomUUID();
+fixtureProjects.push(project);cleanup.trackProject(project);await fixtureCleanupCheckpoint();
 await getPool().query('INSERT INTO projects(name,hostname,path)VALUES($1,$2,$3)',[project,'test',root]);
 globalThis.fetch=async()=>new Response('{"enabled":true}',{status:200});
 const args={project,command:'printf E3_WORKER',agent_id:'sol-2',target:'local'};
@@ -26,4 +31,19 @@ const real=await mitUserHerkunft('tray',()=>enqueueShellJob({...args,agent_id:'u
 await runClaimedJob(project,await claimPendingShellJob(project,'owned-worker'));
 assert.equal((await waitForShellJob(real.id,1000)).status,'done','serverseitige Herkunft muss Worker-Wechsel überleben');
 console.log('P10-T37 Worker: Altjob neu geprüft, kein Originalstart, Rollenbestätigung und Audit im selben Job grün.');
-await closePool();process.exit(0);
+
+
+}finally{
+ globalThis.fetch=oldFetch;
+ try{
+  try{
+   if(fixtureApp)await fixtureApp.close();
+   if(fixtureProjects.length){
+    const pool=(await import('../dist/db/client.js')).getPool();
+    const{rows}=await pool.query('SELECT stream_id FROM shell_jobs WHERE project=ANY($1::text[]) AND stream_id IS NOT NULL',[fixtureProjects]);
+    for(const row of rows)cleanup.trackStreamId(row.stream_id);
+    await pool.query('DELETE FROM projects WHERE name=ANY($1::text[])',[fixtureProjects]);
+   }
+  }finally{await(await import('../dist/db/client.js')).closePool();}
+ }finally{await cleanup.cleanup();cleanup.dispose();}
+}

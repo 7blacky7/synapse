@@ -1,3 +1,5 @@
+import{createTestFixtureCleanup,trackShellStreams}from'./_helfer/test-fixture-cleanup.mjs';
+import{fixtureCleanupCheckpoint}from'./_helfer/fixture-cleanup-checkpoint.mjs';
 /** t76-B: historische Inline-Texte nur statisch, nie Git-/Shell-Befehle ausführen. */
 import assert from'node:assert/strict';import{ermittleShellLage}from'../dist/services/shell-lage.js';
 import{pruefeShellStart}from'../dist/services/shell-start-sicherung.js';import{SHELL_SICHERUNG_SEED}from'../dist/services/shell-sicherung-seed.js';
@@ -32,9 +34,13 @@ for(const js of [
 ])assert.equal((await check(node(js))).darf_starten,false,js);
 if(process.argv.includes('--native-b')){
  const u=new URL(process.env.DATABASE_URL);assert.equal(u.pathname,'/synapse_test');assert.equal(u.port,'5433');
- const{getPool,closePool}=await import('../dist/db/client.js');const{execShellInProject}=await import('../dist/services/shell-exec.js');
- const{mkdtemp,writeFile}=await import('node:fs/promises');const{join}=await import('node:path');const{homedir}=await import('node:os');const{randomUUID}=await import('node:crypto');const{execFileSync}=await import('node:child_process');
- const root=await mkdtemp(join(homedir(),'dev','synapse-t76-b-')),project='test-t76-b-'+randomUUID();
+const cleanup=createTestFixtureCleanup();const oldFetch=globalThis.fetch;const fixtureProjects=[];let fixtureApp;
+try{
+ const{getPool,closePool}=await import('../dist/db/client.js');const{execShellInProject:rawExecShellInProject}=await import('../dist/services/shell-exec.js');
+const execShellInProject=trackShellStreams(cleanup,rawExecShellInProject);
+ const{writeFile}=await import('node:fs/promises');const{join}=await import('node:path');const{homedir}=await import('node:os');const{randomUUID}=await import('node:crypto');const{execFileSync}=await import('node:child_process');
+ const root=await cleanup.createRoot('synapse-t76-b-'),project='test-t76-b-'+randomUUID();
+fixtureProjects.push(project);cleanup.trackProject(project);await fixtureCleanupCheckpoint();
  const git=args=>execFileSync('git',args,{cwd:root,encoding:'utf8'});
  git(['init','--quiet']);git(['config','user.name','T76-Test']);git(['config','user.email','test@invalid']);
  await writeFile(join(root,'owned.txt'),'owned fixture');git(['add','owned.txt']);git(['commit','-qm','fixture','-m','Co-Authored-By: GPT-6 (Codex) <noreply@openai.com>']);
@@ -43,7 +49,22 @@ if(process.argv.includes('--native-b')){
  const command='node -e '+ "'"+js.replace(/'/g,"'\\''")+"'";
  let started=false;const r=await execShellInProject({project,command,agent_id:'sol-2',onStarted:()=>started=true});
  assert.equal(started,true,JSON.stringify(r));assert.equal(r.exit_code,0,JSON.stringify(r));assert.equal(git(['status','--porcelain']).trim(),'');
- await closePool();console.log('t76-B echter Start im eigenen Testprojekt, Wrapper/Encoding/stdin und unverändertes Git grün.');
+ console.log('t76-B echter Start im eigenen Testprojekt, Wrapper/Encoding/stdin und unverändertes Git grün.');
+}finally{
+ globalThis.fetch=oldFetch;
+ try{
+  try{
+   if(fixtureApp)await fixtureApp.close();
+   if(fixtureProjects.length){
+    const pool=(await import('../dist/db/client.js')).getPool();
+    const{rows}=await pool.query('SELECT stream_id FROM shell_jobs WHERE project=ANY($1::text[]) AND stream_id IS NOT NULL',[fixtureProjects]);
+    for(const row of rows)cleanup.trackStreamId(row.stream_id);
+    await pool.query('DELETE FROM projects WHERE name=ANY($1::text[])',[fixtureProjects]);
+   }
+  }finally{await(await import('../dist/db/client.js')).closePool();}
+ }finally{await cleanup.cleanup();cleanup.dispose();}
+}
+
 }
 
 console.log('t76-B historische IO-/Wrapper-Helfer, unbekannte Bindungen und Risko-Kontrollen grün.');

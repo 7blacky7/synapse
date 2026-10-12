@@ -1,3 +1,5 @@
+import{createTestFixtureCleanup,trackShellStreams}from'./_helfer/test-fixture-cleanup.mjs';
+import{fixtureCleanupCheckpoint}from'./_helfer/fixture-cleanup-checkpoint.mjs';
 /** t76-A: historischer Build nur statisch; niemals ausführen. */
 import assert from'node:assert/strict';import{ermittleShellLage}from'../dist/services/shell-lage.js';import{pruefeShellStart}from'../dist/services/shell-start-sicherung.js';import{SHELL_SICHERUNG_SEED}from'../dist/services/shell-sicherung-seed.js';
 await import('./shell-t76-c.test.mjs');
@@ -27,10 +29,15 @@ assert.equal((await check(historical,{probe:async input=>({...await probe(input)
 assert.equal((await check(historical,{probe:async input=>({...await probe(input),pfade:(input.pfade??[]).map(pfad=>({pfad,kanonisch:pfad,existiert:true,links:[],eigener_benutzer:false}))})})).darf_starten,false,'fremder bestehender Log');
 if(process.argv.includes('--native-a')){
  const u=new URL(process.env.DATABASE_URL);assert.equal(u.port,'5433');assert.equal(u.pathname,'/synapse_test');
- const{mkdtemp,writeFile,readFile,symlink}=await import('node:fs/promises');const{homedir}=await import('node:os');const{join}=await import('node:path');const{randomUUID}=await import('node:crypto');
- const{getPool,closePool}=await import('../dist/db/client.js');const{execShellInProject}=await import('../dist/services/shell-exec.js');
- const root=await mkdtemp(join(homedir(),'dev','synapse-t76-a-')),project='test-t76-a-'+randomUUID(),log=join(root,'build-@synapse_owned-a.log');
+const cleanup=createTestFixtureCleanup();const oldFetch=globalThis.fetch;const fixtureProjects=[];let fixtureApp;
+try{
+ const{writeFile,readFile,symlink}=await import('node:fs/promises');const{homedir}=await import('node:os');const{join}=await import('node:path');const{randomUUID}=await import('node:crypto');
+ const{getPool,closePool}=await import('../dist/db/client.js');const{execShellInProject:rawExecShellInProject}=await import('../dist/services/shell-exec.js');
+const execShellInProject=trackShellStreams(cleanup,rawExecShellInProject);
+ const root=await cleanup.createRoot('synapse-t76-a-'),project='test-t76-a-'+randomUUID(),log=join(root,'build-@synapse_owned-a.log');
+fixtureProjects.push(project);cleanup.trackProject(project);await fixtureCleanupCheckpoint();
  await writeFile(join(root,'package.json'),JSON.stringify({name:'@synapse/owned-a',version:'0.0.0',scripts:{build:'node -e "console.log(12345)"'}}));
+ await writeFile(join(root,'pnpm-workspace.yaml'),"packages:\n  - '.'\n");
  await getPool().query('INSERT INTO projects(name,hostname,path)VALUES($1,$2,$3)',[project,'test',root]);globalThis.fetch=async()=>new Response('{"enabled":true}',{status:200});
  const command='for p in @synapse/owned-a; do pnpm --filter $p build > ./build-$(echo $p|tr / _).log; done';
  const native=await ermittleShellLage(command,{...ctx,cwd:root,project_root:root,probe:undefined});
@@ -42,7 +49,22 @@ if(process.argv.includes('--native-a')){
  const unsafe=await ermittleShellLage(evil,{...ctx,cwd:root,project_root:root,probe:undefined});assert.equal(pruefeShellStart({project,command:evil,lage:unsafe,agent_id:'sol-2'},SHELL_SICHERUNG_SEED).darf_starten,false,'echter Symlink nie ausgeführt');
  const real=await ermittleShellLage(historical,{...ctx,cwd:'/home/blacky/dev/synapse',project_root:'/home/blacky/dev/synapse',probe:undefined});
  assert.equal(pruefeShellStart({project:'synapse',command:historical,lage:real,agent_id:'sol-2'},SHELL_SICHERUNG_SEED).darf_starten,true,'historischer Text nur native Leseprobe');assert.equal(real.build_log.belege.length,3);
- await closePool();console.log('t76-A nativer eigener pnpm-Build/Loghash/Scope + echter Symlink abgewiesen; historische Build-Texte nie ausgeführt.');
+ console.log('t76-A nativer eigener pnpm-Build/Loghash/Scope + echter Symlink abgewiesen; historische Build-Texte nie ausgeführt.');
+}finally{
+ globalThis.fetch=oldFetch;
+ try{
+  try{
+   if(fixtureApp)await fixtureApp.close();
+   if(fixtureProjects.length){
+    const pool=(await import('../dist/db/client.js')).getPool();
+    const{rows}=await pool.query('SELECT stream_id FROM shell_jobs WHERE project=ANY($1::text[]) AND stream_id IS NOT NULL',[fixtureProjects]);
+    for(const row of rows)cleanup.trackStreamId(row.stream_id);
+    await pool.query('DELETE FROM projects WHERE name=ANY($1::text[])',[fixtureProjects]);
+   }
+  }finally{await(await import('../dist/db/client.js')).closePool();}
+ }finally{await cleanup.cleanup();cleanup.dispose();}
+}
+
 }
 
 console.log('t76-A historische Logschleife, native Scopegrenzen und echte Mutationen grün.');

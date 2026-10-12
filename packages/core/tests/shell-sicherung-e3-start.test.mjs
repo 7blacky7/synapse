@@ -1,11 +1,17 @@
+import{createTestFixtureCleanup,trackShellStreams}from'./_helfer/test-fixture-cleanup.mjs';
+import{fixtureCleanupCheckpoint}from'./_helfer/fixture-cleanup-checkpoint.mjs';
 /** P10-T37: alle Ausführungsproben nur eigener ungefährlicher printf-Marker. */
 import assert from'node:assert/strict';import{randomUUID}from'node:crypto';
-import{mkdtemp,writeFile,readFile}from'node:fs/promises';import{join}from'node:path';import{homedir}from'node:os';
+import{writeFile,readFile}from'node:fs/promises';import{join}from'node:path';
 const u=new URL(process.env.DATABASE_URL||'http://invalid');assert.equal(u.pathname,'/synapse_test');assert.equal(u.port,'5433');
-const db=await import('../dist/db/client.js');const{execShellInProject}=await import('../dist/services/shell-exec.js');
+const cleanup=createTestFixtureCleanup();const oldFetch=globalThis.fetch;const fixtureProjects=[];let fixtureApp;
+try{
+const db=await import('../dist/db/client.js');const{execShellInProject:rawExecShellInProject}=await import('../dist/services/shell-exec.js');
+const execShellInProject=trackShellStreams(cleanup,rawExecShellInProject);
 const{ensureSchema}=await import('../dist/db/schema.js');await ensureSchema();
-const root=await mkdtemp(join(homedir(),'dev','synapse-e3-start-'));
+const root=await cleanup.createRoot('synapse-e3-start-');
 const project='test-e3-start-'+randomUUID();const rule='owned-'+randomUUID();
+fixtureProjects.push(project);cleanup.trackProject(project);await fixtureCleanupCheckpoint();
 await db.getPool().query('INSERT INTO projects(name,hostname,path)VALUES($1,$2,$3)',[project,'test',root]);
 await db.getPool().query(
  "INSERT INTO shell_sicherungsregeln(id,version,art,stufe,muster,antwort_id,quelle,status,bereich,project,positiv,negativ)VALUES($1,1,'text','anleitung',$2::jsonb,'fs.rm','owned-test','aktiv','projekt',$3,$4::jsonb,$5::jsonb)",
@@ -31,4 +37,19 @@ r=await call({command});const driftGrant={grund:'Eigener Driftmarker geprüft',.
 started=false;r=await call({command,agent_id:'koordinator',bestaetigt:driftGrant,onLage:async()=>{await writeFile(target,'DRIFT');}});
 assert.equal(started,false);assert.equal(r.error,'bestaetigung_veraltet');assert.equal(await readFile(target,'utf8'),'DRIFT');
 console.log('P10-T37 Core: kein Spawn, gemeinsame Rolle, Audit und Drift vor Start gruen.');
-await db.closePool();process.exit(0);
+
+
+}finally{
+ globalThis.fetch=oldFetch;
+ try{
+  try{
+   if(fixtureApp)await fixtureApp.close();
+   if(fixtureProjects.length){
+    const pool=(await import('../dist/db/client.js')).getPool();
+    const{rows}=await pool.query('SELECT stream_id FROM shell_jobs WHERE project=ANY($1::text[]) AND stream_id IS NOT NULL',[fixtureProjects]);
+    for(const row of rows)cleanup.trackStreamId(row.stream_id);
+    await pool.query('DELETE FROM projects WHERE name=ANY($1::text[])',[fixtureProjects]);
+   }
+  }finally{await(await import('../dist/db/client.js')).closePool();}
+ }finally{await cleanup.cleanup();cleanup.dispose();}
+}

@@ -1,3 +1,5 @@
+import{createTestFixtureCleanup,trackShellStreams}from'./_helfer/test-fixture-cleanup.mjs';
+import{fixtureCleanupCheckpoint}from'./_helfer/fixture-cleanup-checkpoint.mjs';
 /** t76-C: historische SQL-/Fixture-Skripte nur statisch prüfen. */
 import assert from'node:assert/strict';
 import{ermittleShellLage}from'../dist/services/shell-lage.js';
@@ -30,9 +32,13 @@ for(const metadata of [undefined,{pfad:envpfad,sha256:sha,testprojekt:false},{pf
 }
 if(process.argv.includes('--native-c')){
  const u=new URL(process.env.DATABASE_URL);assert.equal(u.pathname,'/synapse_test');assert.equal(u.port,'5433');
- const{mkdtemp,writeFile}=await import('node:fs/promises');const{join}=await import('node:path');const{homedir}=await import('node:os');const{randomUUID}=await import('node:crypto');
- const{getPool,closePool}=await import('../dist/db/client.js');const{execShellInProject}=await import('../dist/services/shell-exec.js');const{execFileSync}=await import('node:child_process');
- const root=await mkdtemp(join(homedir(),'dev','synapse-t76-c-')),project='test-t76-c-'+randomUUID(),file=join(root,'test-db.env');
+const cleanup=createTestFixtureCleanup();const oldFetch=globalThis.fetch;const fixtureProjects=[];let fixtureApp;
+try{
+ const{writeFile}=await import('node:fs/promises');const{join}=await import('node:path');const{homedir}=await import('node:os');const{randomUUID}=await import('node:crypto');
+ const{getPool,closePool}=await import('../dist/db/client.js');const{execShellInProject:rawExecShellInProject}=await import('../dist/services/shell-exec.js');const{execFileSync}=await import('node:child_process');
+const execShellInProject=trackShellStreams(cleanup,rawExecShellInProject);
+ const root=await cleanup.createRoot('synapse-t76-c-'),project='test-t76-c-'+randomUUID(),file=join(root,'test-db.env');
+fixtureProjects.push(project);cleanup.trackProject(project);await fixtureCleanupCheckpoint();
  const quote=x=>"'"+x.replace(/'/g,"'\\''")+"'";
  await writeFile(file,'DATABASE_URL='+quote(process.env.DATABASE_URL)+'\n');
  const info=await probeShellLage({cwd:root,umgebungsdatei:file});
@@ -49,6 +55,21 @@ if(process.argv.includes('--native-c')){
  for(const bytes of ['DATABASE_URL='+quote(process.env.DATABASE_URL)+'\necho danger\n','DATABASE_URL='+quote(wrongPort.href)+'\n','DATABASE_URL='+quote(wrongDb.href)+'\n','DATABASE_URL="$(echo danger)"\n','PATH=/outside\nDATABASE_URL='+quote(process.env.DATABASE_URL)+'\n']){
   await writeFile(file,bytes);const bad=await probeShellLage({cwd:root,umgebungsdatei:file});assert.equal(bad.umgebungsdatei?.testprojekt===true,false,'ungültige Quelle '+(bytes.includes('echo danger')?'Skript':bytes.startsWith('PATH')?'Fremdvariable':new URL(bytes.slice('DATABASE_URL='.length).replace(/^\x27|\x27\n$/g,'')).port==='5432'?'Port':'DB'));assert.notEqual(bad.umgebungsdatei?.sha256,hash);
  }
- await closePool();console.log('t76-C native Hash/Port/DB/strikteQuelle/Workspace und echter SELECT-Start im eigenen Testprojekt grün.');
+ console.log('t76-C native Hash/Port/DB/strikteQuelle/Workspace und echter SELECT-Start im eigenen Testprojekt grün.');
+}finally{
+ globalThis.fetch=oldFetch;
+ try{
+  try{
+   if(fixtureApp)await fixtureApp.close();
+   if(fixtureProjects.length){
+    const pool=(await import('../dist/db/client.js')).getPool();
+    const{rows}=await pool.query('SELECT stream_id FROM shell_jobs WHERE project=ANY($1::text[]) AND stream_id IS NOT NULL',[fixtureProjects]);
+    for(const row of rows)cleanup.trackStreamId(row.stream_id);
+    await pool.query('DELETE FROM projects WHERE name=ANY($1::text[])',[fixtureProjects]);
+   }
+  }finally{await(await import('../dist/db/client.js')).closePool();}
+ }finally{await cleanup.cleanup();cleanup.dispose();}
+}
+
 }
 console.log('t76-C Literal-SQL, gebundene Testumgebung und unveränderte dynamische Anleitungen grün.');

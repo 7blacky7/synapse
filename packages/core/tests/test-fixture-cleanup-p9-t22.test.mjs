@@ -15,6 +15,8 @@ const ownId = randomUUID();
 const otherId = randomUUID();
 await writeFile(join(streamDirectory, ownId + '.log'), 'own');
 await writeFile(join(streamDirectory, otherId + '.log'), 'other');
+await writeFile(join(streamDirectory, ownId + '.meta.json'), JSON.stringify({project:'own'}));
+await writeFile(join(streamDirectory, otherId + '.meta.json'), JSON.stringify({project:'other'}));
 
 try {
   const helper = fileURLToPath(new URL('./_helfer/test-fixture-cleanup.mjs', import.meta.url));
@@ -60,6 +62,8 @@ setTimeout(() => process.kill(process.pid, 'SIGTERM'), 100);
   await cleanup.cleanup();
   await assert.rejects(stat(root), {code: 'ENOENT'});
   await assert.rejects(readFile(join(streamDirectory, ownId + '.log')), {code: 'ENOENT'});
+  await assert.rejects(readFile(join(streamDirectory, ownId + '.meta.json')), {code:'ENOENT'}, 'own stream metadata removed');
+  assert.equal(await readFile(join(streamDirectory, otherId + '.meta.json'), 'utf8'), JSON.stringify({project:'other'}), 'unrelated stream metadata is preserved');
   assert.equal(await readFile(join(streamDirectory, otherId + '.log'), 'utf8'), 'other', 'unrelated stream log is preserved');
   cleanup.dispose();
   console.log('PASS P9-T22: SIGTERM/normal cleanup removes owned fixtures and only owned stream logs');
