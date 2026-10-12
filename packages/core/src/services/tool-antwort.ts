@@ -14,7 +14,7 @@
  *   - Text ohne Einrueckung. Text und structuredContent entstehen aus DEMSELBEN Objekt.
  *   - E1: Objekt ohne success (z. B. plan get) bekommt success:true, weil das REST-outputSchema
  *     success verlangt. Nicht bei isError.
- *   - Rueckweg: SYNAPSE_TOOL_ANTWORT_KOMPAKT=0 liefert das alte Format (eingerueckt, alle Felder).
+ *   - Rueckweg: SYNAPSE_TOOL_ANTWORT_KOMPAKT=0 liefert das alte Format (eingerueckt, alle fachlichen Felder; Skill-Telemetrie bleibt intern).
  *
  * Persistenz (tool_calls, shell_jobs, Audit) bleibt unberuehrt: das hier ist nur Auslieferung.
  */
@@ -90,10 +90,60 @@ function entpackeInnereHuelle(payload: unknown, optionen: ToolErgebnisOptionen):
   return { ...innen, ...anhaenge, ...('success' in innen ? { success: innen.success } : {}) };
 }
 
+/** P10-T53: nur bekannte Anzeige-Anhänge kürzen, Zustellung und fachliche Werte nicht ändern. */
+function kuerzeAntwortAnhaenge(payload: unknown, kompakt: boolean): unknown {
+  if (!istSchlichtesObjekt(payload)) return payload;
+  const aus = { ...payload };
+  // Produzenten zählen weiterhin intern in PG; Telemetrie gehört nicht in Tool-Antworten.
+  delete aus.skill_hook_metrics;
+  if (!kompakt) return aus;
+  const kurz: Record<string, string> = {
+    'Erfolgreich. Ergebnis: shell(get, id).': 'Details: shell(get, id).',
+    'Gueltig — nichts geaendert. Ergebnis: shell(get, id).': 'Gültig; unverändert. Details: shell(get, id).',
+    'Fehlgeschlagen. Details: shell(log, id).': 'Details: shell(log, id).',
+  };
+  if (Array.isArray(payload.shell_activity)) {
+    aus.shell_activity = payload.shell_activity.map(hinweis =>
+      istSchlichtesObjekt(hinweis) && typeof hinweis.hinweis === 'string' && kurz[hinweis.hinweis]
+        ? { ...hinweis, hinweis: kurz[hinweis.hinweis] } : hinweis);
+  }
+  if (istSchlichtesObjekt(payload.open_plans)) {
+    const plaene = { ...payload.open_plans };
+    if (typeof plaene.hinweis === 'string' && plaene.hinweis.startsWith('Offene Plaene laufen nicht ab.')) {
+      plaene.hinweis = 'Offene Pläne laufen nicht ab. Prüfen: files(plan_status, plan_id); ändern: commit/cancel/plan_update.';
+    }
+    if (istSchlichtesObjekt(plaene.aeltere)) {
+      const alt = plaene.aeltere;
+      if (typeof alt.hinweis === 'string' && alt.hinweis.startsWith('dazu ') &&
+          alt.hinweis.includes('aeltere offene Plaene ohne Aktivitaet seit >7 Tagen') && alt.hinweis.endsWith('zum Ansehen.')) {
+        plaene.aeltere = { ...alt, hinweis: 'Ältere Pläne: files(plan_status, plan_id).' };
+      }
+    }
+    aus.open_plans = plaene;
+  }
+  return aus;
+}
+
+/** Im Format-Rückweg bleibt die innere Hülle, bekannte interne Telemetrie bleibt trotzdem intern. */
+function ohneInnereMetriken(payload: unknown, optionen: ToolErgebnisOptionen): unknown {
+  if (!((optionen.tool === 'shell' && optionen.action === 'get') ||
+        (optionen.tool === 'channel' && optionen.action === 'feed'))) return payload;
+  if (!istSchlichtesObjekt(payload) || !Array.isArray(payload.content) || payload.content.length !== 1) return payload;
+  const block = payload.content[0];
+  if (!istSchlichtesObjekt(block) || block.type !== 'text' || typeof block.text !== 'string') return payload;
+  let innen: unknown;
+  try { innen = JSON.parse(block.text); } catch { return payload; }
+  if (!istSchlichtesObjekt(innen) || !('skill_hook_metrics' in innen)) return payload;
+  return { ...payload, content: [{ ...block,
+    text: JSON.stringify(kuerzeAntwortAnhaenge(innen, false), null, block.text.includes('\n') ? 2 : undefined) }] };
+}
+
 /** Baut die MCP-Huelle aus einem Tool-Ergebnis. */
 export function baueToolErgebnis(payload: unknown, optionen: ToolErgebnisOptionen = {}): ToolErgebnisHuelle {
   const kompakt = toolAntwortKompaktAktiv();
-  let objekt: unknown = kompakt ? kompaktiereToolAntwort(entpackeInnereHuelle(payload, optionen), optionen.tool) : payload;
+  const normal = kompakt ? entpackeInnereHuelle(payload, optionen) : ohneInnereMetriken(payload, optionen);
+  const anzeige = kuerzeAntwortAnhaenge(normal, kompakt);
+  let objekt: unknown = kompakt ? kompaktiereToolAntwort(anzeige, optionen.tool) : anzeige;
   if (kompakt && !optionen.isError && istSchlichtesObjekt(objekt) && !('success' in objekt)) {
     objekt = { success: true, ...objekt };
   }
@@ -117,7 +167,6 @@ export function kompaktiereTextErgebnis<T extends { content?: Array<{ type: stri
   tool?: string,
   action?: string,
 ): T {
-  if (!toolAntwortKompaktAktiv()) return resp;
   const erstes = resp?.content?.[0];
   if (!erstes || erstes.type !== 'text' || typeof erstes.text !== 'string') return resp;
   let geparst: unknown;
@@ -126,7 +175,9 @@ export function kompaktiereTextErgebnis<T extends { content?: Array<{ type: stri
   } catch {
     return resp;
   }
-  const strukturiert = (tool === 'shell' && action === 'get') || (tool === 'channel' && action === 'feed');
+  if (!toolAntwortKompaktAktiv() && (!istSchlichtesObjekt(geparst) ||
+      (!('skill_hook_metrics' in geparst) && ohneInnereMetriken(geparst, { tool, action }) === geparst))) return resp;
+  const strukturiert = toolAntwortKompaktAktiv() && ((tool === 'shell' && action === 'get') || (tool === 'channel' && action === 'feed'));
   const huelle = baueToolErgebnis(geparst, { tool, action, isError: resp.isError === true, strukturiert });
   erstes.text = huelle.content[0].text;
   if (strukturiert) resp.structuredContent = huelle.structuredContent;
