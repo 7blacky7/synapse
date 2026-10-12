@@ -16,7 +16,7 @@ import {
   deleteTechDocTool,
 } from '../tech-docs.js';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
-import { resolveAgentId } from '@synapse/core';
+import { findMemoriesForPath, resolveAgentId } from '@synapse/core';
 
 export const docsTool: ConsolidatedTool = {
   definition: {
@@ -98,6 +98,9 @@ export const docsTool: ConsolidatedTool = {
           type: 'string',
           description: 'Agent-ID fuer Cutoff-Ermittlung',
         },
+        framework_warnungen: { type: 'boolean', description: 'get_for_file: Framework-Warnungen abrufen (Standard true)' },
+        memories: { type: 'boolean', description: 'get_for_file: passende Projekt-Memories kompakt hinzufuegen (Standard false)' },
+        steckbrief: { type: 'boolean', description: 'Platzhalter fuer Datei-Steckbriefe in Teil B; derzeit ohne Wirkung' },
         // ===== ACTION: update / delete =====
         id: {
           type: 'string',
@@ -254,41 +257,48 @@ export const docsTool: ConsolidatedTool = {
         const agentId = resolveAgentId(rawAgentId);
         if (!agentId) throw new Error('agent_id erforderlich (oder SYNAPSE_AGENT_NAME setzen)');
         const project = reqStr(args, 'project');
+        const frameworks = str(args, 'framework') ? [str(args, 'framework') as string] : undefined;
+        const opts = { limit: num(args, 'limit'), frameworks, frameworkWarnings: bool(args, 'framework_warnungen') !== false };
+        const memoriesAktiv = bool(args, 'memories') === true;
+        const kompakteMemories = async (filePath: string) => {
+          let matches;
+          try {
+            matches = await findMemoriesForPath(project, filePath, 5);
+          } catch (error) {
+            if (typeof error === 'object' && error !== null && 'status' in error && error.status === 404) return [];
+            throw error;
+          }
+          return matches.map(({ memory }) => ({
+            name: memory.name,
+            kurzfassung: memory.content.trim().slice(0, 240) + (memory.content.trim().length > 240 ? '…' : ''),
+            link: { action: 'read', project, name: memory.name },
+          }));
+        };
+        const einzelDatei = async (filePath: string) => {
+          const result = await getDocsForFileTool(filePath, agentId, project, opts);
+          return {
+            success: result.success,
+            warnings: result.warnings,
+            agentCutoff: result.agentCutoff,
+            message: result.message,
+            ...(memoriesAktiv ? { memories: await kompakteMemories(filePath) } : {}),
+          };
+        };
 
         // Array-Support: Mehrere Dateien in einem Call
         const filePaths = strArray(args, 'file_path');
         if (filePaths && filePaths.length > 1) {
-          const settled = await Promise.allSettled(
-            filePaths.map(fp => getDocsForFileTool(fp, agentId, project))
-          );
+          const settled = await Promise.allSettled(filePaths.map(einzelDatei));
           const results: Array<Record<string, unknown>> = [];
           const errors: string[] = [];
           for (const r of settled) {
-            if (r.status === 'fulfilled') {
-              const val = r.value;
-              results.push({
-                success: val.success,
-                warnings: val.warnings,
-                agentCutoff: val.agentCutoff,
-                message: val.message,
-              });
-            } else {
-              errors.push(String(r.reason));
-            }
+            if (r.status === 'fulfilled') results.push(r.value);
+            else errors.push(String(r.reason));
           }
           return { results, count: results.length, errors };
         }
 
-        // Bestehend: Einzelner Dateipfad
-        const filePath = reqStr(args, 'file_path');
-        const result = await getDocsForFileTool(filePath, agentId, project);
-
-        return {
-          success: result.success,
-          warnings: result.warnings,
-          agentCutoff: result.agentCutoff,
-          message: result.message,
-        };
+        return await einzelDatei(reqStr(args, 'file_path'));
       }
 
       case 'update': {

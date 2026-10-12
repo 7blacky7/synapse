@@ -76,7 +76,7 @@ export async function getDocsForFileTool(
   filePath: string,
   agentId: string,
   project: string,
-  opts?: { limit?: number; frameworks?: string[] }
+  opts?: { limit?: number; frameworks?: string[]; frameworkWarnings?: boolean }
 ): Promise<{
   success: boolean;
   warnings: Array<{ framework: string; version: string; docs: Array<{ section: string; type: string; content: string }> }>;

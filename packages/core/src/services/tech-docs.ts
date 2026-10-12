@@ -570,7 +570,7 @@ export async function getDocsForFile(
   filePath: string,
   agentId: string,
   project: string,
-  opts?: { limit?: number; frameworks?: string[] }
+  opts?: { limit?: number; frameworks?: string[]; frameworkWarnings?: boolean }
 ): Promise<{
   warnings: Array<{ framework: string; version: string; docs: Array<{ section: string; type: string; content: string }> }>;
   agentCutoff: string | null;
@@ -581,6 +581,9 @@ export async function getDocsForFile(
 
   if (!agentCutoff) {
     return { warnings: [], agentCutoff: null };
+  }
+  if (opts?.frameworkWarnings === false) {
+    return { warnings: [], agentCutoff };
   }
 
   // 2. Datei -> Sprach-Parser (Registry, Single Source of Truth) -> Sprach-Hints.
