@@ -22,6 +22,7 @@
 
 import { getPool } from '../db/client.js';
 import { resolveCutoff } from './model-cutoffs.js';
+import { initialisiereChatLesestand } from './chat-unread.js';
 import { vergissOnboarding } from './project-status.js';
 
 export interface ChatMessage {
@@ -110,6 +111,8 @@ export async function registerAgent(
      RETURNING registered_at, sitzung_seit`,
     [id, project, model || null, resolvedCutoff, cutoffBekannt]
   );
+  // Auch Register ohne agent_id initialisiert den Chat des registrierten Agenten.
+  await initialisiereChatLesestand(project, id);
   const jetzt = new Date();
   const registriert = zeit.rows[0]?.registered_at ?? jetzt;
   const sitzung = zeit.rows[0]?.sitzung_seit ?? jetzt;

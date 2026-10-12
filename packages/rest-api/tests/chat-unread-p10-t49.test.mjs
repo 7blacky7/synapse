@@ -52,6 +52,11 @@ try {
   await app.register(mcpRoutes); await app.ready(); await restart();
   for (const [name,call] of [['rest',rest],['stdio',stdio]]) {
     const project = prefix + '-' + name, base = {project,agent_id:agent};
+    const alt = (await pool.query("INSERT INTO chat_messages(project,sender_id,content) VALUES($1,$2,'alt') RETURNING id",[project,sender])).rows[0];
+    const initial = await Promise.all([call({...base,action:'list'}),call({...base,action:'list'})]);
+    check(name+' paralleler erster Hinweis überspringt Altbestand',initial.map(shape),[null,null]);
+    check(name+' Ausgangsstand ist Projektmaximum',await mark(project),String(alt.id));
+    await rest({project,agent_id:other,action:'list'});
     await pool.query(`INSERT INTO chat_messages(project,sender_id,recipient_id,content,timestamp) VALUES
       ($1,$2,NULL,'broadcast',now()),($1,$2,$3,'dm',now()),
       ($1,$2,$4,'fremd',now()),($1,$3,NULL,'eigen',now())`,[project,sender,agent,other]);
@@ -60,9 +65,9 @@ try {
     check(name+' Hinweis',shape(first),expected);
     if(first.unreadChat) assert.equal(typeof first.unreadChat.hint,'string');
     check(name+' wiederholen zählt ohne Lesen',shape(await call({...base,action:'list'})),expected);
-    check(name+' kein Lesestand durch Hinweis',await mark(project),undefined);
+    check(name+' weiterer Hinweis verschiebt Ausgangsstand nicht',await mark(project),String(alt.id));
     const read = await call({...base,action:'get'});
-    assert.equal(read.messages.length,3,'echter Read liefert Broadcast, eigene Nachricht und eigene DM');
+    assert.equal(read.messages.length,4,'echter Read liefert auch historischen Broadcast, eigene Nachricht und eigene DM');
     assert(!read.messages.some(m=>m.content==='fremd'));
     check(name+' nach Get leer',shape(await call({...base,action:'list'})),null);
     const saved = await mark(project);
@@ -75,7 +80,7 @@ try {
     const ids = (await pool.query("INSERT INTO chat_messages(project,sender_id,recipient_id,content) SELECT $1,$2,$3,'mehr' FROM generate_series(1,60) RETURNING id",[project,sender,agent])).rows;
     check(name+' vollständige Zählung',shape(await rest({...base,action:'list'})),{broadcasts:0,dms:[{from:sender,count:60}]});
     await call({...base,action:'get',limit:5});
-    check(name+' Teilabruf lässt Rest offen',shape(await rest({...base,action:'list'})),{broadcasts:0,dms:[{from:sender,count:58}]});
+    check(name+' Teilabruf lässt Rest offen',shape(await rest({...base,action:'list'})),{broadcasts:0,dms:[{from:sender,count:59}]});
     await Promise.all([getMessages(project,{agentId:agent,limit:100}),getMessages(project,{agentId:agent,limit:1})]);
     check(name+' parallele Leser monoton',await mark(project),String(ids.at(-1).id));
     await getMessages(project,{agentId:agent,limit:1});
@@ -85,6 +90,14 @@ try {
     check(name+' ID-Read liefert nur angeforderte Nachricht',one.messages.map(m=>Number(m.id)),[direct.id]);
     check(name+' ID-Read schreibt Stand fort',await mark(project),String(direct.id));
     check(name+' ID-Read leert Hinweis',shape(await rest({...base,action:'list'})),null);
+    const newcomer = agent + '-new';
+    await call({project,action:'register',id:newcomer});
+    check(name+' Register setzt Ausgangsstand auch ohne agent_id',
+      (await pool.query('SELECT letzte_id::text FROM chat_lesestand WHERE project=$1 AND agent_id=$2',[project,newcomer])).rows[0]?.letzte_id,String(direct.id));
+    await pool.query("INSERT INTO chat_messages(project,sender_id,content) VALUES($1,$2,'neu nach Register')",[project,sender]);
+    check(name+' nach Register neuer Broadcast',shape(await call({project,agent_id:newcomer,action:'list'})),{broadcasts:1,dms:[]});
+    await call({project,action:'register',id:newcomer});
+    check(name+' Wiederanmeldung setzt Stand nicht zurück',shape(await call({project,agent_id:newcomer,action:'list'})),{broadcasts:1,dms:[]});
     console.log('geprüft',name);
   }
   assert.deepEqual(failures,[],failures.join('\n'));

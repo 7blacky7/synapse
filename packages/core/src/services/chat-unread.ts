@@ -6,10 +6,25 @@ export interface UnreadChatHint {
   hint: string;
 }
 
-/** Reine PG-Zählung: Anzeigen ist kein Lesen. Eigene und fremde DMs zählen nicht. */
+/** Einmaliger Ausgangsstand: bestehende Marken werden auch bei Wiederanmeldung nie ersetzt. */
+export async function initialisiereChatLesestand(project: string, agentId: string): Promise<boolean> {
+  if (!project || !agentId) return false;
+  const { rowCount } = await getPool().query(
+    `INSERT INTO chat_lesestand(project, agent_id, letzte_id)
+     SELECT $1, $2, COALESCE((SELECT MAX(id) FROM chat_messages WHERE project = $1), 0)
+     WHERE NOT EXISTS (SELECT 1 FROM chat_lesestand WHERE project = $1 AND agent_id = $2)
+     ON CONFLICT (project, agent_id) DO NOTHING
+     RETURNING letzte_id`,
+    [project, agentId],
+  );
+  return (rowCount ?? 0) > 0;
+}
+
+/** Nach dem einmaligen Ausgangsstand reine PG-Zählung; eigene und fremde DMs zählen nicht. */
 export async function getUnreadChatHint(project: string, agentId: string): Promise<UnreadChatHint | null> {
   if (!project || !agentId) return null;
   try {
+    if (await initialisiereChatLesestand(project, agentId)) return null;
     const { rows } = await getPool().query<{ recipient_id: string | null; sender_id: string | null; count: number }>(
       `SELECT recipient_id,
               CASE WHEN recipient_id IS NOT NULL THEN sender_id END AS sender_id,
