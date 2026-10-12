@@ -462,9 +462,9 @@ export class PlanBatchOpsFailedError extends Error {
       `Op ${first.index} (${first.action} auf "${first.file_path}") fehlgeschlagen: ${first.error} — ` +
       `${args.failed_ops.length} von ${args.total_ops} Op(s) im Trockenlauf gescheitert, nichts geschrieben. ` +
       `Die Ops liegen als NEUER offener Plan ${args.plan_id} bereit (gescheiterte Ops in failed_ops). ` +
-      `Korrigieren: files(action:"plan_update", plan_id:"${args.plan_id}", op_index:<index>, ops:[<korrigierte Op>]) ` +
-      `— ergibt einen Folgeplan mit NEUER plan_id (die aus der Antwort weiterverwenden) und verwirft diesen. ` +
-      `Verwerfen: files(action:"cancel", plan_id:"${args.plan_id}").` +
+      `Zum Reparieren plan_update mit op_index statt cancel + neu planen: ` +
+      `files(action:"plan_update", plan_id:"${args.plan_id}", op_index:${first.index}, ops:[<korrigierte Op>]) — ` +
+      `ersetzt die Op im selben Plan. Ganz verwerfen: files(action:"cancel", plan_id:"${args.plan_id}").` +
       ((args.shared_plans ?? []).length > 0
         ? ` GEMEINSAMER PLAN: ${(args.shared_plans ?? []).map((p) => `Plan ${p.plan_id} von ${p.owner} (${p.files.join(', ')})`).join('; ')} ` +
           'ist auf diesen Pfaden offen. Dieser Entwurf konkurriert nicht (weder committbar noch beitretbar); ' +
@@ -512,6 +512,7 @@ export function planFailureResponse(err: unknown, error = 'plan_failed'): Record
       ...(failed.eigene_plaene && failed.eigene_plaene.length > 0 ? { eigene_plaene: failed.eigene_plaene } : {}),
       ...(failed.diff ? { diff: failed.diff } : {}),
       message: failed.message,
+      hinweis_plan_update: `Zum Reparieren plan_update mit op_index statt cancel + neu planen: files(action:"plan_update", plan_id:"${failed.plan_id}", op_index:${failed.failed_ops?.[0]?.index ?? 0}, ops:[<korrigierte Op>]).`,
     };
   }
   return { success: false, error, message: err instanceof Error ? err.message : String(err) };
@@ -606,7 +607,9 @@ export type CommitBatchResult =
       plan_id: string;
       batch_id: string;
       committed: number;
-      files: Array<{ file_path: string; size: number; hash: string; created: boolean; deleted?: boolean }>;
+      files: Array<{ file_path: string; size: number; hash: string; created: boolean; deleted?: boolean; auf_platte?: 'ja' | 'nein' | 'unbekannt' }>;
+      /** P6-T30: Lokaler Dateistand ist ohne Daemon-Bestaetigung unbekannt; der PG->FS-Sync laeuft asynchron. */
+      sync_hinweis?: string;
       embeddings_pending?: boolean;
       embeddings_hint?: string;
       /** Gemeinsamer Plan: Hinweis auf Waits, die beim commit noch nicht ready waren (kein Blocker). */
@@ -4330,10 +4333,15 @@ export async function commitBatch(args: {
     // P15-T36 Teil 2: kein Abbruch, aber ein Hinweis, welche .env-Variablen mit Wert der commit ueberschrieben
     // oder entfernt hat (nur Namen; Stand vor dem commit aus file_versions des Batches).
     if (result.success) {
+      const mitSyncStatus = {
+        ...result,
+        files: result.files.map((datei) => ({ ...datei, auf_platte: 'unbekannt' as const })),
+        sync_hinweis: 'PG->FS-Sync laeuft asynchron; ohne lokale Daemon-Bestaetigung ist auf_platte unbekannt. Vor lokaler Ausfuehrung kurz warten.',
+      };
       const envListe = await envHinweiseFuerBatch(result.plan_id).catch(() => [] as string[]);
-      if (envListe.length > 0) return { ...result, env_hinweise: envListe };
+      return envListe.length > 0 ? { ...mitSyncStatus, env_hinweise: envListe } : mitSyncStatus;
     }
-    if (result.success || result.status !== 'waiting_for_contributors') return result;
+    if (result.status !== 'waiting_for_contributors') return result;
     let blockers = result.waiting_for ?? [];
     for (;;) {
       const rest = deadline - Date.now();
@@ -5153,7 +5161,13 @@ export function buildCancelResponse(planId: string, result: CancelBatchResult): 
         ? `Plan ${planId} verworfen (${result.withdrawn_ops ?? 0} Op(s), keine fremden Beitraege). Ops und Begruendung bleiben lesbar (plan_status), mit Vermerk wer/wann/warum.`
           + (result.closed_waits ? ` ${result.closed_waits} eigene(r) Wait(s) dieses Plans geschlossen — sie halten keinen commit mehr auf; schon beigetragene Ops bleiben im Ziel-Plan (dort per cancel mit agent_id zurueckziehen).` : '')
         : `Plan ${planId} nicht abbrechbar (Status: ${result.status}).`;
-  return { success: result.ok, plan_id: planId, ...result, message };
+  return {
+    success: result.ok,
+    plan_id: planId,
+    ...result,
+    message,
+    hinweis_plan_update: `Bei fehlerhaften Ops reparieren statt verwerfen + neu planen: files(action:"plan_update", plan_id:"${planId}", op_index:<index>, ops:[<korrigierte Op>]).`,
+  };
 }
 
 /**
@@ -5806,7 +5820,7 @@ export function buildPlanStatusResponse(plan: FileBatchPlanRow): Record<string, 
       return failedOps.length > 0
         ? {
             failed_ops: failedOps,
-            failed_hint: 'Plan enthaelt gescheiterte Ops und ist nicht committbar. Korrigieren: files(action:"plan_update", plan_id, op_index, ops) — ergibt einen Folgeplan mit eigener ID. Verwerfen: files(action:"cancel", plan_id).',
+            failed_hint: `Plan enthaelt gescheiterte Ops und ist nicht committbar. Zum Reparieren plan_update mit op_index statt cancel + neu planen: files(action:"plan_update", plan_id:"${plan.id}", op_index:${failedOps[0].index}, ops:[<korrigierte Op>]) — ersetzt die Op im selben Plan.`,
           }
         : {};
     })(),

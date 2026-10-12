@@ -111,6 +111,10 @@ async function anlegen(agent, pfad, text) {
   const p = await batch.planBatch({ project: PROJECT, agent_id: agent, ops: [{ file_path: pfad, action: 'create', content: text }] });
   const c = await batch.commitBatch({ plan_id: p.plan_id, agent_id: agent });
   if (!c.success) throw new Error('Anlegen von ' + pfad + ' fehlgeschlagen: ' + JSON.stringify(c));
+  pruefe(c.committed === 1 && c.files?.[0]?.file_path === pfad && typeof c.files?.[0]?.hash === 'string',
+    'Golden: commit liefert weiter committed, Pfad und Hash', c);
+  pruefe(c.files?.every((datei) => datei.auf_platte === 'unbekannt') && /Sync laeuft/.test(c.sync_hinweis ?? ''),
+    'P6-T30: commit weist Plattenstatus und laufenden Sync je Datei aus', c);
 }
 
 async function planFehler(args) {
@@ -151,9 +155,19 @@ try {
     '3: erfolgreiche Op mit Preview, gescheiterte Op markiert (Index 1 + Fehlertext)', f1Zeile?.previews);
   pruefe(Array.isArray(f1.err?.failed_ops) && f1.err.failed_ops.length === 1 && f1.err.failed_ops[0].index === 1,
     '3: failed_ops nennt Index 1', f1.err?.failed_ops);
-  pruefe(/plan_update/.test(f1.err?.message ?? '') && /cancel/.test(f1.err?.message ?? ''), '3: Meldung sagt, wie man korrigiert/verwirft', f1.err?.message);
+  pruefe(/plan_update/.test(f1.err?.message ?? '') && /op_index/.test(f1.err?.message ?? '') && !/cancel \+ replan/.test(f1.err?.message ?? ''),
+    '3: Meldung empfiehlt plan_update mit op_index statt cancel + replan', f1.err?.message);
   const antwort = batch.planFailureResponse ? batch.planFailureResponse(f1.err) : {};
   pruefe(antwort.success === false && antwort.error === 'plan_failed' && antwort.plan_id === f1Id, '3: Tool-Antwort plan_failed MIT plan_id', antwort);
+  pruefe(/plan_update/.test(antwort.hinweis_plan_update ?? '') && /op_index/.test(antwort.hinweis_plan_update ?? ''),
+    '3: plan_failed-Antwort enthaelt kopierbaren Korrekturaufruf', antwort);
+  const statusAntwort = batch.buildPlanStatusResponse({id:f1Id, project:PROJECT, status:'open', owner_agent_id:O,
+    ops:f1Zeile.ops, expected_hashes:{}, previews:f1Zeile.previews});
+  pruefe(/plan_update/.test(statusAntwort.failed_hint ?? '') && /op_index/.test(statusAntwort.failed_hint ?? ''),
+    '3: plan_status nennt plan_update mit op_index fuer fehlerhafte Ops', statusAntwort);
+  const cancelAntwort = batch.buildCancelResponse(f1Id, {ok:false, mode:'none', status:'open', withdrawn_ops:0, remaining_ops:0});
+  pruefe(/plan_update/.test(cancelAntwort.hinweis_plan_update ?? '') && /op_index/.test(cancelAntwort.hinweis_plan_update ?? ''),
+    '3: cancel-Antwort enthaelt Reparaturhinweis mit Aufruf', cancelAntwort);
   pruefe(await inhalt('a.md') === 'alpha\nbeta\n', '3: nichts geschrieben', await inhalt('a.md'));
 
   const f1Snapshot = JSON.stringify(f1Zeile);
