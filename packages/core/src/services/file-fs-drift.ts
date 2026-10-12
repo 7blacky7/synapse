@@ -38,7 +38,9 @@ export async function pruefeFsDrift(project:string,pfade:string[]):Promise<FsPru
       const file_path=files[index++];
       const eintrag:Record<string,unknown>={file_path,host:ziel.hostname,status:'ungeprueft'};
       result.dateien.push(eintrag);
+      const beginn=Date.now();
       try {
+        for(;;) {
         if(Date.now()>=deadline)throw new Error('FS-Prüfbudget erschöpft');
         const {rows}=await getPool().query<{content:string|null;deleted_at:unknown}>(
           'SELECT content,deleted_at FROM code_files WHERE project=$1 AND file_path=$2',[project,file_path]);
@@ -54,13 +56,28 @@ export async function pruefeFsDrift(project:string,pfade:string[]):Promise<FsPru
         if(platte.existiert&&typeof platte.sha256!=='string')throw new Error('Plattenhash fehlt');
         const fsHash=platte.existiert?String(platte.sha256):null;
         Object.assign(eintrag,{pg_hash:pgHash,fs_hash:fsHash,pg_existiert:vorhanden,fs_existiert:platte.existiert});
-        if(pgHash===fsHash){eintrag.status='gleich';continue}
+        if(pgHash===fsHash){
+          eintrag.status='gleich';
+          delete eintrag.grund;delete eintrag.diff;delete eintrag.ansehen;delete eintrag.was_tun;
+          if(eintrag.sync_abgewartet)eintrag.gewartet_ms=Date.now()-beginn;
+          break;
+        }
         eintrag.status='drift';
         eintrag.grund=probe.bekannte_version?'sync_rueckstand':'lokale_abweichung';
         eintrag.diff=probe.drift_diff??{nicht_verfuegbar:'Daemon liefert noch keinen Diff; Hashabweichung bleibt gesperrt'};
         eintrag.ansehen={action:'sync_inspektor',project,file_path,prozess:'daemon:'+ziel.hostname};
-        eintrag.was_tun='Diff/Zeilen prüfen; nach FS→PG-Abgleich code_intel(file) für diese Bereiche lesen und plan_update verwenden.';
-      }catch(err){eintrag.grund=err instanceof Error?err.message:String(err)}
+        eintrag.was_tun=probe.bekannte_version
+          ? 'PG→FS-Sync prüfen; nach Synchronisierung denselben Plan erneut committen.'
+          : 'Diff/Zeilen prüfen; nach FS→PG-Abgleich code_intel(file) für diese Bereiche lesen und plan_update verwenden.';
+        // Nur einen bekannten Synapse-Stand abwarten. Unbekannte Fremdänderung sofort sperren.
+        if(!probe.bekannte_version||Date.now()>=deadline)break;
+        eintrag.sync_abgewartet=true;
+        await new Promise(resolve=>setTimeout(resolve,Math.min(200,Math.max(1,deadline-Date.now()))));
+        }
+      }catch(err){
+        // Eine bereits belegte Drift bleibt gesperrt, auch wenn die Folgeprobe ausfällt.
+        eintrag.pruef_fehler=err instanceof Error?err.message:String(err);
+      }
     }
   };
   await Promise.all(Array.from({length:Math.min(4,files.length)},worker));

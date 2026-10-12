@@ -62,7 +62,9 @@ try{
  await check('Bekannter alter Plattenstand wird als Sync-Rückstand benannt',async()=>{
   await seed('alt.txt');await writeFile(join(dir,'alt.txt'),local);
   await pool.query("INSERT INTO file_versions(project,file_path,content,content_hash,edit_action,size_bytes) VALUES($1,'alt.txt',$2,$3,'test',$4)",[project,local,hash(local),Buffer.byteLength(local)]);
+  const start=Date.now();
   try{await plan('alt.txt');assert.fail('Drift erwartet')}catch(e){assert.equal(e.fs_pruefung.dateien[0].grund,'sync_rueckstand')}
+  assert.ok(Date.now()-start>=4500&&Date.now()-start<7000,'bekannter Rückstand bleibt nach begrenztem Warten gesperrt');
  });
  await check('Diff maskiert sensible Dateien vor Rückgabe',async()=>{
   await seed('.env.test','PASSWORD=alter-geheimer-wert\n');
@@ -92,6 +94,39 @@ try{
    try{const r=await batch.commitBatch({plan_id:p.plan_id,agent_id:agent,wait_sync:true});assert.equal(r.success,true);assert.equal(r.files[0].auf_platte,'ja')}finally{clearInterval(sync)}
   }finally{stop=true;await worker;bridge.vergissDaemons()}
   await pool.query('UPDATE projects SET hostname=$2 WHERE name=$1',[project,hostname()]);
+ });
+
+ await check('Zwei schnelle Commits warten auf bekannten PG→FS-Rückstand',async()=>{
+  await seed('schnell.txt');
+  await pool.query("INSERT INTO file_versions(project,file_path,content,content_hash,edit_action,size_bytes) VALUES($1,'schnell.txt',$2,$3,'test',$4)",[project,old,hash(old),Buffer.byteLength(old)]);
+  const p1=await plan('schnell.txt');
+  assert.equal((await batch.commitBatch({plan_id:p1.plan_id,agent_id:agent})).success,true);
+  const erster=old.replace('zwei','PLAN');
+  const sync=new Promise(resolve=>setTimeout(async()=>{await writeFile(join(dir,'schnell.txt'),erster);resolve()},300));
+  try {
+   const p2=await batch.planBatch({project,agent_id:agent,ops:[{action:'search_replace',file_path:'schnell.txt',search:'PLAN',replace:'ZWEITER'}]});
+   assert.equal(p2.fs_pruefung.dateien[0].sync_abgewartet,true);
+   await sync;
+   await writeFile(join(dir,'schnell.txt'),old);
+   const sync2=new Promise(resolve=>setTimeout(async()=>{await writeFile(join(dir,'schnell.txt'),erster);resolve()},300));
+   try {
+    const c2=await batch.commitBatch({plan_id:p2.plan_id,agent_id:agent});
+    assert.equal(c2.success,true);assert.equal(c2.fs_pruefung.dateien[0].sync_abgewartet,true);
+   }finally{await sync2}
+   assert.equal((await pool.query("SELECT content FROM code_files WHERE project=$1 AND file_path='schnell.txt'",[project])).rows[0].content,old.replace('zwei','ZWEITER'));
+  }finally{await sync}
+ });
+
+ await check('Unbekannte Fremdänderung während Sync-Warten wird sofort gesperrt',async()=>{
+  await seed('wechsel.txt');
+  await pool.query("INSERT INTO file_versions(project,file_path,content,content_hash,edit_action,size_bytes) VALUES($1,'wechsel.txt',$2,$3,'test',$4)",[project,local,hash(local),Buffer.byteLength(local)]);
+  await writeFile(join(dir,'wechsel.txt'),local);
+  const fremd=new Promise(resolve=>setTimeout(async()=>{await writeFile(join(dir,'wechsel.txt'),'ganz fremd');resolve()},300));
+  const start=Date.now();
+  try{
+   await assert.rejects(()=>plan('wechsel.txt'),e=>e.fs_pruefung.dateien[0].grund==='lokale_abweichung');
+   assert.ok(Date.now()-start<2500,'unbekannter Stand verbraucht nicht das Wartebudget');
+  }finally{await fremd}
  });
  await check('Offline/mehrdeutig ist sichtbar ungeprüft',async()=>{
   const {pruefeFsDrift}=await import('../dist/services/file-fs-drift.js');
