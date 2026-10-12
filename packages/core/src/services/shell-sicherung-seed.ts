@@ -56,6 +56,17 @@ export const SHELL_SICHERUNG_VORGAENGER:Record<string,ShellSicherungsKatalog['ri
         }
       ]
     }
+  ],
+  "regel:inline.exec": [
+    {
+      "command": [
+        "^(?:node|python[\\d.]*)$"
+      ],
+      "argv_any": [
+        "\\b(?:child_process\\.(?:exec|execSync|spawn|spawnSync|execFile|execFileSync)|subprocess\\.(?:run|call|Popen|check_call|check_output)|os\\.(?:system|popen))\\s*\\("
+      ],
+      "skript_exec": "ungeklaert"
+    }
   ]
 };
 export const SHELL_SICHERUNG_SEED: ShellSicherungsKatalog = {
@@ -85,7 +96,7 @@ export const SHELL_SICHERUNG_SEED: ShellSicherungsKatalog = {
 },
 {
     "id": "inline.exec",
-    "version": 1,
+    "version": 2,
     "art": "text",
     "stufe": "anleitung",
     "status": "aktiv",
@@ -96,7 +107,21 @@ export const SHELL_SICHERUNG_SEED: ShellSicherungsKatalog = {
         "argv_any": [
             "\\b(?:child_process\\.(?:exec|execSync|spawn|spawnSync|execFile|execFileSync)|subprocess\\.(?:run|call|Popen|check_call|check_output)|os\\.(?:system|popen))\\s*\\("
         ],
-        "skript_exec": "ungeklaert"
+        "skript_exec": "ungeklaert",
+        "skript_stdin_daten": [
+            {
+                "command": [
+                    "^git$",
+                    "^hash-object$"
+                ],
+                "argv_option_any": [
+                    "^--stdin$"
+                ],
+                "argv_none": [
+                    "^--(?:path|filters)(?:=|$)"
+                ]
+            }
+        ]
     },
     "antwort_id": "inline.exec",
     "quelle": "P10-T47: statische Sprachaufrufe, keine Skriptausführung",

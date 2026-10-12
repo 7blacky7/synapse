@@ -10,7 +10,7 @@ export interface ShellMuster {
   command: string[]; argv_any?: string[]; argv_all?: string[]; argv_none?: string[];
   argv_option_any?:string[];argv_ohne_nachrichten?:boolean;
   umleitung?: boolean; target_regex?: string; ausnahmen?: ShellMuster[];
-  skript_ziel?:'ausserhalb';skript_db?:'ohne_testprojekt';skript_exec?:'ungeklaert';
+  skript_ziel?:'ausserhalb';skript_db?:'ohne_testprojekt';skript_exec?:'ungeklaert';skript_stdin_daten?:ShellMuster[];
 }
 export interface ShellGeltung {
   os?: Array<'linux' | 'windows' | 'macos' | 'wsl'>;
@@ -93,7 +93,7 @@ function trifft(m: ShellMuster, k: ShellTextKommando): boolean {
   if(!k.umleitungen.length&&!k.argv.some(a=>a.dynamisch)&&m.ausnahmen?.some(x=>trifft(x,k)))return false;
   if(m.skript_ziel==='ausserhalb'&&k.skript_operation?.ziel_im_projekt===true)return false;
   if(m.skript_db==='ohne_testprojekt'&&k.skript_operation?.testprojekt)return false;
-  if(m.skript_exec==='ungeklaert'&&k.skript_operation?.statischer_befehl)return false;
+  if(m.skript_exec==='ungeklaert'&&k.skript_operation?.statischer_befehl&&(!k.skript_operation.eingabe_ungeklaert||k.skript_operation.befehl&&m.skript_stdin_daten?.some(x=>trifft(x,k.skript_operation!.befehl!))))return false;
   if (m.umleitung) return k.umleitungen.some(x => !m.target_regex || regex(m.target_regex, x));
   if (!m.command.length || !m.command.every((p, i) => regex(p, k.argv[i]?.text ?? ''))) return false;
   const data=m.argv_ohne_nachrichten?gitNachrichtenIndizes(k):new Set<number>();
