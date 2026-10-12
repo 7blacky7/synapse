@@ -59,6 +59,7 @@ import { aenderungsBereiche, dateiDiff, diffMaxZeichen, diffMaxZeilen, diffText,
 import { normalisiereOps } from './projekt-pfad.js';
 import {
   findForeignActiveReservationPrimaries,
+  getReservationTtlConfig,
   refreshReservationTtlsForFiles,
   type ForeignActiveReservationPrimary,
 } from './file-reservations.js';
@@ -1730,11 +1731,67 @@ async function planBeteiligte(
   return { waits: waits.rows, autoren };
 }
 
+type CommitAuthorReservationTransfer = {
+  filePaths: string[];
+  expiresAt: string | null;
+  versions: string[];
+  hashes: Record<string, string>;
+};
+
+/** Erhaelt Reservierungen anderer Op-Autoren auf dem committed Datenstand. */
+async function rebaseCommitAuthorReservations(
+  client: PoolClient,
+  plan: { id: string; project: string; owner_agent_id: string | null; ops: FileBatchOp[]; expected_hashes: Record<string, string> },
+  caller: string | null,
+): Promise<Map<string, CommitAuthorReservationTransfer>> {
+  const config = getReservationTtlConfig();
+  const dateien = Object.keys(plan.expected_hashes ?? {});
+  const autoren = uniqueStrings([
+    plan.owner_agent_id ?? '',
+    ...(Array.isArray(plan.ops) ? plan.ops : []).map((op) => op.agent_id ?? ''),
+  ].filter((agent) => agent && agent !== caller));
+  const transfers = new Map<string, CommitAuthorReservationTransfer>();
+  for (const agent of autoren) {
+    const rows = await client.query<{ file_path: string; hash: string; expires_at: Date | string }>(
+      `UPDATE file_reservations r
+          SET plan_id = NULL,
+              content_hash_at_reservation = CASE WHEN cf.deleted_at IS NULL THEN cf.content_hash ELSE $5 END,
+              reserved_at = NOW(),
+              last_extended_at = NOW(),
+              expires_at = NOW() + ($6::double precision * INTERVAL '1 second')
+         FROM code_files cf
+        WHERE r.project = $1 AND r.agent_id = $2
+          AND r.file_path = ANY($3::text[]) AND r.released_at IS NULL
+          AND (r.plan_id = $4::bigint OR r.plan_id IS NULL)
+          AND cf.project = r.project AND cf.file_path = r.file_path
+        RETURNING r.file_path,
+                  r.content_hash_at_reservation AS hash,
+                  r.expires_at`,
+      [plan.project, agent, dateien, plan.id, EMPTY_CONTENT_HASH, config.planlessMinutes * 60],
+    );
+    const versions = await client.query<{ id: string }>(
+      `SELECT id::text AS id FROM file_versions
+        WHERE project = $1 AND batch_id = $2::bigint
+        ORDER BY id`,
+      [plan.project, plan.id],
+    );
+    const hashes = Object.fromEntries(rows.rows.map((row) => [row.file_path, row.hash]));
+    transfers.set(agent, {
+      filePaths: rows.rows.map((row) => row.file_path),
+      expiresAt: rows.rows.length > 0 ? new Date(rows.rows[0].expires_at).toISOString() : null,
+      versions: versions.rows.map((row) => row.id),
+      hashes,
+    });
+  }
+  return transfers;
+}
+
 /** V1: PLAN_COMMITTED an alle Betroffenen ausser dem Committer, mit ihrem fehlenden Anteil. */
 async function notifyPlanCommitted(
   client: PoolClient,
   plan: { id: string; project: string; owner_agent_id: string | null; ops: FileBatchOp[]; expected_hashes: Record<string, string> },
   caller: string | null,
+  reservationTransfers: Map<string, CommitAuthorReservationTransfer> = new Map(),
 ): Promise<void> {
   const { waits, autoren } = await planBeteiligte(client, plan);
   const fehlt = new Map<string, string[]>(autoren.map((agent) => [agent, []] as const));
@@ -1744,23 +1801,42 @@ async function notifyPlanCommitted(
     fehlt.set(agent, uniqueStrings([...(fehlt.get(agent) ?? []), ...offen]));
   }
   const dateien = Object.keys(plan.expected_hashes ?? {});
-  const empfaenger = [...fehlt].filter(([agent]) => agent !== caller).map(([agent, offen]) => ({
-    agent,
-    payload: {
-      batch_id: plan.id,
-      committed_by: caller,
-      dateien,
-      ...(offen.length > 0
-        ? {
-            offene_dateien: offen,
-            hinweis: `Dein Beitrag zu ${offen.join(', ')} ist NICHT in diesem commit. coedit_add mit plan_id ${plan.id} legt ihn in einen Folgeplan auf den aktuellen Stand (Zeilen werden umgerechnet) — oder neu planen.`,
-          }
-        : { hinweis: `Plan ${plan.id} ist geschrieben; restore_batch mit batch_id ${plan.id} rollt ihn zurueck.` }),
-    },
-  }));
+  const empfaenger = [...fehlt].filter(([agent]) => agent !== caller).map(([agent, offen]) => {
+    const transfer = reservationTransfers.get(agent);
+    const hinweis = transfer
+      ? 'Deine Aenderungen aus Plan ' + plan.id + ' wurden von ' + (caller ?? 'unbekannt')
+        + ' committet (Batch ' + plan.id + '; Versionen ' + (transfer.versions.join(', ') || 'keine Version-ID') + '). '
+        + 'Sie sind bereits enthalten. '
+        + (transfer.filePaths.length > 0
+          ? 'Deine Reservierungen gelten auf dem neuen Stand (' + transfer.filePaths.join(', ') + '; Hashes '
+            + JSON.stringify(transfer.hashes) + ') bis ' + (transfer.expiresAt ?? 'zum Ablauf') + '. '
+          : 'Es gab keine aktive Autoren-Reservierung zum Uebernehmen. ')
+        + 'Weitere Aenderungen bitte in einem neuen Plan. Ohne weitere Aenderungen: reservation_release. '
+        + 'Alte anchor_text/expected_hashes sind ungueltig; code_intel file bzw. files read auf dem neuen Stand, danach neu planen.'
+      : offen.length > 0
+        ? 'Dein Beitrag zu ' + offen.join(', ') + ' ist NICHT in diesem commit. coedit_add mit plan_id ' + plan.id
+          + ' legt ihn in einen Folgeplan auf den aktuellen Stand (Zeilen werden umgerechnet) — oder neu planen.'
+        : 'Plan ' + plan.id + ' ist geschrieben; restore_batch mit batch_id ' + plan.id + ' rollt ihn zurueck.';
+    return {
+      agent,
+      payload: {
+        batch_id: plan.id,
+        committed_by: caller,
+        dateien,
+        ...(transfer ? {
+          version_ids: transfer.versions,
+          reservierungen: transfer.filePaths.map((file_path) => ({
+            file_path, content_hash_at_reservation: transfer.hashes[file_path], expires_at: transfer.expiresAt,
+          })),
+        } : {}),
+        ...(offen.length > 0 ? { offene_dateien: offen } : {}),
+        hinweis,
+      },
+    };
+  });
   await emitPlanFolgeEvents(client, {
     project: plan.project, planId: plan.id, typ: 'PLAN_COMMITTED', actor: caller, empfaenger,
-    grund: `Plan ${plan.id} committed`, quittiereFuer: [...empfaenger.map((eintrag) => eintrag.agent), caller ?? ''],
+    grund: 'Plan ' + plan.id + ' committed', quittiereFuer: [...empfaenger.map((eintrag) => eintrag.agent), caller ?? ''],
   });
 }
 
@@ -2054,14 +2130,17 @@ async function commitCoeditBatch(args: {
       ...plan.ops.map((op) => op.agent_id),
       ...linkedWaits.rows.flatMap((wait) => [wait.primary_agent, wait.waiting_agent]),
     ].filter((agentId): agentId is string => Boolean(agentId)))];
+    const reservationTransfers = await rebaseCommitAuthorReservations(client, plan, commitCaller);
+    const retainedAuthors = [...reservationTransfers.keys()];
     let releasedReservations: Array<{ agent_id: string; file_path: string }> = [];
     if (planPaths.length > 0 && involvedAgents.length > 0) {
       releasedReservations = (await client.query<{ agent_id: string; file_path: string }>(
         `UPDATE file_reservations SET released_at = NOW(), plan_id = COALESCE(plan_id, $4::bigint)
           WHERE project = $1 AND file_path = ANY($2::text[])
-            AND agent_id = ANY($3::text[]) AND released_at IS NULL
+            AND agent_id = ANY($3::text[]) AND NOT (agent_id = ANY($5::text[]))
+            AND released_at IS NULL
           RETURNING agent_id, file_path`,
-        [plan.project, planPaths, involvedAgents, args.plan_id],
+        [plan.project, planPaths, involvedAgents, args.plan_id, retainedAuthors],
       )).rows;
     }
     const planlessReleased = (await client.query<{ agent_id: string; file_path: string }>(
@@ -2075,7 +2154,7 @@ async function commitCoeditBatch(args: {
     // aber NICHT den Traeger eines Agenten, der noch in einem anderen offenen Plan wartet
     // (Befund 875d6a8c: ein Traeger kann Waits auf mehrere Plaene haben).
     await closeOrphanCarriers(client, plan.project, `commit von Plan ${args.plan_id}`);
-    await notifyPlanCommitted(client, plan, commitCaller);
+    await notifyPlanCommitted(client, plan, commitCaller, reservationTransfers);
     await client.query('COMMIT'); notifyPlanChange();
     if (planlessReleased.length > 0) await replanUnblockedReservationWaits(plan.project);
 
@@ -4920,7 +4999,9 @@ async function commitLegacyBody(
       )),
     ],
   );
-  await notifyPlanCommitted(lockClient, plan, resolveAgentId(args.agent_id));
+  const commitCaller = resolveAgentId(args.agent_id);
+  const reservationTransfers = await rebaseCommitAuthorReservations(lockClient, plan, commitCaller);
+  await notifyPlanCommitted(lockClient, plan, commitCaller, reservationTransfers);
   await lockClient.query('COMMIT'); notifyPlanChange();
   const legacyParticipants = [...new Set([
     plan.owner_agent_id,
@@ -4936,9 +5017,10 @@ async function commitLegacyBody(
           SET released_at = COALESCE((SELECT committed_at FROM file_batch_plans WHERE id = $4::bigint), NOW()),
               plan_id = COALESCE(plan_id, $4::bigint)
         WHERE project = $1 AND file_path = ANY($2::text[])
-          AND agent_id = ANY($3::text[]) AND released_at IS NULL
+          AND agent_id = ANY($3::text[]) AND NOT (agent_id = ANY($5::text[]))
+          AND released_at IS NULL
         RETURNING agent_id, file_path`,
-      [plan.project, legacyPaths, legacyParticipants, args.plan_id],
+      [plan.project, legacyPaths, legacyParticipants, args.plan_id, [...reservationTransfers.keys()]],
     )).rows;
   }
   const ownPlanlessReleased = (await pool.query<{ agent_id: string; file_path: string }>(
