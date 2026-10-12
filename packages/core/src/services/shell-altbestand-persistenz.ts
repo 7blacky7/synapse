@@ -127,7 +127,7 @@ export const trockenlaufShellAltbestand=(project:string|undefined,werte:ShellAlt
 /** Separater Aufruf, nur nach freigegebenem Trockenlauf; Zeilenlock + Fingerprint + Marker atomar. */
 export const maskiereShellAltbestand=(project:string|undefined,werte:ShellAltWerte)=>lauf(project,werte,true);
 
-/** Expliziter Gesamtlauf nach Deploy: cursorweise lesen, sämtliche Gruppen bewerten/markieren.
+/** Expliziter Gesamtlauf nach Deploy: vollständige Keyset-Seiten bis Laufstart lesen, sämtliche Gruppen bewerten/markieren.
  * Kein Nachmaskieren. Erfolgreiche Gruppen sind sofort persistiert und bei Wiederholung wiederverwendbar.
  * Quell- und Marker-Zugriffe laufen absichtlich auf getrennten Verbindungen.
  */
@@ -138,13 +138,20 @@ export async function markiereShellAltbestandGesamt(
  const pool=getPool(),c=await pool.connect(),werte=new Map<string,readonly string[]>(),gruppen=new Set<string>();
  const aus={status:'fertig' as 'fertig'|'budget_pause',geprueft:{shell_jobs:0,tool_calls:0},gruppen:0,neue_gruppen:0,markierte_zeilen:0,geaendert:0,usd:0};
  try{
-  await c.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
+  const startAt=(await c.query('SELECT clock_timestamp() AS t')).rows[0].t;
   for(const table of ['shell_jobs','tool_calls'] as const){
-   const where=table==='tool_calls'?" WHERE tool_name='shell'"+(opt.project?' AND project=$1':''):opt.project?' WHERE project=$1':'';
-   await c.query('DECLARE shell_altgesamt NO SCROLL CURSOR FOR SELECT id::text AS id,project,'+felder[table].join(',')+','+
-    (table==='shell_jobs'?'COALESCE(completed_at,created_at)':'ts')+' AS gespeichert_am FROM '+table+where,opt.project?[opt.project]:[]);
+   let after:string|null=null;
    while(true){
-    const batch=(await c.query('FETCH FORWARD 300 FROM shell_altgesamt')).rows;if(!batch.length)break;
+    const params:unknown[]=[startAt],where=[(table==='shell_jobs'?'created_at':'ts')+' <= $1'];
+    if(table==='tool_calls')where.push("tool_name='shell'");
+    if(opt.project){params.push(opt.project);where.push('project=$'+params.length);}
+    if(after!==null){params.push(after);where.push('id>$'+params.length);}
+    await c.query('BEGIN READ ONLY');
+    const batch=(await c.query('SELECT id::text AS id,project,'+felder[table].join(',')+','+
+     (table==='shell_jobs'?'COALESCE(completed_at,created_at)':'ts')+' AS gespeichert_am FROM '+table+
+     ' WHERE '+where.join(' AND ')+' ORDER BY id LIMIT 300',params)).rows;
+    await c.query('ROLLBACK');
+    if(!batch.length)break;after=String(batch[batch.length-1].id);
     const byProject=new Map<string,ShellAltZeile[]>();
     for(const raw of batch){const key=raw.project??'';if(!byProject.has(key))byProject.set(key,[]);byProject.get(key)!.push(row(table,raw));aus.geprueft[table]++;}
     for(const [p,part]of byProject){
@@ -153,12 +160,12 @@ export async function markiereShellAltbestandGesamt(
      for(const g of gruppiereShellAltbestand(part,values))gruppen.add(g.id);
      const result=await markiereShellAltbestand(part,values,{project:p||null,agent_id:opt.agent_id},deps);
      aus.gruppen=gruppen.size;aus.neue_gruppen+=result.neue_gruppen;aus.markierte_zeilen+=result.markierte_zeilen;aus.geaendert+=result.geaendert;aus.usd+=result.usd;
-     if(result.status==='budget_pause'){aus.status='budget_pause';await deps.fortschritt?.({...aus});await c.query('ROLLBACK');return aus;}
+     if(result.status==='budget_pause'){aus.status='budget_pause';await deps.fortschritt?.({...aus});return aus;}
     }
     await deps.fortschritt?.({...aus});
    }
-   await c.query('CLOSE shell_altgesamt');
+   // Kein Cursor bleibt während Jev-Aufrufen offen.
   }
-  await c.query('ROLLBACK');return aus;
+  return aus;
  }catch(error){await c.query('ROLLBACK');throw error;}finally{c.release();}
 }

@@ -85,16 +85,17 @@ try{
   assert((await pool.query('SELECT status FROM shell_altbestand_bezuege WHERE project=$1 AND zeilen_id=$2',[project,rollbackId])).rows.every(b=>b.status==='markiert'));
  }finally{await pool.query('DROP TRIGGER IF EXISTS '+trigger+' ON shell_altbestand_bezuege');await pool.query('DROP SCHEMA '+schema+' CASCADE');}
  // Vollständiger Projektlauf ohne Limit, danach Cache/Wiederholung.
+ await pool.query("INSERT INTO shell_jobs(project,command,status,output) SELECT $1,'page-fixture','done',$2 FROM generate_series(1,301)",[project,'TOKEN='+secret]);
  const full=await mod.markiereShellAltbestandGesamt({project,agent_id:'sol-1-test'},{rufeJev:fake,ladeWerte:async()=>werte});
  assert.equal(full.status,'fertig');assert.equal(full.geprueft.shell_jobs,(await pool.query('SELECT count(*)::int AS n FROM shell_jobs WHERE project=$1',[project])).rows[0].n);
  const fullCalls=calls;
  const again=await mod.markiereShellAltbestandGesamt({project},{rufeJev:fake,ladeWerte:async()=>werte});assert.equal(again.neue_gruppen,0);assert.equal(calls,fullCalls);
+ const pagedApplied=await mod.maskiereShellAltbestand(project,werte);assert.equal(pagedApplied.aenderungen,302,'301 Seiten-Fixtures plus Rollback-Fixture vollständig geändert');
  // Zwei Schreiber: dieselbe Quellenzeile genau einmal ändern.
  const concurrentId=(await pool.query("INSERT INTO shell_jobs(project,command,status,output) VALUES($1,'concurrent-fixture','done',$2) RETURNING id",[project,'TOKEN='+secret])).rows[0].id;
  await mod.markiereShellAltbestand((await read()).filter(r=>r.id===concurrentId),werte,{project},{rufeJev:fake});
  const concurrent=await Promise.all([mod.maskiereShellAltbestand(project,werte),mod.maskiereShellAltbestand(project,werte)]);
- // Der bisher nur markierte Rollback-Job kann ebenfalls einmal bereinigt werden.
- assert.equal(concurrent.reduce((n,r)=>n+r.aenderungen,0),2);
+ assert.equal(concurrent.reduce((n,r)=>n+r.aenderungen,0),1);
  assert.equal((await read()).find(r=>r.id===concurrentId).daten.output,'TOKEN=[WERT]');
  const multi={tabelle:'shell_jobs',id:'multi-path',project,daten:{tail:[secret,secret]}};
  const multiGroups=pure.gruppiereShellAltbestand([multi],werte);assert.equal(multiGroups.length,1);
