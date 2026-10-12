@@ -10,7 +10,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
 
-const DAEMON_HOME = path.join(os.homedir(), '.synapse', 'file-watcher');
+const DAEMON_HOME = process.env.SYNAPSE_DAEMON_HOME || path.join(os.homedir(), '.synapse', 'file-watcher');
 const PORT_FILE = path.join(DAEMON_HOME, 'daemon.port');
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));

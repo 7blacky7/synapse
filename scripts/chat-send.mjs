@@ -2,8 +2,13 @@
 // chat-send.mjs — Sendet eine Nachricht in den Synapse-Chat
 // Args: <project> <sender> <content> <recipient> <db_url>
 
-import pg from '/home/blacky/dev/synapse/node_modules/.pnpm/pg@8.20.0/node_modules/pg/lib/index.js';
-const { Pool } = pg;
+import { createRequire } from 'module';
+import { fileURLToPath } from 'url';
+import { dirname, resolve } from 'path';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const require = createRequire(resolve(__dirname, '../packages/core/package.json'));
+const { Pool } = require('pg');
 
 const [,, project, sender, content, recipient, dbUrl] = process.argv;
 const pool = new Pool({ connectionString: dbUrl, max: 1 });

@@ -9,6 +9,23 @@ import path from 'node:path';
 import os from 'node:os';
 import http from 'node:http';
 
+// Schutz gegen versehentliches Ueberschreiben des laufenden lokalen Daemons.
+const echterPortPfad = path.join(os.homedir(), '.synapse', 'file-watcher', 'daemon.port');
+if (fs.existsSync(echterPortPfad)) {
+  const echterPort = Number(fs.readFileSync(echterPortPfad, 'utf8').trim());
+  if (Number.isInteger(echterPort) && echterPort > 0 && echterPort <= 65535) {
+    try {
+      const health = await fetch(`http://127.0.0.1:${echterPort}/health`, { signal: AbortSignal.timeout(500) });
+      if (health.ok) {
+        console.error('ABBRUCH: Ein laufender FileWatcher-Daemon wurde erkannt; shell_tool.test.mjs nicht gegen sein HOME ausfuehren.');
+        process.exit(2);
+      }
+    } catch { /* kein erreichbarer Daemon */ }
+  }
+}
+
+const TEST_DAEMON_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'synapse-shell-tool-daemon-'));
+process.env.SYNAPSE_DAEMON_HOME = TEST_DAEMON_HOME;
 const { shellTool } = await import('../dist/tools/consolidated/shell.js');
 const { registerProject } = await import('@synapse/core');
 
@@ -31,9 +48,8 @@ function startMockDaemon(port, responder) {
 }
 
 function writeDaemonPort(port) {
-  const dir = path.join(os.homedir(), '.synapse', 'file-watcher');
-  fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(path.join(dir, 'daemon.port'), String(port));
+  fs.mkdirSync(TEST_DAEMON_HOME, { recursive: true });
+  fs.writeFileSync(path.join(TEST_DAEMON_HOME, 'daemon.port'), String(port));
 }
 
 // registerProject aus @synapse/core schreibt in PostgreSQL (hostname-scoped).
@@ -151,5 +167,6 @@ await test('8-tail_lines-respected', async () => {
 // ---------- Cleanup ----------
 
 mockDaemon.close();
+fs.rmSync(TEST_DAEMON_HOME, { recursive: true, force: true });
 console.log(`\n${results.pass} bestanden, ${results.fail} fehlgeschlagen`);
 process.exit(results.fail > 0 ? 1 : 0);
