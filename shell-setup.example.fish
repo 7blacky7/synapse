@@ -2,12 +2,8 @@
 # SYNAPSE SHELL-SETUP (Fish)
 # ===========================================
 # Fuege diese Zeilen in ~/.config/fish/config.fish ein.
-# Wird von Synapse Hooks, Scripts und Context-Handoff benoetigt.
-
-# Synapse DB-URL fuer Hooks und Scripts
-# WICHTIG: Ohne diese Variable funktionieren Chat-Notifications, Event-Watcher
-# und Coordinator-Watch NICHT.
-set -gx SYNAPSE_DB_URL "postgresql://synapse:password@localhost:5432/synapse"
+# Der Hook bezieht API-URL und Token aus ~/.synapse/file-watcher/config.json
+# oder SYNAPSE_API_URL / SYNAPSE_API_TOKEN.
 
 # Claude Code mit automatischem Context-Handoff + volle Rechte
 # claude-session.sh liest Synapse-Kontext (Handoff-Thoughts, Chat) beim Start
