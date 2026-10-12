@@ -418,14 +418,14 @@ export async function postChannelMessage(
   project: string,
   channel: string,
   content: string,
-  sender?: string
+  _sender?: string
 ): Promise<any> {
   const response = await apiFetch(
-    `${API_BASE}/projects/${encodeURIComponent(project)}/channels/${encodeURIComponent(channel)}/post`,
+    `${API_BASE}/projects/${encodeURIComponent(project)}/channels/${encodeURIComponent(channel)}/user-post`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ content, sender }),
+      body: JSON.stringify({ content }),
     }
   );
   if (!response.ok) {

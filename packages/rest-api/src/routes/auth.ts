@@ -233,6 +233,14 @@ export async function authRoutes(fastify: FastifyInstance): Promise<void> {
     });
   });
 
+  // Eigener Tray-Zugang: niemals aus dem gemeinsam genutzten Daemon-Token ableiten.
+  fastify.post<{ Body: { code?: string } }>('/api/auth/tray-session', async (request, reply) => {
+    const code = typeof request.body?.code === 'string' ? request.body.code.trim() : '';
+    if (!code || !await verifyTotp(code)) return reply.code(401).send({ success: false, error: { message: 'Aktueller TOTP-Code erforderlich' } });
+    const issued = await issueSessionToken('ui:tray', SERVICE_TOKEN_TTL_MS);
+    return { success: true, token: issued.token, expiresAt: issued.expiresAt };
+  });
+
   /**
    * POST /api/auth/service-token  (TRAY-3)
    *

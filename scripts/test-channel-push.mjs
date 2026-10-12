@@ -102,15 +102,17 @@ await pruefe('hoechstens 10 Vorschauen, der Rest als "N weitere ab id X"', () =>
   assert.ok(!r.text.includes('id 103,'), 'die aeltesten fallen weg');
 });
 
-await pruefe('PRAXIS-FEEDBACK: koordinator/coordinator/agent-*/bekannte Agenten nie, Unbekannter ja', () => {
+await pruefe('PRAXIS-FEEDBACK ausschließlich mit gespeicherter Userherkunft', () => {
   for (const s of ['koordinator', 'coordinator', 'agent-7', 'rest-api']) {
     const r = push([m(40, s, `${s} -> ${ICH}: x`)]);
     assert.equal(r.hatMensch, false, s);
     assert.ok(!r.text.includes('PRAXIS-FEEDBACK'), s);
   }
-  const r = push([m(41, 'moritz', `${ICH} bitte lesen`)]);
+  const roh = m(41, 'moritz', `${ICH} bitte lesen`);
+  assert.equal(push([roh]).hatMensch, false, 'unbekannter Name reicht nicht');
+  const r = push([{...roh, metadata:{herkunft:{akteur:'user',kanal:'tray'}}}]);
   assert.equal(r.hatMensch, true);
-  assert.match(r.text, /\[PRAXIS-FEEDBACK\] \[#plan-verwaltung\] moritz/);
+  assert.match(r.text, /\[PRAXIS-FEEDBACK\] \[#plan-verwaltung\] User \(Tray\)/);
 });
 
 await pruefe('eigene Nachrichten wecken nicht und erscheinen nicht', () => {
@@ -119,7 +121,7 @@ await pruefe('eigene Nachrichten wecken nicht und erscheinen nicht', () => {
   assert.equal(r.text, '');
 });
 
-await pruefe('ohne istBekannterAgent: Absender-Heuristik bleibt sicher (koordinator nie Mensch)', () => {
+await pruefe('ohne istBekannterAgent: Koordinator wird nicht als User gekennzeichnet', () => {
   const r = mod.baueChannelPush([m(60, 'koordinator', `koordinator -> ${ICH}: x`)], { agentName: ICH });
   assert.equal(r.hatMensch, false);
   assert.equal(r.wecken, true);

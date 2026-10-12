@@ -5,6 +5,8 @@
  * @packageDocumentation
  */
 
+export { mitUserHerkunft, aktuelleUserHerkunft, userHerkunftAusMetadata } from './services/user-herkunft.js';
+
 // P6-T27: optionale Ghost-Schatten, Standardabfragen unveraendert.
 export { mitCodeIntelSchatten, schattenCacheStatistik } from './services/code-intel-schatten.js';
 export type { RegelVerzeichnis } from './services/agent-rollen.js';

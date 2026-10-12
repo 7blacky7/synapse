@@ -19,14 +19,16 @@
  *   2. sie keinen Pfeil hat und vom Koordinator kommt (allgemeine Ansage an alle); oder
  *   3. sie keinen Pfeil hat und den Agenten-Namen nennt (Wortgrenze, auch "@name").
  *
- * MENSCH (PRAXIS-FEEDBACK) ist nur ein Absender, der weder koordinator/coordinator noch
- * agent-* noch ein bekannter Agent (istBekannterAgent) noch der Agent selbst ist.
+ * MENSCH (PRAXIS-FEEDBACK) folgt ausschließlich der gespeicherten UI-Herkunft.
  */
+import { userHerkunftAusMetadata } from '@synapse/core'
+
 export interface ChannelPushNachricht {
   id: number
   channelName: string
   sender: string
   content: string
+  metadata?: Record<string, unknown>
 }
 
 export interface ChannelPushOptionen {
@@ -73,12 +75,8 @@ export function istAdressiert(m: ChannelPushNachricht, agentName: string): boole
   return nenntName(m.content, agentName)
 }
 
-function istMensch(sender: string, o: ChannelPushOptionen): boolean {
-  if (KOORDINATOR.test(sender)) return false
-  if (sender.startsWith('agent-')) return false
-  if (sender === o.agentName) return false
-  if (o.istBekannterAgent?.(sender)) return false
-  return true
+function istMensch(m: ChannelPushNachricht): boolean {
+  return userHerkunftAusMetadata(m.metadata) !== undefined
 }
 
 function abrufHinweis(m: ChannelPushNachricht): string {
@@ -110,17 +108,19 @@ export function baueChannelPush(
   fremde.forEach((m, i) => {
     const adressiert = adressiertFlags[i]
     if (!adressiert && !zuZeigendeFremde.has(i)) return
-    const mensch = istMensch(m.sender, o)
+    const mensch = istMensch(m)
     if (mensch) hatMensch = true
+    const herkunft = userHerkunftAusMetadata(m.metadata)
     const tag = mensch ? '[PRAXIS-FEEDBACK] ' : ''
+    const absender = herkunft ? `User (${herkunft.kanal === 'tray' ? 'Tray' : 'Web-UI'}) [id ${m.id}]` : m.sender
     if (adressiert) {
       const gekuerzt = m.content.length > VOLLTEXT_DECKEL
       const inhalt = gekuerzt ? `${m.content.slice(0, VOLLTEXT_DECKEL)}… ${abrufHinweis(m)}` : m.content
-      zeilen.push(`${tag}[#${m.channelName}] ${m.sender}: ${inhalt}`)
+      zeilen.push(`${tag}[#${m.channelName}] ${absender}: ${inhalt}`)
     } else {
       const flach = m.content.replace(/\s+/g, ' ').trim()
       const vorschau = flach.length > VORSCHAU_ZEICHEN ? `${flach.slice(0, VORSCHAU_ZEICHEN)}… ${abrufHinweis(m)}` : flach
-      zeilen.push(`${tag}[#${m.channelName}] ${m.sender} (id ${m.id}, ${m.content.length} Z.): ${vorschau}`)
+      zeilen.push(`${tag}[#${m.channelName}] ${absender} (id ${m.id}, ${m.content.length} Z.): ${vorschau}`)
     }
   })
 

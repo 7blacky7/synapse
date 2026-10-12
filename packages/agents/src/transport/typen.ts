@@ -44,6 +44,7 @@ export interface ChannelNachricht {
   channelName: string
   sender: string
   content: string
+  metadata?: Record<string, unknown>
 }
 
 export interface InboxNachricht {

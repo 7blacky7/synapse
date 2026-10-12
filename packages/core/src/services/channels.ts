@@ -1,4 +1,5 @@
 import { getPool } from '../db/client.js'
+import { aktuelleUserHerkunft } from './user-herkunft.js'
 import type { ChannelMessage } from '../types/index.js'
 import { bereiteChannelSkillVorschlaegeVor, holeChannelSkillsNachBeitritt } from './skill-hook.js'
 
@@ -103,6 +104,11 @@ export async function postChannelMessage(
   content: string,
   metadata?: Record<string, unknown>,
 ): Promise<{ id: number; createdAt: Date } | null> {
+  // Reserviertes Etikett nur aus serverinternem Kontext, nie aus Caller-Metadata.
+  const { herkunft: _unvertraut, ...rest } = metadata ?? {}
+  const herkunft = aktuelleUserHerkunft()
+  metadata = herkunft ? { ...rest, herkunft } : Object.keys(rest).length ? rest : undefined
+  if (herkunft) sender = 'user'
   const pool = getPool()
   const { rows } = await pool.query<{ id: number; created_at: Date }>(
     `INSERT INTO specialist_channel_messages (channel_id, sender, content, metadata)

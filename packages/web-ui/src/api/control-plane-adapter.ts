@@ -30,6 +30,7 @@ interface WatcherChannel {
 }
 
 interface WatcherChannelMessage {
+  metadata?: unknown;
   id?: unknown;
   sender?: unknown;
   content?: unknown;
@@ -42,6 +43,12 @@ interface WatcherChannelsResponse {
 
 interface WatcherFeedResponse {
   messages?: WatcherChannelMessage[];
+}
+
+function channelAbsender(sender: unknown, metadata: unknown): string {
+  const h = (metadata as { herkunft?: { akteur?: string; kanal?: string } } | undefined)?.herkunft;
+  if (h?.akteur === 'user' && (h.kanal === 'tray' || h.kanal === 'web-ui-chat')) return h.kanal === 'tray' ? 'User (Tray)' : 'User (Web-UI)';
+  return typeof sender === 'string' && sender ? sender : 'unbekannt';
 }
 
 const RELATION_SUFFIX = /_(code|memories|thoughts|plans|proposals|docs|media)$/i;
@@ -186,7 +193,7 @@ async function loadWatcherMessages(
   const data = await watcherRequest<WatcherFeedResponse>(path);
   return (data.messages || []).map((row, index) => ({
     id: typeof row.id === 'number' ? row.id : index + 1,
-    sender: typeof row.sender === 'string' && row.sender ? row.sender : 'unbekannt',
+    sender: channelAbsender(row.sender, row.metadata),
     content: typeof row.content === 'string' ? row.content : '',
     createdAt: typeof row.createdAt === 'string' ? row.createdAt : '',
     source: 'api' as const,
@@ -203,7 +210,7 @@ export async function loadChannelMessageViewModels(
     const rows = await getChannelFeed(project, channel, 100);
     return rows.map((row) => ({
       id: row.id,
-      sender: row.sender || 'unbekannt',
+      sender: channelAbsender(row.sender, row.metadata),
       content: row.content,
       createdAt: row.createdAt,
       source: 'api',
@@ -217,21 +224,7 @@ export async function sendChannelMessage(
   content: string,
   sender = 'synapse-web-ui',
 ): Promise<void> {
-  const path = '/projects/' + encodeURIComponent(project)
-    + '/channels/' + encodeURIComponent(channel) + '/post';
-  try {
-    await watcherRequest(path, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ content, sender }),
-    });
-  } catch (watcherError) {
-    try {
-      await postChannelMessage(project, channel, content, sender);
-    } catch {
-      throw watcherError;
-    }
-  }
+  await postChannelMessage(project, channel, content, sender);
 }
 
 interface ToolCallResponseRow {

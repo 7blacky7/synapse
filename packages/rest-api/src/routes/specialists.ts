@@ -16,9 +16,12 @@ import {
   listChannels,
   getChannelMessages,
   postChannelMessage,
+  mitUserHerkunft,
   queryToolCalls,
   logToolCall,
 } from '@synapse/core';
+
+import { validateToken } from '../services/auth.js';
 
 export async function specialistRoutes(fastify: FastifyInstance): Promise<void> {
   /**
@@ -386,6 +389,23 @@ export async function specialistRoutes(fastify: FastifyInstance): Promise<void> 
       });
     }
   });
+
+  // P10-T41: Herkunft kommt ausschließlich aus dem geprüften UI-Zugang.
+  fastify.post<{ Params: { name: string; channel: string }; Body: { content?: string } }>(
+    '/api/projects/:name/channels/:channel/user-post', async (request, reply) => {
+      const bearer = /^Bearer\s+(.+)$/i.exec(request.headers.authorization ?? '')?.[1];
+      const principal = bearer ? await validateToken(bearer) : null;
+      const kanal = principal?.kind === 'session'
+        ? principal.scope === 'ui:tray' ? 'tray' : principal.scope === null ? 'web-ui-chat' : null
+        : null;
+      if (!kanal) return reply.code(403).send({ success: false, error: { message: 'User-Nachrichten benötigen den angemeldeten Tray- oder Web-UI-Zugang; sender/agent_id ersetzen ihn nicht.' } });
+      const content = typeof request.body?.content === 'string' ? request.body.content.trim() : '';
+      if (!content) return reply.code(400).send({ success: false, error: { message: 'content ist erforderlich' } });
+      const result = await mitUserHerkunft(kanal, () => postChannelMessage(request.params.name, request.params.channel, 'user', content));
+      if (!result) return reply.code(404).send({ success: false, error: { message: 'Kanal nicht gefunden' } });
+      return { success: true, messageId: result.id, createdAt: result.createdAt };
+    },
+  );
 
   /**
    * POST /api/projects/:name/channels/:channel/post

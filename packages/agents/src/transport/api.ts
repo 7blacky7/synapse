@@ -316,6 +316,7 @@ export class ApiTransport implements WrapperTransport {
         channelName: String(m.channelName ?? m.channel_name ?? ''),
         sender: String(m.sender ?? ''),
         content: String(m.content ?? ''),
+        metadata: m.metadata && typeof m.metadata === 'object' ? m.metadata as Record<string, unknown> : undefined,
       }
     })
   }

@@ -119,6 +119,7 @@ export async function trayRoutes(fastify: FastifyInstance): Promise<void> {
           ? await getPool().query(
               `SELECT m.id,
                       m.sender,
+                      m.metadata,
                       m.content,
                       to_char(m.created_at, 'DD.MM. HH24:MI:SS') AS created_at
                  FROM specialist_channel_messages m
@@ -131,6 +132,7 @@ export async function trayRoutes(fastify: FastifyInstance): Promise<void> {
           : await getPool().query(
               `SELECT m.id,
                       m.sender,
+                      m.metadata,
                       m.content,
                       to_char(m.created_at, 'DD.MM. HH24:MI:SS') AS created_at
                  FROM specialist_channel_messages m

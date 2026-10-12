@@ -193,6 +193,7 @@ export class PgTransport implements WrapperTransport {
         channelName: m.channelName,
         sender: m.sender,
         content: m.content,
+        metadata: m.metadata,
       }))
     })
   }
