@@ -50,11 +50,11 @@ try{
  if(real){
   // Koordinator24982: 10 feste Regeln prüfen, 40 echte Jev-Gruppen (je10 Kategorien).
   const sample=(regel,n,det)=>{
-   const eligible=all.filter(g=>g.regel===regel&&shellAltIstDeterministisch(g)===det).sort((a,b)=>randomKey(a).localeCompare(randomKey(b)));
+   const eligible=all.filter(g=>g.regel===regel&&(det===undefined||shellAltIstDeterministisch(g)===det)).sort((a,b)=>randomKey(a).localeCompare(randomKey(b)));
    if(eligible.length<n)throw new Error('Zu wenige Gruppen für Schicht '+regel);
    return eligible.slice(0,n);
   };
-  const fixed=[...sample('url_passwort',4,true),...sample('sshpass_passwort',3,true),...sample('bearer',3,true)];
+  const fixed=[...sample('url_passwort',4,true),...sample('sshpass_passwort',3,true),...sample('bearer',3,undefined)];
   const jev=[...sample('json_geheimname',10,false),...sample('kv_geheimname',10,false),...sample('env_literal',10,false),...sample('mcp_json_feld',10,false)];
   if(!process.env.JEV_OPENROUTER_API_KEY){
    const env=fs.readFileSync(path.join(os.homedir(),'dev/JEV-Test/.env'),'utf8');
@@ -67,7 +67,7 @@ try{
   for(const g of selected){const b=decisions.get(g.id),key=g.regel+' × '+(b?.bewertung??'nicht_bewertet');verteilung[key]=(verteilung[key]??0)+1;}
   const describe=g=>({gruppe:g.id,regel:g.regel,name:g.name,feld:g.feld,zeile:g.zeile,fenster:g.fenster,struktur:g.struktur,bewertung:decisions.get(g.id)?.bewertung,confidence:decisions.get(g.id)?.confidence,grund:decisions.get(g.id)?.grund});
   const examples=[...jev.filter(g=>g.regel==='json_geheimname').slice(0,3),...jev.filter(g=>g.regel==='kv_geheimname').slice(0,3),...jev.filter(g=>g.regel==='env_literal').slice(0,2),...jev.filter(g=>g.regel==='mcp_json_feld').slice(0,2)];
-  console.log(JSON.stringify({status:result.status,auswahl:selected.length,deterministisch:fixed.length,jev_aufrufe:jev.length,usd:result.usd,verteilung,jev_offen:result.bewertungen.filter(b=>b.bewertung==='offen').length,deterministische_pruefung:fixed.map(describe),beispiele:examples.map(describe)}));
+  console.log(JSON.stringify({status:result.status,auswahl:selected.length,a_gruppen:fixed.length,deterministisch:selected.filter(shellAltIstDeterministisch).length,jev_aufrufe:result.bewertungen.filter(b=>b.grund==='jev'||b.grund==='keine_passt'||b.grund==='unter_tor_oder_ungueltig'||b.grund==='zuordnung_mehrdeutig').length,usd:result.usd,verteilung,b_verteilung:Object.fromEntries(['json_geheimname','kv_geheimname','env_literal','mcp_json_feld'].map(regel=>[regel,Object.fromEntries(['geheimnis','falsch','beispiel','offen'].map(v=>[v,jev.filter(g=>g.regel===regel&&decisions.get(g.id)?.bewertung===v).length]))])),b_offen:jev.filter(g=>decisions.get(g.id)?.bewertung==='offen').length,auswahl_ids:selected.map(g=>g.id),jev_offen:result.bewertungen.filter(b=>b.bewertung==='offen').length,deterministische_pruefung:fixed.map(describe),beispiele:examples.map(describe)}));
   if(result.status!=='fertig')throw new Error('Probe wegen Jev-Budget pausiert');
   if(result.bewertungen.some(b=>b.grund.startsWith('jev_')))throw new Error('Jev-Aufruf fehlgeschlagen; Bericht prüfen');
  }

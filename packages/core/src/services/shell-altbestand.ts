@@ -1,7 +1,7 @@
 /** P10-T42 Phase 1+2: reine Kandidaten/Gruppen, Jev-Bewertung; keine DB-Schreibzugriffe. */
 import {createHash} from 'node:crypto';
 import {maskiereShellDaten,maskiereShellText} from './shell-maske.js';
-import {sammleShellMaskenTreffer,type ShellMaskenTreffer,type ShellMaskenRegel} from './shell-masken-katalog.js';
+import {sammleShellMaskenTreffer,holeShellLiteralMatcher,type ShellMaskenTreffer,type ShellMaskenRegel} from './shell-masken-katalog.js';
 import {istShellGeheimnisName} from './mcp-json-maske.js';
 import {rufeJev,type JevAnfrage,type JevErgebnis} from './jev-client.js';
 import {jevPreisJeMio} from './jev-kosten.js';
@@ -24,6 +24,9 @@ const ziele=new WeakMap<ShellAltGruppe,ShellAltZiel[]>();
 const PLATZ='[WERT]';
 const hash=(s:string)=>createHash('sha256').update(s).digest('hex');
 const geprueft=new WeakMap<ShellAltGruppe,string>();
+// Private Prüfwerte verlassen weder Gruppenobjekt noch Anfrage; gemeinsamer Literal-Katalog.
+const anfrageWerte=new WeakMap<ShellAltGruppe,readonly string[]>();
+const zielLiteral=new WeakMap<ShellAltGruppe,string>();
 const signatur=(g:ShellAltGruppe)=>hash(JSON.stringify(g));
 const feldOhneIndex=(s:string)=>s.replace(/\[\d+\]/g,'[]');
 
@@ -70,7 +73,7 @@ export function gruppiereShellAltbestand(zeilen:readonly ShellAltZeile[],werte:r
    if(!g){
     g={id:hash(key),literal_hash,feld:feldSafe,schluessel:nameSafe,name:nameSafe,regel:t.regel,zeile,fenster,
      kontext:fenster,struktur,fundart,wertlaenge:roh.length,konfiguration:t.konfiguration,literal_normales_wort:t.literal_normales_wort,bezuege:[]};
-    gruppen.set(key,g);ziele.set(g,[]);
+    gruppen.set(key,g);ziele.set(g,[]);anfrageWerte.set(g,werte);zielLiteral.set(g,roh);
    }
    if(fundart!=='offene_zuordnung')ziele.get(g)!.push(ziel);
    if(!g.bezuege.some(b=>b.tabelle===row.tabelle&&b.id===row.id&&b.pfad===pfadSafe))g.bezuege.push({tabelle:row.tabelle,id:row.id,project:row.project,pfad:pfadSafe});
@@ -112,21 +115,46 @@ export function gruppiereShellAltbestand(zeilen:readonly ShellAltZeile[],werte:r
  }
  const aus=[...gruppen.values()];for(const g of aus)geprueft.set(g,signatur(g));return aus;
 }
+function bearerAuthKontext(g:ShellAltGruppe):boolean{
+ const text=g.fenster+'\n'+g.struktur;
+ // Historischer Quell-/Testcode gehört zu Jev, auch wenn ein Header darin vorkommt.
+ if(/\b(?:assert\w*|expect|fixture|mock\w*|describe)\b|\/(?:tests?|fixtures?)\/|\b(?:const|let|var|val|return|function|class|import|package)\b/i.test(text))return false;
+ return /\bAuthorization\s*[:=]|["']Authorization["']\s*:/i.test(text)&&/\b(?:curl|http|headers|mcpServers|config)\b|\bAuthorization\s*[:=]|["']Authorization["']\s*:/i.test(text);
+}
 export function shellAltIstDeterministisch(g:ShellAltGruppe):boolean{
- return g.fundart!=='offene_zuordnung'&&(['url_passwort','bearer','sshpass_passwort'].includes(g.regel)||(g.regel==='kv_geheimname'&&g.konfiguration));
+ return g.fundart!=='offene_zuordnung'&&(['url_passwort','sshpass_passwort'].includes(g.regel)||(g.regel==='bearer'&&bearerAuthKontext(g))||(g.regel==='kv_geheimname'&&g.konfiguration));
+}
+function enthaeltKlartextLiteral(g:ShellAltGruppe,state:unknown):boolean{
+ const matcher=holeShellLiteralMatcher(anfrageWerte.get(g)??[]),roh=zielLiteral.get(g)??'';
+ const walk=(v:unknown):boolean=>{
+  if(typeof v==='string'){
+   if(roh.length>=8&&roh!=='[WERT]'&&v.includes(roh))return true;
+   if(matcher instanceof RegExp)return [...v.matchAll(new RegExp(matcher.source,matcher.flags))].some(m=>m[0]!=='[WERT]');
+   return !!matcher?.some(w=>v.includes(w));
+  }
+  if(Array.isArray(v))return v.some(walk);
+  return !!v&&typeof v==='object'&&Object.values(v).some(walk);
+ };
+ return walk(state);
 }
 /** Trefferkontext-v2: alte Marker werden unter ihrer bisherigen Version erhalten. */
 export const SHELL_ALT_TORE={geheimnis:0.6,beispiel:0.7,falsch:0.9} as const;
 
-function anfrage(g:ShellAltGruppe,opt:{project:string|null;agent_id?:string}):JevAnfrage{
+function anfrage(g:ShellAltGruppe,opt:{project:string|null;agent_id?:string}):JevAnfrage|null{
  if(geprueft.get(g)!==signatur(g))throw new Error('Nur unveränderte geprüfte Fundgruppen auswerten');
+ const teile=g.fenster.split('⟦TREFFER⟧');
+ if(teile.length!==2)return null;
+ // Marker vor dem Sicherheitsnetz herausnehmen; beide Seiten separat schützen, dann wieder einsetzen.
+ const fenster=teile.map(t=>maskiereShellText(t,anfrageWerte.get(g)??[]).text).join('⟦TREFFER⟧');
  const state=maskiereShellDaten({
   task:'Classify only the selected match in historical shell output. The matched value is not revealed.',
-  regel:g.regel,name:g.name,zeile:g.zeile,feld:g.feld,wertlaenge:g.wertlaenge,fenster:g.fenster,struktur:g.struktur,
+  regel:g.regel,name:g.name,zeile:g.zeile,feld:g.feld,wertlaenge:g.wertlaenge,struktur:g.struktur,
   literal_normales_wort:g.literal_normales_wort,
   hinweis:'The selected match is ⟦TREFFER⟧. Other redactions are [WERT]. Classify the selected match, not every redaction. No cleanup is authorized.'
  },[],true).daten;
- return {funktion:'entscheidung',project:opt.project,agent_id:opt.agent_id,state,questions:{bewertung:{
+ const payload={...state,fenster};
+ if((fenster.match(/⟦TREFFER⟧/g)??[]).length!==1||enthaeltKlartextLiteral(g,payload))return null;
+ return {funktion:'entscheidung',project:opt.project,agent_id:opt.agent_id,state:payload,questions:{bewertung:{
   type:'choice',instructions:'Judge the selected match from its category, field path, name, numbered ±3-line window and masked structure. Consider source code, UI/XML dumps, logs, CLI help, docs, config/env and auth headers. Pick exactly one option.',
   criteria:{
    geheimnis:'A credential for a real system being set or printed: a password, token or API key in env/config, auth header, connection string or URL. env_literal means a known configured value matched; plain-word occurrences in UI/prose are not evidence of a credential. json_geheimname/mcp_json_feld means the field name triggered masking, not proof the value is a credential.',
@@ -138,7 +166,7 @@ function anfrage(g:ShellAltGruppe,opt:{project:string|null;agent_id?:string}):Je
 }
 /** Schätzung ist nur informativ; tatsächliche usage.cost wird vom gemeinsamen Jev-Client gebucht. */
 export function schaetzeShellAltbestandKosten(gruppen:readonly ShellAltGruppe[]){
-  const input_tokens_geschaetzt=gruppen.reduce((n,g)=>n+(shellAltIstDeterministisch(g)?0:Math.ceil(JSON.stringify(anfrage(g,{project:null})).length/4)),0);
+  const input_tokens_geschaetzt=gruppen.reduce((n,g)=>{const a=shellAltIstDeterministisch(g)?null:anfrage(g,{project:null});return n+(a?Math.ceil(JSON.stringify(a).length/4):0);},0);
   const preis_je_mio=jevPreisJeMio();
   return {gruppen:gruppen.length,input_tokens_geschaetzt,preis_je_mio,usd_geschaetzt:input_tokens_geschaetzt*preis_je_mio/1e6,kostentor:false as const};
 }
@@ -150,7 +178,9 @@ export async function bewerteShellAltbestand(gruppen:readonly ShellAltGruppe[],
   for(const g of gruppen){
     if(geprueft.get(g)!==signatur(g))throw new Error('Nur unveränderte geprüfte Fundgruppen auswerten');
     if(shellAltIstDeterministisch(g)){bewertungen.push({gruppe:g.id,bewertung:'geheimnis',confidence:1,grund:'deterministisch'});continue;}
-    const jr=await(deps.rufeJev??rufeJev)(anfrage(g,opt));
+    const a=anfrage(g,opt);
+    if(!a){bewertungen.push({gruppe:g.id,bewertung:'offen',confidence:null,grund:'fenster_unklar'});continue;}
+    const jr=await(deps.rufeJev??rufeJev)(a);
     if(!jr.ok){
       if(jr.grund==='budget'){
         const hinweis='Globale Jev-Budget-Bremse: Koordinator informieren; Fundgruppen bleiben offen, kein stiller Teil-Erfolg.';
