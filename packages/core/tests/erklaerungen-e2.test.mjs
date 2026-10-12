@@ -105,6 +105,7 @@ const S = await lade(dist, 'services', 'jev-schalter.js');
 const CC = await lade(dist, 'services', 'code-check-tool.js');
 const JA = await lade(dist, 'services', 'jev-admin.js');
 const E = await lade(dist, 'services', 'erklaerungen.js');
+const FB = await lade(dist, 'services', 'file-batch.js');
 
 FP._syntaxPrueferLeeren();
 SP.registriereStandardSyntaxPruefer({ threads: 0 });
@@ -246,6 +247,61 @@ try {
     const r2 = await E2.holeErklaerungsEreignisseNach({ fetch: jev });
     pruefe(r2.geholt === 0 && jev.aufrufe.length === 2, 'W2 zweiter Lauf: nichts doppelt verarbeitet', r2);
     await pool.query('DELETE FROM erklaerung_ereignisse WHERE project = $1', [PRJ]);
+  });
+
+  // ── P6-T32 File-Plan-Erklaerungsfamilien ──
+  await versuche('P6-T32 File-Plan-Familien', async () => {
+    const familien = ['anchor_mismatch', 'nicht_anwendbar', 'op_parameter'];
+    const kandidaten = familien.map((n) => seed.eintraege.find((e) => e.familie === `fileplan:${n}`));
+    pruefe(kandidaten.every(Boolean), 'P6-T32 Seed: drei getrennte File-Plan-Familien', kandidaten.map((e) => e?.kennung));
+    const fragen = E.baueJevFrage([{ id: 'test', de: { lage: 'Deutsch', wieso: 'Deutsch', abhilfe: 'Deutsch' }, en: { lage: 'English', wieso: 'English', abhilfe: 'English' } }], 'en');
+    pruefe(E.JEV_KEINE_TEXTE?.de && E.JEV_KEINE_TEXTE?.en === E.JEV_KEINE
+      && fragen.questions.erklaerung.criteria.keine === E.JEV_KEINE,
+      'P6-T32 „keine passt“ ist zweisprachig; englischer Standardtext bleibt bytegleich');
+
+    const szenarien = [
+      { art: 'anchor_mismatch', agent: 'p6t32-anchor', op: { file_path: TS.datei, action: 'insert_after', after_line: 1, anchor_text: 'not the current line', content: 'export const neu = 1;' }, wahl: 'a', confidence: 0.95 },
+      { art: 'nicht_anwendbar', agent: 'p6t32-not-applicable', op: { file_path: TS.datei, action: 'search_replace', search: 'P6_T32_private_search_text', replace: 'never' }, wahl: 'keine', confidence: 0.95 },
+      { art: 'op_parameter', agent: 'p6t32-parameter', op: { file_path: TS.datei, action: 'insert_after', after_line: 1 }, wahl: 'a', confidence: 0.2 },
+    ];
+    for (const s of szenarien) {
+      const eintrag = seed.eintraege.find((e) => e.familie === `fileplan:${s.art}`);
+      const jev = fakeJev(() => ({ choice: s.wahl, confidence: s.confidence }));
+      E._setzeErklaerungDeps({ fetch: jev });
+      let err;
+      try {
+        await FB.planBatch({ project: PRJ, agent_id: s.agent, reason: 'P6-T32 Test', ops: [s.op] });
+      } catch (e) { err = e; }
+      await E._erklaerungenLeerlauf();
+      const row = (await pool.query('SELECT * FROM erklaerung_faelle WHERE project = $1 AND agent_id = $2 AND familie = $3', [PRJ, s.agent, `fileplan:${s.art}`])).rows[0];
+      const body = jev.aufrufe[0]?.body;
+      const criteria = body?.questions?.erklaerung?.criteria ?? {};
+      pruefe(Boolean(err?.plan_id), `P6-T32 ${s.art}: fehlgeschlagener Plan bleibt als nicht committbarer Entwurf erhalten`, err?.plan_id);
+      pruefe(row?.bezug?.weg === 'plan' && row?.familie === `fileplan:${s.art}` && row?.agent_id === s.agent,
+        `P6-T32 ${s.art}: Fehler wird unter genau der eigenen Familie und Plan-Op gespeichert`, row && { familie: row.familie, weg: row.bezug?.weg, agent_id: row.agent_id });
+      pruefe(jev.aufrufe.length === 1 && Object.keys(criteria).filter((k) => k !== 'keine').length === 1
+        && criteria.a === eintrag?.en?.lage + ' Correct if: ' + eintrag?.en?.wieso
+        && criteria.keine === E.JEV_KEINE && !JSON.stringify(body).includes(TS.datei)
+        && !JSON.stringify(body).includes('P6_T32_private_search_text'),
+        `P6-T32 ${s.art}: Jev sieht nur englische Familienkandidaten und keine Pfad-/Suchdaten`, body);
+      if (s.art === 'anchor_mismatch') {
+        const hints = await AU.holeFehlermusterHinweise(s.agent);
+        const hint = hints?.treffer?.find((x) => x.erklaerung?.id === row?.erklaerung_id);
+        pruefe(row?.jev?.sprache === 'en' && row?.jev?.wahl === 'a' && row?.erklaerung_id
+          && hint?.was === eintrag.de.lage && hint?.erklaerung?.sprachen?.de?.lage === eintrag.de.lage
+          && Object.keys(hint?.erklaerung?.sprachen ?? {}).join() === 'de',
+          'P6-T32: passende Erklaerung wird nach Tor auf Deutsch ausgeliefert', hint);
+      } else {
+        const grund = s.wahl === 'keine' ? 'keine' : 'unter_tor';
+        const hints = await AU.holeFehlermusterHinweise(s.agent);
+        const hint = hints?.treffer?.find((x) => x.pattern_id?.startsWith('erklaerung-fall:'));
+        pruefe(row?.jev?.sprache === 'en' && row?.jev?.grund === grund && !row?.erklaerung_id
+          && typeof hint?.wie === 'string' && /Nach deiner Korrektur/.test(hint.wie),
+          `P6-T32 ${s.art}: ${grund} bleibt offener Fall mit deutscher Anleitung`, { jev: row?.jev, hint });
+      }
+      if (row?.id) await pool.query('DELETE FROM erklaerung_faelle WHERE id = $1::bigint', [row.id]);
+    }
+    E._setzeErklaerungDeps(null);
   });
 
   // ── W3 Schalter aus, W4 Fehler ──

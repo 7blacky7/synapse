@@ -57,6 +57,7 @@ import {
 } from './plan-befunde.js';
 import { aenderungsBereiche, dateiDiff, diffMaxZeichen, diffMaxZeilen, diffText, zeilenZuordnung, type Bereich, type DateiDiff } from './file-diff.js';
 import { normalisiereOps } from './projekt-pfad.js';
+import { meldeFehlerfall } from './erklaerungen.js';
 import {
   findForeignActiveReservationPrimaries,
   getReservationTtlConfig,
@@ -2469,6 +2470,35 @@ export async function planBatch(args: {
         args.reason ?? null,
       ],
     );
+    for (const failed of failedOps) {
+      const familie = /anchor(?:_contains)? mismatch/i.test(failed.error)
+        ? 'anchor_mismatch'
+        : /(?:0 matches|\d+ matches|edits passen nicht|nicht gefunden)/i.test(failed.error)
+          ? 'nicht_anwendbar'
+          : /(?:erforderlich|fehlt|required)/i.test(failed.error)
+            ? 'op_parameter'
+            : null;
+      if (!familie) continue;
+      meldeFehlerfall({
+        project: args.project,
+        agent_id: failedOwner,
+        familie: `fileplan:${familie}`,
+        befund: {
+          quelle: 'muster',
+          pruefer: 'fileplan',
+          severity: 'error',
+          datei: failed.file_path,
+          zeilen: [1, 1],
+          code: familie,
+          was: 'A file plan operation could not be applied safely.',
+          wo: [],
+        },
+        basis: '',
+        ergebnis: '',
+        weg: 'plan',
+        op_index: failed.index,
+      });
+    }
     throw new PlanBatchOpsFailedError({
       plan_id: inserted.rows[0].id,
       failed_ops: failedOps,

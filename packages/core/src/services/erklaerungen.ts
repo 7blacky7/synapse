@@ -309,6 +309,10 @@ export const JEV_ERKLAERUNG_ANWEISUNG =
   + 'state.code_vorher shows the same place before the change and state.aenderung the change itself (- removed, + added). '
   + 'Choose the explanation that describes the CAUSE of this error. Choose "keine" unless one explanation clearly fits.';
 export const JEV_KEINE = 'None of the listed explanations describes the cause of this error.';
+export const JEV_KEINE_TEXTE = {
+  de: 'Keine der aufgeführten Erklärungen beschreibt die Ursache dieses Fehlers.',
+  en: JEV_KEINE,
+} as const;
 export const MAX_KANDIDATEN = 12;
 const MAX_VORGESCHLAGENE = 2;
 const ANTWORT_SCHLUESSEL = 'abcdefghijkl'.split('');
@@ -470,6 +474,8 @@ export interface Fehlerereignis {
   ergebnis: string;
   weg: 'einzelweg' | 'plan';
   op_index?: number | null;
+  /** Eigene Herkunftsfamilie fuer nicht-syntaktische File-Plan-Fehler. */
+  familie?: string;
 }
 
 function schlankerBefund(b: FehlerBefund): Record<string, unknown> {
@@ -596,7 +602,8 @@ export async function _erklaerungenLeerlauf(): Promise<void> {
 export function meldeFehlerfall(e: Fehlerereignis): void {
   try {
     const b = e.befund;
-    if (!b || b.quelle !== 'syntax' || b.severity !== 'error' || b.altlast || b.quittiert_grund || !e.project || istDeployProbe(e)) return;
+    const fileplanFamilie = e.familie?.startsWith('fileplan:') ?? false;
+    if (!b || (!fileplanFamilie && b.quelle !== 'syntax') || b.severity !== 'error' || b.altlast || b.quittiert_grund || !e.project || istDeployProbe(e)) return;
     warteschlange.push(e);
     if (warteschlange.length > MAX_WARTESCHLANGE) {
       warteschlange.shift();
@@ -674,8 +681,8 @@ async function bereiteVor(e: Fehlerereignis): Promise<Vorbereitung> {
   if (istDeployProbe(e)) return { fertig: { ergebnis: 'probe_uebersprungen', grund: 'coedit-test' } };
   const w = await jevWirksam(e.project, 'erklaerungstopf');
   if (!w.an && w.ebene !== 'budget') return { fertig: { ergebnis: 'aus', grund: w.text } };
-  const familie = familieVon(e.befund);
-  const schluessel = schluesselVon(e.befund);
+  const familie = e.familie ?? familieVon(e.befund);
+  const schluessel = `${e.befund.quelle}|${familie}|${e.befund.code ?? meldungsKlasse(e.befund.was)}`;
   const ergebnisHash = sha(e.ergebnis);
   const basisHash = sha(e.basis ?? '');
   const jetzt = Date.now();
@@ -725,17 +732,22 @@ async function bearbeiteKern(v: Vorbereitet, d: { fetch?: typeof fetch }): Promi
   } else if (!w.an) {
     jev = { aufgerufen: false, grund: 'budget', message: w.text };
   } else {
-    const r = await waehleErklaerung({ project: v.project, agent_id: v.agent_id, schatten: v.schatten, kandidaten, sprache: optionen.jev_sprache_wirksam }, d);
+    const fileplan = v.familie.startsWith('fileplan:');
+    const r = await waehleErklaerung({ project: v.project, agent_id: v.agent_id, schatten: v.schatten, kandidaten, sprache: fileplan ? 'en' : optionen.jev_sprache_wirksam }, d);
     jev = r.jev;
     gewaehlt = r.gewaehlt;
   }
   if (gewaehlt) {
     await getPool().query('UPDATE erklaerungen SET gewaehlt_n = gewaehlt_n + 1 WHERE id = $1::uuid', [gewaehlt.id]);
-    vormerkenErklaerung(v.agent_id, v.befund.datei, erklaerungsHinweis(gewaehlt, jev.confidence ?? null, v.befund, optionen.erklaerung_sprachen));
+    const sprachen = v.familie.startsWith('fileplan:') ? { de: true, en: false } : optionen.erklaerung_sprachen;
+    vormerkenErklaerung(v.agent_id, v.befund.datei, erklaerungsHinweis(gewaehlt, jev.confidence ?? null, v.befund, sprachen));
     if (gewaehlt.status === 'verifiziert') return { ergebnis: 'erklaert', erklaerung_id: gewaehlt.id, jev };
   }
   const fall = await speichereFall(v, { jev, erklaerungId: gewaehlt?.id ?? null });
-  if (!gewaehlt && fall.neu) vormerkenErklaerung(v.agent_id, v.befund.datei, fallHinweis(fall.id, v.befund, optionen.erklaerung_sprachen));
+  if (!gewaehlt && fall.neu) {
+    const sprachen = v.familie.startsWith('fileplan:') ? { de: true, en: false } : optionen.erklaerung_sprachen;
+    vormerkenErklaerung(v.agent_id, v.befund.datei, fallHinweis(fall.id, v.befund, sprachen));
+  }
   return { ergebnis: gewaehlt ? 'erklaert_vorgeschlagen' : 'fall', fall_id: fall.id, ...(gewaehlt ? { erklaerung_id: gewaehlt.id } : {}), jev };
 }
 

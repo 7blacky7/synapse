@@ -909,5 +909,57 @@
         "abhilfe": "Add the missing closing quote."
       }
     }
+,
+    {
+      "kennung": "fileplan-anchor-mismatch",
+      "familie": "fileplan:anchor_mismatch",
+      "schluessel": null,
+      "status": "vorgeschlagen",
+      "beleg": "P6-T32: generische File-Plan-Erklaerung fuer einen nicht passenden Dateianker.",
+      "de": {
+        "lage": "Der Dateianker passt nicht zum gelesenen Stand.",
+        "wieso": "Der Anker verhindert, dass eine Änderung an einer Stelle angewendet wird, deren Inhalt sich seit dem Lesen verändert hat.",
+        "abhilfe": "Lies den aktuellen Dateiinhalt erneut und plane die Änderung mit einem Anker, der genau zur Zielzeile passt."
+      },
+      "en": {
+        "lage": "The file anchor does not match the read state.",
+        "wieso": "The anchor prevents a change from being applied at a location whose content changed after it was read.",
+        "abhilfe": "Read the current file content again and plan the change with an anchor that matches the target line."
+      }
+    },
+    {
+      "kennung": "fileplan-nicht-anwendbar",
+      "familie": "fileplan:nicht_anwendbar",
+      "schluessel": null,
+      "status": "vorgeschlagen",
+      "beleg": "P6-T32: generische File-Plan-Erklaerung fuer nicht eindeutig anwendbare Suchänderungen.",
+      "de": {
+        "lage": "Die Suchänderung findet keine eindeutige Zielstelle.",
+        "wieso": "Der Suchtext kommt nicht vor oder passt an mehreren Stellen; dadurch wäre eine sichere Änderung nicht eindeutig.",
+        "abhilfe": "Lies den aktuellen Dateiinhalt erneut, wähle einen eindeutigen Suchtext und plane die Änderung erneut. Verwende replace_all nur, wenn alle Treffer geändert werden sollen."
+      },
+      "en": {
+        "lage": "The search edit has no unique target.",
+        "wieso": "The search text is absent or matches multiple locations, so a safe edit cannot be identified unambiguously.",
+        "abhilfe": "Read the current file content again, choose a unique search text, and plan the edit again. Use replace_all only when every match should change."
+      }
+    },
+    {
+      "kennung": "fileplan-op-parameter",
+      "familie": "fileplan:op_parameter",
+      "schluessel": null,
+      "status": "vorgeschlagen",
+      "beleg": "P6-T32: generische File-Plan-Erklaerung fuer fehlende Pflichtparameter.",
+      "de": {
+        "lage": "Für die Dateiänderung fehlt ein erforderlicher Parameter.",
+        "wieso": "Ohne alle Pflichtangaben kann der Plan die gewünschte Änderung nicht sicher anwenden.",
+        "abhilfe": "Prüfe die erforderlichen Angaben für die gewählte Aktion und plane die Änderung mit allen Pflichtparametern erneut."
+      },
+      "en": {
+        "lage": "A required parameter is missing for the file edit.",
+        "wieso": "The plan cannot safely apply the requested change without all required values.",
+        "abhilfe": "Check the required values for the chosen action and plan the edit again with every required parameter."
+      }
+    }
   ]
 }
