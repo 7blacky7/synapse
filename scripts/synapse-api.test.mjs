@@ -12,7 +12,7 @@ afterEach(async () => {
   await Promise.all(tempHomes.splice(0).map(home => rm(home, { recursive: true, force: true })));
 });
 
-async function setup() {
+async function setup(extra = {}) {
   const home = await mkdtemp(join(tmpdir(), 'synapse-api-test-'));
   tempHomes.push(home);
   const dir = join(home, '.synapse', 'file-watcher');
@@ -20,6 +20,7 @@ async function setup() {
   await writeFile(join(dir, 'config.json'), JSON.stringify({
     synapse_api_url: 'https://api.test/',
     synapse_api_token: 'config-token',
+    ...extra,
   }));
   return home;
 }
@@ -65,4 +66,33 @@ test('SYNAPSE_API_URL überschreibt die Config-URL, der Env-Token hat Vorrang un
     /HTTP 401.*unauthorized/,
   );
   assert.equal(authorization, 'Bearer override-token');
+});
+
+test('synapse_api_fallback_url wird nach dem öffentlichen Standard als gemeinsamer Rückfall genutzt', async () => {
+  const home = await setup({ synapse_api_fallback_url: 'https://fallback.test///' });
+  const { loadApiConfig } = await import(helperUrl);
+  const config = await loadApiConfig({ home, env: {} });
+  assert.deepEqual(config.bases, [
+    'https://api.test',
+    'https://synapse.moosynapse.org',
+    'https://fallback.test',
+  ]);
+});
+
+test('Env-URL und Env-Rückfall haben Vorrang vor Config-Feldern', async () => {
+  const home = await setup({ synapse_api_fallback_url: 'https://config-fallback.test' });
+  const { loadApiConfig } = await import(helperUrl);
+  const config = await loadApiConfig({
+    home,
+    env: {
+      SYNAPSE_API_URL: 'https://override.test/',
+      SYNAPSE_API_FALLBACK_URL: 'https://env-fallback.test/',
+    },
+  });
+  assert.deepEqual(config.bases, [
+    'https://override.test',
+    'https://api.test',
+    'https://synapse.moosynapse.org',
+    'https://env-fallback.test',
+  ]);
 });

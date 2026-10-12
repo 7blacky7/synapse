@@ -56,6 +56,8 @@ export interface ProjektConfig {
 export interface DaemonConfig {
   port: number;
   synapse_api_url: string;
+  /** Optionaler gemeinsamer API-Rueckfall; Quelle ist config.json. */
+  synapse_api_fallback_url?: string;
   projekte: ProjektConfig[];
   /** Optional: Root-Verzeichnis fuer Self-Service Project-Init via REST. */
   workspace_root?: string;

@@ -16,11 +16,11 @@ export async function loadApiConfig({ home = homedir(), env = process.env } = {}
 
   const rawToken = env.SYNAPSE_API_TOKEN || config.synapse_api_token;
   const token = typeof rawToken === 'string' ? rawToken.trim() : '';
-  const fallback = env.SYNAPSE_API_FALLBACK_URL || 'http://192.168.50.65:3456';
+  const fallback = env.SYNAPSE_API_FALLBACK_URL || config.synapse_api_fallback_url || 'http://192.168.50.65:3456'; // Nur Rückfall, Quelle ist config.json.
   const bases = [...new Set([
     env.SYNAPSE_API_URL,
     config.synapse_api_url,
-    'https://synapse.moosynapse.org',
+    'https://synapse.moosynapse.org', // Nur Rückfall, Quelle ist config.json.
     fallback,
   ].map(value => typeof value === 'string' ? value.trim().replace(/\/+$/, '') : '').filter(Boolean))];
   return { token, bases };

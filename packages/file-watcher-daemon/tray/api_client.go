@@ -67,8 +67,9 @@ var (
 
 // trayConfig ist der Ausschnitt der Daemon-Config, den der Tray braucht.
 type trayConfig struct {
-	SynapseApiUrl   string `json:"synapse_api_url"`
-	SynapseApiToken string `json:"synapse_api_token"`
+	SynapseApiUrl         string `json:"synapse_api_url"`
+	SynapseApiFallbackUrl string `json:"synapse_api_fallback_url"`
+	SynapseApiToken       string `json:"synapse_api_token"`
 }
 
 func readTrayConfig() trayConfig {
@@ -107,19 +108,24 @@ func apiBases() []string {
 		out = append(out, u)
 	}
 
+	add(os.Getenv("SYNAPSE_API_URL")) // explizite Env-URL hat Vorrang vor dem Cache
+
 	apiBaseMu.Lock()
 	last := apiLastGood
 	apiBaseMu.Unlock()
 	add(last) // zuletzt erfolgreiche Basis zuerst probieren
 
-	add(readTrayConfig().SynapseApiUrl)
+	cfg := readTrayConfig()
+	add(cfg.SynapseApiUrl)
 
-	add(apiDefaultTunnel)
+	add(apiDefaultTunnel) // Nur Rückfall, Quelle ist config.json.
 
-	if fb := os.Getenv("SYNAPSE_API_FALLBACK_URL"); fb != "" {
+	if fb := strings.TrimSpace(os.Getenv("SYNAPSE_API_FALLBACK_URL")); fb != "" {
 		add(fb)
+	} else if cfg.SynapseApiFallbackUrl != "" {
+		add(cfg.SynapseApiFallbackUrl)
 	} else {
-		add(apiFallbackLocalDefault)
+		add(apiFallbackLocalDefault) // Nur Rückfall, Quelle ist config.json.
 	}
 
 	return out
