@@ -26,6 +26,7 @@ import type { PoolClient } from 'pg';
 import { getPool } from '../db/client.js';
 import { eventsOffenBedingungSql } from './event-sichtbarkeit.js';
 import { darfKoordinatorOderUser } from './rollen-pruefung.js';
+import { sendMessage } from './chat.js';
 
 export type EventType =
   | 'WORK_STOP'
@@ -348,7 +349,7 @@ export async function getPendingEventHints(
   limit = 3,
 ): Promise<{
   hints: Array<{ event_id: number; event_type: string; summary: string }>;
-  urgent: Array<{ event_type: string; priority: EventPriority }>;
+  urgent: DringlicherEventHinweis[];
 }> {
   const boundedLimit = Math.max(1, Math.min(3, Math.trunc(limit)));
   const events = await getPendingEvents(project, agentId, boundedLimit);
@@ -360,9 +361,62 @@ export async function getPendingEventHints(
     })),
     urgent: events
       .filter(event => event.priority === 'critical' || event.priority === 'high')
-      .map(event => ({ event_type: event.eventType, priority: event.priority })),
+      .map(event => ({ event_id: event.id, event_type: event.eventType, priority: event.priority })),
   };
 }
+
+type DringlicherEventHinweis = { event_id: number; event_type: string; priority: EventPriority };
+type EventEskalationsStand = { anzahl: number; gemeldet: boolean };
+// Wie bisher pro Prozess. Projekt und Event-ID verhindern fremde ACK-Resets und Zählervermischung.
+const eventEskalationen = new Map<string, Map<number, EventEskalationsStand>>();
+
+/** Nach drei sichtbaren Warnungen einmal melden; normale Inbox-Felder bleiben unverändert. */
+export async function pruefeEventEskalation(
+  project: string,
+  agentId: string,
+  urgent: DringlicherEventHinweis[],
+): Promise<string | undefined> {
+  const key = JSON.stringify([project, agentId]);
+  if (urgent.length === 0) {
+    eventEskalationen.delete(key);
+    return undefined;
+  }
+  let staende = eventEskalationen.get(key);
+  if (!staende) {
+    staende = new Map();
+    eventEskalationen.set(key, staende);
+  }
+  const faellig: Array<{ event: DringlicherEventHinweis; stand: EventEskalationsStand }> = [];
+  for (const event of urgent) {
+    let stand = staende.get(event.event_id);
+    if (!stand) {
+      stand = { anzahl: 0, gemeldet: false };
+      staende.set(event.event_id, stand);
+    }
+    stand.anzahl = Math.min(3, stand.anzahl + 1);
+    if (stand.anzahl === 3 && !stand.gemeldet) {
+      // Vor dem await beanspruchen: parallele Antworten dürfen nicht mehrfach senden.
+      stand.gemeldet = true;
+      faellig.push({ event, stand });
+    }
+  }
+  if (faellig.length > 0) {
+    try {
+      const liste = faellig.map(({ event }) =>
+        `#${event.event_id} ${event.event_type}(${event.priority})`).join(', ');
+      await sendMessage(project, 'system',
+        `⚠️ ESKALATION: Agent "${agentId}" ignoriert Events seit 3 Tool-Calls: ${liste}`,
+        'koordinator');
+    } catch (error) {
+      for (const { stand } of faellig) stand.gemeldet = false;
+      console.error('[Synapse Events] Eskalations-DM fehlgeschlagen:', error);
+    }
+  }
+  // Bereits gemeldete IDs behalten, auch wenn neue critical-Events sie kurz aus den Top 3 verdrängen.
+  return '⚠️ Dringende Events (' + urgent.map(event => event.priority).join(', ')
+    + '): event(pending) lesen und erforderliche ACKs ausführen.';
+}
+
 
 /**
  * Schneller COUNT unquittierter Events fuer Hook-Usage

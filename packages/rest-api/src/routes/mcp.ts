@@ -85,6 +85,7 @@ import {
   acknowledgeEvent,
   getPendingEvents,
   getPendingEventHints,
+  pruefeEventEskalation,
   // Tech-Docs
   addTechDoc,
   searchTechDocs,
@@ -2068,8 +2069,9 @@ async function attachRestPendingEventHints(
 
   try {
     const pendingEvents = await getPendingEventHints(project, effectiveAgentId, 3);
+    const warnung = await pruefeEventEskalation(project, effectiveAgentId, pendingEvents.urgent);
     if (pendingEvents.hints.length === 0) return result;
-    return { ...result, pending_events: pendingEvents.hints };
+    return { ...result, pending_events: pendingEvents.hints, ...(warnung ? { event_warning: warnung } : {}) };
   } catch {
     // Eine Inbox-Zugabe darf den eigentlichen Tool-Aufruf nie brechen.
     return result;

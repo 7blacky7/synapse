@@ -29,6 +29,7 @@ import {
   markShellJobSeenForToolCall,
   claimOpenPlanHints,
   getPendingEventHints,
+  pruefeEventEskalation,
   TOOL_GUIDES,
   stelleSchemaSicher,
   logToolCall,
@@ -70,9 +71,6 @@ export const SERVER_INSTANCE_ID = randomUUID();
 
 /** Tracking: Wann hat ein Agent zuletzt Chat gelesen? */
 const lastChatRead = new Map<string, string>();
-
-/** Tracking: Wie oft hat ein Agent ein kritisches Event ignoriert? */
-const eventIgnoreCount = new Map<string, { firstSeen: number; count: number }>();
 
 /** Tracking: Welche (Session, Tool)-Kombination wurde bereits mit Guide-Hint versehen?
  *  Schluessel: `${sessionKey}:${toolName}`. sessionKey = agent_id (wenn gesetzt) oder
@@ -292,29 +290,10 @@ export function createServer(): Server {
               first.text = JSON.stringify(parsed, null, 2);
             }
 
-            if (pendingEvents.urgent.length > 0) {
-              const now = Date.now();
-              const existing = eventIgnoreCount.get(agentId);
-              if (!existing) {
-                eventIgnoreCount.set(agentId, { firstSeen: now, count: 1 });
-              } else {
-                existing.count++;
-                const elapsed = now - existing.firstSeen;
-                if (elapsed > 30000 && existing.count >= 3) {
-                  try {
-                    const eventList = pendingEvents.urgent
-                      .map(event => `${event.event_type}(${event.priority})`)
-                      .join(', ');
-                    await sendChatMessage(
-                      projectName,
-                      'system',
-                      `⚠️ ESKALATION: Agent "${agentId}" ignoriert Events seit ${existing.count} Tool-Calls: ${eventList}`,
-                      'koordinator'
-                    );
-                    console.error(`[Synapse] Eskalation: ${agentId} ignoriert Events seit ${existing.count} Calls`);
-                  } catch { /* Eskalation darf nicht crashen */ }
-                }
-              }
+            const warnung = await pruefeEventEskalation(projectName, agentId, pendingEvents.urgent);
+            if (warnung) {
+              parsed.event_warning = warnung;
+              first.text = JSON.stringify(parsed, null, 2);
             }
           } catch { /* Pending-Events duerfen Toolantworten nie brechen */ }
         }
@@ -772,7 +751,7 @@ export function createServer(): Server {
         case 'event': {
           const eventAction = (args as Record<string, unknown>)?.action as string;
 
-          // SONDER-LOGIK: "ack" mit eventIgnoreCount Reset
+          // Einzel-/Mehrfach-ACK; Eskalationen verfolgen die betroffenen Event-IDs im Core.
           if (eventAction === 'ack') {
             const eventIdRaw = (args as Record<string, unknown>)?.event_id;
             const ackAgentId = (args as Record<string, unknown>)?.agent_id as string;
@@ -790,20 +769,12 @@ export function createServer(): Server {
                 if (r.status === 'fulfilled') results.push(r.value as Record<string, unknown>);
                 else errors.push(String(r.reason));
               }
-              // Eskalations-Counter zuruecksetzen wenn mindestens ein Ack erfolgreich
-              const anySuccess = results.some(r => (r as any).success === true);
-              if (anySuccess) {
-                eventIgnoreCount.delete(ackAgentId);
-              }
               return { content: [{ type: 'text', text: JSON.stringify({ results, count: results.length, errors }, null, 2) }] };
             }
 
             // Bestehend: Einzelnes Event
             const eventId = eventIdRaw as number;
             const result = await acknowledgeEventTool(eventId, ackAgentId, reaction);
-            if (result.success) {
-              eventIgnoreCount.delete(ackAgentId);
-            }
             return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
           }
 
