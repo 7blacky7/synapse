@@ -19,6 +19,8 @@
  */
 
 import { createHash } from 'node:crypto';
+import {dateiDiff,diffText,diffMaxZeichen} from './file-diff.js';
+import {maskiereDatei} from './env-maske.js';
 import { promises as fsp } from 'node:fs';
 import path from 'node:path';
 import { getPool } from '../db/client.js';
@@ -73,6 +75,7 @@ export async function syncDateiLokal(
   filePath: string,
   projektRoot: string | undefined,
   prozess = 'daemon',
+  mitDiff = false,
 ): Promise<Record<string, unknown>> {
   if (!projektRoot) {
     throw new DiagnoseFehler('projekt_unbekannt',
@@ -84,6 +87,8 @@ export async function syncDateiLokal(
   // ── Platte ──
   const platte: Record<string, unknown> = { pfad: abs, existiert: false };
   let hashText: string | null = null;
+  let plattenText: string | null = null;
+  let driftDiff: Record<string,unknown> | undefined;
   try {
     const st = await fsp.stat(abs);
     // Symlink-Ausbruch: realer Pfad muss unter dem realen Projektpfad liegen
@@ -100,6 +105,7 @@ export async function syncDateiLokal(
       if (st.size <= SYNC_DATEI_MAX_BYTES) {
         const buf = await fsp.readFile(abs);
         const text = buf.toString('utf8');
+        if(mitDiff)plattenText=text;
         hashText = sha256(text);
         const roh = sha256(buf);
         platte.sha256 = hashText;
@@ -135,6 +141,17 @@ export async function syncDateiLokal(
          FROM code_files WHERE project = $1 AND file_path = $2`, [project, filePath],
     );
     const f = rows[0];
+    if(mitDiff&&!platte.fehler && (hashText !== (f && !f.deleted_at ? f.content_hash : null) || (platte.existiert === true) !== Boolean(f && !f.deleted_at))) {
+      const basis=(await pool.query('SELECT content FROM code_files WHERE project=$1 AND file_path=$2 AND deleted_at IS NULL',[project,filePath])).rows[0]?.content??'';
+      const lokal=plattenText??'';
+      if(basis.length<=diffMaxZeichen()&&lokal.length<=diffMaxZeichen()) {
+        const d=dateiDiff(maskiereDatei(filePath,basis),maskiereDatei(filePath,lokal));
+        const roh=dateiDiff(basis,lokal);
+        const bereiche=roh.hunks.flatMap(h=>h.bereiche);
+        driftDiff={...diffText(d,d.hunks,()=> 'PG → Platte',120),bereiche:bereiche.slice(0,120),bereiche_gesamt:bereiche.length,
+          nur_zeilenenden:roh.nur_zeilenenden,zeilenbasis:'0-basiert, halboffen: a=PG, b=Platte'};
+      } else driftDiff={nicht_verfuegbar:'Datei über Diff-Größenbudget',abruf:'sync_inspektor für Hashvergleich'};
+    }
     if (f) {
       pg = {
         content_hash: f.content_hash,
@@ -202,6 +219,7 @@ export async function syncDateiLokal(
     pg_fehler: pgFehler,
     gleich_pg: gleichPg,
     bekannte_version: bekannteVersion,
+    ...(mitDiff ? {drift_diff:driftDiff} : {}),
     sync_pausen: syncPausen,
     befund,
   };
@@ -219,7 +237,7 @@ export async function fuehreDiagnoseLokal(
       const project = typeof args.project === 'string' ? args.project : '';
       const filePath = typeof args.file_path === 'string' ? args.file_path : '';
       if (!project || !filePath) throw new DiagnoseFehler('parameter_fehlt', 'sync_datei: project und file_path angeben.');
-      return await syncDateiLokal(project, filePath, kontext.projektPfad(project), kontext.prozess);
+      return await syncDateiLokal(project, filePath, kontext.projektPfad(project), kontext.prozess, args.mit_diff === true);
     }
     return { success: false, action: befehl, error: 'befehl_unbekannt', message: `Kein Diagnose-Befehl: ${befehl}.` };
   } catch (err) {

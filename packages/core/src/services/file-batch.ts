@@ -18,6 +18,7 @@
  */
 
 import type { PoolClient } from 'pg';
+import {pruefeFsDrift,FsDriftFehler,fsDriftAntwort,type FsPruefung} from './file-fs-drift.js';
 import { EventEmitter } from 'node:events';
 import { getPool } from '../db/client.js';
 import { daemonUebersicht, sendeAnDaemon } from './daemon-bruecke.js';
@@ -449,6 +450,7 @@ export interface CoeditWaitGroup {
 }
 
 export interface PlanBatchResult {
+  fs_pruefung?: FsPruefung;
   plan_id: string;
   total_ops: number;
   files_touched: string[];
@@ -561,6 +563,7 @@ export class PlanBatchOpsFailedError extends Error {
  * geladenem Modul haelt.
  */
 export function planFailureResponse(err: unknown, error = 'plan_failed'): Record<string, unknown> {
+  if(err instanceof FsDriftFehler)return fsDriftAntwort(err);
   const failed = err as Partial<PlanBatchOpsFailedError> | null;
   if (failed && failed.name === 'PlanBatchOpsFailedError' && typeof failed.plan_id === 'string') {
     return {
@@ -666,7 +669,7 @@ function mitVerweis<T extends { left_op_index: number; right_op_index: number }>
   }));
 }
 
-export type CommitBatchResult =
+export type CommitBatchResult = {fs_pruefung?:FsPruefung} & (
   | {
       success: true;
       plan_id: string;
@@ -720,7 +723,7 @@ export type CommitBatchResult =
       caller_agent_id?: string | null;
       eigene_offene_plaene?: Array<{ plan_id: string; project: string }>;
       message: string;
-    };
+    });
 
 /** P15-T31: warum ein commit nichts geschrieben hat. */
 export type NichtsGeschriebenGrund = 'wartet' | 'abgelaufen' | 'leer';
@@ -1927,7 +1930,7 @@ async function commitCoeditBatch(args: {
   agent_id?: string;
   task_id?: string;
   agent_note?: string;
-}): Promise<CommitBatchResult> {
+}, fsPlan: string): Promise<CommitBatchResult> {
   const pool = getPool();
   const client = await pool.connect();
   try {
@@ -1958,6 +1961,10 @@ async function commitCoeditBatch(args: {
       };
     }
 
+    if(JSON.stringify([plan.ops,plan.expected_hashes])!==fsPlan) {
+      await client.query('ROLLBACK');
+      return {success:false,plan_id:args.plan_id,status:'open',error:'fs_plan_changed',message:'Plan während FS-Prüfung geändert; commit erneut ausführen, damit alle aktuellen Pfade geprüft werden.'};
+    }
     // Einheitliche Lock-Reihenfolge mit coedit_add: zuerst Primaerplan, dann Waits.
     // FOR UPDATE sperrt bestehende Zeilen; der Wait-Tabellenlock verhindert
     // Phantom-INSERTs zwischen Gate und COMMIT. code_files bleibt bis COMMIT gesperrt.
@@ -2380,7 +2387,12 @@ async function lockFilesForPlanning(
  * Plaene laufen nicht ab: expires_at hat keine Bedeutung mehr. Ein Plan bleibt
  * offen, bis er committed oder per cancel verworfen wird.
  */
-export async function planBatch(args: {
+export async function planBatch(args: Parameters<typeof planBatchKern>[0]):Promise<PlanBatchResult> {
+  const ops=await normalisiereOps(args.project,args.ops);
+  const fs_pruefung=await pruefeFsDrift(args.project,ops.flatMap(touchedPaths));
+  return {...await planBatchKern({...args,ops}),fs_pruefung};
+}
+async function planBatchKern(args: {
   project: string;
   agent_id?: string;
   task_id?: string;
@@ -5017,10 +5029,15 @@ async function commitBatchOnce(args: {
     tasksJeDatei.set(path, tasks);
   }
   const mehrereTasks = [...tasksJeDatei.values()].some((tasks) => tasks.size > 1);
-  if (Number(coeditWaitCount.rows[0]?.count ?? 0) > 0 || distinctOpAgents.size > 1 || mehrereTasks) {
-    return commitCoeditBatch(commitArgs);
+  let fs_pruefung:FsPruefung;
+  try {fs_pruefung=await pruefeFsDrift(plan.project,plan.ops.flatMap(touchedPaths));}
+  catch(err) {
+    if(err instanceof FsDriftFehler)return {success:false,plan_id:args.plan_id,status:'open',error:'fs_drift',geschrieben:false,fs_pruefung:err.fs_pruefung,message:err.message};
+    throw err;
   }
-  return commitLegacyLocked(commitArgs, plan);
+  const result=Number(coeditWaitCount.rows[0]?.count ?? 0)>0||distinctOpAgents.size>1||mehrereTasks
+    ? await commitCoeditBatch(commitArgs,JSON.stringify([plan.ops,plan.expected_hashes])) : await commitLegacyLocked(commitArgs,plan);
+  return {...result,fs_pruefung};
 }
 
 /**
@@ -5038,12 +5055,12 @@ async function commitLegacyLocked(
   const lockClient = await getPool().connect();
   try {
     await lockClient.query('BEGIN');
-    const locked = await lockClient.query<{ status: FileBatchStatus; ops_count: number }>(
-      `SELECT status, jsonb_array_length(ops) AS ops_count FROM file_batch_plans WHERE id = $1::bigint FOR UPDATE`,
+    const locked = await lockClient.query<{ status: FileBatchStatus; ops_count: number; ops: FileBatchOp[]; expected_hashes: Record<string,string> }>(
+      `SELECT status, ops, expected_hashes, jsonb_array_length(ops) AS ops_count FROM file_batch_plans WHERE id = $1::bigint FOR UPDATE`,
       [args.plan_id],
     );
     const row = locked.rows[0];
-    if (!row || row.status !== 'open' || Number(row.ops_count) !== plan.ops.length) {
+    if (!row || row.status !== 'open' || Number(row.ops_count) !== plan.ops.length || JSON.stringify([row.ops,row.expected_hashes]) !== JSON.stringify([plan.ops,plan.expected_hashes])) {
       await lockClient.query('ROLLBACK');
       lockClient.release();
       return commitBatchOnce(args);
@@ -5752,7 +5769,12 @@ async function updatePlanInPlace(
  * fremden Ops, Aufrufer = Owner). Alles andere — insbesondere gemeinsame Plaene — wird
  * von JEDEM Agenten im selben Plan geaendert (updatePlanInPlace).
  */
-export async function replanBatch(args: {
+export async function replanBatch(args:Parameters<typeof replanBatchKern>[0]):ReturnType<typeof replanBatchKern> {
+  const ops=await normalisiereOps(args.project,args.ops);
+  const fs_pruefung=await pruefeFsDrift(args.project,ops.flatMap(touchedPaths));
+  return {...await replanBatchKern({...args,ops}),fs_pruefung};
+}
+async function replanBatchKern(args: {
   project: string;
   plan_id: string;
   agent_id?: string;
@@ -6826,7 +6848,14 @@ export function befundeQuittierenLesen(wert: unknown): Array<{ id: string; grund
  * Beitragenden (agent_id der Op); ein Kombinationsfehler an der spaeteren Op mit beteiligt.
  */
 export async function addCoeditContribution(args: Parameters<typeof addCoeditContributionKern>[0]): Promise<CoeditAddResult> {
-  const result = await addCoeditContributionKern(args);
+  const ops=await normalisiereOps(args.project,args.ops);
+  let fs_pruefung:FsPruefung;
+  try {fs_pruefung=await pruefeFsDrift(args.project,ops.flatMap(touchedPaths));}
+  catch(err) {
+    if(err instanceof FsDriftFehler)return {success:false,plan_id:args.plan_id,appended_ops:0,already_consumed_ops:0,error:'fs_drift',fs_pruefung:err.fs_pruefung,message:err.message};
+    throw err;
+  }
+  const result = {...await addCoeditContributionKern({...args,ops}),fs_pruefung};
   if (!result.success || !result.plan_id || !(Number(result.appended_ops) > 0)) return result;
   const ergebnis = await pruefeGespeichertenPlanSicher(result.plan_id);
   if (!ergebnis) return result;
