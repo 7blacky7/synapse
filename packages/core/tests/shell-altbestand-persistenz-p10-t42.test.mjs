@@ -32,7 +32,7 @@ try{
  const applied=await mod.maskiereShellAltbestand(project,werte);
  assert.equal(applied.aenderungen,2);assert(applied.maskiert>=2);
  const after=await read(),j=after.find(r=>r.id===job).daten;
- assert(!j.output.includes(secret));assert(j.output.includes(example));assert(j.output.includes(publicValue));
+ assert(!j.output.includes(secret));assert(j.output.includes(example));assert(j.output.includes(publicValue));assert.deepEqual(j.tail,[],'unberührtes JSONB-Array bleibt Array');
  const c=after.find(r=>r.tabelle==='tool_calls'&&r.id===String(call)).daten;
  assert.equal(JSON.parse(c.result).id,'opaque-id');assert(!c.result.includes(secret));assert(c.args_preview.includes(example));
  assert(after.find(r=>r.id===pending).daten.output.includes(secret),'laufende Jobs unverändert');
@@ -96,6 +96,15 @@ try{
  // Der bisher nur markierte Rollback-Job kann ebenfalls einmal bereinigt werden.
  assert.equal(concurrent.reduce((n,r)=>n+r.aenderungen,0),2);
  assert.equal((await read()).find(r=>r.id===concurrentId).daten.output,'TOKEN=[WERT]');
+ const multi={tabelle:'shell_jobs',id:'multi-path',project,daten:{tail:[secret,secret]}};
+ const multiGroups=pure.gruppiereShellAltbestand([multi],werte);assert.equal(multiGroups.length,1);
+ const multiPlan=pure.planeShellAltbestand([multi],werte,multiGroups.map(g=>({gruppe:g.id,bewertung:'geheimnis',confidence:0.99,grund:'fake'})))[0];
+ assert.equal(multiPlan.maskiert,2);assert.deepEqual(Object.values(multiPlan.maskiert_pro_bezug),[1,1]);
+ const multiId=(await pool.query("INSERT INTO shell_jobs(project,command,status,tail) VALUES($1,'multi-field-fixture','done',$2::jsonb) RETURNING id",[project,JSON.stringify([secret,secret])])).rows[0].id;
+ await mod.markiereShellAltbestand((await read()).filter(r=>r.id===multiId),werte,{project},{rufeJev:fake});
+ const multiApplied=await mod.maskiereShellAltbestand(project,werte);assert.equal(multiApplied.maskiert,2);
+ const markerCount=(await pool.query('SELECT sum(maskiert)::int AS n FROM shell_altbestand_bezuege WHERE project=$1 AND zeilen_id=$2',[project,multiId])).rows[0].n;
+ assert.equal(markerCount,2,'Marker über alle Bezugs-Pfade zählen exakt zwei Ersetzungen');
  console.log('OK Marker ohne Rohwerte; selektiv Geheimnisse, Beispiele/falsche Treffer bleiben; Drift/laufende Jobs sicher; Idempotenz; maskierter Fake-Jev');
 }finally{
  const ownGroups=(await pool.query('SELECT DISTINCT gruppen_id FROM shell_altbestand_bezuege WHERE project=$1',[project]).catch(()=>({rows:[]}))).rows.map(r=>r.gruppen_id);

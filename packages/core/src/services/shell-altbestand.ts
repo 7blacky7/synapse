@@ -16,7 +16,7 @@ export interface ShellAltGruppe {
 export type ShellAltBewertung='geheimnis'|'beispiel'|'falsch'|'offen';
 export interface ShellAltEntscheidung {gruppe:string;bewertung:ShellAltBewertung;confidence:number|null;grund:string;}
 type ShellAltWeg=Array<string|number|null>;
-interface ShellAltZiel {tabelle:ShellAltZeile['tabelle'];id:string;weg:ShellAltWeg;start:number|null;ende:number|null;}
+interface ShellAltZiel {tabelle:ShellAltZeile['tabelle'];id:string;pfad:string;weg:ShellAltWeg;start:number|null;ende:number|null;}
 const ziele=new WeakMap<ShellAltGruppe,ShellAltZiel[]>();
 const PLATZ='[WERT]';
 const hash=(s:string)=>createHash('sha256').update(s).digest('hex');
@@ -70,11 +70,11 @@ export function gruppiereShellAltbestand(zeilen:readonly ShellAltZeile[],werte:r
       if(typeof roh==='string' && typeof neu==='string'){
         if(/^\s*[\[{]/.test(roh) && /^\s*[\[{]/.test(neu))try{walk(JSON.parse(roh),JSON.parse(neu),pfad,[...weg,null]);return;}catch{/* freie Logzeile */}
         const spannen=ersetzteSpannen(roh,neu),feld=feldOhneIndex(pfad);
-        if(!spannen){aufnehmen(roh,feld,feld.split('.').pop()??feld,'offene_zuordnung',neu,pfad,{tabelle:row.tabelle,id:row.id,weg,start:null,ende:null});return;}
+        if(!spannen){aufnehmen(roh,feld,feld.split('.').pop()??feld,'offene_zuordnung',neu,pfad,{tabelle:row.tabelle,id:row.id,pfad,weg,start:null,ende:null});return;}
         for(const s of spannen){
           const vor=roh.slice(0,s.start),kv=/([A-Za-z_][A-Za-z0-9_.-]*)\s*[:=]\s*["']?$/.exec(vor);
           const schluessel=kv?.[1]??(/Bearer\s+$/i.test(vor)?'Bearer':feld.split('.').pop()??feld);
-          aufnehmen(s.wert,feld,schluessel,bekannt.has(s.wert)?'literal':'muster',neu,pfad,{tabelle:row.tabelle,id:row.id,weg,start:s.start,ende:s.start+s.wert.length});
+          aufnehmen(s.wert,feld,schluessel,bekannt.has(s.wert)?'literal':'muster',neu,pfad,{tabelle:row.tabelle,id:row.id,pfad,weg,start:s.start,ende:s.start+s.wert.length});
         }
         return;
       }
@@ -85,7 +85,7 @@ export function gruppiereShellAltbestand(zeilen:readonly ShellAltZeile[],werte:r
       }
       // Ein ganzer JSON-Feldwert wurde ersetzt (auch Zahl/Objekt). Hash bleibt intern.
       const feld=feldOhneIndex(pfad),text=JSON.stringify(roh)??String(roh);
-      aufnehmen(text,feld,feld.split('.').pop()??feld,'muster',JSON.stringify(neu)??PLATZ,pfad,{tabelle:row.tabelle,id:row.id,weg,start:null,ende:null});
+      aufnehmen(text,feld,feld.split('.').pop()??feld,'muster',JSON.stringify(neu)??PLATZ,pfad,{tabelle:row.tabelle,id:row.id,pfad,weg,start:null,ende:null});
     };
     walk(row.daten,safe,'');
   }
@@ -163,7 +163,7 @@ export function zaehleShellUebermaskierungsFenster(zeilen:readonly ShellAltZeile
 export function shellAltQuellHash(row:ShellAltZeile):string{return hash(JSON.stringify(row.daten));}
 export interface ShellAltAenderung {
  tabelle:ShellAltZeile['tabelle'];id:string;project:string|null;quell_hash:string;
- daten:Record<string,unknown>;maskiert:number;gruppen:string[];maskiert_pro_gruppe:Record<string,number>;
+ daten:Record<string,unknown>;maskiert:number;gruppen:string[];maskiert_pro_gruppe:Record<string,number>;maskiert_pro_bezug:Record<string,number>;
 }
 /** Ausschließlich eindeutig zugeordnete, bestätigte Spannen; Beispiele/falsche Treffer bleiben erhalten. */
 export function planeShellAltbestand(rows:readonly ShellAltZeile[],werte:readonly string[],entscheidungen:readonly ShellAltEntscheidung[]):ShellAltAenderung[]{
@@ -182,18 +182,18 @@ export function planeShellAltbestand(rows:readonly ShellAltZeile[],werte:readonl
   const targets=proZeile.get(row.tabelle+':'+row.id);if(!targets?.length)continue;
   const proWeg=new Map<string,Array<{ziel:ShellAltZiel;gruppe:string}>>();
   for(const t of targets){const key=JSON.stringify(t.ziel.weg);if(!proWeg.has(key))proWeg.set(key,[]);proWeg.get(key)!.push(t);}
-  let maskiert=0;const maskiert_pro_gruppe:Record<string,number>={};
-  const zaehle=(gruppe:string)=>{maskiert++;maskiert_pro_gruppe[gruppe]=(maskiert_pro_gruppe[gruppe]??0)+1;};
+  let maskiert=0;const maskiert_pro_gruppe:Record<string,number>={},maskiert_pro_bezug:Record<string,number>={};
+  const zaehle=(gruppe:string,pfad:string)=>{maskiert++;maskiert_pro_gruppe[gruppe]=(maskiert_pro_gruppe[gruppe]??0)+1;const key=gruppe+':'+pfad;maskiert_pro_bezug[key]=(maskiert_pro_bezug[key]??0)+1;};
   const transform=(v:unknown,weg:ShellAltWeg=[]):unknown=>{
    const match=proWeg.get(JSON.stringify(weg));
    if(match){
-    if(match.some(t=>t.ziel.start===null)){zaehle(match.find(t=>t.ziel.start===null)!.gruppe);return PLATZ;}
+    if(match.some(t=>t.ziel.start===null)){const whole=match.find(t=>t.ziel.start===null)!;zaehle(whole.gruppe,whole.ziel.pfad);return PLATZ;}
     if(typeof v!=='string')throw new Error('Altbestand-Spanne passt nicht zum Feld');
     const spannen=[...new Map(match.map(t=>[t.ziel.start+':'+t.ziel.ende,t.ziel])).values()].sort((a,b)=>b.start!-a.start!);
     let text=v,grenze=v.length;
     for(const s of spannen){
      if(s.start!<0||s.ende!>grenze||s.start!>=s.ende!)throw new Error('Altbestand-Spannen überlappen');
-     text=text.slice(0,s.start!)+PLATZ+text.slice(s.ende!);grenze=s.start!;zaehle(match.find(t=>t.ziel.start===s.start&&t.ziel.ende===s.ende)!.gruppe);
+     text=text.slice(0,s.start!)+PLATZ+text.slice(s.ende!);grenze=s.start!;const target=match.find(t=>t.ziel.start===s.start&&t.ziel.ende===s.ende)!;zaehle(target.gruppe,target.ziel.pfad);
     }
     return text;
    }
@@ -205,7 +205,7 @@ export function planeShellAltbestand(rows:readonly ShellAltZeile[],werte:readonl
    return v;
   };
   const daten=transform(row.daten) as Record<string,unknown>;
-  if(maskiert)aus.push({tabelle:row.tabelle,id:row.id,project:row.project,quell_hash:shellAltQuellHash(row),daten,maskiert,maskiert_pro_gruppe,gruppen:[...new Set(targets.map(t=>t.gruppe))]});
+  if(maskiert)aus.push({tabelle:row.tabelle,id:row.id,project:row.project,quell_hash:shellAltQuellHash(row),daten,maskiert,maskiert_pro_gruppe,maskiert_pro_bezug,gruppen:[...new Set(targets.map(t=>t.gruppe))]});
  }
  return aus;
 }

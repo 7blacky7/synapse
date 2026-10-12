@@ -105,18 +105,18 @@ async function lauf(project:string|undefined,werte:ShellAltWerte,schreiben:boole
    const change=planeShellAltbestand([current.row],values,decisions)[0];
    if(change){
     if(schreiben){
-     const columns=felder[table],values=columns.map(k=>change.daten[k]);
+     const columns=felder[table],values=columns.map(k=>table==='shell_jobs'&&k==='tail'&&change.daten[k]!==null?JSON.stringify(change.daten[k]):change.daten[k]);
      await c.query('UPDATE '+table+' SET '+columns.map((k,i)=>k+'=$'+(i+1)).join(',')+' WHERE id=$'+(columns.length+1),[...values,ref.zeilen_id]);
     }
     aus.aenderungen++;aus.maskiert+=change.maskiert;aus.tabellen[table].aenderungen++;aus.tabellen[table].maskiert+=change.maskiert;
    }
    if(schreiben)await c.query(`UPDATE shell_altbestand_bezuege b SET
     status=CASE WHEN g.bewertung='offen' THEN 'offen' WHEN g.bewertung='geheimnis' THEN $5 ELSE 'behalten' END,
-    maskiert=CASE WHEN g.bewertung='geheimnis' THEN COALESCE(($6::jsonb->>b.gruppen_id)::integer,0) ELSE 0 END,
+    maskiert=CASE WHEN g.bewertung='geheimnis' THEN COALESCE(($6::jsonb->>(b.gruppen_id||':'||b.pfad))::integer,0) ELSE 0 END,
     maskiert_at=CASE WHEN g.bewertung='geheimnis' AND $5='maskiert' THEN NOW() ELSE NULL END
     FROM shell_altbestand_gruppen g WHERE b.regelversion=g.regelversion AND b.gruppen_id=g.gruppen_id
     AND b.regelversion=$1 AND b.tabelle=$2 AND b.zeilen_id=$3 AND b.quell_hash=$4`,
-    [version,table,ref.zeilen_id,fingerprint,change?'maskiert':'offen',JSON.stringify(change?.maskiert_pro_gruppe??{})]);
+    [version,table,ref.zeilen_id,fingerprint,change?'maskiert':'offen',JSON.stringify(change?.maskiert_pro_bezug??{})]);
    await c.query(schreiben?'COMMIT':'ROLLBACK');
   }catch(error){await c.query('ROLLBACK');throw error;}finally{c.release();}
  }
