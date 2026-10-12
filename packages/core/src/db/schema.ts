@@ -32,6 +32,7 @@
 
 
 import { createHash } from 'node:crypto';
+import {SHELL_ALT_SCHEMA_SQL} from './shell-altbestand-schema.js';
 import { getPool } from './client.js';
 
 const SCHEMA_SQL = `
@@ -1236,6 +1237,9 @@ CREATE TABLE IF NOT EXISTS shell_sicherungs_audit (
 );
 CREATE INDEX IF NOT EXISTS idx_shell_sicherungs_audit_objekt
   ON shell_sicherungs_audit(objekt_art, objekt_id, id);
+
+-- P10-T42 (sol-1): eigener additiver Shell-Altbestand-Markerabschnitt.
+${SHELL_ALT_SCHEMA_SQL}
 
 CREATE TABLE IF NOT EXISTS shell_jobs (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
