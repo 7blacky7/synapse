@@ -15,7 +15,7 @@
  *   - AgentEvent: Gespeichertes Event mit ID und Timestamp
  *   - EventAck: Quittierung eines Events
  *   - AgentEvent[]: Ausstehende Events fuer einen Agenten
- *   - number: Anzahl unquittierter Events (fuer Hook-Usage)
+ *   - number: Anzahl unquittierter Events (fuer Ereignisabfragen)
  *
  * NEBENEFFEKTE:
  *   - PostgreSQL: Schreibt in agent_events / agent_event_acks Tabellen
@@ -234,7 +234,7 @@ export async function getPendingEvents(
     : Math.max(1, Math.min(100, Math.trunc(limit)));
 
   // Bedingung aus der GEMEINSAMEN Quelle event-sichtbarkeit.ts (P15-T26/P15-T30), dieselbe wie im
-  // PostToolUse-Hook (scripts/event-check.mjs) - keine Kopie mehr. scope:'all' zaehlt erst ab dem Beginn
+  // gemeinsame Quelle - keine Kopie mehr. scope:'all' zaehlt erst ab dem Beginn
   // der laufenden Lebensphase (aktiv_seit, Altzeilen registered_at), siehe eventsSichtbarAbSql.
   // Alte scope:'all' Events wurden bereits von damals aktiven Agenten bearbeitet —
   // ein neuer Agent muss sie nicht nochmal acken.
@@ -419,7 +419,7 @@ export async function pruefeEventEskalation(
 
 
 /**
- * Schneller COUNT unquittierter Events fuer Hook-Usage
+ * Schneller COUNT unquittierter Events
  */
 export async function getUnackedCount(
   project: string,

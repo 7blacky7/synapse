@@ -17,15 +17,13 @@
  *   S7 Altzeile (nur registered_at): Events wie bisher ab registered_at.
  *   S8 Neuer Name: Alt-Event nicht offen.
  *   S9 Spalten: registered_at alt, sitzung_seit und aktiv_seit frisch.
- *   H1/H2/H4 Der echte Hook (scripts/event-check.mjs, gemeinsame Quelle event-sichtbarkeit.ts) liefert
- *       dieselbe Menge wie getPendingEvents (requires_ack, erste 5).
  *   S10 Onboarding-Ruhefenster (onboarding_ruhe aktiv, Agent unter anderer Server-Kennung bekannt):
  *       kein erneutes Onboarding; aktiver Agent unberuehrt (Event bleibt), stillgelegter wird active.
  *       Die Zeile onboarding_ruhe der Test-DB wird danach wiederhergestellt.
  *   P15-T32 (Spawn-Signal, Konzept thought b2293c76):
  *   S11 Spawn mit wiederverwendetem Namen, Vorsitzung noch active: OHNE Signal bleibt das Event (Kontrolle,
  *       = Handoff); mit beginneSitzung(...,'neu') ist der Broadcast weg, das direkt adressierte Event bleibt,
- *       das Fehlermuster gilt als nicht gesehen; H11 Hook == Server.
+ *       das Fehlermuster gilt als nicht gesehen.
  *   S12 'fortsetzung' bei aktiver Vorsitzung: Event bleibt, aktiv_seit unveraendert, Muster frisch.
  *   S13 'fortsetzung' bei stillgelegter Vorsitzung: wie chat register (active, Alt-Event weg).
  *   S14 pruefeSitzungsArt: nur 'neu'|'fortsetzung', fehlend -> undefined, sonst Fehler.
@@ -45,7 +43,6 @@
  * AUFRUF: set -a; . <test-db.env>; set +a; node scripts/test-sitzung-seit.mjs
  */
 import http from 'node:http';
-import { execFileSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -154,16 +151,6 @@ async function gesehen(agent, alter) {
 const muster = async (agent) => (await EP.checkErrorPatterns('PASSEND code', agent)).map((w) => w.id);
 const zeile = async (agent) => (await pool.query('SELECT * FROM agent_sessions WHERE id = $1', [agent])).rows[0];
 const schlaf = (ms) => new Promise((r) => setTimeout(r, ms));
-// Echter PostToolUse-Hook (laedt dist/services/event-sichtbarkeit.js): dieselbe Menge wie der Server
-// (nur requires_ack, die ersten 5 in Server-Reihenfolge).
-const hook = (agent) => JSON.parse(execFileSync('node', [join(hier, 'event-check.mjs'), agent, P, DB_URL], { encoding: 'utf8' })).map((e) => Number(e.id));
-async function hookGleichServer(agent, text) {
-  const h = hook(agent);
-  const s = (await EV.getPendingEvents(P, agent, 100)).filter((e) => e.requiresAck).map((e) => Number(e.id)).slice(0, 5);
-  pruefe(JSON.stringify(h) === JSON.stringify(s), text, { hook: h, server: s });
-  return h;
-}
-
 async function aufraeumen() {
   await pool.query('DELETE FROM agent_events WHERE project = $1', [P]);
   await pool.query('DELETE FROM error_pattern_seen WHERE session_id = ANY($1)', [AGENTEN]);
@@ -189,8 +176,6 @@ try {
   const o1 = await offen(A.s1);
   pruefe(!o1.includes(e1alt), 'S1 wiederverwendeter Name (vorher inactive): Alt-Event nicht mehr offen', o1);
   pruefe(o1.includes(e1neu), 'S1 Gegenprobe: Event nach der Anmeldung offen', o1);
-  const h1 = await hookGleichServer(A.s1, 'H1 Hook == Server nach Wiederanmeldung (vorher inactive)');
-  pruefe(!h1.includes(e1alt) && h1.includes(e1neu), 'H1 Hook zeigt kein Alt-Event, aber das neue', h1);
   const m1 = await muster(A.s1);
   pruefe(m1.includes(MUSTER), 'S1 Fehlermuster der Vorsitzung gilt nicht als gesehen', m1);
 
@@ -209,8 +194,6 @@ try {
   await CH.registerAgent(A.s2, P);
   const o2 = await offen(A.s2);
   pruefe(o2.includes(e2), 'S2 Handoff: unquittiertes Event der Vorsitzung bleibt offen', o2);
-  const h2 = await hookGleichServer(A.s2, 'H2 Hook == Server nach Handoff');
-  pruefe(h2.includes(e2), 'H2 Hook zeigt das unquittierte Event der Vorsitzung', h2);
   const m2 = await muster(A.s2);
   pruefe(m2.includes(MUSTER), 'S2 Handoff: neue Sitzung sieht das Muster wieder', m2);
 
@@ -230,7 +213,6 @@ try {
   pruefe(z4.status === 'active', 'S4 Onboarding holt stillgelegten Agenten zurueck (active)', z4.status);
   const o4 = await offen(A.s4);
   pruefe(!o4.includes(e4alt), 'S4 Onboarding nach Stilllegung: Alt-Event nicht mehr offen', o4);
-  await hookGleichServer(A.s4, 'H4 Hook == Server nach Onboarding eines stillgelegten Agenten');
 
   // ---- S5: Onboarding eines aktiven Agenten (neuer Serverprozess) ----
   await sitzung(A.s5, 'active', '2 hours');
@@ -324,8 +306,6 @@ try {
   pruefe(o11.includes(e11d), "S11 sitzung 'neu': direkt adressiertes Event bleibt offen", o11);
   const m11 = await muster(A.s11);
   pruefe(m11.includes(MUSTER), "S11 sitzung 'neu': Fehlermuster der Vorsitzung gilt nicht als gesehen", m11);
-  const h11 = await hookGleichServer(A.s11, 'H11 Hook == Server nach Spawn-Signal');
-  pruefe(!h11.includes(e11) && h11.includes(e11d), 'H11 Hook: kein Alt-Broadcast, direktes Event da', h11);
   await schlaf(5);
   const e11neu = await ev('s11-neu', '0 seconds');
   pruefe((await offen(A.s11)).includes(e11neu), 'S11 Gegenprobe: Broadcast nach dem Spawn offen');

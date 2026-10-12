@@ -9,7 +9,7 @@
  *   claims              Code-Embedding-Claims je Knoten (aktiv, abgelaufen, Versuche), Zieldimension gegen die
  *                       Code-Collections der Projekte mit Rueckstand (ea0c2d70)
  *   ereignisse          offene Events ohne ACK; mit ziel_agent: Server-Sicht (getPendingEvents) gegen die
- *                       Hook-Sicht (scripts/event-check.mjs) (529ff248)
+ *                       gemeinsame Event-Sichtbarkeit (529ff248)
  *   pipeline_trace      eine Datei durch alle Stufen: Datei/Hash, Parse, Chunks/Claims, Qdrant-Punkte
  *                       (erwartet vs vorhanden). ausfuehren:true = parseAndEmbed + Vorher/Nachher (16e5472a)
  *   parser_messen       Datei ueber den ECHTEN Pool-Pfad parsen (nicht parser.parse im Hauptthread, f82b86a7):
@@ -308,12 +308,13 @@ export async function ereignisse(opt: { project?: string; zielAgent?: string; st
     const reg = (await pool.query<{ registered_at: Date; sitzung_seit: Date | null; aktiv_seit: Date | null; status: string | null }>(
       'SELECT registered_at, sitzung_seit, aktiv_seit, status FROM agent_sessions WHERE id = $1', [opt.zielAgent])).rows[0] ?? null;
     const server = await getPendingEvents(p, opt.zielAgent, 100);
-    // Hook-Sicht: dieselbe Abfrage wie scripts/event-check.mjs, nur mit Limit 100 statt 5 (der Hook zeigt die ersten 5)
+    // P15-T26: Der interne Sichtvergleich nutzt die zentrale Eventsichtbarkeit aus event-sichtbarkeit.ts.
+    // HOOK_EVENTS_SQL haelt den frueheren Filter fuer den Diagnosevergleich fest.
     const hook = (await pool.query(HOOK_EVENTS_SQL, hookEventsParameter(p, opt.zielAgent, 100))).rows;
     const serverIds = new Set(server.map((e) => Number(e.id)));
     const hookIds = new Set(hook.map((e) => Number(e.id)));
     const nurHook = hook.filter((e) => !serverIds.has(Number(e.id)));
-    // requires_ack = false zeigt nur der Server (bewusster Hook-Unterschied), das ist keine Abweichung
+    // requires_ack = false zeigt nur der Server (bewusster Filterunterschied), das ist keine Abweichung
     const nurServer = server.filter((e) => e.requiresAck && !hookIds.has(Number(e.id)));
     agent = {
       agent: opt.zielAgent,
@@ -328,7 +329,7 @@ export async function ereignisse(opt: { project?: string; zielAgent?: string; st
       nur_beim_server: nurServer.map((e) => ({ id: e.id, typ: e.eventType, scope: e.scope, created_at: e.createdAt })),
     };
     if (nurHook.length > 0 || nurServer.length > 0) {
-      befund.push(`${opt.zielAgent}: Hook (scripts/event-check.mjs) und Server (getPendingEvents) weichen ab - nur im Hook ${nurHook.length}, nur beim Server ${nurServer.length} (ACK-pflichtige). Beide nutzen eventsOffenBedingungSql (event-sichtbarkeit.ts); eine Abweichung heisst unterschiedlicher Code-Stand (dist nicht neu gebaut, Hook aus anderem Checkout).`);
+      befund.push(`${opt.zielAgent}: Event-Sicht-SQL und Server (getPendingEvents) weichen ab - nur in der Zusatzsicht ${nurHook.length}, nur im Server ${nurServer.length} (ACK-pflichtige). Beide nutzen eventsOffenBedingungSql (event-sichtbarkeit.ts); eine Abweichung weist auf unterschiedliche Code-Staende hin.`);
     }
   }
   if (befund.length === 0) befund.push('Keine auffaelligen offenen Events.');
@@ -340,7 +341,7 @@ export async function ereignisse(opt: { project?: string; zielAgent?: string; st
     events: offen,
     ...(agent ? { agent_sicht: agent } : {}),
     befund,
-    hinweis: 'offen: direkt adressiert (scope agent:<id>) ohne ACK des Ziels, oder scope all mit laufenden Wrappern ohne ACK. agent_sicht vergleicht getPendingEvents (Server) mit der Abfrage des PostToolUse-Hooks (event-sichtbarkeit.ts HOOK_EVENTS_SQL, dieselbe wie scripts/event-check.mjs); hook_ids in Hook-Reihenfolge, der Hook zeigt die ersten 5.',
+    hinweis: 'offen: direkt adressiert (scope agent:<id>) ohne ACK des Ziels, oder scope all mit laufenden Wrappern ohne ACK. agent_sicht vergleicht getPendingEvents (Server) mit der internen Zusatzsicht (event-sichtbarkeit.ts HOOK_EVENTS_SQL); die Auswahl folgt der Event-Prioritaet.',
   };
 }
 

@@ -1,14 +1,11 @@
 /**
  * MODUL: event-sichtbarkeit.ts (P15-T26, 11.10.2026)
  * ZWECK: EINZIGE Quelle der Frage "welche Events sind fuer einen Agenten offen".
- *   - scripts/event-check.mjs (PostToolUse-Hook) laedt dist/services/event-sichtbarkeit.js direkt
- *     und fragt HOOK_EVENTS_SQL ab.
- *   - intern(ereignisse) (intern-diagnose-welle2.ts) zeigt mit derselben HOOK_EVENTS_SQL die Hook-Sicht;
- *     scripts/test-intern-diagnose.mjs (E3) prueft gegen das echte Hook-Skript.
- *   - getPendingEvents (events.ts) soll dieselbe Bedingung nutzen (eventsOffenBedingungSql), damit Server
- *     und Hook nicht wieder auseinanderlaufen (P15-T21 hatte sie WORTGLEICH kopiert).
+ *   - interne Diagnosepfade nutzen HOOK_EVENTS_SQL aus dieser Sichtbarkeitsquelle.
+ *   - intern(ereignisse) (intern-diagnose-welle2.ts) verwendet HOOK_EVENTS_SQL fuer den internen Sichtvergleich.
+ *   - getPendingEvents (events.ts) nutzt dieselbe Bedingung (eventsOffenBedingungSql); damit laufen Server und Hinweise nicht auseinander.
  * SITZUNGSBEGINN steht NUR in eventsSichtbarAbSql(): ab wann ein scope:'all'-Event fuer den Agenten zaehlt.
- * KEINE IMPORTS: der Hook laedt das Modul nach jedem Tool-Aufruf, es darf nichts nachziehen.
+ * KEINE IMPORTS: das Modul bleibt bewusst abhaengigkeitsfrei.
  */
 
 /**
@@ -28,7 +25,7 @@ export function eventsSichtbarAbSql(agentParam: string): string {
 }
 
 /**
- * Offene Events eines Agenten, fuer "FROM agent_events e" (ohne requires_ack - danach filtert nur der Hook).
+ * Offene Events eines Agenten, fuer "FROM agent_events e" (ohne requires_ack; die gefilterte Zusatzsicht wendet diesen Filter an).
  * - nicht vom Agenten quittiert
  * - scope 'all' erst ab eventsSichtbarAbSql, scope 'agent:<id>' immer
  * - PLAN_READY nur mit offenem Wait und hoechstens eines je Plan (nach ACK desselben Plans keines mehr)
@@ -67,12 +64,12 @@ export function eventsOffenBedingungSql(p: { projekt: string; scope: string; age
        )`;
 }
 
-/** So viele Events zeigt der Hook nach einem Tool-Aufruf hoechstens. */
+/** Legacy-Limit fuer die gefilterte Zusatzsicht. */
 export const HOOK_EVENTS_LIMIT = 5;
 
 /**
- * Die Abfrage des PostToolUse-Hooks. Unterschied zur Server-Sicht: nur requires_ack = true (der Hook fordert
- * nur dort zum Quittieren auf). Parameter: hookEventsParameter().
+ * Gefilterte Zusatzabfrage fuer die Event-Sichtdiagnose. Unterschied zur Server-Sicht: nur requires_ack = true (diese Abfrage enthaelt
+ * nur ACK-pflichtige Events). Parameter: hookEventsParameter().
  */
 export const HOOK_EVENTS_SQL = `SELECT e.id, e.event_type, e.priority, e.source_id, e.payload, e.scope, e.created_at
      FROM agent_events e

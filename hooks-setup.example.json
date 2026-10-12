@@ -28,19 +28,6 @@
         ]
       }
     ],
-    "PostToolUse": [
-      {
-        "matcher": ".*",
-        "hooks": [
-          {
-            "_description": "Chat + Event Notifications: Zeigt ungelesene DMs, Broadcasts und Events nach jedem Tool-Call",
-            "type": "command",
-            "command": "<SYNAPSE_PATH>/scripts/chat-notify.sh",
-            "timeout": 10
-          }
-        ]
-      }
-    ],
     "SubagentStart": [
       {
         "matcher": ".*",

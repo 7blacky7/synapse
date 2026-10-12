@@ -23,7 +23,7 @@
  *   V1..V3 vektorraum_pruefen: ein Chunk mit fremdem Vektor -> BRUCH + je_herkunft; Kontrolle alle passend
  *      -> einheitlich; fehlender Punkt -> "kein Punkt".
  *   C1/C2 claims: aktiver + abgelaufener Claim je Knoten, Collection 16d gegen Ziel 8d -> Befund; Kontrolle 8d ohne.
- *   E1/E2 ereignisse: Alt-Event vor der Registrierung erscheint NUR in der Hook-Sicht (event-check.mjs),
+ *   E1/E2 ereignisse: Alt-Event vor der Registrierung bleibt verborgen; direkt adressierte Events ohne ACK werden gemeldet.
  *      direkt adressiertes Event > 10 min ohne ACK -> Befund; nach ACK alles leer.
  *   T2 wrapper_takt zaehlt direkt adressierte Events (scope agent:<name>) - vorher nie.
  *   PT1/PT2 pipeline_trace: 1 Punkt fehlt + 1 verwaist -> beide Befunde; ausfuehren -> parsed_at neuer.
@@ -238,19 +238,8 @@ try {
   const eNeu = await ev('all', 1);
   r = await ausf({ action: 'ereignisse', project: PRJ, ziel_agent: 'diag-neu', stunden: 72 });
   const srv = (r.agent_sicht?.server_offen ?? []).map((e) => Number(e.id));
-  const nurHook = (r.agent_sicht?.nur_im_hook ?? []).map((e) => Number(e.id));
   pruefe(r.success && srv.includes(eDirekt) && srv.includes(eNeu) && !srv.includes(eAlt) && r.befund.some((b) => /direkt adressierte/.test(b)),
     'E1 Server: Alt-Event vor Registrierung nicht offen, direkt adressiertes Event > 10 min ohne ACK gemeldet', r);
-  // E3/E4 (P15-T26): Hook-Sicht von ereignisse == Menge des ECHTEN Hooks (scripts/event-check.mjs, gleiche DB).
-  // Vorher stand in intern-diagnose-welle2.ts eine eigene, veraltete Kopie der Hook-SQL (ohne Sitzungsfilter).
-  const { execFileSync } = await import('node:child_process');
-  const echterHook = JSON.parse(execFileSync(process.execPath, [join(hier, 'event-check.mjs'), 'diag-neu', PRJ, process.env.DATABASE_URL], { encoding: 'utf8' }))
-    .map((e) => Number(e.id));
-  const ereignisHook = (r.agent_sicht?.hook_ids ?? []).map(Number);
-  pruefe(echterHook.length === 2 && JSON.stringify(ereignisHook.slice(0, 5)) === JSON.stringify(echterHook) && r.agent_sicht?.hook_offen === echterHook.length,
-    'E3 ereignisse-Hook-Sicht == echter Hook (Menge und Reihenfolge)', { echterHook, ereignisHook, hook_offen: r.agent_sicht?.hook_offen });
-  pruefe(nurHook.length === 0 && !r.befund.some((b) => /event-check\.mjs/.test(b)),
-    'E4 nur_im_hook leer: Hook und Server zeigen dieselben Events', { nurHook, befund: r.befund });
   await pool.query(`INSERT INTO agent_event_acks (event_id, agent_id) VALUES ($1, 'diag-neu'), ($2, 'diag-neu'), ($3, 'diag-neu')`, [eAlt, eDirekt, eNeu]);
   r = await ausf({ action: 'ereignisse', project: PRJ, ziel_agent: 'diag-neu', stunden: 72 });
   const f5 = await ausf({ action: 'ereignisse', ziel_agent: 'diag-neu' });
