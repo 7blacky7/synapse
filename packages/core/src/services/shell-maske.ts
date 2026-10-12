@@ -65,7 +65,7 @@ export function maskiereShellDaten<T>(daten:T,werte:readonly string[],steuerdate
     if(wert && typeof wert==='object' && !(wert instanceof Date))return Object.fromEntries(Object.entries(wert).map(([k,v])=>{
       if(!logdaten && control.has(k))return [k,v];
       const original=JSON.stringify({[k]:v}),safe=maskiereMcpJson(original,true);
-      if(safe!==original)try {maskiert+=(safe.match(/\[WERT\]/g)??[]).length-(original.match(/\[WERT\]/g)??[]).length;return [k,JSON.parse(safe)[k]];}catch {/* normales Feld */}
+      if(safe!==original)try {maskiert+=(safe.match(/\[WERT\]/g)??[]).length-(original.match(/\[WERT\]/g)??[]).length;return [k,walk(JSON.parse(safe)[k],logdaten||payload.has(k))];}catch {/* normales Feld */}
       return [k,walk(v,logdaten||payload.has(k))];
     }));
     return wert;
