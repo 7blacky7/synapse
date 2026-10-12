@@ -1,6 +1,8 @@
 /** P10-T42 Phase 1+2: reine Kandidaten/Gruppen, Jev-Bewertung; keine DB-Schreibzugriffe. */
 import {createHash} from 'node:crypto';
 import {maskiereShellDaten,maskiereShellText} from './shell-maske.js';
+import {sammleShellMaskenTreffer,type ShellMaskenTreffer,type ShellMaskenRegel} from './shell-masken-katalog.js';
+import {istShellGeheimnisName} from './mcp-json-maske.js';
 import {rufeJev,type JevAnfrage,type JevErgebnis} from './jev-client.js';
 import {jevPreisJeMio} from './jev-kosten.js';
 
@@ -12,6 +14,7 @@ export interface ShellAltGruppe {
   id:string;literal_hash:string;feld:string;schluessel:string;
   fundart:'literal'|'muster'|'offene_zuordnung';wertlaenge:number;
   kontext:string;bezuege:ShellAltBezug[];
+  regel:ShellMaskenRegel;name:string;zeile:number;fenster:string;struktur:string;konfiguration:boolean;literal_normales_wort:boolean;
 }
 export type ShellAltBewertung='geheimnis'|'beispiel'|'falsch'|'offen';
 export interface ShellAltEntscheidung {gruppe:string;bewertung:ShellAltBewertung;confidence:number|null;grund:string;}
@@ -24,96 +27,118 @@ const geprueft=new WeakMap<ShellAltGruppe,string>();
 const signatur=(g:ShellAltGruppe)=>hash(JSON.stringify(g));
 const feldOhneIndex=(s:string)=>s.replace(/\[\d+\]/g,'[]');
 
-/** Nur eindeutige Ersetzungen rekonstruieren. Mehrdeutige Anker sind kein automatisch schreibbarer Fund. */
-function ersetzteSpannen(roh:string,safe:string):Array<{start:number;wert:string}>|null {
-  const teile=safe.split(PLATZ),spannen:Array<{start:number;wert:string}>=[];
-  if(teile.length<2)return null;
-  let cursor=0;
-  for(let i=0;i<teile.length;i++){
-    if(!roh.startsWith(teile[i],cursor))return null;
-    cursor+=teile[i].length;
-    if(i===teile.length-1)break;
-    if(roh.startsWith(PLATZ,cursor)){cursor+=PLATZ.length;continue;}
-    const anker=teile[i+1];
-    if(!anker && i!==teile.length-2)return null;
-    const ende=anker?roh.indexOf(anker,cursor):roh.length;
-    if(ende<0 || (anker && roh.indexOf(anker,ende+anker.length)>=0))return null;
-    spannen.push({start:cursor,wert:roh.slice(cursor,ende)});cursor=ende;
+/** ±3 echte Feldzeilen; alle anderen Treffer bleiben [WERT], genau ein Treffer ist markiert. */
+function trefferFenster(roh:string,t:ShellMaskenTreffer,alle:readonly ShellMaskenTreffer[],werte:readonly string[]){
+ const lines=roh.split('\n'),zeile=roh.slice(0,t.start).split('\n').length;
+ const von=Math.max(0,zeile-4),bis=Math.min(lines.length,zeile+3),aus:string[]=[];
+ let offset=0;
+ for(let i=0;i<lines.length;i++){
+  const line=lines[i],end=offset+line.length;
+  if(i>=von&&i<bis){
+   const hits=alle.filter(h=>h.start<end&&h.ende>offset).map(h=>({h,start:Math.max(0,h.start-offset),ende:Math.min(line.length,h.ende-offset)}));
+   let text='',cursor=0,markPos=-1;
+   for(const hit of hits){
+    text+=maskiereShellText(line.slice(cursor,hit.start).replaceAll('⟦TREFFER⟧','[WERT]'),werte).text;
+    const selected=hit.h===t&&t.start>=offset&&t.start<=end;
+    if(selected)markPos=text.length;
+    text+=selected?'⟦TREFFER⟧':'[WERT]';cursor=hit.ende;
+   }
+   text+=maskiereShellText(line.slice(cursor).replaceAll('⟦TREFFER⟧','[WERT]'),werte).text;
+   // Lange UI-/JSON-Zeilen horizontal um den gewählten Treffer, niemals am Feldanfang abschneiden.
+   if(text.length>600){
+    const lo=markPos>=0?Math.max(0,markPos-280):0,hi=Math.min(text.length,lo+600);
+    text=(lo?'…':'')+text.slice(lo,hi)+(hi<text.length?'…':'');
+   }
+   aus.push((i+1)+': '+text);
   }
-  return cursor===roh.length?spannen:null;
+  offset=end+1;
+ }
+ return {zeile,fenster:aus.join('\n')};
 }
-
-/** Identische Literale nur mit gleichem Feld/Schluessel/Fundart zusammenlegen. Kein Literal in der Rueckgabe. */
-export function gruppiereShellAltbestand(zeilen:readonly ShellAltZeile[],werte:readonly string[]):ShellAltGruppe[] {
-  const gruppen=new Map<string,ShellAltGruppe>(),bekannt=new Set(werte);
-  for(const row of zeilen){
-    const safe=maskiereShellDaten(row.daten,werte,true).daten;
-    const aufnehmen=(roh:string,feld:string,schluessel:string,art:ShellAltGruppe['fundart'],kontext:string,pfad:string,ziel:ShellAltZiel)=>{
-      const literal_hash=hash(roh),kontextSafe=maskiereShellText(kontext,werte).text;
-      const feldSafe=maskiereShellText(feld,werte).text,nameSafe=maskiereShellText(schluessel,werte).text,
-        pfadSafe=maskiereShellText(pfad,werte).text;
-      const fundart=pfadSafe!==pfad?'offene_zuordnung':art;
-      // Gleiche Werte in echtem Einsatz und in Beispielen sind verschiedene Faelle.
-      const key=JSON.stringify([literal_hash,feldSafe,nameSafe,fundart,hash(kontextSafe)]);
-      let g=gruppen.get(key);
-      if(!g){g={id:hash(key),literal_hash,feld:feldSafe,schluessel:nameSafe,fundart,wertlaenge:roh.length,
-        kontext:kontextSafe.slice(0,1200),bezuege:[]};gruppen.set(key,g);ziele.set(g,[]);}
-      if(fundart!=='offene_zuordnung')ziele.get(g)!.push(ziel);
-      if(!g.bezuege.some(b=>b.tabelle===row.tabelle && b.id===row.id && b.pfad===pfadSafe))
-        g.bezuege.push({tabelle:row.tabelle,id:row.id,project:row.project,pfad:pfadSafe});
-    };
-    const walk=(roh:unknown,neu:unknown,pfad:string,weg:ShellAltWeg=[]):void=>{
-      if(typeof roh==='string' && /(?:^|\.)(?:result|args_preview)$/.test(pfad) && /^\s*[\[{]/.test(roh)){
-        try{const obj=JSON.parse(roh);walk(obj,maskiereShellDaten(obj,werte,true).daten,pfad,[...weg,null]);return;}catch{/* freier Logtext */}
-      }
-      if(JSON.stringify(roh)===JSON.stringify(neu))return;
-      if(typeof roh==='string' && typeof neu==='string'){
-        if(/^\s*[\[{]/.test(roh) && /^\s*[\[{]/.test(neu))try{walk(JSON.parse(roh),JSON.parse(neu),pfad,[...weg,null]);return;}catch{/* freie Logzeile */}
-        const spannen=ersetzteSpannen(roh,neu),feld=feldOhneIndex(pfad);
-        if(!spannen){aufnehmen(roh,feld,feld.split('.').pop()??feld,'offene_zuordnung',neu,pfad,{tabelle:row.tabelle,id:row.id,pfad,weg,start:null,ende:null});return;}
-        for(const s of spannen){
-          const vor=roh.slice(0,s.start),kv=/([A-Za-z_][A-Za-z0-9_.-]*)\s*[:=]\s*["']?$/.exec(vor);
-          const schluessel=kv?.[1]??(/Bearer\s+$/i.test(vor)?'Bearer':feld.split('.').pop()??feld);
-          aufnehmen(s.wert,feld,schluessel,bekannt.has(s.wert)?'literal':'muster',neu,pfad,{tabelle:row.tabelle,id:row.id,pfad,weg,start:s.start,ende:s.start+s.wert.length});
-        }
-        return;
-      }
-      if(Array.isArray(roh) && Array.isArray(neu)){roh.forEach((v,i)=>walk(v,neu[i],pfad+'['+i+']',[...weg,i]));return;}
-      if(roh && neu && typeof roh==='object' && typeof neu==='object' && !Array.isArray(roh) && !Array.isArray(neu)){
-        for(const [k,v]of Object.entries(roh))walk(v,(neu as Record<string,unknown>)[k],pfad?pfad+'.'+k:k,[...weg,k]);
-        return;
-      }
-      // Ein ganzer JSON-Feldwert wurde ersetzt (auch Zahl/Objekt). Hash bleibt intern.
-      const feld=feldOhneIndex(pfad),text=JSON.stringify(roh)??String(roh);
-      aufnehmen(text,feld,feld.split('.').pop()??feld,'muster',JSON.stringify(neu)??PLATZ,pfad,{tabelle:row.tabelle,id:row.id,pfad,weg,start:null,ende:null});
-    };
-    walk(row.daten,safe,'');
-  }
-  const aus=[...gruppen.values()];
-  for(const g of aus)geprueft.set(g,signatur(g));
-  return aus;
-}
-
-function anfrage(g:ShellAltGruppe,opt:{project:string|null;agent_id?:string}):JevAnfrage {
-  if(geprueft.get(g)!==signatur(g))throw new Error('Nur unveraenderte, von der gemeinsamen Maske erzeugte Fundgruppen auswerten');
-  const state=maskiereShellDaten({
-    task:'Classify one historical shell-output masking match; never infer a secret from its hash.',
-    feld:g.feld,schluessel:g.schluessel,fundart:g.fundart,wertlaenge:g.wertlaenge,kontext:g.kontext,
-    hinweis:'The value is always [WERT]. Missing evidence requires keine_passt. No cleanup is authorized by this classification.'
-  },[],true).daten;
-  return {funktion:'entscheidung',project:opt.project,agent_id:opt.agent_id,state,questions:{bewertung:{
-    type:'choice',instructions:'Classify the masked finding using only the supplied field name and context. Pick exactly one option. Missing evidence: keine_passt.',
-    criteria:{
-      geheimnis:'Choose when the context identifies an actual credential or confidential value that should be redacted.',
-      beispiel:'Choose when the context explicitly identifies a placeholder or illustrative example rather than an actual credential.',
-      falsch:'Choose when a public configuration value or ordinary text was incorrectly matched as confidential.',
-      keine_passt:'Choose when none applies or the masked evidence is insufficient to distinguish the other options.'
+/** Gleiches Literal/Feld/Kategorie plus ausgewähltes Fenster; keine Rohwerte in Gruppen. */
+export function gruppiereShellAltbestand(zeilen:readonly ShellAltZeile[],werte:readonly string[]):ShellAltGruppe[]{
+ const gruppen=new Map<string,ShellAltGruppe>(),strukturCache=new WeakMap<object,string>();
+ const strukturVon=(p:unknown)=>{if(!p||typeof p!=='object')return '';let s=strukturCache.get(p);if(s===undefined){s=maskiereShellText(JSON.stringify(p),werte).text.slice(0,800);strukturCache.set(p,s);}return s;};
+ for(const row of zeilen){
+  const safe=maskiereShellDaten(row.daten,werte,true).daten;
+  const aufnehmen=(roh:string,pfad:string,ziel:ShellAltZiel,t:ShellMaskenTreffer,fenster:string,zeile:number,art:ShellAltGruppe['fundart'],struktur:string)=>{
+   const feld=feldOhneIndex(pfad),name=t.name??feld.split('.').pop()??feld;
+   const feldSafe=maskiereShellText(feld,werte).text,nameSafe=maskiereShellText(name,werte).text,pfadSafe=maskiereShellText(pfad,werte).text;
+   const fundart=pfadSafe===pfad?art:'offene_zuordnung',literal_hash=hash(roh);
+   const key=JSON.stringify([literal_hash,feldSafe,nameSafe,fundart,t.regel,zeile,hash(fenster),hash(struktur)]);
+   let g=gruppen.get(key);
+   if(!g){
+    g={id:hash(key),literal_hash,feld:feldSafe,schluessel:nameSafe,name:nameSafe,regel:t.regel,zeile,fenster,
+     kontext:fenster,struktur,fundart,wertlaenge:roh.length,konfiguration:t.konfiguration,literal_normales_wort:t.literal_normales_wort,bezuege:[]};
+    gruppen.set(key,g);ziele.set(g,[]);
+   }
+   if(fundart!=='offene_zuordnung')ziele.get(g)!.push(ziel);
+   if(!g.bezuege.some(b=>b.tabelle===row.tabelle&&b.id===row.id&&b.pfad===pfadSafe))g.bezuege.push({tabelle:row.tabelle,id:row.id,project:row.project,pfad:pfadSafe});
+  };
+  const walk=(roh:unknown,neu:unknown,pfad:string,weg:ShellAltWeg=[],parents:unknown[]=[]):void=>{
+   if(typeof roh==='string'&&/(?:^|\.)(?:result|args_preview)$/.test(pfad)&&/^\s*[\[{]/.test(roh)){
+    try{const obj=JSON.parse(roh);walk(obj,maskiereShellDaten(obj,werte,true).daten,pfad,[...weg,null],parents);return;}catch{/* freier Logtext */}
+   }
+   if(JSON.stringify(roh)===JSON.stringify(neu))return;
+   if(typeof roh==='string'&&typeof neu==='string'&&/^\s*[\[{]/.test(roh)&&/^\s*[\[{]/.test(neu)){
+    try{walk(JSON.parse(roh),JSON.parse(neu),pfad,[...weg,null],parents);return;}catch{/* freie Logzeile */}
+   }
+   const teile=pfad.split('.').map(p=>p.replace(/\[\d+\]/g,''));
+   const direct=teile[teile.length-1]??'',sensibel=[...teile].reverse().find(istShellGeheimnisName);
+   const strukturSafe=parents.slice(-2).reverse().map(strukturVon).join('\n');
+   if(typeof roh==='string'&&typeof neu==='string'){
+    const meta=sensibel?{name:sensibel,strukturiert:true}:{name:direct};
+    let hits=sammleShellMaskenTreffer(roh,werte,meta);
+    if(sensibel&&sensibel!==direct)hits=hits.map(h=>({...h,regel:'mcp_json_feld' as const,name:sensibel}));
+    if(!hits.length){
+     const t:ShellMaskenTreffer={regel:'mcp_json_feld',name:sensibel??direct,start:0,ende:roh.length,konfiguration:false,literal_normales_wort:false};
+     aufnehmen(roh,pfad,{tabelle:row.tabelle,id:row.id,pfad,weg,start:null,ende:null},t,'1: ⟦TREFFER⟧ (maskierte Zuordnung unlesbar)',1,'offene_zuordnung',strukturSafe);return;
     }
-  }}};
+    for(const t of hits){
+     const f=trefferFenster(roh,t,hits,werte);
+     aufnehmen(roh.slice(t.start,t.ende),pfad,{tabelle:row.tabelle,id:row.id,pfad,weg,start:t.start,ende:t.ende},t,f.fenster,f.zeile,t.regel==='env_literal'?'literal':'muster',strukturSafe);
+    }
+    return;
+   }
+   if(Array.isArray(roh)&&Array.isArray(neu)){roh.forEach((v,i)=>walk(v,neu[i],pfad+'['+i+']',[...weg,i],[...parents,neu]));return;}
+   if(roh&&neu&&typeof roh==='object'&&typeof neu==='object'&&!Array.isArray(roh)&&!Array.isArray(neu)){
+    for(const [k,v]of Object.entries(roh))walk(v,(neu as Record<string,unknown>)[k],pfad?pfad+'.'+k:k,[...weg,k],[...parents,neu]);return;
+   }
+   const text=JSON.stringify(roh)??String(roh);
+   const t:ShellMaskenTreffer={regel:sensibel===direct?'json_geheimname':'mcp_json_feld',name:sensibel??direct,start:0,ende:text.length,konfiguration:false,literal_normales_wort:false};
+   aufnehmen(text,pfad,{tabelle:row.tabelle,id:row.id,pfad,weg,start:null,ende:null},t,'1: '+(t.name??direct)+'=⟦TREFFER⟧',1,'muster',strukturSafe);
+  };
+  walk(row.daten,safe,'');
+ }
+ const aus=[...gruppen.values()];for(const g of aus)geprueft.set(g,signatur(g));return aus;
+}
+export function shellAltIstDeterministisch(g:ShellAltGruppe):boolean{
+ return g.fundart!=='offene_zuordnung'&&(['url_passwort','bearer','sshpass_passwort'].includes(g.regel)||(g.regel==='kv_geheimname'&&g.konfiguration));
+}
+/** Trefferkontext-v2: alte Marker werden unter ihrer bisherigen Version erhalten. */
+export const SHELL_ALT_TORE={geheimnis:0.6,beispiel:0.7,falsch:0.9} as const;
+
+function anfrage(g:ShellAltGruppe,opt:{project:string|null;agent_id?:string}):JevAnfrage{
+ if(geprueft.get(g)!==signatur(g))throw new Error('Nur unveränderte geprüfte Fundgruppen auswerten');
+ const state=maskiereShellDaten({
+  task:'Classify only the selected match in historical shell output. The matched value is not revealed.',
+  regel:g.regel,name:g.name,zeile:g.zeile,feld:g.feld,wertlaenge:g.wertlaenge,fenster:g.fenster,struktur:g.struktur,
+  literal_normales_wort:g.literal_normales_wort,
+  hinweis:'The selected match is ⟦TREFFER⟧. Other redactions are [WERT]. Classify the selected match, not every redaction. No cleanup is authorized.'
+ },[],true).daten;
+ return {funktion:'entscheidung',project:opt.project,agent_id:opt.agent_id,state,questions:{bewertung:{
+  type:'choice',instructions:'Judge the selected match from its category, field path, name, numbered ±3-line window and masked structure. Consider source code, UI/XML dumps, logs, CLI help, docs, config/env and auth headers. Pick exactly one option.',
+  criteria:{
+   geheimnis:'A credential for a real system being set or printed: a password, token or API key in env/config, auth header, connection string or URL. env_literal means a known configured value matched; plain-word occurrences in UI/prose are not evidence of a credential. json_geheimname/mcp_json_feld means the field name triggered masking, not proof the value is a credential.',
+   beispiel:'The selected match is a placeholder, template, documentation snippet, test fixture or illustrative example.',
+   falsch:'The selected match is normal source code, UI/XML attributes, log/status text, identifiers, hashes, key IDs, flags, numbers, paths, tokenizer data or prose rather than a credential.',
+   keine_passt:'Only when the selected window/structure is too short, unlocatable or garbled to classify.'
+  }
+ }}};
 }
 /** Schätzung ist nur informativ; tatsächliche usage.cost wird vom gemeinsamen Jev-Client gebucht. */
 export function schaetzeShellAltbestandKosten(gruppen:readonly ShellAltGruppe[]){
-  const input_tokens_geschaetzt=gruppen.reduce((n,g)=>n+Math.ceil(JSON.stringify(anfrage(g,{project:null})).length/4),0);
+  const input_tokens_geschaetzt=gruppen.reduce((n,g)=>n+(shellAltIstDeterministisch(g)?0:Math.ceil(JSON.stringify(anfrage(g,{project:null})).length/4)),0);
   const preis_je_mio=jevPreisJeMio();
   return {gruppen:gruppen.length,input_tokens_geschaetzt,preis_je_mio,usd_geschaetzt:input_tokens_geschaetzt*preis_je_mio/1e6,kostentor:false as const};
 }
@@ -123,6 +148,8 @@ export async function bewerteShellAltbestand(gruppen:readonly ShellAltGruppe[],
   const bewertungen:ShellAltEntscheidung[]=[],kosten=schaetzeShellAltbestandKosten(gruppen);
   let usd=0;
   for(const g of gruppen){
+    if(geprueft.get(g)!==signatur(g))throw new Error('Nur unveränderte geprüfte Fundgruppen auswerten');
+    if(shellAltIstDeterministisch(g)){bewertungen.push({gruppe:g.id,bewertung:'geheimnis',confidence:1,grund:'deterministisch'});continue;}
     const jr=await(deps.rufeJev??rufeJev)(anfrage(g,opt));
     if(!jr.ok){
       if(jr.grund==='budget'){
@@ -136,7 +163,7 @@ export async function bewerteShellAltbestand(gruppen:readonly ShellAltGruppe[],
     const antwort=jr.daten.answers?.bewertung,choice=antwort?.choice,c=antwort?.confidence;
     const confidence=typeof c==='number' && Number.isFinite(c) && c>=0 && c<=1?c:null;
     const gueltig=choice==='geheimnis'||choice==='beispiel'||choice==='falsch';
-    const passt=gueltig && confidence!==null && confidence>=0.7 && g.fundart!=='offene_zuordnung';
+    const passt=gueltig && confidence!==null && confidence>=SHELL_ALT_TORE[choice as keyof typeof SHELL_ALT_TORE] && g.fundart!=='offene_zuordnung';
     bewertungen.push({gruppe:g.id,bewertung:passt?choice as ShellAltBewertung:'offen',confidence,
       grund:passt?'jev':g.fundart==='offene_zuordnung'?'zuordnung_mehrdeutig':choice==='keine_passt'?'keine_passt':'unter_tor_oder_ungueltig'});
   }
@@ -171,7 +198,7 @@ export function planeShellAltbestand(rows:readonly ShellAltZeile[],werte:readonl
  const gruppen=gruppiereShellAltbestand(rows,werte),proZeile=new Map<string,Array<{ziel:ShellAltZiel;gruppe:string}>>();
  for(const g of gruppen){
   const b=bewertet.get(g.id);
-  if(b?.bewertung!=='geheimnis'||b.confidence===null||b.confidence<0.7||b.confidence>1||!Number.isFinite(b.confidence)||g.fundart==='offene_zuordnung')continue;
+  if(b?.bewertung!=='geheimnis'||b.confidence===null||b.confidence<SHELL_ALT_TORE.geheimnis||b.confidence>1||!Number.isFinite(b.confidence)||g.fundart==='offene_zuordnung')continue;
   for(const ziel of ziele.get(g)??[]){
    const key=ziel.tabelle+':'+ziel.id;if(!proZeile.has(key))proZeile.set(key,[]);
    proZeile.get(key)!.push({ziel,gruppe:g.id});

@@ -9,8 +9,8 @@ import {gruppiereShellAltbestand,bewerteShellAltbestand,planeShellAltbestand,she
 export {SHELL_ALT_SCHEMA_SQL} from '../db/shell-altbestand-schema.js';
 
 /** Cache folgt automatisch dem kompilierten gemeinsamen Regel-/Zuordnungsstand. */
-export const SHELL_ALT_REGELVERSION=createHash('sha256').update(
- ['env-maske.js','mcp-json-maske.js','shell-maske.js','shell-altbestand.js'].map(p=>readFileSync(new URL(p,import.meta.url),'utf8')).join('\n')).digest('hex');
+export const SHELL_ALT_REGELVERSION=createHash('sha256').update('treffer-kontext-v2\n').update(
+ ['shell-masken-katalog.js','env-maske.js','mcp-json-maske.js','shell-maske.js','shell-altbestand.js'].map(p=>readFileSync(new URL(p,import.meta.url),'utf8')).join('\n')).digest('hex');
 const felder={shell_jobs:['output','tail','message','error'],tool_calls:['result','args_preview','error']} as const;
 const row=(table:ShellAltZeile['tabelle'],r:Record<string,unknown>):ShellAltZeile=>({
  tabelle:table,id:String(r.id),project:r.project as string|null,
@@ -48,9 +48,9 @@ export async function markiereShellAltbestand(rows:readonly ShellAltZeile[],wert
   if(r.status==='budget_pause')return {status:'budget_pause' as const,gruppen:groups.length,neue_gruppen,markierte_zeilen:0,geaendert:0,verbleibend:groups.filter(x=>!entscheidungen.has(x.id)).length,usd};
   const b=r.bewertungen[0]!;
   // Alle gespeicherten Texte stammen ausschließlich aus dem geprüften maskierten Gruppenobjekt/Grundcode.
-  await getPool().query(`INSERT INTO shell_altbestand_gruppen(regelversion,gruppen_id,literal_hash,feld,schluessel,fundart,kontext,wertlaenge,bewertung,confidence,grund)
-   VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) ON CONFLICT DO NOTHING`,
-   [SHELL_ALT_REGELVERSION,g.id,g.literal_hash,g.feld,g.schluessel,g.fundart,g.kontext,g.wertlaenge,b.bewertung,b.confidence,b.grund]);
+  await getPool().query(`INSERT INTO shell_altbestand_gruppen(regelversion,gruppen_id,literal_hash,feld,schluessel,fundart,kontext,wertlaenge,bewertung,confidence,grund,regel,name,zeile,fenster,struktur,konfiguration,literal_normales_wort)
+   VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18) ON CONFLICT DO NOTHING`,
+   [SHELL_ALT_REGELVERSION,g.id,g.literal_hash,g.feld,g.schluessel,g.fundart,g.kontext,g.wertlaenge,b.bewertung,b.confidence,b.grund,g.regel,g.name,g.zeile,g.fenster,g.struktur,g.konfiguration,g.literal_normales_wort]);
   entscheidungen.set(g.id,b);neue_gruppen++;
  }
  let markierte_zeilen=0,geaendert=0;

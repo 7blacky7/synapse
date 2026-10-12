@@ -1,6 +1,8 @@
 const PLATZHALTER = '[WERT]';
 export const MCP_JSON_PFAD_REGEX_SQL = '(^|/)\\.mcp\\.json(\\.[^/]*)?$';
 const SENSIBLER_SCHLUESSEL = /(?:token|key|secret|password|authorization)/i;
+export const MCP_JSON_FELD_PREFIX=/(?<!\\)("(?:\\.|[^"\\])*")(\s*:\s*)/g;
+export const MCP_JSON_FELD_WERT=/^("(?:\\.|[^"\\])*"|[^,}\]]+)/;
 const SENSIBLE_BEREICHE = new Set(['env', 'headers']);
 /** Shell-Muster und Literalquellen nutzen genau dieselbe Namensregel. */
 export const SHELL_LITERAL_MIN_LAENGE=8;
@@ -13,7 +15,7 @@ export function istShellGeheimnisName(name:string):boolean{
   if(/^(?:input|output|total|cached|prompt|completion)_tokens(?:_|$)/.test(norm))return false;
   return /(?:^|[_.-])(?:keys?|tokens?|secrets?|password|pass|pwd|auth|authorization|credentials?)(?:$|[_.-])/.test(norm);
 }
-const URL_ZUGANGSDATEN = /(?<![a-z0-9+.-])([a-z][a-z0-9+.-]*:\/\/)[^/@?#:\s]+:[^/@?#\s]*@/gi;
+export const URL_ZUGANGSDATEN = /(?<![a-z0-9+.-])([a-z][a-z0-9+.-]*:\/\/)[^/@?#:\s]+:[^/@?#\s]*@/gi;
 
 export function istMcpJsonDatei(pfad: string | null | undefined): boolean {
   if (typeof pfad !== 'string' || pfad === '') return false;
@@ -220,10 +222,10 @@ export function maskiereMcpJsonFragment(text: string, shell = false): string {
   const lines = text.split('\n').map((line) => {
     const edits:Array<{von:number;bis:number;text:string}>=[];
     // Nur echte Feld-Praefixe scannen; kein KEY-Suchvorlauf durch lange zitierte Werte.
-    for(const m of line.matchAll(/(?<!\\)("(?:\\.|[^"\\])*")(\s*:\s*)/g)) {
+    for(const m of line.matchAll(MCP_JSON_FELD_PREFIX)) {
       let key='';try{key=JSON.parse(m[1]);}catch{/* unvollstaendiger Feldname */}
       if(!(shell ? istShellGeheimnisName(key) : SENSIBLER_SCHLUESSEL.test(key)))continue;
-      const von=m.index!+m[0].length, value=/^("(?:\\.|[^"\\])*"|[^,}\]]+)/.exec(line.slice(von));
+      const von=m.index!+m[0].length, value=MCP_JSON_FELD_WERT.exec(line.slice(von));
       if(value)edits.push({von,bis:von+value[0].length,text:JSON.stringify(PLATZHALTER)});
     }
     const disjunkt=edits.filter((e,i)=>!edits.slice(0,i).some(v=>e.von<v.bis));

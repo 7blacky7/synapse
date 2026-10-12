@@ -8,7 +8,17 @@ const {getPool,closePool}=await import('../dist/db/client.js');
 const pool=getPool(),project='test-t42-persist-'+randomUUID(),secret='real-fixture-'+randomUUID(),example='example-fixture-long',publicValue='public-value';
 const hash=s=>createHash('sha256').update(s).digest('hex');
 try{
+ // Bestehende Marker bleiben bei erneuter/additiver DDL unverändert (nur eigene Testzeile).
  await pool.query(mod.SHELL_ALT_SCHEMA_SQL);
+ const legacyVersion='legacy-test-'+randomUUID(),legacyId=randomUUID();
+ await pool.query("INSERT INTO shell_altbestand_gruppen(regelversion,gruppen_id,literal_hash,feld,schluessel,fundart,kontext,wertlaenge,bewertung,confidence,grund) VALUES($1,$2,'fake-hash','output','PUBLIC_FLAG','literal','maskierter Alt-Kontext',9,'falsch',0.97,'legacy')",[legacyVersion,legacyId]);
+ try{
+  const beforeLegacy=(await pool.query('SELECT * FROM shell_altbestand_gruppen WHERE regelversion=$1 AND gruppen_id=$2',[legacyVersion,legacyId])).rows[0];
+  await pool.query(mod.SHELL_ALT_SCHEMA_SQL);
+  const afterLegacy=(await pool.query('SELECT * FROM shell_altbestand_gruppen WHERE regelversion=$1 AND gruppen_id=$2',[legacyVersion,legacyId])).rows[0];
+  assert.deepEqual(afterLegacy,beforeLegacy,'alte Bewertungen/Marker unangetastet');
+  assert.equal(afterLegacy.regel,'legacy');assert.equal(afterLegacy.zeile,null);
+ }finally{await pool.query('DELETE FROM shell_altbestand_gruppen WHERE regelversion=$1 AND gruppen_id=$2',[legacyVersion,legacyId]);}
  await pool.query('INSERT INTO projects(name,hostname,path,enabled) VALUES($1,$2,$3,true)',[project,'test-host','/virtual/test']);
  const output='TOKEN='+secret+'\nExample: TOKEN='+example+'\nPUBLIC_FLAG='+publicValue;
  const job=(await pool.query("INSERT INTO shell_jobs(project,command,status,output,tail) VALUES($1,'fixture','done',$2,'[]') RETURNING id",[project,output])).rows[0].id;
@@ -46,8 +56,8 @@ try{
  // Gate/Mehrdeutigkeit bleibt offen, Budgetpause ist explizit.
  const ambiguous={tabelle:'shell_jobs',id:'fake-ambig',project,daten:{output:'x '+secret+' y '+secret+' y '}};
  const groups=pure.gruppiereShellAltbestand([ambiguous],werte);
- assert(groups.some(g=>g.fundart==='offene_zuordnung'));
- assert.equal(pure.planeShellAltbestand([ambiguous],werte,groups.map(g=>({gruppe:g.id,bewertung:'geheimnis',confidence:0.99,grund:'fake'}))).length,0);
+ assert(groups.every(g=>g.fundart==='literal'),'Katalogspannen statt mehrdeutiger Textanker');
+ const formerlyAmbiguous=pure.planeShellAltbestand([ambiguous],werte,groups.map(g=>({gruppe:g.id,bewertung:'geheimnis',confidence:0.99,grund:'fake'})));assert.equal(formerlyAmbiguous.length,1);assert.equal(formerlyAmbiguous[0].maskiert,2);
  const low=pure.gruppiereShellAltbestand([{...ambiguous,daten:{output:'TOKEN='+secret}}],werte);
  assert.equal(pure.planeShellAltbestand([{...ambiguous,daten:{output:'TOKEN='+secret}}],werte,low.map(g=>({gruppe:g.id,bewertung:'geheimnis',confidence:0.2,grund:'fake'}))).length,0);
 
@@ -67,7 +77,7 @@ try{
  }
  // Jev-Budget stoppt explizit und behält schon persistierte Ergebnisse.
  const budgetSecret='budget-fake-'+randomUUID();
- const budgetJob=(await pool.query("INSERT INTO shell_jobs(project,command,status,output) VALUES($1,'budget-fixture','done',$2) RETURNING id",[project,'TOKEN='+budgetSecret])).rows[0].id;
+ const budgetJob=(await pool.query("INSERT INTO shell_jobs(project,command,status,output) VALUES($1,'budget-fixture','done',$2) RETURNING id",[project,'log TOKEN='+budgetSecret])).rows[0].id;
  let paused=false;
  const budget=await mod.markiereShellAltbestand((await read()).filter(r=>r.id===budgetJob),[budgetSecret],{project},{rufeJev:async()=>({ok:false,grund:'budget',message:'fake'}),beiBudget:()=>{paused=true;}});
  assert.equal(budget.status,'budget_pause');assert(paused);assert(budget.verbleibend>0);

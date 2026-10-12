@@ -1,4 +1,4 @@
-/** P10-T42: gemeinsame additive Marker-DDL für Start und TestDB. */
+/** P10-T42: gemeinsame additive Marker-DDL für Start und TestDB, inklusive v2-Kontext. */
 export const SHELL_ALT_SCHEMA_SQL = `
 -- P10-T42: additive Marker für Shell-Altbestand, niemals Rohwerte.
 CREATE TABLE IF NOT EXISTS shell_altbestand_gruppen (
@@ -21,4 +21,13 @@ CREATE TABLE IF NOT EXISTS shell_altbestand_bezuege (
 );
 CREATE INDEX IF NOT EXISTS idx_shell_altbestand_zeile ON shell_altbestand_bezuege(regelversion,tabelle,zeilen_id,status);
 CREATE INDEX IF NOT EXISTS idx_shell_altbestand_project ON shell_altbestand_bezuege(project,status);
+
+-- P10-T42 Trefferkontext v2: alte Bewertungen/Marker bleiben mit Regel legacy nachvollziehbar.
+ALTER TABLE shell_altbestand_gruppen ADD COLUMN IF NOT EXISTS regel TEXT NOT NULL DEFAULT 'legacy';
+ALTER TABLE shell_altbestand_gruppen ADD COLUMN IF NOT EXISTS name TEXT;
+ALTER TABLE shell_altbestand_gruppen ADD COLUMN IF NOT EXISTS zeile INTEGER CHECK (zeile > 0);
+ALTER TABLE shell_altbestand_gruppen ADD COLUMN IF NOT EXISTS fenster TEXT;
+ALTER TABLE shell_altbestand_gruppen ADD COLUMN IF NOT EXISTS struktur TEXT;
+ALTER TABLE shell_altbestand_gruppen ADD COLUMN IF NOT EXISTS konfiguration BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE shell_altbestand_gruppen ADD COLUMN IF NOT EXISTS literal_normales_wort BOOLEAN NOT NULL DEFAULT false;
 `;

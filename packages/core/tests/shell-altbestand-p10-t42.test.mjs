@@ -7,7 +7,7 @@ const {getPool,closePool}=await import('../dist/db/client.js');
 const pool=getPool(),project='test-p10-t42-'+randomUUID(),secret='private-fixture-'+randomUUID();
 try{
  await pool.query('INSERT INTO projects(name,hostname,path,enabled) VALUES($1,$2,$3,true)',[project,'test-host','/virtual/test']);
- const fixtures=['TOKEN='+secret,'TOKEN='+secret,'PUBLIC_FLAG=ordinary-public-long-value','Example: TOKEN=example-password','AUTH=ambiguous'];
+ const fixtures=['TOKEN='+secret,'TOKEN='+secret,'PUBLIC_FLAG=ordinary-public-long-value','Example: TOKEN=example-password','unclear AUTH=ambiguous'];
  for(const output of fixtures)await pool.query("INSERT INTO shell_jobs(project,command,status,output,tail) VALUES($1,'own-fixture','done',$2,'[]'::jsonb)",[project,output]);
  const before=(await pool.query('SELECT id,output FROM shell_jobs WHERE project=$1 ORDER BY created_at,id',[project])).rows;
  assert(before.some(r=>r.output.includes(secret)),'Positivkontrolle: alter Klartext vor Auswertung vorhanden');
@@ -22,11 +22,11 @@ try{
  const fake=async a=>{
    sent.push(a);
    assert(!JSON.stringify(a).includes(secret));assert(!JSON.stringify(a).includes('example-password'));
-   const s=a.state,choice=s.kontext.includes('Example:')?'beispiel':s.schluessel==='PUBLIC_FLAG'?'falsch':s.schluessel==='AUTH'?'keine_passt':'geheimnis';
+   const s=a.state,choice=s.fenster.includes('Example:')?'beispiel':s.name==='PUBLIC_FLAG'?'falsch':s.name==='AUTH'?'keine_passt':'geheimnis';
    return {ok:true,daten:{answers:{bewertung:{choice,confidence:0.95}}},dauer_ms:0,modell:'fake',kosten:{usd:0.00001,quelle:'antwort',input_tokens:200,output_tokens:0}};
  };
  const r=await mod.bewerteShellAltbestand(gruppen,{project,agent_id:'sol-1-test'},{rufeJev:fake});
- assert.equal(r.status,'fertig');assert.equal(sent.length,gruppen.length,'jede Gruppe, keine Kosten-/Stichprobengrenze');
+ assert.equal(r.status,'fertig');assert.equal(sent.length,gruppen.filter(g=>!mod.shellAltIstDeterministisch(g)).length,'jede Jev-pflichtige Gruppe, deterministische ohne Aufruf');
  assert(r.bewertungen.some(b=>b.bewertung==='geheimnis'));
  assert(r.bewertungen.some(b=>b.bewertung==='beispiel'));
  assert(r.bewertungen.some(b=>b.bewertung==='falsch'));
@@ -37,10 +37,10 @@ try{
  const parsed=mod.gruppiereShellAltbestand([{tabelle:'tool_calls',id:'eigenes-json',project,daten:{result:JSON.stringify({id:'11111111-1111-4111-8111-111111111111',output:'TOKEN='+secret})}}],[secret,'11111111-1111-4111-8111-111111111111']);
  assert(parsed.every(g=>!g.feld.endsWith('.id')),'opaque Result-Metadaten werden wie gemeinsame Maske behandelt');
  const low=await mod.bewerteShellAltbestand(gruppen,{project},{rufeJev:async()=>({ok:true,daten:{answers:{bewertung:{choice:'geheimnis',confidence:0.2}}},dauer_ms:0,modell:'fake',kosten:{usd:0,quelle:'keine',input_tokens:null,output_tokens:null}})});
- assert(low.bewertungen.every(b=>b.bewertung==='offen'));
+ assert(low.bewertungen.every(b=>b.grund==='deterministisch'?b.bewertung==='geheimnis':b.bewertung==='offen'));
  let pause=false;
  const paused=await mod.bewerteShellAltbestand(gruppen,{project},{rufeJev:async()=>({ok:false,grund:'budget',message:'Fake-Budget-Pause'}),beiBudget:()=>{pause=true;}});
- assert.equal(paused.status,'budget_pause');assert.equal(paused.verbleibend,gruppen.length);assert(pause,'Budget-Bremse explizit gemeldet');
+ assert.equal(paused.status,'budget_pause');assert.equal(paused.verbleibend,gruppen.length-paused.bewertungen.length);assert(pause,'Budget-Bremse explizit gemeldet');
  const maskierte=rows.map(row=>({...row,daten:{output:row.daten.output.replaceAll(secret,'[WERT]')}})).filter(row=>row.daten.output==='TOKEN=[WERT]');
  assert.equal(mod.gruppiereShellAltbestand(maskierte,[secret]).length,0,'zweiter Lauf bereits maskierter Zeilen erzeugt keine Kandidaten');
  const kosten=mod.schaetzeShellAltbestandKosten(gruppen);
@@ -54,10 +54,10 @@ try{
  const keySecret=mod.gruppiereShellAltbestand([{tabelle:'tool_calls',id:'key-fixture',project,daten:{result:{[secret]:secret}}}],[secret]);
  assert(!JSON.stringify(keySecret).includes(secret),'Geheimnis in Feldnamen/Bezugspfaden ebenfalls nicht exportieren');
  const ambig=mod.gruppiereShellAltbestand([{tabelle:'shell_jobs',id:'ambig',project,daten:{output:'x '+secret+' y '+secret+' y '}}],[secret]);
- assert(ambig.some(g=>g.fundart==='offene_zuordnung'));
+ assert(ambig.every(g=>g.fundart==='literal'),'präzise Katalogspannen lösen früher mehrdeutige Anker');
  const ung=await mod.bewerteShellAltbestand(ambig,{project},{rufeJev:fake});
- assert(ung.bewertungen.every(b=>b.bewertung==='offen'),'mehrdeutige Ersetzungszuordnung bleibt trotz hoher Jev-Confidence offen');
- const viele=mod.gruppiereShellAltbestand(Array.from({length:1501},(_,i)=>({tabelle:'shell_jobs',id:'many-'+i,project,daten:{output:'TOKEN=fake-value-'+i}})),[]);
+ assert(ung.bewertungen.every(b=>b.bewertung==='geheimnis'),'eindeutige bestätigte Literale sind jetzt zuordenbar');
+ const viele=mod.gruppiereShellAltbestand(Array.from({length:1501},(_,i)=>({tabelle:'shell_jobs',id:'many-'+i,project,daten:{output:'log TOKEN=fake-value-'+i}})),[]);
  let vieleCalls=0;
  const alle=await mod.bewerteShellAltbestand(viele,{project},{rufeJev:async a=>{vieleCalls++;return fake(a);}});
  assert.equal(vieleCalls,1501);assert.equal(alle.bewertungen.length,1501,'kein 200/500/1000-Gruppenlimit');
