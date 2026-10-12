@@ -59,7 +59,9 @@ function bekannteAbweichung(label, nochDa, grund) {
 // lageabhaengig erscheinen und bewusst NICHT zum Werkzeug-Schema gehoeren —
 // wer sie mitvergleicht, macht den Lauf flatterhaft.
 const RAHMEN = new Set(['success', 'project', 'hinweis_agent_id', 'skill_suggestions', 'skill_hook_metrics', 'shell_activity', 'unread_channels']);
-const kern = (objekt) => Object.keys(objekt ?? {}).filter((k) => !RAHMEN.has(k)).sort();
+// P10-T51 (K3): die MCP-Huelle laesst null-Felder weg, der stdio-Handler liefert sie noch;
+// ein Feld mit null zaehlt deshalb wie ein fehlendes.
+const kern = (objekt) => Object.keys(objekt ?? {}).filter((k) => !RAHMEN.has(k) && objekt[k] !== null && objekt[k] !== undefined).sort();
 const gleich = (a, b) => a.length === b.length && a.every((k, i) => k === b[i]);
 
 // Selbsttest: ein Vergleich, der nie rot werden kann, ist keiner.

@@ -274,6 +274,33 @@ export async function searchThoughts(
   return ergebnis;
 }
 
+/** P10-T51 (N2): Laenge der Vorschau je Suchtreffer. */
+export const THOUGHT_VORSCHAU_ZEICHEN = 300;
+
+/** Erste THOUGHT_VORSCHAU_ZEICHEN Zeichen, mit Auslassungszeichen, wenn gekuerzt. */
+export function thoughtVorschau(content: string | null | undefined, max: number = THOUGHT_VORSCHAU_ZEICHEN): string {
+  const text = content ?? '';
+  return text.length > max ? `${text.slice(0, max)}…` : text;
+}
+
+/**
+ * P10-T51 (N2): Suchtreffer ohne Volltext. Zehn Treffer mit Volltext waren 70.549 Zeichen und
+ * rissen das Antwortlimit des Clients. Je Treffer bleiben id, score und die Metadaten; statt
+ * content gibt es vorschau + content_laenge, embedding_modell entfaellt. Volltext: thought get
+ * oder Parameter volltext:true.
+ */
+export function kuerzeThoughtTreffer(treffer: ThoughtSearchResult[]): Array<{
+  id: ThoughtSearchResult['id'];
+  score: number;
+  payload: Record<string, unknown>;
+}> {
+  return treffer.map((t) => {
+    const { content, embedding_modell: _modell, ...rest } = t.payload as unknown as Record<string, unknown> & { content?: string };
+    const text = typeof content === 'string' ? content : '';
+    return { ...t, payload: { ...rest, vorschau: thoughtVorschau(text), content_laenge: text.length } };
+  });
+}
+
 /**
  * Aktualisiert einen bestehenden Gedanken (partielle Aenderungen)
  * PostgreSQL first, dann Qdrant bei content-Aenderung

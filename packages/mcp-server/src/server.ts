@@ -36,6 +36,7 @@ import {
   logToolCall,
   resolveAgentId,
   filtereJevTool,
+  kompaktiereTextErgebnis,
 } from '@synapse/core';
 import { ensureAgentsSchema, detectClaudeCli, heartbeatController, readStatus, postToInbox, postMessage, checkInbox } from '@synapse/agents';
 
@@ -449,7 +450,7 @@ export function createServer(): Server {
         result: null,
       });
 
-      return {
+      return kompaktiereTextErgebnis({
         content: [{
           type: 'text',
           text: JSON.stringify({
@@ -461,7 +462,7 @@ export function createServer(): Server {
           }, null, 2),
         }],
         isError: true,
-      };
+      }, name);
     }
 
     const baseResp = await (async () => {
@@ -799,8 +800,13 @@ export function createServer(): Server {
       durationMs: Date.now() - _t0,
       result: _text,
     });
-    return await attachResponseHooks(
-      baseResp as { content: Array<{ type: string; text: string }>; isError?: boolean },
+    // P10-T51 (K2): nach ALLEN Anhaengen einmal kompakt serialisieren (null-Felder weg, keine
+    // Einrueckung, success ergaenzt) — derselbe Helfer wie auf dem REST-Weg.
+    return kompaktiereTextErgebnis(
+      await attachResponseHooks(
+        baseResp as { content: Array<{ type: string; text: string }>; isError?: boolean },
+      ),
+      name,
     );
   });
 

@@ -24,6 +24,10 @@ const batch = await import(join(coreDist, 'services', process.env.STATUS_VIEWS_B
 const reservations = await import(join(coreDist, 'services', 'file-reservations.js'));
 const { getPool } = await import(join(coreDist, 'db', 'client.js'));
 const { filesTool } = await import(join(hier, '..', '..', 'mcp-server', 'dist', 'tools', 'consolidated', 'files.js'));
+// P10-T51: die MCP-Huelle (REST) kompaktiert seit K2/K3 (null-Felder weg, success ergaenzt).
+// Der stdio-Handler hier liefert weiter das Rohobjekt; die Erwartung fuer REST entsteht ueber
+// denselben Helfer. Die stdio-Golden-Hashes bleiben unveraendert.
+const { baueToolErgebnis } = await import(join(coreDist, 'services', 'tool-antwort.js'));
 const repo = join(hier, '..', '..', '..');
 const requireRest = createRequire(join(repo, 'packages', 'rest-api', 'package.json'));
 const Fastify = requireRest('fastify');
@@ -96,7 +100,8 @@ async function beide(args, key, planId) {
   const stdioSha = createHash('sha256').update(stdioNormalisiert).digest('hex');
   console.log(`GOLDEN ${key} STDIO ${stdioSha}`);
   // REST ohne Wrapper-Anhaenge liefert dieselbe plan_status-Antwort wie stdio.
-  assert.equal(restNormalisiert, stdioNormalisiert, `${key}: REST-Kern gleich stdio`);
+  const stdioAlsHuelle = normalisiere(JSON.parse(baueToolErgebnis(stdio, { tool: 'files' }).content[0].text));
+  assert.equal(restNormalisiert, stdioAlsHuelle, `${key}: REST-Kern gleich stdio (ueber die gemeinsame Huelle)`);
   // stdio-Hashes wurden am Stand VOR P6-T22 (28cee10) erfasst und sind dort wie hier gleich.
   if (process.env.STATUS_VIEWS_CAPTURE !== '1' && Object.hasOwn(GOLDEN, `${key}-stdio`)) {
     assert.equal(stdioSha, GOLDEN[`${key}-stdio`], `${key}: stdio-Ausgabe unveraendert`);

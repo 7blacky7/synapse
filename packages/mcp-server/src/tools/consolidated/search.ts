@@ -89,6 +89,10 @@ export const searchTool: ConsolidatedTool = {
           type: 'number',
           description: 'Max. Ergebnisse (Standard: 10 oder 50)',
         },
+        volltext: {
+          type: 'boolean',
+          description: 'Nur fuer thoughts: true liefert je Treffer den vollen Inhalt (Standard false: vorschau ~300 Zeichen + content_laenge)',
+        },
 
         // Action-spezifische Parameter
         file_type: {
@@ -222,7 +226,7 @@ export const searchTool: ConsolidatedTool = {
           const project = reqStr(args, 'project');
           const limit = num(args, 'limit');
 
-          const result = await searchThoughts(query, project, limit);
+          const result = await searchThoughts(query, project, limit, bool(args, 'volltext') ?? false);
 
           return {
             content: [

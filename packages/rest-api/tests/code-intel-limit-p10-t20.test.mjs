@@ -19,6 +19,8 @@ const load = (...parts) => import(pathToFileURL(join(repo, ...parts)).href);
 const { getPool, closePool } = await load('packages/core/dist/db/client.js');
 const { codeIntelTool } = await load('packages/mcp-server/dist/tools/consolidated/code-intel.js');
 const { createServer } = await load('packages/rest-api/dist/server.js');
+// P10-T51 (K3): die MCP-Huelle laesst null-Felder weg; der stdio-Handler liefert das Rohobjekt.
+const { kompaktiereToolAntwort, toolAntwortKompaktAktiv } = await load('packages/core/dist/services/tool-antwort.js');
 const pool = getPool();
 const project = 'test-p10-t20-' + randomUUID();
 const functions = ['fn_a', 'fn_b', 'fn_c'];
@@ -130,8 +132,10 @@ try {
   for (const [name, run] of [['stdio', stdio], ['REST-MCP', restMcp]]) {
     const fn = await run('functions', {});
     const vars = await run('variables', {});
-    equalJson(fn, { success: true, functions: expectedFunctions, count: 3, project }, name + ' Golden functions ohne limit (Altverhalten)');
-    equalJson(vars, { success: true, variables: expectedVariables, count: 3, project }, name + ' Golden variables ohne limit (Altverhalten)');
+    // Golden bleibt der Altwert; ueber die MCP-Huelle gilt die freigegebene Regel (null-Felder entfallen).
+    const erwartet = (wert) => (name === 'REST-MCP' && toolAntwortKompaktAktiv() ? kompaktiereToolAntwort(wert, 'code_intel') : wert);
+    equalJson(fn, erwartet({ success: true, functions: expectedFunctions, count: 3, project }), name + ' Golden functions ohne limit (Altverhalten)');
+    equalJson(vars, erwartet({ success: true, variables: expectedVariables, count: 3, project }), name + ' Golden variables ohne limit (Altverhalten)');
   }
   for (const [action, field] of [['functions', 'functions'], ['variables', 'variables'], ['statements', 'statements']]) {
     const args = action === 'statements' ? { file_path: 'fixture.ts' } : {};

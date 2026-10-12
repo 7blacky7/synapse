@@ -63,6 +63,10 @@ export const thoughtTool: ConsolidatedTool = {
           type: 'string',
           description: 'Suchanfrage - fuer action "search"',
         },
+        volltext: {
+          type: 'boolean',
+          description: 'Nur fuer search: true liefert je Treffer den vollen Inhalt (Standard false: vorschau ~300 Zeichen + content_laenge; Volltext auch per get mit id)',
+        },
         limit: {
           type: 'number',
           description: 'Maximale Anzahl Ergebnisse (Standard: 50 fuer get, 10 fuer search)',
@@ -196,7 +200,7 @@ export const thoughtTool: ConsolidatedTool = {
         const project = str(args, 'project');
         const limit = num(args, 'limit') ?? 10;
 
-        const result = await searchThoughts(query, project ?? '', limit);
+        const result = await searchThoughts(query, project ?? '', limit, bool(args, 'volltext') ?? false);
         return result;
       }
 

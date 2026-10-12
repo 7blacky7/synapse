@@ -71,7 +71,8 @@ try {
     const messages=(await call({project,agent_id:recipient,action:'get'})).messages;
     assert.deepEqual(messages.map(m=>m.id),[broadcast.message.id,dm.message.id],'Empfänger bekommt Broadcast und eigene DM');
     assert.deepEqual(messages.map(m=>m.content),['broadcast-'+name,'dm-'+name]);
-    assert.equal(messages[0].recipientId,null);
+    // P10-T51 (K3): die MCP-Huelle laesst null-Felder weg; Broadcast = kein Empfaenger (null oder fehlt).
+    assert.equal(messages[0].recipientId ?? null,null);
     assert.equal(messages[1].recipientId,recipient);
     assert(messages.every(m=>m.senderId===sender));
     const others=(await call({project,agent_id:other,action:'get'})).messages;

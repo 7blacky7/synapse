@@ -1428,6 +1428,12 @@ export interface SuchZeilenOptionen {
   limit?: number;
   /** Die ersten N Trefferzeilen je Datei ueberspringen (Standard 0). */
   skip?: number;
+  /**
+   * P10-T51 (N3): words[] je Trefferzeile nur, wenn die ANFRAGE mehrere Woerter hat. Ein
+   * Bezeichner wie "synapse-direkt" zerfaellt intern in zwei Suchwoerter, ist fuer den Aufrufer
+   * aber eines. Standard: wie bisher (mehrere interne Suchwoerter).
+   */
+  woerterJeZeile?: boolean;
 }
 
 const SUCH_ZEILEN_STANDARD = 20;
@@ -1517,7 +1523,7 @@ export function findeSuchZeilen(
       zeile.line_length = roh.length;
       zeile.column = fund.spalte + 1;
     }
-    if (mehrere) zeile.words = [...fund.woerter].sort((a, b) => a - b).map(i => woerter[i].wort);
+    if (mehrere && (optionen.woerterJeZeile ?? true)) zeile.words = [...fund.woerter].sort((a, b) => a - b).map(i => woerter[i].wort);
     return zeile;
   });
 
@@ -1624,7 +1630,7 @@ export async function fullTextSearchCode(
   // P15-T41: Geheimdateien liefern nur Trefferzeilen aus ihrer maskierten Sicht; die echte headline wird ersetzt.
   return result.rows.map(row => {
     const maskiert = istMaskierteDatei(row.file_path);
-    const zeilenTreffer = findeSuchZeilen(maskiert ? maskiereDatei(row.file_path, row.content ?? '') : (row.content ?? ''), woerter, { limit: zeilen.match_limit, skip: zeilen.match_skip });
+    const zeilenTreffer = findeSuchZeilen(maskiert ? maskiereDatei(row.file_path, row.content ?? '') : (row.content ?? ''), woerter, { limit: zeilen.match_limit, skip: zeilen.match_skip, woerterJeZeile: cleanQuery.split(/\s+/).filter(w => w.length > 0).length > 1 });
     return {
       file_path: row.file_path,
       file_type: row.file_type,

@@ -820,8 +820,8 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
         tips: 'Fuer vollstaendige Liste: memory(action: "list") nutzen.',
       },
       thoughts: {
-        description: 'Gedanken/Team-Updates durchsuchen.',
-        params: 'query (req), project (req), limit',
+        description: 'Gedanken/Team-Updates durchsuchen. Je Treffer vorschau (~300 Zeichen) + content_laenge statt Volltext; Volltext per thought get oder volltext:true.',
+        params: 'query (req), project (req), limit, volltext (Standard false)',
         example: 'search({ action: "thoughts", project: "synapse", query: "auto-handoff" })',
       },
       tech_docs: {
@@ -980,8 +980,8 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
         tips: 'Mit id: gezielter Abruf. Ohne id: limit setzen (Standard 50).',
       },
       search: {
-        description: 'Thoughts semantisch durchsuchen.',
-        params: 'query (req), project, limit',
+        description: 'Thoughts semantisch durchsuchen. Je Treffer id, score, Metadaten und vorschau (~300 Zeichen) + content_laenge; Volltext per thought get mit id oder volltext:true.',
+        params: 'query (req), project, limit, volltext (Standard false)',
         example: 'thought({ action: "search", project: "synapse", query: "handoff status" })',
       },
       update: {

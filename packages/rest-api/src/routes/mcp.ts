@@ -216,7 +216,7 @@ import {
   setSetupPhase,
 } from '@synapse/core';
 import { minimatch } from 'minimatch';
-import { GUIDE_OVERVIEW, TOOL_GUIDES, logToolCall, queryToolCalls } from '@synapse/core';
+import { GUIDE_OVERVIEW, TOOL_GUIDES, logToolCall, queryToolCalls, baueToolErgebnis, kuerzeThoughtTreffer } from '@synapse/core';
 import { leiteAgentIdAusHeaders } from './agent-header.js';
 // PA-1: unbekannte Parameter melden statt still verwerfen — dieselbe Funktion wie im
 // lokalen MCP-Server, damit die beiden Strecken nicht auseinanderlaufen.
@@ -337,6 +337,7 @@ export const MCP_TOOLS = [
         project: { type: 'string', description: 'Projekt-Name' },
         agent_id: { type: 'string', description: 'Agent-ID fuer Onboarding' },
         limit: { type: 'number', description: 'Max. Ergebnisse (Standard: 10 oder 50)' },
+        volltext: { type: 'boolean', description: 'Nur fuer thoughts: true liefert je Treffer den vollen Inhalt (Standard false: vorschau ~300 Zeichen + content_laenge)' },
         file_type: { type: 'string', description: 'Dateityp-Filter (fuer code, code_with_path)' },
         path_pattern: { type: 'string', description: 'Glob-Pattern fuer Pfad-Filter (fuer path, code_with_path)' },
         content_pattern: { type: 'string', description: 'Regex-Pattern fuer Content-Filter (fuer path)' },
@@ -455,6 +456,7 @@ export const MCP_TOOLS = [
           description: 'ID des Gedankens - fuer action "get" (einzeln oder Array), "delete" oder "update". Volle UUID oder eindeutiger Praefix (mind. 8 Zeichen, z. B. "04e14f2a"); mehrdeutig/unbekannt -> Fehler mit Kandidaten, nichts wird geaendert.',
         },
         query: { type: 'string', description: 'Suchanfrage - fuer action "search"' },
+        volltext: { type: 'boolean', description: 'Nur fuer search: true liefert je Treffer den vollen Inhalt (Standard false: vorschau ~300 Zeichen + content_laenge; Volltext auch per get mit id)' },
         limit: { type: 'number', description: 'Maximale Anzahl Ergebnisse (Standard: 50 fuer get, 10 fuer search)' },
         dry_run: { type: 'boolean', description: 'Preview-Modus — NUR aktiv wenn name/id ein Array ist (Batch-Delete). Bei Single-String wird sofort geloescht, dry_run wird ignoriert. Wenn die UI eine Bestaetigung erzwingen soll, ruf erst mit Array + dry_run:true auf, dann mit Array ohne dry_run.' },
         max_items: { type: 'number', description: 'Max. erlaubte Items pro Batch-Delete (Standard: 10, nur fuer delete mit Array)' },
@@ -2631,11 +2633,13 @@ async function handleToolCallKern(
           };
         }
         case 'thoughts': {
-          return await searchThoughts(
+          // P10-T51 (N2): Vorschau statt Volltext, ausser volltext:true.
+          const treffer = await searchThoughts(
             reqStr(args, 'query'),
             str(args, 'project') ?? '',
             num(args, 'limit') ?? 10
           );
+          return bool(args, 'volltext') ? treffer : kuerzeThoughtTreffer(treffer);
         }
         case 'proposals': {
           const results = await searchProposals(
@@ -2970,11 +2974,13 @@ async function handleToolCallKern(
           return { thoughts };
         }
         case 'search': {
-          return await searchThoughts(
+          // P10-T51 (N2): Vorschau statt Volltext, ausser volltext:true.
+          const treffer = await searchThoughts(
             reqStr(args, 'query'),
             str(args, 'project') ?? '',
             num(args, 'limit') ?? 10
           );
+          return bool(args, 'volltext') ? treffer : kuerzeThoughtTreffer(treffer);
         }
         case 'delete': {
           const project = reqStr(args, 'project');
@@ -6074,6 +6080,123 @@ async function handleToolCallKern(
   }
 }
 
+/**
+ * P10-T51 (K2, N5): EIN tools/call-Weg fuer POST / und POST /mcp/messages.
+ * Vorher stand derselbe Block zweimal in den Routen; dem Root-Weg fehlte attachWerkzeugRegeln.
+ * Die Huelle (Text + structuredContent aus demselben Objekt, kompakt, null-Felder weg,
+ * success ergaenzt) baut baueToolErgebnis aus core - derselbe Helfer wie auf stdio.
+ * Das Activity-Log speichert weiter das unveraenderte Ergebnis.
+ */
+async function fuehreToolsCallAus(
+  toolName: string,
+  toolArgs: Record<string, unknown>,
+  derivedAgentId: ReturnType<typeof leiteAgentIdAusHeaders>,
+  hauptagentSession: string | null,
+): Promise<unknown> {
+  if (hauptagentSession) {
+    // Auflage (26.08.2026): die Hauptagenten-Verbindung ist auf artefakt
+    // beschraenkt — jedes andere Werkzeug wird klar abgelehnt.
+    if (toolName !== 'artefakt') {
+      const ablehnung = {
+        success: false,
+        error: 'hauptagent_nur_artefakt',
+        message: 'Diese Verbindung gehoert einer Hauptagenten-Session und ist auf das Tool "artefakt" beschraenkt.',
+      };
+      return baueToolErgebnis(ablehnung, { tool: toolName, isError: true, strukturiert: true });
+    }
+    toolArgs.session_id = hauptagentSession;
+  } else if (toolName === 'artefakt') {
+    // Ohne Hauptagenten-Header gibt es keine Session-Bindung: ein selbst
+    // mitgeschicktes session_id waere eine Identitaets-Behauptung.
+    delete toolArgs.session_id;
+  }
+  // Auto-Detect: Web-KIs ohne Wrapper-Kontext bekommen agent_id aus
+  // dem User-Agent/Session-Header (siehe deriveAgentIdFromHeaders).
+  // Setzt nur wenn der Caller nicht selbst eine ID mitschickt.
+  if (derivedAgentId && !toolArgs.agent_id) {
+    toolArgs.agent_id = derivedAgentId;
+  }
+  const effectiveAgentId = typeof toolArgs.agent_id === 'string'
+    ? toolArgs.agent_id
+    : derivedAgentId;
+  const _t0 = Date.now();
+  let _logOk = true;
+  let _logErr: string | null = null;
+  let _logResult: string | null = null;
+  let result: unknown;
+  try {
+    const toolResult = await attachShellJobHints(
+      await attachRestPendingEventHints(
+        await attachWerkzeugRegeln(
+          await attachRestChannelHints(
+            await attachSkillHinweisgeber(
+              await attachRestOnboarding(
+                await attachDirectWriteReservationHint(
+                  await handleToolCall(toolName, toolArgs, effectiveAgentId),
+                  toolName,
+                  toolArgs,
+                ),
+                toolArgs,
+                toolName,
+              ),
+              toolName,
+              toolArgs,
+              effectiveAgentId,
+            ),
+            effectiveAgentId,
+          ),
+          toolName,
+          toolArgs,
+        ),
+        toolName,
+        toolArgs,
+        effectiveAgentId,
+      ),
+      toolName,
+      toolArgs,
+      effectiveAgentId,
+    );
+    _logResult = JSON.stringify(toolResult);
+    // OpenAI-Empfehlung: strukturierte Ausgabe zusaetzlich zum Text (muss zum outputSchema passen).
+    result = baueToolErgebnis(toolResult, { tool: toolName, strukturiert: true });
+  } catch (toolErr) {
+    // Tool-Fehler (z.B. fehlender Pflicht-Parameter wie file_path) als
+    // MCP tool-result mit isError zurueckgeben — NICHT als HTTP 500.
+    // Sonst wertet der Cloud-MCP-Layer (claude.ai) das 5xx als retryable
+    // Transport-Fehler ("502 retry_after"), und die KI haelt einen reinen
+    // Parameter-Fehler faelschlich fuer einen Server-/Bridge-Ausfall.
+    const msg = toolErr instanceof Error ? toolErr.message : String(toolErr);
+    console.error(`[MCP] Tool-Fehler (${toolName}): ${msg}`);
+    _logOk = false;
+    _logErr = msg;
+    const errorPayload = await attachRestPendingEventHints(
+      await attachRestChannelHints(
+        { success: false, error: `Fehler im Tool "${toolName}": ${msg}` },
+        effectiveAgentId,
+      ),
+      toolName,
+      toolArgs,
+      effectiveAgentId,
+    );
+    _logResult = JSON.stringify(errorPayload);
+    result = baueToolErgebnis(errorPayload, { tool: toolName, isError: true, strukturiert: true });
+  }
+  // Activity-Log (best-effort, non-blocking) — Cloud-Pfad.
+  void logToolCall({
+    project: typeof toolArgs.project === 'string' ? toolArgs.project : null,
+    agentId: resolveAgentId(typeof toolArgs.agent_id === 'string' ? toolArgs.agent_id : null) ?? derivedAgentId ?? null,
+    source: 'cloud',
+    tool: toolName,
+    action: typeof toolArgs.action === 'string' ? toolArgs.action : null,
+    argsPreview: JSON.stringify(toolArgs).slice(0, 500),
+    ok: _logOk,
+    error: _logErr,
+    durationMs: Date.now() - _t0,
+    result: _logResult,
+  });
+  return result;
+}
+
 export async function mcpRoutes(fastify: FastifyInstance): Promise<void> {
   /**
    * GET /mcp/sse - SSE Endpoint für MCP
@@ -6154,123 +6277,13 @@ export async function mcpRoutes(fastify: FastifyInstance): Promise<void> {
           break;
 
         case 'tools/call': {
-          const toolName = params?.name as string;
-          const toolArgs = (params?.arguments || {}) as Record<string, unknown>;
-          if (hauptagentSession) {
-            // Auflage (26.08.2026): die Hauptagenten-Verbindung ist auf artefakt
-            // beschraenkt — jedes andere Werkzeug wird klar abgelehnt.
-            if (toolName !== 'artefakt') {
-              const ablehnung = {
-                success: false,
-                error: 'hauptagent_nur_artefakt',
-                message: 'Diese Verbindung gehoert einer Hauptagenten-Session und ist auf das Tool "artefakt" beschraenkt.',
-              };
-              result = { content: [{ type: 'text', text: JSON.stringify(ablehnung, null, 2) }], structuredContent: ablehnung, isError: true };
-              break;
-            }
-            toolArgs.session_id = hauptagentSession;
-          } else if (toolName === 'artefakt') {
-            // Ohne Hauptagenten-Header gibt es keine Session-Bindung: ein selbst
-            // mitgeschicktes session_id waere eine Identitaets-Behauptung.
-            delete toolArgs.session_id;
-          }
-          // Auto-Detect: Web-KIs ohne Wrapper-Kontext bekommen agent_id aus
-          // dem User-Agent/Session-Header (siehe deriveAgentIdFromHeaders).
-          // Setzt nur wenn der Caller nicht selbst eine ID mitschickt.
-          if (derivedAgentId && !toolArgs.agent_id) {
-            toolArgs.agent_id = derivedAgentId;
-          }
-          const effectiveAgentId = typeof toolArgs.agent_id === 'string'
-            ? toolArgs.agent_id
-            : derivedAgentId;
-          const _t0 = Date.now();
-          let _logOk = true;
-          let _logErr: string | null = null;
-          let _logResult: string | null = null;
-          try {
-            const toolResult = await attachShellJobHints(
-              await attachRestPendingEventHints(
-              await attachWerkzeugRegeln(
-                await attachRestChannelHints(
-                  await attachSkillHinweisgeber(
-                    await attachRestOnboarding(
-                      await attachDirectWriteReservationHint(
-                        await handleToolCall(toolName, toolArgs, effectiveAgentId),
-                        toolName,
-                        toolArgs,
-                      ),
-                      toolArgs,
-                      toolName,
-                    ),
-                    toolName,
-                    toolArgs,
-                    effectiveAgentId,
-                  ),
-                  effectiveAgentId,
-                ),
-                toolName,
-                toolArgs,
-              ),
-              toolName,
-              toolArgs,
-              effectiveAgentId,
-            ),
-              toolName,
-              toolArgs,
-              effectiveAgentId,
-            );
-            _logResult = JSON.stringify(toolResult);
-            result = {
-              content: [{ type: 'text', text: JSON.stringify(toolResult, null, 2) }],
-              // OpenAI-Empfehlung: strukturierte Ausgabe zusaetzlich zum Text,
-              // damit das Modell (ChatGPT/Claude) Felder + IDs direkt fuer
-              // Folge-Calls nutzen kann (muss zum outputSchema des Tools passen).
-              structuredContent:
-                toolResult && typeof toolResult === 'object' && !Array.isArray(toolResult)
-                  ? toolResult
-                  : { result: toolResult },
-            };
-          } catch (toolErr) {
-            // Tool-Fehler (z.B. fehlender Pflicht-Parameter wie file_path) als
-            // MCP tool-result mit isError zurueckgeben — NICHT als HTTP 500.
-            // Sonst wertet der Cloud-MCP-Layer (claude.ai) das 5xx als retryable
-            // Transport-Fehler ("502 retry_after"), und die KI haelt einen reinen
-            // Parameter-Fehler faelschlich fuer einen Server-/Bridge-Ausfall.
-            // Mit isError sieht die KI die Klartext-Meldung und kann den Parameter
-            // ergaenzen, statt auf FS/Fallback auszuweichen.
-            const msg = toolErr instanceof Error ? toolErr.message : String(toolErr);
-            console.error(`[MCP] Tool-Fehler (${toolName}): ${msg}`);
-            _logOk = false;
-            _logErr = msg;
-            const errorPayload = await attachRestPendingEventHints(
-              await attachRestChannelHints(
-                { success: false, error: `Fehler im Tool "${toolName}": ${msg}` },
-                effectiveAgentId,
-              ),
-              toolName,
-              toolArgs,
-              effectiveAgentId,
-            );
-            _logResult = JSON.stringify(errorPayload);
-            result = {
-              content: [{ type: 'text', text: JSON.stringify(errorPayload, null, 2) }],
-              structuredContent: errorPayload,
-              isError: true,
-            };
-          }
-          // Activity-Log (best-effort, non-blocking) — Cloud-Pfad.
-          void logToolCall({
-            project: typeof toolArgs.project === 'string' ? toolArgs.project : null,
-            agentId: resolveAgentId(typeof toolArgs.agent_id === 'string' ? toolArgs.agent_id : null) ?? derivedAgentId ?? null,
-            source: 'cloud',
-            tool: toolName,
-            action: typeof toolArgs.action === 'string' ? toolArgs.action : null,
-            argsPreview: JSON.stringify(toolArgs).slice(0, 500),
-            ok: _logOk,
-            error: _logErr,
-            durationMs: Date.now() - _t0,
-            result: _logResult,
-          });
+          // P10-T51 (N5): derselbe Weg wie POST /, siehe fuehreToolsCallAus.
+          result = await fuehreToolsCallAus(
+            params?.name as string,
+            (params?.arguments || {}) as Record<string, unknown>,
+            derivedAgentId,
+            hauptagentSession,
+          );
           break;
         }
 
@@ -6350,119 +6363,13 @@ export async function mcpRoutes(fastify: FastifyInstance): Promise<void> {
           break;
 
         case 'tools/call': {
-          const toolName = params?.name as string;
-          const toolArgs = (params?.arguments || {}) as Record<string, unknown>;
-          if (hauptagentSession) {
-            // Auflage (26.08.2026): die Hauptagenten-Verbindung ist auf artefakt
-            // beschraenkt — jedes andere Werkzeug wird klar abgelehnt.
-            if (toolName !== 'artefakt') {
-              const ablehnung = {
-                success: false,
-                error: 'hauptagent_nur_artefakt',
-                message: 'Diese Verbindung gehoert einer Hauptagenten-Session und ist auf das Tool "artefakt" beschraenkt.',
-              };
-              result = { content: [{ type: 'text', text: JSON.stringify(ablehnung, null, 2) }], structuredContent: ablehnung, isError: true };
-              break;
-            }
-            toolArgs.session_id = hauptagentSession;
-          } else if (toolName === 'artefakt') {
-            // Ohne Hauptagenten-Header gibt es keine Session-Bindung: ein selbst
-            // mitgeschicktes session_id waere eine Identitaets-Behauptung.
-            delete toolArgs.session_id;
-          }
-          // Auto-Detect: Web-KIs ohne Wrapper-Kontext bekommen agent_id aus
-          // dem User-Agent/Session-Header (siehe deriveAgentIdFromHeaders).
-          // Setzt nur wenn der Caller nicht selbst eine ID mitschickt.
-          if (derivedAgentId && !toolArgs.agent_id) {
-            toolArgs.agent_id = derivedAgentId;
-          }
-          const effectiveAgentId = typeof toolArgs.agent_id === 'string'
-            ? toolArgs.agent_id
-            : derivedAgentId;
-          const _t0 = Date.now();
-          let _logOk = true;
-          let _logErr: string | null = null;
-          let _logResult: string | null = null;
-          try {
-            const toolResult = await attachShellJobHints(
-              await attachRestPendingEventHints(
-              await attachRestChannelHints(
-                await attachSkillHinweisgeber(
-                  await attachRestOnboarding(
-                      await attachDirectWriteReservationHint(
-                        await handleToolCall(toolName, toolArgs, effectiveAgentId),
-                        toolName,
-                        toolArgs,
-                      ),
-                    toolArgs,
-                    toolName,
-                  ),
-                  toolName,
-                  toolArgs,
-                  effectiveAgentId,
-                ),
-                effectiveAgentId,
-              ),
-              toolName,
-              toolArgs,
-              effectiveAgentId,
-            ),
-              toolName,
-              toolArgs,
-              effectiveAgentId,
-            );
-            _logResult = JSON.stringify(toolResult);
-            result = {
-              content: [{ type: 'text', text: JSON.stringify(toolResult, null, 2) }],
-              // OpenAI-Empfehlung: strukturierte Ausgabe zusaetzlich zum Text,
-              // damit das Modell (ChatGPT/Claude) Felder + IDs direkt fuer
-              // Folge-Calls nutzen kann (muss zum outputSchema des Tools passen).
-              structuredContent:
-                toolResult && typeof toolResult === 'object' && !Array.isArray(toolResult)
-                  ? toolResult
-                  : { result: toolResult },
-            };
-          } catch (toolErr) {
-            // Tool-Fehler (z.B. fehlender Pflicht-Parameter wie file_path) als
-            // MCP tool-result mit isError zurueckgeben — NICHT als HTTP 500.
-            // Sonst wertet der Cloud-MCP-Layer (claude.ai) das 5xx als retryable
-            // Transport-Fehler ("502 retry_after"), und die KI haelt einen reinen
-            // Parameter-Fehler faelschlich fuer einen Server-/Bridge-Ausfall.
-            // Mit isError sieht die KI die Klartext-Meldung und kann den Parameter
-            // ergaenzen, statt auf FS/Fallback auszuweichen.
-            const msg = toolErr instanceof Error ? toolErr.message : String(toolErr);
-            console.error(`[MCP] Tool-Fehler (${toolName}): ${msg}`);
-            _logOk = false;
-            _logErr = msg;
-            const errorPayload = await attachRestPendingEventHints(
-              await attachRestChannelHints(
-                { success: false, error: `Fehler im Tool "${toolName}": ${msg}` },
-                effectiveAgentId,
-              ),
-              toolName,
-              toolArgs,
-              effectiveAgentId,
-            );
-            _logResult = JSON.stringify(errorPayload);
-            result = {
-              content: [{ type: 'text', text: JSON.stringify(errorPayload, null, 2) }],
-              structuredContent: errorPayload,
-              isError: true,
-            };
-          }
-          // Activity-Log (best-effort, non-blocking) — Cloud-Pfad.
-          void logToolCall({
-            project: typeof toolArgs.project === 'string' ? toolArgs.project : null,
-            agentId: resolveAgentId(typeof toolArgs.agent_id === 'string' ? toolArgs.agent_id : null) ?? derivedAgentId ?? null,
-            source: 'cloud',
-            tool: toolName,
-            action: typeof toolArgs.action === 'string' ? toolArgs.action : null,
-            argsPreview: JSON.stringify(toolArgs).slice(0, 500),
-            ok: _logOk,
-            error: _logErr,
-            durationMs: Date.now() - _t0,
-            result: _logResult,
-          });
+          // P10-T51 (N5): derselbe Weg wie POST /mcp/messages, siehe fuehreToolsCallAus.
+          result = await fuehreToolsCallAus(
+            params?.name as string,
+            (params?.arguments || {}) as Record<string, unknown>,
+            derivedAgentId,
+            hauptagentSession,
+          );
           break;
         }
 

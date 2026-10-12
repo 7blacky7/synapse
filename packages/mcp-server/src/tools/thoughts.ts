@@ -12,7 +12,7 @@ import {
   aendereThoughtPerId,
   loescheThoughtsPerId,
   addThoughtsBatch as addThoughtsBatchCore,
-
+  thoughtVorschau,
 } from '@synapse/core';
 import type { Thought, ThoughtSource } from '@synapse/core';
 
@@ -145,14 +145,19 @@ export async function getThoughts(
 export async function searchThoughts(
   query: string,
   project: string,
-  limit: number = 10
+  limit: number = 10,
+  volltext: boolean = false
 ): Promise<{
   success: boolean;
   results: Array<{
     id: string;
     project: string;
     source: string;
-    content: string;
+    /** nur mit volltext:true */
+    content?: string;
+    /** P10-T51 (N2): ohne volltext Vorschau + Laenge statt Volltext */
+    vorschau?: string;
+    content_laenge?: number;
     tags: string[];
     timestamp: string;
     score: number;
@@ -168,12 +173,14 @@ export async function searchThoughts(
         id: r.id,
         project: r.payload.project,
         source: r.payload.source,
-        content: r.payload.content,
+        ...(volltext
+          ? { content: r.payload.content }
+          : { vorschau: thoughtVorschau(r.payload.content), content_laenge: (r.payload.content ?? '').length }),
         tags: r.payload.tags,
         timestamp: r.payload.timestamp,
         score: r.score,
       })),
-      message: `${results.length} Gedanken gefunden`,
+      message: `${results.length} Gedanken gefunden${volltext ? '' : ' (Vorschau; Volltext: thought get mit id oder volltext:true)'}`,
     };
   } catch (error) {
     return {
