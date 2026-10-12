@@ -43,6 +43,8 @@ import {
   getBatchPlan,
   buildPlanStatusResponse,
   buildPlanStatusResponseMitDiff,
+  buildCompactPlanStatusResponse,
+  buildCompactSharedPlanStatusResponse,
   addCoeditContribution,
   markCoeditReady,
   markCoeditNoChanges,
@@ -195,6 +197,11 @@ export const filesTool: ConsolidatedTool = {
         plan_id: {
           type: 'string',
           description: 'Plan-ID (fuer commit, cancel, plan_status, plan_update). String wegen BIGSERIAL.',
+        },
+        ansicht: {
+          type: 'string',
+          enum: ['uebersicht', 'befunde'],
+          description: 'Optional fuer plan_status/shared_plan_status: kompakte Op-Metadaten ohne Dateiinhalt oder Unified-Diff; befunde filtert auf Fehler und gespeicherte Befunde.',
         },
         op_indices: {
           type: 'array',
@@ -360,7 +367,11 @@ export const filesTool: ConsolidatedTool = {
     }
     if (action === "shared_plan_status") {
       if (!agentId) throw new Error("agent_id ist fuer shared_plan_status erforderlich");
-      return getSharedPlanStatus({ project, wait_token: reqStr(args, "wait_token"), agent_id: agentId, wait_seconds: num(args, "wait_seconds") });
+      const status = await getSharedPlanStatus({ project, wait_token: reqStr(args, "wait_token"), agent_id: agentId, wait_seconds: num(args, "wait_seconds") });
+      const ansicht = str(args, 'ansicht');
+      return ansicht === 'uebersicht' || ansicht === 'befunde'
+        ? buildCompactSharedPlanStatusResponse(status, ansicht, project)
+        : status;
     }
     if (action === 'reservation_add') {
       if (!agentId) throw new Error('agent_id ist fuer reservation_add erforderlich');
@@ -601,8 +612,10 @@ export const filesTool: ConsolidatedTool = {
       }
       const waitSeconds = num(args, 'wait_seconds');
       if (waitSeconds) return pollPlanStatus({ plan_id: planId, wait_seconds: waitSeconds });
+      const ansicht = str(args, 'ansicht');
       const plan = await getBatchPlan(planId);
       if (!plan) return { success: false, error: 'plan_not_found', message: `Plan ${planId} nicht gefunden.` };
+      if (ansicht === 'uebersicht' || ansicht === 'befunde') return buildCompactPlanStatusResponse(plan, ansicht);
       // P15-T22: mit Unified-Diff je Datei aus dem Plan-Schatten.
       return buildPlanStatusResponseMitDiff(plan);
     }

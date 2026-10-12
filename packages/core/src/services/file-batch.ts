@@ -39,7 +39,7 @@ import {
 } from './code-write.js';
 import type { BatchEdit } from './code-write.js';
 import { enqueueParseAndEmbed } from './code.js';
-import { entmaskiereSensibleDatei, envHinweiseFuerBatch, istMaskierteDatei, maskiereDatei, maskiereEnvDiff, maskiereEnvOp } from './env-maske.js';
+import { entmaskiereSensibleDatei, envHinweiseFuerBatch, istMaskierteDatei, maskiereDatei, maskiereEnvDiff, maskiereEnvOp, schwaerzeEnvWerteInAntwort } from './env-maske.js';
 import { performance } from 'node:perf_hooks';
 import { createHash } from 'node:crypto';
 import {
@@ -5588,6 +5588,100 @@ export async function getPlanOpsVollstaendig(args: {
       + '(Basis + alle Ops in commit-Reihenfolge, 3 Zeilen Umfeld, Kopf "op <index>", CRLF nur fuer die Anzeige normalisiert). anwendbar:false = kein nachher.',
   };
 }
+
+/** Kompakte Planansichten; wird ausschliesslich bei explizitem ansicht-Parameter verwendet. */
+export type PlanStatusAnsicht = 'uebersicht' | 'befunde';
+
+function kompakteOps(plan: FileBatchPlanRow, pruefBefunde: unknown[] = [], nurBefunde = false) {
+  const ops = Array.isArray(plan.ops) ? plan.ops : [];
+  const previews = Array.isArray(plan.previews) ? plan.previews : [];
+  const rows = ops.map((op, index) => {
+    const preview = previews.find((eintrag) => eintrag.index === index);
+    const findings = pruefBefunde.filter((befund) => {
+      if (!befund || typeof befund !== 'object') return false;
+      const eintrag = befund as Record<string, unknown>;
+      return eintrag.op_index === index || (eintrag.datei === op.file_path && eintrag.op_index === undefined);
+    });
+    return {
+      index,
+      agent_id: op.agent_id ?? plan.owner_agent_id,
+      action: op.action,
+      file_path: op.file_path,
+      ...(op.new_path ? { new_path: op.new_path } : {}),
+      ...(op.reason ? { reason: op.reason } : {}),
+      status: preview?.ok === false ? 'fehler' : 'geprueft',
+      ...(typeof preview?.size_before === 'number' ? { size_before: preview.size_before } : {}),
+      ...(typeof preview?.size_after === 'number' ? { size_after: preview.size_after } : {}),
+      ...(findings.length ? { befunde: findings } : {}),
+    };
+  });
+  return nurBefunde ? rows.filter((op) => op.status === 'fehler' || 'befunde' in op) : rows;
+}
+
+export async function buildCompactPlanStatusResponse(
+  plan: FileBatchPlanRow,
+  ansicht: PlanStatusAnsicht,
+): Promise<Record<string, unknown>> {
+  const gespeichert = ansicht === 'befunde' ? await ladePlanBefunde(plan.id) : null;
+  const pruefBefunde = Array.isArray(gespeichert?.befunde) ? gespeichert.befunde : [];
+  const ops = kompakteOps(plan, pruefBefunde, ansicht === 'befunde');
+  return schwaerzeEnvWerteInAntwort(plan.project, {
+    success: true,
+    plan_id: plan.id,
+    project: plan.project,
+    status: plan.status,
+    ansicht,
+    ops_count: Array.isArray(plan.ops) ? plan.ops.length : 0,
+    count: ops.length,
+    ops,
+  });
+}
+
+export async function buildCompactSharedPlanStatusResponse(
+  status: SharedPlanStatusResult,
+  ansicht: PlanStatusAnsicht,
+  project: string,
+): Promise<Record<string, unknown>> {
+  const zielPlan = status.primary_plan_id ? await getBatchPlan(status.primary_plan_id) : null;
+  if (zielPlan) {
+    const gespeichert = ansicht === 'befunde' ? await ladePlanBefunde(zielPlan.id) : null;
+    const pruefBefunde = Array.isArray(gespeichert?.befunde) ? gespeichert.befunde : [];
+    // Nur die eigenen Beitraege zeigen, wie die volle shared_plan_status-Antwort
+    // (sie liest den eigenen Wartezustand, nicht den ganzen Zielplan).
+    const ops = kompakteOps(zielPlan, pruefBefunde, ansicht === 'befunde')
+      .filter((op) => status.contributions.some((beitrag) =>
+        beitrag.file_path === op.file_path && beitrag.agent_id === op.agent_id));
+    return schwaerzeEnvWerteInAntwort(project, {
+      success: true,
+      wait_token: status.wait_token,
+      status: status.status,
+      ansicht,
+      primary_plan_id: status.primary_plan_id,
+      waiting_agent: status.waiting_agent,
+      count: ops.length,
+      ops,
+    });
+  }
+  const ops = status.contributions.map((op, index) => ({
+    index,
+    action: op.action,
+    file_path: op.file_path,
+    ...(op.new_path ? { new_path: op.new_path } : {}),
+    ...(op.reason ? { reason: op.reason } : {}),
+    status: status.status,
+  }));
+  return schwaerzeEnvWerteInAntwort(project, {
+    success: true,
+    wait_token: status.wait_token,
+    status: status.status,
+    ansicht,
+    primary_plan_id: status.primary_plan_id,
+    waiting_agent: status.waiting_agent,
+    count: ansicht === 'befunde' ? 0 : ops.length,
+    ops: ansicht === 'befunde' ? [] : ops,
+  });
+}
+
 
 /** Einheitliche plan_status-Antwort fuer MCP-Server und REST-API. */
 export function buildPlanStatusResponse(plan: FileBatchPlanRow): Record<string, unknown> {

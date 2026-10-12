@@ -144,6 +144,8 @@ import {
   getBatchPlan,
   buildPlanStatusResponse,
   buildPlanStatusResponseMitDiff,
+  buildCompactPlanStatusResponse,
+  buildCompactSharedPlanStatusResponse,
   addCoeditContribution,
   markCoeditReady,
   markCoeditNoChanges,
@@ -1067,6 +1069,7 @@ export const MCP_TOOLS = [
         batch_id: { type: 'string', description: 'Batch-ID (fuer restore_batch — rollt alle Files einer Multi-File-Batch zurueck).' },
         vorschau: { type: 'boolean', description: 'restore_batch: true = nur Vorschau, schreibt NICHTS. Je Datei batch_diff (was der Batch geaendert hat) und rueckgaengig (was restore_batch jetzt aendern wuerde), als Unified-Diff.' },
         plan_id: { type: 'string', description: 'Plan-ID (fuer commit, cancel, plan_status, plan_update). String wegen BIGSERIAL.' },
+        ansicht: { type: 'string', enum: ['uebersicht', 'befunde'], description: 'Optional fuer plan_status/shared_plan_status: kompakte Op-Metadaten ohne Dateiinhalt oder Unified-Diff; befunde filtert auf Fehler und gespeicherte Befunde.' },
         op_indices: { type: 'array', items: { type: 'number' }, description: 'plan_status: mehrere Ops VOLLSTAENDIG liefern (auch als JSON-String "[0,1]" oder "0,1") (alle Felder ungekuerzt, agent_id, Status, Unified-Diff der Op im Gesamtbild des Plans). from_line/to_line schneiden ein Fenster aus content.' },
         op_index: { type: 'number', description: 'coedit_add: coedit_source_op_index der zurueckgestellten Op, die ops[0] ersetzt und beitraegt (z. B. nach contribution_failed). plan_status: Index einer Op, die VOLLSTAENDIG geliefert wird (alle Felder ungekuerzt, agent_id, Status, Unified-Diff der Op im Gesamtbild des Plans, anwendbar:false wenn nicht anwendbar). plan_update: Index der zu ersetzenden Op (0-basiert); ops[] ersetzt genau diese. Ohne op_index ersetzt ops[] alle Ops.' },
         agent_id: { type: 'string', description: 'Optional: Audit-Agent fuer file_versions. Bei Web-KI-Calls ohne Wrapper wird agent_id aus User-Agent/X-Openai-Session abgeleitet (z.B. "gpt-<8charsessionid>"). DARF weggelassen oder leer sein — Server ergaenzt automatisch. AUSNAHME action=history: dort wirkt agent_id als EXAKTER Read-Filter — fuer die volle Projekt-History weglassen!' },
@@ -2254,7 +2257,7 @@ const ENV_NETZ_TOOLS = new Set(['files', 'files_batch', 'code_intel']);
  * werden deren aktuelle Werte in allen Strings der Antwort durch [WERT] ersetzt — auch an Stellen, die die
  * Maskierung nicht kennt (z. B. eine Fehlermeldung, die eine Zeile zitiert). Ohne .env-Bezug ein No-op.
  */
-async function handleToolCall(
+export async function handleToolCall(
   name: string,
   args: Record<string, unknown>,
   effectiveAgentId?: string,
@@ -4665,7 +4668,11 @@ async function handleToolCallKern(
       }
       if (action === "shared_plan_status") {
         if (!agentId) throw new Error("agent_id ist fuer shared_plan_status erforderlich");
-        return getSharedPlanStatus({ project, wait_token: reqStr(args, "wait_token"), agent_id: agentId, wait_seconds: num(args, "wait_seconds") });
+        const status = await getSharedPlanStatus({ project, wait_token: reqStr(args, "wait_token"), agent_id: agentId, wait_seconds: num(args, "wait_seconds") });
+        const ansicht = str(args, 'ansicht');
+        return ansicht === 'uebersicht' || ansicht === 'befunde'
+          ? buildCompactSharedPlanStatusResponse(status, ansicht, project)
+          : status;
       }
       if (action === 'reservation_add') {
         if (!agentId) throw new Error('agent_id ist fuer reservation_add erforderlich');
@@ -5076,8 +5083,10 @@ async function handleToolCallKern(
         }
         const waitSeconds = num(args, 'wait_seconds');
         if (waitSeconds) return pollPlanStatus({ plan_id: planId, wait_seconds: waitSeconds });
+        const ansicht = str(args, 'ansicht');
         const plan = await getBatchPlan(planId);
         if (!plan) return { success: false, error: 'plan_not_found', message: `Plan ${planId} nicht gefunden.` };
+        if (ansicht === 'uebersicht' || ansicht === 'befunde') return buildCompactPlanStatusResponse(plan, ansicht);
         // P15-T22: mit Unified-Diff je Datei aus dem Plan-Schatten.
         return buildPlanStatusResponseMitDiff(plan);
       }
